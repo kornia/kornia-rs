@@ -1,6 +1,6 @@
 //! Python bindings for two-view relative pose estimation.
 //!
-//! Exposes `kornia_rs.features.two_view_estimate`, the monocular-SLAM bootstrap
+//! Exposes `kornia_rs.k3d.two_view_estimate`, the monocular-SLAM bootstrap
 //! pipeline used by ORB-SLAM3 et al.:
 //!
 //! 1. RANSAC a fundamental matrix and a homography in parallel.
@@ -24,7 +24,7 @@ use kornia_algebra::{Mat3F64, Vec2F64};
 
 /// Result of [`two_view_estimate_py`]. Field access mirrors the Rust
 /// `TwoViewResult`; all matrices are row-major float64.
-#[pyclass(name = "TwoViewPose", module = "kornia_rs.features", frozen)]
+#[pyclass(name = "TwoViewPose", module = "kornia_rs.k3d", frozen)]
 pub struct PyTwoViewPose {
     /// `(3, 3)` float64 relative rotation from view 1 to view 2.
     #[pyo3(get)]
@@ -146,6 +146,7 @@ fn mat3_to_py<'py>(py: Python<'py>, m: &Mat3F64) -> Bound<'py, PyArray2<f64>> {
     homography_inlier_ratio=0.8,
     min_parallax_deg=1.0,
     seed=None,
+    use_5pt_essential=true,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn two_view_estimate_py(
@@ -161,6 +162,7 @@ pub fn two_view_estimate_py(
     homography_inlier_ratio: f64,
     min_parallax_deg: f64,
     seed: Option<u64>,
+    use_5pt_essential: bool,
 ) -> PyResult<PyTwoViewPose> {
     if !pts1.is_c_contiguous() || !pts2.is_c_contiguous() {
         return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
@@ -206,6 +208,9 @@ pub fn two_view_estimate_py(
         },
         lm_enabled: true,
         lm: LmPoseConfig::default(),
+        use_5pt_essential,
+        lm_anneal_thresholds: vec![0.5, 0.25],
+        lm_anneal_min_inliers: 30,
     };
 
     let result = py
@@ -226,6 +231,7 @@ pub fn two_view_estimate_py(
 
     let (model_type, model_mat) = match result.model {
         TwoViewModel::Fundamental(f) => ("fundamental".to_string(), f),
+        TwoViewModel::Essential(e) => ("essential".to_string(), e),
         TwoViewModel::Homography(h) => ("homography".to_string(), h),
     };
     let model = mat3_to_py(py, &model_mat).unbind();

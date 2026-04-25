@@ -90,27 +90,28 @@ def median_ms(fn, n=N_ITERS, warmup=N_WARMUP) -> float:
     return float(np.median(ts))
 
 
-def bench_kornia(img1: np.ndarray, img2: np.ndarray) -> Result:
-    # Single run for quality + inlier counts + per-stage timing.
-    t0 = time.perf_counter()
+def bench_kornia(
+    img1: np.ndarray,
+    img2: np.ndarray,
+    use_5pt: bool = False,
+    label: str = "kornia-rs",
+) -> Result:
+    # Single run for quality + inlier counts.
     f1 = K.features.orb_detect_and_compute(img1)
     f2 = K.features.orb_detect_and_compute(img2)
-    t_det = (time.perf_counter() - t0) * 1000
 
-    t0 = time.perf_counter()
     m = K.features.match_descriptors(
         f1.descriptors, f2.descriptors, max_ratio=0.75, cross_check=True
     )
-    t_mat = (time.perf_counter() - t0) * 1000
 
     pts1 = np.ascontiguousarray(f1.keypoints_xy[m[:, 0]], dtype=np.float64)
     pts2 = np.ascontiguousarray(f2.keypoints_xy[m[:, 1]], dtype=np.float64)
 
-    t0 = time.perf_counter()
-    pose = K.features.two_view_estimate(
-        pts1, pts2, K_MH01, seed=SEED, min_parallax_deg=0.5
+    pose = K.k3d.two_view_estimate(
+        pts1, pts2, K_MH01,
+        seed=SEED, min_parallax_deg=0.5,
+        use_5pt_essential=use_5pt,
     )
-    t_pose = (time.perf_counter() - t0) * 1000
 
     # Timing medians for stable numbers.
     t_det = median_ms(lambda: (
@@ -120,12 +121,14 @@ def bench_kornia(img1: np.ndarray, img2: np.ndarray) -> Result:
     t_mat = median_ms(lambda: K.features.match_descriptors(
         f1.descriptors, f2.descriptors, max_ratio=0.75, cross_check=True
     ))
-    t_pose = median_ms(lambda: K.features.two_view_estimate(
-        pts1, pts2, K_MH01, seed=SEED, min_parallax_deg=0.5
+    t_pose = median_ms(lambda: K.k3d.two_view_estimate(
+        pts1, pts2, K_MH01,
+        seed=SEED, min_parallax_deg=0.5,
+        use_5pt_essential=use_5pt,
     ))
 
     return Result(
-        name="kornia-rs",
+        name=label,
         t_detect_ms=t_det,
         t_match_ms=t_mat,
         t_pose_ms=t_pose,
@@ -269,7 +272,15 @@ def main() -> None:
         ("opencv-usac-pro",  cv2.USAC_PROSAC),   # quality-ordered sampling
         ("opencv-usac-par",  cv2.USAC_PARALLEL), # multithreaded
     ]
-    results = [bench_kornia(img1, img2)]
+    # Default config uses the 5-point essential solver — the on-manifold path
+    # that gets the best translation accuracy of any backend in this bench.
+    # The 8-point row stays for direct comparison vs OpenCV's `cv2.RANSAC`
+    # legacy fundamental path (it's also what callers get with
+    # `use_5pt_essential=False`).
+    results = [
+        bench_kornia(img1, img2, use_5pt=True,  label="kornia-rs"),
+        bench_kornia(img1, img2, use_5pt=False, label="kornia-rs-8pt"),
+    ]
     results.extend(
         bench_opencv(img1, img2, method=m, label=label)
         for label, m in opencv_methods

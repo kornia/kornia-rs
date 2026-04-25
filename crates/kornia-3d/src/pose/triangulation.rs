@@ -107,9 +107,10 @@ pub(crate) fn triangulate_inliers(
     t: &Vec3F64,
     params: &TriangulateParams<'_>,
 ) -> (usize, Vec<Vec3F64>, Vec<usize>) {
+    let cap = inliers.iter().filter(|&&b| b).count();
     let mut count = 0usize;
-    let mut points = Vec::new();
-    let mut indices = Vec::new();
+    let mut points = Vec::with_capacity(cap);
+    let mut indices = Vec::with_capacity(cap);
 
     for i in 0..x1.len() {
         if !inliers[i] {

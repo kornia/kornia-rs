@@ -405,23 +405,6 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
         feature_match::match_descriptors_py,
         &features_mod
     )?)?;
-    features_mod.add_function(wrap_pyfunction!(
-        homography::ransac_homography_py,
-        &features_mod
-    )?)?;
-    features_mod.add_function(wrap_pyfunction!(
-        homography::find_homography_py,
-        &features_mod
-    )?)?;
-    features_mod.add_function(wrap_pyfunction!(
-        homography::find_fundamental_py,
-        &features_mod
-    )?)?;
-    features_mod.add_class::<twoview::PyTwoViewPose>()?;
-    features_mod.add_function(wrap_pyfunction!(
-        twoview::two_view_estimate_py,
-        &features_mod
-    )?)?;
     m.add_submodule(&features_mod)?;
 
     // Augmentations submodule
@@ -435,11 +418,16 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     aug_mod.add_function(wrap_pyfunction!(augmentations::set_seed, &aug_mod)?)?;
     m.add_submodule(&aug_mod)?;
 
-    // K3D submodule
+    // K3D submodule — 3D geometry: ICP, two-view pose, F/H/E model fits, triangulation.
     let k3d_mod = PyModule::new(py, "k3d")?;
     k3d_mod.add_function(wrap_pyfunction!(icp::icp_vanilla, &k3d_mod)?)?;
     k3d_mod.add_class::<PyICPConvergenceCriteria>()?;
     k3d_mod.add_class::<PyICPResult>()?;
+    k3d_mod.add_class::<twoview::PyTwoViewPose>()?;
+    k3d_mod.add_function(wrap_pyfunction!(twoview::two_view_estimate_py, &k3d_mod)?)?;
+    k3d_mod.add_function(wrap_pyfunction!(homography::ransac_homography_py, &k3d_mod)?)?;
+    k3d_mod.add_function(wrap_pyfunction!(homography::find_homography_py, &k3d_mod)?)?;
+    k3d_mod.add_function(wrap_pyfunction!(homography::find_fundamental_py, &k3d_mod)?)?;
     m.add_submodule(&k3d_mod)?;
 
     // Apriltag submodule

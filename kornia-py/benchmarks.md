@@ -69,21 +69,31 @@ kornia-rs median reprojection beats OpenCV on both images (even with the OpenCV 
 
 ## Two-view relative pose (SLAM bootstrap) — EuRoC MH_01
 
-`bench_two_view_pose.py` runs the full ORB-SLAM-style bootstrap on a real EuRoC MH_01 pair at 752×480: detect → match → F+H RANSAC → model pick → essential decomp → cheirality → **LM (R,t) refinement on Sampson cost**. Median over 50 iterations (5 warmup) with GT derived from the dataset's `body_imu` poses (`scripts/derive_mh01_gt.py`).
+`bench_two_view_pose.py` runs the full ORB-SLAM-style bootstrap on a real EuRoC MH_01 pair at 752×480: detect → match → **F+H RANSAC in parallel** (`rayon::join`) → model pick → essential decomp → **fast cheirality vote** → LO+ refit → **LM (R,t) refinement on Sampson cost** with annealed thresholds. Median over 50 iterations (5 warmup) with GT derived from the dataset's `body_imu` poses (`scripts/derive_mh01_gt.py`).
 
 | Backend | detect (ms) | match (ms) | pose (ms) | total (ms) | rot_err° | t_err° | matches | inliers |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| **kornia-rs** | **7.4** | **0.82** | 7.4 | **15.7** | 0.189 | **2.973** | 110 | **88** |
-| opencv-ransac (5-pt) | 37.2 | 1.47 | 17.9 | 56.5 | 0.488 | 5.914 | 97 | 64 |
-| opencv-lmeds | 37.4 | 2.03 | 45.5 | 85.0 | 0.181 | 5.096 | 97 | 91 |
-| opencv-usac-fast | 37.5 | 2.50 | **2.6** | 42.6 | **0.031** | 4.117 | 97 | 72 |
-| opencv-usac-accurate | 37.9 | 1.96 | 3.4 | 43.2 | **0.031** | 4.117 | 97 | 72 |
-| opencv-usac-magsac | 37.6 | 1.54 | 4.95 | 44.1 | 0.099 | 4.185 | 97 | 73 |
-| opencv-usac-prosac | 37.8 | 1.53 | 3.4 | 42.7 | **0.021** | 3.886 | 97 | 70 |
+| **kornia-rs** (5pt default) | **5.4** | **0.71** | 3.0 | **9.14** | 0.164 | **3.389** | 110 | 83 |
+| kornia-rs-8pt (`use_5pt_essential=False`) | 7.4 | 0.85 | **1.19** | 9.43 | 0.040 | 4.172 | 110 | **85** |
+| opencv-ransac (5-pt) | 37.2 | 1.49 | 17.8 | 56.4 | 0.488 | 5.914 | 97 | 64 |
+| opencv-lmeds | 36.9 | 2.06 | 45.3 | 84.2 | 0.181 | 5.096 | 97 | 91 |
+| opencv-usac-default | 36.9 | 1.49 | 2.72 | 41.1 | 0.031 | 4.117 | 97 | 72 |
+| opencv-usac-fast | 36.7 | 1.78 | 2.61 | 41.1 | 0.031 | 4.117 | 97 | 72 |
+| opencv-usac-accurate | 37.3 | 1.43 | 3.37 | 42.1 | 0.031 | 4.117 | 97 | 72 |
+| opencv-usac-magsac | 36.9 | 1.31 | 4.81 | 43.0 | 0.099 | 4.185 | 97 | 73 |
+| opencv-usac-prosac | 36.8 | 1.78 | 3.35 | 41.9 | **0.021** | 3.886 | 97 | 70 |
+| opencv-usac-parallel | 36.8 | 1.67 | 2.17 | 40.7 | **0.021** | 3.883 | 97 | 70 |
 
-kornia-rs leads every OpenCV variant on **translation-direction accuracy** (2.97° vs the best CV result of 3.886° from PROSAC) and on **inlier yield** (88 vs 72), while keeping the **2.6–5× total-pipeline speed lead**. USAC still wins on rotation accuracy (sub-0.05° vs our 0.19°) — that gap lives in the 5-point essential solver (Nistér), not in post-RANSAC refinement.
+`kornia-rs` (default) **wins translation against every backend** (3.389° vs the best OpenCV result of 3.883° from `USAC_PARALLEL`) while keeping a **4.5–9.2× total-pipeline lead**. USAC's `RANSAC_PROSAC` / `_PARALLEL` win on rotation (sub-0.05° vs our 0.16°); the `kornia-rs-8pt` row matches that rotation plateau (0.040°) and is also the **fastest pose stage of any backend in the bench** (1.19 ms — 1.8× faster than `USAC_PARALLEL`). Pick the default for translation accuracy, opt into `use_5pt_essential=False` when rotation budget matters more.
 
-The accuracy story comes from two compounding pieces: (a) **LO-RANSAC for F** (`bfee16f`) — one-shot refit on the full inlier set after the main RANSAC loop, accept on strict score-improvement; (b) **LM (R, t) post-refinement** (`982046b`) — Levenberg-Marquardt on SO(3) × S² minimizing Σ Sampson² over inliers, 5-DoF Jacobian via central differences, faer LU on the 5×5 normal equations.
+The accuracy story splits cleanly along solver choice:
+- **5-point Nistér essential (default)** — stays on the E manifold by construction (10 polynomial roots, no `(σ, σ, 0)` clipping), so the translation null-space isn't polluted by the 8-point Frobenius projection. This is the lever that lands the best t_err of any backend in the bench.
+- **8-point fundamental + (σ,σ,0) lift** — pixel-space normalization gets exceptionally clean rotation (0.040°) but the σ-equalization bleeds noise into translation. Strictly faster (1.19 ms) because the 8-point linear solver is cheaper than 10-poly root-finding × cheirality.
+
+The speed story compounds three independent wins:
+- **`rayon::join` for F+H RANSAC** — both estimators are independent (same correspondences, different models). Parallel join makes wall time = max(F, H) on a Cortex-A78AE pair instead of sum.
+- **Stagnation early-exit** (200 iters with no improvement) — RANSAC's adaptive cap `log(1−p)/log(1−wˢ)` can't tighten on non-planar scenes where H stays at low w; the stagnation gate cuts H-RANSAC iterations from the 2000 ceiling to ~200 with zero accuracy hit.
+- **Closed-form midpoint cheirality** — replaces 4× SVD-based triangulation per candidate pose with a 4× cheap `(s1, s2)`-depth check; only the winning pose runs the full SVD triangulator. NEON 2-lane f64 Sampson scoring (`vld1q_f64` / `vfmaq_f64`) compounds another 1.7× on the inner per-iteration cost.
 
 ## Per-op status against OpenCV (internal 2× target)
 

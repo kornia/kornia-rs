@@ -85,7 +85,7 @@ def test_two_view_pose_recovers_mh01_ground_truth(mh01_matches):
     """Full F → E → (R, t) decomposition on real SLAM imagery."""
     pts1, pts2 = mh01_matches
 
-    pose = K.features.two_view_estimate(
+    pose = K.k3d.two_view_estimate(
         pts1,
         pts2,
         K_MH01,
@@ -99,8 +99,13 @@ def test_two_view_pose_recovers_mh01_ground_truth(mh01_matches):
     )
 
     # Monocular frame-to-frame motion on the MH01 warehouse: general 3D
-    # motion, not a planar scene — expect the fundamental model to win.
-    assert pose.model_type == "fundamental", f"expected fundamental, got {pose.model_type}"
+    # motion, not a planar scene — the epipolar branch (E or F) must win
+    # over the homography branch. Default config uses the 5-point essential
+    # solver so we expect "essential"; allow "fundamental" for callers that
+    # pass `use_5pt_essential=False` explicitly.
+    assert pose.model_type in ("essential", "fundamental"), (
+        f"expected epipolar model, got {pose.model_type}"
+    )
 
     # Rotation angle (axis-angle magnitude) — GT 2.7021°, allow 5°.
     angle_deg = _rotation_angle_deg(pose.rotation)
@@ -125,7 +130,7 @@ def test_two_view_pose_recovers_mh01_ground_truth(mh01_matches):
 def test_two_view_pose_return_shapes(mh01_matches):
     """Pin the public output contract: dtypes and shapes."""
     pts1, pts2 = mh01_matches
-    pose = K.features.two_view_estimate(pts1, pts2, K_MH01, seed=42)
+    pose = K.k3d.two_view_estimate(pts1, pts2, K_MH01, seed=42)
 
     assert pose.rotation.shape == (3, 3) and pose.rotation.dtype == np.float64
     assert pose.translation.shape == (3,) and pose.translation.dtype == np.float64
@@ -146,12 +151,12 @@ def test_two_view_pose_rejects_mismatched_shapes():
     pts1 = np.zeros((10, 2), dtype=np.float64)
     pts2 = np.zeros((11, 2), dtype=np.float64)
     with pytest.raises(ValueError, match="matching length"):
-        K.features.two_view_estimate(pts1, pts2, K_MH01)
+        K.k3d.two_view_estimate(pts1, pts2, K_MH01)
 
     # (N, 3) instead of (N, 2) — also rejected.
     bad = np.zeros((10, 3), dtype=np.float64)
     with pytest.raises(ValueError):
-        K.features.two_view_estimate(bad, bad, K_MH01)
+        K.k3d.two_view_estimate(bad, bad, K_MH01)
 
 
 def test_two_view_pose_rejects_bad_intrinsics():
@@ -160,4 +165,4 @@ def test_two_view_pose_rejects_bad_intrinsics():
     pts2 = np.zeros((20, 2), dtype=np.float64)
     bad_k = np.eye(4, dtype=np.float64)
     with pytest.raises(ValueError, match=r"\(3, 3\)"):
-        K.features.two_view_estimate(pts1, pts2, bad_k)
+        K.k3d.two_view_estimate(pts1, pts2, bad_k)

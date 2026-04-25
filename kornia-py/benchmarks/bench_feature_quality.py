@@ -277,7 +277,7 @@ def kornia_pipeline() -> Pipeline:
         if len(src) < 4:
             return None, np.zeros(len(src), np.uint8)
         try:
-            H, mask = K.features.find_homography(
+            H, mask = K.k3d.find_homography(
                 src.astype(np.float64), dst.astype(np.float64),
                 method=8, ransac_threshold=3.0, min_inliers=4, seed=0,
             )

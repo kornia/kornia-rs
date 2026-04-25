@@ -29,6 +29,7 @@ kornia-imgproc = { workspace = true }
 log = { workspace = true }
 nalgebra = "0.32"
 rand = { workspace = true }
+rayon = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 

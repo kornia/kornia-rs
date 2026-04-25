@@ -24,10 +24,20 @@
 //!    rows' leading monomials are all in z only. Rearranging produces a
 //!    10×10 polynomial matrix in z whose determinant is a degree-10
 //!    univariate polynomial.
-//! 4. **Root finding**: companion-matrix eigendecomposition yields the 10
-//!    roots (complex in general). Each real root recovers `(x, y)` by
-//!    back-substituting into the reduced matrix.
-//! 5. **Assemble**: `E = x·X + y·Y + z·Z + W` for each real solution.
+//! 4. **Action matrix**: build the 10×10 matrix `M_z` of multiplication-by-z
+//!    in the quotient-algebra basis `{1, x, y, z, x², xy, xz, y², yz, z²}`.
+//!    Every solution of the system appears as a **right eigenvector** of
+//!    `M_z` with eigenvalue = the solution's `z*` coordinate.
+//! 5. **Eigendecomposition**: Householder reduction to upper Hessenberg,
+//!    then Wilkinson-shifted QR iteration (operating on the matrix
+//!    directly, **never** forming its characteristic polynomial — the
+//!    coefficients can span 10³² in magnitude in bad parameterizations,
+//!    which Faddeev-Leverrier cannot survive in f64). Each real eigenvalue
+//!    is a candidate `z*`.
+//! 6. **Back-substitute**: for each real `z*`, recover `(x, y)` from a
+//!    single row of the eigenvector of `M_z − z*·I` (fix `v[0] = 1`, solve
+//!    the bottom 9×9).
+//! 7. **Assemble**: `E = x·X + y·Y + z·Z + W` for each real solution.
 //!
 //! ## Monomial ordering
 //!
@@ -71,6 +81,181 @@
 //!   already known, so there's no reason to pay the extra F-space DOF.
 
 use kornia_algebra::{Mat3F64, Vec2F64, Vec3F64};
+
+// ──────────────────────────────────────────────────────────────────────────
+// NEON micro-kernels for hot inner loops. The 5-point solver is called once
+// per RANSAC draw (hundreds of times per pose estimate), so every μs in
+// build_constraint_matrix / Gauss-Jordan / QR iteration pays back at the
+// loop level. Scalar fallbacks live alongside each aarch64 path so the file
+// still builds (and stays testable) on x86 dev boxes.
+// ──────────────────────────────────────────────────────────────────────────
+
+/// `dst[k] += src[k]` for k in 0..20. NEON-vectorized: 10 `vaddq_f64` on
+/// aarch64, tight scalar loop elsewhere. Small (80-byte) rows so alignment
+/// and prefetching don't matter.
+#[inline(always)]
+fn row20_add_assign(dst: &mut [f64; 20], src: &[f64; 20]) {
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        use std::arch::aarch64::*;
+        let dp = dst.as_mut_ptr();
+        let sp = src.as_ptr();
+        let mut k = 0usize;
+        while k < 20 {
+            let a = vld1q_f64(dp.add(k));
+            let b = vld1q_f64(sp.add(k));
+            vst1q_f64(dp.add(k), vaddq_f64(a, b));
+            k += 2;
+        }
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        for k in 0..20 {
+            dst[k] += src[k];
+        }
+    }
+}
+
+/// `dst[k] -= src[k]` for k in 0..20 (NEON-vectorized; see [`row20_add_assign`]).
+#[inline(always)]
+fn row20_sub_assign(dst: &mut [f64; 20], src: &[f64; 20]) {
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        use std::arch::aarch64::*;
+        let dp = dst.as_mut_ptr();
+        let sp = src.as_ptr();
+        let mut k = 0usize;
+        while k < 20 {
+            let a = vld1q_f64(dp.add(k));
+            let b = vld1q_f64(sp.add(k));
+            vst1q_f64(dp.add(k), vsubq_f64(a, b));
+            k += 2;
+        }
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        for k in 0..20 {
+            dst[k] -= src[k];
+        }
+    }
+}
+
+/// `out[k] = s * src[k]` for k in 0..20 (NEON-vectorized).
+#[inline(always)]
+fn row20_scale(src: &[f64; 20], s: f64) -> [f64; 20] {
+    let mut out = [0.0f64; 20];
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        use std::arch::aarch64::*;
+        let op = out.as_mut_ptr();
+        let sp = src.as_ptr();
+        let ss = vdupq_n_f64(s);
+        let mut k = 0usize;
+        while k < 20 {
+            let a = vld1q_f64(sp.add(k));
+            vst1q_f64(op.add(k), vmulq_f64(a, ss));
+            k += 2;
+        }
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        for k in 0..20 {
+            out[k] = src[k] * s;
+        }
+    }
+    out
+}
+
+/// `dst[k] -= factor * src[k]` for k in 0..20 via `vfmaq_f64` (fused
+/// multiply-subtract). Single-rounded on A78AE, 1/cycle throughput.
+#[inline(always)]
+fn row20_fma_sub(dst: &mut [f64; 20], src: &[f64; 20], factor: f64) {
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        use std::arch::aarch64::*;
+        let dp = dst.as_mut_ptr();
+        let sp = src.as_ptr();
+        let neg_f = vdupq_n_f64(-factor);
+        let mut k = 0usize;
+        while k < 20 {
+            let d = vld1q_f64(dp.add(k));
+            let s = vld1q_f64(sp.add(k));
+            // d + (-factor) * s = d - factor * s
+            vst1q_f64(dp.add(k), vfmaq_f64(d, s, neg_f));
+            k += 2;
+        }
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        for k in 0..20 {
+            dst[k] -= factor * src[k];
+        }
+    }
+}
+
+/// Rotate two rows of a 10×10 matrix by a Givens factor `(c, s)` over a
+/// variable-length column span `[start..end)`:
+///   h_k[j]  ← c·h_k[j] + s·h_{k+1}[j]
+///   h_{k+1}[j] ← −s·h_k[j] + c·h_{k+1}[j]
+/// The QR step applies ~n of these per iteration and iterates ~30-50 times
+/// per 10×10 eigendecomp, so this pair-rotate is the densest hotspot.
+///
+/// NEON: loads two f64 from each row into `float64x2_t`, computes the two
+/// outputs with `vfmaq_f64`, stores. Scalar tail for odd-length spans.
+#[inline(always)]
+fn givens_row_pair_10(
+    h: &mut [[f64; 10]; 10],
+    row_k: usize,
+    start: usize,
+    end: usize,
+    c: f64,
+    s: f64,
+) {
+    debug_assert!(row_k + 1 < 10 && end <= 10 && start <= end);
+    // Safely disjoint-borrow the two rows.
+    let (top, bot) = {
+        let (hi, lo) = h.split_at_mut(row_k + 1);
+        (&mut hi[row_k], &mut lo[0])
+    };
+
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        use std::arch::aarch64::*;
+        let tp = top.as_mut_ptr();
+        let bp = bot.as_mut_ptr();
+        let cv = vdupq_n_f64(c);
+        let sv = vdupq_n_f64(s);
+        let neg_sv = vdupq_n_f64(-s);
+        let mut j = start;
+        while j + 2 <= end {
+            let x = vld1q_f64(tp.add(j));
+            let y = vld1q_f64(bp.add(j));
+            // new_x = c*x + s*y
+            let nx = vfmaq_f64(vmulq_f64(x, cv), y, sv);
+            // new_y = -s*x + c*y
+            let ny = vfmaq_f64(vmulq_f64(y, cv), x, neg_sv);
+            vst1q_f64(tp.add(j), nx);
+            vst1q_f64(bp.add(j), ny);
+            j += 2;
+        }
+        while j < end {
+            let x = *tp.add(j);
+            let y = *bp.add(j);
+            *tp.add(j) = c * x + s * y;
+            *bp.add(j) = -s * x + c * y;
+            j += 1;
+        }
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        for j in start..end {
+            let x = top[j];
+            let y = bot[j];
+            top[j] = c * x + s * y;
+            bot[j] = -s * x + c * y;
+        }
+    }
+}
 
 /// Degrees `[a, b, c]` of each monomial `xᵃ yᵇ zᶜ` in our 20-element basis.
 ///
@@ -122,25 +307,21 @@ impl Poly3D {
         p
     }
 
+    #[inline(always)]
     fn add_assign(&mut self, other: &Poly3D) {
-        for i in 0..20 {
-            self.c[i] += other.c[i];
-        }
+        row20_add_assign(&mut self.c, &other.c);
     }
 
+    #[inline(always)]
     fn sub_assign(&mut self, other: &Poly3D) {
-        for i in 0..20 {
-            self.c[i] -= other.c[i];
-        }
+        row20_sub_assign(&mut self.c, &other.c);
     }
 
+    #[inline(always)]
     fn scale(&self, s: f64) -> Poly3D {
-        let mut out = Poly3D::ZERO;
-        for i in 0..20 {
-            out.c[i] = self.c[i] * s;
-        }
-        out
+        Poly3D { c: row20_scale(&self.c, s) }
     }
+
 
     /// Polynomial product, silently dropping terms of degree > 3.
     /// For Nistér's 10 constraints every intermediate product stays ≤ 3,
@@ -342,16 +523,27 @@ fn build_constraint_matrix(null_basis: &[[f64; 9]; 4]) -> [[f64; 20]; 10] {
     mat
 }
 
-/// In-place Gauss-Jordan reduction of a 10×20 matrix to reduced row-echelon
-/// form on the first 10 columns when possible. Uses partial pivoting for
-/// numerical stability; returns `false` when the leading 10×10 sub-block is
-/// singular (near-degenerate sample).
-fn gauss_jordan_10x20(m: &mut [[f64; 20]; 10]) -> bool {
-    for col in 0..10 {
-        // Partial pivot: find row in [col..10] with max |m[r][col]|.
-        let mut piv = col;
-        let mut piv_abs = m[col][col].abs();
-        for r in (col + 1)..10 {
+/// In-place Gauss-Jordan reduction of a 10×20 matrix, pivoting on columns
+/// 10..20 (the 10 degree-3 monomial columns). After success, the rightmost
+/// 10×10 block equals the identity and row `i` expresses the (10+i)-th
+/// monomial (`x³, x²y, x²z, xy², xyz, xz², y³, y²z, yz², z³`) as
+/// `-Σ_j m[i][j] · B[j]` where `B = {1, x, y, z, x², xy, xz, y², yz, z²}` is
+/// the quotient-algebra basis.
+///
+/// Pivoting on the degree-3 columns (rather than the degree-≤-2 ones) is
+/// what exposes the multiplication-by-z action matrix: six of the degree-3
+/// monomials are exactly `z·B[k]` for `k ∈ {4..10}`, so the reduction rows
+/// hand us those columns of `M_z` directly.
+///
+/// Uses partial pivoting. Returns `false` when the 10×10 sub-block spanning
+/// columns 10..20 is singular (degenerate 5-point sample).
+fn gauss_jordan_eliminate_deg3(m: &mut [[f64; 20]; 10]) -> bool {
+    for i in 0..10 {
+        let col = 10 + i;
+        // Partial pivot: find row in [i..10] with max |m[r][col]|.
+        let mut piv = i;
+        let mut piv_abs = m[i][col].abs();
+        for r in (i + 1)..10 {
             let a = m[r][col].abs();
             if a > piv_abs {
                 piv_abs = a;
@@ -361,36 +553,34 @@ fn gauss_jordan_10x20(m: &mut [[f64; 20]; 10]) -> bool {
         if piv_abs < 1e-12 {
             return false;
         }
-        if piv != col {
-            m.swap(col, piv);
+        if piv != i {
+            m.swap(i, piv);
         }
 
-        // Scale pivot row so m[col][col] = 1.
-        let inv = 1.0 / m[col][col];
-        for k in col..20 {
-            m[col][k] *= inv;
-        }
+        // Scale pivot row so m[i][col] = 1.
+        let inv = 1.0 / m[i][col];
+        m[i] = row20_scale(&m[i], inv);
 
-        // Eliminate column `col` in every other row.
+        // Eliminate column `col` in every other row via NEON fused
+        // multiply-subtract. Snapshot the pivot row (80 B) so we can
+        // borrow `m[r]` mutably without fighting the borrow checker.
+        let pivot = m[i];
         for r in 0..10 {
-            if r == col {
+            if r == i {
                 continue;
             }
             let factor = m[r][col];
             if factor == 0.0 {
                 continue;
             }
-            for k in col..20 {
-                m[r][k] -= factor * m[col][k];
-            }
+            row20_fma_sub(&mut m[r], &pivot, factor);
         }
     }
     true
 }
 
-/// Back-substitute a real z-root into the reduced constraint system to
-/// recover `(x, y)`, then assemble `E = x·X + y·Y + z·Z + W`.
-#[allow(dead_code)]
+/// Assemble `E = x·X + y·Y + z·Z + W` from the null-space basis and the
+/// recovered `(x, y, z)`.
 fn assemble_e(null_basis: &[[f64; 9]; 4], x: f64, y: f64, z: f64) -> Mat3F64 {
     let mut e = [0.0f64; 9];
     for k in 0..9 {
@@ -399,33 +589,379 @@ fn assemble_e(null_basis: &[[f64; 9]; 4], x: f64, y: f64, z: f64) -> Mat3F64 {
     vec9_to_mat3(&e)
 }
 
+/// Build the 10×10 action matrix of multiplication-by-z in the quotient
+/// algebra basis `B = {1, x, y, z, x², xy, xz, y², yz, z²}`.
+///
+/// Convention: row `i` holds `z · B[i]` expanded in the basis, i.e.
+/// `(M_z)[i][j] = coefficient of B[j] in the reduction of z · B[i]`. With
+/// this orientation, the vector `v = (B_0(p), B_1(p), ..., B_9(p))` =
+/// `(1, x*, y*, z*, x*², x*y*, x*z*, y*², y*z*, z*²)` is a **right**
+/// eigenvector of `M_z` with eigenvalue `z*` at every solution `p = (x*, y*, z*)`
+/// of the polynomial system.
+///
+/// `cm_reduced` must be the output of [`gauss_jordan_eliminate_deg3`] — its
+/// right-hand 10×10 block is the identity and row `r` encodes
+/// `deg3_monomial_{10+r} = -Σ_j cm_reduced[r][j] · B[j]`.
+///
+/// Rows 0-3 are permutation-like (`z·1 = z = B[3]`, `z·x = xz = B[6]`,
+/// `z·y = yz = B[8]`, `z·z = z² = B[9]`). Rows 4-9 copy the reduction rows
+/// for `x²z, xyz, xz², y²z, yz², z³` (monomial indices 12, 14, 15, 17, 18,
+/// 19 — rows 2, 4, 5, 7, 8, 9 post-GJ).
+fn build_action_matrix(cm_reduced: &[[f64; 20]; 10]) -> [[f64; 10]; 10] {
+    let mut mz = [[0.0f64; 10]; 10];
+    mz[0][3] = 1.0; // z · B[0] = z · 1 = z = B[3]
+    mz[1][6] = 1.0; // z · B[1] = z · x = xz = B[6]
+    mz[2][8] = 1.0; // z · B[2] = z · y = yz = B[8]
+    mz[3][9] = 1.0; // z · B[3] = z · z = z² = B[9]
+    // Rows 4..10: z · B[i] is a degree-3 monomial for i = 4..10; read the
+    // GJ-produced reduction to express it in the quotient basis.
+    let reduction_row: [usize; 6] = [2, 4, 5, 7, 8, 9];
+    for (k, &r) in reduction_row.iter().enumerate() {
+        let row = 4 + k;
+        for j in 0..10 {
+            mz[row][j] = -cm_reduced[r][j];
+        }
+    }
+    mz
+}
+
+/// Reduce a 10×10 matrix to upper Hessenberg form via Householder similarity
+/// transformations. Modifies `a` in place. Result: `a[i][j] = 0` for all
+/// `i > j + 1`. Eigenvalues are preserved (it's an orthogonal similarity).
+///
+/// For the Nistér action matrix this is a 300-flop setup that makes the
+/// subsequent QR iteration cost `O(n²)` per step instead of `O(n³)`.
+fn hessenberg_reduce_10(a: &mut [[f64; 10]; 10]) {
+    for k in 0..8 {
+        // Build Householder vector v that zeroes a[k+2..10][k].
+        let mut sigma = 0.0f64;
+        for i in (k + 2)..10 {
+            sigma += a[i][k] * a[i][k];
+        }
+        if sigma < 1e-28 {
+            continue;
+        }
+        let alpha = a[k + 1][k];
+        let mu = (alpha * alpha + sigma).sqrt();
+        let d = if alpha >= 0.0 { alpha + mu } else { alpha - mu };
+        let mut v = [0.0f64; 10];
+        v[k + 1] = 1.0;
+        let inv_d = 1.0 / d;
+        for i in (k + 2)..10 {
+            v[i] = a[i][k] * inv_d;
+        }
+        // beta = 2 / (vᵀv) = 2 / (1 + Σ_{i≥k+2} (a[i][k]/d)²) = 2 d² / (d² + σ).
+        let beta = 2.0 * d * d / (d * d + sigma);
+
+        // Left-apply H = I − β v vᵀ :  rows k+1..10 of columns k..10.
+        for j in k..10 {
+            let mut dot = a[k + 1][j];
+            for i in (k + 2)..10 {
+                dot += v[i] * a[i][j];
+            }
+            dot *= beta;
+            a[k + 1][j] -= dot;
+            for i in (k + 2)..10 {
+                a[i][j] -= dot * v[i];
+            }
+        }
+        // Right-apply H :  columns k+1..10 of all rows.
+        for i in 0..10 {
+            let mut dot = a[i][k + 1];
+            for j in (k + 2)..10 {
+                dot += v[j] * a[i][j];
+            }
+            dot *= beta;
+            a[i][k + 1] -= dot;
+            for j in (k + 2)..10 {
+                a[i][j] -= dot * v[j];
+            }
+        }
+    }
+}
+
+/// Eigenvalues of a 2×2 real matrix `[[a, b], [c, d]]`, returned as two
+/// `(re, im)` pairs. Complex conjugate pairs carry `im = ±√discriminant`.
+fn eigs_2x2(a: f64, b: f64, c: f64, d: f64) -> ((f64, f64), (f64, f64)) {
+    let tr = a + d;
+    let det = a * d - b * c;
+    let disc = tr * tr / 4.0 - det;
+    if disc >= 0.0 {
+        let s = disc.sqrt();
+        ((tr / 2.0 + s, 0.0), (tr / 2.0 - s, 0.0))
+    } else {
+        let s = (-disc).sqrt();
+        ((tr / 2.0, s), (tr / 2.0, -s))
+    }
+}
+
+/// One explicit-shift QR step on an active upper-Hessenberg sub-block
+/// `h[0..n][0..n]` using Wilkinson shift. Applies Givens rotations to zero
+/// the subdiagonal (Q-factor), then right-multiplies to re-Hessenberg-ify
+/// (= RQ + μI). Touches only rows/columns 0..n.
+fn qr_step_shifted(h: &mut [[f64; 10]; 10], n: usize) {
+    if n < 2 {
+        return;
+    }
+    // Wilkinson shift: eigenvalue of trailing 2×2 closer to h[n-1][n-1].
+    let hnn = h[n - 1][n - 1];
+    let p = (h[n - 2][n - 2] - hnn) * 0.5;
+    let q = h[n - 1][n - 2] * h[n - 2][n - 1];
+    let disc = p * p + q;
+    let shift = if disc >= 0.0 {
+        let r = disc.sqrt();
+        let denom = if p >= 0.0 { p + r } else { p - r };
+        if denom.abs() < 1e-300 {
+            hnn
+        } else {
+            hnn - q / denom
+        }
+    } else {
+        // Complex shift: use real part (single-shift variant; Francis double-shift
+        // would be stricter, but this is sufficient for converging to the real
+        // Schur form with 2×2 blocks for complex conjugate pairs).
+        hnn - p
+    };
+
+    // Subtract shift.
+    for i in 0..n {
+        h[i][i] -= shift;
+    }
+
+    // Forward sweep: Givens rotations to triangularize H. Store (c, s) per
+    // rotation on a stack so we can apply them from the right.
+    let mut cs = [(0.0f64, 0.0f64); 9];
+    for k in 0..(n - 1) {
+        let a = h[k][k];
+        let b = h[k + 1][k];
+        let r = (a * a + b * b).sqrt();
+        let (c, s) = if r < 1e-300 {
+            (1.0, 0.0)
+        } else {
+            (a / r, b / r)
+        };
+        cs[k] = (c, s);
+        // Apply Gᵀ to rows k, k+1 across columns k..n (NEON pair-rotate,
+        // 2 columns per cycle). Dense hotspot — each QR iteration invokes
+        // n-1 of these, and we iterate ~30-50 times per 10×10 eigendecomp.
+        givens_row_pair_10(h, k, k, n, c, s);
+    }
+
+    // Backward sweep: apply each rotation from the right.
+    for k in 0..(n - 1) {
+        let (c, s) = cs[k];
+        // Apply G to columns k, k+1 across rows 0..min(k+2, n).
+        let lim = (k + 2).min(n);
+        for i in 0..lim {
+            let x = h[i][k];
+            let y = h[i][k + 1];
+            h[i][k] = c * x + s * y;
+            h[i][k + 1] = -s * x + c * y;
+        }
+    }
+
+    // Add shift back.
+    for i in 0..n {
+        h[i][i] += shift;
+    }
+}
+
+/// Compute all 10 eigenvalues of a 10×10 real matrix via Hessenberg + shifted
+/// QR, returning `(re, im)` pairs. Complex conjugate pairs come out of 2×2
+/// diagonal blocks that don't fully deflate.
+///
+/// Operating on the matrix directly (rather than its characteristic
+/// polynomial) sidesteps the catastrophic precision loss Faddeev-Leverrier
+/// exhibits when the null-basis orientation makes Nistér's (x, y, z)
+/// parameters blow up — coefficient magnitudes can span 10³² in that regime,
+/// but the matrix itself stays moderately conditioned.
+fn eigenvalues_10(a: &[[f64; 10]; 10]) -> [(f64, f64); 10] {
+    let mut h = *a;
+    hessenberg_reduce_10(&mut h);
+
+    let mut eigs = [(0.0f64, 0.0f64); 10];
+    let mut found = 0;
+    let mut n = 10usize; // active sub-block is h[0..n][0..n]
+    let mut iters = 0usize;
+    const MAX_ITERS: usize = 500;
+
+    while n > 0 && iters < MAX_ITERS {
+        iters += 1;
+
+        // Check for a small subdiagonal near the bottom to deflate.
+        let mut split = 0usize;
+        for k in (1..n).rev() {
+            let sub = h[k][k - 1].abs();
+            let diag = h[k - 1][k - 1].abs() + h[k][k].abs();
+            if sub <= 1e-13 * diag.max(1e-300) {
+                split = k;
+                break;
+            }
+        }
+
+        // Trailing 1×1 or 2×2 block can be read off directly.
+        if split == n - 1 {
+            eigs[found] = (h[n - 1][n - 1], 0.0);
+            found += 1;
+            n -= 1;
+            continue;
+        }
+        if split == n - 2 {
+            let (e1, e2) = eigs_2x2(
+                h[n - 2][n - 2],
+                h[n - 2][n - 1],
+                h[n - 1][n - 2],
+                h[n - 1][n - 1],
+            );
+            eigs[found] = e1;
+            found += 1;
+            eigs[found] = e2;
+            found += 1;
+            n -= 2;
+            continue;
+        }
+
+        // Otherwise run a QR step on h[split..n][split..n]. We ignore `split`
+        // and operate on h[0..n][0..n] — the rotations leave h[0..split] alone
+        // because Givens on row split..split+1 only touches columns ≥ split in
+        // upper-Hessenberg form.
+        qr_step_shifted(&mut h, n);
+    }
+
+    // Edge case: iteration cap hit. Try reading the trailing 2×2 block just
+    // to make progress, then fill the remaining eigs as zero sentinels.
+    while n > 0 && found < 10 {
+        if n == 1 {
+            eigs[found] = (h[0][0], 0.0);
+            found += 1;
+            n -= 1;
+        } else {
+            let (e1, e2) = eigs_2x2(
+                h[n - 2][n - 2],
+                h[n - 2][n - 1],
+                h[n - 1][n - 2],
+                h[n - 1][n - 1],
+            );
+            eigs[found] = e1;
+            found += 1;
+            if found < 10 {
+                eigs[found] = e2;
+                found += 1;
+            }
+            n = if n >= 2 { n - 2 } else { 0 };
+        }
+    }
+
+    eigs
+}
+
+/// Extract the real eigenvalues (filtered by relative imaginary threshold)
+/// of a 10×10 matrix.
+fn real_eigenvalues_10(a: &[[f64; 10]; 10]) -> Vec<f64> {
+    let all = eigenvalues_10(a);
+    let mut out = Vec::new();
+    for (re, im) in all.iter() {
+        if im.abs() < 1e-8 * (1.0 + re.abs()) {
+            out.push(*re);
+        }
+    }
+    out
+}
+
+/// Solve a 9×9 linear system via Gaussian elimination with partial pivoting.
+/// Returns `None` when the system is singular.
+fn solve_9x9(mut a: [[f64; 9]; 9], mut b: [f64; 9]) -> Option<[f64; 9]> {
+    for k in 0..9 {
+        let mut piv = k;
+        let mut piv_abs = a[k][k].abs();
+        for r in (k + 1)..9 {
+            let v = a[r][k].abs();
+            if v > piv_abs {
+                piv_abs = v;
+                piv = r;
+            }
+        }
+        if piv_abs < 1e-12 {
+            return None;
+        }
+        if piv != k {
+            a.swap(k, piv);
+            b.swap(k, piv);
+        }
+        let inv = 1.0 / a[k][k];
+        for r in (k + 1)..9 {
+            let f = a[r][k] * inv;
+            if f == 0.0 {
+                continue;
+            }
+            for c in k..9 {
+                a[r][c] -= f * a[k][c];
+            }
+            b[r] -= f * b[k];
+        }
+    }
+    let mut x = [0.0f64; 9];
+    for k in (0..9).rev() {
+        let mut s = b[k];
+        for c in (k + 1)..9 {
+            s -= a[k][c] * x[c];
+        }
+        x[k] = s / a[k][k];
+    }
+    Some(x)
+}
+
+/// Given a real z-root of the characteristic polynomial of `M_z`, recover
+/// `(x, y)` from the corresponding right eigenvector of `M_z`.
+///
+/// The quotient-algebra eigenvector is `v = (1, x, y, z, x², xy, xz, y², yz, z²)`
+/// (up to scale). We fix `v[0] = 1` (the basis element "1") and solve rows
+/// 1..10 of `(M_z − z·I) v = 0` for the remaining 9 components. Only the
+/// first two — `v[1] = x` and `v[2] = y` — are needed to assemble `E`.
+///
+/// Returns `None` on the rare case where the 9×9 subsystem is singular at
+/// the given z (typically a multiplicity-2 root not in the real slice).
+fn back_substitute(mz: &[[f64; 10]; 10], z: f64) -> Option<(f64, f64)> {
+    let mut a = [[0.0f64; 9]; 9];
+    let mut b = [0.0f64; 9];
+    for r in 1..10 {
+        for c in 1..10 {
+            let v = if r == c { mz[r][c] - z } else { mz[r][c] };
+            a[r - 1][c - 1] = v;
+        }
+        b[r - 1] = -mz[r][0];
+    }
+    let v = solve_9x9(a, b)?;
+    Some((v[0], v[1]))
+}
+
 /// Nistér 5-point essential-matrix solver.
 ///
 /// Takes 5 pre-normalized correspondences `x̂_i = K⁻¹ x_i` (inhomogeneous
-/// (u, v), not the homogeneous (u, v, 1)) in both views. Returns up to 10
+/// `(u, v)`, not homogeneous `(u, v, 1)`) in both views. Returns up to 10
 /// candidate essential matrices; downstream code picks among them by
 /// cheirality or per-sample inlier scoring.
 ///
-/// Returns an empty `Vec` when the 5-point sample is degenerate — coplanar
-/// back-projected rays, duplicated points, or a null-space rank > 4.
+/// Returns an empty `Vec` when the 5-point sample is degenerate (coplanar
+/// back-projected rays, duplicated points, or a null-space rank > 4) or
+/// when the polynomial system has no real roots (typically only at the
+/// boundary of the essential manifold; well-conditioned samples give 2–10
+/// real solutions).
 ///
-/// # Status
+/// # Algorithm
 ///
-/// **WIP.** This commit lands the numerical infrastructure — null-space
-/// extraction, cubic constraint assembly, and Gauss-Jordan reduction — all
-/// verified by unit tests (`test_null_space_5x9_*`,
-/// `test_constraint_matrix_vanishes_on_true_e`,
-/// `test_gauss_jordan_produces_identity_on_left_block`).
-///
-/// The remaining pipeline — action-matrix construction (correctly
-/// pivoting on the degree-3 monomials, not the degree-≤-2 ones),
-/// Faddeev-Leverrier characteristic-polynomial extraction, and
-/// Durand-Kerner real-root finding — lands in the follow-up commit. No
-/// external eigendecomposition is used; the whole solver stays in
-/// hand-rolled fixed-size (10×10) linear algebra to keep the RANSAC
-/// inner-loop predictable. Until the follow-up lands, this entry point
-/// returns an empty `Vec` so it's safe to call but never contributes a
-/// candidate.
+/// 1. SVD of the 5×9 linear constraint → 4D null basis `{X, Y, Z, W}`.
+/// 2. Expand `det(E) = 0` and `2 E Eᵀ E − tr(E Eᵀ) E = 0` to a 10×20
+///    cubic-monomial matrix.
+/// 3. Gauss-Jordan on the 10 degree-3 columns → reduced form expressing
+///    every degree-3 monomial in the quotient basis `{1, x, y, z, x², xy,
+///    xz, y², yz, z²}`.
+/// 4. Build the 10×10 multiplication-by-z action matrix `M_z` in that basis.
+/// 5. Real eigenvalues of `M_z` via Hessenberg reduction + Wilkinson-shifted
+///    QR iteration on the matrix directly (no characteristic polynomial —
+///    see [`eigenvalues_10`] for why).
+/// 6. For each real z, recover `(x, y)` from the right null-vector of
+///    `M_z − z·I`, then assemble `E = x·X + y·Y + z·Z + W`.
 pub fn essential_5pt(x1_norm: &[Vec2F64; 5], x2_norm: &[Vec2F64; 5]) -> Vec<Mat3F64> {
     let basis = match null_space_5x9(x1_norm, x2_norm) {
         Some(b) => b,
@@ -433,17 +969,20 @@ pub fn essential_5pt(x1_norm: &[Vec2F64; 5], x2_norm: &[Vec2F64; 5]) -> Vec<Mat3
     };
 
     let mut cm = build_constraint_matrix(&basis);
-    if !gauss_jordan_10x20(&mut cm) {
+    if !gauss_jordan_eliminate_deg3(&mut cm) {
         return Vec::new();
     }
 
-    // See the # Status note above — pipeline intentionally bails here
-    // until the action-matrix + root-finder land. `assemble_e` and the
-    // constraint matrix `cm` are retained so the next commit only adds;
-    // it doesn't have to rewrite.
-    let _ = cm;
-    let _ = basis;
-    Vec::new()
+    let mz = build_action_matrix(&cm);
+    let real_zs = real_eigenvalues_10(&mz);
+
+    let mut out = Vec::with_capacity(real_zs.len());
+    for z in real_zs {
+        if let Some((x, y)) = back_substitute(&mz, z) {
+            out.push(assemble_e(&basis, x, y, z));
+        }
+    }
+    out
 }
 
 // Re-export helpers for tests without leaking them into the public API.
@@ -458,8 +997,8 @@ pub(crate) fn __test_build_constraint_matrix(null_basis: &[[f64; 9]; 4]) -> [[f6
 }
 
 #[cfg(test)]
-pub(crate) fn __test_gauss_jordan_10x20(m: &mut [[f64; 20]; 10]) -> bool {
-    gauss_jordan_10x20(m)
+pub(crate) fn __test_gauss_jordan_eliminate_deg3(m: &mut [[f64; 20]; 10]) -> bool {
+    gauss_jordan_eliminate_deg3(m)
 }
 
 #[cfg(test)]
@@ -654,9 +1193,11 @@ mod tests {
         }
     }
 
-    /// GJ must produce a left 10×10 identity block for non-degenerate inputs.
+    /// GJ must produce a right 10×10 identity block (columns 10..20 = I)
+    /// for non-degenerate inputs, so each row expresses one degree-3
+    /// monomial in the quotient basis.
     #[test]
-    fn test_gauss_jordan_produces_identity_on_left_block() {
+    fn test_gauss_jordan_produces_identity_on_right_block() {
         let angle = 0.1_f64;
         let r = Mat3F64::from_cols(
             Vec3F64::new(angle.cos(), 0.0, -angle.sin()),
@@ -668,16 +1209,95 @@ mod tests {
         let basis = __test_null_space_5x9(&x1, &x2).expect("null-space must exist");
 
         let mut cm = __test_build_constraint_matrix(&basis);
-        let ok = __test_gauss_jordan_10x20(&mut cm);
+        let ok = __test_gauss_jordan_eliminate_deg3(&mut cm);
         assert!(ok, "Gauss-Jordan should not fail on a non-degenerate sample");
 
         for i in 0..10 {
             for j in 0..10 {
                 let expected = if i == j { 1.0 } else { 0.0 };
+                let val = cm[i][10 + j];
                 assert!(
-                    (cm[i][j] - expected).abs() < 1e-9,
-                    "GJ left block [{i}][{j}] = {} (expected {expected})",
-                    cm[i][j]
+                    (val - expected).abs() < 1e-9,
+                    "GJ right block [{i}][{j}] = {val} (expected {expected})"
+                );
+            }
+        }
+    }
+
+    /// Full pipeline: synthetic (R, t) → 5 correspondences → essential_5pt
+    /// must return at least one candidate matching E_true up to sign/scale.
+    #[test]
+    fn test_essential_5pt_recovers_true_e() {
+        let angle = 0.15_f64;
+        let r = Mat3F64::from_cols(
+            Vec3F64::new(angle.cos(), 0.0, -angle.sin()),
+            Vec3F64::new(0.0, 1.0, 0.0),
+            Vec3F64::new(angle.sin(), 0.0, angle.cos()),
+        );
+        let t = Vec3F64::new(0.8, 0.1, 0.3).normalize();
+        let (x1, x2) = synthetic_sample(r, t);
+
+        let candidates = essential_5pt(&x1, &x2);
+        assert!(
+            !candidates.is_empty(),
+            "solver must return ≥1 candidate on a non-degenerate sample"
+        );
+
+        let e_true = skew(t) * r;
+        let flat_true = e_true.to_cols_array();
+        let norm_true: f64 = flat_true.iter().map(|v| v * v).sum::<f64>().sqrt();
+        let e_true_unit: [f64; 9] = core::array::from_fn(|k| flat_true[k] / norm_true);
+
+        let mut best_err = f64::INFINITY;
+        for cand in &candidates {
+            let flat = cand.to_cols_array();
+            let norm: f64 = flat.iter().map(|v| v * v).sum::<f64>().sqrt();
+            if norm < 1e-12 {
+                continue;
+            }
+            let mut err_pos = 0.0f64;
+            let mut err_neg = 0.0f64;
+            for k in 0..9 {
+                let u = flat[k] / norm;
+                err_pos += (u - e_true_unit[k]).powi(2);
+                err_neg += (u + e_true_unit[k]).powi(2);
+            }
+            let err = err_pos.min(err_neg).sqrt();
+            if err < best_err {
+                best_err = err;
+            }
+        }
+        assert!(
+            best_err < 1e-4,
+            "no candidate close to E_true: best Frobenius dist (unit-norm, ±sign) = {best_err:.3e}"
+        );
+    }
+
+    /// All returned candidates should satisfy the epipolar constraint on
+    /// every input correspondence — a candidate that doesn't kill x2ᵀ E x1
+    /// means the solver emitted a spurious root that back-substitution
+    /// didn't catch.
+    #[test]
+    fn test_essential_5pt_candidates_satisfy_epipolar() {
+        let angle = 0.12_f64;
+        let r = Mat3F64::from_cols(
+            Vec3F64::new(angle.cos(), 0.0, -angle.sin()),
+            Vec3F64::new(0.0, 1.0, 0.0),
+            Vec3F64::new(angle.sin(), 0.0, angle.cos()),
+        );
+        let t = Vec3F64::new(0.7, -0.2, 0.4).normalize();
+        let (x1, x2) = synthetic_sample(r, t);
+
+        let candidates = essential_5pt(&x1, &x2);
+        assert!(!candidates.is_empty());
+        for (idx, e) in candidates.iter().enumerate() {
+            for i in 0..5 {
+                let x1h = Vec3F64::new(x1[i].x, x1[i].y, 1.0);
+                let x2h = Vec3F64::new(x2[i].x, x2[i].y, 1.0);
+                let r_val = x2h.dot(*e * x1h);
+                assert!(
+                    r_val.abs() < 1e-6,
+                    "candidate {idx} fails epipolar on pt {i}: |x2ᵀ E x1| = {r_val:.3e}"
                 );
             }
         }

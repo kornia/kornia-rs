@@ -1,7 +1,7 @@
-"""Tests for the Python-exposed feature utilities:
+"""Tests for the Python-exposed feature & geometry utilities:
 - `kornia_rs.features.match_descriptors` — brute-force Hamming matcher.
-- `kornia_rs.features.find_homography` — DLT / RANSAC+refit homography solver.
-- `kornia_rs.features.ransac_homography` — legacy 4-point RANSAC (kept for back-compat).
+- `kornia_rs.k3d.find_homography` — DLT / RANSAC+refit homography solver.
+- `kornia_rs.k3d.ransac_homography` — legacy 4-point RANSAC (kept for back-compat).
 
 The goal is to pin the public contract: input shapes, dtypes, error paths, and
 rough numerical behavior against known-good synthetic data. We don't compare
@@ -113,7 +113,7 @@ def _normalize_h(h):
 
 def test_find_homography_dlt_recovers_known_h():
     src, dst, H_gt = _make_known_homography_pair(n=50, seed=0)
-    H_est, mask = K.features.find_homography(src, dst, method=0)
+    H_est, mask = K.k3d.find_homography(src, dst, method=0)
     assert H_est.shape == (3, 3)
     assert H_est.dtype == np.float64
     assert mask.shape == (50,)
@@ -133,7 +133,7 @@ def test_find_homography_ransac_rejects_outliers():
     outlier_dst = rng.uniform(100, 500, size=(10, 2))  # unrelated to src.
     src_all = np.concatenate([src, outlier_src])
     dst_all = np.concatenate([dst, outlier_dst])
-    H_est, mask = K.features.find_homography(
+    H_est, mask = K.k3d.find_homography(
         src_all, dst_all, method=8, ransac_threshold=3.0, seed=0
     )
     # At least the 40 true inliers should be marked.
@@ -151,27 +151,27 @@ def test_find_homography_rejects_insufficient_points():
     src = np.zeros((3, 2), dtype=np.float64)
     dst = np.zeros((3, 2), dtype=np.float64)
     with pytest.raises(ValueError):
-        K.features.find_homography(src, dst, method=0)
+        K.k3d.find_homography(src, dst, method=0)
 
 
 def test_find_homography_rejects_mismatched_length():
     src = np.zeros((5, 2), dtype=np.float64)
     dst = np.zeros((6, 2), dtype=np.float64)
     with pytest.raises(ValueError):
-        K.features.find_homography(src, dst)
+        K.k3d.find_homography(src, dst)
 
 
 def test_find_homography_rejects_bad_method():
     src, dst, _ = _make_known_homography_pair(n=10)
     with pytest.raises(ValueError):
-        K.features.find_homography(src, dst, method=42)
+        K.k3d.find_homography(src, dst, method=42)
 
 
 def test_find_homography_ransac_deterministic_with_seed():
     """Same seed → same H and same inlier mask (property of deterministic RANSAC)."""
     src, dst, _ = _make_known_homography_pair(n=40, seed=3, noise_px=0.5)
-    H1, m1 = K.features.find_homography(src, dst, method=8, seed=123)
-    H2, m2 = K.features.find_homography(src, dst, method=8, seed=123)
+    H1, m1 = K.k3d.find_homography(src, dst, method=8, seed=123)
+    H2, m2 = K.k3d.find_homography(src, dst, method=8, seed=123)
     np.testing.assert_array_equal(H1, H2)
     np.testing.assert_array_equal(m1, m2)
 
@@ -182,7 +182,7 @@ def test_find_homography_ransac_deterministic_with_seed():
 def test_ransac_homography_still_works():
     """Legacy entry point must keep its (H, mask, count) return shape."""
     src, dst, _ = _make_known_homography_pair(n=40, seed=4)
-    H, mask, count = K.features.ransac_homography(
+    H, mask, count = K.k3d.ransac_homography(
         src, dst, threshold=3.0, min_inliers=10, seed=0
     )
     assert H.shape == (3, 3)

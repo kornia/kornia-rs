@@ -132,7 +132,7 @@ def _estimate_h(xy_a, desc_a, xy_b, desc_b, ratio=0.8):
     pts_a = np.asarray(xy_a, dtype=np.float64)[matches[:, 0]]
     pts_b = np.asarray(xy_b, dtype=np.float64)[matches[:, 1]]
     try:
-        H, mask = K.features.find_homography(
+        H, mask = K.k3d.find_homography(
             pts_a, pts_b, method=8, ransac_threshold=3.0, min_inliers=4, seed=0
         )
     except ValueError:
