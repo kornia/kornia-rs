@@ -9,6 +9,8 @@ GitHub runners).
 
 import platform
 
+import pytest
+
 import kornia_rs
 
 
@@ -55,8 +57,5 @@ def test_cpu_features_is_cached_across_calls():
 
 def test_cpu_features_class_is_frozen():
     f = kornia_rs.cpu.cpu_features()
-    try:
+    with pytest.raises((AttributeError, TypeError)):
         f.has_avx2 = True
-    except (AttributeError, TypeError):
-        return
-    raise AssertionError("CpuFeatures should be frozen — attribute writes must fail")

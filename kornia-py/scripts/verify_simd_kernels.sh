@@ -24,16 +24,15 @@
 # instead of the inner `_neon`) or fall back to the global sanity check
 # at the end of the script (any kornia_imgproc-rooted body with SIMD).
 #
-# Cross-build vs native variance: LLVM in the manylinux2014 container
-# inlines more aggressively than native Jetson rustc — kernels like
-# `resize::kernels::horizontal_row_c` survive as a symbol but their SIMD
-# body got hoisted into a rayon closure whose mangled name no longer
-# contains the kernel substring. Symbol-substring search can't recover
-# those. The global sanity floor is set conservatively (cross-build hits
-# ~93 NEON instructions vs ~102 native) and only catches a "regression
-# to zero" — i.e. RUSTFLAGS clobbered or `target_feature` annotations
-# stripped wholesale.
+# Cross-build LLVM (manylinux2014 container) inlines more aggressively
+# than native rustc, so symbol-substring search may miss kernels whose
+# bodies got hoisted into a rayon closure with a different mangled name.
+# `GLOBAL_FLOOR` is the regression-to-zero alarm: a wholesale SIMD strip
+# (RUSTFLAGS clobber, `target_feature` annotations dropped) drives the
+# count to single digits and trips here.
 set -euo pipefail
+
+GLOBAL_FLOOR=50
 
 WHEEL="${1:?usage: $0 <wheel>}"
 case "$WHEEL" in
@@ -44,7 +43,7 @@ esac
 
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
-unzip -q -o "$WHEEL" -d "$WORK"
+unzip -q -o "$WHEEL" '*.so' -d "$WORK"
 SO=$(find "$WORK" -name 'kornia_rs*.so' | head -n1)
 [ -n "$SO" ] || { echo "::error::no kornia_rs*.so in $WHEEL" >&2; exit 1; }
 
@@ -78,55 +77,74 @@ fi
 DUMP="$WORK/dis.txt"
 "$OBJDUMP" -dC --no-show-raw-insn "$SO" > "$DUMP"
 
-# Per-kernel check. `objdump -dC` opens each function with a header line
-# of the form `00000000000abcde <demangled::path::name>:` followed by
-# `addr: <mnemonic> <ops>` lines and a blank-line terminator.
+# Single pass over the dump: build per-kernel pass/fail, plus the global
+# kornia_imgproc SIMD count. `objdump -dC` emits one function header line
+# `<addr> <demangled::path::name>:`, body lines `<addr>: <mnemonic> <ops>`,
+# then a blank-line terminator. We track which kernel-pattern matched the
+# current function's name and mark it `ok` the first time its asm pattern
+# fires inside that body; in parallel we count SIMD lines under any
+# kornia_imgproc-rooted symbol for the global floor.
+RESULTS="$WORK/results.txt"
+# Pass kernel manifest as a newline-joined env var; awk splits it in BEGIN.
+KERNELS_JOINED=$(printf '%s\n' "${KERNELS[@]}")
+export KERNELS_JOINED
+awk -v gp="$GLOBAL_PATTERNS" -v out="$RESULTS" '
+  BEGIN {
+    n = split(ENVIRON["KERNELS_JOINED"], lines, "\n")
+    for (i = 1; i <= n; i++) {
+      if (lines[i] == "") continue
+      split(lines[i], kv, "~")
+      paths[i] = kv[1]; pats[i] = kv[2]
+      sawpath[i] = 0; matched[i] = 0
+      kernel_idx[++kcount] = i
+    }
+    in_kornia = 0
+    global_hits = 0
+  }
+  /^[0-9a-f]+ </ {
+    in_kornia = (index($0, "kornia_imgproc") > 0)
+    delete current
+    for (j = 1; j <= kcount; j++) {
+      i = kernel_idx[j]
+      if (index($0, paths[i]) > 0) { current[i] = 1; sawpath[i] = 1 }
+    }
+    next
+  }
+  /^$/ { delete current; in_kornia = 0; next }
+  {
+    if (in_kornia && match($0, gp)) global_hits++
+    for (i in current) {
+      if (!matched[i] && match($0, pats[i])) matched[i] = 1
+    }
+  }
+  END {
+    for (j = 1; j <= kcount; j++) {
+      i = kernel_idx[j]
+      status = (!sawpath[i]) ? "notfound" : (matched[i] ? "ok" : "noasm")
+      printf "%s\t%s\t%s\n", status, paths[i], pats[i] > out
+    }
+    printf "global\t%d\n", global_hits > out
+  }
+' "$DUMP"
+
 fail=0
 ok=0
 notfound=0
-for entry in "${KERNELS[@]}"; do
-  path="${entry%%~*}"
-  patt="${entry#*~}"
-  status=$(awk -v path="$path" -v p="$patt" '
-    BEGIN { state="seek"; matched=0; sawpath=0 }
-    state=="seek" && /^[0-9a-f]+ </ && index($0, path) > 0 {
-      state="in"; sawpath=1; next
-    }
-    state=="seek" { next }
-    state=="in" && /^$/ { state="seek"; next }
-    state=="in" && match($0, p) { matched=1 }
-    END {
-      if (!sawpath) { print "notfound"; exit }
-      print (matched ? "ok" : "noasm")
-    }
-  ' "$DUMP")
+GLOBAL_HITS=0
+while IFS=$'\t' read -r status path patt; do
   case "$status" in
     ok)       echo "ok   ${ARCH}: $path"; ok=$((ok+1)) ;;
     notfound) echo "::warning::${ARCH}: no function path '$path' present in wheel (renamed? heavily inlined?)"; notfound=$((notfound+1)) ;;
     noasm)    echo "::error::${ARCH}: '$path' present but no body matches SIMD pattern '$patt'"; fail=$((fail+1)) ;;
+    global)   GLOBAL_HITS="$path" ;;
   esac
-done
+done < "$RESULTS"
 
-# Global sanity check: regardless of inlining, *some* kornia_imgproc-rooted
-# function body should contain SIMD asm. Catches the worst-case regression
-# where every NEON/AVX2 path got stripped (e.g. RUSTFLAGS accidentally
-# disabled the target feature, or a build-system change dropped the
-# `cpu_features()` runtime gate).
-GLOBAL_HITS=$(awk -v p="$GLOBAL_PATTERNS" '
-  /^[0-9a-f]+ </ { in_kornia = (index($0, "kornia_imgproc") > 0); next }
-  in_kornia && match($0, p) { n++; }
-  END { print n+0 }
-' "$DUMP")
-# Sanity floor of 50 is set well below the cross-build observed count
-# (~93) so build-system noise doesn't trigger false alarms, but high
-# enough that a wholesale SIMD-stripping regression (e.g. RUSTFLAGS
-# clobber, runtime feature gate dropped) lands hits in the single
-# digits and trips the alarm.
-if [ "$GLOBAL_HITS" -lt 50 ]; then
-  echo "::error::${ARCH}: only $GLOBAL_HITS ${GLOBAL_LABEL} instructions in kornia_imgproc bodies (expected >50). SIMD pipeline likely broken globally."
+if [ "$GLOBAL_HITS" -lt "$GLOBAL_FLOOR" ]; then
+  echo "::error::${ARCH}: only $GLOBAL_HITS ${GLOBAL_LABEL} instructions in kornia_imgproc bodies (expected >${GLOBAL_FLOOR}). SIMD pipeline likely broken globally."
   fail=$((fail+1))
 else
-  echo "ok   ${ARCH}: ${GLOBAL_HITS} ${GLOBAL_LABEL} instructions inside kornia_imgproc bodies (sanity floor 50)"
+  echo "ok   ${ARCH}: ${GLOBAL_HITS} ${GLOBAL_LABEL} instructions inside kornia_imgproc bodies (sanity floor ${GLOBAL_FLOOR})"
 fi
 
 echo "---"
