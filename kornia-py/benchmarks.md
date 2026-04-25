@@ -4,17 +4,30 @@
 
 | Field | Value |
 |-------|-------|
-| Date | 2026-04-24 |
-| Commit | `64132db` on `feat/pil-like-python-api` (ORB-SLAM3 alignment: per-keypoint octave, octree KP balance, scale-aware matcher, u8 rounding blur, Householder null-vector) |
-| pyo3 | 0.28 |
-| numpy (crate) | 0.28 |
-| Platform | Jetson Orin (aarch64), Linux 5.15.148-tegra |
+| Date | 2026-04-25 |
+| Commit | `f394e44` on `perf/orb-beat-opencv` (AVX2 hflip OOB read + misaligned partial-store fixes; aarch64 imgproc byte-identical to baseline `64132db`) |
+| Platform | Jetson Orin (aarch64), JetPack R36.4.3, Linux 5.15.148-tegra |
+| CPU | Cortex-A78AE, 6 cores @ 1.728 GHz (max), `schedutil` governor, no thermal throttling (~52 °C nominal) |
+| Memory | LPDDR5, ~15 GB/s single-core measured ceiling |
 | Rust | 1.93.0, opt-level=2 (LLVM bug workaround for faer) |
+| pyo3 / numpy (crate) | 0.28 / 0.28 |
 | Python | 3.10.12 |
 | numpy | 2.2.6 |
 | OpenCV | 4.13.0 |
 | albumentations | 2.0.8 |
 | Iterations | 200 (10 warmup), `taskset -c 0-5` |
+
+### Run history
+
+Tracks the 1080p median (ms) for representative ops across documented runs. Each entry pins the commit so a regression can be bisected without re-reading the markdown body. New runs append to the top.
+
+| Date | Commit | Branch | hflip | normalize | gauss5×5 | resize½ | warp persp | ORB | Notes |
+|------|--------|--------|------:|----------:|---------:|--------:|-----------:|----:|-------|
+| 2026-04-25 | `f394e44` | `perf/orb-beat-opencv` | 0.807 | 3.81 | 0.99 | 0.52 | 4.77 | 11.19 | aarch64 imgproc byte-identical to `64132db`; AVX2 hflip CI fixes only. Stability re-run (2000 iter / 200 warmup) used for hflip; other rows carry prior-run medians since imgproc bytes are unchanged. |
+| 2026-04-24 | `64132db` | `feat/pil-like-python-api` | 0.961 | 3.81 | 0.99 | 0.52 | 4.77 | 11.19 | ORB-SLAM3 alignment landed (octree KP, per-KP octave, scale-aware matcher). |
+| 2026-04-20 | `f1830ab` (≈) | `feat/pil-like-python-api` | 1.06 | 3.71 | 0.71 | 0.52 | 4.82 | 13.32 | NEON 4-wide reciprocal for warp_perspective; crop threshold lifted to 4 KB; pyrup-2× win. |
+
+Add a row per landed perf-relevant commit; if a run only validates a non-imgproc change (e.g. CI or Python-binding fix) call that out in `Notes` so the apparent jitter isn't misread as a regression.
 
 ## Results — 640×480
 
@@ -22,7 +35,7 @@
 |-----------|---------------:|--------------------:|------------:|----------:|
 | ColorJitter (b+c+s+h) | **3.132** | 6.62 | 9.03 | **2.89× faster** ✓ |
 | Brightness | **0.079** | 0.47 | 0.78 | **9.91× faster** ✓ |
-| Horizontal Flip | **0.090** | 0.33 | 0.311 | **3.46× faster** ✓ |
+| Horizontal Flip | **0.108** | 0.33 | 0.314 | **2.91× faster** ✓ |
 | Vertical Flip | **0.124** | 0.109 | 0.097 | **0.78× parity** ✗ (BW-bound) |
 | Crop 224×224 | **0.018** | 0.037 | 0.022 | **1.22× faster** ✗ (<2×) |
 | Grayscale | — | — | — | (see 1080p; no 640 row in this run) |
@@ -42,7 +55,7 @@
 |-----------|---------------:|--------------------:|------------:|----------:|
 | ColorJitter (b+c+s+h) | **21.01** | 42.56 | 58.78 | **2.80× faster** ✓ |
 | Brightness | **0.953** | 3.36 | 5.25 | **5.51× faster** ✓ |
-| Horizontal Flip | **0.961** | 2.44 | 2.409 | **2.51× faster** ✓ |
+| Horizontal Flip | **0.807** | 2.44 | 2.428 | **3.01× faster** ✓ |
 | Vertical Flip | **1.274** | 1.179 | 1.173 | **0.92× parity** ✗ (BW-bound) |
 | Crop 224×224 | **0.058** | 0.090 | 0.095 | **1.64× faster** ✗ (~50 µs noise floor) |
 | Grayscale | **0.605** | — | 1.005 | **1.66× faster** ✗ (BW-bound) |
@@ -101,7 +114,7 @@ The speed story compounds three independent wins:
 |---|---|---|---|
 | ColorJitter | 2.89× ✓ | 2.80× ✓ | ✓ (Phase 4: NEON saturation + src→dst orchestration) |
 | Brightness | 9.91× ✓ | 5.51× ✓ | ✓ |
-| Horizontal Flip | 3.46× ✓ | 2.51× ✓ | ✓ (NEON `vld3q`/`vrev64q` pair-reverse, 4b82ef3) |
+| Horizontal Flip | 2.91× ✓ | 3.01× ✓ | ✓ (NEON `vld3q`/`vrev64q` pair-reverse, 4b82ef3; AVX2 OOB-read + misaligned-store fixed in f394e44) |
 | Vertical Flip | 0.78× ✗ | 0.92× ✗ | memcpy-bound (single core saturates LPDDR ~15 GB/s) |
 | Crop 224×224 | 1.22× ✗ | 1.64× ✗ | noise-bound (~50 µs op) |
 | Grayscale | — | 1.66× ✗ | 1080p at BW floor (8 MB traffic / 0.6 ms ≈ 13 GB/s); effective parity |
