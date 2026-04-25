@@ -22,7 +22,21 @@ from pathlib import Path
 
 import numpy as np
 import kornia_rs as K
+from kornia_rs.image import Image
 import cv2
+
+
+def _load_gray(path, size=None):
+    """Load an image as 2D u8 grayscale via the kornia Image API.
+
+    `size` is `(width, height)` if a resize is needed. cv2 appears in this
+    bench only as a timing comparison target — never in the setup path.
+    """
+    img = Image.load(str(path)).to_grayscale()
+    if size is not None:
+        w, h = size
+        img = img.resize(width=w, height=h, interpolation="bilinear")
+    return img.to_numpy()[..., 0]
 
 # VPI ships its Python bindings outside the standard site-packages tree.
 # Honor an explicit override (KORNIA_VPI_PYPATH); otherwise probe the usual
@@ -118,9 +132,9 @@ def quality_report():
     hdr += f"  {'k@3':>5s} {'vpi@3':>6s}"
     print(hdr)
     for path in QUALITY_IMGS:
-        img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
-        if img is None:
+        if not os.path.isfile(path):
             continue
+        img = _load_gray(path)
         feat_k = K.features.orb_detect_and_compute(img)
         kps_cv, _ = orb_cv.detectAndCompute(img, None)
         k_xy = np.asarray(feat_k.keypoints_xy, dtype=np.float32).reshape(-1, 2)
@@ -149,9 +163,8 @@ def run_benchmarks():
         print(f"Image size: {label} (HxW={h}x{w}, gray uint8)")
         print(f"{'='*72}")
 
-        src = cv2.imread(TEST_IMG, cv2.IMREAD_GRAYSCALE)
-        assert src is not None, f"missing test image: {TEST_IMG}"
-        gray = cv2.resize(src, (w, h), interpolation=cv2.INTER_AREA)
+        assert os.path.isfile(TEST_IMG), f"missing test image: {TEST_IMG}"
+        gray = _load_gray(TEST_IMG, size=(w, h))
 
         orb_cv = cv2.ORB_create(nfeatures=500, scaleFactor=1.2, nlevels=8,
                                  edgeThreshold=31, firstLevel=0, WTA_K=2,

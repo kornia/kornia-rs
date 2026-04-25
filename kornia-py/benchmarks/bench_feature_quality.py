@@ -63,6 +63,31 @@ import numpy as np
 
 import cv2  # required
 import kornia_rs as K  # required
+from kornia_rs.image import Image
+
+
+def _load_gray(path):
+    """Load a 2D u8 grayscale image via the kornia Image API. cv2 stays as
+    a comparison-only target (ORB / BEBLID / AKAZE pipelines)."""
+    return Image.load(str(path)).to_grayscale().to_numpy()[..., 0]
+
+
+def _warp_perspective_gray(img, H, w, h):
+    """Apply a 3x3 homography to a 2D grayscale image via kornia's
+    `warp_perspective`. Used to synthesize warped test data."""
+    arr3 = img[..., None] if img.ndim == 2 else img
+    out3 = K.imgproc.warp_perspective(
+        arr3, tuple(H.astype(np.float32).flatten()), (h, w), "bilinear"
+    )
+    return out3[..., 0] if img.ndim == 2 else out3
+
+
+def _perspective_transform(pts, H):
+    """Numpy port of cv2.perspectiveTransform: apply 3x3 H to (N, 1, 2) pts."""
+    p = pts.reshape(-1, 2)
+    h_pts = np.concatenate([p, np.ones((len(p), 1), dtype=p.dtype)], axis=1)
+    out = h_pts @ H.T
+    return (out[:, :2] / out[:, 2:3]).reshape(pts.shape)
 
 
 # -------------------------------------------------------------------
@@ -179,9 +204,13 @@ def _apply_illumination(img: np.ndarray, gain: float, bias: float) -> np.ndarray
 
 
 def _apply_motion_blur(img: np.ndarray, kernel_size: int) -> np.ndarray:
-    k = np.zeros((kernel_size, kernel_size), dtype=np.float32)
-    k[kernel_size // 2, :] = 1.0 / kernel_size
-    return cv2.filter2D(img, -1, k)
+    # Horizontal averaging filter (matches the cv2.filter2D row-kernel
+    # version we used to ship). Synthetic perturbation only — never timed
+    # — so a plain numpy sliding window is correct + cv2-free.
+    pad = kernel_size // 2
+    padded = np.pad(img, ((0, 0), (pad, pad)), mode="reflect")
+    windows = np.lib.stride_tricks.sliding_window_view(padded, kernel_size, axis=1)
+    return windows.mean(axis=-1).astype(np.uint8)
 
 
 def _apply_gaussian_noise(img: np.ndarray, sigma: float, seed: int = 0) -> np.ndarray:
@@ -410,17 +439,17 @@ def corner_reproj_error(H_est, H_gt, w, h) -> float:
         return float("inf")
     corners = np.array([[0, 0], [w, 0], [w, h], [0, h]], dtype=np.float64).reshape(-1, 1, 2)
     try:
-        a = cv2.perspectiveTransform(corners, H_est).reshape(-1, 2)
-        b = cv2.perspectiveTransform(corners, H_gt).reshape(-1, 2)
+        a = _perspective_transform(corners, H_est).reshape(-1, 2)
+        b = _perspective_transform(corners, H_gt).reshape(-1, 2)
         return float(np.linalg.norm(a - b, axis=1).mean())
-    except cv2.error:
+    except (ValueError, ZeroDivisionError):
         return float("inf")
 
 
 def run_one(pipeline: Pipeline, img: np.ndarray, scenario: Scenario, trial: int) -> TrialResult:
     h, w = img.shape
     H_gt = scenario.make_h(w, h)
-    warped = cv2.warpPerspective(img, H_gt, (w, h))
+    warped = _warp_perspective_gray(img, H_gt, w, h)
     if scenario.perturb is not None:
         warped = scenario.perturb(warped)
 
@@ -625,10 +654,10 @@ def main():
 
     results: List[TrialResult] = []
     for img_path in args.images:
-        img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
-        if img is None:
+        if not Path(img_path).is_file():
             print(f"[skip image] {img_path}")
             continue
+        img = _load_gray(img_path)
         print(f"\n--- {Path(img_path).name} ({img.shape[1]}x{img.shape[0]}) ---")
         for p in pipelines:
             # warm-up pass so JIT/caches don't taint trial 0 timings

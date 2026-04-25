@@ -37,8 +37,15 @@ import cv2
 import numpy as np
 
 import kornia_rs as K
+from kornia_rs.image import Image
 
 DATA_DIR = Path(__file__).resolve().parents[2] / "tests" / "data"
+
+
+def _load_gray(path):
+    """Load a 2D u8 grayscale image via the kornia Image API. cv2 stays as
+    a comparison-only target (ORB, BFMatcher, findEssentialMat)."""
+    return Image.load(str(path)).to_grayscale().to_numpy()[..., 0]
 
 K_MH01 = np.array(
     [[458.654, 0.0, 367.215], [0.0, 457.296, 248.375], [0.0, 0.0, 1.0]],
@@ -250,9 +257,8 @@ def print_table(results: list[Result]) -> None:
 
 
 def main() -> None:
-    img1 = cv2.imread(str(DATA_DIR / "mh01_frame1.png"), cv2.IMREAD_GRAYSCALE)
-    img2 = cv2.imread(str(DATA_DIR / "mh01_frame2.png"), cv2.IMREAD_GRAYSCALE)
-    assert img1 is not None and img2 is not None, "missing MH01 frames"
+    img1 = _load_gray(DATA_DIR / "mh01_frame1.png")
+    img2 = _load_gray(DATA_DIR / "mh01_frame2.png")
 
     print(f"SLAM bootstrap baseline — EuRoC MH_01 pair ({img1.shape[1]}x{img1.shape[0]})")
     print(f"Ground truth:  rot={GT_ROT_DEG}°  t_dir={GT_T_DIR.tolist()}")

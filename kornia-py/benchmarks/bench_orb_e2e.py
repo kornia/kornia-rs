@@ -31,6 +31,7 @@ if _vpi_path and os.path.isdir(_vpi_path):
 import cv2
 import numpy as np
 import kornia_rs as K
+from kornia_rs.image import Image
 
 try:
     import vpi
@@ -39,6 +40,32 @@ except ImportError:
     HAVE_VPI = False
 
 DATA_DIR = Path(__file__).resolve().parents[2] / "tests" / "data"
+
+
+def _load_gray(path):
+    """Load a 2D u8 grayscale image via the kornia Image API. cv2 appears in
+    this bench only as a comparison target (matcher, RANSAC, ORB)."""
+    if not os.path.isfile(path):
+        return None
+    return Image.load(str(path)).to_grayscale().to_numpy()[..., 0]
+
+
+def _warp_perspective_gray(img, H, w, h):
+    """Apply a 3x3 homography to a 2D grayscale image via kornia's
+    `warp_perspective`. cv2 stays out of the test-data construction path."""
+    arr3 = img[..., None] if img.ndim == 2 else img
+    out3 = K.imgproc.warp_perspective(
+        arr3, tuple(H.astype(np.float32).flatten()), (h, w), "bilinear"
+    )
+    return out3[..., 0] if img.ndim == 2 else out3
+
+
+def _perspective_transform(pts, H):
+    """Numpy port of cv2.perspectiveTransform: apply 3x3 H to (N, 1, 2) pts."""
+    p = pts.reshape(-1, 2)
+    h_pts = np.concatenate([p, np.ones((len(p), 1), dtype=p.dtype)], axis=1)
+    out = h_pts @ H.T
+    return (out[:, :2] / out[:, 2:3]).reshape(pts.shape)
 
 
 def make_test_homography(w, h, seed=0):
@@ -68,8 +95,8 @@ def corner_reproj_error(H_est, H_gt, w, h):
     if H_est is None:
         return float("inf")
     corners = np.array([[0, 0], [w, 0], [w, h], [0, h]], dtype=np.float64).reshape(-1, 1, 2)
-    pts_est = cv2.perspectiveTransform(corners, H_est).reshape(-1, 2)
-    pts_gt = cv2.perspectiveTransform(corners, H_gt).reshape(-1, 2)
+    pts_est = _perspective_transform(corners, H_est).reshape(-1, 2)
+    pts_gt = _perspective_transform(corners, H_gt).reshape(-1, 2)
     return float(np.linalg.norm(pts_est - pts_gt, axis=1).mean())
 
 
@@ -149,7 +176,7 @@ def estimate_homography_kornia(xy_a, desc_a, xy_b, desc_b, ratio=0.8):
 
 
 def run_test(img, H_gt, name, detect_fn, estimator=estimate_homography_cv):
-    warped = cv2.warpPerspective(img, H_gt, (img.shape[1], img.shape[0]))
+    warped = _warp_perspective_gray(img, H_gt, img.shape[1], img.shape[0])
     xy_a, desc_a = detect_fn(img)
     xy_b, desc_b = detect_fn(warped)
     H_est, n_inl, n_good = estimator(xy_a, desc_a, xy_b, desc_b)
@@ -183,7 +210,7 @@ def main():
     print(f"{N_TRIALS} trials per image × backend; lower err = better.\n")
 
     for path in img_paths:
-        img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+        img = _load_gray(path)
         if img is None:
             print(f"  [skip] {path}")
             continue

@@ -34,8 +34,22 @@ if _vpi_path and os.path.isdir(_vpi_path):
 import cv2
 import numpy as np
 import kornia_rs as K
+from kornia_rs.image import Image
 
 DATA_DIR = Path(__file__).resolve().parents[2] / "tests" / "data"
+
+
+def _load_gray(path, size=None):
+    """Load an image as 2D u8 grayscale via the kornia Image API.
+
+    `size` is `(width, height)` if a resize is needed. cv2 stays out of the
+    setup path; it appears in this bench only as a timing comparison target.
+    """
+    img = Image.load(str(path)).to_grayscale()
+    if size is not None:
+        w, h = size
+        img = img.resize(width=w, height=h, interpolation="bilinear")
+    return img.to_numpy()[..., 0]
 
 try:
     import vpi
@@ -151,16 +165,9 @@ def run_size(name, w, h, threshold, img):
 
 def main():
     # 640×480: a 3-ch photo converted to gray, similar to mh01 frames.
-    img_small = cv2.imread(str(DATA_DIR / "mh01_frame1.png"), cv2.IMREAD_GRAYSCALE)
-    assert img_small is not None, "missing mh01_frame1.png"
-    # Crop/pad to 640×480 for a consistent size label.
-    if img_small.shape != (480, 640):
-        img_small = cv2.resize(img_small, (640, 480))
-
+    img_small = _load_gray(DATA_DIR / "mh01_frame1.png", size=(640, 480))
     # 1080p: upscale dog.jpeg (it's the closest real photo we have).
-    dog = cv2.imread(str(DATA_DIR / "dog.jpeg"), cv2.IMREAD_GRAYSCALE)
-    assert dog is not None, "missing dog.jpeg"
-    img_big = cv2.resize(dog, (1920, 1080))
+    img_big = _load_gray(DATA_DIR / "dog.jpeg", size=(1920, 1080))
 
     # Threshold 20 matches cv2's default and gives a realistic (hundreds of)
     # corners at both sizes — not the degenerate 0 or 100k regimes.

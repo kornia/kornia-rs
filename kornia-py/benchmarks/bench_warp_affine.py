@@ -13,7 +13,18 @@ img_kornia = Image.load(image_path)
 img = img_kornia.to_numpy()
 img_pil = PILImage.open(image_path)
 height, width, _ = img.shape
-M = cv2.getRotationMatrix2D((width / 2, height / 2), 45.0, 1.0)
+
+# 2x3 rotation-around-center matrix (cv2.getRotationMatrix2D convention,
+# 45° CCW, scale=1.0). Kept here so the bench pulls in only the kornia
+# image stack at setup; cv2 stays purely as a timing comparison row.
+_a = np.deg2rad(45.0)
+_alpha = float(np.cos(_a))
+_beta = float(np.sin(_a))
+_cx, _cy = width / 2.0, height / 2.0
+M = np.array([
+    [ _alpha, _beta,  (1 - _alpha) * _cx - _beta * _cy],
+    [-_beta, _alpha, _beta * _cx + (1 - _alpha) * _cy],
+], dtype=np.float64)
 M_tuple = tuple(M.flatten())
 N = 5000  # number of iterations
 
