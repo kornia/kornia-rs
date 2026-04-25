@@ -1,5 +1,9 @@
 """Bench resize across interpolation modes vs OpenCV."""
-import time, numpy as np, cv2, kornia_rs as K
+import time
+import numpy as np
+import cv2
+
+from kornia_rs.image import Image
 
 def bench(fn, n=150, warmup=8):
     for _ in range(warmup):
@@ -19,6 +23,7 @@ modes = [
 
 for (h, w) in [(480, 640), (1080, 1920)]:
     data = np.random.randint(0, 256, (h, w, 3), dtype=np.uint8)
+    img = Image.frombuffer(data)  # zero-copy wrap
     for tw, th, desc in [
         (w // 2, h // 2, "0.5x"),
         (224, 224, "224²"),
@@ -26,7 +31,7 @@ for (h, w) in [(480, 640), (1080, 1920)]:
     ]:
         print(f"\n{w}x{h} → {tw}x{th} ({desc})")
         for name, kmode, cvmode in modes:
-            k = bench(lambda: K.imgproc.resize(data, (th, tw), kmode, antialias=False))
+            k = bench(lambda: img.resize(width=tw, height=th, interpolation=kmode))
             c = bench(lambda: cv2.resize(data, (tw, th), interpolation=cvmode))
             ratio = c / k if k > 0 else 0
             flag = "✓" if k < c else "✗"

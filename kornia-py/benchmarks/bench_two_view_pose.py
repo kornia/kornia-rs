@@ -31,14 +31,14 @@ from __future__ import annotations
 import os
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 import cv2
 import numpy as np
 
 import kornia_rs as K
 
-REPO_ROOT = os.path.dirname(os.path.abspath(__file__)).removesuffix("/kornia-py")
-DATA_DIR = os.path.join(REPO_ROOT, "tests", "data")
+DATA_DIR = Path(__file__).resolve().parents[2] / "tests" / "data"
 
 K_MH01 = np.array(
     [[458.654, 0.0, 367.215], [0.0, 457.296, 248.375], [0.0, 0.0, 1.0]],
@@ -250,8 +250,8 @@ def print_table(results: list[Result]) -> None:
 
 
 def main() -> None:
-    img1 = cv2.imread(os.path.join(DATA_DIR, "mh01_frame1.png"), cv2.IMREAD_GRAYSCALE)
-    img2 = cv2.imread(os.path.join(DATA_DIR, "mh01_frame2.png"), cv2.IMREAD_GRAYSCALE)
+    img1 = cv2.imread(str(DATA_DIR / "mh01_frame1.png"), cv2.IMREAD_GRAYSCALE)
+    img2 = cv2.imread(str(DATA_DIR / "mh01_frame2.png"), cv2.IMREAD_GRAYSCALE)
     assert img1 is not None and img2 is not None, "missing MH01 frames"
 
     print(f"SLAM bootstrap baseline — EuRoC MH_01 pair ({img1.shape[1]}x{img1.shape[0]})")
