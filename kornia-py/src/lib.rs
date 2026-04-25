@@ -3,6 +3,7 @@ mod augmentations;
 mod blur;
 mod brightness;
 mod color;
+mod cpu;
 mod crop;
 mod enhance;
 mod feature_match;
@@ -454,6 +455,15 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     m.add_submodule(&apriltag_mod)?;
 
+    // CPU submodule — runtime SIMD feature probe. Lets installed wheels
+    // self-report which SIMD paths the host actually exposes, complementing
+    // the build-time `verify_simd_kernels.sh` that proves the assembly is
+    // present in the binary.
+    let cpu_mod = PyModule::new(py, "cpu")?;
+    cpu_mod.add_class::<cpu::PyCpuFeatures>()?;
+    cpu_mod.add_function(wrap_pyfunction!(cpu::cpu_features, &cpu_mod)?)?;
+    m.add_submodule(&cpu_mod)?;
+
     // Pipeline submodule — fused preprocessing kernels.
     let pipeline_mod = PyModule::new(py, "pipeline")?;
     pipeline_mod.add_function(wrap_pyfunction!(
@@ -475,6 +485,7 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
         ("kornia_rs.augmentations", &aug_mod),
         ("kornia_rs.pipeline", &pipeline_mod),
         ("kornia_rs.features", &features_mod),
+        ("kornia_rs.cpu", &cpu_mod),
     ] {
         modules.set_item(name, submod)?;
     }

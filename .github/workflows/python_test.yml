@@ -128,6 +128,30 @@ jobs:
           WHEEL=$(ls dist/*-manylinux*.whl 2>/dev/null | head -n1)
           [ -n "$WHEEL" ] || { echo "no manylinux wheel found"; exit 1; }
           bash kornia-py/scripts/verify_simd_kernels.sh "$WHEEL"
+      # Runtime probe: install the manylinux wheel into a clean venv on the
+      # ubuntu-latest runner and ask `kornia_rs.cpu.cpu_features()` what it
+      # sees. Closes the loop the disassembly check leaves open: assembly
+      # presence in the .so vs whether `cpu_features()` actually loads and
+      # reports the host's real capabilities. Only x86_64 wheels run native
+      # here — the aarch64 wheel stays disassembly-verified only.
+      - name: Probe runtime SIMD dispatch from installed wheel
+        if: matrix.target == 'x86_64'
+        run: |
+          set -e
+          WHEEL=$(ls dist/*-manylinux*.whl 2>/dev/null | head -n1)
+          python3 -m venv /tmp/wheel-venv
+          /tmp/wheel-venv/bin/pip install --quiet "$WHEEL" numpy
+          /tmp/wheel-venv/bin/python -c "
+          import kornia_rs
+          f = kornia_rs.cpu.cpu_features()
+          print('Runtime CPU features:', f)
+          # GitHub-hosted ubuntu-latest x86_64 runners are AVX2 + FMA capable.
+          # If those come back False the wheel's runtime dispatch is broken
+          # even though objdump found the intrinsics.
+          assert f.has_avx2, 'AVX2 expected on GH x86_64 runner; wheel runtime dispatch may be broken'
+          assert f.has_fma, 'FMA expected on GH x86_64 runner'
+          assert not f.has_neon, 'NEON must be False on x86_64'
+          "
       - name: Upload PR wheel
         uses: actions/upload-artifact@v7
         with:
