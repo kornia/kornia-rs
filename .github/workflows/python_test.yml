@@ -134,12 +134,17 @@ jobs:
       # presence in the .so vs whether `cpu_features()` actually loads and
       # reports the host's real capabilities. Only x86_64 wheels run native
       # here — the aarch64 wheel stays disassembly-verified only.
+      - name: Set up Python 3.10 to match the wheel's cp310 ABI tag
+        if: matrix.target == 'x86_64'
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.10"
       - name: Probe runtime SIMD dispatch from installed wheel
         if: matrix.target == 'x86_64'
         run: |
           set -e
           WHEEL=$(ls dist/*-manylinux*.whl 2>/dev/null | head -n1)
-          python3 -m venv /tmp/wheel-venv
+          python -m venv /tmp/wheel-venv
           /tmp/wheel-venv/bin/pip install --quiet "$WHEEL" numpy
           /tmp/wheel-venv/bin/python -c "
           import kornia_rs
