@@ -150,8 +150,16 @@ fn hflip_rgb_u8_avx2_dispatch(src: &[u8], dst: &mut [u8], cols: usize) {
 /// AVX2 RGB u8 horizontal flip. Processes 5 pixels (15 bytes) per iteration
 /// via SSSE3 `_mm_shuffle_epi8` with a constant lane-reverse mask, going
 /// right-to-left in src so each batch's lane-15 don't-care byte is overwritten
-/// by the next-lower batch (or the scalar tail). The leftmost batch needs
-/// safe 8+4+2+1 stores when `cols % 5 == 0` to avoid a one-byte OOB write.
+/// by the next-lower batch (or the scalar tail).
+///
+/// Two end-of-row hazards to manage:
+/// * **Source over-read on the rightmost batch.** `_mm_loadu_si128` always
+///   reads 16 bytes; at `x = cols-5` the 16th byte sits one past the row
+///   (`row_bytes = cols*3`). On numpy buffers without trailing slack this
+///   SIGSEGVs, so the rightmost 5 pixels are handled scalar.
+/// * **Destination over-write on the leftmost batch.** When `cols % 5 == 0`
+///   the leftmost SIMD batch sits at the row end with no successor to clobber
+///   its don't-care byte — handle it with safe 8+4+2+1 partial stores.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn hflip_rgb_u8_avx2(src: &[u8], dst: &mut [u8], cols: usize) {
@@ -163,9 +171,24 @@ unsafe fn hflip_rgb_u8_avx2(src: &[u8], dst: &mut [u8], cols: usize) {
     let mask = _mm_setr_epi8(12, 13, 14, 9, 10, 11, 6, 7, 8, 3, 4, 5, 0, 1, 2, -1);
     let bulk_start = cols % 5;
 
+    // Rightmost 5 src pixels → leftmost 5 dst pixels: scalar to avoid the
+    // 1-byte source over-read that an aligned-by-3 16-byte SIMD load would
+    // commit at the very end of the row.
     if cols >= 5 {
-        // Iterate src x = cols-5, cols-10, ..., bulk_start.
-        let mut x = cols - 5;
+        for k in 0..5 {
+            let xs = cols - 5 + k;
+            let s = sp.add(xs * 3);
+            let d = dp.add((cols - 1 - xs) * 3);
+            *d = *s;
+            *d.add(1) = *s.add(1);
+            *d.add(2) = *s.add(2);
+        }
+    }
+
+    // SIMD bulk iterates src x = cols-10, cols-15, ..., bulk_start.
+    // Needs cols >= 10 since the rightmost batch (x=cols-5) is handled above.
+    if cols >= 10 {
+        let mut x = cols - 10;
         loop {
             let v = _mm_loadu_si128(sp.add(x * 3) as *const __m128i);
             let rev = _mm_shuffle_epi8(v, mask);
@@ -379,6 +402,33 @@ mod tests {
         let mut flipped = Image::<_, 3, _>::from_size_val(image_size, 0u8, CpuAllocator)?;
         super::vertical_flip(&image, &mut flipped)?;
         assert_eq!(flipped.as_slice(), &data_expected);
+        Ok(())
+    }
+
+    #[test]
+    fn test_horizontal_flip_rgb_u8_cols_multiple_of_five() -> Result<(), ImageError> {
+        // cols=80 (cols % 5 == 0) is the case that historically tripped the
+        // AVX2 path: the rightmost 5-pixel SIMD batch's 16-byte load read 1
+        // byte past the row end, and the leftmost batch's 16-byte store
+        // wrote 1 byte past dst end. Bit-identical scalar comparison.
+        let image_size = ImageSize {
+            width: 80,
+            height: 4,
+        };
+        let pixels: Vec<u8> = (0..(80 * 4 * 3)).map(|i| (i & 0xff) as u8).collect();
+        let image = Image::<u8, 3, _>::new(image_size, pixels.clone(), CpuAllocator)?;
+        let mut flipped = Image::<u8, 3, _>::from_size_val(image_size, 0u8, CpuAllocator)?;
+        super::horizontal_flip(&image, &mut flipped)?;
+
+        let mut expected = vec![0u8; 80 * 4 * 3];
+        for r in 0..4 {
+            for c in 0..80 {
+                let s = (r * 80 + c) * 3;
+                let d = (r * 80 + (79 - c)) * 3;
+                expected[d..d + 3].copy_from_slice(&pixels[s..s + 3]);
+            }
+        }
+        assert_eq!(flipped.as_slice(), &expected[..]);
         Ok(())
     }
 
