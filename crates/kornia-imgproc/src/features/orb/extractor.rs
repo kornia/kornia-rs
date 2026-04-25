@@ -2,9 +2,9 @@ use kornia_image::{allocator::ImageAllocator, Image, ImageError, ImageSize};
 use kornia_tensor::CpuAllocator;
 
 use crate::{
-    features::{FastDetector, HarrisResponse},
+    features::FastDetector,
     filter::gaussian_blur,
-    resize::resize_native,
+    padding::{spatial_padding, Padding2D, PaddingMode},
 };
 
 use super::pattern::{POS0, POS1};
@@ -18,6 +18,58 @@ pub struct OrbFeatures {
     pub orientations: Vec<f32>,
     /// Binary descriptors (256-bit, packed as 32 bytes each).
     pub descriptors: Vec<[u8; 32]>,
+    /// Scale factor (downscale^octave) at which each keypoint was detected.
+    pub scales: Vec<f32>,
+}
+
+/// Which FAST threshold produced a debug candidate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrbDebugThresholdKind {
+    /// Initial FAST threshold.
+    Initial,
+    /// Fallback minimum FAST threshold.
+    Minimum,
+}
+
+/// Debug record for a single ORB candidate or survivor.
+#[derive(Debug, Clone)]
+pub struct OrbDebugCandidate {
+    /// Keypoint x coordinate in original-image pixel space.
+    pub x: f32,
+    /// Keypoint y coordinate in original-image pixel space.
+    pub y: f32,
+    /// Detector response used for ranking.
+    pub response: f32,
+    /// Pyramid octave.
+    pub octave: usize,
+    /// Cell row used during cell-local FAST detection.
+    pub cell_row: i32,
+    /// Cell column used during cell-local FAST detection.
+    pub cell_col: i32,
+    /// Threshold source for this candidate.
+    pub threshold_kind: OrbDebugThresholdKind,
+}
+
+/// Debug data for a single octave.
+#[derive(Debug, Clone)]
+pub struct OrbDebugOctave {
+    /// Pyramid octave.
+    pub octave: usize,
+    /// Octave image size before padding.
+    pub image_size: ImageSize,
+    /// Raw FAST candidates before nonmax suppression.
+    pub raw_candidates: Vec<OrbDebugCandidate>,
+    /// Post-NMS FAST candidates before octree distribution.
+    pub candidates: Vec<OrbDebugCandidate>,
+    /// Final survivors after octree distribution.
+    pub survivors: Vec<OrbDebugCandidate>,
+}
+
+/// Debug data for one ORB detection pass.
+#[derive(Debug, Clone)]
+pub struct OrbDebugFrame {
+    /// Per-octave debug data.
+    pub octaves: Vec<OrbDebugOctave>,
 }
 
 /// ORB (Oriented FAST and Rotated BRIEF) feature detector and descriptor extractor.
@@ -49,10 +101,14 @@ struct OrbCandidate {
     col: usize,
     response: f32,
     angle: f32,
+    cell_row: i32,
+    cell_col: i32,
+    threshold_kind: OrbDebugThresholdKind,
 }
 
 #[derive(Clone, Debug)]
 struct ExtractorNode {
+    id: usize,
     ul: (i32, i32),
     ur: (i32, i32),
     bl: (i32, i32),
@@ -62,11 +118,14 @@ struct ExtractorNode {
 }
 
 impl ExtractorNode {
-    fn divide(&self, candidates: &[OrbCandidate]) -> [ExtractorNode; 4] {
-        let mid_x = (self.ul.0 + self.ur.0) / 2;
-        let mid_y = (self.ul.1 + self.bl.1) / 2;
+    fn divide(&self, candidates: &[OrbCandidate], next_id: &mut usize) -> [ExtractorNode; 4] {
+        let half_x = ((self.ur.0 - self.ul.0) as f32 / 2.0).ceil() as i32;
+        let half_y = ((self.br.1 - self.ul.1) as f32 / 2.0).ceil() as i32;
+        let mid_x = self.ul.0 + half_x;
+        let mid_y = self.ul.1 + half_y;
 
         let mut n1 = ExtractorNode {
+            id: alloc_node_id(next_id),
             ul: self.ul,
             ur: (mid_x, self.ul.1),
             bl: (self.ul.0, mid_y),
@@ -75,6 +134,7 @@ impl ExtractorNode {
             no_more: false,
         };
         let mut n2 = ExtractorNode {
+            id: alloc_node_id(next_id),
             ul: (mid_x, self.ul.1),
             ur: self.ur,
             bl: (mid_x, mid_y),
@@ -83,6 +143,7 @@ impl ExtractorNode {
             no_more: false,
         };
         let mut n3 = ExtractorNode {
+            id: alloc_node_id(next_id),
             ul: (self.ul.0, mid_y),
             ur: (mid_x, mid_y),
             bl: self.bl,
@@ -91,6 +152,7 @@ impl ExtractorNode {
             no_more: false,
         };
         let mut n4 = ExtractorNode {
+            id: alloc_node_id(next_id),
             ul: (mid_x, mid_y),
             ur: (self.ur.0, mid_y),
             bl: (mid_x, self.bl.1),
@@ -116,8 +178,19 @@ impl ExtractorNode {
             }
         }
 
+        n1.no_more = n1.keys.len() == 1;
+        n2.no_more = n2.keys.len() == 1;
+        n3.no_more = n3.keys.len() == 1;
+        n4.no_more = n4.keys.len() == 1;
+
         [n1, n2, n3, n4]
     }
+}
+
+fn alloc_node_id(next_id: &mut usize) -> usize {
+    let id = *next_id;
+    *next_id += 1;
+    id
 }
 
 impl Default for OrbDetector {
@@ -167,63 +240,179 @@ impl OrbDetector {
         &self,
         img: &Image<f32, 1, A>,
     ) -> Result<Vec<Image<f32, 1, CpuAllocator>>, ImageError> {
-        let img = Image::from_size_slice(img.size(), img.as_slice(), CpuAllocator)?;
+        let orig_w = img.width() as f32;
+        let orig_h = img.height() as f32;
 
-        let mut pyramid = Vec::with_capacity(self.n_scales);
-        let mut current = img.clone();
-        pyramid.push(current.clone());
+        let mut pyramid: Vec<Image<f32, 1, CpuAllocator>> = Vec::with_capacity(self.n_scales);
+        pyramid.push(Image::from_size_slice(
+            img.size(),
+            img.as_slice(),
+            CpuAllocator,
+        )?);
 
-        for _ in 1..self.n_scales {
-            let next = pyramid_reduce(&current, self.downscale)?;
-            if next.size() == current.size() {
+        for level in 1..self.n_scales {
+            let inv_scale = 1.0f32 / self.downscale.powi(level as i32);
+            let new_w = (orig_w * inv_scale).round().max(1.0) as usize;
+            let new_h = (orig_h * inv_scale).round().max(1.0) as usize;
+
+            let prev = &pyramid[level - 1];
+            if new_w == prev.width() && new_h == prev.height() {
                 break;
             }
 
-            pyramid.push(next.clone());
-            current = next;
+            let mut resized = Image::from_size_val(
+                ImageSize {
+                    width: new_w,
+                    height: new_h,
+                },
+                0.0,
+                CpuAllocator,
+            )?;
+            resize_linear_pixel_center(prev, &mut resized);
+            pyramid.push(resized);
         }
 
         Ok(pyramid)
     }
 
     #[allow(clippy::type_complexity)]
-    fn detect_octave<A: ImageAllocator>(
+    fn detect_octave_debug<A: ImageAllocator>(
         &self,
         octave_image: &Image<f32, 1, A>,
-    ) -> Result<(Vec<[usize; 2]>, Vec<f32>, Vec<f32>), ImageError> {
-        // Two-tier FAST detection: first try with higher threshold, then lower if needed.
-        // This matches ORB-SLAM3's approach of using iniThFAST then falling back to minThFAST.
-        let mut fast_detector =
-            FastDetector::new(octave_image.size(), self.ini_fast_threshold, self.fast_n, 1)?;
-        fast_detector.compute_corner_response(octave_image);
-        let mut keypoints = fast_detector.extract_keypoints()?;
+        octave: usize,
+    ) -> Result<
+        (
+            Vec<[usize; 2]>,
+            Vec<f32>,
+            Vec<f32>,
+            Vec<OrbDebugCandidate>,
+            Vec<OrbDebugCandidate>,
+        ),
+        ImageError,
+    > {
+        const EDGE_THRESHOLD: i32 = 19;
+        let cell_w = self.cell_size as i32;
+        let (min_x, max_x, min_y, max_y) = octave_bounds(octave_image);
+        let region_w = (max_x - min_x).max(0);
+        let region_h = (max_y - min_y).max(0);
+        if region_w <= 0 || region_h <= 0 {
+            return Ok((vec![], vec![], vec![], vec![], vec![]));
+        }
+        let n_cols = (region_w / cell_w).max(1) as usize;
+        let n_rows = (region_h / cell_w).max(1) as usize;
+        let w_cell = ((region_w as f32) / (n_cols as f32)).ceil() as i32;
+        let h_cell = ((region_h as f32) / (n_rows as f32)).ceil() as i32;
+        let scale = self.downscale.powi(octave as i32);
 
-        // If very few keypoints found, retry with lower threshold.
-        // ORB-SLAM3 does this per-cell; we do it globally for simplicity.
-        if keypoints.len() < 10 {
-            let mut fast_detector_low =
-                FastDetector::new(octave_image.size(), self.min_fast_threshold, self.fast_n, 1)?;
-            fast_detector_low.compute_corner_response(octave_image);
-            let keypoints_low = fast_detector_low.extract_keypoints()?;
+        let mut keypoints: Vec<[usize; 2]> = Vec::new();
+        let mut responses: Vec<f32> = Vec::new();
+        let mut raw_debug_candidates = Vec::new();
+        let mut debug_candidates = Vec::new();
+        let padded = reflect101_pad(octave_image, EDGE_THRESHOLD as usize)?;
+        for row in 0..n_rows {
+            let ini_y = min_y + row as i32 * h_cell;
+            if ini_y >= max_y - 3 {
+                continue;
+            }
+            let max_y_cell = (ini_y + h_cell + 6).min(max_y);
 
-            // Merge keypoints, avoiding duplicates (within 3 pixel radius).
-            for kp in keypoints_low {
-                let dominated = keypoints.iter().any(|&[r, c]| {
-                    let dr = (r as i32 - kp[0] as i32).abs();
-                    let dc = (c as i32 - kp[1] as i32).abs();
-                    dr <= 3 && dc <= 3
-                });
-                if !dominated {
-                    keypoints.push(kp);
+            for col in 0..n_cols {
+                let ini_x = min_x + col as i32 * w_cell;
+                if ini_x >= max_x - 6 {
+                    continue;
+                }
+                let max_x_cell = (ini_x + w_cell + 6).min(max_x);
+
+                let roi = extract_subimage(
+                    &padded,
+                    (ini_y + EDGE_THRESHOLD) as usize,
+                    (ini_x + EDGE_THRESHOLD) as usize,
+                    (max_y_cell - ini_y) as usize,
+                    (max_x_cell - ini_x) as usize,
+                )?;
+                let mut fast_ini =
+                    FastDetector::new(roi.size(), self.ini_fast_threshold, self.fast_n, 1)?;
+                fast_ini.compute_corner_response(&roi);
+                let mut raw_cell_keypoints = fast_ini.extract_raw_keypoints();
+                let mut cell_keypoints = fast_ini.extract_keypoints()?;
+                let mut threshold_kind = OrbDebugThresholdKind::Initial;
+                let mut cell_responses: Vec<f32> = cell_keypoints
+                    .iter()
+                    .map(|&[r, c]| {
+                        fast_ini.corner_response().as_slice()
+                            [fast_ini.corner_response().size().index(r, c)]
+                    })
+                    .collect();
+
+                if cell_keypoints.is_empty() {
+                    let mut fast_min =
+                        FastDetector::new(roi.size(), self.min_fast_threshold, self.fast_n, 1)?;
+                    fast_min.compute_corner_response(&roi);
+                    raw_cell_keypoints = fast_min.extract_raw_keypoints();
+                    cell_keypoints = fast_min.extract_keypoints()?;
+                    threshold_kind = OrbDebugThresholdKind::Minimum;
+                    cell_responses = cell_keypoints
+                        .iter()
+                        .map(|&[r, c]| {
+                            fast_min.corner_response().as_slice()
+                                [fast_min.corner_response().size().index(r, c)]
+                        })
+                        .collect();
+
+                    raw_debug_candidates.extend(raw_cell_keypoints.into_iter().map(|[r, c]| {
+                        let abs_r = (r as i32 + ini_y) as usize;
+                        let abs_c = (c as i32 + ini_x) as usize;
+                        OrbDebugCandidate {
+                            x: abs_c as f32 * scale,
+                            y: abs_r as f32 * scale,
+                            response: fast_min.corner_response().as_slice()
+                                [fast_min.corner_response().size().index(r, c)],
+                            octave,
+                            cell_row: row as i32,
+                            cell_col: col as i32,
+                            threshold_kind,
+                        }
+                    }));
+                } else {
+                    raw_debug_candidates.extend(raw_cell_keypoints.into_iter().map(|[r, c]| {
+                        let abs_r = (r as i32 + ini_y) as usize;
+                        let abs_c = (c as i32 + ini_x) as usize;
+                        OrbDebugCandidate {
+                            x: abs_c as f32 * scale,
+                            y: abs_r as f32 * scale,
+                            response: fast_ini.corner_response().as_slice()
+                                [fast_ini.corner_response().size().index(r, c)],
+                            octave,
+                            cell_row: row as i32,
+                            cell_col: col as i32,
+                            threshold_kind,
+                        }
+                    }));
+                }
+
+                for ([r, c], response) in cell_keypoints.into_iter().zip(cell_responses.into_iter())
+                {
+                    let abs_r = (r as i32 + ini_y) as usize;
+                    let abs_c = (c as i32 + ini_x) as usize;
+                    keypoints.push([abs_r, abs_c]);
+                    responses.push(response);
+                    debug_candidates.push(OrbDebugCandidate {
+                        x: abs_c as f32 * scale,
+                        y: abs_r as f32 * scale,
+                        response,
+                        octave,
+                        cell_row: row as i32,
+                        cell_col: col as i32,
+                        threshold_kind,
+                    });
                 }
             }
         }
 
         if keypoints.is_empty() {
-            return Ok((vec![], vec![], vec![]));
+            return Ok((vec![], vec![], vec![], vec![], raw_debug_candidates));
         }
 
-        const EDGE_THRESHOLD: i32 = 19;
         let mask = mask_border_keypoints(octave_image.size(), &keypoints, EDGE_THRESHOLD);
         let filtered_keypoints: Vec<_> = keypoints
             .iter()
@@ -232,30 +421,38 @@ impl OrbDetector {
             .collect();
 
         if filtered_keypoints.is_empty() {
-            return Ok((vec![], vec![], vec![]));
+            return Ok((vec![], vec![], vec![], vec![], raw_debug_candidates));
         }
 
-        let orientations = corner_orientations(octave_image, &keypoints);
-        let filtered_orientations: Vec<_> = keypoints
+        let padded_keypoints: Vec<_> = keypoints
             .iter()
-            .zip(orientations.iter())
+            .map(|&[r, c]| [r + EDGE_THRESHOLD as usize, c + EDGE_THRESHOLD as usize])
+            .collect();
+        let orientations = corner_orientations(&padded, &padded_keypoints);
+        let filtered_orientations: Vec<_> = orientations
+            .iter()
             .zip(mask.iter())
-            .filter_map(|((_, &ori), &m)| if m { Some(ori) } else { None })
+            .filter_map(|(&ori, &m)| if m { Some(ori) } else { None })
             .collect();
 
-        let mut response = Image::from_size_val(octave_image.size(), 0f32, CpuAllocator)?;
-        let mut harris_response = HarrisResponse::new(octave_image.size()).with_k(self.harris_k);
-        harris_response.compute(octave_image, &mut response)?;
-
-        let filtered_responses: Vec<_> = filtered_keypoints
+        let filtered_responses: Vec<_> = responses
             .iter()
-            .map(|&[r, c]| response.as_slice()[response.size().index(r, c)])
+            .zip(mask.iter())
+            .filter_map(|(&response, &m)| if m { Some(response) } else { None })
+            .collect();
+
+        let filtered_debug_candidates: Vec<_> = debug_candidates
+            .into_iter()
+            .zip(mask.iter())
+            .filter_map(|(candidate, &m)| if m { Some(candidate) } else { None })
             .collect();
 
         Ok((
             filtered_keypoints,
             filtered_orientations,
             filtered_responses,
+            filtered_debug_candidates,
+            raw_debug_candidates,
         ))
     }
 
@@ -277,7 +474,8 @@ impl OrbDetector {
         let mut responses_list = vec![];
 
         for (octave, octave_image) in pyramid.iter().enumerate() {
-            let (keypoints, orientations, responses) = self.detect_octave(octave_image)?;
+            let (keypoints, orientations, responses, _, _) =
+                self.detect_octave_debug(octave_image, octave)?;
             if keypoints.is_empty() {
                 continue;
             }
@@ -291,6 +489,9 @@ impl OrbDetector {
                     col: c,
                     response,
                     angle,
+                    cell_row: -1,
+                    cell_col: -1,
+                    threshold_kind: OrbDebugThresholdKind::Initial,
                 })
                 .collect();
 
@@ -320,6 +521,69 @@ impl OrbDetector {
             orientations_list,
             responses_list,
         ))
+    }
+
+    /// Detect ORB keypoints and return per-octave debug data.
+    pub fn detect_debug<A: ImageAllocator>(
+        &self,
+        src: &Image<f32, 1, A>,
+    ) -> Result<OrbDebugFrame, ImageError> {
+        let pyramid = self.build_pyramid(src)?;
+        let features_per_level = self.features_per_level();
+        let mut octaves = Vec::with_capacity(pyramid.len());
+
+        for (octave, octave_image) in pyramid.iter().enumerate() {
+            let (keypoints, orientations, responses, debug_candidates, raw_debug_candidates) =
+                self.detect_octave_debug(octave_image, octave)?;
+            let candidates: Vec<OrbCandidate> = keypoints
+                .iter()
+                .zip(orientations.iter())
+                .zip(responses.iter())
+                .zip(debug_candidates.iter())
+                .map(|(((&[r, c], &angle), &response), debug)| OrbCandidate {
+                    row: r,
+                    col: c,
+                    response,
+                    angle,
+                    cell_row: debug.cell_row,
+                    cell_col: debug.cell_col,
+                    threshold_kind: debug.threshold_kind,
+                })
+                .collect();
+
+            let (min_x, max_x, min_y, max_y) = octave_bounds(octave_image);
+            let distributed = distribute_octree(
+                &candidates,
+                min_x,
+                max_x,
+                min_y,
+                max_y,
+                features_per_level[octave],
+            );
+            let scale = self.downscale.powi(octave as i32);
+            let survivors = distributed
+                .into_iter()
+                .map(|cand| OrbDebugCandidate {
+                    x: cand.col as f32 * scale,
+                    y: cand.row as f32 * scale,
+                    response: cand.response,
+                    octave,
+                    cell_row: cand.cell_row,
+                    cell_col: cand.cell_col,
+                    threshold_kind: cand.threshold_kind,
+                })
+                .collect();
+
+            octaves.push(OrbDebugOctave {
+                octave,
+                image_size: octave_image.size(),
+                raw_candidates: raw_debug_candidates,
+                candidates: debug_candidates,
+                survivors,
+            });
+        }
+
+        Ok(OrbDebugFrame { octaves })
     }
 
     fn extract_octave<A: ImageAllocator>(
@@ -420,15 +684,22 @@ impl OrbDetector {
         let mut keypoints_xy = Vec::with_capacity(descriptors.len());
         let mut valid_orientations = Vec::with_capacity(descriptors.len());
         let mut valid_descriptors = Vec::with_capacity(descriptors.len());
+        let mut valid_scales = Vec::with_capacity(descriptors.len());
 
         // `mask` has one entry per keypoint; `descriptors` has entries only
         // for keypoints where mask is true, so we track a separate index.
         let mut desc_idx = 0;
-        for (i, ((row, col), &ori)) in kps_rc.iter().zip(orientations.iter()).enumerate() {
+        for (i, (((row, col), &ori), &sc)) in kps_rc
+            .iter()
+            .zip(orientations.iter())
+            .zip(scales.iter())
+            .enumerate()
+        {
             if mask.get(i).copied().unwrap_or(false) {
                 keypoints_xy.push([*col, *row]);
                 valid_orientations.push(ori);
                 valid_descriptors.push(descriptors[desc_idx]);
+                valid_scales.push(sc);
                 desc_idx += 1;
             }
         }
@@ -437,39 +708,101 @@ impl OrbDetector {
             keypoints_xy,
             orientations: valid_orientations,
             descriptors: valid_descriptors,
+            scales: valid_scales,
         })
     }
 }
 
-fn pyramid_reduce<A: ImageAllocator>(
-    img: &Image<f32, 1, A>,
-    downscale: f32,
+fn reflect101_pad<A: ImageAllocator>(
+    src: &Image<f32, 1, A>,
+    border: usize,
 ) -> Result<Image<f32, 1, CpuAllocator>, ImageError> {
-    // ORB-SLAM3 builds pyramid by resizing the previous level with bilinear interpolation.
-    // We apply a small Gaussian blur to reduce aliasing.
-    let sigma = 2.0 * downscale / 6.0;
-
-    let mut smoothed = Image::from_size_val(img.size(), 0.0, CpuAllocator)?;
-    gaussian_blur(img, &mut smoothed, (0, 0), (sigma, 0.0))?;
-
-    let new_h = (smoothed.height() as f32 / downscale).ceil() as usize;
-    let new_w = (smoothed.width() as f32 / downscale).ceil() as usize;
-
-    let mut resized = Image::from_size_val(
-        ImageSize {
-            width: new_w,
-            height: new_h,
+    let size = ImageSize {
+        width: src.width() + 2 * border,
+        height: src.height() + 2 * border,
+    };
+    let mut dst = Image::from_size_val(size, 0.0f32, CpuAllocator)?;
+    spatial_padding(
+        src,
+        &mut dst,
+        Padding2D {
+            top: border,
+            bottom: border,
+            left: border,
+            right: border,
         },
-        0.0,
-        CpuAllocator,
+        PaddingMode::Reflect101,
+        [0.0f32],
     )?;
-    resize_native(
-        &smoothed,
-        &mut resized,
-        crate::interpolation::InterpolationMode::Bilinear,
-    )?;
+    Ok(dst)
+}
 
-    Ok(resized)
+fn extract_subimage<A: ImageAllocator>(
+    src: &Image<f32, 1, A>,
+    top: usize,
+    left: usize,
+    height: usize,
+    width: usize,
+) -> Result<Image<f32, 1, CpuAllocator>, ImageError> {
+    let mut dst = Image::from_size_val(ImageSize { width, height }, 0.0f32, CpuAllocator)?;
+    for row in 0..height {
+        let src_row = top + row;
+        let dst_offset = row * width;
+        let src_offset = src_row * src.width() + left;
+        dst.as_slice_mut()[dst_offset..dst_offset + width]
+            .copy_from_slice(&src.as_slice()[src_offset..src_offset + width]);
+    }
+    Ok(dst)
+}
+
+fn resize_linear_pixel_center<A: ImageAllocator>(
+    src: &Image<f32, 1, A>,
+    dst: &mut Image<f32, 1, CpuAllocator>,
+) {
+    let src_w = src.width();
+    let src_h = src.height();
+    let dst_w = dst.width();
+    let dst_h = dst.height();
+
+    if src_w == dst_w && src_h == dst_h {
+        dst.as_slice_mut().copy_from_slice(src.as_slice());
+        return;
+    }
+
+    let sx_ratio = src_w as f32 / dst_w as f32;
+    let sy_ratio = src_h as f32 / dst_h as f32;
+    let sx_max = (src_w - 1) as i32;
+    let sy_max = (src_h - 1) as i32;
+
+    let src_slice = src.as_slice();
+    let dst_slice = dst.as_slice_mut();
+
+    for row in 0..dst_h {
+        let sy = (row as f32 + 0.5) * sy_ratio - 0.5;
+        let y0f = sy.floor();
+        let wy = sy - y0f;
+        let y0 = (y0f as i32).clamp(0, sy_max) as usize;
+        let y1 = ((y0f as i32) + 1).clamp(0, sy_max) as usize;
+        let row0 = y0 * src_w;
+        let row1 = y1 * src_w;
+
+        for col in 0..dst_w {
+            let sx = (col as f32 + 0.5) * sx_ratio - 0.5;
+            let x0f = sx.floor();
+            let wx = sx - x0f;
+            let x0 = (x0f as i32).clamp(0, sx_max) as usize;
+            let x1 = ((x0f as i32) + 1).clamp(0, sx_max) as usize;
+
+            let p00 = src_slice[row0 + x0];
+            let p01 = src_slice[row0 + x1];
+            let p10 = src_slice[row1 + x0];
+            let p11 = src_slice[row1 + x1];
+
+            let top = p00 + wx * (p01 - p00);
+            let bot = p10 + wx * (p11 - p10);
+            dst_slice[row * dst_w + col] = top + wy * (bot - top);
+        }
+    }
 }
 
 fn mask_border_keypoints(size: ImageSize, keypoints: &[[usize; 2]], distance: i32) -> Vec<bool> {
@@ -519,6 +852,7 @@ fn distribute_octree(
     }
     let h_x = width / n_ini as f32;
 
+    let mut next_node_id = 0usize;
     let mut nodes: Vec<ExtractorNode> = Vec::with_capacity(n_ini);
     for i in 0..n_ini {
         let ul = (min_x + (h_x * i as f32) as i32, min_y);
@@ -526,6 +860,7 @@ fn distribute_octree(
         let bl = (ul.0, max_y);
         let br = (ur.0, max_y);
         nodes.push(ExtractorNode {
+            id: alloc_node_id(&mut next_node_id),
             ul,
             ur,
             bl,
@@ -551,69 +886,71 @@ fn distribute_octree(
         }
     }
 
-    while nodes.len() < n_features {
-        let expandable: Vec<usize> = nodes
+    let mut finished = false;
+    while !finished {
+        let prev_size = nodes.len();
+        let mut n_to_expand = 0usize;
+        let mut size_and_node_ids: Vec<(usize, i32, usize)> = Vec::new();
+        let to_expand: Vec<usize> = nodes
             .iter()
-            .enumerate()
-            .filter(|(_, n)| !n.no_more && n.keys.len() > 1)
-            .map(|(i, _)| i)
+            .filter(|n| !n.no_more && n.keys.len() > 1)
+            .map(|n| n.id)
             .collect();
 
-        if expandable.is_empty() {
-            break;
+        for node_id in to_expand {
+            let Some(pos) = nodes.iter().position(|n| n.id == node_id) else {
+                continue;
+            };
+
+            let node = nodes.remove(pos);
+            let children = node.divide(candidates, &mut next_node_id);
+            for child in children {
+                if child.keys.is_empty() {
+                    continue;
+                }
+                if child.keys.len() > 1 {
+                    n_to_expand += 1;
+                    size_and_node_ids.push((child.keys.len(), child.ul.0, child.id));
+                }
+                nodes.insert(0, child);
+            }
         }
 
-        if nodes.len() + expandable.len() * 3 <= n_features {
-            let mut new_nodes = Vec::new();
-            let mut to_remove = Vec::new();
-            for idx in expandable {
-                let node = nodes[idx].clone();
-                let children = node.divide(candidates);
-                for mut child in children {
-                    if child.keys.is_empty() {
-                        continue;
-                    }
-                    child.no_more = child.keys.len() == 1;
-                    new_nodes.push(child);
-                }
-                to_remove.push(idx);
-            }
-            to_remove.sort_unstable_by(|a, b| b.cmp(a));
-            for idx in to_remove {
-                nodes.swap_remove(idx);
-            }
-            nodes.extend(new_nodes);
-        } else {
-            let mut expandable_sorted: Vec<(usize, usize)> = nodes
-                .iter()
-                .enumerate()
-                .filter(|(_, n)| !n.no_more && n.keys.len() > 1)
-                .map(|(i, n)| (i, n.keys.len()))
-                .collect();
-            expandable_sorted.sort_by_key(|(_, s)| *s);
+        if nodes.len() >= n_features || nodes.len() == prev_size {
+            finished = true;
+        } else if nodes.len() + n_to_expand * 3 > n_features {
+            while !finished {
+                let prev_size = nodes.len();
+                let mut prev = size_and_node_ids.clone();
+                size_and_node_ids.clear();
 
-            let mut new_nodes = Vec::new();
-            let mut to_remove = Vec::new();
-            for (idx, _) in expandable_sorted.into_iter().rev() {
-                let node = nodes[idx].clone();
-                let children = node.divide(candidates);
-                for mut child in children {
-                    if child.keys.is_empty() {
+                prev.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+                for (_, _, node_id) in prev.into_iter().rev() {
+                    let Some(pos) = nodes.iter().position(|n| n.id == node_id) else {
                         continue;
+                    };
+
+                    let node = nodes.remove(pos);
+                    let children = node.divide(candidates, &mut next_node_id);
+                    for child in children {
+                        if child.keys.is_empty() {
+                            continue;
+                        }
+                        if child.keys.len() > 1 {
+                            size_and_node_ids.push((child.keys.len(), child.ul.0, child.id));
+                        }
+                        nodes.insert(0, child);
                     }
-                    child.no_more = child.keys.len() == 1;
-                    new_nodes.push(child);
+
+                    if nodes.len() >= n_features {
+                        break;
+                    }
                 }
-                to_remove.push(idx);
-                if nodes.len() - to_remove.len() + new_nodes.len() >= n_features {
-                    break;
+
+                if nodes.len() >= n_features || nodes.len() == prev_size {
+                    finished = true;
                 }
             }
-            to_remove.sort_unstable_by(|a, b| b.cmp(a));
-            for idx in to_remove {
-                nodes.swap_remove(idx);
-            }
-            nodes.extend(new_nodes);
         }
     }
 
@@ -661,47 +998,78 @@ fn corner_orientations<A: ImageAllocator>(
     src: &Image<f32, 1, A>,
     corners: &[[usize; 2]],
 ) -> Vec<f32> {
-    const M_SIZE: usize = 31; // NOTE: This must be uneven
+    const HALF_PATCH_SIZE: i32 = 15;
     let src_slice = src.as_slice();
-
-    let mrows2 = (M_SIZE as i32 - 1) / 2;
-    let mcols2 = (M_SIZE as i32 - 1) / 2;
-    let radius2 = mrows2 * mrows2;
-
     let height = src.height() as i32;
     let width = src.width() as i32;
+    let umax = orb_umax();
 
     let mut orientations = Vec::with_capacity(corners.len());
 
     for &[r0, c0] in corners {
         let mut m01 = 0f32;
         let mut m10 = 0f32;
+        let row = r0 as i32;
+        let col = c0 as i32;
 
-        for r in 0..M_SIZE as i32 {
-            let mut m01_tmp = 0f32;
+        for u in -HALF_PATCH_SIZE..=HALF_PATCH_SIZE {
+            let rr = row;
+            let cc = col + u;
+            if rr >= 0 && rr < height && cc >= 0 && cc < width {
+                let curr = src_slice[src.size().index(rr as usize, cc as usize)];
+                m10 += u as f32 * curr;
+            }
+        }
 
-            for c in 0..M_SIZE as i32 {
-                let dr = r - mrows2;
-                let dc = c - mcols2;
-                if dr * dr + dc * dc > radius2 {
-                    continue;
-                }
-
-                let rr = r0 as i32 + dr;
-                let cc = c0 as i32 + dc;
-                if rr >= 0 && rr < height && cc >= 0 && cc < width {
-                    let curr_pixel = src_slice[src.size().index(rr as usize, cc as usize)];
-                    m10 += curr_pixel * dc as f32;
-                    m01_tmp += curr_pixel;
+        for v in 1..=HALF_PATCH_SIZE {
+            let mut v_sum = 0f32;
+            let d = umax[v as usize];
+            for u in -d..=d {
+                let rr_plus = row + v;
+                let rr_minus = row - v;
+                let cc = col + u;
+                if rr_plus >= 0
+                    && rr_plus < height
+                    && rr_minus >= 0
+                    && rr_minus < height
+                    && cc >= 0
+                    && cc < width
+                {
+                    let val_plus = src_slice[src.size().index(rr_plus as usize, cc as usize)];
+                    let val_minus = src_slice[src.size().index(rr_minus as usize, cc as usize)];
+                    v_sum += val_plus - val_minus;
+                    m10 += u as f32 * (val_plus + val_minus);
                 }
             }
-
-            m01 += m01_tmp * (r - mrows2) as f32;
+            m01 += v as f32 * v_sum;
         }
         orientations.push(m01.atan2(m10));
     }
 
     orientations
+}
+
+fn orb_umax() -> [i32; 16] {
+    const HALF_PATCH_SIZE: i32 = 15;
+    let mut umax = [0i32; 16];
+    let vmax = ((HALF_PATCH_SIZE as f32) * std::f32::consts::SQRT_2 / 2.0 + 1.0).floor() as i32;
+    let vmin = ((HALF_PATCH_SIZE as f32) * std::f32::consts::SQRT_2 / 2.0).ceil() as i32;
+    let hp2 = (HALF_PATCH_SIZE * HALF_PATCH_SIZE) as f32;
+
+    for v in 0..=vmax {
+        umax[v as usize] = (hp2 - (v * v) as f32).sqrt().round() as i32;
+    }
+
+    let mut v0 = 0;
+    for v in (vmin..=HALF_PATCH_SIZE).rev() {
+        while umax[v0 as usize] == umax[(v0 + 1) as usize] {
+            v0 += 1;
+        }
+        umax[v as usize] = v0;
+        v0 += 1;
+    }
+
+    umax
 }
 
 /// Compute ORB descriptors packed into 32 bytes (256 bits) per keypoint.

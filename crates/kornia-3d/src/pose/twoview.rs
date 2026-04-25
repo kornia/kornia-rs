@@ -33,7 +33,9 @@
 //! from two views alone — this is the SE(3) → essential manifold quotient in action.
 
 use crate::pose::fundamental::{fundamental_8point, sampson_distance, FundamentalError};
-use crate::pose::triangulation::{triangulate_inliers, TriangulateParams, TriangulationConfig};
+use crate::pose::triangulation::{
+    check_rt, triangulate_inliers, TriangulateParams, TriangulationConfig,
+};
 use crate::pose::{
     decompose_essential, decompose_homography, enforce_essential_constraints,
     essential_from_fundamental, homography_4pt2d, HomographyError,
@@ -147,6 +149,38 @@ pub struct TwoViewResult {
     pub inlier_indices: Vec<usize>,
     /// Inlier mask from the selected model's RANSAC.
     pub inliers: Vec<bool>,
+}
+
+/// Per-candidate diagnostics from a two-view estimation. All counts are
+/// computed with kornia's own filters (cheirality + parallax + midpoint/reproj
+/// checks), so they do not match ORB-SLAM3's CheckRT one-to-one — but they
+/// reveal which candidate was picked and how close the runners-up were.
+#[derive(Clone, Debug)]
+pub struct TwoViewDiagnostics {
+    /// Fundamental matrix from RANSAC (always computed).
+    pub f_matrix: Mat3F64,
+    /// Homography matrix from RANSAC (always computed).
+    pub h_matrix: Mat3F64,
+    /// Inlier count from fundamental RANSAC.
+    pub f_inlier_count: usize,
+    /// Inlier count from homography RANSAC.
+    pub h_inlier_count: usize,
+    /// Inlier mask from fundamental RANSAC.
+    pub f_inliers: Vec<bool>,
+    /// Inlier mask from homography RANSAC.
+    pub h_inliers: Vec<bool>,
+    /// Per-candidate triangulation counts for the selected model
+    /// (4 entries for fundamental, 8 for homography).
+    pub candidate_ngood: Vec<usize>,
+    /// Index of the chosen candidate inside `candidate_ngood`, or `None` if
+    /// no candidate passed the minimum cheirality count.
+    pub best_candidate_idx: Option<usize>,
+    /// Second-best candidate count (used for ambiguity checks).
+    pub second_best_good: usize,
+    /// Representative parallax (degrees) of the selected candidate.
+    /// With `use_orb_slam3_check_rt` this is the ORB-SLAM3 sorted-index-50
+    /// parallax of the chosen candidate; otherwise 0.0.
+    pub best_candidate_parallax_deg: f64,
 }
 
 impl TwoViewResult {
@@ -344,6 +378,17 @@ pub fn two_view_estimate(
     k2: &Mat3F64,
     config: &TwoViewConfig,
 ) -> Result<TwoViewResult, TwoViewError> {
+    two_view_estimate_with_diagnostics(x1, x2, k1, k2, config).map(|(r, _)| r)
+}
+
+/// Same as [`two_view_estimate`] but also returns per-candidate diagnostics.
+pub fn two_view_estimate_with_diagnostics(
+    x1: &[Vec2F64],
+    x2: &[Vec2F64],
+    k1: &Mat3F64,
+    k2: &Mat3F64,
+    config: &TwoViewConfig,
+) -> Result<(TwoViewResult, TwoViewDiagnostics), TwoViewError> {
     let res_f = ransac_fundamental(x1, x2, &config.ransac_f)?;
     let res_h = ransac_homography(x1, x2, &config.ransac_h)?;
 
@@ -359,22 +404,58 @@ pub fn two_view_estimate(
         config: &config.triangulation,
     };
 
+    let mut diagnostics = TwoViewDiagnostics {
+        f_matrix: res_f.model,
+        h_matrix: res_h.model,
+        f_inlier_count: res_f.inlier_count,
+        h_inlier_count: res_h.inlier_count,
+        f_inliers: res_f.inliers.clone(),
+        h_inliers: res_h.inliers.clone(),
+        candidate_ngood: Vec::new(),
+        best_candidate_idx: None,
+        second_best_good: 0,
+        best_candidate_parallax_deg: 0.0,
+    };
+
     let mut best_pose = None;
     let mut best_count = 0usize;
     let mut best_points = Vec::new();
     let mut best_indices = Vec::new();
+    let mut best_parallax = 0.0f64;
+    let mut second_best = 0usize;
+    let mut best_candidate_idx: Option<usize> = None;
+    let mut candidate_ngood: Vec<usize> = Vec::new();
+
+    let use_check_rt = config.triangulation.use_orb_slam3_check_rt;
+    let reproj_th_sq = config.triangulation.check_rt_reproj_th_sq;
+
+    let eval_candidate =
+        |inliers: &[bool], r: &Mat3F64, t: &Vec3F64| -> (usize, Vec<Vec3F64>, Vec<usize>, f64) {
+            if use_check_rt {
+                check_rt(x1, x2, inliers, k1, k2, r, t, reproj_th_sq)
+            } else {
+                let (c, p, i) = triangulate_inliers(x1, x2, inliers, r, t, &tri_params);
+                (c, p, i, 0.0)
+            }
+        };
 
     let (model, inliers) = if use_h {
         let h = res_h.model;
         let poses = decompose_homography(&h, k1, k2);
-        for (r, t) in &poses {
-            let (count, points, indices) =
-                triangulate_inliers(x1, x2, &res_h.inliers, r, t, &tri_params);
+        candidate_ngood.reserve(poses.len());
+        for (i, (r, t)) in poses.iter().enumerate() {
+            let (count, points, indices, parallax) = eval_candidate(&res_h.inliers, r, t);
+            candidate_ngood.push(count);
             if count >= config.triangulation.min_cheirality_count && count > best_count {
+                second_best = best_count;
                 best_count = count;
                 best_pose = Some((*r, *t));
                 best_points = points;
                 best_indices = indices;
+                best_candidate_idx = Some(i);
+                best_parallax = parallax;
+            } else if count > second_best {
+                second_best = count;
             }
         }
         (TwoViewModel::Homography(h), res_h.inliers)
@@ -383,32 +464,46 @@ pub fn two_view_estimate(
         let e = essential_from_fundamental(&f, k1, k2);
         let e = enforce_essential_constraints(&e);
         let poses = decompose_essential(&e);
-        for (r, t) in &poses {
-            let (count, points, indices) =
-                triangulate_inliers(x1, x2, &res_f.inliers, r, t, &tri_params);
+        candidate_ngood.reserve(poses.len());
+        for (i, (r, t)) in poses.iter().enumerate() {
+            let (count, points, indices, parallax) = eval_candidate(&res_f.inliers, r, t);
+            candidate_ngood.push(count);
             if count >= config.triangulation.min_cheirality_count && count > best_count {
+                second_best = best_count;
                 best_count = count;
                 best_pose = Some((*r, *t));
                 best_points = points;
                 best_indices = indices;
+                best_candidate_idx = Some(i);
+                best_parallax = parallax;
+            } else if count > second_best {
+                second_best = count;
             }
         }
         (TwoViewModel::Fundamental(f), res_f.inliers)
     };
+
+    diagnostics.candidate_ngood = candidate_ngood;
+    diagnostics.best_candidate_idx = best_candidate_idx;
+    diagnostics.second_best_good = second_best;
+    diagnostics.best_candidate_parallax_deg = best_parallax;
 
     let (r, t) = match best_pose {
         Some(p) => p,
         None => return Err(TwoViewError::RansacFailure),
     };
 
-    Ok(TwoViewResult {
-        model,
-        rotation: r,
-        translation: t,
-        points3d: best_points,
-        inlier_indices: best_indices,
-        inliers,
-    })
+    Ok((
+        TwoViewResult {
+            model,
+            rotation: r,
+            translation: t,
+            points3d: best_points,
+            inlier_indices: best_indices,
+            inliers,
+        },
+        diagnostics,
+    ))
 }
 
 /// Computes the squared reprojection error for mapping `x1` to `x2` via the homography `h`.
