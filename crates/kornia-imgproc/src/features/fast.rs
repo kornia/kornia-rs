@@ -1,5 +1,3 @@
-use std::ops::ControlFlow;
-
 use kornia_image::{allocator::ImageAllocator, Image, ImageError, ImageSize};
 use kornia_tensor::CpuAllocator;
 use rayon::prelude::*;
@@ -97,24 +95,6 @@ impl FastDetector {
                     let lower_threshold = curr_pixel - self.threshold;
                     let upper_threshold = curr_pixel + self.threshold;
 
-                    let mut speed_sum_b = 0;
-                    let mut speed_sum_d = 0;
-
-                    for &k in &[0, 4, 8, 12] {
-                        let ik =
-                            ((y as isize + RP[k]) * width as isize + (x as isize + CP[k])) as usize;
-                        let ring_pixel = src_slice[ik];
-                        if ring_pixel > upper_threshold {
-                            speed_sum_b += 1;
-                        } else if ring_pixel < lower_threshold {
-                            speed_sum_d += 1;
-                        }
-                    }
-                    if speed_sum_d < 3 && speed_sum_b < 3 {
-                        row[ix] = 0.0;
-                        continue;
-                    }
-
                     for k in 0..16 {
                         let ik =
                             ((y as isize + RP[k]) * width as isize + (x as isize + CP[k])) as usize;
@@ -168,6 +148,24 @@ impl FastDetector {
         );
         Ok(coordinates)
     }
+
+    /// Extracts raw FAST candidates before nonmax suppression.
+    pub fn extract_raw_keypoints(&self) -> Vec<[usize; 2]> {
+        let size = self.corner_response.size();
+        let width = size.width;
+        self.corner_response
+            .as_slice()
+            .iter()
+            .enumerate()
+            .filter(|&(_, &response)| response > self.threshold)
+            .map(|(i, _)| [i / width, i % width])
+            .collect()
+    }
+
+    /// Returns the last computed FAST corner response image.
+    pub fn corner_response(&self) -> &Image<f32, 1, CpuAllocator> {
+        &self.corner_response
+    }
 }
 
 fn corner_fast_response(
@@ -177,30 +175,28 @@ fn corner_fast_response(
     state: PixelType,
     n: usize,
 ) -> f32 {
-    let mut consecutive_count = 0;
-    let mut curr_response = 0.0;
-
-    if let ControlFlow::Break(_) = (0..15 + n).try_for_each(|l| {
-        if bins[l % 16] == state {
-            consecutive_count += 1;
-            if consecutive_count == n {
-                curr_response = 0.0;
-                circle_intensities.iter().for_each(|m| {
-                    curr_response += (m - curr_pixel).abs();
-                });
-
-                return ControlFlow::Break(());
+    let mut best_score = 0.0f32;
+    for start in 0..16 {
+        let mut arc_min = f32::INFINITY;
+        let mut valid_arc = true;
+        for offset in 0..n {
+            let idx = (start + offset) % 16;
+            if bins[idx] != state {
+                valid_arc = false;
+                break;
             }
-        } else {
-            consecutive_count = 0;
+            let diff = match state {
+                PixelType::Brighter => circle_intensities[idx] - curr_pixel,
+                PixelType::Darker => curr_pixel - circle_intensities[idx],
+                PixelType::Similar => 0.0,
+            };
+            arc_min = arc_min.min(diff);
         }
-
-        ControlFlow::Continue(())
-    }) {
-        return curr_response;
+        if valid_arc {
+            best_score = best_score.max(arc_min);
+        }
     }
-
-    0.0
+    best_score
 }
 
 fn get_peak_mask<A: ImageAllocator>(
@@ -208,13 +204,44 @@ fn get_peak_mask<A: ImageAllocator>(
     mask: &mut Image<bool, 1, A>,
     threshold: f32,
 ) {
+    let width = src.width();
+    let height = src.height();
     let src_slice = src.as_slice();
     let mask_slice = mask.as_slice_mut();
 
-    src_slice
-        .par_iter()
-        .zip(mask_slice)
-        .for_each(|(src, mask)| *mask = *src > threshold);
+    mask_slice.fill(false);
+
+    if width < 3 || height < 3 {
+        return;
+    }
+
+    mask_slice[width..(height - 1) * width]
+        .par_chunks_mut(width)
+        .enumerate()
+        .for_each(|(row_idx, row_mask)| {
+            let y = row_idx + 1;
+            for x in 1..width - 1 {
+                let center = src_slice[y * width + x];
+                if center <= threshold {
+                    row_mask[x] = false;
+                    continue;
+                }
+
+                let mut is_strict_max = true;
+                'neighbors: for yy in (y - 1)..=(y + 1) {
+                    for xx in (x - 1)..=(x + 1) {
+                        if yy == y && xx == x {
+                            continue;
+                        }
+                        if src_slice[yy * width + xx] >= center {
+                            is_strict_max = false;
+                            break 'neighbors;
+                        }
+                    }
+                }
+                row_mask[x] = is_strict_max;
+            }
+        });
 }
 
 fn exclude_border<A: ImageAllocator>(label: &mut Image<bool, 1, A>, border_width: usize) {
@@ -329,17 +356,19 @@ mod tests {
             [32, 86],
             [60, 75],
             [69, 184],
-            [71, 84],
+            [72, 84],
             [72, 169],
-            [109, 69],
             [109, 125],
-            [120, 64],
-            [129, 162],
+            [122, 63],
+            [125, 165],
             [134, 95],
+            [135, 161],
             [141, 121],
             [153, 104],
             [162, 148],
         ];
+
+        let legacy_keypoints = vec![[71, 84], [109, 69], [109, 125], [120, 64], [129, 162]];
 
         const THRESHOLD: f32 = 0.15;
 
@@ -350,6 +379,51 @@ mod tests {
         let expected: HashSet<[usize; 2]> = expected_keypoints.into_iter().collect();
         let actual: HashSet<[usize; 2]> = keypoints.into_iter().collect();
         assert_eq!(actual, expected);
+        let legacy: HashSet<[usize; 2]> = legacy_keypoints.into_iter().collect();
+        assert_ne!(actual, legacy);
+        Ok(())
+    }
+
+    #[test]
+    fn test_fast_9_accepts_arc_with_only_two_cardinals() -> Result<(), Box<dyn std::error::Error>> {
+        let mut img = Image::from_size_val(
+            ImageSize {
+                width: 7,
+                height: 7,
+            },
+            0.5f32,
+            CpuAllocator,
+        )?;
+
+        let center_r = 3usize;
+        let center_c = 3usize;
+        let width = img.width();
+        let ring_offsets = [
+            (0isize, 3isize),
+            (1, 3),
+            (2, 2),
+            (3, 1),
+            (3, 0),
+            (3, -1),
+            (2, -2),
+            (1, -3),
+            (0, -3),
+        ];
+
+        for (dr, dc) in ring_offsets {
+            let r = (center_r as isize + dr) as usize;
+            let c = (center_c as isize + dc) as usize;
+            img.as_slice_mut()[r * width + c] = 1.0;
+        }
+
+        let mut fast_detector = FastDetector::new(img.size(), 0.1, 9, 1)?;
+        fast_detector.compute_corner_response(&img);
+
+        let raw: HashSet<[usize; 2]> = fast_detector.extract_raw_keypoints().into_iter().collect();
+        assert!(raw.contains(&[center_r, center_c]));
+
+        let nms: HashSet<[usize; 2]> = fast_detector.extract_keypoints()?.into_iter().collect();
+        assert!(nms.contains(&[center_r, center_c]));
         Ok(())
     }
 }

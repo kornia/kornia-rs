@@ -26,6 +26,14 @@ pub struct TriangulationConfig {
     pub max_reprojection_error: f64,
     /// Minimum number of positive-depth triangulated points required.
     pub min_cheirality_count: usize,
+    /// When true, the two-view candidate check uses ORB-SLAM3's CheckRT:
+    /// pixel-space reprojection threshold `check_rt_reproj_th_sq`, points
+    /// at infinity allowed when `cosParallax >= 0.99998`, and parallax
+    /// reported at sorted index `min(50, N-1)` rather than per-point filtering.
+    pub use_orb_slam3_check_rt: bool,
+    /// Squared reprojection threshold in pixels, applied to both images,
+    /// used only when `use_orb_slam3_check_rt` is true. ORB-SLAM3 uses 4.0.
+    pub check_rt_reproj_th_sq: f64,
 }
 
 impl Default for TriangulationConfig {
@@ -35,6 +43,8 @@ impl Default for TriangulationConfig {
             max_midpoint_gap: 1.0,
             max_reprojection_error: 2.0,
             min_cheirality_count: 1,
+            use_orb_slam3_check_rt: false,
+            check_rt_reproj_th_sq: 4.0,
         }
     }
 }
@@ -121,6 +131,125 @@ pub(crate) fn triangulate_inliers(
     }
 
     (count, points, indices)
+}
+
+/// ORB-SLAM3-style CheckRT for a single (R, t) candidate.
+///
+/// Triangulates each inlier correspondence using DLT with normalized
+/// coordinates, then filters against the exact criteria from
+/// `TwoViewReconstruction::CheckRT`:
+///
+///   1. the triangulated point is finite,
+///   2. `z1 > 0` OR `cosParallax >= 0.99998` (points at infinity allowed),
+///   3. same for `z2`,
+///   4. per-point reprojection error in image 1 ≤ `reproj_th_sq` (pixels²),
+///   5. per-point reprojection error in image 2 ≤ `reproj_th_sq` (pixels²).
+///
+/// `parallax_deg` is reported at sorted index `min(50, N-1)` of the collected
+/// cosParallax values (ascending), matching ORB-SLAM3's representative
+/// parallax heuristic.
+///
+/// `x1` / `x2` are pixel-space observations; `k1` / `k2` are the intrinsics of
+/// the corresponding cameras; `r`, `t` map points from camera 1 into camera 2.
+pub fn check_rt(
+    x1: &[Vec2F64],
+    x2: &[Vec2F64],
+    inliers: &[bool],
+    k1: &Mat3F64,
+    k2: &Mat3F64,
+    r: &Mat3F64,
+    t: &Vec3F64,
+    reproj_th_sq: f64,
+) -> (usize, Vec<Vec3F64>, Vec<usize>, f64) {
+    let k1_inv = k1.inverse();
+    let k2_inv = k2.inverse();
+
+    // Camera-1 origin is at (0,0,0). Camera-2 origin in cam1 frame is -R^T * t.
+    let o2 = -(r.transpose() * *t);
+
+    let mut points = Vec::new();
+    let mut indices = Vec::new();
+    let mut cos_values: Vec<f64> = Vec::new();
+
+    for i in 0..x1.len() {
+        if !inliers[i] {
+            continue;
+        }
+        let x1n = normalize_point(&k1_inv, &x1[i]);
+        let x2n = normalize_point(&k2_inv, &x2[i]);
+        let p3d = match triangulate_point_linear(&x1n, &x2n, r, t) {
+            Some(p) => p,
+            None => continue,
+        };
+        if !p3d.x.is_finite() || !p3d.y.is_finite() || !p3d.z.is_finite() {
+            continue;
+        }
+
+        // Parallax at the 3D point w.r.t. both camera centres.
+        let normal1 = p3d; // cam1 center is origin.
+        let dist1 = normal1.length();
+        let normal2 = p3d - o2;
+        let dist2 = normal2.length();
+        if dist1 <= 1e-12 || dist2 <= 1e-12 {
+            continue;
+        }
+        let cos_parallax = (normal1.dot(normal2) / (dist1 * dist2)).clamp(-1.0, 1.0);
+
+        // Depth in cam1 (origin frame).
+        if p3d.z <= 0.0 && cos_parallax < 0.99998 {
+            continue;
+        }
+        // Depth in cam2.
+        let p3d_c2 = *r * p3d + *t;
+        if p3d_c2.z <= 0.0 && cos_parallax < 0.99998 {
+            continue;
+        }
+
+        // Reprojection error in image 1: project p3d with K1 * [I|0].
+        if p3d.z.abs() < 1e-12 {
+            continue;
+        }
+        let k1c0 = k1.col(0);
+        let k1c1 = k1.col(1);
+        let k1c2 = k1.col(2);
+        let u1 = (k1c0.x * p3d.x + k1c1.x * p3d.y + k1c2.x * p3d.z) / p3d.z;
+        let v1 = (k1c0.y * p3d.x + k1c1.y * p3d.y + k1c2.y * p3d.z) / p3d.z;
+        let dx1 = u1 - x1[i].x;
+        let dy1 = v1 - x1[i].y;
+        if dx1 * dx1 + dy1 * dy1 > reproj_th_sq {
+            continue;
+        }
+
+        // Reprojection error in image 2.
+        if p3d_c2.z.abs() < 1e-12 {
+            continue;
+        }
+        let k2c0 = k2.col(0);
+        let k2c1 = k2.col(1);
+        let k2c2 = k2.col(2);
+        let u2 = (k2c0.x * p3d_c2.x + k2c1.x * p3d_c2.y + k2c2.x * p3d_c2.z) / p3d_c2.z;
+        let v2 = (k2c0.y * p3d_c2.x + k2c1.y * p3d_c2.y + k2c2.y * p3d_c2.z) / p3d_c2.z;
+        let dx2 = u2 - x2[i].x;
+        let dy2 = v2 - x2[i].y;
+        if dx2 * dx2 + dy2 * dy2 > reproj_th_sq {
+            continue;
+        }
+
+        cos_values.push(cos_parallax);
+        points.push(p3d);
+        indices.push(i);
+    }
+
+    let count = indices.len();
+    let parallax_deg = if cos_values.is_empty() {
+        0.0
+    } else {
+        cos_values.sort_by(|a, b| a.total_cmp(b));
+        let idx = cos_values.len().saturating_sub(1).min(50);
+        cos_values[idx].clamp(-1.0, 1.0).acos().to_degrees()
+    };
+
+    (count, points, indices, parallax_deg)
 }
 
 pub(crate) fn parallax_ok(x1: &Vec3F64, x2: &Vec3F64, min_parallax_deg: f64) -> bool {
