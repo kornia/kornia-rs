@@ -1,13 +1,16 @@
 """OpenCV-only two-view pose benchmark: sweep every RANSAC/USAC method.
 
-Loads the EuRoC MH_01 frame pair, runs OpenCV ORB → BFMatcher(Lowe+cross-check)
-→ `findEssentialMat(method=...)` → `recoverPose`, and scores each backend on
-wall-clock time + pose error against the Vicon-derived ground truth.
+Loads the EuRoC MH_01 frame pair (via the kornia Image API for consistent
+decode bytes across cv2 versions), runs OpenCV ORB → BFMatcher(Lowe+
+cross-check) → `findEssentialMat(method=...)` → `recoverPose`, and scores
+each backend on wall-clock time + pose error against the Vicon-derived
+ground truth.
 
-Runs standalone — no kornia_rs import — so it can be executed inside any venv
-with cv2 + numpy installed. Used to compare OpenCV 4.13 (latest stable on PyPI)
-against OpenCV 5.0.0-pre (via `opencv-python-rolling==5.0.0.20221015`, built
-from the opencv 5.x branch).
+Used to compare OpenCV 4.13 (latest stable on PyPI) against OpenCV 5.0.0-pre
+(via `opencv-python-rolling==5.0.0.20221015`, built from the opencv 5.x
+branch). Loading via kornia (rather than `cv2.imread`) keeps the input
+pixels identical across cv2 versions, so the comparison only reflects
+the algorithm differences.
 
 Usage:
     python kornia-py/benchmarks/bench_opencv_two_view.py
@@ -25,9 +28,16 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+from kornia_rs.image import Image
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = REPO_ROOT / "tests" / "data"
+
+
+def _load_gray(path):
+    """Load a 2D u8 grayscale image via kornia. cv2 stays purely as the
+    thing being compared (across versions, across RANSAC methods)."""
+    return Image.load(str(path)).to_grayscale().to_numpy()[..., 0]
 
 # EuRoC MH_01_easy cam0.
 K_MH01 = np.array(
@@ -136,9 +146,8 @@ def print_table(results: list[Result], version: str) -> None:
 
 
 def main() -> None:
-    img1 = cv2.imread(str(DATA_DIR / "mh01_frame1.png"), cv2.IMREAD_GRAYSCALE)
-    img2 = cv2.imread(str(DATA_DIR / "mh01_frame2.png"), cv2.IMREAD_GRAYSCALE)
-    assert img1 is not None and img2 is not None, "missing MH01 frames"
+    img1 = _load_gray(DATA_DIR / "mh01_frame1.png")
+    img2 = _load_gray(DATA_DIR / "mh01_frame2.png")
 
     pts1, pts2 = orb_match(img1, img2)
     print(f"OpenCV {cv2.__version__}  ·  {len(pts1)} matches  ·  "
