@@ -1,4 +1,4 @@
-use numpy::{PyArray, PyArray1, PyArray2, PyArrayMethods, PyUntypedArrayMethods};
+use numpy::{PyArray1, PyArray2, PyUntypedArrayMethods};
 use pyo3::prelude::*;
 
 use kornia_3d::pose::{
@@ -6,48 +6,10 @@ use kornia_3d::pose::{
     ransac_fundamental as ransac_fundamental_fn, ransac_homography as ransac_homography_fn,
     RansacParams,
 };
-use kornia_algebra::{Mat3F64, Vec2F64};
+
+use crate::pyutils::{mask_to_py, mat3_to_py, unpack_pts};
 
 const METHOD_RANSAC: i32 = 8;
-
-/// Copy (N, 2) f64 numpy array into a Vec<Vec2F64>. Caller guarantees shape.
-fn unpack_pts(arr: &Bound<'_, PyArray2<f64>>) -> Vec<Vec2F64> {
-    let n = arr.shape()[0];
-    unsafe {
-        let raw = std::slice::from_raw_parts(arr.data(), n * 2);
-        (0..n)
-            .map(|i| Vec2F64::new(raw[i * 2], raw[i * 2 + 1]))
-            .collect()
-    }
-}
-
-/// Pack a Mat3F64 into a row-major (3, 3) numpy array.
-fn mat3_to_py<'py>(py: Python<'py>, m: &Mat3F64) -> Bound<'py, PyArray2<f64>> {
-    let cols = m.to_cols_array();
-    unsafe {
-        let arr = PyArray::<f64, _>::new(py, [3, 3], false);
-        let slice = std::slice::from_raw_parts_mut(arr.data(), 9);
-        for r in 0..3 {
-            for c in 0..3 {
-                slice[r * 3 + c] = cols[c * 3 + r];
-            }
-        }
-        arr
-    }
-}
-
-/// Pack a `&[bool]` inlier mask into a `(N,) uint8` numpy array (1/0).
-fn mask_to_py<'py>(py: Python<'py>, inliers: &[bool]) -> Bound<'py, PyArray1<u8>> {
-    let n = inliers.len();
-    unsafe {
-        let arr = PyArray::<u8, _>::new(py, [n], false);
-        let slice = std::slice::from_raw_parts_mut(arr.data(), n);
-        for (dst, src) in slice.iter_mut().zip(inliers.iter()) {
-            *dst = *src as u8;
-        }
-        arr
-    }
-}
 
 /// Estimate a homography with RANSAC using the normalized 4-point solver.
 ///

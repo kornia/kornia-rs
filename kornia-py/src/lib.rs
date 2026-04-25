@@ -16,6 +16,7 @@ mod normalize;
 mod orb;
 mod pipeline;
 mod pointcloud;
+mod pyutils;
 mod resize;
 mod twoview;
 mod warp;

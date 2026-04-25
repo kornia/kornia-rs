@@ -20,7 +20,8 @@ use kornia_3d::pose::{
     two_view_estimate as two_view_estimate_fn, LmPoseConfig, RansacParams, TriangulationConfig,
     TwoViewConfig, TwoViewModel,
 };
-use kornia_algebra::{Mat3F64, Vec2F64};
+
+use crate::pyutils::{mat3_to_py, unpack_mat3, unpack_pts};
 
 /// Result of [`two_view_estimate_py`]. Field access mirrors the Rust
 /// `TwoViewResult`; all matrices are row-major float64.
@@ -64,50 +65,6 @@ impl PyTwoViewPose {
             "TwoViewPose(model_type='{}', inlier_count={}, points3d={})",
             self.model_type, self.inlier_count, n_pts
         )
-    }
-}
-
-fn unpack_pts(arr: &Bound<'_, PyArray2<f64>>) -> Vec<Vec2F64> {
-    let n = arr.shape()[0];
-    unsafe {
-        let raw = std::slice::from_raw_parts(arr.data(), n * 2);
-        (0..n)
-            .map(|i| Vec2F64::new(raw[i * 2], raw[i * 2 + 1]))
-            .collect()
-    }
-}
-
-fn unpack_mat3(arr: &Bound<'_, PyArray2<f64>>) -> PyResult<Mat3F64> {
-    if !arr.is_c_contiguous() {
-        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-            "intrinsics matrix must be C-contiguous",
-        ));
-    }
-    let s = arr.shape();
-    if s[0] != 3 || s[1] != 3 {
-        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-            "expected (3, 3) float64 intrinsics, got ({}, {})",
-            s[0], s[1]
-        )));
-    }
-    // Numpy is row-major, Mat3F64 is column-major.
-    let raw = unsafe { std::slice::from_raw_parts(arr.data(), 9) };
-    Ok(Mat3F64::from_cols_array(&[
-        raw[0], raw[3], raw[6], raw[1], raw[4], raw[7], raw[2], raw[5], raw[8],
-    ]))
-}
-
-fn mat3_to_py<'py>(py: Python<'py>, m: &Mat3F64) -> Bound<'py, PyArray2<f64>> {
-    let cols = m.to_cols_array();
-    unsafe {
-        let arr = PyArray::<f64, _>::new(py, [3, 3], false);
-        let slice = std::slice::from_raw_parts_mut(arr.data(), 9);
-        for r in 0..3 {
-            for c in 0..3 {
-                slice[r * 3 + c] = cols[c * 3 + r];
-            }
-        }
-        arr
     }
 }
 

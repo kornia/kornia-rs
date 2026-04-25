@@ -180,11 +180,10 @@ pub struct TwoViewConfig {
     /// Use the **Nistér 5-point essential solver** in place of 8-point
     /// fundamental for the F-vs-H race. The 5pt path stays on the essential
     /// manifold throughout (no `(σ, σ, 0)` clipping after the 8-point lift),
-    /// which preserves translation-direction accuracy: on EuRoC MH_01 the 5pt
-    /// path lands at ~3.39° t-err vs ~4.17° for 8pt — the cleanest translation
-    /// of any backend in our two-view bench (incl. all OpenCV USAC variants).
-    /// Default `true`; flip to `false` only when bit-compat with the legacy
-    /// 8-point pipeline matters more than translation accuracy.
+    /// which preserves translation-direction accuracy. The 8-point path
+    /// trades that for cleaner rotation: pixel-space normalization gets the
+    /// rotation null-space crisp, but the σ-equalization bleeds into t.
+    /// Default `true`; see `kornia-py/benchmarks.md` for current numbers.
     pub use_5pt_essential: bool,
     /// Threshold-annealed LM polish. After the initial LM call on the full
     /// RANSAC inlier set, re-classify inliers at progressively tighter Sampson
@@ -1141,10 +1140,10 @@ pub fn two_view_estimate(
         )
     };
 
-    // Both the winner-selection and the ambiguity ratio use cheap counts so
-    // the comparison stays in one unit. The full SVD-based triangulator only
-    // runs on the winner; mixing cheap (winner) with full (runner-up) counts
-    // would bias the second/best ratio because cheap ≥ full systematically.
+    // The ambiguity ratio (best/second) requires both counts to be measured
+    // by the same predicate, so winner and runner-up both go through the
+    // closed-form check. Mixing cheap (winner) with SVD (runner-up) counts
+    // would bias the ratio: cheap ≥ SVD systematically on degenerate parallax.
     let mut best_idx = None;
     for (idx, (r, t)) in poses.iter().enumerate() {
         let count = count_cheirality_fast(
