@@ -198,10 +198,17 @@ unsafe fn hflip_rgb_u8_avx2(src: &[u8], dst: &mut [u8], cols: usize) {
             // Only the leftmost iter (x == bulk_start) AND no scalar tail
             // (bulk_start == 0) hits the buffer end. All other iters write
             // 16 bytes safely — their lane-15 don't-care is overwritten.
+            //
+            // Use `write_unaligned` because `dp0` is `dp + 3*k` for some k —
+            // arbitrary alignment within the row. A bare `*p = v` deref
+            // requires natural alignment, which Rust validates under
+            // debug_assertions (and is UB on relaxed targets even when x86
+            // tolerates the misalignment in hardware).
             if x == bulk_start && bulk_start == 0 {
-                *(dp0 as *mut u64) = _mm_cvtsi128_si64(rev) as u64;
-                *(dp0.add(8) as *mut u32) = _mm_extract_epi32::<2>(rev) as u32;
-                *(dp0.add(12) as *mut u16) = _mm_extract_epi16::<6>(rev) as u16;
+                use std::ptr::write_unaligned;
+                write_unaligned(dp0 as *mut u64, _mm_cvtsi128_si64(rev) as u64);
+                write_unaligned(dp0.add(8) as *mut u32, _mm_extract_epi32::<2>(rev) as u32);
+                write_unaligned(dp0.add(12) as *mut u16, _mm_extract_epi16::<6>(rev) as u16);
                 *dp0.add(14) = _mm_extract_epi8::<14>(rev) as u8;
                 break;
             }
