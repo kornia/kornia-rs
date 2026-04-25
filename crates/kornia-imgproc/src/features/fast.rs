@@ -930,7 +930,6 @@ unsafe fn corner_score_9_neon(
 /// `center.saturating_sub(ring)` semantics.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
-#[inline(always)]
 unsafe fn corner_score_9_avx2_16(
     centers: std::arch::x86_64::__m128i,
     ring_vals: &[std::arch::x86_64::__m128i; 16],
