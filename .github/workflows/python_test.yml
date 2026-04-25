@@ -93,8 +93,13 @@ jobs:
     # Match the release workflow: drop the local `.cargo/config.toml`
     # baselines so wheels target stock CPUs and SIMD paths are gated only
     # by per-fn `#[target_feature]` + runtime `cpu_features()` selection.
+    # Override the x86_64 linker too: `.cargo/config.toml` pins it to
+    # `x86_64-linux-gnu-gcc` (the Debian-named cross compiler used for
+    # Jetson-hosted x86_64 cross-test) but the manylinux2014 container
+    # is CentOS 7 and only ships plain `cc`/`gcc`.
     env:
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: ""
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: "cc"
       CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-Copt-level=2"
     steps:
       - uses: ilammy/setup-nasm@v1
@@ -108,6 +113,15 @@ jobs:
             if command -v dnf &> /dev/null; then dnf install cmake3 -y; elif command -v yum &> /dev/null; then yum install cmake3 -y; elif command -v apt-get &> /dev/null; then apt-get update && apt-get install cmake -y; else echo "None of dnf, yum, or apt found."; fi
             if command -v cmake3 &> /dev/null; then export CMAKE=cmake3; fi
           args: --release --out dist -i python3.10 -m kornia-py/Cargo.toml
+      # The verifier runs on the *outer* ubuntu-latest runner (x86_64), so
+      # the aarch64 wheel needs the Debian-named cross binutils to read its
+      # symbols. The release workflow has the same need but masks it with
+      # `2>/dev/null | grep | head` — that pipe always exits 0 even when the
+      # tool is missing, so its "no NEON" branch never fires. Our verifier
+      # uses `set -euo pipefail` and would actually catch the regression.
+      - name: Install cross binutils for aarch64 disassembly
+        if: matrix.target == 'aarch64'
+        run: sudo apt-get update && sudo apt-get install -y binutils-aarch64-linux-gnu
       - name: Verify each SIMD kernel was compiled with the expected intrinsics
         run: |
           set -e
