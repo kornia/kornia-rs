@@ -1,3 +1,5 @@
+#![allow(clippy::needless_range_loop)]
+
 use crate::linalg;
 use faer::prelude::SpSolver;
 use kornia_algebra::{linalg::svd::svd3_f64, Mat3F64, Vec2F64, Vec3F64};
@@ -412,11 +414,7 @@ mod tests {
     #[test]
     fn test_homography_dlt_recovers_known_h() -> Result<(), HomographyError> {
         // Random-looking H (rotation + translation + mild perspective).
-        let h_true = [
-            [1.1, -0.2, 30.0],
-            [0.15, 0.95, -10.0],
-            [1e-4, 2e-4, 1.0],
-        ];
+        let h_true = [[1.1, -0.2, 30.0], [0.15, 0.95, -10.0], [1e-4, 2e-4, 1.0]];
         let x1_raw = [
             [10.0, 20.0],
             [200.0, 50.0],

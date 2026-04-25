@@ -81,7 +81,13 @@ impl FastDetector {
     ) -> Vec<([usize; 2], f32)> {
         let height = src.height();
         let margin = border.max(3);
-        fast_detect_rows_u8(src, self.threshold, self.arc_length, border, margin..height.saturating_sub(margin))
+        fast_detect_rows_u8(
+            src,
+            self.threshold,
+            self.arc_length,
+            border,
+            margin..height.saturating_sub(margin),
+        )
     }
 
     /// Computes the corner response for the input image.
@@ -198,6 +204,14 @@ impl FastDetector {
         // Flat pixel-stride offsets for each ring position; computed once per image.
         let ring: [isize; 16] = std::array::from_fn(|k| RP[k] * width as isize + CP[k]);
 
+        // Hoist runtime feature checks out of the rayon row closure: env-var
+        // lookups + atomic loads are cheap individually but compound across
+        // O(rows) tasks. Resolved once here and captured by reference.
+        #[cfg(target_arch = "aarch64")]
+        let use_neon = std::env::var("KORNIA_FAST_NEON").map_or(true, |v| v != "0");
+        #[cfg(target_arch = "x86_64")]
+        let use_avx2 = crate::simd::cpu_features().has_avx2;
+
         corner_response[3 * width..(height - 3) * width]
             .par_chunks_mut(width)
             .enumerate()
@@ -214,7 +228,7 @@ impl FastDetector {
                 // scratch and convert lane-by-lane (zeroing lanes that fail
                 // the arc check).
                 #[cfg(target_arch = "aarch64")]
-                if std::env::var("KORNIA_FAST_NEON").map_or(true, |v| v != "0") {
+                if use_neon {
                     let scale = 1.0f32 / 255.0;
                     let mut scratch = [0u16; 16];
                     unsafe {
@@ -228,9 +242,37 @@ impl FastDetector {
                                 scratch.as_mut_ptr(),
                             );
                             let dst = row.as_mut_ptr().add(x);
-                            for i in 0..16 {
+                            for (i, &s) in scratch.iter().enumerate() {
                                 let score = if (mask >> i) & 1 != 0 {
-                                    scratch[i] as f32 * scale
+                                    s as f32 * scale
+                                } else {
+                                    0.0
+                                };
+                                *dst.add(i) = score;
+                            }
+                            x += 16;
+                        }
+                    }
+                }
+
+                #[cfg(target_arch = "x86_64")]
+                if use_avx2 {
+                    let scale = 1.0f32 / 255.0;
+                    let mut scratch = [0u16; 16];
+                    unsafe {
+                        while x + 16 <= row_end {
+                            let mask = fast_block_avx2_16(
+                                src_slice,
+                                row_base + x,
+                                &ring,
+                                threshold_u8,
+                                n as u8,
+                                scratch.as_mut_ptr(),
+                            );
+                            let dst = row.as_mut_ptr().add(x);
+                            for (i, &s) in scratch.iter().enumerate() {
+                                let score = if (mask >> i) & 1 != 0 {
+                                    s as f32 * scale
                                 } else {
                                     0.0
                                 };
@@ -473,13 +515,16 @@ fn fast_detect_rows_u8_impl<A: ImageAllocator>(
     #[cfg(target_arch = "aarch64")]
     let use_neon = std::env::var("KORNIA_FAST_NEON").map_or(true, |v| v != "0");
 
+    #[cfg(target_arch = "x86_64")]
+    let use_avx2 = crate::simd::cpu_features().has_avx2;
+
     // Dense-corner images at large resolutions emit so many candidates that
     // `Vec::push` / allocator pressure starts dominating the kernel wall
     // time. A cheap in-block 1D local-max filter (pays only when mask≠0)
     // cuts emission 2-3× on checker-like inputs. At smaller octaves
     // candidates are sparser and the filter's branch overhead outweighs
     // the savings, so we gate it on width.
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
     let use_inblock_filter = width >= 800;
 
     let row_cap = (col_end.saturating_sub(margin) / 6).max(64);
@@ -496,6 +541,45 @@ fn fast_detect_rows_u8_impl<A: ImageAllocator>(
             unsafe {
                 while x + 16 <= col_end {
                     let mut mask = fast_block_neon_16(
+                        src_slice,
+                        row_base + x,
+                        &ring,
+                        threshold_u8,
+                        n as u8,
+                        scratch.as_mut_ptr(),
+                    );
+                    if use_inblock_filter && mask != 0 {
+                        let mut filtered = 0u16;
+                        let mut m = mask;
+                        while m != 0 {
+                            let i = m.trailing_zeros() as usize;
+                            let s = scratch[i];
+                            let left = if i == 0 { 0 } else { scratch[i - 1] };
+                            let right = if i == 15 { 0 } else { scratch[i + 1] };
+                            if s > left && s > right {
+                                filtered |= 1 << i;
+                            }
+                            m &= m - 1;
+                        }
+                        mask = filtered;
+                    }
+                    while mask != 0 {
+                        let i = mask.trailing_zeros() as usize;
+                        local.push(([y, x + i], scratch[i] as f32 * scale));
+                        mask &= mask - 1;
+                    }
+                    x += 16;
+                }
+            }
+        }
+
+        #[cfg(target_arch = "x86_64")]
+        if use_avx2 {
+            let mut scratch = [0u16; 16];
+            let scale = 1.0f32 / 255.0;
+            unsafe {
+                while x + 16 <= col_end {
+                    let mut mask = fast_block_avx2_16(
                         src_slice,
                         row_base + x,
                         &ring,
@@ -599,14 +683,10 @@ fn fast_score_scalar(
     let c4 = unsafe { *src_slice.get_unchecked((src_ix as isize + ring[4]) as usize) };
     let c8 = unsafe { *src_slice.get_unchecked((src_ix as isize + ring[8]) as usize) };
     let c12 = unsafe { *src_slice.get_unchecked((src_ix as isize + ring[12]) as usize) };
-    let b_count = (c0 > upper) as u32
-        + (c4 > upper) as u32
-        + (c8 > upper) as u32
-        + (c12 > upper) as u32;
-    let d_count = (c0 < lower) as u32
-        + (c4 < lower) as u32
-        + (c8 < lower) as u32
-        + (c12 < lower) as u32;
+    let b_count =
+        (c0 > upper) as u32 + (c4 > upper) as u32 + (c8 > upper) as u32 + (c12 > upper) as u32;
+    let d_count =
+        (c0 < lower) as u32 + (c4 < lower) as u32 + (c8 < lower) as u32 + (c12 < lower) as u32;
     // An arc of length n on a 16-ring with 4-spaced cardinals contains at
     // least ⌊n/4⌋ cardinals. FAST-9 → 2, FAST-12 → 3.
     let min_card = (n as u32) / 4;
@@ -843,6 +923,133 @@ unsafe fn corner_score_9_neon(
     vmaxq_u8(dark_score, bright_score)
 }
 
+/// 16-lane parallel FAST-9 cornerScore on x86_64 AVX2. Direct mirror of
+/// [`corner_score_9_neon`] using `__m128i` (same 16 u8 lanes as NEON's
+/// `uint8x16_t`). Both `_mm_min_epu8` and `_mm_max_epu8` are SSE2 — present
+/// in any AVX2-capable CPU — and `_mm_subs_epu8` provides the saturating
+/// `center.saturating_sub(ring)` semantics.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+#[inline(always)]
+unsafe fn corner_score_9_avx2_16(
+    centers: std::arch::x86_64::__m128i,
+    ring_vals: &[std::arch::x86_64::__m128i; 16],
+) -> std::arch::x86_64::__m128i {
+    use std::arch::x86_64::*;
+    let mut dark = [_mm_setzero_si128(); 16];
+    let mut bright = [_mm_setzero_si128(); 16];
+    for k in 0..16 {
+        dark[k] = _mm_subs_epu8(centers, ring_vals[k]);
+        bright[k] = _mm_subs_epu8(ring_vals[k], centers);
+    }
+    let mut dark_score = _mm_setzero_si128();
+    let mut bright_score = _mm_setzero_si128();
+    let mut k = 0;
+    while k < 16 {
+        let mut core_d = dark[(k + 1) & 15];
+        let mut core_b = bright[(k + 1) & 15];
+        for i in 2..=8 {
+            core_d = _mm_min_epu8(core_d, dark[(k + i) & 15]);
+            core_b = _mm_min_epu8(core_b, bright[(k + i) & 15]);
+        }
+        let arc_k_d = _mm_min_epu8(core_d, dark[k & 15]);
+        let arc_k1_d = _mm_min_epu8(core_d, dark[(k + 9) & 15]);
+        dark_score = _mm_max_epu8(dark_score, _mm_max_epu8(arc_k_d, arc_k1_d));
+        let arc_k_b = _mm_min_epu8(core_b, bright[k & 15]);
+        let arc_k1_b = _mm_min_epu8(core_b, bright[(k + 9) & 15]);
+        bright_score = _mm_max_epu8(bright_score, _mm_max_epu8(arc_k_b, arc_k1_b));
+        k += 2;
+    }
+    _mm_max_epu8(dark_score, bright_score)
+}
+
+/// AVX2 mirror of [`fast_block_neon_16`]. Same 16-lane block kernel, same
+/// signature, same `(mask, scores[16])` output contract. Differences from
+/// NEON:
+///
+/// - Unsigned compares synthesised via `_mm_max_epu8` / `_mm_subs_epu8`
+///   tricks since AVX2 has only signed lane-compares.
+/// - Pass-mask extraction is one `_mm_movemask_epi8` instruction (NEON has
+///   no pmovmskb equivalent and uses the `vshrn_n_u16` substitute).
+/// - 16-lane block check uses `_mm_movemask_epi8(any_pass) == 0` rather
+///   than `vmaxvq_u8`.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn fast_block_avx2_16(
+    src_slice: &[u8],
+    center_ix: usize,
+    ring: &[isize; 16],
+    threshold_u8: u8,
+    n: u8,
+    out_ptr: *mut u16,
+) -> u16 {
+    use std::arch::x86_64::*;
+
+    let base = src_slice.as_ptr().add(center_ix);
+    let centers = _mm_loadu_si128(base as *const __m128i);
+    let threshold_v = _mm_set1_epi8(threshold_u8 as i8);
+    let zero = _mm_setzero_si128();
+
+    let upper = _mm_adds_epu8(centers, threshold_v);
+    let lower = _mm_subs_epu8(centers, threshold_v);
+
+    let c0 = _mm_loadu_si128(base.offset(ring[0]) as *const __m128i);
+    let c4 = _mm_loadu_si128(base.offset(ring[4]) as *const __m128i);
+    let c8 = _mm_loadu_si128(base.offset(ring[8]) as *const __m128i);
+    let c12 = _mm_loadu_si128(base.offset(ring[12]) as *const __m128i);
+
+    // Per-byte 0x01 if c > upper (unsigned). subs_epu8 returns 0 iff c<=upper,
+    // nonzero iff c>upper; cmpeq vs zero gives 0xFF iff c<=upper; andnot with
+    // a 0x01 broadcast flips that to 0x01 iff c>upper.
+    let one = _mm_set1_epi8(1);
+    let above_b0 = _mm_andnot_si128(_mm_cmpeq_epi8(_mm_subs_epu8(c0, upper), zero), one);
+    let above_b4 = _mm_andnot_si128(_mm_cmpeq_epi8(_mm_subs_epu8(c4, upper), zero), one);
+    let above_b8 = _mm_andnot_si128(_mm_cmpeq_epi8(_mm_subs_epu8(c8, upper), zero), one);
+    let above_b12 = _mm_andnot_si128(_mm_cmpeq_epi8(_mm_subs_epu8(c12, upper), zero), one);
+    let b_count = _mm_add_epi8(
+        _mm_add_epi8(above_b0, above_b4),
+        _mm_add_epi8(above_b8, above_b12),
+    );
+
+    let below_b0 = _mm_andnot_si128(_mm_cmpeq_epi8(_mm_subs_epu8(lower, c0), zero), one);
+    let below_b4 = _mm_andnot_si128(_mm_cmpeq_epi8(_mm_subs_epu8(lower, c4), zero), one);
+    let below_b8 = _mm_andnot_si128(_mm_cmpeq_epi8(_mm_subs_epu8(lower, c8), zero), one);
+    let below_b12 = _mm_andnot_si128(_mm_cmpeq_epi8(_mm_subs_epu8(lower, c12), zero), one);
+    let d_count = _mm_add_epi8(
+        _mm_add_epi8(below_b0, below_b4),
+        _mm_add_epi8(below_b8, below_b12),
+    );
+
+    // count >= min_card  ⇔  max_epu8(count, min_card) == count
+    let min_card_v = _mm_set1_epi8((n / 4) as i8);
+    let b_pass = _mm_cmpeq_epi8(_mm_max_epu8(b_count, min_card_v), b_count);
+    let d_pass = _mm_cmpeq_epi8(_mm_max_epu8(d_count, min_card_v), d_count);
+    let any_pass = _mm_or_si128(b_pass, d_pass);
+    if _mm_movemask_epi8(any_pass) == 0 {
+        return 0;
+    }
+
+    let mut ring_vals = [zero; 16];
+    for k in 0..16 {
+        ring_vals[k] = _mm_loadu_si128(base.offset(ring[k]) as *const __m128i);
+    }
+    let _ = (upper, lower, n);
+    let score_u8 = corner_score_9_avx2_16(centers, &ring_vals);
+
+    // pass = score > threshold (unsigned). subs_epu8 returns 0 iff score<=thr.
+    let s = _mm_subs_epu8(score_u8, threshold_v);
+    let pass_inv = _mm_cmpeq_epi8(s, zero); // 0xFF iff score<=thr
+    let pass = _mm_andnot_si128(pass_inv, _mm_set1_epi8(-1i8));
+
+    let score_lo = _mm_unpacklo_epi8(score_u8, zero);
+    let score_hi = _mm_unpackhi_epi8(score_u8, zero);
+
+    _mm_storeu_si128(out_ptr as *mut __m128i, score_lo);
+    _mm_storeu_si128(out_ptr.add(8) as *mut __m128i, score_hi);
+
+    _mm_movemask_epi8(pass) as u16
+}
+
 fn corner_fast_response(
     curr_pixel: f32,
     circle_intensities: &[f32; 16],
@@ -1045,7 +1252,10 @@ mod tests {
         use kornia_image::ImageSize;
 
         // Structured random image — more interesting than flat/noise.
-        let sz = ImageSize { width: 257, height: 131 };
+        let sz = ImageSize {
+            width: 257,
+            height: 131,
+        };
         let mut data = vec![0u8; sz.width * sz.height];
         for (i, p) in data.iter_mut().enumerate() {
             let y = i / sz.width;
@@ -1057,21 +1267,18 @@ mod tests {
 
         let mut det_neon = FastDetector::new(sz, 20.0 / 255.0, 9, 1)?;
         det_neon.compute_corner_response_u8(&img);
-        let neon_response: Vec<f32> =
-            det_neon.corner_response.as_slice().to_vec();
+        let neon_response: Vec<f32> = det_neon.corner_response.as_slice().to_vec();
 
         // Build a scalar-only reference by walking every pixel with the helper.
         const RP: [isize; 16] = [0, 1, 2, 3, 3, 3, 2, 1, 0, -1, -2, -3, -3, -3, -2, -1];
         const CP: [isize; 16] = [3, 3, 2, 1, 0, -1, -2, -3, -3, -3, -2, -1, 0, 1, 2, 3];
-        let ring: [isize; 16] =
-            std::array::from_fn(|k| RP[k] * sz.width as isize + CP[k]);
+        let ring: [isize; 16] = std::array::from_fn(|k| RP[k] * sz.width as isize + CP[k]);
         let mut scalar_response = vec![0f32; sz.width * sz.height];
         let threshold_u8: u8 = 20;
         for y in 3..sz.height - 3 {
             for x in 3..sz.width - 3 {
                 let ix = y * sz.width + x;
-                scalar_response[ix] =
-                    fast_score_scalar(img.as_slice(), ix, &ring, threshold_u8, 9);
+                scalar_response[ix] = fast_score_scalar(img.as_slice(), ix, &ring, threshold_u8, 9);
             }
         }
 

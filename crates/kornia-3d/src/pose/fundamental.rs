@@ -34,6 +34,8 @@
 //! - **Column-major storage**: the SVD null vector is in row-major order. When using
 //!   `from_cols`, consecutive 3 elements give columns, not rows — grouping wrong gives Fᵀ.
 
+#![allow(clippy::needless_range_loop)]
+
 use kornia_algebra::{linalg::svd::svd3_f64, Mat3F64, Vec2F64, Vec3F64};
 
 /// Error type for fundamental matrix estimation.
@@ -206,6 +208,13 @@ fn apply_reflector_col(col: &mut [f64], u: &[f64; 9], k: usize) {
             col[i] -= two_dot * u[i];
         }
     }
+    #[cfg(target_arch = "x86_64")]
+    {
+        if kornia_imgproc::simd::cpu_features().has_avx2 {
+            unsafe { apply_reflector_col_avx2(col, u, k) };
+            return;
+        }
+    }
     #[cfg(not(target_arch = "aarch64"))]
     {
         let mut dot = 0.0;
@@ -216,6 +225,50 @@ fn apply_reflector_col(col: &mut [f64], u: &[f64; 9], k: usize) {
         for i in k..9 {
             col[i] -= two_dot * u[i];
         }
+    }
+}
+
+/// AVX2 mirror of the `apply_reflector_col` NEON path. 4-lane f64 (`__m256d`)
+/// FMA covers the dot accumulator and the AXPY pass; 9-element vector means
+/// at most 2 vector iters + a 1-3 element scalar tail. Horizontal reduce
+/// uses the standard `extractf128 + addhi` chain (AVX2 has no
+/// `vaddvq_f64`-equivalent reduction primitive).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn apply_reflector_col_avx2(col: &mut [f64], u: &[f64; 9], k: usize) {
+    use std::arch::x86_64::*;
+    let u_ptr = u.as_ptr();
+    let c_ptr = col.as_mut_ptr();
+    let mut i = k;
+    let mut acc = _mm256_setzero_pd();
+    while i + 4 <= 9 {
+        let uv = _mm256_loadu_pd(u_ptr.add(i));
+        let cv = _mm256_loadu_pd(c_ptr.add(i));
+        acc = _mm256_fmadd_pd(uv, cv, acc);
+        i += 4;
+    }
+    let lo128 = _mm256_castpd256_pd128(acc);
+    let hi128 = _mm256_extractf128_pd::<1>(acc);
+    let sum2 = _mm_add_pd(lo128, hi128);
+    let sum2_hi = _mm_unpackhi_pd(sum2, sum2);
+    let mut dot = _mm_cvtsd_f64(_mm_add_sd(sum2, sum2_hi));
+    while i < 9 {
+        dot += u[i] * col[i];
+        i += 1;
+    }
+    let two_dot = 2.0 * dot;
+    let tdv = _mm256_set1_pd(two_dot);
+    let mut i = k;
+    while i + 4 <= 9 {
+        let uv = _mm256_loadu_pd(u_ptr.add(i));
+        let cv = _mm256_loadu_pd(c_ptr.add(i));
+        let new = _mm256_fnmadd_pd(tdv, uv, cv);
+        _mm256_storeu_pd(c_ptr.add(i), new);
+        i += 4;
+    }
+    while i < 9 {
+        col[i] -= two_dot * u[i];
+        i += 1;
     }
 }
 
@@ -837,7 +890,9 @@ mod tests {
         // Deterministic pseudo-noise from a linear congruential sequence.
         let mut seed = 12345u64;
         let mut next_noise = || {
-            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             ((seed >> 33) as f64 / (1u64 << 31) as f64 - 1.0) * 0.3
         };
         for p in x1.iter_mut().chain(x2.iter_mut()) {

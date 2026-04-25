@@ -379,7 +379,11 @@ fn retract(
     // b1 * δ1 + b2 * δ2 — glam supports Vec * scalar.
     let b1s = Vec3F64::new(b1.x * delta[3], b1.y * delta[3], b1.z * delta[3]);
     let b2s = Vec3F64::new(b2.x * delta[4], b2.y * delta[4], b2.z * delta[4]);
-    let t_raw = Vec3F64::new(t.x + b1s.x + b2s.x, t.y + b1s.y + b2s.y, t.z + b1s.z + b2s.z);
+    let t_raw = Vec3F64::new(
+        t.x + b1s.x + b2s.x,
+        t.y + b1s.y + b2s.y,
+        t.z + b1s.z + b2s.z,
+    );
     let t_new = t_raw.normalize();
     (r_new, t_new)
 }

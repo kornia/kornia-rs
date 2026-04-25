@@ -14,7 +14,7 @@ All three receive the same image bytes and the same threshold (u8 space,
 timing — if the counts diverge, the implementations are doing different work
 and the timings would be apples-to-oranges.
 
-Usage: `taskset -c 0-5 python kornia-py/bench_fast.py`
+Usage: `taskset -c 0-5 python kornia-py/benchmarks/bench_fast.py`
 """
 import sys
 import time

@@ -23,8 +23,8 @@ Intrinsics: EuRoC MH_01_easy cam0
     fx=458.654, fy=457.296, cx=367.215, cy=248.375
 
 Usage:
-    python kornia-py/bench_two_view_pose.py           # 50 timing iters, seed 42
-    N_ITERS=200 python kornia-py/bench_two_view_pose.py
+    python kornia-py/benchmarks/bench_two_view_pose.py           # 50 timing iters, seed 42
+    N_ITERS=200 python kornia-py/benchmarks/bench_two_view_pose.py
 """
 from __future__ import annotations
 

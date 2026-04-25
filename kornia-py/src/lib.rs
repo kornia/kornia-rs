@@ -400,7 +400,10 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Features submodule — feature detectors and descriptors.
     let features_mod = PyModule::new(py, "features")?;
     features_mod.add_class::<orb::PyOrbFeatures>()?;
-    features_mod.add_function(wrap_pyfunction!(orb::orb_detect_and_compute, &features_mod)?)?;
+    features_mod.add_function(wrap_pyfunction!(
+        orb::orb_detect_and_compute,
+        &features_mod
+    )?)?;
     features_mod.add_function(wrap_pyfunction!(orb::fast_detect, &features_mod)?)?;
     features_mod.add_function(wrap_pyfunction!(
         feature_match::match_descriptors_py,
@@ -426,7 +429,10 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     k3d_mod.add_class::<PyICPResult>()?;
     k3d_mod.add_class::<twoview::PyTwoViewPose>()?;
     k3d_mod.add_function(wrap_pyfunction!(twoview::two_view_estimate_py, &k3d_mod)?)?;
-    k3d_mod.add_function(wrap_pyfunction!(homography::ransac_homography_py, &k3d_mod)?)?;
+    k3d_mod.add_function(wrap_pyfunction!(
+        homography::ransac_homography_py,
+        &k3d_mod
+    )?)?;
     k3d_mod.add_function(wrap_pyfunction!(homography::find_homography_py, &k3d_mod)?)?;
     k3d_mod.add_function(wrap_pyfunction!(homography::find_fundamental_py, &k3d_mod)?)?;
     m.add_submodule(&k3d_mod)?;

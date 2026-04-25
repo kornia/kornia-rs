@@ -41,16 +41,13 @@ pub fn match_descriptors_py(
     let (m, n) = (s1[0], s2[0]);
 
     // Zero-copy reinterpret — the numpy buffer outlives this call.
-    let d1: &[[u8; 32]] = unsafe {
-        std::slice::from_raw_parts(descriptors1.data() as *const [u8; 32], m)
-    };
-    let d2: &[[u8; 32]] = unsafe {
-        std::slice::from_raw_parts(descriptors2.data() as *const [u8; 32], n)
-    };
+    let d1: &[[u8; 32]] =
+        unsafe { std::slice::from_raw_parts(descriptors1.data() as *const [u8; 32], m) };
+    let d2: &[[u8; 32]] =
+        unsafe { std::slice::from_raw_parts(descriptors2.data() as *const [u8; 32], n) };
 
-    let matches = py.detach(|| {
-        match_descriptors::<32>(d1, d2, max_distance, cross_check, max_ratio)
-    });
+    let matches =
+        py.detach(|| match_descriptors::<32>(d1, d2, max_distance, cross_check, max_ratio));
 
     let k = matches.len();
     let out = unsafe {

@@ -1,4 +1,8 @@
 /// Hamming distance between two fixed-size byte descriptors.
+///
+/// Specialized for `N=32` (ORB's 256-bit descriptor) on aarch64 (NEON) and
+/// x86_64 (AVX2). Falls back to scalar XOR+popcount for other widths or
+/// when the SIMD feature is unavailable.
 #[inline]
 pub fn hamming_distance<const N: usize>(a: &[u8; N], b: &[u8; N]) -> u32 {
     // NEON specialization for ORB's 32-byte descriptor: two `veorq_u8` +
@@ -17,10 +21,62 @@ pub fn hamming_distance<const N: usize>(a: &[u8; N], b: &[u8; N]) -> u32 {
             return (vaddvq_u8(p0) as u32) + (vaddvq_u8(p1) as u32);
         }
     }
+    // AVX2 specialization for 32-byte descriptors. AVX2 lacks per-byte popcount
+    // (that's AVX-512 VPOPCNTDQ), so we use Wojciech Mula's nibble-LUT trick:
+    // a 16-byte popcount table broadcast across both 128-bit halves, looked up
+    // via VPSHUFB on the low and high nibbles of each XOR byte. The two
+    // per-nibble popcounts sum into per-byte popcount, then `_mm256_sad_epu8`
+    // against zero collapses the 32 byte counts into 4 × 64-bit sums which we
+    // hsum scalar.
+    #[cfg(target_arch = "x86_64")]
+    if N == 32 {
+        let cpu = crate::simd::cpu_features();
+        if cpu.has_avx2 {
+            // SAFETY: AVX2 confirmed by the runtime probe above.
+            return unsafe { hamming32_avx2(a.as_ptr(), b.as_ptr()) };
+        }
+    }
     a.iter()
         .zip(b.iter())
         .map(|(&x, &y)| (x ^ y).count_ones())
         .sum()
+}
+
+/// AVX2 32-byte Hamming distance via VPSHUFB nibble-popcount + SAD reduction.
+///
+/// # Safety
+/// - Pointers must point to at least 32 valid bytes each.
+/// - Caller must ensure AVX2 is available.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn hamming32_avx2(a: *const u8, b: *const u8) -> u32 {
+    use std::arch::x86_64::*;
+    // 16-byte popcount LUT broadcast to both 128-bit halves of a YMM register.
+    // Index = a 4-bit nibble (0..15), value = its popcount.
+    let lut = _mm256_setr_epi8(
+        0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4, 0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3,
+        3, 4,
+    );
+    let low_mask = _mm256_set1_epi8(0x0f);
+
+    let va = _mm256_loadu_si256(a as *const __m256i);
+    let vb = _mm256_loadu_si256(b as *const __m256i);
+    let x = _mm256_xor_si256(va, vb);
+
+    let lo = _mm256_and_si256(x, low_mask);
+    let hi = _mm256_and_si256(_mm256_srli_epi16(x, 4), low_mask);
+    let pop_lo = _mm256_shuffle_epi8(lut, lo);
+    let pop_hi = _mm256_shuffle_epi8(lut, hi);
+    let pop = _mm256_add_epi8(pop_lo, pop_hi);
+
+    // SAD against zero -> 4 × u64, each = sum of 8 byte popcounts.
+    let sums = _mm256_sad_epu8(pop, _mm256_setzero_si256());
+    // Horizontal sum of the four 64-bit lanes.
+    let lo128 = _mm256_castsi256_si128(sums);
+    let hi128 = _mm256_extracti128_si256(sums, 1);
+    let s = _mm_add_epi64(lo128, hi128);
+    let s = _mm_add_epi64(s, _mm_unpackhi_epi64(s, s));
+    _mm_cvtsi128_si32(s) as u32
 }
 
 /// Match binary descriptors using brute-force Hamming distance.
@@ -266,10 +322,7 @@ pub fn match_orb_by_projection<const N: usize>(
         .enumerate()
         .map(|(i, d_pred)| {
             let pred_oct = predicted.octaves[i];
-            let scale = scale_factors
-                .get(pred_oct as usize)
-                .copied()
-                .unwrap_or(1.0);
+            let scale = scale_factors.get(pred_oct as usize).copied().unwrap_or(1.0);
             let radius = base_r * scale;
             let radius_sq = radius * radius;
             let [px, py] = predicted.keypoints_xy[i];
@@ -335,7 +388,11 @@ mod tests {
     #[test]
     fn by_projection_respects_radius_and_octave() {
         // Three predicted features at different octaves.
-        let d_pred = vec![desc_from_bit(0x01), desc_from_bit(0x02), desc_from_bit(0x04)];
+        let d_pred = vec![
+            desc_from_bit(0x01),
+            desc_from_bit(0x02),
+            desc_from_bit(0x04),
+        ];
         let pred_xy = vec![[100.0, 100.0], [50.0, 50.0], [200.0, 200.0]];
         let pred_oct = vec![0u8, 1, 2];
 

@@ -54,10 +54,25 @@ where
         ));
     }
 
-    #[cfg(target_arch = "aarch64")]
     {
         use std::any::TypeId;
         if C == 3 && TypeId::of::<T>() == TypeId::of::<u8>() {
+            // Pick the per-row kernel by architecture once; the rayon
+            // dispatcher below stays generic over the kernel choice.
+            #[cfg(target_arch = "aarch64")]
+            let kernel: fn(&[u8], &mut [u8], usize) = hflip_rgb_u8_neon;
+            #[cfg(target_arch = "x86_64")]
+            let kernel: fn(&[u8], &mut [u8], usize) = {
+                let cpu = crate::simd::cpu_features();
+                if cpu.has_avx2 {
+                    hflip_rgb_u8_avx2_dispatch
+                } else {
+                    hflip_rgb_u8_scalar
+                }
+            };
+            #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+            let kernel: fn(&[u8], &mut [u8], usize) = hflip_rgb_u8_scalar;
+
             let cols = src.cols();
             let row_bytes = cols * 3;
             // Safety: byte view of u8 C=3 data.
@@ -82,7 +97,7 @@ where
                         .chunks_exact_mut(row_bytes)
                         .zip(src_big.chunks_exact(row_bytes))
                         .for_each(|(dst_row, src_row)| {
-                            hflip_rgb_u8_neon(src_row, dst_row, cols);
+                            kernel(src_row, dst_row, cols);
                         });
                 });
             return Ok(());
@@ -109,6 +124,80 @@ where
         });
 
     Ok(())
+}
+
+/// Portable scalar RGB u8 horizontal flip — fallback when SIMD isn't available.
+#[allow(dead_code)]
+fn hflip_rgb_u8_scalar(src: &[u8], dst: &mut [u8], cols: usize) {
+    for x in 0..cols {
+        let s = x * 3;
+        let d = (cols - 1 - x) * 3;
+        dst[d] = src[s];
+        dst[d + 1] = src[s + 1];
+        dst[d + 2] = src[s + 2];
+    }
+}
+
+/// AVX2 wrapper that re-marks the body with `target_feature` so callers can
+/// take its address as a `fn` pointer (since `target_feature`-gated unsafe
+/// fns can't be coerced directly).
+#[cfg(target_arch = "x86_64")]
+fn hflip_rgb_u8_avx2_dispatch(src: &[u8], dst: &mut [u8], cols: usize) {
+    // SAFETY: caller path verified `cpu.has_avx2` before installing this fn ptr.
+    unsafe { hflip_rgb_u8_avx2(src, dst, cols) }
+}
+
+/// AVX2 RGB u8 horizontal flip. Processes 5 pixels (15 bytes) per iteration
+/// via SSSE3 `_mm_shuffle_epi8` with a constant lane-reverse mask, going
+/// right-to-left in src so each batch's lane-15 don't-care byte is overwritten
+/// by the next-lower batch (or the scalar tail). The leftmost batch needs
+/// safe 8+4+2+1 stores when `cols % 5 == 0` to avoid a one-byte OOB write.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn hflip_rgb_u8_avx2(src: &[u8], dst: &mut [u8], cols: usize) {
+    use std::arch::x86_64::*;
+    let sp = src.as_ptr();
+    let dp = dst.as_mut_ptr();
+
+    // Reverses 5 RGB pixels packed as 15 bytes within a 16-byte register.
+    let mask = _mm_setr_epi8(12, 13, 14, 9, 10, 11, 6, 7, 8, 3, 4, 5, 0, 1, 2, -1);
+    let bulk_start = cols % 5;
+
+    if cols >= 5 {
+        // Iterate src x = cols-5, cols-10, ..., bulk_start.
+        let mut x = cols - 5;
+        loop {
+            let v = _mm_loadu_si128(sp.add(x * 3) as *const __m128i);
+            let rev = _mm_shuffle_epi8(v, mask);
+            let dst_pix = cols - x - 5;
+            let dp0 = dp.add(dst_pix * 3);
+
+            // Only the leftmost iter (x == bulk_start) AND no scalar tail
+            // (bulk_start == 0) hits the buffer end. All other iters write
+            // 16 bytes safely — their lane-15 don't-care is overwritten.
+            if x == bulk_start && bulk_start == 0 {
+                *(dp0 as *mut u64) = _mm_cvtsi128_si64(rev) as u64;
+                *(dp0.add(8) as *mut u32) = _mm_extract_epi32::<2>(rev) as u32;
+                *(dp0.add(12) as *mut u16) = _mm_extract_epi16::<6>(rev) as u16;
+                *dp0.add(14) = _mm_extract_epi8::<14>(rev) as u8;
+                break;
+            }
+            _mm_storeu_si128(dp0 as *mut __m128i, rev);
+            if x == bulk_start {
+                break;
+            }
+            x -= 5;
+        }
+    }
+
+    // Scalar tail: leftmost (cols % 5) src pixels → rightmost dst pixels.
+    for x in 0..bulk_start {
+        let s = sp.add(x * 3);
+        let d = dp.add((cols - 1 - x) * 3);
+        *d = *s;
+        *d.add(1) = *s.add(1);
+        *d.add(2) = *s.add(2);
+    }
 }
 
 /// NEON RGB u8 horizontal flip. Reads 16 src pixels via vld3q_u8, reverses

@@ -10,9 +10,9 @@ against OpenCV 5.0.0-pre (via `opencv-python-rolling==5.0.0.20221015`, built
 from the opencv 5.x branch).
 
 Usage:
-    /tmp/cv413-venv/bin/python kornia-py/bench_opencv_two_view.py
-    /tmp/cv5-venv/bin/python  kornia-py/bench_opencv_two_view.py
-    N_ITERS=200 /tmp/cv5-venv/bin/python kornia-py/bench_opencv_two_view.py
+    /tmp/cv413-venv/bin/python kornia-py/benchmarks/bench_opencv_two_view.py
+    /tmp/cv5-venv/bin/python  kornia-py/benchmarks/bench_opencv_two_view.py
+    N_ITERS=200 /tmp/cv5-venv/bin/python kornia-py/benchmarks/bench_opencv_two_view.py
 """
 from __future__ import annotations
 

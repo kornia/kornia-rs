@@ -112,13 +112,19 @@ fn fused_row_rgb_u8_to_nchw_f32(
     // SAFETY: NEON is architectural on aarch64.
     unsafe {
         fused_row_neon(r0, r1, r_out, g_out, b_out, dst_w, params);
+        return;
     }
-    #[cfg(not(target_arch = "aarch64"))]
+    #[cfg(target_arch = "x86_64")]
+    if crate::simd::cpu_features().has_avx2 && crate::simd::cpu_features().has_fma {
+        unsafe { fused_row_avx2(r0, r1, r_out, g_out, b_out, dst_w, params) };
+        return;
+    }
+    #[allow(unreachable_code)]
     fused_row_scalar(r0, r1, r_out, g_out, b_out, dst_w, params);
 }
 
 /// Scalar reference: f32-precise (no u8 quantization between avg and normalize).
-#[cfg(not(target_arch = "aarch64"))]
+#[allow(dead_code)]
 #[inline]
 fn fused_row_scalar(
     r0: &[u8],
@@ -216,6 +222,198 @@ unsafe fn fused_row_neon(
     }
 
     // Scalar tail for the last (dst_w % 16) pixels.
+    let sr_s = params.scale[0] * 0.25;
+    let sg_s = params.scale[1] * 0.25;
+    let sb_s = params.scale[2] * 0.25;
+    let br_s = params.bias[0];
+    let bg_s = params.bias[1];
+    let bb_s = params.bias[2];
+    while x < dst_w {
+        let base0 = 2 * x * 3;
+        let base1 = base0 + 3;
+        let sum_r = *r0.get_unchecked(base0) as u32
+            + *r0.get_unchecked(base1) as u32
+            + *r1.get_unchecked(base0) as u32
+            + *r1.get_unchecked(base1) as u32;
+        let sum_g = *r0.get_unchecked(base0 + 1) as u32
+            + *r0.get_unchecked(base1 + 1) as u32
+            + *r1.get_unchecked(base0 + 1) as u32
+            + *r1.get_unchecked(base1 + 1) as u32;
+        let sum_b = *r0.get_unchecked(base0 + 2) as u32
+            + *r0.get_unchecked(base1 + 2) as u32
+            + *r1.get_unchecked(base0 + 2) as u32
+            + *r1.get_unchecked(base1 + 2) as u32;
+        *r_out.get_unchecked_mut(x) = (sum_r as f32) * sr_s + br_s;
+        *g_out.get_unchecked_mut(x) = (sum_g as f32) * sg_s + bg_s;
+        *b_out.get_unchecked_mut(x) = (sum_b as f32) * sb_s + bb_s;
+        x += 1;
+    }
+}
+
+// =============================================================================
+// AVX2/FMA port of the fused 2×2-downscale + normalize + HWC→CHW row.
+//
+// AVX2 lacks a 3-way deinterleave (no `vld3q_u8` equivalent), so we replace it
+// with 9× PSHUFB + 6× POR per 16-pixel chunk to extract R/G/B as separate u8x16
+// vectors. The downstream 2×2 sum + widen-to-f32 + FMA chain then mirrors NEON
+// one-for-one: `_mm_maddubs_epi16(x, set1_epi8(1))` replaces NEON's
+// `vpaddlq_u8` (pairwise widening add) — both produce 8 u16 from 16 u8.
+// =============================================================================
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+#[inline]
+unsafe fn vld3_u8_avx2_x86(
+    p: *const u8,
+) -> (
+    std::arch::x86_64::__m128i,
+    std::arch::x86_64::__m128i,
+    std::arch::x86_64::__m128i,
+) {
+    use std::arch::x86_64::*;
+    let s0 = _mm_loadu_si128(p as *const __m128i);
+    let s1 = _mm_loadu_si128(p.add(16) as *const __m128i);
+    let s2 = _mm_loadu_si128(p.add(32) as *const __m128i);
+
+    // R: s0 indices 0,3,6,9,12,15 → output 0..5; s1 indices 2,5,8,11,14 → 6..10;
+    //    s2 indices 1,4,7,10,13 → 11..15. (-1 lanes are zero-fill via PSHUFB.)
+    let m_r0 = _mm_setr_epi8(0, 3, 6, 9, 12, 15, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1);
+    let m_r1 = _mm_setr_epi8(-1, -1, -1, -1, -1, -1, 2, 5, 8, 11, 14, -1, -1, -1, -1, -1);
+    let m_r2 = _mm_setr_epi8(-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 1, 4, 7, 10, 13);
+    let m_g0 = _mm_setr_epi8(1, 4, 7, 10, 13, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1);
+    let m_g1 = _mm_setr_epi8(-1, -1, -1, -1, -1, 0, 3, 6, 9, 12, 15, -1, -1, -1, -1, -1);
+    let m_g2 = _mm_setr_epi8(-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 2, 5, 8, 11, 14);
+    let m_b0 = _mm_setr_epi8(2, 5, 8, 11, 14, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1);
+    let m_b1 = _mm_setr_epi8(-1, -1, -1, -1, -1, 1, 4, 7, 10, 13, -1, -1, -1, -1, -1, -1);
+    let m_b2 = _mm_setr_epi8(-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 0, 3, 6, 9, 12, 15);
+
+    let r = _mm_or_si128(
+        _mm_or_si128(_mm_shuffle_epi8(s0, m_r0), _mm_shuffle_epi8(s1, m_r1)),
+        _mm_shuffle_epi8(s2, m_r2),
+    );
+    let g = _mm_or_si128(
+        _mm_or_si128(_mm_shuffle_epi8(s0, m_g0), _mm_shuffle_epi8(s1, m_g1)),
+        _mm_shuffle_epi8(s2, m_g2),
+    );
+    let b = _mm_or_si128(
+        _mm_or_si128(_mm_shuffle_epi8(s0, m_b0), _mm_shuffle_epi8(s1, m_b1)),
+        _mm_shuffle_epi8(s2, m_b2),
+    );
+    (r, g, b)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn fused_row_avx2(
+    r0: &[u8],
+    r1: &[u8],
+    r_out: &mut [f32],
+    g_out: &mut [f32],
+    b_out: &mut [f32],
+    dst_w: usize,
+    params: &NormalizeParams<3>,
+) {
+    use std::arch::x86_64::*;
+
+    // Fold the 2×2 average's /4 into scale: hot loop is pure FMA, no requantize.
+    let sr = _mm_set1_ps(params.scale[0] * 0.25);
+    let sg = _mm_set1_ps(params.scale[1] * 0.25);
+    let sb = _mm_set1_ps(params.scale[2] * 0.25);
+    let br = _mm_set1_ps(params.bias[0]);
+    let bg = _mm_set1_ps(params.bias[1]);
+    let bb = _mm_set1_ps(params.bias[2]);
+    let zero = _mm_setzero_si128();
+    let one_epi8 = _mm_set1_epi8(1);
+
+    // Per-channel emitter for 16 dst pixels at a time. The 4 args are
+    // (a, b, c, d) = channel-deinterleaved u8x16 from row0-chunk0, row0-chunk1,
+    // row1-chunk0, row1-chunk1 respectively.
+    #[inline(always)]
+    unsafe fn emit_channel(
+        a: __m128i,
+        b: __m128i,
+        c: __m128i,
+        d: __m128i,
+        scale: __m128,
+        bias: __m128,
+        out: *mut f32,
+        zero: __m128i,
+        one_epi8: __m128i,
+    ) {
+        // Pairwise sum within each 16-byte chunk: maddubs(x, [1,1,1,...]) gives
+        // 8 i16 = (x[0]+x[1], x[2]+x[3], ..., x[14]+x[15]). Sum of 2 such is
+        // ≤ 1020 — fits easily in i16.
+        let pa = _mm_maddubs_epi16(a, one_epi8);
+        let pb = _mm_maddubs_epi16(b, one_epi8);
+        let pc = _mm_maddubs_epi16(c, one_epi8);
+        let pd = _mm_maddubs_epi16(d, one_epi8);
+        let lo = _mm_add_epi16(pa, pc); // 8 i16 = output px 0..7 sums
+        let hi = _mm_add_epi16(pb, pd); // 8 i16 = output px 8..15 sums
+
+        // Widen i16 → i32 (values are non-negative, unpack-with-zero is correct).
+        let i0 = _mm_unpacklo_epi16(lo, zero);
+        let i1 = _mm_unpackhi_epi16(lo, zero);
+        let i2 = _mm_unpacklo_epi16(hi, zero);
+        let i3 = _mm_unpackhi_epi16(hi, zero);
+        let f0 = _mm_cvtepi32_ps(i0);
+        let f1 = _mm_cvtepi32_ps(i1);
+        let f2 = _mm_cvtepi32_ps(i2);
+        let f3 = _mm_cvtepi32_ps(i3);
+        _mm_storeu_ps(out, _mm_fmadd_ps(f0, scale, bias));
+        _mm_storeu_ps(out.add(4), _mm_fmadd_ps(f1, scale, bias));
+        _mm_storeu_ps(out.add(8), _mm_fmadd_ps(f2, scale, bias));
+        _mm_storeu_ps(out.add(12), _mm_fmadd_ps(f3, scale, bias));
+    }
+
+    let bulk = dst_w & !15;
+    let mut x = 0usize;
+    while x < bulk {
+        // 16 dst px → 32 src px per row → 2× 48-byte chunks per row.
+        let src0 = r0.as_ptr().add(x * 2 * 3);
+        let src1 = r1.as_ptr().add(x * 2 * 3);
+        let (r_a, g_a, b_a) = vld3_u8_avx2_x86(src0);
+        let (r_b, g_b, b_b) = vld3_u8_avx2_x86(src0.add(48));
+        let (r_c, g_c, b_c) = vld3_u8_avx2_x86(src1);
+        let (r_d, g_d, b_d) = vld3_u8_avx2_x86(src1.add(48));
+
+        emit_channel(
+            r_a,
+            r_b,
+            r_c,
+            r_d,
+            sr,
+            br,
+            r_out.as_mut_ptr().add(x),
+            zero,
+            one_epi8,
+        );
+        emit_channel(
+            g_a,
+            g_b,
+            g_c,
+            g_d,
+            sg,
+            bg,
+            g_out.as_mut_ptr().add(x),
+            zero,
+            one_epi8,
+        );
+        emit_channel(
+            b_a,
+            b_b,
+            b_c,
+            b_d,
+            sb,
+            bb,
+            b_out.as_mut_ptr().add(x),
+            zero,
+            one_epi8,
+        );
+
+        x += 16;
+    }
+
+    // Scalar tail.
     let sr_s = params.scale[0] * 0.25;
     let sg_s = params.scale[1] * 0.25;
     let sb_s = params.scale[2] * 0.25;

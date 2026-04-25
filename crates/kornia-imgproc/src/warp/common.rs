@@ -106,6 +106,26 @@ pub(super) fn bilinear_sample_u8_valid<const C: usize>(
             return;
         }
     }
+    #[cfg(target_arch = "x86_64")]
+    {
+        if C == 3 && (xi < src_w - 2 || yi < src_h - 2) && crate::simd::cpu_features().has_avx2 {
+            // Safety: bounds checked above; caller guarantees xi, yi valid.
+            unsafe {
+                bilinear_sample_u8_valid_c3_avx2(
+                    src.as_ptr(),
+                    src_w,
+                    src_h,
+                    src_stride,
+                    xi,
+                    yi,
+                    fx_q10,
+                    fy_q10,
+                    dst_pixel.as_mut_ptr(),
+                );
+            }
+            return;
+        }
+    }
 
     let fx1 = 1024 - fx_q10;
     let fy1 = 1024 - fy_q10;
@@ -222,4 +242,78 @@ unsafe fn bilinear_sample_u8_valid_c3_neon(
     *dst_pixel.add(0) = vget_lane_u8::<0>(u8x8);
     *dst_pixel.add(1) = vget_lane_u8::<1>(u8x8);
     *dst_pixel.add(2) = vget_lane_u8::<2>(u8x8);
+}
+
+/// AVX2 u8 bilinear sampler, C=3 specialization.
+///
+/// Mirrors the NEON kernel above: 4 corners loaded as u32x4 (`__m128i` with
+/// 4 i32 lanes via `_mm_cvtepu8_epi32`), Q10 bilinear math via
+/// `_mm_mullo_epi32` + `_mm_add_epi32`, final right-shift by 20 and lane-wise
+/// byte stores. SSE4.1 ops are valid inside an AVX2-target_feature function.
+///
+/// # Safety
+/// Same preconditions as `bilinear_sample_u8_valid_c3_neon`.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+#[inline]
+#[allow(clippy::too_many_arguments)]
+unsafe fn bilinear_sample_u8_valid_c3_avx2(
+    src: *const u8,
+    src_w: i32,
+    src_h: i32,
+    src_stride: usize,
+    xi: i32,
+    yi: i32,
+    fx_q10: u32,
+    fy_q10: u32,
+    dst_pixel: *mut u8,
+) {
+    use std::arch::x86_64::*;
+
+    let xi1 = if xi + 1 < src_w {
+        (xi + 1) as usize
+    } else {
+        xi as usize
+    };
+    let yi1 = if yi + 1 < src_h {
+        (yi + 1) as usize
+    } else {
+        yi as usize
+    };
+
+    let row0 = (yi as usize) * src_stride;
+    let row1 = yi1 * src_stride;
+    let xoff0 = (xi as usize) * 3;
+    let xoff1 = xi1 * 3;
+
+    // Load 4 bytes per corner; widen u8→u32 (lane 3 garbage, ignored at end).
+    let load = |off: usize| -> __m128i {
+        let raw = core::ptr::read_unaligned(src.add(off) as *const i32);
+        _mm_cvtepu8_epi32(_mm_cvtsi32_si128(raw))
+    };
+
+    let p00 = load(row0 + xoff0);
+    let p01 = load(row0 + xoff1);
+    let p10 = load(row1 + xoff0);
+    let p11 = load(row1 + xoff1);
+
+    let fx_v = _mm_set1_epi32(fx_q10 as i32);
+    let fx1_v = _mm_set1_epi32((1024 - fx_q10) as i32);
+    let fy_v = _mm_set1_epi32(fy_q10 as i32);
+    let fy1_v = _mm_set1_epi32((1024 - fy_q10) as i32);
+
+    // Q10 bilinear: top = p00*(1024-fx) + p01*fx
+    //               bot = p10*(1024-fx) + p11*fx
+    //               sum = top*(1024-fy) + bot*fy + (1<<19)
+    //               out = sum >> 20
+    let top = _mm_add_epi32(_mm_mullo_epi32(p00, fx1_v), _mm_mullo_epi32(p01, fx_v));
+    let bot = _mm_add_epi32(_mm_mullo_epi32(p10, fx1_v), _mm_mullo_epi32(p11, fx_v));
+    let sum = _mm_add_epi32(_mm_mullo_epi32(top, fy1_v), _mm_mullo_epi32(bot, fy_v));
+    let sum = _mm_add_epi32(sum, _mm_set1_epi32(1 << 19));
+    let res = _mm_srli_epi32::<20>(sum);
+
+    // Extract bottom byte of each of the first 3 i32 lanes.
+    *dst_pixel.add(0) = _mm_extract_epi32::<0>(res) as u8;
+    *dst_pixel.add(1) = _mm_extract_epi32::<1>(res) as u8;
+    *dst_pixel.add(2) = _mm_extract_epi32::<2>(res) as u8;
 }

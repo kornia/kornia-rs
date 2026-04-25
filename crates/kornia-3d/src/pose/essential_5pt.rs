@@ -80,6 +80,8 @@
 //! - **Always prefer over 7-point** when you have calibrated intrinsics: K is
 //!   already known, so there's no reason to pay the extra F-space DOF.
 
+#![allow(clippy::needless_range_loop)]
+
 use kornia_algebra::{Mat3F64, Vec2F64, Vec3F64};
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -108,6 +110,13 @@ fn row20_add_assign(dst: &mut [f64; 20], src: &[f64; 20]) {
             k += 2;
         }
     }
+    #[cfg(target_arch = "x86_64")]
+    {
+        if kornia_imgproc::simd::cpu_features().has_avx2 {
+            unsafe { row20_add_assign_avx2(dst, src) };
+            return;
+        }
+    }
     #[cfg(not(target_arch = "aarch64"))]
     {
         for k in 0..20 {
@@ -130,6 +139,13 @@ fn row20_sub_assign(dst: &mut [f64; 20], src: &[f64; 20]) {
             let b = vld1q_f64(sp.add(k));
             vst1q_f64(dp.add(k), vsubq_f64(a, b));
             k += 2;
+        }
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        if kornia_imgproc::simd::cpu_features().has_avx2 {
+            unsafe { row20_sub_assign_avx2(dst, src) };
+            return;
         }
     }
     #[cfg(not(target_arch = "aarch64"))]
@@ -155,6 +171,13 @@ fn row20_scale(src: &[f64; 20], s: f64) -> [f64; 20] {
             let a = vld1q_f64(sp.add(k));
             vst1q_f64(op.add(k), vmulq_f64(a, ss));
             k += 2;
+        }
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        if kornia_imgproc::simd::cpu_features().has_avx2 {
+            unsafe { row20_scale_avx2(&mut out, src, s) };
+            return out;
         }
     }
     #[cfg(not(target_arch = "aarch64"))]
@@ -185,11 +208,84 @@ fn row20_fma_sub(dst: &mut [f64; 20], src: &[f64; 20], factor: f64) {
             k += 2;
         }
     }
+    #[cfg(target_arch = "x86_64")]
+    {
+        if kornia_imgproc::simd::cpu_features().has_avx2 {
+            unsafe { row20_fma_sub_avx2(dst, src, factor) };
+            return;
+        }
+    }
     #[cfg(not(target_arch = "aarch64"))]
     {
         for k in 0..20 {
             dst[k] -= factor * src[k];
         }
+    }
+}
+
+/// AVX2 row-20 helpers — 4-lane f64 (`__m256d`), 5 unrolled iterations cover
+/// the full 20 lanes (20 = 5 × 4). One factored helper per op so each
+/// dispatch site can return early on the AVX2 path; scalar fallback covers
+/// non-AVX2 x86_64.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn row20_add_assign_avx2(dst: &mut [f64; 20], src: &[f64; 20]) {
+    use std::arch::x86_64::*;
+    let dp = dst.as_mut_ptr();
+    let sp = src.as_ptr();
+    let mut k = 0usize;
+    while k < 20 {
+        let a = _mm256_loadu_pd(dp.add(k));
+        let b = _mm256_loadu_pd(sp.add(k));
+        _mm256_storeu_pd(dp.add(k), _mm256_add_pd(a, b));
+        k += 4;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn row20_sub_assign_avx2(dst: &mut [f64; 20], src: &[f64; 20]) {
+    use std::arch::x86_64::*;
+    let dp = dst.as_mut_ptr();
+    let sp = src.as_ptr();
+    let mut k = 0usize;
+    while k < 20 {
+        let a = _mm256_loadu_pd(dp.add(k));
+        let b = _mm256_loadu_pd(sp.add(k));
+        _mm256_storeu_pd(dp.add(k), _mm256_sub_pd(a, b));
+        k += 4;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn row20_scale_avx2(out: &mut [f64; 20], src: &[f64; 20], s: f64) {
+    use std::arch::x86_64::*;
+    let op = out.as_mut_ptr();
+    let sp = src.as_ptr();
+    let ss = _mm256_set1_pd(s);
+    let mut k = 0usize;
+    while k < 20 {
+        let a = _mm256_loadu_pd(sp.add(k));
+        _mm256_storeu_pd(op.add(k), _mm256_mul_pd(a, ss));
+        k += 4;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn row20_fma_sub_avx2(dst: &mut [f64; 20], src: &[f64; 20], factor: f64) {
+    use std::arch::x86_64::*;
+    let dp = dst.as_mut_ptr();
+    let sp = src.as_ptr();
+    let fv = _mm256_set1_pd(factor);
+    let mut k = 0usize;
+    while k < 20 {
+        let d = _mm256_loadu_pd(dp.add(k));
+        let s = _mm256_loadu_pd(sp.add(k));
+        // d - factor * s == fnmadd(factor, s, d)
+        _mm256_storeu_pd(dp.add(k), _mm256_fnmadd_pd(fv, s, d));
+        k += 4;
     }
 }
 
@@ -246,6 +342,13 @@ fn givens_row_pair_10(
             j += 1;
         }
     }
+    #[cfg(target_arch = "x86_64")]
+    {
+        if kornia_imgproc::simd::cpu_features().has_avx2 {
+            unsafe { givens_row_pair_10_avx2(top, bot, start, end, c, s) };
+            return;
+        }
+    }
     #[cfg(not(target_arch = "aarch64"))]
     {
         for j in start..end {
@@ -254,6 +357,47 @@ fn givens_row_pair_10(
             top[j] = c * x + s * y;
             bot[j] = -s * x + c * y;
         }
+    }
+}
+
+/// AVX2 mirror of the Givens row-pair update. 4-lane f64 batch + scalar
+/// tail. `_mm256_fmadd_pd(c, x, mul(s, y))` form covers the
+/// `c·x + s·y` step in one rounded operation; same shape as the NEON
+/// `vfmaq_f64(vmulq_f64(...), ..., ...)` chain.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn givens_row_pair_10_avx2(
+    top: &mut [f64],
+    bot: &mut [f64],
+    start: usize,
+    end: usize,
+    c: f64,
+    s: f64,
+) {
+    use std::arch::x86_64::*;
+    let tp = top.as_mut_ptr();
+    let bp = bot.as_mut_ptr();
+    let cv = _mm256_set1_pd(c);
+    let sv = _mm256_set1_pd(s);
+    let neg_sv = _mm256_set1_pd(-s);
+    let mut j = start;
+    while j + 4 <= end {
+        let x = _mm256_loadu_pd(tp.add(j));
+        let y = _mm256_loadu_pd(bp.add(j));
+        // new_x = c*x + s*y
+        let nx = _mm256_fmadd_pd(y, sv, _mm256_mul_pd(x, cv));
+        // new_y = -s*x + c*y
+        let ny = _mm256_fmadd_pd(x, neg_sv, _mm256_mul_pd(y, cv));
+        _mm256_storeu_pd(tp.add(j), nx);
+        _mm256_storeu_pd(bp.add(j), ny);
+        j += 4;
+    }
+    while j < end {
+        let x = *tp.add(j);
+        let y = *bp.add(j);
+        *tp.add(j) = c * x + s * y;
+        *bp.add(j) = -s * x + c * y;
+        j += 1;
     }
 }
 
@@ -319,9 +463,10 @@ impl Poly3D {
 
     #[inline(always)]
     fn scale(&self, s: f64) -> Poly3D {
-        Poly3D { c: row20_scale(&self.c, s) }
+        Poly3D {
+            c: row20_scale(&self.c, s),
+        }
     }
-
 
     /// Polynomial product, silently dropping terms of degree > 3.
     /// For Nistér's 10 constraints every intermediate product stays ≤ 3,
@@ -584,7 +729,8 @@ fn gauss_jordan_eliminate_deg3(m: &mut [[f64; 20]; 10]) -> bool {
 fn assemble_e(null_basis: &[[f64; 9]; 4], x: f64, y: f64, z: f64) -> Mat3F64 {
     let mut e = [0.0f64; 9];
     for k in 0..9 {
-        e[k] = x * null_basis[0][k] + y * null_basis[1][k] + z * null_basis[2][k] + null_basis[3][k];
+        e[k] =
+            x * null_basis[0][k] + y * null_basis[1][k] + z * null_basis[2][k] + null_basis[3][k];
     }
     vec9_to_mat3(&e)
 }
@@ -613,8 +759,8 @@ fn build_action_matrix(cm_reduced: &[[f64; 20]; 10]) -> [[f64; 10]; 10] {
     mz[1][6] = 1.0; // z · B[1] = z · x = xz = B[6]
     mz[2][8] = 1.0; // z · B[2] = z · y = yz = B[8]
     mz[3][9] = 1.0; // z · B[3] = z · z = z² = B[9]
-    // Rows 4..10: z · B[i] is a degree-3 monomial for i = 4..10; read the
-    // GJ-produced reduction to express it in the quotient basis.
+                    // Rows 4..10: z · B[i] is a degree-3 monomial for i = 4..10; read the
+                    // GJ-produced reduction to express it in the quotient basis.
     let reduction_row: [usize; 6] = [2, 4, 5, 7, 8, 9];
     for (k, &r) in reduction_row.iter().enumerate() {
         let row = 4 + k;
@@ -848,7 +994,7 @@ fn eigenvalues_10(a: &[[f64; 10]; 10]) -> [(f64, f64); 10] {
                 eigs[found] = e2;
                 found += 1;
             }
-            n = if n >= 2 { n - 2 } else { 0 };
+            n = n.saturating_sub(2);
         }
     }
 
@@ -1210,7 +1356,10 @@ mod tests {
 
         let mut cm = __test_build_constraint_matrix(&basis);
         let ok = __test_gauss_jordan_eliminate_deg3(&mut cm);
-        assert!(ok, "Gauss-Jordan should not fail on a non-degenerate sample");
+        assert!(
+            ok,
+            "Gauss-Jordan should not fail on a non-degenerate sample"
+        );
 
         for i in 0..10 {
             for j in 0..10 {

@@ -196,8 +196,8 @@ fn image_to_gray_u8(
             height: h,
         };
         let rgb_slice = unsafe { std::slice::from_raw_parts(arr.data(), h * w * 3) };
-        let rgb_img = Image::<u8, 3, _>::from_size_slice(size, rgb_slice, CpuAllocator)
-            .map_err(to_pyerr)?;
+        let rgb_img =
+            Image::<u8, 3, _>::from_size_slice(size, rgb_slice, CpuAllocator).map_err(to_pyerr)?;
         let mut gray = Image::from_size_val(size, 0u8, CpuAllocator).map_err(to_pyerr)?;
         py.detach(|| gray_from_rgb_u8(&rgb_img, &mut gray))
             .map_err(to_pyerr)?;

@@ -56,12 +56,14 @@
 //! cap on non-planar scenes), and the cheap-then-full cheirality vote that
 //! replaces 4 × N SVDs with 1 × M SVDs (M = winner inliers).
 
+#![allow(clippy::needless_range_loop)]
+
 use crate::pose::fundamental::{fundamental_8point, FundamentalError};
 use crate::pose::lm_pose::{refine_pose_lm, LmPoseConfig};
 use crate::pose::triangulation::{triangulate_inliers, TriangulateParams, TriangulationConfig};
 use crate::pose::{
-    decompose_essential, decompose_homography, enforce_essential_constraints,
-    essential_5pt, essential_from_fundamental, homography_4pt2d, homography_dlt, HomographyError,
+    decompose_essential, decompose_homography, enforce_essential_constraints, essential_5pt,
+    essential_from_fundamental, homography_4pt2d, homography_dlt, HomographyError,
 };
 use kornia_algebra::{Mat3F64, Vec2F64, Vec3F64};
 use rand::prelude::*;
@@ -328,7 +330,13 @@ fn lo_plus_fundamental(
                     *s = false;
                 }
                 let (vc, _) = score_inliers_f(
-                    &model, x1_x, x1_y, x2_x, x2_y, virt_t_sq, &mut scratch_inliers,
+                    &model,
+                    x1_x,
+                    x1_y,
+                    x2_x,
+                    x2_y,
+                    virt_t_sq,
+                    &mut scratch_inliers,
                 );
                 fit_mask.copy_from_slice(&scratch_inliers);
                 vc
@@ -341,7 +349,13 @@ fn lo_plus_fundamental(
                     *s = false;
                 }
                 let (vc, _) = score_inliers_f(
-                    &model, x1_x, x1_y, x2_x, x2_y, base_thresh_sq, &mut fit_mask,
+                    &model,
+                    x1_x,
+                    x1_y,
+                    x2_x,
+                    x2_y,
+                    base_thresh_sq,
+                    &mut fit_mask,
                 );
                 vc
             };
@@ -369,11 +383,15 @@ fn lo_plus_fundamental(
                 *s = false;
             }
             let (count_b, score_b) = score_inliers_f(
-                &f_refit, x1_x, x1_y, x2_x, x2_y, base_thresh_sq, &mut base_inliers,
+                &f_refit,
+                x1_x,
+                x1_y,
+                x2_x,
+                x2_y,
+                base_thresh_sq,
+                &mut base_inliers,
             );
-            if count_b > best_count
-                || (count_b == best_count && score_b < best_score)
-            {
+            if count_b > best_count || (count_b == best_count && score_b < best_score) {
                 model = f_refit;
                 std::mem::swap(&mut best_inliers, &mut base_inliers);
                 best_count = count_b;
@@ -479,7 +497,13 @@ fn degensac_recover_fundamental(
             *s = false;
         }
         let (cnt, _) = score_inliers_h(
-            &h, &inl_x1_x, &inl_x1_y, &inl_x2_x, &inl_x2_y, base_thresh_sq, &mut h_inl,
+            &h,
+            &inl_x1_x,
+            &inl_x1_y,
+            &inl_x2_x,
+            &inl_x2_y,
+            base_thresh_sq,
+            &mut h_inl,
         );
         if cnt > best_h_count {
             best_h_count = cnt;
@@ -549,9 +573,8 @@ fn degensac_recover_fundamental(
             for s in new_inl.iter_mut() {
                 *s = false;
             }
-            let (cnt, scr) = score_inliers_f(
-                &f_new, x1_x, x1_y, x2_x, x2_y, base_thresh_sq, &mut new_inl,
-            );
+            let (cnt, scr) =
+                score_inliers_f(&f_new, x1_x, x1_y, x2_x, x2_y, base_thresh_sq, &mut new_inl);
             if cnt > best.2 || (cnt == best.2 && scr < best.3) {
                 best = (f_new, new_inl.clone(), cnt, scr);
             }
@@ -676,7 +699,13 @@ pub fn ransac_fundamental(
             *s = false;
         }
         let (count, score) = score_inliers_f(
-            &f, &x1_x, &x1_y, &x2_x, &x2_y, thresh_sq, &mut scratch_inliers,
+            &f,
+            &x1_x,
+            &x1_y,
+            &x2_x,
+            &x2_y,
+            thresh_sq,
+            &mut scratch_inliers,
         );
 
         let improved = count > best_count || (count == best_count && score < best_score);
@@ -707,18 +736,25 @@ pub fn ransac_fundamental(
 
     let (model, best_inliers, best_count, best_score) = if params.refit {
         let polished = lo_plus_fundamental(
-            x1, x2, &x1_x, &x1_y, &x2_x, &x2_y,
-            params.threshold, thresh_sq,
-            model_in, best_inliers, best_count, best_score,
+            x1,
+            x2,
+            &x1_x,
+            &x1_y,
+            &x2_x,
+            &x2_y,
+            params.threshold,
+            thresh_sq,
+            model_in,
+            best_inliers,
+            best_count,
+            best_score,
         );
         // DEGENSAC safety net: if the LO+ winner sits on a dominant-plane local
         // optimum (Chum'04), recover the true F via [e']× H. No-op when the
         // scene is non-planar (the strict-improve gate guarantees we never
         // regress from the polished F).
         degensac_recover_fundamental(
-            &x1_x, &x1_y, &x2_x, &x2_y,
-            thresh_sq,
-            polished.0, polished.1, polished.2, polished.3,
+            &x1_x, &x1_y, &x2_x, &x2_y, thresh_sq, polished.0, polished.1, polished.2, polished.3,
             &mut rng,
         )
     } else {
@@ -954,7 +990,13 @@ pub fn ransac_homography(
             *s = false;
         }
         let (count, score) = score_inliers_h(
-            &h, &x1_x, &x1_y, &x2_x, &x2_y, thresh_sq, &mut scratch_inliers,
+            &h,
+            &x1_x,
+            &x1_y,
+            &x2_x,
+            &x2_y,
+            thresh_sq,
+            &mut scratch_inliers,
         );
 
         let improved = count > best_count || (count == best_count && score < best_score);
@@ -1081,13 +1123,23 @@ pub fn two_view_estimate(
                 // constraints exactly (algebraic by construction). Skip
                 // enforce_essential_constraints to avoid an unnecessary SVD
                 // round-trip that can only add noise.
-                Ok((res_e.inliers, res_e.inlier_count, TwoViewModel::Essential(e), e))
+                Ok((
+                    res_e.inliers,
+                    res_e.inlier_count,
+                    TwoViewModel::Essential(e),
+                    e,
+                ))
             } else {
                 let res_f = ransac_fundamental(x1, x2, &config.ransac_f)?;
                 let f = res_f.model;
                 let e_raw = essential_from_fundamental(&f, k1, k2);
                 let e = enforce_essential_constraints(&e_raw);
-                Ok((res_f.inliers, res_f.inlier_count, TwoViewModel::Fundamental(f), e))
+                Ok((
+                    res_f.inliers,
+                    res_f.inlier_count,
+                    TwoViewModel::Fundamental(f),
+                    e,
+                ))
             }
         },
         || ransac_homography(x1, x2, &config.ransac_h),
@@ -1146,14 +1198,7 @@ pub fn two_view_estimate(
     // would bias the ratio: cheap ≥ SVD systematically on degenerate parallax.
     let mut best_idx = None;
     for (idx, (r, t)) in poses.iter().enumerate() {
-        let count = count_cheirality_fast(
-            &rays1,
-            &rays2_cam2,
-            &inliers,
-            r,
-            t,
-            min_parallax_sin2,
-        );
+        let count = count_cheirality_fast(&rays1, &rays2_cam2, &inliers, r, t, min_parallax_sin2);
         if count >= config.triangulation.min_cheirality_count && count > best_count {
             second_count = best_count;
             best_count = count;
@@ -1226,15 +1271,16 @@ pub fn two_view_estimate(
         }
         if x1_inl.len() >= 6 {
             // Pass 1: full inlier set, full LM iteration budget.
-            let (mut r_cur, mut t_cur) =
-                refine_pose_lm(r, t, &x1_inl, &x2_inl, k1, k2, &config.lm);
+            let (mut r_cur, mut t_cur) = refine_pose_lm(r, t, &x1_inl, &x2_inl, k1, k2, &config.lm);
 
             // Annealed passes — only run on the F path; the H path's inlier
             // set is in pixel-reproj space and uses different thresholds.
             // Skip when the model isn't epipolar (homography winners stay at
             // pass 1).
-            let do_anneal = matches!(model, TwoViewModel::Fundamental(_) | TwoViewModel::Essential(_))
-                && !config.lm_anneal_thresholds.is_empty();
+            let do_anneal = matches!(
+                model,
+                TwoViewModel::Fundamental(_) | TwoViewModel::Essential(_)
+            ) && !config.lm_anneal_thresholds.is_empty();
             if do_anneal {
                 // Tighter passes can converge in fewer iterations since the
                 // starting point is already near-optimal. Halve the budget.
@@ -1263,7 +1309,13 @@ pub fn two_view_estimate(
                         *s = false;
                     }
                     let (n_tight, _) = score_inliers_f(
-                        &f_cur, &x1i_x, &x1i_y, &x2i_x, &x2i_y, tight_t_sq, &mut tight_mask,
+                        &f_cur,
+                        &x1i_x,
+                        &x1i_y,
+                        &x2i_x,
+                        &x2i_y,
+                        tight_t_sq,
+                        &mut tight_mask,
                     );
                     if n_tight < config.lm_anneal_min_inliers {
                         // Tightened set too small — further annealing would
@@ -1278,9 +1330,8 @@ pub fn two_view_estimate(
                             x2_tight.push(x2_inl[k]);
                         }
                     }
-                    let (r_new, t_new) = refine_pose_lm(
-                        r_cur, t_cur, &x1_tight, &x2_tight, k1, k2, &tight_cfg,
-                    );
+                    let (r_new, t_new) =
+                        refine_pose_lm(r_cur, t_cur, &x1_tight, &x2_tight, k1, k2, &tight_cfg);
                     r_cur = r_new;
                     t_cur = t_new;
                 }
@@ -1390,7 +1441,7 @@ fn score_inliers_h(
 
     let mut count = 0usize;
     let mut score = 0.0f64;
-    #[cfg(not(target_arch = "aarch64"))]
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
     let mut idx = 0usize;
 
     #[cfg(target_arch = "aarch64")]
@@ -1406,6 +1457,25 @@ fn score_inliers_h(
             &mut count,
             &mut score,
         )
+    };
+
+    #[cfg(target_arch = "x86_64")]
+    let mut idx = if kornia_imgproc::simd::cpu_features().has_avx2 {
+        unsafe {
+            score_inliers_h_avx2(
+                (a, b, c, d, e, f, g, hh, ii),
+                x1_x,
+                x1_y,
+                x2_x,
+                x2_y,
+                thresh_sq,
+                inliers,
+                &mut count,
+                &mut score,
+            )
+        }
+    } else {
+        0usize
     };
 
     // Scalar tail (and full fallback on non-aarch64).
@@ -1433,6 +1503,7 @@ fn score_inliers_h(
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 #[inline]
+#[allow(clippy::too_many_arguments)]
 unsafe fn score_inliers_h_neon(
     coeffs: (f64, f64, f64, f64, f64, f64, f64, f64, f64),
     x1_x: &[f64],
@@ -1487,6 +1558,67 @@ unsafe fn score_inliers_h_neon(
     idx
 }
 
+/// AVX2 mirror of [`score_inliers_h_neon`]. Same H-reprojection math, but
+/// 4-lane f64 (`__m256d`) — twice NEON's 2-lane width, halving inner-loop
+/// iteration count. `_mm256_fmadd_pd` covers `vfmaq_f64` exactly; the
+/// per-lane scalar commit is unchanged because count++/score+= are
+/// data-dependent regardless of vector width.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+#[inline]
+#[allow(clippy::too_many_arguments)]
+unsafe fn score_inliers_h_avx2(
+    coeffs: (f64, f64, f64, f64, f64, f64, f64, f64, f64),
+    x1_x: &[f64],
+    x1_y: &[f64],
+    x2_x: &[f64],
+    x2_y: &[f64],
+    thresh_sq: f64,
+    inliers: &mut [bool],
+    count: &mut usize,
+    score: &mut f64,
+) -> usize {
+    use std::arch::x86_64::*;
+    let (a, b, c, d, e, f, g, hh, ii) = coeffs;
+    let a_v = _mm256_set1_pd(a);
+    let b_v = _mm256_set1_pd(b);
+    let c_v = _mm256_set1_pd(c);
+    let d_v = _mm256_set1_pd(d);
+    let e_v = _mm256_set1_pd(e);
+    let f_v = _mm256_set1_pd(f);
+    let g_v = _mm256_set1_pd(g);
+    let h_v = _mm256_set1_pd(hh);
+    let i_v = _mm256_set1_pd(ii);
+    let n = x1_x.len();
+    let mut idx = 0usize;
+    while idx + 4 <= n {
+        let x1 = _mm256_loadu_pd(x1_x.as_ptr().add(idx));
+        let y1 = _mm256_loadu_pd(x1_y.as_ptr().add(idx));
+        let x2 = _mm256_loadu_pd(x2_x.as_ptr().add(idx));
+        let y2 = _mm256_loadu_pd(x2_y.as_ptr().add(idx));
+        let hx = _mm256_fmadd_pd(y1, b_v, _mm256_fmadd_pd(x1, a_v, c_v));
+        let hy = _mm256_fmadd_pd(y1, e_v, _mm256_fmadd_pd(x1, d_v, f_v));
+        let hw = _mm256_fmadd_pd(y1, h_v, _mm256_fmadd_pd(x1, g_v, i_v));
+        let u = _mm256_div_pd(hx, hw);
+        let v = _mm256_div_pd(hy, hw);
+        let dx = _mm256_sub_pd(u, x2);
+        let dy = _mm256_sub_pd(v, y2);
+        let sq = _mm256_fmadd_pd(dy, dy, _mm256_mul_pd(dx, dx));
+        let mut buf = [0.0f64; 4];
+        _mm256_storeu_pd(buf.as_mut_ptr(), sq);
+        for k in 0..4 {
+            let dd = buf[k];
+            if dd.is_finite() && dd <= thresh_sq {
+                *inliers.get_unchecked_mut(idx + k) = true;
+                *count += 1;
+                *score += dd;
+            }
+        }
+        idx += 4;
+    }
+    idx
+}
+
 /// Batched Sampson scorer for F. N correspondences × 1 model. Same structure
 /// as `score_inliers_h` — 2-lane f64 NEON FMA path on aarch64, scalar tail.
 /// Equivalent to calling `sampson_distance` per-point then thresholding.
@@ -1514,7 +1646,7 @@ fn score_inliers_f(
 
     let mut count = 0usize;
     let mut score = 0.0f64;
-    #[cfg(not(target_arch = "aarch64"))]
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
     let mut idx = 0usize;
 
     #[cfg(target_arch = "aarch64")]
@@ -1530,6 +1662,25 @@ fn score_inliers_f(
             &mut count,
             &mut score,
         )
+    };
+
+    #[cfg(target_arch = "x86_64")]
+    let mut idx = if kornia_imgproc::simd::cpu_features().has_avx2 {
+        unsafe {
+            score_inliers_f_avx2(
+                (f00, f01, f02, f10, f11, f12, f20, f21, f22),
+                x1_x,
+                x1_y,
+                x2_x,
+                x2_y,
+                thresh_sq,
+                inliers,
+                &mut count,
+                &mut score,
+            )
+        }
+    } else {
+        0usize
     };
 
     while idx < n {
@@ -1602,18 +1753,10 @@ unsafe fn score_inliers_f_neon(
         let ftx2y = vfmaq_f64(vfmaq_f64(f21v, x2, f01v), y2, f11v);
 
         // err = [x2; y2; 1] · fx1
-        let err = vfmaq_f64(
-            vfmaq_f64(fx1z, x2, fx1x),
-            y2,
-            fx1y,
-        );
+        let err = vfmaq_f64(vfmaq_f64(fx1z, x2, fx1x), y2, fx1y);
         // denom = fx1x² + fx1y² + ftx2x² + ftx2y²
         let denom = vfmaq_f64(
-            vfmaq_f64(
-                vfmaq_f64(vmulq_f64(fx1x, fx1x), fx1y, fx1y),
-                ftx2x,
-                ftx2x,
-            ),
+            vfmaq_f64(vfmaq_f64(vmulq_f64(fx1x, fx1x), fx1y, fx1y), ftx2x, ftx2x),
             ftx2y,
             ftx2y,
         );
@@ -1636,6 +1779,83 @@ unsafe fn score_inliers_f_neon(
             }
         }
         idx += 2;
+    }
+    idx
+}
+
+/// AVX2 mirror of [`score_inliers_f_neon`]. Same F Sampson math at 4-lane
+/// f64 (`__m256d`). The branchless `denom > 1e-12` masked select uses
+/// `_mm256_blendv_pd`, whose argument order is the inverse of NEON's
+/// `vbslq_f64` (blendv is `(false, true, mask)`).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+#[inline]
+#[allow(clippy::too_many_arguments)]
+unsafe fn score_inliers_f_avx2(
+    f: (f64, f64, f64, f64, f64, f64, f64, f64, f64),
+    x1_x: &[f64],
+    x1_y: &[f64],
+    x2_x: &[f64],
+    x2_y: &[f64],
+    thresh_sq: f64,
+    inliers: &mut [bool],
+    count: &mut usize,
+    score: &mut f64,
+) -> usize {
+    use std::arch::x86_64::*;
+    let (f00, f01, f02, f10, f11, f12, f20, f21, f22) = f;
+    let f00v = _mm256_set1_pd(f00);
+    let f01v = _mm256_set1_pd(f01);
+    let f02v = _mm256_set1_pd(f02);
+    let f10v = _mm256_set1_pd(f10);
+    let f11v = _mm256_set1_pd(f11);
+    let f12v = _mm256_set1_pd(f12);
+    let f20v = _mm256_set1_pd(f20);
+    let f21v = _mm256_set1_pd(f21);
+    let f22v = _mm256_set1_pd(f22);
+    let one_v = _mm256_set1_pd(1.0);
+    let eps_v = _mm256_set1_pd(1e-12);
+    let n = x1_x.len();
+    let mut idx = 0usize;
+    while idx + 4 <= n {
+        let x1 = _mm256_loadu_pd(x1_x.as_ptr().add(idx));
+        let y1 = _mm256_loadu_pd(x1_y.as_ptr().add(idx));
+        let x2 = _mm256_loadu_pd(x2_x.as_ptr().add(idx));
+        let y2 = _mm256_loadu_pd(x2_y.as_ptr().add(idx));
+
+        let fx1x = _mm256_fmadd_pd(y1, f01v, _mm256_fmadd_pd(x1, f00v, f02v));
+        let fx1y = _mm256_fmadd_pd(y1, f11v, _mm256_fmadd_pd(x1, f10v, f12v));
+        let fx1z = _mm256_fmadd_pd(y1, f21v, _mm256_fmadd_pd(x1, f20v, f22v));
+        let ftx2x = _mm256_fmadd_pd(y2, f10v, _mm256_fmadd_pd(x2, f00v, f20v));
+        let ftx2y = _mm256_fmadd_pd(y2, f11v, _mm256_fmadd_pd(x2, f01v, f21v));
+
+        let err = _mm256_fmadd_pd(y2, fx1y, _mm256_fmadd_pd(x2, fx1x, fx1z));
+        let denom = _mm256_fmadd_pd(
+            ftx2y,
+            ftx2y,
+            _mm256_fmadd_pd(
+                ftx2x,
+                ftx2x,
+                _mm256_fmadd_pd(fx1y, fx1y, _mm256_mul_pd(fx1x, fx1x)),
+            ),
+        );
+        let err_sq = _mm256_mul_pd(err, err);
+        let denom_ok = _mm256_cmp_pd::<_CMP_GT_OQ>(denom, eps_v);
+        let safe_denom = _mm256_blendv_pd(one_v, denom, denom_ok);
+        let div_val = _mm256_div_pd(err_sq, safe_denom);
+        let dd = _mm256_blendv_pd(err_sq, div_val, denom_ok);
+
+        let mut buf = [0.0f64; 4];
+        _mm256_storeu_pd(buf.as_mut_ptr(), dd);
+        for k in 0..4 {
+            let dd_k = buf[k];
+            if dd_k.is_finite() && dd_k <= thresh_sq {
+                *inliers.get_unchecked_mut(idx + k) = true;
+                *count += 1;
+                *score += dd_k;
+            }
+        }
+        idx += 4;
     }
     idx
 }
@@ -1719,7 +1939,9 @@ mod tests {
         // without pulling in extra dependencies.
         let mut lcg: u64 = 12345678901234567;
         let lcg_next = |state: &mut u64| -> f64 {
-            *state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            *state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             // map high 32 bits to [0, 1)
             (*state >> 32) as f64 / 4294967296.0
         };
@@ -1764,7 +1986,10 @@ mod tests {
             random_seed: Some(42),
             refit: false,
         };
-        let refit_params = RansacParams { refit: true, ..base_params };
+        let refit_params = RansacParams {
+            refit: true,
+            ..base_params
+        };
 
         let res_base = ransac_fundamental(&x1, &x2, &base_params).unwrap();
         let res_refit = ransac_fundamental(&x1, &x2, &refit_params).unwrap();
@@ -1785,11 +2010,12 @@ mod tests {
         // Refit must not regress: at least as many inliers, and if equal then
         // a lower or equal Sampson score.
         assert!(
-            res_refit.inlier_count >= res_base.inlier_count
-                || score_refit <= score_base,
+            res_refit.inlier_count >= res_base.inlier_count || score_refit <= score_base,
             "refit regressed: base inliers={} score={:.4}, refit inliers={} score={:.4}",
-            res_base.inlier_count, score_base,
-            res_refit.inlier_count, score_refit,
+            res_base.inlier_count,
+            score_base,
+            res_refit.inlier_count,
+            score_refit,
         );
     }
 
@@ -1947,7 +2173,12 @@ mod tests {
         assert!(!sample_is_degenerate(&quad));
 
         // Points from the `_make_known_homography_pair` region in the Python tests.
-        let normal = [[120.0, 180.0], [340.0, 150.0], [280.0, 420.0], [410.0, 370.0]];
+        let normal = [
+            [120.0, 180.0],
+            [340.0, 150.0],
+            [280.0, 420.0],
+            [410.0, 370.0],
+        ];
         assert!(!sample_is_degenerate(&normal));
     }
 
@@ -1987,9 +2218,7 @@ mod tests {
         let (x1_x, x1_y) = split_xy(&x1);
         let (x2_x, x2_y) = split_xy(&x2);
         let mut inl = vec![false; x1.len()];
-        let (count, score) = score_inliers_h(
-            &h, &x1_x, &x1_y, &x2_x, &x2_y, thresh_sq, &mut inl,
-        );
+        let (count, score) = score_inliers_h(&h, &x1_x, &x1_y, &x2_x, &x2_y, thresh_sq, &mut inl);
 
         assert_eq!(count, count_ref);
         assert_eq!(inl, inl_ref);
@@ -2035,9 +2264,8 @@ mod tests {
         let (x1_x, x1_y) = split_xy(&x1);
         let (x2_x, x2_y) = split_xy(&x2);
         let mut inl = vec![false; x1.len()];
-        let (count, score) = score_inliers_f(
-            &f_mat, &x1_x, &x1_y, &x2_x, &x2_y, thresh_sq, &mut inl,
-        );
+        let (count, score) =
+            score_inliers_f(&f_mat, &x1_x, &x1_y, &x2_x, &x2_y, thresh_sq, &mut inl);
 
         assert_eq!(count, count_ref);
         assert_eq!(inl, inl_ref);
@@ -2351,8 +2579,14 @@ mod tests {
             x2.push(Vec2F64::new(u2, v2));
         }
         for _ in 0..20 {
-            x1.push(Vec2F64::new(lcg_next(&mut lcg) * 640.0, lcg_next(&mut lcg) * 480.0));
-            x2.push(Vec2F64::new(lcg_next(&mut lcg) * 640.0, lcg_next(&mut lcg) * 480.0));
+            x1.push(Vec2F64::new(
+                lcg_next(&mut lcg) * 640.0,
+                lcg_next(&mut lcg) * 480.0,
+            ));
+            x2.push(Vec2F64::new(
+                lcg_next(&mut lcg) * 640.0,
+                lcg_next(&mut lcg) * 480.0,
+            ));
         }
 
         let config = TwoViewConfig {
@@ -2768,14 +3002,8 @@ mod tests {
         let (r_out, t_out) = refine_pose_lm(r_gt, t_gt, &x1, &x2, &k, &k, &cfg);
         let r_err = rot_err_deg(&r_out, &r_gt);
         let t_err = t_err_deg(&t_out, &t_gt);
-        assert!(
-            r_err < 1e-4,
-            "LM drifted from optimal R: err={r_err:.6}°"
-        );
-        assert!(
-            t_err < 1e-4,
-            "LM drifted from optimal t: err={t_err:.6}°"
-        );
+        assert!(r_err < 1e-4, "LM drifted from optimal R: err={r_err:.6}°");
+        assert!(t_err < 1e-4, "LM drifted from optimal t: err={t_err:.6}°");
     }
 
     /// Helper to build a minimal TwoViewResult with given inlier_indices.

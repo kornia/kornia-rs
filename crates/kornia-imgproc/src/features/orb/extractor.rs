@@ -524,8 +524,7 @@ impl OrbDetector {
         if kp_with_resp.is_empty() {
             return Ok((Vec::new(), Vec::new(), Vec::new(), Vec::new()));
         }
-        let (keypoints, responses): (Vec<[usize; 2]>, Vec<f32>) =
-            kp_with_resp.into_iter().unzip();
+        let (keypoints, responses): (Vec<[usize; 2]>, Vec<f32>) = kp_with_resp.into_iter().unzip();
 
         let mut candidates: Vec<OrbCandidate> = keypoints
             .iter()
@@ -555,8 +554,7 @@ impl OrbDetector {
         let min_y = 19 - 3;
         let max_x = image_f32_size.width as i32 - 19 + 3;
         let max_y = image_f32_size.height as i32 - 19 + 3;
-        let distributed =
-            distribute_octree(&candidates, min_x, max_x, min_y, max_y, target);
+        let distributed = distribute_octree(&candidates, min_x, max_x, min_y, max_y, target);
         let t_after_octree = std::time::Instant::now();
 
         let survivor_positions: Vec<[usize; 2]> =
@@ -735,7 +733,12 @@ impl OrbDetector {
         let inv_scale = 1.0 / scale;
         let kps_local: Vec<(i32, i32)> = kps_full
             .iter()
-            .map(|&(r, c)| ((r * inv_scale).round() as i32, (c * inv_scale).round() as i32))
+            .map(|&(r, c)| {
+                (
+                    (r * inv_scale).round() as i32,
+                    (c * inv_scale).round() as i32,
+                )
+            })
             .collect();
 
         let (descriptors, mask) = self.extract_octave_u8(octave_image, &kps_local, &oris)?;
@@ -1243,9 +1246,7 @@ const DISK_MASKS: [[u8; 32]; 31] = build_disk_masks();
 const DC_LOW: [i16; 16] = [
     -16, -15, -14, -13, -12, -11, -10, -9, -8, -7, -6, -5, -4, -3, -2, -1,
 ];
-const DC_HIGH: [i16; 16] = [
-    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
-];
+const DC_HIGH: [i16; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
@@ -1269,7 +1270,7 @@ unsafe fn orientation_kp_neon(src_slice: &[u8], r0: usize, c0: usize, cols: usiz
 
         // Two 16-byte loads centered at c0. Low: dc ∈ [-16, -1]. High: dc ∈ [0, 15].
         let px_low = vandq_u8(vld1q_u8(row_ptr.offset(c0 as isize - 16)), mask_low);
-        let px_high = vandq_u8(vld1q_u8(row_ptr.offset(c0 as isize)), mask_high);
+        let px_high = vandq_u8(vld1q_u8(row_ptr.add(c0)), mask_high);
 
         // m01 row sum: masked bytes widened-and-added across all lanes.
         let row_sum = (vaddlvq_u8(px_low) + vaddlvq_u8(px_high)) as i32;
@@ -1300,6 +1301,73 @@ unsafe fn orientation_kp_neon(src_slice: &[u8], r0: usize, c0: usize, cols: usiz
     (m01_acc as f32).atan2(m10 as f32)
 }
 
+/// AVX2 mirror of [`orientation_kp_neon`]. Same disk-masked moment scan,
+/// translated 1:1 to `__m128i`. NEON's `vmull_s16` lane-by-lane multiply
+/// chain is replaced with `_mm_madd_epi16` which pairwise-multiplies 8 i16
+/// lanes into 4 i32 sums — exactly equivalent after the final horizontal
+/// reduction. Row-sum uses `_mm_sad_epu8(_, zero)` as the SAD-against-zero
+/// horizontal-add idiom (NEON's `vaddlvq_u8` has no x86 single-instruction
+/// equivalent).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn orientation_kp_avx2(src_slice: &[u8], r0: usize, c0: usize, cols: usize) -> f32 {
+    use std::arch::x86_64::*;
+    let zero = _mm_setzero_si128();
+
+    let dc_low_0 = _mm_loadu_si128(DC_LOW.as_ptr() as *const __m128i);
+    let dc_low_1 = _mm_loadu_si128(DC_LOW.as_ptr().add(8) as *const __m128i);
+    let dc_high_0 = _mm_loadu_si128(DC_HIGH.as_ptr() as *const __m128i);
+    let dc_high_1 = _mm_loadu_si128(DC_HIGH.as_ptr().add(8) as *const __m128i);
+
+    let mut m01_acc: i32 = 0;
+    let mut m10_sum = _mm_setzero_si128();
+
+    let base = src_slice.as_ptr();
+    for dr in -15i32..=15 {
+        let row_ptr = base.add(((r0 as isize + dr as isize) * cols as isize) as usize);
+        let mask_row = DISK_MASKS[(dr + 15) as usize].as_ptr();
+        let mask_low = _mm_loadu_si128(mask_row as *const __m128i);
+        let mask_high = _mm_loadu_si128(mask_row.add(16) as *const __m128i);
+
+        let px_low = _mm_and_si128(
+            _mm_loadu_si128(row_ptr.offset(c0 as isize - 16) as *const __m128i),
+            mask_low,
+        );
+        let px_high = _mm_and_si128(
+            _mm_loadu_si128(row_ptr.offset(c0 as isize) as *const __m128i),
+            mask_high,
+        );
+
+        // Row sum via SAD-against-zero: each 64-bit lane gets the sum of its
+        // 8 source bytes; combine and reduce to a single i32.
+        let sad_low = _mm_sad_epu8(px_low, zero);
+        let sad_high = _mm_sad_epu8(px_high, zero);
+        let r_v = _mm_add_epi64(sad_low, sad_high);
+        let r_v = _mm_add_epi64(r_v, _mm_srli_si128::<8>(r_v));
+        let row_sum = _mm_cvtsi128_si32(r_v);
+        m01_acc += row_sum * dr;
+
+        // m10: widen u8→i16 then `_mm_madd_epi16` pairs i16 lanes into i32.
+        let px_low_lo = _mm_unpacklo_epi8(px_low, zero);
+        let px_low_hi = _mm_unpackhi_epi8(px_low, zero);
+        let px_high_lo = _mm_unpacklo_epi8(px_high, zero);
+        let px_high_hi = _mm_unpackhi_epi8(px_high, zero);
+
+        let p0 = _mm_madd_epi16(px_low_lo, dc_low_0);
+        let p1 = _mm_madd_epi16(px_low_hi, dc_low_1);
+        let p2 = _mm_madd_epi16(px_high_lo, dc_high_0);
+        let p3 = _mm_madd_epi16(px_high_hi, dc_high_1);
+        m10_sum = _mm_add_epi32(m10_sum, _mm_add_epi32(p0, p1));
+        m10_sum = _mm_add_epi32(m10_sum, _mm_add_epi32(p2, p3));
+    }
+
+    let s = _mm_add_epi32(m10_sum, _mm_srli_si128::<8>(m10_sum));
+    let s = _mm_add_epi32(s, _mm_srli_si128::<4>(s));
+    let m10 = _mm_cvtsi128_si32(s);
+
+    (m01_acc as f32).atan2(m10 as f32)
+}
+
 fn corner_orientations_u8<A: ImageAllocator>(
     src: &Image<u8, 1, A>,
     corners: &[[usize; 2]],
@@ -1313,12 +1381,19 @@ fn corner_orientations_u8<A: ImageAllocator>(
     #[cfg(target_arch = "aarch64")]
     let use_neon = std::env::var("KORNIA_ORB_ORI_NEON").map_or(true, |v| v != "0");
 
+    #[cfg(target_arch = "x86_64")]
+    let use_avx2 = crate::simd::cpu_features().has_avx2;
+
     corners
         .par_iter()
         .map(|&[r0, c0]| {
             #[cfg(target_arch = "aarch64")]
             if use_neon {
                 return unsafe { orientation_kp_neon(src_slice, r0, c0, cols) };
+            }
+            #[cfg(target_arch = "x86_64")]
+            if use_avx2 {
+                return unsafe { orientation_kp_avx2(src_slice, r0, c0, cols) };
             }
 
             // Standard ORB `ICAngle`: v=0 processed alone, then pairs (+v, -v)
@@ -1427,7 +1502,7 @@ fn orb_loop_u8<A: ImageAllocator>(
 /// Rotate the BRIEF pattern for a single orientation and store as i8 offsets.
 ///
 /// Per-keypoint continuous rotation (Rublee 2011). Cost: 256 pairs × 4 f32 muls
-/// + 4 rounds; shared `cos`/`sin` lifted out of the pair loop. A quantized
+/// plus 4 rounds; shared `cos`/`sin` lifted out of the pair loop. A quantized
 /// bucket table is not sufficient — 12°/bucket produces several bits of
 /// Hamming distance on otherwise-matched keypoints.
 #[inline]
@@ -1468,8 +1543,7 @@ fn compute_brief_descriptor(
     #[cfg(target_arch = "aarch64")]
     unsafe {
         use std::arch::aarch64::*;
-        static BIT_MASK: [u8; 16] =
-            [1, 2, 4, 8, 16, 32, 64, 128, 1, 2, 4, 8, 16, 32, 64, 128];
+        static BIT_MASK: [u8; 16] = [1, 2, 4, 8, 16, 32, 64, 128, 1, 2, 4, 8, 16, 32, 64, 128];
         let bitmask = vld1q_u8(BIT_MASK.as_ptr());
         let cols_i = cols as isize;
         let base_ptr = src_data.as_ptr().offset(base);
@@ -1492,17 +1566,68 @@ fn compute_brief_descriptor(
             desc[chunk * 2] = vaddv_u8(vget_low_u8(anded));
             desc[chunk * 2 + 1] = vaddv_u8(vget_high_u8(anded));
         }
-        return desc;
+        desc
     }
     #[cfg(not(target_arch = "aarch64"))]
     {
+        #[cfg(target_arch = "x86_64")]
+        if crate::simd::cpu_features().has_avx2 {
+            return unsafe { compute_brief_descriptor_avx2(src_data, cols, row, base) };
+        }
         compute_brief_descriptor_scalar(src_data, cols, row, base)
     }
+}
+
+/// AVX2 mirror of the inline NEON BRIEF path. Same 16-pair-per-iteration
+/// structure: gather v0/v1, unsigned `<` compare via the
+/// `_mm_subs_epu8` + `_mm_cmpeq_epi8` substitute (AVX2 has no native unsigned
+/// lane-compare), AND with the per-byte bit-weight pattern, then horizontal
+/// sum each 8-byte half via `_mm_sad_epu8(_, zero)` to produce two output
+/// descriptor bytes.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn compute_brief_descriptor_avx2(
+    src_data: &[u8],
+    cols: usize,
+    row: &[[i8; 4]; 256],
+    base: isize,
+) -> [u8; 32] {
+    use std::arch::x86_64::*;
+    static BIT_MASK: [u8; 16] = [1, 2, 4, 8, 16, 32, 64, 128, 1, 2, 4, 8, 16, 32, 64, 128];
+    let bitmask = _mm_loadu_si128(BIT_MASK.as_ptr() as *const __m128i);
+    let zero = _mm_setzero_si128();
+    let ones = _mm_set1_epi8(-1i8);
+    let cols_i = cols as isize;
+    let base_ptr = src_data.as_ptr().offset(base);
+    let mut v0_buf = [0u8; 16];
+    let mut v1_buf = [0u8; 16];
+    let mut desc = [0u8; 32];
+    for chunk in 0..16usize {
+        let pair_base = chunk * 16;
+        for i in 0..16 {
+            let pair = row[pair_base + i];
+            let off0 = (pair[0] as isize) * cols_i + (pair[1] as isize);
+            let off1 = (pair[2] as isize) * cols_i + (pair[3] as isize);
+            *v0_buf.get_unchecked_mut(i) = *base_ptr.offset(off0);
+            *v1_buf.get_unchecked_mut(i) = *base_ptr.offset(off1);
+        }
+        let v0 = _mm_loadu_si128(v0_buf.as_ptr() as *const __m128i);
+        let v1 = _mm_loadu_si128(v1_buf.as_ptr() as *const __m128i);
+        // (v0 < v1) byte-mask: subs_epu8(v1, v0) is 0 iff v1<=v0 (i.e. v0>=v1);
+        // andnot with the 0xFF broadcast flips that to 0xFF iff v0<v1.
+        let lt = _mm_andnot_si128(_mm_cmpeq_epi8(_mm_subs_epu8(v1, v0), zero), ones);
+        let anded = _mm_and_si128(lt, bitmask);
+        let sad = _mm_sad_epu8(anded, zero);
+        desc[chunk * 2] = _mm_cvtsi128_si32(sad) as u8;
+        desc[chunk * 2 + 1] = _mm_extract_epi32::<2>(sad) as u8;
+    }
+    desc
 }
 
 /// Pure-scalar BRIEF reference — kept so bit-parity against the NEON path
 /// can be asserted in tests without compile-time dispatch.
 #[inline]
+#[allow(dead_code)]
 fn compute_brief_descriptor_scalar(
     src_data: &[u8],
     cols: usize,
@@ -1658,7 +1783,9 @@ mod tests {
         let mut data = vec![0u8; w * h];
         let mut s: u64 = 0x1234_5678_9abc_def0;
         for px in data.iter_mut() {
-            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             *px = (s >> 32) as u8;
         }
         let img = Image::<u8, 1, _>::from_size_slice([w, h].into(), &data, CpuAllocator).unwrap();
@@ -1695,7 +1822,9 @@ mod tests {
         let mut data = vec![0u8; w * h];
         let mut s: u64 = 0xdead_beef_cafe_babe;
         for px in data.iter_mut() {
-            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             *px = (s >> 32) as u8;
         }
 
