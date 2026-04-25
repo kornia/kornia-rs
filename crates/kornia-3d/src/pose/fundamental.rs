@@ -830,9 +830,7 @@ mod tests {
             u[i] *= inv;
         }
         let mut col = [0.0f64; 9];
-        for i in 3..9 {
-            col[i] = u[i];
-        }
+        col[3..9].copy_from_slice(&u[3..9]);
         apply_reflector_col(&mut col, &u, 3);
         for i in 3..9 {
             assert!(

@@ -124,6 +124,7 @@ pub fn orb_detect_and_compute(
 ///     * `responses` — `(N,)` float32 FAST score per corner.
 #[pyfunction]
 #[pyo3(signature = (image, threshold=20.0, arc_length=9, border=3))]
+#[allow(clippy::type_complexity)]
 pub fn fast_detect(
     py: Python<'_>,
     image: Bound<'_, pyo3::types::PyAny>,

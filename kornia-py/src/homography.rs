@@ -30,6 +30,7 @@ const METHOD_RANSAC: i32 = 8;
 /// Raises ValueError if RANSAC fails to find a model meeting `min_inliers`.
 #[pyfunction(name = "ransac_homography")]
 #[pyo3(signature = (pts1, pts2, threshold=3.0, max_iterations=2000, min_inliers=15, seed=None))]
+#[allow(clippy::type_complexity)]
 pub fn ransac_homography_py(
     py: Python<'_>,
     pts1: Bound<'_, PyArray2<f64>>,
@@ -108,6 +109,7 @@ pub fn ransac_homography_py(
     min_inliers=4,
     seed=None,
 ))]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn find_homography_py(
     py: Python<'_>,
     pts1: Bound<'_, PyArray2<f64>>,
@@ -198,6 +200,7 @@ pub fn find_homography_py(
     min_inliers=8,
     seed=None,
 ))]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn find_fundamental_py(
     py: Python<'_>,
     pts1: Bound<'_, PyArray2<f64>>,

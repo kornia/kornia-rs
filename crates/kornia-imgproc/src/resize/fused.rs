@@ -329,6 +329,7 @@ unsafe fn fused_row_avx2(
     // (a, b, c, d) = channel-deinterleaved u8x16 from row0-chunk0, row0-chunk1,
     // row1-chunk0, row1-chunk1 respectively.
     #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
     unsafe fn emit_channel(
         a: __m128i,
         b: __m128i,

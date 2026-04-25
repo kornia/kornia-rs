@@ -1334,7 +1334,7 @@ unsafe fn orientation_kp_avx2(src_slice: &[u8], r0: usize, c0: usize, cols: usiz
             mask_low,
         );
         let px_high = _mm_and_si128(
-            _mm_loadu_si128(row_ptr.offset(c0 as isize) as *const __m128i),
+            _mm_loadu_si128(row_ptr.add(c0) as *const __m128i),
             mask_high,
         );
 
