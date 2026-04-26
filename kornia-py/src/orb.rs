@@ -109,7 +109,7 @@ pub fn orb_detect_and_compute(
 
 /// Run just the FAST-9 corner detector on a u8 image (no Harris, no orientation,
 /// no descriptor, no scale pyramid). The bare detector step, exposed separately
-/// so callers can benchmark or compose it with other pipelines directly.
+/// so callers can compose it with other detection or feature pipelines.
 ///
 /// Args:
 ///     image: `HxW` uint8 gray or `HxWx3` uint8 RGB numpy array.

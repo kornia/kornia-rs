@@ -38,13 +38,15 @@
 //!
 //! [`TwoViewConfig::use_5pt_essential`] picks the epipolar estimator and the choice
 //! is a real accuracy / speed tradeoff:
-//! - **8-point F + (σ,σ,0) lift (default, `false`)** — pixel-space normalization gets
-//!   the cleanest rotation (0.04° on MH_01) and is strictly faster (pose ~1.4 ms)
-//!   because the 8-point linear solve is cheaper than 10-poly root-finding × cheirality.
+//! - **8-point F + (σ,σ,0) lift (default, `false`)** — pixel-space normalization
+//!   gets a clean rotation null-space, and the 8-point linear solve is cheaper than
+//!   10-degree polynomial root-finding × cheirality, so the pose stage is faster.
+//!   The σ-equalization step bleeds noise into the translation direction.
 //!   Returns [`TwoViewModel::Fundamental`].
-//! - **5-point Nistér (`true`)** — stays on the E manifold by construction. Best
-//!   translation-direction accuracy in our EuRoC MH_01 bench (3.39°, lower than every
-//!   OpenCV USAC variant). Returns [`TwoViewModel::Essential`]. Pose stage ~3.2 ms.
+//! - **5-point Nistér (`true`)** — stays on the E manifold by construction (no
+//!   σ-projection round-trip), preserving translation-direction accuracy. Slower
+//!   per RANSAC sample because of the polynomial solve. Returns
+//!   [`TwoViewModel::Essential`].
 //!
 //! The variant returned in [`TwoViewResult::model`] reflects which solver ran, not
 //! a downstream contract — both paths produce the same `(R, t, inliers)` shape.
@@ -52,13 +54,11 @@
 //!
 //! ## Performance
 //!
-//! Median ~1.4 ms pose / ~10.9 ms full pipeline on EuRoC MH_01 752×480 (Jetson Orin
-//! AGX, 110 ORB matches, 8pt default). 3.8× faster total than the fastest OpenCV
-//! USAC variant in the bench. Wins compound from four pieces: parallel F+H RANSAC
-//! (rayon::join), NEON 2-lane f64 inner scorers (Sampson + H-reproj on SoA-laid
-//! x/y arrays), the stagnation early-exit on H (which can't tighten its adaptive
-//! cap on non-planar scenes), and the cheap-then-full cheirality vote that
-//! replaces 4 × N SVDs with 1 × M SVDs (M = winner inliers).
+//! The pipeline composes four independent wins over a serial scalar baseline:
+//! parallel F+H RANSAC (`rayon::join`), NEON 2-lane f64 inner scorers (Sampson +
+//! H-reproj on SoA-laid x/y arrays), a stagnation early-exit on H-RANSAC (which
+//! can't tighten its adaptive cap on non-planar scenes), and a cheap-then-full
+//! cheirality vote that replaces 4 × N SVDs with 1 × M SVDs (M = winner inliers).
 
 #![allow(clippy::needless_range_loop)]
 
@@ -186,14 +186,11 @@ pub struct TwoViewConfig {
     /// Use the **Nistér 5-point essential solver** in place of 8-point
     /// fundamental for the F-vs-H race. The 5pt path stays on the essential
     /// manifold throughout (no `(σ, σ, 0)` clipping after the 8-point lift),
-    /// which preserves translation-direction accuracy. The 8-point path
-    /// trades that for cleaner rotation: pixel-space normalization gets the
-    /// rotation null-space crisp, but the σ-equalization bleeds into t.
-    /// Default `false`: on the EuRoC MH_01 bench the 8pt path is **2.27× faster**
-    /// (pose 1.42 ms vs 3.21 ms) and **4× more rotation-accurate** (0.040° vs
-    /// 0.164°); the 5pt path's only win is translation direction (3.39° vs 4.17°,
-    /// ~0.8° better). Opt into the 5pt path when t-direction accuracy is the
-    /// priority — see `kornia-py/benchmarks.md` for current numbers.
+    /// preserving translation-direction accuracy at the cost of a slower
+    /// per-sample polynomial solve. The 8-point path trades that for cleaner
+    /// rotation (pixel-space normalization gets the rotation null-space crisp)
+    /// and a cheaper linear solve. Default `false` — opt into the 5pt path
+    /// when translation-direction accuracy is the priority.
     ///
     /// Note: the [`TwoViewModel`] variant tag (`Fundamental` vs `Essential`)
     /// reflects which solver ran, not a downstream contract — both paths
@@ -438,8 +435,8 @@ fn lo_plus_fundamental(
 /// never a footgun.
 ///
 /// **Cost when non-degenerate.** Runs `H_TRIALS=15` minimal H samples + the
-/// degeneracy gate. On general-3D scenes (EuRoC, KITTI), the H-support never
-/// reaches the 75% threshold and we early-exit. ≤ 100µs at N≈400 inliers.
+/// degeneracy gate. On general non-planar scenes the H-support never reaches
+/// the 75% threshold and the routine early-exits.
 #[allow(clippy::too_many_arguments)]
 fn degensac_recover_fundamental(
     x1_x: &[f64],

@@ -25,10 +25,10 @@
 //!
 //! Computed via **central finite differences** with step `h = 1e-6`. With only
 //! 5 columns the Jacobian build is cheap — the inner loop rebuilds F from (R, t)
-//! and evaluates N Sampson distances per column × 2 (central). For a typical
-//! ~100-inlier MH_01 run this is ~100 µs, negligible versus the ~2 ms of the
-//! enclosing 8-point RANSAC. Switching to analytical derivatives would save
-//! <5% end-to-end; we'd rather keep the code readable.
+//! and evaluates N Sampson distances per column × 2 (central). The cost is
+//! dominated by the enclosing 8-point RANSAC, so switching to analytical
+//! derivatives would shave only single-digit-percent end-to-end; the finite-
+//! difference form is kept for readability.
 //!
 //! ## Safety net
 //!
