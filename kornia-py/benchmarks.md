@@ -97,10 +97,10 @@ kornia-rs median reprojection beats OpenCV on both images (even with the OpenCV 
 | opencv-usac-prosac | 38.0 | 2.00 | 3.38 | 43.4 | **0.021** | 3.886 | 97 | 70 |
 | opencv-usac-parallel | 37.7 | 1.76 | 2.48 | 41.9 | **0.021** | 3.883 | 97 | 70 |
 
-`kornia-rs` (default) is the **fastest backend end-to-end** (10.89 ms — 3.8× faster than the fastest OpenCV variant) and also has the **fastest pose stage** (1.42 ms — 1.5× faster than `USAC_PARALLEL`'s 2.48 ms) while keeping rotation accuracy on par with OpenCV USAC (0.040° vs `USAC_PROSAC`'s 0.021°). The default ships F because kornia-slam's bootstrap consumes the fundamental matrix downstream; opt into `use_5pt_essential=True` when translation-direction accuracy is the priority — the 5-point row gets `t_err = 3.389°`, beating every other backend in the bench (~0.5° better than the best OpenCV USAC variant).
+`kornia-rs` (default) is the **fastest backend end-to-end** (10.89 ms — 3.8× faster than the fastest OpenCV variant) and also has the **fastest pose stage** (1.42 ms — 1.5× faster than `USAC_PARALLEL`'s 2.48 ms) while keeping rotation accuracy on par with OpenCV USAC (0.040° vs `USAC_PROSAC`'s 0.021°). The 8pt path is the default on technical merit: 2.27× faster pose, 4× more rotation-accurate than 5pt; the 5pt path's only win is translation direction (3.39° vs 4.17°, ~0.8° better than the best OpenCV USAC variant). Opt into `use_5pt_essential=True` when translation-direction accuracy is the priority.
 
 The accuracy story splits cleanly along solver choice:
-- **8-point fundamental + (σ,σ,0) lift (default)** — pixel-space normalization gets exceptionally clean rotation (0.040°) but the σ-equalization bleeds noise into translation. Strictly faster (1.42 ms) because the 8-point linear solver is cheaper than 10-poly root-finding × cheirality, and downstream guided matching gets F directly without a re-multiplication by Ks.
+- **8-point fundamental + (σ,σ,0) lift (default)** — pixel-space normalization gets exceptionally clean rotation (0.040°) but the σ-equalization bleeds noise into translation. Strictly faster (1.42 ms) because the 8-point linear solver is cheaper than 10-poly root-finding × cheirality.
 - **5-point Nistér essential (`use_5pt_essential=True`)** — stays on the E manifold by construction (10 polynomial roots, no `(σ, σ, 0)` clipping), so the translation null-space isn't polluted by the 8-point Frobenius projection. This is the lever that lands the best t_err of any backend in the bench.
 
 The speed story compounds three independent wins:

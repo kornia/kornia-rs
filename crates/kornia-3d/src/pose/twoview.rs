@@ -41,11 +41,14 @@
 //! - **8-point F + (σ,σ,0) lift (default, `false`)** — pixel-space normalization gets
 //!   the cleanest rotation (0.04° on MH_01) and is strictly faster (pose ~1.4 ms)
 //!   because the 8-point linear solve is cheaper than 10-poly root-finding × cheirality.
-//!   Returns `TwoViewModel::Fundamental(F)` so downstream consumers (e.g. kornia-slam's
-//!   guided matching) get F directly without a Ks re-multiplication.
+//!   Returns [`TwoViewModel::Fundamental`].
 //! - **5-point Nistér (`true`)** — stays on the E manifold by construction. Best
 //!   translation-direction accuracy in our EuRoC MH_01 bench (3.39°, lower than every
-//!   OpenCV USAC variant). Returns `TwoViewModel::Essential(E)`. Pose stage ~3.2 ms.
+//!   OpenCV USAC variant). Returns [`TwoViewModel::Essential`]. Pose stage ~3.2 ms.
+//!
+//! The variant returned in [`TwoViewResult::model`] reflects which solver ran, not
+//! a downstream contract — both paths produce the same `(R, t, inliers)` shape.
+//! Pose-only consumers should not branch on the variant.
 //!
 //! ## Performance
 //!
@@ -186,11 +189,16 @@ pub struct TwoViewConfig {
     /// which preserves translation-direction accuracy. The 8-point path
     /// trades that for cleaner rotation: pixel-space normalization gets the
     /// rotation null-space crisp, but the σ-equalization bleeds into t.
-    /// Default `false` — kornia-slam's bootstrap pipeline consumes the
-    /// fundamental matrix downstream of [`two_view_estimate`], so the
-    /// default keeps the 8-point F path. Opt into the 5pt essential path
-    /// explicitly when translation accuracy matters more than F-availability;
-    /// see `kornia-py/benchmarks.md` for current numbers.
+    /// Default `false`: on the EuRoC MH_01 bench the 8pt path is **2.27× faster**
+    /// (pose 1.42 ms vs 3.21 ms) and **4× more rotation-accurate** (0.040° vs
+    /// 0.164°); the 5pt path's only win is translation direction (3.39° vs 4.17°,
+    /// ~0.8° better). Opt into the 5pt path when t-direction accuracy is the
+    /// priority — see `kornia-py/benchmarks.md` for current numbers.
+    ///
+    /// Note: the [`TwoViewModel`] variant tag (`Fundamental` vs `Essential`)
+    /// reflects which solver ran, not a downstream contract — both paths
+    /// produce the same `(R, t, inliers)` output. Pose-only consumers can
+    /// ignore the variant.
     pub use_5pt_essential: bool,
     /// Threshold-annealed LM polish. After the initial LM call on the full
     /// RANSAC inlier set, re-classify inliers at progressively tighter Sampson
