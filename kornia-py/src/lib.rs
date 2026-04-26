@@ -429,6 +429,11 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     k3d_mod.add_class::<PyICPConvergenceCriteria>()?;
     k3d_mod.add_class::<PyICPResult>()?;
     k3d_mod.add_class::<twoview::PyTwoViewPose>()?;
+    k3d_mod.add_class::<twoview::PyFundamental8ptSolver>()?;
+    k3d_mod.add_class::<twoview::PyEssentialNister5ptSolver>()?;
+    k3d_mod.add_class::<twoview::PyLmRefiner>()?;
+    k3d_mod.add_class::<twoview::PyNoopRefiner>()?;
+    k3d_mod.add_class::<twoview::PyTwoViewEstimator>()?;
     k3d_mod.add_function(wrap_pyfunction!(twoview::two_view_estimate_py, &k3d_mod)?)?;
     k3d_mod.add_function(wrap_pyfunction!(
         homography::ransac_homography_py,

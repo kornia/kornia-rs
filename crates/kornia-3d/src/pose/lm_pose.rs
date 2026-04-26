@@ -84,7 +84,7 @@ impl Default for LmPoseConfig {
 ///
 /// `hat(v) * w = v × w` for any `w ∈ ℝ³`.
 #[inline]
-fn hat(v: Vec3F64) -> Mat3F64 {
+pub(crate) fn hat(v: Vec3F64) -> Mat3F64 {
     // Column-major for Mat3F64::from_cols.
     Mat3F64::from_cols(
         Vec3F64::new(0.0, v.z, -v.y),
@@ -150,7 +150,12 @@ fn tangent_basis(t: Vec3F64) -> (Vec3F64, Vec3F64) {
 /// `E = [t]_× R`, `F = K2⁻ᵀ E K1⁻¹`. `t` is treated as a direction (scale
 /// irrelevant for F up to a global factor).
 #[inline]
-fn fundamental_from_rt(r: &Mat3F64, t: &Vec3F64, k1_inv: &Mat3F64, k2_inv_t: &Mat3F64) -> Mat3F64 {
+pub(crate) fn fundamental_from_rt(
+    r: &Mat3F64,
+    t: &Vec3F64,
+    k1_inv: &Mat3F64,
+    k2_inv_t: &Mat3F64,
+) -> Mat3F64 {
     let e = hat(*t) * *r;
     *k2_inv_t * e * *k1_inv
 }

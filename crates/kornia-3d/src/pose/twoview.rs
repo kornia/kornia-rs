@@ -10,8 +10,9 @@
 //!     │   ── rayon::join ──────────────────────────────────────────────
 //!     ├─→ RANSAC + 8-point fundamental → F → enforce(σ,σ,0) → E (default)
 //!     │   (NEON Sampson scoring in pixel space; LO+ refit on inliers)
-//!     │   *or* 5-point Nistér → E (on-manifold by construction) if
-//!     │   `use_5pt_essential = true` (translation-priority path)
+//!     │   *or* 5-point Nistér → E (on-manifold by construction) if the
+//!     │   builder is given an [`EssentialNister5ptSolver`] (translation-
+//!     │   priority path)
 //!     │
 //!     └─→ RANSAC + 4-point → H → multiple (R,t,n) candidates
 //!         (NEON H-reproj scoring; stagnation early-exit @ 200 iters)
@@ -36,17 +37,27 @@
 //!
 //! ## Solver choice
 //!
-//! [`TwoViewConfig::use_5pt_essential`] picks the epipolar estimator and the choice
-//! is a real accuracy / speed tradeoff:
-//! - **8-point F + (σ,σ,0) lift (default, `false`)** — pixel-space normalization
-//!   gets a clean rotation null-space, and the 8-point linear solve is cheaper than
-//!   10-degree polynomial root-finding × cheirality, so the pose stage is faster.
-//!   The σ-equalization step bleeds noise into the translation direction.
-//!   Returns [`TwoViewModel::Fundamental`].
-//! - **5-point Nistér (`true`)** — stays on the E manifold by construction (no
-//!   σ-projection round-trip), preserving translation-direction accuracy. Slower
-//!   per RANSAC sample because of the polynomial solve. Returns
+//! Two epipolar solvers ship with this crate; the builder picks one:
+//! - [`Fundamental8ptSolver`] (default) — pixel-space normalization gets a clean
+//!   rotation null-space, and the 8-point linear solve is cheaper than 10-degree
+//!   polynomial root-finding × cheirality. The σ-equalization step bleeds noise
+//!   into the translation direction. Returns [`TwoViewModel::Fundamental`].
+//! - [`EssentialNister5ptSolver`] — stays on the E manifold by construction (no
+//!   σ-projection round-trip), preserving translation-direction accuracy at the
+//!   cost of a slower per-sample polynomial solve. Returns
 //!   [`TwoViewModel::Essential`].
+//!
+//! ```ignore
+//! use kornia_3d::pose::{TwoViewEstimator, EssentialNister5ptSolver};
+//!
+//! // Default — 8-point fundamental + LM refinement.
+//! let est = TwoViewEstimator::default();
+//!
+//! // Translation-priority — opt into the 5-point essential solver.
+//! let est = TwoViewEstimator::builder()
+//!     .epipolar_solver(EssentialNister5ptSolver::default())
+//!     .build();
+//! ```
 //!
 //! The variant returned in [`TwoViewResult::model`] reflects which solver ran, not
 //! a downstream contract — both paths produce the same `(R, t, inliers)` shape.
@@ -63,7 +74,7 @@
 #![allow(clippy::needless_range_loop)]
 
 use crate::pose::fundamental::{fundamental_8point, FundamentalError};
-use crate::pose::lm_pose::{refine_pose_lm, LmPoseConfig};
+use crate::pose::lm_pose::{fundamental_from_rt, refine_pose_lm, LmPoseConfig};
 use crate::pose::triangulation::{triangulate_inliers, TriangulateParams, TriangulationConfig};
 use crate::pose::{
     decompose_essential, decompose_homography, enforce_essential_constraints, essential_5pt,
@@ -160,70 +171,379 @@ pub enum TwoViewModel {
     /// Fundamental matrix model (pixel space).
     Fundamental(Mat3F64),
     /// Essential matrix model (metric/camera space) — emitted when the
-    /// 5-point path is enabled in `TwoViewConfig`.
+    /// builder is configured with [`EssentialNister5ptSolver`].
     Essential(Mat3F64),
     /// Homography model (pixel space).
     Homography(Mat3F64),
 }
 
-/// Configuration for two-view pose estimation.
-#[derive(Clone, Debug)]
-pub struct TwoViewConfig {
-    /// RANSAC settings for the fundamental matrix.
-    pub ransac_f: RansacParams,
-    /// RANSAC settings for the homography.
-    pub ransac_h: RansacParams,
-    /// Prefer homography when it has this ratio of inliers vs fundamental.
-    pub homography_inlier_ratio: f64,
-    /// Triangulation-backed candidate-pose validation settings.
-    pub triangulation: TriangulationConfig,
-    /// Run Levenberg-Marquardt non-linear refinement of (R, t) over the inlier
-    /// Sampson cost after the cheirality winner is picked. Default `true` —
-    /// this is the final accuracy lever that closes the gap vs OpenCV USAC.
-    pub lm_enabled: bool,
-    /// LM refinement knobs. See [`LmPoseConfig`].
-    pub lm: LmPoseConfig,
-    /// Use the **Nistér 5-point essential solver** in place of 8-point
-    /// fundamental for the F-vs-H race. The 5pt path stays on the essential
-    /// manifold throughout (no `(σ, σ, 0)` clipping after the 8-point lift),
-    /// preserving translation-direction accuracy at the cost of a slower
-    /// per-sample polynomial solve. The 8-point path trades that for cleaner
-    /// rotation (pixel-space normalization gets the rotation null-space crisp)
-    /// and a cheaper linear solve. Default `false` — opt into the 5pt path
-    /// when translation-direction accuracy is the priority.
-    ///
-    /// Note: the [`TwoViewModel`] variant tag (`Fundamental` vs `Essential`)
-    /// reflects which solver ran, not a downstream contract — both paths
-    /// produce the same `(R, t, inliers)` output. Pose-only consumers can
-    /// ignore the variant.
-    pub use_5pt_essential: bool,
-    /// Threshold-annealed LM polish. After the initial LM call on the full
-    /// RANSAC inlier set, re-classify inliers at progressively tighter Sampson
-    /// thresholds (multipliers applied to `ransac_f.threshold`) and re-run LM
-    /// on each tighter subset. This is OpenCV-USAC's LO+ inner loop pattern
-    /// and the lever that lifts both rotation and translation accuracy by
-    /// trimming residual contamination from the noisy tail of the inlier set.
-    /// Empty / single-element schedules disable the annealing pass.
-    /// Default `[0.5, 0.25]`.
-    pub lm_anneal_thresholds: Vec<f64>,
-    /// Minimum inlier count required to admit an annealed LM pass — below this
-    /// the residual set is too small to reliably constrain the 5-DOF problem
-    /// and we'd risk overfitting to noise. Default 30.
-    pub lm_anneal_min_inliers: usize,
+/// Output of an [`EpipolarSolver`] — the inputs the downstream cheirality and
+/// refinement stages need from any epipolar arm of the F-vs-H race.
+pub struct EpipolarFit {
+    /// Essential matrix used to decompose into 4 candidate `(R, t)` poses.
+    /// For 8pt this is the σ-equalized lift of the F in `model`; for 5pt this
+    /// equals the E in `model`.
+    pub e: Mat3F64,
+    /// Variant tag identifying which solver produced the fit. Carried into
+    /// [`TwoViewResult::model`] so callers can inspect what ran without
+    /// branching on solver type.
+    pub model: TwoViewModel,
+    /// Per-input-correspondence inlier mask.
+    pub inliers: Vec<bool>,
+    /// Cached inlier popcount.
+    pub inlier_count: usize,
+    /// Residual threshold the solver classified inliers at — fed to a
+    /// downstream [`PoseRefiner`] for derived sub-thresholds (e.g. LO+ anneal).
+    pub residual_threshold: f64,
 }
 
-impl Default for TwoViewConfig {
+/// Strategy for the epipolar arm of the F-vs-H race in [`TwoViewEstimator`].
+///
+/// Two implementations ship in this crate:
+/// - [`Fundamental8ptSolver`] — pixel-space 8-point F + (σ, σ, 0) lift to E.
+/// - [`EssentialNister5ptSolver`] — calibrated 5-point Nistér E (on-manifold).
+///
+/// Implement this trait to plug in a custom solver (e.g. USAC, MAGSAC).
+pub trait EpipolarSolver: Send + Sync {
+    /// Run the solver's RANSAC and return the essential matrix used for
+    /// decomposition, plus the per-correspondence inlier mask.
+    fn estimate(
+        &self,
+        x1: &[Vec2F64],
+        x2: &[Vec2F64],
+        k1: &Mat3F64,
+        k2: &Mat3F64,
+    ) -> Result<EpipolarFit, TwoViewError>;
+}
+
+/// Eight-point fundamental matrix solver. Pixel-space normalization and
+/// σ-equalization on the F → E lift. Faster linear solve than the 5-point
+/// path; cleaner rotation; translation absorbs some noise from the
+/// `(σ, σ, 0)` clipping. Default solver in [`TwoViewEstimator::builder`].
+#[derive(Clone, Debug, Default)]
+pub struct Fundamental8ptSolver {
+    /// RANSAC parameters for the F-fit.
+    pub ransac: RansacParams,
+}
+
+impl EpipolarSolver for Fundamental8ptSolver {
+    fn estimate(
+        &self,
+        x1: &[Vec2F64],
+        x2: &[Vec2F64],
+        k1: &Mat3F64,
+        k2: &Mat3F64,
+    ) -> Result<EpipolarFit, TwoViewError> {
+        let res = ransac_fundamental(x1, x2, &self.ransac)?;
+        let f = res.model;
+        let e_raw = essential_from_fundamental(&f, k1, k2);
+        let e = enforce_essential_constraints(&e_raw);
+        Ok(EpipolarFit {
+            e,
+            model: TwoViewModel::Fundamental(f),
+            inliers: res.inliers,
+            inlier_count: res.inlier_count,
+            residual_threshold: self.ransac.threshold,
+        })
+    }
+}
+
+/// Nistér five-point essential solver. Calibrated rays; on-manifold by
+/// construction (no σ-clipping round-trip); preserves translation-direction
+/// accuracy at the cost of a 10-degree polynomial solve per RANSAC sample.
+/// Opt in via [`TwoViewEstimatorBuilder::epipolar_solver`].
+#[derive(Clone, Debug, Default)]
+pub struct EssentialNister5ptSolver {
+    /// RANSAC parameters for the E-fit.
+    pub ransac: RansacParams,
+}
+
+impl EpipolarSolver for EssentialNister5ptSolver {
+    fn estimate(
+        &self,
+        x1: &[Vec2F64],
+        x2: &[Vec2F64],
+        k1: &Mat3F64,
+        k2: &Mat3F64,
+    ) -> Result<EpipolarFit, TwoViewError> {
+        let res = ransac_essential_5pt(x1, x2, k1, k2, &self.ransac)?;
+        let e = res.model;
+        // 5pt produces an E that already satisfies the manifold constraints
+        // exactly (algebraic by construction). Skip enforce_essential_constraints
+        // to avoid an SVD round-trip that can only add noise.
+        Ok(EpipolarFit {
+            e,
+            model: TwoViewModel::Essential(e),
+            inliers: res.inliers,
+            inlier_count: res.inlier_count,
+            residual_threshold: self.ransac.threshold,
+        })
+    }
+}
+
+/// Inputs handed to a [`PoseRefiner`]. Bundled into a struct so the trait
+/// signature stays stable as the pipeline evolves.
+pub struct RefineContext<'a> {
+    /// Full input correspondences in view 1 (pixel space).
+    pub x1: &'a [Vec2F64],
+    /// Full input correspondences in view 2 (pixel space).
+    pub x2: &'a [Vec2F64],
+    /// View-1 intrinsics.
+    pub k1: &'a Mat3F64,
+    /// View-2 intrinsics.
+    pub k2: &'a Mat3F64,
+    /// Per-input-correspondence inlier mask from the winning model's RANSAC.
+    pub inliers: &'a [bool],
+    /// Cached popcount of `inliers`.
+    pub inlier_count: usize,
+    /// Base inlier threshold the winning model used (for deriving annealed
+    /// sub-thresholds).
+    pub residual_threshold: f64,
+    /// Tag identifying the winning model — refiners may want to behave
+    /// differently for homography vs epipolar inlier sets.
+    pub model: TwoViewModel,
+}
+
+/// Strategy for nonlinear `(R, t)` refinement after the cheirality vote.
+///
+/// Two implementations ship in this crate:
+/// - [`LmRefiner`] — Levenberg-Marquardt on Σ Sampson² with optional
+///   threshold-annealed polish (OpenCV USAC LO+ pattern).
+/// - [`NoopRefiner`] — pass-through; useful for measuring raw F/E pipeline
+///   accuracy or when the caller owns its own downstream refinement.
+pub trait PoseRefiner: Send + Sync {
+    /// Refine the pose. Implementations must never return a worse pose than
+    /// they were given (LM has this property by construction; pass-through
+    /// returns the input).
+    fn refine(&self, r: Mat3F64, t: Vec3F64, ctx: &RefineContext<'_>) -> (Mat3F64, Vec3F64);
+}
+
+/// Levenberg-Marquardt refiner with optional threshold-annealed polish.
+///
+/// Pass 1 runs LM on the full RANSAC inlier set. Subsequent passes (one per
+/// entry in `anneal_thresholds`) re-classify inliers at a tighter Sampson
+/// threshold (`anneal_thresholds[i] * ctx.residual_threshold`) and re-run LM
+/// on the cleaner subset. Annealing only fires for epipolar models —
+/// homography inlier sets live in pixel-reproj space and use a different
+/// threshold scale.
+///
+/// This is OpenCV USAC's LO+ inner loop and the largest accuracy lever between
+/// kornia-rs and OpenCV USAC.
+#[derive(Clone, Debug)]
+pub struct LmRefiner {
+    /// LM solver knobs (max iters, tolerances).
+    pub config: LmPoseConfig,
+    /// Multipliers applied to `ctx.residual_threshold` for the annealed
+    /// polish passes. Empty disables annealing. Default `[0.5, 0.25]`.
+    pub anneal_thresholds: Vec<f64>,
+    /// Minimum inlier count required to admit an annealed pass — below this
+    /// the residual set is too small to reliably constrain the 5-DOF problem.
+    /// Default 30.
+    pub anneal_min_inliers: usize,
+}
+
+impl Default for LmRefiner {
     fn default() -> Self {
         Self {
-            ransac_f: RansacParams::default(),
-            ransac_h: RansacParams::default(),
+            config: LmPoseConfig::default(),
+            anneal_thresholds: vec![0.5, 0.25],
+            anneal_min_inliers: 30,
+        }
+    }
+}
+
+impl PoseRefiner for LmRefiner {
+    fn refine(&self, r: Mat3F64, t: Vec3F64, ctx: &RefineContext<'_>) -> (Mat3F64, Vec3F64) {
+        let n_inl = ctx.inlier_count;
+        if n_inl < 6 {
+            return (r, t);
+        }
+        let mut x1_inl: Vec<Vec2F64> = Vec::with_capacity(n_inl);
+        let mut x2_inl: Vec<Vec2F64> = Vec::with_capacity(n_inl);
+        // SoA companion for the NEON Sampson scorer used by the anneal passes.
+        let mut x1i_x: Vec<f64> = Vec::with_capacity(n_inl);
+        let mut x1i_y: Vec<f64> = Vec::with_capacity(n_inl);
+        let mut x2i_x: Vec<f64> = Vec::with_capacity(n_inl);
+        let mut x2i_y: Vec<f64> = Vec::with_capacity(n_inl);
+        for (i, &is_inl) in ctx.inliers.iter().enumerate() {
+            if is_inl {
+                x1_inl.push(ctx.x1[i]);
+                x2_inl.push(ctx.x2[i]);
+                x1i_x.push(ctx.x1[i].x);
+                x1i_y.push(ctx.x1[i].y);
+                x2i_x.push(ctx.x2[i].x);
+                x2i_y.push(ctx.x2[i].y);
+            }
+        }
+
+        let (mut r_cur, mut t_cur) =
+            refine_pose_lm(r, t, &x1_inl, &x2_inl, ctx.k1, ctx.k2, &self.config);
+
+        let do_anneal = matches!(
+            ctx.model,
+            TwoViewModel::Fundamental(_) | TwoViewModel::Essential(_)
+        ) && !self.anneal_thresholds.is_empty();
+        if !do_anneal {
+            return (r_cur, t_cur);
+        }
+
+        // Tighter passes start near-optimal — halve the iteration budget.
+        let mut tight_cfg = self.config;
+        tight_cfg.max_iters = (self.config.max_iters / 2).max(3);
+        let k1_inv = ctx.k1.inverse();
+        let k2_inv_t = ctx.k2.inverse().transpose();
+        let mut tight_mask = vec![false; x1_inl.len()];
+        let mut x1_tight: Vec<Vec2F64> = Vec::with_capacity(x1_inl.len());
+        let mut x2_tight: Vec<Vec2F64> = Vec::with_capacity(x1_inl.len());
+        for &mult in &self.anneal_thresholds {
+            let tight_t = ctx.residual_threshold * mult;
+            let tight_t_sq = tight_t * tight_t;
+            let f_cur = fundamental_from_rt(&r_cur, &t_cur, &k1_inv, &k2_inv_t);
+            // score_inliers_f only sets `true`; reset the reused mask.
+            tight_mask.fill(false);
+            let (n_tight, _) = score_inliers_f(
+                &f_cur,
+                &x1i_x,
+                &x1i_y,
+                &x2i_x,
+                &x2i_y,
+                tight_t_sq,
+                &mut tight_mask,
+            );
+            if n_tight < self.anneal_min_inliers {
+                break;
+            }
+            x1_tight.clear();
+            x2_tight.clear();
+            for (k, &keep) in tight_mask.iter().enumerate() {
+                if keep {
+                    x1_tight.push(x1_inl[k]);
+                    x2_tight.push(x2_inl[k]);
+                }
+            }
+            let (r_new, t_new) =
+                refine_pose_lm(r_cur, t_cur, &x1_tight, &x2_tight, ctx.k1, ctx.k2, &tight_cfg);
+            r_cur = r_new;
+            t_cur = t_new;
+        }
+        (r_cur, t_cur)
+    }
+}
+
+/// Identity refiner — returns the cheirality-vote pose unchanged.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NoopRefiner;
+
+impl PoseRefiner for NoopRefiner {
+    fn refine(&self, r: Mat3F64, t: Vec3F64, _ctx: &RefineContext<'_>) -> (Mat3F64, Vec3F64) {
+        (r, t)
+    }
+}
+
+/// Configured two-view pose estimator. Build via [`TwoViewEstimator::builder`]
+/// or take defaults via `TwoViewEstimator::default()`.
+///
+/// ```ignore
+/// use kornia_3d::pose::{TwoViewEstimator, EssentialNister5ptSolver, NoopRefiner};
+///
+/// let est = TwoViewEstimator::builder()
+///     .epipolar_solver(EssentialNister5ptSolver::default())
+///     .refiner(NoopRefiner)
+///     .build();
+/// let result = est.estimate(&pts1, &pts2, &k1, &k2)?;
+/// # Ok::<_, kornia_3d::pose::TwoViewError>(())
+/// ```
+pub struct TwoViewEstimator {
+    epipolar: Box<dyn EpipolarSolver>,
+    homography_ransac: RansacParams,
+    homography_inlier_ratio: f64,
+    triangulation: TriangulationConfig,
+    refiner: Box<dyn PoseRefiner>,
+}
+
+impl Default for TwoViewEstimator {
+    fn default() -> Self {
+        TwoViewEstimator::builder().build()
+    }
+}
+
+impl TwoViewEstimator {
+    /// Start a builder with default settings: 8-point fundamental solver, LM
+    /// refinement with `[0.5, 0.25]` annealing, default RANSAC + triangulation
+    /// parameters.
+    pub fn builder() -> TwoViewEstimatorBuilder {
+        TwoViewEstimatorBuilder::default()
+    }
+}
+
+/// Builder for [`TwoViewEstimator`]. Defaults documented on
+/// [`TwoViewEstimator::builder`].
+pub struct TwoViewEstimatorBuilder {
+    epipolar: Box<dyn EpipolarSolver>,
+    homography_ransac: RansacParams,
+    homography_inlier_ratio: f64,
+    triangulation: TriangulationConfig,
+    refiner: Box<dyn PoseRefiner>,
+}
+
+impl Default for TwoViewEstimatorBuilder {
+    fn default() -> Self {
+        Self {
+            epipolar: Box::new(Fundamental8ptSolver::default()),
+            homography_ransac: RansacParams::default(),
             homography_inlier_ratio: 0.8,
             triangulation: TriangulationConfig::default(),
-            lm_enabled: true,
-            lm: LmPoseConfig::default(),
-            use_5pt_essential: false,
-            lm_anneal_thresholds: vec![0.5, 0.25],
-            lm_anneal_min_inliers: 30,
+            refiner: Box::new(LmRefiner::default()),
+        }
+    }
+}
+
+impl TwoViewEstimatorBuilder {
+    /// Plug in the epipolar solver for the F-vs-H race's epipolar arm.
+    pub fn epipolar_solver(mut self, solver: impl EpipolarSolver + 'static) -> Self {
+        self.epipolar = Box::new(solver);
+        self
+    }
+
+    /// Plug in the post-cheirality pose refiner.
+    pub fn refiner(mut self, refiner: impl PoseRefiner + 'static) -> Self {
+        self.refiner = Box::new(refiner);
+        self
+    }
+
+    /// Skip nonlinear refinement entirely. Equivalent to
+    /// `.refiner(NoopRefiner)`.
+    pub fn no_refinement(self) -> Self {
+        self.refiner(NoopRefiner)
+    }
+
+    /// RANSAC parameters for the homography arm.
+    pub fn homography_ransac(mut self, ransac: RansacParams) -> Self {
+        self.homography_ransac = ransac;
+        self
+    }
+
+    /// Inlier-ratio threshold for preferring H over the epipolar model. The
+    /// homography wins iff `H_inliers > ratio * epipolar_inliers`.
+    pub fn homography_inlier_ratio(mut self, ratio: f64) -> Self {
+        self.homography_inlier_ratio = ratio;
+        self
+    }
+
+    /// Triangulation-backed candidate-pose validation settings.
+    pub fn triangulation(mut self, config: TriangulationConfig) -> Self {
+        self.triangulation = config;
+        self
+    }
+
+    /// Finalize the builder.
+    pub fn build(self) -> TwoViewEstimator {
+        TwoViewEstimator {
+            epipolar: self.epipolar,
+            homography_ransac: self.homography_ransac,
+            homography_inlier_ratio: self.homography_inlier_ratio,
+            triangulation: self.triangulation,
+            refiner: self.refiner,
         }
     }
 }
@@ -1074,294 +1394,187 @@ pub fn ransac_homography(
     })
 }
 
-/// Estimate a two-view relative pose with model selection and triangulation.
-///
-/// Full ORB-SLAM-style bootstrap: F + H RANSAC in parallel, model selection,
-/// 4-candidate cheirality vote, LM refinement. Returns (R, t̂, inlier mask,
-/// 3D points). Translation is direction-only — monocular scale is unobservable.
-///
-/// # Implementation outline
-///
-/// 1. **Parallel epipolar + homography RANSAC** (`rayon::join`). Both consume
-///    the same correspondences; runtime = max(F, H) instead of sum. F goes
-///    8-point → enforce (σ,σ,0) → E, or 5-point essential when
-///    `config.use_5pt_essential` (skips the σ-projection round-trip).
-/// 2. **NEON-vectorized inner scorers**. Sampson (`score_inliers_f`) and
-///    homography reprojection (`score_inliers_h`) run a 2-lane f64 path
-///    on aarch64 over SoA `x_x[]` / `x_y[]` arrays — Vec2F64s are flattened
-///    once outside the RANSAC loops.
-/// 3. **Stagnation early-exit** on H. The standard adaptive cap
-///    `log(1-p)/log(1-w^s)` shrinks fast when w is high but stays at the
-///    ceiling on non-planar scenes (where H's job is just to lose the
-///    selection vote). A 200-iter no-improvement break shortcuts the wasted
-///    work; confidence dropped to 0.99 since H is a model-selection oracle,
-///    not a final-product matrix.
-/// 4. **LO+ for F** (Lebeda 2012). Outer-iterated expand-then-contract
-///    schedule (4×, 3.4×, …, 1×) × 3 outer rounds; strict-improve gate at
-///    the base threshold. **DEGENSAC** (Chum 2004) recovers from
-///    dominant-plane degeneracy via F = [e′]ₓ H when ≥75% of F's inliers
-///    are explained by a single plane.
-/// 5. **Two-stage cheirality vote**. `count_cheirality_fast` runs a
-///    closed-form midpoint-depth check across 4 candidates without an SVD
-///    or any allocation. The winning candidate alone gets the full
-///    `triangulate_inliers` pass (4×4 SVD per point). Cheap counts also
-///    drive the ambiguity-ratio guard so the test stays in one unit.
-/// 6. **LM (R, t) refinement** on SO(3) × S² minimizing Σ Sampson² over
-///    inliers, with optional threshold annealing.
-pub fn two_view_estimate(
-    x1: &[Vec2F64],
-    x2: &[Vec2F64],
-    k1: &Mat3F64,
-    k2: &Mat3F64,
-    config: &TwoViewConfig,
-) -> Result<TwoViewResult, TwoViewError> {
-    // Pick the epipolar estimator: 5-point essential (metric, on-manifold) or
-    // 8-point fundamental (pixel, requires `(σ,σ,0)` projection post-decomp).
-    // Both expose the same `RansacResult<Mat3F64>` shape — the only difference
-    // is what space the model lives in, handled below by the model variant.
-    //
-    // F-RANSAC and H-RANSAC are independent — same correspondences, different
-    // models. `rayon::join` runs them on two cores so wall time = max(F, H)
-    // instead of sum. On non-planar scenes H dominates (it can't shrink its
-    // adaptive cap because the inlier ratio stays low), so this win is real.
-    let (epi_res, h_res) = rayon::join(
-        || -> Result<(Vec<bool>, usize, TwoViewModel, Mat3F64), TwoViewError> {
-            if config.use_5pt_essential {
-                let res_e = ransac_essential_5pt(x1, x2, k1, k2, &config.ransac_f)?;
-                let e = res_e.model;
-                // 5pt produces an E that already satisfies the manifold
-                // constraints exactly (algebraic by construction). Skip
-                // enforce_essential_constraints to avoid an unnecessary SVD
-                // round-trip that can only add noise.
-                Ok((
-                    res_e.inliers,
-                    res_e.inlier_count,
-                    TwoViewModel::Essential(e),
-                    e,
-                ))
-            } else {
-                let res_f = ransac_fundamental(x1, x2, &config.ransac_f)?;
-                let f = res_f.model;
-                let e_raw = essential_from_fundamental(&f, k1, k2);
-                let e = enforce_essential_constraints(&e_raw);
-                Ok((
-                    res_f.inliers,
-                    res_f.inlier_count,
-                    TwoViewModel::Fundamental(f),
-                    e,
-                ))
-            }
-        },
-        || ransac_homography(x1, x2, &config.ransac_h),
-    );
-    let (epi_inliers, epi_count, epi_model_variant, e_decompose) = epi_res?;
-    let res_h = h_res?;
+impl TwoViewEstimator {
+    /// Estimate a two-view relative pose with model selection and
+    /// triangulation. Full ORB-SLAM-style bootstrap: F + H RANSAC in parallel,
+    /// model selection, 4-candidate cheirality vote, optional LM refinement.
+    /// Returns `(R, t̂, inlier mask, 3D points)`. Translation is direction-only
+    /// — monocular scale is unobservable.
+    ///
+    /// # Implementation outline
+    ///
+    /// 1. **Parallel epipolar + homography RANSAC** (`rayon::join`). Both
+    ///    consume the same correspondences; runtime = max(F, H) instead of
+    ///    sum. The epipolar arm runs whichever solver was registered on the
+    ///    builder ([`Fundamental8ptSolver`] by default, or
+    ///    [`EssentialNister5ptSolver`]).
+    /// 2. **NEON-vectorized inner scorers**. Sampson (`score_inliers_f`) and
+    ///    homography reprojection (`score_inliers_h`) run a 2-lane f64 path
+    ///    on aarch64 over SoA `x_x[]` / `x_y[]` arrays — Vec2F64s are
+    ///    flattened once outside the RANSAC loops.
+    /// 3. **Stagnation early-exit** on H. The standard adaptive cap
+    ///    `log(1-p)/log(1-w^s)` shrinks fast when w is high but stays at the
+    ///    ceiling on non-planar scenes (where H's job is just to lose the
+    ///    selection vote). A 200-iter no-improvement break shortcuts the
+    ///    wasted work; confidence dropped to 0.99 since H is a model-
+    ///    selection oracle, not a final-product matrix.
+    /// 4. **LO+ for F** (Lebeda 2012). Outer-iterated expand-then-contract
+    ///    schedule (4×, 3.4×, …, 1×) × 3 outer rounds; strict-improve gate at
+    ///    the base threshold. **DEGENSAC** (Chum 2004) recovers from
+    ///    dominant-plane degeneracy via F = [e′]ₓ H when ≥75% of F's inliers
+    ///    are explained by a single plane.
+    /// 5. **Two-stage cheirality vote**. `count_cheirality_fast` runs a
+    ///    closed-form midpoint-depth check across 4 candidates without an
+    ///    SVD or any allocation. The winning candidate alone gets the full
+    ///    `triangulate_inliers` pass (4×4 SVD per point). Cheap counts also
+    ///    drive the ambiguity-ratio guard so the test stays in one unit.
+    /// 6. **Pose refinement** through the registered [`PoseRefiner`]
+    ///    ([`LmRefiner`] by default; [`NoopRefiner`] to skip).
+    pub fn estimate(
+        &self,
+        x1: &[Vec2F64],
+        x2: &[Vec2F64],
+        k1: &Mat3F64,
+        k2: &Mat3F64,
+    ) -> Result<TwoViewResult, TwoViewError> {
+        // F-RANSAC and H-RANSAC are independent — same correspondences,
+        // different models. `rayon::join` runs them on two cores so wall time
+        // = max(F, H) instead of sum. On non-planar scenes H dominates (it
+        // can't shrink its adaptive cap because the inlier ratio stays low),
+        // so this win is real.
+        let (epi_res, h_res) = rayon::join(
+            || self.epipolar.estimate(x1, x2, k1, k2),
+            || ransac_homography(x1, x2, &self.homography_ransac),
+        );
+        let epi = epi_res?;
+        let res_h = h_res?;
 
-    let use_h = (res_h.inlier_count as f64) > config.homography_inlier_ratio * (epi_count as f64);
+        let use_h = (res_h.inlier_count as f64)
+            > self.homography_inlier_ratio * (epi.inlier_count as f64);
 
-    let k1_inv = k1.inverse();
-    let k2_inv = k2.inverse();
+        let k1_inv = k1.inverse();
+        let k2_inv = k2.inverse();
 
-    let tri_params = TriangulateParams {
-        k1_inv: &k1_inv,
-        k2_inv: &k2_inv,
-        config: &config.triangulation,
-    };
+        let tri_params = TriangulateParams {
+            k1_inv: &k1_inv,
+            k2_inv: &k2_inv,
+            config: &self.triangulation,
+        };
 
-    let mut best_pose = None;
-    let mut best_count = 0usize;
-    let mut second_count = 0usize;
-    let mut best_points = Vec::new();
-    let mut best_indices = Vec::new();
+        let mut best_pose = None;
+        let mut best_count = 0usize;
+        let mut second_count = 0usize;
+        let mut best_points = Vec::new();
+        let mut best_indices = Vec::new();
 
-    let normalize_ray = |k_inv: &Mat3F64, p: &Vec2F64| -> Vec3F64 {
-        let r = *k_inv * Vec3F64::new(p.x, p.y, 1.0);
-        r.normalize()
-    };
-    let rays1: Vec<Vec3F64> = x1.iter().map(|p| normalize_ray(&k1_inv, p)).collect();
-    let rays2_cam2: Vec<Vec3F64> = x2.iter().map(|p| normalize_ray(&k2_inv, p)).collect();
-    let min_parallax_sin2 = config
-        .triangulation
-        .min_parallax_deg
-        .to_radians()
-        .sin()
-        .powi(2);
+        let normalize_ray = |k_inv: &Mat3F64, p: &Vec2F64| -> Vec3F64 {
+            let r = *k_inv * Vec3F64::new(p.x, p.y, 1.0);
+            r.normalize()
+        };
+        let rays1: Vec<Vec3F64> = x1.iter().map(|p| normalize_ray(&k1_inv, p)).collect();
+        let rays2_cam2: Vec<Vec3F64> = x2.iter().map(|p| normalize_ray(&k2_inv, p)).collect();
+        let min_parallax_sin2 = self
+            .triangulation
+            .min_parallax_deg
+            .to_radians()
+            .sin()
+            .powi(2);
 
-    let (poses, inliers, model): (Vec<(Mat3F64, Vec3F64)>, Vec<bool>, TwoViewModel) = if use_h {
-        let h = res_h.model;
-        (
-            decompose_homography(&h, k1, k2),
-            res_h.inliers,
-            TwoViewModel::Homography(h),
-        )
-    } else {
-        (
-            decompose_essential(&e_decompose).to_vec(),
-            epi_inliers,
-            epi_model_variant,
-        )
-    };
-
-    // The ambiguity ratio (best/second) requires both counts to be measured
-    // by the same predicate, so winner and runner-up both go through the
-    // closed-form check. Mixing cheap (winner) with SVD (runner-up) counts
-    // would bias the ratio: cheap ≥ SVD systematically on degenerate parallax.
-    let mut best_idx = None;
-    for (idx, (r, t)) in poses.iter().enumerate() {
-        let count = count_cheirality_fast(&rays1, &rays2_cam2, &inliers, r, t, min_parallax_sin2);
-        if count >= config.triangulation.min_cheirality_count && count > best_count {
-            second_count = best_count;
-            best_count = count;
-            best_idx = Some(idx);
-        } else if count > second_count {
-            second_count = count;
-        }
-    }
-    if let Some(idx) = best_idx {
-        let (r, t) = poses[idx];
-        let (_full_count, points, indices) =
-            triangulate_inliers(x1, x2, &inliers, &r, &t, &tri_params);
-        best_pose = Some((r, t));
-        best_points = points;
-        best_indices = indices;
-    }
-
-    let (r, t) = match best_pose {
-        Some(p) => p,
-        None => return Err(TwoViewError::RansacFailure),
-    };
-
-    // Ambiguity guard: if the runner-up triangulates nearly as many points as
-    // the winner, the decomposition is not uniquely determined and committing
-    // to the winner would be a coin flip. Skip the check when disabled
-    // (max == 1.0) or when best_count is zero (already handled above).
-    let ambiguity_max = config.triangulation.cheirality_ambiguity_max;
-    if ambiguity_max < 1.0 && best_count > 0 {
-        let ratio = second_count as f64 / best_count as f64;
-        if ratio > ambiguity_max {
-            return Err(TwoViewError::AmbiguousCheirality {
-                best: best_count,
-                second: second_count,
-                ratio,
-                max_ratio: ambiguity_max,
-            });
-        }
-    }
-
-    // Non-linear refinement of (R, t) over the inlier Sampson cost.
-    // Parameterized on SO(3) × S²; guaranteed never to return a worse pose
-    // than its input.
-    //
-    // Pass 1 uses the *full* RANSAC inlier set — the loose universe of points
-    // that passed the base Sampson threshold. Subsequent passes tighten the
-    // inlier set using the schedule in `config.lm_anneal_thresholds`, each
-    // applied as a multiplier to the base RANSAC threshold. This is OpenCV
-    // USAC's LO+ pattern: the loose first pass corrects gross epipolar
-    // misalignment; each tighter pass discards borderline-Sampson points that
-    // were biasing the cost, and re-fits to the cleaner core. Empirically the
-    // single largest accuracy lever between us and OpenCV USAC.
-    let (r, t) = if config.lm_enabled {
-        let n_inl = inliers.iter().filter(|&&b| b).count();
-        let mut x1_inl: Vec<Vec2F64> = Vec::with_capacity(n_inl);
-        let mut x2_inl: Vec<Vec2F64> = Vec::with_capacity(n_inl);
-        // SoA companion for the NEON Sampson scorer used by the anneal passes.
-        let mut x1i_x: Vec<f64> = Vec::with_capacity(n_inl);
-        let mut x1i_y: Vec<f64> = Vec::with_capacity(n_inl);
-        let mut x2i_x: Vec<f64> = Vec::with_capacity(n_inl);
-        let mut x2i_y: Vec<f64> = Vec::with_capacity(n_inl);
-        for (i, &is_inl) in inliers.iter().enumerate() {
-            if is_inl {
-                x1_inl.push(x1[i]);
-                x2_inl.push(x2[i]);
-                x1i_x.push(x1[i].x);
-                x1i_y.push(x1[i].y);
-                x2i_x.push(x2[i].x);
-                x2i_y.push(x2[i].y);
-            }
-        }
-        if x1_inl.len() >= 6 {
-            // Pass 1: full inlier set, full LM iteration budget.
-            let (mut r_cur, mut t_cur) = refine_pose_lm(r, t, &x1_inl, &x2_inl, k1, k2, &config.lm);
-
-            // Annealed passes — only run on the F path; the H path's inlier
-            // set is in pixel-reproj space and uses different thresholds.
-            // Skip when the model isn't epipolar (homography winners stay at
-            // pass 1).
-            let do_anneal = matches!(
-                model,
-                TwoViewModel::Fundamental(_) | TwoViewModel::Essential(_)
-            ) && !config.lm_anneal_thresholds.is_empty();
-            if do_anneal {
-                // Tighter passes can converge in fewer iterations since the
-                // starting point is already near-optimal. Halve the budget.
-                let mut tight_cfg = config.lm;
-                tight_cfg.max_iters = (config.lm.max_iters / 2).max(3);
-                let k1_inv = k1.inverse();
-                let k2_inv_t = k2.inverse().transpose();
-                let base_t = config.ransac_f.threshold;
-                let n_inl = x1_inl.len();
-                let mut tight_mask = vec![false; n_inl];
-                let mut x1_tight: Vec<Vec2F64> = Vec::with_capacity(n_inl);
-                let mut x2_tight: Vec<Vec2F64> = Vec::with_capacity(n_inl);
-                for &mult in &config.lm_anneal_thresholds {
-                    let tight_t = base_t * mult;
-                    let tight_t_sq = tight_t * tight_t;
-                    // Build current F = K2⁻ᵀ [t]× R K1⁻¹ to re-score Sampson.
-                    let t_hat = Mat3F64::from_cols(
-                        Vec3F64::new(0.0, t_cur.z, -t_cur.y),
-                        Vec3F64::new(-t_cur.z, 0.0, t_cur.x),
-                        Vec3F64::new(t_cur.y, -t_cur.x, 0.0),
-                    );
-                    let f_cur = k2_inv_t * (t_hat * r_cur) * k1_inv;
-                    // Filter the original RANSAC inliers down to the tight
-                    // subset using the same NEON Sampson scorer as RANSAC.
-                    for s in tight_mask.iter_mut() {
-                        *s = false;
-                    }
-                    let (n_tight, _) = score_inliers_f(
-                        &f_cur,
-                        &x1i_x,
-                        &x1i_y,
-                        &x2i_x,
-                        &x2i_y,
-                        tight_t_sq,
-                        &mut tight_mask,
-                    );
-                    if n_tight < config.lm_anneal_min_inliers {
-                        // Tightened set too small — further annealing would
-                        // overfit. Keep the previous pass's (r, t).
-                        break;
-                    }
-                    x1_tight.clear();
-                    x2_tight.clear();
-                    for (k, &keep) in tight_mask.iter().enumerate() {
-                        if keep {
-                            x1_tight.push(x1_inl[k]);
-                            x2_tight.push(x2_inl[k]);
-                        }
-                    }
-                    let (r_new, t_new) =
-                        refine_pose_lm(r_cur, t_cur, &x1_tight, &x2_tight, k1, k2, &tight_cfg);
-                    r_cur = r_new;
-                    t_cur = t_new;
-                }
-            }
-            (r_cur, t_cur)
+        let (poses, inliers, model): (Vec<(Mat3F64, Vec3F64)>, Vec<bool>, TwoViewModel) = if use_h
+        {
+            let h = res_h.model;
+            (
+                decompose_homography(&h, k1, k2),
+                res_h.inliers,
+                TwoViewModel::Homography(h),
+            )
         } else {
-            (r, t)
-        }
-    } else {
-        (r, t)
-    };
+            (
+                decompose_essential(&epi.e).to_vec(),
+                epi.inliers,
+                epi.model,
+            )
+        };
 
-    Ok(TwoViewResult {
-        model,
-        rotation: r,
-        translation: t,
-        points3d: best_points,
-        inlier_indices: best_indices,
-        inliers,
-    })
+        // The ambiguity ratio (best/second) requires both counts to be
+        // measured by the same predicate, so winner and runner-up both go
+        // through the closed-form check. Mixing cheap (winner) with SVD
+        // (runner-up) counts would bias the ratio: cheap ≥ SVD systematically
+        // on degenerate parallax.
+        let mut best_idx = None;
+        for (idx, (r, t)) in poses.iter().enumerate() {
+            let count =
+                count_cheirality_fast(&rays1, &rays2_cam2, &inliers, r, t, min_parallax_sin2);
+            if count >= self.triangulation.min_cheirality_count && count > best_count {
+                second_count = best_count;
+                best_count = count;
+                best_idx = Some(idx);
+            } else if count > second_count {
+                second_count = count;
+            }
+        }
+        if let Some(idx) = best_idx {
+            let (r, t) = poses[idx];
+            let (_full_count, points, indices) =
+                triangulate_inliers(x1, x2, &inliers, &r, &t, &tri_params);
+            best_pose = Some((r, t));
+            best_points = points;
+            best_indices = indices;
+        }
+
+        let (r, t) = match best_pose {
+            Some(p) => p,
+            None => return Err(TwoViewError::RansacFailure),
+        };
+
+        // Ambiguity guard: if the runner-up triangulates nearly as many
+        // points as the winner, the decomposition is not uniquely determined
+        // and committing to the winner would be a coin flip. Skip the check
+        // when disabled (max == 1.0) or when best_count is zero.
+        let ambiguity_max = self.triangulation.cheirality_ambiguity_max;
+        if ambiguity_max < 1.0 && best_count > 0 {
+            let ratio = second_count as f64 / best_count as f64;
+            if ratio > ambiguity_max {
+                return Err(TwoViewError::AmbiguousCheirality {
+                    best: best_count,
+                    second: second_count,
+                    ratio,
+                    max_ratio: ambiguity_max,
+                });
+            }
+        }
+
+        let inlier_count = if use_h {
+            res_h.inlier_count
+        } else {
+            epi.inlier_count
+        };
+        let residual_threshold = if use_h {
+            self.homography_ransac.threshold
+        } else {
+            epi.residual_threshold
+        };
+        let ctx = RefineContext {
+            x1,
+            x2,
+            k1,
+            k2,
+            inliers: &inliers,
+            inlier_count,
+            residual_threshold,
+            model,
+        };
+        let (r, t) = self.refiner.refine(r, t, &ctx);
+
+        Ok(TwoViewResult {
+            model,
+            rotation: r,
+            translation: t,
+            points3d: best_points,
+            inlier_indices: best_indices,
+            inliers,
+        })
+    }
 }
 
 /// Twice the signed area of the triangle (a, b, c) — zero iff collinear.
@@ -2375,20 +2588,22 @@ mod tests {
     }
 
     #[test]
-    fn test_two_view_config_default_nests_triangulation_defaults() {
-        let config = TwoViewConfig::default();
-        assert_eq!(config.triangulation.min_parallax_deg, 1.0);
-        assert_eq!(config.triangulation.max_midpoint_gap, 1.0);
-        assert_eq!(config.triangulation.max_reprojection_error, 2.0);
-        assert_eq!(config.triangulation.min_cheirality_count, 1);
-        assert_eq!(config.triangulation.cheirality_ambiguity_max, 0.7);
+    fn test_default_triangulation_config_values() {
+        // Defaults the builder will pick up unless overridden via
+        // `TwoViewEstimatorBuilder::triangulation`.
+        let tri = TriangulationConfig::default();
+        assert_eq!(tri.min_parallax_deg, 1.0);
+        assert_eq!(tri.max_midpoint_gap, 1.0);
+        assert_eq!(tri.max_reprojection_error, 2.0);
+        assert_eq!(tri.min_cheirality_count, 1);
+        assert_eq!(tri.cheirality_ambiguity_max, 0.7);
     }
 
     /// End-to-end two-view pose estimation on real EuRoC MH_01_easy images.
     ///
     /// Reads two grayscale frames, runs ORB detection + matching, estimates
-    /// the relative pose via `two_view_estimate`, and compares against
-    /// ground truth camera-frame pose.
+    /// the relative pose via `TwoViewEstimator::estimate`, and compares
+    /// against ground truth camera-frame pose.
     ///
     /// Frame pair: 1403636633263555584 → 1403636634263555584 (20 frames apart).
     /// Ground truth camera-frame relative pose (Vicon-derived; see
@@ -2470,34 +2685,30 @@ mod tests {
             Vec3F64::new(367.215, 248.375, 1.0),
         );
 
-        let config = TwoViewConfig {
-            ransac_f: RansacParams {
-                max_iterations: 2000,
-                threshold: 1.0,
-                min_inliers: 15,
-                random_seed: Some(42),
-                refit: true,
-            },
-            ransac_h: RansacParams {
+        let est = TwoViewEstimator::builder()
+            .epipolar_solver(Fundamental8ptSolver {
+                ransac: RansacParams {
+                    max_iterations: 2000,
+                    threshold: 1.0,
+                    min_inliers: 15,
+                    random_seed: Some(42),
+                    refit: true,
+                },
+            })
+            .homography_ransac(RansacParams {
                 max_iterations: 2000,
                 threshold: 1.0,
                 min_inliers: 8,
                 random_seed: Some(42),
                 refit: false,
-            },
-            homography_inlier_ratio: 0.8,
-            triangulation: TriangulationConfig {
+            })
+            .triangulation(TriangulationConfig {
                 min_parallax_deg: 0.5,
                 ..TriangulationConfig::default()
-            },
-            lm_enabled: true,
-            lm: LmPoseConfig::default(),
-            use_5pt_essential: false,
-            lm_anneal_thresholds: vec![0.5, 0.25],
-            lm_anneal_min_inliers: 30,
-        };
+            })
+            .build();
 
-        let result = two_view_estimate(&pts1, &pts2, &k, &k, &config).unwrap();
+        let result = est.estimate(&pts1, &pts2, &k, &k).unwrap();
 
         // Should select fundamental model (general motion, not planar).
         assert!(
@@ -2536,12 +2747,12 @@ mod tests {
         );
     }
 
-    /// `use_5pt_essential = true` plumbs through `two_view_estimate`:
-    /// the returned model variant must be `Essential`, the recovered (R, t)
-    /// must hit ground truth, and triangulation must produce points. The 5pt
-    /// path skips the F→E SVD round-trip (since 5pt builds E on-manifold),
-    /// so for the same RANSAC budget it's expected to match or beat the F
-    /// path on small-motion synthetic scenes.
+    /// Plugging in [`EssentialNister5ptSolver`] via the builder must:
+    /// the returned model variant is `Essential`, the recovered (R, t) hits
+    /// ground truth, and triangulation produces points. The 5pt path skips
+    /// the F→E SVD round-trip (since 5pt builds E on-manifold), so for the
+    /// same RANSAC budget it's expected to match or beat the F path on
+    /// small-motion synthetic scenes.
     #[test]
     fn test_two_view_estimate_with_5pt_essential() {
         // Synthetic scene: Ry(5°), t = (0.5, 0, 0), pinhole at fx=500.
@@ -2599,35 +2810,32 @@ mod tests {
             ));
         }
 
-        let config = TwoViewConfig {
-            ransac_f: RansacParams {
-                max_iterations: 500,
-                threshold: 2.0,
-                min_inliers: 30,
-                random_seed: Some(42),
-                refit: false,
-            },
-            ransac_h: RansacParams {
+        let est = TwoViewEstimator::builder()
+            .epipolar_solver(EssentialNister5ptSolver {
+                ransac: RansacParams {
+                    max_iterations: 500,
+                    threshold: 2.0,
+                    min_inliers: 30,
+                    random_seed: Some(42),
+                    refit: false,
+                },
+            })
+            .homography_ransac(RansacParams {
                 max_iterations: 500,
                 threshold: 2.0,
                 min_inliers: 8,
                 random_seed: Some(42),
                 refit: false,
-            },
+            })
             // Force the epipolar branch even if H scores comparably.
-            homography_inlier_ratio: 1.5,
-            triangulation: TriangulationConfig {
+            .homography_inlier_ratio(1.5)
+            .triangulation(TriangulationConfig {
                 min_parallax_deg: 0.1,
                 ..TriangulationConfig::default()
-            },
-            lm_enabled: true,
-            lm: LmPoseConfig::default(),
-            use_5pt_essential: true,
-            lm_anneal_thresholds: vec![0.5, 0.25],
-            lm_anneal_min_inliers: 30,
-        };
+            })
+            .build();
 
-        let result = two_view_estimate(&x1, &x2, &k, &k, &config).unwrap();
+        let result = est.estimate(&x1, &x2, &k, &k).unwrap();
 
         assert!(
             matches!(result.model, TwoViewModel::Essential(_)),
@@ -2702,8 +2910,8 @@ mod tests {
             ));
         }
 
-        let config = TwoViewConfig::default();
-        two_view_estimate(&x1, &x2, &k, &k, &config)
+        TwoViewEstimator::default()
+            .estimate(&x1, &x2, &k, &k)
             .expect("default 0.7 ambiguity threshold must accept well-conditioned motion");
     }
 
@@ -2755,26 +2963,27 @@ mod tests {
         // to document that this path needs a stronger synthetic case — but
         // typical runs of this near-pure-rotation setup produce multiple
         // cheirality-passing candidates.
-        let config = TwoViewConfig {
-            ransac_f: RansacParams {
+        let est = TwoViewEstimator::builder()
+            .epipolar_solver(Fundamental8ptSolver {
+                ransac: RansacParams {
+                    min_inliers: 8,
+                    random_seed: Some(0),
+                    ..RansacParams::default()
+                },
+            })
+            .homography_ransac(RansacParams {
                 min_inliers: 8,
                 random_seed: Some(0),
                 ..RansacParams::default()
-            },
-            ransac_h: RansacParams {
-                min_inliers: 8,
-                random_seed: Some(0),
-                ..RansacParams::default()
-            },
-            triangulation: TriangulationConfig {
+            })
+            .triangulation(TriangulationConfig {
                 min_parallax_deg: 0.0,
                 cheirality_ambiguity_max: 0.0,
                 ..TriangulationConfig::default()
-            },
-            ..TwoViewConfig::default()
-        };
+            })
+            .build();
 
-        match two_view_estimate(&x1, &x2, &k, &k, &config) {
+        match est.estimate(&x1, &x2, &k, &k) {
             Err(TwoViewError::AmbiguousCheirality {
                 best,
                 second,

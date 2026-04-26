@@ -102,7 +102,7 @@ def test_two_view_pose_recovers_mh01_ground_truth(mh01_matches):
     # motion, not a planar scene — the epipolar branch (E or F) must win
     # over the homography branch. Default config uses the 8-point fundamental
     # solver so we expect "fundamental"; allow "essential" for callers that
-    # pass `use_5pt_essential=True` explicitly.
+    # pass `solver="essential_5pt"` explicitly.
     assert pose.model_type in ("essential", "fundamental"), (
         f"expected epipolar model, got {pose.model_type}"
     )
@@ -166,3 +166,107 @@ def test_two_view_pose_rejects_bad_intrinsics():
     bad_k = np.eye(4, dtype=np.float64)
     with pytest.raises(ValueError, match=r"\(3, 3\)"):
         K.k3d.two_view_estimate(pts1, pts2, bad_k)
+
+
+# ---------------------------------------------------------------------------
+# TwoViewEstimator pyclass — mirrors the Rust trait/builder API.
+# ---------------------------------------------------------------------------
+
+
+def test_estimator_default_matches_convenience_function(mh01_matches):
+    """`TwoViewEstimator(solver=Fundamental8ptSolver(seed=X), seed=X)` is the
+    same pipeline the convenience wrapper picks by default. The solver kwarg
+    seeds the F-arm, the top-level `seed` kwarg seeds the H-arm — both must
+    match `seed=X` on the convenience function for bit-equal results."""
+    pts1, pts2 = mh01_matches
+
+    via_fn = K.k3d.two_view_estimate(pts1, pts2, K_MH01, seed=42)
+    est = K.k3d.TwoViewEstimator(
+        solver=K.k3d.Fundamental8ptSolver(seed=42),
+        seed=42,
+    )
+    via_class = est.estimate(pts1, pts2, K_MH01)
+
+    assert via_class.model_type == via_fn.model_type
+    np.testing.assert_allclose(via_class.rotation, via_fn.rotation, atol=1e-12)
+    np.testing.assert_allclose(via_class.translation, via_fn.translation, atol=1e-12)
+    assert via_class.inlier_count == via_fn.inlier_count
+
+
+def test_estimator_with_essential_5pt_solver(mh01_matches):
+    """Plug in the Nistér 5pt solver via the pyclass, verify it still recovers
+    a sensible MH01 pose. Cross-check that string-kwarg `solver="essential_5pt"`
+    on the convenience wrapper produces the same result with the same seed."""
+    pts1, pts2 = mh01_matches
+
+    solver = K.k3d.EssentialNister5ptSolver(
+        max_iterations=2000, threshold=1.0, min_inliers=15, seed=42
+    )
+    est = K.k3d.TwoViewEstimator(solver=solver, seed=42)
+    pose = est.estimate(pts1, pts2, K_MH01)
+
+    via_fn = K.k3d.two_view_estimate(
+        pts1, pts2, K_MH01, solver="essential_5pt", seed=42
+    )
+    assert pose.model_type == via_fn.model_type
+    np.testing.assert_allclose(pose.rotation, via_fn.rotation, atol=1e-12)
+    np.testing.assert_allclose(pose.translation, via_fn.translation, atol=1e-12)
+
+    # Sanity: still close to GT.
+    angle_deg = _rotation_angle_deg(pose.rotation)
+    assert abs(angle_deg - GT_ROT_DEG) < 5.0
+
+
+def test_estimator_with_noop_refiner_skips_lm(mh01_matches):
+    """`refiner=NoopRefiner()` skips LM polish — pose differs from the
+    LM-refined default but is still close to GT (cheirality vote alone)."""
+    pts1, pts2 = mh01_matches
+
+    est_lm = K.k3d.TwoViewEstimator(seed=42)
+    pose_lm = est_lm.estimate(pts1, pts2, K_MH01)
+
+    est_raw = K.k3d.TwoViewEstimator(refiner=K.k3d.NoopRefiner(), seed=42)
+    pose_raw = est_raw.estimate(pts1, pts2, K_MH01)
+
+    # LM should move the rotation by *some* amount on real data — if the two
+    # paths produce bit-identical rotations, refiner plumbing is broken.
+    assert not np.allclose(pose_lm.rotation, pose_raw.rotation, atol=1e-12)
+
+    # Raw cheirality-vote pose should still be in the right ballpark.
+    angle_deg = _rotation_angle_deg(pose_raw.rotation)
+    assert abs(angle_deg - GT_ROT_DEG) < 8.0
+
+
+def test_estimator_rejects_bad_solver_type():
+    """Passing a non-solver object as `solver` raises TypeError."""
+    with pytest.raises(TypeError, match="must be a Fundamental8ptSolver"):
+        K.k3d.TwoViewEstimator(solver="fundamental_8pt")  # str, not a solver
+
+    with pytest.raises(TypeError, match="LmRefiner or NoopRefiner"):
+        K.k3d.TwoViewEstimator(refiner=42)
+
+
+def test_estimator_estimate_validates_input_shapes():
+    """Shape validation on `estimate()` mirrors the convenience function."""
+    est = K.k3d.TwoViewEstimator(seed=42)
+    pts1 = np.zeros((10, 2), dtype=np.float64)
+    pts2 = np.zeros((11, 2), dtype=np.float64)
+    with pytest.raises(ValueError, match="matching length"):
+        est.estimate(pts1, pts2, K_MH01)
+
+
+def test_solver_repr_round_trips():
+    """Smoke-test the pyclass __repr__ — useful for notebook debugging."""
+    s = K.k3d.Fundamental8ptSolver(max_iterations=1500, threshold=0.5, seed=7)
+    r = repr(s)
+    assert "Fundamental8ptSolver" in r
+    assert "max_iterations=1500" in r
+
+    e = K.k3d.EssentialNister5ptSolver(seed=99)
+    assert "EssentialNister5pt" in repr(e)
+
+    lm = K.k3d.LmRefiner(max_iters=20, anneal_thresholds=[0.4])
+    assert "max_iters=20" in repr(lm)
+    assert "[0.4]" in repr(lm)
+
+    assert repr(K.k3d.NoopRefiner()) == "NoopRefiner()"

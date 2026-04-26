@@ -22,9 +22,17 @@ table, Δ=0 ns at both frames):
 Intrinsics: EuRoC MH_01_easy cam0
     fx=458.654, fy=457.296, cx=367.215, cy=248.375
 
+Accuracy reporting: rotation/translation errors are reported as the median
+across `N_POSE_SEEDS` (default 20) RANSAC seeds. Single-seed numbers are
+misleading — kornia-rs honors `seed=` and produces a real distribution,
+while OpenCV USAC has its own internal deterministic seeding (PROSAC,
+quality-ordered sampling) that ignores `cv2.setRNGSeed`. For OpenCV USAC
+rows the IQR is therefore zero by construction; the value reported is the
+single number that backend always returns on this match set.
+
 Usage:
-    python kornia-py/benchmarks/bench_two_view_pose.py           # 50 timing iters, seed 42
-    N_ITERS=200 python kornia-py/benchmarks/bench_two_view_pose.py
+    python kornia-py/benchmarks/bench_two_view_pose.py           # 50 timing iters, 20 pose seeds
+    N_ITERS=200 N_POSE_SEEDS=50 python kornia-py/benchmarks/bench_two_view_pose.py
 """
 from __future__ import annotations
 
@@ -57,6 +65,7 @@ GT_T_DIR /= np.linalg.norm(GT_T_DIR)
 
 N_ITERS = int(os.environ.get("N_ITERS", "50"))
 N_WARMUP = int(os.environ.get("N_WARMUP", "5"))
+N_POSE_SEEDS = int(os.environ.get("N_POSE_SEEDS", "20"))
 SEED = 42
 
 
@@ -76,8 +85,9 @@ class Result:
     t_detect_ms: float
     t_match_ms: float
     t_pose_ms: float
-    rot_err_deg: float
-    t_err_deg: float
+    rot_err_deg: float       # median across N_POSE_SEEDS
+    rot_err_iqr: float       # P75 - P25 (zero for OpenCV USAC — internal RNG ignores cv2.setRNGSeed)
+    t_err_deg: float         # median across N_POSE_SEEDS
     n_matches: int
     n_inliers: int
 
@@ -100,10 +110,11 @@ def median_ms(fn, n=N_ITERS, warmup=N_WARMUP) -> float:
 def bench_kornia(
     img1: np.ndarray,
     img2: np.ndarray,
-    use_5pt: bool = False,
+    solver: str = "fundamental_8pt",
     label: str = "kornia-rs",
 ) -> Result:
-    # Single run for quality + inlier counts.
+    # Single run for inlier counts (any seed will do — accuracy is reported
+    # as a distribution further down).
     f1 = K.features.orb_detect_and_compute(img1)
     f2 = K.features.orb_detect_and_compute(img2)
 
@@ -114,13 +125,23 @@ def bench_kornia(
     pts1 = np.ascontiguousarray(f1.keypoints_xy[m[:, 0]], dtype=np.float64)
     pts2 = np.ascontiguousarray(f2.keypoints_xy[m[:, 1]], dtype=np.float64)
 
-    pose = K.k3d.two_view_estimate(
-        pts1, pts2, K_MH01,
-        seed=SEED, min_parallax_deg=0.5,
-        use_5pt_essential=use_5pt,
-    )
+    # Accuracy distribution over N_POSE_SEEDS RANSAC seeds — single-seed
+    # numbers are misleading because kornia honors `seed=` and produces a
+    # real distribution. Report median + IQR.
+    rot_errs, t_errs, inliers = [], [], 0
+    for s in range(N_POSE_SEEDS):
+        pose = K.k3d.two_view_estimate(
+            pts1, pts2, K_MH01,
+            seed=s, min_parallax_deg=0.5,
+            solver=solver,
+        )
+        rot_errs.append(abs(rotation_angle_deg(pose.rotation) - GT_ROT_DEG))
+        t_errs.append(t_direction_error_deg(pose.translation, GT_T_DIR))
+        inliers = int(pose.inlier_count)  # last one — counts barely move with seed
+    rot_arr = np.asarray(rot_errs)
 
-    # Timing medians for stable numbers.
+    # Timing medians for stable numbers — pinned to SEED so timing isn't
+    # measuring the seed-sweep variance, just the per-call cost.
     t_det = median_ms(lambda: (
         K.features.orb_detect_and_compute(img1),
         K.features.orb_detect_and_compute(img2),
@@ -131,7 +152,7 @@ def bench_kornia(
     t_pose = median_ms(lambda: K.k3d.two_view_estimate(
         pts1, pts2, K_MH01,
         seed=SEED, min_parallax_deg=0.5,
-        use_5pt_essential=use_5pt,
+        solver=solver,
     ))
 
     return Result(
@@ -139,10 +160,11 @@ def bench_kornia(
         t_detect_ms=t_det,
         t_match_ms=t_mat,
         t_pose_ms=t_pose,
-        rot_err_deg=abs(rotation_angle_deg(pose.rotation) - GT_ROT_DEG),
-        t_err_deg=t_direction_error_deg(pose.translation, GT_T_DIR),
+        rot_err_deg=float(np.median(rot_arr)),
+        rot_err_iqr=float(np.percentile(rot_arr, 75) - np.percentile(rot_arr, 25)),
+        t_err_deg=float(np.median(t_errs)),
         n_matches=len(pts1),
-        n_inliers=int(pose.inlier_count),
+        n_inliers=inliers,
     )
 
 
@@ -192,10 +214,25 @@ def bench_opencv(
     pts1 = np.float64([k1[m.queryIdx].pt for m in good])
     pts2 = np.float64([k2[m.trainIdx].pt for m in good])
 
-    E, mask = cv2.findEssentialMat(
-        pts1, pts2, K_MH01, method=method, prob=0.9999, threshold=1.0
-    )
-    n_inliers_e, R, t, mask_pose = cv2.recoverPose(E, pts1, pts2, K_MH01, mask=mask)
+    # Accuracy distribution — try N_POSE_SEEDS via cv2.setRNGSeed. USAC
+    # variants ignore this seed (internal deterministic sampling), so the
+    # IQR will be zero by construction; report it anyway for parity with
+    # the kornia rows.
+    rot_errs, t_errs, inliers = [], [], 0
+    for s in range(N_POSE_SEEDS):
+        cv2.setRNGSeed(s)
+        E, mask = cv2.findEssentialMat(
+            pts1, pts2, K_MH01, method=method, prob=0.9999, threshold=1.0
+        )
+        if E is None:
+            continue
+        if E.shape != (3, 3):
+            E = E[:3]  # cv2 occasionally returns stacked (3*k, 3) candidates
+        n_inliers_e, R, t, _ = cv2.recoverPose(E, pts1, pts2, K_MH01, mask=mask)
+        rot_errs.append(abs(rotation_angle_deg(R) - GT_ROT_DEG))
+        t_errs.append(t_direction_error_deg(t.flatten(), GT_T_DIR))
+        inliers = int(n_inliers_e)
+    rot_arr = np.asarray(rot_errs)
 
     # Timing medians.
     def det():
@@ -219,22 +256,30 @@ def bench_opencv(
         t_detect_ms=median_ms(det),
         t_match_ms=median_ms(match),
         t_pose_ms=median_ms(pose),
-        rot_err_deg=abs(rotation_angle_deg(R) - GT_ROT_DEG),
-        t_err_deg=t_direction_error_deg(t.flatten(), GT_T_DIR),
+        rot_err_deg=float(np.median(rot_arr)),
+        rot_err_iqr=float(np.percentile(rot_arr, 75) - np.percentile(rot_arr, 25)),
+        t_err_deg=float(np.median(t_errs)),
         n_matches=len(pts1),
-        n_inliers=int(n_inliers_e),
+        n_inliers=inliers,
     )
 
 
 def print_table(results: list[Result]) -> None:
-    hdr = f"{'backend':<18} {'detect(ms)':>11} {'match(ms)':>10} {'pose(ms)':>10} {'total(ms)':>11} {'rot_err°':>9} {'t_err°':>8} {'matches':>8} {'inliers':>8}"
+    hdr = (
+        f"{'backend':<18} {'detect(ms)':>11} {'match(ms)':>10} {'pose(ms)':>10} "
+        f"{'total(ms)':>11} {'rot°(med)':>10} {'rot°(iqr)':>10} {'t°(med)':>8} "
+        f"{'matches':>8} {'inliers':>8}"
+    )
     print(hdr)
     print("-" * len(hdr))
     for r in results:
+        # OpenCV USAC has IQR == 0 by construction (deterministic sampling).
+        # Annotate with "(det)" so the zero isn't read as suspicious.
+        iqr_cell = f"{r.rot_err_iqr:.3f}" if r.rot_err_iqr > 0 else "(det)"
         print(
             f"{r.name:<18} {r.t_detect_ms:>11.3f} {r.t_match_ms:>10.3f} "
             f"{r.t_pose_ms:>10.3f} {r.t_total_ms:>11.3f} "
-            f"{r.rot_err_deg:>9.3f} {r.t_err_deg:>8.3f} "
+            f"{r.rot_err_deg:>10.3f} {iqr_cell:>10} {r.t_err_deg:>8.3f} "
             f"{r.n_matches:>8d} {r.n_inliers:>8d}"
         )
     # For multi-backend runs (kornia + one or more opencv variants), report
@@ -262,7 +307,9 @@ def main() -> None:
 
     print(f"SLAM bootstrap baseline — EuRoC MH_01 pair ({img1.shape[1]}x{img1.shape[0]})")
     print(f"Ground truth:  rot={GT_ROT_DEG}°  t_dir={GT_T_DIR.tolist()}")
-    print(f"Timing: median over {N_ITERS} iterations ({N_WARMUP} warmup)")
+    print(f"Timing:   median over {N_ITERS} iterations ({N_WARMUP} warmup)")
+    print(f"Accuracy: median across {N_POSE_SEEDS} RANSAC seeds. IQR=(det) marks "
+          f"OpenCV USAC rows whose internal RNG ignores cv2.setRNGSeed.")
     print()
 
     # kornia-rs vs every RANSAC/USAC method OpenCV ships. All OpenCV rows
@@ -280,12 +327,12 @@ def main() -> None:
     ]
     # Default config uses the 8-point fundamental solver — faster pose
     # (1.4 ms vs 3.2 ms) and cleaner rotation (0.04° vs 0.16°) on this
-    # bench. The 5-point row stays for direct comparison: callers opt in
-    # with `use_5pt_essential=True` when translation-direction accuracy
-    # is the priority (3.39° vs 4.17°).
+    # bench. The 5-point row stays for direct comparison: callers pass
+    # `solver="essential_5pt"` when translation-direction accuracy is the
+    # priority (3.39° vs 4.17°).
     results = [
-        bench_kornia(img1, img2, use_5pt=False, label="kornia-rs"),
-        bench_kornia(img1, img2, use_5pt=True,  label="kornia-rs-5pt"),
+        bench_kornia(img1, img2, solver="fundamental_8pt", label="kornia-rs"),
+        bench_kornia(img1, img2, solver="essential_5pt",   label="kornia-rs-5pt"),
     ]
     results.extend(
         bench_opencv(img1, img2, method=m, label=label)
