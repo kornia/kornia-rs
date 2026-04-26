@@ -196,7 +196,12 @@ fn result_to_py(py: Python<'_>, result: TwoViewResult) -> PyTwoViewPose {
 ///     seed: optional RNG seed for deterministic runs.
 ///     refit: re-fit across all inliers after the main loop (LO-RANSAC).
 ///         Default True. Only the homography arm honors this today.
-#[pyclass(name = "Fundamental8ptSolver", module = "kornia_rs.k3d", frozen, skip_from_py_object)]
+#[pyclass(
+    name = "Fundamental8ptSolver",
+    module = "kornia_rs.k3d",
+    frozen,
+    skip_from_py_object
+)]
 #[derive(Clone)]
 pub struct PyFundamental8ptSolver {
     inner: Fundamental8ptSolver,
@@ -264,7 +269,12 @@ impl PyFundamental8ptSolver {
 /// Orin) — the 10-degree polynomial solve is the dominant factor.
 ///
 /// Args mirror [`PyFundamental8ptSolver`].
-#[pyclass(name = "EssentialNister5ptSolver", module = "kornia_rs.k3d", frozen, skip_from_py_object)]
+#[pyclass(
+    name = "EssentialNister5ptSolver",
+    module = "kornia_rs.k3d",
+    frozen,
+    skip_from_py_object
+)]
 #[derive(Clone)]
 pub struct PyEssentialNister5ptSolver {
     inner: EssentialNister5ptSolver,
@@ -329,7 +339,12 @@ impl PyEssentialNister5ptSolver {
 ///         pass. Empty list disables annealing. Default `[0.5, 0.25]`.
 ///     anneal_min_inliers: minimum inliers required to admit an annealed
 ///         pass. Default 30.
-#[pyclass(name = "LmRefiner", module = "kornia_rs.k3d", frozen, skip_from_py_object)]
+#[pyclass(
+    name = "LmRefiner",
+    module = "kornia_rs.k3d",
+    frozen,
+    skip_from_py_object
+)]
 #[derive(Clone)]
 pub struct PyLmRefiner {
     inner: LmRefiner,
@@ -391,7 +406,12 @@ impl PyLmRefiner {
 /// Pass-through refiner — returns the cheirality-vote pose unchanged.
 /// Use for measuring raw F/E pipeline accuracy or when downstream code owns
 /// its own refinement.
-#[pyclass(name = "NoopRefiner", module = "kornia_rs.k3d", frozen, skip_from_py_object)]
+#[pyclass(
+    name = "NoopRefiner",
+    module = "kornia_rs.k3d",
+    frozen,
+    skip_from_py_object
+)]
 #[derive(Clone, Copy, Default)]
 pub struct PyNoopRefiner;
 

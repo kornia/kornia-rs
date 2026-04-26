@@ -421,8 +421,9 @@ impl PoseRefiner for LmRefiner {
                     x2_tight.push(x2_inl[k]);
                 }
             }
-            let (r_new, t_new) =
-                refine_pose_lm(r_cur, t_cur, &x1_tight, &x2_tight, ctx.k1, ctx.k2, &tight_cfg);
+            let (r_new, t_new) = refine_pose_lm(
+                r_cur, t_cur, &x1_tight, &x2_tight, ctx.k1, ctx.k2, &tight_cfg,
+            );
             r_cur = r_new;
             t_cur = t_new;
         }
@@ -1449,8 +1450,8 @@ impl TwoViewEstimator {
         let epi = epi_res?;
         let res_h = h_res?;
 
-        let use_h = (res_h.inlier_count as f64)
-            > self.homography_inlier_ratio * (epi.inlier_count as f64);
+        let use_h =
+            (res_h.inlier_count as f64) > self.homography_inlier_ratio * (epi.inlier_count as f64);
 
         let k1_inv = k1.inverse();
         let k2_inv = k2.inverse();
@@ -1480,8 +1481,7 @@ impl TwoViewEstimator {
             .sin()
             .powi(2);
 
-        let (poses, inliers, model): (Vec<(Mat3F64, Vec3F64)>, Vec<bool>, TwoViewModel) = if use_h
-        {
+        let (poses, inliers, model): (Vec<(Mat3F64, Vec3F64)>, Vec<bool>, TwoViewModel) = if use_h {
             let h = res_h.model;
             (
                 decompose_homography(&h, k1, k2),
@@ -1489,11 +1489,7 @@ impl TwoViewEstimator {
                 TwoViewModel::Homography(h),
             )
         } else {
-            (
-                decompose_essential(&epi.e).to_vec(),
-                epi.inliers,
-                epi.model,
-            )
+            (decompose_essential(&epi.e).to_vec(), epi.inliers, epi.model)
         };
 
         // The ambiguity ratio (best/second) requires both counts to be
