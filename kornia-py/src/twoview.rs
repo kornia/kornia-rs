@@ -103,7 +103,7 @@ impl PyTwoViewPose {
     homography_inlier_ratio=0.8,
     min_parallax_deg=1.0,
     seed=None,
-    use_5pt_essential=true,
+    use_5pt_essential=false,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn two_view_estimate_py(

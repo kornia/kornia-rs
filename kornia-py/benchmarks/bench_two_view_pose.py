@@ -278,14 +278,14 @@ def main() -> None:
         ("opencv-usac-pro",  cv2.USAC_PROSAC),   # quality-ordered sampling
         ("opencv-usac-par",  cv2.USAC_PARALLEL), # multithreaded
     ]
-    # Default config uses the 5-point essential solver — the on-manifold path
-    # that gets the best translation accuracy of any backend in this bench.
-    # The 8-point row stays for direct comparison vs OpenCV's `cv2.RANSAC`
-    # legacy fundamental path (it's also what callers get with
-    # `use_5pt_essential=False`).
+    # Default config uses the 8-point fundamental solver — kornia-slam's
+    # bootstrap consumes F downstream. The 5-point row stays for direct
+    # comparison vs the on-manifold essential path (callers opt in with
+    # `use_5pt_essential=True` when translation-direction priority matters
+    # more than F-availability).
     results = [
-        bench_kornia(img1, img2, use_5pt=True,  label="kornia-rs"),
-        bench_kornia(img1, img2, use_5pt=False, label="kornia-rs-8pt"),
+        bench_kornia(img1, img2, use_5pt=False, label="kornia-rs"),
+        bench_kornia(img1, img2, use_5pt=True,  label="kornia-rs-5pt"),
     ]
     results.extend(
         bench_opencv(img1, img2, method=m, label=label)

@@ -8,10 +8,10 @@
 //! Correspondences (pixel space)
 //!     │
 //!     │   ── rayon::join ──────────────────────────────────────────────
-//!     ├─→ RANSAC + 5-point Nistér → E (on-manifold by construction)
+//!     ├─→ RANSAC + 8-point fundamental → F → enforce(σ,σ,0) → E (default)
 //!     │   (NEON Sampson scoring in pixel space; LO+ refit on inliers)
-//!     │   *or* 8-point fundamental → F → enforce(σ,σ,0) → E if
-//!     │   `use_5pt_essential = false` (legacy / rotation-priority path)
+//!     │   *or* 5-point Nistér → E (on-manifold by construction) if
+//!     │   `use_5pt_essential = true` (translation-priority path)
 //!     │
 //!     └─→ RANSAC + 4-point → H → multiple (R,t,n) candidates
 //!         (NEON H-reproj scoring; stagnation early-exit @ 200 iters)
@@ -38,19 +38,20 @@
 //!
 //! [`TwoViewConfig::use_5pt_essential`] picks the epipolar estimator and the choice
 //! is a real accuracy / speed tradeoff:
-//! - **5-point Nistér (default, `true`)** — stays on the E manifold by construction.
-//!   Best translation-direction accuracy in our EuRoC MH_01 bench (3.39°, lower than
-//!   every OpenCV USAC variant). Pose stage ~3 ms.
-//! - **8-point F + (σ,σ,0) lift (`false`)** — pixel-space normalization gets the
-//!   cleanest rotation (0.04° on MH_01) but the σ-equalization bleeds noise into
-//!   translation (4.17°). Strictly faster (pose ~1.2 ms) because the 8-point linear
-//!   solve is cheaper than 10-poly root-finding × cheirality.
+//! - **8-point F + (σ,σ,0) lift (default, `false`)** — pixel-space normalization gets
+//!   the cleanest rotation (0.04° on MH_01) and is strictly faster (pose ~1.4 ms)
+//!   because the 8-point linear solve is cheaper than 10-poly root-finding × cheirality.
+//!   Returns `TwoViewModel::Fundamental(F)` so downstream consumers (e.g. kornia-slam's
+//!   guided matching) get F directly without a Ks re-multiplication.
+//! - **5-point Nistér (`true`)** — stays on the E manifold by construction. Best
+//!   translation-direction accuracy in our EuRoC MH_01 bench (3.39°, lower than every
+//!   OpenCV USAC variant). Returns `TwoViewModel::Essential(E)`. Pose stage ~3.2 ms.
 //!
 //! ## Performance
 //!
-//! Median ~3.0 ms pose / ~9.1 ms full pipeline on EuRoC MH_01 752×480 (Jetson Orin
-//! AGX, 110 ORB matches, 5pt default). 4.5–9.2× faster total than every OpenCV
-//! variant in the bench. Wins compound from four pieces: parallel F+H RANSAC
+//! Median ~1.4 ms pose / ~10.9 ms full pipeline on EuRoC MH_01 752×480 (Jetson Orin
+//! AGX, 110 ORB matches, 8pt default). 3.8× faster total than the fastest OpenCV
+//! USAC variant in the bench. Wins compound from four pieces: parallel F+H RANSAC
 //! (rayon::join), NEON 2-lane f64 inner scorers (Sampson + H-reproj on SoA-laid
 //! x/y arrays), the stagnation early-exit on H (which can't tighten its adaptive
 //! cap on non-planar scenes), and the cheap-then-full cheirality vote that

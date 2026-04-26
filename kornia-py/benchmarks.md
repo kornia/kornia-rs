@@ -86,22 +86,22 @@ kornia-rs median reprojection beats OpenCV on both images (even with the OpenCV 
 
 | Backend | detect (ms) | match (ms) | pose (ms) | total (ms) | rot_err° | t_err° | matches | inliers |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| **kornia-rs** (5pt default) | **5.4** | **0.71** | 3.0 | **9.14** | 0.164 | **3.389** | 110 | 83 |
-| kornia-rs-8pt (`use_5pt_essential=False`) | 7.4 | 0.85 | **1.19** | 9.43 | 0.040 | 4.172 | 110 | **85** |
-| opencv-ransac (5-pt) | 37.2 | 1.49 | 17.8 | 56.4 | 0.488 | 5.914 | 97 | 64 |
-| opencv-lmeds | 36.9 | 2.06 | 45.3 | 84.2 | 0.181 | 5.096 | 97 | 91 |
-| opencv-usac-default | 36.9 | 1.49 | 2.72 | 41.1 | 0.031 | 4.117 | 97 | 72 |
-| opencv-usac-fast | 36.7 | 1.78 | 2.61 | 41.1 | 0.031 | 4.117 | 97 | 72 |
-| opencv-usac-accurate | 37.3 | 1.43 | 3.37 | 42.1 | 0.031 | 4.117 | 97 | 72 |
-| opencv-usac-magsac | 36.9 | 1.31 | 4.81 | 43.0 | 0.099 | 4.185 | 97 | 73 |
-| opencv-usac-prosac | 36.8 | 1.78 | 3.35 | 41.9 | **0.021** | 3.886 | 97 | 70 |
-| opencv-usac-parallel | 36.8 | 1.67 | 2.17 | 40.7 | **0.021** | 3.883 | 97 | 70 |
+| **kornia-rs** (8pt default) | **8.15** | **1.32** | **1.42** | **10.89** | 0.040 | 4.172 | 110 | **85** |
+| kornia-rs-5pt (`use_5pt_essential=True`) | 9.99 | 0.82 | 3.21 | 14.03 | 0.164 | **3.389** | 110 | 83 |
+| opencv-ransac (5-pt) | 38.0 | 1.72 | 17.9 | 57.6 | 0.488 | 5.914 | 97 | 64 |
+| opencv-lmeds | 37.2 | 2.84 | 45.7 | 85.8 | 0.181 | 5.096 | 97 | 91 |
+| opencv-usac-default | 37.3 | 1.73 | 2.69 | 41.7 | 0.031 | 4.117 | 97 | 72 |
+| opencv-usac-fast | 37.2 | 1.62 | 2.66 | 41.4 | 0.031 | 4.117 | 97 | 72 |
+| opencv-usac-accurate | 38.9 | 1.79 | 3.34 | 44.0 | 0.031 | 4.117 | 97 | 72 |
+| opencv-usac-magsac | 37.6 | 1.82 | 4.88 | 44.3 | 0.099 | 4.185 | 97 | 73 |
+| opencv-usac-prosac | 38.0 | 2.00 | 3.38 | 43.4 | **0.021** | 3.886 | 97 | 70 |
+| opencv-usac-parallel | 37.7 | 1.76 | 2.48 | 41.9 | **0.021** | 3.883 | 97 | 70 |
 
-`kornia-rs` (default) **wins translation against every backend** (3.389° vs the best OpenCV result of 3.883° from `USAC_PARALLEL`) while keeping a **4.5–9.2× total-pipeline lead**. USAC's `RANSAC_PROSAC` / `_PARALLEL` win on rotation (sub-0.05° vs our 0.16°); the `kornia-rs-8pt` row matches that rotation plateau (0.040°) and is also the **fastest pose stage of any backend in the bench** (1.19 ms — 1.8× faster than `USAC_PARALLEL`). Pick the default for translation accuracy, opt into `use_5pt_essential=False` when rotation budget matters more.
+`kornia-rs` (default) is the **fastest backend end-to-end** (10.89 ms — 3.8× faster than the fastest OpenCV variant) and also has the **fastest pose stage** (1.42 ms — 1.5× faster than `USAC_PARALLEL`'s 2.48 ms) while keeping rotation accuracy on par with OpenCV USAC (0.040° vs `USAC_PROSAC`'s 0.021°). The default ships F because kornia-slam's bootstrap consumes the fundamental matrix downstream; opt into `use_5pt_essential=True` when translation-direction accuracy is the priority — the 5-point row gets `t_err = 3.389°`, beating every other backend in the bench (~0.5° better than the best OpenCV USAC variant).
 
 The accuracy story splits cleanly along solver choice:
-- **5-point Nistér essential (default)** — stays on the E manifold by construction (10 polynomial roots, no `(σ, σ, 0)` clipping), so the translation null-space isn't polluted by the 8-point Frobenius projection. This is the lever that lands the best t_err of any backend in the bench.
-- **8-point fundamental + (σ,σ,0) lift** — pixel-space normalization gets exceptionally clean rotation (0.040°) but the σ-equalization bleeds noise into translation. Strictly faster (1.19 ms) because the 8-point linear solver is cheaper than 10-poly root-finding × cheirality.
+- **8-point fundamental + (σ,σ,0) lift (default)** — pixel-space normalization gets exceptionally clean rotation (0.040°) but the σ-equalization bleeds noise into translation. Strictly faster (1.42 ms) because the 8-point linear solver is cheaper than 10-poly root-finding × cheirality, and downstream guided matching gets F directly without a re-multiplication by Ks.
+- **5-point Nistér essential (`use_5pt_essential=True`)** — stays on the E manifold by construction (10 polynomial roots, no `(σ, σ, 0)` clipping), so the translation null-space isn't polluted by the 8-point Frobenius projection. This is the lever that lands the best t_err of any backend in the bench.
 
 The speed story compounds three independent wins:
 - **`rayon::join` for F+H RANSAC** — both estimators are independent (same correspondences, different models). Parallel join makes wall time = max(F, H) on a Cortex-A78AE pair instead of sum.

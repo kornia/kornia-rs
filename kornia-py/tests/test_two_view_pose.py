@@ -100,9 +100,9 @@ def test_two_view_pose_recovers_mh01_ground_truth(mh01_matches):
 
     # Monocular frame-to-frame motion on the MH01 warehouse: general 3D
     # motion, not a planar scene — the epipolar branch (E or F) must win
-    # over the homography branch. Default config uses the 5-point essential
-    # solver so we expect "essential"; allow "fundamental" for callers that
-    # pass `use_5pt_essential=False` explicitly.
+    # over the homography branch. Default config uses the 8-point fundamental
+    # solver so we expect "fundamental"; allow "essential" for callers that
+    # pass `use_5pt_essential=True` explicitly.
     assert pose.model_type in ("essential", "fundamental"), (
         f"expected epipolar model, got {pose.model_type}"
     )
