@@ -64,3 +64,11 @@ tempfile = "3.10"
 thiserror = "2"
 tokenizers = { version = "0.21.1", features = ["http"] }
 walkdir = "2.5"
+
+# Release wheels and binaries ship the SIMD-vectorized hot paths with
+# cross-crate inlining enabled. ThinLTO + single codegen unit lets the
+# `cpu_features()` dispatcher inline into callers in `kornia-py`, collapsing
+# NEON / AVX2 / scalar selection to a branch on a constant after one warmup.
+[profile.release]
+lto = "thin"
+codegen-units = 1

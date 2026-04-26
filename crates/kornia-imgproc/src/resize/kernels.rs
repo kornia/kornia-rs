@@ -241,26 +241,70 @@ unsafe fn hinterp_row_rgb_u8_neon(src: &[u8], dst: &mut [u8], src_w: usize) {
 
 /// Byte-wise `dst[i] = round(0.75·a[i] + 0.25·b[i])`.
 ///
-/// Implemented via the `vrhaddq_u8(a, vrhaddq_u8(a, b))` identity on aarch64.
-/// `a` and `b` must have equal length ≥ `dst.len()`.
+/// Implemented via the `vrhaddq_u8(a, vrhaddq_u8(a, b))` identity on aarch64
+/// (and the equivalent `_mm256_avg_epu8(a, _mm256_avg_epu8(a, b))` on x86_64
+/// with AVX2). `a` and `b` must have equal length ≥ `dst.len()`.
 #[inline(always)]
 pub(super) fn blend_75_25_row(a: &[u8], b: &[u8], dst: &mut [u8]) {
     #[cfg(target_arch = "aarch64")]
     unsafe {
         blend_75_25_row_neon(a, b, dst);
+        return;
     }
-    #[cfg(not(target_arch = "aarch64"))]
+    #[cfg(target_arch = "x86_64")]
+    if crate::simd::cpu_features().has_avx2 {
+        unsafe { blend_75_25_row_avx2(a, b, dst) };
+        return;
+    }
+    #[allow(unreachable_code)]
     blend_75_25_row_scalar(a, b, dst);
 }
 
-#[cfg(not(target_arch = "aarch64"))]
 #[inline]
+#[allow(dead_code)]
 fn blend_75_25_row_scalar(a: &[u8], b: &[u8], dst: &mut [u8]) {
     for i in 0..dst.len() {
         let av = a[i] as u16;
         let bv = b[i] as u16;
         let avg = (av + bv + 1) >> 1;
         dst[i] = ((av + avg + 1) >> 1) as u8;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn blend_75_25_row_avx2(a: &[u8], b: &[u8], dst: &mut [u8]) {
+    use std::arch::x86_64::*;
+    let n = dst.len();
+    let bulk = n & !63; // 2× unroll of 32-byte chunks.
+    let mut i = 0;
+    while i < bulk {
+        let va0 = _mm256_loadu_si256(a.as_ptr().add(i) as *const __m256i);
+        let vb0 = _mm256_loadu_si256(b.as_ptr().add(i) as *const __m256i);
+        let va1 = _mm256_loadu_si256(a.as_ptr().add(i + 32) as *const __m256i);
+        let vb1 = _mm256_loadu_si256(b.as_ptr().add(i + 32) as *const __m256i);
+        let avg0 = _mm256_avg_epu8(va0, vb0);
+        let avg1 = _mm256_avg_epu8(va1, vb1);
+        let out0 = _mm256_avg_epu8(va0, avg0);
+        let out1 = _mm256_avg_epu8(va1, avg1);
+        _mm256_storeu_si256(dst.as_mut_ptr().add(i) as *mut __m256i, out0);
+        _mm256_storeu_si256(dst.as_mut_ptr().add(i + 32) as *mut __m256i, out1);
+        i += 64;
+    }
+    while i + 32 <= n {
+        let va = _mm256_loadu_si256(a.as_ptr().add(i) as *const __m256i);
+        let vb = _mm256_loadu_si256(b.as_ptr().add(i) as *const __m256i);
+        let avg = _mm256_avg_epu8(va, vb);
+        let out = _mm256_avg_epu8(va, avg);
+        _mm256_storeu_si256(dst.as_mut_ptr().add(i) as *mut __m256i, out);
+        i += 32;
+    }
+    while i < n {
+        let av = a[i] as u16;
+        let bv = b[i] as u16;
+        let avg = (av + bv + 1) >> 1;
+        dst[i] = ((av + avg + 1) >> 1) as u8;
+        i += 1;
     }
 }
 
@@ -327,6 +371,15 @@ pub(super) fn horizontal_row_rgb_u8<const C: usize>(
         if C == 3 {
             unsafe {
                 horizontal_row_c3_neon(src_row, out, dst_w, kx, xsrc, xw, last_sx_safe, round1);
+            }
+            return;
+        }
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        if C == 3 && crate::simd::cpu_features().has_avx2 {
+            unsafe {
+                horizontal_row_c3_avx2(src_row, out, dst_w, kx, xsrc, xw, last_sx_safe, round1);
             }
             return;
         }
@@ -611,8 +664,14 @@ pub(super) fn vertical_row(rows: &[&[i16]], w: &[i16], dst_row: &mut [u8], n: us
     // within the bounds enforced by `n` and the calling `resize_separable_u8`.
     unsafe {
         vertical_row_neon(rows, w, dst_row, n, round2);
+        return;
     }
-    #[cfg(not(target_arch = "aarch64"))]
+    #[cfg(target_arch = "x86_64")]
+    if crate::simd::cpu_features().has_avx2 {
+        unsafe { vertical_row_avx2(rows, w, dst_row, n, round2) };
+        return;
+    }
+    #[allow(unreachable_code)]
     vertical_row_scalar(rows, w, dst_row, n, round2);
 }
 
@@ -804,6 +863,219 @@ unsafe fn vertical_row_neon(rows: &[&[i16]], w: &[i16], dst_row: &mut [u8], n: u
         vst1_u8(dst_row.as_mut_ptr().add(i), vqmovun_s16(packed));
         i += 8;
     }
+    // Scalar tail.
+    while i < n {
+        let mut acc: i32 = 0;
+        for k in 0..ky {
+            acc += rows[k][i] as i32 * w[k] as i32;
+        }
+        dst_row[i] = (((acc + round2) >> 14).clamp(0, 255)) as u8;
+        i += 1;
+    }
+}
+
+// =============================================================================
+// AVX2 ports: vertical_row + horizontal_row_c3.
+//
+// `vmlal_n_s16(acc, vec_i16x4, scalar_i16) → i32x4` (NEON multiply-accumulate
+// widening) translates to `_mm_mullo_epi32(_mm_cvtepi16_epi32(...), broadcast)`
+// + `_mm_add_epi32`. We widen u8/i16 directly to i32 with `_mm_cvtepu8_epi32`
+// or `_mm_cvtepi16_epi32` (SSE4.1, available inside AVX2-feature funcs) so the
+// multiply stays in i32 lanes throughout — simpler than NEON's i16-widen path,
+// and AVX2's `mullo_epi32` covers it in one op.
+//
+// Saturating narrow chain: `vqmovn_s32 + vqmovun_s16` (NEON) → `_mm_packs_epi32
+// + _mm_packus_epi16` (AVX2/SSE2). Both saturate signed-i32→i16 then unsigned
+// i16→u8.
+// =============================================================================
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+#[allow(clippy::too_many_arguments)]
+unsafe fn horizontal_row_c3_avx2(
+    src_row: &[u8],
+    out: &mut [i16],
+    dst_w: usize,
+    kx: usize,
+    xsrc: &[u16],
+    xw: &[i16],
+    last_sx_safe: usize,
+    round1: i32,
+) {
+    use std::arch::x86_64::*;
+
+    // Load 4 bytes from `p`; safe variant when `p+3` is in-bounds. Returns an
+    // i32x4 vector with R, G, B in lanes 0..2 and 0 in lane 3 (the 4th byte
+    // padding is masked-off during the cvtepu8_epi32 widen below).
+    #[inline(always)]
+    unsafe fn load_px_avx2(p: *const u8) -> __m128i {
+        let v = std::ptr::read_unaligned(p as *const i32);
+        let v_masked = v & 0x00FF_FFFF; // zero out the 4th byte we just over-read
+        _mm_cvtepu8_epi32(_mm_cvtsi32_si128(v_masked))
+    }
+
+    // Edge variant: byte-by-byte build to avoid touching `p+3` (potentially OOB).
+    #[inline(always)]
+    unsafe fn load_px_edge_avx2(p: *const u8) -> __m128i {
+        let v32 = (*p as i32) | ((*p.add(1) as i32) << 8) | ((*p.add(2) as i32) << 16);
+        _mm_cvtepu8_epi32(_mm_cvtsi32_si128(v32))
+    }
+
+    let round_v = _mm_set1_epi32(round1);
+    let mut x = 0;
+    // 4-wide unroll matching the NEON path: 4 independent accumulators hide
+    // the ~4-cycle mullo_epi32 latency.
+    while x + 4 <= dst_w {
+        let b0 = x * kx;
+        let b1 = (x + 1) * kx;
+        let b2 = (x + 2) * kx;
+        let b3 = (x + 3) * kx;
+        let mut a0 = round_v;
+        let mut a1 = round_v;
+        let mut a2 = round_v;
+        let mut a3 = round_v;
+        for t in 0..kx {
+            let sx0 = *xsrc.get_unchecked(b0 + t) as usize;
+            let sx1 = *xsrc.get_unchecked(b1 + t) as usize;
+            let sx2 = *xsrc.get_unchecked(b2 + t) as usize;
+            let sx3 = *xsrc.get_unchecked(b3 + t) as usize;
+            let w0 = _mm_set1_epi32(*xw.get_unchecked(b0 + t) as i32);
+            let w1 = _mm_set1_epi32(*xw.get_unchecked(b1 + t) as i32);
+            let w2 = _mm_set1_epi32(*xw.get_unchecked(b2 + t) as i32);
+            let w3 = _mm_set1_epi32(*xw.get_unchecked(b3 + t) as i32);
+            let base = src_row.as_ptr();
+            let p0 = if sx0 < last_sx_safe {
+                load_px_avx2(base.add(sx0 * 3))
+            } else {
+                load_px_edge_avx2(base.add(sx0 * 3))
+            };
+            let p1 = if sx1 < last_sx_safe {
+                load_px_avx2(base.add(sx1 * 3))
+            } else {
+                load_px_edge_avx2(base.add(sx1 * 3))
+            };
+            let p2 = if sx2 < last_sx_safe {
+                load_px_avx2(base.add(sx2 * 3))
+            } else {
+                load_px_edge_avx2(base.add(sx2 * 3))
+            };
+            let p3 = if sx3 < last_sx_safe {
+                load_px_avx2(base.add(sx3 * 3))
+            } else {
+                load_px_edge_avx2(base.add(sx3 * 3))
+            };
+            a0 = _mm_add_epi32(a0, _mm_mullo_epi32(p0, w0));
+            a1 = _mm_add_epi32(a1, _mm_mullo_epi32(p1, w1));
+            a2 = _mm_add_epi32(a2, _mm_mullo_epi32(p2, w2));
+            a3 = _mm_add_epi32(a3, _mm_mullo_epi32(p3, w3));
+        }
+        let s0 = _mm_packs_epi32(_mm_srai_epi32::<14>(a0), _mm_setzero_si128());
+        let s1 = _mm_packs_epi32(_mm_srai_epi32::<14>(a1), _mm_setzero_si128());
+        let s2 = _mm_packs_epi32(_mm_srai_epi32::<14>(a2), _mm_setzero_si128());
+        let s3 = _mm_packs_epi32(_mm_srai_epi32::<14>(a3), _mm_setzero_si128());
+        let o = out.as_mut_ptr().add(x * 3);
+        *o = _mm_extract_epi16::<0>(s0) as i16;
+        *o.add(1) = _mm_extract_epi16::<1>(s0) as i16;
+        *o.add(2) = _mm_extract_epi16::<2>(s0) as i16;
+        *o.add(3) = _mm_extract_epi16::<0>(s1) as i16;
+        *o.add(4) = _mm_extract_epi16::<1>(s1) as i16;
+        *o.add(5) = _mm_extract_epi16::<2>(s1) as i16;
+        *o.add(6) = _mm_extract_epi16::<0>(s2) as i16;
+        *o.add(7) = _mm_extract_epi16::<1>(s2) as i16;
+        *o.add(8) = _mm_extract_epi16::<2>(s2) as i16;
+        *o.add(9) = _mm_extract_epi16::<0>(s3) as i16;
+        *o.add(10) = _mm_extract_epi16::<1>(s3) as i16;
+        *o.add(11) = _mm_extract_epi16::<2>(s3) as i16;
+        x += 4;
+    }
+    while x < dst_w {
+        let ibase = x * kx;
+        let mut acc = round_v;
+        for t in 0..kx {
+            let sx = *xsrc.get_unchecked(ibase + t) as usize;
+            let w = _mm_set1_epi32(*xw.get_unchecked(ibase + t) as i32);
+            let p = src_row.as_ptr().add(sx * 3);
+            let px = if sx < last_sx_safe {
+                load_px_avx2(p)
+            } else {
+                load_px_edge_avx2(p)
+            };
+            acc = _mm_add_epi32(acc, _mm_mullo_epi32(px, w));
+        }
+        let sat = _mm_packs_epi32(_mm_srai_epi32::<14>(acc), _mm_setzero_si128());
+        let o = out.as_mut_ptr().add(x * 3);
+        *o = _mm_extract_epi16::<0>(sat) as i16;
+        *o.add(1) = _mm_extract_epi16::<1>(sat) as i16;
+        *o.add(2) = _mm_extract_epi16::<2>(sat) as i16;
+        x += 1;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn vertical_row_avx2(rows: &[&[i16]], w: &[i16], dst_row: &mut [u8], n: usize, round2: i32) {
+    use std::arch::x86_64::*;
+    let ky = rows.len();
+    let round_v = _mm256_set1_epi32(round2);
+    let mut i = 0usize;
+
+    // 16-lane bulk path: process 16 dst lanes per iter as two i32x8 accumulators.
+    while i + 16 <= n {
+        let mut acc_lo = round_v;
+        let mut acc_hi = round_v;
+        for k in 0..ky {
+            let p = rows.get_unchecked(k).as_ptr().add(i);
+            let v = _mm256_loadu_si256(p as *const __m256i); // 16 i16 lanes
+            let v_lo128 = _mm256_castsi256_si128(v);
+            let v_hi128 = _mm256_extracti128_si256::<1>(v);
+            let v_lo = _mm256_cvtepi16_epi32(v_lo128); // 8 i32
+            let v_hi = _mm256_cvtepi16_epi32(v_hi128); // 8 i32
+            let wv = _mm256_set1_epi32(*w.get_unchecked(k) as i32);
+            acc_lo = _mm256_add_epi32(acc_lo, _mm256_mullo_epi32(v_lo, wv));
+            acc_hi = _mm256_add_epi32(acc_hi, _mm256_mullo_epi32(v_hi, wv));
+        }
+        let acc_lo_s = _mm256_srai_epi32::<14>(acc_lo);
+        let acc_hi_s = _mm256_srai_epi32::<14>(acc_hi);
+        // Saturating pack i32→i16; AVX2 packs operates per-128-bit-lane, so the
+        // resulting i16 lanes are interleaved [lo_0..3, hi_0..3, lo_4..7, hi_4..7].
+        // Permute 64-bit chunks via [0,2,1,3] (0xd8) to restore linear order.
+        let packed_i16 = _mm256_packs_epi32(acc_lo_s, acc_hi_s);
+        let packed_perm = _mm256_permute4x64_epi64::<0xd8>(packed_i16);
+        let lo128 = _mm256_castsi256_si128(packed_perm);
+        let hi128 = _mm256_extracti128_si256::<1>(packed_perm);
+        let packed_u8 = _mm_packus_epi16(lo128, hi128);
+        _mm_storeu_si128(dst_row.as_mut_ptr().add(i) as *mut __m128i, packed_u8);
+        i += 16;
+    }
+
+    // 8-lane half-vector path.
+    if i + 8 <= n {
+        let mut acc = _mm256_set1_epi32(round2);
+        for k in 0..ky {
+            let p = rows.get_unchecked(k).as_ptr().add(i);
+            let v = _mm_loadu_si128(p as *const __m128i); // 8 i16
+            let v32 = _mm256_cvtepi16_epi32(v);
+            let wv = _mm256_set1_epi32(*w.get_unchecked(k) as i32);
+            acc = _mm256_add_epi32(acc, _mm256_mullo_epi32(v32, wv));
+        }
+        let acc_s = _mm256_srai_epi32::<14>(acc);
+        // Pack 8 i32 → 8 i16 (packs cross-input collapses to 16 i16; we need only 8).
+        // Do it as: pack(acc_s, acc_s) yields [lo_0..3, lo_0..3, hi_0..3, hi_0..3];
+        // permute64 [0, 2, 1, 3] → [lo_0..3, hi_0..3, dup_lo, dup_hi]; take low 128.
+        let packed = _mm256_packs_epi32(acc_s, acc_s);
+        let packed_perm = _mm256_permute4x64_epi64::<0xd8>(packed);
+        let lo128 = _mm256_castsi256_si128(packed_perm);
+        let packed_u8 = _mm_packus_epi16(lo128, _mm_setzero_si128());
+        // Store 8 bytes (low half of packed_u8).
+        let out64 = _mm_cvtsi128_si64(packed_u8);
+        std::ptr::copy_nonoverlapping(
+            &out64 as *const i64 as *const u8,
+            dst_row.as_mut_ptr().add(i),
+            8,
+        );
+        i += 8;
+    }
+
     // Scalar tail.
     while i < n {
         let mut acc: i32 = 0;

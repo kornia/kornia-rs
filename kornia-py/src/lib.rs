@@ -3,17 +3,23 @@ mod augmentations;
 mod blur;
 mod brightness;
 mod color;
+mod cpu;
 mod crop;
 mod enhance;
+mod feature_match;
 mod flip;
 mod histogram;
+mod homography;
 mod icp;
 mod image;
 mod io;
 mod normalize;
+mod orb;
 mod pipeline;
 mod pointcloud;
+mod pyutils;
 mod resize;
+mod twoview;
 mod warp;
 
 use crate::icp::{PyICPConvergenceCriteria, PyICPResult};
@@ -392,6 +398,20 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     )?)?;
     m.add_submodule(&imgproc_mod)?;
 
+    // Features submodule — feature detectors and descriptors.
+    let features_mod = PyModule::new(py, "features")?;
+    features_mod.add_class::<orb::PyOrbFeatures>()?;
+    features_mod.add_function(wrap_pyfunction!(
+        orb::orb_detect_and_compute,
+        &features_mod
+    )?)?;
+    features_mod.add_function(wrap_pyfunction!(orb::fast_detect, &features_mod)?)?;
+    features_mod.add_function(wrap_pyfunction!(
+        feature_match::match_descriptors_py,
+        &features_mod
+    )?)?;
+    m.add_submodule(&features_mod)?;
+
     // Augmentations submodule
     let aug_mod = PyModule::new(py, "augmentations")?;
     aug_mod.add_class::<augmentations::PyColorJitter>()?;
@@ -403,11 +423,24 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     aug_mod.add_function(wrap_pyfunction!(augmentations::set_seed, &aug_mod)?)?;
     m.add_submodule(&aug_mod)?;
 
-    // K3D submodule
+    // K3D submodule — 3D geometry: ICP, two-view pose, F/H/E model fits, triangulation.
     let k3d_mod = PyModule::new(py, "k3d")?;
     k3d_mod.add_function(wrap_pyfunction!(icp::icp_vanilla, &k3d_mod)?)?;
     k3d_mod.add_class::<PyICPConvergenceCriteria>()?;
     k3d_mod.add_class::<PyICPResult>()?;
+    k3d_mod.add_class::<twoview::PyTwoViewPose>()?;
+    k3d_mod.add_class::<twoview::PyFundamental8ptSolver>()?;
+    k3d_mod.add_class::<twoview::PyEssentialNister5ptSolver>()?;
+    k3d_mod.add_class::<twoview::PyLmRefiner>()?;
+    k3d_mod.add_class::<twoview::PyNoopRefiner>()?;
+    k3d_mod.add_class::<twoview::PyTwoViewEstimator>()?;
+    k3d_mod.add_function(wrap_pyfunction!(twoview::two_view_estimate_py, &k3d_mod)?)?;
+    k3d_mod.add_function(wrap_pyfunction!(
+        homography::ransac_homography_py,
+        &k3d_mod
+    )?)?;
+    k3d_mod.add_function(wrap_pyfunction!(homography::find_homography_py, &k3d_mod)?)?;
+    k3d_mod.add_function(wrap_pyfunction!(homography::find_fundamental_py, &k3d_mod)?)?;
     m.add_submodule(&k3d_mod)?;
 
     // Apriltag submodule
@@ -426,6 +459,15 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     apriltag_mod.add_submodule(&apriltag_family_mod)?;
 
     m.add_submodule(&apriltag_mod)?;
+
+    // CPU submodule — runtime SIMD feature probe. Lets installed wheels
+    // self-report which SIMD paths the host actually exposes, complementing
+    // the build-time `verify_simd_kernels.sh` that proves the assembly is
+    // present in the binary.
+    let cpu_mod = PyModule::new(py, "cpu")?;
+    cpu_mod.add_class::<cpu::PyCpuFeatures>()?;
+    cpu_mod.add_function(wrap_pyfunction!(cpu::cpu_features, &cpu_mod)?)?;
+    m.add_submodule(&cpu_mod)?;
 
     // Pipeline submodule — fused preprocessing kernels.
     let pipeline_mod = PyModule::new(py, "pipeline")?;
@@ -447,6 +489,8 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
         ("kornia_rs.apriltag", &apriltag_mod),
         ("kornia_rs.augmentations", &aug_mod),
         ("kornia_rs.pipeline", &pipeline_mod),
+        ("kornia_rs.features", &features_mod),
+        ("kornia_rs.cpu", &cpu_mod),
     ] {
         modules.set_item(name, submod)?;
     }

@@ -115,10 +115,7 @@ pub fn rgb_to_gray_u8(src: &[u8], dst: &mut [u8], npixels: usize) {
     // recovers ~40% over single-thread NEON.
     const PAR_THRESHOLD: usize = 1024 * 1024;
     if npixels < PAR_THRESHOLD {
-        #[cfg(target_arch = "aarch64")]
-        rgb_to_gray_u8_neon(src, dst, npixels);
-        #[cfg(not(target_arch = "aarch64"))]
-        rgb_to_gray_u8_scalar(src, dst, npixels);
+        rgb_to_gray_u8_kernel(src, dst, npixels);
         return;
     }
 
@@ -136,11 +133,29 @@ pub fn rgb_to_gray_u8(src: &[u8], dst: &mut [u8], npixels: usize) {
             let sstart = start * 3;
             let send = sstart + n * 3;
             let schunk = &src[sstart..send];
-            #[cfg(target_arch = "aarch64")]
-            rgb_to_gray_u8_neon(schunk, dchunk, n);
-            #[cfg(not(target_arch = "aarch64"))]
-            rgb_to_gray_u8_scalar(schunk, dchunk, n);
+            rgb_to_gray_u8_kernel(schunk, dchunk, n);
         });
+}
+
+/// Kernel dispatcher: NEON (aarch64), AVX2 (x86_64), or scalar fallback.
+#[inline]
+fn rgb_to_gray_u8_kernel(src: &[u8], dst: &mut [u8], npixels: usize) {
+    #[cfg(target_arch = "aarch64")]
+    {
+        rgb_to_gray_u8_neon(src, dst, npixels);
+        return;
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        let cpu = crate::simd::cpu_features();
+        if cpu.has_avx2 {
+            // SAFETY: AVX2 confirmed by the runtime probe.
+            unsafe { rgb_to_gray_u8_avx2(src, dst, npixels) };
+            return;
+        }
+    }
+    #[allow(unreachable_code)]
+    rgb_to_gray_u8_scalar(src, dst, npixels);
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -230,7 +245,101 @@ fn rgb_to_gray_u8_neon(src: &[u8], dst: &mut [u8], npixels: usize) {
     }
 }
 
-#[cfg(not(target_arch = "aarch64"))]
+/// AVX2 RGB→gray u8: 16 pixels per iteration.
+///
+/// AVX2 lacks a 3-way byte deinterleave, so we use SSSE3 PSHUFB with three
+/// per-channel mask triplets to gather R, G, B from three 16-byte chunks of
+/// the input stream. Then widen to u16, FMA-style accumulate the weighted
+/// sum (77*R + 150*G + 29*B), shift right by 8, and pack back to u8.
+///
+/// # Safety
+/// - Caller must ensure AVX2 is available.
+/// - `src.len() >= npixels * 3`, `dst.len() >= npixels`.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn rgb_to_gray_u8_avx2(src: &[u8], dst: &mut [u8], npixels: usize) {
+    use std::arch::x86_64::*;
+    let sp = src.as_ptr();
+    let dp = dst.as_mut_ptr();
+
+    // Per-channel deinterleave masks for 16 pixels (48 input bytes split into
+    // three 16-byte chunks `a`, `b`, `c`). `-1` byte zeros that lane via PSHUFB.
+    // Output lanes 0..15 hold the channel values for pixels 0..15.
+    let m_a_r = _mm_setr_epi8(0, 3, 6, 9, 12, 15, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1);
+    let m_b_r = _mm_setr_epi8(-1, -1, -1, -1, -1, -1, 2, 5, 8, 11, 14, -1, -1, -1, -1, -1);
+    let m_c_r = _mm_setr_epi8(-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 1, 4, 7, 10, 13);
+    let m_a_g = _mm_setr_epi8(1, 4, 7, 10, 13, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1);
+    let m_b_g = _mm_setr_epi8(-1, -1, -1, -1, -1, 0, 3, 6, 9, 12, 15, -1, -1, -1, -1, -1);
+    let m_c_g = _mm_setr_epi8(-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 2, 5, 8, 11, 14);
+    let m_a_b = _mm_setr_epi8(2, 5, 8, 11, 14, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1);
+    let m_b_b = _mm_setr_epi8(-1, -1, -1, -1, -1, 1, 4, 7, 10, 13, -1, -1, -1, -1, -1, -1);
+    let m_c_b = _mm_setr_epi8(-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 0, 3, 6, 9, 12, 15);
+
+    let w_r = _mm_set1_epi16(77);
+    let w_g = _mm_set1_epi16(150);
+    let w_b = _mm_set1_epi16(29);
+    let zero = _mm_setzero_si128();
+
+    let bulk = npixels & !15;
+    let mut i = 0usize;
+    while i < bulk {
+        let a = _mm_loadu_si128(sp.add(i * 3) as *const __m128i);
+        let b = _mm_loadu_si128(sp.add(i * 3 + 16) as *const __m128i);
+        let c = _mm_loadu_si128(sp.add(i * 3 + 32) as *const __m128i);
+
+        let r = _mm_or_si128(
+            _mm_or_si128(_mm_shuffle_epi8(a, m_a_r), _mm_shuffle_epi8(b, m_b_r)),
+            _mm_shuffle_epi8(c, m_c_r),
+        );
+        let g = _mm_or_si128(
+            _mm_or_si128(_mm_shuffle_epi8(a, m_a_g), _mm_shuffle_epi8(b, m_b_g)),
+            _mm_shuffle_epi8(c, m_c_g),
+        );
+        let bch = _mm_or_si128(
+            _mm_or_si128(_mm_shuffle_epi8(a, m_a_b), _mm_shuffle_epi8(b, m_b_b)),
+            _mm_shuffle_epi8(c, m_c_b),
+        );
+
+        // Widen u8→u16 via zero-unpack (low and high halves).
+        let r_lo = _mm_unpacklo_epi8(r, zero);
+        let r_hi = _mm_unpackhi_epi8(r, zero);
+        let g_lo = _mm_unpacklo_epi8(g, zero);
+        let g_hi = _mm_unpackhi_epi8(g, zero);
+        let b_lo = _mm_unpacklo_epi8(bch, zero);
+        let b_hi = _mm_unpackhi_epi8(bch, zero);
+
+        // 77*R + 150*G + 29*B in u16. Max = 256*(77+150+29) = 65536 → would
+        // overflow u16. With 8-bit inputs (max 255), max sum = 65280 < 65536, ok.
+        let acc_lo = _mm_add_epi16(
+            _mm_add_epi16(_mm_mullo_epi16(r_lo, w_r), _mm_mullo_epi16(g_lo, w_g)),
+            _mm_mullo_epi16(b_lo, w_b),
+        );
+        let acc_hi = _mm_add_epi16(
+            _mm_add_epi16(_mm_mullo_epi16(r_hi, w_r), _mm_mullo_epi16(g_hi, w_g)),
+            _mm_mullo_epi16(b_hi, w_b),
+        );
+
+        // (acc >> 8), pack two u16 vectors back to one u8 vector.
+        let s_lo = _mm_srli_epi16(acc_lo, 8);
+        let s_hi = _mm_srli_epi16(acc_hi, 8);
+        let gray = _mm_packus_epi16(s_lo, s_hi);
+        _mm_storeu_si128(dp.add(i) as *mut __m128i, gray);
+
+        i += 16;
+    }
+
+    // Scalar tail.
+    while i < npixels {
+        let si = i * 3;
+        *dp.add(i) =
+            ((77 * *sp.add(si) as u32 + 150 * *sp.add(si + 1) as u32 + 29 * *sp.add(si + 2) as u32)
+                >> 8) as u8;
+        i += 1;
+    }
+}
+
+/// Portable scalar fallback — referenced when neither NEON nor AVX2 is available.
+#[allow(dead_code)]
 fn rgb_to_gray_u8_scalar(src: &[u8], dst: &mut [u8], npixels: usize) {
     for (i, out) in dst.iter_mut().take(npixels).enumerate() {
         let si = i * 3;

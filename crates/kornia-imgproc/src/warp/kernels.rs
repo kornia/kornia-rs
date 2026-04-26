@@ -78,9 +78,18 @@ pub(super) fn process_perspective_span<const C: usize>(
         process_perspective_span_neon::<C>(
             src, src_w, src_h, src_stride, dst_row, x_lo, x_hi, nx, ny, nd, dnx, dny, dnd,
         );
+        return;
     }
-
-    #[cfg(not(target_arch = "aarch64"))]
+    #[cfg(target_arch = "x86_64")]
+    if crate::simd::cpu_features().has_avx2 {
+        unsafe {
+            process_perspective_span_avx2::<C>(
+                src, src_w, src_h, src_stride, dst_row, x_lo, x_hi, nx, ny, nd, dnx, dny, dnd,
+            );
+        }
+        return;
+    }
+    #[allow(unreachable_code)]
     process_perspective_span_scalar::<C>(
         src, src_w, src_h, src_stride, dst_row, x_lo, x_hi, nx, ny, nd, dnx, dny, dnd,
     );
@@ -208,6 +217,107 @@ unsafe fn process_perspective_span_neon<const C: usize>(
         nx = vgetq_lane_f32::<0>(nx_v);
         ny = vgetq_lane_f32::<0>(ny_v);
         nd = vgetq_lane_f32::<0>(nd_v);
+    }
+
+    // 1-3 trailing columns: scalar tail.
+    let tail_start = x_lo + n4;
+    process_perspective_span_scalar::<C>(
+        src, src_w, src_h, src_stride, dst_row, tail_start, x_hi, nx, ny, nd, dnx, dny, dnd,
+    );
+}
+
+/// AVX2 implementation: 4-wide reciprocal (rcp + Newton–Raphson refine) +
+/// scalar bilinear per lane. Mirrors the NEON path one-for-one; the per-lane
+/// bilinear call dispatches to the AVX2 C=3 sampler in `common::bilinear_sample_u8_valid`.
+///
+/// # Safety
+/// - AVX2 must be available (caller checks `cpu_features().has_avx2`).
+/// - Caller must satisfy the perspective-span preconditions documented on
+///   [`process_perspective_span`].
+/// - `dst_row.len() >= x_hi * C`.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+#[inline]
+#[allow(clippy::too_many_arguments)]
+unsafe fn process_perspective_span_avx2<const C: usize>(
+    src: &[u8],
+    src_w: i32,
+    src_h: i32,
+    src_stride: usize,
+    dst_row: &mut [u8],
+    x_lo: usize,
+    x_hi: usize,
+    mut nx: f32,
+    mut ny: f32,
+    mut nd: f32,
+    dnx: f32,
+    dny: f32,
+    dnd: f32,
+) {
+    use std::arch::x86_64::*;
+
+    let n4 = (x_hi - x_lo) & !3;
+    if n4 >= 4 {
+        let dnx_v = _mm_set1_ps(dnx);
+        let dny_v = _mm_set1_ps(dny);
+        let dnd_v = _mm_set1_ps(dnd);
+        let lane_offsets: [f32; 4] = [0.0, 1.0, 2.0, 3.0];
+        let lo_v = _mm_loadu_ps(lane_offsets.as_ptr());
+        let mut nx_v = _mm_add_ps(_mm_set1_ps(nx), _mm_mul_ps(dnx_v, lo_v));
+        let mut ny_v = _mm_add_ps(_mm_set1_ps(ny), _mm_mul_ps(dny_v, lo_v));
+        let mut nd_v = _mm_add_ps(_mm_set1_ps(nd), _mm_mul_ps(dnd_v, lo_v));
+        let step_nx = _mm_mul_ps(dnx_v, _mm_set1_ps(4.0));
+        let step_ny = _mm_mul_ps(dny_v, _mm_set1_ps(4.0));
+        let step_nd = _mm_mul_ps(dnd_v, _mm_set1_ps(4.0));
+        let q10_v = _mm_set1_ps(1024.0);
+        let two = _mm_set1_ps(2.0);
+
+        let mut xs = [0i32; 4];
+        let mut ys = [0i32; 4];
+        let mut fxs = [0u32; 4];
+        let mut fys = [0u32; 4];
+
+        let end = x_lo + n4;
+        let mut xi = x_lo;
+        while xi < end {
+            // Reciprocal: rcp gives ~12-bit estimate; one NR step
+            // r1 = r0 * (2 - nd * r0) lifts to ~24-bit precision.
+            let r0 = _mm_rcp_ps(nd_v);
+            let inv_nd = _mm_mul_ps(r0, _mm_sub_ps(two, _mm_mul_ps(nd_v, r0)));
+            let xf = _mm_mul_ps(nx_v, inv_nd);
+            let yf = _mm_mul_ps(ny_v, inv_nd);
+            // Floor → i32 (truncating cvt after floor matches NEON's
+            // vrndm + vcvtq_s32_f32 chain).
+            let xi_v = _mm_cvttps_epi32(_mm_floor_ps(xf));
+            let yi_v = _mm_cvttps_epi32(_mm_floor_ps(yf));
+            let fx_v = _mm_cvttps_epi32(_mm_mul_ps(_mm_sub_ps(xf, _mm_cvtepi32_ps(xi_v)), q10_v));
+            let fy_v = _mm_cvttps_epi32(_mm_mul_ps(_mm_sub_ps(yf, _mm_cvtepi32_ps(yi_v)), q10_v));
+            _mm_storeu_si128(xs.as_mut_ptr() as *mut __m128i, xi_v);
+            _mm_storeu_si128(ys.as_mut_ptr() as *mut __m128i, yi_v);
+            _mm_storeu_si128(fxs.as_mut_ptr() as *mut __m128i, fx_v);
+            _mm_storeu_si128(fys.as_mut_ptr() as *mut __m128i, fy_v);
+
+            for lane in 0..4 {
+                let dst_pixel = &mut dst_row[(xi + lane) * C..(xi + lane) * C + C];
+                bilinear_sample_u8_valid::<C>(
+                    src, src_w, src_h, src_stride, xs[lane], ys[lane], fxs[lane], fys[lane],
+                    dst_pixel,
+                );
+            }
+
+            nx_v = _mm_add_ps(nx_v, step_nx);
+            ny_v = _mm_add_ps(ny_v, step_ny);
+            nd_v = _mm_add_ps(nd_v, step_nd);
+            xi += 4;
+        }
+        // Pull scalar state from vector lane 0 for the tail.
+        let mut tmp = [0f32; 4];
+        _mm_storeu_ps(tmp.as_mut_ptr(), nx_v);
+        nx = tmp[0];
+        _mm_storeu_ps(tmp.as_mut_ptr(), ny_v);
+        ny = tmp[0];
+        _mm_storeu_ps(tmp.as_mut_ptr(), nd_v);
+        nd = tmp[0];
     }
 
     // 1-3 trailing columns: scalar tail.

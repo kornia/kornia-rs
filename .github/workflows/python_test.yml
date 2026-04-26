@@ -76,3 +76,87 @@ jobs:
         if: always()
         run: |
           sccache --show-stats 2>&1 || echo "::warning::sccache stats unavailable - server may have exited"
+
+  # PR-time release dry-run: cross-build manylinux wheels with the same
+  # rustflag-stripping the release workflow uses, verify SIMD instructions
+  # are actually present in the built `.so`, and upload as a downloadable
+  # artifact. Lets us spot a broken SIMD path *before* hitting "Run workflow"
+  # on python_release.yml. One Python version is enough — SIMD codegen is
+  # version-independent.
+  wheels:
+    name: wheel-${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86_64, aarch64]
+    # Drop the local `.cargo/config.toml` baselines so wheels target stock
+    # CPUs and SIMD paths are gated only by per-fn `#[target_feature]` +
+    # runtime `cpu_features()` selection. Override the x86_64 linker too:
+    # `.cargo/config.toml` pins it to `x86_64-linux-gnu-gcc` (the
+    # Debian-named cross compiler used for Jetson-hosted x86_64
+    # cross-test) but the manylinux2014 container is CentOS 7 and only
+    # ships plain `cc`/`gcc`.
+    env:
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: ""
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: "cc"
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-Copt-level=2"
+    steps:
+      - uses: ilammy/setup-nasm@v1
+      - uses: actions/checkout@v6
+      - uses: messense/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          manylinux: auto
+          command: build
+          before-script-linux: |
+            if command -v dnf &> /dev/null; then dnf install cmake3 -y; elif command -v yum &> /dev/null; then yum install cmake3 -y; elif command -v apt-get &> /dev/null; then apt-get update && apt-get install cmake -y; else echo "None of dnf, yum, or apt found."; fi
+            if command -v cmake3 &> /dev/null; then export CMAKE=cmake3; fi
+          args: --release --out dist -i python3.10 -m kornia-py/Cargo.toml
+      # The verifier runs on the *outer* ubuntu-latest runner (x86_64), so
+      # the aarch64 wheel needs the Debian-named cross binutils to read its
+      # symbols.
+      - name: Install cross binutils for aarch64 disassembly
+        if: matrix.target == 'aarch64'
+        run: sudo apt-get update && sudo apt-get install -y binutils-aarch64-linux-gnu
+      - name: Verify each SIMD kernel was compiled with the expected intrinsics
+        run: |
+          set -e
+          WHEEL=$(ls dist/*-manylinux*.whl 2>/dev/null | head -n1)
+          [ -n "$WHEEL" ] || { echo "no manylinux wheel found"; exit 1; }
+          bash kornia-py/scripts/verify_simd_kernels.sh "$WHEEL"
+      # Runtime probe: install the manylinux wheel into a clean venv on the
+      # ubuntu-latest runner and ask `kornia_rs.cpu.cpu_features()` what it
+      # sees. Closes the loop the disassembly check leaves open: assembly
+      # presence in the .so vs whether `cpu_features()` actually loads and
+      # reports the host's real capabilities. Only x86_64 wheels run native
+      # here — the aarch64 wheel stays disassembly-verified only.
+      - name: Set up Python 3.10 to match the wheel's cp310 ABI tag
+        if: matrix.target == 'x86_64'
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.10"
+      - name: Probe runtime SIMD dispatch from installed wheel
+        if: matrix.target == 'x86_64'
+        run: |
+          set -e
+          WHEEL=$(ls dist/*-manylinux*.whl 2>/dev/null | head -n1)
+          python -m venv /tmp/wheel-venv
+          /tmp/wheel-venv/bin/pip install --quiet "$WHEEL"
+          /tmp/wheel-venv/bin/python -c "
+          import kornia_rs
+          f = kornia_rs.cpu.cpu_features()
+          print('Runtime CPU features:', f)
+          # GitHub-hosted ubuntu-latest x86_64 runners are AVX2 + FMA capable.
+          # If those come back False the wheel's runtime dispatch is broken
+          # even though objdump found the intrinsics.
+          assert f.has_avx2, 'AVX2 expected on GH x86_64 runner; wheel runtime dispatch may be broken'
+          assert f.has_fma, 'FMA expected on GH x86_64 runner'
+          assert not f.has_neon, 'NEON must be False on x86_64'
+          "
+      - name: Upload PR wheel
+        uses: actions/upload-artifact@v7
+        with:
+          name: pr-wheel-${{ matrix.target }}-py310
+          path: dist
+          retention-days: 14

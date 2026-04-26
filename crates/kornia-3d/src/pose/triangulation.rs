@@ -26,6 +26,15 @@ pub struct TriangulationConfig {
     pub max_reprojection_error: f64,
     /// Minimum number of positive-depth triangulated points required.
     pub min_cheirality_count: usize,
+    /// Maximum ratio of second-best / best cheirality counts across the 4
+    /// essential-decomposition candidates. If the runner-up retains at least
+    /// this fraction of the winner's cheirality inliers the decomposition is
+    /// ambiguous (near-degenerate motion: pure rotation, planar scene, or
+    /// very low parallax), and `two_view_estimate` returns
+    /// `TwoViewError::AmbiguousCheirality` instead of silently committing to a
+    /// pose that two candidates score equally well. Set to 1.0 to disable.
+    /// Default 0.7 follows ORB-SLAM3's `Initializer::ReconstructF` rule.
+    pub cheirality_ambiguity_max: f64,
 }
 
 impl Default for TriangulationConfig {
@@ -35,6 +44,7 @@ impl Default for TriangulationConfig {
             max_midpoint_gap: 1.0,
             max_reprojection_error: 2.0,
             min_cheirality_count: 1,
+            cheirality_ambiguity_max: 0.7,
         }
     }
 }
@@ -97,9 +107,10 @@ pub(crate) fn triangulate_inliers(
     t: &Vec3F64,
     params: &TriangulateParams<'_>,
 ) -> (usize, Vec<Vec3F64>, Vec<usize>) {
+    let cap = inliers.iter().filter(|&&b| b).count();
     let mut count = 0usize;
-    let mut points = Vec::new();
-    let mut indices = Vec::new();
+    let mut points = Vec::with_capacity(cap);
+    let mut indices = Vec::with_capacity(cap);
 
     for i in 0..x1.len() {
         if !inliers[i] {
@@ -372,6 +383,7 @@ mod tests {
             max_midpoint_gap: 1.0,
             max_reprojection_error: 2.0,
             min_cheirality_count: 1,
+            cheirality_ambiguity_max: 1.0,
         };
 
         let result =

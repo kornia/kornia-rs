@@ -127,7 +127,15 @@ def run_benchmarks():
         print("\n--- Rotation ±30° ---")
         rk = RandomRotation(30.0)
         ra = A.Rotate(limit=30, p=1.0)
-        rot_m = cv2.getRotationMatrix2D((w / 2, h / 2), 30, 1.0)
+        # 2x3 rotation-around-center (cv2.getRotationMatrix2D convention,
+        # +30° CCW, scale 1.0). Built directly so cv2 only appears as a
+        # timing target via cv2.warpAffine, not as a setup helper.
+        _a = np.deg2rad(30.0)
+        _c, _s = float(np.cos(_a)), float(np.sin(_a))
+        rot_m = np.array([
+            [ _c, _s,  (1 - _c) * (w / 2) - _s * (h / 2)],
+            [-_s, _c,  _s * (w / 2) + (1 - _c) * (h / 2)],
+        ], dtype=np.float32)
         res["rotation"] = {
             "kornia": bench("kornia-rs", lambda: rk(img)),
             "albumentations": bench("albumentations", lambda: ra(image=data)["image"]),

@@ -49,6 +49,22 @@ fn bench_fast_corner_detect(c: &mut Criterion) {
             })
         },
     );
+
+    // Fused single-pass u8 path — same entry the Python `K.features.fast_detect`
+    // binding uses. No dense f32 response buffer, no separate NMS pass.
+    let threshold_norm = 20.0f32 / 255.0;
+    let border = 3usize;
+    let rows = border..(new_size.height - border);
+    group.bench_with_input(
+        BenchmarkId::new("fast_detect_rows_u8", &parameter_string),
+        &img_gray8,
+        |b, i| {
+            b.iter(|| {
+                let kps = fast_detect_rows_u8(i, threshold_norm, 9, border, rows.clone());
+                std::hint::black_box(kps);
+            })
+        },
+    );
 }
 
 fn bench_harris_response(c: &mut Criterion) {

@@ -56,22 +56,74 @@ unsafe fn copy_row_neon(src: *const u8, dst: *mut u8, n: usize) {
     }
 }
 
+/// Hand-rolled per-row copy optimized for strided source reads on x86_64.
+///
+/// Issues a non-temporal prefetch ahead of the current row and uses 64-byte
+/// (two 256-bit AVX2) loads/stores to hide the stride latency of jumping
+/// between non-contiguous rows. Tail handled at 32, 16, and byte granularity.
+///
+/// # Safety
+/// - `src` must be valid for reads of `n` bytes.
+/// - `dst` must be valid for writes of `n` bytes.
+/// - `src` and `dst` must not overlap.
+/// - Caller must ensure AVX2 is available.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+#[inline]
+unsafe fn copy_row_avx2(src: *const u8, dst: *mut u8, n: usize) {
+    use std::arch::x86_64::{
+        _mm256_loadu_si256, _mm256_storeu_si256, _mm_loadu_si128, _mm_prefetch, _mm_storeu_si128,
+        _MM_HINT_NTA,
+    };
+
+    // Streaming-prefetch ~2KB ahead — same idea as the NEON path's
+    // `prfm pldl1strm`: keep this row in L1 streaming-style without polluting
+    // the broader cache hierarchy across the next row's stride jump.
+    _mm_prefetch::<_MM_HINT_NTA>(src.add(2048.min(n)) as *const i8);
+
+    let mut i: usize = 0;
+    // Main 64-byte loop: two 256-bit loads/stores per iter.
+    while i + 64 <= n {
+        let v0 = _mm256_loadu_si256(src.add(i) as *const _);
+        let v1 = _mm256_loadu_si256(src.add(i + 32) as *const _);
+        _mm256_storeu_si256(dst.add(i) as *mut _, v0);
+        _mm256_storeu_si256(dst.add(i + 32) as *mut _, v1);
+        i += 64;
+    }
+    // 32-byte remainder.
+    if i + 32 <= n {
+        let v = _mm256_loadu_si256(src.add(i) as *const _);
+        _mm256_storeu_si256(dst.add(i) as *mut _, v);
+        i += 32;
+    }
+    // 16-byte remainder.
+    if i + 16 <= n {
+        let v = _mm_loadu_si128(src.add(i) as *const _);
+        _mm_storeu_si128(dst.add(i) as *mut _, v);
+        i += 16;
+    }
+    // Byte tail.
+    if i < n {
+        std::ptr::copy_nonoverlapping(src.add(i), dst.add(i), n - i);
+    }
+}
+
 /// Copy one destination row from the source slice.
 ///
-/// On aarch64 with `T` = 1 byte and a row of at least 128 bytes, dispatches to
-/// the NEON + prefetch path. Otherwise falls back to `copy_from_slice`.
+/// On aarch64 (NEON) or x86_64 (AVX2) with `T` = 1 byte and a row of at least
+/// 4 KiB, dispatches to the SIMD + prefetch path. Otherwise falls back to
+/// `copy_from_slice`.
 #[inline(always)]
 fn copy_row<T: Copy>(src_row: &[T], dst_row: &mut [T]) {
     debug_assert_eq!(src_row.len(), dst_row.len());
 
-    #[cfg(target_arch = "aarch64")]
-    {
-        // The NEON path issues a `prfm pldl1strm, [src, #2048]` hint tuned
-        // for long contiguous reads. When the cropped row is under ~4KB,
-        // that offset overshoots the row boundary into unrelated pixels
-        // (next row sits at src_stride, not +2048), polluting L1 for no
-        // gain. Let LLVM's `copy_from_slice` memcpy handle small rows.
-        if std::mem::size_of::<T>() == 1 && dst_row.len() >= 4096 {
+    // The SIMD paths issue a streaming prefetch tuned for long contiguous
+    // reads. Under ~4 KiB the prefetch offset overshoots the row boundary
+    // (next row sits at src_stride, not +2048), polluting cache for no gain.
+    // Let LLVM's `copy_from_slice` memcpy handle small rows.
+    if std::mem::size_of::<T>() == 1 && dst_row.len() >= 4096 {
+        #[cfg(target_arch = "aarch64")]
+        {
             // SAFETY: src/dst are distinct slices of equal length; T is 1 byte.
             unsafe {
                 copy_row_neon(
@@ -81,6 +133,21 @@ fn copy_row<T: Copy>(src_row: &[T], dst_row: &mut [T]) {
                 );
             }
             return;
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            let cpu = crate::simd::cpu_features();
+            if cpu.has_avx2 {
+                // SAFETY: AVX2 confirmed; src/dst distinct slices, T is 1 byte.
+                unsafe {
+                    copy_row_avx2(
+                        src_row.as_ptr() as *const u8,
+                        dst_row.as_mut_ptr() as *mut u8,
+                        dst_row.len(),
+                    );
+                }
+                return;
+            }
         }
     }
 
