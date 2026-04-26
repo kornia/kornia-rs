@@ -185,7 +185,11 @@ pub struct TwoViewConfig {
     /// which preserves translation-direction accuracy. The 8-point path
     /// trades that for cleaner rotation: pixel-space normalization gets the
     /// rotation null-space crisp, but the σ-equalization bleeds into t.
-    /// Default `true`; see `kornia-py/benchmarks.md` for current numbers.
+    /// Default `false` — kornia-slam's bootstrap pipeline consumes the
+    /// fundamental matrix downstream of [`two_view_estimate`], so the
+    /// default keeps the 8-point F path. Opt into the 5pt essential path
+    /// explicitly when translation accuracy matters more than F-availability;
+    /// see `kornia-py/benchmarks.md` for current numbers.
     pub use_5pt_essential: bool,
     /// Threshold-annealed LM polish. After the initial LM call on the full
     /// RANSAC inlier set, re-classify inliers at progressively tighter Sampson
@@ -211,7 +215,7 @@ impl Default for TwoViewConfig {
             triangulation: TriangulationConfig::default(),
             lm_enabled: true,
             lm: LmPoseConfig::default(),
-            use_5pt_essential: true,
+            use_5pt_essential: false,
             lm_anneal_thresholds: vec![0.5, 0.25],
             lm_anneal_min_inliers: 30,
         }
