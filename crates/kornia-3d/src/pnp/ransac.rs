@@ -1,7 +1,7 @@
 //! RANSAC-based robust wrapper for PnP solvers.
 
 use super::ops::{intrinsics_as_vectors, project_sq_error};
-use super::{solve_pnp, PnPMethod};
+use super::{solve_pnp, solve_pnp_multi, PnPMethod};
 use super::{PnPError, PnPResult};
 use kornia_algebra::{Mat3AF32, Vec2F32, Vec3AF32};
 use kornia_imgproc::calibration::distortion::PolynomialDistortion;
@@ -9,7 +9,6 @@ use rand::seq::SliceRandom;
 use rand::{rngs::StdRng, SeedableRng};
 use thiserror::Error;
 
-const MIN_CORRESPONDENCES: usize = 4; // Minimum 2D-3D pairs required by PnP
 const EPNP_MIN_SAMPLE_SIZE: usize = 5; // Minimal sample size for EPnP (unless only 4 points available)
 
 const DEFAULT_MAX_ITERATIONS: usize = 100;
@@ -99,20 +98,21 @@ pub fn solve_pnp_ransac(
         }
         .into());
     }
-    if n < MIN_CORRESPONDENCES {
+    let (min_correspondences, sample_size) = match base {
+        PnPMethod::EPnP(_) | PnPMethod::EPnPDefault => {
+            let sc = if n == 4 { 4 } else { EPNP_MIN_SAMPLE_SIZE };
+            (4, sc)
+        }
+        PnPMethod::UP2P(_) => (2, 2),
+    };
+
+    if n < min_correspondences {
         return Err(PnPError::InsufficientCorrespondences {
-            required: MIN_CORRESPONDENCES,
+            required: min_correspondences,
             actual: n,
         }
         .into());
     }
-
-    // Minimal set size: EPnP uses 5 points (unless only 4 points available)
-    let sample_size: usize = if n == MIN_CORRESPONDENCES {
-        MIN_CORRESPONDENCES
-    } else {
-        EPNP_MIN_SAMPLE_SIZE
-    };
 
     // Precompute intrinsics vectors
     let (intr_x, intr_y) = intrinsics_as_vectors(k);
@@ -157,66 +157,68 @@ pub fn solve_pnp_ransac(
             i_min.push(image[idx]);
         }
 
-        // Estimate pose on minimal set
-        let pose_maybe = solve_pnp(&w_min, &i_min, k, distortion, base.clone());
-        let pose_min = match pose_maybe {
+        // Estimate pose(s) on minimal set
+        let poses_maybe = solve_pnp_multi(&w_min, &i_min, k, distortion, base.clone());
+        let poses_min = match poses_maybe {
             Ok(p) => p,
             Err(_e) => {
-                log::debug!("EPnP failed on minimal set");
+                log::debug!("Solver failed on minimal set");
                 continue;
             }
         };
 
-        // Optional cheirality check on minimal set (all positive depths)
-        if !sample_all_positive_depths(&pose_min.rotation, &pose_min.translation, &w_min) {
-            log::debug!("Cheirality check failed on iteration {iter}");
-            continue;
-        }
+        for pose_min in poses_min {
+            // Optional cheirality check on minimal set (all positive depths)
+            if !sample_all_positive_depths(&pose_min.rotation, &pose_min.translation, &w_min) {
+                log::debug!("Cheirality check failed on iteration {iter}");
+                continue;
+            }
 
-        // Score model on all points
-        let (inliers, _total_squared_error) = classify_points(
-            world,
-            image,
-            None,
-            None,
-            ClassificationParams {
-                rotation_matrix: &pose_min.rotation,
-                translation_vector: &pose_min.translation,
-                camera_intrinsics_x: &intr_x,
-                camera_intrinsics_y: &intr_y,
-                threshold: Some(params.reproj_threshold_px),
-            },
-        );
+            // Score model on all points
+            let (inliers, _total_squared_error) = classify_points(
+                world,
+                image,
+                None,
+                None,
+                ClassificationParams {
+                    rotation_matrix: &pose_min.rotation,
+                    translation_vector: &pose_min.translation,
+                    camera_intrinsics_x: &intr_x,
+                    camera_intrinsics_y: &intr_y,
+                    threshold: Some(params.reproj_threshold_px),
+                },
+            );
 
-        if inliers.len() > best_inliers.len() {
-            best_inliers = inliers;
-            best_pose = Some(pose_min);
+            if inliers.len() > best_inliers.len() {
+                best_inliers = inliers;
+                best_pose = Some(pose_min);
 
-            // Update required iterations based on current inlier ratio and sample size
-            if best_inliers.len() >= sample_size {
-                let w = best_inliers.len() as f32 / n as f32;
-                let s = sample_size as f32;
+                // Update required iterations based on current inlier ratio and sample size
+                if best_inliers.len() >= sample_size {
+                    let w = best_inliers.len() as f32 / n as f32;
+                    let s = sample_size as f32;
 
-                // Avoid numerical issues with very small w
-                if w > EPS_PROB_MIN && w < 1.0 {
-                    let ws = w.powf(s);
-                    if ws < 1.0 - EPS_LOG_GUARD && ws > EPS_LOG_GUARD {
-                        // Avoid log(0) and log(1)
-                        let log_conf = (1.0 - params.confidence).max(EPS_LOG_GUARD).ln();
-                        let log_denom = (1.0 - ws).ln();
-                        if log_denom.is_finite() && log_denom.abs() > EPS_LOG_GUARD {
-                            let est = (log_conf / log_denom).ceil();
+                    // Avoid numerical issues with very small w
+                    if w > EPS_PROB_MIN && w < 1.0 {
+                        let ws = w.powf(s);
+                        if ws < 1.0 - EPS_LOG_GUARD && ws > EPS_LOG_GUARD {
+                            // Avoid log(0) and log(1)
+                            let log_conf = (1.0 - params.confidence).max(EPS_LOG_GUARD).ln();
+                            let log_denom = (1.0 - ws).ln();
+                            if log_denom.is_finite() && log_denom.abs() > EPS_LOG_GUARD {
+                                let est = (log_conf / log_denom).ceil();
 
-                            if est.is_finite() && est > 0.0 {
-                                let est_usize = est.min(params.max_iterations as f32) as usize;
-                                if est_usize < required_iters {
-                                    required_iters = est_usize;
+                                if est.is_finite() && est > 0.0 {
+                                    let est_usize = est.min(params.max_iterations as f32) as usize;
+                                    if est_usize < required_iters {
+                                        required_iters = est_usize;
+                                    }
                                 }
                             }
+                        } else if w >= HIGH_INLIER_RATIO_STOP {
+                            // Very high inlier ratio (≥95%), we can stop early
+                            required_iters = iter;
                         }
-                    } else if w >= HIGH_INLIER_RATIO_STOP {
-                        // Very high inlier ratio (≥95%), we can stop early
-                        required_iters = iter;
                     }
                 }
             }
@@ -224,33 +226,50 @@ pub fn solve_pnp_ransac(
     }
 
     // Validate and optionally refine
-    if best_inliers.len() < MIN_CORRESPONDENCES {
+    if best_inliers.len() < min_correspondences {
         let err = PnPRansacError::InsufficientInliers {
-            required: MIN_CORRESPONDENCES,
+            required: min_correspondences,
             actual: best_inliers.len(),
         };
         return Err(err);
     }
 
+    let best_pose = best_pose.ok_or_else(|| {
+        PnPRansacError::Base(PnPError::SvdFailed(
+            "RANSAC failed to produce a pose despite sufficient inliers".to_string(),
+        ))
+    })?;
+
     let mut final_pose = if params.refine {
-        // Refit on all inliers using the base solver.
+        // Refit on all inliers
         let mut w_all = Vec::with_capacity(best_inliers.len());
         let mut i_all = Vec::with_capacity(best_inliers.len());
         for &idx in &best_inliers {
             w_all.push(world[idx]);
             i_all.push(image[idx]);
         }
-        solve_pnp(&w_all, &i_all, k, distortion, base.clone())?
-    } else {
-        match best_pose {
-            Some(p) => p,
-            None => {
-                return Err(PnPError::SvdFailed(
-                    "RANSAC failed to produce a pose despite sufficient inliers".to_string(),
-                )
-                .into());
+
+        match base {
+            PnPMethod::UP2P(_) => {
+                // UP2P is a minimal solver. We cannot run it on N points natively.
+                // We could run unconstrained LM refinement starting from best_pose.
+                // For now, we'll fall back to EPnP if enough points are available,
+                // otherwise just return the minimal pose (since it's better than failing).
+                if w_all.len() >= 4 {
+                    // Try EPnP with default parameters to least-squares fit all inliers
+                    solve_pnp(&w_all, &i_all, k, distortion, PnPMethod::EPnPDefault)
+                        .unwrap_or_else(|e| {
+                            log::warn!("EPnP refinement on UP2P inliers failed! Falling back to unrefined minimal pose. Error: {}", e);
+                            best_pose.clone()
+                        })
+                } else {
+                    best_pose
+                }
             }
+            _ => solve_pnp(&w_all, &i_all, k, distortion, base.clone())?,
         }
+    } else {
+        best_pose
     };
 
     // Recompute reprojection error on inliers only
@@ -498,6 +517,233 @@ mod tests {
         let base = PnPMethod::EPnP(EPnPParams::default());
         let res = solve_pnp_ransac(&points_world, &points_image, &k, None, base, &params)?;
         assert!(res.inliers.len() >= 4);
+        Ok(())
+    }
+
+    #[test]
+    fn test_ransac_up2p() -> Result<(), PnPRansacError> {
+        // Identity rotation and some translation
+        let r_gt = Mat3AF32::IDENTITY;
+        let t_gt = Vec3AF32::new(0.1, -0.2, 0.5);
+        let k = k_default();
+
+        // 6 inliers
+        let mut world = vec![
+            Vec3AF32::new(0.5, 0.5, 2.0),
+            Vec3AF32::new(-0.5, 0.5, 2.5),
+            Vec3AF32::new(0.0, -0.2, 1.8),
+            Vec3AF32::new(0.3, -0.5, 3.0),
+            Vec3AF32::new(-0.2, 0.1, 2.2),
+            Vec3AF32::new(0.8, 0.0, 4.0),
+        ];
+
+        let mut image = Vec::new();
+        for pw in &world {
+            let pc = r_gt * *pw + t_gt;
+            let p_img = Vec2F32::new(
+                k.x_axis().x * (pc.x / pc.z) + k.z_axis().x,
+                k.y_axis().y * (pc.y / pc.z) + k.z_axis().y,
+            );
+            image.push(p_img);
+        }
+
+        // Add 2 outliers
+        world.push(Vec3AF32::new(1.0, 1.0, 1.0));
+        image.push(Vec2F32::new(0.0, 0.0));
+        world.push(Vec3AF32::new(-1.0, -1.0, 1.0));
+        image.push(Vec2F32::new(1000.0, 1000.0));
+
+        let gravity = Vec3AF32::new(0.0, 1.0, 0.0);
+        let params = RansacParams {
+            max_iterations: 20,
+            reproj_threshold_px: 5.0,
+            confidence: 0.99,
+            random_seed: Some(42),
+            refine: false,
+        };
+
+        let base = PnPMethod::UP2P(gravity);
+
+        let res = solve_pnp_ransac(&world, &image, &k, None, base, &params)?;
+        assert_eq!(res.inliers.len(), 6);
+        assert!(res.pose.reproj_rmse.unwrap() < 5.0);
+        Ok(())
+    }
+
+    #[test]
+    fn test_ransac_up2p_complex() -> Result<(), PnPRansacError> {
+        // Yaw rotation of 30 degrees around Y axis (gravity axis)
+        let yaw = std::f32::consts::FRAC_PI_6;
+        let r_gt = Mat3AF32::from_cols_array(&[
+            yaw.cos(),
+            0.0,
+            -yaw.sin(),
+            0.0,
+            1.0,
+            0.0,
+            yaw.sin(),
+            0.0,
+            yaw.cos(),
+        ]);
+        let t_gt = Vec3AF32::new(1.5, -0.2, 3.0);
+        let k = k_default();
+
+        // 10 inliers, spread out
+        let mut world = vec![
+            Vec3AF32::new(1.0, 0.5, 2.0),
+            Vec3AF32::new(-1.0, 0.5, 2.5),
+            Vec3AF32::new(0.0, -0.2, 1.8),
+            Vec3AF32::new(0.5, -0.5, 3.0),
+            Vec3AF32::new(-0.2, 0.1, 2.2),
+            Vec3AF32::new(0.8, 0.0, 4.0),
+            Vec3AF32::new(2.0, -1.0, 3.5),
+            Vec3AF32::new(-1.5, 1.0, 5.0),
+            Vec3AF32::new(0.0, 2.0, 2.0),
+            Vec3AF32::new(0.3, -1.5, 3.1),
+        ];
+
+        let mut image = Vec::new();
+        for (i, pw) in world.iter().enumerate() {
+            let pc = r_gt * *pw + t_gt;
+            let mut p_img = Vec2F32::new(
+                k.x_axis().x * (pc.x / pc.z) + k.z_axis().x,
+                k.y_axis().y * (pc.y / pc.z) + k.z_axis().y,
+            );
+            // Add slight noise to inliers to test refinement step
+            let noise_x = if i % 2 == 0 { 1.5 } else { -1.5 };
+            let noise_y = if i % 3 == 0 { -1.5 } else { 1.5 };
+            p_img.x += noise_x;
+            p_img.y += noise_y;
+            image.push(p_img);
+        }
+
+        // Add 5 severe outliers
+        world.push(Vec3AF32::new(1.0, 1.0, 1.0));
+        image.push(Vec2F32::new(0.0, 0.0));
+        world.push(Vec3AF32::new(-1.0, -1.0, 1.0));
+        image.push(Vec2F32::new(1000.0, 1000.0));
+        world.push(Vec3AF32::new(0.0, 0.0, 1.0));
+        image.push(Vec2F32::new(500.0, -500.0));
+        world.push(Vec3AF32::new(2.0, 2.0, 2.0));
+        image.push(Vec2F32::new(-200.0, 400.0));
+        world.push(Vec3AF32::new(-2.0, 2.0, 2.0));
+        image.push(Vec2F32::new(800.0, 1200.0));
+
+        let gravity = Vec3AF32::new(0.0, 1.0, 0.0);
+        let params = RansacParams {
+            max_iterations: 50,
+            reproj_threshold_px: 5.0, // Should be large enough to tolerate the +/- 1.5px noise
+            confidence: 0.99,
+            random_seed: Some(42),
+            refine: true, // Tests the previously fixed refinement fallback path
+        };
+
+        let base = PnPMethod::UP2P(gravity);
+
+        let res = solve_pnp_ransac(&world, &image, &k, None, base, &params)?;
+
+        assert_eq!(res.inliers.len(), 10);
+
+        let rmse = res.pose.reproj_rmse.unwrap();
+        assert!(rmse > 0.0 && rmse < 10.0, "Actual RMSE: {}", rmse);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_ransac_up2p_high_outliers() -> Result<(), PnPRansacError> {
+        // Identity rotation and some translation
+        let r_gt = Mat3AF32::IDENTITY;
+        let t_gt = Vec3AF32::new(0.5, -0.5, 2.0);
+        let k = k_default();
+
+        let mut world = Vec::new();
+        let mut image = Vec::new();
+
+        // 8 Inliers
+        for i in 0..8 {
+            let pw = Vec3AF32::new(
+                i as f32 * 0.2 - 0.8,
+                (i % 3) as f32 * 0.4 - 0.4,
+                2.0 + i as f32 * 0.1,
+            );
+            world.push(pw);
+            let pc = r_gt * pw + t_gt;
+            image.push(Vec2F32::new(
+                k.x_axis().x * (pc.x / pc.z) + k.z_axis().x,
+                k.y_axis().y * (pc.y / pc.z) + k.z_axis().y,
+            ));
+        }
+
+        // 32 Outliers (80% outliers)
+        for i in 0..32 {
+            world.push(Vec3AF32::new(i as f32 * 0.5, -i as f32 * 0.2, 1.0));
+            image.push(Vec2F32::new(i as f32 * 40.0, i as f32 * 30.0 + 100.0));
+        }
+
+        let gravity = Vec3AF32::new(0.0, 1.0, 0.0);
+        let params = RansacParams {
+            max_iterations: 1000, // Large number of max iterations needed for 20% inlier ratio
+            reproj_threshold_px: 3.0,
+            confidence: 0.99, // 99% confidence requires ~113 iterations
+            random_seed: Some(42),
+            refine: true,
+        };
+
+        let base = PnPMethod::UP2P(gravity);
+
+        let res = solve_pnp_ransac(&world, &image, &k, None, base, &params)?;
+
+        // RANSAC should successfully find all 8 inliers despite 80% outliers
+        assert_eq!(res.inliers.len(), 8);
+        Ok(())
+    }
+
+    #[test]
+    fn test_ransac_up2p_minimal_inliers() -> Result<(), PnPRansacError> {
+        // Tests the logic where UP2P finds <4 inliers, exercising the fallback
+        // unrefined behavior when refine=true is requested but EPnP has insufficient points
+        let r_gt = Mat3AF32::IDENTITY;
+        let t_gt = Vec3AF32::new(-0.2, 0.1, 1.5);
+        let k = k_default();
+
+        let mut world = vec![
+            Vec3AF32::new(0.5, 0.5, 2.0),
+            Vec3AF32::new(-0.5, 0.5, 2.5),
+            Vec3AF32::new(0.0, -0.2, 1.8),
+        ];
+
+        let mut image = Vec::new();
+        for pw in &world {
+            let pc = r_gt * *pw + t_gt;
+            image.push(Vec2F32::new(
+                k.x_axis().x * (pc.x / pc.z) + k.z_axis().x,
+                k.y_axis().y * (pc.y / pc.z) + k.z_axis().y,
+            ));
+        }
+
+        // Add 5 Outliers
+        for i in 0..5 {
+            world.push(Vec3AF32::new(1.0, 1.0, 1.0));
+            image.push(Vec2F32::new(100.0 * i as f32, 200.0 * i as f32));
+        }
+
+        let gravity = Vec3AF32::new(0.0, 1.0, 0.0);
+        let params = RansacParams {
+            max_iterations: 20,
+            reproj_threshold_px: 3.0,
+            confidence: 0.99,
+            random_seed: Some(42),
+            refine: true,
+        };
+
+        let base = PnPMethod::UP2P(gravity);
+        let res = solve_pnp_ransac(&world, &image, &k, None, base, &params)?;
+
+        // UP2P only needs 2 points, so finding 3 is valid
+        assert_eq!(res.inliers.len(), 3);
+        assert!(res.pose.reproj_rmse.unwrap() < 3.0);
+
         Ok(())
     }
 
