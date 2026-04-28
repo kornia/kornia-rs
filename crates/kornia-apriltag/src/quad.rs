@@ -113,11 +113,9 @@ impl Quad {
 /// * `src` - The source image.
 /// * `clusters` - A mutable reference to a HashMap containing clusters of `GradientInfo`.
 /// * `config` - Configuration for decoding tags.
-///
-/// # Returns
-///
-/// A vector of detected `Quad` structures.
-pub fn fit_quads<A: ImageAllocator>(
+/// * `quads` - Mutable reference to a vector where detected quads will be stored.
+/// * `lfps` - Mutable reference to a vector used as a scratch pad for line fitting.
+pub(crate) fn fit_quads<A: ImageAllocator>(
     src: &Image<Pixel, 1, A>,
     clusters: &mut HashMap<(usize, usize), Vec<GradientInfo>>,
     config: &DecodeTagsConfig,
@@ -381,7 +379,7 @@ fn fit_single_quad<A: ImageAllocator>(
 
 /// Stores prefix sums for weighted line fitting over a set of points.
 #[derive(Default, Debug, Clone)]
-pub struct LineFit {
+pub(crate) struct LineFit {
     /// Weighted sum of x coordinates ($\sum_i w_i x_i$)
     mx: f32,
     /// Weighted sum of y coordinates ($\sum_i w_i y_i$)
@@ -402,10 +400,7 @@ pub struct LineFit {
 ///
 /// * `src` - The source image.
 /// * `gradient_infos` - A slice of `GradientInfo` representing the cluster.
-///
-/// # Returns
-///
-/// A vector of `LineFit` structures containing prefix sums for each point.
+/// * `lfps` - Mutable reference to a vector where the line fit prefix sums will be stored.
 fn compute_line_fit_prefix_sums<A: ImageAllocator>(
     src: &Image<Pixel, 1, A>,
     gradient_infos: &[GradientInfo],

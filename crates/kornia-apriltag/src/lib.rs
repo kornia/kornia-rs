@@ -205,7 +205,7 @@ impl AprilTagDecoder {
     ///
     /// # Returns
     ///
-    /// Returns a `Result` containing a vector of `Detection` or an `AprilTagError`.
+    /// Returns a `Result` containing a slice of `Detection` or an `AprilTagError`.
     ///
     /// # Note
     ///
@@ -214,7 +214,7 @@ impl AprilTagDecoder {
     pub fn decode<A: ImageAllocator>(
         &mut self,
         src: &Image<u8, 1, A>,
-    ) -> Result<Vec<Detection>, AprilTagError> {
+    ) -> Result<&[Detection], AprilTagError> {
         if let Some(downscale_img) = self.downscale_img.as_mut() {
             resize_fast_mono(
                 src,
@@ -262,7 +262,7 @@ impl AprilTagDecoder {
             &mut self.gray_model_pair,
             &mut self.detections,
         );
-        Ok(self.detections.clone())
+        Ok(&self.detections)
     }
 
     /// Clears the internal state of the decoder for reuse.

@@ -340,12 +340,8 @@ impl SharpeningBuffer {
 /// * `quads` - Mutable slice of detected quadrilaterals to process.
 /// * `config` - Reference to the tag decoding configuration.
 /// * `gray_model_pair` - Mutable reference to a pair of grayscale models for white and black regions.
-/// * `sharpening_buffer` - Mutable reference to a buffer used for sharpening intermediate values.
-///
-/// # Returns
-///
-/// Returns a vector of `Detection` containing information about each successfully decoded tag.
-pub fn decode_tags<A: ImageAllocator>(
+/// * `detections` - Mutable reference to a vector where detected tags will be stored.
+pub(crate) fn decode_tags<A: ImageAllocator>(
     src: &Image<u8, 1, A>,
     quads: &mut [Quad],
     config: &mut DecodeTagsConfig,
