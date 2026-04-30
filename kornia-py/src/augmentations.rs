@@ -1,4 +1,4 @@
-use numpy::{PyArray, PyArrayMethods};
+use numpy::{PyArray, PyArray3, PyArrayMethods};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use rand::prelude::*;
@@ -484,8 +484,15 @@ impl PyColorJitter {
 
         self.last_params = Some(Self::params_to_dict(py, b, c, s, h, &order)?);
 
-        let arr = img.data(py);
-        let bound = arr.bind(py);
+        // ColorJitter operates on u8 pixels; extract the typed array
+        // (errors on a uint16 Image — those don't go through this op).
+        let arr_any = img.data(py);
+        let typed: Py<PyArray3<u8>> = arr_any.extract(py).map_err(|_| {
+            PyErr::new::<pyo3::exceptions::PyNotImplementedError, _>(
+                "ColorJitter requires a uint8 Image; got uint16",
+            )
+        })?;
+        let bound = typed.bind(py);
         let (src, height, width, channels) = pyarray_data(bound);
         let npixels = height * width;
         let order_f32: Vec<(u8, f32)> = order.iter().map(|&(op, v)| (op, v as f32)).collect();
@@ -628,11 +635,9 @@ impl PyRandomHorizontalFlip {
         if flip {
             img.flip_horizontal(py)
         } else {
-            Ok(PyImageApi::wrap(
-                py,
-                img.data(py),
-                Some(img.mode().to_string()),
-            ))
+            // Pass-through: deep-copy preserves the dtype variant (u8/u16)
+            // through the Image enum without us hand-dispatching here.
+            img.copy(py)
         }
     }
 
@@ -690,11 +695,8 @@ impl PyRandomVerticalFlip {
         if flip {
             img.flip_vertical(py)
         } else {
-            Ok(PyImageApi::wrap(
-                py,
-                img.data(py),
-                Some(img.mode().to_string()),
-            ))
+            // Pass-through deep copy — preserves dtype variant.
+            img.copy(py)
         }
     }
 

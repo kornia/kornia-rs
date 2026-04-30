@@ -1,5 +1,6 @@
 """Tests for the Image API and augmentations."""
 
+import io
 import multiprocessing
 import tempfile
 import os
@@ -854,6 +855,188 @@ class TestDecode:
         garbage = bytes([0xDE, 0xAD, 0xBE, 0xEF] * 16)
         with pytest.raises(Exception):
             Image.decode(garbage)
+
+
+class TestEncode:
+    """Test Image.encode() in-memory and Image.encode_png_u16() for depth maps.
+
+    `encode` is the in-memory complement of `save` — same backend, no path on
+    disk. `encode_png_u16` is the static-method bridge for 16-bit data until
+    Image natively supports uint16 storage; PNG-16 is the only safe lossless
+    format for depth (JPEG smears object-edge discontinuities).
+    """
+
+    def test_encode_jpeg_returns_bytes(self):
+        arr = np.random.randint(0, 255, (32, 64, 3), dtype=np.uint8)
+        img = Image.frombuffer(arr)
+        out = img.encode("jpeg")
+        assert isinstance(out, bytes)
+        # JPEG SOI marker.
+        assert out[:3] == b"\xff\xd8\xff"
+
+    def test_encode_jpeg_quality_is_honoured(self):
+        # High-frequency content so the quality knob actually moves the bytes.
+        arr = np.random.randint(0, 255, (64, 64, 3), dtype=np.uint8)
+        img = Image.frombuffer(arr)
+        small = img.encode("jpeg", quality=20)
+        big = img.encode("jpeg", quality=95)
+        assert len(big) > len(small)
+
+    def test_encode_jpg_alias(self):
+        # "jpg" must work as an alias of "jpeg" — matches `save` extension behavior.
+        arr = np.zeros((8, 8, 3), dtype=np.uint8)
+        img = Image.frombuffer(arr)
+        a = img.encode("jpg")
+        b = img.encode("jpeg")
+        # Same encoder, same input → identical bytes.
+        assert a == b
+
+    def test_encode_png_rgb(self):
+        arr = np.random.randint(0, 255, (32, 64, 3), dtype=np.uint8)
+        img = Image.frombuffer(arr)
+        out = img.encode("png")
+        assert isinstance(out, bytes)
+        # PNG signature (8 bytes).
+        assert out[:8] == b"\x89PNG\r\n\x1a\n"
+        # Round-trip via decode → exact match (PNG is lossless).
+        decoded = Image.decode(out)
+        assert decoded.width == 64
+        assert decoded.height == 32
+        assert decoded.channels == 3
+        assert np.array_equal(np.array(decoded), arr)
+
+    def test_encode_png_grayscale(self):
+        arr = np.full((16, 16, 1), 128, dtype=np.uint8)
+        img = Image.frombuffer(arr)
+        out = img.encode("png")
+        assert out[:8] == b"\x89PNG\r\n\x1a\n"
+
+    def test_encode_png_rgba(self):
+        arr = np.zeros((16, 16, 4), dtype=np.uint8)
+        arr[:, :, 3] = 255  # opaque alpha
+        img = Image.frombuffer(arr)
+        out = img.encode("png")
+        assert out[:8] == b"\x89PNG\r\n\x1a\n"
+
+    def test_encode_unsupported_format_raises(self):
+        arr = np.zeros((4, 4, 3), dtype=np.uint8)
+        img = Image.frombuffer(arr)
+        with pytest.raises(ValueError, match="Unsupported"):
+            img.encode("webp")
+
+    def test_encode_jpeg_rejects_grayscale(self):
+        # JPEG path requires 3-channel; mirror the `save` constraint.
+        arr = np.zeros((8, 8, 1), dtype=np.uint8)
+        img = Image.frombuffer(arr)
+        with pytest.raises(ValueError):
+            img.encode("jpeg")
+
+    # --- u16 (depth) — full Image lifecycle, not a static bridge ---
+
+    def test_u16_image_construction_2d(self):
+        # 2D uint16 → 1-channel u16 Image (depth-map shape).
+        depth = np.full((32, 64), 1500, dtype=np.uint16)
+        img = Image.fromarray(depth)
+        assert img.dtype == np.uint16
+        assert img.mode == "I;16"
+        assert img.width == 64 and img.height == 32 and img.channels == 1
+
+    def test_u16_image_construction_3d(self):
+        depth = np.full((16, 16, 1), 1500, dtype=np.uint16)
+        img = Image.fromarray(depth)
+        assert img.dtype == np.uint16
+        assert img.shape == (16, 16, 1)
+
+    def test_u16_image_encode_png(self):
+        # Realistic depth: smooth gradient + sharp object — what PNG-16 preserves.
+        h, w = 48, 64
+        depth = np.fromfunction(
+            lambda y, x: 1000 + (x.astype(np.uint16) * 8) + (y.astype(np.uint16) * 4),
+            (h, w),
+            dtype=np.uint16,
+        )
+        depth[10:20, 20:40] = 500
+        img = Image.fromarray(depth)
+        out = img.encode("png")
+        assert out[:8] == b"\x89PNG\r\n\x1a\n"
+
+        # Round-trip: decode produces an equal u16 Image (PNG-16 is lossless).
+        back = Image.decode(out, mode="L")
+        assert back.dtype == np.uint16
+        assert back.mode == "I;16"
+        assert np.array_equal(np.array(back).reshape(h, w), depth)
+
+    def test_u16_image_save_to_bytesio(self):
+        # PIL parity: save accepts a file-like (BytesIO) target.
+        depth = np.full((8, 8, 1), 9000, dtype=np.uint16)
+        img = Image.fromarray(depth)
+        buf = io.BytesIO()
+        img.save(buf, format="png")
+        out = buf.getvalue()
+        assert out[:8] == b"\x89PNG\r\n\x1a\n"
+
+    def test_u16_image_jpeg_rejected(self):
+        depth = np.full((8, 8, 1), 1500, dtype=np.uint16)
+        img = Image.fromarray(depth)
+        with pytest.raises(ValueError, match="16-bit"):
+            img.encode("jpeg")
+
+    def test_u16_image_imgproc_raises_clear_error(self):
+        # 8-bit-only methods raise NotImplementedError on u16 with a hint.
+        depth = np.full((8, 8, 1), 1500, dtype=np.uint16)
+        img = Image.fromarray(depth)
+        with pytest.raises(NotImplementedError, match="uint16"):
+            img.resize(4, 4)
+        with pytest.raises(NotImplementedError, match="uint16"):
+            img.flip_horizontal()
+        with pytest.raises(NotImplementedError, match="uint16"):
+            img.adjust_brightness(0.5)
+
+
+class TestSaveToBytesIO:
+    """PIL-parity: ``Image.save(BytesIO, format=...)`` works for u8 too."""
+
+    def test_save_to_bytesio_jpeg(self):
+        arr = np.zeros((8, 8, 3), dtype=np.uint8)
+        img = Image.frombuffer(arr)
+        buf = io.BytesIO()
+        img.save(buf, format="jpeg")
+        out = buf.getvalue()
+        assert out[:3] == b"\xff\xd8\xff"
+
+    def test_save_to_bytesio_png(self):
+        arr = np.full((8, 8, 3), 64, dtype=np.uint8)
+        img = Image.frombuffer(arr)
+        buf = io.BytesIO()
+        img.save(buf, format="png")
+        out = buf.getvalue()
+        assert out[:8] == b"\x89PNG\r\n\x1a\n"
+
+    def test_save_to_bytesio_requires_format(self):
+        # No path extension to fall back on → format= is mandatory.
+        arr = np.zeros((4, 4, 3), dtype=np.uint8)
+        img = Image.frombuffer(arr)
+        buf = io.BytesIO()
+        with pytest.raises(ValueError, match="format="):
+            img.save(buf)
+
+
+class TestFromarrayAlias:
+    """``Image.fromarray`` is the PIL idiom; verify it's a true alias of frombuffer."""
+
+    def test_fromarray_u8(self):
+        arr = np.zeros((4, 4, 3), dtype=np.uint8)
+        a = Image.fromarray(arr)
+        b = Image.frombuffer(arr)
+        assert a.mode == b.mode
+        assert a.dtype == b.dtype
+        assert a.shape == b.shape
+
+    def test_fromarray_u16(self):
+        arr = np.full((4, 4), 1234, dtype=np.uint16)
+        img = Image.fromarray(arr)
+        assert img.dtype == np.uint16
+        assert img.mode == "I;16"
 
 
 # --- Multiprocessing tests ---
