@@ -1,4 +1,4 @@
-use numpy::{PyArray, PyArray3, PyArrayMethods};
+use numpy::{PyArray, PyArrayMethods};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use rand::prelude::*;
@@ -484,14 +484,7 @@ impl PyColorJitter {
 
         self.last_params = Some(Self::params_to_dict(py, b, c, s, h, &order)?);
 
-        // ColorJitter operates on u8 pixels; extract the typed array
-        // (errors on a uint16 Image — those don't go through this op).
-        let arr_any = img.data(py);
-        let typed: Py<PyArray3<u8>> = arr_any.extract(py).map_err(|_| {
-            PyErr::new::<pyo3::exceptions::PyNotImplementedError, _>(
-                "ColorJitter requires a uint8 Image; got uint16",
-            )
-        })?;
+        let typed = img.require_u8("ColorJitter")?;
         let bound = typed.bind(py);
         let (src, height, width, channels) = pyarray_data(bound);
         let npixels = height * width;

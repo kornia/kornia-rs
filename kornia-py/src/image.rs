@@ -258,7 +258,12 @@ impl From<PyPixelFormat> for PixelFormat {
 /// * `image_size` - The dimensions of the image.
 /// * `channels` - The number of channels (e.g., 3 for RGB).
 /// * `pixel_format` - The data type of the pixels.
-#[pyclass(name = "ImageLayout", frozen, from_py_object, module = "kornia_rs.image")]
+#[pyclass(
+    name = "ImageLayout",
+    frozen,
+    from_py_object,
+    module = "kornia_rs.image"
+)]
 #[derive(Clone)]
 pub struct PyImageLayout {
     inner: ImageLayout,
@@ -726,22 +731,15 @@ fn adjust_hue_into_pyarray(
     }
 }
 
-fn mode_from_channels(channels: usize) -> String {
+/// PIL-style mode string. u16 paths get the `;16` suffix (with `I` instead
+/// of `L` for single-channel, mirroring PIL's `"I;16"`).
+fn mode_from_channels(channels: usize, is_u16: bool) -> String {
+    let (gray, suffix) = if is_u16 { ("I", ";16") } else { ("L", "") };
     match channels {
-        1 => "L".to_string(),
-        3 => "RGB".to_string(),
-        4 => "RGBA".to_string(),
-        c => format!("{}ch", c),
-    }
-}
-
-/// PIL-style mode for a 16-bit grayscale image. Mirrors PIL's `"I;16"`.
-fn mode_from_channels_u16(channels: usize) -> String {
-    match channels {
-        1 => "I;16".to_string(),
-        3 => "RGB;16".to_string(),
-        4 => "RGBA;16".to_string(),
-        c => format!("{}ch;16", c),
+        1 => format!("{}{}", gray, suffix),
+        3 => format!("RGB{}", suffix),
+        4 => format!("RGBA{}", suffix),
+        c => format!("{}ch{}", c, suffix),
     }
 }
 
@@ -795,6 +793,31 @@ impl ImageData {
     fn is_u16(&self) -> bool {
         matches!(self, ImageData::U16(_))
     }
+
+    /// Bumps the underlying numpy array's refcount and returns it as `Py<PyAny>`.
+    /// Drives `data` getter, `__array__`, `__getstate__`, `__reduce__`.
+    fn as_pyany(&self, py: Python<'_>) -> Py<PyAny> {
+        match self {
+            ImageData::U8(a) => a.clone_ref(py).into_any(),
+            ImageData::U16(a) => a.clone_ref(py).into_any(),
+        }
+    }
+
+    /// numpy dtype descriptor for the variant — drives the `dtype` getter.
+    fn dtype_obj(&self, py: Python<'_>) -> Py<PyAny> {
+        match self {
+            ImageData::U8(a) => a.bind(py).dtype().clone().unbind().into_any(),
+            ImageData::U16(a) => a.bind(py).dtype().clone().unbind().into_any(),
+        }
+    }
+
+    /// Raw `*mut PyObject` for the buffer protocol.
+    fn as_ptr(&self, py: Python<'_>) -> *mut pyo3::ffi::PyObject {
+        match self {
+            ImageData::U8(a) => a.bind(py).as_ptr(),
+            ImageData::U16(a) => a.bind(py).as_ptr(),
+        }
+    }
 }
 
 /// A high-level image object backed by numpy arrays and Rust operations.
@@ -838,7 +861,7 @@ impl PyImageApi {
     /// derived from channel count.
     pub fn wrap(py: Python<'_>, data: Py<PyArray3<u8>>, mode: Option<String>) -> Self {
         let channels = data.bind(py).shape()[2];
-        let mode = mode.unwrap_or_else(|| mode_from_channels(channels));
+        let mode = mode.unwrap_or_else(|| mode_from_channels(channels, false));
         Self {
             data: ImageData::U8(data),
             mode,
@@ -848,7 +871,7 @@ impl PyImageApi {
     /// Wrap a 16-bit numpy array. Mode defaults to `"I;16"`/`"RGB;16"`/etc.
     pub fn wrap_u16(py: Python<'_>, data: Py<PyArray3<u16>>, mode: Option<String>) -> Self {
         let channels = data.bind(py).shape()[2];
-        let mode = mode.unwrap_or_else(|| mode_from_channels_u16(channels));
+        let mode = mode.unwrap_or_else(|| mode_from_channels(channels, true));
         Self {
             data: ImageData::U16(data),
             mode,
@@ -868,7 +891,7 @@ impl PyImageApi {
 
     /// Returns the u8 backing array, or a `NotImplementedError` if the Image
     /// is u16. Used by 8-bit-only imgproc methods after their early gate.
-    fn require_u8<'a>(&'a self, method: &str) -> PyResult<&'a Py<PyArray3<u8>>> {
+    pub(crate) fn require_u8<'a>(&'a self, method: &str) -> PyResult<&'a Py<PyArray3<u8>>> {
         match &self.data {
             ImageData::U8(a) => Ok(a),
             ImageData::U16(_) => Err(u16_imgproc_unsupported(method)),
@@ -1169,7 +1192,12 @@ impl PyImageApi {
             "RGB" => "rgb",
             "RGBA" => "rgba",
             "L" => "mono",
-            _ => "rgb",
+            other => {
+                return Err(value_err(format!(
+                    "decode: unsupported mode {:?}; expected \"RGB\", \"RGBA\", or \"L\"",
+                    other
+                )))
+            }
         };
 
         // JPEG: always 8-bit per channel.
@@ -1181,31 +1209,31 @@ impl PyImageApi {
             return Ok(Self::wrap(py, arr, Some(mode.to_string())));
         }
 
-        // PNG: parse dimensions + bit depth from IHDR (length 13 starting at byte 16
-        // after the 8-byte signature + 4 length + 4 type bytes). IHDR layout:
-        //   width(4) height(4) bit_depth(1) color_type(1) compression(1) filter(1) interlace(1)
         if data.len() >= 4 && &data[0..4] == b"\x89PNG" {
-            if data.len() < 26 {
-                return Err(value_err("Data too short to be a valid PNG"));
-            }
-            let width = u32::from_be_bytes([data[16], data[17], data[18], data[19]]) as usize;
-            let height = u32::from_be_bytes([data[20], data[21], data[22], data[23]]) as usize;
-            let bit_depth = data[24];
-
-            return if bit_depth == 16 {
-                let arr =
-                    crate::io::png::decode_image_png_u16(data, (height, width), native_mode)?;
-                let mode_u16 = match mode {
-                    "RGB" => "RGB;16".to_string(),
-                    "RGBA" => "RGBA;16".to_string(),
-                    "L" => "I;16".to_string(),
-                    other => other.to_string(),
-                };
-                Ok(Self::wrap_u16(py, arr, Some(mode_u16)))
-            } else {
-                let arr =
-                    crate::io::png::decode_image_png_u8(data, (height, width), native_mode)?;
-                Ok(Self::wrap(py, arr, Some(mode.to_string())))
+            let layout = kornia_io::png::decode_image_png_layout(data)
+                .map_err(|e| value_err(format!("decode: invalid PNG: {}", e)))?;
+            let (height, width) = (layout.image_size.height, layout.image_size.width);
+            return match layout.pixel_format {
+                PixelFormat::U16 => {
+                    let arr =
+                        crate::io::png::decode_image_png_u16(data, (height, width), native_mode)?;
+                    let channels = match mode {
+                        "RGB" => 3,
+                        "RGBA" => 4,
+                        "L" => 1,
+                        _ => unreachable!("native_mode validated above"),
+                    };
+                    Ok(Self::wrap_u16(
+                        py,
+                        arr,
+                        Some(mode_from_channels(channels, true)),
+                    ))
+                }
+                _ => {
+                    let arr =
+                        crate::io::png::decode_image_png_u8(data, (height, width), native_mode)?;
+                    Ok(Self::wrap(py, arr, Some(mode.to_string())))
+                }
             };
         }
 
@@ -1248,10 +1276,7 @@ impl PyImageApi {
 
     #[getter]
     fn dtype(&self, py: Python<'_>) -> Py<PyAny> {
-        match &self.data {
-            ImageData::U8(a) => a.bind(py).dtype().clone().unbind().into_any(),
-            ImageData::U16(a) => a.bind(py).dtype().clone().unbind().into_any(),
-        }
+        self.data.dtype_obj(py)
     }
 
     /// The underlying numpy array. Returns ``Py<PyAny>`` because the dtype
@@ -1259,10 +1284,7 @@ impl PyImageApi {
     /// numpy directly or test ``img.dtype`` to branch.
     #[getter]
     pub fn data(&self, py: Python<'_>) -> Py<PyAny> {
-        match &self.data {
-            ImageData::U8(a) => a.clone_ref(py).into_any(),
-            ImageData::U16(a) => a.clone_ref(py).into_any(),
-        }
+        self.data.as_pyany(py)
     }
 
     #[getter]
@@ -1304,11 +1326,18 @@ impl PyImageApi {
             Some(f) => f.to_lowercase(),
             None => {
                 let path = path_str.as_deref().ok_or_else(|| {
-                    value_err(
-                        "save: format= is required when target is a file-like object",
-                    )
+                    value_err("save: format= is required when target is a file-like object")
                 })?;
-                path.rsplit('.').next().unwrap_or("").to_lowercase()
+                std::path::Path::new(path)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .ok_or_else(|| {
+                        value_err(format!(
+                            "save: could not determine format from path {:?}; pass format=",
+                            path
+                        ))
+                    })?
+                    .to_lowercase()
             }
         };
 
@@ -1501,8 +1530,7 @@ impl PyImageApi {
         let data = self.require_u8("box_blur")?;
         let c = data.bind(py).shape()[2];
         if c == 3 {
-            let result =
-                crate::blur::box_blur(py, data.clone_ref(py), (kernel_size, kernel_size))?;
+            let result = crate::blur::box_blur(py, data.clone_ref(py), (kernel_size, kernel_size))?;
             Ok(Self::wrap(py, result, Some(self.mode.clone())))
         } else {
             self.copy(py)
@@ -1688,8 +1716,7 @@ impl PyImageApi {
         let tx = (cx - cos_a as f64 * cx + sin_a as f64 * cy) as f32;
         let ty = (cy - sin_a as f64 * cx - cos_a as f64 * cy) as f32;
         let m = [cos_a, -sin_a, tx, sin_a, cos_a, ty];
-        let result =
-            crate::warp::warp_affine(py, data.clone_ref(py), m, (h, w), "bilinear", None)?;
+        let result = crate::warp::warp_affine(py, data.clone_ref(py), m, (h, w), "bilinear", None)?;
         Ok(Self::wrap(py, result, Some(self.mode.clone())))
     }
 
@@ -1699,10 +1726,7 @@ impl PyImageApi {
         let cls = Self::type_object(py).unbind().into_any();
         // Pickle as (numpy_array, mode) — `frombuffer` will auto-detect the
         // dtype on reconstruction, so we don't need to thread an extra tag.
-        let arr_any: Py<PyAny> = match &self.data {
-            ImageData::U8(a) => a.clone_ref(py).into_any(),
-            ImageData::U16(a) => a.clone_ref(py).into_any(),
-        };
+        let arr_any = self.data.as_pyany(py);
         let args = pyo3::types::PyTuple::new(
             py,
             [
@@ -1715,11 +1739,7 @@ impl PyImageApi {
     }
 
     fn __getstate__(&self, py: Python<'_>) -> (Py<PyAny>, String) {
-        let arr_any: Py<PyAny> = match &self.data {
-            ImageData::U8(a) => a.clone_ref(py).into_any(),
-            ImageData::U16(a) => a.clone_ref(py).into_any(),
-        };
-        (arr_any, self.mode.clone())
+        (self.data.as_pyany(py), self.mode.clone())
     }
 
     fn __setstate__(&mut self, py: Python<'_>, state: (Py<PyAny>, String)) -> PyResult<()> {
@@ -1791,16 +1811,10 @@ impl PyImageApi {
         dtype: Option<&str>,
         copy: Option<bool>,
     ) -> PyResult<Py<PyAny>> {
-        let arr_any: Py<PyAny> = match &self.data {
-            ImageData::U8(a) => a.clone_ref(py).into_any(),
-            ImageData::U16(a) => a.clone_ref(py).into_any(),
-        };
+        let arr_any = self.data.as_pyany(py);
         let bound = arr_any.bind(py);
         if let Some(dt) = dtype {
-            Ok(bound
-                .call_method1("astype", (dt,))?
-                .call_method0("copy")?
-                .unbind())
+            Ok(bound.call_method1("astype", (dt,))?.unbind())
         } else if copy.unwrap_or(false) {
             Ok(bound.call_method0("copy")?.unbind())
         } else {
@@ -1823,10 +1837,7 @@ impl PyImageApi {
         flags: std::os::raw::c_int,
     ) -> PyResult<()> {
         let py = slf.py();
-        let arr_ptr = match &slf.data {
-            ImageData::U8(a) => a.bind(py).as_ptr(),
-            ImageData::U16(a) => a.bind(py).as_ptr(),
-        };
+        let arr_ptr = slf.data.as_ptr(py);
         let ret = unsafe { pyo3::ffi::PyObject_GetBuffer(arr_ptr, view, flags) };
         if ret != 0 {
             Err(PyErr::fetch(py))

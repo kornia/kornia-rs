@@ -469,16 +469,9 @@ fn write_png_impl(
     write_png_into(file, image_data, image_size, depth, color_type)
 }
 
-// ----------------------------------------------------------------------
-// In-memory encode (returns PNG bytes via a caller-owned `Vec<u8>`)
-// ----------------------------------------------------------------------
-//
-// The buffer-based signature mirrors `encode_image_jpeg_*` in `jpeg.rs` and
-// lets callers reuse a single allocation across many encodes (e.g. a streaming
-// recorder doing one encode per frame).
-//
-// 16-bit variants serialize the source `&[u16]` to big-endian byte pairs (the
-// PNG spec's wire format) — same conversion as the file-path 16-bit writers.
+// In-memory encoders. Buffer is appended to (caller clears for fresh encode,
+// or reuses the allocation across frames). 16-bit variants serialize `&[u16]`
+// to big-endian byte pairs as required by the PNG wire format.
 
 /// Encodes an RGB8 image as PNG bytes into `buffer`.
 ///
@@ -491,6 +484,7 @@ pub fn encode_image_png_rgb8<A: ImageAllocator>(
     image: &Image<u8, 3, A>,
     buffer: &mut Vec<u8>,
 ) -> Result<(), IoError> {
+    buffer.reserve(image.as_slice().len() / 2);
     write_png_into(
         buffer,
         image.as_slice(),
@@ -505,6 +499,7 @@ pub fn encode_image_png_rgba8<A: ImageAllocator>(
     image: &Image<u8, 4, A>,
     buffer: &mut Vec<u8>,
 ) -> Result<(), IoError> {
+    buffer.reserve(image.as_slice().len() / 2);
     write_png_into(
         buffer,
         image.as_slice(),
@@ -519,6 +514,7 @@ pub fn encode_image_png_gray8<A: ImageAllocator>(
     image: &Image<u8, 1, A>,
     buffer: &mut Vec<u8>,
 ) -> Result<(), IoError> {
+    buffer.reserve(image.as_slice().len() / 2);
     write_png_into(
         buffer,
         image.as_slice(),
@@ -535,6 +531,7 @@ pub fn encode_image_png_rgb16<A: ImageAllocator>(
 ) -> Result<(), IoError> {
     let image_size = image.size();
     let image_buf = convert_buf_u16_u8(image.as_slice());
+    buffer.reserve(image_buf.len() / 2);
     write_png_into(
         buffer,
         &image_buf,
@@ -551,6 +548,7 @@ pub fn encode_image_png_rgba16<A: ImageAllocator>(
 ) -> Result<(), IoError> {
     let image_size = image.size();
     let image_buf = convert_buf_u16_u8(image.as_slice());
+    buffer.reserve(image_buf.len() / 2);
     write_png_into(
         buffer,
         &image_buf,
@@ -561,16 +559,13 @@ pub fn encode_image_png_rgba16<A: ImageAllocator>(
 }
 
 /// Encodes a grayscale 16-bit image as PNG bytes into `buffer`.
-///
-/// This is the variant used for depth recording: PNG-16 is lossless on the
-/// uint16 mm values, and works in-memory so the bytes go straight to the wire
-/// (Zenoh / MCAP) without a temporary file.
 pub fn encode_image_png_gray16<A: ImageAllocator>(
     image: &Image<u16, 1, A>,
     buffer: &mut Vec<u8>,
 ) -> Result<(), IoError> {
     let image_size = image.size();
     let image_buf = convert_buf_u16_u8(image.as_slice());
+    buffer.reserve(image_buf.len() / 2);
     write_png_into(
         buffer,
         &image_buf,
