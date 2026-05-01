@@ -160,7 +160,7 @@ impl_pyarray_to_image!(f32, FromPyImageF32, from_pyimage_f32, PyImageF32);
 ///
 /// * `width` - The width of the image.
 /// * `height` - The height of the image.
-#[pyclass(name = "ImageSize", frozen, from_py_object)]
+#[pyclass(name = "ImageSize", frozen, from_py_object, module = "kornia_rs.image")]
 #[derive(Clone)]
 pub struct PyImageSize {
     inner: ImageSize,
@@ -220,7 +220,7 @@ impl From<PyImageSize> for ImageSize {
 ///
 /// Supports standard unsigned 8-bit (U8), unsigned 16-bit (U16),
 /// and 32-bit floating point (F32) formats.
-#[pyclass(name = "PixelFormat", from_py_object)]
+#[pyclass(name = "PixelFormat", from_py_object, module = "kornia_rs.image")]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum PyPixelFormat {
     U8,
@@ -258,7 +258,7 @@ impl From<PyPixelFormat> for PixelFormat {
 /// * `image_size` - The dimensions of the image.
 /// * `channels` - The number of channels (e.g., 3 for RGB).
 /// * `pixel_format` - The data type of the pixels.
-#[pyclass(name = "ImageLayout", frozen, from_py_object)]
+#[pyclass(name = "ImageLayout", frozen, from_py_object, module = "kornia_rs.image")]
 #[derive(Clone)]
 pub struct PyImageLayout {
     inner: ImageLayout,
