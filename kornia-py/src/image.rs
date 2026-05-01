@@ -810,7 +810,7 @@ impl ImageData {
 ///
 /// Thread-safe and serialization-friendly for use with Ray Data,
 /// multiprocessing, and other parallel execution frameworks.
-#[pyclass(name = "Image", weakref)]
+#[pyclass(name = "Image", weakref, module = "kornia_rs.image")]
 pub struct PyImageApi {
     data: ImageData,
     mode: String,

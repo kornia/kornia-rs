@@ -248,14 +248,54 @@ img: np.ndarray = K.read_image_jpeg("dog.jpeg")
 K.write_image_jpeg("dog_copy.jpeg", img)
 ```
 
-### Encoding and Decoding
+### `Image` — PIL-style class with uint8 + uint16 support
 
-Encode or decode image streams using the `turbojpeg` backend:
+`kornia_rs.image.Image` is the recommended high-level API for image I/O,
+encode/decode and transit. It mirrors the parts of PIL most projects use
+(`fromarray`, `save`, `open`-equivalent `load`, `decode`) and natively
+holds **`uint16`** for depth maps and scientific imagery — JPEG would
+corrupt object-edge discontinuities, so 16-bit data must travel through
+lossless PNG-16:
+
+```python
+import io
+import numpy as np
+from kornia_rs.image import Image
+
+# Wrap a numpy array (zero-copy when contiguous). Bit depth is auto-detected.
+rgb   = np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8)
+depth = np.full((480, 640), 1500, dtype=np.uint16)            # mm
+
+rgb_img   = Image.fromarray(rgb)         # mode="RGB",  dtype=uint8
+depth_img = Image.fromarray(depth)       # mode="I;16", dtype=uint16
+
+# Encode to bytes for transit (Zenoh / MCAP / gRPC) — no temp file.
+jpeg_bytes  = rgb_img.encode("jpeg", quality=90)
+png16_bytes = depth_img.encode("png")    # PNG-16, lossless on uint16
+
+# Or save through PIL's file-or-file-like contract.
+buf = io.BytesIO()
+depth_img.save(buf, format="png")        # in-memory
+rgb_img.save("dog.png")                  # to disk (format from extension)
+
+# Decode the other side: PNG IHDR is peeked to choose uint8 vs uint16.
+back = Image.decode(png16_bytes, mode="L")
+assert back.dtype == np.uint16
+assert np.array_equal(np.array(back).reshape(480, 640), depth)
+```
+
+JPEG-on-uint16 raises `ValueError` rather than silently downcasting; 8-bit-only
+imgproc methods (`resize`, `flip_*`, `adjust_*`, `to_grayscale`, …) raise
+`NotImplementedError` on a uint16 Image with a clear remediation hint.
+
+### Encoding and Decoding (legacy, jpeg-only)
+
+The original `ImageEncoder`/`ImageDecoder` pair is still available for
+JPEG-only workflows that want the explicit `turbojpeg` backend object:
 
 ```python
 import kornia_rs as K
 
-# load image with kornia-rs
 img = K.read_image_jpeg("dog.jpeg")
 
 # encode the image with jpeg
@@ -267,9 +307,11 @@ img_encoded: list[int] = image_encoder.encode(img)
 
 # decode back the image
 image_decoder = K.ImageDecoder()
-
 decoded_img: np.ndarray = image_decoder.decode(bytes(img_encoded))
 ```
+
+For new code, prefer the `Image` class above — it covers PNG (incl.
+PNG-16), JPEG, and file-like targets in one consistent surface.
 
 ### Image Resizing
 
