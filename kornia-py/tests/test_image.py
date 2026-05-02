@@ -978,7 +978,7 @@ class TestEncode:
     def test_u16_image_jpeg_rejected(self):
         depth = np.full((8, 8, 1), 1500, dtype=np.uint16)
         img = Image.fromarray(depth)
-        with pytest.raises(ValueError, match="16-bit"):
+        with pytest.raises(ValueError, match="uint16"):
             img.encode("jpeg")
 
     def test_u16_image_imgproc_raises_clear_error(self):
