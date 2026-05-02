@@ -484,8 +484,8 @@ impl PyColorJitter {
 
         self.last_params = Some(Self::params_to_dict(py, b, c, s, h, &order)?);
 
-        let arr = img.data(py);
-        let bound = arr.bind(py);
+        let typed = img.require_u8("ColorJitter")?;
+        let bound = typed.bind(py);
         let (src, height, width, channels) = pyarray_data(bound);
         let npixels = height * width;
         let order_f32: Vec<(u8, f32)> = order.iter().map(|&(op, v)| (op, v as f32)).collect();
@@ -615,9 +615,9 @@ impl PyRandomHorizontalFlip {
     fn __call__(
         &mut self,
         py: Python<'_>,
-        img: PyRef<'_, PyImageApi>,
+        img: Py<PyImageApi>,
         params: Option<&Bound<'_, PyDict>>,
-    ) -> PyResult<PyImageApi> {
+    ) -> PyResult<Py<PyImageApi>> {
         let flip = match params {
             Some(p) => dict_get::<bool>(p, "flip")?,
             None => with_rng(|rng| rng.random::<f64>() < self.p),
@@ -625,15 +625,11 @@ impl PyRandomHorizontalFlip {
 
         self.last_params = Some(dict_single(py, "flip", flip)?);
 
-        if flip {
-            img.flip_horizontal(py)
-        } else {
-            Ok(PyImageApi::wrap(
-                py,
-                img.data(py),
-                Some(img.mode().to_string()),
-            ))
+        if !flip {
+            return Ok(img);
         }
+        let flipped = img.borrow(py).flip_horizontal(py)?;
+        Py::new(py, flipped)
     }
 
     fn __repr__(&self) -> String {
@@ -677,9 +673,9 @@ impl PyRandomVerticalFlip {
     fn __call__(
         &mut self,
         py: Python<'_>,
-        img: PyRef<'_, PyImageApi>,
+        img: Py<PyImageApi>,
         params: Option<&Bound<'_, PyDict>>,
-    ) -> PyResult<PyImageApi> {
+    ) -> PyResult<Py<PyImageApi>> {
         let flip = match params {
             Some(p) => dict_get::<bool>(p, "flip")?,
             None => with_rng(|rng| rng.random::<f64>() < self.p),
@@ -687,15 +683,11 @@ impl PyRandomVerticalFlip {
 
         self.last_params = Some(dict_single(py, "flip", flip)?);
 
-        if flip {
-            img.flip_vertical(py)
-        } else {
-            Ok(PyImageApi::wrap(
-                py,
-                img.data(py),
-                Some(img.mode().to_string()),
-            ))
+        if !flip {
+            return Ok(img);
         }
+        let flipped = img.borrow(py).flip_vertical(py)?;
+        Py::new(py, flipped)
     }
 
     fn __repr__(&self) -> String {

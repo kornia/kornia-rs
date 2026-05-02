@@ -13,6 +13,7 @@
 ## 🔑 Key Features
 
 *   **Image I/O:** Read and write support for JPEG, PNG, and TIFF formats.
+*   **In-memory encode + decode:** Symmetric `encode_image_{jpeg,png}_*` ↔ `decode_image_{jpeg,png}_*` for round-tripping pixels through `Vec<u8>` without touching disk — including lossless PNG-16 (`encode_image_png_gray16`) for depth maps.
 *   **TurboJPEG Support:** Optional integration with `turbojpeg` for high-performance JPEG encoding and decoding.
 *   **Video Capture (GStreamer):** Access generic video streams (files, IP cameras, webcams) via GStreamer integration.
 *   **Camera Access (V4L2):** Direct low-latency access to V4L2 devices on Linux.

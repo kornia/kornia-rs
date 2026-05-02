@@ -160,7 +160,7 @@ impl_pyarray_to_image!(f32, FromPyImageF32, from_pyimage_f32, PyImageF32);
 ///
 /// * `width` - The width of the image.
 /// * `height` - The height of the image.
-#[pyclass(name = "ImageSize", frozen, from_py_object)]
+#[pyclass(name = "ImageSize", frozen, from_py_object, module = "kornia_rs.image")]
 #[derive(Clone)]
 pub struct PyImageSize {
     inner: ImageSize,
@@ -220,7 +220,7 @@ impl From<PyImageSize> for ImageSize {
 ///
 /// Supports standard unsigned 8-bit (U8), unsigned 16-bit (U16),
 /// and 32-bit floating point (F32) formats.
-#[pyclass(name = "PixelFormat", from_py_object)]
+#[pyclass(name = "PixelFormat", from_py_object, module = "kornia_rs.image")]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum PyPixelFormat {
     U8,
@@ -258,7 +258,12 @@ impl From<PyPixelFormat> for PixelFormat {
 /// * `image_size` - The dimensions of the image.
 /// * `channels` - The number of channels (e.g., 3 for RGB).
 /// * `pixel_format` - The data type of the pixels.
-#[pyclass(name = "ImageLayout", frozen, from_py_object)]
+#[pyclass(
+    name = "ImageLayout",
+    frozen,
+    from_py_object,
+    module = "kornia_rs.image"
+)]
 #[derive(Clone)]
 pub struct PyImageLayout {
     inner: ImageLayout,
@@ -450,6 +455,23 @@ pub(crate) fn vec_to_pyarray(
 ) -> Py<PyArray3<u8>> {
     unsafe {
         let arr = PyArray::<u8, _>::new(py, [h, w, c], false);
+        std::ptr::copy_nonoverlapping(data.as_ptr(), arr.data(), data.len());
+        arr.unbind()
+    }
+}
+
+/// Create a `PyArray3<u16>` from a Vec with given dimensions. Sister of
+/// `vec_to_pyarray`; lets the u16 IO paths (PNG-16 decode, `frombytes` u16)
+/// land into a typed numpy view without a numpy round-trip.
+pub(crate) fn vec_to_pyarray_u16(
+    py: Python<'_>,
+    data: Vec<u16>,
+    h: usize,
+    w: usize,
+    c: usize,
+) -> Py<PyArray3<u16>> {
+    unsafe {
+        let arr = PyArray::<u16, _>::new(py, [h, w, c], false);
         std::ptr::copy_nonoverlapping(data.as_ptr(), arr.data(), data.len());
         arr.unbind()
     }
@@ -709,25 +731,111 @@ fn adjust_hue_into_pyarray(
     }
 }
 
-fn mode_from_channels(channels: usize) -> String {
+/// PIL-style mode string. u16 paths get the `;16` suffix (with `I` instead
+/// of `L` for single-channel, mirroring PIL's `"I;16"`).
+fn mode_from_channels(channels: usize, is_u16: bool) -> String {
+    let (gray, suffix) = if is_u16 { ("I", ";16") } else { ("L", "") };
     match channels {
-        1 => "L".to_string(),
-        3 => "RGB".to_string(),
-        4 => "RGBA".to_string(),
-        c => format!("{}ch", c),
+        1 => format!("{}{}", gray, suffix),
+        3 => format!("RGB{}", suffix),
+        4 => format!("RGBA{}", suffix),
+        c => format!("{}ch{}", c, suffix),
+    }
+}
+
+/// Internal storage variant. The two variants are mutually exclusive — the
+/// backing dtype is part of the Image's identity (a uint16 image cannot be
+/// silently downcast on access without a copy).
+#[derive(Debug)]
+pub enum ImageData {
+    U8(Py<PyArray3<u8>>),
+    U16(Py<PyArray3<u16>>),
+}
+
+impl ImageData {
+    /// `(height, width, channels)` for either variant, without copying.
+    fn shape3(&self, py: Python<'_>) -> [usize; 3] {
+        match self {
+            ImageData::U8(a) => {
+                let s = a.bind(py).shape();
+                [s[0], s[1], s[2]]
+            }
+            ImageData::U16(a) => {
+                let s = a.bind(py).shape();
+                [s[0], s[1], s[2]]
+            }
+        }
+    }
+
+    fn channels(&self, py: Python<'_>) -> usize {
+        self.shape3(py)[2]
+    }
+
+    /// dtype name as exposed by numpy. Used for `Image.dtype.name` parity.
+    fn dtype_name(&self) -> &'static str {
+        match self {
+            ImageData::U8(_) => "uint8",
+            ImageData::U16(_) => "uint16",
+        }
+    }
+
+    /// Element size in bytes — 1 for u8, 2 for u16. Used by `nbytes` and
+    /// the buffer protocol.
+    fn itemsize(&self) -> usize {
+        match self {
+            ImageData::U8(_) => 1,
+            ImageData::U16(_) => 2,
+        }
+    }
+
+    /// True for 16-bit storage. Used by 8-bit-only methods to fail fast with
+    /// a clear `NotImplementedError`.
+    fn is_u16(&self) -> bool {
+        matches!(self, ImageData::U16(_))
+    }
+
+    /// Bumps the underlying numpy array's refcount and returns it as `Py<PyAny>`.
+    /// Drives `data` getter, `__array__`, `__getstate__`, `__reduce__`.
+    fn as_pyany(&self, py: Python<'_>) -> Py<PyAny> {
+        match self {
+            ImageData::U8(a) => a.clone_ref(py).into_any(),
+            ImageData::U16(a) => a.clone_ref(py).into_any(),
+        }
+    }
+
+    /// numpy dtype descriptor for the variant — drives the `dtype` getter.
+    fn dtype_obj(&self, py: Python<'_>) -> Py<PyAny> {
+        match self {
+            ImageData::U8(a) => a.bind(py).dtype().clone().unbind().into_any(),
+            ImageData::U16(a) => a.bind(py).dtype().clone().unbind().into_any(),
+        }
+    }
+
+    /// Raw `*mut PyObject` for the buffer protocol.
+    fn as_ptr(&self, py: Python<'_>) -> *mut pyo3::ffi::PyObject {
+        match self {
+            ImageData::U8(a) => a.bind(py).as_ptr(),
+            ImageData::U16(a) => a.bind(py).as_ptr(),
+        }
     }
 }
 
 /// A high-level image object backed by numpy arrays and Rust operations.
 ///
-/// Always stores data as HWC (height, width, channels) numpy arrays.
-/// RGB color order by default.
+/// Always stores data as HWC (height, width, channels) numpy arrays. Supports
+/// both 8-bit (`uint8`) and 16-bit (`uint16`) bit depths — the latter is
+/// required for depth maps and scientific imagery where lossy transit codecs
+/// (JPEG) would corrupt object-edge discontinuities.
+///
+/// Imgproc methods (resize, flip, blur, color conversions, …) currently only
+/// support 8-bit images. Calling them on a 16-bit Image raises
+/// `NotImplementedError` with a clear remediation message.
 ///
 /// Thread-safe and serialization-friendly for use with Ray Data,
 /// multiprocessing, and other parallel execution frameworks.
-#[pyclass(name = "Image", weakref)]
+#[pyclass(name = "Image", weakref, module = "kornia_rs.image")]
 pub struct PyImageApi {
-    data: Py<PyArray3<u8>>,
+    data: ImageData,
     mode: String,
 }
 
@@ -736,14 +844,43 @@ fn value_err<M: Into<String>>(msg: M) -> PyErr {
     PyErr::new::<pyo3::exceptions::PyValueError, _>(msg.into())
 }
 
+/// Shared error for 8-bit-only methods called on a 16-bit Image. We surface
+/// a clear remediation path so users hit a known gap, not a mystery type
+/// mismatch deep inside an imgproc kernel.
+fn u16_imgproc_unsupported(method: &str) -> PyErr {
+    PyErr::new::<pyo3::exceptions::PyNotImplementedError, _>(format!(
+        "Image.{}() is not yet implemented for uint16 images. \
+         Convert to uint8 first via `np.array(img).astype('uint8')` and \
+         re-wrap with `Image.fromarray()`.",
+        method
+    ))
+}
+
 impl PyImageApi {
+    /// Wrap an 8-bit numpy array. Mode defaults to `"L"`/`"RGB"`/`"RGBA"`
+    /// derived from channel count.
     pub fn wrap(py: Python<'_>, data: Py<PyArray3<u8>>, mode: Option<String>) -> Self {
         let channels = data.bind(py).shape()[2];
-        let mode = mode.unwrap_or_else(|| mode_from_channels(channels));
-        Self { data, mode }
+        let mode = mode.unwrap_or_else(|| mode_from_channels(channels, false));
+        Self {
+            data: ImageData::U8(data),
+            mode,
+        }
     }
 
-    /// Wrap a Vec<u8> result as a new `PyImageApi` with the current mode.
+    /// Wrap a 16-bit numpy array. Mode defaults to `"I;16"`/`"RGB;16"`/etc.
+    pub fn wrap_u16(py: Python<'_>, data: Py<PyArray3<u16>>, mode: Option<String>) -> Self {
+        let channels = data.bind(py).shape()[2];
+        let mode = mode.unwrap_or_else(|| mode_from_channels(channels, true));
+        Self {
+            data: ImageData::U16(data),
+            mode,
+        }
+    }
+
+    /// Wrap a Vec<u8> result as a new u8 `PyImageApi` with the current mode.
+    /// Imgproc methods produce these — the result must be u8 because all
+    /// imgproc kernels currently operate on u8.
     fn wrap_vec(&self, py: Python<'_>, out: Vec<u8>, h: usize, w: usize, c: usize) -> Self {
         Self::wrap(
             py,
@@ -751,27 +888,112 @@ impl PyImageApi {
             Some(self.mode.clone()),
         )
     }
+
+    /// Returns the u8 backing array, or a `NotImplementedError` if the Image
+    /// is u16. Used by 8-bit-only imgproc methods after their early gate.
+    pub(crate) fn require_u8<'a>(&'a self, method: &str) -> PyResult<&'a Py<PyArray3<u8>>> {
+        match &self.data {
+            ImageData::U8(a) => Ok(a),
+            ImageData::U16(_) => Err(u16_imgproc_unsupported(method)),
+        }
+    }
+
+    /// Single canonical encode path used by both `encode()` and `save()`.
+    /// Dispatches on (format, dtype, channel count) and returns PNG/JPEG
+    /// bytes. JPEG is u8-only by spec; PNG handles u8 (1/3/4 ch) and u16
+    /// (1/3/4 ch).
+    fn encode_to_bytes(&self, py: Python<'_>, format: &str, quality: u8) -> PyResult<Vec<u8>> {
+        let c = self.data.channels(py);
+        let is_u16 = self.data.is_u16();
+
+        match format {
+            "jpg" | "jpeg" => {
+                if is_u16 {
+                    return Err(value_err(
+                        "JPEG cannot encode 16-bit images (lossy DCT corrupts \
+                         object-edge discontinuities). Use \"png\" instead.",
+                    ));
+                }
+                if c != 3 {
+                    return Err(value_err(format!(
+                        "JPEG requires 3-channel RGB image, got {} channels",
+                        c
+                    )));
+                }
+                let arr = match &self.data {
+                    ImageData::U8(a) => a.clone_ref(py),
+                    ImageData::U16(_) => unreachable!("checked is_u16 above"),
+                };
+                crate::io::jpeg::encode_image_jpeg(arr, quality)
+            }
+            "png" => {
+                let mut buffer = Vec::new();
+                match (&self.data, c) {
+                    (ImageData::U8(a), 3) => {
+                        let img = Image::<u8, 3, _>::from_pyimage(a.clone_ref(py))
+                            .map_err(|e| value_err(e.to_string()))?;
+                        kornia_io::png::encode_image_png_rgb8(&img, &mut buffer)
+                            .map_err(|e| value_err(e.to_string()))?;
+                    }
+                    (ImageData::U8(a), 4) => {
+                        let img = Image::<u8, 4, _>::from_pyimage(a.clone_ref(py))
+                            .map_err(|e| value_err(e.to_string()))?;
+                        kornia_io::png::encode_image_png_rgba8(&img, &mut buffer)
+                            .map_err(|e| value_err(e.to_string()))?;
+                    }
+                    (ImageData::U8(a), 1) => {
+                        let img = Image::<u8, 1, _>::from_pyimage(a.clone_ref(py))
+                            .map_err(|e| value_err(e.to_string()))?;
+                        kornia_io::png::encode_image_png_gray8(&img, &mut buffer)
+                            .map_err(|e| value_err(e.to_string()))?;
+                    }
+                    (ImageData::U16(a), 3) => {
+                        let img = Image::<u16, 3, _>::from_pyimage_u16(a.clone_ref(py))
+                            .map_err(|e| value_err(e.to_string()))?;
+                        kornia_io::png::encode_image_png_rgb16(&img, &mut buffer)
+                            .map_err(|e| value_err(e.to_string()))?;
+                    }
+                    (ImageData::U16(a), 4) => {
+                        let img = Image::<u16, 4, _>::from_pyimage_u16(a.clone_ref(py))
+                            .map_err(|e| value_err(e.to_string()))?;
+                        kornia_io::png::encode_image_png_rgba16(&img, &mut buffer)
+                            .map_err(|e| value_err(e.to_string()))?;
+                    }
+                    (ImageData::U16(a), 1) => {
+                        let img = Image::<u16, 1, _>::from_pyimage_u16(a.clone_ref(py))
+                            .map_err(|e| value_err(e.to_string()))?;
+                        kornia_io::png::encode_image_png_gray16(&img, &mut buffer)
+                            .map_err(|e| value_err(e.to_string()))?;
+                    }
+                    _ => {
+                        return Err(value_err(format!(
+                            "PNG requires 1/3/4-channel image, got {} channels (dtype={})",
+                            c,
+                            self.data.dtype_name()
+                        )))
+                    }
+                };
+                Ok(buffer)
+            }
+            other => Err(value_err(format!(
+                "Unsupported format {:?}. Supported: \"jpeg\"/\"jpg\", \"png\"",
+                other
+            ))),
+        }
+    }
 }
 
 #[pymethods]
 impl PyImageApi {
     /// Create an Image from a numpy array.
+    ///
+    /// Auto-detects the bit depth: ``uint8`` arrays produce an 8-bit Image,
+    /// ``uint16`` arrays produce a 16-bit Image (depth maps, scientific data).
+    /// 2D shapes are treated as single-channel and reshaped to ``(H, W, 1)``.
     #[new]
     #[pyo3(signature = (data, mode=None))]
     fn new(py: Python<'_>, data: &Bound<'_, PyAny>, mode: Option<String>) -> PyResult<Self> {
-        let shape: Vec<usize> = data.getattr("shape")?.extract()?;
-        let arr = if shape.len() == 2 {
-            data.call_method1("reshape", ((shape[0], shape[1], 1usize),))?
-                .extract::<Py<PyArray3<u8>>>()?
-        } else if shape.len() == 3 {
-            data.extract::<Py<PyArray3<u8>>>()?
-        } else {
-            return Err(value_err(format!(
-                "Expected 2D or 3D array, got {}D",
-                shape.len()
-            )));
-        };
-        Ok(Self::wrap(py, arr, mode))
+        Self::frombuffer(py, data, mode)
     }
 
     // --- Static constructors ---
@@ -779,36 +1001,60 @@ impl PyImageApi {
     /// Create a zero-copy Image from a numpy array or array-like object.
     ///
     /// The Image shares memory with the input array — mutations to either
-    /// are visible in both. Accepts 2D (H, W) or 3D (H, W, C) arrays.
+    /// are visible in both. Accepts 2D (H, W) or 3D (H, W, C) arrays. Bit
+    /// depth is inferred from the array's dtype: ``uint8`` is the default
+    /// path, ``uint16`` is the depth-map path.
     ///
     /// Args:
-    ///     data: numpy array (uint8), 2D or 3D in HWC layout.
-    ///     mode: color mode string (e.g. "RGB", "L"). Auto-inferred if omitted.
+    ///     data: numpy array (``uint8`` or ``uint16``), 2D or 3D in HWC layout.
+    ///     mode: color mode string. Auto-inferred from channels + bit depth
+    ///         when omitted (`"RGB"` / `"L"` for u8, `"RGB;16"` / `"I;16"` for u16).
     ///
     /// Returns:
-    ///     Image wrapping the array data without copying.
+    ///     Image wrapping the array data without copying (when contiguous).
     #[staticmethod]
     #[pyo3(signature = (data, mode=None))]
     fn frombuffer(py: Python<'_>, data: &Bound<'_, PyAny>, mode: Option<String>) -> PyResult<Self> {
+        // Fast paths: 3D arrays of the supported dtypes — no shape gymnastics.
         if let Ok(arr) = data.extract::<Py<PyArray3<u8>>>() {
             return Ok(Self::wrap(py, arr, mode));
         }
+        if let Ok(arr) = data.extract::<Py<PyArray3<u16>>>() {
+            return Ok(Self::wrap_u16(py, arr, mode));
+        }
 
+        // 2D fallback: reshape to (H, W, 1) and retry per-dtype. We probe
+        // shape first so we don't reshape a non-array object.
         if let Ok(shape_attr) = data.getattr("shape") {
             if let Ok(shape) = shape_attr.extract::<Vec<usize>>() {
                 if shape.len() == 2 {
-                    if let Ok(arr) = data
+                    let reshaped = data
                         .call_method1("reshape", ((shape[0], shape[1], 1usize),))
-                        .and_then(|r| Ok(r.extract::<Py<PyArray3<u8>>>()?))
-                    {
+                        .map_err(|e| {
+                            PyErr::new::<pyo3::exceptions::PyTypeError, _>(format!(
+                                "frombuffer reshape failed: {}",
+                                e
+                            ))
+                        })?;
+                    if let Ok(arr) = reshaped.extract::<Py<PyArray3<u8>>>() {
                         return Ok(Self::wrap(py, arr, mode));
                     }
+                    if let Ok(arr) = reshaped.extract::<Py<PyArray3<u16>>>() {
+                        return Ok(Self::wrap_u16(py, arr, mode));
+                    }
+                    return Err(value_err(
+                        "frombuffer: 2D array dtype must be uint8 or uint16",
+                    ));
                 } else if shape.len() != 3 {
                     return Err(value_err(format!(
                         "Expected 2D or 3D array, got {}D",
                         shape.len()
                     )));
                 }
+                // 3D but dtype mismatched — give a precise error.
+                return Err(value_err(
+                    "frombuffer: 3D array dtype must be uint8 or uint16",
+                ));
             }
         }
 
@@ -817,23 +1063,38 @@ impl PyImageApi {
         ))
     }
 
+    /// PIL-compatible alias for :meth:`frombuffer`.
+    ///
+    /// PIL's :func:`Image.fromarray` is the standard way to wrap a numpy
+    /// array — exposing the same name here means existing PIL-style code
+    /// works against ``kornia_rs.image.Image`` without renames.
+    #[staticmethod]
+    #[pyo3(signature = (data, mode=None))]
+    fn fromarray(py: Python<'_>, data: &Bound<'_, PyAny>, mode: Option<String>) -> PyResult<Self> {
+        Self::frombuffer(py, data, mode)
+    }
+
     /// Create an Image by copying raw pixel data into a new buffer.
     ///
     /// Accepts bytes, bytearray, memoryview, or any object with a
-    /// .tobytes() method. Width, height, and channels must be specified
+    /// `.tobytes()` method. Width, height, and channels must be specified
     /// so the flat data can be reshaped to (H, W, C).
     ///
     /// Args:
-    ///     data: raw pixel data (bytes, bytearray, memoryview, or .tobytes()-capable).
+    ///     data: raw pixel data (bytes, bytearray, memoryview, or
+    ///         `.tobytes()`-capable).
     ///     width: image width in pixels.
     ///     height: image height in pixels.
     ///     channels: number of channels (default 3).
-    ///     mode: color mode string (e.g. "RGB", "L"). Auto-inferred if omitted.
+    ///     mode: color mode string. Auto-inferred from channels + dtype.
+    ///     dtype: ``"uint8"`` (default) or ``"uint16"``. ``uint16`` requires
+    ///         exactly ``2 * height * width * channels`` bytes (little-endian
+    ///         on the host).
     ///
     /// Returns:
     ///     Image owning a copy of the data.
     #[staticmethod]
-    #[pyo3(signature = (data, width, height, channels=3, mode=None))]
+    #[pyo3(signature = (data, width, height, channels=3, mode=None, dtype=None))]
     fn frombytes(
         py: Python<'_>,
         data: &Bound<'_, PyAny>,
@@ -841,9 +1102,21 @@ impl PyImageApi {
         height: usize,
         channels: Option<usize>,
         mode: Option<String>,
+        dtype: Option<&str>,
     ) -> PyResult<Self> {
         let c = channels.unwrap_or(3);
-        let expected = height * width * c;
+        let dtype = dtype.unwrap_or("uint8");
+        let itemsize = match dtype {
+            "uint8" | "u8" => 1usize,
+            "uint16" | "u16" => 2usize,
+            other => {
+                return Err(value_err(format!(
+                    "Unsupported dtype {:?}: must be \"uint8\" or \"uint16\"",
+                    other
+                )))
+            }
+        };
+        let expected = height * width * c * itemsize;
 
         let bytes: Vec<u8> = if let Ok(v) = data.extract::<Vec<u8>>() {
             v
@@ -857,29 +1130,61 @@ impl PyImageApi {
 
         if bytes.len() != expected {
             return Err(value_err(format!(
-                "Expected {} bytes ({}x{}x{}), got {}",
+                "Expected {} bytes ({}x{}x{}, dtype={}), got {}",
                 expected,
                 height,
                 width,
                 c,
+                dtype,
                 bytes.len()
             )));
         }
 
-        let arr = vec_to_pyarray(py, bytes, height, width, c);
-        Ok(Self::wrap(py, arr, mode))
+        if itemsize == 1 {
+            let arr = vec_to_pyarray(py, bytes, height, width, c);
+            Ok(Self::wrap(py, arr, mode))
+        } else {
+            // Re-interpret little-endian byte pairs as uint16. Allocates a
+            // typed buffer; numpy will hold the canonical view.
+            let mut u16_buf = Vec::with_capacity(bytes.len() / 2);
+            for pair in bytes.chunks_exact(2) {
+                u16_buf.push(u16::from_le_bytes([pair[0], pair[1]]));
+            }
+            let arr = vec_to_pyarray_u16(py, u16_buf, height, width, c);
+            Ok(Self::wrap_u16(py, arr, mode))
+        }
     }
 
-    /// Load an image from file (JPEG, PNG, TIFF). Returns RGB.
+    /// Load an image from a file (JPEG, PNG, TIFF). Auto-detects bit depth
+    /// from the file: PNG-16 / TIFF-16 produce a 16-bit Image; everything
+    /// else produces an 8-bit Image.
+    ///
+    /// PIL parity: equivalent to ``PIL.Image.open(path)``.
     #[staticmethod]
     fn load(py: Python<'_>, path: &str) -> PyResult<Self> {
         let path_str = pyo3::types::PyString::new(py, path);
         let arr_any = crate::io::functional::read_image(path_str.into_any())?;
-        let arr: Py<PyArray3<u8>> = arr_any.extract(py)?;
-        Ok(Self::wrap(py, arr, None))
+        // The functional dispatcher returns either Py<PyArray3<u8>> or
+        // Py<PyArray3<u16>> depending on the file's pixel format. Try the u8
+        // path first (the dominant case) and fall through to u16.
+        if let Ok(arr) = arr_any.extract::<Py<PyArray3<u8>>>(py) {
+            return Ok(Self::wrap(py, arr, None));
+        }
+        let arr: Py<PyArray3<u16>> = arr_any.extract(py).map_err(|_| {
+            PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "load: file decoded to unsupported dtype (expected uint8 or uint16)",
+            )
+        })?;
+        Ok(Self::wrap_u16(py, arr, None))
     }
 
     /// Decode encoded image bytes (JPEG, PNG) into an Image.
+    ///
+    /// Auto-detects the format from magic bytes and the bit depth from the
+    /// PNG IHDR chunk. PNG-16 (16-bit) bytes produce a 16-bit Image; PNG-8
+    /// and JPEG produce 8-bit Images. ``mode`` selects the channel layout
+    /// (``"RGB"`` / ``"RGBA"`` / ``"L"``); for PNG-16 it maps to the 16-bit
+    /// equivalent.
     #[staticmethod]
     #[pyo3(signature = (data, mode="RGB"))]
     fn decode(py: Python<'_>, data: &[u8], mode: &str) -> PyResult<Self> {
@@ -887,45 +1192,69 @@ impl PyImageApi {
             "RGB" => "rgb",
             "RGBA" => "rgba",
             "L" => "mono",
-            _ => "rgb",
+            other => {
+                return Err(value_err(format!(
+                    "decode: unsupported mode {:?}; expected \"RGB\", \"RGBA\", or \"L\"",
+                    other
+                )))
+            }
         };
 
-        let arr = if data.len() >= 2 && data[0] == 0xff && data[1] == 0xd8 {
-            // JPEG
-            match crate::io::jpegturbo::decode_image_jpegturbo(data, native_mode) {
+        // JPEG: always 8-bit per channel.
+        if data.len() >= 2 && data[0] == 0xff && data[1] == 0xd8 {
+            let arr = match crate::io::jpegturbo::decode_image_jpegturbo(data, native_mode) {
                 Ok(a) => a,
                 Err(_) => crate::io::jpeg::decode_image_jpeg(data)?,
-            }
-        } else if data.len() >= 4 && &data[0..4] == b"\x89PNG" {
-            // PNG: parse dimensions from IHDR
-            if data.len() < 24 {
-                return Err(value_err("Data too short to be a valid PNG"));
-            }
-            let width = u32::from_be_bytes([data[16], data[17], data[18], data[19]]) as usize;
-            let height = u32::from_be_bytes([data[20], data[21], data[22], data[23]]) as usize;
-            crate::io::png::decode_image_png_u8(data, (height, width), native_mode)?
-        } else {
-            return Err(value_err("Unsupported image format: not JPEG or PNG"));
-        };
+            };
+            return Ok(Self::wrap(py, arr, Some(mode.to_string())));
+        }
 
-        Ok(Self::wrap(py, arr, Some(mode.to_string())))
+        if data.len() >= 4 && &data[0..4] == b"\x89PNG" {
+            let layout = kornia_io::png::decode_image_png_layout(data)
+                .map_err(|e| value_err(format!("decode: invalid PNG: {}", e)))?;
+            let (height, width) = (layout.image_size.height, layout.image_size.width);
+            return match layout.pixel_format {
+                PixelFormat::U16 => {
+                    let arr =
+                        crate::io::png::decode_image_png_u16(data, (height, width), native_mode)?;
+                    let channels = match mode {
+                        "RGB" => 3,
+                        "RGBA" => 4,
+                        "L" => 1,
+                        _ => unreachable!("native_mode validated above"),
+                    };
+                    Ok(Self::wrap_u16(
+                        py,
+                        arr,
+                        Some(mode_from_channels(channels, true)),
+                    ))
+                }
+                _ => {
+                    let arr =
+                        crate::io::png::decode_image_png_u8(data, (height, width), native_mode)?;
+                    Ok(Self::wrap(py, arr, Some(mode.to_string())))
+                }
+            };
+        }
+
+        Err(value_err("Unsupported image format: not JPEG or PNG"))
     }
 
     // --- Properties ---
 
     #[getter]
     pub fn width(&self, py: Python<'_>) -> usize {
-        self.data.bind(py).shape()[1]
+        self.data.shape3(py)[1]
     }
 
     #[getter]
     pub fn height(&self, py: Python<'_>) -> usize {
-        self.data.bind(py).shape()[0]
+        self.data.shape3(py)[0]
     }
 
     #[getter]
     fn channels(&self, py: Python<'_>) -> usize {
-        self.data.bind(py).shape()[2]
+        self.data.channels(py)
     }
 
     #[getter]
@@ -935,76 +1264,169 @@ impl PyImageApi {
 
     #[getter]
     fn size(&self, py: Python<'_>) -> (usize, usize) {
-        let s = self.data.bind(py).shape();
+        let s = self.data.shape3(py);
         (s[1], s[0])
     }
 
     #[getter]
     fn shape(&self, py: Python<'_>) -> (usize, usize, usize) {
-        let s = self.data.bind(py).shape();
+        let s = self.data.shape3(py);
         (s[0], s[1], s[2])
     }
 
     #[getter]
     fn dtype(&self, py: Python<'_>) -> Py<PyAny> {
-        self.data.bind(py).dtype().clone().unbind().into_any()
+        self.data.dtype_obj(py)
     }
 
+    /// The underlying numpy array. Returns ``Py<PyAny>`` because the dtype
+    /// depends on the bit depth (uint8 or uint16); callers can pass to
+    /// numpy directly or test ``img.dtype`` to branch.
     #[getter]
-    pub fn data(&self, py: Python<'_>) -> Py<PyArray3<u8>> {
-        self.data.clone_ref(py)
+    pub fn data(&self, py: Python<'_>) -> Py<PyAny> {
+        self.data.as_pyany(py)
     }
 
     #[getter]
     fn nbytes(&self, py: Python<'_>) -> usize {
-        let s = self.data.bind(py).shape();
-        s[0] * s[1] * s[2]
+        let s = self.data.shape3(py);
+        s[0] * s[1] * s[2] * self.data.itemsize()
     }
 
     // --- IO ---
 
-    /// Save image to file. Format detected from extension.
-    #[pyo3(signature = (path, quality=95))]
-    fn save(&self, py: Python<'_>, path: &str, quality: u8) -> PyResult<()> {
-        let c = self.data.bind(py).shape()[2];
-        if c != 3 {
-            return Err(value_err(format!(
-                "save requires 3-channel RGB image, got {} channels",
-                c
-            )));
-        }
+    /// Save the image to a file path or file-like object.
+    ///
+    /// PIL-compatible: ``fp`` accepts either a ``str``/``Path`` (writes a
+    /// file directly) or a writable object with ``.write(bytes)`` (writes
+    /// encoded bytes — works with ``io.BytesIO()`` for in-memory capture).
+    /// Format is resolved in this order:
+    ///
+    ///   1. explicit ``format=`` argument (case-insensitive: ``"PNG"`` /
+    ///      ``"JPEG"`` / ``"JPG"``)
+    ///   2. extension on the path (``.png``, ``.jpg``, ``.jpeg``)
+    ///   3. error
+    ///
+    /// 16-bit Images can only save to PNG (JPEG would lose precision and
+    /// smear depth discontinuities); the call returns a ``ValueError``
+    /// otherwise.
+    #[pyo3(signature = (fp, format=None, quality=95))]
+    fn save(
+        &self,
+        py: Python<'_>,
+        fp: &Bound<'_, PyAny>,
+        format: Option<&str>,
+        quality: u8,
+    ) -> PyResult<()> {
+        // Resolve target type: path-like vs file-like.
+        let path_str: Option<String> = fp.extract().ok();
 
-        let ext = path.rsplit('.').next().unwrap_or("").to_lowercase();
-        match ext.as_str() {
-            "jpg" | "jpeg" => {
-                crate::io::jpeg::write_image_jpeg(path, self.data.clone_ref(py), "rgb", quality)
+        // Resolve format.
+        let resolved_format = match format {
+            Some(f) => f.to_lowercase(),
+            None => {
+                let path = path_str.as_deref().ok_or_else(|| {
+                    value_err("save: format= is required when target is a file-like object")
+                })?;
+                std::path::Path::new(path)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .ok_or_else(|| {
+                        value_err(format!(
+                            "save: could not determine format from path {:?}; pass format=",
+                            path
+                        ))
+                    })?
+                    .to_lowercase()
             }
-            "png" => crate::io::png::write_image_png_u8(path, self.data.clone_ref(py), "rgb"),
-            _ => Err(value_err(format!(
-                "Unsupported format: .{}. Supported: .jpg, .jpeg, .png",
-                ext
-            ))),
+        };
+
+        // Encode to bytes (handles u8/u16 dispatch internally).
+        let bytes = self.encode_to_bytes(py, &resolved_format, quality)?;
+
+        if let Some(path) = path_str {
+            std::fs::write(&path, &bytes).map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyIOError, _>(format!(
+                    "save: failed to write {}: {}",
+                    path, e
+                ))
+            })
+        } else {
+            // File-like: requires .write(bytes). PIL accepts BytesIO, file
+            // handles, S3 file objects, etc. — anything quacking like a writer.
+            let pybytes = pyo3::types::PyBytes::new(py, &bytes);
+            fp.call_method1("write", (pybytes,)).map_err(|e| {
+                value_err(format!(
+                    "save: target object must have .write(bytes) — {}",
+                    e
+                ))
+            })?;
+            Ok(())
         }
     }
 
-    /// Return a copy of the underlying numpy array.
-    fn to_numpy(&self, py: Python<'_>) -> PyResult<Py<PyArray3<u8>>> {
-        let copy = self.data.bind(py).call_method0("copy")?;
-        Ok(copy.extract()?)
+    /// Encode the image to in-memory bytes — the in-memory complement of `save`.
+    ///
+    /// PIL parity: ``Image.save(BytesIO(), format=...)`` works because the
+    /// underlying encoder writes to any file-like; here we expose the same
+    /// thing with a direct ``bytes`` return so callers don't need to set up a
+    /// ``BytesIO`` round-trip. Use this when you need to ship an encoded image
+    /// over a wire (Zenoh, MQTT, gRPC) or embed it in a container (MCAP).
+    ///
+    /// Args:
+    ///     format: ``"jpeg"`` (alias ``"jpg"``) or ``"png"``. Case-insensitive.
+    ///     quality: JPEG quality 1-100 (ignored for PNG). Default 95.
+    ///
+    /// Returns:
+    ///     bytes: The encoded image data.
+    ///
+    /// Example::
+    ///
+    ///     img = Image.frombuffer(rgb_array)
+    ///     jpeg_bytes = img.encode("jpeg", quality=80)
+    ///     png_bytes = img.encode("png")
+    #[pyo3(signature = (format, quality=95))]
+    fn encode(&self, py: Python<'_>, format: &str, quality: u8) -> PyResult<Vec<u8>> {
+        self.encode_to_bytes(py, &format.to_lowercase(), quality)
+    }
+
+    /// Return a copy of the underlying numpy array. Dtype matches the
+    /// Image's bit depth (``uint8`` or ``uint16``); returns ``Py<PyAny>``
+    /// because the static type isn't known at compile time.
+    fn to_numpy(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        match &self.data {
+            ImageData::U8(a) => {
+                let copy = a.bind(py).call_method0("copy")?;
+                Ok(copy.extract::<Py<PyArray3<u8>>>()?.into_any())
+            }
+            ImageData::U16(a) => {
+                let copy = a.bind(py).call_method0("copy")?;
+                Ok(copy.extract::<Py<PyArray3<u16>>>()?.into_any())
+            }
+        }
     }
 
     /// Return a deep copy of this image.
     pub fn copy(&self, py: Python<'_>) -> PyResult<Self> {
-        let copy: Py<PyArray3<u8>> = self.data.bind(py).call_method0("copy")?.extract()?;
+        let new_data = match &self.data {
+            ImageData::U8(a) => {
+                let copy: Py<PyArray3<u8>> = a.bind(py).call_method0("copy")?.extract()?;
+                ImageData::U8(copy)
+            }
+            ImageData::U16(a) => {
+                let copy: Py<PyArray3<u16>> = a.bind(py).call_method0("copy")?.extract()?;
+                ImageData::U16(copy)
+            }
+        };
         Ok(Self {
-            data: copy,
+            data: new_data,
             mode: self.mode.clone(),
         })
     }
 
     // --- Chainable transforms ---
 
-    /// Resize image to (width, height).
+    /// Resize image to (width, height). 8-bit only.
     #[pyo3(signature = (width, height, interpolation="bilinear"))]
     fn resize(
         &self,
@@ -1013,12 +1435,13 @@ impl PyImageApi {
         height: usize,
         interpolation: &str,
     ) -> PyResult<Self> {
-        let arr = self.data.bind(py);
+        let data = self.require_u8("resize")?;
+        let arr = data.bind(py);
         let c = arr.shape()[2];
         if c == 3 {
             let result = crate::resize::resize(
                 py,
-                self.data.clone_ref(py),
+                data.clone_ref(py),
                 (height, width),
                 interpolation,
                 true,
@@ -1031,12 +1454,13 @@ impl PyImageApi {
         }
     }
 
-    /// Flip image horizontally.
+    /// Flip image horizontally. 8-bit only.
     pub fn flip_horizontal(&self, py: Python<'_>) -> PyResult<Self> {
-        let arr = self.data.bind(py);
+        let data = self.require_u8("flip_horizontal")?;
+        let arr = data.bind(py);
         let c = arr.shape()[2];
         if c == 3 {
-            let result = crate::flip::horizontal_flip(py, self.data.clone_ref(py))?;
+            let result = crate::flip::horizontal_flip(py, data.clone_ref(py))?;
             Ok(Self::wrap(py, result, Some(self.mode.clone())))
         } else {
             let (src, h, w, _) = pyarray_data(arr);
@@ -1045,12 +1469,13 @@ impl PyImageApi {
         }
     }
 
-    /// Flip image vertically.
+    /// Flip image vertically. 8-bit only.
     pub fn flip_vertical(&self, py: Python<'_>) -> PyResult<Self> {
-        let arr = self.data.bind(py);
+        let data = self.require_u8("flip_vertical")?;
+        let arr = data.bind(py);
         let c = arr.shape()[2];
         if c == 3 {
-            let result = crate::flip::vertical_flip(py, self.data.clone_ref(py))?;
+            let result = crate::flip::vertical_flip(py, data.clone_ref(py))?;
             Ok(Self::wrap(py, result, Some(self.mode.clone())))
         } else {
             let (src, h, w, _) = pyarray_data(arr);
@@ -1059,7 +1484,7 @@ impl PyImageApi {
         }
     }
 
-    /// Crop image at (x, y) with given width and height.
+    /// Crop image at (x, y) with given width and height. 8-bit only.
     pub fn crop(
         &self,
         py: Python<'_>,
@@ -1068,10 +1493,11 @@ impl PyImageApi {
         width: usize,
         height: usize,
     ) -> PyResult<Self> {
-        let arr = self.data.bind(py);
+        let data = self.require_u8("crop")?;
+        let arr = data.bind(py);
         let c = arr.shape()[2];
         if c == 3 {
-            let result = crate::crop::crop(py, self.data.clone_ref(py), x, y, width, height)?;
+            let result = crate::crop::crop(py, data.clone_ref(py), x, y, width, height)?;
             Ok(Self::wrap(py, result, Some(self.mode.clone())))
         } else {
             let (src, _, src_w, _) = pyarray_data(arr);
@@ -1080,14 +1506,15 @@ impl PyImageApi {
         }
     }
 
-    /// Apply Gaussian blur.
+    /// Apply Gaussian blur. 8-bit only.
     #[pyo3(signature = (kernel_size=3, sigma=1.0))]
     fn gaussian_blur(&self, py: Python<'_>, kernel_size: usize, sigma: f32) -> PyResult<Self> {
-        let c = self.data.bind(py).shape()[2];
+        let data = self.require_u8("gaussian_blur")?;
+        let c = data.bind(py).shape()[2];
         if c == 3 {
             let result = crate::blur::gaussian_blur(
                 py,
-                self.data.clone_ref(py),
+                data.clone_ref(py),
                 (kernel_size, kernel_size),
                 (sigma, sigma),
             )?;
@@ -1097,22 +1524,23 @@ impl PyImageApi {
         }
     }
 
-    /// Apply box blur.
+    /// Apply box blur. 8-bit only.
     #[pyo3(signature = (kernel_size=3))]
     fn box_blur(&self, py: Python<'_>, kernel_size: usize) -> PyResult<Self> {
-        let c = self.data.bind(py).shape()[2];
+        let data = self.require_u8("box_blur")?;
+        let c = data.bind(py).shape()[2];
         if c == 3 {
-            let result =
-                crate::blur::box_blur(py, self.data.clone_ref(py), (kernel_size, kernel_size))?;
+            let result = crate::blur::box_blur(py, data.clone_ref(py), (kernel_size, kernel_size))?;
             Ok(Self::wrap(py, result, Some(self.mode.clone())))
         } else {
             self.copy(py)
         }
     }
 
-    /// Adjust brightness. Factor is additive in [0,1] range.
+    /// Adjust brightness. Factor is additive in [0,1] range. 8-bit only.
     pub fn adjust_brightness(&self, py: Python<'_>, factor: f32) -> PyResult<Self> {
-        let arr = self.data.bind(py);
+        let data = self.require_u8("adjust_brightness")?;
+        let arr = data.bind(py);
         let (src, h, w, c) = pyarray_data(arr);
         Ok(Self::wrap(
             py,
@@ -1121,9 +1549,10 @@ impl PyImageApi {
         ))
     }
 
-    /// Adjust contrast. factor=1.0 is identity, >1 increases contrast.
+    /// Adjust contrast. factor=1.0 is identity, >1 increases contrast. 8-bit only.
     pub fn adjust_contrast(&self, py: Python<'_>, factor: f64) -> PyResult<Self> {
-        let arr = self.data.bind(py);
+        let data = self.require_u8("adjust_contrast")?;
+        let arr = data.bind(py);
         let (src, h, w, c) = pyarray_data(arr);
         Ok(Self::wrap(
             py,
@@ -1132,9 +1561,10 @@ impl PyImageApi {
         ))
     }
 
-    /// Adjust saturation. factor=1.0 is identity, 0.0 is grayscale.
+    /// Adjust saturation. factor=1.0 is identity, 0.0 is grayscale. 8-bit only.
     pub fn adjust_saturation(&self, py: Python<'_>, factor: f64) -> PyResult<Self> {
-        let arr = self.data.bind(py);
+        let data = self.require_u8("adjust_saturation")?;
+        let arr = data.bind(py);
         if arr.shape()[2] != 3 {
             return self.copy(py);
         }
@@ -1146,9 +1576,10 @@ impl PyImageApi {
         ))
     }
 
-    /// Adjust hue. factor is in [-0.5, 0.5], fraction of hue wheel.
+    /// Adjust hue. factor is in [-0.5, 0.5], fraction of hue wheel. 8-bit only.
     pub fn adjust_hue(&self, py: Python<'_>, factor: f64) -> PyResult<Self> {
-        let arr = self.data.bind(py);
+        let data = self.require_u8("adjust_hue")?;
+        let arr = data.bind(py);
         if arr.shape()[2] != 3 || factor == 0.0 {
             return self.copy(py);
         }
@@ -1160,14 +1591,15 @@ impl PyImageApi {
         ))
     }
 
-    /// Normalize image to float32 using mean and std per channel.
+    /// Normalize image to float32 using mean and std per channel. 8-bit only.
     fn normalize(
         &self,
         py: Python<'_>,
         mean: (f32, f32, f32),
         std: (f32, f32, f32),
     ) -> PyResult<Py<PyArray3<f32>>> {
-        let arr = self.data.bind(py);
+        let data = self.require_u8("normalize")?;
+        let arr = data.bind(py);
         let (src, h, w, c) = pyarray_data(arr);
         let npixels = h * w;
         let out = unsafe { PyArray::<f32, _>::new(py, [h, w, c], false) };
@@ -1200,9 +1632,10 @@ impl PyImageApi {
         Ok(out.unbind())
     }
 
-    /// Convert RGB image to grayscale (1 channel).
+    /// Convert RGB image to grayscale (1 channel). 8-bit only.
     fn to_grayscale(&self, py: Python<'_>) -> PyResult<Self> {
-        let arr = self.data.bind(py);
+        let data = self.require_u8("to_grayscale")?;
+        let arr = data.bind(py);
         let s = arr.shape();
         let (h, w, c) = (s[0], s[1], s[2]);
         if c == 1 {
@@ -1224,17 +1657,18 @@ impl PyImageApi {
         Ok(Self::wrap(py, out.unbind(), Some("L".to_string())))
     }
 
-    /// Convert grayscale to RGB (3 channels).
+    /// Convert grayscale to RGB (3 channels). 8-bit only.
     fn to_rgb(&self, py: Python<'_>) -> PyResult<Self> {
-        let c = self.data.bind(py).shape()[2];
+        let data = self.require_u8("to_rgb")?;
+        let c = data.bind(py).shape()[2];
         if c == 3 {
             return self.copy(py);
         }
         if c == 1 {
-            let result = crate::color::rgb_from_gray(py, self.data.clone_ref(py))?;
+            let result = crate::color::rgb_from_gray(py, data.clone_ref(py))?;
             Ok(Self::wrap(py, result, Some("RGB".to_string())))
         } else if c == 4 {
-            let result = crate::color::rgb_from_rgba(py, self.data.clone_ref(py), None)?;
+            let result = crate::color::rgb_from_rgba(py, data.clone_ref(py), None)?;
             Ok(Self::wrap(py, result, Some("RGB".to_string())))
         } else {
             Err(value_err(format!(
@@ -1244,7 +1678,7 @@ impl PyImageApi {
         }
     }
 
-    /// Rotate image by angle degrees (counter-clockwise).
+    /// Rotate image by angle degrees (counter-clockwise). 8-bit only.
     ///
     /// Fast paths (exact k·90° only, no epsilon):
     ///  - 0°: copy
@@ -1252,20 +1686,21 @@ impl PyImageApi {
     ///  - ±90°/±270° with H == W: transpose+flip (shape preserved)
     /// Non-exact or non-square 90°/270°: general bilinear warp.
     pub fn rotate(&self, py: Python<'_>, angle: f64) -> PyResult<Self> {
-        let s = self.data.bind(py).shape();
+        let data = self.require_u8("rotate")?;
+        let s = data.bind(py).shape();
         let (h, w, c) = (s[0], s[1], s[2]);
 
         if let Some(k) = exact_k90(angle) {
             match k {
                 0 => return self.copy(py),
                 2 => {
-                    let arr = self.data.bind(py);
+                    let arr = data.bind(py);
                     let (src, _, _, _) = pyarray_data(arr);
                     let (out, _, _) = rot90_generic(src, h, w, c, 2);
                     return Ok(self.wrap_vec(py, out, h, w, c));
                 }
                 1 | 3 if h == w => {
-                    let arr = self.data.bind(py);
+                    let arr = data.bind(py);
                     let (src, _, _, _) = pyarray_data(arr);
                     let (out, nh, nw) = rot90_generic(src, h, w, c, k as i32);
                     return Ok(self.wrap_vec(py, out, nh, nw, c));
@@ -1281,8 +1716,7 @@ impl PyImageApi {
         let tx = (cx - cos_a as f64 * cx + sin_a as f64 * cy) as f32;
         let ty = (cy - sin_a as f64 * cx - cos_a as f64 * cy) as f32;
         let m = [cos_a, -sin_a, tx, sin_a, cos_a, ty];
-        let result =
-            crate::warp::warp_affine(py, self.data.clone_ref(py), m, (h, w), "bilinear", None)?;
+        let result = crate::warp::warp_affine(py, data.clone_ref(py), m, (h, w), "bilinear", None)?;
         Ok(Self::wrap(py, result, Some(self.mode.clone())))
     }
 
@@ -1290,33 +1724,50 @@ impl PyImageApi {
 
     fn __reduce__(&self, py: Python<'_>) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
         let cls = Self::type_object(py).unbind().into_any();
+        // Pickle as (numpy_array, mode) — `frombuffer` will auto-detect the
+        // dtype on reconstruction, so we don't need to thread an extra tag.
+        let arr_any = self.data.as_pyany(py);
         let args = pyo3::types::PyTuple::new(
             py,
             [
-                self.data.bind(py).as_any(),
-                pyo3::types::PyString::new(py, &self.mode).as_any(),
+                arr_any.bind(py).clone(),
+                pyo3::types::PyString::new(py, &self.mode).into_any(),
             ],
         )?
         .unbind();
         Ok((cls, args.into_any()))
     }
 
-    fn __getstate__(&self, py: Python<'_>) -> (Py<PyArray3<u8>>, String) {
-        (self.data.clone_ref(py), self.mode.clone())
+    fn __getstate__(&self, py: Python<'_>) -> (Py<PyAny>, String) {
+        (self.data.as_pyany(py), self.mode.clone())
     }
 
-    fn __setstate__(&mut self, _py: Python<'_>, state: (Py<PyArray3<u8>>, String)) {
-        self.data = state.0;
+    fn __setstate__(&mut self, py: Python<'_>, state: (Py<PyAny>, String)) -> PyResult<()> {
+        // Reconstruct the storage variant from the array's runtime dtype.
+        let bound = state.0.bind(py);
+        if let Ok(arr) = bound.extract::<Py<PyArray3<u8>>>() {
+            self.data = ImageData::U8(arr);
+        } else if let Ok(arr) = bound.extract::<Py<PyArray3<u16>>>() {
+            self.data = ImageData::U16(arr);
+        } else {
+            return Err(value_err(
+                "__setstate__: array dtype must be uint8 or uint16",
+            ));
+        }
         self.mode = state.1;
+        Ok(())
     }
 
     // --- Dunder methods ---
 
     fn __repr__(&self, py: Python<'_>) -> String {
-        let s = self.data.bind(py).shape();
+        let s = self.data.shape3(py);
         format!(
-            "Image(mode={}, size={}x{}, dtype=uint8)",
-            self.mode, s[1], s[0]
+            "Image(mode={}, size={}x{}, dtype={})",
+            self.mode,
+            s[1],
+            s[0],
+            self.data.dtype_name()
         )
     }
 
@@ -1324,15 +1775,33 @@ impl PyImageApi {
         if self.mode != other.mode {
             return false;
         }
-        let a = self.data.bind(py);
-        let b = other.data.bind(py);
-        if a.shape() != b.shape() {
-            return false;
+        // Different bit depths can't be equal — short-circuit before any
+        // raw-byte comparison that would crash on stride mismatches.
+        match (&self.data, &other.data) {
+            (ImageData::U8(a), ImageData::U8(b)) => {
+                let a = a.bind(py);
+                let b = b.bind(py);
+                if a.shape() != b.shape() {
+                    return false;
+                }
+                let len: usize = a.shape().iter().product();
+                let sa = unsafe { std::slice::from_raw_parts(a.data(), len) };
+                let sb = unsafe { std::slice::from_raw_parts(b.data(), len) };
+                sa == sb
+            }
+            (ImageData::U16(a), ImageData::U16(b)) => {
+                let a = a.bind(py);
+                let b = b.bind(py);
+                if a.shape() != b.shape() {
+                    return false;
+                }
+                let len: usize = a.shape().iter().product();
+                let sa = unsafe { std::slice::from_raw_parts(a.data(), len) };
+                let sb = unsafe { std::slice::from_raw_parts(b.data(), len) };
+                sa == sb
+            }
+            _ => false,
         }
-        let len: usize = a.shape().iter().product();
-        let sa = unsafe { std::slice::from_raw_parts(a.data(), len) };
-        let sb = unsafe { std::slice::from_raw_parts(b.data(), len) };
-        sa == sb
     }
 
     #[pyo3(signature = (dtype=None, copy=None))]
@@ -1342,33 +1811,33 @@ impl PyImageApi {
         dtype: Option<&str>,
         copy: Option<bool>,
     ) -> PyResult<Py<PyAny>> {
-        let arr = self.data.bind(py);
+        let arr_any = self.data.as_pyany(py);
+        let bound = arr_any.bind(py);
         if let Some(dt) = dtype {
-            Ok(arr
-                .call_method1("astype", (dt,))?
-                .call_method0("copy")?
-                .unbind())
+            Ok(bound.call_method1("astype", (dt,))?.unbind())
         } else if copy.unwrap_or(false) {
-            Ok(arr.call_method0("copy")?.unbind())
+            Ok(bound.call_method0("copy")?.unbind())
         } else {
-            Ok(self.data.clone_ref(py).into_any())
+            Ok(arr_any)
         }
     }
 
     fn __len__(&self, py: Python<'_>) -> usize {
-        self.data.bind(py).shape()[0]
+        self.data.shape3(py)[0]
     }
 
     /// PEP 3118 buffer protocol — delegates to the backing numpy array so
     /// `memoryview(img)`, `torch.asarray(img)`, and `torch.frombuffer(img)`
-    /// get zero-copy access without going through `np.asarray`.
+    /// get zero-copy access without going through `np.asarray`. Works for
+    /// both u8 and u16 — numpy reports the correct itemsize via the buffer
+    /// protocol's `format` field.
     unsafe fn __getbuffer__(
         slf: pyo3::PyRefMut<'_, Self>,
         view: *mut pyo3::ffi::Py_buffer,
         flags: std::os::raw::c_int,
     ) -> PyResult<()> {
         let py = slf.py();
-        let arr_ptr = slf.data.bind(py).as_ptr();
+        let arr_ptr = slf.data.as_ptr(py);
         let ret = unsafe { pyo3::ffi::PyObject_GetBuffer(arr_ptr, view, flags) };
         if ret != 0 {
             Err(PyErr::fetch(py))
