@@ -19,11 +19,18 @@ Coverage:
   - Buffer ops:          tobytes, to_numpy, copy
 """
 
-import time
+import sys
+from pathlib import Path
+
 import numpy as np
 import pytest
 
 from kornia_rs.image import Image
+
+# Use the shared bench helper from sibling benchmarks/ dir for proper
+# warmup + GC-disable + best-of-N timing. See benchmarks/_bench.py.
+sys.path.insert(0, str(Path(__file__).parent.parent / "benchmarks"))
+from _bench import bench as _real_bench  # noqa: E402
 
 
 def _u8(h, w, c=3):
@@ -38,15 +45,15 @@ def _f32(h, w, c=3):
     return np.random.rand(h, w, c).astype(np.float32)
 
 
-def _bench(label, fn, *, iters=5, warmup=1, ceiling_ms=5000.0):
-    for _ in range(warmup):
-        fn()
-    t0 = time.perf_counter()
-    for _ in range(iters):
-        fn()
-    per_call_ms = (time.perf_counter() - t0) / iters * 1000.0
-    print(f"\n[bench] {label:40s}: {per_call_ms:7.2f} ms/call")
-    assert per_call_ms < ceiling_ms, f"{label} regressed: {per_call_ms:.1f}ms > {ceiling_ms}ms"
+def _bench(label, fn, *, ceiling_ms=5000.0, target_seconds=0.3, **_legacy):
+    """Backwards-compatible wrapper around the shared bench helper.
+
+    Reports the *min* (best-of-N) — the only honest number for sub-ms
+    ops where mean is biased high by GC/scheduler noise.
+    """
+    r = _real_bench(fn, target_seconds=target_seconds, min_iters=20)
+    print(f"\n[bench] {label:40s}: min {r.min_ms:7.3f}  p50 {r.p50_ms:7.3f}  p95 {r.p95_ms:7.3f}  ms (n={r.n})")
+    assert r.min_ms < ceiling_ms, f"{label} regressed: {r.min_ms:.1f}ms > {ceiling_ms}ms"
 
 
 # ----------------------------------------------------- constructors

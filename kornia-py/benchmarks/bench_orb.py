@@ -17,13 +17,14 @@ import glob
 import json
 import os
 import sys
-import time
 from pathlib import Path
 
 import numpy as np
 import kornia_rs as K
 from kornia_rs.image import Image
 import cv2
+
+from _bench import bench as _bench_fn
 
 
 def _load_gray(path, size=None):
@@ -69,15 +70,16 @@ QUALITY_IMGS = [
 VPI_PARAMS = dict(intensity_threshold=20, max_features_per_level=500, max_pyr_levels=3)
 
 
-def bench(name, fn, n=N_ITERS, warmup=N_WARMUP):
-    for _ in range(warmup):
-        fn()
-    t0 = time.perf_counter()
-    for _ in range(n):
-        fn()
-    elapsed = (time.perf_counter() - t0) / n * 1000
-    print(f"  {name:40s} {elapsed:8.3f} ms")
-    return elapsed
+def bench(name, fn, n=None, warmup=None):
+    """Backwards-compat shim around benchmarks/_bench.py — reports min ms.
+
+    The shared helper auto-tunes iteration count to a 1s budget; the legacy
+    n / warmup args are accepted but ignored. min_ms is the right number for
+    sub-millisecond ops; mean is biased high by GC/scheduler noise.
+    """
+    r = _bench_fn(fn, target_seconds=1.0, min_iters=100)
+    print(f"  {name:40s} {r.min_ms:8.3f} ms (min, n={r.n})")
+    return r.min_ms
 
 
 def _xy_from_vpi(corners_array):

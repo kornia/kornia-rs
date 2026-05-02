@@ -13,12 +13,17 @@ by the codec, not by an extra full-image memcpy.
 """
 
 import io
-import time
+import sys
+from pathlib import Path
 
 import numpy as np
 import pytest
 
 from kornia_rs.image import Image
+
+# Best-of-N bench helper from sibling benchmarks/ dir.
+sys.path.insert(0, str(Path(__file__).parent.parent / "benchmarks"))
+from _bench import bench as _bench_fn  # noqa: E402
 
 
 # --------------------------------------------------------------------- helpers
@@ -32,13 +37,11 @@ def _rand_u16(h, w, c=3):
     return np.random.randint(0, 65536, (h, w, c), dtype=np.uint16)
 
 
-def _bench(fn, *, iters=10, warmup=3):
-    for _ in range(warmup):
-        fn()
-    t0 = time.perf_counter()
-    for _ in range(iters):
-        fn()
-    return (time.perf_counter() - t0) / iters * 1000.0
+def _bench(fn, *, iters=None, warmup=None):
+    """Min ms per call (best-of-N). `iters` / `warmup` accepted for
+    backwards compatibility with existing call sites — the bench module
+    auto-tunes iteration count to a 0.3s budget."""
+    return _bench_fn(fn, target_seconds=0.3).min_ms
 
 
 # ----------------------------------------------------------- write/encode side

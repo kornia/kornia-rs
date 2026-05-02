@@ -37,7 +37,6 @@ Usage:
 from __future__ import annotations
 
 import os
-import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -46,6 +45,8 @@ import numpy as np
 
 import kornia_rs as K
 from kornia_rs.image import Image
+
+from _bench import bench as _bench_fn
 
 DATA_DIR = Path(__file__).resolve().parents[2] / "tests" / "data"
 
@@ -97,14 +98,14 @@ class Result:
 
 
 def median_ms(fn, n=N_ITERS, warmup=N_WARMUP) -> float:
-    for _ in range(warmup):
-        fn()
-    ts = []
-    for _ in range(n):
-        t0 = time.perf_counter()
-        fn()
-        ts.append((time.perf_counter() - t0) * 1000)
-    return float(np.median(ts))
+    """Backwards-compat shim around benchmarks/_bench.py — reports min ms.
+
+    The shared helper auto-tunes iteration count to a 1s budget; the legacy
+    n / warmup args are accepted but ignored. min_ms is the right number for
+    sub-millisecond ops; mean is biased high by GC/scheduler noise.
+    """
+    r = _bench_fn(fn, target_seconds=1.0, min_iters=100)
+    return r.min_ms
 
 
 def bench_kornia(

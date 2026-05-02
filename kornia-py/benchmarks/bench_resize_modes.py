@@ -1,17 +1,21 @@
 """Bench resize across interpolation modes vs OpenCV."""
-import time
 import numpy as np
 import cv2
 
 from kornia_rs.image import Image
 
-def bench(fn, n=150, warmup=8):
-    for _ in range(warmup):
-        fn()
-    t0 = time.perf_counter()
-    for _ in range(n):
-        fn()
-    return (time.perf_counter() - t0) / n * 1000
+from _bench import bench as _bench_fn
+
+
+def bench(fn, n=None, warmup=None):
+    """Backwards-compat shim around benchmarks/_bench.py — reports min ms.
+
+    The shared helper auto-tunes iteration count to a 1s budget; the legacy
+    n / warmup args are accepted but ignored. min_ms is the right number for
+    sub-millisecond ops; mean is biased high by GC/scheduler noise.
+    """
+    r = _bench_fn(fn, target_seconds=1.0, min_iters=100)
+    return r.min_ms
 
 
 modes = [

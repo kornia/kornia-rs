@@ -12,7 +12,8 @@ image of kornia's wheels does not require them).
 """
 
 import io
-import time
+import sys
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -22,6 +23,12 @@ cv2 = pytest.importorskip("cv2")
 from PIL import ImageFilter as _PIL_Filter  # noqa: E402
 
 from kornia_rs.image import Image  # noqa: E402
+
+# Shared best-of-N bench helper from sibling benchmarks/ dir. See
+# benchmarks/_bench.py for methodology (warmup + GC-disable + per-call
+# timing + min/p50/p95 reporting).
+sys.path.insert(0, str(Path(__file__).parent.parent / "benchmarks"))
+from _bench import bench as _bench_fn  # noqa: E402
 
 
 H, W = 1080, 1920
@@ -42,24 +49,22 @@ def k_img(arr):
     return Image(arr)
 
 
-def _bench(fn, iters, warmup=2):
-    for _ in range(warmup):
-        fn()
-    t0 = time.perf_counter()
-    for _ in range(iters):
-        fn()
-    return (time.perf_counter() - t0) / iters * 1000.0
+def _race(name, pil_fn, cv2_fn, k_fn, iters=None, *, kornia_max_ratio=1.3,
+          target_seconds=0.3):
+    """Best-of-N bake-off using the shared bench module.
 
-
-def _race(name, pil_fn, cv2_fn, k_fn, iters, *, kornia_max_ratio=1.3):
-    p = _bench(pil_fn, iters)
-    c = _bench(cv2_fn, iters)
-    k = _bench(k_fn, iters)
+    `iters` is ignored — kept for backward compatibility with existing call
+    sites. Each runner gets ``target_seconds`` of timing budget; the report
+    uses the min (least-jitter) sample for the perf gate.
+    """
+    p = _bench_fn(pil_fn, target_seconds=target_seconds).min_ms
+    c = _bench_fn(cv2_fn, target_seconds=target_seconds).min_ms
+    k = _bench_fn(k_fn, target_seconds=target_seconds).min_ms
     fastest_other = min(p, c)
-    print(f"\n[bake-off] {name:<26} PIL {p:6.2f}  cv2 {c:6.2f}  kornia {k:6.2f}  ms")
+    print(f"\n[bake-off] {name:<26} PIL {p:6.3f}  cv2 {c:6.3f}  kornia {k:6.3f}  ms (min)")
     assert k <= fastest_other * kornia_max_ratio, (
-        f"{name}: kornia {k:.1f}ms > {kornia_max_ratio}× fastest competitor "
-        f"({fastest_other:.1f}ms) — perf regression?"
+        f"{name}: kornia {k:.3f}ms > {kornia_max_ratio}× fastest competitor "
+        f"({fastest_other:.3f}ms) — perf regression?"
     )
 
 
@@ -180,9 +185,9 @@ def test_encode_png_fdeflate_beats_cv2(pil_img, arr, k_img):
     """PNG at compress_level=1 hits the fdeflate fast path (NEON/AVX2-accel
     deflate). Asserts kornia < cv2 (which uses libpng with zlib level 1)."""
     buf = io.BytesIO()
-    p = _bench(lambda: (buf.seek(0), buf.truncate(0), pil_img.save(buf, format="PNG")), 2)
-    c = _bench(lambda: cv2.imencode(".png", arr), 2)
-    k = _bench(lambda: k_img.encode("png", compress_level=1), 2)
+    p = _bench_fn(lambda: (buf.seek(0), buf.truncate(0), pil_img.save(buf, format="PNG"))).min_ms
+    c = _bench_fn(lambda: cv2.imencode(".png", arr)).min_ms
+    k = _bench_fn(lambda: k_img.encode("png", compress_level=1)).min_ms
     print(f"\n[bake-off] encode PNG level=1       PIL {p:6.2f}  cv2 {c:6.2f}  kornia {k:6.2f}  ms (fdeflate)")
     assert k <= c, f"encode PNG fdeflate should beat cv2: kornia {k:.1f}ms > cv2 {c:.1f}ms"
 
@@ -190,9 +195,9 @@ def test_encode_png_fdeflate_beats_cv2(pil_img, arr, k_img):
 def test_encode_png_default_no_regression(pil_img, arr, k_img):
     """PNG with default compression level — no perf gate, just a regression guard."""
     buf = io.BytesIO()
-    p = _bench(lambda: (buf.seek(0), buf.truncate(0), pil_img.save(buf, format="PNG")), 2)
-    c = _bench(lambda: cv2.imencode(".png", arr), 2)
-    k = _bench(lambda: k_img.encode("png"), 2)
+    p = _bench_fn(lambda: (buf.seek(0), buf.truncate(0), pil_img.save(buf, format="PNG"))).min_ms
+    c = _bench_fn(lambda: cv2.imencode(".png", arr)).min_ms
+    k = _bench_fn(lambda: k_img.encode("png")).min_ms
     print(f"\n[bake-off] encode PNG default       PIL {p:6.2f}  cv2 {c:6.2f}  kornia {k:6.2f}  ms")
     # Default is balanced (zlib level 6). Loose ceiling.
     assert k <= 800.0, f"encode PNG default regressed: kornia {k:.1f}ms"
