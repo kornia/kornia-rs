@@ -395,6 +395,66 @@ pub(crate) unsafe fn numpy_as_image<const C: usize>(
         .map_err(to_pyerr)
 }
 
+/// Zero-copy wrap a numpy u16 array as a Rust Image for reading.
+///
+/// The caller MUST ensure the Py<PyArray3<u16>> stays alive for the lifetime of the Image.
+pub(crate) unsafe fn numpy_as_image_u16<const C: usize>(
+    py: Python<'_>,
+    image: &Py<PyArray3<u16>>,
+) -> PyResult<Image<u16, C, ForeignAllocator>> {
+    let arr = image.bind(py);
+    if !arr.is_c_contiguous() {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "numpy array is not C-contiguous",
+        ));
+    }
+    let shape = arr.shape();
+    if shape[2] != C {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "expected {} channels, got {}",
+            C, shape[2]
+        )));
+    }
+    let (h, w) = (shape[0], shape[1]);
+    let size = ImageSize {
+        width: w,
+        height: h,
+    };
+    let len_bytes = h * w * C * std::mem::size_of::<u16>();
+    Image::from_raw_parts(size, arr.data() as *const u16, len_bytes, ForeignAllocator)
+        .map_err(to_pyerr)
+}
+
+/// Zero-copy wrap a numpy f32 array as a Rust Image for reading.
+///
+/// The caller MUST ensure the Py<PyArray3<f32>> stays alive for the lifetime of the Image.
+pub(crate) unsafe fn numpy_as_image_f32<const C: usize>(
+    py: Python<'_>,
+    image: &Py<PyArray3<f32>>,
+) -> PyResult<Image<f32, C, ForeignAllocator>> {
+    let arr = image.bind(py);
+    if !arr.is_c_contiguous() {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "numpy array is not C-contiguous",
+        ));
+    }
+    let shape = arr.shape();
+    if shape[2] != C {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "expected {} channels, got {}",
+            C, shape[2]
+        )));
+    }
+    let (h, w) = (shape[0], shape[1]);
+    let size = ImageSize {
+        width: w,
+        height: h,
+    };
+    let len_bytes = h * w * C * std::mem::size_of::<f32>();
+    Image::from_raw_parts(size, arr.data() as *const f32, len_bytes, ForeignAllocator)
+        .map_err(to_pyerr)
+}
+
 pub(crate) type AllocOutput<T, const C: usize, P> = (Image<T, C, ForeignAllocator>, Py<P>);
 
 pub(crate) unsafe fn alloc_output_pyarray<const C: usize>(
@@ -404,6 +464,17 @@ pub(crate) unsafe fn alloc_output_pyarray<const C: usize>(
     let arr = PyArray::<u8, _>::new(py, [size.height, size.width, C], false);
     let len = size.height * size.width * C;
     let img = Image::from_raw_parts(size, arr.data() as *const u8, len, ForeignAllocator)
+        .map_err(to_pyerr)?;
+    Ok((img, arr.unbind()))
+}
+
+pub(crate) unsafe fn alloc_output_pyarray_u16<const C: usize>(
+    py: Python<'_>,
+    size: ImageSize,
+) -> PyResult<AllocOutput<u16, C, PyArray3<u16>>> {
+    let arr = PyArray::<u16, _>::new(py, [size.height, size.width, C], false);
+    let len = size.height * size.width * C * std::mem::size_of::<u16>();
+    let img = Image::from_raw_parts(size, arr.data() as *const u16, len, ForeignAllocator)
         .map_err(to_pyerr)?;
     Ok((img, arr.unbind()))
 }
@@ -924,46 +995,40 @@ impl PyImageApi {
                     ImageData::U8(a) => a.clone_ref(py),
                     ImageData::U16(_) => unreachable!("checked is_u16 above"),
                 };
-                crate::io::jpeg::encode_image_jpeg(arr, quality)
+                crate::io::jpeg::encode_image_jpeg(py, arr, quality)
             }
             "png" => {
                 let mut buffer = Vec::new();
                 match (&self.data, c) {
                     (ImageData::U8(a), 3) => {
-                        let img = Image::<u8, 3, _>::from_pyimage(a.clone_ref(py))
-                            .map_err(|e| value_err(e.to_string()))?;
+                        let img = unsafe { numpy_as_image::<3>(py, a)? };
                         kornia_io::png::encode_image_png_rgb8(&img, &mut buffer)
-                            .map_err(|e| value_err(e.to_string()))?;
+                            .map_err(to_pyerr)?;
                     }
                     (ImageData::U8(a), 4) => {
-                        let img = Image::<u8, 4, _>::from_pyimage(a.clone_ref(py))
-                            .map_err(|e| value_err(e.to_string()))?;
+                        let img = unsafe { numpy_as_image::<4>(py, a)? };
                         kornia_io::png::encode_image_png_rgba8(&img, &mut buffer)
-                            .map_err(|e| value_err(e.to_string()))?;
+                            .map_err(to_pyerr)?;
                     }
                     (ImageData::U8(a), 1) => {
-                        let img = Image::<u8, 1, _>::from_pyimage(a.clone_ref(py))
-                            .map_err(|e| value_err(e.to_string()))?;
+                        let img = unsafe { numpy_as_image::<1>(py, a)? };
                         kornia_io::png::encode_image_png_gray8(&img, &mut buffer)
-                            .map_err(|e| value_err(e.to_string()))?;
+                            .map_err(to_pyerr)?;
                     }
                     (ImageData::U16(a), 3) => {
-                        let img = Image::<u16, 3, _>::from_pyimage_u16(a.clone_ref(py))
-                            .map_err(|e| value_err(e.to_string()))?;
+                        let img = unsafe { numpy_as_image_u16::<3>(py, a)? };
                         kornia_io::png::encode_image_png_rgb16(&img, &mut buffer)
-                            .map_err(|e| value_err(e.to_string()))?;
+                            .map_err(to_pyerr)?;
                     }
                     (ImageData::U16(a), 4) => {
-                        let img = Image::<u16, 4, _>::from_pyimage_u16(a.clone_ref(py))
-                            .map_err(|e| value_err(e.to_string()))?;
+                        let img = unsafe { numpy_as_image_u16::<4>(py, a)? };
                         kornia_io::png::encode_image_png_rgba16(&img, &mut buffer)
-                            .map_err(|e| value_err(e.to_string()))?;
+                            .map_err(to_pyerr)?;
                     }
                     (ImageData::U16(a), 1) => {
-                        let img = Image::<u16, 1, _>::from_pyimage_u16(a.clone_ref(py))
-                            .map_err(|e| value_err(e.to_string()))?;
+                        let img = unsafe { numpy_as_image_u16::<1>(py, a)? };
                         kornia_io::png::encode_image_png_gray16(&img, &mut buffer)
-                            .map_err(|e| value_err(e.to_string()))?;
+                            .map_err(to_pyerr)?;
                     }
                     _ => {
                         return Err(value_err(format!(
@@ -1163,7 +1228,7 @@ impl PyImageApi {
     #[staticmethod]
     fn load(py: Python<'_>, path: &str) -> PyResult<Self> {
         let path_str = pyo3::types::PyString::new(py, path);
-        let arr_any = crate::io::functional::read_image(path_str.into_any())?;
+        let arr_any = crate::io::functional::read_image(py, path_str.into_any())?;
         // The functional dispatcher returns either Py<PyArray3<u8>> or
         // Py<PyArray3<u16>> depending on the file's pixel format. Try the u8
         // path first (the dominant case) and fall through to u16.
@@ -1204,7 +1269,7 @@ impl PyImageApi {
         if data.len() >= 2 && data[0] == 0xff && data[1] == 0xd8 {
             let arr = match crate::io::jpegturbo::decode_image_jpegturbo(data, native_mode) {
                 Ok(a) => a,
-                Err(_) => crate::io::jpeg::decode_image_jpeg(data)?,
+                Err(_) => crate::io::jpeg::decode_image_jpeg(py, data)?,
             };
             return Ok(Self::wrap(py, arr, Some(mode.to_string())));
         }
@@ -1215,8 +1280,12 @@ impl PyImageApi {
             let (height, width) = (layout.image_size.height, layout.image_size.width);
             return match layout.pixel_format {
                 PixelFormat::U16 => {
-                    let arr =
-                        crate::io::png::decode_image_png_u16(data, (height, width), native_mode)?;
+                    let arr = crate::io::png::decode_image_png_u16(
+                        py,
+                        data,
+                        (height, width),
+                        native_mode,
+                    )?;
                     let channels = match mode {
                         "RGB" => 3,
                         "RGBA" => 4,
@@ -1230,8 +1299,12 @@ impl PyImageApi {
                     ))
                 }
                 _ => {
-                    let arr =
-                        crate::io::png::decode_image_png_u8(data, (height, width), native_mode)?;
+                    let arr = crate::io::png::decode_image_png_u8(
+                        py,
+                        data,
+                        (height, width),
+                        native_mode,
+                    )?;
                     Ok(Self::wrap(py, arr, Some(mode.to_string())))
                 }
             };

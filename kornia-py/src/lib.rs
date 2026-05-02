@@ -169,7 +169,7 @@ pub fn read_image_deprecated(py: Python<'_>, file_path: Bound<'_, PyAny>) -> PyR
         py,
         "kornia_rs.read_image is deprecated. Use kornia_rs.io.read_image.",
     )?;
-    io::functional::read_image(file_path)
+    io::functional::read_image(py, file_path)
 }
 
 // JPEG
@@ -183,7 +183,7 @@ pub fn read_image_jpeg_deprecated(
         py,
         "kornia_rs.read_image_jpeg is deprecated. Use kornia_rs.io.read_image_jpeg.",
     )?;
-    io::jpeg::read_image_jpeg(file_path, mode)
+    io::jpeg::read_image_jpeg(py, file_path, mode)
 }
 
 #[pyfunction(name = "write_image_jpeg")]
@@ -198,7 +198,7 @@ pub fn write_image_jpeg_deprecated(
         py,
         "kornia_rs.write_image_jpeg is deprecated. Use kornia_rs.io.write_image_jpeg.",
     )?;
-    io::jpeg::write_image_jpeg(file_path, image, mode, quality)
+    io::jpeg::write_image_jpeg(py, file_path, image, mode, quality)
 }
 
 // PNG
@@ -212,7 +212,7 @@ pub fn read_image_png_u8_deprecated(
         py,
         "kornia_rs.read_image_png_u8 is deprecated. Use kornia_rs.io.read_image_png_u8.",
     )?;
-    io::png::read_image_png_u8(file_path, mode)
+    io::png::read_image_png_u8(py, file_path, mode)
 }
 
 #[pyfunction(name = "write_image_png_u8")]
@@ -226,7 +226,7 @@ pub fn write_image_png_u8_deprecated(
         py,
         "kornia_rs.write_image_png_u8 is deprecated. Use kornia_rs.io.write_image_png_u8.",
     )?;
-    io::png::write_image_png_u8(file_path, image, mode)
+    io::png::write_image_png_u8(py, file_path, image, mode)
 }
 
 // Resize

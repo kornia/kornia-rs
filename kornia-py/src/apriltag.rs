@@ -4,12 +4,11 @@ use kornia_apriltag::{
     quad::{FitQuadConfig, Quad},
     AprilTagDecoder, DecodeTagsConfig,
 };
-use kornia_image::Image;
 use pyo3::{exceptions::PyException, prelude::*, PyResult};
 
 use crate::{
     apriltag::family::PyTagFamily,
-    image::{FromPyImage, PyImage, PyImageSize},
+    image::{numpy_as_image, PyImage, PyImageSize},
 };
 
 #[pyclass(name = "DecodeTagsConfig")]
@@ -223,9 +222,8 @@ impl PyAprilTagDecoder {
         self.0.clear();
     }
 
-    pub fn decode(&mut self, src: PyImage) -> PyResult<Vec<PyApriltagDetection>> {
-        let img: Image<u8, 1, _> = Image::from_pyimage(src)
-            .map_err(|err| PyErr::new::<PyException, _>(err.to_string()))?;
+    pub fn decode(&mut self, py: Python<'_>, src: PyImage) -> PyResult<Vec<PyApriltagDetection>> {
+        let img = unsafe { numpy_as_image::<1>(py, &src)? };
 
         let detection = self
             .0

@@ -1,5 +1,4 @@
-use crate::image::{FromPyImage, PyImage, PyImageSize, ToPyImage};
-use kornia_image::Image;
+use crate::image::{numpy_as_image, to_pyerr, PyImage, PyImageSize, ToPyImage};
 use kornia_io::jpegturbo::{
     read_image_jpegturbo_rgb8, write_image_jpegturbo_rgb8, JpegTurboDecoder, JpegTurboEncoder,
 };
@@ -116,13 +115,9 @@ impl PyImageEncoder {
     ///
     /// # Exceptions
     /// * `Exception`: If encoding fails or the image format is incompatible.
-    pub fn encode(&self, image: PyImage) -> PyResult<Vec<u8>> {
-        let image = Image::from_pyimage(image)
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-        let jpeg_data = self
-            .0
-            .encode_rgb8(&image)
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
+    pub fn encode(&self, py: Python<'_>, image: PyImage) -> PyResult<Vec<u8>> {
+        let image = unsafe { numpy_as_image::<3>(py, &image)? };
+        let jpeg_data = self.0.encode_rgb8(&image).map_err(to_pyerr)?;
         Ok(jpeg_data)
     }
 
@@ -176,11 +171,14 @@ pub fn read_image_jpegturbo(file_path: &str) -> PyResult<PyImage> {
 ///
 /// *Python-only helper; not part of kornia-io's Rust API.*
 #[pyfunction]
-pub fn write_image_jpegturbo(file_path: &str, image: PyImage, quality: u8) -> PyResult<()> {
-    let image = Image::from_pyimage(image)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-    write_image_jpegturbo_rgb8(file_path, &image, quality)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
+pub fn write_image_jpegturbo(
+    py: Python<'_>,
+    file_path: &str,
+    image: PyImage,
+    quality: u8,
+) -> PyResult<()> {
+    let image = unsafe { numpy_as_image::<3>(py, &image)? };
+    write_image_jpegturbo_rgb8(file_path, &image, quality).map_err(to_pyerr)?;
     Ok(())
 }
 

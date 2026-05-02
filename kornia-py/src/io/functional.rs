@@ -1,6 +1,7 @@
-use crate::image::{ToPyImage, ToPyImageF32, ToPyImageU16};
+use crate::image::{
+    alloc_output_pyarray, alloc_output_pyarray_f32, alloc_output_pyarray_u16, to_pyerr,
+};
 use kornia_image::{
-    allocator::CpuAllocator,
     color_spaces::{Gray16, Gray8, Grayf32, Rgb16, Rgb8, Rgba16, Rgba8, Rgbf32},
     PixelFormat,
 };
@@ -15,12 +16,6 @@ use std::path::Path;
 ///
 /// .. warning::
 ///    `read_image_any` is deprecated. Please use `kornia_rs.io.read_image` instead.
-///
-/// # Arguments
-/// * `file_path` (Union[str, os.PathLike]): The path to the image file to read.
-///
-/// # Returns
-/// * `numpy.ndarray`: The decoded image tensor.
 #[pyfunction(name = "read_image_any")]
 pub fn read_image_any_deprecated(
     py: Python<'_>,
@@ -31,42 +26,17 @@ pub fn read_image_any_deprecated(
         "kornia_rs.read_image_any is deprecated. Use kornia_rs.io.read_image instead.",
     )?;
 
-    read_image(file_path)
+    read_image(py, file_path)
 }
 
 /// Reads an image from a file path and returns it as a Python tensor.
-///
-/// This function reads the file at the given path, automatically determines
-/// the image format from the file extension, and decodes it into a Kornia image tensor.
 ///
 /// Supported formats and bit depths:
 /// - **PNG**: 8-bit, 16-bit (Mono, RGB, RGBA)
 /// - **TIFF**: 8-bit, 16-bit, 32-bit float (Mono, RGB)
 /// - **JPEG**: 8-bit (Mono, RGB)
-///
-/// # Arguments
-/// * `file_path` (Union[str, os.PathLike]): The path to the image file.
-///
-/// # Returns
-/// * `numpy.ndarray`: An image array representing the decoded image.
-///
-/// # Exceptions
-/// * `TypeError`: If the provided path does not implement `__fspath__` or isn't a string.
-/// * `FileNotFoundError`: If the file cannot be found at the given path.
-/// * `ValueError`: If the file extension is unsupported or decoding fails.
-/// * `IOError`: If an error occurs reading the file from disk.
-/// * `Exception`: If an unexpected error occurs while decoding the image or converting it into a Python tensor.
-///
-/// # Scope
-///
-/// This is a Python-only convenience helper provided by the `kornia-py` bindings.
-/// It is intentionally not part of the Rust public API of `kornia-io`. Rust
-/// consumers should use the typed per-format functions in
-/// `kornia_io::{jpeg, png, tiff}` directly, or `kornia_io::functional::read_image_any_rgb8`
-/// for a single generic RGB8 path.
 #[pyfunction]
-pub fn read_image(file_path: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-    // Attempt to obtain a path-like object via PEP 519 (`__fspath__`)
+pub fn read_image(py: Python<'_>, file_path: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     let path_obj = file_path
         .call_method0("__fspath__")
         .unwrap_or_else(|_| file_path.clone());
@@ -98,9 +68,9 @@ pub fn read_image(file_path: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         })?;
 
     match extension.as_str() {
-        "png" => read_image_png_dispatcher(path),
-        "tiff" | "tif" => read_image_tiff_dispatcher(path),
-        "jpg" | "jpeg" => read_image_jpeg_dispatcher(path),
+        "png" => read_image_png_dispatcher(py, path),
+        "tiff" | "tif" => read_image_tiff_dispatcher(py, path),
+        "jpg" | "jpeg" => read_image_jpeg_dispatcher(py, path),
         _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
             "Unsupported file format: {}. Supported formats: png, tiff, jpeg",
             extension
@@ -108,113 +78,53 @@ pub fn read_image(file_path: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     }
 }
 
+fn read_file_bytes(path: &Path) -> PyResult<Vec<u8>> {
+    fs::read(path).map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e.to_string()))
+}
+
 /// Internal dispatcher for decoding PNG images.
-fn read_image_png_dispatcher(file_path: &Path) -> PyResult<Py<PyAny>> {
-    // Read file once
-    let png_data = fs::read(file_path)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e.to_string()))?;
+fn read_image_png_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<PyAny>> {
+    let png_data = read_file_bytes(file_path)?;
+    let layout = png_io::decode_image_png_layout(&png_data).map_err(to_pyerr)?;
 
-    // Get layout from bytes
-    let layout = png_io::decode_image_png_layout(&png_data)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-
-    let channels = layout.channels;
-    let pixel_format = layout.pixel_format;
-    let image_size = layout.image_size;
-
-    // Decode from bytes (not file) to avoid reading twice
-    match (channels, pixel_format) {
+    match (layout.channels, layout.pixel_format) {
         (1, PixelFormat::U8) => {
-            let mut img = Gray8::from_size_val(image_size, 0, CpuAllocator)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            png_io::decode_image_png_mono8(&png_data, &mut img)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            Ok(img
-                .to_pyimage()
-                .map_err(|e| {
-                    PyErr::new::<pyo3::exceptions::PyException, _>(format!(
-                        "failed to convert image: {}",
-                        e
-                    ))
-                })?
-                .into())
+            let (dst, out) = unsafe { alloc_output_pyarray::<1>(py, layout.image_size)? };
+            let mut wrapped = Gray8(dst);
+            png_io::decode_image_png_mono8(&png_data, &mut wrapped).map_err(to_pyerr)?;
+            Ok(out.into())
         }
         (1, PixelFormat::U16) => {
-            let mut img = Gray16::from_size_val(image_size, 0, CpuAllocator)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            png_io::decode_image_png_mono16(&png_data, &mut img)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            Ok(img
-                .to_pyimage_u16()
-                .map_err(|e| {
-                    PyErr::new::<pyo3::exceptions::PyException, _>(format!(
-                        "failed to convert image: {}",
-                        e
-                    ))
-                })?
-                .into())
+            let (dst, out) = unsafe { alloc_output_pyarray_u16::<1>(py, layout.image_size)? };
+            let mut wrapped = Gray16(dst);
+            png_io::decode_image_png_mono16(&png_data, &mut wrapped).map_err(to_pyerr)?;
+            Ok(out.into())
         }
         (3, PixelFormat::U8) => {
-            let mut img = Rgb8::from_size_val(image_size, 0, CpuAllocator)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            png_io::decode_image_png_rgb8(&png_data, &mut img)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            Ok(img
-                .to_pyimage()
-                .map_err(|e| {
-                    PyErr::new::<pyo3::exceptions::PyException, _>(format!(
-                        "failed to convert image: {}",
-                        e
-                    ))
-                })?
-                .into())
+            let (dst, out) = unsafe { alloc_output_pyarray::<3>(py, layout.image_size)? };
+            let mut wrapped = Rgb8(dst);
+            png_io::decode_image_png_rgb8(&png_data, &mut wrapped).map_err(to_pyerr)?;
+            Ok(out.into())
         }
         (3, PixelFormat::U16) => {
-            let mut img = Rgb16::from_size_val(image_size, 0, CpuAllocator)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            png_io::decode_image_png_rgb16(&png_data, &mut img)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            Ok(img
-                .to_pyimage_u16()
-                .map_err(|e| {
-                    PyErr::new::<pyo3::exceptions::PyException, _>(format!(
-                        "failed to convert image: {}",
-                        e
-                    ))
-                })?
-                .into())
+            let (dst, out) = unsafe { alloc_output_pyarray_u16::<3>(py, layout.image_size)? };
+            let mut wrapped = Rgb16(dst);
+            png_io::decode_image_png_rgb16(&png_data, &mut wrapped).map_err(to_pyerr)?;
+            Ok(out.into())
         }
         (4, PixelFormat::U8) => {
-            let mut img = Rgba8::from_size_val(image_size, 0, CpuAllocator)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            png_io::decode_image_png_rgba8(&png_data, &mut img)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            Ok(img
-                .to_pyimage()
-                .map_err(|e| {
-                    PyErr::new::<pyo3::exceptions::PyException, _>(format!(
-                        "failed to convert image: {}",
-                        e
-                    ))
-                })?
-                .into())
+            let (dst, out) = unsafe { alloc_output_pyarray::<4>(py, layout.image_size)? };
+            let mut wrapped = Rgba8(dst);
+            png_io::decode_image_png_rgba8(&png_data, &mut wrapped).map_err(to_pyerr)?;
+            Ok(out.into())
         }
         (4, PixelFormat::U16) => {
-            let mut img = Rgba16::from_size_val(image_size, 0, CpuAllocator)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            png_io::decode_image_png_rgba16(&png_data, &mut img)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            Ok(img
-                .to_pyimage_u16()
-                .map_err(|e| {
-                    PyErr::new::<pyo3::exceptions::PyException, _>(format!(
-                        "failed to convert image: {}",
-                        e
-                    ))
-                })?
-                .into())
+            let (dst, out) = unsafe { alloc_output_pyarray_u16::<4>(py, layout.image_size)? };
+            let mut wrapped = Rgba16(dst);
+            png_io::decode_image_png_rgba16(&png_data, &mut wrapped).map_err(to_pyerr)?;
+            Ok(out.into())
         }
-        _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+        (channels, pixel_format) => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
             "Unsupported PNG format: {} channels, {:?} pixel format",
             channels, pixel_format
         ))),
@@ -222,108 +132,48 @@ fn read_image_png_dispatcher(file_path: &Path) -> PyResult<Py<PyAny>> {
 }
 
 /// Internal dispatcher for decoding TIFF images.
-fn read_image_tiff_dispatcher(file_path: &Path) -> PyResult<Py<PyAny>> {
-    let tiff_data = fs::read(file_path)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e.to_string()))?;
+fn read_image_tiff_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<PyAny>> {
+    let tiff_data = read_file_bytes(file_path)?;
+    let layout = tiff_io::decode_image_tiff_layout(&tiff_data).map_err(to_pyerr)?;
 
-    let layout = tiff_io::decode_image_tiff_layout(&tiff_data)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-    let channels = layout.channels;
-    let pixel_format = layout.pixel_format;
-    let image_size = layout.image_size;
-
-    match (channels, pixel_format) {
+    match (layout.channels, layout.pixel_format) {
         (1, PixelFormat::U8) => {
-            let mut img = Gray8::from_size_val(image_size, 0, CpuAllocator)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            tiff_io::decode_image_tiff_mono8(&tiff_data, &mut img)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            Ok(img
-                .to_pyimage()
-                .map_err(|e| {
-                    PyErr::new::<pyo3::exceptions::PyException, _>(format!(
-                        "failed to convert image: {}",
-                        e
-                    ))
-                })?
-                .into())
+            let (dst, out) = unsafe { alloc_output_pyarray::<1>(py, layout.image_size)? };
+            let mut wrapped = Gray8(dst);
+            tiff_io::decode_image_tiff_mono8(&tiff_data, &mut wrapped).map_err(to_pyerr)?;
+            Ok(out.into())
         }
         (1, PixelFormat::U16) => {
-            let mut img = Gray16::from_size_val(image_size, 0, CpuAllocator)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            tiff_io::decode_image_tiff_mono16(&tiff_data, &mut img)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            Ok(img
-                .to_pyimage_u16()
-                .map_err(|e| {
-                    PyErr::new::<pyo3::exceptions::PyException, _>(format!(
-                        "failed to convert image: {}",
-                        e
-                    ))
-                })?
-                .into())
+            let (dst, out) = unsafe { alloc_output_pyarray_u16::<1>(py, layout.image_size)? };
+            let mut wrapped = Gray16(dst);
+            tiff_io::decode_image_tiff_mono16(&tiff_data, &mut wrapped).map_err(to_pyerr)?;
+            Ok(out.into())
         }
         (3, PixelFormat::U8) => {
-            let mut img = Rgb8::from_size_val(image_size, 0, CpuAllocator)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            tiff_io::decode_image_tiff_rgb8(&tiff_data, &mut img)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            Ok(img
-                .to_pyimage()
-                .map_err(|e| {
-                    PyErr::new::<pyo3::exceptions::PyException, _>(format!(
-                        "failed to convert image: {}",
-                        e
-                    ))
-                })?
-                .into())
+            let (dst, out) = unsafe { alloc_output_pyarray::<3>(py, layout.image_size)? };
+            let mut wrapped = Rgb8(dst);
+            tiff_io::decode_image_tiff_rgb8(&tiff_data, &mut wrapped).map_err(to_pyerr)?;
+            Ok(out.into())
         }
         (3, PixelFormat::U16) => {
-            let mut img = Rgb16::from_size_val(image_size, 0, CpuAllocator)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            tiff_io::decode_image_tiff_rgb16(&tiff_data, &mut img)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            Ok(img
-                .to_pyimage_u16()
-                .map_err(|e| {
-                    PyErr::new::<pyo3::exceptions::PyException, _>(format!(
-                        "failed to convert image: {}",
-                        e
-                    ))
-                })?
-                .into())
+            let (dst, out) = unsafe { alloc_output_pyarray_u16::<3>(py, layout.image_size)? };
+            let mut wrapped = Rgb16(dst);
+            tiff_io::decode_image_tiff_rgb16(&tiff_data, &mut wrapped).map_err(to_pyerr)?;
+            Ok(out.into())
         }
         (1, PixelFormat::F32) => {
-            let mut img = Grayf32::from_size_val(image_size, 0.0, CpuAllocator)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            tiff_io::decode_image_tiff_mono32f(&tiff_data, &mut img)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            Ok(img
-                .to_pyimage_f32()
-                .map_err(|e| {
-                    PyErr::new::<pyo3::exceptions::PyException, _>(format!(
-                        "failed to convert image: {}",
-                        e
-                    ))
-                })?
-                .into())
+            let (dst, out) = unsafe { alloc_output_pyarray_f32::<1>(py, layout.image_size)? };
+            let mut wrapped = Grayf32(dst);
+            tiff_io::decode_image_tiff_mono32f(&tiff_data, &mut wrapped).map_err(to_pyerr)?;
+            Ok(out.into())
         }
         (3, PixelFormat::F32) => {
-            let mut img = Rgbf32::from_size_val(image_size, 0.0, CpuAllocator)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            tiff_io::decode_image_tiff_rgb32f(&tiff_data, &mut img)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            Ok(img
-                .to_pyimage_f32()
-                .map_err(|e| {
-                    PyErr::new::<pyo3::exceptions::PyException, _>(format!(
-                        "failed to convert image: {}",
-                        e
-                    ))
-                })?
-                .into())
+            let (dst, out) = unsafe { alloc_output_pyarray_f32::<3>(py, layout.image_size)? };
+            let mut wrapped = Rgbf32(dst);
+            tiff_io::decode_image_tiff_rgb32f(&tiff_data, &mut wrapped).map_err(to_pyerr)?;
+            Ok(out.into())
         }
-        _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+        (channels, pixel_format) => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
             "Unsupported TIFF format: {} channels with pixel format {:?}",
             channels, pixel_format
         ))),
@@ -331,48 +181,24 @@ fn read_image_tiff_dispatcher(file_path: &Path) -> PyResult<Py<PyAny>> {
 }
 
 /// Internal dispatcher for decoding JPEG images.
-fn read_image_jpeg_dispatcher(file_path: &Path) -> PyResult<Py<PyAny>> {
-    // Read file once
-    let jpeg_data = fs::read(file_path)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e.to_string()))?;
+fn read_image_jpeg_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<PyAny>> {
+    let jpeg_data = read_file_bytes(file_path)?;
+    let layout = jpeg_io::decode_image_jpeg_layout(&jpeg_data).map_err(to_pyerr)?;
 
-    // Get layout from bytes
-    let layout = jpeg_io::decode_image_jpeg_layout(&jpeg_data)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-
-    // Decode from bytes (not file) to avoid reading twice
-    let py_image = match (layout.channels, layout.pixel_format) {
+    match (layout.channels, layout.pixel_format) {
         (1, PixelFormat::U8) => {
-            let mut img = Gray8::from_size_val(layout.image_size, 0, CpuAllocator)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            jpeg_io::decode_image_jpeg_mono8(&jpeg_data, &mut img)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            img.to_pyimage().map_err(|e| {
-                PyErr::new::<pyo3::exceptions::PyException, _>(format!(
-                    "failed to convert image: {}",
-                    e
-                ))
-            })?
+            let (mut dst, out) = unsafe { alloc_output_pyarray::<1>(py, layout.image_size)? };
+            jpeg_io::decode_image_jpeg_mono8(&jpeg_data, &mut dst).map_err(to_pyerr)?;
+            Ok(out.into())
         }
         (3, PixelFormat::U8) => {
-            let mut img = Rgb8::from_size_val(layout.image_size, 0, CpuAllocator)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            jpeg_io::decode_image_jpeg_rgb8(&jpeg_data, &mut img)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            img.to_pyimage().map_err(|e| {
-                PyErr::new::<pyo3::exceptions::PyException, _>(format!(
-                    "failed to convert image: {}",
-                    e
-                ))
-            })?
+            let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, layout.image_size)? };
+            jpeg_io::decode_image_jpeg_rgb8(&jpeg_data, &mut dst).map_err(to_pyerr)?;
+            Ok(out.into())
         }
-        _ => {
-            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-                "Unsupported JPEG format: {} channels with pixel format {:?}",
-                layout.channels, layout.pixel_format
-            )))
-        }
-    };
-
-    Ok(py_image.into())
+        (channels, pixel_format) => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "Unsupported JPEG format: {} channels with pixel format {:?}",
+            channels, pixel_format
+        ))),
+    }
 }
