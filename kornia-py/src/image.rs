@@ -2326,7 +2326,9 @@ impl PyImageApi {
         let dst = unsafe { std::slice::from_raw_parts_mut(out.data(), h * w) };
         let npixels = h * w;
 
-        kornia_imgproc::color::rgb_to_gray_u8(src, dst, npixels);
+        // Release the GIL during the SIMD/rayon compute — matches the pattern
+        // used by every other imgproc method in this file (flip, crop, blur, …).
+        py.detach(|| kornia_imgproc::color::rgb_to_gray_u8(src, dst, npixels));
 
         Ok(Self::wrap(py, out.unbind(), Some("L".to_string())))
     }
