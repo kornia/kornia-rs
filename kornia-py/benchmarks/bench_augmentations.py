@@ -1,6 +1,5 @@
 """Benchmark kornia-rs augmentations vs albumentations/OpenCV."""
 import json
-import time
 import numpy as np
 import kornia_rs as K
 from kornia_rs.image import Image
@@ -9,16 +8,11 @@ from kornia_rs.augmentations import ColorJitter, RandomHorizontalFlip, RandomVer
 import albumentations as A
 import cv2
 
+from _bench import bench as _bench_fn, compat_print
 
-def bench(name, fn, n=200, warmup=10):
-    for _ in range(warmup):
-        fn()
-    t0 = time.perf_counter()
-    for _ in range(n):
-        fn()
-    elapsed = (time.perf_counter() - t0) / n * 1000
-    print(f"  {name:40s} {elapsed:8.3f} ms")
-    return elapsed
+
+def bench(name, fn, n=None, warmup=None):
+    return compat_print(name, _bench_fn(fn))
 
 
 def run_benchmarks():

@@ -745,7 +745,7 @@ impl PyRandomCrop {
 
         self.last_xy = Some((x, y));
 
-        img.crop(py, x, y, self.width, self.height)
+        img.crop_xywh(py, x, y, self.width, self.height)
     }
 
     fn __repr__(&self) -> String {

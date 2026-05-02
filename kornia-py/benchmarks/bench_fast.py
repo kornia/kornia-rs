@@ -19,7 +19,6 @@ Usage: `taskset -c 0-5 python kornia-py/benchmarks/bench_fast.py`
 import glob
 import os
 import sys
-import time
 from pathlib import Path
 
 # VPI ships its Python bindings outside the standard site-packages tree;
@@ -35,6 +34,8 @@ import cv2
 import numpy as np
 import kornia_rs as K
 from kornia_rs.image import Image
+
+from _bench import bench as _bench_fn
 
 DATA_DIR = Path(__file__).resolve().parents[2] / "tests" / "data"
 
@@ -60,21 +61,13 @@ except ImportError:
 
 
 # Iterations per round is tuned so each round lasts ~1-3s on the slowest backend
-# at 1080p. We take the median of N_ROUNDS to smooth thermal / scheduler noise.
+# at 1080p. Legacy constants kept for reference but no longer drive iteration count.
 N_ROUNDS = 5
 ITERS_PER_ROUND = {"640x480": 200, "1080x1920": 50}
 
 
-def time_loop(fn, iters):
-    """Run `fn` `iters` times, return median of N_ROUNDS round-averages in ms."""
-    rounds = []
-    for _ in range(N_ROUNDS):
-        t0 = time.perf_counter()
-        for _ in range(iters):
-            fn()
-        t1 = time.perf_counter()
-        rounds.append((t1 - t0) * 1e3 / iters)
-    return float(np.median(rounds))
+def time_loop(fn, iters=None):
+    return _bench_fn(fn).min_ms
 
 
 def bench_kornia(img, threshold):

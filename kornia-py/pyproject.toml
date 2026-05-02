@@ -64,3 +64,6 @@ build-backend = "maturin"
 
 [tool.uv]
 extra-index-url = ["https://download.pytorch.org/whl/cpu"]
+
+[tool.pytest.ini_options]
+pythonpath = ["benchmarks"]

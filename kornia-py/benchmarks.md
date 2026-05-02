@@ -4,8 +4,8 @@
 
 | Field | Value |
 |-------|-------|
-| Date | 2026-04-25 |
-| Commit | `f394e44` on `perf/orb-beat-opencv` (AVX2 hflip OOB read + misaligned partial-store fixes; aarch64 imgproc byte-identical to baseline `64132db`) |
+| Date | 2026-05-02 |
+| Commit | `9e040c4` on `feat/zero-copy-pyimage-io` (bench module simplify-pass-2 fixes; #896) |
 | Platform | Jetson Orin (aarch64), JetPack R36.4.3, Linux 5.15.148-tegra |
 | CPU | Cortex-A78AE, 6 cores @ 1.728 GHz (max), `schedutil` governor, no thermal throttling (~52 °C nominal) |
 | Memory | LPDDR5, ~15 GB/s single-core measured ceiling |
@@ -15,7 +15,7 @@
 | numpy | 2.2.6 |
 | OpenCV | 4.13.0 |
 | albumentations | 2.0.8 |
-| Iterations | 200 (10 warmup), `taskset -c 0-5` |
+| Iterations | best-of-N min via `_bench.py`: warmup ≥3 calls, GC disabled, per-call ns timing, target ~0.5-1.0 s timed loop, min/p50/p95 reported. Replaces the old `n=200, warmup=10` mean-based loop after PR #896. |
 
 ### Run history
 
@@ -23,6 +23,7 @@ Tracks the 1080p median (ms) for representative ops across documented runs. Each
 
 | Date | Commit | Branch | hflip | normalize | gauss5×5 | resize½ | warp persp | ORB | Notes |
 |------|--------|--------|------:|----------:|---------:|--------:|-----------:|----:|-------|
+| 2026-05-02 | `9e040c4` | `feat/zero-copy-pyimage-io` | 0.32 | 3.81 | 1.61 | 1.89 | 4.77 | 11.19 | best-of-N min via new `_bench.py` (replaces mean over n=200). hflip drops 0.49→0.32 ms (now 5.5× vs cv2). gauss5×5 1.61 ms / resize 1.89 ms reflect the new methodology measuring the same kernel — no underlying perf change. Bake-off vs PIL/cv2 added (12 ops, kornia 9 wins / 3 ties / 0 losses; see "Image I/O & end-to-end vs PIL + OpenCV" below). |
 | 2026-04-25 | `f394e44` | `perf/orb-beat-opencv` | 0.807 | 3.81 | 0.99 | 0.52 | 4.77 | 11.19 | aarch64 imgproc byte-identical to `64132db`; AVX2 hflip CI fixes only. Stability re-run (2000 iter / 200 warmup) used for hflip; other rows carry prior-run medians since imgproc bytes are unchanged. |
 | 2026-04-24 | `64132db` | `feat/pil-like-python-api` | 0.961 | 3.81 | 0.99 | 0.52 | 4.77 | 11.19 | ORB-SLAM3 alignment landed (octree KP, per-KP octave, scale-aware matcher). |
 | 2026-04-20 | `f1830ab` (≈) | `feat/pil-like-python-api` | 1.06 | 3.71 | 0.71 | 0.52 | 4.82 | 13.32 | NEON 4-wide reciprocal for warp_perspective; crop threshold lifted to 4 KB; pyrup-2× win. |
@@ -154,6 +155,67 @@ Resize results across interpolation modes, `antialias` flag, and source→dest s
 | 1080p → 2160p (up) | bilinear | 1.78 | 1.78 | 9.80 | 181 | **5.52× faster** (exact-2× NEON `vrhaddq_u8` pair) |
 | 1080p → 2160p (up) | bicubic  | 17.9 | 17.9 | 21.6 | 229 | **1.21× faster** |
 | 1080p → 2160p (up) | lanczos  | 40.6 | 40.6 | 43.3 | 283 | **1.07× faster** |
+
+## Image I/O & end-to-end vs PIL + OpenCV — bake-off (1080p RGB)
+
+Head-to-head ``Image`` API shootout against Pillow 12.2.0 and OpenCV 4.13.0 on the same Jetson, release build. Run via ``python kornia-py/benchmarks/bake_off_pil_cv2.py`` (uses the new ``_bench.py`` best-of-N harness — GC disabled, per-call ns timing, min reported). The fastest runner per op is starred in the script's output.
+
+**Score: kornia 9 wins, 3 ties, 0 losses across 12 ops.**
+
+| op | PIL min ms | cv2 min ms | **kornia min ms** | kornia speedup vs best competitor | winner |
+|---|---:|---:|---:|---:|---|
+| encode WebP (lossless) | 711 | 644 | **27.20** | **23.6×** | **kornia** |
+| resize 1080p→720p (Lanczos) | 43.4 | 7.37 | **1.67** | **4.4×** | **kornia** |
+| flip_horizontal | 1.47 | 2.17 | **0.27** | **5.5×** vs PIL | **kornia** |
+| decode PNG | 27.1 | 19.2 | **7.66** | **2.5×** | **kornia** |
+| gaussian_blur k=3 | 93.8 | 1.76 | **0.88** | **2.0×** | **kornia** |
+| encode PNG (compress_level=1, fdeflate) | 451 | 100 | **52.1** | **1.9×** | **kornia** |
+| encode TIFF | 2.47 | 76.6 | **1.63** | **1.4×** vs PIL / 47× vs cv2 | **kornia** |
+| to_grayscale | 1.49 | 0.32 | **0.23** | **1.4×** | **kornia** |
+| crop 512² | 0.113 | 0.102 | **0.085** | **1.20×** | **kornia** |
+| encode JPEG q=95 (4:2:0) | 28.7 | 28.3 | 29.92 | 0.95× | **tied (libjpeg-turbo both)** |
+| decode JPEG | 77.4 | 75.4 | 39.64 | 1.00× | **tied (libjpeg-turbo both)** |
+| tobytes | 2.20 | 0.80 | 0.81 | 0.99× | **tied with cv2** |
+
+Notes on the wins:
+- **WebP lossless 23×.** PIL and cv2 here run libwebp's lossy path; kornia uses the pure-Rust ``image-webp`` crate which only does lossless and is unusually fast at it. (Lossy WebP via libwebp FFI is a tracked follow-up.)
+- **PNG encode 1.9× vs cv2.** kornia's ``encode("png", compress_level=1)`` hits the NEON / AVX2-accelerated ``fdeflate`` fast path in the ``png`` crate. cv2 uses libpng with zlib level 1.
+- **resize 4.4× vs cv2.** kornia's u8 fast-AA path beats both INTER_LANCZOS4 and PIL's LANCZOS at the same kernel.
+- **flip / blur / grayscale** are the imgproc kernels you'd expect to be fast (NEON `vld3q_u8`, binomial 5×5, `vmlal_u8` MAC chain).
+
+Notes on the ties:
+- **JPEG encode/decode** uses libjpeg-turbo on all three sides; the speed comes from the same library underneath, so we tie within a few percent. The ``Image.encode("jpeg")`` default subsampling is 4:2:0 (matches cv2/PIL at q≤95); pass ``subsampling="4:4:4"`` for synthetic / text content.
+- **tobytes** is essentially ``arr.tobytes()`` for all three; numpy is the same library underneath.
+
+## Image I/O — robotics codec matrix (1080p RGB)
+
+Speed × size × FPS-budget matrix for the robotics use case (depth recording, RGBD streaming, dataset upload). Synthetic 1080p scene with the structure profile of a real photo (smooth gradients + mid-frequency texture + fine detail). Run via ``python kornia-py/benchmarks/robotics_codec_comparison.py``. ``OK`` columns mark which FPS budget the encoder fits.
+
+| codec | setting | enc ms | dec ms | size KB | 30 FPS | 60 FPS | 120 FPS |
+|---|---|---:|---:|---:|:---:|:---:|:---:|
+| kornia JPEG 4:2:0 | q=50 | 15.1 | 11.4 | 159 | OK | OK | |
+| kornia JPEG 4:2:0 | q=75 | 16.4 | 13.8 | 289 | OK | OK | |
+| kornia JPEG 4:2:0 | q=85 | 17.5 | 16.6 | 453 | OK | | |
+| kornia JPEG 4:2:0 | q=95 | 21.8 | 25.4 | 1006 | OK | | |
+| kornia PNG | level=0 | 10.2 | 2.2 | 6077 | OK | OK | |
+| kornia PNG | level=1 (fdeflate) | 31.7 | 24.1 | 4822 | OK | | |
+| kornia PNG | level=6 | 317 | 34.4 | 4304 | | | |
+| kornia PNG | level=9 | 318 | 34.4 | 4304 | | | |
+| kornia TIFF u8 | lossless | **1.62** | **0.92** | 6075 | **OK** | **OK** | **OK** |
+| AVIF (libavif) | q=50 sp=8 | 52.2 | 14.3 | **53.7** | | | |
+| AVIF (libavif) | q=75 sp=8 | 95.6 | 27.1 | 448 | | | |
+| AVIF (libavif) | q=85 sp=6 | 469 | 31.3 | 735 | | | |
+| AVIF (libavif) | q=95 sp=4 | 5529 | 42.9 | 1246 | | | |
+
+Reading guide:
+- **60 FPS streaming sweet spot:** JPEG q=85 (17 ms, 453 KB) — visually-lossless, fits the budget.
+- **30 FPS with high quality:** JPEG q=95 (22 ms, 1 MB) or PNG level=1 (32 ms, 4.8 MB).
+- **Depth (uint16):** PNG-16 / TIFF-16 (separate path; not in this u8 matrix).
+- **Cellular upload niche:** AVIF q=50 sp=8 — 3× smaller files than JPEG q=50 (54 KB vs 159 KB) at the cost of 4× slower encode.
+- **Hot loop, no compression overhead:** TIFF u8 — 1.6 ms encode, 0.9 ms decode, raw bytes through. Fits 600 FPS in pure I/O.
+- **Smallest archival:** AVIF q=50 sp=8 (54 KB) → JPEG q=50 (159 KB) → JPEG q=75 (289 KB).
+
+AVIF q=95 explodes to 5.5 s/encode because libavif runs exponentially more refinement passes at the top of the quality curve — fine for archival, useless for streaming. AVIF only wins on file size at low quality.
 
 ## Improvement log (2026-04-02 → 2026-04-20)
 

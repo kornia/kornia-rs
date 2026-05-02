@@ -1,17 +1,14 @@
 """Bench resize across interpolation modes vs OpenCV."""
-import time
 import numpy as np
 import cv2
 
 from kornia_rs.image import Image
 
-def bench(fn, n=150, warmup=8):
-    for _ in range(warmup):
-        fn()
-    t0 = time.perf_counter()
-    for _ in range(n):
-        fn()
-    return (time.perf_counter() - t0) / n * 1000
+from _bench import bench as _bench_fn
+
+
+def bench(fn, n=None, warmup=None):
+    return _bench_fn(fn).min_ms
 
 
 modes = [

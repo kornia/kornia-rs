@@ -1,10 +1,21 @@
 use crate::image::{
-    FromPyImage, FromPyImageF32, FromPyImageU16, PyImage, PyImageF32, PyImageU16, ToPyImage,
-    ToPyImageF32, ToPyImageU16,
+    alloc_output_pyarray, alloc_output_pyarray_f32, alloc_output_pyarray_u16, numpy_as_image,
+    numpy_as_image_f32, numpy_as_image_u16, to_pyerr, PyImage, PyImageF32, PyImageU16,
 };
-use kornia_image::Image;
+use kornia_image::color_spaces::{Gray16, Gray8, Grayf32, Rgb16, Rgb8, Rgbf32};
 use kornia_io::tiff as k_tiff;
 use pyo3::prelude::*;
+
+fn read_file_bytes(path: &str) -> PyResult<Vec<u8>> {
+    std::fs::read(path).map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e.to_string()))
+}
+
+fn unsupported_mode_err(modes: &str) -> PyErr {
+    PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+        "The following are the supported values of mode:\n{}",
+        modes
+    ))
+}
 
 /// Reads a TIFF image from a file path into an 8-bit tensor.
 ///
@@ -18,278 +29,149 @@ use pyo3::prelude::*;
 ///
 /// # Exceptions
 /// * `ValueError`: If the mode is unsupported (case-sensitive) or the file fails to read.
-/// * `Exception`: If the image fails to convert to a Python tensor.
 #[pyfunction]
-pub fn read_image_tiff_u8(file_path: &str, mode: &str) -> PyResult<PyImage> {
-    let result = match mode {
+pub fn read_image_tiff_u8(py: Python<'_>, file_path: &str, mode: &str) -> PyResult<PyImage> {
+    let bytes = read_file_bytes(file_path)?;
+    let layout = k_tiff::decode_image_tiff_layout(&bytes).map_err(to_pyerr)?;
+    match mode {
         "rgb" => {
-            let img = k_tiff::read_image_tiff_rgb8(file_path)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            let pyimg = img.to_pyimage().map_err(|e| {
-                PyErr::new::<pyo3::exceptions::PyException, _>(format!(
-                    "failed to convert image: {}",
-                    e
-                ))
-            })?;
-            pyimg
+            let (dst, out) = unsafe { alloc_output_pyarray::<3>(py, layout.image_size)? };
+            let mut wrapped = Rgb8(dst);
+            k_tiff::decode_image_tiff_rgb8(&bytes, &mut wrapped).map_err(to_pyerr)?;
+            Ok(out)
         }
         "mono" => {
-            let img = k_tiff::read_image_tiff_mono8(file_path)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            let pyimg = img.to_pyimage().map_err(|e| {
-                PyErr::new::<pyo3::exceptions::PyException, _>(format!(
-                    "failed to convert image: {}",
-                    e
-                ))
-            })?;
-            pyimg
+            let (dst, out) = unsafe { alloc_output_pyarray::<1>(py, layout.image_size)? };
+            let mut wrapped = Gray8(dst);
+            k_tiff::decode_image_tiff_mono8(&bytes, &mut wrapped).map_err(to_pyerr)?;
+            Ok(out)
         }
-        _ => {
-            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                String::from(
-                    r#"\
-        The following are the supported values of mode:
-        1) "rgb" -> 8-bit RGB
-        2) "mono" -> 8-bit Monochrome
-        "#,
-                ),
-            ))
-        }
-    };
-
-    Ok(result)
+        _ => Err(unsupported_mode_err(
+            "  1) \"rgb\"  -> 8-bit RGB\n  2) \"mono\" -> 8-bit Monochrome",
+        )),
+    }
 }
 
 /// Reads a TIFF image from a file path into a 16-bit tensor.
-///
-/// # Arguments
-/// * `file_path` (str): The path to the TIFF file to read.
-/// * `mode` (str): The color mode to decode the image into.
-///   Must be strictly lowercase: `"rgb"` or `"mono"`.
-///
-/// # Returns
-/// * `numpy.ndarray`: The decoded 16-bit image tensor with dtype `uint16`.
-///
-/// # Exceptions
-/// * `ValueError`: If the mode is unsupported (case-sensitive) or the file fails to read.
-/// * `Exception`: If the image fails to convert to a Python tensor.
 #[pyfunction]
-pub fn read_image_tiff_u16(file_path: &str, mode: &str) -> PyResult<PyImageU16> {
-    let result = match mode {
+pub fn read_image_tiff_u16(py: Python<'_>, file_path: &str, mode: &str) -> PyResult<PyImageU16> {
+    let bytes = read_file_bytes(file_path)?;
+    let layout = k_tiff::decode_image_tiff_layout(&bytes).map_err(to_pyerr)?;
+    match mode {
         "rgb" => {
-            let img = k_tiff::read_image_tiff_rgb16(file_path)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            let pyimg = img.to_pyimage_u16().map_err(|e| {
-                PyErr::new::<pyo3::exceptions::PyException, _>(format!(
-                    "failed to convert image: {}",
-                    e
-                ))
-            })?;
-            pyimg
+            let (dst, out) = unsafe { alloc_output_pyarray_u16::<3>(py, layout.image_size)? };
+            let mut wrapped = Rgb16(dst);
+            k_tiff::decode_image_tiff_rgb16(&bytes, &mut wrapped).map_err(to_pyerr)?;
+            Ok(out)
         }
         "mono" => {
-            let img = k_tiff::read_image_tiff_mono16(file_path)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            let pyimg = img.to_pyimage_u16().map_err(|e| {
-                PyErr::new::<pyo3::exceptions::PyException, _>(format!(
-                    "failed to convert image: {}",
-                    e
-                ))
-            })?;
-            pyimg
+            let (dst, out) = unsafe { alloc_output_pyarray_u16::<1>(py, layout.image_size)? };
+            let mut wrapped = Gray16(dst);
+            k_tiff::decode_image_tiff_mono16(&bytes, &mut wrapped).map_err(to_pyerr)?;
+            Ok(out)
         }
-        _ => {
-            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                String::from(
-                    r#"\
-        The following are the supported values of mode:
-        1) "rgb" -> 16-bit RGB
-        2) "mono" -> 16-bit Monochrome
-        "#,
-                ),
-            ))
-        }
-    };
-    Ok(result)
+        _ => Err(unsupported_mode_err(
+            "  1) \"rgb\"  -> 16-bit RGB\n  2) \"mono\" -> 16-bit Monochrome",
+        )),
+    }
 }
 
 /// Reads a TIFF image from a file path into a 32-bit float tensor.
-///
-/// # Arguments
-/// * `file_path` (str): The path to the TIFF file to read.
-/// * `mode` (str): The color mode to decode the image into.
-///   Must be strictly lowercase: `"rgb"` or `"mono"`.
-///
-/// # Returns
-/// * `numpy.ndarray`: The decoded 32-bit float image tensor with dtype `float32`.
-///
-/// # Exceptions
-/// * `ValueError`: If the mode is unsupported (case-sensitive) or the file fails to read.
-/// * `Exception`: If the image fails to convert to a Python tensor.
 #[pyfunction]
-pub fn read_image_tiff_f32(file_path: &str, mode: &str) -> PyResult<PyImageF32> {
-    let result = match mode {
+pub fn read_image_tiff_f32(py: Python<'_>, file_path: &str, mode: &str) -> PyResult<PyImageF32> {
+    let bytes = read_file_bytes(file_path)?;
+    let layout = k_tiff::decode_image_tiff_layout(&bytes).map_err(to_pyerr)?;
+    match mode {
         "mono" => {
-            let img = k_tiff::read_image_tiff_mono32f(file_path)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            let pyimg = img.to_pyimage_f32().map_err(|e| {
-                PyErr::new::<pyo3::exceptions::PyException, _>(format!(
-                    "failed to convert image: {}",
-                    e
-                ))
-            })?;
-            pyimg
+            let (dst, out) = unsafe { alloc_output_pyarray_f32::<1>(py, layout.image_size)? };
+            let mut wrapped = Grayf32(dst);
+            k_tiff::decode_image_tiff_mono32f(&bytes, &mut wrapped).map_err(to_pyerr)?;
+            Ok(out)
         }
         "rgb" => {
-            let img = k_tiff::read_image_tiff_rgb32f(file_path)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            let pyimg = img.to_pyimage_f32().map_err(|e| {
-                PyErr::new::<pyo3::exceptions::PyException, _>(format!(
-                    "failed to convert image: {}",
-                    e
-                ))
-            })?;
-            pyimg
+            let (dst, out) = unsafe { alloc_output_pyarray_f32::<3>(py, layout.image_size)? };
+            let mut wrapped = Rgbf32(dst);
+            k_tiff::decode_image_tiff_rgb32f(&bytes, &mut wrapped).map_err(to_pyerr)?;
+            Ok(out)
         }
-        _ => {
-            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                String::from(
-                    r#"\
-        The following are the supported values of mode:
-        1) "mono" -> 32-bit Floating Point Monochrome
-        2) "rgb" -> 32-bit Floating Point RGB
-        "#,
-                ),
-            ))
-        }
-    };
-    Ok(result)
+        _ => Err(unsupported_mode_err(
+            "  1) \"mono\" -> 32-bit Floating Point Monochrome\n  2) \"rgb\"  -> 32-bit Floating Point RGB",
+        )),
+    }
 }
 
 /// Writes an 8-bit image tensor to a TIFF file.
-///
-/// # Arguments
-/// * `file_path` (str): The path where the TIFF file will be saved.
-/// * `image` (numpy.ndarray): The 8-bit image tensor to write with dtype `uint8`.
-/// * `mode` (str): The color mode of the image.
-///   Must be strictly lowercase: `"rgb"` or `"mono"`.
-///
-/// # Exceptions
-/// * `ValueError`: If the mode is unsupported (case-sensitive).
-/// * `Exception`: If the image format is incompatible or writing fails.
-///
-/// *Python-only helper; not part of kornia-io's Rust API.*
 #[pyfunction]
-pub fn write_image_tiff_u8(file_path: &str, image: PyImage, mode: &str) -> PyResult<()> {
+pub fn write_image_tiff_u8(
+    py: Python<'_>,
+    file_path: &str,
+    image: PyImage,
+    mode: &str,
+) -> PyResult<()> {
     match mode {
         "rgb" => {
-            let image = Image::<u8, 3, _>::from_pyimage(image)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-            k_tiff::write_image_tiff_rgb8(file_path, &image)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
+            let image = unsafe { numpy_as_image::<3>(py, &image)? };
+            k_tiff::write_image_tiff_rgb8(file_path, &image).map_err(to_pyerr)?;
         }
         "mono" => {
-            let image = Image::<u8, 1, _>::from_pyimage(image)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-            k_tiff::write_image_tiff_mono8(file_path, &image)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
+            let image = unsafe { numpy_as_image::<1>(py, &image)? };
+            k_tiff::write_image_tiff_mono8(file_path, &image).map_err(to_pyerr)?;
         }
         _ => {
-            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                String::from(
-                    r#"\
-        The following are the supported values of mode:
-        1) "rgb" -> 8-bit RGB
-        2) "mono" -> 8-bit Monochrome
-        "#,
-                ),
+            return Err(unsupported_mode_err(
+                "  1) \"rgb\"  -> 8-bit RGB\n  2) \"mono\" -> 8-bit Monochrome",
             ))
         }
-    };
-
+    }
     Ok(())
 }
 
 /// Writes a 16-bit image tensor to a TIFF file.
-///
-/// # Arguments
-/// * `file_path` (str): The path where the TIFF file will be saved.
-/// * `image` (numpy.ndarray): The 16-bit image tensor to write, with dtype `uint16`.
-/// * `mode` (str): The color mode of the image.
-///   Must be strictly lowercase: `"rgb"` or `"mono"`.
-///
-/// # Exceptions
-/// * `ValueError`: If the mode is unsupported (case-sensitive).
-/// * `Exception`: If the image format is incompatible or writing fails.
-///
-/// *Python-only helper; not part of kornia-io's Rust API.*
 #[pyfunction]
-pub fn write_image_tiff_u16(file_path: &str, image: PyImageU16, mode: &str) -> PyResult<()> {
+pub fn write_image_tiff_u16(
+    py: Python<'_>,
+    file_path: &str,
+    image: PyImageU16,
+    mode: &str,
+) -> PyResult<()> {
     match mode {
         "rgb" => {
-            let image = Image::<u16, 3, _>::from_pyimage_u16(image)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-            k_tiff::write_image_tiff_rgb16(file_path, &image)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
+            let image = unsafe { numpy_as_image_u16::<3>(py, &image)? };
+            k_tiff::write_image_tiff_rgb16(file_path, &image).map_err(to_pyerr)?;
         }
         "mono" => {
-            let image = Image::<u16, 1, _>::from_pyimage_u16(image)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-            k_tiff::write_image_tiff_mono16(file_path, &image)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
+            let image = unsafe { numpy_as_image_u16::<1>(py, &image)? };
+            k_tiff::write_image_tiff_mono16(file_path, &image).map_err(to_pyerr)?;
         }
         _ => {
-            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                String::from(
-                    r#"\
-        The following are the supported values of mode:
-        1) "rgb" -> 16-bit RGB
-        2) "mono" -> 16-bit Monochrome
-        "#,
-                ),
+            return Err(unsupported_mode_err(
+                "  1) \"rgb\"  -> 16-bit RGB\n  2) \"mono\" -> 16-bit Monochrome",
             ))
         }
-    };
+    }
     Ok(())
 }
 
 /// Writes a 32-bit float image tensor to a TIFF file.
-///
-/// # Arguments
-/// * `file_path` (str): The path where the TIFF file will be saved.
-/// * `image` (numpy.ndarray): The 32-bit float image tensor to write, with dtype `float32`.
-///   For `"mono"` mode, the expected shape is (H, W, 1); for `"rgb"` mode, the expected shape is (H, W, 3).
-/// * `mode` (str): The color mode of the image. Must be strictly lowercase: `"rgb"` or `"mono"`.
-///
-/// # Exceptions
-/// * `ValueError`: If the mode is unsupported (case-sensitive).
-/// * `Exception`: If the image format is incompatible or writing fails.
-///
-/// *Python-only helper; not part of kornia-io's Rust API.*
 #[pyfunction]
-pub fn write_image_tiff_f32(file_path: &str, image: PyImageF32, mode: &str) -> PyResult<()> {
+pub fn write_image_tiff_f32(
+    py: Python<'_>,
+    file_path: &str,
+    image: PyImageF32,
+    mode: &str,
+) -> PyResult<()> {
     match mode {
         "mono" => {
-            let image = Image::<f32, 1, _>::from_pyimage_f32(image)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-            k_tiff::write_image_tiff_mono32f(file_path, &image)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
+            let image = unsafe { numpy_as_image_f32::<1>(py, &image)? };
+            k_tiff::write_image_tiff_mono32f(file_path, &image).map_err(to_pyerr)?;
         }
         "rgb" => {
-            let image = Image::<f32, 3, _>::from_pyimage_f32(image)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-            k_tiff::write_image_tiff_rgb32f(file_path, &image)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
+            let image = unsafe { numpy_as_image_f32::<3>(py, &image)? };
+            k_tiff::write_image_tiff_rgb32f(file_path, &image).map_err(to_pyerr)?;
         }
         _ => {
-            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                String::from(
-                    r#"\
-        The following are the supported values of mode:
-        1) "mono" -> 32-bit Floating Point Monochrome
-        2) "rgb" -> 32-bit Floating Point RGB
-        "#,
-                ),
+            return Err(unsupported_mode_err(
+                "  1) \"mono\" -> 32-bit Floating Point Monochrome\n  2) \"rgb\"  -> 32-bit Floating Point RGB",
             ))
         }
     }

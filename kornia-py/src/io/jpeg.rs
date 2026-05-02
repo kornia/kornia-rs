@@ -1,5 +1,4 @@
-use crate::image::{FromPyImage, PyImage, ToPyImage};
-use kornia_image::{allocator::CpuAllocator, Image};
+use crate::image::{alloc_output_pyarray, numpy_as_image, to_pyerr, PyImage};
 use kornia_io::jpeg as J;
 use pyo3::prelude::*;
 
@@ -16,44 +15,10 @@ use pyo3::prelude::*;
 /// # Exceptions
 /// * `ValueError`: If the mode is unsupported (case-sensitive) or if the image fails to decode.
 #[pyfunction]
-pub fn read_image_jpeg(file_path: &str, mode: &str) -> PyResult<PyImage> {
-    let result = match mode {
-        "rgb" => {
-            let img = J::read_image_jpeg_rgb8(file_path)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            let pyimg = img.to_pyimage().map_err(|e| {
-                PyErr::new::<pyo3::exceptions::PyException, _>(format!(
-                    "failed to convert image: {}",
-                    e
-                ))
-            })?;
-            pyimg
-        }
-        "mono" => {
-            let img = J::read_image_jpeg_mono8(file_path)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            let pyimg = img.to_pyimage().map_err(|e| {
-                PyErr::new::<pyo3::exceptions::PyException, _>(format!(
-                    "failed to convert image: {}",
-                    e
-                ))
-            })?;
-            pyimg
-        }
-        _ => {
-            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                String::from(
-                    r#"\
-        The following are the supported values of mode:
-        1) "rgb" -> 8-bit RGB
-        2) "mono" -> 8-bit Monochrome
-        "#,
-                ),
-            ))
-        }
-    };
-
-    Ok(result)
+pub fn read_image_jpeg(py: Python<'_>, file_path: &str, mode: &str) -> PyResult<PyImage> {
+    let bytes = std::fs::read(file_path)
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e.to_string()))?;
+    decode_image_jpeg_with_mode(py, &bytes, mode)
 }
 
 /// Writes an image tensor to a JPEG file.
@@ -72,19 +37,21 @@ pub fn read_image_jpeg(file_path: &str, mode: &str) -> PyResult<PyImage> {
 ///
 /// *Python-only helper; not part of kornia-io's Rust API.*
 #[pyfunction]
-pub fn write_image_jpeg(file_path: &str, image: PyImage, mode: &str, quality: u8) -> PyResult<()> {
+pub fn write_image_jpeg(
+    py: Python<'_>,
+    file_path: &str,
+    image: PyImage,
+    mode: &str,
+    quality: u8,
+) -> PyResult<()> {
     match mode {
         "rgb" => {
-            let image = Image::<u8, 3, _>::from_pyimage(image)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            J::write_image_jpeg_rgb8(file_path, &image, quality)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+            let image = unsafe { numpy_as_image::<3>(py, &image)? };
+            J::write_image_jpeg_rgb8(file_path, &image, quality).map_err(to_pyerr)?;
         }
         "mono" => {
-            let image = Image::<u8, 1, _>::from_pyimage(image)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            J::write_image_jpeg_gray8(file_path, &image, quality)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+            let image = unsafe { numpy_as_image::<1>(py, &image)? };
+            J::write_image_jpeg_gray8(file_path, &image, quality).map_err(to_pyerr)?;
         }
         _ => {
             return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
@@ -115,51 +82,50 @@ pub fn write_image_jpeg(file_path: &str, image: PyImage, mode: &str, quality: u8
 ///
 /// *Python-only helper; not part of kornia-io's Rust API.*
 #[pyfunction]
-pub fn decode_image_jpeg(src: &[u8]) -> PyResult<PyImage> {
-    let layout = J::decode_image_jpeg_layout(src)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-
-    let result = match layout.channels {
+pub fn decode_image_jpeg(py: Python<'_>, src: &[u8]) -> PyResult<PyImage> {
+    let layout = J::decode_image_jpeg_layout(src).map_err(to_pyerr)?;
+    match layout.channels {
         3 => {
-            let mut output_image =
-                kornia_image::color_spaces::Rgb8::from_size_val(layout.image_size, 0, CpuAllocator)
-                    .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            J::decode_image_jpeg_rgb8(src, &mut output_image)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            let output_pyimage = output_image.to_pyimage().map_err(|e| {
-                PyErr::new::<pyo3::exceptions::PyException, _>(format!(
-                    "failed to convert image: {}",
-                    e
-                ))
-            })?;
-            output_pyimage
+            let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, layout.image_size)? };
+            J::decode_image_jpeg_rgb8(src, &mut dst).map_err(to_pyerr)?;
+            Ok(out)
         }
         1 => {
-            let mut output_image = kornia_image::color_spaces::Gray8::from_size_val(
-                layout.image_size,
-                0,
-                CpuAllocator,
-            )
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            J::decode_image_jpeg_mono8(src, &mut output_image)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            let output_pyimage = output_image.to_pyimage().map_err(|e| {
-                PyErr::new::<pyo3::exceptions::PyException, _>(format!(
-                    "failed to convert image: {}",
-                    e
-                ))
-            })?;
-            output_pyimage
+            let (mut dst, out) = unsafe { alloc_output_pyarray::<1>(py, layout.image_size)? };
+            J::decode_image_jpeg_mono8(src, &mut dst).map_err(to_pyerr)?;
+            Ok(out)
         }
-        ch => {
-            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-                "Unsupported number of channels: {}",
-                ch
-            )))
-        }
-    };
+        ch => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "Unsupported number of channels: {}",
+            ch
+        ))),
+    }
+}
 
-    Ok(result)
+/// Decode JPEG bytes into a numpy array using a `mode` string ("rgb"/"mono").
+fn decode_image_jpeg_with_mode(py: Python<'_>, src: &[u8], mode: &str) -> PyResult<PyImage> {
+    let layout = J::decode_image_jpeg_layout(src).map_err(to_pyerr)?;
+    match mode {
+        "rgb" => {
+            let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, layout.image_size)? };
+            J::decode_image_jpeg_rgb8(src, &mut dst).map_err(to_pyerr)?;
+            Ok(out)
+        }
+        "mono" => {
+            let (mut dst, out) = unsafe { alloc_output_pyarray::<1>(py, layout.image_size)? };
+            J::decode_image_jpeg_mono8(src, &mut dst).map_err(to_pyerr)?;
+            Ok(out)
+        }
+        _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            String::from(
+                r#"\
+        The following are the supported values of mode:
+        1) "rgb" -> 8-bit RGB
+        2) "mono" -> 8-bit Monochrome
+        "#,
+            ),
+        )),
+    }
 }
 
 /// Encodes an RGB u8 image to JPEG bytes.
@@ -174,13 +140,9 @@ pub fn decode_image_jpeg(src: &[u8]) -> PyResult<PyImage> {
 /// # Exceptions
 /// * `ValueError`: If the image format is incompatible or encoding fails.
 #[pyfunction]
-pub fn encode_image_jpeg(image: PyImage, quality: u8) -> PyResult<Vec<u8>> {
-    let image = Image::<u8, 3, _>::from_pyimage(image)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-
+pub fn encode_image_jpeg(py: Python<'_>, image: PyImage, quality: u8) -> PyResult<Vec<u8>> {
+    let image = unsafe { numpy_as_image::<3>(py, &image)? };
     let mut buffer = Vec::new();
-    J::encode_image_jpeg_rgb8(&image, quality, &mut buffer)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-
+    J::encode_image_jpeg_rgb8(&image, quality, &mut buffer).map_err(to_pyerr)?;
     Ok(buffer)
 }

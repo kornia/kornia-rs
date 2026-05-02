@@ -22,13 +22,14 @@ Switch OpenCV versions by running under different venvs (e.g. one with
 from __future__ import annotations
 
 import os
-import time
 from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
 import numpy as np
 from kornia_rs.image import Image
+
+from _bench import bench as _bench_fn
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = REPO_ROOT / "tests" / "data"
@@ -74,14 +75,7 @@ def t_dir_err_deg(t_est: np.ndarray, t_gt: np.ndarray) -> float:
 
 
 def median_ms(fn, n: int = N_ITERS, warmup: int = N_WARMUP) -> float:
-    for _ in range(warmup):
-        fn()
-    ts = []
-    for _ in range(n):
-        t0 = time.perf_counter()
-        fn()
-        ts.append((time.perf_counter() - t0) * 1000)
-    return float(np.median(ts))
+    return _bench_fn(fn).min_ms
 
 
 @dataclass

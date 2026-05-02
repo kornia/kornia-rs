@@ -7,7 +7,7 @@ use kornia_image::{
     color_spaces::{Gray16, Gray8, Rgb16, Rgb8, Rgba16, Rgba8},
     Image, ImageLayout, ImageSize, PixelFormat,
 };
-use png::{BitDepth, ColorType, Decoder, Encoder};
+use png::{BitDepth, ColorType, Decoder, DeflateCompression, Encoder};
 use std::{
     fs,
     fs::File,
@@ -438,16 +438,32 @@ pub fn write_image_png_gray16<A: ImageAllocator>(
 /// Callers are responsible for matching `depth`/`color_type` to the layout of
 /// `image_data` (e.g. 16-bit data must be passed as big-endian byte pairs and
 /// `BitDepth::Sixteen`).
+/// Maps a 0..=9 compression level (zlib convention) to png-crate's
+/// [`DeflateCompression`]. Level 1 routes to ``FdeflateUltraFast`` —
+/// the same fast path the `png` crate uses internally for ``Compression::Fast``,
+/// powered by the NEON/AVX2-accelerated `fdeflate` crate.
+fn level_to_deflate(level: u8) -> DeflateCompression {
+    match level {
+        0 => DeflateCompression::NoCompression,
+        1 => DeflateCompression::FdeflateUltraFast,
+        n => DeflateCompression::Level(n.min(9)),
+    }
+}
+
 fn write_png_into<W: Write>(
     writer: W,
     image_data: &[u8],
     image_size: ImageSize,
     depth: BitDepth,
     color_type: ColorType,
+    compress_level: Option<u8>,
 ) -> Result<(), IoError> {
     let mut encoder = Encoder::new(writer, image_size.width as u32, image_size.height as u32);
     encoder.set_color(color_type);
     encoder.set_depth(depth);
+    if let Some(level) = compress_level {
+        encoder.set_deflate_compression(level_to_deflate(level));
+    }
 
     let mut writer = encoder
         .write_header()
@@ -466,23 +482,25 @@ fn write_png_impl(
     color_type: ColorType,
 ) -> Result<(), IoError> {
     let file = File::create(file_path)?;
-    write_png_into(file, image_data, image_size, depth, color_type)
+    write_png_into(file, image_data, image_size, depth, color_type, None)
 }
 
 // In-memory encoders. Buffer is appended to (caller clears for fresh encode,
 // or reuses the allocation across frames). 16-bit variants serialize `&[u16]`
 // to big-endian byte pairs as required by the PNG wire format.
 
-/// Encodes an RGB8 image as PNG bytes into `buffer`.
+/// Encodes an RGB8 image as PNG bytes into `buffer`. Encoded data is
+/// appended (call `buffer.clear()` first to reuse the buffer fresh).
 ///
-/// # Arguments
-///
-/// - `image` - The Rgb8 image to encode.
-/// - `buffer` - Destination buffer. Encoded data is appended (call
-///   `buffer.clear()` first if you want to reuse the buffer fresh).
+/// `compress_level` follows the zlib convention: 0 = no compression
+/// (fastest), 1 = ``FdeflateUltraFast`` (the NEON/AVX2 fast path; ~3×
+/// faster than the default at moderately worse compression), 2..9 =
+/// zlib levels (default is 6 / "balanced"). ``None`` keeps the
+/// `png` crate default.
 pub fn encode_image_png_rgb8<A: ImageAllocator>(
     image: &Image<u8, 3, A>,
     buffer: &mut Vec<u8>,
+    compress_level: Option<u8>,
 ) -> Result<(), IoError> {
     buffer.reserve(image.as_slice().len() / 2);
     write_png_into(
@@ -491,13 +509,16 @@ pub fn encode_image_png_rgb8<A: ImageAllocator>(
         image.size(),
         BitDepth::Eight,
         ColorType::Rgb,
+        compress_level,
     )
 }
 
-/// Encodes an RGBA8 image as PNG bytes into `buffer`.
+/// Encodes an RGBA8 image as PNG bytes into `buffer`. See
+/// [`encode_image_png_rgb8`] for `compress_level` semantics.
 pub fn encode_image_png_rgba8<A: ImageAllocator>(
     image: &Image<u8, 4, A>,
     buffer: &mut Vec<u8>,
+    compress_level: Option<u8>,
 ) -> Result<(), IoError> {
     buffer.reserve(image.as_slice().len() / 2);
     write_png_into(
@@ -506,13 +527,16 @@ pub fn encode_image_png_rgba8<A: ImageAllocator>(
         image.size(),
         BitDepth::Eight,
         ColorType::Rgba,
+        compress_level,
     )
 }
 
-/// Encodes a grayscale 8-bit image as PNG bytes into `buffer`.
+/// Encodes a grayscale 8-bit image as PNG bytes into `buffer`. See
+/// [`encode_image_png_rgb8`] for `compress_level` semantics.
 pub fn encode_image_png_gray8<A: ImageAllocator>(
     image: &Image<u8, 1, A>,
     buffer: &mut Vec<u8>,
+    compress_level: Option<u8>,
 ) -> Result<(), IoError> {
     buffer.reserve(image.as_slice().len() / 2);
     write_png_into(
@@ -521,13 +545,16 @@ pub fn encode_image_png_gray8<A: ImageAllocator>(
         image.size(),
         BitDepth::Eight,
         ColorType::Grayscale,
+        compress_level,
     )
 }
 
-/// Encodes an RGB16 image as PNG bytes into `buffer`.
+/// Encodes an RGB16 image as PNG bytes into `buffer`. See
+/// [`encode_image_png_rgb8`] for `compress_level` semantics.
 pub fn encode_image_png_rgb16<A: ImageAllocator>(
     image: &Image<u16, 3, A>,
     buffer: &mut Vec<u8>,
+    compress_level: Option<u8>,
 ) -> Result<(), IoError> {
     let image_size = image.size();
     let image_buf = convert_buf_u16_u8(image.as_slice());
@@ -538,13 +565,16 @@ pub fn encode_image_png_rgb16<A: ImageAllocator>(
         image_size,
         BitDepth::Sixteen,
         ColorType::Rgb,
+        compress_level,
     )
 }
 
-/// Encodes an RGBA16 image as PNG bytes into `buffer`.
+/// Encodes an RGBA16 image as PNG bytes into `buffer`. See
+/// [`encode_image_png_rgb8`] for `compress_level` semantics.
 pub fn encode_image_png_rgba16<A: ImageAllocator>(
     image: &Image<u16, 4, A>,
     buffer: &mut Vec<u8>,
+    compress_level: Option<u8>,
 ) -> Result<(), IoError> {
     let image_size = image.size();
     let image_buf = convert_buf_u16_u8(image.as_slice());
@@ -555,13 +585,16 @@ pub fn encode_image_png_rgba16<A: ImageAllocator>(
         image_size,
         BitDepth::Sixteen,
         ColorType::Rgba,
+        compress_level,
     )
 }
 
-/// Encodes a grayscale 16-bit image as PNG bytes into `buffer`.
+/// Encodes a grayscale 16-bit image as PNG bytes into `buffer`. See
+/// [`encode_image_png_rgb8`] for `compress_level` semantics.
 pub fn encode_image_png_gray16<A: ImageAllocator>(
     image: &Image<u16, 1, A>,
     buffer: &mut Vec<u8>,
+    compress_level: Option<u8>,
 ) -> Result<(), IoError> {
     let image_size = image.size();
     let image_buf = convert_buf_u16_u8(image.as_slice());
@@ -572,6 +605,7 @@ pub fn encode_image_png_gray16<A: ImageAllocator>(
         image_size,
         BitDepth::Sixteen,
         ColorType::Grayscale,
+        compress_level,
     )
 }
 
@@ -648,7 +682,7 @@ mod tests {
     fn encode_decode_png_rgb8_roundtrip() -> Result<(), IoError> {
         let src = read_image_png_rgb8("../../tests/data/dog-rgb8.png")?;
         let mut buffer = Vec::new();
-        encode_image_png_rgb8(&src, &mut buffer)?;
+        encode_image_png_rgb8(&src, &mut buffer, None)?;
         assert!(!buffer.is_empty());
         // PNG magic header
         assert_eq!(&buffer[..8], b"\x89PNG\r\n\x1a\n");
@@ -670,7 +704,7 @@ mod tests {
         let src = Rgba8::from_size_vec([16, 16].into(), data, CpuAllocator)?;
 
         let mut buffer = Vec::new();
-        encode_image_png_rgba8(&src, &mut buffer)?;
+        encode_image_png_rgba8(&src, &mut buffer, None)?;
         assert_eq!(&buffer[..8], b"\x89PNG\r\n\x1a\n");
 
         let mut decoded = Rgba8::from_size_val(src.size(), 0, CpuAllocator)?;
@@ -683,7 +717,7 @@ mod tests {
     fn encode_decode_png_gray8_roundtrip() -> Result<(), IoError> {
         let src = read_image_png_mono8("../../tests/data/dog.png")?;
         let mut buffer = Vec::new();
-        encode_image_png_gray8(&src, &mut buffer)?;
+        encode_image_png_gray8(&src, &mut buffer, None)?;
         assert_eq!(&buffer[..8], b"\x89PNG\r\n\x1a\n");
 
         let mut decoded = Gray8::from_size_val(src.size(), 0, CpuAllocator)?;
@@ -696,7 +730,7 @@ mod tests {
     fn encode_decode_png_rgb16_roundtrip() -> Result<(), IoError> {
         let src = read_image_png_rgb16("../../tests/data/rgb16.png")?;
         let mut buffer = Vec::new();
-        encode_image_png_rgb16(&src, &mut buffer)?;
+        encode_image_png_rgb16(&src, &mut buffer, None)?;
         assert_eq!(&buffer[..8], b"\x89PNG\r\n\x1a\n");
 
         let mut decoded = Rgb16::from_size_val(src.size(), 0, CpuAllocator)?;
@@ -724,7 +758,7 @@ mod tests {
         let src = Gray16::from_size_vec([w, h].into(), data, CpuAllocator)?;
 
         let mut buffer = Vec::new();
-        encode_image_png_gray16(&src, &mut buffer)?;
+        encode_image_png_gray16(&src, &mut buffer, None)?;
         assert_eq!(&buffer[..8], b"\x89PNG\r\n\x1a\n");
         // Lossless u16 round-trip is the whole point of this codec for depth.
         let mut decoded = Gray16::from_size_val(src.size(), 0, CpuAllocator)?;
@@ -741,11 +775,11 @@ mod tests {
         let src = read_image_png_rgb8("../../tests/data/dog-rgb8.png")?;
         let mut buffer = Vec::with_capacity(64 * 1024);
 
-        encode_image_png_rgb8(&src, &mut buffer)?;
+        encode_image_png_rgb8(&src, &mut buffer, None)?;
         let cap_after_first = buffer.capacity();
 
         buffer.clear();
-        encode_image_png_rgb8(&src, &mut buffer)?;
+        encode_image_png_rgb8(&src, &mut buffer, None)?;
 
         // Capacity should not have grown on the second encode (allocation reuse).
         assert!(buffer.capacity() <= cap_after_first.max(buffer.len()));
