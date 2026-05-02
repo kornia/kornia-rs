@@ -9,10 +9,12 @@ Covers:
     backing buffer (no internal cache aliasing).
 
 Performance smoke checks at 1080p / 4K confirm the encode path is dominated
-by the codec, not by an extra full-image memcpy.
+by the codec, not by an extra full-image memcpy. The perf-only tests are
+skipped on CI (ceilings tuned to dev hardware; runners vary too much).
 """
 
 import io
+import os
 
 import numpy as np
 import pytest
@@ -22,6 +24,11 @@ from kornia_rs.image import Image
 # Shared best-of-N bench helper. ``benchmarks/`` is on the pythonpath
 # via ``pyproject.toml [tool.pytest.ini_options]``.
 from _bench import bench as _bench_fn  # noqa: E402
+
+skip_on_ci = pytest.mark.skipif(
+    os.getenv("CI") == "true",
+    reason="perf ceilings are tuned to dev hardware; CI runners vary too much",
+)
 
 
 # --------------------------------------------------------------------- helpers
@@ -163,6 +170,7 @@ def test_save_to_bytesio_zero_copy_input():
 # ------------------------------------------------------------------ perf smoke
 
 
+@skip_on_ci
 @pytest.mark.parametrize("size", [(1080, 1920), (2160, 3840)])
 def test_perf_encode_png_u8(size):
     h, w = size
@@ -174,6 +182,7 @@ def test_perf_encode_png_u8(size):
     assert per_call_ms < 5000.0
 
 
+@skip_on_ci
 @pytest.mark.parametrize("size", [(1080, 1920)])
 def test_perf_encode_png_u16(size):
     h, w = size
@@ -184,6 +193,7 @@ def test_perf_encode_png_u16(size):
     assert per_call_ms < 5000.0
 
 
+@skip_on_ci
 @pytest.mark.parametrize("size", [(1080, 1920)])
 def test_perf_encode_jpeg(size):
     h, w = size
@@ -194,6 +204,7 @@ def test_perf_encode_jpeg(size):
     assert per_call_ms < 1000.0
 
 
+@skip_on_ci
 @pytest.mark.parametrize("size", [(1080, 1920)])
 def test_perf_decode_png_u8(size):
     h, w = size

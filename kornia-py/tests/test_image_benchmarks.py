@@ -7,6 +7,9 @@ so a 2-3× regression would fail CI without flapping on noisy runs.
 
 Run with ``pytest -s`` to see the timings.
 
+Skipped on CI runners — ceilings are tuned to developer hardware and
+shared GitHub Actions runners are too variable to gate on absolute ms.
+
 Coverage:
   - Constructors:        Image(arr) / Image.frombuffer / Image.fromarray /
                          Image.frombytes / Image.new
@@ -19,10 +22,17 @@ Coverage:
   - Buffer ops:          tobytes, to_numpy, copy
 """
 
+import os
+
 import numpy as np
 import pytest
 
 from kornia_rs.image import Image
+
+pytestmark = pytest.mark.skipif(
+    os.getenv("CI") == "true",
+    reason="perf ceilings are tuned to dev hardware; CI runners vary too much",
+)
 
 # Shared best-of-N bench helper. ``benchmarks/`` is on the pythonpath
 # via ``pyproject.toml [tool.pytest.ini_options]``.
