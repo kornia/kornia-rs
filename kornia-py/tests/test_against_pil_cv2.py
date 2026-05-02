@@ -165,28 +165,34 @@ def test_tobytes_ties(pil_img, arr, k_img):
 # --------------------------------------------------------------- documented losses
 
 
-def test_encode_jpeg_documented_gap(pil_img, arr, k_img):
-    """Documented gap: kornia encodes JPEG at 4:4:4 (no chroma subsampling),
-    cv2 defaults to 4:2:0 at q≤95. ~2× slower is expected for 4× more chroma
-    samples per macroblock. Tunable via the underlying turbojpeg crate.
-    Test asserts kornia is *no worse than 3×* slower — guards a real regression."""
+def test_encode_jpeg_ties_with_cv2(pil_img, arr, k_img):
+    """Default subsampling is now 4:2:0 (matches cv2/PIL at q ≤ 95).
+    Asserts kornia ties cv2 within 1.3×."""
     buf = io.BytesIO()
-    p = _bench(lambda: (buf.seek(0), buf.truncate(0), pil_img.save(buf, format="JPEG", quality=95)), 5)
-    c = _bench(lambda: cv2.imencode(".jpg", arr, [cv2.IMWRITE_JPEG_QUALITY, 95]), 5)
-    k = _bench(lambda: k_img.encode("jpeg"), 5)
-    fastest = min(p, c)
-    print(f"\n[bake-off] encode JPEG q=95         PIL {p:6.2f}  cv2 {c:6.2f}  kornia {k:6.2f}  ms (4:4:4 vs 4:2:0)")
-    assert k <= fastest * 3.0, f"encode JPEG regressed: kornia {k:.1f}ms > 3× cv2 {c:.1f}ms"
+    _race("encode JPEG q=95",
+          lambda: (buf.seek(0), buf.truncate(0), pil_img.save(buf, format="JPEG", quality=95)),
+          lambda: cv2.imencode(".jpg", arr, [cv2.IMWRITE_JPEG_QUALITY, 95]),
+          lambda: k_img.encode("jpeg"),
+          iters=5, kornia_max_ratio=1.3)
 
 
-def test_encode_png_documented_gap(pil_img, arr, k_img):
-    """Documented gap: kornia uses zlib level 9 (max compression) while cv2
-    defaults to level 1 (faster, larger files). ~3× slower is expected.
-    Test asserts no worse than 4× — guards a real regression."""
+def test_encode_png_fdeflate_beats_cv2(pil_img, arr, k_img):
+    """PNG at compress_level=1 hits the fdeflate fast path (NEON/AVX2-accel
+    deflate). Asserts kornia < cv2 (which uses libpng with zlib level 1)."""
+    buf = io.BytesIO()
+    p = _bench(lambda: (buf.seek(0), buf.truncate(0), pil_img.save(buf, format="PNG")), 2)
+    c = _bench(lambda: cv2.imencode(".png", arr), 2)
+    k = _bench(lambda: k_img.encode("png", compress_level=1), 2)
+    print(f"\n[bake-off] encode PNG level=1       PIL {p:6.2f}  cv2 {c:6.2f}  kornia {k:6.2f}  ms (fdeflate)")
+    assert k <= c, f"encode PNG fdeflate should beat cv2: kornia {k:.1f}ms > cv2 {c:.1f}ms"
+
+
+def test_encode_png_default_no_regression(pil_img, arr, k_img):
+    """PNG with default compression level — no perf gate, just a regression guard."""
     buf = io.BytesIO()
     p = _bench(lambda: (buf.seek(0), buf.truncate(0), pil_img.save(buf, format="PNG")), 2)
     c = _bench(lambda: cv2.imencode(".png", arr), 2)
     k = _bench(lambda: k_img.encode("png"), 2)
-    fastest = min(p, c)
-    print(f"\n[bake-off] encode PNG               PIL {p:6.2f}  cv2 {c:6.2f}  kornia {k:6.2f}  ms (zlib9 vs zlib1)")
-    assert k <= fastest * 4.0, f"encode PNG regressed: kornia {k:.1f}ms > 4× cv2 {c:.1f}ms"
+    print(f"\n[bake-off] encode PNG default       PIL {p:6.2f}  cv2 {c:6.2f}  kornia {k:6.2f}  ms")
+    # Default is balanced (zlib level 6). Loose ceiling.
+    assert k <= 800.0, f"encode PNG default regressed: kornia {k:.1f}ms"

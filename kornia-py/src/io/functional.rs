@@ -226,16 +226,14 @@ fn read_image_jpeg_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<P
         let decoder = jpegturbo_io::JpegTurboDecoder::new().map_err(to_pyerr)?;
         match (layout.channels, layout.pixel_format) {
             (1, PixelFormat::U8) => {
-                let (mut dst, out) =
-                    unsafe { alloc_output_pyarray::<1>(py, layout.image_size)? };
+                let (mut dst, out) = unsafe { alloc_output_pyarray::<1>(py, layout.image_size)? };
                 decoder
                     .decode_gray8_into(&jpeg_data, &mut dst)
                     .map_err(to_pyerr)?;
                 Ok(out.into())
             }
             (3, PixelFormat::U8) => {
-                let (mut dst, out) =
-                    unsafe { alloc_output_pyarray::<3>(py, layout.image_size)? };
+                let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, layout.image_size)? };
                 decoder
                     .decode_rgb8_into(&jpeg_data, &mut dst)
                     .map_err(to_pyerr)?;

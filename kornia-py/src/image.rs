@@ -1212,7 +1212,14 @@ impl PyImageApi {
     /// Dispatches on (format, dtype, channel count) and returns PNG/JPEG
     /// bytes. JPEG is u8-only by spec; PNG handles u8 (1/3/4 ch) and u16
     /// (1/3/4 ch).
-    fn encode_to_bytes(&self, py: Python<'_>, format: &str, quality: u8) -> PyResult<Vec<u8>> {
+    fn encode_to_bytes(
+        &self,
+        py: Python<'_>,
+        format: &str,
+        quality: u8,
+        compress_level: Option<u8>,
+        subsampling: Option<&str>,
+    ) -> PyResult<Vec<u8>> {
         let c = self.data.channels(py);
         let is_u16 = self.data.is_u16();
         let is_f32 = self.data.is_f32();
@@ -1242,6 +1249,7 @@ impl PyImageApi {
                     py,
                     arr.clone_ref(py),
                     quality as i32,
+                    subsampling,
                 ) {
                     Ok(b) => Ok(b),
                     Err(_) => crate::io::jpeg::encode_image_jpeg(py, arr, quality),
@@ -1252,32 +1260,32 @@ impl PyImageApi {
                 match (&self.data, c) {
                     (ImageData::U8(a), 3) => {
                         let img = unsafe { numpy_as_image::<3>(py, a)? };
-                        kornia_io::png::encode_image_png_rgb8(&img, &mut buffer)
+                        kornia_io::png::encode_image_png_rgb8(&img, &mut buffer, compress_level)
                             .map_err(to_pyerr)?;
                     }
                     (ImageData::U8(a), 4) => {
                         let img = unsafe { numpy_as_image::<4>(py, a)? };
-                        kornia_io::png::encode_image_png_rgba8(&img, &mut buffer)
+                        kornia_io::png::encode_image_png_rgba8(&img, &mut buffer, compress_level)
                             .map_err(to_pyerr)?;
                     }
                     (ImageData::U8(a), 1) => {
                         let img = unsafe { numpy_as_image::<1>(py, a)? };
-                        kornia_io::png::encode_image_png_gray8(&img, &mut buffer)
+                        kornia_io::png::encode_image_png_gray8(&img, &mut buffer, compress_level)
                             .map_err(to_pyerr)?;
                     }
                     (ImageData::U16(a), 3) => {
                         let img = unsafe { numpy_as_image_u16::<3>(py, a)? };
-                        kornia_io::png::encode_image_png_rgb16(&img, &mut buffer)
+                        kornia_io::png::encode_image_png_rgb16(&img, &mut buffer, compress_level)
                             .map_err(to_pyerr)?;
                     }
                     (ImageData::U16(a), 4) => {
                         let img = unsafe { numpy_as_image_u16::<4>(py, a)? };
-                        kornia_io::png::encode_image_png_rgba16(&img, &mut buffer)
+                        kornia_io::png::encode_image_png_rgba16(&img, &mut buffer, compress_level)
                             .map_err(to_pyerr)?;
                     }
                     (ImageData::U16(a), 1) => {
                         let img = unsafe { numpy_as_image_u16::<1>(py, a)? };
-                        kornia_io::png::encode_image_png_gray16(&img, &mut buffer)
+                        kornia_io::png::encode_image_png_gray16(&img, &mut buffer, compress_level)
                             .map_err(to_pyerr)?;
                     }
                     _ => {
@@ -1906,13 +1914,15 @@ impl PyImageApi {
     /// 16-bit Images can only save to PNG (JPEG would lose precision and
     /// smear depth discontinuities); the call returns a ``ValueError``
     /// otherwise.
-    #[pyo3(signature = (fp, format=None, quality=95))]
+    #[pyo3(signature = (fp, format=None, quality=95, compress_level=None, subsampling=None))]
     fn save(
         &self,
         py: Python<'_>,
         fp: &Bound<'_, PyAny>,
         format: Option<&str>,
         quality: u8,
+        compress_level: Option<u8>,
+        subsampling: Option<&str>,
     ) -> PyResult<()> {
         // Resolve target type: path-like vs file-like.
         let path_str: Option<String> = fp.extract().ok();
@@ -1938,7 +1948,8 @@ impl PyImageApi {
         };
 
         // Encode to bytes (handles u8/u16 dispatch internally).
-        let bytes = self.encode_to_bytes(py, &resolved_format, quality)?;
+        let bytes =
+            self.encode_to_bytes(py, &resolved_format, quality, compress_level, subsampling)?;
 
         if let Some(path) = path_str {
             std::fs::write(&path, &bytes).map_err(|e| {
@@ -1981,9 +1992,37 @@ impl PyImageApi {
     ///     img = Image.frombuffer(rgb_array)
     ///     jpeg_bytes = img.encode("jpeg", quality=80)
     ///     png_bytes = img.encode("png")
-    #[pyo3(signature = (format, quality=95))]
-    fn encode(&self, py: Python<'_>, format: &str, quality: u8) -> PyResult<Vec<u8>> {
-        self.encode_to_bytes(py, &format.to_lowercase(), quality)
+    /// Encode the image to in-memory bytes.
+    ///
+    /// - ``quality``: JPEG/WebP quality 1-100 (ignored for PNG/TIFF). Default 95.
+    /// - ``compress_level``: PNG zlib level 0..=9 (ignored for non-PNG).
+    ///   ``0`` skips deflate (largest, fastest); ``1`` uses fdeflate
+    ///   (NEON/AVX2-accelerated, ~3-4× faster than the default while
+    ///   producing files larger than level 9 but smaller than ``0``);
+    ///   ``2..=9`` map to standard zlib levels. ``None`` keeps the
+    ///   `png` crate default (level 6 / "balanced").
+    /// - ``subsampling``: JPEG chroma subsampling. ``"4:2:0"`` (default)
+    ///   matches cv2/PIL — half the chroma data, ~2× faster encode, no
+    ///   visible quality loss on natural images. ``"4:2:2"`` is half
+    ///   subsample on x only. ``"4:4:4"`` is no subsampling (largest
+    ///   files, highest fidelity, needed for synthetic / text-heavy
+    ///   images). Ignored for non-JPEG formats.
+    #[pyo3(signature = (format, quality=95, compress_level=None, subsampling=None))]
+    fn encode(
+        &self,
+        py: Python<'_>,
+        format: &str,
+        quality: u8,
+        compress_level: Option<u8>,
+        subsampling: Option<&str>,
+    ) -> PyResult<Vec<u8>> {
+        self.encode_to_bytes(
+            py,
+            &format.to_lowercase(),
+            quality,
+            compress_level,
+            subsampling,
+        )
     }
 
     /// Return the raw pixel buffer as Python ``bytes`` (no encoding, no header).

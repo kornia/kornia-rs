@@ -131,11 +131,33 @@ impl PyImageEncoder {
 ///
 /// Drop-in faster replacement for ``encode_image_jpeg`` (~3-4× faster on
 /// 1080p RGB on aarch64). Returns ``Vec<u8>`` with the JPEG-encoded bytes.
+///
+/// `subsampling` accepts ``"4:2:0"`` (default; matches cv2/PIL at q ≤ 95;
+/// half the chroma data → smaller files, ~2× faster encode), ``"4:2:2"``,
+/// or ``"4:4:4"`` (no subsampling; largest files, highest fidelity).
 #[pyfunction]
-pub fn encode_image_jpegturbo(py: Python<'_>, image: PyImage, quality: i32) -> PyResult<Vec<u8>> {
+#[pyo3(signature = (image, quality, subsampling=None))]
+pub fn encode_image_jpegturbo(
+    py: Python<'_>,
+    image: PyImage,
+    quality: i32,
+    subsampling: Option<&str>,
+) -> PyResult<Vec<u8>> {
     let image = unsafe { numpy_as_image::<3>(py, &image)? };
     let encoder = JpegTurboEncoder::new().map_err(to_pyerr)?;
     encoder.set_quality(quality).map_err(to_pyerr)?;
+    let sub = match subsampling.unwrap_or("4:2:0") {
+        "4:2:0" => kornia_io::jpegturbo::Subsamp::Sub2x2,
+        "4:2:2" => kornia_io::jpegturbo::Subsamp::Sub2x1,
+        "4:4:4" => kornia_io::jpegturbo::Subsamp::None,
+        other => {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "subsampling must be \"4:2:0\", \"4:2:2\", or \"4:4:4\", got {:?}",
+                other
+            )))
+        }
+    };
+    encoder.set_subsamp(sub).map_err(to_pyerr)?;
     encoder.encode_rgb8(&image).map_err(to_pyerr)
 }
 

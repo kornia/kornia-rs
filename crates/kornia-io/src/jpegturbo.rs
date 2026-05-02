@@ -6,6 +6,10 @@ use kornia_image::{
 use std::{path::Path, sync::Mutex};
 use turbojpeg;
 
+/// Re-exported so callers don't need a direct ``turbojpeg`` dep just to
+/// call [`JpegTurboEncoder::set_subsamp`].
+pub use turbojpeg::Subsamp;
+
 /// Error types for the JPEG module.
 #[derive(thiserror::Error, Debug)]
 pub enum JpegTurboError {
@@ -100,6 +104,17 @@ impl JpegTurboEncoder {
             .lock()
             .map_err(|_| JpegTurboError::MutexPoisoned)?
             .set_quality(quality)?)
+    }
+
+    /// Sets chroma subsampling: ``Subsamp::None`` is 4:4:4 (no subsampling,
+    /// largest files, highest quality), ``Sub2x1`` is 4:2:2, ``Sub2x2`` is
+    /// 4:2:0 (half the chroma data, fastest, default for cv2/PIL at q ≤ 95).
+    pub fn set_subsamp(&self, subsamp: turbojpeg::Subsamp) -> Result<(), JpegTurboError> {
+        self.0
+            .lock()
+            .map_err(|_| JpegTurboError::MutexPoisoned)?
+            .set_subsamp(subsamp)?;
+        Ok(())
     }
 }
 
