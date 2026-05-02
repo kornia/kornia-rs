@@ -74,15 +74,8 @@ def t_dir_err_deg(t_est: np.ndarray, t_gt: np.ndarray) -> float:
     return float(np.degrees(np.arccos(np.clip(abs(float(t_est @ t_gt)), 0.0, 1.0))))
 
 
-def median_ms(fn, n: int = N_ITERS, warmup: int = N_WARMUP) -> float:
-    """Backwards-compat shim around benchmarks/_bench.py — reports min ms.
-
-    The shared helper auto-tunes iteration count to a 1s budget; the legacy
-    n / warmup args are accepted but ignored. min_ms is the right number for
-    sub-millisecond ops; mean is biased high by GC/scheduler noise.
-    """
-    r = _bench_fn(fn, target_seconds=1.0, min_iters=100)
-    return r.min_ms
+def median_ms(fn, **_legacy) -> float:
+    return _bench_fn(fn).min_ms
 
 
 @dataclass

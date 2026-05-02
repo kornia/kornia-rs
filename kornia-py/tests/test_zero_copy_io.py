@@ -13,16 +13,14 @@ by the codec, not by an extra full-image memcpy.
 """
 
 import io
-import sys
-from pathlib import Path
 
 import numpy as np
 import pytest
 
 from kornia_rs.image import Image
 
-# Best-of-N bench helper from sibling benchmarks/ dir.
-sys.path.insert(0, str(Path(__file__).parent.parent / "benchmarks"))
+# Shared best-of-N bench helper. ``benchmarks/`` is on the pythonpath
+# via ``pyproject.toml [tool.pytest.ini_options]``.
 from _bench import bench as _bench_fn  # noqa: E402
 
 

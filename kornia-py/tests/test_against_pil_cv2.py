@@ -12,8 +12,6 @@ image of kornia's wheels does not require them).
 """
 
 import io
-import sys
-from pathlib import Path
 
 import numpy as np
 import pytest
@@ -24,10 +22,8 @@ from PIL import ImageFilter as _PIL_Filter  # noqa: E402
 
 from kornia_rs.image import Image  # noqa: E402
 
-# Shared best-of-N bench helper from sibling benchmarks/ dir. See
-# benchmarks/_bench.py for methodology (warmup + GC-disable + per-call
-# timing + min/p50/p95 reporting).
-sys.path.insert(0, str(Path(__file__).parent.parent / "benchmarks"))
+# Shared best-of-N bench helper. ``benchmarks/`` is on the pythonpath
+# via ``pyproject.toml [tool.pytest.ini_options]``.
 from _bench import bench as _bench_fn  # noqa: E402
 
 

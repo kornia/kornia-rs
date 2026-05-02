@@ -19,17 +19,13 @@ Coverage:
   - Buffer ops:          tobytes, to_numpy, copy
 """
 
-import sys
-from pathlib import Path
-
 import numpy as np
 import pytest
 
 from kornia_rs.image import Image
 
-# Use the shared bench helper from sibling benchmarks/ dir for proper
-# warmup + GC-disable + best-of-N timing. See benchmarks/_bench.py.
-sys.path.insert(0, str(Path(__file__).parent.parent / "benchmarks"))
+# Shared best-of-N bench helper. ``benchmarks/`` is on the pythonpath
+# via ``pyproject.toml [tool.pytest.ini_options]``.
 from _bench import bench as _real_bench  # noqa: E402
 
 

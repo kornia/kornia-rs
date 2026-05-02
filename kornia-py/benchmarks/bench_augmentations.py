@@ -8,19 +8,11 @@ from kornia_rs.augmentations import ColorJitter, RandomHorizontalFlip, RandomVer
 import albumentations as A
 import cv2
 
-from _bench import bench as _bench_fn
+from _bench import bench as _bench_fn, compat_print
 
 
-def bench(name, fn, n=None, warmup=None):
-    """Backwards-compat shim around benchmarks/_bench.py — reports min ms.
-
-    The shared helper auto-tunes iteration count to a 1s budget; the legacy
-    n / warmup args are accepted but ignored. min_ms is the right number for
-    sub-millisecond ops; mean is biased high by GC/scheduler noise.
-    """
-    r = _bench_fn(fn, target_seconds=1.0, min_iters=100)
-    print(f"  {name:40s} {r.min_ms:8.3f} ms (min, n={r.n})")
-    return r.min_ms
+def bench(name, fn, **_legacy):
+    return compat_print(name, _bench_fn(fn))
 
 
 def run_benchmarks():

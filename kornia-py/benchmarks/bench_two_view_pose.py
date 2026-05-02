@@ -97,15 +97,8 @@ class Result:
         return self.t_detect_ms + self.t_match_ms + self.t_pose_ms
 
 
-def median_ms(fn, n=N_ITERS, warmup=N_WARMUP) -> float:
-    """Backwards-compat shim around benchmarks/_bench.py — reports min ms.
-
-    The shared helper auto-tunes iteration count to a 1s budget; the legacy
-    n / warmup args are accepted but ignored. min_ms is the right number for
-    sub-millisecond ops; mean is biased high by GC/scheduler noise.
-    """
-    r = _bench_fn(fn, target_seconds=1.0, min_iters=100)
-    return r.min_ms
+def median_ms(fn, **_legacy) -> float:
+    return _bench_fn(fn).min_ms
 
 
 def bench_kornia(

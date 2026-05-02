@@ -7,15 +7,8 @@ from kornia_rs.image import Image
 from _bench import bench as _bench_fn
 
 
-def bench(fn, n=None, warmup=None):
-    """Backwards-compat shim around benchmarks/_bench.py — reports min ms.
-
-    The shared helper auto-tunes iteration count to a 1s budget; the legacy
-    n / warmup args are accepted but ignored. min_ms is the right number for
-    sub-millisecond ops; mean is biased high by GC/scheduler noise.
-    """
-    r = _bench_fn(fn, target_seconds=1.0, min_iters=100)
-    return r.min_ms
+def bench(fn, **_legacy):
+    return _bench_fn(fn).min_ms
 
 
 modes = [

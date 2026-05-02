@@ -66,15 +66,8 @@ N_ROUNDS = 5
 ITERS_PER_ROUND = {"640x480": 200, "1080x1920": 50}
 
 
-def time_loop(fn, iters=None):
-    """Backwards-compat shim around benchmarks/_bench.py — reports min ms.
-
-    The shared helper auto-tunes iteration count to a 1s budget; the legacy
-    iters / N_ROUNDS args are accepted but ignored. min_ms is the right number
-    for sub-millisecond ops; mean is biased high by GC/scheduler noise.
-    """
-    r = _bench_fn(fn, target_seconds=1.0, min_iters=100)
-    return r.min_ms
+def time_loop(fn, **_legacy):
+    return _bench_fn(fn).min_ms
 
 
 def bench_kornia(img, threshold):
