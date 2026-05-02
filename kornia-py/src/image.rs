@@ -662,7 +662,10 @@ fn adjust_hue_into_pyarray(
 /// Canonical format tag for a path's extension. Returns the format kornia
 /// understands ("PNG"/"JPEG"/"TIFF"/"WEBP") or None if the extension is
 /// unknown — matching how PIL exposes ``Image.format`` after a load.
-fn format_from_path(path: &str) -> Option<&'static str> {
+///
+/// The single source of truth for extension → format mapping. Lowercase the
+/// result for the encoder key used by `Image.encode` / `encode_to_bytes`.
+pub(crate) fn format_from_path(path: &str) -> Option<&'static str> {
     let ext = std::path::Path::new(path)
         .extension()
         .and_then(|e| e.to_str())?
@@ -737,17 +740,31 @@ fn convert_u8_to_u16(
 /// Materialize the per-channel u8 fill values from a Python ``color`` arg.
 /// Accepts ``None`` (zero), a scalar broadcast across channels, or a
 /// per-channel tuple/list of the right length.
-fn fill_color_u8(
-    slice: &mut [u8],
+/// Fill a freshly-allocated PyArray slice with a per-channel color.
+///
+/// `color` accepts:
+///   * `None`               → zero-fill
+///   * a Python scalar      → broadcast to every channel
+///   * a Python tuple/list  → per-channel value (length must equal `channels`)
+///
+/// The `dtype_hint` is used in the error message when the user passes an
+/// unparseable color (e.g. a string). Generic over `T: Default + Copy + numpy::Element`
+/// where `T` extracts from a Python int / float.
+fn fill_color<T>(
+    slice: &mut [T],
     color: Option<&Bound<'_, pyo3::PyAny>>,
     channels: usize,
-) -> PyResult<()> {
-    let fill: Vec<u8> = match color {
-        None => vec![0u8; channels],
+    dtype_hint: &str,
+) -> PyResult<()>
+where
+    T: Copy + Default + numpy::Element + for<'a, 'py> pyo3::FromPyObject<'a, 'py>,
+{
+    let fill: Vec<T> = match color {
+        None => vec![T::default(); channels],
         Some(c) => {
-            if let Ok(v) = c.extract::<u8>() {
+            if let Ok(v) = c.extract::<T>() {
                 vec![v; channels]
-            } else if let Ok(t) = c.extract::<Vec<u8>>() {
+            } else if let Ok(t) = c.extract::<Vec<T>>() {
                 if t.len() != channels {
                     return Err(value_err(format!(
                         "Image.new: color tuple has {} entries, mode requires {}",
@@ -757,73 +774,10 @@ fn fill_color_u8(
                 }
                 t
             } else {
-                return Err(value_err(
-                    "Image.new: color must be int 0-255 or a tuple/list of ints",
-                ));
-            }
-        }
-    };
-    for chunk in slice.chunks_exact_mut(channels) {
-        chunk.copy_from_slice(&fill);
-    }
-    Ok(())
-}
-
-fn fill_color_f32(
-    slice: &mut [f32],
-    color: Option<&Bound<'_, pyo3::PyAny>>,
-    channels: usize,
-) -> PyResult<()> {
-    let fill: Vec<f32> = match color {
-        None => vec![0.0_f32; channels],
-        Some(c) => {
-            if let Ok(v) = c.extract::<f32>() {
-                vec![v; channels]
-            } else if let Ok(t) = c.extract::<Vec<f32>>() {
-                if t.len() != channels {
-                    return Err(value_err(format!(
-                        "Image.new: color tuple has {} entries, mode requires {}",
-                        t.len(),
-                        channels
-                    )));
-                }
-                t
-            } else {
-                return Err(value_err(
-                    "Image.new: color must be a float or a tuple/list of floats",
-                ));
-            }
-        }
-    };
-    for chunk in slice.chunks_exact_mut(channels) {
-        chunk.copy_from_slice(&fill);
-    }
-    Ok(())
-}
-
-fn fill_color_u16(
-    slice: &mut [u16],
-    color: Option<&Bound<'_, pyo3::PyAny>>,
-    channels: usize,
-) -> PyResult<()> {
-    let fill: Vec<u16> = match color {
-        None => vec![0u16; channels],
-        Some(c) => {
-            if let Ok(v) = c.extract::<u16>() {
-                vec![v; channels]
-            } else if let Ok(t) = c.extract::<Vec<u16>>() {
-                if t.len() != channels {
-                    return Err(value_err(format!(
-                        "Image.new: color tuple has {} entries, mode requires {}",
-                        t.len(),
-                        channels
-                    )));
-                }
-                t
-            } else {
-                return Err(value_err(
-                    "Image.new: color must be int 0-65535 or a tuple/list of ints",
-                ));
+                return Err(value_err(format!(
+                    "Image.new: color must be a {} scalar or tuple/list of {}",
+                    dtype_hint, dtype_hint
+                )));
             }
         }
     };
@@ -959,7 +913,7 @@ pub struct PyImageApi {
     /// Canonical format the Image was decoded from (e.g. ``"PNG"``, ``"JPEG"``,
     /// ``"TIFF"``). ``None`` for in-memory-constructed Images. Set by
     /// ``Image.load`` / ``Image.decode`` / ``Image.open``.
-    format: Option<String>,
+    format: Option<&'static str>,
 }
 
 /// Shorthand for constructing a Python `ValueError`.
@@ -1035,8 +989,8 @@ impl PyImageApi {
         }
     }
 
-    fn with_format(mut self, format: &str) -> Self {
-        self.format = Some(format.to_string());
+    fn with_format(mut self, format: &'static str) -> Self {
+        self.format = Some(format);
         self
     }
 
@@ -1129,73 +1083,62 @@ impl PyImageApi {
         }
     }
 
-    /// u16 generic flip helper — uses the dtype-trivial kornia_imgproc kernel
-    /// directly (no SIMD-fast u8-only path).
+    /// dtype-trivial flip kernel — flips a buffer by row (vertical) or by
+    /// column-of-channel-tuples (horizontal). Caller is responsible for
+    /// wrapping the resulting PyArray into the right ImageData variant.
+    fn flip_pod_into<T: Copy + numpy::Element>(
+        &self,
+        py: Python<'_>,
+        a: &Py<PyArray3<T>>,
+        dir: FlipDir,
+    ) -> PyResult<Py<PyArray3<T>>> {
+        let arr = a.bind(py);
+        let s = arr.shape();
+        let (h, w, c) = (s[0], s[1], s[2]);
+        let src = unsafe { std::slice::from_raw_parts(arr.data(), h * w * c) };
+        let out = unsafe { PyArray::<T, _>::new(py, [h, w, c], false) };
+        let dst = unsafe { std::slice::from_raw_parts_mut(out.data(), h * w * c) };
+        match dir {
+            FlipDir::Horizontal => {
+                for row in 0..h {
+                    let row_off = row * w * c;
+                    let src_row = &src[row_off..row_off + w * c];
+                    let dst_row = &mut dst[row_off..row_off + w * c];
+                    for (d, s) in dst_row
+                        .chunks_exact_mut(c)
+                        .zip(src_row.chunks_exact(c).rev())
+                    {
+                        d.copy_from_slice(s);
+                    }
+                }
+            }
+            FlipDir::Vertical => {
+                for row in 0..h {
+                    let s_off = row * w * c;
+                    let d_off = (h - 1 - row) * w * c;
+                    dst[d_off..d_off + w * c].copy_from_slice(&src[s_off..s_off + w * c]);
+                }
+            }
+        }
+        Ok(out.unbind())
+    }
+
     fn flip_u16(&self, py: Python<'_>, dir: FlipDir) -> PyResult<Self> {
         let a = match &self.data {
             ImageData::U16(a) => a,
             _ => return self.copy(py),
         };
-        let arr = a.bind(py);
-        let s = arr.shape();
-        let (h, w, c) = (s[0], s[1], s[2]);
-        let src = unsafe { std::slice::from_raw_parts(arr.data(), h * w * c) };
-        let out = unsafe { PyArray::<u16, _>::new(py, [h, w, c], false) };
-        let dst = unsafe { std::slice::from_raw_parts_mut(out.data(), h * w * c) };
-        match dir {
-            FlipDir::Horizontal => {
-                for row in 0..h {
-                    let row_off = row * w * c;
-                    for col in 0..w {
-                        let s_off = row_off + col * c;
-                        let d_off = row_off + (w - 1 - col) * c;
-                        dst[d_off..d_off + c].copy_from_slice(&src[s_off..s_off + c]);
-                    }
-                }
-            }
-            FlipDir::Vertical => {
-                for row in 0..h {
-                    let s_off = row * w * c;
-                    let d_off = (h - 1 - row) * w * c;
-                    dst[d_off..d_off + w * c].copy_from_slice(&src[s_off..s_off + w * c]);
-                }
-            }
-        }
-        Ok(Self::wrap_u16(py, out.unbind(), Some(self.mode.clone())))
+        let out = self.flip_pod_into(py, a, dir)?;
+        Ok(Self::wrap_u16(py, out, Some(self.mode.clone())))
     }
 
-    /// f32 generic flip helper — same shape as `flip_u16`, different dtype.
     fn flip_f32(&self, py: Python<'_>, dir: FlipDir) -> PyResult<Self> {
         let a = match &self.data {
             ImageData::F32(a) => a,
             _ => return self.copy(py),
         };
-        let arr = a.bind(py);
-        let s = arr.shape();
-        let (h, w, c) = (s[0], s[1], s[2]);
-        let src = unsafe { std::slice::from_raw_parts(arr.data(), h * w * c) };
-        let out = unsafe { PyArray::<f32, _>::new(py, [h, w, c], false) };
-        let dst = unsafe { std::slice::from_raw_parts_mut(out.data(), h * w * c) };
-        match dir {
-            FlipDir::Horizontal => {
-                for row in 0..h {
-                    let row_off = row * w * c;
-                    for col in 0..w {
-                        let s_off = row_off + col * c;
-                        let d_off = row_off + (w - 1 - col) * c;
-                        dst[d_off..d_off + c].copy_from_slice(&src[s_off..s_off + c]);
-                    }
-                }
-            }
-            FlipDir::Vertical => {
-                for row in 0..h {
-                    let s_off = row * w * c;
-                    let d_off = (h - 1 - row) * w * c;
-                    dst[d_off..d_off + w * c].copy_from_slice(&src[s_off..s_off + w * c]);
-                }
-            }
-        }
-        Ok(Self::wrap_f32(py, out.unbind(), Some(self.mode.clone())))
+        let out = self.flip_pod_into(py, a, dir)?;
+        Ok(Self::wrap_f32(py, out, Some(self.mode.clone())))
     }
 
     /// Returns the u8 backing array, or a `NotImplementedError` if the Image
@@ -1817,21 +1760,21 @@ impl PyImageApi {
                 let arr = unsafe { PyArray::<u8, _>::new(py, [height, width, channels], false) };
                 let len = height * width * channels;
                 let slice = unsafe { std::slice::from_raw_parts_mut(arr.data(), len) };
-                fill_color_u8(slice, color, channels)?;
+                fill_color::<u8>(slice, color, channels, "uint8 (0-255)")?;
                 Ok(Self::wrap(py, arr.unbind(), Some(mode.to_string())))
             }
             Dtype::U16 => {
                 let arr = unsafe { PyArray::<u16, _>::new(py, [height, width, channels], false) };
                 let len = height * width * channels;
                 let slice = unsafe { std::slice::from_raw_parts_mut(arr.data(), len) };
-                fill_color_u16(slice, color, channels)?;
+                fill_color::<u16>(slice, color, channels, "uint16 (0-65535)")?;
                 Ok(Self::wrap_u16(py, arr.unbind(), Some(mode.to_string())))
             }
             Dtype::F32 => {
                 let arr = unsafe { PyArray::<f32, _>::new(py, [height, width, channels], false) };
                 let len = height * width * channels;
                 let slice = unsafe { std::slice::from_raw_parts_mut(arr.data(), len) };
-                fill_color_f32(slice, color, channels)?;
+                fill_color::<f32>(slice, color, channels, "float32")?;
                 Ok(Self::wrap_f32(py, arr.unbind(), Some(mode.to_string())))
             }
         }
@@ -1934,9 +1877,7 @@ impl PyImageApi {
                 let path = path_str.as_deref().ok_or_else(|| {
                     value_err("save: format= is required when target is a file-like object")
                 })?;
-                std::path::Path::new(path)
-                    .extension()
-                    .and_then(|e| e.to_str())
+                format_from_path(path)
                     .ok_or_else(|| {
                         value_err(format!(
                             "save: could not determine format from path {:?}; pass format=",
@@ -1972,17 +1913,20 @@ impl PyImageApi {
         }
     }
 
-    /// Encode the image to in-memory bytes — the in-memory complement of `save`.
-    ///
-    /// PIL parity: ``Image.save(BytesIO(), format=...)`` works because the
-    /// underlying encoder writes to any file-like; here we expose the same
-    /// thing with a direct ``bytes`` return so callers don't need to set up a
-    /// ``BytesIO`` round-trip. Use this when you need to ship an encoded image
-    /// over a wire (Zenoh, MQTT, gRPC) or embed it in a container (MCAP).
+    /// Encode the image to in-memory bytes — the in-memory complement of ``save``.
     ///
     /// Args:
-    ///     format: ``"jpeg"`` (alias ``"jpg"``) or ``"png"``. Case-insensitive.
-    ///     quality: JPEG quality 1-100 (ignored for PNG). Default 95.
+    ///     format: ``"jpeg"``/``"jpg"``, ``"png"``, ``"webp"``, ``"tiff"``/``"tif"``.
+    ///         Case-insensitive.
+    ///     quality: JPEG / WebP quality 1-100. Ignored for PNG / TIFF. Default 95.
+    ///     compress_level: PNG zlib level 0..=9 (ignored for non-PNG).
+    ///         ``0`` skips deflate (largest, fastest); ``1`` uses fdeflate
+    ///         (NEON / AVX2 fast path, smaller than ``0`` and far faster than
+    ///         the default); ``2..=9`` are standard zlib levels. ``None`` keeps
+    ///         the `png` crate default ("balanced").
+    ///     subsampling: JPEG chroma subsampling — ``"4:2:0"`` (default; matches
+    ///         cv2 / PIL), ``"4:2:2"``, or ``"4:4:4"`` (no subsampling, largest
+    ///         files, needed for synthetic / text content). Ignored for non-JPEG.
     ///
     /// Returns:
     ///     bytes: The encoded image data.
@@ -1991,22 +1935,7 @@ impl PyImageApi {
     ///
     ///     img = Image.frombuffer(rgb_array)
     ///     jpeg_bytes = img.encode("jpeg", quality=80)
-    ///     png_bytes = img.encode("png")
-    /// Encode the image to in-memory bytes.
-    ///
-    /// - ``quality``: JPEG/WebP quality 1-100 (ignored for PNG/TIFF). Default 95.
-    /// - ``compress_level``: PNG zlib level 0..=9 (ignored for non-PNG).
-    ///   ``0`` skips deflate (largest, fastest); ``1`` uses fdeflate
-    ///   (NEON/AVX2-accelerated, ~3-4× faster than the default while
-    ///   producing files larger than level 9 but smaller than ``0``);
-    ///   ``2..=9`` map to standard zlib levels. ``None`` keeps the
-    ///   `png` crate default (level 6 / "balanced").
-    /// - ``subsampling``: JPEG chroma subsampling. ``"4:2:0"`` (default)
-    ///   matches cv2/PIL — half the chroma data, ~2× faster encode, no
-    ///   visible quality loss on natural images. ``"4:2:2"`` is half
-    ///   subsample on x only. ``"4:4:4"`` is no subsampling (largest
-    ///   files, highest fidelity, needed for synthetic / text-heavy
-    ///   images). Ignored for non-JPEG formats.
+    ///     png_bytes  = img.encode("png", compress_level=1)
     #[pyo3(signature = (format, quality=95, compress_level=None, subsampling=None))]
     fn encode(
         &self,

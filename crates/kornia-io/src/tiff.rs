@@ -554,11 +554,19 @@ where
     Ok(())
 }
 
+/// Reserve approximate uncompressed-TIFF capacity in `buffer` (raw bytes
+/// + ~1 KB header) so the inner `Cursor<&mut Vec<u8>>` doesn't trigger
+/// repeated `Vec` doublings during `TiffEncoder::write_image`.
+fn reserve_tiff<T: Sized>(buffer: &mut Vec<u8>, slice_len: usize) {
+    buffer.reserve(slice_len * std::mem::size_of::<T>() + 1024);
+}
+
 /// Encodes an RGB u8 image as TIFF bytes into `buffer` (appended).
 pub fn encode_image_tiff_rgb8<A: ImageAllocator>(
     image: &Image<u8, 3, A>,
     buffer: &mut Vec<u8>,
 ) -> Result<(), IoError> {
+    reserve_tiff::<u8>(buffer, image.as_slice().len());
     let mut cursor = std::io::Cursor::new(buffer);
     write_tiff_into::<_, colortype::RGB8, u8>(&mut cursor, image.as_slice(), image.size())
 }
@@ -568,6 +576,7 @@ pub fn encode_image_tiff_mono8<A: ImageAllocator>(
     image: &Image<u8, 1, A>,
     buffer: &mut Vec<u8>,
 ) -> Result<(), IoError> {
+    reserve_tiff::<u8>(buffer, image.as_slice().len());
     let mut cursor = std::io::Cursor::new(buffer);
     write_tiff_into::<_, colortype::Gray8, u8>(&mut cursor, image.as_slice(), image.size())
 }
@@ -577,6 +586,7 @@ pub fn encode_image_tiff_rgb16<A: ImageAllocator>(
     image: &Image<u16, 3, A>,
     buffer: &mut Vec<u8>,
 ) -> Result<(), IoError> {
+    reserve_tiff::<u16>(buffer, image.as_slice().len());
     let mut cursor = std::io::Cursor::new(buffer);
     write_tiff_into::<_, colortype::RGB16, u16>(&mut cursor, image.as_slice(), image.size())
 }
@@ -586,6 +596,7 @@ pub fn encode_image_tiff_mono16<A: ImageAllocator>(
     image: &Image<u16, 1, A>,
     buffer: &mut Vec<u8>,
 ) -> Result<(), IoError> {
+    reserve_tiff::<u16>(buffer, image.as_slice().len());
     let mut cursor = std::io::Cursor::new(buffer);
     write_tiff_into::<_, colortype::Gray16, u16>(&mut cursor, image.as_slice(), image.size())
 }
@@ -595,6 +606,7 @@ pub fn encode_image_tiff_mono32f<A: ImageAllocator>(
     image: &Image<f32, 1, A>,
     buffer: &mut Vec<u8>,
 ) -> Result<(), IoError> {
+    reserve_tiff::<f32>(buffer, image.as_slice().len());
     let mut cursor = std::io::Cursor::new(buffer);
     write_tiff_into::<_, colortype::Gray32Float, f32>(&mut cursor, image.as_slice(), image.size())
 }
@@ -604,6 +616,7 @@ pub fn encode_image_tiff_rgb32f<A: ImageAllocator>(
     image: &Image<f32, 3, A>,
     buffer: &mut Vec<u8>,
 ) -> Result<(), IoError> {
+    reserve_tiff::<f32>(buffer, image.as_slice().len());
     let mut cursor = std::io::Cursor::new(buffer);
     write_tiff_into::<_, colortype::RGB32Float, f32>(&mut cursor, image.as_slice(), image.size())
 }

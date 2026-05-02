@@ -489,14 +489,8 @@ fn write_png_impl(
 // or reuses the allocation across frames). 16-bit variants serialize `&[u16]`
 // to big-endian byte pairs as required by the PNG wire format.
 
-/// Encodes an RGB8 image as PNG bytes into `buffer`.
-///
-/// # Arguments
-///
-/// - `image` - The Rgb8 image to encode.
-/// - `buffer` - Destination buffer. Encoded data is appended (call
-///   `buffer.clear()` first if you want to reuse the buffer fresh).
-/// Encodes an RGB8 image as PNG bytes into `buffer`.
+/// Encodes an RGB8 image as PNG bytes into `buffer`. Encoded data is
+/// appended (call `buffer.clear()` first to reuse the buffer fresh).
 ///
 /// `compress_level` follows the zlib convention: 0 = no compression
 /// (fastest), 1 = ``FdeflateUltraFast`` (the NEON/AVX2 fast path; ~3×

@@ -58,25 +58,14 @@ pub fn read_image(py: Python<'_>, file_path: Bound<'_, PyAny>) -> PyResult<Py<Py
         ));
     }
 
-    let extension = path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(|s| s.to_lowercase())
-        .ok_or_else(|| {
-            PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-                "Could not determine file extension for: {}",
-                path_display
-            ))
-        })?;
-
-    match extension.as_str() {
-        "png" => read_image_png_dispatcher(py, path),
-        "tiff" | "tif" => read_image_tiff_dispatcher(py, path),
-        "jpg" | "jpeg" => read_image_jpeg_dispatcher(py, path),
-        "webp" => read_image_webp_dispatcher(py, path),
+    match crate::image::format_from_path(&path_display) {
+        Some("PNG") => read_image_png_dispatcher(py, path),
+        Some("TIFF") => read_image_tiff_dispatcher(py, path),
+        Some("JPEG") => read_image_jpeg_dispatcher(py, path),
+        Some("WEBP") => read_image_webp_dispatcher(py, path),
         _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-            "Unsupported file format: {}. Supported formats: png, tiff, jpeg, webp",
-            extension
+            "Unsupported file format for path {:?}. Supported: png, tiff, jpeg, webp",
+            path_display
         ))),
     }
 }
