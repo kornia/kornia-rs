@@ -66,7 +66,7 @@ N_ROUNDS = 5
 ITERS_PER_ROUND = {"640x480": 200, "1080x1920": 50}
 
 
-def time_loop(fn, **_legacy):
+def time_loop(fn, iters=None):
     return _bench_fn(fn).min_ms
 
 

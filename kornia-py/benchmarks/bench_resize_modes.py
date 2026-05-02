@@ -7,7 +7,7 @@ from kornia_rs.image import Image
 from _bench import bench as _bench_fn
 
 
-def bench(fn, **_legacy):
+def bench(fn, n=None, warmup=None):
     return _bench_fn(fn).min_ms
 
 

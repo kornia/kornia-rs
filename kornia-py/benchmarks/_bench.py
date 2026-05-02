@@ -38,6 +38,7 @@ from __future__ import annotations
 import gc
 import statistics
 import time
+from collections import deque
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Callable
@@ -58,19 +59,6 @@ class BenchResult:
     raw_ms: list[float] = field(repr=False, default_factory=list)
 
 
-def _calibrate_one_call_ns(fn: Callable[[], object], samples: int = 5) -> int:
-    """Median-of-N ns-resolution per-call cost. One sample lands on a
-    scheduler tick often enough to mis-size the iteration count by 10×;
-    median of 5 is the cheapest-honest estimate."""
-    pc = time.perf_counter_ns
-    times = []
-    for _ in range(samples):
-        t = pc()
-        fn()
-        times.append(pc() - t)
-    return max(int(statistics.median(times)), 1)
-
-
 def bench(
     fn: Callable[[], object],
     *,
@@ -83,40 +71,56 @@ def bench(
     keep_raw: bool = False,
 ) -> BenchResult:
     """Best-of-N benchmark with GC disabled and per-call timings."""
-    # Warmup: at least N calls AND ``warmup_seconds`` elapsed.
+    # Warmup: at least N calls AND ``warmup_seconds`` elapsed. The last 5
+    # warmup samples double as the calibration window — a single first-call
+    # can land on a scheduler tick and mis-size iters by 10x; median of 5
+    # is the cheapest-honest estimate. Folding it in here saves 5 untimed
+    # fn() calls per bench (visible on slow ops where one call > 100 ms).
+    pc_ns = time.perf_counter_ns
+    recent_ns: deque[int] = deque(maxlen=5)
     t_end = time.perf_counter() + warmup_seconds
     warmups = 0
     while warmups < min_warmup_iters or time.perf_counter() < t_end:
+        t = pc_ns()
         fn()
+        recent_ns.append(pc_ns() - t)
         warmups += 1
 
-    one_call_ns = _calibrate_one_call_ns(fn)
-    iters = int(target_seconds * 1e9 / one_call_ns)
-    iters = max(min_iters, min(max_iters, iters))
+    one_call_ns = max(int(statistics.median(recent_ns)), 1)
+    iters = max(min_iters, min(max_iters, int(target_seconds * 1e9 / one_call_ns)))
 
-    times_ns: list[int] = []
-    append = times_ns.append
+    # Pre-allocate the result buffer at the known iter count: avoids ~17
+    # list-grow reallocations across a 100k-iter run, any one of which
+    # could land inside a timed call and pollute p95.
+    times_ns: list[int] = [0] * iters
     pc = time.perf_counter_ns
 
     was_enabled = gc.isenabled()
     gc.collect()
     gc.disable()
     try:
-        for _ in range(iters):
+        for i in range(iters):
             t = pc()
             fn()
-            append(pc() - t)
+            times_ns[i] = pc() - t
     finally:
         if was_enabled:
             gc.enable()
 
     times_ms = sorted(t / 1e6 for t in times_ns)
     n = len(times_ms)
+    # Already sorted — direct index avoids statistics.median()'s internal
+    # second sort (~10ms on 100k samples).
+    p50 = (
+        0.5 * (times_ms[n // 2 - 1] + times_ms[n // 2])
+        if n % 2 == 0
+        else times_ms[n // 2]
+    )
     return BenchResult(
         name=name,
         n=n,
         min_ms=times_ms[0],
-        p50_ms=statistics.median(times_ms),
+        p50_ms=p50,
         p95_ms=times_ms[min(int(n * 0.95), n - 1)],
         mean_ms=statistics.mean(times_ms),
         stdev_ms=statistics.pstdev(times_ms) if n > 1 else 0.0,

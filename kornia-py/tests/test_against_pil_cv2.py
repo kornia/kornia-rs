@@ -31,8 +31,10 @@ H, W = 1080, 1920
 
 
 @pytest.fixture(scope="module")
-def arr():
-    return np.random.randint(0, 256, (H, W, 3), dtype=np.uint8)
+def arr(rand_u8_1080p):
+    """Seeded 1080p RGB from conftest — deterministic across runs so the
+    perf-gate envelope doesn't flap on a pathological random draw."""
+    return rand_u8_1080p
 
 
 @pytest.fixture(scope="module")

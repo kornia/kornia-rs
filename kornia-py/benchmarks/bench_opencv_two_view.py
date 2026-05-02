@@ -74,7 +74,7 @@ def t_dir_err_deg(t_est: np.ndarray, t_gt: np.ndarray) -> float:
     return float(np.degrees(np.arccos(np.clip(abs(float(t_est @ t_gt)), 0.0, 1.0))))
 
 
-def median_ms(fn, **_legacy) -> float:
+def median_ms(fn, n: int = N_ITERS, warmup: int = N_WARMUP) -> float:
     return _bench_fn(fn).min_ms
 
 

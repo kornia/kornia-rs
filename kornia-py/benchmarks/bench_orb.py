@@ -70,7 +70,7 @@ QUALITY_IMGS = [
 VPI_PARAMS = dict(intensity_threshold=20, max_features_per_level=500, max_pyr_levels=3)
 
 
-def bench(name, fn, **_legacy):
+def bench(name, fn, n=None, warmup=None):
     return compat_print(name, _bench_fn(fn))
 
 

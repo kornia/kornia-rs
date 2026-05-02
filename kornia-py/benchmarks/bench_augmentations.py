@@ -11,7 +11,7 @@ import cv2
 from _bench import bench as _bench_fn, compat_print
 
 
-def bench(name, fn, **_legacy):
+def bench(name, fn, n=None, warmup=None):
     return compat_print(name, _bench_fn(fn))
 
 

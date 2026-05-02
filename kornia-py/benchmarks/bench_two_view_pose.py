@@ -97,7 +97,7 @@ class Result:
         return self.t_detect_ms + self.t_match_ms + self.t_pose_ms
 
 
-def median_ms(fn, **_legacy) -> float:
+def median_ms(fn, n: int = N_ITERS, warmup: int = N_WARMUP) -> float:
     return _bench_fn(fn).min_ms
 
 
