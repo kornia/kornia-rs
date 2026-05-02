@@ -615,9 +615,9 @@ impl PyRandomHorizontalFlip {
     fn __call__(
         &mut self,
         py: Python<'_>,
-        img: PyRef<'_, PyImageApi>,
+        img: Py<PyImageApi>,
         params: Option<&Bound<'_, PyDict>>,
-    ) -> PyResult<PyImageApi> {
+    ) -> PyResult<Py<PyImageApi>> {
         let flip = match params {
             Some(p) => dict_get::<bool>(p, "flip")?,
             None => with_rng(|rng| rng.random::<f64>() < self.p),
@@ -625,13 +625,11 @@ impl PyRandomHorizontalFlip {
 
         self.last_params = Some(dict_single(py, "flip", flip)?);
 
-        if flip {
-            img.flip_horizontal(py)
-        } else {
-            // Pass-through: deep-copy preserves the dtype variant (u8/u16)
-            // through the Image enum without us hand-dispatching here.
-            img.copy(py)
+        if !flip {
+            return Ok(img);
         }
+        let flipped = img.borrow(py).flip_horizontal(py)?;
+        Py::new(py, flipped)
     }
 
     fn __repr__(&self) -> String {
@@ -675,9 +673,9 @@ impl PyRandomVerticalFlip {
     fn __call__(
         &mut self,
         py: Python<'_>,
-        img: PyRef<'_, PyImageApi>,
+        img: Py<PyImageApi>,
         params: Option<&Bound<'_, PyDict>>,
-    ) -> PyResult<PyImageApi> {
+    ) -> PyResult<Py<PyImageApi>> {
         let flip = match params {
             Some(p) => dict_get::<bool>(p, "flip")?,
             None => with_rng(|rng| rng.random::<f64>() < self.p),
@@ -685,12 +683,11 @@ impl PyRandomVerticalFlip {
 
         self.last_params = Some(dict_single(py, "flip", flip)?);
 
-        if flip {
-            img.flip_vertical(py)
-        } else {
-            // Pass-through deep copy — preserves dtype variant.
-            img.copy(py)
+        if !flip {
+            return Ok(img);
         }
+        let flipped = img.borrow(py).flip_vertical(py)?;
+        Py::new(py, flipped)
     }
 
     fn __repr__(&self) -> String {
