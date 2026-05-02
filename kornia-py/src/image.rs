@@ -3,156 +3,13 @@ use pyo3::PyTypeInfo;
 
 use kornia_image::{
     allocator::{CpuAllocator, ForeignAllocator},
-    color_spaces::*,
-    Image, ImageError, ImageLayout, ImageSize, PixelFormat,
+    Image, ImageLayout, ImageSize, PixelFormat,
 };
 use pyo3::prelude::*;
 
 pub type PyImage = Py<PyArray3<u8>>;
 pub type PyImageU16 = Py<PyArray3<u16>>;
 pub type PyImageF32 = Py<PyArray3<f32>>;
-
-// TODO: Replace FromPyImage/ToPyImage with zero-copy ForeignAllocator helpers in IO code.
-// - Write side (FromPyImage): replace with numpy_as_image() for zero-copy reads.
-//   Requires kornia-io write functions to accept generic allocators (not just CpuAllocator).
-// - Read side (ToPyImage): replace with alloc_output_pyarray() + direct decode into PyArray buffer.
-//   Requires kornia-io decoders to accept an output pointer / write into pre-allocated memory.
-// - Also applies to apriltag.rs (one from_pyimage call).
-// These traits are only used by io/ and apriltag.rs — all imgproc bindings already use zero-copy.
-
-/// Trait to convert an image to a PyImage (3D numpy array of u8)
-pub trait ToPyImage {
-    fn to_pyimage(self) -> Result<PyImage, ImageError>;
-}
-
-pub trait ToPyImageU16 {
-    fn to_pyimage_u16(self) -> Result<PyImageU16, ImageError>;
-}
-
-pub trait ToPyImageF32 {
-    fn to_pyimage_f32(self) -> Result<PyImageF32, ImageError>;
-}
-
-macro_rules! impl_image_to_pyarray {
-    ($dtype:ty, $trait:ident, $method:ident, $array_type:ty) => {
-        impl<const C: usize> $trait for Image<$dtype, C, CpuAllocator> {
-            fn $method(self) -> Result<$array_type, ImageError> {
-                Python::attach(|py| unsafe {
-                    let array =
-                        PyArray::<$dtype, _>::new(py, [self.height(), self.width(), C], false);
-                    let contiguous = match self.to_standard_layout(CpuAllocator) {
-                        Ok(c) => c,
-                        Err(_) => {
-                            let expected = self.height() * self.width() * C;
-                            let actual = self.numel();
-                            return Err(ImageError::InvalidChannelShape(actual, expected));
-                        }
-                    };
-                    std::ptr::copy_nonoverlapping(
-                        contiguous.storage.as_ptr(),
-                        array.data(),
-                        contiguous.numel(),
-                    );
-                    Ok(array.unbind())
-                })
-            }
-        }
-    };
-}
-
-impl_image_to_pyarray!(u8, ToPyImage, to_pyimage, PyImage);
-impl_image_to_pyarray!(u16, ToPyImageU16, to_pyimage_u16, PyImageU16);
-impl_image_to_pyarray!(f32, ToPyImageF32, to_pyimage_f32, PyImageF32);
-
-macro_rules! impl_colorspace_to_pyarray {
-    ($trait:ident, $method:ident, $return_type:ty, $($type:ty),+ $(,)?) => {
-        $(
-            impl $trait for $type {
-                fn $method(self) -> Result<$return_type, ImageError> {
-                    self.0.$method()
-                }
-            }
-        )+
-    };
-}
-
-impl_colorspace_to_pyarray!(
-    ToPyImage,
-    to_pyimage,
-    PyImage,
-    Rgb8<CpuAllocator>,
-    Rgba8<CpuAllocator>,
-    Bgr8<CpuAllocator>,
-    Bgra8<CpuAllocator>,
-    Gray8<CpuAllocator>,
-);
-
-impl_colorspace_to_pyarray!(
-    ToPyImageU16,
-    to_pyimage_u16,
-    PyImageU16,
-    Rgb16<CpuAllocator>,
-    Rgba16<CpuAllocator>,
-    Bgr16<CpuAllocator>,
-    Bgra16<CpuAllocator>,
-    Gray16<CpuAllocator>,
-);
-
-impl_colorspace_to_pyarray!(
-    ToPyImageF32,
-    to_pyimage_f32,
-    PyImageF32,
-    Rgbf32<CpuAllocator>,
-    Rgbaf32<CpuAllocator>,
-    Bgrf32<CpuAllocator>,
-    Bgraf32<CpuAllocator>,
-    Grayf32<CpuAllocator>,
-    Hsvf32<CpuAllocator>,
-);
-/// Trait to convert a PyImage (3D numpy array of u8) to an image
-pub trait FromPyImage<const C: usize> {
-    fn from_pyimage(image: PyImage) -> Result<Image<u8, C, CpuAllocator>, ImageError>;
-}
-
-pub trait FromPyImageU16<const C: usize> {
-    fn from_pyimage_u16(image: PyImageU16) -> Result<Image<u16, C, CpuAllocator>, ImageError>;
-}
-
-pub trait FromPyImageF32<const C: usize> {
-    fn from_pyimage_f32(image: PyImageF32) -> Result<Image<f32, C, CpuAllocator>, ImageError>;
-}
-
-macro_rules! impl_pyarray_to_image {
-    ($dtype:ty, $trait:ident, $method:ident, $array_type:ty) => {
-        impl<const C: usize> $trait<C> for Image<$dtype, C, CpuAllocator> {
-            fn $method(image: $array_type) -> Result<Image<$dtype, C, CpuAllocator>, ImageError> {
-                Python::attach(|py| {
-                    let pyarray = image.bind(py);
-
-                    // TODO: we should find a way to avoid copying the data
-                    // Possible solutions:
-                    // - Use a custom ndarray wrapper that does not copy the data
-                    // - Return directly pyarray and use it in the Rust code
-                    let data = match pyarray.to_vec() {
-                        Ok(d) => d,
-                        Err(_) => return Err(ImageError::ImageDataNotContiguous),
-                    };
-
-                    let size = ImageSize {
-                        width: pyarray.shape()[1],
-                        height: pyarray.shape()[0],
-                    };
-
-                    Image::new(size, data, CpuAllocator)
-                })
-            }
-        }
-    };
-}
-
-impl_pyarray_to_image!(u8, FromPyImage, from_pyimage, PyImage);
-impl_pyarray_to_image!(u16, FromPyImageU16, from_pyimage_u16, PyImageU16);
-impl_pyarray_to_image!(f32, FromPyImageF32, from_pyimage_f32, PyImageF32);
 
 /// Represents the dimensions of an image.
 ///
@@ -1267,7 +1124,7 @@ impl PyImageApi {
 
         // JPEG: always 8-bit per channel.
         if data.len() >= 2 && data[0] == 0xff && data[1] == 0xd8 {
-            let arr = match crate::io::jpegturbo::decode_image_jpegturbo(data, native_mode) {
+            let arr = match crate::io::jpegturbo::decode_image_jpegturbo(py, data, native_mode) {
                 Ok(a) => a,
                 Err(_) => crate::io::jpeg::decode_image_jpeg(py, data)?,
             };

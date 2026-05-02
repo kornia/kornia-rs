@@ -143,64 +143,90 @@ impl JpegTurboDecoder {
     }
 
     /// Decodes the given JPEG data as RGB8 image.
-    ///
-    /// # Arguments
-    ///
-    /// * `jpeg_data` - The JPEG data to decode.
-    ///
-    /// # Returns
-    ///
-    /// The decoded data as Image<u8, 3>.
     pub fn decode_rgb8(
         &self,
         jpeg_data: &[u8],
     ) -> Result<Image<u8, 3, CpuAllocator>, JpegTurboError> {
-        self.decode(jpeg_data, turbojpeg::PixelFormat::RGB)
+        let image_size = self.read_header(jpeg_data)?;
+        let mut dst = Image::from_size_val(image_size, 0u8, CpuAllocator)?;
+        self.decode_rgb8_into(jpeg_data, &mut dst)?;
+        Ok(dst)
     }
 
     /// Decodes the given JPEG data as Gray/Mono8 image.
-    ///
-    /// # Arguments
-    ///
-    /// * `jpeg_data` - The JPEG data to decode.
-    ///
-    /// # Returns
-    ///
-    /// The decoded data as Image<u8, 1>.
     pub fn decode_gray8(
         &self,
         jpeg_data: &[u8],
     ) -> Result<Image<u8, 1, CpuAllocator>, JpegTurboError> {
-        self.decode(jpeg_data, turbojpeg::PixelFormat::GRAY)
+        let image_size = self.read_header(jpeg_data)?;
+        let mut dst = Image::from_size_val(image_size, 0u8, CpuAllocator)?;
+        self.decode_gray8_into(jpeg_data, &mut dst)?;
+        Ok(dst)
     }
 
-    fn decode<const C: usize>(
+    /// Decodes JPEG bytes as RGB8 into a pre-allocated buffer.
+    pub fn decode_rgb8_into<A: ImageAllocator>(
         &self,
         jpeg_data: &[u8],
+        dst: &mut Image<u8, 3, A>,
+    ) -> Result<(), JpegTurboError> {
+        let size = dst.size();
+        self.decode_into(
+            jpeg_data,
+            dst.as_slice_mut(),
+            size,
+            turbojpeg::PixelFormat::RGB,
+        )
+    }
+
+    /// Decodes JPEG bytes as Gray/Mono8 into a pre-allocated buffer.
+    pub fn decode_gray8_into<A: ImageAllocator>(
+        &self,
+        jpeg_data: &[u8],
+        dst: &mut Image<u8, 1, A>,
+    ) -> Result<(), JpegTurboError> {
+        let size = dst.size();
+        self.decode_into(
+            jpeg_data,
+            dst.as_slice_mut(),
+            size,
+            turbojpeg::PixelFormat::GRAY,
+        )
+    }
+
+    fn decode_into(
+        &self,
+        jpeg_data: &[u8],
+        pixels: &mut [u8],
+        image_size: ImageSize,
         format: turbojpeg::PixelFormat,
-    ) -> Result<Image<u8, C, CpuAllocator>, JpegTurboError> {
-        // get the image size to allocate th data storage
-        let image_size = self.read_header(jpeg_data)?;
+    ) -> Result<(), JpegTurboError> {
+        let header_size = self.read_header(jpeg_data)?;
+        if header_size != image_size {
+            return Err(JpegTurboError::ImageCreationError(
+                ImageError::InvalidImageSize(
+                    header_size.width,
+                    header_size.height,
+                    image_size.width,
+                    image_size.height,
+                ),
+            ));
+        }
 
-        // prepare a storage for the raw pixel data
-        let mut pixels = vec![0u8; image_size.height * image_size.width * C];
-
-        // allocate image container
+        let pitch = format.size() * image_size.width;
         let buf = turbojpeg::Image {
-            pixels: pixels.as_mut_slice(),
+            pixels,
             width: image_size.width,
-            pitch: C * image_size.width, // we use no padding between rows
+            pitch,
             height: image_size.height,
             format,
         };
 
-        // decompress the JPEG data
         self.0
             .lock()
             .map_err(|_| JpegTurboError::MutexPoisoned)?
             .decompress(jpeg_data, buf)?;
-
-        Ok(Image::new(image_size, pixels, CpuAllocator)?)
+        Ok(())
     }
 }
 

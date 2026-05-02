@@ -1,7 +1,6 @@
-use crate::image::{numpy_as_image, to_pyerr, PyImage, PyImageSize, ToPyImage};
-use kornia_io::jpegturbo::{
-    read_image_jpegturbo_rgb8, write_image_jpegturbo_rgb8, JpegTurboDecoder, JpegTurboEncoder,
-};
+use crate::image::{alloc_output_pyarray, numpy_as_image, to_pyerr, PyImage, PyImageSize};
+use kornia_image::color_spaces::{Gray8, Rgb8};
+use kornia_io::jpegturbo::{write_image_jpegturbo_rgb8, JpegTurboDecoder, JpegTurboEncoder};
 use pyo3::prelude::*;
 
 /// Hardware-accelerated JPEG decoder using libjpeg-turbo.
@@ -49,18 +48,14 @@ impl PyImageDecoder {
     ///
     /// # Exceptions
     /// * `Exception`: If decoding fails.
-    pub fn decode(&self, jpeg_data: &[u8]) -> PyResult<PyImage> {
-        let image = self
-            .0
-            .decode_rgb8(jpeg_data)
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-        let pyimage = image.to_pyimage().map_err(|e| {
-            PyErr::new::<pyo3::exceptions::PyException, _>(format!(
-                "failed to convert image: {}",
-                e
-            ))
-        })?;
-        Ok(pyimage)
+    pub fn decode(&self, py: Python<'_>, jpeg_data: &[u8]) -> PyResult<PyImage> {
+        let size = self.0.read_header(jpeg_data).map_err(to_pyerr)?;
+        let (dst, out) = unsafe { alloc_output_pyarray::<3>(py, size)? };
+        let mut wrapped = Rgb8(dst);
+        self.0
+            .decode_rgb8_into(jpeg_data, &mut wrapped)
+            .map_err(to_pyerr)?;
+        Ok(out)
     }
 
     /// Decodes a JPEG image into an 8-bit grayscale tensor.
@@ -73,18 +68,14 @@ impl PyImageDecoder {
     ///
     /// # Exceptions
     /// * `Exception`: If decoding fails.
-    pub fn decode_gray8(&self, jpeg_data: &[u8]) -> PyResult<PyImage> {
-        let image = self
-            .0
-            .decode_gray8(jpeg_data)
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-        let pyimage = image.to_pyimage().map_err(|e| {
-            PyErr::new::<pyo3::exceptions::PyException, _>(format!(
-                "failed to convert image: {}",
-                e
-            ))
-        })?;
-        Ok(pyimage)
+    pub fn decode_gray8(&self, py: Python<'_>, jpeg_data: &[u8]) -> PyResult<PyImage> {
+        let size = self.0.read_header(jpeg_data).map_err(to_pyerr)?;
+        let (dst, out) = unsafe { alloc_output_pyarray::<1>(py, size)? };
+        let mut wrapped = Gray8(dst);
+        self.0
+            .decode_gray8_into(jpeg_data, &mut wrapped)
+            .map_err(to_pyerr)?;
+        Ok(out)
     }
 }
 
@@ -150,13 +141,17 @@ impl PyImageEncoder {
 ///
 /// *Python-only helper; not part of kornia-io's Rust API.*
 #[pyfunction]
-pub fn read_image_jpegturbo(file_path: &str) -> PyResult<PyImage> {
-    let image = read_image_jpegturbo_rgb8(file_path)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyFileExistsError, _>(format!("{}", e)))?;
-    let pyimage = image.to_pyimage().map_err(|e| {
-        PyErr::new::<pyo3::exceptions::PyException, _>(format!("failed to convert image: {}", e))
-    })?;
-    Ok(pyimage)
+pub fn read_image_jpegturbo(py: Python<'_>, file_path: &str) -> PyResult<PyImage> {
+    let bytes = std::fs::read(file_path)
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e.to_string()))?;
+    let decoder = JpegTurboDecoder::new().map_err(to_pyerr)?;
+    let size = decoder.read_header(&bytes).map_err(to_pyerr)?;
+    let (dst, out) = unsafe { alloc_output_pyarray::<3>(py, size)? };
+    let mut wrapped = Rgb8(dst);
+    decoder
+        .decode_rgb8_into(&bytes, &mut wrapped)
+        .map_err(to_pyerr)?;
+    Ok(out)
 }
 
 /// Writes an image tensor to a JPEG file using libjpeg-turbo.
@@ -198,42 +193,28 @@ pub fn write_image_jpegturbo(
 ///
 /// *Python-only helper; not part of kornia-io's Rust API.*
 #[pyfunction]
-pub fn decode_image_jpegturbo(jpeg_data: &[u8], mode: &str) -> PyResult<PyImage> {
-    let image = match mode {
-        "rgb" => JpegTurboDecoder::new()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?
-            .decode_rgb8(jpeg_data)
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?
-            .to_pyimage()
-            .map_err(|e| {
-                PyErr::new::<pyo3::exceptions::PyException, _>(format!(
-                    "failed to convert image: {}",
-                    e
-                ))
-            })?,
-        "mono" => JpegTurboDecoder::new()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?
-            .decode_gray8(jpeg_data)
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?
-            .to_pyimage()
-            .map_err(|e| {
-                PyErr::new::<pyo3::exceptions::PyException, _>(format!(
-                    "failed to convert image: {}",
-                    e
-                ))
-            })?,
-        _ => {
-            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                String::from(
-                    r#"\
-        The following are the supported values of mode:
-        1) "rgb" -> 8-bit RGB
-        2) "mono" -> 8-bit Monochrome
-        "#,
-                ),
-            ))
+pub fn decode_image_jpegturbo(py: Python<'_>, jpeg_data: &[u8], mode: &str) -> PyResult<PyImage> {
+    let decoder = JpegTurboDecoder::new().map_err(to_pyerr)?;
+    let size = decoder.read_header(jpeg_data).map_err(to_pyerr)?;
+    match mode {
+        "rgb" => {
+            let (dst, out) = unsafe { alloc_output_pyarray::<3>(py, size)? };
+            let mut wrapped = Rgb8(dst);
+            decoder
+                .decode_rgb8_into(jpeg_data, &mut wrapped)
+                .map_err(to_pyerr)?;
+            Ok(out)
         }
-    };
-
-    Ok(image)
+        "mono" => {
+            let (dst, out) = unsafe { alloc_output_pyarray::<1>(py, size)? };
+            let mut wrapped = Gray8(dst);
+            decoder
+                .decode_gray8_into(jpeg_data, &mut wrapped)
+                .map_err(to_pyerr)?;
+            Ok(out)
+        }
+        _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "The following are the supported values of mode:\n  1) \"rgb\"  -> 8-bit RGB\n  2) \"mono\" -> 8-bit Monochrome",
+        )),
+    }
 }
