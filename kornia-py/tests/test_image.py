@@ -982,13 +982,14 @@ class TestEncode:
             img.encode("jpeg")
 
     def test_u16_image_imgproc_raises_clear_error(self):
-        # 8-bit-only methods raise NotImplementedError on u16 with a hint.
+        # Math-heavy methods raise NotImplementedError on u16 with a hint;
+        # dtype-trivial ops (flip_*, crop) work natively on u16.
         depth = np.full((8, 8, 1), 1500, dtype=np.uint16)
         img = Image.fromarray(depth)
         with pytest.raises(NotImplementedError, match="uint16"):
             img.resize(4, 4)
         with pytest.raises(NotImplementedError, match="uint16"):
-            img.flip_horizontal()
+            img.gaussian_blur()
         with pytest.raises(NotImplementedError, match="uint16"):
             img.adjust_brightness(0.5)
 

@@ -918,14 +918,20 @@ fn value_err<M: Into<String>>(msg: M) -> PyErr {
     PyErr::new::<pyo3::exceptions::PyValueError, _>(msg.into())
 }
 
+enum FlipDir {
+    Horizontal,
+    Vertical,
+}
+
 /// Shared error for 8-bit-only methods called on a 16-bit Image. We surface
 /// a clear remediation path so users hit a known gap, not a mystery type
 /// mismatch deep inside an imgproc kernel.
 fn u16_imgproc_unsupported(method: &str) -> PyErr {
     PyErr::new::<pyo3::exceptions::PyNotImplementedError, _>(format!(
         "Image.{}() is not yet implemented for uint16 images. \
-         Convert to uint8 first via `np.array(img).astype('uint8')` and \
-         re-wrap with `Image.fromarray()`.",
+         Convert to uint8 first via `img.convert(\"L\")` (or \"RGB\" / \
+         \"RGBA\" for 3/4 channels). flip_horizontal/flip_vertical/crop \
+         already work on uint16.",
         method
     ))
 }
@@ -981,17 +987,81 @@ impl PyImageApi {
         width: usize,
         height: usize,
     ) -> PyResult<Self> {
-        let data = self.require_u8("crop")?;
-        let arr = data.bind(py);
-        let c = arr.shape()[2];
-        if c == 3 {
-            let result = crate::crop::crop(py, data.clone_ref(py), x, y, width, height)?;
-            Ok(Self::wrap(py, result, Some(self.mode.clone())))
-        } else {
-            let (src, _, src_w, _) = pyarray_data(arr);
-            let out = crop_generic(src, src_w, x, y, width, height, c);
-            Ok(self.wrap_vec(py, out, height, width, c))
+        match &self.data {
+            ImageData::U8(_) => {
+                let data = self.require_u8("crop")?;
+                let arr = data.bind(py);
+                let c = arr.shape()[2];
+                if c == 3 {
+                    let result = crate::crop::crop(py, data.clone_ref(py), x, y, width, height)?;
+                    Ok(Self::wrap(py, result, Some(self.mode.clone())))
+                } else {
+                    let (src, _, src_w, _) = pyarray_data(arr);
+                    let out = crop_generic(src, src_w, x, y, width, height, c);
+                    Ok(self.wrap_vec(py, out, height, width, c))
+                }
+            }
+            ImageData::U16(a) => {
+                let arr = a.bind(py);
+                let s = arr.shape();
+                let (src_h, src_w, c) = (s[0], s[1], s[2]);
+                if y + height > src_h || x + width > src_w {
+                    return Err(value_err(format!(
+                        "crop: box ({}, {}, {}x{}) out of bounds for ({}, {}, {})",
+                        x, y, width, height, src_h, src_w, c
+                    )));
+                }
+                let src = unsafe { std::slice::from_raw_parts(arr.data(), src_h * src_w * c) };
+                let out_arr = unsafe { PyArray::<u16, _>::new(py, [height, width, c], false) };
+                let dst =
+                    unsafe { std::slice::from_raw_parts_mut(out_arr.data(), height * width * c) };
+                for row in 0..height {
+                    let s_off = ((y + row) * src_w + x) * c;
+                    let d_off = row * width * c;
+                    dst[d_off..d_off + width * c].copy_from_slice(&src[s_off..s_off + width * c]);
+                }
+                Ok(Self::wrap_u16(
+                    py,
+                    out_arr.unbind(),
+                    Some(self.mode.clone()),
+                ))
+            }
         }
+    }
+
+    /// u16 generic flip helper — uses the dtype-trivial kornia_imgproc kernel
+    /// directly (no SIMD-fast u8-only path).
+    fn flip_u16(&self, py: Python<'_>, dir: FlipDir) -> PyResult<Self> {
+        let a = match &self.data {
+            ImageData::U16(a) => a,
+            ImageData::U8(_) => return self.copy(py),
+        };
+        let arr = a.bind(py);
+        let s = arr.shape();
+        let (h, w, c) = (s[0], s[1], s[2]);
+        let src = unsafe { std::slice::from_raw_parts(arr.data(), h * w * c) };
+        let out = unsafe { PyArray::<u16, _>::new(py, [h, w, c], false) };
+        let dst = unsafe { std::slice::from_raw_parts_mut(out.data(), h * w * c) };
+        match dir {
+            FlipDir::Horizontal => {
+                for row in 0..h {
+                    let row_off = row * w * c;
+                    for col in 0..w {
+                        let s_off = row_off + col * c;
+                        let d_off = row_off + (w - 1 - col) * c;
+                        dst[d_off..d_off + c].copy_from_slice(&src[s_off..s_off + c]);
+                    }
+                }
+            }
+            FlipDir::Vertical => {
+                for row in 0..h {
+                    let s_off = row * w * c;
+                    let d_off = (h - 1 - row) * w * c;
+                    dst[d_off..d_off + w * c].copy_from_slice(&src[s_off..s_off + w * c]);
+                }
+            }
+        }
+        Ok(Self::wrap_u16(py, out.unbind(), Some(self.mode.clone())))
     }
 
     /// Returns the u8 backing array, or a `NotImplementedError` if the Image
@@ -1817,33 +1887,43 @@ impl PyImageApi {
         }
     }
 
-    /// Flip image horizontally. 8-bit only.
+    /// Flip image horizontally. Supports 8-bit and 16-bit Images.
     pub fn flip_horizontal(&self, py: Python<'_>) -> PyResult<Self> {
-        let data = self.require_u8("flip_horizontal")?;
-        let arr = data.bind(py);
-        let c = arr.shape()[2];
-        if c == 3 {
-            let result = crate::flip::horizontal_flip(py, data.clone_ref(py))?;
-            Ok(Self::wrap(py, result, Some(self.mode.clone())))
-        } else {
-            let (src, h, w, _) = pyarray_data(arr);
-            let out = flip_h_generic(src, h, w, c);
-            Ok(self.wrap_vec(py, out, h, w, c))
+        match &self.data {
+            ImageData::U8(_) => {
+                let data = self.require_u8("flip_horizontal")?;
+                let arr = data.bind(py);
+                let c = arr.shape()[2];
+                if c == 3 {
+                    let result = crate::flip::horizontal_flip(py, data.clone_ref(py))?;
+                    Ok(Self::wrap(py, result, Some(self.mode.clone())))
+                } else {
+                    let (src, h, w, _) = pyarray_data(arr);
+                    let out = flip_h_generic(src, h, w, c);
+                    Ok(self.wrap_vec(py, out, h, w, c))
+                }
+            }
+            ImageData::U16(_) => self.flip_u16(py, FlipDir::Horizontal),
         }
     }
 
-    /// Flip image vertically. 8-bit only.
+    /// Flip image vertically. Supports 8-bit and 16-bit Images.
     pub fn flip_vertical(&self, py: Python<'_>) -> PyResult<Self> {
-        let data = self.require_u8("flip_vertical")?;
-        let arr = data.bind(py);
-        let c = arr.shape()[2];
-        if c == 3 {
-            let result = crate::flip::vertical_flip(py, data.clone_ref(py))?;
-            Ok(Self::wrap(py, result, Some(self.mode.clone())))
-        } else {
-            let (src, h, w, _) = pyarray_data(arr);
-            let out = flip_v_generic(src, h, w, c);
-            Ok(self.wrap_vec(py, out, h, w, c))
+        match &self.data {
+            ImageData::U8(_) => {
+                let data = self.require_u8("flip_vertical")?;
+                let arr = data.bind(py);
+                let c = arr.shape()[2];
+                if c == 3 {
+                    let result = crate::flip::vertical_flip(py, data.clone_ref(py))?;
+                    Ok(Self::wrap(py, result, Some(self.mode.clone())))
+                } else {
+                    let (src, h, w, _) = pyarray_data(arr);
+                    let out = flip_v_generic(src, h, w, c);
+                    Ok(self.wrap_vec(py, out, h, w, c))
+                }
+            }
+            ImageData::U16(_) => self.flip_u16(py, FlipDir::Vertical),
         }
     }
 
