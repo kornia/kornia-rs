@@ -357,6 +357,10 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
         &io_mod
     )?)?;
     io_mod.add_function(wrap_pyfunction!(
+        io::jpegturbo::encode_image_jpegturbo,
+        &io_mod
+    )?)?;
+    io_mod.add_function(wrap_pyfunction!(
         io::jpegturbo::read_image_jpegturbo,
         &io_mod
     )?)?;

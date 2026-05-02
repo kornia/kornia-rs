@@ -127,6 +127,18 @@ impl PyImageEncoder {
     }
 }
 
+/// Encodes an RGB u8 image to JPEG bytes using libjpeg-turbo.
+///
+/// Drop-in faster replacement for ``encode_image_jpeg`` (~3-4× faster on
+/// 1080p RGB on aarch64). Returns ``Vec<u8>`` with the JPEG-encoded bytes.
+#[pyfunction]
+pub fn encode_image_jpegturbo(py: Python<'_>, image: PyImage, quality: i32) -> PyResult<Vec<u8>> {
+    let image = unsafe { numpy_as_image::<3>(py, &image)? };
+    let encoder = JpegTurboEncoder::new().map_err(to_pyerr)?;
+    encoder.set_quality(quality).map_err(to_pyerr)?;
+    encoder.encode_rgb8(&image).map_err(to_pyerr)
+}
+
 /// Reads an 8-bit RGB JPEG image from a file path using libjpeg-turbo.
 ///
 /// # Arguments

@@ -1235,7 +1235,17 @@ impl PyImageApi {
                     ImageData::U8(a) => a.clone_ref(py),
                     _ => unreachable!("u16/f32 rejected above"),
                 };
-                crate::io::jpeg::encode_image_jpeg(py, arr, quality)
+                // libjpeg-turbo first (~3-4× faster than zune-jpeg on aarch64);
+                // fall back to zune-jpeg only if the libjpeg-turbo init fails
+                // — belt-and-suspenders for builds without the turbojpeg feature.
+                match crate::io::jpegturbo::encode_image_jpegturbo(
+                    py,
+                    arr.clone_ref(py),
+                    quality as i32,
+                ) {
+                    Ok(b) => Ok(b),
+                    Err(_) => crate::io::jpeg::encode_image_jpeg(py, arr, quality),
+                }
             }
             "png" => {
                 let mut buffer = Vec::new();
