@@ -1806,7 +1806,7 @@ impl PyImageApi {
     /// ``"TIFF"``, ``"WEBP"``). ``None`` for in-memory-constructed Images.
     #[getter]
     fn format(&self) -> Option<&str> {
-        self.format.as_deref()
+        self.format
     }
 
     #[getter]
@@ -2009,7 +2009,7 @@ impl PyImageApi {
         Ok(Self {
             data: new_data,
             mode: self.mode.clone(),
-            format: self.format.clone(),
+            format: self.format,
         })
     }
 

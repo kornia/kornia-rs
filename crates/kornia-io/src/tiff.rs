@@ -554,9 +554,9 @@ where
     Ok(())
 }
 
-/// Reserve approximate uncompressed-TIFF capacity in `buffer` (raw bytes
-/// + ~1 KB header) so the inner `Cursor<&mut Vec<u8>>` doesn't trigger
-/// repeated `Vec` doublings during `TiffEncoder::write_image`.
+/// Reserve approximate uncompressed-TIFF capacity in `buffer` (raw bytes plus
+/// ~1 KB header) so the inner `Cursor<&mut Vec<u8>>` doesn't trigger repeated
+/// `Vec` doublings during `TiffEncoder::write_image`.
 fn reserve_tiff<T: Sized>(buffer: &mut Vec<u8>, slice_len: usize) {
     buffer.reserve(slice_len * std::mem::size_of::<T>() + 1024);
 }

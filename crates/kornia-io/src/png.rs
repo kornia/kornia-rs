@@ -682,7 +682,7 @@ mod tests {
     fn encode_decode_png_rgb8_roundtrip() -> Result<(), IoError> {
         let src = read_image_png_rgb8("../../tests/data/dog-rgb8.png")?;
         let mut buffer = Vec::new();
-        encode_image_png_rgb8(&src, &mut buffer)?;
+        encode_image_png_rgb8(&src, &mut buffer, None)?;
         assert!(!buffer.is_empty());
         // PNG magic header
         assert_eq!(&buffer[..8], b"\x89PNG\r\n\x1a\n");
@@ -704,7 +704,7 @@ mod tests {
         let src = Rgba8::from_size_vec([16, 16].into(), data, CpuAllocator)?;
 
         let mut buffer = Vec::new();
-        encode_image_png_rgba8(&src, &mut buffer)?;
+        encode_image_png_rgba8(&src, &mut buffer, None)?;
         assert_eq!(&buffer[..8], b"\x89PNG\r\n\x1a\n");
 
         let mut decoded = Rgba8::from_size_val(src.size(), 0, CpuAllocator)?;
@@ -717,7 +717,7 @@ mod tests {
     fn encode_decode_png_gray8_roundtrip() -> Result<(), IoError> {
         let src = read_image_png_mono8("../../tests/data/dog.png")?;
         let mut buffer = Vec::new();
-        encode_image_png_gray8(&src, &mut buffer)?;
+        encode_image_png_gray8(&src, &mut buffer, None)?;
         assert_eq!(&buffer[..8], b"\x89PNG\r\n\x1a\n");
 
         let mut decoded = Gray8::from_size_val(src.size(), 0, CpuAllocator)?;
@@ -730,7 +730,7 @@ mod tests {
     fn encode_decode_png_rgb16_roundtrip() -> Result<(), IoError> {
         let src = read_image_png_rgb16("../../tests/data/rgb16.png")?;
         let mut buffer = Vec::new();
-        encode_image_png_rgb16(&src, &mut buffer)?;
+        encode_image_png_rgb16(&src, &mut buffer, None)?;
         assert_eq!(&buffer[..8], b"\x89PNG\r\n\x1a\n");
 
         let mut decoded = Rgb16::from_size_val(src.size(), 0, CpuAllocator)?;
@@ -758,7 +758,7 @@ mod tests {
         let src = Gray16::from_size_vec([w, h].into(), data, CpuAllocator)?;
 
         let mut buffer = Vec::new();
-        encode_image_png_gray16(&src, &mut buffer)?;
+        encode_image_png_gray16(&src, &mut buffer, None)?;
         assert_eq!(&buffer[..8], b"\x89PNG\r\n\x1a\n");
         // Lossless u16 round-trip is the whole point of this codec for depth.
         let mut decoded = Gray16::from_size_val(src.size(), 0, CpuAllocator)?;
@@ -775,11 +775,11 @@ mod tests {
         let src = read_image_png_rgb8("../../tests/data/dog-rgb8.png")?;
         let mut buffer = Vec::with_capacity(64 * 1024);
 
-        encode_image_png_rgb8(&src, &mut buffer)?;
+        encode_image_png_rgb8(&src, &mut buffer, None)?;
         let cap_after_first = buffer.capacity();
 
         buffer.clear();
-        encode_image_png_rgb8(&src, &mut buffer)?;
+        encode_image_png_rgb8(&src, &mut buffer, None)?;
 
         // Capacity should not have grown on the second encode (allocation reuse).
         assert!(buffer.capacity() <= cap_after_first.max(buffer.len()));
