@@ -1074,8 +1074,74 @@ impl PyImageApi {
                 };
                 Ok(buffer)
             }
+            "webp" => {
+                let mut buffer = Vec::new();
+                match (&self.data, c) {
+                    (ImageData::U8(a), 3) => {
+                        let img = unsafe { numpy_as_image::<3>(py, a)? };
+                        kornia_io::webp::encode_image_webp_rgb8(&img, &mut buffer)
+                            .map_err(to_pyerr)?;
+                    }
+                    (ImageData::U8(a), 4) => {
+                        let img = unsafe { numpy_as_image::<4>(py, a)? };
+                        kornia_io::webp::encode_image_webp_rgba8(&img, &mut buffer)
+                            .map_err(to_pyerr)?;
+                    }
+                    (ImageData::U8(a), 1) => {
+                        let img = unsafe { numpy_as_image::<1>(py, a)? };
+                        kornia_io::webp::encode_image_webp_gray8(&img, &mut buffer)
+                            .map_err(to_pyerr)?;
+                    }
+                    (ImageData::U16(_), _) => {
+                        return Err(value_err(
+                            "WebP encode requires uint8; convert via img.convert('RGB') first",
+                        ))
+                    }
+                    _ => {
+                        return Err(value_err(format!(
+                            "WebP requires 1/3/4-channel u8 image, got {} channels (dtype={})",
+                            c,
+                            self.data.dtype_name()
+                        )))
+                    }
+                };
+                Ok(buffer)
+            }
+            "tiff" | "tif" => {
+                let mut buffer = Vec::new();
+                match (&self.data, c) {
+                    (ImageData::U8(a), 3) => {
+                        let img = unsafe { numpy_as_image::<3>(py, a)? };
+                        kornia_io::tiff::encode_image_tiff_rgb8(&img, &mut buffer)
+                            .map_err(to_pyerr)?;
+                    }
+                    (ImageData::U8(a), 1) => {
+                        let img = unsafe { numpy_as_image::<1>(py, a)? };
+                        kornia_io::tiff::encode_image_tiff_mono8(&img, &mut buffer)
+                            .map_err(to_pyerr)?;
+                    }
+                    (ImageData::U16(a), 3) => {
+                        let img = unsafe { numpy_as_image_u16::<3>(py, a)? };
+                        kornia_io::tiff::encode_image_tiff_rgb16(&img, &mut buffer)
+                            .map_err(to_pyerr)?;
+                    }
+                    (ImageData::U16(a), 1) => {
+                        let img = unsafe { numpy_as_image_u16::<1>(py, a)? };
+                        kornia_io::tiff::encode_image_tiff_mono16(&img, &mut buffer)
+                            .map_err(to_pyerr)?;
+                    }
+                    _ => {
+                        return Err(value_err(format!(
+                            "TIFF requires 1 or 3-channel image, got {} channels (dtype={})",
+                            c,
+                            self.data.dtype_name()
+                        )))
+                    }
+                };
+                Ok(buffer)
+            }
             other => Err(value_err(format!(
-                "Unsupported format {:?}. Supported: \"jpeg\"/\"jpg\", \"png\"",
+                "Unsupported format {:?}. Supported: \"jpeg\"/\"jpg\", \"png\", \"webp\", \"tiff\"/\"tif\"",
                 other
             ))),
         }
@@ -1349,7 +1415,100 @@ impl PyImageApi {
             };
         }
 
-        Err(value_err("Unsupported image format: not JPEG or PNG"))
+        if data.len() >= 12 && &data[0..4] == b"RIFF" && &data[8..12] == b"WEBP" {
+            let layout = kornia_io::webp::decode_image_webp_layout(data)
+                .map_err(|e| value_err(format!("decode: invalid WebP: {}", e)))?;
+            let size = layout.image_size;
+            return match mode {
+                "RGB" => {
+                    let (dst, out) = unsafe { alloc_output_pyarray::<3>(py, size)? };
+                    let mut wrapped = kornia_image::color_spaces::Rgb8(dst);
+                    kornia_io::webp::decode_image_webp_rgb8(data, &mut wrapped)
+                        .map_err(to_pyerr)?;
+                    Ok(Self::wrap(py, out, Some(mode.to_string())).with_format("WEBP"))
+                }
+                "RGBA" => {
+                    let (dst, out) = unsafe { alloc_output_pyarray::<4>(py, size)? };
+                    let mut wrapped = kornia_image::color_spaces::Rgba8(dst);
+                    kornia_io::webp::decode_image_webp_rgba8(data, &mut wrapped)
+                        .map_err(to_pyerr)?;
+                    Ok(Self::wrap(py, out, Some(mode.to_string())).with_format("WEBP"))
+                }
+                "L" => {
+                    let (dst, out) = unsafe { alloc_output_pyarray::<1>(py, size)? };
+                    let mut wrapped = kornia_image::color_spaces::Gray8(dst);
+                    kornia_io::webp::decode_image_webp_gray8(data, &mut wrapped)
+                        .map_err(to_pyerr)?;
+                    Ok(Self::wrap(py, out, Some(mode.to_string())).with_format("WEBP"))
+                }
+                _ => unreachable!("native_mode validated above"),
+            };
+        }
+
+        let is_tiff = data.len() >= 4 && (data.starts_with(b"II*\0") || data.starts_with(b"MM\0*"));
+        if is_tiff {
+            let layout = kornia_io::tiff::decode_image_tiff_layout(data)
+                .map_err(|e| value_err(format!("decode: invalid TIFF: {}", e)))?;
+            let size = layout.image_size;
+            // Choose the right typed decoder based on the file's actual
+            // pixel format + the user-requested mode (which fixes channels).
+            let want_channels = match mode {
+                "RGB" => 3,
+                "RGBA" => 4,
+                "L" => 1,
+                _ => unreachable!("native_mode validated above"),
+            };
+            return match layout.pixel_format {
+                PixelFormat::U8 => {
+                    if want_channels == 3 {
+                        let (dst, out) = unsafe { alloc_output_pyarray::<3>(py, size)? };
+                        let mut wrapped = kornia_image::color_spaces::Rgb8(dst);
+                        kornia_io::tiff::decode_image_tiff_rgb8(data, &mut wrapped)
+                            .map_err(to_pyerr)?;
+                        Ok(Self::wrap(py, out, Some(mode.to_string())).with_format("TIFF"))
+                    } else if want_channels == 1 {
+                        let (dst, out) = unsafe { alloc_output_pyarray::<1>(py, size)? };
+                        let mut wrapped = kornia_image::color_spaces::Gray8(dst);
+                        kornia_io::tiff::decode_image_tiff_mono8(data, &mut wrapped)
+                            .map_err(to_pyerr)?;
+                        Ok(Self::wrap(py, out, Some(mode.to_string())).with_format("TIFF"))
+                    } else {
+                        Err(value_err(format!(
+                            "decode: TIFF u8 with mode={:?} not supported (channels={})",
+                            mode, want_channels
+                        )))
+                    }
+                }
+                PixelFormat::U16 => {
+                    let mode_u16 = mode_from_channels(want_channels, true);
+                    if want_channels == 3 {
+                        let (dst, out) = unsafe { alloc_output_pyarray_u16::<3>(py, size)? };
+                        let mut wrapped = kornia_image::color_spaces::Rgb16(dst);
+                        kornia_io::tiff::decode_image_tiff_rgb16(data, &mut wrapped)
+                            .map_err(to_pyerr)?;
+                        Ok(Self::wrap_u16(py, out, Some(mode_u16)).with_format("TIFF"))
+                    } else if want_channels == 1 {
+                        let (dst, out) = unsafe { alloc_output_pyarray_u16::<1>(py, size)? };
+                        let mut wrapped = kornia_image::color_spaces::Gray16(dst);
+                        kornia_io::tiff::decode_image_tiff_mono16(data, &mut wrapped)
+                            .map_err(to_pyerr)?;
+                        Ok(Self::wrap_u16(py, out, Some(mode_u16)).with_format("TIFF"))
+                    } else {
+                        Err(value_err(format!(
+                            "decode: TIFF u16 with mode={:?} not supported (channels={})",
+                            mode, want_channels
+                        )))
+                    }
+                }
+                PixelFormat::F32 => Err(value_err(
+                    "decode: float32 TIFF must use kornia_rs.io.read_image_tiff_f32",
+                )),
+            };
+        }
+
+        Err(value_err(
+            "Unsupported image format: not JPEG, PNG, WebP, or TIFF",
+        ))
     }
 
     /// Unified entry point — accepts a path, a bytes/bytearray buffer, or any

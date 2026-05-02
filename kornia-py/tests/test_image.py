@@ -922,7 +922,7 @@ class TestEncode:
         arr = np.zeros((4, 4, 3), dtype=np.uint8)
         img = Image.frombuffer(arr)
         with pytest.raises(ValueError, match="Unsupported"):
-            img.encode("webp")
+            img.encode("bmp")
 
     def test_encode_jpeg_rejects_grayscale(self):
         # JPEG path requires 3-channel; mirror the `save` constraint.

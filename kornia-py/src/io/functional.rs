@@ -8,6 +8,7 @@ use kornia_image::{
 use kornia_io::jpeg as jpeg_io;
 use kornia_io::png as png_io;
 use kornia_io::tiff as tiff_io;
+use kornia_io::webp as webp_io;
 use pyo3::prelude::*;
 use std::fs;
 use std::path::Path;
@@ -71,8 +72,9 @@ pub fn read_image(py: Python<'_>, file_path: Bound<'_, PyAny>) -> PyResult<Py<Py
         "png" => read_image_png_dispatcher(py, path),
         "tiff" | "tif" => read_image_tiff_dispatcher(py, path),
         "jpg" | "jpeg" => read_image_jpeg_dispatcher(py, path),
+        "webp" => read_image_webp_dispatcher(py, path),
         _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-            "Unsupported file format: {}. Supported formats: png, tiff, jpeg",
+            "Unsupported file format: {}. Supported formats: png, tiff, jpeg, webp",
             extension
         ))),
     }
@@ -176,6 +178,37 @@ fn read_image_tiff_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<P
         (channels, pixel_format) => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
             "Unsupported TIFF format: {} channels with pixel format {:?}",
             channels, pixel_format
+        ))),
+    }
+}
+
+/// Internal dispatcher for decoding WebP images.
+fn read_image_webp_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<PyAny>> {
+    let data = read_file_bytes(file_path)?;
+    let layout = webp_io::decode_image_webp_layout(&data).map_err(to_pyerr)?;
+
+    match layout.channels {
+        1 => {
+            let (dst, out) = unsafe { alloc_output_pyarray::<1>(py, layout.image_size)? };
+            let mut wrapped = Gray8(dst);
+            webp_io::decode_image_webp_gray8(&data, &mut wrapped).map_err(to_pyerr)?;
+            Ok(out.into())
+        }
+        3 => {
+            let (dst, out) = unsafe { alloc_output_pyarray::<3>(py, layout.image_size)? };
+            let mut wrapped = Rgb8(dst);
+            webp_io::decode_image_webp_rgb8(&data, &mut wrapped).map_err(to_pyerr)?;
+            Ok(out.into())
+        }
+        4 => {
+            let (dst, out) = unsafe { alloc_output_pyarray::<4>(py, layout.image_size)? };
+            let mut wrapped = Rgba8(dst);
+            webp_io::decode_image_webp_rgba8(&data, &mut wrapped).map_err(to_pyerr)?;
+            Ok(out.into())
+        }
+        ch => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "Unsupported WebP format: {} channels",
+            ch
         ))),
     }
 }
