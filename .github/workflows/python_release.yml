@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.7", "3.8", "3.9", "3.10", "3.11", "3.12", "3.13", "3.13t", "3.14", "3.14t"]
+        python-version: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13", "3.13t", "3.14", "3.14t"]
         target: [x86_64, aarch64]
     # Neutralize the in-repo `.cargo/config.toml` rustflags (which target the
     # local Jetson cross-test setup, raising baselines to `x86-64-v3` /
@@ -67,12 +67,6 @@ jobs:
     strategy:
       matrix:
         include:
-          - runs-on: macos-13
-            python-version: "3.7"
-            target: x86_64
-          - runs-on: macos-13
-            python-version: "3.7"
-            target: aarch64
           - runs-on: macos-13
             python-version: "3.8"
             target: x86_64
@@ -155,7 +149,7 @@ jobs:
     runs-on: windows-latest
     strategy:
       matrix:
-        python-version: ["3.7", "3.8", "3.9", "3.10", "3.11", "3.12", "3.13", "3.13t", "3.14", "3.14t"]
+        python-version: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13", "3.13t", "3.14", "3.14t"]
         target: [x64, x86]
     steps:
       - uses: ilammy/setup-nasm@v1
