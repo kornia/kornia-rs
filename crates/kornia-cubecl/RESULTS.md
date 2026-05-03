@@ -27,24 +27,36 @@ algorithm and bit-exact same output as the baseline kernel.
 
 | src → dst           | arm                   | median (μs) | Mpix/s | vs NEON       |
 |---------------------|-----------------------|------------:|-------:|---------------|
-| 512² → 256²         | **neon**              |        28.0 | 1170.2 | —             |
-|                     | cubecl_cpu_kernel     |     1 863.6 |   17.6 | 67× slower    |
-|                     | cubecl_cpu_e2e        |     2 492.6 |   13.1 | 89× slower    |
-| 1024² → 512²        | **neon**              |       167.6 |  781.9 | —             |
-|                     | cubecl_cpu_kernel     |     3 115.4 |   42.1 | 19× slower    |
-|                     | cubecl_cpu_e2e        |     7 857.5 |   16.7 | 47× slower    |
-| 2048² → 1024²       | **neon**              |       317.5 | 1651.2 | —             |
-|                     | cubecl_cpu_kernel     |     6 621.2 |   79.2 | 21× slower    |
-|                     | cubecl_cpu_e2e        |    22 842.3 |   23.0 | 72× slower    |
-| 4096² → 2048²       | **neon**              |     1 800.4 | 1164.8 | —             |
-|                     | cubecl_cpu_kernel     |    20 873.6 |  100.5 | 12× slower    |
-|                     | cubecl_cpu_e2e        |    85 148.5 |   24.6 | 47× slower    |
-| **8192² → 4096²**   | **neon**              |     7 095.3 | 1182.3 | —             |
-|                     | cubecl_cpu_kernel     |    57 736.7 |  145.3 | **8× slower** |
-|                     | cubecl_cpu_e2e        |   291 233.3 |   28.8 | 41× slower    |
-| 1920×1080 → 960×540 | **neon**              |       511.2 | 1014.0 | —             |
-|                     | cubecl_cpu_kernel     |     6 407.6 |   80.9 | 13× slower    |
-|                     | cubecl_cpu_e2e        |    11 486.5 |   45.1 | 22× slower    |
+| 512² → 256²         | **neon**              |        29.7 | 1103.4 | —             |
+|                     | cubecl_cpu_kernel     |     1 933.8 |   16.9 | 65× slower    |
+|                     | cubecl_cpu_kernel_x4  |     2 732.2 |   12.0 | 92× slower    |
+|                     | cubecl_cpu_kernel_x16 |     2 619.2 |   12.5 | 88× slower    |
+|                     | cubecl_cpu_e2e        |     5 608.2 |    5.8 | 190× slower   |
+| 1024² → 512²        | **neon**              |       154.4 |  848.7 | —             |
+|                     | cubecl_cpu_kernel     |     3 562.2 |   36.8 | 23× slower    |
+|                     | cubecl_cpu_kernel_x4  |     3 877.1 |   33.8 | 25× slower    |
+|                     | cubecl_cpu_kernel_x16 |     4 437.4 |   29.5 | 29× slower    |
+|                     | cubecl_cpu_e2e        |     9 784.5 |   13.4 | 63× slower    |
+| 2048² → 1024²       | **neon**              |       650.9 |  805.5 | —             |
+|                     | cubecl_cpu_kernel     |     7 486.8 |   70.0 | 11× slower    |
+|                     | **cubecl_cpu_kernel_x4** |   3 693.0 |  142.0 | **6× slower** |
+|                     | cubecl_cpu_kernel_x16 |     7 896.8 |   66.4 | 12× slower    |
+|                     | cubecl_cpu_e2e        |    20 315.0 |   25.8 | 31× slower    |
+| 4096² → 2048²       | **neon**              |     2 267.6 |  924.8 | —             |
+|                     | cubecl_cpu_kernel     |    20 688.6 |  101.4 | 9× slower     |
+|                     | **cubecl_cpu_kernel_x4** |   9 980.8 |  210.1 | **4× slower** |
+|                     | cubecl_cpu_kernel_x16 |    12 580.3 |  166.7 | 6× slower     |
+|                     | cubecl_cpu_e2e        |    70 940.2 |   29.6 | 31× slower    |
+| **8192² → 4096²**   | **neon**              |     6 887.2 | 1218.0 | —             |
+|                     | cubecl_cpu_kernel     |    54 401.8 |  154.2 | 8× slower     |
+|                     | cubecl_cpu_kernel_x4  |    35 571.7 |  235.8 | 5× slower     |
+|                     | **cubecl_cpu_kernel_x16** |   27 257.8 |  307.8 | **4× slower** |
+|                     | cubecl_cpu_e2e        |   267 784.7 |   31.3 | 39× slower    |
+| 1920×1080 → 960×540 | **neon**              |       727.4 |  712.7 | —             |
+|                     | cubecl_cpu_kernel     |     6 590.4 |   78.7 | 9× slower     |
+|                     | cubecl_cpu_kernel_x4  |     5 272.2 |   98.3 | 7× slower     |
+|                     | **cubecl_cpu_kernel_x16** |   4 167.3 |  124.4 | **6× slower** |
+|                     | cubecl_cpu_e2e        |     9 961.8 |   52.0 | 14× slower    |
 
 ## Findings
 
