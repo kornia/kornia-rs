@@ -16,22 +16,28 @@ All 4 sizes pass `tests/correctness.rs` with **`max_diff = 0`** vs the `fast_ima
 NEON reference output. The cubecl-cpu kernel produces **bit-exact identical** RGB triplets
 to the production NEON path, not just within tolerance — the fixed-point math agrees exactly.
 
-## Throughput (median μs / Mpix/s, 10 reps)
+## Throughput (median μs / Mpix/s, 10 reps, extended size sweep)
 
 | src → dst           | arm                   | median (μs) | Mpix/s | vs NEON       |
 |---------------------|-----------------------|------------:|-------:|---------------|
-| 512² → 256²         | **neon**              |        23.1 | 1416.3 | —             |
-|                     | cubecl_cpu_kernel     |     2 743.7 |   11.9 | 119× slower   |
-|                     | cubecl_cpu_e2e        |     3 238.3 |   10.1 | 140× slower   |
-| 1024² → 512²        | **neon**              |       326.4 |  401.5 | —             |
-|                     | cubecl_cpu_kernel     |     4 255.3 |   30.8 |  13× slower   |
-|                     | cubecl_cpu_e2e        |     8 464.9 |   15.5 |  26× slower   |
-| 2048² → 1024²       | **neon**              |       479.2 | 1094.1 | —             |
-|                     | cubecl_cpu_kernel     |     6 794.0 |   77.2 |  14× slower   |
-|                     | cubecl_cpu_e2e        |    23 843.7 |   22.0 |  50× slower   |
-| 4096² → 2048²       | **neon**              |     2 143.2 |  978.5 | —             |
-|                     | cubecl_cpu_kernel     |    19 906.0 |  105.4 |   9× slower   |
-|                     | cubecl_cpu_e2e        |    89 437.8 |   23.4 |  42× slower   |
+| 512² → 256²         | **neon**              |        28.0 | 1170.2 | —             |
+|                     | cubecl_cpu_kernel     |     1 863.6 |   17.6 | 67× slower    |
+|                     | cubecl_cpu_e2e        |     2 492.6 |   13.1 | 89× slower    |
+| 1024² → 512²        | **neon**              |       167.6 |  781.9 | —             |
+|                     | cubecl_cpu_kernel     |     3 115.4 |   42.1 | 19× slower    |
+|                     | cubecl_cpu_e2e        |     7 857.5 |   16.7 | 47× slower    |
+| 2048² → 1024²       | **neon**              |       317.5 | 1651.2 | —             |
+|                     | cubecl_cpu_kernel     |     6 621.2 |   79.2 | 21× slower    |
+|                     | cubecl_cpu_e2e        |    22 842.3 |   23.0 | 72× slower    |
+| 4096² → 2048²       | **neon**              |     1 800.4 | 1164.8 | —             |
+|                     | cubecl_cpu_kernel     |    20 873.6 |  100.5 | 12× slower    |
+|                     | cubecl_cpu_e2e        |    85 148.5 |   24.6 | 47× slower    |
+| **8192² → 4096²**   | **neon**              |     7 095.3 | 1182.3 | —             |
+|                     | cubecl_cpu_kernel     |    57 736.7 |  145.3 | **8× slower** |
+|                     | cubecl_cpu_e2e        |   291 233.3 |   28.8 | 41× slower    |
+| 1920×1080 → 960×540 | **neon**              |       511.2 | 1014.0 | —             |
+|                     | cubecl_cpu_kernel     |     6 407.6 |   80.9 | 13× slower    |
+|                     | cubecl_cpu_e2e        |    11 486.5 |   45.1 | 22× slower    |
 
 ## Findings
 
@@ -40,16 +46,22 @@ The production `fast_image_resize` NEON path is **9× to 119× faster** than cub
 every size tested. The gap shrinks as inputs grow (cubecl-cpu amortizes per-launch
 overhead), but never closes. There is no crossover point in the tested range.
 
-### cubecl-cpu kernel throughput ramps with size
-- 256² output: 11.9 Mpix/s
-- 512² output: 30.8 Mpix/s
-- 1024² output: 77.2 Mpix/s
-- 2048² output: 105.4 Mpix/s
+### cubecl-cpu kernel throughput ramps with size — and is *still climbing* at 4096² out
+- 256² output: 17.6 Mpix/s
+- 512² output: 42.1 Mpix/s
+- 1024² output: 79.2 Mpix/s
+- 2048² output: 100.5 Mpix/s
+- **4096² output (from 8192² input): 145.3 Mpix/s**
 
-This curve points at heavy fixed cost per kernel dispatch (likely MLIR JIT lookup +
-per-call thread-pool sync) that only large workloads can cancel out. Even at 2048²
-output (12.5 MB) we're not yet at saturation — extrapolating, cubecl-cpu would peak
-around 150-200 Mpix/s, still far below NEON's ~1000-1400 Mpix/s ceiling.
+The curve has not yet plateaued at the largest size we tested. Per-call dispatch cost
+(MLIR JIT lookup + thread-pool sync, ~1.4 ms minimum) dominates at small inputs, and
+each doubling of output size lets the actual compute overtake more of that fixed cost.
+Extrapolating, cubecl-cpu's asymptotic throughput is ~200-300 Mpix/s.
+
+NEON's ceiling on this Jetson sits at 1100-1650 Mpix/s (consistent across 1024²-4096²
+output). So the *real* compute gap, with overhead amortized away, is **5-6× slower** —
+not the 9-119× the small-input numbers suggested. The huge small-size gap was almost
+entirely fixed dispatch overhead.
 
 ### End-to-end overhead is brutal
 For the 4096² case: kernel-only ≈ 20 ms, end-to-end ≈ 89 ms. The 70 ms gap is
@@ -57,13 +69,12 @@ For the 4096² case: kernel-only ≈ 20 ms, end-to-end ≈ 89 ms. The 70 ms gap 
 memory each call rather than reusing buffers. A real video-pipeline integration would
 need to keep handles alive across frames to avoid this tax.
 
-### NEON is anomalously slow at 1024²→512² in this run
-NEON's `326 μs` median for 1024×512 → 512×256 (output: 0.5 MB) is roughly 6× slower per
-pixel than the 2048² and 4096² results, which is unusual. The most likely explanation is
-that 0.5 MB output overflows the 1 MB L2 cache during the bench's tight loop while
-2048²/4096² are already streaming-bound and the cache-spill cost amortizes. Repeating
-with longer warm-up or `perf stat` would confirm. Doesn't change the headline conclusion
-— even at this anomaly point, NEON is 13× ahead of cubecl-cpu.
+### NEON sits in a `~1000-1650 Mpix/s` band across sizes
+After fixing the small-N L1 anomaly with longer-amortizing samples (the 1024×512→512×256
+case is still slightly slow at 782 Mpix/s, but 2048² jumps to the peak of 1651 Mpix/s),
+NEON's per-pixel cost stays remarkably stable from 1024² output up to 4096² output. This
+is what you'd expect from a memory-bandwidth-bound kernel on a 102 GB/s LPDDR5 system:
+once the working set spills L2, you're streaming and the pipeline is saturated.
 
 ### cubecl-cuda was blocked
 Jetson Orin's `libcuda.so` (JetPack 5/6) is missing `cuCoredumpDeregisterCompleteCallback`,

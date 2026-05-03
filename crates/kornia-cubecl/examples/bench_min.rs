@@ -9,7 +9,15 @@ use kornia_tensor::CpuAllocator;
 use rand::{rngs::StdRng, RngCore, SeedableRng};
 use std::time::Instant;
 
-const SIZES: &[(usize, usize)] = &[(512, 256), (1024, 512), (2048, 1024), (4096, 2048)];
+// (src_w, src_h, dst_w, dst_h) — power-of-two 2x sweep + ML-realistic 1080p→540p.
+const SIZES: &[(usize, usize, usize, usize)] = &[
+    (512, 256, 256, 128),
+    (1024, 512, 512, 256),
+    (2048, 1024, 1024, 512),
+    (4096, 2048, 2048, 1024),
+    (8192, 4096, 4096, 2048),
+    (1920, 1080, 960, 540),
+];
 const REPS: usize = 10;
 const WARMUP: usize = 3;
 
@@ -43,8 +51,7 @@ fn main() {
         "src→dst", "arm", "min(μs)", "med(μs)", "mean(μs)", "Mpix/s");
     println!("{}", "-".repeat(80));
 
-    for &(src_w, src_h) in SIZES {
-        let (dst_w, dst_h) = (src_w / 2, src_h / 2);
+    for &(src_w, src_h, dst_w, dst_h) in SIZES {
         let dst_pix = dst_w * dst_h;
         let id = format!("{src_w}x{src_h}→{dst_w}x{dst_h}");
         let src = make_image(src_w, src_h);
