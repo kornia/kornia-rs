@@ -16,7 +16,14 @@ All 4 sizes pass `tests/correctness.rs` with **`max_diff = 0`** vs the `fast_ima
 NEON reference output. The cubecl-cpu kernel produces **bit-exact identical** RGB triplets
 to the production NEON path, not just within tolerance — the fixed-point math agrees exactly.
 
-## Throughput (median μs / Mpix/s, 10 reps, extended size sweep)
+## Throughput (median μs / Mpix/s, 10 reps, extended size sweep + tiled variants)
+
+The `_x4` and `_x16` arms are kornia-cubecl kernel variants that process 4 or 16
+horizontally-adjacent dst pixels per cubecl thread. Reduces total thread count and
+exposes longer contiguous-byte-store patterns to the MLIR optimizer. Same
+algorithm and bit-exact same output as the baseline kernel.
+
+
 
 | src → dst           | arm                   | median (μs) | Mpix/s | vs NEON       |
 |---------------------|-----------------------|------------:|-------:|---------------|
@@ -40,6 +47,24 @@ to the production NEON path, not just within tolerance — the fixed-point math 
 |                     | cubecl_cpu_e2e        |    11 486.5 |   45.1 | 22× slower    |
 
 ## Findings
+
+### Tiling (more dst pixels per thread) is a 2× win at the right size
+| size              | kernel | x4 | x16 | best   |
+|-------------------|-------:|---:|----:|--------|
+| 256² out          | 16.9   | 12.0 | 12.5 | baseline |
+| 512² out          | 36.8   | 33.8 | 29.5 | baseline |
+| 1024² out         | 70.0   | **142.0** | 66.4 | x4 (2.0×) |
+| 2048² out         | 101.4  | **210.1** | 166.7 | x4 (2.1×) |
+| 4096² out (8K in) | 154.2  | 235.8 | **307.8** | x16 (2.0×) |
+| 540p (1080p in)   | 78.7   | 98.3 | **124.4** | x16 (1.6×) |
+
+The optimal tile is not monotonic. At 2048² out, x4 wins; at 4096² out, x16 wins.
+Likely reason: x16 wide tiles serialize the inner per-pixel loop too much when
+each row is short, while x4 keeps enough parallelism. As rows grow, x16's
+reduced thread overhead pays off.
+
+A production cubecl-cpu kernel would need a dispatch heuristic to pick the tile
+size — or generate the tile size at compile time from input dimensions.
 
 ### NEON dominates
 The production `fast_image_resize` NEON path is **9× to 119× faster** than cubecl-cpu at

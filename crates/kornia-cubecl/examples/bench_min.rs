@@ -1,7 +1,7 @@
 //! Minimal bench: NEON vs cubecl-cpu × {kernel-only, end-to-end} × 4 sizes.
 //! No criterion — std::time only, 10 reps, reports min/median/mean.
 
-use kornia_cubecl::resize::resize_bilinear_u8_rgb;
+use kornia_cubecl::resize::{resize_bilinear_u8_rgb, resize_bilinear_u8_rgb_x16, resize_bilinear_u8_rgb_x4};
 use kornia_cubecl::runtime;
 use kornia_image::{Image, ImageSize};
 use kornia_imgproc::{interpolation::InterpolationMode, resize};
@@ -96,6 +96,56 @@ fn main() {
         }
         let (mn, md, mu) = stats(s);
         println!("{:<14}{:<24}{}{}{}{}", "", "cubecl_cpu_kernel", fmt_us(mn), fmt_us(md), fmt_us(mu), fmt_mpix(dst_pix, md));
+
+        // --- cubecl-cpu kernel-only x4 (4 dst pixels per thread) ---
+        if dst_w % 4 == 0 {
+            for _ in 0..WARMUP {
+                resize_bilinear_u8_rgb_x4::<runtime::CpuRuntime>(
+                    &cpu_client, &src_h_cpu,
+                    ImageSize { width: src_w, height: src_h }, &dst_h_cpu,
+                    ImageSize { width: dst_w, height: dst_h },
+                ).unwrap();
+                let _ = cubecl::future::block_on(cpu_client.sync());
+            }
+            let mut s4 = Vec::with_capacity(REPS);
+            for _ in 0..REPS {
+                let t = Instant::now();
+                resize_bilinear_u8_rgb_x4::<runtime::CpuRuntime>(
+                    &cpu_client, &src_h_cpu,
+                    ImageSize { width: src_w, height: src_h }, &dst_h_cpu,
+                    ImageSize { width: dst_w, height: dst_h },
+                ).unwrap();
+                let _ = cubecl::future::block_on(cpu_client.sync());
+                s4.push(t.elapsed().as_secs_f64());
+            }
+            let (mn, md, mu) = stats(s4);
+            println!("{:<14}{:<24}{}{}{}{}", "", "cubecl_cpu_kernel_x4", fmt_us(mn), fmt_us(md), fmt_us(mu), fmt_mpix(dst_pix, md));
+        }
+
+        // --- cubecl-cpu kernel-only x16 (16 dst pixels per thread) ---
+        if dst_w % 16 == 0 {
+            for _ in 0..WARMUP {
+                resize_bilinear_u8_rgb_x16::<runtime::CpuRuntime>(
+                    &cpu_client, &src_h_cpu,
+                    ImageSize { width: src_w, height: src_h }, &dst_h_cpu,
+                    ImageSize { width: dst_w, height: dst_h },
+                ).unwrap();
+                let _ = cubecl::future::block_on(cpu_client.sync());
+            }
+            let mut s16 = Vec::with_capacity(REPS);
+            for _ in 0..REPS {
+                let t = Instant::now();
+                resize_bilinear_u8_rgb_x16::<runtime::CpuRuntime>(
+                    &cpu_client, &src_h_cpu,
+                    ImageSize { width: src_w, height: src_h }, &dst_h_cpu,
+                    ImageSize { width: dst_w, height: dst_h },
+                ).unwrap();
+                let _ = cubecl::future::block_on(cpu_client.sync());
+                s16.push(t.elapsed().as_secs_f64());
+            }
+            let (mn, md, mu) = stats(s16);
+            println!("{:<14}{:<24}{}{}{}{}", "", "cubecl_cpu_kernel_x16", fmt_us(mn), fmt_us(md), fmt_us(mu), fmt_mpix(dst_pix, md));
+        }
 
         // --- cubecl-cpu end-to-end (alloc + upload + kernel + read) ---
         for _ in 0..WARMUP {
