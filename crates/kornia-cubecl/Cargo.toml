@@ -15,11 +15,11 @@ repository = "https://github.com/kornia/kornia-rs"
 description = "cubecl-based GPU/CPU compute kernels for kornia-rs (prototype)"
 
 [features]
-# Default = cpu only. cuda feature works in principle but Jetson Orin's libcuda.so
-# is older than what cudarc 0.19 (used by cubecl-cuda 0.10-pre.4) targets — the
-# missing symbol `cuCoredumpDeregisterCompleteCallback` (CUDA 12.3+) panics on
-# first device allocation. cpu uses tracel-llvm-20.1.4-7 prebuilt bundle.
-default = ["cpu"]
+# Default = cpu + cuda. To compile cuda on Jetson, set CUDARC_CUDA_VERSION=12060
+# in the environment so cudarc binds CUDA 12.6 symbols (matching Jetson libcuda),
+# not the latest CUDA 13.2 default which binds cuCoredumpDeregisterCompleteCallback
+# that doesn't exist in Jetson's libcuda.
+default = ["cpu", "cuda"]
 cuda = ["cubecl/cuda", "dep:cubecl-cuda"]
 cpu = ["dep:cubecl-cpu"]
 
