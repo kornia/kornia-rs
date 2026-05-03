@@ -69,7 +69,7 @@ fn cubecl_cpu_matches_neon_within_tolerance() {
             ImageSize { width: dst_w, height: dst_h },
         ).unwrap();
 
-        let actual = client.read_one(dst_handle.binding()).unwrap();
+        let actual = client.read_one(dst_handle.clone()).unwrap();
         compare(&reference, actual.as_ref(), dst_w, dst_h, "cpu");
     }
 }
@@ -97,7 +97,7 @@ fn cubecl_cuda_matches_neon_within_tolerance() {
             ImageSize { width: dst_w, height: dst_h },
         ).unwrap();
 
-        let actual = client.read_one(dst_handle.binding()).unwrap();
+        let actual = client.read_one(dst_handle.clone()).unwrap();
         compare(&reference, actual.as_ref(), dst_w, dst_h, "cuda");
     }
 }

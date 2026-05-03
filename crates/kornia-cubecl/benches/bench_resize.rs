@@ -58,7 +58,7 @@ fn bench(c: &mut Criterion) {
                         &dst_h_cpu,
                         ImageSize { width: dst_w, height: dst_h },
                     ).unwrap();
-                    let _ = cubecl::common::future::block_on(cpu_client.sync());
+                    let _ = cubecl::future::block_on(cpu_client.sync());
                 });
             });
             group.bench_function(BenchmarkId::new("cubecl_cpu_e2e", &id), |b| {
@@ -71,7 +71,7 @@ fn bench(c: &mut Criterion) {
                         &d,
                         ImageSize { width: dst_w, height: dst_h },
                     ).unwrap();
-                    let _ = cpu_client.read_one(d.binding()).unwrap();
+                    let _ = cpu_client.read_one(d).unwrap();
                 });
             });
         }
@@ -89,7 +89,7 @@ fn bench(c: &mut Criterion) {
                         &dst_h_cu,
                         ImageSize { width: dst_w, height: dst_h },
                     ).unwrap();
-                    let _ = cubecl::common::future::block_on(cuda.sync());
+                    let _ = cubecl::future::block_on(cuda.sync());
                 });
             });
             group.bench_function(BenchmarkId::new("cubecl_cuda_e2e", &id), |b| {
@@ -102,7 +102,7 @@ fn bench(c: &mut Criterion) {
                         &d,
                         ImageSize { width: dst_w, height: dst_h },
                     ).unwrap();
-                    let _ = cuda.read_one(d.binding()).unwrap();
+                    let _ = cuda.read_one(d).unwrap();
                 });
             });
         } else {

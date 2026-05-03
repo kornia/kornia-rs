@@ -15,10 +15,11 @@ repository = "https://github.com/kornia/kornia-rs"
 description = "cubecl-based GPU/CPU compute kernels for kornia-rs (prototype)"
 
 [features]
-# Note: cpu defaulted-off because cubecl-cpu 0.10-pre.4 requires the
-# tracel-llvm-20.1.4-7 prebuilt bundle, which may fail to extract on Jetson aarch64.
-# Enable explicitly via `--features cpu` once a working LLVM bundle is in place.
-default = ["cuda"]
+# Default = cpu only. cuda feature works in principle but Jetson Orin's libcuda.so
+# is older than what cudarc 0.19 (used by cubecl-cuda 0.10-pre.4) targets — the
+# missing symbol `cuCoredumpDeregisterCompleteCallback` (CUDA 12.3+) panics on
+# first device allocation. cpu uses tracel-llvm-20.1.4-7 prebuilt bundle.
+default = ["cpu"]
 cuda = ["cubecl/cuda", "dep:cubecl-cuda"]
 cpu = ["dep:cubecl-cpu"]
 
