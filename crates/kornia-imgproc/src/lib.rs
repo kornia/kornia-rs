@@ -71,3 +71,6 @@ pub mod distance_transform;
 
 /// contours
 pub mod contours;
+
+/// contours via Light Speed Labeling (run-based, work-in-progress 5-day plan)
+pub mod contours_lsl;
