@@ -7,7 +7,7 @@
 
 use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
 use kornia_imgproc::contours::{find_contours, ContourApproximationMode, RetrievalMode};
-use kornia_imgproc::contours_lsl::{find_external_contours_lsl, LslExecutor};
+use kornia_imgproc::contours_lsl::LslExecutor;
 use std::time::Instant;
 
 const REPS: usize = 20;

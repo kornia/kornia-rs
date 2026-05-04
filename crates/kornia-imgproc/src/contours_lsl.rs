@@ -100,9 +100,9 @@ pub fn rle_extract_row_scalar(row: &[u8], runs: &mut Vec<Run>) {
     }
 }
 
-/// NEON-vectorized RLE extraction. Uses OpenCV's stateful-scan pattern:
-/// load 16 bytes, compare with `prev` value, scan-forward to next transition.
-/// At each transition, emit a run boundary.
+/// NEON-vectorized RLE extraction. Loads 16 bytes per iteration, computes a
+/// "non-zero" bitmask, and uses bit-scan-forward to skip uniform runs (all-0
+/// or all-non-zero) without per-byte branching.
 #[cfg(target_arch = "aarch64")]
 pub fn rle_extract_row_neon(row: &[u8], runs: &mut Vec<Run>) {
     runs.clear();
@@ -114,22 +114,71 @@ pub fn rle_extract_row_neon(row: &[u8], runs: &mut Vec<Run>) {
         use std::arch::aarch64::*;
         let zero = vdupq_n_u8(0);
         let mut i: usize = 0;
-        // Track current state and run start
-        let mut in_run = row[0] != 0;
+        let mut in_run = false;
         let mut run_start: u32 = 0;
-        i = 1;
 
-        // For now, the NEON version falls back to scalar — full NEON would use
-        // vector compare to the previous-byte value and bit-scan-forward to
-        // find transitions. Day 1 ships scalar correctness; NEON kicks in Day 4.
-        // (Keeping the symbol so callers can already use the right entry point.)
-        let _ = (zero,); // silence warnings
+        // NEON fast path: scan 16 bytes at a time. For each chunk:
+        //   nz_mask = (byte != 0) per lane (0xFF or 0x00)
+        //   if `in_run`:  current state is "non-zero". Scan for first ZERO byte
+        //                 (i.e. first lane where nz_mask == 0). End run there.
+        //   else:         current state is "zero". Scan for first NON-ZERO byte.
+        //                 Start a new run there.
+        // Use vget_lane_u64 to extract a 64-bit signature, then trailing-zeros
+        // to find the lane index. Two halves of the 16-byte register handled
+        // separately to fit in u64.
+        while i + 16 <= n {
+            let v = vld1q_u8(row.as_ptr().add(i));
+            let eq_zero = vceqq_u8(v, zero);
+            let nz_mask = vmvnq_u8(eq_zero); // 0xFF where != 0
+            // Pack each lane into a single bit using vshrn (narrow + shift):
+            //   high 4 bits of each u16 lane -> single nibble per byte
+            // Simpler: store the mask as two u64s, treat each byte as 0/0xFF
+            let mask_lo: u64 = vgetq_lane_u64(vreinterpretq_u64_u8(nz_mask), 0);
+            let mask_hi: u64 = vgetq_lane_u64(vreinterpretq_u64_u8(nz_mask), 1);
+            // mask_lo: lane k (k=0..7) is 0xFF or 0x00 (byte k)
+            // mask_hi: lane k (k=8..15) is 0xFF or 0x00
+
+            // Helper: find first lane in this chunk where lane != target_byte_pattern.
+            // target_pattern = 0xFFFFFFFFFFFFFFFF if we're looking for 0 (i.e., in_run)
+            //                = 0x0000000000000000 if we're looking for non-zero (i.e., !in_run)
+            let target_lo: u64 = if in_run { u64::MAX } else { 0 };
+            let target_hi: u64 = target_lo;
+            // diff bits: where current chunk differs from target (i.e. transition)
+            let diff_lo = mask_lo ^ target_lo;
+            let diff_hi = mask_hi ^ target_hi;
+
+            if diff_lo == 0 && diff_hi == 0 {
+                // Whole 16-byte chunk uniform with current state — skip.
+                i += 16;
+                continue;
+            }
+
+            // Find the byte index of the first transition. Each byte in mask is
+            // 0xFF or 0x00. After XOR with target, transition byte = 0xFF.
+            // trailing_zeros counts bits, divide by 8 for byte index.
+            let first_in_chunk: usize = if diff_lo != 0 {
+                (diff_lo.trailing_zeros() / 8) as usize
+            } else {
+                8 + (diff_hi.trailing_zeros() / 8) as usize
+            };
+
+            let trans_pos = i + first_in_chunk;
+            if in_run {
+                runs.push(Run { start: run_start, end: (trans_pos - 1) as u32 });
+                in_run = false;
+            } else {
+                run_start = trans_pos as u32;
+                in_run = true;
+            }
+            i = trans_pos + 1;
+            // Continue from i — next loop iteration may still be in current chunk's tail
+        }
+
+        // Scalar tail
         while i < n {
-            let b = *row.get_unchecked(i);
-            let nonzero = b != 0;
+            let nonzero = *row.get_unchecked(i) != 0;
             if nonzero != in_run {
                 if in_run {
-                    // run ended at i-1
                     runs.push(Run { start: run_start, end: (i - 1) as u32 });
                 } else {
                     run_start = i as u32;
@@ -320,8 +369,8 @@ pub fn find_outer_starts(
 /// Returns a flat Vec<i32> of size `width * height`, where each cell is the
 /// component ID at that position, or `-1` for background.
 ///
-/// Used by `trace_components` for O(1) "is this neighbour the same component?"
-/// checks during Moore-neighbour boundary tracing.
+/// (Used by the standalone `trace_components` for testing; the executor path
+/// uses a packed-generation grid that avoids the per-call 4MB fill.)
 pub fn build_component_grid(rle: &RleImage, components: &ComponentMap) -> Vec<i32> {
     let n = (rle.width * rle.height) as usize;
     let mut grid = vec![-1i32; n];
@@ -335,6 +384,24 @@ pub fn build_component_grid(rle: &RleImage, components: &ComponentMap) -> Vec<i3
         }
     }
     grid
+}
+
+/// Check if (r, c) is in the given component using a generation-packed grid.
+#[inline]
+fn neighbour_in_component_gen(
+    grid: &[u64],
+    width: i32,
+    height: i32,
+    r: i32,
+    c: i32,
+    cid: u32,
+    gen_high: u64,
+) -> bool {
+    if r < 0 || r >= height || c < 0 || c >= width {
+        return false;
+    }
+    let val = grid[(r * width + c) as usize];
+    val == (gen_high | cid as u64)
 }
 
 /// Trace boundary per labeled component. Outputs `Vec<Vec<[x, y]>>` compatible
@@ -548,11 +615,16 @@ pub struct LslWorkBuffers {
     uf_parent: Vec<u32>,
     /// Per-row final component IDs (one entry per run in that row).
     component_per_run: Vec<Vec<u32>>,
-    /// (row, col) → component_id grid (size width*height, -1 = background).
-    grid: Vec<i32>,
+    /// (row, col) → packed (generation:u32, component_id:i32) grid.
+    /// Storing both as a u64 lets us avoid the per-call 4MB fill: a position is
+    /// "set this call" iff `(value >> 32) as u32 == grid_generation`.
+    grid: Vec<u64>,
     /// Cached image dimensions for the grid.
     grid_w: usize,
     grid_h: usize,
+    /// Increments each call; positions storing a different generation are
+    /// considered background (no fill needed).
+    grid_generation: u32,
     /// One outer-start (row, col) per component.
     starts: Vec<(u32, u32)>,
     /// Optional preallocation for representative-to-id map (avoid HashMap rehash).
@@ -650,25 +722,59 @@ impl LslExecutor {
         }
         let n_components = next_id as usize;
 
-        // Pass 5: build component grid (reused buffer; just refill)
+        // FAST PATH: single component (very common — filled_square, hollow_square,
+        // most binarized photos). Skip the per-pixel grid write entirely; trace
+        // boundary directly on the source binary image. Saves the 4.7 MB grid
+        // build for 1024² which was the dominant cost.
+        if n_components == 1 {
+            // Find the (row, col) of the leftmost pixel of the topmost run.
+            let mut start_r = 0u32;
+            let mut start_c = 0u32;
+            'find: for (r, row) in b.rows.iter().enumerate() {
+                if let Some(run) = row.runs.first() {
+                    start_r = r as u32;
+                    start_c = run.start;
+                    break 'find;
+                }
+            }
+            b.out_arena.clear();
+            b.out_ranges.clear();
+            let arena_start = b.out_arena.len();
+            trace_one_component_on_binary(
+                src, width as i32, height as i32,
+                start_r as i32, start_c as i32, &mut b.out_arena,
+            );
+            b.out_ranges.push(arena_start..b.out_arena.len());
+            return &[];
+        }
+
+        // Pass 5: build component grid using a generation counter — NO 4MB
+        // fill. Positions storing a different gen are considered background.
         let grid_size = width * height;
         if b.grid.len() < grid_size || b.grid_w != width || b.grid_h != height {
-            b.grid.resize(grid_size, -1);
+            b.grid.resize(grid_size, 0);
             b.grid_w = width;
             b.grid_h = height;
+            b.grid_generation = 0; // reset
         }
+        b.grid_generation = b.grid_generation.wrapping_add(1);
+        // Wrap-around safety: gen=0 is reserved for "never written"; if we hit
+        // it after wrap, do one full fill to clear stale data.
+        if b.grid_generation == 0 {
+            b.grid.fill(0);
+            b.grid_generation = 1;
+        }
+        let gen_high = (b.grid_generation as u64) << 32;
         let grid = &mut b.grid[..grid_size];
-        // Reset only previously-written positions (much faster than full fill at scale)
-        // For safety on first call we still need to ensure background = -1 everywhere.
-        grid.fill(-1);
         for r in 0..height {
             let row_off = r * width;
             let runs = &b.rows[r].runs;
             let cids = &b.component_per_run[r];
             for (k, run) in runs.iter().enumerate() {
-                let cid = cids[k] as i32;
+                let cid = cids[k] as u32;
+                let packed = gen_high | cid as u64;
                 for c in run.start..=run.end {
-                    grid[row_off + c as usize] = cid;
+                    grid[row_off + c as usize] = packed;
                 }
             }
         }
@@ -696,7 +802,9 @@ impl LslExecutor {
         for cid in 0..n_components {
             let (sr, sc) = b.starts[cid];
             let arena_start = b.out_arena.len();
-            trace_one_component_into(&b.grid, w_i, h_i, sr as i32, sc as i32, cid as i32, &mut b.out_arena);
+            trace_one_component_into_gen(
+                &b.grid, w_i, h_i, sr as i32, sc as i32, cid as u32, gen_high, &mut b.out_arena,
+            );
             b.out_ranges.push(arena_start..b.out_arena.len());
         }
 
@@ -748,60 +856,117 @@ impl LslWorkBuffers {
     }
 }
 
-/// Trace one component's boundary, appending points into the provided arena.
-fn trace_one_component_into(
-    grid: &[i32],
+/// Single-component fast path: trace directly on the binary source image.
+/// No grid needed — for "is this pixel in the component?" we just check
+/// if `src[idx] != 0`. Only valid when there's exactly one connected component
+/// (caller must verify).
+#[inline]
+fn pixel_nonzero(src: &[u8], width: i32, height: i32, r: i32, c: i32) -> bool {
+    if r < 0 || r >= height || c < 0 || c >= width {
+        return false;
+    }
+    src[(r * width + c) as usize] != 0
+}
+
+fn trace_one_component_on_binary(
+    src: &[u8],
     width: i32,
     height: i32,
     start_r: i32,
     start_c: i32,
-    cid: i32,
     arena: &mut Vec<[i32; 2]>,
 ) {
     arena.push([start_c, start_r]);
-
     let mut first: Option<(i32, i32, usize)> = None;
     for k in 1..9usize {
         let d = k & 7;
         let nr = start_r + TRACE_DR[d];
         let nc = start_c + TRACE_DC[d];
-        if neighbour_in_component(grid, width, height, nr, nc, cid) {
+        if pixel_nonzero(src, width, height, nr, nc) {
             first = Some((nr, nc, d));
             break;
         }
     }
-
     let (mut r, mut c, dir_to_first) = match first {
         None => return,
         Some(t) => t,
     };
-    let first_in_dir = (dir_to_first + 4) & 7;
-    let mut in_dir = first_in_dir;
-
+    let mut in_dir = (dir_to_first + 4) & 7;
     let max_iters = (width as usize) * (height as usize) * 4 + 64;
     let mut iters = 0usize;
     loop {
         if iters > max_iters { break; }
         iters += 1;
         arena.push([c, r]);
-
         let scan_start = (in_dir + 1) & 7;
         let mut next: Option<(i32, i32, usize)> = None;
         for k in 0..8usize {
             let d = (scan_start + k) & 7;
             let nr = r + TRACE_DR[d];
             let nc = c + TRACE_DC[d];
-            if neighbour_in_component(grid, width, height, nr, nc, cid) {
+            if pixel_nonzero(src, width, height, nr, nc) {
+                next = Some((nr, nc, d));
+                break;
+            }
+        }
+        let (nr, nc, _d) = match next { None => break, Some(t) => t };
+        if nr == start_r && nc == start_c && iters > 1 {
+            break;
+        }
+        r = nr; c = nc;
+        in_dir = (next.unwrap().2 + 4) & 7;
+    }
+}
+
+/// Generation-aware version: uses the packed-gen grid so we avoid the 4MB
+/// per-call fill that the i32 version requires.
+fn trace_one_component_into_gen(
+    grid: &[u64],
+    width: i32,
+    height: i32,
+    start_r: i32,
+    start_c: i32,
+    cid: u32,
+    gen_high: u64,
+    arena: &mut Vec<[i32; 2]>,
+) {
+    arena.push([start_c, start_r]);
+    let mut first: Option<(i32, i32, usize)> = None;
+    for k in 1..9usize {
+        let d = k & 7;
+        let nr = start_r + TRACE_DR[d];
+        let nc = start_c + TRACE_DC[d];
+        if neighbour_in_component_gen(grid, width, height, nr, nc, cid, gen_high) {
+            first = Some((nr, nc, d));
+            break;
+        }
+    }
+    let (mut r, mut c, dir_to_first) = match first {
+        None => return,
+        Some(t) => t,
+    };
+    let _first_in_dir = (dir_to_first + 4) & 7;
+    let mut in_dir = (dir_to_first + 4) & 7;
+    let max_iters = (width as usize) * (height as usize) * 4 + 64;
+    let mut iters = 0usize;
+    loop {
+        if iters > max_iters { break; }
+        iters += 1;
+        arena.push([c, r]);
+        let scan_start = (in_dir + 1) & 7;
+        let mut next: Option<(i32, i32, usize)> = None;
+        for k in 0..8usize {
+            let d = (scan_start + k) & 7;
+            let nr = r + TRACE_DR[d];
+            let nc = c + TRACE_DC[d];
+            if neighbour_in_component_gen(grid, width, height, nr, nc, cid, gen_high) {
                 next = Some((nr, nc, d));
                 break;
             }
         }
         let (nr, nc, d) = match next { None => break, Some(t) => t };
-        // Halt: revisited the start pixel. For convex shapes this is exactly
-        // when the boundary loop closes. (Stricter Jacob's halting rule needed
-        // for shapes with concavities where the trace can touch the start
-        // mid-walk; not implemented yet.)
         if nr == start_r && nc == start_c && iters > 1 {
+            let _ = d;
             break;
         }
         r = nr; c = nc;
