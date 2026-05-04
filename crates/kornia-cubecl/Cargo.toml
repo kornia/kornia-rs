@@ -1,0 +1,42 @@
+# Sub-workspace: kornia-cubecl lives in its own resolver scope so the cubecl
+# pre-release dep tree doesn't force re-resolution of the main workspace
+# (which has a brittle rerun 0.28 pinning in examples/apriltag).
+[workspace]
+
+[package]
+name = "kornia-cubecl"
+version = "0.1.11"
+authors = ["kornia.org <edgar@kornia.org>"]
+edition = "2021"
+rust-version = "1.82"
+license = "Apache-2.0"
+homepage = "http://kornia.org"
+repository = "https://github.com/kornia/kornia-rs"
+description = "cubecl-based GPU/CPU compute kernels for kornia-rs (prototype)"
+
+[features]
+# Default = cpu + cuda. To compile cuda on Jetson, set CUDARC_CUDA_VERSION=12060
+# in the environment so cudarc binds CUDA 12.6 symbols (matching Jetson libcuda),
+# not the latest CUDA 13.2 default which binds cuCoredumpDeregisterCompleteCallback
+# that doesn't exist in Jetson's libcuda.
+default = ["cpu", "cuda"]
+cuda = ["cubecl/cuda", "dep:cubecl-cuda"]
+cpu = ["dep:cubecl-cpu"]
+
+[dependencies]
+cubecl = { version = "0.10.0-pre.4", default-features = false, features = ["std"] }
+cubecl-cuda = { version = "0.10.0-pre.4", optional = true }
+cubecl-cpu = { version = "0.10.0-pre.4", optional = true }
+kornia-image = { path = "../kornia-image" }
+thiserror = "2"
+bytemuck = "1"
+
+[dev-dependencies]
+criterion = "0.8"
+kornia-imgproc = { path = "../kornia-imgproc" }
+kornia-tensor = { path = "../kornia-tensor" }
+rand = "0.9"
+
+[[bench]]
+name = "bench_resize"
+harness = false

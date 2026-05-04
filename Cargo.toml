@@ -6,7 +6,7 @@ members = [
   "kornia-cpp",  # kornia-rs C++ bindings
   "kornia-py",  # kornia-rs python bindings
 ]
-exclude = ["examples/dora"]
+exclude = ["examples/dora", "crates/kornia-cubecl"]
 default-members = ["crates/*"]
 
 [workspace.package]
