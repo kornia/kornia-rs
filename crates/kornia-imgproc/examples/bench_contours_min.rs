@@ -7,6 +7,7 @@ use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
 use kornia_imgproc::contours::{
     find_contours, ContourApproximationMode, FindContoursExecutor, RetrievalMode,
 };
+use kornia_imgproc::contours_lsl::LslExecutor;
 use std::time::Instant;
 
 const SIZES: &[(usize, usize)] = &[(128, 128), (256, 256), (512, 512), (1024, 1024), (2048, 2048)];
@@ -106,6 +107,26 @@ fn run_one(
         "kornia_view,{label},{w}x{h},{:.1},{:.1},{:.1},{:.1}",
         mn * 1e6, md * 1e6, mu * 1e6, pix_per_s
     );
+
+    // --- contours_lsl (run-based, External-only; output shape = NONE) ---
+    if matches!(retrieval, RetrievalMode::External) {
+        let mut lsl = LslExecutor::new();
+        for _ in 0..WARMUP {
+            let _ = lsl.find_external_contours_image(&img);
+        }
+        let mut samples = Vec::with_capacity(REPS);
+        for _ in 0..REPS {
+            let t = Instant::now();
+            let _ = lsl.find_external_contours_image(&img);
+            samples.push(t.elapsed().as_secs_f64());
+        }
+        let (mn, md, mu) = stats(samples);
+        let pix_per_s = (w * h) as f64 / md / 1e6;
+        println!(
+            "kornia_lsl,{label},{w}x{h},{:.1},{:.1},{:.1},{:.1}",
+            mn * 1e6, md * 1e6, mu * 1e6, pix_per_s
+        );
+    }
 }
 
 /// Load + binarize an OpenCV-tutorial test image (pic1/pic3/pic4) using kornia's

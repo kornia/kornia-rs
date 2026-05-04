@@ -599,6 +599,17 @@ pub fn find_external_contours_lsl(src: &[u8], width: usize, height: usize) -> Ve
     exec.iter_contours().map(|s| s.to_vec()).collect()
 }
 
+/// Image-based one-shot wrapper: convenience entry point for callers holding a
+/// `kornia_image::Image<u8, 1, _>` (the same surface shape as
+/// [`crate::contours::find_contours`]). Constructs an executor per call —
+/// for hot loops, prefer [`LslExecutor::find_external_contours_image`].
+pub fn find_external_contours_lsl_image<A: kornia_image::allocator::ImageAllocator>(
+    src: &kornia_image::Image<u8, 1, A>,
+) -> Vec<Vec<[i32; 2]>> {
+    let size = src.size();
+    find_external_contours_lsl(src.as_slice(), size.width, size.height)
+}
+
 // ============================================================================
 // LslExecutor — Day 5: full buffer reuse for repeated calls
 // ============================================================================
@@ -827,6 +838,18 @@ impl LslExecutor {
     /// Number of contours from the last `find_external_contours` call.
     pub fn contour_count(&self) -> usize {
         self.buffers.out_ranges.len()
+    }
+
+    /// Image-based variant of [`Self::find_external_contours`]. Mirrors the
+    /// surface of `FindContoursExecutor::find_contours_view` for code that
+    /// already works in terms of `Image<u8, 1, _>`. The returned slice
+    /// borrows from the executor — valid until the next call.
+    pub fn find_external_contours_image<'a, A: kornia_image::allocator::ImageAllocator>(
+        &'a mut self,
+        src: &kornia_image::Image<u8, 1, A>,
+    ) -> &'a [Vec<[i32; 2]>] {
+        let size = src.size();
+        self.find_external_contours(src.as_slice(), size.width, size.height)
     }
 
     #[inline]
