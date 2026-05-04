@@ -71,22 +71,25 @@ jobs:
     strategy:
       matrix:
         include:
-          - runs-on: macos-13
+          # Python 3.8/3.9/3.10 migrated from macos-13 to macos-14: macos-13
+          # runner pool is effectively unschedulable for these EOL Python versions
+          # in 2026. setup-python@v6 still serves 3.8+ via tool cache on macos-14.
+          - runs-on: macos-14
             python-version: "3.8"
             target: x86_64
-          - runs-on: macos-13
+          - runs-on: macos-14
             python-version: "3.8"
             target: aarch64
-          - runs-on: macos-13
+          - runs-on: macos-14
             python-version: "3.9"
             target: x86_64
-          - runs-on: macos-13
+          - runs-on: macos-14
             python-version: "3.9"
             target: aarch64
-          - runs-on: macos-13
+          - runs-on: macos-14
             python-version: "3.10"
             target: x86_64
-          - runs-on: macos-13
+          - runs-on: macos-14
             python-version: "3.10"
             target: aarch64
           - runs-on: macos-14
