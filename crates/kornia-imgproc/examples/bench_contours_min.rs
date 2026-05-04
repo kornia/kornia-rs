@@ -134,6 +134,7 @@ fn run_one(
         );
 
         // --- contours_linkruns (OpenCV-style single-pass run linking) ---
+        // View path: arena + ranges, no per-contour Vec allocation.
         let mut lr = LinkRunsExecutor::new();
         for _ in 0..WARMUP {
             let _ = lr.find_external_contours_image(&img);

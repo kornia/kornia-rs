@@ -22,6 +22,7 @@
 //! `convert_links` and skipping points where the (dx, dy) direction is
 //! unchanged.
 
+use core::ops::Range;
 use kornia_image::{allocator::ImageAllocator, Image};
 
 /// One endpoint of a run. Two LRPs per run: start (left edge) and end (right edge).
@@ -53,12 +54,19 @@ enum ConnectFlag {
 }
 
 /// Reusable executor for the link-runs path.
+///
+/// Output is stored in a shared point arena + per-contour range table to
+/// avoid one `Vec` allocation per contour. Use [`Self::iter_contours`] to
+/// walk the contours as zero-copy slices, or [`Self::contours_owned`] to
+/// materialize the legacy `Vec<Vec<[i32; 2]>>` shape.
 #[derive(Default)]
 pub struct LinkRunsExecutor {
     rns: Vec<Lrp>,
     ext_rns: Vec<i32>,
-    /// Reusable output: one Vec per external contour.
-    out: Vec<Vec<[i32; 2]>>,
+    /// Flat point arena — every contour's points concatenated.
+    arena: Vec<[i32; 2]>,
+    /// One range per contour, slicing into `arena`.
+    ranges: Vec<Range<usize>>,
 }
 
 impl LinkRunsExecutor {
@@ -67,26 +75,54 @@ impl LinkRunsExecutor {
         Self::default()
     }
 
-    /// External contours only. Output borrows the executor — valid until the
-    /// next call.
+    /// Run on an image. Returns the per-contour range table; pair with
+    /// [`Self::arena`] for the actual points. Valid until next call.
     pub fn find_external_contours_image<'a, A: ImageAllocator>(
         &'a mut self,
         src: &Image<u8, 1, A>,
-    ) -> &'a [Vec<[i32; 2]>] {
+    ) -> &'a [Range<usize>] {
         let size = src.size();
         self.find_external_contours(src.as_slice(), size.width, size.height)
     }
 
-    /// External contours, raw slice input.
+    /// Run on a raw binary slice. Returns the per-contour range table.
     pub fn find_external_contours<'a>(
         &'a mut self,
         src: &[u8],
         width: usize,
         height: usize,
-    ) -> &'a [Vec<[i32; 2]>] {
+    ) -> &'a [Range<usize>] {
         self.process(src, width as i32, height as i32);
         self.convert_links();
-        &self.out
+        &self.ranges
+    }
+
+    /// Borrow the flat point arena. Index via the ranges from
+    /// [`Self::find_external_contours`] or the slices from
+    /// [`Self::iter_contours`].
+    pub fn arena(&self) -> &[[i32; 2]] {
+        &self.arena
+    }
+
+    /// Iterate contours as zero-copy slices into the arena.
+    pub fn iter_contours(&self) -> impl Iterator<Item = &[[i32; 2]]> + '_ {
+        let arena = &self.arena;
+        self.ranges.iter().map(move |r| &arena[r.clone()])
+    }
+
+    /// Materialize the legacy `Vec<Vec<[i32; 2]>>` shape — one `Vec` per
+    /// contour, copied out of the arena. Use [`Self::iter_contours`] when
+    /// you can avoid the allocation.
+    pub fn contours_owned(&self) -> Vec<Vec<[i32; 2]>> {
+        self.ranges
+            .iter()
+            .map(|r| self.arena[r.clone()].to_vec())
+            .collect()
+    }
+
+    /// Number of contours from the last call.
+    pub fn contour_count(&self) -> usize {
+        self.ranges.len()
     }
 
     /// Build the linked-run graph for the entire image.
@@ -94,7 +130,8 @@ impl LinkRunsExecutor {
     fn process(&mut self, src: &[u8], width: i32, height: i32) {
         self.rns.clear();
         self.ext_rns.clear();
-        self.out.clear();
+        self.arena.clear();
+        self.ranges.clear();
 
         // Sentinel head (matches OpenCV's `rns.push_back(LRP())` at line 293)
         self.rns.push(Lrp::empty());
@@ -304,21 +341,26 @@ impl LinkRunsExecutor {
         }
     }
 
-    /// Walk each external-contour chain via `link` and emit the points.
+    /// Walk each external-contour chain via `link` and emit points into the
+    /// shared arena, recording one Range per contour. Single shared
+    /// allocation instead of `ext_rns.len()` per-contour `Vec`s — the
+    /// difference is decisive on sparse-noise images with thousands of
+    /// tiny contours.
     fn convert_links(&mut self) {
-        self.out.clear();
+        self.arena.clear();
+        self.ranges.clear();
         let n = self.ext_rns.len();
-        self.out.reserve(n);
+        self.ranges.reserve(n);
         for i in 0..n {
             let start = self.ext_rns[i];
             let mut cur = start;
             if self.rns[cur as usize].link == -1 {
                 continue;
             }
-            let mut pts: Vec<[i32; 2]> = Vec::new();
+            let arena_start = self.arena.len();
             loop {
                 let p = self.rns[cur as usize];
-                pts.push([p.x, p.y]);
+                self.arena.push([p.x, p.y]);
                 let next = self.rns[cur as usize].link;
                 self.rns[cur as usize].link = -1; // mark visited
                 cur = next;
@@ -326,12 +368,14 @@ impl LinkRunsExecutor {
                     break;
                 }
             }
-            self.out.push(pts);
+            self.ranges.push(arena_start..self.arena.len());
         }
     }
 }
 
-/// Convenience one-shot wrapper.
+/// Convenience one-shot wrapper. Materializes the legacy `Vec<Vec<...>>`
+/// shape — for hot loops, prefer
+/// [`LinkRunsExecutor::find_external_contours`] + iter_contours().
 pub fn find_external_contours_linkruns(
     src: &[u8],
     width: usize,
@@ -339,7 +383,7 @@ pub fn find_external_contours_linkruns(
 ) -> Vec<Vec<[i32; 2]>> {
     let mut exec = LinkRunsExecutor::new();
     exec.find_external_contours(src, width, height);
-    exec.out.clone()
+    exec.contours_owned()
 }
 
 // ----------------------------------------------------------------------------
