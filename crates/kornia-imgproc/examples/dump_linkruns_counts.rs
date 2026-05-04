@@ -82,5 +82,24 @@ fn main() {
     };
 
     let contours = find_external_contours_linkruns(&data, w, h);
+    let dump_bboxes = std::env::var("DUMP_BBOXES").is_ok();
+    if dump_bboxes {
+        for (i, c) in contours.iter().enumerate() {
+            if c.is_empty() {
+                eprintln!("contour {i}: EMPTY");
+                continue;
+            }
+            let xs: Vec<i32> = c.iter().map(|p| p[0]).collect();
+            let ys: Vec<i32> = c.iter().map(|p| p[1]).collect();
+            let xmin = *xs.iter().min().unwrap();
+            let xmax = *xs.iter().max().unwrap();
+            let ymin = *ys.iter().min().unwrap();
+            let ymax = *ys.iter().max().unwrap();
+            eprintln!(
+                "contour {i}: n={:>5}  bbox=({xmin:>3}..{xmax:<3}, {ymin:>3}..{ymax:<3})  size={:>4}x{:<4}",
+                c.len(), xmax - xmin + 1, ymax - ymin + 1
+            );
+        }
+    }
     println!("{fixture},{w}x{h},{}", contours.len());
 }

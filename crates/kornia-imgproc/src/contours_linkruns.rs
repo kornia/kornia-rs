@@ -90,6 +90,7 @@ impl LinkRunsExecutor {
     }
 
     /// Build the linked-run graph for the entire image.
+    #[allow(clippy::needless_range_loop)]
     fn process(&mut self, src: &[u8], width: i32, height: i32) {
         self.rns.clear();
         self.ext_rns.clear();
@@ -247,7 +248,11 @@ impl LinkRunsExecutor {
                         k += 1;
                         upper_run = self.rns[upper_next as usize].next;
                     } else {
-                        // start of an internal (hole) contour — we ignore for External-only
+                        // OpenCV pushes int_rns here (start of a hole). We don't
+                        // distinguish external/internal collections — both go to
+                        // ext_rns, matching cv2.findContoursLinkRuns which
+                        // returns both classes with parent=-1.
+                        self.ext_rns.push(lower_run);
                         self.rns[lower_run as usize].link = *prev_point;
                         let lower_next = self.rns[lower_run as usize].next;
                         if self.rns[lower_next as usize].x < self.rns[upper_next as usize].x {
@@ -302,7 +307,6 @@ impl LinkRunsExecutor {
     /// Walk each external-contour chain via `link` and emit the points.
     fn convert_links(&mut self) {
         self.out.clear();
-        // Iterate by index since we mutate rns inside the loop.
         let n = self.ext_rns.len();
         self.out.reserve(n);
         for i in 0..n {
@@ -439,6 +443,186 @@ fn find_end(row: &[u8], mut j: i32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two-level nesting: white outer, dark middle ring, white shape enclosed inside.
+    /// Link-runs reports BOTH the outer-white outline AND the inner-white outline
+    /// AND the dark hole between them. Expected: 3 contours (matches
+    /// cv2.findContoursLinkRuns).
+    #[test]
+    fn enclosed_white_inside_dark_inside_white() {
+        let w = 16;
+        let h = 16;
+        // Default white
+        let mut data = vec![1u8; w * h];
+        // Outer dark ring at rows 4..12, cols 3..13
+        for r in 4..12 { for c in 3..13 { data[r * w + c] = 0; } }
+        // Inner white block at rows 6..10, cols 5..11 (fully enclosed by dark)
+        for r in 6..10 { for c in 5..11 { data[r * w + c] = 1; } }
+        let contours = find_external_contours_linkruns(&data, w, h);
+        assert_eq!(
+            contours.len(), 3,
+            "outer white + enclosed white = 2 components, got {} ({:?})",
+            contours.len(),
+            contours.iter().enumerate().map(|(i, c)| {
+                let xs: Vec<i32> = c.iter().map(|p| p[0]).collect();
+                let ys: Vec<i32> = c.iter().map(|p| p[1]).collect();
+                let xb = (xs.iter().min().copied().unwrap_or(0), xs.iter().max().copied().unwrap_or(0));
+                let yb = (ys.iter().min().copied().unwrap_or(0), ys.iter().max().copied().unwrap_or(0));
+                format!("c{i}: n={} xb={:?} yb={:?}", c.len(), xb, yb)
+            }).collect::<Vec<_>>(),
+        );
+    }
+
+    /// 6×6 checkerboard. Link-runs counts both the foreground union (1 outer)
+    /// and every interior 1×1 hole. Expected count matches
+    /// cv2.findContoursLinkRuns on the same fixture.
+    #[test]
+    fn checkerboard_matches_opencv_count() {
+        let w = 6;
+        let h = 6;
+        let mut data = vec![0u8; w * h];
+        for r in 0..h {
+            for c in 0..w {
+                if (r + c) % 2 == 0 { data[r * w + c] = 1; }
+            }
+        }
+        // cv2.findContoursLinkRuns on this exact fixture returns 9 (verified
+        // separately). Hard-coded so the test catches future regressions.
+        let contours = find_external_contours_linkruns(&data, w, h);
+        assert_eq!(
+            contours.len(), 9,
+            "checkerboard expected 9 contours (cv2.findContoursLinkRuns), got {} ({:?})",
+            contours.len(),
+            contours.iter().enumerate().map(|(i, c)| {
+                format!("c{i}: n={} pts={:?}", c.len(), c)
+            }).collect::<Vec<_>>(),
+        );
+    }
+
+    /// White background with TWO vertically-stacked holes (same x range,
+    /// separated by 5 white rows). cv2.findContoursLinkRuns = 3.
+    #[test]
+    fn background_with_two_stacked_holes_matches_opencv() {
+        let w = 30;
+        let h = 30;
+        let mut data = vec![1u8; w * h];
+        // Hole 1: rows 5..12, x 10..20
+        for r in 5..12 { for c in 10..20 { data[r * w + c] = 0; } }
+        // Hole 2: rows 18..25, x 10..20
+        for r in 18..25 { for c in 10..20 { data[r * w + c] = 0; } }
+        let contours = find_external_contours_linkruns(&data, w, h);
+        assert_eq!(
+            contours.len(), 3,
+            "background + 2 stacked holes = 3 contours (cv2 ground truth), got {} ({:?})",
+            contours.len(),
+            contours.iter().enumerate().map(|(i, c)| {
+                let xs: Vec<i32> = c.iter().map(|p| p[0]).collect();
+                let ys: Vec<i32> = c.iter().map(|p| p[1]).collect();
+                let xb = (xs.iter().min().copied().unwrap_or(0), xs.iter().max().copied().unwrap_or(0));
+                let yb = (ys.iter().min().copied().unwrap_or(0), ys.iter().max().copied().unwrap_or(0));
+                format!("c{i}: n={} xb={:?} yb={:?}", c.len(), xb, yb)
+            }).collect::<Vec<_>>(),
+        );
+    }
+
+    /// White background with TWO holes side-by-side. cv2 = 3.
+    #[test]
+    fn background_with_two_side_by_side_holes_matches_opencv() {
+        let w = 40;
+        let h = 30;
+        let mut data = vec![1u8; w * h];
+        // Hole 1: (10..23, 5..15)
+        for r in 10..23 { for c in 5..15 { data[r * w + c] = 0; } }
+        // Hole 2: (10..23, 20..30)
+        for r in 10..23 { for c in 20..30 { data[r * w + c] = 0; } }
+        let contours = find_external_contours_linkruns(&data, w, h);
+        assert_eq!(
+            contours.len(), 3,
+            "background + 2 side-by-side holes = 3 (cv2 ground truth), got {} ({:?})",
+            contours.len(),
+            contours.iter().enumerate().map(|(i, c)| {
+                let xs: Vec<i32> = c.iter().map(|p| p[0]).collect();
+                let ys: Vec<i32> = c.iter().map(|p| p[1]).collect();
+                let xb = (xs.iter().min().copied().unwrap_or(0), xs.iter().max().copied().unwrap_or(0));
+                let yb = (ys.iter().min().copied().unwrap_or(0), ys.iter().max().copied().unwrap_or(0));
+                format!("c{i}: n={} xb={:?} yb={:?}", c.len(), xb, yb)
+            }).collect::<Vec<_>>(),
+        );
+    }
+
+    /// White background with single 13×13 black hole. cv2 = 2 (outer + hole).
+    #[test]
+    fn background_with_one_central_hole_matches_opencv() {
+        let w = 30;
+        let h = 30;
+        // All-white background
+        let mut data = vec![1u8; w * h];
+        // Black hole at (10..23, 10..23)
+        for r in 10..23 {
+            for c in 10..23 {
+                data[r * w + c] = 0;
+            }
+        }
+        let contours = find_external_contours_linkruns(&data, w, h);
+        assert_eq!(
+            contours.len(), 2,
+            "background + 1 hole = 2 contours (cv2 ground truth), got {} ({:?})",
+            contours.len(),
+            contours.iter().enumerate().map(|(i, c)| {
+                let xs: Vec<i32> = c.iter().map(|p| p[0]).collect();
+                let ys: Vec<i32> = c.iter().map(|p| p[1]).collect();
+                let xb = (xs.iter().min().copied().unwrap_or(0), xs.iter().max().copied().unwrap_or(0));
+                let yb = (ys.iter().min().copied().unwrap_or(0), ys.iter().max().copied().unwrap_or(0));
+                format!("c{i}: n={} xb={:?} yb={:?}", c.len(), xb, yb)
+            }).collect::<Vec<_>>(),
+        );
+    }
+
+    /// One foreground component with a 1-row "hole-shaped" gap that splits
+    /// the row into 2 runs. cv2 = 2 (outer + 1 hole).
+    #[test]
+    fn split_then_merge_matches_opencv() {
+        let w = 10;
+        let h = 3;
+        // Row 0: ##########  (1 run)
+        // Row 1: ####..####  (2 runs, gap in middle = hole start)
+        // Row 2: ##########  (1 run, hole closed)
+        let mut data = vec![0u8; w * h];
+        for c in 0..w { data[c] = 1; }
+        for c in 0..4 { data[w + c] = 1; }
+        for c in 6..w { data[w + c] = 1; }
+        for c in 0..w { data[2 * w + c] = 1; }
+        let contours = find_external_contours_linkruns(&data, w, h);
+        assert_eq!(
+            contours.len(), 2,
+            "split-then-merge = 2 contours (cv2 ground truth), got {} ({:?})",
+            contours.len(), contours
+        );
+    }
+
+    /// Three top-row runs that merge through a wide bottom row. RETR_EXTERNAL
+    /// should be 1 component; if linkruns returns 3, the cross-row link
+    /// machinery is failing to merge.
+    #[test]
+    fn three_top_runs_merge_via_bottom_row() {
+        let w = 15;
+        let h = 3;
+        // Row 0 + 1: ###...###...###  (3 disjoint columns, top + middle row)
+        // Row 2:    ###############   (1 long run merging everything)
+        let mut data = vec![0u8; w * h];
+        for r in 0..2 {
+            for c in 0..3 { data[r * w + c] = 1; }
+            for c in 6..9 { data[r * w + c] = 1; }
+            for c in 12..15 { data[r * w + c] = 1; }
+        }
+        for c in 0..15 { data[2 * w + c] = 1; }
+        let contours = find_external_contours_linkruns(&data, w, h);
+        assert_eq!(
+            contours.len(), 1,
+            "expected 1 merged contour, got {}: {:?}",
+            contours.len(), contours
+        );
+    }
 
     #[test]
     fn isolated_single_pixel() {
