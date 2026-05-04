@@ -826,6 +826,7 @@ const _: () = {
     let _ = assert_send::<FindContoursExecutor>;
 };
 
+
 /// Convenience API for finding contours without reusing buffers.
 ///
 /// Allocates fresh buffers on each call. For processing multiple images, use [`FindContoursExecutor`].
