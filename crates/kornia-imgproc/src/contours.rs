@@ -383,15 +383,34 @@ impl FindContoursExecutor {
                 // batch advance over zero runs
                 if pixel == 0 {
                     c += 1;
-                    // SWAR: skip 4 i16s at once; saves loop iteration overhead
-                    while c + 4 <= width {
-                        let word =
-                            unsafe { (img_ptr.add(row_base + c) as *const u64).read_unaligned() };
-                        if word != 0 {
-                            break;
+                    // NEON: scan 8 i16 lanes per iteration for the next non-zero,
+                    // following OpenCV's stateful-scan pattern (compare with prev,
+                    // bit-scan-forward to find the first transition). This is
+                    // ~2× the SWAR throughput (8 lanes vs 4) on aarch64.
+                    #[cfg(target_arch = "aarch64")]
+                    unsafe {
+                        use std::arch::aarch64::*;
+                        let zero = vdupq_n_s16(0);
+                        while c + 8 <= width {
+                            let v = vld1q_s16(img_ptr.add(row_base + c) as *const i16);
+                            let eq_zero = vceqq_s16(v, zero); // 0xFFFF where == 0
+                            // Cast to u8 narrow-down: top byte of each u16 → bit per lane
+                            let narrowed = vshrn_n_u16(eq_zero, 8); // uint8x8_t
+                            let bits = vreinterpret_u64_u8(narrowed);
+                            let bits_u64: u64 = vget_lane_u64(bits, 0);
+                            // bits_u64: byte[i] = 0xFF iff lane i == 0; we want
+                            // first lane where it ISN'T 0xFF (i.e. != zero).
+                            // Invert and find first non-zero byte.
+                            let inv = !bits_u64;
+                            if inv != 0 {
+                                let first = inv.trailing_zeros() / 8;
+                                c += first as usize;
+                                break;
+                            }
+                            c += 8;
                         }
-                        c += 4;
                     }
+                    // Scalar fallback / tail
                     while c <= width && unsafe { *img_ptr.add(row_base + c) } == 0 {
                         c += 1;
                     }
@@ -449,22 +468,42 @@ impl FindContoursExecutor {
                     self.buffers.ranges.push(range);
                     lnbd = nbd;
                 } else if pixel == 1 {
-                    // All-1 SWAR skip: interior pixels can never be contour starts
-                    // Guard the last chunk against potential hole start at right boundary
+                    // Interior 1-pixel: NEON-skip whole chunks of all-1s.
+                    // For chunks with any non-1 lane, fall through to the
+                    // existing scalar SWAR which has the correct hole-start
+                    // back-up handling at chunk boundaries.
                     c += 1;
+                    #[cfg(target_arch = "aarch64")]
+                    unsafe {
+                        use std::arch::aarch64::*;
+                        let one = vdupq_n_s16(1);
+                        while c + 8 <= width {
+                            let v = vld1q_s16(img_ptr.add(row_base + c) as *const i16);
+                            let eq_one = vceqq_s16(v, one);
+                            // All lanes equal to 1 iff vminvq_u16(eq_one) == 0xFFFF
+                            if vminvq_u16(eq_one) != 0xFFFF {
+                                break;
+                            }
+                            // Also need to check that the NEXT pixel (c+8) isn't 0,
+                            // because then c+7 would be a hole-start candidate.
+                            let right_peek = *img_ptr.add(row_base + c + 8);
+                            if right_peek == 0 {
+                                c += 7; // step to c+7, which is the candidate
+                                break;
+                            }
+                            c += 8;
+                        }
+                    }
+                    // Scalar SWAR for the partial-chunk tail (preserves the
+                    // existing right-peek hole-start back-up).
                     while c + 4 <= width {
                         let word =
                             unsafe { (img_ptr.add(row_base + c) as *const u64).read_unaligned() };
-
-                        // 4 x 1i16 packed into u64 (endian-agnostic)
                         if word != u64::from_ne_bytes([1, 0, 1, 0, 1, 0, 1, 0]) {
                             break;
                         }
-                        // Pixels c..c+3 are all 1, left = 1 (nonzero)
-                        // Check right of c+3 for potential hole start
                         let right_peek = unsafe { *img_ptr.add(row_base + c + 4) };
                         if right_peek == 0 {
-                            // c+3 may be a hole start; process it next iteration
                             c += 3;
                             break;
                         }
