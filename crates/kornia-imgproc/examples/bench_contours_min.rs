@@ -7,7 +7,7 @@ use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
 use kornia_imgproc::contours::{
     find_contours, ContourApproximationMode, FindContoursExecutor, RetrievalMode,
 };
-use kornia_imgproc::contours_lsl::LslExecutor;
+use kornia_imgproc::contours_lsl::{LslChainMode, LslExecutor};
 use std::time::Instant;
 
 const SIZES: &[(usize, usize)] = &[(128, 128), (256, 256), (512, 512), (1024, 1024), (2048, 2048)];
@@ -108,16 +108,21 @@ fn run_one(
         mn * 1e6, md * 1e6, mu * 1e6, pix_per_s
     );
 
-    // --- contours_lsl (run-based, External-only; output shape = NONE) ---
+    // --- contours_lsl (run-based, External-only) ---
     if matches!(retrieval, RetrievalMode::External) {
+        // Map kornia approx -> LSL chain mode (Simple -> Simple, anything else -> None)
+        let lsl_mode = match approx {
+            ContourApproximationMode::Simple => LslChainMode::Simple,
+            _ => LslChainMode::None,
+        };
         let mut lsl = LslExecutor::new();
         for _ in 0..WARMUP {
-            let _ = lsl.find_external_contours_image(&img);
+            let _ = lsl.find_external_contours_image_with(&img, lsl_mode);
         }
         let mut samples = Vec::with_capacity(REPS);
         for _ in 0..REPS {
             let t = Instant::now();
-            let _ = lsl.find_external_contours_image(&img);
+            let _ = lsl.find_external_contours_image_with(&img, lsl_mode);
             samples.push(t.elapsed().as_secs_f64());
         }
         let (mn, md, mu) = stats(samples);

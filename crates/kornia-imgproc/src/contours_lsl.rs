@@ -44,6 +44,22 @@
 //! - **Day 4**: Boundary trace + NEON optimization (STUB)
 //! - **Day 5**: Public API + bench validation (STUB)
 
+/// Chain approximation mode for [`LslExecutor::find_external_contours`].
+///
+/// Mirrors OpenCV's `CHAIN_APPROX_NONE` / `CHAIN_APPROX_SIMPLE` semantics:
+/// - `None` emits every boundary pixel (raw Moore-neighbour trace).
+/// - `Simple` emits only corner pixels — points where the trace direction
+///   changes. On axis-aligned shapes this collapses long straight runs to
+///   their endpoints (typical 5-10x reduction in arena writes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LslChainMode {
+    /// Emit every boundary pixel.
+    #[default]
+    None,
+    /// Emit only direction-change corners.
+    Simple,
+}
+
 /// One run of consecutive non-zero pixels in a row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Run {
@@ -662,12 +678,25 @@ impl LslExecutor {
     }
 
     /// Run the LSL pipeline on a binary image, returning a view into the
-    /// executor's arena. Returned slice is borrowed; lives until the next call.
+    /// executor's arena. Emits every boundary pixel
+    /// ([`LslChainMode::None`]). For OpenCV-style corner-only output,
+    /// see [`Self::find_external_contours_with`].
     pub fn find_external_contours<'a>(
         &'a mut self,
         src: &[u8],
         width: usize,
         height: usize,
+    ) -> &'a [Vec<[i32; 2]>] {
+        self.find_external_contours_with(src, width, height, LslChainMode::None)
+    }
+
+    /// Run the LSL pipeline with an explicit chain-approximation mode.
+    pub fn find_external_contours_with<'a>(
+        &'a mut self,
+        src: &[u8],
+        width: usize,
+        height: usize,
+        chain_mode: LslChainMode,
     ) -> &'a [Vec<[i32; 2]>] {
         let b = &mut self.buffers;
 
@@ -753,7 +782,7 @@ impl LslExecutor {
             let arena_start = b.out_arena.len();
             trace_one_component_on_binary(
                 src, width as i32, height as i32,
-                start_r as i32, start_c as i32, &mut b.out_arena,
+                start_r as i32, start_c as i32, &mut b.out_arena, chain_mode,
             );
             b.out_ranges.push(arena_start..b.out_arena.len());
             return &[];
@@ -814,7 +843,8 @@ impl LslExecutor {
             let (sr, sc) = b.starts[cid];
             let arena_start = b.out_arena.len();
             trace_one_component_into_gen(
-                &b.grid, w_i, h_i, sr as i32, sc as i32, cid as u32, gen_high, &mut b.out_arena,
+                &b.grid, w_i, h_i, sr as i32, sc as i32, cid as u32, gen_high,
+                &mut b.out_arena, chain_mode,
             );
             b.out_ranges.push(arena_start..b.out_arena.len());
         }
@@ -848,8 +878,17 @@ impl LslExecutor {
         &'a mut self,
         src: &kornia_image::Image<u8, 1, A>,
     ) -> &'a [Vec<[i32; 2]>] {
+        self.find_external_contours_image_with(src, LslChainMode::None)
+    }
+
+    /// Image-based variant of [`Self::find_external_contours_with`].
+    pub fn find_external_contours_image_with<'a, A: kornia_image::allocator::ImageAllocator>(
+        &'a mut self,
+        src: &kornia_image::Image<u8, 1, A>,
+        chain_mode: LslChainMode,
+    ) -> &'a [Vec<[i32; 2]>] {
         let size = src.size();
-        self.find_external_contours(src.as_slice(), size.width, size.height)
+        self.find_external_contours_with(src.as_slice(), size.width, size.height, chain_mode)
     }
 
     #[inline]
@@ -898,6 +937,7 @@ fn trace_one_component_on_binary(
     start_r: i32,
     start_c: i32,
     arena: &mut Vec<[i32; 2]>,
+    mode: LslChainMode,
 ) {
     arena.push([start_c, start_r]);
     let mut first: Option<(i32, i32, usize)> = None;
@@ -915,12 +955,13 @@ fn trace_one_component_on_binary(
         Some(t) => t,
     };
     let mut in_dir = (dir_to_first + 4) & 7;
+    let mut prev_d = dir_to_first;
+    let simple = matches!(mode, LslChainMode::Simple);
     let max_iters = (width as usize) * (height as usize) * 4 + 64;
     let mut iters = 0usize;
     loop {
         if iters > max_iters { break; }
         iters += 1;
-        arena.push([c, r]);
         let scan_start = (in_dir + 1) & 7;
         let mut next: Option<(i32, i32, usize)> = None;
         for k in 0..8usize {
@@ -932,12 +973,16 @@ fn trace_one_component_on_binary(
                 break;
             }
         }
-        let (nr, nc, _d) = match next { None => break, Some(t) => t };
+        let (nr, nc, d) = match next { None => break, Some(t) => t };
+        if !simple || d != prev_d {
+            arena.push([c, r]);
+            prev_d = d;
+        }
         if nr == start_r && nc == start_c && iters > 1 {
             break;
         }
         r = nr; c = nc;
-        in_dir = (next.unwrap().2 + 4) & 7;
+        in_dir = (d + 4) & 7;
     }
 }
 
@@ -952,6 +997,7 @@ fn trace_one_component_into_gen(
     cid: u32,
     gen_high: u64,
     arena: &mut Vec<[i32; 2]>,
+    mode: LslChainMode,
 ) {
     arena.push([start_c, start_r]);
     let mut first: Option<(i32, i32, usize)> = None;
@@ -968,14 +1014,14 @@ fn trace_one_component_into_gen(
         None => return,
         Some(t) => t,
     };
-    let _first_in_dir = (dir_to_first + 4) & 7;
     let mut in_dir = (dir_to_first + 4) & 7;
+    let mut prev_d = dir_to_first;
+    let simple = matches!(mode, LslChainMode::Simple);
     let max_iters = (width as usize) * (height as usize) * 4 + 64;
     let mut iters = 0usize;
     loop {
         if iters > max_iters { break; }
         iters += 1;
-        arena.push([c, r]);
         let scan_start = (in_dir + 1) & 7;
         let mut next: Option<(i32, i32, usize)> = None;
         for k in 0..8usize {
@@ -988,8 +1034,11 @@ fn trace_one_component_into_gen(
             }
         }
         let (nr, nc, d) = match next { None => break, Some(t) => t };
+        if !simple || d != prev_d {
+            arena.push([c, r]);
+            prev_d = d;
+        }
         if nr == start_r && nc == start_c && iters > 1 {
-            let _ = d;
             break;
         }
         r = nr; c = nc;
@@ -1137,6 +1186,28 @@ mod tests {
         assert_eq!(contours.len(), 1);
         // Boundary of a 3x3 filled square = 8 pixels (corners + edge midpoints)
         assert_eq!(contours[0].len(), 8, "expected 8 boundary, got {:?}", contours[0]);
+    }
+
+    #[test]
+    fn simple_mode_collapses_3x3_filled_to_4_corners() {
+        // Same 3x3 filled square as above. NONE returns 8 boundary pixels;
+        // SIMPLE should return only the 4 corners (direction-change points).
+        let w = 5;
+        let h = 5;
+        let mut data = vec![0u8; w * h];
+        for r in 1..4 { for c in 1..4 { data[r * w + c] = 1; } }
+        let mut exec = LslExecutor::new();
+        exec.find_external_contours_with(&data, w, h, LslChainMode::Simple);
+        let pts: Vec<[i32; 2]> = exec.iter_contours().next().unwrap().to_vec();
+        assert_eq!(
+            pts.len(), 4,
+            "SIMPLE mode should collapse straight edges to 4 corners, got {pts:?}"
+        );
+        // The 4 returned points must be exactly the corners of the 3x3 box
+        // (any order — depends on trace direction).
+        let mut sorted = pts.clone();
+        sorted.sort();
+        assert_eq!(sorted, vec![[1, 1], [1, 3], [3, 1], [3, 3]]);
     }
 
     #[test]
