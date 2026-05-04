@@ -6,8 +6,9 @@
 //! "Fused" calls a single kernel that does all three ops inline.
 
 use kornia_cubecl::resize::{
-    normalize_u8_to_f32, resize_bilinear_u8_rgb_with_weights, resize_to_gray_normalize_with_weights,
-    rgb_to_gray_u8, WeightHandles,
+    hwc_u8_to_chw_f32_normalize, normalize_u8_to_f32, resize_bilinear_u8_rgb_with_weights,
+    resize_to_chw_normalize_with_weights, resize_to_gray_normalize_with_weights, rgb_to_gray_u8,
+    WeightHandles,
 };
 use kornia_cubecl::runtime;
 use kornia_image::{Image, ImageSize};
@@ -26,6 +27,9 @@ const REPS: usize = 10;
 const WARMUP: usize = 3;
 const MEAN: f32 = 127.5;
 const INV_STD: f32 = 1.0 / 64.0;
+// ImageNet-style per-channel mean/std (in u8 scale, 0-255)
+const MEAN_RGB: [f32; 3] = [123.675, 116.28, 103.53];
+const INV_STD_RGB: [f32; 3] = [1.0 / 58.395, 1.0 / 57.12, 1.0 / 57.375];
 
 fn make_image(w: usize, h: usize) -> Image<u8, 3, CpuAllocator> {
     let mut rng = StdRng::seed_from_u64(0xC0FFEE);
@@ -42,12 +46,10 @@ fn stats(mut s: Vec<f64>) -> (f64, f64, f64) {
 fn fmt_us(s: f64) -> String { format!("{:>9.1}", s * 1e6) }
 fn fmt_mpix(p: usize, s: f64) -> String { format!("{:>7.1}", (p as f64) / s / 1e6) }
 
-fn main() {
-    let cuda = runtime::init_cuda().expect("CUDA required");
-    println!("# Pipeline: bilinear resize → RGB→gray → normalize_to_f32");
-    println!("# Sequential = 3 kernel launches w/ intermediate DRAM buffers");
-    println!("# Fused      = 1 kernel launch, no intermediate buffers");
-    println!("# Reps={REPS}, warmup={WARMUP}\n");
+fn run_gray_pipeline(cuda: &cubecl::client::ComputeClient<runtime::CudaRuntime>) {
+    println!("\n## Pipeline 1: bilinear resize → RGB→gray → normalize_to_f32 (HWC out)");
+    println!("# sequential = 3 kernel launches with DRAM intermediates");
+    println!("# fused      = 1 kernel launch\n");
     println!("{:<22}{:<14}{:>11}{:>11}{:>11}{:>10}",
         "src→dst", "arm", "min(μs)", "med(μs)", "mean(μs)", "Mpix/s");
     println!("{}", "-".repeat(80));
@@ -115,4 +117,85 @@ fn main() {
         println!("{:<22}{:<14}{}{}{}{}", "", "fused_1k", fmt_us(mn), fmt_us(md), fmt_us(mu), fmt_mpix(dst_pix, md));
         println!();
     }
+}
+
+fn run_chw_pipeline(cuda: &cubecl::client::ComputeClient<runtime::CudaRuntime>) {
+    println!("\n## Pipeline 2: bilinear resize → per-channel normalize → CHW f32 (ML preprocessing)");
+    println!("# sequential = 2 kernel launches (resize HWC u8 + transpose+normalize to CHW f32)");
+    println!("# fused      = 1 kernel launch (resize+normalize+CHW write all inline)\n");
+    println!("{:<22}{:<14}{:>11}{:>11}{:>11}{:>10}",
+        "src→dst", "arm", "min(μs)", "med(μs)", "mean(μs)", "Mpix/s");
+    println!("{}", "-".repeat(80));
+
+    for &(src_w, src_h, dst_w, dst_h) in PIPELINES {
+        let dst_pix = dst_w * dst_h;
+        let label = format!("{src_w}x{src_h}→{dst_w}x{dst_h}");
+        let src = make_image(src_w, src_h);
+
+        let src_h_cu = cuda.create_from_slice(src.as_slice());
+        let tmp_rgb = cuda.empty(dst_w * dst_h * 3);
+        let dst_chw = cuda.empty(3 * dst_w * dst_h * 4); // 3 planes * pixels * 4 bytes/f32
+        let weights = WeightHandles::new::<runtime::CudaRuntime>(
+            cuda,
+            ImageSize { width: src_w, height: src_h },
+            ImageSize { width: dst_w, height: dst_h },
+        );
+
+        // === SEQUENTIAL: 2 kernels (resize + transpose-normalize) ===
+        for _ in 0..WARMUP {
+            resize_bilinear_u8_rgb_with_weights::<runtime::CudaRuntime>(
+                cuda, &src_h_cu, ImageSize { width: src_w, height: src_h },
+                &tmp_rgb, ImageSize { width: dst_w, height: dst_h }, &weights,
+            ).unwrap();
+            hwc_u8_to_chw_f32_normalize::<runtime::CudaRuntime>(
+                cuda, &tmp_rgb, &dst_chw, dst_w, dst_h, MEAN_RGB, INV_STD_RGB,
+            ).unwrap();
+            let _ = cubecl::future::block_on(cuda.sync());
+        }
+        let mut samples = Vec::with_capacity(REPS);
+        for _ in 0..REPS {
+            let t = Instant::now();
+            resize_bilinear_u8_rgb_with_weights::<runtime::CudaRuntime>(
+                cuda, &src_h_cu, ImageSize { width: src_w, height: src_h },
+                &tmp_rgb, ImageSize { width: dst_w, height: dst_h }, &weights,
+            ).unwrap();
+            hwc_u8_to_chw_f32_normalize::<runtime::CudaRuntime>(
+                cuda, &tmp_rgb, &dst_chw, dst_w, dst_h, MEAN_RGB, INV_STD_RGB,
+            ).unwrap();
+            let _ = cubecl::future::block_on(cuda.sync());
+            samples.push(t.elapsed().as_secs_f64());
+        }
+        let (mn, md, mu) = stats(samples);
+        println!("{:<22}{:<14}{}{}{}{}", label, "sequential_2k", fmt_us(mn), fmt_us(md), fmt_us(mu), fmt_mpix(dst_pix, md));
+
+        // === FUSED: 1 kernel ===
+        for _ in 0..WARMUP {
+            resize_to_chw_normalize_with_weights::<runtime::CudaRuntime>(
+                cuda, &src_h_cu, ImageSize { width: src_w, height: src_h },
+                &dst_chw, ImageSize { width: dst_w, height: dst_h }, &weights, MEAN_RGB, INV_STD_RGB,
+            ).unwrap();
+            let _ = cubecl::future::block_on(cuda.sync());
+        }
+        let mut samples = Vec::with_capacity(REPS);
+        for _ in 0..REPS {
+            let t = Instant::now();
+            resize_to_chw_normalize_with_weights::<runtime::CudaRuntime>(
+                cuda, &src_h_cu, ImageSize { width: src_w, height: src_h },
+                &dst_chw, ImageSize { width: dst_w, height: dst_h }, &weights, MEAN_RGB, INV_STD_RGB,
+            ).unwrap();
+            let _ = cubecl::future::block_on(cuda.sync());
+            samples.push(t.elapsed().as_secs_f64());
+        }
+        let (mn, md, mu) = stats(samples);
+        println!("{:<22}{:<14}{}{}{}{}", "", "fused_1k", fmt_us(mn), fmt_us(md), fmt_us(mu), fmt_mpix(dst_pix, md));
+        println!();
+    }
+}
+
+fn main() {
+    let cuda = runtime::init_cuda().expect("CUDA required");
+    println!("# Cubecl pipeline fusion benches on Jetson Orin Nano");
+    println!("# Reps={REPS}, warmup={WARMUP}");
+    run_gray_pipeline(&cuda);
+    run_chw_pipeline(&cuda);
 }

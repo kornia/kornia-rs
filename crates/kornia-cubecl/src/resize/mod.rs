@@ -7,8 +7,9 @@ use cubecl::server::Handle;
 use kornia_image::ImageSize;
 
 use kernel::{
-    normalize_u8_to_f32_kernel, resize_bilinear_u8_rgb_kernel,
-    resize_bilinear_u8_rgb_kernel_x16, resize_bilinear_u8_rgb_kernel_x4,
+    hwc_u8_to_chw_f32_normalize_kernel, normalize_u8_to_f32_kernel,
+    resize_bilinear_u8_rgb_kernel, resize_bilinear_u8_rgb_kernel_x16,
+    resize_bilinear_u8_rgb_kernel_x4, resize_to_chw_normalize_kernel,
     resize_to_gray_normalize_kernel, rgb_to_gray_kernel,
 };
 use weights::compute_axis_weights;
@@ -192,6 +193,86 @@ pub fn resize_to_gray_normalize_with_weights<R: Runtime>(
             dst_h,
             mean,
             inv_std,
+        );
+    }
+    Ok(())
+}
+
+/// FUSED launcher: bilinear resize HWC u8 RGB → per-channel normalize → CHW f32, all in one kernel pass.
+/// `dst` must be a contiguous f32 buffer of length `3 * dst_size.width * dst_size.height` in CHW layout
+/// (R plane | G plane | B plane).
+#[allow(clippy::too_many_arguments)]
+pub fn resize_to_chw_normalize_with_weights<R: Runtime>(
+    client: &ComputeClient<R>,
+    src: &Handle,
+    src_size: ImageSize,
+    dst: &Handle,
+    dst_size: ImageSize,
+    weights: &WeightHandles,
+    mean_rgb: [f32; 3],
+    inv_std_rgb: [f32; 3],
+) -> Result<(), ResizeError> {
+    if src_size.width == 0 || src_size.height == 0 || dst_size.width == 0 || dst_size.height == 0 {
+        return Err(ResizeError::ZeroDimension);
+    }
+    let src_w = src_size.width as u32;
+    let dst_w = dst_size.width as u32;
+    let dst_h = dst_size.height as u32;
+
+    let cube_dim = CubeDim::new_2d(16, 16);
+    let cube_count = CubeCount::new_2d(dst_w.div_ceil(16), dst_h.div_ceil(16));
+    let src_len = src_size.width * src_size.height * 3;
+    let dst_len = 3 * dst_size.width * dst_size.height; // f32 element count
+
+    unsafe {
+        resize_to_chw_normalize_kernel::launch_unchecked::<R>(
+            client,
+            cube_count,
+            cube_dim,
+            ArrayArg::from_raw_parts(src.clone(), src_len),
+            ArrayArg::from_raw_parts(dst.clone(), dst_len),
+            ArrayArg::from_raw_parts(weights.wx_idx.clone(), weights.wx_len),
+            ArrayArg::from_raw_parts(weights.wx_w.clone(), weights.wx_len),
+            ArrayArg::from_raw_parts(weights.wy_idx.clone(), weights.wy_len),
+            ArrayArg::from_raw_parts(weights.wy_w.clone(), weights.wy_len),
+            src_w, dst_w, dst_h,
+            mean_rgb[0], mean_rgb[1], mean_rgb[2],
+            inv_std_rgb[0], inv_std_rgb[1], inv_std_rgb[2],
+        );
+    }
+    Ok(())
+}
+
+/// Standalone: HWC u8 RGB → CHW f32 with per-channel normalize.
+/// Used as the second kernel in the sequential bench arm.
+#[allow(clippy::too_many_arguments)]
+pub fn hwc_u8_to_chw_f32_normalize<R: Runtime>(
+    client: &ComputeClient<R>,
+    src: &Handle,
+    dst: &Handle,
+    width: usize,
+    height: usize,
+    mean_rgb: [f32; 3],
+    inv_std_rgb: [f32; 3],
+) -> Result<(), ResizeError> {
+    if width == 0 || height == 0 {
+        return Err(ResizeError::ZeroDimension);
+    }
+    let cube_dim = CubeDim::new_2d(16, 16);
+    let cube_count = CubeCount::new_2d((width as u32).div_ceil(16), (height as u32).div_ceil(16));
+    let src_len = width * height * 3;
+    let dst_len = 3 * width * height;
+
+    unsafe {
+        hwc_u8_to_chw_f32_normalize_kernel::launch_unchecked::<R>(
+            client,
+            cube_count,
+            cube_dim,
+            ArrayArg::from_raw_parts(src.clone(), src_len),
+            ArrayArg::from_raw_parts(dst.clone(), dst_len),
+            width as u32, height as u32,
+            mean_rgb[0], mean_rgb[1], mean_rgb[2],
+            inv_std_rgb[0], inv_std_rgb[1], inv_std_rgb[2],
         );
     }
     Ok(())

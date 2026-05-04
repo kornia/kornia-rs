@@ -225,6 +225,80 @@ pub fn resize_to_gray_normalize_kernel(
     dst[usize::cast_from(dst_off)] = norm;
 }
 
+/// Composable primitive: per-channel u8→f32 normalize.
+/// Output = (channel_value - mean) * inv_std.
+#[cube]
+pub fn normalize_chan_u8_to_f32(c: u32, mean: f32, inv_std: f32) -> f32 {
+    let v = f32::cast_from(c);
+    (v - mean) * inv_std
+}
+
+/// FUSED kernel for the canonical ML preprocessing chain:
+/// bilinear resize HWC u8 RGB → per-channel normalize → CHW f32 layout, all in one pass.
+///
+/// Output layout: dst[c * dst_h * dst_w + y * dst_w + x] for c ∈ {0=R, 1=G, 2=B}.
+/// This is what every vision model (ResNet, ViT, YOLO, …) takes as input.
+#[cube(launch_unchecked)]
+pub fn resize_to_chw_normalize_kernel(
+    src: &Array<u8>,
+    dst: &mut Array<f32>,
+    weights_x_idx: &Array<u32>,
+    weights_x_w: &Array<u32>,
+    weights_y_idx: &Array<u32>,
+    weights_y_w: &Array<u32>,
+    #[comptime] src_w: u32,
+    #[comptime] dst_w: u32,
+    #[comptime] dst_h: u32,
+    mean_r: f32, mean_g: f32, mean_b: f32,
+    inv_std_r: f32, inv_std_g: f32, inv_std_b: f32,
+) {
+    let out_x = ABSOLUTE_POS_X;
+    let out_y = ABSOLUTE_POS_Y;
+    if out_x >= dst_w || out_y >= dst_h {
+        terminate!();
+    }
+
+    let (r, g, b) = sample_bilinear_u8_rgb_pixel(
+        src, weights_x_idx, weights_x_w, weights_y_idx, weights_y_w,
+        src_w, out_x, out_y,
+    );
+
+    let plane = dst_h * dst_w;
+    let off = out_y * dst_w + out_x;
+    dst[usize::cast_from(off)]             = normalize_chan_u8_to_f32(r, mean_r, inv_std_r);
+    dst[usize::cast_from(plane + off)]     = normalize_chan_u8_to_f32(g, mean_g, inv_std_g);
+    dst[usize::cast_from(2u32 * plane + off)] = normalize_chan_u8_to_f32(b, mean_b, inv_std_b);
+}
+
+/// Standalone: HWC u8 RGB → CHW f32 with per-channel normalize. Two-kernel
+/// sequential alternative to the fused kernel above (operates on already-resized
+/// HWC buffer; used for the sequential bench arm).
+#[cube(launch_unchecked)]
+pub fn hwc_u8_to_chw_f32_normalize_kernel(
+    src: &Array<u8>,
+    dst: &mut Array<f32>,
+    #[comptime] width: u32,
+    #[comptime] height: u32,
+    mean_r: f32, mean_g: f32, mean_b: f32,
+    inv_std_r: f32, inv_std_g: f32, inv_std_b: f32,
+) {
+    let x = ABSOLUTE_POS_X;
+    let y = ABSOLUTE_POS_Y;
+    if x >= width || y >= height {
+        terminate!();
+    }
+    let src_off = (y * width + x) * 3u32;
+    let r = u32::cast_from(src[usize::cast_from(src_off)]);
+    let g = u32::cast_from(src[usize::cast_from(src_off + 1u32)]);
+    let b = u32::cast_from(src[usize::cast_from(src_off + 2u32)]);
+
+    let plane = height * width;
+    let off = y * width + x;
+    dst[usize::cast_from(off)]                = normalize_chan_u8_to_f32(r, mean_r, inv_std_r);
+    dst[usize::cast_from(plane + off)]        = normalize_chan_u8_to_f32(g, mean_g, inv_std_g);
+    dst[usize::cast_from(2u32 * plane + off)] = normalize_chan_u8_to_f32(b, mean_b, inv_std_b);
+}
+
 /// Standalone: RGB → gray (no resize). Operates pixel-by-pixel on an interleaved
 /// u8 RGB buffer, writes a u8 grayscale buffer of length width*height.
 #[cube(launch_unchecked)]

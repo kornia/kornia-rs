@@ -129,26 +129,45 @@ compose a custom pipeline that cubecl emits as one fused kernel:
 - **Tier 3 — Pre-fused common pipelines** (single kernel, calls primitives inline):
   - `resize_to_gray_normalize_with_weights<R>(...)` — does all three above in one pass
 
-### Fused vs sequential bench (1080p ML preprocessing chain)
-
-`bilinear resize → RGB→gray → normalize_to_f32` on Jetson Orin Nano:
+### Fused vs sequential — Pipeline 1 (resize → gray → normalize, HWC out)
 
 | size              | sequential 3-kernel (Mpix/s) | fused 1-kernel (Mpix/s) | **speedup** |
 |-------------------|----------------------------:|------------------------:|------------:|
-| 1024² out         | 1429                        | 2766                    | **1.94×**   |
-| 1080p → 540p      | 1114                        | 2890                    | **2.59×**   |
-| 2048² out         | 1149                        | 3158                    | **2.75×**   |
-| 4096² out         | 1648                        | 3218                    | 1.95×       |
-| 4096² out (8K in) | 1856                        | 3589                    | 1.93×       |
+| 1024² out         | 1340                        | 2731                    | **2.04×**   |
+| 1080p → 540p      | 1116                        | 2771                    | **2.48×**   |
+| 2048² out         |  874                        | 1282                    | 1.47×       |
+| 4096² out         | 1646                        | 3223                    | **1.96×**   |
+| 4096² out (8K in) | 1879                        | 3499                    | **1.86×**   |
 
-The 2× speedup matches the theoretical ceiling for this 3-op chain: sequential
+### Fused vs sequential — Pipeline 2 (resize → per-channel normalize → CHW f32)
+
+This is the canonical ML preprocessing chain: input image → tensor for ResNet/ViT/YOLO.
+ImageNet-style mean/std applied per channel, output is contiguous CHW f32 (input format
+for every PyTorch/ONNX vision model).
+
+| size              | sequential 2-kernel (Mpix/s) | fused 1-kernel (Mpix/s) | **speedup** |
+|-------------------|----------------------------:|------------------------:|------------:|
+| 1024² out         | 1336                        | 1688                    | 1.26×       |
+| 1080p → 540p      | 1124                        | **2243**                | **2.00×** ⭐ |
+| 2048² out         | 1162                        | 2349                    | **2.02×**   |
+| 4096² out         | 1571                        | 1978                    | 1.26×       |
+| 4096² out (8K in) | 1788                        | 2146                    | 1.20×       |
+
+The 2× speedup matches the theoretical ceiling for the gray-HWC chain: sequential
 mode reads/writes ~96 MB of intermediate DRAM buffers per call; the fused kernel
-eliminates them, paying only for src read + final f32 dst write.
+eliminates them.
 
-The fused 8K result (3589 Mpix/s) is actually *higher* than the standalone resize
-peak (3546 Mpix/s with `pw_wide`) — because the fused kernel writes f32 gray
-(1 channel) rather than u8 RGB (3 channels), so total memory traffic is lower
-even though the per-element size is bigger.
+The CHW pipeline shows a smaller proportional speedup at large sizes because the
+CHW output is 3× larger than the gray output (3 f32 planes = 12 bytes/pixel vs
+gray's 4 bytes). Output-write traffic dominates so saving the intermediate buffer
+matters less. The 2× peak at medium sizes still holds.
+
+**The real-world headline**: our CHW-fused 1080p→540p ML preprocessing pipeline
+(resize + ImageNet normalize + CHW transpose) takes **231 μs** on Jetson Orin Nano.
+VPI's *resize alone* takes 593 μs. So the **complete preprocessing pipeline** runs
+**2.6× faster than VPI doing just the resize step** — and a typical PyTorch
+DataLoader pipeline running the same chain on CPU would take ~5-10 ms
+(20-40× slower than our fused kernel).
 
 **API design takeaway:** by exposing primitives as `#[cube]` functions (not
 `#[cube(launch)]` kernels), they inline at codegen when composed. Callers who
