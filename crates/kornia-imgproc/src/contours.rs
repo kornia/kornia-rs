@@ -266,6 +266,7 @@ impl FindContoursExecutor {
         method: ContourApproximationMode,
     ) -> Result<ContoursResult, ContoursError> {
         // Algorithm scan: fills self.buffers (arena, ranges, hierarchy, border_types).
+        // execute_scan also reverses contour direction to match OpenCV's CCW convention.
         self.execute_scan(src, mode, method)?;
 
         // Collect per-contour owned Vecs. THIS IS THE EXPENSIVE STEP for sparse
@@ -331,16 +332,12 @@ impl FindContoursExecutor {
                 .enumerate()
                 .for_each(|(r, dst_row)| {
                     let src_row = &src_data[r * width..(r + 1) * width];
-                    for (d, &s) in dst_row[1..=width].iter_mut().zip(src_row.iter()) {
-                        *d = (s != 0) as i16;
-                    }
+                    binarize_row(src_row, &mut dst_row[1..=width]);
                 });
         } else {
             for (r, dst_row) in interior.chunks_mut(padded_w).enumerate() {
                 let src_row = &src_data[r * width..(r + 1) * width];
-                for (d, &s) in dst_row[1..=width].iter_mut().zip(src_row.iter()) {
-                    *d = (s != 0) as i16;
-                }
+                binarize_row(src_row, &mut dst_row[1..=width]);
             }
         }
 
@@ -479,6 +476,18 @@ impl FindContoursExecutor {
                 }
 
                 c += 1;
+            }
+        }
+
+        // Reverse contour traversal direction in-place to match OpenCV's
+        // CCW-for-outer convention. Suzuki/Abe naturally walks CW; OpenCV
+        // post-processes to CCW. We do the same: keep the start point,
+        // reverse the rest of each contour. Cheap (linear in arena size,
+        // touches only points already in cache).
+        for r in &self.buffers.ranges {
+            let slice = &mut self.buffers.arena[r.clone()];
+            if slice.len() > 1 {
+                slice[1..].reverse();
             }
         }
 
@@ -817,6 +826,46 @@ impl FindContoursExecutor {
 impl Default for FindContoursExecutor {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Binarize one row of u8 source pixels into i16 destination row of 0s and 1s.
+/// On aarch64 uses NEON to process 16 pixels per iteration; scalar fallback elsewhere.
+#[inline]
+fn binarize_row(src: &[u8], dst: &mut [i16]) {
+    debug_assert_eq!(src.len(), dst.len());
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        use std::arch::aarch64::*;
+        let n = src.len();
+        let mut i = 0;
+        let zero_u8 = vdupq_n_u8(0);
+        let one_u8 = vdupq_n_u8(1);
+        while i + 16 <= n {
+            // Load 16 u8 source pixels
+            let v = vld1q_u8(src.as_ptr().add(i));
+            // mask = (v != 0) as 0xFF or 0x00 per byte
+            let eq_zero = vceqq_u8(v, zero_u8);
+            let nonzero_mask = vmvnq_u8(eq_zero); // 0xFF where != 0
+            let bits = vandq_u8(nonzero_mask, one_u8); // 0 or 1 per byte
+            // Widen low 8 bytes to u16x8, then high 8 bytes — store as i16
+            let lo = vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(bits)));
+            let hi = vreinterpretq_s16_u16(vmovl_high_u8(bits));
+            vst1q_s16(dst.as_mut_ptr().add(i), lo);
+            vst1q_s16(dst.as_mut_ptr().add(i + 8), hi);
+            i += 16;
+        }
+        // Tail
+        for j in i..n {
+            *dst.get_unchecked_mut(j) = (*src.get_unchecked(j) != 0) as i16;
+        }
+        return;
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        for (d, &s) in dst.iter_mut().zip(src.iter()) {
+            *d = (s != 0) as i16;
+        }
     }
 }
 
