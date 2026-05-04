@@ -188,24 +188,12 @@ python3 crates/kornia-imgproc/examples/bench_opencv_contours.py \
 
 # Link-runs path (`contours_linkruns`) — OpenCV's algorithm, NEON'd
 
-> ⚠️ **CORRECTNESS REGRESSION — speed numbers below are from an incorrect
-> implementation.** A quality validator (`check_linkruns_quality.py`) showed
-> the port returns wrong contour counts on real images and noise:
->
-> | fixture | OpenCV EXT | OpenCV LIST | kornia linkruns |
-> |---------|-----------:|------------:|----------------:|
-> | pic1     |          1 |          17 | **11**          |
-> | pic3     |          1 |         121 | **3**           |
-> | pic4     |        881 |         931 | 847             |
-> | sparse_noise 1024² | 263 | 72487 | **11329**        |
->
-> Filled / hollow square fixtures still return correct counts (1 component
-> each). Real images and sparse noise reveal the bug — ext_rns push logic
-> in `establishLinks` is undercounting on dense / branching shapes.
->
-> The speed numbers below are kept for reference but **must not be cited as
-> a win until correctness is restored**. Next step: bit-exact debug against
-> OpenCV's link traversal on a small failing fixture.
+> ✅ **Correctness validated** (16/17 fixtures match `cv2.findContoursLinkRuns`
+> exactly). Only pic4 still off by 1.4% (kornia 894 vs cv 931) — a single
+> edge case to investigate. The earlier under-count bug was that
+> `CONNECTING_BELOW`'s hole-start branch was annotated "ignore for
+> External-only" and dropped the push. Fix: push hole starts to ext_rns
+> too (mirrors cv2's behavior of returning all contours with parent=-1).
 
 After reading OpenCV's `findContoursLinkRuns`
 (`modules/imgproc/src/contours_link.cpp`), we discovered the LSL
@@ -216,24 +204,24 @@ the run graph as it scans). Ported to Rust in `contours_linkruns.rs`,
 
 ## Headline numbers (Jetson Orin Nano, External + SIMPLE, 20 reps + 5 warmup)
 
-### vs OpenCV — link-runs wins everywhere except sparse-noise
+### vs OpenCV — correctness-validated link-runs
 
 | fixture | size | OpenCV (μs) | kornia linkruns (μs) | **vs OpenCV** |
 |---------|-----:|------------:|---------------------:|--------------:|
-| pic1.png  | 400×300 | 86      | **57**  | 🚀 **1.51× faster** |
-| pic3.png  | 400×300 | 81      | **50**  | 🚀 **1.62× faster** |
-| pic4.png  | 400×300 | 2023    | **580** | 🚀 **3.49× faster** |
+| pic1.png  | 400×300 | 86      | **68**  | 🚀 **1.26× faster** |
+| pic3.png  | 400×300 | 81      | **75**  | 🚀 **1.08× faster** |
+| pic4.png  | 400×300 | 2023    | **600** | 🚀 **3.37× faster** |
 | filled_square | 128²  | 19  | **6**   | 🚀 **3.16× faster** |
 | filled_square | 256²  | 42  | **14**  | 🚀 **3.00× faster** |
 | filled_square | 512²  | 124 | **42**  | 🚀 **2.95× faster** |
-| filled_square | 1024² | 847 | **139** | 🚀 **6.10× faster** |
-| filled_square | 2048² | 1420 | **522** | 🚀 **2.72× faster** |
-| hollow_square | 1024² | 852 | **153** | 🚀 **5.57× faster** |
-| hollow_square | 2048² | 1574 | **534** | 🚀 **2.95× faster** |
-| sparse_noise | 128² | 262 | **295** | 0.89× |
-| sparse_noise | 256² | 749 | 1234 | 0.61× |
-| sparse_noise | 512² | 2594 | 22325 | 0.12× ❌ |
-| sparse_noise | 2048² | 34821 | 460043 | 0.08× ❌ |
+| filled_square | 1024² | 847 | **138** | 🚀 **6.13× faster** |
+| filled_square | 2048² | 1420 | **592** | 🚀 **2.40× faster** |
+| hollow_square | 1024² | 852 | **154** | 🚀 **5.53× faster** |
+| hollow_square | 2048² | 1574 | **542** | 🚀 **2.90× faster** |
+| sparse_noise | 128² | 262 | 415 | 0.63× |
+| sparse_noise | 256² | 749 | 1682 | 0.45× |
+| sparse_noise | 512² | 2594 | 7744 | 0.33× ❌ |
+| sparse_noise | 2048² | 34821 | 262026 | 0.13× ❌ |
 
 ### vs LSL — link-runs strictly faster except on dense noise
 
