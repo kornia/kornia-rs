@@ -7,6 +7,7 @@ use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
 use kornia_imgproc::contours::{
     find_contours, ContourApproximationMode, FindContoursExecutor, RetrievalMode,
 };
+use kornia_imgproc::contours_linkruns::LinkRunsExecutor;
 use kornia_imgproc::contours_lsl::{LslChainMode, LslExecutor};
 use std::time::Instant;
 
@@ -129,6 +130,24 @@ fn run_one(
         let pix_per_s = (w * h) as f64 / md / 1e6;
         println!(
             "kornia_lsl,{label},{w}x{h},{:.1},{:.1},{:.1},{:.1}",
+            mn * 1e6, md * 1e6, mu * 1e6, pix_per_s
+        );
+
+        // --- contours_linkruns (OpenCV-style single-pass run linking) ---
+        let mut lr = LinkRunsExecutor::new();
+        for _ in 0..WARMUP {
+            let _ = lr.find_external_contours_image(&img);
+        }
+        let mut samples = Vec::with_capacity(REPS);
+        for _ in 0..REPS {
+            let t = Instant::now();
+            let _ = lr.find_external_contours_image(&img);
+            samples.push(t.elapsed().as_secs_f64());
+        }
+        let (mn, md, mu) = stats(samples);
+        let pix_per_s = (w * h) as f64 / md / 1e6;
+        println!(
+            "kornia_linkruns,{label},{w}x{h},{:.1},{:.1},{:.1},{:.1}",
             mn * 1e6, md * 1e6, mu * 1e6, pix_per_s
         );
     }
