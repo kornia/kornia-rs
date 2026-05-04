@@ -81,14 +81,14 @@ num-traits = { workspace = true }
 opencv = { version = "0.98", optional = true }
 rayon = { workspace = true }
 thiserror = { workspace = true }
-wide = "1.1.1"
+wide = "1.3.0"
 
 [dev-dependencies]
 criterion = { workspace = true }
 image = "0.25"
-imageproc = "0.25"
+imageproc = "0.26"
 kornia-io = { workspace = true }
-ndarray = { version = "0.15", features = ["rayon"] }
+ndarray = { version = "0.17", features = ["rayon"] }
 rand = { workspace = true }
 
 [features]
