@@ -14,6 +14,49 @@ use kornia_image::{allocator::ImageAllocator, Image};
 use rayon::prelude::*;
 use std::ops::Range;
 
+/// Trait abstracting over the work-buffer pixel type. We support `i16` (the default,
+/// up to ±32767 borders — works for all real-world images) and `i8` (compact,
+/// up to ±127 borders — 2× memory bandwidth win for small-contour images).
+///
+/// The dispatcher in `find_contours` tries `i8` first, falling back to `i16` on
+/// `NbdOverflow`, so callers don't need to choose explicitly.
+pub trait WorkPixel: Copy + Default + PartialEq + 'static {
+    /// Constant 0 (background marker).
+    const ZERO: Self;
+    /// Constant 1 (foreground unlabeled marker).
+    const ONE: Self;
+    /// Maximum positive value (overflow trigger for `nbd`).
+    const NBD_MAX: i32;
+    /// Construct from an i32 nbd value (positive or negative).
+    fn from_i32(v: i32) -> Self;
+    /// Promote to i32 for arithmetic.
+    fn to_i32(self) -> i32;
+    /// Absolute value as i32 for `lnbd` updates.
+    fn abs_i32(self) -> i32;
+    /// True iff value < 0.
+    fn is_negative(self) -> bool;
+}
+
+impl WorkPixel for i16 {
+    const ZERO: Self = 0;
+    const ONE: Self = 1;
+    const NBD_MAX: i32 = i16::MAX as i32;
+    #[inline(always)] fn from_i32(v: i32) -> Self { v as i16 }
+    #[inline(always)] fn to_i32(self) -> i32 { self as i32 }
+    #[inline(always)] fn abs_i32(self) -> i32 { (self as i32).abs() }
+    #[inline(always)] fn is_negative(self) -> bool { self < 0 }
+}
+
+impl WorkPixel for i8 {
+    const ZERO: Self = 0;
+    const ONE: Self = 1;
+    const NBD_MAX: i32 = i8::MAX as i32;
+    #[inline(always)] fn from_i32(v: i32) -> Self { v as i8 }
+    #[inline(always)] fn to_i32(self) -> i32 { self as i32 }
+    #[inline(always)] fn abs_i32(self) -> i32 { (self as i32).abs() }
+    #[inline(always)] fn is_negative(self) -> bool { self < 0 }
+}
+
 // Directions: 0=W 1=NW 2=N 3=NE 4=E 5=SE 6=S 7=SW
 const DIR_LUT: [usize; 9] = [1, 2, 3, 0, 0, 4, 7, 6, 5];
 const DIR_DR: [i32; 8] = [0, -1, -1, -1, 0, 1, 1, 1];
@@ -926,6 +969,42 @@ fn binarize_row(src: &[u8], dst: &mut [i16]) {
     {
         for (d, &s) in dst.iter_mut().zip(src.iter()) {
             *d = (s != 0) as i16;
+        }
+    }
+}
+
+/// Binarize one row of u8 source pixels into i8 destination row of 0s and 1s.
+/// On aarch64 uses NEON to process 16 pixels per iteration — 2× the throughput
+/// of the i16 version because NEON loads/stores 16 i8 lanes per 128-bit register
+/// (vs 8 i16 lanes). Used by the compact-i8 fast path.
+#[inline]
+fn binarize_row_i8(src: &[u8], dst: &mut [i8]) {
+    debug_assert_eq!(src.len(), dst.len());
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        use std::arch::aarch64::*;
+        let n = src.len();
+        let mut i = 0;
+        let zero_u8 = vdupq_n_u8(0);
+        let one_u8 = vdupq_n_u8(1);
+        while i + 16 <= n {
+            let v = vld1q_u8(src.as_ptr().add(i));
+            let eq_zero = vceqq_u8(v, zero_u8);
+            let nonzero_mask = vmvnq_u8(eq_zero);
+            let bits = vandq_u8(nonzero_mask, one_u8);
+            // Direct store as i8 — no widening needed (1 byte per pixel)
+            vst1q_s8(dst.as_mut_ptr().add(i), vreinterpretq_s8_u8(bits));
+            i += 16;
+        }
+        for j in i..n {
+            *dst.get_unchecked_mut(j) = (*src.get_unchecked(j) != 0) as i8;
+        }
+        return;
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        for (d, &s) in dst.iter_mut().zip(src.iter()) {
+            *d = (s != 0) as i8;
         }
     }
 }
