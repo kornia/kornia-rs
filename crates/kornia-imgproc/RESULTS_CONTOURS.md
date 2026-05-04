@@ -183,3 +183,71 @@ python3 crates/kornia-imgproc/examples/bench_opencv_contours.py \
   > /tmp/opencv.csv
 # (merge the two CSVs by fixture+size for the table above)
 ```
+
+---
+
+# Link-runs path (`contours_linkruns`) — OpenCV's algorithm, NEON'd
+
+After reading OpenCV's `findContoursLinkRuns`
+(`modules/imgproc/src/contours_link.cpp`), we discovered the LSL
+literature path was strictly *more general* than what OpenCV does (LSL
+labels, then traces; OpenCV stitches the contour structure directly into
+the run graph as it scans). Ported to Rust in `contours_linkruns.rs`,
++ NEON `find_start` / `find_end` (`v_scan_forward` equivalent).
+
+## Headline numbers (Jetson Orin Nano, External + SIMPLE, 20 reps + 5 warmup)
+
+### vs OpenCV — link-runs wins everywhere except sparse-noise
+
+| fixture | size | OpenCV (μs) | kornia linkruns (μs) | **vs OpenCV** |
+|---------|-----:|------------:|---------------------:|--------------:|
+| pic1.png  | 400×300 | 86      | **57**  | 🚀 **1.51× faster** |
+| pic3.png  | 400×300 | 81      | **50**  | 🚀 **1.62× faster** |
+| pic4.png  | 400×300 | 2023    | **580** | 🚀 **3.49× faster** |
+| filled_square | 128²  | 19  | **6**   | 🚀 **3.16× faster** |
+| filled_square | 256²  | 42  | **14**  | 🚀 **3.00× faster** |
+| filled_square | 512²  | 124 | **42**  | 🚀 **2.95× faster** |
+| filled_square | 1024² | 847 | **139** | 🚀 **6.10× faster** |
+| filled_square | 2048² | 1420 | **522** | 🚀 **2.72× faster** |
+| hollow_square | 1024² | 852 | **153** | 🚀 **5.57× faster** |
+| hollow_square | 2048² | 1574 | **534** | 🚀 **2.95× faster** |
+| sparse_noise | 128² | 262 | **295** | 0.89× |
+| sparse_noise | 256² | 749 | 1234 | 0.61× |
+| sparse_noise | 512² | 2594 | 22325 | 0.12× ❌ |
+| sparse_noise | 2048² | 34821 | 460043 | 0.08× ❌ |
+
+### vs LSL — link-runs strictly faster except on dense noise
+
+| fixture | size | LSL (μs) | linkruns (μs) | linkruns vs LSL |
+|---------|-----:|---------:|--------------:|----------------:|
+| pic1.png | 400×300 | 192 | 57 | 🚀 3.4× |
+| pic3.png | 400×300 | 252 | 50 | 🚀 5.0× |
+| pic4.png | 400×300 | 1008 | 580 | 🚀 1.7× |
+| filled_square 1024² | | 180 | 139 | 🚀 1.30× |
+| filled_square 2048² | | 629 | 522 | 🚀 1.20× |
+| hollow_square 2048² | | 658 | 534 | 🚀 1.23× |
+
+### Why sparse_noise still loses to OpenCV
+
+`convert_links` materializes one `Vec<[i32; 2]>` per external contour.
+For `sparse_noise 2048²` that's ~3,500 small Vec allocations. OpenCV's
+`Contour` writer uses block-storage (`pointsStorage`) — chunks of
+contiguous memory shared across contours, no per-contour `malloc`.
+Migrating `convert_links` to a flat arena + range-table is the next
+lever; the algorithm itself is correct.
+
+## Tricks ported from OpenCV (with attribution)
+
+| trick | source | impact |
+|-------|--------|--------|
+| `CHAIN_APPROX_SIMPLE` direction-change emission | `contours.cpp:592` | LSL: ~5% faster trace |
+| `LinkRunner` two-pointer state machine | `contours_link.cpp:146` | linkruns: 2-6× over LSL on real images |
+| `v_scan_forward` for find-non-zero / find-zero | `contours_link.cpp:16, 35` | linkruns: 7-19× on synthetic large shapes |
+
+## Reproducibility — link-runs
+
+```bash
+cargo run --release -p kornia-imgproc --example bench_contours_min \
+  | grep -E "kornia_linkruns|opencv"
+python3 crates/kornia-imgproc/examples/bench_opencv_contours.py
+```
