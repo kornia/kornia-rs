@@ -188,6 +188,25 @@ python3 crates/kornia-imgproc/examples/bench_opencv_contours.py \
 
 # Link-runs path (`contours_linkruns`) — OpenCV's algorithm, NEON'd
 
+> ⚠️ **CORRECTNESS REGRESSION — speed numbers below are from an incorrect
+> implementation.** A quality validator (`check_linkruns_quality.py`) showed
+> the port returns wrong contour counts on real images and noise:
+>
+> | fixture | OpenCV EXT | OpenCV LIST | kornia linkruns |
+> |---------|-----------:|------------:|----------------:|
+> | pic1     |          1 |          17 | **11**          |
+> | pic3     |          1 |         121 | **3**           |
+> | pic4     |        881 |         931 | 847             |
+> | sparse_noise 1024² | 263 | 72487 | **11329**        |
+>
+> Filled / hollow square fixtures still return correct counts (1 component
+> each). Real images and sparse noise reveal the bug — ext_rns push logic
+> in `establishLinks` is undercounting on dense / branching shapes.
+>
+> The speed numbers below are kept for reference but **must not be cited as
+> a win until correctness is restored**. Next step: bit-exact debug against
+> OpenCV's link traversal on a small failing fixture.
+
 After reading OpenCV's `findContoursLinkRuns`
 (`modules/imgproc/src/contours_link.cpp`), we discovered the LSL
 literature path was strictly *more general* than what OpenCV does (LSL
