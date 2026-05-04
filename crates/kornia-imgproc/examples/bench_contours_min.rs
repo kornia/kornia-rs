@@ -73,6 +73,7 @@ fn run_one(
         .expect("kornia image");
     let mut exec = FindContoursExecutor::new();
 
+    // --- find_contours (current API: per-contour Vec allocation) ---
     for _ in 0..WARMUP {
         let _ = exec.find_contours(&img, retrieval, approx);
     }
@@ -86,10 +87,24 @@ fn run_one(
     let pix_per_s = (w * h) as f64 / md / 1e6;
     println!(
         "kornia,{label},{w}x{h},{:.1},{:.1},{:.1},{:.1}",
-        mn * 1e6,
-        md * 1e6,
-        mu * 1e6,
-        pix_per_s
+        mn * 1e6, md * 1e6, mu * 1e6, pix_per_s
+    );
+
+    // --- find_contours_view (zero-copy view into the executor's arena) ---
+    for _ in 0..WARMUP {
+        let _ = exec.find_contours_view(&img, retrieval, approx);
+    }
+    let mut samples = Vec::with_capacity(REPS);
+    for _ in 0..REPS {
+        let t = Instant::now();
+        let _ = exec.find_contours_view(&img, retrieval, approx);
+        samples.push(t.elapsed().as_secs_f64());
+    }
+    let (mn, md, mu) = stats(samples);
+    let pix_per_s = (w * h) as f64 / md / 1e6;
+    println!(
+        "kornia_view,{label},{w}x{h},{:.1},{:.1},{:.1},{:.1}",
+        mn * 1e6, md * 1e6, mu * 1e6, pix_per_s
     );
 }
 

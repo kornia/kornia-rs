@@ -77,6 +77,37 @@ pub struct ContoursResult {
     pub hierarchy: Vec<HierarchyEntry>,
 }
 
+/// Zero-copy view into the executor's internal buffers — borrows the arena
+/// instead of copying each contour into its own `Vec<[i32; 2]>`. Use this
+/// when the caller can process contours via slices and doesn't need owned
+/// `Vec<Contour>`. Drops the per-contour allocation tax that dominates the
+/// sparse-image path (many tiny contours = many tiny mallocs).
+pub struct ContoursView<'a> {
+    /// Flat point storage for all contours; index ranges via `ranges`.
+    pub arena: &'a [[i32; 2]],
+    /// One range per contour, slicing into `arena`.
+    pub ranges: &'a [core::ops::Range<usize>],
+    /// Hierarchy entries parallel to `ranges` (filled only for `Ccomp`/`Tree`
+    /// retrieval modes; empty for `External`/`List`).
+    pub hierarchy: &'a [HierarchyEntry],
+}
+
+impl<'a> ContoursView<'a> {
+    /// Number of contours in the view.
+    pub fn len(&self) -> usize { self.ranges.len() }
+    /// Returns true if there are no contours.
+    pub fn is_empty(&self) -> bool { self.ranges.is_empty() }
+    /// Borrow the i-th contour as a slice. Panics if `i >= self.len()`.
+    pub fn contour(&self, i: usize) -> &'a [[i32; 2]] {
+        &self.arena[self.ranges[i].clone()]
+    }
+    /// Iterate contours as slices.
+    pub fn iter_contours(&self) -> impl Iterator<Item = &'a [[i32; 2]]> + '_ {
+        let arena = self.arena;
+        self.ranges.iter().map(move |r| &arena[r.clone()])
+    }
+}
+
 /// Neighbour offsets pre-computed from the padded-image stride.
 struct TracerOffsets {
     /// 8-element flat-offset table (one per direction, 0=W ... 7=SW)
@@ -190,12 +221,78 @@ impl FindContoursExecutor {
         self.execute(src, mode, method)
     }
 
+    /// Run the algorithm and return a zero-copy view into the executor's buffers.
+    /// **Skips the per-contour `Vec` allocation** that `find_contours` does — for
+    /// images with many small contours (sparse noise, dense feature maps) this
+    /// dominates the runtime. Use this when downstream code can consume slices.
+    ///
+    /// The view borrows from `self.buffers`; calling `find_contours*` again
+    /// invalidates it (Rust's borrow checker enforces this).
+    ///
+    /// Note: `RetrievalMode` filtering (CCOMP/Tree-style hierarchy reshaping) is
+    /// not applied here — only `External` and `List` modes return their natural
+    /// arena layout. For `Ccomp`/`Tree` use `find_contours` (which post-processes).
+    pub fn find_contours_view<A: ImageAllocator>(
+        &mut self,
+        src: &Image<u8, 1, A>,
+        mode: RetrievalMode,
+        method: ContourApproximationMode,
+    ) -> Result<ContoursView<'_>, ContoursError> {
+        self.buffers.clear();
+        self.execute_scan(src, mode, method)?;
+        Ok(ContoursView {
+            arena: &self.buffers.arena,
+            ranges: &self.buffers.ranges,
+            hierarchy: &self.buffers.hierarchy,
+        })
+    }
+
+    /// Internal: run the trace pass and fill buffers, but DO NOT do the per-contour
+    /// `to_vec` allocation. Used by `find_contours_view` (the fast path) and
+    /// indirectly by `execute` (which then collects owned vectors on top).
+    fn run_algorithm<A: ImageAllocator>(
+        &mut self,
+        src: &Image<u8, 1, A>,
+        mode: RetrievalMode,
+        method: ContourApproximationMode,
+    ) -> Result<(), ContoursError> {
+        self.execute_scan(src, mode, method)
+    }
+
     fn execute<A: ImageAllocator>(
         &mut self,
         src: &Image<u8, 1, A>,
         mode: RetrievalMode,
         method: ContourApproximationMode,
     ) -> Result<ContoursResult, ContoursError> {
+        // Algorithm scan: fills self.buffers (arena, ranges, hierarchy, border_types).
+        self.execute_scan(src, mode, method)?;
+
+        // Collect per-contour owned Vecs. THIS IS THE EXPENSIVE STEP for sparse
+        // images — N small mallocs + N memcpys. `find_contours_view` skips it.
+        let raw_contours: Vec<Contour> = self
+            .buffers
+            .ranges
+            .iter()
+            .map(|r| self.buffers.arena[r.clone()].to_vec())
+            .collect();
+
+        Ok(Self::filter_by_mode(
+            raw_contours,
+            &self.buffers.hierarchy,
+            &self.buffers.border_types,
+            mode,
+        ))
+    }
+
+    /// The actual Suzuki/Abe scan. Fills `self.buffers` but does not allocate
+    /// per-contour owned vectors. Returns `Ok(())` on success.
+    fn execute_scan<A: ImageAllocator>(
+        &mut self,
+        src: &Image<u8, 1, A>,
+        mode: RetrievalMode,
+        method: ContourApproximationMode,
+    ) -> Result<(), ContoursError> {
         let height = src.height();
         let width = src.width();
         let padded_w = width + 2;
@@ -353,19 +450,10 @@ impl FindContoursExecutor {
             }
         }
 
-        let raw_contours: Vec<Contour> = self
-            .buffers
-            .ranges
-            .iter()
-            .map(|r| self.buffers.arena[r.clone()].to_vec())
-            .collect();
+        // Suppress "unused mode" warning — actual filter happens in execute().
+        let _ = mode;
 
-        Ok(Self::filter_by_mode(
-            raw_contours,
-            &self.buffers.hierarchy,
-            &self.buffers.border_types,
-            mode,
-        ))
+        Ok(())
     }
 
     // Determine parent of a newly detected border per Suzuki-Abe rules
