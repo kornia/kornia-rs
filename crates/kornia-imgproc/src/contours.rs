@@ -362,6 +362,16 @@ impl FindContoursExecutor {
         let mut _trace_border_total_ns: u128 = 0;
         #[cfg(feature = "profile_contours")]
         let mut _trace_border_calls: u32 = 0;
+        #[cfg(feature = "profile_contours")]
+        let mut _scalar_iters: u64 = 0;
+        #[cfg(feature = "profile_contours")]
+        let mut _zero_skip_hits: u64 = 0;
+        #[cfg(feature = "profile_contours")]
+        let mut _one_skip_hits: u64 = 0;
+        #[cfg(feature = "profile_contours")]
+        let mut _start_hits: u64 = 0;
+        #[cfg(feature = "profile_contours")]
+        let mut _labeled_hits: u64 = 0;
 
         for r in 1..=height {
             let mut lnbd: i16 = 1;
@@ -378,10 +388,15 @@ impl FindContoursExecutor {
                 // row_base = r * padded_w with r in 1..=height
                 // padded dimensions are (height+2) * (width+2), so
                 // [padded_w, padded_w*height + width] includes row_base + c and belongs in [0, padded_n)
+                #[cfg(feature = "profile_contours")]
+                { _scalar_iters += 1; }
+
                 let pixel = unsafe { *img_ptr.add(row_base + c) };
 
                 // batch advance over zero runs
                 if pixel == 0 {
+                    #[cfg(feature = "profile_contours")]
+                    { _zero_skip_hits += 1; }
                     c += 1;
                     // NEON: scan 8 i16 lanes per iteration for the next non-zero,
                     // following OpenCV's stateful-scan pattern (compare with prev,
@@ -427,6 +442,8 @@ impl FindContoursExecutor {
                 let is_hole = (pixel >= 1) & (right == 0) & !is_outer;
 
                 if is_outer || is_hole {
+                    #[cfg(feature = "profile_contours")]
+                    { _start_hits += 1; }
                     if nbd == i16::MAX {
                         return Err(ContoursError::NbdOverflow);
                     }
@@ -468,6 +485,8 @@ impl FindContoursExecutor {
                     self.buffers.ranges.push(range);
                     lnbd = nbd;
                 } else if pixel == 1 {
+                    #[cfg(feature = "profile_contours")]
+                    { _one_skip_hits += 1; }
                     // Interior 1-pixel: NEON-skip whole chunks of all-1s.
                     // For chunks with any non-1 lane, fall through to the
                     // existing scalar SWAR which has the correct hole-start
@@ -511,6 +530,8 @@ impl FindContoursExecutor {
                     }
                     continue 'col;
                 } else {
+                    #[cfg(feature = "profile_contours")]
+                    { _labeled_hits += 1; }
                     lnbd = pixel.unsigned_abs() as i16;
                 }
 
@@ -542,7 +563,7 @@ impl FindContoursExecutor {
             let scan_total = _t_after_binarize.elapsed().as_nanos();
             let scan_minus_trace = scan_total.saturating_sub(_trace_border_total_ns);
             eprintln!(
-                "PROFILE w={width} h={height} contours={} init={}μs bin={}μs scan_other={}μs trace_border={}μs ({} calls, {}ns/call)",
+                "PROFILE w={width} h={height} contours={} init={}μs bin={}μs scan_other={}μs trace_border={}μs ({}calls,{}ns/call) | iters={} zero={} one={} labeled={} starts={}",
                 _trace_border_calls,
                 init_ns / 1000,
                 bin_ns / 1000,
@@ -550,6 +571,7 @@ impl FindContoursExecutor {
                 _trace_border_total_ns / 1000,
                 _trace_border_calls,
                 if _trace_border_calls > 0 { _trace_border_total_ns / _trace_border_calls as u128 } else { 0 },
+                _scalar_iters, _zero_skip_hits, _one_skip_hits, _labeled_hits, _start_hits,
             );
             let _ = total_ns;
         }
