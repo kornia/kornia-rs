@@ -297,22 +297,121 @@ pub fn cross_row_merge(rle: &RleImage, _labels: &LineLabels) -> ComponentMap {
 // Day 4: Boundary trace per component (Chang/Chen approach) — STUB
 // ============================================================================
 
-/// Trace boundary per labeled component. Outputs Vec<Vec<[i32;2]>> compatible
-/// with the existing find_contours public API. Day 4. STUB.
+/// For each component, return its starting (row, col) — the leftmost pixel of
+/// the topmost run that belongs to it. This is the outer-start position that
+/// Suzuki/Abe would find when scanning top-to-bottom, left-to-right.
+pub fn find_outer_starts(
+    rle: &RleImage,
+    components: &ComponentMap,
+) -> Vec<(u32, u32)> {
+    let mut starts: Vec<Option<(u32, u32)>> = vec![None; components.n_components as usize];
+    for (r, row) in rle.rows.iter().enumerate() {
+        for (k, run) in row.runs.iter().enumerate() {
+            let cid = components.component_per_run[r][k];
+            if starts[cid as usize].is_none() {
+                starts[cid as usize] = Some((r as u32, run.start));
+            }
+        }
+    }
+    starts.into_iter().flatten().collect()
+}
+
+/// Build a (row, col) → component_id lookup table from RLE + ComponentMap.
+/// Returns a flat Vec<i32> of size `width * height`, where each cell is the
+/// component ID at that position, or `-1` for background.
+///
+/// Used by `trace_components` for O(1) "is this neighbour the same component?"
+/// checks during Moore-neighbour boundary tracing.
+pub fn build_component_grid(rle: &RleImage, components: &ComponentMap) -> Vec<i32> {
+    let n = (rle.width * rle.height) as usize;
+    let mut grid = vec![-1i32; n];
+    for (r, row) in rle.rows.iter().enumerate() {
+        for (k, run) in row.runs.iter().enumerate() {
+            let cid = components.component_per_run[r][k] as i32;
+            let row_off = r * rle.width as usize;
+            for c in run.start..=run.end {
+                grid[row_off + c as usize] = cid;
+            }
+        }
+    }
+    grid
+}
+
+/// Trace boundary per labeled component. Outputs `Vec<Vec<[x, y]>>` compatible
+/// with the existing find_contours public API.
+///
+/// Day 4 implementation plan (NOT YET IMPLEMENTED — STUB returning empty):
+///
+/// ```text
+/// // Moore-neighbour boundary trace for one component:
+/// const DR: [i32; 8] = [ 0, -1, -1, -1,  0,  1,  1,  1];  // 0=W 1=NW 2=N 3=NE 4=E 5=SE 6=S 7=SW
+/// const DC: [i32; 8] = [-1, -1,  0,  1,  1,  1,  0, -1];
+///
+/// fn trace_component(grid: &[i32], w: i32, h: i32, start_r: i32, start_c: i32, cid: i32) -> Vec<[i32;2]> {
+///     let mut points = vec![[start_c, start_r]];
+///     let (mut r, mut c) = (start_r, start_c);
+///     // Initial direction: came from "outside" (left neighbour was background)
+///     let mut in_dir = 7usize; // SW (since we entered at leftmost-topmost)
+///     loop {
+///         let scan_start = (in_dir + 5) & 7;  // Suzuki/Abe "behind" rule
+///         let mut found = false;
+///         for k in 0..8 {
+///             let d = (scan_start + k) & 7;
+///             let (nr, nc) = (r + DR[d], c + DC[d]);
+///             if nr >= 0 && nr < h && nc >= 0 && nc < w
+///                && grid[(nr * w + nc) as usize] == cid {
+///                 // First non-zero neighbour clockwise from scan_start
+///                 r = nr; c = nc;
+///                 in_dir = (d + 4) & 7;  // arrived from the opposite direction
+///                 found = true;
+///                 break;
+///             }
+///         }
+///         if !found { break; }  // 1-pixel component
+///         if r == start_r && c == start_c {
+///             // Jacob's halting rule: revisited start at same in_dir means done
+///             // (need to track the in_dir at start — see paper)
+///             break;
+///         }
+///         points.push([c, r]);
+///     }
+///     points
+/// }
+/// ```
+///
+/// Apply ApproxSimple compression as a post-pass (collapse colinear runs).
+/// Reverse direction at end to match OpenCV CCW convention.
+///
+/// **Performance prediction (per published LSL benchmarks)**:
+///   pic4: 944 μs → ~150 μs  (scan_other eliminated; trace per-pixel similar)
+///   pic1: 105 μs → ~25 μs   (per-pixel scan eliminated entirely)
+///   filled_square 1024²: 506 μs → ~50 μs  (all phases benefit from RLE)
+///
+/// **Validation gate**: `python3 examples/check_correctness.py` must keep
+/// returning ✅ BIT-EXACT MATCH for all 6 External-mode fixtures (after
+/// applying the same CCW-direction post-process the contours.rs path uses).
 pub fn trace_components(
     _rle: &RleImage,
     _components: &ComponentMap,
 ) -> Vec<Vec<[i32; 2]>> {
-    todo!("Day 4: Chang/Chen contour-tracing per component");
+    // STUB — Day 4 implementation pending. Pseudocode above.
+    Vec::new()
 }
 
 // ============================================================================
 // Day 5: Public API + bench validation — STUB
 // ============================================================================
 
-// pub fn find_contours_lsl(...) -> Result<Vec<Vec<[i32;2]>>, ContoursError>
-// (Will live here once Days 2-4 are implemented and validated bit-exact
-//  against cv2.findContours via examples/check_correctness.py.)
+/// Public API: find external contours via the LSL pipeline.
+///
+/// Currently returns empty Vec — the trace_components step is still a STUB.
+/// Once Day 4 is implemented, this will be the fast-path entry point.
+pub fn find_external_contours_lsl(src: &[u8], width: usize, height: usize) -> Vec<Vec<[i32; 2]>> {
+    let rle = rle_extract(src, width, height);
+    let labels = line_relative_label(&rle);
+    let components = cross_row_merge(&rle, &labels);
+    trace_components(&rle, &components)
+}
 
 // ============================================================================
 // Tests for Day 1
@@ -420,6 +519,25 @@ mod tests {
         let labels = line_relative_label(&rle);
         let cmap = cross_row_merge(&rle, &labels);
         assert_eq!(cmap.n_components, 1, "8-conn corner touch = 1 component");
+    }
+
+    #[test]
+    fn outer_starts_finds_one_per_component() {
+        let w = 12;
+        let h = 6;
+        let mut data = vec![0u8; w * h];
+        for r in 1..4 {
+            for c in 1..4 { data[r * w + c] = 1; }
+            for c in 7..10 { data[r * w + c] = 1; }
+        }
+        let rle = rle_extract(&data, w, h);
+        let labels = line_relative_label(&rle);
+        let cmap = cross_row_merge(&rle, &labels);
+        let starts = find_outer_starts(&rle, &cmap);
+        assert_eq!(starts.len(), 2);
+        // First component's start is (row=1, col=1), second is (row=1, col=7)
+        assert!(starts.contains(&(1, 1)));
+        assert!(starts.contains(&(1, 7)));
     }
 
     #[test]
