@@ -82,3 +82,104 @@ cargo build --release --manifest-path crates/kornia-imgproc/Cargo.toml \
   --example bench_contours_min --features profile_contours
 ./target/release/examples/bench_contours_min 2>&1 | grep ^PROFILE
 ```
+
+---
+
+# LSL run-based path — Days 1-5 + filled-shape NEON optimizations
+
+After the Suzuki/Abe results above plateaued at the memory ceiling, a parallel
+work item implemented a **run-based** algorithm (Light Speed Labeling, Lacassagne
+2009 + Cabaret 2018) in `contours_lsl.rs`. The hypothesis: per-pixel scan caps
+at memory bandwidth; switching to runs reduces iteration count by 5-300× on
+realistic shapes.
+
+## Optimizations layered on top of base LSL
+
+1. **NEON RLE extraction** (`rle_extract_row_neon`) — 16 src bytes / NEON iter
+   via `vceqq_u8` + `vmvnq_u8` + `xor target_pattern` + `trailing_zeros / 8`.
+2. **Generation-counter grid** — packed `u64` cells `(gen << 32) | cid`; the
+   reader checks the high word against the executor's current generation, so
+   stale cells read as background without a per-call fill of the 4MB grid.
+3. **Single-component fast path** — when CCL produces `n_components == 1`,
+   skip the grid build entirely and trace directly on the source binary.
+   Pays off massively on convex/filled shapes (perimeter-bound vs O(N²) scan).
+
+## Head-to-head: kornia LSL vs kornia Suzuki/Abe vs OpenCV 4.13
+
+All `External` mode + `CHAIN_APPROX_NONE` (LSL emits every boundary pixel —
+this is the apples-to-apples comparison; OpenCV's `SIMPLE` would collapse
+collinear runs and beat NONE by definition).
+
+### filled_square (single component)
+
+| size  | LSL kornia | Suzuki/Abe | OpenCV NONE | LSL vs Suzuki | LSL vs OpenCV |
+|------:|-----------:|-----------:|------------:|--------------:|--------------:|
+| 128²  |    15.3 μs |    15.6 μs |     20.2 μs |        1.02× |    🚀 **1.32× faster** |
+| 256²  |    34.5 μs |    44.2 μs |     44.2 μs |        1.28× |    🚀 **1.28× faster** |
+| 512²  |    79.6 μs |   157.2 μs |    130.4 μs |        1.97× |    🚀 **1.64× faster** |
+| 1024² |   209.7 μs |   511.6 μs |    364.9 μs |        2.44× |    🚀 **1.74× faster** |
+| 2048² |   618.7 μs |  2038.5 μs |   1470.4 μs |        3.30× |    🚀 **2.38× faster** |
+
+### hollow_square (2 components — single-component fast path off; gen-grid + NEON RLE only)
+
+OpenCV NONE row not available in current bench; comparing against `SIMPLE`
+(which under-reports OpenCV cost since SIMPLE collapses straight runs).
+
+| size  | LSL kornia | Suzuki/Abe | OpenCV SIMPLE | LSL vs Suzuki | LSL vs OpenCV* |
+|------:|-----------:|-----------:|--------------:|--------------:|---------------:|
+| 128²  |    14.1 μs |    16.0 μs |       20.9 μs |        1.13× |   🚀 **1.48×**  |
+| 256²  |    31.3 μs |    40.4 μs |       45.8 μs |        1.29× |   🚀 **1.46×**  |
+| 512²  |    74.0 μs |   153.5 μs |      146.2 μs |        2.07× |   🚀 **1.98×**  |
+| 1024² |   195.2 μs |   507.0 μs |      852.0 μs |        2.60× |   🚀 **4.36×**  |
+| 2048² |   634.5 μs |  1915.3 μs |     1574.6 μs |        3.02× |   🚀 **2.48×**  |
+
+\* OpenCV row is `SIMPLE` (less work than NONE) — LSL's lead is therefore
+   conservative; against OpenCV NONE the gap would widen.
+
+### sparse_noise (worst-case, many tiny components)
+
+| size  | LSL kornia | Suzuki/Abe | OpenCV SIMPLE | LSL vs Suzuki | LSL vs OpenCV |
+|------:|-----------:|-----------:|--------------:|--------------:|--------------:|
+| 128²  |   321.1 μs |   892.3 μs |      261.6 μs |   🚀 2.78×    | 0.81× slower  |
+| 256²  |  1153.8 μs |  4180.0 μs |      748.5 μs |   🚀 3.62×    | 0.65× slower  |
+| 512²  |  4587.3 μs | 18719.2 μs |     2593.7 μs |   🚀 4.08×    | 0.57× slower  |
+| 1024² | 19120.3 μs | 29045.9 μs |     9189.0 μs |   🚀 1.52×    | 0.48× slower  |
+
+LSL is 1.5-4.1× faster than Suzuki/Abe but still slower than OpenCV on
+sparse noise — OpenCV uses a much more aggressive SIMPLE-mode collapse
+(noise generates 30k-3.5k single-pixel contours; LSL emits 4-8 boundary
+pixels per pixel-component, OpenCV emits 1-2 via SIMPLE). When LSL gains
+its own SIMPLE-mode collapse, this gap closes.
+
+## What about VPI?
+
+**NVIDIA VPI 3.2.4 has no findContours / boundary-trace API.** The library
+ships connected-components labeling (`vpiSubmitConnectedComponents`) and
+several per-pixel filters (BoxFilter, Convolution, etc.), but no contour
+extraction primitive. This is documented behavior — VPI's intended pattern
+is "label on GPU, extract contours on CPU with whatever you brought."
+
+So the meaningful CPU baselines are OpenCV (above) and the prior kornia
+Suzuki/Abe path; there is no VPI number to beat for this function.
+
+## Headline summary (LSL branch only)
+
+- **filled / convex shapes:** 🚀 1.3-2.4× faster than OpenCV
+- **multi-component low-perimeter shapes (hollow):** 🚀 1.5-4.4× faster than OpenCV
+- **sparse-noise pathological case:** 1.5-4.1× faster than Suzuki/Abe, still
+  ~2× slower than OpenCV (SIMPLE-mode collapse not yet ported to LSL)
+- **algorithmic constant** vs Suzuki/Abe: **3.0-3.3× at 2048²** (gap grows with N)
+
+## Reproducibility — LSL bench
+
+```bash
+# Algorithmic head-to-head (LSL vs Suzuki/Abe, same kornia binary):
+cargo run --release -p kornia-imgproc --example bench_lsl_vs_suzuki
+
+# CSV-comparable head-to-head against OpenCV:
+cargo run --release -p kornia-imgproc --example bench_lsl_vs_opencv \
+  > /tmp/kornia_lsl.csv
+python3 crates/kornia-imgproc/examples/bench_opencv_contours.py \
+  > /tmp/opencv.csv
+# (merge the two CSVs by fixture+size for the table above)
+```
