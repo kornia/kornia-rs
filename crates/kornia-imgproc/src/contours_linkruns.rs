@@ -126,6 +126,17 @@ impl LinkRunsExecutor {
     }
 
     /// Build the linked-run graph for the entire image.
+    ///
+    /// **Why no pre-sizing of `rns` / `arena`**: profiling (commit history
+    /// retains `LINKRUNS_PROF` flag) showed that on the warm path
+    /// (`LinkRunsExecutor::clear()` retains capacity) allocation cost is
+    /// already zero — the bottleneck is pointer-chasing through the LRP
+    /// graph in `convert_links` + `establish_links`, not allocation. On the
+    /// cold path, an A/B test of `width*height/4` pre-reserve made
+    /// `sparse_noise 256²` 86% slower (heuristic under-reserves the
+    /// noise case AND eats a wasted alloc + page-fault-on-touch). The real
+    /// lever for sparse-noise is cache-friendlier chain layout
+    /// (OpenCV's BlockStorage pattern), tracked separately.
     #[allow(clippy::needless_range_loop)]
     fn process(&mut self, src: &[u8], width: i32, height: i32) {
         self.rns.clear();
