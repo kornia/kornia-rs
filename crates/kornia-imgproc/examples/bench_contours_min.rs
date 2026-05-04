@@ -108,9 +108,46 @@ fn run_one(
     );
 }
 
+/// Load + binarize an OpenCV-tutorial test image (pic1/pic3/pic4).
+/// Threshold at 127 to match what OpenCV docs/tutorial do.
+fn load_test_image(path: &str) -> Option<(usize, usize, Vec<u8>)> {
+    let img = image::open(path).ok()?.to_luma8();
+    let (w, h) = (img.width() as usize, img.height() as usize);
+    let mut buf = vec![0u8; w * h];
+    for (i, p) in img.into_raw().iter().enumerate() {
+        buf[i] = (*p > 127) as u8;
+    }
+    Some((w, h, buf))
+}
+
 fn main() {
     println!("# CSV: impl,fixture,size,min_us,med_us,mean_us,Mpix_per_s_median");
     println!("impl,fixture,size,min_us,med_us,mean_us,Mpix_s");
+
+    // === Real-world OpenCV tutorial images ===
+    for (label, path) in [
+        ("pic1_external_simple", "crates/kornia-imgproc/examples/data/pic1.png"),
+        ("pic3_external_simple", "crates/kornia-imgproc/examples/data/pic3.png"),
+        ("pic4_external_simple", "crates/kornia-imgproc/examples/data/pic4.png"),
+    ] {
+        match load_test_image(path) {
+            Some((w, h, data)) => run_one(
+                label, w, h, data,
+                RetrievalMode::External,
+                ContourApproximationMode::Simple,
+            ),
+            None => eprintln!("skipping {label}: failed to load {path}"),
+        }
+    }
+    // pic2_list_simple: 5723 contours — stress test
+    if let Some((w, h, data)) = load_test_image("crates/kornia-imgproc/examples/data/pic1.png") {
+        run_one("pic1_list_simple", w, h, data, RetrievalMode::List, ContourApproximationMode::Simple);
+    }
+    if let Some((w, h, data)) = load_test_image("crates/kornia-imgproc/examples/data/pic4.png") {
+        run_one("pic4_list_simple", w, h, data, RetrievalMode::List, ContourApproximationMode::Simple);
+    }
+
+    // === Synthetic fixtures (kept for stress testing) ===
     for &(w, h) in SIZES {
         run_one(
             "filled_square_external_simple",
