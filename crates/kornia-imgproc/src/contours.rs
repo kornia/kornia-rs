@@ -306,7 +306,18 @@ impl FindContoursExecutor {
             self.buffers.img.resize(padded_n, 0);
         }
         let img_slice = &mut self.buffers.img[..padded_n];
-        img_slice.fill(0i16);
+        // Only zero the padding (top + bottom rows + left + right columns) — the
+        // interior gets fully overwritten by the binarize pass below. Saves the
+        // largest single phase cost on simple-image fixtures (~17% of total at 1024²).
+        // Top row + bottom row
+        img_slice[..padded_w].fill(0);
+        img_slice[(padded_n - padded_w)..].fill(0);
+        // Left + right columns of every interior row
+        for r in 1..(padded_h - 1) {
+            let base = r * padded_w;
+            img_slice[base] = 0;
+            img_slice[base + padded_w - 1] = 0;
+        }
 
         #[cfg(feature = "profile_contours")]
         let _t_after_init = std::time::Instant::now();
