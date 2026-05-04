@@ -108,16 +108,24 @@ fn run_one(
     );
 }
 
-/// Load + binarize an OpenCV-tutorial test image (pic1/pic3/pic4).
-/// Threshold at 127 to match what OpenCV docs/tutorial do.
+/// Load + binarize an OpenCV-tutorial test image (pic1/pic3/pic4) using kornia's
+/// own PNG reader, color conversion, and threshold function — same code path
+/// real users would write end-to-end.
 fn load_test_image(path: &str) -> Option<(usize, usize, Vec<u8>)> {
-    let img = image::open(path).ok()?.to_luma8();
-    let (w, h) = (img.width() as usize, img.height() as usize);
-    let mut buf = vec![0u8; w * h];
-    for (i, p) in img.into_raw().iter().enumerate() {
-        buf[i] = (*p > 127) as u8;
-    }
-    Some((w, h, buf))
+    // 1. PNG decode (8-bit RGB) via kornia-io
+    let rgb = kornia_io::png::read_image_png_rgb8(path).ok()?;
+    let (w, h) = (rgb.width(), rgb.height());
+    // 2. RGB → gray via kornia-imgproc
+    let mut gray = Image::<u8, 1, _>::from_size_val(
+        ImageSize { width: w, height: h }, 0, CpuAllocator,
+    ).unwrap();
+    kornia_imgproc::color::gray_from_rgb_u8(&rgb, &mut gray).ok()?;
+    // 3. Binarize at threshold 127 → 0 or 1 (matches bench_contours.rs convention)
+    let mut bw = Image::<u8, 1, _>::from_size_val(
+        ImageSize { width: w, height: h }, 0, CpuAllocator,
+    ).unwrap();
+    kornia_imgproc::threshold::threshold_binary(&gray, &mut bw, 127, 1).ok()?;
+    Some((w, h, bw.as_slice().to_vec()))
 }
 
 fn main() {
