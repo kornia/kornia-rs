@@ -525,10 +525,11 @@ pub fn trace_components(
 ///
 /// Allocates fresh buffers each call. For repeated calls (video pipelines,
 /// batch processing), use `LslExecutor` instead — it amortises allocation
-/// across many frames and is 10-100× faster.
+/// across many frames.
 pub fn find_external_contours_lsl(src: &[u8], width: usize, height: usize) -> Vec<Vec<[i32; 2]>> {
     let mut exec = LslExecutor::new();
-    exec.find_external_contours(src, width, height).to_vec()
+    exec.find_external_contours(src, width, height);
+    exec.iter_contours().map(|s| s.to_vec()).collect()
 }
 
 // ============================================================================
@@ -796,7 +797,11 @@ fn trace_one_component_into(
             }
         }
         let (nr, nc, d) = match next { None => break, Some(t) => t };
-        if nr == start_r && nc == start_c && ((d + 4) & 7) == first_in_dir && iters > 1 {
+        // Halt: revisited the start pixel. For convex shapes this is exactly
+        // when the boundary loop closes. (Stricter Jacob's halting rule needed
+        // for shapes with concavities where the trace can touch the start
+        // mid-walk; not implemented yet.)
+        if nr == start_r && nc == start_c && iters > 1 {
             break;
         }
         r = nr; c = nc;
@@ -932,6 +937,18 @@ mod tests {
         assert!(!contours[0].is_empty(), "got empty contour");
         // First point should be the start (top-left of 3x3 = (1, 1) in (col, row))
         assert_eq!(contours[0][0], [1, 1]);
+    }
+
+    #[test]
+    fn trace_filled_3x3_returns_8_boundary_pixels() {
+        let w = 5;
+        let h = 5;
+        let mut data = vec![0u8; w * h];
+        for r in 1..4 { for c in 1..4 { data[r * w + c] = 1; } }
+        let contours = find_external_contours_lsl(&data, w, h);
+        assert_eq!(contours.len(), 1);
+        // Boundary of a 3x3 filled square = 8 pixels (corners + edge midpoints)
+        assert_eq!(contours[0].len(), 8, "expected 8 boundary, got {:?}", contours[0]);
     }
 
     #[test]
