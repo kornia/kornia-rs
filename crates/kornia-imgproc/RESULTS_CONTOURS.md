@@ -204,24 +204,25 @@ the run graph as it scans). Ported to Rust in `contours_linkruns.rs`,
 
 ## Headline numbers (Jetson Orin Nano, External + SIMPLE, 20 reps + 5 warmup)
 
-### vs OpenCV — correctness-validated link-runs
+### vs OpenCV — correctness-validated link-runs (post arena fix)
 
 | fixture | size | OpenCV (μs) | kornia linkruns (μs) | **vs OpenCV** |
 |---------|-----:|------------:|---------------------:|--------------:|
-| pic1.png  | 400×300 | 86      | **68**  | 🚀 **1.26× faster** |
-| pic3.png  | 400×300 | 81      | **75**  | 🚀 **1.08× faster** |
-| pic4.png  | 400×300 | 2023    | **600** | 🚀 **3.37× faster** |
-| filled_square | 128²  | 19  | **6**   | 🚀 **3.16× faster** |
+| pic1.png  | 400×300 | 86      | **60**  | 🚀 **1.43× faster** |
+| pic3.png  | 400×300 | 81      | **53**  | 🚀 **1.53× faster** |
+| pic4.png  | 400×300 | 2023    | **470** | 🚀 **4.30× faster** |
+| filled_square | 128²  | 19  | **5**   | 🚀 **3.80× faster** |
 | filled_square | 256²  | 42  | **14**  | 🚀 **3.00× faster** |
-| filled_square | 512²  | 124 | **42**  | 🚀 **2.95× faster** |
+| filled_square | 512²  | 124 | **41**  | 🚀 **3.02× faster** |
 | filled_square | 1024² | 847 | **138** | 🚀 **6.13× faster** |
-| filled_square | 2048² | 1420 | **592** | 🚀 **2.40× faster** |
+| filled_square | 2048² | 1420 | **513** | 🚀 **2.77× faster** |
 | hollow_square | 1024² | 852 | **154** | 🚀 **5.53× faster** |
-| hollow_square | 2048² | 1574 | **542** | 🚀 **2.90× faster** |
-| sparse_noise | 128² | 262 | 415 | 0.63× |
-| sparse_noise | 256² | 749 | 1682 | 0.45× |
-| sparse_noise | 512² | 2594 | 7744 | 0.33× ❌ |
-| sparse_noise | 2048² | 34821 | 262026 | 0.13× ❌ |
+| hollow_square | 2048² | 1574 | **578** | 🚀 **2.72× faster** |
+| sparse_noise | 128² | 262 | 285 | 0.92× |
+| sparse_noise | 256² | 749 | 1195 | 0.63× |
+| sparse_noise | 512² | 2594 | 5942 | 0.44× |
+| sparse_noise | 1024² | 9189 | 26614 | 0.35× ❌ |
+| sparse_noise | 2048² | 34821 | 124278 | 0.28× ❌ |
 
 ### vs LSL — link-runs strictly faster except on dense noise
 
@@ -234,14 +235,21 @@ the run graph as it scans). Ported to Rust in `contours_linkruns.rs`,
 | filled_square 2048² | | 629 | 522 | 🚀 1.20× |
 | hollow_square 2048² | | 658 | 534 | 🚀 1.23× |
 
-### Why sparse_noise still loses to OpenCV
+### Why sparse_noise still loses to OpenCV (after arena fix)
 
-`convert_links` materializes one `Vec<[i32; 2]>` per external contour.
-For `sparse_noise 2048²` that's ~3,500 small Vec allocations. OpenCV's
-`Contour` writer uses block-storage (`pointsStorage`) — chunks of
-contiguous memory shared across contours, no per-contour `malloc`.
-Migrating `convert_links` to a flat arena + range-table is the next
-lever; the algorithm itself is correct.
+The per-contour `Vec` allocation in `convert_links` was removed in
+commit 16d3ba9 (replaced with a shared arena + Vec<Range>), which cut
+sparse_noise 2048² from 460 ms → 124 ms. We're still slower than
+OpenCV at ≥512² because:
+
+1. `rns: Vec<Lrp>` itself grows to ~14k entries on noise 2048², causing
+   2-3 reallocations per call (each ~250 KB copy).
+2. OpenCV's `LinkRunPoint` is 16 bytes (3 ints + a Point); our `Lrp` is
+   16 bytes too — but cv's BlockStorage allocates in pre-sized chunks
+   that avoid `realloc` entirely.
+
+Next single lever: pre-size `rns` to a runtime-tunable capacity (or
+auto-grow to a chunked storage). Estimated 1.5-2× more on sparse_noise.
 
 ## Tricks ported from OpenCV (with attribution)
 
