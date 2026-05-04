@@ -7,7 +7,7 @@
 
 use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
 use kornia_imgproc::contours::{find_contours, ContourApproximationMode, RetrievalMode};
-use kornia_imgproc::contours_lsl::find_external_contours_lsl;
+use kornia_imgproc::contours_lsl::{find_external_contours_lsl, LslExecutor};
 use std::time::Instant;
 
 const REPS: usize = 20;
@@ -43,19 +43,21 @@ fn stats(mut s: Vec<f64>) -> (f64, f64, f64) {
 }
 
 fn run_one(label: &str, w: usize, h: usize, data: Vec<u8>) {
-    // LSL path
-    let mut samples = Vec::with_capacity(REPS);
+    // LSL path with reusable executor (the realistic hot-loop case)
+    let mut exec = LslExecutor::new();
     for _ in 0..WARMUP {
-        let _ = find_external_contours_lsl(&data, w, h);
+        let _ = exec.find_external_contours(&data, w, h);
     }
+    let mut samples = Vec::with_capacity(REPS);
     for _ in 0..REPS {
         let t = Instant::now();
-        let _ = find_external_contours_lsl(&data, w, h);
+        let _ = exec.find_external_contours(&data, w, h);
         samples.push(t.elapsed().as_secs_f64());
     }
-    let (mn_lsl, md_lsl, _) = stats(samples);
+    let (_, md_lsl, _) = stats(samples);
+    let n_contours = exec.contour_count();
 
-    // Suzuki/Abe path (current kornia)
+    // Suzuki/Abe path (current kornia, also reuses buffers via FindContoursExecutor)
     let img = Image::<u8, 1, _>::new(ImageSize { width: w, height: h }, data, CpuAllocator).unwrap();
     let mut samples = Vec::with_capacity(REPS);
     for _ in 0..WARMUP {
@@ -66,11 +68,11 @@ fn run_one(label: &str, w: usize, h: usize, data: Vec<u8>) {
         let _ = find_contours(&img, RetrievalMode::External, ContourApproximationMode::None);
         samples.push(t.elapsed().as_secs_f64());
     }
-    let (mn_sa, md_sa, _) = stats(samples);
+    let (_, md_sa, _) = stats(samples);
 
     let speedup = md_sa / md_lsl;
     println!(
-        "{label:32} {w}x{h:4}  Suzuki/Abe={:>8.1}μs  LSL={:>8.1}μs  speedup={speedup:.2}×",
+        "{label:18} {w}x{h:4}  Suzuki/Abe={:>8.1}μs  LSL={:>8.1}μs  speedup={speedup:>5.2}×  ({n_contours} contours)",
         md_sa * 1e6,
         md_lsl * 1e6,
     );
