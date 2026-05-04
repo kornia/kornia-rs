@@ -340,10 +340,79 @@ pub fn find_external_contours_linkruns(
 
 // ----------------------------------------------------------------------------
 // Row-scan helpers — equivalent to OpenCV's findStartContourPoint /
-// findEndContourPoint. Scalar version; NEON drop-in is straight-forward
-// (vceqq_u8 + vmvnq_u8 + trailing_zeros) once correctness is locked in.
+// findEndContourPoint. NEON path scans 16 bytes per iter using
+// `vceqq_u8` + bit-extract; falls back to scalar for the row tail.
 // ----------------------------------------------------------------------------
 
+#[cfg(target_arch = "aarch64")]
+#[inline]
+fn find_start(row: &[u8], mut j: i32) -> i32 {
+    use core::arch::aarch64::*;
+    let w = row.len() as i32;
+    // SAFETY: NEON intrinsics, baseline on aarch64 Linux; bounds are checked
+    // before each load.
+    unsafe {
+        while j + 16 <= w {
+            let v = vld1q_u8(row.as_ptr().add(j as usize));
+            // Compare each byte to zero -> 0xFF where byte == 0
+            let zmask = vceqq_u8(v, vdupq_n_u8(0));
+            // Reduce: if any lane is non-zero (a non-zero byte exists), there
+            // is a run start somewhere in this 16-byte window. Use minv: if
+            // min(zmask) == 0xFF, every byte was zero (skip). Otherwise some
+            // byte is non-zero.
+            if vminvq_u8(zmask) == 0 {
+                // At least one non-zero byte present in this window
+                // Compute "is non-zero" mask = ~zmask, then find first set bit.
+                let nz = vmvnq_u8(zmask);
+                // Pack 16 lanes (each 0x00 or 0xFF) into a 64-bit half-vector
+                // by narrowing to 4-bit-per-lane via `vshrn_n_u16` on a
+                // reinterpreted u16 view. Cheaper trick: store, scan.
+                let mut buf = [0u8; 16];
+                vst1q_u8(buf.as_mut_ptr(), nz);
+                for (k, b) in buf.iter().enumerate() {
+                    if *b != 0 {
+                        return j + k as i32;
+                    }
+                }
+            }
+            j += 16;
+        }
+    }
+    while j < w && row[j as usize] == 0 {
+        j += 1;
+    }
+    j
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+fn find_end(row: &[u8], mut j: i32) -> i32 {
+    use core::arch::aarch64::*;
+    let w = row.len() as i32;
+    unsafe {
+        while j + 16 <= w {
+            let v = vld1q_u8(row.as_ptr().add(j as usize));
+            let zmask = vceqq_u8(v, vdupq_n_u8(0));
+            // If any byte is zero, the run ends within this window
+            if vmaxvq_u8(zmask) != 0 {
+                let mut buf = [0u8; 16];
+                vst1q_u8(buf.as_mut_ptr(), zmask);
+                for (k, b) in buf.iter().enumerate() {
+                    if *b != 0 {
+                        return j + k as i32;
+                    }
+                }
+            }
+            j += 16;
+        }
+    }
+    while j < w && row[j as usize] != 0 {
+        j += 1;
+    }
+    j
+}
+
+#[cfg(not(target_arch = "aarch64"))]
 #[inline]
 fn find_start(row: &[u8], mut j: i32) -> i32 {
     let w = row.len() as i32;
@@ -353,6 +422,7 @@ fn find_start(row: &[u8], mut j: i32) -> i32 {
     j
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 #[inline]
 fn find_end(row: &[u8], mut j: i32) -> i32 {
     let w = row.len() as i32;
