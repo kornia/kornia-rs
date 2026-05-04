@@ -445,7 +445,7 @@ dependencies = [
 
 [[package]]
 name = "apriltag"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "argh",
  "kornia",
@@ -1623,7 +1623,7 @@ checksum = "230c5f1ca6a325a32553f8640d31ac9b49f2411e901e427570154868b46da4f7"
 
 [[package]]
 name = "binarize"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "argh",
  "kornia",
@@ -2526,7 +2526,7 @@ checksum = "7e8f1e641542c07631228b1e0dc04b69ae3c1d58ef65d5691a439711d805c698"
 
 [[package]]
 name = "colmap_rerun"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "argh",
  "kornia",
@@ -2568,7 +2568,7 @@ dependencies = [
 
 [[package]]
 name = "color_detector"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "argh",
  "kornia",
@@ -2583,7 +2583,7 @@ checksum = "3d7b894f5411737b7867f4827955924d7c254fc9f4d91a6aad6b097804b1018b"
 
 [[package]]
 name = "color_spaces"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "kornia-image",
  "kornia-imgproc",
@@ -2760,7 +2760,7 @@ dependencies = [
 
 [[package]]
 name = "contours"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "argh",
  "kornia",
@@ -2787,7 +2787,7 @@ dependencies = [
 
 [[package]]
 name = "copper"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "bincode 2.0.1",
  "cu29",
@@ -5037,7 +5037,7 @@ dependencies = [
 
 [[package]]
 name = "exif_auto_orient"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "kornia-io",
 ]
@@ -6823,7 +6823,7 @@ dependencies = [
 
 [[package]]
 name = "hello_world"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "argh",
  "kornia",
@@ -6890,7 +6890,7 @@ dependencies = [
 
 [[package]]
 name = "histogram"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "argh",
  "kornia",
@@ -7160,7 +7160,7 @@ dependencies = [
 
 [[package]]
 name = "icp_registration"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "argh",
  "env_logger",
@@ -7336,7 +7336,7 @@ dependencies = [
 
 [[package]]
 name = "image_api"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "kornia-image",
 ]
@@ -7367,7 +7367,7 @@ checksum = "edcd27d72f2f071c64249075f42e205ff93c9a4c5f6c6da53e79ed9f9832c285"
 
 [[package]]
 name = "imgproc"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "argh",
  "kornia",
@@ -7809,7 +7809,7 @@ dependencies = [
 
 [[package]]
 name = "kornia"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "kornia-3d",
  "kornia-algebra",
@@ -7823,7 +7823,7 @@ dependencies = [
 
 [[package]]
 name = "kornia-3d"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "approx",
  "bincode 2.0.1",
@@ -7845,7 +7845,7 @@ dependencies = [
 
 [[package]]
 name = "kornia-algebra"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "approx",
  "criterion",
@@ -7858,7 +7858,7 @@ dependencies = [
 
 [[package]]
 name = "kornia-apriltag"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "aprilgrid",
  "apriltag 0.4.0",
@@ -7873,7 +7873,7 @@ dependencies = [
 
 [[package]]
 name = "kornia-bow"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "bincode 2.0.1",
  "criterion",
@@ -7886,7 +7886,7 @@ dependencies = [
 
 [[package]]
 name = "kornia-cpp"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "cxx",
  "cxx-build",
@@ -7897,7 +7897,7 @@ dependencies = [
 
 [[package]]
 name = "kornia-image"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "arrow 57.1.0",
  "criterion",
@@ -7910,7 +7910,7 @@ dependencies = [
 
 [[package]]
 name = "kornia-imgproc"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "criterion",
  "image 0.25.9",
@@ -7930,7 +7930,7 @@ dependencies = [
 
 [[package]]
 name = "kornia-io"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "circular-buffer",
  "criterion",
@@ -7955,7 +7955,7 @@ dependencies = [
 
 [[package]]
 name = "kornia-py"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "kornia-3d",
  "kornia-algebra",
@@ -7970,7 +7970,7 @@ dependencies = [
 
 [[package]]
 name = "kornia-tensor"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "bincode 2.0.1",
  "criterion",
@@ -7983,7 +7983,7 @@ dependencies = [
 
 [[package]]
 name = "kornia-tensor-ops"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "approx",
  "criterion",
@@ -7995,7 +7995,7 @@ dependencies = [
 
 [[package]]
 name = "kornia-vlm"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "candle-core",
  "candle-examples",
@@ -8617,7 +8617,7 @@ dependencies = [
 
 [[package]]
 name = "metrics"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "argh",
  "kornia",
@@ -8741,7 +8741,7 @@ dependencies = [
 
 [[package]]
 name = "morphology"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "argh",
  "kornia",
@@ -9161,7 +9161,7 @@ checksum = "0676bb32a98c1a483ce53e500a81ad9c3d5b3f7c920c28c24e9cb0980d0b5bc8"
 
 [[package]]
 name = "normalize"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "argh",
  "kornia",
@@ -9169,7 +9169,7 @@ dependencies = [
 
 [[package]]
 name = "normalize_ii"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "argh",
  "kornia",
@@ -9860,7 +9860,7 @@ dependencies = [
 
 [[package]]
 name = "onnx"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "argh",
  "kornia",
@@ -10191,7 +10191,7 @@ dependencies = [
 
 [[package]]
 name = "paligemma"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "argh",
  "kornia-io",
@@ -10628,7 +10628,7 @@ dependencies = [
 
 [[package]]
 name = "ply_rerun"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "argh",
  "kornia",
@@ -10695,7 +10695,7 @@ dependencies = [
 
 [[package]]
 name = "pnp_demo"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "argh",
  "env_logger",
@@ -13668,7 +13668,7 @@ dependencies = [
 
 [[package]]
 name = "rerun_viz"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "argh",
  "kornia",
@@ -13881,7 +13881,7 @@ dependencies = [
 
 [[package]]
 name = "rotate"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "argh",
  "kornia",
@@ -14841,7 +14841,7 @@ dependencies = [
 
 [[package]]
 name = "smol_vlm"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "argh",
  "kornia-image",
@@ -14892,7 +14892,7 @@ dependencies = [
 
 [[package]]
 name = "smol_vlm_convo"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "argh",
  "color-eyre",
@@ -15140,7 +15140,7 @@ dependencies = [
 
 [[package]]
 name = "std_mean"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "argh",
  "indicatif 0.18.3",
@@ -16344,7 +16344,7 @@ dependencies = [
 
 [[package]]
 name = "undistort"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "argh",
  "kornia",
@@ -16353,7 +16353,7 @@ dependencies = [
 
 [[package]]
 name = "undistort_points"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "argh",
  "kornia",
@@ -16696,7 +16696,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "video_player"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "eframe 0.31.1",
  "env_logger",
