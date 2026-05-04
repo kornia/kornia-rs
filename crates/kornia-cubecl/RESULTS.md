@@ -169,6 +169,36 @@ VPI's *resize alone* takes 593 μs. So the **complete preprocessing pipeline** r
 DataLoader pipeline running the same chain on CPU would take ~5-10 ms
 (20-40× slower than our fused kernel).
 
+### Three-way comparison at 1080p → 540p (typical ML preprocessing)
+
+The single most important table in this document. Shows how fusion neutralizes
+the cost of adding ops to an existing kernel:
+
+| Pipeline                                | median(μs) | Mpix/s | **vs P0 (resize only)** |
+|-----------------------------------------|-----------:|-------:|------------------------:|
+| **P0: resize only** (HWC u8 RGB out)    | **168.9**  | 3069   | 1.00× (baseline)        |
+| P1 sequential: resize → gray → norm     | 500.8      | 1035   | 3× SLOWER than P0!      |
+| **P1 fused: resize+gray+norm in 1 kernel** | **173.2** | 2994 | **0.98× — adding gray+norm is FREE** ⭐ |
+| P2 sequential: resize → CHW+norm        | 503.2      | 1030   | 3× SLOWER than P0       |
+| **P2 fused: resize+norm+CHW in 1 kernel** | **242.8** | 2135  | **0.70× — full ML pipeline costs 1.4× resize alone** ⭐ |
+
+**Vs NVIDIA VPI (just-the-resize = 593 μs at this size):**
+
+| Our cubecl pipeline                                      | μs   | vs VPI    |
+|----------------------------------------------------------|-----:|----------:|
+| P0 — resize only (HWC u8 RGB)                            | 169  | **3.5× faster** |
+| P1 fused — resize + gray + normalize → HWC f32           | 173  | **3.4× faster** while doing 3× the ops |
+| P2 fused — resize + ImageNet normalize → CHW f32 (model-ready) | 243 | **2.4× faster** while producing a tensor ResNet/YOLO/ViT can ingest directly |
+
+**The "P1 fused = 0.98× of resize-only" result is the entire pitch for fusion**:
+adding gray + normalize to a resize kernel costs literally nothing when fused,
+because both extra ops are pure compute on values already in registers. The
+kernel is bandwidth-bound; the extra arithmetic just fills idle pipeline slots.
+
+**The 3× sequential penalty** (500 μs vs 169 μs for the resize alone) is exactly
+the DRAM round-trip tax: each intermediate buffer gets written and immediately
+read back. Fusion eliminates it.
+
 **API design takeaway:** by exposing primitives as `#[cube]` functions (not
 `#[cube(launch)]` kernels), they inline at codegen when composed. Callers who
 need a custom pipeline write their own `#[cube(launch_unchecked)]` kernel that
