@@ -43,7 +43,42 @@ underperforms on ARM**. On ARM the winners are:
 3. **Chang/Chen (2004)** — unified CCL + contour tracing in one pass
    (useful since findContours needs both).
 
-## Implementation plan (5-day estimate for one engineer)
+## Day 0 (already done in this branch): WorkPixel trait + i8 binarize
+
+Commit `497d7fb` adds:
+- `WorkPixel` trait with `ZERO/ONE/NBD_MAX/from_i32/abs_i32/is_negative`
+- `impl WorkPixel for i16` and `impl WorkPixel for i8`
+- `binarize_row_i8` parallel function — 16 lanes per NEON iteration (2× the
+  throughput of the i16 version) via direct `vst1q_s8` (no widening needed)
+
+Foundation only — nothing CALLS the i8 path yet. Next contributor inherits
+the trait and the binarize variant; remaining work is to make execute_scan
+and trace_border generic and add the i8-first dispatcher.
+
+## Day 0.5 (next, ~3-5 hours): generic execute_scan + trace_border + dispatcher
+
+Approach: pure type-substitution duplication is FASTER than trait-based
+generics for this code (the SWAR + NEON paths need type-specific code
+anyway, so generics just adds bound noise without saving lines).
+
+1. Copy `execute_scan` → `execute_scan_i8` (290 lines), substitute i16 → i8,
+   change SWAR `as *const u64` to read 8 i8 lanes (instead of 4 i16),
+   change NEON `vld1q_s16/vceqq_s16/vminvq_u16` to `vld1q_s8/vceqq_s8/vminvq_u8`.
+2. Copy `trace_border` → `trace_border_i8` (140 lines), same substitution.
+3. Add `img_i8: Vec<i8>` to `WorkBuffers` alongside the existing `img: Vec<i16>`.
+4. Add `execute_compact` mirroring `execute` but using i8 path; returns
+   `NbdOverflow` if any contour count > 127.
+5. Modify `find_contours` and `find_contours_view` to try `execute_compact`
+   first, fall back to existing `execute` on overflow.
+6. Validate: `cargo test --release` (15 tests must pass) and
+   `python3 examples/check_correctness.py` (External-mode 6/6 must stay
+   bit-exact). Bench `pic1/pic3/filled_square_*` — predicted **10-20 μs
+   improvement** putting us at OpenCV parity or better.
+
+Risk: breaking the bit-exact correctness while refactoring. Mitigation:
+keep i16 path completely untouched; the i8 path is purely additive.
+
+## Implementation plan for the LSL run-based 10× (separate, 5 days)
 
 ### Day 1: Run-length encoding pass
 - Add a `RunLengthRow { starts: Vec<u32>, ends: Vec<u32> }` struct
