@@ -147,6 +147,90 @@ pub fn resize_bilinear_u8_rgb_with_weights<R: Runtime>(
     Ok(())
 }
 
+/// 4-pixels-per-thread + pre-uploaded weights. Combines both optimizations.
+pub fn resize_bilinear_u8_rgb_x4_with_weights<R: Runtime>(
+    client: &ComputeClient<R>,
+    src: &Handle,
+    src_size: ImageSize,
+    dst: &Handle,
+    dst_size: ImageSize,
+    weights: &WeightHandles,
+) -> Result<(), ResizeError> {
+    if src_size.width == 0 || src_size.height == 0 || dst_size.width == 0 || dst_size.height == 0 {
+        return Err(ResizeError::ZeroDimension);
+    }
+    if dst_size.width % 4 != 0 {
+        return Err(ResizeError::BufferSize { expected: dst_size.width, got: dst_size.width });
+    }
+    let src_w = src_size.width as u32;
+    let dst_w = dst_size.width as u32;
+    let dst_h = dst_size.height as u32;
+
+    let cube_dim = CubeDim::new_2d(16, 16);
+    let cube_count = CubeCount::new_2d((dst_w / 4).div_ceil(16), dst_h.div_ceil(16));
+    let src_len = src_size.width * src_size.height * 3;
+    let dst_len = dst_size.width * dst_size.height * 3;
+
+    unsafe {
+        resize_bilinear_u8_rgb_kernel_x4::launch_unchecked::<R>(
+            client,
+            cube_count,
+            cube_dim,
+            ArrayArg::from_raw_parts(src.clone(), src_len),
+            ArrayArg::from_raw_parts(dst.clone(), dst_len),
+            ArrayArg::from_raw_parts(weights.wx_idx.clone(), weights.wx_len),
+            ArrayArg::from_raw_parts(weights.wx_w.clone(), weights.wx_len),
+            ArrayArg::from_raw_parts(weights.wy_idx.clone(), weights.wy_len),
+            ArrayArg::from_raw_parts(weights.wy_w.clone(), weights.wy_len),
+            src_w,
+            dst_w,
+            dst_h,
+        );
+    }
+    Ok(())
+}
+
+/// Same kernel as baseline + pre-uploaded weights, but launched with a wider
+/// 32×8 workgroup. Better memory coalescing for non-square inputs (e.g. 1080p).
+pub fn resize_bilinear_u8_rgb_with_weights_wide<R: Runtime>(
+    client: &ComputeClient<R>,
+    src: &Handle,
+    src_size: ImageSize,
+    dst: &Handle,
+    dst_size: ImageSize,
+    weights: &WeightHandles,
+) -> Result<(), ResizeError> {
+    if src_size.width == 0 || src_size.height == 0 || dst_size.width == 0 || dst_size.height == 0 {
+        return Err(ResizeError::ZeroDimension);
+    }
+    let src_w = src_size.width as u32;
+    let dst_w = dst_size.width as u32;
+    let dst_h = dst_size.height as u32;
+
+    let cube_dim = CubeDim::new_2d(32, 8);
+    let cube_count = CubeCount::new_2d(dst_w.div_ceil(32), dst_h.div_ceil(8));
+    let src_len = src_size.width * src_size.height * 3;
+    let dst_len = dst_size.width * dst_size.height * 3;
+
+    unsafe {
+        resize_bilinear_u8_rgb_kernel::launch_unchecked::<R>(
+            client,
+            cube_count,
+            cube_dim,
+            ArrayArg::from_raw_parts(src.clone(), src_len),
+            ArrayArg::from_raw_parts(dst.clone(), dst_len),
+            ArrayArg::from_raw_parts(weights.wx_idx.clone(), weights.wx_len),
+            ArrayArg::from_raw_parts(weights.wx_w.clone(), weights.wx_len),
+            ArrayArg::from_raw_parts(weights.wy_idx.clone(), weights.wy_len),
+            ArrayArg::from_raw_parts(weights.wy_w.clone(), weights.wy_len),
+            src_w,
+            dst_w,
+            dst_h,
+        );
+    }
+    Ok(())
+}
+
 /// Same as `resize_bilinear_u8_rgb` but launches the 4-pixels-per-thread
 /// variant (`resize_bilinear_u8_rgb_kernel_x4`). Requires `dst_size.width % 4 == 0`.
 pub fn resize_bilinear_u8_rgb_x4<R: Runtime>(

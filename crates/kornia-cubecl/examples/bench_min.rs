@@ -1,7 +1,7 @@
 //! Minimal bench: NEON vs cubecl-cpu × {kernel-only, end-to-end} × 4 sizes.
 //! No criterion — std::time only, 10 reps, reports min/median/mean.
 
-use kornia_cubecl::resize::{resize_bilinear_u8_rgb, resize_bilinear_u8_rgb_with_weights, resize_bilinear_u8_rgb_x16, resize_bilinear_u8_rgb_x4, WeightHandles};
+use kornia_cubecl::resize::{resize_bilinear_u8_rgb, resize_bilinear_u8_rgb_with_weights, resize_bilinear_u8_rgb_with_weights_wide, resize_bilinear_u8_rgb_x16, resize_bilinear_u8_rgb_x4, resize_bilinear_u8_rgb_x4_with_weights, WeightHandles};
 use kornia_cubecl::runtime;
 use kornia_image::{Image, ImageSize};
 use kornia_imgproc::{interpolation::InterpolationMode, resize};
@@ -286,6 +286,58 @@ fn cuda_arms(
     }
     let (mn, md, mu) = stats(spw);
     println!("{:<14}{:<24}{}{}{}{}", "", "cubecl_cuda_kernel_pw", fmt_us(mn), fmt_us(md), fmt_us(mu), fmt_mpix(dst_pix, md));
+
+    // x4 + pw
+    if dst_w % 4 == 0 {
+        for _ in 0..WARMUP {
+            resize_bilinear_u8_rgb_x4_with_weights::<runtime::CudaRuntime>(
+                cuda, &src_h_cu,
+                ImageSize { width: src_w, height: src_h }, &dst_h_cu,
+                ImageSize { width: dst_w, height: dst_h },
+                &weights_cu,
+            ).unwrap();
+            let _ = cubecl::future::block_on(cuda.sync());
+        }
+        let mut s = Vec::with_capacity(REPS);
+        for _ in 0..REPS {
+            let t = Instant::now();
+            resize_bilinear_u8_rgb_x4_with_weights::<runtime::CudaRuntime>(
+                cuda, &src_h_cu,
+                ImageSize { width: src_w, height: src_h }, &dst_h_cu,
+                ImageSize { width: dst_w, height: dst_h },
+                &weights_cu,
+            ).unwrap();
+            let _ = cubecl::future::block_on(cuda.sync());
+            s.push(t.elapsed().as_secs_f64());
+        }
+        let (mn, md, mu) = stats(s);
+        println!("{:<14}{:<24}{}{}{}{}", "", "cubecl_cuda_x4_pw", fmt_us(mn), fmt_us(md), fmt_us(mu), fmt_mpix(dst_pix, md));
+    }
+
+    // wide workgroup (32x8) + pw
+    for _ in 0..WARMUP {
+        resize_bilinear_u8_rgb_with_weights_wide::<runtime::CudaRuntime>(
+            cuda, &src_h_cu,
+            ImageSize { width: src_w, height: src_h }, &dst_h_cu,
+            ImageSize { width: dst_w, height: dst_h },
+            &weights_cu,
+        ).unwrap();
+        let _ = cubecl::future::block_on(cuda.sync());
+    }
+    let mut s = Vec::with_capacity(REPS);
+    for _ in 0..REPS {
+        let t = Instant::now();
+        resize_bilinear_u8_rgb_with_weights_wide::<runtime::CudaRuntime>(
+            cuda, &src_h_cu,
+            ImageSize { width: src_w, height: src_h }, &dst_h_cu,
+            ImageSize { width: dst_w, height: dst_h },
+            &weights_cu,
+        ).unwrap();
+        let _ = cubecl::future::block_on(cuda.sync());
+        s.push(t.elapsed().as_secs_f64());
+    }
+    let (mn, md, mu) = stats(s);
+    println!("{:<14}{:<24}{}{}{}{}", "", "cubecl_cuda_pw_wide", fmt_us(mn), fmt_us(md), fmt_us(mu), fmt_mpix(dst_pix, md));
 
     // e2e
     for _ in 0..WARMUP {
