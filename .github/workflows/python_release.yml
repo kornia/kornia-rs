@@ -134,7 +134,6 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
-          architecture: x64
       - uses: actions-rs/toolchain@v1
         with:
           profile: minimal
