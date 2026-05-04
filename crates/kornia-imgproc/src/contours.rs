@@ -293,6 +293,9 @@ impl FindContoursExecutor {
         mode: RetrievalMode,
         method: ContourApproximationMode,
     ) -> Result<(), ContoursError> {
+        #[cfg(feature = "profile_contours")]
+        let _t_start = std::time::Instant::now();
+
         let height = src.height();
         let width = src.width();
         let padded_w = width + 2;
@@ -304,6 +307,9 @@ impl FindContoursExecutor {
         }
         let img_slice = &mut self.buffers.img[..padded_n];
         img_slice.fill(0i16);
+
+        #[cfg(feature = "profile_contours")]
+        let _t_after_init = std::time::Instant::now();
 
         // parallel binarisation for large images to avoid thread-dispatch overhead
         let src_data = src.as_slice();
@@ -327,6 +333,9 @@ impl FindContoursExecutor {
             }
         }
 
+        #[cfg(feature = "profile_contours")]
+        let _t_after_binarize = std::time::Instant::now();
+
         let pw = padded_w as isize;
         let o8: [isize; 8] = [-1, -pw - 1, -pw, -pw + 1, 1, pw + 1, pw, pw - 1];
         let mut o16 = [0isize; 16];
@@ -340,6 +349,11 @@ impl FindContoursExecutor {
         self.buffers.border_types.push(BorderType::Outer);
 
         let img_ptr = img_slice.as_mut_ptr();
+
+        #[cfg(feature = "profile_contours")]
+        let mut _trace_border_total_ns: u128 = 0;
+        #[cfg(feature = "profile_contours")]
+        let mut _trace_border_calls: u32 = 0;
 
         for r in 1..=height {
             let mut lnbd: i16 = 1;
@@ -411,7 +425,14 @@ impl FindContoursExecutor {
                         nbd,
                         method,
                     };
+                    #[cfg(feature = "profile_contours")]
+                    let _t_trace = std::time::Instant::now();
                     let range = Self::trace_border(img_ptr, ts, &toff, &mut self.buffers.arena);
+                    #[cfg(feature = "profile_contours")]
+                    {
+                        _trace_border_total_ns += _t_trace.elapsed().as_nanos();
+                        _trace_border_calls += 1;
+                    }
 
                     let hier_entry =
                         Self::update_hierarchy(&mut self.buffers.hierarchy, nbd as usize, parent);
@@ -452,6 +473,27 @@ impl FindContoursExecutor {
 
         // Suppress "unused mode" warning — actual filter happens in execute().
         let _ = mode;
+
+        #[cfg(feature = "profile_contours")]
+        {
+            let init_ns = _t_after_init.duration_since(_t_start).as_nanos();
+            let bin_ns = _t_after_binarize.duration_since(_t_after_init).as_nanos();
+            let total_ns = _t_after_binarize.elapsed().as_nanos()
+                + bin_ns + init_ns;
+            let scan_total = _t_after_binarize.elapsed().as_nanos();
+            let scan_minus_trace = scan_total.saturating_sub(_trace_border_total_ns);
+            eprintln!(
+                "PROFILE w={width} h={height} contours={} init={}μs bin={}μs scan_other={}μs trace_border={}μs ({} calls, {}ns/call)",
+                _trace_border_calls,
+                init_ns / 1000,
+                bin_ns / 1000,
+                scan_minus_trace / 1000,
+                _trace_border_total_ns / 1000,
+                _trace_border_calls,
+                if _trace_border_calls > 0 { _trace_border_total_ns / _trace_border_calls as u128 } else { 0 },
+            );
+            let _ = total_ns;
+        }
 
         Ok(())
     }
