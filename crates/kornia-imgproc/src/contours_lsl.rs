@@ -172,9 +172,13 @@ pub struct LineLabels {
     pub labels: Vec<Vec<u32>>,
 }
 
-/// Assign sequential per-row labels (Day 2). STUB.
-pub fn line_relative_label(_rle: &RleImage) -> LineLabels {
-    todo!("Day 2: assign sequential per-row labels — see Lacassagne 2009 Section 3.2");
+/// Assign sequential per-row labels. Each run in row r gets a unique label
+/// `0, 1, 2, ...` within that row; cross-row identification happens in Day 3.
+pub fn line_relative_label(rle: &RleImage) -> LineLabels {
+    let labels = rle.rows.iter()
+        .map(|r| (0..r.runs.len() as u32).collect::<Vec<u32>>())
+        .collect();
+    LineLabels { labels }
 }
 
 // ============================================================================
@@ -190,10 +194,103 @@ pub struct ComponentMap {
     pub n_components: u32,
 }
 
+/// Simple union-find for u32 IDs.
+struct UnionFind {
+    parent: Vec<u32>,
+}
+
+impl UnionFind {
+    fn new(n: usize) -> Self {
+        Self { parent: (0..n as u32).collect() }
+    }
+    fn find(&mut self, mut x: u32) -> u32 {
+        while self.parent[x as usize] != x {
+            // path compression: point x to grandparent
+            let p = self.parent[x as usize];
+            let g = self.parent[p as usize];
+            self.parent[x as usize] = g;
+            x = g;
+        }
+        x
+    }
+    fn union(&mut self, a: u32, b: u32) {
+        let ra = self.find(a);
+        let rb = self.find(b);
+        if ra != rb {
+            // union by smaller-id wins (deterministic ordering)
+            if ra < rb {
+                self.parent[rb as usize] = ra;
+            } else {
+                self.parent[ra as usize] = rb;
+            }
+        }
+    }
+}
+
 /// Merge equivalent runs across rows via union-find on overlapping intervals.
-/// Day 3. STUB.
-pub fn cross_row_merge(_rle: &RleImage, _labels: &LineLabels) -> ComponentMap {
-    todo!("Day 3: union-find merge across overlapping runs in adjacent rows");
+/// Two runs are equivalent if they're in adjacent rows AND their column ranges
+/// overlap (8-connectivity: overlap by ≥ 1 column counts as connected — uses
+/// the same convention as OpenCV/Suzuki-Abe via diagonal neighbors).
+pub fn cross_row_merge(rle: &RleImage, _labels: &LineLabels) -> ComponentMap {
+    // Assign global indices to each run: run k in row r gets index `offset[r] + k`.
+    let mut offsets: Vec<u32> = Vec::with_capacity(rle.rows.len() + 1);
+    offsets.push(0);
+    for row in &rle.rows {
+        offsets.push(offsets.last().unwrap() + row.runs.len() as u32);
+    }
+    let total_runs = *offsets.last().unwrap() as usize;
+    let mut uf = UnionFind::new(total_runs);
+
+    // For each adjacent pair of rows, find overlapping runs and union them.
+    // 8-connectivity means runs touching at corners count as connected, so
+    // overlap test is `r1.start <= r2.end + 1 AND r2.start <= r1.end + 1`.
+    for r in 0..rle.rows.len().saturating_sub(1) {
+        let above = &rle.rows[r].runs;
+        let below = &rle.rows[r + 1].runs;
+        let off_above = offsets[r];
+        let off_below = offsets[r + 1];
+        // Two-pointer sweep since both run lists are sorted by start_col.
+        let (mut i, mut j) = (0usize, 0usize);
+        while i < above.len() && j < below.len() {
+            let a = &above[i];
+            let b = &below[j];
+            // 8-conn overlap: a touches b iff a.start <= b.end + 1 AND b.start <= a.end + 1
+            let touch = a.start <= b.end + 1 && b.start <= a.end + 1;
+            if touch {
+                uf.union(off_above + i as u32, off_below + j as u32);
+            }
+            // Advance the pointer whose run ends earlier.
+            if a.end < b.end {
+                i += 1;
+            } else {
+                j += 1;
+            }
+        }
+    }
+
+    // Compress paths and assign final compact component IDs.
+    let mut representative_to_id: std::collections::HashMap<u32, u32> = Default::default();
+    let mut next_id: u32 = 0;
+    let mut component_per_run: Vec<Vec<u32>> = Vec::with_capacity(rle.rows.len());
+    for (r, row) in rle.rows.iter().enumerate() {
+        let off = offsets[r];
+        let row_ids: Vec<u32> = (0..row.runs.len() as u32)
+            .map(|k| {
+                let rep = uf.find(off + k);
+                *representative_to_id.entry(rep).or_insert_with(|| {
+                    let id = next_id;
+                    next_id += 1;
+                    id
+                })
+            })
+            .collect();
+        component_per_run.push(row_ids);
+    }
+
+    ComponentMap {
+        component_per_run,
+        n_components: next_id,
+    }
 }
 
 // ============================================================================
@@ -274,6 +371,55 @@ mod tests {
             assert_eq!(r.start, (i * 2 + 1) as u32);
             assert_eq!(r.end, (i * 2 + 1) as u32);
         }
+    }
+
+    #[test]
+    fn ccl_filled_square_is_one_component() {
+        // 8x6 image with a 4x3 filled rectangle in the middle
+        let w = 8;
+        let h = 6;
+        let mut data = vec![0u8; w * h];
+        for r in 1..5 {
+            for c in 2..6 {
+                data[r * w + c] = 1;
+            }
+        }
+        let rle = rle_extract(&data, w, h);
+        let labels = line_relative_label(&rle);
+        let cmap = cross_row_merge(&rle, &labels);
+        assert_eq!(cmap.n_components, 1, "filled rect = 1 component, got {:?}", cmap);
+    }
+
+    #[test]
+    fn ccl_two_disjoint_rectangles() {
+        // 12x6 image: two 3x3 rectangles separated by a column of zeros
+        let w = 12;
+        let h = 6;
+        let mut data = vec![0u8; w * h];
+        for r in 1..4 {
+            for c in 1..4 { data[r * w + c] = 1; }
+            for c in 7..10 { data[r * w + c] = 1; }
+        }
+        let rle = rle_extract(&data, w, h);
+        let labels = line_relative_label(&rle);
+        let cmap = cross_row_merge(&rle, &labels);
+        assert_eq!(cmap.n_components, 2);
+    }
+
+    #[test]
+    fn ccl_diagonal_touch_is_one_component_8conn() {
+        // 6x6: two squares touching only at a corner — should be 1 component (8-conn)
+        let w = 6;
+        let h = 6;
+        let mut data = vec![0u8; w * h];
+        // Top-left 2x2 at (0..2, 0..2)
+        for r in 0..2 { for c in 0..2 { data[r * w + c] = 1; } }
+        // Bottom-right 2x2 at (2..4, 2..4) — touches top-left at corner (1,1)-(2,2)
+        for r in 2..4 { for c in 2..4 { data[r * w + c] = 1; } }
+        let rle = rle_extract(&data, w, h);
+        let labels = line_relative_label(&rle);
+        let cmap = cross_row_merge(&rle, &labels);
+        assert_eq!(cmap.n_components, 1, "8-conn corner touch = 1 component");
     }
 
     #[test]
