@@ -390,12 +390,131 @@ pub fn build_component_grid(rle: &RleImage, components: &ComponentMap) -> Vec<i3
 /// **Validation gate**: `python3 examples/check_correctness.py` must keep
 /// returning ✅ BIT-EXACT MATCH for all 6 External-mode fixtures (after
 /// applying the same CCW-direction post-process the contours.rs path uses).
+/// Direction tables for Moore-neighbour boundary trace.
+/// Direction encoding: 0=W 1=NW 2=N 3=NE 4=E 5=SE 6=S 7=SW
+const TRACE_DR: [i32; 8] = [0, -1, -1, -1, 0, 1, 1, 1];
+const TRACE_DC: [i32; 8] = [-1, -1, 0, 1, 1, 1, 0, -1];
+
+#[inline]
+fn neighbour_in_component(
+    grid: &[i32],
+    width: i32,
+    height: i32,
+    r: i32,
+    c: i32,
+    cid: i32,
+) -> bool {
+    if r < 0 || r >= height || c < 0 || c >= width {
+        return false;
+    }
+    grid[(r * width + c) as usize] == cid
+}
+
+fn trace_one_component(
+    grid: &[i32],
+    width: i32,
+    height: i32,
+    start_r: i32,
+    start_c: i32,
+    cid: i32,
+) -> Vec<[i32; 2]> {
+    let mut points = vec![[start_c, start_r]];
+
+    // Find first non-zero neighbour scanning CW from NW (one step CW from W).
+    // Convention: at the start position (which is the leftmost of the topmost
+    // run), the W and NW and N neighbours are all background. So we scan
+    // starting from NW, expecting to find next boundary pixel at E typically.
+    let mut first: Option<(i32, i32, usize)> = None;
+    for k in 1..9usize {
+        // start_scan = NW (1), then N, NE, E, SE, S, SW, W
+        let d = k & 7;
+        let nr = start_r + TRACE_DR[d];
+        let nc = start_c + TRACE_DC[d];
+        if neighbour_in_component(grid, width, height, nr, nc, cid) {
+            first = Some((nr, nc, d));
+            break;
+        }
+    }
+
+    let (mut r, mut c, dir_to_first) = match first {
+        None => return points, // isolated single-pixel component
+        Some(t) => t,
+    };
+    // We arrived at (r, c) FROM start by moving direction `dir_to_first`,
+    // so we entered (r, c) from (dir_to_first + 4) & 7.
+    let first_in_dir = (dir_to_first + 4) & 7;
+    let mut in_dir = first_in_dir;
+
+    let max_iters = (width as usize) * (height as usize) * 4 + 64; // safety bail
+    let mut iters = 0usize;
+
+    loop {
+        if iters > max_iters {
+            break;
+        }
+        iters += 1;
+
+        points.push([c, r]);
+
+        // Moore-neighbour CW boundary trace: with our encoding (W=0, NW=1, ...,
+        // SW=7), scan starts ONE STEP CW from `came_from_dir`. This rotates
+        // around `cur` from "outside" inward, finding the next boundary pixel.
+        let scan_start = (in_dir + 1) & 7;
+        let mut next_found: Option<(i32, i32, usize)> = None;
+        for k in 0..8usize {
+            let d = (scan_start + k) & 7;
+            let nr = r + TRACE_DR[d];
+            let nc = c + TRACE_DC[d];
+            if neighbour_in_component(grid, width, height, nr, nc, cid) {
+                next_found = Some((nr, nc, d));
+                break;
+            }
+        }
+
+        let (nr, nc, d) = match next_found {
+            None => break,
+            Some(t) => t,
+        };
+
+        // Halting rule: returning to start position with same incoming direction
+        // as we first entered the loop AT start (i.e., next would repeat first move).
+        if nr == start_r
+            && nc == start_c
+            && ((d + 4) & 7) == first_in_dir
+            && iters > 1
+        {
+            break;
+        }
+
+        r = nr;
+        c = nc;
+        in_dir = (d + 4) & 7;
+    }
+
+    points
+}
+
+/// Trace boundary per labeled component. Outputs `Vec<Vec<[x, y]>>` compatible
+/// with the existing find_contours public API.
+///
+/// Implementation: Moore-neighbour boundary trace from each component's
+/// leftmost-topmost pixel. Direction is CW (Suzuki/Abe natural order).
+/// Caller can apply CCW reversal as a post-pass to match OpenCV convention.
 pub fn trace_components(
-    _rle: &RleImage,
-    _components: &ComponentMap,
+    rle: &RleImage,
+    components: &ComponentMap,
 ) -> Vec<Vec<[i32; 2]>> {
-    // STUB — Day 4 implementation pending. Pseudocode above.
-    Vec::new()
+    let grid = build_component_grid(rle, components);
+    let starts = find_outer_starts(rle, components);
+    let w = rle.width as i32;
+    let h = rle.height as i32;
+    starts
+        .into_iter()
+        .enumerate()
+        .map(|(cid, (start_r, start_c))| {
+            trace_one_component(&grid, w, h, start_r as i32, start_c as i32, cid as i32)
+        })
+        .collect()
 }
 
 // ============================================================================
@@ -519,6 +638,36 @@ mod tests {
         let labels = line_relative_label(&rle);
         let cmap = cross_row_merge(&rle, &labels);
         assert_eq!(cmap.n_components, 1, "8-conn corner touch = 1 component");
+    }
+
+    #[test]
+    fn trace_filled_3x3_square() {
+        // 5x5 image with a 3x3 filled square in the middle (cols 1..4, rows 1..4)
+        let w = 5;
+        let h = 5;
+        let mut data = vec![0u8; w * h];
+        for r in 1..4 {
+            for c in 1..4 { data[r * w + c] = 1; }
+        }
+        let contours = find_external_contours_lsl(&data, w, h);
+        assert_eq!(contours.len(), 1);
+        // Expect 8 boundary pixels (corners + edges of 3x3) — the Moore-trace
+        // visits each boundary pixel.
+        assert!(!contours[0].is_empty(), "got empty contour");
+        // First point should be the start (top-left of 3x3 = (1, 1) in (col, row))
+        assert_eq!(contours[0][0], [1, 1]);
+    }
+
+    #[test]
+    fn trace_isolated_pixel() {
+        // Single isolated pixel at (2, 2)
+        let w = 5;
+        let h = 5;
+        let mut data = vec![0u8; w * h];
+        data[2 * w + 2] = 1;
+        let contours = find_external_contours_lsl(&data, w, h);
+        assert_eq!(contours.len(), 1);
+        assert_eq!(contours[0], vec![[2, 2]]);
     }
 
     #[test]
