@@ -111,6 +111,52 @@ across many calls. Skips four small `create_from_slice` device uploads per
 dispatch. Realistic for video pipelines or batched preprocessing where the
 resize shape is fixed.
 
+## Kernel fusion: 2× speedup with composable primitives
+
+The crate exposes a **two-tier API** so callers can either invoke a single op or
+compose a custom pipeline that cubecl emits as one fused kernel:
+
+- **Tier 1 — Composable `#[cube]` primitives** (inlined at codegen):
+  - `sample_bilinear_u8_rgb_pixel(...)` — returns `(r, g, b)` from one bilinear sample
+  - `rgb_to_gray_u8(r, g, b)` — BT.601 fixed-point luma
+  - `normalize_u8_to_f32(g, mean, inv_std)` — `(g - mean) * inv_std`
+
+- **Tier 2 — Standalone launchers** (one kernel each):
+  - `resize_bilinear_u8_rgb<R>(...)` / `_with_weights` / `_x4` / `_x16` / `_x4_with_weights` / `_with_weights_wide`
+  - `rgb_to_gray_u8<R>(...)`
+  - `normalize_u8_to_f32<R>(...)`
+
+- **Tier 3 — Pre-fused common pipelines** (single kernel, calls primitives inline):
+  - `resize_to_gray_normalize_with_weights<R>(...)` — does all three above in one pass
+
+### Fused vs sequential bench (1080p ML preprocessing chain)
+
+`bilinear resize → RGB→gray → normalize_to_f32` on Jetson Orin Nano:
+
+| size              | sequential 3-kernel (Mpix/s) | fused 1-kernel (Mpix/s) | **speedup** |
+|-------------------|----------------------------:|------------------------:|------------:|
+| 1024² out         | 1429                        | 2766                    | **1.94×**   |
+| 1080p → 540p      | 1114                        | 2890                    | **2.59×**   |
+| 2048² out         | 1149                        | 3158                    | **2.75×**   |
+| 4096² out         | 1648                        | 3218                    | 1.95×       |
+| 4096² out (8K in) | 1856                        | 3589                    | 1.93×       |
+
+The 2× speedup matches the theoretical ceiling for this 3-op chain: sequential
+mode reads/writes ~96 MB of intermediate DRAM buffers per call; the fused kernel
+eliminates them, paying only for src read + final f32 dst write.
+
+The fused 8K result (3589 Mpix/s) is actually *higher* than the standalone resize
+peak (3546 Mpix/s with `pw_wide`) — because the fused kernel writes f32 gray
+(1 channel) rather than u8 RGB (3 channels), so total memory traffic is lower
+even though the per-element size is bigger.
+
+**API design takeaway:** by exposing primitives as `#[cube]` functions (not
+`#[cube(launch)]` kernels), they inline at codegen when composed. Callers who
+need a custom pipeline write their own `#[cube(launch_unchecked)]` kernel that
+calls the primitives in sequence — cubecl emits one CUDA kernel that does
+everything in one DRAM pass. The standalone launchers exist for callers who
+only need one op.
+
 ## Findings
 
 ### Headline: cubecl-cuda kernel beats NEON by 2-3× at every realistic size

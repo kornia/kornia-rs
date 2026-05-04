@@ -6,7 +6,11 @@ use cubecl::prelude::*;
 use cubecl::server::Handle;
 use kornia_image::ImageSize;
 
-use kernel::{resize_bilinear_u8_rgb_kernel, resize_bilinear_u8_rgb_kernel_x16, resize_bilinear_u8_rgb_kernel_x4};
+use kernel::{
+    normalize_u8_to_f32_kernel, resize_bilinear_u8_rgb_kernel,
+    resize_bilinear_u8_rgb_kernel_x16, resize_bilinear_u8_rgb_kernel_x4,
+    resize_to_gray_normalize_kernel, rgb_to_gray_kernel,
+};
 use weights::compute_axis_weights;
 
 /// Run the bilinear u8 RGB resize kernel on the given runtime.
@@ -144,6 +148,112 @@ pub fn resize_bilinear_u8_rgb_with_weights<R: Runtime>(
         );
     }
 
+    Ok(())
+}
+
+/// FUSED launcher: bilinear resize + RGB→gray + normalize-to-f32, all in one kernel pass.
+/// Avoids the two intermediate DRAM round-trips a sequential pipeline (`resize → gray → normalize`)
+/// would incur. Output `dst` is f32 of length `dst_size.width * dst_size.height`.
+pub fn resize_to_gray_normalize_with_weights<R: Runtime>(
+    client: &ComputeClient<R>,
+    src: &Handle,
+    src_size: ImageSize,
+    dst: &Handle,
+    dst_size: ImageSize,
+    weights: &WeightHandles,
+    mean: f32,
+    inv_std: f32,
+) -> Result<(), ResizeError> {
+    if src_size.width == 0 || src_size.height == 0 || dst_size.width == 0 || dst_size.height == 0 {
+        return Err(ResizeError::ZeroDimension);
+    }
+    let src_w = src_size.width as u32;
+    let dst_w = dst_size.width as u32;
+    let dst_h = dst_size.height as u32;
+
+    let cube_dim = CubeDim::new_2d(16, 16);
+    let cube_count = CubeCount::new_2d(dst_w.div_ceil(16), dst_h.div_ceil(16));
+    let src_len = src_size.width * src_size.height * 3;
+    let dst_len = dst_size.width * dst_size.height; // f32 count, not bytes
+
+    unsafe {
+        resize_to_gray_normalize_kernel::launch_unchecked::<R>(
+            client,
+            cube_count,
+            cube_dim,
+            ArrayArg::from_raw_parts(src.clone(), src_len),
+            ArrayArg::from_raw_parts(dst.clone(), dst_len),
+            ArrayArg::from_raw_parts(weights.wx_idx.clone(), weights.wx_len),
+            ArrayArg::from_raw_parts(weights.wx_w.clone(), weights.wx_len),
+            ArrayArg::from_raw_parts(weights.wy_idx.clone(), weights.wy_len),
+            ArrayArg::from_raw_parts(weights.wy_w.clone(), weights.wy_len),
+            src_w,
+            dst_w,
+            dst_h,
+            mean,
+            inv_std,
+        );
+    }
+    Ok(())
+}
+
+/// Standalone: RGB → gray (no resize). Width × height u8 RGB → width × height u8 gray.
+pub fn rgb_to_gray_u8<R: Runtime>(
+    client: &ComputeClient<R>,
+    src: &Handle,
+    dst: &Handle,
+    width: usize,
+    height: usize,
+) -> Result<(), ResizeError> {
+    if width == 0 || height == 0 {
+        return Err(ResizeError::ZeroDimension);
+    }
+    let cube_dim = CubeDim::new_2d(16, 16);
+    let cube_count = CubeCount::new_2d((width as u32).div_ceil(16), (height as u32).div_ceil(16));
+    let src_len = width * height * 3;
+    let dst_len = width * height;
+
+    unsafe {
+        rgb_to_gray_kernel::launch_unchecked::<R>(
+            client,
+            cube_count,
+            cube_dim,
+            ArrayArg::from_raw_parts(src.clone(), src_len),
+            ArrayArg::from_raw_parts(dst.clone(), dst_len),
+            width as u32,
+            height as u32,
+        );
+    }
+    Ok(())
+}
+
+/// Standalone: normalize u8 → f32 with given mean and inv_std.
+pub fn normalize_u8_to_f32<R: Runtime>(
+    client: &ComputeClient<R>,
+    src: &Handle,
+    dst: &Handle,
+    count: usize,
+    mean: f32,
+    inv_std: f32,
+) -> Result<(), ResizeError> {
+    if count == 0 {
+        return Err(ResizeError::ZeroDimension);
+    }
+    let cube_dim = CubeDim::new_1d(256);
+    let cube_count = CubeCount::new_1d((count as u32).div_ceil(256));
+
+    unsafe {
+        normalize_u8_to_f32_kernel::launch_unchecked::<R>(
+            client,
+            cube_count,
+            cube_dim,
+            ArrayArg::from_raw_parts(src.clone(), count),
+            ArrayArg::from_raw_parts(dst.clone(), count),
+            count as u32,
+            mean,
+            inv_std,
+        );
+    }
     Ok(())
 }
 
