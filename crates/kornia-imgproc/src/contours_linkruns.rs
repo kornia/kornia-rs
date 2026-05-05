@@ -39,6 +39,18 @@ use kornia_image::{allocator::ImageAllocator, Image};
 // L2), splitting into per-field Vecs keeps the per-phase working set
 // inside L2. Reverting to AoS regressed sparse_noise 12-13% precisely
 // because the working set spilled to L3.
+//
+// **BlockStorage attempt (negative result, see commit history)**:
+// chunked SoA — each Vec replaced with `Vec<Box<[T; 256]>>`, address
+// decoded as `idx >> 8` (block) + `idx & 255` (slot). Hypothesis was
+// that mirroring OpenCV's `BlockStorage` would give chain-walks L1
+// locality. Reality: regressed every fixture by 6-50%. Three reasons:
+// (1) double indirection (block ptr lookup + slot index) added a load
+// per access; (2) the SoA Vecs were already L2-resident so locality was
+// not the bottleneck; (3) chains in sparse_noise span 2-4 blocks
+// anyway since each row roughly fills one 256-LRP block. Without
+// chain-spatial-rearrangement (which would itself cost more than it
+// saves), block chunking is pure overhead.
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ConnectFlag {
