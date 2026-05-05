@@ -6,8 +6,7 @@ use kornia_apriltag::{
 use pyo3::{exceptions::PyException, prelude::*, PyResult};
 
 use crate::{
-    apriltag::family::PyTagFamily,
-    image::{FromPyImage, numpy_as_image, PyImage, PyImageSize},
+    image::{numpy_as_image, PyImage, PyImageSize},
 };
 
 #[pyclass(name = "DecodeTagsConfig")]
@@ -35,7 +34,7 @@ impl PyDecodeTagsConfig {
         Python::attach(|py| {
             let mut out = Vec::with_capacity(self.0.tag_families.len());
             for family in &self.0.tag_families {
-                let kind = TagFamilyKind::Custom(Box::new(family.clone()));
+                let kind = family.clone();
                 out.push(Py::new(py, family::PyTagFamilyKind(kind))?);
             }
             Ok(out)
