@@ -18,6 +18,20 @@ fn main() {
     };
     let r = find_contours(&bw, mode, ContourApproximationMode::Simple).unwrap();
     println!("count: {}", r.contours.len());
+    if std::env::var("DUMP_BOXES").is_ok() {
+        for c in &r.contours {
+            if c.is_empty() { continue; }
+            let mut xmin = c[0][0]; let mut ymin = c[0][1];
+            let mut xmax = c[0][0]; let mut ymax = c[0][1];
+            for &[x, y] in c {
+                if x < xmin { xmin = x; }
+                if x > xmax { xmax = x; }
+                if y < ymin { ymin = y; }
+                if y > ymax { ymax = y; }
+            }
+            println!("[{},{},{},{}]", xmin, ymin, xmax, ymax);
+        }
+    }
     if std::env::var("DUMP_HIER").is_ok() {
         let mut parent_count = std::collections::BTreeMap::new();
         let mut frame_outer = 0u64;

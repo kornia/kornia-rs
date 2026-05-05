@@ -418,11 +418,12 @@ impl FindContoursExecutor {
 
         for r in 1..=height {
             // `lnbd` carries the unsigned NBD of the most-recently-crossed
-            // border (for parent lookup). `lnbd_signed_pixel` carries the
-            // SIGNED marker value (for cv2's `img0[lnbd_x] > 0` check —
-            // distinguishes "just entered an outer" from "just exited").
+            // border (for parent lookup). `lnbd_pos` is the offset in
+            // `img_slice` of that marker — cv2 reads `img0[lnbd_x] > 0`
+            // dynamically (the marker value at that position). usize::MAX
+            // = "no marker seen yet this row".
             let mut lnbd: i16 = 1;
-            let mut lnbd_signed_pixel: i16 = 0; // 0 = no marker seen yet
+            let mut lnbd_pos: usize = usize::MAX;
             let row_base = r * padded_w;
             let mut c = 1usize;
 
@@ -444,12 +445,9 @@ impl FindContoursExecutor {
                 // recent marker we crossed was a POSITIVE +nbd (left edge of
                 // an outer). After crossing a -nbd marker (right edge), we
                 // have exited that outer.
-                if pixel > 1 {
-                    lnbd = pixel;
-                    lnbd_signed_pixel = pixel;
-                } else if pixel < -1 {
-                    lnbd = -pixel;
-                    lnbd_signed_pixel = pixel; // negative
+                if pixel > 1 || pixel < -1 {
+                    lnbd = pixel.unsigned_abs() as i16;
+                    lnbd_pos = row_base + c;
                 }
 
                 // batch advance over zero runs
@@ -525,14 +523,19 @@ impl FindContoursExecutor {
                         //   if (mode == 0 && (is_hole || img0[lnbd] > 0))
                         //     goto resume_scan;
                         //
-                        // `img0[lnbd] > 0` ≡ the most-recent marker we
-                        // crossed was the LEFT edge of an outer (positive
-                        // NBD). If lnbd_signed_pixel < 0, we just crossed
-                        // an outer's RIGHT edge and are now outside it —
-                        // any new is_outer here is a fresh top-level
-                        // sibling that we MUST trace.
+                        // `img0[lnbd]` reads the marker value AT lnbd's
+                        // position — > 0 means the most-recent marker we
+                        // crossed is an outer's LEFT edge (we're inside
+                        // an outer). After crossing a -nbd marker (right
+                        // edge), the value at lnbd_pos becomes negative
+                        // and we exit "inside-outer" state.
                         let lnbd_idx = lnbd as usize;
-                        let lnbd_at_pos_outer = lnbd_signed_pixel > 0
+                        let val_at_lnbd: i16 = if lnbd_pos == usize::MAX {
+                            0
+                        } else {
+                            unsafe { *img_ptr.add(lnbd_pos) }
+                        };
+                        let lnbd_at_pos_outer = val_at_lnbd > 0
                             && lnbd_idx >= 2
                             && lnbd_idx - 1 < self.buffers.border_types.len()
                             && matches!(
@@ -586,10 +589,13 @@ impl FindContoursExecutor {
                     self.buffers.border_types.push(border_type);
                     self.buffers.ranges.push(range);
                     lnbd = nbd;
-                    // After tracing a new border, the +marker is the
-                    // freshest. cv2 advances to the position right of the
-                    // placed +marker (so img0[lnbd] = +nbd > 0).
-                    lnbd_signed_pixel = nbd;
+                    // After tracing, mark the start position (idx) as the
+                    // most-recent +marker for skip-predicate purposes.
+                    // The trace already wrote +nbd to img[idx] for outer
+                    // starts (and -nbd for hole starts via the trace's
+                    // marking convention). cv2 mirrors this with its
+                    // post-trace lnbd update.
+                    lnbd_pos = idx;
                 } else if pixel == 1 {
                     #[cfg(feature = "profile_contours")]
                     { _one_skip_hits += 1; }
@@ -638,14 +644,7 @@ impl FindContoursExecutor {
                 } else {
                     #[cfg(feature = "profile_contours")]
                     { _labeled_hits += 1; }
-                    // Legacy marker-crossing path (now redundant with the
-                    // top-of-loop update, but keep in case the top branch
-                    // didn't fire — e.g. when pixel was 0 going into the
-                    // loop body that's not possible since we returned via
-                    // zero_skip; this is for marker pixels with values
-                    // outside the +/-1 range that still need tracking).
-                    lnbd = pixel.unsigned_abs() as i16;
-                    lnbd_signed_pixel = pixel;
+                    // Marker pixel — top-of-loop already updated lnbd/lnbd_pos.
                 }
 
                 c += 1;
