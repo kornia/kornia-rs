@@ -86,6 +86,11 @@ def test_tag_family_into_family_kind():
     assert kind.name == "custom"
 
 
+def test_decode_tags_config_requires_tag_families():
+    with pytest.raises(Exception):
+        K.apriltag.DecodeTagsConfig([])
+
+
 def test_apriltag_decoder():
     kinds = [TagFamilyKind("tag36_h11")]
     config = K.apriltag.DecodeTagsConfig(kinds)
