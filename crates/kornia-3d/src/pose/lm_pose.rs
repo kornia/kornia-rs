@@ -38,6 +38,7 @@
 //! optimum; a divergent LM call shouldn't regress it.
 
 use crate::pose::fundamental::sampson_distance;
+use crate::ransac::{RobustKernel, RobustKernelKind};
 use faer::prelude::SpSolver;
 use kornia_algebra::{Mat3F64, Vec2F64, Vec3F64};
 
@@ -64,6 +65,17 @@ pub struct LmPoseConfig {
     pub step_tol: f64,
     /// Stop when relative cost decrease `|Δcost|/|cost| < cost_tol`. Default 1e-12.
     pub cost_tol: f64,
+    /// M-estimator kernel applied per-residual inside the normal-equation
+    /// accumulation. Default [`RobustKernelKind::Identity`] preserves the
+    /// original Gauss-Newton behaviour. Switch to `Huber`/`Cauchy`/`Tukey`
+    /// to downweight outlier correspondences without re-running RANSAC.
+    pub robust: RobustKernelKind,
+    /// Squared scale parameter for the robust kernel (`c²`). Ignored when
+    /// `robust = Identity`. For Sampson distance residuals (already
+    /// squared), `c² = (a few px)²` is a sensible default. Defaults to
+    /// `f64::INFINITY` so any non-Identity choice with default scale acts
+    /// as Identity until the user picks a real scale.
+    pub robust_scale_sq: f64,
 }
 
 impl Default for LmPoseConfig {
@@ -76,6 +88,8 @@ impl Default for LmPoseConfig {
             gradient_tol: 1e-9,
             step_tol: 1e-9,
             cost_tol: 1e-12,
+            robust: RobustKernelKind::Identity,
+            robust_scale_sq: f64::INFINITY,
         }
     }
 }
@@ -255,21 +269,34 @@ pub fn refine_pose_lm(
             }
         }
 
-        // 4. Normal equations: H = JᵀJ (5×5), g = Jᵀr (5).
+        // 4. Normal equations: H = JᵀWJ (5×5), g = JᵀWr (5).
+        //    W is diagonal with `w_i = kernel.weight(res[i]², c²)`. With
+        //    Identity (default) every weight is 1 and we recover plain
+        //    Gauss-Newton; with Huber/Cauchy/Tukey, outlier residuals get
+        //    downweighted in the normal equations directly.
+        let kernel = cfg.robust;
+        let c_sq = cfg.robust_scale_sq;
+        let mut weights = vec![0.0_f64; n];
+        for i in 0..n {
+            // res[i] is the *signed* sampson residual (sqrt of the squared
+            // distance with sign carried from the epipolar product); its
+            // square is the kernel's natural input.
+            weights[i] = kernel.weight(res[i] * res[i], c_sq);
+        }
         let mut h_mat = [[0.0_f64; 5]; 5];
         let mut g_vec = [0.0_f64; 5];
         for c1 in 0..5 {
             let col1 = &jac[c1 * n..c1 * n + n];
             let mut g = 0.0;
             for i in 0..n {
-                g += col1[i] * res[i];
+                g += col1[i] * res[i] * weights[i];
             }
             g_vec[c1] = g;
             for c2 in c1..5 {
                 let col2 = &jac[c2 * n..c2 * n + n];
                 let mut h = 0.0;
                 for i in 0..n {
-                    h += col1[i] * col2[i];
+                    h += col1[i] * col2[i] * weights[i];
                 }
                 h_mat[c1][c2] = h;
                 h_mat[c2][c1] = h;

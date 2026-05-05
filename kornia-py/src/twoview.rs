@@ -386,6 +386,10 @@ impl PyLmRefiner {
                     gradient_tol,
                     step_tol,
                     cost_tol,
+                    // Kernel fields default to Identity / ∞ scale — no
+                    // behaviour change vs. the pre-kernel API. Pythonside
+                    // wiring of robust loss is a follow-up.
+                    ..Default::default()
                 },
                 anneal_thresholds,
                 anneal_min_inliers,

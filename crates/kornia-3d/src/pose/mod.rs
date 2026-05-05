@@ -25,6 +25,11 @@ pub use twoview::*;
 mod triangulation;
 pub use triangulation::*;
 
+mod triangulation_ext;
+pub use triangulation_ext::{
+    correct_matches_sampson, triangulate_n_view_linear, triangulate_optimal_2view,
+};
+
 mod pose3d;
 pub use pose3d::*;
 
