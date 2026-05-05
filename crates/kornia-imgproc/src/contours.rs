@@ -436,6 +436,19 @@ impl FindContoursExecutor {
 
                 let pixel = unsafe { *img_ptr.add(row_base + c) };
 
+                // Update lnbd if we just crossed a marker. This is what
+                // makes the cv2 RETR_EXTERNAL skip-trace work: lnbd carries
+                // the most recently seen border's NBD, so when an
+                // is_outer/is_hole transition fires inside an already-traced
+                // outer's interior, we can detect "we're nested" via
+                // border_types[lnbd-1] == Outer and skip the trace.
+                // Mirrors cvFindNextContour's `if (prev & new_mask) lnbd.x = x-1`.
+                if pixel > 1 {
+                    lnbd = pixel;
+                } else if pixel < -1 {
+                    lnbd = -pixel;
+                }
+
                 // batch advance over zero runs
                 if pixel == 0 {
                     #[cfg(feature = "profile_contours")]
@@ -487,6 +500,40 @@ impl FindContoursExecutor {
                 if is_outer || is_hole {
                     #[cfg(feature = "profile_contours")]
                     { _start_hits += 1; }
+
+                    // RETR_EXTERNAL fast path (mirrors cv2's
+                    // cvFindNextContour:1131):
+                    //   if is_hole OR lnbd refers to an Outer → skip trace
+                    //
+                    // Holes are skipped because RETR_EXTERNAL discards
+                    // them anyway. Outers nested inside another outer
+                    // (lnbd_is_outer) are also discarded by EXTERNAL
+                    // semantics, so we skip those too.
+                    //
+                    // Skipping means: don't trace, don't mark, don't
+                    // create hierarchy entries, just continue scanning.
+                    // The reason this works without re-detection: cv2's
+                    // scan tracks lnbd via marker crossings (above), so
+                    // when the next is_outer would-fire fires (e.g. exiting
+                    // a dark blob inside the bg outer), lnbd still points
+                    // to the bg outer and the skip fires again.
+                    if matches!(mode, RetrievalMode::External) {
+                        let lnbd_idx = lnbd as usize;
+                        let lnbd_is_outer = lnbd_idx >= 2
+                            && lnbd_idx - 1 < self.buffers.border_types.len()
+                            && matches!(
+                                self.buffers.border_types[lnbd_idx - 1],
+                                BorderType::Outer
+                            );
+                        if is_hole || lnbd_is_outer {
+                            // Skip without marking — cv2 also doesn't mark
+                            // here. The lnbd-marker carrying logic above
+                            // ensures we keep skipping subsequent fires.
+                            c += 1;
+                            continue 'col;
+                        }
+                    }
+
                     if nbd == i16::MAX {
                         return Err(ContoursError::NbdOverflow);
                     }
@@ -513,39 +560,14 @@ impl FindContoursExecutor {
                         method,
                     };
 
-                    // RETR_EXTERNAL fast path: mark-only trace for borders
-                    // the post-filter would discard (holes, outers nested in
-                    // a hole). Mirrors cv2's icvTraceContour. The border
-                    // pixels still get marked so the next row's scan does
-                    // not re-detect them, but per-pixel arena pushes and
-                    // SIMPLE-mode chain bookkeeping are skipped. We push
-                    // an empty range to keep the contour-index numbering
-                    // (filter_by_mode discards them by border_type/parent).
-                    let mark_only = matches!(mode, RetrievalMode::External)
-                        && (matches!(border_type, BorderType::Hole) || parent > 0);
-
-                    let range = if mark_only {
-                        #[cfg(feature = "profile_contours")]
-                        let _t_trace = std::time::Instant::now();
-                        Self::trace_border_mark_only(img_ptr, ts, &toff);
-                        #[cfg(feature = "profile_contours")]
-                        {
-                            _trace_border_total_ns += _t_trace.elapsed().as_nanos();
-                            _trace_border_calls += 1;
-                        }
-                        let n = self.buffers.arena.len();
-                        n..n
-                    } else {
-                        #[cfg(feature = "profile_contours")]
-                        let _t_trace = std::time::Instant::now();
-                        let range = Self::trace_border(img_ptr, ts, &toff, &mut self.buffers.arena);
-                        #[cfg(feature = "profile_contours")]
-                        {
-                            _trace_border_total_ns += _t_trace.elapsed().as_nanos();
-                            _trace_border_calls += 1;
-                        }
-                        range
-                    };
+                    #[cfg(feature = "profile_contours")]
+                    let _t_trace = std::time::Instant::now();
+                    let range = Self::trace_border(img_ptr, ts, &toff, &mut self.buffers.arena);
+                    #[cfg(feature = "profile_contours")]
+                    {
+                        _trace_border_total_ns += _t_trace.elapsed().as_nanos();
+                        _trace_border_calls += 1;
+                    }
 
                     let hier_entry =
                         Self::update_hierarchy(&mut self.buffers.hierarchy, nbd as usize, parent);
