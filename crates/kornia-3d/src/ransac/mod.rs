@@ -76,6 +76,22 @@ pub trait Estimator {
     /// squared, ...) — see each impl for details.
     fn residual(&self, model: &Self::Model, sample: &Self::Sample) -> f64;
 
+    /// Non-minimal refit on a (typically larger) inlier subset.
+    ///
+    /// Used by the LO-RANSAC step: after a hypothesis lands, the driver
+    /// collects its inlier set and calls `refit` to produce a polished
+    /// model from the full inlier population. Estimators backed by a
+    /// least-squares solver that scales with N (`fundamental_8point`,
+    /// `homography_dlt`) override this to call the over-determined path;
+    /// the default implementation calls [`Self::fit`] on the first
+    /// `SAMPLE_SIZE` inliers, which is correct but loses the LO benefit.
+    fn refit(&self, inliers: &[Self::Sample], out: &mut Vec<Self::Model>) {
+        if inliers.len() < Self::SAMPLE_SIZE {
+            return;
+        }
+        self.fit(&inliers[..Self::SAMPLE_SIZE], out);
+    }
+
     /// Compute residuals for an entire sample slice in one call.
     ///
     /// Default impl loops [`Self::residual`]. Estimators with non-trivial

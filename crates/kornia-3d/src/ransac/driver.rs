@@ -66,6 +66,12 @@ where
     let mut best_inliers: Vec<bool> = Vec::with_capacity(n);
     let mut sample_idx = vec![0usize; E::SAMPLE_SIZE];
     let mut sample_buf: Vec<E::Sample> = Vec::with_capacity(E::SAMPLE_SIZE);
+    // LO-RANSAC scratch: when the configured `lo_every` is non-zero we
+    // periodically refit on the *current best* inlier set and try the
+    // polished model. Allocated once, reused across all LO triggers.
+    let mut lo_inlier_buf: Vec<E::Sample> = Vec::new();
+    let mut lo_models: Vec<E::Model> = Vec::new();
+    let mut accepted_since_lo: u32 = 0;
     // Models out-vec sized for the worst-case multi-solution kernel
     // (Nistér 5pt → up to 10 candidates, P3P → up to 4).
     let mut models: Vec<E::Model> = Vec::with_capacity(10);
@@ -96,6 +102,7 @@ where
                 best_score = outcome.score;
                 best_model = Some(model.clone());
                 std::mem::swap(&mut best_inliers, &mut current_inliers);
+                accepted_since_lo += 1;
 
                 // Adaptive cap update — only ever tightens.
                 if outcome.inlier_count > 0 {
@@ -103,6 +110,52 @@ where
                     let new_max = adaptive_max_iters(w, E::SAMPLE_SIZE, cfg.confidence, max_iters);
                     if new_max < max_iters {
                         max_iters = new_max;
+                    }
+                }
+            }
+        }
+
+        // LO-RANSAC step: every `lo_every` accepted hypotheses, refit on
+        // the current best inlier set and try the polished model. Skipped
+        // when `lo_every == 0` (default) — keeps vanilla RANSAC behaviour
+        // identical to the pre-LO driver.
+        if cfg.lo_every > 0
+            && accepted_since_lo >= cfg.lo_every
+            && best_inliers.iter().any(|&b| b)
+        {
+            accepted_since_lo = 0;
+            lo_inlier_buf.clear();
+            for (idx, &is_in) in best_inliers.iter().enumerate() {
+                if is_in {
+                    lo_inlier_buf.push(samples[idx]);
+                }
+            }
+            // Need at least the minimal-sample size to refit at all, and
+            // strictly more than that to actually benefit from LO.
+            if lo_inlier_buf.len() > E::SAMPLE_SIZE {
+                lo_models.clear();
+                estimator.refit(&lo_inlier_buf, &mut lo_models);
+                for lo_model in lo_models.iter() {
+                    estimator.residual_batch(lo_model, samples, &mut residuals);
+                    let lo_outcome =
+                        consensus.consensus(&residuals, &mut current_inliers);
+                    if lo_outcome.score > best_score {
+                        best_score = lo_outcome.score;
+                        best_model = Some(lo_model.clone());
+                        std::mem::swap(&mut best_inliers, &mut current_inliers);
+                        // LO acceptance also tightens the adaptive cap.
+                        if lo_outcome.inlier_count > 0 {
+                            let w = lo_outcome.inlier_count as f64 / n as f64;
+                            let new_max = adaptive_max_iters(
+                                w,
+                                E::SAMPLE_SIZE,
+                                cfg.confidence,
+                                max_iters,
+                            );
+                            if new_max < max_iters {
+                                max_iters = new_max;
+                            }
+                        }
                     }
                 }
             }
@@ -208,6 +261,45 @@ mod tests {
             result.num_iters,
             cfg.max_iters,
         );
+    }
+
+    /// LO-RANSAC with `lo_every=5` should produce a strictly better
+    /// (or at minimum equal) score than plain RANSAC on the same noisy
+    /// outlier-laden data, because the LO refit polishes the F matrix
+    /// over the full inlier set instead of the 8-point minimal sample.
+    #[test]
+    fn lo_ransac_does_not_regress_plain_ransac() {
+        let pair = synthetic_with_outliers(60, 40, 0xBEEF);
+        let est = FundamentalEstimator;
+        let consensus = ThresholdConsensus { threshold: 4.0 };
+        let cfg_plain = RansacConfig {
+            max_iters: 500,
+            confidence: 0.999,
+            inlier_threshold: 4.0,
+            lo_every: 0,
+            ..Default::default()
+        };
+        let cfg_lo = RansacConfig {
+            lo_every: 5,
+            ..cfg_plain.clone()
+        };
+
+        let mut sampler_plain = UniformSampler::new(StdRng::seed_from_u64(7));
+        let plain = run(&est, &consensus, &mut sampler_plain, &pair.matches, &cfg_plain);
+
+        let mut sampler_lo = UniformSampler::new(StdRng::seed_from_u64(7));
+        let lo = run(&est, &consensus, &mut sampler_lo, &pair.matches, &cfg_lo);
+
+        // LO must not regress on plain RANSAC — it has strictly more chances
+        // to find a better hypothesis (it considers every plain candidate
+        // *plus* periodic refits on the inlier set).
+        assert!(
+            lo.score >= plain.score,
+            "LO regressed: plain.score={} lo.score={}",
+            plain.score,
+            lo.score
+        );
+        assert!(lo.model.is_some());
     }
 
     struct Pair {
