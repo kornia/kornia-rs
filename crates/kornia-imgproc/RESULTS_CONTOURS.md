@@ -301,3 +301,75 @@ cargo run --release -p kornia-imgproc --example bench_contours_min \
   | grep -E "kornia_linkruns|opencv"
 python3 crates/kornia-imgproc/examples/bench_opencv_contours.py
 ```
+
+---
+
+# What's the *most-used* OpenCV contour API? (research, May 2026)
+
+The benchmarks above compare against `cv2.findContoursLinkRuns` (the
+fast-path API added in OpenCV 4.5+, must be called explicitly). But
+**this is NOT what most users invoke**. Searches across
+[OpenCV docs](https://docs.opencv.org/4.x/d4/d73/tutorial_py_contours_begin.html),
+[PyImageSearch](https://pyimagesearch.com/2021/10/06/opencv-contour-approximation/),
+[LearnOpenCV](https://learnopencv.com/contour-detection-using-opencv-python-c/),
+GeeksforGeeks, Medium tutorials, and OpenCV cookbooks consistently
+show one dominant pattern:
+
+```python
+contours, _ = cv2.findContours(img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+```
+
+This is the canonical "find document edges / detect coins / extract
+shape boundaries" idiom. It runs **Suzuki-Abe (1985)**, NOT
+LinkRunner. RETR_EXTERNAL specifically prunes inner borders during
+the trace (cv2's internal `icvTraceContour` mark-only mode), which
+is *fundamentally cheaper* than tracing every contour and filtering.
+
+## kornia vs the actual default invocation
+
+Bench: `cv2.findContours(img, RETR_EXTERNAL, SIMPLE)` vs
+`kornia find_contours(External, Simple)` — apples to apples:
+
+| fixture | contours | cv2 EXT SIMPLE | kornia EXT SIMPLE | margin |
+|---------|---------:|---------------:|------------------:|-------:|
+| pic1 | 1 | 88 μs | 116 μs | **0.76×** ⛔ |
+| **pic2** | **1** | **513 μs** | **20548 μs** | **0.025× = 40× SLOWER** ⛔⛔ |
+| pic3 | 1 | 90 μs | 140 μs | **0.64×** ⛔ |
+| pic4 | 881 | 2014 μs | 957 μs | **2.10× faster** ✓ |
+
+**Kornia loses on the most-common invocation in 3 of 4 real images.**
+pic2 is the worst case — 40× slower because cv2 skips tracing 5722
+holes inside the single white background, while kornia traces every
+border then filters.
+
+## Why our External mode is slow
+
+Our `find_contours` does Suzuki-Abe but treats RETR_EXTERNAL as a
+post-filter: trace all 5723 contours, then keep only the ones with
+parent = -1 (= 1 contour for pic2). cv2 instead skips the trace
+entirely for non-external borders, marking only the boundary pixels
+with a mark-only walk (`icvTraceContour` with method=-1).
+
+A naive "skip trace if hole" was tried (single commit, reverted)
+and broke nesting semantics — the next pixel-scan re-discovers the
+unmarked border because Suzuki-Abe relies on trace-time marking
+to avoid re-detection.
+
+## What it would take to match cv2 EXT SIMPLE
+
+Two real options:
+
+1. **Implement cv2's mark-only trace** for non-external borders in
+   RETR_EXTERNAL mode. Same algorithmic structure as the existing
+   trace_border but doesn't push points to arena and doesn't
+   compute SIMPLE-mode chain compression. Estimated ~50 lines of
+   new code; would close the 40× gap on pic2 to roughly parity.
+
+2. **Dispatch RETR_EXTERNAL through linkruns + hierarchy filter**:
+   linkruns currently emits all contours (no hierarchy). Adding a
+   parent-tracking pass (~30 lines) would let us return only
+   parent=-1 contours. linkruns at 1106 μs would still be 2.15×
+   slower than cv2's 513 μs on pic2 — but ~9× faster on pic4.
+
+(1) is the right fix for matching cv2 on the canonical pattern.
+(2) is a backstop that keeps the link-runs investment paying off.
