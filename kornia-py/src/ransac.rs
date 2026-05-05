@@ -139,7 +139,13 @@ pub fn essential(
     let mut sampler = UniformSampler::new(StdRng::seed_from_u64(seed.unwrap_or(0)));
     let consensus = ThresholdConsensus { threshold };
     let cfg = make_cfg(threshold, max_iters, confidence);
-    let result = run(&EssentialEstimator, &consensus, &mut sampler, &samples, &cfg);
+    let result = run(
+        &EssentialEstimator,
+        &consensus,
+        &mut sampler,
+        &samples,
+        &cfg,
+    );
     Ok(PyRansacTwoViewResult {
         model: result.model.as_ref().map(mat3_to_row_major_vec),
         inliers: result.inliers,
@@ -230,11 +236,17 @@ pub fn solve_pnp(
     let (rot, tr) = match &result.model {
         Some(m) => {
             let r_arr = m.rotation.to_cols_array(); // column-major [c0.x..c2.z]
-            // Row-major repack: row i = (col0[i], col1[i], col2[i])
+                                                    // Row-major repack: row i = (col0[i], col1[i], col2[i])
             let rmaj = vec![
-                r_arr[0] as f64, r_arr[3] as f64, r_arr[6] as f64,
-                r_arr[1] as f64, r_arr[4] as f64, r_arr[7] as f64,
-                r_arr[2] as f64, r_arr[5] as f64, r_arr[8] as f64,
+                r_arr[0] as f64,
+                r_arr[3] as f64,
+                r_arr[6] as f64,
+                r_arr[1] as f64,
+                r_arr[4] as f64,
+                r_arr[7] as f64,
+                r_arr[2] as f64,
+                r_arr[5] as f64,
+                r_arr[8] as f64,
             ];
             (
                 Some(rmaj),

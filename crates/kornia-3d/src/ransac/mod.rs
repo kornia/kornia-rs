@@ -86,12 +86,7 @@ pub trait Estimator {
     ///
     /// `out.len() == samples.len()` must hold; the driver pre-sizes the
     /// scratch buffer.
-    fn residual_batch(
-        &self,
-        model: &Self::Model,
-        samples: &[Self::Sample],
-        out: &mut [f64],
-    ) {
+    fn residual_batch(&self, model: &Self::Model, samples: &[Self::Sample], out: &mut [f64]) {
         debug_assert_eq!(out.len(), samples.len());
         for (i, s) in samples.iter().enumerate() {
             out[i] = self.residual(model, s);
@@ -108,11 +103,7 @@ pub trait Consensus {
     /// `inliers_out` is a caller-owned scratch buffer the driver re-uses
     /// across hypotheses; impls must clear and refill it without keeping
     /// references after the call.
-    fn consensus(
-        &self,
-        residuals: &[f64],
-        inliers_out: &mut Vec<bool>,
-    ) -> ConsensusOutcome;
+    fn consensus(&self, residuals: &[f64], inliers_out: &mut Vec<bool>) -> ConsensusOutcome;
 }
 
 /// Outcome of one consensus evaluation.
@@ -146,11 +137,7 @@ pub struct ThresholdConsensus {
 }
 
 impl Consensus for ThresholdConsensus {
-    fn consensus(
-        &self,
-        residuals: &[f64],
-        inliers_out: &mut Vec<bool>,
-    ) -> ConsensusOutcome {
+    fn consensus(&self, residuals: &[f64], inliers_out: &mut Vec<bool>) -> ConsensusOutcome {
         inliers_out.clear();
         inliers_out.reserve(residuals.len());
         let mut count = 0usize;

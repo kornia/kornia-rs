@@ -168,7 +168,10 @@ mod tests {
     fn cauchy_never_hits_zero() {
         let w = CauchyKernel.weight(10000.0, 1.0);
         assert!(w > 0.0, "Cauchy weight should be strictly positive: {w}");
-        assert!(w < 1e-3, "Cauchy weight should be small at far residuals: {w}");
+        assert!(
+            w < 1e-3,
+            "Cauchy weight should be small at far residuals: {w}"
+        );
     }
 
     /// Huber weight at the transition equals 1 (boundary inclusive).

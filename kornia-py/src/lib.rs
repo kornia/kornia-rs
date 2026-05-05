@@ -18,8 +18,8 @@ mod orb;
 mod pipeline;
 mod pointcloud;
 mod pyutils;
-mod resize;
 mod ransac;
+mod resize;
 mod twoview;
 mod warp;
 
@@ -469,7 +469,7 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // estimators wired into a single `kornia_rs.ransac.*` namespace. The
     // Python signatures mirror OpenCV's calling convention so that
     // benchmark scripts can swap one import for the other.
-    ransac::register(py, &m)?;
+    ransac::register(py, m)?;
 
     // CPU submodule — runtime SIMD feature probe. Lets installed wheels
     // self-report which SIMD paths the host actually exposes, complementing

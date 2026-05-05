@@ -58,11 +58,7 @@ impl MagsacConsensus {
 }
 
 impl Consensus for MagsacConsensus {
-    fn consensus(
-        &self,
-        residuals: &[f64],
-        inliers_out: &mut Vec<bool>,
-    ) -> ConsensusOutcome {
+    fn consensus(&self, residuals: &[f64], inliers_out: &mut Vec<bool>) -> ConsensusOutcome {
         inliers_out.clear();
         inliers_out.reserve(residuals.len());
         let max_sigma_sq = self.max_sigma.max(0.0);

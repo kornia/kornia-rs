@@ -76,11 +76,7 @@ mod tests {
         // here).
         let mut best = f64::INFINITY;
         for e in &models {
-            let total: f64 = pair
-                .matches
-                .iter()
-                .map(|m| est.residual(e, m))
-                .sum();
+            let total: f64 = pair.matches.iter().map(|m| est.residual(e, m)).sum();
             if total < best {
                 best = total;
             }

@@ -71,12 +71,7 @@ impl Estimator for HomographyEstimator {
     /// Override to keep the H matrix in registers across the inner loop.
     /// Smaller win than F (no transpose to hoist) but still removes the
     /// per-call dispatch through [`Self::residual`].
-    fn residual_batch(
-        &self,
-        model: &Self::Model,
-        samples: &[Self::Sample],
-        out: &mut [f64],
-    ) {
+    fn residual_batch(&self, model: &Self::Model, samples: &[Self::Sample], out: &mut [f64]) {
         debug_assert_eq!(out.len(), samples.len());
         let h = *model;
         for (i, s) in samples.iter().enumerate() {

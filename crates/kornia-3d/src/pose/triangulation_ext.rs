@@ -90,10 +90,7 @@ pub fn triangulate_optimal_2view(
 /// Returns `None` if N < 2, slice lengths mismatch, the SVD's last
 /// component is degenerate (homogeneous w ≈ 0), or all observations are
 /// collinear in the design matrix.
-pub fn triangulate_n_view_linear(
-    pixels: &[Vec2F64],
-    projections: &[[f64; 12]],
-) -> Option<Vec3F64> {
+pub fn triangulate_n_view_linear(pixels: &[Vec2F64], projections: &[[f64; 12]]) -> Option<Vec3F64> {
     let n = pixels.len();
     if n < 2 || n != projections.len() {
         return None;
@@ -246,11 +243,7 @@ mod tests {
         for &b in &baselines {
             // K [R|t]; R = I, t = (-b, 0, 0). Row-major flatten.
             // K [I | -b ex] = [[fx 0 cx -fx*b], [0 fy cy 0], [0 0 1 0]]
-            out.push([
-                fx, 0.0, cx, -fx * b,
-                0.0, fy, cy, 0.0,
-                0.0, 0.0, 1.0, 0.0,
-            ]);
+            out.push([fx, 0.0, cx, -fx * b, 0.0, fy, cy, 0.0, 0.0, 0.0, 1.0, 0.0]);
         }
         out
     }

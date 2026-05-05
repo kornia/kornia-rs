@@ -66,12 +66,7 @@ impl Estimator for FundamentalEstimator {
     ///
     /// All three paths produce identical results to within FMA reordering
     /// noise (≤ 1e-12 relative) — a unit test pins the equivalence.
-    fn residual_batch(
-        &self,
-        model: &Self::Model,
-        samples: &[Self::Sample],
-        out: &mut [f64],
-    ) {
+    fn residual_batch(&self, model: &Self::Model, samples: &[Self::Sample], out: &mut [f64]) {
         debug_assert_eq!(out.len(), samples.len());
         let f = pack_f(model);
 
@@ -121,9 +116,15 @@ type FPacked = (f64, f64, f64, f64, f64, f64, f64, f64, f64);
 #[inline(always)]
 fn pack_f(model: &Mat3F64) -> FPacked {
     (
-        model.x_axis.x, model.y_axis.x, model.z_axis.x,
-        model.x_axis.y, model.y_axis.y, model.z_axis.y,
-        model.x_axis.z, model.y_axis.z, model.z_axis.z,
+        model.x_axis.x,
+        model.y_axis.x,
+        model.z_axis.x,
+        model.x_axis.y,
+        model.y_axis.y,
+        model.z_axis.y,
+        model.x_axis.z,
+        model.y_axis.z,
+        model.z_axis.z,
     )
 }
 
@@ -183,11 +184,7 @@ fn sampson_residual_batch_scalar_tail(
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 #[inline]
-unsafe fn sampson_residual_batch_neon(
-    f: FPacked,
-    samples: &[Match2d2d],
-    out: &mut [f64],
-) -> usize {
+unsafe fn sampson_residual_batch_neon(f: FPacked, samples: &[Match2d2d], out: &mut [f64]) -> usize {
     use std::arch::aarch64::*;
     let (f00, f01, f02, f10, f11, f12, f20, f21, f22) = f;
     let f00v = vdupq_n_f64(f00);
@@ -257,11 +254,7 @@ unsafe fn sampson_residual_batch_neon(
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
 #[inline]
-unsafe fn sampson_residual_batch_avx2(
-    f: FPacked,
-    samples: &[Match2d2d],
-    out: &mut [f64],
-) -> usize {
+unsafe fn sampson_residual_batch_avx2(f: FPacked, samples: &[Match2d2d], out: &mut [f64]) -> usize {
     use std::arch::x86_64::*;
     let (f00, f01, f02, f10, f11, f12, f20, f21, f22) = f;
     let f00v = _mm256_set1_pd(f00);
@@ -303,9 +296,11 @@ unsafe fn sampson_residual_batch_avx2(
 
         let err = _mm256_fmadd_pd(fx1x, x2, _mm256_fmadd_pd(fx1y, y2, fx1z));
         let denom = _mm256_fmadd_pd(
-            ftx2y, ftx2y,
+            ftx2y,
+            ftx2y,
             _mm256_fmadd_pd(
-                ftx2x, ftx2x,
+                ftx2x,
+                ftx2x,
                 _mm256_fmadd_pd(fx1y, fx1y, _mm256_mul_pd(fx1x, fx1x)),
             ),
         );

@@ -100,12 +100,7 @@ where
                 // Adaptive cap update — only ever tightens.
                 if outcome.inlier_count > 0 {
                     let w = outcome.inlier_count as f64 / n as f64;
-                    let new_max = adaptive_max_iters(
-                        w,
-                        E::SAMPLE_SIZE,
-                        cfg.confidence,
-                        max_iters,
-                    );
+                    let new_max = adaptive_max_iters(w, E::SAMPLE_SIZE, cfg.confidence, max_iters);
                     if new_max < max_iters {
                         max_iters = new_max;
                     }
@@ -129,12 +124,7 @@ where
 /// Returns the minimum of `current` and the analytic estimate. Never
 /// increases the cap and never returns 0.
 #[inline]
-fn adaptive_max_iters(
-    inlier_ratio: f64,
-    sample_size: usize,
-    confidence: f64,
-    current: u32,
-) -> u32 {
+fn adaptive_max_iters(inlier_ratio: f64, sample_size: usize, confidence: f64, current: u32) -> u32 {
     if inlier_ratio <= 0.0 {
         return current;
     }
