@@ -1,25 +1,37 @@
 """kornia-rs vs opencv-python RANSAC benchmark + quality parity.
 
-Two test classes per estimator: a `quality` set that runs both libraries
-on identical seeded inputs and asserts numerical parity (model agreement,
-inlier set agreement), and a `bench` set that times each library through
-pytest-benchmark with the timed closure containing only the solver call.
+Four test groups per estimator (Fundamental, Homography):
 
-Run timings:
-    pytest -q kornia-py/benchmarks/bench_ransac.py --benchmark-only
+* `*Quality`        — single-seed quality assertions (parity, F1 floors).
+* `*MultiSeed`      — 10-seed RANSAC parity with mean ± std reporting.
+* `*ByteParity`     — *deterministic* minimal-solver byte-to-byte agreement
+                      (kornia DLT vs `cv2.FM_8POINT` / `findHomography(0)`).
+* `*Bench`          — `pytest-benchmark` timings, kornia vs OpenCV.
 
-Run quality only:
-    pytest -q kornia-py/benchmarks/bench_ransac.py -k quality
+Each test class prints a one-line parity summary so a single
+`pytest -s` invocation produces a complete report (CPU features +
+inlier-set parity table + timings) without extra tooling.
 
-Run everything (default):
-    pytest -q kornia-py/benchmarks/bench_ransac.py
+Run all:        pytest -s kornia-py/benchmarks/test_ransac_bench.py
+Run quality:    pytest -s kornia-py/benchmarks/test_ransac_bench.py -k Quality
+Run timings:    pytest -q kornia-py/benchmarks/test_ransac_bench.py \\
+                       --benchmark-only --benchmark-columns=mean,stddev,rounds
+Run multi-seed: pytest -s kornia-py/benchmarks/test_ransac_bench.py -k MultiSeed
+Run byte parity: pytest -s kornia-py/benchmarks/test_ransac_bench.py -k ByteParity
 
-Skips silently if either kornia_rs.ransac or cv2 isn't importable, so the
-file is safe to commit before the wheel is built.
+Skips silently if `cv2`, `kornia_rs`, or `kornia_rs.ransac` isn't
+importable, so the file is safe to commit before the wheel is built.
+
+The kornia side dispatches one of three SIMD paths internally — NEON
+(aarch64), AVX2+FMA (x86_64), or scalar — chosen at compile time + by
+runtime CPU probe (see `crates/kornia-3d/src/ransac/estimators/fundamental.rs`).
+The header printed on session start records which path the loaded wheel
+will exercise, so timing comparisons are reproducible from the report alone.
 """
 from __future__ import annotations
 
 import math
+import platform
 import numpy as np
 import pytest
 
@@ -31,6 +43,57 @@ kornia_rs = pytest.importorskip("kornia_rs")
 ransac = getattr(kornia_rs, "ransac", None)
 if ransac is None:
     pytest.skip("kornia_rs.ransac not available", allow_module_level=True)
+
+
+def _kornia_simd_path() -> str:
+    """Best-effort guess at which Sampson scorer the wheel will dispatch to.
+
+    Works off `kornia_rs.cpu` if it's exposed; otherwise falls back to
+    `platform.machine()`. Used for the session header only — the test
+    bodies don't branch on this.
+    """
+    try:
+        cpu = kornia_rs.cpu.cpu_features()  # type: ignore[attr-defined]
+        if getattr(cpu, "has_avx2", False):
+            return "x86_64 / AVX2+FMA (4-lane f64)"
+        if getattr(cpu, "has_neon", False):
+            return "aarch64 / NEON (2-lane f64, vld4q)"
+    except Exception:
+        pass
+    mach = platform.machine().lower()
+    if mach in ("aarch64", "arm64"):
+        return "aarch64 / NEON (2-lane f64, vld4q)"
+    if mach in ("x86_64", "amd64"):
+        return "x86_64 (AVX2 status unknown — CPU probe unavailable)"
+    return f"scalar (machine={mach})"
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _print_environment_header(request):
+    """Emit a one-shot environment banner before any test body runs.
+
+    Captures the SIMD path the loaded wheel will exercise so the timings
+    in the test output are self-describing. Self-contained — no
+    `conftest.py` required (hooks defined in test files aren't picked
+    up by pytest, but autouse fixtures are).
+    """
+    capman = request.config.pluginmanager.getplugin("capturemanager")
+    lines = [
+        "",
+        "=" * 72,
+        f"  kornia-rs RANSAC bench  vs opencv-python {cv2.__version__}",
+        f"  cpu          : {platform.machine()}  ({platform.processor() or 'n/a'})",
+        f"  numpy        : {np.__version__}",
+        f"  kornia SIMD  : {_kornia_simd_path()}",
+        "=" * 72,
+    ]
+    if capman is not None:
+        with capman.global_and_fixture_disabled():
+            for line in lines:
+                print(line)
+    else:
+        for line in lines:
+            print(line)
 
 
 # --------------------------------------------------------------------------
