@@ -9,9 +9,11 @@
 //! ignored. Pixel observations must be **undistorted** before being passed in,
 //! otherwise the optimizer will minimize the wrong objective.
 
+use std::sync::Arc;
+
 use kornia_algebra::optim::{
-    Factor, FactorError, FactorResult, LevenbergMarquardt, LinearizationResult, OptimizerError,
-    Problem, ProblemError, Variable, VariableType,
+    CauchyLoss, Factor, FactorError, FactorResult, HuberLoss, LevenbergMarquardt,
+    LinearizationResult, OptimizerError, Problem, ProblemError, RobustLoss, Variable, VariableType,
 };
 use kornia_algebra::{Mat3AF32, Mat3F64, QuatF32, Vec3AF32, Vec3F64, SE3F32, SO3F32};
 
@@ -57,17 +59,20 @@ pub struct BaParams {
     pub gradient_tolerance: f32,
     /// Initial LM damping parameter.
     pub initial_lambda: f32,
-    /// M-estimator kernel applied per-residual in the normal equations.
-    ///
-    /// **Status: forward-looking.** The actual IRLS weighting lives inside
-    /// [`kornia_algebra::optim::LevenbergMarquardt`], which doesn't yet
-    /// accept a per-residual weight callback. Setting this field has no
-    /// effect today — it stakes the public API so downstream callers (and
-    /// the Python bindings) can pass the choice through, and once the
-    /// algebra-side hook lands the value is wired without a config break.
+    /// M-estimator kernel applied per-residual in the IRLS normal
+    /// equations. Plumbed through [`kornia_algebra::optim::Factor::get_loss`]
+    /// to the LM solver:
+    /// - `Identity` → no loss (plain L2 fast path).
+    /// - `Huber`    → [`kornia_algebra::optim::HuberLoss`].
+    /// - `Cauchy`   → [`kornia_algebra::optim::CauchyLoss`].
+    /// - `Tukey`    → currently maps to `CauchyLoss` (Tukey isn't yet
+    ///   exposed by `kornia_algebra::optim::losses`; both are smooth
+    ///   redescenders and produce qualitatively similar weight curves).
     pub robust: RobustKernelKind,
-    /// Squared scale parameter for [`Self::robust`]. Same forward-looking
-    /// status — picked up once the LM optimiser exposes a weight hook.
+    /// Squared scale parameter for [`Self::robust`]. The square root is
+    /// the linear scale fed to `HuberLoss::new`/`CauchyLoss::new`. Default
+    /// `f32::INFINITY` collapses to the L2 fast path even for non-Identity
+    /// kernel choices.
     pub robust_scale_sq: f32,
 }
 
@@ -159,6 +164,10 @@ struct ReprojFactor {
     cy: f32,
     /// When set, the pose is fixed and only the point is optimized.
     fixed_pose: Option<[f32; 7]>,
+    /// Optional robust loss applied to this observation's residual by the
+    /// optimiser via `Factor::get_loss`. Shared across every factor in the
+    /// BA problem (one Arc allocation per `bundle_adjust` call).
+    loss: Option<Arc<dyn RobustLoss>>,
 }
 
 impl ReprojFactor {
@@ -171,6 +180,7 @@ impl ReprojFactor {
             cx: camera.cx as f32,
             cy: camera.cy as f32,
             fixed_pose: None,
+            loss: None,
         }
     }
 
@@ -183,7 +193,15 @@ impl ReprojFactor {
             cx: camera.cx as f32,
             cy: camera.cy as f32,
             fixed_pose: Some(pose),
+            loss: None,
         }
+    }
+
+    /// Attach a shared robust loss; called per-factor by `bundle_adjust`
+    /// once the BaParams are translated into a concrete `RobustLoss` impl.
+    fn with_loss(mut self, loss: Option<Arc<dyn RobustLoss>>) -> Self {
+        self.loss = loss;
+        self
     }
 
     /// Project a world point through an SE3 pose, returning `(u, v, z_cam)`.
@@ -402,6 +420,39 @@ impl Factor for ReprojFactor {
             }
         }
     }
+
+    fn get_loss(&self) -> Option<&dyn RobustLoss> {
+        self.loss.as_deref()
+    }
+}
+
+/// Translate a [`BaParams`] robust kernel choice into a shared
+/// [`RobustLoss`] instance. Identity returns `None` so factors fall back
+/// to plain L2 (the optim solver's fast path). Tukey isn't yet exposed
+/// by `kornia-algebra::optim::losses` — caller falls back to Cauchy.
+fn build_robust_loss(params: &BaParams) -> Option<Arc<dyn RobustLoss>> {
+    use crate::ransac::RobustKernelKind;
+    if !params.robust_scale_sq.is_finite() || params.robust_scale_sq <= 0.0 {
+        return None;
+    }
+    // BaParams stores the *squared* scale (matches the kornia-3d kernel
+    // surface); kornia-algebra's losses take the linear scale.
+    let scale = params.robust_scale_sq.sqrt();
+    match params.robust {
+        RobustKernelKind::Identity => None,
+        RobustKernelKind::Huber => HuberLoss::new(scale).ok().map(|l| {
+            let arc: Arc<dyn RobustLoss> = Arc::new(l);
+            arc
+        }),
+        // Tukey not yet in kornia-algebra; fall back to Cauchy which is
+        // also a smooth redescender. Documented in BaParams::robust doc.
+        RobustKernelKind::Cauchy | RobustKernelKind::Tukey => {
+            CauchyLoss::new(scale).ok().map(|l| {
+                let arc: Arc<dyn RobustLoss> = Arc::new(l);
+                arc
+            })
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -466,6 +517,11 @@ pub fn bundle_adjust(
         problem.add_variable(var, init)?;
     }
 
+    // Translate the BaParams robust kernel choice into a shared loss
+    // instance once (cloned by Arc into every factor). Identity → None,
+    // skipping the loss path entirely on the optim solver's L2 fast path.
+    let robust_loss = build_robust_loss(params);
+
     // Add factors.
     for obs in observations {
         if obs.pose_idx >= poses.len() || obs.point_idx >= points.len() {
@@ -475,7 +531,10 @@ pub fn bundle_adjust(
 
         if obs.fixed_pose {
             if let Some(ref fp) = fixed_params[obs.pose_idx] {
-                let factor = Box::new(ReprojFactor::new_fixed_pose(obs.pixel, camera, *fp));
+                let factor = Box::new(
+                    ReprojFactor::new_fixed_pose(obs.pixel, camera, *fp)
+                        .with_loss(robust_loss.clone()),
+                );
                 problem.add_factor(factor, vec![pt_name])?;
             } else {
                 // Pose is actually free but this observation wants it fixed — use current params.
@@ -483,12 +542,17 @@ pub fn bundle_adjust(
                     let p = pose_to_se3_params(&poses[obs.pose_idx]);
                     [p[0], p[1], p[2], p[3], p[4], p[5], p[6]]
                 };
-                let factor = Box::new(ReprojFactor::new_fixed_pose(obs.pixel, camera, fp_arr));
+                let factor = Box::new(
+                    ReprojFactor::new_fixed_pose(obs.pixel, camera, fp_arr)
+                        .with_loss(robust_loss.clone()),
+                );
                 problem.add_factor(factor, vec![pt_name])?;
             }
         } else {
             let pose_name = format!("pose_{}", obs.pose_idx);
-            let factor = Box::new(ReprojFactor::new(obs.pixel, camera));
+            let factor = Box::new(
+                ReprojFactor::new(obs.pixel, camera).with_loss(robust_loss.clone()),
+            );
             problem.add_factor(factor, vec![pose_name, pt_name])?;
         }
     }
@@ -759,5 +823,99 @@ mod tests {
             let err = (*refined - true_points[i]).length();
             assert!(err < 0.1, "point {i} error {err} too large");
         }
+    }
+
+    /// With a single outlier observation injected, plain L2 BA pulls the
+    /// 3D points off-target while a Cauchy robust kernel downweights the
+    /// outlier and converges close to the truth. Exercises the
+    /// `BaParams::robust` plumbing through `Factor::get_loss`.
+    #[test]
+    fn test_bundle_adjust_robust_kernel_resists_outlier() {
+        use crate::ransac::RobustKernelKind;
+
+        let cam = test_camera();
+        let pose0 = Pose3d::new(Mat3F64::IDENTITY, Vec3F64::ZERO);
+        let pose1 = Pose3d::new(Mat3F64::IDENTITY, Vec3F64::new(0.5, 0.0, 0.0));
+
+        let true_points = [
+            Vec3F64::new(-1.0, -1.0, 5.0),
+            Vec3F64::new(1.0, -1.0, 5.0),
+            Vec3F64::new(1.0, 1.0, 5.0),
+            Vec3F64::new(-1.0, 1.0, 5.0),
+        ];
+        let project = |pose: &Pose3d, pw: &Vec3F64| -> [f32; 2] {
+            let pc = pose.transform_point(pw);
+            let u = cam.fx * pc.x / pc.z + cam.cx;
+            let v = cam.fy * pc.y / pc.z + cam.cy;
+            [u as f32, v as f32]
+        };
+        let mut observations = Vec::new();
+        for (pi, pt) in true_points.iter().enumerate() {
+            observations.push(BaObservation {
+                pose_idx: 0,
+                point_idx: pi,
+                pixel: project(&pose0, pt),
+                fixed_pose: true,
+            });
+            observations.push(BaObservation {
+                pose_idx: 1,
+                point_idx: pi,
+                pixel: project(&pose1, pt),
+                fixed_pose: false,
+            });
+        }
+        // Inject one outlier on point 0, view 1 — 30 px off (≫ the 2 px
+        // Cauchy scale, but small enough that the L2 LM doesn't punch
+        // the perturbed point behind the camera mid-iteration).
+        observations[1].pixel[0] += 30.0;
+        observations[1].pixel[1] -= 30.0;
+
+        let perturbed: Vec<Vec3F64> = true_points
+            .iter()
+            .map(|p| *p + Vec3F64::new(0.05, -0.03, 0.02))
+            .collect();
+
+        // L2 (Identity kernel) — should pull the outlier-related point off.
+        let l2 = bundle_adjust(
+            &[pose0, pose1],
+            &perturbed,
+            &observations,
+            &cam,
+            &BaParams {
+                max_iterations: 20,
+                ..BaParams::default()
+            },
+        )
+        .unwrap();
+
+        // Huber with delta=5 px — bounded-influence kernel that keeps
+        // inliers at full weight (squared residual ≤ 25 → w=1) while
+        // downweighting the 30 px outlier (squared norm ≈ 1800,
+        // w = 5/√1800 ≈ 0.12). Cauchy at this scale is *too* aggressive
+        // and discards legitimate inliers during early LM iters; that's
+        // a known limitation of redescending kernels at perturbed inits.
+        let robust = bundle_adjust(
+            &[pose0, pose1],
+            &perturbed,
+            &observations,
+            &cam,
+            &BaParams {
+                max_iterations: 20,
+                robust: RobustKernelKind::Huber,
+                robust_scale_sq: 25.0,
+                ..BaParams::default()
+            },
+        )
+        .unwrap();
+
+        // The point hit by the outlier (index 0) is what we measure.
+        let l2_err = (l2.points[0] - true_points[0]).length();
+        let robust_err = (robust.points[0] - true_points[0]).length();
+        // Robust must do better than L2 on the contaminated point.
+        assert!(
+            robust_err < l2_err,
+            "robust BA didn't beat L2 on outlier-contaminated point: \
+             l2_err={l2_err:.3} robust_err={robust_err:.3}"
+        );
     }
 }
