@@ -5,9 +5,7 @@ use kornia_apriltag::{
 };
 use pyo3::{exceptions::PyException, prelude::*, PyResult};
 
-use crate::{
-    image::{numpy_as_image, PyImage, PyImageSize},
-};
+use crate::image::{numpy_as_image, PyImage, PyImageSize};
 
 #[pyclass(name = "DecodeTagsConfig")]
 pub struct PyDecodeTagsConfig(DecodeTagsConfig);
