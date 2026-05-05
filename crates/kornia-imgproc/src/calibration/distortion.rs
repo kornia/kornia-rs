@@ -19,6 +19,7 @@ use rayon::prelude::*;
 /// # Note
 ///
 /// Higher-order coefficients (k4-k6) are often set to zero for simpler models.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct PolynomialDistortion {
     /// The first radial distortion coefficient
     pub k1: f64,

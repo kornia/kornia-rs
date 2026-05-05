@@ -25,6 +25,9 @@ pub mod pose;
 /// Perspective-n-Point (PnP) solvers.
 pub mod pnp;
 
+/// Generic RANSAC traits and config shared by all robust estimators.
+pub mod ransac;
+
 /// Registration algorithms.
 pub mod registration;
 

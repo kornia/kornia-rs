@@ -17,6 +17,7 @@ use kornia_algebra::{Mat3AF32, Mat3F64, QuatF32, Vec3AF32, Vec3F64, SE3F32, SO3F
 
 use crate::camera::PinholeCamera;
 use crate::pose::Pose3d;
+use crate::ransac::RobustKernelKind;
 
 /// Errors that can occur during bundle adjustment.
 #[derive(Debug, thiserror::Error)]
@@ -56,6 +57,18 @@ pub struct BaParams {
     pub gradient_tolerance: f32,
     /// Initial LM damping parameter.
     pub initial_lambda: f32,
+    /// M-estimator kernel applied per-residual in the normal equations.
+    ///
+    /// **Status: forward-looking.** The actual IRLS weighting lives inside
+    /// [`kornia_algebra::optim::LevenbergMarquardt`], which doesn't yet
+    /// accept a per-residual weight callback. Setting this field has no
+    /// effect today — it stakes the public API so downstream callers (and
+    /// the Python bindings) can pass the choice through, and once the
+    /// algebra-side hook lands the value is wired without a config break.
+    pub robust: RobustKernelKind,
+    /// Squared scale parameter for [`Self::robust`]. Same forward-looking
+    /// status — picked up once the LM optimiser exposes a weight hook.
+    pub robust_scale_sq: f32,
 }
 
 impl Default for BaParams {
@@ -65,6 +78,8 @@ impl Default for BaParams {
             cost_tolerance: 1e-5,
             gradient_tolerance: 1e-5,
             initial_lambda: 1e-3,
+            robust: RobustKernelKind::Identity,
+            robust_scale_sq: f32::INFINITY,
         }
     }
 }
