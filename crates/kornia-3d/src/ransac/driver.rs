@@ -19,6 +19,7 @@
 //! better hypothesis lands we tighten `max_iters` downward, never upward.
 
 use crate::ransac::{Consensus, Estimator, RansacConfig, RansacResult, Sampler};
+use rayon::prelude::*;
 
 /// Run RANSAC.
 ///
@@ -172,6 +173,145 @@ where
     }
 }
 
+/// Run RANSAC with parallel hypothesis evaluation via `rayon`.
+///
+/// Same semantics as [`run`] but evaluates batches of minimal-sample
+/// hypotheses in parallel. Sampling stays serial (the [`Sampler`] is
+/// `&mut`, so single-threaded by construction); only the per-hypothesis
+/// `fit` + `residual_batch` + `consensus` work distributes across the
+/// rayon thread pool.
+///
+/// **When to pick this over [`run`]:** the rayon overhead (~1 µs per
+/// chunk dispatch) is worth it once `samples.len() ≳ 200` *and* the
+/// minimal solver is non-trivial (5-point E, EPnP). For F-8pt with
+/// N ≤ 100 the serial driver is faster.
+///
+/// **Bounds note:** the extra `Sync` requirements on `E` and `C` are
+/// trivially met by every estimator in this crate (they're all unit
+/// structs or POD-state holders). Provided as a separate function so
+/// callers with non-Sync estimators can keep using [`run`].
+pub fn run_parallel<E, C, S>(
+    estimator: &E,
+    consensus: &C,
+    sampler: &mut S,
+    samples: &[E::Sample],
+    cfg: &RansacConfig,
+) -> RansacResult<E::Model>
+where
+    E: Estimator + Sync,
+    E::Sample: Copy + Send + Sync,
+    E::Model: Clone + Send + Sync,
+    C: Consensus + Sync,
+    S: Sampler,
+{
+    let n = samples.len();
+    if n < E::SAMPLE_SIZE || cfg.max_iters == 0 {
+        return RansacResult {
+            model: None,
+            inliers: Vec::new(),
+            num_iters: 0,
+            score: f64::NEG_INFINITY,
+        };
+    }
+
+    // Chunk size: enough work per rayon dispatch to amortise the ~1 µs
+    // task-spawn overhead, but small enough that adaptive cap shrinks
+    // can fire between chunks (fewer wasted hypotheses on easy data).
+    let n_threads = rayon::current_num_threads().max(1);
+    let chunk_size = (n_threads * 4).max(32);
+
+    // Per-chunk minimal samples are pre-generated serially (Sampler is
+    // single-threaded by trait bound).
+    let mut chunk_samples: Vec<Vec<E::Sample>> =
+        Vec::with_capacity(chunk_size);
+    let mut sample_idx = vec![0usize; E::SAMPLE_SIZE];
+
+    let mut best_score = f64::NEG_INFINITY;
+    let mut best_model: Option<E::Model> = None;
+    let mut best_inliers: Vec<bool> = Vec::with_capacity(n);
+
+    let mut max_iters = cfg.max_iters;
+    let mut i: u32 = 0;
+
+    while i < max_iters {
+        // Generate up to `chunk_size` minimal samples without exceeding
+        // the remaining iteration budget.
+        let remaining = max_iters - i;
+        let this_chunk = chunk_size.min(remaining as usize);
+        chunk_samples.clear();
+        for _ in 0..this_chunk {
+            sampler.sample(n, &mut sample_idx);
+            let mut buf: Vec<E::Sample> = Vec::with_capacity(E::SAMPLE_SIZE);
+            for &idx in sample_idx.iter() {
+                buf.push(samples[idx]);
+            }
+            chunk_samples.push(buf);
+        }
+
+        // Per-chunk parallel evaluation. Each thread allocates its own
+        // `models`, `residuals`, and `inliers` buffers — small (10 ×
+        // model + N × f64 + N × bool ≈ a few KB) and short-lived.
+        let chunk_results: Vec<Option<(E::Model, f64, usize, Vec<bool>)>> =
+            chunk_samples
+                .par_iter()
+                .map(|sample_buf| {
+                    let mut models: Vec<E::Model> = Vec::with_capacity(10);
+                    let mut residuals = vec![0.0f64; n];
+                    let mut inliers: Vec<bool> = Vec::with_capacity(n);
+                    estimator.fit(sample_buf, &mut models);
+
+                    let mut local_best:
+                        Option<(E::Model, f64, usize, Vec<bool>)> = None;
+                    for model in models.iter() {
+                        estimator.residual_batch(model, samples, &mut residuals);
+                        let outcome =
+                            consensus.consensus(&residuals, &mut inliers);
+                        let take = match &local_best {
+                            None => true,
+                            Some((_, s, _, _)) => outcome.score > *s,
+                        };
+                        if take {
+                            local_best = Some((
+                                model.clone(),
+                                outcome.score,
+                                outcome.inlier_count,
+                                inliers.clone(),
+                            ));
+                        }
+                    }
+                    local_best
+                })
+                .collect();
+
+        // Reduce: pick best across the chunk, update global best.
+        for entry in chunk_results.into_iter().flatten() {
+            let (model, score, inlier_count, inliers) = entry;
+            if score > best_score {
+                best_score = score;
+                best_model = Some(model);
+                best_inliers = inliers;
+                if inlier_count > 0 {
+                    let w = inlier_count as f64 / n as f64;
+                    let new_max =
+                        adaptive_max_iters(w, E::SAMPLE_SIZE, cfg.confidence, max_iters);
+                    if new_max < max_iters {
+                        max_iters = new_max;
+                    }
+                }
+            }
+        }
+
+        i += this_chunk as u32;
+    }
+
+    RansacResult {
+        model: best_model,
+        inliers: best_inliers,
+        num_iters: i,
+        score: best_score,
+    }
+}
+
 /// Recompute the adaptive iteration cap.
 ///
 /// Returns the minimum of `current` and the analytic estimate. Never
@@ -260,6 +400,46 @@ mod tests {
             "adaptive cap never engaged: ran {} of {} iters",
             result.num_iters,
             cfg.max_iters,
+        );
+    }
+
+    /// `run_parallel` must produce a result at least as good as `run` on
+    /// identical input. (Strict equality is not guaranteed because the
+    /// parallel path evaluates hypotheses in chunks and may visit a
+    /// slightly different prefix before the adaptive cap fires; both
+    /// must still recover a model with ≥ 80% true-inlier recall.)
+    #[test]
+    fn run_parallel_matches_serial_quality() {
+        let pair = synthetic_with_outliers(80, 50, 0xCAFE);
+        let est = FundamentalEstimator;
+        let consensus = ThresholdConsensus { threshold: 4.0 };
+        let cfg = RansacConfig {
+            max_iters: 600,
+            confidence: 0.999,
+            inlier_threshold: 4.0,
+            ..Default::default()
+        };
+
+        let mut sampler_serial = UniformSampler::new(StdRng::seed_from_u64(11));
+        let serial = run(&est, &consensus, &mut sampler_serial, &pair.matches, &cfg);
+
+        let mut sampler_par = UniformSampler::new(StdRng::seed_from_u64(11));
+        let par = run_parallel(&est, &consensus, &mut sampler_par, &pair.matches, &cfg);
+
+        assert!(serial.model.is_some() && par.model.is_some());
+        // Both must recover ≥ 64/80 true inliers (80%).
+        let serial_inliers = serial.inliers[..80].iter().filter(|&&b| b).count();
+        let par_inliers = par.inliers[..80].iter().filter(|&&b| b).count();
+        assert!(serial_inliers >= 64, "serial: {serial_inliers}");
+        assert!(par_inliers >= 64, "parallel: {par_inliers}");
+        // Scores in the same ballpark — parallel can be slightly off
+        // due to chunked scheduling, but not by much.
+        let ratio = par.score / serial.score;
+        assert!(
+            ratio > 0.85,
+            "parallel score {} regressed vs serial {}",
+            par.score,
+            serial.score
         );
     }
 
