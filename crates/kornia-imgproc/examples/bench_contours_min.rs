@@ -181,6 +181,7 @@ fn main() {
     // === Real-world OpenCV tutorial images ===
     for (label, path) in [
         ("pic1_external_simple", "crates/kornia-imgproc/examples/data/pic1.png"),
+        ("pic2_external_simple", "crates/kornia-imgproc/examples/data/pic2.png"),
         ("pic3_external_simple", "crates/kornia-imgproc/examples/data/pic3.png"),
         ("pic4_external_simple", "crates/kornia-imgproc/examples/data/pic4.png"),
     ] {

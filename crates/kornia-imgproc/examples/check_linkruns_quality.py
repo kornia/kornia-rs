@@ -87,6 +87,7 @@ def main():
     # Real-world images
     for path in [
         "crates/kornia-imgproc/examples/data/pic1.png",
+        "crates/kornia-imgproc/examples/data/pic2.png",
         "crates/kornia-imgproc/examples/data/pic3.png",
         "crates/kornia-imgproc/examples/data/pic4.png",
     ]:
