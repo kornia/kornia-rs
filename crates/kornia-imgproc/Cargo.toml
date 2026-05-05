@@ -93,3 +93,4 @@ rand = { workspace = true }
 
 [features]
 opencv_bench = ["dep:opencv"]
+profile_contours = []
