@@ -17,5 +17,19 @@ fn main() {
         _ => RetrievalMode::External,
     };
     let r = find_contours(&bw, mode, ContourApproximationMode::Simple).unwrap();
-    println!("{}", r.contours.len());
+    println!("count: {}", r.contours.len());
+    if std::env::var("DUMP_HIER").is_ok() {
+        let mut parent_count = std::collections::BTreeMap::new();
+        let mut frame_outer = 0u64;
+        let mut frame_other = 0u64;
+        for h in &r.hierarchy {
+            *parent_count.entry(h[3]).or_insert(0u64) += 1;
+            if h[3] <= 0 { frame_outer += 1; }
+        }
+        for (parent, n) in parent_count.iter().take(10) {
+            println!("  parent={parent}: {n}");
+        }
+        println!("  total parent<=0: {}", frame_outer);
+        let _ = frame_other;
+    }
 }
