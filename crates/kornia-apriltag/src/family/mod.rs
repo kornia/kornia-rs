@@ -2,6 +2,8 @@ use crate::{
     decoder::{QuickDecode, SharpeningBuffer},
     errors::AprilTagError,
 };
+use std::str::FromStr;
+use std::sync::Arc;
 
 /// Represents the AprilTag Family
 #[derive(Debug, Clone, PartialEq)]
@@ -122,8 +124,9 @@ pub enum TagFamilyKind {
     /// The TagStandard52H13 Family. [TagFamily::tagstandard52_h13]
     TagStandard52H13,
     /// A custom tag family, allowing users to supply a fully defined [`TagFamily`] instance.
-    // TODO: Currently, we are cloning TagFamily if it's custom. Look into optimizing this in the future.
-    Custom(Box<TagFamily>),
+    /// The [`Arc`] allows cheap cloning and shared ownership of the underlying [`TagFamily`]
+    /// between multiple [`TagFamilyKind::Custom`] values without duplicating the tag data.
+    Custom(Arc<TagFamily>),
 }
 
 impl TagFamilyKind {
@@ -143,9 +146,41 @@ impl TagFamilyKind {
     }
 }
 
+/// Parses a built-in tag family kind from its canonical string name.
+///
+/// Returns an error if `s` does not match one of the supported built-in family names.
+impl FromStr for TagFamilyKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if let Some(kind) = builtin_tag(s) {
+            Ok(kind)
+        } else {
+            Err(format!("Unknown builtin tag family: '{}'", s))
+        }
+    }
+}
+
+/// Returns the built-in tag family variant for a canonical family name.
+fn builtin_tag(name: &str) -> Option<TagFamilyKind> {
+    match name {
+        "tag16_h5" => Some(TagFamilyKind::Tag16H5),
+        "tag36_h11" => Some(TagFamilyKind::Tag36H11),
+        "tag36_h10" => Some(TagFamilyKind::Tag36H10),
+        "tag25_h9" => Some(TagFamilyKind::Tag25H9),
+        "tagcircle21_h7" => Some(TagFamilyKind::TagCircle21H7),
+        "tagcircle49_h12" => Some(TagFamilyKind::TagCircle49H12),
+        "tagcustom48_h12" => Some(TagFamilyKind::TagCustom48H12),
+        "tagstandard41_h12" => Some(TagFamilyKind::TagStandard41H12),
+        "tagstandard52_h13" => Some(TagFamilyKind::TagStandard52H13),
+        _ => None,
+    }
+}
+
 impl From<TagFamily> for TagFamilyKind {
     fn from(value: TagFamily) -> Self {
-        to_tag_family_kind_impl(&value)
+        // Preserve the exact user-provided family data instead of normalizing by name.
+        TagFamilyKind::Custom(Arc::new(value))
     }
 }
 
@@ -162,18 +197,8 @@ impl From<&mut TagFamily> for TagFamilyKind {
 }
 
 fn to_tag_family_kind_impl(value: &TagFamily) -> TagFamilyKind {
-    match value.name.as_str() {
-        "tag16_h5" => TagFamilyKind::Tag16H5,
-        "tag36_h11" => TagFamilyKind::Tag36H11,
-        "tag36_h10" => TagFamilyKind::Tag36H10,
-        "tag25_h9" => TagFamilyKind::Tag25H9,
-        "tagcircle21_h7" => TagFamilyKind::TagCircle21H7,
-        "tagcircle49_h12" => TagFamilyKind::TagCircle49H12,
-        "tagcustom48_h12" => TagFamilyKind::TagCustom48H12,
-        "tagstandard41_h12" => TagFamilyKind::TagStandard41H12,
-        "tagstandard52_h13" => TagFamilyKind::TagStandard52H13,
-        _ => TagFamilyKind::Custom(Box::new(value.clone())),
-    }
+    // Preserve the exact user-provided family data instead of normalizing by name.
+    TagFamilyKind::Custom(Arc::new(value.clone()))
 }
 
 impl TryFrom<TagFamilyKind> for TagFamily {
@@ -181,16 +206,12 @@ impl TryFrom<TagFamilyKind> for TagFamily {
 
     fn try_from(value: TagFamilyKind) -> Result<Self, Self::Error> {
         match value {
-            TagFamilyKind::Tag16H5 => TagFamily::tag16_h5(),
-            TagFamilyKind::Tag25H9 => TagFamily::tag25_h9(),
-            TagFamilyKind::Tag36H10 => TagFamily::tag36_h10(),
-            TagFamilyKind::Tag36H11 => TagFamily::tag36_h11(),
-            TagFamilyKind::TagCircle21H7 => TagFamily::tagcircle21_h7(),
-            TagFamilyKind::TagCircle49H12 => TagFamily::tagcircle49_h12(),
-            TagFamilyKind::TagCustom48H12 => TagFamily::tagcustom48_h12(),
-            TagFamilyKind::TagStandard41H12 => TagFamily::tagstandard41_h12(),
-            TagFamilyKind::TagStandard52H13 => TagFamily::tagstandard52_h13(),
-            TagFamilyKind::Custom(tag_family) => Ok(*tag_family),
+            // Avoid cloning when the Arc has sole ownership
+            TagFamilyKind::Custom(tag_family) => {
+                Ok(Arc::try_unwrap(tag_family).unwrap_or_else(|arc| (*arc).clone()))
+            }
+            // Delegating everything else to the helper function
+            other => to_tag_family_impl(&other),
         }
     }
 }
@@ -222,7 +243,7 @@ fn to_tag_family_impl(value: &TagFamilyKind) -> Result<TagFamily, AprilTagError>
         TagFamilyKind::TagCustom48H12 => TagFamily::tagcustom48_h12(),
         TagFamilyKind::TagStandard41H12 => TagFamily::tagstandard41_h12(),
         TagFamilyKind::TagStandard52H13 => TagFamily::tagstandard52_h13(),
-        TagFamilyKind::Custom(tag_family) => Ok(tag_family.as_ref().clone()),
+        TagFamilyKind::Custom(tag_family) => Ok((**tag_family).clone()),
     }
 }
 
@@ -252,3 +273,79 @@ pub mod tagstandard41h12;
 
 #[doc(hidden)]
 pub mod tagstandard52h13;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_custom_family_arc_sharing() {
+        let family = TagFamily::tag36_h11().unwrap();
+        let custom_kind = TagFamilyKind::Custom(Arc::new(family));
+        let custom_kind_clone = custom_kind.clone();
+
+        // Assert that both point to the same memory
+        if let (TagFamilyKind::Custom(arc1), TagFamilyKind::Custom(arc2)) =
+            (custom_kind, custom_kind_clone)
+        {
+            assert!(
+                Arc::ptr_eq(&arc1, &arc2),
+                "Cloned Custom TagFamilyKind should share the same Arc pointer"
+            );
+        } else {
+            panic!("Expected Custom variants");
+        }
+    }
+
+    #[test]
+    fn test_custom_family_try_unwrap_logic() {
+        let family = TagFamily::tag36_h11().unwrap();
+        let kind = TagFamilyKind::Custom(Arc::new(family));
+
+        // Unique Ownership: try_unwrap should succeed
+        let result = TagFamily::try_from(kind);
+        assert!(result.is_ok());
+
+        // Shared Ownership
+        let family2 = TagFamily::tag36_h11().unwrap();
+        let kind2 = TagFamilyKind::Custom(Arc::new(family2));
+        let _kind_clone = kind2.clone();
+
+        // This triggers the .unwrap_or_else(|a| (*a).clone()) path
+        let result2 = TagFamily::try_from(kind2);
+        let extracted = result2.expect("Should succeed via clone fallback");
+        assert_eq!(extracted.name, "tag36_h11");
+        assert_eq!(extracted.code_data.len(), 587);
+        if let TagFamilyKind::Custom(arc) = _kind_clone {
+            assert_eq!(arc.name, "tag36_h11");
+        }
+    }
+
+    #[test]
+    fn test_safety_no_silent_data_loss() {
+        // Standard tag
+        let mut family = TagFamily::tag36_h11().unwrap();
+        family.width_at_border = 999;
+        assert_eq!(family.name, "tag36_h11");
+
+        // Convert it using From
+        let kind = TagFamilyKind::from(family);
+        if let TagFamilyKind::Custom(arc) = kind {
+            assert_eq!(arc.width_at_border, 999, "User modification was preserved.");
+        } else {
+            panic!("Safety Fail: The library ignored user data and returned the standard builtin.");
+        }
+    }
+
+    #[test]
+    fn test_reference_conversions_preserve_user_data() {
+        let mut family = TagFamily::tag36_h11().unwrap();
+        family.width_at_border = 999;
+
+        let from_ref = TagFamilyKind::from(&family);
+        let from_mut = TagFamilyKind::from(&mut family);
+
+        assert!(matches!(from_ref, TagFamilyKind::Custom(_)));
+        assert!(matches!(from_mut, TagFamilyKind::Custom(_)));
+    }
+}
