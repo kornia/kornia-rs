@@ -502,24 +502,14 @@ fn find_start(row: &[u8], mut j: i32) -> i32 {
             let v = vld1q_u8(row.as_ptr().add(j as usize));
             // Compare each byte to zero -> 0xFF where byte == 0
             let zmask = vceqq_u8(v, vdupq_n_u8(0));
-            // Reduce: if any lane is non-zero (a non-zero byte exists), there
-            // is a run start somewhere in this 16-byte window. Use minv: if
-            // min(zmask) == 0xFF, every byte was zero (skip). Otherwise some
-            // byte is non-zero.
+            // If any lane is non-zero (i.e. some byte is foreground), break
+            // out and let the scalar tail find the exact position. The
+            // store-and-scan path is more expensive than 16 scalar steps
+            // when foreground is dense (e.g. sparse_noise), and roughly
+            // free when foreground is sparse (we skip whole 16-byte
+            // windows of zeros).
             if vminvq_u8(zmask) == 0 {
-                // At least one non-zero byte present in this window
-                // Compute "is non-zero" mask = ~zmask, then find first set bit.
-                let nz = vmvnq_u8(zmask);
-                // Pack 16 lanes (each 0x00 or 0xFF) into a 64-bit half-vector
-                // by narrowing to 4-bit-per-lane via `vshrn_n_u16` on a
-                // reinterpreted u16 view. Cheaper trick: store, scan.
-                let mut buf = [0u8; 16];
-                vst1q_u8(buf.as_mut_ptr(), nz);
-                for (k, b) in buf.iter().enumerate() {
-                    if *b != 0 {
-                        return j + k as i32;
-                    }
-                }
+                break;
             }
             j += 16;
         }
@@ -539,15 +529,10 @@ fn find_end(row: &[u8], mut j: i32) -> i32 {
         while j + 16 <= w {
             let v = vld1q_u8(row.as_ptr().add(j as usize));
             let zmask = vceqq_u8(v, vdupq_n_u8(0));
-            // If any byte is zero, the run ends within this window
+            // If any byte is zero, the run ends within this window — fall
+            // through to the scalar tail to pinpoint the exact byte.
             if vmaxvq_u8(zmask) != 0 {
-                let mut buf = [0u8; 16];
-                vst1q_u8(buf.as_mut_ptr(), zmask);
-                for (k, b) in buf.iter().enumerate() {
-                    if *b != 0 {
-                        return j + k as i32;
-                    }
-                }
+                break;
             }
             j += 16;
         }
