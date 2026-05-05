@@ -1,4 +1,6 @@
-use crate::filter::gaussian_blur;
+use crate::filter::{gaussian_blur, kernels::sobel_kernel_1d, separable_filter};
+use crate::morphology::{dilate, Kernel, KernelShape};
+use crate::padding::PaddingMode;
 use kornia_image::{allocator::ImageAllocator, Image, ImageError, ImageSize};
 use kornia_tensor::CpuAllocator;
 use rayon::prelude::*;
@@ -16,9 +18,9 @@ pub enum GradsMode {
 fn _get_kernel_size(sigma: f32) -> usize {
     let mut ksize = (2.0 * 4.0 * sigma + 1.0) as usize;
 
-    // matches OpenCV, but may cause padding problem for small images
-    // PyTorch does not allow to pad more than original size.
-    // Therefore there is a hack in forward function
+    // Standard odd-radius rounding; may cause padding problems on small
+    // images because PyTorch does not allow padding larger than the input
+    // — callers handle that edge case in the forward function.
     if ksize % 2 == 0 {
         ksize += 1;
     }
@@ -53,48 +55,56 @@ pub fn hessian_response<A1: ImageAllocator, A2: ImageAllocator>(
     }
 
     let src_data = src.as_slice();
+    let cols = src.cols();
+    let rows = src.rows();
 
+    const ROWS_PER_TASK: usize = 16;
     dst.as_slice_mut()
-        .par_chunks_exact_mut(src.cols())
+        .par_chunks_mut(ROWS_PER_TASK * cols)
         .enumerate()
-        .for_each(|(row_idx, row_chunk)| {
-            if row_idx == 0 || row_idx == src.rows() - 1 {
-                // skip the first and last row
-                return;
-            }
-
-            let row_offset = row_idx * src.cols();
-
-            row_chunk
-                .iter_mut()
+        .for_each(|(chunk_idx, chunk)| {
+            let row_base = chunk_idx * ROWS_PER_TASK;
+            chunk
+                .chunks_exact_mut(cols)
                 .enumerate()
-                .for_each(|(col_idx, dst_pixel)| {
-                    if col_idx == 0 || col_idx == src.cols() - 1 {
-                        // skip the first and last column
+                .for_each(|(dr, row_chunk)| {
+                    let row_idx = row_base + dr;
+                    if row_idx == 0 || row_idx == rows - 1 {
                         return;
                     }
 
-                    let current_idx = row_offset + col_idx;
-                    let prev_row_idx = current_idx - src.cols();
-                    let next_row_idx = current_idx + src.cols();
+                    let row_offset = row_idx * cols;
 
-                    let v11 = src_data[prev_row_idx - 1];
-                    let v12 = src_data[prev_row_idx];
-                    let v13 = src_data[prev_row_idx + 1];
-                    let v21 = src_data[current_idx - 1];
-                    let v22 = src_data[current_idx];
-                    let v23 = src_data[current_idx + 1];
-                    let v31 = src_data[next_row_idx - 1];
-                    let v32 = src_data[next_row_idx];
-                    let v33 = src_data[next_row_idx + 1];
+                    row_chunk
+                        .iter_mut()
+                        .enumerate()
+                        .for_each(|(col_idx, dst_pixel)| {
+                            if col_idx == 0 || col_idx == cols - 1 {
+                                return;
+                            }
 
-                    let dxx = v21 - 2.0 * v22 + v23;
-                    let dyy = v12 - 2.0 * v22 + v32;
-                    let dxy = 0.25 * (v31 - v11 - v33 + v13);
+                            let current_idx = row_offset + col_idx;
+                            let prev_row_idx = current_idx - cols;
+                            let next_row_idx = current_idx + cols;
 
-                    let det = dxx * dyy - dxy * dxy;
+                            let v11 = src_data[prev_row_idx - 1];
+                            let v12 = src_data[prev_row_idx];
+                            let v13 = src_data[prev_row_idx + 1];
+                            let v21 = src_data[current_idx - 1];
+                            let v22 = src_data[current_idx];
+                            let v23 = src_data[current_idx + 1];
+                            let v31 = src_data[next_row_idx - 1];
+                            let v32 = src_data[next_row_idx];
+                            let v33 = src_data[next_row_idx + 1];
 
-                    *dst_pixel = det;
+                            let dxx = v21 - 2.0 * v22 + v23;
+                            let dyy = v12 - 2.0 * v22 + v32;
+                            let dxy = 0.25 * (v31 - v11 - v33 + v13);
+
+                            let det = dxx * dyy - dxy * dxy;
+
+                            *dst_pixel = det;
+                        });
                 });
         });
 
@@ -127,6 +137,196 @@ impl HarrisResponse {
         Self { k, ..self }
     }
 
+    #[inline]
+    fn row_bounds_err(cols: usize, rows: usize) -> ImageError {
+        ImageError::PixelIndexOutOfBounds(0, rows.saturating_sub(1), cols, rows)
+    }
+
+    #[inline]
+    fn col_bounds_err(cols: usize, rows: usize, row_idx: usize) -> ImageError {
+        ImageError::PixelIndexOutOfBounds(cols.saturating_sub(1), row_idx + 1, cols, rows)
+    }
+
+    /// u8 variant of [`compute`](Self::compute).
+    ///
+    /// Reads a u8 source image directly, avoiding a full image u8→f32 conversion
+    /// pass. The Harris response is scale-invariant with respect to pixel intensity
+    /// scaling (det and k·trace² scale identically), so the output is magnitude-
+    /// scaled relative to the f32 path but preserves peak ranking. Output remains
+    /// f32 so that downstream octree ranking is unchanged.
+    pub fn compute_u8<A1: ImageAllocator, A2: ImageAllocator>(
+        &mut self,
+        src: &Image<u8, 1, A1>,
+        dst: &mut Image<f32, 1, A2>,
+    ) -> Result<(), ImageError> {
+        if src.size() != self.image_size {
+            return Err(ImageError::InvalidImageSize(
+                src.size().width,
+                src.size().height,
+                self.image_size.width,
+                self.image_size.height,
+            ));
+        }
+        if dst.size() != self.image_size {
+            return Err(ImageError::InvalidImageSize(
+                dst.size().width,
+                dst.size().height,
+                self.image_size.width,
+                self.image_size.height,
+            ));
+        }
+        if src.cols() < 2 || src.rows() < 2 {
+            return Err(ImageError::InvalidImageSize(
+                src.size().width,
+                src.size().height,
+                2,
+                2,
+            ));
+        }
+
+        let src_data = src.as_slice();
+        let col_slice = src.cols()..src_data.len() - src.cols();
+        let row_slice = 1..src.cols() - 1;
+        const ROWS_PER_TASK: usize = 16;
+        let cols = src.cols();
+        let chunk_elems = ROWS_PER_TASK * cols;
+
+        self.dx2_data
+            .as_mut_slice()
+            .get_mut(col_slice.clone())
+            .ok_or_else(|| Self::row_bounds_err(src.cols(), src.rows()))?
+            .par_chunks_mut(chunk_elems)
+            .zip(
+                self.dy2_data
+                    .as_mut_slice()
+                    .get_mut(col_slice.clone())
+                    .ok_or_else(|| Self::row_bounds_err(src.cols(), src.rows()))?
+                    .par_chunks_mut(chunk_elems),
+            )
+            .zip(
+                self.dxy_data
+                    .as_mut_slice()
+                    .get_mut(col_slice.clone())
+                    .ok_or_else(|| Self::row_bounds_err(src.cols(), src.rows()))?
+                    .par_chunks_mut(chunk_elems),
+            )
+            .enumerate()
+            .try_for_each(|(chunk_idx, ((dx2_big, dy2_big), dxy_big))| {
+                let row_base = chunk_idx * ROWS_PER_TASK;
+                dx2_big
+                    .chunks_exact_mut(cols)
+                    .zip(dy2_big.chunks_exact_mut(cols))
+                    .zip(dxy_big.chunks_exact_mut(cols))
+                    .enumerate()
+                    .try_for_each(|(dr, ((dx2_chunk, dy2_chunk), dxy_chunk))| {
+                        let row_idx = row_base + dr;
+                        let row_offset = (row_idx + 1) * cols;
+
+                        dx2_chunk
+                            .get_mut(row_slice.clone())
+                            .ok_or_else(|| Self::col_bounds_err(cols, src.rows(), row_idx))?
+                            .iter_mut()
+                            .zip(
+                                dy2_chunk
+                                    .get_mut(row_slice.clone())
+                                    .ok_or_else(|| Self::col_bounds_err(cols, src.rows(), row_idx))?
+                                    .iter_mut(),
+                            )
+                            .zip(
+                                dxy_chunk
+                                    .get_mut(row_slice.clone())
+                                    .ok_or_else(|| Self::col_bounds_err(cols, src.rows(), row_idx))?
+                                    .iter_mut(),
+                            )
+                            .enumerate()
+                            .for_each(|(col_idx, ((dx2_pixel, dy2_pixel), dxy_pixel))| {
+                                let current_idx = row_offset + col_idx + 1;
+                                let prev_row_idx = current_idx - cols;
+                                let next_row_idx = current_idx + cols;
+
+                                let (v11, v12, v13, v21, v23, v31, v32, v33) = unsafe {
+                                    (
+                                        *src_data.get_unchecked(prev_row_idx - 1) as f32,
+                                        *src_data.get_unchecked(prev_row_idx) as f32,
+                                        *src_data.get_unchecked(prev_row_idx + 1) as f32,
+                                        *src_data.get_unchecked(current_idx - 1) as f32,
+                                        *src_data.get_unchecked(current_idx + 1) as f32,
+                                        *src_data.get_unchecked(next_row_idx - 1) as f32,
+                                        *src_data.get_unchecked(next_row_idx) as f32,
+                                        *src_data.get_unchecked(next_row_idx + 1) as f32,
+                                    )
+                                };
+
+                                let dx = (-v33 + v31 - 2.0 * v23 + 2.0 * v21 - v13 + v11) * 0.125;
+                                let dy = (-v33 - 2.0 * v32 - v31 + v13 + 2.0 * v12 + v11) * 0.125;
+
+                                *dx2_pixel = dx * dx;
+                                *dy2_pixel = dy * dy;
+                                *dxy_pixel = dx * dy;
+                            });
+                        Ok::<(), ImageError>(())
+                    })
+            })?;
+
+        dst.as_slice_mut()
+            .get_mut(col_slice.clone())
+            .ok_or_else(|| Self::row_bounds_err(src.cols(), src.rows()))?
+            .par_chunks_mut(chunk_elems)
+            .enumerate()
+            .try_for_each(|(chunk_idx, dst_big)| {
+                let row_base = chunk_idx * ROWS_PER_TASK;
+                dst_big
+                    .chunks_exact_mut(cols)
+                    .enumerate()
+                    .try_for_each(|(dr, dst_chunk)| {
+                        let row_idx = row_base + dr;
+                        let row_offset = (row_idx + 1) * cols;
+
+                        dst_chunk
+                            .get_mut(row_slice.clone())
+                            .ok_or_else(|| Self::col_bounds_err(cols, src.rows(), row_idx))?
+                            .iter_mut()
+                            .enumerate()
+                            .for_each(|(col_idx, dst_pixel)| {
+                                let current_idx = row_offset + col_idx + 1;
+                                let prev_row_idx = current_idx - cols;
+                                let next_row_idx = current_idx + cols;
+
+                                let mut m11 = 0.0;
+                                let mut m22 = 0.0;
+                                let mut m12 = 0.0;
+
+                                let idxs = [
+                                    prev_row_idx - 1,
+                                    prev_row_idx,
+                                    prev_row_idx + 1,
+                                    current_idx - 1,
+                                    current_idx,
+                                    current_idx + 1,
+                                    next_row_idx - 1,
+                                    next_row_idx,
+                                    next_row_idx + 1,
+                                ];
+                                for idx in idxs {
+                                    unsafe {
+                                        m11 += self.dx2_data.get_unchecked(idx);
+                                        m22 += self.dy2_data.get_unchecked(idx);
+                                        m12 += self.dxy_data.get_unchecked(idx);
+                                    }
+                                }
+
+                                let det = m11 * m22 - m12 * m12;
+                                let trace = m11 + m22;
+                                let response = det - self.k * trace * trace;
+                                *dst_pixel = f32::max(0.0, response);
+                            });
+                        Ok::<(), ImageError>(())
+                    })
+            })?;
+
+        Ok(())
+    }
+
     /// Computes the harris response of an image.
     ///
     /// The Harris response is computed by the determinant minus the trace squared.
@@ -156,131 +356,156 @@ impl HarrisResponse {
             ));
         }
 
+        if src.cols() < 2 || src.rows() < 2 {
+            return Err(ImageError::InvalidImageSize(
+                src.size().width,
+                src.size().height,
+                2,
+                2,
+            ));
+        }
+
         let src_data = src.as_slice();
         let col_slice = src.cols()..src_data.len() - src.cols();
         let row_slice = 1..src.cols() - 1;
 
+        const ROWS_PER_TASK: usize = 16;
+        let cols = src.cols();
+        let chunk_elems = ROWS_PER_TASK * cols;
+
         self.dx2_data
             .as_mut_slice()
             .get_mut(col_slice.clone())
-            // SAFETY: we ranges is valid
-            .unwrap()
-            .par_chunks_exact_mut(src.cols())
+            .ok_or_else(|| Self::row_bounds_err(src.cols(), src.rows()))?
+            .par_chunks_mut(chunk_elems)
             .zip(
                 self.dy2_data
                     .as_mut_slice()
                     .get_mut(col_slice.clone())
-                    // SAFETY: we ranges is valid
-                    .unwrap()
-                    .par_chunks_exact_mut(src.cols()),
+                    .ok_or_else(|| Self::row_bounds_err(src.cols(), src.rows()))?
+                    .par_chunks_mut(chunk_elems),
             )
             .zip(
                 self.dxy_data
                     .as_mut_slice()
                     .get_mut(col_slice.clone())
-                    // SAFETY: we ranges is valid
-                    .unwrap()
-                    .par_chunks_exact_mut(src.cols()),
+                    .ok_or_else(|| Self::row_bounds_err(src.cols(), src.rows()))?
+                    .par_chunks_mut(chunk_elems),
             )
             .enumerate()
-            .for_each(|(row_idx, ((dx2_chunk, dy2_chunk), dxy_chunk))| {
-                let row_offset = (row_idx + 1) * src.cols();
-
-                dx2_chunk
-                    .get_mut(row_slice.clone())
-                    // SAFETY: we ranges is valid
-                    .unwrap()
-                    .iter_mut()
-                    .zip(
-                        dy2_chunk
-                            .get_mut(row_slice.clone())
-                            // SAFETY: we ranges is valid
-                            .unwrap()
-                            .iter_mut(),
-                    )
-                    .zip(dxy_chunk.get_mut(row_slice.clone()).unwrap().iter_mut())
+            .try_for_each(|(chunk_idx, ((dx2_big, dy2_big), dxy_big))| {
+                let row_base = chunk_idx * ROWS_PER_TASK;
+                dx2_big
+                    .chunks_exact_mut(cols)
+                    .zip(dy2_big.chunks_exact_mut(cols))
+                    .zip(dxy_big.chunks_exact_mut(cols))
                     .enumerate()
-                    .for_each(|(col_idx, ((dx2_pixel, dy2_pixel), dxy_pixel))| {
-                        let current_idx = row_offset + col_idx + 1;
-                        let prev_row_idx = current_idx - src.cols();
-                        let next_row_idx = current_idx + src.cols();
+                    .try_for_each(|(dr, ((dx2_chunk, dy2_chunk), dxy_chunk))| {
+                        let row_idx = row_base + dr;
+                        let row_offset = (row_idx + 1) * cols;
 
-                        let (v11, v12, v13, v21, v23, v31, v32, v33) = unsafe {
-                            // SAFETY: we ranges is valid
-                            (
-                                src_data.get_unchecked(prev_row_idx - 1),
-                                src_data.get_unchecked(prev_row_idx),
-                                src_data.get_unchecked(prev_row_idx + 1),
-                                src_data.get_unchecked(current_idx - 1),
-                                src_data.get_unchecked(current_idx + 1),
-                                src_data.get_unchecked(next_row_idx - 1),
-                                src_data.get_unchecked(next_row_idx),
-                                src_data.get_unchecked(next_row_idx + 1),
+                        dx2_chunk
+                            .get_mut(row_slice.clone())
+                            .ok_or_else(|| Self::col_bounds_err(cols, src.rows(), row_idx))?
+                            .iter_mut()
+                            .zip(
+                                dy2_chunk
+                                    .get_mut(row_slice.clone())
+                                    .ok_or_else(|| Self::col_bounds_err(cols, src.rows(), row_idx))?
+                                    .iter_mut(),
                             )
-                        };
+                            .zip(
+                                dxy_chunk
+                                    .get_mut(row_slice.clone())
+                                    .ok_or_else(|| Self::col_bounds_err(cols, src.rows(), row_idx))?
+                                    .iter_mut(),
+                            )
+                            .enumerate()
+                            .for_each(|(col_idx, ((dx2_pixel, dy2_pixel), dxy_pixel))| {
+                                let current_idx = row_offset + col_idx + 1;
+                                let prev_row_idx = current_idx - cols;
+                                let next_row_idx = current_idx + cols;
 
-                        // I_x,I_y via 3x3 sobel operator and convolved
-                        let dx = (-v33 + v31 - 2.0 * v23 + 2.0 * v21 - v13 + v11) * 0.125;
-                        let dy = (-v33 - 2.0 * v32 - v31 + v13 + 2.0 * v12 + v11) * 0.125;
+                                let (v11, v12, v13, v21, v23, v31, v32, v33) = unsafe {
+                                    (
+                                        src_data.get_unchecked(prev_row_idx - 1),
+                                        src_data.get_unchecked(prev_row_idx),
+                                        src_data.get_unchecked(prev_row_idx + 1),
+                                        src_data.get_unchecked(current_idx - 1),
+                                        src_data.get_unchecked(current_idx + 1),
+                                        src_data.get_unchecked(next_row_idx - 1),
+                                        src_data.get_unchecked(next_row_idx),
+                                        src_data.get_unchecked(next_row_idx + 1),
+                                    )
+                                };
 
-                        // filter normalization
-                        *dx2_pixel = dx * dx;
-                        *dy2_pixel = dy * dy;
-                        *dxy_pixel = dx * dy;
-                    });
-            });
+                                let dx = (-v33 + v31 - 2.0 * v23 + 2.0 * v21 - v13 + v11) * 0.125;
+                                let dy = (-v33 - 2.0 * v32 - v31 + v13 + 2.0 * v12 + v11) * 0.125;
+
+                                *dx2_pixel = dx * dx;
+                                *dy2_pixel = dy * dy;
+                                *dxy_pixel = dx * dy;
+                            });
+                        Ok::<(), ImageError>(())
+                    })
+            })?;
 
         dst.as_slice_mut()
             .get_mut(col_slice.clone())
-            // SAFETY: we ranges is valid
-            .unwrap()
-            .par_chunks_exact_mut(src.cols())
+            .ok_or_else(|| Self::row_bounds_err(src.cols(), src.rows()))?
+            .par_chunks_mut(chunk_elems)
             .enumerate()
-            .for_each(|(row_idx, dst_chunk)| {
-                let row_offset = (row_idx + 1) * src.cols();
-
-                dst_chunk
-                    .get_mut(row_slice.clone())
-                    // SAFETY: we ranges is valid
-                    .unwrap()
-                    .iter_mut()
+            .try_for_each(|(chunk_idx, dst_big)| {
+                let row_base = chunk_idx * ROWS_PER_TASK;
+                dst_big
+                    .chunks_exact_mut(cols)
                     .enumerate()
-                    .for_each(|(col_idx, dst_pixel)| {
-                        let current_idx = row_offset + col_idx + 1;
-                        let prev_row_idx = current_idx - src.cols();
-                        let next_row_idx = current_idx + src.cols();
+                    .try_for_each(|(dr, dst_chunk)| {
+                        let row_idx = row_base + dr;
+                        let row_offset = (row_idx + 1) * cols;
 
-                        let mut m11 = 0.0;
-                        let mut m22 = 0.0;
-                        let mut m12 = 0.0;
+                        dst_chunk
+                            .get_mut(row_slice.clone())
+                            .ok_or_else(|| Self::col_bounds_err(cols, src.rows(), row_idx))?
+                            .iter_mut()
+                            .enumerate()
+                            .for_each(|(col_idx, dst_pixel)| {
+                                let current_idx = row_offset + col_idx + 1;
+                                let prev_row_idx = current_idx - cols;
+                                let next_row_idx = current_idx + cols;
 
-                        let idxs = [
-                            prev_row_idx - 1,
-                            prev_row_idx,
-                            prev_row_idx + 1,
-                            current_idx - 1,
-                            current_idx,
-                            current_idx + 1,
-                            next_row_idx - 1,
-                            next_row_idx,
-                            next_row_idx + 1,
-                        ];
-                        for idx in idxs {
-                            // SAFETY: we ranges is valid
-                            unsafe {
-                                m11 += self.dx2_data.get_unchecked(idx);
-                                m22 += self.dy2_data.get_unchecked(idx);
-                                m12 += self.dxy_data.get_unchecked(idx);
-                            }
-                        }
+                                let mut m11 = 0.0;
+                                let mut m22 = 0.0;
+                                let mut m12 = 0.0;
 
-                        let det = m11 * m22 - m12 * m12;
-                        let trace = m11 + m22;
-                        let response = det - self.k * trace * trace;
+                                let idxs = [
+                                    prev_row_idx - 1,
+                                    prev_row_idx,
+                                    prev_row_idx + 1,
+                                    current_idx - 1,
+                                    current_idx,
+                                    current_idx + 1,
+                                    next_row_idx - 1,
+                                    next_row_idx,
+                                    next_row_idx + 1,
+                                ];
+                                for idx in idxs {
+                                    unsafe {
+                                        m11 += self.dx2_data.get_unchecked(idx);
+                                        m22 += self.dy2_data.get_unchecked(idx);
+                                        m12 += self.dxy_data.get_unchecked(idx);
+                                    }
+                                }
 
-                        *dst_pixel = f32::max(0.0, response);
-                    });
-            });
+                                let det = m11 * m22 - m12 * m12;
+                                let trace = m11 + m22;
+                                let response = det - self.k * trace * trace;
+
+                                *dst_pixel = f32::max(0.0, response);
+                            });
+                        Ok::<(), ImageError>(())
+                    })
+            })?;
 
         Ok(())
     }
@@ -326,6 +551,215 @@ pub fn dog_response<A1: ImageAllocator, A2: ImageAllocator>(
         .for_each(|(d, g1)| {
             *d -= *g1;
         });
+
+    Ok(())
+}
+
+/// Apply 3x3 Non-Maximum Suppression (NMS) to a floating point response map using dilation.
+///
+/// This function retains only spatial local maxima within a 3x3 neighborhood.
+///
+/// # Arguments
+///
+/// * `src` - The source image with shape (H, W).
+/// * `dst` - The destination image with shape (H, W).
+/// * `eps` - Small tolerance for floating-point comparisons
+///   (e.g. `1e-6`) to avoid numerical instability.
+pub fn non_max_suppression<A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<f32, 1, A1>,
+    dst: &mut Image<f32, 1, A2>,
+    eps: f32,
+) -> Result<(), ImageError> {
+    if src.size() != dst.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.height(),
+            src.width(),
+            dst.height(),
+            dst.width(),
+        ));
+    }
+
+    let size = src.size();
+
+    let mut src_u32: Image<u32, 1, _> = Image::from_size_val(size, 0u32, CpuAllocator)?;
+    src_u32
+        .as_slice_mut()
+        .par_iter_mut()
+        .zip(src.as_slice().par_iter())
+        .for_each(|(out_bits, &f)| {
+            let v = if f > 0.0 { f } else { 0.0 };
+            *out_bits = v.to_bits();
+        });
+
+    let mut dilated_u32: Image<u32, 1, _> = Image::from_size_val(size, 0u32, CpuAllocator)?;
+    let kernel = Kernel::new(KernelShape::Box { size: 3 });
+    dilate(
+        &src_u32,
+        &mut dilated_u32,
+        &kernel,
+        PaddingMode::Constant,
+        [0u32; 1],
+    )?;
+
+    let src_data = src.as_slice();
+    let dilated_bits = dilated_u32.as_slice();
+    let dst_data = dst.as_slice_mut();
+
+    dst_data
+        .par_iter_mut()
+        .zip(src_data.par_iter())
+        .zip(dilated_bits.par_iter())
+        .for_each(|((out, &orig), &dilated_bit_val)| {
+            let dilated_f32 = f32::from_bits(dilated_bit_val);
+            if orig > 0.0 && orig + eps >= dilated_f32 && orig <= dilated_f32 + eps {
+                *out = orig;
+            } else {
+                *out = 0.0;
+            }
+        });
+
+    Ok(())
+}
+
+/// Compute the GFTT response of an image.
+///
+/// The GFTT response is the minimum eigenvalue of the structure tensor M,
+/// used in Good Features to Track:
+///
+/// M = | \sum(I_x^2)  \sum(I_x I_y) |
+///     | \sum(I_x I_y)  \sum(I_y^2) |
+///
+/// where:
+/// - I_x and I_y are image gradients computed using a sobel operator
+///   of size `sobel_size`.
+/// - The summations are performed using a box filter
+///   of size `window_size × window_size`.
+///
+/// Optionally by `apply_nms`, 3x3 non-maximum suppression (NMS) can be applied using
+/// morphological dilation to retain only local maxima in the response map.
+///
+/// # Arguments
+///
+/// * `src` - The source image with shape (H, W).
+/// * `dst` - The destination image with shape (H, W).
+/// * `sobel_size` - Size of the Sobel derivative kernel (e.g. 3).
+/// * `window_size` - Size of the square box filter window used
+///   to smooth structure tensor components (e.g. 5).
+/// * `apply_nms` - If true, applies 3×3 non-maximum suppression
+///   after computing the response.
+///
+/// # Notes
+///
+/// - No thresholding is performed inside this function.
+pub fn gftt_response<A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<f32, 1, A1>,
+    dst: &mut Image<f32, 1, A2>,
+    sobel_size: usize,
+    window_size: usize,
+    apply_nms: bool,
+) -> Result<(), ImageError> {
+    if src.size() != dst.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.height(),
+            src.width(),
+            dst.height(),
+            dst.width(),
+        ));
+    }
+
+    let image_size = src.size();
+    let rows = src.rows();
+    let cols = src.cols();
+
+    let mut dx = Image::from_size_val(image_size, 0.0f32, CpuAllocator)?;
+    let mut dy = Image::from_size_val(image_size, 0.0f32, CpuAllocator)?;
+
+    let (kernel_deriv, kernel_smooth) = sobel_kernel_1d(sobel_size)?;
+
+    // apply sqrt normalization
+    let deriv_sum: f32 = kernel_deriv.iter().map(|x| x.abs()).sum();
+    let smooth_sum: f32 = kernel_smooth.iter().sum();
+    let product_sum = smooth_sum * deriv_sum;
+    let norm_factor = (1.0 / product_sum).sqrt();
+
+    let kernel_deriv_norm: Vec<f32> = kernel_deriv.iter().map(|&v| v * norm_factor).collect();
+    let kernel_smooth_norm: Vec<f32> = kernel_smooth.iter().map(|&v| v * norm_factor).collect();
+
+    separable_filter(src, &mut dx, &kernel_deriv_norm, &kernel_smooth_norm)?;
+    separable_filter(src, &mut dy, &kernel_smooth_norm, &kernel_deriv_norm)?;
+
+    // compute structure tensor components
+    let mut m11: Image<f32, 1, CpuAllocator> =
+        Image::from_size_val(image_size, 0.0f32, CpuAllocator)?;
+    let mut m22: Image<f32, 1, CpuAllocator> =
+        Image::from_size_val(image_size, 0.0f32, CpuAllocator)?;
+    let mut m12: Image<f32, 1, CpuAllocator> =
+        Image::from_size_val(image_size, 0.0f32, CpuAllocator)?;
+
+    let dx_slice = dx.as_slice();
+    let dy_slice = dy.as_slice();
+    let m11_slice = m11.as_slice_mut();
+    let m22_slice = m22.as_slice_mut();
+    let m12_slice = m12.as_slice_mut();
+
+    m11_slice
+        .par_iter_mut()
+        .zip(m22_slice.par_iter_mut())
+        .zip(m12_slice.par_iter_mut())
+        .enumerate()
+        .for_each(|(i, ((m11_val, m22_val), m12_val))| {
+            let dx_val = dx_slice[i];
+            let dy_val = dy_slice[i];
+
+            *m11_val = dx_val * dx_val;
+            *m22_val = dy_val * dy_val;
+            *m12_val = dx_val * dy_val;
+        });
+
+    // smoothing structure tensor
+    let mut m11_smooth = Image::from_size_val(image_size, 0.0f32, CpuAllocator)?;
+    let mut m22_smooth = Image::from_size_val(image_size, 0.0f32, CpuAllocator)?;
+    let mut m12_smooth = Image::from_size_val(image_size, 0.0f32, CpuAllocator)?;
+
+    let box_kernel = vec![1.0; window_size];
+    separable_filter(&m11, &mut m11_smooth, &box_kernel, &box_kernel)?;
+    separable_filter(&m22, &mut m22_smooth, &box_kernel, &box_kernel)?;
+    separable_filter(&m12, &mut m12_smooth, &box_kernel, &box_kernel)?;
+
+    // compute minimum eigenvalue
+    let m11_slice = m11_smooth.as_slice();
+    let m22_slice = m22_smooth.as_slice();
+    let m12_slice = m12_smooth.as_slice();
+    let dst_slice = dst.as_slice_mut();
+
+    dst_slice
+        .par_iter_mut()
+        .enumerate()
+        .for_each(|(idx, dst_val)| {
+            let r = idx / cols;
+            let c = idx % cols;
+
+            if r == 0 || r == rows - 1 || c == 0 || c == cols - 1 {
+                *dst_val = 0.0;
+            } else {
+                let m11_val = m11_slice[idx];
+                let m22_val = m22_slice[idx];
+                let m12_val = m12_slice[idx];
+
+                let trace = m11_val + m22_val;
+                let discriminant = ((m11_val - m22_val).powi(2) + 4.0 * m12_val * m12_val).sqrt();
+
+                let lambda_min = (trace - discriminant) * 0.5;
+                *dst_val = lambda_min.max(0.0);
+            }
+        });
+
+    // conditionally apply non-maximum suppression using morphological dilation
+    if apply_nms {
+        let mut tmp = Image::from_size_val(image_size, 0.0f32, CpuAllocator)?;
+        non_max_suppression(dst, &mut tmp, 1e-6)?;
+        dst.as_slice_mut().copy_from_slice(tmp.as_slice());
+    }
 
     Ok(())
 }
@@ -524,6 +958,71 @@ mod tests {
             (sum - expected_sum).abs() < 1e-4,
             "Sum of DoG response should be close to expected value"
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_gftt_response() -> Result<(), ImageError> {
+        #[rustfmt::skip]
+        let src = Image::from_size_slice(
+            [9, 9].into(),
+            &[
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            ],
+            CpuAllocator
+        )?;
+
+        let mut dst = Image::from_size_val([9, 9].into(), 0.0, CpuAllocator)?;
+        gftt_response(&src, &mut dst, 3, 5, false)?;
+
+        #[rustfmt::skip]
+        assert_eq!(dst.as_slice(), &[
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.5624999, 0.70894647, 0.7534828, 0.8124998, 0.7534828, 0.7089465, 0.5624999, 0.0,
+            0.0, 0.70894647, 1.0624998, 1.2089465, 1.3124998, 1.2089465, 1.0624998, 0.70894647, 0.0,
+            0.0, 0.7534828, 1.2089465, 1.5624998, 1.8124998, 1.5624998, 1.2089465, 0.7534828, 0.0,
+            0.0, 0.8124998, 1.3124998, 1.8124998, 2.0624998, 1.8124998, 1.3124998, 0.8124998, 0.0,
+            0.0, 0.7534828, 1.2089465, 1.5624998, 1.8124998, 1.5624998, 1.2089465, 0.7534828, 0.0,
+            0.0, 0.7089465, 1.0624998, 1.2089465, 1.3124998, 1.2089465, 1.0624999, 0.7089465, 0.0,
+            0.0, 0.5624999, 0.70894647, 0.7534828, 0.8124998, 0.7534828, 0.7089465, 0.5624999, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_gftt_response_with_nms() -> Result<(), ImageError> {
+        let src = Image::from_size_slice(
+            [9, 9].into(),
+            &[
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0,
+                1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+                1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0,
+            ],
+            CpuAllocator,
+        )?;
+
+        let mut dst = Image::from_size_val([9, 9].into(), 0.0, CpuAllocator)?;
+        gftt_response(&src, &mut dst, 3, 5, true)?;
+
+        let data = dst.as_slice();
+
+        assert!(data[40] > 2.0);
+        assert_eq!(data[31], 0.0);
+        assert_eq!(data[0], 0.0);
 
         Ok(())
     }

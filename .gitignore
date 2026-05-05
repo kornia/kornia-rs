@@ -8,3 +8,6 @@ kornia-py/Cargo.lock
 .idea/
 .pixi/
 build/
+.worktrees/
+.omc/
+tests/data/euroc_mh01_gt/

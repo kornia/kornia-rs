@@ -221,7 +221,7 @@ pub fn adaptive_threshold<A1: ImageAllocator, A2: ImageAllocator>(
         let mut local_max = 0;
 
         for row in tile.data {
-            for px in row as &[u8] {
+            for px in row {
                 if px < &local_min {
                     local_min = *px;
                 }
@@ -300,7 +300,7 @@ pub fn adaptive_threshold<A1: ImageAllocator, A2: ImageAllocator>(
             let row_index = ((tile.pos.y * tile_min_max.tile_size) + y_px) * src.width()
                 + tile.pos.x * tile_min_max.tile_size;
 
-            for (x_px, px) in (row as &[u8]).iter().enumerate() {
+            for (x_px, px) in row.iter().enumerate() {
                 dst_data[row_index + x_px] = if px > &thresh {
                     Pixel::White
                 } else {

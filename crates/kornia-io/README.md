@@ -8,11 +8,12 @@
 
 ## 🚀 Overview
 
-`kornia-io` provides high-performance utilities for reading and writing images and video streams. It abstracts over common formats and libraries to provide a unified, type-safe API for getting visual data into your Rust applications. It supports standard image formats (JPEG, PNG, TIFF) and integrates with GStreamer and V4L2 for advanced video capture.
+`kornia-io` provides high-performance utilities for reading and writing images and video streams. It abstracts over common formats and libraries to provide a unified, type-safe API for getting visual data into your Rust applications. It supports standard image formats (JPEG, PNG, TIFF) and integrates with GStreamer and V4L2 for advanced video capture. The generic `read_image`/`decode_image`/`write_image` helpers exposed by the Python bindings (`kornia-py`) are Python-only; Rust users should call the typed per-format functions (`jpeg`, `png`, `tiff`) in this crate directly.
 
 ## 🔑 Key Features
 
 *   **Image I/O:** Read and write support for JPEG, PNG, and TIFF formats.
+*   **In-memory encode + decode:** Symmetric `encode_image_{jpeg,png}_*` ↔ `decode_image_{jpeg,png}_*` for round-tripping pixels through `Vec<u8>` without touching disk — including lossless PNG-16 (`encode_image_png_gray16`) for depth maps.
 *   **TurboJPEG Support:** Optional integration with `turbojpeg` for high-performance JPEG encoding and decoding.
 *   **Video Capture (GStreamer):** Access generic video streams (files, IP cameras, webcams) via GStreamer integration.
 *   **Camera Access (V4L2):** Direct low-latency access to V4L2 devices on Linux.
@@ -90,6 +91,7 @@ You can find comprehensive examples in the `examples` folder of the repository:
 *   [`video_player`](../../examples/video_player): Simple video player example.
 *   [`video_write`](../../examples/video_write): Video recording and writing.
 *   [`foxglove`](../../examples/foxglove): Integration with Foxglove Studio for visualization.
+*   [`exif_auto_orient`](../../examples/exif_auto_orient): Compare raw JPEG decode vs EXIF auto-oriented output.
 
 ## 🤝 Contributing
 

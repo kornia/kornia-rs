@@ -51,6 +51,8 @@ pub struct TensorStorage<T, A: TensorAllocator> {
     pub(crate) layout: Layout,
     /// The allocator used to allocate/deallocate the tensor memory.
     pub(crate) alloc: A,
+    /// Whether this storage owns its memory (false for foreign/numpy-backed buffers).
+    pub(crate) owns_memory: bool,
 }
 
 impl<T, A: TensorAllocator> TensorStorage<T, A> {
@@ -178,6 +180,7 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
             len,
             layout,
             alloc,
+            owns_memory: true,
         }
     }
 
@@ -186,7 +189,7 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
     /// # Arguments
     ///
     /// * `data` - A pointer to the memory buffer
-    /// * `len` - The length of the buffer in number of elements (not bytes)
+    /// * `len` - The length of the buffer in bytes (not number of elements)
     /// * `alloc` - The allocator to use for deallocation
     ///
     /// # Returns
@@ -197,7 +200,7 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
     ///
     /// The caller must ensure that:
     /// - The pointer is non-null and properly aligned
-    /// - The memory region is valid for `len` elements of type `T`
+    /// - The memory region is valid for `len` bytes (i.e. `len / size_of::<T>()` elements)
     /// - The memory was allocated in a way compatible with the provided allocator
     /// - No other code will free this memory (ownership is transferred)
     pub unsafe fn from_raw_parts(data: *const T, len: usize, alloc: A) -> Self {
@@ -208,6 +211,7 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
             len,
             layout,
             alloc,
+            owns_memory: false,
         }
     }
 
@@ -224,18 +228,14 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
     ///
     /// The returned vector will have the same capacity as the storage's allocated memory.
     pub fn into_vec(self) -> Vec<T> {
-        // TODO: check if the buffer is a cpu buffer or comes from a custom allocator
-        let _layout = &self.layout;
+        assert!(
+            self.owns_memory,
+            "cannot convert foreign-memory-backed storage into Vec"
+        );
 
         let vec_capacity = self.layout.size() / std::mem::size_of::<T>();
-        //match Layout::array::<T>(vec_capacity) {
-        //    Ok(expected) if layout == &expected => {}
-        //    e => return Err(TensorAllocatorError::LayoutError(e.unwrap_err())),
-        //}
-
-        let length = self.len;
+        let vec_len = self.len / std::mem::size_of::<T>();
         let ptr = self.ptr;
-        let vec_len = length / std::mem::size_of::<T>();
 
         // Safety
         std::mem::forget(self);
@@ -254,8 +254,11 @@ impl<T, A: TensorAllocator> Drop for TensorStorage<T, A> {
     ///
     /// This uses the storage's allocator to properly free the memory.
     fn drop(&mut self) {
-        self.alloc
-            .dealloc(self.ptr.as_ptr() as *mut u8, self.layout);
+        // Only deallocate if there is actual heap memory to free and we own it
+        if self.owns_memory && self.layout.size() > 0 {
+            self.alloc
+                .dealloc(self.ptr.as_ptr() as *mut u8, self.layout);
+        }
     }
 }
 
@@ -302,6 +305,7 @@ mod tests {
             len: size * std::mem::size_of::<u8>(),
             layout,
             ptr,
+            owns_memory: true,
         };
 
         assert_eq!(buffer.ptr.as_ptr(), ptr_raw);
@@ -343,6 +347,7 @@ mod tests {
             len: size,
             layout,
             ptr: ptr.cast::<f32>(),
+            owns_memory: true,
         };
 
         assert_eq!(buffer.as_ptr(), ptr.as_ptr() as *const f32);
@@ -441,6 +446,34 @@ mod tests {
             assert_eq!(data.get_unchecked(4), &5);
         }
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_tensor_buffer_from_empty_vec() -> Result<(), TensorAllocatorError> {
+        // This test checks if an empty vector can be handled correct
+        // There was in issue in the Drop function which tried to dealloc an empty vector
+        // which does not allocate memory, which lead to a segfault when Drop was called.
+        let vec: Vec<i32> = vec![];
+        let vec_ptr = vec.as_ptr();
+        let vec_len = vec.len();
+
+        let buffer = TensorStorage::<_, CpuAllocator>::from_vec(vec, CpuAllocator);
+
+        // check NO copy
+        let buffer_ptr = buffer.as_ptr();
+        assert!(std::ptr::eq(buffer_ptr, vec_ptr));
+
+        // check alignment
+        let buffer_ptr = buffer.as_ptr() as usize;
+        let alignment = std::mem::align_of::<i32>();
+        assert_eq!(buffer_ptr % alignment, 0);
+
+        // check accessors
+        let data = buffer.as_slice();
+        assert_eq!(data.len(), vec_len);
+
+        // At the end it is dropped and test should not crash with seg fault
         Ok(())
     }
 

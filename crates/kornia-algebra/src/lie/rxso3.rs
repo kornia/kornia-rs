@@ -18,7 +18,12 @@ use super::so3::SO3F32;
 /// and 3D rotations. Internally stored as a quaternion where:
 /// - Rotation: normalized part of quaternion
 /// - Scale: ||quaternion||²
-#[derive(Debug, Clone, Copy)]
+///
+/// Note regarding `PartialEq`:
+///   Quaternions form a double cover for SO3, meaning `q` and `-q` represent the
+///   same rotation. However, `PartialEq` performs an exact, member-wise comparison
+///   and will return `false` for `q` and `-q`.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RxSO3F32 {
     /// Quaternion representing rotation, scale = ||q||²
     pub quaternion: QuatF32,

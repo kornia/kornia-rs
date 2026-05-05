@@ -3,7 +3,6 @@ use candle_core::{DType, Device, Shape, Tensor};
 use kornia_image::{allocator::ImageAllocator, Image, ImageSize};
 use kornia_imgproc::{interpolation::InterpolationMode, resize::resize_fast_rgb};
 use log::info;
-use std::borrow::Cow;
 
 // https://huggingface.co/HuggingFaceTB/SmolVLM-Instruct/blob/main/preprocessor_config.json
 const MEAN: [f32; 3] = [0.5, 0.5, 0.5];
@@ -73,26 +72,13 @@ impl<A: ImageAllocator> SmolVlmImagePreprocessor<A> {
                 self.max_size,
                 alloc.clone(),
             )?;
-            match img_resized {
-                Cow::Borrowed(img_ref) => {
-                    Self::pad_image_in_place(
-                        img_ref,
-                        &mut self.buf_padded_img,
-                        &mut self.buf_padded_mask,
-                        self.outer_patch_size,
-                        alloc.clone(),
-                    )?;
-                }
-                Cow::Owned(img_owned) => {
-                    Self::pad_image_in_place(
-                        &img_owned,
-                        &mut self.buf_padded_img,
-                        &mut self.buf_padded_mask,
-                        self.outer_patch_size,
-                        alloc.clone(),
-                    )?;
-                }
-            }
+            Self::pad_image_in_place(
+                img_resized,
+                &mut self.buf_padded_img,
+                &mut self.buf_padded_mask,
+                self.outer_patch_size,
+                alloc.clone(),
+            )?;
         }
 
         {
@@ -109,44 +95,27 @@ impl<A: ImageAllocator> SmolVlmImagePreprocessor<A> {
                 self.outer_patch_size,
                 alloc.clone(),
             )?;
-            match global_resized {
-                Cow::Borrowed(img_ref) => {
-                    Self::pad_image_in_place(
-                        img_ref,
-                        &mut self.buf_global_padded_img,
-                        &mut self.buf_global_padded_mask,
-                        self.outer_patch_size,
-                        alloc.clone(),
-                    )?;
-                }
-                Cow::Owned(img_owned) => {
-                    Self::pad_image_in_place(
-                        &img_owned,
-                        &mut self.buf_global_padded_img,
-                        &mut self.buf_global_padded_mask,
-                        self.outer_patch_size,
-                        alloc.clone(),
-                    )?;
-                }
-            }
+            Self::pad_image_in_place(
+                global_resized,
+                &mut self.buf_global_padded_img,
+                &mut self.buf_global_padded_mask,
+                self.outer_patch_size,
+                alloc.clone(),
+            )?;
         }
 
-        let img_padded = self
-            .buf_padded_img
-            .take()
-            .expect("Tried taking a None image");
-        let mask = self
-            .buf_padded_mask
-            .take()
-            .expect("Tried taking a None mask");
-        let global_img = self
-            .buf_global_padded_img
-            .take()
-            .expect("Tried taking a None global image");
-        let global_mask = self
-            .buf_global_padded_mask
-            .take()
-            .expect("Tried taking a None global mask");
+        let img_padded = self.buf_padded_img.take().ok_or_else(|| {
+            SmolVlmError::ImageProcessError("Tried taking a None image".to_string())
+        })?;
+        let mask = self.buf_padded_mask.take().ok_or_else(|| {
+            SmolVlmError::ImageProcessError("Tried taking a None mask".to_string())
+        })?;
+        let global_img = self.buf_global_padded_img.take().ok_or_else(|| {
+            SmolVlmError::ImageProcessError("Tried taking a None global image".to_string())
+        })?;
+        let global_mask = self.buf_global_padded_mask.take().ok_or_else(|| {
+            SmolVlmError::ImageProcessError("Tried taking a None global mask".to_string())
+        })?;
 
         // convert to tensors and normalize
         let mask_tensor = self.mask_to_tensor(mask, device)?;
@@ -172,14 +141,12 @@ impl<A: ImageAllocator> SmolVlmImagePreprocessor<A> {
         buffer: &'a mut Option<Image<u8, 3, A>>,
         target_size: u32,
         alloc: A,
-    ) -> Result<Cow<'a, Image<u8, 3, A>>, SmolVlmError> {
+    ) -> Result<&'a Image<u8, 3, A>, SmolVlmError> {
         let (width, height) = (img.width() as u32, img.height() as u32);
         let longest_edge = width.max(height);
 
         if longest_edge <= target_size {
-            Ok(Cow::Borrowed(unsafe {
-                std::mem::transmute::<&Image<u8, 3, A>, &Image<u8, 3, A>>(img)
-            }))
+            Ok(img)
         } else {
             let scale_factor = target_size as f32 / longest_edge as f32;
             let new_width = (width as f32 * scale_factor) as usize;
@@ -200,12 +167,12 @@ impl<A: ImageAllocator> SmolVlmImagePreprocessor<A> {
                 )?);
             }
 
-            let buf = buffer
-                .as_mut()
-                .expect("Tried to resize a None image buffer");
+            let buf = buffer.as_mut().ok_or_else(|| {
+                SmolVlmError::ImageProcessError("Tried to resize a None image buffer".to_string())
+            })?;
             resize_fast_rgb(img, buf, InterpolationMode::Lanczos)?;
 
-            Ok(Cow::Borrowed(buf))
+            Ok(buf)
         }
     }
 
@@ -260,9 +227,9 @@ impl<A: ImageAllocator> SmolVlmImagePreprocessor<A> {
             )?);
         }
 
-        let padded_img = img_buffer
-            .as_mut()
-            .expect("Tried to pad a None image buffer");
+        let padded_img = img_buffer.as_mut().ok_or_else(|| {
+            SmolVlmError::ImageProcessError("Tried to pad a None image buffer".to_string())
+        })?;
 
         padded_img.as_slice_mut().fill(0);
 

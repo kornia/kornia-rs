@@ -1,5 +1,13 @@
 #![deny(missing_docs)]
 #![doc = env!("CARGO_PKG_DESCRIPTION")]
+//!
+//! # Scope
+//!
+//! The generic `read_image` / `decode_image` / `write_image` entry points
+//! exposed by the `kornia-py` Python bindings are Python-only convenience
+//! helpers. This crate exposes strictly typed per-format functions under the
+//! [`jpeg`], [`png`], and [`tiff`] modules (and `jpegturbo` when enabled),
+//! plus [`functional::read_image_any_rgb8`] for a single-path RGB8 convenience.
 
 /// Module to handle the error types for the io module.
 pub mod error;
@@ -19,6 +27,9 @@ pub mod png;
 
 /// JPEG image encoding and decoding.
 pub mod jpeg;
+
+/// WEBP image encoding and decoding
+pub mod webp;
 
 /// GStreamer video module for real-time video processing.
 #[cfg(feature = "gstreamer")]
@@ -41,3 +52,5 @@ pub mod v4l;
 
 /// Internal utility functions for image bit depth conversion.
 mod conv_utils;
+
+pub use crate::metadata::{apply_exif_orientation, read_image_jpeg_auto_orient};

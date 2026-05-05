@@ -4,6 +4,8 @@ use std::num::NonZeroU8;
 use std::path::Path;
 
 use crate::error::IoError;
+use kornia_image::allocator::CpuAllocator;
+use kornia_image::{Image, ImageSize};
 use little_exif::filetype::FileExtension;
 
 /// Simple image metadata extracted during decoding.
@@ -264,5 +266,166 @@ mod tests {
                 val
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod orientation_tests {
+    use super::*;
+    use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
+    use std::num::NonZeroU8;
+
+    // 1. make_test_image returns Image<f32, 3, CpuAllocator>
+    fn make_test_image() -> Image<f32, 3, CpuAllocator> {
+        let mut img = Image::<f32, 3, _>::from_size_val(
+            ImageSize {
+                width: 3,
+                height: 2,
+            },
+            0.0,
+            CpuAllocator,
+        )
+        .unwrap();
+        img.set_pixel(0, 0, 0, 10.0).unwrap();
+        img.set_pixel(2, 0, 0, 20.0).unwrap();
+        img.set_pixel(0, 1, 0, 30.0).unwrap();
+        img.set_pixel(2, 1, 0, 40.0).unwrap();
+        img
+    }
+
+    // 2. test_orientation_identity — compare pixel values
+    #[test]
+    fn test_orientation_identity() {
+        let img = make_test_image();
+        let out = apply_exif_orientation(img, NonZeroU8::new(1).unwrap()).unwrap();
+        assert_eq!(out.size().width, 3);
+        assert_eq!(out.size().height, 2);
+        assert_eq!(*out.get_pixel(0, 0, 0).unwrap(), 10.0_f32);
+        assert_eq!(*out.get_pixel(2, 1, 0).unwrap(), 40.0_f32);
+    }
+
+    #[test]
+    fn test_orientation_6_and_8_swap_dims() {
+        let img = make_test_image();
+        let out6 = apply_exif_orientation(img.clone(), NonZeroU8::new(6).unwrap()).unwrap();
+        let out8 = apply_exif_orientation(img, NonZeroU8::new(8).unwrap()).unwrap();
+        assert_eq!(out6.size().width, 2);
+        assert_eq!(out6.size().height, 3);
+        assert_eq!(out8.size().width, 2);
+        assert_eq!(out8.size().height, 3);
+    }
+
+    #[test]
+    fn test_all_orientations_corners() {
+        let expected: [(f32, f32, f32, f32); 8] = [
+            (10.0, 20.0, 30.0, 40.0),
+            (20.0, 10.0, 40.0, 30.0),
+            (40.0, 30.0, 20.0, 10.0),
+            (30.0, 40.0, 10.0, 20.0),
+            (10.0, 30.0, 20.0, 40.0),
+            (30.0, 10.0, 40.0, 20.0),
+            (40.0, 20.0, 30.0, 10.0),
+            (20.0, 40.0, 10.0, 30.0), // 8: rotate 90 CCW
+        ];
+        for (i, &(tl, tr, bl, br)) in expected.iter().enumerate() {
+            let img = make_test_image();
+            let out = apply_exif_orientation(img, NonZeroU8::new((i + 1) as u8).unwrap()).unwrap();
+            let w = out.size().width;
+            let h = out.size().height;
+            assert_eq!(
+                *out.get_pixel(0, 0, 0).unwrap(),
+                tl,
+                "TL failed for orientation {}",
+                i + 1
+            );
+            assert_eq!(
+                *out.get_pixel(w - 1, 0, 0).unwrap(),
+                tr,
+                "TR failed for orientation {}",
+                i + 1
+            );
+            assert_eq!(
+                *out.get_pixel(0, h - 1, 0).unwrap(),
+                bl,
+                "BL failed for orientation {}",
+                i + 1
+            );
+            assert_eq!(
+                *out.get_pixel(w - 1, h - 1, 0).unwrap(),
+                br,
+                "BR failed for orientation {}",
+                i + 1
+            );
+        }
+    }
+
+    // End-to-end test for read_image_jpeg_auto_orient would require JPEG IO and EXIF embedding,
+    // which is not shown here due to test environment constraints.
+}
+
+use crate::jpeg::read_image_jpeg_rgb8;
+
+/// Applies EXIF orientation correction using exact pixel remapping.
+pub fn apply_exif_orientation(
+    image: Image<f32, 3, CpuAllocator>,
+    orientation: NonZeroU8,
+) -> Result<Image<f32, 3, CpuAllocator>, IoError> {
+    let src_w = image.size().width;
+    let src_h = image.size().height;
+    let o = orientation.get();
+
+    let out_size = match o {
+        1..=4 => ImageSize {
+            width: src_w,
+            height: src_h,
+        },
+        5..=8 => ImageSize {
+            width: src_h,
+            height: src_w,
+        },
+        _ => return Err(IoError::InvalidOrientation(o as u16)),
+    };
+
+    let mut dst = Image::<f32, 3, CpuAllocator>::from_size_val(out_size, 0.0, CpuAllocator)
+        .map_err(IoError::ImageCreationError)?;
+
+    for sy in 0..src_h {
+        for sx in 0..src_w {
+            let (dx, dy) = match o {
+                1 => (sx, sy),
+                2 => (src_w - 1 - sx, sy),
+                3 => (src_w - 1 - sx, src_h - 1 - sy),
+                4 => (sx, src_h - 1 - sy),
+                5 => (sy, sx),
+                6 => (src_h - 1 - sy, sx),
+                7 => (src_h - 1 - sy, src_w - 1 - sx),
+                8 => (sy, src_w - 1 - sx),
+                _ => unreachable!(),
+            };
+            for c in 0..3 {
+                let value = *image
+                    .get_pixel(sx, sy, c)
+                    .map_err(IoError::ImageCreationError)?;
+                dst.set_pixel(dx, dy, c, value)
+                    .map_err(IoError::ImageCreationError)?;
+            }
+        }
+    }
+    Ok(dst)
+}
+
+/// Convenience reader: loads JPEG and applies EXIF orientation if present.
+/// Returns an f32 image in [0, 255] range.
+pub fn read_image_jpeg_auto_orient<P: AsRef<Path>>(
+    path: P,
+) -> Result<Image<f32, 3, CpuAllocator>, IoError> {
+    let meta = read_image_metadata(&path)?;
+    let rgb8 = read_image_jpeg_rgb8(&path)?;
+    // Convert Rgb8 → Image<f32, 3>
+    let image = rgb8.cast::<f32>().map_err(IoError::ImageCreationError)?;
+    if let Some(orientation) = meta.exif_orientation {
+        apply_exif_orientation(image, orientation)
+    } else {
+        Ok(image)
     }
 }

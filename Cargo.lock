@@ -445,7 +445,7 @@ dependencies = [
 
 [[package]]
 name = "apriltag"
-version = "0.1.11-rc.1"
+version = "0.1.12"
 dependencies = [
  "argh",
  "kornia",
@@ -1623,7 +1623,7 @@ checksum = "230c5f1ca6a325a32553f8640d31ac9b49f2411e901e427570154868b46da4f7"
 
 [[package]]
 name = "binarize"
-version = "0.1.11-rc.1"
+version = "0.1.12"
 dependencies = [
  "argh",
  "kornia",
@@ -1945,9 +1945,9 @@ checksum = "8f1fe948ff07f4bd06c30984e69f5b4899c516a3ef74f34df92a2df2ab535495"
 
 [[package]]
 name = "bytes"
-version = "1.11.0"
+version = "1.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b35204fbdc0b3f4446b89fc1ac2cf84a8a68971995d0bf2e925ec7cd960f9cb3"
+checksum = "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33"
 
 [[package]]
 name = "bytestring"
@@ -2053,7 +2053,7 @@ checksum = "a9f51e2ecf6efe9737af8f993433c839f956d2b6ed4fd2dd4a7c6d8b0fa667ff"
 dependencies = [
  "byteorder",
  "candle-kernels",
- "cudarc",
+ "cudarc 0.16.6",
  "gemm 0.17.1",
  "half",
  "memmap2 0.9.9",
@@ -2526,7 +2526,7 @@ checksum = "7e8f1e641542c07631228b1e0dc04b69ae3c1d58ef65d5691a439711d805c698"
 
 [[package]]
 name = "colmap_rerun"
-version = "0.1.11-rc.1"
+version = "0.1.12"
 dependencies = [
  "argh",
  "kornia",
@@ -2568,7 +2568,7 @@ dependencies = [
 
 [[package]]
 name = "color_detector"
-version = "0.1.11-rc.1"
+version = "0.1.12"
 dependencies = [
  "argh",
  "kornia",
@@ -2583,7 +2583,7 @@ checksum = "3d7b894f5411737b7867f4827955924d7c254fc9f4d91a6aad6b097804b1018b"
 
 [[package]]
 name = "color_spaces"
-version = "0.1.11-rc.1"
+version = "0.1.12"
 dependencies = [
  "kornia-image",
  "kornia-imgproc",
@@ -2712,7 +2712,7 @@ version = "0.1.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9d839f2a20b0aee515dc581a6172f2321f96cab76c1a38a4c584a194955390e"
 dependencies = [
- "getrandom 0.2.16",
+ "getrandom 0.2.17",
  "once_cell",
  "tiny-keccak",
 ]
@@ -2759,6 +2759,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "contours"
+version = "0.1.12"
+dependencies = [
+ "argh",
+ "kornia",
+ "rerun",
+]
+
+[[package]]
 name = "convert_case"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2778,7 +2787,7 @@ dependencies = [
 
 [[package]]
 name = "copper"
-version = "0.1.11-rc.1"
+version = "0.1.12"
 dependencies = [
  "bincode 2.0.1",
  "cu29",
@@ -3253,6 +3262,15 @@ dependencies = [
  "cu29-clock",
  "ordered-float 5.1.0",
  "serde",
+]
+
+[[package]]
+name = "cudarc"
+version = "0.11.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7a5bd4d1eee570c3b2ac64ed114125517dd1e541d88dd28fc259f1de4dba8d60"
+dependencies = [
+ "libloading 0.8.9",
 ]
 
 [[package]]
@@ -4659,9 +4677,9 @@ dependencies = [
 
 [[package]]
 name = "egui_plot"
-version = "0.34.0"
+version = "0.34.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "33233ffc010fd450381805bbbebecbbb82f077de7712ddc439f0b20effd42db7"
+checksum = "67fc9b427a837264e55381a5cade6e28fe83ac5b165a61b9c888548c732a9c95"
 dependencies = [
  "ahash",
  "egui 0.33.3",
@@ -5018,6 +5036,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "exif_auto_orient"
+version = "0.1.12"
+dependencies = [
+ "kornia-io",
+]
+
+[[package]]
 name = "exr"
 version = "1.74.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5163,21 +5188,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fast_image_resize"
-version = "5.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d372ab3252d8f162d858d675a3d88a8c33ba24a6238837c50c8851911c7e89cd"
-dependencies = [
- "bytemuck",
- "cfg-if",
- "document-features",
- "image 0.25.9",
- "num-traits",
- "rayon",
- "thiserror 1.0.69",
-]
-
-[[package]]
 name = "fastbloom"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5195,7 +5205,7 @@ version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
 dependencies = [
- "getrandom 0.2.16",
+ "getrandom 0.2.17",
 ]
 
 [[package]]
@@ -5231,7 +5241,7 @@ dependencies = [
 name = "features"
 version = "0.1.0"
 dependencies = [
- "ctrlc",
+ "argh",
  "kornia",
  "rerun",
 ]
@@ -5879,9 +5889,9 @@ dependencies = [
 
 [[package]]
 name = "getrandom"
-version = "0.2.16"
+version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "335ff9f135e4384c8150d6f27c6daed433577f86b4750418338c01a1a2528592"
+checksum = "ff2abc00be7fca6ebc474524697ae276ad847ad0a6b3faa4bcb027e9a4614ad0"
 dependencies = [
  "cfg-if",
  "js-sys",
@@ -6813,7 +6823,7 @@ dependencies = [
 
 [[package]]
 name = "hello_world"
-version = "0.1.11-rc.1"
+version = "0.1.12"
 dependencies = [
  "argh",
  "kornia",
@@ -6880,7 +6890,7 @@ dependencies = [
 
 [[package]]
 name = "histogram"
-version = "0.1.11-rc.1"
+version = "0.1.12"
 dependencies = [
  "argh",
  "kornia",
@@ -7150,7 +7160,7 @@ dependencies = [
 
 [[package]]
 name = "icp_registration"
-version = "0.1.11-rc.1"
+version = "0.1.12"
 dependencies = [
  "argh",
  "env_logger",
@@ -7326,7 +7336,7 @@ dependencies = [
 
 [[package]]
 name = "image_api"
-version = "0.1.11-rc.1"
+version = "0.1.12"
 dependencies = [
  "kornia-image",
 ]
@@ -7339,7 +7349,7 @@ checksum = "2393fb7808960751a52e8a154f67e7dd3f8a2ef9bd80d1553078a7b4e8ed3f0d"
 dependencies = [
  "ab_glyph",
  "approx",
- "getrandom 0.2.16",
+ "getrandom 0.2.17",
  "image 0.25.9",
  "itertools 0.12.1",
  "nalgebra",
@@ -7357,7 +7367,7 @@ checksum = "edcd27d72f2f071c64249075f42e205ff93c9a4c5f6c6da53e79ed9f9832c285"
 
 [[package]]
 name = "imgproc"
-version = "0.1.11-rc.1"
+version = "0.1.12"
 dependencies = [
  "argh",
  "kornia",
@@ -7799,7 +7809,7 @@ dependencies = [
 
 [[package]]
 name = "kornia"
-version = "0.1.11-rc.1"
+version = "0.1.12"
 dependencies = [
  "kornia-3d",
  "kornia-algebra",
@@ -7813,7 +7823,7 @@ dependencies = [
 
 [[package]]
 name = "kornia-3d"
-version = "0.1.11-rc.1"
+version = "0.1.12"
 dependencies = [
  "approx",
  "bincode 2.0.1",
@@ -7821,17 +7831,21 @@ dependencies = [
  "faer 0.20.1",
  "kiddo",
  "kornia-algebra",
+ "kornia-image",
  "kornia-imgproc",
+ "kornia-io",
+ "kornia-tensor",
  "log",
  "nalgebra",
  "rand 0.9.2",
+ "rayon",
  "serde",
  "thiserror 2.0.17",
 ]
 
 [[package]]
 name = "kornia-algebra"
-version = "0.1.11-rc.1"
+version = "0.1.12"
 dependencies = [
  "approx",
  "criterion",
@@ -7844,12 +7858,13 @@ dependencies = [
 
 [[package]]
 name = "kornia-apriltag"
-version = "0.1.11-rc.1"
+version = "0.1.12"
 dependencies = [
  "aprilgrid",
  "apriltag 0.4.0",
  "criterion",
  "image 0.25.9",
+ "kornia-algebra",
  "kornia-image",
  "kornia-imgproc",
  "kornia-io",
@@ -7858,7 +7873,7 @@ dependencies = [
 
 [[package]]
 name = "kornia-bow"
-version = "0.1.11-rc.1"
+version = "0.1.12"
 dependencies = [
  "bincode 2.0.1",
  "criterion",
@@ -7871,7 +7886,7 @@ dependencies = [
 
 [[package]]
 name = "kornia-cpp"
-version = "0.1.11-rc.1"
+version = "0.1.12"
 dependencies = [
  "cxx",
  "cxx-build",
@@ -7882,7 +7897,7 @@ dependencies = [
 
 [[package]]
 name = "kornia-image"
-version = "0.1.11-rc.1"
+version = "0.1.12"
 dependencies = [
  "arrow 57.1.0",
  "criterion",
@@ -7895,10 +7910,9 @@ dependencies = [
 
 [[package]]
 name = "kornia-imgproc"
-version = "0.1.11-rc.1"
+version = "0.1.12"
 dependencies = [
  "criterion",
- "fast_image_resize",
  "image 0.25.9",
  "imageproc",
  "kornia-algebra",
@@ -7911,16 +7925,18 @@ dependencies = [
  "rand 0.9.2",
  "rayon",
  "thiserror 2.0.17",
+ "wide 1.1.1",
 ]
 
 [[package]]
 name = "kornia-io"
-version = "0.1.11-rc.1"
+version = "0.1.12"
 dependencies = [
  "circular-buffer",
  "criterion",
  "gstreamer 0.24.4",
  "gstreamer-app 0.24.4",
+ "image-webp",
  "jpeg-encoder",
  "kornia-image",
  "kornia-tensor",
@@ -7939,20 +7955,22 @@ dependencies = [
 
 [[package]]
 name = "kornia-py"
-version = "0.1.11-rc.1"
+version = "0.1.12"
 dependencies = [
  "kornia-3d",
+ "kornia-algebra",
  "kornia-apriltag",
  "kornia-image",
  "kornia-imgproc",
  "kornia-io",
  "numpy",
  "pyo3",
+ "rand 0.9.2",
 ]
 
 [[package]]
 name = "kornia-tensor"
-version = "0.1.11-rc.1"
+version = "0.1.12"
 dependencies = [
  "bincode 2.0.1",
  "criterion",
@@ -7965,7 +7983,7 @@ dependencies = [
 
 [[package]]
 name = "kornia-tensor-ops"
-version = "0.1.11-rc.1"
+version = "0.1.12"
 dependencies = [
  "approx",
  "criterion",
@@ -7977,13 +7995,14 @@ dependencies = [
 
 [[package]]
 name = "kornia-vlm"
-version = "0.1.11-rc.1"
+version = "0.1.12"
 dependencies = [
  "candle-core",
  "candle-examples",
  "candle-nn",
  "candle-transformers",
  "circular-buffer",
+ "cudarc 0.11.9",
  "env_logger",
  "hf-hub",
  "kornia-image",
@@ -8598,7 +8617,7 @@ dependencies = [
 
 [[package]]
 name = "metrics"
-version = "0.1.11-rc.1"
+version = "0.1.12"
 dependencies = [
  "argh",
  "kornia",
@@ -8722,7 +8741,7 @@ dependencies = [
 
 [[package]]
 name = "morphology"
-version = "0.1.11-rc.1"
+version = "0.1.12"
 dependencies = [
  "argh",
  "kornia",
@@ -8917,7 +8936,7 @@ version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6a51313c5820b0b02bd422f4b44776fbf47961755c74ce64afc73bfad10226c3"
 dependencies = [
- "getrandom 0.2.16",
+ "getrandom 0.2.17",
 ]
 
 [[package]]
@@ -9142,7 +9161,7 @@ checksum = "0676bb32a98c1a483ce53e500a81ad9c3d5b3f7c920c28c24e9cb0980d0b5bc8"
 
 [[package]]
 name = "normalize"
-version = "0.1.11-rc.1"
+version = "0.1.12"
 dependencies = [
  "argh",
  "kornia",
@@ -9150,7 +9169,7 @@ dependencies = [
 
 [[package]]
 name = "normalize_ii"
-version = "0.1.11-rc.1"
+version = "0.1.12"
 dependencies = [
  "argh",
  "kornia",
@@ -9384,9 +9403,9 @@ checksum = "830b246a0e5f20af87141b25c173cd1b609bd7779a4617d6ec582abaf90870f3"
 
 [[package]]
 name = "numpy"
-version = "0.27.1"
+version = "0.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7aac2e6a6e4468ffa092ad43c39b81c79196c2bb773b8db4085f695efe3bba17"
+checksum = "778da78c64ddc928ebf5ad9df5edf0789410ff3bdbf3619aed51cd789a6af1e2"
 dependencies = [
  "libc",
  "ndarray 0.17.1",
@@ -9841,7 +9860,7 @@ dependencies = [
 
 [[package]]
 name = "onnx"
-version = "0.1.11-rc.1"
+version = "0.1.12"
 dependencies = [
  "argh",
  "kornia",
@@ -9859,36 +9878,35 @@ checksum = "d6790f58c7ff633d8771f42965289203411a5e5c68388703c06e14f24770b41e"
 
 [[package]]
 name = "opencv"
-version = "0.92.3"
+version = "0.98.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c01f7646f18911737aa3d721dec4a0060d044ef1224eb54a439ae6fa716ccb86"
+checksum = "0c607a407be5ff2484f55d2eb289bffd01de84f962779b8470e76f035dd3563d"
 dependencies = [
  "cc",
  "dunce",
  "jobserver",
  "libc",
  "num-traits",
- "once_cell",
  "opencv-binding-generator",
  "pkg-config",
  "semver",
  "shlex",
  "vcpkg",
- "windows 0.58.0",
+ "windows 0.62.2",
 ]
 
 [[package]]
 name = "opencv-binding-generator"
-version = "0.90.2"
+version = "0.101.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c238fe1b9e78bf939dfab14184464a25acaf42d634fd502dc9ccc445f5bad1b9"
+checksum = "833f00c6deee8dd615249af42fa35ff030c5c73ee3c13e44baf1135a4d57af86"
 dependencies = [
  "clang",
  "clang-sys",
  "dunce",
- "once_cell",
  "percent-encoding",
  "regex",
+ "shlex",
 ]
 
 [[package]]
@@ -10055,6 +10073,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "orb_detector"
+version = "0.1.0"
+dependencies = [
+ "argh",
+ "ctrlc",
+ "kornia",
+ "rerun",
+]
+
+[[package]]
 name = "orbclient"
 version = "0.3.50"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10163,7 +10191,7 @@ dependencies = [
 
 [[package]]
 name = "paligemma"
-version = "0.1.11-rc.1"
+version = "0.1.12"
 dependencies = [
  "argh",
  "kornia-io",
@@ -10600,7 +10628,7 @@ dependencies = [
 
 [[package]]
 name = "ply_rerun"
-version = "0.1.11-rc.1"
+version = "0.1.12"
 dependencies = [
  "argh",
  "kornia",
@@ -10667,7 +10695,7 @@ dependencies = [
 
 [[package]]
 name = "pnp_demo"
-version = "0.1.11-rc.1"
+version = "0.1.12"
 dependencies = [
  "argh",
  "env_logger",
@@ -11067,35 +11095,32 @@ dependencies = [
 
 [[package]]
 name = "pyo3"
-version = "0.27.2"
+version = "0.28.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab53c047fcd1a1d2a8820fe84f05d6be69e9526be40cb03b73f86b6b03e6d87d"
+checksum = "cf85e27e86080aafd5a22eae58a162e133a589551542b3e5cee4beb27e54f8e1"
 dependencies = [
- "indoc",
  "libc",
- "memoffset",
  "once_cell",
  "portable-atomic",
  "pyo3-build-config",
  "pyo3-ffi",
  "pyo3-macros",
- "unindent",
 ]
 
 [[package]]
 name = "pyo3-build-config"
-version = "0.27.2"
+version = "0.28.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b455933107de8642b4487ed26d912c2d899dec6114884214a0b3bb3be9261ea6"
+checksum = "8bf94ee265674bf76c09fa430b0e99c26e319c945d96ca0d5a8215f31bf81cf7"
 dependencies = [
  "target-lexicon 0.13.4",
 ]
 
 [[package]]
 name = "pyo3-ffi"
-version = "0.27.2"
+version = "0.28.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1c85c9cbfaddf651b1221594209aed57e9e5cff63c4d11d1feead529b872a089"
+checksum = "491aa5fc66d8059dd44a75f4580a2962c1862a1c2945359db36f6c2818b748dc"
 dependencies = [
  "libc",
  "pyo3-build-config",
@@ -11103,9 +11128,9 @@ dependencies = [
 
 [[package]]
 name = "pyo3-macros"
-version = "0.27.2"
+version = "0.28.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0a5b10c9bf9888125d917fb4d2ca2d25c8df94c7ab5a52e13313a07e050a3b02"
+checksum = "f5d671734e9d7a43449f8480f8b38115df67bef8d21f76837fa75ee7aaa5e52e"
 dependencies = [
  "proc-macro2",
  "pyo3-macros-backend",
@@ -11115,9 +11140,9 @@ dependencies = [
 
 [[package]]
 name = "pyo3-macros-backend"
-version = "0.27.2"
+version = "0.28.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "03b51720d314836e53327f5871d4c0cfb4fb37cc2c4a11cc71907a86342c40f9"
+checksum = "22faaa1ce6c430a1f71658760497291065e6450d7b5dc2bcf254d49f66ee700a"
 dependencies = [
  "heck 0.5.0",
  "proc-macro2",
@@ -11325,7 +11350,7 @@ version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c"
 dependencies = [
- "getrandom 0.2.16",
+ "getrandom 0.2.17",
 ]
 
 [[package]]
@@ -13453,7 +13478,7 @@ version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a4e608c6638b9c18977b00b475ac1f28d14e84b27d8d42f70e0bf1e3dec127ac"
 dependencies = [
- "getrandom 0.2.16",
+ "getrandom 0.2.17",
  "libredox",
  "thiserror 2.0.17",
 ]
@@ -13643,7 +13668,7 @@ dependencies = [
 
 [[package]]
 name = "rerun_viz"
-version = "0.1.11-rc.1"
+version = "0.1.12"
 dependencies = [
  "argh",
  "kornia",
@@ -13721,7 +13746,7 @@ checksum = "a4689e6c2294d81e88dc6261c768b63bc4fcdb852be6d1352498b114f61383b7"
 dependencies = [
  "cc",
  "cfg-if",
- "getrandom 0.2.16",
+ "getrandom 0.2.17",
  "libc",
  "untrusted",
  "windows-sys 0.52.0",
@@ -13856,7 +13881,7 @@ dependencies = [
 
 [[package]]
 name = "rotate"
-version = "0.1.11-rc.1"
+version = "0.1.12"
 dependencies = [
  "argh",
  "kornia",
@@ -14068,6 +14093,15 @@ name = "safe_arch"
 version = "0.7.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "96b02de82ddbe1b636e6170c21be622223aea188ef2e139be0a5b219ec215323"
+dependencies = [
+ "bytemuck",
+]
+
+[[package]]
+name = "safe_arch"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1f7caad094bd561859bcd467734a720c3c1f5d1f338995351fefe2190c45efed"
 dependencies = [
  "bytemuck",
 ]
@@ -14616,7 +14650,7 @@ dependencies = [
  "num-complex",
  "num-traits",
  "paste",
- "wide",
+ "wide 0.7.33",
 ]
 
 [[package]]
@@ -14807,7 +14841,7 @@ dependencies = [
 
 [[package]]
 name = "smol_vlm"
-version = "0.1.11-rc.1"
+version = "0.1.12"
 dependencies = [
  "argh",
  "kornia-image",
@@ -14858,7 +14892,7 @@ dependencies = [
 
 [[package]]
 name = "smol_vlm_convo"
-version = "0.1.11-rc.1"
+version = "0.1.12"
 dependencies = [
  "argh",
  "color-eyre",
@@ -15106,7 +15140,7 @@ dependencies = [
 
 [[package]]
 name = "std_mean"
-version = "0.1.11-rc.1"
+version = "0.1.12"
 dependencies = [
  "argh",
  "indicatif 0.18.3",
@@ -16287,7 +16321,7 @@ version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "14053653d0b7fa7b21015aa9a62edc8af2f60aa6f9c54e66386ecce55f22ed29"
 dependencies = [
- "cudarc",
+ "cudarc 0.16.6",
  "half",
  "serde",
  "thiserror 1.0.69",
@@ -16310,7 +16344,7 @@ dependencies = [
 
 [[package]]
 name = "undistort"
-version = "0.1.11-rc.1"
+version = "0.1.12"
 dependencies = [
  "argh",
  "kornia",
@@ -16319,7 +16353,7 @@ dependencies = [
 
 [[package]]
 name = "undistort_points"
-version = "0.1.11-rc.1"
+version = "0.1.12"
 dependencies = [
  "argh",
  "kornia",
@@ -16662,7 +16696,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "video_player"
-version = "0.1.11-rc.1"
+version = "0.1.12"
 dependencies = [
  "eframe 0.31.1",
  "env_logger",
@@ -17325,7 +17359,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ce5da8ecb62bcd8ec8b7ea19f69a51275e91299be594ea5cc6ef7819e16cd03"
 dependencies = [
  "bytemuck",
- "safe_arch",
+ "safe_arch 0.7.4",
+]
+
+[[package]]
+name = "wide"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac11b009ebeae802ed758530b6496784ebfee7a87b9abfbcaf3bbe25b814eb25"
+dependencies = [
+ "bytemuck",
+ "safe_arch 1.0.0",
 ]
 
 [[package]]
@@ -18567,7 +18611,7 @@ version = "1.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8b754ea6460c4c3c5dd67e6a8c62bfc076c16f8b794898fb3ea6f0039a5939e"
 dependencies = [
- "getrandom 0.2.16",
+ "getrandom 0.2.17",
  "hashbrown 0.16.1",
  "keyed-set",
  "rand 0.8.5",

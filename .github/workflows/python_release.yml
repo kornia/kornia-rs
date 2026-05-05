@@ -12,12 +12,27 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.7", "3.8", "3.9", "3.10", "3.11", "3.12", "3.13", "3.13t", "3.14", "3.14t"]
+        python-version: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13", "3.13t", "3.14", "3.14t"]
         target: [x86_64, aarch64]
+    # Neutralize the in-repo `.cargo/config.toml` (which targets the local
+    # Jetson cross-test setup: `x86_64-linux-gnu-gcc` cross-linker plus
+    # `x86-64-v3` / `aarch64+fp16+fhm` baselines). Released wheels need
+    # broad CPU compat: the binary boots on stock baselines and
+    # `cpu_features()` selects NEON / AVX2 paths at runtime via per-fn
+    # `#[target_feature]` annotations.
+    env:
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: ""
+      # Manylinux containers ship `cc` / `gcc` but not the `x86_64-linux-gnu-gcc`
+      # cross wrapper our config.toml uses for cross-builds from aarch64.
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: cc
+      # Keep `opt-level=2` for aarch64: works around an LLVM crash compiling
+      # `faer` at opt-level=3 (BranchProbabilityInfo SIGSEGV). Drop the
+      # `+fp16,+fhm` baseline so the wheel runs on pre-ARMv8.2 chips.
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-Copt-level=2"
 
     steps:
       - uses: ilammy/setup-nasm@v1
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: messense/maturin-action@v1
         with:
           target: ${{ matrix.target }}
@@ -27,8 +42,26 @@ jobs:
             if command -v dnf &> /dev/null; then dnf install cmake3 -y; elif command -v yum &> /dev/null; then yum install cmake3 -y; elif command -v apt-get &> /dev/null; then apt-get update && apt-get install cmake -y; else echo "None of dnf, yum, or apt found."; fi
             if command -v cmake3 &> /dev/null; then export CMAKE=cmake3; fi
           args: --release --out dist -i python${{ matrix.python-version }} -m kornia-py/Cargo.toml --sdist
+      - name: Verify SIMD paths are present in the built wheel
+        env:
+          MATRIX_TARGET: ${{ matrix.target }}
+        run: |
+          set -e
+          WHEEL=$(ls dist/*-manylinux*.whl 2>/dev/null | head -n1)
+          [ -n "$WHEEL" ] || { echo "no manylinux wheel found"; exit 1; }
+          mkdir -p /tmp/wheel-check && unzip -q -o "$WHEEL" -d /tmp/wheel-check
+          SO=$(find /tmp/wheel-check -name 'kornia_rs*.so' | head -n1)
+          [ -n "$SO" ] || { echo "no .so found in wheel"; exit 1; }
+          if [ "$MATRIX_TARGET" = "x86_64" ]; then
+            objdump -d --no-show-raw-insn "$SO" | grep -E 'vpand[^l]|vpcmpeq|vpaddb|vpsubusb' | head -n3 || \
+              { echo "::error::no AVX2 instructions found in $SO"; exit 1; }
+          else
+            aarch64-linux-gnu-objdump -d --no-show-raw-insn "$SO" 2>/dev/null | grep -E '\bcnt v|\bvld3|\baddv ' | head -n3 || \
+              { echo "::error::no NEON instructions found in $SO"; exit 1; }
+          fi
+          echo "SIMD presence confirmed in $WHEEL for target $MATRIX_TARGET"
       - name: Upload wheels
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: linux-${{ matrix.target }}-${{ matrix.python-version }}-wheels
           path: dist
@@ -38,28 +71,25 @@ jobs:
     strategy:
       matrix:
         include:
-          - runs-on: macos-13
-            python-version: "3.7"
-            target: x86_64
-          - runs-on: macos-13
-            python-version: "3.7"
-            target: aarch64
-          - runs-on: macos-13
+          # Python 3.8/3.9/3.10 migrated from macos-13 to macos-14: macos-13
+          # runner pool is effectively unschedulable for these EOL Python versions
+          # in 2026. setup-python@v6 still serves 3.8+ via tool cache on macos-14.
+          - runs-on: macos-14
             python-version: "3.8"
             target: x86_64
-          - runs-on: macos-13
+          - runs-on: macos-14
             python-version: "3.8"
             target: aarch64
-          - runs-on: macos-13
+          - runs-on: macos-14
             python-version: "3.9"
             target: x86_64
-          - runs-on: macos-13
+          - runs-on: macos-14
             python-version: "3.9"
             target: aarch64
-          - runs-on: macos-13
+          - runs-on: macos-14
             python-version: "3.10"
             target: x86_64
-          - runs-on: macos-13
+          - runs-on: macos-14
             python-version: "3.10"
             target: aarch64
           - runs-on: macos-14
@@ -100,11 +130,10 @@ jobs:
             target: aarch64
     steps:
       - uses: ilammy/setup-nasm@v1
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
-          architecture: x64
       - uses: actions-rs/toolchain@v1
         with:
           profile: minimal
@@ -117,7 +146,7 @@ jobs:
           maturin-version: latest
           args: --release --target ${{ matrix.target }}-apple-darwin --out dist -i python${{ matrix.python-version }} -m kornia-py/Cargo.toml
       - name: Upload wheels
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: macos-${{ matrix.target }}-${{ matrix.python-version }}-wheels
           path: dist
@@ -126,12 +155,12 @@ jobs:
     runs-on: windows-latest
     strategy:
       matrix:
-        python-version: ["3.7", "3.8", "3.9", "3.10", "3.11", "3.12", "3.13", "3.13t", "3.14", "3.14t"]
+        python-version: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13", "3.13t", "3.14", "3.14t"]
         target: [x64, x86]
     steps:
       - uses: ilammy/setup-nasm@v1
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
           # x86 python needs to be available for the win32 wheel
@@ -149,7 +178,7 @@ jobs:
           maturin-version: latest
           args: --release --out dist -i python${{ matrix.python-version }} -m kornia-py/Cargo.toml
       - name: Upload wheels
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: windows-${{ matrix.target }}-${{ matrix.python-version }}-wheels
           path: dist
@@ -160,8 +189,8 @@ jobs:
     needs: [macos, windows, linux]
     steps:
       - run: sudo apt-get update
-      - uses: actions/download-artifact@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/download-artifact@v8
+      - uses: actions/setup-python@v6
         with:
           python-version: 3.9
       - name: Publish to PyPi

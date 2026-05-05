@@ -257,7 +257,7 @@ pub fn decode_image_tiff_layout(src: &[u8]) -> Result<ImageLayout, IoError> {
             tiff::TiffError::UnsupportedError(tiff::TiffUnsupportedError::UnknownInterpretation),
         ))?;
 
-    Ok(ImageLayout::new(size, num_channels, pixel_format))
+    Ok(ImageLayout::new(size, num_channels as u8, pixel_format))
 }
 
 /// Decodes a TIFF image with a three channel (rgb8) from Raw Bytes.
@@ -530,14 +530,95 @@ where
     [T]: tiff::encoder::TiffValue,
 {
     let file = fs::File::create(file_path)?;
+    write_tiff_into::<_, C, T>(file, image_data, image_size)
+}
 
-    let mut encoder = TiffEncoder::new(file)?;
+/// Encodes a TIFF image into any `Write + Seek` target. Drives both the
+/// file-path writers and the buffer-based `encode_image_tiff_*` API.
+fn write_tiff_into<W, C, T>(
+    writer: W,
+    image_data: &[T],
+    image_size: ImageSize,
+) -> Result<(), IoError>
+where
+    W: std::io::Write + std::io::Seek,
+    C: tiff::encoder::colortype::ColorType<Inner = T>,
+    [T]: tiff::encoder::TiffValue,
+{
+    let mut encoder = TiffEncoder::new(writer)?;
     encoder.write_image::<C>(
         image_size.width as u32,
         image_size.height as u32,
         image_data,
     )?;
     Ok(())
+}
+
+/// Reserve approximate uncompressed-TIFF capacity in `buffer` (raw bytes plus
+/// ~1 KB header) so the inner `Cursor<&mut Vec<u8>>` doesn't trigger repeated
+/// `Vec` doublings during `TiffEncoder::write_image`.
+fn reserve_tiff<T: Sized>(buffer: &mut Vec<u8>, slice_len: usize) {
+    buffer.reserve(slice_len * std::mem::size_of::<T>() + 1024);
+}
+
+/// Encodes an RGB u8 image as TIFF bytes into `buffer` (appended).
+pub fn encode_image_tiff_rgb8<A: ImageAllocator>(
+    image: &Image<u8, 3, A>,
+    buffer: &mut Vec<u8>,
+) -> Result<(), IoError> {
+    reserve_tiff::<u8>(buffer, image.as_slice().len());
+    let mut cursor = std::io::Cursor::new(buffer);
+    write_tiff_into::<_, colortype::RGB8, u8>(&mut cursor, image.as_slice(), image.size())
+}
+
+/// Encodes a grayscale u8 image as TIFF bytes into `buffer` (appended).
+pub fn encode_image_tiff_mono8<A: ImageAllocator>(
+    image: &Image<u8, 1, A>,
+    buffer: &mut Vec<u8>,
+) -> Result<(), IoError> {
+    reserve_tiff::<u8>(buffer, image.as_slice().len());
+    let mut cursor = std::io::Cursor::new(buffer);
+    write_tiff_into::<_, colortype::Gray8, u8>(&mut cursor, image.as_slice(), image.size())
+}
+
+/// Encodes an RGB u16 image as TIFF bytes into `buffer` (appended).
+pub fn encode_image_tiff_rgb16<A: ImageAllocator>(
+    image: &Image<u16, 3, A>,
+    buffer: &mut Vec<u8>,
+) -> Result<(), IoError> {
+    reserve_tiff::<u16>(buffer, image.as_slice().len());
+    let mut cursor = std::io::Cursor::new(buffer);
+    write_tiff_into::<_, colortype::RGB16, u16>(&mut cursor, image.as_slice(), image.size())
+}
+
+/// Encodes a grayscale u16 image as TIFF bytes into `buffer` (appended).
+pub fn encode_image_tiff_mono16<A: ImageAllocator>(
+    image: &Image<u16, 1, A>,
+    buffer: &mut Vec<u8>,
+) -> Result<(), IoError> {
+    reserve_tiff::<u16>(buffer, image.as_slice().len());
+    let mut cursor = std::io::Cursor::new(buffer);
+    write_tiff_into::<_, colortype::Gray16, u16>(&mut cursor, image.as_slice(), image.size())
+}
+
+/// Encodes a grayscale f32 image as TIFF bytes into `buffer` (appended).
+pub fn encode_image_tiff_mono32f<A: ImageAllocator>(
+    image: &Image<f32, 1, A>,
+    buffer: &mut Vec<u8>,
+) -> Result<(), IoError> {
+    reserve_tiff::<f32>(buffer, image.as_slice().len());
+    let mut cursor = std::io::Cursor::new(buffer);
+    write_tiff_into::<_, colortype::Gray32Float, f32>(&mut cursor, image.as_slice(), image.size())
+}
+
+/// Encodes an RGB f32 image as TIFF bytes into `buffer` (appended).
+pub fn encode_image_tiff_rgb32f<A: ImageAllocator>(
+    image: &Image<f32, 3, A>,
+    buffer: &mut Vec<u8>,
+) -> Result<(), IoError> {
+    reserve_tiff::<f32>(buffer, image.as_slice().len());
+    let mut cursor = std::io::Cursor::new(buffer);
+    write_tiff_into::<_, colortype::RGB32Float, f32>(&mut cursor, image.as_slice(), image.size())
 }
 
 #[cfg(test)]

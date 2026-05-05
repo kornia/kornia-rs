@@ -51,4 +51,19 @@ pub enum IoError {
     /// Error to decode the TIFF image.
     #[error(transparent)]
     TiffDecodingError(#[from] tiff::TiffError),
+
+    /// Invalid EXIF orientation value.
+    #[error("Invalid EXIF orientation value: {0}")]
+    InvalidOrientation(u16),
+    /// Unsupported pixel type.
+    #[error("Unsupported pixel type")]
+    UnsupportedPixelType,
+
+    /// Error to decode the WEBP image.
+    #[error(transparent)]
+    WebpDecodingError(#[from] image_webp::DecodingError),
+
+    /// Error to encode the WEBP image.
+    #[error(transparent)]
+    WebpEncodingError(#[from] image_webp::EncodingError),
 }
