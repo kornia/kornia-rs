@@ -25,35 +25,19 @@
 use core::ops::Range;
 use kornia_image::{allocator::ImageAllocator, Image};
 
-/// One endpoint of a run. Two LRPs per run: start (left edge) and end (right edge).
-/// `link` points to the next LRP in the *contour* traversal (set during
-/// cross-row stitching). `next` points to the next LRP in this row's
-/// run-pair list (set during row construction).
-///
-/// Layout: 12 bytes (was 16 before x/y were narrowed to i16). On
-/// `sparse_noise 2048²` the LRP arena holds ~2 M entries; the 25%
-/// reduction in working-set is decisive on Jetson Orin's 4 MB L2.
-/// Image dimensions are constrained to `i16::MAX` (32 767), which is
-/// well above any practical use case.
-#[derive(Debug, Clone, Copy)]
-#[repr(C)]
-struct Lrp {
-    link: i32,
-    next: i32,
-    x: i16,
-    y: i16,
-}
-
-impl Lrp {
-    const fn empty() -> Self {
-        Self { link: -1, next: -1, x: 0, y: 0 }
-    }
-    fn at(x: i32, y: i32) -> Self {
-        debug_assert!(x >= 0 && x <= i16::MAX as i32, "x={x} out of i16 range");
-        debug_assert!(y >= 0 && y <= i16::MAX as i32, "y={y} out of i16 range");
-        Self { link: -1, next: -1, x: x as i16, y: y as i16 }
-    }
-}
+// LRPs are stored as four parallel Vecs (Structure-of-Arrays) instead of
+// `Vec<Lrp>`. Rationale:
+//
+// * `establish_links` reads `x` (i16) and `next` (i32) most heavily, writes
+//   `link` (i32) sometimes. With AoS, every touch loads the whole 12-byte
+//   LRP. With SoA the hot streams are `xs` (2 B/entry) and `nexts`
+//   (4 B/entry); `links` is mostly write-only.
+// * `convert_links` walks chains via `link` (random access), reads
+//   `x`, `y` once per node.
+//
+// On `sparse_noise 1024²` (524k LRPs ≈ 6 MB AoS, exceeds Jetson Orin's 4 MB
+// L2), splitting into per-field Vecs keeps the per-phase working set
+// inside L2.
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ConnectFlag {
@@ -70,7 +54,15 @@ enum ConnectFlag {
 /// materialize the legacy `Vec<Vec<[i32; 2]>>` shape.
 #[derive(Default)]
 pub struct LinkRunsExecutor {
-    rns: Vec<Lrp>,
+    /// Per-LRP `link` field: index of next LRP in contour traversal
+    /// (-1 sentinel = unset).
+    links: Vec<i32>,
+    /// Per-LRP `next` field: index of next LRP in this row's run-pair list.
+    nexts: Vec<i32>,
+    /// Per-LRP x-coordinate.
+    xs: Vec<i16>,
+    /// Per-LRP y-coordinate.
+    ys: Vec<i16>,
     ext_rns: Vec<i32>,
     /// Flat point arena — every contour's points concatenated.
     arena: Vec<[i32; 2]>,
@@ -83,6 +75,46 @@ impl LinkRunsExecutor {
     pub fn new() -> Self {
         Self::default()
     }
+
+    // ------------------------------------------------------------------
+    // SoA accessors — single-line `#[inline]` wrappers so the algorithm
+    // code reads close to the AoS original. The compiler should fold these
+    // into direct loads/stores.
+    // ------------------------------------------------------------------
+    #[inline(always)]
+    fn push_lrp(&mut self, x: i32, y: i32) -> i32 {
+        debug_assert!(x >= 0 && x <= i16::MAX as i32, "x={x}");
+        debug_assert!(y >= 0 && y <= i16::MAX as i32, "y={y}");
+        let idx = self.links.len() as i32;
+        self.links.push(-1);
+        self.nexts.push(-1);
+        self.xs.push(x as i16);
+        self.ys.push(y as i16);
+        idx
+    }
+    #[inline(always)]
+    fn push_empty(&mut self) -> i32 {
+        let idx = self.links.len() as i32;
+        self.links.push(-1);
+        self.nexts.push(-1);
+        self.xs.push(0);
+        self.ys.push(0);
+        idx
+    }
+    #[inline(always)]
+    fn x(&self, i: i32) -> i32 { self.xs[i as usize] as i32 }
+    #[inline(always)]
+    fn y(&self, i: i32) -> i32 { self.ys[i as usize] as i32 }
+    #[inline(always)]
+    fn nxt(&self, i: i32) -> i32 { self.nexts[i as usize] }
+    #[inline(always)]
+    fn lnk(&self, i: i32) -> i32 { self.links[i as usize] }
+    #[inline(always)]
+    fn set_nxt(&mut self, i: i32, v: i32) { self.nexts[i as usize] = v; }
+    #[inline(always)]
+    fn set_lnk(&mut self, i: i32, v: i32) { self.links[i as usize] = v; }
+    #[inline(always)]
+    fn lrp_count(&self) -> i32 { self.links.len() as i32 }
 
     /// Run on an image. Returns the per-contour range table; pair with
     /// [`Self::arena`] for the actual points. Valid until next call.
@@ -148,14 +180,18 @@ impl LinkRunsExecutor {
     /// (OpenCV's BlockStorage pattern), tracked separately.
     #[allow(clippy::needless_range_loop)]
     fn process(&mut self, src: &[u8], width: i32, height: i32) {
-        self.rns.clear();
+        // SoA: clear all four parallel Vecs.
+        self.links.clear();
+        self.nexts.clear();
+        self.xs.clear();
+        self.ys.clear();
         self.ext_rns.clear();
         self.arena.clear();
         self.ranges.clear();
 
-        // Sentinel head (matches OpenCV's `rns.push_back(LRP())` at line 293)
-        self.rns.push(Lrp::empty());
-        let mut upper_line = (self.rns.len() as i32) - 1;
+        // Sentinel head (matches OpenCV's `rns.push_back(LRP())`).
+        self.push_empty();
+        let mut upper_line = self.lrp_count() - 1;
         let mut cur = upper_line;
 
         // First row
@@ -165,53 +201,44 @@ impl LinkRunsExecutor {
             let s = find_start(row0, j);
             if s == width { break; }
             let e_excl = find_end(row0, s + 1);
-            // start LRP
-            self.rns.push(Lrp::at(s, 0));
-            let start_idx = (self.rns.len() as i32) - 1;
-            self.rns[cur as usize].next = start_idx;
+            let start_idx = self.push_lrp(s, 0);
+            self.set_nxt(cur, start_idx);
             cur = start_idx;
-            // end LRP
-            self.rns.push(Lrp::at(e_excl - 1, 0));
-            let end_idx = (self.rns.len() as i32) - 1;
-            self.rns[cur as usize].next = end_idx;
-            self.rns[cur as usize].link = end_idx;
-            // record this contour as external (top-row runs are always external)
+            let end_idx = self.push_lrp(e_excl - 1, 0);
+            self.set_nxt(cur, end_idx);
+            self.set_lnk(cur, end_idx);
             self.ext_rns.push(cur);
             cur = end_idx;
             j = e_excl;
         }
-        upper_line = self.rns[upper_line as usize].next;
-        let mut upper_total = (self.rns.len() as i32) - 1;
+        upper_line = self.nxt(upper_line);
+        let mut upper_total = self.lrp_count() - 1;
 
         let mut last_elem = cur;
-        self.rns[cur as usize].next = -1;
+        self.set_nxt(cur, -1);
         let mut prev_point = -1i32;
 
         for i in 1..height {
-            // Build runs for row i
             let row = &src[(i as usize) * (width as usize)..((i + 1) as usize) * (width as usize)];
-            let all_total = self.rns.len() as i32;
+            let all_total = self.lrp_count();
             let mut j = 0;
             while j < width {
                 let s = find_start(row, j);
                 if s == width { break; }
                 let e_excl = find_end(row, s + 1);
-                self.rns.push(Lrp::at(s, i));
-                let start_idx = (self.rns.len() as i32) - 1;
-                self.rns[cur as usize].next = start_idx;
+                let start_idx = self.push_lrp(s, i);
+                self.set_nxt(cur, start_idx);
                 cur = start_idx;
-                self.rns.push(Lrp::at(e_excl - 1, i));
-                let end_idx = (self.rns.len() as i32) - 1;
-                self.rns[cur as usize].next = end_idx;
+                let end_idx = self.push_lrp(e_excl - 1, i);
+                self.set_nxt(cur, end_idx);
                 cur = end_idx;
                 j = e_excl;
             }
-            let lower_line = self.rns[last_elem as usize].next;
-            let lower_total = (self.rns.len() as i32) - all_total;
+            let lower_line = self.nxt(last_elem);
+            let lower_total = self.lrp_count() - all_total;
             last_elem = cur;
-            self.rns[cur as usize].next = -1;
+            self.set_nxt(cur, -1);
 
-            // Stitch upper_line ↔ lower_line
             self.establish_links(
                 &mut prev_point,
                 upper_line,
@@ -224,12 +251,12 @@ impl LinkRunsExecutor {
             upper_total = lower_total;
         }
 
-        // Last line: each upper run-pair links its end → start (closes contour).
+        // Last line: close upper run-pairs.
         let mut upper_run = upper_line;
         for _ in 0..(upper_total / 2) {
-            let n = self.rns[upper_run as usize].next;
-            self.rns[n as usize].link = upper_run;
-            upper_run = self.rns[n as usize].next;
+            let n = self.nxt(upper_run);
+            self.set_lnk(n, upper_run);
+            upper_run = self.nxt(n);
         }
     }
 
@@ -250,77 +277,77 @@ impl LinkRunsExecutor {
         while k < upper_total / 2 && n < lower_total / 2 {
             match flag {
                 ConnectFlag::Single => {
-                    let upper_next = self.rns[upper_run as usize].next;
-                    let lower_next = self.rns[lower_run as usize].next;
-                    if self.rns[upper_next as usize].x < self.rns[lower_next as usize].x {
-                        if self.rns[upper_next as usize].x >= self.rns[lower_run as usize].x - 1 {
-                            self.rns[lower_run as usize].link = upper_run;
+                    let upper_next = self.nxt(upper_run);
+                    let lower_next = self.nxt(lower_run);
+                    let upper_next_x = self.x(upper_next);
+                    let lower_next_x = self.x(lower_next);
+                    if upper_next_x < lower_next_x {
+                        if upper_next_x >= self.x(lower_run) - 1 {
+                            self.set_lnk(lower_run, upper_run);
                             flag = ConnectFlag::ConnectingAbove;
                             *prev_point = upper_next;
                         } else {
-                            self.rns[upper_next as usize].link = upper_run;
+                            self.set_lnk(upper_next, upper_run);
                         }
                         k += 1;
-                        upper_run = self.rns[upper_next as usize].next;
+                        upper_run = self.nxt(upper_next);
                     } else {
-                        if self.rns[upper_run as usize].x <= self.rns[lower_next as usize].x + 1 {
-                            self.rns[lower_run as usize].link = upper_run;
+                        if self.x(upper_run) <= lower_next_x + 1 {
+                            self.set_lnk(lower_run, upper_run);
                             flag = ConnectFlag::ConnectingBelow;
                             *prev_point = lower_next;
                         } else {
-                            self.rns[lower_run as usize].link = lower_next;
+                            self.set_lnk(lower_run, lower_next);
                             self.ext_rns.push(lower_run);
                         }
                         n += 1;
-                        lower_run = self.rns[lower_next as usize].next;
+                        lower_run = self.nxt(lower_next);
                     }
                 }
                 ConnectFlag::ConnectingAbove => {
-                    let lower_next = self.rns[lower_run as usize].next;
-                    if self.rns[upper_run as usize].x > self.rns[lower_next as usize].x + 1 {
-                        self.rns[*prev_point as usize].link = lower_next;
+                    let lower_next = self.nxt(lower_run);
+                    if self.x(upper_run) > self.x(lower_next) + 1 {
+                        self.set_lnk(*prev_point, lower_next);
                         flag = ConnectFlag::Single;
                         n += 1;
-                        lower_run = self.rns[lower_next as usize].next;
+                        lower_run = self.nxt(lower_next);
                     } else {
-                        self.rns[*prev_point as usize].link = upper_run;
-                        let upper_next = self.rns[upper_run as usize].next;
-                        if self.rns[upper_next as usize].x < self.rns[lower_next as usize].x {
+                        self.set_lnk(*prev_point, upper_run);
+                        let upper_next = self.nxt(upper_run);
+                        if self.x(upper_next) < self.x(lower_next) {
                             k += 1;
                             *prev_point = upper_next;
-                            upper_run = self.rns[upper_next as usize].next;
+                            upper_run = self.nxt(upper_next);
                         } else {
                             flag = ConnectFlag::ConnectingBelow;
                             *prev_point = lower_next;
                             n += 1;
-                            lower_run = self.rns[lower_next as usize].next;
+                            lower_run = self.nxt(lower_next);
                         }
                     }
                 }
                 ConnectFlag::ConnectingBelow => {
-                    let upper_next = self.rns[upper_run as usize].next;
-                    if self.rns[lower_run as usize].x > self.rns[upper_next as usize].x + 1 {
-                        self.rns[upper_next as usize].link = *prev_point;
+                    let upper_next = self.nxt(upper_run);
+                    if self.x(lower_run) > self.x(upper_next) + 1 {
+                        self.set_lnk(upper_next, *prev_point);
                         flag = ConnectFlag::Single;
                         k += 1;
-                        upper_run = self.rns[upper_next as usize].next;
+                        upper_run = self.nxt(upper_next);
                     } else {
-                        // OpenCV pushes int_rns here (start of a hole). We don't
-                        // distinguish external/internal collections — both go to
-                        // ext_rns, matching cv2.findContoursLinkRuns which
-                        // returns both classes with parent=-1.
+                        // OpenCV's int_rns push (hole start). Single ext_rns
+                        // collection — matches cv2.findContoursLinkRuns shape.
                         self.ext_rns.push(lower_run);
-                        self.rns[lower_run as usize].link = *prev_point;
-                        let lower_next = self.rns[lower_run as usize].next;
-                        if self.rns[lower_next as usize].x < self.rns[upper_next as usize].x {
+                        self.set_lnk(lower_run, *prev_point);
+                        let lower_next = self.nxt(lower_run);
+                        if self.x(lower_next) < self.x(upper_next) {
                             n += 1;
                             *prev_point = lower_next;
-                            lower_run = self.rns[lower_next as usize].next;
+                            lower_run = self.nxt(lower_next);
                         } else {
                             flag = ConnectFlag::ConnectingAbove;
                             k += 1;
                             *prev_point = upper_next;
-                            upper_run = self.rns[upper_next as usize].next;
+                            upper_run = self.nxt(upper_next);
                         }
                     }
                 }
@@ -330,33 +357,33 @@ impl LinkRunsExecutor {
         // Drain remaining lower runs as new external contours
         while n < lower_total / 2 {
             if flag != ConnectFlag::Single {
-                let lower_next = self.rns[lower_run as usize].next;
-                self.rns[*prev_point as usize].link = lower_next;
+                let lower_next = self.nxt(lower_run);
+                self.set_lnk(*prev_point, lower_next);
                 flag = ConnectFlag::Single;
-                lower_run = self.rns[lower_next as usize].next;
+                lower_run = self.nxt(lower_next);
                 n += 1;
                 continue;
             }
-            let lower_next = self.rns[lower_run as usize].next;
-            self.rns[lower_run as usize].link = lower_next;
+            let lower_next = self.nxt(lower_run);
+            self.set_lnk(lower_run, lower_next);
             self.ext_rns.push(lower_run);
-            lower_run = self.rns[lower_next as usize].next;
+            lower_run = self.nxt(lower_next);
             n += 1;
         }
 
         // Drain remaining upper runs (close them to themselves)
         while k < upper_total / 2 {
             if flag != ConnectFlag::Single {
-                let upper_next = self.rns[upper_run as usize].next;
-                self.rns[upper_next as usize].link = *prev_point;
+                let upper_next = self.nxt(upper_run);
+                self.set_lnk(upper_next, *prev_point);
                 flag = ConnectFlag::Single;
-                upper_run = self.rns[upper_next as usize].next;
+                upper_run = self.nxt(upper_next);
                 k += 1;
                 continue;
             }
-            let upper_next = self.rns[upper_run as usize].next;
-            self.rns[upper_next as usize].link = upper_run;
-            upper_run = self.rns[upper_next as usize].next;
+            let upper_next = self.nxt(upper_run);
+            self.set_lnk(upper_next, upper_run);
+            upper_run = self.nxt(upper_next);
             k += 1;
         }
     }
@@ -371,18 +398,23 @@ impl LinkRunsExecutor {
         self.ranges.clear();
         let n = self.ext_rns.len();
         self.ranges.reserve(n);
+        // Locally bind the field-Vecs so the inner loop doesn't reborrow
+        // self each iteration (helps the compiler eliminate bounds checks
+        // on the parallel slices).
+        let xs = &self.xs[..];
+        let ys = &self.ys[..];
+        let links = &mut self.links[..];
         for i in 0..n {
             let start = self.ext_rns[i];
             let mut cur = start;
-            if self.rns[cur as usize].link == -1 {
+            if links[cur as usize] == -1 {
                 continue;
             }
             let arena_start = self.arena.len();
             loop {
-                let p = self.rns[cur as usize];
-                self.arena.push([p.x as i32, p.y as i32]);
-                let next = self.rns[cur as usize].link;
-                self.rns[cur as usize].link = -1; // mark visited
+                self.arena.push([xs[cur as usize] as i32, ys[cur as usize] as i32]);
+                let next = links[cur as usize];
+                links[cur as usize] = -1;
                 cur = next;
                 if cur == start || cur == -1 {
                     break;
