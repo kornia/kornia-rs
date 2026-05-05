@@ -101,18 +101,41 @@ impl LinkRunsExecutor {
         self.ys.push(0);
         idx
     }
+    // SAFETY for the unchecked variants below: every LRP index that flows
+    // through establish_links comes from `push_lrp` (which returns the
+    // freshly-pushed index) or from a `next`/`link` field that was set by
+    // a previous push_lrp — both bounded by `self.links.len()`. Bounds
+    // checks were measurably hot (see convert_links profile).
     #[inline(always)]
-    fn x(&self, i: i32) -> i32 { self.xs[i as usize] as i32 }
+    fn x(&self, i: i32) -> i32 {
+        debug_assert!((i as usize) < self.xs.len());
+        unsafe { *self.xs.get_unchecked(i as usize) as i32 }
+    }
     #[inline(always)]
-    fn y(&self, i: i32) -> i32 { self.ys[i as usize] as i32 }
+    fn y(&self, i: i32) -> i32 {
+        debug_assert!((i as usize) < self.ys.len());
+        unsafe { *self.ys.get_unchecked(i as usize) as i32 }
+    }
     #[inline(always)]
-    fn nxt(&self, i: i32) -> i32 { self.nexts[i as usize] }
+    fn nxt(&self, i: i32) -> i32 {
+        debug_assert!((i as usize) < self.nexts.len());
+        unsafe { *self.nexts.get_unchecked(i as usize) }
+    }
     #[inline(always)]
-    fn lnk(&self, i: i32) -> i32 { self.links[i as usize] }
+    fn lnk(&self, i: i32) -> i32 {
+        debug_assert!((i as usize) < self.links.len());
+        unsafe { *self.links.get_unchecked(i as usize) }
+    }
     #[inline(always)]
-    fn set_nxt(&mut self, i: i32, v: i32) { self.nexts[i as usize] = v; }
+    fn set_nxt(&mut self, i: i32, v: i32) {
+        debug_assert!((i as usize) < self.nexts.len());
+        unsafe { *self.nexts.get_unchecked_mut(i as usize) = v; }
+    }
     #[inline(always)]
-    fn set_lnk(&mut self, i: i32, v: i32) { self.links[i as usize] = v; }
+    fn set_lnk(&mut self, i: i32, v: i32) {
+        debug_assert!((i as usize) < self.links.len());
+        unsafe { *self.links.get_unchecked_mut(i as usize) = v; }
+    }
     #[inline(always)]
     fn lrp_count(&self) -> i32 { self.links.len() as i32 }
 
@@ -398,29 +421,52 @@ impl LinkRunsExecutor {
         self.ranges.clear();
         let n = self.ext_rns.len();
         self.ranges.reserve(n);
-        // Locally bind the field-Vecs so the inner loop doesn't reborrow
-        // self each iteration (helps the compiler eliminate bounds checks
-        // on the parallel slices).
-        let xs = &self.xs[..];
-        let ys = &self.ys[..];
-        let links = &mut self.links[..];
+        // Bind the field-Vecs locally; rebind as raw ptrs for the hot loop.
+        let xs_ptr = self.xs.as_ptr();
+        let ys_ptr = self.ys.as_ptr();
+        let links_ptr = self.links.as_mut_ptr();
+        let lrp_count = self.links.len();
+        let arena = &mut self.arena;
+        let ranges = &mut self.ranges;
         for i in 0..n {
             let start = self.ext_rns[i];
+            // SAFETY: ext_rns indices are produced by push_lrp / set_lnk and
+            // bounded by lrp_count; debug_assert verifies.
+            debug_assert!((start as usize) < lrp_count);
             let mut cur = start;
-            if links[cur as usize] == -1 {
+            // SAFETY: same bounds.
+            if unsafe { *links_ptr.add(cur as usize) } == -1 {
                 continue;
             }
-            let arena_start = self.arena.len();
+            let arena_start = arena.len();
             loop {
-                self.arena.push([xs[cur as usize] as i32, ys[cur as usize] as i32]);
-                let next = links[cur as usize];
-                links[cur as usize] = -1;
-                cur = next;
+                debug_assert!((cur as usize) < lrp_count);
+                // SAFETY: cur came from a previously-set link or an ext_rns
+                // entry; both are bounded by lrp_count.
+                unsafe {
+                    let x = *xs_ptr.add(cur as usize) as i32;
+                    let y = *ys_ptr.add(cur as usize) as i32;
+                    arena.push([x, y]);
+                    let next = *links_ptr.add(cur as usize);
+                    // Prefetch next iteration's xs/ys before we get there.
+                    // Random pointer-chase otherwise dominates the loop.
+                    #[cfg(target_arch = "aarch64")]
+                    if next >= 0 {
+                        // PRFM PLDL1KEEP — load to L1, expect re-use
+                        core::arch::asm!(
+                            "prfm pldl1keep, [{ptr}]",
+                            ptr = in(reg) xs_ptr.add(next as usize),
+                            options(nostack, preserves_flags),
+                        );
+                    }
+                    *links_ptr.add(cur as usize) = -1;
+                    cur = next;
+                }
                 if cur == start || cur == -1 {
                     break;
                 }
             }
-            self.ranges.push(arena_start..self.arena.len());
+            ranges.push(arena_start..arena.len());
         }
     }
 }
