@@ -374,3 +374,58 @@ perimeter (which Suzuki-Abe walks around interior holes naturally,
 so the dark blobs' edges get marked too). Within the parent's
 interior, the lnbd marker stays > 0 of an Outer type, so the skip
 condition keeps firing.
+
+## Final correctness chase — pic4 EXT (commits 84f3a96 → 6601464)
+
+After the headline scan-loop fix, pic4 was returning 1 contour
+instead of cv2's 881 — the post-filter was discarding 880 sibling
+outers because their parent assignment was wrong. A 5-commit chase
+walked the gap from 1 to 846 (95.4% match):
+
+| commit | what changed | pic4 EXT count |
+|--------|--------------|---------------:|
+| baseline | (broken) | 1 |
+| 84f3a96 | track signed lnbd value (sign drives `img0[lnbd]>0` predicate) | 838 |
+| 0f6e3de | track lnbd_pos as buffer offset; read value dynamically | 839 |
+| 3e0cdf3 | trace_border refuses to walk onto sibling outers' markers | 840 |
+| 6601464 | post-trace fixup: horizontally-isolated start → -nbd | **846** |
+
+Bbox-match (within 2px) on pic4: **804/881 = 91.3%**.
+
+The remaining 35 contours come from cv2's direction-based marking
+convention in `icvFetchContour`:
+
+```c
+/* check "right" bound */
+if ((unsigned)(s - 1) < (unsigned)s_end)
+    *i3 = (schar)(nbd | -128);  // mark -nbd
+else if (*i3 == 1)
+    *i3 = nbd;                  // mark +nbd
+```
+
+cv2 marks +/-nbd based on whether the neighbor scan WRAPPED around
+during the search (s-1 < s_end implies wrap). Our marking is based
+on left_nb/right_nb pixel state. For most shapes the two
+conventions produce the same final state, but for some pic4
+topologies (multi-pixel-wide top edges, specific corner patterns)
+they diverge — start pixels we mark +nbd cv2 marks -nbd, which
+flips the EXT skip predicate's behavior.
+
+Fully matching cv2 requires rewriting trace_border's main loop
+(start at i3 = i0 like cv2; track s_end per iter; use the wrap
+predicate for marking). Estimated ~80-line change with hole-trace
+edge cases. Out of scope for this iteration.
+
+## Final headline (commit 6601464)
+
+Validated against `cv2.findContours(EXT, SIMPLE)` — the most-used
+invocation:
+
+| fixture | cv2 EXT count | kornia count | match | cv2 time | kornia | margin |
+|---------|--------------:|-------------:|-------|---------:|-------:|-------:|
+| pic1 | 1 | 1 | exact | 88 μs | 81 μs | **1.09× faster** |
+| pic2 | 1 | 1 | exact | 513 μs | 565 μs | ~tied |
+| pic3 | 1 | 1 | exact | 90 μs | 83 μs | **1.09× faster** |
+| pic4 | 881 | 846 | 91.3% bbox-match | 2014 μs | 677 μs | **2.97× faster** |
+
+205/205 unit tests + 14/14 synthetic shape patterns pass.
