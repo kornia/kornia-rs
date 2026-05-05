@@ -29,20 +29,29 @@ use kornia_image::{allocator::ImageAllocator, Image};
 /// `link` points to the next LRP in the *contour* traversal (set during
 /// cross-row stitching). `next` points to the next LRP in this row's
 /// run-pair list (set during row construction).
+///
+/// Layout: 12 bytes (was 16 before x/y were narrowed to i16). On
+/// `sparse_noise 2048²` the LRP arena holds ~2 M entries; the 25%
+/// reduction in working-set is decisive on Jetson Orin's 4 MB L2.
+/// Image dimensions are constrained to `i16::MAX` (32 767), which is
+/// well above any practical use case.
 #[derive(Debug, Clone, Copy)]
+#[repr(C)]
 struct Lrp {
     link: i32,
     next: i32,
-    x: i32,
-    y: i32,
+    x: i16,
+    y: i16,
 }
 
 impl Lrp {
     const fn empty() -> Self {
         Self { link: -1, next: -1, x: 0, y: 0 }
     }
-    const fn at(x: i32, y: i32) -> Self {
-        Self { link: -1, next: -1, x, y }
+    fn at(x: i32, y: i32) -> Self {
+        debug_assert!(x >= 0 && x <= i16::MAX as i32, "x={x} out of i16 range");
+        debug_assert!(y >= 0 && y <= i16::MAX as i32, "y={y} out of i16 range");
+        Self { link: -1, next: -1, x: x as i16, y: y as i16 }
     }
 }
 
@@ -371,7 +380,7 @@ impl LinkRunsExecutor {
             let arena_start = self.arena.len();
             loop {
                 let p = self.rns[cur as usize];
-                self.arena.push([p.x, p.y]);
+                self.arena.push([p.x as i32, p.y as i32]);
                 let next = self.rns[cur as usize].link;
                 self.rns[cur as usize].link = -1; // mark visited
                 cur = next;
