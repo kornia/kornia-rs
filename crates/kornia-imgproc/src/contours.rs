@@ -595,13 +595,17 @@ impl FindContoursExecutor {
                     self.buffers.border_types.push(border_type);
                     self.buffers.ranges.push(range);
                     lnbd = nbd;
-                    // After tracing, mark the start position (idx) as the
-                    // most-recent +marker for skip-predicate purposes.
-                    // The trace already wrote +nbd to img[idx] for outer
-                    // starts (and -nbd for hole starts via the trace's
-                    // marking convention). cv2 mirrors this with its
-                    // post-trace lnbd update.
-                    lnbd_pos = idx;
+                    // After tracing, only update lnbd_pos if the start
+                    // pixel ended as +marker. Mirrors cv2's
+                    // `img0[lnbd] > 0` check — when the trace's start
+                    // ends as -nbd (e.g. horizontally-isolated outers
+                    // where the post-trace fixup sets it negative), we
+                    // do NOT consider ourselves still "inside outer",
+                    // so disjoint siblings in the same row get detected.
+                    let val_at_idx = unsafe { *img_ptr.add(idx) };
+                    if val_at_idx > 0 {
+                        lnbd_pos = idx;
+                    }
                 } else if pixel == 1 {
                     #[cfg(feature = "profile_contours")]
                     { _one_skip_hits += 1; }
@@ -874,6 +878,20 @@ impl FindContoursExecutor {
         // SAFETY: start_idx is a valid interior pixel in the padded image.
         if unsafe { *img.add(start_idx) } == 1 {
             unsafe { *img.add(start_idx) = nbd };
+        }
+
+        // Final convention fixup: if start is horizontally isolated
+        // (left=0 AND right=0), mark as -nbd. cv2's trace ends with this
+        // pixel as -nbd because its trace order processes the right-edge
+        // condition before the left-edge condition for such corners. We
+        // match cv2's resulting state without changing the iteration
+        // mechanics (which would break hole detection on hollow shapes).
+        if is_outer {
+            let start_left = unsafe { *img.add(start_idx - 1) };
+            let start_right = unsafe { *img.add(start_idx + 1) };
+            if start_left == 0 && start_right == 0 {
+                unsafe { *img.add(start_idx) = -nbd };
+            }
         }
 
         arena_start..arena.len()
