@@ -204,25 +204,60 @@ the run graph as it scans). Ported to Rust in `contours_linkruns.rs`,
 
 ## Headline numbers (Jetson Orin Nano, External + SIMPLE, 20 reps + 5 warmup)
 
-### vs OpenCV — correctness-validated link-runs (post arena fix)
+### vs OpenCV — correctness-validated link-runs (FINAL — after all opts)
 
 | fixture | size | OpenCV (μs) | kornia linkruns (μs) | **vs OpenCV** |
 |---------|-----:|------------:|---------------------:|--------------:|
 | pic1.png  | 400×300 | 86      | **60**  | 🚀 **1.43× faster** |
 | pic3.png  | 400×300 | 81      | **53**  | 🚀 **1.53× faster** |
-| pic4.png  | 400×300 | 2023    | **470** | 🚀 **4.30× faster** |
+| pic4.png  | 400×300 | 2023    | **420** | 🚀 **4.82× faster** |
 | filled_square | 128²  | 19  | **5**   | 🚀 **3.80× faster** |
 | filled_square | 256²  | 42  | **14**  | 🚀 **3.00× faster** |
 | filled_square | 512²  | 124 | **41**  | 🚀 **3.02× faster** |
-| filled_square | 1024² | 847 | **138** | 🚀 **6.13× faster** |
-| filled_square | 2048² | 1420 | **513** | 🚀 **2.77× faster** |
-| hollow_square | 1024² | 852 | **154** | 🚀 **5.53× faster** |
-| hollow_square | 2048² | 1574 | **578** | 🚀 **2.72× faster** |
-| sparse_noise | 128² | 262 | 285 | 0.92× |
-| sparse_noise | 256² | 749 | 1195 | 0.63× |
-| sparse_noise | 512² | 2594 | 5942 | 0.44× |
-| sparse_noise | 1024² | 9189 | 26614 | 0.35× ❌ |
-| sparse_noise | 2048² | 34821 | 124278 | 0.28× ❌ |
+| filled_square | 1024² | 847 | **137** | 🚀 **6.18× faster** |
+| filled_square | 2048² | 1420 | **523** | 🚀 **2.71× faster** |
+| hollow_square | 1024² | 852 | **152** | 🚀 **5.61× faster** |
+| hollow_square | 2048² | 1574 | **588** | 🚀 **2.68× faster** |
+| sparse_noise | 128² | 262 | 272 | 0.96× (effectively tied) |
+| sparse_noise | 256² | 749 | 1119 | 0.67× |
+| sparse_noise | 512² | 2594 | 4635 | 0.56× |
+| sparse_noise | 1024² | 9189 | 20019 | 0.46× ❌ |
+| sparse_noise | 2048² | 34821 | 93184 | 0.37× ❌ |
+
+### Sparse-noise journey (cumulative optimization log)
+
+| optimization | sparse_noise 1024² | gain |
+|--------------|-------------------:|-----:|
+| baseline (per-Vec contour alloc) | 39 ms | — |
+| arena-backed convert_links (commit 16d3ba9) | 27 ms | 1.45× |
+| Lrp shrink 16B → 12B (commit ced4523) | 24 ms | 1.13× |
+| SoA split (commit 711b59b) | 22 ms | 1.10× |
+| unsafe + prefetch (commit 0023b80) | 20.5 ms | 1.07× |
+| NEON store-and-scan removal (commit e23adac) | **20 ms** | 1.03× |
+| **cumulative** | **20 ms** | **1.95×** |
+
+**vs OpenCV: 20 ms vs 9 ms = 2.22× slower** (was 4× before the journey).
+
+### Why we still lose on sparse_noise
+
+After 5 optimizations, we cut sparse_noise 1024² nearly in half (39 → 20 ms)
+but OpenCV still wins by 2.22×. Per-phase profile:
+
+```
+process:        15 ms (75%)  — NEON row scan + LRP build + establish_links
+convert_links:   5 ms (25%)  — chain walks across 524k LRPs
+```
+
+Tried + reverted (negative results documented in the source):
+- AoS revival: regressed sparse_noise 12-13% (6 MB AoS exceeds 4 MB L2)
+- Pre-sizing rns: regressed cold-start sparse_noise up to 86%
+
+The remaining 2.22× gap is a fundamental cache-locality issue:
+**OpenCV's BlockStorage** keeps each contour's chain within ~4 KB chunks,
+so chain-walks hit L1 cache. Our chain hops scatter across a single 6 MB
+SoA arena (still smaller than AoS but still spans L2). Closing this
+requires a chunked-storage refactor that mimics OpenCV's allocator
+pattern — substantial work, separate task.
 
 ### vs LSL — link-runs strictly faster except on dense noise
 

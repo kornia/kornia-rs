@@ -26,7 +26,7 @@ use core::ops::Range;
 use kornia_image::{allocator::ImageAllocator, Image};
 
 // LRPs are stored as four parallel Vecs (Structure-of-Arrays) instead of
-// `Vec<Lrp>`. Rationale:
+// `Vec<Lrp>`. Rationale (verified by A/B test, see commit history):
 //
 // * `establish_links` reads `x` (i16) and `next` (i32) most heavily, writes
 //   `link` (i32) sometimes. With AoS, every touch loads the whole 12-byte
@@ -37,7 +37,8 @@ use kornia_image::{allocator::ImageAllocator, Image};
 //
 // On `sparse_noise 1024²` (524k LRPs ≈ 6 MB AoS, exceeds Jetson Orin's 4 MB
 // L2), splitting into per-field Vecs keeps the per-phase working set
-// inside L2.
+// inside L2. Reverting to AoS regressed sparse_noise 12-13% precisely
+// because the working set spilled to L3.
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ConnectFlag {
