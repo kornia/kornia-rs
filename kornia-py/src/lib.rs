@@ -19,6 +19,7 @@ mod pipeline;
 mod pointcloud;
 mod pyutils;
 mod resize;
+mod ransac;
 mod twoview;
 mod warp;
 
@@ -463,6 +464,12 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     apriltag_mod.add_submodule(&apriltag_family_mod)?;
 
     m.add_submodule(&apriltag_mod)?;
+
+    // RANSAC submodule — generic robust estimation + the F/E/H/EPnP
+    // estimators wired into a single `kornia_rs.ransac.*` namespace. The
+    // Python signatures mirror OpenCV's calling convention so that
+    // benchmark scripts can swap one import for the other.
+    ransac::register(py, &m)?;
 
     // CPU submodule — runtime SIMD feature probe. Lets installed wheels
     // self-report which SIMD paths the host actually exposes, complementing
