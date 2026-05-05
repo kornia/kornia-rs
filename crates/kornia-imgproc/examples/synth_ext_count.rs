@@ -22,6 +22,30 @@ fn fill(w: usize, h: usize, rects: &[(usize, usize, usize, usize)]) -> Vec<u8> {
 
 fn main() {
     let cases: Vec<(&str, Vec<u8>, usize, usize, usize)> = vec![
+        ("1-pixel-tall + disjoint", {
+            // Single isolated pixel at (3, 5), then disjoint square at right.
+            let mut d = vec![0u8; 30*8];
+            d[3*30 + 5] = 1;  // single pixel
+            for r in 1..6 { for c in 12..16 { d[r*30+c] = 1; } }  // 4x5 square
+            d
+        }, 30, 8, 2),
+        ("3 single pixels in same row", {
+            let mut d = vec![0u8; 30*8];
+            d[3*30 + 2] = 1;
+            d[3*30 + 10] = 1;
+            d[3*30 + 20] = 1;
+            d
+        }, 30, 8, 3),
+        ("dense small components row", {
+            // Mimic pic4 cluster: many small 2x2 squares in a row
+            let mut d = vec![0u8; 30*8];
+            for r in 2..4 { for c in 2..4 { d[r*30+c] = 1; } }
+            for r in 2..4 { for c in 6..8 { d[r*30+c] = 1; } }
+            for r in 2..4 { for c in 10..12 { d[r*30+c] = 1; } }
+            for r in 2..4 { for c in 14..16 { d[r*30+c] = 1; } }
+            for r in 2..4 { for c in 18..20 { d[r*30+c] = 1; } }
+            d
+        }, 30, 8, 5),
         // Test "1-pixel-wide row" hypothesis: outer A with a thin
         // single-pixel-wide row, then outer B disjoint to its right.
         ("triangle then disjoint square", {

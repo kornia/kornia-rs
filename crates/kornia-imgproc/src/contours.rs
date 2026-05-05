@@ -167,6 +167,11 @@ struct TracerStart {
     dir: usize,
     nbd: i16,
     method: ContourApproximationMode,
+    /// True iff this is an outer-border trace. Used to gate the
+    /// "only walk on this contour's pixels" rule — outers must not
+    /// leak into adjacent sibling outers' marks; holes legitimately
+    /// walk on the parent outer's perimeter (which is marked).
+    is_outer: bool,
 }
 
 /// Heap buffers used by [`FindContoursExecutor`] for contour finding.
@@ -572,6 +577,7 @@ impl FindContoursExecutor {
                         dir: start_dir,
                         nbd,
                         method,
+                        is_outer,
                     };
 
                     #[cfg(feature = "profile_contours")]
@@ -736,18 +742,34 @@ impl FindContoursExecutor {
             dir: start_dir,
             nbd,
             method,
+            is_outer,
         } = ts;
         let arena_start = arena.len();
+
+        // For OUTER traces only: forbid walking onto markers from another
+        // contour (otherwise we leak across disjoint sibling outers and
+        // merge their bboxes — the pic4 12-into-1 bug). A neighbor
+        // belongs to THIS outer iff its value is raw 1 (unvisited fg) or
+        // our own ±nbd (cells we visited in this trace).
+        // HOLE traces don't apply this — they walk the white pixels
+        // around the hole, some of which are the parent outer's marked
+        // perimeter (must accept any non-zero).
+        let neg_nbd = -nbd;
+        let belongs = |v: i16| -> bool {
+            if is_outer {
+                v == 1 || v == nbd || v == neg_nbd
+            } else {
+                v != 0
+            }
+        };
 
         let mut first_nb_idx = 0usize;
         let mut first_nb_dir = 0usize;
         let mut found = false;
         for k in 0..8usize {
             let d = start_dir + k;
-            // SAFETY: d & 7 is always in 0..8, and o16 has 16 elements.
-            // The offset is relative to start_idx which is a valid interior pixel.
             let nb = (start_idx as isize + toff.o16[d & 7]) as usize;
-            if unsafe { *img.add(nb) } != 0 {
+            if belongs(unsafe { *img.add(nb) }) {
                 first_nb_idx = nb;
                 first_nb_dir = d & 7;
                 found = true;
@@ -794,17 +816,13 @@ impl FindContoursExecutor {
 
             for k in 0..8usize {
                 let s = scan_start + k;
-                // SAFETY: s & 7 is provably in 0..8 and o8 has exactly 8 elements.
-                // The offset is relative to i2_idx which is a valid interior pixel.
                 let nb = (i2_idx as isize + toff.o8[s & 7]) as usize;
-                // SAFETY: nb wrapping would mean the pointer offset overflowed, violating
-                // the padding invariant. debug_assert validates the bounds.
                 debug_assert!(
                     (nb as isize) >= 0 && nb < usize::MAX / 2,
                     "nb wrapped: i2_idx={i2_idx} offset={}",
                     toff.o8[s & 7]
                 );
-                if unsafe { *img.add(nb) } != 0 {
+                if belongs(unsafe { *img.add(nb) }) {
                     i3_idx = nb;
                     i3_row = i2_row + DIR_DR[s & 7];
                     i3_col = i2_col + DIR_DC[s & 7];
@@ -884,7 +902,19 @@ impl FindContoursExecutor {
             dir: start_dir,
             nbd,
             method: _,
+            is_outer,
         } = ts;
+
+        // Same outer-only `belongs()` rule as trace_border. (See its
+        // comment for the why.)
+        let neg_nbd = -nbd;
+        let belongs = |v: i16| -> bool {
+            if is_outer {
+                v == 1 || v == nbd || v == neg_nbd
+            } else {
+                v != 0
+            }
+        };
 
         let mut first_nb_idx = 0usize;
         let mut first_nb_dir = 0usize;
@@ -892,7 +922,7 @@ impl FindContoursExecutor {
         for k in 0..8usize {
             let d = start_dir + k;
             let nb = (start_idx as isize + toff.o16[d & 7]) as usize;
-            if unsafe { *img.add(nb) } != 0 {
+            if belongs(unsafe { *img.add(nb) }) {
                 first_nb_idx = nb;
                 first_nb_dir = d & 7;
                 found = true;
@@ -930,7 +960,7 @@ impl FindContoursExecutor {
             for k in 0..8usize {
                 let s = scan_start + k;
                 let nb = (i2_idx as isize + toff.o8[s & 7]) as usize;
-                if unsafe { *img.add(nb) } != 0 {
+                if belongs(unsafe { *img.add(nb) }) {
                     i3_idx = nb;
                     dir_out = s & 7;
                     found_next = true;
