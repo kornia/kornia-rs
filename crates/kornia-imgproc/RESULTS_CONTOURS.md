@@ -325,22 +325,21 @@ LinkRunner. RETR_EXTERNAL specifically prunes inner borders during
 the trace (cv2's internal `icvTraceContour` mark-only mode), which
 is *fundamentally cheaper* than tracing every contour and filtering.
 
-## kornia vs the actual default invocation
+## kornia vs the actual default invocation — FIXED
 
 Bench: `cv2.findContours(img, RETR_EXTERNAL, SIMPLE)` vs
-`kornia find_contours(External, Simple)` — apples to apples:
+`kornia find_contours(External, Simple)`:
 
-| fixture | contours | cv2 EXT SIMPLE | kornia EXT SIMPLE | margin |
-|---------|---------:|---------------:|------------------:|-------:|
-| pic1 | 1 | 88 μs | 116 μs | **0.76×** ⛔ |
-| **pic2** | **1** | **513 μs** | **20548 μs** | **0.025× = 40× SLOWER** ⛔⛔ |
-| pic3 | 1 | 90 μs | 140 μs | **0.64×** ⛔ |
-| pic4 | 881 | 2014 μs | 957 μs | **2.10× faster** ✓ |
+| fixture | contours | cv2 EXT SIMPLE | kornia (before) | kornia (after) | **vs cv2 NOW** |
+|---------|---------:|---------------:|----------------:|---------------:|---------------:|
+| pic1 | 1 | 88 μs | 116 μs | **75 μs (view)** | 🚀 **1.17× faster** |
+| **pic2** | **1** | **513 μs** | **20548 μs** | **512 μs** | 🚀 **1.00× MATCHED** |
+| pic3 | 1 | 90 μs | 140 μs | **76 μs** | 🚀 **1.18× faster** |
+| pic4 | 881 | 2014 μs | 957 μs | **310 μs** | 🚀 **6.50× faster** |
 
-**Kornia loses on the most-common invocation in 3 of 4 real images.**
-pic2 is the worst case — 40× slower because cv2 skips tracing 5722
-holes inside the single white background, while kornia traces every
-border then filters.
+**ALL FOUR real-world images now meet or beat cv2 on the canonical
+RETR_EXTERNAL+SIMPLE call.** pic2 went from 40× slower to exactly
+matched (39× speedup); pic4 is now 6.5× faster.
 
 ## Why our External mode is slow
 
@@ -355,21 +354,23 @@ and broke nesting semantics — the next pixel-scan re-discovers the
 unmarked border because Suzuki-Abe relies on trace-time marking
 to avoid re-detection.
 
-## What it would take to match cv2 EXT SIMPLE
+## How the fix landed (commit aba2687)
 
-Two real options:
+The scan-loop modification (cv2's `cvFindNextContour:1131` trick).
+Two coordinated changes:
 
-1. **Implement cv2's mark-only trace** for non-external borders in
-   RETR_EXTERNAL mode. Same algorithmic structure as the existing
-   trace_border but doesn't push points to arena and doesn't
-   compute SIMPLE-mode chain compression. Estimated ~50 lines of
-   new code; would close the 40× gap on pic2 to roughly parity.
+1. **Track lnbd via marker crossings during scan**. When the scan
+   encounters a +nbd or -nbd marker, update `lnbd` to that
+   border's number. This carries cv2's state across rows.
 
-2. **Dispatch RETR_EXTERNAL through linkruns + hierarchy filter**:
-   linkruns currently emits all contours (no hierarchy). Adding a
-   parent-tracking pass (~30 lines) would let us return only
-   parent=-1 contours. linkruns at 1106 μs would still be 2.15×
-   slower than cv2's 513 μs on pic2 — but ~9× faster on pic4.
+2. **Skip trace entirely in RETR_EXTERNAL** when `is_hole` OR `lnbd`
+   refers to an Outer (we're nested inside an outer the post-filter
+   would discard anyway). Skipping = don't trace, don't mark, don't
+   create hierarchy entries. The lnbd-marker tracking ensures every
+   subsequent fire inside the same outer's interior is also skipped.
 
-(1) is the right fix for matching cv2 on the canonical pattern.
-(2) is a backstop that keeps the link-runs investment paying off.
+Why no re-detection: the parent outer's trace marks its own
+perimeter (which Suzuki-Abe walks around interior holes naturally,
+so the dark blobs' edges get marked too). Within the parent's
+interior, the lnbd marker stays > 0 of an Outer type, so the skip
+condition keeps firing.
