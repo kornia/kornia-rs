@@ -14,9 +14,7 @@ use kornia_image::{allocator::ImageAllocator, Image};
 use rayon::prelude::*;
 use std::ops::Range;
 
-// Directions: 0=W 1=NW 2=N 3=NE 4=E 5=SE 6=S 7=SW
-// `trace_border` uses cv2's direction encoding inline; no module-level
-// direction tables needed.
+// `trace_border` uses its 8-direction encoding inline; no module-level tables needed.
 
 /// Minimum image area in pixels above which binarisation is parallelised via Rayon
 const PARALLEL_THRESHOLD: usize = 1920 * 1080;
@@ -93,9 +91,13 @@ pub struct ContoursView<'a> {
 
 impl<'a> ContoursView<'a> {
     /// Number of contours in the view.
-    pub fn len(&self) -> usize { self.ranges.len() }
+    pub fn len(&self) -> usize {
+        self.ranges.len()
+    }
     /// Returns true if there are no contours.
-    pub fn is_empty(&self) -> bool { self.ranges.is_empty() }
+    pub fn is_empty(&self) -> bool {
+        self.ranges.is_empty()
+    }
     /// Borrow the i-th contour as a slice. Panics if `i >= self.len()`.
     pub fn contour(&self, i: usize) -> &'a [[i32; 2]] {
         &self.arena[self.ranges[i].clone()]
@@ -110,10 +112,10 @@ impl<'a> ContoursView<'a> {
 /// Neighbour offsets pre-computed from the padded-image stride.
 ///
 /// The trace function only needs the "N" entry to recover the padded-buffer
-/// stride; cv2-style 16-entry deltas are computed inline. We keep the 8-entry
+/// stride; the full 16-entry deltas are computed inline. We keep the 8-entry
 /// table here so `TracerOffsets` retains a stable role across future tweaks.
 struct TracerOffsets {
-    /// Flat-offset per direction in kornia's encoding (dir 2 = N = -padded_w).
+    /// Flat-offset per direction (dir 2 = N = -padded_w).
     o8: [isize; 8],
 }
 
@@ -256,7 +258,6 @@ impl FindContoursExecutor {
         method: ContourApproximationMode,
     ) -> Result<ContoursResult, ContoursError> {
         // Algorithm scan: fills self.buffers (arena, ranges, hierarchy, border_types).
-        // execute_scan also reverses contour direction to match OpenCV's CCW convention.
         self.execute_scan(src, mode, method)?;
 
         // Collect per-contour owned Vecs. THIS IS THE EXPENSIVE STEP for sparse
@@ -361,15 +362,12 @@ impl FindContoursExecutor {
 
         for r in 1..=height {
             // `lnbd` carries the unsigned NBD of the most-recently-crossed
-            // border (for parent lookup). `lnbd_pos` is the offset in
-            // `img_slice` of that marker — cv2 reads `img0[lnbd_x] > 0`
-            // dynamically (the marker value at that position). usize::MAX
-            // = "no marker seen yet this row".
+            // border (for parent lookup).
             let mut lnbd: i16 = 1;
-            let mut lnbd_pos: usize = usize::MAX;
-            // Cached EXT-skip predicate: `img0[lnbd] > 0 && lnbd's border is an Outer`.
-            // Updated whenever lnbd_pos is updated (top-of-loop marker crossing
-            // or post-trace) so the per-event skip check is O(1).
+            // Cached EXTERNAL-skip predicate: are we currently inside an
+            // outer's marked region. Updated only when the scan crosses a
+            // marker (top of loop) or a trace finishes — so the per-event
+            // skip check stays O(1).
             let mut lnbd_inside_outer: bool = false;
             let row_base = r * padded_w;
             let mut c = 1usize;
@@ -381,41 +379,38 @@ impl FindContoursExecutor {
 
                 // SAFETY: row_base + c is always in the interior of img_slice.
                 #[cfg(feature = "profile_contours")]
-                { _scalar_iters += 1; }
+                {
+                    _scalar_iters += 1;
+                }
 
                 let pixel = unsafe { *img_ptr.add(row_base + c) };
 
-                // Update lnbd + signed pixel if we just crossed a marker.
-                // The signed pixel is what cv2 actually checks
-                // (cvFindNextContour:1131: `img0[lnbd_y, lnbd_x] > 0`).
-                // For RETR_EXTERNAL, "we are inside an outer" iff the most
-                // recent marker we crossed was a POSITIVE +nbd (left edge of
-                // an outer). After crossing a -nbd marker (right edge), we
-                // have exited that outer.
-                if pixel > 1 || pixel < -1 {
+                // Marker crossing: pixel is +nbd (left edge of an outer) or
+                // -nbd (right edge). For EXTERNAL we are "inside an outer"
+                // iff the most recent marker we crossed was positive.
+                // pixel is a marker iff it's outside the [-1, 1] range.
+                if !(-1..=1).contains(&pixel) {
                     let abs_nbd = pixel.unsigned_abs() as i16;
                     lnbd = abs_nbd;
-                    lnbd_pos = row_base + c;
-                    // Refresh the cached EXT-skip predicate. In EXTERNAL
-                    // mode every traced contour is an Outer (Holes are
-                    // skipped before trace fires), so the only thing the
-                    // predicate hinges on is the marker's sign:
-                    //   +nbd  →  inside an outer (we'll skip nested starts)
-                    //   -nbd  →  exited the outer
-                    // For LIST mode this cache is not consulted, so the
-                    // simplification is safe there too.
+                    // Refresh the cached EXTERNAL-skip predicate. In EXTERNAL
+                    // mode every traced contour is an Outer (Holes are skipped
+                    // before trace fires), so the only thing the predicate
+                    // hinges on is the marker's sign. For LIST mode this cache
+                    // is not consulted; updating it is harmless.
                     lnbd_inside_outer = pixel > 0 && abs_nbd >= 2;
                 }
 
                 // batch advance over zero runs
                 if pixel == 0 {
                     #[cfg(feature = "profile_contours")]
-                    { _zero_skip_hits += 1; }
+                    {
+                        _zero_skip_hits += 1;
+                    }
                     c += 1;
-                    // NEON: scan 8 i16 lanes per iteration for the next non-zero,
-                    // following OpenCV's stateful-scan pattern (compare with prev,
-                    // bit-scan-forward to find the first transition). This is
-                    // ~2× the SWAR throughput (8 lanes vs 4) on aarch64.
+                    // NEON: scan 8 i16 lanes per iteration for the next
+                    // non-zero (compare with zero, bit-scan-forward to find
+                    // the first transition). ~2× the SWAR throughput
+                    // (8 lanes vs 4) on aarch64.
                     #[cfg(target_arch = "aarch64")]
                     unsafe {
                         use std::arch::aarch64::*;
@@ -423,7 +418,7 @@ impl FindContoursExecutor {
                         while c + 8 <= width {
                             let v = vld1q_s16(img_ptr.add(row_base + c) as *const i16);
                             let eq_zero = vceqq_s16(v, zero); // 0xFFFF where == 0
-                            // Cast to u8 narrow-down: top byte of each u16 → bit per lane
+                                                              // Cast to u8 narrow-down: top byte of each u16 → bit per lane
                             let narrowed = vshrn_n_u16(eq_zero, 8); // uint8x8_t
                             let bits = vreinterpret_u64_u8(narrowed);
                             let bits_u64: u64 = vget_lane_u64(bits, 0);
@@ -457,36 +452,18 @@ impl FindContoursExecutor {
 
                 if is_outer || is_hole {
                     #[cfg(feature = "profile_contours")]
-                    { _start_hits += 1; }
+                    {
+                        _start_hits += 1;
+                    }
 
-                    // RETR_EXTERNAL fast path (mirrors cv2's
-                    // cvFindNextContour:1131):
-                    //   if is_hole OR lnbd refers to an Outer → skip trace
-                    //
-                    // Holes are skipped because RETR_EXTERNAL discards
-                    // them anyway. Outers nested inside another outer
-                    // (lnbd_is_outer) are also discarded by EXTERNAL
-                    // semantics, so we skip those too.
-                    //
-                    // Skipping means: don't trace, don't mark, don't
-                    // create hierarchy entries, just continue scanning.
-                    // The reason this works without re-detection: cv2's
-                    // scan tracks lnbd via marker crossings (above), so
-                    // when the next is_outer would-fire fires (e.g. exiting
-                    // a dark blob inside the bg outer), lnbd still points
-                    // to the bg outer and the skip fires again.
-                    if matches!(mode, RetrievalMode::External) {
-                        // cv2 RETR_EXTERNAL skip rule (cvFindNextContour:1131):
-                        //   if (mode == 0 && (is_hole || img0[lnbd] > 0))
-                        //     goto resume_scan;
-                        //
-                        // `lnbd_inside_outer` is the cached form of that
-                        // predicate (refreshed only on lnbd updates), so
-                        // the hot path is a single bool test.
-                        if is_hole || lnbd_inside_outer {
-                            c += 1;
-                            continue 'col;
-                        }
+                    // EXTERNAL fast path: skip the trace if this start would
+                    // be discarded by EXTERNAL semantics anyway — holes
+                    // (always discarded) and outers nested inside another
+                    // outer (also discarded). The scan keeps going so the
+                    // *next* start that's a true top-level outer can fire.
+                    if matches!(mode, RetrievalMode::External) && (is_hole || lnbd_inside_outer) {
+                        c += 1;
+                        continue 'col;
                     }
 
                     if nbd == i16::MAX {
@@ -536,17 +513,16 @@ impl FindContoursExecutor {
                     self.buffers.border_types.push(border_type);
                     self.buffers.ranges.push(range);
                     lnbd = nbd;
-                    // cv2 unconditionally sets `lnbd.x = x - is_hole` after
-                    // processing a contour (contours.cpp:1193). Refresh the
-                    // cached EXT-skip predicate too — the start pixel was
-                    // just marked +nbd or -nbd by trace_border, and we know
-                    // its border_type without a Vec lookup.
-                    lnbd_pos = idx;
+                    // Refresh the cached EXTERNAL-skip predicate after the
+                    // trace marked the start cell ±nbd. No border_types
+                    // lookup needed because only outers reach this branch.
                     let val_at_idx = unsafe { *img_ptr.add(idx) };
                     lnbd_inside_outer = val_at_idx > 0 && is_outer;
                 } else if pixel == 1 {
                     #[cfg(feature = "profile_contours")]
-                    { _one_skip_hits += 1; }
+                    {
+                        _one_skip_hits += 1;
+                    }
                     // Interior 1-pixel: NEON-skip whole chunks of all-1s.
                     // For chunks with any non-1 lane, fall through to the
                     // existing scalar SWAR which has the correct hole-start
@@ -591,7 +567,9 @@ impl FindContoursExecutor {
                     continue 'col;
                 } else {
                     #[cfg(feature = "profile_contours")]
-                    { _labeled_hits += 1; }
+                    {
+                        _labeled_hits += 1;
+                    }
                     // Marker pixel — top-of-loop already updated lnbd/lnbd_pos.
                 }
 
@@ -599,9 +577,8 @@ impl FindContoursExecutor {
             }
         }
 
-        // No post-trace reversal: `trace_border` emits points in cv2's
-        // CCW-for-outer order natively (the direction encoding is cv2's,
-        // and cv2's walk is CCW in that encoding).
+        // No post-trace reversal: `trace_border` emits points in CCW-for-outer
+        // order natively given its direction encoding.
 
         // Suppress "unused mode" warning — actual filter happens in execute().
         let _ = mode;
@@ -610,8 +587,7 @@ impl FindContoursExecutor {
         {
             let init_ns = _t_after_init.duration_since(_t_start).as_nanos();
             let bin_ns = _t_after_binarize.duration_since(_t_after_init).as_nanos();
-            let total_ns = _t_after_binarize.elapsed().as_nanos()
-                + bin_ns + init_ns;
+            let total_ns = _t_after_binarize.elapsed().as_nanos() + bin_ns + init_ns;
             let scan_total = _t_after_binarize.elapsed().as_nanos();
             let scan_minus_trace = scan_total.saturating_sub(_trace_border_total_ns);
             eprintln!(
@@ -661,24 +637,23 @@ impl FindContoursExecutor {
         }
     }
 
-    /// Trace one contour using cv2's `icvFetchContour`
-    /// (`modules/imgproc/src/contours.cpp:511-620`).
+    /// Trace one contour using the Suzuki/Abe border-following algorithm.
     ///
-    /// Direction encoding is cv2's CCW-incrementing layout
-    /// (0=E, 1=NE, 2=N, 3=NW, 4=W, 5=SW, 6=S, 7=SE) so the loop mirrors
-    /// the C source line-for-line. Output points are kornia's image-coord
-    /// `[col-1, row-1]`. The post-trace CCW reversal in `execute_scan`
-    /// is skipped — this trace emits CCW natively (cv2 walks in cv2's
-    /// direction encoding which produces CCW directly).
+    /// Direction encoding is the CCW-incrementing layout
+    /// (0=E, 1=NE, 2=N, 3=NW, 4=W, 5=SW, 6=S, 7=SE). Output points are
+    /// in image coords `[col-1, row-1]` (subtracting the 1-pixel padding).
+    /// Output is in CCW-for-outer order natively, so no post-process
+    /// reversal is needed in `execute_scan`.
     ///
-    /// Marking convention:
+    /// Marking convention (the wrap-detection rule that distinguishes left
+    /// edges from right edges):
     /// - `(unsigned)(s - 1) < (unsigned)s_end`  →  mark `-nbd` (right edge)
     /// - else if pixel was raw `1`              →  mark `+nbd` (left edge)
     ///
     /// `IS_OUTER` is a const generic so the compiler emits a specialised
-    /// instance per branch; `is_hole` traces start scanning at direction 0,
-    /// outers at direction 4. The const value also constant-folds the
-    /// initial `s_end = is_outer ? 4 : 0` decision.
+    /// instance per branch; the initial `s_end = IS_OUTER ? 4 : 0`
+    /// constant-folds away in each instance. Outer traces start scanning
+    /// from direction 4 (W); hole traces from direction 0 (E).
     #[inline(always)]
     fn trace_border<const IS_OUTER: bool>(
         img: *mut i16,
@@ -695,29 +670,42 @@ impl FindContoursExecutor {
         } = ts;
         let arena_start = arena.len();
 
-        // Padded-buffer step (= padded_w). Recovered from `_toff.o8`'s
-        // "N" entry: dir 2 in the kornia-encoded offset table is N = -padded_w.
-        // The caller already builds `_toff`; deriving avoids an extra parameter.
+        // Padded-buffer step (= padded_w). Recovered from `_toff.o8`'s "N"
+        // entry: dir 2 in the offset table is N = -padded_w. The caller
+        // already builds `_toff`; deriving here avoids an extra parameter.
         let pw: isize = -_toff.o8[2];
 
-        // cv2's deltas[16] (8 + duplicate). cv2 uses MAX_SIZE=16 so the
-        // forward scan can pre-increment without modulo until masking later.
+        // 8 directions duplicated to 16 so the forward scan can
+        // pre-increment without modulo, masking with `& 7` after.
         let deltas: [isize; 16] = [
-            1,        -pw + 1,  -pw,       -pw - 1,
-            -1,       pw - 1,   pw,        pw + 1,
-            1,        -pw + 1,  -pw,       -pw - 1,
-            -1,       pw - 1,   pw,        pw + 1,
+            1,
+            -pw + 1,
+            -pw,
+            -pw - 1,
+            -1,
+            pw - 1,
+            pw,
+            pw + 1,
+            1,
+            -pw + 1,
+            -pw,
+            -pw - 1,
+            -1,
+            pw - 1,
+            pw,
+            pw + 1,
         ];
-        // icvCodeDeltas — pixel (dx, dy) per cv2 direction
-        const CODE_DX: [i32; 8] = [1,  1,  0, -1, -1, -1,  0,  1];
-        const CODE_DY: [i32; 8] = [0, -1, -1, -1,  0,  1,  1,  1];
+        // Pixel (dx, dy) per direction (parallel to `deltas` modulo the
+        // padded stride): used to advance the emitted point.
+        const CODE_DX: [i32; 8] = [1, 1, 0, -1, -1, -1, 0, 1];
+        const CODE_DY: [i32; 8] = [0, -1, -1, -1, 0, 1, 1, 1];
 
         let i0_idx = start_idx;
         // pt = (col-1, row-1) in image coords
         let mut pt_x: i32 = start_col - 1;
         let mut pt_y: i32 = start_row - 1;
 
-        // s_end = s = is_hole ? 0 : 4 (cv2 line 536)
+        // Initial scan direction: outers start at W (4), holes at E (0).
         let mut s_end: i32 = if IS_OUTER { 4 } else { 0 };
         let mut s: i32 = s_end;
         let mut i1_idx: usize;
@@ -760,7 +748,9 @@ impl FindContoursExecutor {
             }
             s = new_s & 7;
 
-            // Wrap-detection marking — the cv2 secret sauce.
+            // Wrap-detection marking: -nbd if the forward scan wrapped
+            // through direction 0 to find the next neighbour, else +nbd
+            // when the cell was still raw (= 1).
             let cur = unsafe { *img.add(i3_idx) };
             if ((s - 1) as u32) < (s_end as u32) {
                 unsafe { *img.add(i3_idx) = -nbd };
@@ -796,7 +786,6 @@ impl FindContoursExecutor {
 
         arena_start..arena.len()
     }
-
 
     // Update hierarchy tree to insert new border with given parent
     #[inline(always)]
@@ -945,37 +934,36 @@ impl Default for FindContoursExecutor {
 fn binarize_row(src: &[u8], dst: &mut [i16]) {
     debug_assert_eq!(src.len(), dst.len());
     #[cfg(target_arch = "aarch64")]
-    unsafe {
-        use std::arch::aarch64::*;
-        let n = src.len();
-        let mut i = 0;
-        let zero_u8 = vdupq_n_u8(0);
-        let one_u8 = vdupq_n_u8(1);
-        while i + 16 <= n {
-            // Load 16 u8 source pixels
-            let v = vld1q_u8(src.as_ptr().add(i));
-            // mask = (v != 0) as 0xFF or 0x00 per byte
-            let eq_zero = vceqq_u8(v, zero_u8);
-            let nonzero_mask = vmvnq_u8(eq_zero); // 0xFF where != 0
-            let bits = vandq_u8(nonzero_mask, one_u8); // 0 or 1 per byte
-            // Widen low 8 bytes to u16x8, then high 8 bytes — store as i16
-            let lo = vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(bits)));
-            let hi = vreinterpretq_s16_u16(vmovl_high_u8(bits));
-            vst1q_s16(dst.as_mut_ptr().add(i), lo);
-            vst1q_s16(dst.as_mut_ptr().add(i + 8), hi);
-            i += 16;
+    {
+        unsafe {
+            use std::arch::aarch64::*;
+            let n = src.len();
+            let mut i = 0;
+            let zero_u8 = vdupq_n_u8(0);
+            let one_u8 = vdupq_n_u8(1);
+            while i + 16 <= n {
+                // Load 16 u8 source pixels
+                let v = vld1q_u8(src.as_ptr().add(i));
+                // mask = (v != 0) as 0xFF or 0x00 per byte
+                let eq_zero = vceqq_u8(v, zero_u8);
+                let nonzero_mask = vmvnq_u8(eq_zero); // 0xFF where != 0
+                let bits = vandq_u8(nonzero_mask, one_u8); // 0 or 1 per byte
+                                                           // Widen low 8 bytes to u16x8, then high 8 bytes — store as i16
+                let lo = vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(bits)));
+                let hi = vreinterpretq_s16_u16(vmovl_high_u8(bits));
+                vst1q_s16(dst.as_mut_ptr().add(i), lo);
+                vst1q_s16(dst.as_mut_ptr().add(i + 8), hi);
+                i += 16;
+            }
+            // Tail
+            for j in i..n {
+                *dst.get_unchecked_mut(j) = (*src.get_unchecked(j) != 0) as i16;
+            }
         }
-        // Tail
-        for j in i..n {
-            *dst.get_unchecked_mut(j) = (*src.get_unchecked(j) != 0) as i16;
-        }
-        return;
     }
     #[cfg(not(target_arch = "aarch64"))]
-    {
-        for (d, &s) in dst.iter_mut().zip(src.iter()) {
-            *d = (s != 0) as i16;
-        }
+    for (d, &s) in dst.iter_mut().zip(src.iter()) {
+        *d = (s != 0) as i16;
     }
 }
 
@@ -984,7 +972,6 @@ const _: () = {
     fn assert_send<T: Send>() {}
     let _ = assert_send::<FindContoursExecutor>;
 };
-
 
 /// Convenience API for finding contours without reusing buffers.
 ///

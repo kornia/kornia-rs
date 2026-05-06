@@ -4,12 +4,16 @@
 //! Usage: cargo run --release --example bench_contours_min -p kornia-imgproc
 
 use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
-use kornia_imgproc::contours::{
-    find_contours, ContourApproximationMode, FindContoursExecutor, RetrievalMode,
-};
+use kornia_imgproc::contours::{ContourApproximationMode, FindContoursExecutor, RetrievalMode};
 use std::time::Instant;
 
-const SIZES: &[(usize, usize)] = &[(128, 128), (256, 256), (512, 512), (1024, 1024), (2048, 2048)];
+const SIZES: &[(usize, usize)] = &[
+    (128, 128),
+    (256, 256),
+    (512, 512),
+    (1024, 1024),
+    (2048, 2048),
+];
 const REPS: usize = 20;
 const WARMUP: usize = 5;
 
@@ -69,8 +73,15 @@ fn run_one(
     retrieval: RetrievalMode,
     approx: ContourApproximationMode,
 ) {
-    let img = Image::<u8, 1, _>::new(ImageSize { width: w, height: h }, data, CpuAllocator)
-        .expect("kornia image");
+    let img = Image::<u8, 1, _>::new(
+        ImageSize {
+            width: w,
+            height: h,
+        },
+        data,
+        CpuAllocator,
+    )
+    .expect("kornia image");
     let mut exec = FindContoursExecutor::new();
 
     // --- find_contours (current API: per-contour Vec allocation) ---
@@ -87,7 +98,10 @@ fn run_one(
     let pix_per_s = (w * h) as f64 / md / 1e6;
     println!(
         "kornia,{label},{w}x{h},{:.1},{:.1},{:.1},{:.1}",
-        mn * 1e6, md * 1e6, mu * 1e6, pix_per_s
+        mn * 1e6,
+        md * 1e6,
+        mu * 1e6,
+        pix_per_s
     );
 
     // --- find_contours_view (zero-copy view into the executor's arena) ---
@@ -104,7 +118,10 @@ fn run_one(
     let pix_per_s = (w * h) as f64 / md / 1e6;
     println!(
         "kornia_view,{label},{w}x{h},{:.1},{:.1},{:.1},{:.1}",
-        mn * 1e6, md * 1e6, mu * 1e6, pix_per_s
+        mn * 1e6,
+        md * 1e6,
+        mu * 1e6,
+        pix_per_s
     );
 }
 
@@ -117,13 +134,25 @@ fn load_test_image(path: &str) -> Option<(usize, usize, Vec<u8>)> {
     let (w, h) = (rgb.width(), rgb.height());
     // 2. RGB → gray via kornia-imgproc
     let mut gray = Image::<u8, 1, _>::from_size_val(
-        ImageSize { width: w, height: h }, 0, CpuAllocator,
-    ).unwrap();
+        ImageSize {
+            width: w,
+            height: h,
+        },
+        0,
+        CpuAllocator,
+    )
+    .unwrap();
     kornia_imgproc::color::gray_from_rgb_u8(&rgb, &mut gray).ok()?;
     // 3. Binarize at threshold 127 → 0 or 1 (matches bench_contours.rs convention)
     let mut bw = Image::<u8, 1, _>::from_size_val(
-        ImageSize { width: w, height: h }, 0, CpuAllocator,
-    ).unwrap();
+        ImageSize {
+            width: w,
+            height: h,
+        },
+        0,
+        CpuAllocator,
+    )
+    .unwrap();
     kornia_imgproc::threshold::threshold_binary(&gray, &mut bw, 127, 1).ok()?;
     Some((w, h, bw.as_slice().to_vec()))
 }
@@ -134,14 +163,29 @@ fn main() {
 
     // === Real-world OpenCV tutorial images ===
     for (label, path) in [
-        ("pic1_external_simple", "crates/kornia-imgproc/examples/data/pic1.png"),
-        ("pic2_external_simple", "crates/kornia-imgproc/examples/data/pic2.png"),
-        ("pic3_external_simple", "crates/kornia-imgproc/examples/data/pic3.png"),
-        ("pic4_external_simple", "crates/kornia-imgproc/examples/data/pic4.png"),
+        (
+            "pic1_external_simple",
+            "crates/kornia-imgproc/examples/data/pic1.png",
+        ),
+        (
+            "pic2_external_simple",
+            "crates/kornia-imgproc/examples/data/pic2.png",
+        ),
+        (
+            "pic3_external_simple",
+            "crates/kornia-imgproc/examples/data/pic3.png",
+        ),
+        (
+            "pic4_external_simple",
+            "crates/kornia-imgproc/examples/data/pic4.png",
+        ),
     ] {
         match load_test_image(path) {
             Some((w, h, data)) => run_one(
-                label, w, h, data,
+                label,
+                w,
+                h,
+                data,
                 RetrievalMode::External,
                 ContourApproximationMode::Simple,
             ),
@@ -150,17 +194,33 @@ fn main() {
     }
     // pic2_list_simple: 5723 contours — stress test
     if let Some((w, h, data)) = load_test_image("crates/kornia-imgproc/examples/data/pic1.png") {
-        run_one("pic1_list_simple", w, h, data, RetrievalMode::List, ContourApproximationMode::Simple);
+        run_one(
+            "pic1_list_simple",
+            w,
+            h,
+            data,
+            RetrievalMode::List,
+            ContourApproximationMode::Simple,
+        );
     }
     if let Some((w, h, data)) = load_test_image("crates/kornia-imgproc/examples/data/pic4.png") {
-        run_one("pic4_list_simple", w, h, data, RetrievalMode::List, ContourApproximationMode::Simple);
+        run_one(
+            "pic4_list_simple",
+            w,
+            h,
+            data,
+            RetrievalMode::List,
+            ContourApproximationMode::Simple,
+        );
     }
 
     // === Synthetic fixtures (kept for stress testing) ===
     for &(w, h) in SIZES {
         run_one(
             "filled_square_external_simple",
-            w, h, make_filled_square(w, h),
+            w,
+            h,
+            make_filled_square(w, h),
             RetrievalMode::External,
             ContourApproximationMode::Simple,
         );
@@ -168,7 +228,9 @@ fn main() {
     for &(w, h) in SIZES {
         run_one(
             "hollow_square_external_simple",
-            w, h, make_hollow_square(w, h),
+            w,
+            h,
+            make_hollow_square(w, h),
             RetrievalMode::External,
             ContourApproximationMode::Simple,
         );
@@ -176,7 +238,9 @@ fn main() {
     for &(w, h) in SIZES {
         run_one(
             "sparse_noise_external_simple",
-            w, h, make_noise(w, h, 0xC0FFEE),
+            w,
+            h,
+            make_noise(w, h, 0xC0FFEE),
             RetrievalMode::External,
             ContourApproximationMode::Simple,
         );
@@ -185,7 +249,9 @@ fn main() {
     for &(w, h) in SIZES {
         run_one(
             "filled_square_external_none",
-            w, h, make_filled_square(w, h),
+            w,
+            h,
+            make_filled_square(w, h),
             RetrievalMode::External,
             ContourApproximationMode::None,
         );
