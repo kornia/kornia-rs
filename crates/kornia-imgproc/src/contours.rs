@@ -356,19 +356,15 @@ impl FindContoursExecutor {
                 // SAFETY: row_base + c is always in the interior of img_slice.
                 let pixel = unsafe { *img_ptr.add(row_base + c) };
 
-                // Marker crossing: pixel is +nbd (left edge of an outer) or
-                // -nbd (right edge). For EXTERNAL we are "inside an outer"
-                // iff the most recent marker we crossed was positive.
-                // pixel is a marker iff it's outside the [-1, 1] range.
+                // Marker crossing: pixel ≤ -2 (right edge) or pixel ≥ 2 (left
+                // edge). Inside this branch |pixel| ≥ 2 by construction, so
+                // `pixel > 0` is enough — the redundant `abs_nbd >= 2` check
+                // is gone. In EXTERNAL mode every traced contour is an Outer
+                // (Holes are skipped pre-trace), so the predicate only depends
+                // on the marker's sign.
                 if !(-1..=1).contains(&pixel) {
-                    let abs_nbd = pixel.unsigned_abs() as i16;
-                    lnbd = abs_nbd;
-                    // Refresh the cached EXTERNAL-skip predicate. In EXTERNAL
-                    // mode every traced contour is an Outer (Holes are skipped
-                    // before trace fires), so the only thing the predicate
-                    // hinges on is the marker's sign. For LIST mode this cache
-                    // is not consulted; updating it is harmless.
-                    lnbd_inside_outer = pixel > 0 && abs_nbd >= 2;
+                    lnbd = pixel.unsigned_abs() as i16;
+                    lnbd_inside_outer = pixel > 0;
                 }
 
                 // batch advance over zero runs
