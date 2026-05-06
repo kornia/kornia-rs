@@ -4,6 +4,41 @@
 **Goal:** make `find_contours` produce coordinate-by-coordinate identical output to `cv2.findContours` across all 4 fixtures (pic1-4) × 2 modes (EXTERNAL, LIST) × 2 methods (SIMPLE, NONE), without losing the ~3× perf margin we already have on pic4.
 **Non-goal:** re-implement RETR_CCOMP / RETR_TREE parity (out of scope; current users want EXTERNAL).
 
+## What the gap actually looks like (from `analyze_pic4_gap.py`)
+
+Empirical investigation of pic4 EXT, after phase 0 landed:
+
+```
+kornia: 846 contours, cv2: 881 contours, gap: 35
+  starts only in cv2:    107
+  starts only in kornia:  71
+  common starts:         775
+```
+
+So **~92% of pic4's outer contours have identical start points** between
+kornia and cv2. The remaining 178 starts disagree (107 + 71); the net
+difference of 35 happens because cv2's disagreements happen to merge into
+contour-counts that aren't fully balanced by kornia's disagreements.
+
+Topology histograms of the disagreement sets:
+```
+cv2-only:    01111000×44, 00111000×26, 00000000×13, 01110000×6, ...
+kornia-only: 01111000×18, 01110000×16, 00111000×10, 00000000×8, ...
+```
+
+The two lists share **7 of the same 8-conn topology signatures** — meaning
+both implementations *find the same contour blob*, but pick a different
+start pixel (typically off by 1 row or 1 column). This is the smoking gun
+for "marking convention divergence" — when cv2 marks the start of a
+multi-row outer as `-nbd`, the next-row scan crosses into "outside"
+state at a different column than kornia's `+nbd`-marked equivalent,
+producing a shifted re-detection on the row below.
+
+Implication: a targeted patch to the start-marking heuristic CAN'T close
+the gap — the disagreement is per-pixel and depends on the trace's full
+direction history, which is exactly what cv2's wrapped-direction marking
+encodes. Phase 1 (full port of `icvFetchContour`) is the right scope.
+
 ## Where we are today (2026-05-06)
 
 `check_correctness.py` results after commit `b4c1444`:

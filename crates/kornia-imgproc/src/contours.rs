@@ -529,10 +529,21 @@ impl FindContoursExecutor {
                     // non-zero). Removing the runtime branch from the
                     // hot 8-conn neighbor scan is worth a small but
                     // measurable win on contour-heavy fixtures (pic4).
+                    //
+                    // Under `contours_cv2_parity` feature: route to
+                    // trace_border_cv2 instead — the in-progress port
+                    // of cv2's `icvFetchContour`. See spec for status.
+                    #[cfg(not(feature = "contours_cv2_parity"))]
                     let range = if is_outer {
                         Self::trace_border::<true>(img_ptr, ts, &toff, &mut self.buffers.arena)
                     } else {
                         Self::trace_border::<false>(img_ptr, ts, &toff, &mut self.buffers.arena)
+                    };
+                    #[cfg(feature = "contours_cv2_parity")]
+                    let range = if is_outer {
+                        Self::trace_border_cv2::<true>(img_ptr, ts, &toff, &mut self.buffers.arena)
+                    } else {
+                        Self::trace_border_cv2::<false>(img_ptr, ts, &toff, &mut self.buffers.arena)
                     };
                     #[cfg(feature = "profile_contours")]
                     {
@@ -846,6 +857,30 @@ impl FindContoursExecutor {
         }
 
         arena_start..arena.len()
+    }
+
+    /// Experimental cv2-parity trace path (gated by `contours_cv2_parity`
+    /// feature). When complete, mirrors cv2's `icvFetchContour` byte-for-byte:
+    /// wrapped-direction marking + cv2 halt rule + cv2 emission timing +
+    /// cv2 SIMPLE-mode chain compression — landing as a coherent unit so
+    /// the four pieces that depend on each other don't get split.
+    ///
+    /// **Phase 1 status (current):** stub — delegates to the existing
+    /// `trace_border`. The feature is a behavioural no-op for now; the
+    /// scaffolding is in place so phase 1's marking port can land
+    /// incrementally without churning the call site or the dispatch.
+    ///
+    /// See `docs/superpowers/specs/2026-05-06-find-contours-cv2-parity.md`.
+    #[cfg(feature = "contours_cv2_parity")]
+    #[allow(dead_code)]
+    fn trace_border_cv2<const IS_OUTER: bool>(
+        img: *mut i16,
+        ts: TracerStart,
+        toff: &TracerOffsets,
+        arena: &mut Vec<[i32; 2]>,
+    ) -> Range<usize> {
+        // TODO(phase 1): replace with cv2's main loop (marking + halt + emission).
+        Self::trace_border::<IS_OUTER>(img, ts, toff, arena)
     }
 
 
