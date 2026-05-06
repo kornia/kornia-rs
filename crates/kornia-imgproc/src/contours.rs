@@ -14,49 +14,6 @@ use kornia_image::{allocator::ImageAllocator, Image};
 use rayon::prelude::*;
 use std::ops::Range;
 
-/// Trait abstracting over the work-buffer pixel type. We support `i16` (the default,
-/// up to ±32767 borders — works for all real-world images) and `i8` (compact,
-/// up to ±127 borders — 2× memory bandwidth win for small-contour images).
-///
-/// The dispatcher in `find_contours` tries `i8` first, falling back to `i16` on
-/// `NbdOverflow`, so callers don't need to choose explicitly.
-pub trait WorkPixel: Copy + Default + PartialEq + 'static {
-    /// Constant 0 (background marker).
-    const ZERO: Self;
-    /// Constant 1 (foreground unlabeled marker).
-    const ONE: Self;
-    /// Maximum positive value (overflow trigger for `nbd`).
-    const NBD_MAX: i32;
-    /// Construct from an i32 nbd value (positive or negative).
-    fn from_i32(v: i32) -> Self;
-    /// Promote to i32 for arithmetic.
-    fn to_i32(self) -> i32;
-    /// Absolute value as i32 for `lnbd` updates.
-    fn abs_i32(self) -> i32;
-    /// True iff value < 0.
-    fn is_negative(self) -> bool;
-}
-
-impl WorkPixel for i16 {
-    const ZERO: Self = 0;
-    const ONE: Self = 1;
-    const NBD_MAX: i32 = i16::MAX as i32;
-    #[inline(always)] fn from_i32(v: i32) -> Self { v as i16 }
-    #[inline(always)] fn to_i32(self) -> i32 { self as i32 }
-    #[inline(always)] fn abs_i32(self) -> i32 { (self as i32).abs() }
-    #[inline(always)] fn is_negative(self) -> bool { self < 0 }
-}
-
-impl WorkPixel for i8 {
-    const ZERO: Self = 0;
-    const ONE: Self = 1;
-    const NBD_MAX: i32 = i8::MAX as i32;
-    #[inline(always)] fn from_i32(v: i32) -> Self { v as i8 }
-    #[inline(always)] fn to_i32(self) -> i32 { self as i32 }
-    #[inline(always)] fn abs_i32(self) -> i32 { (self as i32).abs() }
-    #[inline(always)] fn is_negative(self) -> bool { self < 0 }
-}
-
 // Directions: 0=W 1=NW 2=N 3=NE 4=E 5=SE 6=S 7=SW
 const DIR_LUT: [usize; 9] = [1, 2, 3, 0, 0, 4, 7, 6, 5];
 const DIR_DR: [i32; 8] = [0, -1, -1, -1, 0, 1, 1, 1];
@@ -159,7 +116,9 @@ struct TracerOffsets {
     o16: [isize; 16],
 }
 
-/// Per-border start position and metadata, passed together to trace_border
+/// Per-border start position and metadata, passed together to trace_border.
+/// `is_outer` is *not* a field — the outer/hole specialisation is done at
+/// the call site via const-generic `trace_border::<true|false>`.
 struct TracerStart {
     idx: usize,
     row: i32,
@@ -167,11 +126,6 @@ struct TracerStart {
     dir: usize,
     nbd: i16,
     method: ContourApproximationMode,
-    /// True iff this is an outer-border trace. Used to gate the
-    /// "only walk on this contour's pixels" rule — outers must not
-    /// leak into adjacent sibling outers' marks; holes legitimately
-    /// walk on the parent outer's perimeter (which is marked).
-    is_outer: bool,
 }
 
 /// Heap buffers used by [`FindContoursExecutor`] for contour finding.
@@ -293,18 +247,6 @@ impl FindContoursExecutor {
             ranges: &self.buffers.ranges,
             hierarchy: &self.buffers.hierarchy,
         })
-    }
-
-    /// Internal: run the trace pass and fill buffers, but DO NOT do the per-contour
-    /// `to_vec` allocation. Used by `find_contours_view` (the fast path) and
-    /// indirectly by `execute` (which then collects owned vectors on top).
-    fn run_algorithm<A: ImageAllocator>(
-        &mut self,
-        src: &Image<u8, 1, A>,
-        mode: RetrievalMode,
-        method: ContourApproximationMode,
-    ) -> Result<(), ContoursError> {
-        self.execute_scan(src, mode, method)
     }
 
     fn execute<A: ImageAllocator>(
@@ -577,12 +519,21 @@ impl FindContoursExecutor {
                         dir: start_dir,
                         nbd,
                         method,
-                        is_outer,
                     };
 
                     #[cfg(feature = "profile_contours")]
                     let _t_trace = std::time::Instant::now();
-                    let range = Self::trace_border(img_ptr, ts, &toff, &mut self.buffers.arena);
+                    // Specialise the trace on `is_outer` — the inner
+                    // `belongs()` predicate differs (outers refuse to
+                    // walk onto sibling-outer markers; holes accept any
+                    // non-zero). Removing the runtime branch from the
+                    // hot 8-conn neighbor scan is worth a small but
+                    // measurable win on contour-heavy fixtures (pic4).
+                    let range = if is_outer {
+                        Self::trace_border::<true>(img_ptr, ts, &toff, &mut self.buffers.arena)
+                    } else {
+                        Self::trace_border::<false>(img_ptr, ts, &toff, &mut self.buffers.arena)
+                    };
                     #[cfg(feature = "profile_contours")]
                     {
                         _trace_border_total_ns += _t_trace.elapsed().as_nanos();
@@ -733,7 +684,7 @@ impl FindContoursExecutor {
 
     // Trace border per Suzuki-Abe algorithm, labeling pixels in-place
     #[inline(always)]
-    fn trace_border(
+    fn trace_border<const IS_OUTER: bool>(
         img: *mut i16,
         ts: TracerStart,
         toff: &TracerOffsets,
@@ -746,7 +697,6 @@ impl FindContoursExecutor {
             dir: start_dir,
             nbd,
             method,
-            is_outer,
         } = ts;
         let arena_start = arena.len();
 
@@ -759,8 +709,9 @@ impl FindContoursExecutor {
         // around the hole, some of which are the parent outer's marked
         // perimeter (must accept any non-zero).
         let neg_nbd = -nbd;
+        // const-generic IS_OUTER — branch fully constant-folds at monomorphisation.
         let belongs = |v: i16| -> bool {
-            if is_outer {
+            if IS_OUTER {
                 v == 1 || v == nbd || v == neg_nbd
             } else {
                 v != 0
@@ -886,7 +837,7 @@ impl FindContoursExecutor {
         // condition before the left-edge condition for such corners. We
         // match cv2's resulting state without changing the iteration
         // mechanics (which would break hole detection on hollow shapes).
-        if is_outer {
+        if IS_OUTER {
             let start_left = unsafe { *img.add(start_idx - 1) };
             let start_right = unsafe { *img.add(start_idx + 1) };
             if start_left == 0 && start_right == 0 {
@@ -897,112 +848,6 @@ impl FindContoursExecutor {
         arena_start..arena.len()
     }
 
-    /// Mark-only border trace — walks and marks border pixels (so the
-    /// scan loop won't re-detect them on the next row) but does NOT
-    /// emit points to the arena. Mirrors cv2's `icvTraceContour`
-    /// (`contours.cpp`, the `method < 0` path).
-    ///
-    /// Used in `RetrievalMode::External` mode for borders that the
-    /// post-filter would discard anyway (holes, and outers nested
-    /// inside a hole). On `pic2` (5722 holes inside one outer) this
-    /// drops per-trace cost by ~70-80% — we still walk the perimeter
-    /// to mark pixels, but skip the per-pixel arena push and the
-    /// SIMPLE-mode chain compression bookkeeping.
-    fn trace_border_mark_only(
-        img: *mut i16,
-        ts: TracerStart,
-        toff: &TracerOffsets,
-    ) {
-        let TracerStart {
-            idx: start_idx,
-            row: _,
-            col: _,
-            dir: start_dir,
-            nbd,
-            method: _,
-            is_outer,
-        } = ts;
-
-        // Same outer-only `belongs()` rule as trace_border. (See its
-        // comment for the why.)
-        let neg_nbd = -nbd;
-        let belongs = |v: i16| -> bool {
-            if is_outer {
-                v == 1 || v == nbd || v == neg_nbd
-            } else {
-                v != 0
-            }
-        };
-
-        let mut first_nb_idx = 0usize;
-        let mut first_nb_dir = 0usize;
-        let mut found = false;
-        for k in 0..8usize {
-            let d = start_dir + k;
-            let nb = (start_idx as isize + toff.o16[d & 7]) as usize;
-            if belongs(unsafe { *img.add(nb) }) {
-                first_nb_idx = nb;
-                first_nb_dir = d & 7;
-                found = true;
-                break;
-            }
-        }
-
-        if !found {
-            // SAFETY: start_idx is a valid interior pixel.
-            unsafe { *img.add(start_idx) = -nbd };
-            return;
-        }
-
-        let mut i2_idx = first_nb_idx;
-        let mut dir_in = first_nb_dir;
-
-        loop {
-            // SAFETY: i2_idx invariant: always an interior pixel.
-            debug_assert!(i2_idx > 0);
-            let cur = unsafe { *img.add(i2_idx) };
-            let left_nb = unsafe { *img.add(i2_idx - 1) };
-            let right_nb = unsafe { *img.add(i2_idx + 1) };
-
-            if left_nb == 0 && cur == 1 {
-                unsafe { *img.add(i2_idx) = nbd };
-            } else if right_nb == 0 && cur > 0 {
-                unsafe { *img.add(i2_idx) = -nbd };
-            }
-
-            let scan_start = (dir_in + 5) & 7;
-            let mut i3_idx = 0usize;
-            let mut dir_out = scan_start;
-            let mut found_next = false;
-
-            for k in 0..8usize {
-                let s = scan_start + k;
-                let nb = (i2_idx as isize + toff.o8[s & 7]) as usize;
-                if belongs(unsafe { *img.add(nb) }) {
-                    i3_idx = nb;
-                    dir_out = s & 7;
-                    found_next = true;
-                    break;
-                }
-            }
-
-            if !found_next {
-                break;
-            }
-
-            if i2_idx == start_idx && i3_idx == first_nb_idx {
-                break;
-            }
-
-            i2_idx = i3_idx;
-            dir_in = dir_out;
-        }
-
-        // SAFETY: start_idx interior pixel, may need final mark.
-        if unsafe { *img.add(start_idx) } == 1 {
-            unsafe { *img.add(start_idx) = nbd };
-        }
-    }
 
     // Update hierarchy tree to insert new border with given parent
     #[inline(always)]
@@ -1181,42 +1026,6 @@ fn binarize_row(src: &[u8], dst: &mut [i16]) {
     {
         for (d, &s) in dst.iter_mut().zip(src.iter()) {
             *d = (s != 0) as i16;
-        }
-    }
-}
-
-/// Binarize one row of u8 source pixels into i8 destination row of 0s and 1s.
-/// On aarch64 uses NEON to process 16 pixels per iteration — 2× the throughput
-/// of the i16 version because NEON loads/stores 16 i8 lanes per 128-bit register
-/// (vs 8 i16 lanes). Used by the compact-i8 fast path.
-#[inline]
-fn binarize_row_i8(src: &[u8], dst: &mut [i8]) {
-    debug_assert_eq!(src.len(), dst.len());
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        use std::arch::aarch64::*;
-        let n = src.len();
-        let mut i = 0;
-        let zero_u8 = vdupq_n_u8(0);
-        let one_u8 = vdupq_n_u8(1);
-        while i + 16 <= n {
-            let v = vld1q_u8(src.as_ptr().add(i));
-            let eq_zero = vceqq_u8(v, zero_u8);
-            let nonzero_mask = vmvnq_u8(eq_zero);
-            let bits = vandq_u8(nonzero_mask, one_u8);
-            // Direct store as i8 — no widening needed (1 byte per pixel)
-            vst1q_s8(dst.as_mut_ptr().add(i), vreinterpretq_s8_u8(bits));
-            i += 16;
-        }
-        for j in i..n {
-            *dst.get_unchecked_mut(j) = (*src.get_unchecked(j) != 0) as i8;
-        }
-        return;
-    }
-    #[cfg(not(target_arch = "aarch64"))]
-    {
-        for (d, &s) in dst.iter_mut().zip(src.iter()) {
-            *d = (s != 0) as i8;
         }
     }
 }

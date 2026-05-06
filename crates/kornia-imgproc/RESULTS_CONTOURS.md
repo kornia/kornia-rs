@@ -10,12 +10,12 @@ code.
 
 | fixture | cv2 EXT count | kornia count | match | cv2 time | kornia | margin |
 |---------|--------------:|-------------:|-------|---------:|-------:|-------:|
-| pic1.png 400×300 | 1 | 1 | exact ✓ | 88 μs | 81 μs | **1.09× faster** |
-| pic2.png 400×300 | 1 | 1 | exact ✓ | 513 μs | 565 μs | ~tied |
-| pic3.png 400×300 | 1 | 1 | exact ✓ | 90 μs | 83 μs | **1.09× faster** |
-| pic4.png 400×300 | 881 | 846 | 91.3% bbox-match | 2014 μs | 677 μs | **2.97× faster** |
+| pic1.png 400×300 | 1 | 1 | exact ✓ | 88 μs | 82 μs | **1.07× faster** |
+| pic2.png 400×300 | 1 | 1 | exact ✓ | 513 μs | 575 μs | ~tied |
+| pic3.png 400×300 | 1 | 1 | exact ✓ | 90 μs | 83 μs | **1.08× faster** |
+| pic4.png 400×300 | 881 | 846 | 91.3% bbox-match | 2014 μs | 675 μs | **2.98× faster** |
 
-Tests: 182/182 unit + 14/14 synthetic shape patterns pass.
+Tests: 182/182 unit + 5/5 real-image integration + 14/14 synthetic shape patterns pass.
 
 ## What changed in this branch
 
@@ -65,6 +65,14 @@ this trace only). Holes are exempt — they walk parent-outer
 markers legitimately. Marginal impact on pic4 (the leak wasn't
 the dominant cause), but a real correctness improvement that
 prevents future bugs.
+
+### 5. `trace_border` const-generic specialisation on `IS_OUTER`
+
+The outer/hole branch in the inner `belongs()` predicate was a
+runtime check on a closure capture. Promoted to a const generic
+parameter so the compiler emits two specialised instances. The
+hot 8-conn neighbor scan now constant-folds the branch away.
+Worth ~2% on pic4 EXT/LIST.
 
 ## Remaining gap (pic4 EXT, 5%)
 
