@@ -22,18 +22,36 @@ def lex_min(contour):
     return min(tuple(p) for p in contour)
 
 
+def trace_start(contour):
+    """First emitted point — the position where the scanner fired is_outer."""
+    return tuple(contour[0]) if contour else None
+
+
 def main():
     k = load("kornia_pic4_external_simple.json")
     o = load("cv2_pic4_external_simple.json")
     print(f"kornia: {len(k)} contours, cv2: {len(o)} contours, gap: {len(o)-len(k)}")
 
-    k_starts = {lex_min(c) for c in k}
-    o_starts = {lex_min(c) for c in o}
+    k_starts_lex = {lex_min(c) for c in k}
+    o_starts_lex = {lex_min(c) for c in o}
+    k_traces = {trace_start(c) for c in k if c}
+    o_traces = {trace_start(c) for c in o if c}
 
-    only_cv2 = sorted(o_starts - k_starts)
-    only_kornia = sorted(k_starts - o_starts)
-    print(f"\n  only in cv2: {len(only_cv2)} contour starts")
-    print(f"  only in kornia: {len(only_kornia)} contour starts")
+    only_cv2 = sorted(o_starts_lex - k_starts_lex)
+    only_kornia = sorted(k_starts_lex - o_starts_lex)
+    print(f"\n  by LEX-MIN of contour points:")
+    print(f"    only in cv2:    {len(only_cv2)}")
+    print(f"    only in kornia: {len(only_kornia)}")
+
+    only_cv2_traces = sorted(o_traces - k_traces)
+    only_kornia_traces = sorted(k_traces - o_traces)
+    print(f"\n  by TRACE-START (first emitted point — where the scanner fired is_outer):")
+    print(f"    only in cv2:    {len(only_cv2_traces)}")
+    print(f"    only in kornia: {len(only_kornia_traces)}")
+    if only_cv2_traces:
+        print(f"\n  first 10 trace-starts cv2 has but kornia doesn't (= scan-loop misses):")
+        for p in only_cv2_traces[:10]:
+            print(f"    {p}")
 
     img = cv2.imread("crates/kornia-imgproc/examples/data/pic4.png", cv2.IMREAD_GRAYSCALE)
     _, bw = cv2.threshold(img, 127, 1, cv2.THRESH_BINARY)

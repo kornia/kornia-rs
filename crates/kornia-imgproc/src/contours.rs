@@ -538,17 +538,16 @@ impl FindContoursExecutor {
                     self.buffers.border_types.push(border_type);
                     self.buffers.ranges.push(range);
                     lnbd = nbd;
-                    // After tracing, only update lnbd_pos if the start
-                    // pixel ended as +marker. Mirrors cv2's
-                    // `img0[lnbd] > 0` check — when the trace's start
-                    // ends as -nbd (e.g. horizontally-isolated outers
-                    // where the post-trace fixup sets it negative), we
-                    // do NOT consider ourselves still "inside outer",
-                    // so disjoint siblings in the same row get detected.
-                    let val_at_idx = unsafe { *img_ptr.add(idx) };
-                    if val_at_idx > 0 {
-                        lnbd_pos = idx;
-                    }
+                    // cv2 unconditionally sets `lnbd.x = x - is_hole` after
+                    // processing a contour (contours.cpp:1193) — *whatever*
+                    // sign the start was marked as. The EXT-skip predicate
+                    // then reads `img0[lnbd]` dynamically (positive → still
+                    // inside outer; negative → exited outer). Updating
+                    // lnbd_pos only on `+nbd` was a bug — when the new
+                    // contour's start was -nbd, lnbd_pos kept pointing at
+                    // an *earlier* +nbd marker, which made the EXT skip
+                    // over-fire on subsequent disjoint siblings.
+                    lnbd_pos = idx;
                 } else if pixel == 1 {
                     #[cfg(feature = "profile_contours")]
                     { _one_skip_hits += 1; }
