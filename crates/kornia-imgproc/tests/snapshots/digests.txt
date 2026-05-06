@@ -3,15 +3,15 @@
 # Regenerate: UPDATE_DIGESTS=1 cargo test ... --test contours_snapshots -- --nocapture
 ab8ca94ff52e9daa  kornia_pic1_external_none.json
 a65ae823e23b21f8  kornia_pic1_external_simple.json
-fb296497768e364e  kornia_pic1_list_none.json
-14721cd85f84b80a  kornia_pic1_list_simple.json
+3e8ba146be7e35b7  kornia_pic1_list_none.json
+9fc1ad7247c75e97  kornia_pic1_list_simple.json
 4581544be16e71f3  kornia_pic2_external_none.json
 7b55714053835093  kornia_pic2_external_simple.json
 ab8ca94ff52e9daa  kornia_pic3_external_none.json
 a65ae823e23b21f8  kornia_pic3_external_simple.json
-125768e1cb36c2e3  kornia_pic3_list_none.json
-87a88682de30ae21  kornia_pic3_list_simple.json
-75dc93fae388e944  kornia_pic4_external_none.json
-10e4891bee84373c  kornia_pic4_external_simple.json
-d332a347449ff292  kornia_pic4_list_none.json
-f82fb3848efba116  kornia_pic4_list_simple.json
+65273fccf1ac3c60  kornia_pic3_list_none.json
+fac42c6ada28b84f  kornia_pic3_list_simple.json
+6bc8d72f77e93a20  kornia_pic4_external_none.json
+f50f7e297e83ee12  kornia_pic4_external_simple.json
+820bd43e840595fc  kornia_pic4_list_none.json
+2f5caee7e04f136d  kornia_pic4_list_simple.json

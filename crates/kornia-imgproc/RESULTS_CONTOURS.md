@@ -8,14 +8,25 @@ code.
 
 ## Headline (vs cv2's default invocation)
 
-| fixture | cv2 EXT count | kornia count | match | cv2 time | kornia | margin |
-|---------|--------------:|-------------:|-------|---------:|-------:|-------:|
-| pic1.png 400×300 | 1 | 1 | exact ✓ | 88 μs | 82 μs | **1.07× faster** |
-| pic2.png 400×300 | 1 | 1 | exact ✓ | 513 μs | 575 μs | ~tied |
-| pic3.png 400×300 | 1 | 1 | exact ✓ | 90 μs | 83 μs | **1.08× faster** |
-| pic4.png 400×300 | 881 | 846 | 91.3% bbox-match | 2014 μs | 675 μs | **2.98× faster** |
+The trace function is a line-for-line port of cv2's `icvFetchContour`
+(`modules/imgproc/src/contours.cpp:511-620`) — same direction encoding,
+same wrapped-direction marking, same halt rule, same emission timing,
+same SIMPLE-mode chain compression.
 
-Tests: 182/182 unit + 5/5 real-image integration + 14/14 synthetic shape patterns pass.
+| fixture | cv2 EXT count | kornia count | bit-exact (EXT/LIST × simple/none) | cv2 time | kornia | margin |
+|---------|--------------:|-------------:|------------------------------------|---------:|-------:|-------:|
+| pic1.png 400×300 | 1 | 1 | ✅ 4/4 — full coordinate parity | 88 μs | 84 μs | **1.05× faster** |
+| pic2.png 400×300 | 1 | 1 | ✅ 2/2 EXT (LIST not snapshot-tracked) | 513 μs | 565 μs | ~tied |
+| pic3.png 400×300 | 1 | 1 | ✅ 4/4 — full coordinate parity | 90 μs | 85 μs | **1.06× faster** |
+| pic4.png 400×300 | 881 | 844 | ❌ count -37 (scan-loop residue) | 2014 μs | 642 μs | **3.14× faster** |
+
+**10/14 snapshot fixtures bit-exact with cv2** (`diff_snapshots.py`).
+The remaining 4/14 are pic4 EXT/LIST × simple/none — same -37 outer-start
+delta in every pic4 row (it's a scan-loop divergence, not a trace divergence).
+Documented in `docs/superpowers/specs/2026-05-06-find-contours-cv2-parity.md`.
+
+Tests: 182/182 unit + 5/5 real-image integration + 1/1 snapshot-digest +
+14/14 synthetic shape patterns pass.
 
 ## What changed in this branch
 

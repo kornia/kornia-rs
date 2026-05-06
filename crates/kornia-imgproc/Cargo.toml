@@ -94,8 +94,3 @@ rand = { workspace = true }
 [features]
 opencv_bench = ["dep:opencv"]
 profile_contours = []
-# Experimental cv2-parity trace path. When enabled, find_contours uses a
-# rewritten trace_border that mirrors cv2's `icvFetchContour` byte-for-byte
-# (marking + halt + emission + SIMPLE-compression). Off by default while
-# the port is in progress. See docs/superpowers/specs/2026-05-06-find-contours-cv2-parity.md
-contours_cv2_parity = []

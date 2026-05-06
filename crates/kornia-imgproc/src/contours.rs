@@ -15,16 +15,8 @@ use rayon::prelude::*;
 use std::ops::Range;
 
 // Directions: 0=W 1=NW 2=N 3=NE 4=E 5=SE 6=S 7=SW
-// kornia direction tables (used by the default `trace_border` path).
-// Under the `contours_cv2_parity` feature these are unused — the cv2
-// port has its own direction encoding inline. Allowing dead_code keeps
-// the build clean either way.
-#[allow(dead_code)]
-const DIR_LUT: [usize; 9] = [1, 2, 3, 0, 0, 4, 7, 6, 5];
-#[allow(dead_code)]
-const DIR_DR: [i32; 8] = [0, -1, -1, -1, 0, 1, 1, 1];
-#[allow(dead_code)]
-const DIR_DC: [i32; 8] = [-1, -1, 0, 1, 1, 1, 0, -1];
+// `trace_border` uses cv2's direction encoding inline; no module-level
+// direction tables needed.
 
 /// Minimum image area in pixels above which binarisation is parallelised via Rayon
 const PARALLEL_THRESHOLD: usize = 1920 * 1080;
@@ -116,21 +108,22 @@ impl<'a> ContoursView<'a> {
 }
 
 /// Neighbour offsets pre-computed from the padded-image stride.
+///
+/// The trace function only needs the "N" entry to recover the padded-buffer
+/// stride; cv2-style 16-entry deltas are computed inline. We keep the 8-entry
+/// table here so `TracerOffsets` retains a stable role across future tweaks.
 struct TracerOffsets {
-    /// 8-element flat-offset table (one per direction, 0=W ... 7=SW)
+    /// Flat-offset per direction in kornia's encoding (dir 2 = N = -padded_w).
     o8: [isize; 8],
-    /// 16-element duplicate of `o8` for modulo-free linear scans
-    o16: [isize; 16],
 }
 
 /// Per-border start position and metadata, passed together to trace_border.
-/// `is_outer` is *not* a field — the outer/hole specialisation is done at
-/// the call site via const-generic `trace_border::<true|false>`.
+/// The outer/hole specialisation is done at the call site via const-generic
+/// `trace_border::<true|false>`, so no `is_outer` field here.
 struct TracerStart {
     idx: usize,
     row: i32,
     col: i32,
-    dir: usize,
     nbd: i16,
     method: ContourApproximationMode,
 }
@@ -343,11 +336,7 @@ impl FindContoursExecutor {
 
         let pw = padded_w as isize;
         let o8: [isize; 8] = [-1, -pw - 1, -pw, -pw + 1, 1, pw + 1, pw, pw - 1];
-        let mut o16 = [0isize; 16];
-        for k in 0..16 {
-            o16[k] = o8[k & 7];
-        }
-        let toff = TracerOffsets { o8, o16 };
+        let toff = TracerOffsets { o8 };
 
         let mut nbd: i16 = 1;
         self.buffers.hierarchy.push([-1, -1, -1, -1]);
@@ -518,39 +507,24 @@ impl FindContoursExecutor {
                         &self.buffers.hierarchy,
                         &self.buffers.border_types,
                     );
-                    let start_dir: usize = if is_outer { 0 } else { 4 };
                     let ts = TracerStart {
                         idx,
                         row: r as i32,
                         col: c as i32,
-                        dir: start_dir,
                         nbd,
                         method,
                     };
 
                     #[cfg(feature = "profile_contours")]
                     let _t_trace = std::time::Instant::now();
-                    // Specialise the trace on `is_outer` — the inner
-                    // `belongs()` predicate differs (outers refuse to
-                    // walk onto sibling-outer markers; holes accept any
-                    // non-zero). Removing the runtime branch from the
-                    // hot 8-conn neighbor scan is worth a small but
-                    // measurable win on contour-heavy fixtures (pic4).
-                    //
-                    // Under `contours_cv2_parity` feature: route to
-                    // trace_border_cv2 instead — the in-progress port
-                    // of cv2's `icvFetchContour`. See spec for status.
-                    #[cfg(not(feature = "contours_cv2_parity"))]
+                    // Specialise the trace on `is_outer` via const generic
+                    // so the compiler emits two specialised instances and
+                    // the IS_OUTER branch constant-folds out of the hot
+                    // 8-conn neighbor scan inside the trace.
                     let range = if is_outer {
                         Self::trace_border::<true>(img_ptr, ts, &toff, &mut self.buffers.arena)
                     } else {
                         Self::trace_border::<false>(img_ptr, ts, &toff, &mut self.buffers.arena)
-                    };
-                    #[cfg(feature = "contours_cv2_parity")]
-                    let range = if is_outer {
-                        Self::trace_border_cv2::<true>(img_ptr, ts, &toff, &mut self.buffers.arena)
-                    } else {
-                        Self::trace_border_cv2::<false>(img_ptr, ts, &toff, &mut self.buffers.arena)
                     };
                     #[cfg(feature = "profile_contours")]
                     {
@@ -630,22 +604,9 @@ impl FindContoursExecutor {
             }
         }
 
-        // Reverse contour traversal direction in-place to match OpenCV's
-        // CCW-for-outer convention. Suzuki/Abe naturally walks CW; OpenCV
-        // post-processes to CCW. We do the same: keep the start point,
-        // reverse the rest of each contour. Cheap (linear in arena size,
-        // touches only points already in cache).
-        //
-        // The cv2-parity trace (`trace_border_cv2`) emits points in cv2's
-        // native order — already CCW after the natural Suzuki walk in cv2's
-        // direction encoding — so this reversal is a no-op there.
-        #[cfg(not(feature = "contours_cv2_parity"))]
-        for r in &self.buffers.ranges {
-            let slice = &mut self.buffers.arena[r.clone()];
-            if slice.len() > 1 {
-                slice[1..].reverse();
-            }
-        }
+        // No post-trace reversal: `trace_border` emits points in cv2's
+        // CCW-for-outer order natively (the direction encoding is cv2's,
+        // and cv2's walk is CCW in that encoding).
 
         // Suppress "unused mode" warning — actual filter happens in execute().
         let _ = mode;
@@ -705,192 +666,26 @@ impl FindContoursExecutor {
         }
     }
 
-    // Trace border per Suzuki-Abe algorithm, labeling pixels in-place.
-    // Default path; superseded by `trace_border_cv2` when the
-    // `contours_cv2_parity` feature is enabled.
-    #[allow(dead_code)]
-    #[inline(always)]
-    fn trace_border<const IS_OUTER: bool>(
-        img: *mut i16,
-        ts: TracerStart,
-        toff: &TracerOffsets,
-        arena: &mut Vec<[i32; 2]>,
-    ) -> Range<usize> {
-        let TracerStart {
-            idx: start_idx,
-            row: start_row,
-            col: start_col,
-            dir: start_dir,
-            nbd,
-            method,
-        } = ts;
-        let arena_start = arena.len();
-
-        // For OUTER traces only: forbid walking onto markers from another
-        // contour (otherwise we leak across disjoint sibling outers and
-        // merge their bboxes — the pic4 12-into-1 bug). A neighbor
-        // belongs to THIS outer iff its value is raw 1 (unvisited fg) or
-        // our own ±nbd (cells we visited in this trace).
-        // HOLE traces don't apply this — they walk the white pixels
-        // around the hole, some of which are the parent outer's marked
-        // perimeter (must accept any non-zero).
-        let neg_nbd = -nbd;
-        // const-generic IS_OUTER — branch fully constant-folds at monomorphisation.
-        let belongs = |v: i16| -> bool {
-            if IS_OUTER {
-                v == 1 || v == nbd || v == neg_nbd
-            } else {
-                v != 0
-            }
-        };
-
-        let mut first_nb_idx = 0usize;
-        let mut first_nb_dir = 0usize;
-        let mut found = false;
-        for k in 0..8usize {
-            let d = start_dir + k;
-            let nb = (start_idx as isize + toff.o16[d & 7]) as usize;
-            if belongs(unsafe { *img.add(nb) }) {
-                first_nb_idx = nb;
-                first_nb_dir = d & 7;
-                found = true;
-                break;
-            }
-        }
-
-        if !found {
-            // SAFETY: start_idx is a valid interior pixel in the padded image.
-            unsafe { *img.add(start_idx) = -nbd };
-            arena.push([start_col - 1, start_row - 1]);
-            return arena_start..arena.len();
-        }
-
-        arena.push([start_col - 1, start_row - 1]);
-
-        let mut i2_idx = first_nb_idx;
-        let mut i2_row = start_row + DIR_DR[first_nb_dir];
-        let mut i2_col = start_col + DIR_DC[first_nb_dir];
-        let mut dir_in = first_nb_dir;
-        let mut dir_out_final = dir_in;
-
-        loop {
-            // SAFETY: i2_idx is always an interior pixel (never on the padding border),
-            // validated by the loop invariant and debug_assert.
-            debug_assert!(i2_idx > 0, "i2_idx underflow: tracer reached left padding");
-            let cur = unsafe { *img.add(i2_idx) };
-            let left_nb = unsafe { *img.add(i2_idx - 1) };
-            let right_nb = unsafe { *img.add(i2_idx + 1) };
-
-            if left_nb == 0 && cur == 1 {
-                unsafe { *img.add(i2_idx) = nbd };
-            } else if right_nb == 0 && cur > 0 {
-                unsafe { *img.add(i2_idx) = -nbd };
-            }
-
-            // Suzuki-Abe "behind" rule: scan starts at (dir_in + 5) & 7
-            let scan_start = (dir_in + 5) & 7;
-            let mut i3_idx = 0usize;
-            let mut i3_row = i2_row;
-            let mut i3_col = i2_col;
-            let mut dir_out = scan_start;
-            let mut found_next = false;
-
-            for k in 0..8usize {
-                let s = scan_start + k;
-                let nb = (i2_idx as isize + toff.o8[s & 7]) as usize;
-                debug_assert!(
-                    (nb as isize) >= 0 && nb < usize::MAX / 2,
-                    "nb wrapped: i2_idx={i2_idx} offset={}",
-                    toff.o8[s & 7]
-                );
-                if belongs(unsafe { *img.add(nb) }) {
-                    i3_idx = nb;
-                    i3_row = i2_row + DIR_DR[s & 7];
-                    i3_col = i2_col + DIR_DC[s & 7];
-                    dir_out = s & 7;
-                    found_next = true;
-                    break;
-                }
-            }
-
-            if !found_next {
-                break;
-            }
-            dir_out_final = dir_out;
-
-            if i2_idx == start_idx && i3_idx == first_nb_idx {
-                break;
-            }
-
-            match method {
-                ContourApproximationMode::None => {
-                    arena.push([i2_col - 1, i2_row - 1]);
-                }
-                ContourApproximationMode::Simple => {
-                    if dir_in != dir_out {
-                        arena.push([i2_col - 1, i2_row - 1]);
-                    }
-                }
-            }
-
-            i2_idx = i3_idx;
-            i2_row = i3_row;
-            i2_col = i3_col;
-            dir_in = dir_out;
-        }
-
-        // for simple mode emit the corner if direction changed
-        if method == ContourApproximationMode::Simple && i2_idx != start_idx {
-            let dr = start_row - i2_row;
-            let dc = start_col - i2_col;
-
-            let idx4 = ((dr + 1) * 3 + (dc + 1)) as usize;
-            let dir_out_to_start = DIR_LUT[idx4];
-            let pt = [i2_col - 1, i2_row - 1];
-            if dir_out_final != dir_out_to_start && arena[arena_start..].last() != Some(&pt) {
-                arena.push(pt);
-            }
-        }
-
-        // SAFETY: start_idx is a valid interior pixel in the padded image.
-        if unsafe { *img.add(start_idx) } == 1 {
-            unsafe { *img.add(start_idx) = nbd };
-        }
-
-        // Final convention fixup: if start is horizontally isolated
-        // (left=0 AND right=0), mark as -nbd. cv2's trace ends with this
-        // pixel as -nbd because its trace order processes the right-edge
-        // condition before the left-edge condition for such corners. We
-        // match cv2's resulting state without changing the iteration
-        // mechanics (which would break hole detection on hollow shapes).
-        if IS_OUTER {
-            let start_left = unsafe { *img.add(start_idx - 1) };
-            let start_right = unsafe { *img.add(start_idx + 1) };
-            if start_left == 0 && start_right == 0 {
-                unsafe { *img.add(start_idx) = -nbd };
-            }
-        }
-
-        arena_start..arena.len()
-    }
-
-    /// cv2-parity trace path — port of `icvFetchContour` from
-    /// OpenCV's `modules/imgproc/src/contours.cpp:511-620`.
+    /// Trace one contour using cv2's `icvFetchContour`
+    /// (`modules/imgproc/src/contours.cpp:511-620`).
     ///
-    /// Direction encoding here differs from kornia's: this function uses cv2's
-    /// CCW-incrementing layout (0=E, 1=NE, 2=N, 3=NW, 4=W, 5=SW, 6=S, 7=SE)
-    /// so the loop logic mirrors the C source line-for-line. We emit points
-    /// in the same image-coord (col-1, row-1) format as `trace_border`, and
-    /// the post-trace CCW reversal in `execute_scan` applies the same way.
+    /// Direction encoding is cv2's CCW-incrementing layout
+    /// (0=E, 1=NE, 2=N, 3=NW, 4=W, 5=SW, 6=S, 7=SE) so the loop mirrors
+    /// the C source line-for-line. Output points are kornia's image-coord
+    /// `[col-1, row-1]`. The post-trace CCW reversal in `execute_scan`
+    /// is skipped — this trace emits CCW natively (cv2 walks in cv2's
+    /// direction encoding which produces CCW directly).
     ///
-    /// Marking convention (the key difference vs `trace_border`):
+    /// Marking convention:
     /// - `(unsigned)(s - 1) < (unsigned)s_end`  →  mark `-nbd` (right edge)
     /// - else if pixel was raw `1`              →  mark `+nbd` (left edge)
     ///
-    /// This is direction-wrap-based, not left/right-state-based. It's what
-    /// closes the pic4 EXT 35-contour gap.
-    #[cfg(feature = "contours_cv2_parity")]
-    fn trace_border_cv2<const IS_OUTER: bool>(
+    /// `IS_OUTER` is a const generic so the compiler emits a specialised
+    /// instance per branch; `is_hole` traces start scanning at direction 0,
+    /// outers at direction 4. The const value also constant-folds the
+    /// initial `s_end = is_outer ? 4 : 0` decision.
+    #[inline(always)]
+    fn trace_border<const IS_OUTER: bool>(
         img: *mut i16,
         ts: TracerStart,
         _toff: &TracerOffsets,
@@ -900,16 +695,14 @@ impl FindContoursExecutor {
             idx: start_idx,
             row: start_row,
             col: start_col,
-            dir: _,
             nbd,
             method,
         } = ts;
         let arena_start = arena.len();
 
-        // Padded-buffer step (= padded_w). Recovered from kornia's "N"
-        // offset: kornia dir 2 = N = -padded_w. We don't pass it explicitly
-        // because the call site already passes `_toff`; deriving keeps the
-        // signature uniform with `trace_border`.
+        // Padded-buffer step (= padded_w). Recovered from `_toff.o8`'s
+        // "N" entry: dir 2 in the kornia-encoded offset table is N = -padded_w.
+        // The caller already builds `_toff`; deriving avoids an extra parameter.
         let pw: isize = -_toff.o8[2];
 
         // cv2's deltas[16] (8 + duplicate). cv2 uses MAX_SIZE=16 so the

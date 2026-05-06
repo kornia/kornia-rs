@@ -1,6 +1,11 @@
 # Spec: bit-exact cv2 parity for `find_contours`
 
-**Status:** phase 1 landed (2026-05-06) — 10/14 bit-exact
+**Status:** phase 1 landed as default path (2026-05-06) — 10/14 bit-exact
+
+Update: the cv2-parity trace is now the *only* trace. The Cargo feature
+flag (`contours_cv2_parity`) was removed and the previous left/right-state
+trace was deleted — kornia's `find_contours` uses cv2's `icvFetchContour`
+unconditionally. Default `cargo build` produces cv2-matching output.
 **Goal:** make `find_contours` produce coordinate-by-coordinate identical output to `cv2.findContours` across all 4 fixtures (pic1-4) × 2 modes (EXTERNAL, LIST) × 2 methods (SIMPLE, NONE), without losing the ~3× perf margin we already have on pic4.
 **Non-goal:** re-implement RETR_CCOMP / RETR_TREE parity (out of scope; current users want EXTERNAL).
 

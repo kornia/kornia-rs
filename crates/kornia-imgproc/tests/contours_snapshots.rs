@@ -124,13 +124,6 @@ fn read_digests() -> std::collections::HashMap<String, String> {
 
 #[test]
 fn snapshot_digests_match() {
-    // Digests are anchored to the default trace path. The cv2-parity feature
-    // intentionally produces different (cv2-matching) output — its correctness
-    // is verified separately by `examples/diff_snapshots.py`.
-    if cfg!(feature = "contours_cv2_parity") {
-        eprintln!("  snapshot_digests_match skipped (contours_cv2_parity feature is on)");
-        return;
-    }
     let expected = read_digests();
     let update = std::env::var("UPDATE_DIGESTS").is_ok();
 
