@@ -367,6 +367,10 @@ impl FindContoursExecutor {
             // = "no marker seen yet this row".
             let mut lnbd: i16 = 1;
             let mut lnbd_pos: usize = usize::MAX;
+            // Cached EXT-skip predicate: `img0[lnbd] > 0 && lnbd's border is an Outer`.
+            // Updated whenever lnbd_pos is updated (top-of-loop marker crossing
+            // or post-trace) so the per-event skip check is O(1).
+            let mut lnbd_inside_outer: bool = false;
             let row_base = r * padded_w;
             let mut c = 1usize;
 
@@ -389,8 +393,18 @@ impl FindContoursExecutor {
                 // an outer). After crossing a -nbd marker (right edge), we
                 // have exited that outer.
                 if pixel > 1 || pixel < -1 {
-                    lnbd = pixel.unsigned_abs() as i16;
+                    let abs_nbd = pixel.unsigned_abs() as i16;
+                    lnbd = abs_nbd;
                     lnbd_pos = row_base + c;
+                    // Refresh the cached EXT-skip predicate. In EXTERNAL
+                    // mode every traced contour is an Outer (Holes are
+                    // skipped before trace fires), so the only thing the
+                    // predicate hinges on is the marker's sign:
+                    //   +nbd  →  inside an outer (we'll skip nested starts)
+                    //   -nbd  →  exited the outer
+                    // For LIST mode this cache is not consulted, so the
+                    // simplification is safe there too.
+                    lnbd_inside_outer = pixel > 0 && abs_nbd >= 2;
                 }
 
                 // batch advance over zero runs
@@ -466,26 +480,10 @@ impl FindContoursExecutor {
                         //   if (mode == 0 && (is_hole || img0[lnbd] > 0))
                         //     goto resume_scan;
                         //
-                        // `img0[lnbd]` reads the marker value AT lnbd's
-                        // position — > 0 means the most-recent marker we
-                        // crossed is an outer's LEFT edge (we're inside
-                        // an outer). After crossing a -nbd marker (right
-                        // edge), the value at lnbd_pos becomes negative
-                        // and we exit "inside-outer" state.
-                        let lnbd_idx = lnbd as usize;
-                        let val_at_lnbd: i16 = if lnbd_pos == usize::MAX {
-                            0
-                        } else {
-                            unsafe { *img_ptr.add(lnbd_pos) }
-                        };
-                        let lnbd_at_pos_outer = val_at_lnbd > 0
-                            && lnbd_idx >= 2
-                            && lnbd_idx - 1 < self.buffers.border_types.len()
-                            && matches!(
-                                self.buffers.border_types[lnbd_idx - 1],
-                                BorderType::Outer
-                            );
-                        if is_hole || lnbd_at_pos_outer {
+                        // `lnbd_inside_outer` is the cached form of that
+                        // predicate (refreshed only on lnbd updates), so
+                        // the hot path is a single bool test.
+                        if is_hole || lnbd_inside_outer {
                             c += 1;
                             continue 'col;
                         }
@@ -539,15 +537,13 @@ impl FindContoursExecutor {
                     self.buffers.ranges.push(range);
                     lnbd = nbd;
                     // cv2 unconditionally sets `lnbd.x = x - is_hole` after
-                    // processing a contour (contours.cpp:1193) — *whatever*
-                    // sign the start was marked as. The EXT-skip predicate
-                    // then reads `img0[lnbd]` dynamically (positive → still
-                    // inside outer; negative → exited outer). Updating
-                    // lnbd_pos only on `+nbd` was a bug — when the new
-                    // contour's start was -nbd, lnbd_pos kept pointing at
-                    // an *earlier* +nbd marker, which made the EXT skip
-                    // over-fire on subsequent disjoint siblings.
+                    // processing a contour (contours.cpp:1193). Refresh the
+                    // cached EXT-skip predicate too — the start pixel was
+                    // just marked +nbd or -nbd by trace_border, and we know
+                    // its border_type without a Vec lookup.
                     lnbd_pos = idx;
+                    let val_at_idx = unsafe { *img_ptr.add(idx) };
+                    lnbd_inside_outer = val_at_idx > 0 && is_outer;
                 } else if pixel == 1 {
                     #[cfg(feature = "profile_contours")]
                     { _one_skip_hits += 1; }

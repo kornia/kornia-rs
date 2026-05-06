@@ -15,10 +15,10 @@ same SIMPLE-mode chain compression.
 
 | fixture | cv2 count | kornia count | bit-exact (EXT/LIST × simple/none) | cv2 time | kornia | margin |
 |---------|----------:|-------------:|------------------------------------|---------:|-------:|-------:|
-| pic1.png 400×300 | 1 | 1 | ✅ 4/4 — full coordinate parity | 88 μs | 84 μs | **1.05× faster** |
-| pic2.png 400×300 | 1 | 1 | ✅ 2/2 EXT (LIST not snapshot-tracked) | 513 μs | 565 μs | ~tied |
-| pic3.png 400×300 | 1 | 1 | ✅ 4/4 — full coordinate parity | 90 μs | 85 μs | **1.06× faster** |
-| pic4.png 400×300 | 844 | 844 | ✅ 4/4 — full coordinate parity | 2014 μs | 642 μs | **3.14× faster** |
+| pic1.png 400×300 | 1 | 1 | ✅ 4/4 — full coordinate parity | 88 μs | 75 μs | **1.18× faster** |
+| pic2.png 400×300 | 1 | 1 | ✅ 2/2 EXT (LIST not snapshot-tracked) | 513 μs | 478 μs | **1.07× faster** |
+| pic3.png 400×300 | 1 | 1 | ✅ 4/4 — full coordinate parity | 90 μs | 73 μs | **1.24× faster** |
+| pic4.png 400×300 | 844 | 844 | ✅ 4/4 — full coordinate parity | 2014 μs | 637 μs | **3.16× faster** |
 
 **14/14 snapshot fixtures bit-exact with cv2** (`diff_snapshots.py`).
 Every fixture, every retrieval mode, every approximation method matches
