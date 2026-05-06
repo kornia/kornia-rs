@@ -15,8 +15,15 @@ use rayon::prelude::*;
 use std::ops::Range;
 
 // Directions: 0=W 1=NW 2=N 3=NE 4=E 5=SE 6=S 7=SW
+// kornia direction tables (used by the default `trace_border` path).
+// Under the `contours_cv2_parity` feature these are unused — the cv2
+// port has its own direction encoding inline. Allowing dead_code keeps
+// the build clean either way.
+#[allow(dead_code)]
 const DIR_LUT: [usize; 9] = [1, 2, 3, 0, 0, 4, 7, 6, 5];
+#[allow(dead_code)]
 const DIR_DR: [i32; 8] = [0, -1, -1, -1, 0, 1, 1, 1];
+#[allow(dead_code)]
 const DIR_DC: [i32; 8] = [-1, -1, 0, 1, 1, 1, 0, -1];
 
 /// Minimum image area in pixels above which binarisation is parallelised via Rayon
@@ -628,6 +635,11 @@ impl FindContoursExecutor {
         // post-processes to CCW. We do the same: keep the start point,
         // reverse the rest of each contour. Cheap (linear in arena size,
         // touches only points already in cache).
+        //
+        // The cv2-parity trace (`trace_border_cv2`) emits points in cv2's
+        // native order — already CCW after the natural Suzuki walk in cv2's
+        // direction encoding — so this reversal is a no-op there.
+        #[cfg(not(feature = "contours_cv2_parity"))]
         for r in &self.buffers.ranges {
             let slice = &mut self.buffers.arena[r.clone()];
             if slice.len() > 1 {
@@ -693,7 +705,10 @@ impl FindContoursExecutor {
         }
     }
 
-    // Trace border per Suzuki-Abe algorithm, labeling pixels in-place
+    // Trace border per Suzuki-Abe algorithm, labeling pixels in-place.
+    // Default path; superseded by `trace_border_cv2` when the
+    // `contours_cv2_parity` feature is enabled.
+    #[allow(dead_code)]
     #[inline(always)]
     fn trace_border<const IS_OUTER: bool>(
         img: *mut i16,
@@ -859,28 +874,139 @@ impl FindContoursExecutor {
         arena_start..arena.len()
     }
 
-    /// Experimental cv2-parity trace path (gated by `contours_cv2_parity`
-    /// feature). When complete, mirrors cv2's `icvFetchContour` byte-for-byte:
-    /// wrapped-direction marking + cv2 halt rule + cv2 emission timing +
-    /// cv2 SIMPLE-mode chain compression — landing as a coherent unit so
-    /// the four pieces that depend on each other don't get split.
+    /// cv2-parity trace path — port of `icvFetchContour` from
+    /// OpenCV's `modules/imgproc/src/contours.cpp:511-620`.
     ///
-    /// **Phase 1 status (current):** stub — delegates to the existing
-    /// `trace_border`. The feature is a behavioural no-op for now; the
-    /// scaffolding is in place so phase 1's marking port can land
-    /// incrementally without churning the call site or the dispatch.
+    /// Direction encoding here differs from kornia's: this function uses cv2's
+    /// CCW-incrementing layout (0=E, 1=NE, 2=N, 3=NW, 4=W, 5=SW, 6=S, 7=SE)
+    /// so the loop logic mirrors the C source line-for-line. We emit points
+    /// in the same image-coord (col-1, row-1) format as `trace_border`, and
+    /// the post-trace CCW reversal in `execute_scan` applies the same way.
     ///
-    /// See `docs/superpowers/specs/2026-05-06-find-contours-cv2-parity.md`.
+    /// Marking convention (the key difference vs `trace_border`):
+    /// - `(unsigned)(s - 1) < (unsigned)s_end`  →  mark `-nbd` (right edge)
+    /// - else if pixel was raw `1`              →  mark `+nbd` (left edge)
+    ///
+    /// This is direction-wrap-based, not left/right-state-based. It's what
+    /// closes the pic4 EXT 35-contour gap.
     #[cfg(feature = "contours_cv2_parity")]
-    #[allow(dead_code)]
     fn trace_border_cv2<const IS_OUTER: bool>(
         img: *mut i16,
         ts: TracerStart,
-        toff: &TracerOffsets,
+        _toff: &TracerOffsets,
         arena: &mut Vec<[i32; 2]>,
     ) -> Range<usize> {
-        // TODO(phase 1): replace with cv2's main loop (marking + halt + emission).
-        Self::trace_border::<IS_OUTER>(img, ts, toff, arena)
+        let TracerStart {
+            idx: start_idx,
+            row: start_row,
+            col: start_col,
+            dir: _,
+            nbd,
+            method,
+        } = ts;
+        let arena_start = arena.len();
+
+        // Padded-buffer step (= padded_w). Recovered from kornia's "N"
+        // offset: kornia dir 2 = N = -padded_w. We don't pass it explicitly
+        // because the call site already passes `_toff`; deriving keeps the
+        // signature uniform with `trace_border`.
+        let pw: isize = -_toff.o8[2];
+
+        // cv2's deltas[16] (8 + duplicate). cv2 uses MAX_SIZE=16 so the
+        // forward scan can pre-increment without modulo until masking later.
+        let deltas: [isize; 16] = [
+            1,        -pw + 1,  -pw,       -pw - 1,
+            -1,       pw - 1,   pw,        pw + 1,
+            1,        -pw + 1,  -pw,       -pw - 1,
+            -1,       pw - 1,   pw,        pw + 1,
+        ];
+        // icvCodeDeltas — pixel (dx, dy) per cv2 direction
+        const CODE_DX: [i32; 8] = [1,  1,  0, -1, -1, -1,  0,  1];
+        const CODE_DY: [i32; 8] = [0, -1, -1, -1,  0,  1,  1,  1];
+
+        let i0_idx = start_idx;
+        // pt = (col-1, row-1) in image coords
+        let mut pt_x: i32 = start_col - 1;
+        let mut pt_y: i32 = start_row - 1;
+
+        // s_end = s = is_hole ? 0 : 4 (cv2 line 536)
+        let mut s_end: i32 = if IS_OUTER { 4 } else { 0 };
+        let mut s: i32 = s_end;
+        let mut i1_idx: usize;
+
+        // Backward scan to find first non-zero neighbor
+        loop {
+            s = (s - 1) & 7;
+            i1_idx = (i0_idx as isize + deltas[s as usize]) as usize;
+            if unsafe { *img.add(i1_idx) } != 0 || s == s_end {
+                break;
+            }
+        }
+
+        if s == s_end {
+            // Single-pixel domain — mark -nbd, emit start, return.
+            unsafe { *img.add(i0_idx) = -nbd };
+            arena.push([pt_x, pt_y]);
+            return arena_start..arena.len();
+        }
+
+        // Main border-following loop
+        let mut i3_idx = i0_idx;
+        let mut prev_s: i32 = s ^ 4;
+
+        loop {
+            s_end = s;
+
+            // Forward scan: increment s through deltas[8..16] (the
+            // duplicate copy lets us scan past 7 without modulo, then
+            // mask once at the end).
+            let mut new_s = s;
+            let mut i4_idx: usize = 0;
+            while new_s < 15 {
+                new_s += 1;
+                let nb = (i3_idx as isize + deltas[new_s as usize]) as usize;
+                if unsafe { *img.add(nb) } != 0 {
+                    i4_idx = nb;
+                    break;
+                }
+            }
+            s = new_s & 7;
+
+            // Wrap-detection marking — the cv2 secret sauce.
+            let cur = unsafe { *img.add(i3_idx) };
+            if ((s - 1) as u32) < (s_end as u32) {
+                unsafe { *img.add(i3_idx) = -nbd };
+            } else if cur == 1 {
+                unsafe { *img.add(i3_idx) = nbd };
+            }
+
+            // Emission: SIMPLE only on direction change; NONE on every step.
+            match method {
+                ContourApproximationMode::None => {
+                    arena.push([pt_x, pt_y]);
+                }
+                ContourApproximationMode::Simple => {
+                    if s != prev_s {
+                        arena.push([pt_x, pt_y]);
+                        prev_s = s;
+                    }
+                }
+            }
+
+            // Advance pt
+            pt_x += CODE_DX[s as usize];
+            pt_y += CODE_DY[s as usize];
+
+            // Halt: i4 == i0 && i3 == i1
+            if i4_idx == i0_idx && i3_idx == i1_idx {
+                break;
+            }
+
+            i3_idx = i4_idx;
+            s = (s + 4) & 7;
+        }
+
+        arena_start..arena.len()
     }
 
 

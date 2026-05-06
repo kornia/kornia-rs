@@ -1,6 +1,6 @@
 # Spec: bit-exact cv2 parity for `find_contours`
 
-**Status:** scoping / not started
+**Status:** phase 1 landed (2026-05-06) — 10/14 bit-exact
 **Goal:** make `find_contours` produce coordinate-by-coordinate identical output to `cv2.findContours` across all 4 fixtures (pic1-4) × 2 modes (EXTERNAL, LIST) × 2 methods (SIMPLE, NONE), without losing the ~3× perf margin we already have on pic4.
 **Non-goal:** re-implement RETR_CCOMP / RETR_TREE parity (out of scope; current users want EXTERNAL).
 
@@ -38,6 +38,34 @@ Implication: a targeted patch to the start-marking heuristic CAN'T close
 the gap — the disagreement is per-pixel and depends on the trace's full
 direction history, which is exactly what cv2's wrapped-direction marking
 encodes. Phase 1 (full port of `icvFetchContour`) is the right scope.
+
+## Phase 1 result (2026-05-06)
+
+`trace_border_cv2` ported faithfully from cv2's `icvFetchContour`
+(contours.cpp:511-620), gated by `contours_cv2_parity` cargo feature.
+
+`diff_snapshots.py` after the port:
+
+| fixture | EXTERNAL simple | EXTERNAL none | LIST simple | LIST none |
+|---------|----------------:|--------------:|------------:|----------:|
+| pic1    | ✅ 1/1          | ✅ 1/1        | ✅ 17/17    | ✅ 17/17  |
+| pic2    | ✅ 1/1          | ✅ 1/1        | (skipped)   | (skipped) |
+| pic3    | ✅ 1/1          | ✅ 1/1        | ✅ 121/121  | ✅ 121/121|
+| pic4    | ❌ 844 vs 881   | ❌ 844 vs 881 | ❌ 894 vs 931 | ❌ 894 vs 931 |
+
+**10/14 bit-exact.** pic1 + pic3 LIST went from total mismatch to byte-perfect.
+The remaining pic4 gap (-37 outers in BOTH EXT and LIST) is **not in the
+trace function** — it's in the scan loop's outer-detection. cv2 detects 37
+outer-starts on pic4 that our `(pixel == 1) & (left == 0)` predicate misses.
+
+### Next: phase 1.5 — close the pic4 scan-loop gap
+
+cv2's scan-loop fast-path (contours.cpp:1100-1102) is a "skip equal pixels"
+optimisation: `for(; x < width && (p = img[x]) == prev; x++) ;` — events
+fire only on transitions where `p != prev`. Our zero-skip / one-skip NEON
+loops aren't strictly equivalent: they may step past pixels where the
+previous pixel was a marker (±nbd) into a foreground pixel that should
+fire `is_outer`. Investigation needed.
 
 ## Where we are today (2026-05-06)
 
