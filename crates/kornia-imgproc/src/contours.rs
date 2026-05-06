@@ -14,10 +14,7 @@ use kornia_image::{allocator::ImageAllocator, Image};
 use rayon::prelude::*;
 use std::ops::Range;
 
-// Directions: 0=W 1=NW 2=N 3=NE 4=E 5=SE 6=S 7=SW
-const DIR_LUT: [usize; 9] = [1, 2, 3, 0, 0, 4, 7, 6, 5];
-const DIR_DR: [i32; 8] = [0, -1, -1, -1, 0, 1, 1, 1];
-const DIR_DC: [i32; 8] = [-1, -1, 0, 1, 1, 1, 0, -1];
+// `trace_border` uses its 8-direction encoding inline; no module-level tables needed.
 
 /// Minimum image area in pixels above which binarisation is parallelised via Rayon
 const PARALLEL_THRESHOLD: usize = 1920 * 1080;
@@ -77,20 +74,58 @@ pub struct ContoursResult {
     pub hierarchy: Vec<HierarchyEntry>,
 }
 
-/// Neighbour offsets pre-computed from the padded-image stride.
-struct TracerOffsets {
-    /// 8-element flat-offset table (one per direction, 0=W ... 7=SW)
-    o8: [isize; 8],
-    /// 16-element duplicate of `o8` for modulo-free linear scans
-    o16: [isize; 16],
+/// Zero-copy view into the executor's internal buffers — borrows the arena
+/// instead of copying each contour into its own `Vec<[i32; 2]>`. Use this
+/// when the caller can process contours via slices and doesn't need owned
+/// `Vec<Contour>`. Drops the per-contour allocation tax that dominates the
+/// sparse-image path (many tiny contours = many tiny mallocs).
+pub struct ContoursView<'a> {
+    /// Flat point storage for all contours; index ranges via `ranges`.
+    pub arena: &'a [[i32; 2]],
+    /// One range per contour, slicing into `arena`.
+    pub ranges: &'a [core::ops::Range<usize>],
+    /// Hierarchy entries parallel to `ranges` (filled only for `Ccomp`/`Tree`
+    /// retrieval modes; empty for `External`/`List`).
+    pub hierarchy: &'a [HierarchyEntry],
 }
 
-/// Per-border start position and metadata, passed together to trace_border
+impl<'a> ContoursView<'a> {
+    /// Number of contours in the view.
+    pub fn len(&self) -> usize {
+        self.ranges.len()
+    }
+    /// Returns true if there are no contours.
+    pub fn is_empty(&self) -> bool {
+        self.ranges.is_empty()
+    }
+    /// Borrow the i-th contour as a slice. Panics if `i >= self.len()`.
+    pub fn contour(&self, i: usize) -> &'a [[i32; 2]] {
+        &self.arena[self.ranges[i].clone()]
+    }
+    /// Iterate contours as slices.
+    pub fn iter_contours(&self) -> impl Iterator<Item = &'a [[i32; 2]]> + '_ {
+        let arena = self.arena;
+        self.ranges.iter().map(move |r| &arena[r.clone()])
+    }
+}
+
+/// Neighbour offsets pre-computed from the padded-image stride.
+///
+/// The trace function only needs the "N" entry to recover the padded-buffer
+/// stride; the full 16-entry deltas are computed inline. We keep the 8-entry
+/// table here so `TracerOffsets` retains a stable role across future tweaks.
+struct TracerOffsets {
+    /// Flat-offset per direction (dir 2 = N = -padded_w).
+    o8: [isize; 8],
+}
+
+/// Per-border start position and metadata, passed together to trace_border.
+/// The outer/hole specialisation is done at the call site via const-generic
+/// `trace_border::<true|false>`, so no `is_outer` field here.
 struct TracerStart {
     idx: usize,
     row: i32,
     col: i32,
-    dir: usize,
     nbd: i16,
     method: ContourApproximationMode,
 }
@@ -190,12 +225,66 @@ impl FindContoursExecutor {
         self.execute(src, mode, method)
     }
 
+    /// Run the algorithm and return a zero-copy view into the executor's buffers.
+    /// **Skips the per-contour `Vec` allocation** that `find_contours` does — for
+    /// images with many small contours (sparse noise, dense feature maps) this
+    /// dominates the runtime. Use this when downstream code can consume slices.
+    ///
+    /// The view borrows from `self.buffers`; calling `find_contours*` again
+    /// invalidates it (Rust's borrow checker enforces this).
+    ///
+    /// Note: `RetrievalMode` filtering (CCOMP/Tree-style hierarchy reshaping) is
+    /// not applied here — only `External` and `List` modes return their natural
+    /// arena layout. For `Ccomp`/`Tree` use `find_contours` (which post-processes).
+    pub fn find_contours_view<A: ImageAllocator>(
+        &mut self,
+        src: &Image<u8, 1, A>,
+        mode: RetrievalMode,
+        method: ContourApproximationMode,
+    ) -> Result<ContoursView<'_>, ContoursError> {
+        self.buffers.clear();
+        self.execute_scan(src, mode, method)?;
+        Ok(ContoursView {
+            arena: &self.buffers.arena,
+            ranges: &self.buffers.ranges,
+            hierarchy: &self.buffers.hierarchy,
+        })
+    }
+
     fn execute<A: ImageAllocator>(
         &mut self,
         src: &Image<u8, 1, A>,
         mode: RetrievalMode,
         method: ContourApproximationMode,
     ) -> Result<ContoursResult, ContoursError> {
+        // Algorithm scan: fills self.buffers (arena, ranges, hierarchy, border_types).
+        self.execute_scan(src, mode, method)?;
+
+        // Collect per-contour owned Vecs. THIS IS THE EXPENSIVE STEP for sparse
+        // images — N small mallocs + N memcpys. `find_contours_view` skips it.
+        let raw_contours: Vec<Contour> = self
+            .buffers
+            .ranges
+            .iter()
+            .map(|r| self.buffers.arena[r.clone()].to_vec())
+            .collect();
+
+        Ok(Self::filter_by_mode(
+            raw_contours,
+            &self.buffers.hierarchy,
+            &self.buffers.border_types,
+            mode,
+        ))
+    }
+
+    /// The actual Suzuki/Abe scan. Fills `self.buffers` but does not allocate
+    /// per-contour owned vectors. Returns `Ok(())` on success.
+    fn execute_scan<A: ImageAllocator>(
+        &mut self,
+        src: &Image<u8, 1, A>,
+        mode: RetrievalMode,
+        method: ContourApproximationMode,
+    ) -> Result<(), ContoursError> {
         let height = src.height();
         let width = src.width();
         let padded_w = width + 2;
@@ -206,7 +295,18 @@ impl FindContoursExecutor {
             self.buffers.img.resize(padded_n, 0);
         }
         let img_slice = &mut self.buffers.img[..padded_n];
-        img_slice.fill(0i16);
+        // Only zero the padding (top + bottom rows + left + right columns) — the
+        // interior gets fully overwritten by the binarize pass below. Saves the
+        // largest single phase cost on simple-image fixtures (~17% of total at 1024²).
+        // Top row + bottom row
+        img_slice[..padded_w].fill(0);
+        img_slice[(padded_n - padded_w)..].fill(0);
+        // Left + right columns of every interior row
+        for r in 1..(padded_h - 1) {
+            let base = r * padded_w;
+            img_slice[base] = 0;
+            img_slice[base + padded_w - 1] = 0;
+        }
 
         // parallel binarisation for large images to avoid thread-dispatch overhead
         let src_data = src.as_slice();
@@ -217,26 +317,18 @@ impl FindContoursExecutor {
                 .enumerate()
                 .for_each(|(r, dst_row)| {
                     let src_row = &src_data[r * width..(r + 1) * width];
-                    for (d, &s) in dst_row[1..=width].iter_mut().zip(src_row.iter()) {
-                        *d = (s != 0) as i16;
-                    }
+                    binarize_row(src_row, &mut dst_row[1..=width]);
                 });
         } else {
             for (r, dst_row) in interior.chunks_mut(padded_w).enumerate() {
                 let src_row = &src_data[r * width..(r + 1) * width];
-                for (d, &s) in dst_row[1..=width].iter_mut().zip(src_row.iter()) {
-                    *d = (s != 0) as i16;
-                }
+                binarize_row(src_row, &mut dst_row[1..=width]);
             }
         }
 
         let pw = padded_w as isize;
         let o8: [isize; 8] = [-1, -pw - 1, -pw, -pw + 1, 1, pw + 1, pw, pw - 1];
-        let mut o16 = [0isize; 16];
-        for k in 0..16 {
-            o16[k] = o8[k & 7];
-        }
-        let toff = TracerOffsets { o8, o16 };
+        let toff = TracerOffsets { o8 };
 
         let mut nbd: i16 = 1;
         self.buffers.hierarchy.push([-1, -1, -1, -1]);
@@ -245,7 +337,14 @@ impl FindContoursExecutor {
         let img_ptr = img_slice.as_mut_ptr();
 
         for r in 1..=height {
+            // `lnbd` carries the unsigned NBD of the most-recently-crossed
+            // border (for parent lookup).
             let mut lnbd: i16 = 1;
+            // Cached EXTERNAL-skip predicate: are we currently inside an
+            // outer's marked region. Updated only when the scan crosses a
+            // marker (top of loop) or a trace finishes — so the per-event
+            // skip check stays O(1).
+            let mut lnbd_inside_outer: bool = false;
             let row_base = r * padded_w;
             let mut c = 1usize;
 
@@ -254,25 +353,51 @@ impl FindContoursExecutor {
                     break 'col;
                 }
 
-                // SAFETY: row_base + c is always in the interior of img_slice:
-                // c ranges over 1..=width
-                // row_base = r * padded_w with r in 1..=height
-                // padded dimensions are (height+2) * (width+2), so
-                // [padded_w, padded_w*height + width] includes row_base + c and belongs in [0, padded_n)
+                // SAFETY: row_base + c is always in the interior of img_slice.
                 let pixel = unsafe { *img_ptr.add(row_base + c) };
+
+                // Marker crossing: pixel ≤ -2 (right edge) or pixel ≥ 2 (left
+                // edge). Inside this branch |pixel| ≥ 2 by construction, so
+                // `pixel > 0` is enough — the redundant `abs_nbd >= 2` check
+                // is gone. In EXTERNAL mode every traced contour is an Outer
+                // (Holes are skipped pre-trace), so the predicate only depends
+                // on the marker's sign.
+                if !(-1..=1).contains(&pixel) {
+                    lnbd = pixel.unsigned_abs() as i16;
+                    lnbd_inside_outer = pixel > 0;
+                }
 
                 // batch advance over zero runs
                 if pixel == 0 {
                     c += 1;
-                    // SWAR: skip 4 i16s at once; saves loop iteration overhead
-                    while c + 4 <= width {
-                        let word =
-                            unsafe { (img_ptr.add(row_base + c) as *const u64).read_unaligned() };
-                        if word != 0 {
-                            break;
+                    // NEON: scan 8 i16 lanes per iteration for the next
+                    // non-zero (compare with zero, bit-scan-forward to find
+                    // the first transition). ~2× the SWAR throughput
+                    // (8 lanes vs 4) on aarch64.
+                    #[cfg(target_arch = "aarch64")]
+                    unsafe {
+                        use std::arch::aarch64::*;
+                        let zero = vdupq_n_s16(0);
+                        while c + 8 <= width {
+                            let v = vld1q_s16(img_ptr.add(row_base + c) as *const i16);
+                            let eq_zero = vceqq_s16(v, zero); // 0xFFFF where == 0
+                                                              // Cast to u8 narrow-down: top byte of each u16 → bit per lane
+                            let narrowed = vshrn_n_u16(eq_zero, 8); // uint8x8_t
+                            let bits = vreinterpret_u64_u8(narrowed);
+                            let bits_u64: u64 = vget_lane_u64(bits, 0);
+                            // bits_u64: byte[i] = 0xFF iff lane i == 0; we want
+                            // first lane where it ISN'T 0xFF (i.e. != zero).
+                            // Invert and find first non-zero byte.
+                            let inv = !bits_u64;
+                            if inv != 0 {
+                                let first = inv.trailing_zeros() / 8;
+                                c += first as usize;
+                                break;
+                            }
+                            c += 8;
                         }
-                        c += 4;
                     }
+                    // Scalar fallback / tail
                     while c <= width && unsafe { *img_ptr.add(row_base + c) } == 0 {
                         c += 1;
                     }
@@ -289,6 +414,16 @@ impl FindContoursExecutor {
                 let is_hole = (pixel >= 1) & (right == 0) & !is_outer;
 
                 if is_outer || is_hole {
+                    // EXTERNAL fast path: skip the trace if this start would
+                    // be discarded by EXTERNAL semantics anyway — holes
+                    // (always discarded) and outers nested inside another
+                    // outer (also discarded). The scan keeps going so the
+                    // *next* start that's a true top-level outer can fire.
+                    if matches!(mode, RetrievalMode::External) && (is_hole || lnbd_inside_outer) {
+                        c += 1;
+                        continue 'col;
+                    }
+
                     if nbd == i16::MAX {
                         return Err(ContoursError::NbdOverflow);
                     }
@@ -305,40 +440,71 @@ impl FindContoursExecutor {
                         &self.buffers.hierarchy,
                         &self.buffers.border_types,
                     );
-                    let start_dir: usize = if is_outer { 0 } else { 4 };
                     let ts = TracerStart {
                         idx,
                         row: r as i32,
                         col: c as i32,
-                        dir: start_dir,
                         nbd,
                         method,
                     };
-                    let range = Self::trace_border(img_ptr, ts, &toff, &mut self.buffers.arena);
 
+                    // Specialise the trace on `is_outer` via const generic
+                    // so the compiler emits two specialised instances and
+                    // the IS_OUTER branch constant-folds out of the hot
+                    // 8-conn neighbor scan inside the trace.
+                    let range = if is_outer {
+                        Self::trace_border::<true>(img_ptr, ts, &toff, &mut self.buffers.arena)
+                    } else {
+                        Self::trace_border::<false>(img_ptr, ts, &toff, &mut self.buffers.arena)
+                    };
                     let hier_entry =
                         Self::update_hierarchy(&mut self.buffers.hierarchy, nbd as usize, parent);
                     self.buffers.hierarchy.push(hier_entry);
                     self.buffers.border_types.push(border_type);
                     self.buffers.ranges.push(range);
                     lnbd = nbd;
+                    // Refresh the cached EXTERNAL-skip predicate after the
+                    // trace marked the start cell ±nbd. No border_types
+                    // lookup needed because only outers reach this branch.
+                    let val_at_idx = unsafe { *img_ptr.add(idx) };
+                    lnbd_inside_outer = val_at_idx > 0 && is_outer;
                 } else if pixel == 1 {
-                    // All-1 SWAR skip: interior pixels can never be contour starts
-                    // Guard the last chunk against potential hole start at right boundary
+                    // Interior 1-pixel: NEON-skip whole chunks of all-1s.
+                    // For chunks with any non-1 lane, fall through to the
+                    // existing scalar SWAR which has the correct hole-start
+                    // back-up handling at chunk boundaries.
                     c += 1;
+                    #[cfg(target_arch = "aarch64")]
+                    unsafe {
+                        use std::arch::aarch64::*;
+                        let one = vdupq_n_s16(1);
+                        while c + 8 <= width {
+                            let v = vld1q_s16(img_ptr.add(row_base + c) as *const i16);
+                            let eq_one = vceqq_s16(v, one);
+                            // All lanes equal to 1 iff vminvq_u16(eq_one) == 0xFFFF
+                            if vminvq_u16(eq_one) != 0xFFFF {
+                                break;
+                            }
+                            // Also need to check that the NEXT pixel (c+8) isn't 0,
+                            // because then c+7 would be a hole-start candidate.
+                            let right_peek = *img_ptr.add(row_base + c + 8);
+                            if right_peek == 0 {
+                                c += 7; // step to c+7, which is the candidate
+                                break;
+                            }
+                            c += 8;
+                        }
+                    }
+                    // Scalar SWAR for the partial-chunk tail (preserves the
+                    // existing right-peek hole-start back-up).
                     while c + 4 <= width {
                         let word =
                             unsafe { (img_ptr.add(row_base + c) as *const u64).read_unaligned() };
-
-                        // 4 x 1i16 packed into u64 (endian-agnostic)
                         if word != u64::from_ne_bytes([1, 0, 1, 0, 1, 0, 1, 0]) {
                             break;
                         }
-                        // Pixels c..c+3 are all 1, left = 1 (nonzero)
-                        // Check right of c+3 for potential hole start
                         let right_peek = unsafe { *img_ptr.add(row_base + c + 4) };
                         if right_peek == 0 {
-                            // c+3 may be a hole start; process it next iteration
                             c += 3;
                             break;
                         }
@@ -346,26 +512,20 @@ impl FindContoursExecutor {
                     }
                     continue 'col;
                 } else {
-                    lnbd = pixel.unsigned_abs() as i16;
+                    // Marker pixel — top-of-loop already updated lnbd/lnbd_pos.
                 }
 
                 c += 1;
             }
         }
 
-        let raw_contours: Vec<Contour> = self
-            .buffers
-            .ranges
-            .iter()
-            .map(|r| self.buffers.arena[r.clone()].to_vec())
-            .collect();
+        // No post-trace reversal: `trace_border` emits points in CCW-for-outer
+        // order natively given its direction encoding.
 
-        Ok(Self::filter_by_mode(
-            raw_contours,
-            &self.buffers.hierarchy,
-            &self.buffers.border_types,
-            mode,
-        ))
+        // Suppress "unused mode" warning — actual filter happens in execute().
+        let _ = mode;
+
+        Ok(())
     }
 
     // Determine parent of a newly detected border per Suzuki-Abe rules
@@ -398,141 +558,151 @@ impl FindContoursExecutor {
         }
     }
 
-    // Trace border per Suzuki-Abe algorithm, labeling pixels in-place
+    /// Trace one contour using the Suzuki/Abe border-following algorithm.
+    ///
+    /// Direction encoding is the CCW-incrementing layout
+    /// (0=E, 1=NE, 2=N, 3=NW, 4=W, 5=SW, 6=S, 7=SE). Output points are
+    /// in image coords `[col-1, row-1]` (subtracting the 1-pixel padding).
+    /// Output is in CCW-for-outer order natively, so no post-process
+    /// reversal is needed in `execute_scan`.
+    ///
+    /// Marking convention (the wrap-detection rule that distinguishes left
+    /// edges from right edges):
+    /// - `(unsigned)(s - 1) < (unsigned)s_end`  →  mark `-nbd` (right edge)
+    /// - else if pixel was raw `1`              →  mark `+nbd` (left edge)
+    ///
+    /// `IS_OUTER` is a const generic so the compiler emits a specialised
+    /// instance per branch; the initial `s_end = IS_OUTER ? 4 : 0`
+    /// constant-folds away in each instance. Outer traces start scanning
+    /// from direction 4 (W); hole traces from direction 0 (E).
     #[inline(always)]
-    fn trace_border(
+    fn trace_border<const IS_OUTER: bool>(
         img: *mut i16,
         ts: TracerStart,
-        toff: &TracerOffsets,
+        _toff: &TracerOffsets,
         arena: &mut Vec<[i32; 2]>,
     ) -> Range<usize> {
         let TracerStart {
             idx: start_idx,
             row: start_row,
             col: start_col,
-            dir: start_dir,
             nbd,
             method,
         } = ts;
         let arena_start = arena.len();
 
-        let mut first_nb_idx = 0usize;
-        let mut first_nb_dir = 0usize;
-        let mut found = false;
-        for k in 0..8usize {
-            let d = start_dir + k;
-            // SAFETY: d & 7 is always in 0..8, and o16 has 16 elements.
-            // The offset is relative to start_idx which is a valid interior pixel.
-            let nb = (start_idx as isize + toff.o16[d & 7]) as usize;
-            if unsafe { *img.add(nb) } != 0 {
-                first_nb_idx = nb;
-                first_nb_dir = d & 7;
-                found = true;
+        // Padded-buffer step (= padded_w). Recovered from `_toff.o8`'s "N"
+        // entry: dir 2 in the offset table is N = -padded_w. The caller
+        // already builds `_toff`; deriving here avoids an extra parameter.
+        let pw: isize = -_toff.o8[2];
+
+        // 8 directions duplicated to 16 so the forward scan can
+        // pre-increment without modulo, masking with `& 7` after.
+        let deltas: [isize; 16] = [
+            1,
+            -pw + 1,
+            -pw,
+            -pw - 1,
+            -1,
+            pw - 1,
+            pw,
+            pw + 1,
+            1,
+            -pw + 1,
+            -pw,
+            -pw - 1,
+            -1,
+            pw - 1,
+            pw,
+            pw + 1,
+        ];
+        // Pixel (dx, dy) per direction (parallel to `deltas` modulo the
+        // padded stride): used to advance the emitted point.
+        const CODE_DX: [i32; 8] = [1, 1, 0, -1, -1, -1, 0, 1];
+        const CODE_DY: [i32; 8] = [0, -1, -1, -1, 0, 1, 1, 1];
+
+        let i0_idx = start_idx;
+        // pt = (col-1, row-1) in image coords
+        let mut pt_x: i32 = start_col - 1;
+        let mut pt_y: i32 = start_row - 1;
+
+        // Initial scan direction: outers start at W (4), holes at E (0).
+        let mut s_end: i32 = if IS_OUTER { 4 } else { 0 };
+        let mut s: i32 = s_end;
+        let mut i1_idx: usize;
+
+        // Backward scan to find first non-zero neighbor
+        loop {
+            s = (s - 1) & 7;
+            i1_idx = (i0_idx as isize + deltas[s as usize]) as usize;
+            if unsafe { *img.add(i1_idx) } != 0 || s == s_end {
                 break;
             }
         }
 
-        if !found {
-            // SAFETY: start_idx is a valid interior pixel in the padded image.
-            unsafe { *img.add(start_idx) = -nbd };
-            arena.push([start_col - 1, start_row - 1]);
+        if s == s_end {
+            // Single-pixel domain — mark -nbd, emit start, return.
+            unsafe { *img.add(i0_idx) = -nbd };
+            arena.push([pt_x, pt_y]);
             return arena_start..arena.len();
         }
 
-        arena.push([start_col - 1, start_row - 1]);
-
-        let mut i2_idx = first_nb_idx;
-        let mut i2_row = start_row + DIR_DR[first_nb_dir];
-        let mut i2_col = start_col + DIR_DC[first_nb_dir];
-        let mut dir_in = first_nb_dir;
-        let mut dir_out_final = dir_in;
+        // Main border-following loop
+        let mut i3_idx = i0_idx;
+        let mut prev_s: i32 = s ^ 4;
 
         loop {
-            // SAFETY: i2_idx is always an interior pixel (never on the padding border),
-            // validated by the loop invariant and debug_assert.
-            debug_assert!(i2_idx > 0, "i2_idx underflow: tracer reached left padding");
-            let cur = unsafe { *img.add(i2_idx) };
-            let left_nb = unsafe { *img.add(i2_idx - 1) };
-            let right_nb = unsafe { *img.add(i2_idx + 1) };
+            s_end = s;
 
-            if left_nb == 0 && cur == 1 {
-                unsafe { *img.add(i2_idx) = nbd };
-            } else if right_nb == 0 && cur > 0 {
-                unsafe { *img.add(i2_idx) = -nbd };
-            }
-
-            // Suzuki-Abe "behind" rule: scan starts at (dir_in + 5) & 7
-            let scan_start = (dir_in + 5) & 7;
-            let mut i3_idx = 0usize;
-            let mut i3_row = i2_row;
-            let mut i3_col = i2_col;
-            let mut dir_out = scan_start;
-            let mut found_next = false;
-
-            for k in 0..8usize {
-                let s = scan_start + k;
-                // SAFETY: s & 7 is provably in 0..8 and o8 has exactly 8 elements.
-                // The offset is relative to i2_idx which is a valid interior pixel.
-                let nb = (i2_idx as isize + toff.o8[s & 7]) as usize;
-                // SAFETY: nb wrapping would mean the pointer offset overflowed, violating
-                // the padding invariant. debug_assert validates the bounds.
-                debug_assert!(
-                    (nb as isize) >= 0 && nb < usize::MAX / 2,
-                    "nb wrapped: i2_idx={i2_idx} offset={}",
-                    toff.o8[s & 7]
-                );
+            // Forward scan: increment s through deltas[8..16] (the
+            // duplicate copy lets us scan past 7 without modulo, then
+            // mask once at the end).
+            let mut new_s = s;
+            let mut i4_idx: usize = 0;
+            while new_s < 15 {
+                new_s += 1;
+                let nb = (i3_idx as isize + deltas[new_s as usize]) as usize;
                 if unsafe { *img.add(nb) } != 0 {
-                    i3_idx = nb;
-                    i3_row = i2_row + DIR_DR[s & 7];
-                    i3_col = i2_col + DIR_DC[s & 7];
-                    dir_out = s & 7;
-                    found_next = true;
+                    i4_idx = nb;
                     break;
                 }
             }
+            s = new_s & 7;
 
-            if !found_next {
-                break;
+            // Wrap-detection marking: -nbd if the forward scan wrapped
+            // through direction 0 to find the next neighbour, else +nbd
+            // when the cell was still raw (= 1).
+            let cur = unsafe { *img.add(i3_idx) };
+            if ((s - 1) as u32) < (s_end as u32) {
+                unsafe { *img.add(i3_idx) = -nbd };
+            } else if cur == 1 {
+                unsafe { *img.add(i3_idx) = nbd };
             }
-            dir_out_final = dir_out;
 
-            if i2_idx == start_idx && i3_idx == first_nb_idx {
-                break;
-            }
-
+            // Emission: SIMPLE only on direction change; NONE on every step.
             match method {
                 ContourApproximationMode::None => {
-                    arena.push([i2_col - 1, i2_row - 1]);
+                    arena.push([pt_x, pt_y]);
                 }
                 ContourApproximationMode::Simple => {
-                    if dir_in != dir_out {
-                        arena.push([i2_col - 1, i2_row - 1]);
+                    if s != prev_s {
+                        arena.push([pt_x, pt_y]);
+                        prev_s = s;
                     }
                 }
             }
 
-            i2_idx = i3_idx;
-            i2_row = i3_row;
-            i2_col = i3_col;
-            dir_in = dir_out;
-        }
+            // Advance pt
+            pt_x += CODE_DX[s as usize];
+            pt_y += CODE_DY[s as usize];
 
-        // for simple mode emit the corner if direction changed
-        if method == ContourApproximationMode::Simple && i2_idx != start_idx {
-            let dr = start_row - i2_row;
-            let dc = start_col - i2_col;
-
-            let idx4 = ((dr + 1) * 3 + (dc + 1)) as usize;
-            let dir_out_to_start = DIR_LUT[idx4];
-            let pt = [i2_col - 1, i2_row - 1];
-            if dir_out_final != dir_out_to_start && arena[arena_start..].last() != Some(&pt) {
-                arena.push(pt);
+            // Halt: i4 == i0 && i3 == i1
+            if i4_idx == i0_idx && i3_idx == i1_idx {
+                break;
             }
-        }
 
-        // SAFETY: start_idx is a valid interior pixel in the padded image.
-        if unsafe { *img.add(start_idx) } == 1 {
-            unsafe { *img.add(start_idx) = nbd };
+            i3_idx = i4_idx;
+            s = (s + 4) & 7;
         }
 
         arena_start..arena.len()
@@ -676,6 +846,45 @@ impl FindContoursExecutor {
 impl Default for FindContoursExecutor {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Binarize one row of u8 source pixels into i16 destination row of 0s and 1s.
+/// On aarch64 uses NEON to process 16 pixels per iteration; scalar fallback elsewhere.
+#[inline]
+fn binarize_row(src: &[u8], dst: &mut [i16]) {
+    debug_assert_eq!(src.len(), dst.len());
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe {
+            use std::arch::aarch64::*;
+            let n = src.len();
+            let mut i = 0;
+            let zero_u8 = vdupq_n_u8(0);
+            let one_u8 = vdupq_n_u8(1);
+            while i + 16 <= n {
+                // Load 16 u8 source pixels
+                let v = vld1q_u8(src.as_ptr().add(i));
+                // mask = (v != 0) as 0xFF or 0x00 per byte
+                let eq_zero = vceqq_u8(v, zero_u8);
+                let nonzero_mask = vmvnq_u8(eq_zero); // 0xFF where != 0
+                let bits = vandq_u8(nonzero_mask, one_u8); // 0 or 1 per byte
+                                                           // Widen low 8 bytes to u16x8, then high 8 bytes — store as i16
+                let lo = vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(bits)));
+                let hi = vreinterpretq_s16_u16(vmovl_high_u8(bits));
+                vst1q_s16(dst.as_mut_ptr().add(i), lo);
+                vst1q_s16(dst.as_mut_ptr().add(i + 8), hi);
+                i += 16;
+            }
+            // Tail
+            for j in i..n {
+                *dst.get_unchecked_mut(j) = (*src.get_unchecked(j) != 0) as i16;
+            }
+        }
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    for (d, &s) in dst.iter_mut().zip(src.iter()) {
+        *d = (s != 0) as i16;
     }
 }
 
