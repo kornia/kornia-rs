@@ -59,6 +59,25 @@ def main():
     cv2_hist = topo_hist(only_cv2, "cv2-only (we miss)")
     k_hist = topo_hist(only_kornia, "kornia-only (we over-detect)")
 
+    # Detail: show full row context for first 5 cv2-only starts.
+    # This reveals what the previous-row + current-row pixels look like.
+    print("\n  detailed context for first 5 cv2-only missing starts (3 rows × 11 cols):")
+    for x, y in only_cv2[:5]:
+        print(f"\n  ({x}, {y}):")
+        for dy in range(-1, 2):
+            yy = y + dy
+            if 0 <= yy < h:
+                row_str = ""
+                for dx in range(-5, 6):
+                    xx = x + dx
+                    if 0 <= xx < w:
+                        v = bw[yy, xx]
+                        marker = "*" if (dy == 0 and dx == 0) else " "
+                        row_str += marker + ("1" if v else ".")
+                    else:
+                        row_str += " ?"
+                print(f"    y={yy:3d}: {row_str}")
+
     overlap = set(cv2_hist) & set(k_hist)
     print(f"\n  topology overlap: {len(overlap)} signatures appear in BOTH miss + over-detect lists")
     print(f"  (suggests near-misses where same topology is mislabeled — start point off by 1 px)")
