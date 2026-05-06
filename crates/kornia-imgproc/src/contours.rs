@@ -285,9 +285,6 @@ impl FindContoursExecutor {
         mode: RetrievalMode,
         method: ContourApproximationMode,
     ) -> Result<(), ContoursError> {
-        #[cfg(feature = "profile_contours")]
-        let _t_start = std::time::Instant::now();
-
         let height = src.height();
         let width = src.width();
         let padded_w = width + 2;
@@ -311,9 +308,6 @@ impl FindContoursExecutor {
             img_slice[base + padded_w - 1] = 0;
         }
 
-        #[cfg(feature = "profile_contours")]
-        let _t_after_init = std::time::Instant::now();
-
         // parallel binarisation for large images to avoid thread-dispatch overhead
         let src_data = src.as_slice();
         let interior = &mut img_slice[padded_w..padded_w + height * padded_w];
@@ -332,9 +326,6 @@ impl FindContoursExecutor {
             }
         }
 
-        #[cfg(feature = "profile_contours")]
-        let _t_after_binarize = std::time::Instant::now();
-
         let pw = padded_w as isize;
         let o8: [isize; 8] = [-1, -pw - 1, -pw, -pw + 1, 1, pw + 1, pw, pw - 1];
         let toff = TracerOffsets { o8 };
@@ -344,21 +335,6 @@ impl FindContoursExecutor {
         self.buffers.border_types.push(BorderType::Outer);
 
         let img_ptr = img_slice.as_mut_ptr();
-
-        #[cfg(feature = "profile_contours")]
-        let mut _trace_border_total_ns: u128 = 0;
-        #[cfg(feature = "profile_contours")]
-        let mut _trace_border_calls: u32 = 0;
-        #[cfg(feature = "profile_contours")]
-        let mut _scalar_iters: u64 = 0;
-        #[cfg(feature = "profile_contours")]
-        let mut _zero_skip_hits: u64 = 0;
-        #[cfg(feature = "profile_contours")]
-        let mut _one_skip_hits: u64 = 0;
-        #[cfg(feature = "profile_contours")]
-        let mut _start_hits: u64 = 0;
-        #[cfg(feature = "profile_contours")]
-        let mut _labeled_hits: u64 = 0;
 
         for r in 1..=height {
             // `lnbd` carries the unsigned NBD of the most-recently-crossed
@@ -378,11 +354,6 @@ impl FindContoursExecutor {
                 }
 
                 // SAFETY: row_base + c is always in the interior of img_slice.
-                #[cfg(feature = "profile_contours")]
-                {
-                    _scalar_iters += 1;
-                }
-
                 let pixel = unsafe { *img_ptr.add(row_base + c) };
 
                 // Marker crossing: pixel is +nbd (left edge of an outer) or
@@ -402,10 +373,6 @@ impl FindContoursExecutor {
 
                 // batch advance over zero runs
                 if pixel == 0 {
-                    #[cfg(feature = "profile_contours")]
-                    {
-                        _zero_skip_hits += 1;
-                    }
                     c += 1;
                     // NEON: scan 8 i16 lanes per iteration for the next
                     // non-zero (compare with zero, bit-scan-forward to find
@@ -451,11 +418,6 @@ impl FindContoursExecutor {
                 let is_hole = (pixel >= 1) & (right == 0) & !is_outer;
 
                 if is_outer || is_hole {
-                    #[cfg(feature = "profile_contours")]
-                    {
-                        _start_hits += 1;
-                    }
-
                     // EXTERNAL fast path: skip the trace if this start would
                     // be discarded by EXTERNAL semantics anyway — holes
                     // (always discarded) and outers nested inside another
@@ -490,8 +452,6 @@ impl FindContoursExecutor {
                         method,
                     };
 
-                    #[cfg(feature = "profile_contours")]
-                    let _t_trace = std::time::Instant::now();
                     // Specialise the trace on `is_outer` via const generic
                     // so the compiler emits two specialised instances and
                     // the IS_OUTER branch constant-folds out of the hot
@@ -501,12 +461,6 @@ impl FindContoursExecutor {
                     } else {
                         Self::trace_border::<false>(img_ptr, ts, &toff, &mut self.buffers.arena)
                     };
-                    #[cfg(feature = "profile_contours")]
-                    {
-                        _trace_border_total_ns += _t_trace.elapsed().as_nanos();
-                        _trace_border_calls += 1;
-                    }
-
                     let hier_entry =
                         Self::update_hierarchy(&mut self.buffers.hierarchy, nbd as usize, parent);
                     self.buffers.hierarchy.push(hier_entry);
@@ -519,10 +473,6 @@ impl FindContoursExecutor {
                     let val_at_idx = unsafe { *img_ptr.add(idx) };
                     lnbd_inside_outer = val_at_idx > 0 && is_outer;
                 } else if pixel == 1 {
-                    #[cfg(feature = "profile_contours")]
-                    {
-                        _one_skip_hits += 1;
-                    }
                     // Interior 1-pixel: NEON-skip whole chunks of all-1s.
                     // For chunks with any non-1 lane, fall through to the
                     // existing scalar SWAR which has the correct hole-start
@@ -566,10 +516,6 @@ impl FindContoursExecutor {
                     }
                     continue 'col;
                 } else {
-                    #[cfg(feature = "profile_contours")]
-                    {
-                        _labeled_hits += 1;
-                    }
                     // Marker pixel — top-of-loop already updated lnbd/lnbd_pos.
                 }
 
@@ -582,27 +528,6 @@ impl FindContoursExecutor {
 
         // Suppress "unused mode" warning — actual filter happens in execute().
         let _ = mode;
-
-        #[cfg(feature = "profile_contours")]
-        {
-            let init_ns = _t_after_init.duration_since(_t_start).as_nanos();
-            let bin_ns = _t_after_binarize.duration_since(_t_after_init).as_nanos();
-            let total_ns = _t_after_binarize.elapsed().as_nanos() + bin_ns + init_ns;
-            let scan_total = _t_after_binarize.elapsed().as_nanos();
-            let scan_minus_trace = scan_total.saturating_sub(_trace_border_total_ns);
-            eprintln!(
-                "PROFILE w={width} h={height} contours={} init={}μs bin={}μs scan_other={}μs trace_border={}μs ({}calls,{}ns/call) | iters={} zero={} one={} labeled={} starts={}",
-                _trace_border_calls,
-                init_ns / 1000,
-                bin_ns / 1000,
-                scan_minus_trace / 1000,
-                _trace_border_total_ns / 1000,
-                _trace_border_calls,
-                if _trace_border_calls > 0 { _trace_border_total_ns / _trace_border_calls as u128 } else { 0 },
-                _scalar_iters, _zero_skip_hits, _one_skip_hits, _labeled_hits, _start_hits,
-            );
-            let _ = total_ns;
-        }
 
         Ok(())
     }
