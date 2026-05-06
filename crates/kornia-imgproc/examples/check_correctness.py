@@ -23,8 +23,15 @@ def kornia_contours(image_path, mode="external", method="simple"):
 
 
 def opencv_contours(image_path, mode_str, method_str):
-    img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
-    _, bw = cv2.threshold(img, 127, 1, cv2.THRESH_BINARY)
+    # Use kornia's exact gray formula (77*R + 150*G + 29*B) >> 8, not
+    # cv2.IMREAD_GRAYSCALE — otherwise pixels at the threshold boundary
+    # binarise differently and the comparison becomes unfair (see pic4).
+    img = cv2.imread(image_path, cv2.IMREAD_COLOR)  # BGR
+    b = img[..., 0].astype(np.uint32)
+    g = img[..., 1].astype(np.uint32)
+    r = img[..., 2].astype(np.uint32)
+    gray = ((77 * r + 150 * g + 29 * b) >> 8).astype(np.uint8)
+    _, bw = cv2.threshold(gray, 127, 1, cv2.THRESH_BINARY)
     mode = {"external": cv2.RETR_EXTERNAL, "list": cv2.RETR_LIST}[mode_str]
     method = {"simple": cv2.CHAIN_APPROX_SIMPLE, "none": cv2.CHAIN_APPROX_NONE}[method_str]
     contours, _ = cv2.findContours(bw, mode, method)

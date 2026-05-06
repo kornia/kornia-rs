@@ -1,11 +1,20 @@
 # Spec: bit-exact cv2 parity for `find_contours`
 
-**Status:** phase 1 landed as default path (2026-05-06) — 10/14 bit-exact
+**Status: COMPLETE (2026-05-06) — 14/14 bit-exact.**
 
-Update: the cv2-parity trace is now the *only* trace. The Cargo feature
+Update 1: the cv2-parity trace is now the *only* trace. The Cargo feature
 flag (`contours_cv2_parity`) was removed and the previous left/right-state
 trace was deleted — kornia's `find_contours` uses cv2's `icvFetchContour`
-unconditionally. Default `cargo build` produces cv2-matching output.
+unconditionally.
+
+Update 2: the residual "pic4 -37 contour gap" was **not an algorithm
+difference** — it was a binarisation difference between Python's
+`cv2.IMREAD_GRAYSCALE` and kornia's `(77*R + 150*G + 29*B) >> 8`. On pic4,
+867 pixels sit close enough to the threshold that the two luma formulas
+binarise them differently, which propagates to a 37-contour count delta.
+When both paths consume the *same* binary input, all 14 snapshot fixtures
+match cv2 byte-for-byte. The harness was updated to use kornia's exact
+gray formula for the cv2 baseline so the comparison is apples-to-apples.
 **Goal:** make `find_contours` produce coordinate-by-coordinate identical output to `cv2.findContours` across all 4 fixtures (pic1-4) × 2 modes (EXTERNAL, LIST) × 2 methods (SIMPLE, NONE), without losing the ~3× perf margin we already have on pic4.
 **Non-goal:** re-implement RETR_CCOMP / RETR_TREE parity (out of scope; current users want EXTERNAL).
 

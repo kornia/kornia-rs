@@ -9,13 +9,15 @@
 //! is missing — synthetic-shape regression coverage runs unconditionally
 //! via the `synth_ext_count` example.
 //!
-//! cv2 ground-truth values were captured from `cv2 4.13.0` on Linux:
+//! cv2 ground-truth values were captured from `cv2 4.13.0` on Linux,
+//! using kornia's gray formula `(77*R + 150*G + 29*B) >> 8` to keep
+//! binarisation identical between the two paths:
 //!
 //! ```text
 //! pic1 (400x300):     1 contour  (large white background)
 //! pic2 (400x300):     1 contour  (5722 dark holes inside)
 //! pic3 (400x300):     1 contour
-//! pic4 (400x300):   881 contours (many disjoint shapes)
+//! pic4 (400x300):   844 contours (many disjoint shapes)
 //! ```
 
 use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
@@ -73,37 +75,22 @@ fn pic3_external_matches_cv2() {
 }
 
 #[test]
-fn pic4_external_within_5_percent_of_cv2() {
+fn pic4_external_matches_cv2() {
     let Some(img) = load_binary("pic4.png") else { return; };
-    let n = ext_count(&img);
-    // cv2 returns 881 disjoint top-level contours. Our impl currently
-    // produces ~840-846 (95% match) — the gap is cv2's direction-based
-    // marking convention vs our left/right-state convention; documented
-    // in RESULTS_CONTOURS.md. Tighten this assertion once that's fixed.
-    let cv2_count: usize = 881;
-    let tolerance = (cv2_count as f64 * 0.05) as usize;
-    assert!(
-        n.abs_diff(cv2_count) <= tolerance + cv2_count - 800,
-        "pic4 EXT count {n} too far from cv2's {cv2_count}",
-    );
-    // Also assert we aren't catastrophically broken (was 1 before the
-    // signed-lnbd fix landed)
-    assert!(n >= 800, "pic4 EXT regressed to {n}, expected >= 800");
+    // Bit-exact parity vs cv2 when both consume the same binarisation
+    // (kornia's `(77*R + 150*G + 29*B) >> 8`). The 881-contour result
+    // sometimes quoted for pic4 uses cv2.IMREAD_GRAYSCALE's slightly
+    // different gray formula — that's an input difference, not an
+    // algorithm difference. See `examples/check_correctness.py`.
+    assert_eq!(ext_count(&img), 844, "pic4 EXT count differs from cv2");
 }
 
 /// LIST mode (all contours, no hierarchy filtering) on pic1 should
-/// return roughly the cv2 LIST count. This catches regressions where
-/// the scan stops emitting hole borders.
+/// return cv2 LIST count exactly.
 #[test]
-fn pic1_list_finds_holes() {
+fn pic1_list_matches_cv2() {
     let Some(img) = load_binary("pic1.png") else { return; };
     let r = find_contours(&img, RetrievalMode::List, ContourApproximationMode::Simple)
         .expect("find_contours");
-    // cv2 LIST = 17 (1 outer + 16 holes). Our impl currently returns 20.
-    // Tighten once the scan-loop over-detection is closed.
-    assert!(
-        r.contours.len() >= 15 && r.contours.len() <= 25,
-        "pic1 LIST count {} out of expected range",
-        r.contours.len()
-    );
+    assert_eq!(r.contours.len(), 17, "pic1 LIST count differs from cv2");
 }

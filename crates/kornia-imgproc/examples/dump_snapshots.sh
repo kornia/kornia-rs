@@ -34,11 +34,22 @@ write_kornia() {
 write_cv2() {
     local fixture=$1 mode=$2 method=$3
     local out="$SNAP_DIR/cv2_${fixture}_${mode}_${method}.json"
+    # IMPORTANT: bw must match what kornia produces, otherwise the comparison
+    # is unfair. cv2's IMREAD_GRAYSCALE uses one luma formula; kornia uses
+    # `(77*R + 150*G + 29*B) >> 8` (BT.601 with integer 8-bit weights). On
+    # fixtures with near-threshold pixels (notably pic4), these formulas
+    # diverge by ±1 gray-value at hundreds of pixels and the binarisation
+    # flips. Without aligning, ~37 contours look like an algorithm gap
+    # when they're actually a binarisation gap.
     python3 - "$fixture" "$mode" "$method" "$out" <<'PY'
-import json, sys, cv2
+import json, sys, cv2, numpy as np
 fixture, mode_s, method_s, out = sys.argv[1:]
-img = cv2.imread(f"crates/kornia-imgproc/examples/data/{fixture}.png", cv2.IMREAD_GRAYSCALE)
-_, bw = cv2.threshold(img, 127, 1, cv2.THRESH_BINARY)
+img = cv2.imread(f"crates/kornia-imgproc/examples/data/{fixture}.png", cv2.IMREAD_COLOR)  # BGR
+b = img[..., 0].astype(np.uint32)
+g = img[..., 1].astype(np.uint32)
+r = img[..., 2].astype(np.uint32)
+gray = ((77*r + 150*g + 29*b) >> 8).astype(np.uint8)  # match kornia exactly
+_, bw = cv2.threshold(gray, 127, 1, cv2.THRESH_BINARY)
 mode = {"external": cv2.RETR_EXTERNAL, "list": cv2.RETR_LIST}[mode_s]
 method = {"simple": cv2.CHAIN_APPROX_SIMPLE, "none": cv2.CHAIN_APPROX_NONE}[method_s]
 contours, _ = cv2.findContours(bw, mode, method)
