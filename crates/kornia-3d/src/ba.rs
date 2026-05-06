@@ -550,9 +550,8 @@ pub fn bundle_adjust(
             }
         } else {
             let pose_name = format!("pose_{}", obs.pose_idx);
-            let factor = Box::new(
-                ReprojFactor::new(obs.pixel, camera).with_loss(robust_loss.clone()),
-            );
+            let factor =
+                Box::new(ReprojFactor::new(obs.pixel, camera).with_loss(robust_loss.clone()));
             problem.add_factor(factor, vec![pose_name, pt_name])?;
         }
     }

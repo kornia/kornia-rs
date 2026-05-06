@@ -21,6 +21,12 @@
 use crate::ransac::{Consensus, Estimator, RansacConfig, RansacResult, Sampler};
 use rayon::prelude::*;
 
+/// Per-hypothesis chunk result inside `run_parallel`: best `(model,
+/// score, inlier_count, inlier_mask)` produced from one minimal sample,
+/// or `None` if the kernel returned no candidates. Aliased to keep the
+/// inner `par_iter` closure's return type readable.
+type ChunkBest<M> = Option<(M, f64, usize, Vec<bool>)>;
+
 /// Run RANSAC.
 ///
 /// `samples` is the full input correspondence set. The driver draws
@@ -120,9 +126,7 @@ where
         // the current best inlier set and try the polished model. Skipped
         // when `lo_every == 0` (default) — keeps vanilla RANSAC behaviour
         // identical to the pre-LO driver.
-        if cfg.lo_every > 0
-            && accepted_since_lo >= cfg.lo_every
-            && best_inliers.iter().any(|&b| b)
+        if cfg.lo_every > 0 && accepted_since_lo >= cfg.lo_every && best_inliers.iter().any(|&b| b)
         {
             accepted_since_lo = 0;
             lo_inlier_buf.clear();
@@ -138,8 +142,7 @@ where
                 estimator.refit(&lo_inlier_buf, &mut lo_models);
                 for lo_model in lo_models.iter() {
                     estimator.residual_batch(lo_model, samples, &mut residuals);
-                    let lo_outcome =
-                        consensus.consensus(&residuals, &mut current_inliers);
+                    let lo_outcome = consensus.consensus(&residuals, &mut current_inliers);
                     if lo_outcome.score > best_score {
                         best_score = lo_outcome.score;
                         best_model = Some(lo_model.clone());
@@ -147,12 +150,8 @@ where
                         // LO acceptance also tightens the adaptive cap.
                         if lo_outcome.inlier_count > 0 {
                             let w = lo_outcome.inlier_count as f64 / n as f64;
-                            let new_max = adaptive_max_iters(
-                                w,
-                                E::SAMPLE_SIZE,
-                                cfg.confidence,
-                                max_iters,
-                            );
+                            let new_max =
+                                adaptive_max_iters(w, E::SAMPLE_SIZE, cfg.confidence, max_iters);
                             if new_max < max_iters {
                                 max_iters = new_max;
                             }
@@ -222,8 +221,7 @@ where
 
     // Per-chunk minimal samples are pre-generated serially (Sampler is
     // single-threaded by trait bound).
-    let mut chunk_samples: Vec<Vec<E::Sample>> =
-        Vec::with_capacity(chunk_size);
+    let mut chunk_samples: Vec<Vec<E::Sample>> = Vec::with_capacity(chunk_size);
     let mut sample_idx = vec![0usize; E::SAMPLE_SIZE];
 
     let mut best_score = f64::NEG_INFINITY;
@@ -251,37 +249,34 @@ where
         // Per-chunk parallel evaluation. Each thread allocates its own
         // `models`, `residuals`, and `inliers` buffers — small (10 ×
         // model + N × f64 + N × bool ≈ a few KB) and short-lived.
-        let chunk_results: Vec<Option<(E::Model, f64, usize, Vec<bool>)>> =
-            chunk_samples
-                .par_iter()
-                .map(|sample_buf| {
-                    let mut models: Vec<E::Model> = Vec::with_capacity(10);
-                    let mut residuals = vec![0.0f64; n];
-                    let mut inliers: Vec<bool> = Vec::with_capacity(n);
-                    estimator.fit(sample_buf, &mut models);
+        let chunk_results: Vec<ChunkBest<E::Model>> = chunk_samples
+            .par_iter()
+            .map(|sample_buf| {
+                let mut models: Vec<E::Model> = Vec::with_capacity(10);
+                let mut residuals = vec![0.0f64; n];
+                let mut inliers: Vec<bool> = Vec::with_capacity(n);
+                estimator.fit(sample_buf, &mut models);
 
-                    let mut local_best:
-                        Option<(E::Model, f64, usize, Vec<bool>)> = None;
-                    for model in models.iter() {
-                        estimator.residual_batch(model, samples, &mut residuals);
-                        let outcome =
-                            consensus.consensus(&residuals, &mut inliers);
-                        let take = match &local_best {
-                            None => true,
-                            Some((_, s, _, _)) => outcome.score > *s,
-                        };
-                        if take {
-                            local_best = Some((
-                                model.clone(),
-                                outcome.score,
-                                outcome.inlier_count,
-                                inliers.clone(),
-                            ));
-                        }
+                let mut local_best: Option<(E::Model, f64, usize, Vec<bool>)> = None;
+                for model in models.iter() {
+                    estimator.residual_batch(model, samples, &mut residuals);
+                    let outcome = consensus.consensus(&residuals, &mut inliers);
+                    let take = match &local_best {
+                        None => true,
+                        Some((_, s, _, _)) => outcome.score > *s,
+                    };
+                    if take {
+                        local_best = Some((
+                            model.clone(),
+                            outcome.score,
+                            outcome.inlier_count,
+                            inliers.clone(),
+                        ));
                     }
-                    local_best
-                })
-                .collect();
+                }
+                local_best
+            })
+            .collect();
 
         // Reduce: pick best across the chunk, update global best.
         for entry in chunk_results.into_iter().flatten() {
@@ -292,8 +287,7 @@ where
                 best_inliers = inliers;
                 if inlier_count > 0 {
                     let w = inlier_count as f64 / n as f64;
-                    let new_max =
-                        adaptive_max_iters(w, E::SAMPLE_SIZE, cfg.confidence, max_iters);
+                    let new_max = adaptive_max_iters(w, E::SAMPLE_SIZE, cfg.confidence, max_iters);
                     if new_max < max_iters {
                         max_iters = new_max;
                     }
@@ -465,7 +459,13 @@ mod tests {
         };
 
         let mut sampler_plain = UniformSampler::new(StdRng::seed_from_u64(7));
-        let plain = run(&est, &consensus, &mut sampler_plain, &pair.matches, &cfg_plain);
+        let plain = run(
+            &est,
+            &consensus,
+            &mut sampler_plain,
+            &pair.matches,
+            &cfg_plain,
+        );
 
         let mut sampler_lo = UniformSampler::new(StdRng::seed_from_u64(7));
         let lo = run(&est, &consensus, &mut sampler_lo, &pair.matches, &cfg_lo);

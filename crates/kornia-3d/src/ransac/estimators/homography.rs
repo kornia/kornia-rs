@@ -5,9 +5,7 @@
 //! step, final inlier-set polish) should call
 //! `crate::pose::homography::homography_dlt` directly.
 
-use kornia_algebra::{Mat3F64, Vec3F64};
-
-use kornia_algebra::Vec2F64;
+use kornia_algebra::{Mat3F64, Vec2F64, Vec3F64};
 
 use crate::pose::{homography_4pt2d, homography_dlt};
 use crate::ransac::{Estimator, Match2d2d};
@@ -189,11 +187,7 @@ fn transfer_error_batch_scalar_tail(
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 #[inline]
-unsafe fn transfer_error_batch_neon(
-    h: HPacked,
-    samples: &[Match2d2d],
-    out: &mut [f64],
-) -> usize {
+unsafe fn transfer_error_batch_neon(h: HPacked, samples: &[Match2d2d], out: &mut [f64]) -> usize {
     use std::arch::aarch64::*;
     let (h00, h01, h02, h10, h11, h12, h20, h21, h22) = h;
     let h00v = vdupq_n_f64(h00);
@@ -248,11 +242,7 @@ unsafe fn transfer_error_batch_neon(
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
 #[inline]
-unsafe fn transfer_error_batch_avx2(
-    h: HPacked,
-    samples: &[Match2d2d],
-    out: &mut [f64],
-) -> usize {
+unsafe fn transfer_error_batch_avx2(h: HPacked, samples: &[Match2d2d], out: &mut [f64]) -> usize {
     use std::arch::x86_64::*;
     let (h00, h01, h02, h10, h11, h12, h20, h21, h22) = h;
     let h00v = _mm256_set1_pd(h00);

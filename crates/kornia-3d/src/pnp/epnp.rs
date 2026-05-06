@@ -632,8 +632,8 @@ mod solve_epnp_tests {
             refine_lm: Some(LMRefineParams::default()),
             ..Default::default()
         };
-        let result = solve_epnp(&world, &image, &k, None, &params)
-            .expect("solver returned an error");
+        let result =
+            solve_epnp(&world, &image, &k, None, &params).expect("solver returned an error");
         let rmse = result.reproj_rmse.unwrap_or(f32::INFINITY);
         // Empirically observed envelope on the (1 m @ 5 m, fx=600) regime
         // is ~25-30 px RMSE. Assertion is the *upper* bound — the test
