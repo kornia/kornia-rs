@@ -16,6 +16,7 @@ mod io;
 mod normalize;
 mod orb;
 mod pipeline;
+mod pnp;
 mod pointcloud;
 mod pyutils;
 mod ransac;
@@ -446,6 +447,7 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     )?)?;
     k3d_mod.add_function(wrap_pyfunction!(homography::find_homography_py, &k3d_mod)?)?;
     k3d_mod.add_function(wrap_pyfunction!(homography::find_fundamental_py, &k3d_mod)?)?;
+    k3d_mod.add_function(wrap_pyfunction!(pnp::solve_pnp_ransac_py, &k3d_mod)?)?;
     m.add_submodule(&k3d_mod)?;
 
     // Apriltag submodule
