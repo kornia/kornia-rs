@@ -59,6 +59,14 @@ impl Estimator for FundamentalEstimator {
         sampson_distance(model, &sample.x1, &sample.x2)
     }
 
+    /// LO-friendly refit. `fundamental_8point` is a least-squares solver
+    /// that takes any N ≥ 8, so we forward straight to `fit` — the existing
+    /// implementation already routes through Householder for n ≤ 64 and
+    /// MtM/LDLᵀ otherwise.
+    fn refit(&self, inliers: &[Self::Sample], out: &mut Vec<Self::Model>) {
+        self.fit(inliers, out);
+    }
+
     /// Dispatcher matching the kornia-imgproc `warp/kernels.rs` convention:
     /// aarch64 → NEON unconditionally (NEON is baseline for the supported
     /// linux-aarch64 target), x86_64 → AVX2+FMA when probed at runtime,
