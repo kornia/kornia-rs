@@ -60,59 +60,52 @@ pub enum ColormapType {
     Deepgreen,
 }
 
+// Single source of truth: (lowercase name, variant, LUT).
+// `from_name` and `lut` both derive from this table, so adding a new colormap
+// requires editing exactly one place instead of two parallel 21-arm matches.
+static COLORMAPS: &[(&str, ColormapType, &ColormapLut)] = &[
+    ("autumn", ColormapType::Autumn, &AUTUMN_LUT),
+    ("bone", ColormapType::Bone, &BONE_LUT),
+    ("jet", ColormapType::Jet, &JET_LUT),
+    ("winter", ColormapType::Winter, &WINTER_LUT),
+    ("rainbow", ColormapType::Rainbow, &RAINBOW_LUT),
+    ("ocean", ColormapType::Ocean, &OCEAN_LUT),
+    ("summer", ColormapType::Summer, &SUMMER_LUT),
+    ("spring", ColormapType::Spring, &SPRING_LUT),
+    ("cool", ColormapType::Cool, &COOL_LUT),
+    ("hsv", ColormapType::Hsv, &HSV_LUT),
+    ("pink", ColormapType::Pink, &PINK_LUT),
+    ("hot", ColormapType::Hot, &HOT_LUT),
+    ("parula", ColormapType::Parula, &PARULA_LUT),
+    ("magma", ColormapType::Magma, &MAGMA_LUT),
+    ("inferno", ColormapType::Inferno, &INFERNO_LUT),
+    ("plasma", ColormapType::Plasma, &PLASMA_LUT),
+    ("viridis", ColormapType::Viridis, &VIRIDIS_LUT),
+    ("cividis", ColormapType::Cividis, &CIVIDIS_LUT),
+    ("twilight", ColormapType::Twilight, &TWILIGHT_LUT),
+    ("turbo", ColormapType::Turbo, &TURBO_LUT),
+    ("deepgreen", ColormapType::Deepgreen, &DEEPGREEN_LUT),
+];
+
 impl ColormapType {
     /// Parse a colormap name (case-insensitive, matches OpenCV lowercase convention).
+    ///
+    /// Valid names: `autumn`, `bone`, `jet`, `winter`, `rainbow`, `ocean`, `summer`,
+    /// `spring`, `cool`, `hsv`, `pink`, `hot`, `parula`, `magma`, `inferno`, `plasma`,
+    /// `viridis`, `cividis`, `twilight`, `turbo`, `deepgreen`.
     pub fn from_name(name: &str) -> Option<Self> {
-        match name.to_lowercase().as_str() {
-            "autumn" => Some(Self::Autumn),
-            "bone" => Some(Self::Bone),
-            "jet" => Some(Self::Jet),
-            "winter" => Some(Self::Winter),
-            "rainbow" => Some(Self::Rainbow),
-            "ocean" => Some(Self::Ocean),
-            "summer" => Some(Self::Summer),
-            "spring" => Some(Self::Spring),
-            "cool" => Some(Self::Cool),
-            "hsv" => Some(Self::Hsv),
-            "pink" => Some(Self::Pink),
-            "hot" => Some(Self::Hot),
-            "parula" => Some(Self::Parula),
-            "magma" => Some(Self::Magma),
-            "inferno" => Some(Self::Inferno),
-            "plasma" => Some(Self::Plasma),
-            "viridis" => Some(Self::Viridis),
-            "cividis" => Some(Self::Cividis),
-            "twilight" => Some(Self::Twilight),
-            "turbo" => Some(Self::Turbo),
-            "deepgreen" => Some(Self::Deepgreen),
-            _ => None,
-        }
+        COLORMAPS
+            .iter()
+            .find(|(n, _, _)| n.eq_ignore_ascii_case(name))
+            .map(|&(_, variant, _)| variant)
     }
 
     fn lut(self) -> &'static ColormapLut {
-        match self {
-            Self::Autumn => &AUTUMN_LUT,
-            Self::Bone => &BONE_LUT,
-            Self::Jet => &JET_LUT,
-            Self::Winter => &WINTER_LUT,
-            Self::Rainbow => &RAINBOW_LUT,
-            Self::Ocean => &OCEAN_LUT,
-            Self::Summer => &SUMMER_LUT,
-            Self::Spring => &SPRING_LUT,
-            Self::Cool => &COOL_LUT,
-            Self::Hsv => &HSV_LUT,
-            Self::Pink => &PINK_LUT,
-            Self::Hot => &HOT_LUT,
-            Self::Parula => &PARULA_LUT,
-            Self::Magma => &MAGMA_LUT,
-            Self::Inferno => &INFERNO_LUT,
-            Self::Plasma => &PLASMA_LUT,
-            Self::Viridis => &VIRIDIS_LUT,
-            Self::Cividis => &CIVIDIS_LUT,
-            Self::Twilight => &TWILIGHT_LUT,
-            Self::Turbo => &TURBO_LUT,
-            Self::Deepgreen => &DEEPGREEN_LUT,
-        }
+        COLORMAPS
+            .iter()
+            .find(|(_, v, _)| *v == self)
+            .map(|&(_, _, lut)| lut)
+            .expect("all ColormapType variants are in COLORMAPS")
     }
 }
 
@@ -128,12 +121,45 @@ fn apply_scalar(src: &[u8], dst: &mut [u8], lut: &ColormapLut) {
     }
 }
 
-/// NEON kernel (aarch64): 16 pixels/iteration using vqtbl4q_u8 + vst3q_u8.
+/// Look up 16 indices in a 256-entry single-channel LUT using NEON table lookup.
+///
+/// # Safety
+/// `p` must point to a 256-byte array aligned to at least 1 byte.
+/// `idx`, `idx64`, `idx128`, `idx192` are the raw index vector and three
+/// offset-subtracted variants for the upper 64-entry chunks.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+unsafe fn lookup_channel(
+    p: *const u8,
+    idx: std::arch::aarch64::uint8x16_t,
+    idx64: std::arch::aarch64::uint8x16_t,
+    idx128: std::arch::aarch64::uint8x16_t,
+    idx192: std::arch::aarch64::uint8x16_t,
+) -> std::arch::aarch64::uint8x16_t {
+    use std::arch::aarch64::*;
+    // Each vqtbl4q_u8 covers one 64-entry chunk; out-of-range indices produce 0,
+    // so OR-ing the four results gives the correct value for all 256 indices.
+    vorrq_u8(
+        vorrq_u8(
+            vqtbl4q_u8(vld1q_u8_x4(p), idx),
+            vqtbl4q_u8(vld1q_u8_x4(p.add(64)), idx64),
+        ),
+        vorrq_u8(
+            vqtbl4q_u8(vld1q_u8_x4(p.add(128)), idx128),
+            vqtbl4q_u8(vld1q_u8_x4(p.add(192)), idx192),
+        ),
+    )
+}
+
+/// NEON kernel (aarch64): 16 pixels/iteration using `vqtbl4q_u8` + `vst3q_u8`.
 ///
 /// Each 256-byte channel LUT is split into four 64-byte chunks. `vqtbl4q_u8`
 /// returns 0 for indices ≥ 64, so OR-ing four offset-adjusted lookups gives
 /// the correct result for all 256 indices. The LUT is 768 bytes total and
 /// stays resident in L1 after the first access.
+///
+/// # Safety
+/// Caller must ensure `dst.len() >= src.len() * 3`.
 #[cfg(target_arch = "aarch64")]
 unsafe fn apply_neon(src: &[u8], dst: &mut [u8], lut: &ColormapLut) {
     use std::arch::aarch64::*;
@@ -152,25 +178,9 @@ unsafe fn apply_neon(src: &[u8], dst: &mut [u8], lut: &ColormapLut) {
         let idx128 = vsubq_u8(idx, off128);
         let idx192 = vsubq_u8(idx, off192);
 
-        macro_rules! lookup_channel {
-            ($ch:expr) => {{
-                let p = $ch.as_ptr();
-                vorrq_u8(
-                    vorrq_u8(
-                        vqtbl4q_u8(vld1q_u8_x4(p), idx),
-                        vqtbl4q_u8(vld1q_u8_x4(p.add(64)), idx64),
-                    ),
-                    vorrq_u8(
-                        vqtbl4q_u8(vld1q_u8_x4(p.add(128)), idx128),
-                        vqtbl4q_u8(vld1q_u8_x4(p.add(192)), idx192),
-                    ),
-                )
-            }};
-        }
-
-        let r = lookup_channel!(lut.r);
-        let g = lookup_channel!(lut.g);
-        let b = lookup_channel!(lut.b);
+        let r = lookup_channel(lut.r.as_ptr(), idx, idx64, idx128, idx192);
+        let g = lookup_channel(lut.g.as_ptr(), idx, idx64, idx128, idx192);
+        let b = lookup_channel(lut.b.as_ptr(), idx, idx64, idx128, idx192);
 
         vst3q_u8(dst.as_mut_ptr().add(di), uint8x16x3_t(r, g, b));
 

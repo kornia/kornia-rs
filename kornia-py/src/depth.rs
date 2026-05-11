@@ -3,6 +3,41 @@ use pyo3::prelude::*;
 use pyo3::types::PyList;
 use rayon::prelude::*;
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+#[derive(Clone, Copy)]
+enum SampleMethod {
+    Mean,
+    Median,
+}
+
+#[inline]
+fn is_valid(m: u8, d: u16) -> bool {
+    m != 0 && d > 0
+}
+
+#[inline]
+fn ensure_c_contiguous(ok: bool, name: &str) -> PyResult<()> {
+    if ok {
+        Ok(())
+    } else {
+        Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "{name} must be C-contiguous"
+        )))
+    }
+}
+
+fn extract_mask_info(item: &Bound<'_, PyAny>) -> PyResult<(usize, usize, usize)> {
+    let mask = item.cast::<PyArray2<u8>>().map_err(|_| {
+        PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+            "each mask must be a 2D uint8 numpy array (use segmentation.rle_to_mask)",
+        )
+    })?;
+    ensure_c_contiguous(mask.is_c_contiguous(), "each mask")?;
+    let mshape = mask.shape();
+    Ok((mask.data() as usize, mshape[0], mshape[1]))
+}
+
 // ── NEON: mean (fully vectorised, same resolution) ────────────────────────────
 //
 // Processes 8 pixels/iteration.  For each chunk:
@@ -46,12 +81,9 @@ unsafe fn mean_neon_same_res(depth_slice: &[u16], mask_slice: &[u8], n: usize) -
 
     // Scalar tail
     while i < n {
-        if mask_slice[i] != 0 {
-            let v = depth_slice[i];
-            if v > 0 {
-                sum += v as u64;
-                count += 1;
-            }
+        if is_valid(mask_slice[i], depth_slice[i]) {
+            sum += depth_slice[i] as u64;
+            count += 1;
         }
         i += 1;
     }
@@ -74,7 +106,7 @@ unsafe fn mean_neon_same_res(depth_slice: &[u16], mask_slice: &[u8], n: usize) -
 unsafe fn collect_neon_same_res(depth_slice: &[u16], mask_slice: &[u8], n: usize) -> Vec<u16> {
     use std::arch::aarch64::*;
 
-    let mut values: Vec<u16> = Vec::new();
+    let mut values: Vec<u16> = Vec::with_capacity(n / 8);
     let mut i = 0;
 
     while i + 8 <= n {
@@ -86,18 +118,17 @@ unsafe fn collect_neon_same_res(depth_slice: &[u16], mask_slice: &[u8], n: usize
         }
         // At least one foreground pixel — scalar collect over the 8 elements
         for j in 0..8usize {
-            if *mask_slice.as_ptr().add(i + j) != 0 {
-                let v = *depth_slice.as_ptr().add(i + j);
-                if v > 0 {
-                    values.push(v);
-                }
+            let m = *mask_slice.as_ptr().add(i + j);
+            let v = *depth_slice.as_ptr().add(i + j);
+            if is_valid(m, v) {
+                values.push(v);
             }
         }
         i += 8;
     }
     // Scalar tail
     while i < n {
-        if mask_slice[i] != 0 && depth_slice[i] > 0 {
+        if is_valid(mask_slice[i], depth_slice[i]) {
             values.push(depth_slice[i]);
         }
         i += 1;
@@ -117,28 +148,29 @@ fn sample_one_scalar(
     mask_slice: &[u8],
     mh: usize,
     mw: usize,
-    use_mean: bool,
+    method: SampleMethod,
 ) -> (u32, bool) {
-    let same_res = dh == mh && dw == mw;
-    let mut values: Vec<u16> = Vec::new();
+    let mut values: Vec<u16> = Vec::with_capacity((dh * dw) / 8);
 
-    for dy in 0..dh {
-        let my = if same_res {
-            dy
-        } else {
-            (dy * mh / dh).min(mh - 1)
-        };
-        let mask_row = my * mw;
-        let depth_row = dy * dw;
-        for dx in 0..dw {
-            let mx = if same_res {
-                dx
-            } else {
-                (dx * mw / dw).min(mw - 1)
-            };
-            if mask_slice[mask_row + mx] != 0 {
+    if dh == mh && dw == mw {
+        for dy in 0..dh {
+            let row = dy * dw;
+            for dx in 0..dw {
+                let v = depth_slice[row + dx];
+                if is_valid(mask_slice[row + dx], v) {
+                    values.push(v);
+                }
+            }
+        }
+    } else {
+        for dy in 0..dh {
+            let my = (dy * mh / dh).min(mh - 1);
+            let depth_row = dy * dw;
+            let mask_row = my * mw;
+            for dx in 0..dw {
+                let mx = (dx * mw / dw).min(mw - 1);
                 let v = depth_slice[depth_row + dx];
-                if v > 0 {
+                if is_valid(mask_slice[mask_row + mx], v) {
                     values.push(v);
                 }
             }
@@ -148,12 +180,15 @@ fn sample_one_scalar(
     if values.is_empty() {
         return (0, false);
     }
-    if use_mean {
-        let sum: u64 = values.iter().map(|&v| v as u64).sum();
-        ((sum / values.len() as u64) as u32, true)
-    } else {
-        values.sort_unstable();
-        (values[values.len() / 2] as u32, true)
+    match method {
+        SampleMethod::Mean => {
+            let sum: u64 = values.iter().map(|&v| v as u64).sum();
+            ((sum / values.len() as u64) as u32, true)
+        }
+        SampleMethod::Median => {
+            values.sort_unstable();
+            (values[values.len() / 2] as u32, true)
+        }
     }
 }
 
@@ -166,24 +201,24 @@ fn sample_one(
     mask_slice: &[u8],
     mh: usize,
     mw: usize,
-    use_mean: bool,
+    method: SampleMethod,
 ) -> (u32, bool) {
     #[cfg(target_arch = "aarch64")]
     if dh == mh && dw == mw {
         let n = dh * dw;
-        return if use_mean {
-            unsafe { mean_neon_same_res(depth_slice, mask_slice, n) }
-        } else {
-            let mut vals = unsafe { collect_neon_same_res(depth_slice, mask_slice, n) };
-            if vals.is_empty() {
-                return (0, false);
+        return match method {
+            SampleMethod::Mean => unsafe { mean_neon_same_res(depth_slice, mask_slice, n) },
+            SampleMethod::Median => {
+                let mut vals = unsafe { collect_neon_same_res(depth_slice, mask_slice, n) };
+                if vals.is_empty() {
+                    return (0, false);
+                }
+                vals.sort_unstable();
+                (vals[vals.len() / 2] as u32, true)
             }
-            vals.sort_unstable();
-            (vals[vals.len() / 2] as u32, true)
         };
     }
-    // Non-aarch64 or different resolutions: scalar path
-    sample_one_scalar(depth_slice, dh, dw, mask_slice, mh, mw, use_mean)
+    sample_one_scalar(depth_slice, dh, dw, mask_slice, mh, mw, method)
 }
 
 // ── Public Python function ────────────────────────────────────────────────────
@@ -207,17 +242,13 @@ pub fn sample_depth(
     masks: &Bound<'_, PyList>,
     method: &str,
 ) -> PyResult<Vec<(u32, bool)>> {
-    if !depth.is_c_contiguous() {
-        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-            "depth must be C-contiguous",
-        ));
-    }
-    let use_mean = match method {
-        "mean" => true,
-        "median" => false,
+    ensure_c_contiguous(depth.is_c_contiguous(), "depth")?;
+    let method = match method {
+        "mean" => SampleMethod::Mean,
+        "median" => SampleMethod::Median,
         other => {
             return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-                "method must be 'median' or 'mean', got {other:?}"
+                "method must be 'median' or 'mean', got '{other}'"
             )))
         }
     };
@@ -227,21 +258,10 @@ pub fn sample_depth(
     let dw = dshape[1];
     let depth_ptr = depth.data() as usize;
 
-    let mut mask_infos: Vec<(usize, usize, usize)> = Vec::with_capacity(masks.len());
-    for item in masks.iter() {
-        let mask = item.cast::<PyArray2<u8>>().map_err(|_| {
-            PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-                "each mask must be a 2D uint8 numpy array (use segmentation.rle_to_mask)",
-            )
-        })?;
-        if !mask.is_c_contiguous() {
-            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                "each mask must be C-contiguous",
-            ));
-        }
-        let mshape = mask.shape();
-        mask_infos.push((mask.data() as usize, mshape[0], mshape[1]));
-    }
+    let mask_infos = masks
+        .iter()
+        .map(|item| extract_mask_info(&item))
+        .collect::<PyResult<Vec<_>>>()?;
 
     let results = py.detach(|| {
         mask_infos
@@ -251,7 +271,7 @@ pub fn sample_depth(
                     unsafe { std::slice::from_raw_parts(depth_ptr as *const u16, dh * dw) };
                 let mask_slice =
                     unsafe { std::slice::from_raw_parts(mask_ptr as *const u8, mh * mw) };
-                sample_one(depth_slice, dh, dw, mask_slice, mh, mw, use_mean)
+                sample_one(depth_slice, dh, dw, mask_slice, mh, mw, method)
             })
             .collect::<Vec<_>>()
     });

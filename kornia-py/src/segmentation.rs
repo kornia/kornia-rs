@@ -3,6 +3,17 @@ use pyo3::prelude::*;
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
+#[inline]
+fn ensure_c_contiguous(ok: bool, name: &str) -> PyResult<()> {
+    if ok {
+        Ok(())
+    } else {
+        Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "{name} must be C-contiguous"
+        )))
+    }
+}
+
 /// Decode COCO column-major RLE into a column-major flat u8 buffer.
 /// flat[x * mh + y] == 1 means pixel (row=y, col=x) is foreground.
 fn decode_rle_flat(rle: &[u32], mh: usize, mw: usize) -> Vec<u8> {
@@ -171,11 +182,7 @@ pub fn rle_to_mask<'py>(
 /// list is always the background run count (may be 0).
 #[pyfunction]
 pub fn mask_to_rle(_py: Python<'_>, mask: &Bound<'_, PyArray2<u8>>) -> PyResult<Vec<u32>> {
-    if !mask.is_c_contiguous() {
-        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-            "mask must be C-contiguous",
-        ));
-    }
+    ensure_c_contiguous(mask.is_c_contiguous(), "mask")?;
     let shape = mask.shape();
     let mh = shape[0];
     let mw = shape[1];
@@ -183,7 +190,7 @@ pub fn mask_to_rle(_py: Python<'_>, mask: &Bound<'_, PyArray2<u8>>) -> PyResult<
 
     // Iterate in column-major order: x in 0..mw, y in 0..mh.
     // Starting with is_fg = false guarantees the first push is the bg count.
-    let mut rle: Vec<u32> = Vec::new();
+    let mut rle: Vec<u32> = Vec::with_capacity(mh + mw);
     let mut is_fg = false;
     let mut run: u32 = 0;
 
