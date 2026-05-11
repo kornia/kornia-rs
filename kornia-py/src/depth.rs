@@ -123,11 +123,19 @@ fn sample_one_scalar(
     let mut values: Vec<u16> = Vec::new();
 
     for dy in 0..dh {
-        let my = if same_res { dy } else { (dy * mh / dh).min(mh - 1) };
+        let my = if same_res {
+            dy
+        } else {
+            (dy * mh / dh).min(mh - 1)
+        };
         let mask_row = my * mw;
         let depth_row = dy * dw;
         for dx in 0..dw {
-            let mx = if same_res { dx } else { (dx * mw / dw).min(mw - 1) };
+            let mx = if same_res {
+                dx
+            } else {
+                (dx * mw / dw).min(mw - 1)
+            };
             if mask_slice[mask_row + mx] != 0 {
                 let v = depth_slice[depth_row + dx];
                 if v > 0 {
@@ -221,7 +229,7 @@ pub fn sample_depth(
 
     let mut mask_infos: Vec<(usize, usize, usize)> = Vec::with_capacity(masks.len());
     for item in masks.iter() {
-        let mask = item.downcast::<PyArray2<u8>>().map_err(|_| {
+        let mask = item.cast::<PyArray2<u8>>().map_err(|_| {
             PyErr::new::<pyo3::exceptions::PyTypeError, _>(
                 "each mask must be a 2D uint8 numpy array (use segmentation.rle_to_mask)",
             )

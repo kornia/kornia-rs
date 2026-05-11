@@ -82,8 +82,8 @@ unsafe fn transpose_8x8_neon(
     );
 
     // Store 8 complete rows (each 8 bytes) to row-major output
-    vst1_u8(dst,             vreinterpret_u8_u32(r04.0)); // row 0
-    vst1_u8(dst.add(mw),     vreinterpret_u8_u32(r15.0)); // row 1
+    vst1_u8(dst, vreinterpret_u8_u32(r04.0)); // row 0
+    vst1_u8(dst.add(mw), vreinterpret_u8_u32(r15.0)); // row 1
     vst1_u8(dst.add(2 * mw), vreinterpret_u8_u32(r26.0)); // row 2
     vst1_u8(dst.add(3 * mw), vreinterpret_u8_u32(r37.0)); // row 3
     vst1_u8(dst.add(4 * mw), vreinterpret_u8_u32(r04.1)); // row 4
@@ -170,10 +170,7 @@ pub fn rle_to_mask<'py>(
 /// Nonzero pixels are treated as foreground.  The first element of the returned
 /// list is always the background run count (may be 0).
 #[pyfunction]
-pub fn mask_to_rle(
-    _py: Python<'_>,
-    mask: &Bound<'_, PyArray2<u8>>,
-) -> PyResult<Vec<u32>> {
+pub fn mask_to_rle(_py: Python<'_>, mask: &Bound<'_, PyArray2<u8>>) -> PyResult<Vec<u32>> {
     if !mask.is_c_contiguous() {
         return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
             "mask must be C-contiguous",

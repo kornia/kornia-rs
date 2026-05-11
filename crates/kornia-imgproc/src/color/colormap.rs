@@ -64,26 +64,26 @@ impl ColormapType {
     /// Parse a colormap name (case-insensitive, matches OpenCV lowercase convention).
     pub fn from_name(name: &str) -> Option<Self> {
         match name.to_lowercase().as_str() {
-            "autumn"    => Some(Self::Autumn),
-            "bone"      => Some(Self::Bone),
-            "jet"       => Some(Self::Jet),
-            "winter"    => Some(Self::Winter),
-            "rainbow"   => Some(Self::Rainbow),
-            "ocean"     => Some(Self::Ocean),
-            "summer"    => Some(Self::Summer),
-            "spring"    => Some(Self::Spring),
-            "cool"      => Some(Self::Cool),
-            "hsv"       => Some(Self::Hsv),
-            "pink"      => Some(Self::Pink),
-            "hot"       => Some(Self::Hot),
-            "parula"    => Some(Self::Parula),
-            "magma"     => Some(Self::Magma),
-            "inferno"   => Some(Self::Inferno),
-            "plasma"    => Some(Self::Plasma),
-            "viridis"   => Some(Self::Viridis),
-            "cividis"   => Some(Self::Cividis),
-            "twilight"  => Some(Self::Twilight),
-            "turbo"     => Some(Self::Turbo),
+            "autumn" => Some(Self::Autumn),
+            "bone" => Some(Self::Bone),
+            "jet" => Some(Self::Jet),
+            "winter" => Some(Self::Winter),
+            "rainbow" => Some(Self::Rainbow),
+            "ocean" => Some(Self::Ocean),
+            "summer" => Some(Self::Summer),
+            "spring" => Some(Self::Spring),
+            "cool" => Some(Self::Cool),
+            "hsv" => Some(Self::Hsv),
+            "pink" => Some(Self::Pink),
+            "hot" => Some(Self::Hot),
+            "parula" => Some(Self::Parula),
+            "magma" => Some(Self::Magma),
+            "inferno" => Some(Self::Inferno),
+            "plasma" => Some(Self::Plasma),
+            "viridis" => Some(Self::Viridis),
+            "cividis" => Some(Self::Cividis),
+            "twilight" => Some(Self::Twilight),
+            "turbo" => Some(Self::Turbo),
             "deepgreen" => Some(Self::Deepgreen),
             _ => None,
         }
@@ -91,26 +91,26 @@ impl ColormapType {
 
     fn lut(self) -> &'static ColormapLut {
         match self {
-            Self::Autumn    => &AUTUMN_LUT,
-            Self::Bone      => &BONE_LUT,
-            Self::Jet       => &JET_LUT,
-            Self::Winter    => &WINTER_LUT,
-            Self::Rainbow   => &RAINBOW_LUT,
-            Self::Ocean     => &OCEAN_LUT,
-            Self::Summer    => &SUMMER_LUT,
-            Self::Spring    => &SPRING_LUT,
-            Self::Cool      => &COOL_LUT,
-            Self::Hsv       => &HSV_LUT,
-            Self::Pink      => &PINK_LUT,
-            Self::Hot       => &HOT_LUT,
-            Self::Parula    => &PARULA_LUT,
-            Self::Magma     => &MAGMA_LUT,
-            Self::Inferno   => &INFERNO_LUT,
-            Self::Plasma    => &PLASMA_LUT,
-            Self::Viridis   => &VIRIDIS_LUT,
-            Self::Cividis   => &CIVIDIS_LUT,
-            Self::Twilight  => &TWILIGHT_LUT,
-            Self::Turbo     => &TURBO_LUT,
+            Self::Autumn => &AUTUMN_LUT,
+            Self::Bone => &BONE_LUT,
+            Self::Jet => &JET_LUT,
+            Self::Winter => &WINTER_LUT,
+            Self::Rainbow => &RAINBOW_LUT,
+            Self::Ocean => &OCEAN_LUT,
+            Self::Summer => &SUMMER_LUT,
+            Self::Spring => &SPRING_LUT,
+            Self::Cool => &COOL_LUT,
+            Self::Hsv => &HSV_LUT,
+            Self::Pink => &PINK_LUT,
+            Self::Hot => &HOT_LUT,
+            Self::Parula => &PARULA_LUT,
+            Self::Magma => &MAGMA_LUT,
+            Self::Inferno => &INFERNO_LUT,
+            Self::Plasma => &PLASMA_LUT,
+            Self::Viridis => &VIRIDIS_LUT,
+            Self::Cividis => &CIVIDIS_LUT,
+            Self::Twilight => &TWILIGHT_LUT,
+            Self::Turbo => &TURBO_LUT,
             Self::Deepgreen => &DEEPGREEN_LUT,
         }
     }
@@ -138,7 +138,7 @@ fn apply_scalar(src: &[u8], dst: &mut [u8], lut: &ColormapLut) {
 unsafe fn apply_neon(src: &[u8], dst: &mut [u8], lut: &ColormapLut) {
     use std::arch::aarch64::*;
 
-    let off64  = vdupq_n_u8(64);
+    let off64 = vdupq_n_u8(64);
     let off128 = vdupq_n_u8(128);
     let off192 = vdupq_n_u8(192);
 
@@ -148,7 +148,7 @@ unsafe fn apply_neon(src: &[u8], dst: &mut [u8], lut: &ColormapLut) {
 
     while si + 16 <= n {
         let idx = vld1q_u8(src.as_ptr().add(si));
-        let idx64  = vsubq_u8(idx, off64);
+        let idx64 = vsubq_u8(idx, off64);
         let idx128 = vsubq_u8(idx, off128);
         let idx192 = vsubq_u8(idx, off192);
 
@@ -157,8 +157,8 @@ unsafe fn apply_neon(src: &[u8], dst: &mut [u8], lut: &ColormapLut) {
                 let p = $ch.as_ptr();
                 vorrq_u8(
                     vorrq_u8(
-                        vqtbl4q_u8(vld1q_u8_x4(p),        idx),
-                        vqtbl4q_u8(vld1q_u8_x4(p.add(64)),  idx64),
+                        vqtbl4q_u8(vld1q_u8_x4(p), idx),
+                        vqtbl4q_u8(vld1q_u8_x4(p.add(64)), idx64),
                     ),
                     vorrq_u8(
                         vqtbl4q_u8(vld1q_u8_x4(p.add(128)), idx128),
@@ -207,14 +207,12 @@ pub fn apply_colormap<A: ImageAllocator>(
     let lut = colormap.lut();
 
     #[cfg(target_arch = "aarch64")]
-    {
-        unsafe { apply_neon(src.as_slice(), dst.as_slice_mut(), lut) };
-        return Ok(());
-    }
+    unsafe {
+        apply_neon(src.as_slice(), dst.as_slice_mut(), lut)
+    };
 
     #[cfg(not(target_arch = "aarch64"))]
-    {
-        apply_scalar(src.as_slice(), dst.as_slice_mut(), lut);
-        Ok(())
-    }
+    apply_scalar(src.as_slice(), dst.as_slice_mut(), lut);
+
+    Ok(())
 }
