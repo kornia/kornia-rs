@@ -2354,6 +2354,28 @@ impl PyImageApi {
         }
     }
 
+    /// Apply a colormap to a single-channel (L) image, producing an RGB image.
+    ///
+    /// Accepts any of the 21 OpenCV colormap names (case-insensitive):
+    /// ``autumn``, ``bone``, ``jet``, ``winter``, ``rainbow``, ``ocean``,
+    /// ``summer``, ``spring``, ``cool``, ``hsv``, ``pink``, ``hot``,
+    /// ``parula``, ``magma``, ``inferno``, ``plasma``, ``viridis``,
+    /// ``cividis``, ``twilight``, ``turbo``, ``deepgreen``.
+    ///
+    /// On aarch64 the LUT lookup is NEON-accelerated (16 px/iter).
+    fn colormap(&self, py: Python<'_>, colormap: &str) -> PyResult<Self> {
+        let data = self.require_u8("colormap")?;
+        let c = data.bind(py).shape()[2];
+        if c != 1 {
+            return Err(value_err(format!(
+                "colormap() requires a single-channel image, got {} channels",
+                c
+            )));
+        }
+        let result = crate::color::apply_colormap(py, data.clone_ref(py), colormap)?;
+        Ok(Self::wrap(py, result, Some("RGB".to_string())))
+    }
+
     /// Rotate image by angle degrees (counter-clockwise). 8-bit only.
     ///
     /// Fast paths (exact k·90° only, no epsilon):

@@ -5,6 +5,7 @@ mod brightness;
 mod color;
 mod cpu;
 mod crop;
+mod depth;
 mod enhance;
 mod feature_match;
 mod flip;
@@ -21,6 +22,7 @@ mod pointcloud;
 mod pyutils;
 mod ransac;
 mod resize;
+mod segmentation;
 mod twoview;
 mod warp;
 
@@ -381,6 +383,7 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_bgra, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(color::bgr_from_rgb, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(color::gray_from_rgb, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::apply_colormap, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(enhance::add_weighted, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(
         histogram::compute_histogram,
@@ -492,6 +495,17 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     pipeline_mod.add_class::<pipeline::Preprocessor>()?;
     m.add_submodule(&pipeline_mod)?;
 
+    // Segmentation submodule — COCO RLE ↔ mask conversions.
+    let seg_mod = PyModule::new(py, "segmentation")?;
+    seg_mod.add_function(wrap_pyfunction!(segmentation::rle_to_mask, &seg_mod)?)?;
+    seg_mod.add_function(wrap_pyfunction!(segmentation::mask_to_rle, &seg_mod)?)?;
+    m.add_submodule(&seg_mod)?;
+
+    // Depth submodule — depth sampling under segmentation masks.
+    let depth_mod = PyModule::new(py, "depth")?;
+    depth_mod.add_function(wrap_pyfunction!(depth::sample_depth, &depth_mod)?)?;
+    m.add_submodule(&depth_mod)?;
+
     // Register submodules in sys.modules so `from kornia_rs.image import Image` works
     let modules =
         unsafe { pyo3::Bound::from_borrowed_ptr(py, pyo3::ffi::PyImport_GetModuleDict()) };
@@ -505,6 +519,8 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
         ("kornia_rs.pipeline", &pipeline_mod),
         ("kornia_rs.features", &features_mod),
         ("kornia_rs.cpu", &cpu_mod),
+        ("kornia_rs.segmentation", &seg_mod),
+        ("kornia_rs.depth", &depth_mod),
     ] {
         modules.set_item(name, submod)?;
     }

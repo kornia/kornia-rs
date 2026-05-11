@@ -58,6 +58,23 @@ pub fn rgb_from_rgba(
 }
 
 #[pyfunction]
+pub fn apply_colormap(py: Python<'_>, image: PyImage, colormap: &str) -> PyResult<PyImage> {
+    // Validate name before touching the image array — fail fast on bad input.
+    let cm = color::ColormapType::from_name(colormap).ok_or_else(|| {
+        pyo3::exceptions::PyValueError::new_err(format!(
+            "unknown colormap '{colormap}'; valid names: autumn, bone, jet, winter, rainbow, \
+             ocean, summer, spring, cool, hsv, pink, hot, parula, magma, inferno, plasma, \
+             viridis, cividis, twilight, turbo, deepgreen"
+        ))
+    })?;
+    let src = unsafe { numpy_as_image::<1>(py, &image)? };
+    let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, src.size())? };
+    py.detach(|| color::apply_colormap(&src, &mut dst, cm))
+        .map_err(to_pyerr)?;
+    Ok(out)
+}
+
+#[pyfunction]
 #[pyo3(signature = (image, background=None))]
 pub fn rgb_from_bgra(
     py: Python<'_>,
