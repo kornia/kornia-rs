@@ -205,23 +205,32 @@ impl ReprojFactor {
     }
 
     /// Project a world point through an SE3 pose, returning `(u, v, z_cam)`.
+    ///
+    /// Clamps the effective z to ±MIN_Z so cheirality violations (z ≤ 0) and
+    /// near-zero depths don't blow up the analytical Jacobian's 1/z and 1/z²
+    /// terms. The robust loss attached to the factor saturates the inflated
+    /// residual that results, so bad observations have bounded influence on
+    /// the linear solve rather than aborting it.
     fn project(
         &self,
         pose_params: &[f32],
         point_params: &[f32],
     ) -> Result<(f32, f32, f32), FactorError> {
+        const MIN_Z: f32 = 1e-3;
         let se3 = SE3F32::from_params(pose_params);
         let pw = Vec3AF32::new(point_params[0], point_params[1], point_params[2]);
         let pc = se3 * pw;
-
-        if pc.z.abs() < 1e-10 {
-            return Err(FactorError::InvalidParameters("point behind camera".into()));
-        }
-        let inv_z = 1.0 / pc.z;
+        // Preserve z sign but enforce |z| ≥ MIN_Z.
+        let z_clamped = if pc.z.abs() < MIN_Z {
+            if pc.z >= 0.0 { MIN_Z } else { -MIN_Z }
+        } else {
+            pc.z
+        };
+        let inv_z = 1.0 / z_clamped;
         Ok((
             self.fx * pc.x * inv_z + self.cx,
             self.fy * pc.y * inv_z + self.cy,
-            pc.z,
+            z_clamped,
         ))
     }
 
@@ -234,12 +243,19 @@ impl ReprojFactor {
         pose_params: &[f32],
         point_params: &[f32],
     ) -> FactorResult<Vec<f32>> {
+        const MIN_Z: f32 = 1e-3;
         let se3 = SE3F32::from_params(pose_params);
         let r = se3.r.matrix();
         let pw = Vec3AF32::new(point_params[0], point_params[1], point_params[2]);
         let pc = se3 * pw;
 
-        let inv_z = 1.0 / pc.z;
+        // Clamp z to match the forward projection (keeps Jacobian finite).
+        let z = if pc.z.abs() < MIN_Z {
+            if pc.z >= 0.0 { MIN_Z } else { -MIN_Z }
+        } else {
+            pc.z
+        };
+        let inv_z = 1.0 / z;
         let inv_z2 = inv_z * inv_z;
 
         // J_proj row coefficients
@@ -315,12 +331,18 @@ impl ReprojFactor {
         pose_params: &[f32],
         point_params: &[f32],
     ) -> FactorResult<Vec<f32>> {
+        const MIN_Z: f32 = 1e-3;
         let se3 = SE3F32::from_params(pose_params);
         let r = se3.r.matrix();
         let pw = Vec3AF32::new(point_params[0], point_params[1], point_params[2]);
         let pc = se3 * pw;
 
-        let inv_z = 1.0 / pc.z;
+        let z = if pc.z.abs() < MIN_Z {
+            if pc.z >= 0.0 { MIN_Z } else { -MIN_Z }
+        } else {
+            pc.z
+        };
+        let inv_z = 1.0 / z;
         let inv_z2 = inv_z * inv_z;
 
         let a0 = self.fx * inv_z;
@@ -373,11 +395,11 @@ impl Factor for ReprojFactor {
             (params[0], params[1])
         };
 
-        let (u, v, z) = self.project(pose_params, point_params)?;
-        if z <= 0.0 {
-            return Err(FactorError::InvalidParameters("point behind camera".into()));
-        }
-
+        // Cheirality (z ≤ 0) is no longer an abort. The robust loss attached
+        // to this factor saturates the residual for bad projections, while
+        // clamping z to MIN_Z below keeps the analytical Jacobian finite so
+        // the linear solve stays well-conditioned (no NaN/Inf from 1/z).
+        let (u, v, _z) = self.project(pose_params, point_params)?;
         let residual = vec![u - self.obs_u, v - self.obs_v];
 
         if self.fixed_pose.is_some() {
