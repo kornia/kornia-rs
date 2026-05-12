@@ -41,6 +41,7 @@ use thiserror::Error;
 use crate::ba::{BaError, BaObservation, BaParams, BaResult};
 use crate::camera::PinholeCamera;
 use crate::pose::Pose3d;
+use crate::ransac::RobustKernelKind;
 
 const MIN_Z: f32 = 1e-3;
 
@@ -418,6 +419,26 @@ pub fn bundle_adjust_schur(
         // contribute to A and g_pose only, no B.
         // (Symmetric case: free point + fixed pose contributes to C and
         //  g_point only. Both we handle below.)
+        // Robust-loss IRLS weight per observation. weight w = min(1, scale/‖r‖)
+        // for Huber, w = scale²/(scale²+‖r‖²) for Cauchy. Identity uses w=1.
+        // Apply √w to both residual and Jacobian rows (equivalent to multiplying
+        // the obs's contribution to the normal equations by w).
+        let robust = params.robust;
+        let robust_scale = params.robust_scale_sq.sqrt().max(1e-6);
+        let huber_w = |r_sq: f32| -> f32 {
+            // ‖r‖ ≤ scale → w=1; else w = scale/‖r‖
+            let r_norm = r_sq.sqrt();
+            if r_norm <= robust_scale {
+                1.0
+            } else {
+                robust_scale / r_norm
+            }
+        };
+        let cauchy_w = |r_sq: f32| -> f32 {
+            let s2 = robust_scale * robust_scale;
+            s2 / (s2 + r_sq)
+        };
+
         let mut cost = 0.0_f32;
 
         for obs in observations {
@@ -426,8 +447,22 @@ pub fn bundle_adjust_schur(
             }
             let pose = &se3s[obs.pose_idx];
             let point = &xyz[obs.point_idx];
-            let (r, j_pose, j_point) =
+            let (mut r, mut j_pose, mut j_point) =
                 residual_and_jacobians(pose, point, obs.pixel, camera);
+            let r_sq = r[0] * r[0] + r[1] * r[1];
+
+            // IRLS weight; apply √w to r and J.
+            let w = match robust {
+                RobustKernelKind::Identity => 1.0,
+                RobustKernelKind::Huber => huber_w(r_sq),
+                RobustKernelKind::Cauchy | RobustKernelKind::Tukey => cauchy_w(r_sq),
+            };
+            if w != 1.0 {
+                let sw = w.sqrt();
+                r[0] *= sw; r[1] *= sw;
+                for v in j_pose.iter_mut()  { *v *= sw; }
+                for v in j_point.iter_mut() { *v *= sw; }
+            }
             cost += 0.5 * (r[0] * r[0] + r[1] * r[1]);
 
             let pli = pose_local[obs.pose_idx];
@@ -621,7 +656,13 @@ pub fn bundle_adjust_schur(
             let pose = &se3s_trial[obs.pose_idx];
             let point = &xyz_trial[obs.point_idx];
             let (r, _, _) = residual_and_jacobians(pose, point, obs.pixel, camera);
-            new_cost += 0.5 * (r[0] * r[0] + r[1] * r[1]);
+            let r_sq = r[0] * r[0] + r[1] * r[1];
+            let w = match robust {
+                RobustKernelKind::Identity => 1.0,
+                RobustKernelKind::Huber => huber_w(r_sq),
+                RobustKernelKind::Cauchy | RobustKernelKind::Tukey => cauchy_w(r_sq),
+            };
+            new_cost += 0.5 * w * r_sq;
         }
 
         if new_cost < cost {
