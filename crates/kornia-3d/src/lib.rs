@@ -25,6 +25,9 @@ pub mod pose;
 /// Perspective-n-Point (PnP) solvers.
 pub mod pnp;
 
+/// SE(3) pose graph optimization (loop-closure backend).
+pub mod pgo;
+
 /// Generic RANSAC traits and config shared by all robust estimators.
 pub mod ransac;
 
