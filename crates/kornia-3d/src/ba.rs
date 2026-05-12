@@ -47,6 +47,9 @@ pub struct BaObservation {
     pub pixel: [f32; 2],
     /// If true, this observation's pose is held fixed during optimization.
     pub fixed_pose: bool,
+    /// If true, this observation's 3D point is held fixed during optimization
+    /// — used for "motion-only" BA where pose is refined against a known map.
+    pub fixed_point: bool,
 }
 
 /// Parameters for bundle adjustment.
@@ -164,6 +167,9 @@ struct ReprojFactor {
     cy: f32,
     /// When set, the pose is fixed and only the point is optimized.
     fixed_pose: Option<[f32; 7]>,
+    /// When set, the 3D point is fixed and only the pose is optimized
+    /// (motion-only BA: refines a single pose against a known map).
+    fixed_point: Option<[f32; 3]>,
     /// Optional robust loss applied to this observation's residual by the
     /// optimiser via `Factor::get_loss`. Shared across every factor in the
     /// BA problem (one Arc allocation per `bundle_adjust` call).
@@ -180,6 +186,7 @@ impl ReprojFactor {
             cx: camera.cx as f32,
             cy: camera.cy as f32,
             fixed_pose: None,
+            fixed_point: None,
             loss: None,
         }
     }
@@ -193,6 +200,21 @@ impl ReprojFactor {
             cx: camera.cx as f32,
             cy: camera.cy as f32,
             fixed_pose: Some(pose),
+            fixed_point: None,
+            loss: None,
+        }
+    }
+
+    fn new_fixed_point(obs: [f32; 2], camera: &PinholeCamera, point: [f32; 3]) -> Self {
+        Self {
+            obs_u: obs[0],
+            obs_v: obs[1],
+            fx: camera.fx as f32,
+            fy: camera.fy as f32,
+            cx: camera.cx as f32,
+            cy: camera.cy as f32,
+            fixed_pose: None,
+            fixed_point: Some(point),
             loss: None,
         }
     }
@@ -323,6 +345,23 @@ impl ReprojFactor {
         ])
     }
 
+    /// Analytical Jacobian for pose only (fixed point).
+    ///
+    /// Returns a row-major 2×6 flat array. Columns are the first 6 columns of
+    /// `analytical_jacobian_full` (upsilon then omega).
+    fn analytical_jacobian_pose_only(
+        &self,
+        pose_params: &[f32],
+        point_params: &[f32],
+    ) -> FactorResult<Vec<f32>> {
+        let full = self.analytical_jacobian_full(pose_params, point_params)?;
+        // Row 0: full[0..6]; Row 1: full[9..15]
+        Ok(vec![
+            full[0], full[1], full[2], full[3], full[4], full[5],
+            full[9], full[10], full[11], full[12], full[13], full[14],
+        ])
+    }
+
     /// Analytical Jacobian for point only (fixed pose).
     ///
     /// Returns a row-major 2×3 flat array.
@@ -377,23 +416,48 @@ impl Factor for ReprojFactor {
         params: &[&[f32]],
         compute_jacobian: bool,
     ) -> FactorResult<LinearizationResult> {
-        let (pose_params, point_params) = if let Some(ref fp) = self.fixed_pose {
-            if params.len() != 1 {
-                return Err(FactorError::DimensionMismatch {
-                    expected: 1,
-                    actual: params.len(),
-                });
-            }
-            (fp.as_slice(), params[0])
-        } else {
-            if params.len() != 2 {
-                return Err(FactorError::DimensionMismatch {
-                    expected: 2,
-                    actual: params.len(),
-                });
-            }
-            (params[0], params[1])
-        };
+        // Resolve pose + point params from either the optimizer's `params` or
+        // the factor's internal fixed buffers. Three variants are valid:
+        //   fixed_pose only       → params = [point]
+        //   fixed_point only      → params = [pose]
+        //   neither fixed (joint) → params = [pose, point]
+        let (pose_params, point_params): (&[f32], &[f32]) =
+            match (&self.fixed_pose, &self.fixed_point) {
+                (Some(fp), None) => {
+                    if params.len() != 1 {
+                        return Err(FactorError::DimensionMismatch {
+                            expected: 1,
+                            actual: params.len(),
+                        });
+                    }
+                    (fp.as_slice(), params[0])
+                }
+                (None, Some(fpt)) => {
+                    if params.len() != 1 {
+                        return Err(FactorError::DimensionMismatch {
+                            expected: 1,
+                            actual: params.len(),
+                        });
+                    }
+                    (params[0], fpt.as_slice())
+                }
+                (None, None) => {
+                    if params.len() != 2 {
+                        return Err(FactorError::DimensionMismatch {
+                            expected: 2,
+                            actual: params.len(),
+                        });
+                    }
+                    (params[0], params[1])
+                }
+                (Some(_), Some(_)) => {
+                    // Both fixed → factor is a constant; shouldn't be added.
+                    return Err(FactorError::DimensionMismatch {
+                        expected: 1,
+                        actual: 0,
+                    });
+                }
+            };
 
         // Cheirality (z ≤ 0) is no longer an abort. The robust loss attached
         // to this factor saturates the residual for bad projections, while
@@ -402,20 +466,35 @@ impl Factor for ReprojFactor {
         let (u, v, _z) = self.project(pose_params, point_params)?;
         let residual = vec![u - self.obs_u, v - self.obs_v];
 
-        if self.fixed_pose.is_some() {
-            let jacobian = if compute_jacobian {
-                Some(self.analytical_jacobian_point_only(pose_params, point_params)?)
-            } else {
-                None
-            };
-            Ok(LinearizationResult::new(residual, jacobian, 3))
-        } else {
-            let jacobian = if compute_jacobian {
-                Some(self.analytical_jacobian_full(pose_params, point_params)?)
-            } else {
-                None
-            };
-            Ok(LinearizationResult::new(residual, jacobian, 9))
+        match (&self.fixed_pose, &self.fixed_point) {
+            (Some(_), None) => {
+                let jacobian = if compute_jacobian {
+                    Some(self.analytical_jacobian_point_only(pose_params, point_params)?)
+                } else {
+                    None
+                };
+                Ok(LinearizationResult::new(residual, jacobian, 3))
+            }
+            (None, Some(_)) => {
+                let jacobian = if compute_jacobian {
+                    Some(self.analytical_jacobian_pose_only(pose_params, point_params)?)
+                } else {
+                    None
+                };
+                Ok(LinearizationResult::new(residual, jacobian, 6))
+            }
+            (None, None) => {
+                let jacobian = if compute_jacobian {
+                    Some(self.analytical_jacobian_full(pose_params, point_params)?)
+                } else {
+                    None
+                };
+                Ok(LinearizationResult::new(residual, jacobian, 9))
+            }
+            (Some(_), Some(_)) => Err(FactorError::DimensionMismatch {
+                expected: 1,
+                actual: 0,
+            }),
         }
     }
 
@@ -424,22 +503,23 @@ impl Factor for ReprojFactor {
     }
 
     fn num_variables(&self) -> usize {
-        if self.fixed_pose.is_some() {
-            1
-        } else {
-            2
+        match (&self.fixed_pose, &self.fixed_point) {
+            (None, None) => 2,
+            (Some(_), None) | (None, Some(_)) => 1,
+            (Some(_), Some(_)) => 0,
         }
     }
 
     fn variable_local_dim(&self, idx: usize) -> usize {
-        if self.fixed_pose.is_some() {
-            3
-        } else {
-            match idx {
+        match (&self.fixed_pose, &self.fixed_point) {
+            (Some(_), None) => 3,        // point only
+            (None, Some(_)) => 6,        // pose only
+            (None, None) => match idx {
                 0 => 6,
                 1 => 3,
                 _ => 0,
-            }
+            },
+            (Some(_), Some(_)) => 0,
         }
     }
 
@@ -500,11 +580,19 @@ pub fn bundle_adjust(
 ) -> Result<BaResult, BaError> {
     let mut problem = Problem::new();
 
-    // Track which poses are only used as fixed (never as free).
+    // Track which poses / points are free (touched by at least one obs that
+    // doesn't fix them) vs fully fixed.
     let mut pose_is_free = vec![false; poses.len()];
+    let mut point_is_free = vec![false; points.len()];
     for obs in observations {
-        if !obs.fixed_pose && obs.pose_idx < poses.len() {
+        if obs.pose_idx >= poses.len() || obs.point_idx >= points.len() {
+            continue;
+        }
+        if !obs.fixed_pose {
             pose_is_free[obs.pose_idx] = true;
+        }
+        if !obs.fixed_point {
+            point_is_free[obs.point_idx] = true;
         }
     }
 
@@ -532,8 +620,11 @@ pub fn bundle_adjust(
         })
         .collect();
 
-    // Add point variables.
+    // Add free point variables only.
     for (i, pt) in points.iter().enumerate() {
+        if !point_is_free[i] {
+            continue;
+        }
         let var = Variable::euclidean(format!("pt_{i}"), 3);
         let init = vec![pt.x as f32, pt.y as f32, pt.z as f32];
         problem.add_variable(var, init)?;
@@ -544,37 +635,50 @@ pub fn bundle_adjust(
     // skipping the loss path entirely on the optim solver's L2 fast path.
     let robust_loss = build_robust_loss(params);
 
-    // Add factors.
+    // Add factors. Variant per observation depends on which side is fixed.
     for obs in observations {
         if obs.pose_idx >= poses.len() || obs.point_idx >= points.len() {
             continue;
         }
-        let pt_name = format!("pt_{}", obs.point_idx);
 
-        if obs.fixed_pose {
-            if let Some(ref fp) = fixed_params[obs.pose_idx] {
+        match (obs.fixed_pose, obs.fixed_point) {
+            (false, false) => {
+                let pose_name = format!("pose_{}", obs.pose_idx);
+                let pt_name = format!("pt_{}", obs.point_idx);
                 let factor = Box::new(
-                    ReprojFactor::new_fixed_pose(obs.pixel, camera, *fp)
-                        .with_loss(robust_loss.clone()),
+                    ReprojFactor::new(obs.pixel, camera).with_loss(robust_loss.clone()),
                 );
-                problem.add_factor(factor, vec![pt_name])?;
-            } else {
-                // Pose is actually free but this observation wants it fixed — use current params.
-                let fp_arr: [f32; 7] = {
+                problem.add_factor(factor, vec![pose_name, pt_name])?;
+            }
+            (true, false) => {
+                let pt_name = format!("pt_{}", obs.point_idx);
+                let fp_arr = fixed_params[obs.pose_idx].unwrap_or_else(|| {
                     let p = pose_to_se3_params(&poses[obs.pose_idx]);
                     [p[0], p[1], p[2], p[3], p[4], p[5], p[6]]
-                };
+                });
                 let factor = Box::new(
                     ReprojFactor::new_fixed_pose(obs.pixel, camera, fp_arr)
                         .with_loss(robust_loss.clone()),
                 );
                 problem.add_factor(factor, vec![pt_name])?;
             }
-        } else {
-            let pose_name = format!("pose_{}", obs.pose_idx);
-            let factor =
-                Box::new(ReprojFactor::new(obs.pixel, camera).with_loss(robust_loss.clone()));
-            problem.add_factor(factor, vec![pose_name, pt_name])?;
+            (false, true) => {
+                let pose_name = format!("pose_{}", obs.pose_idx);
+                let pt = points[obs.point_idx];
+                let factor = Box::new(
+                    ReprojFactor::new_fixed_point(
+                        obs.pixel,
+                        camera,
+                        [pt.x as f32, pt.y as f32, pt.z as f32],
+                    )
+                    .with_loss(robust_loss.clone()),
+                );
+                problem.add_factor(factor, vec![pose_name])?;
+            }
+            (true, true) => {
+                // Both sides fixed — observation is a constant, contributes
+                // nothing to the optimization. Silently skip.
+            }
         }
     }
 
@@ -612,13 +716,17 @@ pub fn bundle_adjust(
 
     let mut out_points = Vec::with_capacity(points.len());
     for i in 0..points.len() {
-        let name = format!("pt_{i}");
-        let values = &vars[&name].values;
-        out_points.push(Vec3F64::new(
-            values[0] as f64,
-            values[1] as f64,
-            values[2] as f64,
-        ));
+        if point_is_free[i] {
+            let name = format!("pt_{i}");
+            let values = &vars[&name].values;
+            out_points.push(Vec3F64::new(
+                values[0] as f64,
+                values[1] as f64,
+                values[2] as f64,
+            ));
+        } else {
+            out_points.push(points[i]);
+        }
     }
 
     Ok(BaResult {
@@ -813,13 +921,13 @@ mod tests {
                 pose_idx: 0,
                 point_idx: pi,
                 pixel: project(&pose0, pt),
-                fixed_pose: true,
+                fixed_pose: true, fixed_point: false,
             });
             observations.push(BaObservation {
                 pose_idx: 1,
                 point_idx: pi,
                 pixel: project(&pose1, pt),
-                fixed_pose: false,
+                fixed_pose: false, fixed_point: false,
             });
         }
 
@@ -876,13 +984,13 @@ mod tests {
                 pose_idx: 0,
                 point_idx: pi,
                 pixel: project(&pose0, pt),
-                fixed_pose: true,
+                fixed_pose: true, fixed_point: false,
             });
             observations.push(BaObservation {
                 pose_idx: 1,
                 point_idx: pi,
                 pixel: project(&pose1, pt),
-                fixed_pose: false,
+                fixed_pose: false, fixed_point: false,
             });
         }
         // Inject one outlier on point 0, view 1 — 30 px off (≫ the 2 px

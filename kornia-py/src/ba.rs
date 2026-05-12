@@ -44,7 +44,8 @@ fn pose_from_slice(r: &[f64], t: &[f64]) -> Pose3d {
 #[pyfunction(name = "bundle_adjust")]
 #[pyo3(signature = (
     rotations, translations, points, observations, k,
-    fixed_pose_indices=None, max_iterations=10,
+    fixed_pose_indices=None, fix_all_points=false,
+    max_iterations=10,
     robust="identity", robust_scale=1.0,
 ))]
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
@@ -56,6 +57,7 @@ pub fn bundle_adjust_py<'py>(
     observations: Bound<'py, PyArray2<f64>>,
     k: Bound<'py, PyArray2<f64>>,
     fixed_pose_indices: Option<Vec<usize>>,
+    fix_all_points: bool,
     max_iterations: usize,
     robust: &str,
     robust_scale: f32,
@@ -133,6 +135,7 @@ pub fn bundle_adjust_py<'py>(
             point_idx,
             pixel: [o_data[i * 4 + 2] as f32, o_data[i * 4 + 3] as f32],
             fixed_pose: fixed.contains(&pose_idx),
+            fixed_point: fix_all_points,
         });
     }
 
