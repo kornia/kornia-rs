@@ -5,6 +5,7 @@
 //! by default to remove the gauge freedom.
 
 use kornia_3d::ba::{bundle_adjust as rs_bundle_adjust, BaObservation, BaParams};
+use kornia_3d::ba_schur::bundle_adjust_schur as rs_bundle_adjust_schur;
 use kornia_3d::camera::PinholeCamera;
 use kornia_3d::pose::Pose3d;
 use kornia_3d::ransac::RobustKernelKind;
@@ -47,6 +48,7 @@ fn pose_from_slice(r: &[f64], t: &[f64]) -> Pose3d {
     fixed_pose_indices=None, fix_all_points=false,
     max_iterations=10,
     robust="identity", robust_scale=1.0,
+    solver="lm",
 ))]
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn bundle_adjust_py<'py>(
@@ -61,6 +63,7 @@ pub fn bundle_adjust_py<'py>(
     max_iterations: usize,
     robust: &str,
     robust_scale: f32,
+    solver: &str,
 ) -> PyResult<(
     Bound<'py, PyArray<f64, numpy::Ix3>>,
     Bound<'py, PyArray2<f64>>,
@@ -173,8 +176,17 @@ pub fn bundle_adjust_py<'py>(
         robust_scale_sq: robust_scale * robust_scale,
     };
 
-    let result = rs_bundle_adjust(&poses, &points_vec, &obs_vec, &camera, &params)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{e}")))?;
+    let result = match solver.to_lowercase().as_str() {
+        "lm" | "dense" => rs_bundle_adjust(&poses, &points_vec, &obs_vec, &camera, &params)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{e}")))?,
+        "schur" | "dense_schur" => rs_bundle_adjust_schur(&poses, &points_vec, &obs_vec, &camera, &params)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{e}")))?,
+        other => {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "unknown solver {other:?} (expected 'lm' or 'schur')"
+            )));
+        }
+    };
 
     // Pack output
     let r_out = unsafe { PyArray::<f64, _>::new(py, [n_poses, 3, 3], false) };
