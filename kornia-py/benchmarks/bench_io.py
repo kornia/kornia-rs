@@ -1,12 +1,22 @@
 import timeit
+from pathlib import Path
 
 import cv2
-from PIL import Image
-import kornia_rs
+from PIL import Image as PILImage
 import numpy as np
-import tensorflow as tf
 
-image_path = "tests/data/dog.jpeg"
+from kornia_rs.image import Image
+
+# tensorflow is heavy and rarely installed alongside cv2/PIL/kornia. Guard
+# the import so the bench still runs the OpenCV/Pillow/Kornia rows without
+# it; the TF row is appended only if `tf.keras.utils.load_img` is available.
+try:
+    import tensorflow as tf
+    HAVE_TF = True
+except ImportError:
+    HAVE_TF = False
+
+image_path = str(Path(__file__).resolve().parents[2] / "tests" / "data" / "dog.jpeg")
 N = 5000  # number of iterations
 
 
@@ -15,11 +25,11 @@ def read_image_opencv(image_path: str) -> None:
 
 
 def read_image_pillow(image_path: str) -> None:
-    return np.array(Image.open(image_path))
+    return np.array(PILImage.open(image_path))
 
 
 def read_image_kornia(image_path: str) -> None:
-    return kornia_rs.read_image_jpeg(image_path)
+    return Image.load(image_path)
 
 
 def read_image_tensorflow(image_path: str) -> None:
@@ -45,13 +55,14 @@ tests = [
         "setup": "from __main__ import read_image_kornia",
         "globals": {"image_path": image_path},
     },
-    {
+]
+if HAVE_TF:
+    tests.append({
         "name": "Tensorflow",
         "stmt": "read_image_tensorflow(image_path)",
         "setup": "from __main__ import read_image_tensorflow",
         "globals": {"image_path": image_path},
-    },
-]
+    })
 
 for test in tests:
     timer = timeit.Timer(

@@ -1,16 +1,11 @@
 use kornia_apriltag::{
     decoder::Detection,
-    family::TagFamilyKind,
     quad::{FitQuadConfig, Quad},
     AprilTagDecoder, DecodeTagsConfig,
 };
-use kornia_image::Image;
 use pyo3::{exceptions::PyException, prelude::*, PyResult};
 
-use crate::{
-    apriltag::family::PyTagFamily,
-    image::{FromPyImage, PyImage, PyImageSize},
-};
+use crate::image::{numpy_as_image, PyImage, PyImageSize};
 
 #[pyclass(name = "DecodeTagsConfig")]
 pub struct PyDecodeTagsConfig(DecodeTagsConfig);
@@ -18,36 +13,31 @@ pub struct PyDecodeTagsConfig(DecodeTagsConfig);
 #[pymethods]
 impl PyDecodeTagsConfig {
     #[new]
-    pub fn new(tag_family_kinds: Vec<Py<family::PyTagFamilyKind>>) -> PyResult<Self> {
+    pub fn new(tag_family_kinds: Vec<family::PyTagFamilyKind>) -> PyResult<Self> {
+        let mut tag_families = Vec::with_capacity(tag_family_kinds.len());
+        for py_kind in tag_family_kinds {
+            tag_families.push(py_kind.0);
+        }
+        Ok(Self(DecodeTagsConfig::new(tag_families).map_err(|e| {
+            PyErr::new::<PyException, _>(e.to_string())
+        })?))
+    }
+
+    pub fn add(&mut self, family_kind: family::PyTagFamilyKind) {
+        self.0.add(family_kind.0);
+    }
+
+    #[getter]
+    pub fn get_tag_families(&self) -> PyResult<Vec<Py<family::PyTagFamilyKind>>> {
         Python::attach(|py| {
-            let mut tag_families = Vec::with_capacity(tag_family_kinds.len());
-            for family_kind in tag_family_kinds.iter() {
-                let py_family_kind: family::PyTagFamilyKind = family_kind.extract(py)?;
-                let family = py_family_kind.0;
-                tag_families.push(family);
+            let mut out = Vec::with_capacity(self.0.tag_families.len());
+            for family in &self.0.tag_families {
+                let kind = family.clone();
+                out.push(Py::new(py, family::PyTagFamilyKind(kind))?);
             }
-
-            Ok(Self(DecodeTagsConfig::new(tag_families).map_err(|e| {
-                PyErr::new::<PyException, _>(e.to_string())
-            })?))
+            Ok(out)
         })
     }
-
-    pub fn add(&mut self, family: Py<PyTagFamily>) -> PyResult<()> {
-        Python::attach(|py| {
-            let py_family = family.borrow(py).into_tag_family_kind()?;
-            let inner = match py_family.0 {
-                TagFamilyKind::Custom(inner) => *inner,
-                // The into_tag_family_kind always wraps every TagFamily into TagFamilyKind::Custom
-                _ => unreachable!(),
-            };
-
-            self.0.add(inner);
-            Ok(())
-        })
-    }
-
-    // TODO: Add getter for tag_families
 
     #[getter]
     pub fn get_fit_quad_config(&self) -> PyFitQuadConfig {
@@ -149,7 +139,7 @@ impl PyDecodeTagsConfig {
     }
 }
 
-#[pyclass(name = "FitQuadConfig", eq, get_all, set_all)]
+#[pyclass(name = "FitQuadConfig", eq, get_all, set_all, from_py_object)]
 #[derive(Default, PartialEq, Clone)]
 pub struct PyFitQuadConfig {
     pub cos_critical_rad: f32,
@@ -213,9 +203,8 @@ impl PyAprilTagDecoder {
         self.0.clear();
     }
 
-    pub fn decode(&mut self, src: PyImage) -> PyResult<Vec<PyApriltagDetection>> {
-        let img: Image<u8, 1, _> = Image::from_pyimage(src)
-            .map_err(|err| PyErr::new::<PyException, _>(err.to_string()))?;
+    pub fn decode(&mut self, py: Python<'_>, src: PyImage) -> PyResult<Vec<PyApriltagDetection>> {
+        let img = unsafe { numpy_as_image::<1>(py, &src)? };
 
         let detection = self
             .0
@@ -227,7 +216,7 @@ impl PyAprilTagDecoder {
     }
 }
 
-#[pyclass(name = "ApriltagDetection", eq, get_all, set_all)]
+#[pyclass(name = "ApriltagDetection", eq, get_all, set_all, from_py_object)]
 #[derive(PartialEq, Clone)]
 pub struct PyApriltagDetection {
     pub tag_family_kind: family::PyTagFamilyKind,
@@ -273,7 +262,7 @@ impl From<Detection> for PyApriltagDetection {
     }
 }
 
-#[pyclass(name = "Quad", eq, get_all, set_all)]
+#[pyclass(name = "Quad", eq, get_all, set_all, from_py_object)]
 #[derive(PartialEq, Clone)]
 pub struct PyQuad {
     pub corners: [(f32, f32); 4],
@@ -308,13 +297,14 @@ impl From<Quad> for PyQuad {
     }
 }
 
-#[pymodule]
+#[pymodule(gil_used = false)]
 pub mod family {
     use kornia_apriltag::{
         decoder::{QuickDecode, SharpeningBuffer},
         family::{TagFamily, TagFamilyKind},
     };
     use pyo3::{exceptions::PyException, prelude::*, Py, PyResult};
+    use std::sync::Arc;
 
     #[pyclass(name = "TagFamily", get_all, set_all)]
     pub struct PyTagFamily {
@@ -384,13 +374,13 @@ pub mod family {
                     sharpening_buffer: sharpening_buffer.0,
                 };
 
-                let kind = TagFamilyKind::Custom(Box::new(tag_family));
+                let kind = TagFamilyKind::Custom(Arc::new(tag_family));
                 Ok(PyTagFamilyKind(kind))
             })
         }
     }
 
-    #[pyclass(name = "QuickDecode")]
+    #[pyclass(name = "QuickDecode", from_py_object)]
     #[derive(Clone)]
     pub struct PyQuickDecode(pub QuickDecode);
 
@@ -418,7 +408,7 @@ pub mod family {
         }
     }
 
-    #[pyclass(name = "SharpeningBuffer")]
+    #[pyclass(name = "SharpeningBuffer", from_py_object)]
     #[derive(Clone)]
     pub struct PySharpeningBuffer(pub SharpeningBuffer);
 
@@ -434,7 +424,7 @@ pub mod family {
         }
     }
 
-    #[pyclass(name = "TagFamilyKind", eq)]
+    #[pyclass(name = "TagFamilyKind", eq, from_py_object)]
     #[derive(PartialEq, Clone)]
     pub struct PyTagFamilyKind(pub TagFamilyKind);
 
@@ -509,7 +499,7 @@ pub mod family {
             let updated = family
                 .with_max_hamming(max_hamming)
                 .map_err(|e| PyErr::new::<PyException, _>(e.to_string()))?;
-            Ok(Self(TagFamilyKind::Custom(Box::new(updated))))
+            Ok(Self(TagFamilyKind::Custom(Arc::new(updated))))
         }
 
         #[staticmethod]
@@ -527,4 +517,16 @@ pub mod family {
             })
         }
     }
+}
+
+#[pymodule]
+fn apriltag(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<PyAprilTagDecoder>()?;
+    m.add_class::<PyApriltagDetection>()?;
+    m.add_class::<PyDecodeTagsConfig>()?;
+    m.add_class::<PyFitQuadConfig>()?;
+
+    m.add_class::<family::PyTagFamilyKind>()?;
+
+    Ok(())
 }

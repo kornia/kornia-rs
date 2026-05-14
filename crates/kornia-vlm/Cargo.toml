@@ -16,6 +16,7 @@ candle-examples = { workspace = true }
 candle-nn = { workspace = true }
 candle-transformers = { workspace = true }
 circular-buffer = { version = "1.1.0" }
+cudarc = { workspace = true, optional = true }
 hf-hub = { workspace = true }
 kornia-image = { workspace = true }
 kornia-imgproc = { workspace = true }
@@ -35,5 +36,10 @@ rand = "0.9.0"
 
 [features]
 default = []
-cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
+cuda = [
+  "candle-core/cuda",
+  "candle-nn/cuda",
+  "candle-transformers/cuda",
+  "cudarc"
+]
 flash-attn = ["candle-transformers/flash-attn"]

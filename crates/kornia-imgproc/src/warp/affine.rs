@@ -3,6 +3,7 @@ use std::f32::consts::PI;
 use kornia_image::allocator::ImageAllocator;
 use kornia_image::{Image, ImageError};
 
+use super::kernels::process_affine_span;
 use crate::interpolation::{interpolate_pixel_fast, validate_interpolation, InterpolationMode};
 use crate::parallel;
 
@@ -153,6 +154,112 @@ pub fn warp_affine<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
             }
         },
     );
+
+    Ok(())
+}
+
+/// u8 warp-affine with bilinear interpolation — direct u8 path avoiding
+/// f32 round-trip. Uses rowwise incremental coordinate update and Q10
+/// fixed-point bilinear weights.
+///
+/// `m` is the forward 2x3 transform; this function inverts it.
+pub fn warp_affine_u8<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<u8, C, A1>,
+    dst: &mut Image<u8, C, A2>,
+    m: &[f32; 6],
+) -> Result<(), ImageError> {
+    use rayon::prelude::*;
+    let m_inv = invert_affine_transform(m);
+    let src_w = src.cols() as i32;
+    let src_h = src.rows() as i32;
+    let src_stride = src.cols() * C;
+    let dst_w = dst.cols();
+    let dst_stride = dst_w * C;
+    let src_slice = src.as_slice();
+
+    // Q16 fixed-point coords for the inner loop: replaces per-pixel
+    // `.floor() as i32` (frintm+fcvtzs) with a single arithmetic shift.
+    const Q: i32 = 16;
+    const Q_SCALE: f32 = (1 << Q) as f32;
+    let dsx = m_inv[0];
+    let dsy = m_inv[3];
+    let dsx_q = (dsx * Q_SCALE) as i32;
+    let dsy_q = (dsy * Q_SCALE) as i32;
+    // Valid iff `0 <= xi < src_w`, i.e. src coord in `[0, src_w)`. The
+    // sampler clamps `xi+1` to `src_w-1` (BORDER_REPLICATE), so exact-edge
+    // integer coords (fx=0) produce `src[yi, xi]` — matching the f32
+    // reference kernel's identity behavior. Same for y.
+    let sx_upper = src_w as f32;
+    let sy_upper = src_h as f32;
+
+    dst.as_slice_mut()
+        .par_chunks_exact_mut(dst_stride)
+        .enumerate()
+        .for_each(|(y, dst_row)| {
+            let y_f = y as f32;
+            let sx0 = m_inv[1] * y_f + m_inv[2];
+            let sy0 = m_inv[4] * y_f + m_inv[5];
+
+            // Analytical valid-x range so the inner loop is branch-free.
+            // Solve: 0 <= dsx*x + sx0 < sx_upper; same for y; intersect.
+            let (mut x_lo, mut x_hi) = (0i64, dst_w as i64);
+            // For the x-axis constraint: 0 <= dsx*x + sx0 < sx_upper.
+            if dsx.abs() < 1e-12 {
+                if !(sx0 >= 0.0 && sx0 < sx_upper) {
+                    x_lo = 0;
+                    x_hi = 0;
+                }
+            } else {
+                let a = (-sx0) / dsx;
+                let b = (sx_upper - sx0) / dsx;
+                let (lo_f, hi_f) = if dsx > 0.0 { (a, b) } else { (b, a) };
+                // x in [ceil(lo_f), ceil(hi_f)): strict < hi means the first
+                // invalid x is ceil(hi_f) when hi_f is non-integer, else hi_f.
+                let new_lo = lo_f.ceil().max(0.0) as i64;
+                let new_hi = hi_f.ceil().min(dst_w as f32) as i64;
+                x_lo = x_lo.max(new_lo);
+                x_hi = x_hi.min(new_hi);
+            }
+            if dsy.abs() < 1e-12 {
+                if !(sy0 >= 0.0 && sy0 < sy_upper) {
+                    x_lo = 0;
+                    x_hi = 0;
+                }
+            } else {
+                let a = (-sy0) / dsy;
+                let b = (sy_upper - sy0) / dsy;
+                let (lo_f, hi_f) = if dsy > 0.0 { (a, b) } else { (b, a) };
+                let new_lo = lo_f.ceil().max(0.0) as i64;
+                let new_hi = hi_f.ceil().min(dst_w as f32) as i64;
+                x_lo = x_lo.max(new_lo);
+                x_hi = x_hi.min(new_hi);
+            }
+            if x_lo > x_hi {
+                x_lo = 0;
+                x_hi = 0;
+            }
+
+            // Left/right invalid ranges: zero-fill via memset.
+            let x_lo_u = x_lo as usize;
+            let x_hi_u = x_hi as usize;
+            dst_row[..x_lo_u * C].fill(0);
+            dst_row[x_hi_u * C..].fill(0);
+
+            if x_lo_u >= x_hi_u {
+                return;
+            }
+
+            // Q16 coord at x_lo.
+            let sx_q_lo = ((sx0 + dsx * x_lo_u as f32) * Q_SCALE) as i32;
+            let sy_q_lo = ((sy0 + dsy * x_lo_u as f32) * Q_SCALE) as i32;
+
+            // Branch-free inner loop over the valid region (dispatched
+            // to the best backend by the kernels module).
+            process_affine_span::<C>(
+                src_slice, src_w, src_h, src_stride, dst_row, x_lo_u, x_hi_u, sx_q_lo, sy_q_lo,
+                dsx_q, dsy_q,
+            );
+        });
 
     Ok(())
 }

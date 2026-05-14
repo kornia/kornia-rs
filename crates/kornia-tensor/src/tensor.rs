@@ -1616,6 +1616,68 @@ mod tests {
     }
 
     #[test]
+    fn test_from_shape_vec_shape_data_mismatch() {
+        // 2*3 = 6 elements expected but only 3 supplied — must return InvalidShape.
+        let result = Tensor::<u8, 2, _>::from_shape_vec([2, 3], vec![1, 2, 3], CpuAllocator);
+        assert!(
+            matches!(result, Err(TensorError::InvalidShape(6))),
+            "expected Err(TensorError::InvalidShape(6))"
+        );
+    }
+
+    #[test]
+    fn test_reshape_invalid_numel() -> Result<(), TensorError> {
+        // 4-element tensor cannot be reshaped to [3, 2] (= 6 elements).
+        let data: Vec<u8> = vec![1, 2, 3, 4];
+        let t = Tensor::<u8, 1, _>::from_shape_vec([4], data, CpuAllocator)?;
+        let result = t.reshape([3, 2]);
+        assert!(
+            matches!(result, Err(TensorError::DimensionMismatch(_))),
+            "expected Err(TensorError::DimensionMismatch)"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_zero_sized_tensor_roundtrip() -> Result<(), TensorError> {
+        // A 1-D tensor with zero elements must be constructable and report correct metadata.
+        let t = Tensor::<f32, 1, _>::from_shape_vec([0], vec![], CpuAllocator)?;
+        assert_eq!(t.numel(), 0);
+        assert!(t.as_slice().is_empty());
+
+        // Casting an empty tensor must also yield an empty tensor.
+        let t2 = t.cast::<f64>();
+        assert_eq!(t2.numel(), 0);
+        assert!(t2.as_slice().is_empty());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_cast_on_permuted_view() -> Result<(), TensorError> {
+        // Build a 2x3 tensor [[1,2,3],[4,5,6]] and permute (transpose) to 3x2.
+        let data: Vec<u8> = vec![1, 2, 3, 4, 5, 6];
+        let t = Tensor::<u8, 2, _>::from_shape_vec([2, 3], data, CpuAllocator)?;
+
+        // permute_axes returns a TensorView; materialise it before casting.
+        let permuted_view = t.permute_axes([1, 0]);
+        assert_eq!(permuted_view.shape, [3, 2]);
+
+        let contiguous = permuted_view.as_contiguous();
+        // as_contiguous() iterates in the view's logical order, so the flat layout
+        // of the 3x2 transposed matrix [[1,4],[2,5],[3,6]] is [1,4,2,5,3,6].
+        assert_eq!(contiguous.shape, [3, 2]);
+        assert_eq!(contiguous.as_slice(), &[1u8, 4, 2, 5, 3, 6]);
+
+        // Cast the contiguous tensor to u16 — shape and values must be preserved.
+        let casted = contiguous.cast::<u16>();
+        assert_eq!(casted.shape, [3, 2]);
+        assert_eq!(casted.as_slice(), &[1u16, 4, 2, 5, 3, 6]);
+
+        Ok(())
+    }
+
+    #[test]
     fn contiguous_tensor_is_standard_layout_true() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
         let t = Tensor::<u8, 3, CpuAllocator>::from_shape_vec([2, 2, 3], data, CpuAllocator)?;

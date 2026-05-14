@@ -6,7 +6,7 @@ use kornia_3d::registration::{icp_vanilla as icp_vanilla_fn, ICPConvergenceCrite
 
 use crate::pointcloud::{FromPyPointCloud, PyPointCloud};
 
-#[pyclass(name = "ICPConvergenceCriteria", frozen)]
+#[pyclass(name = "ICPConvergenceCriteria", frozen, from_py_object)]
 #[derive(Clone)]
 pub struct PyICPConvergenceCriteria(ICPConvergenceCriteria);
 
@@ -30,18 +30,15 @@ impl PyICPConvergenceCriteria {
         self.0.tolerance
     }
 
-    fn __str__(&self) -> PyResult<String> {
+    fn __repr__(&self) -> PyResult<String> {
         Ok(format!(
             "ICPConvergenceCriteria(max_iterations: {}, tolerance: {})",
             self.0.max_iterations, self.0.tolerance
         ))
     }
 
-    fn __repr__(&self) -> PyResult<String> {
-        Ok(format!(
-            "ICPConvergenceCriteria(max_iterations: {}, tolerance: {})",
-            self.0.max_iterations, self.0.tolerance
-        ))
+    fn __str__(&self) -> PyResult<String> {
+        self.__repr__()
     }
 }
 
@@ -80,18 +77,15 @@ impl PyICPResult {
         self.0.rmse
     }
 
-    fn __str__(&self) -> PyResult<String> {
+    fn __repr__(&self) -> PyResult<String> {
         Ok(format!(
             "ICPResult(rotation: {:?}, translation: {:?}, num_iterations: {}, rmse: {})",
             self.0.rotation, self.0.translation, self.0.num_iterations, self.0.rmse
         ))
     }
 
-    fn __repr__(&self) -> PyResult<String> {
-        Ok(format!(
-            "ICPResult(rotation: {:?}, translation: {:?}, num_iterations: {}, rmse: {})",
-            self.0.rotation, self.0.translation, self.0.num_iterations, self.0.rmse
-        ))
+    fn __str__(&self) -> PyResult<String> {
+        self.__repr__()
     }
 }
 
@@ -127,8 +121,6 @@ pub fn icp_vanilla(
             unsafe { array.as_slice() }.expect("Failed to convert initial translation to vector");
         [data_slice[0], data_slice[1], data_slice[2]]
     });
-
-    // run the icp algorithm
 
     let result = icp_vanilla_fn(&source, &target, initial_rot, initial_trans, criteria.0)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;

@@ -1,13 +1,16 @@
 import timeit
+from pathlib import Path
 
 import cv2
 import kornia_rs as K
 import numpy as np
 
-image_path = "tests/data/dog.jpeg"
+from kornia_rs.image import Image
+
+image_path = str(Path(__file__).resolve().parents[2] / "tests" / "data" / "dog.jpeg")
 N = 5000  # number of iterations
 
-img = K.read_image_jpeg(image_path)[..., :1]
+img = np.ascontiguousarray(Image.load(image_path).to_numpy()[..., :1])
 
 
 # 0.04 ms :)
@@ -17,7 +20,7 @@ def hist_opencv(image: np.ndarray) -> np.ndarray:
 
 # 0.17 ms :(
 def hist_kornia(image: np.ndarray) -> np.ndarray:
-    return K.compute_histogram(image, num_bins=256)
+    return K.compute_histogram(image, nbins=256)
 
 
 tests = [

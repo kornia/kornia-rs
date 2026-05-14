@@ -1,3 +1,8 @@
+//! 256-pair BRIEF pattern from Rublee 2011 (`bit_pattern_31_`): learned-
+//! uncorrelated sampling over a 31×31 patch. Rotation is applied per-keypoint
+//! at descriptor time with continuous `cos`/`sin` math (see
+//! `rotate_pattern_for_angle` in `extractor.rs`).
+
 pub(super) const POS0: [[i8; 2]; 256] = [
     [8, -3],
     [4, 2],

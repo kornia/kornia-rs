@@ -184,6 +184,7 @@ Err(KorniaError::SizeMismatch {
 - Prefer iterators over index-based loops for cache-friendly access
 - Do not clone images or tensors unnecessarily — pass references
 - Benchmark before and after any change to a core algorithm using `cargo bench`
+- **SIMD / cross-arch work in `kornia-imgproc`**: see [`crates/kornia-imgproc/SIMD.md`](crates/kornia-imgproc/SIMD.md) for the dispatch pattern, cross-arch testing setup (qemu + tonistiigi/binfmt on aarch64 hosts), correctness-vs-scalar harness, benchmark methodology (best-of-N rounds), and common gotchas (qemu overhead, `is_x86_feature_detected!` compile-time behavior, rayon row-chunking).
 
 ---
 

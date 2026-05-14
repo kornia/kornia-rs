@@ -11,4 +11,7 @@ ctrlc = { workspace = true }
 env_logger = { workspace = true }
 foxglove = "0.16.1"
 kornia-image = { workspace = true }
+kornia-io = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
 kornia-io = { workspace = true, features = ["v4l"] }

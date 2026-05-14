@@ -207,4 +207,16 @@ mod tests {
         allocator.dealloc(ptr, layout);
         Ok(())
     }
+
+    #[test]
+    fn test_cpu_allocator_dealloc_null_noop() {
+        // The CpuAllocator::dealloc implementation has an explicit null-guard;
+        // calling it with a null pointer must be a no-op and must not panic or UB.
+        let allocator = CpuAllocator;
+        let layout = Layout::from_size_align(1024, 8).unwrap();
+        let null_ptr = std::ptr::null_mut::<u8>();
+        // If the null-guard is missing this would invoke undefined behaviour.
+        // A passing call here confirms the guard is in place.
+        allocator.dealloc(null_ptr, layout);
+    }
 }

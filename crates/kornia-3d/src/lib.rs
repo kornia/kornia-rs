@@ -4,6 +4,9 @@
 /// Bundle adjustment solver.
 pub mod ba;
 
+/// Schur-complement bundle adjustment (dense reduced camera system).
+pub mod ba_schur;
+
 /// Pinhole camera model with Brown-Conrady distortion and Kannala-Brandt fisheye model.
 pub mod camera;
 
@@ -24,6 +27,12 @@ pub mod pose;
 
 /// Perspective-n-Point (PnP) solvers.
 pub mod pnp;
+
+/// SE(3) pose graph optimization (loop-closure backend).
+pub mod pgo;
+
+/// Generic RANSAC traits and config shared by all robust estimators.
+pub mod ransac;
 
 /// Registration algorithms.
 pub mod registration;

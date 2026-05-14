@@ -510,6 +510,33 @@ mod tests {
     }
 
     #[test]
+    fn test_threshold_binary_equal_to_threshold() -> Result<(), ImageError> {
+        // The implementation uses strict `>` (not `>=`), so a pixel whose value
+        // exactly equals the threshold is treated as NOT exceeding it and maps to
+        // zero rather than max_val.  Pin that boundary behaviour here.
+        let data = vec![100u8, 101, 99];
+        let image = Image::<_, 1, _>::new(
+            ImageSize {
+                width: 3,
+                height: 1,
+            },
+            data,
+            CpuAllocator,
+        )?;
+
+        let mut thresholded = Image::<_, 1, _>::from_size_val(image.size(), 0, CpuAllocator)?;
+
+        super::threshold_binary(&image, &mut thresholded, 100, 255)?;
+
+        // 100 == threshold → 0 (not strictly greater)
+        // 101 >  threshold → 255
+        // 99  <  threshold → 0
+        assert_eq!(thresholded.as_slice(), &[0u8, 255, 0]);
+
+        Ok(())
+    }
+
+    #[test]
     fn test_in_range() -> Result<(), ImageError> {
         let data = vec![100u8, 200, 50, 150, 200, 250];
         let image = Image::<_, 3, _>::new(
