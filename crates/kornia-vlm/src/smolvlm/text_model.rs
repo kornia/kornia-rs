@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use candle_core::DType;
 use candle_core::{Device, Result, Tensor};
 use candle_nn::{rotary_emb::rope, Linear, Module};
-use candle_nn::kv_cache::KvCache;
 
 use crate::context::InferenceContext;
 use crate::smolvlm::custom_rmsnorm::CustomRmsNorm;
@@ -36,12 +35,14 @@ pub struct Attention {
     // caching
     cos: Tensor,
     sin: Tensor,
-    cache: KvCache,
+    k_cache: Tensor,
+    v_cache: Tensor,
 }
 
 impl Attention {
     fn new(q: Tensor, k: Tensor, v: Tensor, o: Tensor) -> Result<Self> {
         let device = q.device();
+        let dtype = q.dtype();
 
         let theta = Tensor::new(calculate_default_inv_freq(), device)?;
         // 0 -> max position embedding
@@ -53,7 +54,8 @@ impl Attention {
         Ok(Self {
             cos: idx_theta.cos()?.to_dtype(q.dtype())?,
             sin: idx_theta.sin()?.to_dtype(q.dtype())?,
-            cache: KvCache::new(1, 16384),
+            k_cache: Tensor::zeros((NUM_OF_HEADS, 0, HEAD_DIM), dtype, device)?,
+            v_cache: Tensor::zeros((NUM_OF_HEADS, 0, HEAD_DIM), dtype, device)?,
             q_proj: Linear::new(q, None),
             k_proj: Linear::new(k, None),
             v_proj: Linear::new(v, None),
@@ -62,7 +64,16 @@ impl Attention {
     }
 
     pub fn reset_cache(&mut self) -> Result<()> {
-        self.cache.reset();
+        self.k_cache = Tensor::zeros(
+            (NUM_OF_HEADS, 0, HEAD_DIM),
+            self.k_cache.dtype(),
+            self.k_cache.device(),
+        )?;
+        self.v_cache = Tensor::zeros(
+            (NUM_OF_HEADS, 0, HEAD_DIM),
+            self.v_cache.dtype(),
+            self.v_cache.device(),
+        )?;
         Ok(())
     }
 
@@ -96,15 +107,15 @@ impl Attention {
             .contiguous()?;
         let v = v
             .reshape((seq_len, NUM_OF_HEADS, HEAD_DIM))?
-            .transpose(0, 1)?
-            .contiguous()?;
+            .transpose(0, 1)?;
 
         let q = self.apply_rotary_embedding(&q, index_pos)?;
         let k = self.apply_rotary_embedding(&k, index_pos)?;
 
         // use cache (always assumes new tokens are an extension of the previous sequence)
         // TODO: handle context length
-        let (k_cache, v_cache) = self.cache.append(&k, &v)?;
+        self.k_cache = Tensor::cat(&[&self.k_cache, &k], 1)?;
+        self.v_cache = Tensor::cat(&[&self.v_cache, &v], 1)?;
 
         let y = {
             // TODO: implement flash attention
@@ -112,14 +123,14 @@ impl Attention {
 
             let in_dtype = q.dtype();
             let q = q.to_dtype(DType::F32)?;
-            let k = k_cache.to_dtype(DType::F32)?;
-            let v = v_cache.to_dtype(DType::F32)?;
+            let k = self.k_cache.to_dtype(DType::F32)?;
+            let v = self.v_cache.to_dtype(DType::F32)?;
 
             let att = (q.matmul(&k.t()?)? / (HEAD_DIM as f64).sqrt())?;
             let att = if seq_len == 1 {
                 att
             } else {
-                let mask = Self::generate_causal_mask(seq_len, self.cache.current_seq_len(), device)?;
+                let mask = Self::generate_causal_mask(seq_len, self.k_cache.dims()[1], device)?;
                 att.broadcast_add(&mask)?
             };
             let att = candle_nn::ops::softmax_last_dim(&att)?;
