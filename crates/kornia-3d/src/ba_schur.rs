@@ -1214,7 +1214,7 @@ mod tests {
                 (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
             }
         }
-        let mut rng = Lcg::new(0xC0FFEE_DEADBEEF);
+        let mut rng = Lcg::new(0x00C0_FFEE_DEAD_BEEF_u64);
 
         let cam = PinholeCamera {
             fx: 600.0,
@@ -1433,7 +1433,7 @@ mod tests {
                 (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
             }
         }
-        let mut rng = Lcg::new(0x0BAD_CAFE_1234_5u64);
+        let mut rng = Lcg::new(0x0000_BADC_AFE1_2345_u64);
 
         let cam = PinholeCamera {
             fx: 600.0,
@@ -1659,7 +1659,7 @@ mod tests {
                 (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
             }
         }
-        let mut rng = Lcg::new(0x_FACE_F00D_C0DE);
+        let mut rng = Lcg::new(0x000F_ACEF_00DC_0DE0_u64);
 
         let cam = PinholeCamera {
             fx: 600.0,
