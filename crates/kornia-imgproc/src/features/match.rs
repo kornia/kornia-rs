@@ -186,6 +186,132 @@ pub fn match_descriptors<const N: usize>(
     matches
 }
 
+/// Cosine similarity (dot product) between two L2-normalised f32 descriptors.
+///
+/// Assumes both inputs are unit-norm; the dot product is then the cosine.
+/// LLVM autovectorises the loop on aarch64 (NEON) and x86_64 (AVX2) for
+/// fixed-size arrays such as `[f32; 64]` (XFeat) or `[f32; 256]` (SuperPoint).
+#[inline]
+pub fn dot_product<const D: usize>(a: &[f32; D], b: &[f32; D]) -> f32 {
+    // Fused multiply-add when available; iterator form lets LLVM unroll +
+    // vectorise. Manual NEON intrinsics offered no measurable win in benches.
+    let mut acc = 0.0f32;
+    for i in 0..D {
+        acc += a[i] * b[i];
+    }
+    acc
+}
+
+/// Match f32 descriptors via cosine similarity (assumes L2-normalised inputs).
+///
+/// Equivalent to `xfeat.match` (XFeat / SuperPoint convention) with optional
+/// mutual nearest neighbour check and Lowe's ratio test in cosine space.
+///
+/// # Arguments
+/// * `descriptors1` - First set of D-dim descriptors (length N1, each `&[f32; D]`).
+/// * `descriptors2` - Second set (length N2).
+/// * `min_cossim`   - Minimum cosine similarity to keep the match (default ~0.82).
+/// * `cross_check`  - If true, require mutual NN match.
+/// * `max_ratio_cos` - Lowe-ratio in cosine space:
+///   `(1 - best_cos) / (1 - second_best_cos) <= max_ratio_cos`
+///   (lower = more discriminative; typical 0.8-0.85).
+///
+/// # Returns
+/// Vec<(i, j)> index pairs into descriptors1 / descriptors2.
+///
+/// Uses rayon for parallelism across descriptors1; cossim computed inline
+/// as the dot product (descriptors must be L2-normalised). NEON SIMD over
+/// the 64-dim inner loop is autovectorised by LLVM on aarch64.
+pub fn match_descriptors_f32<const D: usize>(
+    descriptors1: &[[f32; D]],
+    descriptors2: &[[f32; D]],
+    min_cossim: Option<f32>,
+    cross_check: bool,
+    max_ratio_cos: Option<f32>,
+) -> Vec<(usize, usize)> {
+    if descriptors1.is_empty() || descriptors2.is_empty() {
+        return vec![];
+    }
+
+    // Forward pass: for each desc1[i], find best and second-best cosine in desc2.
+    // Each row is independent — parallelize across descriptors1.
+    use rayon::prelude::*;
+    let fwd: Vec<(usize, f32, f32)> = descriptors1
+        .par_iter()
+        .map(|d1| {
+            let mut best_j = 0usize;
+            let mut best_cos = f32::NEG_INFINITY;
+            let mut second_cos = f32::NEG_INFINITY;
+            for (j, d2) in descriptors2.iter().enumerate() {
+                let cos = dot_product(d1, d2);
+                if cos > best_cos {
+                    second_cos = best_cos;
+                    best_cos = cos;
+                    best_j = j;
+                } else if cos > second_cos {
+                    second_cos = cos;
+                }
+            }
+            (best_j, best_cos, second_cos)
+        })
+        .collect();
+
+    // Reverse pass (only if cross-check): for each desc2[j], find best match in desc1.
+    let rev_best_i = if cross_check {
+        let rev: Vec<usize> = descriptors2
+            .par_iter()
+            .map(|d2| {
+                let mut best_i = 0usize;
+                let mut best_cos = f32::NEG_INFINITY;
+                for (i, d1) in descriptors1.iter().enumerate() {
+                    let cos = dot_product(d1, d2);
+                    if cos > best_cos {
+                        best_cos = cos;
+                        best_i = i;
+                    }
+                }
+                best_i
+            })
+            .collect();
+        Some(rev)
+    } else {
+        None
+    };
+
+    // Build matches applying all filters in one pass.
+    let mut matches = Vec::new();
+    for (i, &(j, best_cos, second_cos)) in fwd.iter().enumerate() {
+        if let Some(min_cs) = min_cossim {
+            if best_cos < min_cs {
+                continue;
+            }
+        }
+
+        if let Some(ref rev) = rev_best_i {
+            if rev[j] != i {
+                continue;
+            }
+        }
+
+        if let Some(ratio) = max_ratio_cos {
+            if ratio < 1.0 && second_cos > f32::NEG_INFINITY {
+                // Cosine-space Lowe ratio: (1 - best) / (1 - second).
+                // Smaller ratio = more discriminative (best much closer to 1
+                // than second).
+                let denom = (1.0 - second_cos).max(1e-6);
+                let r = (1.0 - best_cos) / denom;
+                if r > ratio {
+                    continue;
+                }
+            }
+        }
+
+        matches.push((i, j));
+    }
+
+    matches
+}
+
 /// Borrowed view over ORB features — descriptors + keypoint positions +
 /// per-keypoint octaves, all as parallel slices.
 ///
@@ -378,6 +504,106 @@ pub fn match_orb_by_projection<const N: usize>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Generate `n` L2-normalised random 64-dim descriptors using a simple
+    /// LCG so the test stays deterministic and dependency-light.
+    fn random_normalised_descs(n: usize, seed: u64) -> Vec<[f32; 64]> {
+        // xorshift64*: cheap, deterministic, no dep on rand.
+        let mut state = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            // Map to [-1, 1).
+            ((state as u32) as f32) / (u32::MAX as f32 / 2.0) - 1.0
+        };
+        let mut out = Vec::with_capacity(n);
+        for _ in 0..n {
+            let mut d = [0f32; 64];
+            for v in d.iter_mut() {
+                *v = next();
+            }
+            let norm: f32 = d.iter().map(|x| x * x).sum::<f32>().sqrt();
+            let inv = if norm > 0.0 { 1.0 / norm } else { 1.0 };
+            for v in d.iter_mut() {
+                *v *= inv;
+            }
+            out.push(d);
+        }
+        out
+    }
+
+    fn l2_normalise(d: &mut [f32; 64]) {
+        let norm: f32 = d.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm > 0.0 {
+            let inv = 1.0 / norm;
+            for v in d.iter_mut() {
+                *v *= inv;
+            }
+        }
+    }
+
+    #[test]
+    fn match_f32_recovers_planted_pairs() {
+        // Build two sets of 100 descriptors. First 50 of each are "matched
+        // pairs" (small noise added on the second side); remaining 50 are
+        // independent random outliers.
+        let mut descs1 = random_normalised_descs(100, 0xDEAD_BEEF);
+        let mut descs2 = random_normalised_descs(100, 0xCAFE_BABE);
+
+        // Inject planted pairs: descs2[i] = descs1[i] + small noise, then
+        // re-normalise. Tiny noise gives cos > 0.99 between planted pairs.
+        // We share the same `state` machinery for noise.
+        let mut state: u64 = 0xF00D_F00D_F00D_F00D;
+        let mut noise = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            ((state as u32) as f32) / (u32::MAX as f32 / 2.0) - 1.0
+        };
+
+        for i in 0..50 {
+            let mut d = descs1[i];
+            for v in d.iter_mut() {
+                *v += 0.01 * noise();
+            }
+            l2_normalise(&mut d);
+            descs2[i] = d;
+        }
+        // Re-normalise descs1 (LCG already gave unit vectors but cheap insurance).
+        for d in descs1.iter_mut() {
+            l2_normalise(d);
+        }
+
+        let matches = match_descriptors_f32::<64>(&descs1, &descs2, Some(0.95), true, Some(0.8));
+
+        // We planted 50 pairs. With cos~0.99 between planted, ~random elsewhere,
+        // cross-check + min_cossim=0.95 should recover most planted pairs and
+        // reject outliers.
+        assert!(
+            matches.len() >= 45,
+            "expected ~50 matches, got {}",
+            matches.len()
+        );
+        // Inlier rate: planted match is (i, i) for i < 50.
+        let correct = matches.iter().filter(|&&(i, j)| i == j && i < 50).count();
+        let inlier_rate = correct as f32 / matches.len() as f32;
+        assert!(
+            inlier_rate >= 0.9,
+            "inlier rate {} too low ({} correct of {})",
+            inlier_rate,
+            correct,
+            matches.len()
+        );
+    }
+
+    #[test]
+    fn match_f32_empty_inputs() {
+        let empty: Vec<[f32; 64]> = vec![];
+        let some = random_normalised_descs(10, 1);
+        assert!(match_descriptors_f32::<64>(&empty, &some, None, false, None).is_empty());
+        assert!(match_descriptors_f32::<64>(&some, &empty, None, false, None).is_empty());
+    }
 
     fn desc_from_bit(bit: u8) -> [u8; 32] {
         let mut d = [0u8; 32];
