@@ -158,9 +158,10 @@ jobs:
         python-version: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13", "3.13t", "3.14", "3.14t"]
         target: [x64, x86]
     env:
-      CMAKE_GENERATOR: "Visual Studio 17 2022"
+      CMAKE_GENERATOR: Ninja
     steps:
       - uses: ilammy/setup-nasm@v1
+      - uses: ilammy/msvc-dev-cmd@v1
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
         with:
@@ -173,7 +174,7 @@ jobs:
           toolchain: stable
           override: true
       - run: |
-          pip install cmake<4
+          pip install cmake ninja
       - uses: messense/maturin-action@v1
         with:
           command: build
