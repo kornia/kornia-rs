@@ -11,6 +11,7 @@ use crate::smolvlm::custom_rmsnorm::CustomRmsNorm;
 const NUM_OF_HEADS: usize = 32;
 const HEAD_DIM: usize = 64;
 
+
 /// Custom SiLU (Sigmoid Linear Unit) activation function
 /// SiLU(x) = x * sigmoid(x) = x * (1 / (1 + e^(-x)))
 fn silu(x: &Tensor) -> Result<Tensor> {
@@ -104,27 +105,31 @@ impl Attention {
 
         // use cache (always assumes new tokens are an extension of the previous sequence)
         // TODO: handle context length
-        let (k_cache, v_cache) = self.cache.append(&k, &v)?;
-
         let y = {
             // TODO: implement flash attention
-            // TODO: just using BF16 is plausible
+            // TODO: consider backend-aware cache dtype policy
 
             let in_dtype = q.dtype();
-            let q = q.to_dtype(DType::F32)?;
-            let k = k_cache.to_dtype(DType::F32)?;
-            let v = v_cache.to_dtype(DType::F32)?;
 
-            let att = (q.matmul(&k.t()?)? / (HEAD_DIM as f64).sqrt())?;
+            let q = q.to_dtype(DType::F32)?;
+            let k = k.to_dtype(DType::F32)?;
+            let v = v.to_dtype(DType::F32)?;
+
+            let (k_cache, v_cache) = self.cache.append(&k, &v)?;
+
+            let att = (q.matmul(&k_cache.t()?)? / (HEAD_DIM as f64).sqrt())?;
+
             let att = if seq_len == 1 {
                 att
             } else {
-                let mask = Self::generate_causal_mask(seq_len, self.cache.current_seq_len(), device)?;
+                let mask =
+                    Self::generate_causal_mask(seq_len, self.cache.current_seq_len(), device)?;
                 att.broadcast_add(&mask)?
             };
+
             let att = candle_nn::ops::softmax_last_dim(&att)?;
 
-            att.matmul(&v)?.contiguous()?.to_dtype(in_dtype)?
+            att.matmul(&v_cache)?.contiguous()?.to_dtype(in_dtype)?
         };
 
         let y = y.transpose(0, 1)?.reshape(&[seq_len, hidden_size])?;
