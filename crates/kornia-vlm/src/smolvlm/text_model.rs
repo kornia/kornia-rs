@@ -2,15 +2,15 @@ use std::collections::HashMap;
 
 use candle_core::DType;
 use candle_core::{Device, Result, Tensor};
-use candle_nn::{rotary_emb::rope, Linear, Module};
 use candle_nn::kv_cache::KvCache;
+use candle_nn::{rotary_emb::rope, Linear, Module};
 
 use crate::context::InferenceContext;
 use crate::smolvlm::custom_rmsnorm::CustomRmsNorm;
 
 const NUM_OF_HEADS: usize = 32;
 const HEAD_DIM: usize = 64;
-
+const MAX_POSITION_EMBEDDINGS: usize = 16384;
 
 /// Custom SiLU (Sigmoid Linear Unit) activation function
 /// SiLU(x) = x * sigmoid(x) = x * (1 / (1 + e^(-x)))
@@ -46,15 +46,15 @@ impl Attention {
 
         let theta = Tensor::new(calculate_default_inv_freq(), device)?;
         // 0 -> max position embedding
-        let idx_theta = Tensor::arange(0, 16384u32, device)?
+        let idx_theta = Tensor::arange(0, MAX_POSITION_EMBEDDINGS as u32, device)?
             .to_dtype(DType::F32)?
-            .reshape((16384, 1))?
+            .reshape((MAX_POSITION_EMBEDDINGS, 1))?
             .matmul(&theta.reshape((1, theta.elem_count()))?)?;
 
         Ok(Self {
             cos: idx_theta.cos()?.to_dtype(q.dtype())?,
             sin: idx_theta.sin()?.to_dtype(q.dtype())?,
-            cache: KvCache::new(1, 16384),
+            cache: KvCache::new(1, MAX_POSITION_EMBEDDINGS),
             q_proj: Linear::new(q, None),
             k_proj: Linear::new(k, None),
             v_proj: Linear::new(v, None),
