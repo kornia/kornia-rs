@@ -302,18 +302,17 @@ pub fn decode_image_rvl(src: &[u8]) -> Result<Image<u16, 1, CpuAllocator>, IoErr
     }
     let width = u32::from_le_bytes(src[4..8].try_into().unwrap()) as usize;
     let height = u32::from_le_bytes(src[8..12].try_into().unwrap()) as usize;
-    let n_pixels = width.checked_mul(height).ok_or_else(|| {
-        IoError::RvlDecodeError("image dimensions overflow".into())
-    })?;
+    let n_pixels = width
+        .checked_mul(height)
+        .ok_or_else(|| IoError::RvlDecodeError("image dimensions overflow".into()))?;
 
     let mut pixels = vec![0u16; n_pixels];
     let mut reader = NibbleReader::new(&src[HEADER_LEN..]);
     let mut prev: i16 = 0;
 
     for p in pixels.iter_mut() {
-        let zigzag = decode_vle(&mut reader).ok_or_else(|| {
-            IoError::RvlDecodeError("unexpected end of nibble stream".into())
-        })?;
+        let zigzag = decode_vle(&mut reader)
+            .ok_or_else(|| IoError::RvlDecodeError("unexpected end of nibble stream".into()))?;
         let zigzag_u16 = zigzag as u16;
         // Inverse zigzag: delta = (z >> 1) ^ -(z & 1)
         let delta = ((zigzag_u16 >> 1) as i16) ^ -((zigzag_u16 & 1) as i16);
@@ -348,7 +347,15 @@ mod tests {
     use super::*;
 
     fn make_image(data: Vec<u16>, w: usize, h: usize) -> Image<u16, 1, CpuAllocator> {
-        Image::new(ImageSize { width: w, height: h }, data, CpuAllocator).unwrap()
+        Image::new(
+            ImageSize {
+                width: w,
+                height: h,
+            },
+            data,
+            CpuAllocator,
+        )
+        .unwrap()
     }
 
     #[test]
@@ -379,7 +386,9 @@ mod tests {
     #[test]
     fn roundtrip_max_delta() {
         // Alternating 0 and 65535 — maximum delta at every pixel
-        let data: Vec<u16> = (0..64).map(|i| if i % 2 == 0 { 0 } else { 65535 }).collect();
+        let data: Vec<u16> = (0..64)
+            .map(|i| if i % 2 == 0 { 0 } else { 65535 })
+            .collect();
         let img = make_image(data, 8, 8);
         let enc = encode_image_rvl(&img).unwrap();
         let dec = decode_image_rvl(&enc).unwrap();
@@ -430,6 +439,10 @@ mod tests {
         let img = make_image(vec![0u16; 640 * 480], 640, 480);
         let enc = encode_image_rvl(&img).unwrap();
         let raw = 640 * 480 * 2;
-        assert!(enc.len() < raw / 3, "expected >3× on zeros, got {}", enc.len());
+        assert!(
+            enc.len() < raw / 3,
+            "expected >3× on zeros, got {}",
+            enc.len()
+        );
     }
 }

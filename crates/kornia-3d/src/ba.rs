@@ -50,6 +50,66 @@ pub struct BaObservation {
     /// If true, this observation's 3D point is held fixed during optimization
     /// — used for "motion-only" BA where pose is refined against a known map.
     pub fixed_point: bool,
+    /// Optional metric depth measurement at this observation pixel.
+    /// When `Some(d)`, the BA cost gains a depth residual:
+    ///   `r_depth = (Z_pred - d) / depth_sigma`
+    /// where `Z_pred = (R · X + t)[2]` in the camera frame. This anchors the
+    /// global scale of the reconstruction and prevents the scale-drift mode
+    /// that pure reprojection BA cannot constrain.
+    ///
+    /// Currently only honoured by [`crate::ba_schur::bundle_adjust_schur`].
+    pub depth_meas: Option<f32>,
+    /// Standard deviation (metres) for the depth residual. Ignored when
+    /// `depth_meas` is `None`.
+    pub depth_sigma: f32,
+}
+
+impl Default for BaObservation {
+    fn default() -> Self {
+        Self {
+            pose_idx: 0,
+            point_idx: 0,
+            pixel: [0.0, 0.0],
+            fixed_pose: false,
+            fixed_point: false,
+            depth_meas: None,
+            depth_sigma: 1.0,
+        }
+    }
+}
+
+impl BaObservation {
+    /// Attach a metric depth measurement and its uncertainty (sigma in metres).
+    pub fn with_depth(mut self, depth: f32, sigma: f32) -> Self {
+        self.depth_meas = Some(depth);
+        self.depth_sigma = sigma;
+        self
+    }
+}
+
+/// Optional per-pose translation prior. When present, BA cost gains a
+/// residual per pose `i`:
+///
+/// ```text
+///     r_pos_i = (C_i_world - prior_i) / σ
+/// ```
+///
+/// where `C_i_world = -R_CW_i^T · t_CW_i` is the camera centre in the world
+/// frame (the inverse-transformed origin of the camera-frame). Use this to
+/// anchor BA to a known metric trajectory (e.g. RGB-D PnP chain-VO output)
+/// so lateral / vertical drift doesn't accumulate during LM. Unlike
+/// `BaObservation::depth_meas` (which only constrains the cam-frame Z of
+/// the pose translation), this residual constrains all three axes of the
+/// pose's world-frame position simultaneously.
+///
+/// Currently only honoured by [`crate::ba_schur::bundle_adjust_schur`].
+#[derive(Debug, Clone, Copy)]
+pub struct BaPosePrior {
+    /// Prior camera centre in world frame.
+    pub center_world: [f32; 3],
+    /// Standard deviation (metres). Clamped to ≥ 1e-6 internally. Smaller
+    /// σ → tighter anchor.
+    pub sigma: f32,
 }
 
 /// Parameters for bundle adjustment.
@@ -244,7 +304,11 @@ impl ReprojFactor {
         let pc = se3 * pw;
         // Preserve z sign but enforce |z| ≥ MIN_Z.
         let z_clamped = if pc.z.abs() < MIN_Z {
-            if pc.z >= 0.0 { MIN_Z } else { -MIN_Z }
+            if pc.z >= 0.0 {
+                MIN_Z
+            } else {
+                -MIN_Z
+            }
         } else {
             pc.z
         };
@@ -273,7 +337,11 @@ impl ReprojFactor {
 
         // Clamp z to match the forward projection (keeps Jacobian finite).
         let z = if pc.z.abs() < MIN_Z {
-            if pc.z >= 0.0 { MIN_Z } else { -MIN_Z }
+            if pc.z >= 0.0 {
+                MIN_Z
+            } else {
+                -MIN_Z
+            }
         } else {
             pc.z
         };
@@ -357,8 +425,8 @@ impl ReprojFactor {
         let full = self.analytical_jacobian_full(pose_params, point_params)?;
         // Row 0: full[0..6]; Row 1: full[9..15]
         Ok(vec![
-            full[0], full[1], full[2], full[3], full[4], full[5],
-            full[9], full[10], full[11], full[12], full[13], full[14],
+            full[0], full[1], full[2], full[3], full[4], full[5], full[9], full[10], full[11],
+            full[12], full[13], full[14],
         ])
     }
 
@@ -377,7 +445,11 @@ impl ReprojFactor {
         let pc = se3 * pw;
 
         let z = if pc.z.abs() < MIN_Z {
-            if pc.z >= 0.0 { MIN_Z } else { -MIN_Z }
+            if pc.z >= 0.0 {
+                MIN_Z
+            } else {
+                -MIN_Z
+            }
         } else {
             pc.z
         };
@@ -512,8 +584,8 @@ impl Factor for ReprojFactor {
 
     fn variable_local_dim(&self, idx: usize) -> usize {
         match (&self.fixed_pose, &self.fixed_point) {
-            (Some(_), None) => 3,        // point only
-            (None, Some(_)) => 6,        // pose only
+            (Some(_), None) => 3, // point only
+            (None, Some(_)) => 6, // pose only
             (None, None) => match idx {
                 0 => 6,
                 1 => 3,
@@ -645,9 +717,8 @@ pub fn bundle_adjust(
             (false, false) => {
                 let pose_name = format!("pose_{}", obs.pose_idx);
                 let pt_name = format!("pt_{}", obs.point_idx);
-                let factor = Box::new(
-                    ReprojFactor::new(obs.pixel, camera).with_loss(robust_loss.clone()),
-                );
+                let factor =
+                    Box::new(ReprojFactor::new(obs.pixel, camera).with_loss(robust_loss.clone()));
                 problem.add_factor(factor, vec![pose_name, pt_name])?;
             }
             (true, false) => {
@@ -921,13 +992,17 @@ mod tests {
                 pose_idx: 0,
                 point_idx: pi,
                 pixel: project(&pose0, pt),
-                fixed_pose: true, fixed_point: false,
+                fixed_pose: true,
+                fixed_point: false,
+                ..BaObservation::default()
             });
             observations.push(BaObservation {
                 pose_idx: 1,
                 point_idx: pi,
                 pixel: project(&pose1, pt),
-                fixed_pose: false, fixed_point: false,
+                fixed_pose: false,
+                fixed_point: false,
+                ..BaObservation::default()
             });
         }
 
@@ -984,13 +1059,17 @@ mod tests {
                 pose_idx: 0,
                 point_idx: pi,
                 pixel: project(&pose0, pt),
-                fixed_pose: true, fixed_point: false,
+                fixed_pose: true,
+                fixed_point: false,
+                ..BaObservation::default()
             });
             observations.push(BaObservation {
                 pose_idx: 1,
                 point_idx: pi,
                 pixel: project(&pose1, pt),
-                fixed_pose: false, fixed_point: false,
+                fixed_pose: false,
+                fixed_point: false,
+                ..BaObservation::default()
             });
         }
         // Inject one outlier on point 0, view 1 — 30 px off (≫ the 2 px

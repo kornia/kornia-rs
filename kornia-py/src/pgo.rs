@@ -5,7 +5,7 @@
 
 use kornia_3d::pgo::{pose_graph_optimize as rs_pgo, PgoEdge, PgoParams};
 use kornia_3d::pose::Pose3d;
-use kornia_algebra::{Mat3F64, SE3F32, SO3F32, Vec3AF32, Vec3F64};
+use kornia_algebra::{Mat3F64, Vec3AF32, Vec3F64, SE3F32, SO3F32};
 use numpy::{PyArray, PyArray2, PyArrayMethods, PyUntypedArrayMethods};
 use pyo3::prelude::*;
 
@@ -29,10 +29,7 @@ fn se3_from_slice(r: &[f64], t: &[f64]) -> SE3F32 {
         Vec3AF32::new(r[2] as f32, r[5] as f32, r[8] as f32),
     );
     let so3 = SO3F32::from_matrix(&r_mat);
-    SE3F32::new(
-        so3,
-        Vec3AF32::new(t[0] as f32, t[1] as f32, t[2] as f32),
-    )
+    SE3F32::new(so3, Vec3AF32::new(t[0] as f32, t[1] as f32, t[2] as f32))
 }
 
 /// Solve a pose graph.
@@ -126,9 +123,8 @@ pub fn pose_graph_optimize_py<'py>(
         max_iterations,
         ..Default::default()
     };
-    let result = rs_pgo(&poses, &edge_vec, &fixed_pose_indices, &params).map_err(|e| {
-        pyo3::exceptions::PyValueError::new_err(format!("{e}"))
-    })?;
+    let result = rs_pgo(&poses, &edge_vec, &fixed_pose_indices, &params)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{e}")))?;
 
     // Pack output (R, t).
     let r_out = unsafe { PyArray::<f64, _>::new(py, [n_poses, 3, 3], false) };

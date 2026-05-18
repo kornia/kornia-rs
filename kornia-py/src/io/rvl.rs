@@ -4,7 +4,6 @@ use pyo3::prelude::*;
 use crate::image::{alloc_output_pyarray_u16, numpy_as_image_u16, to_pyerr, PyImageU16};
 use kornia_io::rvl as R;
 
-
 /// Encodes a single-channel 16-bit depth image to RVL-compressed bytes.
 ///
 /// Args:
