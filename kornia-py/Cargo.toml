@@ -24,3 +24,6 @@ numpy = "0.28"
 pyo3 = { version = "0.28", features = ["extension-module"] }
 rand = { workspace = true }
 rayon = { workspace = true }
+
+[features]
+turbojpeg = ["kornia-io/turbojpeg"]

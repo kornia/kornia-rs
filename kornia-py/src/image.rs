@@ -1161,6 +1161,7 @@ impl PyImageApi {
         format: &str,
         quality: u8,
         compress_level: Option<u8>,
+        #[cfg_attr(not(feature = "turbojpeg"), allow(unused_variables))]
         subsampling: Option<&str>,
     ) -> PyResult<Vec<u8>> {
         let c = self.data.channels(py);
@@ -1186,17 +1187,17 @@ impl PyImageApi {
                     _ => unreachable!("u16/f32 rejected above"),
                 };
                 // libjpeg-turbo first (~3-4× faster than zune-jpeg on aarch64);
-                // fall back to zune-jpeg only if the libjpeg-turbo init fails
-                // — belt-and-suspenders for builds without the turbojpeg feature.
-                match crate::io::jpegturbo::encode_image_jpegturbo(
+                // fall back to pure-Rust jpeg if the turbojpeg feature is absent.
+                #[cfg(feature = "turbojpeg")]
+                if let Ok(b) = crate::io::jpegturbo::encode_image_jpegturbo(
                     py,
                     arr.clone_ref(py),
                     quality as i32,
                     subsampling,
                 ) {
-                    Ok(b) => Ok(b),
-                    Err(_) => crate::io::jpeg::encode_image_jpeg(py, arr, quality),
+                    return Ok(b);
                 }
+                crate::io::jpeg::encode_image_jpeg(py, arr, quality)
             }
             "png" => {
                 let mut buffer = Vec::new();
@@ -1556,9 +1557,16 @@ impl PyImageApi {
 
         // JPEG: always 8-bit per channel.
         if data.len() >= 2 && data[0] == 0xff && data[1] == 0xd8 {
-            let arr = match crate::io::jpegturbo::decode_image_jpegturbo(py, data, native_mode) {
-                Ok(a) => a,
-                Err(_) => crate::io::jpeg::decode_image_jpeg(py, data)?,
+            let arr = {
+                #[cfg(feature = "turbojpeg")]
+                {
+                    match crate::io::jpegturbo::decode_image_jpegturbo(py, data, native_mode) {
+                        Ok(a) => a,
+                        Err(_) => crate::io::jpeg::decode_image_jpeg(py, data)?,
+                    }
+                }
+                #[cfg(not(feature = "turbojpeg"))]
+                crate::io::jpeg::decode_image_jpeg(py, data)?
             };
             return Ok(Self::wrap(py, arr, Some(mode.to_string())).with_format("JPEG"));
         }

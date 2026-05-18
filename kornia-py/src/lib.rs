@@ -30,6 +30,7 @@ mod warp;
 
 use crate::icp::{PyICPConvergenceCriteria, PyICPResult};
 use crate::image::{PyImageLayout, PyImageSize, PyPixelFormat};
+#[cfg(feature = "turbojpeg")]
 use crate::io::jpegturbo::{PyImageDecoder, PyImageEncoder};
 use numpy::{PyArray1, PyArray2};
 use pyo3::exceptions::PyDeprecationWarning;
@@ -362,23 +363,29 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     io_mod.add_function(wrap_pyfunction!(io::rvl::decode_image_rvl, &io_mod)?)?;
     io_mod.add_function(wrap_pyfunction!(io::rvl::write_image_rvl, &io_mod)?)?;
     io_mod.add_function(wrap_pyfunction!(io::rvl::read_image_rvl, &io_mod)?)?;
+    #[cfg(feature = "turbojpeg")]
     io_mod.add_function(wrap_pyfunction!(
         io::jpegturbo::decode_image_jpegturbo,
         &io_mod
     )?)?;
+    #[cfg(feature = "turbojpeg")]
     io_mod.add_function(wrap_pyfunction!(
         io::jpegturbo::encode_image_jpegturbo,
         &io_mod
     )?)?;
+    #[cfg(feature = "turbojpeg")]
     io_mod.add_function(wrap_pyfunction!(
         io::jpegturbo::read_image_jpegturbo,
         &io_mod
     )?)?;
+    #[cfg(feature = "turbojpeg")]
     io_mod.add_function(wrap_pyfunction!(
         io::jpegturbo::write_image_jpegturbo,
         &io_mod
     )?)?;
+    #[cfg(feature = "turbojpeg")]
     io_mod.add_class::<PyImageDecoder>()?;
+    #[cfg(feature = "turbojpeg")]
     io_mod.add_class::<PyImageEncoder>()?;
     m.add_submodule(&io_mod)?;
 
