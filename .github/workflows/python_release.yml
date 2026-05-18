@@ -157,6 +157,8 @@ jobs:
       matrix:
         python-version: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13", "3.13t", "3.14", "3.14t"]
         target: [x64, x86]
+    env:
+      CMAKE_GENERATOR: "Visual Studio 17 2022"
     steps:
       - uses: ilammy/setup-nasm@v1
       - uses: actions/checkout@v6
