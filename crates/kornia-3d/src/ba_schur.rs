@@ -1433,7 +1433,7 @@ mod tests {
                 (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
             }
         }
-        let mut rng = Lcg::new(0xBADCAFE_12345);
+        let mut rng = Lcg::new(0x0BAD_CAFE_1234_5u64);
 
         let cam = PinholeCamera {
             fx: 600.0,
