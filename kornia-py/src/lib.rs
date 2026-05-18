@@ -358,6 +358,10 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     io_mod.add_function(wrap_pyfunction!(io::tiff::write_image_tiff_f32, &io_mod)?)?;
     io_mod.add_function(wrap_pyfunction!(io::tiff::write_image_tiff_u8, &io_mod)?)?;
     io_mod.add_function(wrap_pyfunction!(io::tiff::write_image_tiff_u16, &io_mod)?)?;
+    io_mod.add_function(wrap_pyfunction!(io::rvl::encode_image_rvl, &io_mod)?)?;
+    io_mod.add_function(wrap_pyfunction!(io::rvl::decode_image_rvl, &io_mod)?)?;
+    io_mod.add_function(wrap_pyfunction!(io::rvl::write_image_rvl, &io_mod)?)?;
+    io_mod.add_function(wrap_pyfunction!(io::rvl::read_image_rvl, &io_mod)?)?;
     io_mod.add_function(wrap_pyfunction!(
         io::jpegturbo::decode_image_jpegturbo,
         &io_mod

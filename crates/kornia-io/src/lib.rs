@@ -50,6 +50,9 @@ pub mod metadata;
 #[cfg(all(feature = "v4l", target_os = "linux"))]
 pub mod v4l;
 
+/// RVL (Run-Length Variable) lossless depth codec.
+pub mod rvl;
+
 /// Internal utility functions for image bit depth conversion.
 mod conv_utils;
 
