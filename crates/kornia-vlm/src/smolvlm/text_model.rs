@@ -6,6 +6,7 @@ use candle_nn::kv_cache::KvCache;
 use candle_nn::{rotary_emb::rope, Linear, Module};
 
 use crate::context::InferenceContext;
+use crate::device::get_device_and_dtype;
 use crate::smolvlm::custom_rmsnorm::CustomRmsNorm;
 
 const NUM_OF_HEADS: usize = 32;
@@ -111,9 +112,23 @@ impl Attention {
 
             let in_dtype = q.dtype();
 
-            let q = q.to_dtype(DType::F32)?;
-            let k = k.to_dtype(DType::F32)?;
-            let v = v.to_dtype(DType::F32)?;
+            let q = if q.dtype() != attn_dtype {
+                q.to_dtype(attn_dtype)?
+            } else {
+                q
+            };
+
+            let k = if k.dtype() != attn_dtype {
+                k.to_dtype(attn_dtype)?
+            } else {
+                k
+            };
+
+            let v = if v.dtype() != attn_dtype {
+                v.to_dtype(attn_dtype)?
+            } else {
+                v
+            };
 
             let (k_cache, v_cache) = self.cache.append(&k, &v)?;
 
