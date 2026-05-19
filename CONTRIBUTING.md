@@ -398,20 +398,61 @@ pixi run rust-cross-test-aarch64
 
 ## Release (maintainers)
 
-The script `scripts/release_rust.sh` publishes all crates using `cross publish` and runs in dry-run mode by default.
+Three things publish independently:
 
-Steps:
-1. Update versions across crates and workspace; update dependency pins in `[workspace.dependencies]` accordingly.
-2. Verify locally:
-   ```bash
-   pixi run rust-lint
-   pixi run rust-test
-   ./scripts/release_rust.sh  # dry-run
-   ```
-3. Perform the real publish when ready:
-   ```bash
-   ./scripts/release_rust.sh --no-dry-run
-   ```
+1. **Rust crates → crates.io** — via `scripts/release_rust.sh` (or the `Rust Release` GitHub Actions workflow).
+2. **Python wheel `kornia-rs` → PyPI** — via the `Python Release` workflow (`.github/workflows/python_release.yml`).
+3. **GitHub release with binaries / changelog** — created manually after both of the above succeed.
+
+These are independent: a PyPI publish doesn't push to crates.io, and vice versa. Pick the steps relevant to what you're releasing.
+
+### Versioning
+
+The workspace uses a shared version in the root `Cargo.toml` and every workspace member inherits it via `version = { workspace = true }`. When bumping:
+
+- Update `[workspace.package].version` in root `Cargo.toml`
+- Update each version pin in `[workspace.dependencies]` (e.g. `kornia-image = { path = "...", version = "X.Y.Z" }`)
+- Run `cargo check` to refresh `Cargo.lock`
+- Run `pixi run toml-fmt`
+
+### Publishing to crates.io
+
+The script `scripts/release_rust.sh` publishes the workspace's Rust crates **in topological order** (deps first), sleeping between steps so the crates.io index has time to propagate.
+
+Default mode is `plan` — prints what would be published and dry-runs the tier-0 leaf crates. (Cargo can't dry-run a workspace crate whose deps aren't already on crates.io, so dependent crates are validated by the actual publish.)
+
+```bash
+# Local: preview what would publish
+./scripts/release_rust.sh
+
+# Local: actually publish (requires CARGO_REGISTRY_TOKEN or `cargo login`)
+CARGO_REGISTRY_TOKEN=cio_xxx ./scripts/release_rust.sh --execute
+
+# CI: trigger the `Rust Release` workflow from the Actions tab.
+# It requires typing "publish" in the confirmation field, and reads
+# CARGO_REGISTRY_TOKEN from the repo secrets.
+```
+
+#### Setup: crates.io token (one-time)
+
+1. Generate a token at <https://crates.io/settings/tokens> with `publish-update` scope.
+2. Add it as a repo secret named `CARGO_REGISTRY_TOKEN` (Settings → Secrets and variables → Actions).
+
+#### Crates currently published
+
+`kornia-algebra`, `kornia-bow`, `kornia-tensor`, `kornia-tensor-ops`, `kornia-image`, `kornia-io`, `kornia-imgproc`, `kornia-3d` — in that order.
+
+#### Crates intentionally skipped
+
+- `kornia` — the umbrella crate; needs decisions on optional/feature gating before re-enabling.
+- `kornia-vlm` — pulls in `candle`, `tokio`, `hf-hub`; heavy publish surface.
+- `kornia-apriltag` — has a large git submodule of test images that `cargo publish` verification trips on.
+
+To add them back, append the crate to `PUBLISH_ORDER` in `scripts/release_rust.sh`.
+
+### Publishing the Python wheel
+
+Trigger the `Python Release` workflow (`.github/workflows/python_release.yml`) from the Actions tab. It builds wheels for Linux / macOS / Windows × Python 3.8–3.14t and uploads to PyPI using the `PYPI_PASSWORD` secret.
 
 ## Python bindings (`kornia-py`)
 
