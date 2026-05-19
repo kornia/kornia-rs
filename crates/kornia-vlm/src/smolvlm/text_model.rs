@@ -110,6 +110,7 @@ impl Attention {
             // TODO: implement flash attention
 
             let in_dtype = q.dtype();
+            let (_, attn_dtype) = get_device_and_dtype();
 
             let q = if q.dtype() != attn_dtype {
                 q.to_dtype(attn_dtype)?
