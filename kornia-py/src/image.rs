@@ -1161,8 +1161,7 @@ impl PyImageApi {
         format: &str,
         quality: u8,
         compress_level: Option<u8>,
-        #[cfg_attr(not(feature = "turbojpeg"), allow(unused_variables))]
-        subsampling: Option<&str>,
+        #[cfg_attr(not(feature = "turbojpeg"), allow(unused_variables))] subsampling: Option<&str>,
     ) -> PyResult<Vec<u8>> {
         let c = self.data.channels(py);
         let is_u16 = self.data.is_u16();
