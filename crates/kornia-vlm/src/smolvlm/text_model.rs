@@ -6,7 +6,6 @@ use candle_nn::kv_cache::KvCache;
 use candle_nn::{rotary_emb::rope, Linear, Module};
 
 use crate::context::InferenceContext;
-use crate::device::get_device_and_dtype;
 use crate::smolvlm::custom_rmsnorm::CustomRmsNorm;
 
 const NUM_OF_HEADS: usize = 32;
@@ -39,11 +38,13 @@ pub struct Attention {
     cos: Tensor,
     sin: Tensor,
     cache: KvCache,
+    attn_dtype: DType,
 }
 
 impl Attention {
     fn new(q: Tensor, k: Tensor, v: Tensor, o: Tensor) -> Result<Self> {
         let device = q.device();
+        let attn_dtype = q.dtype();
 
         let theta = Tensor::new(calculate_default_inv_freq(), device)?;
         // 0 -> max position embedding
@@ -60,6 +61,7 @@ impl Attention {
             k_proj: Linear::new(k, None),
             v_proj: Linear::new(v, None),
             o_proj: Linear::new(o, None),
+            attn_dtype,
         })
     }
 
@@ -110,7 +112,7 @@ impl Attention {
             // TODO: implement flash attention
 
             let in_dtype = q.dtype();
-            let (_, attn_dtype) = get_device_and_dtype();
+            let attn_dtype = self.attn_dtype;
 
             let q = if q.dtype() != attn_dtype {
                 q.to_dtype(attn_dtype)?
