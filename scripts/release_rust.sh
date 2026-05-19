@@ -83,8 +83,40 @@ local_version() {
 }
 
 remote_version() {
-  curl -fs "https://crates.io/api/v1/crates/$1" 2>/dev/null \
-    | python3 -c "import sys,json; print(json.load(sys.stdin)['crate']['max_version'])" 2>/dev/null || echo "NOT-PUBLISHED"
+  # crates.io requires a User-Agent header (returns 403 without one).
+  # Retry up to 3 times to ride out transient rate-limit / network blips —
+  # mis-reading "NOT-PUBLISHED" for an already-published crate causes the
+  # next cargo publish to error with "crate already exists".
+  local crate="$1"
+  local attempt
+  for attempt in 1 2 3; do
+    local response
+    response=$(curl -fsS \
+      -A "kornia-rs release script (https://github.com/kornia/kornia-rs)" \
+      "https://crates.io/api/v1/crates/$crate" 2>/dev/null) || {
+      sleep 2
+      continue
+    }
+    local v
+    v=$(echo "$response" | python3 -c "import sys,json; print(json.load(sys.stdin)['crate']['max_version'])" 2>/dev/null) || {
+      sleep 2
+      continue
+    }
+    if [[ -n "$v" ]]; then
+      echo "$v"
+      return 0
+    fi
+  done
+  # After 3 retries, report 404 vs network-failure honestly.
+  local http_code
+  http_code=$(curl -s -o /dev/null -w "%{http_code}" \
+    -A "kornia-rs release script (https://github.com/kornia/kornia-rs)" \
+    "https://crates.io/api/v1/crates/$crate" 2>/dev/null || echo "000")
+  if [[ "$http_code" == "404" ]]; then
+    echo "NOT-PUBLISHED"
+  else
+    echo "ERROR-HTTP-$http_code"  # forces an obvious failure, won't false-match local version
+  fi
 }
 
 if [[ "$MODE" == "plan" ]]; then
