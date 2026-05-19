@@ -13,6 +13,10 @@
 # Crates are published deps-first. crates.io's index has a few-seconds
 # propagation lag after each publish, so we sleep between dependent steps.
 #
+# Idempotent: each step queries crates.io for the current published version
+# and skips if it already matches the local workspace version. Lets us resume
+# from where a previous run failed without re-publishing.
+#
 # Crates intentionally not published from this script:
 #   - kornia            (umbrella — re-enable once we decide how to gate
 #                        optional/feature-heavy deps)
@@ -60,31 +64,40 @@ PUBLISH_ORDER=(
   kornia-3d
 )
 
-# Tier-0 leaves (no kornia-* deps) — these can be `cargo publish --dry-run`'d
+# Tier-0 leaves (no kornia-* deps) — can be `cargo publish --dry-run`'d
 # locally for verification because there's nothing to resolve from crates.io.
 TIER_0=(kornia-algebra kornia-bow kornia-tensor)
 
-# Pass --all-features to crates whose optional features are part of the
-# published surface so docs.rs builds them. Anything not listed defaults
-# to just the default features.
+# Per-crate extra flags. We deliberately do NOT pass --all-features:
+# kornia-io's gstreamer feature requires glib/gobject dev headers, and
+# the published Cargo.toml already declares features so users can opt in.
 declare -A CRATE_FEATURES=(
-  [kornia-tensor]="--all-features"
-  [kornia-io]="--all-features"
+  # Empty by design — see comment above.
+  # Add per-crate flags here if a crate needs them.
+  [_placeholder]=""
 )
 
-is_tier_0() {
-  local target="$1"
-  for c in "${TIER_0[@]}"; do
-    [[ "$c" == "$target" ]] && return 0
-  done
-  return 1
+local_version() {
+  cargo metadata --format-version 1 --no-deps 2>/dev/null \
+    | python3 -c "import sys,json; d=json.load(sys.stdin); print(next(p['version'] for p in d['packages'] if p['name'] == '$1'))"
+}
+
+remote_version() {
+  curl -fs "https://crates.io/api/v1/crates/$1" 2>/dev/null \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['crate']['max_version'])" 2>/dev/null || echo "NOT-PUBLISHED"
 }
 
 if [[ "$MODE" == "plan" ]]; then
   echo "==> PLAN — would publish ${#PUBLISH_ORDER[@]} crates in this order:"
   for crate in "${PUBLISH_ORDER[@]}"; do
     features="${CRATE_FEATURES[$crate]:-}"
-    echo "      cargo publish -p $crate $features"
+    local_v=$(local_version "$crate")
+    remote_v=$(remote_version "$crate")
+    if [[ "$local_v" == "$remote_v" ]]; then
+      echo "      $crate: $remote_v already published, would SKIP"
+    else
+      echo "      $crate: $remote_v -> $local_v   cargo publish -p $crate $features"
+    fi
   done
   echo
   echo "==> Dry-running tier-0 leaves (no kornia-* deps) to validate packaging..."
@@ -108,14 +121,29 @@ if [[ -z "${CARGO_REGISTRY_TOKEN:-}" ]]; then
   exit 1
 fi
 
-echo "==> EXECUTE — publishing ${#PUBLISH_ORDER[@]} crates"
+echo "==> EXECUTE — publishing up to ${#PUBLISH_ORDER[@]} crates"
 echo
 
-for crate in "${PUBLISH_ORDER[@]}"; do
-  features="${CRATE_FEATURES[$crate]:-}"
-  echo "==> cargo publish -p $crate $features"
-  cargo publish -p "$crate" $features
+published_count=0
+skipped_count=0
 
+for crate in "${PUBLISH_ORDER[@]}"; do
+  local_v=$(local_version "$crate")
+  remote_v=$(remote_version "$crate")
+
+  if [[ "$local_v" == "$remote_v" ]]; then
+    echo "==> $crate: $remote_v already on crates.io, skipping"
+    skipped_count=$((skipped_count + 1))
+    continue
+  fi
+
+  features="${CRATE_FEATURES[$crate]:-}"
+  echo "==> $crate: $remote_v -> $local_v"
+  echo "    cargo publish -p $crate $features"
+  cargo publish -p "$crate" $features
+  published_count=$((published_count + 1))
+
+  # Only sleep if there's more to publish.
   if [[ "$crate" != "${PUBLISH_ORDER[-1]}" ]]; then
     echo "    sleeping ${SLEEP_SECS}s for crates.io index propagation..."
     sleep "$SLEEP_SECS"
@@ -123,4 +151,4 @@ for crate in "${PUBLISH_ORDER[@]}"; do
 done
 
 echo
-echo "==> Done — published ${#PUBLISH_ORDER[@]} crates"
+echo "==> Done — published $published_count crate(s), skipped $skipped_count (already on crates.io)"
