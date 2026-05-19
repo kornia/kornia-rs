@@ -102,6 +102,12 @@ if [[ "$MODE" == "plan" ]]; then
   echo
   echo "==> Dry-running tier-0 leaves (no kornia-* deps) to validate packaging..."
   for crate in "${TIER_0[@]}"; do
+    local_v=$(local_version "$crate")
+    remote_v=$(remote_version "$crate")
+    if [[ "$local_v" == "$remote_v" ]]; then
+      echo "==> $crate: $remote_v already published, skipping dry-run"
+      continue
+    fi
     features="${CRATE_FEATURES[$crate]:-}"
     echo "==> cargo publish -p $crate $features --dry-run"
     cargo publish -p "$crate" $features --dry-run
