@@ -26,4 +26,5 @@ rand = { workspace = true }
 rayon = { workspace = true }
 
 [features]
+default = ["turbojpeg"]
 turbojpeg = ["kornia-io/turbojpeg"]
