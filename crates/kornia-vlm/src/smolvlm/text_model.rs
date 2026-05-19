@@ -108,7 +108,6 @@ impl Attention {
         // TODO: handle context length
         let y = {
             // TODO: implement flash attention
-            // TODO: consider backend-aware cache dtype policy
 
             let in_dtype = q.dtype();
 
