@@ -36,6 +36,7 @@ rand = "0.9.0"
 
 [features]
 default = []
+metal = ["candle-core/metal"]
 cuda = [
   "candle-core/cuda",
   "candle-nn/cuda",

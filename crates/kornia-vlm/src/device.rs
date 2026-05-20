@@ -23,7 +23,7 @@ pub fn get_device_and_dtype() -> (Device, DType) {
         }
     }
     // MPS path (Apple Silicon)
-    #[cfg(feature = "metal")]
+    #[cfg(all(feature = "metal", target_os = "macos"))]
     {
         match Device::new_metal(0) {
             Ok(device) => {
