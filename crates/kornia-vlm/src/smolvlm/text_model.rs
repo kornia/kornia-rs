@@ -38,11 +38,13 @@ pub struct Attention {
     cos: Tensor,
     sin: Tensor,
     cache: KvCache,
+    attn_dtype: DType,
 }
 
 impl Attention {
     fn new(q: Tensor, k: Tensor, v: Tensor, o: Tensor) -> Result<Self> {
         let device = q.device();
+        let attn_dtype = q.dtype();
 
         let theta = Tensor::new(calculate_default_inv_freq(), device)?;
         // 0 -> max position embedding
@@ -59,6 +61,7 @@ impl Attention {
             k_proj: Linear::new(k, None),
             v_proj: Linear::new(v, None),
             o_proj: Linear::new(o, None),
+            attn_dtype,
         })
     }
 
@@ -107,13 +110,27 @@ impl Attention {
         // TODO: handle context length
         let y = {
             // TODO: implement flash attention
-            // TODO: consider backend-aware cache dtype policy
 
             let in_dtype = q.dtype();
+            let attn_dtype = self.attn_dtype;
 
-            let q = q.to_dtype(DType::F32)?;
-            let k = k.to_dtype(DType::F32)?;
-            let v = v.to_dtype(DType::F32)?;
+            let q = if q.dtype() != attn_dtype {
+                q.to_dtype(attn_dtype)?
+            } else {
+                q
+            };
+
+            let k = if k.dtype() != attn_dtype {
+                k.to_dtype(attn_dtype)?
+            } else {
+                k
+            };
+
+            let v = if v.dtype() != attn_dtype {
+                v.to_dtype(attn_dtype)?
+            } else {
+                v
+            };
 
             let (k_cache, v_cache) = self.cache.append(&k, &v)?;
 
