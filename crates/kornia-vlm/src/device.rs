@@ -17,8 +17,21 @@ pub fn get_device_and_dtype() -> (Device, DType) {
                 return (device, dtype); // ← explicit return so the CPU fallback below applies on Err
             }
             Err(e) => {
-                log::warn!("CUDA not available, defaulting to CPU: {:?}", e);
+                log::warn!("CUDA not available: {:?}", e);
                 // falls through to CPU fallback below
+            }
+        }
+    }
+    // MPS path (Apple Silicon)
+    #[cfg(feature = "metal")]
+    {
+        match Device::new_metal(0) {
+            Ok(device) => {
+                log::info!("Using Apple Metal (MPS) backend with F16");
+                return (device, DType::F16);
+            }
+            Err(e) => {
+                log::warn!("Metal unavailable: {:?}", e);
             }
         }
     }
