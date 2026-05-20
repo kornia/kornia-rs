@@ -13,7 +13,7 @@ categories = { workspace = true }
 include = { workspace = true }
 
 [dependencies]
-eframe = "0.31"
+eframe = "0.33"
 env_logger = { workspace = true }
 humanize-duration = "0.0"
 kornia = { workspace = true, features = ["gstreamer"] }
