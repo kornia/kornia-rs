@@ -856,6 +856,59 @@ class TestDecode:
         with pytest.raises(Exception):
             Image.decode(garbage)
 
+    def test_decode_png_uint16_gray_without_mode(self):
+        """Test that PNG-16 grayscale decodes correctly without explicit mode= argument.
+        
+        This is the headline use case from issue #895: OAK depth recording over Zenoh
+        requires PNG-16 in memory, and users should not need to manually specify mode="L".
+        """
+        # Create a uint16 grayscale depth map
+        depth = np.full((48, 64), 1500, dtype=np.uint16)
+        png16_bytes = Image.fromarray(depth).encode("png")
+        
+        # Decode without mode argument - should infer mode="L" from PNG color type
+        decoded = Image.decode(png16_bytes)
+        
+        assert decoded.dtype == np.uint16, f"Expected uint16, got {decoded.dtype}"
+        assert decoded.channels == 1, f"Expected 1 channel, got {decoded.channels}"
+        assert decoded.height == 48
+        assert decoded.width == 64
+        assert decoded.mode == "I;16"  # PIL-style mode for 16-bit grayscale
+        
+        # Verify the data round-tripped correctly
+        np.testing.assert_array_equal(decoded.data, depth)
+
+    def test_decode_png_explicit_mode_overrides_inference(self):
+        """Test that explicit mode= argument still works (backward compatibility)."""
+        # Create a grayscale PNG
+        gray = np.full((16, 16, 1), 128, dtype=np.uint8)
+        png_bytes = Image.fromarray(gray).encode("png")
+        
+        # Explicit mode should override the inferred mode
+        decoded_explicit = Image.decode(png_bytes, mode="L")
+        assert decoded_explicit.channels == 1
+        assert decoded_explicit.mode == "L"
+        
+    def test_decode_png_rgb_without_mode(self):
+        """Test that RGB PNG decodes correctly without mode argument."""
+        rgb = np.random.randint(0, 255, (32, 32, 3), dtype=np.uint8)
+        png_bytes = Image.fromarray(rgb).encode("png")
+        
+        decoded = Image.decode(png_bytes)
+        assert decoded.channels == 3
+        assert decoded.mode == "RGB"
+        np.testing.assert_array_equal(decoded.data, rgb)
+
+    def test_decode_png_rgba_without_mode(self):
+        """Test that RGBA PNG decodes correctly without mode argument."""
+        rgba = np.random.randint(0, 255, (16, 16, 4), dtype=np.uint8)
+        png_bytes = Image.fromarray(rgba).encode("png")
+        
+        decoded = Image.decode(png_bytes)
+        assert decoded.channels == 4
+        assert decoded.mode == "RGBA"
+        np.testing.assert_array_equal(decoded.data, rgba)
+
 
 class TestEncode:
     """Test Image.encode() in-memory and Image.encode_png_u16() for depth maps.

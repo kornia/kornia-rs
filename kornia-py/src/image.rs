@@ -1540,22 +1540,23 @@ impl PyImageApi {
     /// (``"RGB"`` / ``"RGBA"`` / ``"L"``); for PNG-16 it maps to the 16-bit
     /// equivalent.
     #[staticmethod]
-    #[pyo3(signature = (data, mode="RGB"))]
-    fn decode(py: Python<'_>, data: &[u8], mode: &str) -> PyResult<Self> {
-        let native_mode = match mode {
-            "RGB" => "rgb",
-            "RGBA" => "rgba",
-            "L" => "mono",
-            other => {
-                return Err(value_err(format!(
-                    "decode: unsupported mode {:?}; expected \"RGB\", \"RGBA\", or \"L\"",
-                    other
-                )))
-            }
-        };
-
+    #[pyo3(signature = (data, mode=None))]
+    fn decode(py: Python<'_>, data: &[u8], mode: Option<&str>) -> PyResult<Self> {
         // JPEG: always 8-bit per channel.
         if data.len() >= 2 && data[0] == 0xff && data[1] == 0xd8 {
+            // JPEG requires explicit mode (no color type in header we can easily peek)
+            let mode = mode.unwrap_or("RGB");
+            let native_mode = match mode {
+                "RGB" => "rgb",
+                "RGBA" => "rgba",
+                "L" => "mono",
+                other => {
+                    return Err(value_err(format!(
+                        "decode: unsupported mode {:?}; expected \"RGB\", \"RGBA\", or \"L\"",
+                        other
+                    )))
+                }
+            };
             let arr = {
                 #[cfg(feature = "turbojpeg")]
                 {
@@ -1574,6 +1575,34 @@ impl PyImageApi {
             let layout = kornia_io::png::decode_image_png_layout(data)
                 .map_err(|e| value_err(format!("decode: invalid PNG: {}", e)))?;
             let (height, width) = (layout.image_size.height, layout.image_size.width);
+            
+            // Infer mode from PNG layout if not explicitly provided
+            let inferred_mode = match layout.channels {
+                1 => "L",
+                3 => "RGB",
+                4 => "RGBA",
+                _ => {
+                    return Err(value_err(format!(
+                        "decode: PNG has unsupported channel count: {}",
+                        layout.channels
+                    )))
+                }
+            };
+            
+            // Explicit mode wins (backward compatibility); else use inferred
+            let mode = mode.unwrap_or(inferred_mode);
+            let native_mode = match mode {
+                "RGB" => "rgb",
+                "RGBA" => "rgba",
+                "L" => "mono",
+                other => {
+                    return Err(value_err(format!(
+                        "decode: unsupported mode {:?}; expected \"RGB\", \"RGBA\", or \"L\"",
+                        other
+                    )))
+                }
+            };
+            
             return match layout.pixel_format {
                 PixelFormat::U16 => {
                     let arr = crate::io::png::decode_image_png_u16(
@@ -1609,6 +1638,21 @@ impl PyImageApi {
             let layout = kornia_io::webp::decode_image_webp_layout(data)
                 .map_err(|e| value_err(format!("decode: invalid WebP: {}", e)))?;
             let size = layout.image_size;
+            
+            // Infer mode from WebP layout if not explicitly provided
+            let inferred_mode = match layout.channels {
+                1 => "L",
+                3 => "RGB",
+                4 => "RGBA",
+                _ => {
+                    return Err(value_err(format!(
+                        "decode: WebP has unsupported channel count: {}",
+                        layout.channels
+                    )))
+                }
+            };
+            
+            let mode = mode.unwrap_or(inferred_mode);
             return match mode {
                 "RGB" => {
                     let (dst, out) = unsafe { alloc_output_pyarray::<3>(py, size)? };
@@ -1631,7 +1675,10 @@ impl PyImageApi {
                         .map_err(to_pyerr)?;
                     Ok(Self::wrap(py, out, Some(mode.to_string())).with_format("WEBP"))
                 }
-                _ => unreachable!("native_mode validated above"),
+                other => Err(value_err(format!(
+                    "decode: unsupported mode {:?}; expected \"RGB\", \"RGBA\", or \"L\"",
+                    other
+                ))),
             };
         }
 
@@ -1640,13 +1687,33 @@ impl PyImageApi {
             let layout = kornia_io::tiff::decode_image_tiff_layout(data)
                 .map_err(|e| value_err(format!("decode: invalid TIFF: {}", e)))?;
             let size = layout.image_size;
+            
+            // Infer mode from TIFF layout if not explicitly provided
+            let inferred_mode = match layout.channels {
+                1 => "L",
+                3 => "RGB",
+                4 => "RGBA",
+                _ => {
+                    return Err(value_err(format!(
+                        "decode: TIFF has unsupported channel count: {}",
+                        layout.channels
+                    )))
+                }
+            };
+            
+            let mode = mode.unwrap_or(inferred_mode);
             // Choose the right typed decoder based on the file's actual
             // pixel format + the user-requested mode (which fixes channels).
             let want_channels = match mode {
                 "RGB" => 3,
                 "RGBA" => 4,
                 "L" => 1,
-                _ => unreachable!("native_mode validated above"),
+                other => {
+                    return Err(value_err(format!(
+                        "decode: unsupported mode {:?}; expected \"RGB\", \"RGBA\", or \"L\"",
+                        other
+                    )))
+                }
             };
             return match layout.pixel_format {
                 PixelFormat::U8 => {
