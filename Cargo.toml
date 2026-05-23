@@ -31,6 +31,7 @@ arrow = "57"
 bincode = { version = "2", features = ["derive"] }
 candle-core = { version = "0.9.1" }
 candle-examples = { version = "0.9.1" }
+candle-flash-attn = { version = "0.9.1" }
 candle-nn = { version = "0.9.1" }
 candle-transformers = { version = "0.9.1" }
 criterion = "0.8"
