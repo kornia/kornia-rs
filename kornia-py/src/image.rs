@@ -1575,7 +1575,7 @@ impl PyImageApi {
             let layout = kornia_io::png::decode_image_png_layout(data)
                 .map_err(|e| value_err(format!("decode: invalid PNG: {}", e)))?;
             let (height, width) = (layout.image_size.height, layout.image_size.width);
-            
+
             // Infer mode from PNG layout if not explicitly provided
             let inferred_mode = match layout.channels {
                 1 => "L",
@@ -1588,7 +1588,7 @@ impl PyImageApi {
                     )))
                 }
             };
-            
+
             // Explicit mode wins (backward compatibility); else use inferred
             let mode = mode.unwrap_or(inferred_mode);
             let native_mode = match mode {
@@ -1602,7 +1602,7 @@ impl PyImageApi {
                     )))
                 }
             };
-            
+
             return match layout.pixel_format {
                 PixelFormat::U16 => {
                     let arr = crate::io::png::decode_image_png_u16(
@@ -1638,7 +1638,7 @@ impl PyImageApi {
             let layout = kornia_io::webp::decode_image_webp_layout(data)
                 .map_err(|e| value_err(format!("decode: invalid WebP: {}", e)))?;
             let size = layout.image_size;
-            
+
             // Infer mode from WebP layout if not explicitly provided
             let inferred_mode = match layout.channels {
                 1 => "L",
@@ -1651,7 +1651,7 @@ impl PyImageApi {
                     )))
                 }
             };
-            
+
             let mode = mode.unwrap_or(inferred_mode);
             return match mode {
                 "RGB" => {
@@ -1687,7 +1687,7 @@ impl PyImageApi {
             let layout = kornia_io::tiff::decode_image_tiff_layout(data)
                 .map_err(|e| value_err(format!("decode: invalid TIFF: {}", e)))?;
             let size = layout.image_size;
-            
+
             // Infer mode from TIFF layout if not explicitly provided
             let inferred_mode = match layout.channels {
                 1 => "L",
@@ -1700,7 +1700,7 @@ impl PyImageApi {
                     )))
                 }
             };
-            
+
             let mode = mode.unwrap_or(inferred_mode);
             // Choose the right typed decoder based on the file's actual
             // pixel format + the user-requested mode (which fixes channels).
