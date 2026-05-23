@@ -13,6 +13,7 @@ include = { workspace = true }
 [dependencies]
 candle-core = { workspace = true }
 candle-examples = { workspace = true }
+candle-flash-attn = { workspace = true, optional = true }
 candle-nn = { workspace = true }
 candle-transformers = { workspace = true }
 circular-buffer = { version = "1.1.0" }
@@ -29,7 +30,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokenizers = { workspace = true }
-candle-flash-attn = { workspace = true, optional = true }
 
 [dev-dependencies]
 env_logger = { workspace = true }
@@ -41,8 +41,8 @@ cuda = [
   "candle-core/cuda",
   "candle-nn/cuda",
   "candle-transformers/cuda",
-  "dep:cudarc",
   "dep:candle-flash-attn",
+  "dep:cudarc",
 ]
 flash-attn = ["candle-transformers/flash-attn"]
 metal = ["candle-core/metal"]
