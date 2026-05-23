@@ -45,16 +45,45 @@ impl Attention {
 
         let y = {
             let in_dtype = q.dtype();
-            let q = q.to_dtype(DType::F32)?;
-            let k = k.to_dtype(DType::F32)?;
-            let v = v.to_dtype(DType::F32)?;
+            let weight_dtype = self.q_proj.weight().dtype();
+
+            // BF16: sufficient dynamic range, keep in BF16 directly.
+            // FP16: pre-Ampere matmul accumulation is unsafe in FP16, upcast to F32.
+            // F32: no-op either way.
+            let compute_dtype = match weight_dtype {
+                DType::BF16 => DType::BF16,
+                _ => DType::F32,
+            };
+
+            let q = if q.dtype() != compute_dtype {
+                q.to_dtype(compute_dtype)?
+            } else {
+                q
+            };
+            let k = if k.dtype() != compute_dtype {
+                k.to_dtype(compute_dtype)?
+            } else {
+                k
+            };
+            let v = if v.dtype() != compute_dtype {
+                v.to_dtype(compute_dtype)?
+            } else {
+                v
+            };
 
             let att = (q.matmul(&k.t()?)? / (HEAD_DIM as f64).sqrt())?;
             let att = att.broadcast_add(attention_mask)?;
-
             let att = candle_nn::ops::softmax_last_dim(&att)?;
-            att.matmul(&v)?.contiguous()?.to_dtype(in_dtype)?
+            let y = att.matmul(&v)?.contiguous()?;
+
+            // cast back to original input dtype if we upcasted
+            if y.dtype() != in_dtype {
+                y.to_dtype(in_dtype)?
+            } else {
+                y
+            }
         };
+
         let y = y
             .transpose(1, 2)?
             .reshape(&[batches, patches, hidden_size])?;
@@ -285,10 +314,18 @@ impl SmolVision {
                 let expanded_masks = patch_attention_masks
                     .unsqueeze(1)?
                     .unsqueeze(1)?
-                    .expand(&[batch, 1, 27 * 27, 27 * 27])?; // batch, head_dim, subpatches, subpatches
+                    .expand(&[batch, 1, 27 * 27, 27 * 27])?;
+
                 let inverted_mask = Tensor::ones_like(&expanded_masks)?.sub(&expanded_masks)?;
-                let neg_infs = Tensor::full(f32::NEG_INFINITY, inverted_mask.shape(), device)?;
-                inverted_mask.where_cond(&neg_infs, &inverted_mask.to_dtype(DType::F32)?)?
+                let mask_value = match dtype {
+                    DType::F16 => -1e4f32, // conservative large negative, finite, safe in f16 range (max ~65504)
+                    DType::BF16 => -1e9f32, // bf16 has f32-like range so can afford larger
+                    _ => f32::NEG_INFINITY, // f32: -inf is fine, softmax handles it cleanly
+                };
+                let neg_infs =
+                    Tensor::full(mask_value, inverted_mask.shape(), device)?.to_dtype(dtype)?;
+                let zeros = Tensor::zeros(inverted_mask.shape(), dtype, device)?;
+                inverted_mask.where_cond(&neg_infs, &zeros)?
             };
 
         ctx.vis_introspector.start_tracking_depth()?;
