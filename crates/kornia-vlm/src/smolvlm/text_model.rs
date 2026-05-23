@@ -82,7 +82,6 @@ impl Attention {
     }
 
     fn forward(&mut self, x: &Tensor, index_pos: usize) -> Result<Tensor> {
-        let _device = x.device();
         let (seq_len, hidden_size) = x.dims2()?;
 
         let q = self.q_proj.forward(x)?;
@@ -105,6 +104,9 @@ impl Attention {
         let q = self.apply_rotary_embedding(&q, index_pos)?;
         let k = self.apply_rotary_embedding(&k, index_pos)?;
 
+        let k = k.to_dtype(self.attn_dtype)?;
+        let v = v.to_dtype(self.attn_dtype)?;
+
         let (k_cache, v_cache) = self.cache.append(&k, &v)?;
         // use cache (always assumes new tokens are an extension of the previous sequence)
         // TODO: handle context length
@@ -112,7 +114,7 @@ impl Attention {
 
         // flash attn: CUDA only, prefill only (seq_len > 1), BF16/F16 only
         #[cfg(feature = "cuda")]
-        if _device.is_cuda()
+        if x.device().is_cuda()
             && seq_len > 1
             && self.cache.current_seq_len() == seq_len
             && matches!(self.attn_dtype, DType::F16 | DType::BF16)
@@ -120,8 +122,8 @@ impl Attention {
             let softmax_scale = 1f32 / (HEAD_DIM as f32).sqrt();
 
             let q = q.unsqueeze(0)?.to_dtype(self.attn_dtype)?;
-            let k = k_cache.unsqueeze(0)?.to_dtype(self.attn_dtype)?;
-            let v = v_cache.unsqueeze(0)?.to_dtype(self.attn_dtype)?;
+            let k = k_cache.unsqueeze(0)?;
+            let v = v_cache.unsqueeze(0)?;
 
             let y = candle_flash_attn::flash_attn(&q, &k, &v, softmax_scale, true)?
                 .squeeze(0)?
@@ -134,10 +136,7 @@ impl Attention {
 
         // fallback: normal SDPA — CPU, Metal, single-token decode
 
-        let compute_dtype = match self.attn_dtype {
-            DType::BF16 => DType::BF16,
-            _ => DType::F32,
-        };
+        let compute_dtype = DType::F32;
 
         let q = q.to_dtype(compute_dtype)?;
         let k = k_cache.to_dtype(compute_dtype)?;
@@ -147,8 +146,9 @@ impl Attention {
         let att = if seq_len == 1 {
             att
         } else {
-            let mask = Self::generate_causal_mask(seq_len, self.cache.current_seq_len(), _device)?
-                .to_dtype(compute_dtype)?;
+            let mask =
+                Self::generate_causal_mask(seq_len, self.cache.current_seq_len(), x.device())?
+                    .to_dtype(compute_dtype)?;
             att.broadcast_add(&mask)?
         };
 

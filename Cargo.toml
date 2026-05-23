@@ -33,7 +33,7 @@ candle-core = { version = "0.9.1" }
 candle-examples = { version = "0.9.1" }
 candle-nn = { version = "0.9.1" }
 candle-transformers = { version = "0.9.1" }
-candle-flash-attn = {version = "0.9.1"}
+candle-flash-attn = { version = "0.9.1" }
 criterion = "0.8"
 ctrlc = "3.4"
 cudarc = "0.11"
