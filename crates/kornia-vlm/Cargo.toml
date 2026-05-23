@@ -44,5 +44,5 @@ cuda = [
   "dep:cudarc",
   "dep:candle-flash-attn",
 ]
-
+flash-attn = ["candle-transformers/flash-attn"]
 metal = ["candle-core/metal"]
