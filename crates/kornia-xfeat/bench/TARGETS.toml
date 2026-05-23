@@ -1,0 +1,55 @@
+# Performance targets per platform. The `compare` binary below reads this
+# and fails CI if the measured median latency exceeds the budget.
+#
+# Numbers below are placeholders calibrated from the scalar-only run on the
+# first end-to-end measurement. Tighten as kernels mature. NEVER widen
+# silently — bumping a budget is a deliberate, reviewed change.
+
+[platforms.jetson-orin]
+arch = "aarch64"
+description = "NVIDIA Jetson Orin (8c Cortex-A78AE), NEON"
+# Input shape this budget is measured against.
+input_h = 480
+input_w = 640
+# Frame latency, milliseconds.
+single_thread_ms = 200.0
+multi_thread_ms = 60.0
+# Must beat these baselines (read from baseline JSON snapshots).
+must_beat = [
+    { baseline = "pytorch_eager", factor = 3.0 },
+    { baseline = "onnxruntime",   factor = 1.5 },
+]
+
+[platforms.x86_64-avx2]
+arch = "x86_64"
+description = "Generic x86_64 with AVX2 + FMA"
+input_h = 480
+input_w = 640
+single_thread_ms = 50.0
+multi_thread_ms = 15.0
+must_beat = [
+    { baseline = "pytorch_eager", factor = 2.0 },
+    { baseline = "onnxruntime",   factor = 1.2 },
+]
+
+[platforms.x86_64-avx512]
+arch = "x86_64"
+description = "x86_64 with AVX-512"
+input_h = 480
+input_w = 640
+single_thread_ms = 30.0
+multi_thread_ms = 10.0
+must_beat = [
+    { baseline = "pytorch_eager", factor = 2.5 },
+    { baseline = "onnxruntime",   factor = 1.3 },
+]
+
+[measurement]
+warmup_iters = 100
+measurement_iters = 1000
+# Statistical aggregator used as the headline number; choices: median, p95.
+headline = "median"
+# Regression budget — if a PR pushes the headline beyond `regress_pct`, CI fails.
+regress_pct = 10.0
+# A 5-10% slowdown gets a warning but doesn't block the merge.
+warn_pct = 5.0

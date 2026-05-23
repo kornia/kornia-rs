@@ -1,0 +1,47 @@
+[package]
+name = "kornia-xfeat"
+version = { workspace = true }
+authors = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+description = "From-scratch CPU + NEON/AVX implementation of XFeat learned local features."
+homepage = { workspace = true }
+repository = { workspace = true }
+license = { workspace = true }
+categories = ["computer-vision", "science::robotics", "algorithms"]
+include = { workspace = true }
+publish = true
+
+[[bench]]
+harness = false
+name = "xfeat_bench"
+
+[dependencies]
+hf-hub = { workspace = true, optional = true }
+kornia-image = { workspace = true }
+kornia-tensor = { workspace = true }
+log = { workspace = true }
+rayon = { workspace = true }
+safetensors = "0.4"
+serde = { workspace = true }
+thiserror = { workspace = true }
+toml = "0.8"
+
+[dev-dependencies]
+approx = { workspace = true }
+criterion = { workspace = true }
+serde_json = { workspace = true }
+
+# SIMD backends (NEON / AVX2 / AVX-512) are runtime-detected via the
+# CpuFeatures probe, not gated by Cargo features. See `src/cpu_features.rs`.
+[features]
+default = ["xfeat-embed"]
+# Bake the ~6 MB pretrained weights into the rlib via include_bytes!. Default
+# because XFeat is a self-contained model and the import-and-use UX is what
+# downstream Python / examples expect. Disable for size-sensitive builds with
+# `default-features = false` and use `xfeat-hub` or an explicit path.
+xfeat-embed = []
+# Download weights from Hugging Face on first use; cache under ~/.cache/kornia/xfeat.
+xfeat-hub = ["dep:hf-hub"]
+# CI feature aggregator (matches workspace convention).
+ci = []

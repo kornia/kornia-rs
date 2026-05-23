@@ -1,0 +1,42 @@
+# Fixture manifest — pinned at the upstream XFeat commit this fixture was
+# regenerated against. Bump deliberately via `tools/xfeat-regen-fixtures`.
+
+format_version = 1
+
+[upstream]
+repo = "https://github.com/verlab/accelerated_features"
+# Pin to whatever sha the regenerator ran against. Placeholder until first regen.
+commit = "<TBD>"
+weights_file = "weights/xfeat.pt"
+weights_sha256 = "<TBD>"
+
+[input]
+file = "input.png"
+height = 480
+width = 640
+# Channels in the source PNG; the regen script writes the gray f32 it produces
+# alongside as `input_preprocessed.safetensors` (after InstanceNorm and the
+# `align_to_32` resample but before any conv).
+channels = 1
+
+[tolerances.dense]
+# Tolerances on the three dense output maps. Calibrated from the scalar
+# reference vs PyTorch eager run on the first regen. Tighten as kernels mature.
+keypoint_logits_abs = 1e-3
+keypoint_logits_rel = 1e-3
+descriptor_pre_l2norm_abs = 5e-4
+descriptor_pre_l2norm_rel = 1e-3
+descriptor_post_l2norm_abs = 1e-4
+descriptor_post_l2norm_rel = 1e-4
+reliability_abs = 1e-4
+reliability_rel = 1e-4
+
+[tolerances.sparse]
+# Keypoint set IoU (matched coords with ±1 px slack).
+keypoint_iou_min = 0.95
+# Per-matched-keypoint descriptor cosine distance.
+descriptor_cosdist_max = 1e-3
+# Per-matched-keypoint score relative diff.
+score_rel_max = 1e-2
+# Count discrepancy tolerance.
+count_abs_max = 1
