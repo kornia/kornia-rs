@@ -29,6 +29,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokenizers = { workspace = true }
+candle-flash-attn = { workspace = true, optional = true }
 
 [dev-dependencies]
 env_logger = { workspace = true }
@@ -40,7 +41,8 @@ cuda = [
   "candle-core/cuda",
   "candle-nn/cuda",
   "candle-transformers/cuda",
-  "cudarc"
+  "dep:cudarc",
+  "dep:candle-flash-attn",
 ]
-flash-attn = ["candle-transformers/flash-attn"]
+
 metal = ["candle-core/metal"]

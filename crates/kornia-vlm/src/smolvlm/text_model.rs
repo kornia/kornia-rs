@@ -82,8 +82,7 @@ impl Attention {
     }
 
     fn forward(&mut self, x: &Tensor, index_pos: usize) -> Result<Tensor> {
-        let device = x.device();
-
+        let _device = x.device();
         let (seq_len, hidden_size) = x.dims2()?;
 
         let q = self.q_proj.forward(x)?;
@@ -106,49 +105,55 @@ impl Attention {
         let q = self.apply_rotary_embedding(&q, index_pos)?;
         let k = self.apply_rotary_embedding(&k, index_pos)?;
 
+        let (k_cache, v_cache) = self.cache.append(&k, &v)?;
         // use cache (always assumes new tokens are an extension of the previous sequence)
         // TODO: handle context length
-        let y = {
-            // TODO: implement flash attention
+        let in_dtype = q.dtype();
 
-            let in_dtype = q.dtype();
-            let attn_dtype = self.attn_dtype;
+        // flash attn: CUDA only, prefill only (seq_len > 1), BF16/F16 only
+        #[cfg(feature = "cuda")]
+        if _device.is_cuda()
+            && seq_len > 1
+            && self.cache.current_seq_len() == seq_len
+            && matches!(self.attn_dtype, DType::F16 | DType::BF16)
+        {
+            let softmax_scale = 1f32 / (HEAD_DIM as f32).sqrt();
 
-            let q = if q.dtype() != attn_dtype {
-                q.to_dtype(attn_dtype)?
-            } else {
-                q
-            };
+            let q = q.unsqueeze(0)?.to_dtype(self.attn_dtype)?;
+            let k = k_cache.unsqueeze(0)?.to_dtype(self.attn_dtype)?;
+            let v = v_cache.unsqueeze(0)?.to_dtype(self.attn_dtype)?;
 
-            let k = if k.dtype() != attn_dtype {
-                k.to_dtype(attn_dtype)?
-            } else {
-                k
-            };
+            let y = candle_flash_attn::flash_attn(&q, &k, &v, softmax_scale, true)?
+                .squeeze(0)?
+                .to_dtype(in_dtype)?
+                .transpose(0, 1)?
+                .reshape(&[seq_len, hidden_size])?;
 
-            let v = if v.dtype() != attn_dtype {
-                v.to_dtype(attn_dtype)?
-            } else {
-                v
-            };
+            return self.o_proj.forward(&y);
+        }
 
-            let (k_cache, v_cache) = self.cache.append(&k, &v)?;
+        // fallback: normal SDPA — CPU, Metal, single-token decode
 
-            let att = (q.matmul(&k_cache.t()?)? / (HEAD_DIM as f64).sqrt())?;
-
-            let att = if seq_len == 1 {
-                att
-            } else {
-                let mask =
-                    Self::generate_causal_mask(seq_len, self.cache.current_seq_len(), device)?;
-                att.broadcast_add(&mask)?
-            };
-
-            let att = candle_nn::ops::softmax_last_dim(&att)?;
-
-            att.matmul(&v_cache)?.contiguous()?.to_dtype(in_dtype)?
+        let compute_dtype = match self.attn_dtype {
+            DType::BF16 => DType::BF16,
+            _ => DType::F32,
         };
 
+        let q = q.to_dtype(compute_dtype)?;
+        let k = k_cache.to_dtype(compute_dtype)?;
+        let v = v_cache.to_dtype(compute_dtype)?;
+
+        let att = (q.matmul(&k.t()?)? / (HEAD_DIM as f64).sqrt())?;
+        let att = if seq_len == 1 {
+            att
+        } else {
+            let mask = Self::generate_causal_mask(seq_len, self.cache.current_seq_len(), _device)?
+                .to_dtype(compute_dtype)?;
+            att.broadcast_add(&mask)?
+        };
+
+        let att = candle_nn::ops::softmax_last_dim(&att)?;
+        let y = att.matmul(&v)?.contiguous()?.to_dtype(in_dtype)?;
         let y = y.transpose(0, 1)?.reshape(&[seq_len, hidden_size])?;
         self.o_proj.forward(&y)
     }
