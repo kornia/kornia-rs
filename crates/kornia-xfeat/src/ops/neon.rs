@@ -5,11 +5,20 @@
 //! end of each (output-pixel, output-channel) work item. Bias, optional
 //! residual, and the ReLU/Sigmoid/Identity activation fuse into the epilogue.
 //!
-//! This is the v1 NEON layer — correct, parity-tested, and several × the
-//! scalar baseline. A more aggressive v2 (block over c_out tiles, re-pack
-//! weights into a SIMD-friendly layout, broadcast input + vector weights to
-//! avoid the horizontal reduction) is a follow-up tuned against measured
-//! profiler traces — see the project's NEON skill for the rules.
+//! Channel-reduction loop has two phases:
+//!   - **Phase 1 (bulk):** 16-element blocks with 4 parallel accumulators.
+//!     Saturates both FMA pipes when c_in is large.
+//!   - **Phase 2 (tail):** remaining f32x4 chunks fold into `acc0`. Lets the
+//!     kernel handle any `c_in % 4 == 0` — including the c_in=24 layer in
+//!     Block 2 mid that was the worst remaining scalar-fallback cliff.
+//!
+//! Scalar fallback only when `c_in % 4 != 0` (i.e. c_in ∈ {1, 2, 3} only —
+//! none of which are hot paths in XFeat).
+//!
+//! A more aggressive v2 (block over c_out tiles, re-pack weights into a
+//! SIMD-friendly layout, broadcast input + vector weights to avoid the
+//! horizontal reduction) is a follow-up tuned against measured profiler
+//! traces — see the project's NEON skill for the rules.
 
 #![allow(unused_imports)]
 
@@ -26,12 +35,9 @@ fn apply_act(x: f32, act: Activation) -> f32 {
     }
 }
 
-/// NEON 1×1 fused conv with parallel f32x4 accumulators.
+/// NEON 1×1 fused conv with parallel f32x4 accumulators + f32x4 tail.
 ///
-/// Falls back to scalar if `c_in` is not a multiple of 16 (covers the
-/// awkward c_in=1 first-layer-of-skip1 case; everything else in the XFeat
-/// graph has c_in ∈ {4, 8, 24, 64, 128} — all multiples of 4, and ≥16 for the
-/// hot layers).
+/// Handles any `c_in % 4 == 0`. Scalar fallback only on c_in ∈ {1, 2, 3}.
 pub fn conv1x1_nhwc(args: &Conv1x1Args<'_>, output: &mut [f32]) {
     let &Conv1x1Args {
         input,
@@ -44,7 +50,7 @@ pub fn conv1x1_nhwc(args: &Conv1x1Args<'_>, output: &mut [f32]) {
         activation,
     } = args;
 
-    if c_in % 16 != 0 {
+    if c_in % 4 != 0 {
         scalar::conv1x1_nhwc(args, output);
         return;
     }
@@ -64,7 +70,7 @@ pub fn conv1x1_nhwc(args: &Conv1x1Args<'_>, output: &mut [f32]) {
             let out_ptr = output.as_mut_ptr().add(px * c_out);
             for (co, &b) in bias.iter().enumerate().take(c_out) {
                 let w_ptr = weights.as_ptr().add(co * c_in);
-                let acc = dot_f32_16ply(in_ptr, w_ptr, c_in);
+                let acc = dot_f32_4ply_tail(in_ptr, w_ptr, c_in);
                 let v = acc + b;
                 *out_ptr.add(co) = apply_act(v, activation);
             }
@@ -73,16 +79,20 @@ pub fn conv1x1_nhwc(args: &Conv1x1Args<'_>, output: &mut [f32]) {
 }
 
 /// Dot product of two contiguous f32 vectors of length `n` (must be a multiple
-/// of 16), 4-way parallel accumulators saturating the two NEON FMA pipes.
+/// of 4). Phase 1: 4-way parallel accumulators over 16-element blocks
+/// (saturates the two A78AE FMA pipes). Phase 2: f32x4 tail folds into `acc0`.
 #[inline]
-unsafe fn dot_f32_16ply(a: *const f32, b: *const f32, n: usize) -> f32 {
-    debug_assert!(n % 16 == 0);
+unsafe fn dot_f32_4ply_tail(a: *const f32, b: *const f32, n: usize) -> f32 {
+    debug_assert!(n % 4 == 0);
     let mut acc0 = vdupq_n_f32(0.0);
     let mut acc1 = vdupq_n_f32(0.0);
     let mut acc2 = vdupq_n_f32(0.0);
     let mut acc3 = vdupq_n_f32(0.0);
+
+    // Phase 1: full 16-element blocks.
+    let n16 = n & !15;
     let mut i = 0;
-    while i < n {
+    while i < n16 {
         let av0 = vld1q_f32(a.add(i));
         let av1 = vld1q_f32(a.add(i + 4));
         let av2 = vld1q_f32(a.add(i + 8));
@@ -97,14 +107,20 @@ unsafe fn dot_f32_16ply(a: *const f32, b: *const f32, n: usize) -> f32 {
         acc3 = vfmaq_f32(acc3, av3, bv3);
         i += 16;
     }
+    // Phase 2: f32x4 tail.
+    while i < n {
+        let av = vld1q_f32(a.add(i));
+        let bv = vld1q_f32(b.add(i));
+        acc0 = vfmaq_f32(acc0, av, bv);
+        i += 4;
+    }
     let s = vaddq_f32(vaddq_f32(acc0, acc1), vaddq_f32(acc2, acc3));
     vaddvq_f32(s)
 }
 
 /// NEON 3×3 stride-1 NHWC fused conv. Same per-output FMA chain structure as
-/// 1×1, but with the spatial-window walk on the outside; falls back to
-/// scalar if `c_in % 16 != 0` (only hits on the rare layers where it would
-/// not pay anyway).
+/// 1×1, but with the spatial-window walk on the outside. Handles any
+/// `c_in % 4 == 0`; scalar fallback only on c_in ∈ {1, 2, 3}.
 pub fn conv3x3_relu_nhwc(args: &Conv3x3Args<'_>, output: &mut [f32]) {
     conv3x3_generic(args, output, 1);
 }
@@ -127,7 +143,7 @@ fn conv3x3_generic(args: &Conv3x3Args<'_>, output: &mut [f32], stride: usize) {
         activation,
     } = args;
 
-    if c_in % 16 != 0 {
+    if c_in % 4 != 0 {
         // Mirror the scalar dispatcher's `s1/s2` split.
         if stride == 1 {
             scalar::conv3x3_relu_nhwc(args, output);
@@ -181,8 +197,10 @@ fn conv3x3_generic(args: &Conv3x3Args<'_>, output: &mut [f32], stride: usize) {
                             let in_row_ptr = in_ptr.add((ih * w_in + iw) * c_in);
                             let w_row_ptr = w_ptr.add(((co * 3 + kh) * 3 + kw) * c_in);
 
+                            // Phase 1: full 16-element blocks, 4 parallel accumulators.
+                            let c16 = c_in & !15;
                             let mut i = 0;
-                            while i < c_in {
+                            while i < c16 {
                                 let av0 = vld1q_f32(in_row_ptr.add(i));
                                 let av1 = vld1q_f32(in_row_ptr.add(i + 4));
                                 let av2 = vld1q_f32(in_row_ptr.add(i + 8));
@@ -196,6 +214,13 @@ fn conv3x3_generic(args: &Conv3x3Args<'_>, output: &mut [f32], stride: usize) {
                                 acc2 = vfmaq_f32(acc2, av2, bv2);
                                 acc3 = vfmaq_f32(acc3, av3, bv3);
                                 i += 16;
+                            }
+                            // Phase 2: f32x4 tail (covers c_in=24's 8-element trailer, etc.).
+                            while i < c_in {
+                                let av = vld1q_f32(in_row_ptr.add(i));
+                                let bv = vld1q_f32(w_row_ptr.add(i));
+                                acc0 = vfmaq_f32(acc0, av, bv);
+                                i += 4;
                             }
                         }
                     }

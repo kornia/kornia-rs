@@ -76,8 +76,24 @@ fn neon_conv1x1_parity_60x80x64x64() {
 
 #[cfg(target_arch = "aarch64")]
 #[test]
-fn neon_conv1x1_parity_falls_back_when_cin_not_multiple_of_16() {
-    let (h, w, c_in, c_out) = (8, 8, 4, 8);
+fn neon_conv1x1_parity_cin4_now_takes_neon_path() {
+    // c_in=4 is a multiple of 4 → goes through the Phase-2-only path
+    // (no Phase 1 because c16 = 0). Verifies the tail loop on its own.
+    parity_conv1x1(8, 8, 4, 8, Activation::Relu);
+}
+
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn neon_conv1x1_parity_cin24_relu() {
+    // c_in=24 is the XFeat Block-2-mid c_in. Exercises Phase 1 (one 16-block)
+    // + Phase 2 (two f32x4 chunks). This is the layer the fallback fix targets.
+    parity_conv1x1(120, 160, 24, 24, Activation::Relu);
+}
+
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn neon_conv1x1_parity_falls_back_when_cin_lt_4() {
+    let (h, w, c_in, c_out) = (8, 8, 3, 8);
     let mut r = lcg_seed(7);
     let input: Vec<f32> = (0..h * w * c_in).map(|_| r()).collect();
     let weights: Vec<f32> = (0..c_out * c_in).map(|_| r()).collect();
@@ -96,13 +112,54 @@ fn neon_conv1x1_parity_falls_back_when_cin_not_multiple_of_16() {
     let mut n_out = vec![0.0f32; h * w * c_out];
     scalar::conv1x1_nhwc(&args, &mut s_out);
     neon::conv1x1_nhwc(&args, &mut n_out);
-    assert_buffers_match(&s_out, &n_out, "conv1x1 c_in=4 fallback");
+    assert_buffers_match(&s_out, &n_out, "conv1x1 c_in=3 fallback");
+}
+
+#[cfg(target_arch = "aarch64")]
+fn parity_conv1x1(h: usize, w: usize, c_in: usize, c_out: usize, act: Activation) {
+    let mut r = lcg_seed(5);
+    let input: Vec<f32> = (0..h * w * c_in).map(|_| r()).collect();
+    let weights: Vec<f32> = (0..c_out * c_in).map(|_| r()).collect();
+    let bias: Vec<f32> = (0..c_out).map(|_| r()).collect();
+    let args = Conv1x1Args {
+        input: &input,
+        weights: &weights,
+        bias: &bias,
+        h,
+        w,
+        c_in,
+        c_out,
+        activation: act,
+    };
+    let mut s_out = vec![0.0f32; h * w * c_out];
+    let mut n_out = vec![0.0f32; h * w * c_out];
+    scalar::conv1x1_nhwc(&args, &mut s_out);
+    neon::conv1x1_nhwc(&args, &mut n_out);
+    assert_buffers_match(
+        &s_out,
+        &n_out,
+        &format!("conv1x1 {h}x{w} c_in={c_in} c_out={c_out}"),
+    );
 }
 
 #[cfg(target_arch = "aarch64")]
 #[test]
 fn neon_conv3x3_parity_60x80x64x64_relu() {
     parity_conv3x3(60, 80, 64, 64, 1, Activation::Relu, None);
+}
+
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn neon_conv3x3_parity_120x160_c24x24_block2_mid() {
+    // Block 2 mid — the c_in=24 case the Phase-2 tail loop was added for.
+    parity_conv3x3(120, 160, 24, 24, 1, Activation::Relu, None);
+}
+
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn neon_conv3x3_parity_60x80_c24x64_s2_block3_entry() {
+    // Block 3 entry — c_in=24 stride-2 transition.
+    parity_conv3x3(60, 80, 24, 64, 2, Activation::Relu, None);
 }
 
 #[cfg(target_arch = "aarch64")]
