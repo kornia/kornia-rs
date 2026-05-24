@@ -127,6 +127,7 @@ impl OpsVtable {
 
 // ── Non-fused primitives used by the model graph ────────────────────────────
 pub use scalar::{
-    add3_inplace, avgpool_4x4_s4, bilinear_upsample, channel_softmax, instance_norm_2d_singlech,
-    l2_normalize_channel, nms_maxpool_5x5_equality, pixel_shuffle_8, sigmoid_inplace, unfold_8x8,
+    add3_inplace, add_inplace, avgpool_4x4_s4, bilinear_upsample, channel_softmax,
+    drop_last_channel_nhwc, instance_norm_2d_singlech, l2_normalize_channel,
+    nms_maxpool_5x5_equality, pixel_shuffle_8, sigmoid_inplace, unfold_8x8,
 };

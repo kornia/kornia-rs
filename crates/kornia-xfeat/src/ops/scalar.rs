@@ -294,6 +294,33 @@ pub fn pixel_shuffle_8(input: &[f32], output: &mut [f32], h_in: usize, w_in: usi
     }
 }
 
+/// In-place element-wise add: `a[i] += b[i]`.
+pub fn add_inplace(a: &mut [f32], b: &[f32]) {
+    debug_assert_eq!(a.len(), b.len());
+    for (ai, &bi) in a.iter_mut().zip(b) {
+        *ai += bi;
+    }
+}
+
+/// Copy the first `c_out` channels from each pixel of an NHWC tensor, discarding
+/// the remainder. Used to strip the softmax dustbin channel (65→64).
+pub fn drop_last_channel_nhwc(
+    input: &[f32],
+    output: &mut [f32],
+    h: usize,
+    w: usize,
+    c_in: usize,
+    c_out: usize,
+) {
+    debug_assert!(c_out < c_in);
+    debug_assert_eq!(input.len(), h * w * c_in);
+    debug_assert_eq!(output.len(), h * w * c_out);
+    for px in 0..(h * w) {
+        output[px * c_out..px * c_out + c_out]
+            .copy_from_slice(&input[px * c_in..px * c_in + c_out]);
+    }
+}
+
 /// NMS via MaxPool 5×5 stride 1 padding 2 equality check.
 ///
 /// Returns a `(value, index)` per local max in raster order; `index` is the
