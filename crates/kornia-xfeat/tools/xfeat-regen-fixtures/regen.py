@@ -71,11 +71,67 @@ def clone_upstream(into: Path, commit: str) -> None:
     subprocess.check_call(["git", "-C", str(into), "checkout", commit])
 
 
+def regen_one_image(xfeat, img_path: Path, out_dir: Path, top_k: int = 4096) -> tuple:
+    """Run XFeat on one image and write per-image fixture files.
+
+    Returns (h_a, w_a) — the processed resolution.
+    """
+    import torch
+    import numpy as np
+    from PIL import Image
+    from safetensors.torch import save_file
+
+    img = Image.open(img_path).convert("L")
+    img_np = np.array(img, dtype=np.uint8)
+    h_orig, w_orig = img_np.shape
+    h_a = (h_orig // 32) * 32
+    w_a = (w_orig // 32) * 32
+    print(f"[regen] {img_path.name}: ({h_orig},{w_orig}) → ({h_a},{w_a})")
+
+    dev = xfeat.dev
+    with torch.no_grad():
+        x = torch.from_numpy(img_np).float().unsqueeze(0).unsqueeze(0) / 255.0
+        x_resized = torch.nn.functional.interpolate(
+            x, size=(h_a, w_a), mode="bilinear", align_corners=False
+        ).to(dev)
+
+        save_file({"input_gray": x_resized.cpu().contiguous()},
+                  str(out_dir / "input_preprocessed.safetensors"))
+
+        feats, k1, h1 = xfeat.net(x_resized)
+        kp_heatmap = xfeat.get_kpts_heatmap(k1)
+        descriptors_post_l2 = torch.nn.functional.normalize(feats, dim=1)
+
+        save_file(
+            {
+                "keypoint_logits": k1.cpu().contiguous(),
+                "descriptor_pre_l2norm": feats.cpu().contiguous(),
+                "descriptor_post_l2norm": descriptors_post_l2.cpu().contiguous(),
+                "reliability": h1.cpu().contiguous(),
+                "kp_heatmap_fullres": kp_heatmap.cpu().contiguous(),
+            },
+            str(out_dir / "expected_dense.safetensors"),
+        )
+
+        out = xfeat.detectAndCompute(x_resized, top_k=top_k)[0]
+        sparse = {
+            "keypoints": out["keypoints"].cpu().numpy().tolist(),
+            "scores": out["scores"].cpu().numpy().tolist(),
+            "descriptors": out["descriptors"].cpu().numpy().tolist(),
+        }
+        with (out_dir / "expected_sparse.json").open("w") as fh:
+            json.dump(sparse, fh)
+
+    return h_a, w_a
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--output", type=Path, required=True)
     ap.add_argument("--upstream", type=Path, default=Path("/tmp/accelerated_features"))
     ap.add_argument("--commit", default=PINNED_COMMIT)
+    ap.add_argument("--images", nargs="+", default=["ref", "tgt"],
+                    help="Image stems to process from upstream/assets/ (default: ref tgt)")
     args = ap.parse_args()
 
     if args.commit == "<TBD>":
@@ -88,65 +144,45 @@ def main() -> int:
 
     sys.path.insert(0, str(args.upstream))
     import torch
-    import numpy as np
-    from PIL import Image
-    from safetensors.torch import save_file
     from modules.xfeat import XFeat  # type: ignore
 
     weights_path = args.upstream / "weights" / "xfeat.pt"
     weights_sha = sha256_of(weights_path)
     xfeat = XFeat(weights=str(weights_path))
-    # Put the model into inference mode (no running-stat updates).
+    # Force CPU so fixtures are comparable to the Rust CPU implementation.
+    xfeat = xfeat.cpu()
+    xfeat.dev = torch.device("cpu")
     getattr(xfeat, "eval")()
 
-    img_path = args.output / "input.png"
-    if not img_path.exists():
-        shutil.copy(args.upstream / "assets" / "ref.png", img_path)
-    img = Image.open(img_path).convert("L")
-    img_np = np.array(img, dtype=np.uint8)
-    h_orig, w_orig = img_np.shape
-    print(f"[regen] input shape (H, W) = ({h_orig}, {w_orig})")
+    image_meta: list = []
+    for stem in args.images:
+        src = args.upstream / "assets" / f"{stem}.png"
+        if not src.exists():
+            print(f"[regen] warning: {src} not found, skipping", file=sys.stderr)
+            continue
+        img_dir = args.output / stem
+        img_dir.mkdir(parents=True, exist_ok=True)
+        dst = img_dir / "input.png"
+        if not dst.exists():
+            shutil.copy(src, dst)
+        h_a, w_a = regen_one_image(xfeat, dst, img_dir)
+        image_meta.append({"stem": stem, "height": h_a, "width": w_a})
 
-    with torch.no_grad():
-        x = torch.from_numpy(img_np).float().unsqueeze(0).unsqueeze(0) / 255.0
-        h_a = (h_orig // 32) * 32
-        w_a = (w_orig // 32) * 32
-        x_resized = torch.nn.functional.interpolate(
-            x, size=(h_a, w_a), mode="bilinear", align_corners=False
+    # Shared MANIFEST.toml at the top-level output directory.
+    images_toml = "\n".join(
+        f'[[images]]\nname = "{m["stem"]}"\nheight = {m["height"]}\nwidth = {m["width"]}\n'
+        for m in image_meta
+    )
+    manifest = (
+        MANIFEST_TEMPLATE.format(
+            repo=UPSTREAM_REPO.removesuffix(".git"),
+            commit=args.commit,
+            weights_sha=weights_sha,
+            h=image_meta[0]["height"] if image_meta else 0,
+            w=image_meta[0]["width"] if image_meta else 0,
         )
-        save_file({"input_gray": x_resized.contiguous()},
-                  str(args.output / "input_preprocessed.safetensors"))
-
-        feats, k1, h1 = xfeat.net(x_resized)
-        kp_heatmap = xfeat.get_kpts_heatmap(k1)
-        descriptors_post_l2 = torch.nn.functional.normalize(feats, dim=1)
-
-        save_file(
-            {
-                "keypoint_logits": k1.contiguous(),
-                "descriptor_pre_l2norm": feats.contiguous(),
-                "descriptor_post_l2norm": descriptors_post_l2.contiguous(),
-                "reliability": h1.contiguous(),
-                "kp_heatmap_fullres": kp_heatmap.contiguous(),
-            },
-            str(args.output / "expected_dense.safetensors"),
-        )
-
-        out = xfeat.detectAndCompute(x_resized, top_k=4096)[0]
-        sparse = {
-            "keypoints": out["keypoints"].cpu().numpy().tolist(),
-            "scores": out["scores"].cpu().numpy().tolist(),
-            "descriptors": out["descriptors"].cpu().numpy().tolist(),
-        }
-        with (args.output / "expected_sparse.json").open("w") as fh:
-            json.dump(sparse, fh)
-
-    manifest = MANIFEST_TEMPLATE.format(
-        repo=UPSTREAM_REPO.removesuffix(".git"),
-        commit=args.commit,
-        weights_sha=weights_sha,
-        h=h_a,
-        w=w_a,
+        + "\n"
+        + images_toml
     )
     (args.output / "MANIFEST.toml").write_text(manifest)
     print(f"[regen] wrote fixtures to {args.output}")

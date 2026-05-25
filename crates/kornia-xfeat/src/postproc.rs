@@ -34,13 +34,23 @@ pub fn nms_topk(
 
     let raw = ops::nms_maxpool_5x5_equality(heatmap, h, w, score_threshold);
 
+    // Match PyTorch's InterpolateSparse2d(bilinear) coordinate convention:
+    //   normgrid: g = 2*x/(W-1) - 1
+    //   grid_sample(align_corners=False): pos = (g+1)/2 * W_rel - 0.5
+    //   → pos = x * W_rel / (W-1) - 0.5
+    let x_scale = (w_rel as f32) / ((w as f32) - 1.0);
+    let y_scale = (h_rel as f32) / ((h as f32) - 1.0);
+
     let mut kps: Vec<KeyPoint> = raw
         .into_iter()
         .map(|(kp_score, idx)| {
             let y = (idx / w) as f32;
             let x = (idx % w) as f32;
-            // Bilinear sample reliability at (x/8, y/8) into the H/8, W/8 map.
-            let rel = bilinear_sample_single(reliability, w_rel, h_rel, x / 8.0, y / 8.0);
+            let rel = bilinear_sample_single(
+                reliability, w_rel, h_rel,
+                x * x_scale - 0.5,
+                y * y_scale - 0.5,
+            );
             KeyPoint {
                 x: x * rw,
                 y: y * rh,

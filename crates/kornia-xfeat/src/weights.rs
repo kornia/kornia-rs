@@ -66,8 +66,7 @@ pub enum WeightsError {
 /// load path (embed / hub / explicit) so we can't silently regress to a wrong
 /// checkpoint.
 pub const PACKED_WEIGHTS_SHA256: &str =
-    // Placeholder — replaced when the converter produces the canonical artifact.
-    "0000000000000000000000000000000000000000000000000000000000000000";
+    "2c5719ebd8d44aec018ab46564647ca99fa8f51f175937181abfb4e20aae8677";
 
 /// Packed, BN-folded, NHWC-laid-out weights for the entire XFeat model.
 ///
@@ -140,9 +139,7 @@ impl PackedWeights {
 /// without `xfeat-embed` don't carry the 6 MB blob in the rlib.
 #[cfg(feature = "xfeat-embed")]
 pub fn embedded_bytes() -> &'static [u8] {
-    // Placeholder weight file. The real artifact is produced by
-    // `tools/xfeat-convert` from the upstream `xfeat.pt` checkpoint.
-    include_bytes!("../assets/xfeat_packed_placeholder.safetensors")
+    include_bytes!("../assets/xfeat_packed.safetensors")
 }
 
 #[cfg(not(feature = "xfeat-embed"))]
