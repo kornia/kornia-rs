@@ -169,7 +169,7 @@ pub fn sobel<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     Ok(())
 }
 
-/// Computer scharr filter
+/// Compute Scharr filter
 ///
 /// # Arguments
 ///
@@ -183,7 +183,7 @@ pub fn scharr<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     dst: &mut Image<f32, C, A2>,
     kernel_size: usize,
 ) -> Result<(), ImageError> {
-    let (kernel_x, kernel_y) = kernels::scharr_kernel_1d(kernel_size);
+    let (kernel_x, kernel_y) = kernels::scharr_kernel_1d(kernel_size)?;
 
     let mut gx = Image::<f32, C, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
     separable_filter(src, &mut gx, &kernel_x, &kernel_y)?;

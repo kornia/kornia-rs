@@ -424,10 +424,10 @@ pub fn pyrdown_f32<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
 /// * `max_level` - The maximum level of the pyramid (0 means just the original image).
 /// # Returns
 /// A vector of images representing the Gaussian pyramid.
-pub fn build_pyramid<const C: usize>(
-    src: &Image<f32, C, kornia_tensor::CpuAllocator>,
+pub fn build_pyramid<const C: usize, A: ImageAllocator>(
+    src: &Image<f32, C, A>,
     max_level: usize,
-) -> Result<Vec<Image<f32, C, kornia_tensor::CpuAllocator>>, ImageError> {
+) -> Result<Vec<Image<f32, C, A>>, ImageError> {
     let mut pyramid = Vec::with_capacity(max_level + 1);
     pyramid.push(src.clone());
 
@@ -437,7 +437,8 @@ pub fn build_pyramid<const C: usize>(
             width: current_img.cols().div_ceil(2),
             height: current_img.rows().div_ceil(2),
         };
-        let mut downsampled = Image::from_size_val(new_size, 0.0, kornia_tensor::CpuAllocator)?;
+        let mut downsampled =
+            Image::from_size_val(new_size, 0.0, current_img.storage.alloc().clone())?;
         pyrdown_f32(current_img, &mut downsampled)?;
         pyramid.push(downsampled);
     }
@@ -849,7 +850,7 @@ mod tests {
             Image::from_size_val(size, 1.0_f32, CpuAllocator).unwrap();
 
         let max_level = 3;
-        let pyramid = build_pyramid::<1>(&src, max_level).unwrap();
+        let pyramid = build_pyramid(&src, max_level).unwrap();
 
         // Check the number of levels: original + max_level downsamples.
         assert_eq!(pyramid.len(), max_level + 1);

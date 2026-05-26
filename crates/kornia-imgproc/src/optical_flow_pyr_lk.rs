@@ -120,6 +120,9 @@ pub enum PyrLKError {
         /// Provided number of points.
         provided: usize,
     },
+    /// `params.use_initial_flow` was enabled but `next_pts_in` was not provided.
+    #[error("use_initial_flow is true but next_pts_in is None; provide initial points or disable use_initial_flow")]
+    InitialFlowMissing,
     /// Image operation failure from lower-level APIs.
     #[error(transparent)]
     Image(#[from] ImageError),
@@ -400,15 +403,16 @@ pub fn calc_optical_flow_pyr_lk<A: ImageAllocator>(
             next_height: next_img.height(),
         });
     }
-    if params.use_initial_flow
-        && next_pts_in
-            .as_ref()
-            .is_some_and(|pts| pts.len() != prev_pts.len())
-    {
-        return Err(PyrLKError::InitialFlowLengthMismatch {
-            expected: prev_pts.len(),
-            provided: next_pts_in.as_ref().map_or(0, |pts| pts.len()),
-        });
+    if params.use_initial_flow {
+        let Some(initial_pts) = next_pts_in else {
+            return Err(PyrLKError::InitialFlowMissing);
+        };
+        if initial_pts.len() != prev_pts.len() {
+            return Err(PyrLKError::InitialFlowLengthMismatch {
+                expected: prev_pts.len(),
+                provided: initial_pts.len(),
+            });
+        }
     }
     let precomputed = build_lk_precomputed(prev_img, next_img, params.max_level)?;
     calc_optical_flow_pyr_lk_with_precomputed(&precomputed, prev_pts, next_pts_in, params)
@@ -457,15 +461,16 @@ pub fn calc_optical_flow_pyr_lk_with_precomputed<A: ImageAllocator>(
         }
     }
 
-    if params.use_initial_flow
-        && next_pts_in
-            .as_ref()
-            .is_some_and(|pts| pts.len() != prev_pts.len())
-    {
-        return Err(PyrLKError::InitialFlowLengthMismatch {
-            expected: prev_pts.len(),
-            provided: next_pts_in.as_ref().map_or(0, |pts| pts.len()),
-        });
+    if params.use_initial_flow {
+        let Some(initial_pts) = next_pts_in else {
+            return Err(PyrLKError::InitialFlowMissing);
+        };
+        if initial_pts.len() != prev_pts.len() {
+            return Err(PyrLKError::InitialFlowLengthMismatch {
+                expected: prev_pts.len(),
+                provided: initial_pts.len(),
+            });
+        }
     }
 
     let n_features = prev_pts.len();
@@ -716,6 +721,25 @@ mod tests {
         params.win_size = 15;
         let result = calc_optical_flow_pyr_lk(&img, &img, &pts, None, &params);
         assert!(matches!(result, Err(PyrLKError::InvalidWindowSize(15))));
+    }
+
+    #[test]
+    fn test_lk_initial_flow_missing() {
+        let size = 64;
+        let img1 = make_circle_image(size, 32.0, 32.0, 10.0);
+        let img2 = make_circle_image(size, 33.0, 32.0, 10.0);
+        let pts = vec![[32.0, 32.0]];
+        let mut params = default_params();
+        params.use_initial_flow = true;
+
+        // Full entry point.
+        let result = calc_optical_flow_pyr_lk(&img1, &img2, &pts, None, &params);
+        assert!(matches!(result, Err(PyrLKError::InitialFlowMissing)));
+
+        // Precomputed entry point.
+        let precomputed = build_lk_precomputed(&img1, &img2, params.max_level).unwrap();
+        let result = calc_optical_flow_pyr_lk_with_precomputed(&precomputed, &pts, None, &params);
+        assert!(matches!(result, Err(PyrLKError::InitialFlowMissing)));
     }
 
     #[test]

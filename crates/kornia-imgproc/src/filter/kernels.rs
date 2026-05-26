@@ -71,17 +71,32 @@ pub fn sobel_kernel_1d(
     Ok((kernel_x, kernel_y))
 }
 
-/// Create a scharr kernel.
+/// Create a Scharr kernel.
+///
 /// # Arguments
-/// * `kernel_size` - The size of the kernel.
+///
+/// * `kernel_size` - The size of the kernel. Only `3` is supported.
+///
 /// # Returns
-/// A tuple of two vectors: (dx_kernel, dy_kernel).
-pub fn scharr_kernel_1d(kernel_size: usize) -> (Vec<f32>, Vec<f32>) {
+///
+/// A tuple `(dx_kernel, dy_kernel)`.
+///
+/// # Errors
+///
+/// Returns `ImageError::InvalidKernelLength` when `kernel_size` is not `3`.
+pub fn scharr_kernel_1d(
+    kernel_size: usize,
+) -> Result<(Vec<f32>, Vec<f32>), kornia_image::ImageError> {
     let (kernel_x, kernel_y) = match kernel_size {
         3 => (vec![-1.0, 0.0, 1.0], vec![3.0, 10.0, 3.0]),
-        _ => panic!("Invalid kernel size for scharr kernel"),
+        _ => {
+            return Err(kornia_image::ImageError::InvalidKernelLength(
+                kernel_size,
+                kernel_size,
+            ))
+        }
     };
-    (kernel_x, kernel_y)
+    Ok((kernel_x, kernel_y))
 }
 
 /// Create a normalized 2d sobel kernel (3×3).
@@ -174,10 +189,13 @@ mod tests {
     }
 
     #[test]
-    fn test_scharr_kernel_1d() {
-        let kernel = scharr_kernel_1d(3);
+    fn test_scharr_kernel_1d() -> Result<(), ImageError> {
+        let kernel = scharr_kernel_1d(3)?;
         assert_eq!(kernel.0, vec![-1.0, 0.0, 1.0]);
         assert_eq!(kernel.1, vec![3.0, 10.0, 3.0]);
+        assert!(scharr_kernel_1d(5).is_err());
+        assert!(scharr_kernel_1d(7).is_err());
+        Ok(())
     }
 
     #[test]
