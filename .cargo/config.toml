@@ -17,7 +17,7 @@ runner = ["env", "QEMU_LD_PREFIX=/usr/x86_64-linux-gnu"]
 # where the amd64 sysroot lives (`/usr/x86_64-linux-gnu`) so libc/libm/libpthread
 # resolve without extra flags. rust-lld doesn't have this sysroot knowledge.
 linker = "x86_64-linux-gnu-gcc"
-# Build with baseline x86-64-v3 (AVX2+FMA+BMI2) so the AVX2 kernels compile
-# without extra flags. Individual functions still use `#[target_feature]`
-# for any features above v3 (e.g. AVX-512).
+# Build with a portable x86_64 baseline so Linux wheels run on older CPUs
+# such as Sandy Bridge. AVX2/FMA kernels are still compiled with
+# `#[target_feature]` and selected through runtime CPU dispatch.
 rustflags = ["-Ctarget-cpu=x86-64"]
