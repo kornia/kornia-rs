@@ -20,4 +20,4 @@ linker = "x86_64-linux-gnu-gcc"
 # Build with baseline x86-64-v3 (AVX2+FMA+BMI2) so the AVX2 kernels compile
 # without extra flags. Individual functions still use `#[target_feature]`
 # for any features above v3 (e.g. AVX-512).
-rustflags = ["-Ctarget-cpu=x86-64-v3"]
+rustflags = ["-Ctarget-cpu=x86-64"]
