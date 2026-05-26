@@ -66,7 +66,6 @@ else
     'color::gray::rgb_to_gray_u8~[[:space:]](vpmaddubsw|vpermq)[[:space:]]'
     'normalize::normalize_rgb_u8~[[:space:]](vfmadd|vcvtdq2ps)[[:space:]]'
     'features::fast::fast_block_avx2~[[:space:]](vpcmpeqb|vpsubusb)[[:space:]]'
-    'features::fast::fast_detect_rows_u~[[:space:]](vpcmpeqb|vpsubusb)[[:space:]]'
     'features::match::hamming~[[:space:]](vpxor|vpshufb)[[:space:]]'
   )
   GLOBAL_PATTERNS='[[:space:]](vpshufb|vpmaddubsw|vfmadd|vpcmpeqb|vpsubusb|vpaddw|vpmullw|vpermq|vpxor)[[:space:]]'
