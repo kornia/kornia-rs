@@ -70,6 +70,10 @@ required-features = ["opencv_bench"]
 
 [[bench]]
 harness = false
+name = "bench_optical_flow"
+
+[[bench]]
+harness = false
 name = "bench_contours"
 required-features = ["opencv_bench"]
 
