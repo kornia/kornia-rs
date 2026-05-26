@@ -56,7 +56,6 @@ if [ "$ARCH" = aarch64 ]; then
     'resize::pyramid::pyrup_~[[:space:]](ld3|urhadd)[[:space:]]'
     'resize::kernels::vertical_row_neon~[[:space:]](smlal|sqshrun)[[:space:]]'
     'features::fast::fast_block_neon~[[:space:]](uqadd|uqsub|cmhs|umaxv)[[:space:]]'
-    'features::fast::fast_detect_rows_u~[[:space:]](uqadd|uqsub|cmhs)[[:space:]]'
   )
   GLOBAL_PATTERNS='[[:space:]](ld3|umlal|fmla|urhadd|smlal|sqshrun|uqadd|cmhs|udot)[[:space:]]'
   GLOBAL_LABEL='NEON'
