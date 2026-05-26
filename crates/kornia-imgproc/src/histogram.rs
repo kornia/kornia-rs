@@ -59,12 +59,15 @@ pub fn compute_histogram<A: ImageAllocator>(
     let width = src.width();
     let src_slice = src.as_slice();
 
-    // parallaized computation of histogram on local threads
+    // Coarse chunks so we allocate O(cores) local histograms rather than
+    // O(rows). Each task accumulates its rows into one local histogram before
+    // the reduce step merges them.
+    const ROWS_PER_TASK: usize = 16;
     let partial_hist = src_slice
-        .par_chunks_exact(width)
-        .map(|row| {
+        .par_chunks(ROWS_PER_TASK * width)
+        .map(|chunk| {
             let mut local_hist = vec![0_usize; num_bins];
-            for &pixel in row {
+            for &pixel in chunk {
                 let bin = (pixel as f32 / scale).floor() as usize;
                 local_hist[bin] += 1;
             }

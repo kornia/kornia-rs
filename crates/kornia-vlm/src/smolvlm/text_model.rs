@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use candle_core::DType;
 use candle_core::{Device, Result, Tensor};
+use candle_nn::kv_cache::KvCache;
 use candle_nn::{rotary_emb::rope, Linear, Module};
 
 use crate::context::InferenceContext;
@@ -9,6 +10,7 @@ use crate::smolvlm::custom_rmsnorm::CustomRmsNorm;
 
 const NUM_OF_HEADS: usize = 32;
 const HEAD_DIM: usize = 64;
+const MAX_POSITION_EMBEDDINGS: usize = 16384;
 
 /// Custom SiLU (Sigmoid Linear Unit) activation function
 /// SiLU(x) = x * sigmoid(x) = x * (1 / (1 + e^(-x)))
@@ -35,45 +37,36 @@ pub struct Attention {
     // caching
     cos: Tensor,
     sin: Tensor,
-    k_cache: Tensor,
-    v_cache: Tensor,
+    cache: KvCache,
+    attn_dtype: DType,
 }
 
 impl Attention {
     fn new(q: Tensor, k: Tensor, v: Tensor, o: Tensor) -> Result<Self> {
         let device = q.device();
-        let dtype = q.dtype();
+        let attn_dtype = q.dtype();
 
         let theta = Tensor::new(calculate_default_inv_freq(), device)?;
         // 0 -> max position embedding
-        let idx_theta = Tensor::arange(0, 16384u32, device)?
+        let idx_theta = Tensor::arange(0, MAX_POSITION_EMBEDDINGS as u32, device)?
             .to_dtype(DType::F32)?
-            .reshape((16384, 1))?
+            .reshape((MAX_POSITION_EMBEDDINGS, 1))?
             .matmul(&theta.reshape((1, theta.elem_count()))?)?;
 
         Ok(Self {
             cos: idx_theta.cos()?.to_dtype(q.dtype())?,
             sin: idx_theta.sin()?.to_dtype(q.dtype())?,
-            k_cache: Tensor::zeros((NUM_OF_HEADS, 0, HEAD_DIM), dtype, device)?,
-            v_cache: Tensor::zeros((NUM_OF_HEADS, 0, HEAD_DIM), dtype, device)?,
+            cache: KvCache::new(1, MAX_POSITION_EMBEDDINGS),
             q_proj: Linear::new(q, None),
             k_proj: Linear::new(k, None),
             v_proj: Linear::new(v, None),
             o_proj: Linear::new(o, None),
+            attn_dtype,
         })
     }
 
     pub fn reset_cache(&mut self) -> Result<()> {
-        self.k_cache = Tensor::zeros(
-            (NUM_OF_HEADS, 0, HEAD_DIM),
-            self.k_cache.dtype(),
-            self.k_cache.device(),
-        )?;
-        self.v_cache = Tensor::zeros(
-            (NUM_OF_HEADS, 0, HEAD_DIM),
-            self.v_cache.dtype(),
-            self.v_cache.device(),
-        )?;
+        self.cache.reset();
         Ok(())
     }
 
@@ -89,8 +82,6 @@ impl Attention {
     }
 
     fn forward(&mut self, x: &Tensor, index_pos: usize) -> Result<Tensor> {
-        let device = x.device();
-
         let (seq_len, hidden_size) = x.dims2()?;
 
         let q = self.q_proj.forward(x)?;
@@ -107,37 +98,62 @@ impl Attention {
             .contiguous()?;
         let v = v
             .reshape((seq_len, NUM_OF_HEADS, HEAD_DIM))?
-            .transpose(0, 1)?;
+            .transpose(0, 1)?
+            .contiguous()?;
 
         let q = self.apply_rotary_embedding(&q, index_pos)?;
         let k = self.apply_rotary_embedding(&k, index_pos)?;
 
+        let k = k.to_dtype(self.attn_dtype)?;
+        let v = v.to_dtype(self.attn_dtype)?;
+
+        let (k_cache, v_cache) = self.cache.append(&k, &v)?;
         // use cache (always assumes new tokens are an extension of the previous sequence)
         // TODO: handle context length
-        self.k_cache = Tensor::cat(&[&self.k_cache, &k], 1)?;
-        self.v_cache = Tensor::cat(&[&self.v_cache, &v], 1)?;
+        let in_dtype = q.dtype();
 
-        let y = {
-            // TODO: implement flash attention
-            // TODO: just using BF16 is plausible
+        // flash attn: CUDA only, prefill only (seq_len > 1), BF16/F16 only
+        #[cfg(feature = "cuda")]
+        if x.device().is_cuda()
+            && seq_len > 1
+            && self.cache.current_seq_len() == seq_len
+            && matches!(self.attn_dtype, DType::F16 | DType::BF16)
+        {
+            let softmax_scale = 1f32 / (HEAD_DIM as f32).sqrt();
 
-            let in_dtype = q.dtype();
-            let q = q.to_dtype(DType::F32)?;
-            let k = self.k_cache.to_dtype(DType::F32)?;
-            let v = self.v_cache.to_dtype(DType::F32)?;
+            let q = q.unsqueeze(0)?.to_dtype(self.attn_dtype)?;
+            let k = k_cache.unsqueeze(0)?;
+            let v = v_cache.unsqueeze(0)?;
 
-            let att = (q.matmul(&k.t()?)? / (HEAD_DIM as f64).sqrt())?;
-            let att = if seq_len == 1 {
-                att
-            } else {
-                let mask = Self::generate_causal_mask(seq_len, self.k_cache.dims()[1], device)?;
-                att.broadcast_add(&mask)?
-            };
-            let att = candle_nn::ops::softmax_last_dim(&att)?;
+            let y = candle_flash_attn::flash_attn(&q, &k, &v, softmax_scale, true)?
+                .squeeze(0)?
+                .to_dtype(in_dtype)?
+                .transpose(0, 1)?
+                .reshape(&[seq_len, hidden_size])?;
 
-            att.matmul(&v)?.contiguous()?.to_dtype(in_dtype)?
+            return self.o_proj.forward(&y);
+        }
+
+        // fallback: normal SDPA — CPU, Metal, single-token decode
+
+        let compute_dtype = DType::F32;
+
+        let q = q.to_dtype(compute_dtype)?;
+        let k = k_cache.to_dtype(compute_dtype)?;
+        let v = v_cache.to_dtype(compute_dtype)?;
+
+        let att = (q.matmul(&k.t()?)? / (HEAD_DIM as f64).sqrt())?;
+        let att = if seq_len == 1 {
+            att
+        } else {
+            let mask =
+                Self::generate_causal_mask(seq_len, self.cache.current_seq_len(), x.device())?
+                    .to_dtype(compute_dtype)?;
+            att.broadcast_add(&mask)?
         };
 
+        let att = candle_nn::ops::softmax_last_dim(&att)?;
+        let y = att.matmul(&v)?.contiguous()?.to_dtype(in_dtype)?;
         let y = y.transpose(0, 1)?.reshape(&[seq_len, hidden_size])?;
         self.o_proj.forward(&y)
     }
@@ -282,12 +298,12 @@ impl SmolText {
         index_pos: usize,
         ctx: &mut InferenceContext,
     ) -> Result<Tensor> {
-        ctx.text_introspector.start_tracking_depth();
+        ctx.text_introspector.start_tracking_depth()?;
         for block in &mut self.blocks {
             x = block.forward(&x, index_pos, ctx)?;
             ctx.text_introspector.increment_depth();
         }
-        ctx.text_introspector.stop_tracking_depth();
+        ctx.text_introspector.stop_tracking_depth()?;
 
         let x = self.norm.forward(&x)?;
         let logits = self.lm_head.forward(&x)?;

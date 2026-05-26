@@ -243,6 +243,8 @@ impl StreamCapture {
 impl Drop for StreamCapture {
     /// Ensures that the StreamCapture is properly closed when dropped.
     fn drop(&mut self) {
-        self.close().expect("Failed to close StreamCapture");
+        if let Err(e) = self.close() {
+            log::warn!("Failed to close stream safely on drop: {:?}", e);
+        }
     }
 }

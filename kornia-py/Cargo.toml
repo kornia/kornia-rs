@@ -15,9 +15,16 @@ name = "kornia_rs"
 
 [dependencies]
 kornia-3d = { workspace = true }
+kornia-algebra = { workspace = true }
 kornia-apriltag = { workspace = true }
 kornia-image = { workspace = true }
 kornia-imgproc = { workspace = true }
-kornia-io = { workspace = true, features = ["turbojpeg"] }
-numpy = "0.27"
-pyo3 = { version = "0.27", features = ["extension-module"] }
+kornia-io = { workspace = true }
+numpy = "0.28"
+pyo3 = { version = "0.28", features = ["extension-module"] }
+rand = { workspace = true }
+rayon = { workspace = true }
+
+[features]
+default = ["turbojpeg"]
+turbojpeg = ["kornia-io/turbojpeg"]

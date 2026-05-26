@@ -1,48 +1,34 @@
 use pyo3::prelude::*;
 
-use crate::image::{FromPyImage, PyImage, ToPyImage};
-use kornia_image::{allocator::CpuAllocator, Image};
+use crate::image::{alloc_output_pyarray, numpy_to_f32_image, to_pyerr, PyImage};
+use kornia_image::{allocator::CpuAllocator, Image, ImageError};
 use kornia_imgproc::enhance;
 
 #[pyfunction]
 pub fn add_weighted(
+    py: Python<'_>,
     src1: PyImage,
     alpha: f32,
     src2: PyImage,
     beta: f32,
     gamma: f32,
 ) -> PyResult<PyImage> {
-    let image1: Image<u8, 3, _> = Image::from_pyimage(src1).map_err(|e| {
-        PyErr::new::<pyo3::exceptions::PyException, _>(format!("src1 image: {}", e))
-    })?;
+    let image1 = numpy_to_f32_image::<3>(py, &src1)?;
+    let image2 = numpy_to_f32_image::<3>(py, &src2)?;
+    let size = image1.size();
+    let (mut dst_u8, out) = unsafe { alloc_output_pyarray::<3>(py, size)? };
 
-    let image2: Image<u8, 3, _> = Image::from_pyimage(src2).map_err(|e| {
-        PyErr::new::<pyo3::exceptions::PyException, _>(format!("src2 image: {}", e))
-    })?;
+    py.detach(|| -> Result<(), ImageError> {
+        let mut dst_f32 = Image::from_size_val(size, 0.0f32, CpuAllocator)?;
+        enhance::add_weighted(&image1, alpha, &image2, beta, gamma, &mut dst_f32)?;
+        dst_u8
+            .as_slice_mut()
+            .iter_mut()
+            .zip(dst_f32.as_slice().iter())
+            .for_each(|(d, &s)| *d = s as u8);
+        Ok(())
+    })
+    .map_err(to_pyerr)?;
 
-    // cast input images to f32
-    let image1 = image1.cast::<f32>().map_err(|e| {
-        PyErr::new::<pyo3::exceptions::PyException, _>(format!("src1 image: {}", e))
-    })?;
-
-    let image2 = image2.cast::<f32>().map_err(|e| {
-        PyErr::new::<pyo3::exceptions::PyException, _>(format!("src2 image: {}", e))
-    })?;
-
-    let mut dst: Image<f32, 3, _> = Image::from_size_val(image1.size(), 0.0f32, CpuAllocator)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("dst image: {}", e)))?;
-
-    enhance::add_weighted(&image1, alpha, &image2, beta, gamma, &mut dst)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("dst image: {}", e)))?;
-
-    // cast dst image to u8
-    let dst = dst
-        .cast::<u8>()
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("dst image: {}", e)))?;
-
-    let pyimage_dst = dst.to_pyimage().map_err(|e| {
-        PyErr::new::<pyo3::exceptions::PyException, _>(format!("failed to convert image: {}", e))
-    })?;
-
-    Ok(pyimage_dst)
+    Ok(out)
 }

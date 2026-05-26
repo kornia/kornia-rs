@@ -183,7 +183,7 @@ pub fn draw_filled_polygon<const C: usize, A: ImageAllocator>(
         }
 
         // sort the intersections by x coordinate
-        x_intersections.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        x_intersections.sort_by(|a, b| a.total_cmp(b));
 
         // filling the region between intersections with color
         for pair in x_intersections.chunks(2) {

@@ -1,6 +1,6 @@
 /// Lucas–Kanade optical flow with pyramids.
 use crate::filter::scharr_spatial_gradient_float;
-use crate::interpolation::{interpolate_pixel, InterpolationMode};
+use crate::interpolation::{interpolate_pixel_fast, InterpolationMode};
 use crate::pyramid::pyrdown_f32;
 use kornia_image::{allocator::ImageAllocator, Image, ImageError, ImageSize};
 use rayon::prelude::*;
@@ -174,7 +174,7 @@ fn sample_at<A: ImageAllocator>(img: &Image<f32, 1, A>, x: f32, y: f32, mode: Bo
         BorderMode::Mirror => (mirror_coord(x, max_x), mirror_coord(y, max_y)),
         BorderMode::Reject => (x, y),
     };
-    interpolate_pixel(img, xf, yf, 0, InterpolationMode::Bilinear)
+    interpolate_pixel_fast(img, xf, yf, 0, InterpolationMode::Bilinear)
 }
 
 fn track_feature<A: ImageAllocator>(

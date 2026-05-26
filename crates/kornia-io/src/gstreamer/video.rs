@@ -163,12 +163,13 @@ impl VideoWriter {
     pub fn close(&mut self) -> Result<(), StreamCaptureError> {
         // send end of stream to the appsrc
         self.appsrc.end_of_stream()?;
+        self.pipeline.set_state(gstreamer::State::Null)?;
 
         if let Some(handle) = self.handle.take() {
-            handle.join().expect("Failed to join thread");
+            if handle.join().is_err() {
+                return Err(StreamCaptureError::JoinThreadError);
+            }
         }
-
-        self.pipeline.set_state(gstreamer::State::Null)?;
 
         Ok(())
     }
@@ -207,7 +208,7 @@ impl VideoWriter {
             gstreamer::ClockTime::from_nseconds(self.counter * 1_000_000_000 / self.fps as u64);
         let duration = gstreamer::ClockTime::from_nseconds(1_000_000_000 / self.fps as u64);
 
-        let buffer_ref = buffer.get_mut().expect("Failed to get buffer");
+        let buffer_ref = buffer.get_mut().ok_or(StreamCaptureError::GetBufferError)?;
         buffer_ref.set_pts(Some(pts));
         buffer_ref.set_duration(Some(duration));
 
@@ -224,7 +225,9 @@ impl VideoWriter {
 impl Drop for VideoWriter {
     fn drop(&mut self) {
         if self.handle.is_some() {
-            self.close().expect("Failed to close video writer");
+            if let Err(e) = self.close() {
+                log::warn!("Failed to close video writer safely on drop: {:?}", e);
+            }
         }
     }
 }

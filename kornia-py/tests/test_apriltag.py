@@ -86,6 +86,11 @@ def test_tag_family_into_family_kind():
     assert kind.name == "custom"
 
 
+def test_decode_tags_config_requires_tag_families():
+    with pytest.raises(Exception):
+        K.apriltag.DecodeTagsConfig([])
+
+
 def test_apriltag_decoder():
     kinds = [TagFamilyKind("tag36_h11")]
     config = K.apriltag.DecodeTagsConfig(kinds)
@@ -106,3 +111,13 @@ def test_apriltag_decoder():
     for (ax, ay), (ex, ey) in zip(detection[0].quad.corners, expected_quad):
         assert ax == pytest.approx(ex, abs=1e-3)
         assert ay == pytest.approx(ey, abs=1e-3)
+
+
+def test_decode_tags_config_tag_families_getter():
+    kinds = [TagFamilyKind("tag36_h11"), TagFamilyKind("tag16_h5")]
+    config = K.apriltag.DecodeTagsConfig(kinds)
+    families = config.tag_families
+    assert len(families) == 2
+    for f in families:
+        assert isinstance(f.name, str)
+        assert len(f.name) > 0

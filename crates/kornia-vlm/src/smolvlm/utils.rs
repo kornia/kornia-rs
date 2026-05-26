@@ -44,4 +44,7 @@ pub enum SmolVlmError {
 
     #[error("Invalid logits detected: {0}")]
     InvalidLogits(String),
+
+    #[error("Image process error: {0}")]
+    ImageProcessError(String),
 }

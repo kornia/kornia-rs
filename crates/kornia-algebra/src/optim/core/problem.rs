@@ -105,9 +105,12 @@ impl Problem {
             // Linearize the factor (only need residual, not Jacobian)
             let result = factor.linearize(&params, false)?;
 
-            // Accumulate squared residuals
-            for r in &result.residual {
-                total_cost += r * r;
+            // Accumulate cost: use robust loss rho(s²) if present, otherwise raw s²
+            let squared_norm: f32 = result.residual.iter().map(|r| r * r).sum();
+            if let Some(loss) = factor.get_loss() {
+                total_cost += loss.rho(squared_norm);
+            } else {
+                total_cost += squared_norm;
             }
         }
 

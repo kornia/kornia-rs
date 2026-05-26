@@ -54,47 +54,57 @@ pub fn convert_yuyv_to_rgb_u8<A: ImageAllocator>(
     }
 
     let rgb_data = dst.as_slice_mut();
+    let rgb_row_len = width * 3;
+    let yuyv_row_len = width * 2;
 
+    const ROWS_PER_TASK: usize = 16;
     rgb_data
-        .par_chunks_exact_mut(width * 3)
+        .par_chunks_mut(ROWS_PER_TASK * rgb_row_len)
         .enumerate()
-        .for_each(|(row, rgb_row)| {
-            let yuyv_row_start = row * width * 2; // 2 bytes per pixel in YUYV
-            let yuyv_row = &src[yuyv_row_start..yuyv_row_start + width * 2];
-
-            rgb_row
-                .chunks_exact_mut(6)
+        .for_each(|(chunk_idx, rgb_chunk)| {
+            let row_base = chunk_idx * ROWS_PER_TASK;
+            rgb_chunk
+                .chunks_exact_mut(rgb_row_len)
                 .enumerate()
-                .for_each(|(col, rgb_chunk)| {
-                    let yuyv_idx = col * 4;
-                    if yuyv_idx + 3 < yuyv_row.len() {
-                        let y0 = yuyv_row[yuyv_idx];
-                        let u = yuyv_row[yuyv_idx + 1];
-                        let y1 = yuyv_row[yuyv_idx + 2];
-                        let v = yuyv_row[yuyv_idx + 3];
+                .for_each(|(dr, rgb_row)| {
+                    let row = row_base + dr;
+                    let yuyv_row_start = row * yuyv_row_len;
+                    let yuyv_row = &src[yuyv_row_start..yuyv_row_start + yuyv_row_len];
 
-                        // Convert YUV to RGB for first pixel
-                        let (r0, g0, b0) = match mode {
-                            YuvToRgbMode::Bt601Full => yuv_to_rgb_u8_bt601_full(y0, u, v),
-                            YuvToRgbMode::Bt709Full => yuv_to_rgb_u8_bt709_full(y0, u, v),
-                            YuvToRgbMode::Bt601Limited => yuv_to_rgb_u8_bt601_limited(y0, u, v),
-                        };
+                    rgb_row
+                        .chunks_exact_mut(6)
+                        .enumerate()
+                        .for_each(|(col, rgb_chunk)| {
+                            let yuyv_idx = col * 4;
+                            if yuyv_idx + 3 < yuyv_row.len() {
+                                let y0 = yuyv_row[yuyv_idx];
+                                let u = yuyv_row[yuyv_idx + 1];
+                                let y1 = yuyv_row[yuyv_idx + 2];
+                                let v = yuyv_row[yuyv_idx + 3];
 
-                        // Convert YUV to RGB for second pixel
-                        let (r1, g1, b1) = match mode {
-                            YuvToRgbMode::Bt601Full => yuv_to_rgb_u8_bt601_full(y1, u, v),
-                            YuvToRgbMode::Bt709Full => yuv_to_rgb_u8_bt709_full(y1, u, v),
-                            YuvToRgbMode::Bt601Limited => yuv_to_rgb_u8_bt601_limited(y1, u, v),
-                        };
+                                let (r0, g0, b0) = match mode {
+                                    YuvToRgbMode::Bt601Full => yuv_to_rgb_u8_bt601_full(y0, u, v),
+                                    YuvToRgbMode::Bt709Full => yuv_to_rgb_u8_bt709_full(y0, u, v),
+                                    YuvToRgbMode::Bt601Limited => {
+                                        yuv_to_rgb_u8_bt601_limited(y0, u, v)
+                                    }
+                                };
+                                let (r1, g1, b1) = match mode {
+                                    YuvToRgbMode::Bt601Full => yuv_to_rgb_u8_bt601_full(y1, u, v),
+                                    YuvToRgbMode::Bt709Full => yuv_to_rgb_u8_bt709_full(y1, u, v),
+                                    YuvToRgbMode::Bt601Limited => {
+                                        yuv_to_rgb_u8_bt601_limited(y1, u, v)
+                                    }
+                                };
 
-                        // Write both RGB pixels
-                        rgb_chunk[0] = r0;
-                        rgb_chunk[1] = g0;
-                        rgb_chunk[2] = b0;
-                        rgb_chunk[3] = r1;
-                        rgb_chunk[4] = g1;
-                        rgb_chunk[5] = b1;
-                    }
+                                rgb_chunk[0] = r0;
+                                rgb_chunk[1] = g0;
+                                rgb_chunk[2] = b0;
+                                rgb_chunk[3] = r1;
+                                rgb_chunk[4] = g1;
+                                rgb_chunk[5] = b1;
+                            }
+                        });
                 });
         });
 

@@ -1,0 +1,5 @@
+# Real-image fixtures are downloaded on demand via examples/fetch_fixtures.sh
+# to keep the git repo lean. The existing PNGs (pic1-4) are already in git
+# history; new fixtures should NOT be committed — fetch them locally instead.
+*.png
+!.gitignore

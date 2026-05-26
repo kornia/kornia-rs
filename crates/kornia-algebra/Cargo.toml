@@ -15,6 +15,10 @@ version = { workspace = true }
 harness = false
 name = "bench_linalg"
 
+[[bench]]
+harness = false
+name = "bench_l2_line"
+
 [dependencies]
 approx = { workspace = true, optional = true }
 glam = "0.30.1"

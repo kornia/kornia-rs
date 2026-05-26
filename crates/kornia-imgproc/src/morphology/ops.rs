@@ -218,7 +218,7 @@ pub fn open<
     padding_mode: PaddingMode,
     constant_value: [T; C],
 ) -> Result<(), ImageError> {
-    let mut temp_img = src.clone();
+    let mut temp_img = Image::from_size_val(src.size(), T::default(), CpuAllocator)?;
     erode(src, &mut temp_img, kernel, padding_mode, constant_value)?;
     dilate(&temp_img, dst, kernel, padding_mode, constant_value)?;
     Ok(())
@@ -251,7 +251,7 @@ pub fn close<
     padding_mode: PaddingMode,
     constant_value: [T; C],
 ) -> Result<(), ImageError> {
-    let mut temp_img = src.clone();
+    let mut temp_img = Image::from_size_val(src.size(), T::default(), CpuAllocator)?;
     dilate(src, &mut temp_img, kernel, padding_mode, constant_value)?;
     erode(&temp_img, dst, kernel, padding_mode, constant_value)?;
     Ok(())

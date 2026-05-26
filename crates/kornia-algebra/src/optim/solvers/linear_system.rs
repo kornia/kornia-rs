@@ -99,15 +99,42 @@ impl LinearSystemBuilder {
                     factor_col_offset += dim;
                 }
 
+                // Apply robust loss scaling if factor provides one
+                let mut scaled_residual = None;
+                let mut scaled_jacobian = None;
+
+                if let Some(loss) = factor.get_loss() {
+                    let squared_norm: f32 = result.residual.iter().map(|r| r * r).sum();
+                    let weight = loss.weight(squared_norm);
+                    let sqrt_weight = weight.sqrt();
+
+                    let mut scaled_res = result.residual.clone();
+                    let mut scaled_jac = jacobian.clone();
+
+                    // Scale residual and Jacobian by sqrt(weight)
+                    for r in &mut scaled_res {
+                        *r *= sqrt_weight;
+                    }
+                    for j in &mut scaled_jac {
+                        *j *= sqrt_weight;
+                    }
+
+                    scaled_residual = Some(scaled_res);
+                    scaled_jacobian = Some(scaled_jac);
+                }
+
+                let residual_ref = scaled_residual.as_ref().unwrap_or(&result.residual);
+                let jacobian_ref = scaled_jacobian.as_ref().unwrap_or(jacobian);
+
                 for (global_start_i, dim_i, factor_col_offset_i) in &mapping {
                     for (global_start_j, dim_j, factor_col_offset_j) in &mapping {
                         for row in 0..residual_dim {
                             for di in 0..*dim_i {
                                 let jac_i_val =
-                                    jacobian[row * total_local_dim + factor_col_offset_i + di];
+                                    jacobian_ref[row * total_local_dim + factor_col_offset_i + di];
                                 for dj in 0..*dim_j {
-                                    let jac_j_val =
-                                        jacobian[row * total_local_dim + factor_col_offset_j + dj];
+                                    let jac_j_val = jacobian_ref
+                                        [row * total_local_dim + factor_col_offset_j + dj];
                                     jtj[(global_start_i + di, global_start_j + dj)] +=
                                         jac_i_val * jac_j_val;
                                 }
@@ -118,10 +145,10 @@ impl LinearSystemBuilder {
 
                 for (global_start_i, dim_i, factor_col_offset_i) in &mapping {
                     for row in 0..residual_dim {
-                        let residual_val = result.residual[row];
+                        let residual_val = residual_ref[row];
                         for di in 0..*dim_i {
                             let jac_val =
-                                jacobian[row * total_local_dim + factor_col_offset_i + di];
+                                jacobian_ref[row * total_local_dim + factor_col_offset_i + di];
                             jtr[global_start_i + di] += jac_val * residual_val;
                         }
                     }

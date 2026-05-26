@@ -1,6 +1,6 @@
 use crate::parallel;
 
-use super::interpolate::interpolate_pixel;
+use super::interpolate::{interpolate_pixel_fast, validate_interpolation};
 use super::InterpolationMode;
 use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 use kornia_tensor::{CpuAllocator, Tensor2};
@@ -44,12 +44,14 @@ pub fn remap<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
         ));
     }
 
+    validate_interpolation(interpolation)?;
+
     // parallelize the remap operation by rows
     parallel::par_iter_rows_resample(dst, map_x, map_y, |&x, &y, dst_pixel| {
         // interpolate the pixel value
-        dst_pixel.iter_mut().enumerate().for_each(|(c, pixel)| {
-            *pixel = interpolate_pixel(src, x, y, c, interpolation);
-        });
+        for (c, pixel) in dst_pixel.iter_mut().enumerate() {
+            *pixel = interpolate_pixel_fast(src, x, y, c, interpolation);
+        }
     });
 
     Ok(())
@@ -59,6 +61,37 @@ pub fn remap<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
 mod tests {
     use kornia_image::{Image, ImageError, ImageSize};
     use kornia_tensor::{CpuAllocator, Tensor2};
+
+    #[test]
+    fn remap_unsupported_interpolation() -> Result<(), ImageError> {
+        let image = Image::<_, 1, _>::new(
+            ImageSize {
+                width: 2,
+                height: 2,
+            },
+            vec![0f32; 4],
+            CpuAllocator,
+        )?;
+        let map_x = Tensor2::from_shape_vec([2, 2], vec![0.0, 1.0, 0.0, 1.0], CpuAllocator)?;
+        let map_y = Tensor2::from_shape_vec([2, 2], vec![0.0, 0.0, 1.0, 1.0], CpuAllocator)?;
+        let mut dst = Image::<_, 1, _>::from_size_val(
+            ImageSize {
+                width: 2,
+                height: 2,
+            },
+            0.0,
+            CpuAllocator,
+        )?;
+        let err = super::remap(
+            &image,
+            &mut dst,
+            &map_x,
+            &map_y,
+            super::InterpolationMode::Lanczos,
+        );
+        assert!(err.is_err());
+        Ok(())
+    }
 
     #[test]
     fn remap_smoke() -> Result<(), ImageError> {

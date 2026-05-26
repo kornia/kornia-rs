@@ -1,38 +1,26 @@
 use pyo3::prelude::*;
 
-use crate::image::{FromPyImage, PyImage, ToPyImage};
-use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
-use kornia_imgproc::{interpolation::InterpolationMode, resize::resize_fast_rgb};
+use crate::image::{alloc_output_pyarray, numpy_as_image, parse_interpolation, to_pyerr, PyImage};
+use kornia_image::ImageSize;
+use kornia_imgproc::resize::resize_fast_rgb_aa;
 
 #[pyfunction]
-pub fn resize(image: PyImage, new_size: (usize, usize), interpolation: &str) -> PyResult<PyImage> {
-    let image = Image::from_pyimage(image)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-
+#[pyo3(signature = (image, new_size, interpolation, antialias=true))]
+pub fn resize(
+    py: Python<'_>,
+    image: PyImage,
+    new_size: (usize, usize),
+    interpolation: &str,
+    antialias: bool,
+) -> PyResult<PyImage> {
+    let interpolation = parse_interpolation(interpolation)?;
     let new_size = ImageSize {
         height: new_size.0,
         width: new_size.1,
     };
-
-    let interpolation = match interpolation.to_lowercase().as_str() {
-        "nearest" => InterpolationMode::Nearest,
-        "bilinear" => InterpolationMode::Bilinear,
-        _ => {
-            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                "Invalid interpolation mode",
-            ))
-        }
-    };
-
-    let mut image_resized = Image::from_size_val(new_size, 0u8, CpuAllocator)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-
-    resize_fast_rgb(&image, &mut image_resized, interpolation)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-
-    let pyimage_resized = image_resized.to_pyimage().map_err(|e| {
-        PyErr::new::<pyo3::exceptions::PyException, _>(format!("failed to convert image: {}", e))
-    })?;
-
-    Ok(pyimage_resized)
+    let src = unsafe { numpy_as_image::<3>(py, &image)? };
+    let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, new_size)? };
+    py.detach(|| resize_fast_rgb_aa(&src, &mut dst, interpolation, antialias))
+        .map_err(to_pyerr)?;
+    Ok(out)
 }

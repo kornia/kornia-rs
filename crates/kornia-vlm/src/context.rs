@@ -54,22 +54,28 @@ impl ActivationIntrospector {
         self.counter_depth_arbitrary += 1;
     }
 
-    pub fn start_tracking_depth(&mut self) {
+    pub fn start_tracking_depth(&mut self) -> Result<()> {
         if self.tracking_depth && self.enabled {
-            panic!("Depth tracking has already started!");
+            return Err(candle_core::Error::Msg(
+                "Depth tracking has already started!".to_string(),
+            ));
         }
 
         self.counter_depth_arbitrary = 0;
         self.tracking_depth = true;
+        Ok(())
     }
 
-    pub fn stop_tracking_depth(&mut self) {
+    pub fn stop_tracking_depth(&mut self) -> Result<()> {
         if !self.tracking_depth && self.enabled {
-            panic!("Depth tracking has already stopped!");
+            return Err(candle_core::Error::Msg(
+                "Depth tracking has already stopped!".to_string(),
+            ));
         }
 
         self.counter_depth_arbitrary = 0;
         self.tracking_depth = false;
+        Ok(())
     }
 }
 

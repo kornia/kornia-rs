@@ -248,26 +248,51 @@ img: np.ndarray = K.read_image_jpeg("dog.jpeg")
 K.write_image_jpeg("dog_copy.jpeg", img)
 ```
 
-### Encoding and Decoding
+### `Image` — PIL-style class with uint8 + uint16 support
 
-Encode or decode image streams using the `turbojpeg` backend:
+`kornia_rs.image.Image` mirrors PIL's `fromarray` / `save` / `load` / `decode`
+and natively holds **`uint16`** for depth maps and scientific imagery
+(lossless via PNG-16):
+
+```python
+import io
+import numpy as np
+from kornia_rs.image import Image
+
+# Bit depth is auto-detected from the numpy dtype.
+rgb   = np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8)
+depth = np.full((480, 640), 1500, dtype=np.uint16)            # mm
+
+rgb_img   = Image.fromarray(rgb)
+depth_img = Image.fromarray(depth)
+
+# In-memory encode for transit (Zenoh / MCAP / gRPC).
+png16_bytes = depth_img.encode("png")    # lossless on uint16
+
+# Save to disk (format from extension), or to any file-like (PIL parity).
+rgb_img.save("dog.png")
+buf = io.BytesIO(); rgb_img.save(buf, format="jpeg")
+
+# Decode auto-detects bit depth from the file header.
+back = Image.decode(png16_bytes, mode="L")
+assert back.dtype == np.uint16
+```
+
+### Encoding and Decoding (legacy, jpeg-only)
+
+The original `ImageEncoder`/`ImageDecoder` pair is still available for
+JPEG-only workflows that want the explicit `turbojpeg` backend object:
 
 ```python
 import kornia_rs as K
 
-# load image with kornia-rs
 img = K.read_image_jpeg("dog.jpeg")
 
-# encode the image with jpeg
 image_encoder = K.ImageEncoder()
-image_encoder.set_quality(95)  # set the encoding quality
-
-# get the encoded stream
+image_encoder.set_quality(95)
 img_encoded: list[int] = image_encoder.encode(img)
 
-# decode back the image
 image_decoder = K.ImageDecoder()
-
 decoded_img: np.ndarray = image_decoder.decode(bytes(img_encoded))
 ```
 

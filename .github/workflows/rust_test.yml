@@ -25,7 +25,10 @@ jobs:
   test:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 10
+    # 20 min covers cold-cache rebuilds on aarch64 + release-x86_64. The
+    # warm-cache runs (e.g. Test Debug - x86_64) finish in ~8 min, so the
+    # extra budget only kicks in when sccache misses workspace-wide.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -41,13 +44,13 @@ jobs:
             command: rust-test
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: recursive
 
       - uses: ./.github/actions/setup-rust-cache
 
-      - uses: prefix-dev/setup-pixi@v0.8.1
+      - uses: prefix-dev/setup-pixi@v0.9.5
         with:
           pixi-version: v0.40.0
           cache: true

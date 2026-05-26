@@ -9,7 +9,9 @@ pub(crate) fn euclidean_distance(x1: Vec<f32>, x2: Vec<f32>) -> f32 {
 }
 
 /// NOTE: only for testing, extremely slow
-pub fn distance_transform_vanilla<A>(image: &Image<f32, 1, A>) -> Image<f32, 1, CpuAllocator>
+pub fn distance_transform_vanilla<A>(
+    image: &Image<f32, 1, A>,
+) -> Result<Image<f32, 1, CpuAllocator>, ImageError>
 where
     A: ImageAllocator,
 {
@@ -34,7 +36,7 @@ where
         }
     }
 
-    Image::new(image.size(), output, CpuAllocator).unwrap()
+    Image::new(image.size(), output, CpuAllocator)
 }
 
 /// Executor for computing the Euclidean Distance Transform.
@@ -184,7 +186,7 @@ mod tests {
     use kornia_image::{Image, ImageSize};
 
     #[test]
-    fn test_accuracy_vs_vanilla() {
+    fn test_accuracy_vs_vanilla() -> Result<(), ImageError> {
         let width = 20;
         let height = 20;
         let mut data = vec![0.0; width * height];
@@ -192,21 +194,21 @@ mod tests {
         data[102] = 1.0;
         data[300] = 1.0;
 
-        let image =
-            Image::<f32, 1, _>::new(ImageSize { width, height }, data, CpuAllocator).unwrap();
-        let expected = distance_transform_vanilla(&image);
+        let image = Image::<f32, 1, _>::new(ImageSize { width, height }, data, CpuAllocator)?;
+        let expected = distance_transform_vanilla(&image)?;
 
         let mut executor = DistanceTransformExecutor::new();
-        let actual = executor.execute(&image).unwrap();
+        let actual = executor.execute(&image)?;
 
         for i in 0..actual.as_slice().len() {
             let diff = (expected.as_slice()[i] - actual.as_slice()[i]).abs();
             assert!(diff < 1e-4);
         }
+        Ok(())
     }
 
     #[test]
-    fn distance_transform_smoke() {
+    fn distance_transform_smoke() -> Result<(), ImageError> {
         let image = Image::<f32, 1, _>::new(
             ImageSize {
                 width: 3,
@@ -216,14 +218,15 @@ mod tests {
                 0.0f32, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0,
             ],
             CpuAllocator,
-        )
-        .unwrap();
+        )?;
 
         let mut executor = DistanceTransformExecutor::new();
-        let output = executor.execute(&image).unwrap();
+        let output = executor.execute(&image)?;
 
         assert_eq!(output.size().width, 3);
         assert_eq!(output.size().height, 4);
         assert_eq!(output.as_slice()[2], 0.0);
+
+        Ok(())
     }
 }

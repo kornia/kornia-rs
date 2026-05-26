@@ -6,6 +6,10 @@ use kornia_image::{
 use std::{path::Path, sync::Mutex};
 use turbojpeg;
 
+/// Re-exported so callers don't need a direct ``turbojpeg`` dep just to
+/// call [`JpegTurboEncoder::set_subsamp`].
+pub use turbojpeg::Subsamp;
+
 /// Error types for the JPEG module.
 #[derive(thiserror::Error, Debug)]
 pub enum JpegTurboError {
@@ -20,31 +24,25 @@ pub enum JpegTurboError {
     /// Error to create the image.
     #[error("Failed to create image")]
     ImageCreationError(#[from] ImageError),
+
+    /// Error when mutex is poisoned.
+    #[error("Mutex is poisoned")]
+    MutexPoisoned,
+
+    /// I/O error, e.g. when reading a JPEG file from disk.
+    #[error(transparent)]
+    IoError(#[from] std::io::Error),
 }
 
 /// A JPEG decoder using the turbojpeg library.
+/// **Note on migration:** The `Default` trait implementation was removed. Please use [`JpegTurboDecoder::new()`] instead.
 pub struct JpegTurboDecoder(Mutex<turbojpeg::Decompressor>);
 
 /// A JPEG encoder using the turbojpeg library.
+/// **Note on migration:** The `Default` trait implementation was removed. Please use [`JpegTurboEncoder::new()`] instead.
 pub struct JpegTurboEncoder(Mutex<turbojpeg::Compressor>);
 
-impl Default for JpegTurboDecoder {
-    fn default() -> Self {
-        match Self::new() {
-            Ok(decoder) => decoder,
-            Err(e) => panic!("Failed to create ImageDecoder: {e}"),
-        }
-    }
-}
-
-impl Default for JpegTurboEncoder {
-    fn default() -> Self {
-        match Self::new() {
-            Ok(encoder) => encoder,
-            Err(e) => panic!("Failed to create ImageEncoder: {e}"),
-        }
-    }
-}
+// Implementations for ImageDecoder and ImageEncoder
 
 /// Implementation of the ImageEncoder struct.
 impl JpegTurboEncoder {
@@ -91,7 +89,7 @@ impl JpegTurboEncoder {
         Ok(self
             .0
             .lock()
-            .expect("Failed to lock the compressor")
+            .map_err(|_| JpegTurboError::MutexPoisoned)?
             .compress_to_vec(buf)?)
     }
 
@@ -104,8 +102,19 @@ impl JpegTurboEncoder {
         Ok(self
             .0
             .lock()
-            .expect("Failed to lock the compressor")
+            .map_err(|_| JpegTurboError::MutexPoisoned)?
             .set_quality(quality)?)
+    }
+
+    /// Sets chroma subsampling: ``Subsamp::None`` is 4:4:4 (no subsampling,
+    /// largest files, highest quality), ``Sub2x1`` is 4:2:2, ``Sub2x2`` is
+    /// 4:2:0 (half the chroma data, fastest, default for cv2/PIL at q ≤ 95).
+    pub fn set_subsamp(&self, subsamp: turbojpeg::Subsamp) -> Result<(), JpegTurboError> {
+        self.0
+            .lock()
+            .map_err(|_| JpegTurboError::MutexPoisoned)?
+            .set_subsamp(subsamp)?;
+        Ok(())
     }
 }
 
@@ -139,7 +148,7 @@ impl JpegTurboDecoder {
         let header = self
             .0
             .lock()
-            .expect("Failed to lock the decompressor")
+            .map_err(|_| JpegTurboError::MutexPoisoned)?
             .read_header(jpeg_data)?;
 
         Ok(ImageSize {
@@ -149,64 +158,90 @@ impl JpegTurboDecoder {
     }
 
     /// Decodes the given JPEG data as RGB8 image.
-    ///
-    /// # Arguments
-    ///
-    /// * `jpeg_data` - The JPEG data to decode.
-    ///
-    /// # Returns
-    ///
-    /// The decoded data as Image<u8, 3>.
     pub fn decode_rgb8(
         &self,
         jpeg_data: &[u8],
     ) -> Result<Image<u8, 3, CpuAllocator>, JpegTurboError> {
-        self.decode(jpeg_data, turbojpeg::PixelFormat::RGB)
+        let image_size = self.read_header(jpeg_data)?;
+        let mut dst = Image::from_size_val(image_size, 0u8, CpuAllocator)?;
+        self.decode_rgb8_into(jpeg_data, &mut dst)?;
+        Ok(dst)
     }
 
     /// Decodes the given JPEG data as Gray/Mono8 image.
-    ///
-    /// # Arguments
-    ///
-    /// * `jpeg_data` - The JPEG data to decode.
-    ///
-    /// # Returns
-    ///
-    /// The decoded data as Image<u8, 1>.
     pub fn decode_gray8(
         &self,
         jpeg_data: &[u8],
-    ) -> Result<Image<u8, 3, CpuAllocator>, JpegTurboError> {
-        self.decode(jpeg_data, turbojpeg::PixelFormat::GRAY)
+    ) -> Result<Image<u8, 1, CpuAllocator>, JpegTurboError> {
+        let image_size = self.read_header(jpeg_data)?;
+        let mut dst = Image::from_size_val(image_size, 0u8, CpuAllocator)?;
+        self.decode_gray8_into(jpeg_data, &mut dst)?;
+        Ok(dst)
     }
 
-    fn decode<const C: usize>(
+    /// Decodes JPEG bytes as RGB8 into a pre-allocated buffer.
+    pub fn decode_rgb8_into<A: ImageAllocator>(
         &self,
         jpeg_data: &[u8],
+        dst: &mut Image<u8, 3, A>,
+    ) -> Result<(), JpegTurboError> {
+        let size = dst.size();
+        self.decode_into(
+            jpeg_data,
+            dst.as_slice_mut(),
+            size,
+            turbojpeg::PixelFormat::RGB,
+        )
+    }
+
+    /// Decodes JPEG bytes as Gray/Mono8 into a pre-allocated buffer.
+    pub fn decode_gray8_into<A: ImageAllocator>(
+        &self,
+        jpeg_data: &[u8],
+        dst: &mut Image<u8, 1, A>,
+    ) -> Result<(), JpegTurboError> {
+        let size = dst.size();
+        self.decode_into(
+            jpeg_data,
+            dst.as_slice_mut(),
+            size,
+            turbojpeg::PixelFormat::GRAY,
+        )
+    }
+
+    fn decode_into(
+        &self,
+        jpeg_data: &[u8],
+        pixels: &mut [u8],
+        image_size: ImageSize,
         format: turbojpeg::PixelFormat,
-    ) -> Result<Image<u8, C, CpuAllocator>, JpegTurboError> {
-        // get the image size to allocate th data storage
-        let image_size = self.read_header(jpeg_data)?;
+    ) -> Result<(), JpegTurboError> {
+        let header_size = self.read_header(jpeg_data)?;
+        if header_size != image_size {
+            return Err(JpegTurboError::ImageCreationError(
+                ImageError::InvalidImageSize(
+                    header_size.width,
+                    header_size.height,
+                    image_size.width,
+                    image_size.height,
+                ),
+            ));
+        }
 
-        // prepare a storage for the raw pixel data
-        let mut pixels = vec![0u8; image_size.height * image_size.width * C];
-
-        // allocate image container
+        let pitch = format.size() * image_size.width;
         let buf = turbojpeg::Image {
-            pixels: pixels.as_mut_slice(),
+            pixels,
             width: image_size.width,
-            pitch: 3 * image_size.width, // we use no padding between rows
+            pitch,
             height: image_size.height,
             format,
         };
 
-        // decompress the JPEG data
         self.0
             .lock()
-            .expect("Failed to lock the decompressor")
+            .map_err(|_| JpegTurboError::MutexPoisoned)?
             .decompress(jpeg_data, buf)?;
-
-        Ok(Image::new(image_size, pixels, CpuAllocator)?)
+        Ok(())
     }
 }
 
@@ -295,7 +330,7 @@ mod tests {
 
     #[test]
     fn image_decoder() -> Result<(), JpegTurboError> {
-        let jpeg_data = std::fs::read("../../tests/data/dog.jpeg").unwrap();
+        let jpeg_data = std::fs::read("../../tests/data/dog.jpeg")?;
         // read the header
         let image_size = JpegTurboDecoder::new()?.read_header(&jpeg_data)?;
         assert_eq!(image_size.width, 258);
@@ -305,6 +340,17 @@ mod tests {
         assert_eq!(image.cols(), 258);
         assert_eq!(image.rows(), 195);
         assert_eq!(image.num_channels(), 3);
+        Ok(())
+    }
+
+    #[test]
+    fn image_decoder_gray8() -> Result<(), JpegTurboError> {
+        let jpeg_data = std::fs::read("../../tests/data/dog.jpeg")?;
+        let image = JpegTurboDecoder::new()?.decode_gray8(&jpeg_data)?;
+        assert_eq!(image.cols(), 258);
+        assert_eq!(image.rows(), 195);
+        assert_eq!(image.num_channels(), 1);
+        assert_eq!(image.as_slice().len(), 258 * 195);
         Ok(())
     }
 

@@ -42,8 +42,11 @@ pub mod histogram;
 /// utilities for interpolation.
 pub mod interpolation;
 
-/// module containing parallization utilities.
+/// module containing parallelization utilities.
 pub mod parallel;
+
+/// runtime CPU feature probe shared by SIMD-dispatching kernels.
+pub mod simd;
 
 /// image processing metrics module.
 pub mod metrics;
@@ -68,3 +71,6 @@ pub mod distance_transform;
 
 /// optical flow module
 pub mod optical_flow_pyr_lk;
+
+/// contours
+pub mod contours;

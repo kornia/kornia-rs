@@ -60,6 +60,8 @@ pub use kornia_image::color_spaces::{
 
 mod convert;
 
+/// Colormap application (LUT-based, NEON-accelerated on aarch64).
+pub mod colormap;
 mod gray;
 mod hsv;
 mod rgb;
@@ -68,6 +70,7 @@ mod yuv;
 // Export traits for type-safe conversions
 pub use convert::{ConvertColor, ConvertColorWithBackground};
 
+pub use colormap::{apply_colormap, ColormapType};
 // Keep old functions available for backward compatibility
 pub use gray::*;
 pub use hsv::*;

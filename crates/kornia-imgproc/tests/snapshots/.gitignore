@@ -1,0 +1,10 @@
+# Snapshots (kornia_*.json, cv2_*.json) are regenerated on demand via
+# examples/dump_snapshots.sh. They're heavy (~1.6 MB total) and only
+# needed during the cv2-parity work — kept out of git on purpose.
+#
+# CI regression catching uses the committed digests.txt instead: it
+# records the SHA256 of each kornia_*.json so any unexpected change
+# to find_contours' output is caught by the snapshot_digests integration
+# test, without storing the full JSON.
+*.json
+!.gitignore

@@ -17,7 +17,7 @@ pub mod ops;
 pub mod color_spaces;
 
 pub use crate::error::ImageError;
-pub use crate::image::{Image, ImageLayout, ImageSize, PixelFormat};
+pub use crate::image::{Image, ImageLayout, ImageSize, InterpolationMode, PixelFormat};
 
 /// Arrow integration for converting images to Arrow format
 #[cfg(feature = "arrow")]

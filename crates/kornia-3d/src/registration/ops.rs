@@ -98,7 +98,7 @@ pub(crate) fn find_correspondences(
     }
 
     let mid_dist = distances.len() / 2;
-    distances.select_nth_unstable_by(mid_dist, |a, b| a.partial_cmp(b).unwrap());
+    distances.select_nth_unstable_by(mid_dist, |a, b| a.total_cmp(b));
     let median_dist = distances[mid_dist];
 
     let mut dmed = nn_results
@@ -107,7 +107,7 @@ pub(crate) fn find_correspondences(
         .collect::<Vec<_>>();
 
     let mid_mad = dmed.len() / 2;
-    dmed.select_nth_unstable_by(mid_mad, |a, b| a.partial_cmp(b).unwrap());
+    dmed.select_nth_unstable_by(mid_mad, |a, b| a.total_cmp(b));
     let mad = dmed[mid_mad];
 
     let sigma_d = 1.4826 * mad;

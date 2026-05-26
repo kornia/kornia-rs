@@ -51,16 +51,14 @@ homepage = "http://www.kornia.org"
 repository = "https://github.com/kornia/kornia-rs"
 
 [project.optional-dependencies]
-dev = [
-  "pytest",
-  "pytest-run-parallel",
-  "numpy",
-  "torch",
-]
+dev = ["pytest", "pytest-run-parallel", "numpy", "torch"]
 
 [build-system]
-requires = ["maturin>=1,<2"]
+requires = ["maturin>=1.9,<2"]
 build-backend = "maturin"
+
+[tool.pytest.ini_options]
+pythonpath = ["benchmarks"]
 
 [tool.uv]
 extra-index-url = ["https://download.pytorch.org/whl/cpu"]
