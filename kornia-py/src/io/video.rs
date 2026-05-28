@@ -1,4 +1,4 @@
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 use kornia_io::stream::video::{ImageFormat, VideoReader};
 use numpy::{PyArray, PyArray3, PyArrayMethods};
@@ -27,10 +27,24 @@ pub struct PyVideoReader {
     format: PyImageFormat,
 }
 
+impl PyVideoReader {
+    fn lock_reader(&self) -> PyResult<MutexGuard<'_, VideoReader>> {
+        self.reader
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("VideoReader mutex was poisoned"))
+    }
+}
+
 #[pymethods]
 impl PyVideoReader {
     #[new]
     pub fn new(path: &str, format: PyImageFormat) -> PyResult<Self> {
+        if matches!(format, PyImageFormat::Mono8) {
+            return Err(PyRuntimeError::new_err(
+                "Mono8 video reading is not supported yet",
+            ));
+        }
+
         let reader = VideoReader::new(path, format.into())
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
 
@@ -41,69 +55,59 @@ impl PyVideoReader {
     }
 
     pub fn start(&self) -> PyResult<()> {
-        self.reader
-            .lock()
-            .unwrap()
+        self.lock_reader()?
             .start()
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))
     }
 
     pub fn pause(&self) -> PyResult<()> {
-        self.reader
-            .lock()
-            .unwrap()
+        self.lock_reader()?
             .pause()
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))
     }
 
     pub fn close(&self) -> PyResult<()> {
-        self.reader
-            .lock()
-            .unwrap()
+        self.lock_reader()?
             .close()
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))
     }
 
     pub fn reset(&self) -> PyResult<()> {
-        self.reader
-            .lock()
-            .unwrap()
+        self.lock_reader()?
             .reset()
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))
     }
 
     #[getter]
-    pub fn fps(&self) -> Option<f64> {
-        self.reader.lock().unwrap().get_fps()
+    pub fn fps(&self) -> PyResult<Option<f64>> {
+        Ok(self.lock_reader()?.get_fps())
     }
 
     #[getter]
-    pub fn position_sec(&self) -> Option<f64> {
-        self.reader
-            .lock()
-            .unwrap()
+    pub fn position_sec(&self) -> PyResult<Option<f64>> {
+        Ok(self
+            .lock_reader()?
             .get_pos()
-            .map(|duration| duration.as_secs_f64())
+            .map(|duration| duration.as_secs_f64()))
     }
 
     #[getter]
-    pub fn duration_sec(&self) -> Option<f64> {
-        self.reader
-            .lock()
-            .unwrap()
+    pub fn duration_sec(&self) -> PyResult<Option<f64>> {
+        Ok(self
+            .lock_reader()?
             .get_duration()
-            .map(|duration| duration.as_secs_f64())
+            .map(|duration| duration.as_secs_f64()))
     }
 
     pub fn grab(&self, py: Python<'_>) -> PyResult<Option<Py<PyArray3<u8>>>> {
         match self.format {
             PyImageFormat::Rgb8 => {
-                let image = self
-                    .reader
-                    .lock()
-                    .unwrap()
-                    .grab_rgb8()
-                    .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+                let image = py.allow_threads(|| {
+                    let mut reader = self.lock_reader()?;
+                    reader
+                        .grab_rgb8()
+                        .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+                })?;
 
                 let Some(image) = image else {
                     return Ok(None);
@@ -114,6 +118,8 @@ impl PyVideoReader {
 
                 let array = unsafe { PyArray::<u8, _>::new(py, [height, width, 3], false) };
 
+                // Copy the GStreamer-backed frame into a fresh NumPy array so the Python
+                // result is not tied to the lifetime of the GStreamer buffer pool.
                 unsafe {
                     array
                         .as_slice_mut()
@@ -124,7 +130,7 @@ impl PyVideoReader {
                 Ok(Some(array.unbind()))
             }
             PyImageFormat::Mono8 => Err(PyRuntimeError::new_err(
-                "Mono8 video grab is not supported yet",
+                "Mono8 video reading is not supported yet",
             )),
         }
     }
