@@ -6,12 +6,7 @@
 //!
 //! # Swap-in story
 //!
-//! Each concrete backend lives behind its own feature flag:
-//! - `gpu-cubecl`      → [`cubecl`] module  (stable Rust, multi-platform JIT) — stub
-//! - `gpu-cuda-oxide`  → [`cuda_oxide`] module  (reserved; see `proto/cuda-oxide` branch) — stub
-//!
-//! To add a new backend: implement [`Backend`] for your type, add a `gpu-<name>` feature in
-//! `Cargo.toml`, and add a `#[cfg(feature = "gpu-<name>")] pub mod <name>;` entry here.
+//! The concrete backend lives behind the `gpu-cubecl` feature flag → [`cubecl`] module (stub).
 
 use std::alloc::Layout;
 
@@ -19,9 +14,6 @@ use crate::allocator::{TensorAllocator, TensorAllocatorError};
 
 #[cfg(feature = "gpu-cubecl")]
 pub mod cubecl;
-
-#[cfg(feature = "gpu-cuda-oxide")]
-pub mod cuda_oxide;
 
 /// Raw device-memory provider.
 ///
