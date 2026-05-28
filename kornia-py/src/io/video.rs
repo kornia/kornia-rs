@@ -102,12 +102,10 @@ impl PyVideoReader {
     pub fn grab(&self, py: Python<'_>) -> PyResult<Option<Py<PyArray3<u8>>>> {
         match self.format {
             PyImageFormat::Rgb8 => {
-                let image = py.allow_threads(|| {
-                    let mut reader = self.lock_reader()?;
-                    reader
-                        .grab_rgb8()
-                        .map_err(|e| PyRuntimeError::new_err(e.to_string()))
-                })?;
+                let image = self
+                    .lock_reader()?
+                    .grab_rgb8()
+                    .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
 
                 let Some(image) = image else {
                     return Ok(None);
