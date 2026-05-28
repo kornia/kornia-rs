@@ -7,8 +7,8 @@
 //! # Swap-in story
 //!
 //! Each concrete backend lives behind its own feature flag:
-//! - `gpu-cubecl`      → [`cubecl`] module  (stable Rust, multi-platform JIT)
-//! - `gpu-cuda-oxide`  → [`cuda_oxide`] module  (reserved; see `proto/cuda-oxide` branch)
+//! - `gpu-cubecl`      → [`cubecl`] module  (stable Rust, multi-platform JIT) — stub
+//! - `gpu-cuda-oxide`  → [`cuda_oxide`] module  (reserved; see `proto/cuda-oxide` branch) — stub
 //!
 //! To add a new backend: implement [`Backend`] for your type, add a `gpu-<name>` feature in
 //! `Cargo.toml`, and add a `#[cfg(feature = "gpu-<name>")] pub mod <name>;` entry here.
@@ -31,14 +31,14 @@ pub trait Backend: Clone + Send + Sync + 'static {
     /// Backend-native error type returned from allocation failures.
     type Error: std::error::Error + Send + Sync + 'static;
 
-    /// Allocate `size` bytes of device memory. Returns a device pointer.
-    fn alloc(&self, size: usize) -> Result<*mut u8, Self::Error>;
+    /// Allocate device memory for the given `layout`.
+    fn alloc(&self, layout: Layout) -> Result<*mut u8, Self::Error>;
 
     /// Free a device pointer previously returned by [`alloc`](Backend::alloc).
     ///
     /// # Safety
-    /// `ptr` must have been returned by this backend's `alloc`, and `size` must match.
-    unsafe fn dealloc(&self, ptr: *mut u8, size: usize);
+    /// `ptr` must have been returned by this backend's `alloc` with the same `layout`.
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout);
 }
 
 /// [`TensorAllocator`] wrapper around any [`Backend`].
@@ -56,14 +56,19 @@ impl<B: Backend> GpuAllocator<B> {
 
 impl<B: Backend> TensorAllocator for GpuAllocator<B> {
     fn alloc(&self, layout: Layout) -> Result<*mut u8, TensorAllocatorError> {
-        self.backend
-            .alloc(layout.size())
-            .map_err(|_e| TensorAllocatorError::NullPointer)
+        let ptr = self
+            .backend
+            .alloc(layout)
+            .map_err(|_e| TensorAllocatorError::NullPointer)?;
+        if ptr.is_null() {
+            return Err(TensorAllocatorError::NullPointer);
+        }
+        Ok(ptr)
     }
 
     fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         if !ptr.is_null() {
-            unsafe { self.backend.dealloc(ptr, layout.size()) }
+            unsafe { self.backend.dealloc(ptr, layout) }
         }
     }
 }

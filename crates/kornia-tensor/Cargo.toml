@@ -27,7 +27,7 @@ serde_json = { workspace = true }
 
 [features]
 bincode = ["dep:bincode"]
-serde = ["dep:serde"]
 gpu = []
 gpu-cubecl = ["gpu"]
 gpu-cuda-oxide = ["gpu"]
+serde = ["dep:serde"]
