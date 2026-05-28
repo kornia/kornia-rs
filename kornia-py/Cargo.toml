@@ -27,5 +27,5 @@ rayon = { workspace = true }
 
 [features]
 default = ["turbojpeg"]
-turbojpeg = ["kornia-io/turbojpeg"]
 gstreamer = ["kornia-io/gstreamer"]
+turbojpeg = ["kornia-io/turbojpeg"]
