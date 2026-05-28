@@ -387,6 +387,8 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     io_mod.add_class::<PyImageDecoder>()?;
     #[cfg(feature = "turbojpeg")]
     io_mod.add_class::<PyImageEncoder>()?;
+    io_mod.add_class::<io::video::PyImageFormat>()?;
+    io_mod.add_class::<io::video::PyVideoReader>()?;
     m.add_submodule(&io_mod)?;
 
     // Imgproc submodule
