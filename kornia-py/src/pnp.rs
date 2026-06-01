@@ -34,7 +34,7 @@ use rand::{rngs::StdRng, SeedableRng};
 ///
 /// Raises ValueError on shape mismatches or when RANSAC produces no model.
 #[pyfunction(name = "solve_pnp_ransac")]
-#[pyo3(signature = (world, image, k, threshold=4.0, max_iterations=1000, confidence=0.999, seed=None))]
+#[pyo3(signature = (world, image, k, threshold=4.0, max_iterations=1000, confidence=0.999, lo_every = 2, seed=None))]
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn solve_pnp_ransac_py<'py>(
     py: Python<'py>,
@@ -44,6 +44,7 @@ pub fn solve_pnp_ransac_py<'py>(
     threshold: f64,
     max_iterations: u32,
     confidence: f64,
+    lo_every: u32,
     seed: Option<u64>,
 ) -> PyResult<(
     Bound<'py, PyArray2<f64>>,
@@ -121,6 +122,7 @@ pub fn solve_pnp_ransac_py<'py>(
         max_iters: max_iterations,
         confidence,
         inlier_threshold: threshold,
+        lo_every,
         ..Default::default()
     };
 
