@@ -14,9 +14,43 @@
 
 use crate::camera::PinholeCamera;
 use kornia_algebra::{Mat3F64, Vec3F64, SO3F64};
-use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
+use kornia_image::{allocator::CpuAllocator, Image, ImageError, ImageSize};
 use kornia_imgproc::calibration::distortion::{distort_point_polynomial, PolynomialDistortion};
 use kornia_imgproc::calibration::CameraIntrinsic;
+
+/// Errors produced while building or applying a [`StereoRectifier`].
+#[derive(Debug, thiserror::Error)]
+pub enum StereoError {
+    /// The left and right calibrations describe different resolutions.
+    #[error(
+        "left and right calibration must share the same resolution, got {left:?} and {right:?}"
+    )]
+    ResolutionMismatch {
+        /// Left calibration resolution `(width, height)`.
+        left: (usize, usize),
+        /// Right calibration resolution `(width, height)`.
+        right: (usize, usize),
+    },
+
+    /// The stereo baseline is (near) zero, so no rectifying rotation exists.
+    #[error(
+        "degenerate stereo baseline: |t_rel| = {0} m; the cameras must be physically separated"
+    )]
+    DegenerateBaseline(f64),
+
+    /// An input image's resolution does not match the rectifier's.
+    #[error("input image {got:?} does not match rectifier resolution {expected:?}")]
+    ImageSizeMismatch {
+        /// Provided image resolution `(width, height)`.
+        got: (usize, usize),
+        /// Rectifier resolution `(width, height)`.
+        expected: (usize, usize),
+    },
+
+    /// Failed to build the rectified image from the remapped buffer.
+    #[error(transparent)]
+    Image(#[from] ImageError),
+}
 
 /// Precomputed stereo rectification for a fixed camera pair and resolution.
 pub struct StereoRectifier {
@@ -60,21 +94,24 @@ impl StereoRectifier {
     /// relative pose left → right (`X_right = r_rel * X_left + t_rel`, with
     /// `t_rel` in metres).
     ///
-    /// # Panics
-    /// Panics if `left` and `right` have different resolutions, or if `t_rel`
-    /// is (near) zero — a degenerate baseline has no well-defined rectifying
-    /// rotation and would otherwise produce `NaN` remap tables.
+    /// # Errors
+    /// - [`StereoError::ResolutionMismatch`] if `left` and `right` describe
+    ///   different resolutions.
+    /// - [`StereoError::DegenerateBaseline`] if `t_rel` is (near) zero — a
+    ///   degenerate baseline has no well-defined rectifying rotation and would
+    ///   otherwise produce `NaN` remap tables.
     pub fn from_calib(
         left: &CameraCalib,
         right: &CameraCalib,
         r_rel: Mat3F64,
         t_rel: Vec3F64,
-    ) -> Self {
-        assert_eq!(
-            (left.width, left.height),
-            (right.width, right.height),
-            "left and right calibration must share the same resolution"
-        );
+    ) -> Result<Self, StereoError> {
+        if (left.width, left.height) != (right.width, right.height) {
+            return Err(StereoError::ResolutionMismatch {
+                left: (left.width, left.height),
+                right: (right.width, right.height),
+            });
+        }
 
         let width = left.width;
         let height = left.height;
@@ -91,14 +128,13 @@ impl StereoRectifier {
         let idx = if t.x.abs() > t.y.abs() { 0 } else { 1 };
         let c = component(&t, idx);
         let nt = t.length();
-        assert!(
-            nt > 1e-9,
-            "degenerate stereo baseline: |t_rel| = {nt} m; the cameras must be physically separated"
-        );
+        if nt <= 1e-9 {
+            return Err(StereoError::DegenerateBaseline(nt));
+        }
         let mut uu = Vec3F64::ZERO;
         set_component(&mut uu, idx, if c > 0.0 { 1.0 } else { -1.0 });
 
-        let ww = cross(&t, &uu);
+        let ww = t.cross(uu);
         let nw = ww.length();
         let ww = if nw > 0.0 {
             ww * ((c.abs() / nt).clamp(-1.0, 1.0).acos() / nw)
@@ -119,7 +155,7 @@ impl StereoRectifier {
         let left_map = build_map(width, height, f, cx, cy, &rect_l, left);
         let right_map = build_map(width, height, f, cx, cy, &rect_r, right);
 
-        Self {
+        Ok(Self {
             width,
             height,
             f,
@@ -128,7 +164,7 @@ impl StereoRectifier {
             baseline: nt,
             left_map,
             right_map,
-        }
+        })
     }
 
     /// Rectified pinhole camera (shared by both views; zero distortion).
@@ -157,17 +193,25 @@ impl StereoRectifier {
 
     /// Rectifies a raw left image.
     ///
-    /// # Panics
-    /// Panics if `img`'s resolution differs from the rectifier's.
-    pub fn rectify_left(&self, img: &Image<u8, 1, CpuAllocator>) -> Image<u8, 1, CpuAllocator> {
+    /// # Errors
+    /// [`StereoError::ImageSizeMismatch`] if `img`'s resolution differs from
+    /// the rectifier's.
+    pub fn rectify_left(
+        &self,
+        img: &Image<u8, 1, CpuAllocator>,
+    ) -> Result<Image<u8, 1, CpuAllocator>, StereoError> {
         self.remap(img, &self.left_map)
     }
 
     /// Rectifies a raw right image.
     ///
-    /// # Panics
-    /// Panics if `img`'s resolution differs from the rectifier's.
-    pub fn rectify_right(&self, img: &Image<u8, 1, CpuAllocator>) -> Image<u8, 1, CpuAllocator> {
+    /// # Errors
+    /// [`StereoError::ImageSizeMismatch`] if `img`'s resolution differs from
+    /// the rectifier's.
+    pub fn rectify_right(
+        &self,
+        img: &Image<u8, 1, CpuAllocator>,
+    ) -> Result<Image<u8, 1, CpuAllocator>, StereoError> {
         self.remap(img, &self.right_map)
     }
 
@@ -175,30 +219,29 @@ impl StereoRectifier {
         &self,
         img: &Image<u8, 1, CpuAllocator>,
         map: &[[f32; 2]],
-    ) -> Image<u8, 1, CpuAllocator> {
-        assert!(
-            img.width() == self.width && img.height() == self.height,
-            "input image {}x{} does not match rectifier resolution {}x{}",
-            img.width(),
-            img.height(),
-            self.width,
-            self.height
-        );
+    ) -> Result<Image<u8, 1, CpuAllocator>, StereoError> {
+        if (img.width(), img.height()) != (self.width, self.height) {
+            return Err(StereoError::ImageSizeMismatch {
+                got: (img.width(), img.height()),
+                expected: (self.width, self.height),
+            });
+        }
         let src = img.as_slice();
         let (sw, sh) = (img.width(), img.height());
         let mut out = vec![0u8; self.width * self.height];
         for (dst, &[fx, fy]) in out.iter_mut().zip(map.iter()) {
-            *dst = sample_bilinear(src, sw, sh, fx, fy);
+            // Pixels whose source falls outside the raw image have no data;
+            // fill the rectified border with black.
+            *dst = sample_bilinear(src, sw, sh, fx, fy).unwrap_or(0);
         }
-        Image::from_size_slice(
+        Ok(Image::from_size_slice(
             ImageSize {
                 width: self.width,
                 height: self.height,
             },
             &out,
             CpuAllocator,
-        )
-        .expect("rectified image size matches buffer")
+        )?)
     }
 }
 
@@ -242,13 +285,16 @@ fn build_map(
     map
 }
 
-fn sample_bilinear(src: &[u8], w: usize, h: usize, fx: f32, fy: f32) -> u8 {
+/// Samples the source image at `(fx, fy)` with bilinear interpolation.
+/// Returns `None` when the coordinate is non-finite or outside the image, so
+/// the caller decides how to fill those (out-of-frame) rectified pixels.
+fn sample_bilinear(src: &[u8], w: usize, h: usize, fx: f32, fy: f32) -> Option<u8> {
     if !fx.is_finite() || !fy.is_finite() || fx < 0.0 || fy < 0.0 {
-        return 0;
+        return None;
     }
     let (wf, hf) = (w as f32, h as f32);
     if fx > wf - 1.0 || fy > hf - 1.0 {
-        return 0;
+        return None;
     }
     let x0 = fx.floor() as usize;
     let y0 = fy.floor() as usize;
@@ -262,15 +308,7 @@ fn sample_bilinear(src: &[u8], w: usize, h: usize, fx: f32, fy: f32) -> u8 {
     let p11 = src[y1 * w + x1] as f32;
     let top = p00 + (p01 - p00) * ax;
     let bot = p10 + (p11 - p10) * ax;
-    (top + (bot - top) * ay).round().clamp(0.0, 255.0) as u8
-}
-
-fn cross(a: &Vec3F64, b: &Vec3F64) -> Vec3F64 {
-    Vec3F64::new(
-        a.y * b.z - a.z * b.y,
-        a.z * b.x - a.x * b.z,
-        a.x * b.y - a.y * b.x,
-    )
+    Some((top + (bot - top) * ay).round().clamp(0.0, 255.0) as u8)
 }
 
 fn component(v: &Vec3F64, idx: usize) -> f64 {
@@ -382,7 +420,7 @@ mod tests {
         // would fail this by a wide margin.
         let r_rel = SO3F64::exp(Vec3F64::new(0.035, 0.018, 0.0)).matrix();
         let t_rel = Vec3F64::new(-0.10, 0.0, 0.0);
-        let rect = StereoRectifier::from_calib(&left, &right, r_rel, t_rel);
+        let rect = StereoRectifier::from_calib(&left, &right, r_rel, t_rel).unwrap();
 
         // Points in the left camera frame, all comfortably inside the frustum.
         let points = [
@@ -402,9 +440,10 @@ mod tests {
             // Stamp each raw view and rectify.
             let img_l = dot_image(w, h, ul.round() as usize, vl.round() as usize);
             let img_r = dot_image(w, h, ur.round() as usize, vr.round() as usize);
-            let (_, cvl) = centroid(&rect.rectify_left(&img_l)).expect("left dot survives rectify");
+            let (_, cvl) =
+                centroid(&rect.rectify_left(&img_l).unwrap()).expect("left dot survives rectify");
             let (_, cvr) =
-                centroid(&rect.rectify_right(&img_r)).expect("right dot survives rectify");
+                centroid(&rect.rectify_right(&img_r).unwrap()).expect("right dot survives rectify");
 
             assert!(
                 (cvl - cvr).abs() < 2.0,
@@ -416,24 +455,45 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "same resolution")]
-    fn mismatched_resolution_panics() {
+    fn mismatched_resolution_errors() {
         let left = pinhole(640, 480, 400.0, 320.0, 240.0);
         let right = pinhole(752, 480, 400.0, 320.0, 240.0);
-        StereoRectifier::from_calib(
+        let result = StereoRectifier::from_calib(
             &left,
             &right,
             Mat3F64::IDENTITY,
             Vec3F64::new(-0.1, 0.0, 0.0),
         );
+        assert!(matches!(
+            result,
+            Err(StereoError::ResolutionMismatch { .. })
+        ));
     }
 
     #[test]
-    #[should_panic(expected = "degenerate stereo baseline")]
-    fn zero_baseline_panics() {
+    fn zero_baseline_errors() {
         let left = pinhole(640, 480, 400.0, 320.0, 240.0);
         let right = pinhole(640, 480, 400.0, 320.0, 240.0);
-        StereoRectifier::from_calib(&left, &right, Mat3F64::IDENTITY, Vec3F64::ZERO);
+        let result = StereoRectifier::from_calib(&left, &right, Mat3F64::IDENTITY, Vec3F64::ZERO);
+        assert!(matches!(result, Err(StereoError::DegenerateBaseline(_))));
+    }
+
+    #[test]
+    fn rectify_size_mismatch_errors() {
+        let left = pinhole(640, 480, 400.0, 320.0, 240.0);
+        let right = pinhole(640, 480, 400.0, 320.0, 240.0);
+        let rect = StereoRectifier::from_calib(
+            &left,
+            &right,
+            Mat3F64::IDENTITY,
+            Vec3F64::new(-0.1, 0.0, 0.0),
+        )
+        .unwrap();
+        let wrong = dot_image(320, 240, 10, 10);
+        assert!(matches!(
+            rect.rectify_left(&wrong),
+            Err(StereoError::ImageSizeMismatch { .. })
+        ));
     }
 
     /// Splits a row-major 4x4 `T_BS` into rotation (3x3) and translation (3).
@@ -498,7 +558,7 @@ mod tests {
         let left = calib(367.215, 248.375);
         let right = calib(379.999, 255.238);
         let (r_rel, t_rel) = relative_pose(&t_bs0, &t_bs1);
-        let rect = StereoRectifier::from_calib(&left, &right, r_rel, t_rel);
+        let rect = StereoRectifier::from_calib(&left, &right, r_rel, t_rel).unwrap();
 
         // EuRoC VI-sensor stereo baseline is ~0.11 m.
         assert!(

@@ -2,4 +2,4 @@
 
 mod rectify;
 
-pub use rectify::{CameraCalib, StereoRectifier};
+pub use rectify::{CameraCalib, StereoError, StereoRectifier};
