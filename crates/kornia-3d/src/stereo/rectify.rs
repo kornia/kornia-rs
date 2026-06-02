@@ -59,12 +59,23 @@ impl StereoRectifier {
     /// Builds the rectifier from generic left/right calibration and the
     /// relative pose left → right (`X_right = r_rel * X_left + t_rel`, with
     /// `t_rel` in metres).
+    ///
+    /// # Panics
+    /// Panics if `left` and `right` have different resolutions, or if `t_rel`
+    /// is (near) zero — a degenerate baseline has no well-defined rectifying
+    /// rotation and would otherwise produce `NaN` remap tables.
     pub fn from_calib(
         left: &CameraCalib,
         right: &CameraCalib,
         r_rel: Mat3F64,
         t_rel: Vec3F64,
     ) -> Self {
+        assert_eq!(
+            (left.width, left.height),
+            (right.width, right.height),
+            "left and right calibration must share the same resolution"
+        );
+
         let width = left.width;
         let height = left.height;
 
@@ -80,6 +91,10 @@ impl StereoRectifier {
         let idx = if t.x.abs() > t.y.abs() { 0 } else { 1 };
         let c = component(&t, idx);
         let nt = t.length();
+        assert!(
+            nt > 1e-9,
+            "degenerate stereo baseline: |t_rel| = {nt} m; the cameras must be physically separated"
+        );
         let mut uu = Vec3F64::ZERO;
         set_component(&mut uu, idx, if c > 0.0 { 1.0 } else { -1.0 });
 
@@ -141,11 +156,17 @@ impl StereoRectifier {
     }
 
     /// Rectifies a raw left image.
+    ///
+    /// # Panics
+    /// Panics if `img`'s resolution differs from the rectifier's.
     pub fn rectify_left(&self, img: &Image<u8, 1, CpuAllocator>) -> Image<u8, 1, CpuAllocator> {
         self.remap(img, &self.left_map)
     }
 
     /// Rectifies a raw right image.
+    ///
+    /// # Panics
+    /// Panics if `img`'s resolution differs from the rectifier's.
     pub fn rectify_right(&self, img: &Image<u8, 1, CpuAllocator>) -> Image<u8, 1, CpuAllocator> {
         self.remap(img, &self.right_map)
     }
@@ -155,6 +176,14 @@ impl StereoRectifier {
         img: &Image<u8, 1, CpuAllocator>,
         map: &[[f32; 2]],
     ) -> Image<u8, 1, CpuAllocator> {
+        assert!(
+            img.width() == self.width && img.height() == self.height,
+            "input image {}x{} does not match rectifier resolution {}x{}",
+            img.width(),
+            img.height(),
+            self.width,
+            self.height
+        );
         let src = img.as_slice();
         let (sw, sh) = (img.width(), img.height());
         let mut out = vec![0u8; self.width * self.height];
@@ -283,6 +312,128 @@ mod tests {
                 p2: 0.0,
             },
         }
+    }
+
+    /// Pinhole calibration with no lens distortion.
+    fn pinhole(width: usize, height: usize, f: f64, cx: f64, cy: f64) -> CameraCalib {
+        CameraCalib {
+            width,
+            height,
+            fx: f,
+            fy: f,
+            cx,
+            cy,
+            distortion: PolynomialDistortion {
+                k1: 0.0,
+                k2: 0.0,
+                k3: 0.0,
+                k4: 0.0,
+                k5: 0.0,
+                k6: 0.0,
+                p1: 0.0,
+                p2: 0.0,
+            },
+        }
+    }
+
+    /// Projects a 3D camera-frame point to a pixel (distortion-free pinhole).
+    fn project(cam: &CameraCalib, p: Vec3F64) -> Option<(f64, f64)> {
+        if p.z <= 0.0 {
+            return None;
+        }
+        Some((cam.fx * p.x / p.z + cam.cx, cam.fy * p.y / p.z + cam.cy))
+    }
+
+    /// A black image with a single white pixel at `(u, v)`.
+    fn dot_image(width: usize, height: usize, u: usize, v: usize) -> Image<u8, 1, CpuAllocator> {
+        let mut buf = vec![0u8; width * height];
+        buf[v * width + u] = 255;
+        Image::from_size_slice(ImageSize { width, height }, &buf, CpuAllocator).unwrap()
+    }
+
+    /// Intensity-weighted centroid `(u, v)` of all non-zero pixels.
+    fn centroid(img: &Image<u8, 1, CpuAllocator>) -> Option<(f64, f64)> {
+        let w = img.width();
+        let (mut su, mut sv, mut sw) = (0.0, 0.0, 0.0);
+        for (i, &p) in img.as_slice().iter().enumerate() {
+            if p == 0 {
+                continue;
+            }
+            let val = p as f64;
+            su += val * (i % w) as f64;
+            sv += val * (i / w) as f64;
+            sw += val;
+        }
+        (sw > 0.0).then(|| (su / sw, sv / sw))
+    }
+
+    /// The defining property of rectification: the same 3D point projects to the
+    /// same *row* in both rectified images (the epipolar lines are horizontal and
+    /// aligned). This exercises the full rectification pipeline — split rotation,
+    /// `w_r` construction, and `build_map` — which `baseline()` alone does not.
+    #[test]
+    fn rectified_views_are_row_aligned() {
+        let (w, h) = (640, 480);
+        let left = pinhole(w, h, 400.0, 320.0, 240.0);
+        let right = pinhole(w, h, 400.0, 320.0, 240.0);
+
+        // A non-trivial relative pose: ~2° pitch + ~1° yaw, 0.1 m baseline. The
+        // pitch makes the *raw* rows disagree by ~14 px, so a broken rectifier
+        // would fail this by a wide margin.
+        let r_rel = SO3F64::exp(Vec3F64::new(0.035, 0.018, 0.0)).matrix();
+        let t_rel = Vec3F64::new(-0.10, 0.0, 0.0);
+        let rect = StereoRectifier::from_calib(&left, &right, r_rel, t_rel);
+
+        // Points in the left camera frame, all comfortably inside the frustum.
+        let points = [
+            Vec3F64::new(0.0, 0.0, 3.0),
+            Vec3F64::new(0.10, -0.05, 4.0),
+            Vec3F64::new(-0.08, 0.06, 2.5),
+        ];
+
+        let mut checked = 0;
+        for x_left in points {
+            let x_right = r_rel * x_left + t_rel;
+            let (Some((ul, vl)), Some((ur, vr))) =
+                (project(&left, x_left), project(&right, x_right))
+            else {
+                continue;
+            };
+            // Stamp each raw view and rectify.
+            let img_l = dot_image(w, h, ul.round() as usize, vl.round() as usize);
+            let img_r = dot_image(w, h, ur.round() as usize, vr.round() as usize);
+            let (_, cvl) = centroid(&rect.rectify_left(&img_l)).expect("left dot survives rectify");
+            let (_, cvr) =
+                centroid(&rect.rectify_right(&img_r)).expect("right dot survives rectify");
+
+            assert!(
+                (cvl - cvr).abs() < 2.0,
+                "rectified rows not aligned: left v={cvl}, right v={cvr}"
+            );
+            checked += 1;
+        }
+        assert!(checked >= 2, "too few points stayed in frame ({checked})");
+    }
+
+    #[test]
+    #[should_panic(expected = "same resolution")]
+    fn mismatched_resolution_panics() {
+        let left = pinhole(640, 480, 400.0, 320.0, 240.0);
+        let right = pinhole(752, 480, 400.0, 320.0, 240.0);
+        StereoRectifier::from_calib(
+            &left,
+            &right,
+            Mat3F64::IDENTITY,
+            Vec3F64::new(-0.1, 0.0, 0.0),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "degenerate stereo baseline")]
+    fn zero_baseline_panics() {
+        let left = pinhole(640, 480, 400.0, 320.0, 240.0);
+        let right = pinhole(640, 480, 400.0, 320.0, 240.0);
+        StereoRectifier::from_calib(&left, &right, Mat3F64::IDENTITY, Vec3F64::ZERO);
     }
 
     /// Splits a row-major 4x4 `T_BS` into rotation (3x3) and translation (3).
