@@ -13,7 +13,7 @@
 //! extrinsics) live with their callers and feed [`StereoRectifier::from_calib`].
 
 use crate::camera::PinholeCamera;
-use kornia_algebra::{Mat3F64, Vec3F64};
+use kornia_algebra::{Mat3F64, Vec3F64, SO3F64};
 use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
 use kornia_imgproc::calibration::distortion::{distort_point_polynomial, PolynomialDistortion};
 use kornia_imgproc::calibration::CameraIntrinsic;
@@ -70,9 +70,9 @@ impl StereoRectifier {
 
         // Bouguet: split the relative rotation in half so both cameras rotate
         // symmetrically into a common plane.
-        let mut om = rodrigues_vec(&r_rel);
+        let mut om = SO3F64::from_matrix(&r_rel).log();
         om *= -0.5;
-        let r_r = rodrigues_mat(&om);
+        let r_r = SO3F64::exp(om).matrix();
         let r_l = r_r.transpose();
         let t = r_r * t_rel;
 
@@ -90,7 +90,7 @@ impl StereoRectifier {
         } else {
             ww
         };
-        let w_r = rodrigues_mat(&ww);
+        let w_r = SO3F64::exp(ww).matrix();
 
         let rect_l = w_r * r_l; // left -> rectified
         let rect_r = w_r * r_r; // right -> rectified
@@ -236,55 +236,6 @@ fn sample_bilinear(src: &[u8], w: usize, h: usize, fx: f32, fy: f32) -> u8 {
     (top + (bot - top) * ay).round().clamp(0.0, 255.0) as u8
 }
 
-/// Rotation vector -> rotation matrix (Rodrigues).
-fn rodrigues_mat(v: &Vec3F64) -> Mat3F64 {
-    let theta = v.length();
-    if theta < 1e-12 {
-        return Mat3F64::IDENTITY;
-    }
-    let k = *v / theta;
-    let kx = skew(&k);
-    let kx2 = kx * kx;
-    Mat3F64::IDENTITY + kx * theta.sin() + kx2 * (1.0 - theta.cos())
-}
-
-/// Rotation matrix -> rotation vector (Rodrigues).
-fn rodrigues_vec(m: &Mat3F64) -> Vec3F64 {
-    let e = |r: usize, c: usize| mat_elem(m, r, c);
-    let trace = e(0, 0) + e(1, 1) + e(2, 2);
-    let cos_theta = ((trace - 1.0) * 0.5).clamp(-1.0, 1.0);
-    let theta = cos_theta.acos();
-    if theta < 1e-12 {
-        return Vec3F64::ZERO;
-    }
-    let axis = Vec3F64::new(e(2, 1) - e(1, 2), e(0, 2) - e(2, 0), e(1, 0) - e(0, 1));
-    let s = 2.0 * theta.sin();
-    axis * (theta / s)
-}
-
-/// Skew-symmetric cross-product matrix of a vector.
-fn skew(k: &Vec3F64) -> Mat3F64 {
-    Mat3F64::from_cols(
-        Vec3F64::new(0.0, k.z, -k.y),
-        Vec3F64::new(-k.z, 0.0, k.x),
-        Vec3F64::new(k.y, -k.x, 0.0),
-    )
-}
-
-/// Element at (row `r`, col `c`) of a column-major 3x3 matrix.
-fn mat_elem(m: &Mat3F64, r: usize, c: usize) -> f64 {
-    let col = match c {
-        0 => m.x_axis(),
-        1 => m.y_axis(),
-        _ => m.z_axis(),
-    };
-    match r {
-        0 => col.x,
-        1 => col.y,
-        _ => col.z,
-    }
-}
-
 fn cross(a: &Vec3F64, b: &Vec3F64) -> Vec3F64 {
     Vec3F64::new(
         a.y * b.z - a.z * b.y,
@@ -352,14 +303,6 @@ mod tests {
         let (r_r, t_r) = decompose_t_bs(t_bs_r);
         let r_rt = r_r.transpose();
         (r_rt * r_l, r_rt * (t_l - t_r))
-    }
-
-    #[test]
-    fn rodrigues_round_trip() {
-        let v = Vec3F64::new(0.1, -0.2, 0.05);
-        let m = rodrigues_mat(&v);
-        let back = rodrigues_vec(&m);
-        assert!((back - v).length() < 1e-9, "got {back:?}");
     }
 
     #[test]
