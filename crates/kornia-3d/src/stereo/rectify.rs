@@ -228,11 +228,13 @@ impl StereoRectifier {
         }
         let src = img.as_slice();
         let (sw, sh) = (img.width(), img.height());
+        // `out` starts black; only pixels whose source lands inside the raw
+        // image get written, so out-of-frame borders stay black.
         let mut out = vec![0u8; self.width * self.height];
         for (dst, &[fx, fy]) in out.iter_mut().zip(map.iter()) {
-            // Pixels whose source falls outside the raw image have no data;
-            // fill the rectified border with black.
-            *dst = sample_bilinear(src, sw, sh, fx, fy).unwrap_or(0);
+            if let Some(v) = sample_bilinear(src, sw, sh, fx, fy) {
+                *dst = v;
+            }
         }
         Ok(Image::from_size_slice(
             ImageSize {
@@ -383,10 +385,15 @@ mod tests {
     }
 
     /// A black image with a single white pixel at `(u, v)`.
-    fn dot_image(width: usize, height: usize, u: usize, v: usize) -> Image<u8, 1, CpuAllocator> {
+    fn dot_image(
+        width: usize,
+        height: usize,
+        u: usize,
+        v: usize,
+    ) -> Result<Image<u8, 1, CpuAllocator>, ImageError> {
         let mut buf = vec![0u8; width * height];
         buf[v * width + u] = 255;
-        Image::from_size_slice(ImageSize { width, height }, &buf, CpuAllocator).unwrap()
+        Image::from_size_slice(ImageSize { width, height }, &buf, CpuAllocator)
     }
 
     /// Intensity-weighted centroid `(u, v)` of all non-zero pixels.
@@ -410,7 +417,7 @@ mod tests {
     /// aligned). This exercises the full rectification pipeline — split rotation,
     /// `w_r` construction, and `build_map` — which `baseline()` alone does not.
     #[test]
-    fn rectified_views_are_row_aligned() {
+    fn rectified_views_are_row_aligned() -> Result<(), Box<dyn std::error::Error>> {
         let (w, h) = (640, 480);
         let left = pinhole(w, h, 400.0, 320.0, 240.0);
         let right = pinhole(w, h, 400.0, 320.0, 240.0);
@@ -420,7 +427,7 @@ mod tests {
         // would fail this by a wide margin.
         let r_rel = SO3F64::exp(Vec3F64::new(0.035, 0.018, 0.0)).matrix();
         let t_rel = Vec3F64::new(-0.10, 0.0, 0.0);
-        let rect = StereoRectifier::from_calib(&left, &right, r_rel, t_rel).unwrap();
+        let rect = StereoRectifier::from_calib(&left, &right, r_rel, t_rel)?;
 
         // Points in the left camera frame, all comfortably inside the frustum.
         let points = [
@@ -438,12 +445,12 @@ mod tests {
                 continue;
             };
             // Stamp each raw view and rectify.
-            let img_l = dot_image(w, h, ul.round() as usize, vl.round() as usize);
-            let img_r = dot_image(w, h, ur.round() as usize, vr.round() as usize);
+            let img_l = dot_image(w, h, ul.round() as usize, vl.round() as usize)?;
+            let img_r = dot_image(w, h, ur.round() as usize, vr.round() as usize)?;
             let (_, cvl) =
-                centroid(&rect.rectify_left(&img_l).unwrap()).expect("left dot survives rectify");
+                centroid(&rect.rectify_left(&img_l)?).expect("left dot survives rectify");
             let (_, cvr) =
-                centroid(&rect.rectify_right(&img_r).unwrap()).expect("right dot survives rectify");
+                centroid(&rect.rectify_right(&img_r)?).expect("right dot survives rectify");
 
             assert!(
                 (cvl - cvr).abs() < 2.0,
@@ -452,6 +459,7 @@ mod tests {
             checked += 1;
         }
         assert!(checked >= 2, "too few points stayed in frame ({checked})");
+        Ok(())
     }
 
     #[test]
@@ -479,7 +487,7 @@ mod tests {
     }
 
     #[test]
-    fn rectify_size_mismatch_errors() {
+    fn rectify_size_mismatch_errors() -> Result<(), Box<dyn std::error::Error>> {
         let left = pinhole(640, 480, 400.0, 320.0, 240.0);
         let right = pinhole(640, 480, 400.0, 320.0, 240.0);
         let rect = StereoRectifier::from_calib(
@@ -487,13 +495,13 @@ mod tests {
             &right,
             Mat3F64::IDENTITY,
             Vec3F64::new(-0.1, 0.0, 0.0),
-        )
-        .unwrap();
-        let wrong = dot_image(320, 240, 10, 10);
+        )?;
+        let wrong = dot_image(320, 240, 10, 10)?;
         assert!(matches!(
             rect.rectify_left(&wrong),
             Err(StereoError::ImageSizeMismatch { .. })
         ));
+        Ok(())
     }
 
     /// Splits a row-major 4x4 `T_BS` into rotation (3x3) and translation (3).
@@ -517,7 +525,7 @@ mod tests {
     }
 
     #[test]
-    fn rectified_baseline_matches_mh01() {
+    fn rectified_baseline_matches_mh01() -> Result<(), Box<dyn std::error::Error>> {
         // Real MH_01_easy cam0/cam1 T_BS (row-major) and principal points.
         let t_bs0 = [
             0.0148655429818,
@@ -558,7 +566,7 @@ mod tests {
         let left = calib(367.215, 248.375);
         let right = calib(379.999, 255.238);
         let (r_rel, t_rel) = relative_pose(&t_bs0, &t_bs1);
-        let rect = StereoRectifier::from_calib(&left, &right, r_rel, t_rel).unwrap();
+        let rect = StereoRectifier::from_calib(&left, &right, r_rel, t_rel)?;
 
         // EuRoC VI-sensor stereo baseline is ~0.11 m.
         assert!(
@@ -568,5 +576,6 @@ mod tests {
         );
         assert!(rect.bf() > 0.0);
         assert_eq!(rect.left_map.len(), 752 * 480);
+        Ok(())
     }
 }
