@@ -1,8 +1,8 @@
 """
 benchmark_pnp.py
 ================
-Synthetic benchmark comparing kornia_rs.k3d.solve_pnp_ransac against
-cv2.solvePnPRansac(SOLVEPNP_AP3P) at varying inlier ratios.
+Synthetic benchmark comparing kornia_rs.k3d.solve_pnp_ransac (EPnP & AP3P) against
+OpenCV's cv2.solvePnPRansac (EPnP & AP3P) at varying inlier ratios.
 
 Setup
 -----
@@ -20,22 +20,6 @@ Usage
 
     # save results to CSV:
     python benchmark_pnp.py --csv results.csv
-
-What it measures
-----------------
-For each (inlier_ratio, lo_every) combination:
-  - Inliers recovered  (vs ground truth)
-  - Rotation error     (degrees, vs ground-truth pose)
-  - Translation error  (L2, normalised units)
-  - Wall-clock time    (seconds)
-
-The synthetic scene
--------------------
-N 3D points are drawn uniformly in a cube in front of the camera.
-They are projected through a known pose to get clean 2D observations.
-Gaussian pixel noise is added to all 2D points.
-(1 - inlier_ratio) * N points are replaced with random pixel coordinates
-to simulate outliers (wrong matches from a wide-baseline matcher).
 """
 
 import argparse
@@ -53,7 +37,7 @@ if os.path.exists(pixi_site_packages):
     sys.path.append(pixi_site_packages)
 
 # ---------------------------------------------------------------------------
-# Try to import kornia-rs.  If not installed, the OpenCV-only columns still
+# Try to import kornia-rs. If not installed, the OpenCV-only columns still
 # run so you can verify the test harness is working.
 # ---------------------------------------------------------------------------
 try:
@@ -89,7 +73,7 @@ T_GT     = np.array([[0.1], [-0.05], [5.0]], dtype=np.float64)
 
 INLIER_RATIOS  = [0.10, 0.20, 0.30, 0.50]
 LO_EVERY_VALS  = [0, 1, 2, 3]          # 0 = LO disabled (vanilla RANSAC)
-N_TRIALS       = 5                      # independent random seeds per cell
+N_TRIALS       = 5                     # independent random seeds per cell
 MAX_ITERATIONS = 10_000
 THRESHOLD_PX   = 6.0
 CONFIDENCE     = 0.999
@@ -102,6 +86,7 @@ class Result(NamedTuple):
     inlier_ratio:  float
     lo_every:      int        # -1 for OpenCV (not applicable)
     n_inliers:     int
+    total_points:  int        # N_POINTS
     recall:        float      # recovered / ground-truth inlier count
     rot_err_deg:   float
     trans_err:     float
@@ -157,8 +142,8 @@ def translation_error(t_est: np.ndarray, t_gt: np.ndarray) -> float:
 
 # ── Solvers ──────────────────────────────────────────────────────────────────
 
-def run_opencv(world, image):
-    """cv2.solvePnPRansac with AP3P."""
+def run_opencv(world, image, flags):
+    """cv2.solvePnPRansac dispatcher."""
     t0 = time.perf_counter()
     ok, rvec, tvec, inliers = cv2.solvePnPRansac(
         world.astype(np.float32),
@@ -168,7 +153,7 @@ def run_opencv(world, image):
         iterationsCount=MAX_ITERATIONS,
         reprojectionError=THRESHOLD_PX,
         confidence=CONFIDENCE,
-        flags=cv2.SOLVEPNP_AP3P,
+        flags=flags,
     )
     wall = time.perf_counter() - t0
     if not ok or rvec is None:
@@ -177,13 +162,14 @@ def run_opencv(world, image):
     return (R, tvec, inliers), wall
 
 
-def run_kornia(world, image, lo_every: int):
-    """kornia_rs.k3d.solve_pnp_ransac with configurable lo_every."""
+def run_kornia(world, image, method, lo_every: int):
+    """kornia_rs.k3d.solve_pnp_ransac dispatcher."""
     t0 = time.perf_counter()
     R, t, mask, n_in = k3d.solve_pnp_ransac(
         world,
         image,
         K,
+        method=method,
         threshold=THRESHOLD_PX,
         max_iterations=MAX_ITERATIONS,
         confidence=CONFIDENCE,
@@ -201,7 +187,11 @@ def run_benchmark(quick: bool = False) -> list[Result]:
     lo_vals  = [1]    if quick else LO_EVERY_VALS
     results  = []
 
-    total = len(ratios) * (1 + (len(lo_vals) if KORNIA_AVAILABLE else 0)) * trials
+    # Calculate total runs for the progress tracker
+    cv_methods_count = 2
+    k_methods_count = 2 * len(lo_vals) if KORNIA_AVAILABLE else 0
+    runs_per_seed = cv_methods_count + k_methods_count
+    total = len(ratios) * trials * runs_per_seed
     done  = 0
 
     for ratio in ratios:
@@ -212,41 +202,51 @@ def run_benchmark(quick: bool = False) -> list[Result]:
             world, image, true_mask = make_scene(ratio, seed)
 
             # ── OpenCV ──────────────────────────────────────────────────────
-            ret, wall = run_opencv(world, image)
-            done += 1
-            print(f"  [{done}/{total}] opencv  ratio={ratio:.0%} seed={seed}", end="")
-            if ret is None:
-                print(" → NO MODEL")
-                results.append(Result("opencv_ap3p", ratio, -1, 0, 0.0,
-                                      180.0, float("inf"), wall))
-            else:
-                R_est, t_est, cv_inliers = ret
-                n_in = len(cv_inliers) if cv_inliers is not None else 0
-                recall   = n_in / true_n
-                rot_err  = rotation_error_deg(R_est, R_GT)
-                t_err    = translation_error(t_est, T_GT)
-                print(f" → {n_in} inliers  recall={recall:.2f}"
-                      f"  R_err={rot_err:.3f}°  t_err={t_err:.4f}"
-                      f"  {wall*1000:.1f} ms")
-                results.append(Result("opencv_ap3p", ratio, -1, n_in,
-                                      recall, rot_err, t_err, wall))
+            cv_methods = [
+                ("opencv_epnp", cv2.SOLVEPNP_EPNP), 
+                ("opencv_ap3p", cv2.SOLVEPNP_AP3P)
+            ]
+            for cv_name, cv_flag in cv_methods:
+                ret, wall = run_opencv(world, image, cv_flag)
+                done += 1
+                print(f"  [{done}/{total}] {cv_name:<16} ratio={ratio:.0%} seed={seed}", end="")
+                if ret is None:
+                    print(" → NO MODEL")
+                    results.append(Result(cv_name, ratio, -1, 0, N_POINTS, 0.0,
+                                          180.0, float("inf"), wall))
+                else:
+                    R_est, t_est, cv_inliers = ret
+                    n_in = len(cv_inliers) if cv_inliers is not None else 0
+                    recall   = n_in / true_n
+                    rot_err  = rotation_error_deg(R_est, R_GT)
+                    t_err    = translation_error(t_est, T_GT)
+                    print(f" → {n_in}/{N_POINTS} inliers  recall={recall:.2f}"
+                          f"  R_err={rot_err:.3f}°  t_err={t_err:.4f}"
+                          f"  {wall*1000:.1f} ms")
+                    results.append(Result(cv_name, ratio, -1, n_in, N_POINTS,
+                                          recall, rot_err, t_err, wall))
 
             # ── kornia-rs ───────────────────────────────────────────────────
             if KORNIA_AVAILABLE:
-                for lo in lo_vals:
-                    ret_k, wall_k = run_kornia(world, image, lo)
-                    done += 1
-                    R_k, t_k, mask_k, n_k = ret_k
-                    recall_k  = n_k / true_n
-                    rot_err_k = rotation_error_deg(R_k, R_GT)
-                    t_err_k   = translation_error(t_k, T_GT)
-                    label = f"kornia lo={lo}"
-                    print(f"  [{done}/{total}] {label:<14} ratio={ratio:.0%} seed={seed}"
-                          f" → {n_k} inliers  recall={recall_k:.2f}"
-                          f"  R_err={rot_err_k:.3f}°  t_err={t_err_k:.4f}"
-                          f"  {wall_k*1000:.1f} ms")
-                    results.append(Result(f"kornia_lo{lo}", ratio, lo, n_k,
-                                          recall_k, rot_err_k, t_err_k, wall_k))
+                k_methods = [
+                    ("k_epnp", k3d.PnPSolverMethod.EPnP), 
+                    ("k_ap3p", k3d.PnPSolverMethod.AP3P)
+                ]
+                for prefix, k_enum in k_methods:
+                    for lo in lo_vals:
+                        ret_k, wall_k = run_kornia(world, image, k_enum, lo)
+                        done += 1
+                        R_k, t_k, mask_k, n_k = ret_k
+                        recall_k  = n_k / true_n
+                        rot_err_k = rotation_error_deg(R_k, R_GT)
+                        t_err_k   = translation_error(t_k, T_GT)
+                        label = f"{prefix}_lo{lo}"
+                        print(f"  [{done}/{total}] {label:<16} ratio={ratio:.0%} seed={seed}"
+                              f" → {n_k}/{N_POINTS} inliers  recall={recall_k:.2f}"
+                              f"  R_err={rot_err_k:.3f}°  t_err={t_err_k:.4f}"
+                              f"  {wall_k*1000:.1f} ms")
+                        results.append(Result(label, ratio, lo, n_k, N_POINTS,
+                                              recall_k, rot_err_k, t_err_k, wall_k))
 
     return results
 
@@ -258,7 +258,8 @@ def print_summary(results: list[Result]):
     for r in results:
         buckets[(r.solver, r.inlier_ratio)].append(r)
 
-    header = (f"{'Solver':<18} {'Ratio':>6} {'Inliers':>8} "
+    # Updated header layout for wider Inliers/Total string
+    header = (f"{'Solver':<18} {'Ratio':>6} {'Inliers/Tot':>13} "
               f"{'Recall':>7} {'R_err°':>8} {'t_err':>8} {'ms':>8}")
     print("\n" + "═"*len(header))
     print(header)
@@ -270,7 +271,12 @@ def print_summary(results: list[Result]):
             print("─"*len(header))
         prev_ratio = ratio
         avg = lambda f: np.mean([getattr(r, f) for r in rows])
-        print(f"{solver:<18} {ratio:>6.0%} {avg('n_inliers'):>8.1f} "
+        
+        # Format the inliers column as AvgInliers/TotalPoints
+        avg_inliers = avg('n_inliers')
+        inlier_str = f"{avg_inliers:.1f}/{N_POINTS}"
+        
+        print(f"{solver:<18} {ratio:>6.0%} {inlier_str:>13} "
               f"{avg('recall'):>7.2f} {avg('rot_err_deg'):>8.3f} "
               f"{avg('trans_err'):>8.4f} {avg('wall_sec')*1000:>8.1f}")
     print("═"*len(header))
