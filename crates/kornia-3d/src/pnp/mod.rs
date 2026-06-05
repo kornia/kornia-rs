@@ -9,9 +9,13 @@ pub mod ransac;
 /// LM-based pose refinement.
 pub mod refine;
 
+/// AP3P solver implementation.
+pub mod ap3p;
+
 mod ops;
 
 pub use epnp::{EPnP, EPnPParams};
+pub use ap3p::{AP3P, AP3PParams};
 use kornia_algebra::{Mat3AF32, Vec2F32, Vec3AF32};
 use kornia_imgproc::calibration::distortion::PolynomialDistortion;
 pub use ransac::{solve_pnp_ransac, PnPRansacError, PnPRansacResult, RansacParams};
