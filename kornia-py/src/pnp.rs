@@ -1,11 +1,12 @@
 //! `kornia_rs.k3d.solve_pnp_ransac` — `cv2.solvePnPRansac`-shaped binding.
 //!
-//! Wraps `kornia_3d::ransac::run` over `EPnPEstimator` or `AP3PEstimator` so the Python 
+//! Wraps `kornia_3d::ransac::run` over `EPnPEstimator` or `AP3PEstimator` so the Python
 //! surface matches OpenCV's calling convention while the underlying solver is the
 //! generic kornia RANSAC driver (NEON/AVX2 scoring, adaptive iter cap).
 
 use kornia_3d::ransac::{
-    estimators::{AP3PEstimator, EPnPEstimator}, run, Match2d3d, RansacConfig, ThresholdConsensus, UniformSampler,
+    estimators::{AP3PEstimator, EPnPEstimator},
+    run, Match2d3d, RansacConfig, ThresholdConsensus, UniformSampler,
 };
 use kornia_algebra::{Mat3AF32, Vec2F64, Vec3AF32, Vec3F64};
 use numpy::{PyArray1, PyArray2, PyArrayMethods, PyUntypedArrayMethods, ToPyArray};
@@ -86,9 +87,9 @@ pub fn solve_pnp_ransac_py<'py>(
             "k must be (3, 3) float64",
         ));
     }
-    
+
     let n = world_shape[0];
-    
+
     // Dynamically check the minimal sample constraints based on the chosen algorithm
     match method {
         PnPSolverMethod::AP3P if n < 3 => {
@@ -137,39 +138,52 @@ pub fn solve_pnp_ransac_py<'py>(
         ),
     );
 
+    let threshold_sq = threshold * threshold;
+
     let mut sampler = UniformSampler::new(StdRng::seed_from_u64(seed.unwrap_or(0)));
-    let consensus = ThresholdConsensus { threshold };
+
+    let consensus = ThresholdConsensus {
+        threshold: threshold_sq,
+    };
     let cfg = RansacConfig {
         max_iters: max_iterations,
         confidence,
-        inlier_threshold: threshold,
+        inlier_threshold: threshold_sq,
         lo_every,
         ..Default::default()
     };
 
     // Helper closure to process output and prevent code duplication between match arms
-    let process_model = |rotation: Mat3AF32, translation: Vec3AF32, inliers: &[bool]| -> PyResult<_> {
-        // Row-major repack of column-major Mat3AF32: row i = (col0[i], col1[i], col2[i]).
-        let r_arr = rotation.to_cols_array();
-        let r_rmaj: Vec<f64> = vec![
-            r_arr[0] as f64, r_arr[3] as f64, r_arr[6] as f64,
-            r_arr[1] as f64, r_arr[4] as f64, r_arr[7] as f64,
-            r_arr[2] as f64, r_arr[5] as f64, r_arr[8] as f64,
-        ];
-        
-        let r_py = numpy::PyArray::from_vec(py, r_rmaj).reshape([3usize, 3])?;
-        let t_py = [
-            translation.x as f64,
-            translation.y as f64,
-            translation.z as f64,
-        ].to_pyarray(py);
-        
-        let mask: Vec<u8> = inliers.iter().map(|&b| b as u8).collect();
-        let mask_py = mask.to_pyarray(py);
-        let inlier_count = inliers.iter().filter(|&&b| b).count();
-        
-        Ok((r_py, t_py, mask_py, inlier_count))
-    };
+    let process_model =
+        |rotation: Mat3AF32, translation: Vec3AF32, inliers: &[bool]| -> PyResult<_> {
+            // Row-major repack of column-major Mat3AF32: row i = (col0[i], col1[i], col2[i]).
+            let r_arr = rotation.to_cols_array();
+            let r_rmaj: Vec<f64> = vec![
+                r_arr[0] as f64,
+                r_arr[3] as f64,
+                r_arr[6] as f64,
+                r_arr[1] as f64,
+                r_arr[4] as f64,
+                r_arr[7] as f64,
+                r_arr[2] as f64,
+                r_arr[5] as f64,
+                r_arr[8] as f64,
+            ];
+
+            let r_py = numpy::PyArray::from_vec(py, r_rmaj).reshape([3usize, 3])?;
+            let t_py = [
+                translation.x as f64,
+                translation.y as f64,
+                translation.z as f64,
+            ]
+            .to_pyarray(py);
+
+            let mask: Vec<u8> = inliers.iter().map(|&b| b as u8).collect();
+            let mask_py = mask.to_pyarray(py);
+            let inlier_count = inliers.iter().filter(|&&b| b).count();
+
+            Ok((r_py, t_py, mask_py, inlier_count))
+        };
 
     // Dispatch to the requested solver pipeline
     match method {

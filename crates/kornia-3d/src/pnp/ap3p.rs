@@ -471,10 +471,11 @@ fn polish_quartic_roots(coeffs: &[f64; 5], roots: &mut [f64; 4], nb_roots: i32) 
         // Iterate over the actual root values safely
         for r_val in roots.iter_mut().take(nb_roots as usize) {
             let r = *r_val;
-            let error = (((coeffs[0] * r + coeffs[1]) * r + coeffs[2]) * r + coeffs[3]) * r + coeffs[4];
+            let error =
+                (((coeffs[0] * r + coeffs[1]) * r + coeffs[2]) * r + coeffs[3]) * r + coeffs[4];
             let derivative =
                 ((4.0 * coeffs[0] * r + 3.0 * coeffs[1]) * r + 2.0 * coeffs[2]) * r + coeffs[3];
-            
+
             if derivative.abs() > f64::EPSILON {
                 *r_val -= error / derivative;
             }
@@ -615,7 +616,7 @@ fn ap3p_compute_poses(
         if ctheta1p.abs() > 1.0 {
             continue;
         }
-        
+
         let mut stheta1p = (1.0 - ctheta1p * ctheta1p).max(0.0).sqrt();
         if k3b3 < 0.0 {
             stheta1p = -stheta1p;
@@ -661,6 +662,130 @@ fn ap3p_compute_poses(
         nb_solutions += 1;
     }
     nb_solutions as i32
+}
+
+/// Solves AP3P and returns ALL cheirality-passing roots (up to 4).
+/// Used natively by the RANSAC estimator to evaluate all algebraic candidates.
+pub fn solve_ap3p_multi(
+    points_world: &[Vec3AF32],
+    points_image: &[Vec2F32],
+    k: &Mat3AF32,
+) -> Result<Vec<PnPResult>, PnPError> {
+    let n = points_world.len();
+    if n != 3 || points_image.len() != 3 {
+        return Err(PnPError::InsufficientCorrespondences {
+            required: 3,
+            actual: n,
+        });
+    }
+
+    let fx = k.x_axis().x as f64;
+    let fy = k.y_axis().y as f64;
+    let cx = k.z_axis().x as f64;
+    let cy = k.z_axis().y as f64;
+    let inv_fx = 1.0 / fx;
+    let inv_fy = 1.0 / fy;
+    let cx_fx = cx / fx;
+    let cy_fy = cy / fy;
+
+    let mut feature_vectors = [[0.0f64; 3]; 3];
+    for i in 0..3 {
+        let u = points_image[i].x as f64;
+        let v = points_image[i].y as f64;
+        let mu = inv_fx * u - cx_fx;
+        let mv = inv_fy * v - cy_fy;
+        let norm = (mu * mu + mv * mv + 1.0).sqrt();
+        feature_vectors[i] = [mu / norm, mv / norm, 1.0 / norm];
+    }
+
+    let world_points = [
+        [
+            points_world[0].x as f64,
+            points_world[0].y as f64,
+            points_world[0].z as f64,
+        ],
+        [
+            points_world[1].x as f64,
+            points_world[1].y as f64,
+            points_world[1].z as f64,
+        ],
+        [
+            points_world[2].x as f64,
+            points_world[2].y as f64,
+            points_world[2].z as f64,
+        ],
+    ];
+
+    let fv = [
+        [
+            feature_vectors[0][0],
+            feature_vectors[1][0],
+            feature_vectors[2][0],
+        ],
+        [
+            feature_vectors[0][1],
+            feature_vectors[1][1],
+            feature_vectors[2][1],
+        ],
+        [
+            feature_vectors[0][2],
+            feature_vectors[1][2],
+            feature_vectors[2][2],
+        ],
+    ];
+    let wp = [
+        [world_points[0][0], world_points[1][0], world_points[2][0]],
+        [world_points[0][1], world_points[1][1], world_points[2][1]],
+        [world_points[0][2], world_points[1][2], world_points[2][2]],
+    ];
+
+    let mut solutions_r = [[[0.0f64; 3]; 3]; 4];
+    let mut solutions_t = [[0.0f64; 3]; 4];
+
+    let n_solutions = ap3p_compute_poses(&fv, &wp, &mut solutions_r, &mut solutions_t);
+    if n_solutions == 0 {
+        return Err(PnPError::SvdFailed(
+            "AP3P: no real solution found".to_string(),
+        ));
+    }
+
+    let mut results = Vec::new();
+    for i in 0..n_solutions as usize {
+        let r = solutions_r[i];
+        let t = solutions_t[i];
+        if all_positive_depths(&r, &t, &world_points) {
+            let r_mat = Mat3AF32::from_cols_array(&[
+                r[0][0] as f32,
+                r[1][0] as f32,
+                r[2][0] as f32,
+                r[0][1] as f32,
+                r[1][1] as f32,
+                r[2][1] as f32,
+                r[0][2] as f32,
+                r[1][2] as f32,
+                r[2][2] as f32,
+            ]);
+            let t_vec = Vec3AF32::new(t[0] as f32, t[1] as f32, t[2] as f32);
+            let rvec = kornia_algebra::SO3F32::from_matrix(&r_mat).log();
+
+            results.push(PnPResult {
+                rotation: r_mat,
+                translation: t_vec,
+                rvec,
+                reproj_rmse: None,
+                num_iterations: None,
+                converged: Some(true),
+            });
+        }
+    }
+
+    if results.is_empty() {
+        Err(PnPError::SvdFailed(
+            "AP3P: all candidates failed cheirality".to_string(),
+        ))
+    } else {
+        Ok(results)
+    }
 }
 
 #[inline]
