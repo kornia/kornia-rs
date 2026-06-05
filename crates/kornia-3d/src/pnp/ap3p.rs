@@ -31,8 +31,8 @@
 //! `LMRefineParams` after the RANSAC fit (the existing EPnP path already
 //! plumbs the same LM refinement in `pnp::refine`).
 
-use kornia_imgproc::calibration::distortion::PolynomialDistortion;
 use kornia_algebra::{Mat3AF32, Vec2F32, Vec3AF32, SO3F32};
+use kornia_imgproc::calibration::distortion::PolynomialDistortion;
 
 use super::{PnPError, PnPResult, PnPSolver};
 
@@ -172,7 +172,7 @@ pub fn solve_ap3p(
 
     let mut solutions_r = [[[0.0f64; 3]; 3]; 4];
     let mut solutions_t = [[0.0f64; 3]; 4];
-    
+
     let n_solutions = ap3p_compute_poses(&fv, &wp, &mut solutions_r, &mut solutions_t);
     if n_solutions == 0 {
         return Err(PnPError::SvdFailed(
@@ -201,7 +201,7 @@ pub fn solve_ap3p(
             best_idx = Some(i);
         }
     }
-    
+
     let pick = best_idx.ok_or_else(|| {
         PnPError::SvdFailed("AP3P: all candidates failed cheirality check".to_string())
     })?;
@@ -209,9 +209,15 @@ pub fn solve_ap3p(
     let r = solutions_r[pick];
     let t = solutions_t[pick];
     let r_mat = Mat3AF32::from_cols_array(&[
-        r[0][0] as f32, r[1][0] as f32, r[2][0] as f32, 
-        r[0][1] as f32, r[1][1] as f32, r[2][1] as f32, 
-        r[0][2] as f32, r[1][2] as f32, r[2][2] as f32,
+        r[0][0] as f32,
+        r[1][0] as f32,
+        r[2][0] as f32,
+        r[0][1] as f32,
+        r[1][1] as f32,
+        r[2][1] as f32,
+        r[0][2] as f32,
+        r[1][2] as f32,
+        r[2][2] as f32,
     ]);
     let t_vec = Vec3AF32::new(t[0] as f32, t[1] as f32, t[2] as f32);
     let rvec = SO3F32::from_matrix(&r_mat).log();
@@ -247,12 +253,12 @@ fn rmse_px(
     k: &Mat3AF32,
 ) -> f64 {
     let mut sum = 0.0;
-    
+
     let fx = k.x_axis().x as f64;
     let fy = k.y_axis().y as f64;
     let cx = k.z_axis().x as f64;
     let cy = k.z_axis().y as f64;
-    
+
     for (i, point) in world.iter().enumerate() {
         let pc0 = r[0][0] * point[0] + r[0][1] * point[1] + r[0][2] * point[2] + t[0];
         let pc1 = r[1][0] * point[0] + r[1][1] * point[1] + r[1][2] * point[2] + t[1];
@@ -317,7 +323,7 @@ pub fn solve_deg3(
         *x2 = 0.0;
         return solve_deg2(b, c, d, x0, x1);
     }
-    
+
     // OpenCV mutates these in-place; we MUST do the same to preserve math below.
     let inv_a = 1.0 / a;
     b *= inv_a;
@@ -362,6 +368,7 @@ pub fn solve_deg3(
 }
 
 /// Solve `a·x⁴ + b·x³ + c·x² + d·x + e = 0`. Returns up to 4 real roots.
+#[allow(clippy::too_many_arguments)]
 pub fn solve_deg4(
     a: f64,
     mut b: f64,
@@ -377,7 +384,7 @@ pub fn solve_deg4(
         *x3 = 0.0;
         return solve_deg3(b, c, d, e, x0, x1, x2);
     }
-    
+
     // Safely mutate parameters down to the normalized form.
     let inv_a = 1.0 / a;
     b *= inv_a;
@@ -412,7 +419,7 @@ pub fn solve_deg4(
     };
     let inv_r = 1.0 / big_r;
     let mut nb_real_roots = 0;
-    
+
     let (d2, e2) = if big_r < 1e-11 {
         let temp = r0 * r0 - 4.0 * e;
         if temp < 0.0 {
@@ -429,10 +436,10 @@ pub fn solve_deg4(
         let v = 0.25 * inv_r * (4.0 * bc - 8.0 * d - b3);
         (u + v, u - v)
     };
-    
+
     let b_4 = 0.25 * b;
     let r_2 = 0.5 * big_r;
-    
+
     if d2 >= 0.0 {
         let root_d = d2.sqrt();
         nb_real_roots = 2;
@@ -440,7 +447,7 @@ pub fn solve_deg4(
         *x0 = r_2 + d_2 - b_4;
         *x1 = r_2 - d_2 - b_4;
     }
-    
+
     if e2 >= 0.0 {
         let root_e = e2.sqrt();
         let e_2 = 0.5 * root_e;
@@ -461,14 +468,15 @@ pub fn solve_deg4(
 /// iterations. Matches OpenCV's `polishQuarticRoots` in ap3p.cpp.
 fn polish_quartic_roots(coeffs: &[f64; 5], roots: &mut [f64; 4], nb_roots: i32) {
     for _ in 0..2 {
-        for j in 0..nb_roots as usize {
-            let r = roots[j];
+        // Iterate over the actual root values safely
+        for r_val in roots.iter_mut().take(nb_roots as usize) {
+            let r = *r_val;
             let error = (((coeffs[0] * r + coeffs[1]) * r + coeffs[2]) * r + coeffs[3]) * r + coeffs[4];
             let derivative =
                 ((4.0 * coeffs[0] * r + 3.0 * coeffs[1]) * r + 2.0 * coeffs[2]) * r + coeffs[3];
             
-            if derivative.abs() > std::f64::EPSILON {
-                roots[j] -= error / derivative;
+            if derivative.abs() > f64::EPSILON {
+                *r_val -= error / derivative;
             }
         }
     }
@@ -480,8 +488,8 @@ fn polish_quartic_roots(coeffs: &[f64; 5], roots: &mut [f64; 4], nb_roots: i32) 
 // ---------------------------------------------------------------------------
 
 fn ap3p_compute_poses(
-    feature_vectors: &[[f64; 3]; 3], 
-    world_points: &[[f64; 3]; 3],    
+    feature_vectors: &[[f64; 3]; 3],
+    world_points: &[[f64; 3]; 3],
     solutions_r: &mut [[[f64; 3]; 3]; 4],
     solutions_t: &mut [[f64; 3]; 4],
 ) -> i32 {
@@ -498,20 +506,32 @@ fn ap3p_compute_poses(
     for k in 0..3 {
         k1[k] = u0[k] / nu0;
     }
-    
-    let b1 = [feature_vectors[0][0], feature_vectors[1][0], feature_vectors[2][0]];
-    let b2 = [feature_vectors[0][1], feature_vectors[1][1], feature_vectors[2][1]];
-    let b3 = [feature_vectors[0][2], feature_vectors[1][2], feature_vectors[2][2]];
-    
+
+    let b1 = [
+        feature_vectors[0][0],
+        feature_vectors[1][0],
+        feature_vectors[2][0],
+    ];
+    let b2 = [
+        feature_vectors[0][1],
+        feature_vectors[1][1],
+        feature_vectors[2][1],
+    ];
+    let b3 = [
+        feature_vectors[0][2],
+        feature_vectors[1][2],
+        feature_vectors[2][2],
+    ];
+
     let mut k3 = [0.0; 3];
     cross(&b1, &b2, &mut k3);
     let nk3 = norm(&k3);
-    for k in 0..3 {
-        k3[k] /= nk3;
+    for val in &mut k3 {
+        *val /= nk3;
     }
     let mut tz = [0.0; 3];
     cross(&b1, &k3, &mut tz);
-    
+
     let mut v1 = [0.0; 3];
     cross(&b1, &b3, &mut v1);
     let mut v2 = [0.0; 3];
@@ -520,22 +540,22 @@ fn ap3p_compute_poses(
     for k in 0..3 {
         u1[k] = w1[k] - w3[k];
     }
-    
+
     let u1k1 = dot(&u1, &k1);
     let k3b3 = dot(&k3, &b3);
     let f11 = k3b3;
     let f13 = dot(&k3, &v1);
     let f15 = -u1k1 * f11;
-    
+
     let mut nl = [0.0; 3];
     cross(&u1, &k1, &mut nl);
     let delta = norm(&nl);
-    for k in 0..3 {
-        nl[k] /= delta;
+    for val in &mut nl {
+        *val /= delta;
     }
     let f11 = f11 * delta;
     let f13 = f13 * delta;
-    
+
     let u2k1 = u1k1 - nu0;
     let f21 = dot(&tz, &v2);
     let f22 = nk3 * k3b3;
@@ -553,7 +573,7 @@ fn ap3p_compute_poses(
     let g5 = f11 * f22;
     let g6 = f11 * f25 - f15 * f21;
     let g7 = -f15 * f24;
-    
+
     let coeffs = [
         g5 * g5 + g1 * g1 + g3 * g3,
         2.0 * (g5 * g6 + g1 * g2 + g3 * g4),
@@ -561,16 +581,15 @@ fn ap3p_compute_poses(
         2.0 * (g6 * g7 - g1 * g2 - g3 * g4),
         g7 * g7 - g2 * g2 - g4 * g4,
     ];
-    
+
     let mut s0 = 0.0;
     let mut s1 = 0.0;
     let mut s2 = 0.0;
     let mut s3 = 0.0;
     let nb_roots = solve_deg4(
-        coeffs[0], coeffs[1], coeffs[2], coeffs[3], coeffs[4], 
-        &mut s0, &mut s1, &mut s2, &mut s3,
+        coeffs[0], coeffs[1], coeffs[2], coeffs[3], coeffs[4], &mut s0, &mut s1, &mut s2, &mut s3,
     );
-    
+
     let mut s = [s0, s1, s2, s3];
     polish_quartic_roots(&coeffs, &mut s, nb_roots);
 
@@ -592,8 +611,7 @@ fn ap3p_compute_poses(
     }
 
     let mut nb_solutions = 0;
-    for i in 0..nb_roots as usize {
-        let ctheta1p = s[i];
+    for &ctheta1p in s.iter().take(nb_roots as usize) {
         if ctheta1p.abs() > 1.0 {
             continue;
         }
@@ -602,7 +620,7 @@ fn ap3p_compute_poses(
         if k3b3 < 0.0 {
             stheta1p = -stheta1p;
         }
-        
+
         let ctheta3 = g1 * ctheta1p + g2;
         let stheta3 = g3 * ctheta1p + g4;
         let ntheta3 = stheta1p / ((g5 * ctheta1p + g6) * ctheta1p + g7);
@@ -623,7 +641,7 @@ fn ap3p_compute_poses(
             w3[0] * r_mat[0][1] + w3[1] * r_mat[1][1] + w3[2] * r_mat[2][1],
             w3[0] * r_mat[0][2] + w3[1] * r_mat[1][2] + w3[2] * r_mat[2][2],
         ];
-        
+
         let mut pxstheta1p = [0.0; 3];
         for k in 0..3 {
             pxstheta1p[k] = stheta1p * b3p[k];
@@ -631,15 +649,15 @@ fn ap3p_compute_poses(
         for k in 0..3 {
             solutions_t[nb_solutions][k] = pxstheta1p[k] - rp3[k];
         }
-        
-        // Restored transpose: convert internal Camera->World mapping 
+
+        // Restored transpose: convert internal Camera->World mapping
         // to World->Camera mapping required by the PnP struct.
         for row in 0..3 {
             for col in 0..3 {
                 solutions_r[nb_solutions][col][row] = r_mat[row][col];
             }
         }
-        
+
         nb_solutions += 1;
     }
     nb_solutions as i32
@@ -702,24 +720,21 @@ mod tests {
             [-0.001, -0.001, 0.999],
         ];
         let t_gt = [0.05, -0.03, 0.2];
-        
+
         let image: Vec<Vec2F32> = world
             .iter()
             .map(|p| {
                 let pc0 = r_gt[0][0] * p.x + r_gt[0][1] * p.y + r_gt[0][2] * p.z + t_gt[0];
                 let pc1 = r_gt[1][0] * p.x + r_gt[1][1] * p.y + r_gt[1][2] * p.z + t_gt[1];
                 let pc2 = r_gt[2][0] * p.x + r_gt[2][1] * p.y + r_gt[2][2] * p.z + t_gt[2];
-                Vec2F32::new(
-                    800.0 * pc0 / pc2 + 640.0,
-                    800.0 * pc1 / pc2 + 480.0,
-                )
+                Vec2F32::new(800.0 * pc0 / pc2 + 640.0, 800.0 * pc1 / pc2 + 480.0)
             })
             .collect();
-            
+
         let result = solve_ap3p(&world, &image, &k, &AP3PParams::default())?;
         let rmat = result.rotation;
         let t = result.translation;
-        
+
         // Allow the algebraic solver to land on a *different* root than
         // ground truth, but verify any cheirality-positive root yields
         // a small reprojection error on the input correspondences.
@@ -728,14 +743,22 @@ mod tests {
             let pc1 = rmat.x_axis().y * p.x + rmat.y_axis().y * p.y + rmat.z_axis().y * p.z + t.y;
             let pc2 = rmat.x_axis().z * p.x + rmat.y_axis().z * p.y + rmat.z_axis().z * p.z + t.z;
             assert!(pc2 > 0.0, "point behind camera");
-            
+
             let u = 800.0 * pc0 / pc2 + 640.0;
             let v = 800.0 * pc1 / pc2 + 480.0;
-            
-            assert!((u - q.x).abs() < 1.0, "u residual too large: {}", (u - q.x).abs());
-            assert!((v - q.y).abs() < 1.0, "v residual too large: {}", (v - q.y).abs());
+
+            assert!(
+                (u - q.x).abs() < 1.0,
+                "u residual too large: {}",
+                (u - q.x).abs()
+            );
+            assert!(
+                (v - q.y).abs() < 1.0,
+                "v residual too large: {}",
+                (v - q.y).abs()
+            );
         }
-        
+
         Ok(())
     }
 
@@ -763,7 +786,9 @@ mod tests {
         // least that some root is one of {1, 2, 3}.)
         let roots = [x0, x1, x2];
         let set = [1.0_f64, 2.0, 3.0];
-        assert!(roots.iter().any(|r| set.iter().any(|s| (r - s).abs() < 1e-3)));
+        assert!(roots
+            .iter()
+            .any(|r| set.iter().any(|s| (r - s).abs() < 1e-3)));
     }
 
     #[test]
