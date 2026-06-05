@@ -119,7 +119,10 @@ pub enum PnPMethod {
     EPnP(EPnPParams),
     /// Efficient PnP solver with the module's default parameters.
     EPnPDefault,
-    // Placeholder for future solvers such as P3P, DLS, etc.
+    /// Algebraic Perspective-3-Point solver with a user-supplied parameter object.
+    AP3P(AP3PParams),
+    /// Algebraic Perspective-3-Point solver with the module's default parameters.
+    AP3PDefault,
 }
 
 /// Dispatch function that routes to the chosen PnP solver.
@@ -133,5 +136,7 @@ pub fn solve_pnp(
     match method {
         PnPMethod::EPnP(params) => EPnP::solve(world, image, k, distortion, &params),
         PnPMethod::EPnPDefault => EPnP::solve(world, image, k, distortion, &EPnPParams::default()),
+        PnPMethod::AP3P(params) => AP3P::solve(world, image, k, distortion, &params),
+        PnPMethod::AP3PDefault => AP3P::solve(world, image, k, distortion, &AP3PParams::default()),
     }
 }
