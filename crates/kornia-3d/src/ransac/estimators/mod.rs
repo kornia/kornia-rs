@@ -10,7 +10,9 @@ mod epnp;
 mod essential;
 mod fundamental;
 mod homography;
+mod ap3p;
 
+pub use ap3p::AP3PEstimator;
 pub use epnp::EPnPEstimator;
 pub use essential::EssentialEstimator;
 pub use fundamental::FundamentalEstimator;
