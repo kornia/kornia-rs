@@ -45,7 +45,7 @@ faer = "=0.22.6"
 glam = "0.33"
 gstreamer = "0.24"
 gstreamer-app = "0.24"
-gstreamer-video = "0.23"
+gstreamer-video = "0.24"
 half = { version = "2.7", features = ["num-traits"] }
 hf-hub = "0.5.0"
 image = "0.25"
