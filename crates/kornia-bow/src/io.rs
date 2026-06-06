@@ -72,7 +72,7 @@ mod tests {
     use super::*;
     use crate::metric::{Feature, Hamming, L2};
     use crate::{BlockCluster, InternalMeta};
-    use rand::{rngs::StdRng, Rng, SeedableRng};
+    use rand::{rngs::StdRng, Rng, RngExt, SeedableRng};
 
     const B: usize = 10;
     const D: usize = 4;

@@ -320,7 +320,7 @@ impl<const B: usize, M: DistanceMetric> Vocabulary<B, M> {
 mod tests {
     use super::*;
     use crate::metric::{Feature, Hamming};
-    use rand::{rngs::StdRng, Rng, SeedableRng};
+    use rand::{rngs::StdRng, Rng, RngExt, SeedableRng};
 
     const B: usize = 10;
     const D: usize = 4;
