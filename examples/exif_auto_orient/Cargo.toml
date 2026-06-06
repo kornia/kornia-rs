@@ -10,7 +10,7 @@ repository = { workspace = true }
 license = { workspace = true }
 categories = { workspace = true }
 include = { workspace = true }
-
 publish = false
+
 [dependencies]
 kornia-io = { workspace = true }

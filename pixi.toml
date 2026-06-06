@@ -37,7 +37,7 @@ rust = ">=1.76"
 sccache = "*"
 openssl = "*"
 pkg-config = "*"
-libprotobuf = "*"      # Provides protoc compiler
+libprotobuf = "*"  # Provides protoc compiler
 glib = "*"
 zlib = "*"
 gstreamer = "*"
@@ -49,10 +49,10 @@ nasm = "*"
 scripts = ["scripts/activate-rust.sh"]
 
 [feature.rust.target.linux-64.dependencies]
-libunwind = "*" # Linux-only
+libunwind = "*"  # Linux-only
 
 [feature.rust.target.linux-aarch64.dependencies]
-libunwind = "*" # Linux-only
+libunwind = "*"  # Linux-only
 
 [feature.rust.tasks]
 rust-check = { cmd = "cargo check --workspace --all-targets --features ci", description = "Check Rust compilation (all targets)" }
@@ -148,7 +148,7 @@ cxx-compiler = "*"
 clang-format = "*"
 
 [feature.cpp.target.linux-64.dependencies]
-libstdcxx-ng = "*" # C++ runtime for linking
+libstdcxx-ng = "*"  # C++ runtime for linking
 
 [feature.cpp.tasks]
 cpp-build = { cmd = "../scripts/cpp-build.sh", cwd = "kornia-cpp", description = "Build C++ library (debug)" }
@@ -168,8 +168,8 @@ cpp-install = { cmd = "../scripts/cpp-build.sh --release --install", cwd = "korn
 # ------------------------------------------------------------------------------
 
 [feature.cuda.target.linux-64.dependencies]
-cuda-toolkit = ">=12.0,<13" # cudarc doesn't support CUDA 13.x yet
-gcc = "12.*"                # CUDA 12.x requires GCC ≤12
+cuda-toolkit = ">=12.0,<13"  # cudarc doesn't support CUDA 13.x yet
+gcc = "12.*"  # CUDA 12.x requires GCC ≤12
 gxx = "12.*"
 sysroot_linux-64 = "*"
 

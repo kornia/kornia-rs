@@ -2,7 +2,7 @@
 name = "image_api"
 version = { workspace = true }
 edition = { workspace = true }
-
 publish = false
+
 [dependencies]
 kornia-image = { workspace = true }
