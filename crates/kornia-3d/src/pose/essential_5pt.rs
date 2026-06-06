@@ -518,25 +518,25 @@ fn null_space_5x9(x1: &[Vec2F64; 5], x2: &[Vec2F64; 5]) -> Option<[[f64; 9]; 4]>
     for i in 0..5 {
         let (u1, v1) = (x1[i].x, x1[i].y);
         let (u2, v2) = (x2[i].x, x2[i].y);
-        mat.write(i, 0, u1 * u2);
-        mat.write(i, 1, v1 * u2);
-        mat.write(i, 2, u2);
-        mat.write(i, 3, u1 * v2);
-        mat.write(i, 4, v1 * v2);
-        mat.write(i, 5, v2);
-        mat.write(i, 6, u1);
-        mat.write(i, 7, v1);
-        mat.write(i, 8, 1.0);
+        mat[(i, 0)] = u1 * u2;
+        mat[(i, 1)] = v1 * u2;
+        mat[(i, 2)] = u2;
+        mat[(i, 3)] = u1 * v2;
+        mat[(i, 4)] = v1 * v2;
+        mat[(i, 5)] = v2;
+        mat[(i, 6)] = u1;
+        mat[(i, 7)] = v1;
+        mat[(i, 8)] = 1.0;
     }
 
     // Null-space via SVD: the last 4 right singular vectors span ker(A)
     // when rank(A) = 5. We use the full-V SVD and grab columns 5..9.
-    let svd = mat.svd();
-    let v = svd.v(); // 9×9 orthogonal (real)
+    let svd = mat.svd().unwrap();
+    let v = svd.V(); // 9×9 orthogonal (real)
 
     // Sanity check: if the 5th singular value is very small the sample is
     // degenerate and the null-space rank is > 4. Reject.
-    let s = svd.s_diagonal();
+    let s = svd.S();
     let s4 = s[4].abs();
     let s0 = s[0].abs().max(1e-30);
     if s4 / s0 < 1e-8 {

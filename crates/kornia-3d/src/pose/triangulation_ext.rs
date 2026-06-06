@@ -102,12 +102,12 @@ pub fn triangulate_n_view_linear(pixels: &[Vec2F64], projections: &[[f64; 12]]) 
             let p0 = p_row[j];
             let p1 = p_row[4 + j];
             let p2 = p_row[8 + j];
-            a.write(2 * i, j, px.x * p2 - p0);
-            a.write(2 * i + 1, j, px.y * p2 - p1);
+            a[(2 * i, j)] = px.x * p2 - p0;
+            a[(2 * i + 1, j)] = px.y * p2 - p1;
         }
     }
-    let svd = a.svd();
-    let v = svd.v();
+    let svd = a.svd().unwrap();
+    let v = svd.V();
     let xh = v.col(3);
     let w = xh[3];
     if w.abs() < 1e-12 {

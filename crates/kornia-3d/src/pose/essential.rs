@@ -77,11 +77,11 @@ pub fn essential_from_fundamental(f: &Mat3F64, k1: &Mat3F64, k2: &Mat3F64) -> Ma
 fn svd3_robust(m: &Mat3F64) -> (Mat3F64, Vec3F64, Mat3F64) {
     let arr: [f64; 9] = (*m).into();
     let a = faer::Mat::<f64>::from_fn(3, 3, |i, j| arr[j * 3 + i]);
-    let svd = a.svd();
+    let svd = a.svd().unwrap();
 
-    let u_f = svd.u();
-    let v_f = svd.v();
-    let s_f = svd.s_diagonal();
+    let u_f = svd.U();
+    let v_f = svd.V();
+    let s_f = svd.S();
 
     let u = Mat3F64::from_cols(
         Vec3F64::new(u_f[(0, 0)], u_f[(1, 0)], u_f[(2, 0)]),

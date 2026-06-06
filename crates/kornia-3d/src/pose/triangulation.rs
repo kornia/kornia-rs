@@ -165,21 +165,21 @@ pub(crate) fn triangulate_point_linear(
     let r_arr: [f64; 9] = (*r).into();
 
     let mut a = faer::Mat::<f64>::zeros(4, 4);
-    a.write(0, 0, -1.0);
-    a.write(0, 2, x1.x);
-    a.write(1, 1, -1.0);
-    a.write(1, 2, x1.y);
+    a[(0, 0)] = -1.0;
+    a[(0, 2)] = x1.x;
+    a[(1, 1)] = -1.0;
+    a[(1, 2)] = x1.y;
 
     let p2_2 = [r_arr[2], r_arr[5], r_arr[8], t.z];
     for j in 0..4 {
         let p2_0j = if j < 3 { r_arr[j * 3] } else { t.x };
         let p2_1j = if j < 3 { r_arr[j * 3 + 1] } else { t.y };
-        a.write(2, j, x2.x * p2_2[j] - p2_0j);
-        a.write(3, j, x2.y * p2_2[j] - p2_1j);
+        a[(2, j)] = x2.x * p2_2[j] - p2_0j;
+        a[(3, j)] = x2.y * p2_2[j] - p2_1j;
     }
 
-    let svd = a.svd();
-    let v = svd.v();
+    let svd = a.svd().unwrap();
+    let v = svd.V();
     let xh = v.col(3);
     let w = xh[3];
     if w.abs() < 1e-12 {

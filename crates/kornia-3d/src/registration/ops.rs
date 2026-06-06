@@ -22,8 +22,8 @@ pub(crate) fn fit_transformation(
     }
 
     // solve the linear system H * x = 0 to find the rotation
-    let svd = hh.svd();
-    let (u_t, v) = (svd.u().transpose(), svd.v());
+    let svd = hh.svd().unwrap();
+    let (u_t, v) = (svd.U().transpose(), svd.V());
 
     // compute rotation matrix R = V * U^T
     let mut rr = v * u_t;
@@ -37,7 +37,7 @@ pub(crate) fn fit_transformation(
             v_neg
         };
         // TODO: improve performance by using matmul33
-        faer::linalg::matmul::matmul(&mut rr, &v_neg, u_t, None, 1.0, faer::Parallelism::None);
+        faer::linalg::matmul::matmul(&mut rr, faer::Accum::Replace, &v_neg, u_t, 1.0_f64, faer::Par::Seq);
     }
 
     // compute translation vector t = C_dst - R * C_src
@@ -47,7 +47,7 @@ pub(crate) fn fit_transformation(
     #[allow(clippy::needless_range_loop)]
     for i in 0..3 {
         for j in 0..3 {
-            dst_r_src[i][j] = rr.read(i, j);
+            dst_r_src[i][j] = rr[(i, j)];
         }
         dst_t_src[i] = t[i];
     }
