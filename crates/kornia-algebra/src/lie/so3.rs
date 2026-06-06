@@ -41,7 +41,7 @@ use crate::{
     param::{Param, ParamError},
     Mat3AF32, Mat3F64, Mat4F32, Mat4F64, QuatF32, QuatF64, Vec3AF32, Vec3F64,
 };
-use rand::Rng;
+use rand::RngExt;
 const SMALL_ANGLE_EPSILON: f32 = 1.0e-8;
 const SMALL_ANGLE_EPSILON_F64: f64 = 1.0e-10;
 

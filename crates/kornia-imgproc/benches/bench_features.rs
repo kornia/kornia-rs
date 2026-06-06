@@ -7,7 +7,7 @@ use kornia_imgproc::{
 };
 use kornia_io::functional as io;
 use kornia_tensor::CpuAllocator;
-use rand::Rng;
+use rand::RngExt;
 
 fn bench_fast_corner_detect(c: &mut Criterion) {
     let mut group = c.benchmark_group("FastCornerDetect");

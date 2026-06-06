@@ -2,7 +2,7 @@ use crate::{
     metric::DistanceMetric, BlockCluster, BlockContent, BowError, BowResult, InternalMeta,
     LeafData, Vocabulary,
 };
-use rand::Rng;
+use rand::RngExt;
 use rayon::prelude::*;
 use std::collections::VecDeque;
 use std::sync::Mutex;
