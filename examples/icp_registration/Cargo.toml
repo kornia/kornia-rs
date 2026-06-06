@@ -12,6 +12,7 @@ license = { workspace = true }
 categories = { workspace = true }
 include = { workspace = true }
 
+publish = false
 [dependencies]
 argh = { workspace = true }
 env_logger = { workspace = true }

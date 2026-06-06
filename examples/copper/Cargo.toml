@@ -12,6 +12,7 @@ license = { workspace = true }
 categories = { workspace = true }
 include = { workspace = true }
 
+publish = false
 [dependencies]
 bincode = { workspace = true }
 cu29 = "0.15.0"

@@ -29,5 +29,5 @@ thiserror = { workspace = true }
 aprilgrid = "0.8"
 apriltag = "0.4"
 criterion = { workspace = true }
-image = "0.25"
+image = { workspace = true }
 kornia-io = { workspace = true }

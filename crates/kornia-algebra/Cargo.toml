@@ -21,8 +21,8 @@ name = "bench_l2_line"
 
 [dependencies]
 approx = { workspace = true, optional = true }
-glam = "0.33.0"
-nalgebra = "0.35"
+glam = { workspace = true }
+nalgebra = { workspace = true }
 rand = { workspace = true }
 thiserror = { workspace = true }
 

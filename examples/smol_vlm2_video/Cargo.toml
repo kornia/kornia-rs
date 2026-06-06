@@ -9,14 +9,14 @@ publish = false
 argh = { workspace = true }
 ctrlc = { workspace = true }
 env_logger = { workspace = true }
-gstreamer = "0.24.4"
-gstreamer-app = "0.24.4"
-gstreamer-video = "0.23.6"
+gstreamer = { workspace = true }
+gstreamer-app = { workspace = true }
+gstreamer-video = { workspace = true }
 kornia = { workspace = true }
 kornia-image = { workspace = true }
 kornia-tensor = { workspace = true }
 kornia-vlm = { workspace = true }
-reqwest = { version = "0.13.4", features = ["blocking"] }
+reqwest = { workspace = true }
 rerun = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]

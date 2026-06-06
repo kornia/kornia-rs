@@ -12,6 +12,7 @@ license = { workspace = true }
 categories = { workspace = true }
 include = { workspace = true }
 
+publish = false
 [dependencies]
 eframe = "0.33"
 env_logger = { workspace = true }

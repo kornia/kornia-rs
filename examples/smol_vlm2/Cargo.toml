@@ -9,16 +9,16 @@ publish = false
 argh = { workspace = true }
 ctrlc = { workspace = true }
 env_logger = { workspace = true }
-gstreamer = "0.24.4"
-gstreamer-app = "0.24.4"
-gstreamer-video = "0.23.6"
+gstreamer = { workspace = true }
+gstreamer-app = { workspace = true }
+gstreamer-video = { workspace = true }
 kornia = { workspace = true, features = ["v4l"] }
 kornia-image = { workspace = true }
 kornia-io = { workspace = true }
 kornia-tensor = { workspace = true }
 kornia-vlm = { workspace = true }
-log = "0.4"
-reqwest = { version = "0.13.4", features = ["blocking"] }
+log = { workspace = true }
+reqwest = { workspace = true }
 rerun = { workspace = true }
 thiserror = { workspace = true }
 
