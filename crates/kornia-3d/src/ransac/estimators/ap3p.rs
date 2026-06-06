@@ -15,6 +15,7 @@ use kornia_imgproc::calibration::distortion::PolynomialDistortion;
 
 use crate::pnp::ap3p::{solve_ap3p_multi, AP3PParams};
 use crate::pnp::epnp::{solve_epnp, EPnPParams};
+use crate::pnp::LMRefineParams;
 use crate::ransac::{Estimator, Match2d3d};
 
 /// One absolute-pose hypothesis produced by the AP3P solver.
@@ -104,7 +105,6 @@ impl Estimator for AP3PEstimator {
             return;
         }
 
-        // Zero heap allocations: Use fixed-size arrays for the minimal 3-point sample.
         let mut world = [Vec3AF32::default(); 3];
         let mut image = [Vec2F32::default(); 3];
 
@@ -117,7 +117,6 @@ impl Estimator for AP3PEstimator {
             image[i] = Vec2F32::new(samples[i].image.x as f32, samples[i].image.y as f32);
         }
 
-        // 1. MINIMAL PHASE: Solve AP3P and extract all cheirality-passing roots.
         if let Ok(results) = solve_ap3p_multi(&world, &image, &self.k) {
             for res in results {
                 out.push(AP3PModel {
@@ -153,7 +152,7 @@ impl Estimator for AP3PEstimator {
         }
 
         let epnp_params = EPnPParams {
-            refine_lm: None,
+            refine_lm: Some(LMRefineParams::default()),
             ..Default::default()
         };
 
@@ -184,7 +183,6 @@ impl Estimator for AP3PEstimator {
         );
         let pc = model.rotation * p + model.translation;
 
-        // Prevent division-by-zero for points perfectly on the camera plane
         if pc.z.abs() < 1e-6 {
             return f64::INFINITY;
         }
@@ -192,14 +190,12 @@ impl Estimator for AP3PEstimator {
         let xn = pc.x / pc.z;
         let yn = pc.y / pc.z;
 
-        // Utilize pre-extracted intrinsics for a massive inner-loop speedup
         let u = self.fx * xn + self.cx;
         let v = self.fy * yn + self.cy;
 
         let du = (u as f64) - sample.image.x;
         let dv = (v as f64) - sample.image.y;
 
-        // Return squared error (avoids expensive square root operations)
         du * du + dv * dv
     }
 }

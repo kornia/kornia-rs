@@ -4,11 +4,12 @@
 //! surface matches OpenCV's calling convention while the underlying solver is the
 //! generic kornia RANSAC driver (NEON/AVX2 scoring, adaptive iter cap).
 
+use kornia_3d::pnp::refine::{refine_pose_lm, LMRefineParams};
 use kornia_3d::ransac::{
     estimators::{AP3PEstimator, EPnPEstimator},
     run, Match2d3d, RansacConfig, ThresholdConsensus, UniformSampler,
 };
-use kornia_algebra::{Mat3AF32, Vec2F64, Vec3AF32, Vec3F64};
+use kornia_algebra::{Mat3AF32, Vec2F32, Vec2F64, Vec3AF32, Vec3F64};
 use numpy::{PyArray1, PyArray2, PyArrayMethods, PyUntypedArrayMethods, ToPyArray};
 use pyo3::prelude::*;
 use rand::{rngs::StdRng, SeedableRng};
@@ -185,8 +186,8 @@ pub fn solve_pnp_ransac_py<'py>(
             Ok((r_py, t_py, mask_py, inlier_count))
         };
 
-    // Dispatch to the requested solver pipeline
-    match method {
+    // 1. Execute RANSAC and extract the base model + inlier mask
+    let (mut final_rot, mut final_trans, inliers) = match method {
         PnPSolverMethod::EPnP => {
             let est = EPnPEstimator::new(k_mat);
             let result = run(&est, &consensus, &mut sampler, &samples, &cfg);
@@ -195,7 +196,7 @@ pub fn solve_pnp_ransac_py<'py>(
                     "solve_pnp_ransac (EPnP): no model recovered (check threshold + iter budget)",
                 )
             })?;
-            process_model(model.rotation, model.translation, &result.inliers)
+            (model.rotation, model.translation, result.inliers)
         }
         PnPSolverMethod::AP3P => {
             let est = AP3PEstimator::new(k_mat);
@@ -205,7 +206,51 @@ pub fn solve_pnp_ransac_py<'py>(
                     "solve_pnp_ransac (AP3P): no model recovered (check threshold + iter budget)",
                 )
             })?;
-            process_model(model.rotation, model.translation, &result.inliers)
+            (model.rotation, model.translation, result.inliers)
+        }
+    };
+
+    // 2. --- THE TERMINAL POLISH ---
+    // Extract the 3D and 2D points directly from our Match2d3d `samples` array
+    let mut inlier_world_pts = Vec::with_capacity(samples.len());
+    let mut inlier_image_pts = Vec::with_capacity(samples.len());
+
+    for (i, &is_inlier) in inliers.iter().enumerate() {
+        if is_inlier {
+            inlier_world_pts.push(Vec3AF32::new(
+                samples[i].object.x as f32,
+                samples[i].object.y as f32,
+                samples[i].object.z as f32,
+            ));
+            inlier_image_pts.push(Vec2F32::new(
+                samples[i].image.x as f32,
+                samples[i].image.y as f32,
+            ));
         }
     }
+
+    // Only run LM if we have an overdetermined system (N >= 4)
+    if inlier_world_pts.len() >= 4 {
+        let refine_params = LMRefineParams::default()
+            .with_max_iterations(20)
+            .with_cost_tolerance(1e-6);
+
+        // Run the Image-Space 2D reprojection minimizer
+        if let Ok(refined) = refine_pose_lm(
+            &inlier_world_pts,
+            &inlier_image_pts,
+            &k_mat,
+            &final_rot,
+            &final_trans,
+            None, // Distortion is safely bypassed here
+            &refine_params,
+        ) {
+            // Overwrite the algebraic pose with the polished geometric pose
+            final_rot = refined.rotation;
+            final_trans = refined.translation;
+        }
+    }
+
+    // 3. Return the polished data to Python
+    process_model(final_rot, final_trans, &inliers)
 }

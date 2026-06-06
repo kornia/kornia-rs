@@ -145,8 +145,6 @@ pub fn solve_ap3p(
         ],
     ];
 
-    // Transpose to the OpenCV `featureVectors[3][4]` layout: rows = (mu, mv, mk)
-    // and columns = point index. We only use the first 3 columns.
     let fv = [
         [
             feature_vectors[0][0],
@@ -180,8 +178,6 @@ pub fn solve_ap3p(
         ));
     }
 
-    // Cheirality: keep only candidates where all three 3D points have
-    // positive depth in the camera frame.
     let mut best_idx = None;
     let mut best_rmse = f64::INFINITY;
 
@@ -324,7 +320,6 @@ pub fn solve_deg3(
         return solve_deg2(b, c, d, x0, x1);
     }
 
-    // OpenCV mutates these in-place; we MUST do the same to preserve math below.
     let inv_a = 1.0 / a;
     b *= inv_a;
     c *= inv_a;
@@ -484,8 +479,7 @@ fn polish_quartic_roots(coeffs: &[f64; 5], roots: &mut [f64; 4], nb_roots: i32) 
 }
 
 // ---------------------------------------------------------------------------
-// `computePoses` — direct port of OpenCV's `ap3p::computePoses`. Returns the
-// number of real (cheirality-passing) solutions.
+// `computePoses` — Returns the number of real (cheirality-passing) solutions.
 // ---------------------------------------------------------------------------
 
 fn ap3p_compute_poses(
@@ -664,8 +658,27 @@ fn ap3p_compute_poses(
     nb_solutions as i32
 }
 
-/// Solves AP3P and returns ALL cheirality-passing roots (up to 4).
-/// Used natively by the RANSAC estimator to evaluate all algebraic candidates.
+/// Solves the Absolute Pose 3-Point (AP3P) problem and returns all cheirality-passing roots.
+///
+/// This solver computes up to 4 possible camera poses $(R, t)$ given three 3D-to-2D
+/// correspondences. Only solutions that satisfy the cheirality constraint (all 3D points
+/// must have positive depth relative to the camera) are returned.
+///
+/// # Arguments
+///
+/// * `points_world` - A slice of three `Vec3AF32` points in the world coordinate system.
+/// * `points_image` - A slice of three `Vec2F32` points representing the corresponding 2D image coordinates.
+/// * `k` - The 3x3 camera intrinsic matrix (`Mat3AF32`).
+///
+/// # Returns
+///
+/// Returns a `Result` containing a `Vec<PnPResult>` with all valid poses. If no solutions
+/// are found or if no candidates pass the cheirality check, it returns an error.
+///
+/// # Errors
+///
+/// * `PnPError::InsufficientCorrespondences` - If the number of points provided is not exactly 3.
+/// * `PnPError::SvdFailed` - If no real algebraic solutions exist or if all candidates fail the positive depth (cheirality) constraint.
 pub fn solve_ap3p_multi(
     points_world: &[Vec3AF32],
     points_image: &[Vec2F32],

@@ -9,6 +9,7 @@ use kornia_algebra::{Mat3AF32, Vec2F32, Vec3AF32};
 use kornia_imgproc::calibration::distortion::PolynomialDistortion;
 
 use crate::pnp::epnp::{solve_epnp, EPnPParams};
+use crate::pnp::LMRefineParams;
 use crate::ransac::{Estimator, Match2d3d};
 
 /// One absolute-pose hypothesis produced by EPnP.
@@ -95,8 +96,6 @@ impl Estimator for EPnPEstimator {
             return;
         }
 
-        // FAST PATH: If exactly 4 points are provided (the RANSAC hypothesis generation phase),
-        // we use stack-allocated arrays to completely eliminate heap allocation bottlenecks.
         if n == Self::SAMPLE_SIZE {
             let mut world = [Vec3AF32::default(); 4];
             let mut image = [Vec2F32::default(); 4];
@@ -110,9 +109,6 @@ impl Estimator for EPnPEstimator {
                 image[i] = Vec2F32::new(samples[i].image.x as f32, samples[i].image.y as f32);
             }
 
-            // Explicitly disable LM Refine for the minimal 4-point sample.
-            // Running a non-linear optimizer on a minimal sample provides zero statistical
-            // benefit and adds massive computational overhead during RANSAC.
             let mut minimal_params = self.params.clone();
             minimal_params.refine_lm = None;
 
@@ -129,7 +125,6 @@ impl Estimator for EPnPEstimator {
                 });
             }
         } else {
-            // SLOW PATH: If a user manually calls fit() with N > 4, fallback to Vec allocations.
             let mut world = Vec::with_capacity(n);
             let mut image = Vec::with_capacity(n);
             for s in samples {
@@ -146,7 +141,7 @@ impl Estimator for EPnPEstimator {
                 &image,
                 &self.k,
                 self.distortion.as_ref(),
-                &self.params, // Allow full LM-refinement here
+                &self.params,
             ) {
                 out.push(EPnPModel {
                     rotation: result.rotation,
@@ -156,7 +151,6 @@ impl Estimator for EPnPEstimator {
         }
     }
 
-    /// Explicitly implement refit for overdetermined Local Optimization (LO) passes.
     fn refit(&self, samples: &[Self::Sample], out: &mut Vec<Self::Model>) {
         let n = samples.len();
         if n < Self::SAMPLE_SIZE {
@@ -175,10 +169,9 @@ impl Estimator for EPnPEstimator {
         }
 
         let params = EPnPParams {
-            refine_lm: None,
+            refine_lm: Some(LMRefineParams::default()),
             ..self.params.clone()
         };
-        
 
         if let Ok(result) = solve_epnp(&world, &image, &self.k, self.distortion.as_ref(), &params) {
             out.push(EPnPModel {
@@ -203,7 +196,6 @@ impl Estimator for EPnPEstimator {
         let xn = pc.x / pc.z;
         let yn = pc.y / pc.z;
 
-        // Utilize pre-extracted intrinsics for a massive inner-loop speedup
         let u = self.fx * xn + self.cx;
         let v = self.fy * yn + self.cy;
 
