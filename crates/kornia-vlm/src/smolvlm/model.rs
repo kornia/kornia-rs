@@ -256,7 +256,7 @@ mod tests {
     fn test_alternate_embeddings_multichunk_2049() -> Result<()> {
         let seq_len = 2049;
         let mask_vec: Vec<u8> = (0..seq_len)
-            .map(|i| if i % 2 == 0 { 1 } else { 0 })
+            .map(|i: usize| if i.is_multiple_of(2) { 1 } else { 0 })
             .collect();
         let img_count = mask_vec.iter().map(|&x| x as usize).sum::<usize>();
 
@@ -265,7 +265,7 @@ mod tests {
         let result = SmolModel::inputs_merger(&mask, &img_embeds, &text_embeds)?;
         let result_vec = result.flatten_all()?.to_vec1::<f32>()?;
         let expected_vec: Vec<f32> = (0..seq_len)
-            .map(|i| if i % 2 == 0 { 2.0 } else { 1.0 })
+            .map(|i: usize| if i.is_multiple_of(2) { 2.0 } else { 1.0 })
             .collect();
 
         assert_eq!(result_vec, expected_vec);

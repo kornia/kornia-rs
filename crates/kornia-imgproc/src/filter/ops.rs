@@ -48,7 +48,7 @@ pub fn box_blur_u8<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     }
 
     let (kx, ky) = kernel_size;
-    if kx == 0 || ky == 0 || kx % 2 == 0 || ky % 2 == 0 {
+    if kx == 0 || ky == 0 || kx.is_multiple_of(2) || ky.is_multiple_of(2) {
         return Err(ImageError::InvalidSigmaValue(kx as f32, ky as f32));
     }
 

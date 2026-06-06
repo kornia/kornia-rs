@@ -355,13 +355,13 @@ pub fn get_resize_output_image_size(size: ImageSize, resolution_max_side: usize)
     if width >= height {
         width = resolution_max_side;
         height = (width as f32 / aspect_ratio).round() as usize;
-        if height % 2 != 0 {
+        if !height.is_multiple_of(2) {
             height += 1;
         }
     } else {
         height = resolution_max_side;
         width = (height as f32 * aspect_ratio).round() as usize;
-        if width % 2 != 0 {
+        if !width.is_multiple_of(2) {
             width += 1;
         }
     }
