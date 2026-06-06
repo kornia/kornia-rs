@@ -96,7 +96,7 @@ pub mod allocator;
 /// GPU backend module providing the [`Backend`] trait and [`GpuAllocator`] abstraction.
 ///
 /// Enabled by the `gpu` feature. Backend implementations live in sub-modules gated by
-/// `gpu-cubecl` and `gpu-cuda-oxide` features. To add a new backend, implement `Backend`
+/// per-backend features such as `gpu-cubecl`. To add a new backend, implement `Backend`
 /// for your type and gate the module behind a `gpu-<name>` feature flag.
 #[cfg(feature = "gpu")]
 pub mod backend;

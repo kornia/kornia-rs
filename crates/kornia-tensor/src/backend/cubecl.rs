@@ -12,7 +12,7 @@ use cubecl::Runtime;
 use cubecl::client::ComputeClient;
 use cubecl::server::Handle;
 
-use super::Backend;
+use super::{Backend, GpuAllocator};
 
 /// Errors produced by [`CubeclBackend`].
 #[derive(Debug, thiserror::Error)]
@@ -32,7 +32,7 @@ pub enum CubeclBackendError {
 /// handle and letting cubecl's reference-counted memory manager free the allocation.
 pub struct CubeclBackend<R: Runtime> {
     client: ComputeClient<R>,
-    live: Arc<Mutex<HashMap<usize, Handle>>>,
+    live: Arc<Mutex<HashMap<u64, Handle>>>,
 }
 
 impl<R: Runtime> CubeclBackend<R> {
@@ -77,6 +77,10 @@ where
     type Error = CubeclBackendError;
 
     fn alloc(&self, layout: Layout) -> Result<*mut u8, Self::Error> {
+        // ZST: return a non-null dangling pointer; cubecl is not called.
+        if layout.size() == 0 {
+            return Ok(layout.align() as *mut u8);
+        }
         let handle = self.client.empty(layout.size());
         let managed = self
             .client
@@ -86,19 +90,33 @@ where
         if device_ptr == 0 {
             return Err(CubeclBackendError::NullDevicePointer);
         }
-        let ptr = device_ptr as *mut u8;
         self.live
             .lock()
-            .expect("CubeclBackend side-table poisoned")
-            .insert(ptr as usize, handle);
-        Ok(ptr)
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(device_ptr, handle);
+        Ok(device_ptr as *mut u8)
     }
 
-    unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        if layout.size() == 0 {
+            return;
+        }
         let _ = self
             .live
             .lock()
-            .expect("CubeclBackend side-table poisoned")
-            .remove(&(ptr as usize));
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&(ptr as u64));
     }
+}
+
+/// Create a [`GpuAllocator`] backed by the default CUDA device.
+///
+/// Hides the cubecl runtime types from callers; use this instead of constructing
+/// [`CubeclBackend`] and [`GpuAllocator`] manually in tests and application code.
+pub fn new_cuda_allocator(
+) -> GpuAllocator<CubeclBackend<cubecl_cuda::CudaRuntime>> {
+    use cubecl::Runtime;
+    let device = <cubecl_cuda::CudaRuntime as Runtime>::Device::default();
+    let client = cubecl_cuda::CudaRuntime::client(&device);
+    GpuAllocator::new(CubeclBackend::new(client))
 }
