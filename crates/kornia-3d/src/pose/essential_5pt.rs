@@ -531,7 +531,7 @@ fn null_space_5x9(x1: &[Vec2F64; 5], x2: &[Vec2F64; 5]) -> Option<[[f64; 9]; 4]>
 
     // Null-space via SVD: the last 4 right singular vectors span ker(A)
     // when rank(A) = 5. We use the full-V SVD and grab columns 5..9.
-    let svd = mat.svd().unwrap();
+    let svd = mat.svd().ok()?;
     let v = svd.V(); // 9×9 orthogonal (real)
 
     // Sanity check: if the 5th singular value is very small the sample is

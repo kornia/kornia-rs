@@ -7,7 +7,7 @@ pub(crate) fn fit_transformation(
     points_in_dst: &[[f64; 3]],
     dst_r_src: &mut [[f64; 3]; 3],
     dst_t_src: &mut [f64; 3],
-) {
+) -> Option<()> {
     assert_eq!(points_in_src.len(), points_in_dst.len());
 
     // compute centroids
@@ -22,7 +22,7 @@ pub(crate) fn fit_transformation(
     }
 
     // solve the linear system H * x = 0 to find the rotation
-    let svd = hh.svd().unwrap();
+    let svd = hh.svd().ok()?;
     let (u_t, v) = (svd.U().transpose(), svd.V());
 
     // compute rotation matrix R = V * U^T
@@ -51,6 +51,7 @@ pub(crate) fn fit_transformation(
         }
         dst_t_src[i] = t[i];
     }
+    Some(())
 }
 
 /// Compute the centroids of two sets of points.
@@ -201,7 +202,7 @@ mod tests {
     }
 
     #[test]
-    fn test_fit_transformation_identity() {
+    fn test_fit_transformation_identity() -> Result<(), &'static str> {
         let num_points = 30;
         let points_src = create_random_points(num_points);
         let points_dst = points_src.clone();
@@ -212,7 +213,8 @@ mod tests {
         let mut rotation = [[0.0; 3]; 3];
         let mut translation = [0.0; 3];
 
-        fit_transformation(&points_src, &points_dst, &mut rotation, &mut translation);
+        fit_transformation(&points_src, &points_dst, &mut rotation, &mut translation)
+            .ok_or("SVD failed")?;
 
         for (res, exp) in rotation.iter().zip(expected_rotation.iter()) {
             for (r, e) in res.iter().zip(exp.iter()) {
@@ -222,6 +224,7 @@ mod tests {
         for (res, exp) in translation.iter().zip(expected_translation.iter()) {
             assert_relative_eq!(res, exp, epsilon = 1e-6);
         }
+        Ok(())
     }
 
     #[test]
@@ -244,7 +247,8 @@ mod tests {
         let mut rotation = [[0.0; 3]; 3];
         let mut translation = [0.0; 3];
 
-        fit_transformation(&points_src, &points_dst, &mut rotation, &mut translation);
+        fit_transformation(&points_src, &points_dst, &mut rotation, &mut translation)
+            .ok_or("SVD failed")?;
 
         for (res, exp) in rotation.iter().zip(expected_rotation.iter()) {
             for (r, e) in res.iter().zip(exp.iter()) {
@@ -284,7 +288,8 @@ mod tests {
             let mut rotation = [[0.0; 3]; 3];
             let mut translation = [0.0; 3];
 
-            fit_transformation(&points_src, &points_dst, &mut rotation, &mut translation);
+            fit_transformation(&points_src, &points_dst, &mut rotation, &mut translation)
+                .ok_or("SVD failed")?;
 
             let mut points_src_fit = vec![[0.0; 3]; num_points];
             transform_points3d(&points_src, &rotation, &translation, &mut points_src_fit)?;

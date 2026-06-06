@@ -106,7 +106,7 @@ pub fn triangulate_n_view_linear(pixels: &[Vec2F64], projections: &[[f64; 12]]) 
             a[(2 * i + 1, j)] = px.y * p2 - p1;
         }
     }
-    let svd = a.svd().unwrap();
+    let svd = a.svd().ok()?;
     let v = svd.V();
     let xh = v.col(3);
     let w = xh[3];

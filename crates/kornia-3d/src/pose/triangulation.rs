@@ -178,7 +178,7 @@ pub(crate) fn triangulate_point_linear(
         a[(3, j)] = x2.y * p2_2[j] - p2_1j;
     }
 
-    let svd = a.svd().unwrap();
+    let svd = a.svd().ok()?;
     let v = svd.V();
     let xh = v.col(3);
     let w = xh[3];

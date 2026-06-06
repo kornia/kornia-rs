@@ -114,6 +114,9 @@ pub enum TwoViewError {
         /// Configured maximum allowed ratio.
         max_ratio: f64,
     },
+    /// SVD or other numerical decomposition failed (input may contain NaN/Inf).
+    #[error("Numerical decomposition failed")]
+    NumericalFailure,
     /// Fundamental estimation failed.
     #[error("Fundamental estimation error: {0}")]
     Fundamental(#[from] FundamentalError),
@@ -237,7 +240,7 @@ impl EpipolarSolver for Fundamental8ptSolver {
         let res = ransac_fundamental(x1, x2, &self.ransac)?;
         let f = res.model;
         let e_raw = essential_from_fundamental(&f, k1, k2);
-        let e = enforce_essential_constraints(&e_raw);
+        let e = enforce_essential_constraints(&e_raw).ok_or(TwoViewError::NumericalFailure)?;
         Ok(EpipolarFit {
             e,
             model: TwoViewModel::Fundamental(f),
@@ -1489,7 +1492,7 @@ impl TwoViewEstimator {
                 TwoViewModel::Homography(h),
             )
         } else {
-            (decompose_essential(&epi.e).to_vec(), epi.inliers, epi.model)
+            (decompose_essential(&epi.e).ok_or(TwoViewError::NumericalFailure)?.to_vec(), epi.inliers, epi.model)
         };
 
         // The ambiguity ratio (best/second) requires both counts to be
