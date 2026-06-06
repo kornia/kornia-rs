@@ -200,12 +200,10 @@ mod tests {
         let points1 = vec![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]];
         let points2 = vec![[7.0, 8.0, 9.0], [10.0, 11.0, 12.0]];
         let (centroid1, centroid2) = compute_centroids(&points1, &points2);
-        assert_eq!(centroid1.read(0), 2.5);
-        assert_eq!(centroid1.read(1), 3.5);
-        assert_eq!(centroid1.read(2), 4.5);
-        assert_eq!(centroid2.read(0), 8.5);
-        assert_eq!(centroid2.read(1), 9.5);
-        assert_eq!(centroid2.read(2), 10.5);
+        let c1: Vec<f64> = centroid1.as_ref().iter().copied().collect();
+        let c2: Vec<f64> = centroid2.as_ref().iter().copied().collect();
+        assert_eq!(c1, vec![2.5, 3.5, 4.5]);
+        assert_eq!(c2, vec![8.5, 9.5, 10.5]);
     }
 
     #[test]

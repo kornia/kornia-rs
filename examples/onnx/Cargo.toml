@@ -17,9 +17,9 @@ publish = false
 argh = { workspace = true }
 kornia = { workspace = true }
 kornia-tensor = { workspace = true }
-ort = { version = "2.0.0-rc.11", default-features = false, features = [
+ort = { version = "=2.0.0-rc.11", default-features = false, features = [
   "half",
   "load-dynamic",
 ] }
-ort-sys = { version = "2.0.0-rc.11" }
+ort-sys = { version = "=2.0.0-rc.11" }
 rerun = { workspace = true }

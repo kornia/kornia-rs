@@ -36,7 +36,7 @@ fn transform_points3d_matmul(
         let dst_r_src_slice = unsafe {
             std::slice::from_raw_parts(dst_r_src.as_ptr() as *const f64, dst_r_src.len() * 3)
         };
-        faer::mat::from_row_major_slice(dst_r_src_slice, 3, 3)
+        faer::MatRef::<f64>::from_row_major_slice(dst_r_src_slice, 3, 3)
     };
     let dst_t_src_col = faer::col![dst_t_src[0], dst_t_src[1], dst_t_src[2]];
 
@@ -46,7 +46,7 @@ fn transform_points3d_matmul(
             std::slice::from_raw_parts(src_points.as_ptr() as *const f64, src_points.len() * 3)
         };
         // SAFETY: src_points_slice is a 3xN matrix where each column represents a 3D point
-        faer::mat::from_row_major_slice(src_points_slice, 3, src_points.len())
+        faer::MatRef::<f64>::from_row_major_slice(src_points_slice, 3, src_points.len())
     };
 
     // create a mutable view of the destination points
@@ -58,7 +58,7 @@ fn transform_points3d_matmul(
             )
         };
         // SAFETY: dst_points_slice is a 3xN matrix where each column represents a 3D point
-        faer::mat::from_column_major_slice_mut(dst_points_slice, 3, dst_points.len())
+        faer::MatMut::<f64>::from_column_major_slice_mut(dst_points_slice, 3, dst_points.len())
     };
 
     // perform the matrix multiplication

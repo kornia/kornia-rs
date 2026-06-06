@@ -3,7 +3,7 @@ use kornia_bow::{
     metric::{Feature, Hamming},
     BlockCluster, Vocabulary,
 };
-use rand::{rngs::StdRng, Rng, RngExt, SeedableRng};
+use rand::{rngs::StdRng, RngExt, SeedableRng};
 use std::mem;
 
 const B: usize = 10;
