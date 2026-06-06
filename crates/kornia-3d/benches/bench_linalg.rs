@@ -64,11 +64,11 @@ fn transform_points3d_matmul(
     // perform the matrix multiplication
     faer::linalg::matmul::matmul(
         &mut points_in_dst,
+        faer::Accum::Replace,
         dst_r_src_mat,
         points_in_src,
-        None,
         1.0,
-        faer::Parallelism::Rayon(4),
+        faer::Par::rayon(4),
     );
 
     // apply translation to each point

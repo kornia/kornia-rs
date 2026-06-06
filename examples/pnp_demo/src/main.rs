@@ -5,7 +5,7 @@ use kornia_imgproc::calibration::{
     distortion::{distort_point_polynomial, PolynomialDistortion},
     CameraIntrinsic,
 };
-use rand::Rng;
+use rand::{Rng, RngExt};
 
 #[derive(FromArgs, Debug)]
 /// PnP demo application
