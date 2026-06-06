@@ -1,11 +1,22 @@
 //! CubeCL backend for `kornia-tensor` (enabled by feature `gpu-cubecl`).
 //!
 //! The pointer returned by [`CubeclBackend::alloc`] is a CUDA device address cast to
-//! `*mut u8`. It must not be dereferenced on the host. cubecl's `Layout::align` is
-//! ignored — the cubecl-cuda backend uses its own alignment (typically 256 bytes).
+//! `*mut u8`. It must not be dereferenced on the host.
+//!
+//! For non-zero allocations, cubecl-cuda controls alignment (typically 256 bytes) and
+//! the `layout.align()` value passed by the caller is ignored. For zero-sized allocations
+//! a non-null dangling pointer aligned to `layout.align()` is returned without calling
+//! into cubecl.
+
+// CUDA device pointers are 64-bit values; this backend is only correct on 64-bit targets.
+#[cfg(not(target_pointer_width = "64"))]
+compile_error!(
+    "kornia-tensor's CubeclBackend requires a 64-bit target (CUDA device pointers are 64-bit)"
+);
 
 use std::alloc::Layout;
 use std::collections::HashMap;
+use std::ptr::NonNull;
 use std::sync::{Arc, Mutex};
 
 use cubecl::Runtime;
@@ -23,6 +34,9 @@ pub enum CubeclBackendError {
     /// Failed to resolve the cubecl `Handle` to a device resource.
     #[error("cubecl backend failed to resolve handle resource: {0}")]
     ResourceLookup(String),
+    /// The allocator side-table mutex was poisoned by a prior panic.
+    #[error("cubecl backend side-table mutex is poisoned")]
+    MutexPoisoned,
 }
 
 /// CubeCL backend wrapping a [`ComputeClient`] for the chosen runtime.
@@ -77,9 +91,12 @@ where
     type Error = CubeclBackendError;
 
     fn alloc(&self, layout: Layout) -> Result<*mut u8, Self::Error> {
-        // ZST: return a non-null dangling pointer; cubecl is not called.
+        // ZST: return a non-null dangling pointer aligned to layout.align().
+        // layout.align() is always >= 1, so NonNull::new succeeds.
         if layout.size() == 0 {
-            return Ok(layout.align() as *mut u8);
+            let dangling = NonNull::new(layout.align() as *mut u8)
+                .expect("layout.align() is always nonzero");
+            return Ok(dangling.as_ptr());
         }
         let handle = self.client.empty(layout.size());
         let managed = self
@@ -92,7 +109,7 @@ where
         }
         self.live
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .map_err(|_| CubeclBackendError::MutexPoisoned)?
             .insert(device_ptr, handle);
         Ok(device_ptr as *mut u8)
     }
@@ -101,11 +118,11 @@ where
         if layout.size() == 0 {
             return;
         }
-        let _ = self
-            .live
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&(ptr as u64));
+        // If the mutex is poisoned a prior panic already corrupted state; skip removal
+        // rather than propagating into an infallible dealloc path.
+        if let Ok(mut guard) = self.live.lock() {
+            guard.remove(&(ptr as u64));
+        }
     }
 }
 
@@ -113,8 +130,7 @@ where
 ///
 /// Hides the cubecl runtime types from callers; use this instead of constructing
 /// [`CubeclBackend`] and [`GpuAllocator`] manually in tests and application code.
-pub fn new_cuda_allocator(
-) -> GpuAllocator<CubeclBackend<cubecl_cuda::CudaRuntime>> {
+pub fn new_cuda_allocator() -> GpuAllocator<CubeclBackend<cubecl_cuda::CudaRuntime>> {
     use cubecl::Runtime;
     let device = <cubecl_cuda::CudaRuntime as Runtime>::Device::default();
     let client = cubecl_cuda::CudaRuntime::client(&device);
