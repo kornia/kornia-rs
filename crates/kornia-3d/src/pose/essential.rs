@@ -187,7 +187,8 @@ mod tests {
 
     /// End-to-end test: known (R, t, K) → generate correspondences → F → E → decompose → verify R, t.
     #[test]
-    fn test_fundamental_to_essential_to_pose_round_trip() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_fundamental_to_essential_to_pose_round_trip() -> Result<(), Box<dyn std::error::Error>>
+    {
         use crate::pose::fundamental::{fundamental_8point, sampson_distance};
 
         // Known camera intrinsics
@@ -264,7 +265,8 @@ mod tests {
 
         // F → E → decompose
         let e = essential_from_fundamental(&f_est, &k, &k);
-        let e = enforce_essential_constraints(&e).ok_or("SVD failed in enforce_essential_constraints")?;
+        let e = enforce_essential_constraints(&e)
+            .ok_or("SVD failed in enforce_essential_constraints")?;
         let candidates = decompose_essential(&e).ok_or("SVD failed in decompose_essential")?;
 
         // One of the 4 candidates should match the known R and t

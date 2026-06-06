@@ -1492,7 +1492,13 @@ impl TwoViewEstimator {
                 TwoViewModel::Homography(h),
             )
         } else {
-            (decompose_essential(&epi.e).ok_or(TwoViewError::NumericalFailure)?.to_vec(), epi.inliers, epi.model)
+            (
+                decompose_essential(&epi.e)
+                    .ok_or(TwoViewError::NumericalFailure)?
+                    .to_vec(),
+                epi.inliers,
+                epi.model,
+            )
         };
 
         // The ambiguity ratio (best/second) requires both counts to be

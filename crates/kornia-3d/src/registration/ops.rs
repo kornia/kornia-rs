@@ -37,7 +37,14 @@ pub(crate) fn fit_transformation(
             v_neg
         };
         // TODO: improve performance by using matmul33
-        faer::linalg::matmul::matmul(&mut rr, faer::Accum::Replace, &v_neg, u_t, 1.0_f64, faer::Par::Seq);
+        faer::linalg::matmul::matmul(
+            &mut rr,
+            faer::Accum::Replace,
+            &v_neg,
+            u_t,
+            1.0_f64,
+            faer::Par::Seq,
+        );
     }
 
     // compute translation vector t = C_dst - R * C_src

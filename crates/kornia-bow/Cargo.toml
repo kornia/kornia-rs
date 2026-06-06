@@ -3,7 +3,7 @@ name = "kornia-bow"
 version = { workspace = true }
 authors = [
   "Siddharth Rambhia <siddharth.rambhia@gmail.com>",
-  "kornia.org <edgar@kornia.org>"
+  "kornia.org <edgar@kornia.org>",
 ]
 edition = { workspace = true }
 rust-version = { workspace = true }
