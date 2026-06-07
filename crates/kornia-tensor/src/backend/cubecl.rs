@@ -91,18 +91,17 @@ where
     type Error = CubeclBackendError;
 
     fn alloc(&self, layout: Layout) -> Result<*mut u8, Self::Error> {
-        // ZST: return a non-null dangling pointer aligned to layout.align().
-        // layout.align() is always >= 1, so NonNull::new succeeds.
         if layout.size() == 0 {
-            let dangling = NonNull::new(layout.align() as *mut u8)
-                .expect("layout.align() is always nonzero");
+            // layout.align() >= 1 by invariant; this pointer is never dereferenced.
+            // SAFETY: layout.align() is non-zero so the cast yields a non-null address.
+            let dangling = unsafe { NonNull::new_unchecked(layout.align() as *mut u8) };
             return Ok(dangling.as_ptr());
         }
         let handle = self.client.empty(layout.size());
         let managed = self
             .client
             .get_resource(handle.clone())
-            .map_err(|e| CubeclBackendError::ResourceLookup(format!("{e:?}")))?;
+            .map_err(|e| CubeclBackendError::ResourceLookup(e.to_string()))?;
         let device_ptr = managed.resource().device_ptr();
         if device_ptr == 0 {
             return Err(CubeclBackendError::NullDevicePointer);
@@ -118,11 +117,13 @@ where
         if layout.size() == 0 {
             return;
         }
-        // If the mutex is poisoned a prior panic already corrupted state; skip removal
-        // rather than propagating into an infallible dealloc path.
-        if let Ok(mut guard) = self.live.lock() {
-            guard.remove(&(ptr as u64));
-        }
+        // Recover from a poisoned mutex rather than leaking the Handle.
+        // A poisoned guard still holds valid data; we take it and remove the entry.
+        let mut guard = match self.live.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        guard.remove(&(ptr as u64));
     }
 }
 
