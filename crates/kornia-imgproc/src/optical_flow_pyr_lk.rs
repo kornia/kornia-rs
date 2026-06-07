@@ -1902,7 +1902,11 @@ mod tests {
         let dy = -12.0;
         let img1 = make_circle_image(size, 64.0, 64.0, 15.0);
         let img2 = make_circle_image(size, 64.0 + dx, 64.0 + dy, 15.0);
-        let pts = vec![[64.0, 64.0]];
+        // Use a point near the circle edge (r≈9.9 from center at 45°) so the
+        // 21×21 tracking window contains the circle arc in both x and y,
+        // giving the structure tensor sufficient gradient energy to pass the
+        // normalized min_eigen check at every pyramid level.
+        let pts = vec![[71.0, 57.0]];
         let mut params = default_params();
         params.max_level = 3;
 
