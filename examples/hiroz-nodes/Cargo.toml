@@ -13,6 +13,9 @@ ctrlc = { workspace = true }
 env_logger = { workspace = true }
 flume = "0.12"
 foxglove = "0.24.0"
+hiroz = { git = "https://github.com/ZettaScaleLabs/hiroz.git", branch = "main", features = [
+  "protobuf",
+] }
 kornia-image = { workspace = true }
 kornia-imgproc = { workspace = true }
 kornia-io = { workspace = true }
@@ -20,9 +23,6 @@ log = { workspace = true }
 nix = { version = "0.31.3", features = ["time"] }
 prost = "0.14.3"
 prost-types = "0.14.3"
-hiroz = { git = "https://github.com/ZettaScaleLabs/hiroz.git", branch = "main", features = [
-  "protobuf",
-] }
 serde = { workspace = true, features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
 zenoh = { version = "1.7", features = ["shared-memory"] }

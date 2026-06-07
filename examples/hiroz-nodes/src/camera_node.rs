@@ -1,10 +1,10 @@
 use crate::protos::{camera::v1::CompressedImage, header::v1::Header};
-use kornia_image::ImageSize;
-use kornia_io::v4l::{PixelFormat, V4LCameraConfig, V4lVideoCapture};
-use nix::sys::time::TimeValLike;
 use hiroz::{
     context::ZContext, msg::ProtobufSerdes, node::ZNode, pubsub::ZPub, Builder, Result as ZResult,
 };
+use kornia_image::ImageSize;
+use kornia_io::v4l::{PixelFormat, V4LCameraConfig, V4lVideoCapture};
+use nix::sys::time::TimeValLike;
 use std::sync::Arc;
 
 /// ROS2-style camera publisher node
@@ -128,7 +128,10 @@ fn frame_to_compressed_image(
 
     Some(CompressedImage {
         header: Some(Header {
-            acq_time: stamp_from_sec_nanos(frame.timestamp.sec as u64, frame.timestamp.usec as u32 * 1_000),
+            acq_time: stamp_from_sec_nanos(
+                frame.timestamp.sec as u64,
+                frame.timestamp.usec as u32 * 1_000,
+            ),
             pub_time,
             sequence: frame.sequence,
             frame_id: camera_name.to_string(),

@@ -1,11 +1,11 @@
 //! Compute Node - subscribes to raw images via SHM, computes statistics, publishes stats
 
 use crate::protos::{Header, ImageStats, RawImage};
-use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
-use prost::Message;
 use hiroz::{
     context::ZContext, msg::ProtobufSerdes, node::ZNode, pubsub::ZPub, Builder, Result as ZResult,
 };
+use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
+use prost::Message;
 use std::sync::Arc;
 use zenoh::Wait;
 

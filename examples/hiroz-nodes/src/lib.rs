@@ -7,8 +7,11 @@ pub mod logger_node;
 
 use bytes::BufMut;
 use foxglove::{Encode, Schema};
+use hiroz::{
+    msg::{ProtobufSerdes, ZMessage},
+    MessageTypeInfo, TypeHash, WithTypeInfo,
+};
 use prost::Message;
-use hiroz::{MessageTypeInfo, TypeHash, WithTypeInfo, msg::{ProtobufSerdes, ZMessage}};
 
 pub mod protos {
     pub mod camera {
