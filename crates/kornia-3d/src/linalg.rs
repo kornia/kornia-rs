@@ -414,7 +414,7 @@ mod tests {
             let rotation_slice = unsafe {
                 std::slice::from_raw_parts(rotation.as_ptr() as *const f64, rotation.len() * 3)
             };
-            faer::mat::from_row_major_slice(rotation_slice, 3, 3)
+            faer::MatRef::<f64>::from_row_major_slice(rotation_slice, 3, 3)
         };
         let dst_t_src = faer::col![translation[0], translation[1], translation[2]];
         // R' = R^T
@@ -425,12 +425,13 @@ mod tests {
             let mut rotation_inv = [[0.0; 3]; 3];
             for (i, row) in rotation_inv.iter_mut().enumerate() {
                 for (j, val) in row.iter_mut().enumerate() {
-                    *val = src_r_dst.read(i, j);
+                    *val = src_r_dst[(i, j)];
                 }
             }
             let mut translation_inv = [0.0; 3];
+            let t_slice = src_t_dst.as_ref().try_as_col_major().unwrap().as_slice();
             for (i, val) in translation_inv.iter_mut().enumerate() {
-                *val = src_t_dst.read(i);
+                *val = t_slice[i];
             }
             (rotation_inv, translation_inv)
         };

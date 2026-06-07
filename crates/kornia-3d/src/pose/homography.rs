@@ -1,7 +1,7 @@
 #![allow(clippy::needless_range_loop)]
 
 use crate::linalg;
-use faer::prelude::SpSolver;
+use faer::prelude::Solve;
 use kornia_algebra::{linalg::svd::svd3_f64, Mat3F64, Vec2F64, Vec3F64};
 use nalgebra::SMatrix;
 
@@ -43,21 +43,18 @@ pub fn homography_4pt2d(
     for i in 0..4 {
         let (u, v) = (x1[i][0], x1[i][1]);
         let (up, vp) = (x2[i][0], x2[i][1]);
-        unsafe {
-            mat_a.write_unchecked(2 * i, 0, u);
-            mat_a.write_unchecked(2 * i, 1, v);
-            mat_a.write_unchecked(2 * i, 2, 1.0);
-            mat_a.write_unchecked(2 * i, 6, -up * u);
-            mat_a.write_unchecked(2 * i, 7, -up * v);
-            rhs.write_unchecked(2 * i, 0, up);
-
-            mat_a.write_unchecked(2 * i + 1, 3, u);
-            mat_a.write_unchecked(2 * i + 1, 4, v);
-            mat_a.write_unchecked(2 * i + 1, 5, 1.0);
-            mat_a.write_unchecked(2 * i + 1, 6, -vp * u);
-            mat_a.write_unchecked(2 * i + 1, 7, -vp * v);
-            rhs.write_unchecked(2 * i + 1, 0, vp);
-        }
+        mat_a[(2 * i, 0)] = u;
+        mat_a[(2 * i, 1)] = v;
+        mat_a[(2 * i, 2)] = 1.0;
+        mat_a[(2 * i, 6)] = -up * u;
+        mat_a[(2 * i, 7)] = -up * v;
+        rhs[(2 * i, 0)] = up;
+        mat_a[(2 * i + 1, 3)] = u;
+        mat_a[(2 * i + 1, 4)] = v;
+        mat_a[(2 * i + 1, 5)] = 1.0;
+        mat_a[(2 * i + 1, 6)] = -vp * u;
+        mat_a[(2 * i + 1, 7)] = -vp * v;
+        rhs[(2 * i + 1, 0)] = vp;
     }
 
     let sol = mat_a.partial_piv_lu().solve(&rhs);
@@ -255,21 +252,18 @@ pub fn homography_4pt3d(
     for i in 0..4 {
         let (x1_0, x1_1, x1_2) = (x1[i][0], x1[i][1], x1[i][2]);
         let (x2_0, x2_1, x2_2) = (x2[i][0], x2[i][1], x2[i][2]);
-        unsafe {
-            m_mat.write_unchecked(2 * i, 0, x2_2 * x1_0);
-            m_mat.write_unchecked(2 * i, 1, x2_2 * x1_1);
-            m_mat.write_unchecked(2 * i, 2, x2_2 * x1_2);
-            m_mat.write_unchecked(2 * i, 6, -x2_0 * x1_0);
-            m_mat.write_unchecked(2 * i, 7, -x2_0 * x1_1);
-            m_mat.write_unchecked(2 * i, 8, -x2_0 * x1_2);
-
-            m_mat.write_unchecked(2 * i + 1, 3, x2_2 * x1_0);
-            m_mat.write_unchecked(2 * i + 1, 4, x2_2 * x1_1);
-            m_mat.write_unchecked(2 * i + 1, 5, x2_2 * x1_2);
-            m_mat.write_unchecked(2 * i + 1, 6, -x2_1 * x1_0);
-            m_mat.write_unchecked(2 * i + 1, 7, -x2_1 * x1_1);
-            m_mat.write_unchecked(2 * i + 1, 8, -x2_1 * x1_2);
-        }
+        m_mat[(2 * i, 0)] = x2_2 * x1_0;
+        m_mat[(2 * i, 1)] = x2_2 * x1_1;
+        m_mat[(2 * i, 2)] = x2_2 * x1_2;
+        m_mat[(2 * i, 6)] = -x2_0 * x1_0;
+        m_mat[(2 * i, 7)] = -x2_0 * x1_1;
+        m_mat[(2 * i, 8)] = -x2_0 * x1_2;
+        m_mat[(2 * i + 1, 3)] = x2_2 * x1_0;
+        m_mat[(2 * i + 1, 4)] = x2_2 * x1_1;
+        m_mat[(2 * i + 1, 5)] = x2_2 * x1_2;
+        m_mat[(2 * i + 1, 6)] = -x2_1 * x1_0;
+        m_mat[(2 * i + 1, 7)] = -x2_1 * x1_1;
+        m_mat[(2 * i + 1, 8)] = -x2_1 * x1_2;
     }
 
     // solve -> h_mat: 8x1

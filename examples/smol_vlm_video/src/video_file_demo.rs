@@ -25,7 +25,7 @@ pub fn video_file_demo(args: &Args) -> Result<(), Box<dyn Error>> {
         "filesrc location={} ! decodebin ! videoconvert ! video/x-raw,format=RGB ! appsink name=sink",
         args.video_file.as_ref().expect("Expected video files to be present when calling this function.")
     );
-    let pipeline = gst::parse_launch(&pipeline_str)?;
+    let pipeline = gst::parse::launch(&pipeline_str)?;
     let appsink = pipeline
         .clone()
         .dynamic_cast::<gst::Bin>()

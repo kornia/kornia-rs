@@ -18,7 +18,7 @@ kornia-3d = { workspace = true }
 kornia-algebra = { workspace = true }
 kornia-image = { workspace = true }
 kornia-imgproc = { workspace = true }
-kornia-io = { workspace = true, features = [] }
+kornia-io = { workspace = true }
 kornia-tensor = { workspace = true }
 kornia-tensor-ops = { workspace = true }
 kornia-vlm = { workspace = true }

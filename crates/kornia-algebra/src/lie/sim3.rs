@@ -11,8 +11,11 @@
 
 use crate::{Mat3AF32, Mat4F32, QuatF32, Vec3AF32};
 
-/// Small angle threshold for Taylor series approximations
-const SMALL_ANGLE_EPSILON: f32 = 1.0e-8;
+/// Small angle threshold for Taylor series approximations.
+/// Must be large enough that f32 catastrophic cancellation is avoided in the
+/// `(1 - sin(θ)/θ) / θ²` formula: sin(θ)/θ rounds to 1.0 for θ < ~1e-4, so
+/// any θ below ~1e-3 must take the small-angle path.
+const SMALL_ANGLE_EPSILON: f32 = 1.0e-3;
 
 use super::rxso3::RxSO3F32;
 use super::so3::SO3F32;
@@ -201,7 +204,8 @@ impl Sim3F32 {
         } else {
             let theta_sq = theta * theta;
             let a = theta.sin() / theta;
-            let c = (1.0 - a / theta_sq) / theta_sq;
+            // c = (1 - sin(θ)/θ) / θ²  →  1/6 as θ → 0
+            let c = (1.0 - a) / theta_sq;
 
             Mat3AF32::IDENTITY - omega_hat * 0.5 + (omega_hat * omega_hat) * (c * sigma)
         };

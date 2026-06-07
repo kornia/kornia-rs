@@ -3,7 +3,7 @@ use crate::{
     param::{Param, ParamError},
     Mat2F32, Mat3AF32, Vec2F32, Vec3AF32,
 };
-use rand::Rng;
+use rand::RngExt;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SE2F32 {

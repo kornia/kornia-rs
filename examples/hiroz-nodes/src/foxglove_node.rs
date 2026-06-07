@@ -3,7 +3,7 @@ use foxglove::{
     schemas::{CompressedImage as FoxgloveCompressedImage, Timestamp},
     Channel, WebSocketServer,
 };
-use ros_z::{
+use hiroz::{
     context::ZContext, msg::ProtobufSerdes, node::ZNode, pubsub::ZSub, Builder, Result as ZResult,
 };
 use std::sync::Arc;
@@ -73,7 +73,7 @@ impl FoxgloveNode {
                                 (h.pub_time % 1_000_000_000) as u32,
                             )
                         }),
-                        frame_id: msg.header.as_ref().unwrap().frame_id.clone(),
+                        frame_id: msg.header.as_ref().map(|h| h.frame_id.clone()).unwrap_or_default(),
                         format: msg.format.clone(),
                         data: msg.data.into(),
                     };

@@ -11,6 +11,7 @@ repository = { workspace = true }
 license = { workspace = true }
 categories = { workspace = true }
 include = { workspace = true }
+publish = false
 
 [dependencies]
 argh = { workspace = true }

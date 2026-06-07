@@ -41,7 +41,7 @@ use crate::{
     param::{Param, ParamError},
     Mat3AF32, Mat3F64, Mat4F32, Mat4F64, QuatF32, QuatF64, Vec3AF32, Vec3F64,
 };
-use rand::Rng;
+use rand::RngExt;
 const SMALL_ANGLE_EPSILON: f32 = 1.0e-8;
 const SMALL_ANGLE_EPSILON_F64: f64 = 1.0e-10;
 
@@ -197,7 +197,9 @@ impl SO3F32 {
         let theta = theta_sq.sqrt();
 
         if theta > SMALL_ANGLE_EPSILON {
-            let half_theta = w.acos();
+            // Use atan2 rather than acos(w): near identity w rounds to 1.0 and
+            // acos(1.0) = 0 collapses the result, whereas atan2 stays accurate.
+            let half_theta = theta.atan2(w);
             let scale = 2.0 * half_theta / theta;
             vec * scale
         } else {
@@ -233,6 +235,10 @@ impl SO3F32 {
         let theta = v.dot(v).sqrt();
         let ident = Mat3AF32::IDENTITY;
 
+        if theta < SMALL_ANGLE_EPSILON {
+            return ident + skew * 0.5;
+        }
+
         ident
             + ((1.0 - theta.cos()) / theta.powi(2)) * skew
             + ((theta - theta.sin()) / theta.powi(3)) * (skew * skew)
@@ -242,6 +248,10 @@ impl SO3F32 {
         let skew = Self::hat(v);
         let theta = v.dot(v).sqrt();
         let ident = Mat3AF32::IDENTITY;
+
+        if theta < SMALL_ANGLE_EPSILON {
+            return ident - skew * 0.5;
+        }
 
         ident - ((1.0 - theta.cos()) / theta.powi(2)) * skew
             + ((theta - theta.sin()) / theta.powi(3)) * (skew * skew)
