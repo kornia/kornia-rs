@@ -78,6 +78,8 @@ name = "bench_contours"
 required-features = ["opencv_bench"]
 
 [dependencies]
+cubecl = { version = "0.10.0-pre.4", default-features = false, features = ["std"], optional = true }
+cubecl-cuda = { version = "0.10.0-pre.4", optional = true }
 kornia-algebra = { workspace = true }
 kornia-image = { workspace = true }
 kornia-tensor = { workspace = true }
@@ -96,4 +98,5 @@ ndarray = { workspace = true, features = ["rayon"] }
 rand = { workspace = true }
 
 [features]
+gpu-cubecl = ["dep:cubecl", "dep:cubecl-cuda", "kornia-tensor/gpu-cubecl"]
 opencv_bench = ["dep:opencv"]
