@@ -3,7 +3,7 @@
 use crate::protos::{Header, ImageStats, RawImage};
 use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
 use prost::Message;
-use ros_z::{
+use hiroz::{
     context::ZContext, msg::ProtobufSerdes, node::ZNode, pubsub::ZPub, Builder, Result as ZResult,
 };
 use std::sync::Arc;

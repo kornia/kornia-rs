@@ -8,7 +8,7 @@ pub mod logger_node;
 use bytes::BufMut;
 use foxglove::{Encode, Schema};
 use prost::Message;
-use ros_z::{MessageTypeInfo, TypeHash, WithTypeInfo};
+use hiroz::{MessageTypeInfo, TypeHash, WithTypeInfo, msg::{ProtobufSerdes, ZMessage}};
 
 pub mod protos {
     pub mod camera {
@@ -83,6 +83,22 @@ impl MessageTypeInfo for protos::Header {
 }
 
 impl WithTypeInfo for protos::Header {}
+
+impl ZMessage for protos::CompressedImage {
+    type Serdes = ProtobufSerdes<protos::CompressedImage>;
+}
+
+impl ZMessage for protos::RawImage {
+    type Serdes = ProtobufSerdes<protos::RawImage>;
+}
+
+impl ZMessage for protos::ImageStats {
+    type Serdes = ProtobufSerdes<protos::ImageStats>;
+}
+
+impl ZMessage for protos::Header {
+    type Serdes = ProtobufSerdes<protos::Header>;
+}
 
 // Implement foxglove::Encode for ImageStats to publish with schema
 impl Encode for protos::ImageStats {

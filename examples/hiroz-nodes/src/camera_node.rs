@@ -2,7 +2,7 @@ use crate::protos::{camera::v1::CompressedImage, header::v1::Header};
 use kornia_image::ImageSize;
 use kornia_io::v4l::{PixelFormat, V4LCameraConfig, V4lVideoCapture};
 use nix::sys::time::TimeValLike;
-use ros_z::{
+use hiroz::{
     context::ZContext, msg::ProtobufSerdes, node::ZNode, pubsub::ZPub, Builder, Result as ZResult,
 };
 use std::sync::Arc;

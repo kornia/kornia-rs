@@ -4,7 +4,7 @@ use crate::protos::{CompressedImage, Header, RawImage};
 use kornia_image::{allocator::CpuAllocator, Image};
 use kornia_io::jpeg::{decode_image_jpeg_layout, decode_image_jpeg_rgb8};
 use prost::Message;
-use ros_z::{
+use hiroz::{
     context::ZContext, msg::ProtobufSerdes, node::ZNode, pubsub::ZSub, Builder, Result as ZResult,
 };
 use std::sync::Arc;

@@ -3,7 +3,7 @@ use foxglove::{
     schemas::{CompressedImage as FoxgloveCompressedImage, Timestamp},
     Channel, WebSocketServer,
 };
-use ros_z::{
+use hiroz::{
     context::ZContext, msg::ProtobufSerdes, node::ZNode, pubsub::ZSub, Builder, Result as ZResult,
 };
 use std::sync::Arc;
