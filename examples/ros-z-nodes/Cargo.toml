@@ -20,7 +20,7 @@ log = { workspace = true }
 nix = { version = "0.31.3", features = ["time"] }
 prost = "0.14.3"
 prost-types = "0.14.3"
-ros-z = { git = "https://github.com/ZettaScaleLabs/ros-z.git", branch = "main", features = [
+ros-z = { git = "https://github.com/ZettaScaleLabs/ros-z.git", rev = "236b318c71a6e5f8deac89ffa1f81c9522814b03", features = [
   "protobuf",
 ] }
 serde = { workspace = true, features = ["derive"] }
