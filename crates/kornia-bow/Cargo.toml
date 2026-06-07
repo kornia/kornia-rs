@@ -11,7 +11,7 @@ description = "High-Performance Hierarchical Bag of Words"
 homepage = { workspace = true }
 repository = { workspace = true }
 license = { workspace = true }
-categories = ["algorithms", "computer-vision", "science::robotics"]
+categories = { workspace = true }
 publish = true
 
 [[bench]]
