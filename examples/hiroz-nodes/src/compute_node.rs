@@ -76,10 +76,16 @@ impl ComputeNode {
                     let msg = RawImage::decode(bytes.as_ref())?;
 
                     // convert to image kornia
-                    let img = Image::<u8, 3, CpuAllocator>::new(ImageSize {
+                    let img = match Image::<u8, 3, CpuAllocator>::new(ImageSize {
                         width: msg.width as usize,
                         height: msg.height as usize,
-                    }, msg.data, CpuAllocator)?;
+                    }, msg.data, CpuAllocator) {
+                        Ok(img) => img,
+                        Err(e) => {
+                            log::warn!("skipping malformed frame: {e}");
+                            continue;
+                        }
+                    };
 
                     // compute mean and std
                     let (std, mean) = kornia_imgproc::core::std_mean(&img);

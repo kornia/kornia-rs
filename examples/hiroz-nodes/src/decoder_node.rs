@@ -90,7 +90,7 @@ impl DecoderNode {
 
         Ok(RawImage {
             header: Some(Header {
-                acq_time: msg.header.as_ref().unwrap().acq_time,
+                acq_time: msg.header.as_ref().map_or(0, |h| h.acq_time),
                 pub_time: get_pub_time(),
                 sequence,
                 frame_id: self.camera_name.clone(),

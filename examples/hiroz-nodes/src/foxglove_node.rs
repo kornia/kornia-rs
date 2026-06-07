@@ -73,7 +73,7 @@ impl FoxgloveNode {
                                 (h.pub_time % 1_000_000_000) as u32,
                             )
                         }),
-                        frame_id: msg.header.as_ref().unwrap().frame_id.clone(),
+                        frame_id: msg.header.as_ref().map(|h| h.frame_id.clone()).unwrap_or_default(),
                         format: msg.format.clone(),
                         data: msg.data.into(),
                     };

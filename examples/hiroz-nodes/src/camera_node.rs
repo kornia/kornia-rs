@@ -128,7 +128,7 @@ fn frame_to_compressed_image(
 
     Some(CompressedImage {
         header: Some(Header {
-            acq_time: stamp_from_sec_nanos(frame.timestamp.sec as u64, frame.timestamp.usec as u32),
+            acq_time: stamp_from_sec_nanos(frame.timestamp.sec as u64, frame.timestamp.usec as u32 * 1_000),
             pub_time,
             sequence: frame.sequence,
             frame_id: camera_name.to_string(),

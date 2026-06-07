@@ -1160,7 +1160,7 @@ fn track_feature<A: ImageAllocator>(
         let trace = a + c;
         let delta = a - c;
         let lambda_min = (trace - ((delta * delta + 4.0 * b * b).sqrt())) * 0.5;
-        if lambda_min < params.min_eigen_threshold {
+        if lambda_min / (WIN_PIXELS as f32) < params.min_eigen_threshold {
             return None;
         }
         let inv_det = 1.0 / det;
