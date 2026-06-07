@@ -1,6 +1,9 @@
 /// image distortion module.
 pub mod distortion;
 
+/// Kannala-Brandt equidistant fisheye projection module.
+pub mod fisheye;
+
 /// Represents the instrinsic parameters of a pinhole camera
 ///
 /// # Fields
