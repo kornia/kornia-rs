@@ -133,6 +133,7 @@ pub mod tensor;
 pub mod view;
 
 pub use crate::allocator::{CpuAllocator, TensorAllocator};
+pub use crate::storage::MemoryDomain;
 pub(crate) use crate::tensor::get_strides_from_shape;
 pub use crate::tensor::{Tensor, TensorError};
 
