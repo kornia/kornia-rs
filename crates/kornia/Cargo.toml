@@ -22,6 +22,7 @@ kornia-io = { workspace = true, features = [] }
 kornia-tensor = { workspace = true }
 kornia-tensor-ops = { workspace = true }
 kornia-vlm = { workspace = true }
+kornia-xfeat = { workspace = true, optional = true }
 
 [features]
 arrow = ["kornia-image/arrow"]
@@ -33,3 +34,4 @@ gstreamer = ["kornia-io/gstreamer"]
 serde = ["kornia-tensor/serde"]
 turbojpeg = ["kornia-io/turbojpeg"]
 v4l = ["kornia-io/v4l"]
+xfeat = ["dep:kornia-xfeat"]

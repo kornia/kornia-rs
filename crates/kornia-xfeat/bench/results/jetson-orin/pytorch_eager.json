@@ -1,0 +1,16 @@
+{
+  "baseline": "pytorch_eager",
+  "platform": "jetson-orin",
+  "median_ms": 376.62651552818716,
+  "p95_ms": 586.3945940509439,
+  "p99_ms": 611.036453046836,
+  "iterations": 100,
+  "warmup": 20,
+  "rss_mb": 551.06640625,
+  "env": {
+    "torch": "2.11.0",
+    "python": "3.10.12",
+    "cpu": "aarch64",
+    "kernel": "5.15.148-tegra"
+  }
+}

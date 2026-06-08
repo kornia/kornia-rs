@@ -30,7 +30,11 @@ toml = "0.8"
 [dev-dependencies]
 approx = { workspace = true }
 criterion = { workspace = true }
+png = "0.17"
 serde_json = { workspace = true }
+
+[[example]]
+name = "detect_and_match"
 
 # SIMD backends (NEON / AVX2 / AVX-512) are runtime-detected via the
 # CpuFeatures probe, not gated by Cargo features. See `src/cpu_features.rs`.

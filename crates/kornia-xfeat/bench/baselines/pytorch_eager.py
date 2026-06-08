@@ -34,6 +34,10 @@ def main() -> int:
     from modules.xfeat import XFeat  # type: ignore
 
     xfeat = XFeat(weights=str(args.upstream / "weights" / "xfeat.pt"))
+    # Force CPU so this baseline measures CPU inference, not GPU.
+    # XFeat.__init__ selects CUDA when available; we override that here.
+    xfeat.net = xfeat.net.cpu()  # type: ignore[attr-defined]
+    xfeat.dev = torch.device("cpu")  # type: ignore[attr-defined]
     getattr(xfeat, "eval")()
 
     img = Image.open(args.fixture).convert("L")
@@ -43,7 +47,7 @@ def main() -> int:
     w_a = (w // 32) * 32
 
     with torch.no_grad():
-        x = torch.from_numpy(img_np).float().unsqueeze(0).unsqueeze(0) / 255.0
+        x = torch.from_numpy(img_np).float().unsqueeze(0).unsqueeze(0) / 255.0  # type: ignore[attr-defined]
         x = torch.nn.functional.interpolate(x, size=(h_a, w_a), mode="bilinear", align_corners=False)
 
         # Warmup.

@@ -96,7 +96,9 @@ impl OpsVtable {
             return Self {
                 conv3x3: neon::conv3x3_relu_nhwc,
                 conv3x3_s2: neon::conv3x3_s2_relu_nhwc,
-                conv1x1: neon::conv1x1_nhwc,
+                // v2: c_out-4 tiled co-product with rayon row parallelism;
+                // falls back to v1 internally when c_out % 4 != 0.
+                conv1x1: neon::conv1x1_nhwc_v2,
             };
         }
 

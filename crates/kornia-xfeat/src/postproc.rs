@@ -47,7 +47,9 @@ pub fn nms_topk(
             let y = (idx / w) as f32;
             let x = (idx % w) as f32;
             let rel = bilinear_sample_single(
-                reliability, w_rel, h_rel,
+                reliability,
+                w_rel,
+                h_rel,
                 x * x_scale - 0.5,
                 y * y_scale - 0.5,
             );

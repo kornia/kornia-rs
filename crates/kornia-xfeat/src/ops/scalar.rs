@@ -57,31 +57,114 @@ fn conv3x3_generic(args: &Conv3x3Args<'_>, output: &mut [f32], stride: usize) {
             let iw_base = (ow * stride) as isize - 1;
 
             for (co, &b) in bias.iter().enumerate().take(c_out) {
-                let mut acc = b;
-                for kh in 0..3usize {
-                    let ih = ih_base + kh as isize;
-                    if ih < 0 || ih >= h_in as isize {
-                        continue;
-                    }
-                    let ih = ih as usize;
-                    for kw in 0..3usize {
-                        let iw = iw_base + kw as isize;
-                        if iw < 0 || iw >= w_in as isize {
+                // 4-way FMA accumulators declared once per (oh, ow, co) work-item,
+                // accumulated across ALL valid (kh, kw) taps — identical structure
+                // to NEON conv3x3_generic which initialises acc0..acc3 to zero once
+                // per (co) and folds only after all taps.
+                let dot = if c_in % 4 == 0 {
+                    let mut acc0 = [0.0f32; 4];
+                    let mut acc1 = [0.0f32; 4];
+                    let mut acc2 = [0.0f32; 4];
+                    let mut acc3 = [0.0f32; 4];
+
+                    for kh in 0..3usize {
+                        let ih = ih_base + kh as isize;
+                        if ih < 0 || ih >= h_in as isize {
                             continue;
                         }
-                        let iw = iw as usize;
-                        let in_off = (ih * w_in + iw) * c_in;
-                        let w_off = ((co * 3 + kh) * 3 + kw) * c_in;
-                        for ci in 0..c_in {
-                            acc += input[in_off + ci] * weights[w_off + ci];
+                        let ih = ih as usize;
+                        for kw in 0..3usize {
+                            let iw = iw_base + kw as isize;
+                            if iw < 0 || iw >= w_in as isize {
+                                continue;
+                            }
+                            let iw = iw as usize;
+                            let in_off = (ih * w_in + iw) * c_in;
+                            let w_off = ((co * 3 + kh) * 3 + kw) * c_in;
+                            // Phase 1: full 16-element blocks, 4 parallel accumulators.
+                            let n16 = c_in & !15;
+                            let mut i = 0usize;
+                            while i < n16 {
+                                for j in 0..4 {
+                                    acc0[j] = f32::mul_add(
+                                        input[in_off + i + j],
+                                        weights[w_off + i + j],
+                                        acc0[j],
+                                    );
+                                    acc1[j] = f32::mul_add(
+                                        input[in_off + i + 4 + j],
+                                        weights[w_off + i + 4 + j],
+                                        acc1[j],
+                                    );
+                                    acc2[j] = f32::mul_add(
+                                        input[in_off + i + 8 + j],
+                                        weights[w_off + i + 8 + j],
+                                        acc2[j],
+                                    );
+                                    acc3[j] = f32::mul_add(
+                                        input[in_off + i + 12 + j],
+                                        weights[w_off + i + 12 + j],
+                                        acc3[j],
+                                    );
+                                }
+                                i += 16;
+                            }
+                            // Phase 2: f32x4 tail into acc0 only.
+                            while i < c_in {
+                                for j in 0..4 {
+                                    acc0[j] = f32::mul_add(
+                                        input[in_off + i + j],
+                                        weights[w_off + i + j],
+                                        acc0[j],
+                                    );
+                                }
+                                i += 4;
+                            }
                         }
                     }
-                }
+
+                    // Horizontal fold: (acc0+acc1)+(acc2+acc3), then sum 4 lanes.
+                    // Mirrors NEON: vaddq_f32(vaddq_f32(acc0,acc1), vaddq_f32(acc2,acc3)) + vaddvq_f32.
+                    let mut s = [0.0f32; 4];
+                    for j in 0..4 {
+                        s[j] = (acc0[j] + acc1[j]) + (acc2[j] + acc3[j]);
+                    }
+                    s[0] + s[1] + s[2] + s[3]
+                } else {
+                    // Scalar fallback for c_in ∈ {1, 2, 3} (not hot paths in XFeat).
+                    let mut acc_scalar = 0.0f32;
+                    for kh in 0..3usize {
+                        let ih = ih_base + kh as isize;
+                        if ih < 0 || ih >= h_in as isize {
+                            continue;
+                        }
+                        let ih = ih as usize;
+                        for kw in 0..3usize {
+                            let iw = iw_base + kw as isize;
+                            if iw < 0 || iw >= w_in as isize {
+                                continue;
+                            }
+                            let iw = iw as usize;
+                            let in_off = (ih * w_in + iw) * c_in;
+                            let w_off = ((co * 3 + kh) * 3 + kw) * c_in;
+                            for ci in 0..c_in {
+                                acc_scalar = f32::mul_add(
+                                    input[in_off + ci],
+                                    weights[w_off + ci],
+                                    acc_scalar,
+                                );
+                            }
+                        }
+                    }
+                    acc_scalar
+                };
+
                 let out_off = (oh * w_out + ow) * c_out + co;
+                let mut v = dot + b;
                 if let Some(r) = residual {
-                    acc += r[out_off];
+                    v += r[out_off];
                 }
-                output[out_off] = apply_act(acc, activation);
+                output[out_off] = apply_act(v, activation);
             }
         }
     }
@@ -108,12 +191,61 @@ pub fn conv1x1_nhwc(args: &Conv1x1Args<'_>, output: &mut [f32]) {
         let in_off = px * c_in;
         let out_off = px * c_out;
         for co in 0..c_out {
-            let mut acc = bias[co];
             let w_off = co * c_in;
-            for ci in 0..c_in {
-                acc += input[in_off + ci] * weights[w_off + ci];
-            }
-            output[out_off + co] = apply_act(acc, activation);
+            // 4-way FMA reduction matching NEON dot_f32_4ply_tail structure.
+            // Falls back to simple loop when c_in % 4 != 0 (c_in ∈ {1,2,3} only).
+            let dot = if c_in % 4 == 0 {
+                let mut acc0 = [0.0f32; 4];
+                let mut acc1 = [0.0f32; 4];
+                let mut acc2 = [0.0f32; 4];
+                let mut acc3 = [0.0f32; 4];
+                // Phase 1: full 16-element blocks.
+                let n16 = c_in & !15;
+                let mut i = 0usize;
+                while i < n16 {
+                    for j in 0..4 {
+                        acc0[j] =
+                            f32::mul_add(input[in_off + i + j], weights[w_off + i + j], acc0[j]);
+                        acc1[j] = f32::mul_add(
+                            input[in_off + i + 4 + j],
+                            weights[w_off + i + 4 + j],
+                            acc1[j],
+                        );
+                        acc2[j] = f32::mul_add(
+                            input[in_off + i + 8 + j],
+                            weights[w_off + i + 8 + j],
+                            acc2[j],
+                        );
+                        acc3[j] = f32::mul_add(
+                            input[in_off + i + 12 + j],
+                            weights[w_off + i + 12 + j],
+                            acc3[j],
+                        );
+                    }
+                    i += 16;
+                }
+                // Phase 2: f32x4 tail, acc0 only.
+                while i < c_in {
+                    for j in 0..4 {
+                        acc0[j] =
+                            f32::mul_add(input[in_off + i + j], weights[w_off + i + j], acc0[j]);
+                    }
+                    i += 4;
+                }
+                // Horizontal fold: (acc0+acc1)+(acc2+acc3), then sum 4 lanes.
+                let mut s = [0.0f32; 4];
+                for j in 0..4 {
+                    s[j] = (acc0[j] + acc1[j]) + (acc2[j] + acc3[j]);
+                }
+                s[0] + s[1] + s[2] + s[3]
+            } else {
+                let mut d = 0.0f32;
+                for ci in 0..c_in {
+                    d = f32::mul_add(input[in_off + ci], weights[w_off + ci], d);
+                }
+                d
+            };
+            output[out_off + co] = apply_act(dot + bias[co], activation);
         }
     }
 }
