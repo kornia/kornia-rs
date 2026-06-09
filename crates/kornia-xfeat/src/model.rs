@@ -1370,6 +1370,7 @@ impl XFeat {
 
         self.descriptors.resize(kps.len() * 64, 0.0);
         if !kps.is_empty() {
+            // L2 re-normalisation is fused inside bicubic_sample_descriptors.
             bicubic_sample_descriptors(
                 &self.feats,
                 h8,
@@ -1378,15 +1379,6 @@ impl XFeat {
                 &kps_desc_coords,
                 &mut self.descriptors,
             );
-            // Re-normalise after bicubic interpolation shifts the norm.
-            // Each 64-dim chunk is independent — parallel over keypoints.
-            self.descriptors.par_chunks_mut(64).for_each(|chunk| {
-                let norm = chunk.iter().map(|&x| x * x).sum::<f32>().sqrt();
-                let inv = 1.0 / (norm + 1e-12);
-                for x in chunk {
-                    *x *= inv;
-                }
-            });
         }
 
         self.reliability_per_kp.resize(kps.len(), 0.0);

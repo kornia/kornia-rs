@@ -96,6 +96,9 @@ fn bilinear_sample_single(buf: &[f32], w: usize, h: usize, x: f32, y: f32) -> f3
 /// Bicubic sample of a `(H, W, C)` NHWC descriptor map at sparse (x, y) pixel
 /// coordinates **in the descriptor map's own resolution** (i.e. already
 /// divided by 8 from the input scale). Output is `kp.len() * c` f32.
+///
+/// Each descriptor is L2-normalised in-place after sampling, avoiding a second
+/// pass over the output buffer.
 pub fn bicubic_sample_descriptors(
     desc: &[f32],
     h_d: usize,
@@ -107,47 +110,127 @@ pub fn bicubic_sample_descriptors(
     debug_assert_eq!(desc.len(), h_d * w_d * c);
     debug_assert_eq!(out.len(), kps_xy_in_desc_space.len() * c);
 
-    // Each keypoint writes to its own non-overlapping slice of `out`, so the
-    // loop is trivially parallel.
     out.par_chunks_mut(c)
         .zip(kps_xy_in_desc_space.par_iter())
         .for_each(|(chunk, &(x, y))| {
             bicubic_sample_one(desc, h_d, w_d, c, x, y, chunk);
+            // Fused L2 re-normalisation: saves a separate pass over `out`.
+            let norm = chunk.iter().map(|&v| v * v).sum::<f32>().sqrt();
+            let inv = 1.0 / (norm + 1e-12);
+            for v in chunk.iter_mut() {
+                *v *= inv;
+            }
         });
 }
 
+/// Cubic Hermite coefficients (PyTorch `grid_sample` bicubic, a = -0.75).
+#[inline(always)]
+fn cubic_weights(t: f32) -> [f32; 4] {
+    let a = -0.75f32;
+    let t2 = t * t;
+    let t3 = t2 * t;
+    let s  = 1.0 - t;
+    let s2 = s * s;
+    let s3 = s2 * s;
+    let u  = 2.0 - t;
+    let u2 = u * u;
+    let u3 = u2 * u;
+    let v  = 1.0 + t;
+    let v2 = v * v;
+    let v3 = v2 * v;
+    [
+        a * v3 - 5.0 * a * v2 + 8.0 * a * v - 4.0 * a,
+        (a + 2.0) * t3 - (a + 3.0) * t2 + 1.0,
+        (a + 2.0) * s3 - (a + 3.0) * s2 + 1.0,
+        a * u3 - 5.0 * a * u2 + 8.0 * a * u - 4.0 * a,
+    ]
+}
+
+/// Sample descriptor at a single sub-pixel coordinate.
+///
+/// Loop order: spatial (j, i) outer, channel inner. Each inner pass reads
+/// `c` contiguous f32 values from the NHWC tensor — a single cache-line-aligned
+/// load stream per spatial position — vs the previous channel-outer order which
+/// scattered 16 stride-`c` loads per channel.
+///
+/// The c=64 path uses NEON FMLA.4S inline (no helper call, no function boundary).
+/// On AArch64, NEON is mandatory ISA, so intrinsics are valid in any unsafe block.
 fn bicubic_sample_one(desc: &[f32], h: usize, w: usize, c: usize, x: f32, y: f32, out: &mut [f32]) {
-    // PyTorch grid_sample-style bicubic with cubic Hermite (a = -0.75).
     let ix = x.floor() as isize;
     let iy = y.floor() as isize;
-    let fx = x - ix as f32;
-    let fy = y - iy as f32;
 
-    let cubic = |t: f32| -> [f32; 4] {
-        let a = -0.75f32;
-        let t1 = 1.0 + t;
-        let t2 = t;
-        let t3 = 1.0 - t;
-        let t4 = 2.0 - t;
-        let h1 = a * t1.powi(3) - 5.0 * a * t1.powi(2) + 8.0 * a * t1 - 4.0 * a;
-        let h2 = (a + 2.0) * t2.powi(3) - (a + 3.0) * t2.powi(2) + 1.0;
-        let h3 = (a + 2.0) * t3.powi(3) - (a + 3.0) * t3.powi(2) + 1.0;
-        let h4 = a * t4.powi(3) - 5.0 * a * t4.powi(2) + 8.0 * a * t4 - 4.0 * a;
-        [h1, h2, h3, h4]
-    };
+    let kx = cubic_weights(x - ix as f32);
+    let ky = cubic_weights(y - iy as f32);
 
-    let kx = cubic(fx);
-    let ky = cubic(fy);
+    // Pre-compute all 16 weight products upfront.
+    let mut w16 = [0.0f32; 16];
+    for j in 0..4usize {
+        for i in 0..4usize {
+            w16[j * 4 + i] = ky[j] * kx[i];
+        }
+    }
 
-    for (ci, out_ci) in out.iter_mut().enumerate().take(c) {
-        let mut acc = 0.0f32;
-        for (j, &kyj) in ky.iter().enumerate() {
-            let yy = (iy - 1 + j as isize).clamp(0, h as isize - 1) as usize;
-            for (i, &kxi) in kx.iter().enumerate() {
-                let xx = (ix - 1 + i as isize).clamp(0, w as isize - 1) as usize;
-                acc += desc[(yy * w + xx) * c + ci] * kxi * kyj;
+    // Spatial-outer: each inner pass reads c contiguous f32s (NHWC pixel).
+    #[cfg(target_arch = "aarch64")]
+    if c == 64 {
+        // SAFETY: AArch64 NEON is mandatory. Bounds: xx < w, yy < h, c == 64 →
+        // base + 64 ≤ desc.len() and out.len() ≥ 64.
+        unsafe {
+            use std::arch::aarch64::*;
+            // 16 zero-initialised accumulators — one per 4-channel block.
+            let op  = out.as_mut_ptr();
+            let z   = vdupq_n_f32(0.0);
+            let mut a0  = z; let mut a1  = z; let mut a2  = z; let mut a3  = z;
+            let mut a4  = z; let mut a5  = z; let mut a6  = z; let mut a7  = z;
+            let mut a8  = z; let mut a9  = z; let mut a10 = z; let mut a11 = z;
+            let mut a12 = z; let mut a13 = z; let mut a14 = z; let mut a15 = z;
+
+            for j in 0..4usize {
+                let yy = (iy - 1 + j as isize).clamp(0, h as isize - 1) as usize;
+                for i in 0..4usize {
+                    let xx = (ix - 1 + i as isize).clamp(0, w as isize - 1) as usize;
+                    let wt  = vdupq_n_f32(w16[j * 4 + i]);
+                    let sp  = desc.as_ptr().add((yy * w + xx) * 64);
+                    a0  = vfmaq_f32(a0,  wt, vld1q_f32(sp));
+                    a1  = vfmaq_f32(a1,  wt, vld1q_f32(sp.add(4)));
+                    a2  = vfmaq_f32(a2,  wt, vld1q_f32(sp.add(8)));
+                    a3  = vfmaq_f32(a3,  wt, vld1q_f32(sp.add(12)));
+                    a4  = vfmaq_f32(a4,  wt, vld1q_f32(sp.add(16)));
+                    a5  = vfmaq_f32(a5,  wt, vld1q_f32(sp.add(20)));
+                    a6  = vfmaq_f32(a6,  wt, vld1q_f32(sp.add(24)));
+                    a7  = vfmaq_f32(a7,  wt, vld1q_f32(sp.add(28)));
+                    a8  = vfmaq_f32(a8,  wt, vld1q_f32(sp.add(32)));
+                    a9  = vfmaq_f32(a9,  wt, vld1q_f32(sp.add(36)));
+                    a10 = vfmaq_f32(a10, wt, vld1q_f32(sp.add(40)));
+                    a11 = vfmaq_f32(a11, wt, vld1q_f32(sp.add(44)));
+                    a12 = vfmaq_f32(a12, wt, vld1q_f32(sp.add(48)));
+                    a13 = vfmaq_f32(a13, wt, vld1q_f32(sp.add(52)));
+                    a14 = vfmaq_f32(a14, wt, vld1q_f32(sp.add(56)));
+                    a15 = vfmaq_f32(a15, wt, vld1q_f32(sp.add(60)));
+                }
+            }
+            vst1q_f32(op,       a0);  vst1q_f32(op.add(4),  a1);
+            vst1q_f32(op.add(8), a2); vst1q_f32(op.add(12), a3);
+            vst1q_f32(op.add(16), a4); vst1q_f32(op.add(20), a5);
+            vst1q_f32(op.add(24), a6); vst1q_f32(op.add(28), a7);
+            vst1q_f32(op.add(32), a8); vst1q_f32(op.add(36), a9);
+            vst1q_f32(op.add(40), a10); vst1q_f32(op.add(44), a11);
+            vst1q_f32(op.add(48), a12); vst1q_f32(op.add(52), a13);
+            vst1q_f32(op.add(56), a14); vst1q_f32(op.add(60), a15);
+        }
+        return;
+    }
+
+    out[..c].fill(0.0);
+    for j in 0..4usize {
+        let yy = (iy - 1 + j as isize).clamp(0, h as isize - 1) as usize;
+        for i in 0..4usize {
+            let xx = (ix - 1 + i as isize).clamp(0, w as isize - 1) as usize;
+            let wt = w16[j * 4 + i];
+            let base = (yy * w + xx) * c;
+            for ci in 0..c {
+                out[ci] += desc[base + ci] * wt;
             }
         }
-        *out_ci = acc;
     }
 }
