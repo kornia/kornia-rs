@@ -33,9 +33,6 @@ pub enum CubeclBackendError {
     /// Failed to resolve the cubecl `Handle` to a device resource.
     #[error("cubecl backend failed to resolve handle resource: {0}")]
     ResourceLookup(String),
-    /// The allocator side-table mutex was poisoned by a prior panic.
-    #[error("cubecl backend side-table mutex is poisoned")]
-    MutexPoisoned,
 }
 
 /// CubeCL backend wrapping a [`ComputeClient`] for the chosen runtime.
@@ -104,11 +101,15 @@ where
         if device_ptr == 0 {
             return Err(CubeclBackendError::NullDevicePointer);
         }
-        self.live
-            .lock()
-            .map_err(|_| CubeclBackendError::MutexPoisoned)?
-            .insert(device_ptr, handle);
-        Ok(device_ptr as *mut u8)
+        // Recover from a poisoned mutex (same as dealloc) so a prior panic
+        // in an unrelated thread does not permanently block future allocations.
+        let mut guard = match self.live.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        guard.insert(device_ptr, handle);
+        // CUDA device address → host-side opaque pointer; never dereferenced on host.
+        Ok(std::ptr::without_provenance_mut(device_ptr as usize))
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
@@ -121,7 +122,12 @@ where
             Ok(g) => g,
             Err(poisoned) => poisoned.into_inner(),
         };
-        guard.remove(&(ptr as u64));
+        let key = ptr as u64;
+        let removed = guard.remove(&key);
+        debug_assert!(
+            removed.is_some(),
+            "CubeclBackend::dealloc called with unknown pointer {key:#x} — possible double-free or wrong allocator"
+        );
     }
 }
 
