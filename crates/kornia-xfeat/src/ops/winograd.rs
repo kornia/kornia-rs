@@ -1400,6 +1400,11 @@ pub fn conv3x3_winograd_nhwc_f43_f16(
     // the output write is bounded by valid_rows/valid_cols.
     let n_tile_h = (h_out + 3) / 4;
     let n_tile_w = (w_out + 3) / 4;
+    // Pad n_tile_w to next multiple of MR=8 (the GEMM tile width). Computed
+    // here (outside the per-tile-row closure) so it's available for the
+    // use_co_par decision below.
+    const MR: usize = 8;
+    let n_tile_w_gemm = (n_tile_w + MR - 1) / MR * MR;
 
     // B panels are pre-transposed in the WinogradCache (one alloc at model
     // build time) — panel p is `b_panels_f16[p*c_in*c_out .. (p+1)*c_in*c_out]`.
@@ -1431,7 +1436,13 @@ pub fn conv3x3_winograd_nhwc_f43_f16(
     // alone keeps 6 threads busy; adding an inner 8-way par creates
     // oversubscription and forces per-tile-row heap allocations (2 × 108 KB for
     // 60×80 c64→c64).  Disable co_par in that regime.
-    let use_co_par = use_prepacked && n_co8 > 1 && n_tile_h < 6;
+    //
+    // Also disable when n_tile_w_gemm <= 8: with only 8 tiles per row the GEMM
+    // is so small (M=8, K, N) that Rayon task-dispatch overhead (~5 µs/task) for
+    // n_tile_h × n_co8 = 4×16 = 64 tasks exceeds the compute benefit.  In that
+    // regime the 4 outer tile-row tasks already cover 4/6 cores; the remaining
+    // 2 idle cores are cheaper than paying 64-task dispatch overhead (~320 µs).
+    let use_co_par = use_prepacked && n_co8 > 1 && n_tile_h < 6 && n_tile_w_gemm > 8;
 
     (0..n_tile_h).into_par_iter().for_each(|tile_oh| {
         // For partial last tiles (h_out % 4 != 0), only write the valid rows.
@@ -1447,13 +1458,7 @@ pub fn conv3x3_winograd_nhwc_f43_f16(
 
         let ih_start = (tile_oh * 4) as isize - 1;
 
-        // Pad n_tile_w to the next multiple of GEMM MR=8 so the M-remainder
-        // handler in gemm_f16_mnk_packed_b is never triggered.  The phantom
-        // tile columns (n_tile_w..n_tile_w_gemm) are left as zero in a_all and
-        // their GEMM outputs are discarded — only 0..n_tile_w are written back.
-        const MR: usize = 8;
-        let n_tile_w_gemm = (n_tile_w + MR - 1) / MR * MR;
-
+        // n_tile_w_gemm is computed once outside the closure (see above).
         let zero_f16 = half::f16::ZERO.to_bits();
         let a_len  = 36 * n_tile_w_gemm * c_in;
         let m_len  = n_tile_w_gemm * 36 * c_out;
