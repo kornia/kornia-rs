@@ -46,7 +46,12 @@ pub fn launch_gray_from_rgb_f32<R: Runtime>(
     width: u32,
     height: u32,
 ) {
-    let num_pixels = width * height;
+    // Use u64 arithmetic to avoid u32 overflow on large images.
+    let num_pixels_u64 = width as u64 * height as u64;
+    if num_pixels_u64 == 0 {
+        return;
+    }
+    let num_pixels = num_pixels_u64 as u32;
     // 64-thread cubes; ceil-div so all pixels are covered.
     let num_cubes = num_pixels.div_ceil(64);
 
@@ -55,7 +60,7 @@ pub fn launch_gray_from_rgb_f32<R: Runtime>(
             client,
             CubeCount::Static(num_cubes, 1, 1),
             CubeDim::new(64, 1, 1),
-            ArrayArg::from_raw_parts::<f32>(&src, (num_pixels * 3) as usize, 1),
+            ArrayArg::from_raw_parts::<f32>(&src, (num_pixels as usize) * 3, 1),
             ArrayArg::from_raw_parts::<f32>(&dst, num_pixels as usize, 1),
             ScalarArg::new(num_pixels),
         )
