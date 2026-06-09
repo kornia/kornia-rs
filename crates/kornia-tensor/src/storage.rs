@@ -321,16 +321,16 @@ impl<T, A: TensorAllocator> Drop for TensorStorage<T, A> {
 /// Clones the storage by creating a new storage with copied data.
 ///
 /// This performs a deep copy of the storage data using the cloned allocator.
+///
+/// # Panics
+///
+/// Panics if the storage lives on the device. Device-to-device copy is not yet
+/// implemented; use an explicit transfer API when it becomes available.
 impl<T, A> Clone for TensorStorage<T, A>
 where
     T: Clone,
     A: TensorAllocator,
 {
-    /// Creates a new storage with a copy of this storage's data.
-    ///
-    /// # Returns
-    ///
-    /// A new `TensorStorage` instance with cloned data.
     fn clone(&self) -> Self {
         assert_eq!(
             self.domain,
