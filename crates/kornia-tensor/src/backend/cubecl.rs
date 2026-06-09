@@ -16,12 +16,11 @@ compile_error!(
 
 use std::alloc::Layout;
 use std::collections::HashMap;
-use std::ptr::NonNull;
 use std::sync::{Arc, Mutex};
 
-use cubecl::Runtime;
 use cubecl::client::ComputeClient;
 use cubecl::server::Handle;
+use cubecl::Runtime;
 
 use super::{Backend, GpuAllocator};
 
@@ -93,9 +92,8 @@ where
     fn alloc(&self, layout: Layout) -> Result<*mut u8, Self::Error> {
         if layout.size() == 0 {
             // layout.align() >= 1 by invariant; this pointer is never dereferenced.
-            // SAFETY: layout.align() is non-zero so the cast yields a non-null address.
-            let dangling = unsafe { NonNull::new_unchecked(layout.align() as *mut u8) };
-            return Ok(dangling.as_ptr());
+            // without_provenance_mut avoids an integer-to-pointer cast under strict provenance.
+            return Ok(std::ptr::without_provenance_mut(layout.align()));
         }
         let handle = self.client.empty(layout.size());
         let managed = self
