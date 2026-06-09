@@ -19,7 +19,7 @@
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use kornia_tensor_ops::kernels::{cosine_similarity_float_kernel, dot_product1_kernel};
-use rand::Rng;
+use rand::RngExt;
 
 /// Benchmarks for the dot product1 kernel.
 ///

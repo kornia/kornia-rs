@@ -39,10 +39,11 @@
 
 use crate::{
     param::{Param, ParamError},
-    Mat3AF32, Mat4F32, QuatF32, Vec3AF32,
+    Mat3AF32, Mat3F64, Mat4F32, Mat4F64, QuatF32, QuatF64, Vec3AF32, Vec3F64,
 };
-use rand::Rng;
+use rand::RngExt;
 const SMALL_ANGLE_EPSILON: f32 = 1.0e-8;
+const SMALL_ANGLE_EPSILON_F64: f64 = 1.0e-10;
 
 /// A 3D rotation, stored as a unit quaternion.
 ///
@@ -196,7 +197,9 @@ impl SO3F32 {
         let theta = theta_sq.sqrt();
 
         if theta > SMALL_ANGLE_EPSILON {
-            let half_theta = w.acos();
+            // Use atan2 rather than acos(w): near identity w rounds to 1.0 and
+            // acos(1.0) = 0 collapses the result, whereas atan2 stays accurate.
+            let half_theta = theta.atan2(w);
             let scale = 2.0 * half_theta / theta;
             vec * scale
         } else {
@@ -232,6 +235,10 @@ impl SO3F32 {
         let theta = v.dot(v).sqrt();
         let ident = Mat3AF32::IDENTITY;
 
+        if theta < SMALL_ANGLE_EPSILON {
+            return ident + skew * 0.5;
+        }
+
         ident
             + ((1.0 - theta.cos()) / theta.powi(2)) * skew
             + ((theta - theta.sin()) / theta.powi(3)) * (skew * skew)
@@ -241,6 +248,10 @@ impl SO3F32 {
         let skew = Self::hat(v);
         let theta = v.dot(v).sqrt();
         let ident = Mat3AF32::IDENTITY;
+
+        if theta < SMALL_ANGLE_EPSILON {
+            return ident - skew * 0.5;
+        }
 
         ident - ((1.0 - theta.cos()) / theta.powi(2)) * skew
             + ((theta - theta.sin()) / theta.powi(3)) * (skew * skew)
@@ -325,6 +336,287 @@ impl approx::RelativeEq for SO3F32 {
     #[inline]
     fn default_max_relative() -> Self::Epsilon {
         <QuatF32 as approx::RelativeEq>::default_max_relative()
+    }
+
+    #[inline]
+    fn relative_eq(
+        &self,
+        other: &Self,
+        epsilon: Self::Epsilon,
+        max_relative: Self::Epsilon,
+    ) -> bool {
+        self.q.relative_eq(&other.q, epsilon, max_relative)
+    }
+}
+
+/// A 3D rotation in double precision, stored as a unit quaternion.
+///
+/// The `f64` counterpart of [`SO3F32`]: same SU(2) → SO(3) double-cover
+/// semantics (`q` and `-q` are the same rotation), same exp/log/hat/vee and
+/// Jacobian conventions, computed in double precision. See the
+/// [module-level documentation](self) and [`SO3F32`] for the full discussion.
+///
+/// Unlike [`SO3F32`], this type does not implement [`Param`]: the optimizer's
+/// parameter interface is currently `f32`-only.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SO3F64 {
+    /// The underlying unit quaternion.
+    pub q: QuatF64,
+}
+
+impl SO3F64 {
+    /// The identity rotation.
+    pub const IDENTITY: Self = Self {
+        q: QuatF64::IDENTITY,
+    };
+
+    /// Create a new SO3F64 from a quaternion.
+    /// NOTE: quaternion should be normalized
+    #[inline]
+    pub fn new(quat: QuatF64) -> Self {
+        Self { q: quat }
+    }
+
+    /// Create from a `[x, y, z, w]` quaternion array.
+    pub fn from_array(arr: [f64; 4]) -> Self {
+        Self {
+            q: QuatF64::from_array(arr),
+        }
+    }
+
+    /// Convert to a `[x, y, z, w]` quaternion array.
+    pub fn to_array(&self) -> [f64; 4] {
+        self.q.to_array()
+    }
+
+    /// Create a new SO3F64 from a quaternion.
+    /// NOTE: quaternion should be normalized
+    #[inline]
+    pub fn from_quaternion(quat: QuatF64) -> Self {
+        Self::new(quat)
+    }
+
+    /// Create from a 3x3 rotation matrix (chooses one of the two quaternions).
+    pub fn from_matrix(mat: &Mat3F64) -> Self {
+        Self {
+            q: QuatF64::from_mat3(mat),
+        }
+    }
+
+    /// Create from the rotation block of a 4x4 homogeneous matrix.
+    pub fn from_matrix4(mat: &Mat4F64) -> Self {
+        Self {
+            q: QuatF64::from_mat4(mat),
+        }
+    }
+
+    /// Uniformly-random rotation (Shoemake's method).
+    pub fn from_random() -> Self {
+        let mut rng = rand::rng();
+
+        let r1: f64 = rng.random();
+        let r2: f64 = rng.random();
+        let r3: f64 = rng.random();
+
+        // Correct uniform random quaternion generation (Shoemake method)
+        let one_minus_r1_sqrt = (1.0 - r1).sqrt();
+        let r1_sqrt = r1.sqrt();
+
+        let w = one_minus_r1_sqrt * (2.0 * std::f64::consts::PI * r2).cos();
+        let x = one_minus_r1_sqrt * (2.0 * std::f64::consts::PI * r2).sin();
+        let y = r1_sqrt * (2.0 * std::f64::consts::PI * r3).cos();
+        let z = r1_sqrt * (2.0 * std::f64::consts::PI * r3).sin();
+
+        Self {
+            q: QuatF64::from_xyzw(x, y, z, w).normalize(),
+        }
+    }
+
+    /// Right-plus retraction: `self ∘ exp(tau)`.
+    #[inline]
+    pub fn rplus(&self, tau: Vec3F64) -> Self {
+        *self * SO3F64::exp(tau)
+    }
+
+    /// Right-minus: `log(self⁻¹ ∘ other)`.
+    #[inline]
+    pub fn rminus(&self, other: &Self) -> Vec3F64 {
+        (self.inverse() * *other).log()
+    }
+
+    /// Left-plus retraction: `exp(tau) ∘ x`.
+    #[inline]
+    pub fn lplus(tau: Vec3F64, x: &Self) -> Self {
+        SO3F64::exp(tau) * *x
+    }
+
+    /// Left-minus: `log(y ∘ x⁻¹)`.
+    #[inline]
+    pub fn lminus(y: &Self, x: &Self) -> Vec3F64 {
+        (*y * x.inverse()).log()
+    }
+
+    /// The 3x3 rotation matrix.
+    pub fn matrix(&self) -> Mat3F64 {
+        Mat3F64::from_quat(self.q)
+    }
+
+    /// Adjoint representation (equal to the rotation matrix for SO(3)).
+    pub fn adjoint(&self) -> Mat3F64 {
+        self.matrix()
+    }
+
+    /// Group inverse (quaternion conjugate of a unit quaternion).
+    pub fn inverse(&self) -> Self {
+        Self {
+            q: self.q.inverse(),
+        }
+    }
+
+    /// Exponential map so(3) → SO(3): axis-angle vector → rotation.
+    pub fn exp(v: Vec3F64) -> Self {
+        let theta_sq = v.dot(v);
+        let theta = theta_sq.sqrt();
+        let theta_half: f64 = 0.5 * theta;
+
+        let (w, b) = if theta < SMALL_ANGLE_EPSILON_F64 {
+            // using the taylor series expansion of cos(x/2) and sin(x/2)/x around 0
+            (1.0 - theta_sq / 8.0, 0.5 - theta_sq / 48.0)
+        } else {
+            (theta_half.cos(), theta_half.sin() / theta)
+        };
+
+        let xyz = b * v;
+
+        Self {
+            q: QuatF64::from_xyzw(xyz.x, xyz.y, xyz.z, w),
+        }
+    }
+
+    /// Logarithmic map SO(3) → so(3): rotation → axis-angle vector.
+    pub fn log(&self) -> Vec3F64 {
+        let mut w = self.q.w;
+        let mut vec = Vec3F64::new(self.q.x, self.q.y, self.q.z);
+
+        if w < 0.0 {
+            w = -w;
+            vec = -vec;
+        }
+
+        let theta_sq = vec.dot(vec);
+        let theta = theta_sq.sqrt();
+
+        if theta > SMALL_ANGLE_EPSILON_F64 {
+            // `vec = sin(θ/2)·axis` and `w = cos(θ/2)`, so the half-angle is
+            // `atan2(|vec|, w)`. We use atan2 rather than `acos(w)`: near the
+            // identity `w` rounds to 1.0 and `acos(1.0) = 0` collapses the
+            // result, whereas atan2 stays accurate for small `|vec|`.
+            let half_theta = theta.atan2(w);
+            let scale = 2.0 * half_theta / theta;
+            vec * scale
+        } else {
+            // Small-angle approximation (Taylor series)
+            let scale = 2.0 / w;
+            vec * scale
+        }
+    }
+
+    /// Hat operator R³ → so(3): vector → skew-symmetric matrix.
+    pub fn hat(v: Vec3F64) -> Mat3F64 {
+        let (a, b, c) = (v.x, v.y, v.z);
+        Mat3F64::from_cols_array(&[0.0, c, -b, -c, 0.0, a, b, -a, 0.0])
+    }
+
+    /// Vee operator so(3) → R³: skew-symmetric matrix → vector (inverse of [`hat`](Self::hat)).
+    pub fn vee(omega: Mat3F64) -> Vec3F64 {
+        let a = omega.y_axis().z;
+        let b = omega.z_axis().x;
+        let c = omega.x_axis().y;
+        Vec3F64::new(a, b, c)
+    }
+
+    /// Vee operator reading the rotation block of a 4x4 matrix.
+    pub fn vee4(omega: Mat4F64) -> Vec3F64 {
+        let a = omega.y_axis().z;
+        let b = omega.z_axis().x;
+        let c = omega.x_axis().y;
+        Vec3F64::new(a, b, c)
+    }
+
+    /// Left Jacobian of SO(3) at `v`.
+    pub fn left_jacobian(v: Vec3F64) -> Mat3F64 {
+        let skew = Self::hat(v);
+        let theta = v.dot(v).sqrt();
+        let ident = Mat3F64::IDENTITY;
+
+        if theta < SMALL_ANGLE_EPSILON_F64 {
+            return ident + skew * 0.5;
+        }
+
+        ident
+            + ((1.0 - theta.cos()) / theta.powi(2)) * skew
+            + ((theta - theta.sin()) / theta.powi(3)) * (skew * skew)
+    }
+
+    /// Right Jacobian of SO(3) at `v`.
+    pub fn right_jacobian(v: Vec3F64) -> Mat3F64 {
+        let skew = Self::hat(v);
+        let theta = v.dot(v).sqrt();
+        let ident = Mat3F64::IDENTITY;
+
+        if theta < SMALL_ANGLE_EPSILON_F64 {
+            return ident - skew * 0.5;
+        }
+
+        ident - ((1.0 - theta.cos()) / theta.powi(2)) * skew
+            + ((theta - theta.sin()) / theta.powi(3)) * (skew * skew)
+    }
+}
+
+impl std::ops::Mul<SO3F64> for SO3F64 {
+    type Output = SO3F64;
+
+    fn mul(self, rhs: Self) -> Self::Output {
+        Self { q: self.q * rhs.q }
+    }
+}
+
+impl std::ops::MulAssign<SO3F64> for SO3F64 {
+    #[inline]
+    fn mul_assign(&mut self, rhs: SO3F64) {
+        *self = *self * rhs;
+    }
+}
+
+impl std::ops::Mul<Vec3F64> for SO3F64 {
+    type Output = Vec3F64;
+
+    fn mul(self, rhs: Vec3F64) -> Self::Output {
+        let result = self.q.mul_vec3([rhs.x, rhs.y, rhs.z]);
+        Vec3F64::new(result[0], result[1], result[2])
+    }
+}
+
+#[cfg(feature = "approx")]
+impl approx::AbsDiffEq for SO3F64 {
+    type Epsilon = <QuatF64 as approx::AbsDiffEq>::Epsilon;
+
+    #[inline]
+    fn default_epsilon() -> Self::Epsilon {
+        <QuatF64 as approx::AbsDiffEq>::default_epsilon()
+    }
+
+    #[inline]
+    fn abs_diff_eq(&self, other: &Self, epsilon: Self::Epsilon) -> bool {
+        self.q.abs_diff_eq(&other.q, epsilon)
+    }
+}
+
+#[cfg(feature = "approx")]
+impl approx::RelativeEq for SO3F64 {
+    #[inline]
+    fn default_max_relative() -> Self::Epsilon {
+        <QuatF64 as approx::RelativeEq>::default_max_relative()
     }
 
     #[inline]
@@ -801,5 +1093,114 @@ mod tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests_f64 {
+    use super::*;
+
+    const EPS: f64 = 1e-12;
+
+    fn assert_mat_eq(a: &Mat3F64, b: &Mat3F64, tol: f64) {
+        for i in 0..3 {
+            for j in 0..3 {
+                assert!(
+                    (a.col(i)[j] - b.col(i)[j]).abs() < tol,
+                    "mismatch at col {i} row {j}: {} vs {}",
+                    a.col(i)[j],
+                    b.col(i)[j]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn exp_zero_is_identity() {
+        let r = SO3F64::exp(Vec3F64::ZERO).matrix();
+        assert_mat_eq(&r, &Mat3F64::IDENTITY, EPS);
+    }
+
+    #[test]
+    fn exp_pi_around_z() {
+        // 180° about z: x -> -x, y -> -y, z -> z.
+        let r = SO3F64::exp(Vec3F64::new(0.0, 0.0, std::f64::consts::PI)).matrix();
+        let expected = Mat3F64::from_cols_array(&[-1.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 1.0]);
+        assert_mat_eq(&r, &expected, 1e-12);
+    }
+
+    #[test]
+    fn exp_log_roundtrip() {
+        let test_vectors = [
+            Vec3F64::new(0.1, 0.2, 0.3),
+            Vec3F64::new(1.0, 0.0, 0.0),
+            Vec3F64::new(0.0, 0.0, 1.0),
+            Vec3F64::new(-0.5, 0.3, -0.2),
+            Vec3F64::new(1e-9, -2e-9, 3e-9), // small-angle branch
+        ];
+        for v in test_vectors.iter() {
+            let back = SO3F64::exp(*v).log();
+            assert!((back - *v).length() < 1e-12, "got {back:?} from {v:?}");
+        }
+    }
+
+    #[test]
+    fn hat_is_skew_symmetric() {
+        let v = Vec3F64::new(1.0, 2.0, 3.0);
+        let h = SO3F64::hat(v);
+        let sum = h + h.transpose();
+        assert_mat_eq(&sum, &Mat3F64::from_cols_array(&[0.0; 9]), EPS);
+        // vee undoes hat.
+        let back = SO3F64::vee(h);
+        assert!((back - v).length() < EPS);
+    }
+
+    #[test]
+    fn matrix_is_orthogonal_with_unit_det() {
+        let r = SO3F64::exp(Vec3F64::new(0.3, -0.7, 0.2)).matrix();
+        assert_mat_eq(&(r.transpose() * r), &Mat3F64::IDENTITY, 1e-12);
+        assert!((r.determinant() - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn right_jacobian_finite_difference() {
+        // exp(omega + delta) ≈ exp(omega) · exp(J_r(omega) · delta).
+        let omega = Vec3F64::new(0.3, -0.2, 0.5);
+        let jr = SO3F64::right_jacobian(omega);
+        let r = SO3F64::exp(omega).matrix();
+        let eps = 1e-6;
+
+        for i in 0..3 {
+            let mut d = [0.0; 3];
+            d[i] = eps;
+            let dv = Vec3F64::new(d[0], d[1], d[2]);
+
+            let lhs = SO3F64::exp(omega + dv).matrix();
+            let jr_delta = jr * dv;
+            let rhs = r * SO3F64::exp(jr_delta).matrix();
+            assert_mat_eq(&lhs, &rhs, 1e-9);
+        }
+    }
+
+    #[test]
+    fn left_jacobian_is_right_jacobian_transpose() {
+        let v = Vec3F64::new(0.1, 0.2, 0.3);
+        let jl = SO3F64::left_jacobian(v);
+        let jr = SO3F64::right_jacobian(v);
+        assert_mat_eq(&jl, &jr.transpose(), 1e-12);
+    }
+
+    #[test]
+    fn mul_and_inverse() {
+        let x = SO3F64::from_random();
+        let identity = (x.inverse() * x).matrix();
+        assert_mat_eq(&identity, &Mat3F64::IDENTITY, 1e-12);
+    }
+
+    #[test]
+    fn from_matrix_roundtrip() {
+        let r = SO3F64::exp(Vec3F64::new(0.4, -0.1, 0.8));
+        let r2 = SO3F64::from_matrix(&r.matrix());
+        assert_mat_eq(&r.matrix(), &r2.matrix(), 1e-12);
     }
 }

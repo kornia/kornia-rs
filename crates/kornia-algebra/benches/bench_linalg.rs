@@ -21,8 +21,7 @@ fn bench_svd3(c: &mut Criterion) {
 
     group.bench_function(BenchmarkId::new("svd3_faer", ""), |b| {
         b.iter(|| {
-            a2.svd();
-            std::hint::black_box(());
+            let _ = std::hint::black_box(a2.svd());
         })
     });
 }
@@ -46,8 +45,7 @@ fn bench_svd3_f64(c: &mut Criterion) {
 
     group.bench_function(BenchmarkId::new("svd3_faer", ""), |b| {
         b.iter(|| {
-            a2.svd();
-            std::hint::black_box(());
+            let _ = std::hint::black_box(a2.svd());
         })
     });
 }

@@ -1,6 +1,6 @@
-# ROS-Z Nodes Example
+# Hiroz Nodes Example
 
-A modular ROS2-style camera processing pipeline using [ros-z](https://github.com/ZettaScaleLabs/ros-z) (Zenoh-based middleware). This example demonstrates a multi-node architecture for camera capture, JPEG decoding, image statistics computation, and visualization via Foxglove.
+A modular ROS2-style camera processing pipeline using [hiroz](https://github.com/ZettaScaleLabs/hiroz) (Zenoh-based middleware). This example demonstrates a multi-node architecture for camera capture, JPEG decoding, image statistics computation, and visualization via Foxglove.
 
 NOTE: This example is only supported on Linux.
 

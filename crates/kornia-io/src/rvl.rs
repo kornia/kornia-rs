@@ -387,7 +387,7 @@ mod tests {
     fn roundtrip_max_delta() {
         // Alternating 0 and 65535 — maximum delta at every pixel
         let data: Vec<u16> = (0..64)
-            .map(|i| if i % 2 == 0 { 0 } else { 65535 })
+            .map(|i: usize| if i.is_multiple_of(2) { 0 } else { 65535 })
             .collect();
         let img = make_image(data, 8, 8);
         let enc = encode_image_rvl(&img).unwrap();

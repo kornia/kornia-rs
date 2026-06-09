@@ -39,7 +39,7 @@
 
 use crate::pose::fundamental::sampson_distance;
 use crate::ransac::{RobustKernel, RobustKernelKind};
-use faer::prelude::SpSolver;
+use faer::prelude::Solve;
 use kornia_algebra::{Mat3F64, Vec2F64, Vec3F64};
 
 /// Configuration for [`refine_pose_lm`].
@@ -321,21 +321,17 @@ pub fn refine_pose_lm(
                 if r_i == c_i {
                     v += lambda * h_mat[r_i][r_i].abs().max(1e-12);
                 }
-                unsafe {
-                    a.write_unchecked(r_i, c_i, v);
-                }
+                a[(r_i, c_i)] = v;
             }
-            unsafe {
-                rhs.write_unchecked(r_i, 0, -g_vec[r_i]);
-            }
+            rhs[(r_i, 0)] = -g_vec[r_i];
         }
         let sol = a.partial_piv_lu().solve(&rhs);
         let delta = [
-            sol.read(0, 0),
-            sol.read(1, 0),
-            sol.read(2, 0),
-            sol.read(3, 0),
-            sol.read(4, 0),
+            sol[(0, 0)],
+            sol[(1, 0)],
+            sol[(2, 0)],
+            sol[(3, 0)],
+            sol[(4, 0)],
         ];
         if !delta.iter().all(|x: &f64| x.is_finite()) {
             // Singular system — bump λ and retry.

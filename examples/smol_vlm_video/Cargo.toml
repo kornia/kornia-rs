@@ -8,13 +8,13 @@ publish = false
 [dependencies]
 argh = { workspace = true }
 ctrlc = { workspace = true }
-gstreamer = "0.21"
-gstreamer-app = "0.21"
-gstreamer-video = "0.21"
-image = "0.24"
+gstreamer = { workspace = true }
+gstreamer-app = { workspace = true }
+gstreamer-video = { workspace = true }
+image = { workspace = true }
 kornia = { workspace = true }
 kornia-vlm = { workspace = true }
-reqwest = { version = "0.12.15", features = ["blocking"] }
+reqwest = { workspace = true }
 rerun = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]

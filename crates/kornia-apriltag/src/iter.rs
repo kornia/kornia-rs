@@ -199,12 +199,12 @@ impl<'a, T> TileIterator<'a, T> {
 
         let tiles_len = find_total_tiles(img_size, tile_size);
         let last_tile_px = Point2d {
-            x: if img.width() % tile_size == 0 {
+            x: if img.width().is_multiple_of(tile_size) {
                 tile_size
             } else {
                 img_size.width % tile_size
             },
-            y: if img.height() % tile_size == 0 {
+            y: if img.height().is_multiple_of(tile_size) {
                 tile_size
             } else {
                 img_size.height % tile_size

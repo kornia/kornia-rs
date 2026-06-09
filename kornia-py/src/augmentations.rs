@@ -20,7 +20,7 @@ thread_local! {
 }
 
 #[inline]
-fn with_rng<T>(f: impl FnOnce(&mut dyn RngCore) -> T) -> T {
+fn with_rng<T>(f: impl FnOnce(&mut dyn rand::Rng) -> T) -> T {
     SEEDED_RNG.with(|cell| {
         let mut rng_opt = cell.borrow_mut();
         match rng_opt.as_mut() {

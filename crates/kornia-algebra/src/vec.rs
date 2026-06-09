@@ -245,6 +245,25 @@ define_vector_type!(Vec3AF32, glam::Vec3A, f32, [f32; 3], [x, y, z]);
 define_vector_type!(Vec4F32, glam::Vec4, f32, [f32; 4], [x, y, z, w]);
 define_vector_type!(Vec4F64, glam::DVec4, f64, [f64; 4], [x, y, z, w]);
 
+/// Adds the cross product to 3-component vector types.
+macro_rules! define_cross_product {
+    ($name:ident, $glam_type:ty) => {
+        impl $name {
+            /// Cross product `self × rhs`.
+            #[inline]
+            pub fn cross(self, rhs: Self) -> Self {
+                let a: $glam_type = self.into();
+                let b: $glam_type = rhs.into();
+                Self::from(a.cross(b))
+            }
+        }
+    };
+}
+
+define_cross_product!(Vec3F32, glam::Vec3);
+define_cross_product!(Vec3F64, glam::DVec3);
+define_cross_product!(Vec3AF32, glam::Vec3A);
+
 // Dynamic-sized vectors from nalgebra (for optimization and large-scale operations)
 /// Dynamic-sized vector with f32 elements.
 pub type DVecF32 = nalgebra::DVector<f32>;

@@ -37,5 +37,8 @@ pub mod ransac;
 /// Registration algorithms.
 pub mod registration;
 
+/// Stereo geometry: rectification of non-row-aligned camera pairs.
+pub mod stereo;
+
 /// 3D transforms algorithms.
 pub mod transforms;
