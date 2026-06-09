@@ -75,7 +75,7 @@ fn bench_decompose_essential(c: &mut Criterion) {
         Vec3F64::new(1.0, 0.0, 0.0),
         Vec3F64::new(0.0, 0.0, 0.0),
     );
-    let e = enforce_essential_constraints(&e);
+    let e = enforce_essential_constraints(&e).unwrap();
     c.bench_function("decompose_essential", |b| {
         b.iter(|| {
             std::hint::black_box(decompose_essential(&e));
@@ -94,7 +94,7 @@ fn bench_essential_pipeline(c: &mut Criterion) {
     c.bench_function("essential_pipeline", |b| {
         b.iter(|| {
             let e = essential_from_fundamental(&f, &k, &k);
-            let e = enforce_essential_constraints(&e);
+            let e = enforce_essential_constraints(&e).unwrap();
             std::hint::black_box(decompose_essential(&e));
         });
     });

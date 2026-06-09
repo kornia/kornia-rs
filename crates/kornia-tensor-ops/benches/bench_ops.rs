@@ -1,7 +1,7 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 use kornia_tensor::{CpuAllocator, Tensor};
 use kornia_tensor_ops::TensorOps;
-use rand::Rng;
+use rand::RngExt;
 
 fn bench_dot_product1(c: &mut Criterion) {
     let mut group = c.benchmark_group("dot_product1");

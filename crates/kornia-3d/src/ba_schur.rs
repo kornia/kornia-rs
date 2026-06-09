@@ -37,7 +37,7 @@
 //! gauge (motion-only BA). Robust kernels and full LM-with-backtracking
 //! are TODO.
 
-use faer::prelude::SpSolver;
+use faer::prelude::Solve;
 use faer::Mat;
 use kornia_algebra::{Mat3AF32, Mat3F64, Vec3AF32, Vec3F64, SE3F32, SO3F32};
 use thiserror::Error;
@@ -884,7 +884,7 @@ pub fn bundle_adjust_schur_with_priors(
                 m_mat[(j, i)] = avg;
             }
         }
-        let chol = match m_mat.cholesky(faer::Side::Lower) {
+        let chol = match m_mat.llt(faer::Side::Lower) {
             Ok(c) => c,
             Err(e) => {
                 // Bump damping and retry next outer iteration.

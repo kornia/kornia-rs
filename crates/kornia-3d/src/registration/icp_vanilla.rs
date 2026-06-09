@@ -96,7 +96,8 @@ pub fn icp_vanilla(
             &current_target_match,
             &mut rr_delta,
             &mut tt_delta,
-        );
+        )
+        .ok_or("SVD failed in fit_transformation")?;
 
         // transform current source using the computed transformation
         let mut transformed_points = vec![[0.0; 3]; current_source.len()];

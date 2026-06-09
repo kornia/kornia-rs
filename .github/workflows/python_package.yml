@@ -25,5 +25,5 @@ jobs:
 
     - name: Install kornia-rs from pypi
       run: |
-        uv pip install kornia_rs
+        uv pip install --system kornia_rs
         python -c "import kornia_rs"

@@ -4,7 +4,7 @@ use kornia_imgproc::calibration::{
     CameraIntrinsic,
 };
 use kornia_tensor::{CpuAllocator, Tensor};
-use rand::Rng;
+use rand::RngExt;
 use std::hint::black_box;
 
 #[cfg(feature = "opencv_bench")]

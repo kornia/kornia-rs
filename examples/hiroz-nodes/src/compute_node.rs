@@ -1,11 +1,11 @@
 //! Compute Node - subscribes to raw images via SHM, computes statistics, publishes stats
 
 use crate::protos::{Header, ImageStats, RawImage};
-use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
-use prost::Message;
-use ros_z::{
+use hiroz::{
     context::ZContext, msg::ProtobufSerdes, node::ZNode, pubsub::ZPub, Builder, Result as ZResult,
 };
+use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
+use prost::Message;
 use std::sync::Arc;
 use zenoh::Wait;
 
@@ -76,10 +76,16 @@ impl ComputeNode {
                     let msg = RawImage::decode(bytes.as_ref())?;
 
                     // convert to image kornia
-                    let img = Image::<u8, 3, CpuAllocator>::new(ImageSize {
+                    let img = match Image::<u8, 3, CpuAllocator>::new(ImageSize {
                         width: msg.width as usize,
                         height: msg.height as usize,
-                    }, msg.data, CpuAllocator)?;
+                    }, msg.data, CpuAllocator) {
+                        Ok(img) => img,
+                        Err(e) => {
+                            log::warn!("skipping malformed frame: {e}");
+                            continue;
+                        }
+                    };
 
                     // compute mean and std
                     let (std, mean) = kornia_imgproc::core::std_mean(&img);

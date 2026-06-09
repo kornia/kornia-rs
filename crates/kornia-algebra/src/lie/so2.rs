@@ -2,7 +2,7 @@ use crate::{
     param::{Param, ParamError},
     Mat2F32, Mat3AF32, Vec2F32,
 };
-use rand::Rng;
+use rand::RngExt;
 use std::f32::consts::TAU; // <-- Added this import
 
 #[derive(Debug, Clone, Copy, PartialEq)]

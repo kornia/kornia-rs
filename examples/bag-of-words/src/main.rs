@@ -1,6 +1,6 @@
 use kornia_bow::metric::{Feature, Hamming};
 use kornia_bow::Vocabulary;
-use rand::{rngs::StdRng, Rng, SeedableRng};
+use rand::{rngs::StdRng, RngExt, SeedableRng};
 
 const BRANCHING_FACTOR: usize = 10;
 const DESC_DIM: usize = 4;
