@@ -100,10 +100,10 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
     ///
     /// # Panics
     ///
-    /// Panics (in debug builds) if the storage lives on the device.
+    /// Panics if the storage lives on the device.
     /// Use explicit host-device transfer APIs to access device data.
     pub fn as_slice(&self) -> &[T] {
-        debug_assert_eq!(
+        assert_eq!(
             self.domain,
             MemoryDomain::Host,
             "as_slice called on device storage — use to_host() first"
@@ -115,9 +115,9 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
     ///
     /// # Panics
     ///
-    /// Panics (in debug builds) if the storage lives on the device.
+    /// Panics if the storage lives on the device.
     pub fn as_mut_slice(&mut self) -> &mut [T] {
-        debug_assert_eq!(
+        assert_eq!(
             self.domain,
             MemoryDomain::Host,
             "as_mut_slice called on device storage — use to_host() first"
@@ -247,18 +247,23 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
     /// Creates a new tensor storage from a raw device pointer returned by a GPU allocator.
     ///
     /// The resulting storage has [`MemoryDomain::Device`]; calling [`as_slice`](Self::as_slice)
-    /// on it will panic in debug builds. Use explicit transfer APIs to bring data to the host.
+    /// on it will panic. Use explicit transfer APIs to bring data to the host.
     ///
     /// # Safety
     ///
-    /// - `ptr` must be a valid device pointer for at least `len` bytes.
+    /// - `ptr` must be a valid device pointer for at least `len_bytes` bytes.
     /// - `layout` must match the allocation that produced `ptr`.
     /// - Ownership is transferred; the allocator's `dealloc` will be called on drop.
-    pub unsafe fn from_raw_device(data: *mut T, len: usize, layout: Layout, alloc: A) -> Self {
+    pub unsafe fn from_raw_device(
+        data: *mut T,
+        len_bytes: usize,
+        layout: Layout,
+        alloc: A,
+    ) -> Self {
         let ptr = NonNull::new_unchecked(data);
         Self {
             ptr,
-            len,
+            len: len_bytes,
             layout,
             alloc,
             owns_memory: true,
@@ -327,7 +332,7 @@ where
     ///
     /// A new `TensorStorage` instance with cloned data.
     fn clone(&self) -> Self {
-        debug_assert_eq!(
+        assert_eq!(
             self.domain,
             MemoryDomain::Host,
             "clone called on device storage — device-to-device copy is not yet implemented"
@@ -563,5 +568,34 @@ mod tests {
         }
         assert_eq!(buffer.into_vec(), vec![10, 2, 3, 4, 5]);
         Ok(())
+    }
+
+    fn make_device_storage() -> TensorStorage<u8, CpuAllocator> {
+        // Construct a Device-domain storage without actually touching GPU hardware.
+        // The pointer value is irrelevant; we only test the domain guard.
+        let layout = Layout::array::<u8>(1).unwrap();
+        let ptr = CpuAllocator.alloc(layout).unwrap();
+        unsafe { TensorStorage::from_raw_device(ptr as *mut u8, 1, layout, CpuAllocator) }
+    }
+
+    #[test]
+    #[should_panic(expected = "as_slice called on device storage")]
+    fn test_as_slice_panics_on_device() {
+        let storage = make_device_storage();
+        let _ = storage.as_slice();
+    }
+
+    #[test]
+    #[should_panic(expected = "as_mut_slice called on device storage")]
+    fn test_as_mut_slice_panics_on_device() {
+        let mut storage = make_device_storage();
+        let _ = storage.as_mut_slice();
+    }
+
+    #[test]
+    #[should_panic(expected = "clone called on device storage")]
+    fn test_clone_panics_on_device() {
+        let storage = make_device_storage();
+        let _ = storage.clone();
     }
 }
