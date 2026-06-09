@@ -43,13 +43,13 @@ pub struct AP3PEstimator {
     /// Full intrinsics matrix (f32, SIMD-aligned).
     pub k: Mat3AF32,
     /// Pre-extracted focal length X to bypass inner-loop matrix copies.
-    fx: f32,
+    pub fx: f32,
     /// Pre-extracted focal length Y to bypass inner-loop matrix copies.
-    fy: f32,
+    pub fy: f32,
     /// Pre-extracted principal point X to bypass inner-loop matrix copies.
-    cx: f32,
+    pub cx: f32,
     /// Pre-extracted principal point Y to bypass inner-loop matrix copies.
-    cy: f32,
+    pub cy: f32,
     /// Optional lens distortion model. Currently utilized only during the LO refit step.
     pub distortion: Option<PolynomialDistortion>,
     /// Tuning parameters for the AP3P algebraic solver.

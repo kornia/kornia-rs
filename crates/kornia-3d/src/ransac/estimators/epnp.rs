@@ -42,13 +42,13 @@ pub struct EPnPEstimator {
     /// Intrinsics matrix (f32, SIMD-aligned).
     pub k: Mat3AF32,
     /// Pre-extracted focal length X to bypass inner-loop matrix copies.
-    fx: f32,
+    pub fx: f32,
     /// Pre-extracted focal length Y to bypass inner-loop matrix copies.
-    fy: f32,
+    pub fy: f32,
     /// Pre-extracted principal point X to bypass inner-loop matrix copies.
-    cx: f32,
+    pub cx: f32,
     /// Pre-extracted principal point Y to bypass inner-loop matrix copies.
-    cy: f32,
+    pub cy: f32,
     /// Optional lens distortion model. Used only by the fit step today.
     pub distortion: Option<PolynomialDistortion>,
     /// Solver hyperparameters (LM refine, tolerances).
