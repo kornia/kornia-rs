@@ -2,6 +2,7 @@
 //! coordinates. Mirrors upstream `Xfeat.detectAndCompute`.
 
 use crate::ops;
+use rayon::prelude::*;
 
 /// One detected keypoint with score, in **original image** coordinates.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -41,8 +42,9 @@ pub fn nms_topk(
     let x_scale = (w_rel as f32) / ((w as f32) - 1.0);
     let y_scale = (h_rel as f32) / ((h as f32) - 1.0);
 
+    // Sampling reliability at each NMS peak is independent per candidate.
     let mut kps: Vec<KeyPoint> = raw
-        .into_iter()
+        .into_par_iter()
         .map(|(kp_score, idx)| {
             let y = (idx / w) as f32;
             let x = (idx % w) as f32;
@@ -105,10 +107,13 @@ pub fn bicubic_sample_descriptors(
     debug_assert_eq!(desc.len(), h_d * w_d * c);
     debug_assert_eq!(out.len(), kps_xy_in_desc_space.len() * c);
 
-    for (i, &(x, y)) in kps_xy_in_desc_space.iter().enumerate() {
-        let out_off = i * c;
-        bicubic_sample_one(desc, h_d, w_d, c, x, y, &mut out[out_off..out_off + c]);
-    }
+    // Each keypoint writes to its own non-overlapping slice of `out`, so the
+    // loop is trivially parallel.
+    out.par_chunks_mut(c)
+        .zip(kps_xy_in_desc_space.par_iter())
+        .for_each(|(chunk, &(x, y))| {
+            bicubic_sample_one(desc, h_d, w_d, c, x, y, chunk);
+        });
 }
 
 fn bicubic_sample_one(desc: &[f32], h: usize, w: usize, c: usize, x: f32, y: f32, out: &mut [f32]) {

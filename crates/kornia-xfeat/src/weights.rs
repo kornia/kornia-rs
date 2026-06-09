@@ -22,6 +22,48 @@ use std::collections::HashMap;
 
 use safetensors::SafeTensors;
 
+// ─── WinogradCache ────────────────────────────────────────────────────────────
+
+/// Pre-transformed weights for every Winograd-eligible stride-1 3×3 layer.
+///
+/// Built once in [`crate::model::XFeat::new`] by calling
+/// [`crate::ops::winograd::winograd_transform_weights_f32_f43`] for each of the
+/// 10 eligible layers. The hot path looks up `transformed[layer_name]` instead
+/// of recomputing G·g·G^T on every frame.
+///
+/// Layout: `transformed[name]` has shape `[36, c_out, c_in]` — 36 Winograd
+/// F(4×4, 3×3) positions (pos = row*6+col), each followed by the c_out × c_in
+/// coefficient matrix.
+///
+/// `transformed_f16[name]` is the same data down-cast to f16 (as `u16` bit
+/// representations) for use with the ARMv8.2 fp16 GEMM path.  Present only on
+/// `aarch64` targets and only when the CPU reports `has_fp16`.
+pub struct WinogradCache {
+    /// Pre-transformed weights `[36 * c_out * c_in]` per layer (f32).
+    pub transformed: HashMap<String, Vec<f32>>,
+    /// Pre-transformed weights `[36 * c_out * c_in]` per layer (f16 as u16 bits).
+    /// Empty on non-aarch64 targets.
+    pub transformed_f16: HashMap<String, Vec<u16>>,
+    /// Pre-transposed B panels `[36 * c_in * c_out]` per layer (f16 as u16 bits)
+    /// for the F(4,3) fp16 GEMM driver. Flat layout:
+    /// `b_panels_f16[p * c_in * c_out + ci * c_out + co]`.
+    /// Empty on non-aarch64 targets / when fp16 is unused.
+    pub b_panels_f16: HashMap<String, Vec<u16>>,
+    /// Pre-packed B in [36, n_blocks, K, NR=8] layout so each per-frame GEMM
+    /// call can skip the B-packing step.  Flat: index = `p * n_blocks * c_in * 8
+    /// + nb * c_in * 8 + ki * 8 + ni`. Empty when fp16 is unused.
+    pub b_panels_packed: HashMap<String, Vec<u16>>,
+    /// Pre-packed fp16 weights in `[c_out/8, 9, c_in, 8]` layout for layers
+    /// that bypass Winograd and use direct fp16 conv3x3 (small-K layers where
+    /// Winograd transform overhead exceeds savings). Only populated for layers
+    /// with `c_in <= 8 && c_out <= 8`. Empty on non-aarch64 / no fp16.
+    pub fp16_direct_conv: HashMap<String, Vec<u16>>,
+    /// Output channel count per layer.
+    pub c_out: HashMap<String, usize>,
+    /// Input channel count per layer.
+    pub c_in: HashMap<String, usize>,
+}
+
 /// Errors when loading or parsing packed weights.
 #[derive(Debug, thiserror::Error)]
 pub enum WeightsError {

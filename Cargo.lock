@@ -8027,6 +8027,7 @@ version = "0.1.14"
 dependencies = [
  "approx",
  "criterion",
+ "half",
  "hf-hub",
  "kornia-image",
  "kornia-tensor",

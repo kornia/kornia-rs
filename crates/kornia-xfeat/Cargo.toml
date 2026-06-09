@@ -17,6 +17,7 @@ harness = false
 name = "xfeat_bench"
 
 [dependencies]
+half = { workspace = true }
 hf-hub = { workspace = true, optional = true }
 kornia-image = { workspace = true }
 kornia-tensor = { workspace = true }
@@ -35,6 +36,9 @@ serde_json = { workspace = true }
 
 [[example]]
 name = "detect_and_match"
+
+[[example]]
+name = "bench_extract"
 
 # SIMD backends (NEON / AVX2 / AVX-512) are runtime-detected via the
 # CpuFeatures probe, not gated by Cargo features. See `src/cpu_features.rs`.

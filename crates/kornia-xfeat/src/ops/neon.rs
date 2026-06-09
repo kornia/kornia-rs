@@ -91,28 +91,6 @@ fn repack_weights_co4(
 }
 
 /// Repack conv3x3 weights from `[c_out, 9, c_in]` to `[c_out/4, 9, c_in, 4]`.
-fn repack_weights_co4_3x3(
-    weights: &[f32], // [c_out, 9, c_in]
-    c_out: usize,
-    c_in: usize,
-) -> Vec<f32> {
-    debug_assert_eq!(c_out % 4, 0);
-    let n_co4 = c_out / 4;
-    let mut out = vec![0.0f32; n_co4 * 9 * c_in * 4];
-    for co_block in 0..n_co4 {
-        for tap in 0..9usize {
-            for ci in 0..c_in {
-                for lane in 0..4usize {
-                    let co = co_block * 4 + lane;
-                    // original layout: weights[co * 9 * c_in + tap * c_in + ci]
-                    out[((co_block * 9 + tap) * c_in + ci) * 4 + lane] =
-                        weights[co * 9 * c_in + tap * c_in + ci];
-                }
-            }
-        }
-    }
-    out
-}
 
 // ── conv1x1 v2 ───────────────────────────────────────────────────────────────
 
@@ -220,6 +198,80 @@ unsafe fn dot_co4(in_px: *const f32, w_blk: *const f32, c_in: usize) -> float32x
     vaddq_f32(vaddq_f32(acc0, acc1), vaddq_f32(acc2, acc3))
 }
 
+/// Accumulate one 3×3 tap into TWO output-pixel accumulators simultaneously,
+/// sharing the weight load between them.
+///
+/// Instead of the old scalar-broadcast path (vdupq_n_f32 + vfmaq), this uses
+/// `vfmaq_laneq_f32` — a single FMA-pipe instruction that reads one lane of a
+/// vector register, broadcasting it implicitly, with no separate broadcast op.
+/// Weight vectors are loaded ONCE and reused for both pixels, halving bandwidth
+/// for the weight access.
+///
+/// `c_in` must be a multiple of 4.  When a pixel pointer is null the caller
+/// has already ensured the accumulator is not updated for that side.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+#[inline]
+unsafe fn accum_tap_2px(
+    acc0: &mut float32x4_t, // accumulator for pixel 0
+    acc1: &mut float32x4_t, // accumulator for pixel 1
+    ip0:  *const f32,       // input pointer for pixel 0 (never null here)
+    ip1:  *const f32,       // input pointer for pixel 1 (never null here)
+    w_tap: *const f32,      // weight pointer: [c_in, 4] for this tap
+    c_in:  usize,
+) {
+    let mut ci = 0usize;
+    while ci < c_in {
+        // One vector load for 4 input channels — shared between acc0 and acc1.
+        let iv0 = vld1q_f32(ip0.add(ci));
+        let iv1 = vld1q_f32(ip1.add(ci));
+
+        // Four weight vectors: w_ci[j] contains the 4 output-channel weights
+        // for input channel ci+j.
+        let wv0 = vld1q_f32(w_tap.add((ci + 0) * 4));
+        let wv1 = vld1q_f32(w_tap.add((ci + 1) * 4));
+        let wv2 = vld1q_f32(w_tap.add((ci + 2) * 4));
+        let wv3 = vld1q_f32(w_tap.add((ci + 3) * 4));
+
+        *acc0 = vfmaq_laneq_f32::<0>(*acc0, wv0, iv0);
+        *acc0 = vfmaq_laneq_f32::<1>(*acc0, wv1, iv0);
+        *acc0 = vfmaq_laneq_f32::<2>(*acc0, wv2, iv0);
+        *acc0 = vfmaq_laneq_f32::<3>(*acc0, wv3, iv0);
+
+        *acc1 = vfmaq_laneq_f32::<0>(*acc1, wv0, iv1);
+        *acc1 = vfmaq_laneq_f32::<1>(*acc1, wv1, iv1);
+        *acc1 = vfmaq_laneq_f32::<2>(*acc1, wv2, iv1);
+        *acc1 = vfmaq_laneq_f32::<3>(*acc1, wv3, iv1);
+
+        ci += 4;
+    }
+}
+
+/// Single-pixel variant of accum_tap_2px, also using vfmaq_laneq_f32.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+#[inline]
+unsafe fn accum_tap_1px(
+    acc: &mut float32x4_t,
+    ip:  *const f32,
+    w_tap: *const f32,
+    c_in:  usize,
+) {
+    let mut ci = 0usize;
+    while ci < c_in {
+        let iv  = vld1q_f32(ip.add(ci));
+        let wv0 = vld1q_f32(w_tap.add((ci + 0) * 4));
+        let wv1 = vld1q_f32(w_tap.add((ci + 1) * 4));
+        let wv2 = vld1q_f32(w_tap.add((ci + 2) * 4));
+        let wv3 = vld1q_f32(w_tap.add((ci + 3) * 4));
+        *acc = vfmaq_laneq_f32::<0>(*acc, wv0, iv);
+        *acc = vfmaq_laneq_f32::<1>(*acc, wv1, iv);
+        *acc = vfmaq_laneq_f32::<2>(*acc, wv2, iv);
+        *acc = vfmaq_laneq_f32::<3>(*acc, wv3, iv);
+        ci += 4;
+    }
+}
+
 /// NEON 1×1 conv (public, called by parity tests).
 ///
 /// Uses v1 accumulation (vector×vector dot) to stay within the parity-test
@@ -274,7 +326,7 @@ pub fn conv1x1_nhwc_v2(args: &Conv1x1Args<'_>, output: &mut [f32]) {
                     pw_ptr as *const f32,
                     bias_ptr as *const f32,
                     out_row.as_mut_ptr(),
-                    w, // n_pixels in this row
+                    w,
                     c_in,
                     c_out,
                     activation,
@@ -435,11 +487,22 @@ fn conv3x3_v2(args: &Conv3x3Args<'_>, output: &mut [f32], stride: usize) {
         c_in,
         c_out,
         activation,
+        packed_weights: _,
     } = args;
 
     let w_out = w_in / stride;
 
-    let packed_w = repack_weights_co4_3x3(weights, c_out, c_in);
+    // Use pre-packed weights when the caller supplies them (zero-alloc hot path).
+    // Fall back to on-the-fly repack for callers that don't pre-compute (e.g.
+    // Winograd-fallback paths and non-aarch64 CI builds).
+    let _owned_packed: Vec<f32>;
+    let packed_w: &[f32] = match args.packed_weights {
+        Some(pw) => pw,
+        None => {
+            _owned_packed = super::repack_weights_co4_3x3(weights, c_out, c_in);
+            &_owned_packed
+        }
+    };
 
     let row_stride_out = w_out * c_out;
 
@@ -530,7 +593,6 @@ unsafe fn conv3x3_v2_row(
                     let iw1 = iw_base1 + kw as isize;
 
                     let tap = kh * 3 + kw;
-                    // w_tap: [c_in, 4] for this (co_block, tap)
                     let w_tap = packed_w.add((co_block * 9 + tap) * c_in * 4);
 
                     let valid0 = iw0 >= 0 && iw0 < w_in as isize;
@@ -540,20 +602,21 @@ unsafe fn conv3x3_v2_row(
                         continue;
                     }
 
-                    if valid0 {
+                    if valid0 && valid1 {
+                        // Fast path: load weights once, accumulate for both pixels.
                         let ip0 = in_ptr.add((ih * w_in + iw0 as usize) * c_in);
-                        let tap_sum = dot_co4(ip0, w_tap, c_in);
-                        acc_px0 = vaddq_f32(acc_px0, tap_sum);
-                    }
-                    if valid1 {
                         let ip1 = in_ptr.add((ih * w_in + iw1 as usize) * c_in);
-                        let tap_sum = dot_co4(ip1, w_tap, c_in);
-                        acc_px1 = vaddq_f32(acc_px1, tap_sum);
+                        accum_tap_2px(&mut acc_px0, &mut acc_px1, ip0, ip1, w_tap, c_in);
+                    } else if valid0 {
+                        let ip0 = in_ptr.add((ih * w_in + iw0 as usize) * c_in);
+                        accum_tap_1px(&mut acc_px0, ip0, w_tap, c_in);
+                    } else {
+                        let ip1 = in_ptr.add((ih * w_in + iw1 as usize) * c_in);
+                        accum_tap_1px(&mut acc_px1, ip1, w_tap, c_in);
                     }
                 }
             }
 
-            // Optional residual add (uses global output offset for residual indexing)
             let out_off0 = ow * c_out + co_block * 4;
             let out_off1 = (ow + 1) * c_out + co_block * 4;
             if !res_ptr.is_null() {
@@ -597,8 +660,7 @@ unsafe fn conv3x3_v2_row(
                     let tap = kh * 3 + kw;
                     let w_tap = w_co_base.add(tap * c_in * 4);
                     let inp = in_ptr.add((ih * w_in + iw) * c_in);
-                    let tap_sum = dot_co4(inp, w_tap, c_in);
-                    acc = vaddq_f32(acc, tap_sum);
+                    accum_tap_1px(&mut acc, inp, w_tap, c_in);
                 }
             }
 
@@ -614,6 +676,334 @@ unsafe fn conv3x3_v2_row(
     }
 }
 
+// ── conv3x3 fp16 ─────────────────────────────────────────────────────────────
+//
+// Uses FMLA.8H (8 fp16 MACs/instruction) for 2× arithmetic density vs FMLA.4S.
+// Weights pre-packed as [c_out/8, 9, c_in, 8] fp16-as-u16. Input f32 is
+// converted inline via FCVTN (zero heap writes). Accumulator is fp16; bias and
+// residual are added after FCVTL/FCVTL2 converts the result back to f32.
+
+/// Per-row kernel for fp16 3×3 conv.
+///
+/// # Safety
+/// All raw pointers must be valid for their logical extents. `res_ptr` may be
+/// null (no residual). Requires aarch64 + ARMv8.2 fp16.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon,fp16")]
+#[allow(clippy::too_many_arguments)]
+unsafe fn conv3x3_nhwc_fp16_row(
+    oh: usize,
+    in_ptr:   *const f32,
+    packed_w: *const u16,  // [c_out/8, 9, c_in, 8] fp16-as-u16
+    bias_ptr: *const f32,
+    res_ptr:  *const f32,  // null if no residual
+    out_ptr:  *mut f32,
+    h_in:  usize,
+    w_in:  usize,
+    w_out: usize,
+    c_in:  usize,
+    c_out: usize,
+    stride: usize,
+    act: Activation,
+) {
+    use super::neon_asm_f16::{accum_tap_2px_f16, accum_tap_1px_f16, fcvtl_lo, fcvtl_hi};
+
+    let n_co8 = c_out / 8;
+    let ih_center = (oh * stride) as isize - 1;
+
+    // --- 2-pixel spatial block loop ---
+    let mut ow = 0usize;
+    while ow + 1 < w_out {
+        let iw_base0 = (ow * stride) as isize - 1;
+        let iw_base1 = ((ow + 1) * stride) as isize - 1;
+
+        for co_block in 0..n_co8 {
+            let mut acc_px0 = vdupq_n_u16(0);
+            let mut acc_px1 = vdupq_n_u16(0);
+
+            for kh in 0..3usize {
+                let ih = ih_center + kh as isize;
+                if ih < 0 || ih >= h_in as isize {
+                    continue;
+                }
+                let ih = ih as usize;
+
+                for kw in 0..3usize {
+                    let iw0 = iw_base0 + kw as isize;
+                    let iw1 = iw_base1 + kw as isize;
+                    let tap = kh * 3 + kw;
+                    let w_tap = packed_w.add((co_block * 9 + tap) * c_in * 8);
+
+                    let valid0 = iw0 >= 0 && iw0 < w_in as isize;
+                    let valid1 = iw1 >= 0 && iw1 < w_in as isize;
+
+                    if !valid0 && !valid1 {
+                        continue;
+                    }
+                    if valid0 && valid1 {
+                        let ip0 = in_ptr.add((ih * w_in + iw0 as usize) * c_in);
+                        let ip1 = in_ptr.add((ih * w_in + iw1 as usize) * c_in);
+                        accum_tap_2px_f16(&mut acc_px0, &mut acc_px1, ip0, ip1, w_tap, c_in);
+                    } else if valid0 {
+                        let ip0 = in_ptr.add((ih * w_in + iw0 as usize) * c_in);
+                        accum_tap_1px_f16(&mut acc_px0, ip0, w_tap, c_in);
+                    } else {
+                        let ip1 = in_ptr.add((ih * w_in + iw1 as usize) * c_in);
+                        accum_tap_1px_f16(&mut acc_px1, ip1, w_tap, c_in);
+                    }
+                }
+            }
+
+            // fp16 → f32, add bias, optional residual, activation, store.
+            let bias_lo = vld1q_f32(bias_ptr.add(co_block * 8));
+            let bias_hi = vld1q_f32(bias_ptr.add(co_block * 8 + 4));
+
+            let mut r0_lo = vaddq_f32(fcvtl_lo(acc_px0), bias_lo);
+            let mut r0_hi = vaddq_f32(fcvtl_hi(acc_px0), bias_hi);
+            let mut r1_lo = vaddq_f32(fcvtl_lo(acc_px1), bias_lo);
+            let mut r1_hi = vaddq_f32(fcvtl_hi(acc_px1), bias_hi);
+
+            let out_off0 = ow * c_out + co_block * 8;
+            let out_off1 = (ow + 1) * c_out + co_block * 8;
+
+            if !res_ptr.is_null() {
+                let g0 = (oh * w_out + ow) * c_out + co_block * 8;
+                let g1 = (oh * w_out + ow + 1) * c_out + co_block * 8;
+                r0_lo = vaddq_f32(r0_lo, vld1q_f32(res_ptr.add(g0)));
+                r0_hi = vaddq_f32(r0_hi, vld1q_f32(res_ptr.add(g0 + 4)));
+                r1_lo = vaddq_f32(r1_lo, vld1q_f32(res_ptr.add(g1)));
+                r1_hi = vaddq_f32(r1_hi, vld1q_f32(res_ptr.add(g1 + 4)));
+            }
+
+            vst1q_f32(out_ptr.add(out_off0),     apply_act_vec(r0_lo, act));
+            vst1q_f32(out_ptr.add(out_off0 + 4), apply_act_vec(r0_hi, act));
+            vst1q_f32(out_ptr.add(out_off1),     apply_act_vec(r1_lo, act));
+            vst1q_f32(out_ptr.add(out_off1 + 4), apply_act_vec(r1_hi, act));
+        }
+
+        ow += 2;
+    }
+
+    // --- Single-pixel epilogue ---
+    if ow < w_out {
+        let iw_base = (ow * stride) as isize - 1;
+        for co_block in 0..n_co8 {
+            let mut acc = vdupq_n_u16(0);
+            for kh in 0..3usize {
+                let ih = ih_center + kh as isize;
+                if ih < 0 || ih >= h_in as isize {
+                    continue;
+                }
+                let ih = ih as usize;
+                for kw in 0..3usize {
+                    let iw = iw_base + kw as isize;
+                    if iw < 0 || iw >= w_in as isize {
+                        continue;
+                    }
+                    let iw = iw as usize;
+                    let tap = kh * 3 + kw;
+                    let w_tap = packed_w.add((co_block * 9 + tap) * c_in * 8);
+                    let ip = in_ptr.add((ih * w_in + iw) * c_in);
+                    accum_tap_1px_f16(&mut acc, ip, w_tap, c_in);
+                }
+            }
+            let bias_lo = vld1q_f32(bias_ptr.add(co_block * 8));
+            let bias_hi = vld1q_f32(bias_ptr.add(co_block * 8 + 4));
+            let mut r_lo = vaddq_f32(fcvtl_lo(acc), bias_lo);
+            let mut r_hi = vaddq_f32(fcvtl_hi(acc), bias_hi);
+            let out_off = ow * c_out + co_block * 8;
+            if !res_ptr.is_null() {
+                let g = (oh * w_out + ow) * c_out + co_block * 8;
+                r_lo = vaddq_f32(r_lo, vld1q_f32(res_ptr.add(g)));
+                r_hi = vaddq_f32(r_hi, vld1q_f32(res_ptr.add(g + 4)));
+            }
+            vst1q_f32(out_ptr.add(out_off),     apply_act_vec(r_lo, act));
+            vst1q_f32(out_ptr.add(out_off + 4), apply_act_vec(r_hi, act));
+        }
+    }
+}
+
+/// fp16 3×3 NHWC conv: 2× arithmetic density via FMLA.8H.
+///
+/// Requires `c_out % 8 == 0` and `c_in % 4 == 0`.
+/// `packed_w_f16` must be pre-packed as `[c_out/8, 9, c_in, 8]` fp16-as-u16
+/// (from [`super::repack_weights_co8_3x3_f16`]).
+/// Bias is kept in f32; it is added after the fp16→f32 accumulator conversion
+/// so there is no additional precision loss in the bias term.
+#[cfg(target_arch = "aarch64")]
+pub fn conv3x3_nhwc_fp16(
+    args: &Conv3x3Args<'_>,
+    output: &mut [f32],
+    packed_w_f16: &[u16],
+    stride: usize,
+) {
+    use rayon::prelude::*;
+    debug_assert_eq!(args.c_out % 8, 0);
+    debug_assert_eq!(args.c_in % 4, 0);
+
+    let w_out = args.w_in / stride;
+    let row_stride_out = w_out * args.c_out;
+
+    let in_ptr    = args.input.as_ptr() as usize;
+    let pw_ptr    = packed_w_f16.as_ptr() as usize;
+    let bias_ptr  = args.bias.as_ptr() as usize;
+    let res_ptr: usize = args.residual.map_or(0, |r| r.as_ptr() as usize);
+    let has_res   = args.residual.is_some();
+
+    let h_in  = args.h_in;
+    let w_in  = args.w_in;
+    let c_in  = args.c_in;
+    let c_out = args.c_out;
+    let act   = args.activation;
+
+    output
+        .par_chunks_mut(row_stride_out)
+        .enumerate()
+        .for_each(|(oh, out_row)| unsafe {
+            conv3x3_nhwc_fp16_row(
+                oh,
+                in_ptr   as *const f32,
+                pw_ptr   as *const u16,
+                bias_ptr as *const f32,
+                if has_res { res_ptr as *const f32 } else { core::ptr::null() },
+                out_row.as_mut_ptr(),
+                h_in, w_in, w_out,
+                c_in, c_out, stride, act,
+            );
+        });
+}
+
+// ── conv3x3 c1: specialized NEON direct conv for c_in=1 ──────────────────────
+//
+// For c_in=1 the `dot_co4` reduction degenerates to one scalar broadcast per
+// tap.  Each tap: `vfmaq_f32(acc, vdupq_n_f32(pixel), vld1q_f32(4-ch-weight))`.
+// No horizontal reduction, no c_in loop.  Process two output pixels per
+// iteration to amortise the weight load.  Rayon-parallel over output rows.
+// Requires c_out % 4 == 0; weights are pre-packed with `repack_weights_co4_3x3`.
+
+/// Stride-1 or stride-2 3×3 NHWC conv for c_in=1, any c_out%4==0.
+///
+/// Weights are consumed in the `[c_out/4, 9, c_in=1, 4]` layout produced by
+/// [`super::repack_weights_co4_3x3`].  The caller must pre-pack (or pass the
+/// `packed_weights` field in `Conv3x3Args`).
+#[cfg(target_arch = "aarch64")]
+pub fn conv3x3_c1_nhwc(args: &Conv3x3Args<'_>, output: &mut [f32], stride: usize) {
+    use std::arch::aarch64::*;
+
+    let &Conv3x3Args {
+        input,
+        residual,
+        weights,
+        bias,
+        h_in,
+        w_in,
+        c_in: _,  // == 1
+        c_out,
+        activation,
+        packed_weights,
+    } = args;
+    debug_assert_eq!(c_out % 4, 0);
+    let w_out = w_in / stride;
+    let n_co4 = c_out / 4;
+
+    let _owned: Vec<f32>;
+    let packed_w: &[f32] = match packed_weights {
+        Some(pw) => pw,
+        None => {
+            _owned = super::repack_weights_co4_3x3(weights, c_out, 1);
+            &_owned
+        }
+    };
+
+    let in_ptr   = input.as_ptr() as usize;
+    let pw_ptr   = packed_w.as_ptr() as usize;
+    let bias_ptr = bias.as_ptr() as usize;
+    let res_ptr: usize = residual.map_or(0, |r| r.as_ptr() as usize);
+    let has_res = residual.is_some();
+
+    output
+        .par_chunks_mut(w_out * c_out)
+        .enumerate()
+        .for_each(|(oh, out_row)| unsafe {
+            let input   = std::slice::from_raw_parts(in_ptr as *const f32, h_in * w_in);
+            let packed  = std::slice::from_raw_parts(pw_ptr as *const f32, n_co4 * 9 * 4);
+            let bias_sl = std::slice::from_raw_parts(bias_ptr as *const f32, c_out);
+            let ih_center = (oh * stride) as isize - 1;
+
+            let mut ow = 0usize;
+            while ow + 1 < w_out {
+                let iw0 = (ow * stride) as isize - 1;
+                let iw1 = ((ow + 1) * stride) as isize - 1;
+
+                for co4 in 0..n_co4 {
+                    let mut acc0 = vld1q_f32(bias_sl.as_ptr().add(co4 * 4));
+                    let mut acc1 = acc0;
+
+                    for kh in 0..3usize {
+                        let ih = ih_center + kh as isize;
+                        if ih < 0 || ih >= h_in as isize { continue; }
+                        let ih = ih as usize;
+                        let row_base = ih * w_in;
+
+                        for kw in 0..3usize {
+                            let tap = kh * 3 + kw;
+                            let wv = vld1q_f32(packed.as_ptr().add((co4 * 9 + tap) * 4));
+                            let cx0 = iw0 + kw as isize;
+                            let cx1 = iw1 + kw as isize;
+                            if cx0 >= 0 && cx0 < w_in as isize {
+                                let p0 = vdupq_n_f32(*input.as_ptr().add(row_base + cx0 as usize));
+                                acc0 = vfmaq_f32(acc0, p0, wv);
+                            }
+                            if cx1 >= 0 && cx1 < w_in as isize {
+                                let p1 = vdupq_n_f32(*input.as_ptr().add(row_base + cx1 as usize));
+                                acc1 = vfmaq_f32(acc1, p1, wv);
+                            }
+                        }
+                    }
+
+                    if has_res {
+                        let g0 = (oh * w_out + ow)       * c_out + co4 * 4;
+                        let g1 = (oh * w_out + ow + 1)   * c_out + co4 * 4;
+                        let rv0 = vld1q_f32((res_ptr as *const f32).add(g0));
+                        let rv1 = vld1q_f32((res_ptr as *const f32).add(g1));
+                        acc0 = vaddq_f32(acc0, rv0);
+                        acc1 = vaddq_f32(acc1, rv1);
+                    }
+                    vst1q_f32(out_row.as_mut_ptr().add( ow      * c_out + co4 * 4), apply_act_vec(acc0, activation));
+                    vst1q_f32(out_row.as_mut_ptr().add((ow + 1) * c_out + co4 * 4), apply_act_vec(acc1, activation));
+                }
+                ow += 2;
+            }
+
+            // Scalar epilogue for odd w_out (or last pixel when w_out is odd).
+            if ow < w_out {
+                let iw_base = (ow * stride) as isize - 1;
+                for co4 in 0..n_co4 {
+                    let mut acc = vld1q_f32(bias_sl.as_ptr().add(co4 * 4));
+                    for kh in 0..3usize {
+                        let ih = ih_center + kh as isize;
+                        if ih < 0 || ih >= h_in as isize { continue; }
+                        let ih = ih as usize;
+                        let row_base = ih * w_in;
+                        for kw in 0..3usize {
+                            let cx = iw_base + kw as isize;
+                            if cx < 0 || cx >= w_in as isize { continue; }
+                            let tap = kh * 3 + kw;
+                            let wv = vld1q_f32(packed.as_ptr().add((co4 * 9 + tap) * 4));
+                            let p  = vdupq_n_f32(*input.as_ptr().add(row_base + cx as usize));
+                            acc = vfmaq_f32(acc, p, wv);
+                        }
+                    }
+                    if has_res {
+                        let g = (oh * w_out + ow) * c_out + co4 * 4;
+                        acc = vaddq_f32(acc, vld1q_f32((res_ptr as *const f32).add(g)));
+                    }
+                    vst1q_f32(out_row.as_mut_ptr().add(ow * c_out + co4 * 4), apply_act_vec(acc, activation));
+                }
+            }
+        });
+}
+
 // ── conv3x3 v1 (original, kept as fallback) ──────────────────────────────────
 
 fn conv3x3_generic_v1(args: &Conv3x3Args<'_>, output: &mut [f32], stride: usize) {
@@ -627,6 +1017,7 @@ fn conv3x3_generic_v1(args: &Conv3x3Args<'_>, output: &mut [f32], stride: usize)
         c_in,
         c_out,
         activation,
+        packed_weights: _,
     } = args;
 
     if c_in % 4 != 0 {
@@ -718,4 +1109,216 @@ fn conv3x3_generic_v1(args: &Conv3x3Args<'_>, output: &mut [f32], stride: usize)
             }
         }
     }
+}
+
+// ── Elementwise / spatial primitives ─────────────────────────────────────────
+
+/// Fast exp(x) for four f32 lanes using a degree-5 Horner polynomial.
+///
+/// Algorithm: split x = n*ln2 + f, compute e^f via Horner, then scale by 2^n
+/// using the IEEE 754 exponent trick. Max error ≈ 2 ULP for |x| ≤ 88.
+/// Process two independent 4-wide exp vectors simultaneously.
+///
+/// On A78AE (2 FMA pipes, 4-cycle latency) the two independent 5-step Horner
+/// chains can overlap: step N of chain 0 on pipe 0 while step N of chain 1 runs
+/// on pipe 1. Achieves ~2× throughput vs calling exp_f32x4 twice sequentially.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+#[target_feature(enable = "neon")]
+unsafe fn exp_f32x8(
+    xa: float32x4_t, xb: float32x4_t,
+) -> (float32x4_t, float32x4_t) {
+    use std::arch::aarch64::*;
+    let clamp_lo = vdupq_n_f32(-88.0_f32);
+    let clamp_hi = vdupq_n_f32( 88.0_f32);
+    let xa = vmaxq_f32(vminq_f32(xa, clamp_hi), clamp_lo);
+    let xb = vmaxq_f32(vminq_f32(xb, clamp_hi), clamp_lo);
+    let log2e = vdupq_n_f32(1.442_695_040_888_963_4_f32);
+    let nfa = vrndnq_f32(vmulq_f32(xa, log2e));
+    let nfb = vrndnq_f32(vmulq_f32(xb, log2e));
+    let nia = vcvtq_s32_f32(nfa);
+    let nib = vcvtq_s32_f32(nfb);
+    let ln2a_v = vdupq_n_f32(6.931_471_805_599_453e-1_f32);
+    let ln2b_v = vdupq_n_f32(1.908_214_929_270_587_7e-10_f32);
+    let fa = vfmsq_f32(vfmsq_f32(xa, nfa, ln2a_v), nfa, ln2b_v);
+    let fb = vfmsq_f32(vfmsq_f32(xb, nfb, ln2a_v), nfb, ln2b_v);
+    let c5 = vdupq_n_f32(1.0_f32 / 120.0);
+    let c4 = vdupq_n_f32(1.0_f32 / 24.0);
+    let c3 = vdupq_n_f32(1.0_f32 / 6.0);
+    let c2 = vdupq_n_f32(0.5_f32);
+    let one = vdupq_n_f32(1.0_f32);
+    let pa = vfmaq_f32(c4, fa, c5); let pb = vfmaq_f32(c4, fb, c5);
+    let pa = vfmaq_f32(c3, fa, pa); let pb = vfmaq_f32(c3, fb, pb);
+    let pa = vfmaq_f32(c2, fa, pa); let pb = vfmaq_f32(c2, fb, pb);
+    let pa = vfmaq_f32(one, fa, pa); let pb = vfmaq_f32(one, fb, pb);
+    let pa = vfmaq_f32(one, fa, pa); let pb = vfmaq_f32(one, fb, pb);
+    let e2a = vreinterpretq_f32_s32(vshlq_n_s32(vaddq_s32(nia, vdupq_n_s32(127)), 23));
+    let e2b = vreinterpretq_f32_s32(vshlq_n_s32(vaddq_s32(nib, vdupq_n_s32(127)), 23));
+    (vmulq_f32(pa, e2a), vmulq_f32(pb, e2b))
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+#[target_feature(enable = "neon")]
+unsafe fn exp_f32x4(x: float32x4_t) -> float32x4_t {
+    use std::arch::aarch64::*;
+    // Clamp to prevent NaN from saturated exponents.
+    let x = vmaxq_f32(x, vdupq_n_f32(-88.0_f32));
+    let x = vminq_f32(x, vdupq_n_f32(88.0_f32));
+    // n = round(x / ln2)
+    let nf = vrndnq_f32(vmulq_f32(x, vdupq_n_f32(1.442_695_040_888_963_4_f32)));
+    let ni = vcvtq_s32_f32(nf);
+    // f = x - n*ln2, using two-part ln2 for accuracy
+    let f = vfmsq_f32(vfmsq_f32(x, nf, vdupq_n_f32(6.931_471_805_599_453e-1_f32)),
+                      nf, vdupq_n_f32(1.908_214_929_270_587_7e-10_f32));
+    // Degree-5 Horner: e^f ≈ 1 + f*(1 + f*(0.5 + f*(1/6 + f*(1/24 + f/120))))
+    let p = vfmaq_f32(vdupq_n_f32(1.0_f32 / 24.0), f, vdupq_n_f32(1.0_f32 / 120.0));
+    let p = vfmaq_f32(vdupq_n_f32(1.0_f32 / 6.0), f, p);
+    let p = vfmaq_f32(vdupq_n_f32(0.5_f32), f, p);
+    let p = vfmaq_f32(vdupq_n_f32(1.0_f32), f, p);
+    let p = vfmaq_f32(vdupq_n_f32(1.0_f32), f, p);
+    // Scale by 2^n via IEEE 754 exponent injection
+    let exp2n = vreinterpretq_f32_s32(vshlq_n_s32(vaddq_s32(ni, vdupq_n_s32(127)), 23));
+    vmulq_f32(p, exp2n)
+}
+
+/// Bilinear upsample with a NEON-vectorized channel inner loop.
+///
+/// Identical semantics to [`super::scalar::bilinear_upsample`]. Processes the
+/// channel dimension 4-at-a-time using `float32x4_t`; a scalar tail handles
+/// any remainder when `c % 4 != 0`.
+#[cfg(target_arch = "aarch64")]
+pub fn bilinear_upsample_neon(
+    input: &[f32],
+    output: &mut [f32],
+    h_in: usize,
+    w_in: usize,
+    c: usize,
+    h_out: usize,
+    w_out: usize,
+) {
+    debug_assert_eq!(input.len(), h_in * w_in * c);
+    debug_assert_eq!(output.len(), h_out * w_out * c);
+    use rayon::prelude::*;
+    let sh = h_in as f32 / h_out as f32;
+    let sw = w_in as f32 / w_out as f32;
+    let in_ptr = input.as_ptr() as usize;
+    output.par_chunks_mut(w_out * c).enumerate().for_each(|(oh, row_out)| {
+        let ys = (oh as f32 + 0.5) * sh - 0.5;
+        let y0f = ys.floor();
+        let wy = ys - y0f;
+        let y0 = (y0f as isize).clamp(0, h_in as isize - 1) as usize;
+        let y1 = ((y0f as isize + 1).clamp(0, h_in as isize - 1)) as usize;
+        for ow in 0..w_out {
+            let xs = (ow as f32 + 0.5) * sw - 0.5;
+            let x0f = xs.floor();
+            let wx = xs - x0f;
+            let x0 = (x0f as isize).clamp(0, w_in as isize - 1) as usize;
+            let x1 = ((x0f as isize + 1).clamp(0, w_in as isize - 1)) as usize;
+            let w00 = (1.0 - wx) * (1.0 - wy);
+            let w01 = wx * (1.0 - wy);
+            let w10 = (1.0 - wx) * wy;
+            let w11 = wx * wy;
+            let b00 = (y0 * w_in + x0) * c;
+            let b01 = (y0 * w_in + x1) * c;
+            let b10 = (y1 * w_in + x0) * c;
+            let b11 = (y1 * w_in + x1) * c;
+            let out_base = ow * c;
+            unsafe {
+                use std::arch::aarch64::*;
+                let inp = in_ptr as *const f32;
+                let w00v = vdupq_n_f32(w00);
+                let w01v = vdupq_n_f32(w01);
+                let w10v = vdupq_n_f32(w10);
+                let w11v = vdupq_n_f32(w11);
+                let outp = row_out.as_mut_ptr().add(out_base);
+                let mut ci = 0usize;
+                while ci + 4 <= c {
+                    let v00 = vld1q_f32(inp.add(b00 + ci));
+                    let v01 = vld1q_f32(inp.add(b01 + ci));
+                    let v10 = vld1q_f32(inp.add(b10 + ci));
+                    let v11 = vld1q_f32(inp.add(b11 + ci));
+                    let r = vmulq_f32(v00, w00v);
+                    let r = vfmaq_f32(r, v01, w01v);
+                    let r = vfmaq_f32(r, v10, w10v);
+                    let r = vfmaq_f32(r, v11, w11v);
+                    vst1q_f32(outp.add(ci), r);
+                    ci += 4;
+                }
+                while ci < c {
+                    let v00 = *inp.add(b00 + ci);
+                    let v01 = *inp.add(b01 + ci);
+                    let v10 = *inp.add(b10 + ci);
+                    let v11 = *inp.add(b11 + ci);
+                    *row_out.get_unchecked_mut(out_base + ci) =
+                        v00 * w00 + v01 * w01 + v10 * w10 + v11 * w11;
+                    ci += 1;
+                }
+            }
+        }
+    });
+}
+
+/// Per-pixel softmax over the channel axis with NEON-vectorized exp().
+///
+/// Replaces the scalar `exp()` loop in [`super::scalar::channel_softmax`] with
+/// a degree-5 polynomial NEON approximation (~2 ULP). Parallelises over pixels
+/// with Rayon; the inner exp/sum/scale loops are 4-wide SIMD.
+#[cfg(target_arch = "aarch64")]
+pub fn channel_softmax_neon(buf: &mut [f32], h: usize, w: usize, c: usize) {
+    debug_assert_eq!(buf.len(), h * w * c);
+    use rayon::prelude::*;
+    // 64 pixels per Rayon task: reduces task count from h*w to h*w/64,
+    // cutting scheduling overhead while keeping 6-core parallelism for 4800 pixels.
+    buf.par_chunks_mut(c * 64).for_each(|block| {
+        for row in block.chunks_exact_mut(c) { unsafe {
+        use std::arch::aarch64::*;
+        // ── Step 1: vectorised max ──
+        let mut max_v = vdupq_n_f32(f32::NEG_INFINITY);
+        let mut i = 0usize;
+        while i + 4 <= c {
+            max_v = vmaxq_f32(max_v, vld1q_f32(row.as_ptr().add(i)));
+            i += 4;
+        }
+        let mut max_s = vmaxvq_f32(max_v);
+        while i < c { max_s = max_s.max(row[i]); i += 1; }
+        let max_v = vdupq_n_f32(max_s);
+        // ── Step 2: exp(x - max) and accumulate sum ──
+        // Process 8 values at a time with dual-chain exp (doubles FMA pipe utilization).
+        let mut sum_v = vdupq_n_f32(0.0_f32);
+        let mut i = 0usize;
+        while i + 8 <= c {
+            let va = vsubq_f32(vld1q_f32(row.as_ptr().add(i)),     max_v);
+            let vb = vsubq_f32(vld1q_f32(row.as_ptr().add(i + 4)), max_v);
+            let (ea, eb) = exp_f32x8(va, vb);
+            vst1q_f32(row.as_mut_ptr().add(i),     ea);
+            vst1q_f32(row.as_mut_ptr().add(i + 4), eb);
+            sum_v = vaddq_f32(vaddq_f32(sum_v, ea), eb);
+            i += 8;
+        }
+        while i + 4 <= c {
+            let v = vsubq_f32(vld1q_f32(row.as_ptr().add(i)), max_v);
+            let e = exp_f32x4(v);
+            vst1q_f32(row.as_mut_ptr().add(i), e);
+            sum_v = vaddq_f32(sum_v, e);
+            i += 4;
+        }
+        let mut sum_s = vaddvq_f32(sum_v);
+        while i < c {
+            let e = (row[i] - max_s).exp();
+            row[i] = e;
+            sum_s += e;
+            i += 1;
+        }
+        // ── Step 3: scale by 1/sum ──
+        let inv = vdupq_n_f32(1.0_f32 / sum_s);
+        let mut i = 0usize;
+        while i + 4 <= c {
+            let v = vld1q_f32(row.as_ptr().add(i));
+            vst1q_f32(row.as_mut_ptr().add(i), vmulq_f32(v, inv));
+            i += 4;
+        }
+        while i < c { row[i] /= sum_s; i += 1; }
+        } } // close unsafe block and inner for-loop
+    });
 }

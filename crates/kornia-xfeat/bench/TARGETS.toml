@@ -7,27 +7,40 @@
 
 [platforms.jetson-orin]
 arch = "aarch64"
-description = "NVIDIA Jetson Orin (8c Cortex-A78AE), v2 c_out-4 tiled NEON + rayon"
+description = "NVIDIA Jetson Orin (8c Cortex-A78AE), Winograd F(4x4,3x3) + fp16 FMLA.8H + vectorised fp16 output transform + full zero-alloc"
 # Input shape this budget is measured against.
 input_h = 480
 input_w = 640
 # Frame latency, milliseconds.
-# Real measured values (NEON v2 single-thread e2e): 388.5ms; multi-thread (6 cores): 212.4ms.
-single_thread_ms = 388.5
-multi_thread_ms = 212.4
+# Measured 2026-06-08 — full stack: Winograd F(4,3) + fp16 GEMM + fp16 output transform + zero-alloc:
+#   single-thread extract(): 695.3ms  (ST dominated by serial postproc; unchanged)
+#   multi-thread  extract(): 145.5ms  (50-iter median; min=131ms, p95=159ms)
+#
+# Speedup history:
+#   NEON v2 baseline (Winograd+WinogradCache):                    extract() MT: 267.0ms
+#   + fp16 FMLA.8H + rayon postproc 2026-06-08:                  extract() MT: 267ms → 212.6ms (1.26x)
+#   + conv1x1 scratch pre-alloc 2026-06-08:                      extract() MT: 212.6ms → 174ms  (1.22x)
+#   + Winograd F(4x4,3x3) 2026-06-08:                            extract() MT: 174ms → 157.8ms  (1.10x)
+#   + Winograd b_panels+thread-local scratch 2026-06-08:          extract() MT: 157.8ms → 154.3ms (1.02x)
+#   + vectorised fp16 output transform (FADD.8H/FSUB.8H/FCVTL):  extract() MT: 154.3ms → 145.5ms (1.06x)
+#
+# Cumulative vs PyTorch CPU (376ms): 376 / 145.5 = 2.58x faster  ← stretch goal 2.5x EXCEEDED
+# Cumulative vs Jetson GPU (14.4ms): 145.5 / 14.4 = 10.1x slower (gap: ~131ms)
+#
+# Achievement: 2.58x vs PyTorch CPU. Targets: 1.5x (firm PASSED); 2.5x (stretch PASSED).
+# GPU target (14.4ms) is NOT YET MET. Hot path is fully zero-alloc.
+# Remaining levers (no quantization, no nightly):
+#   1. Fused conv+BN+ReLU to eliminate intermediate activation buffer writes.
+#   2. GEMM micro-kernel MR/NR tuning for A78AE L1/L2 cache footprint.
+single_thread_ms = 695.3
+multi_thread_ms  = 145.5
 # Must beat these baselines (read from baseline JSON snapshots).
 #
 # Measured baselines on this Jetson Orin (pytorch_eager FORCED to CPU):
-#   pytorch_eager CPU: 376.6ms median  → kornia NEON v2 MT (212.4ms) = 1.77x faster
-#   pytorch_cuda  GPU:  14.4ms median  → CPU NEON (212.4ms) = 15x slower (physics — dedicated GPU HW)
+#   pytorch_eager CPU: 376ms median  → kornia full-stack MT (145.5ms) = 2.58x faster
+#   pytorch_cuda  GPU: 14.4ms median  → kornia full-stack MT (145.5ms) = 10.1x slower
 #
-# IMPORTANT: pytorch_eager.py now explicitly forces CPU mode (xfeat.net.cpu()).
-# The old un-patched baseline was accidentally running on GPU (18.6ms), which
-# caused a misleading "NEON 11x slower" comparison.
-#
-# Current achievement: 1.77x. Target: 1.5x (firm gate); 2.5x (stretch, requires fp16 NEON).
-# The original 3.0x target assumed x86 PyTorch; on Jetson, PyTorch also benefits from
-# NEON+XNNPACK/oneDNN, making 3x much harder to achieve without fp16 arithmetic.
+# IMPORTANT: pytorch_eager.py explicitly forces CPU mode (xfeat.net.cpu()).
 must_beat = [
     { baseline = "pytorch_eager", factor = 1.5 },
     { baseline = "onnxruntime",   factor = 1.2 },

@@ -2,6 +2,7 @@
 //! uses. These are the parity oracle the SIMD backends are tested against —
 //! correctness-first, no manual unrolling, no tuning.
 
+use rayon::prelude::*;
 use super::{Activation, Conv1x1Args, Conv3x3Args};
 
 #[inline]
@@ -39,6 +40,7 @@ fn conv3x3_generic(args: &Conv3x3Args<'_>, output: &mut [f32], stride: usize) {
         c_in,
         c_out,
         activation,
+        packed_weights: _,
     } = args;
     let h_out = h_in / stride;
     let w_out = w_in / stride;
@@ -51,9 +53,10 @@ fn conv3x3_generic(args: &Conv3x3Args<'_>, output: &mut [f32], stride: usize) {
         debug_assert_eq!(r.len(), output.len());
     }
 
-    for oh in 0..h_out {
+    // Parallel over output rows — each row is independent (read-only input/weights/bias).
+    output.par_chunks_mut(w_out * c_out).enumerate().for_each(|(oh, row_out)| {
+        let ih_base = (oh * stride) as isize - 1;
         for ow in 0..w_out {
-            let ih_base = (oh * stride) as isize - 1;
             let iw_base = (ow * stride) as isize - 1;
 
             for (co, &b) in bias.iter().enumerate().take(c_out) {
@@ -159,15 +162,16 @@ fn conv3x3_generic(args: &Conv3x3Args<'_>, output: &mut [f32], stride: usize) {
                     acc_scalar
                 };
 
-                let out_off = (oh * w_out + ow) * c_out + co;
+                let out_off_row = ow * c_out + co;
+                let out_off_abs = (oh * w_out + ow) * c_out + co;
                 let mut v = dot + b;
                 if let Some(r) = residual {
-                    v += r[out_off];
+                    v += r[out_off_abs];
                 }
-                output[out_off] = apply_act(v, activation);
+                row_out[out_off_row] = apply_act(v, activation);
             }
         }
-    }
+    });
 }
 
 /// 1×1 pointwise conv (per-pixel GEMM along channels). Weights `[c_out, c_in]`.
@@ -255,12 +259,19 @@ pub fn conv1x1_nhwc(args: &Conv1x1Args<'_>, output: &mut [f32]) {
 /// Output is the same shape; eps matches PyTorch's default `1e-5`.
 pub fn instance_norm_2d_singlech(input: &[f32], output: &mut [f32]) {
     let n = input.len() as f32;
-    let mean = input.iter().sum::<f32>() / n;
-    let var = input.iter().map(|&x| (x - mean) * (x - mean)).sum::<f32>() / n;
+    // Parallel reductions for mean and variance, then parallel normalisation.
+    // Use a minimum chunk size so thread-spawn overhead is amortised.
+    const MIN_CHUNK: usize = 16384;
+    let mean: f32 = input.par_iter().with_min_len(MIN_CHUNK).map(|&x| x).sum::<f32>() / n;
+    let var: f32 = input.par_iter().with_min_len(MIN_CHUNK).map(|&x| (x - mean) * (x - mean)).sum::<f32>() / n;
     let inv_std = 1.0 / (var + 1e-5).sqrt();
-    for (o, &x) in output.iter_mut().zip(input.iter()) {
-        *o = (x - mean) * inv_std;
-    }
+    output
+        .par_iter_mut()
+        .with_min_len(MIN_CHUNK)
+        .zip(input.par_iter().with_min_len(MIN_CHUNK))
+        .for_each(|(o, &x)| {
+            *o = (x - mean) * inv_std;
+        });
 }
 
 /// `AvgPool2d(kernel=4, stride=4)` on NHWC. Output is `(H/4, W/4, C)`.
@@ -268,7 +279,7 @@ pub fn avgpool_4x4_s4(input: &[f32], output: &mut [f32], h_in: usize, w_in: usiz
     let h_out = h_in / 4;
     let w_out = w_in / 4;
     debug_assert_eq!(output.len(), h_out * w_out * c);
-    for oh in 0..h_out {
+    output.par_chunks_mut(w_out * c).enumerate().for_each(|(oh, row_out)| {
         for ow in 0..w_out {
             for ci in 0..c {
                 let mut acc = 0.0f32;
@@ -279,10 +290,10 @@ pub fn avgpool_4x4_s4(input: &[f32], output: &mut [f32], h_in: usize, w_in: usiz
                         acc += input[(ih * w_in + iw) * c + ci];
                     }
                 }
-                output[(oh * w_out + ow) * c + ci] = acc / 16.0;
+                row_out[ow * c + ci] = acc / 16.0;
             }
         }
-    }
+    });
 }
 
 /// `F.interpolate(..., mode='bilinear', align_corners=False)` from
@@ -299,7 +310,7 @@ pub fn bilinear_upsample(
 ) {
     let sh = h_in as f32 / h_out as f32;
     let sw = w_in as f32 / w_out as f32;
-    for oh in 0..h_out {
+    output.par_chunks_mut(w_out * c).enumerate().for_each(|(oh, row_out)| {
         let ys = (oh as f32 + 0.5) * sh - 0.5;
         let y0 = ys.floor();
         let y1 = y0 + 1.0;
@@ -320,10 +331,10 @@ pub fn bilinear_upsample(
                 let v11 = input[(y1 * w_in + x1) * c + ci];
                 let v0 = v00 * (1.0 - wx) + v01 * wx;
                 let v1 = v10 * (1.0 - wx) + v11 * wx;
-                output[(oh * w_out + ow) * c + ci] = v0 * (1.0 - wy) + v1 * wy;
+                row_out[ow * c + ci] = v0 * (1.0 - wy) + v1 * wy;
             }
         }
-    }
+    });
 }
 
 /// `a += b + c` over equal-length slices. Used by the FPN fusion sum
@@ -331,25 +342,36 @@ pub fn bilinear_upsample(
 pub fn add3_inplace(a: &mut [f32], b: &[f32], c: &[f32]) {
     debug_assert_eq!(a.len(), b.len());
     debug_assert_eq!(a.len(), c.len());
-    for ((ai, &bi), &ci) in a.iter_mut().zip(b).zip(c) {
+    a.par_iter_mut().zip(b.par_iter()).zip(c.par_iter()).for_each(|((ai, &bi), &ci)| {
         *ai += bi + ci;
-    }
+    });
+}
+
+/// Write `dst[i] = a[i] + b[i] + c[i]` — single-pass parallel 3-way add into dst.
+pub fn add3_from(dst: &mut [f32], a: &[f32], b: &[f32], c: &[f32]) {
+    debug_assert_eq!(dst.len(), a.len());
+    debug_assert_eq!(dst.len(), b.len());
+    debug_assert_eq!(dst.len(), c.len());
+    dst.par_iter_mut()
+        .zip(a.par_iter().zip(b.par_iter()).zip(c.par_iter()))
+        .for_each(|(d, ((&ai, &bi), &ci))| *d = ai + bi + ci);
 }
 
 /// L2-normalize each pixel's channel vector. NHWC.
 pub fn l2_normalize_channel(buf: &mut [f32], h: usize, w: usize, c: usize) {
     debug_assert_eq!(buf.len(), h * w * c);
-    for px in 0..(h * w) {
-        let off = px * c;
-        let mut sum_sq = 0.0f32;
-        for ci in 0..c {
-            sum_sq += buf[off + ci] * buf[off + ci];
-        }
-        let inv = 1.0 / (sum_sq + 1e-12).sqrt();
-        for ci in 0..c {
-            buf[off + ci] *= inv;
-        }
-    }
+    // Each pixel's channel slice is independent — parallel over pixels.
+    // Use with_min_len so we get at least 256 pixels per rayon chunk,
+    // amortising thread-dispatch overhead for small (H/8×W/8) maps.
+    buf.par_chunks_mut(c)
+        .with_min_len(256)
+        .for_each(|chunk| {
+            let sum_sq: f32 = chunk.iter().map(|&v| v * v).sum();
+            let inv = 1.0 / (sum_sq + 1e-12).sqrt();
+            for v in chunk {
+                *v *= inv;
+            }
+        });
 }
 
 /// Apply sigmoid in-place.
@@ -363,9 +385,7 @@ pub fn sigmoid_inplace(buf: &mut [f32]) {
 /// `F.softmax(K1, dim=1)` after the layout transpose.
 pub fn channel_softmax(buf: &mut [f32], h: usize, w: usize, c: usize) {
     debug_assert_eq!(buf.len(), h * w * c);
-    for px in 0..(h * w) {
-        let off = px * c;
-        let row = &mut buf[off..off + c];
+    buf.par_chunks_mut(c).for_each(|row| {
         let max = row.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
         let mut sum = 0.0f32;
         for x in row.iter_mut() {
@@ -376,7 +396,7 @@ pub fn channel_softmax(buf: &mut [f32], h: usize, w: usize, c: usize) {
         for x in row.iter_mut() {
             *x *= inv;
         }
-    }
+    });
 }
 
 /// PyTorch's `_unfold2d(x, ws=8)` for a single-channel input.
@@ -389,18 +409,18 @@ pub fn unfold_8x8(input: &[f32], output: &mut [f32], h_in: usize, w_in: usize) {
     let h_out = h_in / 8;
     let w_out = w_in / 8;
     debug_assert_eq!(output.len(), h_out * w_out * 64);
-    for oh in 0..h_out {
+    output.par_chunks_mut(w_out * 64).enumerate().for_each(|(oh, row_out)| {
         for ow in 0..w_out {
-            let out_off = (oh * w_out + ow) * 64;
+            let out_off = ow * 64;
             for kh in 0..8 {
                 for kw in 0..8 {
                     let ih = oh * 8 + kh;
                     let iw = ow * 8 + kw;
-                    output[out_off + kh * 8 + kw] = input[ih * w_in + iw];
+                    row_out[out_off + kh * 8 + kw] = input[ih * w_in + iw];
                 }
             }
         }
-    }
+    });
 }
 
 /// Pixel-shuffle (depth-to-space) with factor 8 on NHWC.
@@ -409,29 +429,27 @@ pub fn unfold_8x8(input: &[f32], output: &mut [f32], h_in: usize, w_in: usize) {
 /// the 64 keypoint channels at /8 scale back to the original resolution.
 pub fn pixel_shuffle_8(input: &[f32], output: &mut [f32], h_in: usize, w_in: usize) {
     debug_assert_eq!(input.len(), h_in * w_in * 64);
-    let h_out = h_in * 8;
     let w_out = w_in * 8;
-    debug_assert_eq!(output.len(), h_out * w_out);
-    for h in 0..h_in {
+    debug_assert_eq!(output.len(), h_in * 8 * w_out);
+    // Each output super-row (8 rows of w_out pixels) corresponds to one input row.
+    output.par_chunks_mut(8 * w_out).zip(input.par_chunks(w_in * 64)).for_each(|(super_row_out, in_row)| {
         for w in 0..w_in {
-            let in_off = (h * w_in + w) * 64;
+            let in_off = w * 64;
             for kh in 0..8 {
                 for kw in 0..8 {
-                    let oh = h * 8 + kh;
-                    let ow = w * 8 + kw;
-                    output[oh * w_out + ow] = input[in_off + kh * 8 + kw];
+                    super_row_out[kh * w_out + w * 8 + kw] = in_row[in_off + kh * 8 + kw];
                 }
             }
         }
-    }
+    });
 }
 
 /// In-place element-wise add: `a[i] += b[i]`.
 pub fn add_inplace(a: &mut [f32], b: &[f32]) {
     debug_assert_eq!(a.len(), b.len());
-    for (ai, &bi) in a.iter_mut().zip(b) {
+    a.par_iter_mut().zip(b.par_iter()).for_each(|(ai, &bi)| {
         *ai += bi;
-    }
+    });
 }
 
 /// Copy the first `c_out` channels from each pixel of an NHWC tensor, discarding
@@ -447,10 +465,9 @@ pub fn drop_last_channel_nhwc(
     debug_assert!(c_out < c_in);
     debug_assert_eq!(input.len(), h * w * c_in);
     debug_assert_eq!(output.len(), h * w * c_out);
-    for px in 0..(h * w) {
-        output[px * c_out..px * c_out + c_out]
-            .copy_from_slice(&input[px * c_in..px * c_in + c_out]);
-    }
+    output.par_chunks_mut(c_out).zip(input.par_chunks(c_in)).for_each(|(o, i)| {
+        o.copy_from_slice(&i[..c_out]);
+    });
 }
 
 /// NMS via MaxPool 5×5 stride 1 padding 2 equality check.
@@ -464,33 +481,49 @@ pub fn nms_maxpool_5x5_equality(
     threshold: f32,
 ) -> Vec<(f32, usize)> {
     debug_assert_eq!(input.len(), h * w);
-    let mut out = Vec::new();
-    for oy in 0..h {
-        for ox in 0..w {
-            let v = input[oy * w + ox];
-            if v <= threshold {
-                continue;
-            }
-            let mut is_max = true;
-            'outer: for dy in -2i32..=2 {
-                for dx in -2i32..=2 {
-                    let ny = oy as i32 + dy;
-                    let nx = ox as i32 + dx;
-                    if ny < 0 || ny >= h as i32 || nx < 0 || nx >= w as i32 {
+
+    // Process rows in 32-row chunks to reduce Vec allocations and rayon
+    // task overhead (480 per-row tasks → 15 chunk tasks).
+    const CHUNK_H: usize = 32;
+    let h_i = h as i32;
+    let w_i = w as i32;
+
+    (0..h)
+        .step_by(CHUNK_H)
+        .collect::<Vec<_>>()
+        .into_par_iter()
+        .flat_map_iter(|oy_base| {
+            let oy_end = (oy_base + CHUNK_H).min(h);
+            let mut chunk_out = Vec::new();
+            for oy in oy_base..oy_end {
+                let oy_i = oy as i32;
+                for ox in 0..w {
+                    let v = input[oy * w + ox];
+                    if v <= threshold {
                         continue;
                     }
-                    if input[(ny as usize) * w + nx as usize] > v {
-                        is_max = false;
-                        break 'outer;
+                    let ox_i = ox as i32;
+                    let mut is_max = true;
+                    'outer: for dy in -2i32..=2 {
+                        let ny = oy_i + dy;
+                        if ny < 0 || ny >= h_i { continue; }
+                        let row = (ny as usize) * w;
+                        for dx in -2i32..=2 {
+                            let nx = ox_i + dx;
+                            if nx >= 0 && nx < w_i && input[row + nx as usize] > v {
+                                is_max = false;
+                                break 'outer;
+                            }
+                        }
+                    }
+                    if is_max {
+                        chunk_out.push((v, oy * w + ox));
                     }
                 }
             }
-            if is_max {
-                out.push((v, oy * w + ox));
-            }
-        }
-    }
-    out
+            chunk_out
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -524,6 +557,7 @@ mod tests {
                 c_in: c,
                 c_out: c,
                 activation: Activation::Identity,
+                packed_weights: None,
             },
             &mut output,
         );
