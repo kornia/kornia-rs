@@ -700,32 +700,6 @@ pub fn channel_softmax_f16_sidecar(
         });
 }
 
-/// Copy the first `c_out` channels from each pixel, discarding the rest. f16 storage.
-pub fn drop_last_channel_nhwc_f16(
-    input: &[u16],
-    output: &mut [u16],
-    h: usize,
-    w: usize,
-    c_in: usize,
-    c_out: usize,
-) {
-    debug_assert!(c_out < c_in);
-    debug_assert_eq!(input.len(), h * w * c_in);
-    debug_assert_eq!(output.len(), h * w * c_out);
-    // Row-level granularity: one task per row (w pixels × c_out channels = ~10 KB).
-    // This keeps task count at h=60 instead of h*w=4800, cutting Rayon dispatch overhead
-    // without sacrificing parallelism (12 threads on 60 rows = 5 rows/thread).
-    output
-        .par_chunks_mut(w * c_out)
-        .zip(input.par_chunks(w * c_in))
-        .for_each(|(out_row, in_row)| {
-            for px in 0..w {
-                out_row[px * c_out..(px + 1) * c_out]
-                    .copy_from_slice(&in_row[px * c_in..px * c_in + c_out]);
-            }
-        });
-}
-
 /// Pixel-shuffle (depth-to-space) factor 8. f16 input → f32 output.
 /// Input `(H, W, 64)` → output `(H*8, W*8)`.
 pub fn pixel_shuffle_8_f16(input: &[u16], output: &mut [f32], h_in: usize, w_in: usize) {
@@ -738,40 +712,6 @@ pub fn pixel_shuffle_8_f16(input: &[u16], output: &mut [f32], h_in: usize, w_in:
         .for_each(|(super_row, in_row)| {
             for w in 0..w_in {
                 let in_off = w * 64;
-                for kh in 0..8 {
-                    for kw in 0..8 {
-                        super_row[kh * w_out + w * 8 + kw] =
-                            half::f16::from_bits(in_row[in_off + kh * 8 + kw]).to_f32();
-                    }
-                }
-            }
-        });
-}
-
-/// Fused: drop dustbin channel + pixel-shuffle (factor 8) + f16→f32.
-///
-/// Replaces the `drop_last_channel_nhwc_f16` → `pixel_shuffle_8_f16` two-pass
-/// sequence. Input is `[h_in, w_in, c_with_dustbin]` f16 (dustbin = last channel);
-/// channels 0..c_with_dustbin−2 are pixel-shuffled into `[h_in*8, w_in*8]` f32.
-/// `c_with_dustbin` must be `c_in + 1` where `c_in` is a multiple of 64.
-pub fn drop_dustbin_pixel_shuffle_8_f16(
-    input: &[u16],
-    output: &mut [f32],
-    h_in: usize,
-    w_in: usize,
-    c_with_dustbin: usize,
-) {
-    let c_in = c_with_dustbin - 1;
-    debug_assert_eq!(c_in, 64);
-    debug_assert_eq!(input.len(), h_in * w_in * c_with_dustbin);
-    let w_out = w_in * 8;
-    debug_assert_eq!(output.len(), h_in * 8 * w_out);
-    output
-        .par_chunks_mut(8 * w_out)
-        .zip(input.par_chunks(w_in * c_with_dustbin))
-        .for_each(|(super_row, in_row)| {
-            for w in 0..w_in {
-                let in_off = w * c_with_dustbin;
                 for kh in 0..8 {
                     for kw in 0..8 {
                         super_row[kh * w_out + w * 8 + kw] =

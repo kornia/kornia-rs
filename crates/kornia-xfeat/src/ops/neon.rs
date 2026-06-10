@@ -1364,53 +1364,6 @@ pub fn pixel_shuffle_8_f16_neon(input: &[u16], output: &mut [f32], h_in: usize, 
         });
 }
 
-/// Fused: drop dustbin channel + pixel-shuffle (factor 8) + f16→f32, NEON-vectorized.
-///
-/// Replaces the two-pass `drop_last_channel_nhwc_f16` → `pixel_shuffle_8_f16`
-/// sequence with a single Rayon pass. Reads directly from the 65-channel softmax
-/// output (stride 65 per pixel), skipping channel 64 (dustbin), and pixel-shuffles
-/// channels 0..63 into the f32 output. Saves one 614KB intermediate buffer
-/// round-trip through cache and one Rayon dispatch.
-#[cfg(target_arch = "aarch64")]
-pub fn drop_dustbin_pixel_shuffle_8_f16_neon(
-    input: &[u16],
-    output: &mut [f32],
-    h_in: usize,
-    w_in: usize,
-    c_with_dustbin: usize,
-) {
-    use crate::ops::neon_asm_f16::{fcvtl_hi, fcvtl_lo};
-    use rayon::prelude::*;
-    use std::arch::aarch64::*;
-
-    let c_in = c_with_dustbin - 1;
-    debug_assert_eq!(c_in, 64);
-    debug_assert_eq!(input.len(), h_in * w_in * c_with_dustbin);
-    let w_out = w_in * 8;
-    debug_assert_eq!(output.len(), h_in * 8 * w_out);
-
-    output
-        .par_chunks_mut(8 * w_out)
-        .zip(input.par_chunks(w_in * c_with_dustbin))
-        .for_each(|(super_row, in_row)| {
-            for w in 0..w_in {
-                unsafe {
-                    // Channels 0..63 are contiguous at stride c_with_dustbin per pixel.
-                    let in_ptr = in_row.as_ptr().add(w * c_with_dustbin);
-                    let out_base = super_row.as_mut_ptr().add(w * 8);
-                    for kh in 0..8usize {
-                        let h8 = vld1q_u16(in_ptr.add(kh * 8));
-                        let lo = fcvtl_lo(h8);
-                        let hi = fcvtl_hi(h8);
-                        let out_row = out_base.add(kh * w_out);
-                        vst1q_f32(out_row, lo);
-                        vst1q_f32(out_row.add(4), hi);
-                    }
-                }
-            }
-        });
-}
-
 ///
 /// Identical semantics to [`super::scalar::bilinear_upsample`]. Processes the
 /// channel dimension 4-at-a-time using `float32x4_t`; a scalar tail handles

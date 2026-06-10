@@ -204,17 +204,8 @@ pub fn repack_weights_co8_3x3_f16(weights: &[f32], c_out: usize, c_in: usize) ->
 
 // ── Non-fused primitives used by the model graph ────────────────────────────
 pub use scalar::{
-    add3_from,
-    add3_inplace,
-    add_inplace,
-    avgpool_4x4_s4,
-    drop_last_channel_nhwc,
-    // f16-storage variant (f32→f16 path) is dispatched via unfold_8x8_to_f16()
-    drop_last_channel_nhwc_f16,
-    l2_normalize_channel,
-    pixel_shuffle_8,
-    sigmoid_inplace,
-    unfold_8x8,
+    add3_from, add3_inplace, add_inplace, avgpool_4x4_s4, drop_last_channel_nhwc,
+    l2_normalize_channel, pixel_shuffle_8, sigmoid_inplace, unfold_8x8,
 };
 
 /// Instance-normalize a single-channel 2-D activation map.
@@ -323,39 +314,6 @@ pub fn pixel_shuffle_8_f16(input: &[u16], output: &mut [f32], h_in: usize, w_in:
         return neon::pixel_shuffle_8_f16_neon(input, output, h_in, w_in);
     }
     scalar::pixel_shuffle_8_f16(input, output, h_in, w_in);
-}
-
-/// Fused: drop dustbin channel + pixel-shuffle (factor 8) + f16→f32.
-///
-/// Replaces the `drop_last_channel_nhwc_f16` → `pixel_shuffle_8_f16` two-pass
-/// sequence with a single NEON Rayon pass, saving a 614KB intermediate buffer
-/// round-trip and one Rayon dispatch. Falls back to scalar on non-aarch64.
-///
-/// NOTE: This kernel is correct and parity-tested but is **not** wired into the
-/// model hot path (`model::extract` still uses the unfused two-pass sequence).
-/// On the keypoint head the dustbin lives at channel 65, so reading 65-wide
-/// strides defeats the 8-lane NEON load alignment and the fused pass measured
-/// *slower* than the two unfused passes on the A78AE. It is retained as a
-/// documented future revisit: a layout that pads 65→72 (or shuffles the dustbin
-/// out earlier) would let this win. Until then it stays out of `extract()`.
-pub fn drop_dustbin_pixel_shuffle_8_f16(
-    input: &[u16],
-    output: &mut [f32],
-    h_in: usize,
-    w_in: usize,
-    c_with_dustbin: usize,
-) {
-    #[cfg(target_arch = "aarch64")]
-    if cpu_features().has_fp16 {
-        return neon::drop_dustbin_pixel_shuffle_8_f16_neon(
-            input,
-            output,
-            h_in,
-            w_in,
-            c_with_dustbin,
-        );
-    }
-    scalar::drop_dustbin_pixel_shuffle_8_f16(input, output, h_in, w_in, c_with_dustbin);
 }
 
 /// Fused FPN merge dispatcher: `x3 += upsample(x4) + upsample(x5)` in one pass.

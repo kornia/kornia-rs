@@ -864,57 +864,6 @@ fn neon_l2_normalize_f16_parity_c64() {
     eprintln!("[neon_l2_normalize_f16_parity_c64] OK — max err {max_err:.2e} (tol 2e-3)");
 }
 
-/// Fused drop-dustbin + pixel-shuffle (f16→f32): NEON vs scalar must be
-/// bit-exact (pure copy + FCVTL widening, no arithmetic). The kernel is not
-/// wired into the model hot path (stride-65 alignment penalty) but stays
-/// correctness-guaranteed for the future layout revisit.
-#[cfg(target_arch = "aarch64")]
-#[test]
-fn neon_drop_dustbin_pixel_shuffle_8_f16_parity_4x5() {
-    let (h_in, w_in, c_with_dustbin) = (4usize, 5usize, 65usize);
-    let n_in = h_in * w_in * c_with_dustbin;
-    let mut rng = 0x0ddbu32;
-    // Finite f16 normals in [1,2) — same generator as the pixel_shuffle test.
-    let input_f16: Vec<u16> = (0..n_in)
-        .map(|_| {
-            rng = rng.wrapping_mul(1664525).wrapping_add(1013904223);
-            0x3c00u16 | ((rng >> 17) & 0x3ff) as u16
-        })
-        .collect();
-
-    let h_out = h_in * 8;
-    let w_out = w_in * 8;
-    let mut out_scalar = vec![0.0f32; h_out * w_out];
-    let mut out_neon = vec![0.0f32; h_out * w_out];
-
-    scalar::drop_dustbin_pixel_shuffle_8_f16(
-        &input_f16,
-        &mut out_scalar,
-        h_in,
-        w_in,
-        c_with_dustbin,
-    );
-    neon::drop_dustbin_pixel_shuffle_8_f16_neon(
-        &input_f16,
-        &mut out_neon,
-        h_in,
-        w_in,
-        c_with_dustbin,
-    );
-
-    for (i, (&s, &n)) in out_scalar.iter().zip(out_neon.iter()).enumerate() {
-        assert_eq!(
-            s.to_bits(),
-            n.to_bits(),
-            "[drop_dustbin_pixel_shuffle_8_f16 parity] bit mismatch at index {i}: scalar={s} neon={n}"
-        );
-    }
-    eprintln!(
-        "[neon_drop_dustbin_pixel_shuffle_8_f16_parity_4x5] OK — {} values, bit-exact",
-        out_scalar.len()
-    );
-}
-
 #[cfg(not(target_arch = "aarch64"))]
 #[test]
 fn neon_skipped_on_non_aarch64() {

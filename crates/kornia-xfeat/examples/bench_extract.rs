@@ -90,6 +90,10 @@ fn main() {
     };
     let cli_threads: Option<usize> = flag("--threads").and_then(|v| v.parse().ok());
     let pin_range: Option<(u32, u32)> = flag("--pin").as_deref().and_then(parse_core_range);
+    // `--timing` = convenience alias for XFEAT_TIMING=1 (per-layer t_lap! output).
+    if args.iter().any(|a| a == "--timing") {
+        std::env::set_var("XFEAT_TIMING", "1");
+    }
 
     let threads = cli_threads.unwrap_or_else(|| {
         std::env::var("RAYON_NUM_THREADS")
