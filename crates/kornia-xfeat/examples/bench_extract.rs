@@ -59,32 +59,6 @@ fn preprocess_image(path: &Path, target_h: usize, target_w: usize) -> Vec<f32> {
     resized
 }
 
-// ─── Thread affinity (raw syscall — no libc dependency) ──────────────────────
-
-/// Pin the *calling thread* to the CPU set given by `mask` (bit i = core i).
-/// aarch64 Linux `sched_setaffinity(0, 8, &mask)`; syscall number 122.
-#[cfg(target_arch = "aarch64")]
-fn pin_current_thread(mask: u64) {
-    unsafe {
-        let m: u64 = mask;
-        let mut ret: i64;
-        std::arch::asm!(
-            "svc 0",
-            in("x8") 122u64,                    // __NR_sched_setaffinity
-            inout("x0") 0u64 => ret,            // pid 0 = current thread
-            in("x1") 8u64,                      // cpusetsize (bytes)
-            in("x2") &m as *const u64 as u64,
-            options(nostack),
-        );
-        if ret < 0 {
-            eprintln!("warn: sched_setaffinity(mask={mask:#x}) failed: {ret}");
-        }
-    }
-}
-
-#[cfg(not(target_arch = "aarch64"))]
-fn pin_current_thread(_mask: u64) {}
-
 /// Parse "A-B" into an inclusive core range.
 fn parse_core_range(s: &str) -> Option<(u32, u32)> {
     let (a, b) = s.split_once('-')?;
@@ -126,32 +100,22 @@ fn main() {
 
     // Build the global pool explicitly when pinning (worker i → core A+i) or
     // when --threads was given. Must happen before any Rayon use.
-    if pin_range.is_some() || cli_threads.is_some() {
-        let mut builder = rayon::ThreadPoolBuilder::new();
-        if threads > 0 {
-            builder = builder.num_threads(threads);
-        }
-        if let Some((a, b)) = pin_range {
-            // Pin the main thread to the whole allowed range...
-            let range_mask: u64 = ((a)..=(b)).fold(0u64, |m, c| m | (1u64 << c));
-            pin_current_thread(range_mask);
-            // ...and each Rayon worker to one core of it (round-robin).
-            let n_cores = (b - a + 1) as usize;
-            builder = builder.start_handler(move |i| {
-                let core = a + (i % n_cores) as u32;
-                pin_current_thread(1u64 << core);
-            });
-        }
-        builder
+    if let Some((a, b)) = pin_range {
+        // The crate's production pinning API: one worker pinned per core of A-B.
+        // (--threads is implied by the range size in this mode.)
+        kornia_xfeat::affinity::init_pinned_threadpool(a, b)
+            .expect("global Rayon pool already initialised?");
+    } else if threads > 0 && cli_threads.is_some() {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
             .build_global()
             .expect("global Rayon pool already initialised?");
     }
 
     let thread_label = match (threads, pin_range) {
+        (_, Some((a, b))) => format!("{}, pinned {a}-{b}", b - a + 1),
         (0, None) => "all cores (Rayon default)".to_string(),
-        (0, Some((a, b))) => format!("all, pinned {a}-{b}"),
         (n, None) => format!("{n}"),
-        (n, Some((a, b))) => format!("{n}, pinned {a}-{b}"),
     };
 
     // Fix the target resolution to 480×640 (must be multiples of 32).

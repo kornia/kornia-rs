@@ -1522,26 +1522,25 @@ impl XFeat {
         // ── 11. Heatmap head (2 × 1×1 BasicLayer + conv1x1(64→1)+sigmoid) ─
         // f16-act path: feats_f16 → act_ha → act_hb → h1_rel (f32 via to_f32).
         // f32 path: feats → buf_a → buf_b → h1_rel.
+        // Aliasing discipline: every slice derived from a raw buffer pointer is
+        // created inside the smallest scope that uses it, so no two references
+        // to the same buffer are ever live simultaneously (each kernel call
+        // sees exactly one &mut or one & per buffer).
         #[cfg(target_arch = "aarch64")]
         if use_fp16_act {
             let feats_f16 =
                 unsafe { std::slice::from_raw_parts(feats_f16_ptr as *const u16, feats_f16_len) };
-            let act_ha = unsafe { std::slice::from_raw_parts_mut(act_ha_ptr, act_ha_len) };
-            let act_hb = unsafe { std::slice::from_raw_parts_mut(act_hb_ptr, act_hb_len) };
-            let sb = unsafe { std::slice::from_raw_parts_mut(f16_sb_ptr, f16_sb_len) };
-            let pb = unsafe { std::slice::from_raw_parts_mut(f16_pb_ptr, f16_pb_len) };
             // heatmap_head.0+1 fused: feats_f16 → act_hb (single Rayon dispatch)
             {
                 let wt0 = self.weights.get("heatmap_head.0.weight")?;
                 let bt0 = self.weights.get("heatmap_head.0.bias")?;
                 let wt1 = self.weights.get("heatmap_head.1.weight")?;
                 let bt1 = self.weights.get("heatmap_head.1.bias")?;
-                let act_hb2 = unsafe { std::slice::from_raw_parts_mut(act_hb_ptr, act_hb_len) };
-                let _ = (wt0, wt1);
                 if let (Some((pk0, pk0o)), Some((pk1, pk1o))) = (
                     self.conv1x1_packed_b.get("heatmap_head.0.weight"),
                     self.conv1x1_packed_b.get("heatmap_head.1.weight"),
                 ) {
+                    let act_hb = unsafe { std::slice::from_raw_parts_mut(act_hb_ptr, act_hb_len) };
                     crate::ops::neon_asm_f16::conv1x1_fused_2layer_f16act_prepacked_parallel(
                         feats_f16,
                         pk0,
@@ -1554,39 +1553,48 @@ impl XFeat {
                         w8,
                         64,
                         Activation::Relu,
-                        act_hb2,
+                        act_hb,
                     );
                 } else {
-                    // Fallback: two separate dispatches.
-                    crate::ops::neon_asm_f16::conv1x1_nhwc_f16act_parallel(
-                        feats_f16,
-                        self.weights.get("heatmap_head.0.weight").unwrap(),
-                        bt0,
-                        h8,
-                        w8,
-                        64,
-                        64,
-                        Activation::Relu,
-                        act_ha,
-                        sb,
-                        pb,
-                    );
+                    // Fallback: two separate dispatches. The first conv's
+                    // &mut act_ha ends with its scope before the read-only
+                    // alias for the second conv is created.
+                    {
+                        let act_ha =
+                            unsafe { std::slice::from_raw_parts_mut(act_ha_ptr, act_ha_len) };
+                        let sb = unsafe { std::slice::from_raw_parts_mut(f16_sb_ptr, f16_sb_len) };
+                        let pb = unsafe { std::slice::from_raw_parts_mut(f16_pb_ptr, f16_pb_len) };
+                        crate::ops::neon_asm_f16::conv1x1_nhwc_f16act_parallel(
+                            feats_f16,
+                            wt0,
+                            bt0,
+                            h8,
+                            w8,
+                            64,
+                            64,
+                            Activation::Relu,
+                            act_ha,
+                            sb,
+                            pb,
+                        );
+                    }
                     let act_ha_ro =
                         unsafe { std::slice::from_raw_parts(act_ha_ptr as *const u16, act_ha_len) };
-                    let sb2 = unsafe { std::slice::from_raw_parts_mut(f16_sb_ptr, f16_sb_len) };
-                    let pb2 = unsafe { std::slice::from_raw_parts_mut(f16_pb_ptr, f16_pb_len) };
+                    let act_hb = unsafe { std::slice::from_raw_parts_mut(act_hb_ptr, act_hb_len) };
+                    let sb = unsafe { std::slice::from_raw_parts_mut(f16_sb_ptr, f16_sb_len) };
+                    let pb = unsafe { std::slice::from_raw_parts_mut(f16_pb_ptr, f16_pb_len) };
                     crate::ops::neon_asm_f16::conv1x1_nhwc_f16act_parallel(
                         act_ha_ro,
-                        self.weights.get("heatmap_head.1.weight").unwrap(),
+                        wt1,
                         bt1,
                         h8,
                         w8,
                         64,
                         64,
                         Activation::Relu,
-                        act_hb2,
-                        sb2,
-                        pb2,
+                        act_hb,
+                        sb,
+                        pb,
                     );
                 }
             }
@@ -1596,12 +1604,9 @@ impl XFeat {
                     unsafe { std::slice::from_raw_parts(act_hb_ptr as *const u16, act_hb_len) };
                 let wt = self.weights.get("heatmap_head.2.weight")?;
                 let bt = self.weights.get("heatmap_head.2.bias")?;
-                let sa = unsafe { std::slice::from_raw_parts_mut(f16_sa_ptr, f16_sa_len) };
-                let sb3 = unsafe { std::slice::from_raw_parts_mut(f16_sb_ptr, f16_sb_len) };
-                let sc = unsafe { std::slice::from_raw_parts_mut(f16_sc_ptr, f16_sc_len) };
-                let pa = unsafe { std::slice::from_raw_parts_mut(f16_pa_ptr, f16_pa_len) };
-                let pb3 = unsafe { std::slice::from_raw_parts_mut(f16_pb_ptr, f16_pb_len) };
                 if let Some((pk, pko)) = self.conv1x1_packed_b.get("heatmap_head.2.weight") {
+                    let sc = unsafe { std::slice::from_raw_parts_mut(f16_sc_ptr, f16_sc_len) };
+                    let pa = unsafe { std::slice::from_raw_parts_mut(f16_pa_ptr, f16_pa_len) };
                     crate::ops::neon_asm_f16::conv1x1_nhwc_f16act_to_f32_prepacked(
                         act_hb_ro,
                         pk,
@@ -1617,6 +1622,11 @@ impl XFeat {
                         pa,
                     );
                 } else {
+                    let sa = unsafe { std::slice::from_raw_parts_mut(f16_sa_ptr, f16_sa_len) };
+                    let sb = unsafe { std::slice::from_raw_parts_mut(f16_sb_ptr, f16_sb_len) };
+                    let sc = unsafe { std::slice::from_raw_parts_mut(f16_sc_ptr, f16_sc_len) };
+                    let pa = unsafe { std::slice::from_raw_parts_mut(f16_pa_ptr, f16_pa_len) };
+                    let pb = unsafe { std::slice::from_raw_parts_mut(f16_pb_ptr, f16_pb_len) };
                     crate::ops::neon_asm_f16::conv1x1_nhwc_f16act_to_f32(
                         act_hb_ro,
                         wt,
@@ -1628,15 +1638,13 @@ impl XFeat {
                         Activation::Sigmoid,
                         &mut self.h1_rel,
                         sa,
-                        sb3,
+                        sb,
                         sc,
                         pa,
-                        pb3,
+                        pb,
                     );
                 }
-                let _ = (sb3, pb3); // unused in prepacked path
             }
-            let _ = (act_ha, act_hb, sb, pb); // silence unused warnings
         }
         #[cfg(not(target_arch = "aarch64"))]
         let _use_fp16_act_neon_only = use_fp16_act;
@@ -1739,17 +1747,16 @@ impl XFeat {
         // ── 12. Keypoint head (input = unfold_8x8(norm_gray)) ────────────
         // f16-act path: unfold → act_ha, then 4 × f16→f16 conv1x1, → k1_raw_f16.
         // f32 path: unchanged (unfold → buf_a, conv1x1 × 4 → k1_raw).
+        // Same aliasing discipline as the heatmap head: raw-derived slices are
+        // scoped so only one reference per buffer is ever live.
         #[cfg(target_arch = "aarch64")]
         if use_fp16_act {
-            let act_ha = unsafe { std::slice::from_raw_parts_mut(act_ha_ptr, act_ha_len) };
-            crate::ops::unfold_8x8_to_f16(&self.norm_gray, act_ha, h, w);
-            let sb = unsafe { std::slice::from_raw_parts_mut(f16_sb_ptr, f16_sb_len) };
-            let pb = unsafe { std::slice::from_raw_parts_mut(f16_pb_ptr, f16_pb_len) };
+            {
+                let act_ha = unsafe { std::slice::from_raw_parts_mut(act_ha_ptr, act_ha_len) };
+                crate::ops::unfold_8x8_to_f16(&self.norm_gray, act_ha, h, w);
+            }
             // keypoint_head.0+1+2 fused: act_ha → act_hb (single Rayon dispatch)
             {
-                let act_ha_ro =
-                    unsafe { std::slice::from_raw_parts(act_ha_ptr as *const u16, act_ha_len) };
-                let act_hb2 = unsafe { std::slice::from_raw_parts_mut(act_hb_ptr, act_hb_len) };
                 let bt0 = self.weights.get("keypoint_head.0.bias")?;
                 let bt1 = self.weights.get("keypoint_head.1.bias")?;
                 let bt2 = self.weights.get("keypoint_head.2.bias")?;
@@ -1758,6 +1765,9 @@ impl XFeat {
                     self.conv1x1_packed_b.get("keypoint_head.1.weight"),
                     self.conv1x1_packed_b.get("keypoint_head.2.weight"),
                 ) {
+                    let act_ha_ro =
+                        unsafe { std::slice::from_raw_parts(act_ha_ptr as *const u16, act_ha_len) };
+                    let act_hb = unsafe { std::slice::from_raw_parts_mut(act_hb_ptr, act_hb_len) };
                     crate::ops::neon_asm_f16::conv1x1_fused_3layer_f16act_prepacked_parallel(
                         act_ha_ro,
                         pk0,
@@ -1773,57 +1783,77 @@ impl XFeat {
                         w8,
                         64,
                         Activation::Relu,
-                        act_hb2,
+                        act_hb,
                     );
                 } else {
-                    // Fallback: three separate dispatches.
-                    let act_hb_f =
-                        unsafe { std::slice::from_raw_parts_mut(act_hb_ptr, act_hb_len) };
-                    crate::ops::neon_asm_f16::conv1x1_nhwc_f16act_parallel(
-                        act_ha_ro,
-                        self.weights.get("keypoint_head.0.weight").unwrap(),
-                        bt0,
-                        h8,
-                        w8,
-                        64,
-                        64,
-                        Activation::Relu,
-                        act_hb_f,
-                        unsafe { std::slice::from_raw_parts_mut(f16_sb_ptr, f16_sb_len) },
-                        unsafe { std::slice::from_raw_parts_mut(f16_pb_ptr, f16_pb_len) },
-                    );
-                    let hb_ro =
-                        unsafe { std::slice::from_raw_parts(act_hb_ptr as *const u16, act_hb_len) };
-                    let act_ha2 = unsafe { std::slice::from_raw_parts_mut(act_ha_ptr, act_ha_len) };
-                    crate::ops::neon_asm_f16::conv1x1_nhwc_f16act_parallel(
-                        hb_ro,
-                        self.weights.get("keypoint_head.1.weight").unwrap(),
-                        bt1,
-                        h8,
-                        w8,
-                        64,
-                        64,
-                        Activation::Relu,
-                        act_ha2,
-                        unsafe { std::slice::from_raw_parts_mut(f16_sb_ptr, f16_sb_len) },
-                        unsafe { std::slice::from_raw_parts_mut(f16_pb_ptr, f16_pb_len) },
-                    );
-                    let ha_ro =
-                        unsafe { std::slice::from_raw_parts(act_ha_ptr as *const u16, act_ha_len) };
-                    let act_hb3 = unsafe { std::slice::from_raw_parts_mut(act_hb_ptr, act_hb_len) };
-                    crate::ops::neon_asm_f16::conv1x1_nhwc_f16act_parallel(
-                        ha_ro,
-                        self.weights.get("keypoint_head.2.weight").unwrap(),
-                        bt2,
-                        h8,
-                        w8,
-                        64,
-                        64,
-                        Activation::Relu,
-                        act_hb3,
-                        unsafe { std::slice::from_raw_parts_mut(f16_sb_ptr, f16_sb_len) },
-                        unsafe { std::slice::from_raw_parts_mut(f16_pb_ptr, f16_pb_len) },
-                    );
+                    // Fallback: three separate ping-pong dispatches, each in
+                    // its own scope (ha→hb, hb→ha, ha→hb).
+                    {
+                        let act_ha_ro = unsafe {
+                            std::slice::from_raw_parts(act_ha_ptr as *const u16, act_ha_len)
+                        };
+                        let act_hb =
+                            unsafe { std::slice::from_raw_parts_mut(act_hb_ptr, act_hb_len) };
+                        let sb = unsafe { std::slice::from_raw_parts_mut(f16_sb_ptr, f16_sb_len) };
+                        let pb = unsafe { std::slice::from_raw_parts_mut(f16_pb_ptr, f16_pb_len) };
+                        crate::ops::neon_asm_f16::conv1x1_nhwc_f16act_parallel(
+                            act_ha_ro,
+                            self.weights.get("keypoint_head.0.weight").unwrap(),
+                            bt0,
+                            h8,
+                            w8,
+                            64,
+                            64,
+                            Activation::Relu,
+                            act_hb,
+                            sb,
+                            pb,
+                        );
+                    }
+                    {
+                        let act_hb_ro = unsafe {
+                            std::slice::from_raw_parts(act_hb_ptr as *const u16, act_hb_len)
+                        };
+                        let act_ha =
+                            unsafe { std::slice::from_raw_parts_mut(act_ha_ptr, act_ha_len) };
+                        let sb = unsafe { std::slice::from_raw_parts_mut(f16_sb_ptr, f16_sb_len) };
+                        let pb = unsafe { std::slice::from_raw_parts_mut(f16_pb_ptr, f16_pb_len) };
+                        crate::ops::neon_asm_f16::conv1x1_nhwc_f16act_parallel(
+                            act_hb_ro,
+                            self.weights.get("keypoint_head.1.weight").unwrap(),
+                            bt1,
+                            h8,
+                            w8,
+                            64,
+                            64,
+                            Activation::Relu,
+                            act_ha,
+                            sb,
+                            pb,
+                        );
+                    }
+                    {
+                        let act_ha_ro = unsafe {
+                            std::slice::from_raw_parts(act_ha_ptr as *const u16, act_ha_len)
+                        };
+                        let act_hb =
+                            unsafe { std::slice::from_raw_parts_mut(act_hb_ptr, act_hb_len) };
+                        let sb = unsafe { std::slice::from_raw_parts_mut(f16_sb_ptr, f16_sb_len) };
+                        let pb = unsafe { std::slice::from_raw_parts_mut(f16_pb_ptr, f16_pb_len) };
+                        crate::ops::neon_asm_f16::conv1x1_nhwc_f16act_parallel(
+                            act_ha_ro,
+                            self.weights.get("keypoint_head.2.weight").unwrap(),
+                            bt2,
+                            h8,
+                            w8,
+                            64,
+                            64,
+                            Activation::Relu,
+                            act_hb,
+                            sb,
+                            pb,
+                        );
+                    }
                 }
             }
             // keypoint_head.3: act_hb → k1_raw_f16 (c_out=65, Identity)
@@ -1833,8 +1863,6 @@ impl XFeat {
                 let k1_raw_f16 = unsafe { std::slice::from_raw_parts_mut(k1_f16_ptr, k1_f16_len) };
                 let wt = self.weights.get("keypoint_head.3.weight")?;
                 let bt = self.weights.get("keypoint_head.3.bias")?;
-                let sb5 = unsafe { std::slice::from_raw_parts_mut(f16_sb_ptr, f16_sb_len) };
-                let pb5 = unsafe { std::slice::from_raw_parts_mut(f16_pb_ptr, f16_pb_len) };
                 if let Some((pk, pko)) = self.conv1x1_packed_b.get("keypoint_head.3.weight") {
                     crate::ops::neon_asm_f16::conv1x1_nhwc_f16act_prepacked_parallel(
                         act_hb_ro,
@@ -1849,6 +1877,8 @@ impl XFeat {
                         k1_raw_f16,
                     );
                 } else {
+                    let sb = unsafe { std::slice::from_raw_parts_mut(f16_sb_ptr, f16_sb_len) };
+                    let pb = unsafe { std::slice::from_raw_parts_mut(f16_pb_ptr, f16_pb_len) };
                     crate::ops::neon_asm_f16::conv1x1_nhwc_f16act_parallel(
                         act_hb_ro,
                         wt,
@@ -1859,12 +1889,11 @@ impl XFeat {
                         65,
                         Activation::Identity,
                         k1_raw_f16,
-                        sb5,
-                        pb5,
+                        sb,
+                        pb,
                     );
                 }
             }
-            let _ = (act_ha, sb, pb);
         }
         if !use_fp16_act {
             unfold_8x8(&self.norm_gray, &mut self.buf_a[..h8 * w8 * 64], h, w);

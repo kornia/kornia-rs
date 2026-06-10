@@ -31,6 +31,7 @@
 //! Early. The scalar reference is the parity oracle and is correct; NEON / AVX
 //! kernels and the offline weight-conversion tool are in progress.
 
+pub mod affinity;
 pub mod model;
 pub mod ops;
 pub mod postproc;
