@@ -304,6 +304,42 @@ pub fn unfold_8x8_to_f16(input: &[f32], output: &mut [u16], h_in: usize, w_in: u
     scalar::unfold_8x8_to_f16(input, output, h_in, w_in);
 }
 
+/// Specialized 3×3 conv dispatcher for `c_in = 1, c_out = 4` (block1.0).
+///
+/// The generic conv path runs scalar inner loops at `c_in = 1`; the NEON
+/// specialization treats each output pixel's 4 channels as one `float32x4`
+/// (bit-identical accumulation order — see `neon::conv3x3_c1_co4_neon`).
+/// Falls back to the generic scalar conv elsewhere.
+pub fn conv3x3_c1_co4(
+    input: &[f32],
+    weights: &[f32],
+    bias: &[f32],
+    h: usize,
+    w: usize,
+    activation: Activation,
+    output: &mut [f32],
+) {
+    #[cfg(target_arch = "aarch64")]
+    if cpu_features().has_neon {
+        return neon::conv3x3_c1_co4_neon(input, weights, bias, h, w, activation, output);
+    }
+    scalar::conv3x3_relu_nhwc(
+        &Conv3x3Args {
+            input,
+            residual: None,
+            weights,
+            bias,
+            h_in: h,
+            w_in: w,
+            c_in: 1,
+            c_out: 4,
+            activation,
+            packed_weights: None,
+        },
+        output,
+    );
+}
+
 /// Pixel-shuffle (factor 8) + f16→f32 widening.
 ///
 /// Dispatches to `neon::pixel_shuffle_8_f16_neon` on aarch64 (FCVTL vectorized).

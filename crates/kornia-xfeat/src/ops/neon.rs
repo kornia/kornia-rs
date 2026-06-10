@@ -2285,3 +2285,171 @@ pub fn nms_maxpool_5x5_equality_neon(
     }
     result
 }
+
+/// Specialized 3×3 conv for `c_in = 1, c_out = 4` (block1.0, full resolution).
+///
+/// The generic NEON conv vectorizes the channel reduction, so `c_in = 1`
+/// falls back to scalar — at 480×640 that single layer costs ~0.65 ms.
+/// Here we exploit `c_out = 4` + NHWC instead: each output pixel is exactly
+/// one `float32x4` (its 4 channels), so a pixel is 9 `vld1q_dup_f32` +
+/// `vfmaq_f32` against pre-gathered per-tap weight vectors.
+///
+/// Bit-exactness vs [`super::scalar::conv3x3_relu_nhwc`] at `c_in = 1`:
+/// the scalar fallback accumulates per channel with sequential
+/// `f32::mul_add` over taps in `kh`-major order, skipping out-of-range
+/// taps; each NEON lane here performs the identical FMA sequence in the
+/// identical order, then `+ bias` and the activation — so every lane is
+/// IEEE-identical to the scalar result (asserted exactly in parity tests).
+#[cfg(target_arch = "aarch64")]
+pub fn conv3x3_c1_co4_neon(
+    input: &[f32],
+    weights: &[f32], // [c_out=4, 3, 3, c_in=1] row-major = [co*9 + kh*3 + kw]
+    bias: &[f32],
+    h: usize,
+    w: usize,
+    activation: Activation,
+    output: &mut [f32],
+) {
+    debug_assert_eq!(input.len(), h * w);
+    debug_assert_eq!(weights.len(), 4 * 9);
+    debug_assert_eq!(bias.len(), 4);
+    debug_assert_eq!(output.len(), h * w * 4);
+    debug_assert!(
+        matches!(activation, Activation::Relu | Activation::Identity),
+        "conv3x3_c1_co4_neon: unsupported activation"
+    );
+
+    // Gather weights into 9 per-tap vectors: wv[tap][lane co] = weights[co*9 + tap].
+    let mut wv = [[0.0f32; 4]; 9];
+    for (tap, wtap) in wv.iter_mut().enumerate() {
+        for (co, lane) in wtap.iter_mut().enumerate() {
+            *lane = weights[co * 9 + tap];
+        }
+    }
+    let relu = matches!(activation, Activation::Relu);
+    let in_addr = input.as_ptr() as usize;
+    debug_assert!(w >= 2 && h >= 1);
+
+    /// One pixel, runtime kw bounds (row edges only). Tap order: kh-major,
+    /// kw-minor, borders skipped — identical to the scalar fallback.
+    #[inline(always)]
+    unsafe fn px1<const KH_LO: usize, const KH_HI: usize>(
+        inp: *const f32,
+        oh: usize,
+        w: usize,
+        ow: usize,
+        kw_lo: usize,
+        kw_hi: usize,
+        wvv: &[float32x4_t; 9],
+    ) -> float32x4_t {
+        let mut acc = vdupq_n_f32(0.0);
+        for kh in KH_LO..KH_HI {
+            let base = inp.add((oh + kh - 1) * w + ow);
+            for kw in kw_lo..kw_hi {
+                acc = vfmaq_f32(acc, vld1q_dup_f32(base.add(kw).sub(1)), wvv[kh * 3 + kw]);
+            }
+        }
+        acc
+    }
+
+    /// Four interior pixels: fully const-unrolled taps (weight vectors stay in
+    /// registers) and 4 independent accumulator chains to hide the 4-cycle FMA
+    /// latency. Each pixel's own chain keeps the exact kh-major tap order, so
+    /// every lane remains bit-identical to the scalar fallback.
+    #[inline(always)]
+    unsafe fn px4<const KH_LO: usize, const KH_HI: usize>(
+        inp: *const f32,
+        oh: usize,
+        w: usize,
+        ow: usize,
+        wvv: &[float32x4_t; 9],
+    ) -> [float32x4_t; 4] {
+        let mut a = [vdupq_n_f32(0.0); 4];
+        for kh in KH_LO..KH_HI {
+            let row = inp.add((oh + kh - 1) * w + ow - 1);
+            for kw in 0..3usize {
+                let wt = wvv[kh * 3 + kw];
+                for (p, acc) in a.iter_mut().enumerate() {
+                    *acc = vfmaq_f32(*acc, vld1q_dup_f32(row.add(kw + p)), wt);
+                }
+            }
+        }
+        a
+    }
+
+    #[inline(always)]
+    unsafe fn store_px(out: *mut f32, acc: float32x4_t, bv: float32x4_t, relu: bool) {
+        let mut r = vaddq_f32(acc, bv);
+        if relu {
+            r = vmaxq_f32(r, vdupq_n_f32(0.0));
+        }
+        vst1q_f32(out, r);
+    }
+
+    /// Whole row with compile-time kh bounds (so `wvv[kh*3+kw]` const-folds).
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn row_body<const KH_LO: usize, const KH_HI: usize>(
+        inp: *const f32,
+        oh: usize,
+        w: usize,
+        wvv: &[float32x4_t; 9],
+        bv: float32x4_t,
+        relu: bool,
+        out: *mut f32,
+    ) {
+        // Left edge (ow = 0): skip kw = 0.
+        store_px(out, px1::<KH_LO, KH_HI>(inp, oh, w, 0, 1, 3, wvv), bv, relu);
+        // Interior 1..w-1: 4-pixel blocks, then a 1-pixel tail.
+        let mut ow = 1usize;
+        while ow + 4 <= w - 1 {
+            let a = px4::<KH_LO, KH_HI>(inp, oh, w, ow, wvv);
+            for (p, &acc) in a.iter().enumerate() {
+                store_px(out.add((ow + p) * 4), acc, bv, relu);
+            }
+            ow += 4;
+        }
+        while ow < w - 1 {
+            store_px(
+                out.add(ow * 4),
+                px1::<KH_LO, KH_HI>(inp, oh, w, ow, 0, 3, wvv),
+                bv,
+                relu,
+            );
+            ow += 1;
+        }
+        // Right edge (ow = w-1): skip kw = 2.
+        store_px(
+            out.add((w - 1) * 4),
+            px1::<KH_LO, KH_HI>(inp, oh, w, w - 1, 0, 2, wvv),
+            bv,
+            relu,
+        );
+    }
+
+    output
+        .par_chunks_mut(w * 4)
+        .enumerate()
+        .for_each(|(oh, row_out)| unsafe {
+            let inp = in_addr as *const f32;
+            let wvv: [float32x4_t; 9] = [
+                vld1q_f32(wv[0].as_ptr()),
+                vld1q_f32(wv[1].as_ptr()),
+                vld1q_f32(wv[2].as_ptr()),
+                vld1q_f32(wv[3].as_ptr()),
+                vld1q_f32(wv[4].as_ptr()),
+                vld1q_f32(wv[5].as_ptr()),
+                vld1q_f32(wv[6].as_ptr()),
+                vld1q_f32(wv[7].as_ptr()),
+                vld1q_f32(wv[8].as_ptr()),
+            ];
+            let bv = vld1q_f32(bias.as_ptr());
+            let out = row_out.as_mut_ptr();
+            match (oh == 0, oh + 1 == h) {
+                (false, false) => row_body::<0, 3>(inp, oh, w, &wvv, bv, relu, out),
+                (true, false) => row_body::<1, 3>(inp, oh, w, &wvv, bv, relu, out),
+                (false, true) => row_body::<0, 2>(inp, oh, w, &wvv, bv, relu, out),
+                (true, true) => row_body::<1, 2>(inp, oh, w, &wvv, bv, relu, out),
+            }
+        });
+}

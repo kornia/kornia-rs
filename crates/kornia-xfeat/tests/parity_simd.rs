@@ -922,6 +922,51 @@ fn opt_b_softmax_pixel_shuffle_fused_parity() {
     eprintln!("[opt_b_softmax_pixel_shuffle_fused_parity] OK — scalar max err {max_err:.2e} (tol 2e-3), NEON bit-exact");
 }
 
+/// Specialized c_in=1/c_out=4 conv (block1.0) must be BIT-exact vs the
+/// generic scalar conv: each NEON lane runs the identical per-channel
+/// sequential-FMA tap order (kh-major, borders skipped), then `+bias` + relu.
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn neon_conv3x3_c1_co4_parity_bit_exact() {
+    let (h, w) = (13usize, 21usize); // odd sizes → exercises all border cases
+    let mut rng = 0xc104u32;
+    let input: Vec<f32> = (0..h * w).map(|_| lcg_f32(&mut rng) * 2.0 - 1.0).collect();
+    let weights: Vec<f32> = (0..4 * 9).map(|_| lcg_f32(&mut rng) * 2.0 - 1.0).collect();
+    let bias: Vec<f32> = (0..4).map(|_| lcg_f32(&mut rng) * 2.0 - 1.0).collect();
+
+    for act in [Activation::Relu, Activation::Identity] {
+        let mut out_scalar = vec![0.0f32; h * w * 4];
+        let mut out_neon = vec![0.0f32; h * w * 4];
+        scalar::conv3x3_relu_nhwc(
+            &Conv3x3Args {
+                input: &input,
+                residual: None,
+                weights: &weights,
+                bias: &bias,
+                h_in: h,
+                w_in: w,
+                c_in: 1,
+                c_out: 4,
+                activation: act,
+                packed_weights: None,
+            },
+            &mut out_scalar,
+        );
+        neon::conv3x3_c1_co4_neon(&input, &weights, &bias, h, w, act, &mut out_neon);
+        for (i, (&s, &n)) in out_scalar.iter().zip(out_neon.iter()).enumerate() {
+            assert_eq!(
+                s.to_bits(),
+                n.to_bits(),
+                "[conv3x3_c1_co4 {act:?}] bit mismatch at idx {i}: scalar={s} neon={n}"
+            );
+        }
+    }
+    eprintln!(
+        "[neon_conv3x3_c1_co4_parity_bit_exact] OK — {} values × 2 acts, bit-exact",
+        h * w * 4
+    );
+}
+
 /// l2_normalize_channel f16 NEON vs scalar reference at the model's real
 /// channel count c=64.
 #[cfg(target_arch = "aarch64")]

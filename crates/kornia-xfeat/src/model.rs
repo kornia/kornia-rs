@@ -823,21 +823,36 @@ impl XFeat {
         {
             let wt = self.weights.get("block1.0.weight")?;
             let bt = self.weights.get("block1.0.bias")?;
-            (vt.conv3x3)(
-                &Conv3x3Args {
-                    input: &self.norm_gray,
-                    residual: None,
-                    weights: wt,
-                    bias: bt,
-                    h_in: h,
-                    w_in: w,
-                    c_in: 1,
-                    c_out: 4,
-                    activation: Activation::Relu,
-                    packed_weights: None,
-                },
-                &mut self.buf_a[..h * w * 4],
-            );
+            if use_winograd {
+                // Fast-path flag doubles as "not the scalar parity oracle":
+                // the specialized c_in=1 NEON kernel is bit-identical to the
+                // generic path but ~4× faster at full resolution.
+                crate::ops::conv3x3_c1_co4(
+                    &self.norm_gray,
+                    wt,
+                    bt,
+                    h,
+                    w,
+                    Activation::Relu,
+                    &mut self.buf_a[..h * w * 4],
+                );
+            } else {
+                (vt.conv3x3)(
+                    &Conv3x3Args {
+                        input: &self.norm_gray,
+                        residual: None,
+                        weights: wt,
+                        bias: bt,
+                        h_in: h,
+                        w_in: w,
+                        c_in: 1,
+                        c_out: 4,
+                        activation: Activation::Relu,
+                        packed_weights: None,
+                    },
+                    &mut self.buf_a[..h * w * 4],
+                );
+            }
         }
         t_lap!("2.block1.0 conv(1->4)", _t);
         // step 2: conv3x3(4→8, s=2, relu)
