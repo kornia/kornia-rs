@@ -1400,11 +1400,15 @@ pub fn conv3x3_winograd_nhwc_f43_f16(
     // the output write is bounded by valid_rows/valid_cols.
     let n_tile_h = (h_out + 3) / 4;
     let n_tile_w = (w_out + 3) / 4;
-    // Pad n_tile_w to next multiple of MR=8 (the GEMM tile width). Computed
-    // here (outside the per-tile-row closure) so it's available for the
-    // use_co_par decision below.
+    // Pad n_tile_w to the next multiple of the GEMM's M granularity. The fp16
+    // GEMM driver processes M in MR=8 micro-tiles plus a vectorised MR=4 tail
+    // (`gemm_4x8_f16` fast path), so padding only to a multiple of 4 — rather
+    // than 8 — halves the worst-case phantom-row waste for the small spatial
+    // layers (block4/block5: n_tile_w 10→12 not 16, 5→8... 2→4 not 8) while the
+    // single leftover MR=4 block still runs at full vector throughput.
     const MR: usize = 8;
-    let n_tile_w_gemm = (n_tile_w + MR - 1) / MR * MR;
+    const M_PAD: usize = 4;
+    let n_tile_w_gemm = n_tile_w.div_ceil(M_PAD) * M_PAD;
 
     // B panels are pre-transposed in the WinogradCache (one alloc at model
     // build time) — panel p is `b_panels_f16[p*c_in*c_out .. (p+1)*c_in*c_out]`.
@@ -1475,12 +1479,20 @@ pub fn conv3x3_winograd_nhwc_f43_f16(
             let tile_oh = task_id / col_parts;
             let col_part = task_id % col_parts;
             // Column range for this task (relative within the tile-row).
-            let tiles_per_part = (n_tile_w + col_parts - 1) / col_parts;
-            let col_start = col_part * tiles_per_part;
+            // Clamp col_start to n_tile_w: when col_parts > n_tile_w (small spatial
+            // layers with many threads), trailing tasks own no columns. Without the
+            // clamp, `col_end - col_start` underflows usize and the scatter loop runs
+            // off the thread-local m_acc buffer (panic at large inputs, e.g. 576×800).
+            let tiles_per_part = n_tile_w.div_ceil(col_parts);
+            let col_start = (col_part * tiles_per_part).min(n_tile_w);
             let col_end = (col_start + tiles_per_part).min(n_tile_w);
             let n_col_tiles = col_end - col_start;
-            // GEMM panel width for this column slice (padded to MR=8).
-            let n_tile_w_gemm_part = (n_col_tiles + MR - 1) / MR * MR;
+            if n_col_tiles == 0 {
+                return;
+            }
+            // GEMM panel width for this column slice (padded to M_PAD=4; the
+            // GEMM handles a single MR=4 tail block at full vector throughput).
+            let n_tile_w_gemm_part = n_col_tiles.div_ceil(M_PAD) * M_PAD;
             // For partial last tiles (h_out % 4 != 0), only write the valid rows.
             let valid_rows = (h_out - tile_oh * 4).min(4);
 
@@ -1963,7 +1975,10 @@ pub fn conv3x3_winograd_nhwc_f43_f16_fused1x1(
             let tile_oh = task_id / col_parts;
             let col_part = task_id % col_parts;
             let tiles_per_part = n_tile_w.div_ceil(col_parts);
-            let col_start = col_part * tiles_per_part;
+            // Clamp col_start to n_tile_w so trailing empty tasks (col_parts >
+            // n_tile_w) don't underflow `col_end - col_start` (usize). See the
+            // matching guard in conv3x3_winograd_nhwc_f43_f16.
+            let col_start = (col_part * tiles_per_part).min(n_tile_w);
             let col_end = (col_start + tiles_per_part).min(n_tile_w);
             let n_col_tiles = col_end - col_start;
             if n_col_tiles == 0 {
@@ -3136,5 +3151,240 @@ mod tests {
             fused_out.len(),
             first
         );
+    }
+
+    /// Shape-robustness smoke test at 72×100 (n_tile_w=25 — NOT a multiple of 8),
+    /// the block_fusion geometry at a 576×800 input. Guards the M-padding contract
+    /// of the fp16 Winograd GEMM driver (`n_tile_w_gemm[_part]` rounding) against
+    /// buffer-bounds regressions, and checks NEON-fp16 ≈ scalar-f32 F(4,3).
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn test_f43_f16_shape_72x100_c64_no_panic() {
+        if !crate::cpu_features::cpu_features().has_fp16 {
+            eprintln!("skipping: CPU lacks fp16");
+            return;
+        }
+        let h = 72usize;
+        let w = 100usize;
+        let c_in = 64usize;
+        let c_out = 64usize;
+        let c_out2 = 64usize;
+
+        let rng = |seed: usize, n: usize, scale: f32| -> Vec<f32> {
+            let mut s = seed as u64 ^ 0x9E37_79B9_7F4A_7C15;
+            (0..n)
+                .map(|_| {
+                    s ^= s << 13;
+                    s ^= s >> 7;
+                    s ^= s << 17;
+                    (((s >> 40) as f32 / 16_777_216.0) - 0.5) * 2.0 * scale
+                })
+                .collect()
+        };
+
+        let input = rng(11, h * w * c_in, 0.8);
+        let w3x3 = rng(12, c_out * 9 * c_in, 0.2);
+        let b3x3 = rng(13, c_out, 0.1);
+
+        let (tf16, bp16, bpk) = build_f43_f16_weights(&w3x3, c_out, c_in);
+
+        // Non-fused fp16 Winograd driver — must not panic and must match scalar.
+        let mut neon_out = vec![0.0f32; h * w * c_out];
+        conv3x3_winograd_nhwc_f43_f16(
+            &input,
+            h,
+            w,
+            c_in,
+            &tf16,
+            &bp16,
+            &bpk,
+            Some(&b3x3),
+            c_out,
+            Activation::Relu,
+            &mut neon_out,
+            h,
+            w,
+        );
+
+        // Scalar f32 F(4,3) reference.
+        let wt = winograd_transform_weights_f32_f43(&w3x3, c_out, c_in);
+        let mut ref_out = vec![0.0f32; h * w * c_out];
+        conv3x3_winograd_nhwc_f43(
+            &input,
+            h,
+            w,
+            c_in,
+            &wt,
+            Some(&b3x3),
+            c_out,
+            Activation::Relu,
+            &mut ref_out,
+            h,
+            w,
+        );
+
+        // fp16 Winograd vs f32 scalar: the K=64 inner products accumulate in
+        // half precision, so a magnitude-scaled tolerance is appropriate (this
+        // test's purpose is the *shape/bounds* contract, not bit-parity).
+        let mut max_ref = 0.0f32;
+        for &b in &ref_out {
+            max_ref = max_ref.max(b.abs());
+        }
+        let tol = (max_ref * 0.05).max(0.5);
+        let mut max_abs = 0.0f32;
+        for (a, b) in neon_out.iter().zip(ref_out.iter()) {
+            max_abs = max_abs.max((a - b).abs());
+        }
+        assert!(
+            max_abs < tol,
+            "72x100 non-fused NEON vs scalar max_abs={max_abs} exceeds tol={tol} (max_ref={max_ref})"
+        );
+
+        // Fused1x1 driver at the same geometry — must not panic when its gate
+        // permits it (otherwise the non-fused path above already covered shape).
+        if f43_fused1x1_is_bit_exact(h, w) {
+            let w1x1 = rng(14, c_out2 * c_in, 0.15);
+            let b1x1 = rng(15, c_out2, 0.1);
+            let (pk1x1, pk1x1_off) =
+                crate::ops::neon_asm_f16::prepack_conv1x1_b_f16(&w1x1, c_in, c_out2);
+            let mut fused_out = vec![0u16; h * w * c_out2];
+            conv3x3_winograd_nhwc_f43_f16_fused1x1(
+                &input,
+                h,
+                w,
+                c_in,
+                &tf16,
+                &bp16,
+                &bpk,
+                Some(&b3x3),
+                c_out,
+                Activation::Relu,
+                &pk1x1,
+                pk1x1_off,
+                &b1x1,
+                c_out2,
+                Activation::Identity,
+                &mut fused_out,
+                h,
+                w,
+            );
+            std::hint::black_box(&fused_out);
+        }
+    }
+
+    /// Regression for the column-split empty-task underflow: at 18×25 (block5's
+    /// 576×800 geometry — n_tile_h=5, n_tile_w=7) with the default ≥6-thread
+    /// Rayon pool, `col_parts` exceeds `n_tile_w`, so trailing tasks own zero
+    /// columns. Before the `col_start.min(n_tile_w)` clamp this underflowed
+    /// `n_col_tiles` (usize) and the scatter ran off the m_acc buffer (panic).
+    /// Post-fix: both fp16 drivers run cleanly and match the scalar reference.
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn test_f43_f16_colsplit_18x25_c64_no_underflow() {
+        if !crate::cpu_features::cpu_features().has_fp16 {
+            eprintln!("skipping: CPU lacks fp16");
+            return;
+        }
+        let h = 18usize;
+        let w = 25usize;
+        let c_in = 64usize;
+        let c_out = 64usize;
+        let c_out2 = 64usize;
+
+        let rng = |seed: usize, n: usize, scale: f32| -> Vec<f32> {
+            let mut s = seed as u64 ^ 0x9E37_79B9_7F4A_7C15;
+            (0..n)
+                .map(|_| {
+                    s ^= s << 13;
+                    s ^= s >> 7;
+                    s ^= s << 17;
+                    (((s >> 40) as f32 / 16_777_216.0) - 0.5) * 2.0 * scale
+                })
+                .collect()
+        };
+
+        let input = rng(21, h * w * c_in, 0.8);
+        let w3x3 = rng(22, c_out * 9 * c_in, 0.2);
+        let b3x3 = rng(23, c_out, 0.1);
+
+        let (tf16, bp16, bpk) = build_f43_f16_weights(&w3x3, c_out, c_in);
+
+        // Non-fused driver — must not panic (empty-task split) and match scalar.
+        let mut neon_out = vec![0.0f32; h * w * c_out];
+        conv3x3_winograd_nhwc_f43_f16(
+            &input,
+            h,
+            w,
+            c_in,
+            &tf16,
+            &bp16,
+            &bpk,
+            Some(&b3x3),
+            c_out,
+            Activation::Relu,
+            &mut neon_out,
+            h,
+            w,
+        );
+
+        let wt = winograd_transform_weights_f32_f43(&w3x3, c_out, c_in);
+        let mut ref_out = vec![0.0f32; h * w * c_out];
+        conv3x3_winograd_nhwc_f43(
+            &input,
+            h,
+            w,
+            c_in,
+            &wt,
+            Some(&b3x3),
+            c_out,
+            Activation::Relu,
+            &mut ref_out,
+            h,
+            w,
+        );
+
+        let mut max_ref = 0.0f32;
+        for &b in &ref_out {
+            max_ref = max_ref.max(b.abs());
+        }
+        let tol = (max_ref * 0.05).max(0.5);
+        let mut max_abs = 0.0f32;
+        for (a, b) in neon_out.iter().zip(ref_out.iter()) {
+            max_abs = max_abs.max((a - b).abs());
+        }
+        assert!(
+            max_abs < tol,
+            "18x25 non-fused NEON vs scalar max_abs={max_abs} exceeds tol={tol}"
+        );
+
+        // Fused1x1 driver at the same geometry — must not panic either.
+        if f43_fused1x1_is_bit_exact(h, w) {
+            let w1x1 = rng(24, c_out2 * c_in, 0.15);
+            let b1x1 = rng(25, c_out2, 0.1);
+            let (pk1x1, pk1x1_off) =
+                crate::ops::neon_asm_f16::prepack_conv1x1_b_f16(&w1x1, c_in, c_out2);
+            let mut fused_out = vec![0u16; h * w * c_out2];
+            conv3x3_winograd_nhwc_f43_f16_fused1x1(
+                &input,
+                h,
+                w,
+                c_in,
+                &tf16,
+                &bp16,
+                &bpk,
+                Some(&b3x3),
+                c_out,
+                Activation::Relu,
+                &pk1x1,
+                pk1x1_off,
+                &b1x1,
+                c_out2,
+                Activation::Identity,
+                &mut fused_out,
+                h,
+                w,
+            );
+            std::hint::black_box(&fused_out);
+        }
     }
 }

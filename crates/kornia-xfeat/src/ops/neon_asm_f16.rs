@@ -1567,39 +1567,117 @@ pub fn gemm_f16_mnk_packed_b(
         }
     }
 
-    // M remainder: scalar path using packed_b directly (b_packed[nb][ki][ni]).
+    // ── M remainder (m_rem = 1..7) ───────────────────────────────────────────
+    // Vectorised in chunks of ≤4 rows using the MR=4 micro-kernel (`gemm_4x8_f16`),
+    // instead of a pure-scalar dot product. This lets the Winograd driver pass the
+    // *true* tile count as M (avoiding zero-padded phantom MR=8 rows) without
+    // paying the scalar-remainder penalty.  N-block columns use the kernel; the
+    // n_rem tail stays scalar (no XFeat layer hits n_rem here).
     if m_rem > 0 {
         let mr_start = m_blocks * MR;
-        for mi in 0..m_rem {
-            for nb in 0..n_blocks {
-                let nr_start = nb * NR;
-                let b_packed_slice = &packed_b[nb * k * NR..(nb + 1) * k * NR];
-                for ni in 0..NR {
-                    let mut acc =
-                        half::f16::from_bits(c[(mr_start + mi) * n + nr_start + ni]).to_f32();
-                    for ki in 0..k {
-                        let a_val = half::f16::from_bits(a[(mr_start + mi) * k + ki]).to_f32();
-                        acc = a_val.mul_add(
-                            half::f16::from_bits(b_packed_slice[ki * NR + ni]).to_f32(),
-                            acc,
+        let zero_bits = half::f16::ZERO.to_bits();
+
+        // Process the remainder rows in groups of up to 4.
+        let mut row0 = 0usize;
+        while row0 < m_rem {
+            let rows = (m_rem - row0).min(4);
+            let g_start = mr_start + row0;
+
+            // Pack up to 4 rows into a [K, 4] column-major A panel, zero-padding
+            // the unused rows (their results are simply not written back).
+            let pa4 = &mut pack_a[..k * 4];
+            unsafe {
+                pack_a_4rows_f16(a, g_start, rows, k, pa4);
+            }
+
+            if rows == 4 {
+                // Fast path: write the 4 kernel rows straight into C (no scratch).
+                for nb in 0..n_blocks {
+                    let nr_start = nb * NR;
+                    let b_packed = &packed_b[nb * k * NR..(nb + 1) * k * NR];
+                    unsafe {
+                        let cbase = c.as_mut_ptr().add(g_start * n + nr_start);
+                        gemm_4x8_f16(
+                            k,
+                            pa4.as_ptr(),
+                            b_packed.as_ptr(),
+                            cbase,
+                            cbase.add(n),
+                            cbase.add(2 * n),
+                            cbase.add(3 * n),
+                            true,
                         );
                     }
-                    c[(mr_start + mi) * n + nr_start + ni] = half::f16::from_f32(acc).to_bits();
+                }
+            } else {
+                // <4 real rows: kernel writes 4 rows into a scratch tile; copy back
+                // only the real rows.  Phantom rows are zero-seeded.
+                let mut c_scratch = [zero_bits; 4 * NR];
+                for nb in 0..n_blocks {
+                    let nr_start = nb * NR;
+                    let b_packed = &packed_b[nb * k * NR..(nb + 1) * k * NR];
+                    for r in 0..rows {
+                        let src = (g_start + r) * n + nr_start;
+                        c_scratch[r * NR..r * NR + NR].copy_from_slice(&c[src..src + NR]);
+                    }
+                    for x in &mut c_scratch[rows * NR..4 * NR] {
+                        *x = zero_bits;
+                    }
+                    unsafe {
+                        let c0 = c_scratch.as_mut_ptr();
+                        gemm_4x8_f16(
+                            k,
+                            pa4.as_ptr(),
+                            b_packed.as_ptr(),
+                            c0,
+                            c0.add(NR),
+                            c0.add(2 * NR),
+                            c0.add(3 * NR),
+                            true,
+                        );
+                    }
+                    for r in 0..rows {
+                        let dst = (g_start + r) * n + nr_start;
+                        c[dst..dst + NR].copy_from_slice(&c_scratch[r * NR..r * NR + NR]);
+                    }
                 }
             }
-            // N-remainder for M-remainder rows too.
+
+            // N-remainder for these rows (scalar; unused by XFeat Winograd).
             if n_rem > 0 {
                 let nr_start = n_blocks * NR;
-                for ni in 0..n_rem {
-                    let mut acc = 0.0f32;
-                    for ki in 0..k {
-                        let a_val = half::f16::from_bits(a[(mr_start + mi) * k + ki]).to_f32();
-                        let b_val = half::f16::from_bits(b_rem[ki * n_rem + ni]).to_f32();
-                        acc += a_val * b_val;
+                for r in 0..rows {
+                    let mi = g_start;
+                    for ni in 0..n_rem {
+                        let mut acc = 0.0f32;
+                        for ki in 0..k {
+                            let a_val = half::f16::from_bits(a[(mi + r) * k + ki]).to_f32();
+                            let b_val = half::f16::from_bits(b_rem[ki * n_rem + ni]).to_f32();
+                            acc += a_val * b_val;
+                        }
+                        c[(mi + r) * n + nr_start + ni] = half::f16::from_f32(acc).to_bits();
                     }
-                    c[(mr_start + mi) * n + nr_start + ni] = half::f16::from_f32(acc).to_bits();
                 }
             }
+
+            row0 += rows;
+        }
+    }
+}
+
+/// Pack up to 4 A rows (`rows` ∈ 1..=4) starting at `mr_start` into a `[K, 4]`
+/// column-major panel for [`gemm_4x8_f16`]. Unused rows (`rows..4`) are zeroed.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon,fp16")]
+unsafe fn pack_a_4rows_f16(a: &[u16], mr_start: usize, rows: usize, k: usize, pack_a: &mut [u16]) {
+    let zero_bits = half::f16::ZERO.to_bits();
+    let rp = a.as_ptr().add(mr_start * k);
+    for ki in 0..k {
+        for mi in 0..rows {
+            *pack_a.get_unchecked_mut(ki * 4 + mi) = *rp.add(mi * k + ki);
+        }
+        for mi in rows..4 {
+            *pack_a.get_unchecked_mut(ki * 4 + mi) = zero_bits;
         }
     }
 }
