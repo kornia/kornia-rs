@@ -1074,6 +1074,62 @@ fn neon_conv3x3_s2_c8_co24_parity() {
     );
 }
 
+/// Specialized stride-1 c_in=8/c_out=8 conv (block1.2) vs the generic scalar
+/// stride-1 conv. Odd h/w exercise all four border cases (top/bottom rows,
+/// left/right columns) plus the 4-pixel interior block + 1-pixel tail.
+/// Tolerance-based (≤ TOL_CONV3X3_PENDING = 5e-5): the 8-channel reduction
+/// order differs (sequential per-lane FMA vs scalar's horizontal 4-lane add).
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn neon_conv3x3_s1_c8_co8_parity() {
+    // Several odd/even sizes to stress borders + the interior-block tail.
+    for &(h, w) in &[(15usize, 23usize), (9, 7), (13, 18), (6, 6), (17, 6)] {
+        let mut rng = 0xb12u32 ^ ((h as u32) << 8) ^ (w as u32);
+        let input: Vec<f32> = (0..h * w * 8)
+            .map(|_| lcg_f32(&mut rng) * 2.0 - 1.0)
+            .collect();
+        let weights: Vec<f32> = (0..8 * 9 * 8)
+            .map(|_| lcg_f32(&mut rng) * 2.0 - 1.0)
+            .collect();
+        let bias: Vec<f32> = (0..8).map(|_| lcg_f32(&mut rng) * 2.0 - 1.0).collect();
+        let packed = neon::pack_b1_2_laneq(&weights);
+
+        let mut max_err = 0.0f32;
+        for act in [Activation::Relu, Activation::Identity] {
+            let mut out_scalar = vec![0.0f32; h * w * 8];
+            let mut out_neon = vec![0.0f32; h * w * 8];
+            scalar::conv3x3_relu_nhwc(
+                &Conv3x3Args {
+                    input: &input,
+                    residual: None,
+                    weights: &weights,
+                    bias: &bias,
+                    h_in: h,
+                    w_in: w,
+                    c_in: 8,
+                    c_out: 8,
+                    activation: act,
+                    packed_weights: None,
+                },
+                &mut out_scalar,
+            );
+            neon::conv3x3_s1_c8_co8_neon(&input, &packed, &bias, h, w, act, &mut out_neon);
+            for (&s, &n) in out_scalar.iter().zip(out_neon.iter()) {
+                max_err = max_err.max((s - n).abs());
+            }
+            assert_buffers_within_tol(
+                &out_scalar,
+                &out_neon,
+                "conv3x3_s1_c8_co8",
+                TOL_CONV3X3_PENDING,
+            );
+        }
+        eprintln!(
+            "[neon_conv3x3_s1_c8_co8_parity] {h}x{w} OK — max err {max_err:.2e} (tol {TOL_CONV3X3_PENDING:.0e})"
+        );
+    }
+}
+
 /// l2_normalize_channel f16 NEON vs scalar reference at the model's real
 /// channel count c=64.
 #[cfg(target_arch = "aarch64")]

@@ -2967,3 +2967,320 @@ pub fn conv3x3_s2_c8_co24_neon(
             }
         });
 }
+
+/// Pack block1.2 weights `[c_out=8, 3, 3, c_in=8]` (row-major
+/// `weights[((co*3+kh)*3+kw)*8 + ci]`) into the `vfmaq_laneq` layout
+/// `pk[((tap*8 + ci)*2 + cob)*4 + co_lane]`: for each (tap, ci) two
+/// `float32x4` vectors holding the 8 output-channel weights split as
+/// `co0..3` (cob=0) and `co4..7` (cob=1). 9·8·2·4 = 576 f32.
+#[cfg(target_arch = "aarch64")]
+pub fn pack_b1_2_laneq(weights: &[f32]) -> Vec<f32> {
+    debug_assert_eq!(weights.len(), 8 * 9 * 8);
+    let mut pk = vec![0.0f32; 9 * 8 * 2 * 4];
+    for tap in 0..9 {
+        for ci in 0..8 {
+            for cob in 0..2 {
+                for lane in 0..4 {
+                    let co = cob * 4 + lane;
+                    pk[((tap * 8 + ci) * 2 + cob) * 4 + lane] = weights[(co * 9 + tap) * 8 + ci];
+                }
+            }
+        }
+    }
+    pk
+}
+
+/// Specialized 3×3 **stride-1** conv for `c_in = 8, c_out = 8` (block1.2).
+///
+/// Each input pixel is two `float32x4` (8 channels); each output pixel is two
+/// `float32x4` (8 channels, split `co0..3` / `co4..7`). The 8-channel
+/// reduction uses `vfmaq_laneq_f32`: the input pixel's two channel quads are
+/// broadcast-per-lane against the pre-packed per-(tap,ci) weight quads (see
+/// [`pack_b1_2_laneq`]).
+///
+/// Stride-1 means adjacent output pixels share input columns. The interior is
+/// processed in 4-pixel blocks: the 6 input columns spanned by a block
+/// (`ow-1 .. ow+4`) are each loaded **once** per `kh` row (two quads apiece)
+/// and reused across the three `kw` taps. Eight accumulators (4 px × 2 quads)
+/// give 8 independent FMA chains to hide the 4-cycle FMA latency; weight quads
+/// are reloaded per (tap, ci) — they stay L1-hot and the const indices keep
+/// them off the stack (the spill lesson from 175967c).
+///
+/// Reduction-order note: the 8 ci terms accumulate sequentially per lane
+/// (lanes = co) instead of the scalar fallback's horizontal 4-lane add
+/// (lanes = ci), so parity is tolerance- (≤ 5e-5), not bit-, exact.
+#[cfg(target_arch = "aarch64")]
+pub fn conv3x3_s1_c8_co8_neon(
+    input: &[f32],
+    packed: &[f32], // pack_b1_2_laneq layout, 576 f32
+    bias: &[f32],
+    h_in: usize,
+    w_in: usize,
+    activation: Activation,
+    output: &mut [f32],
+) {
+    debug_assert_eq!(input.len(), h_in * w_in * 8);
+    debug_assert_eq!(packed.len(), 9 * 8 * 2 * 4);
+    debug_assert_eq!(bias.len(), 8);
+    debug_assert_eq!(output.len(), h_in * w_in * 8);
+    debug_assert!(
+        matches!(activation, Activation::Relu | Activation::Identity),
+        "conv3x3_s1_c8_co8_neon: unsupported activation"
+    );
+    debug_assert!(w_in >= 6);
+
+    let relu = matches!(activation, Activation::Relu);
+    let in_addr = input.as_ptr() as usize;
+    let pk_addr = packed.as_ptr() as usize;
+
+    /// Accumulate one (tap) contribution over all 8 ci into (acc_lo, acc_hi)
+    /// for a single input pixel held as (in_lo, in_hi).
+    #[inline(always)]
+    unsafe fn fma_tap(
+        acc: &mut (float32x4_t, float32x4_t),
+        pk: *const f32,
+        tap: usize,
+        in_lo: float32x4_t,
+        in_hi: float32x4_t,
+    ) {
+        macro_rules! ci_block {
+            ($ci:expr, $inv:expr, $lane:expr) => {{
+                let b = pk.add(((tap * 8 + $ci) * 2) * 4);
+                acc.0 = vfmaq_laneq_f32::<$lane>(acc.0, vld1q_f32(b), $inv);
+                acc.1 = vfmaq_laneq_f32::<$lane>(acc.1, vld1q_f32(b.add(4)), $inv);
+            }};
+        }
+        ci_block!(0, in_lo, 0);
+        ci_block!(1, in_lo, 1);
+        ci_block!(2, in_lo, 2);
+        ci_block!(3, in_lo, 3);
+        ci_block!(4, in_hi, 0);
+        ci_block!(5, in_hi, 1);
+        ci_block!(6, in_hi, 2);
+        ci_block!(7, in_hi, 3);
+    }
+
+    /// One (tap) contribution for four pixels sharing the same weight quads:
+    /// the 2 weight quads per ci are loaded once and FMA'd into all four
+    /// pixels' accumulators (4 input pixels supplied as 8 channel quads).
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn fma_tap4(
+        a0: &mut (float32x4_t, float32x4_t),
+        a1: &mut (float32x4_t, float32x4_t),
+        a2: &mut (float32x4_t, float32x4_t),
+        a3: &mut (float32x4_t, float32x4_t),
+        pk: *const f32,
+        tap: usize,
+        in0: (float32x4_t, float32x4_t),
+        in1: (float32x4_t, float32x4_t),
+        in2: (float32x4_t, float32x4_t),
+        in3: (float32x4_t, float32x4_t),
+    ) {
+        macro_rules! ci_block {
+            ($ci:expr, $v0:expr, $v1:expr, $v2:expr, $v3:expr, $lane:expr) => {{
+                let b = pk.add(((tap * 8 + $ci) * 2) * 4);
+                let wlo = vld1q_f32(b);
+                let whi = vld1q_f32(b.add(4));
+                a0.0 = vfmaq_laneq_f32::<$lane>(a0.0, wlo, $v0);
+                a0.1 = vfmaq_laneq_f32::<$lane>(a0.1, whi, $v0);
+                a1.0 = vfmaq_laneq_f32::<$lane>(a1.0, wlo, $v1);
+                a1.1 = vfmaq_laneq_f32::<$lane>(a1.1, whi, $v1);
+                a2.0 = vfmaq_laneq_f32::<$lane>(a2.0, wlo, $v2);
+                a2.1 = vfmaq_laneq_f32::<$lane>(a2.1, whi, $v2);
+                a3.0 = vfmaq_laneq_f32::<$lane>(a3.0, wlo, $v3);
+                a3.1 = vfmaq_laneq_f32::<$lane>(a3.1, whi, $v3);
+            }};
+        }
+        // Lanes 0..3 of in*.0 are ci 0..3; lanes 0..3 of in*.1 are ci 4..7.
+        ci_block!(0, in0.0, in1.0, in2.0, in3.0, 0);
+        ci_block!(1, in0.0, in1.0, in2.0, in3.0, 1);
+        ci_block!(2, in0.0, in1.0, in2.0, in3.0, 2);
+        ci_block!(3, in0.0, in1.0, in2.0, in3.0, 3);
+        ci_block!(4, in0.1, in1.1, in2.1, in3.1, 0);
+        ci_block!(5, in0.1, in1.1, in2.1, in3.1, 1);
+        ci_block!(6, in0.1, in1.1, in2.1, in3.1, 2);
+        ci_block!(7, in0.1, in1.1, in2.1, in3.1, 3);
+    }
+
+    /// One output pixel with runtime kw bounds (column edges only).
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn px1<const KH_LO: usize, const KH_HI: usize>(
+        inp: *const f32,
+        pk: *const f32,
+        oh: usize,
+        ow: usize,
+        w_in: usize,
+        kw_lo: usize,
+        kw_hi: usize,
+    ) -> (float32x4_t, float32x4_t) {
+        let mut acc = (vdupq_n_f32(0.0), vdupq_n_f32(0.0));
+        for kh in KH_LO..KH_HI {
+            // ih = oh + kh - 1, iw = ow + kw - 1.
+            let row = inp.add(((oh + kh - 1) * w_in + ow) * 8);
+            for kw in kw_lo..kw_hi {
+                let p = row.add((kw - 1) * 8);
+                let in_lo = vld1q_f32(p);
+                let in_hi = vld1q_f32(p.add(4));
+                fma_tap(&mut acc, pk, kh * 3 + kw, in_lo, in_hi);
+            }
+        }
+        acc
+    }
+
+    /// Four interior output pixels (ow..ow+3), full kw range. The 6 shared
+    /// input columns per `kh` row are loaded once and reused across taps.
+    #[inline(always)]
+    unsafe fn px4<const KH_LO: usize, const KH_HI: usize>(
+        inp: *const f32,
+        pk: *const f32,
+        oh: usize,
+        ow: usize,
+        w_in: usize,
+    ) -> [(float32x4_t, float32x4_t); 4] {
+        let z = (vdupq_n_f32(0.0), vdupq_n_f32(0.0));
+        let mut a0 = z;
+        let mut a1 = z;
+        let mut a2 = z;
+        let mut a3 = z;
+        for kh in KH_LO..KH_HI {
+            // Leftmost shared column is iw = ow - 1 (tap kw=0 of pixel ow).
+            let row = inp.add(((oh + kh - 1) * w_in + ow - 1) * 8);
+            // Load the 6 spanned input columns once (each two quads).
+            let c0 = (vld1q_f32(row), vld1q_f32(row.add(4)));
+            let c1 = (vld1q_f32(row.add(8)), vld1q_f32(row.add(12)));
+            let c2 = (vld1q_f32(row.add(16)), vld1q_f32(row.add(20)));
+            let c3 = (vld1q_f32(row.add(24)), vld1q_f32(row.add(28)));
+            let c4 = (vld1q_f32(row.add(32)), vld1q_f32(row.add(36)));
+            let c5 = (vld1q_f32(row.add(40)), vld1q_f32(row.add(44)));
+            // Pixel p, tap kw → shared column slot (p + kw).
+            // kw=0: pixels use cols (0,1,2,3); kw=1: (1,2,3,4); kw=2: (2,3,4,5).
+            fma_tap4(
+                &mut a0,
+                &mut a1,
+                &mut a2,
+                &mut a3,
+                pk,
+                kh * 3,
+                c0,
+                c1,
+                c2,
+                c3,
+            );
+            fma_tap4(
+                &mut a0,
+                &mut a1,
+                &mut a2,
+                &mut a3,
+                pk,
+                kh * 3 + 1,
+                c1,
+                c2,
+                c3,
+                c4,
+            );
+            fma_tap4(
+                &mut a0,
+                &mut a1,
+                &mut a2,
+                &mut a3,
+                pk,
+                kh * 3 + 2,
+                c2,
+                c3,
+                c4,
+                c5,
+            );
+        }
+        [a0, a1, a2, a3]
+    }
+
+    #[inline(always)]
+    unsafe fn store_px(
+        out: *mut f32,
+        acc: (float32x4_t, float32x4_t),
+        blo: float32x4_t,
+        bhi: float32x4_t,
+        relu: bool,
+    ) {
+        let mut lo = vaddq_f32(acc.0, blo);
+        let mut hi = vaddq_f32(acc.1, bhi);
+        if relu {
+            let z = vdupq_n_f32(0.0);
+            lo = vmaxq_f32(lo, z);
+            hi = vmaxq_f32(hi, z);
+        }
+        vst1q_f32(out, lo);
+        vst1q_f32(out.add(4), hi);
+    }
+
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn row_body<const KH_LO: usize, const KH_HI: usize>(
+        inp: *const f32,
+        pk: *const f32,
+        oh: usize,
+        w_in: usize,
+        blo: float32x4_t,
+        bhi: float32x4_t,
+        relu: bool,
+        out: *mut f32,
+    ) {
+        // Left edge (ow = 0): kw = 0 reads iw = -1 → skip.
+        store_px(
+            out,
+            px1::<KH_LO, KH_HI>(inp, pk, oh, 0, w_in, 1, 3),
+            blo,
+            bhi,
+            relu,
+        );
+        // Interior 1..w_in-1: 4-pixel blocks then a 1-pixel tail.
+        let mut ow = 1usize;
+        while ow + 4 <= w_in - 1 {
+            let a = px4::<KH_LO, KH_HI>(inp, pk, oh, ow, w_in);
+            for (p, &acc) in a.iter().enumerate() {
+                store_px(out.add((ow + p) * 8), acc, blo, bhi, relu);
+            }
+            ow += 4;
+        }
+        while ow < w_in - 1 {
+            store_px(
+                out.add(ow * 8),
+                px1::<KH_LO, KH_HI>(inp, pk, oh, ow, w_in, 0, 3),
+                blo,
+                bhi,
+                relu,
+            );
+            ow += 1;
+        }
+        // Right edge (ow = w_in-1): kw = 2 reads iw = w_in → skip.
+        store_px(
+            out.add((w_in - 1) * 8),
+            px1::<KH_LO, KH_HI>(inp, pk, oh, w_in - 1, w_in, 0, 2),
+            blo,
+            bhi,
+            relu,
+        );
+    }
+
+    output
+        .par_chunks_mut(w_in * 8)
+        .enumerate()
+        .for_each(|(oh, row_out)| unsafe {
+            let inp = in_addr as *const f32;
+            let pk = pk_addr as *const f32;
+            let blo = vld1q_f32(bias.as_ptr());
+            let bhi = vld1q_f32(bias.as_ptr().add(4));
+            let out = row_out.as_mut_ptr();
+            // oh=0 → kh=0 reads ih=-1, skip. oh=h_in-1 → kh=2 reads ih=h_in,
+            // skip. Interior rows use the full 0..3 kh range.
+            if oh == 0 {
+                row_body::<1, 3>(inp, pk, oh, w_in, blo, bhi, relu, out);
+            } else if oh == h_in - 1 {
+                row_body::<0, 2>(inp, pk, oh, w_in, blo, bhi, relu, out);
+            } else {
+                row_body::<0, 3>(inp, pk, oh, w_in, blo, bhi, relu, out);
+            }
+        });
+}

@@ -416,6 +416,47 @@ pub fn conv3x3_s2_c8_co24(
     );
 }
 
+/// Specialized 3×3 **stride-1** conv dispatcher for `c_in = 8, c_out = 8`
+/// (block1.2). `packed` is the `neon::pack_b1_2_laneq` layout (576 f32).
+///
+/// The NEON kernel uses `vfmaq_laneq_f32` over the 8 input channels with the
+/// 8 output channels carried as two `float32x4` accumulators, processing the
+/// stride-1 interior in 4-pixel blocks (shared input-column loads). Tolerance-
+/// (not bit-) exact vs scalar; see `neon::conv3x3_s1_c8_co8_neon`. Falls back
+/// to the generic scalar stride-1 conv elsewhere (raw weights).
+#[allow(clippy::too_many_arguments)]
+pub fn conv3x3_s1_c8_co8(
+    input: &[f32],
+    packed: &[f32],
+    weights: &[f32],
+    bias: &[f32],
+    h_in: usize,
+    w_in: usize,
+    activation: Activation,
+    output: &mut [f32],
+) {
+    #[cfg(target_arch = "aarch64")]
+    if cpu_features().has_neon && packed.len() == 9 * 8 * 2 * 4 && w_in >= 6 {
+        return neon::conv3x3_s1_c8_co8_neon(input, packed, bias, h_in, w_in, activation, output);
+    }
+    let _ = packed;
+    scalar::conv3x3_relu_nhwc(
+        &Conv3x3Args {
+            input,
+            residual: None,
+            weights,
+            bias,
+            h_in,
+            w_in,
+            c_in: 8,
+            c_out: 8,
+            activation,
+            packed_weights: None,
+        },
+        output,
+    );
+}
+
 /// Pixel-shuffle (factor 8) + f16→f32 widening.
 ///
 /// Dispatches to `neon::pixel_shuffle_8_f16_neon` on aarch64 (FCVTL vectorized).

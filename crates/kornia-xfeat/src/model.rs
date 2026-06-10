@@ -159,6 +159,7 @@ pub struct XFeat {
     // Specialized vfmaq_laneq weight layouts for the block1.1/1.3 f32 NEON
     // kernels (pack_b1_1_laneq / pack_b1_3_laneq). Empty on non-aarch64.
     packed_b1_1_laneq: Vec<f32>, // block1.1 → 9·4·2·4 = 288 f32
+    packed_b1_2_laneq: Vec<f32>, // block1.2 (stride-1) → 9·8·2·4 = 576 f32
     packed_b1_3_laneq: Vec<f32>, // block1.3 → 9·8·6·4 = 1728 f32
     packed_b3_0: Vec<f32>,       // block3.0  c_in=24, c_out=64  → 13824 f32
     packed_b4_0: Vec<f32>,       // block4.0  c_in=64, c_out=64  → 36864 f32
@@ -356,6 +357,13 @@ impl XFeat {
         #[cfg(not(target_arch = "aarch64"))]
         let packed_b1_1_laneq: Vec<f32> = Vec::new();
         #[cfg(target_arch = "aarch64")]
+        let packed_b1_2_laneq = weights
+            .get("block1.2.weight")
+            .map(crate::ops::neon::pack_b1_2_laneq)
+            .unwrap_or_default();
+        #[cfg(not(target_arch = "aarch64"))]
+        let packed_b1_2_laneq: Vec<f32> = Vec::new();
+        #[cfg(target_arch = "aarch64")]
         let packed_b1_3_laneq = weights
             .get("block1.3.weight")
             .map(crate::ops::neon::pack_b1_3_laneq)
@@ -508,6 +516,7 @@ impl XFeat {
             packed_b1_1,
             packed_b1_3,
             packed_b1_1_laneq,
+            packed_b1_2_laneq,
             packed_b1_3_laneq,
             packed_b3_0,
             packed_b4_0,
@@ -921,19 +930,36 @@ impl XFeat {
         {
             let bt = self.weights.get("block1.2.bias")?;
             let wt_sp = self.weights.get("block1.2.weight")?;
-            let hit = winograd_conv(
-                use_winograd,
-                use_fp16,
-                &self.winograd_cache,
-                wt_sp,
-                bt,
-                "block1.2",
-                &self.buf_b[..h / 2 * (w / 2) * 8],
-                h / 2,
-                w / 2,
-                Activation::Relu,
-                &mut self.buf_a[..h / 2 * (w / 2) * 8],
-            );
+            let hit = if use_winograd && !self.packed_b1_2_laneq.is_empty() {
+                // Specialized stride-1 c_in=8/c_out=8 vfmaq_laneq NEON kernel.
+                // Gated on the "not the scalar parity oracle" flag, replacing
+                // the Winograd path when the specialized kernel is available.
+                crate::ops::conv3x3_s1_c8_co8(
+                    &self.buf_b[..h / 2 * (w / 2) * 8],
+                    &self.packed_b1_2_laneq,
+                    wt_sp,
+                    bt,
+                    h / 2,
+                    w / 2,
+                    Activation::Relu,
+                    &mut self.buf_a[..h / 2 * (w / 2) * 8],
+                );
+                true
+            } else {
+                winograd_conv(
+                    use_winograd,
+                    use_fp16,
+                    &self.winograd_cache,
+                    wt_sp,
+                    bt,
+                    "block1.2",
+                    &self.buf_b[..h / 2 * (w / 2) * 8],
+                    h / 2,
+                    w / 2,
+                    Activation::Relu,
+                    &mut self.buf_a[..h / 2 * (w / 2) * 8],
+                )
+            };
             if !hit {
                 let wt = self.weights.get("block1.2.weight")?;
                 (vt.conv3x3)(
@@ -953,7 +979,7 @@ impl XFeat {
                 );
             }
         }
-        t_lap!("4.block1.2 wino(8->8)", _t);
+        t_lap!("4.block1.2 conv(8->8)", _t);
         // step 4: conv3x3(8→24, s=2, relu) → buf_b = x1_raw (H/4,W/4,24)
         {
             let wt = self.weights.get("block1.3.weight")?;
