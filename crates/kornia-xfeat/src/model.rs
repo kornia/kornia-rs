@@ -773,6 +773,86 @@ impl XFeat {
             true
         }
 
+        /// Fused 3×3 Winograd → 1×1 conv epilogue (fp16 hot path only).
+        ///
+        /// When the fp16 Winograd path is eligible for `layer3x3`, the 1×1
+        /// layer's prepacked B is available, and the output shape is bit-exact
+        /// safe, this runs `conv3x3_winograd_nhwc_f43_f16_fused1x1`, which writes
+        /// the final f16 1×1 output directly — eliminating the full-size f32
+        /// intermediate that the 3×3 would otherwise write and the 1×1 re-read,
+        /// plus one Rayon dispatch barrier.
+        ///
+        /// Returns `true` if the fused path ran (caller must then SKIP both the
+        /// standalone 3×3 and standalone 1×1). Returns `false` if any condition
+        /// is unmet, in which case the caller runs the unfused sequence — the
+        /// numerics of the fused and unfused paths are bit-identical.
+        #[cfg(target_arch = "aarch64")]
+        #[allow(clippy::too_many_arguments)]
+        fn winograd_fused1x1(
+            enabled: bool,
+            fp16: bool,
+            cache: &WinogradCache,
+            packed_1x1: &std::collections::HashMap<String, (Vec<u16>, usize)>,
+            layer3x3: &str,
+            key1x1: &str,
+            bias3x3: &[f32],
+            bias1x1: &[f32],
+            act3x3: Activation,
+            act1x1: Activation,
+            input: &[f32],
+            h_in: usize,
+            w_in: usize,
+            c_out2: usize,
+            out1x1: &mut [u16], // final f16 output [h*w*c_out2]
+        ) -> bool {
+            if !enabled || !fp16 {
+                return false;
+            }
+            if act1x1 == Activation::Sigmoid {
+                return false;
+            }
+            if !winograd::f43_fused1x1_is_bit_exact(h_in, w_in) {
+                return false;
+            }
+            // Small-K direct conv3x3 bypass is not fusible here.
+            if cache.fp16_direct_conv.contains_key(layer3x3) {
+                return false;
+            }
+            let (Some(wt_f16), Some(bp_f16)) = (
+                cache.transformed_f16.get(layer3x3),
+                cache.b_panels_f16.get(layer3x3),
+            ) else {
+                return false;
+            };
+            let Some((pk1x1, pk1x1_off)) = packed_1x1.get(key1x1) else {
+                return false;
+            };
+            let c_out = cache.c_out[layer3x3];
+            let c_in = cache.c_in[layer3x3];
+            let bp_packed = cache.b_panels_packed.get(layer3x3).map_or(&[][..], |v| v);
+            winograd::conv3x3_winograd_nhwc_f43_f16_fused1x1(
+                input,
+                h_in,
+                w_in,
+                c_in,
+                wt_f16,
+                bp_f16,
+                bp_packed,
+                Some(bias3x3),
+                c_out,
+                act3x3,
+                pk1x1,
+                *pk1x1_off,
+                bias1x1,
+                c_out2,
+                act1x1,
+                out1x1,
+                h_in,
+                w_in,
+            );
+            true
+        }
+
         /// Zero-alloc conv1x1 dispatch for the fp16 hot path.
         ///
         /// On aarch64 with `use_fp16=true`: calls `conv1x1_nhwc_f16_scratch` with the
@@ -1499,7 +1579,40 @@ impl XFeat {
                 );
             }
         }
-        {
+        // block_fusion.1 (3×3 wino) → block_fusion.2 (1×1) — fused when eligible.
+        //
+        // The fused driver runs the 1×1 epilogue inside each Winograd task,
+        // writing the final f16 descriptor map directly to feats_f16 and
+        // skipping the full-size buf_b f32 intermediate. Bit-identical to the
+        // unfused sequence (asserted by test_f43_fused1x1_bit_identical_*).
+        // Only valid on the use_fp16_act path (f16 output to feats_f16).
+        // `mut` is only used on aarch64 (the assignment below is cfg-gated).
+        #[cfg_attr(not(target_arch = "aarch64"), allow(unused_mut))]
+        let mut block_fusion_fused = false;
+        #[cfg(target_arch = "aarch64")]
+        if use_fp16_act {
+            let bf1_bias = self.weights.get("block_fusion.1.bias")?;
+            let bf2_bias = self.weights.get("block_fusion.2.bias")?;
+            let feats_f16 = unsafe { std::slice::from_raw_parts_mut(feats_f16_ptr, feats_f16_len) };
+            block_fusion_fused = winograd_fused1x1(
+                use_winograd,
+                use_fp16,
+                &self.winograd_cache,
+                &self.conv1x1_packed_b,
+                "block_fusion.1",
+                "block_fusion.2.weight",
+                bf1_bias,
+                bf2_bias,
+                Activation::Relu,     // block_fusion.1 (3×3) ReLU
+                Activation::Identity, // block_fusion.2 (1×1) no activation
+                &self.buf_a[..h8 * w8 * 64],
+                h8,
+                w8,
+                64,
+                &mut feats_f16[..h8 * w8 * 64],
+            );
+        }
+        if !block_fusion_fused {
             // block_fusion.1: conv3x3(64→64, relu)  [Winograd-eligible]
             let bt = self.weights.get("block_fusion.1.bias")?;
             let wt_sp = self.weights.get("block_fusion.1.weight")?;
@@ -1537,7 +1650,8 @@ impl XFeat {
         }
         // block_fusion.2: plain conv1x1 with real bias, no activation.
         // f16-act path writes to feats_f16 (f16 storage); f32 path writes to feats.
-        {
+        // Skipped entirely when the fused driver above already produced feats_f16.
+        if !block_fusion_fused {
             let wt = self.weights.get("block_fusion.2.weight")?;
             let bt = self.weights.get("block_fusion.2.bias")?;
             #[cfg(target_arch = "aarch64")]

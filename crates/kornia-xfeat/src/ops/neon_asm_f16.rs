@@ -1806,6 +1806,23 @@ unsafe fn f16_bias_act_inplace(
     }
 }
 
+/// Public wrapper around the in-place f16 bias+activation epilogue, for callers
+/// outside this module (the fused Winograd→1×1 driver).
+///
+/// # Safety
+/// `buf` must hold at least `strip_m * c_out` u16 values and `bias` at least
+/// `c_out` f32 values.
+#[cfg(target_arch = "aarch64")]
+pub unsafe fn f16_bias_act_inplace_pub(
+    buf: &mut [u16],
+    bias: &[f32],
+    c_out: usize,
+    relu: bool,
+    strip_m: usize,
+) {
+    f16_bias_act_inplace(buf, bias, c_out, relu, strip_m)
+}
+
 /// conv1×1 NHWC: **f16 activation input → f16 activation output**, Rayon-parallel.
 ///
 /// Identical to `conv1x1_nhwc_f16_parallel` but:
