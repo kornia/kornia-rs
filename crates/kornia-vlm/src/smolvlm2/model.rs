@@ -260,19 +260,7 @@ impl Model {
         // Convert mask to float for computations
         let mask_f32 = image_token_mask.to_dtype(candle_core::DType::F32)?;
 
-        // Count number of image tokens to validate input
-        let num_image_tokens = mask_f32.sum_all()?.to_scalar::<f32>()? as usize;
-
-        // Verify we have the expected number of image hidden states
-        if img_seq_len != num_image_tokens {
-            return Err(candle_core::Error::Msg(format!(
-                "Expected {} image hidden states, got {}",
-                num_image_tokens,
-                image_hidden_states.dims1()?
-            )));
-        }
-
-        if num_image_tokens == 0 {
+        if img_seq_len == 0 {
             return Ok(inputs_embeds.clone());
         }
 
@@ -286,7 +274,7 @@ impl Model {
 
         // For positions where mask is 0, we need dummy indices (we'll mask them out anyway)
         // Clamp indices to valid range [0, num_image_tokens-1]
-        let max_idx = (num_image_tokens - 1) as i64;
+        let max_idx = (img_seq_len - 1) as i64;
         let clamped_indices = image_indices.clamp(0i64, max_idx)?;
 
         // Gather image embeddings using the computed indices
