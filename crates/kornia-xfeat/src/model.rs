@@ -155,9 +155,14 @@ pub struct XFeat {
     // [c_out/4, 9, c_in, 4] — matches the NEON v2 inner-loop read pattern.
     packed_b1_1: Vec<f32>, // block1.1  c_in=4,  c_out=8   → 288 f32
     packed_b1_3: Vec<f32>, // block1.3  c_in=8,  c_out=24  → 1728 f32
-    packed_b3_0: Vec<f32>, // block3.0  c_in=24, c_out=64  → 13824 f32
-    packed_b4_0: Vec<f32>, // block4.0  c_in=64, c_out=64  → 36864 f32
-    packed_b5_0: Vec<f32>, // block5.0  c_in=64, c_out=128 → 73728 f32
+
+    // Specialized vfmaq_laneq weight layouts for the block1.1/1.3 f32 NEON
+    // kernels (pack_b1_1_laneq / pack_b1_3_laneq). Empty on non-aarch64.
+    packed_b1_1_laneq: Vec<f32>, // block1.1 → 9·4·2·4 = 288 f32
+    packed_b1_3_laneq: Vec<f32>, // block1.3 → 9·8·6·4 = 1728 f32
+    packed_b3_0: Vec<f32>,       // block3.0  c_in=24, c_out=64  → 13824 f32
+    packed_b4_0: Vec<f32>,       // block4.0  c_in=64, c_out=64  → 36864 f32
+    packed_b5_0: Vec<f32>,       // block5.0  c_in=64, c_out=128 → 73728 f32
 
     // ── fp16 pre-packed weights for stride-2 direct conv3x3 ───────────────
     // Layout [c_out/8, 9, c_in, 8] fp16-as-u16. Only populated when
@@ -341,6 +346,22 @@ impl XFeat {
         let packed_b1_1 = pack("block1.1.weight", 8, 4);
         let packed_b1_3 = pack("block1.3.weight", 24, 8);
         let packed_b3_0 = pack("block3.0.weight", 64, 24);
+
+        // vfmaq_laneq layouts for the specialized block1.1/1.3 f32 kernels.
+        #[cfg(target_arch = "aarch64")]
+        let packed_b1_1_laneq = weights
+            .get("block1.1.weight")
+            .map(crate::ops::neon::pack_b1_1_laneq)
+            .unwrap_or_default();
+        #[cfg(not(target_arch = "aarch64"))]
+        let packed_b1_1_laneq: Vec<f32> = Vec::new();
+        #[cfg(target_arch = "aarch64")]
+        let packed_b1_3_laneq = weights
+            .get("block1.3.weight")
+            .map(crate::ops::neon::pack_b1_3_laneq)
+            .unwrap_or_default();
+        #[cfg(not(target_arch = "aarch64"))]
+        let packed_b1_3_laneq: Vec<f32> = Vec::new();
         let packed_b4_0 = pack("block4.0.weight", 64, 64);
         let packed_b5_0 = pack("block5.0.weight", 128, 64);
 
@@ -486,6 +507,8 @@ impl XFeat {
 
             packed_b1_1,
             packed_b1_3,
+            packed_b1_1_laneq,
+            packed_b1_3_laneq,
             packed_b3_0,
             packed_b4_0,
             packed_b5_0,
@@ -859,24 +882,39 @@ impl XFeat {
         {
             let wt = self.weights.get("block1.1.weight")?;
             let bt = self.weights.get("block1.1.bias")?;
-            s2_conv(
-                use_fp16,
-                vt.conv3x3_s2,
-                &Conv3x3Args {
-                    input: &self.buf_a[..h * w * 4],
-                    residual: None,
-                    weights: wt,
-                    bias: bt,
-                    h_in: h,
-                    w_in: w,
-                    c_in: 4,
-                    c_out: 8,
-                    activation: Activation::Relu,
-                    packed_weights: (!self.packed_b1_1.is_empty()).then_some(&self.packed_b1_1),
-                },
-                &mut self.buf_b[..h / 2 * (w / 2) * 8],
-                b1_1_f16,
-            );
+            if use_winograd && !self.packed_b1_1_laneq.is_empty() {
+                // Specialized c_in=4/c_out=8 vfmaq_laneq NEON kernel.
+                // Gated on the "not the scalar parity oracle" flag.
+                crate::ops::conv3x3_s2_c4_co8(
+                    &self.buf_a[..h * w * 4],
+                    &self.packed_b1_1_laneq,
+                    wt,
+                    bt,
+                    h,
+                    w,
+                    Activation::Relu,
+                    &mut self.buf_b[..h / 2 * (w / 2) * 8],
+                );
+            } else {
+                s2_conv(
+                    use_fp16,
+                    vt.conv3x3_s2,
+                    &Conv3x3Args {
+                        input: &self.buf_a[..h * w * 4],
+                        residual: None,
+                        weights: wt,
+                        bias: bt,
+                        h_in: h,
+                        w_in: w,
+                        c_in: 4,
+                        c_out: 8,
+                        activation: Activation::Relu,
+                        packed_weights: (!self.packed_b1_1.is_empty()).then_some(&self.packed_b1_1),
+                    },
+                    &mut self.buf_b[..h / 2 * (w / 2) * 8],
+                    b1_1_f16,
+                );
+            }
         }
         t_lap!("3.block1.1 s2(4->8)", _t);
         // step 3: conv3x3(8→8, relu)  [Winograd-eligible]
@@ -920,24 +958,38 @@ impl XFeat {
         {
             let wt = self.weights.get("block1.3.weight")?;
             let bt = self.weights.get("block1.3.bias")?;
-            s2_conv(
-                use_fp16,
-                vt.conv3x3_s2,
-                &Conv3x3Args {
-                    input: &self.buf_a[..h / 2 * (w / 2) * 8],
-                    residual: None,
-                    weights: wt,
-                    bias: bt,
-                    h_in: h / 2,
-                    w_in: w / 2,
-                    c_in: 8,
-                    c_out: 24,
-                    activation: Activation::Relu,
-                    packed_weights: (!self.packed_b1_3.is_empty()).then_some(&self.packed_b1_3),
-                },
-                &mut self.buf_b[..h4 * w4 * 24],
-                b1_3_f16,
-            );
+            if use_winograd && !self.packed_b1_3_laneq.is_empty() {
+                // Specialized c_in=8/c_out=24 vfmaq_laneq NEON kernel.
+                crate::ops::conv3x3_s2_c8_co24(
+                    &self.buf_a[..h / 2 * (w / 2) * 8],
+                    &self.packed_b1_3_laneq,
+                    wt,
+                    bt,
+                    h / 2,
+                    w / 2,
+                    Activation::Relu,
+                    &mut self.buf_b[..h4 * w4 * 24],
+                );
+            } else {
+                s2_conv(
+                    use_fp16,
+                    vt.conv3x3_s2,
+                    &Conv3x3Args {
+                        input: &self.buf_a[..h / 2 * (w / 2) * 8],
+                        residual: None,
+                        weights: wt,
+                        bias: bt,
+                        h_in: h / 2,
+                        w_in: w / 2,
+                        c_in: 8,
+                        c_out: 24,
+                        activation: Activation::Relu,
+                        packed_weights: (!self.packed_b1_3.is_empty()).then_some(&self.packed_b1_3),
+                    },
+                    &mut self.buf_b[..h4 * w4 * 24],
+                    b1_3_f16,
+                );
+            }
         }
 
         t_lap!("5.block1.3 s2(8->24)", _t);

@@ -340,6 +340,82 @@ pub fn conv3x3_c1_co4(
     );
 }
 
+/// Specialized 3×3 **stride-2** conv dispatcher for `c_in = 4, c_out = 8`
+/// (block1.1). `packed` is the `neon::pack_b1_1_laneq` layout (288 f32).
+///
+/// The NEON kernel uses `vfmaq_laneq_f32` over the 4 input channels with
+/// 8 output channels carried as two `float32x4` accumulators. Tolerance-
+/// (not bit-) exact vs scalar; see `neon::conv3x3_s2_c4_co8_neon`. Falls
+/// back to the generic scalar stride-2 conv elsewhere (raw weights).
+#[allow(clippy::too_many_arguments)]
+pub fn conv3x3_s2_c4_co8(
+    input: &[f32],
+    packed: &[f32],
+    weights: &[f32],
+    bias: &[f32],
+    h_in: usize,
+    w_in: usize,
+    activation: Activation,
+    output: &mut [f32],
+) {
+    #[cfg(target_arch = "aarch64")]
+    if cpu_features().has_neon && packed.len() == 9 * 4 * 2 * 4 {
+        return neon::conv3x3_s2_c4_co8_neon(input, packed, bias, h_in, w_in, activation, output);
+    }
+    let _ = packed;
+    scalar::conv3x3_s2_relu_nhwc(
+        &Conv3x3Args {
+            input,
+            residual: None,
+            weights,
+            bias,
+            h_in,
+            w_in,
+            c_in: 4,
+            c_out: 8,
+            activation,
+            packed_weights: None,
+        },
+        output,
+    );
+}
+
+/// Specialized 3×3 **stride-2** conv dispatcher for `c_in = 8, c_out = 24`
+/// (block1.3). `packed` is the `neon::pack_b1_3_laneq` layout (1728 f32).
+/// Tolerance- (not bit-) exact vs scalar; see `neon::conv3x3_s2_c8_co24_neon`.
+#[allow(clippy::too_many_arguments)]
+pub fn conv3x3_s2_c8_co24(
+    input: &[f32],
+    packed: &[f32],
+    weights: &[f32],
+    bias: &[f32],
+    h_in: usize,
+    w_in: usize,
+    activation: Activation,
+    output: &mut [f32],
+) {
+    #[cfg(target_arch = "aarch64")]
+    if cpu_features().has_neon && packed.len() == 9 * 8 * 6 * 4 {
+        return neon::conv3x3_s2_c8_co24_neon(input, packed, bias, h_in, w_in, activation, output);
+    }
+    let _ = packed;
+    scalar::conv3x3_s2_relu_nhwc(
+        &Conv3x3Args {
+            input,
+            residual: None,
+            weights,
+            bias,
+            h_in,
+            w_in,
+            c_in: 8,
+            c_out: 24,
+            activation,
+            packed_weights: None,
+        },
+        output,
+    );
+}
+
 /// Pixel-shuffle (factor 8) + f16→f32 widening.
 ///
 /// Dispatches to `neon::pixel_shuffle_8_f16_neon` on aarch64 (FCVTL vectorized).
