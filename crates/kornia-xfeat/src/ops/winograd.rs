@@ -143,8 +143,7 @@ pub fn winograd_transform_weights_f32(
 ///
 /// B^T rows: `[1,0,-1,0]`, `[0,1,1,0]`, `[0,-1,1,0]`, `[0,1,0,-1]`.
 #[inline(always)]
-pub fn winograd_transform_input_tile_f32(
-    d: &[f32; 16], // 4×4 row-major
+pub fn winograd_transform_input_tile_f32(d: &[f32; 16], // 4×4 row-major
 ) -> [f32; 16] {
     // Convenience indexing: d[r][c] → d[r*4 + c]
     macro_rules! d {
@@ -176,8 +175,8 @@ pub fn winograd_transform_input_tile_f32(
     //   v[3][c] = t[1][c] - t[3][c]
     let mut out = [0.0f32; 16];
     for c in 0..4usize {
-        out[0 * 4 + c] = t[0][c] - t[2][c];
-        out[1 * 4 + c] = t[1][c] + t[2][c];
+        out[c] = t[0][c] - t[2][c];
+        out[4 + c] = t[1][c] + t[2][c];
         out[2 * 4 + c] = t[2][c] - t[1][c];
         out[3 * 4 + c] = t[1][c] - t[3][c];
     }
@@ -349,8 +348,7 @@ pub fn winograd_transform_weights_f32_f43(
 /// All operations are additions/subtractions and constant integer scalings.
 /// Returns the 6×6 transformed patch in row-major order.
 #[inline(always)]
-pub fn winograd_transform_input_tile_f32_f43(
-    d: &[f32; 36], // 6×6 row-major
+pub fn winograd_transform_input_tile_f32_f43(d: &[f32; 36], // 6×6 row-major
 ) -> [f32; 36] {
     // B^T rows applied to a length-6 vector x = [x0..x5]:
     //   r0 =  4*x0          - 5*x2          + 1*x4
@@ -415,14 +413,7 @@ pub fn winograd_output_transform_f32_f43(
     // s[*][c] = at(m[0][c], m[1][c], ..., m[5][c])
     let mut s = [[0.0f32; 6]; 4]; // s[row 0..4][col 0..6]
     for c in 0..6usize {
-        let col = at(
-            m[c],
-            m[6 + c],
-            m[12 + c],
-            m[18 + c],
-            m[24 + c],
-            m[30 + c],
-        );
+        let col = at(m[c], m[6 + c], m[12 + c], m[18 + c], m[24 + c], m[30 + c]);
         for r in 0..4usize {
             s[r][c] = col[r];
         }
@@ -514,7 +505,10 @@ pub fn conv3x3_winograd_nhwc_f43(
     if let Some(b) = bias {
         debug_assert_eq!(b.len(), c_out);
     }
-    debug_assert!(c_out <= 128, "F(4,3) stack accumulator sized for c_out ≤ 128");
+    debug_assert!(
+        c_out <= 128,
+        "F(4,3) stack accumulator sized for c_out ≤ 128"
+    );
 
     // Ceiling division: last tile may be partial when h_out/w_out % 4 != 0.
     let n_tile_h = (h_out + 3) / 4;
@@ -531,8 +525,7 @@ pub fn conv3x3_winograd_nhwc_f43(
     (0..n_tile_h).into_par_iter().for_each(|tile_oh| {
         let valid_rows = (h_out - tile_oh * 4).min(4);
 
-        let input =
-            unsafe { std::slice::from_raw_parts(in_ptr as *const f32, h_in * w_in * c_in) };
+        let input = unsafe { std::slice::from_raw_parts(in_ptr as *const f32, h_in * w_in * c_in) };
         let wt = unsafe { std::slice::from_raw_parts(wt_ptr as *const f32, 36 * c_out * c_in) };
         let bias_slice: Option<&[f32]> = if has_bias {
             Some(unsafe { std::slice::from_raw_parts(bias_ptr as *const f32, c_out) })
@@ -560,8 +553,7 @@ pub fn conv3x3_winograd_nhwc_f43(
             m_acc[..36 * c_out].fill(0.0);
 
             for ci in 0..c_in {
-                let patch =
-                    extract_patch_f32_6x6(input, h_in, w_in, c_in, ih_start, iw_start, ci);
+                let patch = extract_patch_f32_6x6(input, h_in, w_in, c_in, ih_start, iw_start, ci);
                 let v = winograd_transform_input_tile_f32_f43(&patch);
 
                 // wt layout: [36, c_out, c_in] → wt[p*c_out*c_in + co*c_in + ci]
@@ -825,8 +817,7 @@ fn extract_patch_f32(
         for c in 0..4isize {
             let iw = iw_start + c;
             if ih >= 0 && ih < h_in as isize && iw >= 0 && iw < w_in as isize {
-                patch[(r * 4 + c) as usize] =
-                    input[(ih as usize * w_in + iw as usize) * c_in + ci];
+                patch[(r * 4 + c) as usize] = input[(ih as usize * w_in + iw as usize) * c_in + ci];
             }
         }
     }
@@ -944,8 +935,7 @@ pub fn conv3x3_winograd_nhwc(
 
             for co in 0..c_out {
                 // Gather the 4×4 m matrix for this output channel.
-                let m_tile: [f32; 16] =
-                    core::array::from_fn(|p| m_acc[p * c_out + co]);
+                let m_tile: [f32; 16] = core::array::from_fn(|p| m_acc[p * c_out + co]);
 
                 let y = winograd_output_transform_f32(&m_tile);
 
@@ -959,10 +949,11 @@ pub fn conv3x3_winograd_nhwc(
                 // Write into out_row_base: shape [2, w_out, c_out]
                 // Row 0 of tile → out_row_base[0..w_out*c_out]
                 // Row 1 of tile → out_row_base[w_out*c_out..2*w_out*c_out]
-                out_row_base[0 * w_out * c_out + ow0 * c_out + co] = y00;
-                out_row_base[0 * w_out * c_out + ow1 * c_out + co] = y01;
-                out_row_base[1 * w_out * c_out + ow0 * c_out + co] = y10;
-                out_row_base[1 * w_out * c_out + ow1 * c_out + co] = y11;
+                let row1 = w_out * c_out;
+                out_row_base[ow0 * c_out + co] = y00;
+                out_row_base[ow1 * c_out + co] = y01;
+                out_row_base[row1 + ow0 * c_out + co] = y10;
+                out_row_base[row1 + ow1 * c_out + co] = y11;
             }
         }
     });
@@ -1070,8 +1061,16 @@ pub fn conv3x3_winograd_nhwc_with_scalar_fallback(
     let n_tile_w = w_out / 2;
 
     // Recompute boundary pixels using scalar conv when dims are odd.
-    let scalar_col = if w_out % 2 != 0 { Some(w_out - 1) } else { None };
-    let scalar_row = if h_out % 2 != 0 { Some(h_out - 1) } else { None };
+    let scalar_col = if w_out % 2 != 0 {
+        Some(w_out - 1)
+    } else {
+        None
+    };
+    let scalar_row = if h_out % 2 != 0 {
+        Some(h_out - 1)
+    } else {
+        None
+    };
 
     // Last column pixels for all processed rows.
     if let Some(ow) = scalar_col {
@@ -1098,8 +1097,7 @@ pub fn conv3x3_winograd_nhwc_with_scalar_fallback(
                     }
                 }
                 let b = bias.map_or(0.0, |bs| bs[co]);
-                output[oh * w_out * c_out + ow * c_out + co] =
-                    apply_act(acc + b, activation);
+                output[oh * w_out * c_out + ow * c_out + co] = apply_act(acc + b, activation);
             }
         }
     }
@@ -1135,8 +1133,7 @@ pub fn conv3x3_winograd_nhwc_with_scalar_fallback(
                     }
                 }
                 let b = bias.map_or(0.0, |bs| bs[co]);
-                output[oh * w_out * c_out + ow * c_out + co] =
-                    apply_act(acc + b, activation);
+                output[oh * w_out * c_out + ow * c_out + co] = apply_act(acc + b, activation);
             }
         }
     }
@@ -1197,8 +1194,7 @@ pub fn conv3x3_winograd_nhwc_f16(
             // Transpose [c_out, c_in] → [c_in, c_out]
             for co in 0..c_out {
                 for ci in 0..c_in {
-                    panel[ci * c_out + co] =
-                        weights_transformed_f16[pos_offset + co * c_in + ci];
+                    panel[ci * c_out + co] = weights_transformed_f16[pos_offset + co * c_in + ci];
                 }
             }
             panel
@@ -1216,8 +1212,7 @@ pub fn conv3x3_winograd_nhwc_f16(
     let out_ptr = output.as_mut_ptr() as usize;
 
     (0..n_tile_h).into_par_iter().for_each(|tile_oh| {
-        let input =
-            unsafe { std::slice::from_raw_parts(in_ptr as *const f32, h_in * w_in * c_in) };
+        let input = unsafe { std::slice::from_raw_parts(in_ptr as *const f32, h_in * w_in * c_in) };
         let bias_slice: Option<&[f32]> = if has_bias {
             Some(unsafe { std::slice::from_raw_parts(bias_ptr as *const f32, c_out) })
         } else {
@@ -1260,8 +1255,7 @@ pub fn conv3x3_winograd_nhwc_f16(
             for tile_ow in 0..n_tile_w {
                 let iw_start = (tile_ow * 2) as isize - 1;
                 for ci in 0..c_in {
-                    let patch =
-                        extract_patch_f32(input, h_in, w_in, c_in, ih_start, iw_start, ci);
+                    let patch = extract_patch_f32(input, h_in, w_in, c_in, ih_start, iw_start, ci);
                     let v = winograd_transform_input_tile_f32(&patch);
                     a_f16[tile_ow * c_in + ci] = half::f16::from_f32(v[p]).to_bits();
                 }
@@ -1276,17 +1270,13 @@ pub fn conv3x3_winograd_nhwc_f16(
             // Layout: m_acc_f16[tile_ow * (16 * c_out) + p * c_out + co]
             // For a fixed p, the C rows are non-contiguous (stride = 16 * c_out).
             // gemm_f16_mnk requires contiguous [M, N] C — so we use a temp buf.
-            let b_ptr = unsafe {
-                std::slice::from_raw_parts(b_ptrs[p] as *const u16, c_in * c_out)
-            };
+            let b_ptr =
+                unsafe { std::slice::from_raw_parts(b_ptrs[p] as *const u16, c_in * c_out) };
             let mut c_tmp = vec![zero_f16; n_tile_w * c_out];
 
             // Run the fp16 GEMM: C_tmp[n_tile_w, c_out] += A[n_tile_w, c_in] × B[c_in, c_out]
             super::neon_asm_f16::gemm_f16_mnk(
-                &a_f16,
-                b_ptr,
-                &mut c_tmp,
-                n_tile_w, // M
+                &a_f16, b_ptr, &mut c_tmp, n_tile_w, // M
                 c_in,     // K
                 c_out,    // N
                 false,    // no relu — accumulate, apply relu only in output epilogue
@@ -1321,10 +1311,11 @@ pub fn conv3x3_winograd_nhwc_f16(
                 let y10 = apply_act(y[2] + b, activation);
                 let y11 = apply_act(y[3] + b, activation);
 
-                out_row_base[0 * w_out * c_out + ow0 * c_out + co] = y00;
-                out_row_base[0 * w_out * c_out + ow1 * c_out + co] = y01;
-                out_row_base[1 * w_out * c_out + ow0 * c_out + co] = y10;
-                out_row_base[1 * w_out * c_out + ow1 * c_out + co] = y11;
+                let row1 = w_out * c_out;
+                out_row_base[ow0 * c_out + co] = y00;
+                out_row_base[ow1 * c_out + co] = y01;
+                out_row_base[row1 + ow0 * c_out + co] = y10;
+                out_row_base[row1 + ow1 * c_out + co] = y11;
             }
         }
     });
@@ -1416,13 +1407,42 @@ pub fn conv3x3_winograd_nhwc_f43_f16(
     // Pre-packed B: skip per-frame B packing when available.
     const NR_W: usize = 8;
     let n_blocks_w = c_out / NR_W;
-    let n_rem_w    = c_out % NR_W;
-    let slot_sz    = n_blocks_w * c_in * NR_W + c_in * n_rem_w;
+    let n_rem_w = c_out % NR_W;
+    let slot_sz = n_blocks_w * c_in * NR_W + c_in * n_rem_w;
     let use_prepacked = !b_panels_packed.is_empty() && b_panels_packed.len() == 36 * slot_sz;
-    let b_packed_ptr = if use_prepacked { b_panels_packed.as_ptr() as usize } else { 0 };
+    let b_packed_ptr = if use_prepacked {
+        b_panels_packed.as_ptr() as usize
+    } else {
+        0
+    };
 
     let tile_row_stride = 4 * w_out * c_out;
     let out_ptr = output.as_mut_ptr() as usize;
+
+    // Column-split: raise outer task count to the next multiple of n_rayon_threads
+    // by splitting each tile-row into `col_parts` column slices.
+    //
+    // Formula: col_parts = n_rayon_threads / gcd(n_tile_h, n_rayon_threads).
+    // This gives the smallest multiplier k such that n_tile_h × k is divisible by
+    // n_rayon_threads — eliminating the work-stealing tail imbalance with the
+    // fewest extra tasks.
+    //
+    // Example (60×80, 12 Rayon workers):
+    //   n_tile_h=15, gcd(15,12)=3 → col_parts=4 → 60 tasks = 5×12 (perfect balance).
+    //   Each task covers 5 tile-columns (M=8 after GEMM padding) and uses the same
+    //   thread-local scratch buffers — no extra heap allocations.
+    //
+    // Cap at n_tile_w so each task covers ≥1 tile column.
+    fn gcd(a: usize, b: usize) -> usize {
+        if b == 0 {
+            a
+        } else {
+            gcd(b, a % b)
+        }
+    }
+    let n_rayon_threads = rayon::current_num_threads().max(1);
+    let g = gcd(n_tile_h, n_rayon_threads);
+    let col_parts = (n_rayon_threads / g).min(n_tile_w.max(1));
 
     // Co-block parallelism: when pre-packed B panels are available and c_out > NR_W,
     // split the GEMM inside each tile-row into NR_W-wide subtasks.  Idle Rayon
@@ -1430,309 +1450,391 @@ pub fn conv3x3_winograd_nhwc_f43_f16(
     // utilisation from n_tile_h/N_THREADS to (n_tile_h × n_co8)/N_THREADS.
     // Effective for small spatial sizes: block5 (4 tile-rows → 4×16=64 items),
     // block4 (8 → 128 items), block_fusion (15 → 120 items) with 12 threads.
-    let n_co8      = n_blocks_w; // = c_out / NR_W
-    // Co-block parallelism helps only when the outer tile-row count is too small
-    // to saturate all Rayon threads.  When n_tile_h >= 6, the outer par_iter
-    // alone keeps 6 threads busy; adding an inner 8-way par creates
-    // oversubscription and forces per-tile-row heap allocations (2 × 108 KB for
-    // 60×80 c64→c64).  Disable co_par in that regime.
-    //
-    // Also disable when n_tile_w_gemm <= 8: with only 8 tiles per row the GEMM
-    // is so small (M=8, K, N) that Rayon task-dispatch overhead (~5 µs/task) for
-    // n_tile_h × n_co8 = 4×16 = 64 tasks exceeds the compute benefit.  In that
-    // regime the 4 outer tile-row tasks already cover 4/6 cores; the remaining
-    // 2 idle cores are cheaper than paying 64-task dispatch overhead (~320 µs).
-    let use_co_par = use_prepacked && n_co8 > 1 && n_tile_h < 6 && n_tile_w_gemm > 8;
+    let n_co8 = n_blocks_w; // = c_out / NR_W
+                            // Co-block parallelism is only useful when outer task count < thread count.
+                            // When col_parts > 1 (column-split active), outer tasks already fill the pool —
+                            // enabling co_par would add oversubscription and per-tile heap allocations.
+    let use_co_par = use_prepacked
+        && n_co8 > 1
+        && col_parts == 1
+        && n_tile_h < n_rayon_threads
+        && n_tile_w_gemm > 8;
 
-    (0..n_tile_h).into_par_iter().for_each(|tile_oh| {
-        // For partial last tiles (h_out % 4 != 0), only write the valid rows.
-        let valid_rows = (h_out - tile_oh * 4).min(4);
+    (0..n_tile_h * col_parts)
+        .into_par_iter()
+        .for_each(|task_id| {
+            let tile_oh = task_id / col_parts;
+            let col_part = task_id % col_parts;
+            // Column range for this task (relative within the tile-row).
+            let tiles_per_part = (n_tile_w + col_parts - 1) / col_parts;
+            let col_start = col_part * tiles_per_part;
+            let col_end = (col_start + tiles_per_part).min(n_tile_w);
+            let n_col_tiles = col_end - col_start;
+            // GEMM panel width for this column slice (padded to MR=8).
+            let n_tile_w_gemm_part = (n_col_tiles + MR - 1) / MR * MR;
+            // For partial last tiles (h_out % 4 != 0), only write the valid rows.
+            let valid_rows = (h_out - tile_oh * 4).min(4);
 
-        let input =
-            unsafe { std::slice::from_raw_parts(in_ptr as *const f32, h_in * w_in * c_in) };
-        let bias_slice: Option<&[f32]> = if has_bias {
-            Some(unsafe { std::slice::from_raw_parts(bias_ptr as *const f32, c_out) })
-        } else {
-            None
-        };
-
-        let ih_start = (tile_oh * 4) as isize - 1;
-
-        // n_tile_w_gemm is computed once outside the closure (see above).
-        let zero_f16 = half::f16::ZERO.to_bits();
-        let a_len  = 36 * n_tile_w_gemm * c_in;
-        let m_len  = n_tile_w_gemm * 36 * c_out;
-        let c_len  = n_tile_w_gemm * c_out;
-        let pa_len = c_in * MR;
-        let pb_len = c_in * c_out;
-
-        // Phase 1: build all 36 A panels (input transform) — sequential on this thread.
-        // The result is shared read-only with inner co-block workers via a raw pointer.
-        F43_A_ALL.with(|a_cell| {
-            let mut a_all = a_cell.borrow_mut();
-
-            if a_all.len() < a_len { a_all.resize(a_len, zero_f16); }
-            // Phantom columns (n_tile_w..n_tile_w_gemm) must stay zero.
-            a_all[..a_len].fill(zero_f16);
-
-            #[cfg(target_arch = "aarch64")]
-            for tile_ow in 0..n_tile_w {
-                let iw_start = (tile_ow * 4) as isize - 1;
-                unsafe {
-                    super::neon_asm_f16::transform_input_tile_allch_f43(
-                        input, h_in, w_in, c_in, ih_start, iw_start,
-                        n_tile_w_gemm, tile_ow, &mut a_all,
-                    );
-                }
-            }
-
-            #[cfg(not(target_arch = "aarch64"))]
-            for tile_ow in 0..n_tile_w {
-                let iw_start = (tile_ow * 4) as isize - 1;
-                for ci in 0..c_in {
-                    let patch =
-                        extract_patch_f32_6x6(input, h_in, w_in, c_in, ih_start, iw_start, ci);
-                    let v = winograd_transform_input_tile_f32_f43(&patch);
-                    let idx = tile_ow * c_in + ci;
-                    for p in 0..36usize {
-                        a_all[p * n_tile_w_gemm * c_in + idx] =
-                            half::f16::from_f32(v[p]).to_bits();
-                    }
-                }
-            }
-
-            let out_row_base_ptr =
-                unsafe { (out_ptr as *mut f32).add(tile_oh * tile_row_stride) } as usize;
-
-            if use_co_par {
-                // ── Co-block parallelism: Phase 2 parallel GEMM, Phase 3 serial ─
-                // Clone a_all and release RefMut BEFORE inner par_iter to avoid
-                // RefCell re-entrancy when Rayon re-uses this thread for another
-                // outer tile_oh task while we are waiting for the inner par.
-                let a_copy: Vec<u16> = a_all[..a_len].to_vec();
-                drop(a_all); // release RefMut; inner par reads from a_copy
-                let a_ptr = a_copy.as_ptr() as usize;
-
-                // Each co-block's accumulator occupies a unique, non-overlapping
-                // slice of m_acc_all, so the parallel GEMM phase has no
-                // false-sharing.  The output-transform (Phase 3) runs serially
-                // after the parallel phase, so each co-block writes to disjoint
-                // output-channel bytes — no cache-line contention there either.
-                let m_co_len = n_tile_w_gemm * 36 * NR_W;
-                let c_co_len = n_tile_w_gemm * NR_W;
-                let mut m_acc_all = vec![0u16; n_co8 * m_co_len];
-                let m_all_ptr = m_acc_all.as_mut_ptr() as usize;
-
-                // Phase 2: GEMM — parallel across co-blocks.
-                (0..n_co8).into_par_iter().for_each(|co_blk| {
-                    let a  = unsafe { std::slice::from_raw_parts(a_ptr as *const u16, a_len) };
-                    let bp = unsafe {
-                        std::slice::from_raw_parts(b_packed_ptr as *const u16, 36 * slot_sz)
-                    };
-                    // Exclusive m_acc slice for this co-block.
-                    let m_co = unsafe {
-                        std::slice::from_raw_parts_mut(
-                            (m_all_ptr as *mut u16).add(co_blk * m_co_len),
-                            m_co_len,
-                        )
-                    };
-
-                    F43_C_TMP.with(|c_cell| {
-                    F43_PACK_A.with(|pa_cell| {
-                        let mut c_tmp  = c_cell.borrow_mut();
-                        let mut pack_a = pa_cell.borrow_mut();
-
-                        if c_tmp.len()  < c_co_len { c_tmp.resize(c_co_len, zero_f16); }
-                        if pack_a.len() < pa_len   { pack_a.resize(pa_len,   zero_f16); }
-
-                        for p in 0..36usize {
-                            let a_f16 = &a[p * n_tile_w_gemm * c_in
-                                          ..(p + 1) * n_tile_w_gemm * c_in];
-                            c_tmp[..c_co_len].fill(zero_f16);
-
-                            let p_off = p * slot_sz + co_blk * c_in * NR_W;
-                            super::neon_asm_f16::gemm_f16_mnk_packed_b(
-                                a_f16,
-                                &bp[p_off..p_off + c_in * NR_W],
-                                &[],
-                                &mut c_tmp[..c_co_len],
-                                n_tile_w_gemm, c_in, NR_W,
-                                &mut pack_a[..pa_len],
-                            );
-
-                            // Scatter into compact m_co: layout [tile_ow, 36, NR_W].
-                            for tile_ow in 0..n_tile_w {
-                                let dst = tile_ow * 36 * NR_W + p * NR_W;
-                                let src = tile_ow * NR_W;
-                                m_co[dst..dst + NR_W]
-                                    .copy_from_slice(&c_tmp[src..src + NR_W]);
-                            }
-                        }
-                    })});
-                });
-
-                // Phase 3: output transform — serial, no false-sharing.
-                {
-                    use super::neon_asm_f16::{
-                        load_bias_f16x8, vld1q_u16_wrap,
-                        winograd_f43_output_transform_write_f16x8,
-                    };
-                    let out_row_stride = w_out * c_out;
-                    let relu  = matches!(activation, Activation::Relu);
-                    let out_p = out_row_base_ptr as *mut f32;
-
-                    for co_blk in 0..n_co8 {
-                        let co_base = co_blk * NR_W;
-                        let m = &m_acc_all[co_blk * m_co_len..(co_blk + 1) * m_co_len];
-
-                        for tile_ow in 0..n_tile_w {
-                            let ow0        = tile_ow * 4;
-                            let tb         = tile_ow * 36 * NR_W;
-                            let valid_cols = (w_out - ow0).min(4);
-
-                            let (bias_lo, bias_hi) =
-                                unsafe { load_bias_f16x8(bias_slice, co_base) };
-
-                            let mut m_f16 =
-                                unsafe { [vld1q_u16_wrap(m.as_ptr()); 36] };
-                            for (p, slot) in m_f16.iter_mut().enumerate() {
-                                *slot = unsafe {
-                                    vld1q_u16_wrap(m[tb + p * NR_W..].as_ptr())
-                                };
-                            }
-
-                            unsafe {
-                                winograd_f43_output_transform_write_f16x8(
-                                    &m_f16, bias_lo, bias_hi, relu,
-                                    out_p, out_row_stride,
-                                    ow0, c_out, co_base, valid_rows, valid_cols,
-                                );
-                            }
-                        }
-                    }
-                }
-
+            let input =
+                unsafe { std::slice::from_raw_parts(in_ptr as *const f32, h_in * w_in * c_in) };
+            let bias_slice: Option<&[f32]> = if has_bias {
+                Some(unsafe { std::slice::from_raw_parts(bias_ptr as *const f32, c_out) })
             } else {
-                // ── Non-co_par: original full-c_out sequential GEMM + output ─────
-                let a_ptr = a_all.as_ptr() as usize;
-                F43_M_ACC.with(|m_cell| {
-                F43_C_TMP.with(|c_cell| {
-                F43_PACK_A.with(|pa_cell| {
-                F43_PACK_B.with(|pb_cell| {
-                    let mut m_acc_f16 = m_cell.borrow_mut();
-                    let mut c_tmp     = c_cell.borrow_mut();
-                    let mut pack_a    = pa_cell.borrow_mut();
-                    let mut pack_b    = pb_cell.borrow_mut();
+                None
+            };
 
-                    if m_acc_f16.len() < m_len  { m_acc_f16.resize(m_len, zero_f16); }
-                    if c_tmp.len()     < c_len  { c_tmp.resize(c_len,   zero_f16); }
-                    if pack_a.len()    < pa_len { pack_a.resize(pa_len, zero_f16); }
-                    if pack_b.len()    < pb_len { pack_b.resize(pb_len, zero_f16); }
+            let ih_start = (tile_oh * 4) as isize - 1;
 
-                    m_acc_f16[..m_len].fill(zero_f16);
+            // n_tile_w_gemm is computed once outside the closure (see above).
+            let zero_f16 = half::f16::ZERO.to_bits();
+            let a_len = 36 * n_tile_w_gemm_part * c_in;
+            let m_len = n_tile_w_gemm_part * 36 * c_out;
+            let c_len = n_tile_w_gemm_part * c_out;
+            let pa_len = c_in * MR;
+            let pb_len = c_in * c_out;
 
-                    let a = unsafe {
-                        std::slice::from_raw_parts(a_ptr as *const u16, a_len)
-                    };
+            // Phase 1: build all 36 A panels (input transform) — sequential on this thread.
+            // The result is shared read-only with inner co-block workers via a raw pointer.
+            F43_A_ALL.with(|a_cell| {
+                let mut a_all = a_cell.borrow_mut();
 
-                    for p in 0..36usize {
-                        let a_f16 = &a[p * n_tile_w_gemm * c_in..(p + 1) * n_tile_w_gemm * c_in];
-                        c_tmp[..c_len].fill(zero_f16);
+                if a_all.len() < a_len {
+                    a_all.resize(a_len, zero_f16);
+                }
+                // Phantom columns (n_tile_w..n_tile_w_gemm) must stay zero.
+                a_all[..a_len].fill(zero_f16);
 
-                        if use_prepacked {
-                            let bp = unsafe {
-                                std::slice::from_raw_parts(b_packed_ptr as *const u16, 36 * slot_sz)
-                            };
-                            let p_off      = p * slot_sz;
-                            let packed_b   = &bp[p_off..p_off + n_blocks_w * c_in * NR_W];
-                            let b_rem_tail =
-                                &bp[p_off + n_blocks_w * c_in * NR_W..(p + 1) * slot_sz];
-                            super::neon_asm_f16::gemm_f16_mnk_packed_b(
-                                a_f16, packed_b, b_rem_tail, &mut c_tmp[..c_len],
-                                n_tile_w_gemm, c_in, c_out, &mut pack_a[..pa_len],
-                            );
-                        } else {
-                            let b_panels: &[u16] = unsafe {
-                                std::slice::from_raw_parts(
-                                    b_panels_ptr as *const u16, 36 * c_in * c_out)
-                            };
-                            let b_ptr = &b_panels[p * c_in * c_out..(p + 1) * c_in * c_out];
-                            super::neon_asm_f16::gemm_f16_mnk_with_pack(
-                                a_f16, b_ptr, &mut c_tmp[..c_len], n_tile_w_gemm, c_in, c_out,
-                                &mut pack_a[..pa_len], &mut pack_b[..pb_len], false,
-                            );
-                        }
+                // Build A panels for this column slice only (relative indexing).
+                // rel_ow = 0..n_col_tiles maps to absolute tile_ow = col_start..col_end.
+                #[cfg(target_arch = "aarch64")]
+                for tile_ow in col_start..col_end {
+                    let rel_ow = tile_ow - col_start;
+                    let iw_start = (tile_ow * 4) as isize - 1;
+                    unsafe {
+                        super::neon_asm_f16::transform_input_tile_allch_f43(
+                            input,
+                            h_in,
+                            w_in,
+                            c_in,
+                            ih_start,
+                            iw_start,
+                            n_tile_w_gemm_part,
+                            rel_ow,
+                            &mut a_all,
+                        );
+                    }
+                }
 
-                        for tile_ow in 0..n_tile_w {
-                            let dst_base = tile_ow * 36 * c_out + p * c_out;
-                            let src_base = tile_ow * c_out;
-                            m_acc_f16[dst_base..dst_base + c_out]
-                                .copy_from_slice(&c_tmp[src_base..src_base + c_out]);
+                #[cfg(not(target_arch = "aarch64"))]
+                for tile_ow in col_start..col_end {
+                    let rel_ow = tile_ow - col_start;
+                    let iw_start = (tile_ow * 4) as isize - 1;
+                    for ci in 0..c_in {
+                        let patch =
+                            extract_patch_f32_6x6(input, h_in, w_in, c_in, ih_start, iw_start, ci);
+                        let v = winograd_transform_input_tile_f32_f43(&patch);
+                        let idx = rel_ow * c_in + ci;
+                        for p in 0..36usize {
+                            a_all[p * n_tile_w_gemm_part * c_in + idx] =
+                                half::f16::from_f32(v[p]).to_bits();
                         }
                     }
+                }
 
-                    // ── Output transform ─────────────────────────────────────────
-                    use super::neon_asm_f16::{
-                        load_bias_f16x8, vld1q_u16_wrap,
-                        winograd_f43_output_transform_write_f16x8,
-                    };
-                    let out_row_stride = w_out * c_out;
-                    let relu     = matches!(activation, Activation::Relu);
-                    let m_acc    = &m_acc_f16[..m_len];
-                    let out_p    = out_row_base_ptr as *mut f32;
+                let out_row_base_ptr =
+                    unsafe { (out_ptr as *mut f32).add(tile_oh * tile_row_stride) } as usize;
 
-                    for tile_ow in 0..n_tile_w {
-                        let ow0        = tile_ow * 4;
-                        let tile_base  = tile_ow * 36 * c_out;
-                        let valid_cols = (w_out - tile_ow * 4).min(4);
+                if use_co_par {
+                    // ── Co-block parallelism: Phase 2 parallel GEMM, Phase 3 serial ─
+                    // Clone a_all and release RefMut BEFORE inner par_iter to avoid
+                    // RefCell re-entrancy when Rayon re-uses this thread for another
+                    // outer tile_oh task while we are waiting for the inner par.
+                    let a_copy: Vec<u16> = a_all[..a_len].to_vec();
+                    drop(a_all); // release RefMut; inner par reads from a_copy
+                    let a_ptr = a_copy.as_ptr() as usize;
 
-                        let mut co_base = 0usize;
-                        while co_base + 8 <= c_out {
-                            let (bias_lo, bias_hi) =
-                                unsafe { load_bias_f16x8(bias_slice, co_base) };
+                    // Each co-block's accumulator occupies a unique, non-overlapping
+                    // slice of m_acc_all, so the parallel GEMM phase has no
+                    // false-sharing.  The output-transform (Phase 3) runs serially
+                    // after the parallel phase, so each co-block writes to disjoint
+                    // output-channel bytes — no cache-line contention there either.
+                    let m_co_len = n_tile_w_gemm * 36 * NR_W;
+                    let c_co_len = n_tile_w_gemm * NR_W;
+                    let mut m_acc_all = vec![0u16; n_co8 * m_co_len];
+                    let m_all_ptr = m_acc_all.as_mut_ptr() as usize;
 
-                            let mut m_f16 =
-                                unsafe { [vld1q_u16_wrap(m_acc.as_ptr()); 36] };
-                            for (p, slot) in m_f16.iter_mut().enumerate() {
-                                *slot = unsafe {
-                                    vld1q_u16_wrap(
-                                        m_acc[tile_base + p * c_out + co_base..].as_ptr())
-                                };
-                            }
+                    // Phase 2: GEMM — parallel across co-blocks.
+                    (0..n_co8).into_par_iter().for_each(|co_blk| {
+                        let a = unsafe { std::slice::from_raw_parts(a_ptr as *const u16, a_len) };
+                        let bp = unsafe {
+                            std::slice::from_raw_parts(b_packed_ptr as *const u16, 36 * slot_sz)
+                        };
+                        // Exclusive m_acc slice for this co-block.
+                        let m_co = unsafe {
+                            std::slice::from_raw_parts_mut(
+                                (m_all_ptr as *mut u16).add(co_blk * m_co_len),
+                                m_co_len,
+                            )
+                        };
 
-                            unsafe {
-                                winograd_f43_output_transform_write_f16x8(
-                                    &m_f16, bias_lo, bias_hi, relu,
-                                    out_p, out_row_stride,
-                                    ow0, c_out, co_base, valid_rows, valid_cols,
-                                );
-                            }
-                            co_base += 8;
-                        }
+                        F43_C_TMP.with(|c_cell| {
+                            F43_PACK_A.with(|pa_cell| {
+                                let mut c_tmp = c_cell.borrow_mut();
+                                let mut pack_a = pa_cell.borrow_mut();
 
-                        // Scalar tail (no XFeat layer has c_out % 8 != 0).
-                        for co in co_base..c_out {
-                            let m_tile: [f32; 36] = core::array::from_fn(|p| {
-                                let bits = m_acc[tile_base + p * c_out + co];
-                                half::f16::from_bits(bits).to_f32()
-                            });
-                            let y = winograd_output_transform_f32_f43(&m_tile);
-                            let b = bias_slice.map_or(0.0, |bs| bs[co]);
-                            for ry in 0..valid_rows {
-                                let row_off = ry * out_row_stride;
-                                for cx in 0..valid_cols {
-                                    let val = apply_act(y[ry * 4 + cx] + b, activation);
-                                    unsafe {
-                                        *out_p.add(row_off + (ow0 + cx) * c_out + co) = val;
+                                if c_tmp.len() < c_co_len {
+                                    c_tmp.resize(c_co_len, zero_f16);
+                                }
+                                if pack_a.len() < pa_len {
+                                    pack_a.resize(pa_len, zero_f16);
+                                }
+
+                                for p in 0..36usize {
+                                    let a_f16 = &a
+                                        [p * n_tile_w_gemm * c_in..(p + 1) * n_tile_w_gemm * c_in];
+                                    c_tmp[..c_co_len].fill(zero_f16);
+
+                                    let p_off = p * slot_sz + co_blk * c_in * NR_W;
+                                    super::neon_asm_f16::gemm_f16_mnk_packed_b(
+                                        a_f16,
+                                        &bp[p_off..p_off + c_in * NR_W],
+                                        &[],
+                                        &mut c_tmp[..c_co_len],
+                                        n_tile_w_gemm,
+                                        c_in,
+                                        NR_W,
+                                        &mut pack_a[..pa_len],
+                                    );
+
+                                    // Scatter into compact m_co: layout [tile_ow, 36, NR_W].
+                                    for tile_ow in 0..n_tile_w {
+                                        let dst = tile_ow * 36 * NR_W + p * NR_W;
+                                        let src = tile_ow * NR_W;
+                                        m_co[dst..dst + NR_W]
+                                            .copy_from_slice(&c_tmp[src..src + NR_W]);
                                     }
+                                }
+                            })
+                        });
+                    });
+
+                    // Phase 3: output transform — serial, no false-sharing.
+                    {
+                        use super::neon_asm_f16::{
+                            load_bias_f16x8, vld1q_u16_wrap,
+                            winograd_f43_output_transform_write_f16x8,
+                        };
+                        let out_row_stride = w_out * c_out;
+                        let relu = matches!(activation, Activation::Relu);
+                        let out_p = out_row_base_ptr as *mut f32;
+
+                        for co_blk in 0..n_co8 {
+                            let co_base = co_blk * NR_W;
+                            let m = &m_acc_all[co_blk * m_co_len..(co_blk + 1) * m_co_len];
+
+                            for tile_ow in 0..n_tile_w {
+                                let ow0 = tile_ow * 4;
+                                let tb = tile_ow * 36 * NR_W;
+                                let valid_cols = (w_out - ow0).min(4);
+
+                                let (bias_lo, bias_hi) =
+                                    unsafe { load_bias_f16x8(bias_slice, co_base) };
+
+                                let mut m_f16 = unsafe { [vld1q_u16_wrap(m.as_ptr()); 36] };
+                                for (p, slot) in m_f16.iter_mut().enumerate() {
+                                    *slot = unsafe { vld1q_u16_wrap(m[tb + p * NR_W..].as_ptr()) };
+                                }
+
+                                unsafe {
+                                    winograd_f43_output_transform_write_f16x8(
+                                        &m_f16,
+                                        bias_lo,
+                                        bias_hi,
+                                        relu,
+                                        out_p,
+                                        out_row_stride,
+                                        ow0,
+                                        c_out,
+                                        co_base,
+                                        valid_rows,
+                                        valid_cols,
+                                    );
                                 }
                             }
                         }
                     }
-                })})})});
-            }
+                } else {
+                    // ── Non-co_par: original full-c_out sequential GEMM + output ─────
+                    let a_ptr = a_all.as_ptr() as usize;
+                    F43_M_ACC.with(|m_cell| {
+                        F43_C_TMP.with(|c_cell| {
+                            F43_PACK_A.with(|pa_cell| {
+                                F43_PACK_B.with(|pb_cell| {
+                                    let mut m_acc_f16 = m_cell.borrow_mut();
+                                    let mut c_tmp = c_cell.borrow_mut();
+                                    let mut pack_a = pa_cell.borrow_mut();
+                                    let mut pack_b = pb_cell.borrow_mut();
+
+                                    if m_acc_f16.len() < m_len {
+                                        m_acc_f16.resize(m_len, zero_f16);
+                                    }
+                                    if c_tmp.len() < c_len {
+                                        c_tmp.resize(c_len, zero_f16);
+                                    }
+                                    if pack_a.len() < pa_len {
+                                        pack_a.resize(pa_len, zero_f16);
+                                    }
+                                    if pack_b.len() < pb_len {
+                                        pack_b.resize(pb_len, zero_f16);
+                                    }
+
+                                    m_acc_f16[..m_len].fill(zero_f16);
+
+                                    let a = unsafe {
+                                        std::slice::from_raw_parts(a_ptr as *const u16, a_len)
+                                    };
+
+                                    for p in 0..36usize {
+                                        // A panels for this column slice only (relative indices).
+                                        let a_f16 = &a[p * n_tile_w_gemm_part * c_in
+                                            ..(p + 1) * n_tile_w_gemm_part * c_in];
+                                        c_tmp[..c_len].fill(zero_f16);
+
+                                        if use_prepacked {
+                                            let bp = unsafe {
+                                                std::slice::from_raw_parts(
+                                                    b_packed_ptr as *const u16,
+                                                    36 * slot_sz,
+                                                )
+                                            };
+                                            let p_off = p * slot_sz;
+                                            let packed_b =
+                                                &bp[p_off..p_off + n_blocks_w * c_in * NR_W];
+                                            let b_rem_tail = &bp[p_off + n_blocks_w * c_in * NR_W
+                                                ..(p + 1) * slot_sz];
+                                            super::neon_asm_f16::gemm_f16_mnk_packed_b(
+                                                a_f16,
+                                                packed_b,
+                                                b_rem_tail,
+                                                &mut c_tmp[..c_len],
+                                                n_tile_w_gemm_part,
+                                                c_in,
+                                                c_out,
+                                                &mut pack_a[..pa_len],
+                                            );
+                                        } else {
+                                            let b_panels: &[u16] = unsafe {
+                                                std::slice::from_raw_parts(
+                                                    b_panels_ptr as *const u16,
+                                                    36 * c_in * c_out,
+                                                )
+                                            };
+                                            let b_ptr =
+                                                &b_panels[p * c_in * c_out..(p + 1) * c_in * c_out];
+                                            super::neon_asm_f16::gemm_f16_mnk_with_pack(
+                                                a_f16,
+                                                b_ptr,
+                                                &mut c_tmp[..c_len],
+                                                n_tile_w_gemm_part,
+                                                c_in,
+                                                c_out,
+                                                &mut pack_a[..pa_len],
+                                                &mut pack_b[..pb_len],
+                                                false,
+                                            );
+                                        }
+
+                                        // Scatter: rel_ow = 0..n_col_tiles (relative column index).
+                                        for rel_ow in 0..n_col_tiles {
+                                            let dst_base = rel_ow * 36 * c_out + p * c_out;
+                                            let src_base = rel_ow * c_out;
+                                            m_acc_f16[dst_base..dst_base + c_out].copy_from_slice(
+                                                &c_tmp[src_base..src_base + c_out],
+                                            );
+                                        }
+                                    }
+
+                                    // ── Output transform ─────────────────────────────────────────
+                                    use super::neon_asm_f16::{
+                                        load_bias_f16x8, vld1q_u16_wrap,
+                                        winograd_f43_output_transform_write_f16x8,
+                                    };
+                                    let out_row_stride = w_out * c_out;
+                                    let relu = matches!(activation, Activation::Relu);
+                                    let m_acc = &m_acc_f16[..m_len];
+                                    let out_p = out_row_base_ptr as *mut f32;
+
+                                    // Iterate over absolute tile columns (col_start..col_end);
+                                    // use rel_ow for m_acc indexing, tile_ow for output column.
+                                    for tile_ow in col_start..col_end {
+                                        let rel_ow = tile_ow - col_start;
+                                        let ow0 = tile_ow * 4;
+                                        let tile_base = rel_ow * 36 * c_out;
+                                        let valid_cols = (w_out - tile_ow * 4).min(4);
+
+                                        let mut co_base = 0usize;
+                                        while co_base + 8 <= c_out {
+                                            let (bias_lo, bias_hi) =
+                                                unsafe { load_bias_f16x8(bias_slice, co_base) };
+
+                                            let mut m_f16 =
+                                                unsafe { [vld1q_u16_wrap(m_acc.as_ptr()); 36] };
+                                            for (p, slot) in m_f16.iter_mut().enumerate() {
+                                                *slot = unsafe {
+                                                    vld1q_u16_wrap(
+                                                        m_acc[tile_base + p * c_out + co_base..]
+                                                            .as_ptr(),
+                                                    )
+                                                };
+                                            }
+
+                                            unsafe {
+                                                winograd_f43_output_transform_write_f16x8(
+                                                    &m_f16,
+                                                    bias_lo,
+                                                    bias_hi,
+                                                    relu,
+                                                    out_p,
+                                                    out_row_stride,
+                                                    ow0,
+                                                    c_out,
+                                                    co_base,
+                                                    valid_rows,
+                                                    valid_cols,
+                                                );
+                                            }
+                                            co_base += 8;
+                                        }
+
+                                        // Scalar tail (no XFeat layer has c_out % 8 != 0).
+                                        for co in co_base..c_out {
+                                            let m_tile: [f32; 36] = core::array::from_fn(|p| {
+                                                let bits = m_acc[tile_base + p * c_out + co];
+                                                half::f16::from_bits(bits).to_f32()
+                                            });
+                                            let y = winograd_output_transform_f32_f43(&m_tile);
+                                            let b = bias_slice.map_or(0.0, |bs| bs[co]);
+                                            for ry in 0..valid_rows {
+                                                let row_off = ry * out_row_stride;
+                                                for cx in 0..valid_cols {
+                                                    let val =
+                                                        apply_act(y[ry * 4 + cx] + b, activation);
+                                                    unsafe {
+                                                        *out_p.add(
+                                                            row_off + (ow0 + cx) * c_out + co,
+                                                        ) = val;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                })
+                            })
+                        })
+                    });
+                }
+            });
         });
-    });
 }
 
 /// fp16 F(4,3) driver with correct scalar fallback on the row/column epilogue.
@@ -2011,9 +2113,7 @@ mod tests {
         let c_out = 1usize;
 
         // Deterministic "random" input
-        let input: Vec<f32> = (0..h * w * c_in)
-            .map(|i| (i as f32 + 1.0) * 0.1)
-            .collect();
+        let input: Vec<f32> = (0..h * w * c_in).map(|i| (i as f32 + 1.0) * 0.1).collect();
 
         // Deterministic filter
         let weights: Vec<f32> = vec![
@@ -2119,14 +2219,7 @@ mod tests {
         assert_eq!(u.len(), 36);
 
         // G column 1 (kw=1 index in each G row): the second column of G.
-        let g_col1 = [
-            0.0f32,
-            -1.0 / 6.0,
-            1.0 / 6.0,
-            1.0 / 12.0,
-            -1.0 / 12.0,
-            0.0,
-        ];
+        let g_col1 = [0.0f32, -1.0 / 6.0, 1.0 / 6.0, 1.0 / 12.0, -1.0 / 12.0, 0.0];
         for i in 0..6usize {
             for j in 0..6usize {
                 let expected = g_col1[i] * g_col1[j];
@@ -2230,7 +2323,9 @@ mod tests {
     fn test_winograd_f43_matches_scalar_8x8() {
         let h = 8usize;
         let w = 8usize;
-        let input: Vec<f32> = (0..h * w).map(|i| ((i * 7) % 13) as f32 * 0.13 - 0.5).collect();
+        let input: Vec<f32> = (0..h * w)
+            .map(|i| ((i * 7) % 13) as f32 * 0.13 - 0.5)
+            .collect();
         let weights: Vec<f32> = vec![0.05, -0.2, 0.15, 0.3, -0.5, 0.1, -0.1, 0.25, 0.3];
 
         let wt = winograd_transform_weights_f32_f43(&weights, 1, 1);

@@ -64,9 +64,9 @@ fn gemm_tile_scalar(
     a: &[f32], // slice over full A panel, stride = full K
     a_row_stride: usize,
     a_row_offset: usize, // first A row index for this tile
-    b: &[f32], // slice over full B panel
+    b: &[f32],           // slice over full B panel
     b_col_offset: usize, // first B col for this tile
-    c: &mut [f32], // full C, stride = n
+    c: &mut [f32],       // full C, stride = n
     c_row_offset: usize,
     n: usize, // full N (stride of C rows)
 ) {
@@ -74,8 +74,8 @@ fn gemm_tile_scalar(
         for p in 0..k {
             let a_val = a[(a_row_offset + m) * a_row_stride + p];
             for nb in 0..nr {
-                c[(c_row_offset + m) * n + b_col_offset + nb] +=
-                    a_val * b[p * NR + nb]; // B panel is [K, NR] packed
+                c[(c_row_offset + m) * n + b_col_offset + nb] += a_val * b[p * NR + nb];
+                // B panel is [K, NR] packed
             }
         }
     }
@@ -316,8 +316,8 @@ unsafe fn gemm_mr4_nr8_fp16_native(
 /// # Panics
 /// Panics (debug) if slice lengths are inconsistent with `m`, `k`, `n`.
 pub fn winograd_gemm_f32(
-    a: &[f32],    // [m, k]
-    b: &[f32],    // [k, n]
+    a: &[f32],     // [m, k]
+    b: &[f32],     // [k, n]
     c: &mut [f32], // [m, n]  — pre-zeroed by caller or initialised to bias
     m: usize,
     k: usize,
@@ -342,7 +342,9 @@ pub fn winograd_gemm_f32(
         .enumerate()
         .for_each(|(mb, c_block)| {
             let mr_offset = mb * MR; // first A row for this block
-            let a_block = unsafe { std::slice::from_raw_parts((a_ptr as *const f32).add(mr_offset * k), MR * k) };
+            let a_block = unsafe {
+                std::slice::from_raw_parts((a_ptr as *const f32).add(mr_offset * k), MR * k)
+            };
             let b_panel = unsafe { std::slice::from_raw_parts(b_ptr as *const f32, k * n) };
             gemm_block_f32(a_block, b_panel, c_block, MR, k, n);
         });
@@ -383,7 +385,7 @@ fn gemm_block_f32(
                     a.as_ptr(),
                     b_packed.as_ptr(),
                     c.as_mut_ptr().add(b_col), // C row 0, col nb*NR
-                    n,                          // ldc = full N
+                    n,                         // ldc = full N
                 );
             }
         }

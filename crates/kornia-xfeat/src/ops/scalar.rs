@@ -2,8 +2,8 @@
 //! uses. These are the parity oracle the SIMD backends are tested against —
 //! correctness-first, no manual unrolling, no tuning.
 
-use rayon::prelude::*;
 use super::{Activation, Conv1x1Args, Conv3x3Args};
+use rayon::prelude::*;
 
 #[inline]
 fn apply_act(x: f32, act: Activation) -> f32 {
@@ -54,124 +54,127 @@ fn conv3x3_generic(args: &Conv3x3Args<'_>, output: &mut [f32], stride: usize) {
     }
 
     // Parallel over output rows — each row is independent (read-only input/weights/bias).
-    output.par_chunks_mut(w_out * c_out).enumerate().for_each(|(oh, row_out)| {
-        let ih_base = (oh * stride) as isize - 1;
-        for ow in 0..w_out {
-            let iw_base = (ow * stride) as isize - 1;
+    output
+        .par_chunks_mut(w_out * c_out)
+        .enumerate()
+        .for_each(|(oh, row_out)| {
+            let ih_base = (oh * stride) as isize - 1;
+            for ow in 0..w_out {
+                let iw_base = (ow * stride) as isize - 1;
 
-            for (co, &b) in bias.iter().enumerate().take(c_out) {
-                // 4-way FMA accumulators declared once per (oh, ow, co) work-item,
-                // accumulated across ALL valid (kh, kw) taps — identical structure
-                // to NEON conv3x3_generic which initialises acc0..acc3 to zero once
-                // per (co) and folds only after all taps.
-                let dot = if c_in % 4 == 0 {
-                    let mut acc0 = [0.0f32; 4];
-                    let mut acc1 = [0.0f32; 4];
-                    let mut acc2 = [0.0f32; 4];
-                    let mut acc3 = [0.0f32; 4];
+                for (co, &b) in bias.iter().enumerate().take(c_out) {
+                    // 4-way FMA accumulators declared once per (oh, ow, co) work-item,
+                    // accumulated across ALL valid (kh, kw) taps — identical structure
+                    // to NEON conv3x3_generic which initialises acc0..acc3 to zero once
+                    // per (co) and folds only after all taps.
+                    let dot = if c_in % 4 == 0 {
+                        let mut acc0 = [0.0f32; 4];
+                        let mut acc1 = [0.0f32; 4];
+                        let mut acc2 = [0.0f32; 4];
+                        let mut acc3 = [0.0f32; 4];
 
-                    for kh in 0..3usize {
-                        let ih = ih_base + kh as isize;
-                        if ih < 0 || ih >= h_in as isize {
-                            continue;
-                        }
-                        let ih = ih as usize;
-                        for kw in 0..3usize {
-                            let iw = iw_base + kw as isize;
-                            if iw < 0 || iw >= w_in as isize {
+                        for kh in 0..3usize {
+                            let ih = ih_base + kh as isize;
+                            if ih < 0 || ih >= h_in as isize {
                                 continue;
                             }
-                            let iw = iw as usize;
-                            let in_off = (ih * w_in + iw) * c_in;
-                            let w_off = ((co * 3 + kh) * 3 + kw) * c_in;
-                            // Phase 1: full 16-element blocks, 4 parallel accumulators.
-                            let n16 = c_in & !15;
-                            let mut i = 0usize;
-                            while i < n16 {
-                                for j in 0..4 {
-                                    acc0[j] = f32::mul_add(
-                                        input[in_off + i + j],
-                                        weights[w_off + i + j],
-                                        acc0[j],
-                                    );
-                                    acc1[j] = f32::mul_add(
-                                        input[in_off + i + 4 + j],
-                                        weights[w_off + i + 4 + j],
-                                        acc1[j],
-                                    );
-                                    acc2[j] = f32::mul_add(
-                                        input[in_off + i + 8 + j],
-                                        weights[w_off + i + 8 + j],
-                                        acc2[j],
-                                    );
-                                    acc3[j] = f32::mul_add(
-                                        input[in_off + i + 12 + j],
-                                        weights[w_off + i + 12 + j],
-                                        acc3[j],
-                                    );
+                            let ih = ih as usize;
+                            for kw in 0..3usize {
+                                let iw = iw_base + kw as isize;
+                                if iw < 0 || iw >= w_in as isize {
+                                    continue;
                                 }
-                                i += 16;
-                            }
-                            // Phase 2: f32x4 tail into acc0 only.
-                            while i < c_in {
-                                for j in 0..4 {
-                                    acc0[j] = f32::mul_add(
-                                        input[in_off + i + j],
-                                        weights[w_off + i + j],
-                                        acc0[j],
-                                    );
+                                let iw = iw as usize;
+                                let in_off = (ih * w_in + iw) * c_in;
+                                let w_off = ((co * 3 + kh) * 3 + kw) * c_in;
+                                // Phase 1: full 16-element blocks, 4 parallel accumulators.
+                                let n16 = c_in & !15;
+                                let mut i = 0usize;
+                                while i < n16 {
+                                    for j in 0..4 {
+                                        acc0[j] = f32::mul_add(
+                                            input[in_off + i + j],
+                                            weights[w_off + i + j],
+                                            acc0[j],
+                                        );
+                                        acc1[j] = f32::mul_add(
+                                            input[in_off + i + 4 + j],
+                                            weights[w_off + i + 4 + j],
+                                            acc1[j],
+                                        );
+                                        acc2[j] = f32::mul_add(
+                                            input[in_off + i + 8 + j],
+                                            weights[w_off + i + 8 + j],
+                                            acc2[j],
+                                        );
+                                        acc3[j] = f32::mul_add(
+                                            input[in_off + i + 12 + j],
+                                            weights[w_off + i + 12 + j],
+                                            acc3[j],
+                                        );
+                                    }
+                                    i += 16;
                                 }
-                                i += 4;
+                                // Phase 2: f32x4 tail into acc0 only.
+                                while i < c_in {
+                                    for j in 0..4 {
+                                        acc0[j] = f32::mul_add(
+                                            input[in_off + i + j],
+                                            weights[w_off + i + j],
+                                            acc0[j],
+                                        );
+                                    }
+                                    i += 4;
+                                }
                             }
                         }
-                    }
 
-                    // Horizontal fold: (acc0+acc1)+(acc2+acc3), then sum 4 lanes.
-                    // Mirrors NEON: vaddq_f32(vaddq_f32(acc0,acc1), vaddq_f32(acc2,acc3)) + vaddvq_f32.
-                    let mut s = [0.0f32; 4];
-                    for j in 0..4 {
-                        s[j] = (acc0[j] + acc1[j]) + (acc2[j] + acc3[j]);
-                    }
-                    s[0] + s[1] + s[2] + s[3]
-                } else {
-                    // Scalar fallback for c_in ∈ {1, 2, 3} (not hot paths in XFeat).
-                    let mut acc_scalar = 0.0f32;
-                    for kh in 0..3usize {
-                        let ih = ih_base + kh as isize;
-                        if ih < 0 || ih >= h_in as isize {
-                            continue;
+                        // Horizontal fold: (acc0+acc1)+(acc2+acc3), then sum 4 lanes.
+                        // Mirrors NEON: vaddq_f32(vaddq_f32(acc0,acc1), vaddq_f32(acc2,acc3)) + vaddvq_f32.
+                        let mut s = [0.0f32; 4];
+                        for j in 0..4 {
+                            s[j] = (acc0[j] + acc1[j]) + (acc2[j] + acc3[j]);
                         }
-                        let ih = ih as usize;
-                        for kw in 0..3usize {
-                            let iw = iw_base + kw as isize;
-                            if iw < 0 || iw >= w_in as isize {
+                        s[0] + s[1] + s[2] + s[3]
+                    } else {
+                        // Scalar fallback for c_in ∈ {1, 2, 3} (not hot paths in XFeat).
+                        let mut acc_scalar = 0.0f32;
+                        for kh in 0..3usize {
+                            let ih = ih_base + kh as isize;
+                            if ih < 0 || ih >= h_in as isize {
                                 continue;
                             }
-                            let iw = iw as usize;
-                            let in_off = (ih * w_in + iw) * c_in;
-                            let w_off = ((co * 3 + kh) * 3 + kw) * c_in;
-                            for ci in 0..c_in {
-                                acc_scalar = f32::mul_add(
-                                    input[in_off + ci],
-                                    weights[w_off + ci],
-                                    acc_scalar,
-                                );
+                            let ih = ih as usize;
+                            for kw in 0..3usize {
+                                let iw = iw_base + kw as isize;
+                                if iw < 0 || iw >= w_in as isize {
+                                    continue;
+                                }
+                                let iw = iw as usize;
+                                let in_off = (ih * w_in + iw) * c_in;
+                                let w_off = ((co * 3 + kh) * 3 + kw) * c_in;
+                                for ci in 0..c_in {
+                                    acc_scalar = f32::mul_add(
+                                        input[in_off + ci],
+                                        weights[w_off + ci],
+                                        acc_scalar,
+                                    );
+                                }
                             }
                         }
-                    }
-                    acc_scalar
-                };
+                        acc_scalar
+                    };
 
-                let out_off_row = ow * c_out + co;
-                let out_off_abs = (oh * w_out + ow) * c_out + co;
-                let mut v = dot + b;
-                if let Some(r) = residual {
-                    v += r[out_off_abs];
+                    let out_off_row = ow * c_out + co;
+                    let out_off_abs = (oh * w_out + ow) * c_out + co;
+                    let mut v = dot + b;
+                    if let Some(r) = residual {
+                        v += r[out_off_abs];
+                    }
+                    row_out[out_off_row] = apply_act(v, activation);
                 }
-                row_out[out_off_row] = apply_act(v, activation);
             }
-        }
-    });
+        });
 }
 
 /// 1×1 pointwise conv (per-pixel GEMM along channels). Weights `[c_out, c_in]`.
@@ -262,8 +265,18 @@ pub fn instance_norm_2d_singlech(input: &[f32], output: &mut [f32]) {
     // Parallel reductions for mean and variance, then parallel normalisation.
     // Use a minimum chunk size so thread-spawn overhead is amortised.
     const MIN_CHUNK: usize = 16384;
-    let mean: f32 = input.par_iter().with_min_len(MIN_CHUNK).map(|&x| x).sum::<f32>() / n;
-    let var: f32 = input.par_iter().with_min_len(MIN_CHUNK).map(|&x| (x - mean) * (x - mean)).sum::<f32>() / n;
+    let mean: f32 = input
+        .par_iter()
+        .with_min_len(MIN_CHUNK)
+        .map(|&x| x)
+        .sum::<f32>()
+        / n;
+    let var: f32 = input
+        .par_iter()
+        .with_min_len(MIN_CHUNK)
+        .map(|&x| (x - mean) * (x - mean))
+        .sum::<f32>()
+        / n;
     let inv_std = 1.0 / (var + 1e-5).sqrt();
     output
         .par_iter_mut()
@@ -279,21 +292,24 @@ pub fn avgpool_4x4_s4(input: &[f32], output: &mut [f32], h_in: usize, w_in: usiz
     let h_out = h_in / 4;
     let w_out = w_in / 4;
     debug_assert_eq!(output.len(), h_out * w_out * c);
-    output.par_chunks_mut(w_out * c).enumerate().for_each(|(oh, row_out)| {
-        for ow in 0..w_out {
-            for ci in 0..c {
-                let mut acc = 0.0f32;
-                for kh in 0..4 {
-                    for kw in 0..4 {
-                        let ih = oh * 4 + kh;
-                        let iw = ow * 4 + kw;
-                        acc += input[(ih * w_in + iw) * c + ci];
+    output
+        .par_chunks_mut(w_out * c)
+        .enumerate()
+        .for_each(|(oh, row_out)| {
+            for ow in 0..w_out {
+                for ci in 0..c {
+                    let mut acc = 0.0f32;
+                    for kh in 0..4 {
+                        for kw in 0..4 {
+                            let ih = oh * 4 + kh;
+                            let iw = ow * 4 + kw;
+                            acc += input[(ih * w_in + iw) * c + ci];
+                        }
                     }
+                    row_out[ow * c + ci] = acc / 16.0;
                 }
-                row_out[ow * c + ci] = acc / 16.0;
             }
-        }
-    });
+        });
 }
 
 /// `F.interpolate(..., mode='bilinear', align_corners=False)` from
@@ -310,31 +326,109 @@ pub fn bilinear_upsample(
 ) {
     let sh = h_in as f32 / h_out as f32;
     let sw = w_in as f32 / w_out as f32;
-    output.par_chunks_mut(w_out * c).enumerate().for_each(|(oh, row_out)| {
-        let ys = (oh as f32 + 0.5) * sh - 0.5;
-        let y0 = ys.floor();
-        let y1 = y0 + 1.0;
-        let wy = ys - y0;
-        let y0 = (y0 as isize).clamp(0, h_in as isize - 1) as usize;
-        let y1 = (y1 as isize).clamp(0, h_in as isize - 1) as usize;
-        for ow in 0..w_out {
-            let xs = (ow as f32 + 0.5) * sw - 0.5;
-            let x0 = xs.floor();
-            let x1 = x0 + 1.0;
-            let wx = xs - x0;
-            let x0 = (x0 as isize).clamp(0, w_in as isize - 1) as usize;
-            let x1 = (x1 as isize).clamp(0, w_in as isize - 1) as usize;
-            for ci in 0..c {
-                let v00 = input[(y0 * w_in + x0) * c + ci];
-                let v01 = input[(y0 * w_in + x1) * c + ci];
-                let v10 = input[(y1 * w_in + x0) * c + ci];
-                let v11 = input[(y1 * w_in + x1) * c + ci];
-                let v0 = v00 * (1.0 - wx) + v01 * wx;
-                let v1 = v10 * (1.0 - wx) + v11 * wx;
-                row_out[ow * c + ci] = v0 * (1.0 - wy) + v1 * wy;
+    output
+        .par_chunks_mut(w_out * c)
+        .enumerate()
+        .for_each(|(oh, row_out)| {
+            let ys = (oh as f32 + 0.5) * sh - 0.5;
+            let y0 = ys.floor();
+            let y1 = y0 + 1.0;
+            let wy = ys - y0;
+            let y0 = (y0 as isize).clamp(0, h_in as isize - 1) as usize;
+            let y1 = (y1 as isize).clamp(0, h_in as isize - 1) as usize;
+            for ow in 0..w_out {
+                let xs = (ow as f32 + 0.5) * sw - 0.5;
+                let x0 = xs.floor();
+                let x1 = x0 + 1.0;
+                let wx = xs - x0;
+                let x0 = (x0 as isize).clamp(0, w_in as isize - 1) as usize;
+                let x1 = (x1 as isize).clamp(0, w_in as isize - 1) as usize;
+                for ci in 0..c {
+                    let v00 = input[(y0 * w_in + x0) * c + ci];
+                    let v01 = input[(y0 * w_in + x1) * c + ci];
+                    let v10 = input[(y1 * w_in + x0) * c + ci];
+                    let v11 = input[(y1 * w_in + x1) * c + ci];
+                    let v0 = v00 * (1.0 - wx) + v01 * wx;
+                    let v1 = v10 * (1.0 - wx) + v11 * wx;
+                    row_out[ow * c + ci] = v0 * (1.0 - wy) + v1 * wy;
+                }
             }
-        }
-    });
+        });
+}
+
+/// Fused FPN merge: `x3 += upsample(x4) + upsample(x5)` in one parallel pass.
+///
+/// Scalar fallback for `neon::fpn_upsample2_add3_neon`. Mirrors
+/// [`bilinear_upsample`]'s separable-lerp form for each source and
+/// [`add3_inplace`]'s `*x += y + z` grouping for the sum, so it is the
+/// composition of the unfused scalar pipeline, computed without the
+/// intermediate buffers.
+#[allow(clippy::too_many_arguments)]
+pub fn fpn_upsample2_add3(
+    x3: &mut [f32],
+    x4: &[f32],
+    h4: usize,
+    w4: usize,
+    x5: &[f32],
+    h5: usize,
+    w5: usize,
+    c: usize,
+    h_out: usize,
+    w_out: usize,
+) {
+    debug_assert_eq!(x3.len(), h_out * w_out * c);
+    debug_assert_eq!(x4.len(), h4 * w4 * c);
+    debug_assert_eq!(x5.len(), h5 * w5 * c);
+    let sh4 = h4 as f32 / h_out as f32;
+    let sw4 = w4 as f32 / w_out as f32;
+    let sh5 = h5 as f32 / h_out as f32;
+    let sw5 = w5 as f32 / w_out as f32;
+    x3.par_chunks_mut(w_out * c)
+        .enumerate()
+        .for_each(|(oh, row_out)| {
+            let ys4 = (oh as f32 + 0.5) * sh4 - 0.5;
+            let y0f4 = ys4.floor();
+            let wy4 = ys4 - y0f4;
+            let y0_4 = (y0f4 as isize).clamp(0, h4 as isize - 1) as usize;
+            let y1_4 = ((y0f4 as isize + 1).clamp(0, h4 as isize - 1)) as usize;
+            let ys5 = (oh as f32 + 0.5) * sh5 - 0.5;
+            let y0f5 = ys5.floor();
+            let wy5 = ys5 - y0f5;
+            let y0_5 = (y0f5 as isize).clamp(0, h5 as isize - 1) as usize;
+            let y1_5 = ((y0f5 as isize + 1).clamp(0, h5 as isize - 1)) as usize;
+            for ow in 0..w_out {
+                let xs4 = (ow as f32 + 0.5) * sw4 - 0.5;
+                let x0f4 = xs4.floor();
+                let wx4 = xs4 - x0f4;
+                let x0_4 = (x0f4 as isize).clamp(0, w4 as isize - 1) as usize;
+                let x1_4 = ((x0f4 as isize + 1).clamp(0, w4 as isize - 1)) as usize;
+                let xs5 = (ow as f32 + 0.5) * sw5 - 0.5;
+                let x0f5 = xs5.floor();
+                let wx5 = xs5 - x0f5;
+                let x0_5 = (x0f5 as isize).clamp(0, w5 as isize - 1) as usize;
+                let x1_5 = ((x0f5 as isize + 1).clamp(0, w5 as isize - 1)) as usize;
+                for ci in 0..c {
+                    // upsample(x4) — identical lerp form to bilinear_upsample
+                    let v00 = x4[(y0_4 * w4 + x0_4) * c + ci];
+                    let v01 = x4[(y0_4 * w4 + x1_4) * c + ci];
+                    let v10 = x4[(y1_4 * w4 + x0_4) * c + ci];
+                    let v11 = x4[(y1_4 * w4 + x1_4) * c + ci];
+                    let v0 = v00 * (1.0 - wx4) + v01 * wx4;
+                    let v1 = v10 * (1.0 - wx4) + v11 * wx4;
+                    let up4 = v0 * (1.0 - wy4) + v1 * wy4;
+                    // upsample(x5)
+                    let v00 = x5[(y0_5 * w5 + x0_5) * c + ci];
+                    let v01 = x5[(y0_5 * w5 + x1_5) * c + ci];
+                    let v10 = x5[(y1_5 * w5 + x0_5) * c + ci];
+                    let v11 = x5[(y1_5 * w5 + x1_5) * c + ci];
+                    let v0 = v00 * (1.0 - wx5) + v01 * wx5;
+                    let v1 = v10 * (1.0 - wx5) + v11 * wx5;
+                    let up5 = v0 * (1.0 - wy5) + v1 * wy5;
+                    // x3 + (up4 + up5) — same grouping as add3_inplace
+                    row_out[ow * c + ci] += up4 + up5;
+                }
+            }
+        });
 }
 
 /// `a += b + c` over equal-length slices. Used by the FPN fusion sum
@@ -342,9 +436,15 @@ pub fn bilinear_upsample(
 pub fn add3_inplace(a: &mut [f32], b: &[f32], c: &[f32]) {
     debug_assert_eq!(a.len(), b.len());
     debug_assert_eq!(a.len(), c.len());
-    a.par_iter_mut().zip(b.par_iter()).zip(c.par_iter()).for_each(|((ai, &bi), &ci)| {
-        *ai += bi + ci;
-    });
+    const CHUNK: usize = 4096;
+    a.par_chunks_mut(CHUNK)
+        .zip(b.par_chunks(CHUNK))
+        .zip(c.par_chunks(CHUNK))
+        .for_each(|((ai, bi), ci)| {
+            for ((x, &y), &z) in ai.iter_mut().zip(bi.iter()).zip(ci.iter()) {
+                *x += y + z;
+            }
+        });
 }
 
 /// Write `dst[i] = a[i] + b[i] + c[i]` — single-pass parallel 3-way add into dst.
@@ -363,15 +463,13 @@ pub fn l2_normalize_channel(buf: &mut [f32], h: usize, w: usize, c: usize) {
     // Each pixel's channel slice is independent — parallel over pixels.
     // Use with_min_len so we get at least 256 pixels per rayon chunk,
     // amortising thread-dispatch overhead for small (H/8×W/8) maps.
-    buf.par_chunks_mut(c)
-        .with_min_len(256)
-        .for_each(|chunk| {
-            let sum_sq: f32 = chunk.iter().map(|&v| v * v).sum();
-            let inv = 1.0 / (sum_sq + 1e-12).sqrt();
-            for v in chunk {
-                *v *= inv;
-            }
-        });
+    buf.par_chunks_mut(c).with_min_len(256).for_each(|chunk| {
+        let sum_sq: f32 = chunk.iter().map(|&v| v * v).sum();
+        let inv = 1.0 / (sum_sq + 1e-12).sqrt();
+        for v in chunk {
+            *v *= inv;
+        }
+    });
 }
 
 /// Apply sigmoid in-place.
@@ -385,16 +483,20 @@ pub fn sigmoid_inplace(buf: &mut [f32]) {
 /// `F.softmax(K1, dim=1)` after the layout transpose.
 pub fn channel_softmax(buf: &mut [f32], h: usize, w: usize, c: usize) {
     debug_assert_eq!(buf.len(), h * w * c);
-    buf.par_chunks_mut(c).for_each(|row| {
-        let max = row.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-        let mut sum = 0.0f32;
-        for x in row.iter_mut() {
-            *x = (*x - max).exp();
-            sum += *x;
-        }
-        let inv = 1.0 / sum;
-        for x in row.iter_mut() {
-            *x *= inv;
+    // 64 pixels per Rayon task keeps ~75 tasks for 4800-pixel inputs — enough
+    // load-balance without drowning in per-task dispatch overhead.
+    buf.par_chunks_mut(c * 64).for_each(|block| {
+        for row in block.chunks_mut(c) {
+            let max = row.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let mut sum = 0.0f32;
+            for x in row.iter_mut() {
+                *x = (*x - max).exp();
+                sum += *x;
+            }
+            let inv = 1.0 / sum;
+            for x in row.iter_mut() {
+                *x *= inv;
+            }
         }
     });
 }
@@ -409,18 +511,21 @@ pub fn unfold_8x8(input: &[f32], output: &mut [f32], h_in: usize, w_in: usize) {
     let h_out = h_in / 8;
     let w_out = w_in / 8;
     debug_assert_eq!(output.len(), h_out * w_out * 64);
-    output.par_chunks_mut(w_out * 64).enumerate().for_each(|(oh, row_out)| {
-        for ow in 0..w_out {
-            let out_off = ow * 64;
-            for kh in 0..8 {
-                for kw in 0..8 {
-                    let ih = oh * 8 + kh;
-                    let iw = ow * 8 + kw;
-                    row_out[out_off + kh * 8 + kw] = input[ih * w_in + iw];
+    output
+        .par_chunks_mut(w_out * 64)
+        .enumerate()
+        .for_each(|(oh, row_out)| {
+            for ow in 0..w_out {
+                let out_off = ow * 64;
+                for kh in 0..8 {
+                    for kw in 0..8 {
+                        let ih = oh * 8 + kh;
+                        let iw = ow * 8 + kw;
+                        row_out[out_off + kh * 8 + kw] = input[ih * w_in + iw];
+                    }
                 }
             }
-        }
-    });
+        });
 }
 
 /// Pixel-shuffle (depth-to-space) with factor 8 on NHWC.
@@ -432,24 +537,33 @@ pub fn pixel_shuffle_8(input: &[f32], output: &mut [f32], h_in: usize, w_in: usi
     let w_out = w_in * 8;
     debug_assert_eq!(output.len(), h_in * 8 * w_out);
     // Each output super-row (8 rows of w_out pixels) corresponds to one input row.
-    output.par_chunks_mut(8 * w_out).zip(input.par_chunks(w_in * 64)).for_each(|(super_row_out, in_row)| {
-        for w in 0..w_in {
-            let in_off = w * 64;
-            for kh in 0..8 {
-                for kw in 0..8 {
-                    super_row_out[kh * w_out + w * 8 + kw] = in_row[in_off + kh * 8 + kw];
+    output
+        .par_chunks_mut(8 * w_out)
+        .zip(input.par_chunks(w_in * 64))
+        .for_each(|(super_row_out, in_row)| {
+            for w in 0..w_in {
+                let in_off = w * 64;
+                for kh in 0..8 {
+                    for kw in 0..8 {
+                        super_row_out[kh * w_out + w * 8 + kw] = in_row[in_off + kh * 8 + kw];
+                    }
                 }
             }
-        }
-    });
+        });
 }
 
 /// In-place element-wise add: `a[i] += b[i]`.
 pub fn add_inplace(a: &mut [f32], b: &[f32]) {
     debug_assert_eq!(a.len(), b.len());
-    a.par_iter_mut().zip(b.par_iter()).for_each(|(ai, &bi)| {
-        *ai += bi;
-    });
+    // Chunk-based split: LLVM auto-vectorizes the inner loop (vs per-element par_iter).
+    const CHUNK: usize = 4096;
+    a.par_chunks_mut(CHUNK)
+        .zip(b.par_chunks(CHUNK))
+        .for_each(|(ai, bi)| {
+            for (x, &y) in ai.iter_mut().zip(bi.iter()) {
+                *x += y;
+            }
+        });
 }
 
 /// Copy the first `c_out` channels from each pixel of an NHWC tensor, discarding
@@ -465,8 +579,165 @@ pub fn drop_last_channel_nhwc(
     debug_assert!(c_out < c_in);
     debug_assert_eq!(input.len(), h * w * c_in);
     debug_assert_eq!(output.len(), h * w * c_out);
-    output.par_chunks_mut(c_out).zip(input.par_chunks(c_in)).for_each(|(o, i)| {
-        o.copy_from_slice(&i[..c_out]);
+    output
+        .par_chunks_mut(c_out)
+        .zip(input.par_chunks(c_in))
+        .for_each(|(o, i)| {
+            o.copy_from_slice(&i[..c_out]);
+        });
+}
+
+// ── f16-storage variants of common ops ──────────────────────────────────────
+
+/// Unfold 8×8 patches from a single-channel f32 input into f16 (u16) storage.
+pub fn unfold_8x8_to_f16(input: &[f32], output: &mut [u16], h_in: usize, w_in: usize) {
+    debug_assert_eq!(input.len(), h_in * w_in);
+    let h_out = h_in / 8;
+    let w_out = w_in / 8;
+    debug_assert_eq!(output.len(), h_out * w_out * 64);
+    output
+        .par_chunks_mut(w_out * 64)
+        .enumerate()
+        .for_each(|(oh, row_out)| {
+            for ow in 0..w_out {
+                let out_off = ow * 64;
+                for kh in 0..8 {
+                    for kw in 0..8 {
+                        let ih = oh * 8 + kh;
+                        let iw = ow * 8 + kw;
+                        row_out[out_off + kh * 8 + kw] =
+                            half::f16::from_f32(input[ih * w_in + iw]).to_bits();
+                    }
+                }
+            }
+        });
+}
+
+/// Per-pixel channel softmax on f16 storage. exp() computed in f32 for stability.
+pub fn channel_softmax_f16(buf: &mut [u16], h: usize, w: usize, c: usize) {
+    debug_assert_eq!(buf.len(), h * w * c);
+    buf.par_chunks_mut(c * 64).for_each(|block| {
+        for row in block.chunks_mut(c) {
+            let mut max = f32::NEG_INFINITY;
+            for &v in row.iter() {
+                let f = half::f16::from_bits(v).to_f32();
+                if f > max {
+                    max = f;
+                }
+            }
+            let mut sum = 0.0f32;
+            for v in row.iter_mut() {
+                let f = (half::f16::from_bits(*v).to_f32() - max).exp();
+                *v = half::f16::from_f32(f).to_bits();
+                sum += f;
+            }
+            let inv = 1.0 / sum;
+            for v in row.iter_mut() {
+                let f = half::f16::from_bits(*v).to_f32() * inv;
+                *v = half::f16::from_f32(f).to_bits();
+            }
+        }
+    });
+}
+
+/// Copy the first `c_out` channels from each pixel, discarding the rest. f16 storage.
+pub fn drop_last_channel_nhwc_f16(
+    input: &[u16],
+    output: &mut [u16],
+    h: usize,
+    w: usize,
+    c_in: usize,
+    c_out: usize,
+) {
+    debug_assert!(c_out < c_in);
+    debug_assert_eq!(input.len(), h * w * c_in);
+    debug_assert_eq!(output.len(), h * w * c_out);
+    // Row-level granularity: one task per row (w pixels × c_out channels = ~10 KB).
+    // This keeps task count at h=60 instead of h*w=4800, cutting Rayon dispatch overhead
+    // without sacrificing parallelism (12 threads on 60 rows = 5 rows/thread).
+    output
+        .par_chunks_mut(w * c_out)
+        .zip(input.par_chunks(w * c_in))
+        .for_each(|(out_row, in_row)| {
+            for px in 0..w {
+                out_row[px * c_out..(px + 1) * c_out]
+                    .copy_from_slice(&in_row[px * c_in..px * c_in + c_out]);
+            }
+        });
+}
+
+/// Pixel-shuffle (depth-to-space) factor 8. f16 input → f32 output.
+/// Input `(H, W, 64)` → output `(H*8, W*8)`.
+pub fn pixel_shuffle_8_f16(input: &[u16], output: &mut [f32], h_in: usize, w_in: usize) {
+    debug_assert_eq!(input.len(), h_in * w_in * 64);
+    let w_out = w_in * 8;
+    debug_assert_eq!(output.len(), h_in * 8 * w_out);
+    output
+        .par_chunks_mut(8 * w_out)
+        .zip(input.par_chunks(w_in * 64))
+        .for_each(|(super_row, in_row)| {
+            for w in 0..w_in {
+                let in_off = w * 64;
+                for kh in 0..8 {
+                    for kw in 0..8 {
+                        super_row[kh * w_out + w * 8 + kw] =
+                            half::f16::from_bits(in_row[in_off + kh * 8 + kw]).to_f32();
+                    }
+                }
+            }
+        });
+}
+
+/// Fused: drop dustbin channel + pixel-shuffle (factor 8) + f16→f32.
+///
+/// Replaces the `drop_last_channel_nhwc_f16` → `pixel_shuffle_8_f16` two-pass
+/// sequence. Input is `[h_in, w_in, c_with_dustbin]` f16 (dustbin = last channel);
+/// channels 0..c_with_dustbin−2 are pixel-shuffled into `[h_in*8, w_in*8]` f32.
+/// `c_with_dustbin` must be `c_in + 1` where `c_in` is a multiple of 64.
+pub fn drop_dustbin_pixel_shuffle_8_f16(
+    input: &[u16],
+    output: &mut [f32],
+    h_in: usize,
+    w_in: usize,
+    c_with_dustbin: usize,
+) {
+    let c_in = c_with_dustbin - 1;
+    debug_assert_eq!(c_in, 64);
+    debug_assert_eq!(input.len(), h_in * w_in * c_with_dustbin);
+    let w_out = w_in * 8;
+    debug_assert_eq!(output.len(), h_in * 8 * w_out);
+    output
+        .par_chunks_mut(8 * w_out)
+        .zip(input.par_chunks(w_in * c_with_dustbin))
+        .for_each(|(super_row, in_row)| {
+            for w in 0..w_in {
+                let in_off = w * c_with_dustbin;
+                for kh in 0..8 {
+                    for kw in 0..8 {
+                        super_row[kh * w_out + w * 8 + kw] =
+                            half::f16::from_bits(in_row[in_off + kh * 8 + kw]).to_f32();
+                    }
+                }
+            }
+        });
+}
+
+/// L2-normalize each pixel's channel vector in-place. f16 storage.
+pub fn l2_normalize_channel_f16(buf: &mut [u16], h: usize, w: usize, c: usize) {
+    debug_assert_eq!(buf.len(), h * w * c);
+    buf.par_chunks_mut(c).with_min_len(256).for_each(|chunk| {
+        let sum_sq: f32 = chunk
+            .iter()
+            .map(|&v| {
+                let f = half::f16::from_bits(v).to_f32();
+                f * f
+            })
+            .sum();
+        let inv = 1.0 / (sum_sq + 1e-12).sqrt();
+        for v in chunk {
+            let f = half::f16::from_bits(*v).to_f32() * inv;
+            *v = half::f16::from_f32(f).to_bits();
+        }
     });
 }
 
@@ -506,7 +777,9 @@ pub fn nms_maxpool_5x5_equality(
                     let mut is_max = true;
                     'outer: for dy in -2i32..=2 {
                         let ny = oy_i + dy;
-                        if ny < 0 || ny >= h_i { continue; }
+                        if ny < 0 || ny >= h_i {
+                            continue;
+                        }
                         let row = (ny as usize) * w;
                         for dx in -2i32..=2 {
                             let nx = ox_i + dx;

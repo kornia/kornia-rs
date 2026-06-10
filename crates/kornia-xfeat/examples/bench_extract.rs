@@ -4,11 +4,15 @@
 //! then 50 timed iterations at 480×640.  Prints median, min, max latency in ms.
 //!
 //! Thread count is controlled by the `RAYON_NUM_THREADS` environment variable
-//! (Rayon default: all logical cores).
+//! (Rayon default: all logical cores) or the `--threads N` flag (which wins).
+//! `--pin A-B` pins Rayon worker i to core A+i (and the main thread to the
+//! same range) via raw `sched_setaffinity` — used to test whether avoiding
+//! the IRQ-heavy core 0 tightens the latency distribution.
 //!
 //! Run examples:
 //!   cargo run --release -p kornia-xfeat --example bench_extract
 //!   RAYON_NUM_THREADS=1 cargo run --release -p kornia-xfeat --example bench_extract
+//!   cargo run --release -p kornia-xfeat --example bench_extract -- --threads 5 --pin 1-5
 
 use std::path::Path;
 use std::time::Instant;
@@ -55,6 +59,40 @@ fn preprocess_image(path: &Path, target_h: usize, target_w: usize) -> Vec<f32> {
     resized
 }
 
+// ─── Thread affinity (raw syscall — no libc dependency) ──────────────────────
+
+/// Pin the *calling thread* to the CPU set given by `mask` (bit i = core i).
+/// aarch64 Linux `sched_setaffinity(0, 8, &mask)`; syscall number 122.
+#[cfg(target_arch = "aarch64")]
+fn pin_current_thread(mask: u64) {
+    unsafe {
+        let m: u64 = mask;
+        let mut ret: i64;
+        std::arch::asm!(
+            "svc 0",
+            in("x8") 122u64,                    // __NR_sched_setaffinity
+            inout("x0") 0u64 => ret,            // pid 0 = current thread
+            in("x1") 8u64,                      // cpusetsize (bytes)
+            in("x2") &m as *const u64 as u64,
+            options(nostack),
+        );
+        if ret < 0 {
+            eprintln!("warn: sched_setaffinity(mask={mask:#x}) failed: {ret}");
+        }
+    }
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+fn pin_current_thread(_mask: u64) {}
+
+/// Parse "A-B" into an inclusive core range.
+fn parse_core_range(s: &str) -> Option<(u32, u32)> {
+    let (a, b) = s.split_once('-')?;
+    let a: u32 = a.parse().ok()?;
+    let b: u32 = b.parse().ok()?;
+    (a <= b && b < 64).then_some((a, b))
+}
+
 // ─── Percentile helper ────────────────────────────────────────────────────────
 
 fn median_f64(sorted: &[f64]) -> f64 {
@@ -69,15 +107,51 @@ fn median_f64(sorted: &[f64]) -> f64 {
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 fn main() {
-    let threads = std::env::var("RAYON_NUM_THREADS")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(0); // 0 → Rayon default (all cores)
+    // ── CLI: --threads N  --pin A-B ───────────────────────────────────────────
+    let args: Vec<String> = std::env::args().collect();
+    let flag = |name: &str| -> Option<String> {
+        args.iter()
+            .position(|a| a == name)
+            .and_then(|i| args.get(i + 1).cloned())
+    };
+    let cli_threads: Option<usize> = flag("--threads").and_then(|v| v.parse().ok());
+    let pin_range: Option<(u32, u32)> = flag("--pin").as_deref().and_then(parse_core_range);
 
-    let thread_label = if threads == 0 {
-        "all cores (Rayon default)".to_string()
-    } else {
-        format!("{threads}")
+    let threads = cli_threads.unwrap_or_else(|| {
+        std::env::var("RAYON_NUM_THREADS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(0) // 0 → Rayon default (all cores)
+    });
+
+    // Build the global pool explicitly when pinning (worker i → core A+i) or
+    // when --threads was given. Must happen before any Rayon use.
+    if pin_range.is_some() || cli_threads.is_some() {
+        let mut builder = rayon::ThreadPoolBuilder::new();
+        if threads > 0 {
+            builder = builder.num_threads(threads);
+        }
+        if let Some((a, b)) = pin_range {
+            // Pin the main thread to the whole allowed range...
+            let range_mask: u64 = ((a)..=(b)).fold(0u64, |m, c| m | (1u64 << c));
+            pin_current_thread(range_mask);
+            // ...and each Rayon worker to one core of it (round-robin).
+            let n_cores = (b - a + 1) as usize;
+            builder = builder.start_handler(move |i| {
+                let core = a + (i % n_cores) as u32;
+                pin_current_thread(1u64 << core);
+            });
+        }
+        builder
+            .build_global()
+            .expect("global Rayon pool already initialised?");
+    }
+
+    let thread_label = match (threads, pin_range) {
+        (0, None) => "all cores (Rayon default)".to_string(),
+        (0, Some((a, b))) => format!("all, pinned {a}-{b}"),
+        (n, None) => format!("{n}"),
+        (n, Some((a, b))) => format!("{n}, pinned {a}-{b}"),
     };
 
     // Fix the target resolution to 480×640 (must be multiples of 32).
@@ -108,8 +182,8 @@ fn main() {
 
     // Construct the model once — this is the one-time cost (Winograd cache, etc.).
     let t_construct_start = Instant::now();
-    let weights = PackedWeights::from_safetensors_bytes(weights_bytes)
-        .expect("embedded weights must parse");
+    let weights =
+        PackedWeights::from_safetensors_bytes(weights_bytes).expect("embedded weights must parse");
     let mut model = XFeat::new(cfg.clone(), weights).expect("construct model");
     let t_construct = t_construct_start.elapsed();
     eprintln!(

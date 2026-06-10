@@ -88,10 +88,14 @@ pub struct Conv1x1Args<'a> {
 /// Backend function-pointer table. Picked once at construction; the per-frame
 /// hot path never touches `cfg` or feature detection.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)] // populated by `select()`, consumed by `model::extract` once layer wiring lands
 pub(crate) struct OpsVtable {
     pub conv3x3: fn(&Conv3x3Args<'_>, &mut [f32]),
     pub conv3x3_s2: fn(&Conv3x3Args<'_>, &mut [f32]),
+    /// f32 1×1 conv. Currently unread: `model::extract` always routes 1×1 convs
+    /// through `conv1x1_f16` (which falls back to this same NEON/scalar fn when
+    /// fp16 is unavailable). Kept for symmetry with `conv1x1_f16` and as the
+    /// f32 entry point for any future non-fp16 1×1 call site.
+    #[allow(dead_code)]
     pub conv1x1: fn(&Conv1x1Args<'_>, &mut [f32]),
     /// fp16 1×1 conv — same signature as conv1x1 but uses ARMv8.2 FMLA.8H.
     /// Points to conv1x1 when fp16 is unavailable (same pointer, no branch needed).
@@ -200,10 +204,70 @@ pub fn repack_weights_co8_3x3_f16(weights: &[f32], c_out: usize, c_in: usize) ->
 
 // ── Non-fused primitives used by the model graph ────────────────────────────
 pub use scalar::{
-    add3_from, add3_inplace, add_inplace, avgpool_4x4_s4,
-    drop_last_channel_nhwc, instance_norm_2d_singlech, l2_normalize_channel,
-    nms_maxpool_5x5_equality, pixel_shuffle_8, sigmoid_inplace, unfold_8x8,
+    add3_from,
+    add3_inplace,
+    add_inplace,
+    avgpool_4x4_s4,
+    drop_last_channel_nhwc,
+    // f16-storage variant (f32→f16 path) is dispatched via unfold_8x8_to_f16()
+    drop_last_channel_nhwc_f16,
+    l2_normalize_channel,
+    pixel_shuffle_8,
+    sigmoid_inplace,
+    unfold_8x8,
 };
+
+/// Instance-normalize a single-channel 2-D activation map.
+///
+/// Dispatches to `neon::instance_norm_2d_singlech_neon` on aarch64 (2-pass NEON:
+/// fused mean+variance in one Rayon fold, one fewer barrier than scalar 3-pass).
+/// Falls back to scalar on other platforms.
+pub fn instance_norm_2d_singlech(input: &[f32], output: &mut [f32]) {
+    #[cfg(target_arch = "aarch64")]
+    if cpu_features().has_neon {
+        return neon::instance_norm_2d_singlech_neon(input, output);
+    }
+    scalar::instance_norm_2d_singlech(input, output);
+}
+
+/// Channel-wise L2 normalization on f16 storage.
+///
+/// Dispatches to `neon::l2_normalize_channel_f16_neon` on aarch64 with fp16,
+/// otherwise falls back to the scalar Rayon path.
+pub fn l2_normalize_channel_f16(buf: &mut [u16], h: usize, w: usize, c: usize) {
+    #[cfg(target_arch = "aarch64")]
+    if cpu_features().has_fp16 {
+        return neon::l2_normalize_channel_f16_neon(buf, h, w, c);
+    }
+    scalar::l2_normalize_channel_f16(buf, h, w, c);
+}
+
+/// NMS via MaxPool 5×5 equality check.
+///
+/// Uses the scalar Rayon path: direct 5×5 neighborhood check with threshold
+/// early-exit. More efficient than the NEON dense-maxpool path on the small
+/// 1/8-resolution heatmap (60×80) where the alloc + full pass outweighs
+/// the SIMD throughput gain.
+pub fn nms_maxpool_5x5_equality(
+    heatmap: &[f32],
+    h: usize,
+    w: usize,
+    threshold: f32,
+) -> Vec<(f32, usize)> {
+    scalar::nms_maxpool_5x5_equality(heatmap, h, w, threshold)
+}
+
+/// Channel-wise softmax on f16 storage.
+///
+/// Dispatches to `neon::channel_softmax_neon_f16_par` on aarch64 with fp16
+/// (Rayon 800-pixel strips, degree-5 polynomial exp). Falls back to scalar.
+pub fn channel_softmax_f16(buf: &mut [u16], h: usize, w: usize, c: usize) {
+    #[cfg(target_arch = "aarch64")]
+    if cpu_features().has_fp16 {
+        return neon::channel_softmax_neon_f16_par(buf, h, w, c);
+    }
+    scalar::channel_softmax_f16(buf, h, w, c);
+}
 
 /// Channel-wise softmax dispatcher: NEON on aarch64, scalar elsewhere.
 pub fn channel_softmax(buf: &mut [f32], h: usize, w: usize, c: usize) {
@@ -214,10 +278,97 @@ pub fn channel_softmax(buf: &mut [f32], h: usize, w: usize, c: usize) {
     scalar::channel_softmax(buf, h, w, c);
 }
 
+/// Unfold 8×8 patches + f32→f16 narrowing.
+///
+/// Dispatches to `neon::unfold_8x8_to_f16_neon` on aarch64 with fp16 (FCVTN vectorized).
+/// Falls back to scalar on other platforms.
+pub fn unfold_8x8_to_f16(input: &[f32], output: &mut [u16], h_in: usize, w_in: usize) {
+    #[cfg(target_arch = "aarch64")]
+    if cpu_features().has_fp16 {
+        return neon::unfold_8x8_to_f16_neon(input, output, h_in, w_in);
+    }
+    scalar::unfold_8x8_to_f16(input, output, h_in, w_in);
+}
+
+/// Pixel-shuffle (factor 8) + f16→f32 widening.
+///
+/// Dispatches to `neon::pixel_shuffle_8_f16_neon` on aarch64 (FCVTL vectorized).
+/// Falls back to scalar on other platforms.
+pub fn pixel_shuffle_8_f16(input: &[u16], output: &mut [f32], h_in: usize, w_in: usize) {
+    #[cfg(target_arch = "aarch64")]
+    if cpu_features().has_fp16 {
+        return neon::pixel_shuffle_8_f16_neon(input, output, h_in, w_in);
+    }
+    scalar::pixel_shuffle_8_f16(input, output, h_in, w_in);
+}
+
+/// Fused: drop dustbin channel + pixel-shuffle (factor 8) + f16→f32.
+///
+/// Replaces the `drop_last_channel_nhwc_f16` → `pixel_shuffle_8_f16` two-pass
+/// sequence with a single NEON Rayon pass, saving a 614KB intermediate buffer
+/// round-trip and one Rayon dispatch. Falls back to scalar on non-aarch64.
+///
+/// NOTE: This kernel is correct and parity-tested but is **not** wired into the
+/// model hot path (`model::extract` still uses the unfused two-pass sequence).
+/// On the keypoint head the dustbin lives at channel 65, so reading 65-wide
+/// strides defeats the 8-lane NEON load alignment and the fused pass measured
+/// *slower* than the two unfused passes on the A78AE. It is retained as a
+/// documented future revisit: a layout that pads 65→72 (or shuffles the dustbin
+/// out earlier) would let this win. Until then it stays out of `extract()`.
+pub fn drop_dustbin_pixel_shuffle_8_f16(
+    input: &[u16],
+    output: &mut [f32],
+    h_in: usize,
+    w_in: usize,
+    c_with_dustbin: usize,
+) {
+    #[cfg(target_arch = "aarch64")]
+    if cpu_features().has_fp16 {
+        return neon::drop_dustbin_pixel_shuffle_8_f16_neon(
+            input,
+            output,
+            h_in,
+            w_in,
+            c_with_dustbin,
+        );
+    }
+    scalar::drop_dustbin_pixel_shuffle_8_f16(input, output, h_in, w_in, c_with_dustbin);
+}
+
+/// Fused FPN merge dispatcher: `x3 += upsample(x4) + upsample(x5)` in one pass.
+///
+/// Replaces the 3-dispatch `bilinear_upsample` ×2 + `add3_inplace` sequence —
+/// saves two Rayon barriers and the intermediate upsample buffers. Output is
+/// bit-identical to the unfused sequence on each backend.
+#[allow(clippy::too_many_arguments)]
+pub fn fpn_upsample2_add3(
+    x3: &mut [f32],
+    x4: &[f32],
+    h4: usize,
+    w4: usize,
+    x5: &[f32],
+    h5: usize,
+    w5: usize,
+    c: usize,
+    h_out: usize,
+    w_out: usize,
+) {
+    #[cfg(target_arch = "aarch64")]
+    if cpu_features().has_neon {
+        return neon::fpn_upsample2_add3_neon(x3, x4, h4, w4, x5, h5, w5, c, h_out, w_out);
+    }
+    scalar::fpn_upsample2_add3(x3, x4, h4, w4, x5, h5, w5, c, h_out, w_out);
+}
+
 /// Bilinear upsample dispatcher: NEON on aarch64, scalar elsewhere.
 pub fn bilinear_upsample(
-    input: &[f32], output: &mut [f32],
-    h_in: usize, w_in: usize, c: usize, h_out: usize, w_out: usize,
+    input: &[f32],
+    output: &mut [f32],
+    h_in: usize,
+    w_in: usize,
+    c: usize,
+    h_out: usize,
+    w_out: usize,
 ) {
     #[cfg(target_arch = "aarch64")]
     if cpu_features().has_neon {

@@ -237,8 +237,8 @@ fn bench_e2e_480x640(c: &mut Criterion) {
     let b_b5_l4 = alloc_bias(64, 607);
 
     // FPN: upsample x4 and x5 to x3's resolution then add.
-    let mut x4_up   = vec![0.0f32; 60 * 80 * 64];
-    let mut x5_up   = vec![0.0f32; 60 * 80 * 64];
+    let mut x4_up = vec![0.0f32; 60 * 80 * 64];
+    let mut x5_up = vec![0.0f32; 60 * 80 * 64];
     let mut fpn_sum = vec![0.0f32; 60 * 80 * 64];
 
     // block_fusion: 2× conv3x3 c64→c64 + Conv2d(64→64, k=1).
@@ -525,15 +525,17 @@ struct WinoPanels {
 /// Build Winograd F(4,3) fp16 panels from f32 spatial weights [c_out, 9, c_in].
 #[cfg(target_arch = "aarch64")]
 fn make_wino_panels(weights_f32: &[f32], c_out: usize, c_in: usize) -> WinoPanels {
-    use kornia_xfeat::ops::winograd::winograd_transform_weights_f32_f43;
     use kornia_xfeat::ops::neon_asm_f16;
+    use kornia_xfeat::ops::winograd::winograd_transform_weights_f32_f43;
 
     // 1. Transform spatial weights to the F(4,3) domain: [36 * c_out * c_in]
     let transformed = winograd_transform_weights_f32_f43(weights_f32, c_out, c_in);
 
     // 2. Convert to fp16
     let mut f16_buf = vec![0u16; 36 * c_out * c_in];
-    unsafe { neon_asm_f16::f32_to_f16_slice(&transformed, &mut f16_buf); }
+    unsafe {
+        neon_asm_f16::f32_to_f16_slice(&transformed, &mut f16_buf);
+    }
 
     // 3. Transpose B panels: [36, c_out, c_in] → [36, c_in, c_out]
     let mut b_panels = vec![0u16; 36 * c_in * c_out];
@@ -549,8 +551,8 @@ fn make_wino_panels(weights_f32: &[f32], c_out: usize, c_in: usize) -> WinoPanel
     // 4. Pre-pack B panels into [36, slot_sz] GEMM layout
     const NR: usize = 8;
     let n_blocks = c_out / NR;
-    let n_rem    = c_out % NR;
-    let slot_sz  = n_blocks * c_in * NR + c_in * n_rem;
+    let n_rem = c_out % NR;
+    let slot_sz = n_blocks * c_in * NR + c_in * n_rem;
     let mut b_packed = vec![0u16; 36 * slot_sz];
     for p in 0..36usize {
         let dst = &mut b_packed[p * slot_sz..];
@@ -575,7 +577,13 @@ fn make_wino_panels(weights_f32: &[f32], c_out: usize, c_in: usize) -> WinoPanel
         }
     }
 
-    WinoPanels { transformed_f16: f16_buf, b_panels_f16: b_panels, b_panels_packed: b_packed, c_out, c_in }
+    WinoPanels {
+        transformed_f16: f16_buf,
+        b_panels_f16: b_panels,
+        b_panels_packed: b_packed,
+        c_out,
+        c_in,
+    }
 }
 
 /// Call the Winograd F(4,3) fp16 kernel — the hot path the real model uses.
@@ -590,10 +598,20 @@ fn run_wino_f43_fp16(
 ) {
     use kornia_xfeat::ops::winograd::conv3x3_winograd_nhwc_f43_f16_with_scalar_fallback;
     conv3x3_winograd_nhwc_f43_f16_with_scalar_fallback(
-        input, h_in, w_in, wp.c_in,
-        &wp.transformed_f16, &wp.b_panels_f16, &wp.b_panels_packed,
-        &[], Some(bias), wp.c_out,
-        Activation::Relu, output, h_in, w_in,
+        input,
+        h_in,
+        w_in,
+        wp.c_in,
+        &wp.transformed_f16,
+        &wp.b_panels_f16,
+        &wp.b_panels_packed,
+        &[],
+        Some(bias),
+        wp.c_out,
+        Activation::Relu,
+        output,
+        h_in,
+        w_in,
     );
 }
 
@@ -622,22 +640,22 @@ fn bench_e2e_wino_fp16_480x640(c: &mut Criterion) {
     let mut b1_l3 = vec![0.0f32; 240 * 320 * 8];
     let mut b1_l4 = vec![0.0f32; 120 * 160 * 24];
     // b1_l1: c_in=1 — uses c1 NEON path (Winograd not beneficial at c_in=1)
-    let w_b1_l1     = alloc(4 * 9, 100);
-    let b_b1_l1     = alloc_bias(4, 101);
+    let w_b1_l1 = alloc(4 * 9, 100);
+    let b_b1_l1 = alloc_bias(4, 101);
     // b1_l2: c_in=4, stride-2 → fp16 direct s2 conv
-    let w_b1_l2     = alloc(8 * 9 * 4, 102);
-    let b_b1_l2     = alloc_bias(8, 103);
+    let w_b1_l2 = alloc(8 * 9 * 4, 102);
+    let b_b1_l2 = alloc_bias(8, 103);
     let wp_b1_l2_f16 = {
         use kornia_xfeat::ops::repack_weights_co8_3x3_f16;
         repack_weights_co8_3x3_f16(&w_b1_l2, 8, 4)
     };
     // b1_l3: c_in=8, stride-1 → Winograd fp16
-    let w_b1_l3  = alloc(8 * 9 * 8, 104);
-    let b_b1_l3  = alloc_bias(8, 105);
+    let w_b1_l3 = alloc(8 * 9 * 8, 104);
+    let b_b1_l3 = alloc_bias(8, 105);
     let wp_b1_l3 = make_wino_panels(&w_b1_l3, 8, 8);
     // b1_l4: c_in=8, stride-2 → fp16 direct s2 conv
-    let w_b1_l4      = alloc(24 * 9 * 8, 106);
-    let b_b1_l4      = alloc_bias(24, 107);
+    let w_b1_l4 = alloc(24 * 9 * 8, 106);
+    let b_b1_l4 = alloc_bias(24, 107);
     let wp_b1_l4_f16 = {
         use kornia_xfeat::ops::repack_weights_co8_3x3_f16;
         repack_weights_co8_3x3_f16(&w_b1_l4, 24, 8)
@@ -645,18 +663,18 @@ fn bench_e2e_wino_fp16_480x640(c: &mut Criterion) {
 
     // ── Skip1 ────────────────────────────────────────────────────────────────
     let mut skip_pooled = vec![0.0f32; 120 * 160];
-    let mut skip_out    = vec![0.0f32; 120 * 160 * 24];
-    let w_skip  = alloc(24, 200);
-    let b_skip  = alloc_bias(24, 201);
+    let mut skip_out = vec![0.0f32; 120 * 160 * 24];
+    let w_skip = alloc(24, 200);
+    let b_skip = alloc_bias(24, 201);
 
     // ── Block 2 ─────────────────────────────────────────────────────────────
     let mut b2_l1 = vec![0.0f32; 120 * 160 * 24];
     let mut b2_l2 = vec![0.0f32; 120 * 160 * 24];
-    let w_b2_l1  = alloc(24 * 9 * 24, 300);
-    let b_b2_l1  = alloc_bias(24, 301);
+    let w_b2_l1 = alloc(24 * 9 * 24, 300);
+    let b_b2_l1 = alloc_bias(24, 301);
     let wp_b2_l1 = make_wino_panels(&w_b2_l1, 24, 24);
-    let w_b2_l2  = alloc(24 * 9 * 24, 302);
-    let b_b2_l2  = alloc_bias(24, 303);
+    let w_b2_l2 = alloc(24 * 9 * 24, 302);
+    let b_b2_l2 = alloc_bias(24, 303);
     let wp_b2_l2 = make_wino_panels(&w_b2_l2, 24, 24);
 
     // ── Block 3 ─────────────────────────────────────────────────────────────
@@ -664,37 +682,37 @@ fn bench_e2e_wino_fp16_480x640(c: &mut Criterion) {
     let mut b3_l2 = vec![0.0f32; 60 * 80 * 64];
     let mut b3_l3 = vec![0.0f32; 60 * 80 * 64];
     // b3_l1: stride-2 entry → fp16 direct s2 conv
-    let w_b3_l1      = alloc(64 * 9 * 24, 400);
-    let b_b3_l1      = alloc_bias(64, 401);
+    let w_b3_l1 = alloc(64 * 9 * 24, 400);
+    let b_b3_l1 = alloc_bias(64, 401);
     let wp_b3_l1_f16 = {
         use kornia_xfeat::ops::repack_weights_co8_3x3_f16;
         repack_weights_co8_3x3_f16(&w_b3_l1, 64, 24)
     };
     // b3_l2: stride-1 → Winograd fp16
-    let w_b3_l2  = alloc(64 * 9 * 64, 402);
-    let b_b3_l2  = alloc_bias(64, 403);
+    let w_b3_l2 = alloc(64 * 9 * 64, 402);
+    let b_b3_l2 = alloc_bias(64, 403);
     let wp_b3_l2 = make_wino_panels(&w_b3_l2, 64, 64);
     // b3_l3: conv1x1
-    let w_b3_l3  = alloc(64 * 64, 404);
-    let b_b3_l3  = alloc_bias(64, 405);
+    let w_b3_l3 = alloc(64 * 64, 404);
+    let b_b3_l3 = alloc_bias(64, 405);
 
     // ── Block 4 ─────────────────────────────────────────────────────────────
     let mut b4_l1 = vec![0.0f32; 30 * 40 * 64];
     let mut b4_l2 = vec![0.0f32; 30 * 40 * 64];
     let mut b4_l3 = vec![0.0f32; 30 * 40 * 64];
     // b4_l1: stride-2 → fp16 direct s2 conv
-    let w_b4_l1      = alloc(64 * 9 * 64, 500);
-    let b_b4_l1      = alloc_bias(64, 501);
+    let w_b4_l1 = alloc(64 * 9 * 64, 500);
+    let b_b4_l1 = alloc_bias(64, 501);
     let wp_b4_l1_f16 = {
         use kornia_xfeat::ops::repack_weights_co8_3x3_f16;
         repack_weights_co8_3x3_f16(&w_b4_l1, 64, 64)
     };
     // b4_l2, b4_l3: stride-1 → Winograd fp16
-    let w_b4_l2  = alloc(64 * 9 * 64, 502);
-    let b_b4_l2  = alloc_bias(64, 503);
+    let w_b4_l2 = alloc(64 * 9 * 64, 502);
+    let b_b4_l2 = alloc_bias(64, 503);
     let wp_b4_l2 = make_wino_panels(&w_b4_l2, 64, 64);
-    let w_b4_l3  = alloc(64 * 9 * 64, 504);
-    let b_b4_l3  = alloc_bias(64, 505);
+    let w_b4_l3 = alloc(64 * 9 * 64, 504);
+    let b_b4_l3 = alloc_bias(64, 505);
     let wp_b4_l3 = make_wino_panels(&w_b4_l3, 64, 64);
 
     // ── Block 5 ─────────────────────────────────────────────────────────────
@@ -703,84 +721,102 @@ fn bench_e2e_wino_fp16_480x640(c: &mut Criterion) {
     let mut b5_l3 = vec![0.0f32; 15 * 20 * 128];
     let mut b5_l4 = vec![0.0f32; 15 * 20 * 64];
     // b5_l1: stride-2 → fp16 direct s2 conv
-    let w_b5_l1      = alloc(128 * 9 * 64, 600);
-    let b_b5_l1      = alloc_bias(128, 601);
+    let w_b5_l1 = alloc(128 * 9 * 64, 600);
+    let b_b5_l1 = alloc_bias(128, 601);
     let wp_b5_l1_f16 = {
         use kornia_xfeat::ops::repack_weights_co8_3x3_f16;
         repack_weights_co8_3x3_f16(&w_b5_l1, 128, 64)
     };
     // b5_l2, b5_l3: stride-1 → Winograd fp16
-    let w_b5_l2  = alloc(128 * 9 * 128, 602);
-    let b_b5_l2  = alloc_bias(128, 603);
+    let w_b5_l2 = alloc(128 * 9 * 128, 602);
+    let b_b5_l2 = alloc_bias(128, 603);
     let wp_b5_l2 = make_wino_panels(&w_b5_l2, 128, 128);
-    let w_b5_l3  = alloc(128 * 9 * 128, 604);
-    let b_b5_l3  = alloc_bias(128, 605);
+    let w_b5_l3 = alloc(128 * 9 * 128, 604);
+    let b_b5_l3 = alloc_bias(128, 605);
     let wp_b5_l3 = make_wino_panels(&w_b5_l3, 128, 128);
     // b5_l4: conv1x1
-    let w_b5_l4  = alloc(64 * 128, 606);
-    let b_b5_l4  = alloc_bias(64, 607);
+    let w_b5_l4 = alloc(64 * 128, 606);
+    let b_b5_l4 = alloc_bias(64, 607);
 
     // ── FPN / fusion ────────────────────────────────────────────────────────
-    let mut x4_up   = vec![0.0f32; 60 * 80 * 64];
-    let mut x5_up   = vec![0.0f32; 60 * 80 * 64];
+    let mut x4_up = vec![0.0f32; 60 * 80 * 64];
+    let mut x5_up = vec![0.0f32; 60 * 80 * 64];
     let mut fpn_sum = vec![0.0f32; 60 * 80 * 64];
-    let mut fus_l1  = vec![0.0f32; 60 * 80 * 64];
-    let mut fus_l2  = vec![0.0f32; 60 * 80 * 64];
+    let mut fus_l1 = vec![0.0f32; 60 * 80 * 64];
+    let mut fus_l2 = vec![0.0f32; 60 * 80 * 64];
     // fus_l1, fus_l2: stride-1 → Winograd fp16
-    let w_fus_l1  = alloc(64 * 9 * 64, 700);
-    let b_fus_l1  = alloc_bias(64, 701);
+    let w_fus_l1 = alloc(64 * 9 * 64, 700);
+    let b_fus_l1 = alloc_bias(64, 701);
     let wp_fus_l1 = make_wino_panels(&w_fus_l1, 64, 64);
-    let w_fus_l2  = alloc(64 * 9 * 64, 702);
-    let b_fus_l2  = alloc_bias(64, 703);
+    let w_fus_l2 = alloc(64 * 9 * 64, 702);
+    let b_fus_l2 = alloc_bias(64, 703);
     let wp_fus_l2 = make_wino_panels(&w_fus_l2, 64, 64);
 
     // ── Heads: same structure as the original forward-pass benchmark ────────
-    let mut kp_unfold    = vec![0.0f32; 60 * 80 * 64];
-    let mut kp_l1        = vec![0.0f32; 60 * 80 * 64];
-    let mut kp_l2        = vec![0.0f32; 60 * 80 * 64];
-    let mut kp_l3        = vec![0.0f32; 60 * 80 * 64];
-    let mut kp_logits    = vec![0.0f32; 60 * 80 * 65];
-    let mut rel_l1       = vec![0.0f32; 60 * 80 * 64];
-    let mut rel_l2       = vec![0.0f32; 60 * 80 * 64];
-    let mut rel_out      = vec![0.0f32; 60 * 80];
-    let w_kp_l1  = alloc(64 * 64, 800);
-    let b_kp_l1  = alloc_bias(64, 801);
-    let w_kp_l2  = alloc(64 * 64, 802);
-    let b_kp_l2  = alloc_bias(64, 803);
-    let w_kp_l3  = alloc(64 * 64, 804);
-    let b_kp_l3  = alloc_bias(64, 805);
+    let mut kp_unfold = vec![0.0f32; 60 * 80 * 64];
+    let mut kp_l1 = vec![0.0f32; 60 * 80 * 64];
+    let mut kp_l2 = vec![0.0f32; 60 * 80 * 64];
+    let mut kp_l3 = vec![0.0f32; 60 * 80 * 64];
+    let mut kp_logits = vec![0.0f32; 60 * 80 * 65];
+    let mut rel_l1 = vec![0.0f32; 60 * 80 * 64];
+    let mut rel_l2 = vec![0.0f32; 60 * 80 * 64];
+    let mut rel_out = vec![0.0f32; 60 * 80];
+    let w_kp_l1 = alloc(64 * 64, 800);
+    let b_kp_l1 = alloc_bias(64, 801);
+    let w_kp_l2 = alloc(64 * 64, 802);
+    let b_kp_l2 = alloc_bias(64, 803);
+    let w_kp_l3 = alloc(64 * 64, 804);
+    let b_kp_l3 = alloc_bias(64, 805);
     let w_kp_out = alloc(65 * 64, 806);
     let b_kp_out = alloc_bias(65, 807);
-    let w_rel_l1  = alloc(64 * 64, 900);
-    let b_rel_l1  = alloc_bias(64, 901);
-    let w_rel_l2  = alloc(64 * 64, 902);
-    let b_rel_l2  = alloc_bias(64, 903);
+    let w_rel_l1 = alloc(64 * 64, 900);
+    let b_rel_l1 = alloc_bias(64, 901);
+    let w_rel_l2 = alloc(64 * 64, 902);
+    let b_rel_l2 = alloc_bias(64, 903);
     let w_rel_out = alloc(64, 904);
     let b_rel_out = alloc_bias(1, 905);
 
     // Pre-allocated fp16 conv1x1 scratch — sized for the largest shape (c_in=128,
     // c_out=64). Reused every iteration so no heap alloc lands inside the hot loop.
     let mut scratch_b = vec![0u16; 128 * 64];
-    let mut pack_b    = vec![0u16; 128 * 64];
+    let mut pack_b = vec![0u16; 128 * 64];
 
     group.bench_function("forward", |b| {
         b.iter(|| {
             // ── Block 1: c_in=1 → NEON c1 fast-path (not Winograd-eligible)
             {
                 let args = Conv3x3Args {
-                    input: &gray, residual: None, weights: &w_b1_l1, bias: &b_b1_l1,
-                    h_in: 480, w_in: 640, c_in: 1, c_out: 4,
-                    activation: Activation::Relu, packed_weights: None,
+                    input: &gray,
+                    residual: None,
+                    weights: &w_b1_l1,
+                    bias: &b_b1_l1,
+                    h_in: 480,
+                    w_in: 640,
+                    c_in: 1,
+                    c_out: 4,
+                    activation: Activation::Relu,
+                    packed_weights: None,
                 };
                 neon::conv3x3_c1_nhwc(&args, &mut b1_l1, 1);
             }
 
             // b1_l2: stride-2 → fp16 direct conv
             neon::conv3x3_nhwc_fp16(
-                &Conv3x3Args { input: &b1_l1, residual: None, weights: &w_b1_l2,
-                    bias: &b_b1_l2, h_in: 480, w_in: 640, c_in: 4, c_out: 8,
-                    activation: Activation::Relu, packed_weights: Some(&w_b1_l2) },
-                &mut b1_l2, &wp_b1_l2_f16, 2,
+                &Conv3x3Args {
+                    input: &b1_l1,
+                    residual: None,
+                    weights: &w_b1_l2,
+                    bias: &b_b1_l2,
+                    h_in: 480,
+                    w_in: 640,
+                    c_in: 4,
+                    c_out: 8,
+                    activation: Activation::Relu,
+                    packed_weights: Some(&w_b1_l2),
+                },
+                &mut b1_l2,
+                &wp_b1_l2_f16,
+                2,
             );
 
             // b1_l3: stride-1 → Winograd F(4,3) fp16
@@ -788,18 +824,39 @@ fn bench_e2e_wino_fp16_480x640(c: &mut Criterion) {
 
             // b1_l4: stride-2 → fp16 direct conv
             neon::conv3x3_nhwc_fp16(
-                &Conv3x3Args { input: &b1_l3, residual: None, weights: &w_b1_l4,
-                    bias: &b_b1_l4, h_in: 240, w_in: 320, c_in: 8, c_out: 24,
-                    activation: Activation::Relu, packed_weights: Some(&w_b1_l4) },
-                &mut b1_l4, &wp_b1_l4_f16, 2,
+                &Conv3x3Args {
+                    input: &b1_l3,
+                    residual: None,
+                    weights: &w_b1_l4,
+                    bias: &b_b1_l4,
+                    h_in: 240,
+                    w_in: 320,
+                    c_in: 8,
+                    c_out: 24,
+                    activation: Activation::Relu,
+                    packed_weights: Some(&w_b1_l4),
+                },
+                &mut b1_l4,
+                &wp_b1_l4_f16,
+                2,
             );
 
             // ── Skip1
             scalar::avgpool_4x4_s4(&gray, &mut skip_pooled, 480, 640, 1);
             neon_asm_f16::conv1x1_nhwc_f16_parallel(
-                &Conv1x1Args { input: &skip_pooled, weights: &w_skip, bias: &b_skip,
-                    h: 120, w: 160, c_in: 1, c_out: 24, activation: Activation::Identity },
-                &mut skip_out, &mut scratch_b, &mut pack_b,
+                &Conv1x1Args {
+                    input: &skip_pooled,
+                    weights: &w_skip,
+                    bias: &b_skip,
+                    h: 120,
+                    w: 160,
+                    c_in: 1,
+                    c_out: 24,
+                    activation: Activation::Identity,
+                },
+                &mut skip_out,
+                &mut scratch_b,
+                &mut pack_b,
             );
 
             // ── Block 2: both stride-1 → Winograd fp16
@@ -809,43 +866,96 @@ fn bench_e2e_wino_fp16_480x640(c: &mut Criterion) {
             // ── Block 3
             // b3_l1: stride-2 → fp16 direct conv
             neon::conv3x3_nhwc_fp16(
-                &Conv3x3Args { input: &b2_l2, residual: None, weights: &w_b3_l1,
-                    bias: &b_b3_l1, h_in: 120, w_in: 160, c_in: 24, c_out: 64,
-                    activation: Activation::Relu, packed_weights: Some(&w_b3_l1) },
-                &mut b3_l1, &wp_b3_l1_f16, 2,
+                &Conv3x3Args {
+                    input: &b2_l2,
+                    residual: None,
+                    weights: &w_b3_l1,
+                    bias: &b_b3_l1,
+                    h_in: 120,
+                    w_in: 160,
+                    c_in: 24,
+                    c_out: 64,
+                    activation: Activation::Relu,
+                    packed_weights: Some(&w_b3_l1),
+                },
+                &mut b3_l1,
+                &wp_b3_l1_f16,
+                2,
             );
             // b3_l2: stride-1 → Winograd fp16
             run_wino_f43_fp16(&wp_b3_l2, &b3_l1, &mut b3_l2, &b_b3_l2, 60, 80);
             // b3_l3: conv1x1 fp16
             neon_asm_f16::conv1x1_nhwc_f16_parallel(
-                &Conv1x1Args { input: &b3_l2, weights: &w_b3_l3, bias: &b_b3_l3,
-                    h: 60, w: 80, c_in: 64, c_out: 64, activation: Activation::Relu },
-                &mut b3_l3, &mut scratch_b, &mut pack_b,
+                &Conv1x1Args {
+                    input: &b3_l2,
+                    weights: &w_b3_l3,
+                    bias: &b_b3_l3,
+                    h: 60,
+                    w: 80,
+                    c_in: 64,
+                    c_out: 64,
+                    activation: Activation::Relu,
+                },
+                &mut b3_l3,
+                &mut scratch_b,
+                &mut pack_b,
             );
 
             // ── Block 4
             neon::conv3x3_nhwc_fp16(
-                &Conv3x3Args { input: &b3_l3, residual: None, weights: &w_b4_l1,
-                    bias: &b_b4_l1, h_in: 60, w_in: 80, c_in: 64, c_out: 64,
-                    activation: Activation::Relu, packed_weights: Some(&w_b4_l1) },
-                &mut b4_l1, &wp_b4_l1_f16, 2,
+                &Conv3x3Args {
+                    input: &b3_l3,
+                    residual: None,
+                    weights: &w_b4_l1,
+                    bias: &b_b4_l1,
+                    h_in: 60,
+                    w_in: 80,
+                    c_in: 64,
+                    c_out: 64,
+                    activation: Activation::Relu,
+                    packed_weights: Some(&w_b4_l1),
+                },
+                &mut b4_l1,
+                &wp_b4_l1_f16,
+                2,
             );
             run_wino_f43_fp16(&wp_b4_l2, &b4_l1, &mut b4_l2, &b_b4_l2, 30, 40);
             run_wino_f43_fp16(&wp_b4_l3, &b4_l2, &mut b4_l3, &b_b4_l3, 30, 40);
 
             // ── Block 5
             neon::conv3x3_nhwc_fp16(
-                &Conv3x3Args { input: &b4_l3, residual: None, weights: &w_b5_l1,
-                    bias: &b_b5_l1, h_in: 30, w_in: 40, c_in: 64, c_out: 128,
-                    activation: Activation::Relu, packed_weights: Some(&w_b5_l1) },
-                &mut b5_l1, &wp_b5_l1_f16, 2,
+                &Conv3x3Args {
+                    input: &b4_l3,
+                    residual: None,
+                    weights: &w_b5_l1,
+                    bias: &b_b5_l1,
+                    h_in: 30,
+                    w_in: 40,
+                    c_in: 64,
+                    c_out: 128,
+                    activation: Activation::Relu,
+                    packed_weights: Some(&w_b5_l1),
+                },
+                &mut b5_l1,
+                &wp_b5_l1_f16,
+                2,
             );
             run_wino_f43_fp16(&wp_b5_l2, &b5_l1, &mut b5_l2, &b_b5_l2, 15, 20);
             run_wino_f43_fp16(&wp_b5_l3, &b5_l2, &mut b5_l3, &b_b5_l3, 15, 20);
             neon_asm_f16::conv1x1_nhwc_f16_parallel(
-                &Conv1x1Args { input: &b5_l3, weights: &w_b5_l4, bias: &b_b5_l4,
-                    h: 15, w: 20, c_in: 128, c_out: 64, activation: Activation::Relu },
-                &mut b5_l4, &mut scratch_b, &mut pack_b,
+                &Conv1x1Args {
+                    input: &b5_l3,
+                    weights: &w_b5_l4,
+                    bias: &b_b5_l4,
+                    h: 15,
+                    w: 20,
+                    c_in: 128,
+                    c_out: 64,
+                    activation: Activation::Relu,
+                },
+                &mut b5_l4,
+                &mut scratch_b,
+                &mut pack_b,
             );
 
             // ── FPN: bilinear upsample + 3-way add (single parallel pass, no clone)
@@ -860,42 +970,112 @@ fn bench_e2e_wino_fp16_480x640(c: &mut Criterion) {
             // ── Keypoint head: unfold + 3× conv1x1 fp16 + logits + softmax
             scalar::unfold_8x8(&gray, &mut kp_unfold, 480, 640);
             neon_asm_f16::conv1x1_nhwc_f16_parallel(
-                &Conv1x1Args { input: &kp_unfold, weights: &w_kp_l1, bias: &b_kp_l1,
-                    h: 60, w: 80, c_in: 64, c_out: 64, activation: Activation::Relu },
-                &mut kp_l1, &mut scratch_b, &mut pack_b,
+                &Conv1x1Args {
+                    input: &kp_unfold,
+                    weights: &w_kp_l1,
+                    bias: &b_kp_l1,
+                    h: 60,
+                    w: 80,
+                    c_in: 64,
+                    c_out: 64,
+                    activation: Activation::Relu,
+                },
+                &mut kp_l1,
+                &mut scratch_b,
+                &mut pack_b,
             );
             neon_asm_f16::conv1x1_nhwc_f16_parallel(
-                &Conv1x1Args { input: &kp_l1, weights: &w_kp_l2, bias: &b_kp_l2,
-                    h: 60, w: 80, c_in: 64, c_out: 64, activation: Activation::Relu },
-                &mut kp_l2, &mut scratch_b, &mut pack_b,
+                &Conv1x1Args {
+                    input: &kp_l1,
+                    weights: &w_kp_l2,
+                    bias: &b_kp_l2,
+                    h: 60,
+                    w: 80,
+                    c_in: 64,
+                    c_out: 64,
+                    activation: Activation::Relu,
+                },
+                &mut kp_l2,
+                &mut scratch_b,
+                &mut pack_b,
             );
             neon_asm_f16::conv1x1_nhwc_f16_parallel(
-                &Conv1x1Args { input: &kp_l2, weights: &w_kp_l3, bias: &b_kp_l3,
-                    h: 60, w: 80, c_in: 64, c_out: 64, activation: Activation::Relu },
-                &mut kp_l3, &mut scratch_b, &mut pack_b,
+                &Conv1x1Args {
+                    input: &kp_l2,
+                    weights: &w_kp_l3,
+                    bias: &b_kp_l3,
+                    h: 60,
+                    w: 80,
+                    c_in: 64,
+                    c_out: 64,
+                    activation: Activation::Relu,
+                },
+                &mut kp_l3,
+                &mut scratch_b,
+                &mut pack_b,
             );
             neon_asm_f16::conv1x1_nhwc_f16_parallel(
-                &Conv1x1Args { input: &kp_l3, weights: &w_kp_out, bias: &b_kp_out,
-                    h: 60, w: 80, c_in: 64, c_out: 65, activation: Activation::Identity },
-                &mut kp_logits, &mut scratch_b, &mut pack_b,
+                &Conv1x1Args {
+                    input: &kp_l3,
+                    weights: &w_kp_out,
+                    bias: &b_kp_out,
+                    h: 60,
+                    w: 80,
+                    c_in: 64,
+                    c_out: 65,
+                    activation: Activation::Identity,
+                },
+                &mut kp_logits,
+                &mut scratch_b,
+                &mut pack_b,
             );
             scalar::channel_softmax(&mut kp_logits, 60, 80, 65);
 
             // ── Reliability head: 2× conv1x1 fp16 + sigmoid
             neon_asm_f16::conv1x1_nhwc_f16_parallel(
-                &Conv1x1Args { input: &fus_l2, weights: &w_rel_l1, bias: &b_rel_l1,
-                    h: 60, w: 80, c_in: 64, c_out: 64, activation: Activation::Relu },
-                &mut rel_l1, &mut scratch_b, &mut pack_b,
+                &Conv1x1Args {
+                    input: &fus_l2,
+                    weights: &w_rel_l1,
+                    bias: &b_rel_l1,
+                    h: 60,
+                    w: 80,
+                    c_in: 64,
+                    c_out: 64,
+                    activation: Activation::Relu,
+                },
+                &mut rel_l1,
+                &mut scratch_b,
+                &mut pack_b,
             );
             neon_asm_f16::conv1x1_nhwc_f16_parallel(
-                &Conv1x1Args { input: &rel_l1, weights: &w_rel_l2, bias: &b_rel_l2,
-                    h: 60, w: 80, c_in: 64, c_out: 64, activation: Activation::Relu },
-                &mut rel_l2, &mut scratch_b, &mut pack_b,
+                &Conv1x1Args {
+                    input: &rel_l1,
+                    weights: &w_rel_l2,
+                    bias: &b_rel_l2,
+                    h: 60,
+                    w: 80,
+                    c_in: 64,
+                    c_out: 64,
+                    activation: Activation::Relu,
+                },
+                &mut rel_l2,
+                &mut scratch_b,
+                &mut pack_b,
             );
             neon_asm_f16::conv1x1_nhwc_f16_parallel(
-                &Conv1x1Args { input: &rel_l2, weights: &w_rel_out, bias: &b_rel_out,
-                    h: 60, w: 80, c_in: 64, c_out: 1, activation: Activation::Identity },
-                &mut rel_out, &mut scratch_b, &mut pack_b,
+                &Conv1x1Args {
+                    input: &rel_l2,
+                    weights: &w_rel_out,
+                    bias: &b_rel_out,
+                    h: 60,
+                    w: 80,
+                    c_in: 64,
+                    c_out: 1,
+                    activation: Activation::Identity,
+                },
+                &mut rel_out,
+                &mut scratch_b,
+                &mut pack_b,
             );
             scalar::sigmoid_inplace(&mut rel_out);
 
@@ -915,5 +1095,55 @@ fn bench_e2e_wino_fp16_480x640(c: &mut Criterion) {
 #[cfg(not(target_arch = "aarch64"))]
 fn bench_e2e_wino_fp16_480x640(_c: &mut criterion::Criterion) {}
 
-criterion_group!(benches, bench_conv3x3, bench_conv1x1, bench_e2e_480x640, bench_e2e_wino_fp16_480x640);
+/// Full `XFeat::extract()` end-to-end bench at 480×640 with real embedded weights.
+///
+/// This is the authoritative latency number for the wired-up model. Unlike the
+/// kernel-level benches above, it exercises every allocation, dispatch, and the
+/// fp16-activation-storage path on aarch64.
+fn bench_extract_480x640(c: &mut Criterion) {
+    use kornia_xfeat::{weights::PackedWeights, XFeat, XFeatConfig};
+
+    let weights =
+        match PackedWeights::from_safetensors_bytes(kornia_xfeat::weights::embedded_bytes()) {
+            Ok(w) => w,
+            Err(_) => {
+                eprintln!("bench_extract_480x640: embedded weights missing — skipping");
+                return;
+            }
+        };
+
+    let cfg = XFeatConfig {
+        height: 480,
+        width: 640,
+        ..Default::default()
+    };
+    let mut model = XFeat::new(cfg, weights).expect("XFeat::new");
+
+    // Random but normalised input image.
+    let input: Vec<f32> = alloc_random(480 * 640, 42)
+        .iter()
+        .map(|&v| (v + 1.0) * 0.5) // remap [-1,1] → [0,1]
+        .collect();
+
+    let mut group = c.benchmark_group("xfeat_extract_480x640");
+    group.sample_size(50);
+
+    group.bench_function("extract", |b| {
+        b.iter(|| {
+            let out = model.extract(black_box(&input)).expect("extract");
+            black_box(out);
+        })
+    });
+
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_conv3x3,
+    bench_conv1x1,
+    bench_e2e_480x640,
+    bench_e2e_wino_fp16_480x640,
+    bench_extract_480x640
+);
 criterion_main!(benches);

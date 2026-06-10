@@ -110,15 +110,47 @@ pub fn bicubic_sample_descriptors(
     debug_assert_eq!(desc.len(), h_d * w_d * c);
     debug_assert_eq!(out.len(), kps_xy_in_desc_space.len() * c);
 
-    out.par_chunks_mut(c)
-        .zip(kps_xy_in_desc_space.par_iter())
-        .for_each(|(chunk, &(x, y))| {
-            bicubic_sample_one(desc, h_d, w_d, c, x, y, chunk);
-            // Fused L2 re-normalisation: saves a separate pass over `out`.
-            let norm = chunk.iter().map(|&v| v * v).sum::<f32>().sqrt();
-            let inv = 1.0 / (norm + 1e-12);
-            for v in chunk.iter_mut() {
-                *v *= inv;
+    // Batch 64 keypoints per Rayon task (64 tasks for top_k=4096) to amortize
+    // scheduler dispatch overhead across meaningful compute.
+    out.par_chunks_mut(c * 64)
+        .zip(kps_xy_in_desc_space.par_chunks(64))
+        .for_each(|(out_block, kps_block)| {
+            for (chunk, &(x, y)) in out_block.chunks_mut(c).zip(kps_block.iter()) {
+                bicubic_sample_one(desc, h_d, w_d, c, x, y, chunk);
+                let norm = chunk.iter().map(|&v| v * v).sum::<f32>().sqrt();
+                let inv = 1.0 / (norm + 1e-12);
+                for v in chunk.iter_mut() {
+                    *v *= inv;
+                }
+            }
+        });
+}
+
+/// Same as `bicubic_sample_descriptors` but `desc` is in f16 (u16) storage.
+///
+/// Each f16 descriptor value is widened to f32 during the bicubic accumulation.
+/// Output is f32 and L2-normalised in-place, identical to the f32 variant.
+pub fn bicubic_sample_descriptors_f16(
+    desc: &[u16],
+    h_d: usize,
+    w_d: usize,
+    c: usize,
+    kps_xy_in_desc_space: &[(f32, f32)],
+    out: &mut [f32],
+) {
+    debug_assert_eq!(desc.len(), h_d * w_d * c);
+    debug_assert_eq!(out.len(), kps_xy_in_desc_space.len() * c);
+
+    out.par_chunks_mut(c * 64)
+        .zip(kps_xy_in_desc_space.par_chunks(64))
+        .for_each(|(out_block, kps_block)| {
+            for (chunk, &(x, y)) in out_block.chunks_mut(c).zip(kps_block.iter()) {
+                bicubic_sample_one_f16(desc, h_d, w_d, c, x, y, chunk);
+                let norm = chunk.iter().map(|&v| v * v).sum::<f32>().sqrt();
+                let inv = 1.0 / (norm + 1e-12);
+                for v in chunk.iter_mut() {
+                    *v *= inv;
+                }
             }
         });
 }
@@ -129,13 +161,13 @@ fn cubic_weights(t: f32) -> [f32; 4] {
     let a = -0.75f32;
     let t2 = t * t;
     let t3 = t2 * t;
-    let s  = 1.0 - t;
+    let s = 1.0 - t;
     let s2 = s * s;
     let s3 = s2 * s;
-    let u  = 2.0 - t;
+    let u = 2.0 - t;
     let u2 = u * u;
     let u3 = u2 * u;
-    let v  = 1.0 + t;
+    let v = 1.0 + t;
     let v2 = v * v;
     let v3 = v2 * v;
     [
@@ -178,29 +210,41 @@ fn bicubic_sample_one(desc: &[f32], h: usize, w: usize, c: usize, x: f32, y: f32
         unsafe {
             use std::arch::aarch64::*;
             // 16 zero-initialised accumulators — one per 4-channel block.
-            let op  = out.as_mut_ptr();
-            let z   = vdupq_n_f32(0.0);
-            let mut a0  = z; let mut a1  = z; let mut a2  = z; let mut a3  = z;
-            let mut a4  = z; let mut a5  = z; let mut a6  = z; let mut a7  = z;
-            let mut a8  = z; let mut a9  = z; let mut a10 = z; let mut a11 = z;
-            let mut a12 = z; let mut a13 = z; let mut a14 = z; let mut a15 = z;
+            let op = out.as_mut_ptr();
+            let z = vdupq_n_f32(0.0);
+            let mut a0 = z;
+            let mut a1 = z;
+            let mut a2 = z;
+            let mut a3 = z;
+            let mut a4 = z;
+            let mut a5 = z;
+            let mut a6 = z;
+            let mut a7 = z;
+            let mut a8 = z;
+            let mut a9 = z;
+            let mut a10 = z;
+            let mut a11 = z;
+            let mut a12 = z;
+            let mut a13 = z;
+            let mut a14 = z;
+            let mut a15 = z;
 
             for j in 0..4usize {
                 let yy = (iy - 1 + j as isize).clamp(0, h as isize - 1) as usize;
                 for i in 0..4usize {
                     let xx = (ix - 1 + i as isize).clamp(0, w as isize - 1) as usize;
-                    let wt  = vdupq_n_f32(w16[j * 4 + i]);
-                    let sp  = desc.as_ptr().add((yy * w + xx) * 64);
-                    a0  = vfmaq_f32(a0,  wt, vld1q_f32(sp));
-                    a1  = vfmaq_f32(a1,  wt, vld1q_f32(sp.add(4)));
-                    a2  = vfmaq_f32(a2,  wt, vld1q_f32(sp.add(8)));
-                    a3  = vfmaq_f32(a3,  wt, vld1q_f32(sp.add(12)));
-                    a4  = vfmaq_f32(a4,  wt, vld1q_f32(sp.add(16)));
-                    a5  = vfmaq_f32(a5,  wt, vld1q_f32(sp.add(20)));
-                    a6  = vfmaq_f32(a6,  wt, vld1q_f32(sp.add(24)));
-                    a7  = vfmaq_f32(a7,  wt, vld1q_f32(sp.add(28)));
-                    a8  = vfmaq_f32(a8,  wt, vld1q_f32(sp.add(32)));
-                    a9  = vfmaq_f32(a9,  wt, vld1q_f32(sp.add(36)));
+                    let wt = vdupq_n_f32(w16[j * 4 + i]);
+                    let sp = desc.as_ptr().add((yy * w + xx) * 64);
+                    a0 = vfmaq_f32(a0, wt, vld1q_f32(sp));
+                    a1 = vfmaq_f32(a1, wt, vld1q_f32(sp.add(4)));
+                    a2 = vfmaq_f32(a2, wt, vld1q_f32(sp.add(8)));
+                    a3 = vfmaq_f32(a3, wt, vld1q_f32(sp.add(12)));
+                    a4 = vfmaq_f32(a4, wt, vld1q_f32(sp.add(16)));
+                    a5 = vfmaq_f32(a5, wt, vld1q_f32(sp.add(20)));
+                    a6 = vfmaq_f32(a6, wt, vld1q_f32(sp.add(24)));
+                    a7 = vfmaq_f32(a7, wt, vld1q_f32(sp.add(28)));
+                    a8 = vfmaq_f32(a8, wt, vld1q_f32(sp.add(32)));
+                    a9 = vfmaq_f32(a9, wt, vld1q_f32(sp.add(36)));
                     a10 = vfmaq_f32(a10, wt, vld1q_f32(sp.add(40)));
                     a11 = vfmaq_f32(a11, wt, vld1q_f32(sp.add(44)));
                     a12 = vfmaq_f32(a12, wt, vld1q_f32(sp.add(48)));
@@ -209,14 +253,22 @@ fn bicubic_sample_one(desc: &[f32], h: usize, w: usize, c: usize, x: f32, y: f32
                     a15 = vfmaq_f32(a15, wt, vld1q_f32(sp.add(60)));
                 }
             }
-            vst1q_f32(op,       a0);  vst1q_f32(op.add(4),  a1);
-            vst1q_f32(op.add(8), a2); vst1q_f32(op.add(12), a3);
-            vst1q_f32(op.add(16), a4); vst1q_f32(op.add(20), a5);
-            vst1q_f32(op.add(24), a6); vst1q_f32(op.add(28), a7);
-            vst1q_f32(op.add(32), a8); vst1q_f32(op.add(36), a9);
-            vst1q_f32(op.add(40), a10); vst1q_f32(op.add(44), a11);
-            vst1q_f32(op.add(48), a12); vst1q_f32(op.add(52), a13);
-            vst1q_f32(op.add(56), a14); vst1q_f32(op.add(60), a15);
+            vst1q_f32(op, a0);
+            vst1q_f32(op.add(4), a1);
+            vst1q_f32(op.add(8), a2);
+            vst1q_f32(op.add(12), a3);
+            vst1q_f32(op.add(16), a4);
+            vst1q_f32(op.add(20), a5);
+            vst1q_f32(op.add(24), a6);
+            vst1q_f32(op.add(28), a7);
+            vst1q_f32(op.add(32), a8);
+            vst1q_f32(op.add(36), a9);
+            vst1q_f32(op.add(40), a10);
+            vst1q_f32(op.add(44), a11);
+            vst1q_f32(op.add(48), a12);
+            vst1q_f32(op.add(52), a13);
+            vst1q_f32(op.add(56), a14);
+            vst1q_f32(op.add(60), a15);
         }
         return;
     }
@@ -230,6 +282,126 @@ fn bicubic_sample_one(desc: &[f32], h: usize, w: usize, c: usize, x: f32, y: f32
             let base = (yy * w + xx) * c;
             for ci in 0..c {
                 out[ci] += desc[base + ci] * wt;
+            }
+        }
+    }
+}
+
+/// f16-storage variant of `bicubic_sample_one`.
+///
+/// Loads u16 (f16 bits) from `desc` and widens to f32 for accumulation.
+/// On aarch64 the c=64 hot path uses FCVTL (NEON half→single) + FMLA.4S.
+fn bicubic_sample_one_f16(
+    desc: &[u16],
+    h: usize,
+    w: usize,
+    c: usize,
+    x: f32,
+    y: f32,
+    out: &mut [f32],
+) {
+    let ix = x.floor() as isize;
+    let iy = y.floor() as isize;
+    let kx = cubic_weights(x - ix as f32);
+    let ky = cubic_weights(y - iy as f32);
+    let mut w16 = [0.0f32; 16];
+    for j in 0..4usize {
+        for i in 0..4usize {
+            w16[j * 4 + i] = ky[j] * kx[i];
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    if c == 64 {
+        // SAFETY: AArch64 NEON is mandatory. Bounds: xx<w, yy<h, c==64.
+        // Uses fcvtl_lo/fcvtl_hi (stable inline-asm wrappers) instead of the
+        // nightly vcvt_f32_f16 / vreinterpret_f16_u16 intrinsics.
+        unsafe {
+            use crate::ops::neon_asm_f16::{fcvtl_hi, fcvtl_lo};
+            use std::arch::aarch64::*;
+            let op = out.as_mut_ptr();
+            let z = vdupq_n_f32(0.0);
+            let mut a0 = z;
+            let mut a1 = z;
+            let mut a2 = z;
+            let mut a3 = z;
+            let mut a4 = z;
+            let mut a5 = z;
+            let mut a6 = z;
+            let mut a7 = z;
+            let mut a8 = z;
+            let mut a9 = z;
+            let mut a10 = z;
+            let mut a11 = z;
+            let mut a12 = z;
+            let mut a13 = z;
+            let mut a14 = z;
+            let mut a15 = z;
+
+            for j in 0..4usize {
+                let yy = (iy - 1 + j as isize).clamp(0, h as isize - 1) as usize;
+                for i in 0..4usize {
+                    let xx = (ix - 1 + i as isize).clamp(0, w as isize - 1) as usize;
+                    let wt = vdupq_n_f32(w16[j * 4 + i]);
+                    let sp = desc.as_ptr().add((yy * w + xx) * 64);
+                    // 8 groups of 8 f16 lanes = 64 channels.  Each group → 2 × f32x4.
+                    let h0 = vld1q_u16(sp);
+                    let h1 = vld1q_u16(sp.add(8));
+                    let h2 = vld1q_u16(sp.add(16));
+                    let h3 = vld1q_u16(sp.add(24));
+                    let h4 = vld1q_u16(sp.add(32));
+                    let h5 = vld1q_u16(sp.add(40));
+                    let h6 = vld1q_u16(sp.add(48));
+                    let h7 = vld1q_u16(sp.add(56));
+                    // FCVTL/FCVTL2 via stable inline-asm wrappers (no nightly needed).
+                    a0 = vfmaq_f32(a0, wt, fcvtl_lo(h0));
+                    a1 = vfmaq_f32(a1, wt, fcvtl_hi(h0));
+                    a2 = vfmaq_f32(a2, wt, fcvtl_lo(h1));
+                    a3 = vfmaq_f32(a3, wt, fcvtl_hi(h1));
+                    a4 = vfmaq_f32(a4, wt, fcvtl_lo(h2));
+                    a5 = vfmaq_f32(a5, wt, fcvtl_hi(h2));
+                    a6 = vfmaq_f32(a6, wt, fcvtl_lo(h3));
+                    a7 = vfmaq_f32(a7, wt, fcvtl_hi(h3));
+                    a8 = vfmaq_f32(a8, wt, fcvtl_lo(h4));
+                    a9 = vfmaq_f32(a9, wt, fcvtl_hi(h4));
+                    a10 = vfmaq_f32(a10, wt, fcvtl_lo(h5));
+                    a11 = vfmaq_f32(a11, wt, fcvtl_hi(h5));
+                    a12 = vfmaq_f32(a12, wt, fcvtl_lo(h6));
+                    a13 = vfmaq_f32(a13, wt, fcvtl_hi(h6));
+                    a14 = vfmaq_f32(a14, wt, fcvtl_lo(h7));
+                    a15 = vfmaq_f32(a15, wt, fcvtl_hi(h7));
+                }
+            }
+            vst1q_f32(op, a0);
+            vst1q_f32(op.add(4), a1);
+            vst1q_f32(op.add(8), a2);
+            vst1q_f32(op.add(12), a3);
+            vst1q_f32(op.add(16), a4);
+            vst1q_f32(op.add(20), a5);
+            vst1q_f32(op.add(24), a6);
+            vst1q_f32(op.add(28), a7);
+            vst1q_f32(op.add(32), a8);
+            vst1q_f32(op.add(36), a9);
+            vst1q_f32(op.add(40), a10);
+            vst1q_f32(op.add(44), a11);
+            vst1q_f32(op.add(48), a12);
+            vst1q_f32(op.add(52), a13);
+            vst1q_f32(op.add(56), a14);
+            vst1q_f32(op.add(60), a15);
+        }
+        return;
+    }
+
+    // Scalar fallback: convert f16 bits to f32 on load.
+    out[..c].fill(0.0);
+    for j in 0..4usize {
+        let yy = (iy - 1 + j as isize).clamp(0, h as isize - 1) as usize;
+        for i in 0..4usize {
+            let xx = (ix - 1 + i as isize).clamp(0, w as isize - 1) as usize;
+            let wt = w16[j * 4 + i];
+            let base = (yy * w + xx) * c;
+            for ci in 0..c {
+                out[ci] += half::f16::from_bits(desc[base + ci]).to_f32() * wt;
             }
         }
     }

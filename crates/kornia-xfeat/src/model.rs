@@ -28,16 +28,17 @@
 //!
 //! Layers block3.2, block5.3, and all head layers are 1×1 convs (not 3×3).
 
-use rayon::prelude::*;
-use crate::ops::{
-    add3_inplace, add_inplace, avgpool_4x4_s4, bilinear_upsample, channel_softmax,
-    drop_last_channel_nhwc, instance_norm_2d_singlech, l2_normalize_channel, pixel_shuffle_8,
-    repack_weights_co4_3x3, repack_weights_co8_3x3_f16, unfold_8x8, winograd,
-    Activation, Conv1x1Args, Conv3x3Args, OpsVtable,
-};
 #[cfg(target_arch = "aarch64")]
 use crate::ops::neon;
-use crate::postproc::{bicubic_sample_descriptors, nms_topk, KeyPoint};
+use crate::ops::{
+    add_inplace, avgpool_4x4_s4, channel_softmax, drop_last_channel_nhwc,
+    instance_norm_2d_singlech, l2_normalize_channel, pixel_shuffle_8, repack_weights_co4_3x3,
+    repack_weights_co8_3x3_f16, unfold_8x8, winograd, Activation, Conv1x1Args, Conv3x3Args,
+    OpsVtable,
+};
+use crate::postproc::{
+    bicubic_sample_descriptors, bicubic_sample_descriptors_f16, nms_topk, KeyPoint,
+};
 use crate::preproc::InputScale;
 use crate::weights::{PackedWeights, WinogradCache};
 use crate::XFeatError;
@@ -47,16 +48,16 @@ use crate::XFeatError;
 // Only stride-1 3×3 layers qualify. Stride-2 layers (block1.1, block1.3,
 // block3.0, block4.0, block5.0) remain on the NEON/AVX2 vtable path.
 const WINOGRAD_LAYERS: &[(&str, usize, usize)] = &[
-    ("block1.2",         8,   8),
-    ("block2.0",        24,  24),
-    ("block2.1",        24,  24),
-    ("block3.1",        64,  64),
-    ("block4.1",        64,  64),
-    ("block4.2",        64,  64),
-    ("block5.1",       128, 128),
-    ("block5.2",       128, 128),
-    ("block_fusion.0",  64,  64),
-    ("block_fusion.1",  64,  64),
+    ("block1.2", 8, 8),
+    ("block2.0", 24, 24),
+    ("block2.1", 24, 24),
+    ("block3.1", 64, 64),
+    ("block4.1", 64, 64),
+    ("block4.2", 64, 64),
+    ("block5.1", 128, 128),
+    ("block5.2", 128, 128),
+    ("block_fusion.0", 64, 64),
+    ("block_fusion.1", 64, 64),
 ];
 
 /// Static configuration of an XFeat instance.
@@ -100,8 +101,6 @@ pub struct XFeat {
     skip1_pool: Vec<f32>, // (H/4, W/4)  AvgPool output
     x3: Vec<f32>,         // (H/8, W/8, 64)  Block-3 output; FPN accumulator
     x4: Vec<f32>,         // (H/16, W/16, 64)  Block-4 output
-    x4_up: Vec<f32>,      // (H/8, W/8, 64)   x4 bilinear-upsampled
-    x5_up: Vec<f32>,      // (H/8, W/8, 64)   x5 bilinear-upsampled
     feats: Vec<f32>,      // (H/8, W/8, 64)   block_fusion output; descriptor map
 
     // ── Head outputs ──────────────────────────────────────────────────────
@@ -137,14 +136,27 @@ pub struct XFeat {
     // ARMv8.2 fp16 GEMM path instead of the f32 Winograd kernel.
     use_fp16_winograd: bool,
 
+    // When true, head activations are stored as f16 (u16 bits) in
+    // feats_f16/act_ha/act_hb/k1_raw_f16 to halve the hot-section working set.
+    // Set to false by with_scalar_backend() so parity tests are unaffected.
+    use_fp16_act: bool,
+
+    // ── f16 activation storage buffers ────────────────────────────────────
+    // Sized to (h8, w8, 64) and (h8, w8, 65) respectively.
+    // Only populated when build_f16=true; empty vecs fall through to f32 path.
+    feats_f16: Vec<u16>,  // (H/8, W/8, 64)  f16 descriptor map
+    act_ha: Vec<u16>,     // (H/8, W/8, 64)  ping-pong scratch for head layers
+    act_hb: Vec<u16>,     // (H/8, W/8, 64)  ping-pong scratch for head layers
+    k1_raw_f16: Vec<u16>, // (H/8, W/8, 65)  f16 keypoint logits
+
     // ── Pre-packed conv3x3 weights for stride-2 NEON layers ───────────────
     // Eliminates a per-frame Vec<f32> alloc in conv3x3_v2. Layout for each:
     // [c_out/4, 9, c_in, 4] — matches the NEON v2 inner-loop read pattern.
-    packed_b1_1: Vec<f32>,  // block1.1  c_in=4,  c_out=8   → 288 f32
-    packed_b1_3: Vec<f32>,  // block1.3  c_in=8,  c_out=24  → 1728 f32
-    packed_b3_0: Vec<f32>,  // block3.0  c_in=24, c_out=64  → 13824 f32
-    packed_b4_0: Vec<f32>,  // block4.0  c_in=64, c_out=64  → 36864 f32
-    packed_b5_0: Vec<f32>,  // block5.0  c_in=64, c_out=128 → 73728 f32
+    packed_b1_1: Vec<f32>, // block1.1  c_in=4,  c_out=8   → 288 f32
+    packed_b1_3: Vec<f32>, // block1.3  c_in=8,  c_out=24  → 1728 f32
+    packed_b3_0: Vec<f32>, // block3.0  c_in=24, c_out=64  → 13824 f32
+    packed_b4_0: Vec<f32>, // block4.0  c_in=64, c_out=64  → 36864 f32
+    packed_b5_0: Vec<f32>, // block5.0  c_in=64, c_out=128 → 73728 f32
 
     // ── fp16 pre-packed weights for stride-2 direct conv3x3 ───────────────
     // Layout [c_out/8, 9, c_in, 8] fp16-as-u16. Only populated when
@@ -166,8 +178,15 @@ pub struct XFeat {
     f16_scratch_a: Vec<u16>, // f16 input:   h*w*c_in  (max across all conv1x1 layers)
     f16_scratch_b: Vec<u16>, // f16 weights: c_in*c_out
     f16_scratch_c: Vec<u16>, // f16 output:  h*w*c_out
-    f16_pack_a:    Vec<u16>, // GEMM A-panel pack: c_in * 4
-    f16_pack_b:    Vec<u16>, // GEMM full B pre-pack: c_in * c_out
+    f16_pack_a: Vec<u16>,    // GEMM A-panel pack: c_in * 4
+    f16_pack_b: Vec<u16>,    // GEMM full B pre-pack: c_in * c_out
+
+    // ── Pre-packed conv1×1 B matrices (Problem 5 fix) ────────────────────────
+    // Eliminate per-inference Phase 1+2 weight conversion (~44 μs × 7 layers
+    // = ~308 μs per frame) by packing once at construction. Keyed by weight
+    // name; value is (packed_data, b_rem_offset) as returned by
+    // `prepack_conv1x1_b_f16`.  Only populated when build_f16 is true.
+    conv1x1_packed_b: std::collections::HashMap<String, (Vec<u16>, usize)>,
 }
 
 impl std::fmt::Debug for XFeat {
@@ -220,8 +239,7 @@ impl XFeat {
         for &(layer_name, c_out, c_in) in WINOGRAD_LAYERS {
             let wt_key = format!("{layer_name}.weight");
             if let Ok(wt) = weights.get(&wt_key) {
-                let transformed =
-                    winograd::winograd_transform_weights_f32_f43(wt, c_out, c_in);
+                let transformed = winograd::winograd_transform_weights_f32_f43(wt, c_out, c_in);
 
                 // Build the f16 copy if the CPU supports fp16 arithmetic.
                 if build_f16 {
@@ -230,10 +248,7 @@ impl XFeat {
                         let mut f16_buf: Vec<u16> = Vec::with_capacity(transformed.len());
                         // SAFETY: transformed is a valid, aligned Vec<f32>.
                         unsafe {
-                            crate::ops::neon_asm_f16::f32_to_f16_slice(
-                                &transformed,
-                                &mut f16_buf,
-                            );
+                            crate::ops::neon_asm_f16::f32_to_f16_slice(&transformed, &mut f16_buf);
                         }
                         // Pre-transpose B panels for the fp16 F(4,3) GEMM driver.
                         // transformed_f16 layout: [36 * c_out * c_in] (position p
@@ -254,7 +269,7 @@ impl XFeat {
                         // Pre-pack B panels for zero-copy GEMM: [36, n_blocks, K, NR=8].
                         const NR: usize = 8;
                         let n_blocks = c_out / NR;
-                        let n_rem    = c_out % NR;
+                        let n_rem = c_out % NR;
                         // Each position p: aligned [n_blocks, K, NR] + tail [K, n_rem].
                         let slot_sz = n_blocks * c_in * NR + c_in * n_rem;
                         let mut b_packed = vec![0u16; 36 * slot_sz];
@@ -304,7 +319,9 @@ impl XFeat {
                     }
                 }
 
-                winograd_cache.transformed.insert(layer_name.to_string(), transformed);
+                winograd_cache
+                    .transformed
+                    .insert(layer_name.to_string(), transformed);
                 winograd_cache.c_out.insert(layer_name.to_string(), c_out);
                 winograd_cache.c_in.insert(layer_name.to_string(), c_in);
             }
@@ -320,10 +337,10 @@ impl XFeat {
                 .map(|w| repack_weights_co4_3x3(w, c_out, c_in))
                 .unwrap_or_default()
         };
-        let packed_b1_1 = pack("block1.1.weight", 8,   4);
-        let packed_b1_3 = pack("block1.3.weight", 24,  8);
-        let packed_b3_0 = pack("block3.0.weight", 64,  24);
-        let packed_b4_0 = pack("block4.0.weight", 64,  64);
+        let packed_b1_1 = pack("block1.1.weight", 8, 4);
+        let packed_b1_3 = pack("block1.3.weight", 24, 8);
+        let packed_b3_0 = pack("block3.0.weight", 64, 24);
+        let packed_b4_0 = pack("block4.0.weight", 64, 64);
         let packed_b5_0 = pack("block5.0.weight", 128, 64);
 
         // fp16 packing — only when the CPU has ARMv8.2 fp16 (build_f16 true).
@@ -336,11 +353,38 @@ impl XFeat {
                 .map(|w| repack_weights_co8_3x3_f16(w, c_out, c_in))
                 .unwrap_or_default()
         };
-        let packed_b1_1_f16 = pack_f16("block1.1.weight", 8,   4);
-        let packed_b1_3_f16 = pack_f16("block1.3.weight", 24,  8);
-        let packed_b3_0_f16 = pack_f16("block3.0.weight", 64,  24);
-        let packed_b4_0_f16 = pack_f16("block4.0.weight", 64,  64);
+        let packed_b1_1_f16 = pack_f16("block1.1.weight", 8, 4);
+        let packed_b1_3_f16 = pack_f16("block1.3.weight", 24, 8);
+        let packed_b3_0_f16 = pack_f16("block3.0.weight", 64, 24);
+        let packed_b4_0_f16 = pack_f16("block4.0.weight", 64, 64);
         let packed_b5_0_f16 = pack_f16("block5.0.weight", 128, 64);
+
+        // ── Pre-pack conv1×1 B matrices for the f16-act hot path ─────────
+        // Eliminates Phase 1+2 weight conversion on every inference call for
+        // the 7 conv1×1 layers that feed into `conv1x1_nhwc_f16act_prepacked_parallel`
+        // and `conv1x1_nhwc_f32_to_f16_prepacked`.
+        // Format: (packed, b_rem_offset) from `prepack_conv1x1_b_f16`.
+        let mut conv1x1_packed_b: std::collections::HashMap<String, (Vec<u16>, usize)> =
+            std::collections::HashMap::new();
+        if build_f16 {
+            // layer_name, c_out, c_in — all 64-channel layers in heads + block_fusion.2.
+            const CONV1X1_LAYERS: &[(&str, usize, usize)] = &[
+                ("block_fusion.2.weight", 64, 64),
+                ("heatmap_head.0.weight", 64, 64),
+                ("heatmap_head.1.weight", 64, 64),
+                ("heatmap_head.2.weight", 1, 64), // 64→1, used by to_f32_prepacked
+                ("keypoint_head.0.weight", 64, 64),
+                ("keypoint_head.1.weight", 64, 64),
+                ("keypoint_head.2.weight", 64, 64),
+                ("keypoint_head.3.weight", 65, 64),
+            ];
+            for &(key, c_out, c_in) in CONV1X1_LAYERS {
+                if let Ok(wt) = weights.get(key) {
+                    let entry = crate::ops::neon_asm_f16::prepack_conv1x1_b_f16(wt, c_in, c_out);
+                    conv1x1_packed_b.insert(key.to_string(), entry);
+                }
+            }
+        }
 
         // ── Winograd input-tile scratch reserve ──────────────────────────
         // The F(4,3) drivers manage their own scratch internally, so we no
@@ -365,16 +409,16 @@ impl XFeat {
             let h32 = h / 32;
             let w32 = w / 32;
             let candidates = [
-                h4 * w4 * 1,          // skip1 (tiny)
-                h8 * w8 * 128,        // block5.3 output side OR keypoint_head input: 128ch
-                h8 * w8 * 65,         // keypoint_head.3 output: 65ch
-                h32 * w32 * 128,      // block5.3 input: 128ch at h/32×w/32
+                h4 * w4 * 1,     // skip1 (tiny)
+                h8 * w8 * 128,   // block5.3 output side OR keypoint_head input: 128ch
+                h8 * w8 * 65,    // keypoint_head.3 output: 65ch
+                h32 * w32 * 128, // block5.3 input: 128ch at h/32×w/32
             ];
             *candidates.iter().max().unwrap_or(&0)
         };
-        let f16_scratch_b  = 128 * 128; // max c_in * max c_out
-        let f16_pack_a_sz  = 128 * 4;   // max c_in * MR
-        let f16_pack_b_sz  = 128 * 128; // max c_in * c_out — full B pre-pack buffer
+        let f16_scratch_b = 128 * 128; // max c_in * max c_out
+        let f16_pack_a_sz = 128 * 4; // max c_in * MR
+        let f16_pack_b_sz = 128 * 128; // max c_in * c_out — full B pre-pack buffer
 
         Ok(Self {
             config: config.clone(),
@@ -388,8 +432,6 @@ impl XFeat {
             skip1_pool: vec![0.0f32; h4 * w4],
             x3: vec![0.0f32; h8 * w8 * 64],
             x4: vec![0.0f32; h16 * w16 * 64],
-            x4_up: vec![0.0f32; h8 * w8 * 64],
-            x5_up: vec![0.0f32; h8 * w8 * 64],
             feats: vec![0.0f32; h8 * w8 * 64],
 
             h1_rel: vec![0.0f32; h8 * w8],
@@ -411,6 +453,28 @@ impl XFeat {
             winograd_v_buf: vec![0.0f32; winograd_v_buf_size],
             use_winograd_cache: true,
             use_fp16_winograd: build_f16,
+            use_fp16_act: build_f16,
+
+            feats_f16: if build_f16 {
+                vec![0u16; h8 * w8 * 64]
+            } else {
+                Vec::new()
+            },
+            act_ha: if build_f16 {
+                vec![0u16; h8 * w8 * 64]
+            } else {
+                Vec::new()
+            },
+            act_hb: if build_f16 {
+                vec![0u16; h8 * w8 * 64]
+            } else {
+                Vec::new()
+            },
+            k1_raw_f16: if build_f16 {
+                vec![0u16; h8 * w8 * 65]
+            } else {
+                Vec::new()
+            },
 
             packed_b1_1,
             packed_b1_3,
@@ -427,8 +491,10 @@ impl XFeat {
             f16_scratch_a: vec![0u16; f16_scratch_ac],
             f16_scratch_b: vec![0u16; f16_scratch_b],
             f16_scratch_c: vec![0u16; f16_scratch_ac],
-            f16_pack_a:    vec![0u16; f16_pack_a_sz],
-            f16_pack_b:    vec![0u16; f16_pack_b_sz],
+            f16_pack_a: vec![0u16; f16_pack_a_sz],
+            f16_pack_b: vec![0u16; f16_pack_b_sz],
+
+            conv1x1_packed_b,
         })
     }
 
@@ -439,6 +505,7 @@ impl XFeat {
         // every 3×3 conv call — preserving the scalar parity oracle invariant.
         self.use_winograd_cache = false;
         self.use_fp16_winograd = false;
+        self.use_fp16_act = false;
         // Clear fp16 direct-conv weights so the dispatch falls through to vtable.
         self.packed_b1_1_f16.clear();
         self.packed_b1_3_f16.clear();
@@ -485,6 +552,17 @@ impl XFeat {
         // pre-allocated reserve but is currently unused by the hot path.
         let use_winograd = self.use_winograd_cache;
         let use_fp16 = self.use_fp16_winograd;
+        let use_fp16_act = self.use_fp16_act;
+
+        // Raw pointers for f16 activation buffers (same borrow-escape trick).
+        let feats_f16_ptr: *mut u16 = self.feats_f16.as_mut_ptr();
+        let feats_f16_len: usize = self.feats_f16.len();
+        let act_ha_ptr: *mut u16 = self.act_ha.as_mut_ptr();
+        let act_ha_len: usize = self.act_ha.len();
+        let act_hb_ptr: *mut u16 = self.act_hb.as_mut_ptr();
+        let act_hb_len: usize = self.act_hb.len();
+        let k1_f16_ptr: *mut u16 = self.k1_raw_f16.as_mut_ptr();
+        let k1_f16_len: usize = self.k1_raw_f16.len();
 
         // ── fp16 conv1x1 scratch pointers ────────────────────────────────
         // Same trick as vbuf_ptr: extract raw pointers so the scratch vecs
@@ -492,26 +570,41 @@ impl XFeat {
         // SAFETY: each scratch buffer is only accessed at one call site at a
         // time (extract() is single-threaded), never aliasing other borrows.
         let f16_sa_ptr: *mut u16 = self.f16_scratch_a.as_mut_ptr();
-        let f16_sa_len: usize    = self.f16_scratch_a.len();
+        let f16_sa_len: usize = self.f16_scratch_a.len();
         let f16_sb_ptr: *mut u16 = self.f16_scratch_b.as_mut_ptr();
-        let f16_sb_len: usize    = self.f16_scratch_b.len();
+        let f16_sb_len: usize = self.f16_scratch_b.len();
         let f16_sc_ptr: *mut u16 = self.f16_scratch_c.as_mut_ptr();
-        let f16_sc_len: usize    = self.f16_scratch_c.len();
+        let f16_sc_len: usize = self.f16_scratch_c.len();
         let f16_pa_ptr: *mut u16 = self.f16_pack_a.as_mut_ptr();
-        let f16_pa_len: usize    = self.f16_pack_a.len();
+        let f16_pa_len: usize = self.f16_pack_a.len();
         let f16_pb_ptr: *mut u16 = self.f16_pack_b.as_mut_ptr();
-        let f16_pb_len: usize    = self.f16_pack_b.len();
+        let f16_pb_len: usize = self.f16_pack_b.len();
 
         // ── fp16 direct-conv3x3 weight pointers ──────────────────────────
         // Store as (ptr-as-usize, len) to avoid borrow-checker conflicts with
         // simultaneous &mut buf_* borrows at the stride-2 conv call sites.
         // SAFETY: packed_b*_f16 are never mutated in extract(); pointers are
         // valid for the lifetime of self.
-        let b1_1_f16 = (self.packed_b1_1_f16.as_ptr() as usize, self.packed_b1_1_f16.len());
-        let b1_3_f16 = (self.packed_b1_3_f16.as_ptr() as usize, self.packed_b1_3_f16.len());
-        let b3_0_f16 = (self.packed_b3_0_f16.as_ptr() as usize, self.packed_b3_0_f16.len());
-        let b4_0_f16 = (self.packed_b4_0_f16.as_ptr() as usize, self.packed_b4_0_f16.len());
-        let b5_0_f16 = (self.packed_b5_0_f16.as_ptr() as usize, self.packed_b5_0_f16.len());
+        let b1_1_f16 = (
+            self.packed_b1_1_f16.as_ptr() as usize,
+            self.packed_b1_1_f16.len(),
+        );
+        let b1_3_f16 = (
+            self.packed_b1_3_f16.as_ptr() as usize,
+            self.packed_b1_3_f16.len(),
+        );
+        let b3_0_f16 = (
+            self.packed_b3_0_f16.as_ptr() as usize,
+            self.packed_b3_0_f16.len(),
+        );
+        let b4_0_f16 = (
+            self.packed_b4_0_f16.as_ptr() as usize,
+            self.packed_b4_0_f16.len(),
+        );
+        let b5_0_f16 = (
+            self.packed_b5_0_f16.as_ptr() as usize,
+            self.packed_b5_0_f16.len(),
+        );
 
         /// Dispatch a stride-2 3×3 conv: fp16 direct path when weights are present,
         /// otherwise the NEON v2 f32 vtable entry.
@@ -554,8 +647,12 @@ impl XFeat {
             activation: Activation,
             output: &'x mut [f32],
         ) -> bool {
-            if !enabled { return false; }
-            let Some(wt) = cache.transformed.get(layer) else { return false; };
+            if !enabled {
+                return false;
+            }
+            let Some(wt) = cache.transformed.get(layer) else {
+                return false;
+            };
             let c_out = cache.c_out[layer];
             let c_in = cache.c_in[layer];
 
@@ -566,8 +663,16 @@ impl XFeat {
             if fp16 {
                 if let Some(packed_f16) = cache.fp16_direct_conv.get(layer) {
                     let args = Conv3x3Args {
-                        input, residual: None, weights: spatial, bias,
-                        h_in, w_in, c_in, c_out, activation, packed_weights: None,
+                        input,
+                        residual: None,
+                        weights: spatial,
+                        bias,
+                        h_in,
+                        w_in,
+                        c_in,
+                        c_out,
+                        activation,
+                        packed_weights: None,
                     };
                     neon::conv3x3_nhwc_fp16(&args, output, packed_f16, 1);
                     return true;
@@ -583,14 +688,26 @@ impl XFeat {
             // fp16 fast path: use the ARMv8.2 FMLA.8H GEMM kernel.
             #[cfg(target_arch = "aarch64")]
             if fp16 {
-                if let (Some(wt_f16), Some(bp_f16)) =
-                    (cache.transformed_f16.get(layer), cache.b_panels_f16.get(layer))
-                {
+                if let (Some(wt_f16), Some(bp_f16)) = (
+                    cache.transformed_f16.get(layer),
+                    cache.b_panels_f16.get(layer),
+                ) {
                     let bp_packed = cache.b_panels_packed.get(layer).map_or(&[][..], |v| v);
                     winograd::conv3x3_winograd_nhwc_f43_f16_with_scalar_fallback(
-                        input, h_in, w_in, c_in,
-                        wt_f16, bp_f16, bp_packed, spatial, Some(bias), c_out,
-                        activation, output, h_in, w_in,
+                        input,
+                        h_in,
+                        w_in,
+                        c_in,
+                        wt_f16,
+                        bp_f16,
+                        bp_packed,
+                        spatial,
+                        Some(bias),
+                        c_out,
+                        activation,
+                        output,
+                        h_in,
+                        w_in,
                     );
                     return true;
                 }
@@ -598,9 +715,18 @@ impl XFeat {
             let _ = fp16; // suppress unused warning on non-aarch64
 
             winograd::conv3x3_winograd_nhwc_f43_with_scalar_fallback(
-                input, h_in, w_in, c_in,
-                wt, spatial, Some(bias), c_out,
-                activation, output, h_in, w_in,
+                input,
+                h_in,
+                w_in,
+                c_in,
+                wt,
+                spatial,
+                Some(bias),
+                c_out,
+                activation,
+                output,
+                h_in,
+                w_in,
             );
             true
         }
@@ -620,11 +746,16 @@ impl XFeat {
             vt: OpsVtable,
             args: &Conv1x1Args<'x>,
             output: &'x mut [f32],
-            sa_ptr: *mut u16, sa_len: usize,
-            sb_ptr: *mut u16, sb_len: usize,
-            sc_ptr: *mut u16, sc_len: usize,
-            pa_ptr: *mut u16, pa_len: usize,
-            pb_ptr: *mut u16, pb_len: usize,
+            sa_ptr: *mut u16,
+            sa_len: usize,
+            sb_ptr: *mut u16,
+            sb_len: usize,
+            sc_ptr: *mut u16,
+            sc_len: usize,
+            pa_ptr: *mut u16,
+            pa_len: usize,
+            pb_ptr: *mut u16,
+            pb_len: usize,
         ) {
             #[cfg(target_arch = "aarch64")]
             if use_fp16 {
@@ -635,14 +766,12 @@ impl XFeat {
                 let sc = unsafe { std::slice::from_raw_parts_mut(sc_ptr, sc_len) };
                 let pa = unsafe { std::slice::from_raw_parts_mut(pa_ptr, pa_len) };
                 let pb = unsafe { std::slice::from_raw_parts_mut(pb_ptr, pb_len) };
-                let m  = args.h * args.w;
+                let m = args.h * args.w;
                 // Parallel path: Rayon strips with pre-packed B, thread-local scratch.
                 // Serial path: pre-allocated sa/sc/pa (zero-alloc) for small M or
                 // c_out not a multiple of NR=8 (e.g. keypoint_head.3 c_out=65).
                 if m >= 2 * crate::ops::neon_asm_f16::CONV1X1_STRIP_SIZE {
-                    crate::ops::neon_asm_f16::conv1x1_nhwc_f16_parallel(
-                        args, output, sb, pb,
-                    );
+                    crate::ops::neon_asm_f16::conv1x1_nhwc_f16_parallel(args, output, sb, pb);
                 } else {
                     crate::ops::neon_asm_f16::conv1x1_nhwc_f16_scratch(
                         args, output, sa, sb, sc, pa, pb,
@@ -651,12 +780,18 @@ impl XFeat {
                 return;
             }
             // Suppress unused-variable warnings on non-aarch64 or when use_fp16=false.
-            let _ = (use_fp16, sa_ptr, sa_len, sb_ptr, sb_len,
-                     sc_ptr, sc_len, pa_ptr, pa_len, pb_ptr, pb_len);
+            let _ = (
+                use_fp16, sa_ptr, sa_len, sb_ptr, sb_len, sc_ptr, sc_len, pa_ptr, pa_len, pb_ptr,
+                pb_len,
+            );
             (vt.conv1x1_f16)(args, output);
         }
 
-        // ── Timing scaffold (temporary, remove after profiling) ──────────
+        // ── Per-stage timing scaffold ────────────────────────────────────
+        // Opt-in via the `XFEAT_TIMING` env var. When unset, every `t_lap!`
+        // is a runtime no-op (the body is guarded by `_timing`), so the only
+        // always-on cost is the single `Instant::now()` below — negligible.
+        // Used to track the per-layer latency breakdown this crate is tuned to.
         let _timing = std::env::var("XFEAT_TIMING").is_ok();
         macro_rules! t_lap {
             ($label:expr, $t0:ident) => {
@@ -699,13 +834,18 @@ impl XFeat {
         {
             let wt = self.weights.get("block1.1.weight")?;
             let bt = self.weights.get("block1.1.bias")?;
-            s2_conv(use_fp16, vt.conv3x3_s2,
+            s2_conv(
+                use_fp16,
+                vt.conv3x3_s2,
                 &Conv3x3Args {
                     input: &self.buf_a[..h * w * 4],
                     residual: None,
                     weights: wt,
                     bias: bt,
-                    h_in: h, w_in: w, c_in: 4, c_out: 8,
+                    h_in: h,
+                    w_in: w,
+                    c_in: 4,
+                    c_out: 8,
                     activation: Activation::Relu,
                     packed_weights: (!self.packed_b1_1.is_empty()).then_some(&self.packed_b1_1),
                 },
@@ -719,10 +859,16 @@ impl XFeat {
             let bt = self.weights.get("block1.2.bias")?;
             let wt_sp = self.weights.get("block1.2.weight")?;
             let hit = winograd_conv(
-                use_winograd, use_fp16, &self.winograd_cache, wt_sp,
-                bt, "block1.2",
+                use_winograd,
+                use_fp16,
+                &self.winograd_cache,
+                wt_sp,
+                bt,
+                "block1.2",
                 &self.buf_b[..h / 2 * (w / 2) * 8],
-                h / 2, w / 2, Activation::Relu,
+                h / 2,
+                w / 2,
+                Activation::Relu,
                 &mut self.buf_a[..h / 2 * (w / 2) * 8],
             );
             if !hit {
@@ -730,8 +876,14 @@ impl XFeat {
                 (vt.conv3x3)(
                     &Conv3x3Args {
                         input: &self.buf_b[..h / 2 * (w / 2) * 8],
-                        residual: None, weights: wt, bias: bt, packed_weights: None,
-                        h_in: h / 2, w_in: w / 2, c_in: 8, c_out: 8,
+                        residual: None,
+                        weights: wt,
+                        bias: bt,
+                        packed_weights: None,
+                        h_in: h / 2,
+                        w_in: w / 2,
+                        c_in: 8,
+                        c_out: 8,
                         activation: Activation::Relu,
                     },
                     &mut self.buf_a[..h / 2 * (w / 2) * 8],
@@ -743,13 +895,18 @@ impl XFeat {
         {
             let wt = self.weights.get("block1.3.weight")?;
             let bt = self.weights.get("block1.3.bias")?;
-            s2_conv(use_fp16, vt.conv3x3_s2,
+            s2_conv(
+                use_fp16,
+                vt.conv3x3_s2,
                 &Conv3x3Args {
                     input: &self.buf_a[..h / 2 * (w / 2) * 8],
                     residual: None,
                     weights: wt,
                     bias: bt,
-                    h_in: h / 2, w_in: w / 2, c_in: 8, c_out: 24,
+                    h_in: h / 2,
+                    w_in: w / 2,
+                    c_in: 8,
+                    c_out: 24,
                     activation: Activation::Relu,
                     packed_weights: (!self.packed_b1_3.is_empty()).then_some(&self.packed_b1_3),
                 },
@@ -764,7 +921,9 @@ impl XFeat {
         {
             let wt = self.weights.get("skip1.weight")?;
             let bt = self.weights.get("skip1.bias")?;
-            conv1x1_f16_direct(use_fp16, vt,
+            conv1x1_f16_direct(
+                use_fp16,
+                vt,
                 &Conv1x1Args {
                     input: &self.skip1_pool,
                     weights: wt,
@@ -776,11 +935,16 @@ impl XFeat {
                     activation: Activation::Identity,
                 },
                 &mut self.buf_a[..h4 * w4 * 24],
-                f16_sa_ptr, f16_sa_len,
-                f16_sb_ptr, f16_sb_len,
-                f16_sc_ptr, f16_sc_len,
-                f16_pa_ptr, f16_pa_len,
-                f16_pb_ptr, f16_pb_len,
+                f16_sa_ptr,
+                f16_sa_len,
+                f16_sb_ptr,
+                f16_sb_len,
+                f16_sc_ptr,
+                f16_sc_len,
+                f16_pa_ptr,
+                f16_pa_len,
+                f16_pb_ptr,
+                f16_pb_len,
             );
         }
 
@@ -795,10 +959,16 @@ impl XFeat {
             let bt = self.weights.get("block2.0.bias")?;
             let wt_sp = self.weights.get("block2.0.weight")?;
             let hit = winograd_conv(
-                use_winograd, use_fp16, &self.winograd_cache, wt_sp,
-                bt, "block2.0",
+                use_winograd,
+                use_fp16,
+                &self.winograd_cache,
+                wt_sp,
+                bt,
+                "block2.0",
                 &self.buf_b[..h4 * w4 * 24],
-                h4, w4, Activation::Relu,
+                h4,
+                w4,
+                Activation::Relu,
                 &mut self.buf_a[..h4 * w4 * 24],
             );
             if !hit {
@@ -806,8 +976,14 @@ impl XFeat {
                 (vt.conv3x3)(
                     &Conv3x3Args {
                         input: &self.buf_b[..h4 * w4 * 24],
-                        residual: None, weights: wt, bias: bt, packed_weights: None,
-                        h_in: h4, w_in: w4, c_in: 24, c_out: 24,
+                        residual: None,
+                        weights: wt,
+                        bias: bt,
+                        packed_weights: None,
+                        h_in: h4,
+                        w_in: w4,
+                        c_in: 24,
+                        c_out: 24,
                         activation: Activation::Relu,
                     },
                     &mut self.buf_a[..h4 * w4 * 24],
@@ -818,10 +994,16 @@ impl XFeat {
             let bt = self.weights.get("block2.1.bias")?;
             let wt_sp = self.weights.get("block2.1.weight")?;
             let hit = winograd_conv(
-                use_winograd, use_fp16, &self.winograd_cache, wt_sp,
-                bt, "block2.1",
+                use_winograd,
+                use_fp16,
+                &self.winograd_cache,
+                wt_sp,
+                bt,
+                "block2.1",
                 &self.buf_a[..h4 * w4 * 24],
-                h4, w4, Activation::Relu,
+                h4,
+                w4,
+                Activation::Relu,
                 &mut self.buf_b[..h4 * w4 * 24],
             );
             if !hit {
@@ -829,8 +1011,14 @@ impl XFeat {
                 (vt.conv3x3)(
                     &Conv3x3Args {
                         input: &self.buf_a[..h4 * w4 * 24],
-                        residual: None, weights: wt, bias: bt, packed_weights: None,
-                        h_in: h4, w_in: w4, c_in: 24, c_out: 24,
+                        residual: None,
+                        weights: wt,
+                        bias: bt,
+                        packed_weights: None,
+                        h_in: h4,
+                        w_in: w4,
+                        c_in: 24,
+                        c_out: 24,
                         activation: Activation::Relu,
                     },
                     &mut self.buf_b[..h4 * w4 * 24],
@@ -843,13 +1031,18 @@ impl XFeat {
         {
             let wt = self.weights.get("block3.0.weight")?;
             let bt = self.weights.get("block3.0.bias")?;
-            s2_conv(use_fp16, vt.conv3x3_s2,
+            s2_conv(
+                use_fp16,
+                vt.conv3x3_s2,
                 &Conv3x3Args {
                     input: &self.buf_b[..h4 * w4 * 24],
                     residual: None,
                     weights: wt,
                     bias: bt,
-                    h_in: h4, w_in: w4, c_in: 24, c_out: 64,
+                    h_in: h4,
+                    w_in: w4,
+                    c_in: 24,
+                    c_out: 64,
                     activation: Activation::Relu,
                     packed_weights: (!self.packed_b3_0.is_empty()).then_some(&self.packed_b3_0),
                 },
@@ -862,10 +1055,16 @@ impl XFeat {
             let bt = self.weights.get("block3.1.bias")?;
             let wt_sp = self.weights.get("block3.1.weight")?;
             let hit = winograd_conv(
-                use_winograd, use_fp16, &self.winograd_cache, wt_sp,
-                bt, "block3.1",
+                use_winograd,
+                use_fp16,
+                &self.winograd_cache,
+                wt_sp,
+                bt,
+                "block3.1",
                 &self.buf_a[..h8 * w8 * 64],
-                h8, w8, Activation::Relu,
+                h8,
+                w8,
+                Activation::Relu,
                 &mut self.buf_b[..h8 * w8 * 64],
             );
             if !hit {
@@ -873,8 +1072,14 @@ impl XFeat {
                 (vt.conv3x3)(
                     &Conv3x3Args {
                         input: &self.buf_a[..h8 * w8 * 64],
-                        residual: None, weights: wt, bias: bt, packed_weights: None,
-                        h_in: h8, w_in: w8, c_in: 64, c_out: 64,
+                        residual: None,
+                        weights: wt,
+                        bias: bt,
+                        packed_weights: None,
+                        h_in: h8,
+                        w_in: w8,
+                        c_in: 64,
+                        c_out: 64,
                         activation: Activation::Relu,
                     },
                     &mut self.buf_b[..h8 * w8 * 64],
@@ -885,7 +1090,9 @@ impl XFeat {
         {
             let wt = self.weights.get("block3.2.weight")?;
             let bt = self.weights.get("block3.2.bias")?;
-            conv1x1_f16_direct(use_fp16, vt,
+            conv1x1_f16_direct(
+                use_fp16,
+                vt,
                 &Conv1x1Args {
                     input: &self.buf_b[..h8 * w8 * 64],
                     weights: wt,
@@ -897,11 +1104,16 @@ impl XFeat {
                     activation: Activation::Relu,
                 },
                 &mut self.x3,
-                f16_sa_ptr, f16_sa_len,
-                f16_sb_ptr, f16_sb_len,
-                f16_sc_ptr, f16_sc_len,
-                f16_pa_ptr, f16_pa_len,
-                f16_pb_ptr, f16_pb_len,
+                f16_sa_ptr,
+                f16_sa_len,
+                f16_sb_ptr,
+                f16_sb_len,
+                f16_sc_ptr,
+                f16_sc_len,
+                f16_pa_ptr,
+                f16_pa_len,
+                f16_pb_ptr,
+                f16_pb_len,
             );
         }
 
@@ -910,13 +1122,18 @@ impl XFeat {
         {
             let wt = self.weights.get("block4.0.weight")?;
             let bt = self.weights.get("block4.0.bias")?;
-            s2_conv(use_fp16, vt.conv3x3_s2,
+            s2_conv(
+                use_fp16,
+                vt.conv3x3_s2,
                 &Conv3x3Args {
                     input: &self.x3,
                     residual: None,
                     weights: wt,
                     bias: bt,
-                    h_in: h8, w_in: w8, c_in: 64, c_out: 64,
+                    h_in: h8,
+                    w_in: w8,
+                    c_in: 64,
+                    c_out: 64,
                     activation: Activation::Relu,
                     packed_weights: (!self.packed_b4_0.is_empty()).then_some(&self.packed_b4_0),
                 },
@@ -929,10 +1146,16 @@ impl XFeat {
             let bt = self.weights.get("block4.1.bias")?;
             let wt_sp = self.weights.get("block4.1.weight")?;
             let hit = winograd_conv(
-                use_winograd, use_fp16, &self.winograd_cache, wt_sp,
-                bt, "block4.1",
+                use_winograd,
+                use_fp16,
+                &self.winograd_cache,
+                wt_sp,
+                bt,
+                "block4.1",
                 &self.buf_a[..h16 * w16 * 64],
-                h16, w16, Activation::Relu,
+                h16,
+                w16,
+                Activation::Relu,
                 &mut self.buf_b[..h16 * w16 * 64],
             );
             if !hit {
@@ -940,8 +1163,14 @@ impl XFeat {
                 (vt.conv3x3)(
                     &Conv3x3Args {
                         input: &self.buf_a[..h16 * w16 * 64],
-                        residual: None, weights: wt, bias: bt, packed_weights: None,
-                        h_in: h16, w_in: w16, c_in: 64, c_out: 64,
+                        residual: None,
+                        weights: wt,
+                        bias: bt,
+                        packed_weights: None,
+                        h_in: h16,
+                        w_in: w16,
+                        c_in: 64,
+                        c_out: 64,
                         activation: Activation::Relu,
                     },
                     &mut self.buf_b[..h16 * w16 * 64],
@@ -953,10 +1182,16 @@ impl XFeat {
             let bt = self.weights.get("block4.2.bias")?;
             let wt_sp = self.weights.get("block4.2.weight")?;
             let hit = winograd_conv(
-                use_winograd, use_fp16, &self.winograd_cache, wt_sp,
-                bt, "block4.2",
+                use_winograd,
+                use_fp16,
+                &self.winograd_cache,
+                wt_sp,
+                bt,
+                "block4.2",
                 &self.buf_b[..h16 * w16 * 64],
-                h16, w16, Activation::Relu,
+                h16,
+                w16,
+                Activation::Relu,
                 &mut self.x4,
             );
             if !hit {
@@ -964,8 +1199,14 @@ impl XFeat {
                 (vt.conv3x3)(
                     &Conv3x3Args {
                         input: &self.buf_b[..h16 * w16 * 64],
-                        residual: None, weights: wt, bias: bt, packed_weights: None,
-                        h_in: h16, w_in: w16, c_in: 64, c_out: 64,
+                        residual: None,
+                        weights: wt,
+                        bias: bt,
+                        packed_weights: None,
+                        h_in: h16,
+                        w_in: w16,
+                        c_in: 64,
+                        c_out: 64,
                         activation: Activation::Relu,
                     },
                     &mut self.x4,
@@ -978,13 +1219,18 @@ impl XFeat {
         {
             let wt = self.weights.get("block5.0.weight")?;
             let bt = self.weights.get("block5.0.bias")?;
-            s2_conv(use_fp16, vt.conv3x3_s2,
+            s2_conv(
+                use_fp16,
+                vt.conv3x3_s2,
                 &Conv3x3Args {
                     input: &self.x4,
                     residual: None,
                     weights: wt,
                     bias: bt,
-                    h_in: h16, w_in: w16, c_in: 64, c_out: 128,
+                    h_in: h16,
+                    w_in: w16,
+                    c_in: 64,
+                    c_out: 128,
                     activation: Activation::Relu,
                     packed_weights: (!self.packed_b5_0.is_empty()).then_some(&self.packed_b5_0),
                 },
@@ -997,10 +1243,16 @@ impl XFeat {
             let bt = self.weights.get("block5.1.bias")?;
             let wt_sp = self.weights.get("block5.1.weight")?;
             let hit = winograd_conv(
-                use_winograd, use_fp16, &self.winograd_cache, wt_sp,
-                bt, "block5.1",
+                use_winograd,
+                use_fp16,
+                &self.winograd_cache,
+                wt_sp,
+                bt,
+                "block5.1",
                 &self.buf_a[..h32 * w32 * 128],
-                h32, w32, Activation::Relu,
+                h32,
+                w32,
+                Activation::Relu,
                 &mut self.buf_b[..h32 * w32 * 128],
             );
             if !hit {
@@ -1008,8 +1260,14 @@ impl XFeat {
                 (vt.conv3x3)(
                     &Conv3x3Args {
                         input: &self.buf_a[..h32 * w32 * 128],
-                        residual: None, weights: wt, bias: bt, packed_weights: None,
-                        h_in: h32, w_in: w32, c_in: 128, c_out: 128,
+                        residual: None,
+                        weights: wt,
+                        bias: bt,
+                        packed_weights: None,
+                        h_in: h32,
+                        w_in: w32,
+                        c_in: 128,
+                        c_out: 128,
                         activation: Activation::Relu,
                     },
                     &mut self.buf_b[..h32 * w32 * 128],
@@ -1021,10 +1279,16 @@ impl XFeat {
             let bt = self.weights.get("block5.2.bias")?;
             let wt_sp = self.weights.get("block5.2.weight")?;
             let hit = winograd_conv(
-                use_winograd, use_fp16, &self.winograd_cache, wt_sp,
-                bt, "block5.2",
+                use_winograd,
+                use_fp16,
+                &self.winograd_cache,
+                wt_sp,
+                bt,
+                "block5.2",
                 &self.buf_b[..h32 * w32 * 128],
-                h32, w32, Activation::Relu,
+                h32,
+                w32,
+                Activation::Relu,
                 &mut self.buf_a[..h32 * w32 * 128],
             );
             if !hit {
@@ -1032,8 +1296,14 @@ impl XFeat {
                 (vt.conv3x3)(
                     &Conv3x3Args {
                         input: &self.buf_b[..h32 * w32 * 128],
-                        residual: None, weights: wt, bias: bt, packed_weights: None,
-                        h_in: h32, w_in: w32, c_in: 128, c_out: 128,
+                        residual: None,
+                        weights: wt,
+                        bias: bt,
+                        packed_weights: None,
+                        h_in: h32,
+                        w_in: w32,
+                        c_in: 128,
+                        c_out: 128,
                         activation: Activation::Relu,
                     },
                     &mut self.buf_a[..h32 * w32 * 128],
@@ -1044,7 +1314,9 @@ impl XFeat {
         {
             let wt = self.weights.get("block5.3.weight")?;
             let bt = self.weights.get("block5.3.bias")?;
-            conv1x1_f16_direct(use_fp16, vt,
+            conv1x1_f16_direct(
+                use_fp16,
+                vt,
                 &Conv1x1Args {
                     input: &self.buf_a[..h32 * w32 * 128],
                     weights: wt,
@@ -1056,27 +1328,35 @@ impl XFeat {
                     activation: Activation::Relu,
                 },
                 &mut self.buf_b[..h32 * w32 * 64],
-                f16_sa_ptr, f16_sa_len,
-                f16_sb_ptr, f16_sb_len,
-                f16_sc_ptr, f16_sc_len,
-                f16_pa_ptr, f16_pa_len,
-                f16_pb_ptr, f16_pb_len,
+                f16_sa_ptr,
+                f16_sa_len,
+                f16_sb_ptr,
+                f16_sb_len,
+                f16_sc_ptr,
+                f16_sc_len,
+                f16_pa_ptr,
+                f16_pa_len,
+                f16_pb_ptr,
+                f16_pb_len,
             );
         }
 
         t_lap!("11.block5 s2+2xwino+1x1", _t);
-        // ── 9. FPN: upsample x4, x5 to H/8×W/8, sum into x3 ────────────
-        bilinear_upsample(&self.x4, &mut self.x4_up, h16, w16, 64, h8, w8);
-        bilinear_upsample(
+        // ── 9. FPN: x3 += upsample(x4) + upsample(x5), single fused pass ──
+        // (one Rayon dispatch instead of three; bit-identical to the unfused
+        // bilinear_upsample ×2 + add3_inplace sequence)
+        crate::ops::fpn_upsample2_add3(
+            &mut self.x3,
+            &self.x4,
+            h16,
+            w16,
             &self.buf_b[..h32 * w32 * 64],
-            &mut self.x5_up,
             h32,
             w32,
             64,
             h8,
             w8,
         );
-        add3_inplace(&mut self.x3, &self.x4_up, &self.x5_up);
 
         t_lap!("12.FPN upsample+add3", _t);
         // ── 10. block_fusion (two 3×3 BasicLayers + one 1×1 plain conv) ──
@@ -1085,10 +1365,16 @@ impl XFeat {
             let bt = self.weights.get("block_fusion.0.bias")?;
             let wt_sp = self.weights.get("block_fusion.0.weight")?;
             let hit = winograd_conv(
-                use_winograd, use_fp16, &self.winograd_cache, wt_sp,
-                bt, "block_fusion.0",
+                use_winograd,
+                use_fp16,
+                &self.winograd_cache,
+                wt_sp,
+                bt,
+                "block_fusion.0",
                 &self.x3,
-                h8, w8, Activation::Relu,
+                h8,
+                w8,
+                Activation::Relu,
                 &mut self.buf_a[..h8 * w8 * 64],
             );
             if !hit {
@@ -1096,8 +1382,14 @@ impl XFeat {
                 (vt.conv3x3)(
                     &Conv3x3Args {
                         input: &self.x3,
-                        residual: None, weights: wt, bias: bt, packed_weights: None,
-                        h_in: h8, w_in: w8, c_in: 64, c_out: 64,
+                        residual: None,
+                        weights: wt,
+                        bias: bt,
+                        packed_weights: None,
+                        h_in: h8,
+                        w_in: w8,
+                        c_in: 64,
+                        c_out: 64,
                         activation: Activation::Relu,
                     },
                     &mut self.buf_a[..h8 * w8 * 64],
@@ -1109,10 +1401,16 @@ impl XFeat {
             let bt = self.weights.get("block_fusion.1.bias")?;
             let wt_sp = self.weights.get("block_fusion.1.weight")?;
             let hit = winograd_conv(
-                use_winograd, use_fp16, &self.winograd_cache, wt_sp,
-                bt, "block_fusion.1",
+                use_winograd,
+                use_fp16,
+                &self.winograd_cache,
+                wt_sp,
+                bt,
+                "block_fusion.1",
                 &self.buf_a[..h8 * w8 * 64],
-                h8, w8, Activation::Relu,
+                h8,
+                w8,
+                Activation::Relu,
                 &mut self.buf_b[..h8 * w8 * 64],
             );
             if !hit {
@@ -1120,19 +1418,82 @@ impl XFeat {
                 (vt.conv3x3)(
                     &Conv3x3Args {
                         input: &self.buf_a[..h8 * w8 * 64],
-                        residual: None, weights: wt, bias: bt, packed_weights: None,
-                        h_in: h8, w_in: w8, c_in: 64, c_out: 64,
+                        residual: None,
+                        weights: wt,
+                        bias: bt,
+                        packed_weights: None,
+                        h_in: h8,
+                        w_in: w8,
+                        c_in: 64,
+                        c_out: 64,
                         activation: Activation::Relu,
                     },
                     &mut self.buf_b[..h8 * w8 * 64],
                 );
             }
         }
-        // block_fusion.2: plain conv1x1 with real bias, no activation
+        // block_fusion.2: plain conv1x1 with real bias, no activation.
+        // f16-act path writes to feats_f16 (f16 storage); f32 path writes to feats.
         {
             let wt = self.weights.get("block_fusion.2.weight")?;
             let bt = self.weights.get("block_fusion.2.bias")?;
-            conv1x1_f16_direct(use_fp16, vt,
+            #[cfg(target_arch = "aarch64")]
+            if use_fp16_act {
+                let feats_f16 =
+                    unsafe { std::slice::from_raw_parts_mut(feats_f16_ptr, feats_f16_len) };
+                let args = Conv1x1Args {
+                    input: &self.buf_b[..h8 * w8 * 64],
+                    weights: wt,
+                    bias: bt,
+                    h: h8,
+                    w: w8,
+                    c_in: 64,
+                    c_out: 64,
+                    activation: Activation::Identity,
+                };
+                if let Some((pk, pko)) = self.conv1x1_packed_b.get("block_fusion.2.weight") {
+                    crate::ops::neon_asm_f16::conv1x1_nhwc_f32_to_f16_prepacked(
+                        &args, pk, *pko, feats_f16,
+                    );
+                } else {
+                    crate::ops::neon_asm_f16::conv1x1_nhwc_f32_to_f16(
+                        &args,
+                        feats_f16,
+                        unsafe { std::slice::from_raw_parts_mut(f16_sb_ptr, f16_sb_len) },
+                        unsafe { std::slice::from_raw_parts_mut(f16_pb_ptr, f16_pb_len) },
+                    );
+                }
+            } else {
+                conv1x1_f16_direct(
+                    use_fp16,
+                    vt,
+                    &Conv1x1Args {
+                        input: &self.buf_b[..h8 * w8 * 64],
+                        weights: wt,
+                        bias: bt,
+                        h: h8,
+                        w: w8,
+                        c_in: 64,
+                        c_out: 64,
+                        activation: Activation::Identity,
+                    },
+                    &mut self.feats,
+                    f16_sa_ptr,
+                    f16_sa_len,
+                    f16_sb_ptr,
+                    f16_sb_len,
+                    f16_sc_ptr,
+                    f16_sc_len,
+                    f16_pa_ptr,
+                    f16_pa_len,
+                    f16_pb_ptr,
+                    f16_pb_len,
+                );
+            }
+            #[cfg(not(target_arch = "aarch64"))]
+            conv1x1_f16_direct(
+                use_fp16,
+                vt,
                 &Conv1x1Args {
                     input: &self.buf_b[..h8 * w8 * 64],
                     weights: wt,
@@ -1144,25 +1505,151 @@ impl XFeat {
                     activation: Activation::Identity,
                 },
                 &mut self.feats,
-                f16_sa_ptr, f16_sa_len,
-                f16_sb_ptr, f16_sb_len,
-                f16_sc_ptr, f16_sc_len,
-                f16_pa_ptr, f16_pa_len,
-                f16_pb_ptr, f16_pb_len,
+                f16_sa_ptr,
+                f16_sa_len,
+                f16_sb_ptr,
+                f16_sb_len,
+                f16_sc_ptr,
+                f16_sc_len,
+                f16_pa_ptr,
+                f16_pa_len,
+                f16_pb_ptr,
+                f16_pb_len,
             );
         }
 
         t_lap!("13.block_fusion 2xwino+1x1", _t);
         // ── 11. Heatmap head (2 × 1×1 BasicLayer + conv1x1(64→1)+sigmoid) ─
-        // Outputs single-channel reliability map h1_rel.
-        {
-            let wt = self.weights.get("heatmap_head.0.weight")?;
-            let bt = self.weights.get("heatmap_head.0.bias")?;
-            conv1x1_f16_direct(use_fp16, vt,
+        // f16-act path: feats_f16 → act_ha → act_hb → h1_rel (f32 via to_f32).
+        // f32 path: feats → buf_a → buf_b → h1_rel.
+        #[cfg(target_arch = "aarch64")]
+        if use_fp16_act {
+            let feats_f16 =
+                unsafe { std::slice::from_raw_parts(feats_f16_ptr as *const u16, feats_f16_len) };
+            let act_ha = unsafe { std::slice::from_raw_parts_mut(act_ha_ptr, act_ha_len) };
+            let act_hb = unsafe { std::slice::from_raw_parts_mut(act_hb_ptr, act_hb_len) };
+            let sb = unsafe { std::slice::from_raw_parts_mut(f16_sb_ptr, f16_sb_len) };
+            let pb = unsafe { std::slice::from_raw_parts_mut(f16_pb_ptr, f16_pb_len) };
+            // heatmap_head.0+1 fused: feats_f16 → act_hb (single Rayon dispatch)
+            {
+                let wt0 = self.weights.get("heatmap_head.0.weight")?;
+                let bt0 = self.weights.get("heatmap_head.0.bias")?;
+                let wt1 = self.weights.get("heatmap_head.1.weight")?;
+                let bt1 = self.weights.get("heatmap_head.1.bias")?;
+                let act_hb2 = unsafe { std::slice::from_raw_parts_mut(act_hb_ptr, act_hb_len) };
+                let _ = (wt0, wt1);
+                if let (Some((pk0, pk0o)), Some((pk1, pk1o))) = (
+                    self.conv1x1_packed_b.get("heatmap_head.0.weight"),
+                    self.conv1x1_packed_b.get("heatmap_head.1.weight"),
+                ) {
+                    crate::ops::neon_asm_f16::conv1x1_fused_2layer_f16act_prepacked_parallel(
+                        feats_f16,
+                        pk0,
+                        *pk0o,
+                        bt0,
+                        pk1,
+                        *pk1o,
+                        bt1,
+                        h8,
+                        w8,
+                        64,
+                        Activation::Relu,
+                        act_hb2,
+                    );
+                } else {
+                    // Fallback: two separate dispatches.
+                    crate::ops::neon_asm_f16::conv1x1_nhwc_f16act_parallel(
+                        feats_f16,
+                        self.weights.get("heatmap_head.0.weight").unwrap(),
+                        bt0,
+                        h8,
+                        w8,
+                        64,
+                        64,
+                        Activation::Relu,
+                        act_ha,
+                        sb,
+                        pb,
+                    );
+                    let act_ha_ro =
+                        unsafe { std::slice::from_raw_parts(act_ha_ptr as *const u16, act_ha_len) };
+                    let sb2 = unsafe { std::slice::from_raw_parts_mut(f16_sb_ptr, f16_sb_len) };
+                    let pb2 = unsafe { std::slice::from_raw_parts_mut(f16_pb_ptr, f16_pb_len) };
+                    crate::ops::neon_asm_f16::conv1x1_nhwc_f16act_parallel(
+                        act_ha_ro,
+                        self.weights.get("heatmap_head.1.weight").unwrap(),
+                        bt1,
+                        h8,
+                        w8,
+                        64,
+                        64,
+                        Activation::Relu,
+                        act_hb2,
+                        sb2,
+                        pb2,
+                    );
+                }
+            }
+            // heatmap_head.2: act_hb → h1_rel (f32, sigmoid)
+            {
+                let act_hb_ro =
+                    unsafe { std::slice::from_raw_parts(act_hb_ptr as *const u16, act_hb_len) };
+                let wt = self.weights.get("heatmap_head.2.weight")?;
+                let bt = self.weights.get("heatmap_head.2.bias")?;
+                let sa = unsafe { std::slice::from_raw_parts_mut(f16_sa_ptr, f16_sa_len) };
+                let sb3 = unsafe { std::slice::from_raw_parts_mut(f16_sb_ptr, f16_sb_len) };
+                let sc = unsafe { std::slice::from_raw_parts_mut(f16_sc_ptr, f16_sc_len) };
+                let pa = unsafe { std::slice::from_raw_parts_mut(f16_pa_ptr, f16_pa_len) };
+                let pb3 = unsafe { std::slice::from_raw_parts_mut(f16_pb_ptr, f16_pb_len) };
+                if let Some((pk, pko)) = self.conv1x1_packed_b.get("heatmap_head.2.weight") {
+                    crate::ops::neon_asm_f16::conv1x1_nhwc_f16act_to_f32_prepacked(
+                        act_hb_ro,
+                        pk,
+                        *pko,
+                        bt,
+                        h8,
+                        w8,
+                        64,
+                        1,
+                        Activation::Sigmoid,
+                        &mut self.h1_rel,
+                        sc,
+                        pa,
+                    );
+                } else {
+                    crate::ops::neon_asm_f16::conv1x1_nhwc_f16act_to_f32(
+                        act_hb_ro,
+                        wt,
+                        bt,
+                        h8,
+                        w8,
+                        64,
+                        1,
+                        Activation::Sigmoid,
+                        &mut self.h1_rel,
+                        sa,
+                        sb3,
+                        sc,
+                        pa,
+                        pb3,
+                    );
+                }
+                let _ = (sb3, pb3); // unused in prepacked path
+            }
+            let _ = (act_ha, act_hb, sb, pb); // silence unused warnings
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        let _use_fp16_act_neon_only = use_fp16_act;
+        if !use_fp16_act {
+            let wt0 = self.weights.get("heatmap_head.0.weight")?;
+            let bt0 = self.weights.get("heatmap_head.0.bias")?;
+            conv1x1_f16_direct(
+                use_fp16,
+                vt,
                 &Conv1x1Args {
                     input: &self.feats,
-                    weights: wt,
-                    bias: bt,
+                    weights: wt0,
+                    bias: bt0,
                     h: h8,
                     w: w8,
                     c_in: 64,
@@ -1170,21 +1657,26 @@ impl XFeat {
                     activation: Activation::Relu,
                 },
                 &mut self.buf_a[..h8 * w8 * 64],
-                f16_sa_ptr, f16_sa_len,
-                f16_sb_ptr, f16_sb_len,
-                f16_sc_ptr, f16_sc_len,
-                f16_pa_ptr, f16_pa_len,
-                f16_pb_ptr, f16_pb_len,
+                f16_sa_ptr,
+                f16_sa_len,
+                f16_sb_ptr,
+                f16_sb_len,
+                f16_sc_ptr,
+                f16_sc_len,
+                f16_pa_ptr,
+                f16_pa_len,
+                f16_pb_ptr,
+                f16_pb_len,
             );
-        }
-        {
-            let wt = self.weights.get("heatmap_head.1.weight")?;
-            let bt = self.weights.get("heatmap_head.1.bias")?;
-            conv1x1_f16_direct(use_fp16, vt,
+            let wt1 = self.weights.get("heatmap_head.1.weight")?;
+            let bt1 = self.weights.get("heatmap_head.1.bias")?;
+            conv1x1_f16_direct(
+                use_fp16,
+                vt,
                 &Conv1x1Args {
                     input: &self.buf_a[..h8 * w8 * 64],
-                    weights: wt,
-                    bias: bt,
+                    weights: wt1,
+                    bias: bt1,
                     h: h8,
                     w: w8,
                     c_in: 64,
@@ -1192,22 +1684,26 @@ impl XFeat {
                     activation: Activation::Relu,
                 },
                 &mut self.buf_b[..h8 * w8 * 64],
-                f16_sa_ptr, f16_sa_len,
-                f16_sb_ptr, f16_sb_len,
-                f16_sc_ptr, f16_sc_len,
-                f16_pa_ptr, f16_pa_len,
-                f16_pb_ptr, f16_pb_len,
+                f16_sa_ptr,
+                f16_sa_len,
+                f16_sb_ptr,
+                f16_sb_len,
+                f16_sc_ptr,
+                f16_sc_len,
+                f16_pa_ptr,
+                f16_pa_len,
+                f16_pb_ptr,
+                f16_pb_len,
             );
-        }
-        // heatmap_head.2: conv1x1(64→1) + Sigmoid → h1_rel (H/8,W/8)
-        {
-            let wt = self.weights.get("heatmap_head.2.weight")?;
-            let bt = self.weights.get("heatmap_head.2.bias")?;
-            conv1x1_f16_direct(use_fp16, vt,
+            let wt2 = self.weights.get("heatmap_head.2.weight")?;
+            let bt2 = self.weights.get("heatmap_head.2.bias")?;
+            conv1x1_f16_direct(
+                use_fp16,
+                vt,
                 &Conv1x1Args {
                     input: &self.buf_b[..h8 * w8 * 64],
-                    weights: wt,
-                    bias: bt,
+                    weights: wt2,
+                    bias: bt2,
                     h: h8,
                     w: w8,
                     c_in: 64,
@@ -1215,126 +1711,327 @@ impl XFeat {
                     activation: Activation::Sigmoid,
                 },
                 &mut self.h1_rel,
-                f16_sa_ptr, f16_sa_len,
-                f16_sb_ptr, f16_sb_len,
-                f16_sc_ptr, f16_sc_len,
-                f16_pa_ptr, f16_pa_len,
-                f16_pb_ptr, f16_pb_len,
+                f16_sa_ptr,
+                f16_sa_len,
+                f16_sb_ptr,
+                f16_sb_len,
+                f16_sc_ptr,
+                f16_sc_len,
+                f16_pa_ptr,
+                f16_pa_len,
+                f16_pb_ptr,
+                f16_pb_len,
             );
         }
 
         t_lap!("14.heatmap_head 3x1x1", _t);
+        // L2-normalise feats/feats_f16 while still warm in L3.
+        #[cfg(target_arch = "aarch64")]
+        if use_fp16_act {
+            let feats_f16 = unsafe { std::slice::from_raw_parts_mut(feats_f16_ptr, feats_f16_len) };
+            crate::ops::l2_normalize_channel_f16(feats_f16, h8, w8, 64);
+        } else {
+            l2_normalize_channel(&mut self.feats, h8, w8, 64);
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        l2_normalize_channel(&mut self.feats, h8, w8, 64);
+        t_lap!("14b.l2_norm (early)", _t);
         // ── 12. Keypoint head (input = unfold_8x8(norm_gray)) ────────────
-        // Takes the 8×8 patches of the InstanceNorm'd gray image at H/8 × W/8
-        // grid positions (64 channels), then processes with 1×1 layers.
-        unfold_8x8(&self.norm_gray, &mut self.buf_a[..h8 * w8 * 64], h, w);
-        {
-            let wt = self.weights.get("keypoint_head.0.weight")?;
-            let bt = self.weights.get("keypoint_head.0.bias")?;
-            conv1x1_f16_direct(use_fp16, vt,
-                &Conv1x1Args {
-                    input: &self.buf_a[..h8 * w8 * 64],
-                    weights: wt,
-                    bias: bt,
-                    h: h8,
-                    w: w8,
-                    c_in: 64,
-                    c_out: 64,
-                    activation: Activation::Relu,
-                },
-                &mut self.buf_b[..h8 * w8 * 64],
-                f16_sa_ptr, f16_sa_len,
-                f16_sb_ptr, f16_sb_len,
-                f16_sc_ptr, f16_sc_len,
-                f16_pa_ptr, f16_pa_len,
-                f16_pb_ptr, f16_pb_len,
-            );
+        // f16-act path: unfold → act_ha, then 4 × f16→f16 conv1x1, → k1_raw_f16.
+        // f32 path: unchanged (unfold → buf_a, conv1x1 × 4 → k1_raw).
+        #[cfg(target_arch = "aarch64")]
+        if use_fp16_act {
+            let act_ha = unsafe { std::slice::from_raw_parts_mut(act_ha_ptr, act_ha_len) };
+            crate::ops::unfold_8x8_to_f16(&self.norm_gray, act_ha, h, w);
+            let sb = unsafe { std::slice::from_raw_parts_mut(f16_sb_ptr, f16_sb_len) };
+            let pb = unsafe { std::slice::from_raw_parts_mut(f16_pb_ptr, f16_pb_len) };
+            // keypoint_head.0+1+2 fused: act_ha → act_hb (single Rayon dispatch)
+            {
+                let act_ha_ro =
+                    unsafe { std::slice::from_raw_parts(act_ha_ptr as *const u16, act_ha_len) };
+                let act_hb2 = unsafe { std::slice::from_raw_parts_mut(act_hb_ptr, act_hb_len) };
+                let bt0 = self.weights.get("keypoint_head.0.bias")?;
+                let bt1 = self.weights.get("keypoint_head.1.bias")?;
+                let bt2 = self.weights.get("keypoint_head.2.bias")?;
+                if let (Some((pk0, pk0o)), Some((pk1, pk1o)), Some((pk2, pk2o))) = (
+                    self.conv1x1_packed_b.get("keypoint_head.0.weight"),
+                    self.conv1x1_packed_b.get("keypoint_head.1.weight"),
+                    self.conv1x1_packed_b.get("keypoint_head.2.weight"),
+                ) {
+                    crate::ops::neon_asm_f16::conv1x1_fused_3layer_f16act_prepacked_parallel(
+                        act_ha_ro,
+                        pk0,
+                        *pk0o,
+                        bt0,
+                        pk1,
+                        *pk1o,
+                        bt1,
+                        pk2,
+                        *pk2o,
+                        bt2,
+                        h8,
+                        w8,
+                        64,
+                        Activation::Relu,
+                        act_hb2,
+                    );
+                } else {
+                    // Fallback: three separate dispatches.
+                    let act_hb_f =
+                        unsafe { std::slice::from_raw_parts_mut(act_hb_ptr, act_hb_len) };
+                    crate::ops::neon_asm_f16::conv1x1_nhwc_f16act_parallel(
+                        act_ha_ro,
+                        self.weights.get("keypoint_head.0.weight").unwrap(),
+                        bt0,
+                        h8,
+                        w8,
+                        64,
+                        64,
+                        Activation::Relu,
+                        act_hb_f,
+                        unsafe { std::slice::from_raw_parts_mut(f16_sb_ptr, f16_sb_len) },
+                        unsafe { std::slice::from_raw_parts_mut(f16_pb_ptr, f16_pb_len) },
+                    );
+                    let hb_ro =
+                        unsafe { std::slice::from_raw_parts(act_hb_ptr as *const u16, act_hb_len) };
+                    let act_ha2 = unsafe { std::slice::from_raw_parts_mut(act_ha_ptr, act_ha_len) };
+                    crate::ops::neon_asm_f16::conv1x1_nhwc_f16act_parallel(
+                        hb_ro,
+                        self.weights.get("keypoint_head.1.weight").unwrap(),
+                        bt1,
+                        h8,
+                        w8,
+                        64,
+                        64,
+                        Activation::Relu,
+                        act_ha2,
+                        unsafe { std::slice::from_raw_parts_mut(f16_sb_ptr, f16_sb_len) },
+                        unsafe { std::slice::from_raw_parts_mut(f16_pb_ptr, f16_pb_len) },
+                    );
+                    let ha_ro =
+                        unsafe { std::slice::from_raw_parts(act_ha_ptr as *const u16, act_ha_len) };
+                    let act_hb3 = unsafe { std::slice::from_raw_parts_mut(act_hb_ptr, act_hb_len) };
+                    crate::ops::neon_asm_f16::conv1x1_nhwc_f16act_parallel(
+                        ha_ro,
+                        self.weights.get("keypoint_head.2.weight").unwrap(),
+                        bt2,
+                        h8,
+                        w8,
+                        64,
+                        64,
+                        Activation::Relu,
+                        act_hb3,
+                        unsafe { std::slice::from_raw_parts_mut(f16_sb_ptr, f16_sb_len) },
+                        unsafe { std::slice::from_raw_parts_mut(f16_pb_ptr, f16_pb_len) },
+                    );
+                }
+            }
+            // keypoint_head.3: act_hb → k1_raw_f16 (c_out=65, Identity)
+            {
+                let act_hb_ro =
+                    unsafe { std::slice::from_raw_parts(act_hb_ptr as *const u16, act_hb_len) };
+                let k1_raw_f16 = unsafe { std::slice::from_raw_parts_mut(k1_f16_ptr, k1_f16_len) };
+                let wt = self.weights.get("keypoint_head.3.weight")?;
+                let bt = self.weights.get("keypoint_head.3.bias")?;
+                let sb5 = unsafe { std::slice::from_raw_parts_mut(f16_sb_ptr, f16_sb_len) };
+                let pb5 = unsafe { std::slice::from_raw_parts_mut(f16_pb_ptr, f16_pb_len) };
+                if let Some((pk, pko)) = self.conv1x1_packed_b.get("keypoint_head.3.weight") {
+                    crate::ops::neon_asm_f16::conv1x1_nhwc_f16act_prepacked_parallel(
+                        act_hb_ro,
+                        pk,
+                        *pko,
+                        bt,
+                        h8,
+                        w8,
+                        64,
+                        65,
+                        Activation::Identity,
+                        k1_raw_f16,
+                    );
+                } else {
+                    crate::ops::neon_asm_f16::conv1x1_nhwc_f16act_parallel(
+                        act_hb_ro,
+                        wt,
+                        bt,
+                        h8,
+                        w8,
+                        64,
+                        65,
+                        Activation::Identity,
+                        k1_raw_f16,
+                        sb5,
+                        pb5,
+                    );
+                }
+            }
+            let _ = (act_ha, sb, pb);
         }
-        {
-            let wt = self.weights.get("keypoint_head.1.weight")?;
-            let bt = self.weights.get("keypoint_head.1.bias")?;
-            conv1x1_f16_direct(use_fp16, vt,
-                &Conv1x1Args {
-                    input: &self.buf_b[..h8 * w8 * 64],
-                    weights: wt,
-                    bias: bt,
-                    h: h8,
-                    w: w8,
-                    c_in: 64,
-                    c_out: 64,
-                    activation: Activation::Relu,
-                },
-                &mut self.buf_a[..h8 * w8 * 64],
-                f16_sa_ptr, f16_sa_len,
-                f16_sb_ptr, f16_sb_len,
-                f16_sc_ptr, f16_sc_len,
-                f16_pa_ptr, f16_pa_len,
-                f16_pb_ptr, f16_pb_len,
-            );
-        }
-        {
-            let wt = self.weights.get("keypoint_head.2.weight")?;
-            let bt = self.weights.get("keypoint_head.2.bias")?;
-            conv1x1_f16_direct(use_fp16, vt,
-                &Conv1x1Args {
-                    input: &self.buf_a[..h8 * w8 * 64],
-                    weights: wt,
-                    bias: bt,
-                    h: h8,
-                    w: w8,
-                    c_in: 64,
-                    c_out: 64,
-                    activation: Activation::Relu,
-                },
-                &mut self.buf_b[..h8 * w8 * 64],
-                f16_sa_ptr, f16_sa_len,
-                f16_sb_ptr, f16_sb_len,
-                f16_sc_ptr, f16_sc_len,
-                f16_pa_ptr, f16_pa_len,
-                f16_pb_ptr, f16_pb_len,
-            );
-        }
-        // keypoint_head.3: plain conv1x1(64→65) with real bias → k1_raw
-        {
-            let wt = self.weights.get("keypoint_head.3.weight")?;
-            let bt = self.weights.get("keypoint_head.3.bias")?;
-            conv1x1_f16_direct(use_fp16, vt,
-                &Conv1x1Args {
-                    input: &self.buf_b[..h8 * w8 * 64],
-                    weights: wt,
-                    bias: bt,
-                    h: h8,
-                    w: w8,
-                    c_in: 64,
-                    c_out: 65,
-                    activation: Activation::Identity,
-                },
-                &mut self.k1_raw,
-                f16_sa_ptr, f16_sa_len,
-                f16_sb_ptr, f16_sb_len,
-                f16_sc_ptr, f16_sc_len,
-                f16_pa_ptr, f16_pa_len,
-                f16_pb_ptr, f16_pb_len,
-            );
+        if !use_fp16_act {
+            unfold_8x8(&self.norm_gray, &mut self.buf_a[..h8 * w8 * 64], h, w);
+            {
+                let wt = self.weights.get("keypoint_head.0.weight")?;
+                let bt = self.weights.get("keypoint_head.0.bias")?;
+                conv1x1_f16_direct(
+                    use_fp16,
+                    vt,
+                    &Conv1x1Args {
+                        input: &self.buf_a[..h8 * w8 * 64],
+                        weights: wt,
+                        bias: bt,
+                        h: h8,
+                        w: w8,
+                        c_in: 64,
+                        c_out: 64,
+                        activation: Activation::Relu,
+                    },
+                    &mut self.buf_b[..h8 * w8 * 64],
+                    f16_sa_ptr,
+                    f16_sa_len,
+                    f16_sb_ptr,
+                    f16_sb_len,
+                    f16_sc_ptr,
+                    f16_sc_len,
+                    f16_pa_ptr,
+                    f16_pa_len,
+                    f16_pb_ptr,
+                    f16_pb_len,
+                );
+            }
+            {
+                let wt = self.weights.get("keypoint_head.1.weight")?;
+                let bt = self.weights.get("keypoint_head.1.bias")?;
+                conv1x1_f16_direct(
+                    use_fp16,
+                    vt,
+                    &Conv1x1Args {
+                        input: &self.buf_b[..h8 * w8 * 64],
+                        weights: wt,
+                        bias: bt,
+                        h: h8,
+                        w: w8,
+                        c_in: 64,
+                        c_out: 64,
+                        activation: Activation::Relu,
+                    },
+                    &mut self.buf_a[..h8 * w8 * 64],
+                    f16_sa_ptr,
+                    f16_sa_len,
+                    f16_sb_ptr,
+                    f16_sb_len,
+                    f16_sc_ptr,
+                    f16_sc_len,
+                    f16_pa_ptr,
+                    f16_pa_len,
+                    f16_pb_ptr,
+                    f16_pb_len,
+                );
+            }
+            {
+                let wt = self.weights.get("keypoint_head.2.weight")?;
+                let bt = self.weights.get("keypoint_head.2.bias")?;
+                conv1x1_f16_direct(
+                    use_fp16,
+                    vt,
+                    &Conv1x1Args {
+                        input: &self.buf_a[..h8 * w8 * 64],
+                        weights: wt,
+                        bias: bt,
+                        h: h8,
+                        w: w8,
+                        c_in: 64,
+                        c_out: 64,
+                        activation: Activation::Relu,
+                    },
+                    &mut self.buf_b[..h8 * w8 * 64],
+                    f16_sa_ptr,
+                    f16_sa_len,
+                    f16_sb_ptr,
+                    f16_sb_len,
+                    f16_sc_ptr,
+                    f16_sc_len,
+                    f16_pa_ptr,
+                    f16_pa_len,
+                    f16_pb_ptr,
+                    f16_pb_len,
+                );
+            }
+            {
+                let wt = self.weights.get("keypoint_head.3.weight")?;
+                let bt = self.weights.get("keypoint_head.3.bias")?;
+                conv1x1_f16_direct(
+                    use_fp16,
+                    vt,
+                    &Conv1x1Args {
+                        input: &self.buf_b[..h8 * w8 * 64],
+                        weights: wt,
+                        bias: bt,
+                        h: h8,
+                        w: w8,
+                        c_in: 64,
+                        c_out: 65,
+                        activation: Activation::Identity,
+                    },
+                    &mut self.k1_raw,
+                    f16_sa_ptr,
+                    f16_sa_len,
+                    f16_sb_ptr,
+                    f16_sb_len,
+                    f16_sc_ptr,
+                    f16_sc_len,
+                    f16_pa_ptr,
+                    f16_pa_len,
+                    f16_pb_ptr,
+                    f16_pb_len,
+                );
+            }
         }
         t_lap!("15.kp_head unfold+4x1x1", _t);
-        // softmax(65 ch) → drop dustbin → pixel_shuffle(8) → K1h (H, W)
-        channel_softmax(&mut self.k1_raw, h8, w8, 65);
-        drop_last_channel_nhwc(
-            &self.k1_raw,
-            &mut self.buf_a[..h8 * w8 * 64],
-            h8,
-            w8,
-            65,
-            64,
-        );
-        pixel_shuffle_8(&self.buf_a[..h8 * w8 * 64], &mut self.k1h, h8, w8);
-
+        // Softmax, drop dustbin, pixel-shuffle — f16 path keeps data in f16 until shuffle output.
+        #[cfg(target_arch = "aarch64")]
+        if use_fp16_act {
+            let k1_raw_f16 = unsafe { std::slice::from_raw_parts_mut(k1_f16_ptr, k1_f16_len) };
+            crate::ops::channel_softmax_f16(k1_raw_f16, h8, w8, 65);
+            let act_ha = unsafe { std::slice::from_raw_parts_mut(act_ha_ptr, act_ha_len) };
+            crate::ops::drop_last_channel_nhwc_f16(
+                unsafe { std::slice::from_raw_parts(k1_f16_ptr as *const u16, k1_f16_len) },
+                act_ha,
+                h8,
+                w8,
+                65,
+                64,
+            );
+            crate::ops::pixel_shuffle_8_f16(
+                unsafe { std::slice::from_raw_parts(act_ha_ptr as *const u16, act_ha_len) },
+                &mut self.k1h,
+                h8,
+                w8,
+            );
+        } else {
+            channel_softmax(&mut self.k1_raw, h8, w8, 65);
+            drop_last_channel_nhwc(
+                &self.k1_raw,
+                &mut self.buf_a[..h8 * w8 * 64],
+                h8,
+                w8,
+                65,
+                64,
+            );
+            pixel_shuffle_8(&self.buf_a[..h8 * w8 * 64], &mut self.k1h, h8, w8);
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            channel_softmax(&mut self.k1_raw, h8, w8, 65);
+            drop_last_channel_nhwc(
+                &self.k1_raw,
+                &mut self.buf_a[..h8 * w8 * 64],
+                h8,
+                w8,
+                65,
+                64,
+            );
+            pixel_shuffle_8(&self.buf_a[..h8 * w8 * 64], &mut self.k1h, h8, w8);
+        }
         t_lap!("16.softmax+shuffle", _t);
-        // ── 13. L2-normalise descriptor map (M1 = feats) ─────────────────
-        l2_normalize_channel(&mut self.feats, h8, w8, 64);
-
-        t_lap!("17.l2_norm", _t);
         // ── 14. NMS + sparse descriptor sampling ─────────────────────────
         let rw = self.last_scale.rw;
         let rh = self.last_scale.rh;
@@ -1370,7 +2067,31 @@ impl XFeat {
 
         self.descriptors.resize(kps.len() * 64, 0.0);
         if !kps.is_empty() {
-            // L2 re-normalisation is fused inside bicubic_sample_descriptors.
+            // L2 re-normalisation is fused inside bicubic_sample_descriptors(_f16).
+            #[cfg(target_arch = "aarch64")]
+            if use_fp16_act {
+                let feats_f16 = unsafe {
+                    std::slice::from_raw_parts(feats_f16_ptr as *const u16, feats_f16_len)
+                };
+                bicubic_sample_descriptors_f16(
+                    feats_f16,
+                    h8,
+                    w8,
+                    64,
+                    &kps_desc_coords,
+                    &mut self.descriptors,
+                );
+            } else {
+                bicubic_sample_descriptors(
+                    &self.feats,
+                    h8,
+                    w8,
+                    64,
+                    &kps_desc_coords,
+                    &mut self.descriptors,
+                );
+            }
+            #[cfg(not(target_arch = "aarch64"))]
             bicubic_sample_descriptors(
                 &self.feats,
                 h8,
