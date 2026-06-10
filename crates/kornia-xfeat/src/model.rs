@@ -147,7 +147,8 @@ pub struct XFeat {
     feats_f16: Vec<u16>,  // (H/8, W/8, 64)  f16 descriptor map
     act_ha: Vec<u16>,     // (H/8, W/8, 64)  ping-pong scratch for head layers
     act_hb: Vec<u16>,     // (H/8, W/8, 64)  ping-pong scratch for head layers
-    k1_raw_f16: Vec<u16>, // (H/8, W/8, 65)  f16 keypoint logits
+    k1_raw_f16: Vec<u16>, // (H/8, W/8, 64)  f16 keypoint logits (main channels, stride 64)
+    k1_dustbin: Vec<u16>, // (H/8, W/8)      f16 keypoint dustbin (sidecar) channel
 
     // ── Pre-packed conv3x3 weights for stride-2 NEON layers ───────────────
     // Eliminates a per-frame Vec<f32> alloc in conv3x3_v2. Layout for each:
@@ -471,7 +472,14 @@ impl XFeat {
                 Vec::new()
             },
             k1_raw_f16: if build_f16 {
-                vec![0u16; h8 * w8 * 65]
+                // Sidecar layout: 64 main channels at stride 64 (the dustbin
+                // channel lives in k1_dustbin), so pixel_shuffle reads it directly.
+                vec![0u16; h8 * w8 * 64]
+            } else {
+                Vec::new()
+            },
+            k1_dustbin: if build_f16 {
+                vec![0u16; h8 * w8]
             } else {
                 Vec::new()
             },
@@ -563,6 +571,8 @@ impl XFeat {
         let act_hb_len: usize = self.act_hb.len();
         let k1_f16_ptr: *mut u16 = self.k1_raw_f16.as_mut_ptr();
         let k1_f16_len: usize = self.k1_raw_f16.len();
+        let k1_dustbin_ptr: *mut u16 = self.k1_dustbin.as_mut_ptr();
+        let k1_dustbin_len: usize = self.k1_dustbin.len();
 
         // ── fp16 conv1x1 scratch pointers ────────────────────────────────
         // Same trick as vbuf_ptr: extract raw pointers so the scratch vecs
@@ -1856,15 +1866,21 @@ impl XFeat {
                     }
                 }
             }
-            // keypoint_head.3: act_hb → k1_raw_f16 (c_out=65, Identity)
+            // keypoint_head.3: act_hb → k1_raw_f16 (64 main ch, stride 64) +
+            // k1_dustbin (1 ch). The "sidecar dustbin" layout writes the 64
+            // aligned channels into the main buffer and the 65th (dustbin) into
+            // the sidecar, so the later pixel_shuffle reads an 8-aligned buffer
+            // directly (no separate drop_last_channel copy / round-trip).
             {
                 let act_hb_ro =
                     unsafe { std::slice::from_raw_parts(act_hb_ptr as *const u16, act_hb_len) };
                 let k1_raw_f16 = unsafe { std::slice::from_raw_parts_mut(k1_f16_ptr, k1_f16_len) };
+                let k1_dustbin =
+                    unsafe { std::slice::from_raw_parts_mut(k1_dustbin_ptr, k1_dustbin_len) };
                 let wt = self.weights.get("keypoint_head.3.weight")?;
                 let bt = self.weights.get("keypoint_head.3.bias")?;
                 if let Some((pk, pko)) = self.conv1x1_packed_b.get("keypoint_head.3.weight") {
-                    crate::ops::neon_asm_f16::conv1x1_nhwc_f16act_prepacked_parallel(
+                    crate::ops::neon_asm_f16::conv1x1_nhwc_f16act_prepacked_parallel_sidecar(
                         act_hb_ro,
                         pk,
                         *pko,
@@ -1873,12 +1889,17 @@ impl XFeat {
                         w8,
                         64,
                         65,
+                        64,
                         Activation::Identity,
                         k1_raw_f16,
+                        k1_dustbin,
                     );
                 } else {
+                    // Fallback (no pre-packed B): run the stride-65 conv into a
+                    // scratch buffer then split into main + sidecar.
                     let sb = unsafe { std::slice::from_raw_parts_mut(f16_sb_ptr, f16_sb_len) };
                     let pb = unsafe { std::slice::from_raw_parts_mut(f16_pb_ptr, f16_pb_len) };
+                    let mut tmp65 = vec![0u16; h8 * w8 * 65];
                     crate::ops::neon_asm_f16::conv1x1_nhwc_f16act_parallel(
                         act_hb_ro,
                         wt,
@@ -1888,10 +1909,15 @@ impl XFeat {
                         64,
                         65,
                         Activation::Identity,
-                        k1_raw_f16,
+                        &mut tmp65,
                         sb,
                         pb,
                     );
+                    for px in 0..(h8 * w8) {
+                        k1_raw_f16[px * 64..px * 64 + 64]
+                            .copy_from_slice(&tmp65[px * 65..px * 65 + 64]);
+                        k1_dustbin[px] = tmp65[px * 65 + 64];
+                    }
                 }
             }
         }
@@ -2015,22 +2041,20 @@ impl XFeat {
             }
         }
         t_lap!("15.kp_head unfold+4x1x1", _t);
-        // Softmax, drop dustbin, pixel-shuffle — f16 path keeps data in f16 until shuffle output.
+        // Softmax + pixel-shuffle — f16 path keeps data in f16 until shuffle output.
+        // The "sidecar dustbin" layout makes the softmax dustbin-aware (over the
+        // 64 main channels + the sidecar) and lets pixel_shuffle read the aligned
+        // stride-64 k1_raw_f16 directly — the drop_last_channel copy is gone.
         #[cfg(target_arch = "aarch64")]
         if use_fp16_act {
-            let k1_raw_f16 = unsafe { std::slice::from_raw_parts_mut(k1_f16_ptr, k1_f16_len) };
-            crate::ops::channel_softmax_f16(k1_raw_f16, h8, w8, 65);
-            let act_ha = unsafe { std::slice::from_raw_parts_mut(act_ha_ptr, act_ha_len) };
-            crate::ops::drop_last_channel_nhwc_f16(
-                unsafe { std::slice::from_raw_parts(k1_f16_ptr as *const u16, k1_f16_len) },
-                act_ha,
-                h8,
-                w8,
-                65,
-                64,
-            );
+            {
+                let k1_raw_f16 = unsafe { std::slice::from_raw_parts_mut(k1_f16_ptr, k1_f16_len) };
+                let k1_dustbin =
+                    unsafe { std::slice::from_raw_parts_mut(k1_dustbin_ptr, k1_dustbin_len) };
+                crate::ops::channel_softmax_f16_sidecar(k1_raw_f16, k1_dustbin, h8, w8, 64);
+            }
             crate::ops::pixel_shuffle_8_f16(
-                unsafe { std::slice::from_raw_parts(act_ha_ptr as *const u16, act_ha_len) },
+                unsafe { std::slice::from_raw_parts(k1_f16_ptr as *const u16, k1_f16_len) },
                 &mut self.k1h,
                 h8,
                 w8,

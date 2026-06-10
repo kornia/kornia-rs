@@ -269,6 +269,29 @@ pub fn channel_softmax_f16(buf: &mut [u16], h: usize, w: usize, c: usize) {
     scalar::channel_softmax_f16(buf, h, w, c);
 }
 
+/// Sidecar-aware channel-wise softmax on f16 storage.
+///
+/// Softmax over `c_main + 1` logits per pixel: `c_main` in `main` (stride
+/// `c_main`) plus one "dustbin" value per pixel in `dustbin`. Normalizes both in
+/// place. Numerically equivalent to running [`channel_softmax_f16`] over a
+/// stride-(c_main+1) interleaved buffer.
+///
+/// Dispatches to `neon::channel_softmax_neon_f16_sidecar_par` on aarch64 with
+/// fp16; falls back to the scalar reference.
+pub fn channel_softmax_f16_sidecar(
+    main: &mut [u16],
+    dustbin: &mut [u16],
+    h: usize,
+    w: usize,
+    c_main: usize,
+) {
+    #[cfg(target_arch = "aarch64")]
+    if cpu_features().has_fp16 {
+        return neon::channel_softmax_neon_f16_sidecar_par(main, dustbin, h, w, c_main);
+    }
+    scalar::channel_softmax_f16_sidecar(main, dustbin, h, w, c_main);
+}
+
 /// Channel-wise softmax dispatcher: NEON on aarch64, scalar elsewhere.
 pub fn channel_softmax(buf: &mut [f32], h: usize, w: usize, c: usize) {
     #[cfg(target_arch = "aarch64")]

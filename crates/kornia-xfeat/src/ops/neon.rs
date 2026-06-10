@@ -1844,6 +1844,163 @@ pub fn channel_softmax_neon_f16_par(buf: &mut [u16], h: usize, w: usize, c: usiz
     });
 }
 
+/// Sidecar-aware per-pixel channel softmax on f16 storage (NEON-vectorized exp).
+///
+/// Computes softmax over `c_main + 1` logits per pixel: the first `c_main` live in
+/// `main` (row stride `c_main`), the last "dustbin" logit lives in `dustbin` (one
+/// value per pixel). Mirrors [`channel_softmax_f16_sidecar`]'s reduction order —
+/// max/sum over the `c_main` main values first (vectorized), dustbin folded in last
+/// (scalar) — so it matches the interleaved scalar reference within the f16-scale
+/// softmax tolerance.
+///
+/// Requires ARMv8.2 fp16; caller must check `has_fp16`.
+///
+/// # Safety
+/// `main.len() >= rows * c_main`, `dustbin.len() >= rows`, fp16 supported.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon,fp16")]
+unsafe fn channel_softmax_neon_f16_sidecar_kernel(
+    main: &mut [u16],
+    dustbin: &mut [u16],
+    c_main: usize,
+) {
+    use crate::ops::neon_asm_f16::{fcvtl_hi, fcvtl_lo, fcvtn_f32x4_to_f16x4};
+    use std::arch::aarch64::*;
+
+    for (row, d) in main.chunks_exact_mut(c_main).zip(dustbin.iter_mut()) {
+        unsafe {
+            // ── Step 1: max across the c_main main channels, then fold dustbin ──
+            let mut max_v = vdupq_n_f32(f32::NEG_INFINITY);
+            let mut i = 0usize;
+            while i + 8 <= c_main {
+                let u16x8 = vld1q_u16(row.as_ptr().add(i));
+                let fa = fcvtl_lo(u16x8);
+                let fb = fcvtl_hi(u16x8);
+                max_v = vmaxq_f32(max_v, vmaxq_f32(fa, fb));
+                i += 8;
+            }
+            while i + 4 <= c_main {
+                let lo = vld1_u16(row.as_ptr().add(i));
+                let u16x8 = vcombine_u16(lo, vdup_n_u16(0));
+                let fa = fcvtl_lo(u16x8);
+                max_v = vmaxq_f32(max_v, fa);
+                i += 4;
+            }
+            let mut max_s = vmaxvq_f32(max_v);
+            while i < c_main {
+                let f = half::f16::from_bits(row[i]).to_f32();
+                if f > max_s {
+                    max_s = f;
+                }
+                i += 1;
+            }
+            // Dustbin folded in last (matches scalar reference order).
+            let dustbin_f = half::f16::from_bits(*d).to_f32();
+            if dustbin_f > max_s {
+                max_s = dustbin_f;
+            }
+            let max_v = vdupq_n_f32(max_s);
+
+            // ── Step 2: exp(x - max), store back, accumulate sum (main then dustbin) ──
+            let mut sum_v = vdupq_n_f32(0.0_f32);
+            let mut i = 0usize;
+            while i + 8 <= c_main {
+                let u16x8 = vld1q_u16(row.as_ptr().add(i));
+                let fa = fcvtl_lo(u16x8);
+                let fb = fcvtl_hi(u16x8);
+                let va = vsubq_f32(fa, max_v);
+                let vb = vsubq_f32(fb, max_v);
+                let (ea, eb) = exp_f32x8(va, vb);
+                let lo = fcvtn_f32x4_to_f16x4(ea);
+                let hi = fcvtn_f32x4_to_f16x4(eb);
+                vst1q_u16(row.as_mut_ptr().add(i), vcombine_u16(lo, hi));
+                sum_v = vaddq_f32(vaddq_f32(sum_v, ea), eb);
+                i += 8;
+            }
+            while i + 4 <= c_main {
+                let lo = vld1_u16(row.as_ptr().add(i));
+                let u16x8 = vcombine_u16(lo, vdup_n_u16(0));
+                let fa = fcvtl_lo(u16x8);
+                let va = vsubq_f32(fa, max_v);
+                let ea = exp_f32x4(va);
+                let lo_out = fcvtn_f32x4_to_f16x4(ea);
+                vst1_u16(row.as_mut_ptr().add(i), lo_out);
+                sum_v = vaddq_f32(sum_v, ea);
+                i += 4;
+            }
+            let mut sum_s = vaddvq_f32(sum_v);
+            while i < c_main {
+                let f = half::f16::from_bits(row[i]).to_f32();
+                let e = (f - max_s).exp();
+                row[i] = half::f16::from_f32(e).to_bits();
+                sum_s += e;
+                i += 1;
+            }
+            // Dustbin exp folded in last.
+            let dustbin_e = (dustbin_f - max_s).exp();
+            *d = half::f16::from_f32(dustbin_e).to_bits();
+            sum_s += dustbin_e;
+
+            // ── Step 3: scale all exp values by 1/sum (main then dustbin) ──
+            let inv_v = vdupq_n_f32(1.0_f32 / sum_s);
+            let mut i = 0usize;
+            while i + 8 <= c_main {
+                let u16x8 = vld1q_u16(row.as_ptr().add(i));
+                let fa = fcvtl_lo(u16x8);
+                let fb = fcvtl_hi(u16x8);
+                let ra = vmulq_f32(fa, inv_v);
+                let rb = vmulq_f32(fb, inv_v);
+                let lo = fcvtn_f32x4_to_f16x4(ra);
+                let hi = fcvtn_f32x4_to_f16x4(rb);
+                vst1q_u16(row.as_mut_ptr().add(i), vcombine_u16(lo, hi));
+                i += 8;
+            }
+            while i + 4 <= c_main {
+                let lo = vld1_u16(row.as_ptr().add(i));
+                let u16x8 = vcombine_u16(lo, vdup_n_u16(0));
+                let fa = fcvtl_lo(u16x8);
+                let ra = vmulq_f32(fa, inv_v);
+                let lo_out = fcvtn_f32x4_to_f16x4(ra);
+                vst1_u16(row.as_mut_ptr().add(i), lo_out);
+                i += 4;
+            }
+            while i < c_main {
+                let f = half::f16::from_bits(row[i]).to_f32();
+                row[i] = half::f16::from_f32(f / sum_s).to_bits();
+                i += 1;
+            }
+            let df = half::f16::from_bits(*d).to_f32();
+            *d = half::f16::from_f32(df / sum_s).to_bits();
+        }
+    }
+}
+
+/// Rayon-parallel sidecar softmax: 64-pixel chunks of `main` paired with the
+/// matching 64 dustbin values. See [`channel_softmax_neon_f16_sidecar_kernel`].
+#[cfg(target_arch = "aarch64")]
+pub fn channel_softmax_neon_f16_sidecar_par(
+    main: &mut [u16],
+    dustbin: &mut [u16],
+    h: usize,
+    w: usize,
+    c_main: usize,
+) {
+    use rayon::prelude::*;
+    let m = h * w;
+    debug_assert_eq!(main.len(), m * c_main);
+    debug_assert_eq!(dustbin.len(), m);
+    debug_assert!(
+        crate::cpu_features::cpu_features().has_fp16,
+        "channel_softmax_neon_f16_sidecar_par called on a CPU without fp16 support"
+    );
+    main.par_chunks_mut(c_main * 64)
+        .zip(dustbin.par_chunks_mut(64))
+        .for_each(|(block, dblock)| {
+            // SAFETY: fp16 checked above; each (block, dblock) pair is independent.
+            unsafe { channel_softmax_neon_f16_sidecar_kernel(block, dblock, c_main) };
+        });
+}
+
 /// Channel-wise L2 normalization for f16 storage — NEON + Rayon.
 ///
 /// For each pixel's `c`-channel vector: compute sum-of-squares using NEON

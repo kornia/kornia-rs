@@ -761,6 +761,77 @@ fn neon_channel_softmax_f16_parity_c65() {
     eprintln!("[neon_channel_softmax_f16_parity_c65] OK — max err {max_err:.2e} (tol 2e-3)");
 }
 
+/// Sidecar softmax (64 main + 1 dustbin) must match the interleaved stride-65
+/// scalar reference within the same f16-scale tolerance (2e-3). This is the
+/// numerics bar for the "sidecar dustbin" layout optimization: build a stride-65
+/// buffer, run the existing scalar::channel_softmax_f16 over all 65 channels, then
+/// compare against the sidecar versions (scalar + NEON) fed the same data split
+/// into main(64) + sidecar(1).
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn channel_softmax_f16_sidecar_parity_c64plus1() {
+    use kornia_xfeat::ops::neon;
+    use kornia_xfeat::ops::scalar;
+    let (h, w, c_main) = (6usize, 10usize, 64usize);
+    let c = c_main + 1; // 65 interleaved
+    let m = h * w;
+    let mut rng = 0x5071u32;
+    // Interleaved stride-65 reference input, logit-scale in [-4, 4).
+    let init65: Vec<u16> = (0..m * c)
+        .map(|_| half::f16::from_f32(lcg_f32(&mut rng) * 8.0 - 4.0).to_bits())
+        .collect();
+
+    // Reference: existing scalar softmax over all 65 interleaved channels.
+    let mut ref65 = init65.clone();
+    scalar::channel_softmax_f16(&mut ref65, h, w, c);
+
+    // Split the same input into main(64, stride 64) + dustbin(1) for the sidecar.
+    let mut main_scalar = vec![0u16; m * c_main];
+    let mut dust_scalar = vec![0u16; m];
+    for px in 0..m {
+        main_scalar[px * c_main..px * c_main + c_main]
+            .copy_from_slice(&init65[px * c..px * c + c_main]);
+        dust_scalar[px] = init65[px * c + c_main];
+    }
+    let mut main_neon = main_scalar.clone();
+    let mut dust_neon = dust_scalar.clone();
+
+    scalar::channel_softmax_f16_sidecar(&mut main_scalar, &mut dust_scalar, h, w, c_main);
+    neon::channel_softmax_neon_f16_sidecar_par(&mut main_neon, &mut dust_neon, h, w, c_main);
+
+    let mut max_err = 0.0f32;
+    for px in 0..m {
+        for ci in 0..c {
+            let rv = half::f16::from_bits(ref65[px * c + ci]).to_f32();
+            let (sv, nv) = if ci < c_main {
+                (
+                    half::f16::from_bits(main_scalar[px * c_main + ci]).to_f32(),
+                    half::f16::from_bits(main_neon[px * c_main + ci]).to_f32(),
+                )
+            } else {
+                (
+                    half::f16::from_bits(dust_scalar[px]).to_f32(),
+                    half::f16::from_bits(dust_neon[px]).to_f32(),
+                )
+            };
+            let es = (rv - sv).abs();
+            let en = (rv - nv).abs();
+            max_err = max_err.max(es).max(en);
+            assert!(
+                es <= 2e-3,
+                "[sidecar softmax scalar] px {px} ch {ci}: ref={rv} scalar={sv} err={es}"
+            );
+            assert!(
+                en <= 2e-3,
+                "[sidecar softmax neon] px {px} ch {ci}: ref={rv} neon={nv} err={en}"
+            );
+        }
+    }
+    eprintln!(
+        "[channel_softmax_f16_sidecar_parity_c64plus1] OK — max err {max_err:.2e} (tol 2e-3)"
+    );
+}
+
 /// l2_normalize_channel f16 NEON vs scalar reference at the model's real
 /// channel count c=64.
 #[cfg(target_arch = "aarch64")]

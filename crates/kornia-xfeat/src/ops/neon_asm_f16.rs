@@ -2392,6 +2392,152 @@ pub fn conv1x1_nhwc_f16act_prepacked_parallel(
         });
 }
 
+/// conv1×1 NHWC with a **sidecar dustbin** C-store split, Rayon-parallel, pre-packed B.
+///
+/// This is the "sidecar dustbin" variant of
+/// [`conv1x1_nhwc_f16act_prepacked_parallel`], specialised for the XFeat
+/// keypoint head's final layer (`keypoint_head.3`: c_in=64 → c_out=65 = 64 real
+/// channels + 1 "dustbin" channel).
+///
+/// The GEMM, bias and activation are computed **identically** to the base
+/// function — the only thing that changes is how the per-pixel C row is scattered
+/// to memory:
+///
+/// * The first `c_out_main` channels (the `n_blocks * NR=8` aligned columns, here
+///   64) are written to `output` at row stride `c_out_main` (here 64), so that
+///   downstream NEON consumers (pixel_shuffle) get a naturally 8-aligned buffer
+///   and no separate `drop_last_channel` copy / 614 KB round-trip is needed.
+/// * The remaining `n_rem` channels (here exactly 1, the dustbin) are written to
+///   the `dustbin_out` sidecar buffer, one f16 value per pixel.
+///
+/// The GEMM still runs at the full `c_out = c_out_main + n_rem` internally inside
+/// a small per-thread scratch (`c_buf`), so the n_rem=1 column lands in the cheap
+/// scalar/NEON epilogue exactly as before; only the final scatter changes. This
+/// keeps the numerics bit-identical to the base function's `c_buf` contents.
+///
+/// # Panics / requirements
+/// * `c_out == c_out_main + n_rem`, and `c_out_main` must be a multiple of NR=8.
+/// * `output.len() >= m * c_out_main`, `dustbin_out.len() >= m * n_rem`.
+#[cfg(target_arch = "aarch64")]
+#[allow(clippy::too_many_arguments)]
+pub fn conv1x1_nhwc_f16act_prepacked_parallel_sidecar(
+    input: &[u16],       // f16 activation [m * c_in]
+    packed_b: &[u16],    // pre-packed B [b_rem_offset + c_in * n_rem]
+    b_rem_offset: usize, // = n_blocks * c_in * NR
+    bias: &[f32],
+    h: usize,
+    w: usize,
+    c_in: usize,
+    c_out: usize,      // total output channels (e.g. 65)
+    c_out_main: usize, // aligned main channels written at stride c_out_main (e.g. 64)
+    activation: super::Activation,
+    output: &mut [u16],      // f16 main output [m * c_out_main], stride c_out_main
+    dustbin_out: &mut [u16], // f16 sidecar [m * n_rem], n_rem = c_out - c_out_main
+) {
+    use super::Activation;
+    use rayon::prelude::*;
+
+    const NR: usize = 8;
+    let m = h * w;
+    let n_rem = c_out - c_out_main;
+    debug_assert_eq!(
+        c_out_main % NR,
+        0,
+        "c_out_main must be a multiple of NR=8 (got {c_out_main})"
+    );
+    debug_assert_eq!(
+        c_out_main,
+        (c_out / NR) * NR,
+        "c_out_main must equal the aligned column count n_blocks*NR"
+    );
+    debug_assert!(output.len() >= m * c_out_main);
+    debug_assert!(dustbin_out.len() >= m * n_rem);
+
+    let use_relu = activation == Activation::Relu;
+
+    // Scatter one strip's [strip_m, c_out] c_buf into main (stride c_out_main) +
+    // dustbin sidecar (n_rem per pixel). Pure copy; GEMM order is untouched.
+    let scatter = |c_buf: &[u16], out_main: &mut [u16], out_dust: &mut [u16], strip_m: usize| {
+        for px in 0..strip_m {
+            let src = &c_buf[px * c_out..px * c_out + c_out];
+            out_main[px * c_out_main..(px + 1) * c_out_main].copy_from_slice(&src[..c_out_main]);
+            out_dust[px * n_rem..(px + 1) * n_rem].copy_from_slice(&src[c_out_main..c_out]);
+        }
+    };
+
+    // Small-M fallback: run single-threaded with stack-owned scratch.
+    if m < 2 * CONV1X1_STRIP_SIZE {
+        let mut sc = vec![0u16; m * c_out];
+        let mut pa = vec![0u16; c_in * 8];
+        unsafe {
+            gemm_f16_mnk_packed_b(
+                input,
+                &packed_b[..b_rem_offset],
+                &packed_b[b_rem_offset..],
+                &mut sc[..m * c_out],
+                m,
+                c_in,
+                c_out,
+                &mut pa,
+            );
+            f16_bias_act_inplace(&mut sc[..m * c_out], bias, c_out, use_relu, m);
+        }
+        scatter(&sc, output, dustbin_out, m);
+        return;
+    }
+
+    let pb_ptr = packed_b.as_ptr() as usize;
+    let pb_total = packed_b.len();
+    let bias_ptr = bias.as_ptr() as usize;
+
+    // Drive parallelism over the input strips; main + dustbin outputs are split in
+    // lock-step so each strip owns disjoint output ranges (no aliasing).
+    input
+        .par_chunks(CONV1X1_STRIP_SIZE * c_in)
+        .zip(output.par_chunks_mut(CONV1X1_STRIP_SIZE * c_out_main))
+        .zip(dustbin_out.par_chunks_mut(CONV1X1_STRIP_SIZE * n_rem))
+        .for_each(|((in_strip, out_main_strip), out_dust_strip)| {
+            let strip_m = in_strip.len() / c_in;
+            let packed_b_all: &[u16] =
+                unsafe { std::slice::from_raw_parts(pb_ptr as *const u16, pb_total) };
+            let bias_sl: &[f32] =
+                unsafe { std::slice::from_raw_parts(bias_ptr as *const f32, c_out) };
+            CONV1X1_STRIP_C.with(|cc| {
+                CONV1X1_STRIP_PA.with(|cp| {
+                    let mut c_buf = cc.borrow_mut();
+                    let mut pa = cp.borrow_mut();
+                    if c_buf.len() < strip_m * c_out {
+                        c_buf.resize(strip_m * c_out, 0);
+                    }
+                    if pa.len() < c_in * 8 {
+                        pa.resize(c_in * 8, 0);
+                    }
+                    c_buf[..strip_m * c_out].fill(0);
+                    gemm_f16_mnk_packed_b(
+                        in_strip,
+                        &packed_b_all[..b_rem_offset],
+                        &packed_b_all[b_rem_offset..],
+                        &mut c_buf[..strip_m * c_out],
+                        strip_m,
+                        c_in,
+                        c_out,
+                        &mut pa[..c_in * 8],
+                    );
+                    unsafe {
+                        f16_bias_act_inplace(
+                            &mut c_buf[..strip_m * c_out],
+                            bias_sl,
+                            c_out,
+                            use_relu,
+                            strip_m,
+                        );
+                    }
+                    scatter(&c_buf, out_main_strip, out_dust_strip, strip_m);
+                })
+            });
+        });
+}
+
 /// Fused 2-layer conv1×1: **f16 → f16 → f16**, single Rayon dispatch.
 ///
 /// Runs layer-0 GEMM + bias+ReLU on each strip, writes intermediate into the

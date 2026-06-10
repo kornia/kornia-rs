@@ -640,6 +640,66 @@ pub fn channel_softmax_f16(buf: &mut [u16], h: usize, w: usize, c: usize) {
     });
 }
 
+/// Sidecar-aware per-pixel channel softmax on f16 storage (scalar reference).
+///
+/// Computes softmax over `c_main + 1` logits per pixel, where the first `c_main`
+/// logits live in `main` (row stride `c_main`) and the last logit (the "dustbin")
+/// lives in `dustbin` (one value per pixel). The `c_main` normalized outputs are
+/// written back to `main` in place; the dustbin's normalized output is written
+/// back to `dustbin`.
+///
+/// To stay numerically equivalent to running `channel_softmax_f16` over a
+/// stride-(c_main+1) interleaved buffer, the reduction order matches exactly:
+/// the max is taken over the `c_main` main values first then the dustbin last,
+/// and the exp-sum sums the main values in the same order before adding the
+/// dustbin's exp last.
+pub fn channel_softmax_f16_sidecar(
+    main: &mut [u16],
+    dustbin: &mut [u16],
+    h: usize,
+    w: usize,
+    c_main: usize,
+) {
+    let m = h * w;
+    debug_assert_eq!(main.len(), m * c_main);
+    debug_assert_eq!(dustbin.len(), m);
+    main.par_chunks_mut(c_main * 64)
+        .zip(dustbin.par_chunks_mut(64))
+        .for_each(|(block, dblock)| {
+            for (row, d) in block.chunks_mut(c_main).zip(dblock.iter_mut()) {
+                // max over main values first, dustbin last.
+                let mut max = f32::NEG_INFINITY;
+                for &v in row.iter() {
+                    let f = half::f16::from_bits(v).to_f32();
+                    if f > max {
+                        max = f;
+                    }
+                }
+                let df = half::f16::from_bits(*d).to_f32();
+                if df > max {
+                    max = df;
+                }
+                // exp(x - max): main in order, dustbin last; sum accumulated identically.
+                let mut sum = 0.0f32;
+                for v in row.iter_mut() {
+                    let f = (half::f16::from_bits(*v).to_f32() - max).exp();
+                    *v = half::f16::from_f32(f).to_bits();
+                    sum += f;
+                }
+                let de = (df - max).exp();
+                *d = half::f16::from_f32(de).to_bits();
+                sum += de;
+                let inv = 1.0 / sum;
+                for v in row.iter_mut() {
+                    let f = half::f16::from_bits(*v).to_f32() * inv;
+                    *v = half::f16::from_f32(f).to_bits();
+                }
+                let f = half::f16::from_bits(*d).to_f32() * inv;
+                *d = half::f16::from_f32(f).to_bits();
+            }
+        });
+}
+
 /// Copy the first `c_out` channels from each pixel, discarding the rest. f16 storage.
 pub fn drop_last_channel_nhwc_f16(
     input: &[u16],
