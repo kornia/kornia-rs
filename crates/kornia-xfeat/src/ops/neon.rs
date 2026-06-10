@@ -1954,6 +1954,139 @@ pub fn channel_softmax_neon_f16_sidecar_par(
         });
 }
 
+/// Per-pixel fused sidecar-softmax + pixel-shuffle (c_main = 64), NEON.
+///
+/// Runs the same sidecar softmax math as [`channel_softmax_neon_f16_sidecar_kernel`]
+/// (max over the 64 main channels then dustbin; exp-sum in the same order), writes
+/// the normalized dustbin back, and scatters the 64 normalized values — through the
+/// identical `FCVTN(x*inv)` f16 round-trip the standalone softmax applies, then
+/// `FCVTL`-widened — into the f32 output block. `main_row` is left holding the
+/// post-exp (un-normalized) f16 values.
+///
+/// `out_base` points at the top-left of this pixel's 8×8 output block; rows are
+/// `w_out` apart.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon,fp16")]
+unsafe fn softmax_shuffle_px_f16_neon(
+    row: &mut [u16], // 64 main channels for this pixel
+    d: &mut u16,     // dustbin for this pixel
+    out_base: *mut f32,
+    w_out: usize,
+) {
+    use crate::ops::neon_asm_f16::{fcvtl_hi, fcvtl_lo, fcvtn_f32x4_to_f16x4};
+    use std::arch::aarch64::*;
+    const C_MAIN: usize = 64;
+
+    unsafe {
+        // ── Step 1: max across the 64 main channels, then fold dustbin last. ──
+        let mut max_v = vdupq_n_f32(f32::NEG_INFINITY);
+        let mut i = 0usize;
+        while i + 8 <= C_MAIN {
+            let u16x8 = vld1q_u16(row.as_ptr().add(i));
+            let fa = fcvtl_lo(u16x8);
+            let fb = fcvtl_hi(u16x8);
+            max_v = vmaxq_f32(max_v, vmaxq_f32(fa, fb));
+            i += 8;
+        }
+        let mut max_s = vmaxvq_f32(max_v);
+        let dustbin_f = half::f16::from_bits(*d).to_f32();
+        if dustbin_f > max_s {
+            max_s = dustbin_f;
+        }
+        let max_v = vdupq_n_f32(max_s);
+
+        // ── Step 2: exp(x - max), store back to row, accumulate sum (main then
+        //    dustbin), matching the standalone sidecar order exactly. ──
+        let mut sum_v = vdupq_n_f32(0.0_f32);
+        let mut i = 0usize;
+        while i + 8 <= C_MAIN {
+            let u16x8 = vld1q_u16(row.as_ptr().add(i));
+            let fa = fcvtl_lo(u16x8);
+            let fb = fcvtl_hi(u16x8);
+            let va = vsubq_f32(fa, max_v);
+            let vb = vsubq_f32(fb, max_v);
+            let (ea, eb) = exp_f32x8(va, vb);
+            let lo = fcvtn_f32x4_to_f16x4(ea);
+            let hi = fcvtn_f32x4_to_f16x4(eb);
+            vst1q_u16(row.as_mut_ptr().add(i), vcombine_u16(lo, hi));
+            sum_v = vaddq_f32(vaddq_f32(sum_v, ea), eb);
+            i += 8;
+        }
+        let mut sum_s = vaddvq_f32(sum_v);
+        let dustbin_e = (dustbin_f - max_s).exp();
+        *d = half::f16::from_f32(dustbin_e).to_bits();
+        sum_s += dustbin_e;
+
+        // ── Step 3 (fused with shuffle): scale each main value by 1/sum through
+        //    the f16 round-trip, then FCVTL-widen straight into the f32 output. ──
+        let inv_v = vdupq_n_f32(1.0_f32 / sum_s);
+        let mut i = 0usize;
+        while i + 8 <= C_MAIN {
+            let u16x8 = vld1q_u16(row.as_ptr().add(i));
+            let fa = fcvtl_lo(u16x8);
+            let fb = fcvtl_hi(u16x8);
+            let ra = vmulq_f32(fa, inv_v);
+            let rb = vmulq_f32(fb, inv_v);
+            // f16 round-trip (FCVTN) to match the standalone softmax output bits,
+            // then widen (FCVTL) for the f32 heatmap.
+            let lo = fcvtn_f32x4_to_f16x4(ra);
+            let hi = fcvtn_f32x4_to_f16x4(rb);
+            let h8x = vcombine_u16(lo, hi);
+            let out_lo = fcvtl_lo(h8x);
+            let out_hi = fcvtl_hi(h8x);
+            // i == kh*8 → output row kh of this pixel's 8×8 block.
+            let out_row = out_base.add((i / 8) * w_out);
+            vst1q_f32(out_row, out_lo);
+            vst1q_f32(out_row.add(4), out_hi);
+            i += 8;
+        }
+
+        // Dustbin normalized + written back (parity with sidecar softmax).
+        let df = half::f16::from_bits(*d).to_f32();
+        *d = half::f16::from_f32(df / sum_s).to_bits();
+    }
+}
+
+/// Fused sidecar-softmax + pixel-shuffle (c_main = 64), NEON + Rayon.
+///
+/// Replaces the `channel_softmax_neon_f16_sidecar_par` + `pixel_shuffle_8_f16_neon`
+/// sequence with one dispatch. Bit-identical to running those two ops in sequence
+/// (same softmax order, same `FCVTN(x*inv)` round-trip before widening).
+#[cfg(target_arch = "aarch64")]
+pub fn channel_softmax_pixel_shuffle_f16_sidecar_neon(
+    main: &mut [u16],
+    dustbin: &mut [u16],
+    k1h_out: &mut [f32],
+    h8: usize,
+    w8: usize,
+) {
+    use rayon::prelude::*;
+    const C_MAIN: usize = 64;
+    let w_out = w8 * 8;
+    debug_assert_eq!(main.len(), h8 * w8 * C_MAIN);
+    debug_assert_eq!(dustbin.len(), h8 * w8);
+    debug_assert_eq!(k1h_out.len(), h8 * 8 * w_out);
+    debug_assert!(
+        crate::cpu_features::cpu_features().has_fp16,
+        "channel_softmax_pixel_shuffle_f16_sidecar_neon called on a CPU without fp16 support"
+    );
+
+    k1h_out
+        .par_chunks_mut(8 * w_out)
+        .zip(main.par_chunks_mut(w8 * C_MAIN))
+        .zip(dustbin.par_chunks_mut(w8))
+        .for_each(|((super_row, main_row), dust_row)| {
+            for w in 0..w8 {
+                let row = &mut main_row[w * C_MAIN..w * C_MAIN + C_MAIN];
+                let d = &mut dust_row[w];
+                // out_base = top-left of this pixel's 8×8 block.
+                let out_base = unsafe { super_row.as_mut_ptr().add(w * 8) };
+                // SAFETY: fp16 checked above; each (row, d, block) is disjoint.
+                unsafe { softmax_shuffle_px_f16_neon(row, d, out_base, w_out) };
+            }
+        });
+}
+
 /// Channel-wise L2 normalization for f16 storage — NEON + Rayon.
 ///
 /// For each pixel's `c`-channel vector: compute sum-of-squares using NEON

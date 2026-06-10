@@ -832,6 +832,96 @@ fn channel_softmax_f16_sidecar_parity_c64plus1() {
     );
 }
 
+/// OPT B: the fused sidecar-softmax + pixel-shuffle must match the unfused
+/// `channel_softmax_f16_sidecar` + `pixel_shuffle_8_f16` pipeline. The fused f32
+/// heatmap is compared against the sequential f32 heatmap (within 2e-3) and the
+/// normalized dustbin likewise (within 2e-3). Both scalar and NEON fused paths
+/// are checked against the same sequential reference.
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn opt_b_softmax_pixel_shuffle_fused_parity() {
+    use kornia_xfeat::ops::{neon, scalar};
+    let (h8, w8) = (6usize, 10usize);
+    let c_main = 64usize;
+    let m = h8 * w8;
+    let w_out = w8 * 8;
+    let mut rng = 0x7e21u32;
+
+    // Logit-scale main + dustbin inputs in [-4, 4).
+    let main_init: Vec<u16> = (0..m * c_main)
+        .map(|_| half::f16::from_f32(lcg_f32(&mut rng) * 8.0 - 4.0).to_bits())
+        .collect();
+    let dust_init: Vec<u16> = (0..m)
+        .map(|_| half::f16::from_f32(lcg_f32(&mut rng) * 8.0 - 4.0).to_bits())
+        .collect();
+
+    // ── Reference: run the two ops in sequence (NEON, the production path). ──
+    let mut main_seq = main_init.clone();
+    let mut dust_seq = dust_init.clone();
+    let mut k1h_seq = vec![0.0f32; h8 * 8 * w_out];
+    neon::channel_softmax_neon_f16_sidecar_par(&mut main_seq, &mut dust_seq, h8, w8, c_main);
+    neon::pixel_shuffle_8_f16_neon(&main_seq, &mut k1h_seq, h8, w8);
+
+    // ── Fused NEON. ──
+    let mut main_fn = main_init.clone();
+    let mut dust_fn = dust_init.clone();
+    let mut k1h_fn = vec![0.0f32; h8 * 8 * w_out];
+    neon::channel_softmax_pixel_shuffle_f16_sidecar_neon(
+        &mut main_fn,
+        &mut dust_fn,
+        &mut k1h_fn,
+        h8,
+        w8,
+    );
+
+    // ── Fused scalar. ──
+    let mut main_fs = main_init.clone();
+    let mut dust_fs = dust_init;
+    let mut k1h_fs = vec![0.0f32; h8 * 8 * w_out];
+    scalar::channel_softmax_pixel_shuffle_f16_sidecar(
+        &mut main_fs,
+        &mut dust_fs,
+        &mut k1h_fs,
+        h8,
+        w8,
+    );
+
+    // The fused NEON path reuses the exact softmax + FCVTN-round-trip + FCVTL
+    // widening of the sequential NEON path → bit-identical heatmap.
+    assert_buffers_exact(&k1h_seq, &k1h_fn, "opt_b fused NEON k1h vs sequential");
+    for px in 0..m {
+        assert_eq!(
+            dust_seq[px], dust_fn[px],
+            "[opt_b fused NEON dustbin] px {px}: seq={:#06x} fused={:#06x}",
+            dust_seq[px], dust_fn[px]
+        );
+    }
+
+    // Scalar fused vs the NEON sequential reference: f16-scale tolerance (2e-3).
+    let mut max_err = 0.0f32;
+    for i in 0..k1h_seq.len() {
+        let e = (k1h_seq[i] - k1h_fs[i]).abs();
+        max_err = max_err.max(e);
+        assert!(
+            e <= 2e-3,
+            "[opt_b fused scalar k1h] idx {i}: seq={} fused={} err={e}",
+            k1h_seq[i],
+            k1h_fs[i]
+        );
+    }
+    for px in 0..m {
+        let sv = half::f16::from_bits(dust_seq[px]).to_f32();
+        let fv = half::f16::from_bits(dust_fs[px]).to_f32();
+        let e = (sv - fv).abs();
+        max_err = max_err.max(e);
+        assert!(
+            e <= 2e-3,
+            "[opt_b fused scalar dustbin] px {px}: seq={sv} fused={fv} err={e}"
+        );
+    }
+    eprintln!("[opt_b_softmax_pixel_shuffle_fused_parity] OK — scalar max err {max_err:.2e} (tol 2e-3), NEON bit-exact");
+}
+
 /// l2_normalize_channel f16 NEON vs scalar reference at the model's real
 /// channel count c=64.
 #[cfg(target_arch = "aarch64")]

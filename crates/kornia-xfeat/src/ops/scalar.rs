@@ -722,6 +722,78 @@ pub fn pixel_shuffle_8_f16(input: &[u16], output: &mut [f32], h_in: usize, w_in:
         });
 }
 
+/// Fused sidecar-softmax + pixel-shuffle (factor 8). f16 in → f32 out.
+///
+/// For each pixel: run the sidecar softmax over `64` main channels + the
+/// dustbin (identical numerics to [`channel_softmax_f16_sidecar`] — max over the
+/// 64 main first then dustbin, exp-sum in the same order), write the normalized
+/// dustbin back to the sidecar, then pixel-shuffle that pixel's 64 normalized
+/// values into the f32 output (same indexing as [`pixel_shuffle_8_f16`]).
+///
+/// `main` is left holding the post-exp (un-normalized) f16 values; nothing
+/// downstream reads it after this op.
+pub fn channel_softmax_pixel_shuffle_f16_sidecar(
+    main: &mut [u16],
+    dustbin: &mut [u16],
+    k1h_out: &mut [f32],
+    h8: usize,
+    w8: usize,
+) {
+    const C_MAIN: usize = 64;
+    let w_out = w8 * 8;
+    debug_assert_eq!(main.len(), h8 * w8 * C_MAIN);
+    debug_assert_eq!(dustbin.len(), h8 * w8);
+    debug_assert_eq!(k1h_out.len(), h8 * 8 * w_out);
+
+    k1h_out
+        .par_chunks_mut(8 * w_out)
+        .zip(main.par_chunks_mut(w8 * C_MAIN))
+        .zip(dustbin.par_chunks_mut(w8))
+        .for_each(|((super_row, main_row), dust_row)| {
+            for w in 0..w8 {
+                let row = &mut main_row[w * C_MAIN..w * C_MAIN + C_MAIN];
+                let d = &mut dust_row[w];
+
+                // Softmax (identical order to channel_softmax_f16_sidecar).
+                let mut max = f32::NEG_INFINITY;
+                for &v in row.iter() {
+                    let f = half::f16::from_bits(v).to_f32();
+                    if f > max {
+                        max = f;
+                    }
+                }
+                let df = half::f16::from_bits(*d).to_f32();
+                if df > max {
+                    max = df;
+                }
+                let mut sum = 0.0f32;
+                for v in row.iter_mut() {
+                    let f = (half::f16::from_bits(*v).to_f32() - max).exp();
+                    *v = half::f16::from_f32(f).to_bits();
+                    sum += f;
+                }
+                let de = (df - max).exp();
+                *d = half::f16::from_f32(de).to_bits();
+                sum += de;
+                let inv = 1.0 / sum;
+                // Dustbin normalized + written back (parity with sidecar softmax).
+                let dn = half::f16::from_bits(*d).to_f32() * inv;
+                *d = half::f16::from_f32(dn).to_bits();
+
+                // Shuffle the 64 normalized main values into the f32 output block.
+                // Normalize each value (×inv) through the same f16 round-trip the
+                // standalone softmax applies, then widen to f32.
+                for kh in 0..8 {
+                    for kw in 0..8 {
+                        let f = half::f16::from_bits(row[kh * 8 + kw]).to_f32() * inv;
+                        let fn16 = half::f16::from_f32(f).to_f32();
+                        super_row[kh * w_out + w * 8 + kw] = fn16;
+                    }
+                }
+            }
+        });
+}
+
 /// L2-normalize each pixel's channel vector in-place. f16 storage.
 pub fn l2_normalize_channel_f16(buf: &mut [u16], h: usize, w: usize, c: usize) {
     debug_assert_eq!(buf.len(), h * w * c);

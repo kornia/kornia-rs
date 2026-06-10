@@ -316,6 +316,32 @@ pub fn pixel_shuffle_8_f16(input: &[u16], output: &mut [f32], h_in: usize, w_in:
     scalar::pixel_shuffle_8_f16(input, output, h_in, w_in);
 }
 
+/// Fused sidecar-softmax + pixel-shuffle (c_main = 64) dispatcher.
+///
+/// Replaces the `channel_softmax_f16_sidecar` + `pixel_shuffle_8_f16` sequence
+/// with a single dispatch. Per pixel: softmax over the 64 main channels + the
+/// dustbin (dustbin normalized + written back), then the 64 normalized values
+/// pixel-shuffled into the f32 `k1h` output. Numerically identical to running
+/// the two ops in sequence. `main` is left un-normalized afterward (nothing
+/// downstream reads it).
+///
+/// Dispatches to NEON on aarch64 with fp16; falls back to the scalar reference.
+pub fn channel_softmax_pixel_shuffle_f16_sidecar(
+    main: &mut [u16],
+    dustbin: &mut [u16],
+    k1h_out: &mut [f32],
+    h8: usize,
+    w8: usize,
+) {
+    #[cfg(target_arch = "aarch64")]
+    if cpu_features().has_fp16 {
+        return neon::channel_softmax_pixel_shuffle_f16_sidecar_neon(
+            main, dustbin, k1h_out, h8, w8,
+        );
+    }
+    scalar::channel_softmax_pixel_shuffle_f16_sidecar(main, dustbin, k1h_out, h8, w8);
+}
+
 /// Fused FPN merge dispatcher: `x3 += upsample(x4) + upsample(x5)` in one pass.
 ///
 /// Replaces the 3-dispatch `bilinear_upsample` ×2 + `add3_inplace` sequence —

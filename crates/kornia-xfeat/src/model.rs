@@ -2047,14 +2047,15 @@ impl XFeat {
         // stride-64 k1_raw_f16 directly — the drop_last_channel copy is gone.
         #[cfg(target_arch = "aarch64")]
         if use_fp16_act {
-            {
-                let k1_raw_f16 = unsafe { std::slice::from_raw_parts_mut(k1_f16_ptr, k1_f16_len) };
-                let k1_dustbin =
-                    unsafe { std::slice::from_raw_parts_mut(k1_dustbin_ptr, k1_dustbin_len) };
-                crate::ops::channel_softmax_f16_sidecar(k1_raw_f16, k1_dustbin, h8, w8, 64);
-            }
-            crate::ops::pixel_shuffle_8_f16(
-                unsafe { std::slice::from_raw_parts(k1_f16_ptr as *const u16, k1_f16_len) },
+            // OPT B: fused sidecar-softmax + pixel-shuffle in a single dispatch.
+            // The dustbin is normalized + written back; the 64 main channels are
+            // left un-normalized (nothing reads k1_raw_f16 after this point).
+            let k1_raw_f16 = unsafe { std::slice::from_raw_parts_mut(k1_f16_ptr, k1_f16_len) };
+            let k1_dustbin =
+                unsafe { std::slice::from_raw_parts_mut(k1_dustbin_ptr, k1_dustbin_len) };
+            crate::ops::channel_softmax_pixel_shuffle_f16_sidecar(
+                k1_raw_f16,
+                k1_dustbin,
                 &mut self.k1h,
                 h8,
                 w8,
