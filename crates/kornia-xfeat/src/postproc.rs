@@ -63,15 +63,19 @@ pub fn nms_topk(
         })
         .collect();
 
-    // Sort descending, then truncate.
-    kps.sort_unstable_by(|a, b| {
+    // Top-K by descending score. When more candidates than top_k survive NMS,
+    // an O(n) partial select brings the top_k to the front first so the
+    // O(k log k) sort only touches those — instead of sorting every candidate.
+    let cmp = |a: &KeyPoint, b: &KeyPoint| {
         b.score
             .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    };
     if kps.len() > top_k {
+        kps.select_nth_unstable_by(top_k - 1, cmp);
         kps.truncate(top_k);
     }
+    kps.sort_unstable_by(cmp);
     kps
 }
 

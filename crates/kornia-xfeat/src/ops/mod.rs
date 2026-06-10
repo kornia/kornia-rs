@@ -235,16 +235,21 @@ pub fn l2_normalize_channel_f16(buf: &mut [u16], h: usize, w: usize, c: usize) {
 
 /// NMS via MaxPool 5×5 equality check.
 ///
-/// Uses the scalar Rayon path: direct 5×5 neighborhood check with threshold
-/// early-exit. More efficient than the NEON dense-maxpool path on the small
-/// 1/8-resolution heatmap (60×80) where the alloc + full pass outweighs
-/// the SIMD throughput gain.
+/// The model runs this on the FULL-resolution heatmap (480×640 at the bench
+/// shape), where most pixels fail the score threshold — so the NEON path's
+/// 16-wide threshold pre-reject pays off (the earlier "NEON dense maxpool is
+/// slower" finding was measured on a 60×80 map and computed the full dense
+/// pool; the pre-reject variant emits identical results to the scalar path).
 pub fn nms_maxpool_5x5_equality(
     heatmap: &[f32],
     h: usize,
     w: usize,
     threshold: f32,
 ) -> Vec<(f32, usize)> {
+    #[cfg(target_arch = "aarch64")]
+    if cpu_features().has_neon {
+        return neon::nms_maxpool_5x5_equality_neon(heatmap, h, w, threshold);
+    }
     scalar::nms_maxpool_5x5_equality(heatmap, h, w, threshold)
 }
 

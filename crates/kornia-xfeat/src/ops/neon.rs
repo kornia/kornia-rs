@@ -2173,96 +2173,21 @@ unsafe fn l2_norm_row_f16_neon(chunk: &mut [u16]) {
 
 // ── NMS via MaxPool 5×5 equality (NEON) ──────────────────────────────────────
 
-/// Compute the 5×5 sliding-window maximum (stride 1, padding 2 / clamp-border)
-/// for a single-channel `(h, w)` image. Writes the result into `out`.
+/// NMS via MaxPool 5×5 equality — dense separable NEON maxpool, row-parallel.
 ///
-/// Uses a separable two-pass approach:
-///   1. Horizontal 1×5 max → `hmax` scratch  (NEON vmaxq_f32, 4 px/cycle)
-///   2. Vertical   5×1 max → `out`           (sequential scalar)
+/// Identical output to [`super::scalar::nms_maxpool_5x5_equality`] (same
+/// raster emission order; a pixel survives iff `v > threshold` and no 5×5
+/// neighbor is strictly greater ⟺ `v == maxpool5x5(v)`).
 ///
-/// Both passes are sequential — at 60×80 (1/8 of 480×640) the compute is
-/// ~0.02ms and Rayon dispatch overhead would dominate.
-pub(crate) fn maxpool_5x5_neon(input: &[f32], out: &mut [f32], h: usize, w: usize) {
-    debug_assert_eq!(input.len(), h * w);
-    debug_assert_eq!(out.len(), h * w);
-
-    // ── Pass 1: horizontal max into hmax ─────────────────────────────────────
-    // hmax[y * w + x] = max(input[y][x-2 .. x+2])  (boundary → clamp).
-    let mut hmax = vec![0.0f32; h * w];
-    // Pre-allocate padded row once; reused for every row.
-    let mut padded = vec![f32::NEG_INFINITY; w + 4];
-    unsafe {
-        use std::arch::aarch64::*;
-        for y in 0..h {
-            let row = &input[y * w..(y + 1) * w];
-            let hrow = &mut hmax[y * w..(y + 1) * w];
-
-            padded[2..w + 2].copy_from_slice(row);
-            // Clamp-border: replicate edge values.
-            padded[0] = row[0];
-            padded[1] = row[0];
-            padded[w + 2] = row[w - 1];
-            padded[w + 3] = row[w - 1];
-
-            let p = padded.as_ptr();
-            let o = hrow.as_mut_ptr();
-
-            let mut x = 0usize;
-            // Process 4 output pixels at a time.
-            while x + 4 <= w {
-                // For output pixel x, 5 taps are padded[x], padded[x+1], ..., padded[x+4].
-                // For output pixel x+1, taps are padded[x+1] .. padded[x+5], etc.
-                // Load 5 float32x4_t vectors at offsets x, x+1, x+2, x+3, x+4.
-                let v0 = vld1q_f32(p.add(x));
-                let v1 = vld1q_f32(p.add(x + 1));
-                let v2 = vld1q_f32(p.add(x + 2));
-                let v3 = vld1q_f32(p.add(x + 3));
-                let v4 = vld1q_f32(p.add(x + 4));
-                let m01 = vmaxq_f32(v0, v1);
-                let m23 = vmaxq_f32(v2, v3);
-                let m = vmaxq_f32(vmaxq_f32(m01, m23), v4);
-                vst1q_f32(o.add(x), m);
-                x += 4;
-            }
-            // Scalar tail for remaining pixels.
-            while x < w {
-                let mut m = f32::NEG_INFINITY;
-                for k in 0..5usize {
-                    let v = padded[x + k];
-                    if v > m {
-                        m = v;
-                    }
-                }
-                hrow[x] = m;
-                x += 1;
-            }
-        }
-    }
-
-    // ── Pass 2: vertical max from hmax into out (sequential scalar) ──────────
-    // out[y * w + x] = max(hmax[(y-2..y+2)][x])
-    for y in 0..h {
-        let y0 = if y >= 2 { y - 2 } else { 0 };
-        let y1 = (y + 3).min(h); // exclusive, covers y-2..y+2 inclusive
-        for x in 0..w {
-            let mut m = f32::NEG_INFINITY;
-            for vy in y0..y1 {
-                let v = hmax[vy * w + x];
-                if v > m {
-                    m = v;
-                }
-            }
-            out[y * w + x] = m;
-        }
-    }
-}
-
-/// NMS via MaxPool 5×5 equality check — NEON-accelerated.
-///
-/// For each pixel: keep if `value > threshold` AND `value == max over 5×5 window`.
-/// Uses [`maxpool_5x5_neon`] for the window max, then a NEON equality pass.
-/// Returns `(value, flat_index)` for each surviving local maximum, in an
-/// arbitrary order (same as the scalar variant).
+/// Strategy (per 32-row Rayon chunk, with a 2-row halo):
+///   1. Horizontal 1×5 max per row → chunk-local `hmax` (5 shifted `vmaxq`).
+///   2. Vertical 5×1 max across `hmax` rows, fused with the candidate select:
+///      `vceqq(v, pool) & vcgtq(v, thr)` → lanes extracted only when the
+///      4-pixel mask is non-zero (rare).
+/// A per-candidate 25-load scalar neighborhood check (the previous approach)
+/// costs ~0.4ms at 480×640 because too many pixels pass the score threshold;
+/// the dense pool is branch-free and ~4× cheaper.
+#[cfg(target_arch = "aarch64")]
 pub fn nms_maxpool_5x5_equality_neon(
     input: &[f32],
     h: usize,
@@ -2270,20 +2195,99 @@ pub fn nms_maxpool_5x5_equality_neon(
     threshold: f32,
 ) -> Vec<(f32, usize)> {
     debug_assert_eq!(input.len(), h * w);
+    debug_assert!(w >= 4);
+    // NOTE: at 480×640 this section's wall time is dominated by the Rayon
+    // dispatch wakeup (~0.3ms on a loaded box), not compute (~0.02ms). The
+    // dense pool still wins over the previous per-candidate neighborhood
+    // check: its runtime is flat in the candidate count (the old path was
+    // O(passers × 25 loads), ~0.4ms of real CPU work at typical thresholds).
+    const CHUNK_H: usize = 32;
 
-    // Step 1: compute 5×5 sliding max.
-    let mut pool = vec![0.0f32; h * w];
-    maxpool_5x5_neon(input, &mut pool, h, w);
+    (0..h)
+        .step_by(CHUNK_H)
+        .collect::<Vec<_>>()
+        .into_par_iter()
+        .flat_map_iter(|y_base| {
+            let y_end = (y_base + CHUNK_H).min(h);
+            // hmax rows needed: the chunk plus a 2-row halo on each side.
+            let hy0 = y_base.saturating_sub(2);
+            let hy1 = (y_end + 2).min(h);
+            let n_hrows = hy1 - hy0;
+            let mut hmax = vec![f32::NEG_INFINITY; n_hrows * w];
+            let mut padded = vec![f32::NEG_INFINITY; w + 4];
 
-    // Step 2: collect pixels where input[i] > threshold AND input[i] == pool[i].
-    // Sequential scan — 60×80 = 4800 pixels, sequential is ~0.01ms.
-    let mut result = Vec::new();
-    for (i, (&v, &p)) in input.iter().zip(pool.iter()).enumerate() {
-        if v > threshold && v == p {
-            result.push((v, i));
-        }
-    }
-    result
+            unsafe {
+                // ── Pass 1: horizontal 1×5 max (clamp-border) ───────────────
+                for (ri, y) in (hy0..hy1).enumerate() {
+                    let row = &input[y * w..(y + 1) * w];
+                    padded[2..w + 2].copy_from_slice(row);
+                    padded[0] = row[0];
+                    padded[1] = row[0];
+                    padded[w + 2] = row[w - 1];
+                    padded[w + 3] = row[w - 1];
+                    let p = padded.as_ptr();
+                    let o = hmax.as_mut_ptr().add(ri * w);
+                    let mut x = 0usize;
+                    while x + 4 <= w {
+                        let m01 = vmaxq_f32(vld1q_f32(p.add(x)), vld1q_f32(p.add(x + 1)));
+                        let m23 = vmaxq_f32(vld1q_f32(p.add(x + 2)), vld1q_f32(p.add(x + 3)));
+                        let m = vmaxq_f32(vmaxq_f32(m01, m23), vld1q_f32(p.add(x + 4)));
+                        vst1q_f32(o.add(x), m);
+                        x += 4;
+                    }
+                    while x < w {
+                        let mut m = f32::NEG_INFINITY;
+                        for k in 0..5usize {
+                            m = m.max(padded[x + k]);
+                        }
+                        *o.add(x) = m;
+                        x += 1;
+                    }
+                }
+
+                // ── Pass 2: vertical 5×1 max + fused candidate select ───────
+                let mut out = Vec::new();
+                let thr = vdupq_n_f32(threshold);
+                let hp = hmax.as_ptr();
+                for y in y_base..y_end {
+                    let vy0 = y.saturating_sub(2);
+                    let vy1 = (y + 3).min(h);
+                    let in_row = input.as_ptr().add(y * w);
+                    let mut x = 0usize;
+                    while x + 4 <= w {
+                        let mut m = vld1q_f32(hp.add((vy0 - hy0) * w + x));
+                        for vy in vy0 + 1..vy1 {
+                            m = vmaxq_f32(m, vld1q_f32(hp.add((vy - hy0) * w + x)));
+                        }
+                        let v = vld1q_f32(in_row.add(x));
+                        let keep = vandq_u32(vceqq_f32(v, m), vcgtq_f32(v, thr));
+                        if vmaxvq_u32(keep) != 0 {
+                            let mut lanes = [0u32; 4];
+                            vst1q_u32(lanes.as_mut_ptr(), keep);
+                            for (l, &k) in lanes.iter().enumerate() {
+                                if k != 0 {
+                                    out.push((*in_row.add(x + l), y * w + x + l));
+                                }
+                            }
+                        }
+                        x += 4;
+                    }
+                    while x < w {
+                        let mut m = f32::NEG_INFINITY;
+                        for vy in vy0..vy1 {
+                            m = m.max(hmax[(vy - hy0) * w + x]);
+                        }
+                        let v = *in_row.add(x);
+                        if v > threshold && v == m {
+                            out.push((v, y * w + x));
+                        }
+                        x += 1;
+                    }
+                }
+                out
+            }
+        })
+        .collect()
 }
 
 /// Specialized 3×3 conv for `c_in = 1, c_out = 4` (block1.0, full resolution).
