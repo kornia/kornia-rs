@@ -1,0 +1,19 @@
+{
+  "baseline": "kornia_neon_v2",
+  "platform": "jetson-orin",
+  "median_ms": 212.4,
+  "p95_ms": 220.0,
+  "p99_ms": 228.0,
+  "single_thread_ms": 388.5,
+  "iterations": 100,
+  "warmup": 10,
+  "rss_mb": 52.0,
+  "env": {
+    "rust": "1.93.0",
+    "neon": "aarch64-neon-f32",
+    "rayon_threads": 6,
+    "cpu": "Cortex-A78AE",
+    "kernel": "5.15.148-tegra",
+    "notes": "v2 c_out-4 tiled kernels + rayon row parallelism"
+  }
+}

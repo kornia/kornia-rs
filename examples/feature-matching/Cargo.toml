@@ -1,0 +1,24 @@
+[package]
+name = "feature-matching"
+version = "0.1.0"
+authors = ["kornia.org <edgar@kornia.org>"]
+license = "Apache-2.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "feature-matching"
+path = "src/main.rs"
+
+[dependencies]
+argh = { workspace = true }
+ctrlc = { workspace = true }
+kornia = { workspace = true, features = ["xfeat"] }
+kornia-3d = { workspace = true }
+kornia-algebra = { workspace = true }
+kornia-xfeat = { workspace = true }
+rand = { workspace = true }
+rerun = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+kornia = { workspace = true, features = ["xfeat", "v4l"] }

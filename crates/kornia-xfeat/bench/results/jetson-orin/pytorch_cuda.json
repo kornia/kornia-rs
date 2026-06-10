@@ -1,0 +1,18 @@
+{
+  "baseline": "pytorch_cuda",
+  "platform": "jetson-orin-cuda",
+  "median_ms": 14.385652961209416,
+  "p95_ms": 16.327893012203276,
+  "p99_ms": 19.81690200045705,
+  "iterations": 500,
+  "warmup": 50,
+  "rss_mb": 1068.26953125,
+  "env": {
+    "torch": "2.11.0",
+    "cuda": "12.6",
+    "gpu": "Orin",
+    "python": "3.10.12",
+    "cpu": "aarch64",
+    "kernel": "5.15.148-tegra"
+  }
+}

@@ -7645,6 +7645,7 @@ dependencies = [
  "kornia-tensor",
  "kornia-tensor-ops",
  "kornia-vlm",
+ "kornia-xfeat",
 ]
 
 [[package]]
@@ -7845,6 +7846,26 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tokenizers",
+]
+
+[[package]]
+name = "kornia-xfeat"
+version = "0.1.14"
+dependencies = [
+ "approx",
+ "criterion",
+ "half",
+ "hf-hub",
+ "kornia-image",
+ "kornia-tensor",
+ "log",
+ "png 0.17.16",
+ "rayon",
+ "safetensors",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.17",
+ "toml 0.8.2",
 ]
 
 [[package]]
