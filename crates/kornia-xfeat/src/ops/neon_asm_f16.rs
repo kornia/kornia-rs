@@ -317,7 +317,8 @@ pub(crate) unsafe fn fcvtn_f32x4_to_f16x4(v: float32x4_t) -> uint16x4_t {
 /// Uses two independent partial-sum pairs (A=ci..ci+3, B=ci+4..ci+7) so the
 /// A78AE OoO scheduler fills the 4-cycle FMLA latency stalls of chain A with
 /// chain B ops.  Measured speedup: ~1.25× for c_in=24, ~1.20× for c_in=64.
-/// Single fold (`vaddq_u16`) at end of call — negligible overhead.
+/// Single fold (`fadd_f16x8`, a true half-precision FADD) at end of call —
+/// negligible overhead.
 ///
 /// Weight layout: `[c_in, 8]` fp16-as-u16 from `repack_weights_co8_3x3_f16`.
 /// `c_in` must be a multiple of 4.
@@ -383,8 +384,11 @@ pub unsafe fn accum_tap_2px_f16(
         *acc1 = fmla_f16x8_lane3(*acc1, wv3, iv1);
         ci += 4;
     }
-    *acc0 = vaddq_u16(*acc0, acc0b);
-    *acc1 = vaddq_u16(*acc1, acc1b);
+    // Fold the B partial-sum chain into A with a HALF-PRECISION FADD.
+    // (A previous version used integer `vaddq_u16` on the f16 bit patterns,
+    // which silently corrupted every layer with c_in >= 8 through this path.)
+    *acc0 = fadd_f16x8(*acc0, acc0b);
+    *acc1 = fadd_f16x8(*acc1, acc1b);
 }
 
 /// Single-pixel variant of [`accum_tap_2px_f16`].
@@ -435,7 +439,8 @@ pub(crate) unsafe fn accum_tap_1px_f16(
         *acc = fmla_f16x8_lane3(*acc, wv3, iv);
         ci += 4;
     }
-    *acc = vaddq_u16(*acc, accb);
+    // f16 FADD fold — see the dual-chain fold note in `accum_tap_2px_f16`.
+    *acc = fadd_f16x8(*acc, accb);
 }
 
 /// ReLU in fp16: max(v, 0) element-wise over 8 half-precision lanes.
