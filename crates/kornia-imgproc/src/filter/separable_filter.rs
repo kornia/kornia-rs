@@ -1,5 +1,6 @@
 use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 use num_traits::Zero;
+use wide::f32x8;
 
 /// Trait for floating point casting
 pub trait FloatConversion {
@@ -256,6 +257,382 @@ pub(crate) fn fast_horizontal_filter<const C: usize, A1: ImageAllocator, A2: Ima
     Ok(())
 }
 
+#[inline(always)]
+unsafe fn load8(src_data: &[f32], idx: usize) -> f32x8 {
+    // SAFETY: caller ensures at least 8 elements remain at idx.
+    f32x8::from(&src_data[idx..idx + 8])
+}
+
+#[inline(always)]
+unsafe fn store8(col_sums: &mut [f32], out_idx: usize, v: f32x8) {
+    // SAFETY: caller ensures at least 8 writable elements remain at out_idx.
+    col_sums[out_idx..out_idx + 8].copy_from_slice(&v.to_array());
+}
+
+#[inline]
+fn update_row<const C: usize>(
+    row_idx: usize,
+    add: bool,
+    cols: usize,
+    src_data: &[f32],
+    col_sums: &mut [f32],
+) {
+    debug_assert!(
+        row_idx * cols * C + cols * C <= src_data.len(),
+        "update_row: src_data too short for row_idx={row_idx}, cols={cols}, C={C}"
+    );
+    debug_assert_eq!(
+        col_sums.len(),
+        cols * C,
+        "update_row: col_sums length mismatch"
+    );
+
+    unsafe {
+        let total_elements = cols * C;
+        let mut idx = row_idx * total_elements;
+        let mut out_idx = 0;
+
+        while out_idx + 8 <= total_elements {
+            // SAFETY: while condition guarantees 8 elements remain; bounds checked by debug_assert.
+            let sv = load8(src_data, idx);
+            let cv = load8(col_sums, out_idx);
+            let r = if add { cv + sv } else { cv - sv };
+            store8(col_sums, out_idx, r);
+            idx += 8;
+            out_idx += 8;
+        }
+
+        while out_idx < total_elements {
+            // SAFETY: out_idx < total_elements keeps both accesses in bounds; checked by debug_assert.
+            let v = *src_data.get_unchecked(idx);
+            if add {
+                *col_sums.get_unchecked_mut(out_idx) += v;
+            } else {
+                *col_sums.get_unchecked_mut(out_idx) -= v;
+            }
+            idx += 1;
+            out_idx += 1;
+        }
+    }
+}
+
+/// Apply box blur using incremental column sums.
+///
+/// # Arguments
+///
+/// * `src` - The source image with shape (H, W, C).
+/// * `dst` - The destination image with shape (H, W, C).
+/// * `kernel_size` - The size of the kernel (kernel_x, kernel_y).
+pub(crate) fn columnar_sat<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<f32, C, A1>,
+    dst: &mut Image<f32, C, A2>,
+    kernel_size: (usize, usize),
+) -> Result<(), ImageError> {
+    if src.size() != dst.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.cols(),
+            src.rows(),
+            dst.cols(),
+            dst.rows(),
+        ));
+    }
+    if kernel_size.0 == 0
+        || kernel_size.1 == 0
+        || kernel_size.0 > src.cols()
+        || kernel_size.1 > src.rows()
+    {
+        return Err(ImageError::InvalidKernelLength(
+            kernel_size.0,
+            kernel_size.1,
+        ));
+    }
+
+    let cols = src.cols();
+    let rows = src.rows();
+
+    let half_x = kernel_size.0 / 2;
+    let half_y = kernel_size.1 / 2;
+
+    let src_data = src.as_slice();
+    let dst_data = dst.as_slice_mut();
+
+    let mut col_sums = vec![0.0f32; cols * C];
+    let mut row_acc = [0.0f32; C];
+
+    // pre-initialize col_sums for r = 0; loop below skips vertical update when r == 0.
+    {
+        let r = 0usize;
+        let y_start = r.saturating_sub(half_y);
+        let y_end = (r + half_y + 1).min(rows);
+        let row_offset = r * cols * C;
+        for y in y_start..y_end {
+            update_row::<C>(y, true, cols, src_data, &mut col_sums);
+        }
+
+        // horizontal sliding window
+        debug_assert_eq!(col_sums.len(), cols * C, "col_sums length mismatch");
+        debug_assert!(
+            row_offset + cols * C <= dst_data.len(),
+            "dst_data too short: row_offset={row_offset}, cols={cols}, C={C}"
+        );
+
+        {
+            let c = 0usize;
+            let x_start = c.saturating_sub(half_x);
+            let x_end = (c + half_x + 1).min(cols);
+
+            row_acc.fill(0.0);
+            for x in x_start..x_end {
+                let base = x * C;
+                for (ch, acc) in row_acc.iter_mut().enumerate() {
+                    // SAFETY: x is clamped to cols so base + ch stays within col_sums; checked by debug_assert.
+                    *acc += unsafe { *col_sums.get_unchecked(base + ch) };
+                }
+            }
+
+            let inv_area = 1.0 / ((x_end - x_start) * (y_end - y_start)) as f32;
+            let out_idx = row_offset + c * C;
+
+            if C == 8 {
+                let v = f32x8::new([
+                    row_acc[0], row_acc[1], row_acc[2], row_acc[3], row_acc[4], row_acc[5],
+                    row_acc[6], row_acc[7],
+                ]) * f32x8::splat(inv_area);
+                unsafe {
+                    store8(dst_data, out_idx, v);
+                }
+            } else if C == 4 {
+                unsafe {
+                    *dst_data.get_unchecked_mut(out_idx) = row_acc[0] * inv_area;
+                    *dst_data.get_unchecked_mut(out_idx + 1) = row_acc[1] * inv_area;
+                    *dst_data.get_unchecked_mut(out_idx + 2) = row_acc[2] * inv_area;
+                    *dst_data.get_unchecked_mut(out_idx + 3) = row_acc[3] * inv_area;
+                }
+            } else if C == 3 {
+                unsafe {
+                    *dst_data.get_unchecked_mut(out_idx) = row_acc[0] * inv_area;
+                    *dst_data.get_unchecked_mut(out_idx + 1) = row_acc[1] * inv_area;
+                    *dst_data.get_unchecked_mut(out_idx + 2) = row_acc[2] * inv_area;
+                }
+            } else if C == 2 {
+                unsafe {
+                    *dst_data.get_unchecked_mut(out_idx) = row_acc[0] * inv_area;
+                    *dst_data.get_unchecked_mut(out_idx + 1) = row_acc[1] * inv_area;
+                }
+            } else {
+                for (ch, &acc) in row_acc.iter().enumerate() {
+                    unsafe {
+                        *dst_data.get_unchecked_mut(out_idx + ch) = acc * inv_area;
+                    }
+                }
+            }
+        }
+
+        for c in 1..cols {
+            let x_start = c.saturating_sub(half_x);
+            let x_end = (c + half_x + 1).min(cols);
+
+            let prev_x_start = (c - 1).saturating_sub(half_x);
+            if x_start > prev_x_start {
+                let base = prev_x_start * C;
+                for (ch, acc) in row_acc.iter_mut().enumerate() {
+                    *acc -= unsafe { *col_sums.get_unchecked(base + ch) };
+                }
+            }
+
+            let prev_x_end = (c + half_x).min(cols);
+            if x_end > prev_x_end {
+                let base = (x_end - 1) * C;
+                for (ch, acc) in row_acc.iter_mut().enumerate() {
+                    *acc += unsafe { *col_sums.get_unchecked(base + ch) };
+                }
+            }
+
+            let inv_area = 1.0 / ((x_end - x_start) * (y_end - y_start)) as f32;
+            let out_idx = row_offset + c * C;
+
+            if C == 8 {
+                let v = f32x8::new([
+                    row_acc[0], row_acc[1], row_acc[2], row_acc[3], row_acc[4], row_acc[5],
+                    row_acc[6], row_acc[7],
+                ]) * f32x8::splat(inv_area);
+                // SAFETY: r < rows and c < cols guarantee 8 elements remain at out_idx; checked by debug_assert.
+                unsafe {
+                    store8(dst_data, out_idx, v);
+                }
+            } else if C == 4 {
+                // SAFETY: r < rows and c < cols guarantee 4 elements remain at out_idx; checked by debug_assert.
+                unsafe {
+                    *dst_data.get_unchecked_mut(out_idx) = row_acc[0] * inv_area;
+                    *dst_data.get_unchecked_mut(out_idx + 1) = row_acc[1] * inv_area;
+                    *dst_data.get_unchecked_mut(out_idx + 2) = row_acc[2] * inv_area;
+                    *dst_data.get_unchecked_mut(out_idx + 3) = row_acc[3] * inv_area;
+                }
+            } else if C == 3 {
+                // SAFETY: r < rows and c < cols guarantee 3 elements remain at out_idx; checked by debug_assert.
+                unsafe {
+                    *dst_data.get_unchecked_mut(out_idx) = row_acc[0] * inv_area;
+                    *dst_data.get_unchecked_mut(out_idx + 1) = row_acc[1] * inv_area;
+                    *dst_data.get_unchecked_mut(out_idx + 2) = row_acc[2] * inv_area;
+                }
+            } else if C == 2 {
+                // SAFETY: r < rows and c < cols guarantee 2 elements remain at out_idx; checked by debug_assert.
+                unsafe {
+                    *dst_data.get_unchecked_mut(out_idx) = row_acc[0] * inv_area;
+                    *dst_data.get_unchecked_mut(out_idx + 1) = row_acc[1] * inv_area;
+                }
+            } else {
+                // Scalar fallback
+                for (ch, &acc) in row_acc.iter().enumerate() {
+                    // SAFETY: r < rows and c < cols keep out_idx + ch within dst_data; checked by debug_assert.
+                    unsafe {
+                        *dst_data.get_unchecked_mut(out_idx + ch) = acc * inv_area;
+                    }
+                }
+            }
+        }
+    }
+
+    for r in 1..rows {
+        let y_start = r.saturating_sub(half_y);
+        let y_end = (r + half_y + 1).min(rows);
+        let row_offset = r * cols * C;
+
+        // vertical incremental update
+        if r > half_y {
+            update_row::<C>(r - half_y - 1, false, cols, src_data, &mut col_sums);
+        }
+        if r + half_y < rows {
+            update_row::<C>(r + half_y, true, cols, src_data, &mut col_sums);
+        }
+
+        // horizontal sliding window
+        debug_assert_eq!(col_sums.len(), cols * C, "col_sums length mismatch");
+        debug_assert!(
+            row_offset + cols * C <= dst_data.len(),
+            "dst_data too short: row_offset={row_offset}, cols={cols}, C={C}"
+        );
+
+        {
+            let c = 0usize;
+            let x_start = c.saturating_sub(half_x);
+            let x_end = (c + half_x + 1).min(cols);
+
+            row_acc.fill(0.0);
+            for x in x_start..x_end {
+                let base = x * C;
+                for (ch, acc) in row_acc.iter_mut().enumerate() {
+                    // SAFETY: x is clamped to cols so base + ch stays within col_sums; checked by debug_assert.
+                    *acc += unsafe { *col_sums.get_unchecked(base + ch) };
+                }
+            }
+
+            let inv_area = 1.0 / ((x_end - x_start) * (y_end - y_start)) as f32;
+            let out_idx = row_offset + c * C;
+
+            if C == 8 {
+                let v = f32x8::new([
+                    row_acc[0], row_acc[1], row_acc[2], row_acc[3], row_acc[4], row_acc[5],
+                    row_acc[6], row_acc[7],
+                ]) * f32x8::splat(inv_area);
+                unsafe {
+                    store8(dst_data, out_idx, v);
+                }
+            } else if C == 4 {
+                unsafe {
+                    *dst_data.get_unchecked_mut(out_idx) = row_acc[0] * inv_area;
+                    *dst_data.get_unchecked_mut(out_idx + 1) = row_acc[1] * inv_area;
+                    *dst_data.get_unchecked_mut(out_idx + 2) = row_acc[2] * inv_area;
+                    *dst_data.get_unchecked_mut(out_idx + 3) = row_acc[3] * inv_area;
+                }
+            } else if C == 3 {
+                unsafe {
+                    *dst_data.get_unchecked_mut(out_idx) = row_acc[0] * inv_area;
+                    *dst_data.get_unchecked_mut(out_idx + 1) = row_acc[1] * inv_area;
+                    *dst_data.get_unchecked_mut(out_idx + 2) = row_acc[2] * inv_area;
+                }
+            } else if C == 2 {
+                unsafe {
+                    *dst_data.get_unchecked_mut(out_idx) = row_acc[0] * inv_area;
+                    *dst_data.get_unchecked_mut(out_idx + 1) = row_acc[1] * inv_area;
+                }
+            } else {
+                for (ch, &acc) in row_acc.iter().enumerate() {
+                    unsafe {
+                        *dst_data.get_unchecked_mut(out_idx + ch) = acc * inv_area;
+                    }
+                }
+            }
+        }
+
+        for c in 1..cols {
+            let x_start = c.saturating_sub(half_x);
+            let x_end = (c + half_x + 1).min(cols);
+
+            let prev_x_start = (c - 1).saturating_sub(half_x);
+            if x_start > prev_x_start {
+                let base = prev_x_start * C;
+                for (ch, acc) in row_acc.iter_mut().enumerate() {
+                    *acc -= unsafe { *col_sums.get_unchecked(base + ch) };
+                }
+            }
+
+            let prev_x_end = (c + half_x).min(cols);
+            if x_end > prev_x_end {
+                let base = (x_end - 1) * C;
+                for (ch, acc) in row_acc.iter_mut().enumerate() {
+                    *acc += unsafe { *col_sums.get_unchecked(base + ch) };
+                }
+            }
+
+            let inv_area = 1.0 / ((x_end - x_start) * (y_end - y_start)) as f32;
+            let out_idx = row_offset + c * C;
+
+            if C == 8 {
+                let v = f32x8::new([
+                    row_acc[0], row_acc[1], row_acc[2], row_acc[3], row_acc[4], row_acc[5],
+                    row_acc[6], row_acc[7],
+                ]) * f32x8::splat(inv_area);
+                // SAFETY: r < rows and c < cols guarantee 8 elements remain at out_idx; checked by debug_assert.
+                unsafe {
+                    store8(dst_data, out_idx, v);
+                }
+            } else if C == 4 {
+                // SAFETY: r < rows and c < cols guarantee 4 elements remain at out_idx; checked by debug_assert.
+                unsafe {
+                    *dst_data.get_unchecked_mut(out_idx) = row_acc[0] * inv_area;
+                    *dst_data.get_unchecked_mut(out_idx + 1) = row_acc[1] * inv_area;
+                    *dst_data.get_unchecked_mut(out_idx + 2) = row_acc[2] * inv_area;
+                    *dst_data.get_unchecked_mut(out_idx + 3) = row_acc[3] * inv_area;
+                }
+            } else if C == 3 {
+                // SAFETY: r < rows and c < cols guarantee 3 elements remain at out_idx; checked by debug_assert.
+                unsafe {
+                    *dst_data.get_unchecked_mut(out_idx) = row_acc[0] * inv_area;
+                    *dst_data.get_unchecked_mut(out_idx + 1) = row_acc[1] * inv_area;
+                    *dst_data.get_unchecked_mut(out_idx + 2) = row_acc[2] * inv_area;
+                }
+            } else if C == 2 {
+                // SAFETY: r < rows and c < cols guarantee 2 elements remain at out_idx; checked by debug_assert.
+                unsafe {
+                    *dst_data.get_unchecked_mut(out_idx) = row_acc[0] * inv_area;
+                    *dst_data.get_unchecked_mut(out_idx + 1) = row_acc[1] * inv_area;
+                }
+            } else {
+                // Scalar fallback
+                for (ch, &acc) in row_acc.iter().enumerate() {
+                    // SAFETY: r < rows and c < cols keep out_idx + ch within dst_data; checked by debug_assert.
+                    unsafe {
+                        *dst_data.get_unchecked_mut(out_idx + ch) = acc * inv_area;
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -425,6 +802,40 @@ mod tests {
         );
         let xsum = dst.as_slice().iter().sum::<f32>();
         assert_eq!(xsum, 9.0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_columnar_sat_box_blur() -> Result<(), ImageError> {
+        let size = ImageSize {
+            width: 5,
+            height: 5,
+        };
+
+        #[rustfmt::skip]
+        let img = Image::new(
+            size,
+            vec![
+                0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 255.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0,
+            ],
+            CpuAllocator,
+        )?;
+
+        let mut dst = Image::<f32, 1, _>::from_size_val(img.size(), 0.0, CpuAllocator)?;
+
+        columnar_sat(&img, &mut dst, (3, 3))?;
+
+        let center_val = 255.0 / 9.0;
+
+        assert!((dst.as_slice()[6] - center_val).abs() < 1e-3);
+        assert!((dst.as_slice()[7] - center_val).abs() < 1e-3);
+        assert!((dst.as_slice()[12] - center_val).abs() < 1e-3);
+        assert_eq!(dst.as_slice()[0], 0.0);
 
         Ok(())
     }
