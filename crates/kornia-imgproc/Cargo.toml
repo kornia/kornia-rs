@@ -78,8 +78,8 @@ name = "bench_contours"
 required-features = ["opencv_bench"]
 
 [dependencies]
-cubecl = { version = "0.10.0-pre.4", default-features = false, features = ["std"], optional = true }
-cubecl-cuda = { version = "0.10.0-pre.4", optional = true }
+cubecl = { package = "cubecl-core", version = "=0.10.0-pre.4", default-features = false, features = ["std"], optional = true }
+cubecl-cuda = { version = "=0.10.0-pre.4", optional = true }
 kornia-algebra = { workspace = true }
 kornia-image = { workspace = true }
 kornia-tensor = { workspace = true }
