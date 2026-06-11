@@ -3,7 +3,7 @@ use crate::{
     param::{Param, ParamError},
     Mat3AF32, Mat4F32, QuatF32, Vec3AF32,
 };
-use rand::Rng;
+use rand::RngExt;
 
 const SMALL_ANGLE_EPSILON: f32 = 1.0e-8;
 

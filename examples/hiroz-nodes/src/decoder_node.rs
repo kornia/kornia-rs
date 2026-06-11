@@ -1,12 +1,12 @@
 //! JPEG Decoder Node - subscribes to compressed JPEG images and publishes raw images
 
 use crate::protos::{CompressedImage, Header, RawImage};
+use hiroz::{
+    context::ZContext, msg::ProtobufSerdes, node::ZNode, pubsub::ZSub, Builder, Result as ZResult,
+};
 use kornia_image::{allocator::CpuAllocator, Image};
 use kornia_io::jpeg::{decode_image_jpeg_layout, decode_image_jpeg_rgb8};
 use prost::Message;
-use ros_z::{
-    context::ZContext, msg::ProtobufSerdes, node::ZNode, pubsub::ZSub, Builder, Result as ZResult,
-};
 use std::sync::Arc;
 use zenoh::{
     bytes::ZBytes,
@@ -90,7 +90,7 @@ impl DecoderNode {
 
         Ok(RawImage {
             header: Some(Header {
-                acq_time: msg.header.as_ref().unwrap().acq_time,
+                acq_time: msg.header.as_ref().map_or(0, |h| h.acq_time),
                 pub_time: get_pub_time(),
                 sequence,
                 frame_id: self.camera_name.clone(),

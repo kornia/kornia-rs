@@ -9,13 +9,15 @@ homepage = { workspace = true }
 repository = { workspace = true }
 license = { workspace = true }
 include = { workspace = true }
+publish = false
 
 [dependencies]
 candle-core = { workspace = true }
 candle-examples = { workspace = true }
+candle-flash-attn = { workspace = true, optional = true }
 candle-nn = { workspace = true }
 candle-transformers = { workspace = true }
-circular-buffer = { version = "1.1.0" }
+circular-buffer = { workspace = true }
 cudarc = { workspace = true, optional = true }
 hf-hub = { workspace = true }
 kornia-image = { workspace = true }
@@ -23,8 +25,8 @@ kornia-imgproc = { workspace = true }
 kornia-io = { workspace = true }
 kornia-tensor = { workspace = true }
 log = { workspace = true }
-minijinja = { version = "2.12.0", features = ["loader"] }
-num2words = "1.2.0"
+minijinja = { workspace = true }
+num2words = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -32,7 +34,7 @@ tokenizers = { workspace = true }
 
 [dev-dependencies]
 env_logger = { workspace = true }
-rand = "0.9.0"
+rand = { workspace = true }
 
 [features]
 default = []
@@ -40,6 +42,8 @@ cuda = [
   "candle-core/cuda",
   "candle-nn/cuda",
   "candle-transformers/cuda",
-  "cudarc"
+  "dep:candle-flash-attn",
+  "dep:cudarc",
 ]
 flash-attn = ["candle-transformers/flash-attn"]
+metal = ["candle-core/metal"]

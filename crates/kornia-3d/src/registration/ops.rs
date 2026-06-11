@@ -7,7 +7,7 @@ pub(crate) fn fit_transformation(
     points_in_dst: &[[f64; 3]],
     dst_r_src: &mut [[f64; 3]; 3],
     dst_t_src: &mut [f64; 3],
-) {
+) -> Option<()> {
     assert_eq!(points_in_src.len(), points_in_dst.len());
 
     // compute centroids
@@ -22,8 +22,8 @@ pub(crate) fn fit_transformation(
     }
 
     // solve the linear system H * x = 0 to find the rotation
-    let svd = hh.svd();
-    let (u_t, v) = (svd.u().transpose(), svd.v());
+    let svd = hh.svd().ok()?;
+    let (u_t, v) = (svd.U().transpose(), svd.V());
 
     // compute rotation matrix R = V * U^T
     let mut rr = v * u_t;
@@ -37,7 +37,14 @@ pub(crate) fn fit_transformation(
             v_neg
         };
         // TODO: improve performance by using matmul33
-        faer::linalg::matmul::matmul(&mut rr, &v_neg, u_t, None, 1.0, faer::Parallelism::None);
+        faer::linalg::matmul::matmul(
+            &mut rr,
+            faer::Accum::Replace,
+            &v_neg,
+            u_t,
+            1.0_f64,
+            faer::Par::Seq,
+        );
     }
 
     // compute translation vector t = C_dst - R * C_src
@@ -47,10 +54,11 @@ pub(crate) fn fit_transformation(
     #[allow(clippy::needless_range_loop)]
     for i in 0..3 {
         for j in 0..3 {
-            dst_r_src[i][j] = rr.read(i, j);
+            dst_r_src[i][j] = rr[(i, j)];
         }
         dst_t_src[i] = t[i];
     }
+    Some(())
 }
 
 /// Compute the centroids of two sets of points.
@@ -192,16 +200,14 @@ mod tests {
         let points1 = vec![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]];
         let points2 = vec![[7.0, 8.0, 9.0], [10.0, 11.0, 12.0]];
         let (centroid1, centroid2) = compute_centroids(&points1, &points2);
-        assert_eq!(centroid1.read(0), 2.5);
-        assert_eq!(centroid1.read(1), 3.5);
-        assert_eq!(centroid1.read(2), 4.5);
-        assert_eq!(centroid2.read(0), 8.5);
-        assert_eq!(centroid2.read(1), 9.5);
-        assert_eq!(centroid2.read(2), 10.5);
+        let c1: Vec<f64> = centroid1.as_ref().iter().copied().collect();
+        let c2: Vec<f64> = centroid2.as_ref().iter().copied().collect();
+        assert_eq!(c1, vec![2.5, 3.5, 4.5]);
+        assert_eq!(c2, vec![8.5, 9.5, 10.5]);
     }
 
     #[test]
-    fn test_fit_transformation_identity() {
+    fn test_fit_transformation_identity() -> Result<(), &'static str> {
         let num_points = 30;
         let points_src = create_random_points(num_points);
         let points_dst = points_src.clone();
@@ -212,7 +218,8 @@ mod tests {
         let mut rotation = [[0.0; 3]; 3];
         let mut translation = [0.0; 3];
 
-        fit_transformation(&points_src, &points_dst, &mut rotation, &mut translation);
+        fit_transformation(&points_src, &points_dst, &mut rotation, &mut translation)
+            .ok_or("SVD failed")?;
 
         for (res, exp) in rotation.iter().zip(expected_rotation.iter()) {
             for (r, e) in res.iter().zip(exp.iter()) {
@@ -222,6 +229,7 @@ mod tests {
         for (res, exp) in translation.iter().zip(expected_translation.iter()) {
             assert_relative_eq!(res, exp, epsilon = 1e-6);
         }
+        Ok(())
     }
 
     #[test]
@@ -244,7 +252,8 @@ mod tests {
         let mut rotation = [[0.0; 3]; 3];
         let mut translation = [0.0; 3];
 
-        fit_transformation(&points_src, &points_dst, &mut rotation, &mut translation);
+        fit_transformation(&points_src, &points_dst, &mut rotation, &mut translation)
+            .ok_or("SVD failed")?;
 
         for (res, exp) in rotation.iter().zip(expected_rotation.iter()) {
             for (r, e) in res.iter().zip(exp.iter()) {
@@ -284,7 +293,8 @@ mod tests {
             let mut rotation = [[0.0; 3]; 3];
             let mut translation = [0.0; 3];
 
-            fit_transformation(&points_src, &points_dst, &mut rotation, &mut translation);
+            fit_transformation(&points_src, &points_dst, &mut rotation, &mut translation)
+                .ok_or("SVD failed")?;
 
             let mut points_src_fit = vec![[0.0; 3]; num_points];
             transform_points3d(&points_src, &rotation, &translation, &mut points_src_fit)?;

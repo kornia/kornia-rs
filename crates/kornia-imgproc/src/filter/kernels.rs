@@ -71,15 +71,39 @@ pub fn sobel_kernel_1d(
     Ok((kernel_x, kernel_y))
 }
 
-/// Create a normalized 2d sobel kernel.
+/// Create a Scharr kernel.
 ///
 /// # Arguments
 ///
-/// * `kernel_size` - The size of the kernel.
+/// * `kernel_size` - The size of the kernel. Only `3` is supported.
 ///
 /// # Returns
 ///
-/// A tuple of two array of the kernel. (dx_kernel, dy_kernel)
+/// A tuple `(dx_kernel, dy_kernel)`.
+///
+/// # Errors
+///
+/// Returns `ImageError::InvalidKernelLength` when `kernel_size` is not `3`.
+pub fn scharr_kernel_1d(
+    kernel_size: usize,
+) -> Result<(Vec<f32>, Vec<f32>), kornia_image::ImageError> {
+    let (kernel_x, kernel_y) = match kernel_size {
+        3 => (vec![-1.0, 0.0, 1.0], vec![3.0, 10.0, 3.0]),
+        _ => {
+            return Err(kornia_image::ImageError::InvalidKernelLength(
+                kernel_size,
+                kernel_size,
+            ))
+        }
+    };
+    Ok((kernel_x, kernel_y))
+}
+
+/// Create a normalized 2d sobel kernel (3×3).
+///
+/// # Returns
+///
+/// A tuple of two 3×3 arrays: (dx_kernel, dy_kernel).
 pub fn normalized_sobel_kernel3() -> ([[f32; 3]; 3], [[f32; 3]; 3]) {
     (
         [
@@ -91,6 +115,24 @@ pub fn normalized_sobel_kernel3() -> ([[f32; 3]; 3], [[f32; 3]; 3]) {
             [-0.125, -0.25, -0.125],
             [0.0, 0.0, 0.0],
             [0.125, 0.25, 0.125],
+        ],
+    )
+}
+
+/// Create a normalized 2d scharr kernel.
+/// # Returns
+/// A tuple of two 3x3 arrays: (dx_kernel, dy_kernel).
+pub fn normalized_scharr_kernel3() -> ([[f32; 3]; 3], [[f32; 3]; 3]) {
+    (
+        [
+            [-0.09375, 0.0, 0.09375],
+            [-0.3125, 0.0, 0.3125],
+            [-0.09375, 0.0, 0.09375],
+        ],
+        [
+            [-0.09375, -0.3125, -0.09375],
+            [0.0, 0.0, 0.0],
+            [0.09375, 0.3125, 0.09375],
         ],
     )
 }
@@ -143,6 +185,16 @@ mod tests {
 
         assert!(sobel_kernel_1d(7).is_err());
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_scharr_kernel_1d() -> Result<(), ImageError> {
+        let kernel = scharr_kernel_1d(3)?;
+        assert_eq!(kernel.0, vec![-1.0, 0.0, 1.0]);
+        assert_eq!(kernel.1, vec![3.0, 10.0, 3.0]);
+        assert!(scharr_kernel_1d(5).is_err());
+        assert!(scharr_kernel_1d(7).is_err());
         Ok(())
     }
 

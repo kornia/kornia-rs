@@ -4,7 +4,9 @@
 //! `T_a`, `T_b` (world→cam) with a measured relative transform
 //! `T_ab_meas` (cam_a → cam_b). The 6-dimensional residual is
 //!
+//! ```text
 //!     r = log(T_ab_meas⁻¹ · T_b · T_a⁻¹)
+//! ```
 //!
 //! in `se(3)` tangent (right-perturbation convention, `[ρ; ω]` =
 //! `[upsilon; omega]`).
@@ -19,7 +21,7 @@ use kornia_algebra::optim::{
     Factor, FactorError, FactorResult, LevenbergMarquardt, LinearizationResult, OptimizerError,
     Problem, ProblemError, RobustLoss, TerminationReason, Variable, VariableType,
 };
-use kornia_algebra::{Mat3F64, SE3F32, Vec3AF32, Vec3F64};
+use kornia_algebra::{Mat3F64, Vec3AF32, Vec3F64, SE3F32};
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -223,7 +225,10 @@ impl Factor for RelPoseFactor {
                 }
                 (Some(_), Some(_)) => {
                     // Both fixed → constant factor, contributes nothing.
-                    return Err(FactorError::DimensionMismatch { expected: 1, actual: 0 });
+                    return Err(FactorError::DimensionMismatch {
+                        expected: 1,
+                        actual: 0,
+                    });
                 }
             };
 

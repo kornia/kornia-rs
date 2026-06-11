@@ -1,4 +1,4 @@
-use faer::prelude::SpSolverLstsq;
+use faer::prelude::SolveLstsq;
 
 /// Computes the 2D affine transformation matrix from 4 point correspondences.
 ///
@@ -17,16 +17,14 @@ pub fn affine_4pt2d(x1: &[[f64; 2]; 4], x2: &[[f64; 2]; 4], affine: &mut [[f64; 
     for i in 0..4 {
         let (x1_0, x1_1) = (x1[i][0], x1[i][1]);
         let (x2_0, x2_1) = (x2[i][0], x2[i][1]);
-        unsafe {
-            mat_a.write_unchecked(2 * i, 0, x1_0);
-            mat_a.write_unchecked(2 * i, 1, x1_1);
-            mat_a.write_unchecked(2 * i, 2, 1.0);
-            mat_a.write_unchecked(2 * i + 1, 3, x1_0);
-            mat_a.write_unchecked(2 * i + 1, 4, x1_1);
-            mat_a.write_unchecked(2 * i + 1, 5, 1.0);
-            mat_b.write_unchecked(2 * i, 0, x2_0);
-            mat_b.write_unchecked(2 * i + 1, 0, x2_1);
-        }
+        mat_a[(2 * i, 0)] = x1_0;
+        mat_a[(2 * i, 1)] = x1_1;
+        mat_a[(2 * i, 2)] = 1.0;
+        mat_a[(2 * i + 1, 3)] = x1_0;
+        mat_a[(2 * i + 1, 4)] = x1_1;
+        mat_a[(2 * i + 1, 5)] = 1.0;
+        mat_b[(2 * i, 0)] = x2_0;
+        mat_b[(2 * i + 1, 0)] = x2_1;
     }
 
     let params = mat_a.qr().solve_lstsq(mat_b);

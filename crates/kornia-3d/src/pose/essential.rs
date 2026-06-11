@@ -74,14 +74,14 @@ pub fn essential_from_fundamental(f: &Mat3F64, k1: &Mat3F64, k2: &Mat3F64) -> Ma
 /// Perform SVD of a 3x3 matrix using faer, returning (U, singular_values, V).
 /// TODO: temporary workaround until svd3_f64 is fixed to handle repeated
 /// singular values: https://github.com/kornia/kornia-rs/issues/696
-fn svd3_robust(m: &Mat3F64) -> (Mat3F64, Vec3F64, Mat3F64) {
+fn svd3_robust(m: &Mat3F64) -> Option<(Mat3F64, Vec3F64, Mat3F64)> {
     let arr: [f64; 9] = (*m).into();
     let a = faer::Mat::<f64>::from_fn(3, 3, |i, j| arr[j * 3 + i]);
-    let svd = a.svd();
+    let svd = a.svd().ok()?;
 
-    let u_f = svd.u();
-    let v_f = svd.v();
-    let s_f = svd.s_diagonal();
+    let u_f = svd.U();
+    let v_f = svd.V();
+    let s_f = svd.S();
 
     let u = Mat3F64::from_cols(
         Vec3F64::new(u_f[(0, 0)], u_f[(1, 0)], u_f[(2, 0)]),
@@ -94,25 +94,27 @@ fn svd3_robust(m: &Mat3F64) -> (Mat3F64, Vec3F64, Mat3F64) {
         Vec3F64::new(v_f[(0, 1)], v_f[(1, 1)], v_f[(2, 1)]),
         Vec3F64::new(v_f[(0, 2)], v_f[(1, 2)], v_f[(2, 2)]),
     );
-    (u, s, v)
+    Some((u, s, v))
 }
 
 /// Enforce the (1,1,0) singular value constraint on an essential matrix.
-pub fn enforce_essential_constraints(e: &Mat3F64) -> Mat3F64 {
-    let (u, _s, v) = svd3_robust(e);
+///
+/// Returns `None` if the SVD of `e` fails (input contains NaN or Inf).
+pub fn enforce_essential_constraints(e: &Mat3F64) -> Option<Mat3F64> {
+    let (u, _s, v) = svd3_robust(e)?;
     let s_mat = Mat3F64::from_cols(
         Vec3F64::new(1.0, 0.0, 0.0),
         Vec3F64::new(0.0, 1.0, 0.0),
         Vec3F64::new(0.0, 0.0, 0.0),
     );
-    u * s_mat * v.transpose()
+    Some(u * s_mat * v.transpose())
 }
 
 /// Decompose an essential matrix into four possible (R, t) solutions.
 ///
-/// Returns an array of candidate poses where R is 3x3 and t is a unit 3-vector.
-pub fn decompose_essential(e: &Mat3F64) -> [(Mat3F64, Vec3F64); 4] {
-    let (mut u, _s, mut v) = svd3_robust(e);
+/// Returns the array of candidate poses, or `None` if the SVD fails.
+pub fn decompose_essential(e: &Mat3F64) -> Option<[(Mat3F64, Vec3F64); 4]> {
+    let (mut u, _s, mut v) = svd3_robust(e)?;
 
     if u.determinant() < 0.0 {
         u.z_axis = -u.z_axis;
@@ -134,7 +136,7 @@ pub fn decompose_essential(e: &Mat3F64) -> [(Mat3F64, Vec3F64); 4] {
     let t = u.z_axis();
     let t_neg = -t;
 
-    [(r1, t), (r1, t_neg), (r2, t), (r2, t_neg)]
+    Some([(r1, t), (r1, t_neg), (r2, t), (r2, t_neg)])
 }
 
 #[cfg(test)]
@@ -151,12 +153,12 @@ mod tests {
     }
 
     #[test]
-    fn test_decompose_essential_identity_rotation() {
+    fn test_decompose_essential_identity_rotation() -> Result<(), &'static str> {
         let r = Mat3F64::IDENTITY;
         let t = Vec3F64::new(1.0, 0.0, 0.0);
         let e = skew(t) * r;
 
-        let candidates = decompose_essential(&e);
+        let candidates = decompose_essential(&e).ok_or("SVD failed")?;
         assert_eq!(candidates.len(), 4);
 
         let mut found = false;
@@ -180,11 +182,13 @@ mod tests {
         }
 
         assert!(found);
+        Ok(())
     }
 
     /// End-to-end test: known (R, t, K) → generate correspondences → F → E → decompose → verify R, t.
     #[test]
-    fn test_fundamental_to_essential_to_pose_round_trip() {
+    fn test_fundamental_to_essential_to_pose_round_trip() -> Result<(), Box<dyn std::error::Error>>
+    {
         use crate::pose::fundamental::{fundamental_8point, sampson_distance};
 
         // Known camera intrinsics
@@ -251,7 +255,7 @@ mod tests {
         }
 
         // Estimate F from correspondences
-        let f_est = fundamental_8point(&x1, &x2).unwrap();
+        let f_est = fundamental_8point(&x1, &x2)?;
 
         // Verify epipolar constraint with estimated F
         for i in 0..x1.len() {
@@ -261,8 +265,9 @@ mod tests {
 
         // F → E → decompose
         let e = essential_from_fundamental(&f_est, &k, &k);
-        let e = enforce_essential_constraints(&e);
-        let candidates = decompose_essential(&e);
+        let e = enforce_essential_constraints(&e)
+            .ok_or("SVD failed in enforce_essential_constraints")?;
+        let candidates = decompose_essential(&e).ok_or("SVD failed in decompose_essential")?;
 
         // One of the 4 candidates should match the known R and t
         let rt_arr: [f64; 9] = r_true.into();
@@ -289,18 +294,20 @@ mod tests {
             found,
             "no decomposed (R, t) candidate matched the ground truth"
         );
+        Ok(())
     }
 
     #[test]
-    fn test_enforce_essential_constraints_rank2() {
+    fn test_enforce_essential_constraints_rank2() -> Result<(), &'static str> {
         let e = Mat3F64::from_cols(
             Vec3F64::new(0.1, 0.2, -0.3),
             Vec3F64::new(0.4, -0.1, 0.2),
             Vec3F64::new(-0.2, 0.5, 0.3),
         );
-        let e_fixed = enforce_essential_constraints(&e);
-        let (_u, s, _v) = svd3_robust(&e_fixed);
+        let e_fixed = enforce_essential_constraints(&e).ok_or("SVD failed in enforce")?;
+        let (_u, s, _v) = svd3_robust(&e_fixed).ok_or("SVD failed in svd3_robust")?;
         assert!(s.z.abs() < 1e-6);
         assert!((s.x - s.y).abs() < 1e-6);
+        Ok(())
     }
 }

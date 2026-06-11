@@ -59,6 +59,14 @@ pub enum IoError {
     #[error("Unsupported pixel type")]
     UnsupportedPixelType,
 
+    /// Error encoding an RVL depth image.
+    #[error("Failed to encode RVL depth image: {0}")]
+    RvlEncodeError(String),
+
+    /// Error decoding an RVL depth image.
+    #[error("Failed to decode RVL depth image: {0}")]
+    RvlDecodeError(String),
+
     /// Error to decode the WEBP image.
     #[error(transparent)]
     WebpDecodingError(#[from] image_webp::DecodingError),

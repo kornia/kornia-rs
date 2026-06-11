@@ -6,6 +6,7 @@ use kornia_image::{
     PixelFormat,
 };
 use kornia_io::jpeg as jpeg_io;
+#[cfg(feature = "turbojpeg")]
 use kornia_io::jpegturbo as jpegturbo_io;
 use kornia_io::png as png_io;
 use kornia_io::tiff as tiff_io;
@@ -211,6 +212,7 @@ fn read_image_jpeg_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<P
     // libjpeg-turbo first (~30% faster than zune-jpeg on 1080p RGB);
     // zune-jpeg fallback only kicks in if turbojpeg init fails (e.g.
     // on a build without the turbojpeg feature).
+    #[cfg(feature = "turbojpeg")]
     let try_turbo = || -> PyResult<Py<PyAny>> {
         let decoder = jpegturbo_io::JpegTurboDecoder::new().map_err(to_pyerr)?;
         match (layout.channels, layout.pixel_format) {
@@ -234,6 +236,7 @@ fn read_image_jpeg_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<P
             ))),
         }
     };
+    #[cfg(feature = "turbojpeg")]
     if let Ok(out) = try_turbo() {
         return Ok(out);
     }

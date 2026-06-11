@@ -21,7 +21,7 @@ fn _get_kernel_size(sigma: f32) -> usize {
     // Standard odd-radius rounding; may cause padding problems on small
     // images because PyTorch does not allow padding larger than the input
     // — callers handle that edge case in the forward function.
-    if ksize % 2 == 0 {
+    if ksize.is_multiple_of(2) {
         ksize += 1;
     }
 

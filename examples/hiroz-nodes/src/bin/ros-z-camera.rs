@@ -1,10 +1,10 @@
 #[cfg(target_os = "linux")]
 mod linux {
     use argh::FromArgs;
-    use ros_z::{context::ZContextBuilder, Builder, Result as ZResult};
+    use hiroz::{context::ZContextBuilder, Builder, Result as ZResult};
     use std::sync::Arc;
 
-    use ros_z_nodes::{
+    use hiroz_nodes::{
         camera_node::V4lCameraNode, compute_node::ComputeNode, decoder_node::DecoderNode,
         foxglove_node::FoxgloveNode, logger_node::LoggerNode,
     };
@@ -75,7 +75,7 @@ mod linux {
 }
 
 #[cfg(target_os = "linux")]
-fn main() -> ros_z::Result<()> {
+fn main() -> hiroz::Result<()> {
     linux::main()
 }
 

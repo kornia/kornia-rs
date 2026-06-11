@@ -1,5 +1,5 @@
 use crate::protos::ImageStats;
-use ros_z::{
+use hiroz::{
     context::ZContext, msg::ProtobufSerdes, node::ZNode, pubsub::ZSub, Builder, Result as ZResult,
 };
 use std::sync::Arc;

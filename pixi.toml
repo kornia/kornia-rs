@@ -12,7 +12,12 @@ platforms = ["linux-64", "linux-aarch64", "osx-arm64", "osx-64"]
 [environments]
 default = { features = ["rust", "python", "cpp"], solve-group = "default" }
 cuda = { features = ["rust", "python", "cuda"], solve-group = "cuda" }
-dev = { features = ["rust", "python", "cpp", "dev-tools"], solve-group = "default" }
+dev = { features = [
+  "rust",
+  "python",
+  "cpp",
+  "dev-tools",
+], solve-group = "default" }
 # Python version-specific environments for CI matrix testing
 py38 = { features = ["rust", "python", "py38"] }
 py39 = { features = ["rust", "python", "py39"] }
@@ -54,7 +59,11 @@ rust-check = { cmd = "cargo check --workspace --all-targets --features ci", desc
 rust-clippy = { cmd = "cargo clippy --workspace --no-deps --all-targets --features ci -- -D warnings", description = "Run clippy (all targets)" }
 rust-fmt = { cmd = "cargo fmt --all", description = "Format Rust code" }
 rust-fmt-check = { cmd = "cargo fmt --all -- --check", description = "Check Rust formatting" }
-rust-lint = { depends-on = ["rust-fmt", "rust-clippy", "rust-check"], description = "Run all Rust lints" }
+rust-lint = { depends-on = [
+  "rust-fmt",
+  "rust-clippy",
+  "rust-check",
+], description = "Run all Rust lints" }
 rust-test = { cmd = "cargo test --features ci", description = "Run Rust tests" }
 rust-test-release = { cmd = "cargo test --release --features ci", description = "Run Rust tests (release)" }
 rust-test-package = { cmd = "cargo test -p", description = "Run tests for a specific package (usage: pixi run rust-test-package <package>)" }
@@ -79,10 +88,10 @@ pytest = "*"
 py-build = { cmd = "maturin develop --uv -m Cargo.toml --extras dev", cwd = "kornia-py", description = "Build kornia-py for development" }
 py-build-release = { cmd = "maturin develop --uv -m Cargo.toml --release --extras dev", cwd = "kornia-py", description = "Build kornia-py for release" }
 py-test = { cmd = "python -m pytest", cwd = "kornia-py", depends-on = [
-  "py-build"
+  "py-build",
 ], description = "Run pytest" }
 py-test-threaded = { cmd = "python -m pytest --parallel-threads=8 --iterations=50", cwd = "kornia-py", depends-on = [
-  "py-build"
+  "py-build",
 ], description = "Run pytest with free-threading" }
 py-clean = { cmd = "rm -rf .venv target dist *.egg-info && find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true", cwd = "kornia-py", description = "Clean Python build artifacts" }
 
@@ -123,10 +132,10 @@ scripts = ["scripts/activate-py314t.sh"]
 [feature.py314t.tasks]
 py-build = { cmd = "bash ../scripts/build-py314t.sh", cwd = "kornia-py", description = "Build kornia-py with Python 3.14t" }
 py-test = { cmd = "python -m pytest", cwd = "kornia-py", depends-on = [
-  "py-build"
+  "py-build",
 ], description = "Test kornia-py with Python 3.14t" }
 py-test-threaded = { cmd = "python -m pytest --parallel-threads=8 --iterations=50", cwd = "kornia-py", depends-on = [
-  "py-build"
+  "py-build",
 ], description = "Test kornia-py with Python 3.14t free-threaded" }
 
 # ------------------------------------------------------------------------------
@@ -190,6 +199,18 @@ tombi = "*"
 [feature.dev-tools.tasks]
 toml-fmt = { cmd = "tombi format", description = "Format TOML files" }
 toml-fmt-check = { cmd = "tombi format --check", description = "Check TOML formatting" }
-clean-all = { depends-on = ["rust-clean", "py-clean", "cpp-clean"], description = "Clean all build artifacts" }
-test-all = { depends-on = ["rust-test", "py-test", "cpp-test"], description = "Run all tests" }
-fmt-all = { depends-on = ["rust-fmt", "toml-fmt", "cpp-fmt"], description = "Format all code" }
+clean-all = { depends-on = [
+  "rust-clean",
+  "py-clean",
+  "cpp-clean",
+], description = "Clean all build artifacts" }
+test-all = { depends-on = [
+  "rust-test",
+  "py-test",
+  "cpp-test",
+], description = "Run all tests" }
+fmt-all = { depends-on = [
+  "rust-fmt",
+  "toml-fmt",
+  "cpp-fmt",
+], description = "Format all code" }

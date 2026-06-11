@@ -128,12 +128,13 @@ sudo docker run --privileged --network=none --rm \
 [target.x86_64-unknown-linux-gnu]
 runner = ["env", "QEMU_LD_PREFIX=/usr/x86_64-linux-gnu"]
 linker = "x86_64-linux-gnu-gcc"
-rustflags = ["-Ctarget-cpu=x86-64-v3"]
+rustflags = ["-Ctarget-cpu=x86-64"]
 ```
 
 - `runner = ["env", "QEMU_LD_PREFIX=…"]`: binfmt_misc picks up the binary transparently; `QEMU_LD_PREFIX` tells qemu where the amd64 dynamic loader + libc live (the `gcc-x86-64-linux-gnu` package ships the sysroot there).
 - `linker = "x86_64-linux-gnu-gcc"`: needed because `rust-lld` doesn't know where the amd64 sysroot is.
-- `rustflags = ["-Ctarget-cpu=x86-64-v3"]`: AVX2 + FMA + BMI2 baseline so the hand-written kernels' `#[target_feature]` annotations have something reasonable to build against. Use plain `-Ctarget-cpu=x86-64` when you want a strict-scalar reference for benchmarking.
+
+- `rustflags = ["-Ctarget-cpu=x86-64"]`: keeps the x86_64 build portable for older CPUs. AVX2/FMA kernels are still compiled with `#[target_feature]` and selected through runtime dispatch when available.
 
 #### Running x86 examples under qemu
 
@@ -235,9 +236,11 @@ For 1080p RGB8, the arithmetic intensity of most preprocess kernels (normalize, 
 
 ## Common gotchas
 
-### `is_x86_feature_detected!` is compile-time with `-Ctarget-cpu=x86-64-v3`
+### Avoid `-Ctarget-cpu=x86-64-v3` for portable builds
 
-Because AVX2+FMA+BMI2 are in the v3 baseline, the macro expands to an always-true constant. The dispatcher will always pick AVX2 and **never** fall through to scalar. To exercise the scalar fallback under qemu, build with `-Ctarget-cpu=x86-64` (plain baseline).
+Because AVX2+FMA+BMI2 are in the v3 baseline, the runtime feature check may fold to an always-true constant. The dispatcher will always pick AVX2 and **never** fall through to scalar. Public Linux x86_64 wheels should use `-Ctarget-cpu=x86-64`; AVX2/FMA should remain isolated in `#[target_feature]` kernels and selected through runtime dispatch.
+
+To exercise the scalar fallback under qemu, build with `-Ctarget-cpu=x86-64` (plain baseline).
 
 ### Criterion under qemu
 

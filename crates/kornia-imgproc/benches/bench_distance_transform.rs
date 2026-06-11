@@ -12,7 +12,7 @@ fn bench_distance_transform(c: &mut Criterion) {
 
         let mut data = vec![0.0f32; width * height];
         for i in 0..(*width).min(*height) {
-            if i % 10 == 0 {
+            if i.is_multiple_of(10) {
                 data[i * width + i] = 1.0;
             }
         }
@@ -33,7 +33,7 @@ fn bench_distance_transform(c: &mut Criterion) {
             .to_mat()
             .unwrap();
         for i in 0..(*width).min(*height) {
-            if i % 10 == 0 {
+            if i.is_multiple_of(10) {
                 *cv_src.at_2d_mut::<u8>(i as i32, i as i32).unwrap() = 255;
             }
         }
@@ -77,7 +77,7 @@ fn bench_distance_transform(c: &mut Criterion) {
 
         let mut data = vec![0.0f32; width * height];
         for i in 0..(*width).min(*height) {
-            if i % 10 == 0 {
+            if i.is_multiple_of(10) {
                 data[i * width + i] = 1.0;
             }
         }
@@ -97,7 +97,7 @@ fn bench_distance_transform(c: &mut Criterion) {
             .to_mat()
             .unwrap();
         for i in 0..(*width).min(*height) {
-            if i % 10 == 0 {
+            if i.is_multiple_of(10) {
                 *cv_src.at_2d_mut::<u8>(i as i32, i as i32).unwrap() = 255;
             }
         }
