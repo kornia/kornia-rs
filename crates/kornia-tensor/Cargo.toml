@@ -31,7 +31,12 @@ optional = true
 [dependencies.cudarc]
 version = "0.19.0"
 default-features = false
-features = ["driver", "cuda-version-from-build-system", "fallback-dynamic-loading", "fallback-latest"]
+features = [
+  "cuda-version-from-build-system",
+  "driver",
+  "fallback-dynamic-loading",
+  "fallback-latest"
+]
 optional = true
 
 [dev-dependencies]
