@@ -575,7 +575,7 @@ mod tests {
         // The pointer value is irrelevant; we only test the domain guard.
         let layout = Layout::array::<u8>(1).unwrap();
         let ptr = CpuAllocator.alloc(layout).unwrap();
-        unsafe { TensorStorage::from_raw_device(ptr as *mut u8, 1, layout, CpuAllocator) }
+        unsafe { TensorStorage::from_raw_device(ptr, 1, layout, CpuAllocator) }
     }
 
     #[test]
