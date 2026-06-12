@@ -16,9 +16,24 @@ name = "bench_view"
 
 [dependencies]
 bincode = { workspace = true, optional = true }
-cubecl-core = { version = "=0.10.0-pre.4", default-features = false, features = ["std"], optional = true }
+cubecl-core = {
+  version = "=0.10.0-pre.4",
+  default-features = false,
+  features = ["std"],
+  optional = true
+}
 cubecl-cuda = { version = "=0.10.0-pre.4", optional = true }
-cudarc = { version = "0.19.0", features = ["driver", "cuda-version-from-build-system", "fallback-dynamic-loading", "fallback-latest"], default-features = false, optional = true }
+cudarc = {
+  version = "0.19.0",
+  default-features = false,
+  features = [
+    "cuda-version-from-build-system",
+    "driver",
+    "fallback-dynamic-loading",
+    "fallback-latest"
+  ],
+  optional = true
+}
 num-traits = { workspace = true }
 rayon = { workspace = true }
 serde = { workspace = true, optional = true }
