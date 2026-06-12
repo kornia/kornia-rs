@@ -78,13 +78,6 @@ name = "bench_contours"
 required-features = ["opencv_bench"]
 
 [dependencies]
-cubecl = {
-  package = "cubecl-core",
-  version = "=0.10.0-pre.4",
-  default-features = false,
-  features = ["std"],
-  optional = true
-}
 cubecl-cuda = { version = "=0.10.0-pre.4", optional = true }
 kornia-algebra = { workspace = true }
 kornia-image = { workspace = true }
@@ -94,6 +87,13 @@ opencv = { version = "0.98", optional = true }
 rayon = { workspace = true }
 thiserror = { workspace = true }
 wide = { workspace = true }
+
+[dependencies.cubecl]
+package = "cubecl-core"
+version = "=0.10.0-pre.4"
+default-features = false
+features = ["std"]
+optional = true
 
 [dev-dependencies]
 criterion = { workspace = true }
