@@ -63,6 +63,8 @@ pub struct StereoRectifier {
     cy: f64,
     /// Metric stereo baseline (‖translation between cameras‖).
     baseline: f64,
+    /// Rotation mapping raw left-camera coordinates into the rectified frame.
+    rect_left: Mat3F64,
     /// Per-output-pixel source coordinate in the raw left image (`[u, v]`).
     left_map: Vec<[f32; 2]>,
     /// Per-output-pixel source coordinate in the raw right image.
@@ -162,9 +164,17 @@ impl StereoRectifier {
             cx,
             cy,
             baseline: nt,
+            rect_left: rect_l,
             left_map,
             right_map,
         })
+    }
+
+    /// Rotation mapping raw left-camera coordinates into the rectified frame
+    /// (`p_rect = R · p_left_raw`). Lets callers re-express raw-frame
+    /// extrinsics (e.g. a camera-IMU `T_BS`) for the rectified virtual camera.
+    pub fn left_rectifying_rotation(&self) -> Mat3F64 {
+        self.rect_left
     }
 
     /// Rectified pinhole camera (shared by both views; zero distortion).
