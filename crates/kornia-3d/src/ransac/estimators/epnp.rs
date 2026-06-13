@@ -9,6 +9,7 @@ use kornia_algebra::{Mat3AF32, Vec2F32, Vec3AF32};
 use kornia_imgproc::calibration::distortion::PolynomialDistortion;
 
 use crate::pnp::epnp::{solve_epnp, EPnPParams};
+use crate::pnp::LMRefineParams;
 use crate::ransac::{Estimator, Match2d3d};
 
 /// One absolute-pose hypothesis produced by EPnP.
@@ -28,23 +29,26 @@ pub struct EPnPModel {
 ///
 /// Carries the camera intrinsics + (optional) lens distortion + solver
 /// hyperparameters as state, since they're constant across all hypotheses
-/// in a single RANSAC run. The trait's `Sample` is f64 / column-major;
-/// conversion to the f32 SIMD types EPnP expects happens inside `fit`.
+/// in a single RANSAC run.
 ///
 /// **Coordinate convention.** `Match2d3d::object` is a world-frame 3D point;
 /// `Match2d3d::image` is the corresponding pixel observation. The recovered
 /// pose maps world → camera (matching the existing `PnPResult` convention).
 ///
 /// **Residual.** Squared reprojection error in pixels, with no distortion
-/// model applied at scoring time. If `distortion` is set, the *fit* step
-/// uses it (so the recovered pose is correct for the distorted observations),
-/// but the residual currently treats the camera as ideal pinhole. A
-/// distortion-aware residual is a follow-up — bench results on undistorted
-/// inputs are unaffected.
+/// model applied at scoring time.
 #[derive(Debug, Clone)]
 pub struct EPnPEstimator {
     /// Intrinsics matrix (f32, SIMD-aligned).
     pub k: Mat3AF32,
+    /// Pre-extracted focal length X to bypass inner-loop matrix copies.
+    pub fx: f32,
+    /// Pre-extracted focal length Y to bypass inner-loop matrix copies.
+    pub fy: f32,
+    /// Pre-extracted principal point X to bypass inner-loop matrix copies.
+    pub cx: f32,
+    /// Pre-extracted principal point Y to bypass inner-loop matrix copies.
+    pub cy: f32,
     /// Optional lens distortion model. Used only by the fit step today.
     pub distortion: Option<PolynomialDistortion>,
     /// Solver hyperparameters (LM refine, tolerances).
@@ -54,8 +58,13 @@ pub struct EPnPEstimator {
 impl EPnPEstimator {
     /// Build an EPnP estimator with no distortion and default parameters.
     pub fn new(k: Mat3AF32) -> Self {
+        let arr = k.to_cols_array();
         Self {
             k,
+            fx: arr[0],
+            fy: arr[4],
+            cx: arr[6],
+            cy: arr[7],
             distortion: None,
             params: EPnPParams::default(),
         }
@@ -77,16 +86,77 @@ impl EPnPEstimator {
 impl Estimator for EPnPEstimator {
     type Model = EPnPModel;
     type Sample = Match2d3d;
+
+    // EPnP requires at least 4 non-coplanar points.
     const SAMPLE_SIZE: usize = 4;
 
     fn fit(&self, samples: &[Self::Sample], out: &mut Vec<Self::Model>) {
-        if samples.len() < Self::SAMPLE_SIZE {
+        let n = samples.len();
+        if n < Self::SAMPLE_SIZE {
             return;
         }
-        // Translate AoS samples (f64) into the parallel SoA (f32) form
-        // solve_epnp expects. Tiny by construction at SAMPLE_SIZE=4; for
-        // larger LO refits these grow but stay small relative to EPnP cost.
+
+        if n == Self::SAMPLE_SIZE {
+            let mut world = [Vec3AF32::default(); 4];
+            let mut image = [Vec2F32::default(); 4];
+
+            for i in 0..4 {
+                world[i] = Vec3AF32::new(
+                    samples[i].object.x as f32,
+                    samples[i].object.y as f32,
+                    samples[i].object.z as f32,
+                );
+                image[i] = Vec2F32::new(samples[i].image.x as f32, samples[i].image.y as f32);
+            }
+
+            let mut minimal_params = self.params.clone();
+            minimal_params.refine_lm = None;
+
+            if let Ok(result) = solve_epnp(
+                &world,
+                &image,
+                &self.k,
+                self.distortion.as_ref(),
+                &minimal_params,
+            ) {
+                out.push(EPnPModel {
+                    rotation: result.rotation,
+                    translation: result.translation,
+                });
+            }
+        } else {
+            let mut world = Vec::with_capacity(n);
+            let mut image = Vec::with_capacity(n);
+            for s in samples {
+                world.push(Vec3AF32::new(
+                    s.object.x as f32,
+                    s.object.y as f32,
+                    s.object.z as f32,
+                ));
+                image.push(Vec2F32::new(s.image.x as f32, s.image.y as f32));
+            }
+
+            if let Ok(result) = solve_epnp(
+                &world,
+                &image,
+                &self.k,
+                self.distortion.as_ref(),
+                &self.params,
+            ) {
+                out.push(EPnPModel {
+                    rotation: result.rotation,
+                    translation: result.translation,
+                });
+            }
+        }
+    }
+
+    fn refit(&self, samples: &[Self::Sample], out: &mut Vec<Self::Model>) {
         let n = samples.len();
+        if n < Self::SAMPLE_SIZE {
+            return;
+        }
+
         let mut world = Vec::with_capacity(n);
         let mut image = Vec::with_capacity(n);
         for s in samples {
@@ -97,13 +167,13 @@ impl Estimator for EPnPEstimator {
             ));
             image.push(Vec2F32::new(s.image.x as f32, s.image.y as f32));
         }
-        if let Ok(result) = solve_epnp(
-            &world,
-            &image,
-            &self.k,
-            self.distortion.as_ref(),
-            &self.params,
-        ) {
+
+        let params = EPnPParams {
+            refine_lm: Some(LMRefineParams::default()),
+            ..self.params.clone()
+        };
+
+        if let Ok(result) = solve_epnp(&world, &image, &self.k, self.distortion.as_ref(), &params) {
             out.push(EPnPModel {
                 rotation: result.rotation,
                 translation: result.translation,
@@ -112,30 +182,26 @@ impl Estimator for EPnPEstimator {
     }
 
     fn residual(&self, model: &Self::Model, sample: &Self::Sample) -> f64 {
-        // Project sample.object via (R, t, K) — pinhole, no distortion in v1.
         let p = Vec3AF32::new(
             sample.object.x as f32,
             sample.object.y as f32,
             sample.object.z as f32,
         );
         let pc = model.rotation * p + model.translation;
+
         if pc.z.abs() < 1e-6 {
             return f64::INFINITY;
         }
+
         let xn = pc.x / pc.z;
         let yn = pc.y / pc.z;
-        // K is column-major [m00, m10, m20, m01, m11, m21, m02, m12, m22].
-        // For a standard intrinsics matrix that lays out as
-        //   col 0 = [fx, 0, 0], col 1 = [0, fy, 0], col 2 = [cx, cy, 1].
-        let arr = self.k.to_cols_array();
-        let fx = arr[0] as f64;
-        let fy = arr[4] as f64;
-        let cx = arr[6] as f64;
-        let cy = arr[7] as f64;
-        let u = fx * xn as f64 + cx;
-        let v = fy * yn as f64 + cy;
-        let du = u - sample.image.x;
-        let dv = v - sample.image.y;
+
+        let u = self.fx * xn + self.cx;
+        let v = self.fy * yn + self.cy;
+
+        let du = (u as f64) - sample.image.x;
+        let dv = (v as f64) - sample.image.y;
+
         du * du + dv * dv
     }
 }
@@ -161,7 +227,6 @@ mod tests {
             Vec3AF32::new(cx, cy, 1.0),
         );
 
-        // World points well-distributed in front of the camera.
         let world_pts = [
             Vec3F64::new(-0.4, -0.3, 5.0),
             Vec3F64::new(0.3, -0.2, 4.5),
@@ -171,7 +236,6 @@ mod tests {
             Vec3F64::new(0.2, 0.1, 5.2),
         ];
 
-        // Camera pose: small rotation around Y + translation.
         let angle = 0.05_f64;
         let r = [
             [angle.cos(), 0.0, -angle.sin()],
@@ -194,10 +258,7 @@ mod tests {
             })
             .collect();
 
-        // Enable LM refine — bare EPnP has ~10-20 px RMSE on small N (the
-        // existing pnp::ransac tests document this same trade-off). With LM
-        // refine the recovered pose drives reprojection well below 1 px on
-        // noise-free data.
+        // Testing the slow-path fallback (N > 4) with LM Refine.
         let est = EPnPEstimator::new(k).with_params(EPnPParams {
             refine_lm: Some(LMRefineParams::default()),
             ..Default::default()
@@ -206,20 +267,29 @@ mod tests {
         est.fit(&matches, &mut models);
         assert_eq!(models.len(), 1, "expected exactly one EPnP solution");
 
-        // Wiring-only assertions: the trait wrapper's job is plumbing, not
-        // validating solver accuracy. The existing
-        // `pnp::ransac::tests::test_ransac_perfect_data` already covers
-        // accuracy with its own dataset (and explicitly tolerates up to
-        // 20 px RMSE on bare EPnP). Different geometric configurations
-        // give different numerical conditioning — the only invariant we
-        // can rely on at the trait boundary is a finite, non-NaN residual.
         for m in &matches {
             let r2 = est.residual(&models[0], m);
             assert!(r2.is_finite(), "non-finite reprojection²: {r2}");
         }
     }
 
-    /// Below-minimal sample → no model, no panic.
+    #[test]
+    fn safely_routes_lo_refit() {
+        let k = Mat3AF32::from_cols(
+            Vec3AF32::new(600.0, 0.0, 0.0),
+            Vec3AF32::new(0.0, 600.0, 0.0),
+            Vec3AF32::new(320.0, 240.0, 1.0),
+        );
+        let est = EPnPEstimator::new(k);
+        let mut models = Vec::new();
+
+        let dummy_match = Match2d3d::new(Vec3F64::new(0.0, 0.0, 5.0), Vec2F64::new(320.0, 240.0));
+        let oversampled = vec![dummy_match; 6];
+
+        est.refit(&oversampled, &mut models);
+        assert!(!models.is_empty());
+    }
+
     #[test]
     fn under_min_samples_yields_no_model() {
         let k = Mat3AF32::from_cols(
