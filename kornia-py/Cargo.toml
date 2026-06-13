@@ -28,4 +28,5 @@ rayon = { workspace = true }
 
 [features]
 default = ["turbojpeg"]
+gstreamer = ["kornia-io/gstreamer"]
 turbojpeg = ["kornia-io/turbojpeg"]
