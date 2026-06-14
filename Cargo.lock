@@ -8033,6 +8033,8 @@ name = "kornia-imgproc"
 version = "0.1.14"
 dependencies = [
  "criterion 0.8.2",
+ "cubecl-core",
+ "cubecl-cuda",
  "image",
  "imageproc 0.26.2",
  "kornia-algebra",
