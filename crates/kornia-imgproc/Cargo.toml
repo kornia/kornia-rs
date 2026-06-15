@@ -12,7 +12,6 @@ publish = true
 
 [[example]]
 name = "bench_gpu_color"
-required-features = ["gpu-cubecl"]
 
 [[bench]]
 harness = false
