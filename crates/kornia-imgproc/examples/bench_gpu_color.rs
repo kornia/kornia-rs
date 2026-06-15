@@ -21,8 +21,7 @@ use std::time::Instant;
 
 const WARMUP: u32 = 50;
 const ITERS: u32 = 200;
-/// Number of distinct source GPU buffers; must exceed GPU L2 / src_size to
-/// prevent cache reuse inflating bandwidth numbers.
+#[cfg(feature = "gpu-cubecl")]
 const N_BUFFS: usize = 8;
 const SIZES: &[(u32, u32)] = &[(512, 512), (1024, 1024), (1920, 1080), (3840, 2160)];
 
