@@ -89,17 +89,26 @@ unsafe fn cpu_gray_avx2(src: &[f32], dst: &mut [f32]) {
 
         // R: merge v0 (lanes 0-2) | v1 (lanes 3-5) | v2 (lanes 6-7)
         let r = _mm256_blend_ps::<0xC0>(
-            _mm256_blend_ps::<0x38>(_mm256_permutevar8x32_ps(v0, pr0), _mm256_permutevar8x32_ps(v1, pr1)),
+            _mm256_blend_ps::<0x38>(
+                _mm256_permutevar8x32_ps(v0, pr0),
+                _mm256_permutevar8x32_ps(v1, pr1),
+            ),
             _mm256_permutevar8x32_ps(v2, pr2),
         );
         // G: merge v0 (lanes 0-2) | v1 (lanes 3-4) | v2 (lanes 5-7)
         let g = _mm256_blend_ps::<0xE0>(
-            _mm256_blend_ps::<0x18>(_mm256_permutevar8x32_ps(v0, pg0), _mm256_permutevar8x32_ps(v1, pg1)),
+            _mm256_blend_ps::<0x18>(
+                _mm256_permutevar8x32_ps(v0, pg0),
+                _mm256_permutevar8x32_ps(v1, pg1),
+            ),
             _mm256_permutevar8x32_ps(v2, pg2),
         );
         // B: merge v0 (lanes 0-1) | v1 (lanes 2-4) | v2 (lanes 5-7)
         let b = _mm256_blend_ps::<0xE0>(
-            _mm256_blend_ps::<0x1C>(_mm256_permutevar8x32_ps(v0, pb0), _mm256_permutevar8x32_ps(v1, pb1)),
+            _mm256_blend_ps::<0x1C>(
+                _mm256_permutevar8x32_ps(v0, pb0),
+                _mm256_permutevar8x32_ps(v1, pb1),
+            ),
             _mm256_permutevar8x32_ps(v2, pb2),
         );
 
