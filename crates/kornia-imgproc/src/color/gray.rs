@@ -10,10 +10,8 @@ const RW_F32: f32 = 0.299;
 const GW_F32: f32 = 0.587;
 const BW_F32: f32 = 0.114;
 
-/// Thread-dispatch threshold shared by both u8 and f32 strip-split functions.
-///
-/// Below ~1M px rayon spawn cost exceeds the compute budget; above it (e.g. 1080p ≈ 2M px)
-/// splitting across the two A78AE perf cores recovers ~40% over single-thread SIMD.
+/// Below this pixel count rayon spawn cost exceeds the compute budget; above it
+/// (e.g. 1080p ≈ 2M px) strip-splitting across available threads pays off.
 const PAR_THRESHOLD: usize = 1024 * 1024;
 
 /// Convert an RGB image to grayscale using the formula:
@@ -684,21 +682,9 @@ fn rgb_u8_to_gray_f32_kernel(src: &[u8], dst: &mut [f32], npixels: usize) {
 
 /// NEON fused u8→f32 grayscale: 16 pixels per iteration.
 ///
-/// `vld3q_u8` reads 16 interleaved RGB pixels (48 bytes) and deinterleaves
-/// them into R, G, B `uint8x16_t` lanes in a single instruction, then widens
-/// each channel through u8→u16→u32→f32 in three stages.  Processing 16 pixels
-/// per outer iteration amortizes the structured-load cost (9-cycle latency,
-/// throughput ~3 cycles) across 4× more widening+FMA work than an 8-pixel loop,
-/// keeping the load unit and FMA units better fed.
-///
-/// Inner structure per 16 pixels:
-///   1 vld3q_u8 → 3 channels × (2 vmovl_u8 + 4 vmovl_u16 + 4 vcvtq_f32_u32)
-///   + 12 vfmaq_f32 + 4 vst1q_f32
-///
-/// Followed by an 8-pixel step (vld3_u8) and scalar tail.
-///
-/// Memory traffic: 48 bytes in + 64 bytes out per 16 pixels = 7 bytes/pixel,
-/// vs 16 bytes/pixel for the f32→f32 path.
+/// `vld3q_u8` deinterleaves 16 RGB pixels into R/G/B `uint8x16_t` lanes; each
+/// channel is widened u8→u16→u32→f32 and scaled by pre-divided weights (÷255
+/// baked in at compile time). Followed by an 8-pixel step and scalar tail.
 #[cfg(target_arch = "aarch64")]
 fn rgb_u8_to_gray_f32_neon(src: &[u8], dst: &mut [f32], npixels: usize) {
     use std::arch::aarch64::*;
@@ -710,23 +696,18 @@ fn rgb_u8_to_gray_f32_neon(src: &[u8], dst: &mut [f32], npixels: usize) {
         let sp = src.as_ptr();
         let dp = dst.as_mut_ptr();
 
-        // Macro: widen a uint8x8_t to float32x4_t (two calls give low + high halves).
-        macro_rules! u8x8_to_f32x4 {
-            ($v:expr) => {
-                vcvtq_f32_u32(vmovl_u16(vget_low_u16(vmovl_u8($v))))
-            };
+        // Widen uint8x8_t low/high halves to float32x4_t.
+        macro_rules! lo_f32 {
+            ($v:expr) => { vcvtq_f32_u32(vmovl_u16(vget_low_u16(vmovl_u8($v)))) };
         }
-        macro_rules! u8x8_hi_to_f32x4 {
-            ($v:expr) => {
-                vcvtq_f32_u32(vmovl_u16(vget_high_u16(vmovl_u8($v))))
-            };
+        macro_rules! hi_f32 {
+            ($v:expr) => { vcvtq_f32_u32(vmovl_u16(vget_high_u16(vmovl_u8($v)))) };
         }
 
-        // 16-pixel bulk: one vld3q_u8 covers 48 source bytes.
         let bulk16 = npixels & !15;
         let mut i = 0usize;
         while i < bulk16 {
-            let v = vld3q_u8(sp.add(i * 3)); // R[0..15], G[0..15], B[0..15]
+            let v = vld3q_u8(sp.add(i * 3));
 
             let r_lo = vget_low_u8(v.0);
             let r_hi = vget_high_u8(v.0);
@@ -735,22 +716,10 @@ fn rgb_u8_to_gray_f32_neon(src: &[u8], dst: &mut [f32], npixels: usize) {
             let b_lo = vget_low_u8(v.2);
             let b_hi = vget_high_u8(v.2);
 
-            // Pixels 0-3
-            let y0 = vfmaq_f32(vfmaq_f32(vmulq_f32(u8x8_to_f32x4!(b_lo), wb),
-                                           u8x8_to_f32x4!(g_lo), wg),
-                                u8x8_to_f32x4!(r_lo), wr);
-            // Pixels 4-7
-            let y1 = vfmaq_f32(vfmaq_f32(vmulq_f32(u8x8_hi_to_f32x4!(b_lo), wb),
-                                           u8x8_hi_to_f32x4!(g_lo), wg),
-                                u8x8_hi_to_f32x4!(r_lo), wr);
-            // Pixels 8-11
-            let y2 = vfmaq_f32(vfmaq_f32(vmulq_f32(u8x8_to_f32x4!(b_hi), wb),
-                                           u8x8_to_f32x4!(g_hi), wg),
-                                u8x8_to_f32x4!(r_hi), wr);
-            // Pixels 12-15
-            let y3 = vfmaq_f32(vfmaq_f32(vmulq_f32(u8x8_hi_to_f32x4!(b_hi), wb),
-                                           u8x8_hi_to_f32x4!(g_hi), wg),
-                                u8x8_hi_to_f32x4!(r_hi), wr);
+            let y0 = vfmaq_f32(vfmaq_f32(vmulq_f32(lo_f32!(b_lo), wb), lo_f32!(g_lo), wg), lo_f32!(r_lo), wr);
+            let y1 = vfmaq_f32(vfmaq_f32(vmulq_f32(hi_f32!(b_lo), wb), hi_f32!(g_lo), wg), hi_f32!(r_lo), wr);
+            let y2 = vfmaq_f32(vfmaq_f32(vmulq_f32(lo_f32!(b_hi), wb), lo_f32!(g_hi), wg), lo_f32!(r_hi), wr);
+            let y3 = vfmaq_f32(vfmaq_f32(vmulq_f32(hi_f32!(b_hi), wb), hi_f32!(g_hi), wg), hi_f32!(r_hi), wr);
 
             vst1q_f32(dp.add(i), y0);
             vst1q_f32(dp.add(i + 4), y1);

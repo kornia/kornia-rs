@@ -158,15 +158,8 @@ def test_to_grayscale_ties(pil_img, arr, k_img):
           iters=10, kornia_max_ratio=1.5)
 
 
-def test_to_grayscale_f32_wins(arr_f32):
-    """f32 grayscale: NEON/AVX2 kernel + rayon strip-split vs cv2(float32) and numpy matmul.
-
-    PIL has no natural float-gray API so this race is cv2 / numpy / kornia only.
-    kornia wins because:
-      • vld3q_f32 structured load deinterleaves R/G/B for free (no shuffle cost)
-      • 8-px/iter unroll keeps both load and FMA pipes fed
-      • rayon strip-split across both A78AE perf cores at 1080p (> 1M px threshold)
-    """
+def test_to_grayscale_f32_no_regression(arr_f32):
+    """f32 grayscale: gate kornia within 1.5× of cv2 — both hit the LPDDR5 BW ceiling."""
     c = _bench_fn(
         lambda: cv2.cvtColor(arr_f32, cv2.COLOR_RGB2GRAY),
         target_seconds=0.3,
@@ -192,14 +185,7 @@ def test_to_grayscale_f32_wins(arr_f32):
 
 
 def test_to_grayscale_u8_to_f32_wins(arr):
-    """Fused u8→f32 grayscale: one NEON pass reads 4× less data than f32→f32 path.
-
-    The fair cv2 competitor is the 2-step u8 pipeline (cvtColor → astype float32 / 255).
-    kornia wins because:
-      • single vld3q_u8 deinterleaves 16 pixels (48 bytes); avoids a separate astype alloc
-      • widens u8→u16→u32→f32 via vmovl chain + vfmaq with 1/255-baked weights
-      • rayon strip-split above 1M px; 1080p (2M px) hits 5-6× vs cv2 single-thread
-    """
+    """Fused u8→f32: kornia must be at least 2× faster than cv2's 2-step pipeline."""
     cv2_pipe = _bench_fn(
         lambda: cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY).astype(np.float32) / 255.0,
         target_seconds=0.3,

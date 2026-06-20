@@ -105,9 +105,8 @@ def main():
             "numpy":  lambda: arr_f32 @ W_GRAY,
             "kornia": lambda: kornia_imgproc.gray_from_rgb_f32(arr_f32),
         }),
-        # Fused u8→f32 race: reads u8 (6.2 MB vs 24.9 MB), 2.3× less total BW.
-        # Fair opponent is the equivalent cv2 pipeline: cast arr→f32, then cvtColor.
-        # kornia does it in one NEON pass (vld3_u8 + widen + FMA + vst1q_f32).
+        # Fused u8→f32: reads 6.2 MB u8 instead of 24.9 MB f32 — 2.3× less DRAM traffic.
+        # cv2_u8+cast is the fair baseline (same inputs/outputs, two separate passes).
         ("to_grayscale_u8_to_f32 (fused)", {
             "cv2_pipeline":  lambda: cv2.cvtColor(arr.astype(np.float32) / 255.0, cv2.COLOR_RGB2GRAY),
             "cv2_u8+cast":   lambda: cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY).astype(np.float32) / 255.0,
@@ -131,14 +130,13 @@ def main():
         results = compare(fns, target_seconds=0.5)
         print_table(f"{label} (1080p)", results)
         # speedup vs the best non-kornia runner
-        if "kornia" in results:
-            non_k_min = min(r.min_ms for n, r in results.items() if n != "kornia")
-            k_min = results["kornia"].min_ms
-            speedup = non_k_min / k_min  # >1 = kornia faster
-            winner = "kornia" if k_min == min(r.min_ms for r in results.values()) else (
-                min(((n, r.min_ms) for n, r in results.items()), key=lambda x: x[1])[0]
-            )
-            summary.append((label, winner, speedup))
+        non_k_min = min(r.min_ms for n, r in results.items() if n != "kornia")
+        k_min = results["kornia"].min_ms
+        speedup = non_k_min / k_min  # >1 = kornia faster
+        winner = "kornia" if k_min == min(r.min_ms for r in results.values()) else (
+            min(((n, r.min_ms) for n, r in results.items()), key=lambda x: x[1])[0]
+        )
+        summary.append((label, winner, speedup))
 
     # Summary table
     print("\n=== Summary (best-of-N, kornia speedup vs best competitor) ===")
