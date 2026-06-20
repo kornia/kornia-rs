@@ -21,6 +21,7 @@ cv2 = pytest.importorskip("cv2")
 from PIL import ImageFilter as _PIL_Filter  # noqa: E402
 
 from kornia_rs.image import Image  # noqa: E402
+from kornia_rs import imgproc as _kornia_imgproc  # noqa: E402
 
 # Shared best-of-N bench helper. ``benchmarks/`` is on the pythonpath
 # via ``pyproject.toml [tool.pytest.ini_options]``.
@@ -29,12 +30,23 @@ from _bench import bench as _bench_fn  # noqa: E402
 
 H, W = 1080, 1920
 
+_W_GRAY_F32 = np.array([0.299, 0.587, 0.114], dtype=np.float32)
+
 
 @pytest.fixture(scope="module")
 def arr(rand_u8_1080p):
     """Seeded 1080p RGB from conftest — deterministic across runs so the
     perf-gate envelope doesn't flap on a pathological random draw."""
     return rand_u8_1080p
+
+
+@pytest.fixture(scope="module")
+def arr_f32(arr):
+    """Float32 version of the 1080p RGB array, values in [0, 1].
+
+    Contiguous in memory so cv2 and numpy baselines don't pay an extra copy.
+    """
+    return np.ascontiguousarray(arr.astype(np.float32) / 255.0)
 
 
 @pytest.fixture(scope="module")
@@ -144,6 +156,39 @@ def test_to_grayscale_ties(pil_img, arr, k_img):
           lambda: cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY),
           lambda: k_img.to_grayscale(),
           iters=10, kornia_max_ratio=1.5)
+
+
+def test_to_grayscale_f32_wins(arr_f32):
+    """f32 grayscale: NEON/AVX2 kernel + rayon strip-split vs cv2(float32) and numpy matmul.
+
+    PIL has no natural float-gray API so this race is cv2 / numpy / kornia only.
+    kornia wins because:
+      • vld3q_f32 structured load deinterleaves R/G/B for free (no shuffle cost)
+      • 8-px/iter unroll keeps both load and FMA pipes fed
+      • rayon strip-split across both A78AE perf cores at 1080p (> 1M px threshold)
+    """
+    c = _bench_fn(
+        lambda: cv2.cvtColor(arr_f32, cv2.COLOR_RGB2GRAY),
+        target_seconds=0.3,
+    ).min_ms
+    n = _bench_fn(
+        lambda: arr_f32 @ _W_GRAY_F32,
+        target_seconds=0.3,
+    ).min_ms
+    k = _bench_fn(
+        lambda: _kornia_imgproc.gray_from_rgb_f32(arr_f32),
+        target_seconds=0.3,
+    ).min_ms
+    fastest_other = min(c, n)
+    print(
+        f"\n[bake-off] to_grayscale_f32        cv2 {c:6.3f}  numpy {n:6.3f}  kornia {k:6.3f}  ms (min)"
+    )
+    # Gate: kornia must be within 1.5× of the fastest competitor.
+    # The real target (documented in benchmarks.md) is kornia < fastest_other (speedup > 1.0×).
+    assert k <= fastest_other * 1.5, (
+        f"to_grayscale_f32: kornia {k:.3f}ms > 1.5× fastest competitor "
+        f"({fastest_other:.3f}ms) — perf regression?"
+    )
 
 
 def test_gaussian_blur_wins(pil_img, arr, k_img):

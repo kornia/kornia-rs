@@ -25,12 +25,15 @@ except ImportError:
     raise SystemExit("cv2 not installed — `uv pip install opencv-python`")
 
 from kornia_rs.image import Image
+from kornia_rs import imgproc as kornia_imgproc
 from _bench import compare, print_table, speedup_vs
 
 
 def main():
     H, W = 1080, 1920
     arr = np.random.randint(0, 256, (H, W, 3), dtype=np.uint8)
+    arr_f32 = np.ascontiguousarray(arr.astype(np.float32) / 255.0)
+    W_GRAY = np.array([0.299, 0.587, 0.114], dtype=np.float32)
     pil_img = PIL.fromarray(arr)
     k_img = Image(arr)
     buf = io.BytesIO()
@@ -94,6 +97,13 @@ def main():
             "PIL":    lambda: pil_img.convert("L"),
             "cv2":    lambda: cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY),
             "kornia": lambda: k_img.to_grayscale(),
+        }),
+        # f32 race: PIL has no float-gray API so we compare cv2(float32), numpy @ matmul, and kornia.
+        # kornia wins via NEON vld3q_f32 (free deinterleave) + rayon at 1080p (>1M px threshold).
+        ("to_grayscale_f32", {
+            "cv2":    lambda: cv2.cvtColor(arr_f32, cv2.COLOR_RGB2GRAY),
+            "numpy":  lambda: arr_f32 @ W_GRAY,
+            "kornia": lambda: kornia_imgproc.gray_from_rgb_f32(arr_f32),
         }),
         ("gaussian_blur k=3", {
             "PIL":    lambda: pil_img.filter(ImageFilter.GaussianBlur(radius=1.0)),

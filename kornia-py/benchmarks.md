@@ -171,7 +171,8 @@ Head-to-head ``Image`` API shootout against Pillow 12.2.0 and OpenCV 4.13.0 on t
 | gaussian_blur k=3 | 93.8 | 1.76 | **0.88** | **2.0×** | **kornia** |
 | encode PNG (compress_level=1, fdeflate) | 451 | 100 | **52.1** | **1.9×** | **kornia** |
 | encode TIFF | 2.47 | 76.6 | **1.63** | **1.4×** vs PIL / 47× vs cv2 | **kornia** |
-| to_grayscale | 1.49 | 0.32 | **0.23** | **1.4×** | **kornia** |
+| to_grayscale (u8) | 1.49 | 0.32 | **0.23** | **1.4×** | **kornia** |
+| to_grayscale_f32 | — | 0.83 (cv2) / 15.6 (numpy) | **0.89** | tied cv2 / **17.5×** vs numpy | **tied** |
 | crop 512² | 0.113 | 0.102 | **0.085** | **1.20×** | **kornia** |
 | encode JPEG q=95 (4:2:0) | 28.7 | 28.3 | 29.92 | 0.95× | **tied (libjpeg-turbo both)** |
 | decode JPEG | 77.4 | 75.4 | 39.64 | 1.00× | **tied (libjpeg-turbo both)** |
@@ -182,6 +183,7 @@ Notes on the wins:
 - **PNG encode 1.9× vs cv2.** kornia's ``encode("png", compress_level=1)`` hits the NEON / AVX2-accelerated ``fdeflate`` fast path in the ``png`` crate. cv2 uses libpng with zlib level 1.
 - **resize 4.4× vs cv2.** kornia's u8 fast-AA path beats both INTER_LANCZOS4 and PIL's LANCZOS at the same kernel.
 - **flip / blur / grayscale** are the imgproc kernels you'd expect to be fast (NEON `vld3q_u8`, binomial 5×5, `vmlal_u8` MAC chain).
+- **to_grayscale_f32 — tied with cv2, 17.5× vs numpy.** NEON `vld3q_f32` deinterleaves R/G/B for free, 8 px/iter FMA, rayon strip-split at 1080p. Both kornia and cv2 saturate the LPDDR5 bandwidth ceiling (~25 GB/s for 33 MB of f32 data). numpy's `arr @ W` uses general BLAS GEMM overhead tuned for large square matrices — completely the wrong code path for a 3-column skinny multiply.
 
 Notes on the ties:
 - **JPEG encode/decode** uses libjpeg-turbo on all three sides; the speed comes from the same library underneath, so we tie within a few percent. The ``Image.encode("jpeg")`` default subsampling is 4:2:0 (matches cv2/PIL at q≤95); pass ``subsampling="4:4:4"`` for synthetic / text content.

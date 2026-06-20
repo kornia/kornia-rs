@@ -81,7 +81,7 @@ macro_rules! impl_convert_with_bg {
 }
 
 // ===== RGB -> Gray Conversions =====
-impl_convert!(Rgbf32<A1> => Grayf32<A2>, crate::color::gray_from_rgb);
+impl_convert!(Rgbf32<A1> => Grayf32<A2>, crate::color::gray_from_rgb_f32);
 impl_convert!(Rgbf64<A1> => Grayf64<A2>, crate::color::gray_from_rgb);
 impl_convert!(Rgb8<A1> => Gray8<A2>, crate::color::gray_from_rgb_u8);
 
