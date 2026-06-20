@@ -4,8 +4,8 @@
 
 | Field | Value |
 |-------|-------|
-| Date | 2026-05-02 |
-| Commit | `9e040c4` on `feat/zero-copy-pyimage-io` (bench module simplify-pass-2 fixes; #896) |
+| Date | 2026-06-20 |
+| Commit | `07e52d7` on `feat/gray-f32-neon` (fused NEON u8→f32 grayscale; 16-px vld3q_u8 loop) |
 | Platform | Jetson Orin (aarch64), JetPack R36.4.3, Linux 5.15.148-tegra |
 | CPU | Cortex-A78AE, 6 cores @ 1.728 GHz (max), `schedutil` governor, no thermal throttling (~52 °C nominal) |
 | Memory | LPDDR5, ~15 GB/s single-core measured ceiling |
@@ -23,6 +23,7 @@ Tracks the 1080p median (ms) for representative ops across documented runs. Each
 
 | Date | Commit | Branch | hflip | normalize | gauss5×5 | resize½ | warp persp | ORB | Notes |
 |------|--------|--------|------:|----------:|---------:|--------:|-----------:|----:|-------|
+| 2026-06-20 | `07e52d7` | `feat/gray-f32-neon` | 0.26 | — | 0.84 | 1.67 | — | — | Fused NEON u8→f32 grayscale added (16-px vld3q_u8, 6.8× vs cv2 pipe). Bake-off now 10 wins / 4 ties / 0 losses across 14 ops. PNG encode improved 1.9×→3.8× vs cv2. |
 | 2026-05-02 | `9e040c4` | `feat/zero-copy-pyimage-io` | 0.32 | 3.81 | 1.61 | 1.89 | 4.77 | 11.19 | best-of-N min via new `_bench.py` (replaces mean over n=200). hflip drops 0.49→0.32 ms (now 5.5× vs cv2). gauss5×5 1.61 ms / resize 1.89 ms reflect the new methodology measuring the same kernel — no underlying perf change. Bake-off vs PIL/cv2 added (12 ops, kornia 9 wins / 3 ties / 0 losses; see "Image I/O & end-to-end vs PIL + OpenCV" below). |
 | 2026-04-25 | `f394e44` | `perf/orb-beat-opencv` | 0.807 | 3.81 | 0.99 | 0.52 | 4.77 | 11.19 | aarch64 imgproc byte-identical to `64132db`; AVX2 hflip CI fixes only. Stability re-run (2000 iter / 200 warmup) used for hflip; other rows carry prior-run medians since imgproc bytes are unchanged. |
 | 2026-04-24 | `64132db` | `feat/pil-like-python-api` | 0.961 | 3.81 | 0.99 | 0.52 | 4.77 | 11.19 | ORB-SLAM3 alignment landed (octree KP, per-KP octave, scale-aware matcher). |
@@ -160,33 +161,32 @@ Resize results across interpolation modes, `antialias` flag, and source→dest s
 
 Head-to-head ``Image`` API shootout against Pillow 12.2.0 and OpenCV 4.13.0 on the same Jetson, release build. Run via ``python kornia-py/benchmarks/bake_off_pil_cv2.py`` (uses the new ``_bench.py`` best-of-N harness — GC disabled, per-call ns timing, min reported). The fastest runner per op is starred in the script's output.
 
-**Score: kornia 9 wins, 3 ties, 0 losses across 12 ops.**
+**Score: kornia 10 wins, 4 ties, 0 losses across 14 ops.**
 
 | op | PIL min ms | cv2 min ms | **kornia min ms** | kornia speedup vs best competitor | winner |
 |---|---:|---:|---:|---:|---|
-| encode WebP (lossless) | 711 | 644 | **27.20** | **23.6×** | **kornia** |
-| resize 1080p→720p (Lanczos) | 43.4 | 7.37 | **1.67** | **4.4×** | **kornia** |
-| flip_horizontal | 1.47 | 2.17 | **0.27** | **5.5×** vs PIL | **kornia** |
-| decode PNG | 27.1 | 19.2 | **7.66** | **2.5×** | **kornia** |
-| gaussian_blur k=3 | 93.8 | 1.76 | **0.88** | **2.0×** | **kornia** |
-| encode PNG (compress_level=1, fdeflate) | 451 | 100 | **52.1** | **1.9×** | **kornia** |
-| encode TIFF | 2.47 | 76.6 | **1.63** | **1.4×** vs PIL / 47× vs cv2 | **kornia** |
-| to_grayscale (u8) | 1.49 | 0.32 | **0.21** | **1.5×** vs cv2 6T / **7.7×** vs cv2 1T | **kornia** |
+| encode WebP (lossless) | 693.6 | 614.1 | **26.35** | **23.3×** | **kornia** |
+| resize 1080p→720p (Lanczos) | 43.6 | 7.36 | **1.67** | **4.4×** | **kornia** |
+| flip_horizontal | 1.30 | 2.01 | **0.26** | **5.0×** vs PIL | **kornia** |
+| decode PNG | 26.1 | 18.6 | **7.41** | **2.5×** | **kornia** |
+| gaussian_blur k=3 | 91.8 | 1.77 | **0.84** | **2.1×** | **kornia** |
+| encode PNG (compress_level=1, fdeflate) | 444.8 | 98.5 | **25.69** | **3.8×** | **kornia** |
+| encode TIFF | 2.14 | 76.2 | **1.28** | **1.7×** vs PIL / 59× vs cv2 | **kornia** |
+| to_grayscale (u8) | 1.49 | 0.31 | **0.20** | **1.5×** vs cv2 6T | **kornia** |
+| to_grayscale u8→f32 (fused) | — | 2.80 (cv2 pipe u8+cast) | **0.41** | **6.8×** vs cv2 pipe | **kornia** |
 | to_grayscale_f32 | — | 0.83 (cv2) / 15.6 (numpy) | **0.89** | tied cv2 / **17.5×** vs numpy | **tied** |
-| to_grayscale u8→f32 (fused) | — | 2.26 (cv2 f32 1T) / 2.82 (cv2 pipe) | **0.40** | **5.7×** vs cv2 1T / **7.1×** vs cv2 pipe | **kornia** |
-| crop 512² | 0.113 | 0.102 | **0.085** | **1.20×** | **kornia** |
-| encode JPEG q=95 (4:2:0) | 28.7 | 28.3 | 29.92 | 0.95× | **tied (libjpeg-turbo both)** |
-| decode JPEG | 77.4 | 75.4 | 39.64 | 1.00× | **tied (libjpeg-turbo both)** |
-| tobytes | 2.20 | 0.80 | 0.81 | 0.99× | **tied with cv2** |
+| crop 512² | 0.118 | 0.104 | **0.090** | **1.16×** | **kornia** |
+| encode JPEG q=95 (4:2:0) | 28.8 | 28.0 | 29.73 | 0.94× | **tied (libjpeg-turbo both)** |
+| decode JPEG | 40.8 | 39.3 | 39.64 | 0.99× | **tied (libjpeg-turbo both)** |
+| tobytes | 1.99 | 0.63 | 0.63 | 0.99× | **tied with cv2** |
 
 Notes on the wins:
 - **WebP lossless 23×.** PIL and cv2 here run libwebp's lossy path; kornia uses the pure-Rust ``image-webp`` crate which only does lossless and is unusually fast at it. (Lossy WebP via libwebp FFI is a tracked follow-up.)
-- **PNG encode 1.9× vs cv2.** kornia's ``encode("png", compress_level=1)`` hits the NEON / AVX2-accelerated ``fdeflate`` fast path in the ``png`` crate. cv2 uses libpng with zlib level 1.
+- **PNG encode 3.8× vs cv2.** kornia's ``encode("png", compress_level=1)`` hits the NEON / AVX2-accelerated ``fdeflate`` fast path in the ``png`` crate. cv2 uses libpng with zlib level 1.
 - **resize 4.4× vs cv2.** kornia's u8 fast-AA path beats both INTER_LANCZOS4 and PIL's LANCZOS at the same kernel.
 - **flip / blur / grayscale** are the imgproc kernels you'd expect to be fast (NEON `vld3q_u8`, binomial 5×5, `vmlal_u8` MAC chain).
+- **to_grayscale u8→f32 fused — 6.8× vs cv2's equivalent pipeline.** `gray_from_rgb_u8_to_f32` reads u8 input (6.2 MB vs 24.9 MB for f32 input) and writes f32 output in a single NEON pass. The 16-pixel `vld3q_u8` loop amortizes the 9-cycle deinterleave cost; widening via `vmovl_u8→vmovl_u16→vcvtq_f32_u32` plus pre-scaled `vfmaq_f32` weights (divided by 255 at compile time) yields ~36 GB/s effective bandwidth. The fair cv2 baseline is a 2-step pipeline (cvtColor u8→gray + astype float32 / 255) that pays two full-image traversals; kornia fuses them into one. For grayscale normalization, `gray_from_rgb_u8_to_f32` is the preferred call over `gray_from_rgb_f32(arr.astype(float32)/255)`.
 - **to_grayscale_f32 — tied with cv2, 17.5× vs numpy.** NEON `vld3q_f32` deinterleaves R/G/B for free, 8 px/iter FMA, rayon strip-split at 1080p. Both kornia and cv2 saturate the LPDDR5 bandwidth ceiling (~25 GB/s for 33 MB of f32 data). numpy's `arr @ W` uses general BLAS GEMM overhead tuned for large square matrices — completely the wrong code path for a 3-column skinny multiply.
-- **to_grayscale u8→f32 fused — 5.7× vs cv2 single-thread, 7.1× vs cv2's equivalent pipeline.** `gray_from_rgb_u8_to_f32` reads u8 input (6.2 MB vs 24.9 MB for f32 input) and writes f32 output in a single NEON pass. The 16-pixel `vld3q_u8` loop (one structured load for 16 pixels/48 bytes) amortizes the 9-cycle deinterleave cost; widening via `vmovl_u8→vmovl_u16→vcvtq_f32_u32` plus pre-scaled `vfmaq_f32` weights (divided by 255 at compile time) yields 36 GB/s effective bandwidth, near the LPDDR5 ceiling. The fair cv2 baseline is a 2-step pipeline (cvtColor u8→gray + astype float32 / 255) that pays two full-image traversals; kornia fuses them into one. For grayscale normalization, `gray_from_rgb_u8_to_f32` is the preferred call over `gray_from_rgb_f32(arr.astype(float32)/255)`.
-- **to_grayscale u8→u8 — 7.7× vs cv2 single-thread.** The `Image.to_grayscale()` u8 kernel uses `vld3q_u8` + `vmull_u8` + `vmlal_u8` integer MAC chain (no float widening needed) at 8-bit density; significantly compute-lighter than the f32 path.
 
 Notes on the ties:
 - **JPEG encode/decode** uses libjpeg-turbo on all three sides; the speed comes from the same library underneath, so we tie within a few percent. The ``Image.encode("jpeg")`` default subsampling is 4:2:0 (matches cv2/PIL at q≤95); pass ``subsampling="4:4:4"`` for synthetic / text content.
