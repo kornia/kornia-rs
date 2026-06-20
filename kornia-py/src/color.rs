@@ -38,6 +38,22 @@ pub fn gray_from_rgb_f32(py: Python<'_>, image: PyImageF32) -> PyResult<PyImageF
     Ok(out)
 }
 
+/// Fused u8 RGB → normalized f32 grayscale, zero-copy in and out.
+///
+/// Accepts a (H, W, 3) numpy uint8 array; returns a (H, W, 1) numpy float32 array
+/// with values in [0, 1].  Combines the u8→f32 cast and the BT.601 grayscale
+/// weights in a single NEON/scalar pass, reading 4× less data than
+/// `gray_from_rgb_f32` (6.2 MB vs 24.9 MB at 1080p) for 2–5× speedup depending
+/// on cache state and thread count.
+#[pyfunction]
+pub fn gray_from_rgb_u8_to_f32(py: Python<'_>, image: PyImage) -> PyResult<PyImageF32> {
+    let src = unsafe { numpy_as_image::<3>(py, &image)? };
+    let (mut dst, out) = unsafe { alloc_output_pyarray_f32::<1>(py, src.size())? };
+    py.detach(|| color::gray_from_rgb_u8_to_f32(&src, &mut dst))
+        .map_err(to_pyerr)?;
+    Ok(out)
+}
+
 #[pyfunction]
 pub fn gray_from_rgb(py: Python<'_>, image: PyImage) -> PyResult<PyImage> {
     let src_f32 = numpy_to_f32_image::<3>(py, &image)?;

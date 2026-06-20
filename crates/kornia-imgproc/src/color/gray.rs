@@ -598,6 +598,207 @@ fn rgb_to_gray_f32_scalar(src: &[f32], dst: &mut [f32], npixels: usize) {
     }
 }
 
+// ===== RGB u8 → Gray f32 (fused normalize) ==========================================
+
+/// Convert a u8 RGB image to normalized f32 grayscale in a single pass.
+///
+/// `Y = (0.299 * R + 0.587 * G + 0.114 * B) / 255`
+///
+/// This fused kernel reads u8 pixels (1 byte/channel) and writes f32 grayscale
+/// values ∈ [0, 1]. Because the input is 4× smaller than `gray_from_rgb_f32`,
+/// total memory traffic drops from 33 MB → 14.5 MB at 1080p, enabling
+/// significantly higher throughput on bandwidth-limited hardware.
+///
+/// Dispatches to:
+/// - **NEON** (aarch64): `vld3_u8` + widen to f32 + `vfmaq_f32`, 8 px/iter.
+/// - **Scalar** fallback on all other targets.
+///
+/// Large images (> 1 M px) are split across Rayon threads.
+///
+/// # Errors
+///
+/// Returns [`ImageError::InvalidImageSize`] if `src` and `dst` sizes differ.
+///
+/// # Example
+///
+/// ```
+/// use kornia_image::{Image, ImageSize, allocator::CpuAllocator};
+/// use kornia_imgproc::color::gray_from_rgb_u8_to_f32;
+///
+/// let src = Image::<u8, 3, _>::new(
+///     ImageSize { width: 4, height: 2 },
+///     vec![255u8, 0, 0,  0, 255, 0,  0, 0, 255,  128, 128, 128,
+///          255,   0, 0,  0, 255, 0,  0, 0, 255,  128, 128, 128],
+///     CpuAllocator,
+/// ).unwrap();
+/// let mut dst = Image::<f32, 1, _>::from_size_val(src.size(), 0.0, CpuAllocator).unwrap();
+/// gray_from_rgb_u8_to_f32(&src, &mut dst).unwrap();
+/// // Pure red → 0.299/1.0 ≈ 0.299
+/// assert!((dst.as_slice()[0] - 0.299).abs() < 1e-4);
+/// ```
+pub fn gray_from_rgb_u8_to_f32<A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<u8, 3, A1>,
+    dst: &mut Image<f32, 1, A2>,
+) -> Result<(), ImageError> {
+    if src.size() != dst.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.cols(),
+            src.rows(),
+            dst.cols(),
+            dst.rows(),
+        ));
+    }
+    let npix = src.rows() * src.cols();
+    rgb_u8_to_gray_f32(src.as_slice(), dst.as_slice_mut(), npix);
+    Ok(())
+}
+
+/// Slice-level dispatch: rayon strip-split above PAR_THRESHOLD, else single-thread kernel.
+pub fn rgb_u8_to_gray_f32(src: &[u8], dst: &mut [f32], npixels: usize) {
+    if npixels < PAR_THRESHOLD {
+        rgb_u8_to_gray_f32_kernel(src, dst, npixels);
+        return;
+    }
+    use rayon::prelude::*;
+    let nthreads = rayon::current_num_threads().max(1);
+    let strip = npixels.div_ceil(nthreads).next_multiple_of(16);
+    dst.par_chunks_mut(strip).enumerate().for_each(|(i, dchunk)| {
+        let start = i * strip;
+        let n = dchunk.len();
+        let schunk = &src[start * 3..start * 3 + n * 3];
+        rgb_u8_to_gray_f32_kernel(schunk, dchunk, n);
+    });
+}
+
+/// Kernel dispatcher: NEON (aarch64) or scalar fallback.
+#[inline]
+fn rgb_u8_to_gray_f32_kernel(src: &[u8], dst: &mut [f32], npixels: usize) {
+    #[cfg(target_arch = "aarch64")]
+    {
+        rgb_u8_to_gray_f32_neon(src, dst, npixels);
+        return;
+    }
+    #[allow(unreachable_code)]
+    rgb_u8_to_gray_f32_scalar(src, dst, npixels);
+}
+
+/// NEON fused u8→f32 grayscale: 16 pixels per iteration.
+///
+/// `vld3q_u8` reads 16 interleaved RGB pixels (48 bytes) and deinterleaves
+/// them into R, G, B `uint8x16_t` lanes in a single instruction, then widens
+/// each channel through u8→u16→u32→f32 in three stages.  Processing 16 pixels
+/// per outer iteration amortizes the structured-load cost (9-cycle latency,
+/// throughput ~3 cycles) across 4× more widening+FMA work than an 8-pixel loop,
+/// keeping the load unit and FMA units better fed.
+///
+/// Inner structure per 16 pixels:
+///   1 vld3q_u8 → 3 channels × (2 vmovl_u8 + 4 vmovl_u16 + 4 vcvtq_f32_u32)
+///   + 12 vfmaq_f32 + 4 vst1q_f32
+///
+/// Followed by an 8-pixel step (vld3_u8) and scalar tail.
+///
+/// Memory traffic: 48 bytes in + 64 bytes out per 16 pixels = 7 bytes/pixel,
+/// vs 16 bytes/pixel for the f32→f32 path.
+#[cfg(target_arch = "aarch64")]
+fn rgb_u8_to_gray_f32_neon(src: &[u8], dst: &mut [f32], npixels: usize) {
+    use std::arch::aarch64::*;
+    unsafe {
+        // Weights pre-scaled by 1/255 so the output is in [0, 1].
+        let wr = vdupq_n_f32(RW_F32 / 255.0);
+        let wg = vdupq_n_f32(GW_F32 / 255.0);
+        let wb = vdupq_n_f32(BW_F32 / 255.0);
+        let sp = src.as_ptr();
+        let dp = dst.as_mut_ptr();
+
+        // Macro: widen a uint8x8_t to float32x4_t (two calls give low + high halves).
+        macro_rules! u8x8_to_f32x4 {
+            ($v:expr) => {
+                vcvtq_f32_u32(vmovl_u16(vget_low_u16(vmovl_u8($v))))
+            };
+        }
+        macro_rules! u8x8_hi_to_f32x4 {
+            ($v:expr) => {
+                vcvtq_f32_u32(vmovl_u16(vget_high_u16(vmovl_u8($v))))
+            };
+        }
+
+        // 16-pixel bulk: one vld3q_u8 covers 48 source bytes.
+        let bulk16 = npixels & !15;
+        let mut i = 0usize;
+        while i < bulk16 {
+            let v = vld3q_u8(sp.add(i * 3)); // R[0..15], G[0..15], B[0..15]
+
+            let r_lo = vget_low_u8(v.0);
+            let r_hi = vget_high_u8(v.0);
+            let g_lo = vget_low_u8(v.1);
+            let g_hi = vget_high_u8(v.1);
+            let b_lo = vget_low_u8(v.2);
+            let b_hi = vget_high_u8(v.2);
+
+            // Pixels 0-3
+            let y0 = vfmaq_f32(vfmaq_f32(vmulq_f32(u8x8_to_f32x4!(b_lo), wb),
+                                           u8x8_to_f32x4!(g_lo), wg),
+                                u8x8_to_f32x4!(r_lo), wr);
+            // Pixels 4-7
+            let y1 = vfmaq_f32(vfmaq_f32(vmulq_f32(u8x8_hi_to_f32x4!(b_lo), wb),
+                                           u8x8_hi_to_f32x4!(g_lo), wg),
+                                u8x8_hi_to_f32x4!(r_lo), wr);
+            // Pixels 8-11
+            let y2 = vfmaq_f32(vfmaq_f32(vmulq_f32(u8x8_to_f32x4!(b_hi), wb),
+                                           u8x8_to_f32x4!(g_hi), wg),
+                                u8x8_to_f32x4!(r_hi), wr);
+            // Pixels 12-15
+            let y3 = vfmaq_f32(vfmaq_f32(vmulq_f32(u8x8_hi_to_f32x4!(b_hi), wb),
+                                           u8x8_hi_to_f32x4!(g_hi), wg),
+                                u8x8_hi_to_f32x4!(r_hi), wr);
+
+            vst1q_f32(dp.add(i), y0);
+            vst1q_f32(dp.add(i + 4), y1);
+            vst1q_f32(dp.add(i + 8), y2);
+            vst1q_f32(dp.add(i + 12), y3);
+            i += 16;
+        }
+
+        // 8-pixel remainder step
+        if i + 8 <= npixels {
+            let v = vld3_u8(sp.add(i * 3));
+            let r16 = vmovl_u8(v.0);
+            let g16 = vmovl_u8(v.1);
+            let b16 = vmovl_u8(v.2);
+            let y0 = vfmaq_f32(
+                vfmaq_f32(vmulq_f32(vcvtq_f32_u32(vmovl_u16(vget_low_u16(b16))), wb),
+                          vcvtq_f32_u32(vmovl_u16(vget_low_u16(g16))), wg),
+                vcvtq_f32_u32(vmovl_u16(vget_low_u16(r16))), wr);
+            let y1 = vfmaq_f32(
+                vfmaq_f32(vmulq_f32(vcvtq_f32_u32(vmovl_u16(vget_high_u16(b16))), wb),
+                          vcvtq_f32_u32(vmovl_u16(vget_high_u16(g16))), wg),
+                vcvtq_f32_u32(vmovl_u16(vget_high_u16(r16))), wr);
+            vst1q_f32(dp.add(i), y0);
+            vst1q_f32(dp.add(i + 4), y1);
+            i += 8;
+        }
+
+        // Scalar tail (0–7 remaining pixels)
+        while i < npixels {
+            let si = i * 3;
+            *dp.add(i) = *sp.add(si) as f32 * (RW_F32 / 255.0)
+                + *sp.add(si + 1) as f32 * (GW_F32 / 255.0)
+                + *sp.add(si + 2) as f32 * (BW_F32 / 255.0);
+            i += 1;
+        }
+    }
+}
+
+/// Portable scalar fallback.
+fn rgb_u8_to_gray_f32_scalar(src: &[u8], dst: &mut [f32], npixels: usize) {
+    for (i, out) in dst.iter_mut().take(npixels).enumerate() {
+        let si = i * 3;
+        *out = src[si] as f32 * (RW_F32 / 255.0)
+            + src[si + 1] as f32 * (GW_F32 / 255.0)
+            + src[si + 2] as f32 * (BW_F32 / 255.0);
+    }
+}
+
 // ===== Other conversions ===========================================================
 
 /// Convert a grayscale image to an RGB image by replicating the grayscale value across all three channels.
@@ -968,6 +1169,83 @@ mod tests {
             assert!((a - b).abs() < 1e-5, "pixel {i}: SIMD {a} != generic {b}");
         }
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_gray_from_rgb_u8_to_f32_correctness() -> Result<(), Box<dyn std::error::Error>> {
+        // Verify fused kernel matches reference pixel-by-pixel (tol 1e-4 for u8 rounding).
+        let pixels: Vec<u8> = (0u8..=255).flat_map(|v| [v, v / 2, 255 - v]).collect();
+        let npix = pixels.len() / 3;
+        let src = Image::new(
+            ImageSize { width: npix, height: 1 },
+            pixels,
+            CpuAllocator,
+        )?;
+        let mut dst = Image::<f32, 1, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
+        super::gray_from_rgb_u8_to_f32(&src, &mut dst)?;
+
+        for (i, (&r, &g, &b)) in src.as_slice().chunks(3)
+            .map(|c| (&c[0], &c[1], &c[2]))
+            .enumerate()
+        {
+            let expected = r as f32 * (super::RW_F32 / 255.0)
+                + g as f32 * (super::GW_F32 / 255.0)
+                + b as f32 * (super::BW_F32 / 255.0);
+            let got = dst.as_slice()[i];
+            assert!(
+                (got - expected).abs() < 1e-5,
+                "pixel {i}: got {got} expected {expected}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_gray_from_rgb_u8_to_f32_tail() -> Result<(), Box<dyn std::error::Error>> {
+        // 13 pixels exercises NEON 8-pixel bulk + 5-pixel scalar tail.
+        let npix = 13usize;
+        let data: Vec<u8> = (0..npix * 3).map(|i| (i * 7 % 256) as u8).collect();
+        let src = Image::new(
+            ImageSize { width: npix, height: 1 },
+            data,
+            CpuAllocator,
+        )?;
+        let mut dst = Image::<f32, 1, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
+        super::gray_from_rgb_u8_to_f32(&src, &mut dst)?;
+        for (i, (&r, &g, &b)) in src.as_slice().chunks(3)
+            .map(|c| (&c[0], &c[1], &c[2]))
+            .enumerate()
+        {
+            let expected = r as f32 * (super::RW_F32 / 255.0)
+                + g as f32 * (super::GW_F32 / 255.0)
+                + b as f32 * (super::BW_F32 / 255.0);
+            assert!((dst.as_slice()[i] - expected).abs() < 1e-5, "pixel {i}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_gray_from_rgb_u8_to_f32_large() -> Result<(), Box<dyn std::error::Error>> {
+        // 1024×1025 triggers the rayon strip-split path.
+        let npix = 1024 * 1025;
+        let data: Vec<u8> = (0..npix * 3).map(|i| (i * 3 % 256) as u8).collect();
+        let src = Image::new(
+            ImageSize { width: 1024, height: 1025 },
+            data,
+            CpuAllocator,
+        )?;
+        let mut dst = Image::<f32, 1, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
+        super::gray_from_rgb_u8_to_f32(&src, &mut dst)?;
+        // Spot-check first, middle, last pixels
+        for idx in [0, npix / 2, npix - 1] {
+            let si = idx * 3;
+            let s = src.as_slice();
+            let expected = s[si] as f32 * (super::RW_F32 / 255.0)
+                + s[si + 1] as f32 * (super::GW_F32 / 255.0)
+                + s[si + 2] as f32 * (super::BW_F32 / 255.0);
+            assert!((dst.as_slice()[idx] - expected).abs() < 1e-5, "pixel {idx}");
+        }
         Ok(())
     }
 }

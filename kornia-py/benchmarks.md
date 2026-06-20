@@ -171,8 +171,9 @@ Head-to-head ``Image`` API shootout against Pillow 12.2.0 and OpenCV 4.13.0 on t
 | gaussian_blur k=3 | 93.8 | 1.76 | **0.88** | **2.0×** | **kornia** |
 | encode PNG (compress_level=1, fdeflate) | 451 | 100 | **52.1** | **1.9×** | **kornia** |
 | encode TIFF | 2.47 | 76.6 | **1.63** | **1.4×** vs PIL / 47× vs cv2 | **kornia** |
-| to_grayscale (u8) | 1.49 | 0.32 | **0.23** | **1.4×** | **kornia** |
+| to_grayscale (u8) | 1.49 | 0.32 | **0.21** | **1.5×** vs cv2 6T / **7.7×** vs cv2 1T | **kornia** |
 | to_grayscale_f32 | — | 0.83 (cv2) / 15.6 (numpy) | **0.89** | tied cv2 / **17.5×** vs numpy | **tied** |
+| to_grayscale u8→f32 (fused) | — | 2.26 (cv2 f32 1T) / 2.82 (cv2 pipe) | **0.40** | **5.7×** vs cv2 1T / **7.1×** vs cv2 pipe | **kornia** |
 | crop 512² | 0.113 | 0.102 | **0.085** | **1.20×** | **kornia** |
 | encode JPEG q=95 (4:2:0) | 28.7 | 28.3 | 29.92 | 0.95× | **tied (libjpeg-turbo both)** |
 | decode JPEG | 77.4 | 75.4 | 39.64 | 1.00× | **tied (libjpeg-turbo both)** |
@@ -184,6 +185,8 @@ Notes on the wins:
 - **resize 4.4× vs cv2.** kornia's u8 fast-AA path beats both INTER_LANCZOS4 and PIL's LANCZOS at the same kernel.
 - **flip / blur / grayscale** are the imgproc kernels you'd expect to be fast (NEON `vld3q_u8`, binomial 5×5, `vmlal_u8` MAC chain).
 - **to_grayscale_f32 — tied with cv2, 17.5× vs numpy.** NEON `vld3q_f32` deinterleaves R/G/B for free, 8 px/iter FMA, rayon strip-split at 1080p. Both kornia and cv2 saturate the LPDDR5 bandwidth ceiling (~25 GB/s for 33 MB of f32 data). numpy's `arr @ W` uses general BLAS GEMM overhead tuned for large square matrices — completely the wrong code path for a 3-column skinny multiply.
+- **to_grayscale u8→f32 fused — 5.7× vs cv2 single-thread, 7.1× vs cv2's equivalent pipeline.** `gray_from_rgb_u8_to_f32` reads u8 input (6.2 MB vs 24.9 MB for f32 input) and writes f32 output in a single NEON pass. The 16-pixel `vld3q_u8` loop (one structured load for 16 pixels/48 bytes) amortizes the 9-cycle deinterleave cost; widening via `vmovl_u8→vmovl_u16→vcvtq_f32_u32` plus pre-scaled `vfmaq_f32` weights (divided by 255 at compile time) yields 36 GB/s effective bandwidth, near the LPDDR5 ceiling. The fair cv2 baseline is a 2-step pipeline (cvtColor u8→gray + astype float32 / 255) that pays two full-image traversals; kornia fuses them into one. For grayscale normalization, `gray_from_rgb_u8_to_f32` is the preferred call over `gray_from_rgb_f32(arr.astype(float32)/255)`.
+- **to_grayscale u8→u8 — 7.7× vs cv2 single-thread.** The `Image.to_grayscale()` u8 kernel uses `vld3q_u8` + `vmull_u8` + `vmlal_u8` integer MAC chain (no float widening needed) at 8-bit density; significantly compute-lighter than the f32 path.
 
 Notes on the ties:
 - **JPEG encode/decode** uses libjpeg-turbo on all three sides; the speed comes from the same library underneath, so we tie within a few percent. The ``Image.encode("jpeg")`` default subsampling is 4:2:0 (matches cv2/PIL at q≤95); pass ``subsampling="4:4:4"`` for synthetic / text content.

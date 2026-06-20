@@ -191,6 +191,32 @@ def test_to_grayscale_f32_wins(arr_f32):
     )
 
 
+def test_to_grayscale_u8_to_f32_wins(arr):
+    """Fused u8→f32 grayscale: one NEON pass reads 4× less data than f32→f32 path.
+
+    The fair cv2 competitor is the 2-step u8 pipeline (cvtColor → astype float32 / 255).
+    kornia wins because:
+      • single vld3q_u8 deinterleaves 16 pixels (48 bytes); avoids a separate astype alloc
+      • widens u8→u16→u32→f32 via vmovl chain + vfmaq with 1/255-baked weights
+      • rayon strip-split above 1M px; 1080p (2M px) hits 5-6× vs cv2 single-thread
+    """
+    cv2_pipe = _bench_fn(
+        lambda: cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY).astype(np.float32) / 255.0,
+        target_seconds=0.3,
+    ).min_ms
+    k = _bench_fn(
+        lambda: _kornia_imgproc.gray_from_rgb_u8_to_f32(arr),
+        target_seconds=0.3,
+    ).min_ms
+    print(
+        f"\n[bake-off] to_grayscale_u8_to_f32  cv2_pipe {cv2_pipe:6.3f}  kornia {k:6.3f}  ms (min)"
+    )
+    assert k <= cv2_pipe * 0.5, (
+        f"gray_from_rgb_u8_to_f32: kornia {k:.3f}ms not at least 2× faster than cv2 pipe "
+        f"({cv2_pipe:.3f}ms) — perf regression?"
+    )
+
+
 def test_gaussian_blur_wins(pil_img, arr, k_img):
     _race("gaussian_blur k=3",
           lambda: pil_img.filter(_PIL_Filter.GaussianBlur(radius=1.0)),
