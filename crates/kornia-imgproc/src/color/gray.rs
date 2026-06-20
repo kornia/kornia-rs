@@ -14,6 +14,36 @@ const BW_F32: f32 = 0.114;
 /// (e.g. 1080p ≈ 2M px) strip-splitting across available threads pays off.
 const PAR_THRESHOLD: usize = 1024 * 1024;
 
+/// Split `src`/`dst` into strips and run `kernel` on each strip in parallel.
+///
+/// `align` is the SIMD loop width (pixels) so strip boundaries never cut a bulk
+/// iteration in half.  All gray paths share this scaffold; only the element types,
+/// alignment multiple, and kernel differ.
+fn par_strip_dispatch<S, D>(
+    src: &[S],
+    dst: &mut [D],
+    npixels: usize,
+    align: usize,
+    kernel: impl Fn(&[S], &mut [D], usize) + Send + Sync,
+) where
+    S: Sync,
+    D: Send,
+{
+    if npixels < PAR_THRESHOLD {
+        kernel(src, dst, npixels);
+        return;
+    }
+    use rayon::prelude::*;
+    let nthreads = rayon::current_num_threads().max(1);
+    let strip = npixels.div_ceil(nthreads).next_multiple_of(align);
+    dst.par_chunks_mut(strip).enumerate().for_each(|(i, dchunk)| {
+        let start = i * strip;
+        let n = dchunk.len();
+        let schunk = &src[start * 3..start * 3 + n * 3];
+        kernel(schunk, dchunk, n);
+    });
+}
+
 /// Convert an RGB image to grayscale using the formula:
 ///
 /// Y = 0.299 * R + 0.587 * G + 0.114 * B
@@ -119,27 +149,8 @@ pub fn gray_from_rgb_u8<A1: ImageAllocator, A2: ImageAllocator>(
 /// Parallelized over row-strips for large images; single-threaded SIMD below
 /// the threshold to avoid rayon dispatch overhead.
 pub fn rgb_to_gray_u8(src: &[u8], dst: &mut [u8], npixels: usize) {
-    if npixels < PAR_THRESHOLD {
-        rgb_to_gray_u8_kernel(src, dst, npixels);
-        return;
-    }
-
-    use rayon::prelude::*;
-    // Pick strip size so strips are cache-friendly but large enough to amortize
-    // rayon overhead. 32-pixel alignment keeps the SIMD fast-path intact.
-    let nthreads = rayon::current_num_threads().max(1);
-    let strip = npixels.div_ceil(nthreads).next_multiple_of(32);
-
-    dst.par_chunks_mut(strip)
-        .enumerate()
-        .for_each(|(i, dchunk)| {
-            let start = i * strip;
-            let n = dchunk.len();
-            let sstart = start * 3;
-            let send = sstart + n * 3;
-            let schunk = &src[sstart..send];
-            rgb_to_gray_u8_kernel(schunk, dchunk, n);
-        });
+    // 32-pixel alignment keeps the SIMD bulk loop (2× vld3q_u8) intact at strip boundaries.
+    par_strip_dispatch(src, dst, npixels, 32, rgb_to_gray_u8_kernel);
 }
 
 /// Kernel dispatcher: NEON (aarch64), AVX2 (x86_64), or scalar fallback.
@@ -417,24 +428,8 @@ pub fn gray_from_rgb_f32<A1: ImageAllocator, A2: ImageAllocator>(
 /// Parallelized over row-strips for large images (> [`PAR_THRESHOLD`] px); single-threaded
 /// SIMD below the threshold to avoid rayon dispatch overhead.
 pub fn rgb_to_gray_f32(src: &[f32], dst: &mut [f32], npixels: usize) {
-    if npixels < PAR_THRESHOLD {
-        rgb_to_gray_f32_kernel(src, dst, npixels);
-        return;
-    }
-
-    use rayon::prelude::*;
     // 8-pixel alignment keeps both NEON (8 px/iter) and AVX2 (8 px/iter) tails intact.
-    let nthreads = rayon::current_num_threads().max(1);
-    let strip = npixels.div_ceil(nthreads).next_multiple_of(8);
-
-    dst.par_chunks_mut(strip)
-        .enumerate()
-        .for_each(|(i, dchunk)| {
-            let start = i * strip;
-            let n = dchunk.len();
-            let schunk = &src[start * 3..start * 3 + n * 3];
-            rgb_to_gray_f32_kernel(schunk, dchunk, n);
-        });
+    par_strip_dispatch(src, dst, npixels, 8, rgb_to_gray_f32_kernel);
 }
 
 /// Kernel dispatcher: NEON (aarch64), AVX2+FMA (x86_64), or scalar fallback.
@@ -653,19 +648,8 @@ pub fn gray_from_rgb_u8_to_f32<A1: ImageAllocator, A2: ImageAllocator>(
 
 /// Slice-level dispatch: rayon strip-split above PAR_THRESHOLD, else single-thread kernel.
 pub fn rgb_u8_to_gray_f32(src: &[u8], dst: &mut [f32], npixels: usize) {
-    if npixels < PAR_THRESHOLD {
-        rgb_u8_to_gray_f32_kernel(src, dst, npixels);
-        return;
-    }
-    use rayon::prelude::*;
-    let nthreads = rayon::current_num_threads().max(1);
-    let strip = npixels.div_ceil(nthreads).next_multiple_of(16);
-    dst.par_chunks_mut(strip).enumerate().for_each(|(i, dchunk)| {
-        let start = i * strip;
-        let n = dchunk.len();
-        let schunk = &src[start * 3..start * 3 + n * 3];
-        rgb_u8_to_gray_f32_kernel(schunk, dchunk, n);
-    });
+    // 16-pixel alignment keeps the vld3q_u8 bulk loop intact at strip boundaries.
+    par_strip_dispatch(src, dst, npixels, 16, rgb_u8_to_gray_f32_kernel);
 }
 
 /// Kernel dispatcher: NEON (aarch64) or scalar fallback.
@@ -731,17 +715,8 @@ fn rgb_u8_to_gray_f32_neon(src: &[u8], dst: &mut [f32], npixels: usize) {
         // 8-pixel remainder step
         if i + 8 <= npixels {
             let v = vld3_u8(sp.add(i * 3));
-            let r16 = vmovl_u8(v.0);
-            let g16 = vmovl_u8(v.1);
-            let b16 = vmovl_u8(v.2);
-            let y0 = vfmaq_f32(
-                vfmaq_f32(vmulq_f32(vcvtq_f32_u32(vmovl_u16(vget_low_u16(b16))), wb),
-                          vcvtq_f32_u32(vmovl_u16(vget_low_u16(g16))), wg),
-                vcvtq_f32_u32(vmovl_u16(vget_low_u16(r16))), wr);
-            let y1 = vfmaq_f32(
-                vfmaq_f32(vmulq_f32(vcvtq_f32_u32(vmovl_u16(vget_high_u16(b16))), wb),
-                          vcvtq_f32_u32(vmovl_u16(vget_high_u16(g16))), wg),
-                vcvtq_f32_u32(vmovl_u16(vget_high_u16(r16))), wr);
+            let y0 = vfmaq_f32(vfmaq_f32(vmulq_f32(lo_f32!(v.2), wb), lo_f32!(v.1), wg), lo_f32!(v.0), wr);
+            let y1 = vfmaq_f32(vfmaq_f32(vmulq_f32(hi_f32!(v.2), wb), hi_f32!(v.1), wg), hi_f32!(v.0), wr);
             vst1q_f32(dp.add(i), y0);
             vst1q_f32(dp.add(i + 4), y1);
             i += 8;
