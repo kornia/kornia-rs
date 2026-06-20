@@ -6,6 +6,10 @@ const RW: f64 = 0.299;
 const GW: f64 = 0.587;
 const BW: f64 = 0.114;
 
+const RW_F32: f32 = 0.299;
+const GW_F32: f32 = 0.587;
+const BW_F32: f32 = 0.114;
+
 /// Convert an RGB image to grayscale using the formula:
 ///
 /// Y = 0.299 * R + 0.587 * G + 0.114 * B
@@ -71,6 +75,155 @@ where
     });
 
     Ok(())
+}
+
+/// Convert an RGB f32 image to grayscale using AVX2+FMA when available.
+///
+/// Y = 0.299 * R + 0.587 * G + 0.114 * B
+///
+/// On x86_64 with AVX2+FMA this processes 8 pixels per iteration via sequential
+/// 256-bit loads and shuffle-deinterleave; on other targets it falls back to a
+/// scalar loop.
+///
+/// # Arguments
+///
+/// * `src` - The input RGB f32 image.
+/// * `dst` - The output grayscale f32 image.
+///
+/// # Errors
+///
+/// Returns [`ImageError::InvalidImageSize`] if `src` and `dst` sizes differ.
+///
+/// # Example
+///
+/// ```
+/// use kornia_image::{Image, ImageSize, allocator::CpuAllocator};
+/// use kornia_imgproc::color::gray_from_rgb_f32;
+///
+/// let src = Image::<f32, 3, _>::new(
+///     ImageSize { width: 2, height: 1 },
+///     vec![1.0, 0.0, 0.0,  0.0, 1.0, 0.0],
+///     CpuAllocator,
+/// ).unwrap();
+/// let mut dst = Image::<f32, 1, _>::from_size_val(src.size(), 0.0, CpuAllocator).unwrap();
+/// gray_from_rgb_f32(&src, &mut dst).unwrap();
+/// ```
+pub fn gray_from_rgb_f32<A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<f32, 3, A1>,
+    dst: &mut Image<f32, 1, A2>,
+) -> Result<(), ImageError> {
+    if src.size() != dst.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.cols(),
+            src.rows(),
+            dst.cols(),
+            dst.rows(),
+        ));
+    }
+    let npix = src.rows() * src.cols();
+    rgb_to_gray_f32(src.as_slice(), dst.as_slice_mut(), npix);
+    Ok(())
+}
+
+/// Slice-level RGB f32 → grayscale f32 kernel dispatcher.
+///
+/// Dispatches to AVX2+FMA on x86_64 when available, scalar otherwise.
+pub fn rgb_to_gray_f32(src: &[f32], dst: &mut [f32], npixels: usize) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let cpu = crate::simd::cpu_features();
+        if cpu.has_avx2 && cpu.has_fma {
+            // SAFETY: AVX2+FMA confirmed by runtime probe.
+            unsafe { rgb_to_gray_f32_avx2(src, dst, npixels) };
+            return;
+        }
+    }
+    #[allow(unreachable_code)]
+    rgb_to_gray_f32_scalar(src, dst, npixels);
+}
+
+/// AVX2+FMA RGB f32 → grayscale f32: 8 pixels per iteration.
+///
+/// Three sequential 256-bit loads cover 8 RGB pixels (24 f32 values).
+/// `_mm256_permutevar8x32_ps` + `_mm256_blend_ps` deinterleave R, G, B lanes;
+/// `_mm256_fmadd_ps` accumulates the weighted sum in a single pass.
+/// No gather instructions are used.
+///
+/// # Safety
+/// Caller must ensure AVX2 and FMA are available (`cpuid` check).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn rgb_to_gray_f32_avx2(src: &[f32], dst: &mut [f32], npixels: usize) {
+    use std::arch::x86_64::*;
+
+    let rw = _mm256_set1_ps(RW_F32);
+    let gw = _mm256_set1_ps(GW_F32);
+    let bw = _mm256_set1_ps(BW_F32);
+
+    // Deinterleave indices for 8 RGB pixels stored in three 256-bit vectors:
+    //   v0: [R0,G0,B0, R1,G1,B1, R2,G2]   (lanes 0-7)
+    //   v1: [B2,R3,G3, B3,R4,G4, B4,R5]   (lanes 8-15)
+    //   v2: [G5,B5,R6, G6,B6,R7, G7,B7]   (lanes 16-23)
+    //
+    // _mm256_set_epi32(x7,x6,x5,x4,x3,x2,x1,x0) → lane i = xi.
+    let pr0 = _mm256_set_epi32(0, 0, 0, 0, 0, 6, 3, 0);
+    let pr1 = _mm256_set_epi32(0, 0, 7, 4, 1, 0, 0, 0);
+    let pr2 = _mm256_set_epi32(5, 2, 0, 0, 0, 0, 0, 0);
+
+    let pg0 = _mm256_set_epi32(0, 0, 0, 0, 0, 7, 4, 1);
+    let pg1 = _mm256_set_epi32(0, 0, 0, 5, 2, 0, 0, 0);
+    let pg2 = _mm256_set_epi32(6, 3, 0, 0, 0, 0, 0, 0);
+
+    let pb0 = _mm256_set_epi32(0, 0, 0, 0, 0, 0, 5, 2);
+    let pb1 = _mm256_set_epi32(0, 0, 0, 6, 3, 0, 0, 0);
+    let pb2 = _mm256_set_epi32(7, 4, 1, 0, 0, 0, 0, 0);
+
+    let mut i = 0usize;
+    while i + 8 <= npixels {
+        let base = src.as_ptr().add(i * 3);
+        let v0 = _mm256_loadu_ps(base);
+        let v1 = _mm256_loadu_ps(base.add(8));
+        let v2 = _mm256_loadu_ps(base.add(16));
+
+        let r = _mm256_blend_ps::<0xC0>(
+            _mm256_blend_ps::<0x38>(
+                _mm256_permutevar8x32_ps(v0, pr0),
+                _mm256_permutevar8x32_ps(v1, pr1),
+            ),
+            _mm256_permutevar8x32_ps(v2, pr2),
+        );
+        let g = _mm256_blend_ps::<0xE0>(
+            _mm256_blend_ps::<0x18>(
+                _mm256_permutevar8x32_ps(v0, pg0),
+                _mm256_permutevar8x32_ps(v1, pg1),
+            ),
+            _mm256_permutevar8x32_ps(v2, pg2),
+        );
+        let b = _mm256_blend_ps::<0xE0>(
+            _mm256_blend_ps::<0x1C>(
+                _mm256_permutevar8x32_ps(v0, pb0),
+                _mm256_permutevar8x32_ps(v1, pb1),
+            ),
+            _mm256_permutevar8x32_ps(v2, pb2),
+        );
+
+        let out = _mm256_fmadd_ps(r, rw, _mm256_fmadd_ps(g, gw, _mm256_mul_ps(b, bw)));
+        _mm256_storeu_ps(dst.as_mut_ptr().add(i), out);
+        i += 8;
+    }
+    // Scalar tail for npixels % 8 != 0.
+    while i < npixels {
+        let b = i * 3;
+        dst[i] = RW_F32 * src[b] + GW_F32 * src[b + 1] + BW_F32 * src[b + 2];
+        i += 1;
+    }
+}
+
+fn rgb_to_gray_f32_scalar(src: &[f32], dst: &mut [f32], npixels: usize) {
+    for (i, out) in dst.iter_mut().take(npixels).enumerate() {
+        let b = i * 3;
+        *out = RW_F32 * src[b] + GW_F32 * src[b + 1] + BW_F32 * src[b + 2];
+    }
 }
 
 /// Convert an RGB8 image to grayscale using the formula:
@@ -595,6 +748,59 @@ mod tests {
         super::gray_from_rgb_u8(&image, &mut gray)?;
 
         assert_eq!(gray.as_slice(), &[103, 53]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_gray_from_rgb_f32_regression() -> Result<(), Box<dyn std::error::Error>> {
+        // 6 pixels: pure R, G, B, black, white, and a mixed pixel.
+        #[rustfmt::skip]
+        let src = Image::new(
+            ImageSize { width: 6, height: 1 },
+            vec![
+                1.0_f32, 0.0, 0.0,
+                0.0,     1.0, 0.0,
+                0.0,     0.0, 1.0,
+                0.0,     0.0, 0.0,
+                1.0,     1.0, 1.0,
+                0.5,     0.5, 0.5,
+            ],
+            CpuAllocator,
+        )?;
+
+        let mut dst = Image::<f32, 1, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
+        super::gray_from_rgb_f32(&src, &mut dst)?;
+
+        let expected = [0.299_f32, 0.587, 0.114, 0.0, 1.0, 0.5];
+        for (got, exp) in dst.as_slice().iter().zip(expected.iter()) {
+            assert!((got - exp).abs() < 1e-5, "got {got}, expected {exp}");
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_gray_from_rgb_f32_matches_generic() -> Result<(), Box<dyn std::error::Error>> {
+        // Verify the f32-specific path agrees with the generic gray_from_rgb.
+        let src = Image::new(
+            ImageSize {
+                width: 4,
+                height: 4,
+            },
+            (0..48).map(|v| v as f32 / 47.0).collect::<Vec<_>>(),
+            CpuAllocator,
+        )?;
+
+        let mut dst_f32 = Image::<f32, 1, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
+        let mut dst_generic = Image::<f32, 1, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
+
+        super::gray_from_rgb_f32(&src, &mut dst_f32)?;
+        super::gray_from_rgb(&src, &mut dst_generic)?;
+
+        for (a, b) in dst_f32.as_slice().iter().zip(dst_generic.as_slice().iter()) {
+            assert!((a - b).abs() < 1e-5, "f32 path {a} != generic path {b}");
+        }
 
         Ok(())
     }
