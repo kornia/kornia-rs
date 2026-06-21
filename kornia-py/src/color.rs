@@ -1,8 +1,8 @@
 use pyo3::prelude::*;
 
 use crate::image::{
-    alloc_output_pyarray, alloc_output_pyarray_f32, numpy_as_image, numpy_as_image_f32,
-    to_pyerr, PyImage, PyImageF32,
+    alloc_output_pyarray, alloc_output_pyarray_f32, numpy_as_image, numpy_as_image_f32, to_pyerr,
+    PyImage, PyImageF32,
 };
 use kornia_imgproc::color;
 

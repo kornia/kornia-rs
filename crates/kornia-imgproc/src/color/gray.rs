@@ -37,12 +37,14 @@ fn par_strip_dispatch<S, D>(
     use rayon::prelude::*;
     let nthreads = rayon::current_num_threads().max(1);
     let strip = npixels.div_ceil(nthreads).next_multiple_of(align);
-    dst.par_chunks_mut(strip).enumerate().for_each(|(i, dchunk)| {
-        let start = i * strip;
-        let n = dchunk.len();
-        let schunk = &src[start * channels..start * channels + n * channels];
-        kernel(schunk, dchunk, n);
-    });
+    dst.par_chunks_mut(strip)
+        .enumerate()
+        .for_each(|(i, dchunk)| {
+            let start = i * strip;
+            let n = dchunk.len();
+            let schunk = &src[start * channels..start * channels + n * channels];
+            kernel(schunk, dchunk, n);
+        });
 }
 
 /// Convert an RGB image to grayscale using the formula:
@@ -485,8 +487,8 @@ fn rgb_to_gray_f32_neon(src: &[f32], dst: &mut [f32], npixels: usize) {
         let bulk8 = npixels & !7;
         let mut i = 0usize;
         while i < bulk8 {
-            let a = vld3q_f32(sp.add(i * 3));           // pixels i..i+4: .0=R .1=G .2=B
-            let b = vld3q_f32(sp.add((i + 4) * 3));     // pixels i+4..i+8
+            let a = vld3q_f32(sp.add(i * 3)); // pixels i..i+4: .0=R .1=G .2=B
+            let b = vld3q_f32(sp.add((i + 4) * 3)); // pixels i+4..i+8
 
             let ya = vfmaq_f32(vfmaq_f32(vmulq_f32(a.2, wb), a.1, wg), a.0, wr);
             let yb = vfmaq_f32(vfmaq_f32(vmulq_f32(b.2, wb), b.1, wg), b.0, wr);
@@ -968,5 +970,4 @@ mod tests {
 
         Ok(())
     }
-
 }
