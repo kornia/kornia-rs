@@ -63,10 +63,16 @@ pub use kornia_image::color_spaces::{
 mod convert;
 mod kernel_common;
 
+mod cie;
 /// Colormap application (LUT-based, NEON-accelerated on aarch64).
 pub mod colormap;
 mod gray;
+mod hls;
 mod hsv;
+// Shared generic 3×3 affine kernel; the CIE pipelines fuse the matrix in-register
+// instead of calling it, but it stays available for the YUV/YCbCr family.
+#[allow(dead_code)]
+mod matrix;
 mod rgb;
 mod yuv;
 
@@ -75,7 +81,9 @@ pub use convert::{ConvertColor, ConvertColorWithBackground};
 
 pub use colormap::{apply_colormap, ColormapType};
 // Keep old functions available for backward compatibility
+pub use cie::*;
 pub use gray::*;
+pub use hls::*;
 pub use hsv::*;
 pub use rgb::*;
 pub use yuv::*;

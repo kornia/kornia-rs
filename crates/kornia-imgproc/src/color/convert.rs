@@ -1,7 +1,9 @@
 use kornia_image::{
     allocator::ImageAllocator,
     color_spaces::{
-        Bgr8, Bgra8, Bgrf32, Gray8, Grayf32, Grayf64, Hsvf32, Hsvf64, Rgb8, Rgba8, Rgbf32, Rgbf64,
+        Bgr8, Bgra8, Bgraf32, Bgrf32, Gray8, Grayf32, Grayf64, Hlsf32, Hlsf64, Hsvf32, Hsvf64,
+        Labf32, Labf64, LinearRgbf32, LinearRgbf64, Luvf32, Luvf64, Rgb8, Rgba8, Rgbaf32, Rgbf32,
+        Rgbf64, Xyzf32, Xyzf64,
     },
     ImageError,
 };
@@ -102,11 +104,49 @@ impl_convert!(Hsvf32<A1> => Rgbf32<A2>, crate::color::rgb_from_hsv);
 impl_convert!(Rgbf64<A1> => Hsvf64<A2>, crate::color::hsv_from_rgb);
 impl_convert!(Hsvf64<A1> => Rgbf64<A2>, crate::color::rgb_from_hsv);
 
+// ===== RGB <-> HLS Conversions =====
+impl_convert!(Rgbf32<A1> => Hlsf32<A2>, crate::color::hls_from_rgb);
+impl_convert!(Hlsf32<A1> => Rgbf32<A2>, crate::color::rgb_from_hls);
+impl_convert!(Rgbf64<A1> => Hlsf64<A2>, crate::color::hls_from_rgb);
+impl_convert!(Hlsf64<A1> => Rgbf64<A2>, crate::color::rgb_from_hls);
+
+// ===== RGB <-> linear-RGB (sRGB transfer) =====
+impl_convert!(Rgbf32<A1> => LinearRgbf32<A2>, crate::color::linear_rgb_from_rgb);
+impl_convert!(LinearRgbf32<A1> => Rgbf32<A2>, crate::color::rgb_from_linear_rgb);
+impl_convert!(Rgbf64<A1> => LinearRgbf64<A2>, crate::color::linear_rgb_from_rgb);
+impl_convert!(LinearRgbf64<A1> => Rgbf64<A2>, crate::color::rgb_from_linear_rgb);
+
+// ===== RGB <-> XYZ Conversions =====
+impl_convert!(Rgbf32<A1> => Xyzf32<A2>, crate::color::xyz_from_rgb);
+impl_convert!(Xyzf32<A1> => Rgbf32<A2>, crate::color::rgb_from_xyz);
+impl_convert!(Rgbf64<A1> => Xyzf64<A2>, crate::color::xyz_from_rgb);
+impl_convert!(Xyzf64<A1> => Rgbf64<A2>, crate::color::rgb_from_xyz);
+
+// ===== RGB <-> Lab Conversions =====
+impl_convert!(Rgbf32<A1> => Labf32<A2>, crate::color::lab_from_rgb);
+impl_convert!(Labf32<A1> => Rgbf32<A2>, crate::color::rgb_from_lab);
+impl_convert!(Rgbf64<A1> => Labf64<A2>, crate::color::lab_from_rgb);
+impl_convert!(Labf64<A1> => Rgbf64<A2>, crate::color::rgb_from_lab);
+
+// ===== RGB <-> Luv Conversions =====
+impl_convert!(Rgbf32<A1> => Luvf32<A2>, crate::color::luv_from_rgb);
+impl_convert!(Luvf32<A1> => Rgbf32<A2>, crate::color::rgb_from_luv);
+impl_convert!(Rgbf64<A1> => Luvf64<A2>, crate::color::luv_from_rgb);
+impl_convert!(Luvf64<A1> => Rgbf64<A2>, crate::color::rgb_from_luv);
+
 // ===== RGBA -> RGB Conversions =====
 impl_convert!(Rgba8<A1> => Rgb8<A2>, crate::color::rgb_from_rgba, bg: None);
 
 // ===== BGRA -> RGB Conversions =====
 impl_convert!(Bgra8<A1> => Rgb8<A2>, crate::color::rgb_from_bgra, bg: None);
+
+// ===== RGB -> RGBA Conversions (add opaque alpha) =====
+impl_convert!(Rgb8<A1> => Rgba8<A2>, crate::color::rgba_from_rgb);
+impl_convert!(Rgbf32<A1> => Rgbaf32<A2>, crate::color::rgba_from_rgb);
+
+// ===== RGB -> BGRA Conversions (swap R/B + add opaque alpha) =====
+impl_convert!(Rgb8<A1> => Bgra8<A2>, crate::color::bgra_from_rgb);
+impl_convert!(Rgbf32<A1> => Bgraf32<A2>, crate::color::bgra_from_rgb);
 
 // ===== Conversion with background support =====
 
@@ -348,6 +388,38 @@ mod tests {
         assert_eq!(data[1], 128); // G
         assert_eq!(data[2], 64); // B
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_rgba_from_rgb() -> Result<(), ImageError> {
+        let rgb = Rgb8::from_size_vec(
+            ImageSize {
+                width: 2,
+                height: 1,
+            },
+            vec![1, 2, 3, 4, 5, 6],
+            CpuAllocator,
+        )?;
+        let mut rgba = Rgba8::from_size_val(rgb.size(), 0, CpuAllocator)?;
+        rgb.convert(&mut rgba)?;
+        assert_eq!(rgba.as_slice(), &[1, 2, 3, 255, 4, 5, 6, 255]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_bgra_from_rgb() -> Result<(), ImageError> {
+        let rgb = Rgb8::from_size_vec(
+            ImageSize {
+                width: 2,
+                height: 1,
+            },
+            vec![1, 2, 3, 4, 5, 6],
+            CpuAllocator,
+        )?;
+        let mut bgra = Bgra8::from_size_val(rgb.size(), 0, CpuAllocator)?;
+        rgb.convert(&mut bgra)?;
+        assert_eq!(bgra.as_slice(), &[3, 2, 1, 255, 6, 5, 4, 255]);
         Ok(())
     }
 

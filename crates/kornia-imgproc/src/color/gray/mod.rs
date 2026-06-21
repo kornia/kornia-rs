@@ -154,7 +154,76 @@ pub fn gray_from_rgb_f32<A1: ImageAllocator, A2: ImageAllocator>(
 
 // ===== Other conversions ===========================================================
 
+/// Compile-time dispatch to the right gray→RGB broadcast kernel for each pixel type.
+///
+/// `u8` and `f32` get NEON kernels (`vld1q` + `vst3q`); any other `T` (e.g. `f64`,
+/// `u16`) uses the portable scalar broadcast. Sealed: no external implementations.
+pub trait RgbFromGray: Copy + Send + Sync {
+    #[doc(hidden)]
+    fn rgb_from_gray_impl<A1: ImageAllocator, A2: ImageAllocator>(
+        src: &Image<Self, 1, A1>,
+        dst: &mut Image<Self, 3, A2>,
+    ) -> Result<(), ImageError>;
+}
+
+// Generic scalar broadcast — the oracle and the path for every non-NEON `T`.
+#[inline]
+fn rgb_from_gray_scalar<T, A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<T, 1, A1>,
+    dst: &mut Image<T, 3, A2>,
+) -> Result<(), ImageError>
+where
+    T: Copy + Send + Sync,
+{
+    check_size(src, dst)?;
+    parallel::par_iter_rows(src, dst, |src_pixel, dst_pixel| {
+        dst_pixel[0] = src_pixel[0];
+        dst_pixel[1] = src_pixel[0];
+        dst_pixel[2] = src_pixel[0];
+    });
+    Ok(())
+}
+
+macro_rules! impl_rgb_from_gray_scalar {
+    ($($t:ty),*) => {$(
+        impl RgbFromGray for $t {
+            fn rgb_from_gray_impl<A1: ImageAllocator, A2: ImageAllocator>(
+                src: &Image<$t, 1, A1>,
+                dst: &mut Image<$t, 3, A2>,
+            ) -> Result<(), ImageError> {
+                rgb_from_gray_scalar(src, dst)
+            }
+        }
+    )*};
+}
+impl_rgb_from_gray_scalar!(u16, i32, f64);
+
+impl RgbFromGray for u8 {
+    fn rgb_from_gray_impl<A1: ImageAllocator, A2: ImageAllocator>(
+        src: &Image<u8, 1, A1>,
+        dst: &mut Image<u8, 3, A2>,
+    ) -> Result<(), ImageError> {
+        check_size(src, dst)?;
+        kernels::rgb_from_gray_u8(src.as_slice(), dst.as_slice_mut(), src.rows() * src.cols());
+        Ok(())
+    }
+}
+
+impl RgbFromGray for f32 {
+    fn rgb_from_gray_impl<A1: ImageAllocator, A2: ImageAllocator>(
+        src: &Image<f32, 1, A1>,
+        dst: &mut Image<f32, 3, A2>,
+    ) -> Result<(), ImageError> {
+        check_size(src, dst)?;
+        kernels::rgb_from_gray_f32(src.as_slice(), dst.as_slice_mut(), src.rows() * src.cols());
+        Ok(())
+    }
+}
+
 /// Convert a grayscale image to RGB by replicating the value across all three channels.
+///
+/// Dispatches at compile time on pixel type `T`: `u8`/`f32` use NEON
+/// (`vld1q` + `vst3q`); any other `T` uses a portable scalar broadcast.
 ///
 /// # Example
 ///
@@ -176,15 +245,9 @@ pub fn rgb_from_gray<T, A1: ImageAllocator, A2: ImageAllocator>(
     dst: &mut Image<T, 3, A2>,
 ) -> Result<(), ImageError>
 where
-    T: Copy + Send + Sync,
+    T: RgbFromGray,
 {
-    check_size(src, dst)?;
-    parallel::par_iter_rows(src, dst, |src_pixel, dst_pixel| {
-        dst_pixel[0] = src_pixel[0];
-        dst_pixel[1] = src_pixel[0];
-        dst_pixel[2] = src_pixel[0];
-    });
-    Ok(())
+    T::rgb_from_gray_impl(src, dst)
 }
 
 #[cfg(test)]
@@ -275,6 +338,66 @@ mod tests {
 
         assert_eq!(rgb.as_slice(), expected.as_slice());
 
+        Ok(())
+    }
+
+    // ----- rgb_from_gray broadcast: NEON vs scalar oracle -----
+
+    #[test]
+    fn rgb_from_gray_u8_matches_scalar() -> Result<(), Box<dyn std::error::Error>> {
+        // 7x3 = 21 px exercises the 16-px NEON body + 5-px scalar tail.
+        let size = ImageSize {
+            width: 7,
+            height: 3,
+        };
+        let gray: Vec<u8> = (0..21).map(|v| (v * 11 % 256) as u8).collect();
+        let src = Image::<u8, 1, _>::new(size, gray.clone(), CpuAllocator)?;
+        let mut rgb = Image::<u8, 3, _>::from_size_val(size, 0, CpuAllocator)?;
+        super::rgb_from_gray(&src, &mut rgb)?;
+        for (i, &g) in gray.iter().enumerate() {
+            assert_eq!(rgb.as_slice()[i * 3], g);
+            assert_eq!(rgb.as_slice()[i * 3 + 1], g);
+            assert_eq!(rgb.as_slice()[i * 3 + 2], g);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rgb_from_gray_u8_large_strip() -> Result<(), Box<dyn std::error::Error>> {
+        // > PAR_THRESHOLD: exercises the 1->3 strip split.
+        let size = ImageSize {
+            width: 1024,
+            height: 1025,
+        };
+        let npix = 1024 * 1025;
+        let gray: Vec<u8> = (0..npix).map(|v| (v % 256) as u8).collect();
+        let src = Image::<u8, 1, _>::new(size, gray.clone(), CpuAllocator)?;
+        let mut rgb = Image::<u8, 3, _>::from_size_val(size, 0, CpuAllocator)?;
+        super::rgb_from_gray(&src, &mut rgb)?;
+        for (i, &g) in gray.iter().enumerate() {
+            assert_eq!(rgb.as_slice()[i * 3], g, "px {i}");
+            assert_eq!(rgb.as_slice()[i * 3 + 1], g, "px {i}");
+            assert_eq!(rgb.as_slice()[i * 3 + 2], g, "px {i}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rgb_from_gray_f32_large_strip() -> Result<(), Box<dyn std::error::Error>> {
+        let size = ImageSize {
+            width: 1024,
+            height: 1025,
+        };
+        let npix = 1024 * 1025;
+        let gray: Vec<f32> = (0..npix).map(|v| (v % 256) as f32 * 0.25).collect();
+        let src = Image::<f32, 1, _>::new(size, gray.clone(), CpuAllocator)?;
+        let mut rgb = Image::<f32, 3, _>::from_size_val(size, 0.0, CpuAllocator)?;
+        super::rgb_from_gray(&src, &mut rgb)?;
+        for (i, &g) in gray.iter().enumerate() {
+            assert_eq!(rgb.as_slice()[i * 3], g, "px {i}");
+            assert_eq!(rgb.as_slice()[i * 3 + 1], g, "px {i}");
+            assert_eq!(rgb.as_slice()[i * 3 + 2], g, "px {i}");
+        }
         Ok(())
     }
 

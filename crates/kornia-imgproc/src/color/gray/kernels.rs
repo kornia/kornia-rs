@@ -3,7 +3,7 @@ pub(super) const RW_F32: f32 = 0.299;
 pub(super) const GW_F32: f32 = 0.587;
 pub(super) const BW_F32: f32 = 0.114;
 
-use super::super::kernel_common::par_strip_dispatch;
+use super::super::kernel_common::par_strip_dispatch_nm;
 
 // ===== RGB8 → Gray8 ================================================================
 
@@ -15,7 +15,7 @@ pub fn gray_from_rgb_u8(src: &[u8], dst: &mut [u8], npixels: usize) {
     debug_assert!(src.len() >= npixels * 3);
     debug_assert!(dst.len() >= npixels);
     // 32-pixel alignment keeps the SIMD bulk loop (2× vld3q_u8) intact at strip boundaries.
-    par_strip_dispatch(src, dst, npixels, 3, 32, gray_from_rgb_u8_kernel);
+    par_strip_dispatch_nm(src, dst, npixels, 3, 1, 32, gray_from_rgb_u8_kernel);
 }
 
 /// Kernel dispatcher: NEON (aarch64), AVX2 (x86_64), or scalar fallback.
@@ -244,7 +244,7 @@ pub fn gray_from_rgb_f32(src: &[f32], dst: &mut [f32], npixels: usize) {
     debug_assert!(src.len() >= npixels * 3);
     debug_assert!(dst.len() >= npixels);
     // 8-pixel alignment keeps both NEON (8 px/iter) and AVX2 (8 px/iter) tails intact.
-    par_strip_dispatch(src, dst, npixels, 3, 8, gray_from_rgb_f32_kernel);
+    par_strip_dispatch_nm(src, dst, npixels, 3, 1, 8, gray_from_rgb_f32_kernel);
 }
 
 /// Kernel dispatcher: NEON (aarch64), AVX2+FMA (x86_64), or scalar fallback.
@@ -403,5 +403,117 @@ fn gray_from_rgb_f32_scalar(src: &[f32], dst: &mut [f32], npixels: usize) {
     for (i, out) in dst.iter_mut().take(npixels).enumerate() {
         let b = i * 3;
         *out = RW_F32 * src[b] + GW_F32 * src[b + 1] + BW_F32 * src[b + 2];
+    }
+}
+
+// ===== Gray -> RGB (1->3 broadcast) ================================================
+//
+// Bandwidth-bound: replicate the single gray channel across R/G/B. No arithmetic,
+// just a structured load (`vld1q`) + interleaved store (`vst3q`).
+
+/// Gray8 -> RGB8: replicate the single channel across all three output channels.
+pub fn rgb_from_gray_u8(src: &[u8], dst: &mut [u8], npixels: usize) {
+    debug_assert!(src.len() >= npixels);
+    debug_assert!(dst.len() >= npixels * 3);
+    par_strip_dispatch_nm(src, dst, npixels, 1, 3, 16, rgb_from_gray_u8_kernel);
+}
+
+#[inline]
+fn rgb_from_gray_u8_kernel(src: &[u8], dst: &mut [u8], npixels: usize) {
+    #[cfg(target_arch = "aarch64")]
+    {
+        rgb_from_gray_u8_neon(src, dst, npixels);
+        return;
+    }
+    #[allow(unreachable_code)]
+    rgb_from_gray_u8_scalar(src, dst, npixels);
+}
+
+/// NEON Gray8 -> RGB8: 16 pixels per iteration. `vld1q_u8` loads 16 gray values;
+/// `vst3q_u8` writes them to all three R/G/B lanes.
+#[cfg(target_arch = "aarch64")]
+fn rgb_from_gray_u8_neon(src: &[u8], dst: &mut [u8], npixels: usize) {
+    use std::arch::aarch64::*;
+    unsafe {
+        let sp = src.as_ptr();
+        let dp = dst.as_mut_ptr();
+        let bulk = npixels & !15;
+        let mut i = 0usize;
+        while i < bulk {
+            let g = vld1q_u8(sp.add(i));
+            vst3q_u8(dp.add(i * 3), uint8x16x3_t(g, g, g));
+            i += 16;
+        }
+        while i < npixels {
+            let g = *sp.add(i);
+            let d = i * 3;
+            *dp.add(d) = g;
+            *dp.add(d + 1) = g;
+            *dp.add(d + 2) = g;
+            i += 1;
+        }
+    }
+}
+
+/// Portable scalar fallback / oracle for Gray8 -> RGB8.
+#[allow(dead_code)]
+fn rgb_from_gray_u8_scalar(src: &[u8], dst: &mut [u8], npixels: usize) {
+    for (px, &g) in dst.chunks_exact_mut(3).zip(src.iter()).take(npixels) {
+        px[0] = g;
+        px[1] = g;
+        px[2] = g;
+    }
+}
+
+/// Gray f32 -> RGB f32: replicate the single channel across all three channels.
+pub fn rgb_from_gray_f32(src: &[f32], dst: &mut [f32], npixels: usize) {
+    debug_assert!(src.len() >= npixels);
+    debug_assert!(dst.len() >= npixels * 3);
+    par_strip_dispatch_nm(src, dst, npixels, 1, 3, 4, rgb_from_gray_f32_kernel);
+}
+
+#[inline]
+fn rgb_from_gray_f32_kernel(src: &[f32], dst: &mut [f32], npixels: usize) {
+    #[cfg(target_arch = "aarch64")]
+    {
+        rgb_from_gray_f32_neon(src, dst, npixels);
+        return;
+    }
+    #[allow(unreachable_code)]
+    rgb_from_gray_f32_scalar(src, dst, npixels);
+}
+
+/// NEON Gray f32 -> RGB f32: 4 pixels per iteration (`vld1q_f32`/`vst3q_f32`).
+#[cfg(target_arch = "aarch64")]
+fn rgb_from_gray_f32_neon(src: &[f32], dst: &mut [f32], npixels: usize) {
+    use std::arch::aarch64::*;
+    unsafe {
+        let sp = src.as_ptr();
+        let dp = dst.as_mut_ptr();
+        let bulk = npixels & !3;
+        let mut i = 0usize;
+        while i < bulk {
+            let g = vld1q_f32(sp.add(i));
+            vst3q_f32(dp.add(i * 3), float32x4x3_t(g, g, g));
+            i += 4;
+        }
+        while i < npixels {
+            let g = *sp.add(i);
+            let d = i * 3;
+            *dp.add(d) = g;
+            *dp.add(d + 1) = g;
+            *dp.add(d + 2) = g;
+            i += 1;
+        }
+    }
+}
+
+/// Portable scalar fallback / oracle for Gray f32 -> RGB f32.
+#[allow(dead_code)]
+fn rgb_from_gray_f32_scalar(src: &[f32], dst: &mut [f32], npixels: usize) {
+    for (px, &g) in dst.chunks_exact_mut(3).zip(src.iter()).take(npixels) {
+        px[0] = g;
+        px[1] = g;
+        px[2] = g;
     }
 }
