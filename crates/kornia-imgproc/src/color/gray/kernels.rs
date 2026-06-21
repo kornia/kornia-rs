@@ -46,19 +46,19 @@ fn par_strip_dispatch<S, D>(
 ///
 /// Parallelized over row-strips for large images; single-threaded SIMD below
 /// the threshold to avoid rayon dispatch overhead.
-pub fn rgb_to_gray_u8(src: &[u8], dst: &mut [u8], npixels: usize) {
+pub fn gray_from_rgb_u8(src: &[u8], dst: &mut [u8], npixels: usize) {
     debug_assert!(src.len() >= npixels * 3);
     debug_assert!(dst.len() >= npixels);
     // 32-pixel alignment keeps the SIMD bulk loop (2× vld3q_u8) intact at strip boundaries.
-    par_strip_dispatch(src, dst, npixels, 3, 32, rgb_to_gray_u8_kernel);
+    par_strip_dispatch(src, dst, npixels, 3, 32, gray_from_rgb_u8_kernel);
 }
 
 /// Kernel dispatcher: NEON (aarch64), AVX2 (x86_64), or scalar fallback.
 #[inline]
-fn rgb_to_gray_u8_kernel(src: &[u8], dst: &mut [u8], npixels: usize) {
+fn gray_from_rgb_u8_kernel(src: &[u8], dst: &mut [u8], npixels: usize) {
     #[cfg(target_arch = "aarch64")]
     {
-        rgb_to_gray_u8_neon(src, dst, npixels);
+        gray_from_rgb_u8_neon(src, dst, npixels);
         return;
     }
     #[cfg(target_arch = "x86_64")]
@@ -66,12 +66,12 @@ fn rgb_to_gray_u8_kernel(src: &[u8], dst: &mut [u8], npixels: usize) {
         let cpu = crate::simd::cpu_features();
         if cpu.has_avx2 {
             // SAFETY: AVX2 confirmed by the runtime probe.
-            unsafe { rgb_to_gray_u8_avx2(src, dst, npixels) };
+            unsafe { gray_from_rgb_u8_avx2(src, dst, npixels) };
             return;
         }
     }
     #[allow(unreachable_code)]
-    rgb_to_gray_u8_scalar(src, dst, npixels);
+    gray_from_rgb_u8_scalar(src, dst, npixels);
 }
 
 /// NEON RGB u8 → gray u8: 32 pixels per iteration (2× vld3q_u8).
@@ -80,7 +80,7 @@ fn rgb_to_gray_u8_kernel(src: &[u8], dst: &mut [u8], npixels: usize) {
 /// Two loads cover 32 pixels; both load pipes stay fed and widening MAC chains
 /// (vmull_u8 / vmlal_u8) are independent between the two groups.
 #[cfg(target_arch = "aarch64")]
-fn rgb_to_gray_u8_neon(src: &[u8], dst: &mut [u8], npixels: usize) {
+fn gray_from_rgb_u8_neon(src: &[u8], dst: &mut [u8], npixels: usize) {
     use std::arch::aarch64::*;
     unsafe {
         let w_r = vdup_n_u8(77);
@@ -178,7 +178,7 @@ fn rgb_to_gray_u8_neon(src: &[u8], dst: &mut [u8], npixels: usize) {
 /// - `src.len() >= npixels * 3`, `dst.len() >= npixels`.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
-unsafe fn rgb_to_gray_u8_avx2(src: &[u8], dst: &mut [u8], npixels: usize) {
+unsafe fn gray_from_rgb_u8_avx2(src: &[u8], dst: &mut [u8], npixels: usize) {
     use std::arch::x86_64::*;
     let sp = src.as_ptr();
     let dp = dst.as_mut_ptr();
@@ -261,7 +261,7 @@ unsafe fn rgb_to_gray_u8_avx2(src: &[u8], dst: &mut [u8], npixels: usize) {
 
 /// Portable scalar fallback — referenced when neither NEON nor AVX2 is available.
 #[allow(dead_code)]
-fn rgb_to_gray_u8_scalar(src: &[u8], dst: &mut [u8], npixels: usize) {
+fn gray_from_rgb_u8_scalar(src: &[u8], dst: &mut [u8], npixels: usize) {
     for (i, out) in dst.iter_mut().take(npixels).enumerate() {
         let si = i * 3;
         *out =
@@ -275,19 +275,19 @@ fn rgb_to_gray_u8_scalar(src: &[u8], dst: &mut [u8], npixels: usize) {
 ///
 /// Parallelized over row-strips for large images (> [`PAR_THRESHOLD`] px); single-threaded
 /// SIMD below the threshold to avoid rayon dispatch overhead.
-pub fn rgb_to_gray_f32(src: &[f32], dst: &mut [f32], npixels: usize) {
+pub fn gray_from_rgb_f32(src: &[f32], dst: &mut [f32], npixels: usize) {
     debug_assert!(src.len() >= npixels * 3);
     debug_assert!(dst.len() >= npixels);
     // 8-pixel alignment keeps both NEON (8 px/iter) and AVX2 (8 px/iter) tails intact.
-    par_strip_dispatch(src, dst, npixels, 3, 8, rgb_to_gray_f32_kernel);
+    par_strip_dispatch(src, dst, npixels, 3, 8, gray_from_rgb_f32_kernel);
 }
 
 /// Kernel dispatcher: NEON (aarch64), AVX2+FMA (x86_64), or scalar fallback.
 #[inline]
-fn rgb_to_gray_f32_kernel(src: &[f32], dst: &mut [f32], npixels: usize) {
+fn gray_from_rgb_f32_kernel(src: &[f32], dst: &mut [f32], npixels: usize) {
     #[cfg(target_arch = "aarch64")]
     {
-        rgb_to_gray_f32_neon(src, dst, npixels);
+        gray_from_rgb_f32_neon(src, dst, npixels);
         return;
     }
     #[cfg(target_arch = "x86_64")]
@@ -295,12 +295,12 @@ fn rgb_to_gray_f32_kernel(src: &[f32], dst: &mut [f32], npixels: usize) {
         let cpu = crate::simd::cpu_features();
         if cpu.has_avx2 && cpu.has_fma {
             // SAFETY: AVX2+FMA confirmed by runtime probe.
-            unsafe { rgb_to_gray_f32_avx2(src, dst, npixels) };
+            unsafe { gray_from_rgb_f32_avx2(src, dst, npixels) };
             return;
         }
     }
     #[allow(unreachable_code)]
-    rgb_to_gray_f32_scalar(src, dst, npixels);
+    gray_from_rgb_f32_scalar(src, dst, npixels);
 }
 
 /// NEON RGB f32 → gray f32: 8 pixels per iteration (2× vld3q_f32).
@@ -315,7 +315,7 @@ fn rgb_to_gray_f32_kernel(src: &[f32], dst: &mut [f32], npixels: usize) {
 /// - 4-pixel remainder step (1× vld3q_f32 + FMA chain + vst1q_f32)
 /// - Scalar tail (0–3 pixels)
 #[cfg(target_arch = "aarch64")]
-fn rgb_to_gray_f32_neon(src: &[f32], dst: &mut [f32], npixels: usize) {
+fn gray_from_rgb_f32_neon(src: &[f32], dst: &mut [f32], npixels: usize) {
     use std::arch::aarch64::*;
     unsafe {
         let wr = vdupq_n_f32(RW_F32);
@@ -367,7 +367,7 @@ fn rgb_to_gray_f32_neon(src: &[f32], dst: &mut [f32], npixels: usize) {
 /// Caller must ensure AVX2 and FMA are available (`cpuid` check).
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
-unsafe fn rgb_to_gray_f32_avx2(src: &[f32], dst: &mut [f32], npixels: usize) {
+unsafe fn gray_from_rgb_f32_avx2(src: &[f32], dst: &mut [f32], npixels: usize) {
     use std::arch::x86_64::*;
 
     let rw = _mm256_set1_ps(RW_F32);
@@ -434,7 +434,7 @@ unsafe fn rgb_to_gray_f32_avx2(src: &[f32], dst: &mut [f32], npixels: usize) {
 }
 
 /// Portable scalar fallback — used when neither NEON nor AVX2+FMA is available.
-fn rgb_to_gray_f32_scalar(src: &[f32], dst: &mut [f32], npixels: usize) {
+fn gray_from_rgb_f32_scalar(src: &[f32], dst: &mut [f32], npixels: usize) {
     for (i, out) in dst.iter_mut().take(npixels).enumerate() {
         let b = i * 3;
         *out = RW_F32 * src[b] + GW_F32 * src[b + 1] + BW_F32 * src[b + 2];

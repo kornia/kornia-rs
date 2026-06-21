@@ -2328,16 +2328,15 @@ impl PyImageApi {
                 c
             )));
         }
-        let src = unsafe { std::slice::from_raw_parts(arr.data(), h * w * c) };
-        let out = unsafe { PyArray::<u8, _>::new(py, [h, w, 1], false) };
-        let dst = unsafe { std::slice::from_raw_parts_mut(out.data(), h * w) };
-        let npixels = h * w;
-
-        // Release the GIL during the SIMD/rayon compute — matches the pattern
-        // used by every other imgproc method in this file (flip, crop, blur, …).
-        py.detach(|| kornia_imgproc::color::rgb_to_gray_u8(src, dst, npixels));
-
-        Ok(Self::wrap(py, out.unbind(), Some("L".to_string())))
+        let size = ImageSize {
+            width: w,
+            height: h,
+        };
+        let src = unsafe { numpy_as_image::<3>(py, &data)? };
+        let (mut dst, out) = unsafe { alloc_output_pyarray::<1>(py, size)? };
+        py.detach(|| kornia_imgproc::color::gray_from_rgb_u8(&src, &mut dst))
+            .map_err(to_pyerr)?;
+        Ok(Self::wrap(py, out, Some("L".to_string())))
     }
 
     /// Convert grayscale to RGB (3 channels). 8-bit only.

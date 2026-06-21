@@ -131,7 +131,7 @@ rgb_from_gray       ✓       gray_to_rgb         ✗
 bgr_from_rgb        ✓       rgb_to_bgr          ✗
 ```
 
-This mirrors Rust's `From`/`Into` trait naming and makes the conversion direction unambiguous at every call site. Slice-level kernel helpers (`rgb_to_gray_u8`, `rgb_to_gray_f32`) are private implementation details in `kernels.rs` and are exempt from this rule because they are never part of the public API.
+This mirrors Rust's `From`/`Into` trait naming and makes the conversion direction unambiguous at every call site. The rule applies at every level — public Image API, slice-level fns, and internal `_kernel`/`_neon`/`_avx2`/`_scalar` leaves.
 
 ### Adding a new SIMD path
 

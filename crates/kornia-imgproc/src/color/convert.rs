@@ -123,7 +123,7 @@ mod tests {
     use kornia_tensor::CpuAllocator;
 
     #[test]
-    fn test_rgb_to_gray_f32() -> Result<(), ImageError> {
+    fn test_gray_from_rgb_f32() -> Result<(), ImageError> {
         let rgb = Rgbf32::from_size_vec(
             ImageSize {
                 width: 2,
@@ -145,7 +145,7 @@ mod tests {
     }
 
     #[test]
-    fn test_rgb_to_gray_u8() -> Result<(), ImageError> {
+    fn test_gray_from_rgb_u8() -> Result<(), ImageError> {
         let rgb = Rgb8::from_size_vec(
             ImageSize {
                 width: 2,
@@ -165,7 +165,7 @@ mod tests {
     }
 
     #[test]
-    fn test_gray_to_rgb() -> Result<(), ImageError> {
+    fn test_rgb_from_gray() -> Result<(), ImageError> {
         let gray = Grayf32::from_size_vec(
             ImageSize {
                 width: 2,
@@ -187,7 +187,7 @@ mod tests {
     }
 
     #[test]
-    fn test_rgb_to_bgr() -> Result<(), ImageError> {
+    fn test_bgr_from_rgb() -> Result<(), ImageError> {
         let rgb = Rgb8::from_size_vec(
             ImageSize {
                 width: 1,
@@ -211,7 +211,7 @@ mod tests {
     }
 
     #[test]
-    fn test_bgr_to_rgb() -> Result<(), ImageError> {
+    fn test_rgb_from_bgr() -> Result<(), ImageError> {
         let bgr = Bgr8::from_size_vec(
             ImageSize {
                 width: 1,
@@ -235,7 +235,7 @@ mod tests {
     }
 
     #[test]
-    fn test_rgb_to_hsv() -> Result<(), ImageError> {
+    fn test_hsv_from_rgb() -> Result<(), ImageError> {
         let rgb = Rgbf32::from_size_vec(
             ImageSize {
                 width: 1,
@@ -275,7 +275,7 @@ mod tests {
     }
 
     #[test]
-    fn test_rgba_to_rgb() -> Result<(), ImageError> {
+    fn test_rgb_from_rgba() -> Result<(), ImageError> {
         let rgba = Rgba8::from_size_vec(
             ImageSize {
                 width: 2,
@@ -299,7 +299,7 @@ mod tests {
     }
 
     #[test]
-    fn test_rgba_to_rgb_with_background() -> Result<(), ImageError> {
+    fn test_rgb_from_rgba_with_background() -> Result<(), ImageError> {
         use super::ConvertColorWithBackground;
 
         let rgba = Rgba8::from_size_vec(
@@ -326,7 +326,7 @@ mod tests {
     }
 
     #[test]
-    fn test_bgra_to_rgb() -> Result<(), ImageError> {
+    fn test_rgb_from_bgra() -> Result<(), ImageError> {
         let bgra = Bgra8::from_size_vec(
             ImageSize {
                 width: 1,

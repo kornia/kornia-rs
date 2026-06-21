@@ -2,7 +2,6 @@ use crate::parallel;
 use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 
 mod kernels;
-pub use kernels::{rgb_to_gray_f32, rgb_to_gray_u8};
 
 // ===== Sealed-trait dispatch =========================================================
 
@@ -34,7 +33,7 @@ impl GrayFromRgb for u8 {
         dst: &mut Image<u8, 1, A2>,
     ) -> Result<(), ImageError> {
         check_size(src, dst)?;
-        kernels::rgb_to_gray_u8(src.as_slice(), dst.as_slice_mut(), src.rows() * src.cols());
+        kernels::gray_from_rgb_u8(src.as_slice(), dst.as_slice_mut(), src.rows() * src.cols());
         Ok(())
     }
 }
@@ -46,7 +45,7 @@ impl GrayFromRgb for f32 {
         dst: &mut Image<f32, 1, A2>,
     ) -> Result<(), ImageError> {
         check_size(src, dst)?;
-        kernels::rgb_to_gray_f32(src.as_slice(), dst.as_slice_mut(), src.rows() * src.cols());
+        kernels::gray_from_rgb_f32(src.as_slice(), dst.as_slice_mut(), src.rows() * src.cols());
         Ok(())
     }
 }
