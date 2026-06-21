@@ -126,6 +126,42 @@ pub fn rgb_from_bgra<A1: ImageAllocator, A2: ImageAllocator>(
     Ok(())
 }
 
+/// Convert an RGB image to BGR by swapping the red and blue channels.
+///
+/// # Arguments
+///
+/// * `src` - The input RGB image.
+/// * `dst` - The output BGR image.
+///
+/// Precondition: the input and output images must have the same size.
+pub fn bgr_from_rgb<T, A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<T, 3, A1>,
+    dst: &mut Image<T, 3, A2>,
+) -> Result<(), ImageError>
+where
+    T: Copy + Send + Sync,
+{
+    if src.size() != dst.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.cols(),
+            src.rows(),
+            dst.cols(),
+            dst.rows(),
+        ));
+    }
+
+    parallel::par_iter_rows(src, dst, |src_pixel, dst_pixel| {
+        dst_pixel
+            .iter_mut()
+            .zip(src_pixel.iter().rev())
+            .for_each(|(d, s)| {
+                *d = *s;
+            });
+    });
+
+    Ok(())
+}
+
 #[inline]
 fn alpha_blend(r: u8, g: u8, b: u8, a: u8, bg: &[u8; 3], rgb: &mut [u8]) {
     let alpha = a as f32 / 255.0;
@@ -269,6 +305,45 @@ mod tests {
         rgb_from_bgra(&src, &mut dst, Some([100, 100, 100]))?;
 
         assert_eq!(dst.as_slice(), expected.as_slice());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_bgr_from_rgb() -> Result<(), ImageError> {
+        #[rustfmt::skip]
+        let image = Image::new(
+            ImageSize {
+                width: 1,
+                height: 3,
+            },
+            vec![
+                0.0_f32, 1.0, 2.0,
+                3.0, 4.0, 5.0,
+                6.0, 7.0, 8.0,
+            ],
+            CpuAllocator,
+        )?;
+
+        let mut bgr = Image::<f32, 3, _>::from_size_val(image.size(), 0.0, CpuAllocator)?;
+
+        super::bgr_from_rgb(&image, &mut bgr)?;
+
+        #[rustfmt::skip]
+        let expected: Image<f32, 3, _> = Image::new(
+            ImageSize {
+                width: 1,
+                height: 3,
+            },
+            vec![
+                2.0, 1.0, 0.0,
+                5.0, 4.0, 3.0,
+                8.0, 7.0, 6.0,
+            ],
+            CpuAllocator,
+        )?;
+
+        assert_eq!(bgr.as_slice(), expected.as_slice());
 
         Ok(())
     }
