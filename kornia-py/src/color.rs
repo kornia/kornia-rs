@@ -90,3 +90,41 @@ pub fn rgb_from_bgra(
         .map_err(to_pyerr)?;
     Ok(out)
 }
+
+/// Generates a zero-copy f32 3→3 channel color-conversion `#[pyfunction]`.
+///
+/// All perceptual/cylindrical conversions share the same shape: a (H, W, 3) float32
+/// input → (H, W, 3) float32 output, GIL released for the NEON/AVX2 kernel.
+macro_rules! py_f32_3to3 {
+    ($name:ident, $func:path, $doc:literal) => {
+        #[doc = $doc]
+        #[pyfunction]
+        pub fn $name(py: Python<'_>, image: PyImageF32) -> PyResult<PyImageF32> {
+            let src = unsafe { numpy_as_image_f32::<3>(py, &image)? };
+            let (mut dst, out) = unsafe { alloc_output_pyarray_f32::<3>(py, src.size())? };
+            py.detach(|| $func(&src, &mut dst)).map_err(to_pyerr)?;
+            Ok(out)
+        }
+    };
+}
+
+py_f32_3to3!(hsv_from_rgb, color::hsv_from_rgb, "RGB f32 → HSV f32 (H,S,V in [0,255]).");
+py_f32_3to3!(rgb_from_hsv, color::rgb_from_hsv, "HSV f32 → RGB f32.");
+py_f32_3to3!(hls_from_rgb, color::hls_from_rgb, "RGB f32 → HLS f32.");
+py_f32_3to3!(rgb_from_hls, color::rgb_from_hls, "HLS f32 → RGB f32.");
+py_f32_3to3!(xyz_from_rgb, color::xyz_from_rgb, "RGB f32 → CIE XYZ f32 (D65).");
+py_f32_3to3!(rgb_from_xyz, color::rgb_from_xyz, "CIE XYZ f32 → RGB f32.");
+py_f32_3to3!(lab_from_rgb, color::lab_from_rgb, "RGB f32 → CIE L*a*b* f32.");
+py_f32_3to3!(rgb_from_lab, color::rgb_from_lab, "CIE L*a*b* f32 → RGB f32.");
+py_f32_3to3!(luv_from_rgb, color::luv_from_rgb, "RGB f32 → CIE L*u*v* f32.");
+py_f32_3to3!(rgb_from_luv, color::rgb_from_luv, "CIE L*u*v* f32 → RGB f32.");
+py_f32_3to3!(
+    linear_rgb_from_rgb,
+    color::linear_rgb_from_rgb,
+    "sRGB f32 → linear-RGB f32 (gamma expand)."
+);
+py_f32_3to3!(
+    rgb_from_linear_rgb,
+    color::rgb_from_linear_rgb,
+    "linear-RGB f32 → sRGB f32 (gamma compress)."
+);

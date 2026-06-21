@@ -398,6 +398,19 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     imgproc_mod.add_function(wrap_pyfunction!(color::gray_from_rgb, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(color::gray_from_rgb_f32, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(color::apply_colormap, &imgproc_mod)?)?;
+    // f32 perceptual / cylindrical color conversions (3→3)
+    imgproc_mod.add_function(wrap_pyfunction!(color::hsv_from_rgb, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_hsv, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::hls_from_rgb, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_hls, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::xyz_from_rgb, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_xyz, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::lab_from_rgb, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_lab, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::luv_from_rgb, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_luv, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::linear_rgb_from_rgb, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_linear_rgb, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(enhance::add_weighted, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(
         histogram::compute_histogram,
