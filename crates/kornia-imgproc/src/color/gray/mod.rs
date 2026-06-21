@@ -4,95 +4,71 @@ use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 mod kernels;
 pub use kernels::{rgb_to_gray_f32, rgb_to_gray_u8};
 
-/// BT.601 f64 luma weights, used by the generic `gray_from_rgb`.
-const RW: f64 = 0.299;
-const GW: f64 = 0.587;
-const BW: f64 = 0.114;
+// ===== Sealed-trait dispatch =========================================================
 
-/// Convert an RGB image to grayscale using the formula:
-///
-/// Y = 0.299 * R + 0.587 * G + 0.114 * B
-///
-/// # Arguments
-///
-/// * `src` - The input RGB image.
-/// * `dst` - The output grayscale image.
-///
-/// Precondition: the input image must have 3 channels.
-/// Precondition: the output image must have 1 channel.
-/// Precondition: the input and output images must have the same size.
-///
-/// # Example
-///
-/// ```
-/// use kornia_image::{Image, ImageSize};
-/// use kornia_image::allocator::CpuAllocator;
-/// use kornia_imgproc::color::gray_from_rgb;
-///
-/// let image = Image::<f32, 3, _>::new(
-///     ImageSize {
-///         width: 4,
-///         height: 5,
-///     },
-///     vec![0f32; 4 * 5 * 3],
-///     CpuAllocator
-/// )
-/// .unwrap();
-///
-/// let mut gray = Image::<f32, 1, _>::from_size_val(image.size(), 0.0, CpuAllocator).unwrap();
-///
-/// gray_from_rgb(&image, &mut gray).unwrap();
-/// assert_eq!(gray.num_channels(), 1);
-/// assert_eq!(gray.size().width, 4);
-/// assert_eq!(gray.size().height, 5);
-/// ```
-pub fn gray_from_rgb<T, A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<T, 3, A1>,
-    dst: &mut Image<T, 1, A2>,
-) -> Result<(), ImageError>
-where
-    T: Send + Sync + num_traits::Float,
-{
-    if src.size() != dst.size() {
-        return Err(ImageError::InvalidImageSize(
-            src.cols(),
-            src.rows(),
-            dst.cols(),
-            dst.rows(),
-        ));
-    }
-
-    let rw = T::from(RW).ok_or(ImageError::CastError)?;
-    let gw = T::from(GW).ok_or(ImageError::CastError)?;
-    let bw = T::from(BW).ok_or(ImageError::CastError)?;
-
-    parallel::par_iter_rows(src, dst, |src_pixel, dst_pixel| {
-        let r = src_pixel[0];
-        let g = src_pixel[1];
-        let b = src_pixel[2];
-        dst_pixel[0] = rw * r + gw * g + bw * b;
-    });
-
-    Ok(())
+mod sealed {
+    pub trait Sealed {}
 }
 
-// ===== RGB8 → Gray8 ================================================================
+/// Compile-time dispatch to the right RGB→gray kernel for each pixel type.
+///
+/// Implemented for `u8`, `f32`, and `f64`. Sealed: no external implementations.
+///
+/// | Type  | Kernel                                        |
+/// |-------|-----------------------------------------------|
+/// | `u8`  | `(77·R + 150·G + 29·B) >> 8` — NEON / AVX2  |
+/// | `f32` | `0.299·R + 0.587·G + 0.114·B` — NEON / AVX2+FMA |
+/// | `f64` | Same weights, portable scalar                 |
+pub trait GrayFromRgb: sealed::Sealed + Sized {
+    #[doc(hidden)]
+    fn gray_from_rgb_impl<A1: ImageAllocator, A2: ImageAllocator>(
+        src: &Image<Self, 3, A1>,
+        dst: &mut Image<Self, 1, A2>,
+    ) -> Result<(), ImageError>;
+}
 
-/// Convert an RGB8 image to grayscale using the formula:
-///
-/// Y = 77 * R + 150 * G + 29 * B
-///
-/// # Arguments
-///
-/// * `src` - The input RGB8 image.
-/// * `dst` - The output grayscale image.
-///
-/// Precondition: the input image must have 3 channels.
-/// Precondition: the output image must have 1 channel.
-/// Precondition: the input and output images must have the same size.
-pub fn gray_from_rgb_u8<A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<u8, 3, A1>,
-    dst: &mut Image<u8, 1, A2>,
+impl sealed::Sealed for u8 {}
+impl GrayFromRgb for u8 {
+    fn gray_from_rgb_impl<A1: ImageAllocator, A2: ImageAllocator>(
+        src: &Image<u8, 3, A1>,
+        dst: &mut Image<u8, 1, A2>,
+    ) -> Result<(), ImageError> {
+        check_size(src, dst)?;
+        kernels::rgb_to_gray_u8(src.as_slice(), dst.as_slice_mut(), src.rows() * src.cols());
+        Ok(())
+    }
+}
+
+impl sealed::Sealed for f32 {}
+impl GrayFromRgb for f32 {
+    fn gray_from_rgb_impl<A1: ImageAllocator, A2: ImageAllocator>(
+        src: &Image<f32, 3, A1>,
+        dst: &mut Image<f32, 1, A2>,
+    ) -> Result<(), ImageError> {
+        check_size(src, dst)?;
+        kernels::rgb_to_gray_f32(src.as_slice(), dst.as_slice_mut(), src.rows() * src.cols());
+        Ok(())
+    }
+}
+
+impl sealed::Sealed for f64 {}
+impl GrayFromRgb for f64 {
+    fn gray_from_rgb_impl<A1: ImageAllocator, A2: ImageAllocator>(
+        src: &Image<f64, 3, A1>,
+        dst: &mut Image<f64, 1, A2>,
+    ) -> Result<(), ImageError> {
+        check_size(src, dst)?;
+        parallel::par_iter_rows(src, dst, |src_pixel, dst_pixel| {
+            dst_pixel[0] = 0.299 * src_pixel[0] + 0.587 * src_pixel[1] + 0.114 * src_pixel[2];
+        });
+        Ok(())
+    }
+}
+
+#[inline]
+fn check_size<T, U, const C1: usize, const C2: usize, A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<T, C1, A1>,
+    dst: &Image<U, C2, A2>,
 ) -> Result<(), ImageError> {
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
@@ -102,79 +78,84 @@ pub fn gray_from_rgb_u8<A1: ImageAllocator, A2: ImageAllocator>(
             dst.rows(),
         ));
     }
-
-    let npixels = src.rows() * src.cols();
-    rgb_to_gray_u8(src.as_slice(), dst.as_slice_mut(), npixels);
-
     Ok(())
 }
 
-// ===== RGB f32 → Gray f32 ==========================================================
+// ===== Public API ==================================================================
 
-/// Convert an RGB f32 image to grayscale.
+/// Convert an RGB image to grayscale.
 ///
-/// Y = 0.299 * R + 0.587 * G + 0.114 * B
+/// Y = 0.299·R + 0.587·G + 0.114·B
 ///
-/// Dispatches to:
-/// - **NEON** (aarch64): `vld3q_f32` structured deinterleave + `vfmaq_f32`, 8 px/iter.
-/// - **AVX2+FMA** (x86_64): sequential 256-bit loads with shuffle-deinterleave, 8 px/iter.
-/// - **Scalar** fallback on all other targets.
+/// Dispatches at compile time based on pixel type `T`:
 ///
-/// Large images (> 1 M px) are split across Rayon threads; small images run
-/// on a single thread to avoid spawn overhead.
+/// | `T`   | Path                                              |
+/// |-------|---------------------------------------------------|
+/// | `u8`  | `(77·R + 150·G + 29·B) >> 8` via NEON or AVX2   |
+/// | `f32` | FMA-fused BT.601 via NEON `vld3q_f32` or AVX2   |
+/// | `f64` | Portable scalar BT.601                           |
 ///
-/// # Arguments
-///
-/// * `src` - The input RGB f32 image.
-/// * `dst` - The output grayscale f32 image.
-///
-/// # Errors
-///
-/// Returns [`ImageError::InvalidImageSize`] if `src` and `dst` sizes differ.
+/// Large images (> 1 M px) are split across Rayon threads regardless of type.
 ///
 /// # Example
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize, allocator::CpuAllocator};
-/// use kornia_imgproc::color::gray_from_rgb_f32;
+/// use kornia_imgproc::color::gray_from_rgb;
 ///
-/// let src = Image::<f32, 3, _>::new(
-///     ImageSize { width: 2, height: 1 },
-///     vec![1.0, 0.0, 0.0,  0.0, 1.0, 0.0],
+/// // u8 — NEON / AVX2
+/// let rgb = Image::<u8, 3, _>::new(
+///     ImageSize { width: 4, height: 5 },
+///     vec![0u8; 4 * 5 * 3],
 ///     CpuAllocator,
 /// ).unwrap();
-/// let mut dst = Image::<f32, 1, _>::from_size_val(src.size(), 0.0, CpuAllocator).unwrap();
-/// gray_from_rgb_f32(&src, &mut dst).unwrap();
+/// let mut gray = Image::<u8, 1, _>::from_size_val(rgb.size(), 0, CpuAllocator).unwrap();
+/// gray_from_rgb(&rgb, &mut gray).unwrap();
+///
+/// // f32 — NEON / AVX2+FMA
+/// let rgb_f32 = Image::<f32, 3, _>::new(
+///     ImageSize { width: 4, height: 5 },
+///     vec![0f32; 4 * 5 * 3],
+///     CpuAllocator,
+/// ).unwrap();
+/// let mut gray_f32 = Image::<f32, 1, _>::from_size_val(rgb_f32.size(), 0.0, CpuAllocator).unwrap();
+/// gray_from_rgb(&rgb_f32, &mut gray_f32).unwrap();
 /// ```
+pub fn gray_from_rgb<T, A1, A2>(
+    src: &Image<T, 3, A1>,
+    dst: &mut Image<T, 1, A2>,
+) -> Result<(), ImageError>
+where
+    T: GrayFromRgb,
+    A1: ImageAllocator,
+    A2: ImageAllocator,
+{
+    T::gray_from_rgb_impl(src, dst)
+}
+
+/// Convert an RGB8 image to grayscale (`u8`).
+///
+/// Thin wrapper around [`gray_from_rgb`] for backward compatibility.
+pub fn gray_from_rgb_u8<A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<u8, 3, A1>,
+    dst: &mut Image<u8, 1, A2>,
+) -> Result<(), ImageError> {
+    gray_from_rgb(src, dst)
+}
+
+/// Convert an RGB f32 image to grayscale (`f32`).
+///
+/// Thin wrapper around [`gray_from_rgb`] for backward compatibility.
 pub fn gray_from_rgb_f32<A1: ImageAllocator, A2: ImageAllocator>(
     src: &Image<f32, 3, A1>,
     dst: &mut Image<f32, 1, A2>,
 ) -> Result<(), ImageError> {
-    if src.size() != dst.size() {
-        return Err(ImageError::InvalidImageSize(
-            src.cols(),
-            src.rows(),
-            dst.cols(),
-            dst.rows(),
-        ));
-    }
-    let npix = src.rows() * src.cols();
-    rgb_to_gray_f32(src.as_slice(), dst.as_slice_mut(), npix);
-    Ok(())
+    gray_from_rgb(src, dst)
 }
 
 // ===== Other conversions ===========================================================
 
-/// Convert a grayscale image to an RGB image by replicating the grayscale value across all three channels.
-///
-/// # Arguments
-///
-/// * `src` - The input grayscale image.
-/// * `dst` - The output RGB image.
-///
-/// Precondition: the input image must have 1 channel.
-/// Precondition: the output image must have 3 channels.
-/// Precondition: the input and output images must have the same size.
+/// Convert a grayscale image to RGB by replicating the value across all three channels.
 ///
 /// # Example
 ///
@@ -184,17 +165,11 @@ pub fn gray_from_rgb_f32<A1: ImageAllocator, A2: ImageAllocator>(
 /// use kornia_imgproc::color::rgb_from_gray;
 ///
 /// let image = Image::<f32, 1, _>::new(
-///     ImageSize {
-///         width: 4,
-///         height: 5,
-///     },
+///     ImageSize { width: 4, height: 5 },
 ///     vec![0f32; 4 * 5 * 1],
 ///     CpuAllocator
-/// )
-/// .unwrap();
-///
+/// ).unwrap();
 /// let mut rgb = Image::<f32, 3, _>::from_size_val(image.size(), 0.0, CpuAllocator).unwrap();
-///
 /// rgb_from_gray(&image, &mut rgb).unwrap();
 /// ```
 pub fn rgb_from_gray<T, A1: ImageAllocator, A2: ImageAllocator>(
@@ -204,21 +179,12 @@ pub fn rgb_from_gray<T, A1: ImageAllocator, A2: ImageAllocator>(
 where
     T: Copy + Send + Sync,
 {
-    if src.size() != dst.size() {
-        return Err(ImageError::InvalidImageSize(
-            src.cols(),
-            src.rows(),
-            dst.cols(),
-            dst.rows(),
-        ));
-    }
-
+    check_size(src, dst)?;
     parallel::par_iter_rows(src, dst, |src_pixel, dst_pixel| {
         dst_pixel[0] = src_pixel[0];
         dst_pixel[1] = src_pixel[0];
         dst_pixel[2] = src_pixel[0];
     });
-
     Ok(())
 }
 
@@ -249,23 +215,19 @@ mod tests {
     fn test_gray_from_rgb_regression() -> Result<(), Box<dyn std::error::Error>> {
         #[rustfmt::skip]
         let image = Image::new(
-            ImageSize {
-                width: 2,
-                height: 3,
-            },
+            ImageSize { width: 2, height: 3 },
             vec![
-                1.0, 0.0, 0.0,
+                1.0_f32, 0.0, 0.0,
                 0.0, 1.0, 0.0,
                 0.0, 0.0, 1.0,
                 0.0, 0.0, 0.0,
                 0.0, 0.0, 0.0,
                 0.0, 0.0, 0.0,
             ],
-            CpuAllocator
+            CpuAllocator,
         )?;
 
         let mut gray = Image::<f32, 1, _>::from_size_val(image.size(), 0.0, CpuAllocator)?;
-
         super::gray_from_rgb(&image, &mut gray)?;
 
         let expected: Image<f32, 1, _> = Image::new(
@@ -291,20 +253,16 @@ mod tests {
                 width: 2,
                 height: 3,
             },
-            vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
+            vec![0.0_f32, 1.0, 2.0, 3.0, 4.0, 5.0],
             CpuAllocator,
         )?;
 
         let mut rgb = Image::<f32, 3, _>::from_size_val(image.size(), 0.0, CpuAllocator)?;
-
         super::rgb_from_gray(&image, &mut rgb)?;
 
         #[rustfmt::skip]
         let expected: Image<f32, 3, _> = Image::new(
-            ImageSize {
-                width: 2,
-                height: 3,
-            },
+            ImageSize { width: 2, height: 3 },
             vec![
                 0.0, 0.0, 0.0,
                 1.0, 1.0, 1.0,
@@ -313,7 +271,7 @@ mod tests {
                 4.0, 4.0, 4.0,
                 5.0, 5.0, 5.0,
             ],
-            CpuAllocator
+            CpuAllocator,
         )?;
 
         assert_eq!(rgb.as_slice(), expected.as_slice());
@@ -328,13 +286,13 @@ mod tests {
                 width: 1,
                 height: 2,
             },
-            vec![0, 128, 255, 128, 0, 128],
+            vec![0u8, 128, 255, 128, 0, 128],
             CpuAllocator,
         )?;
 
         let mut gray = Image::<u8, 1, _>::from_size_val(image.size(), 0, CpuAllocator)?;
-
-        super::gray_from_rgb_u8(&image, &mut gray)?;
+        // unified entry point dispatches to the u8 NEON/AVX2 kernel
+        super::gray_from_rgb(&image, &mut gray)?;
 
         assert_eq!(gray.as_slice(), &[103, 53]);
 
@@ -345,7 +303,6 @@ mod tests {
 
     #[test]
     fn test_gray_from_rgb_f32_regression() -> Result<(), Box<dyn std::error::Error>> {
-        // 6 pixels: pure R, G, B, black, white, and a mixed pixel.
         #[rustfmt::skip]
         let src = Image::new(
             ImageSize { width: 6, height: 1 },
@@ -361,36 +318,11 @@ mod tests {
         )?;
 
         let mut dst = Image::<f32, 1, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
-        super::gray_from_rgb_f32(&src, &mut dst)?;
+        super::gray_from_rgb(&src, &mut dst)?;
 
         let expected = [0.299_f32, 0.587, 0.114, 0.0, 1.0, 0.5];
         for (got, exp) in dst.as_slice().iter().zip(expected.iter()) {
             assert!((got - exp).abs() < 1e-5, "got {got}, expected {exp}");
-        }
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_gray_from_rgb_f32_matches_generic() -> Result<(), Box<dyn std::error::Error>> {
-        // Verify the f32-specific path agrees with the generic gray_from_rgb.
-        let src = Image::new(
-            ImageSize {
-                width: 4,
-                height: 4,
-            },
-            (0..48).map(|v| v as f32 / 47.0).collect::<Vec<_>>(),
-            CpuAllocator,
-        )?;
-
-        let mut dst_f32 = Image::<f32, 1, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
-        let mut dst_generic = Image::<f32, 1, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
-
-        super::gray_from_rgb_f32(&src, &mut dst_f32)?;
-        super::gray_from_rgb(&src, &mut dst_generic)?;
-
-        for (a, b) in dst_f32.as_slice().iter().zip(dst_generic.as_slice().iter()) {
-            assert!((a - b).abs() < 1e-5, "f32 path {a} != generic path {b}");
         }
 
         Ok(())
@@ -410,18 +342,26 @@ mod tests {
         )?;
 
         let mut dst_simd = Image::<f32, 1, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
-        let mut dst_generic = Image::<f32, 1, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
+        let mut dst_scalar = Image::<f64, 1, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
+        let src_f64 = Image::new(
+            src.size(),
+            src.as_slice().iter().map(|&v| v as f64).collect::<Vec<_>>(),
+            CpuAllocator,
+        )?;
 
-        super::gray_from_rgb_f32(&src, &mut dst_simd)?;
-        super::gray_from_rgb(&src, &mut dst_generic)?;
+        super::gray_from_rgb(&src, &mut dst_simd)?;
+        super::gray_from_rgb(&src_f64, &mut dst_scalar)?;
 
         for (i, (a, b)) in dst_simd
             .as_slice()
             .iter()
-            .zip(dst_generic.as_slice().iter())
+            .zip(dst_scalar.as_slice().iter())
             .enumerate()
         {
-            assert!((a - b).abs() < 1e-5, "pixel {i}: SIMD {a} != generic {b}");
+            assert!(
+                (*a as f64 - b).abs() < 1e-5,
+                "pixel {i}: f32-SIMD {a} != f64-scalar {b}"
+            );
         }
 
         Ok(())
@@ -444,18 +384,26 @@ mod tests {
         )?;
 
         let mut dst_simd = Image::<f32, 1, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
-        let mut dst_generic = Image::<f32, 1, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
+        let mut dst_scalar = Image::<f64, 1, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
+        let src_f64 = Image::new(
+            src.size(),
+            src.as_slice().iter().map(|&v| v as f64).collect::<Vec<_>>(),
+            CpuAllocator,
+        )?;
 
-        super::gray_from_rgb_f32(&src, &mut dst_simd)?;
-        super::gray_from_rgb(&src, &mut dst_generic)?;
+        super::gray_from_rgb(&src, &mut dst_simd)?;
+        super::gray_from_rgb(&src_f64, &mut dst_scalar)?;
 
         for (i, (a, b)) in dst_simd
             .as_slice()
             .iter()
-            .zip(dst_generic.as_slice().iter())
+            .zip(dst_scalar.as_slice().iter())
             .enumerate()
         {
-            assert!((a - b).abs() < 1e-5, "pixel {i}: SIMD {a} != generic {b}");
+            assert!(
+                (*a as f64 - b).abs() < 1e-5,
+                "pixel {i}: f32-SIMD {a} != f64-scalar {b}"
+            );
         }
 
         Ok(())
