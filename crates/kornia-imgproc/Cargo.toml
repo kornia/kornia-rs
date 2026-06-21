@@ -111,5 +111,10 @@ ndarray = { workspace = true, features = ["rayon"] }
 rand = { workspace = true }
 
 [features]
-gpu-cubecl = ["dep:cubecl", "dep:cubecl-cpu", "dep:cubecl-cuda", "kornia-tensor/gpu-cubecl"]
+gpu-cubecl = [
+  "dep:cubecl",
+  "dep:cubecl-cpu",
+  "dep:cubecl-cuda",
+  "kornia-tensor/gpu-cubecl"
+]
 opencv_bench = ["dep:opencv"]
