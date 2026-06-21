@@ -2,9 +2,8 @@ use pyo3::prelude::*;
 
 use crate::image::{
     alloc_output_pyarray, alloc_output_pyarray_f32, numpy_as_image, numpy_as_image_f32,
-    numpy_to_f32_image, to_pyerr, PyImage, PyImageF32,
+    to_pyerr, PyImage, PyImageF32,
 };
-use kornia_image::{allocator::CpuAllocator, Image, ImageError};
 use kornia_imgproc::color;
 
 #[pyfunction]
@@ -38,25 +37,12 @@ pub fn gray_from_rgb_f32(py: Python<'_>, image: PyImageF32) -> PyResult<PyImageF
     Ok(out)
 }
 
-
 #[pyfunction]
 pub fn gray_from_rgb(py: Python<'_>, image: PyImage) -> PyResult<PyImage> {
-    let src_f32 = numpy_to_f32_image::<3>(py, &image)?;
-    let size = src_f32.size();
-    let (mut dst_u8, out) = unsafe { alloc_output_pyarray::<1>(py, size)? };
-
-    py.detach(|| -> Result<(), ImageError> {
-        let mut dst_f32 = Image::from_size_val(size, 0f32, CpuAllocator)?;
-        color::gray_from_rgb(&src_f32, &mut dst_f32)?;
-        dst_u8
-            .as_slice_mut()
-            .iter_mut()
-            .zip(dst_f32.as_slice().iter())
-            .for_each(|(d, &s)| *d = s as u8);
-        Ok(())
-    })
-    .map_err(to_pyerr)?;
-
+    let src = unsafe { numpy_as_image::<3>(py, &image)? };
+    let (mut dst, out) = unsafe { alloc_output_pyarray::<1>(py, src.size())? };
+    py.detach(|| color::gray_from_rgb_u8(&src, &mut dst))
+        .map_err(to_pyerr)?;
     Ok(out)
 }
 

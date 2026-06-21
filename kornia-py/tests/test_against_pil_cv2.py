@@ -159,30 +159,12 @@ def test_to_grayscale_ties(pil_img, arr, k_img):
 
 
 def test_to_grayscale_f32_no_regression(arr_f32):
-    """f32 grayscale: gate kornia within 1.5× of cv2 — both hit the LPDDR5 BW ceiling."""
-    c = _bench_fn(
-        lambda: cv2.cvtColor(arr_f32, cv2.COLOR_RGB2GRAY),
-        target_seconds=0.3,
-    ).min_ms
-    n = _bench_fn(
-        lambda: arr_f32 @ _W_GRAY_F32,
-        target_seconds=0.3,
-    ).min_ms
-    k = _bench_fn(
-        lambda: _kornia_imgproc.gray_from_rgb_f32(arr_f32),
-        target_seconds=0.3,
-    ).min_ms
-    fastest_other = min(c, n)
-    print(
-        f"\n[bake-off] to_grayscale_f32        cv2 {c:6.3f}  numpy {n:6.3f}  kornia {k:6.3f}  ms (min)"
-    )
-    # Gate: kornia must be within 1.5× of the fastest competitor.
-    # The real target (documented in benchmarks.md) is kornia < fastest_other (speedup > 1.0×).
-    assert k <= fastest_other * 1.5, (
-        f"to_grayscale_f32: kornia {k:.3f}ms > 1.5× fastest competitor "
-        f"({fastest_other:.3f}ms) — perf regression?"
-    )
-
+    # PIL has no float-gray API; numpy matmul is the "pil" slot.
+    _race("to_grayscale_f32",
+          lambda: arr_f32 @ _W_GRAY_F32,
+          lambda: cv2.cvtColor(arr_f32, cv2.COLOR_RGB2GRAY),
+          lambda: _kornia_imgproc.gray_from_rgb_f32(arr_f32),
+          kornia_max_ratio=1.5)
 
 
 def test_gaussian_blur_wins(pil_img, arr, k_img):

@@ -126,9 +126,7 @@ def main():
         non_k_min = min(r.min_ms for n, r in results.items() if n != "kornia")
         k_min = results["kornia"].min_ms
         speedup = non_k_min / k_min  # >1 = kornia faster
-        winner = "kornia" if k_min == min(r.min_ms for r in results.values()) else (
-            min(((n, r.min_ms) for n, r in results.items()), key=lambda x: x[1])[0]
-        )
+        winner = min(results, key=lambda n: results[n].min_ms)
         summary.append((label, winner, speedup))
 
     # Summary table

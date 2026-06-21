@@ -23,7 +23,7 @@ Tracks the 1080p median (ms) for representative ops across documented runs. Each
 
 | Date | Commit | Branch | hflip | normalize | gauss5×5 | resize½ | warp persp | ORB | Notes |
 |------|--------|--------|------:|----------:|---------:|--------:|-----------:|----:|-------|
-| 2026-06-20 | `07e52d7` | `feat/gray-f32-neon` | 0.26 | — | 0.84 | 1.67 | — | — | Fused NEON u8→f32 grayscale added (16-px vld3q_u8, 6.8× vs cv2 pipe). Bake-off now 10 wins / 4 ties / 0 losses across 14 ops. PNG encode improved 1.9×→3.8× vs cv2. |
+| 2026-06-20 | `07e52d7` | `feat/gray-neon-kernels` | 0.26 | — | 0.84 | 1.67 | — | — | NEON f32 grayscale added (8-px vld3q_f32, tied cv2 at BW ceiling). Bake-off now 9 wins / 4 ties / 0 losses across 13 ops. PNG encode improved 1.9×→3.8× vs cv2. |
 | 2026-05-02 | `9e040c4` | `feat/zero-copy-pyimage-io` | 0.32 | 3.81 | 1.61 | 1.89 | 4.77 | 11.19 | best-of-N min via new `_bench.py` (replaces mean over n=200). hflip drops 0.49→0.32 ms (now 5.5× vs cv2). gauss5×5 1.61 ms / resize 1.89 ms reflect the new methodology measuring the same kernel — no underlying perf change. Bake-off vs PIL/cv2 added (12 ops, kornia 9 wins / 3 ties / 0 losses; see "Image I/O & end-to-end vs PIL + OpenCV" below). |
 | 2026-04-25 | `f394e44` | `perf/orb-beat-opencv` | 0.807 | 3.81 | 0.99 | 0.52 | 4.77 | 11.19 | aarch64 imgproc byte-identical to `64132db`; AVX2 hflip CI fixes only. Stability re-run (2000 iter / 200 warmup) used for hflip; other rows carry prior-run medians since imgproc bytes are unchanged. |
 | 2026-04-24 | `64132db` | `feat/pil-like-python-api` | 0.961 | 3.81 | 0.99 | 0.52 | 4.77 | 11.19 | ORB-SLAM3 alignment landed (octree KP, per-KP octave, scale-aware matcher). |
@@ -161,7 +161,7 @@ Resize results across interpolation modes, `antialias` flag, and source→dest s
 
 Head-to-head ``Image`` API shootout against Pillow 12.2.0 and OpenCV 4.13.0 on the same Jetson, release build. Run via ``python kornia-py/benchmarks/bake_off_pil_cv2.py`` (uses the new ``_bench.py`` best-of-N harness — GC disabled, per-call ns timing, min reported). The fastest runner per op is starred in the script's output.
 
-**Score: kornia 10 wins, 4 ties, 0 losses across 14 ops.**
+**Score: kornia 9 wins, 4 ties, 0 losses across 13 ops.**
 
 | op | PIL min ms | cv2 min ms | **kornia min ms** | kornia speedup vs best competitor | winner |
 |---|---:|---:|---:|---:|---|
@@ -173,7 +173,6 @@ Head-to-head ``Image`` API shootout against Pillow 12.2.0 and OpenCV 4.13.0 on t
 | encode PNG (compress_level=1, fdeflate) | 444.8 | 98.5 | **25.69** | **3.8×** | **kornia** |
 | encode TIFF | 2.14 | 76.2 | **1.28** | **1.7×** vs PIL / 59× vs cv2 | **kornia** |
 | to_grayscale (u8) | 1.49 | 0.31 | **0.20** | **1.5×** vs cv2 6T | **kornia** |
-| to_grayscale u8→f32 (fused) | — | 2.80 (cv2 pipe u8+cast) | **0.41** | **6.8×** vs cv2 pipe | **kornia** |
 | to_grayscale_f32 | — | 0.83 (cv2) / 15.6 (numpy) | **0.89** | tied cv2 / **17.5×** vs numpy | **tied** |
 | crop 512² | 0.118 | 0.104 | **0.090** | **1.16×** | **kornia** |
 | encode JPEG q=95 (4:2:0) | 28.8 | 28.0 | 29.73 | 0.94× | **tied (libjpeg-turbo both)** |
@@ -185,7 +184,6 @@ Notes on the wins:
 - **PNG encode 3.8× vs cv2.** kornia's ``encode("png", compress_level=1)`` hits the NEON / AVX2-accelerated ``fdeflate`` fast path in the ``png`` crate. cv2 uses libpng with zlib level 1.
 - **resize 4.4× vs cv2.** kornia's u8 fast-AA path beats both INTER_LANCZOS4 and PIL's LANCZOS at the same kernel.
 - **flip / blur / grayscale** are the imgproc kernels you'd expect to be fast (NEON `vld3q_u8`, binomial 5×5, `vmlal_u8` MAC chain).
-- **to_grayscale u8→f32 fused — 6.8× vs cv2's equivalent pipeline.** `gray_from_rgb_u8_to_f32` reads u8 input (6.2 MB vs 24.9 MB for f32 input) and writes f32 output in a single NEON pass. The 16-pixel `vld3q_u8` loop amortizes the 9-cycle deinterleave cost; widening via `vmovl_u8→vmovl_u16→vcvtq_f32_u32` plus pre-scaled `vfmaq_f32` weights (divided by 255 at compile time) yields ~36 GB/s effective bandwidth. The fair cv2 baseline is a 2-step pipeline (cvtColor u8→gray + astype float32 / 255) that pays two full-image traversals; kornia fuses them into one. For grayscale normalization, `gray_from_rgb_u8_to_f32` is the preferred call over `gray_from_rgb_f32(arr.astype(float32)/255)`.
 - **to_grayscale_f32 — tied with cv2, 17.5× vs numpy.** NEON `vld3q_f32` deinterleaves R/G/B for free, 8 px/iter FMA, rayon strip-split at 1080p. Both kornia and cv2 saturate the LPDDR5 bandwidth ceiling (~25 GB/s for 33 MB of f32 data). numpy's `arr @ W` uses general BLAS GEMM overhead tuned for large square matrices — completely the wrong code path for a 3-column skinny multiply.
 
 Notes on the ties:
