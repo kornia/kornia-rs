@@ -275,17 +275,19 @@ mod tests {
 
     #[test]
     fn srgb_linear_simd_vs_scalar() -> Result<(), ImageError> {
+        // Colour-grade pow (degree-4 log2 / degree-3 exp2) → ~4e-4 rel on the gamma;
+        // deliberate speed/accuracy trade for the hot path (imperceptible, ≈0.04%).
         check_simd_vs_scalar(
             7,
             3,
             super::linear_rgb_from_rgb,
             super::linear_rgb_from_rgb,
-            [1e-4; 3],
+            [5e-4; 3],
         )
     }
     #[test]
     fn xyz_simd_vs_scalar() -> Result<(), ImageError> {
-        check_simd_vs_scalar(7, 3, super::xyz_from_rgb, super::xyz_from_rgb, [1e-4; 3])
+        check_simd_vs_scalar(7, 3, super::xyz_from_rgb, super::xyz_from_rgb, [5e-4; 3])
     }
     #[test]
     fn lab_simd_vs_scalar() -> Result<(), ImageError> {
