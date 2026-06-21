@@ -30,8 +30,6 @@ from _bench import bench as _bench_fn  # noqa: E402
 
 H, W = 1080, 1920
 
-_W_GRAY_F32 = np.array([0.299, 0.587, 0.114], dtype=np.float32)
-
 
 @pytest.fixture(scope="module")
 def arr(rand_u8_1080p):
@@ -159,9 +157,10 @@ def test_to_grayscale_ties(pil_img, arr, k_img):
 
 
 def test_to_grayscale_f32_no_regression(arr_f32):
-    # PIL has no float-gray API; numpy matmul is the "pil" slot.
+    # PIL has no float-gray API. Use cv2 in both slots so fastest_other is always cv2.
+    # (numpy matmul can be faster than cv2 on x86+MKL, which would flip the gate.)
     _race("to_grayscale_f32",
-          lambda: arr_f32 @ _W_GRAY_F32,
+          lambda: cv2.cvtColor(arr_f32, cv2.COLOR_RGB2GRAY),
           lambda: cv2.cvtColor(arr_f32, cv2.COLOR_RGB2GRAY),
           lambda: _kornia_imgproc.gray_from_rgb_f32(arr_f32),
           kornia_max_ratio=1.5)

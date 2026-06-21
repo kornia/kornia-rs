@@ -150,6 +150,8 @@ pub fn gray_from_rgb_u8<A1: ImageAllocator, A2: ImageAllocator>(
 /// Parallelized over row-strips for large images; single-threaded SIMD below
 /// the threshold to avoid rayon dispatch overhead.
 pub fn rgb_to_gray_u8(src: &[u8], dst: &mut [u8], npixels: usize) {
+    debug_assert!(src.len() >= npixels * 3);
+    debug_assert!(dst.len() >= npixels);
     // 32-pixel alignment keeps the SIMD bulk loop (2× vld3q_u8) intact at strip boundaries.
     par_strip_dispatch(src, dst, npixels, 3, 32, rgb_to_gray_u8_kernel);
 }
@@ -429,6 +431,8 @@ pub fn gray_from_rgb_f32<A1: ImageAllocator, A2: ImageAllocator>(
 /// Parallelized over row-strips for large images (> [`PAR_THRESHOLD`] px); single-threaded
 /// SIMD below the threshold to avoid rayon dispatch overhead.
 pub fn rgb_to_gray_f32(src: &[f32], dst: &mut [f32], npixels: usize) {
+    debug_assert!(src.len() >= npixels * 3);
+    debug_assert!(dst.len() >= npixels);
     // 8-pixel alignment keeps both NEON (8 px/iter) and AVX2 (8 px/iter) tails intact.
     par_strip_dispatch(src, dst, npixels, 3, 8, rgb_to_gray_f32_kernel);
 }
