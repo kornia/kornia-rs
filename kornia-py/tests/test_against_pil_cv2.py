@@ -12,7 +12,6 @@ image of kornia's wheels does not require them).
 """
 
 import io
-import platform
 
 import numpy as np
 import pytest
@@ -184,28 +183,6 @@ def test_to_grayscale_f32_no_regression(arr_f32):
         f"({fastest_other:.3f}ms) — perf regression?"
     )
 
-
-@pytest.mark.skipif(
-    platform.machine() != "aarch64",
-    reason="2× gate requires NEON fused kernel — scalar fallback on non-aarch64 won't achieve it",
-)
-def test_to_grayscale_u8_to_f32_wins(arr):
-    """Fused u8→f32: kornia must be at least 2× faster than cv2's 2-step pipeline (aarch64 only)."""
-    cv2_pipe = _bench_fn(
-        lambda: cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY).astype(np.float32) / 255.0,
-        target_seconds=0.3,
-    ).min_ms
-    k = _bench_fn(
-        lambda: _kornia_imgproc.gray_from_rgb_u8_to_f32(arr),
-        target_seconds=0.3,
-    ).min_ms
-    print(
-        f"\n[bake-off] to_grayscale_u8_to_f32  cv2_pipe {cv2_pipe:6.3f}  kornia {k:6.3f}  ms (min)"
-    )
-    assert k <= cv2_pipe * 0.5, (
-        f"gray_from_rgb_u8_to_f32: kornia {k:.3f}ms not at least 2× faster than cv2 pipe "
-        f"({cv2_pipe:.3f}ms) — perf regression?"
-    )
 
 
 def test_gaussian_blur_wins(pil_img, arr, k_img):

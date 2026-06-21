@@ -397,7 +397,6 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     imgproc_mod.add_function(wrap_pyfunction!(color::bgr_from_rgb, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(color::gray_from_rgb, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(color::gray_from_rgb_f32, &imgproc_mod)?)?;
-    imgproc_mod.add_function(wrap_pyfunction!(color::gray_from_rgb_u8_to_f32, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(color::apply_colormap, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(enhance::add_weighted, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(

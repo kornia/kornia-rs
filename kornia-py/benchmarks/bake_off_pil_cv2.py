@@ -105,13 +105,6 @@ def main():
             "numpy":  lambda: arr_f32 @ W_GRAY,
             "kornia": lambda: kornia_imgproc.gray_from_rgb_f32(arr_f32),
         }),
-        # Fused u8→f32: reads 6.2 MB u8 instead of 24.9 MB f32 — 2.3× less DRAM traffic.
-        # cv2_u8+cast is the fair baseline (same inputs/outputs, two separate passes).
-        ("to_grayscale_u8_to_f32 (fused)", {
-            "cv2_pipeline":  lambda: cv2.cvtColor(arr.astype(np.float32) / 255.0, cv2.COLOR_RGB2GRAY),
-            "cv2_u8+cast":   lambda: cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY).astype(np.float32) / 255.0,
-            "kornia": lambda: kornia_imgproc.gray_from_rgb_u8_to_f32(arr),
-        }),
         ("gaussian_blur k=3", {
             "PIL":    lambda: pil_img.filter(ImageFilter.GaussianBlur(radius=1.0)),
             "cv2":    lambda: cv2.GaussianBlur(arr, (3, 3), 1.0),
