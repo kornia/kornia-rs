@@ -57,10 +57,10 @@ fn hsv_from_rgb_f32_neon(src: &[f32], dst: &mut [f32], npixels: usize) {
         let sp = src.as_ptr();
         let dp = dst.as_mut_ptr();
 
-        let mut i = 0usize;
-        let bulk4 = npixels & !3;
-        while i < bulk4 {
-            let p = vld3q_f32(sp.add(i * 3));
+        // Per-vector transform (4 px). Pulled into a closure so the driver can run two
+        // independent instances per iteration — the two reciprocal/divide chains then
+        // overlap on the OoO core instead of serializing on FDIV latency.
+        let tx = |p: float32x4x3_t| -> float32x4x3_t {
             let r = vmulq_f32(p.0, inv255);
             let g = vmulq_f32(p.1, inv255);
             let b = vmulq_f32(p.2, inv255);
@@ -100,8 +100,23 @@ fn hsv_from_rgb_f32_neon(src: &[f32], dst: &mut [f32], npixels: usize) {
             s = vbslq_f32(max0, zero, s);
 
             let v = vmulq_f32(max, v255);
+            float32x4x3_t(h, s, v)
+        };
 
-            vst3q_f32(dp.add(i * 3), float32x4x3_t(h, s, v));
+        let mut i = 0usize;
+        let bulk8 = npixels & !7;
+        while i < bulk8 {
+            let p0 = vld3q_f32(sp.add(i * 3));
+            let p1 = vld3q_f32(sp.add((i + 4) * 3));
+            let o0 = tx(p0);
+            let o1 = tx(p1);
+            vst3q_f32(dp.add(i * 3), o0);
+            vst3q_f32(dp.add((i + 4) * 3), o1);
+            i += 8;
+        }
+        if i + 4 <= npixels {
+            let p = vld3q_f32(sp.add(i * 3));
+            vst3q_f32(dp.add(i * 3), tx(p));
             i += 4;
         }
         // scalar tail
