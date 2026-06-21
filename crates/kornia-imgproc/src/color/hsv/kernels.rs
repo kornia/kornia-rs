@@ -153,7 +153,11 @@ fn hsv_from_rgb_scalar_px(r8: f32, g8: f32, b8: f32) -> (f32, f32, f32) {
     };
     let h = if h < 0.0 { h + 360.0 } else { h };
     let h = h * DEG_TO_BYTE;
-    let s = if max == 0.0 { 0.0 } else { (delta / max) * 255.0 };
+    let s = if max == 0.0 {
+        0.0
+    } else {
+        (delta / max) * 255.0
+    };
     let v = max * 255.0;
     (h, s, v)
 }
@@ -231,19 +235,31 @@ fn rgb_from_hsv_f32_neon(src: &[f32], dst: &mut [f32], npixels: usize) {
             let r1 = vbslq_f32(
                 eq0,
                 c,
-                vbslq_f32(eq1, x, vbslq_f32(eq2, zero, vbslq_f32(eq3, zero, vbslq_f32(eq4, x, c)))),
+                vbslq_f32(
+                    eq1,
+                    x,
+                    vbslq_f32(eq2, zero, vbslq_f32(eq3, zero, vbslq_f32(eq4, x, c))),
+                ),
             );
             // g1
             let g1 = vbslq_f32(
                 eq0,
                 x,
-                vbslq_f32(eq1, c, vbslq_f32(eq2, c, vbslq_f32(eq3, x, vbslq_f32(eq4, zero, zero)))),
+                vbslq_f32(
+                    eq1,
+                    c,
+                    vbslq_f32(eq2, c, vbslq_f32(eq3, x, vbslq_f32(eq4, zero, zero))),
+                ),
             );
             // b1
             let b1 = vbslq_f32(
                 eq0,
                 zero,
-                vbslq_f32(eq1, zero, vbslq_f32(eq2, x, vbslq_f32(eq3, c, vbslq_f32(eq4, c, x)))),
+                vbslq_f32(
+                    eq1,
+                    zero,
+                    vbslq_f32(eq2, x, vbslq_f32(eq3, c, vbslq_f32(eq4, c, x))),
+                ),
             );
 
             let r = vmulq_f32(vaddq_f32(r1, m), v255);

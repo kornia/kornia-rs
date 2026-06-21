@@ -116,7 +116,11 @@ fn hsv_from_rgb_scalar_f64(r8: f64, g8: f64, b8: f64) -> (f64, f64, f64) {
         60.0 * (((r - g) / delta) + 4.0)
     };
     let h = if h < 0.0 { h + 360.0 } else { h };
-    let s = if max == 0.0 { 0.0 } else { (delta / max) * 255.0 };
+    let s = if max == 0.0 {
+        0.0
+    } else {
+        (delta / max) * 255.0
+    };
     ((h / 360.0) * 255.0, s, max * 255.0)
 }
 
@@ -297,7 +301,14 @@ mod tests {
         // > PAR_THRESHOLD (1,048,576) to exercise the rayon strip split.
         let (w, h) = (1024, 1025);
         let data: Vec<f32> = (0..w * h * 3).map(|v| (v % 256) as f32).collect();
-        let src = Image::<f32, 3, _>::new(ImageSize { width: w, height: h }, data, CpuAllocator)?;
+        let src = Image::<f32, 3, _>::new(
+            ImageSize {
+                width: w,
+                height: h,
+            },
+            data,
+            CpuAllocator,
+        )?;
         let mut hsv = Image::<f32, 3, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
         let mut back = Image::<f32, 3, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
         super::hsv_from_rgb(&src, &mut hsv)?;

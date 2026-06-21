@@ -56,13 +56,14 @@
 pub use kornia_image::color_spaces::{
     Bgr16, Bgr8, Bgra16, Bgra8, Bgraf32, Bgraf64, Bgrf32, Bgrf64, Gray16, Gray8, Grayf32, Grayf64,
     Hlsf32, Hlsf64, Hsvf32, Hsvf64, Labf32, Labf64, LinearRgbf32, LinearRgbf64, Luvf32, Luvf64,
-    Rgb16, Rgb8, Rgba16, Rgba8, Rgbaf32, Rgbaf64, Rgbf32, Rgbf64, Xyzf32, Xyzf64, YCbCrf32,
-    YCbCrf64, Yuvf32, Yuvf64,
+    Nv12, Nv21, Rgb16, Rgb8, Rgba16, Rgba8, Rgbaf32, Rgbaf64, Rgbf32, Rgbf64, Uyvy8, Xyzf32,
+    Xyzf64, YCbCr8, YCbCrf32, YCbCrf64, Yuv8, Yuvf32, Yuvf64, Yuyv8, Yv12, Yvyu8, I420,
 };
 
 mod convert;
 mod kernel_common;
 
+mod bayer;
 mod cie;
 /// Colormap application (LUT-based, NEON-accelerated on aarch64).
 pub mod colormap;
@@ -74,16 +75,21 @@ mod hsv;
 #[allow(dead_code)]
 mod matrix;
 mod rgb;
+mod sepia;
 mod yuv;
 
 // Export traits for type-safe conversions
 pub use convert::{ConvertColor, ConvertColorWithBackground};
 
 pub use colormap::{apply_colormap, ColormapType};
+// Re-export Bayer mosaic types from kornia-image alongside the demosaic fns.
+pub use kornia_image::color_spaces::{Bayer8, BayerPattern};
 // Keep old functions available for backward compatibility
+pub use bayer::*;
 pub use cie::*;
 pub use gray::*;
 pub use hls::*;
 pub use hsv::*;
 pub use rgb::*;
+pub use sepia::*;
 pub use yuv::*;

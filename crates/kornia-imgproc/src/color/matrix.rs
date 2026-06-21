@@ -28,7 +28,13 @@ pub(crate) fn matrix3_affine_f32(
 }
 
 #[inline]
-fn matrix3_affine_f32_kernel(src: &[f32], dst: &mut [f32], npixels: usize, m: &[f32; 9], b: &[f32; 3]) {
+fn matrix3_affine_f32_kernel(
+    src: &[f32],
+    dst: &mut [f32],
+    npixels: usize,
+    m: &[f32; 9],
+    b: &[f32; 3],
+) {
     #[cfg(target_arch = "aarch64")]
     {
         matrix3_affine_f32_neon(src, dst, npixels, m, b);
@@ -49,7 +55,13 @@ fn matrix3_affine_f32_kernel(src: &[f32], dst: &mut [f32], npixels: usize, m: &[
 
 /// NEON: 8 px/iter via 2× `vld3q_f32`, 9 `vfmaq`-style MACs + bias, `vst3q_f32`.
 #[cfg(target_arch = "aarch64")]
-fn matrix3_affine_f32_neon(src: &[f32], dst: &mut [f32], npixels: usize, m: &[f32; 9], b: &[f32; 3]) {
+fn matrix3_affine_f32_neon(
+    src: &[f32],
+    dst: &mut [f32],
+    npixels: usize,
+    m: &[f32; 9],
+    b: &[f32; 3],
+) {
     use std::arch::aarch64::*;
     unsafe {
         let (m00, m01, m02) = (vdupq_n_f32(m[0]), vdupq_n_f32(m[1]), vdupq_n_f32(m[2]));
@@ -107,7 +119,13 @@ unsafe fn matrix3_affine_f32_avx2(
 }
 
 /// Portable scalar reference / oracle.
-fn matrix3_affine_f32_scalar(src: &[f32], dst: &mut [f32], npixels: usize, m: &[f32; 9], b: &[f32; 3]) {
+fn matrix3_affine_f32_scalar(
+    src: &[f32],
+    dst: &mut [f32],
+    npixels: usize,
+    m: &[f32; 9],
+    b: &[f32; 3],
+) {
     for i in 0..npixels {
         let si = i * 3;
         let (c0, c1, c2) = (src[si], src[si + 1], src[si + 2]);

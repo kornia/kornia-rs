@@ -2,8 +2,9 @@ use kornia_image::{
     allocator::ImageAllocator,
     color_spaces::{
         Bgr8, Bgra8, Bgraf32, Bgrf32, Gray8, Grayf32, Grayf64, Hlsf32, Hlsf64, Hsvf32, Hsvf64,
-        Labf32, Labf64, LinearRgbf32, LinearRgbf64, Luvf32, Luvf64, Rgb8, Rgba8, Rgbaf32, Rgbf32,
-        Rgbf64, Xyzf32, Xyzf64,
+        Labf32, Labf64, LinearRgbf32, LinearRgbf64, Luvf32, Luvf64, Nv12, Nv21, Rgb8, Rgba8,
+        Rgbaf32, Rgbf32, Rgbf64, Uyvy8, Xyzf32, Xyzf64, YCbCr8, YCbCrf32, YCbCrf64, Yuv8, Yuvf32,
+        Yuvf64, Yuyv8, Yv12, Yvyu8, I420,
     },
     ImageError,
 };
@@ -82,6 +83,17 @@ macro_rules! impl_convert_with_bg {
     };
 }
 
+// ===== Bayer mosaic -> RGB (hand-written: reads the runtime pattern field) =====
+impl<A1, A2> ConvertColor<Rgb8<A2>> for kornia_image::color_spaces::Bayer8<A1>
+where
+    A1: ImageAllocator,
+    A2: ImageAllocator,
+{
+    fn convert(&self, dst: &mut Rgb8<A2>) -> Result<(), ImageError> {
+        crate::color::rgb_from_bayer(self.as_image(), self.pattern, &mut dst.0)
+    }
+}
+
 // ===== RGB -> Gray Conversions =====
 impl_convert!(Rgbf32<A1> => Grayf32<A2>, crate::color::gray_from_rgb_f32);
 impl_convert!(Rgbf64<A1> => Grayf64<A2>, crate::color::gray_from_rgb);
@@ -134,6 +146,22 @@ impl_convert!(Luvf32<A1> => Rgbf32<A2>, crate::color::rgb_from_luv);
 impl_convert!(Rgbf64<A1> => Luvf64<A2>, crate::color::luv_from_rgb);
 impl_convert!(Luvf64<A1> => Rgbf64<A2>, crate::color::rgb_from_luv);
 
+// ===== RGB <-> YCbCr Conversions =====
+impl_convert!(Rgb8<A1> => YCbCr8<A2>, crate::color::ycbcr_from_rgb);
+impl_convert!(YCbCr8<A1> => Rgb8<A2>, crate::color::rgb_from_ycbcr);
+impl_convert!(Rgbf32<A1> => YCbCrf32<A2>, crate::color::ycbcr_from_rgb);
+impl_convert!(YCbCrf32<A1> => Rgbf32<A2>, crate::color::rgb_from_ycbcr);
+impl_convert!(Rgbf64<A1> => YCbCrf64<A2>, crate::color::ycbcr_from_rgb);
+impl_convert!(YCbCrf64<A1> => Rgbf64<A2>, crate::color::rgb_from_ycbcr);
+
+// ===== RGB <-> YUV (planar 3-channel) Conversions =====
+impl_convert!(Rgb8<A1> => Yuv8<A2>, crate::color::yuv_from_rgb);
+impl_convert!(Yuv8<A1> => Rgb8<A2>, crate::color::rgb_from_yuv);
+impl_convert!(Rgbf32<A1> => Yuvf32<A2>, crate::color::yuv_from_rgb);
+impl_convert!(Yuvf32<A1> => Rgbf32<A2>, crate::color::rgb_from_yuv);
+impl_convert!(Rgbf64<A1> => Yuvf64<A2>, crate::color::yuv_from_rgb);
+impl_convert!(Yuvf64<A1> => Rgbf64<A2>, crate::color::rgb_from_yuv);
+
 // ===== RGBA -> RGB Conversions =====
 impl_convert!(Rgba8<A1> => Rgb8<A2>, crate::color::rgb_from_rgba, bg: None);
 
@@ -147,6 +175,31 @@ impl_convert!(Rgbf32<A1> => Rgbaf32<A2>, crate::color::rgba_from_rgb);
 // ===== RGB -> BGRA Conversions (swap R/B + add opaque alpha) =====
 impl_convert!(Rgb8<A1> => Bgra8<A2>, crate::color::bgra_from_rgb);
 impl_convert!(Rgbf32<A1> => Bgraf32<A2>, crate::color::bgra_from_rgb);
+
+// ===== Video format decode -> RGB (BT.601 limited range) =====
+//
+// The packed/planar video wrappers carry a raw byte buffer rather than a typed `Image`,
+// so they get hand-written `ConvertColor` impls (the `impl_convert!` macro assumes `.0`).
+macro_rules! impl_video_decode {
+    ($src:ty, $func:path) => {
+        impl<A2> ConvertColor<Rgb8<A2>> for $src
+        where
+            A2: ImageAllocator,
+        {
+            fn convert(&self, dst: &mut Rgb8<A2>) -> Result<(), ImageError> {
+                $func(self.as_slice(), &mut dst.0)
+            }
+        }
+    };
+}
+
+impl_video_decode!(Yuyv8, crate::color::rgb_from_yuyv);
+impl_video_decode!(Uyvy8, crate::color::rgb_from_uyvy);
+impl_video_decode!(Yvyu8, crate::color::rgb_from_yvyu);
+impl_video_decode!(Nv12, crate::color::rgb_from_nv12);
+impl_video_decode!(Nv21, crate::color::rgb_from_nv21);
+impl_video_decode!(I420, crate::color::rgb_from_i420);
+impl_video_decode!(Yv12, crate::color::rgb_from_yv12);
 
 // ===== Conversion with background support =====
 
@@ -274,6 +327,48 @@ mod tests {
         assert_eq!(rgb_data[1], 128); // G
         assert_eq!(rgb_data[2], 64); // B
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_ycbcr_and_yuv_round_trip_u8() -> Result<(), ImageError> {
+        use kornia_image::color_spaces::{YCbCr8, Yuv8};
+        let size = ImageSize {
+            width: 4,
+            height: 2,
+        };
+        let data: Vec<u8> = (0..4 * 2 * 3).map(|v| (v * 7 + 11) as u8).collect();
+        let rgb = Rgb8::from_size_vec(size, data, CpuAllocator)?;
+
+        // YCbCr round-trip
+        let mut ycc = YCbCr8::from_size_val(size, 0, CpuAllocator)?;
+        let mut back = Rgb8::from_size_val(size, 0, CpuAllocator)?;
+        rgb.convert(&mut ycc)?;
+        ycc.convert(&mut back)?;
+        for (a, b) in rgb.as_slice().iter().zip(back.as_slice().iter()) {
+            assert!((*a as i32 - *b as i32).abs() <= 3);
+        }
+
+        // YUV (swapped chroma) must differ from YCbCr in channels 1/2 but round-trip too.
+        let mut yuv = Yuv8::from_size_val(size, 0, CpuAllocator)?;
+        rgb.convert(&mut yuv)?;
+        assert_eq!(ycc.as_slice()[1], yuv.as_slice()[2]);
+        assert_eq!(ycc.as_slice()[2], yuv.as_slice()[1]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_yuyv_decode_to_rgb() -> Result<(), ImageError> {
+        use kornia_image::color_spaces::Yuyv8;
+        let size = ImageSize {
+            width: 2,
+            height: 1,
+        };
+        // Y=16, U=V=128 -> black (limited range).
+        let yuyv = Yuyv8::from_size_vec(size, vec![16, 128, 16, 128])?;
+        let mut rgb = Rgb8::from_size_val(size, 0, CpuAllocator)?;
+        yuyv.convert(&mut rgb)?;
+        assert_eq!(rgb.as_slice(), &[0, 0, 0, 0, 0, 0]);
         Ok(())
     }
 
