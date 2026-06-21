@@ -10,12 +10,15 @@ const RW: f32 = 0.299;
 const GW: f32 = 0.587;
 const BW: f32 = 0.114;
 
+const BLOCK_SIZE: u32 = 256;
+
 /// CubeCL kernel: convert a packed RGB buffer to a packed grayscale buffer (f32).
 ///
-/// `src` must have `dst.len() * 3` elements. Threads beyond `dst.len()` call `terminate!()`.
+/// `src` must have `num_pixels * 3` elements; `dst` must have `num_pixels` elements.
+/// Threads beyond `num_pixels` call `terminate!()`.
 #[cube(launch)]
-fn gray_from_rgb_f32_kernel(src: &Array<f32>, dst: &mut Array<f32>) {
-    if ABSOLUTE_POS >= dst.len() {
+fn gray_from_rgb_f32_kernel(src: &Array<f32>, dst: &mut Array<f32>, num_pixels: u32) {
+    if ABSOLUTE_POS >= usize::cast_from(num_pixels) {
         terminate!();
     }
     let base = ABSOLUTE_POS * 3;
@@ -50,16 +53,20 @@ pub fn launch_gray_from_rgb_f32<R: Runtime>(
         return;
     }
     let num_pixels = num_pixels_u64 as usize;
-    // 64-thread cubes; ceil-div so all pixels are covered.
-    let num_cubes = num_pixels.div_ceil(64) as u32;
+    let num_cubes = num_pixels.div_ceil(BLOCK_SIZE as usize) as u32;
 
     unsafe {
         gray_from_rgb_f32_kernel::launch::<R>(
             client,
             CubeCount::Static(num_cubes, 1, 1),
-            CubeDim { x: 64, y: 1, z: 1 },
+            CubeDim {
+                x: BLOCK_SIZE,
+                y: 1,
+                z: 1,
+            },
             ArrayArg::from_raw_parts(src, num_pixels * 3),
             ArrayArg::from_raw_parts(dst, num_pixels),
+            num_pixels as u32,
         )
     }
 }

@@ -13,6 +13,9 @@ publish = true
 [[example]]
 name = "bench_gpu_color"
 
+[[example]]
+name = "bench_gpu_resize"
+
 [[bench]]
 harness = false
 name = "bench_color"
@@ -100,6 +103,7 @@ optional = true
 
 [dev-dependencies]
 criterion = { workspace = true }
+cubecl-cpu = { version = "=0.10.0-pre.4" }
 image = { workspace = true }
 imageproc = { workspace = true }
 kornia-io = { workspace = true }
