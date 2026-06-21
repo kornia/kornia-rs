@@ -16,13 +16,14 @@ const PAR_THRESHOLD: usize = 1024 * 1024;
 
 /// Split `src`/`dst` into strips and run `kernel` on each strip in parallel.
 ///
+/// `channels` is the number of source elements per output pixel (e.g. 3 for RGB).
 /// `align` is the SIMD loop width (pixels) so strip boundaries never cut a bulk
-/// iteration in half.  All gray paths share this scaffold; only the element types,
-/// alignment multiple, and kernel differ.
+/// iteration in half.
 fn par_strip_dispatch<S, D>(
     src: &[S],
     dst: &mut [D],
     npixels: usize,
+    channels: usize,
     align: usize,
     kernel: impl Fn(&[S], &mut [D], usize) + Send + Sync,
 ) where
@@ -39,7 +40,7 @@ fn par_strip_dispatch<S, D>(
     dst.par_chunks_mut(strip).enumerate().for_each(|(i, dchunk)| {
         let start = i * strip;
         let n = dchunk.len();
-        let schunk = &src[start * 3..start * 3 + n * 3];
+        let schunk = &src[start * channels..start * channels + n * channels];
         kernel(schunk, dchunk, n);
     });
 }
@@ -150,7 +151,7 @@ pub fn gray_from_rgb_u8<A1: ImageAllocator, A2: ImageAllocator>(
 /// the threshold to avoid rayon dispatch overhead.
 pub fn rgb_to_gray_u8(src: &[u8], dst: &mut [u8], npixels: usize) {
     // 32-pixel alignment keeps the SIMD bulk loop (2× vld3q_u8) intact at strip boundaries.
-    par_strip_dispatch(src, dst, npixels, 32, rgb_to_gray_u8_kernel);
+    par_strip_dispatch(src, dst, npixels, 3, 32, rgb_to_gray_u8_kernel);
 }
 
 /// Kernel dispatcher: NEON (aarch64), AVX2 (x86_64), or scalar fallback.
@@ -429,7 +430,7 @@ pub fn gray_from_rgb_f32<A1: ImageAllocator, A2: ImageAllocator>(
 /// SIMD below the threshold to avoid rayon dispatch overhead.
 pub fn rgb_to_gray_f32(src: &[f32], dst: &mut [f32], npixels: usize) {
     // 8-pixel alignment keeps both NEON (8 px/iter) and AVX2 (8 px/iter) tails intact.
-    par_strip_dispatch(src, dst, npixels, 8, rgb_to_gray_f32_kernel);
+    par_strip_dispatch(src, dst, npixels, 3, 8, rgb_to_gray_f32_kernel);
 }
 
 /// Kernel dispatcher: NEON (aarch64), AVX2+FMA (x86_64), or scalar fallback.
@@ -649,7 +650,7 @@ pub fn gray_from_rgb_u8_to_f32<A1: ImageAllocator, A2: ImageAllocator>(
 /// Slice-level dispatch: rayon strip-split above PAR_THRESHOLD, else single-thread kernel.
 pub fn rgb_u8_to_gray_f32(src: &[u8], dst: &mut [f32], npixels: usize) {
     // 16-pixel alignment keeps the vld3q_u8 bulk loop intact at strip boundaries.
-    par_strip_dispatch(src, dst, npixels, 16, rgb_u8_to_gray_f32_kernel);
+    par_strip_dispatch(src, dst, npixels, 3, 16, rgb_u8_to_gray_f32_kernel);
 }
 
 /// Kernel dispatcher: NEON (aarch64) or scalar fallback.
@@ -1084,8 +1085,8 @@ mod tests {
 
     #[test]
     fn test_gray_from_rgb_f32_large() -> Result<(), Box<dyn std::error::Error>> {
-        // 1024×1025 = 1 048 576 px — sits exactly at PAR_THRESHOLD, triggering the rayon
-        // strip-split path. Verifies strip-boundary correctness and thread consistency.
+        // 1024×1025 = 1 049 600 px — just above PAR_THRESHOLD (1 048 576), triggering the
+        // rayon strip-split path. Verifies strip-boundary correctness and thread consistency.
         let npix = 1024 * 1025;
         let src = Image::new(
             ImageSize {
@@ -1181,14 +1182,12 @@ mod tests {
         )?;
         let mut dst = Image::<f32, 1, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
         super::gray_from_rgb_u8_to_f32(&src, &mut dst)?;
-        // Spot-check first, middle, last pixels
-        for idx in [0, npix / 2, npix - 1] {
-            let si = idx * 3;
-            let s = src.as_slice();
-            let expected = s[si] as f32 * (super::RW_F32 / 255.0)
-                + s[si + 1] as f32 * (super::GW_F32 / 255.0)
-                + s[si + 2] as f32 * (super::BW_F32 / 255.0);
-            assert!((dst.as_slice()[idx] - expected).abs() < 1e-5, "pixel {idx}");
+
+        for (i, (chunk, &got)) in src.as_slice().chunks(3).zip(dst.as_slice().iter()).enumerate() {
+            let expected = chunk[0] as f32 * (super::RW_F32 / 255.0)
+                + chunk[1] as f32 * (super::GW_F32 / 255.0)
+                + chunk[2] as f32 * (super::BW_F32 / 255.0);
+            assert!((got - expected).abs() < 1e-5, "pixel {i}: got {got} expected {expected}");
         }
         Ok(())
     }
