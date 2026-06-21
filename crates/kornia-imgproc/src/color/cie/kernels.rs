@@ -399,7 +399,9 @@ unsafe fn lab_finv_v(f: float32x4_t) -> float32x4_t {
 // ===== generic NEON driver ==========================================================
 
 /// Run a per-vector transform `f(float32x4x3_t) -> float32x4x3_t` over the image,
-/// 4 px/iter, with a scalar tail driven by `scalar_px`.
+/// 8 px/iter (2× unrolled so two independent `pow`/`cbrt` chains overlap on the
+/// A78AE's dual SIMD pipes — hides transcendental latency), then a 4-px remainder,
+/// then a scalar tail driven by `scalar_px`.
 #[cfg(target_arch = "aarch64")]
 #[inline]
 unsafe fn neon_drive(
@@ -412,8 +414,19 @@ unsafe fn neon_drive(
     let sp = src.as_ptr();
     let dp = dst.as_mut_ptr();
     let mut i = 0usize;
-    let bulk4 = npixels & !3;
-    while i < bulk4 {
+    let bulk8 = npixels & !7;
+    while i < bulk8 {
+        // Two independent loads/transforms — no data dependency between them, so the
+        // out-of-order core overlaps the two pow/cbrt chains.
+        let p0 = vld3q_f32(sp.add(i * 3));
+        let p1 = vld3q_f32(sp.add((i + 4) * 3));
+        let o0 = f(p0);
+        let o1 = f(p1);
+        vst3q_f32(dp.add(i * 3), o0);
+        vst3q_f32(dp.add((i + 4) * 3), o1);
+        i += 8;
+    }
+    if i + 4 <= npixels {
         let p = vld3q_f32(sp.add(i * 3));
         vst3q_f32(dp.add(i * 3), f(p));
         i += 4;
@@ -453,7 +466,7 @@ macro_rules! cie_kernel {
         pub fn $name(src: &[f32], dst: &mut [f32], npixels: usize) {
             debug_assert!(src.len() >= npixels * 3);
             debug_assert!(dst.len() >= npixels * 3);
-            par_strip_dispatch(src, dst, npixels, 3, 4, |s, d, n| {
+            par_strip_dispatch(src, dst, npixels, 3, 8, |s, d, n| {
                 #[cfg(target_arch = "aarch64")]
                 {
                     // SAFETY: NEON is baseline on aarch64; slices sized by debug_assert.
