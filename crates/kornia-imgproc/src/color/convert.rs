@@ -1,7 +1,7 @@
 use kornia_image::{
     allocator::ImageAllocator,
     color_spaces::{
-        Bgr8, Bgra8, Bgrf32, Gray8, Grayf32, Grayf64, Hsvf32, Rgb8, Rgba8, Rgbf32, Rgbf64,
+        Bgr8, Bgra8, Bgrf32, Gray8, Grayf32, Grayf64, Hsvf32, Hsvf64, Rgb8, Rgba8, Rgbf32, Rgbf64,
     },
     ImageError,
 };
@@ -96,8 +96,11 @@ impl_convert!(Bgr8<A1> => Rgb8<A2>, crate::color::bgr_from_rgb);
 impl_convert!(Rgbf32<A1> => Bgrf32<A2>, crate::color::bgr_from_rgb);
 impl_convert!(Bgrf32<A1> => Rgbf32<A2>, crate::color::bgr_from_rgb);
 
-// ===== RGB -> HSV Conversions =====
+// ===== RGB <-> HSV Conversions =====
 impl_convert!(Rgbf32<A1> => Hsvf32<A2>, crate::color::hsv_from_rgb);
+impl_convert!(Hsvf32<A1> => Rgbf32<A2>, crate::color::rgb_from_hsv);
+impl_convert!(Rgbf64<A1> => Hsvf64<A2>, crate::color::hsv_from_rgb);
+impl_convert!(Hsvf64<A1> => Rgbf64<A2>, crate::color::rgb_from_hsv);
 
 // ===== RGBA -> RGB Conversions =====
 impl_convert!(Rgba8<A1> => Rgb8<A2>, crate::color::rgb_from_rgba, bg: None);

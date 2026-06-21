@@ -208,3 +208,94 @@ define_color_space!(
     3,
     "HSV color space with 64-bit floating point channels"
 );
+
+define_color_space!(
+    Hlsf32,
+    f32,
+    3,
+    "HLS (hue, lightness, saturation) color space with 32-bit floating point channels"
+);
+define_color_space!(
+    Hlsf64,
+    f64,
+    3,
+    "HLS (hue, lightness, saturation) color space with 64-bit floating point channels"
+);
+
+define_color_space!(
+    Xyzf32,
+    f32,
+    3,
+    "CIE XYZ color space with 32-bit floating point channels"
+);
+define_color_space!(
+    Xyzf64,
+    f64,
+    3,
+    "CIE XYZ color space with 64-bit floating point channels"
+);
+
+define_color_space!(
+    Labf32,
+    f32,
+    3,
+    "CIE L*a*b* color space with 32-bit floating point channels"
+);
+define_color_space!(
+    Labf64,
+    f64,
+    3,
+    "CIE L*a*b* color space with 64-bit floating point channels"
+);
+
+define_color_space!(
+    Luvf32,
+    f32,
+    3,
+    "CIE L*u*v* color space with 32-bit floating point channels"
+);
+define_color_space!(
+    Luvf64,
+    f64,
+    3,
+    "CIE L*u*v* color space with 64-bit floating point channels"
+);
+
+define_color_space!(
+    YCbCrf32,
+    f32,
+    3,
+    "YCbCr color space with 32-bit floating point channels"
+);
+define_color_space!(
+    YCbCrf64,
+    f64,
+    3,
+    "YCbCr color space with 64-bit floating point channels"
+);
+
+define_color_space!(
+    Yuvf32,
+    f32,
+    3,
+    "YUV color space (planar, full-range) with 32-bit floating point channels"
+);
+define_color_space!(
+    Yuvf64,
+    f64,
+    3,
+    "YUV color space (planar, full-range) with 64-bit floating point channels"
+);
+
+define_color_space!(
+    LinearRgbf32,
+    f32,
+    3,
+    "Linear (gamma-expanded) RGB color space with 32-bit floating point channels"
+);
+define_color_space!(
+    LinearRgbf64,
+    f64,
+    3,
+    "Linear (gamma-expanded) RGB color space with 64-bit floating point channels"
+);

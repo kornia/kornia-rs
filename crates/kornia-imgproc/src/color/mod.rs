@@ -55,10 +55,13 @@
 // Re-export color spaces from kornia-image
 pub use kornia_image::color_spaces::{
     Bgr16, Bgr8, Bgra16, Bgra8, Bgraf32, Bgraf64, Bgrf32, Bgrf64, Gray16, Gray8, Grayf32, Grayf64,
-    Hsvf32, Hsvf64, Rgb16, Rgb8, Rgba16, Rgba8, Rgbaf32, Rgbaf64, Rgbf32, Rgbf64,
+    Hlsf32, Hlsf64, Hsvf32, Hsvf64, Labf32, Labf64, LinearRgbf32, LinearRgbf64, Luvf32, Luvf64,
+    Rgb16, Rgb8, Rgba16, Rgba8, Rgbaf32, Rgbaf64, Rgbf32, Rgbf64, Xyzf32, Xyzf64, YCbCrf32,
+    YCbCrf64, Yuvf32, Yuvf64,
 };
 
 mod convert;
+mod kernel_common;
 
 /// Colormap application (LUT-based, NEON-accelerated on aarch64).
 pub mod colormap;

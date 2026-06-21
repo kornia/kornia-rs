@@ -3,42 +3,7 @@ pub(super) const RW_F32: f32 = 0.299;
 pub(super) const GW_F32: f32 = 0.587;
 pub(super) const BW_F32: f32 = 0.114;
 
-/// Below this pixel count rayon spawn cost exceeds the compute budget; above it
-/// (e.g. 1080p ≈ 2M px) strip-splitting across available threads pays off.
-const PAR_THRESHOLD: usize = 1024 * 1024;
-
-/// Split `src`/`dst` into strips and run `kernel` on each strip in parallel.
-///
-/// `channels` is the number of source elements per output pixel (e.g. 3 for RGB).
-/// `align` is the SIMD loop width (pixels) so strip boundaries never cut a bulk
-/// iteration in half.
-fn par_strip_dispatch<S, D>(
-    src: &[S],
-    dst: &mut [D],
-    npixels: usize,
-    channels: usize,
-    align: usize,
-    kernel: impl Fn(&[S], &mut [D], usize) + Send + Sync,
-) where
-    S: Sync,
-    D: Send,
-{
-    if npixels < PAR_THRESHOLD {
-        kernel(src, dst, npixels);
-        return;
-    }
-    use rayon::prelude::*;
-    let nthreads = rayon::current_num_threads().max(1);
-    let strip = npixels.div_ceil(nthreads).next_multiple_of(align);
-    dst.par_chunks_mut(strip)
-        .enumerate()
-        .for_each(|(i, dchunk)| {
-            let start = i * strip;
-            let n = dchunk.len();
-            let schunk = &src[start * channels..start * channels + n * channels];
-            kernel(schunk, dchunk, n);
-        });
-}
+use super::super::kernel_common::par_strip_dispatch;
 
 // ===== RGB8 → Gray8 ================================================================
 
