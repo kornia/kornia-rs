@@ -417,3 +417,22 @@ and the YUV video decoders.** The only conversions that are NOT byte-exact to cv
 Lab and Luv — and that is because cv2's *own* f32 Lab is ~0.5 off true Lab (internal
 gamma-LUT interpolation). Matching cv2 byte-for-byte there would require copying cv2's
 LUT and making kornia *less* accurate; we keep the accurate (and faster) kernel instead.
+
+## NV12→RGB vs NVIDIA VPI (Jetson Orin)
+
+Color conversion (not codec): kornia CPU NEON vs NVIDIA VPI (CUDA GPU + VIC hardware).
+Measured on the same Jetson Orin. `device convert` = pure backend convert+sync with the
+image already device-resident; `end-to-end` = wrap host numpy buffer + convert + download
+RGB to host (realistic for a numpy frame).
+
+| Resolution | kornia CPU NEON | VPI CUDA device | VPI CUDA end-to-end | VPI VIC device (→RGBA8) |
+|---|---|---|---|---|
+| 1080p | **1.23 ms** | 2.86 ms | 5.04 ms | 3.00 ms |
+| 4K    | **4.05 ms** | 4.95 ms | 10.76 ms | 7.06 ms |
+
+kornia's NEON path wins on every measurement for host-resident frames: NV12→RGB is
+memory-bandwidth-bound (~9 MB/frame, trivial math), so the GPU has no compute to hide
+launch+sync overhead behind, and host↔device transfer dominates the end-to-end path.
+NVIDIA's GPU/VIC only pays off when frames already live on the device (e.g., after NVDEC
+in a pure-GPU pipeline). NVDEC (H.264/H.265 *codec* decode) is a different operation and
+not comparable to this color conversion. kornia's NV12→RGB is also byte-exact to cv2.
