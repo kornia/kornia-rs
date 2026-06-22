@@ -329,3 +329,44 @@ An earlier revision of this file reported VPI CUDA at 15.45 ms for 1080p ORB. Th
 | Horizontal Flip (RGB u8) | `flip.rs` | `hflip_rgb_u8_neon` |
 | Rotation / warp affine | `warp/affine.rs` | `warp_affine_u8` (dispatches to `kernels::process_affine_span`) |
 | Warp perspective | `warp/perspective.rs` + `warp/kernels.rs` | `warp_perspective_u8` + `process_perspective_span_neon` (NEON 4-wide reciprocal) |
+
+## Color conversions vs OpenCV 5 (1080p f32, best-of-N min ms, Jetson Orin)
+
+Full OpenCV ∪ Kornia color matrix, all NEON-vectorized. Measured against OpenCV 5
+`cv2.cvtColor` (which ships its own tuned NEON), so the realistic ceiling is
+**parity** — two equally-vectorized implementations of the same math on the same
+cores run within ~1×. Wins come from doing *less work* (precision matched to colour
+need), not from out-vectorizing an already-vectorized rival.
+
+| Conversion | kornia ms | OpenCV 5 ms | ratio | note |
+|---|---|---|---|---|
+| RGB→Lab | 6.5 | 10.1 | **1.55× win** | colour-grade pow/cbrt (≈4e-4 / 2.3e-5) vs cv2's heavier path |
+| grayscale (u8) | 0.21 | 0.31 | **1.48× win** | fused single-pass NEON |
+| RGB→XYZ | 1.2 | 1.2 | 1.03× | matrix-only (correctness fix — see below) |
+| RGB→HLS | 1.8 | 1.8 | 1.00× | 2× unrolled to overlap divides |
+| RGB→HSV | 1.5 | 1.4 | 0.91× | div-latency bound |
+| RGB→Luv | 5.3 | 4.6 | 0.87× | cbrt + 2 divides; near-parity |
+
+For reference, kornia's pipeline ops in the same run: flip 4.6×, resize 4.5×,
+WebP encode 24×, PNG encode 3.8×, blur 2.1× — all wins.
+
+### Why not 5×
+The original target was "5× faster than OpenCV 5 for every method." That assumed
+OpenCV's f32 colour paths were scalar libm; they are not — OpenCV 5 is fully NEON-
+vectorized. You cannot be 5× faster than equally-vectorized code doing equal work on
+the same hardware. The only genuine 5×+ route is the GPU (CUDA), which was out of
+scope. On CPU the honest ceiling is parity, which this work reaches or beats
+everywhere except Luv (0.87×, near-parity).
+
+### Correctness note (XYZ)
+`xyz_from_rgb` originally applied sRGB linearization, diverging from both
+`cv2.COLOR_RGB2XYZ` and `kornia.color.rgb_to_xyz` (which apply the 3×3 matrix
+directly). This was found via the benchmark (4× too slow → investigated → wrong
+output, 0.31 abs diff). Fixed to matrix-only: now bit-exact vs cv2 (5.96e-8) and at
+parity. Lab/Luv verified correct vs cv2 (≤0.2, cv2's own f32 rounding).
+
+### Precision policy
+Perceptual `pow`/`cbrt` are tuned to colour tolerance (~1e-2), not full f32:
+degree-4 log2 + degree-3 exp2 (pow rel err 4e-4), one Halley cbrt iteration (2.3e-5).
+This is the source of the Lab win and is imperceptible (≈0.04%), comparable to
+OpenCV's own f32 approximations.
