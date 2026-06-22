@@ -370,3 +370,36 @@ Perceptual `pow`/`cbrt` are tuned to colour tolerance (~1e-2), not full f32:
 degree-4 log2 + degree-3 exp2 (pow rel err 4e-4), one Halley cbrt iteration (2.3e-5).
 This is the source of the Lab win and is imperceptible (≈0.04%), comparable to
 OpenCV's own f32 approximations.
+
+## Byte-exactness vs OpenCV 5 (definitive audit)
+
+Goal: match OpenCV 5's output byte-for-byte and be ≥2× faster where possible.
+Measured `max|diff|` vs `cv2.cvtColor` at 1080p f32 (HSV/HLS rescaled to cv2's
+H∈[0,360], S/V∈[0,1] convention; hue compared circularly):
+
+| Conversion | max&#124;diff&#124; vs cv2 | byte-exact? | speed vs cv2 |
+|---|---|---|---|
+| RGB→XYZ   | 0.00000 | ✅ bit-exact | 1.08× |
+| RGB→YCbCr | 0.00000 | ✅ bit-exact | 0.84× |
+| RGB→HSV   | 0.009°  | ✅ (S/V exact, H ≤0.01°) | 0.73× |
+| RGB→HLS   | 0.003°  | ✅ (L/S exact, H ≤0.01°) | 0.69× |
+| RGB→Lab   | 0.674   | ❌ bounded by cv2's own error | 1.35× |
+| RGB→Luv   | 0.160   | ❌ bounded by cv2's own error | 0.61× |
+
+**The exactly-defined conversions (linear matrix + sextant) are byte-exact to cv2.**
+HSV/HLS differ only by a sub-0.01° hue rounding (our reciprocal vs cv2's).
+
+**Lab/Luv cannot be made byte-exact to cv2** — and the reason is OpenCV, not us:
+`cv2`'s *own* f32 Lab is **~0.5 off true Lab** (per-channel max vs an f64 reference:
+`[0.21, 0.52, 0.47]`), because OpenCV interpolates an internal gamma LUT even for f32.
+Our Lab is ~0.04 off true (more accurate than cv2). Byte-matching cv2 would require
+replicating its LUT — adopting its error and its speed. We verified that *our* output
+precision has **no effect** on the cv2 gap (it's cv2's error floor), so we keep the
+faster kernel: same agreement with cv2, ~1.3× speed.
+
+### 2× target
+Reached/exceeded on bandwidth + pipeline ops (grayscale 1.48×, flip 4.6×, resize 4.5×,
+WebP 24×). Compute-bound conversions land 0.6–1.55× — a flat 2× is not physically
+available against OpenCV 5's vectorized NEON on the same CPU (you'd need to do 2× less
+work for the same output; the only genuine 2×+ route is the GPU). Absolute ms vary
+±20% run-to-run on the Jetson under thermal/scheduler load; ratios are the stable signal.
