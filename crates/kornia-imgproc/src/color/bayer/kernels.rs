@@ -218,54 +218,86 @@ pub fn rgb_from_bayer_neon(
 
             let sp = src.as_ptr();
             let dp = dst.as_mut_ptr();
-            // Even-aligned 32-column blocks. Loads at base-2 / base / base+2 read at
-            // most base+33; `base + 33 < cols` keeps every load inside the row (safe,
-            // no row-spill). vld2q deinterleaves even/odd columns so each shifted
-            // neighbor comes straight from a register half — no carry, no masks.
             let mut base = 2usize;
-            while base + 33 < cols {
-                // 3 rows × {base-2 (for west-shifted odd/even), base, base+2 (east-shifted)}.
+            // Carry-based: one vld2q per row per 32-col block. The west-shifted odds come
+            // from the carried previous block (vext<15>), the east-shifted evens from the
+            // looked-ahead next block (vext<1>) — 3 loads/block in steady state instead of
+            // 9. Needs the lookahead [base+32,base+63] in-row, so a small guard + scalar tail.
+            if cols >= 66 {
+                // Process one 32-col block at `b` from its 3 row registers + the 6 shifted
+                // neighbour registers. Captures raw pointers by copy (no dst borrow).
+                let process = |cp: uint8x16x2_t,
+                               cc: uint8x16x2_t,
+                               cn: uint8x16x2_t,
+                               po_w: uint8x16_t,
+                               co_w: uint8x16_t,
+                               no_w: uint8x16_t,
+                               pe_e: uint8x16_t,
+                               ce_e: uint8x16_t,
+                               ne_e: uint8x16_t,
+                               b: usize| {
+                    // Even-column pixels (center = cc.0).
+                    let g4e = avg4_u8(cp.0, cn.0, co_w, cc.1);
+                    let dge = avg4_u8(po_w, cp.1, no_w, cn.1);
+                    let h2e = vrhaddq_u8(co_w, cc.1);
+                    let v2e = vrhaddq_u8(cp.0, cn.0);
+                    let (re, ge, be) = assemble_cell(cell_e, cc.0, g4e, dge, h2e, v2e);
+                    // Odd-column pixels (center = cc.1).
+                    let g4o = avg4_u8(cp.1, cn.1, cc.0, ce_e);
+                    let dgo = avg4_u8(cp.0, pe_e, cn.0, ne_e);
+                    let h2o = vrhaddq_u8(cc.0, ce_e);
+                    let v2o = vrhaddq_u8(cp.1, cn.1);
+                    let (ro, go, bo) = assemble_cell(cell_o, cc.1, g4o, dgo, h2o, v2o);
+                    let zr = vzipq_u8(re, ro);
+                    let zg = vzipq_u8(ge, go);
+                    let zb = vzipq_u8(be, bo);
+                    vst3q_u8(dp.add((row_off + b) * 3), uint8x16x3_t(zr.0, zg.0, zb.0));
+                    vst3q_u8(
+                        dp.add((row_off + b + 16) * 3),
+                        uint8x16x3_t(zr.1, zg.1, zb.1),
+                    );
+                };
+
+                // Block 0 (base=2): no previous block, so its west/east shifts load directly
+                // from base-2 / base+2 (carry-free seed). This also seeds the carry registers.
                 let p_m = vld2q_u8(sp.add(pr + base - 2));
-                let p_0 = vld2q_u8(sp.add(pr + base));
-                let p_p = vld2q_u8(sp.add(pr + base + 2));
                 let c_m = vld2q_u8(sp.add(row_off + base - 2));
-                let c_0 = vld2q_u8(sp.add(row_off + base));
-                let c_p = vld2q_u8(sp.add(row_off + base + 2));
                 let n_m = vld2q_u8(sp.add(nr + base - 2));
-                let n_0 = vld2q_u8(sp.add(nr + base));
+                let mut cp = vld2q_u8(sp.add(pr + base));
+                let mut cc = vld2q_u8(sp.add(row_off + base));
+                let mut cn = vld2q_u8(sp.add(nr + base));
+                let p_p = vld2q_u8(sp.add(pr + base + 2));
+                let c_p = vld2q_u8(sp.add(row_off + base + 2));
                 let n_p = vld2q_u8(sp.add(nr + base + 2));
-
-                // .0 = even columns, .1 = odd columns.
-                let (pe, po) = (p_0.0, p_0.1);
-                let (ce, co) = (c_0.0, c_0.1);
-                let (ne, no) = (n_0.0, n_0.1);
-                let (po_w, co_w, no_w) = (p_m.1, c_m.1, n_m.1); // odd@(base-1+2i)
-                let (pe_e, ce_e, ne_e) = (p_p.0, c_p.0, n_p.0); // even@(base+2+2i)
-
-                // Even-column pixels (center = ce): N/S same col; W/E = adjacent odds.
-                let g4e = avg4_u8(pe, ne, co_w, co);
-                let dge = avg4_u8(po_w, po, no_w, no);
-                let h2e = vrhaddq_u8(co_w, co);
-                let v2e = vrhaddq_u8(pe, ne);
-                let (re, ge, be) = assemble_cell(cell_e, ce, g4e, dge, h2e, v2e);
-
-                // Odd-column pixels (center = co): W/E = adjacent evens.
-                let g4o = avg4_u8(po, no, ce, ce_e);
-                let dgo = avg4_u8(pe, pe_e, ne, ne_e);
-                let h2o = vrhaddq_u8(ce, ce_e);
-                let v2o = vrhaddq_u8(po, no);
-                let (ro, go, bo) = assemble_cell(cell_o, co, g4o, dgo, h2o, v2o);
-
-                // Re-interleave even/odd back to spatial order and store.
-                let zr = vzipq_u8(re, ro);
-                let zg = vzipq_u8(ge, go);
-                let zb = vzipq_u8(be, bo);
-                vst3q_u8(dp.add((row_off + base) * 3), uint8x16x3_t(zr.0, zg.0, zb.0));
-                vst3q_u8(
-                    dp.add((row_off + base + 16) * 3),
-                    uint8x16x3_t(zr.1, zg.1, zb.1),
-                );
+                process(cp, cc, cn, p_m.1, c_m.1, n_m.1, p_p.0, c_p.0, n_p.0, base);
+                let mut prev_po = cp.1;
+                let mut prev_co = cc.1;
+                let mut prev_no = cn.1;
                 base += 32;
+
+                // Blocks 1..: 3 vld2q for `cur`, lookahead next block's evens for east shift.
+                while base + 31 < cols {
+                    cp = vld2q_u8(sp.add(pr + base));
+                    cc = vld2q_u8(sp.add(row_off + base));
+                    cn = vld2q_u8(sp.add(nr + base));
+                    if base + 63 >= cols {
+                        break; // no room to look ahead — scalar tail handles this block
+                    }
+                    let np = vld2q_u8(sp.add(pr + base + 32));
+                    let nc = vld2q_u8(sp.add(row_off + base + 32));
+                    let nn = vld2q_u8(sp.add(nr + base + 32));
+                    let po_w = vextq_u8::<15>(prev_po, cp.1);
+                    let co_w = vextq_u8::<15>(prev_co, cc.1);
+                    let no_w = vextq_u8::<15>(prev_no, cn.1);
+                    let pe_e = vextq_u8::<1>(cp.0, np.0);
+                    let ce_e = vextq_u8::<1>(cc.0, nc.0);
+                    let ne_e = vextq_u8::<1>(cn.0, nn.0);
+                    process(cp, cc, cn, po_w, co_w, no_w, pe_e, ce_e, ne_e, base);
+                    prev_po = cp.1;
+                    prev_co = cc.1;
+                    prev_no = cn.1;
+                    base += 32;
+                }
             }
             // Scalar remainder (tail + right border) with replicate-edge addressing.
             for cc in base..cols {
