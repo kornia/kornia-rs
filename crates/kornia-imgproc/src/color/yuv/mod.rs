@@ -328,6 +328,42 @@ pub fn rgb_from_yv12<A: ImageAllocator>(
     Ok(())
 }
 
+/// Encode an RGB image to a packed 4:2:2 YUYV (`Y0 U Y1 V`) buffer (BT.601 limited).
+///
+/// `dst` must be exactly `width*height*2` bytes and `width` must be even. Luma is
+/// per-pixel; the shared chroma of each horizontal pixel pair is their rounded
+/// average. Inverse of [`rgb_from_yuyv`] (round-trips to within subsampling error).
+pub fn yuyv_from_rgb<A: ImageAllocator>(
+    src: &Image<u8, 3, A>,
+    dst: &mut [u8],
+) -> Result<(), ImageError> {
+    let (w, h) = (src.width(), src.height());
+    if w % 2 != 0 || dst.len() != w * h * 2 {
+        return Err(ImageError::InvalidImageSize(dst.len(), w, h, w * h * 2));
+    }
+    kernels::yuyv_from_rgb(src.as_slice(), dst, w, h);
+    Ok(())
+}
+
+/// Encode an RGB image to a planar 4:2:0 NV12 (Y plane + interleaved `UV`) buffer
+/// (BT.601 limited).
+///
+/// `dst` must be exactly `width*height*3/2` bytes and both dimensions must be even.
+/// Each chroma pair is the rounded average of its 2×2 luma block. Inverse of
+/// [`rgb_from_nv12`].
+pub fn nv12_from_rgb<A: ImageAllocator>(
+    src: &Image<u8, 3, A>,
+    dst: &mut [u8],
+) -> Result<(), ImageError> {
+    let (w, h) = (src.width(), src.height());
+    if w % 2 != 0 || h % 2 != 0 || dst.len() != w * h * 3 / 2 {
+        return Err(ImageError::InvalidImageSize(dst.len(), w, h, w * h * 3 / 2));
+    }
+    let (y, uv) = dst.split_at_mut(w * h);
+    kernels::nv12_from_rgb(src.as_slice(), y, uv, w, h);
+    Ok(())
+}
+
 /// The mode to convert YUV to RGB.
 ///
 /// These modes correspond to ITU-R Broadcasting Television standards that define

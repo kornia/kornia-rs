@@ -1121,6 +1121,201 @@ fn chroma_at(c0: &[u8], c1: &[u8], cw: usize, cy: usize, cx: usize, fmt: Planar4
     }
 }
 
+// ===== Family C: video encode (RGB -> YUV, BT.601 limited, Q8) ======================
+//
+// Forward libyuv BT.601 limited-range coefficients (Q8). These are the exact inverse
+// of the Family-B decode constants (1.164 / 2.018 / -0.391 / -0.813 / 1.596), so an
+// encode→decode round-trip is stable to within chroma-subsampling error.
+
+const ENC_SHIFT: i32 = 8;
+const ENC_HALF: i32 = 1 << 7;
+const YR: i32 = 66; // R -> Y   (+16 offset)
+const YG: i32 = 129; // G -> Y
+const YB: i32 = 25; // B -> Y
+const UR: i32 = -38; // R -> U   (+128 offset)
+const UG: i32 = -74; // G -> U
+const UB: i32 = 112; // B -> U
+const VR: i32 = 112; // R -> V   (+128 offset)
+const VG: i32 = -94; // G -> V
+const VB: i32 = -18; // B -> V
+
+/// Encode one RGB triple to a BT.601-limited luma byte. Bit-exact oracle.
+#[inline]
+fn encode_y(r: i32, g: i32, b: i32) -> u8 {
+    (((YR * r + YG * g + YB * b + ENC_HALF) >> ENC_SHIFT) + 16).clamp(0, 255) as u8
+}
+
+/// Encode an (already-averaged) RGB triple to a BT.601-limited `(U, V)` chroma pair.
+#[inline]
+fn encode_uv(r: i32, g: i32, b: i32) -> (u8, u8) {
+    let u = ((UR * r + UG * g + UB * b + ENC_HALF) >> ENC_SHIFT) + 128;
+    let v = ((VR * r + VG * g + VB * b + ENC_HALF) >> ENC_SHIFT) + 128;
+    (u.clamp(0, 255) as u8, v.clamp(0, 255) as u8)
+}
+
+// ---- 4:2:2 packed encode ---------------------------------------------------------
+
+/// Encode RGB (`src`, 3 bytes/px) to packed 4:2:2 YUYV (`dst`, 2 bytes/px), BT.601
+/// limited. Luma is per-pixel; the shared chroma of each horizontal pixel pair is the
+/// rounded average of the two pixels. `width` must be even. Parallel over rows.
+pub fn yuyv_from_rgb(src: &[u8], dst: &mut [u8], width: usize, height: usize) {
+    debug_assert!(width.is_multiple_of(2));
+    debug_assert!(src.len() >= width * height * 3);
+    debug_assert!(dst.len() >= width * height * 2);
+    let src_row = width * 3;
+    let dst_row = width * 2;
+    use super::super::kernel_common::PAR_THRESHOLD;
+    if width * height < PAR_THRESHOLD {
+        for row in 0..height {
+            yuyv_from_rgb_row(
+                &src[row * src_row..row * src_row + src_row],
+                &mut dst[row * dst_row..row * dst_row + dst_row],
+                width,
+            );
+        }
+        return;
+    }
+    use rayon::prelude::*;
+    dst.par_chunks_mut(dst_row)
+        .enumerate()
+        .for_each(|(row, d)| {
+            yuyv_from_rgb_row(&src[row * src_row..row * src_row + src_row], d, width);
+        });
+}
+
+#[inline]
+fn yuyv_from_rgb_row(src: &[u8], dst: &mut [u8], width: usize) {
+    for g in 0..width / 2 {
+        let s = g * 6;
+        let (r0, g0, b0) = (src[s] as i32, src[s + 1] as i32, src[s + 2] as i32);
+        let (r1, g1, b1) = (src[s + 3] as i32, src[s + 4] as i32, src[s + 5] as i32);
+        let y0 = encode_y(r0, g0, b0);
+        let y1 = encode_y(r1, g1, b1);
+        // Shared chroma: rounded average of the two source pixels.
+        let ra = (r0 + r1 + 1) >> 1;
+        let ga = (g0 + g1 + 1) >> 1;
+        let ba = (b0 + b1 + 1) >> 1;
+        let (u, v) = encode_uv(ra, ga, ba);
+        let d = g * 4;
+        dst[d] = y0; // Y0 U Y1 V
+        dst[d + 1] = u;
+        dst[d + 2] = y1;
+        dst[d + 3] = v;
+    }
+}
+
+// ---- 4:2:0 planar encode (NV12) --------------------------------------------------
+
+/// Encode RGB (`src`, 3 bytes/px) to planar 4:2:0 NV12 (BT.601 limited): a full-res
+/// luma plane `y_out` (`w*h`) followed by an interleaved `UV` plane `uv_out` (`w*h/2`).
+/// Each chroma pair is the rounded average of its 2×2 luma block. `w`/`h` must be even.
+pub fn nv12_from_rgb(src: &[u8], y_out: &mut [u8], uv_out: &mut [u8], width: usize, height: usize) {
+    debug_assert!(width.is_multiple_of(2) && height.is_multiple_of(2));
+    debug_assert!(src.len() >= width * height * 3);
+    debug_assert!(y_out.len() >= width * height);
+    debug_assert!(uv_out.len() >= width * height / 2);
+    let src_row = width * 3;
+    use super::super::kernel_common::PAR_THRESHOLD;
+
+    // Luma plane: one independent output row per source row.
+    let encode_y_row = |srow: &[u8], yrow: &mut [u8]| {
+        #[cfg(target_arch = "aarch64")]
+        // SAFETY: NEON is baseline on aarch64; slices sized by the caller.
+        unsafe {
+            encode_y_row_neon(srow, yrow, width);
+            return;
+        }
+        #[allow(unreachable_code)]
+        for (x, yo) in yrow.iter_mut().enumerate() {
+            let s = x * 3;
+            *yo = encode_y(srow[s] as i32, srow[s + 1] as i32, srow[s + 2] as i32);
+        }
+    };
+    // Chroma plane: one output row per 2 source rows (2×2 average).
+    let encode_uv_row = |top: &[u8], bot: &[u8], uvrow: &mut [u8]| {
+        for cx in 0..width / 2 {
+            let s = cx * 6;
+            let r = top[s] as i32 + top[s + 3] as i32 + bot[s] as i32 + bot[s + 3] as i32;
+            let g = top[s + 1] as i32 + top[s + 4] as i32 + bot[s + 1] as i32 + bot[s + 4] as i32;
+            let b = top[s + 2] as i32 + top[s + 5] as i32 + bot[s + 2] as i32 + bot[s + 5] as i32;
+            // Rounded 2×2 average.
+            let (u, v) = encode_uv((r + 2) >> 2, (g + 2) >> 2, (b + 2) >> 2);
+            uvrow[cx * 2] = u;
+            uvrow[cx * 2 + 1] = v;
+        }
+    };
+
+    if width * height < PAR_THRESHOLD {
+        for row in 0..height {
+            encode_y_row(
+                &src[row * src_row..row * src_row + src_row],
+                &mut y_out[row * width..row * width + width],
+            );
+        }
+        for cy in 0..height / 2 {
+            encode_uv_row(
+                &src[(2 * cy) * src_row..(2 * cy) * src_row + src_row],
+                &src[(2 * cy + 1) * src_row..(2 * cy + 1) * src_row + src_row],
+                &mut uv_out[cy * width..cy * width + width],
+            );
+        }
+        return;
+    }
+    use rayon::prelude::*;
+    y_out
+        .par_chunks_mut(width)
+        .enumerate()
+        .for_each(|(row, y)| {
+            encode_y_row(&src[row * src_row..row * src_row + src_row], y);
+        });
+    uv_out
+        .par_chunks_mut(width)
+        .enumerate()
+        .for_each(|(cy, uv)| {
+            encode_uv_row(
+                &src[(2 * cy) * src_row..(2 * cy) * src_row + src_row],
+                &src[(2 * cy + 1) * src_row..(2 * cy + 1) * src_row + src_row],
+                uv,
+            );
+        });
+}
+
+/// NEON luma-row encode: `vld3q_u8` deinterleaves 16 px → R/G/B, widening MACs apply
+/// the Q8 (66,129,25) matrix, then `+16` and a narrowing store. Scalar tail handles
+/// the `width % 16` remainder. Bit-identical to the scalar `encode_y`.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn encode_y_row_neon(src: &[u8], dst: &mut [u8], width: usize) {
+    use std::arch::aarch64::*;
+    let bulk = width & !15;
+    let mut x = 0;
+    while x < bulk {
+        let rgb = vld3q_u8(src.as_ptr().add(x * 3));
+        // Widen each channel to two u16x8 halves and accumulate Y in u16 (Q8 coeffs
+        // fit: 66+129+25 = 220 < 256, so 220*255 = 56100 < 65535).
+        let acc = |r: uint8x8_t, g: uint8x8_t, b: uint8x8_t| -> uint8x8_t {
+            let mut a = vmull_u8(r, vdup_n_u8(YR as u8));
+            a = vmlal_u8(a, g, vdup_n_u8(YG as u8));
+            a = vmlal_u8(a, b, vdup_n_u8(YB as u8));
+            // (a + 128) >> 8, then +16, saturating to u8.
+            let y = vrshrn_n_u16::<8>(a); // rounded narrow ≈ (a+128)>>8
+            vqadd_u8(y, vdup_n_u8(16))
+        };
+        let lo = acc(vget_low_u8(rgb.0), vget_low_u8(rgb.1), vget_low_u8(rgb.2));
+        let hi = acc(
+            vget_high_u8(rgb.0),
+            vget_high_u8(rgb.1),
+            vget_high_u8(rgb.2),
+        );
+        vst1q_u8(dst.as_mut_ptr().add(x), vcombine_u8(lo, hi));
+        x += 16;
+    }
+    for (x, d) in dst.iter_mut().enumerate().skip(bulk) {
+        let s = x * 3;
+        *d = encode_y(src[s] as i32, src[s + 1] as i32, src[s + 2] as i32);
+    }
+}
+
 // ===== Tests ========================================================================
 
 #[cfg(test)]
@@ -1129,6 +1324,77 @@ mod tests {
 
     fn ramp_u8(n: usize) -> Vec<u8> {
         (0..n).map(|v| (v * 7 + 3) as u8).collect()
+    }
+
+    // ----- Family C: video encode -----
+
+    /// The NEON luma-row encode must be bit-identical to the scalar `encode_y`.
+    #[test]
+    fn encode_y_row_matches_scalar() {
+        let width = 35; // 16-px body twice + 3-px tail
+        let src = ramp_u8(width * 3);
+        let mut neon = vec![0u8; width];
+        let mut scalar = vec![0u8; width];
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            super::encode_y_row_neon(&src, &mut neon, width);
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        for x in 0..width {
+            let s = x * 3;
+            neon[x] = encode_y(src[s] as i32, src[s + 1] as i32, src[s + 2] as i32);
+        }
+        for x in 0..width {
+            let s = x * 3;
+            scalar[x] = encode_y(src[s] as i32, src[s + 1] as i32, src[s + 2] as i32);
+        }
+        assert_eq!(neon, scalar);
+    }
+
+    /// A constant-color image survives encode→decode exactly (no subsampling error
+    /// when every pixel is identical), for both YUYV and NV12.
+    #[test]
+    fn encode_decode_constant_is_exact() {
+        let (w, h) = (8, 6);
+        for &(r, g, b) in &[(200u8, 50, 25), (0, 0, 0), (255, 255, 255), (17, 200, 99)] {
+            let rgb: Vec<u8> = (0..w * h).flat_map(|_| [r, g, b]).collect();
+
+            // YUYV round-trip.
+            let mut yuyv = vec![0u8; w * h * 2];
+            yuyv_from_rgb(&rgb, &mut yuyv, w, h);
+            let mut back = vec![0u8; w * h * 3];
+            rgb_from_packed422(&yuyv, &mut back, w, h, Packed422::Yuyv);
+            for i in 0..w * h {
+                assert!((back[i * 3] as i32 - r as i32).abs() <= 2, "yuyv R");
+                assert!((back[i * 3 + 1] as i32 - g as i32).abs() <= 2, "yuyv G");
+                assert!((back[i * 3 + 2] as i32 - b as i32).abs() <= 2, "yuyv B");
+            }
+
+            // NV12 round-trip.
+            let mut nv12 = vec![0u8; w * h * 3 / 2];
+            let (y, uv) = nv12.split_at_mut(w * h);
+            nv12_from_rgb(&rgb, y, uv, w, h);
+            let mut back2 = vec![0u8; w * h * 3];
+            rgb_from_planar420(y, uv, &[], &mut back2, w, h, Planar420::Nv12);
+            for i in 0..w * h {
+                assert!((back2[i * 3] as i32 - r as i32).abs() <= 2, "nv12 R");
+                assert!((back2[i * 3 + 1] as i32 - g as i32).abs() <= 2, "nv12 G");
+                assert!((back2[i * 3 + 2] as i32 - b as i32).abs() <= 2, "nv12 B");
+            }
+        }
+    }
+
+    /// YUYV byte layout: `Y0 U Y1 V` per pair, luma per-pixel, chroma the pair average.
+    #[test]
+    fn yuyv_layout_and_values() {
+        // two pixels: (255,0,0) and (0,0,255)
+        let rgb = [255u8, 0, 0, 0, 0, 255];
+        let mut out = [0u8; 4];
+        yuyv_from_rgb(&rgb, &mut out, 2, 1);
+        let y0 = encode_y(255, 0, 0);
+        let y1 = encode_y(0, 0, 255);
+        let (u, v) = encode_uv((255 + 0 + 1) >> 1, 0, (0 + 255 + 1) >> 1);
+        assert_eq!(out, [y0, u, y1, v]);
     }
 
     // ----- Family A: u8 bit-exact vs scalar oracle -----
