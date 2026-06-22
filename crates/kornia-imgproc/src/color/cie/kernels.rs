@@ -598,7 +598,7 @@ cie_kernel!(
         let l = vbslq_f32(vcgtq_f32(y, vdupq_n_f32(LAB_DELTA)), l_big, l_small);
         // d = x + 15y + 3z; u'=4x/d, v'=9y/d (0 where d==0).
         let d = vfmaq_f32(vfmaq_f32(x, y, vdupq_n_f32(15.0)), z, vdupq_n_f32(3.0));
-        let rd = nonlinear::vrecip_fast_f32x4(d);
+        let rd = nonlinear::vrecip_f32x4(d);
         let up = vmulq_f32(vmulq_f32(x, vdupq_n_f32(4.0)), rd);
         let vp = vmulq_f32(vmulq_f32(y, vdupq_n_f32(9.0)), rd);
         let dz = vceqq_f32(d, vdupq_n_f32(0.0));
@@ -620,10 +620,10 @@ cie_kernel!(
         let y_big = vmulq_f32(vmulq_f32(t, t), t);
         let y_small = vmulq_f32(l, vdupq_n_f32(1.0 / LUV_KAPPA));
         let y = vbslq_f32(vcgtq_f32(l, vdupq_n_f32(8.0)), y_big, y_small);
-        let inv13l = nonlinear::vrecip_fast_f32x4(vmulq_f32(l, vdupq_n_f32(13.0)));
+        let inv13l = nonlinear::vrecip_f32x4(vmulq_f32(l, vdupq_n_f32(13.0)));
         let up = vfmaq_f32(vdupq_n_f32(LUV_UN), p.1, inv13l);
         let vp = vfmaq_f32(vdupq_n_f32(LUV_VN), p.2, inv13l);
-        let inv4vp = nonlinear::vrecip_fast_f32x4(vmulq_f32(vp, vdupq_n_f32(4.0)));
+        let inv4vp = nonlinear::vrecip_f32x4(vmulq_f32(vp, vdupq_n_f32(4.0)));
         let x = vmulq_f32(vmulq_f32(y, vmulq_f32(vdupq_n_f32(9.0), up)), inv4vp);
         // z = y*(12 - 3u' - 20v')/(4v')
         let zn = vsubq_f32(

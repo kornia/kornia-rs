@@ -46,7 +46,7 @@ pub(crate) fn linear_to_srgb_scalar(l: f32) -> f32 {
 
 // ===== vectorized pow via exp2∘log2 =================================================
 
-/// NEON `log2(x)` for `x > 0`, degree-4 least-squares fit over the mantissa.
+/// NEON `log2(x)` for `x > 0`, degree-7 minimax over the mantissa.
 ///
 /// Decomposes `x = m · 2^e` with `m ∈ [1, 2)` via the IEEE-754 exponent bits, then
 /// approximates `log2(m)` with a polynomial. Inputs `≤ 0` are not expected here (the
@@ -70,15 +70,21 @@ unsafe fn log2_f32x4(x: float32x4_t) -> float32x4_t {
     );
     let m = vreinterpretq_f32_u32(mant_bits);
 
-    // Least-squares fit for log2(m) on [1, 2) (degree-4, Horner). Max abs err
-    // ≈ 2.0e-4 → pow(x,2.4) rel err ≈ 4e-4, far inside the color tolerance (~1e-2).
-    // Degree chosen to match colour precision, not full f32 — this is the hot path.
-    let c0 = vdupq_n_f32(-2.496_773_8);
-    let c1 = vdupq_n_f32(4.028_372_8);
-    let c2 = vdupq_n_f32(-2.081_060_2);
-    let c3 = vdupq_n_f32(0.628_815_73);
-    let c4 = vdupq_n_f32(-0.079_150_366);
-    let mut p = c4;
+    // Minimax for log2(m) on [1, 2) (degree-7, Horner). Max abs err < 1e-6 → pow rel
+    // err < 2e-6. High precision so our Lab/Luv land as close to OpenCV as its own
+    // approximation allows (accuracy is the priority over the hot-path speed here).
+    let c0 = vdupq_n_f32(-3.235_209_4);
+    let c1 = vdupq_n_f32(7.085_100_8);
+    let c2 = vdupq_n_f32(-7.396_148);
+    let c3 = vdupq_n_f32(5.673_517_7);
+    let c4 = vdupq_n_f32(-2.914_490_3);
+    let c5 = vdupq_n_f32(0.950_741);
+    let c6 = vdupq_n_f32(-0.178_109_57);
+    let c7 = vdupq_n_f32(0.014_598_475);
+    let mut p = c7;
+    p = vfmaq_f32(c6, p, m);
+    p = vfmaq_f32(c5, p, m);
+    p = vfmaq_f32(c4, p, m);
     p = vfmaq_f32(c3, p, m);
     p = vfmaq_f32(c2, p, m);
     p = vfmaq_f32(c1, p, m);
@@ -99,13 +105,16 @@ unsafe fn exp2_f32x4(x: float32x4_t) -> float32x4_t {
     let n = vrndmq_f32(x); // floor(x)
     let f = vsubq_f32(x, n); // [0, 1)
 
-    // Least-squares fit for 2^f on [0, 1) (degree-3, Horner). Max abs err ≈ 2.0e-4,
-    // matched to colour precision (see log2 note).
-    let c0 = vdupq_n_f32(0.999_811_96);
-    let c1 = vdupq_n_f32(0.696_838_58);
-    let c2 = vdupq_n_f32(0.224_126_44);
-    let c3 = vdupq_n_f32(0.079_019_94);
-    let mut p = c3;
+    // Minimax for 2^f on [0, 1) (degree-5, Horner). Max abs err < 3e-7.
+    let c0 = vdupq_n_f32(0.999_999_77);
+    let c1 = vdupq_n_f32(0.693_156_8);
+    let c2 = vdupq_n_f32(0.240_131_68);
+    let c3 = vdupq_n_f32(0.055_876_57);
+    let c4 = vdupq_n_f32(0.008_940_577);
+    let c5 = vdupq_n_f32(0.001_894_378_6);
+    let mut p = c5;
+    p = vfmaq_f32(c4, p, f);
+    p = vfmaq_f32(c3, p, f);
     p = vfmaq_f32(c2, p, f);
     p = vfmaq_f32(c1, p, f);
     p = vfmaq_f32(c0, p, f); // 2^f
@@ -139,10 +148,8 @@ mod tests {
                     let vp = vdupq_n_f32(p);
                     let got = vgetq_lane_f32::<0>(super::pow_f32x4(vx, vp));
                     let rel = (got - want).abs() / want.max(1e-6);
-                    // Colour-grade precision: degree-4 log2 + degree-3 exp2 give
-                    // pow rel err ≈ 4e-4, ample for Lab/Luv (tolerance ~1e-2).
                     assert!(
-                        rel <= 2e-3,
+                        rel <= 1e-5,
                         "pow({x},{p}): got {got}, want {want}, rel {rel}"
                     );
                 }

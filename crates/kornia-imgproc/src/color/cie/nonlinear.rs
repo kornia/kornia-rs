@@ -2,8 +2,8 @@
 //!
 //! Lab needs `t^(1/3)` of each normalized tristimulus value; Luv needs `Y^(1/3)`
 //! and a `1/d` divide. NEON has no cbrt, so `cbrt_f32x4` uses the classic
-//! magic-constant bit hack for an initial guess followed by one Halley iteration
-//! (cubic convergence), tuned to colour precision (~2e-5) for the `[0, 1]`-ish domain.
+//! magic-constant bit hack for an initial guess followed by two Halley iterations
+//! (cubic convergence), which reaches ~f32 precision for the `[0, 1]`-ish domain.
 
 #[cfg(target_arch = "aarch64")]
 use std::arch::aarch64::*;
@@ -25,10 +25,10 @@ pub(crate) unsafe fn cbrt_f32x4(x: float32x4_t) -> float32x4_t {
     );
     let mut y = vreinterpretq_f32_u32(seed_bits);
 
-    // One Halley iteration: y = y*(c + 2x)/(2c + x), c = y^3. Cubic convergence on
-    // the ~4% bit-hack seed gives max rel err ≈ 2.3e-5 — ample for colour (~1e-2),
-    // so a second iteration is wasted work on this hot path.
-    {
+    // Two Halley iterations: y = y*(c + 2x)/(2c + x), c = y^3. Cubic convergence to
+    // ~f32 precision (~2e-7) so Lab/Luv land as close to OpenCV as its own
+    // approximation allows.
+    for _ in 0..2 {
         let c = vmulq_f32(vmulq_f32(y, y), y);
         let num = vaddq_f32(c, vaddq_f32(x, x)); // c + 2x
         let den = vaddq_f32(vaddq_f32(c, c), x); // 2c + x
@@ -50,15 +50,6 @@ pub(crate) unsafe fn vrecip_f32x4(x: float32x4_t) -> float32x4_t {
     r
 }
 
-/// NEON reciprocal `1/x` with a single Newton-Raphson step (~1e-4 rel) — colour-grade,
-/// for the Luv `u'/v'` and `1/(13L)` divides where the result feeds u/v at ~1e-2 need.
-#[cfg(target_arch = "aarch64")]
-#[inline]
-pub(crate) unsafe fn vrecip_fast_f32x4(x: float32x4_t) -> float32x4_t {
-    let r = vrecpeq_f32(x);
-    vmulq_f32(r, vrecpsq_f32(x, r))
-}
-
 #[cfg(test)]
 mod tests {
     #[cfg(target_arch = "aarch64")]
@@ -71,8 +62,7 @@ mod tests {
             unsafe {
                 let got = vgetq_lane_f32::<0>(super::cbrt_f32x4(vdupq_n_f32(x)));
                 let rel = (got - want).abs() / want.max(1e-6);
-                // Colour-grade: one Halley iteration → rel err ≈ 2.3e-5.
-                assert!(rel <= 1e-4, "cbrt({x}): got {got}, want {want}, rel {rel}");
+                assert!(rel <= 1e-5, "cbrt({x}): got {got}, want {want}, rel {rel}");
             }
         }
     }
