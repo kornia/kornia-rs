@@ -118,8 +118,22 @@ pub(crate) fn srgb_from_linear_scalar64_px(r: f64, g: f64, b: f64) -> (f64, f64,
     )
 }
 
+// Public RGB↔XYZ: a direct 3×3 matrix, NO gamma — matches OpenCV `COLOR_RGB2XYZ`
+// and `kornia.color.rgb_to_xyz`. (Lab/Luv linearize internally via the `lin_*`
+// helpers below before applying the matrix.)
 #[inline]
 pub(crate) fn xyz_from_rgb_scalar64(r: f64, g: f64, b: f64) -> (f64, f64, f64) {
+    matvec(&M_RGB2XYZ, r, g, b)
+}
+
+#[inline]
+pub(crate) fn rgb_from_xyz_scalar64(x: f64, y: f64, z: f64) -> (f64, f64, f64) {
+    matvec(&M_XYZ2RGB, x, y, z)
+}
+
+// Gamma-aware XYZ (sRGB→linear→matrix), the colorimetric pipeline used by Lab/Luv.
+#[inline]
+fn lin_xyz_from_rgb_scalar64(r: f64, g: f64, b: f64) -> (f64, f64, f64) {
     let lr = linear_from_srgb_scalar64(r);
     let lg = linear_from_srgb_scalar64(g);
     let lb = linear_from_srgb_scalar64(b);
@@ -127,7 +141,7 @@ pub(crate) fn xyz_from_rgb_scalar64(r: f64, g: f64, b: f64) -> (f64, f64, f64) {
 }
 
 #[inline]
-pub(crate) fn rgb_from_xyz_scalar64(x: f64, y: f64, z: f64) -> (f64, f64, f64) {
+fn rgb_from_lin_xyz_scalar64(x: f64, y: f64, z: f64) -> (f64, f64, f64) {
     let (lr, lg, lb) = matvec(&M_XYZ2RGB, x, y, z);
     (
         srgb_from_linear_scalar64(lr),
@@ -138,7 +152,7 @@ pub(crate) fn rgb_from_xyz_scalar64(x: f64, y: f64, z: f64) -> (f64, f64, f64) {
 
 #[inline]
 pub(crate) fn lab_from_rgb_scalar64(r: f64, g: f64, b: f64) -> (f64, f64, f64) {
-    let (x, y, z) = xyz_from_rgb_scalar64(r, g, b);
+    let (x, y, z) = lin_xyz_from_rgb_scalar64(r, g, b);
     let fx = lab_f(x / XN as f64);
     let fy = lab_f(y / YN as f64);
     let fz = lab_f(z / ZN as f64);
@@ -153,12 +167,12 @@ pub(crate) fn rgb_from_lab_scalar64(l: f64, a: f64, b: f64) -> (f64, f64, f64) {
     let x = XN as f64 * lab_finv(fx);
     let y = YN as f64 * lab_finv(fy);
     let z = ZN as f64 * lab_finv(fz);
-    rgb_from_xyz_scalar64(x, y, z)
+    rgb_from_lin_xyz_scalar64(x, y, z)
 }
 
 #[inline]
 pub(crate) fn luv_from_rgb_scalar64(r: f64, g: f64, b: f64) -> (f64, f64, f64) {
-    let (x, y, z) = xyz_from_rgb_scalar64(r, g, b);
+    let (x, y, z) = lin_xyz_from_rgb_scalar64(r, g, b);
     let yr = y / YN as f64;
     let l = if yr > LAB_DELTA as f64 {
         116.0 * yr.cbrt() - 16.0
@@ -179,7 +193,7 @@ pub(crate) fn luv_from_rgb_scalar64(r: f64, g: f64, b: f64) -> (f64, f64, f64) {
 #[inline]
 pub(crate) fn rgb_from_luv_scalar64(l: f64, u: f64, v: f64) -> (f64, f64, f64) {
     if l <= 0.0 {
-        return rgb_from_xyz_scalar64(0.0, 0.0, 0.0);
+        return rgb_from_lin_xyz_scalar64(0.0, 0.0, 0.0);
     }
     let y = if l > 8.0 {
         YN as f64 * ((l + 16.0) / 116.0).powi(3)
@@ -190,7 +204,7 @@ pub(crate) fn rgb_from_luv_scalar64(l: f64, u: f64, v: f64) -> (f64, f64, f64) {
     let vp = v / (13.0 * l) + LUV_VN as f64;
     let x = y * 9.0 * up / (4.0 * vp);
     let z = y * (12.0 - 3.0 * up - 20.0 * vp) / (4.0 * vp);
-    rgb_from_xyz_scalar64(x, y, z)
+    rgb_from_lin_xyz_scalar64(x, y, z)
 }
 
 // f32 scalar per-pixel reference (mirrors the f32 SIMD math; used for tail + fallback).
@@ -241,19 +255,30 @@ fn srgb_from_linear_px(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
 
 #[inline]
 fn xyz_from_rgb_px(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
+    matvec32(&M_RGB2XYZ, r, g, b)
+}
+
+#[inline]
+fn rgb_from_xyz_px(x: f32, y: f32, z: f32) -> (f32, f32, f32) {
+    matvec32(&M_XYZ2RGB, x, y, z)
+}
+
+// Gamma-aware XYZ for the Lab/Luv f32 scalar tail.
+#[inline]
+fn lin_xyz_from_rgb_px(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
     let (lr, lg, lb) = linear_from_srgb_px(r, g, b);
     matvec32(&M_RGB2XYZ, lr, lg, lb)
 }
 
 #[inline]
-fn rgb_from_xyz_px(x: f32, y: f32, z: f32) -> (f32, f32, f32) {
+fn rgb_from_lin_xyz_px(x: f32, y: f32, z: f32) -> (f32, f32, f32) {
     let (lr, lg, lb) = matvec32(&M_XYZ2RGB, x, y, z);
     srgb_from_linear_px(lr, lg, lb)
 }
 
 #[inline]
 fn lab_from_rgb_px(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
-    let (x, y, z) = xyz_from_rgb_px(r, g, b);
+    let (x, y, z) = lin_xyz_from_rgb_px(r, g, b);
     let fx = lab_f_f32(x * INV_XN);
     let fy = lab_f_f32(y); // YN == 1
     let fz = lab_f_f32(z * INV_ZN);
@@ -268,12 +293,12 @@ fn rgb_from_lab_px(l: f32, a: f32, b: f32) -> (f32, f32, f32) {
     let x = XN * lab_finv_f32(fx);
     let y = YN * lab_finv_f32(fy);
     let z = ZN * lab_finv_f32(fz);
-    rgb_from_xyz_px(x, y, z)
+    rgb_from_lin_xyz_px(x, y, z)
 }
 
 #[inline]
 fn luv_from_rgb_px(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
-    let (x, y, z) = xyz_from_rgb_px(r, g, b);
+    let (x, y, z) = lin_xyz_from_rgb_px(r, g, b);
     let yr = y; // YN == 1
     let l = if yr > LAB_DELTA {
         116.0 * yr.cbrt() - 16.0
@@ -292,7 +317,7 @@ fn luv_from_rgb_px(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
 #[inline]
 fn rgb_from_luv_px(l: f32, u: f32, v: f32) -> (f32, f32, f32) {
     if l <= 0.0 {
-        return rgb_from_xyz_px(0.0, 0.0, 0.0);
+        return rgb_from_lin_xyz_px(0.0, 0.0, 0.0);
     }
     let y = if l > 8.0 {
         let t = (l + 16.0) / 116.0;
@@ -305,7 +330,7 @@ fn rgb_from_luv_px(l: f32, u: f32, v: f32) -> (f32, f32, f32) {
     let vp = v * inv13l + LUV_VN;
     let x = y * 9.0 * up / (4.0 * vp);
     let z = y * (12.0 - 3.0 * up - 20.0 * vp) / (4.0 * vp);
-    rgb_from_xyz_px(x, y, z)
+    rgb_from_lin_xyz_px(x, y, z)
 }
 
 // ===== NEON building blocks =========================================================
@@ -504,10 +529,8 @@ cie_kernel!(
 cie_kernel!(
     xyz_from_rgb_f32,
     |p: float32x4x3_t| {
-        let lr = srgb_to_linear_v(p.0);
-        let lg = srgb_to_linear_v(p.1);
-        let lb = srgb_to_linear_v(p.2);
-        let (x, y, z) = matvec_v(&M_RGB2XYZ, lr, lg, lb);
+        // Direct matrix, no gamma — matches OpenCV/Kornia rgb_to_xyz convention.
+        let (x, y, z) = matvec_v(&M_RGB2XYZ, p.0, p.1, p.2);
         float32x4x3_t(x, y, z)
     },
     xyz_from_rgb_px
@@ -515,12 +538,8 @@ cie_kernel!(
 cie_kernel!(
     rgb_from_xyz_f32,
     |p: float32x4x3_t| {
-        let (lr, lg, lb) = matvec_v(&M_XYZ2RGB, p.0, p.1, p.2);
-        float32x4x3_t(
-            linear_to_srgb_v(lr),
-            linear_to_srgb_v(lg),
-            linear_to_srgb_v(lb),
-        )
+        let (r, g, b) = matvec_v(&M_XYZ2RGB, p.0, p.1, p.2);
+        float32x4x3_t(r, g, b)
     },
     rgb_from_xyz_px
 );
