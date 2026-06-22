@@ -5,12 +5,15 @@
 ```sh
 # CPU baseline (no CUDA required)
 cargo run --example bench_gpu_color --release
+cargo run --example bench_gpu_resize --release
 
 # CPU + GPU comparison (requires CUDA driver)
 cargo run --example bench_gpu_color --features gpu-cubecl --release
+cargo run --example bench_gpu_resize --features gpu-cubecl --release
 
 # OpenCV CPU comparison (requires Python + opencv-python)
-python3 scripts/bench_opencv_color.py
+python3 crates/kornia-imgproc/examples/bench_opencv_color.py
+python3 crates/kornia-imgproc/examples/bench_opencv_resize.py
 ```
 
 ## Methodology
@@ -159,6 +162,38 @@ DRAM utilisation corrected for actual traffic:
 - Downscale nearest trails the other cases (55–57%) due to strided source reads
   defeating L1/L2 cache-line reuse — texture memory would close the gap but is
   not currently exposed by CubeCL.
+
+### OpenCV comparison — 2026-06-22
+
+**OpenCV 4.12.0** benchmarked via Python bindings (`cv2.resize`), same methodology
+(50 warmup, 200 timed iters, f32 RGB).  OpenCV uses multi-threaded CPU (TBB) where
+available.
+
+```
+python3 crates/kornia-imgproc/examples/bench_opencv_resize.py
+```
+
+#### Nearest-neighbor
+
+| Source → Dest | GPU ms | OpenCV ms | GPU vs OpenCV |
+|---------------|-------:|----------:|--------------:|
+| 1024×1024→512×512 | 0.061 | 0.510 | **8×** |
+| 512×512→1024×1024 | 0.115 | 2.290 | **20×** |
+| 1920×1080→960×540 | 0.118 | 2.086 | **18×** |
+| 1920×1080→3840×2160 | 0.905 | 36.332 | **40×** |
+| 3840×2160→1920×1080 | 0.465 | 11.054 | **24×** |
+
+#### Bilinear
+
+| Source → Dest | GPU ms | OpenCV ms | GPU vs OpenCV |
+|---------------|-------:|----------:|--------------:|
+| 1024×1024→512×512 | 0.097 | 0.750 | **8×** |
+| 512×512→1024×1024 | 0.140 | 1.848 | **13×** |
+| 1920×1080→960×540 | 0.186 | 2.824 | **15×** |
+| 1920×1080→3840×2160 | 1.009 | 32.207 | **32×** |
+| 3840×2160→1920×1080 | 0.742 | 11.778 | **16×** |
+
+GPU is **8–40× faster than OpenCV** across all cases.
 
 ---
 
