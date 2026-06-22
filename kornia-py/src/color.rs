@@ -1,9 +1,11 @@
+use numpy::{PyArray1, PyArrayMethods, PyUntypedArrayMethods};
 use pyo3::prelude::*;
 
 use crate::image::{
     alloc_output_pyarray, alloc_output_pyarray_f32, numpy_as_image, numpy_as_image_f32, to_pyerr,
     PyImage, PyImageF32,
 };
+use kornia_image::ImageSize;
 use kornia_imgproc::color;
 
 #[pyfunction]
@@ -159,3 +161,45 @@ pub fn rgb_from_bayer(py: Python<'_>, image: PyImage, pattern: &str) -> PyResult
         .map_err(to_pyerr)?;
     Ok(out)
 }
+
+/// Decode a raw packed/planar YUV byte buffer (1-D `uint8`) to an `(H, W, 3)` RGB image.
+///
+/// The buffer layout and required length are determined by the format:
+/// packed 4:2:2 (`yuyv`/`uyvy`/`yvyu`) needs `W*H*2` bytes; planar 4:2:0
+/// (`nv12`/`nv21`/`i420`/`yv12`) needs `W*H*3/2` bytes (Y plane followed by chroma).
+/// BT.601 limited range, matching OpenCV's `COLOR_YUV2RGB_*`.
+macro_rules! py_video_decode {
+    ($name:ident, $func:path, $doc:expr) => {
+        #[doc = $doc]
+        #[pyfunction]
+        pub fn $name(
+            py: Python<'_>,
+            data: Py<PyArray1<u8>>,
+            width: usize,
+            height: usize,
+        ) -> PyResult<PyImage> {
+            let arr = data.bind(py);
+            if !arr.is_c_contiguous() {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "YUV buffer must be a C-contiguous 1-D uint8 array",
+                ));
+            }
+            // SAFETY: `data` is owned for the call, keeping the buffer alive; the slice is
+            // only read inside `py.detach` while `arr` remains valid.
+            let src = unsafe { std::slice::from_raw_parts(arr.data(), arr.len()) };
+            let (mut dst, out) =
+                unsafe { alloc_output_pyarray::<3>(py, ImageSize { width, height })? };
+            // Length validation happens inside the kernel (returns InvalidImageSize).
+            py.detach(|| $func(src, &mut dst)).map_err(to_pyerr)?;
+            Ok(out)
+        }
+    };
+}
+
+py_video_decode!(rgb_from_yuyv, color::rgb_from_yuyv, "Decode packed 4:2:2 YUYV to RGB.");
+py_video_decode!(rgb_from_uyvy, color::rgb_from_uyvy, "Decode packed 4:2:2 UYVY to RGB.");
+py_video_decode!(rgb_from_yvyu, color::rgb_from_yvyu, "Decode packed 4:2:2 YVYU to RGB.");
+py_video_decode!(rgb_from_nv12, color::rgb_from_nv12, "Decode planar 4:2:0 NV12 to RGB.");
+py_video_decode!(rgb_from_nv21, color::rgb_from_nv21, "Decode planar 4:2:0 NV21 to RGB.");
+py_video_decode!(rgb_from_i420, color::rgb_from_i420, "Decode planar 4:2:0 I420 to RGB.");
+py_video_decode!(rgb_from_yv12, color::rgb_from_yv12, "Decode planar 4:2:0 YV12 to RGB.");

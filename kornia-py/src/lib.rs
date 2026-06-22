@@ -417,6 +417,13 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_yuv, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(color::sepia_from_rgb, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_bayer, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_yuyv, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_uyvy, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_yvyu, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_nv12, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_nv21, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_i420, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_yv12, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(enhance::add_weighted, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(
         histogram::compute_histogram,
