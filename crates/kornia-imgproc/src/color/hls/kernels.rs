@@ -13,6 +13,17 @@ const INV_255: f32 = 1.0 / 255.0;
 const DEG_TO_BYTE: f32 = 255.0 / 360.0; // h_degrees → [0,255]
 const BYTE_TO_DEG: f32 = 360.0 / 255.0; // [0,255] → h_degrees
 
+/// Fast NEON reciprocal `1/x` (vrecpe seed + 2 Newton steps, ~f32-exact). Higher
+/// throughput than `vdivq_f32` on the A78AE for the per-pixel hue/sat divides.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+unsafe fn vrecip_f32x4(x: std::arch::aarch64::float32x4_t) -> std::arch::aarch64::float32x4_t {
+    use std::arch::aarch64::*;
+    let r = vrecpeq_f32(x);
+    let r = vmulq_f32(r, vrecpsq_f32(x, r));
+    vmulq_f32(r, vrecpsq_f32(x, r))
+}
+
 // ===== RGB f32 → HLS f32 ============================================================
 
 /// Slice-level RGB f32 → HLS f32. Parallelized over row-strips for large images.
@@ -73,7 +84,7 @@ fn hls_from_rgb_f32_neon(src: &[f32], dst: &mut [f32], npixels: usize) {
             let l = vmulq_f32(sum, half);
 
             // reciprocal of diff (guard against /0 via masks below)
-            let rd = vdivq_f32(vdupq_n_f32(1.0), diff);
+            let rd = vrecip_f32x4(diff);
 
             // hue candidates (no %6 needed: (g-b)/diff ∈ [-1,1] on the r-max branch, etc.)
             let h_r = vmulq_f32(vsubq_f32(g, b), rd);
@@ -97,8 +108,8 @@ fn hls_from_rgb_f32_neon(src: &[f32], dst: &mut [f32], npixels: usize) {
             h = vmulq_f32(h, deg2byte);
 
             // s = if L<=0.5 { diff/sum } else { diff/(2-sum) }
-            let s_lo = vmulq_f32(diff, vdivq_f32(vdupq_n_f32(1.0), sum));
-            let s_hi = vmulq_f32(diff, vdivq_f32(vdupq_n_f32(1.0), vsubq_f32(v2, sum)));
+            let s_lo = vmulq_f32(diff, vrecip_f32x4(sum));
+            let s_hi = vmulq_f32(diff, vrecip_f32x4(vsubq_f32(v2, sum)));
             let l_le = vcleq_f32(l, half);
             let mut s = vbslq_f32(l_le, s_lo, s_hi);
             // diff == 0 → s = 0

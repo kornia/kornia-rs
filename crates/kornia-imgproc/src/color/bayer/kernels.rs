@@ -215,46 +215,41 @@ pub fn rgb_from_bayer_neon(
             //
             // We compute for columns c in [1, cols-1). Start at the first even
             // multiple that keeps a 16-wide window inside the interior.
-            let mut c = 1usize;
-            // Bulk: 16 interior pixels per iteration. Need c+16 <= cols-1.
-            while c + 16 <= cols - 1 {
-                // Load the 3×3 neighborhood lanes for 16 consecutive pixels.
-                let center = vld1q_u8(src.as_ptr().add(row_off + c));
-                let west = vld1q_u8(src.as_ptr().add(row_off + c - 1));
-                let east = vld1q_u8(src.as_ptr().add(row_off + c + 1));
-                let north = vld1q_u8(src.as_ptr().add(row_off - cols + c));
-                let south = vld1q_u8(src.as_ptr().add(row_off + cols + c));
-                let nw = vld1q_u8(src.as_ptr().add(row_off - cols + c - 1));
-                let ne = vld1q_u8(src.as_ptr().add(row_off - cols + c + 1));
-                let sw = vld1q_u8(src.as_ptr().add(row_off + cols + c - 1));
-                let se = vld1q_u8(src.as_ptr().add(row_off + cols + c + 1));
-
-                // Rounded averages over the whole 16-lane window. The 4-neighbor
-                // cases need true (a+b+c+d+2)>>2 (a nested vrhadd is not bit-exact),
-                // so they go through the widening avg4_u8 helper; the 2-neighbor
-                // cases are exact with vrhaddq_u8 (rounded halving add).
+            // One 16-pixel NEON block at interior column `cc`. The 4-neighbor cases
+            // need true (a+b+c+d+2)>>2 (nested vrhadd is not bit-exact) via the
+            // widening avg4_u8; the 2-neighbor cases are exact with vrhaddq_u8.
+            let mut blk = |cc: usize| {
+                let center = vld1q_u8(src.as_ptr().add(row_off + cc));
+                let west = vld1q_u8(src.as_ptr().add(row_off + cc - 1));
+                let east = vld1q_u8(src.as_ptr().add(row_off + cc + 1));
+                let north = vld1q_u8(src.as_ptr().add(row_off - cols + cc));
+                let south = vld1q_u8(src.as_ptr().add(row_off + cols + cc));
+                let nw = vld1q_u8(src.as_ptr().add(row_off - cols + cc - 1));
+                let ne = vld1q_u8(src.as_ptr().add(row_off - cols + cc + 1));
+                let sw = vld1q_u8(src.as_ptr().add(row_off + cols + cc - 1));
+                let se = vld1q_u8(src.as_ptr().add(row_off + cols + cc + 1));
                 let g4 = avg4_u8(north, south, west, east);
                 let diag4 = avg4_u8(nw, ne, sw, se);
-                let h2 = vrhaddq_u8(west, east); // avg2 horizontal
-                let v2 = vrhaddq_u8(north, south); // avg2 vertical
-
-                // Build R/G/B for each lane by selecting per the column phase.
-                // Within a NEON block the phase alternates every column, so we
-                // assemble masks for "this lane is an R/B-colored sensel" vs a
-                // G sensel, and for the colored-row identity.
-                //
-                // Phase of column (c + lane): cell = table[r&1][(c+lane)&1].
-                // The two columns in the block alternate, so we precompute the
-                // two cell kinds for even/odd lanes of this row.
-                let cell_even = table[r & 1][c & 1]; // lane 0,2,4,...
-                let cell_odd = table[r & 1][(c + 1) & 1]; // lane 1,3,5,...
-
+                let h2 = vrhaddq_u8(west, east);
+                let v2 = vrhaddq_u8(north, south);
+                let cell_even = table[r & 1][cc & 1];
+                let cell_odd = table[r & 1][(cc + 1) & 1];
                 let (r_v, g_v, b_v) = assemble_rgb(center, g4, diag4, h2, v2, cell_even, cell_odd);
-
                 vst3q_u8(
-                    dst.as_mut_ptr().add((row_off + c) * 3),
+                    dst.as_mut_ptr().add((row_off + cc) * 3),
                     uint8x16x3_t(r_v, g_v, b_v),
                 );
+            };
+            let mut c = 1usize;
+            // 2× unrolled: two independent 16-px blocks per iter so the OoO core
+            // overlaps their load/compute chains.
+            while c + 32 <= cols - 1 {
+                blk(c);
+                blk(c + 16);
+                c += 32;
+            }
+            while c + 16 <= cols - 1 {
+                blk(c);
                 c += 16;
             }
             // Remainder of this interior row (NEON tail) + right border (col cols-1),
