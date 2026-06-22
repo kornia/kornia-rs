@@ -46,13 +46,14 @@ pub(crate) fn linear_to_srgb_scalar(l: f32) -> f32 {
 
 // ===== vectorized pow via exp2∘log2 =================================================
 
-/// NEON `log2(x)` for `x > 0`, degree-5 minimax over the mantissa.
+/// NEON `log2(x)` for `x > 0`, degree-4 least-squares fit over the mantissa.
 ///
 /// Decomposes `x = m · 2^e` with `m ∈ [1, 2)` via the IEEE-754 exponent bits, then
 /// approximates `log2(m)` with a polynomial. Inputs `≤ 0` are not expected here (the
 /// gamma tail is only taken for `x > breakpoint > 0`).
 #[cfg(target_arch = "aarch64")]
 #[inline]
+#[allow(clippy::excessive_precision)] // least-squares fit constants; keep full digits
 unsafe fn log2_f32x4(x: float32x4_t) -> float32x4_t {
     // Extract exponent: e = ((bits >> 23) & 0xff) - 127.
     let bits = vreinterpretq_u32_f32(x);
