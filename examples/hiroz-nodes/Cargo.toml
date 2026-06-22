@@ -12,7 +12,7 @@ bytes = "1"
 ctrlc = { workspace = true }
 env_logger = { workspace = true }
 flume = "0.12"
-foxglove = "0.24.0"
+foxglove = "0.25.2"
 hiroz = { git = "https://github.com/ZettaScaleLabs/hiroz.git", branch = "main", features = [
   "protobuf",
 ] }
