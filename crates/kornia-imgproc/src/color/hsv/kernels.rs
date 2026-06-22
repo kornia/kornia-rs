@@ -12,17 +12,6 @@ const INV_255: f32 = 1.0 / 255.0;
 const DEG_TO_BYTE: f32 = 255.0 / 360.0; // h_degrees → [0,255]
 const BYTE_TO_DEG: f32 = 360.0 / 255.0; // [0,255] → h_degrees
 
-/// Fast NEON reciprocal `1/x` (vrecpe seed + 2 Newton steps, ~f32-exact). Higher
-/// throughput than `vdivq_f32` on the A78AE for the per-pixel hue/sat divides.
-#[cfg(target_arch = "aarch64")]
-#[inline]
-unsafe fn vrecip_f32x4(x: std::arch::aarch64::float32x4_t) -> std::arch::aarch64::float32x4_t {
-    use std::arch::aarch64::*;
-    let r = vrecpeq_f32(x);
-    let r = vmulq_f32(r, vrecpsq_f32(x, r));
-    vmulq_f32(r, vrecpsq_f32(x, r))
-}
-
 // ===== RGB f32 → HSV f32 ============================================================
 
 /// Slice-level RGB f32 → HSV f32. Parallelized over row-strips for large images.
@@ -81,8 +70,8 @@ fn hsv_from_rgb_f32_neon(src: &[f32], dst: &mut [f32], npixels: usize) {
             let delta = vsubq_f32(max, min);
 
             // reciprocals (guard against /0 via masks below)
-            let rd = vrecip_f32x4(delta);
-            let rmax = vrecip_f32x4(max);
+            let rd = vdivq_f32(vdupq_n_f32(1.0), delta);
+            let rmax = vdivq_f32(vdupq_n_f32(1.0), max);
 
             // hue candidates (no %6 needed: (g-b)/delta ∈ [-1,1] on the r-max branch, etc.)
             let h_r = vmulq_f32(vsubq_f32(g, b), rd);
