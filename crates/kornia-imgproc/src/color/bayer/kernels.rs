@@ -165,13 +165,13 @@ pub fn rgb_from_bayer_dispatch(
 
 /// NEON Bayer demosaic.
 ///
-/// Strategy: the four border lines (top/bottom row, left/right column) are done
-/// by the scalar oracle so replicate-edge handling is shared and exact. The
-/// interior (`1..rows-1` × `1..cols-1`) is processed two rows at a time. Each
-/// interior row pair is split into even/odd columns with `vld2q_u8` so the two
-/// mosaic phases land in separate registers; the 2-neighbor cases use
-/// `vrhaddq_u8` (rounded halving add) and the 4-neighbor cases use widening
-/// `vaddl_u8` + `vrshrn_n_u16(_, 2)`. Results re-interleave with `vst3q_u8`.
+/// Borders (top/bottom rows, left/right columns) and the per-row tail use the
+/// scalar oracle so replicate-edge handling is shared and exact. The interior is
+/// processed in even-aligned 32-column blocks: each of the 3 source rows is loaded
+/// with `vld2q_u8` (deinterleaving even/odd columns), so each pixel's phase is
+/// uniform per register — no per-lane masks. 2-neighbour cases use `vrhaddq_u8`,
+/// 4-neighbour cases use widening `vaddl_u8` + `vrshrn_n_u16(_, 2)`; results
+/// re-interleave with `vzipq_u8` + `vst3q_u8`. Bit-exact vs the scalar oracle.
 ///
 /// For images too small to have an interior (rows < 3 or cols < 3) we fall back
 /// to the scalar path entirely.
