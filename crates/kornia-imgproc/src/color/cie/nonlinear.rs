@@ -40,6 +40,7 @@ pub(crate) unsafe fn cbrt_f32x4(x: float32x4_t) -> float32x4_t {
 }
 
 /// NEON reciprocal `1/x` refined by two Newton-Raphson steps (vrecpe seed).
+/// ~f32-exact; used inside the cbrt Halley step where accuracy compounds.
 #[cfg(target_arch = "aarch64")]
 #[inline]
 pub(crate) unsafe fn vrecip_f32x4(x: float32x4_t) -> float32x4_t {
@@ -47,6 +48,15 @@ pub(crate) unsafe fn vrecip_f32x4(x: float32x4_t) -> float32x4_t {
     r = vmulq_f32(r, vrecpsq_f32(x, r));
     r = vmulq_f32(r, vrecpsq_f32(x, r));
     r
+}
+
+/// NEON reciprocal `1/x` with a single Newton-Raphson step (~1e-4 rel) — colour-grade,
+/// for the Luv `u'/v'` and `1/(13L)` divides where the result feeds u/v at ~1e-2 need.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+pub(crate) unsafe fn vrecip_fast_f32x4(x: float32x4_t) -> float32x4_t {
+    let r = vrecpeq_f32(x);
+    vmulq_f32(r, vrecpsq_f32(x, r))
 }
 
 #[cfg(test)]
