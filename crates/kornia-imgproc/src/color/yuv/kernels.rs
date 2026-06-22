@@ -1185,6 +1185,27 @@ pub fn yuyv_from_rgb(src: &[u8], dst: &mut [u8], width: usize, height: usize) {
 
 #[inline]
 fn yuyv_from_rgb_row(src: &[u8], dst: &mut [u8], width: usize) {
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: NEON is baseline on aarch64; slices sized by the caller.
+    unsafe {
+        yuyv_from_rgb_row_neon(src, dst, width);
+        return;
+    }
+    #[cfg(target_arch = "x86_64")]
+    if crate::simd::cpu_features().has_avx2 {
+        // SAFETY: avx2 verified above; slices sized by the caller.
+        unsafe {
+            yuyv_from_rgb_row_avx2(src, dst, width);
+            return;
+        }
+    }
+    #[allow(unreachable_code)]
+    yuyv_from_rgb_row_scalar(src, dst, width);
+}
+
+/// Scalar YUYV row encode (oracle + SIMD tail). Each pair → `Y0 U Y1 V`.
+#[inline]
+fn yuyv_from_rgb_row_scalar(src: &[u8], dst: &mut [u8], width: usize) {
     for g in 0..width / 2 {
         let s = g * 6;
         let (r0, g0, b0) = (src[s] as i32, src[s + 1] as i32, src[s + 2] as i32);
@@ -1201,6 +1222,158 @@ fn yuyv_from_rgb_row(src: &[u8], dst: &mut [u8], width: usize) {
         dst[d + 1] = u;
         dst[d + 2] = y1;
         dst[d + 3] = v;
+    }
+}
+
+/// NEON YUYV row encode, 16 px (8 pairs → 32 dst bytes) per iter. `vld3q_u8`
+/// deinterleaves RGB; luma uses the Q8 (66,129,25) matrix; per-pair chroma is the
+/// rounded pixel average (`vpaddlq_u8` + `vrshrn<1>`) put through the signed U/V
+/// matrix. The interleaved `[U0,V0,U1,V1,…]` chroma vector zipped against luma by
+/// `vst2q_u8` yields the `Y0 U Y1 V` stream directly. Bit-identical to scalar.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn yuyv_from_rgb_row_neon(src: &[u8], dst: &mut [u8], width: usize) {
+    use std::arch::aarch64::*;
+    let bulk = width & !15;
+    let mut x = 0;
+    while x < bulk {
+        let rgb = vld3q_u8(src.as_ptr().add(x * 3));
+        // Luma for 16 px.
+        let yacc = |r: uint8x8_t, g: uint8x8_t, b: uint8x8_t| -> uint8x8_t {
+            let mut a = vmull_u8(r, vdup_n_u8(YR as u8));
+            a = vmlal_u8(a, g, vdup_n_u8(YG as u8));
+            a = vmlal_u8(a, b, vdup_n_u8(YB as u8));
+            vqadd_u8(vrshrn_n_u16::<8>(a), vdup_n_u8(16))
+        };
+        let y16 = vcombine_u8(
+            yacc(vget_low_u8(rgb.0), vget_low_u8(rgb.1), vget_low_u8(rgb.2)),
+            yacc(
+                vget_high_u8(rgb.0),
+                vget_high_u8(rgb.1),
+                vget_high_u8(rgb.2),
+            ),
+        );
+        // Per-pair rounded chroma averages (8 pairs).
+        let ravg = vrshrn_n_u16::<1>(vpaddlq_u8(rgb.0));
+        let gavg = vrshrn_n_u16::<1>(vpaddlq_u8(rgb.1));
+        let bavg = vrshrn_n_u16::<1>(vpaddlq_u8(rgb.2));
+        let r16 = vreinterpretq_s16_u16(vmovl_u8(ravg));
+        let g16 = vreinterpretq_s16_u16(vmovl_u8(gavg));
+        let b16 = vreinterpretq_s16_u16(vmovl_u8(bavg));
+        let chroma = |cr: i16, cg: i16, cb: i16| -> uint8x8_t {
+            let mut a = vmulq_s16(r16, vdupq_n_s16(cr));
+            a = vmlaq_s16(a, g16, vdupq_n_s16(cg));
+            a = vmlaq_s16(a, b16, vdupq_n_s16(cb));
+            // (a + 128) >> 8 (rounded, signed) + 128, saturate to u8.
+            vqmovun_s16(vaddq_s16(vrshrq_n_s16::<8>(a), vdupq_n_s16(128)))
+        };
+        let u8v = chroma(UR as i16, UG as i16, UB as i16);
+        let v8v = chroma(VR as i16, VG as i16, VB as i16);
+        // chroma stream [U0,V0,U1,V1,…]; vst2 zips it against luma → Y0 U Y1 V.
+        let uv = vzip_u8(u8v, v8v);
+        let c16 = vcombine_u8(uv.0, uv.1);
+        vst2q_u8(dst.as_mut_ptr().add(x * 2), uint8x16x2_t(y16, c16));
+        x += 16;
+    }
+    if bulk < width {
+        yuyv_from_rgb_row_scalar(&src[bulk * 3..], &mut dst[bulk * 2..], width - bulk);
+    }
+}
+
+/// AVX2 YUYV row encode, 16 px/iter. `pshufb` deinterleave (no native `vld3`); luma
+/// via the Q8 matrix; per-pair chroma average via `maddubs` (pairwise sum) + rounded
+/// halve, through the signed U/V matrix. `unpacklo/hi_epi8(Y, [U0,V0,U1,V1,…])`
+/// builds the `Y0 U Y1 V` stream. Bit-identical to scalar.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn yuyv_from_rgb_row_avx2(src: &[u8], dst: &mut [u8], width: usize) {
+    use std::arch::x86_64::*;
+    let m_r0 = _mm_setr_epi8(0, 3, 6, 9, 12, 15, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1);
+    let m_r1 = _mm_setr_epi8(-1, -1, -1, -1, -1, -1, 2, 5, 8, 11, 14, -1, -1, -1, -1, -1);
+    let m_r2 = _mm_setr_epi8(-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 1, 4, 7, 10, 13);
+    let m_g0 = _mm_setr_epi8(1, 4, 7, 10, 13, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1);
+    let m_g1 = _mm_setr_epi8(-1, -1, -1, -1, -1, 0, 3, 6, 9, 12, 15, -1, -1, -1, -1, -1);
+    let m_g2 = _mm_setr_epi8(-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 2, 5, 8, 11, 14);
+    let m_b0 = _mm_setr_epi8(2, 5, 8, 11, 14, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1);
+    let m_b1 = _mm_setr_epi8(-1, -1, -1, -1, -1, 1, 4, 7, 10, 13, -1, -1, -1, -1, -1, -1);
+    let m_b2 = _mm_setr_epi8(-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 0, 3, 6, 9, 12, 15);
+
+    let c_yr = _mm_set1_epi16(YR as i16);
+    let c_yg = _mm_set1_epi16(YG as i16);
+    let c_yb = _mm_set1_epi16(YB as i16);
+    let half = _mm_set1_epi16(ENC_HALF as i16);
+    let off16 = _mm_set1_epi16(16);
+    let off128 = _mm_set1_epi16(128);
+    let ones = _mm_set1_epi8(1);
+    let zero = _mm_setzero_si128();
+
+    let yhalf = |r: __m128i, g: __m128i, b: __m128i| -> __m128i {
+        let mut t = _mm_mullo_epi16(r, c_yr);
+        t = _mm_add_epi16(t, _mm_mullo_epi16(g, c_yg));
+        t = _mm_add_epi16(t, _mm_mullo_epi16(b, c_yb));
+        t = _mm_srli_epi16(_mm_add_epi16(t, half), 8);
+        _mm_add_epi16(t, off16)
+    };
+    // pairwise rounded average of a u8x16 channel → u16x8 in [0,255].
+    let pair_avg = |c: __m128i| -> __m128i {
+        let sum = _mm_maddubs_epi16(c, ones); // [c0+c1, c2+c3, …]
+        _mm_srli_epi16(_mm_add_epi16(sum, _mm_set1_epi16(1)), 1)
+    };
+
+    let bulk = width & !15;
+    let mut x = 0;
+    while x < bulk {
+        let p = src.as_ptr().add(x * 3);
+        let s0 = _mm_loadu_si128(p as *const __m128i);
+        let s1 = _mm_loadu_si128(p.add(16) as *const __m128i);
+        let s2 = _mm_loadu_si128(p.add(32) as *const __m128i);
+        let r = _mm_or_si128(
+            _mm_or_si128(_mm_shuffle_epi8(s0, m_r0), _mm_shuffle_epi8(s1, m_r1)),
+            _mm_shuffle_epi8(s2, m_r2),
+        );
+        let g = _mm_or_si128(
+            _mm_or_si128(_mm_shuffle_epi8(s0, m_g0), _mm_shuffle_epi8(s1, m_g1)),
+            _mm_shuffle_epi8(s2, m_g2),
+        );
+        let b = _mm_or_si128(
+            _mm_or_si128(_mm_shuffle_epi8(s0, m_b0), _mm_shuffle_epi8(s1, m_b1)),
+            _mm_shuffle_epi8(s2, m_b2),
+        );
+        let y16 = _mm_packus_epi16(
+            yhalf(
+                _mm_unpacklo_epi8(r, zero),
+                _mm_unpacklo_epi8(g, zero),
+                _mm_unpacklo_epi8(b, zero),
+            ),
+            yhalf(
+                _mm_unpackhi_epi8(r, zero),
+                _mm_unpackhi_epi8(g, zero),
+                _mm_unpackhi_epi8(b, zero),
+            ),
+        );
+        let (ravg, gavg, bavg) = (pair_avg(r), pair_avg(g), pair_avg(b));
+        let chroma = |cr: i16, cg: i16, cb: i16| -> __m128i {
+            let mut a = _mm_mullo_epi16(ravg, _mm_set1_epi16(cr));
+            a = _mm_add_epi16(a, _mm_mullo_epi16(gavg, _mm_set1_epi16(cg)));
+            a = _mm_add_epi16(a, _mm_mullo_epi16(bavg, _mm_set1_epi16(cb)));
+            a = _mm_srai_epi16(_mm_add_epi16(a, half), 8); // (a+128)>>8 signed
+            _mm_add_epi16(a, off128)
+        };
+        let u = _mm_packus_epi16(chroma(UR as i16, UG as i16, UB as i16), zero);
+        let v = _mm_packus_epi16(chroma(VR as i16, VG as i16, VB as i16), zero);
+        let c16 = _mm_unpacklo_epi8(u, v); // [U0,V0,U1,V1,…,U7,V7]
+        _mm_storeu_si128(
+            dst.as_mut_ptr().add(x * 2) as *mut __m128i,
+            _mm_unpacklo_epi8(y16, c16), // Y0 U Y1 V … (first 8 px)
+        );
+        _mm_storeu_si128(
+            dst.as_mut_ptr().add(x * 2 + 16) as *mut __m128i,
+            _mm_unpackhi_epi8(y16, c16), // … (next 8 px)
+        );
+        x += 16;
+    }
+    if bulk < width {
+        yuyv_from_rgb_row_scalar(&src[bulk * 3..], &mut dst[bulk * 2..], width - bulk);
     }
 }
 
@@ -1490,6 +1663,19 @@ mod tests {
         let y1 = encode_y(0, 0, 255);
         let (u, v) = encode_uv((255 + 0 + 1) >> 1, 0, (0 + 255 + 1) >> 1);
         assert_eq!(out, [y0, u, y1, v]);
+    }
+
+    /// The SIMD YUYV row (NEON on aarch64, AVX2 on x86) must be bit-identical to the
+    /// scalar oracle, across the vector bulk + the scalar tail.
+    #[test]
+    fn yuyv_row_simd_matches_scalar() {
+        let width = 38; // two 16-px bulk iters (32) + 6-px (3-pair) tail
+        let src = ramp_u8(width * 3);
+        let mut simd = vec![0u8; width * 2];
+        let mut scalar = vec![0u8; width * 2];
+        yuyv_from_rgb_row(&src, &mut simd, width);
+        yuyv_from_rgb_row_scalar(&src, &mut scalar, width);
+        assert_eq!(simd, scalar);
     }
 
     // ----- Family A: u8 bit-exact vs scalar oracle -----
