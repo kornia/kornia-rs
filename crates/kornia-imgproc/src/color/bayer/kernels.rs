@@ -51,6 +51,75 @@ fn avg4(a: u8, b: u8, c: u8, d: u8) -> u8 {
     ((a as u16 + b as u16 + c as u16 + d as u16 + 2) >> 2) as u8
 }
 
+/// Demosaic a single output pixel `(r, c)` with replicate-border addressing.
+/// Used for the scalar oracle and for the borders/remainder of the NEON path.
+#[inline]
+fn demosaic_px(
+    src: &[u8],
+    dst: &mut [u8],
+    r: usize,
+    c: usize,
+    rows: usize,
+    cols: usize,
+    table: &[[Cell; 2]; 2],
+) {
+    let at = |r: isize, c: isize| -> u8 {
+        let rr = r.clamp(0, rows as isize - 1) as usize;
+        let cc = c.clamp(0, cols as isize - 1) as usize;
+        src[rr * cols + cc]
+    };
+    let ri = r as isize;
+    let ci = c as isize;
+    let center = src[r * cols + c];
+    let cell = table[r & 1][c & 1];
+    let (red, green, blue) = match cell {
+        Cell::R => {
+            let g = avg4(
+                at(ri - 1, ci),
+                at(ri + 1, ci),
+                at(ri, ci - 1),
+                at(ri, ci + 1),
+            );
+            let b = avg4(
+                at(ri - 1, ci - 1),
+                at(ri - 1, ci + 1),
+                at(ri + 1, ci - 1),
+                at(ri + 1, ci + 1),
+            );
+            (center, g, b)
+        }
+        Cell::B => {
+            let g = avg4(
+                at(ri - 1, ci),
+                at(ri + 1, ci),
+                at(ri, ci - 1),
+                at(ri, ci + 1),
+            );
+            let rr = avg4(
+                at(ri - 1, ci - 1),
+                at(ri - 1, ci + 1),
+                at(ri + 1, ci - 1),
+                at(ri + 1, ci + 1),
+            );
+            (rr, g, center)
+        }
+        Cell::GonRRow => {
+            let rr = avg2(at(ri, ci - 1), at(ri, ci + 1));
+            let b = avg2(at(ri - 1, ci), at(ri + 1, ci));
+            (rr, center, b)
+        }
+        Cell::GonBRow => {
+            let b = avg2(at(ri, ci - 1), at(ri, ci + 1));
+            let rr = avg2(at(ri - 1, ci), at(ri + 1, ci));
+            (rr, center, b)
+        }
+    };
+    let o = (r * cols + c) * 3;
+    dst[o] = red;
+    dst[o + 1] = green;
+    dst[o + 2] = blue;
+}
+
 /// Scalar Bayer demosaic — the reference/oracle. Replicate-border addressing.
 ///
 /// `src` is `rows*cols` bytes; `dst` is `rows*cols*3` interleaved RGB bytes.
@@ -67,70 +136,9 @@ pub fn rgb_from_bayer_scalar(
         return;
     }
     let table = phase_table(pattern);
-
-    // Clamp-to-edge sampling of the single-channel mosaic.
-    let at = |r: isize, c: isize| -> u8 {
-        let rr = r.clamp(0, rows as isize - 1) as usize;
-        let cc = c.clamp(0, cols as isize - 1) as usize;
-        src[rr * cols + cc]
-    };
-
     for r in 0..rows {
         for c in 0..cols {
-            let ri = r as isize;
-            let ci = c as isize;
-            let center = src[r * cols + c];
-            let cell = table[r & 1][c & 1];
-            let (red, green, blue) = match cell {
-                Cell::R => {
-                    let g = avg4(
-                        at(ri - 1, ci),
-                        at(ri + 1, ci),
-                        at(ri, ci - 1),
-                        at(ri, ci + 1),
-                    );
-                    let b = avg4(
-                        at(ri - 1, ci - 1),
-                        at(ri - 1, ci + 1),
-                        at(ri + 1, ci - 1),
-                        at(ri + 1, ci + 1),
-                    );
-                    (center, g, b)
-                }
-                Cell::B => {
-                    let g = avg4(
-                        at(ri - 1, ci),
-                        at(ri + 1, ci),
-                        at(ri, ci - 1),
-                        at(ri, ci + 1),
-                    );
-                    let rr = avg4(
-                        at(ri - 1, ci - 1),
-                        at(ri - 1, ci + 1),
-                        at(ri + 1, ci - 1),
-                        at(ri + 1, ci + 1),
-                    );
-                    (rr, g, center)
-                }
-                Cell::GonRRow => {
-                    // G sits on a row whose colored sensels are R (horizontal
-                    // neighbors are R, vertical neighbors are B).
-                    let rr = avg2(at(ri, ci - 1), at(ri, ci + 1));
-                    let b = avg2(at(ri - 1, ci), at(ri + 1, ci));
-                    (rr, center, b)
-                }
-                Cell::GonBRow => {
-                    // G sits on a row whose colored sensels are B (horizontal
-                    // neighbors are B, vertical neighbors are R).
-                    let b = avg2(at(ri, ci - 1), at(ri, ci + 1));
-                    let rr = avg2(at(ri - 1, ci), at(ri + 1, ci));
-                    (rr, center, b)
-                }
-            };
-            let o = (r * cols + c) * 3;
-            dst[o] = red;
-            dst[o + 1] = green;
-            dst[o + 2] = blue;
+            demosaic_px(src, dst, r, c, rows, cols, &table);
         }
     }
 }
@@ -181,13 +189,16 @@ pub fn rgb_from_bayer_neon(
         return;
     }
 
-    // Borders (and everything) via scalar first; the interior is then overwritten
-    // by the SIMD kernel. This keeps replicate-edge math in one place and bounds
-    // the SIMD loop strictly to full interior pixels.
-    rgb_from_bayer_scalar(src, dst, rows, cols, pattern);
-
     use std::arch::aarch64::*;
     let table = phase_table(pattern);
+
+    // Scalar only where NEON can't reach: the top/bottom border rows. Interior rows
+    // get NEON for the bulk and a scalar fill for the left/right edges + remainder.
+    // (The old code scalar-filled the *whole* image first — O(N) and ~16× slower.)
+    for cc in 0..cols {
+        demosaic_px(src, dst, 0, cc, rows, cols, &table);
+        demosaic_px(src, dst, rows - 1, cc, rows, cols, &table);
+    }
 
     // SIMD interior columns: process 32-wide blocks of the even/odd split. Each
     // vld2q_u8 covers 32 source columns (16 even + 16 odd). We require a full
@@ -195,6 +206,8 @@ pub fn rgb_from_bayer_neon(
     unsafe {
         for r in 1..rows - 1 {
             let row_off = r * cols;
+            // Left border (col 0) — scalar (replicate edge).
+            demosaic_px(src, dst, r, 0, rows, cols, &table);
             // Phase of the colored sensel on this interior row at column 0.
             // We iterate per-pixel-pair via the even/odd vld2 split, but the
             // simplest correct-and-fast structure here is a column loop with
@@ -244,9 +257,11 @@ pub fn rgb_from_bayer_neon(
                 );
                 c += 16;
             }
-            // Scalar remainder for this interior row already written by the
-            // initial scalar pass — nothing to do.
-            let _ = c;
+            // Remainder of this interior row (NEON tail) + right border (col cols-1),
+            // all via scalar with replicate-edge addressing.
+            for cc in c..cols {
+                demosaic_px(src, dst, r, cc, rows, cols, &table);
+            }
         }
     }
 }
