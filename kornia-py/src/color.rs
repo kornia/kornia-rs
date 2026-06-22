@@ -128,3 +128,8 @@ py_f32_3to3!(
     color::rgb_from_linear_rgb,
     "linear-RGB f32 → sRGB f32 (gamma compress)."
 );
+py_f32_3to3!(ycbcr_from_rgb, color::ycbcr_from_rgb, "RGB f32 → YCbCr f32 (full range).");
+py_f32_3to3!(rgb_from_ycbcr, color::rgb_from_ycbcr, "YCbCr f32 → RGB f32.");
+py_f32_3to3!(yuv_from_rgb, color::yuv_from_rgb, "RGB f32 → YUV f32 (planar, full range).");
+py_f32_3to3!(rgb_from_yuv, color::rgb_from_yuv, "YUV f32 → RGB f32.");
+py_f32_3to3!(sepia_from_rgb, color::sepia_from_rgb_f32, "RGB f32 → sepia-toned RGB f32.");
