@@ -133,3 +133,29 @@ py_f32_3to3!(rgb_from_ycbcr, color::rgb_from_ycbcr, "YCbCr f32 → RGB f32.");
 py_f32_3to3!(yuv_from_rgb, color::yuv_from_rgb, "RGB f32 → YUV f32 (planar, full range).");
 py_f32_3to3!(rgb_from_yuv, color::rgb_from_yuv, "YUV f32 → RGB f32.");
 py_f32_3to3!(sepia_from_rgb, color::sepia_from_rgb_f32, "RGB f32 → sepia-toned RGB f32.");
+
+/// Demosaic a single-channel u8 Bayer mosaic to RGB (bilinear).
+///
+/// `pattern` is the sensor layout on kornia's *sensor-truth* convention:
+/// `"rggb"`, `"bggr"`, `"grbg"`, `"gbrg"` (R at (0,0) for rggb, etc.). Note OpenCV's
+/// naming offset: kornia `"rggb"` == `cv2.COLOR_BayerBG2RGB`.
+#[pyfunction]
+pub fn rgb_from_bayer(py: Python<'_>, image: PyImage, pattern: &str) -> PyResult<PyImage> {
+    use kornia_imgproc::color::BayerPattern;
+    let pat = match pattern.to_lowercase().as_str() {
+        "rggb" => BayerPattern::Rggb,
+        "bggr" => BayerPattern::Bggr,
+        "grbg" => BayerPattern::Grbg,
+        "gbrg" => BayerPattern::Gbrg,
+        other => {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "unknown Bayer pattern '{other}'; valid: rggb, bggr, grbg, gbrg"
+            )))
+        }
+    };
+    let src = unsafe { numpy_as_image::<1>(py, &image)? };
+    let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, src.size())? };
+    py.detach(|| color::rgb_from_bayer(&src, pat, &mut dst))
+        .map_err(to_pyerr)?;
+    Ok(out)
+}
