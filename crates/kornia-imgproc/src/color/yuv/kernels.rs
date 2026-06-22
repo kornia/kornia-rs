@@ -1225,6 +1225,14 @@ pub fn nv12_from_rgb(src: &[u8], y_out: &mut [u8], uv_out: &mut [u8], width: usi
             encode_y_row_neon(srow, yrow, width);
             return;
         }
+        #[cfg(target_arch = "x86_64")]
+        if crate::simd::cpu_features().has_avx2 {
+            // SAFETY: avx2 verified above; slices sized by the caller.
+            unsafe {
+                encode_y_row_avx2(srow, yrow, width);
+                return;
+            }
+        }
         #[allow(unreachable_code)]
         for (x, yo) in yrow.iter_mut().enumerate() {
             let s = x * 3;
@@ -1316,6 +1324,85 @@ unsafe fn encode_y_row_neon(src: &[u8], dst: &mut [u8], width: usize) {
     }
 }
 
+/// AVX2 luma-row encode (16 px/iter). AVX2 has no 3-way deinterleave, so 9× `pshufb`
+/// + 6× `por` extract R/G/B as u8x16 (same trick as the fused-resize loader); the
+/// Q8 (66,129,25) matrix is then applied in u16 lanes — `(acc+128)>>8 + 16`,
+/// `packus` to u8. Bit-identical to the scalar `encode_y`. Scalar tail for `% 16`.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn encode_y_row_avx2(src: &[u8], dst: &mut [u8], width: usize) {
+    use std::arch::x86_64::*;
+    // R/G/B deinterleave masks for one 16-px (48-byte) chunk across 3 loads.
+    let m_r0 = _mm_setr_epi8(0, 3, 6, 9, 12, 15, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1);
+    let m_r1 = _mm_setr_epi8(-1, -1, -1, -1, -1, -1, 2, 5, 8, 11, 14, -1, -1, -1, -1, -1);
+    let m_r2 = _mm_setr_epi8(-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 1, 4, 7, 10, 13);
+    let m_g0 = _mm_setr_epi8(1, 4, 7, 10, 13, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1);
+    let m_g1 = _mm_setr_epi8(-1, -1, -1, -1, -1, 0, 3, 6, 9, 12, 15, -1, -1, -1, -1, -1);
+    let m_g2 = _mm_setr_epi8(-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 2, 5, 8, 11, 14);
+    let m_b0 = _mm_setr_epi8(2, 5, 8, 11, 14, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1);
+    let m_b1 = _mm_setr_epi8(-1, -1, -1, -1, -1, 1, 4, 7, 10, 13, -1, -1, -1, -1, -1, -1);
+    let m_b2 = _mm_setr_epi8(-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 0, 3, 6, 9, 12, 15);
+
+    let c_yr = _mm_set1_epi16(YR as i16);
+    let c_yg = _mm_set1_epi16(YG as i16);
+    let c_yb = _mm_set1_epi16(YB as i16);
+    let half = _mm_set1_epi16(ENC_HALF as i16);
+    let off16 = _mm_set1_epi16(16);
+    let zero = _mm_setzero_si128();
+
+    // Y for one 8-px u16 half: (66R + 129G + 25B + 128) >> 8 + 16. Coeff sum
+    // 220*255 = 56100 < 65535, so u16 mullo/add never overflow.
+    let yhalf = |r: __m128i, g: __m128i, b: __m128i| -> __m128i {
+        let mut t = _mm_mullo_epi16(r, c_yr);
+        t = _mm_add_epi16(t, _mm_mullo_epi16(g, c_yg));
+        t = _mm_add_epi16(t, _mm_mullo_epi16(b, c_yb));
+        t = _mm_add_epi16(t, half);
+        t = _mm_srli_epi16(t, 8);
+        _mm_add_epi16(t, off16)
+    };
+
+    let bulk = width & !15;
+    let mut x = 0;
+    while x < bulk {
+        let p = src.as_ptr().add(x * 3);
+        let s0 = _mm_loadu_si128(p as *const __m128i);
+        let s1 = _mm_loadu_si128(p.add(16) as *const __m128i);
+        let s2 = _mm_loadu_si128(p.add(32) as *const __m128i);
+        let r = _mm_or_si128(
+            _mm_or_si128(_mm_shuffle_epi8(s0, m_r0), _mm_shuffle_epi8(s1, m_r1)),
+            _mm_shuffle_epi8(s2, m_r2),
+        );
+        let g = _mm_or_si128(
+            _mm_or_si128(_mm_shuffle_epi8(s0, m_g0), _mm_shuffle_epi8(s1, m_g1)),
+            _mm_shuffle_epi8(s2, m_g2),
+        );
+        let b = _mm_or_si128(
+            _mm_or_si128(_mm_shuffle_epi8(s0, m_b0), _mm_shuffle_epi8(s1, m_b1)),
+            _mm_shuffle_epi8(s2, m_b2),
+        );
+        // Widen low/high 8 px to u16 and apply the matrix; packus back to u8x16.
+        let lo = yhalf(
+            _mm_unpacklo_epi8(r, zero),
+            _mm_unpacklo_epi8(g, zero),
+            _mm_unpacklo_epi8(b, zero),
+        );
+        let hi = yhalf(
+            _mm_unpackhi_epi8(r, zero),
+            _mm_unpackhi_epi8(g, zero),
+            _mm_unpackhi_epi8(b, zero),
+        );
+        _mm_storeu_si128(
+            dst.as_mut_ptr().add(x) as *mut __m128i,
+            _mm_packus_epi16(lo, hi),
+        );
+        x += 16;
+    }
+    for (x, d) in dst.iter_mut().enumerate().skip(bulk) {
+        let s = x * 3;
+        *d = encode_y(src[s] as i32, src[s + 1] as i32, src[s + 2] as i32);
+    }
+}
+
 // ===== Tests ========================================================================
 
 #[cfg(test)]
@@ -1349,6 +1436,14 @@ mod tests {
             scalar[x] = encode_y(src[s] as i32, src[s + 1] as i32, src[s + 2] as i32);
         }
         assert_eq!(neon, scalar);
+
+        // On x86 with AVX2, the AVX2 luma path must also match the scalar oracle.
+        #[cfg(target_arch = "x86_64")]
+        if crate::simd::cpu_features().has_avx2 {
+            let mut avx = vec![0u8; width];
+            unsafe { super::encode_y_row_avx2(&src, &mut avx, width) };
+            assert_eq!(avx, scalar);
+        }
     }
 
     /// A constant-color image survives encode→decode exactly (no subsampling error
