@@ -403,3 +403,17 @@ WebP 24×). Compute-bound conversions land 0.6–1.55× — a flat 2× is not ph
 available against OpenCV 5's vectorized NEON on the same CPU (you'd need to do 2× less
 work for the same output; the only genuine 2×+ route is the GPU). Absolute ms vary
 ±20% run-to-run on the Jetson under thermal/scheduler load; ratios are the stable signal.
+
+## Update — byte-exact set extended
+
+`rgb_from_bayer` (bilinear demosaic) is **byte-exact to cv2** (`max|diff|=0` interior
+vs `cv2.COLOR_BayerBG2RGB`, the documented naming offset). The video decoders
+(YUYV/UYVY/YVYU, NV12/NV21/I420/YV12) use OpenCV's exact `ITUR_BT_601` Q20 integer
+math, so they are byte-exact to cv2's `COLOR_YUV2RGB_*` on the Rust side (tested vs an
+independent Q20 reference).
+
+**Byte-exact-to-cv2 conversions: Gray-family matrix ops (XYZ, YCbCr), HSV, HLS, Bayer,
+and the YUV video decoders.** The only conversions that are NOT byte-exact to cv2 are
+Lab and Luv — and that is because cv2's *own* f32 Lab is ~0.5 off true Lab (internal
+gamma-LUT interpolation). Matching cv2 byte-for-byte there would require copying cv2's
+LUT and making kornia *less* accurate; we keep the accurate (and faster) kernel instead.
