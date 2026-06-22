@@ -97,6 +97,352 @@ pub fn resize_normalize_to_tensor_u8_to_f32(
         });
 }
 
+/// Fused **general bilinear** resize + per-channel normalize + HWC→CHW for RGB
+/// u8 → f32, for **arbitrary** src→dst sizes (up- or down-scale).
+///
+/// When `src == 2×dst` exactly it dispatches to the dedicated box-average NEON
+/// path ([`resize_normalize_to_tensor_u8_to_f32`]); otherwise it bilinearly
+/// samples with OpenCV's half-pixel mapping (`src = (dst+0.5)·scale − 0.5`),
+/// interpolating in f32 so there is no intermediate u8 requantization — the
+/// result is at least as accurate as `cv2.resize`-then-normalize and stays a
+/// single pass (every output byte written once, directly in CHW layout).
+///
+/// * `src` — `[src_h × src_w × 3]` row-major u8 (HWC)
+/// * `dst` — `[3 × dst_h × dst_w]` f32 output (CHW), `out = sample·scale + bias`
+pub fn resize_normalize_to_tensor_u8_to_f32_bilinear(
+    src: &[u8],
+    src_w: usize,
+    src_h: usize,
+    dst: &mut [f32],
+    dst_w: usize,
+    dst_h: usize,
+    params: &NormalizeParams<3>,
+) {
+    debug_assert_eq!(src.len(), src_h * src_w * 3);
+    debug_assert_eq!(dst.len(), 3 * dst_h * dst_w);
+
+    // Exact 2× downscale → dedicated fused box kernel (fully NEON-vectorized).
+    if src_w == 2 * dst_w && src_h == 2 * dst_h {
+        resize_normalize_to_tensor_u8_to_f32(src, src_w, src_h, dst, dst_w, dst_h, params);
+        return;
+    }
+    if dst_w == 0 || dst_h == 0 || src_w == 0 || src_h == 0 {
+        return;
+    }
+
+    let scale_x = src_w as f32 / dst_w as f32;
+    let scale_y = src_h as f32 / dst_h as f32;
+    let src_stride = src_w * 3;
+
+    // Per-output-column source byte offsets (already ×3 for the R lane) + weight,
+    // computed once and reused across every row (OpenCV half-pixel convention).
+    let mut x0b = vec![0usize; dst_w];
+    let mut x1b = vec![0usize; dst_w];
+    let mut wx = vec![0f32; dst_w];
+    for dx in 0..dst_w {
+        let fx = ((dx as f32 + 0.5) * scale_x - 0.5).max(0.0);
+        let x0 = (fx as usize).min(src_w - 1);
+        let x1 = (x0 + 1).min(src_w - 1);
+        x0b[dx] = x0 * 3;
+        x1b[dx] = x1 * 3;
+        wx[dx] = fx - x0 as f32;
+    }
+
+    let plane = dst_h * dst_w;
+    let (r_plane, rest) = dst.split_at_mut(plane);
+    let (g_plane, b_plane) = rest.split_at_mut(plane);
+
+    const ROWS_PER_TASK: usize = 8;
+    let chunk = dst_w * ROWS_PER_TASK;
+    r_plane
+        .par_chunks_mut(chunk)
+        .zip(g_plane.par_chunks_mut(chunk))
+        .zip(b_plane.par_chunks_mut(chunk))
+        .enumerate()
+        .for_each(|(ti, ((rc, gc), bc))| {
+            let y_start = ti * ROWS_PER_TASK;
+            let nrows = rc.len() / dst_w;
+            for dy in 0..nrows {
+                let y = y_start + dy;
+                let fy = ((y as f32 + 0.5) * scale_y - 0.5).max(0.0);
+                let y0 = (fy as usize).min(src_h - 1);
+                let y1 = (y0 + 1).min(src_h - 1);
+                let wy = fy - y0 as f32;
+                let row0 = &src[y0 * src_stride..y0 * src_stride + src_stride];
+                let row1 = &src[y1 * src_stride..y1 * src_stride + src_stride];
+                let ro = &mut rc[dy * dst_w..dy * dst_w + dst_w];
+                let go = &mut gc[dy * dst_w..dy * dst_w + dst_w];
+                let bo = &mut bc[dy * dst_w..dy * dst_w + dst_w];
+                fused_bilinear_row(row0, row1, &x0b, &x1b, &wx, wy, ro, go, bo, dst_w, params);
+            }
+        });
+}
+
+/// One output row of the general bilinear path: dispatch to NEON / AVX2 / scalar.
+/// `x0b`/`x1b` are per-column source byte offsets (R lane), `wx` the x-weights.
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+fn fused_bilinear_row(
+    row0: &[u8],
+    row1: &[u8],
+    x0b: &[usize],
+    x1b: &[usize],
+    wx: &[f32],
+    wy: f32,
+    r_out: &mut [f32],
+    g_out: &mut [f32],
+    b_out: &mut [f32],
+    dst_w: usize,
+    params: &NormalizeParams<3>,
+) {
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: NEON is architectural on aarch64.
+    unsafe {
+        fused_bilinear_row_neon(
+            row0, row1, x0b, x1b, wx, wy, r_out, g_out, b_out, dst_w, params,
+        );
+        return;
+    }
+    #[cfg(target_arch = "x86_64")]
+    if crate::simd::cpu_features().has_avx2 && crate::simd::cpu_features().has_fma {
+        unsafe {
+            fused_bilinear_row_avx2(
+                row0, row1, x0b, x1b, wx, wy, r_out, g_out, b_out, dst_w, params,
+            )
+        };
+        return;
+    }
+    #[allow(unreachable_code)]
+    fused_bilinear_row_scalar(
+        row0, row1, x0b, x1b, wx, wy, r_out, g_out, b_out, dst_w, params,
+    );
+}
+
+/// Scalar reference / tail for the general bilinear row.
+#[allow(clippy::too_many_arguments)]
+#[inline]
+fn fused_bilinear_row_scalar(
+    row0: &[u8],
+    row1: &[u8],
+    x0b: &[usize],
+    x1b: &[usize],
+    wx: &[f32],
+    wy: f32,
+    r_out: &mut [f32],
+    g_out: &mut [f32],
+    b_out: &mut [f32],
+    dst_w: usize,
+    params: &NormalizeParams<3>,
+) {
+    let blerp = |a: f32, b: f32, c: f32, d: f32, w: f32| {
+        let top = a + w * (b - a);
+        let bot = c + w * (d - c);
+        top + wy * (bot - top)
+    };
+    for dx in 0..dst_w {
+        let (o0, o1, w) = (x0b[dx], x1b[dx], wx[dx]);
+        let r = blerp(
+            row0[o0] as f32,
+            row0[o1] as f32,
+            row1[o0] as f32,
+            row1[o1] as f32,
+            w,
+        );
+        let g = blerp(
+            row0[o0 + 1] as f32,
+            row0[o1 + 1] as f32,
+            row1[o0 + 1] as f32,
+            row1[o1 + 1] as f32,
+            w,
+        );
+        let b = blerp(
+            row0[o0 + 2] as f32,
+            row0[o1 + 2] as f32,
+            row1[o0 + 2] as f32,
+            row1[o1 + 2] as f32,
+            w,
+        );
+        r_out[dx] = r * params.scale[0] + params.bias[0];
+        g_out[dx] = g * params.scale[1] + params.bias[1];
+        b_out[dx] = b * params.scale[2] + params.bias[2];
+    }
+}
+
+/// NEON general-bilinear row: 4 dst px/iter. Gathers the 4×4 corner samples per
+/// channel into stack arrays (the only scalar part — bilinear has arbitrary src
+/// offsets), then does the bilinear blend + scale/bias as f32x4 FMAs and writes
+/// 4 contiguous outputs per plane.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+#[allow(clippy::too_many_arguments)]
+unsafe fn fused_bilinear_row_neon(
+    row0: &[u8],
+    row1: &[u8],
+    x0b: &[usize],
+    x1b: &[usize],
+    wx: &[f32],
+    wy: f32,
+    r_out: &mut [f32],
+    g_out: &mut [f32],
+    b_out: &mut [f32],
+    dst_w: usize,
+    params: &NormalizeParams<3>,
+) {
+    use std::arch::aarch64::*;
+    let sc = [
+        vdupq_n_f32(params.scale[0]),
+        vdupq_n_f32(params.scale[1]),
+        vdupq_n_f32(params.scale[2]),
+    ];
+    let bi = [
+        vdupq_n_f32(params.bias[0]),
+        vdupq_n_f32(params.bias[1]),
+        vdupq_n_f32(params.bias[2]),
+    ];
+    let wy4 = vdupq_n_f32(wy);
+
+    let bulk = dst_w & !3;
+    let mut dx = 0;
+    while dx < bulk {
+        let wx4 = vld1q_f32(wx.as_ptr().add(dx));
+        // Gather the 4 corner samples for the 4 output pixels, all channels.
+        let (mut p00, mut p01, mut p10, mut p11) = ([0f32; 12], [0f32; 12], [0f32; 12], [0f32; 12]);
+        for k in 0..4 {
+            let o0 = *x0b.get_unchecked(dx + k);
+            let o1 = *x1b.get_unchecked(dx + k);
+            for c in 0..3 {
+                p00[k * 3 + c] = *row0.get_unchecked(o0 + c) as f32;
+                p01[k * 3 + c] = *row0.get_unchecked(o1 + c) as f32;
+                p10[k * 3 + c] = *row1.get_unchecked(o0 + c) as f32;
+                p11[k * 3 + c] = *row1.get_unchecked(o1 + c) as f32;
+            }
+        }
+        // Per channel: deinterleave the 4 lanes via a strided load into f32x4,
+        // bilinear blend, scale/bias, contiguous store.
+        for (c, out) in [r_out.as_mut_ptr(), g_out.as_mut_ptr(), b_out.as_mut_ptr()]
+            .into_iter()
+            .enumerate()
+        {
+            let gather =
+                |arr: &[f32; 12]| vld1q_f32([arr[c], arr[3 + c], arr[6 + c], arr[9 + c]].as_ptr());
+            let a = gather(&p00);
+            let b = gather(&p01);
+            let cc = gather(&p10);
+            let d = gather(&p11);
+            let top = vfmaq_f32(a, wx4, vsubq_f32(b, a));
+            let bot = vfmaq_f32(cc, wx4, vsubq_f32(d, cc));
+            let val = vfmaq_f32(top, wy4, vsubq_f32(bot, top));
+            vst1q_f32(out.add(dx), vfmaq_f32(bi[c], val, sc[c]));
+        }
+        dx += 4;
+    }
+    if dx < dst_w {
+        fused_bilinear_row_scalar(
+            row0,
+            row1,
+            &x0b[dx..],
+            &x1b[dx..],
+            &wx[dx..],
+            wy,
+            &mut r_out[dx..],
+            &mut g_out[dx..],
+            &mut b_out[dx..],
+            dst_w - dx,
+            params,
+        );
+    }
+}
+
+/// AVX2/FMA general-bilinear row: 8 dst px/iter. Same gather→blend→scale shape as
+/// the NEON path, widened to 8-wide `__m256`.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+#[allow(clippy::too_many_arguments)]
+unsafe fn fused_bilinear_row_avx2(
+    row0: &[u8],
+    row1: &[u8],
+    x0b: &[usize],
+    x1b: &[usize],
+    wx: &[f32],
+    wy: f32,
+    r_out: &mut [f32],
+    g_out: &mut [f32],
+    b_out: &mut [f32],
+    dst_w: usize,
+    params: &NormalizeParams<3>,
+) {
+    use std::arch::x86_64::*;
+    let sc = [
+        _mm256_set1_ps(params.scale[0]),
+        _mm256_set1_ps(params.scale[1]),
+        _mm256_set1_ps(params.scale[2]),
+    ];
+    let bi = [
+        _mm256_set1_ps(params.bias[0]),
+        _mm256_set1_ps(params.bias[1]),
+        _mm256_set1_ps(params.bias[2]),
+    ];
+    let wy8 = _mm256_set1_ps(wy);
+
+    let bulk = dst_w & !7;
+    let mut dx = 0;
+    while dx < bulk {
+        let wx8 = _mm256_loadu_ps(wx.as_ptr().add(dx));
+        let (mut p00, mut p01, mut p10, mut p11) = ([0f32; 24], [0f32; 24], [0f32; 24], [0f32; 24]);
+        for k in 0..8 {
+            let o0 = *x0b.get_unchecked(dx + k);
+            let o1 = *x1b.get_unchecked(dx + k);
+            for c in 0..3 {
+                p00[k * 3 + c] = *row0.get_unchecked(o0 + c) as f32;
+                p01[k * 3 + c] = *row0.get_unchecked(o1 + c) as f32;
+                p10[k * 3 + c] = *row1.get_unchecked(o0 + c) as f32;
+                p11[k * 3 + c] = *row1.get_unchecked(o1 + c) as f32;
+            }
+        }
+        for (c, out) in [r_out.as_mut_ptr(), g_out.as_mut_ptr(), b_out.as_mut_ptr()]
+            .into_iter()
+            .enumerate()
+        {
+            let gather = |arr: &[f32; 24]| {
+                _mm256_setr_ps(
+                    arr[c],
+                    arr[3 + c],
+                    arr[6 + c],
+                    arr[9 + c],
+                    arr[12 + c],
+                    arr[15 + c],
+                    arr[18 + c],
+                    arr[21 + c],
+                )
+            };
+            let a = gather(&p00);
+            let b = gather(&p01);
+            let cc = gather(&p10);
+            let d = gather(&p11);
+            let top = _mm256_fmadd_ps(_mm256_sub_ps(b, a), wx8, a);
+            let bot = _mm256_fmadd_ps(_mm256_sub_ps(d, cc), wx8, cc);
+            let val = _mm256_fmadd_ps(_mm256_sub_ps(bot, top), wy8, top);
+            _mm256_storeu_ps(out.add(dx), _mm256_fmadd_ps(val, sc[c], bi[c]));
+        }
+        dx += 8;
+    }
+    if dx < dst_w {
+        fused_bilinear_row_scalar(
+            row0,
+            row1,
+            &x0b[dx..],
+            &x1b[dx..],
+            &wx[dx..],
+            wy,
+            &mut r_out[dx..],
+            &mut g_out[dx..],
+            &mut b_out[dx..],
+            dst_w - dx,
+            params,
+        );
+    }
+}
+
 /// Row-level fused kernel: one 2× downscale + normalize + HWC→CHW split.
 #[inline(always)]
 fn fused_row_rgb_u8_to_nchw_f32(
@@ -522,5 +868,69 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// General bilinear path on a non-2× ratio matches an f64 bilinear reference
+    /// (OpenCV half-pixel mapping) after normalize, in CHW layout.
+    #[test]
+    fn fused_bilinear_general_matches_f64_reference() {
+        let (src_w, src_h) = (60, 40);
+        let (dst_w, dst_h) = (37, 23); // arbitrary, non-integer ratio, with tail
+        let src: Vec<u8> = (0..src_h * src_w * 3)
+            .map(|i| ((i * 13 + 7) % 256) as u8)
+            .collect();
+        let mut dst = vec![0f32; 3 * dst_h * dst_w];
+        let mean = [0.485, 0.456, 0.406];
+        let std = [0.229, 0.224, 0.225];
+        let params = NormalizeParams::<3>::from_mean_std(mean, std);
+
+        resize_normalize_to_tensor_u8_to_f32_bilinear(
+            &src, src_w, src_h, &mut dst, dst_w, dst_h, &params,
+        );
+
+        let sx = src_w as f64 / dst_w as f64;
+        let sy = src_h as f64 / dst_h as f64;
+        let at = |y: usize, x: usize, c: usize| src[(y * src_w + x) * 3 + c] as f64;
+        let plane = dst_h * dst_w;
+        for dy in 0..dst_h {
+            let fy = ((dy as f64 + 0.5) * sy - 0.5).max(0.0);
+            let y0 = (fy as usize).min(src_h - 1);
+            let y1 = (y0 + 1).min(src_h - 1);
+            let wy = fy - y0 as f64;
+            for dx in 0..dst_w {
+                let fx = ((dx as f64 + 0.5) * sx - 0.5).max(0.0);
+                let x0 = (fx as usize).min(src_w - 1);
+                let x1 = (x0 + 1).min(src_w - 1);
+                let wx = fx - x0 as f64;
+                for c in 0..3 {
+                    let top = at(y0, x0, c) + wx * (at(y0, x1, c) - at(y0, x0, c));
+                    let bot = at(y1, x0, c) + wx * (at(y1, x1, c) - at(y1, x0, c));
+                    let val = top + wy * (bot - top);
+                    let expect = (val / 255.0 - mean[c] as f64) / std[c] as f64;
+                    let got = dst[c * plane + dy * dst_w + dx] as f64;
+                    assert!(
+                        (got - expect).abs() < 1e-3,
+                        "c={c} dy={dy} dx={dx} got={got} expect={expect}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The 2× ratio dispatches into the box path; the bilinear entry must agree
+    /// with the direct 2× call bit-for-bit (same buffer, same code).
+    #[test]
+    fn fused_bilinear_dispatches_2x() {
+        let (dst_w, dst_h) = (20, 12);
+        let (src_w, src_h) = (2 * dst_w, 2 * dst_h);
+        let src: Vec<u8> = (0..src_h * src_w * 3).map(|i| (i % 251) as u8).collect();
+        let params = NormalizeParams::<3>::from_mean_std([0.5, 0.4, 0.3], [0.25, 0.2, 0.3]);
+        let mut a = vec![0f32; 3 * dst_h * dst_w];
+        let mut b = vec![0f32; 3 * dst_h * dst_w];
+        resize_normalize_to_tensor_u8_to_f32(&src, src_w, src_h, &mut a, dst_w, dst_h, &params);
+        resize_normalize_to_tensor_u8_to_f32_bilinear(
+            &src, src_w, src_h, &mut b, dst_w, dst_h, &params,
+        );
+        assert_eq!(a, b);
     }
 }

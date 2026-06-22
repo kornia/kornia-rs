@@ -2050,6 +2050,75 @@ impl PyImageApi {
         }
     }
 
+    /// Fused **resize + per-channel normalize + HWC→CHW** into an owned float32
+    /// tensor `Image`, for **any** target size. General bilinear (NEON/AVX2
+    /// vectorized, single pass); exact 2× downscale takes a faster fused box path.
+    ///
+    /// The whole path is copy-free: the input numpy buffer is borrowed in place,
+    /// the `(3, height, width)` output is allocated once and written directly, and
+    /// the returned `Image` wraps that same buffer. Use `.numpy()` for a zero-copy
+    /// view and `.data_ptr` for the host address to hand to cudarc / TensorRT.
+    ///
+    /// `mean`/`std` are per-channel in `[0, 1]` (PyTorch convention); the output is
+    /// `(x/255 − mean) / std`. Input must be `(H, W, 3)` uint8, C-contiguous.
+    #[pyo3(signature = (width, height, mean, std))]
+    fn resize_normalize_to_tensor(
+        &self,
+        py: Python<'_>,
+        width: usize,
+        height: usize,
+        mean: [f32; 3],
+        std: [f32; 3],
+    ) -> PyResult<Self> {
+        let data = self.require_u8("resize_normalize_to_tensor")?;
+        let arr = data.bind(py);
+        if !arr.is_c_contiguous() {
+            return Err(value_err("input image must be C-contiguous"));
+        }
+        let shape = arr.shape();
+        let (src_h, src_w, c) = (shape[0], shape[1], shape[2]);
+        if c != 3 {
+            return Err(value_err(format!("expected 3 channels (RGB), got {c}")));
+        }
+        if width == 0 || height == 0 {
+            return Err(value_err("target width and height must be > 0"));
+        }
+        // Zero-copy borrow of the HWC u8 input.
+        let src = unsafe { std::slice::from_raw_parts(arr.data(), src_h * src_w * 3) };
+        let params = kornia_imgproc::resize::NormalizeParams::<3>::from_mean_std(mean, std);
+
+        // Single output allocation, written in place — no Vec→numpy copy.
+        let out = unsafe { PyArray::<f32, _>::new(py, [3, height, width], false) };
+        // SAFETY: freshly-allocated C-contiguous (3,H,W) f32 array, not yet shared.
+        let out_slice = unsafe { std::slice::from_raw_parts_mut(out.data(), 3 * height * width) };
+        py.detach(|| {
+            kornia_imgproc::resize::resize_normalize_to_tensor_u8_to_f32_bilinear(
+                src, src_w, src_h, out_slice, width, height, &params,
+            );
+        });
+        // Wrap the same buffer as an owned f32 Image (CHW tensor).
+        Ok(Self::wrap_f32(py, out.unbind(), Some("RGBf".to_string())))
+    }
+
+    /// Host address (as an int) of the underlying contiguous data buffer.
+    ///
+    /// Stable for the lifetime of this `Image`; hand it (with `.shape` / `.nbytes`)
+    /// to cudarc / TensorRT for a host→device copy without going through numpy.
+    #[getter]
+    fn data_ptr(&self, py: Python<'_>) -> usize {
+        match &self.data {
+            ImageData::U8(a) => a.bind(py).data() as usize,
+            ImageData::U16(a) => a.bind(py).data() as usize,
+            ImageData::F32(a) => a.bind(py).data() as usize,
+        }
+    }
+
+    /// Zero-copy numpy view of the underlying buffer (shares memory; no copy).
+    /// Distinct from `to_numpy()`, which returns an owned deep copy.
+    fn numpy(&self, py: Python<'_>) -> Py<PyAny> {
+        self.data.as_pyany(py)
+    }
+
     /// Flip image horizontally. Supports 8-bit, 16-bit, and float32 Images.
     pub fn flip_horizontal(&self, py: Python<'_>) -> PyResult<Self> {
         match &self.data {
