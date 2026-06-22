@@ -1390,75 +1390,241 @@ pub fn nv12_from_rgb(src: &[u8], y_out: &mut [u8], uv_out: &mut [u8], width: usi
     let src_row = width * 3;
     use super::super::kernel_common::PAR_THRESHOLD;
 
-    // Luma plane: one independent output row per source row.
-    let encode_y_row = |srow: &[u8], yrow: &mut [u8]| {
-        #[cfg(target_arch = "aarch64")]
-        // SAFETY: NEON is baseline on aarch64; slices sized by the caller.
-        unsafe {
-            encode_y_row_neon(srow, yrow, width);
-            return;
-        }
-        #[cfg(target_arch = "x86_64")]
-        if crate::simd::cpu_features().has_avx2 {
-            // SAFETY: avx2 verified above; slices sized by the caller.
-            unsafe {
-                encode_y_row_avx2(srow, yrow, width);
-                return;
-            }
-        }
-        #[allow(unreachable_code)]
-        for (x, yo) in yrow.iter_mut().enumerate() {
-            let s = x * 3;
-            *yo = encode_y(srow[s] as i32, srow[s + 1] as i32, srow[s + 2] as i32);
-        }
-    };
-    // Chroma plane: one output row per 2 source rows (2×2 average).
-    let encode_uv_row = |top: &[u8], bot: &[u8], uvrow: &mut [u8]| {
-        for cx in 0..width / 2 {
-            let s = cx * 6;
-            let r = top[s] as i32 + top[s + 3] as i32 + bot[s] as i32 + bot[s + 3] as i32;
-            let g = top[s + 1] as i32 + top[s + 4] as i32 + bot[s + 1] as i32 + bot[s + 4] as i32;
-            let b = top[s + 2] as i32 + top[s + 5] as i32 + bot[s + 2] as i32 + bot[s + 5] as i32;
-            // Rounded 2×2 average.
-            let (u, v) = encode_uv((r + 2) >> 2, (g + 2) >> 2, (b + 2) >> 2);
-            uvrow[cx * 2] = u;
-            uvrow[cx * 2 + 1] = v;
-        }
+    // Fused: one task per chroma row handles its 2 luma rows + 1 UV row, so each
+    // source row is read once (the Y and UV reads hit the same L1-hot rows) instead
+    // of two separate full-image passes.
+    let process = |cy: usize, y_block: &mut [u8], uv_row: &mut [u8]| {
+        let top = &src[(2 * cy) * src_row..(2 * cy) * src_row + src_row];
+        let bot = &src[(2 * cy + 1) * src_row..(2 * cy + 1) * src_row + src_row];
+        let (y_top, y_bot) = y_block.split_at_mut(width);
+        encode_y_row(top, y_top, width);
+        encode_y_row(bot, y_bot, width);
+        encode_uv_row(top, bot, uv_row, width);
     };
 
     if width * height < PAR_THRESHOLD {
-        for row in 0..height {
-            encode_y_row(
-                &src[row * src_row..row * src_row + src_row],
-                &mut y_out[row * width..row * width + width],
-            );
-        }
         for cy in 0..height / 2 {
-            encode_uv_row(
-                &src[(2 * cy) * src_row..(2 * cy) * src_row + src_row],
-                &src[(2 * cy + 1) * src_row..(2 * cy + 1) * src_row + src_row],
-                &mut uv_out[cy * width..cy * width + width],
-            );
+            let y_block = &mut y_out[(2 * cy) * width..(2 * cy) * width + 2 * width];
+            let uv_row = &mut uv_out[cy * width..cy * width + width];
+            process(cy, y_block, uv_row);
         }
         return;
     }
     use rayon::prelude::*;
     y_out
-        .par_chunks_mut(width)
+        .par_chunks_mut(2 * width)
+        .zip(uv_out.par_chunks_mut(width))
         .enumerate()
-        .for_each(|(row, y)| {
-            encode_y_row(&src[row * src_row..row * src_row + src_row], y);
-        });
-    uv_out
-        .par_chunks_mut(width)
-        .enumerate()
-        .for_each(|(cy, uv)| {
-            encode_uv_row(
-                &src[(2 * cy) * src_row..(2 * cy) * src_row + src_row],
-                &src[(2 * cy + 1) * src_row..(2 * cy + 1) * src_row + src_row],
-                uv,
-            );
-        });
+        .for_each(|(cy, (y_block, uv_row))| process(cy, y_block, uv_row));
+}
+
+/// Luma-row encode dispatcher (NEON / AVX2 / scalar).
+#[inline]
+fn encode_y_row(src: &[u8], dst: &mut [u8], width: usize) {
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: NEON is baseline on aarch64; slices sized by the caller.
+    unsafe {
+        encode_y_row_neon(src, dst, width);
+        return;
+    }
+    #[cfg(target_arch = "x86_64")]
+    if crate::simd::cpu_features().has_avx2 {
+        // SAFETY: avx2 verified above; slices sized by the caller.
+        unsafe {
+            encode_y_row_avx2(src, dst, width);
+            return;
+        }
+    }
+    #[allow(unreachable_code)]
+    for (x, yo) in dst.iter_mut().enumerate() {
+        let s = x * 3;
+        *yo = encode_y(src[s] as i32, src[s + 1] as i32, src[s + 2] as i32);
+    }
+}
+
+/// Chroma-row encode dispatcher (NEON / AVX2 / scalar): 2×2 average → interleaved U,V.
+#[inline]
+fn encode_uv_row(top: &[u8], bot: &[u8], uv: &mut [u8], width: usize) {
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: NEON is baseline on aarch64; slices sized by the caller.
+    unsafe {
+        encode_uv_row_neon(top, bot, uv, width);
+        return;
+    }
+    #[cfg(target_arch = "x86_64")]
+    if crate::simd::cpu_features().has_avx2 {
+        // SAFETY: avx2 verified above; slices sized by the caller.
+        unsafe {
+            encode_uv_row_avx2(top, bot, uv, width);
+            return;
+        }
+    }
+    #[allow(unreachable_code)]
+    encode_uv_row_scalar(top, bot, uv, width);
+}
+
+/// Scalar chroma-row encode (oracle + SIMD tail): each 2×2 RGB block → one (U,V).
+#[inline]
+fn encode_uv_row_scalar(top: &[u8], bot: &[u8], uv: &mut [u8], width: usize) {
+    for cx in 0..width / 2 {
+        let s = cx * 6;
+        let r = top[s] as i32 + top[s + 3] as i32 + bot[s] as i32 + bot[s + 3] as i32;
+        let g = top[s + 1] as i32 + top[s + 4] as i32 + bot[s + 1] as i32 + bot[s + 4] as i32;
+        let b = top[s + 2] as i32 + top[s + 5] as i32 + bot[s + 2] as i32 + bot[s + 5] as i32;
+        let (u, v) = encode_uv((r + 2) >> 2, (g + 2) >> 2, (b + 2) >> 2);
+        uv[cx * 2] = u;
+        uv[cx * 2 + 1] = v;
+    }
+}
+
+/// NEON chroma-row encode, 16 chroma px (32 src px × 2 rows → 32 UV bytes) per iter.
+/// `vpaddlq_u8` pairwise-sums each row, the two rows add to the 2×2 block sum, and
+/// `vrshrn<2>` does `(sum+2)>>2`; the signed U/V matrix then runs on the averages,
+/// zipped to the interleaved `[U0,V0,…]` UV plane. Bit-identical to scalar.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn encode_uv_row_neon(top: &[u8], bot: &[u8], uv: &mut [u8], width: usize) {
+    use std::arch::aarch64::*;
+    let cw = width / 2;
+    let mut cx = 0;
+    while cx + 16 <= cw {
+        let sp = cx * 2 * 3; // byte offset of src px 2*cx
+        let t0 = vld3q_u8(top.as_ptr().add(sp));
+        let t1 = vld3q_u8(top.as_ptr().add(sp + 48));
+        let b0 = vld3q_u8(bot.as_ptr().add(sp));
+        let b1 = vld3q_u8(bot.as_ptr().add(sp + 48));
+        // 2×2 block average for one channel across the two 16-px chunks → u8x16.
+        let avg = |tc0, tc1, bc0, bc1| -> uint8x16_t {
+            let blk0 = vaddq_u16(vpaddlq_u8(tc0), vpaddlq_u8(bc0));
+            let blk1 = vaddq_u16(vpaddlq_u8(tc1), vpaddlq_u8(bc1));
+            vcombine_u8(vrshrn_n_u16::<2>(blk0), vrshrn_n_u16::<2>(blk1))
+        };
+        let ravg = avg(t0.0, t1.0, b0.0, b1.0);
+        let gavg = avg(t0.1, t1.1, b0.1, b1.1);
+        let bavg = avg(t0.2, t1.2, b0.2, b1.2);
+        let chroma = |cr: i16, cg: i16, cb: i16| -> uint8x16_t {
+            let half = |r: uint8x8_t, g: uint8x8_t, b: uint8x8_t| -> uint8x8_t {
+                let r = vreinterpretq_s16_u16(vmovl_u8(r));
+                let g = vreinterpretq_s16_u16(vmovl_u8(g));
+                let b = vreinterpretq_s16_u16(vmovl_u8(b));
+                let mut a = vmulq_s16(r, vdupq_n_s16(cr));
+                a = vmlaq_s16(a, g, vdupq_n_s16(cg));
+                a = vmlaq_s16(a, b, vdupq_n_s16(cb));
+                vqmovun_s16(vaddq_s16(vrshrq_n_s16::<8>(a), vdupq_n_s16(128)))
+            };
+            vcombine_u8(
+                half(vget_low_u8(ravg), vget_low_u8(gavg), vget_low_u8(bavg)),
+                half(vget_high_u8(ravg), vget_high_u8(gavg), vget_high_u8(bavg)),
+            )
+        };
+        let u16v = chroma(UR as i16, UG as i16, UB as i16);
+        let v16v = chroma(VR as i16, VG as i16, VB as i16);
+        let uvz = vzipq_u8(u16v, v16v);
+        vst1q_u8(uv.as_mut_ptr().add(cx * 2), uvz.0);
+        vst1q_u8(uv.as_mut_ptr().add(cx * 2 + 16), uvz.1);
+        cx += 16;
+    }
+    if cx < cw {
+        encode_uv_row_scalar(
+            &top[cx * 2 * 3..],
+            &bot[cx * 2 * 3..],
+            &mut uv[cx * 2..],
+            (cw - cx) * 2,
+        );
+    }
+}
+
+/// AVX2 chroma-row encode, 16 chroma px/iter. `pshufb` deinterleave; `maddubs`
+/// pairwise-sums each row; the two rows add to the 2×2 block sum and `(sum+2)>>2`
+/// averages; the signed U/V matrix runs in u16 lanes, then `packus` + `unpack` build
+/// the interleaved `[U0,V0,…]` UV plane. Bit-identical to scalar.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn encode_uv_row_avx2(top: &[u8], bot: &[u8], uv: &mut [u8], width: usize) {
+    use std::arch::x86_64::*;
+    let m_r0 = _mm_setr_epi8(0, 3, 6, 9, 12, 15, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1);
+    let m_r1 = _mm_setr_epi8(-1, -1, -1, -1, -1, -1, 2, 5, 8, 11, 14, -1, -1, -1, -1, -1);
+    let m_r2 = _mm_setr_epi8(-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 1, 4, 7, 10, 13);
+    let m_g0 = _mm_setr_epi8(1, 4, 7, 10, 13, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1);
+    let m_g1 = _mm_setr_epi8(-1, -1, -1, -1, -1, 0, 3, 6, 9, 12, 15, -1, -1, -1, -1, -1);
+    let m_g2 = _mm_setr_epi8(-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 2, 5, 8, 11, 14);
+    let m_b0 = _mm_setr_epi8(2, 5, 8, 11, 14, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1);
+    let m_b1 = _mm_setr_epi8(-1, -1, -1, -1, -1, 1, 4, 7, 10, 13, -1, -1, -1, -1, -1, -1);
+    let m_b2 = _mm_setr_epi8(-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 0, 3, 6, 9, 12, 15);
+    let half = _mm_set1_epi16(ENC_HALF as i16);
+    let off128 = _mm_set1_epi16(128);
+    let two = _mm_set1_epi16(2);
+    let ones = _mm_set1_epi8(1);
+
+    // pshufb deinterleave of one 16-px (48-byte) chunk → (R, G, B).
+    let deint = |p: *const u8| -> (__m128i, __m128i, __m128i) {
+        let s0 = _mm_loadu_si128(p as *const __m128i);
+        let s1 = _mm_loadu_si128(p.add(16) as *const __m128i);
+        let s2 = _mm_loadu_si128(p.add(32) as *const __m128i);
+        (
+            _mm_or_si128(
+                _mm_or_si128(_mm_shuffle_epi8(s0, m_r0), _mm_shuffle_epi8(s1, m_r1)),
+                _mm_shuffle_epi8(s2, m_r2),
+            ),
+            _mm_or_si128(
+                _mm_or_si128(_mm_shuffle_epi8(s0, m_g0), _mm_shuffle_epi8(s1, m_g1)),
+                _mm_shuffle_epi8(s2, m_g2),
+            ),
+            _mm_or_si128(
+                _mm_or_si128(_mm_shuffle_epi8(s0, m_b0), _mm_shuffle_epi8(s1, m_b1)),
+                _mm_shuffle_epi8(s2, m_b2),
+            ),
+        )
+    };
+    // 2×2 average of one channel (a chunk from each row) → u16x8 in [0,255].
+    let blk_avg = |tc: __m128i, bc: __m128i| -> __m128i {
+        let sum = _mm_add_epi16(_mm_maddubs_epi16(tc, ones), _mm_maddubs_epi16(bc, ones));
+        _mm_srli_epi16(_mm_add_epi16(sum, two), 2)
+    };
+    let chroma = |r: __m128i, g: __m128i, b: __m128i, cr: i16, cg: i16, cb: i16| -> __m128i {
+        let mut a = _mm_mullo_epi16(r, _mm_set1_epi16(cr));
+        a = _mm_add_epi16(a, _mm_mullo_epi16(g, _mm_set1_epi16(cg)));
+        a = _mm_add_epi16(a, _mm_mullo_epi16(b, _mm_set1_epi16(cb)));
+        a = _mm_srai_epi16(_mm_add_epi16(a, half), 8);
+        _mm_add_epi16(a, off128)
+    };
+
+    let cw = width / 2;
+    let mut cx = 0;
+    while cx + 16 <= cw {
+        let sp = cx * 2 * 3;
+        let (tar, tag, tab) = deint(top.as_ptr().add(sp)); // chroma px cx..cx+7
+        let (tbr, tbg, tbb) = deint(top.as_ptr().add(sp + 48)); // cx+8..cx+15
+        let (bar, bag, bab) = deint(bot.as_ptr().add(sp));
+        let (bbr, bbg, bbb) = deint(bot.as_ptr().add(sp + 48));
+        let (ra, ga, ba) = (blk_avg(tar, bar), blk_avg(tag, bag), blk_avg(tab, bab));
+        let (rb, gb, bb) = (blk_avg(tbr, bbr), blk_avg(tbg, bbg), blk_avg(tbb, bbb));
+        let u = _mm_packus_epi16(
+            chroma(ra, ga, ba, UR as i16, UG as i16, UB as i16),
+            chroma(rb, gb, bb, UR as i16, UG as i16, UB as i16),
+        );
+        let v = _mm_packus_epi16(
+            chroma(ra, ga, ba, VR as i16, VG as i16, VB as i16),
+            chroma(rb, gb, bb, VR as i16, VG as i16, VB as i16),
+        );
+        _mm_storeu_si128(
+            uv.as_mut_ptr().add(cx * 2) as *mut __m128i,
+            _mm_unpacklo_epi8(u, v), // [U0,V0,…,U7,V7]
+        );
+        _mm_storeu_si128(
+            uv.as_mut_ptr().add(cx * 2 + 16) as *mut __m128i,
+            _mm_unpackhi_epi8(u, v), // [U8,V8,…,U15,V15]
+        );
+        cx += 16;
+    }
+    if cx < cw {
+        encode_uv_row_scalar(
+            &top[cx * 2 * 3..],
+            &bot[cx * 2 * 3..],
+            &mut uv[cx * 2..],
+            (cw - cx) * 2,
+        );
+    }
 }
 
 /// NEON luma-row encode: `vld3q_u8` deinterleaves 16 px → R/G/B, widening MACs apply
@@ -1663,6 +1829,19 @@ mod tests {
         let y1 = encode_y(0, 0, 255);
         let (u, v) = encode_uv((255 + 0 + 1) >> 1, 0, (0 + 255 + 1) >> 1);
         assert_eq!(out, [y0, u, y1, v]);
+    }
+
+    /// The SIMD chroma row (NEON/AVX2) must be bit-identical to the scalar oracle.
+    #[test]
+    fn nv12_uv_row_simd_matches_scalar() {
+        let width = 70; // 16-chroma-px bulk twice (64 src px) + 6-px (3-chroma) tail
+        let top = ramp_u8(width * 3);
+        let bot: Vec<u8> = (0..width * 3).map(|v| (v * 5 + 11) as u8).collect();
+        let mut simd = vec![0u8; width]; // uv row = width bytes
+        let mut scalar = vec![0u8; width];
+        encode_uv_row(&top, &bot, &mut simd, width);
+        encode_uv_row_scalar(&top, &bot, &mut scalar, width);
+        assert_eq!(simd, scalar);
     }
 
     /// The SIMD YUYV row (NEON on aarch64, AVX2 on x86) must be bit-identical to the
