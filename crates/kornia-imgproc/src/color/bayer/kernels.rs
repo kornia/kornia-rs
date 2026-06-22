@@ -206,55 +206,69 @@ pub fn rgb_from_bayer_neon(
     unsafe {
         for r in 1..rows - 1 {
             let row_off = r * cols;
-            // Left border (col 0) — scalar (replicate edge).
+            let pr = row_off - cols; // prev row
+            let nr = row_off + cols; // next row
+                                     // Phase is uniform per even/odd column for this row (no per-lane masks).
+            let cell_e = table[r & 1][0]; // even columns (col & 1 == 0)
+            let cell_o = table[r & 1][1]; // odd columns
+
+            // Scalar prefix: col 0 (border) + col 1 (odd, before the even-aligned bulk).
             demosaic_px(src, dst, r, 0, rows, cols, &table);
-            // Phase of the colored sensel on this interior row at column 0.
-            // We iterate per-pixel-pair via the even/odd vld2 split, but the
-            // simplest correct-and-fast structure here is a column loop with
-            // 16-pixel NEON blocks aligned so we never touch the borders.
-            //
-            // We compute for columns c in [1, cols-1). Start at the first even
-            // multiple that keeps a 16-wide window inside the interior.
-            // One 16-pixel NEON block at interior column `cc`. The 4-neighbor cases
-            // need true (a+b+c+d+2)>>2 (nested vrhadd is not bit-exact) via the
-            // widening avg4_u8; the 2-neighbor cases are exact with vrhaddq_u8.
-            let mut blk = |cc: usize| {
-                let center = vld1q_u8(src.as_ptr().add(row_off + cc));
-                let west = vld1q_u8(src.as_ptr().add(row_off + cc - 1));
-                let east = vld1q_u8(src.as_ptr().add(row_off + cc + 1));
-                let north = vld1q_u8(src.as_ptr().add(row_off - cols + cc));
-                let south = vld1q_u8(src.as_ptr().add(row_off + cols + cc));
-                let nw = vld1q_u8(src.as_ptr().add(row_off - cols + cc - 1));
-                let ne = vld1q_u8(src.as_ptr().add(row_off - cols + cc + 1));
-                let sw = vld1q_u8(src.as_ptr().add(row_off + cols + cc - 1));
-                let se = vld1q_u8(src.as_ptr().add(row_off + cols + cc + 1));
-                let g4 = avg4_u8(north, south, west, east);
-                let diag4 = avg4_u8(nw, ne, sw, se);
-                let h2 = vrhaddq_u8(west, east);
-                let v2 = vrhaddq_u8(north, south);
-                let cell_even = table[r & 1][cc & 1];
-                let cell_odd = table[r & 1][(cc + 1) & 1];
-                let (r_v, g_v, b_v) = assemble_rgb(center, g4, diag4, h2, v2, cell_even, cell_odd);
+            demosaic_px(src, dst, r, 1, rows, cols, &table);
+
+            let sp = src.as_ptr();
+            let dp = dst.as_mut_ptr();
+            // Even-aligned 32-column blocks. Loads at base-2 / base / base+2 read at
+            // most base+33; `base + 33 < cols` keeps every load inside the row (safe,
+            // no row-spill). vld2q deinterleaves even/odd columns so each shifted
+            // neighbor comes straight from a register half — no carry, no masks.
+            let mut base = 2usize;
+            while base + 33 < cols {
+                // 3 rows × {base-2 (for west-shifted odd/even), base, base+2 (east-shifted)}.
+                let p_m = vld2q_u8(sp.add(pr + base - 2));
+                let p_0 = vld2q_u8(sp.add(pr + base));
+                let p_p = vld2q_u8(sp.add(pr + base + 2));
+                let c_m = vld2q_u8(sp.add(row_off + base - 2));
+                let c_0 = vld2q_u8(sp.add(row_off + base));
+                let c_p = vld2q_u8(sp.add(row_off + base + 2));
+                let n_m = vld2q_u8(sp.add(nr + base - 2));
+                let n_0 = vld2q_u8(sp.add(nr + base));
+                let n_p = vld2q_u8(sp.add(nr + base + 2));
+
+                // .0 = even columns, .1 = odd columns.
+                let (pe, po) = (p_0.0, p_0.1);
+                let (ce, co) = (c_0.0, c_0.1);
+                let (ne, no) = (n_0.0, n_0.1);
+                let (po_w, co_w, no_w) = (p_m.1, c_m.1, n_m.1); // odd@(base-1+2i)
+                let (pe_e, ce_e, ne_e) = (p_p.0, c_p.0, n_p.0); // even@(base+2+2i)
+
+                // Even-column pixels (center = ce): N/S same col; W/E = adjacent odds.
+                let g4e = avg4_u8(pe, ne, co_w, co);
+                let dge = avg4_u8(po_w, po, no_w, no);
+                let h2e = vrhaddq_u8(co_w, co);
+                let v2e = vrhaddq_u8(pe, ne);
+                let (re, ge, be) = assemble_cell(cell_e, ce, g4e, dge, h2e, v2e);
+
+                // Odd-column pixels (center = co): W/E = adjacent evens.
+                let g4o = avg4_u8(po, no, ce, ce_e);
+                let dgo = avg4_u8(pe, pe_e, ne, ne_e);
+                let h2o = vrhaddq_u8(ce, ce_e);
+                let v2o = vrhaddq_u8(po, no);
+                let (ro, go, bo) = assemble_cell(cell_o, co, g4o, dgo, h2o, v2o);
+
+                // Re-interleave even/odd back to spatial order and store.
+                let zr = vzipq_u8(re, ro);
+                let zg = vzipq_u8(ge, go);
+                let zb = vzipq_u8(be, bo);
+                vst3q_u8(dp.add((row_off + base) * 3), uint8x16x3_t(zr.0, zg.0, zb.0));
                 vst3q_u8(
-                    dst.as_mut_ptr().add((row_off + cc) * 3),
-                    uint8x16x3_t(r_v, g_v, b_v),
+                    dp.add((row_off + base + 16) * 3),
+                    uint8x16x3_t(zr.1, zg.1, zb.1),
                 );
-            };
-            let mut c = 1usize;
-            // 2× unrolled: two independent 16-px blocks per iter so the OoO core
-            // overlaps their load/compute chains.
-            while c + 32 <= cols - 1 {
-                blk(c);
-                blk(c + 16);
-                c += 32;
+                base += 32;
             }
-            while c + 16 <= cols - 1 {
-                blk(c);
-                c += 16;
-            }
-            // Remainder of this interior row (NEON tail) + right border (col cols-1),
-            // all via scalar with replicate-edge addressing.
-            for cc in c..cols {
+            // Scalar remainder (tail + right border) with replicate-edge addressing.
+            for cc in base..cols {
                 demosaic_px(src, dst, r, cc, rows, cols, &table);
             }
         }
@@ -284,49 +298,27 @@ unsafe fn avg4_u8(
     vcombine_u8(vrshrn_n_u16::<2>(lo), vrshrn_n_u16::<2>(hi))
 }
 
-/// Assemble per-lane R/G/B vectors given the precomputed interpolations and the
-/// even/odd column cell kinds for this row block.
-///
-/// Lanes alternate `cell_even, cell_odd, cell_even, ...`. We compute the result
-/// for both phases over the whole vector then blend with an even/odd lane mask.
+/// Assemble (R,G,B) for a register of same-phase pixels (uniform cell).
+///   R-cell:     R=center, G=g4,     B=diag    | B-cell:    R=diag, G=g4, B=center
+///   G-on-R-row: R=h2,     G=center, B=v2      | G-on-B-row: R=v2,  G=center, B=h2
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
-unsafe fn assemble_rgb(
+fn assemble_cell(
+    cell: Cell,
     center: std::arch::aarch64::uint8x16_t,
     g4: std::arch::aarch64::uint8x16_t,
-    diag4: std::arch::aarch64::uint8x16_t,
+    diag: std::arch::aarch64::uint8x16_t,
     h2: std::arch::aarch64::uint8x16_t,
     v2: std::arch::aarch64::uint8x16_t,
-    cell_even: Cell,
-    cell_odd: Cell,
 ) -> (
     std::arch::aarch64::uint8x16_t,
     std::arch::aarch64::uint8x16_t,
     std::arch::aarch64::uint8x16_t,
 ) {
-    use std::arch::aarch64::*;
-
-    // Per-cell (R,G,B) selection as vectors:
-    //   R-cell:      R=center, G=g4,     B=diag4
-    //   B-cell:      R=diag4,  G=g4,     B=center
-    //   G-on-R-row:  R=h2,     G=center, B=v2
-    //   G-on-B-row:  R=v2,     G=center, B=h2
-    let pick = |cell: Cell| -> (uint8x16_t, uint8x16_t, uint8x16_t) {
-        match cell {
-            Cell::R => (center, g4, diag4),
-            Cell::B => (diag4, g4, center),
-            Cell::GonRRow => (h2, center, v2),
-            Cell::GonBRow => (v2, center, h2),
-        }
-    };
-    let (re, ge, be) = pick(cell_even);
-    let (ro, go, bo) = pick(cell_odd);
-
-    // Even-lane mask: 0xFF on even byte lanes, 0x00 on odd.
-    let lane_idx = vld1q_u8([0u8, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15].as_ptr());
-    let one = vdupq_n_u8(1);
-    let is_odd = vtstq_u8(lane_idx, one); // 0xFF where lane index is odd
-    let blend = |ev: uint8x16_t, od: uint8x16_t| vbslq_u8(is_odd, od, ev);
-
-    (blend(re, ro), blend(ge, go), blend(be, bo))
+    match cell {
+        Cell::R => (center, g4, diag),
+        Cell::B => (diag, g4, center),
+        Cell::GonRRow => (h2, center, v2),
+        Cell::GonBRow => (v2, center, h2),
+    }
 }
