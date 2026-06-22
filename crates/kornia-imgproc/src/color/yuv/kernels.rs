@@ -911,6 +911,15 @@ pub fn rgb_from_planar420(
         let y_top = &y[(2 * cy) * width..(2 * cy) * width + width];
         let y_bot = &y[(2 * cy + 1) * width..(2 * cy + 1) * width + width];
         let (d_top, d_bot) = dst.split_at_mut(dst_row);
+        #[cfg(target_arch = "aarch64")]
+        {
+            // SAFETY: NEON is baseline on aarch64; row slices sized by the caller.
+            unsafe {
+                rgb_from_planar420_block_neon(y_top, y_bot, c0, c1, d_top, d_bot, cw, cy, fmt)
+            };
+            return;
+        }
+        #[allow(unreachable_code)]
         rgb_from_planar420_block_scalar(y_top, y_bot, c0, c1, d_top, d_bot, width, cw, cy, fmt);
     };
 
@@ -961,6 +970,130 @@ fn rgb_from_planar420_block_scalar(
             d_bot[dt + 1] = g2;
             d_bot[dt + 2] = b2;
         }
+    }
+}
+
+/// NEON planar 4:2:0 two-row block decode: 32 luma cols (16 chroma) per iter. Chroma is
+/// upsampled ×2 horizontally in-register via `vzipq_u8` (each (U,V) serves a 2×2 luma
+/// block, reused across both rows). Q20 BT.601 math is identical to the scalar oracle;
+/// a scalar tail covers `cw % 16`.
+#[cfg(target_arch = "aarch64")]
+#[allow(clippy::too_many_arguments)]
+unsafe fn rgb_from_planar420_block_neon(
+    y_top: &[u8],
+    y_bot: &[u8],
+    c0: &[u8],
+    c1: &[u8],
+    d_top: &mut [u8],
+    d_bot: &mut [u8],
+    cw: usize,
+    cy: usize,
+    fmt: Planar420,
+) {
+    use std::arch::aarch64::*;
+    let ytp = y_top.as_ptr();
+    let ybp = y_bot.as_ptr();
+    let dtp = d_top.as_mut_ptr();
+    let dbp = d_bot.as_mut_ptr();
+
+    // Load 16 (U,V) chroma samples starting at column `cx` per layout.
+    let load_uv = |cx: usize| -> (uint8x16_t, uint8x16_t) {
+        match fmt {
+            Planar420::Nv12 => {
+                let q = vld2q_u8(c0.as_ptr().add(cy * cw * 2 + cx * 2));
+                (q.0, q.1)
+            }
+            Planar420::Nv21 => {
+                let q = vld2q_u8(c0.as_ptr().add(cy * cw * 2 + cx * 2));
+                (q.1, q.0)
+            }
+            Planar420::I420 => (
+                vld1q_u8(c0.as_ptr().add(cy * cw + cx)),
+                vld1q_u8(c1.as_ptr().add(cy * cw + cx)),
+            ),
+            Planar420::Yv12 => (
+                vld1q_u8(c1.as_ptr().add(cy * cw + cx)),
+                vld1q_u8(c0.as_ptr().add(cy * cw + cx)),
+            ),
+        }
+    };
+
+    // Chroma RGB contribution for a centred u8x8 (U,V) → [(r_lo,r_hi),(g..),(b..)] s32 pairs.
+    let chroma_rgb = |u8x8: uint8x8_t, v8x8: uint8x8_t| -> [(int32x4_t, int32x4_t); 3] {
+        let uc = vsubq_s16(vreinterpretq_s16_u16(vmovl_u8(u8x8)), vdupq_n_s16(128));
+        let vc = vsubq_s16(vreinterpretq_s16_u16(vmovl_u8(v8x8)), vdupq_n_s16(128));
+        let (ul, uh) = (vmovl_s16(vget_low_s16(uc)), vmovl_s16(vget_high_s16(uc)));
+        let (vl, vh) = (vmovl_s16(vget_low_s16(vc)), vmovl_s16(vget_high_s16(vc)));
+        let half = vdupq_n_s32(ITUR_HALF);
+        let r = (vmlaq_n_s32(half, vl, CVR), vmlaq_n_s32(half, vh, CVR));
+        let g = (
+            vmlaq_n_s32(vmlaq_n_s32(half, ul, CUG), vl, CVG),
+            vmlaq_n_s32(vmlaq_n_s32(half, uh, CUG), vh, CVG),
+        );
+        let b = (vmlaq_n_s32(half, ul, CUB), vmlaq_n_s32(half, uh, CUB));
+        [r, g, b]
+    };
+    let yy_pair = |y8: uint8x8_t| -> (int32x4_t, int32x4_t) {
+        let y16 = vreinterpretq_s16_u16(vmovl_u8(vqsub_u8(y8, vdup_n_u8(16))));
+        (
+            vmulq_n_s32(vmovl_s16(vget_low_s16(y16)), CY),
+            vmulq_n_s32(vmovl_s16(vget_high_s16(y16)), CY),
+        )
+    };
+    let finish = |yy: (int32x4_t, int32x4_t), c: (int32x4_t, int32x4_t)| -> uint8x8_t {
+        let lo = vshrq_n_s32::<ITUR_SHIFT>(vaddq_s32(yy.0, c.0));
+        let hi = vshrq_n_s32::<ITUR_SHIFT>(vaddq_s32(yy.1, c.1));
+        vqmovun_s16(vcombine_s16(vqmovn_s32(lo), vqmovn_s32(hi)))
+    };
+    // Decode a 16-px luma run (`yp`+col) with chroma groups for px 0..8 (clo) / 8..16 (chi).
+    let decode16_store = |yp: *const u8,
+                          dp: *mut u8,
+                          col: usize,
+                          clo: &[(int32x4_t, int32x4_t); 3],
+                          chi: &[(int32x4_t, int32x4_t); 3]| {
+        let y = vld1q_u8(yp.add(col));
+        let yl = yy_pair(vget_low_u8(y));
+        let yh = yy_pair(vget_high_u8(y));
+        let r = vcombine_u8(finish(yl, clo[0]), finish(yh, chi[0]));
+        let g = vcombine_u8(finish(yl, clo[1]), finish(yh, chi[1]));
+        let b = vcombine_u8(finish(yl, clo[2]), finish(yh, chi[2]));
+        vst3q_u8(dp.add(col * 3), uint8x16x3_t(r, g, b));
+    };
+
+    let bulk = cw & !15;
+    let mut cx = 0usize;
+    while cx < bulk {
+        let (u, v) = load_uv(cx);
+        // ×2 horizontal upsample: lane i → luma cols 2i, 2i+1.
+        let uz = vzipq_u8(u, u);
+        let vz = vzipq_u8(v, v);
+        let g0 = chroma_rgb(vget_low_u8(uz.0), vget_low_u8(vz.0)); // cols 0..8
+        let g1 = chroma_rgb(vget_high_u8(uz.0), vget_high_u8(vz.0)); // cols 8..16
+        let g2 = chroma_rgb(vget_low_u8(uz.1), vget_low_u8(vz.1)); // cols 16..24
+        let g3 = chroma_rgb(vget_high_u8(uz.1), vget_high_u8(vz.1)); // cols 24..32
+        let col = cx * 2;
+        decode16_store(ytp, dtp, col, &g0, &g1);
+        decode16_store(ytp, dtp, col + 16, &g2, &g3);
+        decode16_store(ybp, dbp, col, &g0, &g1);
+        decode16_store(ybp, dbp, col + 16, &g2, &g3);
+        cx += 16;
+    }
+    // scalar tail (cw % 16)
+    while cx < cw {
+        let (u, v) = chroma_at(c0, c1, cw, cy, cx, fmt);
+        let x = cx * 2;
+        for dx in 0..2 {
+            let dt = (x + dx) * 3;
+            let (r, g, b) = decode_px(yy_term(*ytp.add(x + dx) as i32), u, v);
+            *dtp.add(dt) = r;
+            *dtp.add(dt + 1) = g;
+            *dtp.add(dt + 2) = b;
+            let (r2, g2, b2) = decode_px(yy_term(*ybp.add(x + dx) as i32), u, v);
+            *dbp.add(dt) = r2;
+            *dbp.add(dt + 1) = g2;
+            *dbp.add(dt + 2) = b2;
+        }
+        cx += 1;
     }
 }
 
@@ -1083,7 +1216,8 @@ mod tests {
     #[test]
     fn packed422_matches_scalar() {
         for fmt in [Packed422::Yuyv, Packed422::Uyvy, Packed422::Yvyu] {
-            let (w, h) = (18, 3); // 18 even; 9 groups/row -> 8-group body + 1 tail
+            // 70 px = 35 groups/row -> 2×16-group NEON bodies (32 grp) + 3-group tail.
+            let (w, h) = (70, 3);
             let src = ramp_u8(w * h * 2);
             let mut simd = vec![0u8; w * h * 3];
             let mut oracle = vec![0u8; w * h * 3];
@@ -1137,6 +1271,105 @@ mod tests {
             }
         }
         assert_eq!(dst, expected);
+    }
+
+    #[test]
+    fn planar420_neon_bulk_matches_reference() {
+        // w=64 → cw=32 exercises the 16-chroma NEON bulk loop twice; w=70 → cw=35
+        // adds a 3-sample scalar tail. Both cover all four layouts vs an independent ref.
+        for (w, h) in [(64usize, 6usize), (70usize, 4usize)] {
+            let cw = w / 2;
+            let ch = h / 2;
+            let y: Vec<u8> = (0..w * h).map(|i| ((i * 7 + 16) % 240) as u8).collect();
+            for fmt in [
+                Planar420::Nv12,
+                Planar420::Nv21,
+                Planar420::I420,
+                Planar420::Yv12,
+            ] {
+                let (c0, c1): (Vec<u8>, Vec<u8>) = match fmt {
+                    Planar420::Nv12 | Planar420::Nv21 => (
+                        (0..cw * ch * 2)
+                            .map(|i| ((i * 5 + 90) % 250) as u8)
+                            .collect(),
+                        vec![],
+                    ),
+                    _ => (
+                        (0..cw * ch).map(|i| ((i * 5 + 90) % 250) as u8).collect(),
+                        (0..cw * ch).map(|i| ((i * 3 + 40) % 250) as u8).collect(),
+                    ),
+                };
+                let mut dst = vec![0u8; w * h * 3];
+                rgb_from_planar420(&y, &c0, &c1, &mut dst, w, h, fmt);
+                let mut exp = vec![0u8; w * h * 3];
+                for row in 0..h {
+                    for col in 0..w {
+                        let (u, v) = chroma_at(&c0, &c1, cw, row / 2, col / 2, fmt);
+                        let yy = (y[row * w + col] as i32 - 16).max(0) * CY;
+                        let (r, g, b) = decode_px(yy, u, v);
+                        let d = (row * w + col) * 3;
+                        exp[d] = r;
+                        exp[d + 1] = g;
+                        exp[d + 2] = b;
+                    }
+                }
+                assert_eq!(dst, exp, "planar420 NEON mismatch (w={w}, h={h})");
+            }
+        }
+    }
+
+    // Ignored timing helper (not a correctness gate): `cargo test ... -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn bench_throughput() {
+        use std::time::Instant;
+        let (w, h) = (1920usize, 1080usize);
+        let npix = w * h;
+        let rgb = ramp_u8(npix * 3);
+        let yuyv = ramp_u8(npix * 2);
+        let mut out3 = vec![0u8; npix * 3];
+        let iters = 50;
+
+        let t = Instant::now();
+        for _ in 0..iters {
+            ycc_from_rgb_u8(&rgb, &mut out3, npix, ChromaOrder::YCrCb);
+        }
+        let neon = t.elapsed().as_secs_f64() / iters as f64;
+        let t = Instant::now();
+        for _ in 0..iters {
+            ycc_from_rgb_u8_scalar(&rgb, &mut out3, npix, ChromaOrder::YCrCb);
+        }
+        let scalar = t.elapsed().as_secs_f64() / iters as f64;
+        println!(
+            "ycbcr_from_rgb u8 1080p: neon {:.3} ms, scalar {:.3} ms, speedup {:.2}x",
+            neon * 1e3,
+            scalar * 1e3,
+            scalar / neon
+        );
+
+        let t = Instant::now();
+        for _ in 0..iters {
+            rgb_from_packed422(&yuyv, &mut out3, w, h, Packed422::Yuyv);
+        }
+        let neon = t.elapsed().as_secs_f64() / iters as f64;
+        let t = Instant::now();
+        for _ in 0..iters {
+            for row in 0..h {
+                rgb_from_packed422_row_scalar(
+                    &yuyv[row * w * 2..row * w * 2 + w * 2],
+                    &mut out3[row * w * 3..row * w * 3 + w * 3],
+                    w,
+                    Packed422::Yuyv,
+                );
+            }
+        }
+        let scalar = t.elapsed().as_secs_f64() / iters as f64;
+        println!(
+            "yuyv->rgb 1080p: neon {:.3} ms, scalar {:.3} ms, speedup {:.2}x",
+            neon * 1e3,
+            scalar * 1e3,
+            scalar / neon
+        );
     }
 
     #[test]
