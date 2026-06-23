@@ -799,6 +799,15 @@ fn mode_from_channels(channels: usize, is_u16: bool) -> String {
     }
 }
 
+/// Default color space derived from channel count: 1->Gray, 4->Rgba, else Rgb.
+fn default_color_space(channels: usize) -> kornia_image::ColorSpace {
+    match channels {
+        1 => kornia_image::ColorSpace::Gray,
+        4 => kornia_image::ColorSpace::Rgba,
+        _ => kornia_image::ColorSpace::Rgb,
+    }
+}
+
 /// PIL-style mode string for f32 storage. Single-channel uses PIL's
 /// canonical ``"F"`` (32-bit float); multi-channel uses an "f" suffix.
 fn mode_from_channels_f32(channels: usize) -> String {
@@ -914,6 +923,10 @@ pub struct PyImageApi {
     /// ``"TIFF"``). ``None`` for in-memory-constructed Images. Set by
     /// ``Image.load`` / ``Image.decode`` / ``Image.open``.
     format: Option<&'static str>,
+    /// The per-pixel color space this Image is interpreted as. Defaults by
+    /// channel count on construction (1->Gray, 3->Rgb, 4->Rgba) and is updated
+    /// by `cvt_color`.
+    color_space: kornia_image::ColorSpace,
 }
 
 /// Shorthand for constructing a Python `ValueError`.
@@ -952,6 +965,131 @@ fn u16_imgproc_unsupported(method: &str) -> PyErr {
     ))
 }
 
+/// Scale an f32 PyArray3 in-place by a scalar factor `k`.
+///
+/// SAFETY: `arr` must be a freshly-allocated contiguous C-order array that
+/// we exclusively own (no other Python references to its data).
+fn scale_f32_inplace(py: Python<'_>, arr: &Py<PyArray3<f32>>, k: f32) {
+    let bound = arr.bind(py);
+    let len = bound.shape().iter().product::<usize>();
+    // SAFETY: contiguous f32 array we own exclusively.
+    let s = unsafe { std::slice::from_raw_parts_mut(bound.data(), len) };
+    for v in s.iter_mut() {
+        *v *= k;
+    }
+}
+
+/// Scale an f32 PyArray3 by `k`, round, clamp to `[0, 255]`, and return u8.
+///
+/// Allocates a fresh output array; the input is read-only.
+fn scale_clamp_f32_to_u8(
+    py: Python<'_>,
+    arr: &Py<PyArray3<f32>>,
+    k: f32,
+) -> PyResult<Py<PyArray3<u8>>> {
+    let bound = arr.bind(py);
+    let shape = bound.shape();
+    let (h, w, c) = (shape[0], shape[1], shape[2]);
+    let len = h * w * c;
+    let src = unsafe { std::slice::from_raw_parts(bound.data(), len) };
+    let out = unsafe { PyArray::<u8, _>::new(py, [h, w, c], false) };
+    let dst = unsafe { std::slice::from_raw_parts_mut(out.data(), len) };
+    for (d, s) in dst.iter_mut().zip(src.iter()) {
+        *d = (s * k).round().clamp(0.0, 255.0) as u8;
+    }
+    Ok(out.unbind())
+}
+
+/// Dispatch a color-space conversion over a `ImageData`, producing a new
+/// `PyImageApi`. Validates nothing — callers must pre-check dtype / legality.
+fn dispatch_cvt(
+    py: Python<'_>,
+    data: &ImageData,
+    from: kornia_image::ColorSpace,
+    to: kornia_image::ColorSpace,
+) -> PyResult<PyImageApi> {
+    use kornia_image::ColorSpace as CS;
+    use kornia_imgproc::color as kc;
+
+    macro_rules! f32_3to3 {
+        ($func:path) => {{
+            let ImageData::F32(a) = data else {
+                unreachable!()
+            };
+            let src = unsafe { numpy_as_image_f32::<3>(py, a)? };
+            let (mut dst, out) = unsafe { alloc_output_pyarray_f32::<3>(py, src.size())? };
+            py.detach(|| $func(&src, &mut dst)).map_err(to_pyerr)?;
+            Ok(PyImageApi::wrap_f32(py, out, None))
+        }};
+    }
+    macro_rules! u8_3to3 {
+        ($func:path) => {{
+            let ImageData::U8(a) = data else {
+                unreachable!()
+            };
+            let src = unsafe { numpy_as_image::<3>(py, a)? };
+            let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, src.size())? };
+            py.detach(|| $func(&src, &mut dst)).map_err(to_pyerr)?;
+            Ok(PyImageApi::wrap(py, out, None))
+        }};
+    }
+
+    match (from, to) {
+        // channel-swap BGR<->RGB: works on both u8 and f32
+        (CS::Rgb, CS::Bgr) | (CS::Bgr, CS::Rgb) if data.is_f32() => {
+            f32_3to3!(kc::bgr_from_rgb)
+        }
+        (CS::Rgb, CS::Bgr) | (CS::Bgr, CS::Rgb) => {
+            u8_3to3!(kc::bgr_from_rgb)
+        }
+        (CS::Rgb, CS::Gray) if !data.is_f32() => {
+            let ImageData::U8(a) = data else {
+                unreachable!()
+            };
+            let src = unsafe { numpy_as_image::<3>(py, a)? };
+            let (mut dst, out) = unsafe { alloc_output_pyarray::<1>(py, src.size())? };
+            py.detach(|| kc::gray_from_rgb_u8(&src, &mut dst)).map_err(to_pyerr)?;
+            Ok(PyImageApi::wrap(py, out, None))
+        }
+        (CS::Gray, CS::Rgb) if !data.is_f32() => {
+            let ImageData::U8(a) = data else {
+                unreachable!()
+            };
+            let src = unsafe { numpy_as_image::<1>(py, a)? };
+            let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, src.size())? };
+            py.detach(|| kc::rgb_from_gray(&src, &mut dst)).map_err(to_pyerr)?;
+            Ok(PyImageApi::wrap(py, out, None))
+        }
+        // f32-only perceptual/cylindrical conversions (3->3); cvt_color already
+        // rejects non-f32 storage for these via the `requires_f32` guard above.
+        (CS::Rgb, CS::Hsv) => f32_3to3!(kc::hsv_from_rgb),
+        (CS::Hsv, CS::Rgb) => f32_3to3!(kc::rgb_from_hsv),
+        (CS::Rgb, CS::Hls) => f32_3to3!(kc::hls_from_rgb),
+        (CS::Hls, CS::Rgb) => f32_3to3!(kc::rgb_from_hls),
+        (CS::Rgb, CS::Lab) => f32_3to3!(kc::lab_from_rgb),
+        (CS::Lab, CS::Rgb) => f32_3to3!(kc::rgb_from_lab),
+        (CS::Rgb, CS::Luv) => f32_3to3!(kc::luv_from_rgb),
+        (CS::Luv, CS::Rgb) => f32_3to3!(kc::rgb_from_luv),
+        (CS::Rgb, CS::Xyz) => f32_3to3!(kc::xyz_from_rgb),
+        (CS::Xyz, CS::Rgb) => f32_3to3!(kc::rgb_from_xyz),
+        (CS::Rgb, CS::LinearRgb) => f32_3to3!(kc::linear_rgb_from_rgb),
+        (CS::LinearRgb, CS::Rgb) => f32_3to3!(kc::rgb_from_linear_rgb),
+        // YCbCr / Yuv support both u8 and f32 (YuvFamily). Route through f32
+        // when storage is f32, fall through to u8 path otherwise.
+        (CS::Rgb, CS::YCbCr) if data.is_f32() => f32_3to3!(kc::ycbcr_from_rgb),
+        (CS::YCbCr, CS::Rgb) if data.is_f32() => f32_3to3!(kc::rgb_from_ycbcr),
+        (CS::Rgb, CS::Yuv) if data.is_f32() => f32_3to3!(kc::yuv_from_rgb),
+        (CS::Yuv, CS::Rgb) if data.is_f32() => f32_3to3!(kc::rgb_from_yuv),
+        (CS::Rgb, CS::YCbCr) => u8_3to3!(kc::ycbcr_from_rgb),
+        (CS::YCbCr, CS::Rgb) => u8_3to3!(kc::rgb_from_ycbcr),
+        (CS::Rgb, CS::Yuv) => u8_3to3!(kc::yuv_from_rgb),
+        (CS::Yuv, CS::Rgb) => u8_3to3!(kc::rgb_from_yuv),
+        _ => Err(value_err(format!(
+            "no direct {from:?}->{to:?} color conversion; convert via Rgb"
+        ))),
+    }
+}
+
 impl PyImageApi {
     /// Wrap an 8-bit numpy array. Mode defaults to `"L"`/`"RGB"`/`"RGBA"`
     /// derived from channel count.
@@ -962,6 +1100,7 @@ impl PyImageApi {
             data: ImageData::U8(data),
             mode,
             format: None,
+            color_space: default_color_space(channels),
         }
     }
 
@@ -973,6 +1112,7 @@ impl PyImageApi {
             data: ImageData::U16(data),
             mode,
             format: None,
+            color_space: default_color_space(channels),
         }
     }
 
@@ -986,12 +1126,30 @@ impl PyImageApi {
             data: ImageData::F32(data),
             mode,
             format: None,
+            color_space: default_color_space(channels),
         }
     }
 
     fn with_format(mut self, format: &'static str) -> Self {
         self.format = Some(format);
         self
+    }
+
+    /// Return a shallow clone sharing the same numpy array handle.
+    /// Preserves mode, format, and color_space. Used by `cvt_color` for the
+    /// same-space case and by `to_float`/`to_uint8` for already-correct dtype.
+    fn clone_handle(&self, py: Python<'_>) -> Self {
+        let data = match &self.data {
+            ImageData::U8(a) => ImageData::U8(a.clone_ref(py)),
+            ImageData::U16(a) => ImageData::U16(a.clone_ref(py)),
+            ImageData::F32(a) => ImageData::F32(a.clone_ref(py)),
+        };
+        Self {
+            data,
+            mode: self.mode.clone(),
+            format: self.format,
+            color_space: self.color_space,
+        }
     }
 
     /// Wrap a Vec<u8> result as a new u8 `PyImageApi` with the current mode.
@@ -1816,6 +1974,12 @@ impl PyImageApi {
         self.format
     }
 
+    /// The color space this Image is interpreted as.
+    #[getter]
+    fn color_space(&self) -> crate::color_space::PyColorSpace {
+        self.color_space.into()
+    }
+
     #[getter]
     fn size(&self, py: Python<'_>) -> (usize, usize) {
         let s = self.data.shape3(py);
@@ -2017,6 +2181,7 @@ impl PyImageApi {
             data: new_data,
             mode: self.mode.clone(),
             format: self.format,
+            color_space: self.color_space,
         })
     }
 
@@ -2429,6 +2594,97 @@ impl PyImageApi {
         }
     }
 
+    // --- Color space conversion ---
+
+    /// Cast u8 -> f32 by dividing by 255 (range [0,1]). f32 input is returned
+    /// unchanged (cloned handle). Required before converting to f32-only spaces
+    /// (HSV, Lab, Luv, XYZ, LinearRgb, YCbCr, Yuv).
+    fn to_float(&self, py: Python<'_>) -> PyResult<Self> {
+        match &self.data {
+            ImageData::F32(_) => Ok(self.clone_handle(py)),
+            ImageData::U8(a) => {
+                let arr = a.bind(py);
+                let out: Bound<'_, PyArray3<f32>> = PyArrayMethods::cast_array(arr, false)?;
+                let out: Py<PyArray3<f32>> = out.unbind();
+                // scale from [0, 255] to [0, 1] in-place
+                scale_f32_inplace(py, &out, 1.0 / 255.0);
+                let mut img = Self::wrap_f32(py, out, Some(self.mode.clone()));
+                img.color_space = self.color_space;
+                Ok(img)
+            }
+            ImageData::U16(_) => Err(u16_imgproc_unsupported("to_float")),
+        }
+    }
+
+    /// Cast f32 [0,1] -> u8 by multiplying by 255 (saturating round). u8 input
+    /// is returned unchanged (cloned handle).
+    fn to_uint8(&self, py: Python<'_>) -> PyResult<Self> {
+        match &self.data {
+            ImageData::U8(_) => Ok(self.clone_handle(py)),
+            ImageData::F32(a) => {
+                let out = scale_clamp_f32_to_u8(py, a, 255.0)?;
+                let mut img = Self::wrap(py, out, Some(self.mode.clone()));
+                img.color_space = self.color_space;
+                Ok(img)
+            }
+            ImageData::U16(_) => Err(u16_imgproc_unsupported("to_uint8")),
+        }
+    }
+
+    /// Convert to another color space, returning a new tagged Image. Strict
+    /// dtype: f32-only spaces require a float image (call `to_float()` first).
+    fn cvt_color(
+        &self,
+        py: Python<'_>,
+        to: crate::color_space::PyColorSpace,
+    ) -> PyResult<Self> {
+        use kornia_image::ColorSpace as CS;
+        let from = self.color_space;
+        let to: CS = to.into();
+        if from == to {
+            return Ok(self.clone_handle(py));
+        }
+        if !CS::supports(from, to) {
+            return Err(value_err(format!(
+                "no direct {from:?}->{to:?} color conversion; convert via Rgb"
+            )));
+        }
+        // strict dtype: f32-only target (or source) needs f32 storage
+        let needs_f32 = to.requires_f32() || from.requires_f32();
+        if needs_f32 && !self.data.is_f32() {
+            return Err(value_err(format!(
+                "{to:?} requires float32; call img.to_float() first"
+            )));
+        }
+        if self.data.is_u16() {
+            return Err(u16_imgproc_unsupported("cvt_color"));
+        }
+        let mut img = dispatch_cvt(py, &self.data, from, to)?;
+        img.color_space = to;
+        Ok(img)
+    }
+
+    /// Convert to grayscale. 8-bit: u8 output. Alias for
+    /// `cvt_color(ColorSpace.Gray)`.
+    fn to_gray(&self, py: Python<'_>) -> PyResult<Self> {
+        self.cvt_color(py, crate::color_space::PyColorSpace::Gray)
+    }
+
+    /// Convert to HSV (requires float input — call `to_float()` first).
+    fn to_hsv(&self, py: Python<'_>) -> PyResult<Self> {
+        self.cvt_color(py, crate::color_space::PyColorSpace::Hsv)
+    }
+
+    /// Convert to CIE L*a*b* (requires float input — call `to_float()` first).
+    fn to_lab(&self, py: Python<'_>) -> PyResult<Self> {
+        self.cvt_color(py, crate::color_space::PyColorSpace::Lab)
+    }
+
+    /// Convert to BGR (channel-swap of RGB). Works on u8 or f32 storage.
+    fn to_bgr(&self, py: Python<'_>) -> PyResult<Self> {
+        self.cvt_color(py, crate::color_space::PyColorSpace::Bgr)
+    }
+
     /// Apply a colormap to a single-channel (L) image, producing an RGB image.
     ///
     /// Accepts any of the 21 OpenCV colormap names (case-insensitive):
@@ -2518,10 +2774,16 @@ impl PyImageApi {
     fn __setstate__(&mut self, py: Python<'_>, state: (Py<PyAny>, String)) -> PyResult<()> {
         let bound = state.0.bind(py);
         if let Ok(arr) = bound.extract::<Py<PyArray3<u8>>>() {
+            let channels = arr.bind(py).shape()[2];
+            self.color_space = default_color_space(channels);
             self.data = ImageData::U8(arr);
         } else if let Ok(arr) = bound.extract::<Py<PyArray3<u16>>>() {
+            let channels = arr.bind(py).shape()[2];
+            self.color_space = default_color_space(channels);
             self.data = ImageData::U16(arr);
         } else if let Ok(arr) = bound.extract::<Py<PyArray3<f32>>>() {
+            let channels = arr.bind(py).shape()[2];
+            self.color_space = default_color_space(channels);
             self.data = ImageData::F32(arr);
         } else {
             return Err(value_err(
