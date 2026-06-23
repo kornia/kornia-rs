@@ -60,4 +60,24 @@ pub enum ImageError {
     /// Error when interpolation mode is unsupported.
     #[error("Unsupported interpolation mode: {0:?}")]
     UnsupportedInterpolation(crate::image::InterpolationMode),
+
+    /// No direct kernel exists for this color-space pair.
+    #[error("no direct {from:?}->{to:?} color conversion; convert via Rgb")]
+    UnsupportedColorConversion {
+        /// The source color space.
+        from: crate::color_space::ColorSpace,
+        /// The target color space.
+        to: crate::color_space::ColorSpace,
+    },
+
+    /// The color space requires a different element type than the image holds.
+    #[error("{space:?} requires {expected} data, got {got}")]
+    InvalidColorDtype {
+        /// The color space that has the dtype constraint.
+        space: crate::color_space::ColorSpace,
+        /// The element type required by the color space.
+        expected: &'static str,
+        /// The element type the image actually holds.
+        got: &'static str,
+    },
 }

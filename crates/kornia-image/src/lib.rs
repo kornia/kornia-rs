@@ -16,6 +16,10 @@ pub mod ops;
 /// Typed color space wrappers for compile-time type safety.
 pub mod color_spaces;
 
+/// Runtime color-space vocabulary shared by Rust and Python.
+pub mod color_space;
+
+pub use crate::color_space::ColorSpace;
 pub use crate::error::ImageError;
 pub use crate::image::{Image, ImageLayout, ImageSize, InterpolationMode, PixelFormat};
 
