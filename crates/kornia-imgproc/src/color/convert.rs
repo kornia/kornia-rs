@@ -698,6 +698,39 @@ impl<Src> ConvertColorExt for Src {
 }
 
 #[cfg(test)]
+mod cvt_color_tests {
+    use crate::color::Tagged;
+    use kornia_image::allocator::CpuAllocator;
+    use kornia_image::color_spaces::Rgbf32;
+    use kornia_image::{ColorSpace, DynImage, ImageSize};
+
+    #[test]
+    fn runtime_cvt_color_returns_tagged_dynimage() {
+        let size = ImageSize { width: 4, height: 4 };
+        let rgb = Rgbf32::from_size_vec(size, vec![0.5f32; 4 * 4 * 3], CpuAllocator).unwrap();
+        let hsv = rgb.cvt_color(ColorSpace::Hsv).unwrap();
+        assert_eq!(hsv.color_space(), ColorSpace::Hsv);
+        assert_eq!(hsv.channels(), 3);
+        let gray = rgb.cvt_color(ColorSpace::Gray).unwrap();
+        assert_eq!(gray.color_space(), ColorSpace::Gray);
+        assert_eq!(gray.channels(), 1);
+        assert!(matches!(gray, DynImage::C1(..)));
+    }
+
+    #[test]
+    fn runtime_cvt_color_rejects_unsupported_pair() {
+        let size = ImageSize { width: 2, height: 2 };
+        let rgb = Rgbf32::from_size_vec(size, vec![0.0f32; 2 * 2 * 3], CpuAllocator).unwrap();
+        // Rgb has no direct path to YCbCr? It does — pick a truly illegal target by
+        // constructing from a non-Rgb source instead:
+        let hsv = rgb.cvt_color(ColorSpace::Hsv).unwrap();
+        let hsv_typed: kornia_image::color_spaces::Hsvf32<_> = hsv.try_into().unwrap();
+        let err = hsv_typed.cvt_color(ColorSpace::Lab);
+        assert!(err.is_err());
+    }
+}
+
+#[cfg(test)]
 mod cvt_ext_tests {
     use crate::color::ConvertColorExt;
     use kornia_image::allocator::CpuAllocator;
@@ -734,3 +767,99 @@ mod cvt_ext_tests {
         }
     }
 }
+
+// ===== Runtime Tagged dispatch layer =====
+
+use kornia_image::{ColorSpace, DynImage};
+use kornia_image::allocator::CpuAllocator;
+
+/// Runtime, color-space-tagged conversion. The source newtype encodes its
+/// space and dtype, so only the target `to` is supplied; the result is a
+/// `DynImage` tagged with `to`. Same legal set as the typed `.cvt()` path.
+pub trait Tagged<T> {
+    /// This image's color space.
+    fn space(&self) -> ColorSpace;
+    /// Convert to `to`, returning an owned tagged `DynImage`.
+    fn cvt_color(&self, to: ColorSpace) -> Result<DynImage<T, CpuAllocator>, ImageError>;
+}
+
+/// Generates a `Tagged` impl for one source newtype. Each `to => Dst, Cn`
+/// arm names the destination newtype and the DynImage channel constructor.
+macro_rules! impl_tagged {
+    ($src:ty, $t:ty, $space:expr, { $( $to:ident => $dst:ty , $ctor:ident );* $(;)? }) => {
+        impl<A: ImageAllocator> Tagged<$t> for $src
+        where Self: SrcSize {
+            fn space(&self) -> ColorSpace { $space }
+            fn cvt_color(&self, to: ColorSpace) -> Result<DynImage<$t, CpuAllocator>, ImageError> {
+                match to {
+                    $( ColorSpace::$to => {
+                        let out: $dst = self.cvt()?;
+                        Ok(DynImage::$ctor(to, out.into_inner()))
+                    } )*
+                    _ => Err(ImageError::UnsupportedColorConversion { from: $space, to }),
+                }
+            }
+        }
+    };
+}
+
+// ---- f32 RGB source: all f32 targets ----
+impl_tagged!(kornia_image::color_spaces::Rgbf32<A>, f32, ColorSpace::Rgb, {
+    Gray      => kornia_image::color_spaces::Grayf32<CpuAllocator>, C1;
+    Bgr       => kornia_image::color_spaces::Bgrf32<CpuAllocator>, C3;
+    Hsv       => kornia_image::color_spaces::Hsvf32<CpuAllocator>, C3;
+    Hls       => kornia_image::color_spaces::Hlsf32<CpuAllocator>, C3;
+    Lab       => kornia_image::color_spaces::Labf32<CpuAllocator>, C3;
+    Luv       => kornia_image::color_spaces::Luvf32<CpuAllocator>, C3;
+    Xyz       => kornia_image::color_spaces::Xyzf32<CpuAllocator>, C3;
+    LinearRgb => kornia_image::color_spaces::LinearRgbf32<CpuAllocator>, C3;
+    YCbCr     => kornia_image::color_spaces::YCbCrf32<CpuAllocator>, C3;
+    Yuv       => kornia_image::color_spaces::Yuvf32<CpuAllocator>, C3;
+});
+
+// ---- f32 inverse sources back to RGB ----
+impl_tagged!(kornia_image::color_spaces::Hsvf32<A>, f32, ColorSpace::Hsv, {
+    Rgb => kornia_image::color_spaces::Rgbf32<CpuAllocator>, C3;
+});
+impl_tagged!(kornia_image::color_spaces::Hlsf32<A>, f32, ColorSpace::Hls, {
+    Rgb => kornia_image::color_spaces::Rgbf32<CpuAllocator>, C3;
+});
+impl_tagged!(kornia_image::color_spaces::Labf32<A>, f32, ColorSpace::Lab, {
+    Rgb => kornia_image::color_spaces::Rgbf32<CpuAllocator>, C3;
+});
+impl_tagged!(kornia_image::color_spaces::Luvf32<A>, f32, ColorSpace::Luv, {
+    Rgb => kornia_image::color_spaces::Rgbf32<CpuAllocator>, C3;
+});
+impl_tagged!(kornia_image::color_spaces::Xyzf32<A>, f32, ColorSpace::Xyz, {
+    Rgb => kornia_image::color_spaces::Rgbf32<CpuAllocator>, C3;
+});
+impl_tagged!(kornia_image::color_spaces::LinearRgbf32<A>, f32, ColorSpace::LinearRgb, {
+    Rgb => kornia_image::color_spaces::Rgbf32<CpuAllocator>, C3;
+});
+impl_tagged!(kornia_image::color_spaces::YCbCrf32<A>, f32, ColorSpace::YCbCr, {
+    Rgb => kornia_image::color_spaces::Rgbf32<CpuAllocator>, C3;
+});
+impl_tagged!(kornia_image::color_spaces::Yuvf32<A>, f32, ColorSpace::Yuv, {
+    Rgb => kornia_image::color_spaces::Rgbf32<CpuAllocator>, C3;
+});
+impl_tagged!(kornia_image::color_spaces::Bgrf32<A>, f32, ColorSpace::Bgr, {
+    Rgb => kornia_image::color_spaces::Rgbf32<CpuAllocator>, C3;
+});
+impl_tagged!(kornia_image::color_spaces::Grayf32<A>, f32, ColorSpace::Gray, {
+    Rgb => kornia_image::color_spaces::Rgbf32<CpuAllocator>, C3;
+});
+
+// ---- u8 RGB source: u8-valid targets ----
+impl_tagged!(kornia_image::color_spaces::Rgb8<A>, u8, ColorSpace::Rgb, {
+    Gray  => kornia_image::color_spaces::Gray8<CpuAllocator>, C1;
+    Bgr   => kornia_image::color_spaces::Bgr8<CpuAllocator>, C3;
+    Rgba  => kornia_image::color_spaces::Rgba8<CpuAllocator>, C4;
+    YCbCr => kornia_image::color_spaces::YCbCr8<CpuAllocator>, C3;
+    Yuv   => kornia_image::color_spaces::Yuv8<CpuAllocator>, C3;
+});
+impl_tagged!(kornia_image::color_spaces::Gray8<A>, u8, ColorSpace::Gray, {
+    Rgb => kornia_image::color_spaces::Rgb8<CpuAllocator>, C3;
+});
+impl_tagged!(kornia_image::color_spaces::Bgr8<A>, u8, ColorSpace::Bgr, {
+    Rgb => kornia_image::color_spaces::Rgb8<CpuAllocator>, C3;
+});
