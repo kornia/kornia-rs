@@ -6,7 +6,7 @@ use kornia_image::{
         Rgbaf32, Rgbf32, Rgbf64, Uyvy8, Xyzf32, Xyzf64, YCbCr8, YCbCrf32, YCbCrf64, Yuv8, Yuvf32,
         Yuvf64, Yuyv8, Yv12, Yvyu8, I420,
     },
-    ImageError,
+    ImageError, ImageSize,
 };
 
 /// Trait for type-safe color space conversion
@@ -557,5 +557,180 @@ mod tests {
         assert_eq!(rgb_out.as_slice()[0], 255);
 
         Ok(())
+    }
+}
+
+// ===== Zero-cost typed allocating conversion layer =====
+
+/// Allocate a zeroed owned image of a color-space newtype at a given size.
+///
+/// Backed by [`kornia_image::allocator::CpuAllocator`] so that `.cvt()` returns
+/// owned, heap-allocated data without any allocator generic in the call site.
+pub trait NewColorImage: Sized {
+    /// Allocate a zero-filled image of `size`.
+    fn new_zeroed(size: ImageSize) -> Result<Self, ImageError>;
+    /// Size of an already-constructed instance (used to size the output).
+    fn size_of(&self) -> ImageSize;
+}
+
+macro_rules! impl_new_color_image {
+    ($newtype:ident, $t:ty) => {
+        impl NewColorImage
+            for kornia_image::color_spaces::$newtype<kornia_image::allocator::CpuAllocator>
+        {
+            fn new_zeroed(size: ImageSize) -> Result<Self, ImageError> {
+                kornia_image::color_spaces::$newtype::from_size_val(
+                    size,
+                    <$t>::default(),
+                    kornia_image::allocator::CpuAllocator,
+                )
+            }
+            fn size_of(&self) -> ImageSize {
+                self.size()
+            }
+        }
+    };
+}
+
+impl_new_color_image!(Rgbf32, f32);
+impl_new_color_image!(Bgrf32, f32);
+impl_new_color_image!(Grayf32, f32);
+impl_new_color_image!(Hsvf32, f32);
+impl_new_color_image!(Hlsf32, f32);
+impl_new_color_image!(Labf32, f32);
+impl_new_color_image!(Luvf32, f32);
+impl_new_color_image!(Xyzf32, f32);
+impl_new_color_image!(LinearRgbf32, f32);
+impl_new_color_image!(YCbCrf32, f32);
+impl_new_color_image!(Yuvf32, f32);
+impl_new_color_image!(Rgb8, u8);
+impl_new_color_image!(Bgr8, u8);
+impl_new_color_image!(Gray8, u8);
+impl_new_color_image!(Rgba8, u8);
+impl_new_color_image!(Bgra8, u8);
+impl_new_color_image!(YCbCr8, u8);
+impl_new_color_image!(Yuv8, u8);
+impl_new_color_image!(Rgbaf32, f32);
+impl_new_color_image!(Bgraf32, f32);
+
+/// Helper trait so `.cvt()` can read the source image size without coupling to
+/// a concrete allocator.
+///
+/// All color-space newtypes implement this via their `Deref<Target = Image<…>>`.
+pub trait SrcSize {
+    /// Source image size.
+    fn src_size(&self) -> ImageSize;
+}
+
+macro_rules! impl_src_size {
+    ($newtype:ident) => {
+        impl<A: ImageAllocator> SrcSize
+            for kornia_image::color_spaces::$newtype<A>
+        {
+            fn src_size(&self) -> ImageSize {
+                self.size()
+            }
+        }
+    };
+}
+
+impl_src_size!(Rgbf32);
+impl_src_size!(Bgrf32);
+impl_src_size!(Grayf32);
+impl_src_size!(Hsvf32);
+impl_src_size!(Hlsf32);
+impl_src_size!(Labf32);
+impl_src_size!(Luvf32);
+impl_src_size!(Xyzf32);
+impl_src_size!(LinearRgbf32);
+impl_src_size!(YCbCrf32);
+impl_src_size!(Yuvf32);
+impl_src_size!(Rgb8);
+impl_src_size!(Bgr8);
+impl_src_size!(Gray8);
+impl_src_size!(Rgba8);
+impl_src_size!(Bgra8);
+impl_src_size!(YCbCr8);
+impl_src_size!(Yuv8);
+impl_src_size!(Rgbaf32);
+impl_src_size!(Bgraf32);
+
+/// Ergonomic allocating conversion built on [`ConvertColor`].
+///
+/// Zero-cost sugar: allocates the correctly-sized owned destination and delegates
+/// to the existing kernel. The source must expose its size via [`SrcSize`] (all
+/// newtypes do, through `Deref` to `Image`).
+///
+/// # Example
+///
+/// ```
+/// use kornia_image::ImageSize;
+/// use kornia_image::allocator::CpuAllocator;
+/// use kornia_imgproc::color::{Rgbf32, Hsvf32, ConvertColorExt};
+///
+/// let rgb = Rgbf32::from_size_vec(
+///     ImageSize { width: 4, height: 3 },
+///     vec![0.5f32; 4 * 3 * 3],
+///     CpuAllocator,
+/// ).unwrap();
+///
+/// let hsv: Hsvf32<_> = rgb.cvt().unwrap();
+/// assert_eq!(hsv.size(), rgb.size());
+/// ```
+pub trait ConvertColorExt {
+    /// Allocate and convert to `Dst`. `Dst` is chosen by inference or turbofish.
+    fn cvt<Dst>(&self) -> Result<Dst, ImageError>
+    where
+        Self: ConvertColor<Dst> + SrcSize,
+        Dst: NewColorImage;
+}
+
+impl<Src> ConvertColorExt for Src {
+    fn cvt<Dst>(&self) -> Result<Dst, ImageError>
+    where
+        Self: ConvertColor<Dst> + SrcSize,
+        Dst: NewColorImage,
+    {
+        let mut dst = Dst::new_zeroed(self.src_size())?;
+        self.convert(&mut dst)?;
+        Ok(dst)
+    }
+}
+
+#[cfg(test)]
+mod cvt_ext_tests {
+    use crate::color::ConvertColorExt;
+    use kornia_image::allocator::CpuAllocator;
+    use kornia_image::color_spaces::{Grayf32, Hsvf32, Rgbf32};
+    use kornia_image::ImageSize;
+
+    #[test]
+    fn cvt_allocates_and_converts_typed() {
+        let size = ImageSize {
+            width: 4,
+            height: 3,
+        };
+        let rgb = Rgbf32::from_size_vec(size, vec![0.5f32; 4 * 3 * 3], CpuAllocator).unwrap();
+        // typed, allocating: no manual dst construction
+        let hsv: Hsvf32<_> = rgb.cvt().unwrap();
+        assert_eq!(hsv.size(), size);
+        // channel-changing conversion is natural — Dst encodes C
+        let gray: Grayf32<_> = rgb.cvt().unwrap();
+        assert_eq!(gray.num_channels(), 1);
+    }
+
+    #[test]
+    fn cvt_round_trip_rgb_hsv() {
+        let size = ImageSize {
+            width: 8,
+            height: 8,
+        };
+        let data: Vec<f32> = (0..8 * 8 * 3).map(|i| (i % 255) as f32 / 255.0).collect();
+        let rgb = Rgbf32::from_size_vec(size, data.clone(), CpuAllocator).unwrap();
+        let hsv: Hsvf32<_> = rgb.cvt().unwrap();
+        let back: Rgbf32<_> = hsv.cvt().unwrap();
+        for (a, b) in data.iter().zip(back.as_slice().iter()) {
+            assert!((a - b).abs() < 1e-3, "round-trip drift {a} vs {b}");
+        }
     }
 }
