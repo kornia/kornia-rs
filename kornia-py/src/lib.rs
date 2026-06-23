@@ -1,3 +1,4 @@
+pub(crate) mod backing;
 mod apriltag;
 mod augmentations;
 mod ba;

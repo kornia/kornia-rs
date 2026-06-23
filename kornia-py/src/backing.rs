@@ -1,0 +1,204 @@
+//! Numpy-agnostic storage backing for the Python Image.
+use std::alloc::{alloc_zeroed, dealloc, Layout};
+use std::ptr::NonNull;
+
+use kornia_image::{allocator::ForeignAllocator, Image, ImageError, ImageSize};
+use pyo3::prelude::*;
+
+const ALIGN: usize = 64;
+
+/// Element type of an Image buffer (v1 scope).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Dtype {
+    U8,
+    U16,
+    F32,
+}
+impl Dtype {
+    pub fn itemsize(self) -> usize {
+        match self {
+            Dtype::U8 => 1,
+            Dtype::U16 => 2,
+            Dtype::F32 => 4,
+        }
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            Dtype::U8 => "uint8",
+            Dtype::U16 => "uint16",
+            Dtype::F32 => "float32",
+        }
+    }
+    pub fn from_numpy_str(s: &str) -> PyResult<Dtype> {
+        match s {
+            "uint8" | "u8" | "|u1" | "B" => Ok(Dtype::U8),
+            "uint16" | "u16" | "<u2" | "=u2" | "H" => Ok(Dtype::U16),
+            "float32" | "f32" | "<f4" | "=f4" | "f" => Ok(Dtype::F32),
+            other => Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "unsupported dtype {other:?}; expected uint8, uint16, or float32"
+            ))),
+        }
+    }
+}
+
+/// A 64-byte-aligned owned heap buffer (SIMD/DMA friendly).
+pub struct AlignedBytes {
+    ptr: NonNull<u8>,
+    len: usize,
+    layout: Layout,
+}
+// SAFETY: AlignedBytes uniquely owns a heap allocation of plain bytes.
+unsafe impl Send for AlignedBytes {}
+unsafe impl Sync for AlignedBytes {}
+impl AlignedBytes {
+    pub fn zeroed(len: usize) -> Self {
+        let layout = Layout::from_size_align(len.max(1), ALIGN).expect("layout");
+        // SAFETY: layout has non-zero size (len.max(1)).
+        let raw = unsafe { alloc_zeroed(layout) };
+        let ptr = NonNull::new(raw).unwrap_or_else(|| std::alloc::handle_alloc_error(layout));
+        Self { ptr, len, layout }
+    }
+    pub fn from_slice(src: &[u8]) -> Self {
+        let mut b = Self::zeroed(src.len());
+        // SAFETY: b.ptr owns len==src.len() bytes; regions don't overlap.
+        unsafe { std::ptr::copy_nonoverlapping(src.as_ptr(), b.ptr.as_ptr(), src.len()) };
+        b
+    }
+    pub fn as_ptr(&self) -> *const u8 {
+        self.ptr.as_ptr()
+    }
+    pub fn as_mut_ptr(&mut self) -> *mut u8 {
+        self.ptr.as_ptr()
+    }
+    pub fn as_slice(&self) -> &[u8] {
+        // SAFETY: ptr owns len bytes, allocated and valid for reads.
+        unsafe { std::slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
+    }
+    pub fn len(&self) -> usize {
+        self.len
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+impl Drop for AlignedBytes {
+    fn drop(&mut self) {
+        // SAFETY: ptr/layout came from alloc_zeroed with this exact layout.
+        unsafe { dealloc(self.ptr.as_ptr(), self.layout) };
+    }
+}
+
+/// Keeps a borrowed buffer's source alive for the Image's lifetime.
+pub enum BorrowGuard {
+    /// numpy ndarray (ptr = base) or PEP-3118 owner (ptr = Py_buffer.buf, view stored to release on drop).
+    PyObject {
+        obj: Py<PyAny>,
+        buffer: Option<Box<pyo3::ffi::Py_buffer>>,
+    },
+    /// Imported DLPack tensor; its Drop runs the producer's deleter.
+    Dlpack(dlpack_rs::pyo3_glue::PyTensor),
+}
+impl Drop for BorrowGuard {
+    fn drop(&mut self) {
+        if let BorrowGuard::PyObject {
+            buffer: Some(view), ..
+        } = self
+        {
+            // SAFETY: `view` was filled by PyObject_GetBuffer in from_buffer; release exactly once.
+            unsafe { pyo3::ffi::PyBuffer_Release(view.as_mut()) };
+        }
+        // Py<PyAny> and PyTensor drop themselves.
+    }
+}
+
+/// Image data backing: owned aligned bytes, or a zero-copy borrow with keep-alive.
+pub enum Backing {
+    Owned(AlignedBytes),
+    Borrowed {
+        ptr: NonNull<u8>,
+        keep: BorrowGuard,
+        readonly: bool,
+    },
+}
+// SAFETY: Owned is Send+Sync; Borrowed holds Send keep-alives and a raw ptr with exclusive logical ownership.
+unsafe impl Send for Backing {}
+impl Backing {
+    pub fn data_ptr(&self) -> *mut u8 {
+        match self {
+            Backing::Owned(b) => b.ptr.as_ptr(),
+            Backing::Borrowed { ptr, .. } => ptr.as_ptr(),
+        }
+    }
+    pub fn readonly(&self) -> bool {
+        match self {
+            Backing::Owned(_) => false,
+            Backing::Borrowed { readonly, .. } => *readonly,
+        }
+    }
+}
+
+/// Build a typed compute borrow from a backing + shape. Validates channel count.
+///
+/// # Safety
+///
+/// Caller guarantees `b`'s buffer holds at least H*W*C elements of T and
+/// stays alive for the returned Image's lifetime (the Image borrows it).
+pub unsafe fn borrow_image<T: Clone, const C: usize>(
+    b: &Backing,
+    shape: [usize; 3],
+) -> Result<Image<T, C, ForeignAllocator>, ImageError> {
+    let (h, w, c) = (shape[0], shape[1], shape[2]);
+    if c != C {
+        return Err(ImageError::InvalidChannelShape(c, C));
+    }
+    Image::from_raw_parts(
+        ImageSize {
+            width: w,
+            height: h,
+        },
+        b.data_ptr() as *const T,
+        h * w * c,
+        ForeignAllocator,
+    )
+}
+
+/// Allocate a zeroed owned output buffer for an op of channel count C.
+pub fn alloc_output_owned<const C: usize>(dtype: Dtype, size: ImageSize) -> (AlignedBytes, ImageSize) {
+    let len = size.width * size.height * C * dtype.itemsize();
+    (AlignedBytes::zeroed(len), size)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn aligned_bytes_is_64b_aligned_and_zeroed() {
+        let b = AlignedBytes::zeroed(100);
+        assert_eq!(b.as_ptr() as usize % ALIGN, 0);
+        assert_eq!(b.len(), 100);
+        assert!(b.as_slice().iter().all(|&x| x == 0));
+    }
+
+    #[test]
+    fn from_slice_copies() {
+        let src = [1u8, 2, 3, 4, 5];
+        let b = AlignedBytes::from_slice(&src);
+        assert_eq!(b.as_slice(), &src);
+        assert_eq!(b.as_ptr() as usize % ALIGN, 0);
+    }
+
+    #[test]
+    fn dtype_roundtrip() {
+        assert_eq!(Dtype::from_numpy_str("uint8").unwrap(), Dtype::U8);
+        assert_eq!(Dtype::F32.itemsize(), 4);
+        assert!(Dtype::from_numpy_str("int64").is_err());
+    }
+
+    #[test]
+    fn alloc_output_owned_sizes_correctly() {
+        let (b, sz) = alloc_output_owned::<3>(Dtype::F32, ImageSize { width: 4, height: 5 });
+        assert_eq!(b.len(), 4 * 5 * 3 * 4);
+        assert_eq!((sz.width, sz.height), (4, 5));
+    }
+}

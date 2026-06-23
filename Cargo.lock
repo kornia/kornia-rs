@@ -4463,6 +4463,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "dlpack-rs"
+version = "0.2.0"
+source = "git+https://github.com/kornia/dlpack-rs?tag=v0.2.0#38e1bc37cbdaf7480623bc7d773626e5d02bec08"
+dependencies = [
+ "pyo3",
+]
+
+[[package]]
 name = "document-features"
 version = "0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8079,6 +8087,7 @@ dependencies = [
 name = "kornia-py"
 version = "0.1.14"
 dependencies = [
+ "dlpack-rs",
  "kornia-3d",
  "kornia-algebra",
  "kornia-apriltag",
