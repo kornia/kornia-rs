@@ -18,6 +18,21 @@ class PixelFormat:
     U16: PixelFormat
     F32: PixelFormat
 
+class ColorSpace:
+    Rgb: ColorSpace
+    Bgr: ColorSpace
+    Gray: ColorSpace
+    Rgba: ColorSpace
+    Bgra: ColorSpace
+    Hsv: ColorSpace
+    Hls: ColorSpace
+    Lab: ColorSpace
+    Luv: ColorSpace
+    Xyz: ColorSpace
+    LinearRgb: ColorSpace
+    YCbCr: ColorSpace
+    Yuv: ColorSpace
+
 class ImageLayout:
     def __init__(
         self, image_size: ImageSize, channels: int, pixel_format: PixelFormat
@@ -32,7 +47,7 @@ class ImageLayout:
 class Image:
     """An owned image/tensor buffer backed by a numpy ``uint8``/``uint16``/``float32`` array."""
 
-    def __init__(self, data: np.ndarray, mode: Optional[str] = ...) -> None: ...
+    def __init__(self, data: np.ndarray, mode: Optional[str] = ..., color_space: Optional[ColorSpace] = ...) -> None: ...
 
     # --- constructors ---
     @staticmethod
@@ -150,6 +165,17 @@ class Image:
     def to_rgb(self) -> Image: ...
     def colormap(self, colormap: str) -> Image: ...
     def rotate(self, angle: float) -> Image: ...
+
+    # --- color-space conversion ---
+    @property
+    def color_space(self) -> ColorSpace: ...
+    def cvt_color(self, to: ColorSpace) -> Image: ...
+    def to_float(self) -> Image: ...
+    def to_uint8(self) -> Image: ...
+    def to_gray(self) -> Image: ...
+    def to_hsv(self) -> Image: ...
+    def to_lab(self) -> Image: ...
+    def to_bgr(self) -> Image: ...
 
     # --- dunders ---
     def __array__(self, dtype: Any = ..., copy: Any = ...) -> np.ndarray: ...
