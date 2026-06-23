@@ -972,8 +972,9 @@ fn u16_imgproc_unsupported(method: &str) -> PyErr {
 /// we exclusively own (no other Python references to its data).
 fn scale_f32_inplace(py: Python<'_>, arr: &Py<PyArray3<f32>>, k: f32) {
     let bound = arr.bind(py);
+    assert!(bound.is_c_contiguous(), "scale_f32_inplace: array must be C-contiguous");
     let len = bound.shape().iter().product::<usize>();
-    // SAFETY: contiguous f32 array we own exclusively.
+    // SAFETY: verified C-contiguous above.
     let s = unsafe { std::slice::from_raw_parts_mut(bound.data(), len) };
     for v in s.iter_mut() {
         *v *= k;
@@ -989,6 +990,11 @@ fn scale_clamp_f32_to_u8(
     k: f32,
 ) -> PyResult<Py<PyArray3<u8>>> {
     let bound = arr.bind(py);
+    if !bound.is_c_contiguous() {
+        return Err(value_err(
+            "scale_clamp_f32_to_u8: array must be C-contiguous; call numpy.ascontiguousarray() first".to_string()
+        ));
+    }
     let shape = bound.shape();
     let (h, w, c) = (shape[0], shape[1], shape[2]);
     let len = h * w * c;
@@ -1210,11 +1216,23 @@ impl PyImageApi {
     /// Imgproc methods produce these — the result must be u8 because all
     /// imgproc kernels currently operate on u8.
     fn wrap_vec(&self, py: Python<'_>, out: Vec<u8>, h: usize, w: usize, c: usize) -> Self {
-        Self::wrap(
+        let mut result = Self::wrap(
             py,
             vec_to_pyarray(py, out, h, w, c),
             Some(self.mode.clone()),
-        )
+        );
+        result.color_space = self.color_space;
+        result
+    }
+
+    /// Wrap a PyArray3<u8> produced by an imgproc kernel as a new `PyImageApi`,
+    /// preserving the current mode and color_space from `self`.  Use this
+    /// instead of bare `Self::wrap(..., Some(self.mode.clone()))` in instance
+    /// methods so that custom tags (e.g. Bgr) are not silently re-derived as Rgb.
+    fn wrap_u8_result(&self, py: Python<'_>, arr: Py<PyArray3<u8>>) -> Self {
+        let mut result = Self::wrap(py, arr, Some(self.mode.clone()));
+        result.color_space = self.color_space;
+        result
     }
 
     /// Internal Rust-only entry for the kornia-style crop signature.
@@ -1235,7 +1253,7 @@ impl PyImageApi {
                 let c = arr.shape()[2];
                 if c == 3 {
                     let result = crate::crop::crop(py, data.clone_ref(py), x, y, width, height)?;
-                    Ok(Self::wrap(py, result, Some(self.mode.clone())))
+                    Ok(self.wrap_u8_result(py, result))
                 } else {
                     let (src, _, src_w, _) = pyarray_data(arr);
                     let out = crop_generic(src, src_w, x, y, width, height, c);
@@ -2270,7 +2288,7 @@ impl PyImageApi {
                 interpolation,
                 true,
             )?;
-            Ok(Self::wrap(py, result, Some(self.mode.clone())))
+            Ok(self.wrap_u8_result(py, result))
         } else {
             let (src, src_h, src_w, _) = pyarray_data(arr);
             let out = resize_nearest(src, src_h, src_w, height, width, c);
@@ -2356,7 +2374,7 @@ impl PyImageApi {
                 let c = arr.shape()[2];
                 if c == 3 {
                     let result = crate::flip::horizontal_flip(py, data.clone_ref(py))?;
-                    Ok(Self::wrap(py, result, Some(self.mode.clone())))
+                    Ok(self.wrap_u8_result(py, result))
                 } else {
                     let (src, h, w, _) = pyarray_data(arr);
                     let out = flip_h_generic(src, h, w, c);
@@ -2377,7 +2395,7 @@ impl PyImageApi {
                 let c = arr.shape()[2];
                 if c == 3 {
                     let result = crate::flip::vertical_flip(py, data.clone_ref(py))?;
-                    Ok(Self::wrap(py, result, Some(self.mode.clone())))
+                    Ok(self.wrap_u8_result(py, result))
                 } else {
                     let (src, h, w, _) = pyarray_data(arr);
                     let out = flip_v_generic(src, h, w, c);
@@ -2442,7 +2460,7 @@ impl PyImageApi {
                 (kernel_size, kernel_size),
                 (sigma, sigma),
             )?;
-            Ok(Self::wrap(py, result, Some(self.mode.clone())))
+            Ok(self.wrap_u8_result(py, result))
         } else {
             self.copy(py)
         }
@@ -2455,7 +2473,7 @@ impl PyImageApi {
         let c = data.bind(py).shape()[2];
         if c == 3 {
             let result = crate::blur::box_blur(py, data.clone_ref(py), (kernel_size, kernel_size))?;
-            Ok(Self::wrap(py, result, Some(self.mode.clone())))
+            Ok(self.wrap_u8_result(py, result))
         } else {
             self.copy(py)
         }
@@ -2671,7 +2689,7 @@ impl PyImageApi {
                 let out: Py<PyArray3<f32>> = out.unbind();
                 // scale from [0, 255] to [0, 1] in-place
                 scale_f32_inplace(py, &out, 1.0 / 255.0);
-                let mut img = Self::wrap_f32(py, out, Some(self.mode.clone()));
+                let mut img = Self::wrap_f32(py, out, None);
                 img.color_space = self.color_space;
                 Ok(img)
             }
@@ -2686,7 +2704,7 @@ impl PyImageApi {
             ImageData::U8(_) => Ok(self.clone_handle(py)),
             ImageData::F32(a) => {
                 let out = scale_clamp_f32_to_u8(py, a, 255.0)?;
-                let mut img = Self::wrap(py, out, Some(self.mode.clone()));
+                let mut img = Self::wrap(py, out, None);
                 img.color_space = self.color_space;
                 Ok(img)
             }
@@ -2809,7 +2827,7 @@ impl PyImageApi {
         let ty = (cy - sin_a as f64 * cx - cos_a as f64 * cy) as f32;
         let m = [cos_a, -sin_a, tx, sin_a, cos_a, ty];
         let result = crate::warp::warp_affine(py, data.clone_ref(py), m, (h, w), "bilinear", None)?;
-        Ok(Self::wrap(py, result, Some(self.mode.clone())))
+        Ok(self.wrap_u8_result(py, result))
     }
 
     // --- Serialization for multiprocess (Ray Data, etc.) ---
