@@ -808,47 +808,6 @@ fn default_color_space(channels: usize) -> kornia_image::ColorSpace {
     }
 }
 
-/// Stable integer encoding for `ColorSpace` used in pickle state (must not change).
-/// Matches `PyColorSpace` variant declaration order (eq_int discriminants 0-12).
-fn color_space_to_u8(cs: kornia_image::ColorSpace) -> u8 {
-    use kornia_image::ColorSpace as CS;
-    match cs {
-        CS::Rgb => 0,
-        CS::Bgr => 1,
-        CS::Gray => 2,
-        CS::Rgba => 3,
-        CS::Bgra => 4,
-        CS::Hsv => 5,
-        CS::Hls => 6,
-        CS::Lab => 7,
-        CS::Luv => 8,
-        CS::Xyz => 9,
-        CS::LinearRgb => 10,
-        CS::YCbCr => 11,
-        CS::Yuv => 12,
-    }
-}
-
-/// Decode a pickle-state integer back to `ColorSpace`; returns `None` for unknown values.
-fn color_space_from_u8(v: u8) -> Option<kornia_image::ColorSpace> {
-    use kornia_image::ColorSpace as CS;
-    Some(match v {
-        0 => CS::Rgb,
-        1 => CS::Bgr,
-        2 => CS::Gray,
-        3 => CS::Rgba,
-        4 => CS::Bgra,
-        5 => CS::Hsv,
-        6 => CS::Hls,
-        7 => CS::Lab,
-        8 => CS::Luv,
-        9 => CS::Xyz,
-        10 => CS::LinearRgb,
-        11 => CS::YCbCr,
-        12 => CS::Yuv,
-        _ => return None,
-    })
-}
 
 /// PIL-style mode string for f32 storage. Single-channel uses PIL's
 /// canonical ``"F"`` (32-bit float); multi-channel uses an "f" suffix.
@@ -1551,9 +1510,18 @@ impl PyImageApi {
     /// ``uint16`` arrays produce a 16-bit Image (depth maps, scientific data).
     /// 2D shapes are treated as single-channel and reshaped to ``(H, W, 1)``.
     #[new]
-    #[pyo3(signature = (data, mode=None))]
-    fn new(py: Python<'_>, data: &Bound<'_, PyAny>, mode: Option<String>) -> PyResult<Self> {
-        Self::frombuffer(py, data, mode)
+    #[pyo3(signature = (data, mode=None, color_space=None))]
+    fn new(
+        py: Python<'_>,
+        data: &Bound<'_, PyAny>,
+        mode: Option<String>,
+        color_space: Option<crate::color_space::PyColorSpace>,
+    ) -> PyResult<Self> {
+        let mut img = Self::frombuffer(py, data, mode)?;
+        if let Some(cs) = color_space {
+            img.color_space = cs.into();
+        }
+        Ok(img)
     }
 
     // --- Static constructors ---
@@ -2811,90 +2779,21 @@ impl PyImageApi {
 
     // --- Serialization for multiprocess (Ray Data, etc.) ---
 
-    fn __reduce__(&self, py: Python<'_>) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
-        // Use (cls._reconstruct, (arr, mode, cs_int)) so that color_space
-        // survives pickle / multiprocessing / Ray.  `_reconstruct` is a
-        // classmethod defined below that accepts these three positional args.
-        let cls = Self::type_object(py).unbind();
-        let reconstruct_fn: Py<PyAny> =
-            cls.bind(py).getattr("_reconstruct")?.unbind();
-        let (arr, mode, cs_int) = self.__getstate__(py);
-        let args = pyo3::types::PyTuple::new(
-            py,
-            [
-                arr.bind(py).clone(),
-                pyo3::types::PyString::new(py, &mode).into_any(),
-                cs_int.into_pyobject(py)?.into_any(),
-            ],
-        )?
-        .unbind();
-        Ok((reconstruct_fn, args.into_any()))
-    }
-
-    fn __getstate__(&self, py: Python<'_>) -> (Py<PyAny>, String, u8) {
-        let cs_int = color_space_to_u8(self.color_space);
-        (self.data.as_pyany(py), self.mode.clone(), cs_int)
-    }
-
-    /// Pickle reconstruction helper — called by `__reduce__` to rebuild an
-    /// `Image` from its serialized `(arr, mode, cs_int)` triple.  The `cs_int`
-    /// is the stable integer discriminant written by `color_space_to_u8`.
-    #[staticmethod]
-    #[pyo3(signature = (data, mode, cs_int=None))]
-    fn _reconstruct(
+    /// Return `(Image, (arr, mode, color_space))` so that `constructor is Image`
+    /// and color_space survives pickle / multiprocessing / Ray Data.
+    #[allow(clippy::type_complexity)]
+    fn __reduce__(
+        &self,
         py: Python<'_>,
-        data: &Bound<'_, PyAny>,
-        mode: Option<String>,
-        cs_int: Option<u8>,
-    ) -> PyResult<Self> {
-        let mut img = Self::frombuffer(py, data, mode)?;
-        if let Some(cs) = cs_int.and_then(color_space_from_u8) {
-            img.color_space = cs;
-        }
-        Ok(img)
-    }
-
-    fn __setstate__(&mut self, py: Python<'_>, state: Py<PyAny>) -> PyResult<()> {
-        // Accept both the new 3-tuple (data, mode, cs_int) and the old 2-tuple
-        // (data, mode) for backward-compat with already-pickled objects.
-        let bound = state.bind(py);
-        let items: Vec<Py<PyAny>> = bound
-            .extract()
-            .map_err(|_| value_err("__setstate__: expected a tuple"))?;
-        if items.len() < 2 {
-            return Err(value_err("__setstate__: state tuple too short"));
-        }
-        let arr_any = items[0].bind(py);
-        let mode: String = items[1].bind(py).extract()?;
-        // Optional third element: color_space discriminant (u8).
-        let cs_opt: Option<u8> = items.get(2).and_then(|v| v.bind(py).extract().ok());
-
-        if let Ok(arr) = arr_any.extract::<Py<PyArray3<u8>>>() {
-            let channels = arr.bind(py).shape()[2];
-            self.color_space = cs_opt
-                .and_then(color_space_from_u8)
-                .unwrap_or_else(|| default_color_space(channels));
-            self.data = ImageData::U8(arr);
-        } else if let Ok(arr) = arr_any.extract::<Py<PyArray3<u16>>>() {
-            let channels = arr.bind(py).shape()[2];
-            self.color_space = cs_opt
-                .and_then(color_space_from_u8)
-                .unwrap_or_else(|| default_color_space(channels));
-            self.data = ImageData::U16(arr);
-        } else if let Ok(arr) = arr_any.extract::<Py<PyArray3<f32>>>() {
-            let channels = arr.bind(py).shape()[2];
-            self.color_space = cs_opt
-                .and_then(color_space_from_u8)
-                .unwrap_or_else(|| default_color_space(channels));
-            self.data = ImageData::F32(arr);
-        } else {
-            return Err(value_err(
-                "__setstate__: array dtype must be uint8, uint16, or float32",
-            ));
-        }
-        self.mode = mode;
-        self.format = None;
-        Ok(())
+    ) -> PyResult<(
+        Py<PyAny>,
+        (Py<PyAny>, Option<String>, crate::color_space::PyColorSpace),
+    )> {
+        let cls: Py<PyAny> = Self::type_object(py).into_any().unbind();
+        let arr = self.data.as_pyany(py);
+        let mode = Some(self.mode.clone());
+        let cs: crate::color_space::PyColorSpace = self.color_space.into();
+        Ok((cls, (arr, mode, cs)))
     }
 
     // --- Dunder methods ---
