@@ -4,7 +4,7 @@ use kornia_image::ColorSpace;
 use pyo3::prelude::*;
 
 /// Per-pixel color space tag used by `Image.cvt_color`.
-#[pyclass(name = "ColorSpace", eq, eq_int, module = "kornia_rs.image")]
+#[pyclass(name = "ColorSpace", eq, eq_int, from_py_object, module = "kornia_rs.image")]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum PyColorSpace {
     Rgb,

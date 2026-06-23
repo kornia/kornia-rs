@@ -2401,7 +2401,7 @@ impl PyImageApi {
             width: w,
             height: h,
         };
-        let src = unsafe { numpy_as_image::<3>(py, &data)? };
+        let src = unsafe { numpy_as_image::<3>(py, data)? };
         let (mut dst, out) = unsafe { alloc_output_pyarray::<1>(py, size)? };
         py.detach(|| kornia_imgproc::color::gray_from_rgb_u8(&src, &mut dst))
             .map_err(to_pyerr)?;
