@@ -17,7 +17,7 @@ Make the Python `kornia_rs.Image` **own a Rust buffer** instead of being a numpy
 ## Approved decisions
 
 1. **Full agnostic core** — the Image owns its buffer; numpy is an adapter.
-2. **Type-erased backing** — `enum Backing { Owned(AlignedBytes) | Numpy(Py<PyArray3>) | Dlpack(PyTensor) }` plus `(dtype, shape, color_space, mode)` metadata; typed `Image<T,C,ForeignAllocator>` views built on demand for compute (the same mechanism `numpy_as_image` uses today).
+2. **Type-erased backing, two variants** — `enum Backing { Owned(AlignedBytes) | Borrowed{ptr, keep, readonly} }` plus `(dtype, shape, color_space, mode)` metadata. numpy, PEP-3118 buffers, and DLPack imports all collapse into `Borrowed` (they're each just ptr + keep-alive); numpy is an adapter, not a stored type. Typed `Image<T,C,ForeignAllocator>` views are built on demand for compute (the same mechanism `numpy_as_image` uses today).
 3. **`from_numpy` borrows by default** (`copy=True` to own); every backing variant carries a keep-alive so borrows can't outlive their source.
 4. **Op outputs become `Owned`** buffers — done by reworking the shared alloc/wrap helpers (contained change, not 57 method rewrites). This is what makes the core genuinely numpy-agnostic.
 5. **Owned buffers are 64-byte aligned** (SIMD/DMA).
@@ -50,13 +50,25 @@ impl AlignedBytes {
 
 pub enum Backing {
     Owned(AlignedBytes),
-    Numpy(Py<PyAny>),          // a live numpy ndarray we borrow; real dtype tracked by the `dtype` field
+    /// Any zero-copy borrow: numpy array, PEP-3118 buffer object, or imported
+    /// DLPack capsule. All three reduce to (ptr + keep-alive + readonly).
+    Borrowed { ptr: NonNull<u8>, keep: BorrowGuard, readonly: bool },
+}
+
+/// Owns whatever keeps a `Borrowed` buffer alive. The core holds NO numpy type;
+/// numpy is reached only at the adapter boundary (`from_numpy`/`to_numpy`).
+pub enum BorrowGuard {
+    /// numpy ndarray (ptr = array base) or a PEP-3118 buffer owner (ptr = PyBuffer.buf).
+    /// For a buffer object we also hold the `Py_buffer` to release it on drop.
+    PyObject { obj: Py<PyAny>, buffer: Option<Box<pyo3::ffi::Py_buffer>> },
+    /// Imported DLPack tensor (ptr = managed-tensor data); Drop runs the producer's deleter.
     Dlpack(dlpack_rs::pyo3_glue::PyTensor),
 }
+
 impl Backing {
     /// Host byte address of element [0,0,0]. The single source of truth.
-    pub fn data_ptr(&self, py: Python<'_>) -> *mut u8;
-    pub fn nbytes(&self, py: Python<'_>) -> usize;
+    pub fn data_ptr(&self) -> *mut u8;
+    pub fn readonly(&self) -> bool;   // Owned => false
 }
 ```
 
@@ -73,9 +85,9 @@ pub struct PyImageApi {
 }
 ```
 
-**Keep-alive invariant:** `Numpy` holds the `Py<PyArray3>` (refcount), `Dlpack` holds the `PyTensor` (which holds the capsule and calls the producer's deleter on drop), `Owned` owns its bytes. A borrowed view is always backed by a live source.
+**Keep-alive invariant:** `Owned` owns its bytes; `Borrowed` holds a `BorrowGuard` that keeps the source alive (numpy array / buffer owner via refcount; DLPack via the `PyTensor` whose drop runs the producer's deleter) and, for PEP-3118, releases the `Py_buffer` on drop. A borrowed view is therefore always backed by a live source — misuse can't compile into a dangling pointer.
 
-Note: `Backing::Numpy` stores the ndarray as an opaque `Py<PyAny>` (the buffer we borrow); its element type is recorded once in `self.dtype`, and `data_ptr` reads the array's base pointer. The public contract is "a live numpy array whose buffer we borrow."
+**numpy is an adapter, not a backing.** The core enum contains no numpy type. `from_numpy(copy=False)` produces `Borrowed{ keep: PyObject{obj: arr} }` reading the array's base pointer directly (no DLPack bounce — avoids the numpy≥1.22 / read-only-export caveats). `to_numpy` produces a numpy *view* via the buffer protocol. Element type is recorded once in `self.dtype`.
 
 ## Section 2 — Compute integration (high-leverage)
 
@@ -89,10 +101,10 @@ Effect: `resize/blur/rotate/crop/flip/color/adjust_*/resize_normalize_to_tensor`
 ## Section 3 — Ingest + egress adapters
 
 **Ingest** (all set the keep-alive + metadata + default `color_space` by channels):
-- `from_numpy(arr, *, copy=False)` → `Backing::Numpy` (borrow) or `Owned` (copy). The `Image(arr, …)` constructor and `frombuffer`/`fromarray` delegate here.
+- `from_numpy(arr, *, copy=False)` → `Borrowed{ keep: PyObject{obj: arr}, readonly: arr.flags.writeable==false }` (borrow, ptr = array base) or `Owned` (copy). The `Image(arr, …)` constructor and `frombuffer`/`fromarray` delegate here.
 - `from_bytes(data, width, height, channels=3, dtype="uint8")` → `Owned` (copy). (Existing `frombytes` semantics, now producing `Owned`.)
-- `from_buffer(obj)` → borrow a PEP-3118 buffer-protocol object zero-copy with a keep-alive to `obj` (robotics ingest of a memoryview/bytearray, e.g. a ROS2 message payload). Validates C-contiguous + supported dtype/shape.
-- `from_dlpack(obj)` → `Backing::Dlpack` via `PyTensor::from_pyany`; validates CPU device, contiguous, ndim==3 (or 2→(H,W,1)), dtype ∈ {u8,u16,f32}, C ∈ {1,3,4}.
+- `from_buffer(obj)` → `Borrowed{ keep: PyObject{obj, buffer: Some(view)} }` over a PEP-3118 buffer-protocol object zero-copy (robotics ingest of a memoryview/bytearray, e.g. a ROS2 message payload). Validates C-contiguous + supported dtype/shape; `readonly` from the `Py_buffer`.
+- `from_dlpack(obj)` → `Borrowed{ keep: Dlpack(PyTensor::from_pyany(obj)) }`; validates CPU device, contiguous, ndim==3 (or 2→(H,W,1)), dtype ∈ {u8,u16,f32}, C ∈ {1,3,4}; `readonly` from the capsule's READ_ONLY flag.
 
 **Egress:**
 - `to_numpy(*, copy=False)` → zero-copy ndarray **view** with numpy `base = self` (keeps the Image alive) via the buffer protocol; `copy=True` returns an independent array.
