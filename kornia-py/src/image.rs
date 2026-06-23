@@ -1103,6 +1103,41 @@ fn dispatch_cvt(
         (CS::YCbCr, CS::Rgb) => u8_3to3!(kc::rgb_from_ycbcr),
         (CS::Rgb, CS::Yuv) => u8_3to3!(kc::yuv_from_rgb),
         (CS::Yuv, CS::Rgb) => u8_3to3!(kc::rgb_from_yuv),
+        // Alpha-family conversions (u8-only; alpha kernels have no f32 path)
+        (CS::Rgb, CS::Rgba) if !data.is_f32() => {
+            let ImageData::U8(a) = data else { unreachable!() };
+            let src = unsafe { numpy_as_image::<3>(py, a)? };
+            let (mut dst, out) = unsafe { alloc_output_pyarray::<4>(py, src.size())? };
+            py.detach(|| kc::rgba_from_rgb(&src, &mut dst)).map_err(to_pyerr)?;
+            Ok(PyImageApi::wrap(py, out, None))
+        }
+        (CS::Rgb, CS::Bgra) if !data.is_f32() => {
+            let ImageData::U8(a) = data else { unreachable!() };
+            let src = unsafe { numpy_as_image::<3>(py, a)? };
+            let (mut dst, out) = unsafe { alloc_output_pyarray::<4>(py, src.size())? };
+            py.detach(|| kc::bgra_from_rgb(&src, &mut dst)).map_err(to_pyerr)?;
+            Ok(PyImageApi::wrap(py, out, None))
+        }
+        (CS::Rgba, CS::Rgb) if !data.is_f32() => {
+            let ImageData::U8(a) = data else { unreachable!() };
+            let src = unsafe { numpy_as_image::<4>(py, a)? };
+            let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, src.size())? };
+            py.detach(|| kc::rgb_from_rgba(&src, &mut dst, None)).map_err(to_pyerr)?;
+            Ok(PyImageApi::wrap(py, out, None))
+        }
+        (CS::Bgra, CS::Rgb) if !data.is_f32() => {
+            let ImageData::U8(a) = data else { unreachable!() };
+            let src = unsafe { numpy_as_image::<4>(py, a)? };
+            let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, src.size())? };
+            py.detach(|| kc::rgb_from_bgra(&src, &mut dst, None)).map_err(to_pyerr)?;
+            Ok(PyImageApi::wrap(py, out, None))
+        }
+        // f32 with alpha pairs: clear error (alpha kernels are u8-only)
+        (CS::Rgb, CS::Rgba) | (CS::Rgb, CS::Bgra) | (CS::Rgba, CS::Rgb) | (CS::Bgra, CS::Rgb) => {
+            Err(value_err(format!(
+                "alpha-family conversions ({from:?}->{to:?}) require uint8 storage; call to_uint8() first"
+            )))
+        }
         _ => Err(value_err(format!(
             "no direct {from:?}->{to:?} color conversion; convert via Rgb"
         ))),

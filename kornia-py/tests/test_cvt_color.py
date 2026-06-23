@@ -56,3 +56,40 @@ def test_sugar_methods():
     img = Image(_rgb_u8())
     assert img.to_gray().color_space == ColorSpace.Gray
     assert img.to_bgr().color_space == ColorSpace.Bgr
+
+
+@pytest.mark.parametrize("src_cs,dst_cs,src_ch,use_f32", [
+    (ColorSpace.Rgb, ColorSpace.Gray, 3, False),
+    (ColorSpace.Gray, ColorSpace.Rgb, 1, False),
+    (ColorSpace.Rgb, ColorSpace.Bgr, 3, False),
+    (ColorSpace.Bgr, ColorSpace.Rgb, 3, False),
+    (ColorSpace.Rgb, ColorSpace.Rgba, 3, False),
+    (ColorSpace.Rgba, ColorSpace.Rgb, 4, False),
+    (ColorSpace.Rgb, ColorSpace.Bgra, 3, False),
+    (ColorSpace.Bgra, ColorSpace.Rgb, 4, False),
+    (ColorSpace.Rgb, ColorSpace.YCbCr, 3, False),
+    (ColorSpace.YCbCr, ColorSpace.Rgb, 3, False),
+    (ColorSpace.Rgb, ColorSpace.Yuv, 3, False),
+    (ColorSpace.Yuv, ColorSpace.Rgb, 3, False),
+    (ColorSpace.Rgb, ColorSpace.Hsv, 3, True),
+    (ColorSpace.Hsv, ColorSpace.Rgb, 3, True),
+    (ColorSpace.Rgb, ColorSpace.Hls, 3, True),
+    (ColorSpace.Hls, ColorSpace.Rgb, 3, True),
+    (ColorSpace.Rgb, ColorSpace.Lab, 3, True),
+    (ColorSpace.Lab, ColorSpace.Rgb, 3, True),
+    (ColorSpace.Rgb, ColorSpace.Luv, 3, True),
+    (ColorSpace.Luv, ColorSpace.Rgb, 3, True),
+    (ColorSpace.Rgb, ColorSpace.Xyz, 3, True),
+    (ColorSpace.Xyz, ColorSpace.Rgb, 3, True),
+    (ColorSpace.Rgb, ColorSpace.LinearRgb, 3, True),
+    (ColorSpace.LinearRgb, ColorSpace.Rgb, 3, True),
+])
+def test_legal_pairs_parity(src_cs, dst_cs, src_ch, use_f32):
+    rng = np.random.default_rng(42)
+    if use_f32:
+        arr = rng.random((8, 8, src_ch), dtype=np.float32)
+    else:
+        arr = rng.integers(0, 256, (8, 8, src_ch), dtype=np.uint8)
+    img = Image(arr, color_space=src_cs)
+    result = img.cvt_color(dst_cs)
+    assert result.color_space == dst_cs

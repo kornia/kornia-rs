@@ -854,6 +854,7 @@ impl_tagged!(kornia_image::color_spaces::Rgb8<A>, u8, ColorSpace::Rgb, {
     Gray  => kornia_image::color_spaces::Gray8<CpuAllocator>, C1;
     Bgr   => kornia_image::color_spaces::Bgr8<CpuAllocator>, C3;
     Rgba  => kornia_image::color_spaces::Rgba8<CpuAllocator>, C4;
+    Bgra  => kornia_image::color_spaces::Bgra8<CpuAllocator>, C4;
     YCbCr => kornia_image::color_spaces::YCbCr8<CpuAllocator>, C3;
     Yuv   => kornia_image::color_spaces::Yuv8<CpuAllocator>, C3;
 });
@@ -861,5 +862,11 @@ impl_tagged!(kornia_image::color_spaces::Gray8<A>, u8, ColorSpace::Gray, {
     Rgb => kornia_image::color_spaces::Rgb8<CpuAllocator>, C3;
 });
 impl_tagged!(kornia_image::color_spaces::Bgr8<A>, u8, ColorSpace::Bgr, {
+    Rgb => kornia_image::color_spaces::Rgb8<CpuAllocator>, C3;
+});
+impl_tagged!(kornia_image::color_spaces::Rgba8<A>, u8, ColorSpace::Rgba, {
+    Rgb => kornia_image::color_spaces::Rgb8<CpuAllocator>, C3;
+});
+impl_tagged!(kornia_image::color_spaces::Bgra8<A>, u8, ColorSpace::Bgra, {
     Rgb => kornia_image::color_spaces::Rgb8<CpuAllocator>, C3;
 });
