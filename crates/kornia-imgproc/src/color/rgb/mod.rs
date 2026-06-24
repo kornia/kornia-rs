@@ -5,25 +5,7 @@ mod kernels;
 
 // ===== Sealed-trait dispatch =========================================================
 
-mod sealed {
-    pub trait Sealed {}
-}
-
-#[inline]
-fn check_size<T, U, const C1: usize, const C2: usize, A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<T, C1, A1>,
-    dst: &Image<U, C2, A2>,
-) -> Result<(), ImageError> {
-    if src.size() != dst.size() {
-        return Err(ImageError::InvalidImageSize(
-            src.cols(),
-            src.rows(),
-            dst.cols(),
-            dst.rows(),
-        ));
-    }
-    Ok(())
-}
+use crate::color::kernel_common::{check_size, sealed};
 
 /// Compile-time dispatch to the right channel/alpha kernels for each pixel type.
 ///
@@ -50,7 +32,6 @@ pub trait ChannelOps: sealed::Sealed + Sized + Copy + Send + Sync {
     ) -> Result<(), ImageError>;
 }
 
-impl sealed::Sealed for u8 {}
 impl ChannelOps for u8 {
     fn bgr_from_rgb_impl<A1: ImageAllocator, A2: ImageAllocator>(
         src: &Image<u8, 3, A1>,
@@ -78,7 +59,6 @@ impl ChannelOps for u8 {
     }
 }
 
-impl sealed::Sealed for f32 {}
 impl ChannelOps for f32 {
     fn bgr_from_rgb_impl<A1: ImageAllocator, A2: ImageAllocator>(
         src: &Image<f32, 3, A1>,
@@ -106,7 +86,6 @@ impl ChannelOps for f32 {
     }
 }
 
-impl sealed::Sealed for f64 {}
 impl ChannelOps for f64 {
     fn bgr_from_rgb_impl<A1: ImageAllocator, A2: ImageAllocator>(
         src: &Image<f64, 3, A1>,

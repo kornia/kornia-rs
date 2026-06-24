@@ -5,6 +5,40 @@
 //! module holds the pieces shared across all of them so the per-conversion kernels stay
 //! focused on the math.
 
+/// Return `Err(ImageError::InvalidImageSize)` when `src` and `dst` sizes differ.
+#[inline]
+pub(crate) fn check_size<T, U, const C1: usize, const C2: usize, A1, A2>(
+    src: &kornia_image::Image<T, C1, A1>,
+    dst: &kornia_image::Image<U, C2, A2>,
+) -> Result<(), kornia_image::ImageError>
+where
+    A1: kornia_image::allocator::ImageAllocator,
+    A2: kornia_image::allocator::ImageAllocator,
+{
+    if src.size() != dst.size() {
+        return Err(kornia_image::ImageError::InvalidImageSize(
+            src.cols(),
+            src.rows(),
+            dst.cols(),
+            dst.rows(),
+        ));
+    }
+    Ok(())
+}
+
+/// Sealed-trait plumbing shared across all color-conversion families.
+pub(crate) mod sealed {
+    /// Marker trait — prevents external crates from implementing
+    /// the sealed color-dispatch traits.
+    pub trait Sealed {}
+
+    impl Sealed for u8 {}
+    impl Sealed for u16 {}
+    impl Sealed for i32 {}
+    impl Sealed for f32 {}
+    impl Sealed for f64 {}
+}
+
 /// Below this pixel count rayon spawn cost exceeds the compute budget; above it
 /// (e.g. 1080p ≈ 2M px) strip-splitting across available threads pays off.
 pub(crate) const PAR_THRESHOLD: usize = 1024 * 1024;

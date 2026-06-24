@@ -11,6 +11,7 @@
 
 use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 
+use super::kernel_common::check_size;
 use super::matrix::matrix3_affine_f32;
 
 /// Sepia matrix, row-major (R',G',B' rows).
@@ -20,22 +21,6 @@ const SEPIA_M: [f32; 9] = [
     0.272, 0.534, 0.131, // B'
 ];
 
-#[inline]
-fn check_size<A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<u8, 3, A1>,
-    dst: &Image<u8, 3, A2>,
-) -> Result<(), ImageError> {
-    if src.size() != dst.size() {
-        return Err(ImageError::InvalidImageSize(
-            src.cols(),
-            src.rows(),
-            dst.cols(),
-            dst.rows(),
-        ));
-    }
-    Ok(())
-}
-
 /// Apply sepia tone to an RGB f32 image (values in any range; matrix is linear).
 ///
 /// # Errors
@@ -44,14 +29,7 @@ pub fn sepia_from_rgb_f32<A1: ImageAllocator, A2: ImageAllocator>(
     src: &Image<f32, 3, A1>,
     dst: &mut Image<f32, 3, A2>,
 ) -> Result<(), ImageError> {
-    if src.size() != dst.size() {
-        return Err(ImageError::InvalidImageSize(
-            src.cols(),
-            src.rows(),
-            dst.cols(),
-            dst.rows(),
-        ));
-    }
+    check_size(src, dst)?;
     matrix3_affine_f32(
         src.as_slice(),
         dst.as_slice_mut(),

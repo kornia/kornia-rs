@@ -5,9 +5,7 @@ mod kernels;
 
 // ===== Sealed-trait dispatch =========================================================
 
-mod sealed {
-    pub trait Sealed {}
-}
+use crate::color::kernel_common::{check_size, sealed};
 
 /// Compile-time dispatch to the right RGB→gray kernel for each pixel type.
 ///
@@ -26,7 +24,6 @@ pub trait GrayFromRgb: sealed::Sealed + Sized {
     ) -> Result<(), ImageError>;
 }
 
-impl sealed::Sealed for u8 {}
 impl GrayFromRgb for u8 {
     fn gray_from_rgb_impl<A1: ImageAllocator, A2: ImageAllocator>(
         src: &Image<u8, 3, A1>,
@@ -38,7 +35,6 @@ impl GrayFromRgb for u8 {
     }
 }
 
-impl sealed::Sealed for f32 {}
 impl GrayFromRgb for f32 {
     fn gray_from_rgb_impl<A1: ImageAllocator, A2: ImageAllocator>(
         src: &Image<f32, 3, A1>,
@@ -50,7 +46,6 @@ impl GrayFromRgb for f32 {
     }
 }
 
-impl sealed::Sealed for f64 {}
 impl GrayFromRgb for f64 {
     fn gray_from_rgb_impl<A1: ImageAllocator, A2: ImageAllocator>(
         src: &Image<f64, 3, A1>,
@@ -62,22 +57,6 @@ impl GrayFromRgb for f64 {
         });
         Ok(())
     }
-}
-
-#[inline]
-fn check_size<T, U, const C1: usize, const C2: usize, A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<T, C1, A1>,
-    dst: &Image<U, C2, A2>,
-) -> Result<(), ImageError> {
-    if src.size() != dst.size() {
-        return Err(ImageError::InvalidImageSize(
-            src.cols(),
-            src.rows(),
-            dst.cols(),
-            dst.rows(),
-        ));
-    }
-    Ok(())
 }
 
 // ===== Public API ==================================================================
@@ -158,7 +137,7 @@ pub fn gray_from_rgb_f32<A1: ImageAllocator, A2: ImageAllocator>(
 ///
 /// `u8` and `f32` get NEON kernels (`vld1q` + `vst3q`); any other `T` (e.g. `f64`,
 /// `u16`) uses the portable scalar broadcast. Sealed: no external implementations.
-pub trait RgbFromGray: Copy + Send + Sync {
+pub trait RgbFromGray: sealed::Sealed + Copy + Send + Sync {
     #[doc(hidden)]
     fn rgb_from_gray_impl<A1: ImageAllocator, A2: ImageAllocator>(
         src: &Image<Self, 1, A1>,

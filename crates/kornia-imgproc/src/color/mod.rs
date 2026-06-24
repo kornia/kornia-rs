@@ -72,7 +72,6 @@ mod hls;
 mod hsv;
 // Shared generic 3×3 affine kernel; the CIE pipelines fuse the matrix in-register
 // instead of calling it, but it stays available for the YUV/YCbCr family.
-#[allow(dead_code)]
 mod matrix;
 mod rgb;
 mod sepia;

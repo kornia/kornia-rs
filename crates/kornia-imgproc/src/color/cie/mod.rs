@@ -17,27 +17,7 @@ mod kernels;
 mod nonlinear;
 mod transfer;
 
-mod sealed {
-    pub trait Sealed {}
-    impl Sealed for f32 {}
-    impl Sealed for f64 {}
-}
-
-#[inline]
-fn check_size<T, U, const C1: usize, const C2: usize, A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<T, C1, A1>,
-    dst: &Image<U, C2, A2>,
-) -> Result<(), ImageError> {
-    if src.size() != dst.size() {
-        return Err(ImageError::InvalidImageSize(
-            src.cols(),
-            src.rows(),
-            dst.cols(),
-            dst.rows(),
-        ));
-    }
-    Ok(())
-}
+use crate::color::kernel_common::{check_size, sealed};
 
 // ===== trait + impl generation ======================================================
 //
