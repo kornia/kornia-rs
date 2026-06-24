@@ -2,17 +2,9 @@ use std::{alloc::Layout, ptr::NonNull};
 
 use crate::allocator::TensorAllocator;
 
-/// Indicates where the data owned by a [`TensorStorage`] physically lives.
-///
-/// Host storage may be accessed via slice APIs. Device storage holds a raw
-/// device address — dereferencing it on the host is unsound.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MemoryDomain {
-    /// Data lives in host (CPU) memory; slice access is safe.
-    Host,
-    /// Data lives in device (GPU) memory; slice access is unsound.
-    Device,
-}
+// MemoryDomain is now defined in `resource` and re-exported from there.
+// This re-export keeps all `storage::MemoryDomain` use-sites working unchanged.
+pub use crate::resource::MemoryDomain;
 
 /// Low-level memory buffer for tensor data.
 ///
@@ -316,7 +308,7 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
             layout,
             alloc,
             owns_memory: true,
-            domain: MemoryDomain::Device,
+            domain: MemoryDomain::Device { id: 0 },
             device_id: 0,
             keepalive: None,
         }

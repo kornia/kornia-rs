@@ -21,6 +21,13 @@ pub enum TensorAllocatorError {
     /// This typically indicates an out-of-memory condition or other allocation failure.
     #[error("Null pointer")]
     NullPointer,
+
+    /// A foreign allocator was asked to allocate memory, which it never does.
+    ///
+    /// [`ForeignAllocator`] exists only as a type tag for externally-owned buffers;
+    /// calling `allocate` on it is always an error.
+    #[error("Cannot allocate with a foreign allocator — use from_borrowed or a wrapping constructor")]
+    CannotAllocateForeign,
 }
 
 /// Trait for custom tensor memory allocators.
