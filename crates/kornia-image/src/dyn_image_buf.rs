@@ -117,6 +117,7 @@ impl DynImageBuf {
         // Use nbytes.max(1) so that Layout::from_size_align never gets size 0.
         let layout = Layout::from_size_align(nbytes.max(1), 64)
             .map_err(|_| ImageError::ImageDataNotInitialized)?;
+        // Note: reuses ImageDataNotInitialized for allocation failures (no dedicated OOM variant)
         let ptr = AlignedCpuAllocator
             .alloc(layout)
             .map_err(|_| ImageError::ImageDataNotInitialized)?;
@@ -144,8 +145,9 @@ impl DynImageBuf {
     ///
     /// # Errors
     ///
-    /// Returns [`ImageError::InvalidChannelShape`] if `bytes.len()` does not match the
-    /// expected byte count.
+    /// Returns `ImageError::InvalidChannelShape(got, expected)` if `bytes.len()` does not
+    /// equal `H * W * C * dtype.element_size()`. Note: semantically this is a size mismatch,
+    /// but the variant is reused for this purpose (no dedicated "buffer size mismatch" variant).
     pub fn from_bytes(
         shape: [usize; 3],
         dtype: PixelFormat,
@@ -158,6 +160,7 @@ impl DynImageBuf {
         }
         let layout = Layout::from_size_align(nbytes.max(1), 64)
             .map_err(|_| ImageError::ImageDataNotInitialized)?;
+        // Note: reuses ImageDataNotInitialized for allocation failures (no dedicated OOM variant)
         let ptr = AlignedCpuAllocator
             .alloc(layout)
             .map_err(|_| ImageError::ImageDataNotInitialized)?;
@@ -332,6 +335,7 @@ impl DynImageBuf {
         }
 
         // 2. Dtype check via TypeId.
+        // Unknown T: can't determine caller's format; both fields set to buffer's dtype as a best-effort signal
         let caller_fmt = dtype_for::<T>().ok_or(ImageError::DtypeMismatch {
             expected: self.dtype,
             got: self.dtype,
