@@ -351,9 +351,23 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
     ///
     /// Panics if the owner is not a [`HostResource`] (i.e., the memory is foreign- or device-backed).
     pub fn into_vec(self) -> Vec<T> {
-        assert!(
-            self.owner.as_any().is::<HostResource>(),
-            "cannot convert foreign-memory-backed storage into Vec"
+        let host = self
+            .owner
+            .as_any()
+            .downcast_ref::<HostResource>()
+            .expect("cannot convert foreign-memory-backed storage into Vec");
+        // A `Vec<T>` always frees with `Layout::array::<T>(cap)` (align = align_of::<T>()).
+        // Reconstructing a Vec from an over-aligned allocation (e.g. AlignedCpuAllocator's
+        // 64-byte buffers) would dealloc with a mismatched layout — undefined behaviour.
+        // `from_vec` is always safe (it adopts the Vec's own layout); only the
+        // allocate-path with an over-aligned allocator could trip this.
+        assert_eq!(
+            host.layout().align(),
+            std::mem::align_of::<T>(),
+            "into_vec: backing allocation alignment ({}) != align_of::<T>() ({}); \
+             over-aligned storage is not Vec-reconstructable without a copy",
+            host.layout().align(),
+            std::mem::align_of::<T>(),
         );
 
         let vec_len = self.len / std::mem::size_of::<T>();
@@ -534,6 +548,26 @@ mod tests {
         assert_eq!(ptr_raw % alignment, 0);
 
         Ok(())
+    }
+
+    #[test]
+    #[should_panic(expected = "not Vec-reconstructable")]
+    fn into_vec_rejects_over_aligned_allocation() {
+        use crate::allocator::{AlignedCpuAllocator, TensorAllocator};
+        // AlignedCpuAllocator forces 64-byte alignment; align_of::<f32>() is 4.
+        let layout = Layout::array::<f32>(4).unwrap();
+        let owner = AlignedCpuAllocator.allocate(layout).unwrap();
+        let ptr = std::ptr::NonNull::new(owner.as_ptr() as *mut f32).unwrap();
+        let storage = TensorStorage::<f32, AlignedCpuAllocator> {
+            ptr,
+            len: 4 * std::mem::size_of::<f32>(),
+            owner,
+            alloc: AlignedCpuAllocator,
+            _marker: std::marker::PhantomData,
+        };
+        // Must panic: a 64-byte-aligned allocation cannot be handed to Vec, which would
+        // free it with align_of::<f32>() == 4 (mismatched dealloc layout = UB).
+        let _ = storage.into_vec();
     }
 
     #[test]

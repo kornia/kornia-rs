@@ -146,6 +146,15 @@ impl HostResource {
         self.layout.size() == 0
     }
 
+    /// Returns the [`Layout`] the backing buffer was allocated with.
+    ///
+    /// Used to verify allocation alignment before reconstructing a `Vec` (which always
+    /// frees with `align_of::<T>()`): an over-aligned allocation (e.g. 64-byte) is not
+    /// `Vec`-reconstructable without a copy.
+    pub fn layout(&self) -> Layout {
+        self.layout
+    }
+
     /// Consumes the resource and returns the raw pointer and layout without running [`Drop`].
     ///
     /// The caller takes full responsibility for the allocation: it must eventually be freed
