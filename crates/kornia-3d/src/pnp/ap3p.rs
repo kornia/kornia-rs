@@ -66,48 +66,18 @@ pub struct AP3PParams {
     pub pick_lowest_rmse: bool,
 }
 
-/// Solve Perspective-3-Point (AP3P).
-///
-/// # Arguments
-/// * `points_world` – 3-D coordinates in the world frame, shape *(3,3)*
-///   (exactly three correspondences).
-/// * `points_image` – Corresponding pixel coordinates, shape *(3,2)*.
-/// * `k` – Camera intrinsics matrix.
-///
-/// # Returns
-/// Best `(R, t)` satisfying cheirality (or sole candidate if the algebraic
-/// root system returns a single one). The rotation is in the
-/// **world → camera** frame.
-pub fn solve_ap3p(
+struct PreparedInputs {
+    world_points: [[f64; 3]; 3],
+    fv: [[f64; 3]; 3],
+    wp: [[f64; 3]; 3],
+}
+
+#[inline]
+fn prepare_ap3p_inputs(
     points_world: &[Vec3AF32],
     points_image: &[Vec2F32],
     k: &Mat3AF32,
-    params: &AP3PParams,
-) -> Result<PnPResult, PnPError> {
-    let n = points_world.len();
-    if n != points_image.len() {
-        return Err(PnPError::MismatchedArrayLengths {
-            left_name: "world points",
-            left_len: n,
-            right_name: "image points",
-            right_len: points_image.len(),
-        });
-    }
-    if n != 3 {
-        return Err(PnPError::InsufficientCorrespondences {
-            required: 3,
-            actual: n,
-        });
-    }
-
-    // Recover focal / principal point once. We follow the OpenCV convention
-    // of un-normalising the 2D image points first and then dividing by `‖·‖`
-    // to get the unit bearing vector. The reference implementation pushes
-    // through the inverse-intrinsics matrix:
-    //   mu = (u - cx) / fx, mv = (v - cy) / fy
-    //   b  = [mu, mv, 1] / ‖[mu, mv, 1]‖
-    // We perform the same op in f64 (the algorithm's own precision) and
-    // downcast only for the final PnPResult struct.
+) -> PreparedInputs {
     let fx = k.x_axis().x as f64;
     let fy = k.y_axis().y as f64;
     let cx = k.z_axis().x as f64;
@@ -117,7 +87,7 @@ pub fn solve_ap3p(
     let cx_fx = cx / fx;
     let cy_fy = cy / fy;
 
-    let mut feature_vectors = [[0.0f64; 3]; 3]; // 3 bearings × 3 coords
+    let mut feature_vectors = [[0.0f64; 3]; 3];
     for i in 0..3 {
         let u = points_image[i].x as f64;
         let v = points_image[i].y as f64;
@@ -162,11 +132,85 @@ pub fn solve_ap3p(
             feature_vectors[2][2],
         ],
     ];
+
     let wp = [
         [world_points[0][0], world_points[1][0], world_points[2][0]],
         [world_points[0][1], world_points[1][1], world_points[2][1]],
         [world_points[0][2], world_points[1][2], world_points[2][2]],
     ];
+
+    PreparedInputs {
+        world_points,
+        fv,
+        wp,
+    }
+}
+
+#[inline]
+fn to_pnp_result(r: &[[f64; 3]; 3], t: &[f64; 3], reproj_rmse: Option<f32>) -> PnPResult {
+    let r_mat = Mat3AF32::from_cols_array(&[
+        r[0][0] as f32,
+        r[1][0] as f32,
+        r[2][0] as f32,
+        r[0][1] as f32,
+        r[1][1] as f32,
+        r[2][1] as f32,
+        r[0][2] as f32,
+        r[1][2] as f32,
+        r[2][2] as f32,
+    ]);
+    let t_vec = Vec3AF32::new(t[0] as f32, t[1] as f32, t[2] as f32);
+    let rvec = SO3F32::from_matrix(&r_mat).log();
+
+    PnPResult {
+        rotation: r_mat,
+        translation: t_vec,
+        rvec,
+        reproj_rmse,
+        num_iterations: None,
+        converged: Some(true),
+    }
+}
+
+/// Solve Perspective-3-Point (AP3P).
+///
+/// # Arguments
+/// * `points_world` – 3-D coordinates in the world frame, shape *(3,3)*
+///   (exactly three correspondences).
+/// * `points_image` – Corresponding pixel coordinates, shape *(3,2)*.
+/// * `k` – Camera intrinsics matrix.
+///
+/// # Returns
+/// Best `(R, t)` satisfying cheirality (or sole candidate if the algebraic
+/// root system returns a single one). The rotation is in the
+/// **world → camera** frame.
+pub fn solve_ap3p(
+    points_world: &[Vec3AF32],
+    points_image: &[Vec2F32],
+    k: &Mat3AF32,
+    params: &AP3PParams,
+) -> Result<PnPResult, PnPError> {
+    let n = points_world.len();
+    if n != points_image.len() {
+        return Err(PnPError::MismatchedArrayLengths {
+            left_name: "world points",
+            left_len: n,
+            right_name: "image points",
+            right_len: points_image.len(),
+        });
+    }
+    if n != 3 {
+        return Err(PnPError::InsufficientCorrespondences {
+            required: 3,
+            actual: n,
+        });
+    }
+
+    let PreparedInputs {
+        world_points,
+        fv,
+        wp,
+    } = prepare_ap3p_inputs(points_world, points_image, k);
 
     let mut solutions_r = [[[0.0f64; 3]; 3]; 4];
     let mut solutions_t = [[0.0f64; 3]; 4];
@@ -182,15 +226,18 @@ pub fn solve_ap3p(
     let mut best_rmse = f64::INFINITY;
 
     for i in 0..n_solutions as usize {
-        let r: [[f64; 3]; 3] = solutions_r[i];
-        let t: [f64; 3] = solutions_t[i];
+        let r = solutions_r[i];
+        let t = solutions_t[i];
+
         if !all_positive_depths(&r, &t, &world_points) {
             continue;
         }
+
         if !params.pick_lowest_rmse {
             best_idx = Some(i);
             break;
         }
+
         let rmse = rmse_px(&world_points, points_image, &r, &t, k);
         if rmse < best_rmse {
             best_rmse = rmse;
@@ -202,30 +249,11 @@ pub fn solve_ap3p(
         PnPError::SvdFailed("AP3P: all candidates failed cheirality check".to_string())
     })?;
 
-    let r = solutions_r[pick];
-    let t = solutions_t[pick];
-    let r_mat = Mat3AF32::from_cols_array(&[
-        r[0][0] as f32,
-        r[1][0] as f32,
-        r[2][0] as f32,
-        r[0][1] as f32,
-        r[1][1] as f32,
-        r[2][1] as f32,
-        r[0][2] as f32,
-        r[1][2] as f32,
-        r[2][2] as f32,
-    ]);
-    let t_vec = Vec3AF32::new(t[0] as f32, t[1] as f32, t[2] as f32);
-    let rvec = SO3F32::from_matrix(&r_mat).log();
-
-    Ok(PnPResult {
-        rotation: r_mat,
-        translation: t_vec,
-        rvec,
-        reproj_rmse: Some(best_rmse as f32),
-        num_iterations: None,
-        converged: Some(true),
-    })
+    Ok(to_pnp_result(
+        &solutions_r[pick],
+        &solutions_t[pick],
+        Some(best_rmse as f32),
+    ))
 }
 
 /// world is laid out as `world_points[point_index][coord]`.
@@ -684,73 +712,17 @@ pub fn solve_ap3p_multi(
     points_image: &[Vec2F32],
     k: &Mat3AF32,
 ) -> Result<Vec<PnPResult>, PnPError> {
-    let n = points_world.len();
-    if n != 3 || points_image.len() != 3 {
+    if points_world.len() != 3 || points_image.len() != 3 {
         return Err(PnPError::InsufficientCorrespondences {
             required: 3,
-            actual: n,
+            actual: points_world.len(),
         });
     }
-
-    let fx = k.x_axis().x as f64;
-    let fy = k.y_axis().y as f64;
-    let cx = k.z_axis().x as f64;
-    let cy = k.z_axis().y as f64;
-    let inv_fx = 1.0 / fx;
-    let inv_fy = 1.0 / fy;
-    let cx_fx = cx / fx;
-    let cy_fy = cy / fy;
-
-    let mut feature_vectors = [[0.0f64; 3]; 3];
-    for i in 0..3 {
-        let u = points_image[i].x as f64;
-        let v = points_image[i].y as f64;
-        let mu = inv_fx * u - cx_fx;
-        let mv = inv_fy * v - cy_fy;
-        let norm = (mu * mu + mv * mv + 1.0).sqrt();
-        feature_vectors[i] = [mu / norm, mv / norm, 1.0 / norm];
-    }
-
-    let world_points = [
-        [
-            points_world[0].x as f64,
-            points_world[0].y as f64,
-            points_world[0].z as f64,
-        ],
-        [
-            points_world[1].x as f64,
-            points_world[1].y as f64,
-            points_world[1].z as f64,
-        ],
-        [
-            points_world[2].x as f64,
-            points_world[2].y as f64,
-            points_world[2].z as f64,
-        ],
-    ];
-
-    let fv = [
-        [
-            feature_vectors[0][0],
-            feature_vectors[1][0],
-            feature_vectors[2][0],
-        ],
-        [
-            feature_vectors[0][1],
-            feature_vectors[1][1],
-            feature_vectors[2][1],
-        ],
-        [
-            feature_vectors[0][2],
-            feature_vectors[1][2],
-            feature_vectors[2][2],
-        ],
-    ];
-    let wp = [
-        [world_points[0][0], world_points[1][0], world_points[2][0]],
-        [world_points[0][1], world_points[1][1], world_points[2][1]],
-        [world_points[0][2], world_points[1][2], world_points[2][2]],
-    ];
+    let PreparedInputs {
+        world_points,
+        fv,
+        wp,
+    } = prepare_ap3p_inputs(points_world, points_image, k);
 
     let mut solutions_r = [[[0.0f64; 3]; 3]; 4];
     let mut solutions_t = [[0.0f64; 3]; 4];
@@ -764,31 +736,8 @@ pub fn solve_ap3p_multi(
 
     let mut results = Vec::new();
     for i in 0..n_solutions as usize {
-        let r = solutions_r[i];
-        let t = solutions_t[i];
-        if all_positive_depths(&r, &t, &world_points) {
-            let r_mat = Mat3AF32::from_cols_array(&[
-                r[0][0] as f32,
-                r[1][0] as f32,
-                r[2][0] as f32,
-                r[0][1] as f32,
-                r[1][1] as f32,
-                r[2][1] as f32,
-                r[0][2] as f32,
-                r[1][2] as f32,
-                r[2][2] as f32,
-            ]);
-            let t_vec = Vec3AF32::new(t[0] as f32, t[1] as f32, t[2] as f32);
-            let rvec = kornia_algebra::SO3F32::from_matrix(&r_mat).log();
-
-            results.push(PnPResult {
-                rotation: r_mat,
-                translation: t_vec,
-                rvec,
-                reproj_rmse: None,
-                num_iterations: None,
-                converged: Some(true),
-            });
+        if all_positive_depths(&solutions_r[i], &solutions_t[i], &world_points) {
+            results.push(to_pnp_result(&solutions_r[i], &solutions_t[i], None));
         }
     }
 

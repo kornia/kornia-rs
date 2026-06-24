@@ -97,9 +97,6 @@ impl Estimator for AP3PEstimator {
     const SAMPLE_SIZE: usize = 3;
 
     /// Generates camera pose hypotheses from a minimal 3-point sample.
-    ///
-    /// This method is highly optimized for the RANSAC inner loop. It guarantees
-    /// zero heap allocations (`Vec::new`, etc.) and yields up to 4 algebraic roots.
     fn fit(&self, samples: &[Self::Sample], out: &mut Vec<Self::Model>) {
         if samples.len() < Self::SAMPLE_SIZE {
             return;
