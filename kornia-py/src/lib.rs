@@ -18,6 +18,7 @@ mod icp;
 mod image;
 mod io;
 mod normalize;
+pub(crate) mod numpy_view;
 mod orb;
 mod pgo;
 mod pipeline;

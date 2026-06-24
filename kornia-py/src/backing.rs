@@ -29,6 +29,7 @@ impl Dtype {
             Dtype::F32 => "float32",
         }
     }
+    #[allow(dead_code)]
     pub fn from_numpy_str(s: &str) -> PyResult<Dtype> {
         match s {
             "uint8" | "u8" | "|u1" | "B" => Ok(Dtype::U8),
@@ -44,6 +45,7 @@ impl Dtype {
 /// A 64-byte-aligned owned heap buffer (SIMD/DMA friendly).
 pub struct AlignedBytes {
     ptr: NonNull<u8>,
+    #[allow(dead_code)]
     len: usize,
     layout: Layout,
 }
@@ -59,24 +61,28 @@ impl AlignedBytes {
         Self { ptr, len, layout }
     }
     pub fn from_slice(src: &[u8]) -> Self {
-        let mut b = Self::zeroed(src.len());
+        let b = Self::zeroed(src.len());
         // SAFETY: b.ptr owns len==src.len() bytes; regions don't overlap.
         unsafe { std::ptr::copy_nonoverlapping(src.as_ptr(), b.ptr.as_ptr(), src.len()) };
         b
     }
+    #[allow(dead_code)]
     pub fn as_ptr(&self) -> *const u8 {
         self.ptr.as_ptr()
     }
     pub fn as_mut_ptr(&mut self) -> *mut u8 {
         self.ptr.as_ptr()
     }
+    #[allow(dead_code)]
     pub fn as_slice(&self) -> &[u8] {
         // SAFETY: ptr owns len bytes, allocated and valid for reads.
         unsafe { std::slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
     }
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.len
     }
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
@@ -96,6 +102,7 @@ pub enum BorrowGuard {
         buffer: Option<Box<pyo3::ffi::Py_buffer>>,
     },
     /// Imported DLPack tensor; its Drop runs the producer's deleter.
+    #[allow(dead_code)]
     Dlpack(dlpack_rs::pyo3_glue::PyTensor),
 }
 impl Drop for BorrowGuard {
@@ -121,7 +128,9 @@ pub enum Backing {
     },
 }
 // SAFETY: Owned is Send+Sync; Borrowed holds Send keep-alives and a raw ptr with exclusive logical ownership.
+// Sync is sound because all mutation of the pointed-to memory happens under the Python GIL.
 unsafe impl Send for Backing {}
+unsafe impl Sync for Backing {}
 impl Backing {
     pub fn data_ptr(&self) -> *mut u8 {
         match self {
@@ -157,7 +166,7 @@ pub unsafe fn borrow_image<T: Clone, const C: usize>(
             height: h,
         },
         b.data_ptr() as *const T,
-        h * w * c,
+        h * w * c * std::mem::size_of::<T>(),
         ForeignAllocator,
     )
 }
