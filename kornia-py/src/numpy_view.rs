@@ -65,6 +65,8 @@ pub unsafe fn view3<T: Element>(
     };
     if rc != 0 {
         // SetBaseObject failed and already decref'd base_ptr.
+        // Decref the freshly-allocated array to avoid leaking it.
+        unsafe { pyo3::ffi::Py_DECREF(ptr) };
         return Err(PyErr::fetch(py));
     }
     // SAFETY: ptr is an owned reference to a PyArray3<T>.

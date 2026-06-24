@@ -9,7 +9,7 @@ use pyo3::prelude::*;
 
 use kornia_imgproc::resize::{resize_normalize_to_tensor_u8_to_f32_bilinear, NormalizeParams};
 
-use crate::image::PyImage;
+use crate::image::{to_pyerr, PyImage};
 
 /// Fused resize (general bilinear, any target size) + per-channel normalize +
 /// HWC→CHW layout convert, all in one pass. Exact 2× downscale takes a faster
@@ -47,11 +47,12 @@ pub fn resize_normalize_to_tensor(
     // SAFETY: out_arr is a freshly-allocated C-contiguous f32 PyArray3.
     let out_slice = unsafe { std::slice::from_raw_parts_mut(out_arr.data(), out_len) };
 
-    py.detach(|| {
+    let result = py.detach(|| {
         resize_normalize_to_tensor_u8_to_f32_bilinear(
             src_slice, src_w, src_h, out_slice, dst_w, dst_h, &params,
-        );
+        )
     });
+    result.map_err(to_pyerr)?;
 
     Ok(out_arr.unbind())
 }
@@ -148,7 +149,7 @@ impl Preprocessor {
         // `&mut self` on __call__ prevents concurrent Python-level aliasing.
         let out_slice = unsafe { std::slice::from_raw_parts_mut(out_bound.data(), out_len) };
 
-        py.detach(|| {
+        let result = py.detach(|| {
             resize_normalize_to_tensor_u8_to_f32_bilinear(
                 src_slice,
                 self.src_w,
@@ -157,8 +158,9 @@ impl Preprocessor {
                 self.dst_w,
                 self.dst_h,
                 &self.params,
-            );
+            )
         });
+        result.map_err(to_pyerr)?;
 
         Ok(self.out.clone_ref(py))
     }

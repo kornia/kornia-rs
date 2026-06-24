@@ -119,6 +119,11 @@ impl Drop for BorrowGuard {
 }
 
 /// Image data backing: owned aligned bytes, or a zero-copy borrow with keep-alive.
+///
+/// # INVARIANT
+///
+/// No concurrent write to the backing buffer while a writable numpy view is live.
+/// Enforced by GIL — all mutations go through `&mut self` methods called from Python.
 pub enum Backing {
     Owned(AlignedBytes),
     Borrowed {
@@ -171,10 +176,31 @@ pub unsafe fn borrow_image<T: Clone, const C: usize>(
     )
 }
 
+/// Compute the total byte length for an image with dimensions `(h, w, c)` and
+/// element type `dtype`, using checked arithmetic to detect overflow.
+///
+/// Returns `PyOverflowError` if the product would exceed `usize::MAX`.
+pub fn byte_len(h: usize, w: usize, c: usize, dtype: Dtype) -> pyo3::PyResult<usize> {
+    h.checked_mul(w)
+        .and_then(|x| x.checked_mul(c))
+        .and_then(|x| x.checked_mul(dtype.itemsize()))
+        .ok_or_else(|| {
+            pyo3::exceptions::PyOverflowError::new_err(
+                "image dimensions overflow usize",
+            )
+        })
+}
+
 /// Allocate a zeroed owned output buffer for an op of channel count C.
-pub fn alloc_output_owned<const C: usize>(dtype: Dtype, size: ImageSize) -> (AlignedBytes, ImageSize) {
-    let len = size.width * size.height * C * dtype.itemsize();
-    (AlignedBytes::zeroed(len), size)
+///
+/// Uses checked arithmetic via [`byte_len`]; returns `PyOverflowError` if
+/// dimensions would overflow `usize`.
+pub fn alloc_output_owned<const C: usize>(
+    dtype: Dtype,
+    size: ImageSize,
+) -> pyo3::PyResult<(AlignedBytes, ImageSize)> {
+    let len = byte_len(size.height, size.width, C, dtype)?;
+    Ok((AlignedBytes::zeroed(len), size))
 }
 
 #[cfg(test)]
@@ -206,8 +232,18 @@ mod tests {
 
     #[test]
     fn alloc_output_owned_sizes_correctly() {
-        let (b, sz) = alloc_output_owned::<3>(Dtype::F32, ImageSize { width: 4, height: 5 });
+        let (b, sz) =
+            alloc_output_owned::<3>(Dtype::F32, ImageSize { width: 4, height: 5 }).unwrap();
         assert_eq!(b.len(), 4 * 5 * 3 * 4);
         assert_eq!((sz.width, sz.height), (4, 5));
+    }
+
+    #[test]
+    fn byte_len_overflow_raises() {
+        // usize::MAX * 4 (F32 itemsize) overflows usize.
+        let huge = usize::MAX;
+        assert!(byte_len(huge, 2, 3, Dtype::F32).is_err());
+        // Normal case should succeed.
+        assert_eq!(byte_len(5, 4, 3, Dtype::U8).unwrap(), 60);
     }
 }

@@ -1194,7 +1194,7 @@ impl PyImageApi {
 
         if copy || !c_contig {
             // Force an owned, contiguous buffer (ascontiguousarray semantics).
-            let n = h * w * c * dtype.itemsize();
+            let n = backing::byte_len(h, w, c, dtype)?;
             let contig = if c_contig {
                 obj
             } else {
@@ -1253,7 +1253,8 @@ impl PyImageApi {
     where
         F: FnOnce(&mut Image<u8, CO, ForeignAllocator>) -> Result<(), ImageError> + Send,
     {
-        let (mut bytes, size) = backing::alloc_output_owned::<CO>(backing::Dtype::U8, out_size);
+        let (mut bytes, size) =
+            backing::alloc_output_owned::<CO>(backing::Dtype::U8, out_size)?;
         let mut dst = unsafe {
             Image::<u8, CO, ForeignAllocator>::from_raw_parts(
                 size,
@@ -1283,7 +1284,8 @@ impl PyImageApi {
     where
         F: FnOnce(&mut Image<f32, CO, ForeignAllocator>) -> Result<(), ImageError> + Send,
     {
-        let (mut bytes, size) = backing::alloc_output_owned::<CO>(backing::Dtype::F32, out_size);
+        let (mut bytes, size) =
+            backing::alloc_output_owned::<CO>(backing::Dtype::F32, out_size)?;
         let mut dst = unsafe {
             Image::<f32, CO, ForeignAllocator>::from_raw_parts(
                 size,
@@ -1314,12 +1316,27 @@ impl PyImageApi {
     /// Keep-alive object for a transient numpy view over self's backing. For a
     /// borrowed-numpy image this is the original ndarray (real owner); for an
     /// owned buffer it's `None` (the caller guarantees `self` outlives the view).
+    ///
+    /// # INVARIANT
+    ///
+    /// When `Backing::Owned`, this returns `py.None()`. The numpy view is only
+    /// used transiently inside `&self` methods called from Python (`#[pymethods]`);
+    /// the GIL and pyo3's calling convention guarantee `self` stays alive for the
+    /// duration of the call, so the buffer is never actually freed while the view
+    /// is live.
+    ///
+    /// INVARIANT: No concurrent write to the backing buffer while a writable numpy
+    /// view is live. Enforced by GIL — all mutations go through `&mut self` methods
+    /// called from Python.
     fn borrow_keepalive(&self, py: Python<'_>) -> Py<PyAny> {
         match &self.backing {
             backing::Backing::Borrowed {
                 keep: backing::BorrowGuard::PyObject { obj, .. },
                 ..
             } => obj.clone_ref(py),
+            // INVARIANT: self outlives this view (called from #[pymethods] &self
+            // method; GIL holds). The None base means numpy has no keep-alive, but
+            // self is guaranteed alive for the duration of the enclosing call.
             _ => py.None(),
         }
     }
@@ -1418,6 +1435,8 @@ impl PyImageApi {
             return Ok(self.wrap_u8_result(py, result));
         }
         // Generic byte-level crop for any dtype / channel count.
+        // Validate output dimensions before allocation to catch overflow.
+        let _total = backing::byte_len(height, width, c, self.dtype)?;
         let isz = self.dtype.itemsize();
         let row_stride = src_w * c * isz;
         let out_row = width * c * isz;
@@ -2357,11 +2376,12 @@ impl PyImageApi {
         let n = 3 * height * width;
         let mut bytes = backing::AlignedBytes::zeroed(n * 4);
         let out_slice = unsafe { std::slice::from_raw_parts_mut(bytes.as_mut_ptr() as *mut f32, n) };
-        py.detach(|| {
+        let result = py.detach(|| {
             kornia_imgproc::resize::resize_normalize_to_tensor_u8_to_f32_bilinear(
                 src, src_w, src_h, out_slice, width, height, &params,
-            );
+            )
         });
+        result.map_err(to_pyerr)?;
         // CHW tensor stored as shape [3, H, W].
         Ok(Self::from_owned_bytes(
             bytes,
@@ -3107,7 +3127,7 @@ impl PyImageApi {
         if rc != 0 {
             return Err(PyErr::fetch(py));
         }
-        let need = width * height * channels * dt.itemsize();
+        let need = backing::byte_len(height, width, channels, dt)?;
         if (view.len as usize) < need {
             // Release the view before returning the error.
             unsafe { pyo3::ffi::PyBuffer_Release(view.as_mut()) };
