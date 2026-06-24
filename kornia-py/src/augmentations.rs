@@ -486,7 +486,7 @@ impl PyColorJitter {
 
         img.require_u8("ColorJitter")?;
         let (height, width, channels) = img.shape_hwc();
-        let src = img.u8_slice();
+        let src = img.u8_elems();
         let npixels = height * width;
         let order_f32: Vec<(u8, f32)> = order.iter().map(|&(op, v)| (op, v as f32)).collect();
 

@@ -892,14 +892,9 @@ impl PyImageApi {
         arr: Py<PyArray3<u8>>,
         mode: Option<String>,
     ) -> Self {
-        let b = arr.bind(py);
-        let s = b.shape();
-        let (h, w, c) = (s[0], s[1], s[2]);
-        let n = h * w * c;
-        let src = unsafe { std::slice::from_raw_parts(b.data(), n) };
-        let bytes = backing::AlignedBytes::from_slice(src);
+        let c = arr.bind(py).shape()[2];
         let mode = mode.unwrap_or_else(|| mode_from_channels(c, false));
-        Self::from_owned_bytes(bytes, backing::Dtype::U8, [h, w, c], self.color_space, mode)
+        Self::copy_numpy_into_owned::<u8>(py, &arr, backing::Dtype::U8, self.color_space, mode)
     }
 
     /// Allocate a numpy view (zero-copy) over this image's backing, tied to a
@@ -1061,9 +1056,7 @@ fn dispatch_cvt(
                 "alpha-family conversions ({from:?}->{to:?}) require uint8 storage; call to_uint8() first"
             )))
         }
-        _ => Err(value_err(format!(
-            "no direct {from:?}->{to:?} color conversion; convert via Rgb"
-        ))),
+        _ => Err(value_err(ImageError::UnsupportedColorConversion { from, to }.to_string())),
     }
 }
 
@@ -1086,40 +1079,48 @@ impl PyImageApi {
         }
     }
 
+    /// Generic helper: copy a typed 3-D numpy array into a fresh owned aligned buffer.
+    /// This is the single implementation body shared by `wrap`, `wrap_u16`, `wrap_f32`,
+    /// and `owned_from_numpy_u8`.
+    fn copy_numpy_into_owned<T: numpy::Element>(
+        py: Python<'_>,
+        arr: &Py<PyArray3<T>>,
+        dtype: backing::Dtype,
+        cs: ColorSpace,
+        mode: String,
+    ) -> Self {
+        let b = arr.bind(py);
+        let s = b.shape();
+        let (h, w, c) = (s[0], s[1], s[2]);
+        let n_bytes = h * w * c * std::mem::size_of::<T>();
+        let src = unsafe { std::slice::from_raw_parts(b.data() as *const u8, n_bytes) };
+        let bytes = backing::AlignedBytes::from_slice(src);
+        Self::from_owned_bytes(bytes, dtype, [h, w, c], cs, mode)
+    }
+
     /// Wrap a freshly-allocated 8-bit numpy array by copying it into an owned
     /// aligned buffer. Mode defaults to `"L"`/`"RGB"`/`"RGBA"` by channel count.
     pub fn wrap(py: Python<'_>, data: Py<PyArray3<u8>>, mode: Option<String>) -> Self {
-        let b = data.bind(py);
-        let s = b.shape();
-        let (h, w, c) = (s[0], s[1], s[2]);
-        let src = unsafe { std::slice::from_raw_parts(b.data(), h * w * c) };
-        let bytes = backing::AlignedBytes::from_slice(src);
+        let c = data.bind(py).shape()[2];
         let mode = mode.unwrap_or_else(|| mode_from_channels(c, false));
-        Self::from_owned_bytes(bytes, backing::Dtype::U8, [h, w, c], default_color_space(c), mode)
+        let cs = default_color_space(c);
+        Self::copy_numpy_into_owned::<u8>(py, &data, backing::Dtype::U8, cs, mode)
     }
 
     /// Wrap a freshly-allocated 16-bit numpy array into an owned buffer.
     pub fn wrap_u16(py: Python<'_>, data: Py<PyArray3<u16>>, mode: Option<String>) -> Self {
-        let b = data.bind(py);
-        let s = b.shape();
-        let (h, w, c) = (s[0], s[1], s[2]);
-        let n = h * w * c;
-        let src = unsafe { std::slice::from_raw_parts(b.data() as *const u8, n * 2) };
-        let bytes = backing::AlignedBytes::from_slice(src);
+        let c = data.bind(py).shape()[2];
         let mode = mode.unwrap_or_else(|| mode_from_channels(c, true));
-        Self::from_owned_bytes(bytes, backing::Dtype::U16, [h, w, c], default_color_space(c), mode)
+        let cs = default_color_space(c);
+        Self::copy_numpy_into_owned::<u16>(py, &data, backing::Dtype::U16, cs, mode)
     }
 
     /// Wrap a freshly-allocated 32-bit float numpy array into an owned buffer.
     pub fn wrap_f32(py: Python<'_>, data: Py<PyArray3<f32>>, mode: Option<String>) -> Self {
-        let b = data.bind(py);
-        let s = b.shape();
-        let (h, w, c) = (s[0], s[1], s[2]);
-        let n = h * w * c;
-        let src = unsafe { std::slice::from_raw_parts(b.data() as *const u8, n * 4) };
-        let bytes = backing::AlignedBytes::from_slice(src);
+        let c = data.bind(py).shape()[2];
         let mode = mode.unwrap_or_else(|| mode_from_channels_f32(c));
-        Self::from_owned_bytes(bytes, backing::Dtype::F32, [h, w, c], default_color_space(c), mode)
+        let cs = default_color_space(c);
+        Self::copy_numpy_into_owned::<f32>(py, &data, backing::Dtype::F32, cs, mode)
     }
 
     fn with_format(mut self, format: &'static str) -> Self {
@@ -1388,7 +1389,8 @@ impl PyImageApi {
     }
 
     /// Borrow the backing as a `&[u8]` element slice (u8 dtype only).
-    pub(crate) fn u8_slice(&self) -> &[u8] {
+    pub(crate) fn u8_elems(&self) -> &[u8] {
+        debug_assert!(self.dtype == backing::Dtype::U8);
         unsafe { std::slice::from_raw_parts(self.backing.data_ptr(), self.nelems()) }
     }
 
@@ -2343,7 +2345,7 @@ impl PyImageApi {
             let result = crate::resize::resize(py, arr, (height, width), interpolation, true)?;
             Ok(self.wrap_u8_result(py, result))
         } else {
-            let out = resize_nearest(self.u8_slice(), src_h, src_w, height, width, c);
+            let out = resize_nearest(self.u8_elems(), src_h, src_w, height, width, c);
             Ok(self.wrap_vec(py, out, height, width, c))
         }
     }
@@ -2377,7 +2379,7 @@ impl PyImageApi {
             return Err(value_err("target width and height must be > 0"));
         }
         // Zero-copy borrow of the HWC u8 input.
-        let src = self.u8_slice();
+        let src = self.u8_elems();
         let params = kornia_imgproc::resize::NormalizeParams::<3>::from_mean_std(mean, std);
 
         // Single owned output allocation (CHW), written in place.
@@ -2424,7 +2426,7 @@ impl PyImageApi {
             return Ok(self.wrap_u8_result(py, result));
         }
         if self.dtype == backing::Dtype::U8 {
-            let out = flip_h_generic(self.u8_slice(), h, w, c);
+            let out = flip_h_generic(self.u8_elems(), h, w, c);
             return Ok(self.wrap_vec(py, out, h, w, c));
         }
         Ok(self.flip_pod(FlipDir::Horizontal))
@@ -2439,7 +2441,7 @@ impl PyImageApi {
             return Ok(self.wrap_u8_result(py, result));
         }
         if self.dtype == backing::Dtype::U8 {
-            let out = flip_v_generic(self.u8_slice(), h, w, c);
+            let out = flip_v_generic(self.u8_elems(), h, w, c);
             return Ok(self.wrap_vec(py, out, h, w, c));
         }
         Ok(self.flip_pod(FlipDir::Vertical))
@@ -2519,7 +2521,7 @@ impl PyImageApi {
         let [h, w, c] = self.shape;
         Ok(self.wrap_u8_result(
             py,
-            adjust_brightness_into_pyarray(py, self.u8_slice(), factor * 255.0, h, w, c),
+            adjust_brightness_into_pyarray(py, self.u8_elems(), factor * 255.0, h, w, c),
         ))
     }
 
@@ -2529,7 +2531,7 @@ impl PyImageApi {
         let [h, w, c] = self.shape;
         Ok(self.wrap_u8_result(
             py,
-            adjust_contrast_into_pyarray(py, self.u8_slice(), factor, h, w, c),
+            adjust_contrast_into_pyarray(py, self.u8_elems(), factor, h, w, c),
         ))
     }
 
@@ -2542,7 +2544,7 @@ impl PyImageApi {
         }
         Ok(self.wrap_u8_result(
             py,
-            adjust_saturation_into_pyarray(py, self.u8_slice(), h * w, factor as f32, h, w),
+            adjust_saturation_into_pyarray(py, self.u8_elems(), h * w, factor as f32, h, w),
         ))
     }
 
@@ -2555,7 +2557,7 @@ impl PyImageApi {
         }
         Ok(self.wrap_u8_result(
             py,
-            adjust_hue_into_pyarray(py, self.u8_slice(), h * w, factor as f32, h, w),
+            adjust_hue_into_pyarray(py, self.u8_elems(), h * w, factor as f32, h, w),
         ))
     }
 
@@ -2569,7 +2571,7 @@ impl PyImageApi {
         let me = slf.borrow();
         me.require_u8("normalize")?;
         let [h, w, c] = me.shape;
-        let src = me.u8_slice();
+        let src = me.u8_elems();
         let npixels = h * w;
         let out = unsafe { PyArray::<f32, _>::new(py, [h, w, c], false) };
         let dst = unsafe { std::slice::from_raw_parts_mut(out.data(), npixels * c) };
@@ -2628,7 +2630,7 @@ impl PyImageApi {
             ("RGB", "RGBA") => {
                 self.require_u8("convert")?;
                 let [h, w, _] = self.shape;
-                let src = self.u8_slice();
+                let src = self.u8_elems();
                 let mut bytes = backing::AlignedBytes::zeroed(h * w * 4);
                 let dst = unsafe { std::slice::from_raw_parts_mut(bytes.as_mut_ptr(), h * w * 4) };
                 for (i, px) in src.chunks_exact(3).enumerate() {
@@ -2717,7 +2719,7 @@ impl PyImageApi {
             backing::Dtype::F32 => Ok(self.clone_handle(py)),
             backing::Dtype::U8 => {
                 let [h, w, c] = self.shape;
-                let src = self.u8_slice();
+                let src = self.u8_elems();
                 let n = h * w * c;
                 let mut bytes = backing::AlignedBytes::zeroed(n * 4);
                 let dst = unsafe { std::slice::from_raw_parts_mut(bytes.as_mut_ptr() as *mut f32, n) };
@@ -2778,9 +2780,7 @@ impl PyImageApi {
             return Ok(self.clone_handle(py));
         }
         if !CS::supports(from, to) {
-            return Err(value_err(format!(
-                "no direct {from:?}->{to:?} color conversion; convert via Rgb"
-            )));
+            return Err(value_err(ImageError::UnsupportedColorConversion { from, to }.to_string()));
         }
         // strict dtype: f32-only target (or source) needs f32 storage
         let needs_f32 = to.requires_f32() || from.requires_f32();
@@ -2858,11 +2858,11 @@ impl PyImageApi {
             match k {
                 0 => return self.copy(py),
                 2 => {
-                    let (out, _, _) = rot90_generic(self.u8_slice(), h, w, c, 2);
+                    let (out, _, _) = rot90_generic(self.u8_elems(), h, w, c, 2);
                     return Ok(self.wrap_vec(py, out, h, w, c));
                 }
                 1 | 3 if h == w => {
-                    let (out, nh, nw) = rot90_generic(self.u8_slice(), h, w, c, k as i32);
+                    let (out, nh, nw) = rot90_generic(self.u8_elems(), h, w, c, k as i32);
                     return Ok(self.wrap_vec(py, out, nh, nw, c));
                 }
                 _ => {} // fall through to warp for non-square 90/270
@@ -2917,10 +2917,25 @@ impl PyImageApi {
     }
 
     fn __eq__(&self, other: &Self) -> bool {
-        if self.mode != other.mode || self.dtype != other.dtype || self.shape != other.shape {
+        if self.mode != other.mode
+            || self.dtype != other.dtype
+            || self.shape != other.shape
+            || self.color_space != other.color_space
+        {
             return false;
         }
         self.raw_bytes() == other.raw_bytes()
+    }
+
+    fn __hash__(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.raw_bytes().hash(&mut h);
+        self.mode.hash(&mut h);
+        (self.dtype as u8).hash(&mut h);
+        self.shape.hash(&mut h);
+        format!("{:?}", self.color_space).hash(&mut h);
+        h.finish()
     }
 
     #[pyo3(signature = (dtype=None, copy=None))]
@@ -3056,7 +3071,24 @@ impl PyImageApi {
         dl_device: Option<Py<PyAny>>,
         copy: Option<bool>,
     ) -> PyResult<Py<PyAny>> {
-        let _ = (stream, dl_device, copy); // CPU: all ignored
+        let _ = stream; // CPU: no stream concept
+        // Validate dl_device: only CPU (kDLCPU=1, id=0) is supported.
+        if let Some(ref dev) = dl_device {
+            let (dev_type, dev_id): (i32, i32) = dev.extract(py)?;
+            use dlpack_rs::ffi::K_DL_CPU;
+            if dev_type != K_DL_CPU as i32 || dev_id != 0 {
+                return Err(pyo3::exceptions::PyBufferError::new_err(format!(
+                    "__dlpack__: only CPU device (kDLCPU=1, id=0) is supported; \
+                     got ({dev_type}, {dev_id})"
+                )));
+            }
+        }
+        // copy=True is not yet supported; explicitly reject it.
+        if copy.unwrap_or(false) {
+            return Err(pyo3::exceptions::PyNotImplementedError::new_err(
+                "__dlpack__: copy=True is not yet supported; call img.copy() first",
+            ));
+        }
         let (data, shape, dt) = {
             let s = slf.borrow();
             let dt = crate::dlpack::dtype_to_dl(s.dtype);

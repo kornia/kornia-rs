@@ -272,34 +272,36 @@ py_video_decode!(
     "Decode planar 4:2:0 YV12 to RGB."
 );
 
-/// Encode an `(H, W, 3)` uint8 RGB image to a packed 4:2:2 **YUYV** byte buffer
-/// (1-D `uint8`, length `W*H*2`), BT.601 limited range. Inverse of `rgb_from_yuyv`.
-/// `width` must be even.
-#[pyfunction]
-pub fn yuyv_from_rgb(py: Python<'_>, image: PyImage) -> PyResult<Py<PyArray1<u8>>> {
-    let src = unsafe { numpy_as_image::<3>(py, &image)? };
-    let (w, h) = (src.width(), src.height());
-    let len = w * h * 2;
-    let out = unsafe { PyArray::<u8, _>::new(py, [len], false) };
-    // SAFETY: freshly-allocated 1-D uint8 array, not yet shared.
-    let out_slice = unsafe { std::slice::from_raw_parts_mut(out.data(), len) };
-    py.detach(|| color::yuyv_from_rgb(&src, out_slice))
-        .map_err(to_pyerr)?;
-    Ok(out.unbind())
+macro_rules! py_video_encode {
+    ($name:ident, $func:path, $len_expr:expr, $doc:literal) => {
+        #[doc = $doc]
+        #[pyfunction]
+        pub fn $name(py: Python<'_>, image: PyImage) -> PyResult<Py<PyArray1<u8>>> {
+            let src = unsafe { numpy_as_image::<3>(py, &image)? };
+            let (w, h) = (src.width(), src.height());
+            let len = $len_expr(w, h);
+            let out = unsafe { PyArray::<u8, _>::new(py, [len], false) };
+            // SAFETY: freshly-allocated 1-D uint8 array, not yet shared.
+            let out_slice = unsafe { std::slice::from_raw_parts_mut(out.data(), len) };
+            py.detach(|| $func(&src, out_slice)).map_err(to_pyerr)?;
+            Ok(out.unbind())
+        }
+    };
 }
 
-/// Encode an `(H, W, 3)` uint8 RGB image to a planar 4:2:0 **NV12** byte buffer
-/// (1-D `uint8`, length `W*H*3/2`: Y plane + interleaved `UV`), BT.601 limited range.
-/// Inverse of `rgb_from_nv12`. `width` and `height` must be even.
-#[pyfunction]
-pub fn nv12_from_rgb(py: Python<'_>, image: PyImage) -> PyResult<Py<PyArray1<u8>>> {
-    let src = unsafe { numpy_as_image::<3>(py, &image)? };
-    let (w, h) = (src.width(), src.height());
-    let len = w * h * 3 / 2;
-    let out = unsafe { PyArray::<u8, _>::new(py, [len], false) };
-    // SAFETY: freshly-allocated 1-D uint8 array, not yet shared.
-    let out_slice = unsafe { std::slice::from_raw_parts_mut(out.data(), len) };
-    py.detach(|| color::nv12_from_rgb(&src, out_slice))
-        .map_err(to_pyerr)?;
-    Ok(out.unbind())
-}
+py_video_encode!(
+    yuyv_from_rgb,
+    color::yuyv_from_rgb,
+    |w: usize, h: usize| -> usize { w * h * 2 },
+    "Encode an `(H, W, 3)` uint8 RGB image to a packed 4:2:2 **YUYV** byte buffer \
+     (1-D `uint8`, length `W*H*2`), BT.601 limited range. Inverse of `rgb_from_yuyv`. \
+     `width` must be even."
+);
+py_video_encode!(
+    nv12_from_rgb,
+    color::nv12_from_rgb,
+    |w: usize, h: usize| -> usize { w * h * 3 / 2 },
+    "Encode an `(H, W, 3)` uint8 RGB image to a planar 4:2:0 **NV12** byte buffer \
+     (1-D `uint8`, length `W*H*3/2`: Y plane + interleaved `UV`), BT.601 limited range. \
+     Inverse of `rgb_from_nv12`. `width` and `height` must be even."
+);

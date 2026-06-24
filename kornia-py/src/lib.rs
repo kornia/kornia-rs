@@ -1,6 +1,8 @@
+// Special/internal
 pub(crate) mod backing;
+pub(crate) mod numpy_view;
+// Feature modules (alphabetical)
 mod apriltag;
-mod dlpack;
 mod augmentations;
 mod ba;
 mod blur;
@@ -10,6 +12,7 @@ mod color_space;
 mod cpu;
 mod crop;
 mod depth;
+mod dlpack;
 mod enhance;
 mod feature_match;
 mod flip;
@@ -19,7 +22,6 @@ mod icp;
 mod image;
 mod io;
 mod normalize;
-pub(crate) mod numpy_view;
 mod orb;
 mod pgo;
 mod pipeline;
