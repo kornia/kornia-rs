@@ -38,6 +38,21 @@ pub enum PixelFormat {
     F32,
 }
 
+impl PixelFormat {
+    /// Returns the size in bytes of a single element for this pixel format.
+    ///
+    /// - [`PixelFormat::U8`] → 1
+    /// - [`PixelFormat::U16`] → 2
+    /// - [`PixelFormat::F32`] → 4
+    pub const fn element_size(self) -> usize {
+        match self {
+            PixelFormat::U8 => 1,
+            PixelFormat::U16 => 2,
+            PixelFormat::F32 => 4,
+        }
+    }
+}
+
 /// Interpolation mode for the image operations
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InterpolationMode {

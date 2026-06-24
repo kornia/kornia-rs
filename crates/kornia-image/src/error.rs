@@ -79,4 +79,19 @@ pub enum ImageError {
         /// The color space the `DynImage` was actually tagged with.
         got: crate::color_space::ColorSpace,
     },
+
+    /// The operation is not supported on device memory.
+    ///
+    /// Copy the buffer to host first before attempting this operation.
+    #[error("operation not supported on device memory; copy to host first")]
+    UnsupportedDevice,
+
+    /// The pixel format (dtype) of the buffer does not match what was expected.
+    #[error("pixel format mismatch: expected {expected:?}, got {got:?}")]
+    DtypeMismatch {
+        /// The pixel format the caller expected.
+        expected: crate::image::PixelFormat,
+        /// The pixel format the buffer was actually tagged with.
+        got: crate::image::PixelFormat,
+    },
 }

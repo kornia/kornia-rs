@@ -259,6 +259,36 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
         }
     }
 
+    /// Creates a new tensor storage that owns a host (CPU) allocation produced by `alloc`.
+    ///
+    /// Unlike [`from_vec`](Self::from_vec) (which wraps a `Vec` and inherits its alignment),
+    /// this constructor allows callers to allocate with a custom layout (e.g. 64-byte alignment)
+    /// via `alloc` and then hand the ownership to `TensorStorage`.
+    ///
+    /// # Safety
+    ///
+    /// - `data` must be a valid, non-null host pointer for at least `len_bytes` bytes.
+    /// - `layout` must exactly match the layout passed to `alloc.alloc` that produced `data`.
+    /// - Ownership is transferred; the allocator's `dealloc(data, layout)` will be called on drop.
+    pub unsafe fn from_raw_host(
+        data: *mut T,
+        len_bytes: usize,
+        layout: Layout,
+        alloc: A,
+    ) -> Self {
+        let ptr = NonNull::new_unchecked(data);
+        Self {
+            ptr,
+            len: len_bytes,
+            layout,
+            alloc,
+            owns_memory: true,
+            domain: MemoryDomain::Host,
+            device_id: 0,
+            keepalive: None,
+        }
+    }
+
     /// Creates a new tensor storage from a raw device pointer returned by a GPU allocator.
     ///
     /// The resulting storage has [`MemoryDomain::Device`]; calling [`as_slice`](Self::as_slice)
