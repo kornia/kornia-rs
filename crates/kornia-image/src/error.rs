@@ -94,4 +94,8 @@ pub enum ImageError {
         /// The pixel format the buffer was actually tagged with.
         got: crate::image::PixelFormat,
     },
+
+    /// A DLPack tensor had an invalid or unsupported shape (e.g. ndim != 3, non-positive dim).
+    #[error("dlpack shape error: {0}")]
+    DlpackShapeError(String),
 }

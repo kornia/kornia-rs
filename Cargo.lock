@@ -4464,8 +4464,8 @@ dependencies = [
 
 [[package]]
 name = "dlpack-rs"
-version = "0.3.1"
-source = "git+https://github.com/kornia/dlpack-rs?tag=v0.3.1#6344f61fa55e58ff7dfc8f9e880ce74bbf882806"
+version = "0.3.2"
+source = "git+https://github.com/kornia/dlpack-rs?tag=v0.3.2#3b3d6ad1bf7ef40962294fcf7df7a2eed6fd212a"
 dependencies = [
  "dlpack-sys",
  "pyo3",
@@ -4473,8 +4473,8 @@ dependencies = [
 
 [[package]]
 name = "dlpack-sys"
-version = "0.3.1"
-source = "git+https://github.com/kornia/dlpack-rs?tag=v0.3.1#6344f61fa55e58ff7dfc8f9e880ce74bbf882806"
+version = "0.3.2"
+source = "git+https://github.com/kornia/dlpack-rs?tag=v0.3.2#3b3d6ad1bf7ef40962294fcf7df7a2eed6fd212a"
 
 [[package]]
 name = "document-features"
@@ -8035,6 +8035,7 @@ version = "0.1.14"
 dependencies = [
  "arrow 58.3.0",
  "criterion 0.8.2",
+ "dlpack-rs",
  "half",
  "kornia-tensor",
  "num-traits",
@@ -8115,6 +8116,7 @@ dependencies = [
  "cubecl-core",
  "cubecl-cuda",
  "cudarc 0.19.7",
+ "dlpack-rs",
  "num-traits",
  "rayon",
  "serde",
