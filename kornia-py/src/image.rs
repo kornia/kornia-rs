@@ -1400,15 +1400,21 @@ impl PyImageApi {
     fn numpy_view_of(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         let py = slf.py();
         let me = slf.borrow();
-        // Borrowed numpy: return the original ndarray for true identity.
+        // Borrowed numpy: return the original ndarray for true identity — but ONLY
+        // when the kept object actually IS a numpy ndarray (the `from_numpy` borrow).
+        // For other producers kept by `from_dlpack` (e.g. a torch tensor), do NOT
+        // return the producer verbatim; fall through to build a real numpy view over
+        // the backing pointer (with the Image as base, which keeps the producer alive).
         if let backing::Backing::Borrowed {
             keep: backing::BorrowGuard::PyObject { obj, buffer: None },
             ..
         } = &me.backing
         {
-            return Ok(obj.clone_ref(py));
+            if obj.bind(py).downcast::<numpy::PyUntypedArray>().is_ok() {
+                return Ok(obj.clone_ref(py));
+            }
         }
-        // Owned (or buffer-backed borrow): build a view with the Image as base.
+        // Owned, dlpack-imported, or buffer-backed borrow: build a view (Image as base).
         let dtype = me.dtype;
         let base: Py<PyAny> = slf.clone().into_any().unbind();
         let arr = unsafe {
