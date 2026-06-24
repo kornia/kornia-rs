@@ -3061,7 +3061,7 @@ impl PyImageApi {
 
     /// Return the DLPack device tuple for this image: `(kDLCPU=1, device_id=0)`.
     fn __dlpack_device__(&self) -> (i32, i32) {
-        (dlpack_rs::ffi::K_DL_CPU, 0)
+        (dlpack_rs::ffi::K_DL_CPU as i32, 0)
     }
 
     /// Zero-copy ingest of a PEP-3118 buffer (ROS2 bytearray / memoryview).
