@@ -64,6 +64,34 @@ class Image:
         dtype: Optional[str] = ...,
     ) -> Image: ...
     @staticmethod
+    def from_numpy(
+        data: np.ndarray,
+        mode: Optional[str] = ...,
+        color_space: Optional[ColorSpace] = ...,
+        copy: bool = ...,
+    ) -> Image:
+        """Create an Image from a numpy array. Zero-copy by default (``copy=False``);
+        pass ``copy=True`` to own an independent aligned copy."""
+        ...
+    @staticmethod
+    def from_buffer(
+        data: Any,
+        width: int,
+        height: int,
+        channels: int = ...,
+        dtype: str = ...,
+        mode: Optional[str] = ...,
+        color_space: Optional[ColorSpace] = ...,
+    ) -> Image:
+        """Zero-copy ingest of a PEP-3118 buffer (bytearray, memoryview, etc.).
+        The Image borrows the caller's buffer and keeps the source alive."""
+        ...
+    @staticmethod
+    def from_dlpack(obj: Any) -> Image:
+        """Import a DLPack tensor (numpy >= 1.22, PyTorch, CuPy CPU) as a
+        zero-copy Image.  The producer object is kept alive as a keep-alive."""
+        ...
+    @staticmethod
     def load(path: str) -> Image: ...
     @staticmethod
     def decode(data: bytes, mode: str = ...) -> Image: ...
@@ -119,8 +147,9 @@ class Image:
         subsampling: Optional[int] = ...,
     ) -> bytes: ...
     def tobytes(self) -> bytes: ...
-    def to_numpy(self) -> np.ndarray:
-        """Owned deep copy of the buffer as a numpy array."""
+    def to_numpy(self, *, copy: bool = ...) -> np.ndarray:
+        """Return the buffer as a numpy array. ``copy=True`` (default) returns
+        an independent deep copy; ``copy=False`` returns a zero-copy view."""
         ...
     def numpy(self) -> np.ndarray:
         """Zero-copy numpy view of the underlying buffer (shares memory)."""
@@ -183,3 +212,16 @@ class Image:
     def __eq__(self, other: object) -> bool: ...
     def __enter__(self) -> Image: ...
     def __exit__(self, *args: Any) -> None: ...
+    def __dlpack__(
+        self,
+        *,
+        stream: Any = ...,
+        max_version: Optional[tuple[int, int]] = ...,
+        dl_device: Any = ...,
+        copy: Optional[bool] = ...,
+    ) -> Any:
+        """Export the image buffer as a DLPack capsule (CPU, zero-copy)."""
+        ...
+    def __dlpack_device__(self) -> tuple[int, int]:
+        """Return the DLPack device tuple: ``(kDLCPU=1, device_id=0)``."""
+        ...

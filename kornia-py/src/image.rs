@@ -3064,6 +3064,82 @@ impl PyImageApi {
         (dlpack_rs::ffi::K_DL_CPU, 0)
     }
 
+    /// Zero-copy ingest of a PEP-3118 buffer (ROS2 bytearray / memoryview).
+    ///
+    /// Borrows the underlying buffer without copying: the `Image` keeps `data`
+    /// alive (via a `BorrowGuard::PyObject` that also releases the `Py_buffer`
+    /// view on drop).  Mutations to the source are immediately visible via the
+    /// `Image`, and vice-versa.
+    ///
+    /// Args:
+    ///     data: any object that exposes a PEP-3118 buffer (``bytearray``,
+    ///         ``memoryview``, ``bytes``, NumPy array contiguous bytes, etc.).
+    ///     width: image width in pixels.
+    ///     height: image height in pixels.
+    ///     channels: number of channels (default 3).
+    ///     dtype: ``"uint8"`` (default), ``"uint16"``, or ``"float32"``.
+    ///     mode: PIL-style mode string; inferred when omitted.
+    ///     color_space: :class:`ColorSpace` value; inferred from channels when omitted.
+    ///
+    /// Returns:
+    ///     Image that borrows the caller's buffer (zero-copy).
+    #[staticmethod]
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (data, width, height, channels=3, dtype="uint8", mode=None, color_space=None))]
+    fn from_buffer(
+        py: Python<'_>,
+        data: &Bound<'_, PyAny>,
+        width: usize,
+        height: usize,
+        channels: usize,
+        dtype: &str,
+        mode: Option<String>,
+        color_space: Option<crate::color_space::PyColorSpace>,
+    ) -> PyResult<Self> {
+        let dt = backing::Dtype::from_numpy_str(dtype)?;
+        // SAFETY: `view` is zero-initialised; `PyObject_GetBuffer` fills it on success.
+        let mut view = Box::new(unsafe { std::mem::zeroed::<pyo3::ffi::Py_buffer>() });
+        // Request a simple (flat, contiguous) buffer.  On success the caller owns
+        // the view and must release it with `PyBuffer_Release` exactly once.
+        let rc = unsafe {
+            pyo3::ffi::PyObject_GetBuffer(data.as_ptr(), view.as_mut(), pyo3::ffi::PyBUF_SIMPLE)
+        };
+        if rc != 0 {
+            return Err(PyErr::fetch(py));
+        }
+        let need = width * height * channels * dt.itemsize();
+        if (view.len as usize) < need {
+            // Release the view before returning the error.
+            unsafe { pyo3::ffi::PyBuffer_Release(view.as_mut()) };
+            return Err(value_err(format!(
+                "buffer too small: {} < {} ({}x{}x{} {})",
+                view.len, need, height, width, channels, dtype
+            )));
+        }
+        let ptr = std::ptr::NonNull::new(view.buf as *mut u8)
+            .ok_or_else(|| value_err("from_buffer: null buffer pointer"))?;
+        let readonly = view.readonly != 0;
+        // BorrowGuard::PyObject Drop calls PyBuffer_Release exactly once (see backing.rs).
+        let keep = backing::BorrowGuard::PyObject {
+            obj: data.clone().unbind(),
+            buffer: Some(view),
+        };
+        Ok(Self {
+            backing: backing::Backing::Borrowed {
+                ptr,
+                keep,
+                readonly,
+            },
+            dtype: dt,
+            shape: [height, width, channels],
+            color_space: color_space
+                .map(Into::into)
+                .unwrap_or_else(|| default_color_space(channels)),
+            mode: mode.unwrap_or_else(|| mode_from_channels(channels, dt == backing::Dtype::U16)),
+            format: None,
+        })
+    }
+
     /// Import a DLPack tensor as a zero-copy Image (static method).
     ///
     /// Accepts any Python object that implements `__dlpack__()`: numpy arrays
@@ -3081,25 +3157,24 @@ impl PyImageApi {
         use pyo3::types::{PyCapsule, PyCapsuleMethods};
         use std::ffi::CStr;
 
-        // DLPack import design: zero-copy via capsule keep-alive.
+        // DLPack import design: zero-copy via producer keep-alive + capsule consumption.
         //
         // We call `obj.__dlpack__()` to get a `PyCapsule` (named "dltensor" or
-        // "dltensor_versioned"). We read the pointer and extract metadata WITHOUT
-        // consuming the capsule (i.e. WITHOUT renaming it to "used_dltensor").
+        // "dltensor_versioned"). We read the pointer and extract metadata, then
+        // CONSUME (rename) the capsule to "used_dltensor" / "used_dltensor_versioned"
+        // so the capsule's C destructor will NOT call the producer's deleter when
+        // the capsule is later GC'd.
         //
-        // The capsule is then stored as our keep-alive (BorrowGuard::PyObject).
-        // When our Image drops, the capsule's refcount hits 0 and Python calls
-        // the capsule's C destructor. That destructor checks if the name is still
-        // "dltensor" (it is, since we never renamed it) and calls the producer's
-        // deleter. This is the standard capsule-owner path per the DLPack spec.
+        // Instead, `obj` (the original producer: numpy array, torch tensor, etc.)
+        // is stored as our BorrowGuard::PyObject keep-alive.  While `obj` is alive,
+        // the buffer is valid.  When our Image drops, `obj` is dropped (its Python
+        // refcount decrements), and the GC eventually frees the producer and its buffer.
         //
-        // Why NOT use `PyTensor::from_pyany` (which renames + holds `pt`)?
-        // Because `PyTensor::drop()` calls the deleter without the GIL, which
-        // causes a segfault when torch's deleter free its TensorImpl (a re-entrant
-        // Python object reference cycle during implicit frame cleanup).
-        //
-        // By NOT consuming the capsule, we delegate lifecycle to the Python GC,
-        // which is always GIL-safe.
+        // Consuming the capsule prevents double-free: if the capsule were not renamed,
+        // its C destructor would also call the producer's internal deleter (e.g.
+        // decrement `at::Storage` refcount), which could free the buffer while `obj`
+        // still holds it — undefined behaviour.  Renaming disables the destructor path
+        // and transfers lifetime management to `obj` exclusively.
 
         // 1. Call `obj.__dlpack__()` to get the capsule.
         let capsule_obj = obj.call_method0("__dlpack__").map_err(|_| {
