@@ -70,14 +70,13 @@ pub enum ImageError {
         to: crate::color_space::ColorSpace,
     },
 
-    /// The color space requires a different element type than the image holds.
-    #[error("{space:?} requires {expected} data, got {got}")]
-    InvalidColorDtype {
-        /// The color space that has the dtype constraint.
-        space: crate::color_space::ColorSpace,
-        /// The element type required by the color space.
-        expected: &'static str,
-        /// The element type the image actually holds.
-        got: &'static str,
+    /// A `DynImage` was tagged with a color space that does not match the
+    /// expected space when recovering a typed wrapper.
+    #[error("cannot recover DynImage tagged {got:?} as {expected:?}")]
+    ColorSpaceMismatch {
+        /// The color space the caller expected.
+        expected: crate::color_space::ColorSpace,
+        /// The color space the `DynImage` was actually tagged with.
+        got: crate::color_space::ColorSpace,
     },
 }

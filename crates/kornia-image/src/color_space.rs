@@ -1,5 +1,7 @@
 //! Runtime color-space vocabulary shared by Rust and Python.
 
+use crate::{allocator::ImageAllocator, error::ImageError, image::Image, image::ImageSize};
+
 /// A per-pixel color space. The shared vocabulary for the high-level
 /// conversion API (`.cvt()` typed path and `cvt_color` runtime path).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -53,6 +55,10 @@ impl ColorSpace {
 
     /// Whether a direct kernel exists for `from -> to`. Mirrors the
     /// `ConvertColor` impls in kornia-imgproc (RGB-hub graph).
+    ///
+    /// This is the **single source of truth** for which color conversions are
+    /// legal at the Rust API level. The kornia-imgproc dispatch macro must
+    /// cover every pair that returns `true` here.
     pub const fn supports(from: ColorSpace, to: ColorSpace) -> bool {
         use ColorSpace::*;
         matches!(
@@ -71,9 +77,29 @@ impl ColorSpace {
                 | (Rgb, Yuv) | (Yuv, Rgb)
         )
     }
-}
 
-use crate::{allocator::ImageAllocator, error::ImageError, image::Image, image::ImageSize};
+    /// Whether a `from -> to` conversion is valid for the given element dtype.
+    ///
+    /// Combines the legality check of [`Self::supports`] with the dtype
+    /// constraint encoded in [`Self::requires_f32`]:
+    ///
+    /// - f32-only spaces (HSV, HLS, Lab, Luv, XYZ, LinearRgb) require
+    ///   `is_f32 == true`.
+    /// - The u8-compatible alpha spaces (Rgba, Bgra paired with Rgb/Bgr)
+    ///   are valid for both dtypes.
+    ///
+    /// Returns `false` if `supports(from, to)` is `false` regardless of dtype.
+    pub const fn supports_dtype(from: ColorSpace, to: ColorSpace, is_f32: bool) -> bool {
+        if !Self::supports(from, to) {
+            return false;
+        }
+        // If either endpoint is f32-only, the image must be f32.
+        if from.requires_f32() || to.requires_f32() {
+            return is_f32;
+        }
+        true
+    }
+}
 
 /// Owned image whose channel count is known only at runtime. Mirrors Python's
 /// dynamic numpy-backed Image; produced by the runtime `cvt_color` path.
@@ -131,8 +157,9 @@ macro_rules! impl_try_from_dyn {
             fn try_from(d: DynImage<$t, A>) -> Result<Self, ImageError> {
                 match d {
                     DynImage::C1(s, img) if s == $space => Ok(Self(img)),
-                    other => Err(ImageError::UnsupportedColorConversion {
-                        from: other.color_space(), to: $space,
+                    other => Err(ImageError::ColorSpaceMismatch {
+                        expected: $space,
+                        got: other.color_space(),
                     }),
                 }
             }
@@ -146,8 +173,9 @@ macro_rules! impl_try_from_dyn {
             fn try_from(d: DynImage<$t, A>) -> Result<Self, ImageError> {
                 match d {
                     DynImage::C3(s, img) if s == $space => Ok(Self(img)),
-                    other => Err(ImageError::UnsupportedColorConversion {
-                        from: other.color_space(), to: $space,
+                    other => Err(ImageError::ColorSpaceMismatch {
+                        expected: $space,
+                        got: other.color_space(),
                     }),
                 }
             }
@@ -161,8 +189,9 @@ macro_rules! impl_try_from_dyn {
             fn try_from(d: DynImage<$t, A>) -> Result<Self, ImageError> {
                 match d {
                     DynImage::C4(s, img) if s == $space => Ok(Self(img)),
-                    other => Err(ImageError::UnsupportedColorConversion {
-                        from: other.color_space(), to: $space,
+                    other => Err(ImageError::ColorSpaceMismatch {
+                        expected: $space,
+                        got: other.color_space(),
                     }),
                 }
             }
@@ -238,5 +267,50 @@ mod tests {
         let dynimg = DynImage::C1(CS::Gray, gray.into_inner());
         // recovering as Rgbf32 must fail (channel mismatch C1 vs C3)
         assert!(Rgbf32::try_from(dynimg).is_err());
+    }
+
+    /// Self-consistency: `requires_f32`, `channels`, and `supports_dtype` must
+    /// agree for the full RGB-hub set of spaces.
+    #[test]
+    fn legality_table_self_consistency() {
+        use ColorSpace::*;
+
+        // --- requires_f32 membership ---
+        let f32_only = [Hsv, Hls, Lab, Luv, Xyz, LinearRgb];
+        let non_f32_only = [Rgb, Bgr, Gray, Rgba, Bgra, YCbCr, Yuv];
+
+        for &s in &f32_only {
+            assert!(s.requires_f32(), "{s:?} should require f32");
+        }
+        for &s in &non_f32_only {
+            assert!(!s.requires_f32(), "{s:?} should not require f32");
+        }
+
+        // --- channel counts ---
+        assert_eq!(Gray.channels(), 1);
+        for &s in &[Rgb, Bgr, Hsv, Hls, Lab, Luv, Xyz, LinearRgb, YCbCr, Yuv] {
+            assert_eq!(s.channels(), 3, "{s:?} should be 3-channel");
+        }
+        for &s in &[Rgba, Bgra] {
+            assert_eq!(s.channels(), 4, "{s:?} should be 4-channel");
+        }
+
+        // --- supports_dtype agrees with supports + requires_f32 ---
+        // f32-only conversions are valid for f32, invalid for u8
+        assert!(ColorSpace::supports_dtype(Rgb, Hsv, true));
+        assert!(!ColorSpace::supports_dtype(Rgb, Hsv, false));
+        assert!(ColorSpace::supports_dtype(Lab, Rgb, true));
+        assert!(!ColorSpace::supports_dtype(Lab, Rgb, false));
+
+        // dtype-agnostic conversions are valid for both
+        assert!(ColorSpace::supports_dtype(Rgb, Gray, true));
+        assert!(ColorSpace::supports_dtype(Rgb, Gray, false));
+        assert!(ColorSpace::supports_dtype(Rgb, Bgr, true));
+        assert!(ColorSpace::supports_dtype(Rgb, Bgr, false));
+
+        // unsupported pairs rejected regardless of dtype
+        assert!(!ColorSpace::supports_dtype(Hsv, Lab, true));
+        assert!(!ColorSpace::supports_dtype(Hsv, Lab, false));
+        assert!(!ColorSpace::supports_dtype(Gray, Hsv, true));
     }
 }
