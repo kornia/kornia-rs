@@ -126,7 +126,7 @@ pub fn dynimage_to_dlpack(img: DynImageBuf) -> *mut DLManagedTensor {
 /// # Errors
 ///
 /// - [`ImageError::DlpackShapeError`] if `ndim != 3` or any dimension is non-positive.
-/// - [`ImageError::DtypeMismatch`] if the dtype is not `U8`, `U16`, or `F32`.
+/// - [`ImageError::DlpackShapeError`] if the dtype is not `U8`, `U16`, or `F32`.
 /// - [`ImageError::UnsupportedChannelCount`] if channel count is not 1, 3, or 4.
 pub unsafe fn dynimage_from_dlpack_raw(
     mt: *mut DLManagedTensor,
@@ -183,6 +183,10 @@ pub unsafe fn dynimage_from_dlpack_raw(
 
     // Compute data pointer with byte offset applied.
     // SAFETY: dl.data is valid (caller contract); byte_offset is within the buffer.
+    debug_assert!(
+        dl.byte_offset <= usize::MAX as u64,
+        "byte_offset overflows usize on this platform"
+    );
     let data_ptr = unsafe { (dl.data as *const u8).add(dl.byte_offset as usize) as *mut u8 };
 
     // Build DynImageBuf as a zero-copy borrow.
@@ -261,12 +265,15 @@ mod tests {
         let mt = dynimage_to_dlpack(img);
         assert!(!mt.is_null());
 
-        // Verify shape is [2, 3, 3].
+        // Verify shape is [2, 3, 3] and HWC strides are [W*C, C, 1] = [9, 3, 1].
         unsafe {
             let dl = &(*mt).dl_tensor;
             assert_eq!(dl.ndim, 3);
             let s = std::slice::from_raw_parts(dl.shape, 3);
             assert_eq!(s, &[2i64, 3, 3]);
+            // Shape [2,3,3] → HWC strides [W*C, C, 1] = [9, 3, 1]
+            let strides = std::slice::from_raw_parts((*mt).dl_tensor.strides, 3);
+            assert_eq!(strides, &[9i64, 3, 1], "HWC strides must be [W*C, C, 1]");
         }
 
         // Invoke deleter — must drop the DynImageBuf (and hence its keepalive).
@@ -450,6 +457,46 @@ mod tests {
         assert!(
             matches!(result, Err(ImageError::UnsupportedChannelCount(2))),
             "2-channel must return UnsupportedChannelCount(2)"
+        );
+    }
+
+    // ── test 6: unsupported dtype (K_DL_INT / 8-bit signed) returns DlpackShapeError ──
+
+    #[test]
+    fn test_dynimage_from_dlpack_raw_unsupported_dtype() {
+        use dlpack_rs::ffi::{DLDataType, K_DL_INT};
+
+        // K_DL_INT 8-bit is not U8/U16/F32 — dl_dtype_to_pixel_format returns None.
+        let int8_dtype = DLDataType {
+            code: K_DL_INT,
+            bits: 8,
+            lanes: 1,
+        };
+
+        let data: Vec<i8> = vec![0i8; 4 * 4 * 3];
+        let shape_arr: Vec<i64> = vec![4i64, 4, 3];
+
+        let dl_tensor = dlpack_rs::ffi::DLTensor {
+            data: data.as_ptr() as *mut std::ffi::c_void,
+            device: safe::cpu_device(),
+            ndim: 3,
+            dtype: int8_dtype,
+            shape: shape_arr.as_ptr() as *mut i64,
+            strides: std::ptr::null_mut(),
+            byte_offset: 0,
+        };
+        let mut managed = DLManagedTensor {
+            dl_tensor,
+            manager_ctx: std::ptr::null_mut(),
+            deleter: None,
+        };
+
+        let keepalive: Arc<dyn Any + Send + Sync> = Arc::new(data);
+
+        let result = unsafe { dynimage_from_dlpack_raw(&mut managed as *mut _, keepalive) };
+        assert!(
+            matches!(result, Err(ImageError::DlpackShapeError(_))),
+            "unsupported dtype (K_DL_INT 8-bit) must return DlpackShapeError"
         );
     }
 }

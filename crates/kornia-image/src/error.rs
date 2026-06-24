@@ -96,6 +96,7 @@ pub enum ImageError {
     },
 
     /// A DLPack tensor had an invalid or unsupported shape (e.g. ndim != 3, non-positive dim).
+    #[cfg(feature = "dlpack")]
     #[error("dlpack shape error: {0}")]
     DlpackShapeError(String),
 }
