@@ -569,11 +569,19 @@ mod tests {
 pub trait NewColorImage: Sized {
     /// Allocate a zero-filled image of `size`.
     fn new_zeroed(size: ImageSize) -> Result<Self, ImageError>;
-    /// Size of an already-constructed instance (used to size the output).
-    fn size_of(&self) -> ImageSize;
 }
 
-macro_rules! impl_new_color_image {
+/// Helper trait so `.cvt()` can read the source image size without coupling to
+/// a concrete allocator.
+///
+/// All color-space newtypes implement this via their `Deref<Target = Image<…>>`.
+pub trait SrcSize {
+    /// Source image size.
+    fn src_size(&self) -> ImageSize;
+}
+
+/// Emit both `NewColorImage` and `SrcSize` impls for a color-space newtype.
+macro_rules! impl_color_newtype {
     ($newtype:ident, $t:ty) => {
         impl NewColorImage
             for kornia_image::color_spaces::$newtype<kornia_image::allocator::CpuAllocator>
@@ -585,45 +593,8 @@ macro_rules! impl_new_color_image {
                     kornia_image::allocator::CpuAllocator,
                 )
             }
-            fn size_of(&self) -> ImageSize {
-                self.size()
-            }
         }
-    };
-}
 
-impl_new_color_image!(Rgbf32, f32);
-impl_new_color_image!(Bgrf32, f32);
-impl_new_color_image!(Grayf32, f32);
-impl_new_color_image!(Hsvf32, f32);
-impl_new_color_image!(Hlsf32, f32);
-impl_new_color_image!(Labf32, f32);
-impl_new_color_image!(Luvf32, f32);
-impl_new_color_image!(Xyzf32, f32);
-impl_new_color_image!(LinearRgbf32, f32);
-impl_new_color_image!(YCbCrf32, f32);
-impl_new_color_image!(Yuvf32, f32);
-impl_new_color_image!(Rgb8, u8);
-impl_new_color_image!(Bgr8, u8);
-impl_new_color_image!(Gray8, u8);
-impl_new_color_image!(Rgba8, u8);
-impl_new_color_image!(Bgra8, u8);
-impl_new_color_image!(YCbCr8, u8);
-impl_new_color_image!(Yuv8, u8);
-impl_new_color_image!(Rgbaf32, f32);
-impl_new_color_image!(Bgraf32, f32);
-
-/// Helper trait so `.cvt()` can read the source image size without coupling to
-/// a concrete allocator.
-///
-/// All color-space newtypes implement this via their `Deref<Target = Image<…>>`.
-pub trait SrcSize {
-    /// Source image size.
-    fn src_size(&self) -> ImageSize;
-}
-
-macro_rules! impl_src_size {
-    ($newtype:ident) => {
         impl<A: ImageAllocator> SrcSize
             for kornia_image::color_spaces::$newtype<A>
         {
@@ -634,26 +605,26 @@ macro_rules! impl_src_size {
     };
 }
 
-impl_src_size!(Rgbf32);
-impl_src_size!(Bgrf32);
-impl_src_size!(Grayf32);
-impl_src_size!(Hsvf32);
-impl_src_size!(Hlsf32);
-impl_src_size!(Labf32);
-impl_src_size!(Luvf32);
-impl_src_size!(Xyzf32);
-impl_src_size!(LinearRgbf32);
-impl_src_size!(YCbCrf32);
-impl_src_size!(Yuvf32);
-impl_src_size!(Rgb8);
-impl_src_size!(Bgr8);
-impl_src_size!(Gray8);
-impl_src_size!(Rgba8);
-impl_src_size!(Bgra8);
-impl_src_size!(YCbCr8);
-impl_src_size!(Yuv8);
-impl_src_size!(Rgbaf32);
-impl_src_size!(Bgraf32);
+impl_color_newtype!(Rgbf32, f32);
+impl_color_newtype!(Bgrf32, f32);
+impl_color_newtype!(Grayf32, f32);
+impl_color_newtype!(Hsvf32, f32);
+impl_color_newtype!(Hlsf32, f32);
+impl_color_newtype!(Labf32, f32);
+impl_color_newtype!(Luvf32, f32);
+impl_color_newtype!(Xyzf32, f32);
+impl_color_newtype!(LinearRgbf32, f32);
+impl_color_newtype!(YCbCrf32, f32);
+impl_color_newtype!(Yuvf32, f32);
+impl_color_newtype!(Rgb8, u8);
+impl_color_newtype!(Bgr8, u8);
+impl_color_newtype!(Gray8, u8);
+impl_color_newtype!(Rgba8, u8);
+impl_color_newtype!(Bgra8, u8);
+impl_color_newtype!(YCbCr8, u8);
+impl_color_newtype!(Yuv8, u8);
+impl_color_newtype!(Rgbaf32, f32);
+impl_color_newtype!(Bgraf32, f32);
 
 /// Ergonomic allocating conversion built on [`ConvertColor`].
 ///
