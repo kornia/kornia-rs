@@ -10,9 +10,9 @@
 use std::ffi::c_void;
 
 use dlpack_rs::{
-    ffi::{DLDataType, DLDevice, K_DL_CPU, K_DL_FLOAT, K_DL_UINT},
+    ffi::{DLDataType, DLDevice, K_DL_CPU},
     pyo3_glue::IntoDLPack,
-    safe::{cpu_device, dtype_f32, dtype_u16, dtype_u8, TensorInfo},
+    safe::{cpu_device, TensorInfo},
 };
 use pyo3::prelude::*;
 
@@ -61,29 +61,17 @@ impl IntoDLPack for ImageExport {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Convert a `Dtype` to the corresponding `DLDataType`.
+///
+/// Delegates to [`Dtype::to_dldatatype`] — canonical mapping lives in `backing.rs`.
 pub fn dtype_to_dl(dtype: Dtype) -> DLDataType {
-    match dtype {
-        Dtype::U8 => dtype_u8(),
-        Dtype::U16 => dtype_u16(),
-        Dtype::F32 => dtype_f32(),
-    }
+    dtype.to_dldatatype()
 }
 
 /// Convert a `DLDataType` to `Dtype`, or return a `ValueError`.
+///
+/// Delegates to [`Dtype::from_dldatatype`] — canonical mapping lives in `backing.rs`.
 pub fn dl_to_dtype(dt: DLDataType) -> PyResult<Dtype> {
-    match (dt.code, dt.bits, dt.lanes) {
-        (c, 8, 1) if c == K_DL_UINT => Ok(Dtype::U8),
-        (c, 16, 1) if c == K_DL_UINT => Ok(Dtype::U16),
-        (c, 32, 1) if c == K_DL_FLOAT => Ok(Dtype::F32),
-        _ => Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "from_dlpack: unsupported DLPack dtype \
-             (code={code}, bits={bits}, lanes={lanes}); \
-             expected uint8, uint16, or float32",
-            code = dt.code,
-            bits = dt.bits,
-            lanes = dt.lanes,
-        ))),
-    }
+    Dtype::from_dldatatype(dt)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

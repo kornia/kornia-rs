@@ -878,13 +878,10 @@ impl PyImageApi {
     }
 
     /// numpy dtype descriptor for the `dtype` getter.
+    ///
+    /// Delegates to the free function [`dtype_to_numpy_obj`].
     fn dtype_obj(&self, py: Python<'_>) -> Py<PyAny> {
-        let d = match self.dtype {
-            backing::Dtype::U8 => numpy::dtype::<u8>(py),
-            backing::Dtype::U16 => numpy::dtype::<u16>(py),
-            backing::Dtype::F32 => numpy::dtype::<f32>(py),
-        };
-        d.into_any().unbind()
+        dtype_to_numpy_obj(self.dtype, py)
     }
 
     /// Build an owned (copied) image from a typed numpy array. Used to convert
@@ -927,6 +924,20 @@ impl PyImageApi {
             )
         }
     }
+}
+
+/// Map a [`backing::Dtype`] to the corresponding numpy dtype descriptor object.
+///
+/// This is the single canonical place for the Dtype → numpy dtype mapping.
+/// All call sites in this module should go through this function rather than
+/// duplicating the match table.
+fn dtype_to_numpy_obj(dtype: backing::Dtype, py: Python<'_>) -> Py<PyAny> {
+    let d = match dtype {
+        backing::Dtype::U8 => numpy::dtype::<u8>(py),
+        backing::Dtype::U16 => numpy::dtype::<u16>(py),
+        backing::Dtype::F32 => numpy::dtype::<f32>(py),
+    };
+    d.into_any().unbind()
 }
 
 /// Shorthand for constructing a Python `ValueError`.
@@ -1148,18 +1159,15 @@ impl PyImageApi {
                     "Image requires a numpy array or array-like object with .shape",
                 ));
             };
-            // Determine dtype by trying each typed view.
-            if resolved.extract::<Py<PyArray3<u8>>>().is_ok() {
-                (resolved, backing::Dtype::U8)
-            } else if resolved.extract::<Py<PyArray3<u16>>>().is_ok() {
-                (resolved, backing::Dtype::U16)
-            } else if resolved.extract::<Py<PyArray3<f32>>>().is_ok() {
-                (resolved, backing::Dtype::F32)
-            } else {
-                return Err(value_err(
-                    "array dtype must be uint8, uint16, or float32",
-                ));
-            }
+            // Determine dtype from the authoritative numpy dtype descriptor,
+            // not from speculative typed extraction (which can hide implicit casts).
+            let dtype_name: String = resolved
+                .getattr("dtype")
+                .and_then(|d| d.getattr("name"))
+                .and_then(|n| n.extract::<String>())
+                .map_err(|_| value_err("could not read numpy array dtype"))?;
+            let dtype = backing::Dtype::from_numpy_str(&dtype_name)?;
+            (resolved, dtype)
         };
 
         // Pull shape, contiguity, writeability and base pointer via numpy.
