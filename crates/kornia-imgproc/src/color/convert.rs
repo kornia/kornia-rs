@@ -778,6 +778,8 @@ macro_rules! impl_tagged {
 impl_tagged!(kornia_image::color_spaces::Rgbf32<A>, f32, ColorSpace::Rgb, {
     Gray      => kornia_image::color_spaces::Grayf32<CpuAllocator>, C1;
     Bgr       => kornia_image::color_spaces::Bgrf32<CpuAllocator>, C3;
+    Rgba      => kornia_image::color_spaces::Rgbaf32<CpuAllocator>, C4;
+    Bgra      => kornia_image::color_spaces::Bgraf32<CpuAllocator>, C4;
     Hsv       => kornia_image::color_spaces::Hsvf32<CpuAllocator>, C3;
     Hls       => kornia_image::color_spaces::Hlsf32<CpuAllocator>, C3;
     Lab       => kornia_image::color_spaces::Labf32<CpuAllocator>, C3;
@@ -841,3 +843,162 @@ impl_tagged!(kornia_image::color_spaces::Rgba8<A>, u8, ColorSpace::Rgba, {
 impl_tagged!(kornia_image::color_spaces::Bgra8<A>, u8, ColorSpace::Bgra, {
     Rgb => kornia_image::color_spaces::Rgb8<CpuAllocator>, C3;
 });
+
+#[cfg(test)]
+mod legality_drift_tests {
+    //! Drift-lock: Tagged dispatch arms must agree with ColorSpace::supports_dtype().
+    //!
+    //! For every (from, to) pair: cvt_color(to).is_ok() must equal
+    //! ColorSpace::supports_dtype(from, to, is_f32).  If an impl_tagged! arm is
+    //! added or removed without updating the supports table (or vice-versa), this
+    //! test will catch the regression.
+    //!
+    //! `supports_dtype` is used (rather than `supports`) because the Tagged
+    //! dispatch is also gated by element type: f32-only spaces (Hsv, Hls, Lab,
+    //! Luv, Xyz, LinearRgb) cannot be produced from u8 source images.
+
+    use super::Tagged;
+    use kornia_image::allocator::CpuAllocator;
+    use kornia_image::color_spaces::{
+        Bgr8, Bgra8, Bgrf32, Gray8, Grayf32, Hlsf32, Hsvf32, Labf32, LinearRgbf32, Luvf32,
+        Rgb8, Rgba8, Rgbf32, Xyzf32, YCbCrf32, Yuvf32,
+    };
+    use kornia_image::{ColorSpace, ImageSize};
+
+    /// All ColorSpace variants enumerated manually (no strum/EnumIter in scope).
+    /// 13 variants × 16 source types = 208 (from, to) pairs checked.
+    const ALL_SPACES: &[ColorSpace] = &[
+        ColorSpace::Rgb,
+        ColorSpace::Bgr,
+        ColorSpace::Gray,
+        ColorSpace::Rgba,
+        ColorSpace::Bgra,
+        ColorSpace::Hsv,
+        ColorSpace::Hls,
+        ColorSpace::Lab,
+        ColorSpace::Luv,
+        ColorSpace::Xyz,
+        ColorSpace::LinearRgb,
+        ColorSpace::YCbCr,
+        ColorSpace::Yuv,
+    ];
+
+    fn size() -> ImageSize {
+        ImageSize { width: 2, height: 2 }
+    }
+
+    /// Check one source image against every possible target.
+    /// `is_f32` controls whether f32-only spaces are considered supported.
+    macro_rules! check_all_targets {
+        ($src:expr, $from:expr, $is_f32:expr) => {{
+            let src = $src;
+            let from: ColorSpace = $from;
+            let is_f32: bool = $is_f32;
+            for &to in ALL_SPACES {
+                let result = src.cvt_color(to);
+                let expected_ok = ColorSpace::supports_dtype(from, to, is_f32);
+                assert_eq!(
+                    result.is_ok(),
+                    expected_ok,
+                    "{:?} -> {:?} (is_f32={}): supports_dtype={} but cvt_color returned {}",
+                    from,
+                    to,
+                    is_f32,
+                    expected_ok,
+                    if result.is_ok() { "Ok" } else { "Err" },
+                );
+            }
+        }};
+    }
+
+    #[test]
+    fn tagged_dispatch_matches_supports_table() {
+        let sz = size();
+
+        // ---- f32 sources (is_f32 = true) ----
+
+        check_all_targets!(
+            Rgbf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 3], CpuAllocator).unwrap(),
+            ColorSpace::Rgb,
+            true
+        );
+        check_all_targets!(
+            Grayf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 1], CpuAllocator).unwrap(),
+            ColorSpace::Gray,
+            true
+        );
+        check_all_targets!(
+            Hsvf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 3], CpuAllocator).unwrap(),
+            ColorSpace::Hsv,
+            true
+        );
+        check_all_targets!(
+            Hlsf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 3], CpuAllocator).unwrap(),
+            ColorSpace::Hls,
+            true
+        );
+        check_all_targets!(
+            Labf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 3], CpuAllocator).unwrap(),
+            ColorSpace::Lab,
+            true
+        );
+        check_all_targets!(
+            Luvf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 3], CpuAllocator).unwrap(),
+            ColorSpace::Luv,
+            true
+        );
+        check_all_targets!(
+            Xyzf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 3], CpuAllocator).unwrap(),
+            ColorSpace::Xyz,
+            true
+        );
+        check_all_targets!(
+            LinearRgbf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 3], CpuAllocator).unwrap(),
+            ColorSpace::LinearRgb,
+            true
+        );
+        check_all_targets!(
+            YCbCrf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 3], CpuAllocator).unwrap(),
+            ColorSpace::YCbCr,
+            true
+        );
+        check_all_targets!(
+            Yuvf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 3], CpuAllocator).unwrap(),
+            ColorSpace::Yuv,
+            true
+        );
+        check_all_targets!(
+            Bgrf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 3], CpuAllocator).unwrap(),
+            ColorSpace::Bgr,
+            true
+        );
+
+        // ---- u8 sources (is_f32 = false) ----
+
+        check_all_targets!(
+            Rgb8::from_size_vec(sz, vec![128u8; 2 * 2 * 3], CpuAllocator).unwrap(),
+            ColorSpace::Rgb,
+            false
+        );
+        check_all_targets!(
+            Gray8::from_size_vec(sz, vec![128u8; 2 * 2 * 1], CpuAllocator).unwrap(),
+            ColorSpace::Gray,
+            false
+        );
+        check_all_targets!(
+            Bgr8::from_size_vec(sz, vec![128u8; 2 * 2 * 3], CpuAllocator).unwrap(),
+            ColorSpace::Bgr,
+            false
+        );
+        check_all_targets!(
+            Rgba8::from_size_vec(sz, vec![128u8; 2 * 2 * 4], CpuAllocator).unwrap(),
+            ColorSpace::Rgba,
+            false
+        );
+        check_all_targets!(
+            Bgra8::from_size_vec(sz, vec![128u8; 2 * 2 * 4], CpuAllocator).unwrap(),
+            ColorSpace::Bgra,
+            false
+        );
+    }
+}
