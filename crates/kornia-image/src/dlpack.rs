@@ -66,7 +66,7 @@ where
 /// - `mt` must be non-null and point to a valid, initialised `DLManagedTensor`.
 /// - `dl_tensor.data` must be valid for at least `H*W*C*size_of::<T>()` bytes for
 ///   the full lifetime of `keepalive`.
-/// - Strides must be null (contiguous) or C-contiguous.
+/// - Strides must be null (C-contiguous per spec) or explicit C-contiguous `[W*C, C, 1]`.
 pub unsafe fn image_from_dlpack<T, const C: usize>(
     mt: *mut DLManagedTensor,
     keepalive: Arc<dyn Any + Send + Sync>,
@@ -79,7 +79,7 @@ where
     // SAFETY: caller guarantees mt is non-null and valid.
     let dl = unsafe { &(*mt).dl_tensor };
 
-    // Validate ndim == 3.
+    // 1. Validate ndim == 3.
     if dl.ndim != 3 {
         return Err(ImageError::DlpackShapeError(format!(
             "ndim mismatch: expected 3, got {}",
@@ -87,7 +87,7 @@ where
         )));
     }
 
-    // Validate dtype matches T.
+    // 2. Validate dtype matches T.
     let expected = T::dl_dtype();
     if dl.dtype.code != expected.code || dl.dtype.bits != expected.bits {
         return Err(ImageError::DlpackShapeError(
@@ -95,36 +95,58 @@ where
         ));
     }
 
-    // Require contiguous (null strides pointer means C-contiguous in DLPack spec).
-    if !dl.strides.is_null() {
-        return Err(ImageError::DlpackShapeError(
-            "tensor is not C-contiguous".to_string(),
-        ));
-    }
-
-    // Validate data pointer.
+    // 3. Validate data pointer.
     if dl.data.is_null() {
         return Err(ImageError::DlpackShapeError(
             "null data pointer in DLManagedTensor".to_string(),
         ));
     }
 
-    // Read shape [H, W, actual_C].
+    // 4. Read shape [H, W, actual_C].
     // SAFETY: dl.shape is valid for dl.ndim (== 3) elements (caller contract + DLPack spec).
     let shape_slice = unsafe { std::slice::from_raw_parts(dl.shape, 3) };
+
+    // 5. Validate that all shape dimensions are positive (before casting to usize).
+    for (i, &dim) in shape_slice.iter().enumerate() {
+        if dim <= 0 {
+            return Err(ImageError::DlpackShapeError(format!(
+                "dimension[{}] must be positive, got {}",
+                i, dim
+            )));
+        }
+    }
+
     let shape: [usize; 3] = [
         shape_slice[0] as usize,
         shape_slice[1] as usize,
         shape_slice[2] as usize,
     ];
 
-    // Validate channel count.
+    // 6. Validate channel count.
     let actual_c = shape[2];
     if actual_c != C {
         return Err(ImageError::InvalidChannelShape(actual_c, C));
     }
 
-    // Compute byte length with checked arithmetic.
+    // 7. Validate strides: null means C-contiguous per DLPack spec; non-null strides
+    //    must equal the explicit C-contiguous layout [W*C, C, 1] for HWC tensors.
+    if !dl.strides.is_null() {
+        // SAFETY: dl.strides is valid for dl.ndim (== 3) elements per DLPack spec.
+        let s = unsafe { std::slice::from_raw_parts(dl.strides, 3) };
+        let expected_strides = [
+            (shape[1] * shape[2]) as i64,
+            shape[2] as i64,
+            1i64,
+        ];
+        if s != expected_strides {
+            return Err(ImageError::DlpackShapeError(format!(
+                "tensor is not C-contiguous: strides {:?}, expected {:?}",
+                s, expected_strides
+            )));
+        }
+    }
+
+    // 8. Compute byte length with checked arithmetic.
     let n_elems = shape
         .iter()
         .try_fold(1usize, |a, &d| a.checked_mul(d))
@@ -133,18 +155,18 @@ where
         .checked_mul(std::mem::size_of::<T>())
         .ok_or_else(|| ImageError::DlpackShapeError("integer overflow computing byte length".to_string()))?;
 
-    // Map device.
+    // 9. Map device.
     let (domain, device_id) = if dl.device.device_type == K_DL_CPU {
         (MemoryDomain::Host, 0i32)
     } else {
         (MemoryDomain::Device, dl.device.device_id)
     };
 
-    // Apply byte_offset.
+    // 10. Apply byte_offset.
     let byte_offset = usize::try_from(dl.byte_offset)
         .map_err(|_| ImageError::DlpackShapeError("byte_offset overflows usize".to_string()))?;
 
-    // Build storage with kornia-image's ForeignAllocator (no-op dealloc).
+    // 11. Build storage with kornia-image's ForeignAllocator (no-op dealloc).
     // SAFETY: data pointer is valid for len_bytes (caller contract); keepalive keeps
     // the source alive; domain+device_id correctly reflect the DLDevice.
     let data_ptr = unsafe { (dl.data as *const u8).add(byte_offset) as *const T };
@@ -152,7 +174,7 @@ where
         TensorStorage::from_borrowed(data_ptr, len_bytes, ForeignAllocator, domain, device_id, keepalive)
     };
 
-    // Build Tensor<T, 3, ForeignAllocator>.
+    // 12. Build Tensor<T, 3, ForeignAllocator>.
     // Compute C-contiguous strides for HWC layout: [W*C, C, 1].
     let strides: [usize; 3] = [shape[1] * shape[2], shape[2], 1];
     let tensor = kornia_tensor::Tensor {
@@ -161,7 +183,7 @@ where
         strides,
     };
 
-    // Wrap into Image<T, C, ForeignAllocator>.
+    // 13. Wrap into Image<T, C, ForeignAllocator>.
     // Safe because: ndim==3, shape[2]==C (validated above), ForeignAllocator is correct.
     Ok(Image(tensor))
 }
@@ -180,14 +202,15 @@ mod tests {
     use dlpack_rs::safe;
     use kornia_tensor::CpuAllocator;
 
-    // ── Test 1: round-trip Image<u8,3,CpuAllocator> → image_to_dlpack → deleter ──
+    use crate::{allocator::CpuAllocator as ImageCpuAllocator, image::ImageSize};
+
+    // ── Test 1a: image_to_dlpack with ForeignAllocator drop-counter ─────────────
     //
-    // We build the Image from a borrowed foreign buffer so the keepalive (a drop-counter
-    // Arc) is bundled into the storage. image_to_dlpack moves the Image into the DLPack
-    // keepalive, so deleter() firing must drop it exactly once.
+    // Build an Image<u8,3,ForeignAllocator> with a drop-counter keepalive and verify
+    // the deleter fires the counter exactly once.
 
     #[test]
-    fn test_image_to_dlpack_deleter_fires_once() {
+    fn test_image_to_dlpack_foreign_deleter_fires_once() {
         let counter = Arc::new(AtomicUsize::new(0));
 
         struct DropGuard {
@@ -260,6 +283,40 @@ mod tests {
             1,
             "keepalive must drop exactly once after deleter"
         );
+    }
+
+    // ── Test 1b: image_to_dlpack with CpuAllocator ──────────────────────────────
+    //
+    // Build a real Image<u8,3,CpuAllocator> from known data, export via image_to_dlpack,
+    // verify shape/ndim/dtype, fire the deleter (no panic expected).
+
+    #[test]
+    fn test_image_to_dlpack_cpu_allocator() {
+        let data: Vec<u8> = (0u8..18).collect();
+        let img = Image::<u8, 3, ImageCpuAllocator>::new(
+            ImageSize { height: 2, width: 3 },
+            data,
+            ImageCpuAllocator,
+        )
+        .unwrap();
+
+        let mt = image_to_dlpack(img);
+        assert!(!mt.is_null(), "mt must be non-null");
+
+        unsafe {
+            let dl = &(*mt).dl_tensor;
+            assert_eq!(dl.ndim, 3, "ndim must be 3");
+            let s = std::slice::from_raw_parts(dl.shape, 3);
+            assert_eq!(s, &[2i64, 3, 3], "shape must be [H=2, W=3, C=3]");
+            use dlpack_rs::ffi::K_DL_UINT;
+            assert_eq!(dl.dtype.code, K_DL_UINT as u8, "dtype code must be K_DL_UINT");
+            assert_eq!(dl.dtype.bits, 8, "dtype bits must be 8");
+
+            // Fire the deleter — must not panic.
+            if let Some(del) = (*mt).deleter {
+                del(mt);
+            }
+        }
     }
 
     // ── Test 2: image_from_dlpack::<f32,3> with drop-counter guard ──────────────
@@ -453,6 +510,79 @@ mod tests {
         assert!(
             matches!(result, Err(ImageError::DlpackShapeError(_))),
             "ndim mismatch must return DlpackShapeError"
+        );
+    }
+
+    // ── Test 7: explicit C-contiguous strides are accepted ───────────────────────
+    //
+    // PyTorch and other producers may emit non-null but C-contiguous strides.
+    // For a 2×3 RGB tensor, correct HWC strides are [W*C, C, 1] = [9, 3, 1].
+    // image_from_dlpack must accept these without error.
+
+    #[test]
+    fn test_image_from_dlpack_explicit_c_contiguous_strides() {
+        let data: Vec<u8> = (0u8..18).collect();
+        let shape_arr: Vec<i64> = vec![2i64, 3, 3];
+        // Explicit C-contiguous strides for HWC 2×3×3: [W*C, C, 1] = [9, 3, 1].
+        let strides_arr: Vec<i64> = vec![9i64, 3, 1];
+
+        let dl_tensor = DLTensor {
+            data: data.as_ptr() as *mut std::ffi::c_void,
+            device: safe::cpu_device(),
+            ndim: 3,
+            dtype: safe::dtype_u8(),
+            shape: shape_arr.as_ptr() as *mut i64,
+            strides: strides_arr.as_ptr() as *mut i64,
+            byte_offset: 0,
+        };
+        let mut managed = DLManagedTensor {
+            dl_tensor,
+            manager_ctx: std::ptr::null_mut(),
+            deleter: None,
+        };
+
+        let keepalive: Arc<dyn Any + Send + Sync> = Arc::new(data);
+        let result = unsafe { image_from_dlpack::<u8, 3>(&mut managed as *mut _, keepalive) };
+
+        assert!(
+            result.is_ok(),
+            "explicit C-contiguous strides [9,3,1] must be accepted, got: {:?}",
+            result.err()
+        );
+        let img = result.unwrap();
+        assert_eq!(img.0.shape, [2, 3, 3], "shape must be [2,3,3]");
+    }
+
+    // ── Test 8: non-C-contiguous strides are rejected ───────────────────────────
+
+    #[test]
+    fn test_image_from_dlpack_non_contiguous_strides_rejected() {
+        let data: Vec<u8> = vec![0u8; 18];
+        let shape_arr: Vec<i64> = vec![2i64, 3, 3];
+        // Wrong strides (e.g. Fortran-order or padded row stride).
+        let strides_arr: Vec<i64> = vec![1i64, 2, 6];
+
+        let dl_tensor = DLTensor {
+            data: data.as_ptr() as *mut std::ffi::c_void,
+            device: safe::cpu_device(),
+            ndim: 3,
+            dtype: safe::dtype_u8(),
+            shape: shape_arr.as_ptr() as *mut i64,
+            strides: strides_arr.as_ptr() as *mut i64,
+            byte_offset: 0,
+        };
+        let mut managed = DLManagedTensor {
+            dl_tensor,
+            manager_ctx: std::ptr::null_mut(),
+            deleter: None,
+        };
+
+        let keepalive: Arc<dyn Any + Send + Sync> = Arc::new(data);
+        let result = unsafe { image_from_dlpack::<u8, 3>(&mut managed as *mut _, keepalive) };
+
+        assert!(
+            matches!(result, Err(ImageError::DlpackShapeError(_))),
+            "non-C-contiguous strides must return DlpackShapeError"
         );
     }
 }
