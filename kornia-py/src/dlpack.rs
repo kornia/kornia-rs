@@ -1,108 +1,105 @@
-//! This module provides utilities to convert between PyTorch and DLPack tensors.
+//! DLPack export glue for `PyImageApi`.
 //!
-//! NOTE: this is deprecated and will be removed in the future.
+//! **Export (`__dlpack__`)** — true zero-copy: a `Py<PyAny>` handle to the
+//! Image object keeps the backing alive while the consumer holds the tensor.
+//! No bytes are copied.
 //!
-use dlpack_rs as dlpack;
-use kornia_tensor::Tensor;
+//! **Import (`from_dlpack`)** — zero-copy via non-consuming capsule keep-alive.
+//! See `image.rs::from_dlpack` for the import path.
 
+use std::ffi::c_void;
+
+use dlpack_rs::{
+    ffi::{DLDataType, DLDevice, K_DL_CPU, K_DL_FLOAT, K_DL_UINT},
+    pyo3_glue::IntoDLPack,
+    safe::{cpu_device, dtype_f32, dtype_u16, dtype_u8, TensorInfo},
+};
 use pyo3::prelude::*;
-use std::ffi::{c_void, CStr, CString};
-use std::os::raw::c_char;
 
-const DLPACK_CAPSULE_NAME: &[u8] = b"dltensor\0";
+use crate::backing::Dtype;
 
-// desctructor function for the python capsule
-unsafe extern "C" fn dlpack_capsule_destructor(capsule: *mut pyo3::ffi::PyObject) {
-    if pyo3::ffi::PyCapsule_IsValid(capsule, DLPACK_CAPSULE_NAME.as_ptr() as *const c_char) == 1 {
-        // println!("Is an invalid capsule!");
-        return;
-    }
+// ─────────────────────────────────────────────────────────────────────────────
+// Export: keep-alive wrapper
+// ─────────────────────────────────────────────────────────────────────────────
 
-    // println!("PyCapsule destructor");
-
-    let expected_name = CString::new("dltensor").unwrap();
-
-    let current_name_ptr: *const c_char = pyo3::ffi::PyCapsule_GetName(capsule);
-    let current_name = CStr::from_ptr(current_name_ptr);
-    // println!("Expected Name: {:?}", expected_name);
-    // println!("Current Name: {:?}", current_name);
-
-    if current_name != expected_name.as_c_str() {
-        return;
-    }
-
-    let managed: *mut dlpack::DLManagedTensor =
-        pyo3::ffi::PyCapsule_GetPointer(capsule, current_name_ptr) as *mut dlpack::DLManagedTensor;
-
-    if managed.is_null() {
-        // println!("Invalid managed pointer");
-        return;
-    }
-
-    if !managed.is_null() {
-        (*managed).deleter.unwrap()(managed);
-    }
-
-    // println!("Delete by Python");
+/// Zero-copy DLPack export wrapper.
+///
+/// `keepalive` holds a `Py<PyAny>` handle to the exporting `PyImageApi`.
+/// While the DLPack consumer retains the tensor (the capsule / the `ManagedContext`
+/// allocated by `safe::pack`), `keepalive` is kept alive, and therefore
+/// the `Backing` buffer is kept alive too.  When the consumer's deleter runs
+/// it drops the `ManagedContext<ImageExport>`, which drops `keepalive`, which
+/// decrements the Image's refcount (and potentially frees the buffer if nothing
+/// else holds a reference).
+pub struct ImageExport {
+    /// Strong reference to the `PyImageApi` Python object — keeps Backing alive.
+    /// Never "read" by Rust — this field exists to be *held*, not accessed.
+    #[allow(dead_code)]
+    pub keepalive: Py<PyAny>,
+    /// Raw pointer into the Image's backing buffer (NOT a copy).
+    pub data: *mut c_void,
+    /// HWC shape as `[H, W, C]` (i64 for DLPack).
+    pub shape: Vec<i64>,
+    /// DLPack data-type descriptor.
+    pub dtype: DLDataType,
 }
 
-unsafe extern "C" fn dlpack_deleter(_x: *mut dlpack::DLManagedTensor) {
-    // println!("DLManagedTensor deleter");
+// SAFETY: `data` points into `keepalive`'s backing.  `ManagedContext<ImageExport>`
+// (heap-allocated by `safe::pack`) owns the `ImageExport`, which owns `keepalive`.
+// The buffer therefore outlives the exported tensor.  `Py<PyAny>` is `Send` under
+// the assumption that operations on the GIL-held Python object happen under the GIL.
+unsafe impl Send for ImageExport {}
 
-    //let ctx = (*x).manager_ctx as *mut Tensor;
-    //ctx.drop_in_place();
-    //(*x).dl_tensor.shape.drop_in_place();
-    //(*x).dl_tensor.strides.drop_in_place();
-    //x.drop_in_place();
-}
-
-pub fn cvtensor_to_dltensor(x: &Tensor) -> dlpack::DLTensor {
-    dlpack::DLTensor {
-        data: x.data.as_ptr() as *mut c_void,
-        device: dlpack::DLDevice {
-            device_type: dlpack::DLDeviceType_kDLCPU,
-            device_id: 0,
-        },
-        ndim: x.shape.len() as i32,
-        dtype: dlpack::DLDataType {
-            code: dlpack::DLDataTypeCode_kDLUInt as u8,
-            bits: 8,
-            lanes: 1,
-        },
-        shape: x.shape.as_ptr() as *mut i64,
-        strides: x.strides.as_ptr() as *mut i64,
-        byte_offset: 0,
+impl IntoDLPack for ImageExport {
+    fn tensor_info(&self) -> TensorInfo {
+        TensorInfo::contiguous(self.data, cpu_device(), self.dtype, self.shape.clone())
     }
 }
 
-fn cvtensor_to_dlmtensor(x: &Tensor) -> dlpack::DLManagedTensor {
-    // create dl tensor
+// ─────────────────────────────────────────────────────────────────────────────
+// Helper: Dtype <-> DLDataType
+// ─────────────────────────────────────────────────────────────────────────────
 
-    let dl_tensor_bx = Box::new(x);
-    let dl_tensor: dlpack::DLTensor = cvtensor_to_dltensor(&dl_tensor_bx);
-
-    // create dlpack managed tensor
-
-    dlpack::DLManagedTensor {
-        dl_tensor,
-        manager_ctx: Box::into_raw(dl_tensor_bx) as *mut c_void,
-        deleter: Some(dlpack_deleter),
+/// Convert a `Dtype` to the corresponding `DLDataType`.
+pub fn dtype_to_dl(dtype: Dtype) -> DLDataType {
+    match dtype {
+        Dtype::U8 => dtype_u8(),
+        Dtype::U16 => dtype_u16(),
+        Dtype::F32 => dtype_f32(),
     }
 }
 
-pub fn cvtensor_to_dlpack(x: &Tensor, py: Python) -> PyResult<PyObject> {
-    // create the managed tensor
-    let dlm_tensor: dlpack::DLManagedTensor = cvtensor_to_dlmtensor(x);
-    let dlm_tensor_bx = Box::new(dlm_tensor);
-
-    // create python capsule
-    let capsule = unsafe {
-        let ptr = pyo3::ffi::PyCapsule_New(
-            Box::into_raw(dlm_tensor_bx) as *mut c_void,
-            DLPACK_CAPSULE_NAME.as_ptr() as *const c_char,
-            Some(dlpack_capsule_destructor as pyo3::ffi::PyCapsule_Destructor),
-        );
-        PyObject::from_owned_ptr(py, ptr)
-    };
-    Ok(capsule)
+/// Convert a `DLDataType` to `Dtype`, or return a `ValueError`.
+pub fn dl_to_dtype(dt: DLDataType) -> PyResult<Dtype> {
+    match (dt.code, dt.bits, dt.lanes) {
+        (c, 8, 1) if c == K_DL_UINT => Ok(Dtype::U8),
+        (c, 16, 1) if c == K_DL_UINT => Ok(Dtype::U16),
+        (c, 32, 1) if c == K_DL_FLOAT => Ok(Dtype::F32),
+        _ => Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "from_dlpack: unsupported DLPack dtype \
+             (code={code}, bits={bits}, lanes={lanes}); \
+             expected uint8, uint16, or float32",
+            code = dt.code,
+            bits = dt.bits,
+            lanes = dt.lanes,
+        ))),
+    }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helper: device validation
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Assert the device is CPU, or raise `NotImplementedError`.
+pub fn require_cpu(device: DLDevice) -> PyResult<()> {
+    if device.device_type != K_DL_CPU {
+        Err(pyo3::exceptions::PyNotImplementedError::new_err(format!(
+            "from_dlpack: only CPU (device_type={K_DL_CPU}) tensors are supported; \
+             got device_type={}. GPU/CUDA support is a future extension.",
+            device.device_type,
+        )))
+    } else {
+        Ok(())
+    }
+}
+

@@ -1,5 +1,6 @@
 pub(crate) mod backing;
 mod apriltag;
+mod dlpack;
 mod augmentations;
 mod ba;
 mod blur;

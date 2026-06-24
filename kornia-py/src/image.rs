@@ -780,7 +780,7 @@ where
 
 /// PIL-style mode string. u16 paths get the `;16` suffix (with `I` instead
 /// of `L` for single-channel, mirroring PIL's `"I;16"`).
-fn mode_from_channels(channels: usize, is_u16: bool) -> String {
+pub(crate) fn mode_from_channels(channels: usize, is_u16: bool) -> String {
     let (gray, suffix) = if is_u16 { ("I", ";16") } else { ("L", "") };
     match channels {
         1 => format!("{}{}", gray, suffix),
@@ -791,7 +791,7 @@ fn mode_from_channels(channels: usize, is_u16: bool) -> String {
 }
 
 /// Default color space derived from channel count: 1->Gray, 4->Rgba, else Rgb.
-fn default_color_space(channels: usize) -> kornia_image::ColorSpace {
+pub(crate) fn default_color_space(channels: usize) -> kornia_image::ColorSpace {
     match channels {
         1 => kornia_image::ColorSpace::Gray,
         4 => kornia_image::ColorSpace::Rgba,
@@ -802,7 +802,7 @@ fn default_color_space(channels: usize) -> kornia_image::ColorSpace {
 
 /// PIL-style mode string for f32 storage. Single-channel uses PIL's
 /// canonical ``"F"`` (32-bit float); multi-channel uses an "f" suffix.
-fn mode_from_channels_f32(channels: usize) -> String {
+pub(crate) fn mode_from_channels_f32(channels: usize) -> String {
     match channels {
         1 => "F".to_string(),
         3 => "RGBf".to_string(),
@@ -1258,7 +1258,7 @@ impl PyImageApi {
             Image::<u8, CO, ForeignAllocator>::from_raw_parts(
                 size,
                 bytes.as_mut_ptr(),
-                size.width * size.height * CO,
+                size.width * size.height * CO * std::mem::size_of::<u8>(),
                 ForeignAllocator,
             )
             .map_err(to_pyerr)?
@@ -2999,5 +2999,289 @@ impl PyImageApi {
         _exc_tb: Option<&Bound<'_, PyAny>>,
     ) -> bool {
         false
+    }
+
+    // ─── DLPack protocol ───────────────────────────────────────────────────────
+
+    /// Export this image as a DLPack capsule (zero-copy).
+    ///
+    /// Implements the DLPack protocol used by NumPy 2.x, PyTorch, etc.
+    ///
+    /// - If `max_version` is `(1, 0)` or higher (NumPy 2.x, modern consumers),
+    ///   returns a **versioned** capsule (`"dltensor_versioned"`) with `flags = 0`
+    ///   so consumers treat the tensor as mutable (not read-only).
+    /// - Otherwise falls back to the **legacy** capsule (`"dltensor"`).  Note
+    ///   that some consumers (NumPy 2.x) will mark legacy tensors read-only.
+    ///
+    /// The returned capsule points directly into the Image's backing buffer.
+    /// A `Py<PyAny>` handle to the Image is stored in the `ImageExport`
+    /// keep-alive, keeping the buffer alive until the consumer's deleter runs.
+    ///
+    /// All other keyword arguments (`stream`, `dl_device`, `copy`) are accepted
+    /// and ignored; this implementation is CPU-only.
+    #[pyo3(signature = (*, stream=None, max_version=None, dl_device=None, copy=None))]
+    fn __dlpack__(
+        slf: Bound<'_, Self>,
+        py: Python<'_>,
+        stream: Option<Py<PyAny>>,
+        max_version: Option<(u32, u32)>,
+        dl_device: Option<Py<PyAny>>,
+        copy: Option<bool>,
+    ) -> PyResult<Py<PyAny>> {
+        let _ = (stream, dl_device, copy); // CPU: all ignored
+        let (data, shape, dt) = {
+            let s = slf.borrow();
+            let dt = crate::dlpack::dtype_to_dl(s.dtype);
+            let data = s.backing.data_ptr() as *mut std::ffi::c_void;
+            let shape: Vec<i64> = s.shape.iter().map(|&d| d as i64).collect();
+            (data, shape, dt)
+        };
+        // Build the export with `slf` as the keep-alive.
+        // The `ImageExport` owns a `Py<PyAny>` handle that keeps the Image alive
+        // so the backing buffer outlives the exported DLPack tensor.
+        let keepalive: Py<PyAny> = slf.into_any().unbind();
+        let export = crate::dlpack::ImageExport {
+            keepalive,
+            data,
+            shape,
+            dtype: dt,
+        };
+        use dlpack_rs::pyo3_glue::IntoDLPack;
+        // If the consumer supports DLPack v1.0+, return a versioned capsule with
+        // flags=0 (mutable). This prevents NumPy 2.x from marking the array
+        // read-only (which it does for all legacy "dltensor" capsules because the
+        // old format has no flags field to express writability).
+        let capsule = if max_version.is_some_and(|(maj, _)| maj >= 1) {
+            export.into_capsule_versioned(py, 0 /* flags: mutable */)?
+        } else {
+            export.into_capsule(py)?
+        };
+        Ok(capsule.into_any().unbind())
+    }
+
+    /// Return the DLPack device tuple for this image: `(kDLCPU=1, device_id=0)`.
+    fn __dlpack_device__(&self) -> (i32, i32) {
+        (dlpack_rs::ffi::K_DL_CPU, 0)
+    }
+
+    /// Import a DLPack tensor as a zero-copy Image (static method).
+    ///
+    /// Accepts any Python object that implements `__dlpack__()`: numpy arrays
+    /// (>= 1.22), PyTorch tensors, CuPy arrays (CPU only), etc.
+    ///
+    /// Validation:
+    /// - Device must be CPU (`kDLCPU = 1`); raises `NotImplementedError` otherwise.
+    /// - Tensor must be C-contiguous; raises `ValueError` otherwise.
+    /// - `ndim` must be 3 (`(H, W, C)`) or 2 (`(H, W)` → treated as `(H, W, 1)`).
+    /// - dtype must be `uint8`, `uint16`, or `float32`; raises `ValueError` otherwise.
+    /// - Channel count `C` must be in `{1, 3, 4}`; raises `ValueError` otherwise.
+    #[staticmethod]
+    fn from_dlpack(_py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Self> {
+        use dlpack_rs::ffi::{DLManagedTensor, DLManagedTensorVersioned};
+        use pyo3::types::{PyCapsule, PyCapsuleMethods};
+        use std::ffi::CStr;
+
+        // DLPack import design: zero-copy via capsule keep-alive.
+        //
+        // We call `obj.__dlpack__()` to get a `PyCapsule` (named "dltensor" or
+        // "dltensor_versioned"). We read the pointer and extract metadata WITHOUT
+        // consuming the capsule (i.e. WITHOUT renaming it to "used_dltensor").
+        //
+        // The capsule is then stored as our keep-alive (BorrowGuard::PyObject).
+        // When our Image drops, the capsule's refcount hits 0 and Python calls
+        // the capsule's C destructor. That destructor checks if the name is still
+        // "dltensor" (it is, since we never renamed it) and calls the producer's
+        // deleter. This is the standard capsule-owner path per the DLPack spec.
+        //
+        // Why NOT use `PyTensor::from_pyany` (which renames + holds `pt`)?
+        // Because `PyTensor::drop()` calls the deleter without the GIL, which
+        // causes a segfault when torch's deleter free its TensorImpl (a re-entrant
+        // Python object reference cycle during implicit frame cleanup).
+        //
+        // By NOT consuming the capsule, we delegate lifecycle to the Python GC,
+        // which is always GIL-safe.
+
+        // 1. Call `obj.__dlpack__()` to get the capsule.
+        let capsule_obj = obj.call_method0("__dlpack__").map_err(|_| {
+            pyo3::exceptions::PyTypeError::new_err(
+                "from_dlpack: object does not implement __dlpack__()",
+            )
+        })?;
+
+        // 2. Downcast to PyCapsule.
+        let capsule: pyo3::Bound<'_, PyCapsule> = capsule_obj.cast_into()?;
+
+        // 3. Determine variant and read the DLTensor.
+        const NAME_DL: &CStr = c"dltensor";
+        const NAME_DLV: &CStr = c"dltensor_versioned";
+
+        let cap_name = capsule.name()?;
+        let name_cstr: &CStr = match &cap_name {
+            Some(n) => unsafe { n.as_cstr() },
+            None => {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "from_dlpack: DLPack capsule has no name",
+                ));
+            }
+        };
+
+        // Extract the DLTensor reference (borrowed; valid while capsule is alive).
+        let (device, ndim, raw_shape, raw_strides, dtype_raw, data_raw, byte_offset, readonly) =
+            if name_cstr == NAME_DL {
+                let nn = capsule.pointer_checked(Some(NAME_DL))?;
+                let mt = unsafe { &*(nn.as_ptr() as *const DLManagedTensor) };
+                let t = &mt.dl_tensor;
+                let sh = unsafe { std::slice::from_raw_parts(t.shape, t.ndim as usize) };
+                let st = if t.strides.is_null() {
+                    None
+                } else {
+                    Some(unsafe { std::slice::from_raw_parts(t.strides, t.ndim as usize) })
+                };
+                (t.device, t.ndim as usize, sh, st, t.dtype, t.data, t.byte_offset, false)
+            } else if name_cstr == NAME_DLV {
+                let nn = capsule.pointer_checked(Some(NAME_DLV))?;
+                let mt = unsafe { &*(nn.as_ptr() as *const DLManagedTensorVersioned) };
+                let t = &mt.dl_tensor;
+                let sh = unsafe { std::slice::from_raw_parts(t.shape, t.ndim as usize) };
+                let st = if t.strides.is_null() {
+                    None
+                } else {
+                    Some(unsafe { std::slice::from_raw_parts(t.strides, t.ndim as usize) })
+                };
+                let ro = (mt.flags & dlpack_rs::ffi::DLPACK_FLAG_BITMASK_READ_ONLY) != 0;
+                (t.device, t.ndim as usize, sh, st, t.dtype, t.data, t.byte_offset, ro)
+            } else {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "from_dlpack: unexpected capsule name {:?}; expected 'dltensor' or \
+                     'dltensor_versioned'",
+                    name_cstr
+                )));
+            };
+
+        // 4. Validate device.
+        crate::dlpack::require_cpu(device)?;
+
+        // 5. Validate contiguity (strides == None, or compact row-major).
+        if let Some(strides) = raw_strides {
+            let mut expected = 1i64;
+            let ok = (0..ndim).rev().all(|i| {
+                let ok = strides[i] == expected;
+                expected *= raw_shape[i];
+                ok
+            });
+            if !ok {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "from_dlpack: tensor is not C-contiguous; call .contiguous() first",
+                ));
+            }
+        }
+
+        // 6. Resolve shape: ndim 2 → (H, W, 1), ndim 3 → (H, W, C).
+        let shape_hwc = match ndim {
+            2 => [raw_shape[0] as usize, raw_shape[1] as usize, 1],
+            3 => [
+                raw_shape[0] as usize,
+                raw_shape[1] as usize,
+                raw_shape[2] as usize,
+            ],
+            n => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "from_dlpack: expected 2D or 3D tensor, got {}D",
+                    n
+                )));
+            }
+        };
+        let [h, w, c] = shape_hwc;
+
+        // 7. Validate dtype.
+        let dtype = crate::dlpack::dl_to_dtype(dtype_raw)?;
+
+        // 8. Validate channel count.
+        if !matches!(c, 1 | 3 | 4) {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "from_dlpack: channel count must be 1, 3, or 4; got {}",
+                c
+            )));
+        }
+
+        // 9. Compute effective data pointer (with byte_offset).
+        let base = (data_raw as usize)
+            .checked_add(byte_offset as usize)
+            .ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err(
+                    "from_dlpack: byte_offset overflow on data_ptr",
+                )
+            })? as *mut u8;
+
+        let ptr = std::ptr::NonNull::new(base).ok_or_else(|| {
+            pyo3::exceptions::PyValueError::new_err("from_dlpack: tensor has null data pointer")
+        })?;
+
+        // 10. Build the Image with the PRODUCER as keep-alive.
+        //
+        // We store `obj` (the original producer — a numpy array, torch tensor,
+        // or other DLPack-capable object) as our keep-alive.  This keeps the
+        // producer alive while our Image borrows its buffer.
+        //
+        // The capsule (which we obtained above from `obj.__dlpack__()`) is
+        // consumed here by renaming it to "used_dltensor" so the capsule's
+        // C destructor will NOT call the DLManagedTensor's deleter when the
+        // capsule is GC'd.  The buffer lifetime is managed by `obj` directly:
+        // as long as `obj` is alive, the buffer is valid.
+        //
+        // Safety rationale:
+        // - For numpy arrays: numpy keeps the buffer alive as long as the array
+        //   object exists. `obj` holds the array, so the buffer outlives us.
+        // - For torch tensors: torch's `at::Storage` is refcounted. The tensor
+        //   `obj` holds a reference to `at::Storage`; while `obj` is alive,
+        //   `at::Storage` is alive, and the buffer is valid.
+        // - For our own Image (bidirectional): `obj` = Image → `obj`'s backing
+        //   keeps the buffer alive. The Image's `keepalive` (in `ImageExport`)
+        //   is NOT involved here; the chain is `img2.keep → obj(=t) → t.storage
+        //   → ImageExport → img` (implicit; mediated by torch's lifecycle).
+        //
+        // We consume the capsule (rename) to prevent double-free: the capsule's
+        // C destructor would otherwise also call the deleter, which would
+        // decrement the producer's internal refcount, possibly freeing the buffer
+        // while `obj` still claims to own it.
+        {
+            use pyo3::ffi::PyCapsule_SetName;
+            // Consumed name for the capsule (DLPack spec: "used_dltensor" / "used_dltensor_versioned")
+            let consumed_name: &'static CStr = if name_cstr == c"dltensor_versioned" {
+                c"used_dltensor_versioned"
+            } else {
+                c"used_dltensor"
+            };
+            // SAFETY: capsule is a valid PyCapsule (validated by cast_into) and the
+            // new name is a valid C string with static lifetime.
+            let ok = unsafe { PyCapsule_SetName(capsule.as_ptr(), consumed_name.as_ptr()) };
+            if ok != 0 {
+                return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                    "from_dlpack: failed to consume DLPack capsule (PyCapsule_SetName failed)",
+                ));
+            }
+        }
+
+        let mode = match dtype {
+            backing::Dtype::U8 => mode_from_channels(c, false),
+            backing::Dtype::U16 => mode_from_channels(c, true),
+            backing::Dtype::F32 => mode_from_channels_f32(c),
+        };
+
+        Ok(Self {
+            backing: backing::Backing::Borrowed {
+                ptr,
+                keep: backing::BorrowGuard::PyObject {
+                    obj: obj.clone().unbind(),
+                    buffer: None,
+                },
+                readonly,
+            },
+            dtype,
+            shape: [h, w, c],
+            color_space: default_color_space(c),
+            mode,
+            format: None,
+        })
     }
 }
