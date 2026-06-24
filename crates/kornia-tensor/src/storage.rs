@@ -69,7 +69,11 @@ pub struct TensorStorage<T, A: TensorAllocator> {
     pub(crate) domain: MemoryDomain,
     /// The CUDA device id (0 for host or single-GPU).
     pub(crate) device_id: i32,
-    /// Optional keep-alive guard; when Some, the Arc is dropped with this storage.
+    /// Optional keep-alive guard; when Some, the Arc is dropped with this storage,
+    /// ensuring the source object (e.g. a DLPack producer or numpy array) outlives
+    /// this borrowed view.  The field is never read — it is held purely for its
+    /// Drop side-effect (releasing the Arc decrements the refcount and may free
+    /// the underlying buffer).
     #[allow(dead_code)]
     pub(crate) keepalive: Option<std::sync::Arc<dyn core::any::Any + Send + Sync>>,
 }

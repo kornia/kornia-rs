@@ -107,6 +107,8 @@ pub enum DlpackError {
     NotContiguous,
     /// The pointer in the DLManagedTensor is null.
     NullPointer,
+    /// Integer overflow computing element count or byte length from the shape.
+    Overflow,
     /// Allocation error forwarded from the storage layer.
     TensorError(TensorError),
 }
@@ -120,6 +122,7 @@ impl core::fmt::Display for DlpackError {
             Self::DtypeMismatch => write!(f, "dtype mismatch"),
             Self::NotContiguous => write!(f, "tensor is not C-contiguous"),
             Self::NullPointer => write!(f, "null data pointer in DLManagedTensor"),
+            Self::Overflow => write!(f, "integer overflow computing tensor size from shape"),
             Self::TensorError(e) => write!(f, "tensor error: {e}"),
         }
     }
@@ -188,17 +191,26 @@ where
     let shape_slice = unsafe { std::slice::from_raw_parts(dl.shape, N) };
     let shape: [usize; N] = std::array::from_fn(|i| shape_slice[i] as usize);
 
-    // Compute byte length.
-    let n_elems: usize = shape.iter().product();
-    let len_bytes = n_elems * std::mem::size_of::<T>();
+    // Compute byte length with checked arithmetic to guard against hostile/corrupt shapes.
+    let n_elems = shape
+        .iter()
+        .try_fold(1usize, |a, &d| a.checked_mul(d))
+        .ok_or(DlpackError::Overflow)?;
+    let len_bytes = n_elems
+        .checked_mul(std::mem::size_of::<T>())
+        .ok_or(DlpackError::Overflow)?;
 
     // Map device.
     let (domain, device_id) = map_dl_device(dl.device);
 
+    // Convert byte_offset safely: u64 -> usize (fails on 32-bit if value > usize::MAX).
+    let byte_offset =
+        usize::try_from(dl.byte_offset).map_err(|_| DlpackError::Overflow)?;
+
     // Build storage (borrowed, no dealloc).
     // SAFETY: data pointer is valid for len_bytes (caller contract), keepalive keeps
     // the source alive, domain+device_id correctly reflect the DLDevice.
-    let data_ptr = unsafe { (dl.data as *const u8).add(dl.byte_offset as usize) as *const T };
+    let data_ptr = unsafe { (dl.data as *const u8).add(byte_offset) as *const T };
     let storage = unsafe {
         crate::storage::TensorStorage::from_borrowed(
             data_ptr,

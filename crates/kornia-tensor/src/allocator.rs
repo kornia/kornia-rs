@@ -233,10 +233,11 @@ impl TensorAllocator for AlignedCpuAllocator {
     fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         if !ptr.is_null() {
             // Reconstruct the exact layout used during alloc (64-byte alignment).
-            if let Ok(aligned) = Layout::from_size_align(layout.size(), 64) {
-                // SAFETY: ptr was allocated with `aligned` by this allocator's alloc.
-                unsafe { alloc::dealloc(ptr, aligned) }
-            }
+            // 64 is always a valid power-of-two alignment, so this cannot fail.
+            let aligned = Layout::from_size_align(layout.size(), 64)
+                .expect("64 is a valid alignment");
+            // SAFETY: ptr was allocated with `aligned` by this allocator's alloc.
+            unsafe { alloc::dealloc(ptr, aligned) }
         }
     }
 }
