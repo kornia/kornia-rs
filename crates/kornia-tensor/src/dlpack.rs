@@ -77,7 +77,8 @@ where
     let dtype = T::dl_dtype();
     let device = match t.storage.domain() {
         MemoryDomain::Host => safe::cpu_device(),
-        MemoryDomain::Device => safe::cuda_device(t.storage.device_id()),
+        MemoryDomain::Device { id } => safe::cuda_device(id),
+        MemoryDomain::Unified { id } => safe::cuda_device(id),
     };
     let data_ptr = t.storage.as_ptr() as *mut std::ffi::c_void;
     let shape: Vec<i64> = t.shape.iter().map(|&s| s as i64).collect();
@@ -238,7 +239,7 @@ fn map_dl_device(device: DLDevice) -> (MemoryDomain, i32) {
         (MemoryDomain::Host, 0)
     } else {
         // kDLCUDA and any other device type -> Device domain.
-        (MemoryDomain::Device, device.device_id)
+        (MemoryDomain::Device { id: device.device_id }, device.device_id)
     }
 }
 
@@ -255,7 +256,9 @@ mod tests {
 
     #[test]
     fn test_tensor_to_dlpack_and_deleter() {
-        // drop counter
+        // Drop counter: we build the tensor around a borrowed buffer whose keepalive
+        // is a Guard. When the DLPack deleter fires it drops the tensor, which drops
+        // the ForeignResource, which drops the keepalive Arc, which fires the Guard.
         struct DropCounter(Arc<AtomicUsize>);
         impl Drop for DropCounter {
             fn drop(&mut self) {
@@ -264,13 +267,24 @@ mod tests {
         }
 
         let counter = Arc::new(AtomicUsize::new(0));
-        let tensor = {
-            let data = vec![1.0f32, 2.0, 3.0, 4.0];
-            let mut t =
-                Tensor::<f32, 1, CpuAllocator>::from_shape_vec([4], data, CpuAllocator).unwrap();
-            // attach a drop counter as keepalive so we can observe it
-            t.storage.keepalive = Some(Arc::new(DropCounter(counter.clone())));
-            t
+
+        // Build a borrowed tensor whose lifetime is tied to a DropCounter keepalive.
+        let data = vec![1.0f32, 2.0, 3.0, 4.0];
+        let keep: Arc<dyn core::any::Any + Send + Sync> =
+            Arc::new(DropCounter(counter.clone()));
+        let tensor = unsafe {
+            use crate::storage::TensorStorage;
+            let storage = TensorStorage::<f32, crate::allocator::ForeignAllocator>::from_borrowed(
+                data.as_ptr(),
+                data.len() * std::mem::size_of::<f32>(),
+                crate::allocator::ForeignAllocator,
+                crate::storage::MemoryDomain::Host,
+                0,
+                keep,
+            );
+            let shape = [4usize];
+            let strides = crate::tensor::get_strides_from_shape(shape);
+            Tensor { storage, shape, strides }
         };
 
         assert_eq!(counter.load(Ordering::SeqCst), 0);
@@ -278,7 +292,7 @@ mod tests {
         let mt = tensor_to_dlpack(tensor);
         assert!(!mt.is_null());
 
-        // invoke deleter
+        // invoke deleter — this drops the tensor (and the keepalive Arc)
         unsafe {
             let deleter = (*mt).deleter;
             if let Some(del) = deleter {
@@ -292,6 +306,8 @@ mod tests {
             1,
             "keepalive must drop exactly once"
         );
+        // keep `data` alive until here so the borrowed pointer is valid above.
+        drop(data);
     }
 
     // ── round-trip: from_borrowed with drop counter ────────────────────────────
@@ -406,16 +422,15 @@ mod tests {
         .unwrap();
 
         // CUDA-readiness assertions
-        assert_eq!(
-            tensor.storage.domain(),
-            MemoryDomain::Device,
+        assert!(
+            matches!(tensor.storage.domain(), MemoryDomain::Device { .. }),
             "must be Device domain"
         );
         assert_eq!(tensor.storage.device_id(), 2, "device_id must be 2");
     }
 
     #[test]
-    #[should_panic(expected = "as_slice called on device storage")]
+    #[should_panic(expected = "non-host-accessible")]
     fn test_cuda_tensor_slice_panics() {
         use dlpack_rs::ffi::{DLDevice, K_DL_CUDA};
 

@@ -145,6 +145,24 @@ impl HostResource {
     pub fn is_empty(&self) -> bool {
         self.layout.size() == 0
     }
+
+    /// Consumes the resource and returns the raw pointer and layout without running [`Drop`].
+    ///
+    /// The caller takes full responsibility for the allocation: it must eventually be freed
+    /// exactly once using the global allocator with the returned `Layout`.
+    ///
+    /// # Safety
+    ///
+    /// The caller must free the returned pointer with `std::alloc::dealloc(ptr, layout)`
+    /// when it is no longer needed (e.g. by converting it into a `Vec` with `from_raw_parts`
+    /// and a matching capacity, which will free on drop).
+    pub unsafe fn into_raw_parts(self) -> (*mut u8, Layout) {
+        let this = std::mem::ManuallyDrop::new(self);
+        // SAFETY: we are reading the fields out of a ManuallyDrop, so Drop will not run.
+        let ptr = this.ptr.as_ptr();
+        let layout = this.layout;
+        (ptr, layout)
+    }
 }
 
 impl MemoryResource for HostResource {
