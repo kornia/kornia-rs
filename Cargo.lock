@@ -4464,8 +4464,8 @@ dependencies = [
 
 [[package]]
 name = "dlpack-rs"
-version = "0.3.0"
-source = "git+https://github.com/kornia/dlpack-rs?tag=v0.3.1#7eb7e412f7d7abc04f658404aa13cbed3aff71b4"
+version = "0.3.1"
+source = "git+https://github.com/kornia/dlpack-rs?tag=v0.3.1#6344f61fa55e58ff7dfc8f9e880ce74bbf882806"
 dependencies = [
  "dlpack-sys",
  "pyo3",
@@ -4473,8 +4473,8 @@ dependencies = [
 
 [[package]]
 name = "dlpack-sys"
-version = "0.3.0"
-source = "git+https://github.com/kornia/dlpack-rs?tag=v0.3.1#7eb7e412f7d7abc04f658404aa13cbed3aff71b4"
+version = "0.3.1"
+source = "git+https://github.com/kornia/dlpack-rs?tag=v0.3.1#6344f61fa55e58ff7dfc8f9e880ce74bbf882806"
 
 [[package]]
 name = "document-features"
