@@ -4,9 +4,6 @@
 /// allocator module containing the memory management utilities.
 pub mod allocator;
 
-/// Runtime-typed image buffer with dynamic pixel format and color space.
-pub mod dyn_image_buf;
-
 /// image representation for computer vision purposes.
 pub mod image;
 
@@ -23,7 +20,6 @@ pub mod color_spaces;
 pub mod color_space;
 
 pub use crate::color_space::{ColorSpace, DynImage};
-pub use crate::dyn_image_buf::DynImageBuf;
 pub use crate::error::ImageError;
 pub use crate::image::{Image, ImageLayout, ImageSize, InterpolationMode, PixelFormat};
 
@@ -31,6 +27,6 @@ pub use crate::image::{Image, ImageLayout, ImageSize, InterpolationMode, PixelFo
 #[cfg(feature = "arrow")]
 pub mod arrow;
 
-/// DLPack interoperability for [`DynImageBuf`].
+/// DLPack interoperability for typed [`Image`].
 #[cfg(feature = "dlpack")]
 pub mod dlpack;
