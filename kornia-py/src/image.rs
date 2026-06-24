@@ -1410,7 +1410,7 @@ impl PyImageApi {
             ..
         } = &me.backing
         {
-            if obj.bind(py).downcast::<numpy::PyUntypedArray>().is_ok() {
+            if obj.bind(py).cast::<numpy::PyUntypedArray>().is_ok() {
                 return Ok(obj.clone_ref(py));
             }
         }
