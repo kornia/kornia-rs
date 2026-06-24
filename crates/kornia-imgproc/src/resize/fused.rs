@@ -49,6 +49,11 @@ impl<const C: usize> NormalizeParams<C> {
 /// * `dst_w`  — output width
 /// * `dst_h`  — output height
 /// * `params` — per-channel pre-combined scale/bias from [`NormalizeParams`]
+///
+/// # Errors
+///
+/// Returns [`kornia_image::ImageError`] if `src` or `dst` length does not match
+/// the expected size, or if `src_w != 2 * dst_w` or `src_h != 2 * dst_h`.
 pub fn resize_normalize_to_tensor_u8_to_f32(
     src: &[u8],
     src_w: usize,
@@ -57,7 +62,29 @@ pub fn resize_normalize_to_tensor_u8_to_f32(
     dst_w: usize,
     dst_h: usize,
     params: &NormalizeParams<3>,
-) {
+) -> Result<(), kornia_image::ImageError> {
+    // Real runtime validation (release-safe)
+    if src_w != 2 * dst_w || src_h != 2 * dst_h {
+        return Err(kornia_image::ImageError::InvalidImageSize(
+            src_w,
+            src_h,
+            dst_w * 2,
+            dst_h * 2,
+        ));
+    }
+    if src.len() != src_h * src_w * 3 {
+        return Err(kornia_image::ImageError::InvalidChannelShape(
+            src.len(),
+            src_h * src_w * 3,
+        ));
+    }
+    if dst.len() != 3 * dst_h * dst_w {
+        return Err(kornia_image::ImageError::InvalidChannelShape(
+            dst.len(),
+            3 * dst_h * dst_w,
+        ));
+    }
+
     debug_assert_eq!(src_w, 2 * dst_w);
     debug_assert_eq!(src_h, 2 * dst_h);
     debug_assert_eq!(src.len(), src_h * src_w * 3);
@@ -95,6 +122,8 @@ pub fn resize_normalize_to_tensor_u8_to_f32(
                 fused_row_rgb_u8_to_nchw_f32(r0, r1, r_row, g_row, b_row, dst_w, params);
             }
         });
+
+    Ok(())
 }
 
 /// Fused **general bilinear** resize + per-channel normalize + HWC→CHW for RGB
@@ -109,6 +138,12 @@ pub fn resize_normalize_to_tensor_u8_to_f32(
 ///
 /// * `src` — `[src_h × src_w × 3]` row-major u8 (HWC)
 /// * `dst` — `[3 × dst_h × dst_w]` f32 output (CHW), `out = sample·scale + bias`
+///
+/// # Errors
+///
+/// Returns [`kornia_image::ImageError`] if `src` or `dst` length does not match
+/// the expected size, or (for the 2× variant) if `src_w != 2 * dst_w` or
+/// `src_h != 2 * dst_h`.
 pub fn resize_normalize_to_tensor_u8_to_f32_bilinear(
     src: &[u8],
     src_w: usize,
@@ -117,17 +152,29 @@ pub fn resize_normalize_to_tensor_u8_to_f32_bilinear(
     dst_w: usize,
     dst_h: usize,
     params: &NormalizeParams<3>,
-) {
+) -> Result<(), kornia_image::ImageError> {
+    if src.len() != src_h * src_w * 3 {
+        return Err(kornia_image::ImageError::InvalidChannelShape(
+            src.len(),
+            src_h * src_w * 3,
+        ));
+    }
+    if dst.len() != 3 * dst_h * dst_w {
+        return Err(kornia_image::ImageError::InvalidChannelShape(
+            dst.len(),
+            3 * dst_h * dst_w,
+        ));
+    }
+
     debug_assert_eq!(src.len(), src_h * src_w * 3);
     debug_assert_eq!(dst.len(), 3 * dst_h * dst_w);
 
     // Exact 2× downscale → dedicated fused box kernel (fully NEON-vectorized).
     if src_w == 2 * dst_w && src_h == 2 * dst_h {
-        resize_normalize_to_tensor_u8_to_f32(src, src_w, src_h, dst, dst_w, dst_h, params);
-        return;
+        return resize_normalize_to_tensor_u8_to_f32(src, src_w, src_h, dst, dst_w, dst_h, params);
     }
     if dst_w == 0 || dst_h == 0 || src_w == 0 || src_h == 0 {
-        return;
+        return Ok(());
     }
 
     let scale_x = src_w as f32 / dst_w as f32;
@@ -176,6 +223,8 @@ pub fn resize_normalize_to_tensor_u8_to_f32_bilinear(
                 fused_bilinear_row(row0, row1, &x0b, &x1b, &wx, wy, ro, go, bo, dst_w, params);
             }
         });
+
+    Ok(())
 }
 
 /// One output row of the general bilinear path: dispatch to NEON / AVX2 / scalar.
@@ -811,7 +860,8 @@ mod tests {
         let std = [0.229, 0.224, 0.225];
         let params = NormalizeParams::<3>::from_mean_std(mean, std);
 
-        resize_normalize_to_tensor_u8_to_f32(&src, src_w, src_h, &mut dst, dst_w, dst_h, &params);
+        resize_normalize_to_tensor_u8_to_f32(&src, src_w, src_h, &mut dst, dst_w, dst_h, &params)
+            .unwrap();
 
         // f64 reference: (avg(2x2)/255 - mean) / std, CHW layout.
         let plane = dst_h * dst_w;
@@ -856,7 +906,8 @@ mod tests {
             dst_w,
             dst_h,
             &params,
-        );
+        )
+        .unwrap();
         let plane = dst_h * dst_w;
         for ch in 0..3 {
             let expect = -mean[ch] / std[ch];
@@ -886,7 +937,8 @@ mod tests {
 
         resize_normalize_to_tensor_u8_to_f32_bilinear(
             &src, src_w, src_h, &mut dst, dst_w, dst_h, &params,
-        );
+        )
+        .unwrap();
 
         let sx = src_w as f64 / dst_w as f64;
         let sy = src_h as f64 / dst_h as f64;
@@ -927,10 +979,12 @@ mod tests {
         let params = NormalizeParams::<3>::from_mean_std([0.5, 0.4, 0.3], [0.25, 0.2, 0.3]);
         let mut a = vec![0f32; 3 * dst_h * dst_w];
         let mut b = vec![0f32; 3 * dst_h * dst_w];
-        resize_normalize_to_tensor_u8_to_f32(&src, src_w, src_h, &mut a, dst_w, dst_h, &params);
+        resize_normalize_to_tensor_u8_to_f32(&src, src_w, src_h, &mut a, dst_w, dst_h, &params)
+            .unwrap();
         resize_normalize_to_tensor_u8_to_f32_bilinear(
             &src, src_w, src_h, &mut b, dst_w, dst_h, &params,
-        );
+        )
+        .unwrap();
         assert_eq!(a, b);
     }
 }

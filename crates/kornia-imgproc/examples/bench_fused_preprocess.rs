@@ -54,7 +54,8 @@ fn main() {
             dst_w,
             dst_h,
             &params,
-        );
+        )
+        .unwrap();
     }
 
     let t0 = Instant::now();
@@ -80,7 +81,8 @@ fn main() {
             dst_w,
             dst_h,
             &params,
-        );
+        )
+        .unwrap();
     }
     let fused_ms = t0.elapsed().as_secs_f64() / n as f64 * 1000.0;
 
