@@ -495,4 +495,80 @@ mod tests {
             "unsupported dtype (K_DL_INT 8-bit) must return DlpackShapeError"
         );
     }
+
+    // ── test 7: dynimage_to_dlpack — U16 dtype emits K_DL_UINT / bits=16 ─────
+
+    #[test]
+    fn test_dynimage_to_dlpack_u16() {
+        use dlpack_rs::ffi::K_DL_UINT;
+
+        // Build a 1×2 single-channel U16 image: values [1u16, 2u16].
+        let values: [u16; 2] = [1u16, 2u16];
+        let bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(
+                values.as_ptr() as *const u8,
+                values.len() * std::mem::size_of::<u16>(),
+            )
+        };
+        let img = DynImageBuf::from_bytes([1, 2, 1], PixelFormat::U16, ColorSpace::Gray, bytes)
+            .unwrap();
+
+        let mt = dynimage_to_dlpack(img);
+        assert!(!mt.is_null());
+
+        unsafe {
+            let dl = &(*mt).dl_tensor;
+            // dtype.code must be K_DL_UINT and bits must be 16.
+            assert_eq!(
+                dl.dtype.code, K_DL_UINT,
+                "U16 export must have code K_DL_UINT"
+            );
+            assert_eq!(dl.dtype.bits, 16, "U16 export must have bits=16");
+
+            // Fire the deleter to avoid leaking memory.
+            if let Some(del) = (*mt).deleter {
+                del(mt);
+            }
+        }
+    }
+
+    // ── test 8: dynimage_from_dlpack_raw — F32 CPU 1×1×3 path ───────────────
+
+    #[test]
+    fn test_dynimage_from_dlpack_raw_f32_cpu() {
+        // Allocate a 1×1 RGB F32 image: [1.0, 2.0, 3.0].
+        let data: Vec<f32> = vec![1.0f32, 2.0, 3.0];
+        let shape_arr: Vec<i64> = vec![1i64, 1, 3];
+
+        let dl_tensor = dlpack_rs::ffi::DLTensor {
+            data: data.as_ptr() as *mut std::ffi::c_void,
+            device: safe::cpu_device(),
+            ndim: 3,
+            dtype: safe::dtype_f32(),
+            shape: shape_arr.as_ptr() as *mut i64,
+            strides: std::ptr::null_mut(),
+            byte_offset: 0,
+        };
+        let mut managed = DLManagedTensor {
+            dl_tensor,
+            manager_ctx: std::ptr::null_mut(),
+            deleter: None,
+        };
+
+        let keepalive: Arc<dyn Any + Send + Sync> = Arc::new(data.clone());
+
+        let img =
+            unsafe { dynimage_from_dlpack_raw(&mut managed as *mut _, keepalive) }.unwrap();
+
+        // Verify domain, device_id, dtype, channels, color_space.
+        assert_eq!(img.domain(), MemoryDomain::Host);
+        assert_eq!(img.device_id(), 0);
+        assert_eq!(img.dtype(), PixelFormat::F32);
+        assert_eq!(img.channels(), 3);
+        assert_eq!(img.color_space(), ColorSpace::Rgb);
+
+        // Verify pixel values via as_image.
+        let view = unsafe { img.as_image::<f32, 3>() }.unwrap();
+        assert_eq!(view.as_slice(), data.as_slice());
+    }
 }

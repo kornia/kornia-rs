@@ -582,6 +582,80 @@ mod tests {
         assert!(matches!(result, Err(ImageError::UnsupportedDevice)));
     }
 
+    // ── test_nbytes_correct ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_nbytes_correct() {
+        // U8: H=2, W=3, C=4 → 2*3*4*1 = 24
+        let buf = DynImageBuf::new_owned([2, 3, 4], PixelFormat::U8, ColorSpace::Rgba).unwrap();
+        assert_eq!(buf.nbytes(), 24);
+
+        // F32: same spatial shape → 2*3*4*4 = 96
+        let buf = DynImageBuf::new_owned([2, 3, 4], PixelFormat::F32, ColorSpace::Rgba).unwrap();
+        assert_eq!(buf.nbytes(), 96);
+    }
+
+    // ── test_from_bytes_u16 ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_from_bytes_u16() {
+        // 4 u16 values in little-endian: [1u16, 2u16, 3u16, 4u16]
+        let values: [u16; 4] = [1, 2, 3, 4];
+        let bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(
+                values.as_ptr() as *const u8,
+                values.len() * std::mem::size_of::<u16>(),
+            )
+        };
+        assert_eq!(bytes.len(), 8);
+
+        let buf =
+            DynImageBuf::from_bytes([2, 2, 1], PixelFormat::U16, ColorSpace::Gray, bytes).unwrap();
+
+        assert_eq!(buf.nbytes(), 8);
+        assert_eq!(buf.dtype(), PixelFormat::U16);
+        assert_eq!(buf.channels(), 1);
+
+        // Zero-copy typed view: first pixel must be 1u16.
+        let img = unsafe { buf.as_image::<u16, 1>() }.unwrap();
+        assert_eq!(img.as_slice()[0], 1u16);
+        assert_eq!(img.as_slice()[1], 2u16);
+        assert_eq!(img.as_slice()[2], 3u16);
+        assert_eq!(img.as_slice()[3], 4u16);
+    }
+
+    // ── test_foreign_readonly_data_ptr ────────────────────────────────────────
+
+    #[test]
+    fn test_foreign_readonly_data_ptr() {
+        let mut data = vec![0u8; 6];
+        let ptr = data.as_mut_ptr();
+        let ka: Arc<dyn Any + Send + Sync> = Arc::new(data.clone());
+        let mut buf = unsafe {
+            DynImageBuf::from_borrowed(
+                ptr,
+                PixelFormat::U8,
+                [1, 2, 3],
+                ColorSpace::Rgb,
+                MemoryDomain::Host,
+                0,
+                true,
+                ka,
+            )
+        }
+        .unwrap();
+
+        // data_ptr() must return non-null even for readonly buffers.
+        assert!(!buf.data_ptr().is_null());
+        // readonly() must be true.
+        assert!(buf.readonly());
+        // data_ptr_mut() must panic.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = buf.data_ptr_mut();
+        }));
+        assert!(result.is_err(), "data_ptr_mut must panic on readonly buffer");
+    }
+
     // ── helper ────────────────────────────────────────────────────────────────────
 
     /// Reinterpret a `&[f32]` as `&[u8]` (native endian).
