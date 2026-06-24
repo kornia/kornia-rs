@@ -245,9 +245,7 @@ pub fn solve_ap3p(
         }
     }
 
-    let pick = best_idx.ok_or_else(|| {
-        PnPError::SvdFailed("AP3P: all candidates failed cheirality check".to_string())
-    })?;
+    let pick = best_idx.ok_or(PnPError::CheiralityCheckFailed)?;
 
     Ok(to_pnp_result(
         &solutions_r[pick],
@@ -742,9 +740,7 @@ pub fn solve_ap3p_multi(
     }
 
     if results.is_empty() {
-        Err(PnPError::SvdFailed(
-            "AP3P: all candidates failed cheirality".to_string(),
-        ))
+        Err(PnPError::CheiralityCheckFailed)
     } else {
         Ok(results)
     }

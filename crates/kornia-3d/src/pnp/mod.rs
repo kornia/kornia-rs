@@ -50,6 +50,10 @@ pub enum PnPError {
     /// Singular value decomposition failed.
     #[error("SVD computation failed: {0}")]
     SvdFailed(String),
+
+    /// All returned poses placed the points behind the camera.
+    #[error("Cheirality check failed: all mathematically valid poses place the 3D points behind the camera lens.")]
+    CheiralityCheckFailed,
 }
 
 /// Numeric tolerances used by linear algebra routines throughout the PnP pipeline.
