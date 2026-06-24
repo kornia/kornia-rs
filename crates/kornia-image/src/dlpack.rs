@@ -158,12 +158,8 @@ pub unsafe fn dynimage_from_dlpack_raw(
     let w = shape_slice[1] as usize;
     let c = shape_slice[2] as usize;
 
-    // Map dtype.
+    // Map dtype — returns DlpackShapeError for unrecognized DLDataType codes.
     let dtype = dl_dtype_to_pixel_format(dl.dtype).ok_or_else(|| {
-        // Construct a synthetic "unknown" PixelFormat representation for the error.
-        // We reuse DtypeMismatch with U8 as placeholder; the actual unsupported type
-        // is described by the error string via Display on PixelFormat, but since we
-        // have no PixelFormat for unknown dtypes we use a shape error instead.
         ImageError::DlpackShapeError(format!(
             "unsupported DLDataType code={} bits={}",
             dl.dtype.code, dl.dtype.bits
