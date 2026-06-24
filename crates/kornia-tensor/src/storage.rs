@@ -67,6 +67,11 @@ pub struct TensorStorage<T, A: TensorAllocator> {
     pub(crate) owns_memory: bool,
     /// Where the backing memory lives (host or device).
     pub(crate) domain: MemoryDomain,
+    /// The CUDA device id (0 for host or single-GPU).
+    pub(crate) device_id: i32,
+    /// Optional keep-alive guard; when Some, the Arc is dropped with this storage.
+    #[allow(dead_code)]
+    pub(crate) keepalive: Option<std::sync::Arc<dyn core::any::Any + Send + Sync>>,
 }
 
 impl<T, A: TensorAllocator> TensorStorage<T, A> {
@@ -94,6 +99,12 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
     #[inline]
     pub fn domain(&self) -> MemoryDomain {
         self.domain
+    }
+
+    /// Returns the device id for this storage (0 for host; CUDA device id for Device domain).
+    #[inline]
+    pub fn device_id(&self) -> i32 {
+        self.device_id
     }
 
     /// Returns the storage data as a slice.
@@ -209,6 +220,8 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
             alloc,
             owns_memory: true,
             domain: MemoryDomain::Host,
+            device_id: 0,
+            keepalive: None,
         }
     }
 
@@ -241,6 +254,8 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
             alloc,
             owns_memory: false,
             domain: MemoryDomain::Host,
+            device_id: 0,
+            keepalive: None,
         }
     }
 
@@ -268,6 +283,45 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
             alloc,
             owns_memory: true,
             domain: MemoryDomain::Device,
+            device_id: 0,
+            keepalive: None,
+        }
+    }
+
+    /// Creates a borrowed storage view that keeps `keepalive` alive until this storage is dropped.
+    ///
+    /// The storage does NOT own the memory — `Drop` will NOT call `alloc.dealloc`.
+    /// Instead it holds `keepalive` in an `Arc` so the source object lives at least as long
+    /// as this storage.
+    ///
+    /// # Safety
+    ///
+    /// - `data` must point to a valid, non-null allocation of at least `len_bytes` bytes valid for `T`.
+    /// - The memory must remain valid for the full lifetime of this storage (guaranteed by `keepalive`).
+    /// - `domain` and `device_id` must correctly describe where `data` lives:
+    ///   - `(Host, 0)` for CPU memory,
+    ///   - `(Device, id)` for CUDA device `id`.
+    /// - For `Device` domain: do NOT call `as_slice`/`as_mut_slice` (they will panic).
+    pub unsafe fn from_borrowed(
+        data: *const T,
+        len_bytes: usize,
+        alloc: A,
+        domain: MemoryDomain,
+        device_id: i32,
+        keepalive: std::sync::Arc<dyn core::any::Any + Send + Sync>,
+    ) -> Self {
+        // SAFETY: caller guarantees data is non-null and valid for len_bytes
+        let ptr = NonNull::new_unchecked(data as *mut T);
+        let layout = Layout::from_size_align_unchecked(len_bytes, std::mem::align_of::<T>());
+        Self {
+            ptr,
+            len: len_bytes,
+            layout,
+            alloc,
+            owns_memory: false,
+            domain,
+            device_id,
+            keepalive: Some(keepalive),
         }
     }
 
@@ -302,6 +356,8 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
 // Safety:
 // TensorStorage is thread-safe if the allocator is thread-safe.
 // The storage owns its data exclusively, and the allocator trait requires thread-safety.
+// The `keepalive` field is `Option<Arc<dyn Any+Send+Sync>>`, which is itself Send+Sync,
+// so adding it does not weaken the overall thread-safety guarantees.
 unsafe impl<T, A: TensorAllocator> Send for TensorStorage<T, A> {}
 unsafe impl<T, A: TensorAllocator> Sync for TensorStorage<T, A> {}
 
@@ -368,6 +424,8 @@ mod tests {
             ptr,
             owns_memory: true,
             domain: super::MemoryDomain::Host,
+            device_id: 0,
+            keepalive: None,
         };
 
         assert_eq!(buffer.ptr.as_ptr(), ptr_raw);
@@ -411,6 +469,8 @@ mod tests {
             ptr: ptr.cast::<f32>(),
             owns_memory: true,
             domain: super::MemoryDomain::Host,
+            device_id: 0,
+            keepalive: None,
         };
 
         assert_eq!(buffer.as_ptr(), ptr.as_ptr() as *const f32);

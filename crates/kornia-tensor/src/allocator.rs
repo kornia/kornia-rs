@@ -195,6 +195,69 @@ impl TensorAllocator for CpuAllocator {
     }
 }
 
+/// A 64-byte aligned CPU allocator, suitable for SIMD and cache-line-friendly workloads.
+///
+/// Uses `alloc_zeroed` so freshly allocated memory is always zero-initialised.
+///
+/// # Examples
+///
+/// ```rust
+/// use kornia_tensor::allocator::AlignedCpuAllocator;
+/// use kornia_tensor::TensorAllocator;
+/// use std::alloc::Layout;
+///
+/// let alloc = AlignedCpuAllocator;
+/// let layout = Layout::from_size_align(128, 1).unwrap();
+/// let ptr = alloc.alloc(layout).unwrap();
+/// // ptr is guaranteed to be 64-byte aligned
+/// assert_eq!(ptr as usize % 64, 0);
+/// alloc.dealloc(ptr, layout);
+/// ```
+#[derive(Clone)]
+pub struct AlignedCpuAllocator;
+
+impl TensorAllocator for AlignedCpuAllocator {
+    fn alloc(&self, layout: Layout) -> Result<*mut u8, TensorAllocatorError> {
+        // Build a 64-byte aligned layout of the requested size.
+        let aligned = Layout::from_size_align(layout.size(), 64)
+            .map_err(TensorAllocatorError::LayoutError)?;
+        // SAFETY: `aligned` is a valid layout (size and power-of-two alignment).
+        let ptr = unsafe { alloc::alloc_zeroed(aligned) };
+        if ptr.is_null() {
+            return Err(TensorAllocatorError::NullPointer);
+        }
+        Ok(ptr)
+    }
+
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        if !ptr.is_null() {
+            // Reconstruct the exact layout used during alloc (64-byte alignment).
+            if let Ok(aligned) = Layout::from_size_align(layout.size(), 64) {
+                // SAFETY: ptr was allocated with `aligned` by this allocator's alloc.
+                unsafe { alloc::dealloc(ptr, aligned) }
+            }
+        }
+    }
+}
+
+/// A no-op allocator for foreign (externally managed) memory.
+///
+/// Used when wrapping memory that is owned by an external system (e.g. DLPack,
+/// numpy, CUDA runtime). `alloc` always errors; `dealloc` is a no-op.
+#[derive(Clone)]
+pub struct ForeignAllocator;
+
+impl TensorAllocator for ForeignAllocator {
+    fn alloc(&self, _layout: Layout) -> Result<*mut u8, TensorAllocatorError> {
+        Err(TensorAllocatorError::NullPointer)
+    }
+
+    fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {
+        // Foreign memory is managed externally; no deallocation needed.
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -218,5 +281,19 @@ mod tests {
         // If the null-guard is missing this would invoke undefined behaviour.
         // A passing call here confirms the guard is in place.
         allocator.dealloc(null_ptr, layout);
+    }
+
+    #[test]
+    fn test_aligned_cpu_allocator() -> Result<(), TensorAllocatorError> {
+        let allocator = AlignedCpuAllocator;
+        let layout = Layout::from_size_align(256, 1).unwrap(); // request unaligned layout
+        let ptr = allocator.alloc(layout)?;
+        assert!(!ptr.is_null());
+        assert_eq!(ptr as usize % 64, 0, "pointer must be 64-byte aligned");
+        // memory must be zeroed
+        let slice = unsafe { std::slice::from_raw_parts(ptr, 256) };
+        assert!(slice.iter().all(|&b| b == 0), "memory must be zeroed");
+        allocator.dealloc(ptr, layout);
+        Ok(())
     }
 }

@@ -93,6 +93,13 @@
 /// memory backends. The default [`CpuAllocator`] uses the system allocator for CPU memory.
 pub mod allocator;
 
+/// DLPack interop — convert Tensor to/from DLManagedTensor (CPU and CUDA).
+///
+/// Enabled by the `dlpack` feature. Zero-copy for owned CPU tensors (the tensor
+/// itself becomes the keepalive object passed to `dlpack_rs::safe::pack`).
+#[cfg(feature = "dlpack")]
+pub mod dlpack;
+
 /// GPU backend module providing the [`Backend`] trait and [`GpuAllocator`] abstraction.
 ///
 /// Enabled by the `gpu` feature. Backend implementations live in sub-modules gated by
@@ -132,7 +139,7 @@ pub mod tensor;
 /// into existing tensor data.
 pub mod view;
 
-pub use crate::allocator::{CpuAllocator, TensorAllocator};
+pub use crate::allocator::{AlignedCpuAllocator, CpuAllocator, ForeignAllocator, TensorAllocator};
 pub use crate::storage::MemoryDomain;
 pub(crate) use crate::tensor::get_strides_from_shape;
 pub use crate::tensor::{Tensor, TensorError};
