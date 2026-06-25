@@ -1770,9 +1770,9 @@ mod tests {
             let s = x * 3;
             neon[x] = encode_y(src[s] as i32, src[s + 1] as i32, src[s + 2] as i32);
         }
-        for x in 0..width {
+        for (x, out) in scalar.iter_mut().enumerate().take(width) {
             let s = x * 3;
-            scalar[x] = encode_y(src[s] as i32, src[s + 1] as i32, src[s + 2] as i32);
+            *out = encode_y(src[s] as i32, src[s + 1] as i32, src[s + 2] as i32);
         }
         assert_eq!(neon, scalar);
 
@@ -1827,6 +1827,8 @@ mod tests {
         yuyv_from_rgb(&rgb, &mut out, 2, 1);
         let y0 = encode_y(255, 0, 0);
         let y1 = encode_y(0, 0, 255);
+        // `(r1 + r2 + 1) >> 1` average formula; the 0s are explicit channel values.
+        #[allow(clippy::identity_op)]
         let (u, v) = encode_uv((255 + 0 + 1) >> 1, 0, (0 + 255 + 1) >> 1);
         assert_eq!(out, [y0, u, y1, v]);
     }

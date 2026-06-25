@@ -347,19 +347,24 @@ mod tests {
         const FRAME_BYTES: usize = W * H * 3;
         assert!(FRAME_BYTES <= total_bytes, "frame fits in one page");
 
-        let buffer = unsafe {
-            MmapBuffer::new(raw_ptr as *const u8, FRAME_BYTES, mmap_info.clone())
-        };
+        let buffer =
+            unsafe { MmapBuffer::new(raw_ptr as *const u8, FRAME_BYTES, mmap_info.clone()) };
 
         // Drop the Arc we kept for observation — now only buffer (and arc_weak) hold it.
         drop(mmap_info);
         // Arc strong count == 1 (buffer's _mmap_info); weak count == 1 (arc_weak).
-        assert!(arc_weak.upgrade().is_some(), "MmapInfo still alive via buffer");
+        assert!(
+            arc_weak.upgrade().is_some(),
+            "MmapInfo still alive via buffer"
+        );
 
         // Build an Image via image_from_v4l_buffer — this moves `buffer` into V4lResource
         // and wraps it in Arc<dyn Any>; the V4lResource is then the sole holder of buffer
         // which is the sole holder of Arc<MmapInfo>.
-        let size = ImageSize { width: W, height: H };
+        let size = ImageSize {
+            width: W,
+            height: H,
+        };
         let image = image_from_v4l_buffer(size, buffer)
             .expect("image_from_v4l_buffer must succeed for a valid mmap region");
 
@@ -372,11 +377,7 @@ mod tests {
         assert_eq!(slice.len(), FRAME_BYTES);
         // Spot-check the pattern written above.
         for (i, &byte) in slice.iter().enumerate() {
-            assert_eq!(
-                byte,
-                (i % 251) as u8,
-                "pixel mismatch at index {i}"
-            );
+            assert_eq!(byte, (i % 251) as u8, "pixel mismatch at index {i}");
         }
 
         // Arc<MmapInfo> still alive (held by V4lResource inside the Image).

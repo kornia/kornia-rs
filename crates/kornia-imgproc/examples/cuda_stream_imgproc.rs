@@ -45,20 +45,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Build a simple gradient: pixel (row, col) → (col, row, 128)
     let rgb_data: Vec<u8> = (0..height)
-        .flat_map(|row| {
-            (0..width).flat_map(move |col| {
-                [col as u8, row as u8, 128u8]
-            })
-        })
+        .flat_map(|row| (0..width).flat_map(move |col| [col as u8, row as u8, 128u8]))
         .collect();
 
     // Wrap in a kornia Tensor<u8,1,CpuAllocator> (host, contiguous).
     // This is the source image: shape [npix*3] (interleaved RGB bytes).
-    let host_rgb = Tensor::<u8, 1, CpuAllocator>::from_shape_vec(
-        [npix * 3],
-        rgb_data,
-        CpuAllocator,
-    )?;
+    let host_rgb =
+        Tensor::<u8, 1, CpuAllocator>::from_shape_vec([npix * 3], rgb_data, CpuAllocator)?;
 
     println!(
         "Step 1: host RGB tensor — shape {:?}, first 9 bytes: {:?}",
@@ -101,7 +94,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // This call panics because `dev_rgb_tensor` lives on the device.
         let _ = dev_rgb_tensor.as_slice();
     }));
-    assert!(panic_result.is_err(), "expected a panic from as_slice on device tensor");
+    assert!(
+        panic_result.is_err(),
+        "expected a panic from as_slice on device tensor"
+    );
     println!("Step 3: as_slice() correctly refused host access on a Device tensor");
 
     // ── Step 4: allocate output device buffer for grayscale result ────────────
@@ -147,7 +143,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     builder.arg(&npix_i32);
     unsafe { builder.launch(cfg) }?;
 
-    println!("Step 5: rgb_to_gray kernel launched (grid={blocks} blocks × {threads_per_block} threads)");
+    println!(
+        "Step 5: rgb_to_gray kernel launched (grid={blocks} blocks × {threads_per_block} threads)"
+    );
 
     // ── Step 6: wrap output slice in a Tensor, then D2H ──────────────────────
     //

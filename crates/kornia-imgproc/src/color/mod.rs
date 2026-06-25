@@ -78,7 +78,9 @@ mod sepia;
 mod yuv;
 
 // Export traits for type-safe conversions
-pub use convert::{ConvertColor, ConvertColorExt, ConvertColorWithBackground, NewColorImage, SrcSize, Tagged};
+pub use convert::{
+    ConvertColor, ConvertColorExt, ConvertColorWithBackground, NewColorImage, SrcSize, Tagged,
+};
 
 pub use colormap::{apply_colormap, ColormapType};
 // Re-export Bayer mosaic types from kornia-image alongside the demosaic fns.

@@ -6,11 +6,7 @@
 use std::{any::Any, sync::Arc};
 
 use dlpack_rs::ffi::DLManagedTensor;
-use kornia_tensor::{
-    dlpack::tensor_to_dlpack,
-    storage::TensorStorage,
-    MemoryDomain,
-};
+use kornia_tensor::{dlpack::tensor_to_dlpack, storage::TensorStorage, MemoryDomain};
 
 use crate::{
     allocator::{ForeignAllocator, ImageAllocator},
@@ -133,11 +129,7 @@ where
     if !dl.strides.is_null() {
         // SAFETY: dl.strides is valid for dl.ndim (== 3) elements per DLPack spec.
         let s = unsafe { std::slice::from_raw_parts(dl.strides, 3) };
-        let expected_strides = [
-            (shape[1] * shape[2]) as i64,
-            shape[2] as i64,
-            1i64,
-        ];
+        let expected_strides = [(shape[1] * shape[2]) as i64, shape[2] as i64, 1i64];
         if s != expected_strides {
             return Err(ImageError::DlpackShapeError(format!(
                 "tensor is not C-contiguous: strides {:?}, expected {:?}",
@@ -150,16 +142,25 @@ where
     let n_elems = shape
         .iter()
         .try_fold(1usize, |a, &d| a.checked_mul(d))
-        .ok_or_else(|| ImageError::DlpackShapeError("integer overflow computing tensor size".to_string()))?;
+        .ok_or_else(|| {
+            ImageError::DlpackShapeError("integer overflow computing tensor size".to_string())
+        })?;
     let len_bytes = n_elems
         .checked_mul(std::mem::size_of::<T>())
-        .ok_or_else(|| ImageError::DlpackShapeError("integer overflow computing byte length".to_string()))?;
+        .ok_or_else(|| {
+            ImageError::DlpackShapeError("integer overflow computing byte length".to_string())
+        })?;
 
     // 9. Map device.
     let (domain, device_id) = if dl.device.device_type == K_DL_CPU {
         (MemoryDomain::Host, 0i32)
     } else {
-        (MemoryDomain::Device { id: dl.device.device_id }, dl.device.device_id)
+        (
+            MemoryDomain::Device {
+                id: dl.device.device_id,
+            },
+            dl.device.device_id,
+        )
     };
 
     // 10. Apply byte_offset.
@@ -171,7 +172,14 @@ where
     // the source alive; domain+device_id correctly reflect the DLDevice.
     let data_ptr = unsafe { (dl.data as *const u8).add(byte_offset) as *const T };
     let storage = unsafe {
-        TensorStorage::from_borrowed(data_ptr, len_bytes, ForeignAllocator, domain, device_id, keepalive)
+        TensorStorage::from_borrowed(
+            data_ptr,
+            len_bytes,
+            ForeignAllocator,
+            domain,
+            device_id,
+            keepalive,
+        )
     };
 
     // 12. Build Tensor<T, 3, ForeignAllocator>.
@@ -248,10 +256,7 @@ mod tests {
         };
 
         // Import as Image<u8,3,ForeignAllocator> (keepalive holds the DropGuard).
-        let img = unsafe {
-            image_from_dlpack::<u8, 3>(&mut managed as *mut _, keepalive)
-        }
-        .unwrap();
+        let img = unsafe { image_from_dlpack::<u8, 3>(&mut managed as *mut _, keepalive) }.unwrap();
 
         assert_eq!(counter.load(Ordering::SeqCst), 0, "not dropped yet");
 
@@ -294,7 +299,10 @@ mod tests {
     fn test_image_to_dlpack_cpu_allocator() {
         let data: Vec<u8> = (0u8..18).collect();
         let img = Image::<u8, 3, ImageCpuAllocator>::new(
-            ImageSize { height: 2, width: 3 },
+            ImageSize {
+                height: 2,
+                width: 3,
+            },
             data,
             ImageCpuAllocator,
         )
@@ -309,7 +317,10 @@ mod tests {
             let s = std::slice::from_raw_parts(dl.shape, 3);
             assert_eq!(s, &[2i64, 3, 3], "shape must be [H=2, W=3, C=3]");
             use dlpack_rs::ffi::K_DL_UINT;
-            assert_eq!(dl.dtype.code, K_DL_UINT as u8, "dtype code must be K_DL_UINT");
+            assert_eq!(
+                dl.dtype.code, K_DL_UINT as u8,
+                "dtype code must be K_DL_UINT"
+            );
             assert_eq!(dl.dtype.bits, 8, "dtype bits must be 8");
 
             // Fire the deleter — must not panic.

@@ -4,7 +4,13 @@ use kornia_image::ColorSpace;
 use pyo3::prelude::*;
 
 /// Per-pixel color space tag used by `Image.cvt_color`.
-#[pyclass(name = "ColorSpace", eq, eq_int, from_py_object, module = "kornia_rs.image")]
+#[pyclass(
+    name = "ColorSpace",
+    eq,
+    eq_int,
+    from_py_object,
+    module = "kornia_rs.image"
+)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum PyColorSpace {
     Rgb,
@@ -69,10 +75,7 @@ impl PyColorSpace {
 
     /// Support `pickle.dumps` / `pickle.loads` round-trips.
     fn __reduce__(&self, py: Python<'_>) -> PyResult<(Py<PyAny>, (u8,))> {
-        let from_int = py
-            .get_type::<PyColorSpace>()
-            .getattr("_from_int")?
-            .unbind();
+        let from_int = py.get_type::<PyColorSpace>().getattr("_from_int")?.unbind();
         Ok((from_int, (self.to_int(),)))
     }
 }

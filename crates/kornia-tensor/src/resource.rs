@@ -45,7 +45,10 @@ impl MemoryDomain {
     /// Both [`Device`](MemoryDomain::Device) and [`Unified`](MemoryDomain::Unified) memory
     /// satisfy this predicate.
     pub fn is_device_accessible(&self) -> bool {
-        matches!(self, MemoryDomain::Device { .. } | MemoryDomain::Unified { .. })
+        matches!(
+            self,
+            MemoryDomain::Device { .. } | MemoryDomain::Unified { .. }
+        )
     }
 
     /// Returns the CUDA device id (0 for host; the embedded id for Device/Unified).
@@ -126,10 +129,7 @@ impl HostResource {
     /// `ptr` must have been returned by the global allocator using this exact `layout`.
     /// Ownership is transferred; this resource's [`Drop`] will call
     /// `std::alloc::dealloc(ptr, layout)`.
-    pub unsafe fn from_raw(
-        ptr: *mut u8,
-        layout: Layout,
-    ) -> Result<Self, TensorAllocatorError> {
+    pub unsafe fn from_raw(ptr: *mut u8, layout: Layout) -> Result<Self, TensorAllocatorError> {
         Ok(Self {
             ptr: NonNull::new(ptr).ok_or(TensorAllocatorError::NullPointer)?,
             layout,
@@ -325,7 +325,7 @@ mod tests {
         }
 
         let count = Arc::new(AtomicUsize::new(0));
-        let buf = vec![1u8, 2, 3, 4];
+        let buf = [1u8, 2, 3, 4];
         {
             let keep: Arc<dyn Any + Send + Sync> = Arc::new(Guard(count.clone()));
             let r = unsafe {

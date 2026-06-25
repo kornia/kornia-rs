@@ -27,7 +27,9 @@ pub enum TensorAllocatorError {
     ///
     /// [`ForeignAllocator`] exists only as a type tag for externally-owned buffers;
     /// calling `allocate` on it is always an error.
-    #[error("Cannot allocate with a foreign allocator — use from_borrowed or a wrapping constructor")]
+    #[error(
+        "Cannot allocate with a foreign allocator — use from_borrowed or a wrapping constructor"
+    )]
     CannotAllocateForeign,
 
     /// A CUDA allocation or driver call failed.

@@ -15,7 +15,9 @@ crate-type = ["cdylib"]
 name = "kornia_rs"
 
 [dependencies]
-dlpack-rs = { git = "https://github.com/kornia/dlpack-rs", tag = "v0.3.2", features = ["pyo3"] }
+dlpack-rs = { git = "https://github.com/kornia/dlpack-rs", tag = "v0.3.2", features = [
+  "pyo3"
+] }
 kornia-3d = { workspace = true }
 kornia-algebra = { workspace = true }
 kornia-apriltag = { workspace = true }

@@ -136,6 +136,9 @@ fn avx2_available() -> bool {
 }
 
 /// Warms up and times the AVX2 path. Returns `None` if AVX2/FMA is absent.
+// `src`/`dst` are only referenced inside `#[cfg(target_arch = "x86_64")]`; on
+// other hosts the early `return None` makes them unreachable.
+#[allow(unused_variables)]
 fn time_avx2(src: &[f32], dst: &mut [f32]) -> Option<f64> {
     if !avx2_available() {
         return None;

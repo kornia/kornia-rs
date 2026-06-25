@@ -41,22 +41,15 @@
 //! - `miri` cannot execute CUDA driver calls; device tests are guarded by
 //!   `#[cfg(all(test, feature = "cudarc"))]` and run on the real Jetson Orin.
 
-use std::{
-    any::Any,
-    marker::PhantomData,
-    ptr::NonNull,
-    sync::Arc,
-};
+use std::{any::Any, marker::PhantomData, ptr::NonNull, sync::Arc};
 
-use cudarc::driver::{
-    CudaContext, CudaSlice, CudaStream, DevicePtr, DeviceRepr, ValidAsZeroBits,
-};
+use cudarc::driver::{CudaContext, CudaSlice, CudaStream, DevicePtr, DeviceRepr, ValidAsZeroBits};
 
 use crate::{
     allocator::{CpuAllocator, TensorAllocator, TensorAllocatorError},
     resource::{MemoryDomain, MemoryResource},
     storage::TensorStorage,
-    tensor::{Tensor, TensorError, get_strides_from_shape},
+    tensor::{get_strides_from_shape, Tensor, TensorError},
 };
 
 // ── CudaResource ─────────────────────────────────────────────────────────────
@@ -224,11 +217,7 @@ where
     /// # Panics
     ///
     /// Panics if `slice.len() != shape.iter().product()`.
-    pub fn from_cudaslice(
-        slice: CudaSlice<T>,
-        shape: [usize; N],
-        stream: Arc<CudaStream>,
-    ) -> Self {
+    pub fn from_cudaslice(slice: CudaSlice<T>, shape: [usize; N], stream: Arc<CudaStream>) -> Self {
         let numel = shape.iter().product::<usize>();
         assert_eq!(
             slice.len(),
@@ -313,8 +302,7 @@ where
         // Downcast Box<dyn MemoryResource> → Box<CudaResource<T>>.
         // SAFETY: We verified above (downcast_ref) that the concrete type is CudaResource<T>.
         let raw: *mut dyn MemoryResource = Box::into_raw(owner);
-        let cuda_box: Box<CudaResource<T>> =
-            unsafe { Box::from_raw(raw as *mut CudaResource<T>) };
+        let cuda_box: Box<CudaResource<T>> = unsafe { Box::from_raw(raw as *mut CudaResource<T>) };
 
         // Move CudaSlice<T> out without running CudaResource's Drop.
         let mut md_res = std::mem::ManuallyDrop::new(*cuda_box);
@@ -454,7 +442,11 @@ mod tests {
         );
 
         let back = dev.to_host(&stream).unwrap();
-        assert_eq!(back.as_slice(), &[1u8, 2, 3, 4], "round-trip bytes must match");
+        assert_eq!(
+            back.as_slice(),
+            &[1u8, 2, 3, 4],
+            "round-trip bytes must match"
+        );
     }
 
     /// `as_slice()` on a device tensor must panic with "non-host-accessible".
@@ -477,9 +469,8 @@ mod tests {
         let ctx = CudaContext::new(0).unwrap();
         let stream = ctx.default_stream();
 
-        let host =
-            Tensor::<u8, 1, CpuAllocator>::from_shape_vec([8], vec![10u8; 8], CpuAllocator)
-                .unwrap();
+        let host = Tensor::<u8, 1, CpuAllocator>::from_shape_vec([8], vec![10u8; 8], CpuAllocator)
+            .unwrap();
         let dev = host.to_cuda(&stream).unwrap();
         let slice = dev.into_cudaslice().ok().expect("must be cuda-backed");
         // The slice now owns the device memory.  Drop it — cudarc frees exactly once.
@@ -536,11 +527,16 @@ mod tests {
         );
 
         // as_cudaslice must also report the same device pointer.
-        let wrapped = tensor.as_cudaslice().expect("must be CudaResource<u8>-backed");
+        let wrapped = tensor
+            .as_cudaslice()
+            .expect("must be CudaResource<u8>-backed");
         let wrapped_ptr = {
             let (cu_ptr, _sync) = wrapped.device_ptr(&stream);
             cu_ptr as usize
         };
-        assert_eq!(wrapped_ptr, orig_ptr, "as_cudaslice must report the aliased pointer");
+        assert_eq!(
+            wrapped_ptr, orig_ptr,
+            "as_cudaslice must report the aliased pointer"
+        );
     }
 }

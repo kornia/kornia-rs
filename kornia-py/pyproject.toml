@@ -58,11 +58,11 @@ requires = ["maturin>=1.9,<2"]
 build-backend = "maturin"
 
 [tool.maturin]
+module-name = "kornia_rs.kornia_rs"
 # Mixed layout: the compiled extension lands at `kornia_rs/kornia_rs.*.so` while
 # `python/kornia_rs/` ships the re-export `__init__.py`, the `py.typed` marker,
 # and the `.pyi` type stubs.
 python-source = "python"
-module-name = "kornia_rs.kornia_rs"
 
 [tool.pytest.ini_options]
 pythonpath = ["benchmarks"]

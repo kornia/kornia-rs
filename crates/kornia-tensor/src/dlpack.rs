@@ -45,7 +45,7 @@ macro_rules! impl_dlpack_elem {
 }
 
 // DLDataTypeCode values: kDLInt=0, kDLUInt=1, kDLFloat=2, kDLBfloat=4, kDLBool=6
-impl_dlpack_elem!(u8,  1u32, 8,  1);
+impl_dlpack_elem!(u8, 1u32, 8, 1);
 impl_dlpack_elem!(u16, 1u32, 16, 1);
 impl_dlpack_elem!(i32, 0u32, 32, 1);
 impl_dlpack_elem!(i64, 0u32, 64, 1);
@@ -67,9 +67,7 @@ impl_dlpack_elem!(f64, 2u32, 64, 1);
 /// # Panics
 ///
 /// Panics if `T` does not implement [`DlpackElem`] (compile-time, via trait bound).
-pub fn tensor_to_dlpack<T, const N: usize, A>(
-    t: Tensor<T, N, A>,
-) -> *mut DLManagedTensor
+pub fn tensor_to_dlpack<T, const N: usize, A>(t: Tensor<T, N, A>) -> *mut DLManagedTensor
 where
     T: DlpackElem + 'static + Send,
     A: TensorAllocator + Send + 'static,
@@ -205,8 +203,7 @@ where
     let (domain, device_id) = map_dl_device(dl.device);
 
     // Convert byte_offset safely: u64 -> usize (fails on 32-bit if value > usize::MAX).
-    let byte_offset =
-        usize::try_from(dl.byte_offset).map_err(|_| DlpackError::Overflow)?;
+    let byte_offset = usize::try_from(dl.byte_offset).map_err(|_| DlpackError::Overflow)?;
 
     // Build storage (borrowed, no dealloc).
     // SAFETY: data pointer is valid for len_bytes (caller contract), keepalive keeps
@@ -239,7 +236,12 @@ fn map_dl_device(device: DLDevice) -> (MemoryDomain, i32) {
         (MemoryDomain::Host, 0)
     } else {
         // kDLCUDA and any other device type -> Device domain.
-        (MemoryDomain::Device { id: device.device_id }, device.device_id)
+        (
+            MemoryDomain::Device {
+                id: device.device_id,
+            },
+            device.device_id,
+        )
     }
 }
 
@@ -249,8 +251,8 @@ fn map_dl_device(device: DLDevice) -> (MemoryDomain, i32) {
 mod tests {
     use super::*;
     use crate::{CpuAllocator, Tensor};
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     // ── round-trip: owned CPU tensor ──────────────────────────────────────────
 
@@ -270,8 +272,7 @@ mod tests {
 
         // Build a borrowed tensor whose lifetime is tied to a DropCounter keepalive.
         let data = vec![1.0f32, 2.0, 3.0, 4.0];
-        let keep: Arc<dyn core::any::Any + Send + Sync> =
-            Arc::new(DropCounter(counter.clone()));
+        let keep: Arc<dyn core::any::Any + Send + Sync> = Arc::new(DropCounter(counter.clone()));
         let tensor = unsafe {
             use crate::storage::TensorStorage;
             let storage = TensorStorage::<f32, crate::allocator::ForeignAllocator>::from_borrowed(
@@ -284,7 +285,11 @@ mod tests {
             );
             let shape = [4usize];
             let strides = crate::tensor::get_strides_from_shape(shape);
-            Tensor { storage, shape, strides }
+            Tensor {
+                storage,
+                shape,
+                strides,
+            }
         };
 
         assert_eq!(counter.load(Ordering::SeqCst), 0);
@@ -356,10 +361,9 @@ mod tests {
 
         assert_eq!(counter.load(Ordering::SeqCst), 0);
 
-        let tensor = unsafe {
-            tensor_from_dlpack_raw::<f32, 1>(&mut managed as *mut _, guard as Arc<_>)
-        }
-        .unwrap();
+        let tensor =
+            unsafe { tensor_from_dlpack_raw::<f32, 1>(&mut managed as *mut _, guard as Arc<_>) }
+                .unwrap();
 
         // Verify domain and device_id
         assert_eq!(tensor.storage.domain(), MemoryDomain::Host);
@@ -416,10 +420,8 @@ mod tests {
         // keepalive keeps `data` alive
         let keepalive: Arc<dyn core::any::Any + Send + Sync> = Arc::new(data);
 
-        let tensor = unsafe {
-            tensor_from_dlpack_raw::<f32, 1>(&mut managed as *mut _, keepalive)
-        }
-        .unwrap();
+        let tensor =
+            unsafe { tensor_from_dlpack_raw::<f32, 1>(&mut managed as *mut _, keepalive) }.unwrap();
 
         // CUDA-readiness assertions
         assert!(
@@ -458,10 +460,8 @@ mod tests {
         };
 
         let keepalive: Arc<dyn core::any::Any + Send + Sync> = Arc::new(data);
-        let tensor = unsafe {
-            tensor_from_dlpack_raw::<f32, 1>(&mut managed as *mut _, keepalive)
-        }
-        .unwrap();
+        let tensor =
+            unsafe { tensor_from_dlpack_raw::<f32, 1>(&mut managed as *mut _, keepalive) }.unwrap();
 
         // This MUST panic:
         let _ = tensor.storage.as_slice();

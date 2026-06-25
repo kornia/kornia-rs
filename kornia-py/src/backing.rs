@@ -229,9 +229,7 @@ pub fn byte_len(h: usize, w: usize, c: usize, dtype: Dtype) -> pyo3::PyResult<us
         .and_then(|x| x.checked_mul(c))
         .and_then(|x| x.checked_mul(dtype.itemsize()))
         .ok_or_else(|| {
-            pyo3::exceptions::PyOverflowError::new_err(
-                "image dimensions overflow usize",
-            )
+            pyo3::exceptions::PyOverflowError::new_err("image dimensions overflow usize")
         })
 }
 
@@ -276,8 +274,14 @@ mod tests {
 
     #[test]
     fn alloc_output_owned_sizes_correctly() {
-        let (b, sz) =
-            alloc_output_owned::<3>(Dtype::F32, ImageSize { width: 4, height: 5 }).unwrap();
+        let (b, sz) = alloc_output_owned::<3>(
+            Dtype::F32,
+            ImageSize {
+                width: 4,
+                height: 5,
+            },
+        )
+        .unwrap();
         assert_eq!(b.len(), 4 * 5 * 3 * 4);
         assert_eq!((sz.width, sz.height), (4, 5));
     }

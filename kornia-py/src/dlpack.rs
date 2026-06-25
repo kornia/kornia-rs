@@ -90,4 +90,3 @@ pub fn require_cpu(device: DLDevice) -> PyResult<()> {
         Ok(())
     }
 }
-

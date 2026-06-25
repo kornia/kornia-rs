@@ -1,3 +1,7 @@
+// GstAllocator is deprecated in favour of ForeignAllocator; this example
+// intentionally exercises the old type for backward-compat demonstration.
+#![allow(deprecated)]
+
 use eframe::egui::{self, CentralPanel, Grid, TextEdit};
 use humanize_duration::{prelude::*, Truncate};
 use kornia::image::{Image, ImageSize};
@@ -312,7 +316,7 @@ fn render_image(app: &mut MyApp, ui: &mut eframe::egui::Ui) {
                             .set(color_image, egui::TextureOptions::default());
                     } else {
                         let mut dst: Image<u8, 3, GstAllocator> =
-                            Image::from_size_val(new_image_size, 0, GstAllocator::default())
+                            Image::from_size_val(new_image_size, 0, GstAllocator)
                                 .expect("Failed to create Image");
                         resize_fast_rgb(
                             &image_frame,

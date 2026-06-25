@@ -47,7 +47,7 @@ pub unsafe fn view3<T: Element>(
             T::get_dtype(py).into_dtype_ptr(),
             3,
             dims.as_mut_ptr(),
-            std::ptr::null_mut(),        // strides: NULL => C-contiguous
+            std::ptr::null_mut(), // strides: NULL => C-contiguous
             data_ptr as *mut std::ffi::c_void,
             flags as c_int,
             std::ptr::null_mut(),

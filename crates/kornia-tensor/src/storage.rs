@@ -139,13 +139,11 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
     #[inline]
     pub fn layout(&self) -> Layout {
         // Reconstruct from the owner's byte count and T's alignment requirement.
-        Layout::from_size_align(self.owner.len_bytes(), std::mem::align_of::<T>())
-            .unwrap_or_else(|_| unsafe {
-                Layout::from_size_align_unchecked(
-                    self.owner.len_bytes(),
-                    std::mem::align_of::<T>(),
-                )
-            })
+        Layout::from_size_align(self.owner.len_bytes(), std::mem::align_of::<T>()).unwrap_or_else(
+            |_| unsafe {
+                Layout::from_size_align_unchecked(self.owner.len_bytes(), std::mem::align_of::<T>())
+            },
+        )
     }
 
     /// Returns a reference to the allocator used by this storage.
@@ -232,12 +230,7 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
     ///   global allocator.
     /// - Ownership is transferred; `HostResource::Drop` will call
     ///   `std::alloc::dealloc(data, layout)` on drop.
-    pub unsafe fn from_raw_host(
-        data: *mut T,
-        len_bytes: usize,
-        layout: Layout,
-        alloc: A,
-    ) -> Self {
+    pub unsafe fn from_raw_host(data: *mut T, len_bytes: usize, layout: Layout, alloc: A) -> Self {
         // The viewed length must lie within the allocation `layout` describes; otherwise
         // `as_slice` (len = len_bytes / size_of::<T>()) reads out of bounds and `into_vec`
         // would build a Vec with len > capacity (instant UB). Enforce the documented
@@ -250,8 +243,7 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
         );
         let ptr = NonNull::new_unchecked(data);
         let owner: Box<dyn MemoryResource> = Box::new(
-            HostResource::from_raw(data as *mut u8, layout)
-                .expect("non-null pointer required"),
+            HostResource::from_raw(data as *mut u8, layout).expect("non-null pointer required"),
         );
         Self {
             ptr,
@@ -471,10 +463,10 @@ mod tests {
     use crate::resource::{ForeignResource, HostResource, MemoryDomain, MemoryResource};
     use crate::TensorAllocator;
     use std::alloc::Layout;
-    use std::ptr::NonNull;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
     use std::marker::PhantomData;
+    use std::ptr::NonNull;
+    use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -527,7 +519,7 @@ mod tests {
         let layout = Layout::array::<u8>(size).map_err(TensorAllocatorError::LayoutError)?;
         let owner = Box::new(HostResource::from_layout(layout)?) as Box<dyn MemoryResource>;
         let ptr_raw = owner.as_ptr();
-        let ptr = unsafe { NonNull::new_unchecked(ptr_raw as *mut u8) };
+        let ptr = unsafe { NonNull::new_unchecked(ptr_raw) };
 
         let buffer = TensorStorage {
             alloc: CpuAllocator,
@@ -795,10 +787,9 @@ mod tests {
         }
 
         let n = Arc::new(AtomicUsize::new(0));
-        let buf = vec![7u8; 8];
+        let buf = [7u8; 8];
         {
-            let keep: Arc<dyn core::any::Any + Send + Sync> =
-                Arc::new(Guard(n.clone()));
+            let keep: Arc<dyn core::any::Any + Send + Sync> = Arc::new(Guard(n.clone()));
             let s = unsafe {
                 TensorStorage::<u8, ForeignAllocator>::from_borrowed(
                     buf.as_ptr(),
@@ -881,7 +872,7 @@ mod tests {
                 counter: counter.clone(),
             };
             let owner: Box<dyn MemoryResource> = Box::new(counting);
-            let ptr = unsafe { NonNull::new_unchecked(owner.as_ptr() as *mut u8) };
+            let ptr = unsafe { NonNull::new_unchecked(owner.as_ptr()) };
 
             let _storage: TensorStorage<u8, CpuAllocator> = TensorStorage {
                 ptr,

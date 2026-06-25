@@ -48,8 +48,12 @@ impl ColorSpace {
     pub const fn requires_f32(self) -> bool {
         matches!(
             self,
-            ColorSpace::Hsv | ColorSpace::Hls | ColorSpace::Lab
-                | ColorSpace::Luv | ColorSpace::Xyz | ColorSpace::LinearRgb
+            ColorSpace::Hsv
+                | ColorSpace::Hls
+                | ColorSpace::Lab
+                | ColorSpace::Luv
+                | ColorSpace::Xyz
+                | ColorSpace::LinearRgb
         )
     }
 
@@ -63,18 +67,30 @@ impl ColorSpace {
         use ColorSpace::*;
         matches!(
             (from, to),
-            (Rgb, Gray) | (Gray, Rgb)
-                | (Rgb, Bgr) | (Bgr, Rgb)
-                | (Rgb, Rgba) | (Rgba, Rgb)
-                | (Rgb, Bgra) | (Bgra, Rgb)
-                | (Rgb, Hsv) | (Hsv, Rgb)
-                | (Rgb, Hls) | (Hls, Rgb)
-                | (Rgb, Lab) | (Lab, Rgb)
-                | (Rgb, Luv) | (Luv, Rgb)
-                | (Rgb, Xyz) | (Xyz, Rgb)
-                | (Rgb, LinearRgb) | (LinearRgb, Rgb)
-                | (Rgb, YCbCr) | (YCbCr, Rgb)
-                | (Rgb, Yuv) | (Yuv, Rgb)
+            (Rgb, Gray)
+                | (Gray, Rgb)
+                | (Rgb, Bgr)
+                | (Bgr, Rgb)
+                | (Rgb, Rgba)
+                | (Rgba, Rgb)
+                | (Rgb, Bgra)
+                | (Bgra, Rgb)
+                | (Rgb, Hsv)
+                | (Hsv, Rgb)
+                | (Rgb, Hls)
+                | (Hls, Rgb)
+                | (Rgb, Lab)
+                | (Lab, Rgb)
+                | (Rgb, Luv)
+                | (Luv, Rgb)
+                | (Rgb, Xyz)
+                | (Xyz, Rgb)
+                | (Rgb, LinearRgb)
+                | (LinearRgb, Rgb)
+                | (Rgb, YCbCr)
+                | (YCbCr, Rgb)
+                | (Rgb, Yuv)
+                | (Yuv, Rgb)
         )
     }
 
@@ -249,7 +265,10 @@ mod tests {
 
     #[test]
     fn dyn_image_tag_size_and_recovery() {
-        let size = ImageSize { width: 2, height: 2 };
+        let size = ImageSize {
+            width: 2,
+            height: 2,
+        };
         let rgb = Rgbf32::from_size_val(size, 0.25, CpuAllocator).unwrap();
         let dynimg = DynImage::C3(CS::Rgb, rgb.into_inner());
         assert_eq!(dynimg.color_space(), CS::Rgb);
@@ -262,7 +281,10 @@ mod tests {
 
     #[test]
     fn dyn_image_recovery_rejects_wrong_space() {
-        let size = ImageSize { width: 2, height: 2 };
+        let size = ImageSize {
+            width: 2,
+            height: 2,
+        };
         let gray = Grayf32::from_size_val(size, 0.0, CpuAllocator).unwrap();
         let dynimg = DynImage::C1(CS::Gray, gray.into_inner());
         // recovering as Rgbf32 must fail (channel mismatch C1 vs C3)

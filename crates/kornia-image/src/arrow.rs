@@ -3,11 +3,7 @@ use arrow::{
     array::{ArrayRef, BinaryArray, StructArray, UInt32Array},
     datatypes::{DataType, Field},
 };
-use kornia_tensor::{
-    allocator::TensorAllocatorError,
-    resource::MemoryResource,
-    TensorAllocator,
-};
+use kornia_tensor::{allocator::TensorAllocatorError, resource::MemoryResource, TensorAllocator};
 use std::{alloc::Layout, sync::Arc};
 
 /// Allocator for Arrow arrays.

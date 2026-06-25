@@ -17,7 +17,7 @@ name = "bench_view"
 [dependencies]
 bincode = { workspace = true, optional = true }
 cubecl-cuda = { version = "=0.10.0-pre.4", optional = true }
-dlpack-rs = { git = "https://github.com/kornia/dlpack-rs", tag = "v0.3.2", optional = true, default-features = false }
+dlpack-rs = { git = "https://github.com/kornia/dlpack-rs", tag = "v0.3.2", default-features = false, optional = true }
 num-traits = { workspace = true }
 rayon = { workspace = true }
 serde = { workspace = true, optional = true }
@@ -35,10 +35,10 @@ default-features = false
 features = [
   "cuda-version-from-build-system",
   "driver",
-  "nvrtc",
-  "std",
   "fallback-dynamic-loading",
-  "fallback-latest"
+  "fallback-latest",
+  "nvrtc",
+  "std"
 ]
 optional = true
 

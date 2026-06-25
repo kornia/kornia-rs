@@ -142,7 +142,9 @@ pub(crate) fn image_from_gst_buffer(
     let data_len: usize = mapped_buffer.len();
 
     // Move the MappedBuffer into a GstResource; its Drop releases the buffer.
-    let resource = GstResource { _map: mapped_buffer };
+    let resource = GstResource {
+        _map: mapped_buffer,
+    };
     let keepalive: Arc<dyn Any + Send + Sync> = Arc::new(resource);
 
     // Build a TensorStorage that borrows the gst memory and holds the keepalive.
@@ -281,6 +283,6 @@ mod tests {
     fn gst_allocator_clone_and_default() {
         let a = GstAllocator;
         let _b = a.clone();
-        let _c = GstAllocator::default();
+        let _c = GstAllocator;
     }
 }

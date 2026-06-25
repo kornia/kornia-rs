@@ -488,7 +488,6 @@ fn flip_v_generic(src: &[u8], h: usize, w: usize, c: usize) -> Vec<u8> {
     out
 }
 
-
 /// Rotate 90 degrees CCW, k times. Returns (data, new_h, new_w).
 /// Returns `Some(k)` where k ∈ {0,1,2,3} if `angle` is *exactly* a
 /// multiple of 90° (no epsilon — `90.0001` falls through to the general
@@ -664,11 +663,7 @@ pub(crate) fn format_from_path(path: &str) -> Option<&'static str> {
 
 /// Scale a u16 buffer down to u8 by ``v >> 8`` — fast and equivalent to
 /// the PIL/ImageMagick convention of ``v / 257`` for 16-bit color.
-fn convert_u16_to_u8(
-    img: &PyImageApi,
-    channels: usize,
-    mode: String,
-) -> PyResult<PyImageApi> {
+fn convert_u16_to_u8(img: &PyImageApi, channels: usize, mode: String) -> PyResult<PyImageApi> {
     if img.dtype != backing::Dtype::U16 {
         return Err(value_err("convert_u16_to_u8 called on non-u16 image"));
     }
@@ -697,11 +692,7 @@ fn convert_u16_to_u8(
 
 /// Scale a u8 buffer up to u16 via ``v * 257`` so 0xFF maps to 0xFFFF —
 /// matches PIL's "I;16" upcast convention.
-fn convert_u8_to_u16(
-    img: &PyImageApi,
-    channels: usize,
-    mode: String,
-) -> PyResult<PyImageApi> {
+fn convert_u8_to_u16(img: &PyImageApi, channels: usize, mode: String) -> PyResult<PyImageApi> {
     if img.dtype != backing::Dtype::U8 {
         return Err(value_err("convert_u8_to_u16 called on non-u8 image"));
     }
@@ -798,7 +789,6 @@ pub(crate) fn default_color_space(channels: usize) -> kornia_image::ColorSpace {
         _ => kornia_image::ColorSpace::Rgb,
     }
 }
-
 
 /// PIL-style mode string for f32 storage. Single-channel uses PIL's
 /// canonical ``"F"`` (32-bit float); multi-channel uses an "f" suffix.
@@ -1141,25 +1131,23 @@ impl PyImageApi {
         // Resolve a typed, C-contiguous 3D numpy array (reshape 2D -> (H,W,1)).
         let (obj, dtype): (Bound<'_, PyAny>, backing::Dtype) = {
             // Probe ndim and dtype via attributes/extraction.
-            let resolved = if let Ok(shape) = arr
-                .getattr("shape")
-                .and_then(|s| s.extract::<Vec<usize>>())
-            {
-                if shape.len() == 2 {
-                    arr.call_method1("reshape", ((shape[0], shape[1], 1usize),))?
-                } else if shape.len() == 3 {
-                    arr.clone()
+            let resolved =
+                if let Ok(shape) = arr.getattr("shape").and_then(|s| s.extract::<Vec<usize>>()) {
+                    if shape.len() == 2 {
+                        arr.call_method1("reshape", ((shape[0], shape[1], 1usize),))?
+                    } else if shape.len() == 3 {
+                        arr.clone()
+                    } else {
+                        return Err(value_err(format!(
+                            "Expected 2D or 3D array, got {}D",
+                            shape.len()
+                        )));
+                    }
                 } else {
-                    return Err(value_err(format!(
-                        "Expected 2D or 3D array, got {}D",
-                        shape.len()
-                    )));
-                }
-            } else {
-                return Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-                    "Image requires a numpy array or array-like object with .shape",
-                ));
-            };
+                    return Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+                        "Image requires a numpy array or array-like object with .shape",
+                    ));
+                };
             // Determine dtype from the authoritative numpy dtype descriptor,
             // not from speculative typed extraction (which can hide implicit casts).
             let dtype_name: String = resolved
@@ -1184,7 +1172,14 @@ impl PyImageApi {
                     let a = obj.extract::<Py<PyArray3<$t>>>()?;
                     let b = a.bind(py);
                     let s = b.shape();
-                    (s[0], s[1], s[2], b.data() as *mut u8, b.is_c_contiguous(), writeable)
+                    (
+                        s[0],
+                        s[1],
+                        s[2],
+                        b.data() as *mut u8,
+                        b.is_c_contiguous(),
+                        writeable,
+                    )
                 }};
             }
             match dtype {
@@ -1211,9 +1206,15 @@ impl PyImageApi {
                 np.call_method1("ascontiguousarray", (&obj,))?
             };
             let bptr = match dtype {
-                backing::Dtype::U8 => contig.extract::<Py<PyArray3<u8>>>()?.bind(py).data() as *const u8,
-                backing::Dtype::U16 => contig.extract::<Py<PyArray3<u16>>>()?.bind(py).data() as *const u8,
-                backing::Dtype::F32 => contig.extract::<Py<PyArray3<f32>>>()?.bind(py).data() as *const u8,
+                backing::Dtype::U8 => {
+                    contig.extract::<Py<PyArray3<u8>>>()?.bind(py).data() as *const u8
+                }
+                backing::Dtype::U16 => {
+                    contig.extract::<Py<PyArray3<u16>>>()?.bind(py).data() as *const u8
+                }
+                backing::Dtype::F32 => {
+                    contig.extract::<Py<PyArray3<f32>>>()?.bind(py).data() as *const u8
+                }
             };
             let src = unsafe { std::slice::from_raw_parts(bptr, n) };
             let bytes = backing::AlignedBytes::from_slice(src);
@@ -1262,8 +1263,7 @@ impl PyImageApi {
     where
         F: FnOnce(&mut Image<u8, CO, ForeignAllocator>) -> Result<(), ImageError> + Send,
     {
-        let (mut bytes, size) =
-            backing::alloc_output_owned::<CO>(backing::Dtype::U8, out_size)?;
+        let (mut bytes, size) = backing::alloc_output_owned::<CO>(backing::Dtype::U8, out_size)?;
         let mut dst = unsafe {
             Image::<u8, CO, ForeignAllocator>::from_raw_parts(
                 size,
@@ -1293,8 +1293,7 @@ impl PyImageApi {
     where
         F: FnOnce(&mut Image<f32, CO, ForeignAllocator>) -> Result<(), ImageError> + Send,
     {
-        let (mut bytes, size) =
-            backing::alloc_output_owned::<CO>(backing::Dtype::F32, out_size)?;
+        let (mut bytes, size) = backing::alloc_output_owned::<CO>(backing::Dtype::F32, out_size)?;
         let mut dst = unsafe {
             Image::<f32, CO, ForeignAllocator>::from_raw_parts(
                 size,
@@ -1481,9 +1480,8 @@ impl PyImageApi {
         let isz = self.dtype.itemsize();
         let row_stride = src_w * c * isz;
         let out_row = width * c * isz;
-        let src = unsafe {
-            std::slice::from_raw_parts(self.backing.data_ptr(), src_h * row_stride)
-        };
+        let src =
+            unsafe { std::slice::from_raw_parts(self.backing.data_ptr(), src_h * row_stride) };
         let mut bytes = backing::AlignedBytes::zeroed(height * out_row);
         let dst = unsafe { std::slice::from_raw_parts_mut(bytes.as_mut_ptr(), height * out_row) };
         for row in 0..height {
@@ -2416,7 +2414,8 @@ impl PyImageApi {
         // Single owned output allocation (CHW), written in place.
         let n = 3 * height * width;
         let mut bytes = backing::AlignedBytes::zeroed(n * 4);
-        let out_slice = unsafe { std::slice::from_raw_parts_mut(bytes.as_mut_ptr() as *mut f32, n) };
+        let out_slice =
+            unsafe { std::slice::from_raw_parts_mut(bytes.as_mut_ptr() as *mut f32, n) };
         let result = py.detach(|| {
             kornia_imgproc::resize::resize_normalize_to_tensor_u8_to_f32_bilinear(
                 src, src_w, src_h, out_slice, width, height, &params,
@@ -2705,7 +2704,10 @@ impl PyImageApi {
                 c
             )));
         }
-        let size = ImageSize { width: w, height: h };
+        let size = ImageSize {
+            width: w,
+            height: h,
+        };
         let src = unsafe { self.borrow_self::<u8, 3>().map_err(to_pyerr)? };
         let mut out = self.run_into_owned_u8::<1, _>(py, size, |dst| {
             kornia_imgproc::color::gray_from_rgb_u8(&src, dst)
@@ -2753,7 +2755,8 @@ impl PyImageApi {
                 let src = self.u8_elems();
                 let n = h * w * c;
                 let mut bytes = backing::AlignedBytes::zeroed(n * 4);
-                let dst = unsafe { std::slice::from_raw_parts_mut(bytes.as_mut_ptr() as *mut f32, n) };
+                let dst =
+                    unsafe { std::slice::from_raw_parts_mut(bytes.as_mut_ptr() as *mut f32, n) };
                 for (d, &s) in dst.iter_mut().zip(src.iter()) {
                     *d = s as f32 / 255.0;
                 }
@@ -2777,9 +2780,8 @@ impl PyImageApi {
             backing::Dtype::F32 => {
                 let [h, w, c] = self.shape;
                 let n = h * w * c;
-                let src = unsafe {
-                    std::slice::from_raw_parts(self.backing.data_ptr() as *const f32, n)
-                };
+                let src =
+                    unsafe { std::slice::from_raw_parts(self.backing.data_ptr() as *const f32, n) };
                 let mut bytes = backing::AlignedBytes::zeroed(n);
                 let dst = unsafe { std::slice::from_raw_parts_mut(bytes.as_mut_ptr(), n) };
                 for (d, &s) in dst.iter_mut().zip(src.iter()) {
@@ -2799,11 +2801,7 @@ impl PyImageApi {
 
     /// Convert to another color space, returning a new tagged Image. Strict
     /// dtype: f32-only spaces require a float image (call `to_float()` first).
-    fn cvt_color(
-        &self,
-        py: Python<'_>,
-        to: crate::color_space::PyColorSpace,
-    ) -> PyResult<Self> {
+    fn cvt_color(&self, py: Python<'_>, to: crate::color_space::PyColorSpace) -> PyResult<Self> {
         use kornia_image::ColorSpace as CS;
         let from = self.color_space;
         let to: CS = to.into();
@@ -2811,7 +2809,9 @@ impl PyImageApi {
             return Ok(self.clone_handle(py));
         }
         if !CS::supports(from, to) {
-            return Err(value_err(ImageError::UnsupportedColorConversion { from, to }.to_string()));
+            return Err(value_err(
+                ImageError::UnsupportedColorConversion { from, to }.to_string(),
+            ));
         }
         // strict dtype: f32-only target (or source) needs f32 storage
         let needs_f32 = to.requires_f32() || from.requires_f32();
@@ -3017,8 +3017,7 @@ impl PyImageApi {
             backing::Dtype::F32 => b"f\0",
         };
         // Heap-boxed shape/strides arrays (3 dims).
-        let shape_box: Box<[pyo3::ffi::Py_ssize_t; 3]> =
-            Box::new([h as _, w as _, c as _]);
+        let shape_box: Box<[pyo3::ffi::Py_ssize_t; 3]> = Box::new([h as _, w as _, c as _]);
         let strides_box: Box<[pyo3::ffi::Py_ssize_t; 3]> = Box::new([
             (w * c) as pyo3::ffi::Py_ssize_t * itemsize,
             c as pyo3::ffi::Py_ssize_t * itemsize,
@@ -3103,7 +3102,7 @@ impl PyImageApi {
         copy: Option<bool>,
     ) -> PyResult<Py<PyAny>> {
         let _ = stream; // CPU: no stream concept
-        // Validate dl_device: only CPU (kDLCPU=1, id=0) is supported.
+                        // Validate dl_device: only CPU (kDLCPU=1, id=0) is supported.
         if let Some(ref dev) = dl_device {
             let (dev_type, dev_id): (i32, i32) = dev.extract(py)?;
             use dlpack_rs::ffi::K_DL_CPU;
@@ -3303,7 +3302,16 @@ impl PyImageApi {
                 } else {
                     Some(unsafe { std::slice::from_raw_parts(t.strides, t.ndim as usize) })
                 };
-                (t.device, t.ndim as usize, sh, st, t.dtype, t.data, t.byte_offset, false)
+                (
+                    t.device,
+                    t.ndim as usize,
+                    sh,
+                    st,
+                    t.dtype,
+                    t.data,
+                    t.byte_offset,
+                    false,
+                )
             } else if name_cstr == NAME_DLV {
                 let nn = capsule.pointer_checked(Some(NAME_DLV))?;
                 let mt = unsafe { &*(nn.as_ptr() as *const DLManagedTensorVersioned) };
@@ -3315,7 +3323,16 @@ impl PyImageApi {
                     Some(unsafe { std::slice::from_raw_parts(t.strides, t.ndim as usize) })
                 };
                 let ro = (mt.flags & dlpack_rs::ffi::DLPACK_FLAG_BITMASK_READ_ONLY) != 0;
-                (t.device, t.ndim as usize, sh, st, t.dtype, t.data, t.byte_offset, ro)
+                (
+                    t.device,
+                    t.ndim as usize,
+                    sh,
+                    st,
+                    t.dtype,
+                    t.data,
+                    t.byte_offset,
+                    ro,
+                )
             } else {
                 return Err(pyo3::exceptions::PyValueError::new_err(format!(
                     "from_dlpack: unexpected capsule name {:?}; expected 'dltensor' or \

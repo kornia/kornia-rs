@@ -595,9 +595,7 @@ macro_rules! impl_color_newtype {
             }
         }
 
-        impl<A: ImageAllocator> SrcSize
-            for kornia_image::color_spaces::$newtype<A>
-        {
+        impl<A: ImageAllocator> SrcSize for kornia_image::color_spaces::$newtype<A> {
             fn src_size(&self) -> ImageSize {
                 self.size()
             }
@@ -677,7 +675,10 @@ mod cvt_color_tests {
 
     #[test]
     fn runtime_cvt_color_returns_tagged_dynimage() {
-        let size = ImageSize { width: 4, height: 4 };
+        let size = ImageSize {
+            width: 4,
+            height: 4,
+        };
         let rgb = Rgbf32::from_size_vec(size, vec![0.5f32; 4 * 4 * 3], CpuAllocator).unwrap();
         let hsv = rgb.cvt_color(ColorSpace::Hsv).unwrap();
         assert_eq!(hsv.color_space(), ColorSpace::Hsv);
@@ -690,7 +691,10 @@ mod cvt_color_tests {
 
     #[test]
     fn runtime_cvt_color_rejects_unsupported_pair() {
-        let size = ImageSize { width: 2, height: 2 };
+        let size = ImageSize {
+            width: 2,
+            height: 2,
+        };
         let rgb = Rgbf32::from_size_vec(size, vec![0.0f32; 2 * 2 * 3], CpuAllocator).unwrap();
         // Rgb has no direct path to YCbCr? It does — pick a truly illegal target by
         // constructing from a non-Rgb source instead:
@@ -741,8 +745,8 @@ mod cvt_ext_tests {
 
 // ===== Runtime Tagged dispatch layer =====
 
-use kornia_image::{ColorSpace, DynImage};
 use kornia_image::allocator::CpuAllocator;
+use kornia_image::{ColorSpace, DynImage};
 
 /// Runtime, color-space-tagged conversion. The source newtype encodes its
 /// space and dtype, so only the target `to` is supplied; the result is a
@@ -860,8 +864,8 @@ mod legality_drift_tests {
     use super::Tagged;
     use kornia_image::allocator::CpuAllocator;
     use kornia_image::color_spaces::{
-        Bgr8, Bgra8, Bgrf32, Gray8, Grayf32, Hlsf32, Hsvf32, Labf32, LinearRgbf32, Luvf32,
-        Rgb8, Rgba8, Rgbf32, Xyzf32, YCbCrf32, Yuvf32,
+        Bgr8, Bgra8, Bgrf32, Gray8, Grayf32, Hlsf32, Hsvf32, Labf32, LinearRgbf32, Luvf32, Rgb8,
+        Rgba8, Rgbf32, Xyzf32, YCbCrf32, Yuvf32,
     };
     use kornia_image::{ColorSpace, ImageSize};
 
@@ -884,7 +888,10 @@ mod legality_drift_tests {
     ];
 
     fn size() -> ImageSize {
-        ImageSize { width: 2, height: 2 }
+        ImageSize {
+            width: 2,
+            height: 2,
+        }
     }
 
     /// Check one source image against every possible target.
@@ -923,7 +930,7 @@ mod legality_drift_tests {
             true
         );
         check_all_targets!(
-            Grayf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 1], CpuAllocator).unwrap(),
+            Grayf32::from_size_vec(sz, vec![0.5f32; 2 * 2], CpuAllocator).unwrap(),
             ColorSpace::Gray,
             true
         );
@@ -981,7 +988,7 @@ mod legality_drift_tests {
             false
         );
         check_all_targets!(
-            Gray8::from_size_vec(sz, vec![128u8; 2 * 2 * 1], CpuAllocator).unwrap(),
+            Gray8::from_size_vec(sz, vec![128u8; 2 * 2], CpuAllocator).unwrap(),
             ColorSpace::Gray,
             false
         );
