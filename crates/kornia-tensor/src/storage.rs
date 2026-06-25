@@ -238,6 +238,16 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
         layout: Layout,
         alloc: A,
     ) -> Self {
+        // The viewed length must lie within the allocation `layout` describes; otherwise
+        // `as_slice` (len = len_bytes / size_of::<T>()) reads out of bounds and `into_vec`
+        // would build a Vec with len > capacity (instant UB). Enforce the documented
+        // contract rather than trusting the caller.
+        assert!(
+            layout.size() >= len_bytes,
+            "from_raw_host: layout.size() ({}) < len_bytes ({}) — buffer too small for the view",
+            layout.size(),
+            len_bytes,
+        );
         let ptr = NonNull::new_unchecked(data);
         let owner: Box<dyn MemoryResource> = Box::new(
             HostResource::from_raw(data as *mut u8, layout)
