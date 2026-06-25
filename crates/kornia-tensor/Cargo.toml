@@ -35,6 +35,8 @@ default-features = false
 features = [
   "cuda-version-from-build-system",
   "driver",
+  "nvrtc",
+  "std",
   "fallback-dynamic-loading",
   "fallback-latest"
 ]
@@ -46,6 +48,10 @@ serde_json = { workspace = true }
 
 [features]
 bincode = ["dep:bincode"]
+# cudarc device-memory integration — default OFF.
+# Enables CudaResource / CudaAllocator and Tensor::to_cuda / to_host etc.
+# Verify absence: `cargo tree -p kornia-tensor -e features | grep -i cudarc`
+cudarc = ["dep:cudarc"]
 dlpack = ["dep:dlpack-rs"]
 gpu = []
 gpu-cubecl = ["dep:cubecl-core", "dep:cubecl-cuda", "dep:cudarc", "gpu"]
