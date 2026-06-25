@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 use super::{
     capture::StreamerState, error::VideoReaderError, GstAllocator, StreamCapture,
     StreamCaptureError,
