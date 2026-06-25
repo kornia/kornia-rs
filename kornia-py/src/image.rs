@@ -1446,9 +1446,14 @@ impl PyImageApi {
             )));
         }
         if self.dtype == backing::Dtype::U8 && c == 3 {
-            let arr = self.as_numpy_u8(py)?;
-            let result = crate::crop::crop(py, arr, x, y, width, height)?;
-            return Ok(self.wrap_u8_result(py, result));
+            // Crop directly into the owned output buffer — ONE copy. The previous
+            // path copied twice: source -> a fresh numpy array, then that array ->
+            // the owned backing. Borrow the source and let the SIMD `crop_image`
+            // write straight into the owned destination.
+            let src = unsafe { self.borrow_self::<u8, 3>().map_err(to_pyerr)? };
+            return self.run_into_owned_u8::<3, _>(py, ImageSize { width, height }, move |dst| {
+                kornia_imgproc::crop::crop_image(&src, dst, x, y)
+            });
         }
         // Generic byte-level crop for any dtype / channel count.
         // Validate output dimensions before allocation to catch overflow.
