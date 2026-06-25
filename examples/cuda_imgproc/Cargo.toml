@@ -5,9 +5,6 @@ edition = "2021"
 publish = false
 
 [dependencies]
-kornia-image = { path = "../../crates/kornia-image" }
-kornia-io = { path = "../../crates/kornia-io" }
-kornia-tensor = { path = "../../crates/kornia-tensor", features = ["cudarc"] }
 cudarc = { version = "0.19", default-features = false, features = [
   "cuda-version-from-build-system",
   "driver",
@@ -16,3 +13,6 @@ cudarc = { version = "0.19", default-features = false, features = [
   "nvrtc",
   "std",
 ] }
+kornia-image = { path = "../../crates/kornia-image", features = ["cudarc"] }
+kornia-io = { path = "../../crates/kornia-io" }
+kornia-tensor = { path = "../../crates/kornia-tensor", features = ["cudarc"] }

@@ -8035,6 +8035,7 @@ version = "0.1.14"
 dependencies = [
  "arrow 58.3.0",
  "criterion 0.8.2",
+ "cudarc 0.19.7",
  "dlpack-rs",
  "half",
  "kornia-tensor",

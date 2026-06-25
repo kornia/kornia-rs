@@ -57,9 +57,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let stream = ctx.default_stream();
 
     // ── Eased device path: everything stays a kornia Tensor ──────────────────
-    // Upload the inner `Tensor3<u8>` directly — `to_cuda` copies the contiguous
+    // Upload the RGB image directly — `to_cuda` copies the contiguous
     // h*w*3 bytes to a device tensor (no manual host flatten / Vec copy).
-    let dev_rgb: Tensor<u8, 3, _> = rgb.into_inner().0.to_cuda(&stream)?;
+    let dev_rgb: Tensor<u8, 3, _> = rgb.to_cuda(&stream)?;
     // Allocate the device output as a zero-filled device tensor (no raw CudaSlice).
     let mut dev_gray = zeros_cuda::<u8, 1>([npix], &stream)?;
 
