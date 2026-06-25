@@ -27,19 +27,25 @@ def test_dlpack_export_numpy_values():
 
 
 def test_dlpack_export_numpy_zero_copy():
-    """Mutating the exported numpy array must be visible through the Image
-    (proves the export is zero-copy, not a copy)."""
+    """The exported numpy array must share the Image's data buffer (zero-copy)."""
     arr = np.ascontiguousarray(np.random.randint(0, 255, (5, 7, 3), np.uint8))
     img = Image.from_numpy(arr, copy=True)  # owned buffer
     out = np.from_dlpack(img)
-    # Write a sentinel value through `out` and read it back via the Image buffer.
-    sentinel = 42
-    out[0, 0, 0] = sentinel
     img_view = np.asarray(img)
-    assert int(img_view[0, 0, 0]) == sentinel, (
-        "ZERO-COPY EXPORT FAILED: mutation through exported tensor "
-        "not visible in Image buffer"
+    # Primary zero-copy check via shared memory — robust across numpy versions.
+    # Older numpy (py3.8/3.9) marks `np.from_dlpack` results read-only, so a
+    # mutation check would raise there; numpy>=2 returns a writable view.
+    assert np.shares_memory(out, img_view), (
+        "ZERO-COPY EXPORT FAILED: exported tensor does not share the Image buffer"
     )
+    # Stronger mutation-visibility check only where numpy exposes a writable view.
+    if out.flags.writeable:
+        sentinel = 42
+        out[0, 0, 0] = sentinel
+        assert int(img_view[0, 0, 0]) == sentinel, (
+            "ZERO-COPY EXPORT FAILED: mutation through exported tensor "
+            "not visible in Image buffer"
+        )
 
 
 def test_dlpack_export_shape_and_dtype():
