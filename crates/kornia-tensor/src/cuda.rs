@@ -31,12 +31,12 @@
 //!   The heap allocation for the `CudaResource` struct itself is freed by `Box::from_raw`;
 //!   the `CudaSlice` it contained is *not* dropped (we return it to the caller instead).
 //!
-//! - `from_cudaslice` accepts a `CudaSlice<T>` for any `DeviceRepr + ValidAsZeroBits` T.
-//!   To store it uniformly as `CudaSlice<u8>`, we issue a device-to-device byte copy
-//!   into a new `CudaSlice<u8>` of `size_of::<T>() * numel` bytes, then drop the source.
-//!   This is allocation-safe (no host data) and avoids any transmute UB.
-//!   When `T = u8`, the copy is still done for uniformity; an optimisation (direct move)
-//!   can be added later once cudarc exposes a `CudaSlice::reinterpret_as_u8` API.
+//! - `from_cudaslice` ZERO-COPY WRAPS the input `CudaSlice<T>`: it caches the device
+//!   pointer (via `DevicePtr::device_ptr`) and moves the slice, unchanged, into a
+//!   generic `CudaResource<T>`. The resulting tensor aliases the same device allocation
+//!   — no host round-trip, no device copy. `CudaResource` is generic over `T` precisely
+//!   so this requires no transmute or byte coercion. (`to_cuda`/`to_host` DO copy —
+//!   they are host↔device transfers, which is correct.)
 //!
 //! - `miri` cannot execute CUDA driver calls; device tests are guarded by
 //!   `#[cfg(all(test, feature = "cudarc"))]` and run on the real Jetson Orin.
@@ -61,25 +61,33 @@ use crate::{
 
 // ── CudaResource ─────────────────────────────────────────────────────────────
 
-/// An owning [`MemoryResource`] that wraps a [`CudaSlice<u8>`].
+/// An owning [`MemoryResource`] that wraps a [`CudaSlice<T>`].
 ///
-/// The `CudaSlice<u8>`'s own `Drop` impl frees the device allocation exactly once.
-/// No manual free is performed here.
-pub struct CudaResource {
+/// The wrapped `CudaSlice<T>` is the **sole owner** of the device allocation and its
+/// own `Drop` impl frees the device memory exactly once.  No manual free is performed
+/// here — the `CudaResource` is purely a keepalive + type-erasable handle.
+///
+/// `CudaResource` is generic over the element type `T` so that
+/// [`Tensor::from_cudaslice`] can **zero-copy wrap** (alias) an existing
+/// `CudaSlice<T>` without any host round-trip or byte coercion.  The
+/// [`CudaAllocator`] produces `CudaResource<u8>`.
+pub struct CudaResource<T> {
     /// Owns the device allocation; freed when this struct is dropped.
-    pub(crate) slice: CudaSlice<u8>,
+    pub(crate) slice: CudaSlice<T>,
     /// Cached raw device pointer (device-addressable; NOT safe to dereference on host).
     ptr: *mut u8,
     /// CUDA device ordinal (returned by `CudaContext::ordinal()`).
     id: i32,
 }
 
-// SAFETY: CudaSlice<u8> is Send + Sync.  `ptr` is a device pointer that is never
+// SAFETY: CudaSlice<T> is Send + Sync.  `ptr` is a device pointer that is never
 // dereferenced on the host — it is only passed back to CUDA APIs.
-unsafe impl Send for CudaResource {}
-unsafe impl Sync for CudaResource {}
+unsafe impl<T> Send for CudaResource<T> {}
+unsafe impl<T> Sync for CudaResource<T> {}
 
-impl MemoryResource for CudaResource {
+// SAFETY: CudaResource<T> is unconditionally Send + Sync (see the unsafe impls above);
+// `T: 'static` is required only so the value is `Any`-downcastable via `as_any`.
+impl<T: 'static> MemoryResource for CudaResource<T> {
     /// Returns the cached device pointer (NOT host-dereferenceable).
     fn as_ptr(&self) -> *mut u8 {
         self.ptr
@@ -137,7 +145,7 @@ impl TensorAllocator for CudaAllocator {
         };
         let id = self.ctx.ordinal() as i32;
 
-        Ok(Box::new(CudaResource { slice, ptr, id }))
+        Ok(Box::new(CudaResource::<u8> { slice, ptr, id }))
     }
 }
 
@@ -161,19 +169,26 @@ pub enum CudaError {
 
 // ── Helper: build a TensorStorage from a CudaResource ─────────────────────────
 
-/// Build a `TensorStorage<T, CudaAllocator>` that owns the given [`CudaResource`].
+/// Build a `TensorStorage<T, A>` that owns the given [`CudaResource<R>`].
+///
+/// `R` is the element type of the wrapped `CudaSlice` (e.g. `u8` from the allocator,
+/// or `T` from `from_cudaslice`); `T` is the tensor's element type.
 ///
 /// # Safety
 ///
 /// `ptr` must be the device pointer inside `resource` (cached from
 /// `resource.slice.device_ptr(stream)`).  It must be valid for `len_bytes` bytes on
 /// the device.  The caller guarantees `resource` is the sole owner of that allocation.
-unsafe fn storage_from_cuda_resource<T, A: TensorAllocator>(
-    resource: CudaResource,
+unsafe fn storage_from_cuda_resource<T, R, A>(
+    resource: CudaResource<R>,
     ptr: *mut T,
     len_bytes: usize,
     alloc: A,
-) -> TensorStorage<T, A> {
+) -> TensorStorage<T, A>
+where
+    R: 'static,
+    A: TensorAllocator,
+{
     let owner: Box<dyn MemoryResource> = Box::new(resource);
     let nn_ptr = NonNull::new_unchecked(ptr);
     TensorStorage {
@@ -191,18 +206,20 @@ impl<T, const N: usize> Tensor<T, N, CudaAllocator>
 where
     T: DeviceRepr + ValidAsZeroBits + 'static,
 {
-    /// Wrap an existing `CudaSlice<T>` as a device-backed tensor (no host copy).
+    /// Zero-copy wrap an existing `CudaSlice<T>` as a device-backed tensor.
     ///
-    /// The source slice's elements are copied device-to-device into a new
-    /// `CudaSlice<u8>` of `numel * size_of::<T>()` bytes; the source slice is
-    /// then dropped.  This avoids any transmute and keeps `CudaResource` typed
-    /// as `CudaSlice<u8>` uniformly.
+    /// The resulting tensor **aliases the same device allocation** as `slice` — no
+    /// host round-trip and no device-to-device copy occur.  The `CudaSlice<T>` is
+    /// moved (unchanged) into a [`CudaResource<T>`]; its own `Drop` remains the sole
+    /// owner of the device memory and frees it exactly once when the tensor drops.
+    ///
+    /// The tensor's cached device pointer equals the input slice's device pointer.
     ///
     /// # Arguments
     ///
     /// * `slice` — source device slice; `slice.len()` must equal `shape.iter().product()`.
     /// * `shape` — N-dimensional tensor shape.
-    /// * `stream` — stream for the d→d byte copy.
+    /// * `stream` — stream owning `slice`'s context; retained in the `CudaAllocator`.
     ///
     /// # Panics
     ///
@@ -225,47 +242,17 @@ where
         let ctx = stream.context().clone();
         let id = ctx.ordinal() as i32;
 
-        // cudarc 0.19 does not expose a public CudaSlice::reinterpret_as method, and
-        // memcpy_dtod is typed as <T> (both src and dst must share the same T).
-        // Safest public-API path: D→H (clone_dtoh → Vec<T>), reinterpret bytes, H→D
-        // into a fresh CudaSlice<u8>.  On Jetson with unified memory the D→H copy is
-        // effectively a no-op.  A direct D→D byte copy can replace this if cudarc ever
-        // exposes an untyped memcpy or a reinterpret API.
-        let host_tmp: Vec<T> = stream
-            .clone_dtoh(&slice)
-            .expect("from_cudaslice: dtoh failed");
-        let byte_view: &[u8] = unsafe {
-            std::slice::from_raw_parts(
-                host_tmp.as_ptr() as *const u8,
-                std::mem::size_of_val(host_tmp.as_slice()),
-            )
-        };
-        let mut byte_slice: CudaSlice<u8> = stream
-            .clone_htod(byte_view)
-            .expect("from_cudaslice: htod failed");
-        // Synchronize to ensure the copy completes before we drop the source slice.
-        stream.synchronize().expect("from_cudaslice: synchronize failed");
-
-        // Drop the source T-typed slice (its device memory is freed).
-        drop(slice);
-        drop(host_tmp);
-
-        // Ensure byte_slice is live as mutable for memcpy_htod; suppress the lint.
-        let _ = &mut byte_slice;
-
-        // Extract device pointer; _sync must be dropped before byte_slice is moved.
+        // Cache the raw device pointer of the EXISTING allocation (no copy).
+        // _sync must be dropped before we move `slice` into CudaResource.
         let ptr = {
-            let (cu_ptr, _sync) = byte_slice.device_ptr(&stream);
+            let (cu_ptr, _sync) = slice.device_ptr(&stream);
             cu_ptr as *mut u8
-            // _sync drops here
+            // _sync drops here, releasing the borrow on `slice`
         };
 
         let alloc = CudaAllocator { ctx, stream };
-        let resource = CudaResource {
-            slice: byte_slice,
-            ptr,
-            id,
-        };
+        // Move the original CudaSlice<T> in, unchanged — this is the aliasing wrap.
+        let resource = CudaResource::<T> { slice, ptr, id };
 
         let storage =
             unsafe { storage_from_cuda_resource(resource, ptr as *mut T, n_bytes, alloc) };
@@ -277,62 +264,59 @@ where
         }
     }
 
-    /// Borrow the underlying `CudaSlice<u8>` if the storage is backed by a [`CudaResource`].
+    /// Borrow the underlying `CudaSlice<T>` if the storage is backed by a
+    /// [`CudaResource<T>`] (i.e. was built via [`from_cudaslice`](Self::from_cudaslice)).
     ///
-    /// Returns `None` if the storage was not created via a `CudaAllocator`-backed path.
-    pub fn as_cudaslice(&self) -> Option<&CudaSlice<u8>> {
+    /// Returns `None` if the storage is not a `CudaResource<T>` (e.g. it was allocated
+    /// by [`CudaAllocator`] which produces `CudaResource<u8>`, or T differs).
+    pub fn as_cudaslice(&self) -> Option<&CudaSlice<T>> {
         self.storage
             .owner
             .as_any()
-            .downcast_ref::<CudaResource>()
+            .downcast_ref::<CudaResource<T>>()
             .map(|r| &r.slice)
     }
 
-    /// Consume the tensor and return the underlying `CudaSlice<u8>`.
+    /// Consume the tensor and return the underlying `CudaSlice<T>`.
     ///
-    /// Returns `Err(self)` if the storage is not backed by a [`CudaResource`].
+    /// Returns `Err(self)` if the storage is not backed by a [`CudaResource<T>`].
     ///
     /// # Memory safety — no double-free
     ///
-    /// The `Box<dyn MemoryResource>` is consumed via `Box::into_raw` → `Box::from_raw`
-    /// to downcast to `Box<CudaResource>`.  The `CudaSlice<u8>` is then moved out of
-    /// the `CudaResource` via `ManuallyDrop` so the struct's own `Drop` does NOT run.
-    /// The `Box<CudaResource>` heap allocation is freed (it no longer contains the
-    /// slice, so only the struct metadata is freed, not the device memory).
-    pub fn into_cudaslice(self) -> Result<CudaSlice<u8>, Self> {
+    /// The `Box<dyn MemoryResource>` is downcast to `Box<CudaResource<T>>` via
+    /// `Box::into_raw` → `Box::from_raw`.  The `CudaSlice<T>` is then moved out via
+    /// `ManuallyDrop` so the `CudaResource`'s own `Drop` does NOT run.  The
+    /// `Box<CudaResource<T>>` heap allocation is freed (struct metadata only); the
+    /// device memory is now owned by the returned `CudaSlice<T>`.
+    pub fn into_cudaslice(self) -> Result<CudaSlice<T>, Self> {
         if self
             .storage
             .owner
             .as_any()
-            .downcast_ref::<CudaResource>()
+            .downcast_ref::<CudaResource<T>>()
             .is_none()
         {
             return Err(self);
         }
 
         // Consume `self` without running TensorStorage's Drop or CudaResource's Drop.
-        // We use ManuallyDrop on the whole TensorStorage and extract just the owner.
-        let (shape, strides, storage) = (self.shape, self.strides, self.storage);
-        let _ = (shape, strides); // suppress unused warnings
-
-        // Consume TensorStorage: we must prevent its Drop from running (which would
-        // drop `owner` and thus drop CudaSlice — we want to return it instead).
+        let storage = self.storage;
         let md_storage = std::mem::ManuallyDrop::new(storage);
 
         // Read `owner` out of the ManuallyDrop without running TensorStorage's Drop.
         // SAFETY: We are the sole owner; ManuallyDrop prevents double-drop of the storage.
         let owner: Box<dyn MemoryResource> = unsafe { std::ptr::read(&md_storage.owner) };
-        // Explicitly drop the allocator (unit struct, but be explicit).
+        // Drop the allocator field explicitly (Arc fields drop normally).
         let _alloc = unsafe { std::ptr::read(&md_storage.alloc) };
-        // Suppress the ptr/len/marker (no Drop needed for NonNull/PhantomData/usize).
-        // ManuallyDrop ensures nothing else is dropped.
+        // ptr/len/marker are Copy/ZST — nothing else to drop.
 
-        // Downcast Box<dyn MemoryResource> → Box<CudaResource>.
-        // SAFETY: We verified above (downcast_ref) that the concrete type is CudaResource.
+        // Downcast Box<dyn MemoryResource> → Box<CudaResource<T>>.
+        // SAFETY: We verified above (downcast_ref) that the concrete type is CudaResource<T>.
         let raw: *mut dyn MemoryResource = Box::into_raw(owner);
-        let cuda_box: Box<CudaResource> = unsafe { Box::from_raw(raw as *mut CudaResource) };
+        let cuda_box: Box<CudaResource<T>> =
+            unsafe { Box::from_raw(raw as *mut CudaResource<T>) };
 
-        // Move CudaSlice<u8> out without running CudaResource's Drop.
+        // Move CudaSlice<T> out without running CudaResource's Drop.
         let mut md_res = std::mem::ManuallyDrop::new(*cuda_box);
         // SAFETY: md_res prevents CudaResource from dropping its fields; we take the slice.
         let slice = unsafe { std::ptr::read(&md_res.slice) };
@@ -365,22 +349,14 @@ where
         let id = ctx.ordinal() as i32;
         let n_bytes = std::mem::size_of_val(src_slice);
 
-        // Reinterpret the host slice as bytes and copy directly to a CudaSlice<u8>.
-        // This avoids a redundant D→H→D round-trip that would be needed if we first
-        // cloned as CudaSlice<T>.
-        //
-        // SAFETY: T is DeviceRepr + ValidAsZeroBits; byte reinterpretation is well-defined.
-        let byte_src: &[u8] = unsafe {
-            std::slice::from_raw_parts(src_slice.as_ptr() as *const u8, n_bytes)
-        };
-
-        let byte_slice: CudaSlice<u8> = stream
-            .clone_htod(byte_src)
+        // Copy host slice → a new device CudaSlice<T> (this is a transfer, copy is correct).
+        let dev_slice: CudaSlice<T> = stream
+            .clone_htod(src_slice)
             .map_err(|e| CudaError::Driver(e.to_string()))?;
 
-        // Extract device pointer; _sync must drop before byte_slice is moved.
+        // Extract device pointer; _sync must drop before dev_slice is moved.
         let ptr = {
-            let (cu_ptr, _sync) = byte_slice.device_ptr(stream);
+            let (cu_ptr, _sync) = dev_slice.device_ptr(stream);
             cu_ptr as *mut u8
             // _sync drops here
         };
@@ -388,8 +364,9 @@ where
             ctx,
             stream: stream.clone(),
         };
-        let resource = CudaResource {
-            slice: byte_slice,
+        // Store as CudaResource<T> so as_cudaslice::<T>() also works on to_cuda results.
+        let resource = CudaResource::<T> {
+            slice: dev_slice,
             ptr,
             id,
         };
@@ -417,7 +394,7 @@ where
     /// # Errors
     ///
     /// Returns [`CudaError::Driver`] on CUDA failure or [`CudaError::NotCudaBacked`]
-    /// if the storage owner is not a [`CudaResource`].
+    /// if the storage owner is not a [`CudaResource<T>`].
     pub fn to_host(
         &self,
         stream: &Arc<CudaStream>,
@@ -426,35 +403,16 @@ where
             .storage
             .owner
             .as_any()
-            .downcast_ref::<CudaResource>()
+            .downcast_ref::<CudaResource<T>>()
             .ok_or(CudaError::NotCudaBacked)?;
 
-        // D→H: copy the raw bytes, then reinterpret as T.
-        let numel = self.shape.iter().product::<usize>();
-        let n_bytes = numel * std::mem::size_of::<T>();
-
-        // Allocate host destination for raw bytes.
-        let mut byte_buf: Vec<u8> = vec![0u8; n_bytes];
-        stream
-            .memcpy_dtoh(&cuda_res.slice, byte_buf.as_mut_slice())
+        // D→H typed copy into a Vec<T> (this is a transfer, copy is correct).
+        let host_data: Vec<T> = stream
+            .clone_dtoh(&cuda_res.slice)
             .map_err(|e| CudaError::Driver(e.to_string()))?;
         stream
             .synchronize()
             .map_err(|e| CudaError::Driver(e.to_string()))?;
-
-        // Reinterpret byte buffer as Vec<T>.
-        // SAFETY: T is DeviceRepr + ValidAsZeroBits; the bytes came from a valid T-typed
-        // allocation; size and alignment are correct.
-        let mut host_data: Vec<T> = Vec::with_capacity(numel);
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                byte_buf.as_ptr(),
-                host_data.as_mut_ptr() as *mut u8,
-                n_bytes,
-            );
-            host_data.set_len(numel);
-        }
-        drop(byte_buf);
 
         let storage = TensorStorage::from_vec(host_data, CpuAllocator);
         let strides = get_strides_from_shape(self.shape);
@@ -549,5 +507,40 @@ mod tests {
         let _verify = stream
             .alloc_zeros::<u8>(16)
             .expect("allocation after from_cudaslice+drop must succeed");
+    }
+
+    /// `from_cudaslice` must ZERO-COPY WRAP (alias) the existing device allocation:
+    /// the resulting tensor's device pointer must equal the source slice's device pointer.
+    #[test]
+    fn from_cudaslice_zero_copy_alias() {
+        let ctx = CudaContext::new(0).unwrap();
+        let stream = ctx.default_stream();
+
+        // Allocate on device; record its device pointer.
+        let dev_slice: CudaSlice<u8> = stream.alloc_zeros::<u8>(32).unwrap();
+        let orig_ptr = {
+            let (cu_ptr, _sync) = dev_slice.device_ptr(&stream);
+            cu_ptr as usize
+        };
+
+        let tensor =
+            Tensor::<u8, 1, CudaAllocator>::from_cudaslice(dev_slice, [32], stream.clone());
+
+        // The tensor's cached device pointer must equal the original allocation's pointer
+        // → same device memory → aliased, not copied.
+        let tensor_ptr = tensor.as_ptr() as usize;
+        assert_eq!(
+            tensor_ptr, orig_ptr,
+            "from_cudaslice must alias the original device allocation \
+             (tensor ptr {tensor_ptr:#x} != orig ptr {orig_ptr:#x})"
+        );
+
+        // as_cudaslice must also report the same device pointer.
+        let wrapped = tensor.as_cudaslice().expect("must be CudaResource<u8>-backed");
+        let wrapped_ptr = {
+            let (cu_ptr, _sync) = wrapped.device_ptr(&stream);
+            cu_ptr as usize
+        };
+        assert_eq!(wrapped_ptr, orig_ptr, "as_cudaslice must report the aliased pointer");
     }
 }
