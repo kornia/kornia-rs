@@ -44,8 +44,8 @@
 use std::{any::Any, marker::PhantomData, ptr::NonNull, sync::Arc};
 
 use cudarc::driver::{
-    CudaContext, CudaFunction, CudaModule, CudaSlice, CudaStream, DevicePtr, DeviceRepr,
-    LaunchArgs, LaunchConfig, PushKernelArg, ValidAsZeroBits,
+    CudaContext, CudaFunction, CudaSlice, CudaStream, DevicePtr, DeviceRepr, LaunchArgs,
+    LaunchConfig, PushKernelArg, ValidAsZeroBits,
 };
 use cudarc::nvrtc::{compile_ptx_with_opts, CompileOptions};
 
@@ -170,16 +170,16 @@ pub enum CudaError {
 
 // ── CudaKernel ────────────────────────────────────────────────────────────────
 
-/// A compiled CUDA kernel that wraps a [`CudaFunction`] and keeps the owning
-/// [`CudaModule`] alive.
+/// A compiled CUDA kernel that wraps a [`CudaFunction`] (which internally keeps
+/// its owning `CudaModule` alive).
 ///
 /// Construct via [`CudaKernel::compile`], then launch via
 /// [`CudaKernel::launch_builder`].
 pub struct CudaKernel {
+    /// The loaded kernel. `CudaFunction` internally holds an `Arc<CudaModule>`,
+    /// so the module stays alive as long as this kernel exists — no separate
+    /// keep-alive field is needed.
     func: CudaFunction,
-    /// Keepalive: `CudaFunction` already holds an `Arc<CudaModule>` internally,
-    /// but we also keep our own `Arc` so callers can reason about ownership.
-    _module: Arc<CudaModule>,
 }
 
 impl CudaKernel {
@@ -220,14 +220,13 @@ impl CudaKernel {
         let module = ctx
             .load_module(ptx)
             .map_err(|e| CudaError::Driver(e.to_string()))?;
+        // `load_function` returns a `CudaFunction` that holds its own
+        // `Arc<CudaModule>`, so `module` may drop at the end of this scope.
         let func = module
             .load_function(fn_name)
             .map_err(|e| CudaError::Driver(e.to_string()))?;
 
-        Ok(CudaKernel {
-            func,
-            _module: module,
-        })
+        Ok(CudaKernel { func })
     }
 
     /// Create a [`CudaLaunchBuilder`] pre-bound to this kernel and the given stream.
@@ -313,8 +312,8 @@ impl<'a> CudaLaunchBuilder<'a> {
 ///
 /// # Errors
 ///
-/// Returns [`CudaError::Tensor`] if the total element count is zero or
-/// [`CudaError::Driver`] on CUDA allocation failure.
+/// Returns [`CudaError::Driver`] on CUDA allocation failure. A zero-element
+/// shape is allowed and yields an empty (0-byte) device tensor.
 pub fn zeros_cuda<T, const N: usize>(
     shape: [usize; N],
     stream: &Arc<CudaStream>,
@@ -791,7 +790,10 @@ mod tests {
 
         let result: Vec<u8> = stream.clone_dtoh(&output).unwrap();
         stream.synchronize().unwrap();
-        assert_eq!(result, input_data, "copy_bytes kernel output must match input");
+        assert_eq!(
+            result, input_data,
+            "copy_bytes kernel output must match input"
+        );
     }
 
     /// `zeros_cuda` allocates a device tensor; `to_host` must return all-zero bytes.
