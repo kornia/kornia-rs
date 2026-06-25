@@ -640,7 +640,7 @@ pub fn gaussian_blur_u8<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     // The [1,2,1]/4 separable kernel (one H-pass + one V-pass of halving-adds) is
     // within ±4% of a true Gaussian at sigma=1.0 and stays entirely in u8
     // (no vmull/widen/pack). cv2.GaussianBlur((3,3), 1.0) uses the same kernel.
-    // Reuses the same NEON/AVX2 helpers as the k=5 path (identical arithmetic).
+    // Uses the [1,2,1]/4 separable NEON/AVX2 helpers (identical arithmetic).
     if kx == 3 && ky == 3 && (0.6..=1.2).contains(&sx) && (0.6..=1.2).contains(&sy) {
         #[cfg(target_arch = "aarch64")]
         {
@@ -654,7 +654,7 @@ pub fn gaussian_blur_u8<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
         }
         #[cfg(target_arch = "x86_64")]
         if crate::simd::cpu_features().has_avx2 {
-            gaussian_blur_5x5_binomial_u8_avx2::<C>(
+            gaussian_blur_3x3_binomial_u8_avx2::<C>(
                 src.as_slice(),
                 dst.as_slice_mut(),
                 src.rows(),
@@ -1500,7 +1500,7 @@ fn hpass_sym7_row<const C: usize>(
 // =============================================================================
 
 #[cfg(target_arch = "x86_64")]
-fn gaussian_blur_5x5_binomial_u8_avx2<const C: usize>(
+fn gaussian_blur_3x3_binomial_u8_avx2<const C: usize>(
     src: &[u8],
     dst: &mut [u8],
     rows: usize,
@@ -2041,7 +2041,7 @@ mod tests {
                 *v = ((i.wrapping_mul(2654435761)) >> 24) as u8;
             }
 
-            // Binomial fast path via gaussian_blur_5x5_binomial_u8 (same function
+            // Binomial fast path via gaussian_blur_3x3_binomial_u8 (same function
             // used by the k=3 dispatch).
             let mut binom = vec![0u8; n];
             if channels == 1 {
