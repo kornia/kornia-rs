@@ -25,8 +25,17 @@ pub use kornia_tensor::dlpack::DlpackElem;
 /// `managed.deleter(managed)` when done to free the buffer.  Export is zero-copy.
 /// Shape is encoded as `[H, W, C]` (HWC layout); strides are contiguous C-order.
 ///
+/// # Arguments
+///
+/// * `img` - The image to export; ownership is transferred into the `DLManagedTensor` keepalive.
+///
 /// # Returns
+///
 /// Raw pointer to a `DLManagedTensor` that the consumer owns.
+///
+/// # Errors
+///
+/// This function does not return an error. The allocation is infallible for heap-backed images.
 pub fn image_to_dlpack<T, const C: usize, A>(img: Image<T, C, A>) -> *mut DLManagedTensor
 where
     T: DlpackElem + 'static + Send,
@@ -51,6 +60,12 @@ where
 /// Both CPU (`kDLCPU`) and CUDA (`kDLCUDA`) tensors are accepted at the container
 /// level. CUDA images have `MemoryDomain::Device`; calling `as_slice()` on them will
 /// panic — use device-transfer APIs instead.
+///
+/// # Arguments
+///
+/// * `mt` - Raw pointer to a valid, initialised `DLManagedTensor`; must be non-null (see `# Safety`).
+/// * `keepalive` - An `Arc` keepalive that keeps the source data alive for the lifetime of the
+///   returned `Image`. The caller must NOT call the tensor's own deleter after passing it here.
 ///
 /// # Errors
 /// - [`ImageError::DlpackShapeError`] if `T` does not match the tensor's dtype, or if
