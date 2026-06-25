@@ -75,6 +75,21 @@ impl GrayFromRgb for f64 {
 ///
 /// Large images (> 1 M px) are split across Rayon threads regardless of type.
 ///
+/// # Arguments
+///
+/// * `src` - The source RGB image with shape (H, W, 3).
+/// * `dst` - The destination grayscale image with shape (H, W, 1). Must have
+///   the same spatial dimensions as `src`.
+///
+/// # Returns
+///
+/// Returns `Ok(())` on success.
+///
+/// # Errors
+///
+/// Returns [`ImageError::InvalidImageSize`] if `src` and `dst` have different
+/// spatial dimensions.
+///
 /// # Example
 ///
 /// ```
@@ -114,6 +129,19 @@ where
 /// Convert an RGB8 image to grayscale (`u8`).
 ///
 /// Thin wrapper around [`gray_from_rgb`] for backward compatibility.
+///
+/// # Arguments
+///
+/// * `src` - The source RGB u8 image with shape (H, W, 3).
+/// * `dst` - The destination grayscale u8 image with shape (H, W, 1).
+///
+/// # Returns
+///
+/// Returns `Ok(())` on success.
+///
+/// # Errors
+///
+/// Returns [`ImageError::InvalidImageSize`] if `src` and `dst` differ in size.
 pub fn gray_from_rgb_u8<A1: ImageAllocator, A2: ImageAllocator>(
     src: &Image<u8, 3, A1>,
     dst: &mut Image<u8, 1, A2>,
@@ -124,6 +152,19 @@ pub fn gray_from_rgb_u8<A1: ImageAllocator, A2: ImageAllocator>(
 /// Convert an RGB f32 image to grayscale (`f32`).
 ///
 /// Thin wrapper around [`gray_from_rgb`] for backward compatibility.
+///
+/// # Arguments
+///
+/// * `src` - The source RGB f32 image with shape (H, W, 3).
+/// * `dst` - The destination grayscale f32 image with shape (H, W, 1).
+///
+/// # Returns
+///
+/// Returns `Ok(())` on success.
+///
+/// # Errors
+///
+/// Returns [`ImageError::InvalidImageSize`] if `src` and `dst` differ in size.
 pub fn gray_from_rgb_f32<A1: ImageAllocator, A2: ImageAllocator>(
     src: &Image<f32, 3, A1>,
     dst: &mut Image<f32, 1, A2>,
@@ -203,6 +244,21 @@ impl RgbFromGray for f32 {
 ///
 /// Dispatches at compile time on pixel type `T`: `u8`/`f32` use NEON
 /// (`vld1q` + `vst3q`); any other `T` uses a portable scalar broadcast.
+///
+/// # Arguments
+///
+/// * `src` - The source grayscale image with shape (H, W, 1).
+/// * `dst` - The destination RGB image with shape (H, W, 3). Must have the
+///   same spatial dimensions as `src`.
+///
+/// # Returns
+///
+/// Returns `Ok(())` on success.
+///
+/// # Errors
+///
+/// Returns [`ImageError::InvalidImageSize`] if `src` and `dst` have different
+/// spatial dimensions.
 ///
 /// # Example
 ///

@@ -192,6 +192,15 @@ pub fn crop_image<T, const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
 where
     T: Copy + Send + Sync,
 {
+    // Bounds check: crop region must fit entirely inside source.
+    if x + dst.cols() > src.cols() || y + dst.rows() > src.rows() {
+        return Err(ImageError::PixelIndexOutOfBounds(
+            x + dst.cols(),
+            y + dst.rows(),
+            src.cols(),
+            src.rows(),
+        ));
+    }
     let dst_cols = dst.cols();
     let src_cols = src.cols();
     let row_bytes = dst_cols * C * std::mem::size_of::<T>();
@@ -367,6 +376,31 @@ mod tests {
             assert_eq!(dst_row, src_row, "row {} mismatch", r);
         }
         Ok(())
+    }
+
+    #[test]
+    fn test_crop_oob_returns_err() {
+        // crop region extends beyond source width: x=2, dst.cols=3, x+dst.cols=5 > src.cols=4
+        let src = Image::<u8, 1, _>::from_size_val(
+            ImageSize {
+                width: 4,
+                height: 4,
+            },
+            0u8,
+            CpuAllocator,
+        )
+        .unwrap();
+        let mut dst = Image::<u8, 1, _>::from_size_val(
+            ImageSize {
+                width: 3,
+                height: 3,
+            },
+            0u8,
+            CpuAllocator,
+        )
+        .unwrap();
+        let result = super::crop_image(&src, &mut dst, 2, 0);
+        assert!(result.is_err(), "expected Err for OOB crop, got Ok");
     }
 
     #[test]
