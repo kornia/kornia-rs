@@ -132,10 +132,14 @@ pub mod resource;
 /// CUDA device-memory integration via `cudarc 0.19`.
 ///
 /// Enabled by the `cudarc` feature (default OFF). Provides [`cuda::CudaResource`],
-/// [`cuda::CudaAllocator`], and `Tensor` methods `to_cuda`/`to_host`/`from_cudaslice`/
+/// [`cuda::CudaAllocator`], [`cuda::CudaKernel`], [`cuda::CudaLaunchBuilder`],
+/// [`cuda::zeros_cuda`], and `Tensor` methods `to_cuda`/`to_host`/`from_cudaslice`/
 /// `as_cudaslice`/`into_cudaslice` for first-class device tensor support.
 #[cfg(feature = "cudarc")]
 pub mod cuda;
+
+#[cfg(feature = "cudarc")]
+pub use crate::cuda::{CudaAllocator, CudaError, CudaKernel, CudaLaunchBuilder, zeros_cuda};
 
 /// Storage module containing low-level memory buffer implementations.
 ///

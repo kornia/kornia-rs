@@ -43,7 +43,11 @@
 
 use std::{any::Any, marker::PhantomData, ptr::NonNull, sync::Arc};
 
-use cudarc::driver::{CudaContext, CudaSlice, CudaStream, DevicePtr, DeviceRepr, ValidAsZeroBits};
+use cudarc::driver::{
+    CudaContext, CudaFunction, CudaModule, CudaSlice, CudaStream, DevicePtr, DeviceRepr,
+    LaunchArgs, LaunchConfig, PushKernelArg, ValidAsZeroBits,
+};
+use cudarc::nvrtc::{compile_ptx_with_opts, CompileOptions};
 
 use crate::{
     allocator::{CpuAllocator, TensorAllocator, TensorAllocatorError},
@@ -158,6 +162,195 @@ pub enum CudaError {
     /// Storage is not backed by a `CudaResource`.
     #[error("Tensor storage is not device-backed by CudaResource")]
     NotCudaBacked,
+}
+
+// ── CudaKernel ────────────────────────────────────────────────────────────────
+
+/// A compiled CUDA kernel that wraps a [`CudaFunction`] and keeps the owning
+/// [`CudaModule`] alive.
+///
+/// Construct via [`CudaKernel::compile`], then launch via
+/// [`CudaKernel::launch_builder`].
+pub struct CudaKernel {
+    func: CudaFunction,
+    /// Keepalive: `CudaFunction` already holds an `Arc<CudaModule>` internally,
+    /// but we also keep our own `Arc` so callers can reason about ownership.
+    _module: Arc<CudaModule>,
+}
+
+impl CudaKernel {
+    /// Compile a CUDA C source string and return a ready-to-launch kernel.
+    ///
+    /// # Arguments
+    ///
+    /// * `ctx`     — CUDA context; used to detect compute capability and load the module.
+    /// * `src`     — CUDA C (`.cu`) source string.
+    /// * `fn_name` — name of the `extern "C" __global__` function to load.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CudaError::Driver`] on nvrtc compile failure or module/function
+    /// load failure.
+    pub fn compile(ctx: &Arc<CudaContext>, src: &str, fn_name: &str) -> Result<Self, CudaError> {
+        // Detect arch from the context's device.
+        let (major, minor) = ctx
+            .compute_capability()
+            .map_err(|e| CudaError::Driver(e.to_string()))?;
+
+        // `CompileOptions.arch` is `Option<&'static str>`.
+        // We build a heap string and `Box::leak` it to get a `'static` reference.
+        // The leaked allocation is tiny (< 16 bytes) and intentional: it persists for
+        // the process lifetime, which is acceptable for a per-compilation arch string.
+        let arch_str: &'static str =
+            Box::leak(format!("compute_{}{}", major, minor).into_boxed_str());
+
+        let ptx = compile_ptx_with_opts(
+            src,
+            CompileOptions {
+                arch: Some(arch_str),
+                ..Default::default()
+            },
+        )
+        .map_err(|e| CudaError::Driver(format!("{e:?}")))?;
+
+        let module = ctx
+            .load_module(ptx)
+            .map_err(|e| CudaError::Driver(e.to_string()))?;
+        let func = module
+            .load_function(fn_name)
+            .map_err(|e| CudaError::Driver(e.to_string()))?;
+
+        Ok(CudaKernel {
+            func,
+            _module: module,
+        })
+    }
+
+    /// Create a [`CudaLaunchBuilder`] pre-bound to this kernel and the given stream.
+    pub fn launch_builder<'a>(&'a self, stream: &'a Arc<CudaStream>) -> CudaLaunchBuilder<'a> {
+        CudaLaunchBuilder {
+            inner: stream.launch_builder(&self.func),
+        }
+    }
+}
+
+// ── CudaLaunchBuilder ─────────────────────────────────────────────────────────
+
+/// Ergonomic wrapper around cudarc's [`LaunchArgs`] that accumulates kernel
+/// arguments and provides a one-liner `launch_1d` helper.
+///
+/// Obtain via [`CudaKernel::launch_builder`].
+///
+/// # Example
+///
+/// ```ignore
+/// kernel.launch_builder(&stream)
+///     .arg(&input_slice)
+///     .arg(&mut output_slice)
+///     .arg(&n_i32)
+///     .launch_1d(n as u32)?;
+/// ```
+pub struct CudaLaunchBuilder<'a> {
+    inner: LaunchArgs<'a>,
+}
+
+impl<'a> CudaLaunchBuilder<'a> {
+    /// Push a kernel argument.  `T` must implement [`PushKernelArg`] for
+    /// [`LaunchArgs<'a>`], which is satisfied by `&T` (for `T: DeviceRepr`),
+    /// `&CudaSlice<T>`, `&mut CudaSlice<T>`, and similar cudarc types.
+    pub fn arg<T>(mut self, v: T) -> Self
+    where
+        LaunchArgs<'a>: PushKernelArg<T>,
+    {
+        self.inner.arg(v);
+        self
+    }
+
+    /// Launch the kernel with a 1-D grid sized to cover `n` elements.
+    ///
+    /// Uses a fixed block size of 256 threads.
+    ///
+    /// # Safety (internal)
+    ///
+    /// The `unsafe { self.inner.launch(cfg) }` call is inherently unsafe because
+    /// CUDA cannot verify that the accumulated arguments are valid.  This wrapper
+    /// provides the ergonomic surface; callers must ensure argument types and
+    /// counts match the kernel signature.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CudaError::Driver`] on CUDA launch failure.
+    pub fn launch_1d(mut self, n: u32) -> Result<(), CudaError> {
+        const BLOCK: u32 = 256;
+        let cfg = LaunchConfig {
+            block_dim: (BLOCK, 1, 1),
+            grid_dim: (n.div_ceil(BLOCK), 1, 1),
+            shared_mem_bytes: 0,
+        };
+        // SAFETY: The caller is responsible for ensuring the kernel arguments match
+        // the kernel's parameter list in type, count, and alignment.
+        unsafe { self.inner.launch(cfg) }
+            .map(|_| ()) // discard optional (CudaEvent, CudaEvent) timing pair
+            .map_err(|e| CudaError::Driver(e.to_string()))
+    }
+}
+
+// ── zeros_cuda ────────────────────────────────────────────────────────────────
+
+/// Allocate a zero-initialised device tensor with shape `shape` on `stream`.
+///
+/// Uses [`CudaAllocator`] (which calls `stream.alloc_zeros::<u8>`) so all bytes
+/// are guaranteed to be zero on the device.
+///
+/// # Type parameters
+///
+/// * `T` — element type; must satisfy [`DeviceRepr`] + [`ValidAsZeroBits`].
+/// * `N` — number of dimensions.
+///
+/// # Errors
+///
+/// Returns [`CudaError::Tensor`] if the total element count is zero or
+/// [`CudaError::Driver`] on CUDA allocation failure.
+pub fn zeros_cuda<T, const N: usize>(
+    shape: [usize; N],
+    stream: &Arc<CudaStream>,
+) -> Result<Tensor<T, N, CudaAllocator>, CudaError>
+where
+    T: DeviceRepr + ValidAsZeroBits + 'static,
+{
+    let ctx = stream.context().clone();
+    let alloc = CudaAllocator {
+        ctx: ctx.clone(),
+        stream: stream.clone(),
+    };
+
+    let numel: usize = shape.iter().product();
+    let n_bytes = numel * std::mem::size_of::<T>();
+
+    // Allocate zero-initialised device memory via the stream.
+    let slice: CudaSlice<u8> = stream
+        .alloc_zeros::<u8>(n_bytes)
+        .map_err(|e| CudaError::Driver(e.to_string()))?;
+
+    // Cache device pointer before moving `slice` into CudaResource.
+    let id = ctx.ordinal() as i32;
+    let ptr = {
+        let (cu_ptr, _sync) = slice.device_ptr(stream);
+        cu_ptr as *mut u8
+        // _sync drops here
+    };
+
+    let resource = CudaResource::<u8> { slice, ptr, id };
+
+    // SAFETY: `ptr` is the device pointer inside `resource`; `n_bytes` is the
+    // allocation size; `resource` is the sole owner of that device memory.
+    let storage = unsafe { storage_from_cuda_resource(resource, ptr as *mut T, n_bytes, alloc) };
+    let strides = get_strides_from_shape(shape);
+    Ok(Tensor {
+        storage,
+        shape,
+        strides,
+    })
 }
 
 // ── Helper: build a TensorStorage from a CudaResource ─────────────────────────
@@ -498,6 +691,61 @@ mod tests {
         let _verify = stream
             .alloc_zeros::<u8>(16)
             .expect("allocation after from_cudaslice+drop must succeed");
+    }
+
+    /// Compile a trivial `copy_bytes` kernel, launch it via `CudaKernel` + `CudaLaunchBuilder`,
+    /// and verify that the output slice matches the input.
+    #[test]
+    fn cuda_kernel_compile_and_launch() {
+        const COPY_BYTES_SRC: &str = r#"
+            extern "C" __global__ void copy_bytes(
+                const unsigned char* __restrict__ src,
+                unsigned char* __restrict__ dst,
+                int n)
+            {
+                int i = blockIdx.x * blockDim.x + threadIdx.x;
+                if (i < n) { dst[i] = src[i]; }
+            }
+        "#;
+
+        let ctx = CudaContext::new(0).unwrap();
+        let stream = ctx.default_stream();
+
+        let kernel = CudaKernel::compile(&ctx, COPY_BYTES_SRC, "copy_bytes")
+            .expect("kernel compile must succeed");
+
+        const N: usize = 16;
+        let input_data: Vec<u8> = (0u8..N as u8).collect();
+        let input: CudaSlice<u8> = stream.clone_htod(&input_data).unwrap();
+        let mut output: CudaSlice<u8> = stream.alloc_zeros::<u8>(N).unwrap();
+
+        let n_i32: i32 = N as i32;
+        kernel
+            .launch_builder(&stream)
+            .arg(&input)
+            .arg(&mut output)
+            .arg(&n_i32)
+            .launch_1d(N as u32)
+            .expect("kernel launch must succeed");
+
+        let result: Vec<u8> = stream.clone_dtoh(&output).unwrap();
+        stream.synchronize().unwrap();
+        assert_eq!(result, input_data, "copy_bytes kernel output must match input");
+    }
+
+    /// `zeros_cuda` allocates a device tensor; `to_host` must return all-zero bytes.
+    #[test]
+    fn zeros_cuda_test() {
+        let ctx = CudaContext::new(0).unwrap();
+        let stream = ctx.default_stream();
+
+        let dev = zeros_cuda::<u8, 1>([8], &stream).expect("zeros_cuda must succeed");
+        let host = dev.to_host(&stream).expect("to_host must succeed");
+        assert_eq!(
+            host.as_slice(),
+            &[0u8; 8],
+            "zeros_cuda result must be all zeros"
+        );
     }
 
     /// `from_cudaslice` must ZERO-COPY WRAP (alias) the existing device allocation:
