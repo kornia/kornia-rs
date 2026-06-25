@@ -8050,6 +8050,7 @@ dependencies = [
  "criterion 0.8.2",
  "cubecl-core",
  "cubecl-cuda",
+ "cudarc 0.19.7",
  "image",
  "imageproc 0.26.2",
  "kornia-algebra",
