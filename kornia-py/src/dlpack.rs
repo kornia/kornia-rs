@@ -31,17 +31,38 @@ use crate::backing::Dtype;
 /// it drops the `ManagedContext<ImageExport>`, which drops `keepalive`, which
 /// decrements the Image's refcount (and potentially frees the buffer if nothing
 /// else holds a reference).
+///
+/// # GIL safety
+///
+/// `keepalive` is wrapped in `ManuallyDrop` so that field-drop never calls
+/// `Py_DECREF` implicitly (which would be UB if the DLPack deleter runs
+/// off-GIL, e.g. from a PyTorch worker thread).  Our custom `Drop` impl
+/// acquires the GIL before releasing the reference count.
 pub struct ImageExport {
     /// Strong reference to the `PyImageApi` Python object — keeps Backing alive.
     /// Never "read" by Rust — this field exists to be *held*, not accessed.
+    /// Wrapped in `ManuallyDrop` to prevent implicit off-GIL `Py_DECREF`.
     #[allow(dead_code)]
-    pub keepalive: Py<PyAny>,
+    pub keepalive: std::mem::ManuallyDrop<Py<PyAny>>,
     /// Raw pointer into the Image's backing buffer (NOT a copy).
     pub data: *mut c_void,
     /// HWC shape as `[H, W, C]` (i64 for DLPack).
     pub shape: Vec<i64>,
     /// DLPack data-type descriptor.
     pub dtype: DLDataType,
+}
+
+impl Drop for ImageExport {
+    fn drop(&mut self) {
+        // SAFETY: We own this `Py<PyAny>` inside `ManuallyDrop`; we drop it
+        // exactly once here, under the GIL, to prevent `Py_DECREF` off-GIL.
+        // The DLPack consumer's deleter may run off-GIL (e.g. from a PyTorch
+        // worker thread), so we must re-acquire it before touching the refcount.
+        let keepalive = unsafe { std::mem::ManuallyDrop::take(&mut self.keepalive) };
+        Python::attach(|_py| {
+            drop(keepalive);
+        });
+    }
 }
 
 // SAFETY: `data` points into `keepalive`'s backing.  `ManagedContext<ImageExport>`

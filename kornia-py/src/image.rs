@@ -1082,7 +1082,12 @@ impl PyImageApi {
         let b = arr.bind(py);
         let s = b.shape();
         let (h, w, c) = (s[0], s[1], s[2]);
-        let n_bytes = h * w * c * std::mem::size_of::<T>();
+        // Checked multiplication: the numpy array is already allocated so this
+        // should never overflow in practice, but we guard the unsafe slice
+        // creation defensively. If somehow the shape is adversarial, this is
+        // unreachable — numpy itself would have failed to allocate first.
+        let n_bytes = backing::byte_len(h, w, c, dtype)
+            .expect("image dimensions overflow usize — should have been caught at ingest");
         let src = unsafe { std::slice::from_raw_parts(b.data() as *const u8, n_bytes) };
         let bytes = backing::AlignedBytes::from_slice(src);
         Self::from_owned_bytes(bytes, dtype, [h, w, c], cs, mode)
@@ -2370,9 +2375,14 @@ impl PyImageApi {
         self.require_u8("resize")?;
         let [src_h, src_w, c] = self.shape;
         if c == 3 {
-            let arr = self.as_numpy_u8(py)?;
-            let result = crate::resize::resize(py, arr, (height, width), interpolation, true)?;
-            Ok(self.wrap_u8_result(py, result))
+            // One-copy path: borrow src zero-copy, allocate dst once, write
+            // directly.  The old path went src → PyArray → owned, wasting a copy.
+            let src = unsafe { self.borrow_self::<u8, 3>().map_err(to_pyerr)? };
+            let interp = parse_interpolation(interpolation)?;
+            let out_size = ImageSize { width, height };
+            self.run_into_owned_u8::<3, _>(py, out_size, |dst| {
+                kornia_imgproc::resize::resize_fast_rgb_aa(&src, dst, interp, true)
+            })
         } else {
             let out = resize_nearest(self.u8_elems(), src_h, src_w, height, width, c);
             Ok(self.wrap_vec(py, out, height, width, c))
@@ -3024,9 +3034,11 @@ impl PyImageApi {
             itemsize,
         ]);
 
+        let total_bytes = backing::byte_len(h, w, c, slf.dtype)
+            .map_err(|e| pyo3::exceptions::PyBufferError::new_err(e.to_string()))?;
         let v = unsafe { &mut *view };
         v.buf = slf.backing.data_ptr() as *mut std::ffi::c_void;
-        v.len = (h * w * c) as pyo3::ffi::Py_ssize_t * itemsize;
+        v.len = total_bytes as pyo3::ffi::Py_ssize_t;
         v.readonly = readonly as std::os::raw::c_int;
         v.itemsize = itemsize;
         v.format = if (flags & pyo3::ffi::PyBUF_FORMAT) == pyo3::ffi::PyBUF_FORMAT {
@@ -3131,7 +3143,7 @@ impl PyImageApi {
         // so the backing buffer outlives the exported DLPack tensor.
         let keepalive: Py<PyAny> = slf.into_any().unbind();
         let export = crate::dlpack::ImageExport {
-            keepalive,
+            keepalive: std::mem::ManuallyDrop::new(keepalive),
             data,
             shape,
             dtype: dt,

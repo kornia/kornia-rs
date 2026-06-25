@@ -6,6 +6,7 @@ use pyo3::prelude::*;
 /// Per-pixel color space tag used by `Image.cvt_color`.
 #[pyclass(
     name = "ColorSpace",
+    frozen,
     eq,
     eq_int,
     from_py_object,
