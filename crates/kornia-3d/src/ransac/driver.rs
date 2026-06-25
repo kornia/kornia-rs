@@ -164,8 +164,34 @@ where
         i += 1;
     }
 
+    let mut final_model = best_model.clone();
+
+    if final_model.is_some() {
+        let mut final_inliers_buf = Vec::with_capacity(n);
+        for (idx, &is_in) in best_inliers.iter().enumerate() {
+            if is_in {
+                final_inliers_buf.push(samples[idx]);
+            }
+        }
+
+        if final_inliers_buf.len() > E::SAMPLE_SIZE {
+            let mut final_models = Vec::new();
+            estimator.refit(&final_inliers_buf, &mut final_models);
+
+            for fm in final_models.iter() {
+                estimator.residual_batch(fm, samples, &mut residuals);
+                let final_outcome = consensus.consensus(&residuals, &mut current_inliers);
+                if final_outcome.score >= best_score {
+                    best_score = final_outcome.score;
+                    final_model = Some(fm.clone());
+                    best_inliers = current_inliers.clone();
+                }
+            }
+        }
+    }
+
     RansacResult {
-        model: best_model,
+        model: final_model,
         inliers: best_inliers,
         num_iters: i,
         score: best_score,

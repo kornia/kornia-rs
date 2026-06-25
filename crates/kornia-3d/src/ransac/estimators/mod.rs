@@ -6,11 +6,13 @@
 //! adds no new numerical surface — only the trait plumbing that lets the
 //! generic RANSAC driver reuse them.
 
+mod ap3p;
 mod epnp;
 mod essential;
 mod fundamental;
 mod homography;
 
+pub use ap3p::AP3PEstimator;
 pub use epnp::EPnPEstimator;
 pub use essential::EssentialEstimator;
 pub use fundamental::FundamentalEstimator;
