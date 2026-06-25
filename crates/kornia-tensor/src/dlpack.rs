@@ -175,9 +175,28 @@ where
         return Err(DlpackError::DtypeMismatch);
     }
 
-    // Require contiguous (null strides pointer means C-contiguous in DLPack spec).
+    // Accept null strides (C-contiguous per DLPack spec) OR explicit strides that
+    // equal the C-contiguous strides for this shape.  Reject genuinely non-contiguous
+    // strides so we don't silently produce a Tensor with wrong element addressing.
     if !dl.strides.is_null() {
-        return Err(DlpackError::NotContiguous);
+        // SAFETY: dl.strides is valid for dl.ndim elements (same guarantee as dl.shape).
+        let strides_slice = unsafe { std::slice::from_raw_parts(dl.strides, N) };
+        // Compute expected C-contiguous strides: stride[i] = product(shape[i+1..]).
+        // Read shape_slice eagerly; it was not yet materialised at this point, so recompute
+        // here using the raw pointer (shape_slice is re-read below after this block).
+        let shape_raw = unsafe { std::slice::from_raw_parts(dl.shape, N) };
+        let expected_contiguous = {
+            let mut s = [0i64; N];
+            let mut acc = 1i64;
+            for i in (0..N).rev() {
+                s[i] = acc;
+                acc = acc.saturating_mul(shape_raw[i]);
+            }
+            s
+        };
+        if strides_slice != expected_contiguous {
+            return Err(DlpackError::NotContiguous);
+        }
     }
 
     // Validate data pointer.
@@ -250,7 +269,7 @@ fn map_dl_device(device: DLDevice) -> (MemoryDomain, i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CpuAllocator, Tensor};
+    use crate::Tensor;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
@@ -325,12 +344,10 @@ mod tests {
         let data: Vec<f32> = vec![10.0, 20.0, 30.0];
         let shape_arr: Vec<i64> = vec![3i64];
 
-        // We'll box up the data so keepalive owns it
-        let boxed: Box<Vec<f32>> = Box::new(data);
-        let data_ptr = boxed.as_ptr();
+        let data_ptr = data.as_ptr();
 
         struct Guard {
-            _data: Box<Vec<f32>>,
+            _data: Vec<f32>,
             counter: Arc<AtomicUsize>,
         }
         impl Drop for Guard {
@@ -339,7 +356,7 @@ mod tests {
             }
         }
         let guard = Arc::new(Guard {
-            _data: boxed,
+            _data: data,
             counter: counter.clone(),
         });
 
@@ -465,5 +482,80 @@ mod tests {
 
         // This MUST panic:
         let _ = tensor.storage.as_slice();
+    }
+
+    // ── explicit C-contiguous strides ─────────────────────────────────────────
+
+    /// A DLManagedTensor with explicit C-contiguous strides must import successfully.
+    ///
+    /// For shape [H, W, C] = [4, 3, 2] the C-contiguous strides are [6, 2, 1].
+    #[test]
+    fn test_from_dlpack_explicit_contiguous_strides_accepted() {
+        // shape [4, 3, 2] → C-contiguous strides [6, 2, 1]
+        let data: Vec<f32> = (0..24).map(|x| x as f32).collect();
+        let shape_arr: Vec<i64> = vec![4, 3, 2];
+        let strides_arr: Vec<i64> = vec![6, 2, 1]; // explicit C-contiguous strides
+
+        let dl_tensor = dlpack_rs::ffi::DLTensor {
+            data: data.as_ptr() as *mut std::ffi::c_void,
+            device: safe::cpu_device(),
+            ndim: 3,
+            dtype: f32::dl_dtype(),
+            shape: shape_arr.as_ptr() as *mut i64,
+            strides: strides_arr.as_ptr() as *mut i64,
+            byte_offset: 0,
+        };
+        let mut managed = DLManagedTensor {
+            dl_tensor,
+            manager_ctx: std::ptr::null_mut(),
+            deleter: None,
+        };
+
+        let keepalive: Arc<dyn core::any::Any + Send + Sync> = Arc::new(data.clone());
+        let tensor = unsafe { tensor_from_dlpack_raw::<f32, 3>(&mut managed as *mut _, keepalive) };
+        assert!(
+            tensor.is_ok(),
+            "explicit C-contiguous strides must be accepted, got: {:?}",
+            tensor.err().map(|e| e.to_string())
+        );
+        // Verify data is accessible and correct.
+        let t = tensor.unwrap();
+        assert_eq!(t.shape, [4, 3, 2]);
+        let slice = t.storage.as_slice();
+        assert_eq!(slice.len(), 24);
+        assert_eq!(slice[0], 0.0f32);
+        assert_eq!(slice[23], 23.0f32);
+    }
+
+    /// A DLManagedTensor with genuinely non-contiguous strides must be rejected.
+    #[test]
+    fn test_from_dlpack_non_contiguous_strides_rejected() {
+        // shape [4, 3] with strides [4, 1] — NOT C-contiguous (should be [3, 1]).
+        let data: Vec<f32> = (0..16).map(|x| x as f32).collect();
+        let shape_arr: Vec<i64> = vec![4, 3];
+        let strides_arr: Vec<i64> = vec![4, 1]; // non-contiguous: C-contiguous would be [3, 1]
+
+        let dl_tensor = dlpack_rs::ffi::DLTensor {
+            data: data.as_ptr() as *mut std::ffi::c_void,
+            device: safe::cpu_device(),
+            ndim: 2,
+            dtype: f32::dl_dtype(),
+            shape: shape_arr.as_ptr() as *mut i64,
+            strides: strides_arr.as_ptr() as *mut i64,
+            byte_offset: 0,
+        };
+        let mut managed = DLManagedTensor {
+            dl_tensor,
+            manager_ctx: std::ptr::null_mut(),
+            deleter: None,
+        };
+
+        let keepalive: Arc<dyn core::any::Any + Send + Sync> = Arc::new(data);
+        let result = unsafe { tensor_from_dlpack_raw::<f32, 2>(&mut managed as *mut _, keepalive) };
+        assert!(
+            matches!(result, Err(DlpackError::NotContiguous)),
+            "non-contiguous strides must return NotContiguous, got: {:?}",
+            result.map(|_| ())
+        );
     }
 }

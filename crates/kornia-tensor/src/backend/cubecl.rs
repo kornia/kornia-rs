@@ -61,10 +61,11 @@ impl<R: Runtime> Clone for CubeclBackend<R> {
 impl<R: Runtime> Backend for CubeclBackend<R> {
     type Error = CubeclBackendError;
 
-    fn alloc(&self, layout: Layout) -> Result<*mut u8, Self::Error> {
+    fn alloc(&self, layout: Layout) -> Result<(*mut u8, i32), Self::Error> {
         if layout.size() == 0 {
             // layout.align() >= 1 by invariant; this pointer is never dereferenced.
-            return Ok(std::ptr::without_provenance_mut(layout.align()));
+            // Device id 0 is the conventional default for zero-sized allocations.
+            return Ok((std::ptr::without_provenance_mut(layout.align()), 0));
         }
         // SAFETY: a CUDA context is active — CudaRuntime::client() initialised it.
         let device_ptr = unsafe { cudarc::driver::result::malloc_sync(layout.size()) }
@@ -73,7 +74,7 @@ impl<R: Runtime> Backend for CubeclBackend<R> {
             return Err(CubeclBackendError::NullDevicePointer);
         }
         // CUDA device address → host-side opaque pointer; never dereferenced on host.
-        Ok(std::ptr::without_provenance_mut(device_ptr as usize))
+        Ok((std::ptr::without_provenance_mut(device_ptr as usize), 0))
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {

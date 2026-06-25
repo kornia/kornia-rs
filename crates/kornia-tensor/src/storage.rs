@@ -241,7 +241,10 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
             layout.size(),
             len_bytes,
         );
-        let ptr = NonNull::new_unchecked(data);
+        // Defense-in-depth: a null pointer here is always a caller bug; make it a clear
+        // panic rather than undefined behaviour via `new_unchecked`.
+        let ptr = NonNull::new(data)
+            .expect("from_raw_host: null pointer — data must be a valid, non-null host pointer");
         let owner: Box<dyn MemoryResource> = Box::new(
             HostResource::from_raw(data as *mut u8, layout).expect("non-null pointer required"),
         );

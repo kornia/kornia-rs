@@ -41,7 +41,13 @@
 //! - `miri` cannot execute CUDA driver calls; device tests are guarded by
 //!   `#[cfg(all(test, feature = "cudarc"))]` and run on the real Jetson Orin.
 
-use std::{any::Any, marker::PhantomData, ptr::NonNull, sync::Arc};
+use std::{
+    any::Any,
+    collections::HashMap,
+    marker::PhantomData,
+    ptr::NonNull,
+    sync::{Arc, Mutex, OnceLock},
+};
 
 use cudarc::driver::{
     CudaContext, CudaFunction, CudaSlice, CudaStream, DevicePtr, DeviceRepr, LaunchArgs,
@@ -202,11 +208,24 @@ impl CudaKernel {
             .map_err(|e| CudaError::Driver(e.to_string()))?;
 
         // `CompileOptions.arch` is `Option<&'static str>`.
-        // We build a heap string and `Box::leak` it to get a `'static` reference.
-        // The leaked allocation is tiny (< 16 bytes) and intentional: it persists for
-        // the process lifetime, which is acceptable for a per-compilation arch string.
-        let arch_str: &'static str =
-            Box::leak(format!("compute_{}{}", major, minor).into_boxed_str());
+        // We cache the leaked `&'static str` per (major, minor) compute capability so
+        // that at most one string is ever leaked per distinct arch value (typically a
+        // handful in the lifetime of a process), rather than one per `compile` call.
+        static ARCH_CACHE: OnceLock<Mutex<HashMap<(i32, i32), &'static str>>> = OnceLock::new();
+        let arch_str: &'static str = {
+            let mut map = ARCH_CACHE
+                .get_or_init(|| Mutex::new(HashMap::new()))
+                .lock()
+                .expect("ARCH_CACHE mutex poisoned");
+            if let Some(&s) = map.get(&(major, minor)) {
+                s
+            } else {
+                let s: &'static str =
+                    Box::leak(format!("compute_{}{}", major, minor).into_boxed_str());
+                map.insert((major, minor), s);
+                s
+            }
+        };
 
         let ptx = compile_ptx_with_opts(
             src,
