@@ -159,7 +159,7 @@ where
     let (domain, device_id) = if dl.device.device_type == K_DL_CPU {
         (MemoryDomain::Host, 0i32)
     } else {
-        (MemoryDomain::Device, dl.device.device_id)
+        (MemoryDomain::Device { id: dl.device.device_id }, dl.device.device_id)
     };
 
     // 10. Apply byte_offset.
@@ -474,7 +474,7 @@ mod tests {
         // Verify storage domain == Device and device_id == 1.
         assert_eq!(
             img.0.storage.domain(),
-            MemoryDomain::Device,
+            MemoryDomain::Device { id: 1 },
             "must be Device domain"
         );
         assert_eq!(img.0.storage.device_id(), 1, "device_id must be 1");

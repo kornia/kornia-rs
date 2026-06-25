@@ -24,10 +24,19 @@ pub use crate::stream::v4l2::V4L2CameraConfig;
 pub use crate::stream::video::VideoWriter;
 
 use kornia_image::allocator::ImageAllocator;
-use kornia_tensor::{allocator::TensorAllocatorError, TensorAllocator};
+use kornia_tensor::{
+    allocator::TensorAllocatorError,
+    resource::MemoryResource,
+    TensorAllocator,
+};
 
 #[derive(Clone)]
 /// A [TensorAllocator] used for those images, whose memory is managed by gstreamer.
+///
+/// NOTE: This is a transitional shim (Tasks 7-8 will replace it with `GstResource`).
+/// `allocate` always returns [`TensorAllocatorError::CannotAllocateForeign`] because
+/// GStreamer manages the buffer memory; use `Image::from_raw_parts` with the mapped
+/// buffer pointer directly.
 pub struct GstAllocator(pub gstreamer::Buffer);
 
 impl Default for GstAllocator {
@@ -37,19 +46,14 @@ impl Default for GstAllocator {
 }
 
 impl TensorAllocator for GstAllocator {
-    fn alloc(&self, layout: std::alloc::Layout) -> Result<*mut u8, TensorAllocatorError> {
-        let ptr = unsafe { std::alloc::alloc(layout) };
-
-        if ptr.is_null() {
-            Err(TensorAllocatorError::NullPointer)?
-        }
-
-        Ok(ptr)
-    }
-
-    fn dealloc(&self, _ptr: *mut u8, _layout: std::alloc::Layout) {
-        // Do nothing as the memory is managed by Gstreamer
+    fn allocate(
+        &self,
+        _layout: std::alloc::Layout,
+    ) -> Result<Box<dyn MemoryResource>, TensorAllocatorError> {
+        // GStreamer manages the buffer memory — allocation never happens here.
         // For more info, check https://github.com/kornia/kornia-rs/pull/338
+        // TODO(Task 7): replace with GstResource that keeps the MappedBuffer alive.
+        Err(TensorAllocatorError::CannotAllocateForeign)
     }
 }
 
