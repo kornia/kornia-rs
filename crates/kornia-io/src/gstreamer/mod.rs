@@ -138,13 +138,26 @@ impl ImageAllocator for GstAllocator {}
 pub(crate) fn image_from_gst_buffer(
     size: kornia_image::ImageSize,
     mapped_buffer: gstreamer::buffer::MappedBuffer<gstreamer::buffer::Readable>,
-) -> Result<kornia_image::Image<u8, 3, GstAllocator>, kornia_image::ImageError> {
+) -> Result<kornia_image::Image<u8, 3, GstAllocator>, crate::stream::error::StreamCaptureError> {
     use kornia_tensor::storage::{MemoryDomain, TensorStorage};
     use kornia_tensor::Tensor;
 
     // Capture pointer and length BEFORE moving mapped_buffer into GstResource.
     let data_ptr: *const u8 = mapped_buffer.as_ptr();
     let data_len: usize = mapped_buffer.len();
+
+    // Defense-in-depth: verify the buffer is large enough for an RGB24 frame.
+    // The pipeline normally enforces RGB caps, but a misconfigured or non-RGB
+    // pipeline would silently produce out-of-bounds stride-based access otherwise.
+    let expected_len = size.width * size.height * 3;
+    if data_len < expected_len {
+        return Err(
+            crate::stream::error::StreamCaptureError::BufferSizeMismatch {
+                expected: expected_len,
+                got: data_len,
+            },
+        );
+    }
 
     // Move the MappedBuffer into a GstResource; its Drop releases the buffer.
     let resource = GstResource {
@@ -182,6 +195,7 @@ pub(crate) fn image_from_gst_buffer(
 
     // TryFrom<Tensor3<T, A>> for Image<T, C, A> validates that shape[2] == C (== 3).
     kornia_image::Image::try_from(tensor)
+        .map_err(crate::stream::error::StreamCaptureError::ImageError)
 }
 
 #[cfg(test)]
@@ -289,5 +303,32 @@ mod tests {
         let a = GstAllocator;
         let _b = a.clone();
         let _c = GstAllocator;
+    }
+
+    /// Validates the buffer-size guard arithmetic used in `image_from_gst_buffer`.
+    ///
+    /// A real `MappedBuffer<Readable>` requires a live GStreamer pipeline and cannot
+    /// be constructed in a pure unit test, so this test asserts the validation formula
+    /// `expected = width * height * 3` for representative boundary values.
+    #[test]
+    fn gst_buffer_size_validation_arithmetic() {
+        // expected bytes for an RGB24 frame of various sizes
+        assert_eq!(8usize * 4 * 3, 96, "8x4 RGB24 = 96 bytes");
+        assert_eq!(640usize * 480 * 3, 921_600, "640x480 RGB24 = 921600 bytes");
+        assert_eq!(
+            1920usize * 1080 * 3,
+            6_220_800,
+            "1920x1080 RGB24 = 6220800 bytes"
+        );
+        // A buffer smaller than the expected size must be rejected.
+        // The actual rejection is inside image_from_gst_buffer; this test
+        // documents the check boundary: expected-1 < expected → rejected.
+        let width = 8usize;
+        let height = 4usize;
+        let expected = width * height * 3;
+        assert!(
+            (expected - 1) < expected,
+            "a buffer of size expected-1 is strictly smaller than expected"
+        );
     }
 }

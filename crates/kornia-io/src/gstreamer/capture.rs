@@ -163,8 +163,7 @@ impl StreamCapture {
                 height: height as usize,
             },
             mapped_buffer,
-        )
-        .map_err(StreamCaptureError::ImageError)?;
+        )?;
 
         Ok(Some(image))
     }
