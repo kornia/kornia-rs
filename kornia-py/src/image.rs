@@ -1446,14 +1446,34 @@ impl PyImageApi {
             )));
         }
         if self.dtype == backing::Dtype::U8 && c == 3 {
-            // Crop directly into the owned output buffer — ONE copy. The previous
-            // path copied twice: source -> a fresh numpy array, then that array ->
-            // the owned backing. Borrow the source and let the SIMD `crop_image`
-            // write straight into the owned destination.
+            // Crop directly into an UNINITIALIZED owned output — ONE copy, no
+            // pre-zeroing (the OpenCV/numpy trick: never zero a buffer you fully
+            // overwrite). The old path did two copies (source -> numpy array ->
+            // owned backing) plus a zeroing.
             let src = unsafe { self.borrow_self::<u8, 3>().map_err(to_pyerr)? };
-            return self.run_into_owned_u8::<3, _>(py, ImageSize { width, height }, move |dst| {
-                kornia_imgproc::crop::crop_image(&src, dst, x, y)
-            });
+            let out_size = ImageSize { width, height };
+            let n = width * height * 3;
+            // SAFETY: `crop_image` writes all `n` bytes (height*width*3) before the
+            // buffer is wrapped/read, so the uninitialized alloc is fully covered.
+            let mut bytes = backing::AlignedBytes::uninit(n);
+            let mut dst = unsafe {
+                Image::<u8, 3, ForeignAllocator>::from_raw_parts(
+                    out_size,
+                    bytes.as_mut_ptr(),
+                    n,
+                    ForeignAllocator,
+                )
+                .map_err(to_pyerr)?
+            };
+            py.detach(|| kornia_imgproc::crop::crop_image(&src, &mut dst, x, y))
+                .map_err(to_pyerr)?;
+            return Ok(Self::from_owned_bytes(
+                bytes,
+                backing::Dtype::U8,
+                [height, width, 3],
+                self.color_space,
+                self.mode.clone(),
+            ));
         }
         // Generic byte-level crop for any dtype / channel count.
         // Validate output dimensions before allocation to catch overflow.

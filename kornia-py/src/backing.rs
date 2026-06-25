@@ -1,5 +1,5 @@
 //! Numpy-agnostic storage backing for the Python Image.
-use std::alloc::{alloc_zeroed, dealloc, Layout};
+use std::alloc::{alloc, alloc_zeroed, dealloc, Layout};
 use std::ptr::NonNull;
 
 use dlpack_rs::ffi::{DLDataType, K_DL_FLOAT, K_DL_UINT};
@@ -88,8 +88,24 @@ impl AlignedBytes {
         let ptr = NonNull::new(raw).unwrap_or_else(|| std::alloc::handle_alloc_error(layout));
         Self { ptr, len, layout }
     }
+    /// Allocate `len` bytes **without zeroing**. This is how numpy/OpenCV allocate
+    /// output buffers — pre-zeroing a buffer you're about to fully overwrite is
+    /// pure waste (an extra full-buffer write).
+    ///
+    /// # Safety contract (caller-enforced, not in the type)
+    /// The caller MUST fully initialize all `len` bytes before any read of this
+    /// buffer (e.g. a full-overwrite op like crop, or `copy_nonoverlapping`).
+    pub fn uninit(len: usize) -> Self {
+        let layout = Layout::from_size_align(len.max(1), ALIGN).expect("layout");
+        // SAFETY: layout has non-zero size (len.max(1)); the returned bytes are
+        // uninitialized and must be fully written before being read.
+        let raw = unsafe { alloc(layout) };
+        let ptr = NonNull::new(raw).unwrap_or_else(|| std::alloc::handle_alloc_error(layout));
+        Self { ptr, len, layout }
+    }
     pub fn from_slice(src: &[u8]) -> Self {
-        let b = Self::zeroed(src.len());
+        // `uninit` is sound here: copy_nonoverlapping below writes every byte.
+        let b = Self::uninit(src.len());
         // SAFETY: b.ptr owns len==src.len() bytes; regions don't overlap.
         unsafe { std::ptr::copy_nonoverlapping(src.as_ptr(), b.ptr.as_ptr(), src.len()) };
         b
@@ -117,7 +133,7 @@ impl AlignedBytes {
 }
 impl Drop for AlignedBytes {
     fn drop(&mut self) {
-        // SAFETY: ptr/layout came from alloc_zeroed with this exact layout.
+        // SAFETY: ptr/layout came from alloc/alloc_zeroed with this exact layout.
         unsafe { dealloc(self.ptr.as_ptr(), self.layout) };
     }
 }
