@@ -77,6 +77,11 @@ impl MemoryResource for GstResource {
     fn as_any(&self) -> &dyn Any {
         self
     }
+
+    /// Mutable downcast hook.
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
 }
 
 /// A [`TensorAllocator`] type-tag for GStreamer-backed images.

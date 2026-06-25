@@ -4,16 +4,25 @@
 //!   cargo run --release                      # uses default test image
 //!   cargo run --release -- /path/to/img.jpg  # custom image path
 //!
-//! Pipeline:
-//!   load RGB8 (kornia-io) → flatten Tensor<u8,1> → H2D → kernel → D2H → write PNG
+//! Pipeline (all device buffers stay kornia `Tensor`s):
+//!   load RGB8 (kornia-io) → to_cuda (H2D) → kernel → to_host (D2H) → write PNG
+//!
+//! Eased CUDA API used here (from `kornia_tensor`, behind the `cudarc` feature):
+//!   - `Tensor::to_cuda`        — upload a host tensor to device (no manual flatten/copy)
+//!   - `zeros_cuda`             — allocate a zero-filled device output tensor
+//!   - `CudaKernel::compile`    — NVRTC compile with the device arch auto-detected
+//!   - `launch_builder().arg()` — chained kernel-arg builder + `launch_1d`
+//!   - `as_cudaslice` / `as_cudaslice_mut` — borrow device buffers as kernel args
 
-use cudarc::driver::{CudaContext, CudaSlice};
-use kornia_image::{allocator::CpuAllocator, color_spaces::Gray8, image::ImageSize};
+use cudarc::driver::CudaContext;
+use kornia_image::color_spaces::Gray8;
+use kornia_image::image::ImageSize;
 use kornia_io::functional::read_image_any_rgb8;
 use kornia_io::png::write_image_png_gray8;
-use kornia_tensor::{CudaAllocator, CudaKernel, Tensor};
+use kornia_tensor::{zeros_cuda, CpuAllocator, CudaKernel, Tensor};
 
-// BT.601 RGB→gray CUDA kernel (u8 interleaved → u8 planar).
+// BT.601 RGB→gray CUDA kernel (u8 interleaved RGB → u8 planar gray).
+// `src` is the flat h*w*3 byte buffer; `dst` is the flat h*w gray buffer.
 const RGB_TO_GRAY_SRC: &str = r#"
 extern "C" __global__ void rgb_to_gray(
     const unsigned char* __restrict__ src,
@@ -31,91 +40,53 @@ extern "C" __global__ void rgb_to_gray(
 "#;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // ── Step 1: resolve image path ────────────────────────────────────────────
+    // Resolve the input path (CLI arg, else a bundled test image).
     let path = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "/home/nvidia/kornia-rs/tests/data/dog.jpeg".to_owned());
-
     println!("Loading image: {path}");
 
-    // ── Step 2: load RGB8 from disk ───────────────────────────────────────────
-    let rgb_img = read_image_any_rgb8(&path)?;
-    let height = rgb_img.rows();
-    let width = rgb_img.cols();
-    let npix = height * width;
+    // Load an RGB8 image from disk via kornia-io. `Rgb8` derefs/owns an
+    // `Image<u8, 3, CpuAllocator>`, which is a newtype over `Tensor3<u8, _>`.
+    let rgb = read_image_any_rgb8(&path)?;
+    let (h, w) = (rgb.rows(), rgb.cols());
+    let npix = h * w;
+    println!("Image size: {w}x{h} ({npix} pixels)");
 
-    println!("Image size: {width}x{height} ({npix} pixels)");
-
-    // ── Step 3: flatten to Tensor<u8,1,CpuAllocator> ─────────────────────────
-    // Image<u8,3,CpuAllocator> Derefs to Tensor3<u8,CpuAllocator>.
-    // We borrow the raw bytes from as_slice() and construct a flat Tensor.
-    let rgb_bytes: &[u8] = rgb_img.as_slice();
-    let host_rgb =
-        Tensor::<u8, 1, CpuAllocator>::from_shape_vec([npix * 3], rgb_bytes.to_vec(), CpuAllocator)?;
-
-    println!(
-        "Host RGB tensor — shape {:?}, first 9 bytes: {:?}",
-        host_rgb.shape,
-        &host_rgb.as_slice()[..9.min(host_rgb.as_slice().len())]
-    );
-
-    // ── Step 4: set up CUDA context + stream ─────────────────────────────────
     let ctx = CudaContext::new(0)?;
     let stream = ctx.default_stream();
 
-    // ── Step 5: H2D — copy host RGB tensor to device ──────────────────────────
-    let dev_rgb = host_rgb.to_cuda(&stream)?;
+    // ── Eased device path: everything stays a kornia Tensor ──────────────────
+    // Upload the inner `Tensor3<u8>` directly — `to_cuda` copies the contiguous
+    // h*w*3 bytes to a device tensor (no manual host flatten / Vec copy).
+    let dev_rgb: Tensor<u8, 3, _> = rgb.into_inner().0.to_cuda(&stream)?;
+    // Allocate the device output as a zero-filled device tensor (no raw CudaSlice).
+    let mut dev_gray = zeros_cuda::<u8, 1>([npix], &stream)?;
 
-    println!(
-        "Device RGB tensor — shape {:?}, domain: {:?}",
-        dev_rgb.shape,
-        dev_rgb.storage.domain(),
-    );
-
-    // ── Step 6: allocate output device buffer (raw CudaSlice) ────────────────
-    let mut dev_gray_slice: CudaSlice<u8> = stream.alloc_zeros::<u8>(npix)?;
-
-    // ── Step 7: compile + launch rgb_to_gray via CudaKernel ──────────────────
+    // Compile (device arch auto-detected) and launch via the chained builder.
     let kernel = CudaKernel::compile(&ctx, RGB_TO_GRAY_SRC, "rgb_to_gray")?;
-
-    let input_slice = dev_rgb
-        .as_cudaslice()
-        .ok_or("dev_rgb is not backed by CudaResource")?;
-
-    let npix_i32 = npix as i32;
-
     kernel
         .launch_builder(&stream)
-        .arg(input_slice)
-        .arg(&mut dev_gray_slice)
-        .arg(&npix_i32)
+        .arg(dev_rgb.as_cudaslice().unwrap())
+        .arg(dev_gray.as_cudaslice_mut().unwrap())
+        .arg(&(npix as i32))
         .launch_1d(npix as u32)?;
-
     println!("Kernel launched: rgb_to_gray ({npix} pixels)");
 
-    // ── Step 8: wrap output slice as Tensor, then D2H ────────────────────────
-    let dev_gray_tensor =
-        Tensor::<u8, 1, CudaAllocator>::from_cudaslice(dev_gray_slice, [npix], stream.clone());
+    // Download the result back to a host tensor (D2H + stream sync).
+    let gray = dev_gray.to_host(&stream)?;
 
-    let host_gray_tensor = dev_gray_tensor.to_host(&stream)?;
-
-    // ── Step 9: verify — print first pixels and u64 checksum ─────────────────
-    let gray_slice = host_gray_tensor.as_slice();
+    // Verify: print the first pixels and a u64 checksum.
+    let gray_slice = gray.as_slice();
     let checksum: u64 = gray_slice.iter().map(|&b| b as u64).sum();
-
     println!(
         "First 8 gray pixels: {:?}",
         &gray_slice[..8.min(gray_slice.len())]
     );
     println!("Gray checksum: {checksum}");
 
-    // ── Step 10: wrap as Gray8 image and save PNG ─────────────────────────────
-    let gray_img = Gray8::from_size_vec(
-        ImageSize { width, height },
-        gray_slice.to_vec(),
-        CpuAllocator,
-    )?;
-
+    // Wrap the gray bytes as a Gray8 image and write a PNG.
+    let gray_img = Gray8::from_size_vec(ImageSize { width: w, height: h }, gray_slice.to_vec(), CpuAllocator)?;
     let out_path = "/tmp/cuda_imgproc_output.png";
     write_image_png_gray8(out_path, &gray_img)?;
     println!("Saved grayscale output to: {out_path}");

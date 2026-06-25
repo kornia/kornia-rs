@@ -65,6 +65,11 @@ impl MemoryResource for V4lResource {
     fn as_any(&self) -> &dyn Any {
         self
     }
+
+    /// Mutable downcast hook.
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
 }
 
 /// Construct a borrowed [`Image`] backed by a V4L2 mmap'd frame buffer.

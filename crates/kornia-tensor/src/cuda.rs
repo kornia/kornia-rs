@@ -101,6 +101,10 @@ impl<T: 'static> MemoryResource for CudaResource<T> {
     fn as_any(&self) -> &dyn Any {
         self
     }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
 }
 
 // Implicit Drop: `CudaSlice::drop` calls cudarc's device-free path exactly once.
@@ -459,6 +463,22 @@ where
             .map(|r| &r.slice)
     }
 
+    /// Mutably borrow the underlying `CudaSlice<T>` if the storage is backed by a
+    /// [`CudaResource<T>`].
+    ///
+    /// This is the mutable sibling of [`as_cudaslice`](Self::as_cudaslice); it lets a
+    /// device-owning output tensor be passed as a mutable kernel argument
+    /// (e.g. `kernel.launch_builder(&stream).arg(out.as_cudaslice_mut().unwrap())`).
+    ///
+    /// Returns `None` if the storage is not a `CudaResource<T>` (e.g. host-backed, or T differs).
+    pub fn as_cudaslice_mut(&mut self) -> Option<&mut CudaSlice<T>> {
+        self.storage
+            .owner
+            .as_any_mut()
+            .downcast_mut::<CudaResource<T>>()
+            .map(|r| &mut r.slice)
+    }
+
     /// Consume the tensor and return the underlying `CudaSlice<T>`.
     ///
     /// Returns `Err(self)` if the storage is not backed by a [`CudaResource<T>`].
@@ -639,6 +659,47 @@ mod tests {
             back.as_slice(),
             &[1u8, 2, 3, 4],
             "round-trip bytes must match"
+        );
+    }
+
+    /// `as_cudaslice_mut` returns `Some` for a device tensor (CudaResource<T>-backed) and
+    /// `None` when the concrete element type does not match the stored `CudaResource`.
+    /// Mutating through the returned `&mut CudaSlice` must be observable after `to_host`.
+    #[test]
+    fn as_cudaslice_mut_some_for_device_none_for_mismatch() {
+        let ctx = CudaContext::new(0).unwrap();
+        let stream = ctx.default_stream();
+
+        // Device tensor backed by CudaResource<u8> (via to_cuda).
+        let host =
+            Tensor::<u8, 1, CpuAllocator>::from_shape_vec([4], vec![1, 2, 3, 4], CpuAllocator)
+                .unwrap();
+        let mut dev = host.to_cuda(&stream).unwrap();
+
+        // Some: same element type u8.
+        assert!(
+            dev.as_cudaslice_mut().is_some(),
+            "as_cudaslice_mut should return Some for a CudaResource<u8>-backed device tensor"
+        );
+
+        // Mutate the whole slice on-device through the &mut CudaSlice, then verify D2H.
+        {
+            let slice = dev.as_cudaslice_mut().expect("must be device-backed");
+            stream.memset_zeros(slice).unwrap();
+        }
+        let back = dev.to_host(&stream).unwrap();
+        assert_eq!(
+            back.as_slice(),
+            &[0u8, 0, 0, 0],
+            "mutation through as_cudaslice_mut must be observable after to_host"
+        );
+
+        // None branch: `zeros_cuda` always stores a `CudaResource<u8>`, so an i16 device
+        // tensor's owner does NOT downcast to `CudaResource<i16>` — the mutable query is None.
+        let mut dev_i16: Tensor<i16, 1, CudaAllocator> = zeros_cuda([4], &stream).unwrap();
+        assert!(
+            dev_i16.as_cudaslice_mut().is_none(),
+            "zeros_cuda stores CudaResource<u8>; querying as CudaSlice<i16> must be None"
         );
     }
 

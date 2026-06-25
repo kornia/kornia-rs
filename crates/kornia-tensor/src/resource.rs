@@ -82,6 +82,9 @@ pub trait MemoryResource: Send + Sync {
 
     /// Downcast hook (e.g. recover a `&CudaSlice` from a `CudaResource`).
     fn as_any(&self) -> &dyn Any;
+
+    /// Mutable downcast hook (e.g. recover a `&mut CudaSlice` from a `CudaResource`).
+    fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
 /// Host memory owned by kornia (allocated here, freed here on drop).
@@ -190,6 +193,10 @@ impl MemoryResource for HostResource {
     fn as_any(&self) -> &dyn Any {
         self
     }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
 }
 
 impl Drop for HostResource {
@@ -265,6 +272,10 @@ impl MemoryResource for ForeignResource {
     }
 
     fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
 }
