@@ -46,6 +46,8 @@ impl<B: Backend> GpuAllocator<B> {
     }
 }
 
+// The trait method is intentionally safe; the unsafe block delegates to the Backend impl.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 impl<B: Backend> TensorAllocator for GpuAllocator<B> {
     fn alloc(&self, layout: Layout) -> Result<*mut u8, TensorAllocatorError> {
         let ptr = self

@@ -13,6 +13,9 @@ publish = true
 [[example]]
 name = "bench_gpu_color"
 
+[[example]]
+name = "bench_gpu_resize"
+
 [[bench]]
 harness = false
 name = "bench_color"
@@ -81,6 +84,7 @@ name = "bench_contours"
 required-features = ["opencv_bench"]
 
 [dependencies]
+cubecl-cpu = { version = "=0.10.0-pre.4", optional = true }
 cubecl-cuda = { version = "=0.10.0-pre.4", optional = true }
 kornia-algebra = { workspace = true }
 kornia-image = { workspace = true }
@@ -107,5 +111,10 @@ ndarray = { workspace = true, features = ["rayon"] }
 rand = { workspace = true }
 
 [features]
-gpu-cubecl = ["dep:cubecl", "dep:cubecl-cuda", "kornia-tensor/gpu-cubecl"]
+gpu-cubecl = [
+  "dep:cubecl",
+  "dep:cubecl-cpu",
+  "dep:cubecl-cuda",
+  "kornia-tensor/gpu-cubecl"
+]
 opencv_bench = ["dep:opencv"]

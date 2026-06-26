@@ -23,5 +23,5 @@ fn gray_from_rgb_kernel_launches_on_cuda() {
     launch_gray_from_rgb_f32::<CudaRuntime>(&client, src, dst, width, height);
 
     // Flush the queue — panics on driver error.
-    client.sync().expect("kernel execution failed");
+    client.flush().expect("kernel execution failed");
 }

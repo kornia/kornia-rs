@@ -18,3 +18,6 @@
 
 /// GPU-accelerated color conversion kernels.
 pub mod color;
+
+/// GPU-accelerated resize kernels (nearest-neighbor and bilinear, f32).
+pub mod resize;
