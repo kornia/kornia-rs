@@ -607,8 +607,14 @@ mod tests {
         // SAFETY: raw_ptr is non-null, valid for len_bytes, allocated with `layout` above.
         // from_raw_host takes ownership and will store the 64-byte-aligned layout in
         // HostResource, which into_vec will detect and reject.
-        let storage =
-            unsafe { TensorStorage::<f32, CpuAllocator>::from_raw_host(raw_ptr, layout.size(), layout, CpuAllocator) };
+        let storage = unsafe {
+            TensorStorage::<f32, CpuAllocator>::from_raw_host(
+                raw_ptr,
+                layout.size(),
+                layout,
+                CpuAllocator,
+            )
+        };
         let _ = storage.into_vec();
     }
 

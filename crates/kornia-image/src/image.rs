@@ -1,4 +1,7 @@
-use crate::{allocator::{CpuAllocator, ImageAllocator}, error::ImageError};
+use crate::{
+    allocator::{CpuAllocator, ImageAllocator},
+    error::ImageError,
+};
 use kornia_tensor::{Tensor, Tensor2, Tensor3};
 use rayon::prelude::*;
 

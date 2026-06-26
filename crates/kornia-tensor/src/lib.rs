@@ -165,6 +165,10 @@ pub use crate::resource::{ForeignResource, HostResource, MemoryDomain, MemoryRes
 pub(crate) use crate::tensor::get_strides_from_shape;
 pub use crate::tensor::{Tensor, TensorError};
 
+// Note: Rust does not propagate type-parameter defaults through type aliases, so these
+// aliases require an explicit allocator argument. Use `Tensor<T, N>` directly to rely
+// on the `A = CpuAllocator` default, or use the `CpuTensor2` / similar helpers below.
+
 /// Type alias for a 1-dimensional tensor.
 pub type Tensor1<T, A> = Tensor<T, 1, A>;
 

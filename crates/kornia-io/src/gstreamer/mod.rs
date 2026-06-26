@@ -101,7 +101,8 @@ impl MemoryResource for GstResource {
 pub(crate) fn image_from_gst_buffer(
     size: kornia_image::ImageSize,
     mapped_buffer: gstreamer::buffer::MappedBuffer<gstreamer::buffer::Readable>,
-) -> Result<kornia_image::Image<u8, 3, ForeignAllocator>, crate::stream::error::StreamCaptureError> {
+) -> Result<kornia_image::Image<u8, 3, ForeignAllocator>, crate::stream::error::StreamCaptureError>
+{
     use kornia_tensor::storage::{MemoryDomain, TensorStorage};
     use kornia_tensor::Tensor;
 
