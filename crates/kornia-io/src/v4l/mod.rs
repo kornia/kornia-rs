@@ -118,8 +118,9 @@ pub(crate) fn image_from_v4l_buffer(
     //   - data_len equals the "used bytes" of the frame (captured above).
     //   - The memory is host-accessible (MemoryDomain::Host).
     //   - The keepalive (Arc<V4lResource>) holds the MmapBuffer (and Arc<MmapInfo>) alive.
+    //   - The storage is read-only: `as_mut_slice` will panic (v4l mmap is read-only mapped memory).
     let storage: TensorStorage<u8, ForeignAllocator> = unsafe {
-        TensorStorage::from_borrowed(
+        TensorStorage::from_borrowed_readonly(
             data_ptr,
             data_len,
             ForeignAllocator,
@@ -402,6 +403,52 @@ mod tests {
             arc_weak.upgrade().is_none(),
             "MmapInfo must have been released (munmap'd) when Image was dropped"
         );
+    }
+
+    /// Verify that a captured frame constructed via `image_from_v4l_buffer` is read-only:
+    /// `as_slice()` must succeed, but `as_mut_slice()` must panic with "read-only".
+    ///
+    /// The read-only-ness comes from `from_borrowed_readonly` (not from OS mmap protection),
+    /// so a PROT_READ | PROT_WRITE mapping is fine for the test.
+    #[test]
+    #[should_panic(expected = "read-only")]
+    fn v4l_captured_frame_readonly_rejects_as_mut_slice() {
+        let page_size = 4096_usize;
+        let raw_ptr = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                page_size,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        assert_ne!(raw_ptr, libc::MAP_FAILED, "mmap failed");
+
+        let mmap_info = Arc::new(MmapInfo {
+            ptr: raw_ptr as *mut u8,
+            length: page_size,
+            offset: 0,
+        });
+
+        const W: usize = 12;
+        const H: usize = 4;
+        const FRAME_BYTES: usize = W * H * 3;
+
+        let buffer = unsafe { MmapBuffer::new(raw_ptr as *const u8, FRAME_BYTES, mmap_info) };
+        let size = ImageSize {
+            width: W,
+            height: H,
+        };
+        let mut image = image_from_v4l_buffer(size, buffer)
+            .expect("image_from_v4l_buffer must succeed for a valid mmap region");
+
+        // as_slice() must succeed (read-only is still readable).
+        assert!(!image.as_slice().is_empty());
+
+        // as_slice_mut() delegates to TensorStorage::as_mut_slice and must panic with "read-only".
+        let _ = image.as_slice_mut();
     }
 
     /// Verify that `V4lResource` implements `MemoryResource` correctly for a synthetic

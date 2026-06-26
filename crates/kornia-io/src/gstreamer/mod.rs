@@ -171,9 +171,9 @@ pub(crate) fn image_from_gst_buffer(
     //   - data_len equals the mapped size (captured above from mapped_buffer.len()).
     //   - The memory is host-accessible (MemoryDomain::Host).
     //   - The keepalive (Arc<GstResource>) holds the map alive for the storage's lifetime.
+    //   - The storage is read-only: `as_mut_slice` will panic (GstMappedBuffer is Readable).
     let storage: TensorStorage<u8, GstAllocator> = unsafe {
-        #[allow(deprecated)]
-        TensorStorage::from_borrowed(
+        TensorStorage::from_borrowed_readonly(
             data_ptr,
             data_len,
             GstAllocator,
