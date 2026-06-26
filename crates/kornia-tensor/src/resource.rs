@@ -85,6 +85,14 @@ pub trait MemoryResource: Send + Sync {
 
     /// Mutable downcast hook (e.g. recover a `&mut CudaSlice` from a `CudaResource`).
     fn as_any_mut(&mut self) -> &mut dyn Any;
+
+    /// Returns `true` if this resource must never be written to.
+    ///
+    /// The default implementation returns `false` (writable), preserving backwards
+    /// compatibility for all existing implementors.
+    fn is_readonly(&self) -> bool {
+        false
+    }
 }
 
 /// Host memory owned by kornia (allocated here, freed here on drop).
@@ -225,6 +233,8 @@ pub struct ForeignResource {
     /// Keep-alive guard — held purely for its `Drop` side-effect.
     #[allow(dead_code)]
     _keep: Option<Arc<dyn Any + Send + Sync>>,
+    /// If `true`, mutable slice access via `as_mut_slice` is forbidden.
+    readonly: bool,
 }
 
 impl ForeignResource {
@@ -254,6 +264,32 @@ impl ForeignResource {
             len_bytes,
             domain,
             _keep: keep,
+            readonly: false,
+        })
+    }
+
+    /// Wrap a foreign pointer that must never be mutated (e.g. kernel-mapped read-only buffers).
+    ///
+    /// Identical to [`new`](Self::new) but marks the resource read-only:
+    /// [`as_mut_slice`](TensorStorage::as_mut_slice) will panic if called on storage
+    /// backed by this resource.
+    ///
+    /// # Safety
+    ///
+    /// Same contract as [`new`](Self::new).  The caller additionally asserts that the
+    /// buffer will never be written to through the returned resource.
+    pub unsafe fn new_readonly(
+        ptr: *mut u8,
+        len_bytes: usize,
+        domain: MemoryDomain,
+        keep: Option<Arc<dyn Any + Send + Sync>>,
+    ) -> Result<Self, TensorAllocatorError> {
+        Ok(Self {
+            ptr: NonNull::new(ptr).ok_or(TensorAllocatorError::NullPointer)?,
+            len_bytes,
+            domain,
+            _keep: keep,
+            readonly: true,
         })
     }
 }
@@ -277,6 +313,10 @@ impl MemoryResource for ForeignResource {
 
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
+    }
+
+    fn is_readonly(&self) -> bool {
+        self.readonly
     }
 }
 

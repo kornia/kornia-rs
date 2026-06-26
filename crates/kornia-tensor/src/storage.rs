@@ -108,12 +108,18 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
     /// # Panics
     ///
     /// Panics if the storage is non-host-accessible (i.e. `MemoryDomain::Device`).
+    /// Also panics if the storage was created with a read-only resource (e.g. via
+    /// [`from_borrowed_readonly`](Self::from_borrowed_readonly)).
     pub fn as_mut_slice(&mut self) -> &mut [T] {
         let domain = self.owner.domain();
         assert!(
             domain.is_host_accessible(),
             "as_mut_slice on non-host-accessible memory (domain={:?})",
             domain
+        );
+        assert!(
+            !self.owner.is_readonly(),
+            "as_mut_slice on read-only memory"
         );
         unsafe {
             std::slice::from_raw_parts_mut(self.as_mut_ptr(), self.len / std::mem::size_of::<T>())
@@ -336,6 +342,41 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
         let ptr = NonNull::new_unchecked(data as *mut T);
         let owner: Box<dyn MemoryResource> = Box::new(
             ForeignResource::new(data as *mut u8, len_bytes, domain, Some(keepalive))
+                .expect("non-null pointer required"),
+        );
+        Self {
+            ptr,
+            len: len_bytes,
+            owner,
+            alloc,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Creates a borrowed storage view that is read-only.
+    ///
+    /// Like [`from_borrowed`](Self::from_borrowed) but the resulting storage refuses
+    /// mutable slice access: [`as_mut_slice`](Self::as_mut_slice) will panic with
+    /// `"as_mut_slice on read-only memory"`.
+    ///
+    /// Use this when the underlying buffer is mapped read-only by the OS (e.g. a
+    /// GStreamer / V4L2 `mmap` buffer) so that callers cannot accidentally write
+    /// to kernel-owned memory.
+    ///
+    /// # Safety
+    ///
+    /// Same contract as [`from_borrowed`](Self::from_borrowed).
+    pub unsafe fn from_borrowed_readonly(
+        data: *const T,
+        len_bytes: usize,
+        alloc: A,
+        domain: MemoryDomain,
+        _device_id: i32,
+        keepalive: std::sync::Arc<dyn core::any::Any + Send + Sync>,
+    ) -> Self {
+        let ptr = NonNull::new_unchecked(data as *mut T);
+        let owner: Box<dyn MemoryResource> = Box::new(
+            ForeignResource::new_readonly(data as *mut u8, len_bytes, domain, Some(keepalive))
                 .expect("non-null pointer required"),
         );
         Self {
@@ -950,5 +991,63 @@ mod tests {
 
         // After storage drops: original Vec is still valid (ForeignResource did not free it).
         assert_eq!(owned_buf.as_slice(), &[11, 22, 33, 44]);
+    }
+
+    // ── Read-only storage tests ───────────────────────────────────────────────
+
+    #[test]
+    fn readonly_foreign_as_slice_works() {
+        let buf = [1u8, 2, 3, 4];
+        let keep: Arc<dyn core::any::Any + Send + Sync> = Arc::new(()); // dummy keepalive
+        let s = unsafe {
+            TensorStorage::<u8, ForeignAllocator>::from_borrowed_readonly(
+                buf.as_ptr(),
+                buf.len(),
+                ForeignAllocator,
+                MemoryDomain::Host,
+                0,
+                keep,
+            )
+        };
+        // buf is still alive here; s.as_slice() reads from buf
+        assert_eq!(s.as_slice(), &[1u8, 2, 3, 4]);
+        // s drops here, buf drops after (stack order)
+    }
+
+    #[test]
+    #[should_panic(expected = "read-only")]
+    fn readonly_foreign_as_mut_slice_panics() {
+        let buf = [1u8, 2, 3, 4];
+        let keep: Arc<dyn core::any::Any + Send + Sync> = Arc::new(()); // dummy keepalive
+        let mut s = unsafe {
+            TensorStorage::<u8, ForeignAllocator>::from_borrowed_readonly(
+                buf.as_ptr(),
+                buf.len(),
+                ForeignAllocator,
+                MemoryDomain::Host,
+                0,
+                keep,
+            )
+        };
+        let _ = s.as_mut_slice(); // must panic: read-only memory
+    }
+
+    #[test]
+    fn normal_foreign_as_mut_slice_works() {
+        let mut buf = [10u8, 20, 30, 40];
+        let keep: Arc<dyn core::any::Any + Send + Sync> = Arc::new(42u8); // dummy keepalive
+        let mut s = unsafe {
+            TensorStorage::<u8, ForeignAllocator>::from_borrowed(
+                buf.as_mut_ptr(),
+                buf.len(),
+                ForeignAllocator,
+                MemoryDomain::Host,
+                0,
+                keep,
+            )
+        };
+        let sl = s.as_mut_slice();
+        sl[0] = 99;
+        assert_eq!(sl[0], 99);
     }
 }
