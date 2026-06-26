@@ -1,4 +1,4 @@
-use crate::{allocator::ImageAllocator, error::ImageError};
+use crate::{allocator::{CpuAllocator, ImageAllocator}, error::ImageError};
 use kornia_tensor::{Tensor, Tensor2, Tensor3};
 use rayon::prelude::*;
 
@@ -133,7 +133,7 @@ impl ImageSize {
 /// Represents an image with pixel data.
 ///
 /// The image is represented as a 3D Tensor with shape (H, W, C), where H is the height of the image,
-pub struct Image<T, const C: usize, A: ImageAllocator>(pub Tensor3<T, A>);
+pub struct Image<T, const C: usize, A: ImageAllocator = CpuAllocator>(pub Tensor3<T, A>);
 
 /// helper to deference the inner tensor
 impl<T, const C: usize, A: ImageAllocator> std::ops::Deref for Image<T, C, A> {

@@ -1,6 +1,6 @@
 use std::{alloc::Layout, marker::PhantomData, ptr::NonNull};
 
-use crate::allocator::TensorAllocator;
+use crate::allocator::{CpuAllocator, TensorAllocator};
 use crate::resource::{ForeignResource, HostResource, MemoryResource};
 
 // MemoryDomain is now defined in `resource` and re-exported from there.
@@ -50,7 +50,7 @@ pub use crate::resource::MemoryDomain;
 ///
 /// assert_eq!(recovered, vec![1.0, 2.0, 3.0]);
 /// ```
-pub struct TensorStorage<T, A: TensorAllocator> {
+pub struct TensorStorage<T, A: TensorAllocator = CpuAllocator> {
     /// Cached hot-path pointer to the first element of the backing buffer.
     pub(crate) ptr: NonNull<T>,
     /// Length of the backing buffer in bytes (NOT number of elements).
