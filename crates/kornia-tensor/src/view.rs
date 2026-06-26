@@ -167,7 +167,7 @@ impl<T: Send, const N: usize, A: TensorAllocator> TensorView<'_, T, N, A> {
     /// ```
     pub fn as_contiguous(&self) -> Tensor<T, N, CpuAllocator>
     where
-        T: Clone,
+        T: Clone + Sync,
     {
         let numel = self.numel();
 

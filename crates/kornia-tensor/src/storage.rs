@@ -456,16 +456,12 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
     }
 }
 
-// Safety:
-// TensorStorage is thread-safe because:
-// - `owner: Box<dyn MemoryResource>` is `Send + Sync` (the trait requires it).
-// - `alloc: A` is `Clone + Send + Sync` (required by `TensorAllocator`).
-// - `ptr: NonNull<T>` carries the same Send/Sync obligations as `T`; however, since
-//   TensorStorage is the sole owner of the pointed-to memory (no other code holds the
-//   same pointer without going through this storage) the unconditional unsafe impls
-//   below preserve the original contract, matching the previous field-based design.
-unsafe impl<T, A: TensorAllocator> Send for TensorStorage<T, A> {}
-unsafe impl<T, A: TensorAllocator> Sync for TensorStorage<T, A> {}
+// SAFETY: TensorStorage is the sole owner of the pointed-to memory.
+// Sending it across threads is safe iff T is Send (same rule as Vec<T>).
+unsafe impl<T: Send, A: TensorAllocator> Send for TensorStorage<T, A> {}
+// SAFETY: Shared references to TensorStorage only allow reading T.
+// This is safe iff T is Sync (same rule as &[T]).
+unsafe impl<T: Sync, A: TensorAllocator> Sync for TensorStorage<T, A> {}
 
 /// Drop is empty: the `owner: Box<dyn MemoryResource>` field drops itself,
 /// calling the correct deallocation path (HostResource::dealloc, or ForeignResource
@@ -1049,5 +1045,15 @@ mod tests {
         let sl = s.as_mut_slice();
         sl[0] = 99;
         assert_eq!(sl[0], 99);
+    }
+
+    #[test]
+    fn tensor_storage_send_sync_static_check() {
+        fn _assert_send<T: Send>() {}
+        fn _assert_sync<T: Sync>() {}
+        _assert_send::<TensorStorage<u8, CpuAllocator>>();
+        _assert_sync::<TensorStorage<u8, CpuAllocator>>();
+        _assert_send::<TensorStorage<f32, CpuAllocator>>();
+        _assert_sync::<TensorStorage<f32, CpuAllocator>>();
     }
 }
