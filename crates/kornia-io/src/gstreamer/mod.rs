@@ -164,7 +164,6 @@ pub(crate) fn image_from_gst_buffer(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::stream::StreamCapture;
 
     /// Verifies that capturing N frames with `videotestsrc` succeeds, that the pixel
