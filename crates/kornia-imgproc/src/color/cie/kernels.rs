@@ -9,6 +9,9 @@
 //! Lab `L ∈ [0,100]`, `a,b ∈ ~[-128,127]`; Luv `L ∈ [0,100]`, `u,v` similar.
 
 use super::super::kernel_common::par_strip_dispatch;
+// `nonlinear` is only used by the aarch64 NEON paths below; gate the import so it
+// isn't flagged as unused on x86_64 (CI clippy runs on x86_64).
+#[cfg(target_arch = "aarch64")]
 use super::nonlinear;
 use super::transfer;
 

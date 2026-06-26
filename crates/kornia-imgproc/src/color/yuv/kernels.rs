@@ -1663,9 +1663,9 @@ unsafe fn encode_y_row_neon(src: &[u8], dst: &mut [u8], width: usize) {
     }
 }
 
-/// AVX2 luma-row encode (16 px/iter). AVX2 has no 3-way deinterleave, so 9× `pshufb`
-/// + 6× `por` extract R/G/B as u8x16 (same trick as the fused-resize loader); the
-/// Q8 (66,129,25) matrix is then applied in u16 lanes — `(acc+128)>>8 + 16`,
+/// AVX2 luma-row encode (16 px/iter). AVX2 has no 3-way deinterleave, so it extracts
+/// R/G/B as u8x16 via 9 `pshufb` and 6 `por` (same trick as the fused-resize loader);
+/// the Q8 (66,129,25) matrix is then applied in u16 lanes (`(acc+128)>>8 + 16`), then
 /// `packus` to u8. Bit-identical to the scalar `encode_y`. Scalar tail for `% 16`.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
@@ -1766,9 +1766,9 @@ mod tests {
             super::encode_y_row_neon(&src, &mut neon, width);
         }
         #[cfg(not(target_arch = "aarch64"))]
-        for x in 0..width {
+        for (x, out) in neon.iter_mut().enumerate().take(width) {
             let s = x * 3;
-            neon[x] = encode_y(src[s] as i32, src[s + 1] as i32, src[s + 2] as i32);
+            *out = encode_y(src[s] as i32, src[s + 1] as i32, src[s + 2] as i32);
         }
         for (x, out) in scalar.iter_mut().enumerate().take(width) {
             let s = x * 3;

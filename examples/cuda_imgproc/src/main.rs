@@ -86,7 +86,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Gray checksum: {checksum}");
 
     // Wrap the gray bytes as a Gray8 image and write a PNG.
-    let gray_img = Gray8::from_size_vec(ImageSize { width: w, height: h }, gray_slice.to_vec(), CpuAllocator)?;
+    let gray_img = Gray8::from_size_vec(
+        ImageSize {
+            width: w,
+            height: h,
+        },
+        gray_slice.to_vec(),
+        CpuAllocator,
+    )?;
     let out_path = "/tmp/cuda_imgproc_output.png";
     write_image_png_gray8(out_path, &gray_img)?;
     println!("Saved grayscale output to: {out_path}");
