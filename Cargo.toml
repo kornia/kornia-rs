@@ -79,7 +79,10 @@ rayon = "1.12"
 # workspace graph (via hf-hub), so this reuses an existing dependency with no new
 # build deps. (reqwest is a dev-dependency, used by the gstreamer bench to download
 # a test video.)
-reqwest = { version = "0.13", default-features = false, features = ["blocking", "native-tls"] }
+reqwest = { version = "0.13", default-features = false, features = [
+  "blocking",
+  "native-tls"
+] }
 rerun = "0.30"
 serde = { version = "1", features = ["derive"] }
 serde-big-array = "0.5"
