@@ -132,7 +132,7 @@ pub fn from_video_path<const N: usize, P: AsRef<std::path::Path>, A: ImageAlloca
 
                 consecutive_no_frames = 0; // Reset counter when we get a frame
 
-                // Convert GstAllocator image to target allocator
+                // Convert ForeignAllocator image to target allocator
                 let size = gst_image.size();
                 let gst_data = gst_image.as_slice();
 

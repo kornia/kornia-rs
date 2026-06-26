@@ -1,13 +1,9 @@
-// GstAllocator is deprecated in favour of ForeignAllocator; this example
-// intentionally exercises the old type for backward-compat demonstration.
-#![allow(deprecated)]
-
 use eframe::egui::{self, CentralPanel, Grid, TextEdit};
 use humanize_duration::{prelude::*, Truncate};
 use kornia::image::{Image, ImageSize};
 use kornia::imgproc::resize::resize_fast_rgb;
 use kornia::io::stream::video::{ImageFormat, SeekFlags, VideoReader};
-use kornia::io::stream::GstAllocator;
+use kornia::io::stream::ForeignAllocator;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -22,7 +18,7 @@ pub struct MyApp {
 }
 
 struct TextureStore {
-    image: Image<u8, 3, GstAllocator>,
+    image: Image<u8, 3, ForeignAllocator>,
     texture_handle: egui::TextureHandle,
 }
 
@@ -315,8 +311,8 @@ fn render_image(app: &mut MyApp, ui: &mut eframe::egui::Ui) {
                         ts.texture_handle
                             .set(color_image, egui::TextureOptions::default());
                     } else {
-                        let mut dst: Image<u8, 3, GstAllocator> =
-                            Image::from_size_val(new_image_size, 0, GstAllocator)
+                        let mut dst: Image<u8, 3, ForeignAllocator> =
+                            Image::from_size_val(new_image_size, 0, ForeignAllocator)
                                 .expect("Failed to create Image");
                         resize_fast_rgb(
                             &image_frame,

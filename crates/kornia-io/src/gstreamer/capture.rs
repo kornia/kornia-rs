@@ -1,6 +1,6 @@
-#![allow(deprecated)]
-use super::{image_from_gst_buffer, GstAllocator};
+use super::image_from_gst_buffer;
 use crate::stream::error::StreamCaptureError;
+use kornia_tensor::allocator::ForeignAllocator;
 use circular_buffer::CircularBuffer;
 use gstreamer::prelude::*;
 use kornia_image::{Image, ImageSize};
@@ -135,7 +135,7 @@ impl StreamCapture {
     /// # Returns
     ///
     /// An Option containing the last captured Image or None if no image has been captured yet.
-    pub fn grab_rgb8(&mut self) -> Result<Option<Image<u8, 3, GstAllocator>>, StreamCaptureError> {
+    pub fn grab_rgb8(&mut self) -> Result<Option<Image<u8, 3, ForeignAllocator>>, StreamCaptureError> {
         let mut circular_buffer = self
             .circular_buffer
             .lock()

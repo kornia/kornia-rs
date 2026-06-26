@@ -26,12 +26,9 @@ pub use crate::stream::video::VideoWriter;
 use std::any::Any;
 use std::sync::Arc;
 
-use kornia_image::allocator::ImageAllocator;
-use kornia_tensor::{
-    allocator::TensorAllocatorError,
-    resource::{MemoryDomain, MemoryResource},
-    TensorAllocator,
-};
+use kornia_tensor::resource::{MemoryDomain, MemoryResource};
+
+pub use kornia_tensor::allocator::ForeignAllocator;
 
 /// A proper [`MemoryResource`] for a GStreamer-mapped buffer (sysmem).
 ///
@@ -84,39 +81,6 @@ impl MemoryResource for GstResource {
     }
 }
 
-/// A [`TensorAllocator`] type-tag for GStreamer-backed images.
-///
-/// # Deprecation
-///
-/// This struct is **deprecated** and kept only for backward compatibility with
-/// existing call sites that use `Image<u8, 3, GstAllocator>` as a concrete type.
-/// New code should use [`kornia_tensor::allocator::ForeignAllocator`] as the
-/// type tag and [`GstResource`] as the keepalive.
-///
-/// `allocate` always returns [`TensorAllocatorError::CannotAllocateForeign`]
-/// because GStreamer manages buffer memory; use [`StreamCapture::grab_rgb8`]
-/// (which injects a `GstResource` keepalive) instead.
-#[deprecated(
-    since = "0.1.11",
-    note = "Use kornia_tensor::allocator::ForeignAllocator; GstResource now manages the buffer lifetime"
-)]
-#[derive(Clone, Default)]
-pub struct GstAllocator;
-
-#[allow(deprecated)]
-impl TensorAllocator for GstAllocator {
-    fn allocate(
-        &self,
-        _layout: std::alloc::Layout,
-    ) -> Result<Box<dyn MemoryResource>, TensorAllocatorError> {
-        // GStreamer manages the buffer memory — allocation never happens through this path.
-        Err(TensorAllocatorError::CannotAllocateForeign)
-    }
-}
-
-#[allow(deprecated)]
-impl ImageAllocator for GstAllocator {}
-
 /// Construct a borrowed [`Image`] backed by a GStreamer [`MappedBuffer`].
 ///
 /// # Arguments
@@ -127,18 +91,17 @@ impl ImageAllocator for GstAllocator {}
 ///
 /// # Returns
 ///
-/// An `Image<u8, 3, GstAllocator>` whose memory is the GStreamer buffer.
+/// An `Image<u8, 3, ForeignAllocator>` whose memory is the GStreamer buffer.
 /// The buffer remains live (and the pointer valid) for exactly the lifetime of the
 /// returned `Image`; dropping the `Image` releases the buffer ref exactly once.
 ///
 /// # Safety
 ///
 /// The caller must ensure the pointer has not been aliased as mutable elsewhere.
-#[allow(deprecated)]
 pub(crate) fn image_from_gst_buffer(
     size: kornia_image::ImageSize,
     mapped_buffer: gstreamer::buffer::MappedBuffer<gstreamer::buffer::Readable>,
-) -> Result<kornia_image::Image<u8, 3, GstAllocator>, crate::stream::error::StreamCaptureError> {
+) -> Result<kornia_image::Image<u8, 3, ForeignAllocator>, crate::stream::error::StreamCaptureError> {
     use kornia_tensor::storage::{MemoryDomain, TensorStorage};
     use kornia_tensor::Tensor;
 
@@ -172,11 +135,11 @@ pub(crate) fn image_from_gst_buffer(
     //   - The memory is host-accessible (MemoryDomain::Host).
     //   - The keepalive (Arc<GstResource>) holds the map alive for the storage's lifetime.
     //   - The storage is read-only: `as_mut_slice` will panic (GstMappedBuffer is Readable).
-    let storage: TensorStorage<u8, GstAllocator> = unsafe {
+    let storage: TensorStorage<u8, ForeignAllocator> = unsafe {
         TensorStorage::from_borrowed_readonly(
             data_ptr,
             data_len,
-            GstAllocator,
+            ForeignAllocator,
             MemoryDomain::Host,
             0,
             keepalive,
@@ -199,7 +162,6 @@ pub(crate) fn image_from_gst_buffer(
 }
 
 #[cfg(test)]
-#[allow(deprecated)]
 mod tests {
     use super::*;
     use crate::stream::StreamCapture;
@@ -276,33 +238,6 @@ mod tests {
         );
 
         Ok(())
-    }
-
-    /// Unit-test: GstResource implements MemoryResource correctly.
-    ///
-    /// We can't easily unit-test Drop of MappedBuffer without a real GStreamer buffer,
-    /// so this test focuses on the allocator metadata (domain, len_bytes accessor).
-    /// The actual Drop/lifetime test is covered by `gst_resource_capture_n_frames_and_drop`.
-    #[test]
-    fn gst_allocator_cannot_allocate_foreign() {
-        use std::alloc::Layout;
-        let layout = Layout::from_size_align(64, 1).unwrap();
-        let result = GstAllocator.allocate(layout);
-        assert!(
-            matches!(
-                result,
-                Err(kornia_tensor::allocator::TensorAllocatorError::CannotAllocateForeign)
-            ),
-            "GstAllocator must refuse to allocate (foreign memory only)"
-        );
-    }
-
-    /// Verify GstAllocator can be cloned and defaulted (backward compat for examples).
-    #[test]
-    fn gst_allocator_clone_and_default() {
-        let a = GstAllocator;
-        let _b = a.clone();
-        let _c = GstAllocator;
     }
 
     /// Validates the buffer-size guard arithmetic used in `image_from_gst_buffer`.

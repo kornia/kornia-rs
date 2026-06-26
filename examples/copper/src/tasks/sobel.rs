@@ -1,9 +1,5 @@
-// GstAllocator is deprecated in favour of ForeignAllocator; this example
-// intentionally exercises the old type for backward-compat demonstration.
-#![allow(deprecated)]
-
 use cu29::prelude::*;
-use kornia::{image::Image, imgproc, io::stream::GstAllocator};
+use kornia::{image::Image, imgproc, io::stream::ForeignAllocator};
 
 use super::cu_image::{ImageGray8Msg, ImageRgb8Msg};
 
@@ -46,7 +42,7 @@ impl<'cl> CuTask<'cl> for Sobel {
             .map(|&x| x as f32)
             .map_err(|e| CuError::new_with_cause("Failed to cast image to f32", e))?;
 
-        let mut img_sobel = Image::from_size_val(img.size(), 0.0f32, GstAllocator)
+        let mut img_sobel = Image::from_size_val(img.size(), 0.0f32, ForeignAllocator)
             .map_err(|e| CuError::new_with_cause("Failed to create image", e))?;
 
         imgproc::filter::sobel(&img, &mut img_sobel, 3)
