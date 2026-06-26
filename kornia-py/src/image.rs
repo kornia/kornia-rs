@@ -2461,9 +2461,10 @@ impl PyImageApi {
     pub fn flip_horizontal(&self, py: Python<'_>) -> PyResult<Self> {
         let [h, w, c] = self.shape;
         if self.dtype == backing::Dtype::U8 && c == 3 {
-            let arr = self.as_numpy_u8(py)?;
-            let result = crate::flip::horizontal_flip(py, arr)?;
-            return Ok(self.wrap_u8_result(py, result));
+            let src = unsafe { self.borrow_self::<u8, 3>().map_err(to_pyerr)? };
+            return self.run_into_owned_u8::<3, _>(py, src.size(), |dst| {
+                kornia_imgproc::flip::horizontal_flip(&src, dst)
+            });
         }
         if self.dtype == backing::Dtype::U8 {
             let out = flip_h_generic(self.u8_elems(), h, w, c);
@@ -2476,9 +2477,10 @@ impl PyImageApi {
     pub fn flip_vertical(&self, py: Python<'_>) -> PyResult<Self> {
         let [h, w, c] = self.shape;
         if self.dtype == backing::Dtype::U8 && c == 3 {
-            let arr = self.as_numpy_u8(py)?;
-            let result = crate::flip::vertical_flip(py, arr)?;
-            return Ok(self.wrap_u8_result(py, result));
+            let src = unsafe { self.borrow_self::<u8, 3>().map_err(to_pyerr)? };
+            return self.run_into_owned_u8::<3, _>(py, src.size(), |dst| {
+                kornia_imgproc::flip::vertical_flip(&src, dst)
+            });
         }
         if self.dtype == backing::Dtype::U8 {
             let out = flip_v_generic(self.u8_elems(), h, w, c);
@@ -2533,10 +2535,15 @@ impl PyImageApi {
     fn gaussian_blur(&self, py: Python<'_>, kernel_size: usize, sigma: f32) -> PyResult<Self> {
         self.require_u8("gaussian_blur")?;
         if self.nchannels() == 3 {
-            let arr = self.as_numpy_u8(py)?;
-            let result =
-                crate::blur::gaussian_blur(py, arr, (kernel_size, kernel_size), (sigma, sigma))?;
-            Ok(self.wrap_u8_result(py, result))
+            let src = unsafe { self.borrow_self::<u8, 3>().map_err(to_pyerr)? };
+            self.run_into_owned_u8::<3, _>(py, src.size(), |dst| {
+                kornia_imgproc::filter::gaussian_blur_u8(
+                    &src,
+                    dst,
+                    (kernel_size, kernel_size),
+                    (sigma, sigma),
+                )
+            })
         } else {
             self.copy(py)
         }
@@ -2547,9 +2554,10 @@ impl PyImageApi {
     fn box_blur(&self, py: Python<'_>, kernel_size: usize) -> PyResult<Self> {
         self.require_u8("box_blur")?;
         if self.nchannels() == 3 {
-            let arr = self.as_numpy_u8(py)?;
-            let result = crate::blur::box_blur(py, arr, (kernel_size, kernel_size))?;
-            Ok(self.wrap_u8_result(py, result))
+            let src = unsafe { self.borrow_self::<u8, 3>().map_err(to_pyerr)? };
+            self.run_into_owned_u8::<3, _>(py, src.size(), |dst| {
+                kornia_imgproc::filter::box_blur_u8(&src, dst, (kernel_size, kernel_size))
+            })
         } else {
             self.copy(py)
         }
