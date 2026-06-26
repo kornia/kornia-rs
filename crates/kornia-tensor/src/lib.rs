@@ -158,7 +158,7 @@ pub mod tensor;
 /// into existing tensor data.
 pub mod view;
 
-pub use crate::allocator::{AlignedCpuAllocator, CpuAllocator, ForeignAllocator, TensorAllocator};
+pub use crate::allocator::{CpuAllocator, ForeignAllocator, TensorAllocator};
 pub use crate::resource::{ForeignResource, HostResource, MemoryDomain, MemoryResource};
 // Keep backward-compatible re-export: `use kornia_tensor::storage::MemoryDomain` still resolves
 // because storage.rs now re-exports from resource.

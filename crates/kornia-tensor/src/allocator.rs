@@ -118,41 +118,6 @@ impl TensorAllocator for CpuAllocator {
     }
 }
 
-/// A 64-byte aligned CPU allocator, suitable for SIMD and cache-line-friendly workloads.
-///
-/// Forces 64-byte alignment regardless of the requested layout alignment, then delegates
-/// to [`HostResource::from_layout`] (which uses `alloc_zeroed`).
-///
-/// # Examples
-///
-/// ```rust
-/// use std::alloc::Layout;
-/// use kornia_tensor::allocator::AlignedCpuAllocator;
-/// use kornia_tensor::TensorAllocator;
-///
-/// let layout = Layout::from_size_align(128, 1).unwrap();
-/// let resource = AlignedCpuAllocator.allocate(layout).unwrap();
-/// assert_eq!(resource.as_ptr() as usize % 64, 0);
-/// ```
-#[derive(Clone)]
-pub struct AlignedCpuAllocator;
-
-// SAFETY: AlignedCpuAllocator is a zero-size unit struct with no interior mutability.
-unsafe impl Send for AlignedCpuAllocator {}
-unsafe impl Sync for AlignedCpuAllocator {}
-
-impl TensorAllocator for AlignedCpuAllocator {
-    /// Allocates a zeroed, 64-byte-aligned host buffer.
-    ///
-    /// The requested alignment is overridden to 64 bytes so the returned pointer is always
-    /// suitable for SIMD loads/stores and cache-line-aligned accesses.
-    fn allocate(&self, layout: Layout) -> Result<Box<dyn MemoryResource>, TensorAllocatorError> {
-        // Force 64-byte alignment; 64 is always a valid power-of-two, so this cannot fail.
-        let aligned = Layout::from_size_align(layout.size(), 64).expect("64 is a valid alignment");
-        Ok(Box::new(HostResource::from_layout(aligned)?))
-    }
-}
-
 /// A no-op allocator for foreign (externally managed) memory.
 ///
 /// Used as a type tag when wrapping memory that is owned by an external system
@@ -181,8 +146,7 @@ mod tests {
     use super::*;
     use std::alloc::Layout;
 
-    /// Verify that `CpuAllocator::allocate` returns a zeroed, host-accessible buffer,
-    /// and that `AlignedCpuAllocator::allocate` additionally guarantees 64-byte alignment.
+    /// Verify that `CpuAllocator::allocate` returns a zeroed, host-accessible buffer.
     #[test]
     fn cpu_allocate_zeroed_and_aligned() {
         let l = Layout::from_size_align(64, 1).unwrap();
@@ -191,10 +155,6 @@ mod tests {
         assert!(r.domain().is_host_accessible());
         // Must be zeroed.
         unsafe { assert!((0..64).all(|i| *r.as_ptr().add(i) == 0)) };
-
-        let la = Layout::from_size_align(100, 1).unwrap();
-        let ra = AlignedCpuAllocator.allocate(la).unwrap();
-        assert_eq!(ra.as_ptr() as usize % 64, 0);
     }
 
     /// `ForeignAllocator::allocate` must always return `CannotAllocateForeign`.
@@ -211,7 +171,6 @@ mod tests {
     #[test]
     fn allocators_are_clone() {
         let _a = CpuAllocator.clone();
-        let _b = AlignedCpuAllocator.clone();
-        let _c = ForeignAllocator.clone();
+        let _b = ForeignAllocator.clone();
     }
 }

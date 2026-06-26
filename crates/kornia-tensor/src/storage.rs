@@ -403,10 +403,10 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
             .downcast_ref::<HostResource>()
             .expect("cannot convert foreign-memory-backed storage into Vec");
         // A `Vec<T>` always frees with `Layout::array::<T>(cap)` (align = align_of::<T>()).
-        // Reconstructing a Vec from an over-aligned allocation (e.g. AlignedCpuAllocator's
-        // 64-byte buffers) would dealloc with a mismatched layout — undefined behaviour.
+        // Reconstructing a Vec from an over-aligned allocation (e.g. foreign memory with
+        // 64-byte alignment) would dealloc with a mismatched layout — undefined behaviour.
         // `from_vec` is always safe (it adopts the Vec's own layout); only the
-        // allocate-path with an over-aligned allocator could trip this.
+        // allocate-path with an over-aligned layout could trip this.
         assert_eq!(
             host.layout().align(),
             std::mem::align_of::<T>(),
@@ -598,20 +598,17 @@ mod tests {
     #[test]
     #[should_panic(expected = "not Vec-reconstructable")]
     fn into_vec_rejects_over_aligned_allocation() {
-        use crate::allocator::{AlignedCpuAllocator, TensorAllocator};
-        // AlignedCpuAllocator forces 64-byte alignment; align_of::<f32>() is 4.
-        let layout = Layout::array::<f32>(4).unwrap();
-        let owner = AlignedCpuAllocator.allocate(layout).unwrap();
-        let ptr = std::ptr::NonNull::new(owner.as_ptr() as *mut f32).unwrap();
-        let storage = TensorStorage::<f32, AlignedCpuAllocator> {
-            ptr,
-            len: 4 * std::mem::size_of::<f32>(),
-            owner,
-            alloc: AlignedCpuAllocator,
-            _marker: std::marker::PhantomData,
-        };
-        // Must panic: a 64-byte-aligned allocation cannot be handed to Vec, which would
-        // free it with align_of::<f32>() == 4 (mismatched dealloc layout = UB).
+        // Manually allocate a 64-byte-aligned buffer; align_of::<f32>() is 4.
+        // into_vec must refuse: handing a 64-byte-aligned allocation to Vec would cause
+        // it to dealloc with align_of::<f32>()==4 — a mismatched layout (undefined behaviour).
+        let layout = Layout::from_size_align(4 * std::mem::size_of::<f32>(), 64).unwrap();
+        let raw_ptr = unsafe { std::alloc::alloc(layout) } as *mut f32;
+        assert!(!raw_ptr.is_null(), "allocation failed");
+        // SAFETY: raw_ptr is non-null, valid for len_bytes, allocated with `layout` above.
+        // from_raw_host takes ownership and will store the 64-byte-aligned layout in
+        // HostResource, which into_vec will detect and reject.
+        let storage =
+            unsafe { TensorStorage::<f32, CpuAllocator>::from_raw_host(raw_ptr, layout.size(), layout, CpuAllocator) };
         let _ = storage.into_vec();
     }
 
