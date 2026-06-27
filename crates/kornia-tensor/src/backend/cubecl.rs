@@ -74,6 +74,7 @@ impl<R: Runtime> Backend for CubeclBackend<R> {
             return Err(CubeclBackendError::NullDevicePointer);
         }
         // CUDA device address → host-side opaque pointer; never dereferenced on host.
+        // TODO: cubecl API doesn't expose device ordinal; multi-GPU returns 0
         Ok((std::ptr::without_provenance_mut(device_ptr as usize), 0))
     }
 
