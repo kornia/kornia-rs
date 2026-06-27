@@ -273,7 +273,7 @@ impl AprilTagDecoder {
         find_connected_components(&self.bin_img, &mut self.uf)?;
 
         // Step 2(b): Find Clusters
-        find_gradient_clusters(&self.bin_img, &mut self.uf, &mut self.clusters);
+        self.clusters = find_gradient_clusters(&self.bin_img, &self.uf);
 
         // Step 3: Quad Fitting
         let mut quads = fit_quads(&self.bin_img, &mut self.clusters, &self.config);

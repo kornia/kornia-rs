@@ -1,5 +1,6 @@
 use std::ops::Mul;
 
+use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 
 use crate::{
@@ -144,95 +145,131 @@ impl Pixel {
 ///
 /// For each pixel, this function checks its neighbors and, if the neighbor belongs to a different
 /// connected component (with sufficient size), records the gradient information between the two components.
-/// The results are stored in the `clusters` map, keyed by the pair of component representatives.
+/// The results are grouped by the pair of component representatives.
+///
+/// Rows are processed in parallel strips using rayon. The union-find is shared read-only via
+/// `get_representative_ref` / `get_set_size_ref` which traverse the parent chain without mutation.
 ///
 /// # Arguments
 ///
 /// * `src` - Reference to the source image containing `Pixel` values.
-/// * `uf` - Mutable reference to a [`UnionFind`] structure for tracking connected components.
-/// * `clusters` - Mutable reference to a map where the gradient information between component pairs will be stored.
-///   Make sure to call [`HashMap::clear`] if you are using this function multiple times with the same `clusters`
+/// * `uf` - Reference to a [`UnionFind`] structure for tracking connected components.
+///
+/// # Returns
+///
+/// A `FxHashMap` keyed by `(representative_a, representative_b)` pairs mapping to gradient info vectors.
 pub fn find_gradient_clusters<A: ImageAllocator>(
     src: &Image<Pixel, 1, A>,
-    uf: &mut UnionFind,
-    clusters: &mut FxHashMap<(usize, usize), Vec<GradientInfo>>,
-) {
+    uf: &UnionFind,
+) -> FxHashMap<(usize, usize), Vec<GradientInfo>> {
+    let height = src.height();
+    let width = src.width();
     let src_slice = src.as_slice();
 
-    (1..src.height() - 1).for_each(|y| {
-        let mut connected_last = false;
+    let n_threads = rayon::current_num_threads().max(1);
+    let inner_rows = height.saturating_sub(2);
+    let strip_h = (inner_rows + n_threads - 1) / n_threads;
 
-        (1..src.width() - 1).for_each(|x| {
-            let i = y * src.width() + x;
-            let current_pixel = src_slice[i];
-
-            if current_pixel == Pixel::Skip {
-                connected_last = false;
-                return;
+    // Each thread processes rows [y_start, y_end) and reads the union-find without mutation
+    // via get_representative_ref / get_set_size_ref (Sync, no locking needed).
+    let local_maps: Vec<FxHashMap<(usize, usize), Vec<GradientInfo>>> = (0..n_threads)
+        .into_par_iter()
+        .map(|t| {
+            let y_start = 1 + t * strip_h;
+            if y_start >= height - 1 {
+                return FxHashMap::default();
             }
+            let y_end = (y_start + strip_h).min(height - 1);
+            let mut local: FxHashMap<(usize, usize), Vec<GradientInfo>> = FxHashMap::default();
 
-            let current_pixel_representative = uf.get_representative(i);
+            for y in y_start..y_end {
+                let mut connected_last = false;
 
-            // Ignore components smaller than 25 pixels to filter out noise and very small regions.
-            if uf.get_set_size(current_pixel_representative) < 25 {
-                connected_last = false;
-                return;
-            }
+                for x in 1..width - 1 {
+                    let i = y * width + x;
+                    let current_pixel = src_slice[i];
 
-            let mut any_connected = false;
-            let mut do_conn =
-                |dx: isize, dy: isize, neighbor_i: usize, any_connected: &mut bool| {
-                    let neighbor_pixel = src_slice[neighbor_i];
-                    if neighbor_pixel == Pixel::Skip {
-                        return;
+                    if current_pixel == Pixel::Skip {
+                        connected_last = false;
+                        continue;
                     }
 
-                    if current_pixel != neighbor_pixel {
-                        let neighbor_pixel_representative = uf.get_representative(neighbor_i);
+                    let current_pixel_representative = uf.get_representative_ref(i);
 
-                        // Ignore components smaller than 25 pixels to filter out noise and very small regions.
-                        if uf.get_set_size(neighbor_pixel_representative) < 25 {
-                            return;
-                        }
-
-                        let key = if current_pixel_representative < neighbor_pixel_representative {
-                            (current_pixel_representative, neighbor_pixel_representative)
-                        } else {
-                            (neighbor_pixel_representative, current_pixel_representative)
-                        };
-
-                        let entry = clusters.entry(key).or_default();
-
-                        let delta = neighbor_pixel.gradient_to(current_pixel);
-                        let gradient_info = GradientInfo {
-                            pos: Point2d {
-                                x: (2 * x as isize + dx) as usize,
-                                y: (2 * y as isize + dy) as usize,
-                            },
-                            gx: delta * dx,
-                            gy: delta * dy,
-                            slope: 0.0,
-                        };
-
-                        entry.push(gradient_info);
-                        *any_connected = true;
+                    if uf.get_set_size_ref(current_pixel_representative) < 25 {
+                        connected_last = false;
+                        continue;
                     }
-                };
 
-            do_conn(1, 0, i + 1, &mut any_connected);
-            do_conn(0, 1, i + src.width(), &mut any_connected);
+                    let mut any_connected = false;
+                    let mut do_conn =
+                        |dx: isize, dy: isize, neighbor_i: usize, any_connected: &mut bool| {
+                            let neighbor_pixel = src_slice[neighbor_i];
+                            if neighbor_pixel == Pixel::Skip {
+                                return;
+                            }
 
-            if !connected_last {
-                do_conn(-1, 1, i + src.width() - 1, &mut any_connected)
+                            if current_pixel != neighbor_pixel {
+                                let neighbor_pixel_representative =
+                                    uf.get_representative_ref(neighbor_i);
+
+                                if uf.get_set_size_ref(neighbor_pixel_representative) < 25 {
+                                    return;
+                                }
+
+                                let key = if current_pixel_representative
+                                    < neighbor_pixel_representative
+                                {
+                                    (current_pixel_representative, neighbor_pixel_representative)
+                                } else {
+                                    (neighbor_pixel_representative, current_pixel_representative)
+                                };
+
+                                let entry = local.entry(key).or_default();
+
+                                let delta = neighbor_pixel.gradient_to(current_pixel);
+                                let gradient_info = GradientInfo {
+                                    pos: Point2d {
+                                        x: (2 * x as isize + dx) as usize,
+                                        y: (2 * y as isize + dy) as usize,
+                                    },
+                                    gx: delta * dx,
+                                    gy: delta * dy,
+                                    slope: 0.0,
+                                };
+
+                                entry.push(gradient_info);
+                                *any_connected = true;
+                            }
+                        };
+
+                    do_conn(1, 0, i + 1, &mut any_connected);
+                    do_conn(0, 1, i + width, &mut any_connected);
+
+                    if !connected_last {
+                        do_conn(-1, 1, i + width - 1, &mut any_connected);
+                    }
+
+                    any_connected = false;
+
+                    do_conn(1, 1, i + width + 1, &mut any_connected);
+
+                    connected_last = any_connected;
+                }
             }
 
-            any_connected = false;
+            local
+        })
+        .collect();
 
-            do_conn(1, 1, i + src.width() + 1, &mut any_connected);
-
-            connected_last = any_connected;
-        });
-    });
+    // Merge thread-local maps into one.
+    let mut clusters: FxHashMap<(usize, usize), Vec<GradientInfo>> = FxHashMap::default();
+    for map in local_maps {
+        for (key, mut entries) in map {
+            clusters.entry(key).or_default().append(&mut entries);
+        }
+    }
+    clusters
 }
 
 #[cfg(test)]
@@ -333,8 +370,7 @@ mod tests {
         let mut uf = UnionFind::new(bin.as_slice().len());
         find_connected_components(&bin, &mut uf)?;
 
-        let mut gradient_clusters = FxHashMap::default();
-        find_gradient_clusters(&bin, &mut uf, &mut gradient_clusters);
+        let gradient_clusters = find_gradient_clusters(&bin, &uf);
 
         // Since the order of HashMap iteration is random, we cannot rely on the order of clusters.
         // However, we know from the expected data file that there are exactly 3 unique clusters,

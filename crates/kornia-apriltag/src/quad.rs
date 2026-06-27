@@ -809,11 +809,9 @@ mod tests {
         let mut bin = Image::from_size_val(src.size(), Pixel::Skip, CpuAllocator)?;
         let mut tile_min_max = TileMinMax::new(src.size(), 4);
         let mut uf = UnionFind::new(src.as_slice().len());
-        let mut clusters = FxHashMap::default();
-
         adaptive_threshold(&src, &mut bin, &mut tile_min_max, 20)?;
         find_connected_components(&bin, &mut uf)?;
-        find_gradient_clusters(&bin, &mut uf, &mut clusters);
+        let mut clusters = find_gradient_clusters(&bin, &uf);
 
         let mut decode_tag_config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag36H11])?;
         decode_tag_config.downscale_factor = 1;
@@ -901,11 +899,9 @@ mod tests {
         let mut bin = Image::from_size_val(src.size(), Pixel::Skip, CpuAllocator)?;
         let mut tile_min_max = TileMinMax::new(src.size(), 4);
         let mut uf = UnionFind::new(src.as_slice().len());
-        let mut clusters = FxHashMap::default();
-
         adaptive_threshold(&src, &mut bin, &mut tile_min_max, 20)?;
         find_connected_components(&bin, &mut uf)?;
-        find_gradient_clusters(&bin, &mut uf, &mut clusters);
+        let clusters = find_gradient_clusters(&bin, &uf);
 
         // Find the largest cluster to test with
         let largest_cluster = clusters

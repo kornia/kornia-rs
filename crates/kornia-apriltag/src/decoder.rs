@@ -958,8 +958,6 @@ fn rotate_90(mut w: usize, num_bits: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
     use super::*;
     use crate::{family::TagFamilyKind, DecodeTagsConfig};
     use crate::{
@@ -984,12 +982,11 @@ mod tests {
         let mut bin = Image::from_size_val(src.size(), Pixel::Skip, CpuAllocator)?;
         let mut tile_min_max = TileMinMax::new(bin.size(), 4);
         let mut uf = UnionFind::new(bin.as_slice().len());
-        let mut clusters = HashMap::new();
         let mut gray_model_pair = GrayModelPair::default();
 
         adaptive_threshold(&src, &mut bin, &mut tile_min_max, 20)?;
         find_connected_components(&bin, &mut uf)?;
-        find_gradient_clusters(&bin, &mut uf, &mut clusters);
+        let mut clusters = find_gradient_clusters(&bin, &uf);
 
         let mut quads = fit_quads(&bin, &mut clusters, &config);
 

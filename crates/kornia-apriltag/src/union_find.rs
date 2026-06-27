@@ -1,4 +1,5 @@
 /// A disjoint-set (union-find) data structure.
+#[derive(Clone)]
 pub struct UnionFind {
     parent: Vec<usize>,
     size: Vec<usize>,
@@ -27,9 +28,31 @@ impl UnionFind {
         id
     }
 
+    /// Returns the representative of the set containing `id` without path compression.
+    ///
+    /// Safe to call from multiple threads simultaneously since it only reads `parent`.
+    /// Slightly slower per call than `get_representative` but requires only `&self`.
+    pub fn get_representative_ref(&self, mut id: usize) -> usize {
+        if self.parent[id] == usize::MAX {
+            return id;
+        }
+        while self.parent[id] != id {
+            id = self.parent[id];
+        }
+        id
+    }
+
     /// Returns the size of the set containing `id`.
     pub fn get_set_size(&mut self, id: usize) -> usize {
         let repid = self.get_representative(id);
+        self.size[repid]
+    }
+
+    /// Returns the size of the set containing `id` without path compression.
+    ///
+    /// Safe to call from multiple threads simultaneously.
+    pub fn get_set_size_ref(&self, id: usize) -> usize {
+        let repid = self.get_representative_ref(id);
         self.size[repid]
     }
 
