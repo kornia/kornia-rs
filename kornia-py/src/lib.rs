@@ -12,7 +12,6 @@ mod color_space;
 mod cpu;
 mod crop;
 mod depth;
-mod dlpack;
 mod enhance;
 mod feature_match;
 mod flip;

@@ -2,8 +2,6 @@
 use std::alloc::{alloc, alloc_zeroed, dealloc, Layout};
 use std::ptr::NonNull;
 
-use dlpack_rs::ffi::{DLDataType, K_DL_FLOAT, K_DL_UINT};
-use dlpack_rs::safe::{dtype_f32, dtype_u16, dtype_u8};
 use kornia_image::{allocator::ForeignAllocator, Image, ImageError, ImageSize};
 use pyo3::prelude::*;
 
@@ -39,32 +37,6 @@ impl Dtype {
             "float32" | "f32" | "<f4" | "=f4" | "f" => Ok(Dtype::F32),
             other => Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "unsupported dtype {other:?}; expected uint8, uint16, or float32"
-            ))),
-        }
-    }
-
-    /// Convert this `Dtype` to the corresponding `DLDataType`.
-    pub fn to_dldatatype(self) -> DLDataType {
-        match self {
-            Dtype::U8 => dtype_u8(),
-            Dtype::U16 => dtype_u16(),
-            Dtype::F32 => dtype_f32(),
-        }
-    }
-
-    /// Convert a `DLDataType` to `Dtype`, or return a `ValueError`.
-    pub fn from_dldatatype(dt: DLDataType) -> PyResult<Dtype> {
-        match (dt.code, dt.bits, dt.lanes) {
-            (c, 8, 1) if c == K_DL_UINT => Ok(Dtype::U8),
-            (c, 16, 1) if c == K_DL_UINT => Ok(Dtype::U16),
-            (c, 32, 1) if c == K_DL_FLOAT => Ok(Dtype::F32),
-            _ => Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "from_dlpack: unsupported DLPack dtype \
-                 (code={code}, bits={bits}, lanes={lanes}); \
-                 expected uint8, uint16, or float32",
-                code = dt.code,
-                bits = dt.bits,
-                lanes = dt.lanes,
             ))),
         }
     }
@@ -145,9 +117,6 @@ pub enum BorrowGuard {
         obj: Py<PyAny>,
         buffer: Option<Box<pyo3::ffi::Py_buffer>>,
     },
-    /// Imported DLPack tensor; its Drop runs the producer's deleter.
-    #[allow(dead_code)]
-    Dlpack(dlpack_rs::pyo3_glue::PyTensor),
 }
 impl Drop for BorrowGuard {
     fn drop(&mut self) {

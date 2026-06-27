@@ -93,13 +93,6 @@
 /// memory backends. The default [`CpuAllocator`] uses the system allocator for CPU memory.
 pub mod allocator;
 
-/// DLPack interop — convert Tensor to/from DLManagedTensor (CPU and CUDA).
-///
-/// Enabled by the `dlpack` feature. Zero-copy for owned CPU tensors (the tensor
-/// itself becomes the keepalive object passed to `dlpack_rs::safe::pack`).
-#[cfg(feature = "dlpack")]
-pub mod dlpack;
-
 /// GPU backend module providing the [`Backend`] trait and [`GpuAllocator`] abstraction.
 ///
 /// Enabled by the `gpu` feature. Backend implementations live in sub-modules gated by
@@ -126,7 +119,7 @@ pub mod serde;
 ///
 /// This module defines the [`resource::MemoryResource`] trait, the three-state
 /// [`resource::MemoryDomain`] enum, [`resource::HostResource`] (kornia-owned host memory),
-/// and [`resource::ForeignResource`] (externally owned memory: numpy, gstreamer, dlpack, …).
+/// and [`resource::ForeignResource`] (externally owned memory: numpy, gstreamer, …).
 pub mod resource;
 
 /// Storage module containing low-level memory buffer implementations.

@@ -2,7 +2,7 @@
 //!
 //! This module provides the [`MemoryResource`] trait and two concrete implementations:
 //! - [`HostResource`]: kornia-owned host memory (allocated and freed here).
-//! - [`ForeignResource`]: memory owned externally (numpy, gstreamer, v4l, dlpack, cudarc-wrap).
+//! - [`ForeignResource`]: memory owned externally (numpy, gstreamer, v4l, cudarc-wrap).
 //!
 //! The [`MemoryDomain`] enum describes where a buffer can be legally dereferenced.
 
@@ -221,7 +221,7 @@ unsafe impl Send for HostResource {}
 // SAFETY: shared references to HostResource never mutate the buffer.
 unsafe impl Sync for HostResource {}
 
-/// Foreign memory that kornia does NOT own: numpy/gstreamer/v4l/dlpack/cudarc-wrap.
+/// Foreign memory that kornia does NOT own: numpy/gstreamer/v4l/cudarc-wrap.
 ///
 /// On `Drop` the bytes themselves are NOT freed — only the optional `_keep` guard is dropped,
 /// whose own `Drop` is responsible for releasing the source buffer (e.g. decrement a Python
