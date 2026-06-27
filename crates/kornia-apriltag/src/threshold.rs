@@ -3,6 +3,46 @@ use crate::utils::{find_full_tiles, Pixel, Point2d};
 use crate::{errors::AprilTagError, iter::TileIterator};
 use kornia_image::{allocator::ImageAllocator, Image, ImageError, ImageSize};
 
+/// Classifies pixels in a contiguous row: pixel > thresh → 255 (White), else 0 (Black).
+///
+/// On aarch64 uses NEON `vcgtq_u8` which maps exactly to Pixel::White/Black since those
+/// are repr(u8) values 255 and 0 respectively.
+///
+/// # Safety
+/// `src` and `dst` must have the same length. `Pixel` must be `#[repr(u8)]`.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn classify_row_neon(src: &[u8], dst: &mut [Pixel], thresh: u8) {
+    use std::arch::aarch64::*;
+    let thresh_v = vdupq_n_u8(thresh);
+    let len = src.len();
+    // Safety: Pixel is #[repr(u8)] so *mut Pixel == *mut u8 for layout purposes.
+    let dst_u8 = core::slice::from_raw_parts_mut(dst.as_mut_ptr() as *mut u8, len);
+    let mut i = 0;
+    while i + 16 <= len {
+        let px = vld1q_u8(src.as_ptr().add(i));
+        vst1q_u8(dst_u8.as_mut_ptr().add(i), vcgtq_u8(px, thresh_v));
+        i += 16;
+    }
+    while i < len {
+        dst_u8[i] = if src[i] > thresh { 255 } else { 0 };
+        i += 1;
+    }
+}
+
+#[inline(always)]
+fn classify_row(src: &[u8], dst: &mut [Pixel], thresh: u8) {
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: aarch64 always has NEON; Pixel is #[repr(u8)].
+        return unsafe { classify_row_neon(src, dst, thresh) };
+    }
+    #[allow(unreachable_code)]
+    for (s, d) in src.iter().zip(dst.iter_mut()) {
+        *d = if *s > thresh { Pixel::White } else { Pixel::Black };
+    }
+}
+
 /// Fills `tile_min` and `tile_max` for all full tiles in row-major order.
 ///
 /// **Batch-of-4-tiles strategy for tile_size=4 (the common case):**
@@ -406,14 +446,8 @@ pub fn adaptive_threshold<A1: ImageAllocator, A2: ImageAllocator>(
         for (y_px, row) in tile.data.iter().enumerate() {
             let row_index = ((tile.pos.y * tile_min_max.tile_size) + y_px) * src.width()
                 + tile.pos.x * tile_min_max.tile_size;
-
-            for (x_px, px) in row.iter().enumerate() {
-                dst_data[row_index + x_px] = if px > &thresh {
-                    Pixel::White
-                } else {
-                    Pixel::Black
-                };
-            }
+            let row_len = row.len();
+            classify_row(row, &mut dst_data[row_index..row_index + row_len], thresh);
         }
     });
 
