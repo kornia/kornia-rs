@@ -76,8 +76,18 @@ target_link_libraries(kornia_cpp INTERFACE kornia_rust_lib)
 # - Unreal uses bundled libc++, explicitly linking stdc++ causes conflicts
 # - The C++ stdlib will be automatically linked by the final executable
 if(APPLE)
-    # macOS: dl functions are part of the system, only pthread is needed
-    target_link_libraries(kornia_cpp INTERFACE pthread)
+    # macOS: a Rust staticlib pulls in std, which references system frameworks/libs
+    # (CoreFoundation, Security/CommonCrypto for the RNG, libiconv for locale, and
+    # libSystem). Without these the C++ link fails intermittently with undefined
+    # _CCRandomGenerateBytes / __DefaultRuneLocale / __NSGetArgc symbols, depending on
+    # which std paths the staticlib happens to reference. Link them explicitly.
+    target_link_libraries(kornia_cpp INTERFACE
+        pthread
+        "-framework CoreFoundation"
+        "-framework Security"
+        "-framework SystemConfiguration"
+        iconv
+    )
 elseif(UNIX)
     # Linux: needs both dl and pthread
     target_link_libraries(kornia_cpp INTERFACE dl pthread)
