@@ -32,6 +32,8 @@ kornia-algebra = { workspace = true }
 kornia-image = { workspace = true }
 kornia-imgproc = { workspace = true }
 kornia-3d = { workspace = true, optional = true }
+rayon = { workspace = true }
+rustc-hash = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

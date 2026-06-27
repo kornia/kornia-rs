@@ -1,7 +1,7 @@
 #![deny(missing_docs)]
 //! # Kornia AprilTag
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 use kornia_image::{
     allocator::{CpuAllocator, ImageAllocator},
@@ -155,7 +155,7 @@ pub struct AprilTagDecoder {
     bin_img: Image<Pixel, 1, CpuAllocator>,
     tile_min_max: TileMinMax,
     uf: UnionFind,
-    clusters: HashMap<(usize, usize), Vec<GradientInfo>>,
+    clusters: FxHashMap<(usize, usize), Vec<GradientInfo>>,
     gray_model_pair: GrayModelPair,
 }
 
@@ -222,7 +222,7 @@ impl AprilTagDecoder {
             bin_img,
             tile_min_max,
             uf,
-            clusters: HashMap::new(),
+            clusters: FxHashMap::default(),
             gray_model_pair: GrayModelPair::new(),
         })
     }

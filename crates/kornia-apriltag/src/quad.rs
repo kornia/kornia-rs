@@ -6,8 +6,8 @@ use crate::{
 use kornia_algebra::{Mat3F32, Vec3F32};
 use kornia_image::{allocator::ImageAllocator, Image};
 use kornia_imgproc::filter::kernels::gaussian_kernel_1d;
+use rustc_hash::FxHashMap;
 use std::{
-    collections::HashMap,
     f32::{self, consts::PI},
     ops::ControlFlow,
 };
@@ -120,7 +120,7 @@ impl Quad {
 // TODO: Support multiple tag families
 pub fn fit_quads<A: ImageAllocator>(
     src: &Image<Pixel, 1, A>,
-    clusters: &mut HashMap<(usize, usize), Vec<GradientInfo>>,
+    clusters: &mut FxHashMap<(usize, usize), Vec<GradientInfo>>,
     config: &DecodeTagsConfig,
 ) -> Vec<Quad> {
     // TODO: Avoid this allocation every time
@@ -809,7 +809,7 @@ mod tests {
         let mut bin = Image::from_size_val(src.size(), Pixel::Skip, CpuAllocator)?;
         let mut tile_min_max = TileMinMax::new(src.size(), 4);
         let mut uf = UnionFind::new(src.as_slice().len());
-        let mut clusters = HashMap::new();
+        let mut clusters = FxHashMap::default();
 
         adaptive_threshold(&src, &mut bin, &mut tile_min_max, 20)?;
         find_connected_components(&bin, &mut uf)?;
@@ -901,7 +901,7 @@ mod tests {
         let mut bin = Image::from_size_val(src.size(), Pixel::Skip, CpuAllocator)?;
         let mut tile_min_max = TileMinMax::new(src.size(), 4);
         let mut uf = UnionFind::new(src.as_slice().len());
-        let mut clusters = HashMap::new();
+        let mut clusters = FxHashMap::default();
 
         adaptive_threshold(&src, &mut bin, &mut tile_min_max, 20)?;
         find_connected_components(&bin, &mut uf)?;

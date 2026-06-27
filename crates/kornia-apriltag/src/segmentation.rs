@@ -1,4 +1,6 @@
-use std::{collections::HashMap, ops::Mul};
+use std::ops::Mul;
+
+use rustc_hash::FxHashMap;
 
 use crate::{
     errors::AprilTagError,
@@ -153,7 +155,7 @@ impl Pixel {
 pub fn find_gradient_clusters<A: ImageAllocator>(
     src: &Image<Pixel, 1, A>,
     uf: &mut UnionFind,
-    clusters: &mut HashMap<(usize, usize), Vec<GradientInfo>>,
+    clusters: &mut FxHashMap<(usize, usize), Vec<GradientInfo>>,
 ) {
     let src_slice = src.as_slice();
 
@@ -331,7 +333,7 @@ mod tests {
         let mut uf = UnionFind::new(bin.as_slice().len());
         find_connected_components(&bin, &mut uf)?;
 
-        let mut gradient_clusters = HashMap::new();
+        let mut gradient_clusters = FxHashMap::default();
         find_gradient_clusters(&bin, &mut uf, &mut gradient_clusters);
 
         // Since the order of HashMap iteration is random, we cannot rely on the order of clusters.

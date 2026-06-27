@@ -74,6 +74,7 @@ numpy = "0.28"
 pyo3 = "0.28"
 rand = "0.10"
 rayon = "1.12"
+rustc-hash = "2"
 reqwest = { version = "0.13", features = ["blocking"] }
 rerun = "0.30"
 serde = { version = "1", features = ["derive"] }
