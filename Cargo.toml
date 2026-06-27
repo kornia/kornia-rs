@@ -26,14 +26,14 @@ include = ["Cargo.toml"]
 [workspace.dependencies]
 approx = "0.5"
 argh = "0.1"
-arrow = "58"
+arrow = "59"
 # TODO: update to version 3 but it requires some changes in the codebase
 bincode = { version = "2", features = ["derive"] }
-candle-core = { version = "0.10.2" }
-candle-examples = { version = "0.10.2" }
-candle-flash-attn = { version = "0.10.2" }
-candle-nn = { version = "0.10.2" }
-candle-transformers = { version = "0.10.2" }
+candle-core = { version = "0.11.0" }
+candle-examples = { version = "0.11.0" }
+candle-flash-attn = { version = "0.11.0" }
+candle-nn = { version = "0.11.0" }
+candle-transformers = { version = "0.11.0" }
 circular-buffer = "1.1"
 criterion = "0.8"
 ctrlc = "3.5"
@@ -41,15 +41,15 @@ cudarc = "0.19"
 env_logger = "0.11"
 # Pinned exact version: faer has significant API breaks between minor releases;
 # update only after auditing our Schur/PGO decomposition code in kornia-3d.
-faer = "=0.22.6"
+faer = "=0.23.2"
 glam = "0.33"
-gstreamer = "0.24"
-gstreamer-app = "0.24"
-gstreamer-video = "0.24"
+gstreamer = "0.25"
+gstreamer-app = "0.25"
+gstreamer-video = "0.25"
 half = { version = "2.7", features = ["num-traits"] }
 hf-hub = "0.5.0"
 image = "0.25"
-imageproc = "0.26"
+imageproc = "0.27"
 indicatif = { version = "0.18.4", features = ["rayon"] }
 kiddo = "5.3"
 # NOTE: remember to update the kornia-py package version in `kornia-py/Cargo.toml` when updating the Rust package version
@@ -89,7 +89,7 @@ serde-big-array = "0.5"
 serde_json = "1"
 tempfile = "3.27"
 thiserror = "2"
-tokenizers = { version = "0.22.2", features = ["http"] }
+tokenizers = { version = "0.23.1", features = ["http"] }
 walkdir = "2.5"
 wide = "1.4"
 
