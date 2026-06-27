@@ -29,6 +29,10 @@ default-features = false
 features = ["std"]
 optional = true
 
+# cudarc is used directly by the CubeclBackend (malloc_sync / free_sync) when
+# the `gpu-cubecl` feature is enabled.  It is NOT the standalone `cudarc`
+# device-tensor feature (which has been removed); it is here only as a low-level
+# CUDA driver accessor for CubeCL memory management.
 [dependencies.cudarc]
 version = "0.19.0"
 default-features = false
@@ -48,10 +52,6 @@ serde_json = { workspace = true }
 
 [features]
 bincode = ["dep:bincode"]
-# cudarc device-memory integration — default OFF.
-# Enables CudaResource / CudaAllocator and Tensor::to_cuda / to_host etc.
-# Verify absence: `cargo tree -p kornia-tensor -e features | grep -i cudarc`
-cudarc = ["dep:cudarc"]
 dlpack = ["dep:dlpack-rs"]
 gpu = []
 gpu-cubecl = ["dep:cubecl-core", "dep:cubecl-cuda", "dep:cudarc", "gpu"]
