@@ -352,12 +352,13 @@ pub fn decode_tags<A: ImageAllocator>(
     refine_edges_enabled: bool,
     decode_sharpening: f32,
     gray_model_pair: &mut GrayModelPair,
+    refine_edges_range: f32,
 ) -> Vec<Detection> {
     let mut detections = Vec::new();
 
     quads.iter_mut().for_each(|quad| {
         if refine_edges_enabled {
-            refine_edges(src, quad);
+            refine_edges(src, quad, refine_edges_range);
         }
 
         if !quad.update_homographies() {
@@ -421,7 +422,7 @@ pub fn decode_tags<A: ImageAllocator>(
 /// * `src` - Reference to the grayscale source image.
 /// * `quad` - Mutable reference to the quadrilateral to refine.
 // TODO: Consider moving this somewhere in kornia-imgproc.
-fn refine_edges<A: ImageAllocator>(src: &Image<u8, 1, A>, quad: &mut Quad) {
+fn refine_edges<A: ImageAllocator>(src: &Image<u8, 1, A>, quad: &mut Quad, range: f32) {
     let src_slice = src.as_slice();
     let mut lines: [[f32; 4]; 4] = Default::default();
 
@@ -458,16 +459,16 @@ fn refine_edges<A: ImageAllocator>(src: &Image<u8, 1, A>, quad: &mut Quad) {
             let mut mn = 0.0;
             let mut m_count = 0.0;
 
-            const RANGE: f32 = 2.0; // TODO: Make it tuneable. It will depend on the downscaling factor of the image preprocessing.
+            // D4 fix: search range is passed in as `range` (C uses quad_decimate + 1).
             const STEPS_PER_UNIT: usize = 4;
             const STEP_LENGTH: f32 = 1.0 / STEPS_PER_UNIT as f32;
-            const MAX_STEPS: usize = 2 * STEPS_PER_UNIT * RANGE as usize + 1;
+            let max_steps: usize = (2.0 * range / STEP_LENGTH).round() as usize + 1;
             const DELTA: f32 = 0.5;
 
             const GRANGE: f32 = 1.0;
 
-            (0..MAX_STEPS).for_each(|step| {
-                let n = -RANGE + STEP_LENGTH * step as f32;
+            (0..max_steps).for_each(|step| {
+                let n = -range + STEP_LENGTH * step as f32;
 
                 let x1 = x0 + (n + GRANGE) * nx - DELTA;
                 let y1 = y0 + (n + GRANGE) * ny - DELTA;
@@ -970,6 +971,8 @@ mod tests {
             })
             .collect();
 
+        // downscale_factor=1 → range = 1+1 = 2.0 (no decimation, same as C default).
+        let refine_edges_range = config.downscale_factor as f32 + 1.0;
         let tags = decode_tags(
             &src,
             &mut quads,
@@ -977,6 +980,7 @@ mod tests {
             config.refine_edges_enabled,
             config.decode_sharpening,
             &mut gray_model_pair,
+            refine_edges_range,
         );
 
         assert_eq!(tags.len(), 1);
@@ -1071,7 +1075,8 @@ mod tests {
             homography: Mat3F32::IDENTITY,
         };
 
-        refine_edges(&src, &mut quad);
+        // Pass range=2.0 (no decimation → downscale_factor=1 → range = 1+1 = 2.0).
+        refine_edges(&src, &mut quad, 2.0);
         let expected_corners = [
             Vec2F32::new(26.612904, 3.387097),
             Vec2F32::new(26.612904, 26.612904),

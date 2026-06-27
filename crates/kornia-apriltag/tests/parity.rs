@@ -27,7 +27,7 @@ use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
 
 /// Maximum allowed per-axis pixel difference between C and kornia corner coordinates
 /// after optimal alignment.
-const CORNER_TOLERANCE: f32 = 2.0;
+const CORNER_TOLERANCE: f32 = 0.5;
 
 /// The 8 valid corner permutations (4 CW-rotation starts × 2 winding directions).
 /// Entry `CORNER_PERMS[p][c_i]` gives the kornia corner index that corresponds to C corner `c_i`
@@ -251,11 +251,9 @@ fn check_image(
 
 /// Parity check on `apriltags_tag36h11.jpg` — a 799×533 multi-tag real-world scene.
 ///
-/// Known divergence of ~60–90 px in corner positions due to the quad.rs downscale
-/// coordinate mapping (D1/D4 in PARITY.md). This test is marked ignored until A3
-/// fixes the root cause; it will then pass within the 2.0 px tolerance.
+/// D1/D2 (decimation top-left subsample + ceiling size) and D4 (refine_edges range)
+/// are fixed in Task A3; this test now passes within 0.5 px tolerance.
 #[test]
-#[ignore = "known 60-90 px corner divergence from quad.rs downscale coordinate mapping; fixed in Task A3"]
 fn test_parity_tag36h11_apriltags_jpg() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/data/apriltags_tag36h11.jpg");

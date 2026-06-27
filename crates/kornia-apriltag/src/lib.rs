@@ -272,6 +272,8 @@ impl AprilTagDecoder {
         let mut quads = fit_quads(&self.bin_img, &mut self.clusters, &self.config);
 
         // Step 4: Tag Decoding
+        // D4 fix: refine_edges search range matches C's (quad_decimate + 1).
+        let refine_edges_range = self.config.downscale_factor as f32 + 1.0;
         Ok(decode_tags(
             src,
             &mut quads,
@@ -279,6 +281,7 @@ impl AprilTagDecoder {
             self.config.refine_edges_enabled,
             self.config.decode_sharpening,
             &mut self.gray_model_pair,
+            refine_edges_range,
         ))
     }
 
