@@ -44,6 +44,14 @@ pub trait Backend: Clone + Send + Sync + 'static {
 ///
 /// Holds the raw device pointer plus enough state to call the backend's free routine
 /// on drop.  The pointer is a device address — it must NOT be dereferenced on the host.
+///
+/// # Single-device / single-context assumption
+///
+/// `GpuResource` is `Send`, so it may be dropped on a thread other than the one that
+/// allocated it.  The `cudarc` free path (`free_sync`) requires the allocating CUDA
+/// context to be current on the calling thread.  In a single-GPU, single-context
+/// program this is always satisfied.  Multi-GPU or multi-context programs must ensure
+/// the allocating context is made current before the resource is dropped.
 pub struct GpuResource<B: Backend> {
     /// Raw device pointer (not host-dereferenceable).
     ptr: *mut u8,
@@ -67,18 +75,22 @@ impl<B: Backend> MemoryResource for GpuResource<B> {
         self.ptr
     }
 
+    /// Byte length of the device allocation.
     fn len_bytes(&self) -> usize {
         self.len_bytes
     }
 
+    /// Returns [`MemoryDomain::Device`] with the device id for this allocation.
     fn domain(&self) -> MemoryDomain {
         MemoryDomain::Device { id: self.device_id }
     }
 
+    /// Downcast hook for type-erased access.
     fn as_any(&self) -> &dyn Any {
         self
     }
 
+    /// Mutable downcast hook for type-erased access.
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
@@ -114,7 +126,7 @@ impl<B: Backend> TensorAllocator for GpuAllocator<B> {
         let (ptr, device_id) = self
             .backend
             .alloc(layout)
-            .map_err(|_e| TensorAllocatorError::NullPointer)?;
+            .map_err(|e| TensorAllocatorError::AllocationFailed(e.to_string()))?;
         if layout.size() != 0 && ptr.is_null() {
             return Err(TensorAllocatorError::NullPointer);
         }

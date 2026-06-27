@@ -31,6 +31,13 @@ pub enum TensorAllocatorError {
         "Cannot allocate with a foreign allocator — use from_borrowed or a wrapping constructor"
     )]
     CannotAllocateForeign,
+
+    /// Backend allocation failed with an error message.
+    ///
+    /// This error carries the backend-specific error description, such as a CUDA
+    /// driver error message from CubeCL.
+    #[error("Allocation failed: {0}")]
+    AllocationFailed(String),
 }
 
 /// Trait for custom tensor memory allocators.
@@ -114,7 +121,7 @@ impl TensorAllocator for CpuAllocator {
 /// A no-op allocator for foreign (externally managed) memory.
 ///
 /// Used as a type tag when wrapping memory that is owned by an external system
-/// (e.g. DLPack, numpy, GStreamer, CUDA runtime). Calling [`allocate`](TensorAllocator::allocate)
+/// (e.g. numpy arrays, GStreamer buffers, or other external allocations). Calling [`allocate`](TensorAllocator::allocate)
 /// on `ForeignAllocator` always returns [`TensorAllocatorError::CannotAllocateForeign`];
 /// use `from_borrowed` or a wrapping constructor instead.
 #[derive(Clone)]
