@@ -94,11 +94,6 @@ class Image:
         The Image borrows the caller's buffer and keeps the source alive."""
         ...
     @staticmethod
-    def from_dlpack(obj: Any) -> Image:
-        """Import a DLPack tensor (numpy >= 1.22, PyTorch, CuPy CPU) as a
-        zero-copy Image.  The producer object is kept alive as a keep-alive."""
-        ...
-    @staticmethod
     def load(path: str) -> Image: ...
     @staticmethod
     def decode(data: bytes, mode: str = ...) -> Image: ...
@@ -133,7 +128,7 @@ class Image:
         """Host address (int) of the underlying contiguous buffer.
 
         Stable for the lifetime of this ``Image``; hand it (with ``shape`` /
-        ``nbytes``) to cudarc / TensorRT for a host→device copy.
+        ``nbytes``) to an external library for a host→device copy.
         """
         ...
 
@@ -176,7 +171,7 @@ class Image:
         """Fused resize + per-channel normalize + HWC→CHW into an owned float32
         tensor ``Image`` (CHW), for any target size. NEON/AVX2-vectorized, single
         pass, copy-free. Use ``.numpy()`` for a view and ``.data_ptr`` for the
-        host address to hand to cudarc / TensorRT. Output is ``(x/255 - mean)/std``.
+        host address to hand to an external library. Output is ``(x/255 - mean)/std``.
         """
         ...
     def flip_horizontal(self) -> Image: ...
@@ -222,16 +217,3 @@ class Image:
     def __hash__(self) -> int: ...
     def __enter__(self) -> Image: ...
     def __exit__(self, *args: Any) -> None: ...
-    def __dlpack__(
-        self,
-        *,
-        stream: Any = ...,
-        max_version: Optional[tuple[int, int]] = ...,
-        dl_device: Any = ...,
-        copy: Optional[bool] = ...,
-    ) -> Any:
-        """Export the image buffer as a DLPack capsule (CPU, zero-copy)."""
-        ...
-    def __dlpack_device__(self) -> tuple[int, int]:
-        """Return the DLPack device tuple: ``(kDLCPU=1, device_id=0)``."""
-        ...
