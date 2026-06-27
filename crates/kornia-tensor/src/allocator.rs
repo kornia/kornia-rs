@@ -38,6 +38,12 @@ pub enum TensorAllocatorError {
     /// driver error message from CubeCL.
     #[error("Allocation failed: {0}")]
     AllocationFailed(String),
+    /// A CUDA allocation or driver call failed.
+    ///
+    /// Only produced when the `cudarc` feature is enabled.
+    #[cfg(feature = "cudarc")]
+    #[error("CUDA allocator error: {0}")]
+    CudaError(String),
 }
 
 /// Trait for custom tensor memory allocators.

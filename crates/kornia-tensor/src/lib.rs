@@ -129,6 +129,18 @@ pub mod serde;
 /// and [`resource::ForeignResource`] (externally owned memory: numpy, gstreamer, dlpack, …).
 pub mod resource;
 
+/// CUDA device-memory integration via `cudarc 0.19`.
+///
+/// Enabled by the `cudarc` feature (default OFF). Provides [`cuda::CudaResource`],
+/// [`cuda::CudaAllocator`], [`cuda::CudaKernel`], [`cuda::CudaLaunchBuilder`],
+/// [`cuda::zeros_cuda`], and `Tensor` methods `to_cuda`/`to_host`/`from_cudaslice`/
+/// `as_cudaslice`/`into_cudaslice` for first-class device tensor support.
+#[cfg(feature = "cudarc")]
+pub mod cuda;
+
+#[cfg(feature = "cudarc")]
+pub use crate::cuda::{zeros_cuda, CudaAllocator, CudaError, CudaKernel, CudaLaunchBuilder};
+
 /// Storage module containing low-level memory buffer implementations.
 ///
 /// This module provides [`storage::TensorStorage`] which manages the actual memory buffer
