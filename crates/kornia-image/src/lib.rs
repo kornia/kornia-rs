@@ -27,3 +27,7 @@ pub mod arrow;
 /// DLPack interoperability for typed [`Image`].
 #[cfg(feature = "dlpack")]
 pub mod dlpack;
+
+/// CUDA device-memory integration: [`Image::to_cuda`].
+#[cfg(feature = "cudarc")]
+pub mod cuda;
