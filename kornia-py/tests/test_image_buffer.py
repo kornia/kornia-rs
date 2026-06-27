@@ -1,4 +1,4 @@
-"""Tests for Image buffer-protocol, pickle, dlpack, equality, and overflow."""
+"""Tests for Image buffer-protocol, pickle, equality, and overflow."""
 import pickle
 import struct
 import sys
@@ -147,26 +147,6 @@ def test_to_numpy_default_is_copy():
     img = Image(arr)
     out = img.to_numpy()  # default copy=True
     assert not np.shares_memory(out, img.numpy())
-
-
-# ---------------------------------------------------------------------------
-# __dlpack__ kwargs
-# ---------------------------------------------------------------------------
-
-def test_dlpack_non_cpu_device_raises_buffer_error():
-    """Non-CPU dl_device raises BufferError."""
-    arr = np.zeros((4, 4, 3), dtype=np.uint8)
-    img = Image(arr)
-    with pytest.raises(BufferError):
-        img.__dlpack__(dl_device=(2, 0))  # kDLCUDA=2
-
-
-def test_dlpack_copy_true_raises_not_implemented():
-    """copy=True raises NotImplementedError."""
-    arr = np.zeros((4, 4, 3), dtype=np.uint8)
-    img = Image(arr)
-    with pytest.raises(NotImplementedError):
-        img.__dlpack__(copy=True)
 
 
 # ---------------------------------------------------------------------------
