@@ -71,7 +71,14 @@ jobs:
           cache: true
 
       - name: Run cargo check
-        run: pixi run rust-check
+        # The pixi/conda cxx-compiler has no SDKROOT, so its clang can't find the
+        # macOS SDK / libSystem when building C/native deps from scratch (e.g.
+        # turbojpeg-sys's bundled libjpeg-turbo). Point it at the Xcode SDK so the
+        # C builds link libSystem (_fprintf/_malloc/etc.).
+        run: |
+          export SDKROOT="$(xcrun --show-sdk-path)"
+          export CONDA_BUILD_SYSROOT="$SDKROOT"
+          pixi run rust-check
 
   cross-platform-check-windows:
     name: Check - Windows
