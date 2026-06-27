@@ -59,6 +59,10 @@ impl_dlpack_elem!(f64, 2u32, 64, 1);
 /// The tensor itself is the keepalive: the consumer's deleter will drop it, freeing
 /// the buffer. The export is zero-copy.
 ///
+/// # Arguments
+///
+/// * `t` - The tensor to export; ownership is transferred into the `DLManagedTensor` keepalive.
+///
 /// # Returns
 ///
 /// A raw pointer to a `DLManagedTensor` that the consumer owns.  The consumer
@@ -139,6 +143,17 @@ impl std::error::Error for DlpackError {}
 /// The caller must NOT call the DLManagedTensor's own deleter after passing it here;
 /// that responsibility transfers to `keepalive`.
 ///
+/// # Arguments
+///
+/// * `mt` - Raw pointer to a valid, initialised `DLManagedTensor`; must be non-null.
+/// * `keepalive` - An `Arc` keepalive that keeps the source data alive for the lifetime
+///   of the returned `Tensor`. The caller must NOT call the tensor's own deleter after
+///   passing it here.
+///
+/// # Returns
+///
+/// A zero-copy [`Tensor`] borrowing the buffer pointed to by `mt`.
+///
 /// # Safety
 ///
 /// - `mt` must be non-null and point to a valid, initialised `DLManagedTensor`.
@@ -149,8 +164,8 @@ impl std::error::Error for DlpackError {}
 ///
 /// # Errors
 ///
-/// Returns `Err(DlpackError::*)` for ndim mismatch, dtype mismatch, non-contiguous,
-/// or null pointer.
+/// Returns `Err(DlpackError::*)` for ndim mismatch, dtype mismatch (including `lanes != 1`),
+/// non-contiguous strides, or null pointer.
 pub unsafe fn tensor_from_dlpack_raw<T, const N: usize>(
     mt: *mut DLManagedTensor,
     keepalive: Arc<dyn core::any::Any + Send + Sync>,
@@ -169,9 +184,10 @@ where
         });
     }
 
-    // Validate dtype.
+    // Validate dtype (code, bits, and lanes — lanes != 1 means a SIMD-packed type
+    // that would yield the wrong element count and cause OOB access).
     let expected = T::dl_dtype();
-    if dl.dtype.code != expected.code || dl.dtype.bits != expected.bits {
+    if dl.dtype.code != expected.code || dl.dtype.bits != expected.bits || dl.dtype.lanes != 1 {
         return Err(DlpackError::DtypeMismatch);
     }
 
@@ -298,7 +314,6 @@ mod tests {
                 data.len() * std::mem::size_of::<f32>(),
                 crate::allocator::ForeignAllocator,
                 crate::storage::MemoryDomain::Host,
-                0,
                 keep,
             );
             let shape = [4usize];

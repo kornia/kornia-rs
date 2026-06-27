@@ -67,9 +67,14 @@ where
 /// * `keepalive` - An `Arc` keepalive that keeps the source data alive for the lifetime of the
 ///   returned `Image`. The caller must NOT call the tensor's own deleter after passing it here.
 ///
+/// # Returns
+///
+/// A zero-copy [`Image`] borrowing the buffer pointed to by `mt`, with shape `[H, W, C]`.
+///
 /// # Errors
-/// - [`ImageError::DlpackShapeError`] if `T` does not match the tensor's dtype, or if
-///   ndim != 3, or the tensor is non-contiguous, or the pointer is null, or overflow.
+/// - [`ImageError::DlpackShapeError`] if `T` does not match the tensor's dtype (including
+///   `lanes != 1`), or if ndim != 3, or the tensor is non-contiguous, or the pointer is
+///   null, or overflow.
 /// - [`ImageError::InvalidImageShape`] wraps a `TensorError` for storage-layer issues.
 /// - [`ImageError::InvalidChannelShape`] if runtime channel count != `C`.
 ///
@@ -98,11 +103,12 @@ where
         )));
     }
 
-    // 2. Validate dtype matches T.
+    // 2. Validate dtype matches T (code, bits, and lanes).
+    // lanes != 1 means a SIMD-packed type that would yield the wrong element count → OOB.
     let expected = T::dl_dtype();
-    if dl.dtype.code != expected.code || dl.dtype.bits != expected.bits {
+    if dl.dtype.code != expected.code || dl.dtype.bits != expected.bits || dl.dtype.lanes != 1 {
         return Err(ImageError::DlpackShapeError(
-            "dtype mismatch: requested T does not match tensor dtype".to_string(),
+            "dtype mismatch: requested T does not match tensor dtype (or lanes != 1)".to_string(),
         ));
     }
 
