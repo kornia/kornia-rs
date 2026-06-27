@@ -251,8 +251,9 @@ fn check_image(
 
 /// Parity check on `apriltags_tag36h11.jpg` — a 799×533 multi-tag real-world scene.
 ///
-/// D1/D2 (decimation top-left subsample + ceiling size) and D4 (refine_edges range)
-/// are fixed in Task A3; this test now passes within 0.5 px tolerance.
+/// D4 (refine_edges range) fixed in Task A3. D1/D2 (decimation stride) investigated:
+/// applying true top-left subsample caused 299 px regression (different quad selected);
+/// Nearest resize already achieves ≤0.26 px parity so D1/D2 are deferred.
 #[test]
 fn test_parity_tag36h11_apriltags_jpg() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

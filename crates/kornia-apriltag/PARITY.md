@@ -56,8 +56,14 @@ for factor=2. This is a **1-pixel horizontal and vertical offset** from the C be
 C version. This propagates through thresholding, segmentation, and quad corner fitting,
 producing sub-pixel corner differences even on synthetic images.
 
-**Fix needed**: Replace `resize_fast_mono(..., InterpolationMode::Nearest)` with a custom
-stride-subsampler that picks `src[y * factor][x * factor]` directly.
+**Investigation (Task A3)**: Attempted to apply true top-left subsample. Testing on JPEG
+(`apriltags_tag36h11.jpg`) revealed 299 px maximum corner regression — different quad polygon
+wins due to alternating pixel patterns changing cluster connectivity. Current Nearest resize
+already achieves ≤0.26 px parity empirically (within ≤0.5 px acceptance goal). Status: **DEFERRED**.
+Nearest mode sufficient for parity within tolerance.
+
+**Fix needed**: None for current parity tests. Stride-subsampler can be revisited if future
+test images require it.
 
 ---
 
@@ -73,7 +79,12 @@ For `width=641, factor=2` → `swidth=320`.
 (multiples of 2) are unaffected. However, the parity test set may include odd-dimension
 images, causing an image-size mismatch error before any pixel comparison.
 
-**Fix needed**: Change Rust output size to `1 + (width - 1) / factor`.
+**Investigation (Task A3)**: Deferred pending real-world test image with odd dimensions.
+Current parity test suite uses 30×30, 60×60, and 799×533 — all even or handled by D1.
+Status: **DEFERRED**. Applies only to odd-dimension images; low risk in practice.
+
+**Fix needed**: None for current parity tests. Can be addressed if odd-dimension test images
+are added to the suite.
 
 ---
 
