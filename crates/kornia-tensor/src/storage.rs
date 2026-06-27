@@ -70,8 +70,14 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
     }
 
     /// Returns a raw mutable pointer to the storage's first element.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the storage was created with a read-only resource (e.g. via
+    /// [`from_borrowed_readonly`](Self::from_borrowed_readonly)).
     #[inline]
     pub fn as_mut_ptr(&mut self) -> *mut T {
+        assert!(!self.owner.is_readonly(), "as_mut_ptr on read-only memory");
         self.ptr.as_ptr()
     }
 
@@ -263,57 +269,11 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
         }
     }
 
-    /// Creates a new tensor storage from a raw device pointer.
-    ///
-    /// The resulting storage has [`MemoryDomain::Device{id:device_id}`]; calling
-    /// [`as_slice`](Self::as_slice) on it will panic. Use explicit transfer APIs to
-    /// bring data to the host.
-    ///
-    /// This uses a [`ForeignResource`] (no keep-alive) — the device memory is NOT freed
-    /// when this storage is dropped. The caller is responsible for managing the device
-    /// allocation's lifetime.
-    ///
-    /// # Arguments
-    ///
-    /// * `data`      - Device pointer (not dereferenced on the host).
-    /// * `len_bytes` - Byte length of the buffer.
-    /// * `alloc`     - Allocator type tag.
-    /// * `device_id` - CUDA device identifier.
-    ///
-    /// # Safety
-    ///
-    /// - `data` must be a valid device pointer for at least `len_bytes` bytes.
-    /// - The memory must remain valid for the full lifetime of this storage.
-    pub unsafe fn from_raw_device(
-        data: *const T,
-        len_bytes: usize,
-        alloc: A,
-        device_id: i32,
-    ) -> Self {
-        let ptr = NonNull::new_unchecked(data as *mut T);
-        let owner: Box<dyn MemoryResource> = Box::new(
-            ForeignResource::new(
-                data as *mut u8,
-                len_bytes,
-                MemoryDomain::Device { id: device_id },
-                None,
-            )
-            .expect("non-null pointer required"),
-        );
-        Self {
-            ptr,
-            len: len_bytes,
-            owner,
-            alloc,
-            _marker: PhantomData,
-        }
-    }
-
     /// Creates a borrowed storage view that keeps `keepalive` alive until this storage is dropped.
     ///
     /// The storage does NOT own the memory bytes — [`ForeignResource::Drop`] does NOT free them.
-    /// Instead, `keepalive` is held in an `Arc` so the source object (e.g. a DLPack producer,
-    /// numpy array, GStreamer buffer) lives at least as long as this storage.
+    /// Instead, `keepalive` is held in an `Arc` so the source object (e.g. a numpy array,
+    /// GStreamer buffer) lives at least as long as this storage.
     ///
     /// # Arguments
     ///
@@ -321,8 +281,6 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
     /// * `len_bytes` - Byte length of the buffer.
     /// * `alloc`     - Allocator type tag.
     /// * `domain`    - Accessibility of the buffer (`Host`, `Device{id}`, or `Unified{id}`).
-    /// * `device_id` - CUDA device id (used when constructing a `Device` or `Unified` domain
-    ///   if `domain` is `Host` this is ignored in practice).
     /// * `keepalive` - Owned arc whose `Drop` releases the underlying allocation.
     ///
     /// # Safety
@@ -336,7 +294,6 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
         len_bytes: usize,
         alloc: A,
         domain: MemoryDomain,
-        _device_id: i32,
         keepalive: std::sync::Arc<dyn core::any::Any + Send + Sync>,
     ) -> Self {
         let ptr = NonNull::new_unchecked(data as *mut T);
@@ -363,6 +320,18 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
     /// GStreamer / V4L2 `mmap` buffer) so that callers cannot accidentally write
     /// to kernel-owned memory.
     ///
+    /// # Arguments
+    ///
+    /// * `data`      - Pointer to the first element of the buffer.
+    /// * `len_bytes` - Byte length of the buffer.
+    /// * `alloc`     - Allocator type tag.
+    /// * `domain`    - Accessibility of the buffer.
+    /// * `keepalive` - Owned arc whose `Drop` releases the underlying allocation.
+    ///
+    /// # Returns
+    ///
+    /// A new `TensorStorage` backed by the given pointer, refusing mutable access.
+    ///
     /// # Safety
     ///
     /// Same contract as [`from_borrowed`](Self::from_borrowed).
@@ -371,7 +340,6 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
         len_bytes: usize,
         alloc: A,
         domain: MemoryDomain,
-        _device_id: i32,
         keepalive: std::sync::Arc<dyn core::any::Any + Send + Sync>,
     ) -> Self {
         let ptr = NonNull::new_unchecked(data as *mut T);
@@ -842,7 +810,6 @@ mod tests {
                     8,
                     ForeignAllocator,
                     MemoryDomain::Host,
-                    0,
                     keep,
                 )
             };
@@ -862,7 +829,6 @@ mod tests {
                 4,
                 ForeignAllocator,
                 MemoryDomain::Unified { id: 0 },
-                0,
                 keep,
             )
         };
@@ -1004,7 +970,6 @@ mod tests {
                 buf.len(),
                 ForeignAllocator,
                 MemoryDomain::Host,
-                0,
                 keep,
             )
         };
@@ -1024,7 +989,6 @@ mod tests {
                 buf.len(),
                 ForeignAllocator,
                 MemoryDomain::Host,
-                0,
                 keep,
             )
         };
@@ -1041,7 +1005,6 @@ mod tests {
                 buf.len(),
                 ForeignAllocator,
                 MemoryDomain::Host,
-                0,
                 keep,
             )
         };

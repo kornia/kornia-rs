@@ -113,7 +113,16 @@ pub(crate) fn image_from_gst_buffer(
     // Defense-in-depth: verify the buffer is large enough for an RGB24 frame.
     // The pipeline normally enforces RGB caps, but a misconfigured or non-RGB
     // pipeline would silently produce out-of-bounds stride-based access otherwise.
-    let expected_len = size.width * size.height * 3;
+    let expected_len = size
+        .width
+        .checked_mul(size.height)
+        .and_then(|n| n.checked_mul(3))
+        .ok_or_else(|| {
+            crate::stream::error::StreamCaptureError::InvalidImageFormat(format!(
+                "frame dimensions overflow: {}x{}",
+                size.width, size.height
+            ))
+        })?;
     if data_len < expected_len {
         return Err(
             crate::stream::error::StreamCaptureError::BufferSizeMismatch {
@@ -142,7 +151,6 @@ pub(crate) fn image_from_gst_buffer(
             data_len,
             ForeignAllocator,
             MemoryDomain::Host,
-            0,
             keepalive,
         )
     };

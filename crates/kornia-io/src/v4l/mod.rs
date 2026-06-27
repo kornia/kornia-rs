@@ -125,7 +125,6 @@ pub(crate) fn image_from_v4l_buffer(
             data_len,
             ForeignAllocator,
             MemoryDomain::Host,
-            0,
             keepalive,
         )
     };
