@@ -23,3 +23,7 @@ pub use crate::image::{Image, ImageLayout, ImageSize, InterpolationMode, PixelFo
 /// Arrow integration for converting images to Arrow format
 #[cfg(feature = "arrow")]
 pub mod arrow;
+
+/// DLPack interoperability for typed [`Image`].
+#[cfg(feature = "dlpack")]
+pub mod dlpack;
