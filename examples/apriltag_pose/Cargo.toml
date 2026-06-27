@@ -1,0 +1,24 @@
+[package]
+name = "apriltag-pose"
+version = { workspace = true }
+authors = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+description = { workspace = true }
+readme = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+license = { workspace = true }
+categories = { workspace = true }
+include = { workspace = true }
+publish = false
+
+[[bin]]
+name = "apriltag_pose"
+path = "src/main.rs"
+
+[dependencies]
+argh = { workspace = true }
+kornia = { workspace = true }
+kornia-apriltag = { workspace = true, features = ["pose"] }
+kornia-3d = { workspace = true }

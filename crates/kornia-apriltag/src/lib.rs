@@ -47,6 +47,13 @@ pub mod quad;
 /// Decoding utilities for AprilTag detection.
 pub mod decoder;
 
+/// Re-exports of kornia-3d pose types when the `pose` feature is enabled.
+#[cfg(feature = "pose")]
+pub mod pose {
+    pub use kornia_3d::camera::PinholeCamera;
+    pub use kornia_3d::pose::{AprilTagPoseError, TagPose, TagPosePair};
+}
+
 /// Configuration for decoding AprilTags.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DecodeTagsConfig {

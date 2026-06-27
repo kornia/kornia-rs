@@ -298,6 +298,45 @@ pub struct Detection {
     pub quad: Quad,
 }
 
+#[cfg(feature = "pose")]
+impl Detection {
+    /// Estimate the 6-DOF pose of this tag given camera intrinsics and tag size.
+    ///
+    /// # Arguments
+    ///
+    /// * `camera` — pinhole camera intrinsics (fx, fy, cx, cy).
+    /// * `tag_size` — physical tag size in metric units (e.g., metres). The tag corners
+    ///   in object space are placed at `±tag_size/2` on the X and Y axes.
+    /// * `n_iters` — number of orthogonal-iteration refinement steps (default: 50).
+    ///
+    /// # Returns
+    ///
+    /// [`kornia_3d::pose::TagPosePair`] with `best` (lower reprojection error) and
+    /// `second` (higher error / ambiguous solution).
+    pub fn estimate_pose(
+        &self,
+        camera: &kornia_3d::camera::PinholeCamera,
+        tag_size: f64,
+        n_iters: usize,
+    ) -> Result<kornia_3d::pose::TagPosePair, kornia_3d::pose::AprilTagPoseError> {
+        use kornia_algebra::{Vec2F64, Vec3F64};
+        let s = tag_size / 2.0;
+        let object_pts = [
+            Vec3F64::new(-s, -s, 0.0),
+            Vec3F64::new(s, -s, 0.0),
+            Vec3F64::new(s, s, 0.0),
+            Vec3F64::new(-s, s, 0.0),
+        ];
+        let image_pts = [
+            Vec2F64::new(self.quad.corners[0].x as f64, self.quad.corners[0].y as f64),
+            Vec2F64::new(self.quad.corners[1].x as f64, self.quad.corners[1].y as f64),
+            Vec2F64::new(self.quad.corners[2].x as f64, self.quad.corners[2].y as f64),
+            Vec2F64::new(self.quad.corners[3].x as f64, self.quad.corners[3].y as f64),
+        ];
+        kornia_3d::pose::estimate_tag_pose(&object_pts, &image_pts, camera, n_iters)
+    }
+}
+
 /// Buffer used for storing intermediate values during the sharpening process.
 #[derive(Debug, PartialEq, Clone)]
 pub struct SharpeningBuffer {
