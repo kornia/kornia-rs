@@ -2,7 +2,7 @@
 //!
 //! This module provides the [`MemoryResource`] trait and two concrete implementations:
 //! - [`HostResource`]: kornia-owned host memory (allocated and freed here).
-//! - [`ForeignResource`]: memory owned externally (numpy, gstreamer, v4l, cudarc-wrap).
+//! - [`ForeignResource`]: memory owned externally (numpy, gstreamer, v4l, foreign handles).
 //!
 //! The [`MemoryDomain`] enum describes where a buffer can be legally dereferenced.
 
@@ -80,10 +80,10 @@ pub trait MemoryResource: Send + Sync {
     /// Accessibility of the backing buffer.
     fn domain(&self) -> MemoryDomain;
 
-    /// Downcast hook (e.g. recover a `&CudaSlice` from a `CudaResource`).
+    /// Downcast hook — use to recover a concrete resource type from a type-erased handle.
     fn as_any(&self) -> &dyn Any;
 
-    /// Mutable downcast hook (e.g. recover a `&mut CudaSlice` from a `CudaResource`).
+    /// Mutable downcast hook — use to recover a concrete resource type from a type-erased handle.
     fn as_any_mut(&mut self) -> &mut dyn Any;
 
     /// Returns `true` if this resource must never be written to.
@@ -221,7 +221,7 @@ unsafe impl Send for HostResource {}
 // SAFETY: shared references to HostResource never mutate the buffer.
 unsafe impl Sync for HostResource {}
 
-/// Foreign memory that kornia does NOT own: numpy/gstreamer/v4l/cudarc-wrap.
+/// Foreign memory that kornia does NOT own: numpy arrays, GStreamer buffers, V4L2 frames, or other external handles.
 ///
 /// On `Drop` the bytes themselves are NOT freed — only the optional `_keep` guard is dropped,
 /// whose own `Drop` is responsible for releasing the source buffer (e.g. decrement a Python
@@ -273,6 +273,11 @@ impl ForeignResource {
     /// Identical to [`new`](Self::new) but marks the resource read-only:
     /// [`as_mut_slice`](TensorStorage::as_mut_slice) will panic if called on storage
     /// backed by this resource.
+    ///
+    /// # Returns
+    ///
+    /// A new `ForeignResource` marked read-only, or [`TensorAllocatorError::NullPointer`]
+    /// if `ptr` is null.
     ///
     /// # Safety
     ///

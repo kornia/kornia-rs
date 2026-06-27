@@ -2395,7 +2395,7 @@ impl PyImageApi {
     /// The whole path is copy-free: the input numpy buffer is borrowed in place,
     /// the `(3, height, width)` output is allocated once and written directly, and
     /// the returned `Image` wraps that same buffer. Use `.numpy()` for a zero-copy
-    /// view and `.data_ptr` for the host address to hand to cudarc / TensorRT.
+    /// view and `.data_ptr` for the host address to hand to an external library.
     ///
     /// `mean`/`std` are per-channel in `[0, 1]` (PyTorch convention); the output is
     /// `(x/255 − mean) / std`. Input must be `(H, W, 3)` uint8, C-contiguous.
@@ -2444,7 +2444,7 @@ impl PyImageApi {
     /// Host address (as an int) of the underlying contiguous data buffer.
     ///
     /// Stable for the lifetime of this `Image`; hand it (with `.shape` / `.nbytes`)
-    /// to cudarc / TensorRT for a host→device copy without going through numpy.
+    /// to an external library for a host→device copy without going through numpy.
     #[getter]
     fn data_ptr(&self) -> usize {
         self.backing.data_ptr() as usize

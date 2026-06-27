@@ -127,7 +127,7 @@ impl Drop for BorrowGuard {
             // SAFETY: `view` was filled by PyObject_GetBuffer in from_buffer; release exactly once.
             unsafe { pyo3::ffi::PyBuffer_Release(view.as_mut()) };
         }
-        // Py<PyAny> and PyTensor drop themselves.
+        // Py<PyAny> drops itself.
     }
 }
 

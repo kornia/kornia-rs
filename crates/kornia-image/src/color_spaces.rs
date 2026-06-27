@@ -47,6 +47,10 @@ pub enum ColorSpace {
 
 impl ColorSpace {
     /// Number of channels an image in this space has.
+    ///
+    /// # Returns
+    ///
+    /// The channel count for this color space (1, 3, or 4).
     pub const fn channels(self) -> usize {
         match self {
             ColorSpace::Gray => 1,
@@ -56,6 +60,10 @@ impl ColorSpace {
     }
 
     /// True for spaces whose kernels only operate on f32 data.
+    ///
+    /// # Returns
+    ///
+    /// `true` if this space requires f32 pixel data.
     pub const fn requires_f32(self) -> bool {
         matches!(
             self,
@@ -141,6 +149,10 @@ pub enum DynImage<T, A: ImageAllocator> {
 
 impl<T, A: ImageAllocator> DynImage<T, A> {
     /// The color space tag carried by this image.
+    ///
+    /// # Returns
+    ///
+    /// The [`ColorSpace`] tag of this image.
     pub fn color_space(&self) -> ColorSpace {
         match self {
             DynImage::C1(s, _) | DynImage::C3(s, _) | DynImage::C4(s, _) => *s,
@@ -148,6 +160,10 @@ impl<T, A: ImageAllocator> DynImage<T, A> {
     }
 
     /// Image dimensions.
+    ///
+    /// # Returns
+    ///
+    /// The [`ImageSize`] (width × height) of this image.
     pub fn size(&self) -> ImageSize {
         match self {
             DynImage::C1(_, i) => i.size(),
@@ -157,6 +173,10 @@ impl<T, A: ImageAllocator> DynImage<T, A> {
     }
 
     /// Channel count (1, 3, or 4).
+    ///
+    /// # Returns
+    ///
+    /// The channel count: 1, 3, or 4.
     pub fn channels(&self) -> usize {
         match self {
             DynImage::C1(..) => 1,
@@ -166,6 +186,10 @@ impl<T, A: ImageAllocator> DynImage<T, A> {
     }
 
     /// Contiguous (H, W, C) row-major data.
+    ///
+    /// # Returns
+    ///
+    /// A contiguous byte slice in H×W×C row-major order.
     pub fn as_slice(&self) -> &[T] {
         match self {
             DynImage::C1(_, i) => i.as_slice(),
