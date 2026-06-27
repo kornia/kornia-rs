@@ -11,7 +11,8 @@ use super::homography_4pt2d;
 pub struct TagPose {
     /// The world-to-camera rigid transform.
     pub pose: Pose3d,
-    /// Sum of squared reprojection errors over the 4 tag corners (pixels²).
+    /// Sum of squared pixel reprojection errors over the 4 tag corners (pixels²).
+    /// Lower is better; < 1.0 indicates sub-pixel accuracy.
     pub error: f64,
 }
 
@@ -65,12 +66,17 @@ fn calc_f(v: Vec3F64) -> Mat3F64 {
 
 /// Run Lu-Hager-Mjolsness orthogonal iteration to refine a pose.
 ///
-/// Returns `(refined_pose, sum_sq_reprojection_error)`.
+/// Returns `(refined_pose, sum_sq_reprojection_error_in_pixels)`.
 fn orthogonal_iteration(
     object_pts: &[Vec3F64; 4],
     image_rays: &[Vec3F64; 4],
+    image_pts: &[Vec2F64; 4],
     init_pose: Pose3d,
     n_iters: usize,
+    fx: f64,
+    fy: f64,
+    cx: f64,
+    cy: f64,
 ) -> Result<(Pose3d, f64), AprilTagPoseError> {
     let f = [
         calc_f(image_rays[0]),
@@ -147,12 +153,19 @@ fn orthogonal_iteration(
         }
         rotation = r_new;
 
-        // Error: Σᵢ ‖(I − Fᵢ)(R·pᵢ + t)‖²
+        // Error: Σᵢ (Δuᵢ² + Δvᵢ²) — sum of squared pixel reprojection errors
         error = 0.0;
         for i in 0..4 {
-            let z = rotation * object_pts[i] + translation;
-            let e = z - f[i] * z;
-            error += e.dot(e);
+            let p_cam = rotation * object_pts[i] + translation;
+            if p_cam.z > 1e-10 {
+                let u_hat = fx * p_cam.x / p_cam.z + cx;
+                let v_hat = fy * p_cam.y / p_cam.z + cy;
+                let du = u_hat - image_pts[i].x;
+                let dv = v_hat - image_pts[i].y;
+                error += du * du + dv * dv;
+            } else {
+                error += f64::MAX / 4.0;  // degenerate: point behind camera
+            }
         }
     }
 
@@ -205,7 +218,7 @@ pub fn estimate_tag_pose(
     ];
 
     // Pose 1: refine from H decomposition
-    let (pose1, err1) = orthogonal_iteration(object_pts, &image_rays, init_pose, n_iters)?;
+    let (pose1, err1) = orthogonal_iteration(object_pts, &image_rays, image_pts, init_pose, n_iters, fx, fy, cx, cy)?;
 
     // Pose 2: other planar ambiguity — negate first two R columns
     let r2_init = Mat3F64::from_cols(
@@ -214,7 +227,7 @@ pub fn estimate_tag_pose(
         init_pose.rotation.z_axis(),
     );
     let (pose2, err2) =
-        orthogonal_iteration(object_pts, &image_rays, Pose3d::new(r2_init, init_pose.translation), n_iters)?;
+        orthogonal_iteration(object_pts, &image_rays, image_pts, Pose3d::new(r2_init, init_pose.translation), n_iters, fx, fy, cx, cy)?;
 
     let (best, second) = if err1 <= err2 {
         (TagPose { pose: pose1, error: err1 }, TagPose { pose: pose2, error: err2 })
