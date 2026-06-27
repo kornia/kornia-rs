@@ -145,9 +145,6 @@ pub enum BorrowGuard {
         obj: Py<PyAny>,
         buffer: Option<Box<pyo3::ffi::Py_buffer>>,
     },
-    /// Imported DLPack tensor; its Drop runs the producer's deleter.
-    #[allow(dead_code)]
-    Dlpack(dlpack_rs::pyo3_glue::PyTensor),
 }
 impl Drop for BorrowGuard {
     fn drop(&mut self) {

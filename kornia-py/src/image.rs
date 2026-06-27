@@ -3139,12 +3139,13 @@ impl PyImageApi {
                 "__dlpack__: copy=True is not yet supported; call img.copy() first",
             ));
         }
-        let (data, shape, dt) = {
+        let (data, shape, dt, readonly) = {
             let s = slf.borrow();
             let dt = crate::dlpack::dtype_to_dl(s.dtype);
             let data = s.backing.data_ptr() as *mut std::ffi::c_void;
             let shape: Vec<i64> = s.shape.iter().map(|&d| d as i64).collect();
-            (data, shape, dt)
+            let readonly = s.backing.readonly();
+            (data, shape, dt, readonly)
         };
         // Build the export with `slf` as the keep-alive.
         // The `ImageExport` owns a `Py<PyAny>` handle that keeps the Image alive
@@ -3157,12 +3158,16 @@ impl PyImageApi {
             dtype: dt,
         };
         use dlpack_rs::pyo3_glue::IntoDLPack;
-        // If the consumer supports DLPack v1.0+, return a versioned capsule with
-        // flags=0 (mutable). This prevents NumPy 2.x from marking the array
-        // read-only (which it does for all legacy "dltensor" capsules because the
-        // old format has no flags field to express writability).
+        // If the consumer supports DLPack v1.0+, return a versioned capsule.
+        // Set DLPACK_FLAG_BITMASK_READ_ONLY when the backing is read-only so that
+        // compliant consumers (NumPy 2.x, PyTorch ≥2) honour the immutability.
+        let flags: u64 = if readonly {
+            dlpack_rs::ffi::DLPACK_FLAG_BITMASK_READ_ONLY
+        } else {
+            0
+        };
         let capsule = if max_version.is_some_and(|(maj, _)| maj >= 1) {
-            export.into_capsule_versioned(py, 0 /* flags: mutable */)?
+            export.into_capsule_versioned(py, flags)?
         } else {
             export.into_capsule(py)?
         };
@@ -3262,7 +3267,7 @@ impl PyImageApi {
     /// - dtype must be `uint8`, `uint16`, or `float32`; raises `ValueError` otherwise.
     /// - Channel count `C` must be in `{1, 3, 4}`; raises `ValueError` otherwise.
     #[staticmethod]
-    fn from_dlpack(_py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Self> {
+    fn from_dlpack(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Self> {
         use dlpack_rs::ffi::{DLManagedTensor, DLManagedTensorVersioned};
         use pyo3::types::{PyCapsule, PyCapsuleMethods};
         use std::ffi::CStr;
@@ -3286,12 +3291,27 @@ impl PyImageApi {
         // still holds it — undefined behaviour.  Renaming disables the destructor path
         // and transfers lifetime management to `obj` exclusively.
 
-        // 1. Call `obj.__dlpack__()` to get the capsule.
-        let capsule_obj = obj.call_method0("__dlpack__").map_err(|_| {
-            pyo3::exceptions::PyTypeError::new_err(
-                "from_dlpack: object does not implement __dlpack__()",
-            )
-        })?;
+        // 1. Call `obj.__dlpack__(max_version=(1,0))` to get the capsule.
+        //    Passing max_version lets compliant producers (NumPy ≥1.24, PyTorch ≥2.0) return
+        //    the versioned "dltensor_versioned" capsule, which carries the read-only flag.
+        //    Fall back to the no-arg call for pre-spec producers that reject the keyword.
+        let capsule_obj = {
+            let kwargs = pyo3::types::PyDict::new(py);
+            kwargs.set_item("max_version", (1u32, 0u32))?;
+            obj.call_method("__dlpack__", (), Some(&kwargs))
+                .or_else(|e| {
+                    if e.is_instance_of::<pyo3::exceptions::PyTypeError>(py) {
+                        obj.call_method0("__dlpack__")
+                    } else {
+                        Err(e)
+                    }
+                })
+                .map_err(|_| {
+                    pyo3::exceptions::PyTypeError::new_err(
+                        "from_dlpack: object does not implement __dlpack__()",
+                    )
+                })?
+        };
 
         // 2. Downcast to PyCapsule.
         let capsule: pyo3::Bound<'_, PyCapsule> = capsule_obj.cast_into()?;
@@ -3380,6 +3400,15 @@ impl PyImageApi {
         }
 
         // 6. Resolve shape: ndim 2 → (H, W, 1), ndim 3 → (H, W, C).
+        //    Reject non-positive dimensions before casting to usize — a negative i64
+        //    wraps to usize::MAX and bypasses all subsequent size checks.
+        for (i, &d) in raw_shape.iter().enumerate() {
+            if d <= 0 {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "from_dlpack: shape dimension {i} must be positive, got {d}"
+                )));
+            }
+        }
         let shape_hwc = match ndim {
             2 => [raw_shape[0] as usize, raw_shape[1] as usize, 1],
             3 => [
@@ -3408,6 +3437,13 @@ impl PyImageApi {
         }
 
         // 9. Compute effective data pointer (with byte_offset).
+        //    Null check must happen BEFORE adding byte_offset: null+nonzero produces a
+        //    non-null address that would pass the NonNull guard (same guard as kornia-tensor).
+        if data_raw.is_null() {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "from_dlpack: tensor has null data pointer",
+            ));
+        }
         let byte_offset_usize = usize::try_from(byte_offset).map_err(|_| {
             pyo3::exceptions::PyValueError::new_err(
                 "from_dlpack: byte_offset does not fit in usize on this platform",
@@ -3421,9 +3457,8 @@ impl PyImageApi {
                 )
             })? as *mut u8;
 
-        let ptr = std::ptr::NonNull::new(base).ok_or_else(|| {
-            pyo3::exceptions::PyValueError::new_err("from_dlpack: tensor has null data pointer")
-        })?;
+        let ptr = std::ptr::NonNull::new(base)
+            .expect("from_dlpack: base pointer is null after adding byte_offset (unreachable)");
 
         // 10. Build the Image with the PRODUCER as keep-alive.
         //

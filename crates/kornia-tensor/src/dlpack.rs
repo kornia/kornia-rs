@@ -112,6 +112,8 @@ pub enum DlpackError {
     NullPointer,
     /// Integer overflow computing element count or byte length from the shape.
     Overflow,
+    /// A shape dimension is zero or negative.
+    NegativeDimension,
     /// Allocation error forwarded from the storage layer.
     TensorError(TensorError),
 }
@@ -126,6 +128,7 @@ impl core::fmt::Display for DlpackError {
             Self::NotContiguous => write!(f, "tensor is not C-contiguous"),
             Self::NullPointer => write!(f, "null data pointer in DLManagedTensor"),
             Self::Overflow => write!(f, "integer overflow computing tensor size from shape"),
+            Self::NegativeDimension => write!(f, "shape dimension must be positive"),
             Self::TensorError(e) => write!(f, "tensor error: {e}"),
         }
     }
@@ -223,6 +226,11 @@ where
     // Read shape.
     // SAFETY: dl.shape is valid for dl.ndim elements (caller contract + DLPack spec).
     let shape_slice = unsafe { std::slice::from_raw_parts(dl.shape, N) };
+    for &d in shape_slice {
+        if d <= 0 {
+            return Err(DlpackError::NegativeDimension);
+        }
+    }
     let shape: [usize; N] = std::array::from_fn(|i| shape_slice[i] as usize);
 
     // Compute byte length with checked arithmetic to guard against hostile/corrupt shapes.
