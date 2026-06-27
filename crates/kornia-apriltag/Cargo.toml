@@ -11,6 +11,11 @@ repository = { workspace = true }
 rust-version = { workspace = true }
 version = { workspace = true }
 
+[[test]]
+name = "parity"
+path = "tests/parity.rs"
+harness = true
+
 [[bench]]
 harness = false
 name = "bench_decoding"
