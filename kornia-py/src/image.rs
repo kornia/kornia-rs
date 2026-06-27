@@ -3408,8 +3408,13 @@ impl PyImageApi {
         }
 
         // 9. Compute effective data pointer (with byte_offset).
+        let byte_offset_usize = usize::try_from(byte_offset).map_err(|_| {
+            pyo3::exceptions::PyValueError::new_err(
+                "from_dlpack: byte_offset does not fit in usize on this platform",
+            )
+        })?;
         let base = (data_raw as usize)
-            .checked_add(byte_offset as usize)
+            .checked_add(byte_offset_usize)
             .ok_or_else(|| {
                 pyo3::exceptions::PyValueError::new_err(
                     "from_dlpack: byte_offset overflow on data_ptr",

@@ -59,9 +59,15 @@ impl Drop for ImageExport {
         // The DLPack consumer's deleter may run off-GIL (e.g. from a PyTorch
         // worker thread), so we must re-acquire it before touching the refcount.
         let keepalive = unsafe { std::mem::ManuallyDrop::take(&mut self.keepalive) };
-        Python::attach(|_py| {
-            drop(keepalive);
-        });
+        // During `Py_FinalizeEx`, torch may call our capsule destructor after
+        // `Py_IsInitialized()` has returned 0. `Python::attach` asserts the
+        // interpreter is alive, so it would panic. Instead, forget the handle:
+        // CPython will reclaim everything during finalization regardless.
+        if unsafe { pyo3::ffi::Py_IsInitialized() } != 0 {
+            Python::attach(|_py| drop(keepalive));
+        } else {
+            std::mem::forget(keepalive);
+        }
     }
 }
 
