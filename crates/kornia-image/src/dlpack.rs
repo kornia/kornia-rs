@@ -167,7 +167,7 @@ where
         })?;
 
     // 9. Map device.
-    let (domain, device_id) = if dl.device.device_type == K_DL_CPU {
+    let (domain, _device_id) = if dl.device.device_type == K_DL_CPU {
         (MemoryDomain::Host, 0i32)
     } else {
         (
@@ -184,17 +184,10 @@ where
 
     // 11. Build storage with kornia-image's ForeignAllocator (no-op dealloc).
     // SAFETY: data pointer is valid for len_bytes (caller contract); keepalive keeps
-    // the source alive; domain+device_id correctly reflect the DLDevice.
+    // the source alive; domain correctly reflects the DLDevice.
     let data_ptr = unsafe { (dl.data as *const u8).add(byte_offset) as *const T };
     let storage = unsafe {
-        TensorStorage::from_borrowed(
-            data_ptr,
-            len_bytes,
-            ForeignAllocator,
-            domain,
-            device_id,
-            keepalive,
-        )
+        TensorStorage::from_borrowed(data_ptr, len_bytes, ForeignAllocator, domain, keepalive)
     };
 
     // 12. Build Tensor<T, 3, ForeignAllocator>.

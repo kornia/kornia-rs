@@ -218,15 +218,15 @@ where
         .checked_mul(std::mem::size_of::<T>())
         .ok_or(DlpackError::Overflow)?;
 
-    // Map device.
-    let (domain, device_id) = map_dl_device(dl.device);
+    // Map device (the device id is encoded in the returned domain).
+    let (domain, _) = map_dl_device(dl.device);
 
     // Convert byte_offset safely: u64 -> usize (fails on 32-bit if value > usize::MAX).
     let byte_offset = usize::try_from(dl.byte_offset).map_err(|_| DlpackError::Overflow)?;
 
     // Build storage (borrowed, no dealloc).
     // SAFETY: data pointer is valid for len_bytes (caller contract), keepalive keeps
-    // the source alive, domain+device_id correctly reflect the DLDevice.
+    // the source alive, domain correctly reflects the DLDevice.
     let data_ptr = unsafe { (dl.data as *const u8).add(byte_offset) as *const T };
     let storage = unsafe {
         crate::storage::TensorStorage::from_borrowed(
@@ -234,7 +234,6 @@ where
             len_bytes,
             ForeignAllocator,
             domain,
-            device_id,
             keepalive,
         )
     };
