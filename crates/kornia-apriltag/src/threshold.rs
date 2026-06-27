@@ -3,6 +3,86 @@ use crate::utils::{find_full_tiles, Pixel, Point2d};
 use crate::{errors::AprilTagError, iter::TileIterator};
 use kornia_image::{allocator::ImageAllocator, Image, ImageError, ImageSize};
 
+/// Fills `tile_min` and `tile_max` for all full tiles in row-major order.
+///
+/// **Batch-of-4-tiles strategy for tile_size=4 (the common case):**
+/// 16 consecutive image pixels (= 4 side-by-side tiles) fit in one NEON q-register,
+/// so each `vld1q_u8` processes a whole row of 4 tiles with no gather overhead.
+/// After accumulating `tile_size` rows we apply two rounds of `vpminq_u8`/`vpmaxq_u8`
+/// to reduce the 16-lane register into 4 per-tile scalars (lanes 0-3).
+///
+/// # Safety
+/// Caller must ensure `tiles_y * tile_size * img_width + tiles_x * tile_size ≤ img_data.len()`.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn fill_tile_stats_neon(
+    img_data: &[u8],
+    img_width: usize,
+    tile_size: usize,
+    tiles_x: usize,
+    tiles_y: usize,
+    tile_min: &mut [u8],
+    tile_max: &mut [u8],
+) {
+    use std::arch::aarch64::*;
+
+    for tile_y in 0..tiles_y {
+        let mut tile_x = 0usize;
+
+        // Fast path: consume 4 tile-columns at a time using 16-byte contiguous loads.
+        // One q-register covers exactly 4 consecutive tiles (4 columns × tile_size=4 pixels).
+        while tile_size == 4 && tile_x + 4 <= tiles_x {
+            // Accumulate row-min/max across tile_size rows for all 4 tiles simultaneously.
+            let mut vmin = vdupq_n_u8(255);
+            let mut vmax = vdupq_n_u8(0);
+
+            for row in 0..tile_size {
+                let offset = (tile_y * tile_size + row) * img_width + tile_x * tile_size;
+                let v = vld1q_u8(img_data.as_ptr().add(offset));
+                vmin = vminq_u8(vmin, v);
+                vmax = vmaxq_u8(vmax, v);
+            }
+
+            // Two rounds of pairwise-min collapse 16 lanes into 4 per-tile minima.
+            // Round 1: [min(px0,px1), min(px2,px3), min(px4,px5), ..., (repeat 8..15)]
+            // Round 2: [min(px0..3), min(px4..7), min(px8..11), min(px12..15), ...]
+            vmin = vpminq_u8(vmin, vmin);
+            vmin = vpminq_u8(vmin, vmin);
+            vmax = vpmaxq_u8(vmax, vmax);
+            vmax = vpmaxq_u8(vmax, vmax);
+
+            let base = tile_y * tiles_x + tile_x;
+            tile_min[base] = vgetq_lane_u8::<0>(vmin);
+            tile_min[base + 1] = vgetq_lane_u8::<1>(vmin);
+            tile_min[base + 2] = vgetq_lane_u8::<2>(vmin);
+            tile_min[base + 3] = vgetq_lane_u8::<3>(vmin);
+            tile_max[base] = vgetq_lane_u8::<0>(vmax);
+            tile_max[base + 1] = vgetq_lane_u8::<1>(vmax);
+            tile_max[base + 2] = vgetq_lane_u8::<2>(vmax);
+            tile_max[base + 3] = vgetq_lane_u8::<3>(vmax);
+
+            tile_x += 4;
+        }
+
+        // Scalar tail: remaining tile columns (< 4 when tiles_x % 4 != 0, or tile_size != 4).
+        while tile_x < tiles_x {
+            let idx = tile_y * tiles_x + tile_x;
+            let mut local_min = 255u8;
+            let mut local_max = 0u8;
+            for row in 0..tile_size {
+                let row_start = (tile_y * tile_size + row) * img_width + tile_x * tile_size;
+                for &px in &img_data[row_start..row_start + tile_size] {
+                    local_min = local_min.min(px);
+                    local_max = local_max.max(px);
+                }
+            }
+            tile_min[idx] = local_min;
+            tile_max[idx] = local_max;
+            tile_x += 1;
+        }
+    }
+}
+
 /// Stores the minimum and maximum pixel values for each tile for [adaptive_threshold]
 ///
 /// The tiles are indexed in row-major order, i.e., tile IDs increase first along the x-axis (columns),
@@ -32,6 +112,56 @@ impl TileMinMax {
             min: vec![0; num_tiles],
             max: vec![0; num_tiles],
             tile_size,
+        }
+    }
+
+    /// Fills `self.min` and `self.max` by scanning every full tile in `src`.
+    ///
+    /// On AArch64 uses NEON with a batch-of-4-tiles fast path (tile_size=4); falls back to
+    /// scalar on other targets.
+    pub fn compute<A: ImageAllocator>(&mut self, src: &Image<u8, 1, A>) {
+        let img_data = src.as_slice();
+        let img_width = src.width();
+        let tile_size = self.tile_size;
+        let tiles_x = img_width / tile_size;
+        let tiles_y = src.height() / tile_size;
+
+        #[cfg(target_arch = "aarch64")]
+        {
+            // SAFETY: tiles_x/tiles_y computed from floor division, so all tile accesses are
+            // within img_data bounds.
+            unsafe {
+                fill_tile_stats_neon(
+                    img_data,
+                    img_width,
+                    tile_size,
+                    tiles_x,
+                    tiles_y,
+                    &mut self.min,
+                    &mut self.max,
+                );
+            }
+            return;
+        }
+
+        // Scalar fallback (non-aarch64 targets, e.g. x86 CI).
+        #[allow(unreachable_code)]
+        for tile_y in 0..tiles_y {
+            for tile_x in 0..tiles_x {
+                let idx = tile_y * tiles_x + tile_x;
+                let mut local_min = 255u8;
+                let mut local_max = 0u8;
+                for row in 0..tile_size {
+                    let row_start =
+                        (tile_y * tile_size + row) * img_width + tile_x * tile_size;
+                    for &px in &img_data[row_start..row_start + tile_size] {
+                        local_min = local_min.min(px);
+                        local_max = local_max.max(px);
+                    }
+                }
+                self.min[idx] = local_min;
+                self.max[idx] = local_max;
+            }
         }
     }
 
@@ -199,7 +329,6 @@ pub fn adaptive_threshold<A1: ImageAllocator, A2: ImageAllocator>(
         return Err(AprilTagError::InvalidImageSize);
     }
 
-    let tile_iterator = TileIterator::from_image(src, tile_min_max.tile_size)?;
     let tiles_full_len = find_full_tiles(src.size(), tile_min_max.tile_size);
 
     if tile_min_max.min.len() != tiles_full_len.x * tiles_full_len.y {
@@ -210,31 +339,9 @@ pub fn adaptive_threshold<A1: ImageAllocator, A2: ImageAllocator>(
 
     let dst_data = dst.as_slice_mut();
 
-    // Calculate extrema (i.e. min & max grayscale value) of each tile
-    tile_iterator.for_each(|tile| {
-        let ImageTile::FullTile(tile) = tile else {
-            // Skip non-full tiles
-            return;
-        };
-
-        let mut local_min = 255;
-        let mut local_max = 0;
-
-        for row in tile.data {
-            for px in row {
-                if px < &local_min {
-                    local_min = *px;
-                }
-
-                if px > &local_max {
-                    local_max = *px;
-                }
-            }
-        }
-
-        tile_min_max.min[tile.full_index] = local_min;
-        tile_min_max.max[tile.full_index] = local_max;
-    });
+    // Calculate extrema (min/max grayscale value) of each tile.
+    // Uses NEON on aarch64, scalar elsewhere.
+    tile_min_max.compute(src);
 
     // Binarize the image
     TileIterator::from_image(src, tile_min_max.tile_size)?.for_each(|tile| {
