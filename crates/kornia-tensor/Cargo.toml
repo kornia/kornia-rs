@@ -48,11 +48,11 @@ serde_json = { workspace = true }
 
 [features]
 bincode = ["dep:bincode"]
-dlpack = ["dep:dlpack-rs"]
 # cudarc device-memory integration — default OFF.
 # Enables CudaResource / CudaAllocator and Tensor::to_cuda / to_host etc.
 # Verify absence: `cargo tree -p kornia-tensor -e features | grep -i cudarc`
 cudarc = ["dep:cudarc"]
+dlpack = ["dep:dlpack-rs"]
 gpu = []
 gpu-cubecl = ["dep:cubecl-core", "dep:cubecl-cuda", "dep:cudarc", "gpu"]
 serde = ["dep:serde"]
