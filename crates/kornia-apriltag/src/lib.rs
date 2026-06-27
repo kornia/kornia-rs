@@ -7,10 +7,8 @@ use kornia_image::{
     allocator::{CpuAllocator, ImageAllocator},
     Image, ImageSize,
 };
-use kornia_imgproc::resize::resize_fast_mono;
-
 use crate::{
-    decoder::{decode_tags, Detection, GrayModelPair},
+    decoder::{decode_tags, Detection},
     errors::AprilTagError,
     family::{TagFamily, TagFamilyKind},
     quad::{fit_quads, FitQuadConfig},
@@ -147,6 +145,24 @@ impl DecodeTagsConfig {
     }
 }
 
+/// Stride-based decimation matching C's `image_u8_decimate` (top-left pixel of each factor×factor block).
+fn stride_decimate<A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<u8, 1, A1>,
+    dst: &mut Image<u8, 1, A2>,
+    factor: usize,
+) {
+    let src_w = src.width();
+    let dst_w = dst.width();
+    let dst_h = dst.height();
+    let src_data = src.as_slice();
+    let dst_data = dst.as_slice_mut();
+    for sy in 0..dst_h {
+        for sx in 0..dst_w {
+            dst_data[sy * dst_w + sx] = src_data[(sy * factor) * src_w + sx * factor];
+        }
+    }
+}
+
 /// Decoder for AprilTag detection and decoding.
 pub struct AprilTagDecoder {
     config: DecodeTagsConfig,
@@ -156,7 +172,6 @@ pub struct AprilTagDecoder {
     tile_min_max: TileMinMax,
     uf: UnionFind,
     clusters: FxHashMap<(usize, usize), Vec<GradientInfo>>,
-    gray_model_pair: GrayModelPair,
 }
 
 impl AprilTagDecoder {
@@ -189,9 +204,10 @@ impl AprilTagDecoder {
         let (img_size, downscale_img) = if config.downscale_factor <= 1 {
             (img_size, None)
         } else {
+            // Match C's image_u8_decimate: swidth = 1 + (w-1)/factor (ceiling division).
             let new_size = ImageSize {
-                width: img_size.width / config.downscale_factor,
-                height: img_size.height / config.downscale_factor,
+                width: 1 + (img_size.width - 1) / config.downscale_factor,
+                height: 1 + (img_size.height - 1) / config.downscale_factor,
             };
 
             (
@@ -223,7 +239,6 @@ impl AprilTagDecoder {
             tile_min_max,
             uf,
             clusters: FxHashMap::default(),
-            gray_model_pair: GrayModelPair::new(),
         })
     }
 
@@ -241,16 +256,13 @@ impl AprilTagDecoder {
     ///
     /// If you are running this method multiple times on the same decoder instance,
     /// you should call [`AprilTagDecoder::clear`] between runs to reset internal state.
-    pub fn decode<A: ImageAllocator>(
+    pub fn decode<A: ImageAllocator + Sync>(
         &mut self,
         src: &Image<u8, 1, A>,
     ) -> Result<Vec<Detection>, AprilTagError> {
         if let Some(downscale_img) = self.downscale_img.as_mut() {
-            resize_fast_mono(
-                src,
-                downscale_img,
-                kornia_imgproc::interpolation::InterpolationMode::Nearest,
-            )?;
+            // Stride-based subsample matching C's image_u8_decimate: dst[sy][sx] = src[sy*f][sx*f].
+            stride_decimate(src, downscale_img, self.config.downscale_factor);
 
             // Step 1: Adaptive Threshold
             adaptive_threshold(
@@ -284,10 +296,9 @@ impl AprilTagDecoder {
         Ok(decode_tags(
             src,
             &mut quads,
-            &mut self.cached_families,
+            &self.cached_families,
             self.config.refine_edges_enabled,
             self.config.decode_sharpening,
-            &mut self.gray_model_pair,
             refine_edges_range,
         ))
     }
@@ -296,7 +307,6 @@ impl AprilTagDecoder {
     pub fn clear(&mut self) {
         self.uf.reset();
         self.clusters.clear();
-        self.gray_model_pair.reset();
     }
 
     /// Returns a slice of tag families configured for detection.

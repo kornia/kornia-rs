@@ -1,5 +1,8 @@
 use std::{f32::consts::PI, ops::ControlFlow};
 
+use rayon::prelude::*;
+use rustc_hash::FxHashMap;
+
 use crate::{
     errors::AprilTagError,
     family::{TagFamily, TagFamilyKind},
@@ -376,82 +379,98 @@ impl SharpeningBuffer {
 ///
 /// * `src` - Reference to the grayscale source image.
 /// * `quads` - Mutable slice of detected quadrilaterals to process.
-/// * `tag_families` - Mutable slice of pre built tag family pairs.
+/// * `tag_families` - Slice of pre-built tag family pairs.
 /// * `refine_edges_enabled` - Edge refinement before decoding.
 /// * `decode_sharpening` - Sharpening factor applied during decoding.
-/// * `gray_model_pair` - Mutable reference to a pair of grayscale models for white and black regions.
+/// * `refine_edges_range` - The search range used for edge refinement.
 ///
 /// # Returns
 ///
 /// Returns a vector of `Detection` containing information about each successfully decoded tag.
-pub fn decode_tags<A: ImageAllocator>(
+pub fn decode_tags<A: ImageAllocator + Sync>(
     src: &Image<u8, 1, A>,
     quads: &mut [Quad],
-    tag_families: &mut [(TagFamilyKind, TagFamily)],
+    tag_families: &[(TagFamilyKind, TagFamily)],
     refine_edges_enabled: bool,
     decode_sharpening: f32,
-    gray_model_pair: &mut GrayModelPair,
     refine_edges_range: f32,
 ) -> Vec<Detection> {
-    let mut detections = Vec::new();
-
-    quads.iter_mut().for_each(|quad| {
-        if refine_edges_enabled {
-            refine_edges(src, quad, refine_edges_range);
-        }
-
-        if !quad.update_homographies() {
-            return;
-        }
-
-        tag_families.iter_mut().for_each(|(kind, family)| {
-            if family.reversed_border != quad.reversed_border {
-                return;
+    let raw: Vec<(usize, Detection)> = quads
+        .par_iter_mut()
+        .flat_map_iter(|quad| {
+            if refine_edges_enabled {
+                refine_edges(src, quad, refine_edges_range);
             }
 
-            let mut entry = QuickDecodeEntry::default();
+            if !quad.update_homographies() {
+                return Vec::new();
+            }
 
-            let decision_margin = quad_decode(
-                src,
-                family,
-                quad,
-                decode_sharpening,
-                &mut entry,
-                gray_model_pair,
-            );
+            let mut gmp = GrayModelPair::new();
+            let mut local: Vec<(usize, Detection)> = Vec::new();
 
-            if let Some(decision_margin) = decision_margin {
-                if decision_margin >= 0.0 && entry.hamming < u8::MAX {
-                    let theta = entry.rotation as f32 * PI / 2.0;
-                    let c = theta.cos();
-                    let s = theta.sin();
+            for (fidx, (kind, family)) in tag_families.iter().enumerate() {
+                if family.reversed_border != quad.reversed_border {
+                    continue;
+                }
 
-                    // Fix the rotation of our homography to properly orient the tag
-                    let r = Mat3F32::from_cols_array(&[
-                        c, s, 0.0, // col 0
-                        -s, c, 0.0, // col 1
-                        0.0, 0.0, 1.0, // col 2
-                    ]);
+                gmp.reset();
+                let mut entry = QuickDecodeEntry::default();
 
-                    quad.homography *= r;
-                    let center = quad.homography_project(0.0, 0.0);
+                let decision_margin =
+                    quad_decode(src, family, quad, decode_sharpening, &mut entry, &mut gmp);
 
-                    let detection = Detection {
-                        tag_family_kind: kind.clone(),
-                        id: entry.id,
-                        hamming: entry.hamming,
-                        decision_margin,
-                        center,
-                        quad: std::mem::take(quad),
-                    };
+                if let Some(decision_margin) = decision_margin {
+                    if decision_margin >= 0.0 && entry.hamming < u8::MAX {
+                        let theta = entry.rotation as f32 * PI / 2.0;
+                        let c = theta.cos();
+                        let s = theta.sin();
 
-                    detections.push(detection);
+                        let r = Mat3F32::from_cols_array(&[
+                            c, s, 0.0, -s, c, 0.0, 0.0, 0.0, 1.0,
+                        ]);
+
+                        let mut quad_clone = quad.clone();
+                        quad_clone.homography *= r;
+                        let center = quad_clone.homography_project(0.0, 0.0);
+
+                        local.push((
+                            fidx,
+                            Detection {
+                                tag_family_kind: kind.clone(),
+                                id: entry.id,
+                                hamming: entry.hamming,
+                                decision_margin,
+                                center,
+                                quad: quad_clone,
+                            },
+                        ));
+                    }
                 }
             }
-        });
-    });
 
-    detections
+            local
+        })
+        .collect();
+
+    // Dedup: keep best (lowest hamming, then highest decision_margin) per (family_idx, tag_id)
+    let mut best: FxHashMap<(usize, u16), Detection> = FxHashMap::default();
+    for (fidx, d) in raw {
+        let key = (fidx, d.id);
+        match best.get_mut(&key) {
+            None => {
+                best.insert(key, d);
+            }
+            Some(prev) => {
+                if d.hamming < prev.hamming
+                    || (d.hamming == prev.hamming && d.decision_margin > prev.decision_margin)
+                {
+                    *prev = d;
+                }
+            }
+        }
+    }
+    best.into_values().collect()
 }
 
 /// Refines the edges of a quadrilateral in the image by adjusting its corners based on local image gradients.
@@ -631,14 +650,13 @@ fn refine_edges<A: ImageAllocator>(src: &Image<u8, 1, A>, quad: &mut Quad, range
 /// * `decode_sharpening` - Sharpening factor applied during decoding.
 /// * `entry` - Mutable reference to a `QuickDecodeEntry` to store the decoding result.
 /// * `gray_model_pair` - A mutable reference to a `GrayModelPair`.
-/// * `sharpening_buffer` - A mutable reference to a `SharpeningBuffer`.
 ///
 /// # Returns
 ///
 /// Returns `Some(f32)` containing the decision margin if decoding is successful, or `None` otherwise.
 fn quad_decode<A: ImageAllocator>(
     src: &Image<u8, 1, A>,
-    tag_family: &mut TagFamily,
+    tag_family: &TagFamily,
     quad: &Quad,
     decode_sharpening: f32,
     entry: &mut QuickDecodeEntry,
@@ -728,6 +746,8 @@ fn quad_decode<A: ImageAllocator>(
     ];
 
     let src_slice = src.as_slice();
+    let mut sharpening_buffer =
+        SharpeningBuffer::new(tag_family.total_width * tag_family.total_width);
 
     patterns.iter().for_each(|pattern| {
         (0..tag_family.width_at_border).for_each(|i| {
@@ -806,14 +826,14 @@ fn quad_decode<A: ImageAllocator>(
             + gray_model_pair.white_model.interpolate(tag_x, tag_y))
             / 2.0;
 
-        tag_family.sharpening_buffer.values[(tag_family.total_width as isize
+        sharpening_buffer.values[(tag_family.total_width as isize
             * (bit_y as isize - min_coord)
             + bit_x as isize
             - min_coord) as usize] = v - thresh;
     });
 
     sharpen(
-        &mut tag_family.sharpening_buffer,
+        &mut sharpening_buffer,
         decode_sharpening,
         tag_family.total_width,
     );
@@ -825,7 +845,7 @@ fn quad_decode<A: ImageAllocator>(
 
         rcode <<= 1;
 
-        let v = tag_family.sharpening_buffer.values[((bit_y as isize - min_coord)
+        let v = sharpening_buffer.values[((bit_y as isize - min_coord)
             * tag_family.total_width as isize
             + bit_x as isize
             - min_coord) as usize];
@@ -839,9 +859,6 @@ fn quad_decode<A: ImageAllocator>(
             black_score_count += 1;
         }
     });
-
-    // Reset the Sharpening Buffer for the next iteration
-    tag_family.sharpening_buffer.reset();
 
     quick_decode_codeword(tag_family, rcode, entry);
 
@@ -982,8 +999,6 @@ mod tests {
         let mut bin = Image::from_size_val(src.size(), Pixel::Skip, CpuAllocator)?;
         let mut tile_min_max = TileMinMax::new(bin.size(), 4);
         let mut uf = UnionFind::new(bin.as_slice().len());
-        let mut gray_model_pair = GrayModelPair::default();
-
         adaptive_threshold(&src, &mut bin, &mut tile_min_max, 20)?;
         find_connected_components(&bin, &mut uf)?;
         let mut clusters = find_gradient_clusters(&bin, &uf);
@@ -997,7 +1012,7 @@ mod tests {
             }
         }
 
-        let mut tag_families: Vec<(TagFamilyKind, TagFamily)> = config
+        let tag_families: Vec<(TagFamilyKind, TagFamily)> = config
             .tag_families
             .iter()
             .filter_map(|kind| {
@@ -1012,10 +1027,9 @@ mod tests {
         let tags = decode_tags(
             &src,
             &mut quads,
-            &mut tag_families,
+            &tag_families,
             config.refine_edges_enabled,
             config.decode_sharpening,
-            &mut gray_model_pair,
             refine_edges_range,
         );
 
@@ -1167,7 +1181,7 @@ mod tests {
 
     #[test]
     fn test_quad_decode() -> Result<(), Box<dyn std::error::Error>> {
-        let mut tag_family = TagFamily::tag36_h11()?;
+        let tag_family = TagFamily::tag36_h11()?;
         let src = read_image_png_mono8("../../tests/data/apriltag.png")?;
 
         let quad = Quad {
@@ -1190,7 +1204,7 @@ mod tests {
 
         let d = quad_decode(
             &src,
-            &mut tag_family,
+            &tag_family,
             &quad,
             0.25,
             &mut entry,
