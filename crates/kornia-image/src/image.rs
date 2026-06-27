@@ -1,4 +1,7 @@
-use crate::{allocator::ImageAllocator, error::ImageError};
+use crate::{
+    allocator::{CpuAllocator, ImageAllocator},
+    error::ImageError,
+};
 use kornia_tensor::{Tensor, Tensor2, Tensor3};
 use rayon::prelude::*;
 
@@ -36,6 +39,21 @@ pub enum PixelFormat {
     U16,
     /// 32-bit floating point pixels.
     F32,
+}
+
+impl PixelFormat {
+    /// Returns the size in bytes of a single element for this pixel format.
+    ///
+    /// - [`PixelFormat::U8`] → 1
+    /// - [`PixelFormat::U16`] → 2
+    /// - [`PixelFormat::F32`] → 4
+    pub const fn element_size(self) -> usize {
+        match self {
+            PixelFormat::U8 => 1,
+            PixelFormat::U16 => 2,
+            PixelFormat::F32 => 4,
+        }
+    }
 }
 
 /// Interpolation mode for the image operations
@@ -118,7 +136,7 @@ impl ImageSize {
 /// Represents an image with pixel data.
 ///
 /// The image is represented as a 3D Tensor with shape (H, W, C), where H is the height of the image,
-pub struct Image<T, const C: usize, A: ImageAllocator>(pub Tensor3<T, A>);
+pub struct Image<T, const C: usize, A: ImageAllocator = CpuAllocator>(pub Tensor3<T, A>);
 
 /// helper to deference the inner tensor
 impl<T, const C: usize, A: ImageAllocator> std::ops::Deref for Image<T, C, A> {

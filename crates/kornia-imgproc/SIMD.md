@@ -42,6 +42,96 @@ The `cfg(target_arch)` gates let the compiler dead-code-eliminate branches per b
 
 - **Single-op kernels** (e.g. `normalize_rgb_u8`): co-located in the op's module (`normalize.rs`). Public entry + `fn _scalar` + `unsafe fn _neon` / `unsafe fn _avx2`.
 - **Shared row-level kernels** (used by multiple algos, e.g. `pyrdown_row_rgb_u8`, `horizontal_row_rgb_u8`): `src/resize/kernels.rs` or `src/warp/kernels.rs`. Dispatcher is `#[inline(always)]` so call-site `cfg` branches collapse.
+- **Multi-dtype ops** (same semantic op with different SIMD kernels per pixel type, e.g. RGB→gray for `u8`/`f32`/`f64`): promote the module to a **subdir** — `<op>/mod.rs` + `<op>/kernels.rs` — and wire dtype dispatch through a sealed trait. See `color/gray/` as the canonical example.
+
+#### Submodule layout for multi-dtype SIMD ops
+
+When an op has meaningfully different SIMD kernels per dtype (not just a cast wrapper), split the module into a directory that mirrors `filter/`, `warp/`, `resize/`, and `morphology/`:
+
+```
+color/gray/
+  mod.rs      — public Image-typed API + sealed trait impls + thin compat wrappers
+  kernels.rs  — constants, par_strip_dispatch, slice-level dispatchers,
+                NEON/AVX2/scalar kernels (all private except pub slice fns)
+```
+
+`color/mod.rs` keeps `mod gray;` unchanged — Rust resolves it to `gray/mod.rs` automatically.
+
+#### Dtype dispatch: sealed trait
+
+Use a **sealed trait** to route a single `my_op<T>` entry point to the right kernel at compile time with zero runtime cost:
+
+```rust
+// mod.rs
+mod sealed { pub trait Sealed {} }
+
+pub trait GrayFromRgb: sealed::Sealed + Sized {
+    #[doc(hidden)]
+    fn gray_from_rgb_impl<A1: ImageAllocator, A2: ImageAllocator>(
+        src: &Image<Self, 3, A1>,
+        dst: &mut Image<Self, 1, A2>,
+    ) -> Result<(), ImageError>;
+}
+
+impl sealed::Sealed for u8 {}
+impl GrayFromRgb for u8 {
+    fn gray_from_rgb_impl<A1, A2>(src: &Image<u8, 3, A1>, dst: &mut Image<u8, 1, A2>)
+        -> Result<(), ImageError> where A1: ImageAllocator, A2: ImageAllocator
+    {
+        check_size(src, dst)?;
+        kernels::rgb_to_gray_u8(src.as_slice(), dst.as_slice_mut(), src.rows() * src.cols());
+        Ok(())
+    }
+}
+// impl for f32 → kernels::rgb_to_gray_f32 (NEON/AVX2+FMA)
+// impl for f64 → portable scalar
+
+pub fn gray_from_rgb<T: GrayFromRgb, A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<T, 3, A1>,
+    dst: &mut Image<T, 1, A2>,
+) -> Result<(), ImageError> {
+    T::gray_from_rgb_impl(src, dst)
+}
+```
+
+Rules:
+- `mod sealed { pub trait Sealed {} }` prevents external impls — callers can use the trait as a bound but cannot add new implementations.
+- Name the hidden method `<fn>_impl` and mark it `#[doc(hidden)]`.
+- Explicitly list each supported type (`u8`, `f32`, `f64`). Do **not** use a blanket `impl<T: Float>` — it conflicts with concrete `impl for f32` (no stable specialization in Rust).
+- Keep backward-compat wrappers (`gray_from_rgb_u8`, `gray_from_rgb_f32`) as thin one-liners that call `gray_from_rgb`. Don't duplicate the size check or the kernel call.
+
+#### Shared size-check helper
+
+Extract the repeated `src.size() != dst.size()` boilerplate into a private `check_size` that works across const-generic channel counts:
+
+```rust
+#[inline]
+fn check_size<T, U, const C1: usize, const C2: usize, A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<T, C1, A1>,
+    dst: &Image<U, C2, A2>,
+) -> Result<(), ImageError> {
+    if src.size() != dst.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.cols(), src.rows(), dst.cols(), dst.rows(),
+        ));
+    }
+    Ok(())
+}
+```
+
+Call it at the top of every `*_impl` body and in `rgb_from_gray`. One definition eliminates copy-paste across every dtype impl.
+
+### Naming convention
+
+Public functions follow `<output_type>_from_<input_type>` — the **output comes first**:
+
+```
+gray_from_rgb       ✓       rgb_to_gray         ✗
+rgb_from_gray       ✓       gray_to_rgb         ✗
+bgr_from_rgb        ✓       rgb_to_bgr          ✗
+```
+
+This mirrors Rust's `From`/`Into` trait naming and makes the conversion direction unambiguous at every call site. The rule applies at every level — public Image API, slice-level fns, and internal `_kernel`/`_neon`/`_avx2`/`_scalar` leaves.
 
 ### Adding a new SIMD path
 
@@ -50,6 +140,7 @@ The `cfg(target_arch)` gates let the compiler dead-code-eliminate branches per b
 3. Add a correctness test that compares SIMD output to scalar on a PRNG-seeded batch. Max \|diff\| must be ≤ `1e-4` for f32 (FMA rounding) or bit-exact for integer kernels.
 4. Update the dispatcher.
 5. If it's a new shared kernel, add to `kernels.rs` and document per-arch feature requirements in the module header.
+6. If the op has different kernels per dtype, promote to `<op>/mod.rs` + `<op>/kernels.rs` and add a sealed-trait dispatcher (see pattern above).
 
 ---
 
@@ -265,9 +356,11 @@ Kill Ollama (`! sudo systemctl stop ollama`) before serious benching on the Jets
 | File | Role |
 |---|---|
 | `src/simd/mod.rs` | `CpuFeatures` + `cpu_features()` probe |
+| `src/color/gray/mod.rs` | **Canonical multi-dtype sealed-trait dispatch** — `GrayFromRgb` + single `gray_from_rgb<T>` entry |
+| `src/color/gray/kernels.rs` | **Canonical `mod.rs`/`kernels.rs` split** — `par_strip_dispatch`, u8 NEON/AVX2, f32 NEON/AVX2+FMA, scalar fallbacks |
 | `src/resize/kernels.rs` | Shared NEON kernels for resize (H pass, V pass, pyrdown, pyrup) |
 | `src/warp/kernels.rs` | Per-arch dispatch for warp_perspective's 4-wide recip |
-| `src/normalize.rs` | Only op with both NEON **and** AVX2 today (reference port) |
+| `src/normalize.rs` | Reference single-dtype op with both NEON and AVX2 |
 | `src/resize/fused.rs` | Canonical "fuse passes to halve memory traffic" pattern |
 | `.cargo/config.toml` | Cross-arch build + qemu runner configuration |
 | `examples/verify_normalize_avx2.rs` | Cross-arch correctness verification template |

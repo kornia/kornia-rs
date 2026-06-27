@@ -70,6 +70,15 @@ pub enum StreamCaptureError {
     #[error("Could not lock the mutex")]
     MutexPoisonError,
 
+    /// The mapped GStreamer buffer is smaller than the expected RGB frame size.
+    #[error("buffer size mismatch: expected {expected} bytes, got {got}")]
+    BufferSizeMismatch {
+        /// The number of bytes required for an RGB24 frame of the given dimensions.
+        expected: usize,
+        /// The actual number of bytes in the mapped GStreamer buffer.
+        got: usize,
+    },
+
     /// An error occurred when the image is not valid.
     #[error(transparent)]
     ImageError(#[from] kornia_image::ImageError),

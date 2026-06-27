@@ -5,7 +5,7 @@ use rand::prelude::*;
 use rand::rngs::StdRng;
 use std::cell::RefCell;
 
-use crate::image::{apply_brightness_sat, pyarray_data, PyImageApi, LUMINANCE_WEIGHTS};
+use crate::image::{apply_brightness_sat, PyImageApi, LUMINANCE_WEIGHTS};
 
 // Thread-local seeded RNG. `None` means "use the system entropy source".
 //
@@ -484,9 +484,9 @@ impl PyColorJitter {
 
         self.last_params = Some(Self::params_to_dict(py, b, c, s, h, &order)?);
 
-        let typed = img.require_u8("ColorJitter")?;
-        let bound = typed.bind(py);
-        let (src, height, width, channels) = pyarray_data(bound);
+        img.require_u8("ColorJitter")?;
+        let (height, width, channels) = img.shape_hwc();
+        let src = img.u8_elems();
         let npixels = height * width;
         let order_f32: Vec<(u8, f32)> = order.iter().map(|&(op, v)| (op, v as f32)).collect();
 
@@ -500,11 +500,7 @@ impl PyColorJitter {
             );
         });
 
-        Ok(PyImageApi::wrap(
-            py,
-            out_arr.unbind(),
-            Some(img.mode().to_string()),
-        ))
+        Ok(img.wrap_u8_result_pub(py, out_arr.unbind()))
     }
 
     fn __repr__(&self) -> String {
@@ -719,7 +715,7 @@ impl PyRandomCrop {
 
     /// Sample crop position. Requires the image to determine valid range.
     fn sample(&self, py: Python<'_>, img: PyRef<'_, PyImageApi>) -> PyResult<Py<PyDict>> {
-        let (x, y) = self.sample_pos(img.width(py), img.height(py))?;
+        let (x, y) = self.sample_pos(img.width(), img.height())?;
         Self::xy_dict(py, x, y)
     }
 
@@ -740,7 +736,7 @@ impl PyRandomCrop {
     ) -> PyResult<PyImageApi> {
         let (x, y) = match params {
             Some(p) => (dict_get::<usize>(p, "x")?, dict_get::<usize>(p, "y")?),
-            None => self.sample_pos(img.width(py), img.height(py))?,
+            None => self.sample_pos(img.width(), img.height())?,
         };
 
         self.last_xy = Some((x, y));

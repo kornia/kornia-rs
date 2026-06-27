@@ -3,27 +3,23 @@ use arrow::{
     array::{ArrayRef, BinaryArray, StructArray, UInt32Array},
     datatypes::{DataType, Field},
 };
-use kornia_tensor::{allocator::TensorAllocatorError, TensorAllocator};
-use std::sync::Arc;
+use kornia_tensor::{allocator::TensorAllocatorError, resource::MemoryResource, TensorAllocator};
+use std::{alloc::Layout, sync::Arc};
 
-/// Allocator for Arrow arrays
+/// Allocator for Arrow arrays.
+///
+/// Arrow manages the backing buffer's lifetime via reference-counting.
+/// `allocate` returns a [`ForeignResource`] that keeps the `arrow::buffer::Buffer`
+/// alive (via its keepalive `Arc`) and performs a no-op free on drop.
 #[derive(Clone)]
 #[allow(dead_code)]
 pub struct ArrowAllocator(arrow::buffer::Buffer);
 
 impl TensorAllocator for ArrowAllocator {
-    fn alloc(&self, layout: std::alloc::Layout) -> Result<*mut u8, TensorAllocatorError> {
-        let ptr = unsafe { std::alloc::alloc(layout) };
-
-        if ptr.is_null() {
-            Err(TensorAllocatorError::NullPointer)?
-        }
-
-        Ok(ptr)
-    }
-
-    fn dealloc(&self, _ptr: *mut u8, _layout: std::alloc::Layout) {
-        // Do nothing as the memory is managed by Arrow
+    fn allocate(&self, _layout: Layout) -> Result<Box<dyn MemoryResource>, TensorAllocatorError> {
+        // ArrowAllocator is used only as a type tag for foreign Arrow-managed memory.
+        // Actual allocation never happens here; the buffer is pre-existing.
+        Err(TensorAllocatorError::CannotAllocateForeign)
     }
 }
 

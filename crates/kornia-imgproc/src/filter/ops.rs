@@ -636,15 +636,15 @@ pub fn gaussian_blur_u8<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
 
     let ((kx, ky), (sx, sy)) = resolve_gaussian_params(kernel_size, sigma)?;
 
-    // Binomial fast path for the common 5x5, sigma≈1 case. Two separable
-    // passes of [1,2,1]/4 convolve to [1,4,6,4,1]/16 — a close approximation
-    // of a true Gaussian with sigma≈1.0 that stays in u8 throughout (halving
-    // adds, no widen/pack). This is what OpenCV's cv2.GaussianBlur uses
-    // internally when sigma=0.
-    if kx == 5 && ky == 5 && (0.7..=1.3).contains(&sx) && (0.7..=1.3).contains(&sy) {
+    // Binomial fast path for k=3, sigma in the [1,2,1]/4 range (sigma≈0.7–1.2).
+    // The [1,2,1]/4 separable kernel (one H-pass + one V-pass of halving-adds) is
+    // within ±4% of a true Gaussian at sigma=1.0 and stays entirely in u8
+    // (no vmull/widen/pack). cv2.GaussianBlur((3,3), 1.0) uses the same kernel.
+    // Uses the [1,2,1]/4 separable NEON/AVX2 helpers (identical arithmetic).
+    if kx == 3 && ky == 3 && (0.6..=1.2).contains(&sx) && (0.6..=1.2).contains(&sy) {
         #[cfg(target_arch = "aarch64")]
         {
-            gaussian_blur_5x5_binomial_u8::<C>(
+            gaussian_blur_3x3_binomial_u8::<C>(
                 src.as_slice(),
                 dst.as_slice_mut(),
                 src.rows(),
@@ -654,7 +654,7 @@ pub fn gaussian_blur_u8<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
         }
         #[cfg(target_arch = "x86_64")]
         if crate::simd::cpu_features().has_avx2 {
-            gaussian_blur_5x5_binomial_u8_avx2::<C>(
+            gaussian_blur_3x3_binomial_u8_avx2::<C>(
                 src.as_slice(),
                 dst.as_slice_mut(),
                 src.rows(),
@@ -1064,18 +1064,18 @@ fn separable_blur_u8_striped(
     );
 }
 
-/// 5x5 binomial Gaussian approximation for u8 using halving-add cascades.
+/// 3x3 binomial Gaussian approximation for u8 using halving-add cascades.
 ///
-/// Convolves the image with [1,4,6,4,1]/16 in both dimensions, implemented as
-/// two separable passes of [1,2,1]/4. The 3-tap pass is `(a + 2b + c + 2) / 4`,
-/// computed via `vrhaddq_u8(vrhaddq_u8(a,b), vrhaddq_u8(b,c))`. This yields
-/// `(a + 2b + c + 3) / 4`, within ±1 LSB of the true binomial — the same trick
-/// OpenCV uses in its `cv2.GaussianBlur(sigma=0)` fast path.
+/// Convolves the image with a single separable pass of [1,2,1]/4 per axis.
+/// The 3-tap pass is `(a + 2b + c + 2) / 4`, computed via
+/// `vrhaddq_u8(vrhaddq_u8(a,b), vrhaddq_u8(b,c))`. This yields
+/// `(a + 2b + c + 3) / 4`, within ±1 LSB of the true 3x3 binomial — the same
+/// trick OpenCV uses in its `cv2.GaussianBlur(sigma=0)` fast path.
 ///
 /// Parallelized by row chunks; each worker keeps a rolling 3-row ring of H-passed
 /// rows in ~10-20 KB of L1 so the tmp buffer never hits DRAM.
 #[cfg(target_arch = "aarch64")]
-fn gaussian_blur_5x5_binomial_u8<const C: usize>(
+fn gaussian_blur_3x3_binomial_u8<const C: usize>(
     src: &[u8],
     dst: &mut [u8],
     rows: usize,
@@ -1088,7 +1088,7 @@ fn gaussian_blur_5x5_binomial_u8<const C: usize>(
 
     // Small image: single-thread to skip rayon overhead.
     if rows * cols < 256 * 1024 {
-        binomial_blur_chunk::<C>(src, dst, rows, cols, 0, rows);
+        binomial_blur_chunk_3x3::<C>(src, dst, rows, cols, 0, rows);
         return;
     }
 
@@ -1102,13 +1102,13 @@ fn gaussian_blur_5x5_binomial_u8<const C: usize>(
         .for_each(|(chunk_idx, dst_chunk)| {
             let start = chunk_idx * chunk_rows;
             let end = (start + dst_chunk.len() / stride).min(rows);
-            binomial_blur_chunk::<C>(src, dst_chunk, rows, cols, start, end);
+            binomial_blur_chunk_3x3::<C>(src, dst_chunk, rows, cols, start, end);
         });
 }
 
 #[cfg(target_arch = "aarch64")]
 #[inline]
-fn binomial_blur_chunk<const C: usize>(
+fn binomial_blur_chunk_3x3<const C: usize>(
     src: &[u8],
     dst_chunk: &mut [u8],
     rows: usize,
@@ -1173,7 +1173,8 @@ fn hpass_binomial_row<const C: usize>(src: &[u8], dst: &mut [u8], cols: usize) {
     for c in 0..C {
         let a = src[c] as u16;
         let b = a;
-        let d = src[C + c] as u16;
+        // Clamp right neighbor: when cols==1, stride==C, so right neighbor is self.
+        let d = if stride > C { src[C + c] as u16 } else { b };
         dst[c] = ((a + 2 * b + d + 2) >> 2) as u8;
     }
 
@@ -1202,8 +1203,13 @@ fn hpass_binomial_row<const C: usize>(src: &[u8], dst: &mut [u8], cols: usize) {
     }
 
     // Last pixel: right neighbor replicates to self.
+    // When cols==1, stride==C, so left neighbor is also self (same pixel).
     for c in 0..C {
-        let a = src[stride - 2 * C + c] as u16;
+        let a = if stride > C {
+            src[stride - 2 * C + c] as u16
+        } else {
+            src[c] as u16
+        };
         let b = src[stride - C + c] as u16;
         let d = b;
         dst[stride - C + c] = ((a + 2 * b + d + 2) >> 2) as u8;
@@ -1494,7 +1500,7 @@ fn hpass_sym7_row<const C: usize>(
 // =============================================================================
 
 #[cfg(target_arch = "x86_64")]
-fn gaussian_blur_5x5_binomial_u8_avx2<const C: usize>(
+fn gaussian_blur_3x3_binomial_u8_avx2<const C: usize>(
     src: &[u8],
     dst: &mut [u8],
     rows: usize,
@@ -1506,7 +1512,7 @@ fn gaussian_blur_5x5_binomial_u8_avx2<const C: usize>(
     let stride = cols * C;
 
     if rows * cols < 256 * 1024 {
-        binomial_blur_chunk_avx2::<C>(src, dst, rows, cols, 0, rows);
+        binomial_blur_chunk_3x3_avx2::<C>(src, dst, rows, cols, 0, rows);
         return;
     }
 
@@ -1518,13 +1524,13 @@ fn gaussian_blur_5x5_binomial_u8_avx2<const C: usize>(
         .for_each(|(chunk_idx, dst_chunk)| {
             let start = chunk_idx * chunk_rows;
             let end = (start + dst_chunk.len() / stride).min(rows);
-            binomial_blur_chunk_avx2::<C>(src, dst_chunk, rows, cols, start, end);
+            binomial_blur_chunk_3x3_avx2::<C>(src, dst_chunk, rows, cols, start, end);
         });
 }
 
 #[cfg(target_arch = "x86_64")]
 #[inline]
-fn binomial_blur_chunk_avx2<const C: usize>(
+fn binomial_blur_chunk_3x3_avx2<const C: usize>(
     src: &[u8],
     dst_chunk: &mut [u8],
     rows: usize,
@@ -1581,7 +1587,8 @@ unsafe fn hpass_binomial_row_avx2<const C: usize>(src: &[u8], dst: &mut [u8], co
     for c in 0..C {
         let a = src[c] as u16;
         let b = a;
-        let d = src[C + c] as u16;
+        // Clamp right neighbor: when cols==1, stride==C, so right neighbor is self.
+        let d = if stride > C { src[C + c] as u16 } else { b };
         dst[c] = ((a + 2 * b + d + 2) >> 2) as u8;
     }
 
@@ -1605,8 +1612,13 @@ unsafe fn hpass_binomial_row_avx2<const C: usize>(src: &[u8], dst: &mut [u8], co
     }
 
     // Last pixel: replicate right neighbor.
+    // When cols==1, stride==C, so left neighbor is also self (same pixel).
     for c in 0..C {
-        let a = src[stride - 2 * C + c] as u16;
+        let a = if stride > C {
+            src[stride - 2 * C + c] as u16
+        } else {
+            src[c] as u16
+        };
         let b = src[stride - C + c] as u16;
         let d = b;
         dst[stride - C + c] = ((a + 2 * b + d + 2) >> 2) as u8;
@@ -1969,6 +1981,153 @@ mod tests {
         // because addition is associative in u16 and neither path overflows
         // (kernel sums to 256, inputs ≤ 255, so pre-shift acc ≤ 256·255 < 2^16).
         assert_eq!(sym, gen, "7x7 symmetric path must match general Q8+Q8 path");
+    }
+
+    /// Verify that gaussian_blur_u8 with k=5 produces the same result as the
+    /// general separable path with the correctly-quantized 5-tap Gaussian kernel.
+    /// Previously a 3x3 binomial fast-path was incorrectly dispatched for k=5.
+    #[test]
+    fn test_gaussian_blur_5x5_matches_general() -> Result<(), ImageError> {
+        let rows = 37usize;
+        let cols = 83usize;
+        let n = rows * cols;
+        let mut src_data = vec![0u8; n];
+        for (i, v) in src_data.iter_mut().enumerate() {
+            *v = ((i.wrapping_mul(2654435761)) >> 24) as u8;
+        }
+        let src_img = Image::<u8, 1, _>::new(
+            ImageSize {
+                width: cols,
+                height: rows,
+            },
+            src_data.clone(),
+            CpuAllocator,
+        )?;
+        let mut dst_5x5 = Image::<u8, 1, _>::from_size_val(
+            ImageSize {
+                width: cols,
+                height: rows,
+            },
+            0u8,
+            CpuAllocator,
+        )?;
+        gaussian_blur_u8(&src_img, &mut dst_5x5, (5, 5), (1.0, 1.0))?;
+
+        // General path reference (same as what gaussian_blur_u8 falls through to now).
+        let ikx = quantize_kernel_256(&kernels::gaussian_kernel_1d(5, 1.0));
+        let iky = ikx.clone();
+        let mut gen = vec![0u8; n];
+        separable_blur_u8_striped(&src_data, &mut gen, rows, cols, 1, &ikx, 2, &iky, 2);
+
+        assert_eq!(
+            dst_5x5.as_slice(),
+            gen.as_slice(),
+            "5x5 gaussian_blur_u8 must match general separable path"
+        );
+        Ok(())
+    }
+
+    /// Verify the 3x3 binomial fast path (reuses 5x5 helpers) stays within ≤2 LSB
+    /// of the general Q8+Q8 separable path for random data. Tests C=1 and C=3,
+    /// odd-width non-multiple-of-16 (exercises vector + scalar-tail), and borders.
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn test_gaussian_blur_3x3_binomial_matches_general() {
+        for (rows, cols, c_label) in [(37usize, 83usize, "C=1"), (17usize, 45usize, "C=3")] {
+            let channels = if c_label == "C=1" { 1 } else { 3 };
+            let n = rows * cols * channels;
+            let mut src = vec![0u8; n];
+            for (i, v) in src.iter_mut().enumerate() {
+                *v = ((i.wrapping_mul(2654435761)) >> 24) as u8;
+            }
+
+            // Binomial fast path via gaussian_blur_3x3_binomial_u8 (same function
+            // used by the k=3 dispatch).
+            let mut binom = vec![0u8; n];
+            if channels == 1 {
+                gaussian_blur_3x3_binomial_u8::<1>(&src, &mut binom, rows, cols);
+            } else {
+                gaussian_blur_3x3_binomial_u8::<3>(&src, &mut binom, rows, cols);
+            }
+
+            // General Q8+Q8 path with the [1,2,1]/4 kernel quantized to Q8.
+            let sx = 0.85f32; // natural sigma for [1,2,1]/4
+            let ikx = quantize_kernel_256(&kernels::gaussian_kernel_1d(3, sx));
+            let iky = ikx.clone();
+            let mut gen = vec![0u8; n];
+            separable_blur_u8_striped(&src, &mut gen, rows, cols, channels, &ikx, 1, &iky, 1);
+
+            // The halving-add vrhadd path computes (a+2b+c+3)/4 (rounded up);
+            // the Q8 path computes (a+2b+c+2)/4 with different rounding.
+            // Allow ≤2 LSB difference on any pixel.
+            let max_diff = binom
+                .iter()
+                .zip(gen.iter())
+                .map(|(&a, &b)| (a as i16 - b as i16).unsigned_abs())
+                .max()
+                .unwrap_or(0);
+            assert!(
+                max_diff <= 2,
+                "3x3 binomial vs general Q8+Q8 max diff {max_diff} > 2 LSB ({c_label})"
+            );
+        }
+    }
+
+    /// 1-column image must not panic in the 3x3 binomial H-pass (guards src[C+c] OOB).
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn test_gaussian_blur_3x3_binomial_1col() -> Result<(), ImageError> {
+        // rows=5, cols=1: stride==C==1, the "right neighbor" access src[C+c] would OOB.
+        let rows = 5usize;
+        let cols = 1usize;
+        let src_data: Vec<u8> = (0..rows).map(|i| (i * 50) as u8).collect();
+        let src = Image::<u8, 1, _>::new(
+            ImageSize {
+                width: cols,
+                height: rows,
+            },
+            src_data,
+            CpuAllocator,
+        )?;
+        let mut dst = Image::<u8, 1, _>::from_size_val(
+            ImageSize {
+                width: cols,
+                height: rows,
+            },
+            0u8,
+            CpuAllocator,
+        )?;
+        // Must not panic.
+        gaussian_blur_u8(&src, &mut dst, (3, 3), (1.0, 1.0))?;
+        Ok(())
+    }
+
+    /// 1-row image must not panic in the 3x3 binomial V-pass.
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn test_gaussian_blur_3x3_binomial_1row() -> Result<(), ImageError> {
+        let rows = 1usize;
+        let cols = 5usize;
+        let src_data: Vec<u8> = (0..cols).map(|i| (i * 50) as u8).collect();
+        let src = Image::<u8, 1, _>::new(
+            ImageSize {
+                width: cols,
+                height: rows,
+            },
+            src_data,
+            CpuAllocator,
+        )?;
+        let mut dst = Image::<u8, 1, _>::from_size_val(
+            ImageSize {
+                width: cols,
+                height: rows,
+            },
+            0u8,
+            CpuAllocator,
+        )?;
+        // Must not panic.
+        gaussian_blur_u8(&src, &mut dst, (3, 3), (1.0, 1.0))?;
+        Ok(())
     }
 
     #[test]

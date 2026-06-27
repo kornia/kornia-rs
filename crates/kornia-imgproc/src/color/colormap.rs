@@ -192,6 +192,57 @@ unsafe fn apply_neon(src: &[u8], dst: &mut [u8], lut: &ColormapLut) {
     apply_scalar(&src[si..], &mut dst[di..], lut);
 }
 
+/// AVX2 kernel (x86_64): 8 pixels/iteration via a 32-bit gather over a packed
+/// RGBA LUT.
+///
+/// AVX2's `_mm256_shuffle_epi8` is a 16-entry in-lane table, too small for the
+/// 256-entry colormap. Instead we pack the three channel LUTs into a single
+/// 256-entry `u32` table (`0x00BBGGRR` per index) and `_mm256_i32gather_epi32`
+/// eight RGBA words per iteration. The interleaved RGB store is done scalar from
+/// the gathered words (a full SIMD RGBA→RGB repack buys little for this
+/// gather-bound kernel).
+///
+/// # Safety
+/// Caller must ensure AVX2 is available and `dst.len() >= src.len() * 3`.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn apply_avx2(src: &[u8], dst: &mut [u8], lut: &ColormapLut) {
+    use std::arch::x86_64::*;
+
+    // Pack the 3 channel LUTs into one 256-entry RGBA word table: 0x00BBGGRR.
+    let mut packed = [0u32; 256];
+    for (i, w) in packed.iter_mut().enumerate() {
+        *w = (lut.r[i] as u32) | ((lut.g[i] as u32) << 8) | ((lut.b[i] as u32) << 16);
+    }
+    let base = packed.as_ptr() as *const i32;
+
+    let n = src.len();
+    let mut si = 0usize;
+    let mut di = 0usize;
+
+    while si + 8 <= n {
+        // Load 8 indices (u8) and zero-extend to 8×i32.
+        let idx8 = _mm_loadl_epi64(src.as_ptr().add(si) as *const __m128i);
+        let idx32 = _mm256_cvtepu8_epi32(idx8);
+        // Gather 8 RGBA words: packed[idx]. scale=4 (u32 stride).
+        let rgba = _mm256_i32gather_epi32::<4>(base, idx32);
+
+        // Store gathered words and emit interleaved RGB (drop the alpha byte).
+        let mut words = [0u32; 8];
+        _mm256_storeu_si256(words.as_mut_ptr() as *mut __m256i, rgba);
+        for &w in words.iter() {
+            *dst.as_mut_ptr().add(di) = w as u8;
+            *dst.as_mut_ptr().add(di + 1) = (w >> 8) as u8;
+            *dst.as_mut_ptr().add(di + 2) = (w >> 16) as u8;
+            di += 3;
+        }
+        si += 8;
+    }
+
+    // Scalar tail.
+    apply_scalar(&src[si..], &mut dst[di..], lut);
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /// Apply a colormap to a single-channel u8 image, producing an RGB u8 image.
@@ -217,12 +268,24 @@ pub fn apply_colormap<A: ImageAllocator>(
     let lut = colormap.lut();
 
     #[cfg(target_arch = "aarch64")]
-    unsafe {
-        apply_neon(src.as_slice(), dst.as_slice_mut(), lut)
-    };
+    {
+        // SAFETY: NEON is baseline on aarch64; size check passed above.
+        unsafe { apply_neon(src.as_slice(), dst.as_slice_mut(), lut) };
+        return Ok(());
+    }
 
-    #[cfg(not(target_arch = "aarch64"))]
-    apply_scalar(src.as_slice(), dst.as_slice_mut(), lut);
+    #[cfg(target_arch = "x86_64")]
+    {
+        if crate::simd::cpu_features().has_avx2 {
+            // SAFETY: AVX2 confirmed by the runtime probe; size check passed.
+            unsafe { apply_avx2(src.as_slice(), dst.as_slice_mut(), lut) };
+            return Ok(());
+        }
+    }
 
-    Ok(())
+    #[allow(unreachable_code)]
+    {
+        apply_scalar(src.as_slice(), dst.as_slice_mut(), lut);
+        Ok(())
+    }
 }

@@ -4557,6 +4557,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "dlpack-rs"
+version = "0.3.2"
+source = "git+https://github.com/kornia/dlpack-rs?tag=v0.3.2#3b3d6ad1bf7ef40962294fcf7df7a2eed6fd212a"
+dependencies = [
+ "dlpack-sys",
+ "pyo3",
+]
+
+[[package]]
+name = "dlpack-sys"
+version = "0.3.2"
+source = "git+https://github.com/kornia/dlpack-rs?tag=v0.3.2#3b3d6ad1bf7ef40962294fcf7df7a2eed6fd212a"
+
+[[package]]
 name = "document-features"
 version = "0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8131,6 +8145,8 @@ version = "0.1.14"
 dependencies = [
  "arrow 58.3.0",
  "criterion 0.8.2",
+ "cudarc 0.19.7",
+ "dlpack-rs",
  "half",
  "kornia-tensor",
  "num-traits",
@@ -8190,6 +8206,7 @@ dependencies = [
 name = "kornia-py"
 version = "0.1.14"
 dependencies = [
+ "dlpack-rs",
  "kornia-3d",
  "kornia-algebra",
  "kornia-apriltag",
@@ -8211,6 +8228,7 @@ dependencies = [
  "cubecl-core",
  "cubecl-cuda",
  "cudarc 0.19.7",
+ "dlpack-rs",
  "num-traits",
  "rayon",
  "serde",
@@ -11606,7 +11624,6 @@ version = "0.11.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "434b42fec591c96ef50e21e886936e66d3cc3f737104fdb9b737c40ffb94c098"
 dependencies = [
- "aws-lc-rs",
  "bytes",
  "fastbloom",
  "getrandom 0.3.4",
@@ -11616,7 +11633,7 @@ dependencies = [
  "rustc-hash 2.1.2",
  "rustls",
  "rustls-pki-types",
- "rustls-platform-verifier 0.6.2",
+ "rustls-platform-verifier",
  "slab",
  "thiserror 2.0.18",
  "tinyvec",
@@ -14210,29 +14227,24 @@ checksum = "219c5811de6525e5416c7d5d53bb656d3afdbc6c5af816e0802bcfa42dbdc1c3"
 dependencies = [
  "base64 0.22.1",
  "bytes",
- "encoding_rs",
  "futures-channel",
  "futures-core",
  "futures-util",
- "h2",
  "http",
  "http-body",
  "http-body-util",
  "hyper",
- "hyper-rustls",
+ "hyper-tls",
  "hyper-util",
  "js-sys",
  "log",
- "mime",
+ "native-tls",
  "percent-encoding",
  "pin-project-lite",
- "quinn",
- "rustls",
  "rustls-pki-types",
- "rustls-platform-verifier 0.7.0",
  "sync_wrapper",
  "tokio",
- "tokio-rustls",
+ "tokio-native-tls",
  "tower",
  "tower-http",
  "tower-service",
@@ -14656,27 +14668,6 @@ dependencies = [
  "core-foundation 0.10.1",
  "core-foundation-sys",
  "jni 0.21.1",
- "log",
- "once_cell",
- "rustls",
- "rustls-native-certs",
- "rustls-platform-verifier-android",
- "rustls-webpki",
- "security-framework",
- "security-framework-sys",
- "webpki-root-certs",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "rustls-platform-verifier"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "26d1e2536ce4f35f4846aa13bff16bd0ff40157cdb14cc056c7b14ba41233ba0"
-dependencies = [
- "core-foundation 0.10.1",
- "core-foundation-sys",
- "jni 0.22.4",
  "log",
  "once_cell",
  "rustls",

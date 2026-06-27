@@ -1658,6 +1658,9 @@ mod tests {
             let mut sp = [0.0_f32; 441];
             let mut sx = [0.0_f32; 441];
             let mut sy = [0.0_f32; 441];
+            // `scalar` is consumed only by the x86_64 AVX2 parity check below; on
+            // other arches the comparison is cfg'd out, so the binding is unused.
+            #[cfg_attr(not(target_arch = "x86_64"), allow(unused_variables))]
             let scalar = build_three_patches_interior_scalar(
                 img.as_slice(),
                 ix.as_slice(),

@@ -25,12 +25,15 @@ except ImportError:
     raise SystemExit("cv2 not installed — `uv pip install opencv-python`")
 
 from kornia_rs.image import Image
+from kornia_rs import imgproc as kornia_imgproc
 from _bench import compare, print_table, speedup_vs
 
 
 def main():
     H, W = 1080, 1920
     arr = np.random.randint(0, 256, (H, W, 3), dtype=np.uint8)
+    arr_f32 = np.ascontiguousarray(arr.astype(np.float32) / 255.0)
+    W_GRAY = np.array([0.299, 0.587, 0.114], dtype=np.float32)
     pil_img = PIL.fromarray(arr)
     k_img = Image(arr)
     buf = io.BytesIO()
@@ -95,6 +98,36 @@ def main():
             "cv2":    lambda: cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY),
             "kornia": lambda: k_img.to_grayscale(),
         }),
+        # f32 race: PIL has no float-gray API so we compare cv2(float32), numpy @ matmul, and kornia.
+        # kornia ties cv2 (both saturate LPDDR5 at ~40 GB/s for 33 MB of f32 data).
+        ("to_grayscale_f32", {
+            "cv2":    lambda: cv2.cvtColor(arr_f32, cv2.COLOR_RGB2GRAY),
+            "numpy":  lambda: arr_f32 @ W_GRAY,
+            "kornia": lambda: kornia_imgproc.gray_from_rgb_f32(arr_f32),
+        }),
+        # f32 color-space conversions vs OpenCV 5 (compute-bound — the 5× battleground).
+        # Input scaling differs by convention but the per-pixel work (and thus timing)
+        # is equivalent; we measure wall-clock of the conversion, not output identity.
+        ("rgb_to_hsv_f32", {
+            "cv2":    lambda: cv2.cvtColor(arr_f32, cv2.COLOR_RGB2HSV),
+            "kornia": lambda: kornia_imgproc.hsv_from_rgb(arr_f32),
+        }),
+        ("rgb_to_hls_f32", {
+            "cv2":    lambda: cv2.cvtColor(arr_f32, cv2.COLOR_RGB2HLS),
+            "kornia": lambda: kornia_imgproc.hls_from_rgb(arr_f32),
+        }),
+        ("rgb_to_xyz_f32", {
+            "cv2":    lambda: cv2.cvtColor(arr_f32, cv2.COLOR_RGB2XYZ),
+            "kornia": lambda: kornia_imgproc.xyz_from_rgb(arr_f32),
+        }),
+        ("rgb_to_lab_f32", {
+            "cv2":    lambda: cv2.cvtColor(arr_f32, cv2.COLOR_RGB2Lab),
+            "kornia": lambda: kornia_imgproc.lab_from_rgb(arr_f32),
+        }),
+        ("rgb_to_luv_f32", {
+            "cv2":    lambda: cv2.cvtColor(arr_f32, cv2.COLOR_RGB2Luv),
+            "kornia": lambda: kornia_imgproc.luv_from_rgb(arr_f32),
+        }),
         ("gaussian_blur k=3", {
             "PIL":    lambda: pil_img.filter(ImageFilter.GaussianBlur(radius=1.0)),
             "cv2":    lambda: cv2.GaussianBlur(arr, (3, 3), 1.0),
@@ -116,9 +149,7 @@ def main():
         non_k_min = min(r.min_ms for n, r in results.items() if n != "kornia")
         k_min = results["kornia"].min_ms
         speedup = non_k_min / k_min  # >1 = kornia faster
-        winner = "kornia" if k_min == min(r.min_ms for r in results.values()) else (
-            min(((n, r.min_ms) for n, r in results.items()), key=lambda x: x[1])[0]
-        )
+        winner = min(results, key=lambda n: results[n].min_ms)
         summary.append((label, winner, speedup))
 
     # Summary table

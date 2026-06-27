@@ -13,9 +13,10 @@ pub mod error;
 /// module containing ops implementations.
 pub mod ops;
 
-/// Typed color space wrappers for compile-time type safety.
+/// Typed color-space wrappers and runtime color-space vocabulary.
 pub mod color_spaces;
 
+pub use crate::color_spaces::{ColorSpace, DynImage};
 pub use crate::error::ImageError;
 pub use crate::image::{Image, ImageLayout, ImageSize, InterpolationMode, PixelFormat};
 

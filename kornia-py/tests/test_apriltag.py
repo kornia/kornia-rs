@@ -91,6 +91,10 @@ def test_decode_tags_config_requires_tag_families():
         K.apriltag.DecodeTagsConfig([])
 
 
+@pytest.mark.skipif(
+    not TAG36H11_TAG.exists(),
+    reason="apriltag-imgs tag36h11 fixture not vendored in this checkout",
+)
 def test_apriltag_decoder():
     kinds = [TagFamilyKind("tag36_h11")]
     config = K.apriltag.DecodeTagsConfig(kinds)

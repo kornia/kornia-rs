@@ -1,9 +1,14 @@
+// Special/internal
+pub(crate) mod backing;
+pub(crate) mod numpy_view;
+// Feature modules (alphabetical)
 mod apriltag;
 mod augmentations;
 mod ba;
 mod blur;
 mod brightness;
 mod color;
+mod color_space;
 mod cpu;
 mod crop;
 mod depth;
@@ -324,6 +329,7 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     image_mod.add_class::<PyPixelFormat>()?;
     image_mod.add_class::<PyImageLayout>()?;
     image_mod.add_class::<image::PyImageApi>()?;
+    image_mod.add_class::<crate::color_space::PyColorSpace>()?;
     m.add_submodule(&image_mod)?;
 
     // ---------------------------------------------------------------------------
@@ -396,7 +402,36 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_bgra, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(color::bgr_from_rgb, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(color::gray_from_rgb, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::gray_from_rgb_f32, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(color::apply_colormap, &imgproc_mod)?)?;
+    // f32 perceptual / cylindrical color conversions (3→3)
+    imgproc_mod.add_function(wrap_pyfunction!(color::hsv_from_rgb, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_hsv, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::hls_from_rgb, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_hls, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::xyz_from_rgb, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_xyz, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::lab_from_rgb, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_lab, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::luv_from_rgb, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_luv, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::linear_rgb_from_rgb, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_linear_rgb, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::ycbcr_from_rgb, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_ycbcr, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::yuv_from_rgb, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_yuv, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::sepia_from_rgb, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_bayer, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_yuyv, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_uyvy, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_yvyu, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_nv12, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_nv21, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_i420, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_yv12, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::yuyv_from_rgb, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::nv12_from_rgb, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(enhance::add_weighted, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(
         histogram::compute_histogram,

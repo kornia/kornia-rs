@@ -86,6 +86,9 @@ kornia-cpp/         ← C++ bindings
 - **Image type**: `Image<T, C, Alloc>` — `T` is pixel type (`u8`, `f32`), `C` is channel count (`1`, `3`)
 - **Operations**: Many `imgproc` functions take `&source` and `&mut destination` (pre-allocated output)
 - **I/O**: `kornia::io::functional` provides top-level read/write functions
+- **Naming convention**: use `<output>_from_<input>` — `gray_from_rgb`, `rgb_from_gray`, `bgr_from_rgb`. Never `rgb_to_gray` or `gray_to_rgb`. The output type comes first.
+- **Module layout for SIMD ops**: when an op has multiple SIMD kernels (e.g. different per dtype), use a subdir with `mod.rs` (public Image API + sealed-trait dispatch) and `kernels.rs` (slice-level dispatch, NEON/AVX2/scalar). See `src/color/gray/` as the canonical example. Single-dtype ops can stay in a flat `.rs` file.
+- **Dtype dispatch**: use a sealed trait (e.g. `GrayFromRgb`) to route a single `fn gray_from_rgb<T: GrayFromRgb>` entry point to the right kernel at compile time. Explicit impls for each concrete type (`u8`, `f32`, `f64`); no blanket `impl<T: Float>` (conflicts without stable specialization). See `SIMD.md` for the full pattern.
 
 ---
 

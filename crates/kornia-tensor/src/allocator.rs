@@ -1,7 +1,8 @@
-use std::alloc;
 use std::alloc::Layout;
 
 use thiserror::Error;
+
+use crate::resource::{HostResource, MemoryResource};
 
 /// Error type for tensor memory allocation operations.
 ///
@@ -21,108 +22,80 @@ pub enum TensorAllocatorError {
     /// This typically indicates an out-of-memory condition or other allocation failure.
     #[error("Null pointer")]
     NullPointer,
+
+    /// A foreign allocator was asked to allocate memory, which it never does.
+    ///
+    /// [`ForeignAllocator`] exists only as a type tag for externally-owned buffers;
+    /// calling `allocate` on it is always an error.
+    #[error(
+        "Cannot allocate with a foreign allocator — use from_borrowed or a wrapping constructor"
+    )]
+    CannotAllocateForeign,
+
+    /// Backend allocation failed with an error message.
+    ///
+    /// This error carries the backend-specific error description, such as a CUDA
+    /// driver error message from CubeCL.
+    #[error("Allocation failed: {0}")]
+    AllocationFailed(String),
 }
 
 /// Trait for custom tensor memory allocators.
 ///
 /// `TensorAllocator` enables supporting different memory backends (CPU, GPU, shared memory, etc.)
-/// by abstracting the allocation and deallocation interface. Implementors can provide custom
-/// memory management strategies while maintaining compatibility with the tensor library.
+/// by abstracting the allocation interface. Implementors return an owning [`MemoryResource`]
+/// handle that frees the backing buffer correctly on [`Drop`].
 ///
 /// # Thread Safety
 ///
-/// Implementations must be thread-safe (`Send` + `Sync`) as tensors can be shared across threads.
-/// The allocator is typically wrapped in `Arc` or similar when shared between tensors.
-///
-/// # Lifecycle
-///
-/// - [`alloc`](Self::alloc): Called when creating new tensor storage
-/// - [`dealloc`](Self::dealloc): Called when tensor storage is dropped
+/// Implementations must be `Clone + Send + Sync` as tensors can be shared across threads.
 ///
 /// # Examples
 ///
 /// Using the default CPU allocator:
 ///
 /// ```rust
-/// use kornia_tensor::{Tensor, CpuAllocator};
+/// use std::alloc::Layout;
+/// use kornia_tensor::{CpuAllocator, TensorAllocator};
 ///
 /// let allocator = CpuAllocator;
-/// let tensor = Tensor::<f32, 2, _>::zeros([100, 100], allocator);
+/// let layout = Layout::from_size_align(64, 8).unwrap();
+/// let resource = allocator.allocate(layout).unwrap();
+/// assert_eq!(resource.len_bytes(), 64);
+/// assert!(resource.domain().is_host_accessible());
 /// ```
-///
-/// Implementing a custom allocator:
-///
-/// ```rust
-/// use std::alloc::Layout;
-/// use kornia_tensor::{TensorAllocator, allocator::TensorAllocatorError};
-///
-/// #[derive(Clone)]
-/// struct AlignedAllocator {
-///     alignment: usize,
-/// }
-///
-/// impl TensorAllocator for AlignedAllocator {
-///     fn alloc(&self, layout: Layout) -> Result<*mut u8, TensorAllocatorError> {
-///         // Custom allocation with guaranteed alignment
-///         let aligned_layout = Layout::from_size_align(layout.size(), self.alignment)
-///             .map_err(TensorAllocatorError::LayoutError)?;
-///
-///         let ptr = unsafe { std::alloc::alloc(aligned_layout) };
-///         if ptr.is_null() {
-///             return Err(TensorAllocatorError::NullPointer);
-///         }
-///         Ok(ptr)
-///     }
-///
-///     fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-///         if !ptr.is_null() {
-///             let aligned_layout = Layout::from_size_align(layout.size(), self.alignment)
-///                 .unwrap();
-///             unsafe { std::alloc::dealloc(ptr, aligned_layout) }
-///         }
-///     }
-/// }
-/// ```
-pub trait TensorAllocator: Clone {
-    /// Allocates memory for a tensor with the given layout.
+pub trait TensorAllocator: Clone + Send + Sync {
+    /// Allocates memory for a tensor with the given layout and returns an owning handle.
     ///
     /// # Arguments
     ///
-    /// * `layout` - The memory layout specifying size and alignment requirements
+    /// * `layout` - The memory layout specifying size and alignment requirements.
     ///
     /// # Returns
     ///
-    /// A pointer to the allocated memory on success, or an error on failure.
+    /// A boxed [`MemoryResource`] that owns the allocation and frees it on drop.
     ///
     /// # Errors
     ///
-    /// Returns [`TensorAllocatorError::NullPointer`] if allocation fails.
-    fn alloc(&self, layout: Layout) -> Result<*mut u8, TensorAllocatorError>;
-
-    /// Deallocates memory previously allocated by this allocator.
-    ///
-    /// # Arguments
-    ///
-    /// * `ptr` - The pointer to the memory to deallocate
-    /// * `layout` - The layout used when allocating this memory
-    ///
-    /// # Safety
-    ///
-    /// The pointer must have been returned by [`alloc`](Self::alloc) with the same layout.
-    fn dealloc(&self, ptr: *mut u8, layout: Layout);
+    /// - [`TensorAllocatorError::NullPointer`] if the allocator returns a null pointer.
+    /// - [`TensorAllocatorError::CannotAllocateForeign`] if called on [`ForeignAllocator`].
+    fn allocate(&self, layout: Layout) -> Result<Box<dyn MemoryResource>, TensorAllocatorError>;
 }
 
 /// CPU memory allocator using the system allocator.
 ///
-/// `CpuAllocator` is the default allocator for tensors, providing standard heap allocation
-/// using Rust's global allocator. It's suitable for general-purpose CPU-based tensor operations.
+/// `CpuAllocator` is the default allocator for tensors, providing standard zeroed heap
+/// allocation using Rust's global allocator. Suitable for general-purpose CPU tensor ops.
 ///
 /// # Examples
 ///
 /// ```rust
-/// use kornia_tensor::{Tensor, CpuAllocator};
+/// use std::alloc::Layout;
+/// use kornia_tensor::{CpuAllocator, TensorAllocator};
 ///
-/// let tensor = Tensor::<f32, 2, _>::zeros([10, 10], CpuAllocator);
+/// let layout = Layout::from_size_align(1024, 8).unwrap();
+/// let resource = CpuAllocator.allocate(layout).unwrap();
+/// assert_eq!(resource.len_bytes(), 1024);
 /// ```
 #[derive(Clone)]
 pub struct CpuAllocator;
@@ -134,89 +107,70 @@ impl Default for CpuAllocator {
     }
 }
 
-/// Implements [`TensorAllocator`] using the Rust global allocator.
-impl TensorAllocator for CpuAllocator {
-    /// Allocates memory using the system allocator.
-    ///
-    /// This uses Rust's global allocator (typically the system's malloc/free) to allocate
-    /// memory with the specified layout.
-    ///
-    /// # Arguments
-    ///
-    /// * `layout` - The memory layout specifying size and alignment
-    ///
-    /// # Returns
-    ///
-    /// A pointer to the allocated memory on success.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TensorAllocatorError::NullPointer`] if the allocation fails (typically
-    /// due to insufficient memory).
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use std::alloc::Layout;
-    /// use kornia_tensor::{TensorAllocator, CpuAllocator};
-    ///
-    /// let allocator = CpuAllocator;
-    /// let layout = Layout::from_size_align(1024, 8).unwrap();
-    /// let ptr = allocator.alloc(layout).unwrap();
-    /// allocator.dealloc(ptr, layout);
-    /// ```
-    fn alloc(&self, layout: Layout) -> Result<*mut u8, TensorAllocatorError> {
-        let ptr = unsafe { alloc::alloc(layout) };
-        if ptr.is_null() {
-            Err(TensorAllocatorError::NullPointer)?
-        }
-        Ok(ptr)
-    }
+// SAFETY: CpuAllocator is a zero-size unit struct with no interior mutability.
+unsafe impl Send for CpuAllocator {}
+unsafe impl Sync for CpuAllocator {}
 
-    /// Deallocates memory using the system allocator.
+impl TensorAllocator for CpuAllocator {
+    /// Allocates a zeroed host buffer via [`HostResource::from_layout`].
+    fn allocate(&self, layout: Layout) -> Result<Box<dyn MemoryResource>, TensorAllocatorError> {
+        Ok(Box::new(HostResource::from_layout(layout)?))
+    }
+}
+
+/// A no-op allocator for foreign (externally managed) memory.
+///
+/// Used as a type tag when wrapping memory that is owned by an external system
+/// (e.g. numpy arrays, GStreamer buffers, or other external allocations). Calling [`allocate`](TensorAllocator::allocate)
+/// on `ForeignAllocator` always returns [`TensorAllocatorError::CannotAllocateForeign`];
+/// use `from_borrowed` or a wrapping constructor instead.
+#[derive(Clone)]
+pub struct ForeignAllocator;
+
+// SAFETY: ForeignAllocator is a zero-size unit struct with no interior mutability.
+unsafe impl Send for ForeignAllocator {}
+unsafe impl Sync for ForeignAllocator {}
+
+impl TensorAllocator for ForeignAllocator {
+    /// Always returns [`TensorAllocatorError::CannotAllocateForeign`].
     ///
-    /// This safely deallocates memory previously allocated by [`alloc`](Self::alloc).
-    /// If the pointer is null, this is a no-op.
-    ///
-    /// # Arguments
-    ///
-    /// * `ptr` - The pointer to deallocate (can be null)
-    /// * `layout` - The layout used when allocating this memory
-    ///
-    /// # Safety
-    ///
-    /// If `ptr` is non-null, it must have been allocated with this allocator using
-    /// the same layout. The memory must not be accessed after deallocation.
-    #[allow(clippy::not_unsafe_ptr_arg_deref)]
-    fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        if !ptr.is_null() {
-            unsafe { alloc::dealloc(ptr, layout) }
-        }
+    /// Foreign allocators never allocate — they are pure type tags for externally
+    /// owned buffers.
+    fn allocate(&self, _layout: Layout) -> Result<Box<dyn MemoryResource>, TensorAllocatorError> {
+        Err(TensorAllocatorError::CannotAllocateForeign)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::alloc::Layout;
 
+    /// Verify that `CpuAllocator::allocate` returns a zeroed, host-accessible buffer.
     #[test]
-    fn test_cpu_allocator() -> Result<(), TensorAllocatorError> {
-        let allocator = CpuAllocator;
-        let layout = Layout::from_size_align(1024, 64).unwrap();
-        let ptr = allocator.alloc(layout)?;
-        allocator.dealloc(ptr, layout);
-        Ok(())
+    fn cpu_allocate_zeroed_and_aligned() {
+        let l = Layout::from_size_align(64, 1).unwrap();
+        let r = CpuAllocator.allocate(l).unwrap();
+        assert_eq!(r.len_bytes(), 64);
+        assert!(r.domain().is_host_accessible());
+        // Must be zeroed.
+        unsafe { assert!((0..64).all(|i| *r.as_ptr().add(i) == 0)) };
     }
 
+    /// `ForeignAllocator::allocate` must always return `CannotAllocateForeign`.
     #[test]
-    fn test_cpu_allocator_dealloc_null_noop() {
-        // The CpuAllocator::dealloc implementation has an explicit null-guard;
-        // calling it with a null pointer must be a no-op and must not panic or UB.
-        let allocator = CpuAllocator;
-        let layout = Layout::from_size_align(1024, 8).unwrap();
-        let null_ptr = std::ptr::null_mut::<u8>();
-        // If the null-guard is missing this would invoke undefined behaviour.
-        // A passing call here confirms the guard is in place.
-        allocator.dealloc(null_ptr, layout);
+    fn foreign_allocate_returns_error() {
+        let l = Layout::from_size_align(64, 1).unwrap();
+        match ForeignAllocator.allocate(l) {
+            Err(TensorAllocatorError::CannotAllocateForeign) => {}
+            other => panic!("expected CannotAllocateForeign, got {:?}", other.err()),
+        }
+    }
+
+    /// Allocator types must be `Clone`.
+    #[test]
+    fn allocators_are_clone() {
+        let _a = CpuAllocator.clone();
+        let _b = ForeignAllocator.clone();
     }
 }

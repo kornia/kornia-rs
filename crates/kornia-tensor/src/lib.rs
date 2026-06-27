@@ -115,6 +115,13 @@ pub mod bincode;
 #[cfg(feature = "serde")]
 pub mod serde;
 
+/// Resource module providing ownership handles for tensor backing memory.
+///
+/// This module defines the [`resource::MemoryResource`] trait, the three-state
+/// [`resource::MemoryDomain`] enum, [`resource::HostResource`] (kornia-owned host memory),
+/// and [`resource::ForeignResource`] (externally owned memory: numpy, gstreamer, …).
+pub mod resource;
+
 /// Storage module containing low-level memory buffer implementations.
 ///
 /// This module provides [`storage::TensorStorage`] which manages the actual memory buffer
@@ -132,10 +139,16 @@ pub mod tensor;
 /// into existing tensor data.
 pub mod view;
 
-pub use crate::allocator::{CpuAllocator, TensorAllocator};
-pub use crate::storage::MemoryDomain;
+pub use crate::allocator::{CpuAllocator, ForeignAllocator, TensorAllocator};
+pub use crate::resource::{ForeignResource, HostResource, MemoryDomain, MemoryResource};
+// Keep backward-compatible re-export: `use kornia_tensor::storage::MemoryDomain` still resolves
+// because storage.rs now re-exports from resource.
 pub(crate) use crate::tensor::get_strides_from_shape;
 pub use crate::tensor::{Tensor, TensorError};
+
+// Note: Rust does not propagate type-parameter defaults through type aliases, so these
+// aliases require an explicit allocator argument. Use `Tensor<T, N>` directly to rely
+// on the `A = CpuAllocator` default, or use the `CpuTensor2` / similar helpers below.
 
 /// Type alias for a 1-dimensional tensor.
 pub type Tensor1<T, A> = Tensor<T, 1, A>;

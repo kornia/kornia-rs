@@ -131,7 +131,7 @@ pub fn get_strides_from_shape<const N: usize>(shape: [usize; N]) -> [usize; N] {
 /// // Generated with a function
 /// let range = Tensor::<i32, 1, _>::from_shape_fn([10], CpuAllocator, |[i]| i as i32);
 /// ```
-pub struct Tensor<T, const N: usize, A: TensorAllocator> {
+pub struct Tensor<T, const N: usize, A: TensorAllocator = CpuAllocator> {
     /// The storage of the tensor.
     pub storage: TensorStorage<T, A>,
     /// The shape of the tensor.

@@ -40,11 +40,25 @@ echo "  ENABLE_SANITIZERS=$ENABLE_SANITIZERS"
 echo "  NPROC=$NPROC"
 
 # Configure
-cmake -B build \
-    -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
-    -DBUILD_TESTS="$BUILD_TESTS" \
-    -DBUILD_EXAMPLES="$BUILD_EXAMPLES" \
+CMAKE_ARGS=(
+    -DCMAKE_BUILD_TYPE="$BUILD_TYPE"
+    -DBUILD_TESTS="$BUILD_TESTS"
+    -DBUILD_EXAMPLES="$BUILD_EXAMPLES"
     -DENABLE_SANITIZERS="$ENABLE_SANITIZERS"
+)
+
+# On macOS, force Apple's system clang + SDK. The pixi/conda cxx-compiler fails to
+# link libSystem into the C++ test (undefined _strlen/_snprintf/_sigaction, notably
+# on Release), while Apple's clang links libSystem by default.
+if [[ "$(uname)" == "Darwin" ]]; then
+    CMAKE_ARGS+=(
+        -DCMAKE_C_COMPILER="$(xcrun -f clang)"
+        -DCMAKE_CXX_COMPILER="$(xcrun -f clang++)"
+        -DCMAKE_OSX_SYSROOT="$(xcrun --show-sdk-path)"
+    )
+fi
+
+cmake -B build "${CMAKE_ARGS[@]}"
 
 # Build
 if [ "$BUILD_TESTS" = "OFF" ] && [ "$BUILD_EXAMPLES" = "OFF" ]; then
