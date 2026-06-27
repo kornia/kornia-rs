@@ -65,9 +65,9 @@ pub enum ImageError {
     #[error("no direct {from:?}->{to:?} color conversion; convert via Rgb")]
     UnsupportedColorConversion {
         /// The source color space.
-        from: crate::color_space::ColorSpace,
+        from: crate::color_spaces::ColorSpace,
         /// The target color space.
-        to: crate::color_space::ColorSpace,
+        to: crate::color_spaces::ColorSpace,
     },
 
     /// A `DynImage` was tagged with a color space that does not match the
@@ -75,9 +75,9 @@ pub enum ImageError {
     #[error("cannot recover DynImage tagged {got:?} as {expected:?}")]
     ColorSpaceMismatch {
         /// The color space the caller expected.
-        expected: crate::color_space::ColorSpace,
+        expected: crate::color_spaces::ColorSpace,
         /// The color space the `DynImage` was actually tagged with.
-        got: crate::color_space::ColorSpace,
+        got: crate::color_spaces::ColorSpace,
     },
 
     /// The operation is not supported on device memory.
