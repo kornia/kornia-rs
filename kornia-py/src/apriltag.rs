@@ -247,6 +247,81 @@ impl PyApriltagDetection {
             quad,
         }
     }
+
+    /// Estimate the 6-DOF pose of this tag.
+    ///
+    /// Args:
+    ///     fx: Focal length x (pixels).
+    ///     fy: Focal length y (pixels).
+    ///     cx: Principal point x (pixels).
+    ///     cy: Principal point y (pixels).
+    ///     tag_size: Physical size of the tag in metres.
+    ///     n_iters: Orthogonal iteration steps (default 50).
+    ///
+    /// Returns:
+    ///     A tuple ``(best, second)`` of :class:`TagPose` objects,
+    ///     where ``best`` has the lower reprojection error.
+    #[pyo3(signature = (fx, fy, cx, cy, tag_size, n_iters=50))]
+    pub fn estimate_pose(
+        &self,
+        fx: f64,
+        fy: f64,
+        cx: f64,
+        cy: f64,
+        tag_size: f64,
+        n_iters: usize,
+    ) -> PyResult<(PyTagPose, PyTagPose)> {
+        use kornia_3d::camera::PinholeCamera;
+        use kornia_3d::pose::estimate_tag_pose;
+        use kornia_algebra::{Vec2F64, Vec3F64};
+
+        let camera = PinholeCamera {
+            fx,
+            fy,
+            cx,
+            cy,
+            k1: 0.0,
+            k2: 0.0,
+            p1: 0.0,
+            p2: 0.0,
+        };
+        let s = tag_size / 2.0;
+        let object_pts = [
+            Vec3F64::new(-s, -s, 0.0),
+            Vec3F64::new(s, -s, 0.0),
+            Vec3F64::new(s, s, 0.0),
+            Vec3F64::new(-s, s, 0.0),
+        ];
+        let image_pts = [
+            Vec2F64::new(self.quad.corners[0].0 as f64, self.quad.corners[0].1 as f64),
+            Vec2F64::new(self.quad.corners[1].0 as f64, self.quad.corners[1].1 as f64),
+            Vec2F64::new(self.quad.corners[2].0 as f64, self.quad.corners[2].1 as f64),
+            Vec2F64::new(self.quad.corners[3].0 as f64, self.quad.corners[3].1 as f64),
+        ];
+        let pair = estimate_tag_pose(&object_pts, &image_pts, &camera, n_iters)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+
+        let to_py = |tp: &kornia_3d::pose::TagPose| -> PyTagPose {
+            let r = tp.pose.rotation;
+            let t = tp.pose.translation;
+            PyTagPose {
+                rotation: [
+                    r.x_axis().x,
+                    r.y_axis().x,
+                    r.z_axis().x,
+                    r.x_axis().y,
+                    r.y_axis().y,
+                    r.z_axis().y,
+                    r.x_axis().z,
+                    r.y_axis().z,
+                    r.z_axis().z,
+                ],
+                translation: [t.x, t.y, t.z],
+                error: tp.error,
+            }
+        };
+        Ok((to_py(&pair.best), to_py(&pair.second)))
+    }
 }
 
 impl From<Detection> for PyApriltagDetection {
@@ -294,6 +369,37 @@ impl From<Quad> for PyQuad {
             reversed_border: value.reversed_border,
             homography: value.homography.into(),
         }
+    }
+}
+
+/// 3D pose estimate for an AprilTag.
+#[pyclass(name = "TagPose", frozen, get_all, skip_from_py_object)]
+#[derive(Clone)]
+pub struct PyTagPose {
+    /// 3×3 rotation matrix (world-to-camera, row-major), flattened to 9 elements.
+    pub rotation: [f64; 9],
+    /// Translation vector [tx, ty, tz] in world-to-camera frame.
+    pub translation: [f64; 3],
+    /// Sum of squared reprojection errors over 4 corners (pixels²).
+    pub error: f64,
+}
+
+#[pymethods]
+impl PyTagPose {
+    #[new]
+    pub fn new(rotation: [f64; 9], translation: [f64; 3], error: f64) -> Self {
+        Self {
+            rotation,
+            translation,
+            error,
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "TagPose(error={:.4}, t=[{:.4}, {:.4}, {:.4}])",
+            self.error, self.translation[0], self.translation[1], self.translation[2]
+        )
     }
 }
 
@@ -525,6 +631,7 @@ fn apriltag(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyApriltagDetection>()?;
     m.add_class::<PyDecodeTagsConfig>()?;
     m.add_class::<PyFitQuadConfig>()?;
+    m.add_class::<PyTagPose>()?;
 
     m.add_class::<family::PyTagFamilyKind>()?;
 
