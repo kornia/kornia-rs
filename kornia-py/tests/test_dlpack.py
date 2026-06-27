@@ -182,3 +182,24 @@ def test_dlpack_torch_bidirectional():
     # Import back from torch.
     img2 = Image.from_dlpack(t)
     np.testing.assert_array_equal(img2.numpy(), np.asarray(img))
+
+
+# ────────────────────────────────────────────────────────────────
+# __dlpack__ kwargs (device / copy)
+# ────────────────────────────────────────────────────────────────
+
+
+def test_dlpack_non_cpu_device_raises_buffer_error():
+    """Non-CPU dl_device raises BufferError."""
+    arr = np.zeros((4, 4, 3), dtype=np.uint8)
+    img = Image(arr)
+    with pytest.raises(BufferError):
+        img.__dlpack__(dl_device=(2, 0))  # kDLCUDA=2
+
+
+def test_dlpack_copy_true_raises_not_implemented():
+    """copy=True raises NotImplementedError."""
+    arr = np.zeros((4, 4, 3), dtype=np.uint8)
+    img = Image(arr)
+    with pytest.raises(NotImplementedError):
+        img.__dlpack__(copy=True)
