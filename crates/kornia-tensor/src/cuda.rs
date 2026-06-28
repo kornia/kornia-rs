@@ -254,6 +254,22 @@ impl CudaKernel {
             inner: stream.launch_builder(&self.func),
         }
     }
+
+    /// Set the L1/shared-memory carveout for this kernel.
+    ///
+    /// Pass `0` to give L1 the maximum possible space (all shared memory budget
+    /// allocated to L1 data cache).  This improves `__ldg` hit rates when the
+    /// kernel does not use shared memory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CudaError::Driver`] if the driver call fails.
+    pub fn prefer_l1_cache(&self) -> Result<(), CudaError> {
+        use cudarc::driver::sys::CUfunc_cache_enum::CU_FUNC_CACHE_PREFER_L1;
+        self.func
+            .set_function_cache_config(CU_FUNC_CACHE_PREFER_L1)
+            .map_err(|e| CudaError::Driver(e.to_string()))
+    }
 }
 
 // ── CudaLaunchBuilder ─────────────────────────────────────────────────────────

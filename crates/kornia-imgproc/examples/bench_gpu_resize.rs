@@ -241,7 +241,7 @@ fn run_gpu_cuda() {
 
     for method in ["nearest", "bilinear"] {
         println!(
-            "\n=== native CUDA {method} downscale (__ldg, 16×16 grid, {ITERS} iters) ==="
+            "\n=== native CUDA {method} downscale (__ldg, 32×8 grid, {ITERS} iters) ==="
         );
         println!(
             "  {:<24}  {:>10}  {:>10}",
