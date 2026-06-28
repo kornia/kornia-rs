@@ -34,17 +34,16 @@
 
 use std::sync::{Arc, OnceLock};
 
-use cudarc::driver::{CudaContext, CudaSlice, CudaStream, DevicePtr, LaunchConfig};
 use cudarc::driver::sys::{
     CUDA_RESOURCE_DESC_st, CUDA_RESOURCE_DESC_st__bindgen_ty_1,
-    CUDA_RESOURCE_DESC_st__bindgen_ty_1__bindgen_ty_4,
-    CUDA_TEXTURE_DESC_st,
-    CUresourcetype_enum::CU_RESOURCE_TYPE_PITCH2D,
+    CUDA_RESOURCE_DESC_st__bindgen_ty_1__bindgen_ty_4, CUDA_TEXTURE_DESC_st,
+    CUaddress_mode_enum::CU_TR_ADDRESS_MODE_CLAMP,
     CUarray_format_enum::CU_AD_FORMAT_FLOAT,
     CUfilter_mode_enum::{CU_TR_FILTER_MODE_LINEAR, CU_TR_FILTER_MODE_POINT},
-    CUaddress_mode_enum::CU_TR_ADDRESS_MODE_CLAMP,
+    CUresourcetype_enum::CU_RESOURCE_TYPE_PITCH2D,
     CUresult,
 };
+use cudarc::driver::{CudaContext, CudaSlice, CudaStream, DevicePtr, LaunchConfig};
 use kornia_tensor::CudaKernel;
 
 // ── CUDA C source: de-interleave RGB → 3 planar float buffers ────────────────
@@ -250,17 +249,23 @@ impl CudaRgbTexture {
             .map_err(|e| CudaTexResizeError::Cuda(e.to_string()))?;
 
         // Create pitch2D texture objects (no cudaArray copy — wraps device memory directly).
-        let tex_r = create_pitch2d_texture(
-            stream, &plane_r, src_width, src_height, pitch as usize,
-        )?;
-        let tex_g = create_pitch2d_texture(
-            stream, &plane_g, src_width, src_height, pitch as usize,
-        )?;
-        let tex_b = create_pitch2d_texture(
-            stream, &plane_b, src_width, src_height, pitch as usize,
-        )?;
+        let tex_r =
+            create_pitch2d_texture(stream, &plane_r, src_width, src_height, pitch as usize)?;
+        let tex_g =
+            create_pitch2d_texture(stream, &plane_g, src_width, src_height, pitch as usize)?;
+        let tex_b =
+            create_pitch2d_texture(stream, &plane_b, src_width, src_height, pitch as usize)?;
 
-        Ok(CudaRgbTexture { plane_r, plane_g, plane_b, width: src_width, height: src_height, tex_r, tex_g, tex_b })
+        Ok(CudaRgbTexture {
+            plane_r,
+            plane_g,
+            plane_b,
+            width: src_width,
+            height: src_height,
+            tex_r,
+            tex_g,
+            tex_b,
+        })
     }
 }
 
@@ -278,7 +283,8 @@ fn query_pitch_alignment(ctx: &Arc<CudaContext>) -> Result<u32, CudaTexResizeErr
     };
     if result != CUresult::CUDA_SUCCESS {
         return Err(CudaTexResizeError::Cuda(format!(
-            "cuDeviceGetAttribute failed: {:?}", result
+            "cuDeviceGetAttribute failed: {:?}",
+            result
         )));
     }
     Ok(val as u32)
@@ -340,7 +346,8 @@ fn create_pitch2d_texture(
 
     if result != CUresult::CUDA_SUCCESS {
         return Err(CudaTexResizeError::Cuda(format!(
-            "cuTexObjectCreate failed: {:?}", result
+            "cuTexObjectCreate failed: {:?}",
+            result
         )));
     }
 
@@ -377,7 +384,10 @@ pub fn launch_resize_bilinear_tex_cuda(
 ) -> Result<(), CudaTexResizeError> {
     let need = (dst_width as usize) * (dst_height as usize) * 3;
     if dst.len() < need {
-        return Err(CudaTexResizeError::SliceTooSmall { got: dst.len(), need });
+        return Err(CudaTexResizeError::SliceTooSmall {
+            got: dst.len(),
+            need,
+        });
     }
 
     let kernel = BILINEAR_TEX_KERNEL.get_or_init(|| {

@@ -95,12 +95,24 @@ fn run_cpu() {
         let src_data: Vec<f32> = (0..npix_src * 3)
             .map(|i| (i % 256) as f32 / 255.0)
             .collect();
-        let src =
-            Image::<f32, 3>::new(ImageSize { width: sw as usize, height: sh as usize }, src_data, CpuAllocator)
-                .expect("src image");
-        let mut dst =
-            Image::<f32, 3>::from_size_val(ImageSize { width: dw as usize, height: dh as usize }, 0.0, CpuAllocator)
-                .expect("dst image");
+        let src = Image::<f32, 3>::new(
+            ImageSize {
+                width: sw as usize,
+                height: sh as usize,
+            },
+            src_data,
+            CpuAllocator,
+        )
+        .expect("src image");
+        let mut dst = Image::<f32, 3>::from_size_val(
+            ImageSize {
+                width: dw as usize,
+                height: dh as usize,
+            },
+            0.0,
+            CpuAllocator,
+        )
+        .expect("dst image");
 
         for _ in 0..WARMUP {
             resize_native(&src, &mut dst, InterpolationMode::Bilinear).expect("resize");
@@ -188,24 +200,32 @@ fn run_gpu() {
                 .map(|i| (i % 256) as f32 / 255.0)
                 .collect();
             let src_img = Image::<f32, 3>::new(
-                ImageSize { width: sw as usize, height: sh as usize },
+                ImageSize {
+                    width: sw as usize,
+                    height: sh as usize,
+                },
                 src_data,
                 CpuAllocator,
             )
             .expect("cpu src image");
             let mut dst_cpu = Image::<f32, 3>::from_size_val(
-                ImageSize { width: dw as usize, height: dh as usize },
+                ImageSize {
+                    width: dw as usize,
+                    height: dh as usize,
+                },
                 0.0,
                 CpuAllocator,
             )
             .expect("cpu dst image");
             for _ in 0..WARMUP {
-                resize_native(&src_img, &mut dst_cpu, InterpolationMode::Bilinear).expect("cpu resize");
+                resize_native(&src_img, &mut dst_cpu, InterpolationMode::Bilinear)
+                    .expect("cpu resize");
                 std::hint::black_box(dst_cpu.as_slice());
             }
             let t1 = Instant::now();
             for _ in 0..ITERS {
-                resize_native(&src_img, &mut dst_cpu, InterpolationMode::Bilinear).expect("cpu resize");
+                resize_native(&src_img, &mut dst_cpu, InterpolationMode::Bilinear)
+                    .expect("cpu resize");
                 std::hint::black_box(dst_cpu.as_slice());
             }
             let cpu_ms = t1.elapsed().as_secs_f64() * 1e3 / ITERS as f64;
@@ -243,9 +263,7 @@ fn run_gpu_cuda() {
     let stream = ctx.default_stream();
 
     for method in ["nearest", "bilinear"] {
-        println!(
-            "\n=== native CUDA {method} downscale (__ldg, 32×8 grid, {ITERS} iters) ==="
-        );
+        println!("\n=== native CUDA {method} downscale (__ldg, 32×8 grid, {ITERS} iters) ===");
         println!(
             "  {:<24}  {:>10}  {:>10}",
             "case (src→dst)", "ms/iter", "GB/s"
@@ -261,23 +279,21 @@ fn run_gpu_cuda() {
                 .map(|i| (i % 256) as f32 / 255.0)
                 .collect();
 
-            let src_dev = stream
-                .clone_htod(&src_data)
-                .expect("H→D src copy");
-            let mut dst_dev = stream
-                .alloc_zeros::<f32>(npix_dst * nc)
-                .expect("alloc dst");
+            let src_dev = stream.clone_htod(&src_data).expect("H→D src copy");
+            let mut dst_dev = stream.alloc_zeros::<f32>(npix_dst * nc).expect("alloc dst");
 
             let launch = |src: &cudarc::driver::CudaSlice<f32>,
-                          dst: &mut cudarc::driver::CudaSlice<f32>| match method {
-                "nearest" => launch_resize_nearest_downscale_cuda(
-                    &ctx, &stream, src, dst, sw, sh, dw, dh,
-                )
-                .expect("nearest launch"),
-                _ => launch_resize_bilinear_downscale_cuda(
-                    &ctx, &stream, src, dst, sw, sh, dw, dh,
-                )
-                .expect("bilinear launch"),
+                          dst: &mut cudarc::driver::CudaSlice<f32>| {
+                match method {
+                    "nearest" => launch_resize_nearest_downscale_cuda(
+                        &ctx, &stream, src, dst, sw, sh, dw, dh,
+                    )
+                    .expect("nearest launch"),
+                    _ => launch_resize_bilinear_downscale_cuda(
+                        &ctx, &stream, src, dst, sw, sh, dw, dh,
+                    )
+                    .expect("bilinear launch"),
+                }
             };
 
             // Warmup
@@ -310,7 +326,7 @@ fn run_gpu_cuda() {
 #[cfg(feature = "gpu-cuda")]
 fn run_gpu_cuda_tex() {
     use cudarc::driver::CudaContext;
-    use kornia_imgproc::gpu::resize_cuda_tex::{CudaRgbTexture, launch_resize_bilinear_tex_cuda};
+    use kornia_imgproc::gpu::resize_cuda_tex::{launch_resize_bilinear_tex_cuda, CudaRgbTexture};
 
     const DOWNSCALE_CASES: &[(u32, u32, u32, u32)] = &[
         (1024, 1024, 512, 512),
@@ -322,9 +338,7 @@ fn run_gpu_cuda_tex() {
     let stream = ctx.default_stream();
 
     // ── Kernel-only timing (texture setup done once, amortised) ──────────────
-    println!(
-        "\n=== native CUDA bilinear (texture HW, kernel-only, {ITERS} iters) ==="
-    );
+    println!("\n=== native CUDA bilinear (texture HW, kernel-only, {ITERS} iters) ===");
     println!(
         "  {:<24}  {:>12}  {:>10}  {:>14}",
         "case (src→dst)", "kernel ms", "GB/s", "setup ms"
@@ -400,9 +414,7 @@ fn run_gpu_cuda_fused_normalize() {
     let ctx = std::sync::Arc::new(CudaContext::new(0).expect("CUDA context"));
     let stream = ctx.default_stream();
 
-    println!(
-        "\n=== native CUDA fused bilinear+normalise vs separate passes ({ITERS} iters) ==="
-    );
+    println!("\n=== native CUDA fused bilinear+normalise vs separate passes ({ITERS} iters) ===");
     println!(
         "  {:<24}  {:>12}  {:>12}  {:>12}",
         "case (src→dst)", "resize ms", "fused ms", "saved ms"
@@ -423,15 +435,33 @@ fn run_gpu_cuda_fused_normalize() {
 
         // ── Bilinear-only timing ─────────────────────────────────────────────
         for _ in 0..WARMUP {
-            launch_resize_bilinear_downscale_cuda(&ctx, &stream, &src_dev, &mut dst_dev, sw, sh, dw, dh)
-                .expect("bilinear launch");
+            launch_resize_bilinear_downscale_cuda(
+                &ctx,
+                &stream,
+                &src_dev,
+                &mut dst_dev,
+                sw,
+                sh,
+                dw,
+                dh,
+            )
+            .expect("bilinear launch");
         }
         stream.synchronize().expect("sync");
 
         let t = Instant::now();
         for _ in 0..ITERS {
-            launch_resize_bilinear_downscale_cuda(&ctx, &stream, &src_dev, &mut dst_dev, sw, sh, dw, dh)
-                .expect("bilinear launch");
+            launch_resize_bilinear_downscale_cuda(
+                &ctx,
+                &stream,
+                &src_dev,
+                &mut dst_dev,
+                sw,
+                sh,
+                dw,
+                dh,
+            )
+            .expect("bilinear launch");
         }
         stream.synchronize().expect("sync");
         let resize_ms = t.elapsed().as_secs_f64() * 1e3 / ITERS as f64;
@@ -439,7 +469,16 @@ fn run_gpu_cuda_fused_normalize() {
         // ── Fused resize+normalise timing ────────────────────────────────────
         for _ in 0..WARMUP {
             launch_resize_bilinear_normalize_cuda(
-                &ctx, &stream, &src_dev, &mut dst_dev, sw, sh, dw, dh, mean, std,
+                &ctx,
+                &stream,
+                &src_dev,
+                &mut dst_dev,
+                sw,
+                sh,
+                dw,
+                dh,
+                mean,
+                std,
             )
             .expect("fused launch");
         }
@@ -448,7 +487,16 @@ fn run_gpu_cuda_fused_normalize() {
         let t = Instant::now();
         for _ in 0..ITERS {
             launch_resize_bilinear_normalize_cuda(
-                &ctx, &stream, &src_dev, &mut dst_dev, sw, sh, dw, dh, mean, std,
+                &ctx,
+                &stream,
+                &src_dev,
+                &mut dst_dev,
+                sw,
+                sh,
+                dw,
+                dh,
+                mean,
+                std,
             )
             .expect("fused launch");
         }
@@ -468,13 +516,9 @@ fn run_gpu_cuda_fused_normalize() {
             saved_ms,
         );
     }
-    println!(
-        "  note: fused kernel ≈ resize-only latency — DRAM I/O is identical."
-    );
+    println!("  note: fused kernel ≈ resize-only latency — DRAM I/O is identical.");
     println!(
         "  savings come from eliminating the separate normalise pass (reads+rewrites full dst)."
     );
-    println!(
-        "  estimated pipeline savings: 1080p ~0.13 ms, 4K ~0.52 ms per call."
-    );
+    println!("  estimated pipeline savings: 1080p ~0.13 ms, 4K ~0.52 ms per call.");
 }

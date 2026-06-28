@@ -274,12 +274,14 @@ pub fn launch_resize_bilinear_downscale_cuda(
 ) -> Result<(), CudaResizeError> {
     let need = (dst_width as usize) * (dst_height as usize) * 3;
     if dst.len() < need {
-        return Err(CudaResizeError::SliceTooSmall { got: dst.len(), need });
+        return Err(CudaResizeError::SliceTooSmall {
+            got: dst.len(),
+            need,
+        });
     }
 
-    let kernel = BILINEAR_KERNEL.get_or_init(|| {
-        compile_with_l1(ctx, BILINEAR_SRC, "resize_bilinear_downscale_3c")
-    });
+    let kernel = BILINEAR_KERNEL
+        .get_or_init(|| compile_with_l1(ctx, BILINEAR_SRC, "resize_bilinear_downscale_3c"));
 
     let scale_x = src_width as f32 / dst_width as f32;
     let scale_y = src_height as f32 / dst_height as f32;
@@ -335,10 +337,15 @@ pub fn launch_resize_bilinear_normalize_cuda(
 ) -> Result<(), CudaResizeError> {
     let need = (dst_width as usize) * (dst_height as usize) * 3;
     if dst.len() < need {
-        return Err(CudaResizeError::SliceTooSmall { got: dst.len(), need });
+        return Err(CudaResizeError::SliceTooSmall {
+            got: dst.len(),
+            need,
+        });
     }
     if std[0] == 0.0 || std[1] == 0.0 || std[2] == 0.0 {
-        return Err(CudaResizeError::Cuda("std must be non-zero for all channels".into()));
+        return Err(CudaResizeError::Cuda(
+            "std must be non-zero for all channels".into(),
+        ));
     }
 
     let kernel = BILINEAR_NORMALIZE_KERNEL.get_or_init(|| {
@@ -397,12 +404,14 @@ pub fn launch_resize_nearest_downscale_cuda(
 ) -> Result<(), CudaResizeError> {
     let need = (dst_width as usize) * (dst_height as usize) * 3;
     if dst.len() < need {
-        return Err(CudaResizeError::SliceTooSmall { got: dst.len(), need });
+        return Err(CudaResizeError::SliceTooSmall {
+            got: dst.len(),
+            need,
+        });
     }
 
-    let kernel = NEAREST_KERNEL.get_or_init(|| {
-        compile_with_l1(ctx, NEAREST_SRC, "resize_nearest_downscale_3c")
-    });
+    let kernel = NEAREST_KERNEL
+        .get_or_init(|| compile_with_l1(ctx, NEAREST_SRC, "resize_nearest_downscale_3c"));
 
     let scale_x = src_width as f32 / dst_width as f32;
     let scale_y = src_height as f32 / dst_height as f32;
