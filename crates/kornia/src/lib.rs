@@ -23,3 +23,7 @@ pub use kornia_tensor as tensor;
 
 #[doc(inline)]
 pub use kornia_tensor_ops as tensor_ops;
+
+#[cfg(feature = "xfeat")]
+#[doc(inline)]
+pub use kornia_xfeat;

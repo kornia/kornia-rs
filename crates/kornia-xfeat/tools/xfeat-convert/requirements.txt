@@ -1,0 +1,4 @@
+torch>=2.0
+safetensors>=0.4
+numpy>=1.24
+huggingface_hub>=0.20  # only needed for --hf-hub
