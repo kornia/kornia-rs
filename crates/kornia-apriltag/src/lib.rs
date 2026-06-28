@@ -8,7 +8,7 @@ use kornia_image::{
     Image, ImageSize,
 };
 use crate::{
-    decoder::{decode_tags, Detection},
+    decoder::{decode_tags, dedup_detections, Detection},
     errors::AprilTagError,
     family::{TagFamily, TagFamilyKind},
     quad::{fit_quads, FitQuadConfig},
@@ -293,6 +293,46 @@ impl AprilTagDecoder {
         // Step 4: Tag Decoding
         // D4 fix: refine_edges search range matches C's (quad_decimate + 1).
         let refine_edges_range = self.config.downscale_factor as f32 + 1.0;
+        let all = decode_tags(
+            src,
+            &mut quads,
+            &self.cached_families,
+            self.config.refine_edges_enabled,
+            self.config.decode_sharpening,
+            refine_edges_range,
+        );
+        Ok(dedup_detections(all))
+    }
+
+    /// Decodes all valid tags in the image without deduplication.
+    ///
+    /// Returns every detection (including multiple copies of the same id if several quads
+    /// decode to it). Use this when you need the full candidate set — e.g. for parity
+    /// testing where you want to find the detection closest to a known reference.
+    pub fn decode_all<A: ImageAllocator>(
+        &mut self,
+        src: &Image<u8, 1, A>,
+    ) -> Result<Vec<Detection>, AprilTagError> {
+        if let Some(downscale_img) = self.downscale_img.as_mut() {
+            stride_decimate(src, downscale_img, self.config.downscale_factor);
+            adaptive_threshold(
+                downscale_img,
+                &mut self.bin_img,
+                &mut self.tile_min_max,
+                self.config.min_white_black_difference,
+            )?;
+        } else {
+            adaptive_threshold(
+                src,
+                &mut self.bin_img,
+                &mut self.tile_min_max,
+                self.config.min_white_black_difference,
+            )?;
+        }
+        find_connected_components(&self.bin_img, &mut self.uf)?;
+        self.clusters = find_gradient_clusters(&self.bin_img, &self.uf);
+        let mut quads = fit_quads(&self.bin_img, &mut self.clusters, &self.config);
+        let refine_edges_range = self.config.downscale_factor as f32 + 1.0;
         Ok(decode_tags(
             src,
             &mut quads,
@@ -362,16 +402,18 @@ mod tests {
                 assert_eq!(detection.id, expected_id);
                 assert_eq!(detection.tag_family_kind, expected_tag);
 
+                // Tolerance widened to 0.3px to accommodate C-equivalent corner scaling
+                // ((c - 0.5) * factor + 0.5) which shifts initial corners by -0.5px before refine.
                 for (point, expected) in detection.quad.corners.iter().zip(expected_quads.iter()) {
                     assert!(
-                        (point.y - expected.y).abs() <= 0.1,
+                        (point.y - expected.y).abs() <= 0.3,
                         "Tag: {}, Got y: {}, Expected: {}",
                         file_name,
                         point.y,
                         expected.y
                     );
                     assert!(
-                        (point.x - expected.x).abs() <= 0.1,
+                        (point.x - expected.x).abs() <= 0.3,
                         "Tag: {}, Got x: {}, Expected: {}",
                         file_name,
                         point.x,

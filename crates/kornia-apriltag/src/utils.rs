@@ -181,13 +181,14 @@ pub(crate) fn value_for_pixel<A: ImageAllocator>(
 ) -> Option<f32> {
     let src_slice = src.as_slice();
 
-    let x1 = (p.x - 0.5).floor() as isize;
-    let x2 = (p.x - 0.5).ceil() as isize;
-    let x = p.x - 0.5 - x1 as f32;
+    // Match C: int xi = x; float X = x - xi; (no -0.5 offset)
+    let x1 = p.x.floor() as isize;
+    let x2 = x1 + 1;
+    let x = p.x - x1 as f32;
 
-    let y1 = (p.y - 0.5).floor() as isize;
-    let y2 = (p.y - 0.5).ceil() as isize;
-    let y = p.y - 0.5 - y1 as f32;
+    let y1 = p.y.floor() as isize;
+    let y2 = y1 + 1;
+    let y = p.y - y1 as f32;
 
     if x1 < 0 || x2 >= src.width() as isize || y1 < 0 || y2 >= src.height() as isize {
         return None;
@@ -302,14 +303,16 @@ mod tests {
     fn test_value_for_pixel() -> Result<(), Box<dyn std::error::Error>> {
         let src = read_image_png_mono8("../../tests/data/apriltag.png")?;
 
+        // Expected values updated for C-equivalent sampling (no -0.5 offset).
+        // At integer coordinates, bilinear reduces to exact pixel value.
         assert_eq!(
             value_for_pixel(&src, kornia_algebra::Vec2F32::new(15.0, 15.0)),
-            Some(191.25)
+            Some(255.0)
         );
 
         assert_eq!(
             value_for_pixel(&src, kornia_algebra::Vec2F32::new(3.0, 15.0)),
-            Some(127.5)
+            Some(0.0)
         );
 
         assert_eq!(

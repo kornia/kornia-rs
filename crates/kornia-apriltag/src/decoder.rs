@@ -287,6 +287,8 @@ impl QuickDecode {
 /// Represents a detected tag in the image, including its family, ID, decoding quality, and geometric information.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Detection {
+    /// Index of the tag family in the families slice (used for dedup).
+    pub _family_idx: usize,
     /// Reference to the tag family this detection belongs to.
     pub tag_family_kind: TagFamilyKind,
     /// The decoded tag ID.
@@ -387,7 +389,7 @@ impl SharpeningBuffer {
 /// # Returns
 ///
 /// Returns a vector of `Detection` containing information about each successfully decoded tag.
-pub fn decode_tags<A: ImageAllocator + Sync>(
+pub fn decode_tags<A: ImageAllocator>(
     src: &Image<u8, 1, A>,
     quads: &mut [Quad],
     tag_families: &[(TagFamilyKind, TagFamily)],
@@ -395,82 +397,73 @@ pub fn decode_tags<A: ImageAllocator + Sync>(
     decode_sharpening: f32,
     refine_edges_range: f32,
 ) -> Vec<Detection> {
-    let raw: Vec<(usize, Detection)> = quads
-        .par_iter_mut()
-        .flat_map_iter(|quad| {
-            if refine_edges_enabled {
-                refine_edges(src, quad, refine_edges_range);
+    let mut all: Vec<Detection> = Vec::new();
+
+    quads.iter_mut().for_each(|quad| {
+        // Match C's pipeline: refine edges first, then compute homography and decode.
+        if refine_edges_enabled {
+            refine_edges(src, quad, refine_edges_range);
+        }
+
+        if !quad.update_homographies() {
+            return;
+        }
+
+        let mut gmp = GrayModelPair::new();
+
+        for (fidx, (kind, family)) in tag_families.iter().enumerate() {
+            if family.reversed_border != quad.reversed_border {
+                continue;
             }
 
-            if !quad.update_homographies() {
-                return Vec::new();
-            }
+            gmp.reset();
+            let mut entry = QuickDecodeEntry::default();
 
-            let mut gmp = GrayModelPair::new();
-            let mut local: Vec<(usize, Detection)> = Vec::new();
+            let decision_margin =
+                quad_decode(src, family, quad, decode_sharpening, &mut entry, &mut gmp);
+            if let Some(decision_margin) = decision_margin {
+                if decision_margin >= 0.0 && entry.hamming < u8::MAX {
+                    let theta = entry.rotation as f32 * PI / 2.0;
+                    let c = theta.cos();
+                    let s = theta.sin();
+                    let r = Mat3F32::from_cols_array(&[c, s, 0.0, -s, c, 0.0, 0.0, 0.0, 1.0]);
+                    quad.homography *= r;
+                    let center = quad.homography_project(0.0, 0.0);
 
-            for (fidx, (kind, family)) in tag_families.iter().enumerate() {
-                if family.reversed_border != quad.reversed_border {
-                    continue;
-                }
-
-                gmp.reset();
-                let mut entry = QuickDecodeEntry::default();
-
-                let decision_margin =
-                    quad_decode(src, family, quad, decode_sharpening, &mut entry, &mut gmp);
-
-                if let Some(decision_margin) = decision_margin {
-                    if decision_margin >= 0.0 && entry.hamming < u8::MAX {
-                        let theta = entry.rotation as f32 * PI / 2.0;
-                        let c = theta.cos();
-                        let s = theta.sin();
-
-                        let r = Mat3F32::from_cols_array(&[
-                            c, s, 0.0, -s, c, 0.0, 0.0, 0.0, 1.0,
-                        ]);
-
-                        let mut quad_clone = quad.clone();
-                        quad_clone.homography *= r;
-                        let center = quad_clone.homography_project(0.0, 0.0);
-
-                        local.push((
-                            fidx,
-                            Detection {
-                                tag_family_kind: kind.clone(),
-                                id: entry.id,
-                                hamming: entry.hamming,
-                                decision_margin,
-                                center,
-                                quad: quad_clone,
-                            },
-                        ));
-                    }
+                    all.push(Detection {
+                        _family_idx: fidx,
+                        tag_family_kind: kind.clone(),
+                        id: entry.id,
+                        hamming: entry.hamming,
+                        decision_margin,
+                        center,
+                        quad: quad.clone(),
+                    });
                 }
             }
+        }
+    });
 
-            local
-        })
-        .collect();
+    all
+}
 
-    // Dedup: keep best (lowest hamming, then highest decision_margin) per (family_idx, tag_id)
-    let mut best: FxHashMap<(usize, u16), Detection> = FxHashMap::default();
-    for (fidx, d) in raw {
-        let key = (fidx, d.id);
-        match best.get_mut(&key) {
-            None => {
-                best.insert(key, d);
-            }
+/// Deduplicates a list of detections, keeping the best (lowest hamming, then highest margin)
+/// per `(family_idx, id)` pair — matching C's `apriltag_detect` dedup behaviour.
+pub fn dedup_detections(all: Vec<Detection>) -> Vec<Detection> {
+    let mut dedup: FxHashMap<(usize, u16), Detection> = FxHashMap::default();
+    for det in all {
+        match dedup.get_mut(&(det._family_idx, det.id)) {
+            None => { dedup.insert((det._family_idx, det.id), det); }
             Some(prev) => {
-                if d.hamming < prev.hamming
-                    || (d.hamming == prev.hamming && d.decision_margin > prev.decision_margin)
+                if det.hamming < prev.hamming
+                    || (det.hamming == prev.hamming && det.decision_margin > prev.decision_margin)
                 {
-                    *prev = d;
+                    *prev = det;
                 }
             }
         }
     }
-    best.into_values().collect()
+    dedup.into_values().collect()
 }
 
 /// Refines the edges of a quadrilateral in the image by adjusting its corners based on local image gradients.
@@ -521,59 +514,47 @@ fn refine_edges<A: ImageAllocator>(src: &Image<u8, 1, A>, quad: &mut Quad, range
             const STEPS_PER_UNIT: usize = 4;
             const STEP_LENGTH: f32 = 1.0 / STEPS_PER_UNIT as f32;
             let max_steps: usize = (2.0 * range / STEP_LENGTH).round() as usize + 1;
-            const DELTA: f32 = 0.5;
 
             const GRANGE: f32 = 1.0;
 
             (0..max_steps).for_each(|step| {
                 let n = -range + STEP_LENGTH * step as f32;
 
-                let x1 = x0 + (n + GRANGE) * nx - DELTA;
-                let y1 = y0 + (n + GRANGE) * ny - DELTA;
+                // Match C: no sub-pixel offset, sample the pixel at the truncated position.
+                let x1 = x0 + (n + GRANGE) * nx;
+                let y1 = y0 + (n + GRANGE) * ny;
 
-                let (x1i, a1) = (x1.trunc(), x1.fract());
-                let (y1i, b1) = (y1.trunc(), y1.fract());
+                let x1i = x1 as isize;
+                let y1i = y1 as isize;
 
-                if x1i < 0.0
-                    || y1i < 0.0
-                    || x1i + 1.0 >= src.width() as f32
-                    || y1i + 1.0 >= src.height() as f32
+                if x1i < 0
+                    || y1i < 0
+                    || x1i >= src.width() as isize
+                    || y1i >= src.height() as isize
                 {
                     return;
                 }
 
-                let x2 = x0 + (n - GRANGE) * nx - DELTA;
-                let y2 = y0 + (n - GRANGE) * ny - DELTA;
+                let x2 = x0 + (n - GRANGE) * nx;
+                let y2 = y0 + (n - GRANGE) * ny;
 
-                let (x2i, a2) = (x2.trunc(), x2.fract());
-                let (y2i, b2) = (y2.trunc(), y2.fract());
+                let x2i = x2 as isize;
+                let y2i = y2 as isize;
 
-                if x2i < 0.0
-                    || y2i < 0.0
-                    || x2i + 1.0 >= src.width() as f32
-                    || y2i + 1.0 >= src.height() as f32
+                if x2i < 0
+                    || y2i < 0
+                    || x2i >= src.width() as isize
+                    || y2i >= src.height() as isize
                 {
                     return;
                 }
 
-                let (x1i, x2i, y1i, y2i) = (x1i as usize, x2i as usize, y1i as usize, y2i as usize);
+                let g1 = src_slice[y1i as usize * src.width() + x1i as usize] as f32;
+                let g2 = src_slice[y2i as usize * src.width() + x2i as usize] as f32;
 
-                let top_left_idx = y1i * src.width() + x1i;
-                let bottom_left_idx = (y1i + 1) * src.width() + x1i;
-
-                let g1 = (1.0 - a1) * (1.0 - b1) * src_slice[top_left_idx] as f32
-                    + a1 * (1.0 - b1) * src_slice[top_left_idx + 1] as f32
-                    + (1.0 - a1) * b1 * src_slice[bottom_left_idx] as f32
-                    + a1 * b1 * src_slice[bottom_left_idx + 1] as f32;
-
-                let top_left_idx = y2i * src.width() + x2i;
-                let bottom_left_idx = (y2i + 1) * src.width() + x2i;
-
-                let g2 = (1.0 - a2) * (1.0 - b2) * src_slice[top_left_idx] as f32
-                    + a2 * (1.0 - b2) * src_slice[top_left_idx + 1] as f32
-                    + (1.0 - a2) * b2 * src_slice[bottom_left_idx] as f32
-                    + a2 * b2 * src_slice[bottom_left_idx + 1] as f32;
-
+                // Match C: reject samples where the gradient is "backwards".
+                // With outward-pointing normal (screen-CW winding), g1 is on the bright
+                // outer border and g2 is on the dark interior, so g1 >= g2 for valid edges.
                 if g1 < g2 {
                     return;
                 }
@@ -732,7 +713,7 @@ fn quad_decode<A: ImageAllocator>(
             start_y: tag_family.width_at_border as f32 + 0.5,
             step_x: 1.0,
             step_y: 0.0,
-            is_white: false,
+            is_white: true,
         },
 
         // bottom black row
@@ -782,20 +763,23 @@ fn quad_decode<A: ImageAllocator>(
         });
     });
 
-    gray_model_pair.white_model.solve().ok()?;
+    if gray_model_pair.white_model.solve().is_err() {
+        return None;
+    }
     if tag_family.width_at_border > 1 {
-        gray_model_pair.black_model.solve().ok()?;
+        if gray_model_pair.black_model.solve().is_err() {
+            return None;
+        }
     } else {
         gray_model_pair.black_model.c.x = 0.0;
         gray_model_pair.black_model.c.y = 0.0;
         gray_model_pair.black_model.c.z = gray_model_pair.black_model.b.z / 4.0;
     }
 
-    if (gray_model_pair.white_model.interpolate(0.0, 0.0)
-        - gray_model_pair.black_model.interpolate(0.0, 0.0)
-        < 0.0)
-        != tag_family.reversed_border
-    {
+    let white00 = gray_model_pair.white_model.interpolate(0.0, 0.0);
+    let black00 = gray_model_pair.black_model.interpolate(0.0, 0.0);
+
+    if (white00 - black00 < 0.0) != tag_family.reversed_border {
         return None;
     }
 
@@ -927,6 +911,7 @@ pub fn sharpen(sharpening_buffer: &mut SharpeningBuffer, decode_sharpening: f32,
 /// * `rcode` - The codeword to look up.
 /// * `entry` - Mutable reference to a `QuickDecodeEntry` to store the result.
 fn quick_decode_codeword(tag_family: &TagFamily, mut rcode: usize, entry: &mut QuickDecodeEntry) {
+    let orig = rcode;
     if let ControlFlow::Break(_) = (0..4).try_for_each(|ridx| {
         if let Some(mut decoded) = tag_family.quick_decode.decode(rcode, &tag_family.code_data) {
             decoded.rotation = ridx as u8;
@@ -1035,8 +1020,9 @@ mod tests {
 
         assert_eq!(tags.len(), 1);
         assert_eq!(tags[0].id, 23);
-        assert!((tags[0].center.x - 15.0).abs() < EPSILON);
-        assert!((tags[0].center.y - 15.0).abs() < EPSILON);
+        // Center tolerance relaxed to 0.5px — nearest-neighbor refine_edges shifts corners ~0.1px.
+        assert!((tags[0].center.x - 15.0).abs() < 0.5);
+        assert!((tags[0].center.y - 15.0).abs() < 0.5);
         assert_eq!(tags[0].hamming, 0);
         assert_eq!(tags[0].tag_family_kind, TagFamilyKind::Tag36H11);
 
@@ -1127,11 +1113,12 @@ mod tests {
 
         // Pass range=2.0 (no decimation → downscale_factor=1 → range = 1+1 = 2.0).
         refine_edges(&src, &mut quad, 2.0);
+        // Expected corners after nearest-neighbor refine_edges (C-equivalent sampling).
         let expected_corners = [
-            Vec2F32::new(26.612904, 3.387097),
-            Vec2F32::new(26.612904, 26.612904),
-            Vec2F32::new(3.387097, 26.612904),
-            Vec2F32::new(3.387097, 3.387096),
+            Vec2F32::new(26.5, 3.375),
+            Vec2F32::new(26.5, 26.5),
+            Vec2F32::new(3.375, 26.5),
+            Vec2F32::new(3.375, 3.375),
         ];
 
         for (i, expected) in expected_corners.iter().enumerate() {
@@ -1211,7 +1198,8 @@ mod tests {
             &mut gray_model_pair,
         );
 
-        assert_eq!(d, Some(225.50317));
+        // Margin updated for C-equivalent value_for_pixel (no -0.5 offset).
+        assert_eq!(d, Some(239.0625));
 
         Ok(())
     }

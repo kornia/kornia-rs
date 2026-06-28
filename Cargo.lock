@@ -370,6 +370,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "apriltag-pose"
+version = "0.1.14"
+dependencies = [
+ "argh",
+ "kornia",
+ "kornia-3d",
+ "kornia-apriltag",
+]
+
+[[package]]
 name = "apriltag-sys"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8094,10 +8104,13 @@ dependencies = [
  "apriltag 0.4.0",
  "criterion 0.8.2",
  "image",
+ "kornia-3d",
  "kornia-algebra",
  "kornia-image",
  "kornia-imgproc",
  "kornia-io",
+ "rayon",
+ "rustc-hash 2.1.2",
  "thiserror 2.0.18",
 ]
 

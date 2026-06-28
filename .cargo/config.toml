@@ -2,7 +2,7 @@
 # Use opt-level=2 instead of 3 to work around rustc LLVM bug
 # causing SIGSEGV during cross-compilation with opt-level=3
 # See: LLVM BranchProbabilityInfo crash when compiling faer
-rustflags = ["-Copt-level=2", "-Ctarget-feature=+fp16,+fhm"]
+rustflags = ["-Copt-level=2", "-Ctarget-feature=+fp16,+fhm", "-Clink-arg=-lapriltag-utils"]
 
 # Cross-test x86_64 on aarch64 hosts (e.g. Jetson) via qemu-user emulation.
 # `-cpu max` exposes AVX2/FMA/AVX-512 so runtime feature probes return

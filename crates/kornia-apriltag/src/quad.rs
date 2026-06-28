@@ -6,7 +6,6 @@ use crate::{
 use kornia_algebra::{Mat3F32, Vec3F32};
 use kornia_image::{allocator::ImageAllocator, Image};
 use kornia_imgproc::filter::kernels::gaussian_kernel_1d;
-use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 use std::{
     f32::{self, consts::PI},
@@ -119,38 +118,41 @@ impl Quad {
 ///
 /// A vector of detected `Quad` structures.
 // TODO: Support multiple tag families
-pub fn fit_quads<A: ImageAllocator + Sync>(
+pub fn fit_quads<A: ImageAllocator>(
     src: &Image<Pixel, 1, A>,
     clusters: &mut FxHashMap<(usize, usize), Vec<GradientInfo>>,
     config: &DecodeTagsConfig,
 ) -> Vec<Quad> {
     let max_cluster_len = 4 * (src.width() + src.height());
+    let mut quads = Vec::new();
 
-    clusters
-        .par_iter_mut()
-        .filter(|(_, cluster)| {
-            cluster.len() >= config.fit_quad_config.min_cluster_pixels
-                && cluster.len() <= max_cluster_len
-        })
-        .filter_map(|(_, cluster)| {
-            let mut quad = fit_single_quad(
-                src,
-                cluster,
-                config.min_tag_width,
-                config.normal_border,
-                config.reversed_border,
-                &config.fit_quad_config,
-            )?;
+    clusters.iter_mut().for_each(|(_, cluster)| {
+        if cluster.len() < config.fit_quad_config.min_cluster_pixels
+            || cluster.len() > max_cluster_len
+        {
+            return;
+        }
+        if let Some(mut quad) = fit_single_quad(
+            src,
+            cluster,
+            config.min_tag_width,
+            config.normal_border,
+            config.reversed_border,
+            &config.fit_quad_config,
+        ) {
             if config.downscale_factor > 1 {
                 let downscale_factor = config.downscale_factor as f32;
+                // Match C: q->p[j][0] = (q->p[j][0] - 0.5) * quad_decimate + 0.5
                 quad.corners.iter_mut().for_each(|c| {
-                    c.x *= downscale_factor;
-                    c.y *= downscale_factor;
+                    c.x = (c.x - 0.5) * downscale_factor + 0.5;
+                    c.y = (c.y - 0.5) * downscale_factor + 0.5;
                 });
             }
-            Some(quad)
-        })
-        .collect()
+            quads.push(quad);
+        }
+    });
+
+    quads
 }
 
 /// Fits a single quadrilateral (quad) to a cluster of gradient information in the image.
@@ -307,6 +309,8 @@ fn fit_single_quad<A: ImageAllocator>(
         return None;
     };
 
+    // Slope sort produces CW-in-image corners [TR,BR,BL,TL], matching C's internal ordering.
+
     let mut area = 0.0f32;
 
     let mut length = [0f32; 3];
@@ -357,9 +361,11 @@ fn fit_single_quad<A: ImageAllocator>(
         let cos_dtheta =
             (dx1 * dx2 + dy1 * dy2) / ((dx1 * dx1 + dy1 * dy1) * (dx2 * dx2 + dy2 * dy2)).sqrt();
 
-        if !(-config.cos_critical_rad..=config.cos_critical_rad).contains(&cos_dtheta)
-            || dx1 * dy2 < dy1 * dx2
-        {
+        // Reject screen-CCW quads (negative cross product in image coords = wrong winding).
+        // Slope sort gives screen-CW [TR,BR,BL,TL]; cross product is positive for screen-CW.
+        let cross_cond = dx1 * dy2 < dy1 * dx2;
+        let cos_cond = !(-config.cos_critical_rad..=config.cos_critical_rad).contains(&cos_dtheta);
+        if cos_cond || cross_cond {
             return ControlFlow::Break(());
         }
 

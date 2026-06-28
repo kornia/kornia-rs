@@ -262,12 +262,16 @@ pub fn find_gradient_clusters<A: ImageAllocator>(
         })
         .collect();
 
-    // Merge thread-local maps into one.
+    // Merge thread-local maps into one, preserving row-major (y, x) insertion order
+    // so that the slope-sort in fit_single_quad has a stable, deterministic tiebreak.
     let mut clusters: FxHashMap<(usize, usize), Vec<GradientInfo>> = FxHashMap::default();
     for map in local_maps {
         for (key, mut entries) in map {
             clusters.entry(key).or_default().append(&mut entries);
         }
+    }
+    for entries in clusters.values_mut() {
+        entries.sort_unstable_by(|a, b| a.pos.y.cmp(&b.pos.y).then(a.pos.x.cmp(&b.pos.x)));
     }
     clusters
 }
