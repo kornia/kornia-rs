@@ -30,3 +30,7 @@ pub mod resize;
 /// Native CUDA downscale kernels using `__ldg` read-only cache (feature `gpu-cuda`).
 #[cfg(feature = "gpu-cuda")]
 pub mod resize_cuda;
+
+/// Hardware bilinear resize via CUDA texture objects (feature `gpu-cuda`).
+#[cfg(feature = "gpu-cuda")]
+pub mod resize_cuda_tex;
