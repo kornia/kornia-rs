@@ -7,6 +7,7 @@ pub mod bow;
 pub mod constructor;
 pub mod io;
 pub mod metric;
+pub mod orb_slam3;
 
 pub use bow::{BoW, DirectIndex};
 use metric::{DistanceMetric, MetricType};
