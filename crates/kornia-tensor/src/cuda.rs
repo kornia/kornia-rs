@@ -315,6 +315,27 @@ impl<'a> CudaLaunchBuilder<'a> {
             .map(|_| ()) // discard optional (CudaEvent, CudaEvent) timing pair
             .map_err(|e| CudaError::Driver(e.to_string()))
     }
+
+    /// Launch the kernel with a caller-supplied [`LaunchConfig`].
+    ///
+    /// Use this when the kernel requires a 2-D or 3-D grid (e.g. image kernels
+    /// where `blockIdx.x/y` index the output pixel column/row).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CudaError::Driver`] on CUDA launch failure.
+    pub fn launch_2d(
+        mut self,
+        _width: u32,
+        _height: u32,
+        cfg: LaunchConfig,
+    ) -> Result<(), CudaError> {
+        // SAFETY: The caller is responsible for ensuring the kernel arguments match
+        // the kernel's parameter list in type, count, and alignment.
+        unsafe { self.inner.launch(cfg) }
+            .map(|_| ())
+            .map_err(|e| CudaError::Driver(e.to_string()))
+    }
 }
 
 // ── zeros_cuda ────────────────────────────────────────────────────────────────

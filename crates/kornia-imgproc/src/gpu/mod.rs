@@ -1,10 +1,13 @@
-//! Experimental CubeCL-backed image processing kernels (feature `gpu-cubecl`).
+//! Experimental GPU-accelerated image processing kernels.
 //!
-//! This module is the first home for GPU-accelerated operations in `kornia-imgproc`.
-//! The current scope is device-to-device kernels only; host-device transfer APIs
-//! (`to_device` / `to_host`) will be added in a later PR.
+//! Two backends are supported, each behind its own feature flag:
 //!
-//! # Usage
+//! | Feature      | Backend        | Use for                              |
+//! |--------------|----------------|--------------------------------------|
+//! | `gpu-cubecl` | CubeCL/CUDA    | General kernels; best for upscale    |
+//! | `gpu-cuda`   | native NVRTC   | Downscale; uses `__ldg` (read-only cache) |
+//!
+//! # Usage (CubeCL)
 //!
 //! ```no_run
 //! use cubecl::Runtime;
@@ -16,8 +19,14 @@
 //! // allocate device buffers for a 1920×1080 image …
 //! ```
 
-/// GPU-accelerated color conversion kernels.
+/// GPU-accelerated color conversion kernels (CubeCL).
+#[cfg(feature = "gpu-cubecl")]
 pub mod color;
 
-/// GPU-accelerated resize kernels (nearest-neighbor and bilinear, f32).
+/// GPU-accelerated resize kernels via CubeCL (nearest-neighbor and bilinear, f32).
+#[cfg(feature = "gpu-cubecl")]
 pub mod resize;
+
+/// Native CUDA downscale kernels using `__ldg` read-only cache (feature `gpu-cuda`).
+#[cfg(feature = "gpu-cuda")]
+pub mod resize_cuda;
