@@ -11,7 +11,6 @@ pub fn run_video_demo(
     prompt: &str,
     max_tokens: usize,
 ) {
-    use kornia_tensor::host_alloc;
     use kornia_vlm::smolvlm2::{InputMedia, Line, Message, Role, SmolVlm2, SmolVlm2Config};
 
     use crate::video::{from_video_path, VideoSamplingMethod};
@@ -59,7 +58,6 @@ pub fn run_video_demo(
             messages,
             Some(InputMedia::Video(vec![&mut video])),
             max_tokens,
-            kornia_image::allocator::host_alloc(),
         )
         .unwrap_or_else(|e| format!("Model error: {:?}", e));
 
@@ -69,7 +67,6 @@ pub fn run_video_demo(
 #[cfg(test)]
 mod tests {
     use kornia_io::{jpeg::read_image_jpeg_rgb8, png::read_image_png_rgb8};
-    use kornia_tensor::host_alloc;
     use kornia_vlm::smolvlm2::{InputMedia, Line, Message, Role, SmolVlm2, SmolVlm2Config};
     use std::path::Path;
 
@@ -132,7 +129,6 @@ mod tests {
                         }],
                         Some(InputMedia::Images(vec![image.clone()])),
                         sample_len,
-                        kornia_image::allocator::host_alloc(),
                     )
                     .unwrap_or_else(|e| format!("Inference failed: {:?}", e));
                 let duration = start_time.elapsed();
@@ -203,11 +199,8 @@ mod tests {
 
                         use crate::video::{from_video_path, VideoSamplingMethod};
                         let start_load = std::time::Instant::now();
-                        let video_result = from_video_path::<32, _>(
-                            video_path,
-                            VideoSamplingMethod::FirstN(32),
-                            kornia_image::allocator::host_alloc(),
-                        );
+                        let video_result =
+                            from_video_path::<32, _>(video_path, VideoSamplingMethod::FirstN(32));
                         let load_duration = start_load.elapsed();
                         let load_secs = load_duration.as_secs_f64();
                         load_times.push(load_secs);
@@ -239,7 +232,6 @@ mod tests {
                                         messages,
                                         Some(InputMedia::Video(vec![&mut video])),
                                         500,
-                                        kornia_image::allocator::host_alloc(),
                                     )
                                     .unwrap_or_else(|e| format!("Model error: {:?}", e));
                                 let infer_duration = start_infer.elapsed();
@@ -335,7 +327,6 @@ mod tests {
                 }],
                 Some(InputMedia::Images(vec![image.into_inner()])),
                 sample_len,
-                kornia_image::allocator::host_alloc(),
             )
             .unwrap_or_else(|e| format!("Inference failed: {:?}", e));
 

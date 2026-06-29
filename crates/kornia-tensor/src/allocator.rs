@@ -27,9 +27,7 @@ pub enum TensorAllocatorError {
     ///
     /// Returned by allocators that wrap externally-owned buffers (e.g. Arrow, GStreamer);
     /// use `from_borrowed` or a wrapping constructor instead.
-    #[error(
-        "Cannot allocate with this allocator — use from_borrowed or a wrapping constructor"
-    )]
+    #[error("Cannot allocate with this allocator — use from_borrowed or a wrapping constructor")]
     CannotAllocateForeign,
 
     /// Backend allocation failed with an error message.
@@ -54,7 +52,9 @@ pub enum TensorAllocatorError {
 ///
 /// # Thread Safety
 ///
-/// Implementations must be `Clone + Send + Sync` as tensors can be shared across threads.
+/// Implementations must be `Send + Sync` as tensors can be shared across threads. The
+/// allocator is held behind an [`AllocHandle`] (`Arc<dyn TensorAllocator>`), so it is
+/// shared by reference-count, not cloned by value.
 ///
 /// # Examples
 ///
@@ -143,28 +143,21 @@ mod tests {
 
 // ── Runtime allocator handle ──────────────────────────────────────────────────
 
-use std::sync::{Arc, OnceLock};
-
-/// Object-safe subset of [`TensorAllocator`] usable behind a trait-object pointer.
-pub trait AllocDyn: Send + Sync {
-    /// Allocates memory with the given layout.
-    fn allocate(&self, layout: Layout) -> Result<Box<dyn MemoryResource>, TensorAllocatorError>;
-}
-
-/// Every [`TensorAllocator`] is automatically an [`AllocDyn`].
-impl<A: TensorAllocator> AllocDyn for A {
-    #[inline]
-    fn allocate(&self, layout: Layout) -> Result<Box<dyn MemoryResource>, TensorAllocatorError> {
-        TensorAllocator::allocate(self, layout)
-    }
-}
+use std::sync::{Arc, LazyLock};
 
 /// A cheaply-cloneable runtime allocator reference.
-pub type AllocHandle = Arc<dyn AllocDyn>;
+///
+/// `TensorAllocator` is object-safe (one non-generic method, no `Clone` supertrait),
+/// so the handle is a plain `Arc<dyn TensorAllocator>` — no separate object-safe shim.
+pub type AllocHandle = Arc<dyn TensorAllocator>;
 
-static HOST_ALLOC: OnceLock<AllocHandle> = OnceLock::new();
+/// Process-global host allocator handle, initialised once on first use.
+///
+/// `CpuAllocator` is a stateless ZST, so a single shared `Arc` is safe to hand out to
+/// every host tensor; cloning it is one atomic increment with no per-tensor heap box.
+static HOST_ALLOC: LazyLock<AllocHandle> = LazyLock::new(|| Arc::new(CpuAllocator));
 
 /// Returns the process-global host allocator handle.
 pub fn host_alloc() -> AllocHandle {
-    HOST_ALLOC.get_or_init(|| Arc::new(CpuAllocator)).clone()
+    HOST_ALLOC.clone()
 }
