@@ -159,7 +159,7 @@ pub mod tensor;
 pub mod view;
 
 pub use crate::allocator::{
-    host_alloc, AllocDyn, AllocHandle, CpuAllocator, ForeignAllocator, TensorAllocator,
+    host_alloc, AllocDyn, AllocHandle, CpuAllocator, TensorAllocator,
 };
 pub use crate::resource::{ForeignResource, HostResource, MemoryDomain, MemoryResource};
 // Keep backward-compatible re-export: `use kornia_tensor::storage::MemoryDomain` still resolves

@@ -564,6 +564,10 @@ define_color_space!(
 // These store luma and (subsampled) chroma in a single byte buffer with non-trivial
 // layouts, so they can't be a thin `Image<T, C>` wrapper. Each carries an `ImageSize`
 // and a `Vec<u8>`, and validates its length on construction.
+//
+// HOST/CPU-ONLY: unlike `Image<T, C>` these own a plain `Vec<u8>` and carry no
+// `AllocHandle`, so they cannot live in device or custom-allocator memory. They are
+// interchange formats decoded to `Image`/`DynImage` before any allocator-aware op.
 
 /// Packed 4:2:2 YUYV (a.k.a. YUY2): byte order `Y0 U Y1 V` per 2-pixel group.
 ///

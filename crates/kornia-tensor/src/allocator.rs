@@ -23,12 +23,12 @@ pub enum TensorAllocatorError {
     #[error("Null pointer")]
     NullPointer,
 
-    /// A foreign allocator was asked to allocate memory, which it never does.
+    /// An allocator was asked to allocate memory but does not support it.
     ///
-    /// [`ForeignAllocator`] exists only as a type tag for externally-owned buffers;
-    /// calling `allocate` on it is always an error.
+    /// Returned by allocators that wrap externally-owned buffers (e.g. Arrow, GStreamer);
+    /// use `from_borrowed` or a wrapping constructor instead.
     #[error(
-        "Cannot allocate with a foreign allocator — use from_borrowed or a wrapping constructor"
+        "Cannot allocate with this allocator — use from_borrowed or a wrapping constructor"
     )]
     CannotAllocateForeign,
 
@@ -70,7 +70,7 @@ pub enum TensorAllocatorError {
 /// assert_eq!(resource.len_bytes(), 64);
 /// assert!(resource.domain().is_host_accessible());
 /// ```
-pub trait TensorAllocator: Clone + Send + Sync {
+pub trait TensorAllocator: Send + Sync {
     /// Allocates memory for a tensor with the given layout and returns an owning handle.
     ///
     /// # Arguments
@@ -84,7 +84,7 @@ pub trait TensorAllocator: Clone + Send + Sync {
     /// # Errors
     ///
     /// - [`TensorAllocatorError::NullPointer`] if the allocator returns a null pointer.
-    /// - [`TensorAllocatorError::CannotAllocateForeign`] if called on [`ForeignAllocator`].
+    /// - [`TensorAllocatorError::CannotAllocateForeign`] if the allocator wraps foreign memory.
     fn allocate(&self, layout: Layout) -> Result<Box<dyn MemoryResource>, TensorAllocatorError>;
 }
 
@@ -124,29 +124,6 @@ impl TensorAllocator for CpuAllocator {
     }
 }
 
-/// A no-op allocator for foreign (externally managed) memory.
-///
-/// Used as a type tag when wrapping memory that is owned by an external system
-/// (e.g. numpy arrays, GStreamer buffers, or other external allocations). Calling [`allocate`](TensorAllocator::allocate)
-/// on `ForeignAllocator` always returns [`TensorAllocatorError::CannotAllocateForeign`];
-/// use `from_borrowed` or a wrapping constructor instead.
-#[derive(Clone)]
-pub struct ForeignAllocator;
-
-// SAFETY: ForeignAllocator is a zero-size unit struct with no interior mutability.
-unsafe impl Send for ForeignAllocator {}
-unsafe impl Sync for ForeignAllocator {}
-
-impl TensorAllocator for ForeignAllocator {
-    /// Always returns [`TensorAllocatorError::CannotAllocateForeign`].
-    ///
-    /// Foreign allocators never allocate — they are pure type tags for externally
-    /// owned buffers.
-    fn allocate(&self, _layout: Layout) -> Result<Box<dyn MemoryResource>, TensorAllocatorError> {
-        Err(TensorAllocatorError::CannotAllocateForeign)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,23 +138,6 @@ mod tests {
         assert!(r.domain().is_host_accessible());
         // Must be zeroed.
         unsafe { assert!((0..64).all(|i| *r.as_ptr().add(i) == 0)) };
-    }
-
-    /// `ForeignAllocator::allocate` must always return `CannotAllocateForeign`.
-    #[test]
-    fn foreign_allocate_returns_error() {
-        let l = Layout::from_size_align(64, 1).unwrap();
-        match TensorAllocator::allocate(&ForeignAllocator, l) {
-            Err(TensorAllocatorError::CannotAllocateForeign) => {}
-            other => panic!("expected CannotAllocateForeign, got {:?}", other.err()),
-        }
-    }
-
-    /// Allocator types must be `Clone`.
-    #[test]
-    fn allocators_are_clone() {
-        let _a = CpuAllocator.clone();
-        let _b = ForeignAllocator.clone();
     }
 }
 
