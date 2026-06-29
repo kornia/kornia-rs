@@ -6,6 +6,7 @@ use crate::{
 use kornia_algebra::{Mat3F32, Vec3F32};
 use kornia_image::{allocator::ImageAllocator, Image};
 use kornia_imgproc::filter::kernels::gaussian_kernel_1d;
+use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 use std::{
     f32::{self, consts::PI},
@@ -110,7 +111,7 @@ impl Quad {
 ///
 /// # Arguments
 ///
-/// * `src` - The source image.
+/// * `src` - The source image. Must be `Sync` so it can be shared across Rayon threads.
 /// * `clusters` - A mutable reference to a HashMap containing clusters of `GradientInfo`.
 /// * `config` - Configuration for decoding tags.
 ///
@@ -118,41 +119,48 @@ impl Quad {
 ///
 /// A vector of detected `Quad` structures.
 // TODO: Support multiple tag families
-pub fn fit_quads<A: ImageAllocator>(
+pub fn fit_quads<A: ImageAllocator + Sync>(
     src: &Image<Pixel, 1, A>,
     clusters: &mut FxHashMap<(usize, usize), Vec<GradientInfo>>,
     config: &DecodeTagsConfig,
 ) -> Vec<Quad> {
     let max_cluster_len = 4 * (src.width() + src.height());
-    let mut quads = Vec::new();
+    let min_tag_width = config.min_tag_width;
+    let normal_border = config.normal_border;
+    let reversed_border = config.reversed_border;
+    let downscale_factor = config.downscale_factor;
+    let fit_quad_config = config.fit_quad_config;
 
-    clusters.iter_mut().for_each(|(_, cluster)| {
-        if cluster.len() < config.fit_quad_config.min_cluster_pixels
-            || cluster.len() > max_cluster_len
-        {
-            return;
-        }
-        if let Some(mut quad) = fit_single_quad(
-            src,
-            cluster,
-            config.min_tag_width,
-            config.normal_border,
-            config.reversed_border,
-            &config.fit_quad_config,
-        ) {
-            if config.downscale_factor > 1 {
-                let downscale_factor = config.downscale_factor as f32;
+    // Collect mut refs into a Vec so we get native parallel iteration (no bridge mutex).
+    let cluster_refs: Vec<&mut Vec<GradientInfo>> = clusters.values_mut().collect();
+
+    cluster_refs
+        .into_par_iter()
+        .filter_map(|cluster| {
+            if cluster.len() < fit_quad_config.min_cluster_pixels
+                || cluster.len() > max_cluster_len
+            {
+                return None;
+            }
+            let mut quad = fit_single_quad(
+                src,
+                cluster,
+                min_tag_width,
+                normal_border,
+                reversed_border,
+                &fit_quad_config,
+            )?;
+            if downscale_factor > 1 {
+                let df = downscale_factor as f32;
                 // Match C: q->p[j][0] = (q->p[j][0] - 0.5) * quad_decimate + 0.5
                 quad.corners.iter_mut().for_each(|c| {
-                    c.x = (c.x - 0.5) * downscale_factor + 0.5;
-                    c.y = (c.y - 0.5) * downscale_factor + 0.5;
+                    c.x = (c.x - 0.5) * df + 0.5;
+                    c.y = (c.y - 0.5) * df + 0.5;
                 });
             }
-            quads.push(quad);
-        }
-    });
-
-    quads
+            Some(quad)
+        })
+        .collect()
 }
 
 /// Fits a single quadrilateral (quad) to a cluster of gradient information in the image.
@@ -202,7 +210,7 @@ fn fit_single_quad<A: ImageAllocator>(
     });
 
     // Reject clusters whose bounding box is too small
-    if (x_max - x_min) * (y_max - y_min) < min_tag_width {
+    if (x_max - x_min) * (y_max - y_min) < min_tag_width as u32 {
         return None;
     }
 
@@ -254,7 +262,7 @@ fn fit_single_quad<A: ImageAllocator>(
         return None;
     }
 
-    cluster.sort_by(|a, b| a.slope.total_cmp(&b.slope));
+    cluster.sort_unstable_by(|a, b| a.slope.total_cmp(&b.slope));
 
     let lfps = compute_line_fit_prefix_sums(src, cluster);
 
@@ -448,6 +456,73 @@ fn compute_line_fit_prefix_sums<A: ImageAllocator>(
     lfps
 }
 
+/// Interior Gaussian smooth without modulo: processes `errors[half..len-half]` using
+/// plain indexing. Edge elements (wrap-around) are handled separately by the caller.
+#[cfg(not(target_arch = "aarch64"))]
+fn smooth_interior(errors: &[f32], kernel: &[f32], out: &mut [f32], half: usize, len: usize) {
+    for iy in half..len - half {
+        let mut acc = 0.0f32;
+        for (ki, &kv) in kernel.iter().enumerate() {
+            acc += errors[iy + ki - half] * kv;
+        }
+        out[iy] = acc;
+    }
+}
+
+/// NEON-vectorized interior Gaussian smooth (4 outputs per iteration).
+///
+/// For each group of 4 output pixels [iy, iy+3], tap `ki` loads 4 consecutive
+/// error values from `errors[iy-half+ki .. iy-half+ki+3]` and multiplies by the
+/// broadcast scalar `kernel[ki]`.  One `vfmaq_f32` advances all 4 outputs at once.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn smooth_interior_neon(errors: &[f32], kernel: &[f32], out: &mut [f32], half: usize, len: usize) {
+    use std::arch::aarch64::*;
+    let flen = kernel.len();
+    let interior_end = len - half;
+    let mut iy = half;
+
+    while iy + 4 <= interior_end {
+        let mut acc = vdupq_n_f32(0.0);
+        let base = errors.as_ptr().add(iy - half);
+        for ki in 0..flen {
+            // Broadcast one kernel weight; load 4 consecutive error samples for this tap.
+            let kv = vdupq_n_f32(*kernel.get_unchecked(ki));
+            let ev = vld1q_f32(base.add(ki));
+            acc = vfmaq_f32(acc, kv, ev);
+        }
+        vst1q_f32(out.as_mut_ptr().add(iy), acc);
+        iy += 4;
+    }
+    // Scalar tail (up to 3 elements).
+    while iy < interior_end {
+        let mut acc = 0.0f32;
+        for ki in 0..flen {
+            acc += *errors.get_unchecked(iy - half + ki) * *kernel.get_unchecked(ki);
+        }
+        *out.get_unchecked_mut(iy) = acc;
+        iy += 1;
+    }
+}
+
+/// Dispatch to NEON or scalar smooth_interior.
+fn smooth_interior(errors: &[f32], kernel: &[f32], out: &mut [f32], half: usize, len: usize) {
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: NEON mandatory on ARMv8-A.
+    return unsafe { smooth_interior_neon(errors, kernel, out, half, len) };
+
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        for iy in half..len - half {
+            let mut acc = 0.0f32;
+            for (ki, &kv) in kernel.iter().enumerate() {
+                acc += errors[iy + ki - half] * kv;
+            }
+            out[iy] = acc;
+        }
+    }
+}
+
 /// Segments the gradient information into four maxima corresponding to the corners of a quadrilateral.
 ///
 /// This function analyzes the error profile of line fits over the gradient information and finds
@@ -481,36 +556,105 @@ fn quad_segment_maxima(
 
     let mut errors = vec![0.0f32; len];
 
-    (0..len).for_each(|i| {
-        fit_line(
-            lfps,
-            (i + len - window_size) % len,
-            (i + window_size) % len,
-            None,
-            errors.get_mut(i),
-            None,
-        );
-    });
+    let ws = window_size;
+    let inner_end = len - ws;
+
+    // Scalar wrapping boundary elements (first ws and last ws).
+    for i in (0..ws).chain(inner_end..len) {
+        fit_line(lfps, (i + len - ws) % len, (i + ws) % len, None, errors.get_mut(i), None);
+    }
+
+    // Interior: no wrap. NEON 4-wide on aarch64, scalar elsewhere.
+    // Build padded SoA from AoS lfps. Padded: index 0 = 0 sentinel, index k+1 = lfps[k].field.
+    // sw_field[i] = soa[i+ws+1] - soa[i-ws], valid for i in ws..len-ws.
+    // Single allocation for all 6 SoA arrays to minimize malloc cost.
+    let pad = len + 1;
+    let mut soa = vec![0.0f32; 6 * pad]; // [mx | my | mxx | mxy | myy | w]
+    for k in 0..len {
+        let lk = &lfps[k];
+        soa[k + 1]         = lk.mx;
+        soa[pad + k + 1]   = lk.my;
+        soa[2*pad + k + 1] = lk.mxx;
+        soa[3*pad + k + 1] = lk.mxy;
+        soa[4*pad + k + 1] = lk.myy;
+        soa[5*pad + k + 1] = lk.w;
+    }
+
+    let n_f32 = (2 * ws + 1) as f32;
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        use std::arch::aarch64::*;
+        let p = soa.as_ptr();
+        let ep = errors.as_mut_ptr();
+        let mx_p  = p;
+        let my_p  = unsafe { p.add(pad) };
+        let mxx_p = unsafe { p.add(2 * pad) };
+        let mxy_p = unsafe { p.add(3 * pad) };
+        let myy_p = unsafe { p.add(4 * pad) };
+        let w_p   = unsafe { p.add(5 * pad) };
+
+        let n_v   = unsafe { vdupq_n_f32(n_f32) };
+        let four  = unsafe { vdupq_n_f32(4.0) };
+        let half  = unsafe { vdupq_n_f32(0.5) };
+
+        let mut i = ws;
+        while i + 4 <= inner_end {
+            unsafe {
+                let hi = i + ws + 1;
+                let lo = i - ws;
+
+                let sw_mx  = vsubq_f32(vld1q_f32(mx_p.add(hi)),  vld1q_f32(mx_p.add(lo)));
+                let sw_my  = vsubq_f32(vld1q_f32(my_p.add(hi)),  vld1q_f32(my_p.add(lo)));
+                let sw_mxx = vsubq_f32(vld1q_f32(mxx_p.add(hi)), vld1q_f32(mxx_p.add(lo)));
+                let sw_mxy = vsubq_f32(vld1q_f32(mxy_p.add(hi)), vld1q_f32(mxy_p.add(lo)));
+                let sw_myy = vsubq_f32(vld1q_f32(myy_p.add(hi)), vld1q_f32(myy_p.add(lo)));
+                let sw_w   = vsubq_f32(vld1q_f32(w_p.add(hi)),   vld1q_f32(w_p.add(lo)));
+
+                let ex    = vdivq_f32(sw_mx,  sw_w);
+                let ey    = vdivq_f32(sw_my,  sw_w);
+                let cxx   = vsubq_f32(vdivq_f32(sw_mxx, sw_w), vmulq_f32(ex, ex));
+                let cxy   = vsubq_f32(vdivq_f32(sw_mxy, sw_w), vmulq_f32(ex, ey));
+                let cyy   = vsubq_f32(vdivq_f32(sw_myy, sw_w), vmulq_f32(ey, ey));
+                let diff  = vsubq_f32(cxx, cyy);
+                let disc  = vaddq_f32(vmulq_f32(diff, diff), vmulq_f32(four, vmulq_f32(cxy, cxy)));
+                let eig   = vmulq_f32(half, vsubq_f32(vaddq_f32(cxx, cyy), vsqrtq_f32(disc)));
+                vst1q_f32(ep.add(i), vmulq_f32(eig, n_v));
+            }
+            i += 4;
+        }
+        while i < inner_end {
+            fit_line(lfps, i - ws, i + ws, None, errors.get_mut(i), None);
+            i += 1;
+        }
+    }
+
+    #[cfg(not(target_arch = "aarch64"))]
+    for i in ws..inner_end {
+        fit_line(lfps, i - ws, i + ws, None, errors.get_mut(i), None);
+    }
 
     const SIGMA: f32 = 1.0;
     const CUTOFF: f32 = 0.05;
 
     let filter_size = (2.0 * ((-(CUTOFF.ln()) * 2.0 * SIGMA * SIGMA).sqrt() + 1.0) + 1.0) as usize;
+    let half = filter_size / 2;
     let mut smoothed_errors = vec![0.0f32; len];
 
     let gaussian_kernel = gaussian_kernel_1d(filter_size, SIGMA);
 
-    (0..len).for_each(|iy| {
+    // Edge elements that wrap around (2×half elements at the ends): use modulo.
+    for iy in (0..half).chain(len - half..len) {
         let mut acc = 0.0f32;
-
-        (0..filter_size).for_each(|i| {
-            let idx = (iy as isize + i as isize - filter_size as isize / 2 + len as isize)
-                .rem_euclid(gradient_infos.len() as isize) as usize;
+        for i in 0..filter_size {
+            let idx = (iy + i + len - half) % len;
             acc += errors[idx] * gaussian_kernel[i];
-        });
-
+        }
         smoothed_errors[iy] = acc;
-    });
+    }
+
+    // Interior elements: no wrap-around → fast path without division.
+    smooth_interior(&errors, &gaussian_kernel, &mut smoothed_errors, half, len);
 
     errors = smoothed_errors;
 
@@ -809,7 +953,7 @@ mod tests {
         let mut uf = UnionFind::new(src.as_slice().len());
         adaptive_threshold(&src, &mut bin, &mut tile_min_max, 20)?;
         find_connected_components(&bin, &mut uf)?;
-        let mut clusters = find_gradient_clusters(&bin, &uf);
+        let mut clusters = find_gradient_clusters(&bin, &mut uf);
 
         let mut decode_tag_config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag36H11])?;
         decode_tag_config.downscale_factor = 1;
@@ -899,7 +1043,7 @@ mod tests {
         let mut uf = UnionFind::new(src.as_slice().len());
         adaptive_threshold(&src, &mut bin, &mut tile_min_max, 20)?;
         find_connected_components(&bin, &mut uf)?;
-        let clusters = find_gradient_clusters(&bin, &uf);
+        let clusters = find_gradient_clusters(&bin, &mut uf);
 
         // Find the largest cluster to test with
         let largest_cluster = clusters

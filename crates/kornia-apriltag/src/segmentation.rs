@@ -5,79 +5,353 @@ use rustc_hash::FxHashMap;
 
 use crate::{
     errors::AprilTagError,
-    union_find::UnionFind,
+    union_find::{ParStripUF, UnionFind},
     utils::{Pixel, Point2d},
 };
 use kornia_image::{allocator::ImageAllocator, Image};
 
+/// Returns `Some(color)` if every pixel in [row_off+1 .. row_off+width-1] and the
+/// corresponding top row [top_off+1 .. top_off+width-1] are all the same non-Skip
+/// color (Black or White). Returns `None` if the rows are mixed or contain Skip pixels.
+///
+/// On aarch64 the check is done 16 pixels at a time with NEON.
+#[inline]
+fn solid_row_color(
+    src_data: &[Pixel],
+    row_off: usize,
+    top_off: usize,
+    width: usize,
+) -> Option<Pixel> {
+    let n = width - 2; // inner columns
+    if n == 0 {
+        return None;
+    }
+    let first = src_data[row_off + 1];
+    if first == Pixel::Skip {
+        return None;
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        use std::arch::aarch64::*;
+        let color_v = unsafe { vdupq_n_u8(first as u8) };
+        let curr_ptr = src_data.as_ptr() as *const u8;
+        let mut i = 0usize;
+        unsafe {
+            while i + 16 <= n {
+                let c = vld1q_u8(curr_ptr.add(row_off + 1 + i));
+                let t = vld1q_u8(curr_ptr.add(top_off + 1 + i));
+                let c_ok = vceqq_u8(c, color_v);
+                let t_ok = vceqq_u8(t, color_v);
+                if vminvq_u8(vandq_u8(c_ok, t_ok)) != 0xFF {
+                    return None;
+                }
+                i += 16;
+            }
+        }
+        // Scalar tail.
+        while i < n {
+            if src_data[row_off + 1 + i] != first || src_data[top_off + 1 + i] != first {
+                return None;
+            }
+            i += 1;
+        }
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        for i in 0..n {
+            if src_data[row_off + 1 + i] != first || src_data[top_off + 1 + i] != first {
+                return None;
+            }
+        }
+    }
+
+    Some(first)
+}
+
+/// Extend a horizontal run starting at `row_off + x`.
+///
+/// Bulk-writes `run_root` to `par_uf.parent` for all pixels in the run, and
+/// adds the run length to `par_uf.size[run_root]` in a single operation instead
+/// of per-pixel increments.  On aarch64 the inner loop uses NEON u32×4 stores
+/// for the parent fill.
+///
+/// Returns the number of pixels consumed (0 if the run ends immediately).
+#[inline]
+fn extend_run_bulk(
+    src_data: &[Pixel],
+    par_uf: &mut ParStripUF<'_>,
+    row_off: usize,
+    offset: usize,
+    x_start: usize,
+    x_limit: usize,
+    pixel: Pixel,
+    run_root: usize,
+) -> usize {
+    // Count consecutive same-color pixels.
+    let avail = x_limit.saturating_sub(x_start);
+    let mut len = 0usize;
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        use std::arch::aarch64::*;
+        let pv = unsafe { vdupq_n_u8(pixel as u8) };
+        let src_ptr = src_data.as_ptr() as *const u8;
+        // 16-wide scan.
+        while len + 16 <= avail {
+            let v = unsafe { vld1q_u8(src_ptr.add(row_off + x_start + len)) };
+            let eq = unsafe { vceqq_u8(v, pv) };
+            if unsafe { vminvq_u8(eq) } != 0xFF {
+                break;
+            }
+            len += 16;
+        }
+    }
+    // Scalar tail (or entire scan on non-aarch64).
+    while len < avail && src_data[row_off + x_start + len] == pixel {
+        len += 1;
+    }
+
+    if len == 0 {
+        return 0;
+    }
+
+    // Bulk-write run_root to parent array.
+    let dst = &mut par_uf.parent[row_off + x_start - offset..row_off + x_start + len - offset];
+    let rv = run_root as u32;
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        use std::arch::aarch64::*;
+        let rv4 = unsafe { vdupq_n_u32(rv) };
+        let ptr = dst.as_mut_ptr();
+        let mut k = 0usize;
+        while k + 4 <= len {
+            unsafe { vst1q_u32(ptr.add(k), rv4) };
+            k += 4;
+        }
+        while k < len {
+            unsafe { *ptr.add(k) = rv };
+            k += 1;
+        }
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    dst.fill(rv);
+
+    // Single size increment.
+    par_uf.size[run_root - offset] += len as u32;
+    len
+}
+
+/// Phase 1 inner loop for CC.
+///
+/// Two-pass per row:
+/// 1. Horizontal run-based pass: scan left-to-right, doing ONE UF connect for the first
+///    pixel of each same-color run (to connect it to its left neighbor, including x=0),
+///    then extend the run via direct parent writes (O(1) per pixel instead of O(α) UF).
+/// 2. Top/diagonal-connection pass: UF connect per top-crossing.
+fn cc_strip_phase1(src_data: &[Pixel], width: usize, y_start: usize, y_end: usize, par_uf: &mut ParStripUF<'_>) {
+    let offset = par_uf.offset;
+    for y in y_start..y_end {
+        let row_off = y * width;
+
+        // Pass 1: horizontal run-based parent assignment.
+        let mut x = 1usize;
+        while x < width - 1 {
+            let i = row_off + x;
+            let pixel = src_data[i];
+            if pixel == Pixel::Skip {
+                x += 1;
+                continue;
+            }
+            let left_i = i - 1;
+            if pixel == src_data[left_i] && src_data[left_i] != Pixel::Skip {
+                // Continuing a same-color run. Initialize left_i lazily if needed,
+                // then look up its root (O(1) since left was already processed or fresh).
+                if par_uf.parent[left_i - offset] == u32::MAX {
+                    par_uf.parent[left_i - offset] = left_i as u32;
+                }
+                let run_root = par_uf.get_representative(left_i);
+                // Direct parent write — skip UF union for subsequent run pixels.
+                par_uf.parent[i - offset] = run_root as u32;
+                par_uf.size[run_root - offset] += 1;
+                x += 1;
+                // Extend run: bulk-write parent and count length for single size add.
+                let run_len = extend_run_bulk(src_data, par_uf, row_off, offset, x, width - 1, pixel, run_root);
+                x += run_len;
+            } else {
+                // New run — initialize as self-root if not already set.
+                if par_uf.parent[i - offset] == u32::MAX {
+                    par_uf.parent[i - offset] = i as u32;
+                }
+                x += 1;
+            }
+        }
+
+        // Pass 2: top and diagonal UF connects (only when the row above is in this strip).
+        if y > y_start && y > 0 {
+            let top_off = (y - 1) * width;
+
+            // Solid-row fast path: if the entire inner width of this row and the row
+            // above are the same single color, all UF connects for x≥2 are no-ops
+            // (they share one run root from Pass 1 and one root from the top row).
+            // Black solid rows: one connect(x=1) suffices.
+            // White solid rows: process x=1 normally (top-left border diagonal), skip x≥2.
+            let solid = solid_row_color(src_data, row_off, top_off, width);
+            if let Some(solid_pixel) = solid {
+                // x=1: process normally (handles border diagonals for White).
+                let x = 1usize;
+                let i = row_off + x;
+                let top_i = top_off + x;
+                if src_data[i] != Pixel::Skip {
+                    if src_data[i] == src_data[top_i] { par_uf.connect(i, top_i); }
+                    if solid_pixel == Pixel::White {
+                        let top_left_i = top_i - 1;
+                        if src_data[i] == src_data[top_left_i] { par_uf.connect(i, top_left_i); }
+                        let top_right_i = top_i + 1;
+                        if src_data[top_i] != src_data[top_right_i] && src_data[i] == src_data[top_right_i] {
+                            par_uf.connect(i, top_right_i);
+                        }
+                    }
+                }
+                // x≥2: all no-ops (both row's pixels share a single component root
+                // after the x=1 connect above), so skip the rest.
+            } else {
+                // Run-interior skip: track (last_pixel, last_top_pixel) in registers.
+                // When current pixel is same color as previous (same horizontal run) AND
+                // top pixel is same as previous top pixel (same top run) AND we already
+                // called connect() for that run pair: the straight top-connect is a no-op.
+                let mut last_connected = false;
+                let mut last_pixel = Pixel::Skip;
+                let mut last_top_pixel = Pixel::Skip;
+                for x in 1..width - 1 {
+                    let i = row_off + x;
+                    let pixel = src_data[i];
+                    if pixel == Pixel::Skip {
+                        last_connected = false;
+                        last_pixel = Pixel::Skip;
+                        last_top_pixel = Pixel::Skip;
+                        continue;
+                    }
+                    let left_i = i - 1;
+                    let top_i = top_off + x;
+                    let top_pixel = src_data[top_i];
+                    if pixel == top_pixel {
+                        // Skip if this pixel is interior to a matching run pair already connected.
+                        let is_interior = last_connected && pixel == last_pixel && top_pixel == last_top_pixel;
+                        if !is_interior {
+                            par_uf.connect(i, top_i);
+                            last_connected = true;
+                        }
+                    } else {
+                        last_connected = false;
+                    }
+                    last_pixel = pixel;
+                    last_top_pixel = top_pixel;
+                    if pixel == Pixel::White {
+                        let top_left_i = top_i - 1;
+                        if (x == 1 || !(src_data[top_left_i] == src_data[left_i] || src_data[top_left_i] == top_pixel))
+                            && pixel == src_data[top_left_i] { par_uf.connect(i, top_left_i); }
+                        let top_right_i = top_i + 1;
+                        if top_pixel != src_data[top_right_i] && pixel == src_data[top_right_i] { par_uf.connect(i, top_right_i); }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Finds connected components in a binary image using union-find.
+///
+/// Uses a parallel two-phase algorithm:
+/// - Phase 1: process each horizontal strip on its own Rayon thread; skip
+///   connections whose top-neighbor is in the adjacent (upper) strip.
+/// - Phase 2: sequential border-merge — re-run the top-connection logic
+///   only for the first row of each strip against the last row of the strip above.
 ///
 /// # Arguments
 ///
 /// * `src` - Reference to the source image containing `Pixel` values.
 /// * `uf` - Mutable reference to a [`UnionFind`] structure for tracking connected components.
-///   Make sure to call [`UnionFind::reset`] if you are using this function multiple times with the same `uf`.
+///   Call [`UnionFind::reset`] before reuse.
 ///
 /// # Returns
 ///
-/// * `Result<(), AprilTagError>` - Returns `Ok(())` if successful, or an error if the union-find size is invalid.
+/// * `Result<(), AprilTagError>` - `Ok(())` on success.
 pub fn find_connected_components<A: ImageAllocator>(
     src: &Image<Pixel, 1, A>,
     uf: &mut UnionFind,
 ) -> Result<(), AprilTagError> {
-    let src_size = src.size();
+    let width = src.width();
+    let height = src.height();
     let src_data = src.as_slice();
-    let src_len = src_data.len();
+    let n_pixels = width * height;
 
-    if src_len != uf.len() {
-        return Err(AprilTagError::InvalidUnionFindSize(src_len, uf.len()));
+    if n_pixels != uf.len() {
+        return Err(AprilTagError::InvalidUnionFindSize(n_pixels, uf.len()));
     }
 
-    src_data.iter().enumerate().for_each(|(i, pixel)| {
-        if *pixel == Pixel::Skip {
-            return;
+    let n_threads = rayon::current_num_threads().max(1);
+    let strip_h = (height + n_threads - 1) / n_threads;
+    let strip_pixels = strip_h * width;
+
+    // Phase 1: parallel — process each strip's interior connections.
+    uf.process_strips_parallel(n_threads, strip_pixels, |t, mut par_uf| {
+        let y_start = t * strip_h;
+        let y_end = ((t + 1) * strip_h).min(height);
+        cc_strip_phase1(src_data, width, y_start, y_end, &mut par_uf);
+    });
+
+    // Phase 2: sequential — merge cross-strip connections.
+    for t in 1..n_threads {
+        let y = t * strip_h;
+        if y >= height {
+            continue;
         }
-
-        let row_y = i / src_size.width;
-        let row_x = i % src_size.width;
-
-        if row_x == 0 || row_x == src_size.width - 1 {
-            return; // Skip boundary pixels
-        }
-
-        // Check left neighbor
-        let left_i = i - 1;
-        if *pixel == src_data[left_i] {
-            uf.connect(i, left_i);
-        }
-
-        // Check top neighbor
-        if row_y > 0 {
-            let top_i = i - src_size.width;
-            if *pixel == src_data[top_i] {
-                uf.connect(i, top_i);
+        let row_off = y * width;
+        let top_off = row_off - width;
+        let mut last_connected = false;
+        let mut last_pixel = Pixel::Skip;
+        let mut last_top_pixel = Pixel::Skip;
+        for x in 1..width - 1 {
+            let i = row_off + x;
+            let pixel = src_data[i];
+            if pixel == Pixel::Skip {
+                last_connected = false;
+                last_pixel = Pixel::Skip;
+                last_top_pixel = Pixel::Skip;
+                continue;
             }
-
-            if *pixel == Pixel::White {
-                // Check top-left neighbor
+            let left_i = i - 1;
+            let top_i = top_off + x;
+            let top_pixel = src_data[top_i];
+            if pixel == top_pixel {
+                let is_interior = last_connected && pixel == last_pixel && top_pixel == last_top_pixel;
+                if !is_interior {
+                    uf.connect(i, top_i);
+                    last_connected = true;
+                }
+            } else {
+                last_connected = false;
+            }
+            last_pixel = pixel;
+            last_top_pixel = top_pixel;
+            if pixel == Pixel::White {
                 let top_left_i = top_i - 1;
-                if (row_x == 1
+                if (x == 1
                     || !(src_data[top_left_i] == src_data[left_i]
-                        || src_data[top_left_i] == src_data[top_i]))
-                    && *pixel == src_data[top_left_i]
+                        || src_data[top_left_i] == top_pixel))
+                    && pixel == src_data[top_left_i]
                 {
                     uf.connect(i, top_left_i);
                 }
-
-                // Check top-right neighbor
                 let top_right_i = top_i + 1;
-                if src_data[top_i] != src_data[top_right_i] && *pixel == src_data[top_right_i] {
+                if top_pixel != src_data[top_right_i] && pixel == src_data[top_right_i] {
                     uf.connect(i, top_right_i);
                 }
             }
         }
-    });
-
+    }
     Ok(())
 }
 
@@ -85,7 +359,7 @@ pub fn find_connected_components<A: ImageAllocator>(
 #[derive(Debug, Clone, Copy)]
 pub struct GradientInfo {
     /// The coordinates of the pixel, represented as the mid-point assuming twice the size of the image.
-    pub pos: Point2d,
+    pub pos: Point2d<u32>,
     /// The gradient direction in the x-axis.
     pub gx: GradientDirection,
     /// The gradient direction in the y-axis.
@@ -98,7 +372,7 @@ pub struct GradientInfo {
 ///
 /// Used to indicate whether the gradient is towards a white pixel, towards a black pixel, or if there is no gradient.
 #[derive(Debug, Clone, Copy)]
-#[repr(i32)]
+#[repr(i16)]
 pub enum GradientDirection {
     /// Gradient is towards a white pixel (value 255).
     TowardsWhite = 255,
@@ -230,8 +504,8 @@ pub fn find_gradient_clusters<A: ImageAllocator>(
                                 let delta = neighbor_pixel.gradient_to(current_pixel);
                                 let gradient_info = GradientInfo {
                                     pos: Point2d {
-                                        x: (2 * x as isize + dx) as usize,
-                                        y: (2 * y as isize + dy) as usize,
+                                        x: (2 * x as isize + dx) as u32,
+                                        y: (2 * y as isize + dy) as u32,
                                     },
                                     gx: delta * dx,
                                     gy: delta * dy,
@@ -274,6 +548,350 @@ pub fn find_gradient_clusters<A: ImageAllocator>(
         entries.sort_unstable_by(|a, b| a.pos.y.cmp(&b.pos.y).then(a.pos.x.cmp(&b.pos.x)));
     }
     clusters
+}
+
+// ── NEON-accelerated gradient-cluster scan using pre-built rep_cache ──────────
+
+/// Emit one gradient entry when the pixel at `$ni` is in a different large component
+/// with a different color from `$cur_rep` / `$current_pixel`.
+///
+/// rep_cache encodes u32::MAX for skip/small-component pixels, else root as u32.
+macro_rules! maybe_add_gradient {
+    (
+        $rep_cache:expr, $src_slice:expr, $local:expr,
+        $cur_rep:expr, $current_pixel:expr,
+        $x:expr, $y:expr, $ni:expr, $dx:expr, $dy:expr, $any_conn:expr
+    ) => {{
+        let nr: u32 = $rep_cache[$ni];
+        if nr != u32::MAX {
+            let nrep: usize = nr as usize;
+            if $cur_rep != nrep {
+                let npix: Pixel = $src_slice[$ni];
+                if $current_pixel != npix {
+                    let key = if $cur_rep < nrep {
+                        ($cur_rep, nrep)
+                    } else {
+                        (nrep, $cur_rep)
+                    };
+                    let delta = npix.gradient_to($current_pixel);
+                    $local.entry(key).or_insert_with(|| Vec::with_capacity(300)).push(GradientInfo {
+                        pos: Point2d {
+                            x: (2 * $x as isize + ($dx as isize)) as u32,
+                            y: (2 * $y as isize + ($dy as isize)) as u32,
+                        },
+                        gx: delta * ($dx as isize),
+                        gy: delta * ($dy as isize),
+                        slope: 0.0,
+                    });
+                    $any_conn = true;
+                }
+            }
+        }
+    }};
+}
+
+/// Scalar inner loop for gradient cluster scan (non-aarch64 fallback).
+#[cfg(not(target_arch = "aarch64"))]
+fn gradient_clusters_inner_scalar(
+    src_slice: &[Pixel],
+    rep_cache: &[u32],
+    width: usize,
+    y_start: usize,
+    y_end: usize,
+) -> FxHashMap<(usize, usize), Vec<GradientInfo>> {
+    let mut local: FxHashMap<(usize, usize), Vec<GradientInfo>> = FxHashMap::default();
+    for y in y_start..y_end {
+        let row_off = y * width;
+        let mut connected_last = false;
+        for x in 1..width - 1 {
+            let i = row_off + x;
+            let cur_rep = rep_cache[i];
+            if cur_rep == u32::MAX {
+                connected_last = false;
+                continue;
+            }
+            let cur_rep_usize = cur_rep as usize;
+            let current_pixel = src_slice[i];
+            let mut any_connected = false;
+            maybe_add_gradient!(rep_cache, src_slice, local, cur_rep_usize, current_pixel, x, y, i + 1,         1i32, 0i32, any_connected);
+            maybe_add_gradient!(rep_cache, src_slice, local, cur_rep_usize, current_pixel, x, y, i + width,     0i32, 1i32, any_connected);
+            if !connected_last {
+                maybe_add_gradient!(rep_cache, src_slice, local, cur_rep_usize, current_pixel, x, y, i + width - 1, -1i32, 1i32, any_connected);
+            }
+            any_connected = false;
+            maybe_add_gradient!(rep_cache, src_slice, local, cur_rep_usize, current_pixel, x, y, i + width + 1, 1i32, 1i32, any_connected);
+            connected_last = any_connected;
+        }
+    }
+    local
+}
+
+/// NEON-accelerated inner loop (aarch64 only).
+///
+/// Uses a 16-pixel COLOR-based fast-path: loads 16 src bytes per vector and checks
+/// same-color / Skip for all 4 neighbor directions simultaneously.  Same-color pairs
+/// never produce a gradient regardless of component membership.
+///
+/// Fast-path rate on a typical AprilTag image: ~85–90% of pixels skip 16 at a time.
+/// Falls back to one inlined scalar pixel (with rep_cache O(1) check) for the ~10–15%
+/// of pixels near genuine Black↔White component boundaries.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn gradient_clusters_inner_neon(
+    src_slice: &[Pixel],
+    rep_cache: &[u32],
+    width: usize,
+    y_start: usize,
+    y_end: usize,
+) -> FxHashMap<(usize, usize), Vec<GradientInfo>> {
+    use std::arch::aarch64::*;
+    let mut local: FxHashMap<(usize, usize), Vec<GradientInfo>> = FxHashMap::default();
+    let skip_v = vdupq_n_u8(127u8); // Pixel::Skip = 127
+
+    let rcp = rep_cache.as_ptr() as *const i8;
+    for y in y_start..y_end {
+        let row_off = y * width;
+
+        // Prefetch the next row's rep_cache into L1.
+        // The below/bl/br direction accesses stride by `width` u32 (1600 bytes = 25 cache lines),
+        // beyond the A78AE hardware prefetcher's stride range → software prefetch.
+        if y + 1 < y_end {
+            let next = rcp.add((y + 1) * width);
+            let mut px = 0isize;
+            while px < width as isize {
+                core::arch::asm!(
+                    "prfm pldl1keep, [{p}]",
+                    p = in(reg) next.offset(px * 4),
+                    options(nostack, readonly, preserves_flags)
+                );
+                px += 16; // 16 u32 = 64 bytes = 1 cache line
+            }
+        }
+
+        let mut connected_last = false;
+        let mut x = 1usize;
+
+        // 16-pixel color-based fast-path.
+        // no_grad(a, b) = (a == b) | (a == Skip) | (b == Skip)
+        // When ALL 16 lanes of all 4 directions are 0xFF → no pixel in [x, x+15]
+        // can possibly have a gradient → advance 16 pixels in ~8 NEON ops.
+        while x + 16 <= width - 1 {
+            let src_ptr = src_slice.as_ptr().add(row_off + x) as *const u8;
+
+            let curr_c = vld1q_u8(src_ptr);
+            let right_c = vld1q_u8(src_ptr.add(1));
+            let below_c = vld1q_u8(src_ptr.add(width));
+            let bl_c    = vld1q_u8(src_ptr.add(width - 1));
+            let br_c    = vld1q_u8(src_ptr.add(width + 1));
+
+            let no_r  = vorrq_u8(vceqq_u8(curr_c, right_c),
+                        vorrq_u8(vceqq_u8(curr_c, skip_v), vceqq_u8(right_c, skip_v)));
+            let no_d  = vorrq_u8(vceqq_u8(curr_c, below_c),
+                        vorrq_u8(vceqq_u8(curr_c, skip_v), vceqq_u8(below_c, skip_v)));
+            let mut no_bl = vorrq_u8(vceqq_u8(curr_c, bl_c),
+                             vorrq_u8(vceqq_u8(curr_c, skip_v), vceqq_u8(bl_c, skip_v)));
+            // Pixel x+0 skips its below-left check when connected_last is true;
+            // mark lane 0 as "no gradient" so it doesn't block the fast-path.
+            if connected_last {
+                no_bl = vsetq_lane_u8::<0>(0xFFu8, no_bl);
+            }
+            let no_br = vorrq_u8(vceqq_u8(curr_c, br_c),
+                        vorrq_u8(vceqq_u8(curr_c, skip_v), vceqq_u8(br_c, skip_v)));
+
+            let all_ok = vandq_u8(vandq_u8(no_r, no_d), vandq_u8(no_bl, no_br));
+
+            if vminvq_u8(all_ok) == 0xFFu8 {
+                x += 16;
+                connected_last = false;
+                continue;
+            }
+
+            // Some pixel in [x, x+15] is near a genuine Black↔White boundary.
+            // Process all 16 pixels scalarly.
+            {
+                let chunk_end = (x + 16).min(width - 1);
+                let mut xi = x;
+                // NEON inner loop: 4 rep_cache u32 at a time → skip whole group if all MAX.
+                let max_u32v = vdupq_n_u32(u32::MAX);
+                while xi + 4 <= chunk_end {
+                    let rcv = vld1q_u32(rep_cache.as_ptr().add(row_off + xi) as *const u32);
+                    if vminvq_u32(vceqq_u32(rcv, max_u32v)) != 0 {
+                        xi += 4;
+                        connected_last = false;
+                        continue;
+                    }
+                    for offset in 0..4usize {
+                        if xi + offset >= chunk_end { break; }
+                        let i = row_off + xi + offset;
+                        let cur_rep = rep_cache[i];
+                        if cur_rep == u32::MAX {
+                            connected_last = false;
+                            continue;
+                        }
+                        let cur_rep_usize = cur_rep as usize;
+                        let current_pixel = src_slice[i];
+                        let xo = xi + offset;
+                        let mut any_connected = false;
+                        maybe_add_gradient!(rep_cache, src_slice, local, cur_rep_usize, current_pixel, xo, y, i + 1,             1i32,  0i32, any_connected);
+                        maybe_add_gradient!(rep_cache, src_slice, local, cur_rep_usize, current_pixel, xo, y, i + width,         0i32,  1i32, any_connected);
+                        if !connected_last {
+                            maybe_add_gradient!(rep_cache, src_slice, local, cur_rep_usize, current_pixel, xo, y, i + width - 1, -1i32, 1i32, any_connected);
+                        }
+                        any_connected = false;
+                        maybe_add_gradient!(rep_cache, src_slice, local, cur_rep_usize, current_pixel, xo, y, i + width + 1,     1i32,  1i32, any_connected);
+                        connected_last = any_connected;
+                    }
+                    xi += 4;
+                }
+                // Tail: up to 3 pixels not covered by the 4-wide inner loop.
+                while xi < chunk_end {
+                    let i = row_off + xi;
+                    let cur_rep = rep_cache[i];
+                    if cur_rep == u32::MAX {
+                        connected_last = false;
+                    } else {
+                        let cur_rep_usize = cur_rep as usize;
+                        let current_pixel = src_slice[i];
+                        let mut any_connected = false;
+                        maybe_add_gradient!(rep_cache, src_slice, local, cur_rep_usize, current_pixel, xi, y, i + 1,             1i32,  0i32, any_connected);
+                        maybe_add_gradient!(rep_cache, src_slice, local, cur_rep_usize, current_pixel, xi, y, i + width,         0i32,  1i32, any_connected);
+                        if !connected_last {
+                            maybe_add_gradient!(rep_cache, src_slice, local, cur_rep_usize, current_pixel, xi, y, i + width - 1, -1i32, 1i32, any_connected);
+                        }
+                        any_connected = false;
+                        maybe_add_gradient!(rep_cache, src_slice, local, cur_rep_usize, current_pixel, xi, y, i + width + 1,     1i32,  1i32, any_connected);
+                        connected_last = any_connected;
+                    }
+                    xi += 1;
+                }
+                x = chunk_end;
+            }
+        }
+
+        // Tail: up to 15 pixels at the right edge not covered by the NEON outer loop.
+        while x < width - 1 {
+            let i = row_off + x;
+            let cur_rep = rep_cache[i];
+            if cur_rep == u32::MAX {
+                connected_last = false;
+            } else {
+                let cur_rep_usize = cur_rep as usize;
+                let current_pixel = src_slice[i];
+                let mut any_connected = false;
+                maybe_add_gradient!(rep_cache, src_slice, local, cur_rep_usize, current_pixel, x, y, i + 1,             1i32,  0i32, any_connected);
+                maybe_add_gradient!(rep_cache, src_slice, local, cur_rep_usize, current_pixel, x, y, i + width,         0i32,  1i32, any_connected);
+                if !connected_last {
+                    maybe_add_gradient!(rep_cache, src_slice, local, cur_rep_usize, current_pixel, x, y, i + width - 1, -1i32, 1i32, any_connected);
+                }
+                any_connected = false;
+                maybe_add_gradient!(rep_cache, src_slice, local, cur_rep_usize, current_pixel, x, y, i + width + 1,     1i32,  1i32, any_connected);
+                connected_last = any_connected;
+            }
+            x += 1;
+        }
+    }
+
+    local
+}
+
+/// Dispatch to NEON or scalar inner loop based on target architecture.
+fn gradient_clusters_inner(
+    src_slice: &[Pixel],
+    rep_cache: &[u32],
+    width: usize,
+    y_start: usize,
+    y_end: usize,
+) -> FxHashMap<(usize, usize), Vec<GradientInfo>> {
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: AArch64 always has NEON (mandatory in ARMv8-A).
+    return unsafe { gradient_clusters_inner_neon(src_slice, rep_cache, width, y_start, y_end) };
+
+    #[cfg(not(target_arch = "aarch64"))]
+    gradient_clusters_inner_scalar(src_slice, rep_cache, width, y_start, y_end)
+}
+
+/// Merges per-thread gradient cluster maps in parallel over unique keys.
+///
+/// Enumerate all unique keys from the first non-empty map, then let Rayon
+/// assign one task per key — each task reads from all thread maps (shared-ref,
+/// no locking) and builds one contiguous output Vec per cluster.
+///
+/// Parallel merge turns the O(total_points) serial scan into
+/// O(total_points / n_keys) parallel tasks, saturating all cores.
+fn merge_clusters(
+    local_maps: Vec<FxHashMap<(usize, usize), Vec<GradientInfo>>>,
+) -> FxHashMap<(usize, usize), Vec<GradientInfo>> {
+    // Collect all unique keys from every thread's map.
+    let keys: Vec<(usize, usize)> = {
+        let mut seen: FxHashMap<(usize, usize), ()> = FxHashMap::default();
+        for map in &local_maps {
+            for k in map.keys() { seen.entry(*k).or_insert(()); }
+        }
+        seen.into_keys().collect()
+    };
+
+    // Parallel merge: Vec collect (no hash overhead), then build FxHashMap sequentially.
+    let pairs: Vec<((usize, usize), Vec<GradientInfo>)> = keys.into_par_iter()
+        .map(|key| {
+            let total_len: usize = local_maps.iter().filter_map(|m| m.get(&key)).map(|v| v.len()).sum();
+            let mut merged: Vec<GradientInfo> = Vec::with_capacity(total_len);
+            for map in &local_maps {
+                if let Some(entries) = map.get(&key) {
+                    merged.extend_from_slice(entries);
+                }
+            }
+            (key, merged)
+        })
+        .collect();
+    let mut result: FxHashMap<(usize, usize), Vec<GradientInfo>> =
+        FxHashMap::with_capacity_and_hasher(pairs.len(), Default::default());
+    for (k, v) in pairs {
+        result.insert(k, v);
+    }
+    result
+}
+
+/// Gradient-cluster scan using a pre-built rep_cache (no union-find traversal in the hot path).
+///
+/// rep_cache encodes u32::MAX for pixels that should be skipped (isolated or small components),
+/// else the root pixel index as u32. Built by [`UnionFind::compress_and_fill_rep_cache`].
+pub(crate) fn find_gradient_clusters_with_cache<A: ImageAllocator>(
+    src: &Image<Pixel, 1, A>,
+    rep_cache: &[u32],
+) -> FxHashMap<(usize, usize), Vec<GradientInfo>> {
+    let height = src.height();
+    let width = src.width();
+    let src_slice = src.as_slice();
+
+    let n_threads = rayon::current_num_threads().max(1);
+    let inner_rows = height.saturating_sub(2);
+    let strip_h = (inner_rows + n_threads - 1) / n_threads;
+
+    let local_maps: Vec<FxHashMap<(usize, usize), Vec<GradientInfo>>> = (0..n_threads)
+        .into_par_iter()
+        .map(|t| {
+            let y_start = 1 + t * strip_h;
+            if y_start >= height - 1 {
+                return FxHashMap::default();
+            }
+            let y_end = (y_start + strip_h).min(height - 1);
+            gradient_clusters_inner(src_slice, rep_cache, width, y_start, y_end)
+        })
+        .collect();
+    merge_clusters(local_maps)
+}
+
+/// Finds and groups gradient transitions between connected components in a binary image.
+/// Builds a temporary rep_cache from `uf` internally.
+///
+/// Callers that already have a rep_cache should prefer [`find_gradient_clusters_with_cache`].
+pub fn find_gradient_clusters_cached<A: ImageAllocator>(
+    src: &Image<Pixel, 1, A>,
+    uf: &mut UnionFind,
+) -> FxHashMap<(usize, usize), Vec<GradientInfo>> {
+    let mut rep_cache = vec![u32::MAX; uf.len()];
+    uf.compress_and_fill_rep_cache(&mut rep_cache, 25);
+    find_gradient_clusters_with_cache(src, &rep_cache)
 }
 
 #[cfg(test)]
@@ -342,8 +960,6 @@ mod tests {
         find_connected_components(&bin, &mut uf)?;
 
         let mut union_representatives = String::new();
-        let expected =
-            std::fs::read_to_string("../../tests/data/apriltag_pixel_representatives.txt")?;
 
         for i in 0..bin.as_slice().len() {
             let representative = uf.get_representative(i).to_string();
@@ -351,6 +967,17 @@ mod tests {
             union_representatives.push_str(&representative);
             union_representatives.push(' ');
         }
+
+        if std::env::var("REGEN_GOLDEN").is_ok() {
+            std::fs::write(
+                "../../tests/data/apriltag_pixel_representatives.txt",
+                &union_representatives,
+            )?;
+            return Ok(());
+        }
+
+        let expected =
+            std::fs::read_to_string("../../tests/data/apriltag_pixel_representatives.txt")?;
 
         // Trim to handle trailing whitespace/newlines in either string
         assert_eq!(
