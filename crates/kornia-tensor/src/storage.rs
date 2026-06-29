@@ -306,20 +306,7 @@ impl<T> TensorStorage<T> {
         domain: MemoryDomain,
         keepalive: std::sync::Arc<dyn core::any::Any + Send + Sync>,
     ) -> Self {
-        unsafe {
-            let ptr = NonNull::new_unchecked(data as *mut T);
-            let owner: Box<dyn MemoryResource> = Box::new(
-                ForeignResource::new(data as *mut u8, len_bytes, domain, Some(keepalive))
-                    .expect("non-null pointer required"),
-            );
-            Self {
-                ptr,
-                len: len_bytes,
-                owner,
-                alloc,
-                _marker: PhantomData,
-            }
-        }
+        unsafe { Self::make_borrowed(data, len_bytes, alloc, domain, keepalive, false) }
     }
 
     /// Creates a borrowed storage view that is read-only.
@@ -354,12 +341,26 @@ impl<T> TensorStorage<T> {
         domain: MemoryDomain,
         keepalive: std::sync::Arc<dyn core::any::Any + Send + Sync>,
     ) -> Self {
+        unsafe { Self::make_borrowed(data, len_bytes, alloc, domain, keepalive, true) }
+    }
+
+    unsafe fn make_borrowed(
+        data: *const T,
+        len_bytes: usize,
+        alloc: AllocHandle,
+        domain: MemoryDomain,
+        keepalive: std::sync::Arc<dyn core::any::Any + Send + Sync>,
+        readonly: bool,
+    ) -> Self {
         unsafe {
             let ptr = NonNull::new_unchecked(data as *mut T);
-            let owner: Box<dyn MemoryResource> = Box::new(
+            let resource_result = if readonly {
                 ForeignResource::new_readonly(data as *mut u8, len_bytes, domain, Some(keepalive))
-                    .expect("non-null pointer required"),
-            );
+            } else {
+                ForeignResource::new(data as *mut u8, len_bytes, domain, Some(keepalive))
+            };
+            let owner: Box<dyn MemoryResource> =
+                Box::new(resource_result.expect("non-null pointer required"));
             Self {
                 ptr,
                 len: len_bytes,
@@ -448,12 +449,6 @@ unsafe impl<T: Sync> Sync for TensorStorage<T> {}
 /// Drop is empty: the `owner: Box<dyn MemoryResource>` field drops itself,
 /// calling the correct deallocation path (HostResource::dealloc, or ForeignResource
 /// dropping its keepalive Arc, etc.) exactly once.
-impl<T> Drop for TensorStorage<T> {
-    fn drop(&mut self) {
-        // Nothing to do — `owner` drops automatically via Box<dyn MemoryResource>.
-    }
-}
-
 /// Clones the storage by creating a new storage with copied data.
 ///
 /// This performs a deep copy of the storage data using the cloned allocator handle.

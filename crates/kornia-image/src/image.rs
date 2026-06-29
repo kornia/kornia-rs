@@ -300,9 +300,7 @@ impl<T, const C: usize> Image<T, C> {
     where
         T: Clone,
     {
-        let tensor: Tensor3<T> =
-            Tensor::from_shape_slice([size.height, size.width, C], data, alloc)?;
-        Image::try_from(tensor)
+        Image::new(size, data.to_vec(), alloc)
     }
 
     /// Map the pixel data of the image to a different type.
@@ -652,24 +650,17 @@ impl<T, const C: usize> Image<T, C> {
     }
 }
 
-/// helper to convert an single channel tensor to a kornia image with try into
-impl<T> TryFrom<Tensor2<T>> for Image<T, 1>
-where
-    T: Clone,
-{
+/// helper to convert a single-channel tensor to a kornia image with try into
+impl<T> TryFrom<Tensor2<T>> for Image<T, 1> {
     type Error = ImageError;
 
     fn try_from(value: Tensor2<T>) -> Result<Self, Self::Error> {
-        let alloc = value.storage.alloc();
-
-        Self::from_size_slice(
-            ImageSize {
-                width: value.shape[1],
-                height: value.shape[0],
-            },
-            value.as_slice(),
-            alloc.clone(),
-        )
+        let alloc = value.storage.alloc().clone();
+        let size = ImageSize {
+            width: value.shape[1],
+            height: value.shape[0],
+        };
+        Self::new(size, value.storage.into_vec(), alloc)
     }
 }
 

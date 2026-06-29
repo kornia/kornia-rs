@@ -256,17 +256,7 @@ impl<T, const N: usize> Tensor<T, N> {
     where
         T: Clone,
     {
-        let numel = shape.iter().product::<usize>();
-        if numel != data.len() {
-            return Err(TensorError::InvalidShape(numel));
-        }
-        let storage = TensorStorage::from_vec(data.to_vec(), alloc);
-        let strides = get_strides_from_shape(shape);
-        Ok(Self {
-            storage,
-            shape,
-            strides,
-        })
+        Self::from_shape_vec(shape, data.to_vec(), alloc)
     }
 
     /// Creates a new `Tensor` with the given shape and raw parts.
@@ -803,7 +793,7 @@ impl<T, const N: usize> Tensor<T, N> {
         U: From<T>,
         T: Clone,
     {
-        let mut data: Vec<U> = Vec::with_capacity(self.storage.len());
+        let mut data: Vec<U> = Vec::with_capacity(self.numel());
         self.as_slice().iter().for_each(|x| {
             data.push(U::from(x.clone()));
         });
@@ -852,6 +842,14 @@ impl<T, const N: usize> Tensor<T, N> {
             return Err(TensorError::DimensionMismatch(format!(
                 "Shapes {:?} and {:?} are not compatible for element-wise operations",
                 self.shape, other.shape
+            )));
+        }
+
+        if self.storage.domain() != other.storage.domain() {
+            return Err(TensorError::DimensionMismatch(format!(
+                "Tensors are on different memory domains: {:?} vs {:?}",
+                self.storage.domain(),
+                other.storage.domain()
             )));
         }
 
