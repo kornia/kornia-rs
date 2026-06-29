@@ -66,9 +66,6 @@ fn main() {
     run_gpu_cuda();
 
     #[cfg(feature = "gpu-cuda")]
-    run_gpu_cuda_tex();
-
-    #[cfg(feature = "gpu-cuda")]
     run_gpu_cuda_fused_normalize();
 
     #[cfg(not(feature = "gpu-cuda"))]
@@ -316,77 +313,6 @@ fn run_gpu_cuda() {
                 gb_per_sec(npix_dst, ms),
             );
         }
-    }
-}
-
-// --------------------------------------------------------------------------
-// Texture-object hardware bilinear section (feature gpu-cuda)
-// --------------------------------------------------------------------------
-
-#[cfg(feature = "gpu-cuda")]
-fn run_gpu_cuda_tex() {
-    use cudarc::driver::CudaContext;
-    use kornia_imgproc::gpu::resize_cuda_tex::{launch_resize_bilinear_tex_cuda, CudaRgbTexture};
-
-    const DOWNSCALE_CASES: &[(u32, u32, u32, u32)] = &[
-        (1024, 1024, 512, 512),
-        (1920, 1080, 960, 540),
-        (3840, 2160, 1920, 1080),
-    ];
-
-    let ctx = std::sync::Arc::new(CudaContext::new(0).expect("CUDA context"));
-    let stream = ctx.default_stream();
-
-    // ── Kernel-only timing (texture setup done once, amortised) ──────────────
-    println!("\n=== native CUDA bilinear (texture HW, kernel-only, {ITERS} iters) ===");
-    println!(
-        "  {:<24}  {:>12}  {:>10}  {:>14}",
-        "case (src→dst)", "kernel ms", "GB/s", "setup ms"
-    );
-    println!("  {}", "-".repeat(68));
-
-    for &(sw, sh, dw, dh) in DOWNSCALE_CASES {
-        let npix_src = (sw * sh) as usize;
-        let npix_dst = (dw * dh) as usize;
-        let nc = NC as usize;
-
-        let src_data: Vec<f32> = (0..npix_src * nc)
-            .map(|i| (i % 256) as f32 / 255.0)
-            .collect();
-        let src_dev = stream.clone_htod(&src_data).expect("H→D copy");
-        let mut dst_dev = stream.alloc_zeros::<f32>(npix_dst * nc).expect("alloc dst");
-
-        // Time the one-shot setup (de-interleave + texture bind).
-        stream.synchronize().expect("sync");
-        let t_setup = Instant::now();
-        let tex = CudaRgbTexture::from_interleaved(&ctx, &stream, &src_dev, sw, sh)
-            .expect("texture setup");
-        stream.synchronize().expect("sync");
-        let setup_ms = t_setup.elapsed().as_secs_f64() * 1e3;
-
-        // Warmup.
-        for _ in 0..WARMUP {
-            launch_resize_bilinear_tex_cuda(&ctx, &stream, &tex, &mut dst_dev, dw, dh)
-                .expect("tex launch");
-        }
-        stream.synchronize().expect("sync");
-
-        // Kernel-only timing.
-        let t = Instant::now();
-        for _ in 0..ITERS {
-            launch_resize_bilinear_tex_cuda(&ctx, &stream, &tex, &mut dst_dev, dw, dh)
-                .expect("tex launch");
-        }
-        stream.synchronize().expect("sync");
-        let kernel_ms = t.elapsed().as_secs_f64() * 1e3 / ITERS as f64;
-
-        println!(
-            "  {:<24}  {:>12.3}  {:>10.2}  {:>14.3}",
-            format!("{sw}×{sh}→{dw}×{dh}"),
-            kernel_ms,
-            gb_per_sec(npix_dst, kernel_ms),
-            setup_ms,
-        );
     }
 }
 
