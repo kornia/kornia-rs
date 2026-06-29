@@ -33,7 +33,7 @@ use std::path::Path;
 /// use kornia_io::functional as F;
 /// use kornia_image::color_spaces::Rgb8;
 ///
-/// let image: Rgb8<_> = F::read_image_any_rgb8("../../tests/data/dog.jpeg").unwrap();
+/// let image: Rgb8 = F::read_image_any_rgb8("../../tests/data/dog.jpeg").unwrap();
 ///
 /// assert_eq!(image.cols(), 258);
 /// assert_eq!(image.rows(), 195);

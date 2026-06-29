@@ -432,8 +432,8 @@ pub struct UndistortResults {
 ///   implemented in [`apply_r_and_p`].
 ///
 /// # Arguments
-/// * `src` - Input Tensor<f64, 2, A> with shape [N, 2] containing distorted pixel coords (u,v)
-/// * `dst` - Output Tensor<f64, 2, A> with shape [N, 2] (will be overwritten)
+/// * `src` - Input Tensor<f64, 2> with shape [N, 2] containing distorted pixel coords (u,v)
+/// * `dst` - Output Tensor<f64, 2> with shape [N, 2] (will be overwritten)
 /// * `intrinsic` - camera intrinsic parameters in a struct [`CameraIntrinsic`]
 /// * `distortion` - polynomial distortion model parameters in a struct [`PolynomialDistortion`]
 /// * `r_opt` - optional [`Mat3F64`] rectification matrix R (3x3) (or None)

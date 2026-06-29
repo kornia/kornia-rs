@@ -49,18 +49,18 @@ kornia = { version = "0.1.0", features = ["image", "io", "imgproc"] }
 The `prelude` module provides easy access to common types and traits.
 
 ```rust
-use kornia::image::{Image, ImageSize, allocator::CpuAllocator};
+use kornia::image::{allocator::host_alloc, Image, ImageSize, InterpolationMode};
 use kornia::io::functional as F;
-use kornia::imgproc::resize::{resize_fast_rgb, InterpolationMode};
+use kornia::imgproc::resize::resize_fast_rgb;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 1. Read an image
-    let image = F::read_image_any_rgb8("tests/data/dog.jpeg")?;
+    let image = F::read_image_any_rgb8("../../tests/data/dog.jpeg")?;
     println!("Loaded image: {:?}", image.size());
 
     // 2. Resize it
     let new_size = ImageSize { width: 128, height: 128 };
-    let mut resized = Image::from_size_val(new_size, 0, CpuAllocator)?;
+    let mut resized = Image::from_size_val(new_size, 0, host_alloc())?;
 
     resize_fast_rgb(&image, &mut resized, InterpolationMode::Bilinear)?;
 
