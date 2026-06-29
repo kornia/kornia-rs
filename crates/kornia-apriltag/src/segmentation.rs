@@ -5,7 +5,7 @@ use crate::{
     union_find::UnionFind,
     utils::{Pixel, Point2d},
 };
-use kornia_image::{allocator::ImageAllocator, Image};
+use kornia_image::Image;
 
 /// Finds connected components in a binary image using union-find.
 ///
@@ -18,8 +18,8 @@ use kornia_image::{allocator::ImageAllocator, Image};
 /// # Returns
 ///
 /// * `Result<(), AprilTagError>` - Returns `Ok(())` if successful, or an error if the union-find size is invalid.
-pub fn find_connected_components<A: ImageAllocator>(
-    src: &Image<Pixel, 1, A>,
+pub fn find_connected_components(
+    src: &Image<Pixel, 1>,
     uf: &mut UnionFind,
 ) -> Result<(), AprilTagError> {
     let src_size = src.size();
@@ -150,8 +150,8 @@ impl Pixel {
 /// * `uf` - Mutable reference to a [`UnionFind`] structure for tracking connected components.
 /// * `clusters` - Mutable reference to a map where the gradient information between component pairs will be stored.
 ///   Make sure to call [`HashMap::clear`] if you are using this function multiple times with the same `clusters`
-pub fn find_gradient_clusters<A: ImageAllocator>(
-    src: &Image<Pixel, 1, A>,
+pub fn find_gradient_clusters(
+    src: &Image<Pixel, 1>,
     uf: &mut UnionFind,
     clusters: &mut HashMap<(usize, usize), Vec<GradientInfo>>,
 ) {
@@ -237,7 +237,7 @@ pub fn find_gradient_clusters<A: ImageAllocator>(
 mod tests {
     use super::*;
     use crate::threshold::{adaptive_threshold, TileMinMax};
-    use kornia_image::{allocator::CpuAllocator, ImageSize};
+    use kornia_image::ImageSize;
     use kornia_io::png::read_image_png_mono8;
 
     #[test]
@@ -257,7 +257,7 @@ mod tests {
                 height: 4,
             },
             bin_data,
-            CpuAllocator,
+            kornia_image::allocator::host_alloc(),
         )?;
 
         let mut uf = UnionFind::new(20);
@@ -290,7 +290,11 @@ mod tests {
     #[test]
     fn test_segmentation() -> Result<(), Box<dyn std::error::Error>> {
         let src = read_image_png_mono8("../../tests/data/apriltag.png")?;
-        let mut bin = Image::from_size_val(src.size(), Pixel::Skip, CpuAllocator)?;
+        let mut bin = Image::from_size_val(
+            src.size(),
+            Pixel::Skip,
+            kornia_image::allocator::host_alloc(),
+        )?;
 
         let mut tile_min_max = TileMinMax::new(src.size(), 4);
         adaptive_threshold(&src, &mut bin, &mut tile_min_max, 20)?;
@@ -323,7 +327,11 @@ mod tests {
     #[test]
     fn test_gradient_clusters() -> Result<(), Box<dyn std::error::Error>> {
         let src = read_image_png_mono8("../../tests/data/apriltag.png")?;
-        let mut bin = Image::from_size_val(src.size(), Pixel::Skip, CpuAllocator)?;
+        let mut bin = Image::from_size_val(
+            src.size(),
+            Pixel::Skip,
+            kornia_image::allocator::host_alloc(),
+        )?;
 
         let mut tile_min_max = TileMinMax::new(src.size(), 4);
         adaptive_threshold(&src, &mut bin, &mut tile_min_max, 20)?;

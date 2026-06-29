@@ -2,7 +2,7 @@
 // such as kornia-linalg, or another location we decide on later.
 
 use kornia_algebra::Mat3F32;
-use kornia_image::{allocator::ImageAllocator, Image, ImageSize};
+use kornia_image::{Image, ImageSize};
 
 /// Calculates the total number of tiles needed to cover an image of the given size,
 /// including partial tiles at the edges.
@@ -175,10 +175,7 @@ pub(crate) fn homography_compute(c: [[f32; 4]; 4]) -> Option<Mat3F32> {
 ///
 /// An `Option<f32>` containing the interpolated pixel value, or `None` if the coordinate is out of bounds.
 // TODO: Make interpolate function in kornia-imgproc generic and use that instead
-pub(crate) fn value_for_pixel<A: ImageAllocator>(
-    src: &Image<u8, 1, A>,
-    p: kornia_algebra::Vec2F32,
-) -> Option<f32> {
+pub(crate) fn value_for_pixel(src: &Image<u8, 1>, p: kornia_algebra::Vec2F32) -> Option<f32> {
     let src_slice = src.as_slice();
 
     let x1 = (p.x - 0.5).floor() as isize;

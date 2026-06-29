@@ -1,7 +1,7 @@
 use apriltag::DetectorBuilder;
 use criterion::{criterion_group, criterion_main, Criterion};
 use kornia_apriltag::{family::TagFamilyKind, AprilTagDecoder, DecodeTagsConfig};
-use kornia_image::{allocator::CpuAllocator, Image};
+use kornia_image::{allocator::host_alloc, Image};
 use kornia_imgproc::color::gray_from_rgb_u8;
 use kornia_io::jpeg::read_image_jpeg_rgb8;
 use std::path::PathBuf;
@@ -12,7 +12,7 @@ fn bench_decoding(c: &mut Criterion) {
 
     // Kornia
     let img = read_image_jpeg_rgb8(img_path).unwrap();
-    let mut gray_img = Image::from_size_val(img.size(), 0, CpuAllocator).unwrap();
+    let mut gray_img = Image::from_size_val(img.size(), 0, host_alloc()).unwrap();
     gray_from_rgb_u8(&img, &mut gray_img).unwrap();
 
     let kornia_detector_config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag36H11]).unwrap();
