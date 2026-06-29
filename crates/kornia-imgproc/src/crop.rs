@@ -1,4 +1,4 @@
-use kornia_image::{allocator::ImageAllocator, Image, ImageError};
+use kornia_image::{Image, ImageError};
 use rayon::{
     iter::{IndexedParallelIterator, ParallelIterator},
     slice::ParallelSliceMut,
@@ -19,40 +19,42 @@ use rayon::{
 #[target_feature(enable = "neon")]
 #[inline]
 unsafe fn copy_row_neon(src: *const u8, dst: *mut u8, n: usize) {
-    use std::arch::aarch64::{vld1q_u8, vst1q_u8};
-    use std::arch::asm;
+    unsafe {
+        use std::arch::aarch64::{vld1q_u8, vst1q_u8};
+        use std::arch::asm;
 
-    // Prefetch ~2KB ahead of the current row to hide L2 fetch latency on the
-    // next iteration (rows are spaced by src stride bytes; prefetcher won't
-    // see the pattern across rows, so we hint manually).
-    asm!(
-        "prfm pldl1strm, [{0}, #2048]",
-        in(reg) src,
-        options(nostack, preserves_flags, readonly)
-    );
+        // Prefetch ~2KB ahead of the current row to hide L2 fetch latency on the
+        // next iteration (rows are spaced by src stride bytes; prefetcher won't
+        // see the pattern across rows, so we hint manually).
+        asm!(
+            "prfm pldl1strm, [{0}, #2048]",
+            in(reg) src,
+            options(nostack, preserves_flags, readonly)
+        );
 
-    let mut i: usize = 0;
-    // Main 32-byte loop: two 128-bit loads/stores per iter.
-    while i + 32 <= n {
-        let s0 = src.add(i);
-        let s1 = src.add(i + 16);
-        let d0 = dst.add(i);
-        let d1 = dst.add(i + 16);
-        let v0 = vld1q_u8(s0);
-        let v1 = vld1q_u8(s1);
-        vst1q_u8(d0, v0);
-        vst1q_u8(d1, v1);
-        i += 32;
-    }
-    // 16-byte remainder.
-    if i + 16 <= n {
-        let v = vld1q_u8(src.add(i));
-        vst1q_u8(dst.add(i), v);
-        i += 16;
-    }
-    // Byte tail.
-    if i < n {
-        std::ptr::copy_nonoverlapping(src.add(i), dst.add(i), n - i);
+        let mut i: usize = 0;
+        // Main 32-byte loop: two 128-bit loads/stores per iter.
+        while i + 32 <= n {
+            let s0 = src.add(i);
+            let s1 = src.add(i + 16);
+            let d0 = dst.add(i);
+            let d1 = dst.add(i + 16);
+            let v0 = vld1q_u8(s0);
+            let v1 = vld1q_u8(s1);
+            vst1q_u8(d0, v0);
+            vst1q_u8(d1, v1);
+            i += 32;
+        }
+        // 16-byte remainder.
+        if i + 16 <= n {
+            let v = vld1q_u8(src.add(i));
+            vst1q_u8(dst.add(i), v);
+            i += 16;
+        }
+        // Byte tail.
+        if i < n {
+            std::ptr::copy_nonoverlapping(src.add(i), dst.add(i), n - i);
+        }
     }
 }
 
@@ -167,25 +169,25 @@ fn copy_row<T: Copy>(src_row: &[T], dst_row: &mut [T]) {
 ///
 /// ```rust
 /// use kornia_image::{Image, ImageSize};
-/// use kornia_image::allocator::CpuAllocator;
+/// use kornia_tensor::host_alloc;
 /// use kornia_imgproc::crop::crop_image;
 ///
-/// let image = Image::<_, 1, _>::new(ImageSize { width: 4, height: 4 }, vec![
+/// let image = Image::<_, 1>::new(ImageSize { width: 4, height: 4 }, vec![
 ///     0u8, 1, 2, 3,
 ///     4u8, 5, 6, 7,
 ///     8u8, 9, 10, 11,
 ///     12u8, 13, 14, 15
-/// ], CpuAllocator).unwrap();
+/// ], host_alloc()).unwrap();
 ///
-/// let mut cropped = Image::<_, 1, _>::from_size_val(ImageSize { width: 2, height: 2 }, 0u8, CpuAllocator).unwrap();
+/// let mut cropped = Image::<_, 1>::from_size_val(ImageSize { width: 2, height: 2 }, 0u8, host_alloc()).unwrap();
 ///
 /// crop_image(&image, &mut cropped, 1, 1).unwrap();
 ///
 /// assert_eq!(cropped.as_slice(), &[5u8, 6, 9, 10]);
 /// ```
-pub fn crop_image<T, const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<T, C, A1>,
-    dst: &mut Image<T, C, A2>,
+pub fn crop_image<T, const C: usize>(
+    src: &Image<T, C>,
+    dst: &mut Image<T, C>,
     x: usize,
     y: usize,
 ) -> Result<(), ImageError>
@@ -240,7 +242,7 @@ where
 #[cfg(test)]
 mod tests {
     use kornia_image::{Image, ImageError, ImageSize};
-    use kornia_tensor::CpuAllocator;
+    use kornia_tensor::host_alloc;
 
     #[test]
     fn test_crop() -> Result<(), ImageError> {
@@ -250,14 +252,14 @@ mod tests {
         };
 
         #[rustfmt::skip]
-        let image = Image::<_, 3, _>::new(
+        let image = Image::<_, 3>::new(
             image_size,
             vec![
                 0u8, 1, 2, 3, 4, 5,
                 6u8, 7, 8, 9, 10, 11,
                 12u8, 13, 14, 15, 16, 17,
             ],
-            CpuAllocator
+            host_alloc()
         )?;
 
         let data_expected = vec![9u8, 10, 11, 15, 16, 17];
@@ -267,7 +269,7 @@ mod tests {
             height: 2,
         };
 
-        let mut cropped = Image::<_, 3, _>::from_size_val(crop_size, 0u8, CpuAllocator)?;
+        let mut cropped = Image::<_, 3>::from_size_val(crop_size, 0u8, host_alloc())?;
 
         super::crop_image(&image, &mut cropped, 1, 1)?;
 
@@ -291,8 +293,8 @@ mod tests {
             70u8, 80, 90, 100, 110, 120,
         ];
 
-        let image = Image::<_, 2, _>::new(image_size, data.clone(), CpuAllocator)?;
-        let mut dst = Image::<_, 2, _>::from_size_val(image_size, 0u8, CpuAllocator)?;
+        let image = Image::<_, 2>::new(image_size, data.clone(), host_alloc())?;
+        let mut dst = Image::<_, 2>::from_size_val(image_size, 0u8, host_alloc())?;
 
         super::crop_image(&image, &mut dst, 0, 0)?;
 
@@ -310,7 +312,7 @@ mod tests {
         };
 
         #[rustfmt::skip]
-        let image = Image::<_, 1, _>::new(
+        let image = Image::<_, 1>::new(
             image_size,
             vec![
                  0u8,  1,  2,  3,
@@ -318,14 +320,14 @@ mod tests {
                  8u8,  9, 10, 11,
                 12u8, 13, 14, 15,
             ],
-            CpuAllocator,
+            host_alloc(),
         )?;
 
         let crop_size = ImageSize {
             width: 1,
             height: 1,
         };
-        let mut dst = Image::<_, 1, _>::from_size_val(crop_size, 0u8, CpuAllocator)?;
+        let mut dst = Image::<_, 1>::from_size_val(crop_size, 0u8, host_alloc())?;
 
         // Pixel at column 2, row 3 is value 14.
         super::crop_image(&image, &mut dst, 2, 3)?;
@@ -345,25 +347,25 @@ mod tests {
         for (i, v) in src_data.iter_mut().enumerate() {
             *v = (i & 0xFF) as u8;
         }
-        let src = Image::<_, 3, _>::new(
+        let src = Image::<_, 3>::new(
             ImageSize {
                 width: src_w,
                 height: src_h,
             },
             src_data.clone(),
-            CpuAllocator,
+            host_alloc(),
         )?;
         let crop_w = 224;
         let crop_h = 224;
         let x0 = 848;
         let y0 = 428;
-        let mut dst = Image::<_, 3, _>::from_size_val(
+        let mut dst = Image::<_, 3>::from_size_val(
             ImageSize {
                 width: crop_w,
                 height: crop_h,
             },
             0u8,
-            CpuAllocator,
+            host_alloc(),
         )?;
         super::crop_image(&src, &mut dst, x0, y0)?;
 
@@ -381,22 +383,22 @@ mod tests {
     #[test]
     fn test_crop_oob_returns_err() {
         // crop region extends beyond source width: x=2, dst.cols=3, x+dst.cols=5 > src.cols=4
-        let src = Image::<u8, 1, _>::from_size_val(
+        let src = Image::<u8, 1>::from_size_val(
             ImageSize {
                 width: 4,
                 height: 4,
             },
             0u8,
-            CpuAllocator,
+            host_alloc(),
         )
         .unwrap();
-        let mut dst = Image::<u8, 1, _>::from_size_val(
+        let mut dst = Image::<u8, 1>::from_size_val(
             ImageSize {
                 width: 3,
                 height: 3,
             },
             0u8,
-            CpuAllocator,
+            host_alloc(),
         )
         .unwrap();
         let result = super::crop_image(&src, &mut dst, 2, 0);
@@ -413,26 +415,26 @@ mod tests {
         for (i, v) in src_data.iter_mut().enumerate() {
             *v = ((i * 7) & 0xFF) as u8;
         }
-        let src = Image::<_, 3, _>::new(
+        let src = Image::<_, 3>::new(
             ImageSize {
                 width: src_w,
                 height: src_h,
             },
             src_data.clone(),
-            CpuAllocator,
+            host_alloc(),
         )?;
         // 43 columns * 3 chans = 129 bytes row (hits main + 16-byte tail + 1-byte tail).
         let crop_w = 43;
         let crop_h = 4;
         let x0 = 5;
         let y0 = 2;
-        let mut dst = Image::<_, 3, _>::from_size_val(
+        let mut dst = Image::<_, 3>::from_size_val(
             ImageSize {
                 width: crop_w,
                 height: crop_h,
             },
             0u8,
-            CpuAllocator,
+            host_alloc(),
         )?;
         super::crop_image(&src, &mut dst, x0, y0)?;
         let dst_slice = dst.as_slice();

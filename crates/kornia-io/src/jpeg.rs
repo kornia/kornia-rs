@@ -1,7 +1,6 @@
 use crate::error::IoError;
 use jpeg_encoder::{ColorType, Encoder};
 use kornia_image::{
-    allocator::{CpuAllocator, ImageAllocator},
     color_spaces::{Gray8, Rgb8},
     Image, ImageLayout, ImageSize, PixelFormat,
 };
@@ -14,9 +13,9 @@ use std::{fs, io::Cursor, path::Path};
 /// - `file_path` - The path to the JPEG image.
 /// - `image` - The RGB8 image to write
 /// - `quality` - The quality of the JPEG encoding, range from 0 (lowest) to 100 (highest)
-pub fn write_image_jpeg_rgb8<A: ImageAllocator>(
+pub fn write_image_jpeg_rgb8(
     file_path: impl AsRef<Path>,
-    image: &Image<u8, 3, A>,
+    image: &Image<u8, 3>,
     quality: u8,
 ) -> Result<(), IoError> {
     write_image_jpeg_imp(file_path, image, ColorType::Rgb, quality)
@@ -29,9 +28,9 @@ pub fn write_image_jpeg_rgb8<A: ImageAllocator>(
 /// - `file_path` - The path to the JPEG image.
 /// - `image` - The grayscale image to write
 /// - `quality` - The quality of the JPEG encoding, range from 0 (lowest) to 100 (highest)
-pub fn write_image_jpeg_gray8<A: ImageAllocator>(
+pub fn write_image_jpeg_gray8(
     file_path: impl AsRef<Path>,
-    image: &Image<u8, 1, A>,
+    image: &Image<u8, 1>,
     quality: u8,
 ) -> Result<(), IoError> {
     write_image_jpeg_imp(file_path, image, ColorType::Luma, quality)
@@ -56,14 +55,14 @@ pub fn write_image_jpeg_gray8<A: ImageAllocator>(
 ///
 /// ```rust
 /// use kornia_io::jpeg::encode_image_jpeg_rgb8;
-/// use kornia_image::{Image, allocator::CpuAllocator};
+/// use kornia_image::{Image};
 ///
-/// let image = Image::<u8, 3, CpuAllocator>::from_size_val([258, 195].into(), 0, CpuAllocator).expect("Failed to create image");
+/// let image = Image::<u8, 3>::from_size_val([258, 195].into(), 0, kornia_tensor::host_alloc()).expect("Failed to create image");
 /// let mut buffer = Vec::new();
 /// encode_image_jpeg_rgb8(&image, 100, &mut buffer).expect("Failed to encode image");
 /// ```
-pub fn encode_image_jpeg_rgb8<A: ImageAllocator>(
-    image: &Image<u8, 3, A>,
+pub fn encode_image_jpeg_rgb8(
+    image: &Image<u8, 3>,
     quality: u8,
     buffer: &mut Vec<u8>,
 ) -> Result<(), IoError> {
@@ -96,11 +95,11 @@ pub fn encode_image_jpeg_rgb8<A: ImageAllocator>(
 /// # Example
 ///
 /// ```no_run
-/// use kornia_image::{Image, allocator::CpuAllocator};
+/// use kornia_image::{Image};
 /// use kornia_io::jpeg;
 ///
 /// let bgra_data = vec![0u8; 640 * 480 * 4]; // BGRA pixels from graphics API
-/// let image = Image::<u8, 4, _>::new([640, 480].into(), bgra_data, CpuAllocator)?;
+/// let image = Image::<u8, 4>::new([640, 480].into(), bgra_data, kornia_tensor::host_alloc())?;
 ///
 /// let mut buffer = Vec::new();
 /// jpeg::encode_image_jpeg_bgra8(&image, 90, &mut buffer)?;
@@ -109,8 +108,8 @@ pub fn encode_image_jpeg_rgb8<A: ImageAllocator>(
 /// std::fs::write("output.jpg", &buffer)?;
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
-pub fn encode_image_jpeg_bgra8<A: ImageAllocator>(
-    image: &Image<u8, 4, A>,
+pub fn encode_image_jpeg_bgra8(
+    image: &Image<u8, 4>,
     quality: u8,
     buffer: &mut Vec<u8>,
 ) -> Result<(), IoError> {
@@ -138,8 +137,8 @@ pub fn encode_image_jpeg_bgra8<A: ImageAllocator>(
 ///
 /// The caller is responsible for clearing the buffer if needed. The encoded data will be
 /// appended to any existing content in the buffer.
-pub fn encode_image_jpeg_gray8<A: ImageAllocator>(
-    image: &Image<u8, 1, A>,
+pub fn encode_image_jpeg_gray8(
+    image: &Image<u8, 1>,
     quality: u8,
     buffer: &mut Vec<u8>,
 ) -> Result<(), IoError> {
@@ -153,9 +152,9 @@ pub fn encode_image_jpeg_gray8<A: ImageAllocator>(
     Ok(())
 }
 
-fn write_image_jpeg_imp<const N: usize, A: ImageAllocator>(
+fn write_image_jpeg_imp<const N: usize>(
     file_path: impl AsRef<Path>,
-    image: &Image<u8, N, A>,
+    image: &Image<u8, N>,
     color_type: ColorType,
     quality: u8,
 ) -> Result<(), IoError> {
@@ -179,12 +178,12 @@ fn write_image_jpeg_imp<const N: usize, A: ImageAllocator>(
 /// # Returns
 ///
 /// An RGB8 typed image.
-pub fn read_image_jpeg_rgb8(file_path: impl AsRef<Path>) -> Result<Rgb8<CpuAllocator>, IoError> {
+pub fn read_image_jpeg_rgb8(file_path: impl AsRef<Path>) -> Result<Rgb8, IoError> {
     let img = read_image_jpeg_impl::<3>(file_path)?;
     Ok(Rgb8::from_size_vec(
         img.size(),
         img.into_vec(),
-        CpuAllocator,
+        kornia_tensor::host_alloc(),
     )?)
 }
 
@@ -197,12 +196,12 @@ pub fn read_image_jpeg_rgb8(file_path: impl AsRef<Path>) -> Result<Rgb8<CpuAlloc
 /// # Returns
 ///
 /// A Gray8 typed image.
-pub fn read_image_jpeg_mono8(file_path: impl AsRef<Path>) -> Result<Gray8<CpuAllocator>, IoError> {
+pub fn read_image_jpeg_mono8(file_path: impl AsRef<Path>) -> Result<Gray8, IoError> {
     let img = read_image_jpeg_impl::<1>(file_path)?;
     Ok(Gray8::from_size_vec(
         img.size(),
         img.into_vec(),
-        CpuAllocator,
+        kornia_tensor::host_alloc(),
     )?)
 }
 
@@ -212,10 +211,7 @@ pub fn read_image_jpeg_mono8(file_path: impl AsRef<Path>) -> Result<Gray8<CpuAll
 ///
 /// - `src` - Raw bytes of the jpeg file
 /// - `dst` - A mutable reference to your `Rgb8` image
-pub fn decode_image_jpeg_rgb8<A: ImageAllocator>(
-    src: &[u8],
-    dst: &mut Image<u8, 3, A>,
-) -> Result<(), IoError> {
+pub fn decode_image_jpeg_rgb8(src: &[u8], dst: &mut Image<u8, 3>) -> Result<(), IoError> {
     decode_jpeg_impl(src, dst)
 }
 
@@ -225,16 +221,13 @@ pub fn decode_image_jpeg_rgb8<A: ImageAllocator>(
 ///
 /// - `src` - Raw bytes of the jpeg file
 /// - `dst` - A mutable reference to your `Gray8` image
-pub fn decode_image_jpeg_mono8<A: ImageAllocator>(
-    src: &[u8],
-    dst: &mut Image<u8, 1, A>,
-) -> Result<(), IoError> {
+pub fn decode_image_jpeg_mono8(src: &[u8], dst: &mut Image<u8, 1>) -> Result<(), IoError> {
     decode_jpeg_impl(src, dst)
 }
 
 fn read_image_jpeg_impl<const N: usize>(
     file_path: impl AsRef<Path>,
-) -> Result<Image<u8, N, CpuAllocator>, IoError> {
+) -> Result<Image<u8, N>, IoError> {
     use zune_jpeg::zune_core::colorspace::ColorSpace;
     use zune_jpeg::zune_core::options::DecoderOptions;
 
@@ -296,13 +289,14 @@ fn read_image_jpeg_impl<const N: usize>(
     let mut decoder = zune_jpeg::JpegDecoder::new_with_options(Cursor::new(&jpeg_data), options);
     let img_data = decoder.decode()?;
 
-    Ok(Image::new(image_size, img_data, CpuAllocator)?)
+    Ok(Image::new(
+        image_size,
+        img_data,
+        kornia_tensor::host_alloc(),
+    )?)
 }
 
-fn decode_jpeg_impl<const C: usize, A: ImageAllocator>(
-    src: &[u8],
-    dst: &mut Image<u8, C, A>,
-) -> Result<(), IoError> {
+fn decode_jpeg_impl<const C: usize>(src: &[u8], dst: &mut Image<u8, C>) -> Result<(), IoError> {
     use zune_jpeg::zune_core::colorspace::ColorSpace;
     use zune_jpeg::zune_core::options::DecoderOptions;
 
@@ -421,7 +415,7 @@ mod tests {
     #[test]
     fn test_decode_jpeg() -> Result<(), IoError> {
         let bytes = read("../../tests/data/dog.jpeg")?;
-        let mut image = Rgb8::from_size_val([258, 195].into(), 0, CpuAllocator)?;
+        let mut image = Rgb8::from_size_val([258, 195].into(), 0, kornia_tensor::host_alloc())?;
         decode_image_jpeg_rgb8(&bytes, &mut image)?;
 
         assert_eq!(image.cols(), 258);
@@ -454,8 +448,8 @@ mod tests {
         assert_eq!(buffer[1], 0xD8, "Invalid JPEG magic byte 2");
 
         // Verify we can decode it back
-        let mut decoded: Image<u8, 3, _> =
-            Image::from_size_val([258, 195].into(), 0, CpuAllocator)?;
+        let mut decoded: Image<u8, 3> =
+            Image::from_size_val([258, 195].into(), 0, kornia_tensor::host_alloc())?;
         decode_image_jpeg_rgb8(&buffer, &mut decoded)?;
         assert_eq!(decoded.cols(), 258);
         assert_eq!(decoded.rows(), 195);
@@ -466,7 +460,8 @@ mod tests {
     #[test]
     fn test_encode_jpeg_gray8_with_buffer() -> Result<(), IoError> {
         // Create a synthetic grayscale image for testing
-        let image = Image::<u8, 1, _>::from_size_val([258, 195].into(), 128, CpuAllocator)?;
+        let image =
+            Image::<u8, 1>::from_size_val([258, 195].into(), 128, kornia_tensor::host_alloc())?;
 
         let mut buffer = Vec::new();
         encode_image_jpeg_gray8(&image, 100, &mut buffer)?;
@@ -477,8 +472,8 @@ mod tests {
         assert_eq!(buffer[1], 0xD8, "Invalid JPEG magic byte 2");
 
         // Verify we can decode it back
-        let mut decoded: Image<u8, 1, _> =
-            Image::from_size_val([258, 195].into(), 0, CpuAllocator)?;
+        let mut decoded: Image<u8, 1> =
+            Image::from_size_val([258, 195].into(), 0, kornia_tensor::host_alloc())?;
         decode_image_jpeg_mono8(&buffer, &mut decoded)?;
         assert_eq!(decoded.cols(), 258);
         assert_eq!(decoded.rows(), 195);
@@ -489,7 +484,8 @@ mod tests {
     #[test]
     fn test_encode_jpeg_buffer_reuse() -> Result<(), IoError> {
         let image1 = read_image_jpeg_rgb8("../../tests/data/dog.jpeg")?;
-        let image2 = Image::<u8, 3, _>::from_size_val([100, 100].into(), 255, CpuAllocator)?;
+        let image2 =
+            Image::<u8, 3>::from_size_val([100, 100].into(), 255, kornia_tensor::host_alloc())?;
 
         // Reuse the same buffer for multiple encodes
         let mut buffer = Vec::new();

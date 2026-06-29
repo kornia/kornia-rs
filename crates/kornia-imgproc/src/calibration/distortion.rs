@@ -2,7 +2,7 @@ use super::{CameraExtrinsic, CameraIntrinsic};
 use crate::interpolation::grid::meshgrid_from_fn;
 use kornia_algebra::{Mat3F64, Mat4F64, Vec3F64, Vec4F64};
 use kornia_image::ImageSize;
-use kornia_tensor::{CpuTensor2, Tensor, TensorAllocator, TensorError};
+use kornia_tensor::{CpuTensor2, Tensor, TensorError};
 use rayon::prelude::*;
 
 /// Represents the polynomial distortion parameters of a camera using the Brown-Conrady model.
@@ -468,11 +468,11 @@ pub struct UndistortResults {
 ///
 /// # Example:
 /// ```rust
-/// use kornia_tensor::{CpuAllocator, Tensor};
+/// use kornia_tensor::{host_alloc, Tensor};
 /// use kornia_imgproc::calibration::{CameraIntrinsic, distortion::{PolynomialDistortion, undistort_points, TermCriteria}};
 /// // distorted points
-/// let src = Tensor::<f64, 2, _>::from_shape_vec([2, 2], vec![320.0, 240.0, 100.0,  50.0], CpuAllocator).unwrap();
-/// let mut dst = Tensor::<f64, 2, _>::from_shape_vec([2, 2], vec![0.0; 4], CpuAllocator).unwrap();
+/// let src = Tensor::<f64, 2>::from_shape_vec([2, 2], vec![320.0, 240.0, 100.0,  50.0], host_alloc()).unwrap();
+/// let mut dst = Tensor::<f64, 2>::from_shape_vec([2, 2], vec![0.0; 4], host_alloc()).unwrap();
 ///
 /// // intrinsics
 /// let intr = CameraIntrinsic {
@@ -501,9 +501,9 @@ pub struct UndistortResults {
 /// // dst[[i,0]], dst[[i,1]] now contain the undistorted normalized coordinates.
 /// ```
 #[allow(clippy::too_many_arguments)]
-pub fn undistort_points<A: TensorAllocator>(
-    src: &Tensor<f64, 2, A>,
-    dst: &mut Tensor<f64, 2, A>,
+pub fn undistort_points(
+    src: &Tensor<f64, 2>,
+    dst: &mut Tensor<f64, 2>,
     intrinsic: &CameraIntrinsic,
     distortion: &PolynomialDistortion,
     r_opt: Option<&Mat3F64>,
@@ -597,7 +597,7 @@ pub fn undistort_points<A: TensorAllocator>(
 mod tests {
     use super::*;
     use kornia_image::ImageSize;
-    use kornia_tensor::CpuAllocator;
+    use kornia_tensor::host_alloc;
 
     #[test]
     fn test_distort_point_polynomial() {
@@ -758,9 +758,8 @@ mod tests {
         for &(x, y) in &pts {
             let (u, v) = distort_point_polynomial(x, y, &intr, &dist);
 
-            let src =
-                Tensor::<f64, 2, _>::from_shape_vec([1, 2], vec![u, v], CpuAllocator).unwrap();
-            let mut dst = Tensor::<f64, 2, _>::from_shape_val([1, 2], 0.0, CpuAllocator);
+            let src = Tensor::<f64, 2>::from_shape_vec([1, 2], vec![u, v], host_alloc()).unwrap();
+            let mut dst = Tensor::<f64, 2>::from_shape_val([1, 2], 0.0, host_alloc());
 
             undistort_points(&src, &mut dst, &intr, &dist, None, None, None, c).unwrap();
 
@@ -790,9 +789,8 @@ mod tests {
         for &(x, y) in &pts {
             let (u, v) = distort_point_polynomial(x, y, &intr, &dist);
 
-            let src =
-                Tensor::<f64, 2, _>::from_shape_vec([1, 2], vec![u, v], CpuAllocator).unwrap();
-            let mut dst = Tensor::<f64, 2, _>::from_shape_val([1, 2], 0.0, CpuAllocator);
+            let src = Tensor::<f64, 2>::from_shape_vec([1, 2], vec![u, v], host_alloc()).unwrap();
+            let mut dst = Tensor::<f64, 2>::from_shape_val([1, 2], 0.0, host_alloc());
 
             undistort_points(&src, &mut dst, &intr, &dist, None, None, None, c).unwrap();
 
@@ -816,9 +814,9 @@ mod tests {
 
         let (u, v) = distort_point_polynomial(x, y, &intr, &dist);
 
-        let src = Tensor::<f64, 2, _>::from_shape_vec([1, 2], vec![u, v], CpuAllocator).unwrap();
+        let src = Tensor::<f64, 2>::from_shape_vec([1, 2], vec![u, v], host_alloc()).unwrap();
         let mut dst =
-            Tensor::<f64, 2, _>::from_shape_vec([1, 2], vec![0.0, 0.0], CpuAllocator).unwrap();
+            Tensor::<f64, 2>::from_shape_vec([1, 2], vec![0.0, 0.0], host_alloc()).unwrap();
 
         let p34_arr = [
             intr.fx, 0.0, 0.0, 0.0, 0.0, intr.fy, 0.0, 0.0, intr.cx, intr.cy, 1.0, 0.0,
@@ -861,10 +859,10 @@ mod tests {
 
         let (u, v) = distort_point_polynomial(x, y, &intr, &dist);
 
-        let src = Tensor::<f64, 2, _>::from_shape_vec([1, 2], vec![u, v], CpuAllocator).unwrap();
+        let src = Tensor::<f64, 2>::from_shape_vec([1, 2], vec![u, v], host_alloc()).unwrap();
 
         let mut dst =
-            Tensor::<f64, 2, _>::from_shape_vec([1, 2], vec![0.0, 0.0], CpuAllocator).unwrap();
+            Tensor::<f64, 2>::from_shape_vec([1, 2], vec![0.0, 0.0], host_alloc()).unwrap();
 
         let theta = 5.0_f64.to_radians();
         let r = Mat3F64::from_cols_array(&[
@@ -918,10 +916,8 @@ mod tests {
 
     #[test]
     fn test_shape_error() {
-        let src =
-            Tensor::<f64, 2, _>::from_shape_vec([1, 3], vec![1., 2., 3.], CpuAllocator).unwrap();
-        let mut dst =
-            Tensor::<f64, 2, _>::from_shape_vec([1, 2], vec![0., 0.], CpuAllocator).unwrap();
+        let src = Tensor::<f64, 2>::from_shape_vec([1, 3], vec![1., 2., 3.], host_alloc()).unwrap();
+        let mut dst = Tensor::<f64, 2>::from_shape_vec([1, 2], vec![0., 0.], host_alloc()).unwrap();
 
         let r = undistort_points(
             &src,

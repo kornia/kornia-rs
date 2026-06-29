@@ -32,7 +32,7 @@ use crate::{
     },
     parallel,
 };
-use kornia_image::{allocator::ImageAllocator, Image, ImageError};
+use kornia_image::{Image, ImageError};
 
 use common::FilterKind;
 
@@ -55,17 +55,17 @@ use common::FilterKind;
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
-/// use kornia_image::allocator::CpuAllocator;
+/// use kornia_tensor::host_alloc;
 /// use kornia_imgproc::resize::resize_native;
 /// use kornia_imgproc::interpolation::InterpolationMode;
 ///
-/// let image = Image::<_, 3, _>::new(
+/// let image = Image::<_, 3>::new(
 ///     ImageSize {
 ///         width: 4,
 ///         height: 5,
 ///     },
 ///     vec![0f32; 4 * 5 * 3],
-///     CpuAllocator
+///     host_alloc()
 /// )
 /// .unwrap();
 ///
@@ -74,7 +74,7 @@ use common::FilterKind;
 ///     height: 3,
 /// };
 ///
-/// let mut image_resized = Image::<_, 3, _>::from_size_val(new_size, 0.0, CpuAllocator).unwrap();
+/// let mut image_resized = Image::<_, 3>::from_size_val(new_size, 0.0, host_alloc()).unwrap();
 ///
 /// resize_native(
 ///     &image,
@@ -87,9 +87,9 @@ use common::FilterKind;
 /// assert_eq!(image_resized.size().width, 2);
 /// assert_eq!(image_resized.size().height, 3);
 /// ```
-pub fn resize_native<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<f32, C, A1>,
-    dst: &mut Image<f32, C, A2>,
+pub fn resize_native<const C: usize>(
+    src: &Image<f32, C>,
+    dst: &mut Image<f32, C>,
     interpolation: InterpolationMode,
 ) -> Result<(), ImageError> {
     validate_interpolation(interpolation)?;
@@ -130,17 +130,17 @@ pub fn resize_native<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
-/// use kornia_image::allocator::CpuAllocator;
+/// use kornia_tensor::host_alloc;
 /// use kornia_imgproc::resize::resize_fast_rgb;
 /// use kornia_imgproc::interpolation::InterpolationMode;
 ///
-/// let image = Image::<_, 3, _>::new(
+/// let image = Image::<_, 3>::new(
 ///     ImageSize {
 ///         width: 4,
 ///         height: 5,
 ///     },
 ///     vec![0u8; 4 * 5 * 3],
-///     CpuAllocator
+///     host_alloc()
 /// )
 /// .unwrap();
 ///
@@ -149,7 +149,7 @@ pub fn resize_native<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
 ///   height: 3,
 /// };
 ///
-/// let mut image_resized = Image::<_, 3, _>::from_size_val(new_size, 0, CpuAllocator).unwrap();
+/// let mut image_resized = Image::<_, 3>::from_size_val(new_size, 0, host_alloc()).unwrap();
 ///
 /// resize_fast_rgb(
 ///   &image,
@@ -162,21 +162,21 @@ pub fn resize_native<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
 /// assert_eq!(image_resized.size().width, 2);
 /// assert_eq!(image_resized.size().height, 3);
 /// ```
-pub fn resize_fast_rgb<A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<u8, 3, A1>,
-    dst: &mut Image<u8, 3, A2>,
+pub fn resize_fast_rgb(
+    src: &Image<u8, 3>,
+    dst: &mut Image<u8, 3>,
     interpolation: InterpolationMode,
 ) -> Result<(), ImageError> {
-    resize_fast_u8::<3, _, _>(src, dst, interpolation)
+    resize_fast_u8::<3>(src, dst, interpolation)
 }
 
 /// Generic fast u8 resize for 1/3/4-channel images (PIL-quality antialiased downscale).
-pub fn resize_fast_u8<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<u8, C, A1>,
-    dst: &mut Image<u8, C, A2>,
+pub fn resize_fast_u8<const C: usize>(
+    src: &Image<u8, C>,
+    dst: &mut Image<u8, C>,
     interpolation: InterpolationMode,
 ) -> Result<(), ImageError> {
-    resize_fast_u8_aa::<C, _, _>(src, dst, interpolation, true)
+    resize_fast_u8_aa::<C>(src, dst, interpolation, true)
 }
 
 /// Generic fast u8 resize with explicit antialias control.
@@ -190,9 +190,9 @@ pub fn resize_fast_u8<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
 /// downscale but does not anti-alias.
 ///
 /// `Nearest` and `Bilinear` are unaffected by this flag.
-pub fn resize_fast_u8_aa<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<u8, C, A1>,
-    dst: &mut Image<u8, C, A2>,
+pub fn resize_fast_u8_aa<const C: usize>(
+    src: &Image<u8, C>,
+    dst: &mut Image<u8, C>,
     interpolation: InterpolationMode,
     antialias: bool,
 ) -> Result<(), ImageError> {
@@ -253,40 +253,40 @@ pub fn resize_fast_u8_aa<const C: usize, A1: ImageAllocator, A2: ImageAllocator>
 }
 
 /// Resize a 1-channel u8 image. Convenience wrapper around [`resize_fast_u8`].
-pub fn resize_fast_mono<A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<u8, 1, A1>,
-    dst: &mut Image<u8, 1, A2>,
+pub fn resize_fast_mono(
+    src: &Image<u8, 1>,
+    dst: &mut Image<u8, 1>,
     interpolation: InterpolationMode,
 ) -> Result<(), ImageError> {
-    resize_fast_u8::<1, _, _>(src, dst, interpolation)
+    resize_fast_u8::<1>(src, dst, interpolation)
 }
 
 /// Grayscale resize with explicit antialias control. See [`resize_fast_u8_aa`].
-pub fn resize_fast_mono_aa<A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<u8, 1, A1>,
-    dst: &mut Image<u8, 1, A2>,
+pub fn resize_fast_mono_aa(
+    src: &Image<u8, 1>,
+    dst: &mut Image<u8, 1>,
     interpolation: InterpolationMode,
     antialias: bool,
 ) -> Result<(), ImageError> {
-    resize_fast_u8_aa::<1, _, _>(src, dst, interpolation, antialias)
+    resize_fast_u8_aa::<1>(src, dst, interpolation, antialias)
 }
 
 /// RGB resize with explicit antialias control. See [`resize_fast_u8_aa`].
-pub fn resize_fast_rgb_aa<A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<u8, 3, A1>,
-    dst: &mut Image<u8, 3, A2>,
+pub fn resize_fast_rgb_aa(
+    src: &Image<u8, 3>,
+    dst: &mut Image<u8, 3>,
     interpolation: InterpolationMode,
     antialias: bool,
 ) -> Result<(), ImageError> {
-    resize_fast_u8_aa::<3, _, _>(src, dst, interpolation, antialias)
+    resize_fast_u8_aa::<3>(src, dst, interpolation, antialias)
 }
 
 /// Slow-path per-interpolation dispatch for cases that didn't take the
 /// fast paths in [`resize_fast_u8_aa`] (primarily bicubic / lanczos and
 /// non-exact-2× bilinear on unusual channel counts).
-fn resize_fast_impl<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<u8, C, A1>,
-    dst: &mut Image<u8, C, A2>,
+fn resize_fast_impl<const C: usize>(
+    src: &Image<u8, C>,
+    dst: &mut Image<u8, C>,
     interpolation: InterpolationMode,
     antialias: bool,
 ) -> Result<(), ImageError> {
@@ -347,17 +347,17 @@ fn resize_fast_impl<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
 #[cfg(test)]
 mod tests {
     use kornia_image::{Image, ImageError, ImageSize};
-    use kornia_tensor::{CpuAllocator, TensorError};
+    use kornia_tensor::{host_alloc, TensorError};
 
     #[test]
     fn resize_smoke_ch3() -> Result<(), ImageError> {
-        let image = Image::<_, 3, _>::new(
+        let image = Image::<_, 3>::new(
             ImageSize {
                 width: 3,
                 height: 4,
             },
             (0..3 * 4 * 3).map(|x| x as f32).collect::<Vec<f32>>(),
-            CpuAllocator,
+            host_alloc(),
         )?;
 
         let new_size = ImageSize {
@@ -365,7 +365,7 @@ mod tests {
             height: 3,
         };
 
-        let mut image_resized = Image::<_, 3, _>::from_size_val(new_size, 0.0, CpuAllocator)?;
+        let mut image_resized = Image::<_, 3>::from_size_val(new_size, 0.0, host_alloc())?;
 
         super::resize_native(
             &image,
@@ -391,13 +391,13 @@ mod tests {
     #[test]
     fn resize_smoke_ch1() -> Result<(), ImageError> {
         use kornia_image::{Image, ImageSize};
-        let image = Image::<_, 1, _>::new(
+        let image = Image::<_, 1>::new(
             ImageSize {
                 width: 2,
                 height: 3,
             },
             vec![0.0f32, 1.0, 2.0, 3.0, 4.0, 5.0],
-            CpuAllocator,
+            host_alloc(),
         )?;
 
         let new_size = ImageSize {
@@ -405,7 +405,7 @@ mod tests {
             height: 3,
         };
 
-        let mut image_resized = Image::<_, 1, _>::from_size_val(new_size, 0.0f32, CpuAllocator)?;
+        let mut image_resized = Image::<_, 1>::from_size_val(new_size, 0.0f32, host_alloc())?;
 
         super::resize_native(
             &image,
@@ -439,22 +439,22 @@ mod tests {
 
     #[test]
     fn resize_native_unsupported_interpolation() -> Result<(), ImageError> {
-        let image = Image::<_, 1, _>::new(
+        let image = Image::<_, 1>::new(
             ImageSize {
                 width: 2,
                 height: 2,
             },
             vec![0.0f32; 4],
-            CpuAllocator,
+            host_alloc(),
         )?;
 
-        let mut dst = Image::<_, 1, _>::from_size_val(
+        let mut dst = Image::<_, 1>::from_size_val(
             ImageSize {
                 width: 1,
                 height: 1,
             },
             0.0f32,
-            CpuAllocator,
+            host_alloc(),
         )?;
 
         let err = super::resize_native(&image, &mut dst, super::InterpolationMode::Bicubic);
@@ -468,13 +468,13 @@ mod tests {
     #[test]
     fn resize_fast() -> Result<(), ImageError> {
         use kornia_image::{Image, ImageSize};
-        let image = Image::<_, 3, _>::new(
+        let image = Image::<_, 3>::new(
             ImageSize {
                 width: 4,
                 height: 5,
             },
             vec![0u8; 4 * 5 * 3],
-            CpuAllocator,
+            host_alloc(),
         )?;
 
         let new_size = ImageSize {
@@ -482,7 +482,7 @@ mod tests {
             height: 3,
         };
 
-        let mut image_resized = Image::<_, 3, _>::from_size_val(new_size, 0, CpuAllocator)?;
+        let mut image_resized = Image::<_, 3>::from_size_val(new_size, 0, host_alloc())?;
 
         super::resize_fast_rgb(
             &image,
@@ -505,21 +505,21 @@ mod tests {
 
         for (w, h) in [(2, 2), (3, 4), (17, 9), (32, 5), (33, 6)] {
             let data: Vec<u8> = (0..w * h * 3).map(|x| (x % 251) as u8).collect();
-            let image = Image::<_, 3, _>::new(
+            let image = Image::<_, 3>::new(
                 ImageSize {
                     width: w,
                     height: h,
                 },
                 data,
-                CpuAllocator,
+                host_alloc(),
             )?;
-            let mut dst = Image::<_, 3, _>::from_size_val(
+            let mut dst = Image::<_, 3>::from_size_val(
                 ImageSize {
                     width: 2 * w,
                     height: 2 * h,
                 },
                 0u8,
-                CpuAllocator,
+                host_alloc(),
             )?;
             super::resize_fast_rgb(&image, &mut dst, super::InterpolationMode::Bilinear)?;
 

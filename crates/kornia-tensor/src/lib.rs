@@ -29,11 +29,11 @@
 //! Creating and manipulating tensors:
 //!
 //! ```rust
-//! use kornia_tensor::{Tensor, CpuAllocator};
+//! use kornia_tensor::{Tensor, host_alloc};
 //!
 //! // Create a 2x3 tensor from a vector
 //! let data = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
-//! let tensor = Tensor::<f32, 2, _>::from_shape_vec([2, 3], data, CpuAllocator).unwrap();
+//! let tensor = Tensor::<f32, 2>::from_shape_vec([2, 3], data, host_alloc()).unwrap();
 //!
 //! // Access elements
 //! assert_eq!(tensor.get([0, 0]), Some(&1.0));
@@ -47,14 +47,14 @@
 //! Using tensor operations:
 //!
 //! ```rust
-//! use kornia_tensor::{Tensor, CpuAllocator};
+//! use kornia_tensor::{Tensor, host_alloc};
 //!
 //! // Create tensors with specific values
-//! let zeros = Tensor::<f32, 2, _>::zeros([3, 3], CpuAllocator);
-//! let ones = Tensor::<f32, 2, _>::from_shape_val([3, 3], 1.0, CpuAllocator);
+//! let zeros = Tensor::<f32, 2>::zeros([3, 3], host_alloc());
+//! let ones = Tensor::<f32, 2>::from_shape_val([3, 3], 1.0, host_alloc());
 //!
 //! // Generate data with a function
-//! let identity = Tensor::<f32, 2, _>::from_shape_fn([3, 3], CpuAllocator, |[i, j]| {
+//! let identity = Tensor::<f32, 2>::from_shape_fn([3, 3], host_alloc(), |[i, j]| {
 //!     if i == j { 1.0 } else { 0.0 }
 //! });
 //!
@@ -65,10 +65,10 @@
 //! Working with views:
 //!
 //! ```rust
-//! use kornia_tensor::{Tensor, CpuAllocator};
+//! use kornia_tensor::{Tensor, host_alloc};
 //!
 //! let data = vec![1, 2, 3, 4, 5, 6];
-//! let tensor = Tensor::<i32, 1, _>::from_shape_vec([6], data, CpuAllocator).unwrap();
+//! let tensor = Tensor::<i32, 1>::from_shape_vec([6], data, host_alloc()).unwrap();
 //!
 //! // Create a reshaped view without copying data
 //! let view = tensor.reshape([2, 3]).unwrap();
@@ -85,7 +85,7 @@
 //! - [`Tensor2`]: Two-dimensional tensor (matrix)
 //! - [`Tensor3`]: Three-dimensional tensor
 //! - [`Tensor4`]: Four-dimensional tensor
-//! - [`CpuTensor2`]: Two-dimensional CPU tensor (most common)
+//! - [`CpuTensor2`]: Two-dimensional tensor backed by CPU memory
 
 /// Allocator module containing memory management utilities.
 ///
@@ -158,28 +158,28 @@ pub mod tensor;
 /// into existing tensor data.
 pub mod view;
 
-pub use crate::allocator::{CpuAllocator, ForeignAllocator, TensorAllocator};
+pub use crate::allocator::{
+    host_alloc, AllocDyn, AllocHandle, CpuAllocator, ForeignAllocator, TensorAllocator,
+};
 pub use crate::resource::{ForeignResource, HostResource, MemoryDomain, MemoryResource};
 // Keep backward-compatible re-export: `use kornia_tensor::storage::MemoryDomain` still resolves
 // because storage.rs now re-exports from resource.
 pub(crate) use crate::tensor::get_strides_from_shape;
 pub use crate::tensor::{Tensor, TensorError};
 
-// Note: Rust does not propagate type-parameter defaults through type aliases, so these
-// aliases require an explicit allocator argument. Use `Tensor<T, N>` directly to rely
-// on the `A = CpuAllocator` default, or use the `CpuTensor2` / similar helpers below.
+// Note: type aliases no longer carry an allocator parameter — the allocator is runtime.
 
 /// Type alias for a 1-dimensional tensor.
-pub type Tensor1<T, A> = Tensor<T, 1, A>;
+pub type Tensor1<T> = Tensor<T, 1>;
 
 /// Type alias for a 2-dimensional tensor.
-pub type Tensor2<T, A> = Tensor<T, 2, A>;
+pub type Tensor2<T> = Tensor<T, 2>;
 
 /// Type alias for a 3-dimensional tensor.
-pub type Tensor3<T, A> = Tensor<T, 3, A>;
+pub type Tensor3<T> = Tensor<T, 3>;
 
 /// Type alias for a 4-dimensional tensor.
-pub type Tensor4<T, A> = Tensor<T, 4, A>;
+pub type Tensor4<T> = Tensor<T, 4>;
 
-/// Type alias for a 2-dimensional tensor with CPU allocator.
-pub type CpuTensor2<T> = Tensor2<T, CpuAllocator>;
+/// Type alias for a 2-dimensional tensor backed by CPU memory.
+pub type CpuTensor2<T> = Tensor2<T>;

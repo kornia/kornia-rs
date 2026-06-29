@@ -1,4 +1,4 @@
-use kornia_tensor::{CpuAllocator, CpuTensor2, TensorError};
+use kornia_tensor::{host_alloc, CpuTensor2, TensorError};
 use num_traits::Float;
 use rayon::iter::ParallelIterator;
 use rayon::{iter::IndexedParallelIterator, slice::ParallelSliceMut};
@@ -42,8 +42,8 @@ where
     T: Float + Send + Sync,
 {
     // allocate the output tensors
-    let mut map_x = CpuTensor2::<T>::zeros([rows, cols], CpuAllocator);
-    let mut map_y = CpuTensor2::<T>::zeros([rows, cols], CpuAllocator);
+    let mut map_x = CpuTensor2::<T>::zeros([rows, cols], host_alloc());
+    let mut map_y = CpuTensor2::<T>::zeros([rows, cols], host_alloc());
 
     // fill the output tensors
     let chunk_elems = ROWS_PER_TASK * cols;

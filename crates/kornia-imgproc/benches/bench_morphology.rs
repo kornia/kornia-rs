@@ -3,7 +3,7 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use kornia_image::Image;
 use kornia_imgproc::morphology::{close, dilate, erode, open, Kernel, KernelShape};
 use kornia_imgproc::padding::PaddingMode;
-use kornia_tensor::CpuAllocator;
+use kornia_tensor::host_alloc;
 
 fn bench_morphology(c: &mut Criterion) {
     let mut group = c.benchmark_group("Morphology");
@@ -13,8 +13,8 @@ fn bench_morphology(c: &mut Criterion) {
             let parameter_string = format!("{width}x{height}_k{kernel_size}");
             let image_size = [*width, *height].into();
 
-            let image = Image::<u8, 1, _>::from_size_val(image_size, 128, CpuAllocator).unwrap();
-            let dst = Image::<u8, 1, _>::from_size_val(image_size, 0, CpuAllocator).unwrap();
+            let image = Image::<u8, 1>::from_size_val(image_size, 128, host_alloc()).unwrap();
+            let dst = Image::<u8, 1>::from_size_val(image_size, 0, host_alloc()).unwrap();
 
             let kernel = Kernel::new(KernelShape::Box { size: *kernel_size });
 

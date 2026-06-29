@@ -1,6 +1,6 @@
 use num_traits::Float;
 
-use kornia_image::{allocator::ImageAllocator, Image, ImageError};
+use kornia_image::{Image, ImageError};
 
 use crate::parallel;
 
@@ -27,21 +27,21 @@ use crate::parallel;
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
-/// use kornia_image::allocator::CpuAllocator;
+/// use kornia_tensor::host_alloc;
 /// use kornia_imgproc::normalize::normalize_mean_std;
 ///
 /// let image_data = vec![0f32, 1.0, 0.0, 1.0, 2.0, 3.0, 0.0, 1.0, 0.0, 1.0, 2.0, 3.0];
-/// let image = Image::<f32, 3, _>::new(
+/// let image = Image::<f32, 3>::new(
 ///   ImageSize {
 ///     width: 2,
 ///     height: 2,
 ///   },
 ///   image_data,
-///   CpuAllocator
+///   host_alloc()
 /// )
 /// .unwrap();
 ///
-/// let mut image_normalized = Image::<f32, 3, _>::from_size_val(image.size(), 0.0, CpuAllocator).unwrap();
+/// let mut image_normalized = Image::<f32, 3>::from_size_val(image.size(), 0.0, host_alloc()).unwrap();
 ///
 /// normalize_mean_std(
 ///     &image,
@@ -55,9 +55,9 @@ use crate::parallel;
 /// assert_eq!(image_normalized.size().width, 2);
 /// assert_eq!(image_normalized.size().height, 2);
 /// ```
-pub fn normalize_mean_std<T, const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<T, C, A1>,
-    dst: &mut Image<T, C, A2>,
+pub fn normalize_mean_std<T, const C: usize>(
+    src: &Image<T, C>,
+    dst: &mut Image<T, C>,
     mean: &[T; C],
     std: &[T; C],
 ) -> Result<(), ImageError>
@@ -106,17 +106,17 @@ where
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
-/// use kornia_image::allocator::CpuAllocator;
+/// use kornia_tensor::host_alloc;
 /// use kornia_imgproc::normalize::find_min_max;
 ///
 /// let image_data = vec![0u8, 1, 0, 1, 2, 3, 0, 1, 0, 1, 2, 3];
-/// let image = Image::<u8, 3, _>::new(
+/// let image = Image::<u8, 3>::new(
 ///   ImageSize {
 ///     width: 2,
 ///     height: 2,
 ///   },
 ///   image_data,
-///   CpuAllocator
+///   host_alloc()
 /// )
 /// .unwrap();
 ///
@@ -124,9 +124,7 @@ where
 /// assert_eq!(min, 0);
 /// assert_eq!(max, 3);
 /// ```
-pub fn find_min_max<T, const C: usize, A: ImageAllocator>(
-    image: &Image<T, C, A>,
-) -> Result<(T, T), ImageError>
+pub fn find_min_max<T, const C: usize>(image: &Image<T, C>) -> Result<(T, T), ImageError>
 where
     T: Clone + Copy + PartialOrd,
 {
@@ -174,21 +172,21 @@ where
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
-/// use kornia_image::allocator::CpuAllocator;
+/// use kornia_tensor::host_alloc;
 /// use kornia_imgproc::normalize::normalize_min_max;
 ///
 /// let image_data = vec![0.0f32, 1.0, 0.0, 1.0, 2.0, 3.0, 0.0, 1.0, 0.0, 1.0, 2.0, 3.0];
-/// let image = Image::<f32, 3, _>::new(
+/// let image = Image::<f32, 3>::new(
 ///   ImageSize {
 ///     width: 2,
 ///     height: 2,
 ///   },
 ///   image_data,
-///   CpuAllocator
+///   host_alloc()
 /// )
 /// .unwrap();
 ///
-/// let mut image_normalized = Image::<f32, 3, _>::from_size_val(image.size(), 0.0, CpuAllocator).unwrap();
+/// let mut image_normalized = Image::<f32, 3>::from_size_val(image.size(), 0.0, host_alloc()).unwrap();
 ///
 /// normalize_min_max(&image, &mut image_normalized, 0.0, 1.0).unwrap();
 ///
@@ -196,9 +194,9 @@ where
 /// assert_eq!(image_normalized.size().width, 2);
 /// assert_eq!(image_normalized.size().height, 2);
 /// ```
-pub fn normalize_min_max<T, const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<T, C, A1>,
-    dst: &mut Image<T, C, A2>,
+pub fn normalize_min_max<T, const C: usize>(
+    src: &Image<T, C>,
+    dst: &mut Image<T, C>,
     min: T,
     max: T,
 ) -> Result<(), ImageError>
@@ -281,44 +279,46 @@ unsafe fn normalize_rgb_u8_neon(
     scale: &[f32; 3],
     offset: &[f32; 3],
 ) {
-    use std::arch::aarch64::*;
-    let bulk = npixels & !7; // 8 pixels per iteration
-    let s0 = vdupq_n_f32(scale[0]);
-    let s1 = vdupq_n_f32(scale[1]);
-    let s2 = vdupq_n_f32(scale[2]);
-    let o0 = vdupq_n_f32(offset[0]);
-    let o1 = vdupq_n_f32(offset[1]);
-    let o2 = vdupq_n_f32(offset[2]);
-    let mut i = 0usize;
-    while i < bulk {
-        // Load 8 RGB pixels (24 bytes), deinterleave into R/G/B vectors
-        let rgb = vld3_u8(src.as_ptr().add(i * 3));
-        // Widen u8→u16→u32→f32, then fma: val * scale + offset
-        let r16 = vmovl_u8(rgb.0);
-        let r_lo = vfmaq_f32(o0, vcvtq_f32_u32(vmovl_u16(vget_low_u16(r16))), s0);
-        let r_hi = vfmaq_f32(o0, vcvtq_f32_u32(vmovl_u16(vget_high_u16(r16))), s0);
-        let g16 = vmovl_u8(rgb.1);
-        let g_lo = vfmaq_f32(o1, vcvtq_f32_u32(vmovl_u16(vget_low_u16(g16))), s1);
-        let g_hi = vfmaq_f32(o1, vcvtq_f32_u32(vmovl_u16(vget_high_u16(g16))), s1);
-        let b16 = vmovl_u8(rgb.2);
-        let b_lo = vfmaq_f32(o2, vcvtq_f32_u32(vmovl_u16(vget_low_u16(b16))), s2);
-        let b_hi = vfmaq_f32(o2, vcvtq_f32_u32(vmovl_u16(vget_high_u16(b16))), s2);
-        // Interleave back to [R,G,B, R,G,B, ...] and store
-        vst3q_f32(dst.as_mut_ptr().add(i * 3), float32x4x3_t(r_lo, g_lo, b_lo));
-        vst3q_f32(
-            dst.as_mut_ptr().add((i + 4) * 3),
-            float32x4x3_t(r_hi, g_hi, b_hi),
-        );
-        i += 8;
-    }
-    // Scalar tail
-    for i in bulk..npixels {
-        let base = i * 3;
-        *dst.get_unchecked_mut(base) = *src.get_unchecked(base) as f32 * scale[0] + offset[0];
-        *dst.get_unchecked_mut(base + 1) =
-            *src.get_unchecked(base + 1) as f32 * scale[1] + offset[1];
-        *dst.get_unchecked_mut(base + 2) =
-            *src.get_unchecked(base + 2) as f32 * scale[2] + offset[2];
+    unsafe {
+        use std::arch::aarch64::*;
+        let bulk = npixels & !7; // 8 pixels per iteration
+        let s0 = vdupq_n_f32(scale[0]);
+        let s1 = vdupq_n_f32(scale[1]);
+        let s2 = vdupq_n_f32(scale[2]);
+        let o0 = vdupq_n_f32(offset[0]);
+        let o1 = vdupq_n_f32(offset[1]);
+        let o2 = vdupq_n_f32(offset[2]);
+        let mut i = 0usize;
+        while i < bulk {
+            // Load 8 RGB pixels (24 bytes), deinterleave into R/G/B vectors
+            let rgb = vld3_u8(src.as_ptr().add(i * 3));
+            // Widen u8→u16→u32→f32, then fma: val * scale + offset
+            let r16 = vmovl_u8(rgb.0);
+            let r_lo = vfmaq_f32(o0, vcvtq_f32_u32(vmovl_u16(vget_low_u16(r16))), s0);
+            let r_hi = vfmaq_f32(o0, vcvtq_f32_u32(vmovl_u16(vget_high_u16(r16))), s0);
+            let g16 = vmovl_u8(rgb.1);
+            let g_lo = vfmaq_f32(o1, vcvtq_f32_u32(vmovl_u16(vget_low_u16(g16))), s1);
+            let g_hi = vfmaq_f32(o1, vcvtq_f32_u32(vmovl_u16(vget_high_u16(g16))), s1);
+            let b16 = vmovl_u8(rgb.2);
+            let b_lo = vfmaq_f32(o2, vcvtq_f32_u32(vmovl_u16(vget_low_u16(b16))), s2);
+            let b_hi = vfmaq_f32(o2, vcvtq_f32_u32(vmovl_u16(vget_high_u16(b16))), s2);
+            // Interleave back to [R,G,B, R,G,B, ...] and store
+            vst3q_f32(dst.as_mut_ptr().add(i * 3), float32x4x3_t(r_lo, g_lo, b_lo));
+            vst3q_f32(
+                dst.as_mut_ptr().add((i + 4) * 3),
+                float32x4x3_t(r_hi, g_hi, b_hi),
+            );
+            i += 8;
+        }
+        // Scalar tail
+        for i in bulk..npixels {
+            let base = i * 3;
+            *dst.get_unchecked_mut(base) = *src.get_unchecked(base) as f32 * scale[0] + offset[0];
+            *dst.get_unchecked_mut(base + 1) =
+                *src.get_unchecked(base + 1) as f32 * scale[1] + offset[1];
+            *dst.get_unchecked_mut(base + 2) =
+                *src.get_unchecked(base + 2) as f32 * scale[2] + offset[2];
+        }
     }
 }
 
@@ -428,7 +428,7 @@ fn normalize_rgb_u8_scalar(
 #[cfg(test)]
 mod tests {
     use kornia_image::{Image, ImageError, ImageSize};
-    use kornia_tensor::CpuAllocator;
+    use kornia_tensor::host_alloc;
 
     #[test]
     fn normalize_mean_std() -> Result<(), ImageError> {
@@ -440,19 +440,19 @@ mod tests {
             -0.5f32, 0.0, -0.5, 0.5, 1.0, 2.5, -0.5, 0.0, -0.5, 0.5, 1.0, 2.5,
         ];
 
-        let image = Image::<f32, 3, _>::new(
+        let image = Image::<f32, 3>::new(
             ImageSize {
                 width: 2,
                 height: 2,
             },
             image_data,
-            CpuAllocator,
+            host_alloc(),
         )?;
 
         let mean = [0.5, 1.0, 0.5];
         let std = [1.0, 1.0, 1.0];
 
-        let mut normalized = Image::<f32, 3, _>::from_size_val(image.size(), 0.0, CpuAllocator)?;
+        let mut normalized = Image::<f32, 3>::from_size_val(image.size(), 0.0, host_alloc())?;
 
         super::normalize_mean_std(&image, &mut normalized, &mean, &std)?;
 
@@ -474,13 +474,13 @@ mod tests {
     #[test]
     fn find_min_max() -> Result<(), ImageError> {
         let image_data = vec![0u8, 1, 0, 1, 2, 3, 0, 1, 0, 1, 2, 3];
-        let image = Image::<u8, 3, _>::new(
+        let image = Image::<u8, 3>::new(
             ImageSize {
                 width: 2,
                 height: 2,
             },
             image_data,
-            CpuAllocator,
+            host_alloc(),
         )?;
 
         let (min, max) = super::find_min_max(&image)?;
@@ -502,16 +502,16 @@ mod tests {
             0.6666667, 1.0,
         ];
 
-        let image = Image::<f32, 3, _>::new(
+        let image = Image::<f32, 3>::new(
             ImageSize {
                 width: 2,
                 height: 2,
             },
             image_data,
-            CpuAllocator,
+            host_alloc(),
         )?;
 
-        let mut normalized = Image::<f32, 3, _>::from_size_val(image.size(), 0.0, CpuAllocator)?;
+        let mut normalized = Image::<f32, 3>::from_size_val(image.size(), 0.0, host_alloc())?;
 
         super::normalize_min_max(&image, &mut normalized, 0.0, 1.0)?;
 

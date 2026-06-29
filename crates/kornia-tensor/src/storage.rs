@@ -1,6 +1,6 @@
 use std::{alloc::Layout, marker::PhantomData, ptr::NonNull};
 
-use crate::allocator::{CpuAllocator, TensorAllocator};
+use crate::allocator::AllocHandle;
 use crate::resource::{ForeignResource, HostResource, MemoryResource};
 
 // MemoryDomain is now defined in `resource` and re-exported from there.
@@ -22,7 +22,7 @@ pub use crate::resource::MemoryDomain;
 ///
 /// # Thread Safety
 ///
-/// `TensorStorage` is `Send` and `Sync` when the allocator is thread-safe and `T: Send + Sync`,
+/// `TensorStorage` is `Send` and `Sync` when `T: Send + Sync`,
 /// allowing tensors to be safely shared across threads.
 ///
 /// # Examples
@@ -30,10 +30,10 @@ pub use crate::resource::MemoryDomain;
 /// Creating storage from a vector:
 ///
 /// ```rust
-/// use kornia_tensor::{storage::TensorStorage, CpuAllocator};
+/// use kornia_tensor::{storage::TensorStorage, host_alloc};
 ///
 /// let data = vec![1, 2, 3, 4, 5];
-/// let storage = TensorStorage::from_vec(data, CpuAllocator);
+/// let storage = TensorStorage::from_vec(data, host_alloc());
 ///
 /// assert_eq!(storage.as_slice(), &[1, 2, 3, 4, 5]);
 /// assert!(!storage.is_empty());
@@ -42,27 +42,27 @@ pub use crate::resource::MemoryDomain;
 /// Converting back to a vector:
 ///
 /// ```rust
-/// use kornia_tensor::{storage::TensorStorage, CpuAllocator};
+/// use kornia_tensor::{storage::TensorStorage, host_alloc};
 ///
 /// let data = vec![1.0, 2.0, 3.0];
-/// let storage = TensorStorage::from_vec(data, CpuAllocator);
+/// let storage = TensorStorage::from_vec(data, host_alloc());
 /// let recovered = storage.into_vec();
 ///
 /// assert_eq!(recovered, vec![1.0, 2.0, 3.0]);
 /// ```
-pub struct TensorStorage<T, A: TensorAllocator = CpuAllocator> {
+pub struct TensorStorage<T> {
     /// Cached hot-path pointer to the first element of the backing buffer.
     pub(crate) ptr: NonNull<T>,
     /// Length of the backing buffer in bytes (NOT number of elements).
     pub(crate) len: usize,
     /// Owning handle that frees the backing buffer correctly on Drop.
     pub(crate) owner: Box<dyn MemoryResource>,
-    /// The allocator associated with this storage (type tag / future allocation use).
-    pub(crate) alloc: A,
+    /// The allocator associated with this storage (runtime handle).
+    pub(crate) alloc: AllocHandle,
     pub(crate) _marker: PhantomData<T>,
 }
 
-impl<T, A: TensorAllocator> TensorStorage<T, A> {
+impl<T> TensorStorage<T> {
     /// Returns a raw const pointer to the storage's first element.
     #[inline]
     pub fn as_ptr(&self) -> *const T {
@@ -158,9 +158,9 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
         )
     }
 
-    /// Returns a reference to the allocator used by this storage.
+    /// Returns a reference to the allocator handle used by this storage.
     #[inline]
-    pub fn alloc(&self) -> &A {
+    pub fn alloc(&self) -> &AllocHandle {
         &self.alloc
     }
 
@@ -173,8 +173,8 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
     /// # Arguments
     ///
     /// * `value` - The vector to convert into storage
-    /// * `alloc` - The allocator to associate with this storage
-    pub fn from_vec(value: Vec<T>, alloc: A) -> Self {
+    /// * `alloc` - The allocator handle to associate with this storage
+    pub fn from_vec(value: Vec<T>, alloc: AllocHandle) -> Self {
         // Extract the Vec's innards without copying.
         // SAFETY: Vec::as_ptr is non-null for non-zero-capacity vecs; for cap == 0
         // the pointer is dangling but len == 0 so we never dereference it.
@@ -214,18 +214,20 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
     /// - The pointer is non-null and properly aligned.
     /// - The memory region is valid for `len` bytes for the entire lifetime of this storage.
     /// - No other code will free this memory while this storage exists.
-    pub unsafe fn from_raw_parts(data: *const T, len: usize, alloc: A) -> Self {
-        let ptr = NonNull::new_unchecked(data as *mut T);
-        let owner: Box<dyn MemoryResource> = Box::new(
-            ForeignResource::new(data as *mut u8, len, MemoryDomain::Host, None)
-                .expect("non-null pointer required"),
-        );
-        Self {
-            ptr,
-            len,
-            owner,
-            alloc,
-            _marker: PhantomData,
+    pub unsafe fn from_raw_parts(data: *const T, len: usize, alloc: AllocHandle) -> Self {
+        unsafe {
+            let ptr = NonNull::new_unchecked(data as *mut T);
+            let owner: Box<dyn MemoryResource> = Box::new(
+                ForeignResource::new(data as *mut u8, len, MemoryDomain::Host, None)
+                    .expect("non-null pointer required"),
+            );
+            Self {
+                ptr,
+                len,
+                owner,
+                alloc,
+                _marker: PhantomData,
+            }
         }
     }
 
@@ -242,30 +244,38 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
     ///   global allocator.
     /// - Ownership is transferred; `HostResource::Drop` will call
     ///   `std::alloc::dealloc(data, layout)` on drop.
-    pub unsafe fn from_raw_host(data: *mut T, len_bytes: usize, layout: Layout, alloc: A) -> Self {
-        // The viewed length must lie within the allocation `layout` describes; otherwise
-        // `as_slice` (len = len_bytes / size_of::<T>()) reads out of bounds and `into_vec`
-        // would build a Vec with len > capacity (instant UB). Enforce the documented
-        // contract rather than trusting the caller.
-        assert!(
+    pub unsafe fn from_raw_host(
+        data: *mut T,
+        len_bytes: usize,
+        layout: Layout,
+        alloc: AllocHandle,
+    ) -> Self {
+        unsafe {
+            // The viewed length must lie within the allocation `layout` describes; otherwise
+            // `as_slice` (len = len_bytes / size_of::<T>()) reads out of bounds and `into_vec`
+            // would build a Vec with len > capacity (instant UB). Enforce the documented
+            // contract rather than trusting the caller.
+            assert!(
             layout.size() >= len_bytes,
             "from_raw_host: layout.size() ({}) < len_bytes ({}) — buffer too small for the view",
             layout.size(),
             len_bytes,
         );
-        // Defense-in-depth: a null pointer here is always a caller bug; make it a clear
-        // panic rather than undefined behaviour via `new_unchecked`.
-        let ptr = NonNull::new(data)
-            .expect("from_raw_host: null pointer — data must be a valid, non-null host pointer");
-        let owner: Box<dyn MemoryResource> = Box::new(
-            HostResource::from_raw(data as *mut u8, layout).expect("non-null pointer required"),
-        );
-        Self {
-            ptr,
-            len: len_bytes,
-            owner,
-            alloc,
-            _marker: PhantomData,
+            // Defense-in-depth: a null pointer here is always a caller bug; make it a clear
+            // panic rather than undefined behaviour via `new_unchecked`.
+            let ptr = NonNull::new(data).expect(
+                "from_raw_host: null pointer — data must be a valid, non-null host pointer",
+            );
+            let owner: Box<dyn MemoryResource> = Box::new(
+                HostResource::from_raw(data as *mut u8, layout).expect("non-null pointer required"),
+            );
+            Self {
+                ptr,
+                len: len_bytes,
+                owner,
+                alloc,
+                _marker: PhantomData,
+            }
         }
     }
 
@@ -279,7 +289,7 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
     ///
     /// * `data`      - Pointer to the first element of the buffer.
     /// * `len_bytes` - Byte length of the buffer.
-    /// * `alloc`     - Allocator type tag.
+    /// * `alloc`     - Allocator handle.
     /// * `domain`    - Accessibility of the buffer (`Host`, `Device{id}`, or `Unified{id}`).
     /// * `keepalive` - Owned arc whose `Drop` releases the underlying allocation.
     ///
@@ -292,21 +302,23 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
     pub unsafe fn from_borrowed(
         data: *const T,
         len_bytes: usize,
-        alloc: A,
+        alloc: AllocHandle,
         domain: MemoryDomain,
         keepalive: std::sync::Arc<dyn core::any::Any + Send + Sync>,
     ) -> Self {
-        let ptr = NonNull::new_unchecked(data as *mut T);
-        let owner: Box<dyn MemoryResource> = Box::new(
-            ForeignResource::new(data as *mut u8, len_bytes, domain, Some(keepalive))
-                .expect("non-null pointer required"),
-        );
-        Self {
-            ptr,
-            len: len_bytes,
-            owner,
-            alloc,
-            _marker: PhantomData,
+        unsafe {
+            let ptr = NonNull::new_unchecked(data as *mut T);
+            let owner: Box<dyn MemoryResource> = Box::new(
+                ForeignResource::new(data as *mut u8, len_bytes, domain, Some(keepalive))
+                    .expect("non-null pointer required"),
+            );
+            Self {
+                ptr,
+                len: len_bytes,
+                owner,
+                alloc,
+                _marker: PhantomData,
+            }
         }
     }
 
@@ -324,7 +336,7 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
     ///
     /// * `data`      - Pointer to the first element of the buffer.
     /// * `len_bytes` - Byte length of the buffer.
-    /// * `alloc`     - Allocator type tag.
+    /// * `alloc`     - Allocator handle.
     /// * `domain`    - Accessibility of the buffer.
     /// * `keepalive` - Owned arc whose `Drop` releases the underlying allocation.
     ///
@@ -338,21 +350,23 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
     pub unsafe fn from_borrowed_readonly(
         data: *const T,
         len_bytes: usize,
-        alloc: A,
+        alloc: AllocHandle,
         domain: MemoryDomain,
         keepalive: std::sync::Arc<dyn core::any::Any + Send + Sync>,
     ) -> Self {
-        let ptr = NonNull::new_unchecked(data as *mut T);
-        let owner: Box<dyn MemoryResource> = Box::new(
-            ForeignResource::new_readonly(data as *mut u8, len_bytes, domain, Some(keepalive))
-                .expect("non-null pointer required"),
-        );
-        Self {
-            ptr,
-            len: len_bytes,
-            owner,
-            alloc,
-            _marker: PhantomData,
+        unsafe {
+            let ptr = NonNull::new_unchecked(data as *mut T);
+            let owner: Box<dyn MemoryResource> = Box::new(
+                ForeignResource::new_readonly(data as *mut u8, len_bytes, domain, Some(keepalive))
+                    .expect("non-null pointer required"),
+            );
+            Self {
+                ptr,
+                len: len_bytes,
+                owner,
+                alloc,
+                _marker: PhantomData,
+            }
         }
     }
 
@@ -401,7 +415,7 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
         let vec_capacity = unsafe {
             // Read the Box and alloc out of the ManuallyDrop (does NOT run their Drop).
             let owner_box: Box<dyn MemoryResource> = std::ptr::read(&this.owner);
-            // Drop the allocator field (unit struct for CpuAllocator/ForeignAllocator, but be explicit).
+            // Drop the allocator handle (Arc).
             drop(std::ptr::read(&this.alloc));
             // Convert the Box<dyn MemoryResource> into a raw fat pointer.
             let raw: *mut dyn MemoryResource = Box::into_raw(owner_box);
@@ -426,15 +440,15 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
 
 // SAFETY: TensorStorage is the sole owner of the pointed-to memory.
 // Sending it across threads is safe iff T is Send (same rule as Vec<T>).
-unsafe impl<T: Send, A: TensorAllocator> Send for TensorStorage<T, A> {}
+unsafe impl<T: Send> Send for TensorStorage<T> {}
 // SAFETY: Shared references to TensorStorage only allow reading T.
 // This is safe iff T is Sync (same rule as &[T]).
-unsafe impl<T: Sync, A: TensorAllocator> Sync for TensorStorage<T, A> {}
+unsafe impl<T: Sync> Sync for TensorStorage<T> {}
 
 /// Drop is empty: the `owner: Box<dyn MemoryResource>` field drops itself,
 /// calling the correct deallocation path (HostResource::dealloc, or ForeignResource
 /// dropping its keepalive Arc, etc.) exactly once.
-impl<T, A: TensorAllocator> Drop for TensorStorage<T, A> {
+impl<T> Drop for TensorStorage<T> {
     fn drop(&mut self) {
         // Nothing to do — `owner` drops automatically via Box<dyn MemoryResource>.
     }
@@ -442,17 +456,13 @@ impl<T, A: TensorAllocator> Drop for TensorStorage<T, A> {
 
 /// Clones the storage by creating a new storage with copied data.
 ///
-/// This performs a deep copy of the storage data using the cloned allocator.
+/// This performs a deep copy of the storage data using the cloned allocator handle.
 ///
 /// # Panics
 ///
 /// Panics if the storage is non-host-accessible. Device-to-device copy is not yet
 /// implemented; use an explicit transfer API when it becomes available.
-impl<T, A> Clone for TensorStorage<T, A>
-where
-    T: Clone,
-    A: TensorAllocator,
-{
+impl<T: Clone> Clone for TensorStorage<T> {
     fn clone(&self) -> Self {
         let domain = self.owner.domain();
         assert!(
@@ -467,7 +477,7 @@ where
 mod tests {
 
     use super::TensorStorage;
-    use crate::allocator::{CpuAllocator, ForeignAllocator, TensorAllocatorError};
+    use crate::allocator::{host_alloc, TensorAllocatorError};
     use crate::resource::{ForeignResource, HostResource, MemoryDomain, MemoryResource};
     use crate::TensorAllocator;
     use std::alloc::Layout;
@@ -482,7 +492,7 @@ mod tests {
     ///
     /// Uses a custom `FakeDeviceResource` that wraps a real `HostResource` allocation but
     /// reports `Device` domain, so the memory is properly freed on Drop (no leaks under miri).
-    fn make_device_storage() -> TensorStorage<u8, CpuAllocator> {
+    fn make_device_storage() -> TensorStorage<u8> {
         /// Wraps a properly-allocated HostResource but reports Device domain.
         /// This lets us test Device-domain guards without any real GPU or leaked memory.
         struct FakeDeviceResource {
@@ -517,7 +527,7 @@ mod tests {
             ptr,
             len: 1,
             owner,
-            alloc: CpuAllocator,
+            alloc: host_alloc(),
             _marker: PhantomData,
         }
     }
@@ -533,7 +543,7 @@ mod tests {
         let ptr = unsafe { NonNull::new_unchecked(ptr_raw) };
 
         let buffer = TensorStorage {
-            alloc: CpuAllocator,
+            alloc: host_alloc(),
             len: size * std::mem::size_of::<u8>(),
             owner,
             ptr,
@@ -553,7 +563,7 @@ mod tests {
     fn test_tensor_buffer_ptr() -> Result<(), TensorAllocatorError> {
         let size = 8;
         let layout = Layout::array::<u8>(size).map_err(TensorAllocatorError::LayoutError)?;
-        let r = CpuAllocator.allocate(layout)?;
+        let r = HostResource::from_layout(layout)?;
 
         // check alignment
         let ptr_raw = r.as_ptr() as usize;
@@ -576,12 +586,7 @@ mod tests {
         // from_raw_host takes ownership and will store the 64-byte-aligned layout in
         // HostResource, which into_vec will detect and reject.
         let storage = unsafe {
-            TensorStorage::<f32, CpuAllocator>::from_raw_host(
-                raw_ptr,
-                layout.size(),
-                layout,
-                CpuAllocator,
-            )
+            TensorStorage::<f32>::from_raw_host(raw_ptr, layout.size(), layout, host_alloc())
         };
         let _ = storage.into_vec();
     }
@@ -594,7 +599,7 @@ mod tests {
         let ptr = unsafe { NonNull::new_unchecked(owner.as_ptr() as *mut f32) };
 
         let buffer = TensorStorage {
-            alloc: CpuAllocator,
+            alloc: host_alloc(),
             len: size,
             owner,
             ptr,
@@ -642,7 +647,7 @@ mod tests {
             let vec_ptr = vec.as_ptr();
             let vec_capacity = vec.capacity();
 
-            let buffer = TensorStorage::from_vec(vec, allocator.clone());
+            let buffer = TensorStorage::from_vec(vec, host_alloc());
             assert_eq!(allocator.bytes_allocated.load(Ordering::SeqCst), 0);
 
             let result_vec = buffer.into_vec();
@@ -662,7 +667,7 @@ mod tests {
         let vec_ptr = vec.as_ptr();
         let vec_len = vec.len();
 
-        let buffer = TensorStorage::<_, CpuAllocator>::from_vec(vec, CpuAllocator);
+        let buffer = TensorStorage::from_vec(vec, host_alloc());
 
         // check NO copy
         let buffer_ptr = buffer.as_ptr();
@@ -707,7 +712,7 @@ mod tests {
         let vec_ptr = vec.as_ptr();
         let vec_len = vec.len();
 
-        let buffer = TensorStorage::<_, CpuAllocator>::from_vec(vec, CpuAllocator);
+        let buffer = TensorStorage::from_vec(vec, host_alloc());
 
         // check NO copy
         let buffer_ptr = buffer.as_ptr();
@@ -726,7 +731,7 @@ mod tests {
         let vec_ptr = vec.as_ptr();
         let vec_cap = vec.capacity();
 
-        let buffer = TensorStorage::<_, CpuAllocator>::from_vec(vec, CpuAllocator);
+        let buffer = TensorStorage::from_vec(vec, host_alloc());
 
         // convert back to vec (no copy)
         let result_vec = buffer.into_vec();
@@ -740,7 +745,7 @@ mod tests {
     #[test]
     fn test_tensor_mutability() -> Result<(), TensorAllocatorError> {
         let vec: Vec<i32> = vec![1, 2, 3, 4, 5];
-        let mut buffer = TensorStorage::<_, CpuAllocator>::from_vec(vec, CpuAllocator);
+        let mut buffer = TensorStorage::from_vec(vec, host_alloc());
         let ptr_mut = buffer.as_mut_ptr();
         unsafe {
             *ptr_mut.add(0) = 10;
@@ -775,7 +780,7 @@ mod tests {
     /// from_vec roundtrip + verify Host domain.
     #[test]
     fn from_vec_roundtrip_and_host_domain() {
-        let s = TensorStorage::from_vec(vec![1u8, 2, 3, 4], CpuAllocator);
+        let s = TensorStorage::from_vec(vec![1u8, 2, 3, 4], host_alloc());
         assert_eq!(s.as_slice(), &[1, 2, 3, 4]);
         assert!(matches!(s.domain(), MemoryDomain::Host));
         assert_eq!(s.into_vec(), vec![1u8, 2, 3, 4]);
@@ -805,10 +810,10 @@ mod tests {
         {
             let keep: Arc<dyn core::any::Any + Send + Sync> = Arc::new(Guard(n.clone()));
             let s = unsafe {
-                TensorStorage::<u8, ForeignAllocator>::from_borrowed(
+                TensorStorage::<u8>::from_borrowed(
                     buf.as_ptr(),
                     8,
-                    ForeignAllocator,
+                    host_alloc(),
                     MemoryDomain::Host,
                     keep,
                 )
@@ -824,10 +829,10 @@ mod tests {
         let buf = vec![42u8; 4];
         let keep: Arc<dyn core::any::Any + Send + Sync> = Arc::new(buf.clone());
         let s = unsafe {
-            TensorStorage::<u8, ForeignAllocator>::from_borrowed(
+            TensorStorage::<u8>::from_borrowed(
                 buf.as_ptr(),
                 4,
-                ForeignAllocator,
+                host_alloc(),
                 MemoryDomain::Unified { id: 0 },
                 keep,
             )
@@ -889,11 +894,11 @@ mod tests {
             let owner: Box<dyn MemoryResource> = Box::new(counting);
             let ptr = unsafe { NonNull::new_unchecked(owner.as_ptr()) };
 
-            let _storage: TensorStorage<u8, CpuAllocator> = TensorStorage {
+            let _storage: TensorStorage<u8> = TensorStorage {
                 ptr,
                 len: 64,
                 owner,
-                alloc: CpuAllocator,
+                alloc: host_alloc(),
                 _marker: PhantomData,
             };
             // counter == 1 while alive
@@ -911,7 +916,7 @@ mod tests {
         let original_ptr = original.as_ptr();
         let original_cap = original.capacity();
 
-        let storage = TensorStorage::from_vec(original, CpuAllocator);
+        let storage = TensorStorage::from_vec(original, host_alloc());
         let recovered = storage.into_vec();
 
         // Same pointer, same capacity (no copy, no realloc)
@@ -943,11 +948,11 @@ mod tests {
                 .unwrap()
             });
             let storage_ptr = unsafe { NonNull::new_unchecked(ptr as *mut u8) };
-            let _storage: TensorStorage<u8, ForeignAllocator> = TensorStorage {
+            let _storage: TensorStorage<u8> = TensorStorage {
                 ptr: storage_ptr,
                 len,
                 owner,
-                alloc: ForeignAllocator,
+                alloc: host_alloc(),
                 _marker: PhantomData,
             };
             // While alive: same pointer, same bytes.
@@ -965,10 +970,10 @@ mod tests {
         let buf = [1u8, 2, 3, 4];
         let keep: Arc<dyn core::any::Any + Send + Sync> = Arc::new(()); // dummy keepalive
         let s = unsafe {
-            TensorStorage::<u8, ForeignAllocator>::from_borrowed_readonly(
+            TensorStorage::<u8>::from_borrowed_readonly(
                 buf.as_ptr(),
                 buf.len(),
-                ForeignAllocator,
+                host_alloc(),
                 MemoryDomain::Host,
                 keep,
             )
@@ -984,10 +989,10 @@ mod tests {
         let buf = [1u8, 2, 3, 4];
         let keep: Arc<dyn core::any::Any + Send + Sync> = Arc::new(()); // dummy keepalive
         let mut s = unsafe {
-            TensorStorage::<u8, ForeignAllocator>::from_borrowed_readonly(
+            TensorStorage::<u8>::from_borrowed_readonly(
                 buf.as_ptr(),
                 buf.len(),
-                ForeignAllocator,
+                host_alloc(),
                 MemoryDomain::Host,
                 keep,
             )
@@ -1000,10 +1005,10 @@ mod tests {
         let mut buf = [10u8, 20, 30, 40];
         let keep: Arc<dyn core::any::Any + Send + Sync> = Arc::new(42u8); // dummy keepalive
         let mut s = unsafe {
-            TensorStorage::<u8, ForeignAllocator>::from_borrowed(
+            TensorStorage::<u8>::from_borrowed(
                 buf.as_mut_ptr(),
                 buf.len(),
-                ForeignAllocator,
+                host_alloc(),
                 MemoryDomain::Host,
                 keep,
             )
@@ -1017,9 +1022,9 @@ mod tests {
     fn tensor_storage_send_sync_static_check() {
         fn _assert_send<T: Send>() {}
         fn _assert_sync<T: Sync>() {}
-        _assert_send::<TensorStorage<u8, CpuAllocator>>();
-        _assert_sync::<TensorStorage<u8, CpuAllocator>>();
-        _assert_send::<TensorStorage<f32, CpuAllocator>>();
-        _assert_sync::<TensorStorage<f32, CpuAllocator>>();
+        _assert_send::<TensorStorage<u8>>();
+        _assert_sync::<TensorStorage<u8>>();
+        _assert_send::<TensorStorage<f32>>();
+        _assert_sync::<TensorStorage<f32>>();
     }
 }

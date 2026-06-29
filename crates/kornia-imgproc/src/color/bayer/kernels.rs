@@ -316,18 +316,20 @@ unsafe fn avg4_u8(
     c: std::arch::aarch64::uint8x16_t,
     d: std::arch::aarch64::uint8x16_t,
 ) -> std::arch::aarch64::uint8x16_t {
-    use std::arch::aarch64::*;
-    // low/high 8-lane halves widened to u16, summed, then vrshrn (rounding
-    // narrowing shift right) by 2 == (sum + 2) >> 2.
-    let lo = vaddq_u16(
-        vaddl_u8(vget_low_u8(a), vget_low_u8(b)),
-        vaddl_u8(vget_low_u8(c), vget_low_u8(d)),
-    );
-    let hi = vaddq_u16(
-        vaddl_u8(vget_high_u8(a), vget_high_u8(b)),
-        vaddl_u8(vget_high_u8(c), vget_high_u8(d)),
-    );
-    vcombine_u8(vrshrn_n_u16::<2>(lo), vrshrn_n_u16::<2>(hi))
+    unsafe {
+        use std::arch::aarch64::*;
+        // low/high 8-lane halves widened to u16, summed, then vrshrn (rounding
+        // narrowing shift right) by 2 == (sum + 2) >> 2.
+        let lo = vaddq_u16(
+            vaddl_u8(vget_low_u8(a), vget_low_u8(b)),
+            vaddl_u8(vget_low_u8(c), vget_low_u8(d)),
+        );
+        let hi = vaddq_u16(
+            vaddl_u8(vget_high_u8(a), vget_high_u8(b)),
+            vaddl_u8(vget_high_u8(c), vget_high_u8(d)),
+        );
+        vcombine_u8(vrshrn_n_u16::<2>(lo), vrshrn_n_u16::<2>(hi))
+    }
 }
 
 /// Assemble (R,G,B) for a register of same-phase pixels (uniform cell).

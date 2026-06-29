@@ -1,7 +1,7 @@
 use crate::iter::ImageTile;
 use crate::utils::{find_full_tiles, Pixel, Point2d};
 use crate::{errors::AprilTagError, iter::TileIterator};
-use kornia_image::{allocator::ImageAllocator, Image, ImageError, ImageSize};
+use kornia_image::{Image, ImageError, ImageSize};
 
 /// Stores the minimum and maximum pixel values for each tile for [adaptive_threshold]
 ///
@@ -163,7 +163,7 @@ impl TileMinMax {
 /// # Examples
 ///
 /// ```
-/// use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
+/// use kornia_image::{Image, ImageSize};
 /// use kornia_apriltag::threshold::{adaptive_threshold, TileMinMax};
 /// use kornia_apriltag::utils::Pixel;
 ///
@@ -173,19 +173,19 @@ impl TileMinMax {
 ///         height: 3,
 ///     },
 ///     vec![0, 50, 100, 150, 200, 250],
-///     CpuAllocator,
+///     kornia_image::allocator::host_alloc(),
 /// )
 /// .unwrap();
-/// let mut dst = Image::from_size_val(src.size(), Pixel::Skip, CpuAllocator).unwrap();
+/// let mut dst = Image::from_size_val(src.size(), Pixel::Skip, kornia_image::allocator::host_alloc()).unwrap();
 ///
 /// let mut tile_buffers = TileMinMax::new(src.size(), 2);
 /// adaptive_threshold(&src, &mut dst, &mut tile_buffers, 20).unwrap();
 /// assert_eq!(dst.as_slice(), &[0, 0, 255, 255, 255, 255]);
 /// ```
 // TODO: Add support for parallelism
-pub fn adaptive_threshold<A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<u8, 1, A1>,
-    dst: &mut Image<Pixel, 1, A2>,
+pub fn adaptive_threshold(
+    src: &Image<u8, 1>,
+    dst: &mut Image<Pixel, 1>,
     tile_min_max: &mut TileMinMax,
     min_white_black_diff: u8,
 ) -> Result<(), AprilTagError> {
@@ -316,7 +316,7 @@ pub fn adaptive_threshold<A1: ImageAllocator, A2: ImageAllocator>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kornia_image::{allocator::CpuAllocator, ImageSize};
+    use kornia_image::ImageSize;
     use kornia_io::png::read_image_png_mono8;
 
     #[test]
@@ -355,9 +355,13 @@ mod tests {
                 100, 150, 200, 250, 0,
                 80,  127, 221, 20,  100,
             ],
-            CpuAllocator,
+            kornia_image::allocator::host_alloc(),
         )?;
-        let mut dst = Image::from_size_val(src.size(), Pixel::Skip, CpuAllocator)?;
+        let mut dst = Image::from_size_val(
+            src.size(),
+            Pixel::Skip,
+            kornia_image::allocator::host_alloc(),
+        )?;
 
         let mut tile_buffers = TileMinMax::new(src.size(), 2);
         adaptive_threshold(&src, &mut dst, &mut tile_buffers, 20)?;
@@ -384,9 +388,13 @@ mod tests {
                 height: 4,
             },
             vec![100; 16],
-            CpuAllocator,
+            kornia_image::allocator::host_alloc(),
         )?;
-        let mut dst = Image::from_size_val(src.size(), Pixel::Skip, CpuAllocator)?;
+        let mut dst = Image::from_size_val(
+            src.size(),
+            Pixel::Skip,
+            kornia_image::allocator::host_alloc(),
+        )?;
 
         let mut tile_buffers = TileMinMax::new(src.size(), 2);
         adaptive_threshold(&src, &mut dst, &mut tile_buffers, 20)?;
@@ -397,7 +405,11 @@ mod tests {
     #[test]
     fn test_adaptive_threshold_synthetic_image() -> Result<(), Box<dyn std::error::Error>> {
         let src = read_image_png_mono8("../../tests/data/apriltag.png")?;
-        let mut bin = Image::from_size_val(src.size(), Pixel::Skip, CpuAllocator)?;
+        let mut bin = Image::from_size_val(
+            src.size(),
+            Pixel::Skip,
+            kornia_image::allocator::host_alloc(),
+        )?;
 
         let mut tile_buffers = TileMinMax::new(src.size(), 4);
         adaptive_threshold(&src, &mut bin, &mut tile_buffers, 20)?;
@@ -413,9 +425,17 @@ mod tests {
             height: 4,
         };
 
-        let src = Image::new(img_size, vec![100u8; 16], CpuAllocator)?;
+        let src = Image::new(
+            img_size,
+            vec![100u8; 16],
+            kornia_image::allocator::host_alloc(),
+        )?;
 
-        let mut dst = Image::from_size_val(img_size, Pixel::default(), CpuAllocator)?;
+        let mut dst = Image::from_size_val(
+            img_size,
+            Pixel::default(),
+            kornia_image::allocator::host_alloc(),
+        )?;
 
         let mut tile_buffers = TileMinMax::new(
             ImageSize {

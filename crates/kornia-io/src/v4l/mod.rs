@@ -17,10 +17,7 @@ use v4l::{
 use std::any::Any;
 use std::sync::Arc;
 
-use kornia_tensor::{
-    allocator::ForeignAllocator,
-    resource::{MemoryDomain, MemoryResource},
-};
+use kornia_tensor::resource::{MemoryDomain, MemoryResource};
 
 /// A proper [`MemoryResource`] for a V4L2 mmap'd frame buffer.
 ///
@@ -87,7 +84,7 @@ impl MemoryResource for V4lResource {
 ///
 /// # Returns
 ///
-/// An `Image<u8, 3, ForeignAllocator>` whose memory is the V4L2 mmap region.
+/// An `Image<u8, 3>` whose memory is the V4L2 mmap region.
 /// The kernel buffer remains live for exactly the lifetime of the returned `Image`;
 /// dropping the `Image` releases the mmap region exactly once (via `Arc<MmapInfo>`).
 ///
@@ -100,7 +97,7 @@ impl MemoryResource for V4lResource {
 pub(crate) fn image_from_v4l_buffer(
     size: kornia_image::ImageSize,
     buffer: MmapBuffer,
-) -> Result<kornia_image::Image<u8, 3, ForeignAllocator>, kornia_image::ImageError> {
+) -> Result<kornia_image::Image<u8, 3>, kornia_image::ImageError> {
     use kornia_tensor::storage::TensorStorage;
     use kornia_tensor::Tensor;
 
@@ -119,11 +116,11 @@ pub(crate) fn image_from_v4l_buffer(
     //   - The memory is host-accessible (MemoryDomain::Host).
     //   - The keepalive (Arc<V4lResource>) holds the MmapBuffer (and Arc<MmapInfo>) alive.
     //   - The storage is read-only: `as_mut_slice` will panic (v4l mmap is read-only mapped memory).
-    let storage: TensorStorage<u8, ForeignAllocator> = unsafe {
+    let storage: TensorStorage<u8> = unsafe {
         TensorStorage::from_borrowed_readonly(
             data_ptr,
             data_len,
-            ForeignAllocator,
+            kornia_tensor::host_alloc(),
             MemoryDomain::Host,
             keepalive,
         )
@@ -138,7 +135,7 @@ pub(crate) fn image_from_v4l_buffer(
         strides,
     };
 
-    // TryFrom<Tensor3<T, A>> for Image<T, C, A> validates that shape[2] == C (== 3).
+    // TryFrom<Tensor3<T, >> for Image<T, C> validates that shape[2] == C (== 3).
     kornia_image::Image::try_from(tensor)
 }
 

@@ -3,7 +3,7 @@ use candle_core::Device;
 use candle_core::Shape;
 use candle_core::Tensor;
 use circular_buffer::CircularBuffer;
-use kornia_image::{allocator::ImageAllocator, Image};
+use kornia_image::Image;
 use thiserror::Error;
 
 /// Errors that can occur during video processing operations.
@@ -60,9 +60,9 @@ pub struct VideoMetadata<const N: usize> {
 ///
 /// * `A` - The image allocator type used for frame storage
 #[derive(Clone, Default)]
-pub struct VideoSample<const N: usize, A: ImageAllocator> {
+pub struct VideoSample<const N: usize> {
     /// Circular buffer of image frames that make up the video.
-    frames: CircularBuffer<N, Image<u8, 3, A>>,
+    frames: CircularBuffer<N, Image<u8, 3>>,
 
     /// Metadata containing timing and video information.
     meta: VideoMetadata<N>,
@@ -75,7 +75,7 @@ pub struct VideoSample<const N: usize, A: ImageAllocator> {
     processed: CircularBuffer<N, bool>,
 }
 
-impl<const N: usize, A: ImageAllocator + Clone> VideoSample<N, A> {
+impl<const N: usize> VideoSample<N> {
     /// Create a new Video instance with frames and timestamps.
     ///
     /// # Arguments
@@ -104,7 +104,7 @@ impl<const N: usize, A: ImageAllocator + Clone> VideoSample<N, A> {
     ///
     /// * `frame` - The image frame to add
     /// * `timestamp` - Timestamp of the frame in seconds
-    pub fn add_frame(&mut self, frame: Image<u8, 3, A>, timestamp: u32) {
+    pub fn add_frame(&mut self, frame: Image<u8, 3>, timestamp: u32) {
         self.frames.push_back(frame);
         self.processed.push_back(false);
         self.meta.timestamps.push_back(timestamp);
@@ -129,9 +129,9 @@ impl<const N: usize, A: ImageAllocator + Clone> VideoSample<N, A> {
     ///
     /// ```no_run
     /// use kornia_vlm::video::VideoSample;
-    /// use kornia_tensor::CpuAllocator;
+    /// use kornia_tensor::kornia_tensor::host_alloc();
     /// use kornia_image::Image;
-    /// let mut video = VideoSample::<32, CpuAllocator>::default();
+    /// let mut video = VideoSample::<32, kornia_tensor::host_alloc()>::default();
     /// // Apply some processing to each frame
     /// video.process_frames(|frame| {
     ///     // Example: modify frame data (e.g., apply a filter)
@@ -142,7 +142,7 @@ impl<const N: usize, A: ImageAllocator + Clone> VideoSample<N, A> {
     /// ```
     pub fn process_frames<F>(&mut self, mut processor: F) -> Result<(), VideoError>
     where
-        F: FnMut(&mut Image<u8, 3, A>) -> Result<(), VideoError>,
+        F: FnMut(&mut Image<u8, 3>) -> Result<(), VideoError>,
     {
         for (frame, processed) in self.frames.iter_mut().zip(self.processed.iter_mut()) {
             if *processed {
@@ -159,7 +159,7 @@ impl<const N: usize, A: ImageAllocator + Clone> VideoSample<N, A> {
     /// # Returns
     ///
     /// A reference to the frames vector
-    pub fn frames(&self) -> &CircularBuffer<N, Image<u8, 3, A>> {
+    pub fn frames(&self) -> &CircularBuffer<N, Image<u8, 3>> {
         &self.frames
     }
 
@@ -190,10 +190,10 @@ impl<const N: usize, A: ImageAllocator + Clone> VideoSample<N, A> {
     ///
     /// ```no_run
     /// use kornia_vlm::video::VideoSample;
-    /// use kornia_tensor::CpuAllocator;
+    /// use kornia_tensor::kornia_tensor::host_alloc();
     /// use kornia_image::Image;
     /// use candle_core::Device;
-    /// let video = VideoSample::<32, CpuAllocator>::default();
+    /// let video = VideoSample::<32, kornia_tensor::host_alloc()>::default();
     /// let device = Device::Cpu;
     /// let tensor = video.into_tensor(candle_core::DType::F32, &device).unwrap();
     /// println!("Tensor shape: {:?}", tensor.dims()); // [N, 3, H, W]
@@ -232,8 +232,8 @@ impl<const N: usize, A: ImageAllocator + Clone> VideoSample<N, A> {
     ///
     /// ```no_run
     /// use kornia_vlm::video::VideoSample;
-    /// use kornia_tensor::CpuAllocator;
-    /// let video = VideoSample::<32, CpuAllocator>::default();
+    /// use kornia_tensor::kornia_tensor::host_alloc();
+    /// let video = VideoSample::<32, kornia_tensor::host_alloc()>::default();
     /// let metadata = video.metadata();
     /// if let Some(fps) = metadata.fps {
     ///     println!("Video FPS: {}", fps);

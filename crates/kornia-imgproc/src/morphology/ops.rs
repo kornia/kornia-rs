@@ -1,7 +1,7 @@
 use super::kernels::Kernel;
 use crate::padding::{spatial_padding, Padding2D, PaddingMode};
-use kornia_image::{allocator::ImageAllocator, Image, ImageError, ImageSize};
-use kornia_tensor::CpuAllocator;
+use kornia_image::{Image, ImageError, ImageSize};
+use kornia_tensor::host_alloc;
 use rayon::prelude::*;
 
 /// Dilate an image using a [`Kernel`].
@@ -20,14 +20,9 @@ use rayon::prelude::*;
 /// # Returns
 ///
 /// Ok(()) on success, or [`ImageError`] if shapes don't match.
-pub fn dilate<
-    T: Copy + Default + Send + Sync + Ord,
-    const C: usize,
-    A1: ImageAllocator,
-    A2: ImageAllocator,
->(
-    src: &Image<T, C, A1>,
-    dst: &mut Image<T, C, A2>,
+pub fn dilate<T: Copy + Default + Send + Sync + Ord, const C: usize>(
+    src: &Image<T, C>,
+    dst: &mut Image<T, C>,
     kernel: &Kernel,
     padding_mode: PaddingMode,
     constant_value: [T; C],
@@ -53,7 +48,7 @@ pub fn dilate<
         height: height + 2 * pad_h,
     };
     let padded_buffer = vec![T::default(); padded_size.width * padded_size.height * C];
-    let mut padded = Image::new(padded_size, padded_buffer, CpuAllocator)?;
+    let mut padded = Image::new(padded_size, padded_buffer, host_alloc())?;
 
     let padding = Padding2D {
         top: pad_h,
@@ -112,14 +107,9 @@ pub fn dilate<
 /// # Returns
 ///
 /// Ok(()) on success, or [`ImageError`] if shapes don't match.
-pub fn erode<
-    T: Copy + Default + Send + Sync + Ord,
-    const C: usize,
-    A1: ImageAllocator,
-    A2: ImageAllocator,
->(
-    src: &Image<T, C, A1>,
-    dst: &mut Image<T, C, A2>,
+pub fn erode<T: Copy + Default + Send + Sync + Ord, const C: usize>(
+    src: &Image<T, C>,
+    dst: &mut Image<T, C>,
     kernel: &Kernel,
     padding_mode: PaddingMode,
     constant_value: [T; C],
@@ -145,7 +135,7 @@ pub fn erode<
         height: height + 2 * pad_h,
     };
     let padded_buffer = vec![T::default(); padded_size.width * padded_size.height * C];
-    let mut padded = Image::new(padded_size, padded_buffer, CpuAllocator)?;
+    let mut padded = Image::new(padded_size, padded_buffer, host_alloc())?;
 
     let padding = Padding2D {
         top: pad_h,
@@ -206,19 +196,14 @@ pub fn erode<
 /// # Returns
 ///
 /// Ok(()) on success, or [`ImageError`] if shapes don't match.
-pub fn open<
-    T: Copy + Default + Send + Sync + Ord,
-    const C: usize,
-    A1: ImageAllocator,
-    A2: ImageAllocator,
->(
-    src: &Image<T, C, A1>,
-    dst: &mut Image<T, C, A2>,
+pub fn open<T: Copy + Default + Send + Sync + Ord, const C: usize>(
+    src: &Image<T, C>,
+    dst: &mut Image<T, C>,
     kernel: &Kernel,
     padding_mode: PaddingMode,
     constant_value: [T; C],
 ) -> Result<(), ImageError> {
-    let mut temp_img = Image::from_size_val(src.size(), T::default(), CpuAllocator)?;
+    let mut temp_img = Image::from_size_val(src.size(), T::default(), host_alloc())?;
     erode(src, &mut temp_img, kernel, padding_mode, constant_value)?;
     dilate(&temp_img, dst, kernel, padding_mode, constant_value)?;
     Ok(())
@@ -239,19 +224,14 @@ pub fn open<
 /// # Returns
 ///
 /// Ok(()) on success, or [`ImageError`] if shapes don't match.
-pub fn close<
-    T: Copy + Default + Send + Sync + Ord,
-    const C: usize,
-    A1: ImageAllocator,
-    A2: ImageAllocator,
->(
-    src: &Image<T, C, A1>,
-    dst: &mut Image<T, C, A2>,
+pub fn close<T: Copy + Default + Send + Sync + Ord, const C: usize>(
+    src: &Image<T, C>,
+    dst: &mut Image<T, C>,
     kernel: &Kernel,
     padding_mode: PaddingMode,
     constant_value: [T; C],
 ) -> Result<(), ImageError> {
-    let mut temp_img = Image::from_size_val(src.size(), T::default(), CpuAllocator)?;
+    let mut temp_img = Image::from_size_val(src.size(), T::default(), host_alloc())?;
     dilate(src, &mut temp_img, kernel, padding_mode, constant_value)?;
     erode(&temp_img, dst, kernel, padding_mode, constant_value)?;
     Ok(())
@@ -312,8 +292,8 @@ mod tests {
             height: 3,
         };
         let data = vec![0u8, 0, 0, 0, 255, 0, 0, 0, 0];
-        let src = Image::new(size, data, CpuAllocator)?;
-        let mut dst = Image::new(size, vec![0u8; 9], CpuAllocator)?;
+        let src = Image::new(size, data, host_alloc())?;
+        let mut dst = Image::new(size, vec![0u8; 9], host_alloc())?;
 
         let kernel = Kernel::new(KernelShape::Box { size: 3 });
         dilate(&src, &mut dst, &kernel, PaddingMode::Constant, [0])?;
@@ -332,8 +312,8 @@ mod tests {
             width: 3,
             height: 3,
         };
-        let src = Image::new(size, vec![255u8; 9], CpuAllocator)?;
-        let mut dst = Image::new(size, vec![0u8; 9], CpuAllocator)?;
+        let src = Image::new(size, vec![255u8; 9], host_alloc())?;
+        let mut dst = Image::new(size, vec![0u8; 9], host_alloc())?;
 
         let kernel = Kernel::new(KernelShape::Box { size: 3 });
         erode(&src, &mut dst, &kernel, PaddingMode::Constant, [0])?;
@@ -356,8 +336,8 @@ mod tests {
         let mut data = vec![0u8; 25];
         data[6] = 255;
 
-        let src = Image::new(size, data, CpuAllocator)?;
-        let mut dst = Image::new(size, vec![0u8; 25], CpuAllocator)?;
+        let src = Image::new(size, data, host_alloc())?;
+        let mut dst = Image::new(size, vec![0u8; 25], host_alloc())?;
 
         let kernel = Kernel::new(KernelShape::Box { size: 3 });
         open(&src, &mut dst, &kernel, PaddingMode::Constant, [0])?;
@@ -384,8 +364,8 @@ mod tests {
         }
         data[12] = 0;
 
-        let src = Image::new(size, data, CpuAllocator)?;
-        let mut dst = Image::new(size, vec![0u8; 25], CpuAllocator)?;
+        let src = Image::new(size, data, host_alloc())?;
+        let mut dst = Image::new(size, vec![0u8; 25], host_alloc())?;
 
         let kernel = Kernel::new(KernelShape::Box { size: 3 });
         close(&src, &mut dst, &kernel, PaddingMode::Constant, [0])?;

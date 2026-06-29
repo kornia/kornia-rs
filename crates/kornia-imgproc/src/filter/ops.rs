@@ -1,5 +1,5 @@
-use kornia_image::{allocator::ImageAllocator, Image, ImageError, ImageSize};
-use kornia_tensor::CpuAllocator;
+use kornia_image::{Image, ImageError, ImageSize};
+use kornia_tensor::host_alloc;
 use rayon::{
     iter::{IndexedParallelIterator, ParallelIterator},
     slice::ParallelSliceMut,
@@ -16,9 +16,9 @@ use super::{fast_horizontal_filter, kernels, separable_filter};
 /// * `kernel_size` - The size of the kernel (kernel_x, kernel_y).
 ///
 /// PRECONDITION: `src` and `dst` must have the same shape.
-pub fn box_blur<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<f32, C, A1>,
-    dst: &mut Image<f32, C, A2>,
+pub fn box_blur<const C: usize>(
+    src: &Image<f32, C>,
+    dst: &mut Image<f32, C>,
     kernel_size: (usize, usize),
 ) -> Result<(), ImageError> {
     let kernel_x = kernels::box_blur_kernel_1d(kernel_size.0);
@@ -33,9 +33,9 @@ pub fn box_blur<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
 /// kernel summing to 256, reusing the same striped ring-buffer path as
 /// [`gaussian_blur_u8`]. The k=5 case hits the 32-u8/iter vmull/vmlal V-pass
 /// unroll.
-pub fn box_blur_u8<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<u8, C, A1>,
-    dst: &mut Image<u8, C, A2>,
+pub fn box_blur_u8<const C: usize>(
+    src: &Image<u8, C>,
+    dst: &mut Image<u8, C>,
     kernel_size: (usize, usize),
 ) -> Result<(), ImageError> {
     if src.size() != dst.size() {
@@ -87,9 +87,9 @@ pub fn box_blur_u8<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
 ///
 /// PRECONDITION: `src` and `dst` must have the same shape.
 /// NOTE: This function uses a constant border type.
-pub fn gaussian_blur<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<f32, C, A1>,
-    dst: &mut Image<f32, C, A2>,
+pub fn gaussian_blur<const C: usize>(
+    src: &Image<f32, C>,
+    dst: &mut Image<f32, C>,
     kernel_size: (usize, usize),
     sigma: (f32, f32),
 ) -> Result<(), ImageError> {
@@ -142,19 +142,19 @@ pub fn gaussian_blur<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
 /// * `kernel_size` - The size of the kernel (kernel_x, kernel_y).
 ///
 /// PRECONDITION: `src` and `dst` must have the same shape.
-pub fn sobel<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<f32, C, A1>,
-    dst: &mut Image<f32, C, A2>,
+pub fn sobel<const C: usize>(
+    src: &Image<f32, C>,
+    dst: &mut Image<f32, C>,
     kernel_size: usize,
 ) -> Result<(), ImageError> {
     // get the sobel kernels
     let (kernel_x, kernel_y) = kernels::sobel_kernel_1d(kernel_size)?;
 
     // apply the sobel filter using separable filter
-    let mut gx = Image::<f32, C, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
+    let mut gx = Image::<f32, C>::from_size_val(src.size(), 0.0, host_alloc())?;
     separable_filter(src, &mut gx, &kernel_x, &kernel_y)?;
 
-    let mut gy = Image::<f32, C, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
+    let mut gy = Image::<f32, C>::from_size_val(src.size(), 0.0, host_alloc())?;
     separable_filter(src, &mut gy, &kernel_y, &kernel_x)?;
 
     // compute the magnitude in parallel by rows
@@ -178,17 +178,17 @@ pub fn sobel<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
 /// * `kernel_size` - The size of the kernel (kernel_x, kernel_y).
 ///
 /// PRECONDITION: `src` and `dst` must have the same shape.
-pub fn scharr<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<f32, C, A1>,
-    dst: &mut Image<f32, C, A2>,
+pub fn scharr<const C: usize>(
+    src: &Image<f32, C>,
+    dst: &mut Image<f32, C>,
     kernel_size: usize,
 ) -> Result<(), ImageError> {
     let (kernel_x, kernel_y) = kernels::scharr_kernel_1d(kernel_size)?;
 
-    let mut gx = Image::<f32, C, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
+    let mut gx = Image::<f32, C>::from_size_val(src.size(), 0.0, host_alloc())?;
     separable_filter(src, &mut gx, &kernel_x, &kernel_y)?;
 
-    let mut gy = Image::<f32, C, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
+    let mut gy = Image::<f32, C>::from_size_val(src.size(), 0.0, host_alloc())?;
     separable_filter(src, &mut gy, &kernel_y, &kernel_x)?;
 
     dst.as_slice_mut()
@@ -212,9 +212,9 @@ pub fn scharr<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
 /// * `sigma` - The sigma of the gaussian kernel, xy-ordered.
 ///
 /// PRECONDITION: `src` and `dst` must have the same shape.
-pub fn box_blur_fast<const C: usize, A: ImageAllocator>(
-    src: &Image<f32, C, A>,
-    dst: &mut Image<f32, C, A>,
+pub fn box_blur_fast<const C: usize>(
+    src: &Image<f32, C>,
+    dst: &mut Image<f32, C>,
     sigma: (f32, f32),
 ) -> Result<(), ImageError> {
     let half_kernel_x_sizes = kernels::box_blur_fast_kernels_1d(sigma.0, 3);
@@ -226,7 +226,7 @@ pub fn box_blur_fast<const C: usize, A: ImageAllocator>(
     };
 
     let mut input_img = src;
-    let mut transposed = Image::<f32, C, _>::from_size_val(transposed_size, 0.0, CpuAllocator)?;
+    let mut transposed = Image::<f32, C>::from_size_val(transposed_size, 0.0, host_alloc())?;
 
     for (half_kernel_x_size, half_kernel_y_size) in
         half_kernel_x_sizes.iter().zip(half_kernel_y_sizes.iter())
@@ -247,15 +247,10 @@ pub fn box_blur_fast<const C: usize, A: ImageAllocator>(
 /// * `src` - The source image with shape (H, W, C).
 /// * `dx` - The destination image for x-derivative with shape (H, W, C).
 /// * `dy` - The destination image for y-derivative with shape (H, W, C).
-pub fn spatial_gradient_float<
-    const C: usize,
-    A1: ImageAllocator,
-    A2: ImageAllocator,
-    A3: ImageAllocator,
->(
-    src: &Image<f32, C, A1>,
-    dx: &mut Image<f32, C, A2>,
-    dy: &mut Image<f32, C, A3>,
+pub fn spatial_gradient_float<const C: usize>(
+    src: &Image<f32, C>,
+    dx: &mut Image<f32, C>,
+    dy: &mut Image<f32, C>,
 ) -> Result<(), ImageError> {
     if src.size() != dx.size() {
         return Err(ImageError::InvalidImageSize(
@@ -320,15 +315,10 @@ pub fn spatial_gradient_float<
 /// * `src` - The source image with shape (H, W, C).
 /// * `dx` - The destination image for x-derivative with shape (H, W, C).
 /// * `dy` - The destination image for y-derivative with shape (H, W, C).
-pub fn spatial_gradient_float_parallel_row<
-    const C: usize,
-    A1: ImageAllocator,
-    A2: ImageAllocator,
-    A3: ImageAllocator,
->(
-    src: &Image<f32, C, A1>,
-    dx: &mut Image<f32, C, A2>,
-    dy: &mut Image<f32, C, A3>,
+pub fn spatial_gradient_float_parallel_row<const C: usize>(
+    src: &Image<f32, C>,
+    dx: &mut Image<f32, C>,
+    dy: &mut Image<f32, C>,
 ) -> Result<(), ImageError> {
     if src.size() != dx.size() {
         return Err(ImageError::InvalidImageSize(
@@ -414,15 +404,10 @@ pub fn spatial_gradient_float_parallel_row<
 /// * `src` - The source image with shape (H, W, C).
 /// * `dx` - The destination image for x-derivative with shape (H, W, C).
 /// * `dy` - The destination image for y-derivative with shape (H, W, C).
-pub fn spatial_gradient_float_parallel<
-    const C: usize,
-    A1: ImageAllocator,
-    A2: ImageAllocator,
-    A3: ImageAllocator,
->(
-    src: &Image<f32, C, A1>,
-    dx: &mut Image<f32, C, A2>,
-    dy: &mut Image<f32, C, A3>,
+pub fn spatial_gradient_float_parallel<const C: usize>(
+    src: &Image<f32, C>,
+    dx: &mut Image<f32, C>,
+    dy: &mut Image<f32, C>,
 ) -> Result<(), ImageError> {
     if src.size() != dx.size() {
         return Err(ImageError::InvalidImageSize(
@@ -486,15 +471,10 @@ pub fn spatial_gradient_float_parallel<
 /// * `src` - The source image with shape (H, W, C).
 /// * `dx` - The destination image for x-derivative with shape (H, W, C).
 /// * `dy` - The destination image for y-derivative with shape (H, W, C).
-pub fn scharr_spatial_gradient_float<
-    const C: usize,
-    A1: ImageAllocator,
-    A2: ImageAllocator,
-    A3: ImageAllocator,
->(
-    src: &Image<f32, C, A1>,
-    dx: &mut Image<f32, C, A2>,
-    dy: &mut Image<f32, C, A3>,
+pub fn scharr_spatial_gradient_float<const C: usize>(
+    src: &Image<f32, C>,
+    dx: &mut Image<f32, C>,
+    dy: &mut Image<f32, C>,
 ) -> Result<(), ImageError> {
     if src.size() != dx.size() {
         return Err(ImageError::InvalidImageSize(
@@ -619,9 +599,9 @@ fn resolve_gaussian_params(
 ///   If zero, it is computed from `sigma`.
 /// * `sigma` - Gaussian sigma (sigma_x, sigma_y). If zero, it is computed
 ///   from `kernel_size`.
-pub fn gaussian_blur_u8<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<u8, C, A1>,
-    dst: &mut Image<u8, C, A2>,
+pub fn gaussian_blur_u8<const C: usize>(
+    src: &Image<u8, C>,
+    dst: &mut Image<u8, C>,
     kernel_size: (usize, usize),
     sigma: (f32, f32),
 ) -> Result<(), ImageError> {
@@ -1973,14 +1953,17 @@ mod tests {
         let mut sym = vec![0u8; rows * cols];
         gaussian_blur_7x7_sym_u8::<1>(&src, &mut sym, rows, cols, &ikx, &iky);
 
-        let mut gen = vec![0u8; rows * cols];
-        separable_blur_u8_striped(&src, &mut gen, rows, cols, 1, &ikx, 3, &iky, 3);
+        let mut r#gen = vec![0u8; rows * cols];
+        separable_blur_u8_striped(&src, &mut r#gen, rows, cols, 1, &ikx, 3, &iky, 3);
 
         // Symmetric path computes pair sums before multiplying; general path
         // accumulates one tap at a time. The final Q8+Q8 result is identical
         // because addition is associative in u16 and neither path overflows
         // (kernel sums to 256, inputs ≤ 255, so pre-shift acc ≤ 256·255 < 2^16).
-        assert_eq!(sym, gen, "7x7 symmetric path must match general Q8+Q8 path");
+        assert_eq!(
+            sym, r#gen,
+            "7x7 symmetric path must match general Q8+Q8 path"
+        );
     }
 
     /// Verify that gaussian_blur_u8 with k=5 produces the same result as the
@@ -1995,33 +1978,33 @@ mod tests {
         for (i, v) in src_data.iter_mut().enumerate() {
             *v = ((i.wrapping_mul(2654435761)) >> 24) as u8;
         }
-        let src_img = Image::<u8, 1, _>::new(
+        let src_img = Image::<u8, 1>::new(
             ImageSize {
                 width: cols,
                 height: rows,
             },
             src_data.clone(),
-            CpuAllocator,
+            host_alloc(),
         )?;
-        let mut dst_5x5 = Image::<u8, 1, _>::from_size_val(
+        let mut dst_5x5 = Image::<u8, 1>::from_size_val(
             ImageSize {
                 width: cols,
                 height: rows,
             },
             0u8,
-            CpuAllocator,
+            host_alloc(),
         )?;
         gaussian_blur_u8(&src_img, &mut dst_5x5, (5, 5), (1.0, 1.0))?;
 
         // General path reference (same as what gaussian_blur_u8 falls through to now).
         let ikx = quantize_kernel_256(&kernels::gaussian_kernel_1d(5, 1.0));
         let iky = ikx.clone();
-        let mut gen = vec![0u8; n];
-        separable_blur_u8_striped(&src_data, &mut gen, rows, cols, 1, &ikx, 2, &iky, 2);
+        let mut r#gen = vec![0u8; n];
+        separable_blur_u8_striped(&src_data, &mut r#gen, rows, cols, 1, &ikx, 2, &iky, 2);
 
         assert_eq!(
             dst_5x5.as_slice(),
-            gen.as_slice(),
+            r#gen.as_slice(),
             "5x5 gaussian_blur_u8 must match general separable path"
         );
         Ok(())
@@ -2054,15 +2037,15 @@ mod tests {
             let sx = 0.85f32; // natural sigma for [1,2,1]/4
             let ikx = quantize_kernel_256(&kernels::gaussian_kernel_1d(3, sx));
             let iky = ikx.clone();
-            let mut gen = vec![0u8; n];
-            separable_blur_u8_striped(&src, &mut gen, rows, cols, channels, &ikx, 1, &iky, 1);
+            let mut r#gen = vec![0u8; n];
+            separable_blur_u8_striped(&src, &mut r#gen, rows, cols, channels, &ikx, 1, &iky, 1);
 
             // The halving-add vrhadd path computes (a+2b+c+3)/4 (rounded up);
             // the Q8 path computes (a+2b+c+2)/4 with different rounding.
             // Allow ≤2 LSB difference on any pixel.
             let max_diff = binom
                 .iter()
-                .zip(gen.iter())
+                .zip(r#gen.iter())
                 .map(|(&a, &b)| (a as i16 - b as i16).unsigned_abs())
                 .max()
                 .unwrap_or(0);
@@ -2081,21 +2064,21 @@ mod tests {
         let rows = 5usize;
         let cols = 1usize;
         let src_data: Vec<u8> = (0..rows).map(|i| (i * 50) as u8).collect();
-        let src = Image::<u8, 1, _>::new(
+        let src = Image::<u8, 1>::new(
             ImageSize {
                 width: cols,
                 height: rows,
             },
             src_data,
-            CpuAllocator,
+            host_alloc(),
         )?;
-        let mut dst = Image::<u8, 1, _>::from_size_val(
+        let mut dst = Image::<u8, 1>::from_size_val(
             ImageSize {
                 width: cols,
                 height: rows,
             },
             0u8,
-            CpuAllocator,
+            host_alloc(),
         )?;
         // Must not panic.
         gaussian_blur_u8(&src, &mut dst, (3, 3), (1.0, 1.0))?;
@@ -2109,21 +2092,21 @@ mod tests {
         let rows = 1usize;
         let cols = 5usize;
         let src_data: Vec<u8> = (0..cols).map(|i| (i * 50) as u8).collect();
-        let src = Image::<u8, 1, _>::new(
+        let src = Image::<u8, 1>::new(
             ImageSize {
                 width: cols,
                 height: rows,
             },
             src_data,
-            CpuAllocator,
+            host_alloc(),
         )?;
-        let mut dst = Image::<u8, 1, _>::from_size_val(
+        let mut dst = Image::<u8, 1>::from_size_val(
             ImageSize {
                 width: cols,
                 height: rows,
             },
             0u8,
-            CpuAllocator,
+            host_alloc(),
         )?;
         // Must not panic.
         gaussian_blur_u8(&src, &mut dst, (3, 3), (1.0, 1.0))?;
@@ -2137,8 +2120,8 @@ mod tests {
             height: 5,
         };
 
-        let img = Image::new(size, (0..25).map(|x| x as f32).collect(), CpuAllocator)?;
-        let mut dst = Image::<_, 1, _>::from_size_val(size, 0.0, CpuAllocator)?;
+        let img = Image::new(size, (0..25).map(|x| x as f32).collect(), host_alloc())?;
+        let mut dst = Image::<_, 1>::from_size_val(size, 0.0, host_alloc())?;
 
         box_blur_fast(&img, &mut dst, (0.5, 0.5))?;
 
@@ -2164,9 +2147,9 @@ mod tests {
             height: 5,
         };
 
-        let img = Image::new(size, (0..25).map(|x| x as f32).collect(), CpuAllocator)?;
+        let img = Image::new(size, (0..25).map(|x| x as f32).collect(), host_alloc())?;
 
-        let mut dst = Image::<_, 1, _>::from_size_val(size, 0.0, CpuAllocator)?;
+        let mut dst = Image::<_, 1>::from_size_val(size, 0.0, host_alloc())?;
 
         gaussian_blur(&img, &mut dst, (3, 3), (0.5, 0.5))?;
 
@@ -2191,9 +2174,9 @@ mod tests {
             height: 5,
         };
 
-        let img = Image::new(size, (0..25).map(|x| x as f32).collect(), CpuAllocator)?;
+        let img = Image::new(size, (0..25).map(|x| x as f32).collect(), host_alloc())?;
 
-        let mut dst = Image::<_, 1, _>::from_size_val(size, 0.0, CpuAllocator)?;
+        let mut dst = Image::<_, 1>::from_size_val(size, 0.0, host_alloc())?;
 
         gaussian_blur(&img, &mut dst, (0, 0), (0.5, 0.5))?;
 
@@ -2217,9 +2200,9 @@ mod tests {
             height: 5,
         };
 
-        let img = Image::new(size, (0..25).map(|x| x as f32).collect(), CpuAllocator)?;
+        let img = Image::new(size, (0..25).map(|x| x as f32).collect(), host_alloc())?;
 
-        let mut dst = Image::<_, 1, _>::from_size_val(size, 0.0, CpuAllocator)?;
+        let mut dst = Image::<_, 1>::from_size_val(size, 0.0, host_alloc())?;
 
         gaussian_blur(&img, &mut dst, (3, 3), (0.0, 0.0))?;
 
@@ -2239,11 +2222,8 @@ mod tests {
     #[test]
     fn test_spatial_gradient() -> Result<(), ImageError> {
         // First, define a type alias for the function signature
-        type FilterFunction = fn(
-            &Image<f32, 2, CpuAllocator>,
-            &mut Image<f32, 2, CpuAllocator>,
-            &mut Image<f32, 2, CpuAllocator>,
-        ) -> Result<(), ImageError>;
+        type FilterFunction =
+            fn(&Image<f32, 2>, &mut Image<f32, 2>, &mut Image<f32, 2>) -> Result<(), ImageError>;
 
         // Then, define a type for the test tuple
         type TestCase = (FilterFunction, &'static str);
@@ -2266,14 +2246,14 @@ mod tests {
             height: 5,
         };
 
-        let img = Image::<f32, 2, _>::new(
+        let img = Image::<f32, 2>::new(
             size,
             (0..25).flat_map(|x| [x as f32, x as f32 + 25.0]).collect(),
-            CpuAllocator,
+            host_alloc(),
         )?;
         for (test_fn, fn_name) in TEST_FUNCTIONS {
-            let mut dx = Image::<_, 2, _>::from_size_val(size, 0.0, CpuAllocator)?;
-            let mut dy = Image::<_, 2, _>::from_size_val(size, 0.0, CpuAllocator)?;
+            let mut dx = Image::<_, 2>::from_size_val(size, 0.0, host_alloc())?;
+            let mut dy = Image::<_, 2>::from_size_val(size, 0.0, host_alloc())?;
 
             test_fn(&img, &mut dx, &mut dy)?;
 
@@ -2340,14 +2320,14 @@ mod tests {
             height: 5,
         };
 
-        let img = Image::<f32, 2, _>::new(
+        let img = Image::<f32, 2>::new(
             size,
             (0..25).flat_map(|x| [x as f32, x as f32 + 25.0]).collect(),
-            CpuAllocator,
+            host_alloc(),
         )?;
 
-        let mut dx = Image::<_, 2, _>::from_size_val(size, 0.0, CpuAllocator)?;
-        let mut dy = Image::<_, 2, _>::from_size_val(size, 0.0, CpuAllocator)?;
+        let mut dx = Image::<_, 2>::from_size_val(size, 0.0, host_alloc())?;
+        let mut dy = Image::<_, 2>::from_size_val(size, 0.0, host_alloc())?;
 
         scharr_spatial_gradient_float(&img, &mut dx, &mut dy)?;
 

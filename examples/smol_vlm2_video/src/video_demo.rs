@@ -1,4 +1,5 @@
 use kornia::{
+    image::allocator::host_alloc,
     image::{color_spaces::Rgb8, ImageSize},
     imgproc::{self, color::YuvToRgbMode},
     io::{
@@ -6,7 +7,6 @@ use kornia::{
         jpeg,
         v4l::{camera_control, PixelFormat, V4LCameraConfig, V4lVideoCapture},
     },
-    tensor::CpuAllocator,
 };
 use kornia_vlm::smolvlm2::{InputMedia, Line, Message, Role, SmolVlm2, SmolVlm2Config};
 use kornia_vlm::video::VideoSample;
@@ -78,7 +78,7 @@ pub fn video_demo(args: &crate::Args) -> Result<(), Box<dyn std::error::Error>> 
     let mut fps_counter = FpsCounter::new();
 
     // Pre-allocate RGB image buffer outside the loop
-    let mut rgb_image = Rgb8::from_size_val(img_size, 0, CpuAllocator)?;
+    let mut rgb_image = Rgb8::from_size_val(img_size, 0, host_alloc())?;
 
     let prompt = &args.prompt as &str;
     let mut smolvlm2 = SmolVlm2::new(SmolVlm2Config::default())?;
@@ -86,7 +86,7 @@ pub fn video_demo(args: &crate::Args) -> Result<(), Box<dyn std::error::Error>> 
     // === Video Understanding Implementation ===
     // This implementation uses Line::Video and InputMedia::Video for proper video understanding:
     //    - Uses Line::Video in message content
-    //    - Passes entire Video<CpuAllocator> via InputMedia::Video
+    //    - Passes entire Video<kornia_image::allocator::host_alloc()> via InputMedia::Video
     //    - Leverages SmolVLM2's native video processing for temporal analysis
     //    - Provides holistic understanding of motion and temporal relationships
     //
@@ -96,7 +96,7 @@ pub fn video_demo(args: &crate::Args) -> Result<(), Box<dyn std::error::Error>> 
     // Create a video object to manage frames with a rolling buffer
     const MAX_FRAMES_IN_BUFFER: usize = 32; // After around keeping 50 frames, CUDA OOM for 24gb GPU
     let mut frame_idx = 0;
-    let mut video_buffer = VideoSample::<MAX_FRAMES_IN_BUFFER, CpuAllocator>::new();
+    let mut video_buffer = VideoSample::<MAX_FRAMES_IN_BUFFER>::new();
 
     while !cancel_token.load(Ordering::SeqCst) {
         let Some(frame) = webcam.grab_frame()? else {
@@ -142,7 +142,6 @@ pub fn video_demo(args: &crate::Args) -> Result<(), Box<dyn std::error::Error>> 
             vec![video_message],
             Some(InputMedia::Video(vec![&mut video_buffer])),
             20,
-            CpuAllocator,
         )?;
 
         // Log the frame to rerun

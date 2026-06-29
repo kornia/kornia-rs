@@ -1,17 +1,18 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
+use kornia_image::{Image, ImageSize};
 #[cfg(feature = "opencv_bench")]
 use kornia_imgproc::optical_flow_pyr_lk::{
     build_lk_precomputed, calc_optical_flow_pyr_lk_with_precomputed,
 };
 use kornia_imgproc::optical_flow_pyr_lk::{calc_optical_flow_pyr_lk, PyrLKParams};
+use kornia_tensor::host_alloc;
 #[cfg(feature = "opencv_bench")]
 use std::hint::black_box;
 
 #[cfg(feature = "opencv_bench")]
 use opencv::{core, prelude::*, video};
 
-type GrayImage = Image<f32, 1, CpuAllocator>;
+type GrayImage = Image<f32, 1>;
 
 fn make_synthetic_pair(
     size: usize,
@@ -24,7 +25,7 @@ fn make_synthetic_pair(
         width: size,
         height: size,
     };
-    let mut img1 = GrayImage::from_size_val(img_size, 0.0, CpuAllocator).unwrap();
+    let mut img1 = GrayImage::from_size_val(img_size, 0.0, host_alloc()).unwrap();
     for y in 0..size {
         for x in 0..size {
             let cx = size as f32 / 2.0;
@@ -37,7 +38,7 @@ fn make_synthetic_pair(
         }
     }
 
-    let mut img2 = GrayImage::from_size_val(img_size, 0.0, CpuAllocator).unwrap();
+    let mut img2 = GrayImage::from_size_val(img_size, 0.0, host_alloc()).unwrap();
     for y in 0..size {
         for x in 0..size {
             let cx = size as f32 / 2.0 + dx;

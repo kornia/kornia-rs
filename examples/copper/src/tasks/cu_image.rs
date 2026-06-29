@@ -1,7 +1,5 @@
-use kornia::io::stream::ForeignAllocator;
-
-type ImageRgb8 = kornia::image::Image<u8, 3, ForeignAllocator>;
-type ImageGray8 = kornia::image::Image<u8, 1, ForeignAllocator>;
+type ImageRgb8 = kornia::image::Image<u8, 3>;
+type ImageGray8 = kornia::image::Image<u8, 1>;
 
 #[derive(Clone)]
 pub struct ImageRgb8Msg(pub ImageRgb8);
@@ -24,7 +22,14 @@ impl std::fmt::Debug for ImageRgb8Msg {
 // TODO: implement Image::empty()
 impl Default for ImageRgb8Msg {
     fn default() -> Self {
-        Self(ImageRgb8::new([0, 0].into(), vec![], ForeignAllocator).unwrap())
+        Self(
+            ImageRgb8::new(
+                [0, 0].into(),
+                vec![],
+                kornia::image::allocator::host_alloc(),
+            )
+            .unwrap(),
+        )
     }
 }
 
@@ -49,8 +54,12 @@ impl<C> bincode::de::Decode<C> for ImageRgb8Msg {
         let rows = bincode::Decode::decode(decoder)?;
         let cols = bincode::Decode::decode(decoder)?;
         let data = bincode::Decode::decode(decoder)?;
-        let image = ImageRgb8::new([rows, cols].into(), data, ForeignAllocator)
-            .map_err(|e| bincode::error::DecodeError::OtherString(e.to_string()))?;
+        let image = ImageRgb8::new(
+            [rows, cols].into(),
+            data,
+            kornia::image::allocator::host_alloc(),
+        )
+        .map_err(|e| bincode::error::DecodeError::OtherString(e.to_string()))?;
         Ok(Self(image))
     }
 }
@@ -74,7 +83,14 @@ impl std::fmt::Debug for ImageGray8Msg {
 
 impl Default for ImageGray8Msg {
     fn default() -> Self {
-        Self(ImageGray8::new([0, 0].into(), vec![], ForeignAllocator).unwrap())
+        Self(
+            ImageGray8::new(
+                [0, 0].into(),
+                vec![],
+                kornia::image::allocator::host_alloc(),
+            )
+            .unwrap(),
+        )
     }
 }
 
@@ -97,8 +113,12 @@ impl<C> bincode::de::Decode<C> for ImageGray8Msg {
         let rows = bincode::Decode::decode(decoder)?;
         let cols = bincode::Decode::decode(decoder)?;
         let data = bincode::Decode::decode(decoder)?;
-        let image = ImageGray8::new([rows, cols].into(), data, ForeignAllocator)
-            .map_err(|e| bincode::error::DecodeError::OtherString(e.to_string()))?;
+        let image = ImageGray8::new(
+            [rows, cols].into(),
+            data,
+            kornia::image::allocator::host_alloc(),
+        )
+        .map_err(|e| bincode::error::DecodeError::OtherString(e.to_string()))?;
         Ok(Self(image))
     }
 }

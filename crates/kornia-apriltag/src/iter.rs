@@ -2,7 +2,7 @@ use crate::{
     errors::AprilTagError,
     utils::{find_total_tiles, Point2d},
 };
-use kornia_image::{allocator::ImageAllocator, Image, ImageSize};
+use kornia_image::{Image, ImageSize};
 
 /// A lightweight, zero-allocation view into a rectangular sub-region of image data.
 ///
@@ -188,8 +188,8 @@ impl<'a, T> TileIterator<'a, T> {
     ///
     /// Returns a `TileIterator` that yields non-overlapping tiles of the specified size from the image.
     /// Tiles at the image edges may be smaller if the image dimensions are not multiples of the tile size.
-    pub fn from_image<const C: usize, A: ImageAllocator>(
-        img: &'a Image<T, C, A>,
+    pub fn from_image<const C: usize>(
+        img: &'a Image<T, C>,
         tile_size: usize,
     ) -> Result<Self, AprilTagError> {
         let img_size = img.size();
@@ -292,18 +292,18 @@ impl<'a, T> Iterator for TileIterator<'a, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
+    use kornia_image::{Image, ImageSize};
 
     #[test]
     fn test_tile_iterator_basic() -> Result<(), Box<dyn std::error::Error>> {
         let data = vec![127u8; 100];
-        let image: Image<_, 1, _> = Image::new(
+        let image: Image<_, 1> = Image::new(
             ImageSize {
                 width: 25,
                 height: 4,
             },
             data,
-            CpuAllocator,
+            kornia_image::allocator::host_alloc(),
         )?;
 
         let tile_iter = TileIterator::from_image(&image, 4)?;
@@ -340,19 +340,19 @@ mod tests {
             26, 27, 28, 29, 30,
             31, 32, 33, 34, 35,
         ];
-        let img: Image<_, 1, _> = Image::new(
+        let img: Image<_, 1> = Image::new(
             ImageSize {
                 width: 5,
                 height: 7,
             },
             data,
-            CpuAllocator,
+            kornia_image::allocator::host_alloc(),
         )?;
 
         let mut iter = TileIterator::from_image(&img, 2)?;
 
         macro_rules! test_iter_next {
-            ($variant:ident, $x:expr, $y:expr, $index:expr, $full_index:expr, $rows:expr) => {
+            ($variant:ident, $x:expr_2021, $y:expr_2021, $index:expr_2021, $full_index:expr_2021, $rows:expr_2021) => {
                 let next = iter
                     .next()
                     .ok_or("Failed to get the next value from iterator")?;
@@ -396,13 +396,13 @@ mod tests {
 
     #[test]
     fn test_invalid_image() -> Result<(), Box<dyn std::error::Error>> {
-        let img: Image<_, 1, _> = Image::from_size_val(
+        let img: Image<_, 1> = Image::from_size_val(
             ImageSize {
                 width: 3,
                 height: 4,
             },
             0,
-            CpuAllocator,
+            kornia_image::allocator::host_alloc(),
         )?;
 
         let tile_iterator = TileIterator::from_image(&img, 4);

@@ -1,4 +1,4 @@
-use crate::{allocator::ImageAllocator, Image, ImageError};
+use crate::{Image, ImageError};
 
 /// Cast the pixel data of an image to a different type.
 ///
@@ -12,28 +12,28 @@ use crate::{allocator::ImageAllocator, Image, ImageError};
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
-/// use kornia_image::allocator::CpuAllocator;
+/// use kornia_tensor::host_alloc;
 /// use kornia_image::ops::cast_and_scale;
 ///
-/// let image = Image::<u8, 1, _>::new(
+/// let image = Image::<u8, 1>::new(
 ///  ImageSize {
 ///   width: 2,
 ///  height: 1,
 /// },
 /// vec![0u8, 255],
-/// CpuAllocator
+/// host_alloc()
 /// ).unwrap();
 ///
-/// let mut image_f32 = Image::from_size_val(image.size(), 0.0f32, CpuAllocator).unwrap();
+/// let mut image_f32 = Image::from_size_val(image.size(), 0.0f32, host_alloc()).unwrap();
 ///
 /// cast_and_scale(&image, &mut image_f32, 1. / 255.0).unwrap();
 ///
 /// assert_eq!(image_f32.get_pixel(0, 0, 0).unwrap(), &0.0f32);
 /// assert_eq!(image_f32.get_pixel(1, 0, 0).unwrap(), &1.0f32);
 /// ```
-pub fn cast_and_scale<T, U, const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<T, C, A1>,
-    dst: &mut Image<U, C, A2>,
+pub fn cast_and_scale<T, U, const C: usize>(
+    src: &Image<T, C>,
+    dst: &mut Image<U, C>,
     scale: U,
 ) -> Result<(), ImageError>
 where
@@ -65,21 +65,20 @@ where
 mod tests {
     use super::*;
     use crate::image::ImageSize;
-    use kornia_tensor::CpuAllocator;
+    use kornia_tensor::host_alloc;
 
     #[test]
     fn test_cast_and_scale() -> Result<(), ImageError> {
-        let image = Image::<u8, 3, CpuAllocator>::new(
+        let image = Image::<u8, 3>::new(
             ImageSize {
                 height: 2,
                 width: 1,
             },
             vec![0u8, 0, 255, 0, 0, 255],
-            CpuAllocator,
+            host_alloc(),
         )?;
 
-        let mut image_f64: Image<f64, 3, CpuAllocator> =
-            Image::from_size_val(image.size(), 0.0, CpuAllocator)?;
+        let mut image_f64: Image<f64, 3> = Image::from_size_val(image.size(), 0.0, host_alloc())?;
 
         super::cast_and_scale(&image, &mut image_f64, 1. / 255.0)?;
 

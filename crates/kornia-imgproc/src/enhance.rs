@@ -1,4 +1,4 @@
-use kornia_image::{allocator::ImageAllocator, Image, ImageError};
+use kornia_image::{Image, ImageError};
 use num_traits::Float;
 
 use crate::parallel;
@@ -24,13 +24,13 @@ use crate::parallel;
 ///
 /// Returns an error if the sizes of `src1` and `src2` do not match.
 /// Returns an error if the size of `dst` does not match the size of `src1` or `src2`.
-pub fn add_weighted<T, const C: usize, A1: ImageAllocator, A2: ImageAllocator, A3: ImageAllocator>(
-    src1: &Image<T, C, A1>,
+pub fn add_weighted<T, const C: usize>(
+    src1: &Image<T, C>,
     alpha: T,
-    src2: &Image<T, C, A2>,
+    src2: &Image<T, C>,
     beta: T,
     gamma: T,
-    dst: &mut Image<T, C, A3>,
+    dst: &mut Image<T, C>,
 ) -> Result<(), ImageError>
 where
     T: num_traits::Float + num_traits::FromPrimitive + std::fmt::Debug + Send + Sync + Copy,
@@ -81,9 +81,9 @@ where
 /// # Errors
 ///
 /// Returns an [ImageError::InvalidImageSize] if the sizes of `src` and `dst` do not match.
-pub fn adjust_brightness<T, const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<T, C, A1>,
-    dst: &mut Image<T, C, A2>,
+pub fn adjust_brightness<T, const C: usize>(
+    src: &Image<T, C>,
+    dst: &mut Image<T, C>,
     factor: T,
     clip_output: bool,
 ) -> Result<(), ImageError>
@@ -117,34 +117,35 @@ where
 
 #[cfg(test)]
 mod tests {
-    use kornia_image::{allocator::CpuAllocator, Image, ImageError, ImageSize};
-    type TestImage = Image<f32, 1, CpuAllocator>;
+    use kornia_image::{Image, ImageError, ImageSize};
+    use kornia_tensor::host_alloc;
+    type TestImage = Image<f32, 1>;
     #[test]
     fn test_add_weighted() -> Result<(), ImageError> {
         let src1_data = vec![1.0f32, 2.0, 3.0, 4.0];
-        let src1 = Image::<f32, 1, _>::new(
+        let src1 = Image::<f32, 1>::new(
             ImageSize {
                 width: 2,
                 height: 2,
             },
             src1_data,
-            CpuAllocator,
+            host_alloc(),
         )?;
         let src2_data = vec![4.0f32, 5.0, 6.0, 7.0];
-        let src2 = Image::<f32, 1, _>::new(
+        let src2 = Image::<f32, 1>::new(
             ImageSize {
                 width: 2,
                 height: 2,
             },
             src2_data,
-            CpuAllocator,
+            host_alloc(),
         )?;
         let alpha = 2.0f32;
         let beta = 2.0f32;
         let gamma = 1.0f32;
         let expected = [11.0, 15.0, 19.0, 23.0];
 
-        let mut weighted = Image::<f32, 1, _>::from_size_val(src1.size(), 0.0, CpuAllocator)?;
+        let mut weighted = Image::<f32, 1>::from_size_val(src1.size(), 0.0, host_alloc())?;
 
         super::add_weighted(&src1, alpha, &src2, beta, gamma, &mut weighted)?;
 
@@ -162,15 +163,15 @@ mod tests {
     // Helper function to create a base image for tests
     fn create_test_image() -> Result<(TestImage, TestImage), ImageError> {
         let src_data = vec![0.5f32, 0.5];
-        let src = Image::<f32, 1, _>::new(
+        let src = Image::<f32, 1>::new(
             ImageSize {
                 width: 2,
                 height: 1,
             },
             src_data,
-            CpuAllocator,
+            host_alloc(),
         )?;
-        let dst = Image::<f32, 1, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
+        let dst = Image::<f32, 1>::from_size_val(src.size(), 0.0, host_alloc())?;
         Ok((src, dst))
     }
 

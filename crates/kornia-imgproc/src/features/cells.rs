@@ -15,7 +15,7 @@
 //!
 //! Returns are all named structs ([`FastCorner`], [`CellKeypoint`],
 //! [`PyramidKeypoint`]) so adding fields later is non-breaking.
-use kornia_image::{allocator::ImageAllocator, Image};
+use kornia_image::Image;
 use rayon::prelude::*;
 
 use super::fast::fast_detect_rows_u8_serial;
@@ -138,8 +138,8 @@ impl Default for CellDetectConfig {
 /// This is **Layer 1** of the layered API: it produces a flat list of
 /// corners inside the rect, with no cell bookkeeping or NMS. For the usual
 /// ORB-SLAM / Basalt cell loop, prefer [`fast_detect_cells_u8`].
-pub fn fast_detect_rect_u8<A: ImageAllocator>(
-    image: &Image<u8, 1, A>,
+pub fn fast_detect_rect_u8(
+    image: &Image<u8, 1>,
     rect: Rect,
     threshold: f32,
     arc_length: usize,
@@ -199,8 +199,8 @@ fn grid_dims(image_w: usize, image_h: usize, cell_size: usize) -> (usize, usize)
 /// points without rebuilding the image.
 ///
 /// Cells are processed in parallel via rayon.
-pub fn fast_detect_cells_u8<A: ImageAllocator + Sync>(
-    image: &Image<u8, 1, A>,
+pub fn fast_detect_cells_u8(
+    image: &Image<u8, 1>,
     cfg: &CellDetectConfig,
     occupancy: Option<&[bool]>,
 ) -> Vec<CellKeypoint> {
@@ -282,8 +282,8 @@ pub fn fast_detect_cells_u8<A: ImageAllocator + Sync>(
 /// Rescale uses the exact width/height ratio `levels[0].size / levels[i].size`
 /// rather than assuming a fixed factor (1.2×, 2×, …), so ORB-SLAM's 1.2×
 /// chain and Basalt's 2× chain both work without special-casing.
-pub fn fast_detect_pyramid_u8<A: ImageAllocator + Sync>(
-    levels: &[&Image<u8, 1, A>],
+pub fn fast_detect_pyramid_u8(
+    levels: &[&Image<u8, 1>],
     cfg: &CellDetectConfig,
 ) -> Vec<PyramidKeypoint> {
     if levels.is_empty() {
@@ -315,7 +315,7 @@ pub fn fast_detect_pyramid_u8<A: ImageAllocator + Sync>(
 mod tests {
     use super::*;
     use kornia_image::ImageSize;
-    use kornia_tensor::CpuAllocator;
+    use kornia_tensor::host_alloc;
 
     /// Black background with 5×5 bright squares placed on a regular grid.
     /// Each square has 4 strong FAST corners (center pixel bright, most of the
@@ -323,7 +323,7 @@ mod tests {
     /// fires reliably at every grid position — unlike an axis-aligned
     /// checkerboard, whose T-junctions only produce runs of ~5 same-sign
     /// pixels, below the FAST-9 threshold.
-    fn dot_image(w: usize, h: usize, spacing: usize) -> Image<u8, 1, CpuAllocator> {
+    fn dot_image(w: usize, h: usize, spacing: usize) -> Image<u8, 1> {
         let size = ImageSize {
             width: w,
             height: h,
@@ -342,7 +342,7 @@ mod tests {
             }
             cy += spacing;
         }
-        Image::from_size_slice(size, &buf, CpuAllocator).unwrap()
+        Image::from_size_slice(size, &buf, host_alloc()).unwrap()
     }
 
     #[test]

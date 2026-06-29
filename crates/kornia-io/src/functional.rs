@@ -2,7 +2,7 @@ use crate::{
     error::IoError, jpeg::read_image_jpeg_rgb8, png::read_image_png_rgb8,
     tiff::read_image_tiff_rgb8, webp::read_image_webp_rgb8,
 };
-use kornia_image::{allocator::CpuAllocator, color_spaces::Rgb8};
+use kornia_image::color_spaces::Rgb8;
 use std::path::Path;
 
 /// Reads a RGB8 image from the given file path.
@@ -39,7 +39,7 @@ use std::path::Path;
 /// assert_eq!(image.rows(), 195);
 /// assert_eq!(image.num_channels(), 3);
 /// ```
-pub fn read_image_any_rgb8(file_path: impl AsRef<Path>) -> Result<Rgb8<CpuAllocator>, IoError> {
+pub fn read_image_any_rgb8(file_path: impl AsRef<Path>) -> Result<Rgb8, IoError> {
     let file_path = file_path.as_ref().to_owned();
 
     // verify the file exists

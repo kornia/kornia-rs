@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use candle_core::{DType, Device, Tensor};
-use kornia_image::{allocator::ImageAllocator, Image, ImageSize};
+use kornia_image::{Image, ImageSize};
 use kornia_imgproc::{interpolation::InterpolationMode, resize::resize_fast_rgb};
 use num2words::Num2Words;
 
@@ -44,13 +44,12 @@ impl<const N: usize> VideoProcessor<N> {
         dtype: DType,
         txt_processor: &TextProcessor,
     ) -> Result<Self, SmolVlm2Error> {
-        let image_token_tensor = if let Err(SmolVlm2Error::MissingTokenizer) =
-            txt_processor.encode(config.image_token)
-        {
-            None
-        } else {
-            let image_token = txt_processor.encode(config.image_token)?;
-            Some(Tensor::from_slice(&[image_token], &[1], device)?)
+        let image_token_tensor = match txt_processor.encode(config.image_token) {
+            Err(SmolVlm2Error::MissingTokenizer) => None,
+            _ => {
+                let image_token = txt_processor.encode(config.image_token)?;
+                Some(Tensor::from_slice(&[image_token], &[1], device)?)
+            }
         };
 
         // Create normalization tensors once
@@ -72,13 +71,12 @@ impl<const N: usize> VideoProcessor<N> {
         })
     }
 
-    pub fn binding_videos_to_prompt<A: ImageAllocator>(
+    pub fn binding_videos_to_prompt(
         &mut self,
         prompt: &mut String,
-        videos: Vec<&mut VideoSample<N, A>>,
+        videos: Vec<&mut VideoSample<N>>,
         dtype: DType,
         device: &Device,
-        alloc: A,
     ) -> Result<(), SmolVlm2Error> {
         let cloned_prompt = prompt.clone();
         let video_tags_pos = cloned_prompt
@@ -102,7 +100,7 @@ impl<const N: usize> VideoProcessor<N> {
         let mut video_metadatas = vec![];
         for video in videos.into_iter() {
             video_metadatas.push(video.metadata().clone());
-            let img_patches = self.preprocess(video, device, dtype, alloc.clone())?;
+            let img_patches = self.preprocess(video, device, dtype)?;
             self.processed_videos
                 .push((img_patches, Tensor::zeros(&[0], dtype, device)?));
         }
@@ -135,12 +133,11 @@ impl<const N: usize> VideoProcessor<N> {
 
     /// Preprocess a video for SmolVLM2 model inference
     /// We assume images are RGB.
-    pub fn preprocess<A: ImageAllocator>(
+    pub fn preprocess(
         &mut self,
-        video: &mut VideoSample<N, A>,
+        video: &mut VideoSample<N>,
         device: &Device,
         dtype: DType,
-        alloc: A,
     ) -> Result<Tensor, SmolVlm2Error> {
         let new_size = get_resize_output_image_size(
             video.frames()[0].size(),
@@ -148,7 +145,7 @@ impl<const N: usize> VideoProcessor<N> {
         );
 
         video.process_frames(|frame| {
-            Self::resize(frame, new_size, InterpolationMode::Bicubic, alloc.clone())?;
+            Self::resize(frame, new_size, InterpolationMode::Bicubic)?;
             Self::resize(
                 frame,
                 ImageSize {
@@ -156,7 +153,6 @@ impl<const N: usize> VideoProcessor<N> {
                     height: self.config.video_size_longest_edge,
                 },
                 InterpolationMode::Bicubic,
-                alloc.clone(),
             )?;
 
             // pad
@@ -165,7 +161,7 @@ impl<const N: usize> VideoProcessor<N> {
                 height: self.config.video_size_longest_edge,
             };
             // TODO: masking
-            Self::pad(frame, padded_size, 0, alloc.clone())?;
+            Self::pad(frame, padded_size, 0)?;
 
             Ok(())
         })?;
@@ -255,13 +251,12 @@ impl<const N: usize> VideoProcessor<N> {
     /// # Returns
     ///
     /// * `Result<(), VideoError>` - Ok if successful, VideoError if resizing fails
-    pub fn resize<A: ImageAllocator>(
-        frame: &mut Image<u8, 3, A>,
+    pub fn resize(
+        frame: &mut Image<u8, 3>,
         new_size: ImageSize,
         interpolation: InterpolationMode,
-        alloc: A,
     ) -> Result<(), VideoError> {
-        let mut buf = Image::<u8, 3, A>::from_size_val(new_size, 0, alloc.clone())?;
+        let mut buf = Image::<u8, 3>::from_size_val(new_size, 0, kornia_tensor::host_alloc())?;
         resize_fast_rgb(frame, &mut buf, interpolation)?;
         *frame = buf;
         Ok(())
@@ -286,16 +281,16 @@ impl<const N: usize> VideoProcessor<N> {
     /// # Returns
     ///
     /// * `Result<(), VideoError>` - Ok if successful, VideoError if padding fails
-    pub fn pad<A: ImageAllocator>(
-        frame: &mut Image<u8, 3, A>,
+    pub fn pad(
+        frame: &mut Image<u8, 3>,
         padded_size: ImageSize,
         fill: u8,
-        alloc: A,
     ) -> Result<(), VideoError> {
         // Pad each frame spatially if needed
         let size = frame.size();
         if size.width < padded_size.width || size.height < padded_size.height {
-            let mut padded = Image::<u8, 3, A>::from_size_val(padded_size, fill, alloc.clone())?;
+            let mut padded =
+                Image::<u8, 3>::from_size_val(padded_size, fill, kornia_tensor::host_alloc())?;
             let img_slice = frame.as_slice();
             let padded_img_slice = padded.as_slice_mut();
             let width = size.width;

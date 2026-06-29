@@ -5,10 +5,10 @@
 //! by [`define_color_space!`].
 
 use crate::{
-    allocator::ImageAllocator,
     error::ImageError,
     image::{Image, ImageSize},
 };
+use kornia_tensor::AllocHandle;
 use std::ops::{Deref, DerefMut};
 
 // ===== Runtime color-space vocabulary ===========================================
@@ -138,16 +138,16 @@ impl ColorSpace {
 
 /// Owned image whose channel count is known only at runtime. Mirrors Python's
 /// dynamic numpy-backed Image; produced by the runtime `cvt_color` path.
-pub enum DynImage<T, A: ImageAllocator> {
+pub enum DynImage<T> {
     /// 1-channel (e.g. Gray).
-    C1(ColorSpace, Image<T, 1, A>),
+    C1(ColorSpace, Image<T, 1>),
     /// 3-channel (Rgb/Bgr/Hsv/...).
-    C3(ColorSpace, Image<T, 3, A>),
+    C3(ColorSpace, Image<T, 3>),
     /// 4-channel (Rgba/Bgra).
-    C4(ColorSpace, Image<T, 4, A>),
+    C4(ColorSpace, Image<T, 4>),
 }
 
-impl<T, A: ImageAllocator> DynImage<T, A> {
+impl<T> DynImage<T> {
     /// The color space tag carried by this image.
     ///
     /// # Returns
@@ -200,12 +200,10 @@ impl<T, A: ImageAllocator> DynImage<T, A> {
 }
 
 macro_rules! impl_try_from_dyn {
-    ($newtype:ident, $t:ty, C1, $space:expr) => {
-        impl<A: ImageAllocator> std::convert::TryFrom<DynImage<$t, A>>
-            for crate::color_spaces::$newtype<A>
-        {
+    ($newtype:ident, $t:ty, C1, $space:expr_2021) => {
+        impl std::convert::TryFrom<DynImage<$t>> for crate::color_spaces::$newtype {
             type Error = ImageError;
-            fn try_from(d: DynImage<$t, A>) -> Result<Self, ImageError> {
+            fn try_from(d: DynImage<$t>) -> Result<Self, ImageError> {
                 match d {
                     DynImage::C1(s, img) if s == $space => Ok(Self(img)),
                     other => Err(ImageError::ColorSpaceMismatch {
@@ -216,12 +214,10 @@ macro_rules! impl_try_from_dyn {
             }
         }
     };
-    ($newtype:ident, $t:ty, C3, $space:expr) => {
-        impl<A: ImageAllocator> std::convert::TryFrom<DynImage<$t, A>>
-            for crate::color_spaces::$newtype<A>
-        {
+    ($newtype:ident, $t:ty, C3, $space:expr_2021) => {
+        impl std::convert::TryFrom<DynImage<$t>> for crate::color_spaces::$newtype {
             type Error = ImageError;
-            fn try_from(d: DynImage<$t, A>) -> Result<Self, ImageError> {
+            fn try_from(d: DynImage<$t>) -> Result<Self, ImageError> {
                 match d {
                     DynImage::C3(s, img) if s == $space => Ok(Self(img)),
                     other => Err(ImageError::ColorSpaceMismatch {
@@ -232,12 +228,10 @@ macro_rules! impl_try_from_dyn {
             }
         }
     };
-    ($newtype:ident, $t:ty, C4, $space:expr) => {
-        impl<A: ImageAllocator> std::convert::TryFrom<DynImage<$t, A>>
-            for crate::color_spaces::$newtype<A>
-        {
+    ($newtype:ident, $t:ty, C4, $space:expr_2021) => {
+        impl std::convert::TryFrom<DynImage<$t>> for crate::color_spaces::$newtype {
             type Error = ImageError;
-            fn try_from(d: DynImage<$t, A>) -> Result<Self, ImageError> {
+            fn try_from(d: DynImage<$t>) -> Result<Self, ImageError> {
                 match d {
                     DynImage::C4(s, img) if s == $space => Ok(Self(img)),
                     other => Err(ImageError::ColorSpaceMismatch {
@@ -273,19 +267,19 @@ impl_try_from_dyn!(Yuv8, u8, C3, ColorSpace::Yuv);
 
 /// Macro to define a color space wrapper type with explicit bit depth
 macro_rules! define_color_space {
-    ($name:ident, $type:ty, $channels:expr, $doc:expr) => {
+    ($name:ident, $type:ty, $channels:expr_2021, $doc:expr_2021) => {
         #[doc = $doc]
         ///
         /// This is a zero-cost wrapper that provides compile-time type safety.
         #[repr(transparent)]
-        pub struct $name<A: ImageAllocator>(pub Image<$type, $channels, A>);
+        pub struct $name(pub Image<$type, $channels>);
 
-        impl<A: ImageAllocator> $name<A> {
+        impl $name {
             #[doc = concat!("Create ", stringify!($name), " image from size and data")]
             pub fn from_size_vec(
                 size: ImageSize,
                 data: Vec<$type>,
-                alloc: A,
+                alloc: AllocHandle,
             ) -> Result<Self, ImageError> {
                 Ok(Self(Image::new(size, data, alloc)?))
             }
@@ -294,42 +288,42 @@ macro_rules! define_color_space {
             pub fn from_size_val(
                 size: ImageSize,
                 val: $type,
-                alloc: A,
+                alloc: AllocHandle,
             ) -> Result<Self, ImageError> {
                 Ok(Self(Image::from_size_val(size, val, alloc)?))
             }
 
             /// Unwrap into the underlying Image
-            pub fn into_inner(self) -> Image<$type, $channels, A> {
+            pub fn into_inner(self) -> Image<$type, $channels> {
                 self.0
             }
 
             /// Get a reference to the underlying Image
-            pub fn as_image(&self) -> &Image<$type, $channels, A> {
+            pub fn as_image(&self) -> &Image<$type, $channels> {
                 &self.0
             }
 
             /// Get a mutable reference to the underlying Image
-            pub fn as_image_mut(&mut self) -> &mut Image<$type, $channels, A> {
+            pub fn as_image_mut(&mut self) -> &mut Image<$type, $channels> {
                 &mut self.0
             }
         }
 
-        impl<A: ImageAllocator> Deref for $name<A> {
-            type Target = Image<$type, $channels, A>;
+        impl Deref for $name {
+            type Target = Image<$type, $channels>;
             fn deref(&self) -> &Self::Target {
                 &self.0
             }
         }
 
-        impl<A: ImageAllocator> DerefMut for $name<A> {
+        impl DerefMut for $name {
             fn deref_mut(&mut self) -> &mut Self::Target {
                 &mut self.0
             }
         }
 
-        impl<A: ImageAllocator> AsRef<Image<$type, $channels, A>> for $name<A> {
-            fn as_ref(&self) -> &Image<$type, $channels, A> {
+        impl AsRef<Image<$type, $channels>> for $name {
+            fn as_ref(&self) -> &Image<$type, $channels> {
                 &self.0
             }
         }
@@ -596,7 +590,7 @@ pub struct Yvyu8 {
 }
 
 macro_rules! define_packed_422 {
-    ($name:ident, $doc:expr) => {
+    ($name:ident, $doc:expr_2021) => {
         impl $name {
             #[doc = concat!("Create a ", stringify!($name), " buffer from a size and a packed 4:2:2 byte vector (len = width*height*2).")]
             pub fn from_size_vec(size: ImageSize, data: Vec<u8>) -> Result<Self, ImageError> {
@@ -677,7 +671,7 @@ pub struct Yv12 {
 }
 
 macro_rules! define_planar_420 {
-    ($name:ident, $doc:expr) => {
+    ($name:ident, $doc:expr_2021) => {
         impl $name {
             #[doc = concat!("Create a ", stringify!($name), " buffer from a size and a planar 4:2:0 byte vector (len = width*height*3/2).")]
             pub fn from_size_vec(size: ImageSize, data: Vec<u8>) -> Result<Self, ImageError> {
@@ -812,19 +806,19 @@ pub enum BayerPattern {
 ///
 /// Hand-written rather than via `define_color_space!` because it carries the
 /// `pattern` field alongside the underlying single-channel image.
-pub struct Bayer8<A: ImageAllocator> {
-    image: Image<u8, 1, A>,
+pub struct Bayer8 {
+    image: Image<u8, 1>,
     /// The mosaic pattern of `image`.
     pub pattern: BayerPattern,
 }
 
-impl<A: ImageAllocator> Bayer8<A> {
+impl Bayer8 {
     /// Create a Bayer8 image from a size, raw mosaic data, and a pattern.
     pub fn from_size_vec(
         size: ImageSize,
         data: Vec<u8>,
         pattern: BayerPattern,
-        alloc: A,
+        alloc: AllocHandle,
     ) -> Result<Self, ImageError> {
         Ok(Self {
             image: Image::new(size, data, alloc)?,
@@ -833,18 +827,18 @@ impl<A: ImageAllocator> Bayer8<A> {
     }
 
     /// Get a reference to the underlying single-channel mosaic image.
-    pub fn as_image(&self) -> &Image<u8, 1, A> {
+    pub fn as_image(&self) -> &Image<u8, 1> {
         &self.image
     }
 
     /// Unwrap into the underlying single-channel mosaic image.
-    pub fn into_inner(self) -> Image<u8, 1, A> {
+    pub fn into_inner(self) -> Image<u8, 1> {
         self.image
     }
 }
 
-impl<A: ImageAllocator> Deref for Bayer8<A> {
-    type Target = Image<u8, 1, A>;
+impl Deref for Bayer8 {
+    type Target = Image<u8, 1>;
     fn deref(&self) -> &Self::Target {
         &self.image
     }
@@ -874,9 +868,9 @@ mod tests {
         assert!(!ColorSpace::supports(ColorSpace::Gray, ColorSpace::Hsv));
     }
 
-    use crate::allocator::CpuAllocator;
     use crate::color_spaces::{Grayf32, Rgbf32};
     use crate::{ColorSpace as CS, DynImage, ImageSize};
+    use kornia_tensor::host_alloc;
     use std::convert::TryFrom;
 
     #[test]
@@ -885,13 +879,13 @@ mod tests {
             width: 2,
             height: 2,
         };
-        let rgb = Rgbf32::from_size_val(size, 0.25, CpuAllocator).unwrap();
+        let rgb = Rgbf32::from_size_val(size, 0.25, host_alloc()).unwrap();
         let dynimg = DynImage::C3(CS::Rgb, rgb.into_inner());
         assert_eq!(dynimg.color_space(), CS::Rgb);
         assert_eq!(dynimg.channels(), 3);
         assert_eq!(dynimg.size(), size);
         // typed recovery succeeds for matching space+channels
-        let back: Rgbf32<_> = Rgbf32::try_from(dynimg).unwrap();
+        let back: Rgbf32 = Rgbf32::try_from(dynimg).unwrap();
         assert_eq!(back.as_slice()[0], 0.25);
     }
 
@@ -901,7 +895,7 @@ mod tests {
             width: 2,
             height: 2,
         };
-        let gray = Grayf32::from_size_val(size, 0.0, CpuAllocator).unwrap();
+        let gray = Grayf32::from_size_val(size, 0.0, host_alloc()).unwrap();
         let dynimg = DynImage::C1(CS::Gray, gray.into_inner());
         // recovering as Rgbf32 must fail (channel mismatch C1 vs C3)
         assert!(Rgbf32::try_from(dynimg).is_err());

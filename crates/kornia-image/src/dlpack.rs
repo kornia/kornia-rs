@@ -1,4 +1,4 @@
-//! DLPack interoperability for typed [`Image<T, C, A>`].
+//! DLPack interoperability for typed [`Image<T, C>`].
 //!
 //! Provides [`image_to_dlpack`] (export) and [`image_from_dlpack`] (import).
 //! Both CPU and CUDA device images are accepted at the container level.
@@ -8,18 +8,14 @@ use std::{any::Any, sync::Arc};
 use dlpack_rs::ffi::DLManagedTensor;
 use kornia_tensor::{dlpack::tensor_to_dlpack, storage::TensorStorage, MemoryDomain};
 
-use crate::{
-    allocator::{ForeignAllocator, ImageAllocator},
-    error::ImageError,
-    image::Image,
-};
+use crate::{error::ImageError, image::Image};
 
 /// Re-export [`DlpackElem`] so callers get it from one place.
 pub use kornia_tensor::dlpack::DlpackElem;
 
 // ── image_to_dlpack ──────────────────────────────────────────────────────────
 
-/// Exports a typed [`Image<T, C, A>`] to a heap-allocated `DLManagedTensor`.
+/// Exports a typed [`Image<T, C>`] to a heap-allocated `DLManagedTensor`.
 ///
 /// The image is moved into the DLManagedTensor's keepalive; the consumer MUST call
 /// `managed.deleter(managed)` when done to free the buffer.  Export is zero-copy.
@@ -36,10 +32,9 @@ pub use kornia_tensor::dlpack::DlpackElem;
 /// # Errors
 ///
 /// This function does not return an error. The allocation is infallible for heap-backed images.
-pub fn image_to_dlpack<T, const C: usize, A>(img: Image<T, C, A>) -> *mut DLManagedTensor
+pub fn image_to_dlpack<T, const C: usize>(img: Image<T, C>) -> *mut DLManagedTensor
 where
     T: DlpackElem + 'static + Send,
-    A: ImageAllocator + Send + 'static,
 {
     // Image<T,C,A> is a newtype over Tensor<T,3,A>; delegate directly.
     tensor_to_dlpack(img.0)
@@ -47,7 +42,7 @@ where
 
 // ── image_from_dlpack ────────────────────────────────────────────────────────
 
-/// Imports a typed [`Image<T, C, ForeignAllocator>`] from a raw `DLManagedTensor` pointer.
+/// Imports a typed [`Image<T, C>`] from a raw `DLManagedTensor` pointer.
 ///
 /// Zero-copy: the `keepalive` keeps the source alive. The caller must NOT call the
 /// tensor's own deleter after passing it here.
@@ -86,7 +81,7 @@ where
 pub unsafe fn image_from_dlpack<T, const C: usize>(
     mt: *mut DLManagedTensor,
     keepalive: Arc<dyn Any + Send + Sync>,
-) -> Result<Image<T, C, ForeignAllocator>, ImageError>
+) -> Result<Image<T, C>, ImageError>
 where
     T: DlpackElem + Clone,
 {
@@ -188,15 +183,21 @@ where
     let byte_offset = usize::try_from(dl.byte_offset)
         .map_err(|_| ImageError::DlpackShapeError("byte_offset overflows usize".to_string()))?;
 
-    // 11. Build storage with kornia-image's ForeignAllocator (no-op dealloc).
+    // 11. Build storage with host_alloc (no-op dealloc for foreign memory).
     // SAFETY: data pointer is valid for len_bytes (caller contract); keepalive keeps
     // the source alive; domain correctly reflects the DLDevice.
     let data_ptr = unsafe { (dl.data as *const u8).add(byte_offset) as *const T };
     let storage = unsafe {
-        TensorStorage::from_borrowed(data_ptr, len_bytes, ForeignAllocator, domain, keepalive)
+        TensorStorage::from_borrowed(
+            data_ptr,
+            len_bytes,
+            kornia_tensor::host_alloc(),
+            domain,
+            keepalive,
+        )
     };
 
-    // 12. Build Tensor<T, 3, ForeignAllocator>.
+    // 12. Build Tensor<T, 3>.
     // Compute C-contiguous strides for HWC layout: [W*C, C, 1].
     let strides: [usize; 3] = [shape[1] * shape[2], shape[2], 1];
     let tensor = kornia_tensor::Tensor {
@@ -205,8 +206,8 @@ where
         strides,
     };
 
-    // 13. Wrap into Image<T, C, ForeignAllocator>.
-    // Safe because: ndim==3, shape[2]==C (validated above), ForeignAllocator is correct.
+    // 13. Wrap into Image<T, C>.
+    // Safe because: ndim==3, shape[2]==C (validated above).
     Ok(Image(tensor))
 }
 
@@ -222,13 +223,13 @@ mod tests {
 
     use dlpack_rs::ffi::{DLManagedTensor, DLTensor};
     use dlpack_rs::safe;
-    use kornia_tensor::CpuAllocator;
+    use kornia_tensor::host_alloc;
 
-    use crate::{allocator::CpuAllocator as ImageCpuAllocator, image::ImageSize};
+    use crate::image::ImageSize;
 
-    // ── Test 1a: image_to_dlpack with ForeignAllocator drop-counter ─────────────
+    // ── Test 1a: image_to_dlpack with foreign-buffer drop-counter ───────────────
     //
-    // Build an Image<u8,3,ForeignAllocator> with a drop-counter keepalive and verify
+    // Build an Image<u8,3> with a drop-counter keepalive and verify
     // the deleter fires the counter exactly once.
 
     #[test]
@@ -269,7 +270,7 @@ mod tests {
             deleter: None,
         };
 
-        // Import as Image<u8,3,ForeignAllocator> (keepalive holds the DropGuard).
+        // Import as Image<u8,3> (keepalive holds the DropGuard).
         let img = unsafe { image_from_dlpack::<u8, 3>(&mut managed as *mut _, keepalive) }.unwrap();
 
         assert_eq!(counter.load(Ordering::SeqCst), 0, "not dropped yet");
@@ -304,21 +305,21 @@ mod tests {
         );
     }
 
-    // ── Test 1b: image_to_dlpack with CpuAllocator ──────────────────────────────
+    // ── Test 1b: image_to_dlpack with host allocator ─────────────────────────────
     //
-    // Build a real Image<u8,3,CpuAllocator> from known data, export via image_to_dlpack,
+    // Build a real Image<u8,3> from known data, export via image_to_dlpack,
     // verify shape/ndim/dtype, fire the deleter (no panic expected).
 
     #[test]
     fn test_image_to_dlpack_cpu_allocator() {
         let data: Vec<u8> = (0u8..18).collect();
-        let img = Image::<u8, 3, ImageCpuAllocator>::new(
+        let img = Image::<u8, 3>::new(
             ImageSize {
                 height: 2,
                 width: 3,
             },
             data,
-            ImageCpuAllocator,
+            host_alloc(),
         )
         .unwrap();
 

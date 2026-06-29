@@ -156,7 +156,7 @@ mod tests {
     #[test]
     fn cpu_allocate_zeroed_and_aligned() {
         let l = Layout::from_size_align(64, 1).unwrap();
-        let r = CpuAllocator.allocate(l).unwrap();
+        let r = TensorAllocator::allocate(&CpuAllocator, l).unwrap();
         assert_eq!(r.len_bytes(), 64);
         assert!(r.domain().is_host_accessible());
         // Must be zeroed.
@@ -167,7 +167,7 @@ mod tests {
     #[test]
     fn foreign_allocate_returns_error() {
         let l = Layout::from_size_align(64, 1).unwrap();
-        match ForeignAllocator.allocate(l) {
+        match TensorAllocator::allocate(&ForeignAllocator, l) {
             Err(TensorAllocatorError::CannotAllocateForeign) => {}
             other => panic!("expected CannotAllocateForeign, got {:?}", other.err()),
         }
@@ -179,4 +179,32 @@ mod tests {
         let _a = CpuAllocator.clone();
         let _b = ForeignAllocator.clone();
     }
+}
+
+// ── Runtime allocator handle ──────────────────────────────────────────────────
+
+use std::sync::{Arc, OnceLock};
+
+/// Object-safe subset of [`TensorAllocator`] usable behind a trait-object pointer.
+pub trait AllocDyn: Send + Sync {
+    /// Allocates memory with the given layout.
+    fn allocate(&self, layout: Layout) -> Result<Box<dyn MemoryResource>, TensorAllocatorError>;
+}
+
+/// Every [`TensorAllocator`] is automatically an [`AllocDyn`].
+impl<A: TensorAllocator> AllocDyn for A {
+    #[inline]
+    fn allocate(&self, layout: Layout) -> Result<Box<dyn MemoryResource>, TensorAllocatorError> {
+        TensorAllocator::allocate(self, layout)
+    }
+}
+
+/// A cheaply-cloneable runtime allocator reference.
+pub type AllocHandle = Arc<dyn AllocDyn>;
+
+static HOST_ALLOC: OnceLock<AllocHandle> = OnceLock::new();
+
+/// Returns the process-global host allocator handle.
+pub fn host_alloc() -> AllocHandle {
+    HOST_ALLOC.get_or_init(|| Arc::new(CpuAllocator)).clone()
 }

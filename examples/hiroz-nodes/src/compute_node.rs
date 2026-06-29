@@ -4,7 +4,7 @@ use crate::protos::{Header, ImageStats, RawImage};
 use hiroz::{
     context::ZContext, msg::ProtobufSerdes, node::ZNode, pubsub::ZPub, Builder, Result as ZResult,
 };
-use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
+use kornia_image::{Image, ImageSize};
 use prost::Message;
 use std::sync::Arc;
 use zenoh::Wait;
@@ -76,10 +76,10 @@ impl ComputeNode {
                     let msg = RawImage::decode(bytes.as_ref())?;
 
                     // convert to image kornia
-                    let img = match Image::<u8, 3, CpuAllocator>::new(ImageSize {
+                    let img = match Image::<u8, 3>::new(ImageSize {
                         width: msg.width as usize,
                         height: msg.height as usize,
-                    }, msg.data, CpuAllocator) {
+                    }, msg.data, kornia_image::allocator::host_alloc()) {
                         Ok(img) => img,
                         Err(e) => {
                             log::warn!("skipping malformed frame: {e}");

@@ -1,4 +1,4 @@
-use kornia_image::{allocator::ImageAllocator, Image, ImageError};
+use kornia_image::{Image, ImageError};
 use rayon::prelude::*;
 
 mod kernels;
@@ -16,24 +16,24 @@ use crate::color::kernel_common::{check_size, sealed};
 /// and YUV (`[Y,Cb,Cr]`) via the `order` argument. Sealed.
 pub trait YuvFamily: sealed::Sealed + Sized {
     #[doc(hidden)]
-    fn ycc_from_rgb_impl<A1: ImageAllocator, A2: ImageAllocator>(
-        src: &Image<Self, 3, A1>,
-        dst: &mut Image<Self, 3, A2>,
+    fn ycc_from_rgb_impl(
+        src: &Image<Self, 3>,
+        dst: &mut Image<Self, 3>,
         order: ChromaOrder,
     ) -> Result<(), ImageError>;
 
     #[doc(hidden)]
-    fn rgb_from_ycc_impl<A1: ImageAllocator, A2: ImageAllocator>(
-        src: &Image<Self, 3, A1>,
-        dst: &mut Image<Self, 3, A2>,
+    fn rgb_from_ycc_impl(
+        src: &Image<Self, 3>,
+        dst: &mut Image<Self, 3>,
         order: ChromaOrder,
     ) -> Result<(), ImageError>;
 }
 
 impl YuvFamily for u8 {
-    fn ycc_from_rgb_impl<A1: ImageAllocator, A2: ImageAllocator>(
-        src: &Image<u8, 3, A1>,
-        dst: &mut Image<u8, 3, A2>,
+    fn ycc_from_rgb_impl(
+        src: &Image<u8, 3>,
+        dst: &mut Image<u8, 3>,
         order: ChromaOrder,
     ) -> Result<(), ImageError> {
         check_size(src, dst)?;
@@ -45,9 +45,9 @@ impl YuvFamily for u8 {
         );
         Ok(())
     }
-    fn rgb_from_ycc_impl<A1: ImageAllocator, A2: ImageAllocator>(
-        src: &Image<u8, 3, A1>,
-        dst: &mut Image<u8, 3, A2>,
+    fn rgb_from_ycc_impl(
+        src: &Image<u8, 3>,
+        dst: &mut Image<u8, 3>,
         order: ChromaOrder,
     ) -> Result<(), ImageError> {
         check_size(src, dst)?;
@@ -62,9 +62,9 @@ impl YuvFamily for u8 {
 }
 
 impl YuvFamily for f32 {
-    fn ycc_from_rgb_impl<A1: ImageAllocator, A2: ImageAllocator>(
-        src: &Image<f32, 3, A1>,
-        dst: &mut Image<f32, 3, A2>,
+    fn ycc_from_rgb_impl(
+        src: &Image<f32, 3>,
+        dst: &mut Image<f32, 3>,
         order: ChromaOrder,
     ) -> Result<(), ImageError> {
         check_size(src, dst)?;
@@ -76,9 +76,9 @@ impl YuvFamily for f32 {
         );
         Ok(())
     }
-    fn rgb_from_ycc_impl<A1: ImageAllocator, A2: ImageAllocator>(
-        src: &Image<f32, 3, A1>,
-        dst: &mut Image<f32, 3, A2>,
+    fn rgb_from_ycc_impl(
+        src: &Image<f32, 3>,
+        dst: &mut Image<f32, 3>,
         order: ChromaOrder,
     ) -> Result<(), ImageError> {
         check_size(src, dst)?;
@@ -93,9 +93,9 @@ impl YuvFamily for f32 {
 }
 
 impl YuvFamily for f64 {
-    fn ycc_from_rgb_impl<A1: ImageAllocator, A2: ImageAllocator>(
-        src: &Image<f64, 3, A1>,
-        dst: &mut Image<f64, 3, A2>,
+    fn ycc_from_rgb_impl(
+        src: &Image<f64, 3>,
+        dst: &mut Image<f64, 3>,
         order: ChromaOrder,
     ) -> Result<(), ImageError> {
         check_size(src, dst)?;
@@ -119,9 +119,9 @@ impl YuvFamily for f64 {
         });
         Ok(())
     }
-    fn rgb_from_ycc_impl<A1: ImageAllocator, A2: ImageAllocator>(
-        src: &Image<f64, 3, A1>,
-        dst: &mut Image<f64, 3, A2>,
+    fn rgb_from_ycc_impl(
+        src: &Image<f64, 3>,
+        dst: &mut Image<f64, 3>,
         order: ChromaOrder,
     ) -> Result<(), ImageError> {
         check_size(src, dst)?;
@@ -147,28 +147,18 @@ impl YuvFamily for f64 {
 ///
 /// Dispatches at compile time on pixel type `T`: `u8` (Q14 fixed-point), `f32` (`[0,1]`),
 /// `f64` (scalar). For `u8`/`f32` the aarch64 path is NEON.
-pub fn ycbcr_from_rgb<T, A1, A2>(
-    src: &Image<T, 3, A1>,
-    dst: &mut Image<T, 3, A2>,
-) -> Result<(), ImageError>
+pub fn ycbcr_from_rgb<T>(src: &Image<T, 3>, dst: &mut Image<T, 3>) -> Result<(), ImageError>
 where
     T: YuvFamily,
-    A1: ImageAllocator,
-    A2: ImageAllocator,
 {
     T::ycc_from_rgb_impl(src, dst, ChromaOrder::YCrCb)
 }
 
 /// Convert a YCbCr image (`[Y, Cr, Cb]`, full range) back to RGB. Inverse of
 /// [`ycbcr_from_rgb`].
-pub fn rgb_from_ycbcr<T, A1, A2>(
-    src: &Image<T, 3, A1>,
-    dst: &mut Image<T, 3, A2>,
-) -> Result<(), ImageError>
+pub fn rgb_from_ycbcr<T>(src: &Image<T, 3>, dst: &mut Image<T, 3>) -> Result<(), ImageError>
 where
     T: YuvFamily,
-    A1: ImageAllocator,
-    A2: ImageAllocator,
 {
     T::rgb_from_ycc_impl(src, dst, ChromaOrder::YCrCb)
 }
@@ -176,28 +166,18 @@ where
 /// Convert an RGB image to planar YUV, channel order `[Y, U=Cb, V=Cr]`, full range.
 ///
 /// Same math as [`ycbcr_from_rgb`] with the two chroma channels swapped in storage.
-pub fn yuv_from_rgb<T, A1, A2>(
-    src: &Image<T, 3, A1>,
-    dst: &mut Image<T, 3, A2>,
-) -> Result<(), ImageError>
+pub fn yuv_from_rgb<T>(src: &Image<T, 3>, dst: &mut Image<T, 3>) -> Result<(), ImageError>
 where
     T: YuvFamily,
-    A1: ImageAllocator,
-    A2: ImageAllocator,
 {
     T::ycc_from_rgb_impl(src, dst, ChromaOrder::YuvCbCr)
 }
 
 /// Convert a planar YUV image (`[Y, U=Cb, V=Cr]`, full range) back to RGB. Inverse of
 /// [`yuv_from_rgb`].
-pub fn rgb_from_yuv<T, A1, A2>(
-    src: &Image<T, 3, A1>,
-    dst: &mut Image<T, 3, A2>,
-) -> Result<(), ImageError>
+pub fn rgb_from_yuv<T>(src: &Image<T, 3>, dst: &mut Image<T, 3>) -> Result<(), ImageError>
 where
     T: YuvFamily,
-    A1: ImageAllocator,
-    A2: ImageAllocator,
 {
     T::rgb_from_ycc_impl(src, dst, ChromaOrder::YuvCbCr)
 }
@@ -205,8 +185,8 @@ where
 // ===== Family B: video decode (BT.601 limited range) ================================
 
 #[inline]
-fn check_dst_size<A: ImageAllocator>(
-    dst: &Image<u8, 3, A>,
+fn check_dst_size(
+    dst: &Image<u8, 3>,
     width: usize,
     height: usize,
     src_len: usize,
@@ -224,12 +204,9 @@ fn check_dst_size<A: ImageAllocator>(
 }
 
 macro_rules! impl_packed422 {
-    ($fn_name:ident, $variant:ident, $doc:expr) => {
+    ($fn_name:ident, $variant:ident, $doc:expr_2021) => {
         #[doc = $doc]
-        pub fn $fn_name<A: ImageAllocator>(
-            src: &[u8],
-            dst: &mut Image<u8, 3, A>,
-        ) -> Result<(), ImageError> {
+        pub fn $fn_name(src: &[u8], dst: &mut Image<u8, 3>) -> Result<(), ImageError> {
             let (w, h) = (dst.width(), dst.height());
             check_dst_size(dst, w, h, src.len(), w * h * 2)?;
             kernels::rgb_from_packed422(src, dst.as_slice_mut(), w, h, Packed422::$variant);
@@ -255,10 +232,7 @@ impl_packed422!(
 );
 
 /// Decode a planar 4:2:0 NV12 (Y plane + interleaved `UV`) buffer to RGB (BT.601 limited).
-pub fn rgb_from_nv12<A: ImageAllocator>(
-    src: &[u8],
-    dst: &mut Image<u8, 3, A>,
-) -> Result<(), ImageError> {
+pub fn rgb_from_nv12(src: &[u8], dst: &mut Image<u8, 3>) -> Result<(), ImageError> {
     let (w, h) = (dst.width(), dst.height());
     check_dst_size(dst, w, h, src.len(), w * h * 3 / 2)?;
     let (y, uv) = src.split_at(w * h);
@@ -267,10 +241,7 @@ pub fn rgb_from_nv12<A: ImageAllocator>(
 }
 
 /// Decode a planar 4:2:0 NV21 (Y plane + interleaved `VU`) buffer to RGB (BT.601 limited).
-pub fn rgb_from_nv21<A: ImageAllocator>(
-    src: &[u8],
-    dst: &mut Image<u8, 3, A>,
-) -> Result<(), ImageError> {
+pub fn rgb_from_nv21(src: &[u8], dst: &mut Image<u8, 3>) -> Result<(), ImageError> {
     let (w, h) = (dst.width(), dst.height());
     check_dst_size(dst, w, h, src.len(), w * h * 3 / 2)?;
     let (y, uv) = src.split_at(w * h);
@@ -279,10 +250,7 @@ pub fn rgb_from_nv21<A: ImageAllocator>(
 }
 
 /// Decode a planar 4:2:0 I420 (Y, then U plane, then V plane) buffer to RGB (BT.601 limited).
-pub fn rgb_from_i420<A: ImageAllocator>(
-    src: &[u8],
-    dst: &mut Image<u8, 3, A>,
-) -> Result<(), ImageError> {
+pub fn rgb_from_i420(src: &[u8], dst: &mut Image<u8, 3>) -> Result<(), ImageError> {
     let (w, h) = (dst.width(), dst.height());
     check_dst_size(dst, w, h, src.len(), w * h * 3 / 2)?;
     let n = w * h;
@@ -293,10 +261,7 @@ pub fn rgb_from_i420<A: ImageAllocator>(
 }
 
 /// Decode a planar 4:2:0 YV12 (Y, then V plane, then U plane) buffer to RGB (BT.601 limited).
-pub fn rgb_from_yv12<A: ImageAllocator>(
-    src: &[u8],
-    dst: &mut Image<u8, 3, A>,
-) -> Result<(), ImageError> {
+pub fn rgb_from_yv12(src: &[u8], dst: &mut Image<u8, 3>) -> Result<(), ImageError> {
     let (w, h) = (dst.width(), dst.height());
     check_dst_size(dst, w, h, src.len(), w * h * 3 / 2)?;
     let n = w * h;
@@ -312,10 +277,7 @@ pub fn rgb_from_yv12<A: ImageAllocator>(
 /// `dst` must be exactly `width*height*2` bytes and `width` must be even. Luma is
 /// per-pixel; the shared chroma of each horizontal pixel pair is their rounded
 /// average. Inverse of [`rgb_from_yuyv`] (round-trips to within subsampling error).
-pub fn yuyv_from_rgb<A: ImageAllocator>(
-    src: &Image<u8, 3, A>,
-    dst: &mut [u8],
-) -> Result<(), ImageError> {
+pub fn yuyv_from_rgb(src: &Image<u8, 3>, dst: &mut [u8]) -> Result<(), ImageError> {
     let (w, h) = (src.width(), src.height());
     if w % 2 != 0 || dst.len() != w * h * 2 {
         return Err(ImageError::InvalidImageSize(dst.len(), w, h, w * h * 2));
@@ -330,10 +292,7 @@ pub fn yuyv_from_rgb<A: ImageAllocator>(
 /// `dst` must be exactly `width*height*3/2` bytes and both dimensions must be even.
 /// Each chroma pair is the rounded average of its 2×2 luma block. Inverse of
 /// [`rgb_from_nv12`].
-pub fn nv12_from_rgb<A: ImageAllocator>(
-    src: &Image<u8, 3, A>,
-    dst: &mut [u8],
-) -> Result<(), ImageError> {
+pub fn nv12_from_rgb(src: &Image<u8, 3>, dst: &mut [u8]) -> Result<(), ImageError> {
     let (w, h) = (src.width(), src.height());
     if w % 2 != 0 || h % 2 != 0 || dst.len() != w * h * 3 / 2 {
         return Err(ImageError::InvalidImageSize(dst.len(), w, h, w * h * 3 / 2));
@@ -379,9 +338,9 @@ pub enum YuvToRgbMode {
 /// # Returns
 ///
 /// The RGB image in HxWx3 format.
-pub fn convert_yuyv_to_rgb_u8<A: ImageAllocator>(
+pub fn convert_yuyv_to_rgb_u8(
     src: &[u8],
-    dst: &mut Image<u8, 3, A>,
+    dst: &mut Image<u8, 3>,
     mode: YuvToRgbMode,
 ) -> Result<(), ImageError> {
     // the yuyv image is 2 bytes per pixel, so we need to divide by 2

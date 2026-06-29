@@ -1,4 +1,4 @@
-use kornia_image::{allocator::ImageAllocator, Image, ImageError};
+use kornia_image::{Image, ImageError};
 use rayon::{
     iter::{IndexedParallelIterator, ParallelIterator},
     slice::{ParallelSlice, ParallelSliceMut},
@@ -21,26 +21,26 @@ use rayon::{
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
-/// use kornia_image::allocator::CpuAllocator;
+/// use kornia_tensor::host_alloc;
 /// use kornia_imgproc::flip::horizontal_flip;
 ///
-/// let image = Image::<f32, 3, _>::new(
+/// let image = Image::<f32, 3>::new(
 ///     ImageSize {
 ///         width: 2,
 ///         height: 3,
 ///     },
 ///     vec![0f32; 2 * 3 * 3],
-///     CpuAllocator
+///     host_alloc()
 /// )
 /// .unwrap();
 ///
-/// let mut flipped = Image::<f32, 3, _>::from_size_val(image.size(), 0.0, CpuAllocator).unwrap();
+/// let mut flipped = Image::<f32, 3>::from_size_val(image.size(), 0.0, host_alloc()).unwrap();
 ///
 /// horizontal_flip(&image, &mut flipped).unwrap();
 /// ```
-pub fn horizontal_flip<T, const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<T, C, A1>,
-    dst: &mut Image<T, C, A2>,
+pub fn horizontal_flip<T, const C: usize>(
+    src: &Image<T, C>,
+    dst: &mut Image<T, C>,
 ) -> Result<(), ImageError>
 where
     T: Copy + Send + Sync + 'static,
@@ -288,27 +288,27 @@ fn hflip_rgb_u8_neon(src: &[u8], dst: &mut [u8], cols: usize) {
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
-/// use kornia_image::allocator::CpuAllocator;
+/// use kornia_tensor::host_alloc;
 /// use kornia_imgproc::flip::vertical_flip;
 ///
-/// let image = Image::<f32, 3, _>::new(
+/// let image = Image::<f32, 3>::new(
 ///     ImageSize {
 ///         width: 2,
 ///         height: 3,
 ///     },
 ///     vec![0f32; 2 * 3 * 3],
-///     CpuAllocator,
+///     host_alloc(),
 /// )
 /// .unwrap();
 ///
-/// let mut flipped = Image::<f32, 3, _>::from_size_val(image.size(), 0.0, CpuAllocator).unwrap();
+/// let mut flipped = Image::<f32, 3>::from_size_val(image.size(), 0.0, host_alloc()).unwrap();
 ///
 /// vertical_flip(&image, &mut flipped).unwrap();
 ///
 /// ```
-pub fn vertical_flip<T, const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<T, C, A1>,
-    dst: &mut Image<T, C, A2>,
+pub fn vertical_flip<T, const C: usize>(
+    src: &Image<T, C>,
+    dst: &mut Image<T, C>,
 ) -> Result<(), ImageError>
 where
     T: Copy + Send + Sync,
@@ -366,7 +366,7 @@ where
 #[cfg(test)]
 mod tests {
     use kornia_image::{Image, ImageError, ImageSize};
-    use kornia_tensor::CpuAllocator;
+    use kornia_tensor::host_alloc;
 
     #[test]
     fn test_hflip() -> Result<(), ImageError> {
@@ -374,17 +374,17 @@ mod tests {
             width: 2,
             height: 3,
         };
-        let image = Image::<_, 3, _>::new(
+        let image = Image::<_, 3>::new(
             image_size,
             vec![
                 0u8, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
             ],
-            CpuAllocator,
+            host_alloc(),
         )?;
         let data_expected = vec![
             3u8, 4, 5, 0, 1, 2, 9, 10, 11, 6, 7, 8, 15, 16, 17, 12, 13, 14,
         ];
-        let mut flipped = Image::<_, 3, _>::from_size_val(image_size, 0u8, CpuAllocator)?;
+        let mut flipped = Image::<_, 3>::from_size_val(image_size, 0u8, host_alloc())?;
         super::horizontal_flip(&image, &mut flipped)?;
         assert_eq!(flipped.as_slice(), &data_expected);
         Ok(())
@@ -396,17 +396,17 @@ mod tests {
             width: 2,
             height: 3,
         };
-        let image = Image::<_, 3, _>::new(
+        let image = Image::<_, 3>::new(
             image_size,
             vec![
                 0u8, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
             ],
-            CpuAllocator,
+            host_alloc(),
         )?;
         let data_expected = vec![
             12u8, 13, 14, 15, 16, 17, 6, 7, 8, 9, 10, 11, 0, 1, 2, 3, 4, 5,
         ];
-        let mut flipped = Image::<_, 3, _>::from_size_val(image_size, 0u8, CpuAllocator)?;
+        let mut flipped = Image::<_, 3>::from_size_val(image_size, 0u8, host_alloc())?;
         super::vertical_flip(&image, &mut flipped)?;
         assert_eq!(flipped.as_slice(), &data_expected);
         Ok(())
@@ -423,8 +423,8 @@ mod tests {
             height: 4,
         };
         let pixels: Vec<u8> = (0..(80 * 4 * 3)).map(|i| (i & 0xff) as u8).collect();
-        let image = Image::<u8, 3, _>::new(image_size, pixels.clone(), CpuAllocator)?;
-        let mut flipped = Image::<u8, 3, _>::from_size_val(image_size, 0u8, CpuAllocator)?;
+        let image = Image::<u8, 3>::new(image_size, pixels.clone(), host_alloc())?;
+        let mut flipped = Image::<u8, 3>::from_size_val(image_size, 0u8, host_alloc())?;
         super::horizontal_flip(&image, &mut flipped)?;
 
         let mut expected = vec![0u8; 80 * 4 * 3];
@@ -447,8 +447,8 @@ mod tests {
             width: 4,
             height: 1,
         };
-        let image = Image::<_, 1, _>::new(image_size, vec![10u8, 20, 30, 40], CpuAllocator)?;
-        let mut flipped = Image::<_, 1, _>::from_size_val(image_size, 0u8, CpuAllocator)?;
+        let image = Image::<_, 1>::new(image_size, vec![10u8, 20, 30, 40], host_alloc())?;
+        let mut flipped = Image::<_, 1>::from_size_val(image_size, 0u8, host_alloc())?;
         super::horizontal_flip(&image, &mut flipped)?;
         // Columns reversed: [40, 30, 20, 10]
         assert_eq!(flipped.as_slice(), &[40u8, 30, 20, 10]);
@@ -463,8 +463,8 @@ mod tests {
             width: 1,
             height: 4,
         };
-        let image = Image::<_, 1, _>::new(image_size, vec![10u8, 20, 30, 40], CpuAllocator)?;
-        let mut flipped = Image::<_, 1, _>::from_size_val(image_size, 0u8, CpuAllocator)?;
+        let image = Image::<_, 1>::new(image_size, vec![10u8, 20, 30, 40], host_alloc())?;
+        let mut flipped = Image::<_, 1>::from_size_val(image_size, 0u8, host_alloc())?;
         super::vertical_flip(&image, &mut flipped)?;
         // Rows reversed: [40, 30, 20, 10]
         assert_eq!(flipped.as_slice(), &[40u8, 30, 20, 10]);

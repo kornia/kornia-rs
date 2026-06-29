@@ -2,10 +2,10 @@ use argh::FromArgs;
 use std::path::PathBuf;
 
 use kornia::{
+    image::allocator::host_alloc,
     image::{ops, Image},
     imgproc,
     io::functional as F,
-    tensor::CpuAllocator,
 };
 
 #[derive(FromArgs)]
@@ -24,12 +24,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let size = img_rgb.size();
 
     // preallocate images
-    let mut img_f32 = Image::from_size_val(size, 0f32, CpuAllocator)?;
-    let mut gray = Image::from_size_val(size, 0f32, CpuAllocator)?;
-    let mut gftt_response = Image::from_size_val(size, 0f32, CpuAllocator)?;
-    let mut hessian_response = Image::from_size_val(size, 0f32, CpuAllocator)?;
-    let mut gftt_corners = Image::from_size_val(size, 0f32, CpuAllocator)?;
-    let mut hessian_corners = Image::from_size_val(size, 0f32, CpuAllocator)?;
+    let mut img_f32 = Image::from_size_val(size, 0f32, kornia::image::allocator::host_alloc())?;
+    let mut gray = Image::from_size_val(size, 0f32, kornia::image::allocator::host_alloc())?;
+    let mut gftt_response =
+        Image::from_size_val(size, 0f32, kornia::image::allocator::host_alloc())?;
+    let mut hessian_response =
+        Image::from_size_val(size, 0f32, kornia::image::allocator::host_alloc())?;
+    let mut gftt_corners =
+        Image::from_size_val(size, 0f32, kornia::image::allocator::host_alloc())?;
+    let mut hessian_corners =
+        Image::from_size_val(size, 0f32, kornia::image::allocator::host_alloc())?;
 
     // convert to gray scale
     ops::cast_and_scale(&img_rgb, &mut img_f32, 1.0 / 255.0)?;

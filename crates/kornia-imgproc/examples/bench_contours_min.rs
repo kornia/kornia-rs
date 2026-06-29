@@ -3,8 +3,9 @@
 //!
 //! Usage: cargo run --release --example bench_contours_min -p kornia-imgproc
 
-use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
+use kornia_image::{Image, ImageSize};
 use kornia_imgproc::contours::{ContourApproximationMode, FindContoursExecutor, RetrievalMode};
+use kornia_tensor::host_alloc;
 use std::time::Instant;
 
 const SIZES: &[(usize, usize)] = &[
@@ -73,13 +74,13 @@ fn run_one(
     retrieval: RetrievalMode,
     approx: ContourApproximationMode,
 ) {
-    let img = Image::<u8, 1, _>::new(
+    let img = Image::<u8, 1>::new(
         ImageSize {
             width: w,
             height: h,
         },
         data,
-        CpuAllocator,
+        host_alloc(),
     )
     .expect("kornia image");
     let mut exec = FindContoursExecutor::new();
@@ -133,24 +134,24 @@ fn load_test_image(path: &str) -> Option<(usize, usize, Vec<u8>)> {
     let rgb = kornia_io::png::read_image_png_rgb8(path).ok()?;
     let (w, h) = (rgb.width(), rgb.height());
     // 2. RGB → gray via kornia-imgproc
-    let mut gray = Image::<u8, 1, _>::from_size_val(
+    let mut gray = Image::<u8, 1>::from_size_val(
         ImageSize {
             width: w,
             height: h,
         },
         0,
-        CpuAllocator,
+        host_alloc(),
     )
     .unwrap();
     kornia_imgproc::color::gray_from_rgb_u8(&rgb, &mut gray).ok()?;
     // 3. Binarize at threshold 127 → 0 or 1 (matches bench_contours.rs convention)
-    let mut bw = Image::<u8, 1, _>::from_size_val(
+    let mut bw = Image::<u8, 1>::from_size_val(
         ImageSize {
             width: w,
             height: h,
         },
         0,
-        CpuAllocator,
+        host_alloc(),
     )
     .unwrap();
     kornia_imgproc::threshold::threshold_binary(&gray, &mut bw, 127, 1).ok()?;

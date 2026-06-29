@@ -56,7 +56,7 @@ use cudarc::driver::{
 use cudarc::nvrtc::{compile_ptx_with_opts, CompileOptions};
 
 use crate::{
-    allocator::{CpuAllocator, TensorAllocator, TensorAllocatorError},
+    allocator::{host_alloc, AllocHandle, TensorAllocator, TensorAllocatorError},
     resource::{MemoryDomain, MemoryResource},
     storage::TensorStorage,
     tensor::{get_strides_from_shape, Tensor, TensorError},
@@ -336,15 +336,11 @@ impl<'a> CudaLaunchBuilder<'a> {
 pub fn zeros_cuda<T, const N: usize>(
     shape: [usize; N],
     stream: &Arc<CudaStream>,
-) -> Result<Tensor<T, N, CudaAllocator>, CudaError>
+) -> Result<Tensor<T, N>, CudaError>
 where
     T: DeviceRepr + ValidAsZeroBits + 'static,
 {
     let ctx = stream.context().clone();
-    let alloc = CudaAllocator {
-        ctx: ctx.clone(),
-        stream: stream.clone(),
-    };
 
     let numel: usize = shape.iter().product();
     let n_bytes = numel * std::mem::size_of::<T>();
@@ -363,6 +359,10 @@ where
     };
 
     let resource = CudaResource::<u8> { slice, ptr, id };
+    let alloc: AllocHandle = Arc::new(CudaAllocator {
+        ctx: ctx.clone(),
+        stream: stream.clone(),
+    });
 
     // SAFETY: `ptr` is the device pointer inside `resource`; `n_bytes` is the
     // allocation size; `resource` is the sole owner of that device memory.
@@ -377,7 +377,7 @@ where
 
 // ── Helper: build a TensorStorage from a CudaResource ─────────────────────────
 
-/// Build a `TensorStorage<T, A>` that owns the given [`CudaResource<R>`].
+/// Build a `TensorStorage<T>` that owns the given [`CudaResource<R>`].
 ///
 /// `R` is the element type of the wrapped `CudaSlice` (e.g. `u8` from the allocator,
 /// or `T` from `from_cudaslice`); `T` is the tensor's element type.
@@ -387,15 +387,14 @@ where
 /// `ptr` must be the device pointer inside `resource` (cached from
 /// `resource.slice.device_ptr(stream)`).  It must be valid for `len_bytes` bytes on
 /// the device.  The caller guarantees `resource` is the sole owner of that allocation.
-unsafe fn storage_from_cuda_resource<T, R, A>(
+unsafe fn storage_from_cuda_resource<T, R>(
     resource: CudaResource<R>,
     ptr: *mut T,
     len_bytes: usize,
-    alloc: A,
-) -> TensorStorage<T, A>
+    alloc: AllocHandle,
+) -> TensorStorage<T>
 where
     R: 'static,
-    A: TensorAllocator,
 {
     let owner: Box<dyn MemoryResource> = Box::new(resource);
     let nn_ptr = NonNull::new_unchecked(ptr);
@@ -410,7 +409,7 @@ where
 
 // ── Tensor: from_cudaslice / as_cudaslice / into_cudaslice ────────────────────
 
-impl<T, const N: usize> Tensor<T, N, CudaAllocator>
+impl<T, const N: usize> Tensor<T, N>
 where
     T: DeviceRepr + ValidAsZeroBits + 'static,
 {
@@ -454,7 +453,7 @@ where
             // _sync drops here, releasing the borrow on `slice`
         };
 
-        let alloc = CudaAllocator { ctx, stream };
+        let alloc: AllocHandle = Arc::new(CudaAllocator { ctx, stream });
         // Move the original CudaSlice<T> in, unchanged — this is the aliasing wrap.
         let resource = CudaResource::<T> { slice, ptr, id };
 
@@ -526,7 +525,7 @@ where
         // Read `owner` out of the ManuallyDrop without running TensorStorage's Drop.
         // SAFETY: We are the sole owner; ManuallyDrop prevents double-drop of the storage.
         let owner: Box<dyn MemoryResource> = unsafe { std::ptr::read(&md_storage.owner) };
-        // Drop the allocator field explicitly (Arc fields drop normally).
+        // Drop the allocator handle (Arc) explicitly.
         let _alloc = unsafe { std::ptr::read(&md_storage.alloc) };
         // ptr/len/marker are Copy/ZST — nothing else to drop.
 
@@ -548,20 +547,16 @@ where
 
 // ── Tensor::to_cuda (host → device) ──────────────────────────────────────────
 
-impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A>
+impl<T, const N: usize> Tensor<T, N>
 where
     T: DeviceRepr + ValidAsZeroBits + Clone + Default + 'static,
-    A: 'static,
 {
     /// Copy this host tensor to a new device-backed tensor on `stream`.
     ///
     /// # Errors
     ///
     /// Returns [`CudaError::Driver`] on CUDA failure.
-    pub fn to_cuda(
-        &self,
-        stream: &Arc<CudaStream>,
-    ) -> Result<Tensor<T, N, CudaAllocator>, CudaError> {
+    pub fn to_cuda(&self, stream: &Arc<CudaStream>) -> Result<Tensor<T, N>, CudaError> {
         let src_slice = self.as_slice(); // panics (correctly) if non-host-accessible
 
         let ctx = stream.context().clone();
@@ -579,10 +574,10 @@ where
             cu_ptr as *mut u8
             // _sync drops here
         };
-        let alloc = CudaAllocator {
+        let alloc: AllocHandle = Arc::new(CudaAllocator {
             ctx,
             stream: stream.clone(),
-        };
+        });
         // Store as CudaResource<T> so as_cudaslice::<T>() also works on to_cuda results.
         let resource = CudaResource::<T> {
             slice: dev_slice,
@@ -598,14 +593,7 @@ where
             strides,
         })
     }
-}
 
-// ── Tensor::to_host (device → host) ──────────────────────────────────────────
-
-impl<T, const N: usize> Tensor<T, N, CudaAllocator>
-where
-    T: DeviceRepr + ValidAsZeroBits + Clone + Default + 'static,
-{
     /// Copy this device tensor to a new host-backed tensor.
     ///
     /// Synchronizes the stream before returning so the host data is valid.
@@ -614,10 +602,7 @@ where
     ///
     /// Returns [`CudaError::Driver`] on CUDA failure or [`CudaError::NotCudaBacked`]
     /// if the storage owner is not a [`CudaResource<T>`].
-    pub fn to_host(
-        &self,
-        stream: &Arc<CudaStream>,
-    ) -> Result<Tensor<T, N, CpuAllocator>, CudaError> {
+    pub fn to_host(&self, stream: &Arc<CudaStream>) -> Result<Tensor<T, N>, CudaError> {
         let cuda_res = self
             .storage
             .owner
@@ -633,7 +618,7 @@ where
             .synchronize()
             .map_err(|e| CudaError::Driver(e.to_string()))?;
 
-        let storage = TensorStorage::from_vec(host_data, CpuAllocator);
+        let storage = TensorStorage::from_vec(host_data, host_alloc());
         let strides = get_strides_from_shape(self.shape);
         Ok(Tensor {
             storage,
@@ -648,7 +633,8 @@ where
 #[cfg(all(test, feature = "cudarc"))]
 mod tests {
     use super::*;
-    use crate::{CpuAllocator, Tensor};
+    use crate::allocator::host_alloc;
+    use crate::Tensor;
 
     /// Device round-trip: host → GPU → host, bytes must match exactly.
     /// Also verifies domain is Device and as_cudaslice is Some.
@@ -657,9 +643,7 @@ mod tests {
         let ctx = CudaContext::new(0).unwrap();
         let stream = ctx.default_stream();
 
-        let host =
-            Tensor::<u8, 1, CpuAllocator>::from_shape_vec([4], vec![1, 2, 3, 4], CpuAllocator)
-                .unwrap();
+        let host = Tensor::<u8, 1>::from_shape_vec([4], vec![1, 2, 3, 4], host_alloc()).unwrap();
 
         let dev = host.to_cuda(&stream).unwrap();
         assert!(
@@ -689,9 +673,7 @@ mod tests {
         let stream = ctx.default_stream();
 
         // Device tensor backed by CudaResource<u8> (via to_cuda).
-        let host =
-            Tensor::<u8, 1, CpuAllocator>::from_shape_vec([4], vec![1, 2, 3, 4], CpuAllocator)
-                .unwrap();
+        let host = Tensor::<u8, 1>::from_shape_vec([4], vec![1, 2, 3, 4], host_alloc()).unwrap();
         let mut dev = host.to_cuda(&stream).unwrap();
 
         // Some: same element type u8.
@@ -714,7 +696,7 @@ mod tests {
 
         // None branch: `zeros_cuda` always stores a `CudaResource<u8>`, so an i16 device
         // tensor's owner does NOT downcast to `CudaResource<i16>` — the mutable query is None.
-        let mut dev_i16: Tensor<i16, 1, CudaAllocator> = zeros_cuda([4], &stream).unwrap();
+        let mut dev_i16: Tensor<i16, 1> = zeros_cuda([4], &stream).unwrap();
         assert!(
             dev_i16.as_cudaslice_mut().is_none(),
             "zeros_cuda stores CudaResource<u8>; querying as CudaSlice<i16> must be None"
@@ -727,9 +709,7 @@ mod tests {
     fn as_slice_on_device_panics() {
         let ctx = CudaContext::new(0).unwrap();
         let stream = ctx.default_stream();
-        let host =
-            Tensor::<u8, 1, CpuAllocator>::from_shape_vec([4], vec![1, 2, 3, 4], CpuAllocator)
-                .unwrap();
+        let host = Tensor::<u8, 1>::from_shape_vec([4], vec![1, 2, 3, 4], host_alloc()).unwrap();
         let dev = host.to_cuda(&stream).unwrap();
         let _ = dev.as_slice(); // must panic: Device is not host-accessible
     }
@@ -741,8 +721,7 @@ mod tests {
         let ctx = CudaContext::new(0).unwrap();
         let stream = ctx.default_stream();
 
-        let host = Tensor::<u8, 1, CpuAllocator>::from_shape_vec([8], vec![10u8; 8], CpuAllocator)
-            .unwrap();
+        let host = Tensor::<u8, 1>::from_shape_vec([8], vec![10u8; 8], host_alloc()).unwrap();
         let dev = host.to_cuda(&stream).unwrap();
         let slice = dev.into_cudaslice().ok().expect("must be cuda-backed");
         // The slice now owns the device memory.  Drop it — cudarc frees exactly once.
@@ -761,8 +740,7 @@ mod tests {
 
         // Allocate on device directly via cudarc.
         let dev_slice: CudaSlice<u8> = stream.alloc_zeros::<u8>(16).unwrap();
-        let tensor =
-            Tensor::<u8, 1, CudaAllocator>::from_cudaslice(dev_slice, [16], stream.clone());
+        let tensor = Tensor::<u8, 1>::from_cudaslice(dev_slice, [16], stream.clone());
         // Drop tensor → TensorStorage drops → Box<CudaResource> drops → CudaSlice::drop
         // → cudarc frees the device memory exactly once.
         drop(tensor);
@@ -844,8 +822,7 @@ mod tests {
             cu_ptr as usize
         };
 
-        let tensor =
-            Tensor::<u8, 1, CudaAllocator>::from_cudaslice(dev_slice, [32], stream.clone());
+        let tensor = Tensor::<u8, 1>::from_cudaslice(dev_slice, [32], stream.clone());
 
         // The tensor's cached device pointer must equal the original allocation's pointer
         // → same device memory → aliased, not copied.

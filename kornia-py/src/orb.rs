@@ -1,7 +1,7 @@
 use numpy::{PyArray, PyArray1, PyArray2, PyArray3, PyArrayMethods, PyUntypedArrayMethods};
 use pyo3::prelude::*;
 
-use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
+use kornia_image::{Image, ImageSize};
 use kornia_imgproc::{
     color::gray_from_rgb_u8,
     features::{fast_detect_rows_u8, OrbDetector},
@@ -161,7 +161,7 @@ pub fn fast_detect(
 fn image_to_gray_u8(
     py: Python<'_>,
     image: Bound<'_, pyo3::types::PyAny>,
-) -> PyResult<Image<u8, 1, CpuAllocator>> {
+) -> PyResult<Image<u8, 1>> {
     if let Ok(arr) = image.cast::<PyArray2<u8>>() {
         if !arr.is_c_contiguous() {
             return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
@@ -175,7 +175,8 @@ fn image_to_gray_u8(
             width: w,
             height: h,
         };
-        return Image::from_size_slice(size, slice, CpuAllocator).map_err(to_pyerr);
+        return Image::from_size_slice(size, slice, kornia_image::allocator::host_alloc())
+            .map_err(to_pyerr);
     }
 
     if let Ok(arr) = image.cast::<PyArray3<u8>>() {
@@ -198,8 +199,10 @@ fn image_to_gray_u8(
         };
         let rgb_slice = unsafe { std::slice::from_raw_parts(arr.data(), h * w * 3) };
         let rgb_img =
-            Image::<u8, 3, _>::from_size_slice(size, rgb_slice, CpuAllocator).map_err(to_pyerr)?;
-        let mut gray = Image::from_size_val(size, 0u8, CpuAllocator).map_err(to_pyerr)?;
+            Image::<u8, 3>::from_size_slice(size, rgb_slice, kornia_image::allocator::host_alloc())
+                .map_err(to_pyerr)?;
+        let mut gray = Image::from_size_val(size, 0u8, kornia_image::allocator::host_alloc())
+            .map_err(to_pyerr)?;
         py.detach(|| gray_from_rgb_u8(&rgb_img, &mut gray))
             .map_err(to_pyerr)?;
         return Ok(gray);

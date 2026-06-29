@@ -2,10 +2,10 @@ use argh::FromArgs;
 use std::path::PathBuf;
 
 use kornia::{
+    image::allocator::host_alloc,
     image::{Image, ImageSize},
     imgproc::{color, morphology, padding, threshold},
     io::functional as F,
-    tensor::CpuAllocator,
 };
 
 #[derive(FromArgs)]
@@ -32,20 +32,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let size = gray.size();
     let (width, height) = (size.width, size.height);
 
-    let mut gray_single = Image::<u8, 1, CpuAllocator>::new(
+    let mut gray_single = Image::<u8, 1>::new(
         ImageSize { width, height },
         vec![0u8; width * height],
-        CpuAllocator,
+        host_alloc(),
     )?;
 
     // rgb to grayscale
     color::gray_from_rgb_u8(&gray, &mut gray_single)?;
 
     // apply threshold to create binary image
-    let mut binary = Image::<u8, 1, CpuAllocator>::new(
+    let mut binary = Image::<u8, 1>::new(
         ImageSize { width, height },
         vec![0u8; width * height],
-        CpuAllocator,
+        host_alloc(),
     )?;
     threshold::threshold_binary(&gray_single, &mut binary, 128u8, 255u8)?;
 
@@ -63,28 +63,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let kernel = morphology::Kernel::new(kernel_shape);
 
-    let mut dilated = Image::<u8, 1, CpuAllocator>::new(
+    let mut dilated = Image::<u8, 1>::new(
         ImageSize { width, height },
         vec![0u8; width * height],
-        CpuAllocator,
+        host_alloc(),
     )?;
 
-    let mut eroded = Image::<u8, 1, CpuAllocator>::new(
+    let mut eroded = Image::<u8, 1>::new(
         ImageSize { width, height },
         vec![0u8; width * height],
-        CpuAllocator,
+        host_alloc(),
     )?;
 
-    let mut opened = Image::<u8, 1, CpuAllocator>::new(
+    let mut opened = Image::<u8, 1>::new(
         ImageSize { width, height },
         vec![0u8; width * height],
-        CpuAllocator,
+        host_alloc(),
     )?;
 
-    let mut closed = Image::<u8, 1, CpuAllocator>::new(
+    let mut closed = Image::<u8, 1>::new(
         ImageSize { width, height },
         vec![0u8; width * height],
-        CpuAllocator,
+        host_alloc(),
     )?;
 
     // apply all morphological operations
@@ -124,45 +124,45 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rec = rerun::RecordingStreamBuilder::new("Kornia Morphology").spawn()?;
 
     // convert all images to rgb
-    let mut gray_rgb = Image::<u8, 3, CpuAllocator>::new(
+    let mut gray_rgb = Image::<u8, 3>::new(
         ImageSize { width, height },
         vec![0u8; width * height * 3],
-        CpuAllocator,
+        host_alloc(),
     )?;
     color::rgb_from_gray(&gray_single, &mut gray_rgb)?;
 
-    let mut binary_rgb = Image::<u8, 3, CpuAllocator>::new(
+    let mut binary_rgb = Image::<u8, 3>::new(
         ImageSize { width, height },
         vec![0u8; width * height * 3],
-        CpuAllocator,
+        host_alloc(),
     )?;
     color::rgb_from_gray(&binary, &mut binary_rgb)?;
 
-    let mut dilated_rgb = Image::<u8, 3, CpuAllocator>::new(
+    let mut dilated_rgb = Image::<u8, 3>::new(
         ImageSize { width, height },
         vec![0u8; width * height * 3],
-        CpuAllocator,
+        host_alloc(),
     )?;
     color::rgb_from_gray(&dilated, &mut dilated_rgb)?;
 
-    let mut eroded_rgb = Image::<u8, 3, CpuAllocator>::new(
+    let mut eroded_rgb = Image::<u8, 3>::new(
         ImageSize { width, height },
         vec![0u8; width * height * 3],
-        CpuAllocator,
+        host_alloc(),
     )?;
     color::rgb_from_gray(&eroded, &mut eroded_rgb)?;
 
-    let mut opened_rgb = Image::<u8, 3, CpuAllocator>::new(
+    let mut opened_rgb = Image::<u8, 3>::new(
         ImageSize { width, height },
         vec![0u8; width * height * 3],
-        CpuAllocator,
+        host_alloc(),
     )?;
     color::rgb_from_gray(&opened, &mut opened_rgb)?;
 
-    let mut closed_rgb = Image::<u8, 3, CpuAllocator>::new(
+    let mut closed_rgb = Image::<u8, 3>::new(
         ImageSize { width, height },
         vec![0u8; width * height * 3],
-        CpuAllocator,
+        host_alloc(),
     )?;
     color::rgb_from_gray(&closed, &mut closed_rgb)?;
 

@@ -1,7 +1,6 @@
 use crate::error::IoError;
 use image_webp::{ColorType, WebPDecoder, WebPEncoder};
 use kornia_image::{
-    allocator::{CpuAllocator, ImageAllocator},
     color_spaces::{Gray8, Rgb8, Rgba8},
     Image, ImageLayout, ImageSize, PixelFormat,
 };
@@ -29,10 +28,14 @@ const GRAY_B: u32 = 29;
 /// # Returns
 ///
 /// A grayscale image (Gray8).
-pub fn read_image_webp_gray8(file_path: impl AsRef<Path>) -> Result<Gray8<CpuAllocator>, IoError> {
+pub fn read_image_webp_gray8(file_path: impl AsRef<Path>) -> Result<Gray8, IoError> {
     let (rgb, size, has_alpha) = read_webp_rgb_or_rgba(file_path)?;
     let gray = rgb_or_rgba_to_gray(&rgb, has_alpha);
-    Ok(Gray8::from_size_vec(size, gray, CpuAllocator)?)
+    Ok(Gray8::from_size_vec(
+        size,
+        gray,
+        kornia_tensor::host_alloc(),
+    )?)
 }
 
 /// Read a WEBP image as RGB8.
@@ -46,7 +49,7 @@ pub fn read_image_webp_gray8(file_path: impl AsRef<Path>) -> Result<Gray8<CpuAll
 /// # Returns
 ///
 /// A RGB8 typed image.
-pub fn read_image_webp_rgb8(file_path: impl AsRef<Path>) -> Result<Rgb8<CpuAllocator>, IoError> {
+pub fn read_image_webp_rgb8(file_path: impl AsRef<Path>) -> Result<Rgb8, IoError> {
     let (buf, size, has_alpha) = read_webp_rgb_or_rgba(file_path)?;
     if has_alpha {
         return Err(IoError::WebpDecodingError(
@@ -55,7 +58,7 @@ pub fn read_image_webp_rgb8(file_path: impl AsRef<Path>) -> Result<Rgb8<CpuAlloc
             ),
         ));
     }
-    Ok(Rgb8::from_size_vec(size, buf, CpuAllocator)?)
+    Ok(Rgb8::from_size_vec(size, buf, kornia_tensor::host_alloc())?)
 }
 
 /// Read a WEBP image as RGBA8.
@@ -69,7 +72,7 @@ pub fn read_image_webp_rgb8(file_path: impl AsRef<Path>) -> Result<Rgb8<CpuAlloc
 /// # Returns
 ///
 /// A RGBA8 typed image.
-pub fn read_image_webp_rgba8(file_path: impl AsRef<Path>) -> Result<Rgba8<CpuAllocator>, IoError> {
+pub fn read_image_webp_rgba8(file_path: impl AsRef<Path>) -> Result<Rgba8, IoError> {
     let (buf, size, has_alpha) = read_webp_rgb_or_rgba(file_path)?;
     if !has_alpha {
         return Err(IoError::WebpDecodingError(
@@ -78,7 +81,11 @@ pub fn read_image_webp_rgba8(file_path: impl AsRef<Path>) -> Result<Rgba8<CpuAll
             ),
         ));
     }
-    Ok(Rgba8::from_size_vec(size, buf, CpuAllocator)?)
+    Ok(Rgba8::from_size_vec(
+        size,
+        buf,
+        kornia_tensor::host_alloc(),
+    )?)
 }
 
 /// Decodes a WEBP image as RGB8 from raw bytes.
@@ -89,11 +96,8 @@ pub fn read_image_webp_rgba8(file_path: impl AsRef<Path>) -> Result<Rgba8<CpuAll
 ///
 /// - `src` - Raw bytes of the webp file
 /// - `dst` - A mutable reference to your `Rgb8` image
-pub fn decode_image_webp_rgb8<A: ImageAllocator>(
-    src: &[u8],
-    dst: &mut Image<u8, 3, A>,
-) -> Result<(), IoError> {
-    decode_webp_impl::<3, _>(src, dst, false)
+pub fn decode_image_webp_rgb8(src: &[u8], dst: &mut Image<u8, 3>) -> Result<(), IoError> {
+    decode_webp_impl::<3>(src, dst, false)
 }
 
 /// Decodes a WEBP image as RGBA8 from raw bytes.
@@ -104,11 +108,8 @@ pub fn decode_image_webp_rgb8<A: ImageAllocator>(
 ///
 /// - `src` - Raw bytes of the webp file
 /// - `dst` - A mutable reference to your `Rgba8` image
-pub fn decode_image_webp_rgba8<A: ImageAllocator>(
-    src: &[u8],
-    dst: &mut Image<u8, 4, A>,
-) -> Result<(), IoError> {
-    decode_webp_impl::<4, _>(src, dst, true)
+pub fn decode_image_webp_rgba8(src: &[u8], dst: &mut Image<u8, 4>) -> Result<(), IoError> {
+    decode_webp_impl::<4>(src, dst, true)
 }
 
 /// Decodes a WEBP image as Gray8 from raw bytes.
@@ -120,10 +121,7 @@ pub fn decode_image_webp_rgba8<A: ImageAllocator>(
 ///
 /// - `src` - Raw bytes of the webp file
 /// - `dst` - A mutable reference to your `Gray8` image
-pub fn decode_image_webp_gray8<A: ImageAllocator>(
-    src: &[u8],
-    dst: &mut Image<u8, 1, A>,
-) -> Result<(), IoError> {
+pub fn decode_image_webp_gray8(src: &[u8], dst: &mut Image<u8, 1>) -> Result<(), IoError> {
     let mut decoder = WebPDecoder::new(Cursor::new(src))?;
     let (width, height) = decoder.dimensions();
     if [width as usize, height as usize] != [dst.width(), dst.height()] {
@@ -182,9 +180,9 @@ pub fn decode_image_webp_layout(src: &[u8]) -> Result<ImageLayout, IoError> {
 }
 
 // Decodes a WEBP image into a pre-allocated Image buffer, validating channel count and size.
-fn decode_webp_impl<const C: usize, A: ImageAllocator>(
+fn decode_webp_impl<const C: usize>(
     src: &[u8],
-    dst: &mut Image<u8, C, A>,
+    dst: &mut Image<u8, C>,
     expect_alpha: bool,
 ) -> Result<(), IoError> {
     let mut decoder = WebPDecoder::new(Cursor::new(src))?;
@@ -270,10 +268,7 @@ fn rgb_or_rgba_to_gray(buf: &[u8], has_alpha: bool) -> Vec<u8> {
 /// - `image` - The RGB image to encode
 /// - `buffer` - A mutable buffer to write the WEBP bytes into. Existing contents are preserved;
 ///   the encoded data is appended.
-pub fn encode_image_webp_rgb8<A: ImageAllocator>(
-    image: &Image<u8, 3, A>,
-    buffer: &mut Vec<u8>,
-) -> Result<(), IoError> {
+pub fn encode_image_webp_rgb8(image: &Image<u8, 3>, buffer: &mut Vec<u8>) -> Result<(), IoError> {
     WebPEncoder::new(buffer).encode(
         image.as_slice(),
         image.width() as u32,
@@ -290,10 +285,7 @@ pub fn encode_image_webp_rgb8<A: ImageAllocator>(
 /// - `image` - The RGBA8 image to encode
 /// - `buffer` - A mutable buffer to write the WEBP bytes into. Existing contents are preserved;
 ///   the encoded data is appended.
-pub fn encode_image_webp_rgba8<A: ImageAllocator>(
-    image: &Image<u8, 4, A>,
-    buffer: &mut Vec<u8>,
-) -> Result<(), IoError> {
+pub fn encode_image_webp_rgba8(image: &Image<u8, 4>, buffer: &mut Vec<u8>) -> Result<(), IoError> {
     WebPEncoder::new(buffer).encode(
         image.as_slice(),
         image.width() as u32,
@@ -310,10 +302,7 @@ pub fn encode_image_webp_rgba8<A: ImageAllocator>(
 /// - `image` - The Gray8 image to encode
 /// - `buffer` - A mutable buffer to write the WEBP bytes into. Existing contents are preserved;
 ///   the encoded data is appended.
-pub fn encode_image_webp_gray8<A: ImageAllocator>(
-    image: &Image<u8, 1, A>,
-    buffer: &mut Vec<u8>,
-) -> Result<(), IoError> {
+pub fn encode_image_webp_gray8(image: &Image<u8, 1>, buffer: &mut Vec<u8>) -> Result<(), IoError> {
     WebPEncoder::new(buffer).encode(
         image.as_slice(),
         image.width() as u32,
@@ -329,9 +318,9 @@ pub fn encode_image_webp_gray8<A: ImageAllocator>(
 ///
 /// - `file_path` - The path to the WEBP image.
 /// - `image` - The grayscale image to write
-pub fn write_image_webp_gray8<A: ImageAllocator>(
+pub fn write_image_webp_gray8(
     file_path: impl AsRef<Path>,
-    image: &Image<u8, 1, A>,
+    image: &Image<u8, 1>,
 ) -> Result<(), IoError> {
     write_image_webp_impl(file_path, image, ColorType::L8)
 }
@@ -342,9 +331,9 @@ pub fn write_image_webp_gray8<A: ImageAllocator>(
 ///
 /// - `file_path` - The path to the WEBP image.
 /// - `image` - The rgb8 image to write
-pub fn write_image_webp_rgb8<A: ImageAllocator>(
+pub fn write_image_webp_rgb8(
     file_path: impl AsRef<Path>,
-    image: &Image<u8, 3, A>,
+    image: &Image<u8, 3>,
 ) -> Result<(), IoError> {
     write_image_webp_impl(file_path, image, ColorType::Rgb8)
 }
@@ -355,16 +344,16 @@ pub fn write_image_webp_rgb8<A: ImageAllocator>(
 ///
 /// - `file_path` - The path to the WEBP image.
 /// - `image` - The rgba8 image to write
-pub fn write_image_webp_rgba8<A: ImageAllocator>(
+pub fn write_image_webp_rgba8(
     file_path: impl AsRef<Path>,
-    image: &Image<u8, 4, A>,
+    image: &Image<u8, 4>,
 ) -> Result<(), IoError> {
     write_image_webp_impl(file_path, image, ColorType::Rgba8)
 }
 
-fn write_image_webp_impl<const N: usize, A: ImageAllocator>(
+fn write_image_webp_impl<const N: usize>(
     file_path: impl AsRef<Path>,
-    image: &Image<u8, N, A>,
+    image: &Image<u8, N>,
     color_type: ColorType,
 ) -> Result<(), IoError> {
     let file = fs::File::create(file_path)?;
@@ -402,7 +391,7 @@ mod tests {
     #[test]
     fn test_decode_webp() -> Result<(), IoError> {
         let bytes = read("../../tests/data/fire.webp")?;
-        let mut image = Rgb8::from_size_val([320, 235].into(), 0, CpuAllocator)?;
+        let mut image = Rgb8::from_size_val([320, 235].into(), 0, kornia_tensor::host_alloc())?;
         decode_image_webp_rgb8(&bytes, &mut image)?;
 
         assert_eq!(image.cols(), 320);
@@ -453,7 +442,7 @@ mod tests {
                 pixels.extend_from_slice(&[x as u8, y as u8, (x + y) as u8, 0x80]);
             }
         }
-        let src = Rgba8::from_size_vec([w, h].into(), pixels, CpuAllocator)?;
+        let src = Rgba8::from_size_vec([w, h].into(), pixels, kornia_tensor::host_alloc())?;
         write_image_webp_rgba8(&file_path, &src)?;
 
         let decoded = read_image_webp_rgba8(&file_path)?;
@@ -481,7 +470,7 @@ mod tests {
         let w = 4;
         let h = 4;
         let pixels = vec![0xAAu8; w * h * 4];
-        let src = Rgba8::from_size_vec([w, h].into(), pixels, CpuAllocator)?;
+        let src = Rgba8::from_size_vec([w, h].into(), pixels, kornia_tensor::host_alloc())?;
         write_image_webp_rgba8(&file_path, &src)?;
 
         match read_image_webp_rgb8(&file_path) {

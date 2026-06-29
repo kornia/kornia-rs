@@ -1,5 +1,5 @@
 use crate::parallel;
-use kornia_image::{allocator::ImageAllocator, Image, ImageError};
+use kornia_image::{Image, ImageError};
 
 mod kernels;
 
@@ -14,45 +14,29 @@ use crate::color::kernel_common::{check_size, sealed};
 /// external implementations.
 pub trait ChannelOps: sealed::Sealed + Sized + Copy + Send + Sync {
     #[doc(hidden)]
-    fn bgr_from_rgb_impl<A1: ImageAllocator, A2: ImageAllocator>(
-        src: &Image<Self, 3, A1>,
-        dst: &mut Image<Self, 3, A2>,
-    ) -> Result<(), ImageError>;
+    fn bgr_from_rgb_impl(src: &Image<Self, 3>, dst: &mut Image<Self, 3>) -> Result<(), ImageError>;
 
     #[doc(hidden)]
-    fn rgba_from_rgb_impl<A1: ImageAllocator, A2: ImageAllocator>(
-        src: &Image<Self, 3, A1>,
-        dst: &mut Image<Self, 4, A2>,
-    ) -> Result<(), ImageError>;
+    fn rgba_from_rgb_impl(src: &Image<Self, 3>, dst: &mut Image<Self, 4>)
+        -> Result<(), ImageError>;
 
     #[doc(hidden)]
-    fn bgra_from_rgb_impl<A1: ImageAllocator, A2: ImageAllocator>(
-        src: &Image<Self, 3, A1>,
-        dst: &mut Image<Self, 4, A2>,
-    ) -> Result<(), ImageError>;
+    fn bgra_from_rgb_impl(src: &Image<Self, 3>, dst: &mut Image<Self, 4>)
+        -> Result<(), ImageError>;
 }
 
 impl ChannelOps for u8 {
-    fn bgr_from_rgb_impl<A1: ImageAllocator, A2: ImageAllocator>(
-        src: &Image<u8, 3, A1>,
-        dst: &mut Image<u8, 3, A2>,
-    ) -> Result<(), ImageError> {
+    fn bgr_from_rgb_impl(src: &Image<u8, 3>, dst: &mut Image<u8, 3>) -> Result<(), ImageError> {
         check_size(src, dst)?;
         kernels::bgr_from_rgb_u8(src.as_slice(), dst.as_slice_mut(), src.rows() * src.cols());
         Ok(())
     }
-    fn rgba_from_rgb_impl<A1: ImageAllocator, A2: ImageAllocator>(
-        src: &Image<u8, 3, A1>,
-        dst: &mut Image<u8, 4, A2>,
-    ) -> Result<(), ImageError> {
+    fn rgba_from_rgb_impl(src: &Image<u8, 3>, dst: &mut Image<u8, 4>) -> Result<(), ImageError> {
         check_size(src, dst)?;
         kernels::rgba_from_rgb_u8(src.as_slice(), dst.as_slice_mut(), src.rows() * src.cols());
         Ok(())
     }
-    fn bgra_from_rgb_impl<A1: ImageAllocator, A2: ImageAllocator>(
-        src: &Image<u8, 3, A1>,
-        dst: &mut Image<u8, 4, A2>,
-    ) -> Result<(), ImageError> {
+    fn bgra_from_rgb_impl(src: &Image<u8, 3>, dst: &mut Image<u8, 4>) -> Result<(), ImageError> {
         check_size(src, dst)?;
         kernels::bgra_from_rgb_u8(src.as_slice(), dst.as_slice_mut(), src.rows() * src.cols());
         Ok(())
@@ -60,26 +44,17 @@ impl ChannelOps for u8 {
 }
 
 impl ChannelOps for f32 {
-    fn bgr_from_rgb_impl<A1: ImageAllocator, A2: ImageAllocator>(
-        src: &Image<f32, 3, A1>,
-        dst: &mut Image<f32, 3, A2>,
-    ) -> Result<(), ImageError> {
+    fn bgr_from_rgb_impl(src: &Image<f32, 3>, dst: &mut Image<f32, 3>) -> Result<(), ImageError> {
         check_size(src, dst)?;
         kernels::bgr_from_rgb_f32(src.as_slice(), dst.as_slice_mut(), src.rows() * src.cols());
         Ok(())
     }
-    fn rgba_from_rgb_impl<A1: ImageAllocator, A2: ImageAllocator>(
-        src: &Image<f32, 3, A1>,
-        dst: &mut Image<f32, 4, A2>,
-    ) -> Result<(), ImageError> {
+    fn rgba_from_rgb_impl(src: &Image<f32, 3>, dst: &mut Image<f32, 4>) -> Result<(), ImageError> {
         check_size(src, dst)?;
         kernels::rgba_from_rgb_f32(src.as_slice(), dst.as_slice_mut(), src.rows() * src.cols());
         Ok(())
     }
-    fn bgra_from_rgb_impl<A1: ImageAllocator, A2: ImageAllocator>(
-        src: &Image<f32, 3, A1>,
-        dst: &mut Image<f32, 4, A2>,
-    ) -> Result<(), ImageError> {
+    fn bgra_from_rgb_impl(src: &Image<f32, 3>, dst: &mut Image<f32, 4>) -> Result<(), ImageError> {
         check_size(src, dst)?;
         kernels::bgra_from_rgb_f32(src.as_slice(), dst.as_slice_mut(), src.rows() * src.cols());
         Ok(())
@@ -87,10 +62,7 @@ impl ChannelOps for f32 {
 }
 
 impl ChannelOps for f64 {
-    fn bgr_from_rgb_impl<A1: ImageAllocator, A2: ImageAllocator>(
-        src: &Image<f64, 3, A1>,
-        dst: &mut Image<f64, 3, A2>,
-    ) -> Result<(), ImageError> {
+    fn bgr_from_rgb_impl(src: &Image<f64, 3>, dst: &mut Image<f64, 3>) -> Result<(), ImageError> {
         check_size(src, dst)?;
         parallel::par_iter_rows(src, dst, |s, d| {
             d[0] = s[2];
@@ -99,10 +71,7 @@ impl ChannelOps for f64 {
         });
         Ok(())
     }
-    fn rgba_from_rgb_impl<A1: ImageAllocator, A2: ImageAllocator>(
-        src: &Image<f64, 3, A1>,
-        dst: &mut Image<f64, 4, A2>,
-    ) -> Result<(), ImageError> {
+    fn rgba_from_rgb_impl(src: &Image<f64, 3>, dst: &mut Image<f64, 4>) -> Result<(), ImageError> {
         check_size(src, dst)?;
         parallel::par_iter_rows(src, dst, |s, d| {
             d[0] = s[0];
@@ -112,10 +81,7 @@ impl ChannelOps for f64 {
         });
         Ok(())
     }
-    fn bgra_from_rgb_impl<A1: ImageAllocator, A2: ImageAllocator>(
-        src: &Image<f64, 3, A1>,
-        dst: &mut Image<f64, 4, A2>,
-    ) -> Result<(), ImageError> {
+    fn bgra_from_rgb_impl(src: &Image<f64, 3>, dst: &mut Image<f64, 4>) -> Result<(), ImageError> {
         check_size(src, dst)?;
         parallel::par_iter_rows(src, dst, |s, d| {
             d[0] = s[2];
@@ -144,25 +110,25 @@ impl ChannelOps for f64 {
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
-/// use kornia_image::allocator::CpuAllocator;
+/// use kornia_tensor::host_alloc;
 /// use kornia_imgproc::color::rgb_from_rgba;
 ///
-/// let src = Image::<u8, 4, CpuAllocator>::new(ImageSize { width: 3, height: 2 }, vec![
+/// let src = Image::<u8, 4>::new(ImageSize { width: 3, height: 2 }, vec![
 ///     0, 1, 2, 255, // (0, 0)
 ///     3, 4, 5, 255, // (0, 1)
 ///     6, 7, 8, 255, // (0, 2)
 ///     9, 10, 11, 255, // (1, 0)
 ///     12, 13, 14, 255, // (1, 1)
 ///     15, 16, 17, 255, // (1, 2)
-/// ], CpuAllocator).unwrap();
+/// ], host_alloc()).unwrap();
 ///
-/// let mut dst = Image::<u8, 3, CpuAllocator>::new(ImageSize { width: 3, height: 2 }, vec![0; 18], CpuAllocator).unwrap();
+/// let mut dst = Image::<u8, 3>::new(ImageSize { width: 3, height: 2 }, vec![0; 18], host_alloc()).unwrap();
 ///
 /// rgb_from_rgba(&src, &mut dst, None).unwrap();
 /// ```
-pub fn rgb_from_rgba<A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<u8, 4, A1>,
-    dst: &mut Image<u8, 3, A2>,
+pub fn rgb_from_rgba(
+    src: &Image<u8, 4>,
+    dst: &mut Image<u8, 3>,
     background: Option<[u8; 3]>,
 ) -> Result<(), ImageError> {
     if src.size() != dst.size() {
@@ -205,25 +171,25 @@ pub fn rgb_from_rgba<A1: ImageAllocator, A2: ImageAllocator>(
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
-/// use kornia_image::allocator::CpuAllocator;
+/// use kornia_tensor::host_alloc;
 /// use kornia_imgproc::color::rgb_from_bgra;
 ///
-/// let src = Image::<u8, 4, CpuAllocator>::new(ImageSize { width: 3, height: 2 }, vec![
+/// let src = Image::<u8, 4>::new(ImageSize { width: 3, height: 2 }, vec![
 ///     0, 1, 2, 255, // (0, 0)
 ///     3, 4, 5, 255, // (0, 1)
 ///     6, 7, 8, 255, // (0, 2)
 ///     9, 10, 11, 255, // (1, 0)
 ///     12, 13, 14, 255, // (1, 1)
 ///     15, 16, 17, 255, // (1, 2)
-/// ], CpuAllocator).unwrap();
+/// ], host_alloc()).unwrap();
 ///
-/// let mut dst = Image::<u8, 3, CpuAllocator>::from_size_val(src.size(), 0, CpuAllocator).unwrap();
+/// let mut dst = Image::<u8, 3>::from_size_val(src.size(), 0, host_alloc()).unwrap();
 ///
 /// rgb_from_bgra(&src, &mut dst, None).unwrap();
 /// ```
-pub fn rgb_from_bgra<A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<u8, 4, A1>,
-    dst: &mut Image<u8, 3, A2>,
+pub fn rgb_from_bgra(
+    src: &Image<u8, 4>,
+    dst: &mut Image<u8, 3>,
     background: Option<[u8; 3]>,
 ) -> Result<(), ImageError> {
     if src.size() != dst.size() {
@@ -268,10 +234,7 @@ pub fn rgb_from_bgra<A1: ImageAllocator, A2: ImageAllocator>(
 /// * `dst` - The output BGR image.
 ///
 /// Precondition: the input and output images must have the same size.
-pub fn bgr_from_rgb<T, A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<T, 3, A1>,
-    dst: &mut Image<T, 3, A2>,
-) -> Result<(), ImageError>
+pub fn bgr_from_rgb<T>(src: &Image<T, 3>, dst: &mut Image<T, 3>) -> Result<(), ImageError>
 where
     T: ChannelOps,
 {
@@ -297,21 +260,18 @@ where
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
-/// use kornia_image::allocator::CpuAllocator;
+/// use kornia_tensor::host_alloc;
 /// use kornia_imgproc::color::rgba_from_rgb;
 ///
-/// let src = Image::<u8, 3, CpuAllocator>::new(
+/// let src = Image::<u8, 3>::new(
 ///     ImageSize { width: 2, height: 1 },
 ///     vec![1, 2, 3, 4, 5, 6],
-///     CpuAllocator,
+///     host_alloc(),
 /// ).unwrap();
-/// let mut dst = Image::<u8, 4, CpuAllocator>::from_size_val(src.size(), 0, CpuAllocator).unwrap();
+/// let mut dst = Image::<u8, 4>::from_size_val(src.size(), 0, host_alloc()).unwrap();
 /// rgba_from_rgb(&src, &mut dst).unwrap();
 /// ```
-pub fn rgba_from_rgb<T, A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<T, 3, A1>,
-    dst: &mut Image<T, 4, A2>,
-) -> Result<(), ImageError>
+pub fn rgba_from_rgb<T>(src: &Image<T, 3>, dst: &mut Image<T, 4>) -> Result<(), ImageError>
 where
     T: ChannelOps,
 {
@@ -335,21 +295,18 @@ where
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
-/// use kornia_image::allocator::CpuAllocator;
+/// use kornia_tensor::host_alloc;
 /// use kornia_imgproc::color::bgra_from_rgb;
 ///
-/// let src = Image::<u8, 3, CpuAllocator>::new(
+/// let src = Image::<u8, 3>::new(
 ///     ImageSize { width: 2, height: 1 },
 ///     vec![1, 2, 3, 4, 5, 6],
-///     CpuAllocator,
+///     host_alloc(),
 /// ).unwrap();
-/// let mut dst = Image::<u8, 4, CpuAllocator>::from_size_val(src.size(), 0, CpuAllocator).unwrap();
+/// let mut dst = Image::<u8, 4>::from_size_val(src.size(), 0, host_alloc()).unwrap();
 /// bgra_from_rgb(&src, &mut dst).unwrap();
 /// ```
-pub fn bgra_from_rgb<T, A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<T, 3, A1>,
-    dst: &mut Image<T, 4, A2>,
-) -> Result<(), ImageError>
+pub fn bgra_from_rgb<T>(src: &Image<T, 3>, dst: &mut Image<T, 4>) -> Result<(), ImageError>
 where
     T: ChannelOps,
 {
@@ -367,12 +324,13 @@ fn alpha_blend(r: u8, g: u8, b: u8, a: u8, bg: &[u8; 3], rgb: &mut [u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kornia_image::{allocator::CpuAllocator, ImageSize};
+    use kornia_image::ImageSize;
+    use kornia_tensor::host_alloc;
 
     #[test]
     fn test_rgb_from_rgba() -> Result<(), ImageError> {
         // NOTE: verified with opencv
-        let src = Image::<u8, 4, CpuAllocator>::new(
+        let src = Image::<u8, 4>::new(
             ImageSize {
                 width: 3,
                 height: 2,
@@ -385,12 +343,12 @@ mod tests {
                 12, 13, 14, 255, // (1, 1)
                 15, 16, 17, 255, // (1, 2)
             ],
-            CpuAllocator,
+            host_alloc(),
         )?;
 
-        let mut dst = Image::<u8, 3, CpuAllocator>::from_size_val(src.size(), 0, CpuAllocator)?;
+        let mut dst = Image::<u8, 3>::from_size_val(src.size(), 0, host_alloc())?;
 
-        let expected = Image::<u8, 3, CpuAllocator>::new(
+        let expected = Image::<u8, 3>::new(
             ImageSize {
                 width: 3,
                 height: 2,
@@ -403,7 +361,7 @@ mod tests {
                 12, 13, 14, // (1, 1)
                 15, 16, 17, // (1, 2)
             ],
-            CpuAllocator,
+            host_alloc(),
         )?;
 
         rgb_from_rgba(&src, &mut dst, None)?;
@@ -416,24 +374,24 @@ mod tests {
     #[test]
     fn test_rgb_from_rgba_with_background() -> Result<(), ImageError> {
         // NOTE: verified with PIL
-        let src = Image::<u8, 4, CpuAllocator>::new(
+        let src = Image::<u8, 4>::new(
             ImageSize {
                 width: 1,
                 height: 1,
             },
             vec![255, 0, 0, 128],
-            CpuAllocator,
+            host_alloc(),
         )?;
 
-        let mut dst = Image::<u8, 3, CpuAllocator>::from_size_val(src.size(), 0, CpuAllocator)?;
+        let mut dst = Image::<u8, 3>::from_size_val(src.size(), 0, host_alloc())?;
 
-        let expected = Image::<u8, 3, CpuAllocator>::new(
+        let expected = Image::<u8, 3>::new(
             ImageSize {
                 width: 1,
                 height: 1,
             },
             vec![178, 50, 50],
-            CpuAllocator,
+            host_alloc(),
         )?;
 
         rgb_from_rgba(&src, &mut dst, Some([100, 100, 100]))?;
@@ -446,24 +404,24 @@ mod tests {
     #[test]
     fn test_rgb_from_bgra_without_background() -> Result<(), ImageError> {
         // NOTE: verified with opencv
-        let src = Image::<u8, 4, CpuAllocator>::new(
+        let src = Image::<u8, 4>::new(
             ImageSize {
                 width: 1,
                 height: 1,
             },
             vec![0, 0, 255, 128],
-            CpuAllocator,
+            host_alloc(),
         )?;
 
-        let mut dst = Image::<u8, 3, CpuAllocator>::from_size_val(src.size(), 0, CpuAllocator)?;
+        let mut dst = Image::<u8, 3>::from_size_val(src.size(), 0, host_alloc())?;
 
-        let expected = Image::<u8, 3, CpuAllocator>::new(
+        let expected = Image::<u8, 3>::new(
             ImageSize {
                 width: 1,
                 height: 1,
             },
             vec![255, 0, 0],
-            CpuAllocator,
+            host_alloc(),
         )?;
 
         rgb_from_bgra(&src, &mut dst, None)?;
@@ -476,24 +434,24 @@ mod tests {
     #[test]
     fn test_rgb_from_bgra_with_background() -> Result<(), ImageError> {
         // NOTE: verified with opencv
-        let src = Image::<u8, 4, CpuAllocator>::new(
+        let src = Image::<u8, 4>::new(
             ImageSize {
                 width: 1,
                 height: 1,
             },
             vec![0, 0, 255, 128],
-            CpuAllocator,
+            host_alloc(),
         )?;
 
-        let mut dst = Image::<u8, 3, CpuAllocator>::from_size_val(src.size(), 0, CpuAllocator)?;
+        let mut dst = Image::<u8, 3>::from_size_val(src.size(), 0, host_alloc())?;
 
-        let expected = Image::<u8, 3, CpuAllocator>::new(
+        let expected = Image::<u8, 3>::new(
             ImageSize {
                 width: 1,
                 height: 1,
             },
             vec![178, 50, 50],
-            CpuAllocator,
+            host_alloc(),
         )?;
 
         rgb_from_bgra(&src, &mut dst, Some([100, 100, 100]))?;
@@ -516,15 +474,15 @@ mod tests {
                 3.0, 4.0, 5.0,
                 6.0, 7.0, 8.0,
             ],
-            CpuAllocator,
+            host_alloc(),
         )?;
 
-        let mut bgr = Image::<f32, 3, _>::from_size_val(image.size(), 0.0, CpuAllocator)?;
+        let mut bgr = Image::<f32, 3>::from_size_val(image.size(), 0.0, host_alloc())?;
 
         super::bgr_from_rgb(&image, &mut bgr)?;
 
         #[rustfmt::skip]
-        let expected: Image<f32, 3, _> = Image::new(
+        let expected: Image<f32, 3> = Image::new(
             ImageSize {
                 width: 1,
                 height: 3,
@@ -534,7 +492,7 @@ mod tests {
                 5.0, 4.0, 3.0,
                 8.0, 7.0, 6.0,
             ],
-            CpuAllocator,
+            host_alloc(),
         )?;
 
         assert_eq!(bgr.as_slice(), expected.as_slice());
@@ -560,8 +518,8 @@ mod tests {
             height: 1025,
         };
         let npix = 1024 * 1025;
-        let src = Image::<u8, 3, _>::new(size, ramp_u8(npix * 3), CpuAllocator)?;
-        let mut dst = Image::<u8, 3, _>::from_size_val(size, 0, CpuAllocator)?;
+        let src = Image::<u8, 3>::new(size, ramp_u8(npix * 3), host_alloc())?;
+        let mut dst = Image::<u8, 3>::from_size_val(size, 0, host_alloc())?;
         super::bgr_from_rgb(&src, &mut dst)?;
         let s = src.as_slice();
         let d = dst.as_slice();
@@ -582,8 +540,8 @@ mod tests {
             height: 1025,
         };
         let npix = 1024 * 1025;
-        let src = Image::<u8, 3, _>::new(size, ramp_u8(npix * 3), CpuAllocator)?;
-        let mut dst = Image::<u8, 4, _>::from_size_val(size, 0, CpuAllocator)?;
+        let src = Image::<u8, 3>::new(size, ramp_u8(npix * 3), host_alloc())?;
+        let mut dst = Image::<u8, 4>::from_size_val(size, 0, host_alloc())?;
         super::rgba_from_rgb(&src, &mut dst)?;
         let s = src.as_slice();
         let d = dst.as_slice();
@@ -602,8 +560,8 @@ mod tests {
             width: 7,
             height: 3,
         };
-        let src = Image::<u8, 3, _>::new(size, ramp_u8(7 * 3 * 3), CpuAllocator)?;
-        let mut dst = Image::<u8, 3, _>::from_size_val(size, 0, CpuAllocator)?;
+        let src = Image::<u8, 3>::new(size, ramp_u8(7 * 3 * 3), host_alloc())?;
+        let mut dst = Image::<u8, 3>::from_size_val(size, 0, host_alloc())?;
         super::bgr_from_rgb(&src, &mut dst)?;
 
         let s = src.as_slice();
@@ -621,9 +579,9 @@ mod tests {
             width: 7,
             height: 3,
         };
-        let src = Image::<u8, 3, _>::new(size, ramp_u8(7 * 3 * 3), CpuAllocator)?;
-        let mut bgr = Image::<u8, 3, _>::from_size_val(size, 0, CpuAllocator)?;
-        let mut back = Image::<u8, 3, _>::from_size_val(size, 0, CpuAllocator)?;
+        let src = Image::<u8, 3>::new(size, ramp_u8(7 * 3 * 3), host_alloc())?;
+        let mut bgr = Image::<u8, 3>::from_size_val(size, 0, host_alloc())?;
+        let mut back = Image::<u8, 3>::from_size_val(size, 0, host_alloc())?;
         super::bgr_from_rgb(&src, &mut bgr)?;
         super::bgr_from_rgb(&bgr, &mut back)?;
         assert_eq!(src.as_slice(), back.as_slice());
@@ -636,9 +594,9 @@ mod tests {
             width: 7,
             height: 3,
         };
-        let src = Image::<f32, 3, _>::new(size, ramp_f32(7 * 3 * 3), CpuAllocator)?;
-        let mut bgr = Image::<f32, 3, _>::from_size_val(size, 0.0, CpuAllocator)?;
-        let mut back = Image::<f32, 3, _>::from_size_val(size, 0.0, CpuAllocator)?;
+        let src = Image::<f32, 3>::new(size, ramp_f32(7 * 3 * 3), host_alloc())?;
+        let mut bgr = Image::<f32, 3>::from_size_val(size, 0.0, host_alloc())?;
+        let mut back = Image::<f32, 3>::from_size_val(size, 0.0, host_alloc())?;
         super::bgr_from_rgb(&src, &mut bgr)?;
         super::bgr_from_rgb(&bgr, &mut back)?;
         assert_eq!(src.as_slice(), back.as_slice());
@@ -651,8 +609,8 @@ mod tests {
             width: 7,
             height: 3,
         };
-        let src = Image::<u8, 3, _>::new(size, ramp_u8(7 * 3 * 3), CpuAllocator)?;
-        let mut dst = Image::<u8, 4, _>::from_size_val(size, 0, CpuAllocator)?;
+        let src = Image::<u8, 3>::new(size, ramp_u8(7 * 3 * 3), host_alloc())?;
+        let mut dst = Image::<u8, 4>::from_size_val(size, 0, host_alloc())?;
         super::rgba_from_rgb(&src, &mut dst)?;
 
         let s = src.as_slice();
@@ -667,15 +625,15 @@ mod tests {
 
     #[test]
     fn rgba_from_rgb_u8_known_value() -> Result<(), ImageError> {
-        let src = Image::<u8, 3, _>::new(
+        let src = Image::<u8, 3>::new(
             ImageSize {
                 width: 2,
                 height: 1,
             },
             vec![1, 2, 3, 4, 5, 6],
-            CpuAllocator,
+            host_alloc(),
         )?;
-        let mut dst = Image::<u8, 4, _>::from_size_val(src.size(), 0, CpuAllocator)?;
+        let mut dst = Image::<u8, 4>::from_size_val(src.size(), 0, host_alloc())?;
         super::rgba_from_rgb(&src, &mut dst)?;
         assert_eq!(dst.as_slice(), &[1, 2, 3, 255, 4, 5, 6, 255]);
         Ok(())
@@ -687,8 +645,8 @@ mod tests {
             width: 7,
             height: 3,
         };
-        let src = Image::<f32, 3, _>::new(size, ramp_f32(7 * 3 * 3), CpuAllocator)?;
-        let mut dst = Image::<f32, 4, _>::from_size_val(size, 0.0, CpuAllocator)?;
+        let src = Image::<f32, 3>::new(size, ramp_f32(7 * 3 * 3), host_alloc())?;
+        let mut dst = Image::<f32, 4>::from_size_val(size, 0.0, host_alloc())?;
         super::rgba_from_rgb(&src, &mut dst)?;
 
         let s = src.as_slice();
@@ -707,8 +665,8 @@ mod tests {
             width: 7,
             height: 3,
         };
-        let src = Image::<u8, 3, _>::new(size, ramp_u8(7 * 3 * 3), CpuAllocator)?;
-        let mut dst = Image::<u8, 4, _>::from_size_val(size, 0, CpuAllocator)?;
+        let src = Image::<u8, 3>::new(size, ramp_u8(7 * 3 * 3), host_alloc())?;
+        let mut dst = Image::<u8, 4>::from_size_val(size, 0, host_alloc())?;
         super::bgra_from_rgb(&src, &mut dst)?;
 
         let s = src.as_slice();
@@ -723,15 +681,15 @@ mod tests {
 
     #[test]
     fn bgra_from_rgb_u8_known_value() -> Result<(), ImageError> {
-        let src = Image::<u8, 3, _>::new(
+        let src = Image::<u8, 3>::new(
             ImageSize {
                 width: 2,
                 height: 1,
             },
             vec![1, 2, 3, 4, 5, 6],
-            CpuAllocator,
+            host_alloc(),
         )?;
-        let mut dst = Image::<u8, 4, _>::from_size_val(src.size(), 0, CpuAllocator)?;
+        let mut dst = Image::<u8, 4>::from_size_val(src.size(), 0, host_alloc())?;
         super::bgra_from_rgb(&src, &mut dst)?;
         assert_eq!(dst.as_slice(), &[3, 2, 1, 255, 6, 5, 4, 255]);
         Ok(())
@@ -743,8 +701,8 @@ mod tests {
             width: 7,
             height: 3,
         };
-        let src = Image::<f32, 3, _>::new(size, ramp_f32(7 * 3 * 3), CpuAllocator)?;
-        let mut dst = Image::<f32, 4, _>::from_size_val(size, 0.0, CpuAllocator)?;
+        let src = Image::<f32, 3>::new(size, ramp_f32(7 * 3 * 3), host_alloc())?;
+        let mut dst = Image::<f32, 4>::from_size_val(size, 0.0, host_alloc())?;
         super::bgra_from_rgb(&src, &mut dst)?;
 
         let s = src.as_slice();

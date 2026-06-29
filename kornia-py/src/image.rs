@@ -2,10 +2,7 @@ use numpy::{PyArray, PyArray3, PyArrayMethods, PyUntypedArrayMethods};
 use pyo3::PyTypeInfo;
 
 use crate::backing;
-use kornia_image::{
-    allocator::{CpuAllocator, ForeignAllocator},
-    ColorSpace, Image, ImageError, ImageLayout, ImageSize, PixelFormat,
-};
+use kornia_image::{ColorSpace, Image, ImageError, ImageLayout, ImageSize, PixelFormat};
 use pyo3::prelude::*;
 
 pub type PyImage = Py<PyArray3<u8>>;
@@ -230,7 +227,7 @@ pub(crate) fn to_pyerr(e: impl std::fmt::Display) -> PyErr {
 pub(crate) unsafe fn numpy_as_image<const C: usize>(
     py: Python<'_>,
     image: &Py<PyArray3<u8>>,
-) -> PyResult<Image<u8, C, ForeignAllocator>> {
+) -> PyResult<Image<u8, C>> {
     let arr = image.bind(py);
     if !arr.is_c_contiguous() {
         return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
@@ -249,8 +246,13 @@ pub(crate) unsafe fn numpy_as_image<const C: usize>(
         width: w,
         height: h,
     };
-    Image::from_raw_parts(size, arr.data() as *const u8, h * w * C, ForeignAllocator)
-        .map_err(to_pyerr)
+    Image::from_raw_parts(
+        size,
+        arr.data() as *const u8,
+        h * w * C,
+        kornia_image::allocator::host_alloc(),
+    )
+    .map_err(to_pyerr)
 }
 
 /// Zero-copy wrap a numpy u16 array as a Rust Image for reading.
@@ -259,7 +261,7 @@ pub(crate) unsafe fn numpy_as_image<const C: usize>(
 pub(crate) unsafe fn numpy_as_image_u16<const C: usize>(
     py: Python<'_>,
     image: &Py<PyArray3<u16>>,
-) -> PyResult<Image<u16, C, ForeignAllocator>> {
+) -> PyResult<Image<u16, C>> {
     let arr = image.bind(py);
     if !arr.is_c_contiguous() {
         return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
@@ -279,8 +281,13 @@ pub(crate) unsafe fn numpy_as_image_u16<const C: usize>(
         height: h,
     };
     let len_bytes = h * w * C * std::mem::size_of::<u16>();
-    Image::from_raw_parts(size, arr.data() as *const u16, len_bytes, ForeignAllocator)
-        .map_err(to_pyerr)
+    Image::from_raw_parts(
+        size,
+        arr.data() as *const u16,
+        len_bytes,
+        kornia_image::allocator::host_alloc(),
+    )
+    .map_err(to_pyerr)
 }
 
 /// Zero-copy wrap a numpy f32 array as a Rust Image for reading.
@@ -289,7 +296,7 @@ pub(crate) unsafe fn numpy_as_image_u16<const C: usize>(
 pub(crate) unsafe fn numpy_as_image_f32<const C: usize>(
     py: Python<'_>,
     image: &Py<PyArray3<f32>>,
-) -> PyResult<Image<f32, C, ForeignAllocator>> {
+) -> PyResult<Image<f32, C>> {
     let arr = image.bind(py);
     if !arr.is_c_contiguous() {
         return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
@@ -309,11 +316,16 @@ pub(crate) unsafe fn numpy_as_image_f32<const C: usize>(
         height: h,
     };
     let len_bytes = h * w * C * std::mem::size_of::<f32>();
-    Image::from_raw_parts(size, arr.data() as *const f32, len_bytes, ForeignAllocator)
-        .map_err(to_pyerr)
+    Image::from_raw_parts(
+        size,
+        arr.data() as *const f32,
+        len_bytes,
+        kornia_image::allocator::host_alloc(),
+    )
+    .map_err(to_pyerr)
 }
 
-pub(crate) type AllocOutput<T, const C: usize, P> = (Image<T, C, ForeignAllocator>, Py<P>);
+pub(crate) type AllocOutput<T, const C: usize, P> = (Image<T, C>, Py<P>);
 
 pub(crate) unsafe fn alloc_output_pyarray<const C: usize>(
     py: Python<'_>,
@@ -321,8 +333,13 @@ pub(crate) unsafe fn alloc_output_pyarray<const C: usize>(
 ) -> PyResult<AllocOutput<u8, C, PyArray3<u8>>> {
     let arr = PyArray::<u8, _>::new(py, [size.height, size.width, C], false);
     let len = size.height * size.width * C;
-    let img = Image::from_raw_parts(size, arr.data() as *const u8, len, ForeignAllocator)
-        .map_err(to_pyerr)?;
+    let img = Image::from_raw_parts(
+        size,
+        arr.data() as *const u8,
+        len,
+        kornia_image::allocator::host_alloc(),
+    )
+    .map_err(to_pyerr)?;
     Ok((img, arr.unbind()))
 }
 
@@ -332,8 +349,13 @@ pub(crate) unsafe fn alloc_output_pyarray_u16<const C: usize>(
 ) -> PyResult<AllocOutput<u16, C, PyArray3<u16>>> {
     let arr = PyArray::<u16, _>::new(py, [size.height, size.width, C], false);
     let len = size.height * size.width * C * std::mem::size_of::<u16>();
-    let img = Image::from_raw_parts(size, arr.data() as *const u16, len, ForeignAllocator)
-        .map_err(to_pyerr)?;
+    let img = Image::from_raw_parts(
+        size,
+        arr.data() as *const u16,
+        len,
+        kornia_image::allocator::host_alloc(),
+    )
+    .map_err(to_pyerr)?;
     Ok((img, arr.unbind()))
 }
 
@@ -343,21 +365,26 @@ pub(crate) unsafe fn alloc_output_pyarray_f32<const C: usize>(
 ) -> PyResult<AllocOutput<f32, C, PyArray3<f32>>> {
     let arr = PyArray::<f32, _>::new(py, [size.height, size.width, C], false);
     let len = size.height * size.width * C * std::mem::size_of::<f32>();
-    let img = Image::from_raw_parts(size, arr.data() as *const f32, len, ForeignAllocator)
-        .map_err(to_pyerr)?;
+    let img = Image::from_raw_parts(
+        size,
+        arr.data() as *const f32,
+        len,
+        kornia_image::allocator::host_alloc(),
+    )
+    .map_err(to_pyerr)?;
     Ok((img, arr.unbind()))
 }
 
-/// Copy numpy u8 data into a CpuAllocator f32 Image (for Category B ops needing f32).
+/// Copy numpy u8 data into a kornia_image::allocator::host_alloc() f32 Image (for Category B ops needing f32).
 ///
 /// Uses zero-copy read via numpy_as_image, then a single u8→f32 collect.
 pub(crate) fn numpy_to_f32_image<const C: usize>(
     py: Python<'_>,
     image: &Py<PyArray3<u8>>,
-) -> PyResult<Image<f32, C, CpuAllocator>> {
+) -> PyResult<Image<f32, C>> {
     let src = unsafe { numpy_as_image::<C>(py, image)? };
     let f32_data: Vec<f32> = src.as_slice().iter().map(|&v| v as f32).collect();
-    Image::new(src.size(), f32_data, CpuAllocator).map_err(to_pyerr)
+    Image::new(src.size(), f32_data, kornia_image::allocator::host_alloc()).map_err(to_pyerr)
 }
 
 /// Get raw u8 data and dimensions from a PyArray3.
@@ -1253,7 +1280,7 @@ impl PyImageApi {
     /// The returned Image borrows self's buffer; self must outlive it.
     pub(crate) unsafe fn borrow_self<T: Clone, const C: usize>(
         &self,
-    ) -> Result<Image<T, C, ForeignAllocator>, ImageError> {
+    ) -> Result<Image<T, C>, ImageError> {
         unsafe { backing::borrow_image::<T, C>(&self.backing, self.shape) }
     }
 
@@ -1266,15 +1293,15 @@ impl PyImageApi {
         f: F,
     ) -> PyResult<Self>
     where
-        F: FnOnce(&mut Image<u8, CO, ForeignAllocator>) -> Result<(), ImageError> + Send,
+        F: FnOnce(&mut Image<u8, CO>) -> Result<(), ImageError> + Send,
     {
         let (mut bytes, size) = backing::alloc_output_owned::<CO>(backing::Dtype::U8, out_size)?;
         let mut dst = unsafe {
-            Image::<u8, CO, ForeignAllocator>::from_raw_parts(
+            Image::<u8, CO>::from_raw_parts(
                 size,
                 bytes.as_mut_ptr(),
                 size.width * size.height * CO * std::mem::size_of::<u8>(),
-                ForeignAllocator,
+                kornia_image::allocator::host_alloc(),
             )
             .map_err(to_pyerr)?
         };
@@ -1296,15 +1323,15 @@ impl PyImageApi {
         f: F,
     ) -> PyResult<Self>
     where
-        F: FnOnce(&mut Image<f32, CO, ForeignAllocator>) -> Result<(), ImageError> + Send,
+        F: FnOnce(&mut Image<f32, CO>) -> Result<(), ImageError> + Send,
     {
         let (mut bytes, size) = backing::alloc_output_owned::<CO>(backing::Dtype::F32, out_size)?;
         let mut dst = unsafe {
-            Image::<f32, CO, ForeignAllocator>::from_raw_parts(
+            Image::<f32, CO>::from_raw_parts(
                 size,
                 bytes.as_mut_ptr() as *const f32,
                 size.width * size.height * CO * std::mem::size_of::<f32>(),
-                ForeignAllocator,
+                kornia_image::allocator::host_alloc(),
             )
             .map_err(to_pyerr)?
         };
@@ -1461,11 +1488,11 @@ impl PyImageApi {
             // buffer is wrapped/read, so the uninitialized alloc is fully covered.
             let mut bytes = backing::AlignedBytes::uninit(n);
             let mut dst = unsafe {
-                Image::<u8, 3, ForeignAllocator>::from_raw_parts(
+                Image::<u8, 3>::from_raw_parts(
                     out_size,
                     bytes.as_mut_ptr(),
                     n,
-                    ForeignAllocator,
+                    kornia_image::allocator::host_alloc(),
                 )
                 .map_err(to_pyerr)?
             };

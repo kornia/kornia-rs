@@ -3,7 +3,7 @@ use kornia_imgproc::calibration::{
     distortion::{distort_point_polynomial, undistort_points, PolynomialDistortion, TermCriteria},
     CameraIntrinsic,
 };
-use kornia_tensor::{CpuAllocator, Tensor};
+use kornia_tensor::{host_alloc, Tensor};
 use rand::RngExt;
 use std::hint::black_box;
 
@@ -25,7 +25,7 @@ fn distort_and_project(
     pts: &[(f64, f64)],
     intr: &CameraIntrinsic,
     dist: &PolynomialDistortion,
-) -> Tensor<f64, 2, CpuAllocator> {
+) -> Tensor<f64, 2> {
     let mut data = Vec::with_capacity(pts.len() * 2);
 
     for &(x, y) in pts {
@@ -34,7 +34,7 @@ fn distort_and_project(
         data.push(v);
     }
 
-    Tensor::from_shape_vec([pts.len(), 2], data, CpuAllocator).unwrap()
+    Tensor::from_shape_vec([pts.len(), 2], data, host_alloc()).unwrap()
 }
 
 fn bench_rust(c: &mut Criterion) {
@@ -63,7 +63,7 @@ fn bench_rust(c: &mut Criterion) {
 
     let pts = gen_pixel_points(10000, 640.0, 480.0);
     let src = distort_and_project(&pts, &intr, &dist);
-    let mut dst = Tensor::<f64, 2, _>::zeros([10000, 2], CpuAllocator);
+    let mut dst = Tensor::<f64, 2>::zeros([10000, 2], host_alloc());
 
     c.bench_function("undistort_rust", |b| {
         b.iter(|| {

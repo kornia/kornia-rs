@@ -17,10 +17,7 @@
 /// Compression ratio: ~3–5× over raw u16 for typical depth frames. Zeros (background /
 /// missing depth) compress to a single nibble (0x00) — very efficient for sparse scenes.
 use crate::error::IoError;
-use kornia_image::{
-    allocator::{CpuAllocator, ImageAllocator},
-    Image, ImageSize,
-};
+use kornia_image::{Image, ImageSize};
 use std::{fs, path::Path};
 
 const MAGIC: &[u8; 4] = b"RVL1";
@@ -255,17 +252,17 @@ unsafe fn encode_pixels_avx2(pixels: &[u16], writer: &mut NibbleWriter) -> usize
 ///
 /// ```rust
 /// use kornia_io::rvl::{encode_image_rvl, decode_image_rvl};
-/// use kornia_image::{Image, ImageSize, allocator::CpuAllocator};
+/// use kornia_image::{Image, ImageSize};
 ///
 /// let size = ImageSize { width: 4, height: 2 };
 /// let data = vec![1000u16, 1001, 1002, 1003, 0, 500, 500, 500];
-/// let img = Image::<u16, 1, _>::new(size, data, CpuAllocator).unwrap();
+/// let img = Image::<u16, 1>::new(size, data, kornia_tensor::host_alloc()).unwrap();
 ///
 /// let compressed = encode_image_rvl(&img).unwrap();
 /// let decoded = decode_image_rvl(&compressed).unwrap();
 /// assert_eq!(decoded.as_slice(), img.as_slice());
 /// ```
-pub fn encode_image_rvl<A: ImageAllocator>(image: &Image<u16, 1, A>) -> Result<Vec<u8>, IoError> {
+pub fn encode_image_rvl(image: &Image<u16, 1>) -> Result<Vec<u8>, IoError> {
     let pixels = image.as_slice();
     let w = image.width() as u32;
     let h = image.height() as u32;
@@ -289,7 +286,7 @@ pub fn encode_image_rvl<A: ImageAllocator>(image: &Image<u16, 1, A>) -> Result<V
 ///
 /// Reads the 12-byte header produced by [`encode_image_rvl`] to recover
 /// the image dimensions, then decodes the variable-length nibble stream.
-pub fn decode_image_rvl(src: &[u8]) -> Result<Image<u16, 1, CpuAllocator>, IoError> {
+pub fn decode_image_rvl(src: &[u8]) -> Result<Image<u16, 1>, IoError> {
     if src.len() < HEADER_LEN {
         return Err(IoError::RvlDecodeError(
             "buffer too short for 12-byte RVL header".into(),
@@ -321,21 +318,18 @@ pub fn decode_image_rvl(src: &[u8]) -> Result<Image<u16, 1, CpuAllocator>, IoErr
     }
 
     let size = ImageSize { width, height };
-    Ok(Image::new(size, pixels, CpuAllocator)?)
+    Ok(Image::new(size, pixels, kornia_tensor::host_alloc())?)
 }
 
 /// Writes a single-channel 16-bit depth image to an RVL file.
-pub fn write_image_rvl<A: ImageAllocator>(
-    file_path: impl AsRef<Path>,
-    image: &Image<u16, 1, A>,
-) -> Result<(), IoError> {
+pub fn write_image_rvl(file_path: impl AsRef<Path>, image: &Image<u16, 1>) -> Result<(), IoError> {
     let bytes = encode_image_rvl(image)?;
     fs::write(file_path, bytes)?;
     Ok(())
 }
 
 /// Reads an RVL file into a single-channel 16-bit depth image.
-pub fn read_image_rvl(file_path: impl AsRef<Path>) -> Result<Image<u16, 1, CpuAllocator>, IoError> {
+pub fn read_image_rvl(file_path: impl AsRef<Path>) -> Result<Image<u16, 1>, IoError> {
     let bytes = fs::read(file_path)?;
     decode_image_rvl(&bytes)
 }
@@ -346,14 +340,14 @@ pub fn read_image_rvl(file_path: impl AsRef<Path>) -> Result<Image<u16, 1, CpuAl
 mod tests {
     use super::*;
 
-    fn make_image(data: Vec<u16>, w: usize, h: usize) -> Image<u16, 1, CpuAllocator> {
+    fn make_image(data: Vec<u16>, w: usize, h: usize) -> Image<u16, 1> {
         Image::new(
             ImageSize {
                 width: w,
                 height: h,
             },
             data,
-            CpuAllocator,
+            kornia_tensor::host_alloc(),
         )
         .unwrap()
     }

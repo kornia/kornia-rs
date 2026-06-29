@@ -4,7 +4,8 @@ use std::ptr::NonNull;
 
 use dlpack_rs::ffi::{DLDataType, K_DL_FLOAT, K_DL_UINT};
 use dlpack_rs::safe::{dtype_f32, dtype_u16, dtype_u8};
-use kornia_image::{allocator::ForeignAllocator, Image, ImageError, ImageSize};
+use kornia_image::allocator::host_alloc;
+use kornia_image::{Image, ImageError, ImageSize};
 use pyo3::prelude::*;
 
 const ALIGN: usize = 64;
@@ -201,7 +202,7 @@ impl Backing {
 pub unsafe fn borrow_image<T: Clone, const C: usize>(
     b: &Backing,
     shape: [usize; 3],
-) -> Result<Image<T, C, ForeignAllocator>, ImageError> {
+) -> Result<Image<T, C>, ImageError> {
     let (h, w, c) = (shape[0], shape[1], shape[2]);
     if c != C {
         return Err(ImageError::InvalidChannelShape(c, C));
@@ -213,7 +214,7 @@ pub unsafe fn borrow_image<T: Clone, const C: usize>(
         },
         b.data_ptr() as *const T,
         h * w * c * std::mem::size_of::<T>(),
-        ForeignAllocator,
+        host_alloc(),
     )
 }
 

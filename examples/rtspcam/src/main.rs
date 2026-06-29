@@ -1,9 +1,9 @@
 use argh::FromArgs;
 use kornia::{
+    image::allocator::host_alloc,
     image::{ops, Image},
     imgproc,
     io::{fps_counter::FpsCounter, stream::RTSPCameraConfig},
-    tensor::CpuAllocator,
 };
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -88,11 +88,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // initialize images lazily
         let img_f32_ref = img_f32.get_or_insert_with(|| {
-            Image::<f32, 3, _>::from_size_val(img.size(), 0.0, CpuAllocator)
+            Image::<f32, 3>::from_size_val(img.size(), 0.0, kornia::image::allocator::host_alloc())
                 .expect("Failed to create image")
         });
         let gray_ref = gray.get_or_insert_with(|| {
-            Image::<f32, 1, _>::from_size_val(img.size(), 0.0, CpuAllocator)
+            Image::<f32, 1>::from_size_val(img.size(), 0.0, kornia::image::allocator::host_alloc())
                 .expect("Failed to create image")
         });
 

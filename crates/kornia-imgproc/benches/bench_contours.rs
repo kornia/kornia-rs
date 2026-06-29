@@ -1,8 +1,9 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
+use kornia_image::{Image, ImageSize};
 use kornia_imgproc::contours::{
     find_contours, ContourApproximationMode, FindContoursExecutor, RetrievalMode,
 };
+use kornia_tensor::host_alloc;
 use opencv::{core, imgproc, prelude::*};
 
 /// Filled square with a margin of size/8 on each side.
@@ -48,8 +49,8 @@ fn make_noise(width: usize, height: usize, seed: u64) -> Vec<u8> {
         .collect()
 }
 
-fn kornia_image(width: usize, height: usize, data: Vec<u8>) -> Image<u8, 1, CpuAllocator> {
-    Image::<u8, 1, _>::new(ImageSize { width, height }, data, CpuAllocator).expect("kornia image")
+fn kornia_image(width: usize, height: usize, data: Vec<u8>) -> Image<u8, 1> {
+    Image::<u8, 1>::new(ImageSize { width, height }, data, host_alloc()).expect("kornia image")
 }
 
 /// OpenCV expects 0/255 for binary images, not 0/1.
@@ -71,7 +72,7 @@ fn opencv_mat(width: usize, height: usize, data: &[u8]) -> core::Mat {
 fn register_variants(
     group: &mut criterion::BenchmarkGroup<criterion::measurement::WallTime>,
     parameter_string: &str,
-    kornia_img: &Image<u8, 1, CpuAllocator>,
+    kornia_img: &Image<u8, 1>,
     cv_mat: &core::Mat,
 ) {
     group.bench_with_input(

@@ -1,4 +1,4 @@
-use crate::{allocator::ImageAllocator, Image, ImageError, ImageSize};
+use crate::{Image, ImageError, ImageSize};
 use arrow::{
     array::{ArrayRef, BinaryArray, StructArray, UInt32Array},
     datatypes::{DataType, Field},
@@ -23,8 +23,6 @@ impl TensorAllocator for ArrowAllocator {
     }
 }
 
-impl ImageAllocator for ArrowAllocator {}
-
 /// Trait for converting to Arrow arrays
 pub trait IntoArrow {
     /// Convert the image to an Arrow array including the metadata
@@ -38,7 +36,7 @@ pub trait TryFromArrow: Sized {
 }
 
 /// Implementation of IntoArrow for Image
-impl<const C: usize, A: ImageAllocator> IntoArrow for Image<u8, C, A> {
+impl<const C: usize> IntoArrow for Image<u8, C> {
     fn into_arrow(self) -> arrow::array::ArrayRef {
         let width = self.width() as u32;
         let height = self.height() as u32;
@@ -66,7 +64,7 @@ impl<const C: usize, A: ImageAllocator> IntoArrow for Image<u8, C, A> {
     }
 }
 
-impl<const C: usize> TryFromArrow for Image<u8, C, ArrowAllocator> {
+impl<const C: usize> TryFromArrow for Image<u8, C> {
     fn try_from_arrow(array: arrow::array::ArrayRef) -> Result<Self, ImageError> {
         let struct_array = array
             .as_any()
@@ -111,7 +109,9 @@ impl<const C: usize> TryFromArrow for Image<u8, C, ArrowAllocator> {
         let data_ptr = buffer_owned.as_ptr();
         let data_len = buffer_owned.len();
 
-        let alloc = ArrowAllocator(buffer_owned);
+        use kornia_tensor::AllocHandle;
+        use std::sync::Arc;
+        let alloc: AllocHandle = Arc::new(ArrowAllocator(buffer_owned));
 
         let image = unsafe {
             Image::from_raw_parts(
@@ -132,26 +132,26 @@ impl<const C: usize> TryFromArrow for Image<u8, C, ArrowAllocator> {
 #[cfg(test)]
 mod tests {
     use crate::{
-        allocator::CpuAllocator,
         arrow::{IntoArrow, TryFromArrow},
         image::Image,
         ImageError, ImageSize,
     };
+    use kornia_tensor::host_alloc;
 
     #[test]
     fn test_image_into_arrow() -> Result<(), ImageError> {
-        let image = Image::<u8, 1, CpuAllocator>::new(
+        let image = Image::<u8, 1>::new(
             ImageSize {
                 width: 2,
                 height: 3,
             },
             vec![0, 1, 2, 3, 4, 5],
-            CpuAllocator,
+            host_alloc(),
         )?;
 
         let arrow_array = image.into_arrow();
 
-        let image_arr = Image::<u8, 1, _>::try_from_arrow(arrow_array.clone())?;
+        let image_arr = Image::<u8, 1>::try_from_arrow(arrow_array.clone())?;
 
         assert_eq!(image_arr.width(), 2);
         assert_eq!(image_arr.height(), 3);

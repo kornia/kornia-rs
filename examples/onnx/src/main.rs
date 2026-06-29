@@ -1,5 +1,5 @@
 use argh::FromArgs;
-use kornia_tensor::{CpuAllocator, Tensor};
+use kornia_tensor::Tensor;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -59,7 +59,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .commit_from_file(&args.onnx_model_path)?;
 
     // cast and scale the image to f32
-    let mut image_hwc_f32 = Image::from_size_val(image.size(), 0.0f32, CpuAllocator)?;
+    let mut image_hwc_f32 =
+        Image::from_size_val(image.size(), 0.0f32, kornia_tensor::host_alloc())?;
     kornia::image::ops::cast_and_scale(&image, &mut image_hwc_f32, 1.0 / 255.0)?;
 
     // convert to HWC -> CHW
@@ -74,7 +75,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             image_chw.shape[2],
         ],
         image_chw.into_vec(),
-        CpuAllocator,
+        kornia_tensor::host_alloc(),
     )?;
 
     // make the ort tensor
@@ -114,14 +115,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (out_shape, out_ort) = outputs["output"].try_extract_tensor::<f32>()?;
     println!("out_shape: {out_shape:?}");
 
-    let out_tensor = Tensor::<f32, 3, CpuAllocator>::from_shape_vec(
+    let out_tensor = Tensor::<f32, 3>::from_shape_vec(
         [
             out_shape[0] as usize,
             out_shape[1] as usize,
             out_shape[2] as usize,
         ],
         out_ort.to_vec(),
-        CpuAllocator,
+        kornia_tensor::host_alloc(),
     )?;
 
     println!("out_tensor: {:?}", out_tensor.shape);

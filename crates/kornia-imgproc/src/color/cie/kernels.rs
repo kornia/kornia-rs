@@ -343,32 +343,36 @@ fn rgb_from_luv_px(l: f32, u: f32, v: f32) -> (f32, f32, f32) {
 #[cfg(target_arch = "aarch64")]
 #[inline]
 unsafe fn srgb_to_linear_v(x: float32x4_t) -> float32x4_t {
-    let x = vmaxq_f32(x, vdupq_n_f32(0.0));
-    let lin = vmulq_f32(x, vdupq_n_f32(transfer::SRGB_INV_1292));
-    let t = vmulq_f32(
-        vaddq_f32(x, vdupq_n_f32(transfer::SRGB_A)),
-        vdupq_n_f32(transfer::SRGB_INV_1055),
-    );
-    let powed = transfer::pow_f32x4(t, vdupq_n_f32(transfer::SRGB_GAMMA));
-    let mask = vcleq_f32(x, vdupq_n_f32(transfer::SRGB_THRESH));
-    vbslq_f32(mask, lin, powed)
+    unsafe {
+        let x = vmaxq_f32(x, vdupq_n_f32(0.0));
+        let lin = vmulq_f32(x, vdupq_n_f32(transfer::SRGB_INV_1292));
+        let t = vmulq_f32(
+            vaddq_f32(x, vdupq_n_f32(transfer::SRGB_A)),
+            vdupq_n_f32(transfer::SRGB_INV_1055),
+        );
+        let powed = transfer::pow_f32x4(t, vdupq_n_f32(transfer::SRGB_GAMMA));
+        let mask = vcleq_f32(x, vdupq_n_f32(transfer::SRGB_THRESH));
+        vbslq_f32(mask, lin, powed)
+    }
 }
 
 /// NEON linear→sRGB on a vector (per channel).
 #[cfg(target_arch = "aarch64")]
 #[inline]
 unsafe fn linear_to_srgb_v(l: float32x4_t) -> float32x4_t {
-    let l = vmaxq_f32(l, vdupq_n_f32(0.0));
-    let lin = vmulq_f32(l, vdupq_n_f32(transfer::SRGB_1292));
-    let powed = vsubq_f32(
-        vmulq_f32(
-            vdupq_n_f32(transfer::SRGB_1055),
-            transfer::pow_f32x4(l, vdupq_n_f32(transfer::SRGB_INV_GAMMA)),
-        ),
-        vdupq_n_f32(transfer::SRGB_A),
-    );
-    let mask = vcleq_f32(l, vdupq_n_f32(transfer::SRGB_INV_THRESH));
-    vbslq_f32(mask, lin, powed)
+    unsafe {
+        let l = vmaxq_f32(l, vdupq_n_f32(0.0));
+        let lin = vmulq_f32(l, vdupq_n_f32(transfer::SRGB_1292));
+        let powed = vsubq_f32(
+            vmulq_f32(
+                vdupq_n_f32(transfer::SRGB_1055),
+                transfer::pow_f32x4(l, vdupq_n_f32(transfer::SRGB_INV_GAMMA)),
+            ),
+            vdupq_n_f32(transfer::SRGB_A),
+        );
+        let mask = vcleq_f32(l, vdupq_n_f32(transfer::SRGB_INV_THRESH));
+        vbslq_f32(mask, lin, powed)
+    }
 }
 
 /// NEON 3×3 matrix-vector (row-major `m`) on deinterleaved channel vectors.
@@ -380,48 +384,54 @@ unsafe fn matvec_v(
     b: float32x4_t,
     c: float32x4_t,
 ) -> (float32x4_t, float32x4_t, float32x4_t) {
-    let o0 = vfmaq_f32(
-        vfmaq_f32(vmulq_f32(a, vdupq_n_f32(m[0])), b, vdupq_n_f32(m[1])),
-        c,
-        vdupq_n_f32(m[2]),
-    );
-    let o1 = vfmaq_f32(
-        vfmaq_f32(vmulq_f32(a, vdupq_n_f32(m[3])), b, vdupq_n_f32(m[4])),
-        c,
-        vdupq_n_f32(m[5]),
-    );
-    let o2 = vfmaq_f32(
-        vfmaq_f32(vmulq_f32(a, vdupq_n_f32(m[6])), b, vdupq_n_f32(m[7])),
-        c,
-        vdupq_n_f32(m[8]),
-    );
-    (o0, o1, o2)
+    unsafe {
+        let o0 = vfmaq_f32(
+            vfmaq_f32(vmulq_f32(a, vdupq_n_f32(m[0])), b, vdupq_n_f32(m[1])),
+            c,
+            vdupq_n_f32(m[2]),
+        );
+        let o1 = vfmaq_f32(
+            vfmaq_f32(vmulq_f32(a, vdupq_n_f32(m[3])), b, vdupq_n_f32(m[4])),
+            c,
+            vdupq_n_f32(m[5]),
+        );
+        let o2 = vfmaq_f32(
+            vfmaq_f32(vmulq_f32(a, vdupq_n_f32(m[6])), b, vdupq_n_f32(m[7])),
+            c,
+            vdupq_n_f32(m[8]),
+        );
+        (o0, o1, o2)
+    }
 }
 
 /// NEON Lab `f(t)`: branchless cbrt vs linear segment.
 #[cfg(target_arch = "aarch64")]
 #[inline]
 unsafe fn lab_f_v(t: float32x4_t) -> float32x4_t {
-    let cube = nonlinear::cbrt_f32x4(t);
-    let lin = vaddq_f32(
-        vmulq_f32(t, vdupq_n_f32(LAB_F_SLOPE)),
-        vdupq_n_f32(LAB_F_OFFSET),
-    );
-    let mask = vcgtq_f32(t, vdupq_n_f32(LAB_DELTA));
-    vbslq_f32(mask, cube, lin)
+    unsafe {
+        let cube = nonlinear::cbrt_f32x4(t);
+        let lin = vaddq_f32(
+            vmulq_f32(t, vdupq_n_f32(LAB_F_SLOPE)),
+            vdupq_n_f32(LAB_F_OFFSET),
+        );
+        let mask = vcgtq_f32(t, vdupq_n_f32(LAB_DELTA));
+        vbslq_f32(mask, cube, lin)
+    }
 }
 
 /// NEON Lab `f^{-1}(f)`: branchless `f^3` vs linear segment.
 #[cfg(target_arch = "aarch64")]
 #[inline]
 unsafe fn lab_finv_v(f: float32x4_t) -> float32x4_t {
-    let cube = vmulq_f32(vmulq_f32(f, f), f);
-    let lin = vmulq_f32(
-        vdupq_n_f32(LAB_FINV_SLOPE),
-        vsubq_f32(f, vdupq_n_f32(LAB_F_OFFSET)),
-    );
-    let mask = vcgtq_f32(f, vdupq_n_f32(LAB_FINV_THRESH));
-    vbslq_f32(mask, cube, lin)
+    unsafe {
+        let cube = vmulq_f32(vmulq_f32(f, f), f);
+        let lin = vmulq_f32(
+            vdupq_n_f32(LAB_FINV_SLOPE),
+            vsubq_f32(f, vdupq_n_f32(LAB_F_OFFSET)),
+        );
+        let mask = vcgtq_f32(f, vdupq_n_f32(LAB_FINV_THRESH));
+        vbslq_f32(mask, cube, lin)
+    }
 }
 
 // ===== generic NEON driver ==========================================================
@@ -439,33 +449,35 @@ unsafe fn neon_drive(
     f: impl Fn(float32x4x3_t) -> float32x4x3_t,
     scalar_px: impl Fn(f32, f32, f32) -> (f32, f32, f32),
 ) {
-    let sp = src.as_ptr();
-    let dp = dst.as_mut_ptr();
-    let mut i = 0usize;
-    let bulk8 = npixels & !7;
-    while i < bulk8 {
-        // Two independent loads/transforms — no data dependency between them, so the
-        // out-of-order core overlaps the two pow/cbrt chains.
-        let p0 = vld3q_f32(sp.add(i * 3));
-        let p1 = vld3q_f32(sp.add((i + 4) * 3));
-        let o0 = f(p0);
-        let o1 = f(p1);
-        vst3q_f32(dp.add(i * 3), o0);
-        vst3q_f32(dp.add((i + 4) * 3), o1);
-        i += 8;
-    }
-    if i + 4 <= npixels {
-        let p = vld3q_f32(sp.add(i * 3));
-        vst3q_f32(dp.add(i * 3), f(p));
-        i += 4;
-    }
-    while i < npixels {
-        let si = i * 3;
-        let (o0, o1, o2) = scalar_px(*sp.add(si), *sp.add(si + 1), *sp.add(si + 2));
-        *dp.add(si) = o0;
-        *dp.add(si + 1) = o1;
-        *dp.add(si + 2) = o2;
-        i += 1;
+    unsafe {
+        let sp = src.as_ptr();
+        let dp = dst.as_mut_ptr();
+        let mut i = 0usize;
+        let bulk8 = npixels & !7;
+        while i < bulk8 {
+            // Two independent loads/transforms — no data dependency between them, so the
+            // out-of-order core overlaps the two pow/cbrt chains.
+            let p0 = vld3q_f32(sp.add(i * 3));
+            let p1 = vld3q_f32(sp.add((i + 4) * 3));
+            let o0 = f(p0);
+            let o1 = f(p1);
+            vst3q_f32(dp.add(i * 3), o0);
+            vst3q_f32(dp.add((i + 4) * 3), o1);
+            i += 8;
+        }
+        if i + 4 <= npixels {
+            let p = vld3q_f32(sp.add(i * 3));
+            vst3q_f32(dp.add(i * 3), f(p));
+            i += 4;
+        }
+        while i < npixels {
+            let si = i * 3;
+            let (o0, o1, o2) = scalar_px(*sp.add(si), *sp.add(si + 1), *sp.add(si + 2));
+            *dp.add(si) = o0;
+            *dp.add(si + 1) = o1;
+            *dp.add(si + 2) = o2;
+            i += 1;
+        }
     }
 }
 
@@ -490,7 +502,7 @@ fn scalar_drive(
 // Each follows the 4-layer pattern: slice entry → strip dispatch → cfg leaf.
 
 macro_rules! cie_kernel {
-    ($name:ident, $neon_body:expr, $scalar_px:path) => {
+    ($name:ident, $neon_body:expr_2021, $scalar_px:path) => {
         pub fn $name(src: &[f32], dst: &mut [f32], npixels: usize) {
             debug_assert!(src.len() >= npixels * 3);
             debug_assert!(dst.len() >= npixels * 3);

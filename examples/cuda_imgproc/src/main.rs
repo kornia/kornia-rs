@@ -19,7 +19,7 @@ use kornia_image::color_spaces::Gray8;
 use kornia_image::image::ImageSize;
 use kornia_io::functional::read_image_any_rgb8;
 use kornia_io::png::write_image_png_gray8;
-use kornia_tensor::{zeros_cuda, CpuAllocator, CudaKernel, Tensor};
+use kornia_tensor::{zeros_cuda, CudaKernel, Tensor};
 
 // BT.601 RGB→gray CUDA kernel (u8 interleaved RGB → u8 planar gray).
 // `src` is the flat h*w*3 byte buffer; `dst` is the flat h*w gray buffer.
@@ -47,7 +47,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Loading image: {path}");
 
     // Load an RGB8 image from disk via kornia-io. `Rgb8` derefs/owns an
-    // `Image<u8, 3, CpuAllocator>`, which is a newtype over `Tensor3<u8, _>`.
+    // `Image<u8, 3>`, which is a newtype over `Tensor3<u8, _>`.
     let rgb = read_image_any_rgb8(&path)?;
     let (h, w) = (rgb.rows(), rgb.cols());
     let npix = h * w;
@@ -59,7 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── Eased device path: everything stays a kornia Tensor ──────────────────
     // Upload the RGB image directly — `to_cuda` copies the contiguous
     // h*w*3 bytes to a device tensor (no manual host flatten / Vec copy).
-    let dev_rgb: Tensor<u8, 3, _> = rgb.to_cuda(&stream)?;
+    let dev_rgb: Tensor<u8, 3> = rgb.to_cuda(&stream)?;
     // Allocate the device output as a zero-filled device tensor (no raw CudaSlice).
     let mut dev_gray = zeros_cuda::<u8, 1>([npix], &stream)?;
 
@@ -92,7 +92,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             height: h,
         },
         gray_slice.to_vec(),
-        CpuAllocator,
+        kornia_image::allocator::host_alloc(),
     )?;
     let out_path = "/tmp/cuda_imgproc_output.png";
     write_image_png_gray8(out_path, &gray_img)?;

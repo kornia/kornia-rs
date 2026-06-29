@@ -5,10 +5,7 @@ use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::paligemma::{Config, Model};
 use hf_hub::{api::sync::Api, Repo, RepoType};
-use kornia_image::{
-    allocator::{CpuAllocator, ImageAllocator},
-    Image,
-};
+use kornia_image::Image;
 use kornia_imgproc::{interpolation::InterpolationMode, resize::resize_fast_rgb};
 use model::{TextGeneration, TextGenerationConfig};
 use tokenizers::Tokenizer;
@@ -76,7 +73,7 @@ impl Default for PaligemmaConfig {
 /// NOTE: to run the model with Cuda, you need to pass the `--features cuda` flag to the `cargo run` command.
 pub struct Paligemma {
     pipeline: TextGeneration,
-    img_buf: Image<u8, 3, CpuAllocator>,
+    img_buf: Image<u8, 3>,
     dtype: DType,
 }
 
@@ -92,7 +89,7 @@ impl Paligemma {
         use crate::device::get_device_and_dtype;
         let (device, dtype) = get_device_and_dtype();
         let (model, tokenizer) = Self::load_model(dtype, &device)?;
-        let img_buf = Image::from_size_val([224, 224].into(), 0, CpuAllocator)?;
+        let img_buf = Image::from_size_val([224, 224].into(), 0, kornia_tensor::host_alloc())?;
         let pipeline = TextGeneration::new(model, tokenizer, device, config.into());
 
         Ok(Self {
@@ -114,9 +111,9 @@ impl Paligemma {
     /// # Returns
     ///
     /// * `caption` - The generated caption
-    pub fn inference<A: ImageAllocator>(
+    pub fn inference(
         &mut self,
-        image: &Image<u8, 3, A>,
+        image: &Image<u8, 3>,
         prompt: &str,
         sample_len: usize,
         stdout_debug: bool,

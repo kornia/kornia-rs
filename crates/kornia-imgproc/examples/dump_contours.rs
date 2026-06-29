@@ -2,8 +2,9 @@
 //! Usage: dump_contours <png_path> <external|list> <simple|none>
 //! Used by check_correctness.py to compare bit-exact against cv2.findContours.
 
-use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
+use kornia_image::{Image, ImageSize};
 use kornia_imgproc::contours::{find_contours, ContourApproximationMode, RetrievalMode};
+use kornia_tensor::host_alloc;
 use std::env;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -33,22 +34,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Load via kornia, threshold via kornia, then find_contours.
     let rgb = kornia_io::png::read_image_png_rgb8(path)?;
     let (w, h) = (rgb.width(), rgb.height());
-    let mut gray = Image::<u8, 1, _>::from_size_val(
+    let mut gray = Image::<u8, 1>::from_size_val(
         ImageSize {
             width: w,
             height: h,
         },
         0,
-        CpuAllocator,
+        host_alloc(),
     )?;
     kornia_imgproc::color::gray_from_rgb_u8(&rgb, &mut gray)?;
-    let mut bw = Image::<u8, 1, _>::from_size_val(
+    let mut bw = Image::<u8, 1>::from_size_val(
         ImageSize {
             width: w,
             height: h,
         },
         0,
-        CpuAllocator,
+        host_alloc(),
     )?;
     kornia_imgproc::threshold::threshold_binary(&gray, &mut bw, 127, 1)?;
 

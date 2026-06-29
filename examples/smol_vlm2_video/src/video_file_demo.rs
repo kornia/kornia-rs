@@ -3,8 +3,8 @@ use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
 use gstreamer_video as gst_video;
 use kornia::{
+    image::allocator::host_alloc,
     image::{Image, ImageSize},
-    tensor::CpuAllocator,
 };
 use kornia_vlm::smolvlm2::{InputMedia, Line, Message, Role, SmolVlm2, SmolVlm2Config};
 use kornia_vlm::video::VideoSample;
@@ -27,7 +27,7 @@ use std::error::Error;
 /// - **Real-time Logging**: Streams results to Rerun for visualization
 ///
 /// ## Video Buffer Management:
-/// - Creates a `Video<CpuAllocator>` object to manage frame history
+/// - Creates a `Video<kornia_image::allocator::host_alloc()>` object to manage frame history
 /// - Adds new frames with timestamps for temporal tracking
 /// - Automatically removes old frames when buffer exceeds `max_frames_in_buffer`
 /// - Passes entire video buffer to SmolVLM2 for holistic video analysis
@@ -76,7 +76,7 @@ pub fn video_file_demo(args: &Args) -> Result<(), Box<dyn Error>> {
     const MAX_FRAMES_IN_BUFFER: usize = 32;
 
     // Keeping around 50 frames caused CUDA OOM on a 24GB GPU, so we use 32 as a safety margin.
-    let mut video_buffer = VideoSample::<MAX_FRAMES_IN_BUFFER, CpuAllocator>::new();
+    let mut video_buffer = VideoSample::<MAX_FRAMES_IN_BUFFER>::new();
 
     // FPS tracking variables
     let mut last_frame_time = std::time::Instant::now();
@@ -89,7 +89,11 @@ pub fn video_file_demo(args: &Args) -> Result<(), Box<dyn Error>> {
         let height = s.height() as usize;
         let img_size = ImageSize { width, height };
         let rgb_slice = map.as_ref();
-        let image = Image::<u8, 3, CpuAllocator>::new(img_size, rgb_slice.to_vec(), CpuAllocator)?;
+        let image = Image::<u8, 3>::new(
+            img_size,
+            rgb_slice.to_vec(),
+            kornia::image::allocator::host_alloc(),
+        )?;
 
         video_buffer.add_frame(image, frame_idx);
 
@@ -111,7 +115,6 @@ pub fn video_file_demo(args: &Args) -> Result<(), Box<dyn Error>> {
             vec![video_message],
             Some(InputMedia::Video(vec![&mut video_buffer])),
             20,
-            CpuAllocator,
         )?;
 
         // Log image and text to rerun (all using rgb_slice for image)

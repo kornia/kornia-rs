@@ -16,27 +16,29 @@ use std::arch::aarch64::*;
 #[cfg(target_arch = "aarch64")]
 #[inline]
 pub(crate) unsafe fn cbrt_f32x4(x: float32x4_t) -> float32x4_t {
-    let bits = vreinterpretq_u32_f32(x);
-    // Seed y0 = bitcast(bits/3 + magic) ≈ 2^(e/3); the magic constant restores the
-    // exponent bias and gives a good first-order mantissa guess.
-    let seed_bits = vaddq_u32(
-        vcvtq_u32_f32(vmulq_f32(vcvtq_f32_u32(bits), vdupq_n_f32(1.0 / 3.0))),
-        vdupq_n_u32(0x2a51_4067),
-    );
-    let mut y = vreinterpretq_f32_u32(seed_bits);
+    unsafe {
+        let bits = vreinterpretq_u32_f32(x);
+        // Seed y0 = bitcast(bits/3 + magic) ≈ 2^(e/3); the magic constant restores the
+        // exponent bias and gives a good first-order mantissa guess.
+        let seed_bits = vaddq_u32(
+            vcvtq_u32_f32(vmulq_f32(vcvtq_f32_u32(bits), vdupq_n_f32(1.0 / 3.0))),
+            vdupq_n_u32(0x2a51_4067),
+        );
+        let mut y = vreinterpretq_f32_u32(seed_bits);
 
-    // One Halley iteration: y = y*(c + 2x)/(2c + x), c = y^3. Cubic convergence on
-    // the ~4% bit-hack seed gives max rel err ≈ 2.3e-5 — ample for colour (~1e-2),
-    // so a second iteration is wasted work on this hot path.
-    {
-        let c = vmulq_f32(vmulq_f32(y, y), y);
-        let num = vaddq_f32(c, vaddq_f32(x, x)); // c + 2x
-        let den = vaddq_f32(vaddq_f32(c, c), x); // 2c + x
-        y = vmulq_f32(y, vmulq_f32(num, vrecip_f32x4(den)));
+        // One Halley iteration: y = y*(c + 2x)/(2c + x), c = y^3. Cubic convergence on
+        // the ~4% bit-hack seed gives max rel err ≈ 2.3e-5 — ample for colour (~1e-2),
+        // so a second iteration is wasted work on this hot path.
+        {
+            let c = vmulq_f32(vmulq_f32(y, y), y);
+            let num = vaddq_f32(c, vaddq_f32(x, x)); // c + 2x
+            let den = vaddq_f32(vaddq_f32(c, c), x); // 2c + x
+            y = vmulq_f32(y, vmulq_f32(num, vrecip_f32x4(den)));
+        }
+        // Force exact 0 input to 0 output.
+        let is0 = vceqq_f32(x, vdupq_n_f32(0.0));
+        vbslq_f32(is0, vdupq_n_f32(0.0), y)
     }
-    // Force exact 0 input to 0 output.
-    let is0 = vceqq_f32(x, vdupq_n_f32(0.0));
-    vbslq_f32(is0, vdupq_n_f32(0.0), y)
 }
 
 /// NEON reciprocal `1/x` refined by two Newton-Raphson steps (vrecpe seed).
@@ -44,10 +46,12 @@ pub(crate) unsafe fn cbrt_f32x4(x: float32x4_t) -> float32x4_t {
 #[cfg(target_arch = "aarch64")]
 #[inline]
 pub(crate) unsafe fn vrecip_f32x4(x: float32x4_t) -> float32x4_t {
-    let mut r = vrecpeq_f32(x);
-    r = vmulq_f32(r, vrecpsq_f32(x, r));
-    r = vmulq_f32(r, vrecpsq_f32(x, r));
-    r
+    unsafe {
+        let mut r = vrecpeq_f32(x);
+        r = vmulq_f32(r, vrecpsq_f32(x, r));
+        r = vmulq_f32(r, vrecpsq_f32(x, r));
+        r
+    }
 }
 
 /// NEON reciprocal `1/x` with a single Newton-Raphson step (~1e-4 rel) — colour-grade,
@@ -55,8 +59,10 @@ pub(crate) unsafe fn vrecip_f32x4(x: float32x4_t) -> float32x4_t {
 #[cfg(target_arch = "aarch64")]
 #[inline]
 pub(crate) unsafe fn vrecip_fast_f32x4(x: float32x4_t) -> float32x4_t {
-    let r = vrecpeq_f32(x);
-    vmulq_f32(r, vrecpsq_f32(x, r))
+    unsafe {
+        let r = vrecpeq_f32(x);
+        vmulq_f32(r, vrecpsq_f32(x, r))
+    }
 }
 
 #[cfg(test)]

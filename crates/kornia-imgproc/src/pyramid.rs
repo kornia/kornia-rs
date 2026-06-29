@@ -1,4 +1,4 @@
-use kornia_image::{allocator::ImageAllocator, Image, ImageError, ImageSize};
+use kornia_image::{Image, ImageError, ImageSize};
 use rayon::prelude::*;
 
 // Gaussian kernel weights
@@ -19,13 +19,11 @@ const W_BORDER: f32 = 7.0;
 /// * `src` - The source image.
 /// * `dst` - The destination buffer for the horizontal pass.
 /// * `dst_width` - The width of the destination image.
-fn pyrup_horizontal_pass_f32<const C: usize, A>(
-    src: &Image<f32, C, A>,
+fn pyrup_horizontal_pass_f32<const C: usize>(
+    src: &Image<f32, C>,
     dst: &mut [f32],
     dst_width: usize,
-) where
-    A: ImageAllocator,
-{
+) {
     let src_width = src.width();
     let src_data = src.as_slice();
     let dst_stride = dst_width * C;
@@ -189,37 +187,33 @@ fn pyrup_vertical_pass_f32<const C: usize>(
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
-/// use kornia_image::allocator::CpuAllocator;
+/// use kornia_tensor::host_alloc;
 /// use kornia_imgproc::pyramid::pyrup_f32;
 ///
-/// let image = Image::<f32, 1, _>::new(
+/// let image = Image::<f32, 1>::new(
 ///     ImageSize {
 ///         width: 2,
 ///         height: 2,
 ///     },
 ///     vec![0.0, 1.0, 2.0, 3.0],
-///     CpuAllocator
+///     host_alloc()
 /// ).unwrap();
 ///
-/// let mut upsampled = Image::<f32, 1, _>::from_size_val(
+/// let mut upsampled = Image::<f32, 1>::from_size_val(
 ///     ImageSize {
 ///         width: 4,
 ///         height: 4,
 ///     },
 ///     0.0,
-///     CpuAllocator
+///     host_alloc()
 /// ).unwrap();
 ///
 /// pyrup_f32(&image, &mut upsampled).unwrap();
 /// ```
-pub fn pyrup_f32<const C: usize, A1, A2>(
-    src: &Image<f32, C, A1>,
-    dst: &mut Image<f32, C, A2>,
-) -> Result<(), ImageError>
-where
-    A1: ImageAllocator,
-    A2: ImageAllocator,
-{
+pub fn pyrup_f32<const C: usize>(
+    src: &Image<f32, C>,
+    dst: &mut Image<f32, C>,
+) -> Result<(), ImageError> {
     let expected_width = src.width() * 2;
     let expected_height = src.height() * 2;
 
@@ -234,7 +228,7 @@ where
 
     // Intermediate buffer for horizontal pass, pyrup_horizontal writes here
     let mut buffer = vec![0.0f32; dst.width() * src.height() * C];
-    pyrup_horizontal_pass_f32::<C, _>(src, &mut buffer, dst.width());
+    pyrup_horizontal_pass_f32::<C>(src, &mut buffer, dst.width());
 
     // Vertical pass reads from buffer and finally writes to dst
     let dst_width = dst.width();
@@ -290,32 +284,32 @@ fn reflect_101(mut p: i32, len: i32) -> i32 {
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
-/// use kornia_image::allocator::CpuAllocator;
+/// use kornia_tensor::host_alloc;
 /// use kornia_imgproc::pyramid::pyrdown_f32;
 ///
-/// let image = Image::<f32, 3, _>::new(
+/// let image = Image::<f32, 3>::new(
 ///     ImageSize {
 ///         width: 4,
 ///         height: 4,
 ///     },
 ///     (0..48).map(|x| x as f32).collect(),
-///     CpuAllocator,
+///     host_alloc(),
 /// ).unwrap();
 ///
-/// let mut downsampled = Image::<f32, 3, _>::from_size_val(
+/// let mut downsampled = Image::<f32, 3>::from_size_val(
 ///     ImageSize {
 ///         width: 2,
 ///         height: 2,
 ///     },
 ///     0.0,
-///     CpuAllocator,
+///     host_alloc(),
 /// ).unwrap();
 ///
 /// pyrdown_f32(&image, &mut downsampled).unwrap();
 /// ```
-pub fn pyrdown_f32<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<f32, C, A1>,
-    dst: &mut Image<f32, C, A2>,
+pub fn pyrdown_f32<const C: usize>(
+    src: &Image<f32, C>,
+    dst: &mut Image<f32, C>,
 ) -> Result<(), ImageError> {
     let expected_width = src.width().div_ceil(2);
     let expected_height = src.height().div_ceil(2);
@@ -424,10 +418,10 @@ pub fn pyrdown_f32<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
 /// * `max_level` - The maximum level of the pyramid (0 means just the original image).
 /// # Returns
 /// A vector of images representing the Gaussian pyramid.
-pub fn build_pyramid<const C: usize, A: ImageAllocator>(
-    src: &Image<f32, C, A>,
+pub fn build_pyramid<const C: usize>(
+    src: &Image<f32, C>,
     max_level: usize,
-) -> Result<Vec<Image<f32, C, A>>, ImageError> {
+) -> Result<Vec<Image<f32, C>>, ImageError> {
     let mut pyramid = Vec::with_capacity(max_level + 1);
     pyramid.push(src.clone());
 
@@ -462,9 +456,9 @@ pub fn build_pyramid<const C: usize, A: ImageAllocator>(
 /// # Returns
 ///
 /// * `Result<(), ImageError>` - Ok if successful, Err otherwise.
-pub fn pyrdown_u8<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<u8, C, A1>,
-    dst: &mut Image<u8, C, A2>,
+pub fn pyrdown_u8<const C: usize>(
+    src: &Image<u8, C>,
+    dst: &mut Image<u8, C>,
 ) -> Result<(), ImageError> {
     let expected_width = src.width().div_ceil(2);
     let expected_height = src.height().div_ceil(2);
@@ -483,7 +477,7 @@ pub fn pyrdown_u8<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     let mut buffer = vec![0u16; buffer_width * buffer_height * C];
 
     // Horizontal pass: 1D convolution + downsample
-    pyrdown_horizontal_pass_u8::<C, _>(src, &mut buffer, buffer_width);
+    pyrdown_horizontal_pass_u8::<C>(src, &mut buffer, buffer_width);
 
     // Vertical pass
     let dst_width = dst.width();
@@ -498,13 +492,11 @@ pub fn pyrdown_u8<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     Ok(())
 }
 
-fn pyrdown_horizontal_pass_u8<const C: usize, A>(
-    src: &Image<u8, C, A>,
+fn pyrdown_horizontal_pass_u8<const C: usize>(
+    src: &Image<u8, C>,
     dst: &mut [u16],
     dst_width: usize,
-) where
-    A: ImageAllocator,
-{
+) {
     let src_width = src.width();
     let src_data = src.as_slice();
     let dst_stride = dst_width * C;
@@ -643,13 +635,7 @@ fn pyrdown_vertical_pass_u8<const C: usize>(
         });
 }
 
-fn pyrup_horizontal_pass_u8<const C: usize, A>(
-    src: &Image<u8, C, A>,
-    dst: &mut [u8],
-    dst_width: usize,
-) where
-    A: ImageAllocator,
-{
+fn pyrup_horizontal_pass_u8<const C: usize>(src: &Image<u8, C>, dst: &mut [u8], dst_width: usize) {
     let src_width = src.width();
     let src_data = src.as_slice();
     let dst_stride = dst_width * C;
@@ -797,14 +783,10 @@ fn pyrup_vertical_pass_u8<const C: usize>(
 /// # Returns
 ///
 /// * `Result<(), ImageError>` - Ok if successful, Err otherwise.
-pub fn pyrup_u8<const C: usize, A1, A2>(
-    src: &Image<u8, C, A1>,
-    dst: &mut Image<u8, C, A2>,
-) -> Result<(), ImageError>
-where
-    A1: ImageAllocator,
-    A2: ImageAllocator,
-{
+pub fn pyrup_u8<const C: usize>(
+    src: &Image<u8, C>,
+    dst: &mut Image<u8, C>,
+) -> Result<(), ImageError> {
     let expected_width = src.width() * 2;
     let expected_height = src.height() * 2;
 
@@ -819,7 +801,7 @@ where
 
     // Intermediate buffer for horizontal pass
     let mut buffer = vec![0u8; dst.width() * src.height() * C];
-    pyrup_horizontal_pass_u8::<C, _>(src, &mut buffer, dst.width());
+    pyrup_horizontal_pass_u8::<C>(src, &mut buffer, dst.width());
 
     // Vertical pass
     let dst_width = dst.width();
@@ -837,7 +819,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
+    use kornia_image::{Image, ImageSize};
+    use kornia_tensor::host_alloc;
 
     #[test]
     fn test_build_pyramid_levels_and_sizes_odd_dimensions() {
@@ -846,8 +829,7 @@ mod tests {
             width: 5,
             height: 7,
         };
-        let src: Image<f32, 1, CpuAllocator> =
-            Image::from_size_val(size, 1.0_f32, CpuAllocator).unwrap();
+        let src: Image<f32, 1> = Image::from_size_val(size, 1.0_f32, host_alloc()).unwrap();
 
         let max_level = 3;
         let pyramid = build_pyramid(&src, max_level).unwrap();
@@ -876,22 +858,22 @@ mod tests {
 
     #[test]
     fn test_pyrup() -> Result<(), ImageError> {
-        let src = Image::<f32, 1, _>::new(
+        let src = Image::<f32, 1>::new(
             ImageSize {
                 width: 2,
                 height: 2,
             },
             vec![0.0, 1.0, 2.0, 3.0],
-            CpuAllocator,
+            host_alloc(),
         )?;
 
-        let mut dst = Image::<f32, 1, _>::from_size_val(
+        let mut dst = Image::<f32, 1>::from_size_val(
             ImageSize {
                 width: 4,
                 height: 4,
             },
             0.0,
-            CpuAllocator,
+            host_alloc(),
         )?;
 
         pyrup_f32(&src, &mut dst)?;
@@ -909,7 +891,7 @@ mod tests {
     #[test]
     fn test_pyrdown() -> Result<(), ImageError> {
         // NOTE: verified with opencv
-        let src = Image::<f32, 1, _>::new(
+        let src = Image::<f32, 1>::new(
             ImageSize {
                 width: 4,
                 height: 4,
@@ -918,16 +900,16 @@ mod tests {
                 0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0,
                 15.0,
             ],
-            CpuAllocator,
+            host_alloc(),
         )?;
 
-        let mut dst = Image::<f32, 1, _>::from_size_val(
+        let mut dst = Image::<f32, 1>::from_size_val(
             ImageSize {
                 width: 2,
                 height: 2,
             },
             0.0,
-            CpuAllocator,
+            host_alloc(),
         )?;
 
         pyrdown_f32(&src, &mut dst)?;
@@ -951,22 +933,22 @@ mod tests {
     #[test]
     fn test_pyrdown_3c() -> Result<(), ImageError> {
         // NOTE: verified with opencv
-        let src = Image::<f32, 3, _>::new(
+        let src = Image::<f32, 3>::new(
             ImageSize {
                 width: 4,
                 height: 4,
             },
             (0..48).map(|x| x as f32).collect(),
-            CpuAllocator,
+            host_alloc(),
         )?;
 
-        let mut dst = Image::<f32, 3, _>::from_size_val(
+        let mut dst = Image::<f32, 3>::from_size_val(
             ImageSize {
                 width: 2,
                 height: 2,
             },
             0.0,
-            CpuAllocator,
+            host_alloc(),
         )?;
 
         pyrdown_f32(&src, &mut dst)?;
@@ -994,22 +976,22 @@ mod tests {
 
     #[test]
     fn test_pyrdown_invalid_size() -> Result<(), ImageError> {
-        let src = Image::<f32, 1, _>::new(
+        let src = Image::<f32, 1>::new(
             ImageSize {
                 width: 4,
                 height: 4,
             },
             vec![0.0; 16],
-            CpuAllocator,
+            host_alloc(),
         )?;
 
-        let mut dst = Image::<f32, 1, _>::from_size_val(
+        let mut dst = Image::<f32, 1>::from_size_val(
             ImageSize {
                 width: 3,
                 height: 3,
             },
             0.0,
-            CpuAllocator,
+            host_alloc(),
         )?;
 
         let result = pyrdown_f32(&src, &mut dst);
@@ -1020,22 +1002,22 @@ mod tests {
 
     #[test]
     fn test_pyrdown_odd_dims() -> Result<(), ImageError> {
-        let src = Image::<f32, 1, _>::new(
+        let src = Image::<f32, 1>::new(
             ImageSize {
                 width: 5,
                 height: 7,
             },
             (0..(5 * 7)).map(|x| x as f32).collect(),
-            CpuAllocator,
+            host_alloc(),
         )?;
 
-        let mut dst = Image::<f32, 1, _>::from_size_val(
+        let mut dst = Image::<f32, 1>::from_size_val(
             ImageSize {
                 width: 3,
                 height: 4,
             },
             0.0,
-            CpuAllocator,
+            host_alloc(),
         )?;
 
         pyrdown_f32(&src, &mut dst)?;
@@ -1051,63 +1033,63 @@ mod tests {
 
     #[test]
     fn test_pyrdown_min_sizes() -> Result<(), ImageError> {
-        let src1 = Image::<f32, 1, _>::new(
+        let src1 = Image::<f32, 1>::new(
             ImageSize {
                 width: 1,
                 height: 1,
             },
             vec![42.0],
-            CpuAllocator,
+            host_alloc(),
         )?;
-        let mut dst1 = Image::<f32, 1, _>::from_size_val(
+        let mut dst1 = Image::<f32, 1>::from_size_val(
             ImageSize {
                 width: 1,
                 height: 1,
             },
             0.0,
-            CpuAllocator,
+            host_alloc(),
         )?;
         pyrdown_f32(&src1, &mut dst1)?;
         assert_eq!(dst1.width(), 1);
         assert_eq!(dst1.height(), 1);
         assert!(dst1.as_slice().iter().all(|v| v.is_finite()));
 
-        let src2 = Image::<f32, 1, _>::new(
+        let src2 = Image::<f32, 1>::new(
             ImageSize {
                 width: 1,
                 height: 2,
             },
             vec![1.0, 2.0],
-            CpuAllocator,
+            host_alloc(),
         )?;
-        let mut dst2 = Image::<f32, 1, _>::from_size_val(
+        let mut dst2 = Image::<f32, 1>::from_size_val(
             ImageSize {
                 width: 1,
                 height: 1,
             },
             0.0,
-            CpuAllocator,
+            host_alloc(),
         )?;
         pyrdown_f32(&src2, &mut dst2)?;
         assert_eq!(dst2.width(), 1);
         assert_eq!(dst2.height(), 1);
         assert!(dst2.as_slice().iter().all(|v| v.is_finite()));
 
-        let src3 = Image::<f32, 1, _>::new(
+        let src3 = Image::<f32, 1>::new(
             ImageSize {
                 width: 2,
                 height: 1,
             },
             vec![1.0, 2.0],
-            CpuAllocator,
+            host_alloc(),
         )?;
-        let mut dst3 = Image::<f32, 1, _>::from_size_val(
+        let mut dst3 = Image::<f32, 1>::from_size_val(
             ImageSize {
                 width: 1,
                 height: 1,
             },
             0.0,
-            CpuAllocator,
+            host_alloc(),
         )?;
         pyrdown_f32(&src3, &mut dst3)?;
         assert_eq!(dst3.width(), 1);
@@ -1121,21 +1103,21 @@ mod tests {
     #[test]
     fn test_pyrdown_numeric_extremes() -> Result<(), ImageError> {
         let large_val = 1e9_f32;
-        let src = Image::<f32, 1, _>::new(
+        let src = Image::<f32, 1>::new(
             ImageSize {
                 width: 4,
                 height: 4,
             },
             vec![large_val; 16],
-            CpuAllocator,
+            host_alloc(),
         )?;
-        let mut dst = Image::<f32, 1, _>::from_size_val(
+        let mut dst = Image::<f32, 1>::from_size_val(
             ImageSize {
                 width: 2,
                 height: 2,
             },
             0.0,
-            CpuAllocator,
+            host_alloc(),
         )?;
         pyrdown_f32(&src, &mut dst)?;
         for &v in dst.as_slice() {
@@ -1147,22 +1129,22 @@ mod tests {
     }
     #[test]
     fn test_pyrdown_u8_smoke() -> Result<(), ImageError> {
-        let src = Image::<u8, 1, _>::new(
+        let src = Image::<u8, 1>::new(
             ImageSize {
                 width: 4,
                 height: 4,
             },
             vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
-            CpuAllocator,
+            host_alloc(),
         )?;
 
-        let mut dst = Image::<u8, 1, _>::from_size_val(
+        let mut dst = Image::<u8, 1>::from_size_val(
             ImageSize {
                 width: 2,
                 height: 2,
             },
             0,
-            CpuAllocator,
+            host_alloc(),
         )?;
 
         pyrdown_u8(&src, &mut dst)?;
@@ -1179,22 +1161,22 @@ mod tests {
 
     #[test]
     fn test_pyrup_u8_smoke() -> Result<(), ImageError> {
-        let src = Image::<u8, 1, _>::new(
+        let src = Image::<u8, 1>::new(
             ImageSize {
                 width: 2,
                 height: 2,
             },
             vec![0, 10, 20, 30],
-            CpuAllocator,
+            host_alloc(),
         )?;
 
-        let mut dst = Image::<u8, 1, _>::from_size_val(
+        let mut dst = Image::<u8, 1>::from_size_val(
             ImageSize {
                 width: 4,
                 height: 4,
             },
             0,
-            CpuAllocator,
+            host_alloc(),
         )?;
 
         pyrup_u8(&src, &mut dst)?;
@@ -1207,22 +1189,22 @@ mod tests {
 
     #[test]
     fn test_pyrup_u8_invalid_size() -> Result<(), ImageError> {
-        let src = Image::<u8, 1, _>::new(
+        let src = Image::<u8, 1>::new(
             ImageSize {
                 width: 2,
                 height: 2,
             },
             vec![0; 4],
-            CpuAllocator,
+            host_alloc(),
         )?;
 
-        let mut dst = Image::<u8, 1, _>::from_size_val(
+        let mut dst = Image::<u8, 1>::from_size_val(
             ImageSize {
                 width: 3, // Expected 4
                 height: 4,
             },
             0,
-            CpuAllocator,
+            host_alloc(),
         )?;
 
         let result = pyrup_u8(&src, &mut dst);
@@ -1233,21 +1215,21 @@ mod tests {
 
     #[test]
     fn test_pyrup_u8_min_sizes() -> Result<(), ImageError> {
-        let src1 = Image::<u8, 1, _>::new(
+        let src1 = Image::<u8, 1>::new(
             ImageSize {
                 width: 1,
                 height: 1,
             },
             vec![100],
-            CpuAllocator,
+            host_alloc(),
         )?;
-        let mut dst1 = Image::<u8, 1, _>::from_size_val(
+        let mut dst1 = Image::<u8, 1>::from_size_val(
             ImageSize {
                 width: 2,
                 height: 2,
             },
             0,
-            CpuAllocator,
+            host_alloc(),
         )?;
 
         pyrup_u8(&src1, &mut dst1)?;
@@ -1264,22 +1246,22 @@ mod tests {
     #[test]
     fn test_pyrdown_u8_flat() -> Result<(), ImageError> {
         let val = 100u8;
-        let src = Image::<u8, 1, _>::new(
+        let src = Image::<u8, 1>::new(
             ImageSize {
                 width: 16,
                 height: 16,
             },
             vec![val; 16 * 16],
-            CpuAllocator,
+            host_alloc(),
         )?;
 
-        let mut dst = Image::<u8, 1, _>::from_size_val(
+        let mut dst = Image::<u8, 1>::from_size_val(
             ImageSize {
                 width: 8,
                 height: 8,
             },
             0,
-            CpuAllocator,
+            host_alloc(),
         )?;
 
         pyrdown_u8(&src, &mut dst)?;
@@ -1299,22 +1281,22 @@ mod tests {
     }
     #[test]
     fn test_pyrdown_u8_invalid_size() -> Result<(), ImageError> {
-        let src = Image::<u8, 1, _>::new(
+        let src = Image::<u8, 1>::new(
             ImageSize {
                 width: 4,
                 height: 4,
             },
             vec![0; 16],
-            CpuAllocator,
+            host_alloc(),
         )?;
 
-        let mut dst = Image::<u8, 1, _>::from_size_val(
+        let mut dst = Image::<u8, 1>::from_size_val(
             ImageSize {
                 width: 3,
                 height: 3,
             },
             0,
-            CpuAllocator,
+            host_alloc(),
         )?;
 
         let result = pyrdown_u8(&src, &mut dst);
@@ -1325,22 +1307,22 @@ mod tests {
 
     #[test]
     fn test_pyrdown_u8_odd_dims() -> Result<(), ImageError> {
-        let src = Image::<u8, 1, _>::new(
+        let src = Image::<u8, 1>::new(
             ImageSize {
                 width: 5,
                 height: 7,
             },
             (0..(5 * 7)).map(|x| x as u8).collect(),
-            CpuAllocator,
+            host_alloc(),
         )?;
 
-        let mut dst = Image::<u8, 1, _>::from_size_val(
+        let mut dst = Image::<u8, 1>::from_size_val(
             ImageSize {
                 width: 3,
                 height: 4,
             },
             0,
-            CpuAllocator,
+            host_alloc(),
         )?;
 
         pyrdown_u8(&src, &mut dst)?;
@@ -1353,42 +1335,42 @@ mod tests {
 
     #[test]
     fn test_pyrdown_u8_min_sizes() -> Result<(), ImageError> {
-        let src1 = Image::<u8, 1, _>::new(
+        let src1 = Image::<u8, 1>::new(
             ImageSize {
                 width: 1,
                 height: 1,
             },
             vec![42],
-            CpuAllocator,
+            host_alloc(),
         )?;
-        let mut dst1 = Image::<u8, 1, _>::from_size_val(
+        let mut dst1 = Image::<u8, 1>::from_size_val(
             ImageSize {
                 width: 1,
                 height: 1,
             },
             0,
-            CpuAllocator,
+            host_alloc(),
         )?;
         pyrdown_u8(&src1, &mut dst1)?;
         assert_eq!(dst1.width(), 1);
         assert_eq!(dst1.height(), 1);
         assert_eq!(dst1.get_pixel(0, 0, 0).unwrap(), &42); // Should be preserved (or close)
 
-        let src2 = Image::<u8, 1, _>::new(
+        let src2 = Image::<u8, 1>::new(
             ImageSize {
                 width: 1,
                 height: 2,
             },
             vec![10, 20],
-            CpuAllocator,
+            host_alloc(),
         )?;
-        let mut dst2 = Image::<u8, 1, _>::from_size_val(
+        let mut dst2 = Image::<u8, 1>::from_size_val(
             ImageSize {
                 width: 1,
                 height: 1,
             },
             0,
-            CpuAllocator,
+            host_alloc(),
         )?;
         pyrdown_u8(&src2, &mut dst2)?;
         assert_eq!(dst2.width(), 1);
@@ -1402,22 +1384,22 @@ mod tests {
         // NOTE: verified with opencv
         // src = np.arange(4*4*3, dtype=np.uint8).reshape(4,4,3)
         // dst = cv2.pyrDown(src)
-        let src = Image::<u8, 3, _>::new(
+        let src = Image::<u8, 3>::new(
             ImageSize {
                 width: 4,
                 height: 4,
             },
             (0..48).map(|x| x as u8).collect(),
-            CpuAllocator,
+            host_alloc(),
         )?;
 
-        let mut dst = Image::<u8, 3, _>::from_size_val(
+        let mut dst = Image::<u8, 3>::from_size_val(
             ImageSize {
                 width: 2,
                 height: 2,
             },
             0,
-            CpuAllocator,
+            host_alloc(),
         )?;
 
         pyrdown_u8(&src, &mut dst)?;
@@ -1449,7 +1431,7 @@ mod tests {
 
     #[test]
     fn test_pyrup_u8_3c() -> Result<(), ImageError> {
-        let src = Image::<u8, 3, _>::new(
+        let src = Image::<u8, 3>::new(
             ImageSize {
                 width: 2,
                 height: 2,
@@ -1460,16 +1442,16 @@ mod tests {
                 70, 80, 90, // (1,0)
                 100, 110, 120, // (1,1)
             ],
-            CpuAllocator,
+            host_alloc(),
         )?;
 
-        let mut dst = Image::<u8, 3, _>::from_size_val(
+        let mut dst = Image::<u8, 3>::from_size_val(
             ImageSize {
                 width: 4,
                 height: 4,
             },
             0,
-            CpuAllocator,
+            host_alloc(),
         )?;
 
         pyrup_u8(&src, &mut dst)?;

@@ -1,7 +1,7 @@
 use pyo3::prelude::*;
 
 use crate::image::{alloc_output_pyarray_f32, numpy_to_f32_image, to_pyerr, PyImage, PyImageF32};
-use kornia_image::{allocator::CpuAllocator, Image, ImageError};
+use kornia_image::{Image, ImageError};
 use kornia_imgproc::normalize;
 
 #[pyfunction]
@@ -16,7 +16,8 @@ pub fn normalize_mean_std(
     let (mut out_img, out) = unsafe { alloc_output_pyarray_f32::<3>(py, size)? };
 
     py.detach(|| -> Result<(), ImageError> {
-        let mut dst_f32 = Image::from_size_val(size, 0.0f32, CpuAllocator)?;
+        let mut dst_f32 =
+            Image::from_size_val(size, 0.0f32, kornia_image::allocator::host_alloc())?;
         normalize::normalize_mean_std(&src_f32, &mut dst_f32, &mean, &std)?;
         out_img
             .as_slice_mut()

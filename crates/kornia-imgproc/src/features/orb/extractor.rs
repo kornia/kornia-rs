@@ -1,5 +1,5 @@
-use kornia_image::{allocator::ImageAllocator, Image, ImageError, ImageSize};
-use kornia_tensor::CpuAllocator;
+use kornia_image::{Image, ImageError, ImageSize};
+use kornia_tensor::host_alloc;
 use rayon::prelude::*;
 
 use crate::{
@@ -197,11 +197,8 @@ impl OrbDetector {
         features_per_level
     }
 
-    fn build_pyramid<A: ImageAllocator>(
-        &self,
-        img: &Image<f32, 1, A>,
-    ) -> Result<Vec<Image<f32, 1, CpuAllocator>>, ImageError> {
-        let img = Image::from_size_slice(img.size(), img.as_slice(), CpuAllocator)?;
+    fn build_pyramid(&self, img: &Image<f32, 1>) -> Result<Vec<Image<f32, 1>>, ImageError> {
+        let img = Image::from_size_slice(img.size(), img.as_slice(), host_alloc())?;
 
         let base = img.size();
         let mut pyramid = Vec::with_capacity(self.n_scales);
@@ -222,9 +219,9 @@ impl OrbDetector {
     }
 
     #[allow(clippy::type_complexity)]
-    fn detect_octave<A: ImageAllocator>(
+    fn detect_octave(
         &self,
-        octave_image: &Image<f32, 1, A>,
+        octave_image: &Image<f32, 1>,
     ) -> Result<(Vec<[usize; 2]>, Vec<f32>, Vec<f32>), ImageError> {
         // Two-tier FAST detection: first try with higher threshold, then lower if needed.
         // This matches ORB-SLAM3's approach of using iniThFAST then falling back to minThFAST.
@@ -278,7 +275,7 @@ impl OrbDetector {
             .filter_map(|((_, &ori), &m)| if m { Some(ori) } else { None })
             .collect();
 
-        let mut response = Image::from_size_val(octave_image.size(), 0f32, CpuAllocator)?;
+        let mut response = Image::from_size_val(octave_image.size(), 0f32, host_alloc())?;
         let mut harris_response = HarrisResponse::new(octave_image.size()).with_k(self.harris_k);
         harris_response.compute(octave_image, &mut response)?;
 
@@ -299,9 +296,9 @@ impl OrbDetector {
     /// Returns `(keypoints, scales, orientations, responses)` where each vector
     /// has the same length and keypoints are in `(row, col)` coordinates.
     #[allow(clippy::type_complexity)]
-    pub fn detect<A: ImageAllocator>(
+    pub fn detect(
         &self,
-        src: &Image<f32, 1, A>,
+        src: &Image<f32, 1>,
     ) -> Result<(Vec<(f32, f32)>, Vec<f32>, Vec<f32>, Vec<f32>), ImageError> {
         let pyramid = self.build_pyramid(src)?;
         let features_per_level = self.features_per_level();
@@ -357,9 +354,9 @@ impl OrbDetector {
         ))
     }
 
-    fn extract_octave<A: ImageAllocator>(
+    fn extract_octave(
         &self,
-        octave_image: &Image<f32, 1, A>,
+        octave_image: &Image<f32, 1>,
         keypoints: &[(i32, i32)],
         orientations: &[f32],
     ) -> Result<(Vec<[u8; 32]>, Vec<bool>), ImageError> {
@@ -380,7 +377,7 @@ impl OrbDetector {
 
         // Apply Gaussian blur before computing descriptors (matches ORB-SLAM3).
         // ORB-SLAM3 uses 7x7 kernel with sigma=2.
-        let mut blurred = Image::from_size_val(octave_image.size(), 0.0f32, CpuAllocator)?;
+        let mut blurred = Image::from_size_val(octave_image.size(), 0.0f32, host_alloc())?;
         gaussian_blur(octave_image, &mut blurred, (7, 7), (2.0, 2.0))?;
 
         let descriptors = orb_loop(&blurred, &filtered_keypoints, &filtered_orientations);
@@ -392,9 +389,9 @@ impl OrbDetector {
     ///
     /// Returns `(descriptors, mask)` where `mask[i]` indicates whether descriptor `i`
     /// was successfully computed (keypoints too close to the image border are skipped).
-    pub fn extract<A: ImageAllocator>(
+    pub fn extract(
         &self,
-        src: &Image<f32, 1, A>,
+        src: &Image<f32, 1>,
         keypoints: &[(f32, f32)],
         scales: &[f32],
         orientations: &[f32],
@@ -444,7 +441,7 @@ impl OrbDetector {
     fn detect_octave_u8(
         &self,
         octave: usize,
-        octave_image: &Image<u8, 1, CpuAllocator>,
+        octave_image: &Image<u8, 1>,
         features_per_level: &[usize],
         trace: bool,
     ) -> Result<(Vec<(f32, f32)>, Vec<f32>, Vec<f32>, Vec<f32>), ImageError> {
@@ -604,18 +601,17 @@ impl OrbDetector {
     /// chain with the full detect+extract work per octave — pyramid images
     /// are consumed by the spawned tasks and aren't returned.
     #[allow(clippy::type_complexity)]
-    fn build_pyramid_and_process_u8<A: ImageAllocator>(
+    fn build_pyramid_and_process_u8(
         &self,
-        img: &Image<u8, 1, A>,
+        img: &Image<u8, 1>,
     ) -> Result<Vec<(Vec<[f32; 2]>, Vec<f32>, Vec<[u8; 32]>, Vec<u8>)>, ImageError> {
         use std::sync::{Arc, OnceLock};
 
         let trace = std::env::var("KORNIA_ORB_TRACE").is_ok();
         let features_per_level = self.features_per_level();
 
-        let level0 = Image::from_size_slice(img.size(), img.as_slice(), CpuAllocator)?;
-        let mut pyramid_arcs: Vec<Arc<Image<u8, 1, CpuAllocator>>> =
-            Vec::with_capacity(self.n_scales);
+        let level0 = Image::from_size_slice(img.size(), img.as_slice(), host_alloc())?;
+        let mut pyramid_arcs: Vec<Arc<Image<u8, 1>>> = Vec::with_capacity(self.n_scales);
         pyramid_arcs.push(Arc::new(level0));
 
         // OnceLock (not Mutex) — each slot is written by exactly one spawn and
@@ -680,9 +676,9 @@ impl OrbDetector {
         Ok(per_octave)
     }
 
-    fn extract_octave_u8<A: ImageAllocator>(
+    fn extract_octave_u8(
         &self,
-        octave_image: &Image<u8, 1, A>,
+        octave_image: &Image<u8, 1>,
         keypoints: &[(i32, i32)],
         orientations: &[f32],
     ) -> Result<(Vec<[u8; 32]>, Vec<bool>), ImageError> {
@@ -701,7 +697,7 @@ impl OrbDetector {
         // Pre-BRIEF blur via the Q8+Q8 u8 NEON path: ≤1 LSB off a float
         // reference, which is well under the bit-flip threshold that would
         // drift the 256-bit Hamming distance.
-        let mut blurred = Image::from_size_val(octave_image.size(), 0u8, CpuAllocator)?;
+        let mut blurred = Image::from_size_val(octave_image.size(), 0u8, host_alloc())?;
         gaussian_blur_u8(octave_image, &mut blurred, (7, 7), (2.0, 2.0))?;
 
         let descriptors = orb_loop_u8(&blurred, &filtered_keypoints, &filtered_orientations);
@@ -718,7 +714,7 @@ impl OrbDetector {
     fn process_octave_u8(
         &self,
         octave: usize,
-        octave_image: &Image<u8, 1, CpuAllocator>,
+        octave_image: &Image<u8, 1>,
         features_per_level: &[usize],
         trace: bool,
     ) -> Result<(Vec<[f32; 2]>, Vec<f32>, Vec<[u8; 32]>, Vec<u8>), ImageError> {
@@ -765,10 +761,7 @@ impl OrbDetector {
     /// u8-native pipeline: the image stays u8 through pyramid build, FAST
     /// detection, Harris scoring, orientation, and BRIEF. Takes u8 pixels
     /// in and returns packed 32-byte descriptors out.
-    pub fn detect_and_extract_u8<A: ImageAllocator>(
-        &self,
-        src: &Image<u8, 1, A>,
-    ) -> Result<OrbFeatures, ImageError> {
+    pub fn detect_and_extract_u8(&self, src: &Image<u8, 1>) -> Result<OrbFeatures, ImageError> {
         let trace = std::env::var("KORNIA_ORB_TRACE").is_ok();
         let t0 = std::time::Instant::now();
         let per_octave = self.build_pyramid_and_process_u8(src)?;
@@ -807,10 +800,7 @@ impl OrbDetector {
     /// Equivalent to calling [`detect`](Self::detect) then [`extract`](Self::extract),
     /// but filters out border keypoints and returns an [`OrbFeatures`] with matching
     /// `keypoints_xy`, `orientations`, and `descriptors` vectors.
-    pub fn detect_and_extract<A: ImageAllocator>(
-        &self,
-        src: &Image<f32, 1, A>,
-    ) -> Result<OrbFeatures, ImageError> {
+    pub fn detect_and_extract(&self, src: &Image<f32, 1>) -> Result<OrbFeatures, ImageError> {
         let (kps_rc, scales, orientations, _responses) = self.detect(src)?;
         let (descriptors, mask) = self.extract(src, &kps_rc, &scales, &orientations)?;
 
@@ -869,32 +859,29 @@ fn pyramid_size_at_level(base: ImageSize, downscale: f32, level: usize) -> Image
     }
 }
 
-fn pyramid_reduce_u8<A: ImageAllocator>(
-    img: &Image<u8, 1, A>,
-    target: ImageSize,
-) -> Result<Image<u8, 1, CpuAllocator>, ImageError> {
+fn pyramid_reduce_u8(img: &Image<u8, 1>, target: ImageSize) -> Result<Image<u8, 1>, ImageError> {
     // For downscale=1.2 the theoretical anti-alias sigma is 2*1.2/6 = 0.4 —
     // a 3-tap filter with weights ≈ [0.25, 0.50, 0.25]. The bilinear resize
     // kernel itself already provides equivalent low-pass over a 1.2× factor
     // on near-natural images, so the separate blur pass is skipped.
-    let mut resized = Image::from_size_val(target, 0u8, CpuAllocator)?;
+    let mut resized = Image::from_size_val(target, 0u8, host_alloc())?;
     resize_fast_u8(img, &mut resized, InterpolationMode::Bilinear)?;
     Ok(resized)
 }
 
-fn pyramid_reduce<A: ImageAllocator>(
-    img: &Image<f32, 1, A>,
+fn pyramid_reduce(
+    img: &Image<f32, 1>,
     target: ImageSize,
     downscale: f32,
-) -> Result<Image<f32, 1, CpuAllocator>, ImageError> {
+) -> Result<Image<f32, 1>, ImageError> {
     // ORB-SLAM3 builds pyramid by resizing the previous level with bilinear interpolation.
     // We apply a small Gaussian blur to reduce aliasing.
     let sigma = 2.0 * downscale / 6.0;
 
-    let mut smoothed = Image::from_size_val(img.size(), 0.0, CpuAllocator)?;
+    let mut smoothed = Image::from_size_val(img.size(), 0.0, host_alloc())?;
     gaussian_blur(img, &mut smoothed, (0, 0), (sigma, 0.0))?;
 
-    let mut resized = Image::from_size_val(target, 0.0, CpuAllocator)?;
+    let mut resized = Image::from_size_val(target, 0.0, host_alloc())?;
     resize_native(
         &smoothed,
         &mut resized,
@@ -922,7 +909,7 @@ fn mask_border_keypoints(size: ImageSize, keypoints: &[[usize; 2]], distance: i3
         .collect()
 }
 
-fn octave_bounds<A: ImageAllocator>(image: &Image<f32, 1, A>) -> (i32, i32, i32, i32) {
+fn octave_bounds(image: &Image<f32, 1>) -> (i32, i32, i32, i32) {
     const EDGE_THRESHOLD: i32 = 19;
     let min_x = EDGE_THRESHOLD - 3;
     let min_y = EDGE_THRESHOLD - 3;
@@ -1159,12 +1146,7 @@ fn mask_border_keypoints_i32(
 /// 72 u8 reads per call for the same pixels. Bit-exact with the old path because
 /// the Sobel expression and accumulation order are unchanged; only the source
 /// of the pixel values (register cache vs re-read) differs.
-fn harris_response_at_u8<A: ImageAllocator>(
-    src: &Image<u8, 1, A>,
-    r0: usize,
-    c0: usize,
-    k: f32,
-) -> f32 {
+fn harris_response_at_u8(src: &Image<u8, 1>, r0: usize, c0: usize, k: f32) -> f32 {
     let cols = src.cols();
     let src_data = src.as_slice();
     let base = (r0 - 2) * cols + (c0 - 2);
@@ -1251,54 +1233,56 @@ const DC_HIGH: [i16; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 unsafe fn orientation_kp_neon(src_slice: &[u8], r0: usize, c0: usize, cols: usize) -> f32 {
-    use std::arch::aarch64::*;
+    unsafe {
+        use std::arch::aarch64::*;
 
-    let dc_low_0 = vld1q_s16(DC_LOW.as_ptr());
-    let dc_low_1 = vld1q_s16(DC_LOW.as_ptr().add(8));
-    let dc_high_0 = vld1q_s16(DC_HIGH.as_ptr());
-    let dc_high_1 = vld1q_s16(DC_HIGH.as_ptr().add(8));
+        let dc_low_0 = vld1q_s16(DC_LOW.as_ptr());
+        let dc_low_1 = vld1q_s16(DC_LOW.as_ptr().add(8));
+        let dc_high_0 = vld1q_s16(DC_HIGH.as_ptr());
+        let dc_high_1 = vld1q_s16(DC_HIGH.as_ptr().add(8));
 
-    let mut m01_acc: i32 = 0;
-    let mut m10_sum = vdupq_n_s32(0);
+        let mut m01_acc: i32 = 0;
+        let mut m10_sum = vdupq_n_s32(0);
 
-    let base = src_slice.as_ptr();
-    for dr in -15i32..=15 {
-        let row_ptr = base.add(((r0 as isize + dr as isize) * cols as isize) as usize);
-        let mask_row = DISK_MASKS[(dr + 15) as usize].as_ptr();
-        let mask_low = vld1q_u8(mask_row);
-        let mask_high = vld1q_u8(mask_row.add(16));
+        let base = src_slice.as_ptr();
+        for dr in -15i32..=15 {
+            let row_ptr = base.add(((r0 as isize + dr as isize) * cols as isize) as usize);
+            let mask_row = DISK_MASKS[(dr + 15) as usize].as_ptr();
+            let mask_low = vld1q_u8(mask_row);
+            let mask_high = vld1q_u8(mask_row.add(16));
 
-        // Two 16-byte loads centered at c0. Low: dc ∈ [-16, -1]. High: dc ∈ [0, 15].
-        let px_low = vandq_u8(vld1q_u8(row_ptr.offset(c0 as isize - 16)), mask_low);
-        let px_high = vandq_u8(vld1q_u8(row_ptr.add(c0)), mask_high);
+            // Two 16-byte loads centered at c0. Low: dc ∈ [-16, -1]. High: dc ∈ [0, 15].
+            let px_low = vandq_u8(vld1q_u8(row_ptr.offset(c0 as isize - 16)), mask_low);
+            let px_high = vandq_u8(vld1q_u8(row_ptr.add(c0)), mask_high);
 
-        // m01 row sum: masked bytes widened-and-added across all lanes.
-        let row_sum = (vaddlvq_u8(px_low) + vaddlvq_u8(px_high)) as i32;
-        m01_acc += row_sum * dr;
+            // m01 row sum: masked bytes widened-and-added across all lanes.
+            let row_sum = (vaddlvq_u8(px_low) + vaddlvq_u8(px_high)) as i32;
+            m01_acc += row_sum * dr;
 
-        // m10: Σ px * dc. Widen u8 → u16, reinterpret as s16 (safe: values ≤ 255
-        // fit in i16's positive range), multiply by dc using vmull_s16 to
-        // produce i32 partial products, accumulate.
-        let px_low_u16_0 = vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(px_low)));
-        let px_low_u16_1 = vreinterpretq_s16_u16(vmovl_u8(vget_high_u8(px_low)));
-        let px_high_u16_0 = vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(px_high)));
-        let px_high_u16_1 = vreinterpretq_s16_u16(vmovl_u8(vget_high_u8(px_high)));
+            // m10: Σ px * dc. Widen u8 → u16, reinterpret as s16 (safe: values ≤ 255
+            // fit in i16's positive range), multiply by dc using vmull_s16 to
+            // produce i32 partial products, accumulate.
+            let px_low_u16_0 = vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(px_low)));
+            let px_low_u16_1 = vreinterpretq_s16_u16(vmovl_u8(vget_high_u8(px_low)));
+            let px_high_u16_0 = vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(px_high)));
+            let px_high_u16_1 = vreinterpretq_s16_u16(vmovl_u8(vget_high_u8(px_high)));
 
-        let p0 = vmull_s16(vget_low_s16(px_low_u16_0), vget_low_s16(dc_low_0));
-        let p1 = vmull_high_s16(px_low_u16_0, dc_low_0);
-        let p2 = vmull_s16(vget_low_s16(px_low_u16_1), vget_low_s16(dc_low_1));
-        let p3 = vmull_high_s16(px_low_u16_1, dc_low_1);
-        let p4 = vmull_s16(vget_low_s16(px_high_u16_0), vget_low_s16(dc_high_0));
-        let p5 = vmull_high_s16(px_high_u16_0, dc_high_0);
-        let p6 = vmull_s16(vget_low_s16(px_high_u16_1), vget_low_s16(dc_high_1));
-        let p7 = vmull_high_s16(px_high_u16_1, dc_high_1);
+            let p0 = vmull_s16(vget_low_s16(px_low_u16_0), vget_low_s16(dc_low_0));
+            let p1 = vmull_high_s16(px_low_u16_0, dc_low_0);
+            let p2 = vmull_s16(vget_low_s16(px_low_u16_1), vget_low_s16(dc_low_1));
+            let p3 = vmull_high_s16(px_low_u16_1, dc_low_1);
+            let p4 = vmull_s16(vget_low_s16(px_high_u16_0), vget_low_s16(dc_high_0));
+            let p5 = vmull_high_s16(px_high_u16_0, dc_high_0);
+            let p6 = vmull_s16(vget_low_s16(px_high_u16_1), vget_low_s16(dc_high_1));
+            let p7 = vmull_high_s16(px_high_u16_1, dc_high_1);
 
-        m10_sum = vaddq_s32(m10_sum, vaddq_s32(vaddq_s32(p0, p1), vaddq_s32(p2, p3)));
-        m10_sum = vaddq_s32(m10_sum, vaddq_s32(vaddq_s32(p4, p5), vaddq_s32(p6, p7)));
+            m10_sum = vaddq_s32(m10_sum, vaddq_s32(vaddq_s32(p0, p1), vaddq_s32(p2, p3)));
+            m10_sum = vaddq_s32(m10_sum, vaddq_s32(vaddq_s32(p4, p5), vaddq_s32(p6, p7)));
+        }
+
+        let m10 = vaddvq_s32(m10_sum);
+        (m01_acc as f32).atan2(m10 as f32)
     }
-
-    let m10 = vaddvq_s32(m10_sum);
-    (m01_acc as f32).atan2(m10 as f32)
 }
 
 /// AVX2 mirror of [`orientation_kp_neon`]. Same disk-masked moment scan,
@@ -1368,10 +1352,7 @@ unsafe fn orientation_kp_avx2(src_slice: &[u8], r0: usize, c0: usize, cols: usiz
     (m01_acc as f32).atan2(m10 as f32)
 }
 
-fn corner_orientations_u8<A: ImageAllocator>(
-    src: &Image<u8, 1, A>,
-    corners: &[[usize; 2]],
-) -> Vec<f32> {
+fn corner_orientations_u8(src: &Image<u8, 1>, corners: &[[usize; 2]]) -> Vec<f32> {
     // Caller must have already filtered keypoints by border distance ≥ 15.
     const HALF: i32 = 15;
 
@@ -1432,10 +1413,7 @@ fn corner_orientations_u8<A: ImageAllocator>(
         .collect()
 }
 
-fn corner_orientations<A: ImageAllocator>(
-    src: &Image<f32, 1, A>,
-    corners: &[[usize; 2]],
-) -> Vec<f32> {
+fn corner_orientations(src: &Image<f32, 1>, corners: &[[usize; 2]]) -> Vec<f32> {
     const M_SIZE: usize = 31; // NOTE: This must be uneven
     let src_slice = src.as_slice();
 
@@ -1479,11 +1457,7 @@ fn corner_orientations<A: ImageAllocator>(
     orientations
 }
 
-fn orb_loop_u8<A: ImageAllocator>(
-    src: &Image<u8, 1, A>,
-    keypoints: &[(i32, i32)],
-    orientation: &[f32],
-) -> Vec<[u8; 32]> {
+fn orb_loop_u8(src: &Image<u8, 1>, keypoints: &[(i32, i32)], orientation: &[f32]) -> Vec<[u8; 32]> {
     let cols = src.cols();
     let src_data = src.as_slice();
 
@@ -1657,11 +1631,7 @@ fn compute_brief_descriptor_scalar(
 
 /// Compute ORB descriptors packed into 32 bytes (256 bits) per keypoint —
 /// the standard ORB-SLAM3 descriptor format.
-fn orb_loop<A: ImageAllocator>(
-    src: &Image<f32, 1, A>,
-    keypoints: &[(i32, i32)],
-    orientation: &[f32],
-) -> Vec<[u8; 32]> {
+fn orb_loop(src: &Image<f32, 1>, keypoints: &[(i32, i32)], orientation: &[f32]) -> Vec<[u8; 32]> {
     let n_keypoints = keypoints.len();
     let height = src.height() as i32;
     let width = src.width() as i32;
@@ -1722,10 +1692,10 @@ fn orb_loop<A: ImageAllocator>(
 mod tests {
     use super::*;
     use kornia_image::Image;
-    use kornia_tensor::CpuAllocator;
+    use kornia_tensor::host_alloc;
 
-    fn make_gradient_x(size: usize) -> Image<f32, 1, CpuAllocator> {
-        let mut img = Image::from_size_val([size, size].into(), 0.0, CpuAllocator).unwrap();
+    fn make_gradient_x(size: usize) -> Image<f32, 1> {
+        let mut img = Image::from_size_val([size, size].into(), 0.0, host_alloc()).unwrap();
         let width = img.width();
         let height = img.height();
         let denom = (width.saturating_sub(1)).max(1) as f32;
@@ -1739,8 +1709,8 @@ mod tests {
         img
     }
 
-    fn make_gradient_y(size: usize) -> Image<f32, 1, CpuAllocator> {
-        let mut img = Image::from_size_val([size, size].into(), 0.0, CpuAllocator).unwrap();
+    fn make_gradient_y(size: usize) -> Image<f32, 1> {
+        let mut img = Image::from_size_val([size, size].into(), 0.0, host_alloc()).unwrap();
         let width = img.width();
         let height = img.height();
         let denom = (height.saturating_sub(1)).max(1) as f32;
@@ -1788,7 +1758,7 @@ mod tests {
                 .wrapping_add(1442695040888963407);
             *px = (s >> 32) as u8;
         }
-        let img = Image::<u8, 1, _>::from_size_slice([w, h].into(), &data, CpuAllocator).unwrap();
+        let img = Image::<u8, 1>::from_size_slice([w, h].into(), &data, host_alloc()).unwrap();
 
         let corners: Vec<[usize; 2]> = (0..50)
             .map(|i| {
@@ -1798,11 +1768,14 @@ mod tests {
             })
             .collect();
 
-        std::env::set_var("KORNIA_ORB_ORI_NEON", "1");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("KORNIA_ORB_ORI_NEON", "1") };
         let neon = corner_orientations_u8(&img, &corners);
-        std::env::set_var("KORNIA_ORB_ORI_NEON", "0");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("KORNIA_ORB_ORI_NEON", "0") };
         let scalar = corner_orientations_u8(&img, &corners);
-        std::env::remove_var("KORNIA_ORB_ORI_NEON");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("KORNIA_ORB_ORI_NEON") };
 
         for (i, (n, s)) in neon.iter().zip(scalar.iter()).enumerate() {
             // atan2 of identical integer moments is bit-identical.

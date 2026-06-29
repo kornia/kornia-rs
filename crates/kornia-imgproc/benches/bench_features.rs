@@ -6,7 +6,7 @@ use kornia_imgproc::{
     color::gray_from_rgb_u8, features::*, interpolation::InterpolationMode, resize::resize_fast_rgb,
 };
 use kornia_io::functional as io;
-use kornia_tensor::CpuAllocator;
+use kornia_tensor::host_alloc;
 use rand::RngExt;
 
 fn bench_fast_corner_detect(c: &mut Criterion) {
@@ -17,13 +17,13 @@ fn bench_fast_corner_detect(c: &mut Criterion) {
     let img_rgb8 = io::read_image_any_rgb8(img_path).unwrap();
 
     let new_size = [1920, 1080].into();
-    let mut img_resized = Image::from_size_val(new_size, 0, CpuAllocator).unwrap();
+    let mut img_resized = Image::from_size_val(new_size, 0, host_alloc()).unwrap();
     resize_fast_rgb(&img_rgb8, &mut img_resized, InterpolationMode::Bilinear).unwrap();
 
-    let mut img_gray8 = Image::from_size_val(new_size, 0, CpuAllocator).unwrap();
+    let mut img_gray8 = Image::from_size_val(new_size, 0, host_alloc()).unwrap();
     gray_from_rgb_u8(&img_resized, &mut img_gray8).unwrap();
 
-    let mut img_grayf32 = Image::from_size_val(new_size, 0.0, CpuAllocator).unwrap();
+    let mut img_grayf32 = Image::from_size_val(new_size, 0.0, host_alloc()).unwrap();
     img_gray8
         .as_slice()
         .iter()
@@ -82,11 +82,11 @@ fn bench_harris_response(c: &mut Criterion) {
             .collect();
         let image_size = [*width, *height].into();
 
-        let image_f32: Image<f32, 1, _> = Image::new(image_size, image_data, CpuAllocator).unwrap();
+        let image_f32: Image<f32, 1> = Image::new(image_size, image_data, host_alloc()).unwrap();
 
         // output image
-        let response_f32: Image<f32, 1, _> =
-            Image::from_size_val(image_size, 0.0, CpuAllocator).unwrap();
+        let response_f32: Image<f32, 1> =
+            Image::from_size_val(image_size, 0.0, host_alloc()).unwrap();
         let mut harris_response = HarrisResponse::new(image_size);
 
         group.bench_with_input(
@@ -110,9 +110,9 @@ fn bench_dog_response(c: &mut Criterion) {
         group.throughput(criterion::Throughput::Elements((*width * *height) as u64));
 
         let src =
-            Image::<f32, 1, _>::from_size_val([*width, *height].into(), 1.0, CpuAllocator).unwrap();
+            Image::<f32, 1>::from_size_val([*width, *height].into(), 1.0, host_alloc()).unwrap();
         let mut dst =
-            Image::<f32, 1, _>::from_size_val([*width, *height].into(), 0.0, CpuAllocator).unwrap();
+            Image::<f32, 1>::from_size_val([*width, *height].into(), 0.0, host_alloc()).unwrap();
 
         // Benchmark DoG response (serial version)
         group.bench_with_input(
@@ -135,11 +135,11 @@ fn bench_dog_response(c: &mut Criterion) {
     group.finish();
 }
 
-fn load_mh01_gray_f32(name: &str) -> Image<f32, 1, CpuAllocator> {
+fn load_mh01_gray_f32(name: &str) -> Image<f32, 1> {
     let img_path =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("../../tests/data/{name}"));
     let img = kornia_io::png::read_image_png_mono8(&img_path).expect("failed to read test PNG");
-    let mut dst = Image::from_size_val(img.0.size(), 0.0f32, CpuAllocator).expect("alloc failed");
+    let mut dst = Image::from_size_val(img.0.size(), 0.0f32, host_alloc()).expect("alloc failed");
     img.0
         .as_slice()
         .iter()

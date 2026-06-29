@@ -18,12 +18,12 @@
 /// # #[cfg(feature = "gstreamer")]
 /// # {
 /// use kornia_vlm::video::{Video, VideoSamplingMethod};
-/// use kornia_tensor::CpuAllocator;
+/// use kornia_tensor::host_alloc;
 ///
 /// let video = Video::from_video_path(
 ///     "video.mp4",
 ///     VideoSamplingMethod::Uniform(30),
-///     CpuAllocator,
+///     kornia_image::allocator::host_alloc(),
 /// ).unwrap();
 /// # }
 /// ```
@@ -31,8 +31,6 @@
 use kornia_io::gstreamer::{video::ImageFormat as IoImageFormat, video::VideoReader};
 use kornia_vlm::video::VideoError;
 use kornia_vlm::video::VideoSample;
-
-use kornia_image::allocator::ImageAllocator;
 
 /// Video sampling strategies for extracting frames from a video.
 ///
@@ -68,20 +66,18 @@ pub enum VideoSamplingMethod {
 
 #[cfg(not(feature = "gstreamer"))]
 #[allow(dead_code)]
-pub fn from_video_path<P: AsRef<std::path::Path>, A: ImageAllocator>(
+pub fn from_video_path<P: AsRef<std::path::Path>>(
     _path: P,
     _sampling: VideoSamplingMethod,
-    _allocator: A,
-) -> Result<VideoSample<32, A>, VideoError> {
+) -> Result<VideoSample<32>, VideoError> {
     panic!("This function requires the 'gstreamer' feature to be enabled.");
 }
 
 #[cfg(feature = "gstreamer")]
-pub fn from_video_path<const N: usize, P: AsRef<std::path::Path>, A: ImageAllocator>(
+pub fn from_video_path<const N: usize, P: AsRef<std::path::Path>>(
     path: P,
     sampling: VideoSamplingMethod,
-    allocator: A,
-) -> Result<VideoSample<N, A>, VideoError> {
+) -> Result<VideoSample<N>, VideoError> {
     let mut video_reader = VideoReader::new(&path, IoImageFormat::Rgb8).map_err(|e| {
         VideoError::VideoReaderCreation(format!("Path: {:?}, Error: {:?}", path.as_ref(), e))
     })?;
@@ -132,12 +128,16 @@ pub fn from_video_path<const N: usize, P: AsRef<std::path::Path>, A: ImageAlloca
 
                 consecutive_no_frames = 0; // Reset counter when we get a frame
 
-                // Convert ForeignAllocator image to target allocator
+                // Convert kornia_image::allocator::host_alloc() image to target allocator
                 let size = gst_image.size();
                 let gst_data = gst_image.as_slice();
 
-                let img = Image::<u8, 3, A>::from_size_slice(size, gst_data, allocator.clone())
-                    .map_err(VideoError::KorniaImage)?;
+                let img = Image::<u8, 3>::from_size_slice(
+                    size,
+                    gst_data,
+                    kornia_image::allocator::host_alloc(),
+                )
+                .map_err(VideoError::KorniaImage)?;
 
                 // Get current position for timestamp - using frame index as fallback
                 let current_pos = video_reader

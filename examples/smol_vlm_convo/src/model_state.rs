@@ -3,11 +3,10 @@ use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
 
 use kornia_image::Image;
-use kornia_tensor::CpuAllocator;
 pub enum ModelRequest {
     Inference {
         prompt: String,
-        image: Option<Image<u8, 3, CpuAllocator>>,
+        image: Option<Image<u8, 3>>,
         response_tx: mpsc::Sender<ModelResponse>,
     },
     SetTemperature(f64),
@@ -47,7 +46,7 @@ impl ModelStateHandle {
                         response_tx,
                     }) => {
                         // No streaming: send only the full response at once
-                        let result = model.inference(&prompt, image, sample_len, CpuAllocator);
+                        let result = model.inference(&prompt, image, sample_len);
                         match result {
                             Ok(full) => {
                                 let _ = response_tx.send(ModelResponse::StreamChunk(full));

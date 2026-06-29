@@ -1743,47 +1743,49 @@ unsafe fn score_inliers_h_neon(
     count: &mut usize,
     score: &mut f64,
 ) -> usize {
-    use std::arch::aarch64::*;
-    let (a, b, c, d, e, f, g, hh, ii) = coeffs;
-    let a_v = vdupq_n_f64(a);
-    let b_v = vdupq_n_f64(b);
-    let c_v = vdupq_n_f64(c);
-    let d_v = vdupq_n_f64(d);
-    let e_v = vdupq_n_f64(e);
-    let f_v = vdupq_n_f64(f);
-    let g_v = vdupq_n_f64(g);
-    let h_v = vdupq_n_f64(hh);
-    let i_v = vdupq_n_f64(ii);
-    let n = x1_x.len();
-    let mut idx = 0usize;
-    while idx + 2 <= n {
-        let x1 = vld1q_f64(x1_x.as_ptr().add(idx));
-        let y1 = vld1q_f64(x1_y.as_ptr().add(idx));
-        let x2 = vld1q_f64(x2_x.as_ptr().add(idx));
-        let y2 = vld1q_f64(x2_y.as_ptr().add(idx));
-        // hx = a*x + b*y + c ; hy = d*x + e*y + f ; hw = g*x + h*y + i
-        let hx = vfmaq_f64(vfmaq_f64(c_v, x1, a_v), y1, b_v);
-        let hy = vfmaq_f64(vfmaq_f64(f_v, x1, d_v), y1, e_v);
-        let hw = vfmaq_f64(vfmaq_f64(i_v, x1, g_v), y1, h_v);
-        let u = vdivq_f64(hx, hw);
-        let v = vdivq_f64(hy, hw);
-        let dx = vsubq_f64(u, x2);
-        let dy = vsubq_f64(v, y2);
-        let sq = vfmaq_f64(vmulq_f64(dx, dx), dy, dy);
-        let mut buf = [0.0f64; 2];
-        vst1q_f64(buf.as_mut_ptr(), sq);
-        // Commit per-lane (scalar reduction — count++/score+= are data-dependent).
-        for k in 0..2 {
-            let dd = buf[k];
-            if dd.is_finite() && dd <= thresh_sq {
-                *inliers.get_unchecked_mut(idx + k) = true;
-                *count += 1;
-                *score += dd;
+    unsafe {
+        use std::arch::aarch64::*;
+        let (a, b, c, d, e, f, g, hh, ii) = coeffs;
+        let a_v = vdupq_n_f64(a);
+        let b_v = vdupq_n_f64(b);
+        let c_v = vdupq_n_f64(c);
+        let d_v = vdupq_n_f64(d);
+        let e_v = vdupq_n_f64(e);
+        let f_v = vdupq_n_f64(f);
+        let g_v = vdupq_n_f64(g);
+        let h_v = vdupq_n_f64(hh);
+        let i_v = vdupq_n_f64(ii);
+        let n = x1_x.len();
+        let mut idx = 0usize;
+        while idx + 2 <= n {
+            let x1 = vld1q_f64(x1_x.as_ptr().add(idx));
+            let y1 = vld1q_f64(x1_y.as_ptr().add(idx));
+            let x2 = vld1q_f64(x2_x.as_ptr().add(idx));
+            let y2 = vld1q_f64(x2_y.as_ptr().add(idx));
+            // hx = a*x + b*y + c ; hy = d*x + e*y + f ; hw = g*x + h*y + i
+            let hx = vfmaq_f64(vfmaq_f64(c_v, x1, a_v), y1, b_v);
+            let hy = vfmaq_f64(vfmaq_f64(f_v, x1, d_v), y1, e_v);
+            let hw = vfmaq_f64(vfmaq_f64(i_v, x1, g_v), y1, h_v);
+            let u = vdivq_f64(hx, hw);
+            let v = vdivq_f64(hy, hw);
+            let dx = vsubq_f64(u, x2);
+            let dy = vsubq_f64(v, y2);
+            let sq = vfmaq_f64(vmulq_f64(dx, dx), dy, dy);
+            let mut buf = [0.0f64; 2];
+            vst1q_f64(buf.as_mut_ptr(), sq);
+            // Commit per-lane (scalar reduction — count++/score+= are data-dependent).
+            for k in 0..2 {
+                let dd = buf[k];
+                if dd.is_finite() && dd <= thresh_sq {
+                    *inliers.get_unchecked_mut(idx + k) = true;
+                    *count += 1;
+                    *score += dd;
+                }
             }
+            idx += 2;
         }
-        idx += 2;
+        idx
     }
-    idx
 }
 
 /// AVX2 mirror of [`score_inliers_h_neon`]. Same H-reprojection math, but
@@ -1953,62 +1955,64 @@ unsafe fn score_inliers_f_neon(
     count: &mut usize,
     score: &mut f64,
 ) -> usize {
-    use std::arch::aarch64::*;
-    let (f00, f01, f02, f10, f11, f12, f20, f21, f22) = f;
-    let f00v = vdupq_n_f64(f00);
-    let f01v = vdupq_n_f64(f01);
-    let f02v = vdupq_n_f64(f02);
-    let f10v = vdupq_n_f64(f10);
-    let f11v = vdupq_n_f64(f11);
-    let f12v = vdupq_n_f64(f12);
-    let f20v = vdupq_n_f64(f20);
-    let f21v = vdupq_n_f64(f21);
-    let f22v = vdupq_n_f64(f22);
-    let n = x1_x.len();
-    let mut idx = 0usize;
-    while idx + 2 <= n {
-        let x1 = vld1q_f64(x1_x.as_ptr().add(idx));
-        let y1 = vld1q_f64(x1_y.as_ptr().add(idx));
-        let x2 = vld1q_f64(x2_x.as_ptr().add(idx));
-        let y2 = vld1q_f64(x2_y.as_ptr().add(idx));
+    unsafe {
+        use std::arch::aarch64::*;
+        let (f00, f01, f02, f10, f11, f12, f20, f21, f22) = f;
+        let f00v = vdupq_n_f64(f00);
+        let f01v = vdupq_n_f64(f01);
+        let f02v = vdupq_n_f64(f02);
+        let f10v = vdupq_n_f64(f10);
+        let f11v = vdupq_n_f64(f11);
+        let f12v = vdupq_n_f64(f12);
+        let f20v = vdupq_n_f64(f20);
+        let f21v = vdupq_n_f64(f21);
+        let f22v = vdupq_n_f64(f22);
+        let n = x1_x.len();
+        let mut idx = 0usize;
+        while idx + 2 <= n {
+            let x1 = vld1q_f64(x1_x.as_ptr().add(idx));
+            let y1 = vld1q_f64(x1_y.as_ptr().add(idx));
+            let x2 = vld1q_f64(x2_x.as_ptr().add(idx));
+            let y2 = vld1q_f64(x2_y.as_ptr().add(idx));
 
-        // fx1 = F * [x1; y1; 1]
-        let fx1x = vfmaq_f64(vfmaq_f64(f02v, x1, f00v), y1, f01v);
-        let fx1y = vfmaq_f64(vfmaq_f64(f12v, x1, f10v), y1, f11v);
-        let fx1z = vfmaq_f64(vfmaq_f64(f22v, x1, f20v), y1, f21v);
-        // ftx2 = F^T * [x2; y2; 1]  (only x,y components needed for denom)
-        let ftx2x = vfmaq_f64(vfmaq_f64(f20v, x2, f00v), y2, f10v);
-        let ftx2y = vfmaq_f64(vfmaq_f64(f21v, x2, f01v), y2, f11v);
+            // fx1 = F * [x1; y1; 1]
+            let fx1x = vfmaq_f64(vfmaq_f64(f02v, x1, f00v), y1, f01v);
+            let fx1y = vfmaq_f64(vfmaq_f64(f12v, x1, f10v), y1, f11v);
+            let fx1z = vfmaq_f64(vfmaq_f64(f22v, x1, f20v), y1, f21v);
+            // ftx2 = F^T * [x2; y2; 1]  (only x,y components needed for denom)
+            let ftx2x = vfmaq_f64(vfmaq_f64(f20v, x2, f00v), y2, f10v);
+            let ftx2y = vfmaq_f64(vfmaq_f64(f21v, x2, f01v), y2, f11v);
 
-        // err = [x2; y2; 1] · fx1
-        let err = vfmaq_f64(vfmaq_f64(fx1z, x2, fx1x), y2, fx1y);
-        // denom = fx1x² + fx1y² + ftx2x² + ftx2y²
-        let denom = vfmaq_f64(
-            vfmaq_f64(vfmaq_f64(vmulq_f64(fx1x, fx1x), fx1y, fx1y), ftx2x, ftx2x),
-            ftx2y,
-            ftx2y,
-        );
-        let err_sq = vmulq_f64(err, err);
-        // If denom > 0, use err²/denom; else err². Branchless select via bitwise
-        // (denom > 1e-12) mask — otherwise fall back to scalar handling per lane.
-        let denom_ok = vcgtq_f64(denom, vdupq_n_f64(1e-12));
-        let safe_denom = vbslq_f64(denom_ok, denom, vdupq_n_f64(1.0));
-        let div_val = vdivq_f64(err_sq, safe_denom);
-        let dd = vbslq_f64(denom_ok, div_val, err_sq);
+            // err = [x2; y2; 1] · fx1
+            let err = vfmaq_f64(vfmaq_f64(fx1z, x2, fx1x), y2, fx1y);
+            // denom = fx1x² + fx1y² + ftx2x² + ftx2y²
+            let denom = vfmaq_f64(
+                vfmaq_f64(vfmaq_f64(vmulq_f64(fx1x, fx1x), fx1y, fx1y), ftx2x, ftx2x),
+                ftx2y,
+                ftx2y,
+            );
+            let err_sq = vmulq_f64(err, err);
+            // If denom > 0, use err²/denom; else err². Branchless select via bitwise
+            // (denom > 1e-12) mask — otherwise fall back to scalar handling per lane.
+            let denom_ok = vcgtq_f64(denom, vdupq_n_f64(1e-12));
+            let safe_denom = vbslq_f64(denom_ok, denom, vdupq_n_f64(1.0));
+            let div_val = vdivq_f64(err_sq, safe_denom);
+            let dd = vbslq_f64(denom_ok, div_val, err_sq);
 
-        let mut buf = [0.0f64; 2];
-        vst1q_f64(buf.as_mut_ptr(), dd);
-        for k in 0..2 {
-            let dd_k = buf[k];
-            if dd_k.is_finite() && dd_k <= thresh_sq {
-                *inliers.get_unchecked_mut(idx + k) = true;
-                *count += 1;
-                *score += dd_k;
+            let mut buf = [0.0f64; 2];
+            vst1q_f64(buf.as_mut_ptr(), dd);
+            for k in 0..2 {
+                let dd_k = buf[k];
+                if dd_k.is_finite() && dd_k <= thresh_sq {
+                    *inliers.get_unchecked_mut(idx + k) = true;
+                    *count += 1;
+                    *score += dd_k;
+                }
             }
+            idx += 2;
         }
-        idx += 2;
+        idx
     }
-    idx
 }
 
 /// AVX2 mirror of [`score_inliers_f_neon`]. Same F Sampson math at 4-lane
@@ -2227,7 +2231,7 @@ mod tests {
             x1.iter()
                 .zip(x2.iter())
                 .zip(res.inliers.iter())
-                .filter(|(_, &inl)| inl)
+                .filter(|&(_, &inl)| inl)
                 .map(|((p1, p2), _)| sampson_distance(&res.model, p1, p2))
                 .sum::<f64>()
         };
@@ -3332,12 +3336,13 @@ mod tests {
         );
     }
 
-    fn u8_to_f32_image(
-        src: &kornia_image::Image<u8, 1, kornia_tensor::CpuAllocator>,
-    ) -> kornia_image::Image<f32, 1, kornia_tensor::CpuAllocator> {
-        let mut dst =
-            kornia_image::Image::from_size_val(src.size(), 0.0, kornia_tensor::CpuAllocator)
-                .unwrap();
+    fn u8_to_f32_image(src: &kornia_image::Image<u8, 1>) -> kornia_image::Image<f32, 1> {
+        let mut dst = kornia_image::Image::from_size_val(
+            src.size(),
+            0.0,
+            kornia_image::allocator::host_alloc(),
+        )
+        .unwrap();
         src.as_slice()
             .iter()
             .zip(dst.as_slice_mut())
