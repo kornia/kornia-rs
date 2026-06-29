@@ -24,7 +24,7 @@ use std::error::Error;
 /// - **Real-time Logging**: Streams results to Rerun for visualization
 ///
 /// ## Video Buffer Management:
-/// - Creates a `Video<kornia_image::allocator::host_alloc()>` object to manage frame history
+/// - Creates a `VideoSample` object to manage frame history
 /// - Adds new frames with timestamps for temporal tracking
 /// - Automatically removes old frames when buffer exceeds `max_frames_in_buffer`
 /// - Passes entire video buffer to SmolVLM2 for holistic video analysis

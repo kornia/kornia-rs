@@ -202,7 +202,7 @@ impl<const N: usize> SmolVlm2<N> {
     ///     "/path/to/model-00001-of-00002.safetensors",
     ///     "/path/to/model-00002-of-00002.safetensors",
     /// ];
-    /// let model = SmolVlm2::<32, kornia_tensor::kornia_tensor::host_alloc()>::from_safetensors(weights, SmolVlm2Config::default()).unwrap();
+    /// let model = SmolVlm2::<32>::from_safetensors(weights, SmolVlm2Config::default()).unwrap();
     /// ```
     pub fn from_safetensors<P: Into<std::path::PathBuf>>(
         weights_paths: Vec<P>,
@@ -224,7 +224,7 @@ impl<const N: usize> SmolVlm2<N> {
     /// ```no_run
     /// use kornia_vlm::smolvlm2::{SmolVlm2, SmolVlm2Config};
     ///
-    /// let model = SmolVlm2::<32, kornia_tensor::kornia_tensor::host_alloc()>::from_single_safetensor(
+    /// let model = SmolVlm2::<32>::from_single_safetensor(
     ///     "/path/to/model.safetensors",
     ///     SmolVlm2Config::default()
     /// ).unwrap();

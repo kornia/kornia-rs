@@ -86,7 +86,7 @@ pub fn video_demo(args: &crate::Args) -> Result<(), Box<dyn std::error::Error>> 
     // === Video Understanding Implementation ===
     // This implementation uses Line::Video and InputMedia::Video for proper video understanding:
     //    - Uses Line::Video in message content
-    //    - Passes entire Video<kornia_image::allocator::host_alloc()> via InputMedia::Video
+    //    - Passes entire VideoSample via InputMedia::Video
     //    - Leverages SmolVLM2's native video processing for temporal analysis
     //    - Provides holistic understanding of motion and temporal relationships
     //

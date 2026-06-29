@@ -129,9 +129,8 @@ impl<const N: usize> VideoSample<N> {
     ///
     /// ```no_run
     /// use kornia_vlm::video::VideoSample;
-    /// use kornia_tensor::kornia_tensor::host_alloc();
     /// use kornia_image::Image;
-    /// let mut video = VideoSample::<32, kornia_tensor::host_alloc()>::default();
+    /// let mut video = VideoSample::<32>::default();
     /// // Apply some processing to each frame
     /// video.process_frames(|frame| {
     ///     // Example: modify frame data (e.g., apply a filter)
@@ -190,10 +189,9 @@ impl<const N: usize> VideoSample<N> {
     ///
     /// ```no_run
     /// use kornia_vlm::video::VideoSample;
-    /// use kornia_tensor::kornia_tensor::host_alloc();
     /// use kornia_image::Image;
     /// use candle_core::Device;
-    /// let video = VideoSample::<32, kornia_tensor::host_alloc()>::default();
+    /// let video = VideoSample::<32>::default();
     /// let device = Device::Cpu;
     /// let tensor = video.into_tensor(candle_core::DType::F32, &device).unwrap();
     /// println!("Tensor shape: {:?}", tensor.dims()); // [N, 3, H, W]
@@ -232,8 +230,7 @@ impl<const N: usize> VideoSample<N> {
     ///
     /// ```no_run
     /// use kornia_vlm::video::VideoSample;
-    /// use kornia_tensor::kornia_tensor::host_alloc();
-    /// let video = VideoSample::<32, kornia_tensor::host_alloc()>::default();
+    /// let video = VideoSample::<32>::default();
     /// let metadata = video.metadata();
     /// if let Some(fps) = metadata.fps {
     ///     println!("Video FPS: {}", fps);

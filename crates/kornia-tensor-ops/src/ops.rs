@@ -22,11 +22,11 @@ use crate::error::TensorOpsError;
 /// # Example
 ///
 /// ```
-/// use kornia_tensor::{Tensor};
+/// use kornia_tensor::{host_alloc, Tensor};
 /// use kornia_tensor_ops::TensorOps;
 ///
 /// let data: [u8; 6] = [1, 1, 1, 1, 1, 1];
-/// let t = Tensor::<u8, 2>::from_shape_slice([2, 3], &data).unwrap();
+/// let t = Tensor::<u8, 2>::from_shape_slice([2, 3], &data, host_alloc()).unwrap();
 /// let agg = Tensor::sum_elements(&t, 1).unwrap();
 /// assert_eq!(agg.shape, [2, 1]);
 /// assert_eq!(agg.as_slice(), [3, 3]);
@@ -183,14 +183,14 @@ where
 /// # Example
 ///
 /// ```
-/// use kornia_tensor::{Tensor};
+/// use kornia_tensor::{host_alloc, Tensor};
 /// use kornia_tensor_ops::TensorOps;
 ///
 /// let data1: Vec<u8> = vec![1, 2, 3, 4];
-/// let t1 = Tensor::<u8, 1>::from_shape_vec([4], data1).unwrap();
+/// let t1 = Tensor::<u8, 1>::from_shape_vec([4], data1, host_alloc()).unwrap();
 ///
 /// let data2: Vec<u8> = vec![1, 2, 3, 4];
-/// let t2 = Tensor::<u8, 1>::from_shape_vec([4], data2).unwrap();
+/// let t2 = Tensor::<u8, 1>::from_shape_vec([4], data2, host_alloc()).unwrap();
 ///
 /// let t3 = t1.add(&t2).unwrap();
 /// assert_eq!(t3.as_slice(), vec![2, 4, 6, 8]);
@@ -220,14 +220,14 @@ where
 /// # Example
 ///
 /// ```
-/// use kornia_tensor::{Tensor};
+/// use kornia_tensor::{host_alloc, Tensor};
 /// use kornia_tensor_ops::TensorOps;
 ///
 /// let data1: Vec<u8> = vec![1, 2, 3, 4];
-/// let t1 = Tensor::<u8, 1>::from_shape_vec([4], data1).unwrap();
+/// let t1 = Tensor::<u8, 1>::from_shape_vec([4], data1, host_alloc()).unwrap();
 ///
 /// let data2: Vec<u8> = vec![1, 2, 3, 4];
-/// let t2 = Tensor::<u8, 1>::from_shape_vec([4], data2).unwrap();
+/// let t2 = Tensor::<u8, 1>::from_shape_vec([4], data2, host_alloc()).unwrap();
 ///
 /// let t3 = t1.sub(&t2).unwrap();
 /// assert_eq!(t3.as_slice(), vec![0, 0, 0, 0]);
@@ -257,14 +257,14 @@ where
 /// # Example
 ///
 /// ```
-/// use kornia_tensor::{Tensor};
+/// use kornia_tensor::{host_alloc, Tensor};
 /// use kornia_tensor_ops::TensorOps;
 ///
 /// let data1: Vec<u8> = vec![1, 2, 3, 4];
-/// let t1 = Tensor::<u8, 1>::from_shape_vec([4], data1).unwrap();
+/// let t1 = Tensor::<u8, 1>::from_shape_vec([4], data1, host_alloc()).unwrap();
 ///
 /// let data2: Vec<u8> = vec![1, 2, 3, 4];
-/// let t2 = Tensor::<u8, 1>::from_shape_vec([4], data2).unwrap();
+/// let t2 = Tensor::<u8, 1>::from_shape_vec([4], data2, host_alloc()).unwrap();
 ///
 /// let t3 = t1.mul(&t2).unwrap();
 /// assert_eq!(t3.as_slice(), vec![1, 4, 9, 16]);
@@ -294,14 +294,14 @@ where
 /// # Example
 ///
 /// ```
-/// use kornia_tensor::{Tensor};
+/// use kornia_tensor::{host_alloc, Tensor};
 /// use kornia_tensor_ops::TensorOps;
 ///
 /// let data1: Vec<u8> = vec![1, 2, 3, 4];
-/// let t1 = Tensor::<u8, 1>::from_shape_vec([4], data1).unwrap();
+/// let t1 = Tensor::<u8, 1>::from_shape_vec([4], data1, host_alloc()).unwrap();
 ///
 /// let data2: Vec<u8> = vec![1, 2, 3, 4];
-/// let t2 = Tensor::<u8, 1>::from_shape_vec([4], data2).unwrap();
+/// let t2 = Tensor::<u8, 1>::from_shape_vec([4], data2, host_alloc()).unwrap();
 ///
 /// let t3 = t1.div(&t2).unwrap();
 /// assert_eq!(t3.as_slice(), vec![1, 1, 1, 1]);
@@ -335,11 +335,11 @@ where
 /// # Example
 ///
 /// ```
-/// use kornia_tensor::{Tensor};
+/// use kornia_tensor::{host_alloc, Tensor};
 /// use kornia_tensor_ops::TensorOps;
 ///
-/// let a = Tensor::<i32, 1>::from_shape_slice([3], &[1, 2, 3]).unwrap();
-/// let b = Tensor::<i32, 1>::from_shape_slice([3], &[4, 5, 6]).unwrap();
+/// let a = Tensor::<i32, 1>::from_shape_slice([3], &[1, 2, 3], host_alloc()).unwrap();
+/// let b = Tensor::<i32, 1>::from_shape_slice([3], &[4, 5, 6], host_alloc()).unwrap();
 /// let result = Tensor::<i32,1>::dot_product1(&a, &b).unwrap();
 /// assert_eq!(result, 32); // 1*4 + 2*5 + 3*6 = 4 + 10 + 18 = 32
 /// ```
@@ -376,11 +376,11 @@ where
 ///
 /// Example:
 /// ```
-/// use kornia_tensor::{Tensor};
+/// use kornia_tensor::{host_alloc, Tensor};
 /// use kornia_tensor_ops::TensorOps;
 ///
-/// let a = Tensor::<f32, 1>::from_shape_slice([3], &[1.0, 2.0, 3.0]).unwrap();
-/// let b = Tensor::<f32, 1>::from_shape_slice([3], &[2.0, 4.0, 6.0]).unwrap();
+/// let a = Tensor::<f32, 1>::from_shape_slice([3], &[1.0, 2.0, 3.0], host_alloc()).unwrap();
+/// let b = Tensor::<f32, 1>::from_shape_slice([3], &[2.0, 4.0, 6.0], host_alloc()).unwrap();
 /// let result = Tensor::cosine_similarity(&a, &b).unwrap();
 /// assert!((result - 1.0).abs() < 1e-6);
 /// ```
@@ -421,11 +421,11 @@ where
 /// # Example
 ///
 /// ```
-/// use kornia_tensor::{Tensor};
+/// use kornia_tensor::{host_alloc, Tensor};
 /// use kornia_tensor_ops::TensorOps;
 ///
-/// let a = Tensor::<f32, 1>::from_shape_slice([3], &[1.0, 2.0, 3.0]).unwrap();
-/// let b = Tensor::<f32, 1>::from_shape_slice([3], &[2.0, 4.0, 6.0]).unwrap();
+/// let a = Tensor::<f32, 1>::from_shape_slice([3], &[1.0, 2.0, 3.0], host_alloc()).unwrap();
+/// let b = Tensor::<f32, 1>::from_shape_slice([3], &[2.0, 4.0, 6.0], host_alloc()).unwrap();
 /// let result = Tensor::<f32,1>::cosine_distance(&a, &b).unwrap();
 /// assert!(result.abs() < 1e-6);
 /// ```
@@ -459,12 +459,12 @@ where
 /// # Examples
 ///
 /// ```
-/// use kornia_tensor::{Tensor};
+/// use kornia_tensor::{host_alloc, Tensor};
 /// use kornia_tensor_ops::ops::TensorOps;
 ///
 /// // Create a tensor
 /// let data = vec![1.0, 2.0, 3.0, 4.0];
-/// let t = Tensor::<f32, 2>::from_shape_vec([2, 2], data).unwrap();
+/// let t = Tensor::<f32, 2>::from_shape_vec([2, 2], data, host_alloc()).unwrap();
 ///
 /// // Use operations through the trait
 /// let scaled = t.mul_scalar(2.0);
