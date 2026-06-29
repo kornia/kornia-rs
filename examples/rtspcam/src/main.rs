@@ -1,6 +1,5 @@
 use argh::FromArgs;
 use kornia::{
-    image::allocator::host_alloc,
     image::{ops, Image},
     imgproc,
     io::{fps_counter::FpsCounter, stream::RTSPCameraConfig},

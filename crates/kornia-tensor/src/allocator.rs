@@ -124,23 +124,6 @@ impl TensorAllocator for CpuAllocator {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::alloc::Layout;
-
-    /// Verify that `CpuAllocator::allocate` returns a zeroed, host-accessible buffer.
-    #[test]
-    fn cpu_allocate_zeroed_and_aligned() {
-        let l = Layout::from_size_align(64, 1).unwrap();
-        let r = TensorAllocator::allocate(&CpuAllocator, l).unwrap();
-        assert_eq!(r.len_bytes(), 64);
-        assert!(r.domain().is_host_accessible());
-        // Must be zeroed.
-        unsafe { assert!((0..64).all(|i| *r.as_ptr().add(i) == 0)) };
-    }
-}
-
 // ── Runtime allocator handle ──────────────────────────────────────────────────
 
 use std::sync::{Arc, LazyLock};
@@ -160,4 +143,21 @@ static HOST_ALLOC: LazyLock<AllocHandle> = LazyLock::new(|| Arc::new(CpuAllocato
 /// Returns the process-global host allocator handle.
 pub fn host_alloc() -> AllocHandle {
     HOST_ALLOC.clone()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::alloc::Layout;
+
+    /// Verify that `CpuAllocator::allocate` returns a zeroed, host-accessible buffer.
+    #[test]
+    fn cpu_allocate_zeroed_and_aligned() {
+        let l = Layout::from_size_align(64, 1).unwrap();
+        let r = TensorAllocator::allocate(&CpuAllocator, l).unwrap();
+        assert_eq!(r.len_bytes(), 64);
+        assert!(r.domain().is_host_accessible());
+        // Must be zeroed.
+        unsafe { assert!((0..64).all(|i| *r.as_ptr().add(i) == 0)) };
+    }
 }

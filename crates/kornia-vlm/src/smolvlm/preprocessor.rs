@@ -435,23 +435,13 @@ mod tests {
 
         // Test no resize needed
         let mut buffer = None;
-        let result = SmolVlmImagePreprocessor::resize_image_with_buffer(
-            &img,
-            &mut buffer,
-            300,
-            kornia_tensor::host_alloc(),
-        )?;
+        let result = SmolVlmImagePreprocessor::resize_image_with_buffer(&img, &mut buffer, 300)?;
         assert_eq!(result.width(), 100);
         assert_eq!(result.height(), 200);
 
         // Test resize needed
         let mut buffer = None;
-        let result = SmolVlmImagePreprocessor::resize_image_with_buffer(
-            &img,
-            &mut buffer,
-            100,
-            kornia_tensor::host_alloc(),
-        )?;
+        let result = SmolVlmImagePreprocessor::resize_image_with_buffer(&img, &mut buffer, 100)?;
         assert_eq!(result.width(), 50); // scaled down proportionally
         assert_eq!(result.height(), 100); // longest edge = 100
 
@@ -511,13 +501,7 @@ mod tests {
         // First, test just the padding to verify it works correctly
         let mut img_buffer = None;
         let mut mask_buffer = None;
-        SmolVlmImagePreprocessor::pad_image_in_place(
-            &img,
-            &mut img_buffer,
-            &mut mask_buffer,
-            4,
-            kornia_tensor::host_alloc(),
-        )?;
+        SmolVlmImagePreprocessor::pad_image_in_place(&img, &mut img_buffer, &mut mask_buffer, 4)?;
 
         let padded_img_data = img_buffer
             .as_ref()

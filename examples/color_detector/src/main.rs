@@ -1,5 +1,4 @@
 use argh::FromArgs;
-use kornia::image::allocator::host_alloc;
 use std::path::PathBuf;
 
 use kornia::image::{ops, Image};

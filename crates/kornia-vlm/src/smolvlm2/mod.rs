@@ -453,7 +453,6 @@ mod tests {
     use std::path::Path;
 
     use kornia_io::{jpeg::read_image_jpeg_rgb8, png::read_image_png_rgb8};
-    use kornia_tensor::host_alloc;
 
     use super::*;
 
@@ -479,7 +478,7 @@ mod tests {
             debug: true,
             ..Default::default()
         };
-        let mut model = SmolVlm2::<32, _>::new(config).unwrap();
+        let mut model = SmolVlm2::<32>::new(config).unwrap();
 
         let prompt = "Describe the image.";
         let sample_len = 500;
@@ -497,7 +496,6 @@ mod tests {
                 }],
                 Some(InputMedia::Images(vec![image.into_inner()])),
                 sample_len,
-                kornia_tensor::host_alloc(),
             )
             .expect("Inference failed");
     }

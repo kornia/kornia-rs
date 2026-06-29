@@ -1,7 +1,6 @@
 use argh::FromArgs;
 
 use kornia::{
-    image::allocator::host_alloc,
     image::{ops, Image},
     imgproc::{color, contours, threshold},
 };

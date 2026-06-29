@@ -787,7 +787,6 @@ fn fit_line(
 
 #[cfg(test)]
 mod tests {
-    use kornia_image::allocator::host_alloc;
     use kornia_io::png::read_image_png_mono8;
 
     use crate::{

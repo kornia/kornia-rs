@@ -2,10 +2,7 @@ use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
 use gstreamer_video as gst_video;
-use kornia::{
-    image::allocator::host_alloc,
-    image::{Image, ImageSize},
-};
+use kornia::image::{Image, ImageSize};
 use kornia_vlm::smolvlm2::{InputMedia, Line, Message, Role, SmolVlm2, SmolVlm2Config};
 use kornia_vlm::video::VideoSample;
 

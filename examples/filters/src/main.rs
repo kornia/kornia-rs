@@ -5,7 +5,6 @@ use std::sync::{
 };
 
 use kornia::{
-    image::allocator::host_alloc,
     image::{ops, Image},
     imgproc,
     io::stream::V4L2CameraConfig,

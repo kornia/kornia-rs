@@ -930,7 +930,6 @@ mod tests {
         utils::Pixel,
     };
     use kornia_algebra::Vec2F32;
-    use kornia_image::allocator::host_alloc;
     use kornia_io::png::read_image_png_mono8;
 
     const EPSILON: f32 = 0.0001;

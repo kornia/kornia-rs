@@ -497,7 +497,7 @@ mod tests {
         )?;
 
         let (img_patches, mask_patches, size) =
-            preprocessor.preprocess(&img, DType::F32, &device, kornia_tensor::host_alloc())?;
+            preprocessor.preprocess(&img, DType::F32, &device)?;
 
         // Check that we got the expected dimensions
         assert_eq!(img_patches.dims().len(), 4); // [patches, channels, height, width]
@@ -533,23 +533,13 @@ mod tests {
 
         // Test no resize needed
         let mut buffer = None;
-        let result = ImageProcessor::resize_image_with_buffer(
-            &img,
-            &mut buffer,
-            300,
-            kornia_tensor::host_alloc(),
-        )?;
+        let result = ImageProcessor::resize_image_with_buffer(&img, &mut buffer, 300)?;
         assert_eq!(result.width(), 100);
         assert_eq!(result.height(), 200);
 
         // Test resize needed
         let mut buffer = None;
-        let result = ImageProcessor::resize_image_with_buffer(
-            &img,
-            &mut buffer,
-            100,
-            kornia_tensor::host_alloc(),
-        )?;
+        let result = ImageProcessor::resize_image_with_buffer(&img, &mut buffer, 100)?;
         assert_eq!(result.width(), 50); // scaled down proportionally
         assert_eq!(result.height(), 100); // longest edge = 100
 
@@ -621,13 +611,7 @@ mod tests {
         // First, test just the padding to verify it works correctly
         let mut img_buffer = None;
         let mut mask_buffer = None;
-        ImageProcessor::pad_image_in_place(
-            &img,
-            &mut img_buffer,
-            &mut mask_buffer,
-            4,
-            kornia_tensor::host_alloc(),
-        )?;
+        ImageProcessor::pad_image_in_place(&img, &mut img_buffer, &mut mask_buffer, 4)?;
 
         let padded_img_data = img_buffer
             .as_ref()
@@ -655,7 +639,7 @@ mod tests {
 
         // Now test the full preprocessing pipeline
         let (img_patches, mask_patches, size) =
-            preprocessor.preprocess(&img, DType::F32, &device, kornia_tensor::host_alloc())?;
+            preprocessor.preprocess(&img, DType::F32, &device)?;
 
         // Verify basic structure
         assert_eq!(img_patches.dims().len(), 4); // [patches, channels, height, width]

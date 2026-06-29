@@ -2,7 +2,6 @@ use argh::FromArgs;
 use std::path::PathBuf;
 
 use kornia::{
-    image::allocator::host_alloc,
     image::{Image, ImageSize},
     imgproc::{
         self,
