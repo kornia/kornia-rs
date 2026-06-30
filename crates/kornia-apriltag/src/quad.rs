@@ -9,9 +9,59 @@ use kornia_imgproc::filter::kernels::gaussian_kernel_1d;
 use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 use std::{
+    cell::RefCell,
     f32::{self, consts::PI},
     ops::ControlFlow,
+    sync::OnceLock,
 };
+
+// Precomputed once: gaussian_kernel_1d(filter_size, 1.0) where filter_size is derived from
+// SIGMA=1.0 CUTOFF=0.05 constants in quad_segment_maxima. Always 7 elements.
+static GAUSSIAN_KERNEL: OnceLock<Vec<f32>> = OnceLock::new();
+
+#[inline(always)]
+fn gaussian_kernel() -> &'static [f32] {
+    GAUSSIAN_KERNEL.get_or_init(|| {
+        const SIGMA: f32 = 1.0;
+        const CUTOFF: f32 = 0.05;
+        let filter_size =
+            (2.0 * ((-(CUTOFF.ln()) * 2.0 * SIGMA * SIGMA).sqrt() + 1.0) + 1.0) as usize;
+        gaussian_kernel_1d(filter_size, SIGMA)
+    })
+}
+
+/// Per-thread scratch buffers for compute_line_fit_prefix_sums (weights pass + lfps output).
+#[derive(Default)]
+struct LfpWorkspace {
+    weights: Vec<f32>,
+    lfps: Vec<LineFit>,
+}
+
+/// Per-thread scratch buffers for quad_segment_maxima (all internal allocations).
+#[derive(Default)]
+struct SegWorkspace {
+    soa: Vec<f32>,
+    errors: Vec<f32>,
+    smoothed_errors: Vec<f32>,
+    maxima: Vec<usize>,
+    maxima_errs: Vec<f32>,
+}
+
+/// Combined per-thread workspace for fit_quads hot path (eliminates all per-cluster allocations).
+#[derive(Default)]
+struct FitWorkspace {
+    cluster: Vec<GradientInfo>,
+    lfw: LfpWorkspace,
+    seg: SegWorkspace,
+    /// Compact (slope_bits<<32|orig_idx) u64 pairs for sort-by-key.
+    sort_pairs: Vec<u64>,
+    /// Scratch permutation buffer so we scatter-then-copy instead of sorting 16-byte structs.
+    scratch: Vec<GradientInfo>,
+}
+
+thread_local! {
+    static FIT_WS: RefCell<FitWorkspace> = RefCell::new(FitWorkspace::default());
+}
 
 const SLOPE_OFFSET_BASE: i32 = 2 << 15; // Base value for slope offset calculations.
 const SLOPE_OFFSET_DOUBLE: i32 = 2 * SLOPE_OFFSET_BASE; // Double the base value for extended range.
@@ -140,9 +190,8 @@ pub fn fit_quads<A: ImageAllocator + Sync>(
     }
     let keys: Vec<(usize, usize)> = seen.into_keys().collect();
 
-    let result = keys.into_par_iter()
+    keys.into_par_iter()
         .filter_map(|key| {
-            // Sum total events for this key, filter before allocating merged Vec.
             let total_len: usize = strip_maps
                 .iter()
                 .filter_map(|m| m.get(&key))
@@ -151,33 +200,37 @@ pub fn fit_quads<A: ImageAllocator + Sync>(
             if total_len < fit_quad_config.min_cluster_pixels || total_len > max_cluster_len {
                 return None;
             }
-            // Merge per-strip events into a local Vec (stays L2-hot for fit_single_quad).
-            let mut cluster: Vec<GradientInfo> = Vec::with_capacity(total_len);
-            for map in strip_maps {
-                if let Some(entries) = map.get(&key) {
-                    cluster.extend_from_slice(entries);
+            FIT_WS.with(|cell| {
+                let ws = &mut *cell.borrow_mut();
+                ws.cluster.clear();
+                for map in strip_maps {
+                    if let Some(entries) = map.get(&key) {
+                        ws.cluster.extend_from_slice(entries);
+                    }
                 }
-            }
-            let mut quad = fit_single_quad(
-                src,
-                &mut cluster,
-                min_tag_width,
-                normal_border,
-                reversed_border,
-                &fit_quad_config,
-            )?;
-            if downscale_factor > 1 {
-                let df = downscale_factor as f32;
-                quad.corners.iter_mut().for_each(|c| {
-                    c.x = (c.x - 0.5) * df + 0.5;
-                    c.y = (c.y - 0.5) * df + 0.5;
-                });
-            }
-            Some(quad)
+                let mut quad = fit_single_quad(
+                    src,
+                    &mut ws.cluster,
+                    min_tag_width,
+                    normal_border,
+                    reversed_border,
+                    &fit_quad_config,
+                    &mut ws.lfw,
+                    &mut ws.seg,
+                    &mut ws.sort_pairs,
+                    &mut ws.scratch,
+                )?;
+                if downscale_factor > 1 {
+                    let df = downscale_factor as f32;
+                    quad.corners.iter_mut().for_each(|c| {
+                        c.x = (c.x - 0.5) * df + 0.5;
+                        c.y = (c.y - 0.5) * df + 0.5;
+                    });
+                }
+                Some(quad)
+            })
         })
-        .collect();
-
-    result
+        .collect()
 }
 
 /// Fits a single quadrilateral (quad) to a cluster of gradient information in the image.
@@ -201,6 +254,10 @@ fn fit_single_quad<A: ImageAllocator>(
     normal_border: bool,
     reversed_border: bool,
     config: &FitQuadConfig,
+    lfw: &mut LfpWorkspace,
+    seg: &mut SegWorkspace,
+    sort_pairs: &mut Vec<u64>,
+    scratch: &mut Vec<GradientInfo>,
 ) -> Option<Quad> {
     if cluster.len() < 24 {
         return None;
@@ -211,7 +268,6 @@ fn fit_single_quad<A: ImageAllocator>(
     let mut y_max = cluster[0].pos.y;
     let mut y_min = y_max;
 
-    // Find the bounding box of the cluster
     cluster.iter().for_each(|GradientInfo { pos, .. }| {
         if pos.x > x_max {
             x_max = pos.x;
@@ -226,18 +282,13 @@ fn fit_single_quad<A: ImageAllocator>(
         }
     });
 
-    // Reject clusters whose bounding box is too small
     if (x_max - x_min) * (y_max - y_min) < min_tag_width as u32 {
         return None;
     }
 
-    // add some noise to (cx,cy) so that pixels get a more diverse set
-    // of theta estimates. This will help us remove more points.
     let cx = (x_min + x_max) as f32 * 0.5 + 0.05118;
     let cy = (y_min + y_max) as f32 * 0.5 - 0.028581;
 
-    // Pass 1: compute dot only (cheap: no fdiv) to early-exit on border mismatch.
-    // ~88/210 clusters fail here; avoiding slope compute saves ~3µs per rejected cluster.
     let mut dot = 0.0f32;
     for g in cluster.iter() {
         let dx = g.pos.x as f32 - cx;
@@ -250,7 +301,6 @@ fn fit_single_quad<A: ImageAllocator>(
         ..Default::default()
     };
 
-    // Ensure that the black border is inside the white border
     if !reversed_border && quad.reversed_border {
         return None;
     }
@@ -258,7 +308,6 @@ fn fit_single_quad<A: ImageAllocator>(
         return None;
     }
 
-    // Pass 2: compute slopes (fdiv per element) only for clusters that pass border check.
     for g in cluster.iter_mut() {
         let mut dx = g.pos.x as f32 - cx;
         let mut dy = g.pos.y as f32 - cy;
@@ -268,13 +317,32 @@ fn fit_single_quad<A: ImageAllocator>(
         g.slope = quadrant as f32 + dy / dx;
     }
 
-    cluster.sort_unstable_by(|a, b| a.slope.total_cmp(&b.slope));
+    // Sort compact (sort_key<<32|orig_idx) u64 pairs — 8 bytes vs 16 for GradientInfo.
+    // Slopes include negative values (quadrant offset can be -65536), so we need the IEEE 754
+    // total-order bit transform: flip sign bit for positives, flip all bits for negatives.
+    #[inline(always)]
+    fn slope_sort_key(v: f32) -> u32 {
+        let b = v.to_bits();
+        if b >> 31 == 0 { b ^ 0x8000_0000 } else { !b }
+    }
+    sort_pairs.resize(cluster.len(), 0u64);
+    for (i, g) in cluster.iter().enumerate() {
+        sort_pairs[i] = ((slope_sort_key(g.slope) as u64) << 32) | i as u64;
+    }
+    sort_pairs.sort_unstable();
+    // Scatter into scratch in sorted order, copy back — avoids moving 16-byte structs during sort.
+    // Cluster is L1-hot (~3.5KB) from the slope pass, so random reads are fast.
+    scratch.clear();
+    for &pair in sort_pairs.iter() {
+        scratch.push(cluster[(pair & 0xFFFF_FFFF) as usize]);
+    }
+    cluster.copy_from_slice(scratch.as_slice());
 
-    let lfps = compute_line_fit_prefix_sums(src, cluster);
+    compute_line_fit_prefix_sums_into(src, cluster, lfw);
 
     let mut indices = [0usize; 4];
 
-    if !quad_segment_maxima(cluster, &lfps, &mut indices, config) {
+    if !quad_segment_maxima_ws(cluster, &lfw.lfps, &mut indices, config, seg) {
         return None;
     }
 
@@ -285,7 +353,7 @@ fn fit_single_quad<A: ImageAllocator>(
         let i1 = indices[(i + 1) & 3];
 
         let mut mse = 0.0f32;
-        fit_line(&lfps, i0, i1, Some(&mut lines[i]), None, Some(&mut mse));
+        fit_line(&lfw.lfps, i0, i1, Some(&mut lines[i]), None, Some(&mut mse));
 
         if mse > config.max_line_fit_mse {
             return ControlFlow::Break(());
@@ -418,24 +486,25 @@ struct LineFit {
 /// # Returns
 ///
 /// A vector of `LineFit` structures containing prefix sums for each point.
-fn compute_line_fit_prefix_sums<A: ImageAllocator>(
+// Hot path: fills lfw.weights and lfw.lfps without allocating.
+fn compute_line_fit_prefix_sums_into<A: ImageAllocator>(
     src: &Image<Pixel, 1, A>,
     gradient_infos: &[GradientInfo],
-) -> Vec<LineFit> {
+    lfw: &mut LfpWorkspace,
+) {
     let src_slice = src.as_slice();
     let width = src.width();
     let height = src.height();
     let n = gradient_infos.len();
-    let mut lfps = vec![LineFit::default(); n];
+    lfw.weights.resize(n, 0.0);
+    lfw.lfps.resize_with(n, LineFit::default);
+    let weights = &mut lfw.weights;
+    let lfps = &mut lfw.lfps;
 
     #[cfg(target_arch = "aarch64")]
     {
         use std::arch::aarch64::*;
 
-        // Pass 1: batch-compute weights using NEON vsqrtq_f32 (4 sqrts per 4 cycles vs
-        // 12 cycles per scalar fsqrt). Scatter-gather of src_slice is still scalar
-        // since NEON has no u8 gather, but sqrt throughput is the bottleneck.
-        let mut weights = vec![0.0f32; n];
         let mut k = 0;
         while k + 4 <= n {
             let mut g2 = [0.0f32; 4];
@@ -452,7 +521,6 @@ fn compute_line_fit_prefix_sums<A: ImageAllocator>(
                         - src_slice[(iy - 1) * width + ix] as i32;
                     g2[j] = (gx * gx + gy * gy) as f32;
                 }
-                // g2[j] stays 0.0 for boundary pixels → sqrt(0)+1 = 1.0
             }
             let wv = unsafe {
                 vaddq_f32(vsqrtq_f32(vld1q_f32(g2.as_ptr())), vdupq_n_f32(1.0))
@@ -478,7 +546,6 @@ fn compute_line_fit_prefix_sums<A: ImageAllocator>(
             k += 1;
         }
 
-        // Pass 2: accumulate in registers — no load from lfps[i-1] (eliminates load-use chain).
         let (mut smx, mut smy, mut smxx, mut smxy, mut smyy, mut sw) =
             (0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32);
         for i in 0..n {
@@ -493,17 +560,16 @@ fn compute_line_fit_prefix_sums<A: ImageAllocator>(
             sw += w;
             lfps[i] = LineFit { mx: smx, my: smy, mxx: smxx, mxy: smxy, myy: smyy, w: sw };
         }
-        return lfps;
+        return;
     }
 
-    // Scalar path (non-aarch64).
     #[allow(unreachable_code)]
     {
         let (mut smx, mut smy, mut smxx, mut smxy, mut smyy, mut sw) =
             (0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32);
-        for (i, cluster) in gradient_infos.iter().enumerate() {
-            let x = cluster.pos.x as f32 * 0.5 + 0.5;
-            let y = cluster.pos.y as f32 * 0.5 + 0.5;
+        for (i, gi) in gradient_infos.iter().enumerate() {
+            let x = gi.pos.x as f32 * 0.5 + 0.5;
+            let y = gi.pos.y as f32 * 0.5 + 0.5;
             let ix = x as usize;
             let iy = y as usize;
             let w = if ix > 0 && ix + 1 < width && iy > 0 && iy + 1 < height {
@@ -523,8 +589,17 @@ fn compute_line_fit_prefix_sums<A: ImageAllocator>(
             sw += w;
             lfps[i] = LineFit { mx: smx, my: smy, mxx: smxx, mxy: smxy, myy: smyy, w: sw };
         }
-        lfps
     }
+}
+
+// Test/compatibility wrapper: allocates fresh vecs.
+fn compute_line_fit_prefix_sums<A: ImageAllocator>(
+    src: &Image<Pixel, 1, A>,
+    gradient_infos: &[GradientInfo],
+) -> Vec<LineFit> {
+    let mut lfw = LfpWorkspace::default();
+    compute_line_fit_prefix_sums_into(src, gradient_infos, &mut lfw);
+    lfw.lfps
 }
 
 /// Interior Gaussian smooth without modulo: processes `errors[half..len-half]` using
@@ -610,45 +685,46 @@ fn smooth_interior(errors: &[f32], kernel: &[f32], out: &mut [f32], half: usize,
 /// # Returns
 ///
 /// `true` if four valid maxima are found and written to `indices`, `false` otherwise.
-fn quad_segment_maxima(
+// Hot path: uses pre-allocated SegWorkspace buffers, no per-call malloc.
+fn quad_segment_maxima_ws(
     gradient_infos: &[GradientInfo],
     lfps: &[LineFit],
     indices: &mut [usize; 4],
     config: &FitQuadConfig,
+    seg: &mut SegWorkspace,
 ) -> bool {
     debug_assert_eq!(gradient_infos.len(), lfps.len());
     let len = gradient_infos.len();
     let window_size = 20.min(len / 12);
-
-    // can't fit a quad, too few points
     if window_size < 2 {
         return false;
     }
 
-    let mut errors = vec![0.0f32; len];
+    let pad = len + 1;
+    // Resize scratch buffers — no malloc if capacity already sufficient.
+    seg.soa.resize(6 * pad, 0.0);
+    // Zero the 6 prefix-sum sentinels at index 0 of each sub-array.
+    for k in 0..6usize { seg.soa[k * pad] = 0.0; }
+    seg.errors.resize(len, 0.0);
+    seg.smoothed_errors.resize(len, 0.0);
+    seg.maxima.resize(len, 0);
+    seg.maxima_errs.resize(len, 0.0);
 
     let ws = window_size;
     let inner_end = len - ws;
 
-    // Scalar wrapping boundary elements (first ws and last ws).
     for i in (0..ws).chain(inner_end..len) {
-        fit_line(lfps, (i + len - ws) % len, (i + ws) % len, None, errors.get_mut(i), None);
+        fit_line(lfps, (i + len - ws) % len, (i + ws) % len, None, seg.errors.get_mut(i), None);
     }
 
-    // Interior: no wrap. NEON 4-wide on aarch64, scalar elsewhere.
-    // Build padded SoA from AoS lfps. Padded: index 0 = 0 sentinel, index k+1 = lfps[k].field.
-    // sw_field[i] = soa[i+ws+1] - soa[i-ws], valid for i in ws..len-ws.
-    // Single allocation for all 6 SoA arrays to minimize malloc cost.
-    let pad = len + 1;
-    let mut soa = vec![0.0f32; 6 * pad]; // [mx | my | mxx | mxy | myy | w]
     for k in 0..len {
         let lk = &lfps[k];
-        soa[k + 1]         = lk.mx;
-        soa[pad + k + 1]   = lk.my;
-        soa[2*pad + k + 1] = lk.mxx;
-        soa[3*pad + k + 1] = lk.mxy;
-        soa[4*pad + k + 1] = lk.myy;
-        soa[5*pad + k + 1] = lk.w;
+        seg.soa[k + 1]         = lk.mx;
+        seg.soa[pad + k + 1]   = lk.my;
+        seg.soa[2*pad + k + 1] = lk.mxx;
+        seg.soa[3*pad + k + 1] = lk.mxy;
+        seg.soa[4*pad + k + 1] = lk.myy;
+        seg.soa[5*pad + k + 1] = lk.w;
     }
 
     let n_f32 = (2 * ws + 1) as f32;
@@ -656,8 +732,8 @@ fn quad_segment_maxima(
     #[cfg(target_arch = "aarch64")]
     {
         use std::arch::aarch64::*;
-        let p = soa.as_ptr();
-        let ep = errors.as_mut_ptr();
+        let p = seg.soa.as_ptr();
+        let ep = seg.errors.as_mut_ptr();
         let mx_p  = p;
         let my_p  = unsafe { p.add(pad) };
         let mxx_p = unsafe { p.add(2 * pad) };
@@ -674,17 +750,13 @@ fn quad_segment_maxima(
             unsafe {
                 let hi = i + ws + 1;
                 let lo = i - ws;
-
                 let sw_mx  = vsubq_f32(vld1q_f32(mx_p.add(hi)),  vld1q_f32(mx_p.add(lo)));
                 let sw_my  = vsubq_f32(vld1q_f32(my_p.add(hi)),  vld1q_f32(my_p.add(lo)));
                 let sw_mxx = vsubq_f32(vld1q_f32(mxx_p.add(hi)), vld1q_f32(mxx_p.add(lo)));
                 let sw_mxy = vsubq_f32(vld1q_f32(mxy_p.add(hi)), vld1q_f32(mxy_p.add(lo)));
                 let sw_myy = vsubq_f32(vld1q_f32(myy_p.add(hi)), vld1q_f32(myy_p.add(lo)));
                 let sw_w   = vsubq_f32(vld1q_f32(w_p.add(hi)),   vld1q_f32(w_p.add(lo)));
-
-                // Replace 5 vdivq_f32 (~70 cycles) with one reciprocal +
-                // two Newton-Raphson refinement steps (~32 cycles total).
-                // Full f32 precision (~24 bits) after 2 steps.
+                // 2-step Newton-Raphson reciprocal (~32 cycles) vs 5 vdivq_f32 (~70 cycles).
                 let inv_w0 = vrecpeq_f32(sw_w);
                 let inv_w1 = vmulq_f32(vrecpsq_f32(sw_w, inv_w0), inv_w0);
                 let inv_w  = vmulq_f32(vrecpsq_f32(sw_w, inv_w1), inv_w1);
@@ -701,75 +773,62 @@ fn quad_segment_maxima(
             i += 4;
         }
         while i < inner_end {
-            fit_line(lfps, i - ws, i + ws, None, errors.get_mut(i), None);
+            fit_line(lfps, i - ws, i + ws, None, seg.errors.get_mut(i), None);
             i += 1;
         }
     }
 
     #[cfg(not(target_arch = "aarch64"))]
     for i in ws..inner_end {
-        fit_line(lfps, i - ws, i + ws, None, errors.get_mut(i), None);
+        fit_line(lfps, i - ws, i + ws, None, seg.errors.get_mut(i), None);
     }
 
-    const SIGMA: f32 = 1.0;
-    const CUTOFF: f32 = 0.05;
-
-    let filter_size = (2.0 * ((-(CUTOFF.ln()) * 2.0 * SIGMA * SIGMA).sqrt() + 1.0) + 1.0) as usize;
+    let kernel = gaussian_kernel();
+    let filter_size = kernel.len();
     let half = filter_size / 2;
-    let mut smoothed_errors = vec![0.0f32; len];
 
-    let gaussian_kernel = gaussian_kernel_1d(filter_size, SIGMA);
-
-    // Edge elements that wrap around (2×half elements at the ends): use modulo.
     for iy in (0..half).chain(len - half..len) {
         let mut acc = 0.0f32;
         for i in 0..filter_size {
             let idx = (iy + i + len - half) % len;
-            acc += errors[idx] * gaussian_kernel[i];
+            acc += seg.errors[idx] * kernel[i];
         }
-        smoothed_errors[iy] = acc;
+        seg.smoothed_errors[iy] = acc;
     }
+    smooth_interior(&seg.errors, kernel, &mut seg.smoothed_errors, half, len);
 
-    // Interior elements: no wrap-around → fast path without division.
-    smooth_interior(&errors, &gaussian_kernel, &mut smoothed_errors, half, len);
+    // Swap so seg.errors now holds the smoothed values (seg.smoothed_errors gets the raw, unused).
+    std::mem::swap(&mut seg.errors, &mut seg.smoothed_errors);
 
-    errors = smoothed_errors;
-
-    let mut maxima = vec![0usize; len];
-    let mut maxima_errs = vec![0.0f32; len];
     let mut nmaxima = 0usize;
-
-    (0..gradient_infos.len()).for_each(|i| {
-        if errors[i] > errors[(i + 1) % len] && errors[i] > errors[(i + len - 1) % len] {
-            maxima[nmaxima] = i;
-            maxima_errs[nmaxima] = errors[i];
+    for i in 0..len {
+        if seg.errors[i] > seg.errors[(i + 1) % len] && seg.errors[i] > seg.errors[(i + len - 1) % len] {
+            seg.maxima[nmaxima] = i;
+            seg.maxima_errs[nmaxima] = seg.errors[i];
             nmaxima += 1;
         }
-    });
+    }
 
     if nmaxima < 4 {
         return false;
     }
 
     if nmaxima > config.max_nmaxima {
-        let mut maxima_errs_copy = maxima_errs.clone();
-
+        let mut maxima_errs_copy = seg.maxima_errs[..nmaxima].to_vec();
         maxima_errs_copy.sort_by(|a, b| b.total_cmp(a));
-
         let maxima_thresh = maxima_errs_copy[config.max_nmaxima];
         let mut out = 0usize;
         for i in 0..nmaxima {
-            if maxima_errs[i] <= maxima_thresh {
+            if seg.maxima_errs[i] <= maxima_thresh {
                 continue;
             }
-            maxima[out] = maxima[i];
+            let v = seg.maxima[i];
+            seg.maxima[out] = v;
             out += 1;
         }
-
         if out < 4 {
             return false;
         }
-
         nmaxima = out;
     }
 
@@ -790,62 +849,24 @@ fn quad_segment_maxima(
     let mut params12 = [0.0f32; 4];
 
     (0..nmaxima - 3).for_each(|m0| {
-        let i0 = maxima[m0];
-
+        let i0 = seg.maxima[m0];
         ((m0 + 1)..(nmaxima - 2)).for_each(|m1| {
-            let i1 = maxima[m1];
-
-            fit_line(
-                lfps,
-                i0,
-                i1,
-                Some(&mut params01),
-                Some(&mut err01),
-                Some(&mut mse01),
-            );
-
-            if mse01 > config.max_line_fit_mse {
-                return;
-            }
-
+            let i1 = seg.maxima[m1];
+            fit_line(lfps, i0, i1, Some(&mut params01), Some(&mut err01), Some(&mut mse01));
+            if mse01 > config.max_line_fit_mse { return; }
             ((m1 + 1)..nmaxima - 1).for_each(|m2| {
-                let i2 = maxima[m2];
-
-                fit_line(
-                    lfps,
-                    i1,
-                    i2,
-                    Some(&mut params12),
-                    Some(&mut err12),
-                    Some(&mut mse12),
-                );
-
-                if mse12 > config.max_line_fit_mse {
-                    return;
-                }
-
+                let i2 = seg.maxima[m2];
+                fit_line(lfps, i1, i2, Some(&mut params12), Some(&mut err12), Some(&mut mse12));
+                if mse12 > config.max_line_fit_mse { return; }
                 let dot = params01[2] * params12[2] + params01[3] * params12[3];
-                if dot.abs() > config.cos_critical_rad {
-                    return;
-                }
-
+                if dot.abs() > config.cos_critical_rad { return; }
                 ((m2 + 1)..nmaxima).for_each(|m3| {
-                    let i3 = maxima[m3];
-
+                    let i3 = seg.maxima[m3];
                     fit_line(lfps, i2, i3, None, Some(&mut err23), Some(&mut mse23));
-
-                    if mse23 > config.max_line_fit_mse {
-                        return;
-                    }
-
+                    if mse23 > config.max_line_fit_mse { return; }
                     fit_line(lfps, i3, i0, None, Some(&mut err30), Some(&mut mse30));
-
-                    if mse30 > config.max_line_fit_mse {
-                        return;
-                    }
-
+                    if mse30 > config.max_line_fit_mse { return; }
                     let err = err01 + err12 + err23 + err30;
-
                     if err < best_error {
                         best_error = err;
                         best_indices[0] = i0;
@@ -862,15 +883,19 @@ fn quad_segment_maxima(
         return false;
     }
 
-    best_indices.iter().enumerate().for_each(|(i, b)| {
-        indices[i] = *b;
-    });
+    best_indices.iter().enumerate().for_each(|(i, b)| { indices[i] = *b; });
+    (best_error / gradient_infos.len() as f32) < config.max_line_fit_mse
+}
 
-    if (best_error / gradient_infos.len() as f32) < config.max_line_fit_mse {
-        return true;
-    }
-
-    false
+// Test/compatibility wrapper: allocates fresh SegWorkspace.
+fn quad_segment_maxima(
+    gradient_infos: &[GradientInfo],
+    lfps: &[LineFit],
+    indices: &mut [usize; 4],
+    config: &FitQuadConfig,
+) -> bool {
+    let mut seg = SegWorkspace::default();
+    quad_segment_maxima_ws(gradient_infos, lfps, indices, config, &mut seg)
 }
 
 /// Fits a line to a segment of points using prefix sums for weighted least squares.
