@@ -75,9 +75,8 @@ pub mod optical_flow_pyr_lk;
 /// contours
 pub mod contours;
 
-/// Experimental CubeCL-backed GPU image processing kernels.
+/// GPU-accelerated image processing kernels (CubeCL and native CUDA paths).
 ///
-/// Enabled by the `gpu-cubecl` feature. Device-to-device kernels only at this stage;
-/// host-device transfer APIs will follow in a later milestone.
-#[cfg(feature = "gpu-cubecl")]
+/// Enabled by the `gpu-cubecl` or `gpu-cuda` feature.
+#[cfg(any(feature = "gpu-cubecl", feature = "gpu-cuda"))]
 pub mod gpu;

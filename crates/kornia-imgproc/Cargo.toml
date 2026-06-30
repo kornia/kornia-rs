@@ -86,6 +86,7 @@ required-features = ["opencv_bench"]
 [dependencies]
 cubecl-cpu = { version = "=0.10.0-pre.4", optional = true }
 cubecl-cuda = { version = "=0.10.0-pre.4", optional = true }
+cudarc = { workspace = true, optional = true }
 kornia-algebra = { workspace = true }
 kornia-image = { workspace = true }
 kornia-tensor = { workspace = true }
@@ -115,6 +116,10 @@ gpu-cubecl = [
   "dep:cubecl",
   "dep:cubecl-cpu",
   "dep:cubecl-cuda",
-  "kornia-tensor/gpu-cubecl"
+  "kornia-tensor/gpu-cubecl",
+]
+gpu-cuda = [
+  "dep:cudarc",
+  "kornia-tensor/cudarc",
 ]
 opencv_bench = ["dep:opencv"]
