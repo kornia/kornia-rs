@@ -50,8 +50,8 @@ use std::{
 };
 
 use cudarc::driver::{
-    CudaContext, CudaFunction, CudaSlice, CudaStream, DevicePtr, DeviceRepr, LaunchArgs,
-    LaunchConfig, PushKernelArg, ValidAsZeroBits,
+    CudaContext, CudaFunction, CudaModule, CudaSlice, CudaStream, DevicePtr, DeviceRepr,
+    LaunchArgs, LaunchConfig, PushKernelArg, ValidAsZeroBits,
 };
 use cudarc::nvrtc::{compile_ptx_with_opts, CompileOptions};
 
@@ -202,6 +202,40 @@ impl CudaKernel {
     /// Returns [`CudaError::Driver`] on nvrtc compile failure or module/function
     /// load failure.
     pub fn compile(ctx: &Arc<CudaContext>, src: &str, fn_name: &str) -> Result<Self, CudaError> {
+        let module = Self::load_module(ctx, src)?;
+        // `load_function` returns a `CudaFunction` that holds its own
+        // `Arc<CudaModule>`, so `module` may drop at the end of this scope.
+        let func = module
+            .load_function(fn_name)
+            .map_err(|e| CudaError::Driver(e.to_string()))?;
+
+        Ok(CudaKernel { func })
+    }
+
+    /// Compile `src` **once** and load several `extern "C" __global__` functions
+    /// from it — for a source file that defines a whole kernel suite (NMS, top-K,
+    /// matching, …). Returns one [`CudaKernel`] per name, in order. Avoids paying
+    /// the nvrtc compile cost once per function.
+    pub fn compile_many(
+        ctx: &Arc<CudaContext>,
+        src: &str,
+        fn_names: &[&str],
+    ) -> Result<Vec<Self>, CudaError> {
+        let module = Self::load_module(ctx, src)?;
+        fn_names
+            .iter()
+            .map(|name| {
+                module
+                    .load_function(name)
+                    .map(|func| CudaKernel { func })
+                    .map_err(|e| CudaError::Driver(e.to_string()))
+            })
+            .collect()
+    }
+
+    /// nvrtc-compile `src` and load the module on `ctx`'s device, with the target
+    /// arch (`compute_XY`) auto-detected from the device's compute capability.
+    fn load_module(ctx: &Arc<CudaContext>, src: &str) -> Result<Arc<CudaModule>, CudaError> {
         // Detect arch from the context's device.
         let (major, minor) = ctx
             .compute_capability()
@@ -236,16 +270,8 @@ impl CudaKernel {
         )
         .map_err(|e| CudaError::Driver(format!("{e:?}")))?;
 
-        let module = ctx
-            .load_module(ptx)
-            .map_err(|e| CudaError::Driver(e.to_string()))?;
-        // `load_function` returns a `CudaFunction` that holds its own
-        // `Arc<CudaModule>`, so `module` may drop at the end of this scope.
-        let func = module
-            .load_function(fn_name)
-            .map_err(|e| CudaError::Driver(e.to_string()))?;
-
-        Ok(CudaKernel { func })
+        ctx.load_module(ptx)
+            .map_err(|e| CudaError::Driver(e.to_string()))
     }
 
     /// Create a [`CudaLaunchBuilder`] pre-bound to this kernel and the given stream.
@@ -318,13 +344,25 @@ impl<'a> CudaLaunchBuilder<'a> {
     /// # Errors
     ///
     /// Returns [`CudaError::Driver`] on CUDA launch failure.
-    pub fn launch_1d(mut self, n: u32) -> Result<(), CudaError> {
+    pub fn launch_1d(self, n: u32) -> Result<(), CudaError> {
         const BLOCK: u32 = 256;
         let cfg = LaunchConfig {
             block_dim: (BLOCK, 1, 1),
             grid_dim: (n.div_ceil(BLOCK), 1, 1),
             shared_mem_bytes: 0,
         };
+        self.launch_cfg(cfg)
+    }
+
+    /// Launch with an explicit [`LaunchConfig`] — for kernels that need a specific
+    /// grid/block shape or shared memory (2-D image kernels, one-block-per-item
+    /// cooperative reductions, fixed-block-size tiled kernels) that `launch_1d`'s
+    /// flat 256-thread blocks cannot express.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CudaError::Driver`] on CUDA launch failure.
+    pub fn launch_cfg(mut self, cfg: LaunchConfig) -> Result<(), CudaError> {
         // SAFETY: The caller is responsible for ensuring the kernel arguments match
         // the kernel's parameter list in type, count, and alignment.
         unsafe { self.inner.launch(cfg) }
@@ -358,8 +396,10 @@ impl<'a> CudaLaunchBuilder<'a> {
 
 /// Allocate a zero-initialised device tensor with shape `shape` on `stream`.
 ///
-/// Uses [`CudaAllocator`] (which calls `stream.alloc_zeros::<u8>`) so all bytes
-/// are guaranteed to be zero on the device.
+/// The storage is backed by a typed [`CudaResource<T>`], so the resulting tensor's
+/// [`as_cudaslice`](Tensor::as_cudaslice) / [`as_cudaslice_mut`](Tensor::as_cudaslice_mut)
+/// return `Some(&CudaSlice<T>)` — the tensor can be passed straight as a kernel
+/// argument or written in place, with no `from_cudaslice` round-trip.
 ///
 /// # Type parameters
 ///
@@ -382,9 +422,10 @@ where
     let numel: usize = shape.iter().product();
     let n_bytes = numel * std::mem::size_of::<T>();
 
-    // Allocate zero-initialised device memory via the stream.
-    let slice: CudaSlice<u8> = stream
-        .alloc_zeros::<u8>(n_bytes)
+    // Allocate zero-initialised, **typed** device memory so the storage is backed
+    // by `CudaResource<T>` (not `CudaResource<u8>`) — `as_cudaslice::<T>()` then works.
+    let slice: CudaSlice<T> = stream
+        .alloc_zeros::<T>(numel)
         .map_err(|e| CudaError::Driver(e.to_string()))?;
 
     // Cache device pointer before moving `slice` into CudaResource.
@@ -395,7 +436,7 @@ where
         // _sync drops here
     };
 
-    let resource = CudaResource::<u8> { slice, ptr, id };
+    let resource = CudaResource::<T> { slice, ptr, id };
     let alloc: AllocHandle = Arc::new(CudaAllocator {
         ctx: ctx.clone(),
         stream: stream.clone(),
@@ -731,12 +772,12 @@ mod tests {
             "mutation through as_cudaslice_mut must be observable after to_host"
         );
 
-        // None branch: `zeros_cuda` always stores a `CudaResource<u8>`, so an i16 device
-        // tensor's owner does NOT downcast to `CudaResource<i16>` — the mutable query is None.
+        // `zeros_cuda` stores a TYPED `CudaResource<i16>`, so an i16 device tensor's
+        // owner downcasts to `CudaResource<i16>` — the mutable query is Some.
         let mut dev_i16: Tensor<i16, 1> = zeros_cuda([4], &stream).unwrap();
         assert!(
-            dev_i16.as_cudaslice_mut().is_none(),
-            "zeros_cuda stores CudaResource<u8>; querying as CudaSlice<i16> must be None"
+            dev_i16.as_cudaslice_mut().is_some(),
+            "zeros_cuda stores CudaResource<i16>; querying as CudaSlice<i16> must be Some"
         );
     }
 
