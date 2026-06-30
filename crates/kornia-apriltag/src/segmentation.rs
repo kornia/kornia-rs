@@ -640,24 +640,31 @@ macro_rules! process_grad_pixel {
     (
         $rep_cache:expr, $src_slice:expr, $local:expr, $width:expr,
         $row_off:expr, $x:expr, $y:expr, $connected_last:expr
-    ) => {{
-        let x = $x;
-        let i = $row_off + x;
-        let cur_rep = $rep_cache[i];
-        if cur_rep == u32::MAX {
-            $connected_last = false;
-        } else {
-            let cur_rep_usize = cur_rep as usize;
-            let current_pixel = $src_slice[i];
-            let mut any_connected = false;
-            maybe_add_gradient!($rep_cache, $src_slice, $local, cur_rep_usize, current_pixel, x, $y, i + 1,             1i32,  0i32, any_connected);
-            maybe_add_gradient!($rep_cache, $src_slice, $local, cur_rep_usize, current_pixel, x, $y, i + $width,         0i32,  1i32, any_connected);
-            if !$connected_last {
-                maybe_add_gradient!($rep_cache, $src_slice, $local, cur_rep_usize, current_pixel, x, $y, i + $width - 1, -1i32, 1i32, any_connected);
+    ) =>
+    // `any_connected` is written by the right/below/below-left taps but only the
+    // below-right result feeds `connected_last`; the earlier writes are intentional
+    // side-effects of the shared `maybe_add_gradient!` macro, hence allow(unused_assignments).
+    {{
+        #[allow(unused_assignments)]
+        {
+            let x = $x;
+            let i = $row_off + x;
+            let cur_rep = $rep_cache[i];
+            if cur_rep == u32::MAX {
+                $connected_last = false;
+            } else {
+                let cur_rep_usize = cur_rep as usize;
+                let current_pixel = $src_slice[i];
+                let mut any_connected = false;
+                maybe_add_gradient!($rep_cache, $src_slice, $local, cur_rep_usize, current_pixel, x, $y, i + 1,             1i32,  0i32, any_connected);
+                maybe_add_gradient!($rep_cache, $src_slice, $local, cur_rep_usize, current_pixel, x, $y, i + $width,         0i32,  1i32, any_connected);
+                if !$connected_last {
+                    maybe_add_gradient!($rep_cache, $src_slice, $local, cur_rep_usize, current_pixel, x, $y, i + $width - 1, -1i32, 1i32, any_connected);
+                }
+                any_connected = false;
+                maybe_add_gradient!($rep_cache, $src_slice, $local, cur_rep_usize, current_pixel, x, $y, i + $width + 1,     1i32,  1i32, any_connected);
+                $connected_last = any_connected;
             }
-            any_connected = false;
-            maybe_add_gradient!($rep_cache, $src_slice, $local, cur_rep_usize, current_pixel, x, $y, i + $width + 1,     1i32,  1i32, any_connected);
-            $connected_last = any_connected;
         }
     }};
 }

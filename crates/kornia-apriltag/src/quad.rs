@@ -808,7 +808,11 @@ fn quad_segment_maxima_ws(
         }
     }
 
-    // x86_64: AVX2 line-fit error over 8 windows at once (exact reciprocal via div).
+    // x86_64: AVX2 line-fit error over 8 windows at once. Uses an IEEE-exact
+    // reciprocal (`_mm256_div_ps(1, w)`) — more precise than NEON's Newton-Raphson —
+    // but `mx * (1/w)` still differs from the scalar `fit_line`'s `mx / w` by ≤1 ULP,
+    // so the segment-maxima it feeds can pick a different index on borderline ties.
+    // Acceptable and consistent with the NEON path; covered by the C-parity suite.
     #[cfg(target_arch = "x86_64")]
     {
         if crate::simd::has_avx2() {

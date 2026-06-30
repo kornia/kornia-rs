@@ -62,11 +62,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let iters = (200_000_000 / n).max(20);
         let t_kornia = time(iters, || {
-            gray_from_rgb_u8(&img, &mut dst).unwrap();
+            // `black_box` the input and output so the optimizer can't hoist or
+            // elide the loop-invariant work, which would inflate the speedup.
+            gray_from_rgb_u8(std::hint::black_box(&img), std::hint::black_box(&mut dst)).unwrap();
         });
         let mut scratch = vec![0u8; n];
         let t_scalar = time(iters, || {
-            scalar(&src, &mut scratch, n);
+            scalar(std::hint::black_box(&src), std::hint::black_box(&mut scratch), n);
         });
 
         let mpix = n as f64 / 1e6;

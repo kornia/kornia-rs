@@ -1,8 +1,31 @@
-use crate::iter::ImageTile;
+use crate::errors::AprilTagError;
 use crate::utils::{find_full_tiles, Pixel, Point2d};
-use crate::{errors::AprilTagError, iter::TileIterator};
 use kornia_image::{allocator::ImageAllocator, Image, ImageError, ImageSize};
 use rayon::prelude::*;
+
+/// Scalar min/max over one `tile_size`×`tile_size` tile at column `tile_x`, row `tile_y`.
+///
+/// Shared by every dispatch path's scalar tail/fallback so the per-tile reduction
+/// is written exactly once.
+#[inline]
+fn tile_min_max(
+    img_data: &[u8],
+    img_width: usize,
+    tile_size: usize,
+    tile_x: usize,
+    tile_y: usize,
+) -> (u8, u8) {
+    let mut lo = 255u8;
+    let mut hi = 0u8;
+    for row in 0..tile_size {
+        let row_start = (tile_y * tile_size + row) * img_width + tile_x * tile_size;
+        for &px in &img_data[row_start..row_start + tile_size] {
+            lo = lo.min(px);
+            hi = hi.max(px);
+        }
+    }
+    (lo, hi)
+}
 
 /// Classifies pixels in a contiguous row: pixel > thresh → 255 (White), else 0 (Black).
 ///
@@ -146,17 +169,9 @@ unsafe fn fill_tile_stats_neon(
         // Scalar tail: remaining tile columns (< 4 when tiles_x % 4 != 0, or tile_size != 4).
         while tile_x < tiles_x {
             let idx = tile_y * tiles_x + tile_x;
-            let mut local_min = 255u8;
-            let mut local_max = 0u8;
-            for row in 0..tile_size {
-                let row_start = (tile_y * tile_size + row) * img_width + tile_x * tile_size;
-                for &px in &img_data[row_start..row_start + tile_size] {
-                    local_min = local_min.min(px);
-                    local_max = local_max.max(px);
-                }
-            }
-            tile_min[idx] = local_min;
-            tile_max[idx] = local_max;
+            let (lo, hi) = tile_min_max(img_data, img_width, tile_size, tile_x, tile_y);
+            tile_min[idx] = lo;
+            tile_max[idx] = hi;
             tile_x += 1;
         }
     }
@@ -222,17 +237,9 @@ unsafe fn fill_tile_stats_avx2(
         // Scalar tail: remaining tile columns (< 8, or tile_size != 4).
         while tile_x < tiles_x {
             let idx = tile_y * tiles_x + tile_x;
-            let mut local_min = 255u8;
-            let mut local_max = 0u8;
-            for row in 0..tile_size {
-                let row_start = (tile_y * tile_size + row) * img_width + tile_x * tile_size;
-                for &px in &img_data[row_start..row_start + tile_size] {
-                    local_min = local_min.min(px);
-                    local_max = local_max.max(px);
-                }
-            }
-            tile_min[idx] = local_min;
-            tile_max[idx] = local_max;
+            let (lo, hi) = tile_min_max(img_data, img_width, tile_size, tile_x, tile_y);
+            tile_min[idx] = lo;
+            tile_max[idx] = hi;
             tile_x += 1;
         }
     }
@@ -307,18 +314,9 @@ impl TileMinMax {
         for tile_y in 0..tiles_y {
             for tile_x in 0..tiles_x {
                 let idx = tile_y * tiles_x + tile_x;
-                let mut local_min = 255u8;
-                let mut local_max = 0u8;
-                for row in 0..tile_size {
-                    let row_start =
-                        (tile_y * tile_size + row) * img_width + tile_x * tile_size;
-                    for &px in &img_data[row_start..row_start + tile_size] {
-                        local_min = local_min.min(px);
-                        local_max = local_max.max(px);
-                    }
-                }
-                self.min[idx] = local_min;
-                self.max[idx] = local_max;
+                let (lo, hi) = tile_min_max(img_data, img_width, tile_size, tile_x, tile_y);
+                self.min[idx] = lo;
+                self.max[idx] = hi;
             }
         }
     }
