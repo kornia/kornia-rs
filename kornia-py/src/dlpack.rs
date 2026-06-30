@@ -10,9 +10,9 @@
 use std::ffi::c_void;
 
 use dlpack_rs::{
-    ffi::{DLDataType, DLDevice, K_DL_CPU},
+    ffi::{DLDataType, DLDevice},
     pyo3_glue::IntoDLPack,
-    safe::{cpu_device, TensorInfo},
+    safe::TensorInfo,
 };
 use pyo3::prelude::*;
 
@@ -50,6 +50,9 @@ pub struct ImageExport {
     pub shape: Vec<i64>,
     /// DLPack data-type descriptor.
     pub dtype: DLDataType,
+    /// DLPack device as `(device_type, device_id)`. Carries the image's own
+    /// device so a zero-copy export reports the correct device (CPU or CUDA).
+    pub device: (i32, i32),
 }
 
 impl Drop for ImageExport {
@@ -79,7 +82,11 @@ unsafe impl Send for ImageExport {}
 
 impl IntoDLPack for ImageExport {
     fn tensor_info(&self) -> TensorInfo {
-        TensorInfo::contiguous(self.data, cpu_device(), self.dtype, self.shape.clone())
+        let device = DLDevice {
+            device_type: self.device.0 as u32,
+            device_id: self.device.1,
+        };
+        TensorInfo::contiguous(self.data, device, self.dtype, self.shape.clone())
     }
 }
 
@@ -99,21 +106,4 @@ pub fn dtype_to_dl(dtype: Dtype) -> DLDataType {
 /// Delegates to [`Dtype::from_dldatatype`] — canonical mapping lives in `backing.rs`.
 pub fn dl_to_dtype(dt: DLDataType) -> PyResult<Dtype> {
     Dtype::from_dldatatype(dt)
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Helper: device validation
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Assert the device is CPU, or raise `NotImplementedError`.
-pub fn require_cpu(device: DLDevice) -> PyResult<()> {
-    if device.device_type != K_DL_CPU {
-        Err(pyo3::exceptions::PyNotImplementedError::new_err(format!(
-            "from_dlpack: only CPU (device_type={K_DL_CPU}) tensors are supported; \
-             got device_type={}. GPU/CUDA support is a future extension.",
-            device.device_type,
-        )))
-    } else {
-        Ok(())
-    }
 }

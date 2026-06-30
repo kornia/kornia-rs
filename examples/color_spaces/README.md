@@ -4,7 +4,7 @@ This example demonstrates the modern, type-safe color space API in kornia-rs.
 
 ## Features
 
-- **Explicit Types**: Use `Rgb8`, `Gray8`, `Bgr8` instead of generic `Image<u8, 3, _>`
+- **Explicit Types**: Use `Rgb8`, `Gray8`, `Bgr8` instead of generic `Image<u8, 3>`
 - **Compile-Time Safety**: Can't mix RGB with BGR accidentally
 - **Clean API**: `rgb.convert(&mut gray)?` instead of function calls
 - **Zero-Cost**: `#[repr(transparent)]` wrappers with Deref
@@ -27,7 +27,6 @@ let rgb = F::read_image_any_rgb8("dog.jpeg")?;
 let rgb = Rgb8::from_size_vec(
     ImageSize { width: 640, height: 480 },
     vec![128; 640 * 480 * 3],
-    CpuAllocator
 )?;
 ```
 

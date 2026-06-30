@@ -12,17 +12,62 @@
 //! The crate is organized into several key components:
 //!
 //! - **Tensor**: The main data structure representing multi-dimensional arrays with shape and stride information
-//! - **TensorStorage**: Low-level memory buffer management with custom allocator support
+//! - **TensorStorage**: Low-level memory buffer management holding a runtime allocator handle
 //! - **TensorView**: Non-owning views into tensor data for efficient memory sharing
 //! - **TensorAllocator**: Trait-based memory allocation system for different memory backends
+//!
+//! # Memory Model
+//!
+//! A tensor's location is described at **runtime**, not in its type. `Tensor<T, N>` has no
+//! allocator/device type parameter; instead [`TensorStorage`](storage::TensorStorage) carries:
+//!
+//! - an `owner: Box<dyn `[`MemoryResource`](resource::MemoryResource)`>` — the single source of
+//!   truth that frees the buffer on `Drop` and reports its [`MemoryDomain`](resource::MemoryDomain):
+//!   - [`Host`](resource::MemoryDomain::Host) — kornia- or foreign-owned CPU memory,
+//!   - [`Device { id }`](resource::MemoryDomain::Device) — CUDA device memory,
+//!   - [`Unified { id }`](resource::MemoryDomain::Unified) — CUDA managed/unified memory;
+//! - an [`AllocHandle`] (`Arc<dyn `[`TensorAllocator`]`>`) — a cheap, reference-counted runtime
+//!   handle used **only** when an op needs to allocate (e.g. `zeros`, `cast`); it is propagated to
+//!   derived tensors, never consulted on the hot path;
+//! - a cached `NonNull<T>` pointer read directly by element access — so domain/handle add **zero**
+//!   overhead to `as_ptr`/`as_slice`/indexing.
+//!
+//! **Host-accessibility gate.** Element access is checked at runtime, not by the type system:
+//! [`as_slice`](storage::TensorStorage::as_slice)/`as_mut_slice` (and indexing) **panic** on a
+//! non-host-accessible (`Device`) tensor. Move data with `to_host` / `to_cuda` first. A single
+//! concrete `Tensor<T, N>` can therefore live in a `Vec` alongside tensors on other domains.
+//!
+//! # Unified Constructor API
+//!
+//! The common host case needs **no** allocator argument (mirrors `Vec::new` / `Vec::new_in`):
+//!
+//! ```rust
+//! use kornia_tensor::{Tensor, host_alloc};
+//!
+//! // Host (default) — no allocator argument:
+//! let a = Tensor::<f32, 2>::from_shape_vec([2, 3], vec![0.0; 6]).unwrap();
+//! let z = Tensor::<f32, 2>::zeros([2, 3]);
+//!
+//! // Explicit allocator handle via the `_in` variants (custom/arena/device allocators):
+//! let b = Tensor::<f32, 2>::from_shape_vec_in([2, 3], vec![0.0; 6], host_alloc()).unwrap();
+//! ```
+//!
+//! Every host-default constructor has an `_in` counterpart taking an [`AllocHandle`]:
+//! `from_shape_vec`/`_in`, `from_shape_slice`/`_in`, `from_shape_val`/`_in`, `from_shape_fn`/`_in`,
+//! `zeros`/`_in`. Low-level / non-host constructors always take an explicit handle or resource:
+//! [`from_vec`](storage::TensorStorage::from_vec), `from_resource`, `from_borrowed`, `from_raw_parts`.
+//! Device tensors are created through the stream-based CUDA API rather than a handle —
+//! `to_cuda`, `zeros_cuda`, `from_cudaslice` (feature `cudarc`) — which build the device
+//! allocator handle internally from the supplied `CudaStream`.
 //!
 //! # Key Features
 //!
 //! - **Zero-copy operations**: Views and reshaping operations avoid data copying when possible
-//! - **Custom allocators**: Support for different memory backends (CPU, GPU, etc.)
+//! - **Runtime device model**: one concrete `Tensor<T, N>` spans Host / Device / Unified memory
+//! - **Ergonomic host default**: host constructors need no allocator; `_in` variants for custom ones
 //! - **Type-safe dimensions**: Compile-time dimensional checking using const generics
 //! - **Standard memory layouts**: Automatic stride calculation for contiguous memory
-//! - **Thread-safe**: All components are Send + Sync when using thread-safe allocators
+//! - **Thread-safe**: All components are Send + Sync (allocator handle is `Arc<dyn TensorAllocator>`)
 //!
 //! # Quick Start
 //!

@@ -484,6 +484,7 @@ impl PyColorJitter {
 
         self.last_params = Some(Self::params_to_dict(py, b, c, s, h, &order)?);
 
+        img.backing.ensure_host()?;
         img.require_u8("ColorJitter")?;
         let (height, width, channels) = img.shape_hwc();
         let src = img.u8_elems();

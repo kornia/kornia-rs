@@ -1263,6 +1263,8 @@ impl PyImageApi {
                 buffer: None,
             },
             readonly: !writeable,
+            // numpy borrows are always host memory.
+            device: (dlpack_rs::ffi::K_DL_CPU as i32, 0),
         };
         Ok(Self {
             backing,
@@ -1431,6 +1433,8 @@ impl PyImageApi {
     fn numpy_view_of(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         let py = slf.py();
         let me = slf.borrow();
+        // Host guard: numpy views dereference the buffer on the host.
+        me.backing.ensure_host()?;
         // Borrowed numpy: return the original ndarray for true identity — but ONLY
         // when the kept object actually IS a numpy ndarray (the `from_numpy` borrow).
         // For other producers kept by `from_dlpack` (e.g. a torch tensor), do NOT
@@ -1469,6 +1473,8 @@ impl PyImageApi {
         width: usize,
         height: usize,
     ) -> PyResult<Self> {
+        // Host guard: crop copies pixel bytes on the host.
+        self.backing.ensure_host()?;
         let [src_h, src_w, c] = self.shape;
         if y + height > src_h || x + width > src_w {
             return Err(value_err(format!(
@@ -1592,6 +1598,8 @@ impl PyImageApi {
         compress_level: Option<u8>,
         #[cfg_attr(not(feature = "turbojpeg"), allow(unused_variables))] subsampling: Option<&str>,
     ) -> PyResult<Vec<u8>> {
+        // Host guard: encoding reads pixel bytes on the host.
+        self.backing.ensure_host()?;
         let c = self.nchannels();
         let is_u16 = self.is_u16();
         let is_f32 = self.is_f32();
@@ -2367,6 +2375,7 @@ impl PyImageApi {
     /// row-major; element width matches ``dtype`` (``uint8`` -> 1 byte/elem,
     /// ``uint16`` -> 2 bytes little-endian native).
     fn tobytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
+        self.backing.ensure_host()?;
         Ok(pyo3::types::PyBytes::new(py, self.raw_bytes()))
     }
 
@@ -2385,6 +2394,7 @@ impl PyImageApi {
 
     /// Return a deep copy of this image (owned, independent storage).
     pub fn copy(&self, py: Python<'_>) -> PyResult<Self> {
+        self.backing.ensure_host()?;
         Ok(self.clone_handle(py))
     }
 
@@ -2399,6 +2409,7 @@ impl PyImageApi {
         height: usize,
         interpolation: &str,
     ) -> PyResult<Self> {
+        self.backing.ensure_host()?;
         self.require_u8("resize")?;
         let [src_h, src_w, c] = self.shape;
         if c == 3 {
@@ -2436,6 +2447,7 @@ impl PyImageApi {
         mean: [f32; 3],
         std: [f32; 3],
     ) -> PyResult<Self> {
+        self.backing.ensure_host()?;
         self.require_u8("resize_normalize_to_tensor")?;
         let [src_h, src_w, c] = self.shape;
         if c != 3 {
@@ -2486,6 +2498,7 @@ impl PyImageApi {
 
     /// Flip image horizontally. Supports 8-bit, 16-bit, and float32 Images.
     pub fn flip_horizontal(&self, py: Python<'_>) -> PyResult<Self> {
+        self.backing.ensure_host()?;
         let [h, w, c] = self.shape;
         if self.dtype == backing::Dtype::U8 && c == 3 {
             let src = unsafe { self.borrow_self::<u8, 3>().map_err(to_pyerr)? };
@@ -2502,6 +2515,7 @@ impl PyImageApi {
 
     /// Flip image vertically. Supports 8-bit, 16-bit, and float32 Images.
     pub fn flip_vertical(&self, py: Python<'_>) -> PyResult<Self> {
+        self.backing.ensure_host()?;
         let [h, w, c] = self.shape;
         if self.dtype == backing::Dtype::U8 && c == 3 {
             let src = unsafe { self.borrow_self::<u8, 3>().map_err(to_pyerr)? };
@@ -2560,6 +2574,7 @@ impl PyImageApi {
     /// Apply Gaussian blur. 8-bit only.
     #[pyo3(signature = (kernel_size=3, sigma=1.0))]
     fn gaussian_blur(&self, py: Python<'_>, kernel_size: usize, sigma: f32) -> PyResult<Self> {
+        self.backing.ensure_host()?;
         self.require_u8("gaussian_blur")?;
         if self.nchannels() == 3 {
             let src = unsafe { self.borrow_self::<u8, 3>().map_err(to_pyerr)? };
@@ -2579,6 +2594,7 @@ impl PyImageApi {
     /// Apply box blur. 8-bit only.
     #[pyo3(signature = (kernel_size=3))]
     fn box_blur(&self, py: Python<'_>, kernel_size: usize) -> PyResult<Self> {
+        self.backing.ensure_host()?;
         self.require_u8("box_blur")?;
         if self.nchannels() == 3 {
             let src = unsafe { self.borrow_self::<u8, 3>().map_err(to_pyerr)? };
@@ -2592,6 +2608,7 @@ impl PyImageApi {
 
     /// Adjust brightness. Factor is additive in [0,1] range. 8-bit only.
     pub fn adjust_brightness(&self, py: Python<'_>, factor: f32) -> PyResult<Self> {
+        self.backing.ensure_host()?;
         self.require_u8("adjust_brightness")?;
         let [h, w, c] = self.shape;
         Ok(self.wrap_u8_result(
@@ -2602,6 +2619,7 @@ impl PyImageApi {
 
     /// Adjust contrast. factor=1.0 is identity, >1 increases contrast. 8-bit only.
     pub fn adjust_contrast(&self, py: Python<'_>, factor: f64) -> PyResult<Self> {
+        self.backing.ensure_host()?;
         self.require_u8("adjust_contrast")?;
         let [h, w, c] = self.shape;
         Ok(self.wrap_u8_result(
@@ -2612,6 +2630,7 @@ impl PyImageApi {
 
     /// Adjust saturation. factor=1.0 is identity, 0.0 is grayscale. 8-bit only.
     pub fn adjust_saturation(&self, py: Python<'_>, factor: f64) -> PyResult<Self> {
+        self.backing.ensure_host()?;
         self.require_u8("adjust_saturation")?;
         let [h, w, c] = self.shape;
         if c != 3 {
@@ -2625,6 +2644,7 @@ impl PyImageApi {
 
     /// Adjust hue. factor is in [-0.5, 0.5], fraction of hue wheel. 8-bit only.
     pub fn adjust_hue(&self, py: Python<'_>, factor: f64) -> PyResult<Self> {
+        self.backing.ensure_host()?;
         self.require_u8("adjust_hue")?;
         let [h, w, c] = self.shape;
         if c != 3 || factor == 0.0 {
@@ -2644,6 +2664,7 @@ impl PyImageApi {
         std: (f32, f32, f32),
     ) -> PyResult<Py<PyAny>> {
         let me = slf.borrow();
+        me.backing.ensure_host()?;
         me.require_u8("normalize")?;
         let [h, w, c] = me.shape;
         let src = me.u8_elems();
@@ -2690,6 +2711,7 @@ impl PyImageApi {
     /// 8-bit and 16-bit dtypes scale the integer range proportionally
     /// (×257 / ÷257) so that pure white / pure black map correctly.
     fn convert(&self, py: Python<'_>, mode: &str) -> PyResult<Self> {
+        self.backing.ensure_host()?;
         if mode == self.mode {
             return self.copy(py);
         }
@@ -2738,6 +2760,7 @@ impl PyImageApi {
 
     /// Convert RGB image to grayscale (1 channel). 8-bit only.
     fn to_grayscale(&self, py: Python<'_>) -> PyResult<Self> {
+        self.backing.ensure_host()?;
         self.require_u8("to_grayscale")?;
         let [h, w, c] = self.shape;
         if c == 1 {
@@ -2764,6 +2787,7 @@ impl PyImageApi {
 
     /// Convert grayscale to RGB (3 channels). 8-bit only.
     fn to_rgb(&self, py: Python<'_>) -> PyResult<Self> {
+        self.backing.ensure_host()?;
         self.require_u8("to_rgb")?;
         let c = self.nchannels();
         if c == 3 {
@@ -2793,6 +2817,7 @@ impl PyImageApi {
     /// unchanged (cloned handle). Required before converting to f32-only spaces
     /// (HSV, Lab, Luv, XYZ, LinearRgb, YCbCr, Yuv).
     fn to_float(&self, py: Python<'_>) -> PyResult<Self> {
+        self.backing.ensure_host()?;
         match self.dtype {
             backing::Dtype::F32 => Ok(self.clone_handle(py)),
             backing::Dtype::U8 => {
@@ -2820,6 +2845,7 @@ impl PyImageApi {
     /// Cast f32 [0,1] -> u8 by multiplying by 255 (saturating round). u8 input
     /// is returned unchanged (cloned handle).
     fn to_uint8(&self, py: Python<'_>) -> PyResult<Self> {
+        self.backing.ensure_host()?;
         match self.dtype {
             backing::Dtype::U8 => Ok(self.clone_handle(py)),
             backing::Dtype::F32 => {
@@ -2847,6 +2873,7 @@ impl PyImageApi {
     /// Convert to another color space, returning a new tagged Image. Strict
     /// dtype: f32-only spaces require a float image (call `to_float()` first).
     fn cvt_color(&self, py: Python<'_>, to: crate::color_space::PyColorSpace) -> PyResult<Self> {
+        self.backing.ensure_host()?;
         use kornia_image::ColorSpace as CS;
         let from = self.color_space;
         let to: CS = to.into();
@@ -2904,6 +2931,7 @@ impl PyImageApi {
     ///
     /// On aarch64 the LUT lookup is NEON-accelerated (16 px/iter).
     fn colormap(&self, py: Python<'_>, colormap: &str) -> PyResult<Self> {
+        self.backing.ensure_host()?;
         self.require_u8("colormap")?;
         let c = self.nchannels();
         if c != 1 {
@@ -2927,6 +2955,7 @@ impl PyImageApi {
     ///  - ±90°/±270° with H == W: transpose+flip (shape preserved)
     /// Non-exact or non-square 90°/270°: general bilinear warp.
     pub fn rotate(&self, py: Python<'_>, angle: f64) -> PyResult<Self> {
+        self.backing.ensure_host()?;
         self.require_u8("rotate")?;
         let [h, w, c] = self.shape;
 
@@ -3000,13 +3029,26 @@ impl PyImageApi {
         {
             return false;
         }
+        // Device images cannot be byte-compared on the host (dereferencing device
+        // memory is UB). Equal only if they alias the same device buffer.
+        if !self.backing.is_host() || !other.backing.is_host() {
+            return self.backing.device() == other.backing.device()
+                && self.backing.data_ptr() == other.backing.data_ptr();
+        }
         self.raw_bytes() == other.raw_bytes()
     }
 
     fn __hash__(&self) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
-        self.raw_bytes().hash(&mut h);
+        // Device images cannot be byte-hashed on the host; hash the device +
+        // buffer address instead of dereferencing device memory.
+        if self.backing.is_host() {
+            self.raw_bytes().hash(&mut h);
+        } else {
+            self.backing.device().hash(&mut h);
+            (self.backing.data_ptr() as usize).hash(&mut h);
+        }
         self.mode.hash(&mut h);
         (self.dtype as u8).hash(&mut h);
         self.shape.hash(&mut h);
@@ -3048,6 +3090,9 @@ impl PyImageApi {
         if view.is_null() {
             return Err(pyo3::exceptions::PyBufferError::new_err("null view"));
         }
+        // Host guard: the PEP-3118 buffer exposes the backing pointer for host
+        // access; refuse to hand out a device pointer as a host buffer.
+        slf.backing.ensure_host()?;
         let readonly = slf.backing.readonly();
         if (flags & pyo3::ffi::PyBUF_WRITABLE) == pyo3::ffi::PyBUF_WRITABLE && readonly {
             return Err(pyo3::exceptions::PyBufferError::new_err(
@@ -3137,8 +3182,16 @@ impl PyImageApi {
     /// A `Py<PyAny>` handle to the Image is stored in the `ImageExport`
     /// keep-alive, keeping the buffer alive until the consumer's deleter runs.
     ///
-    /// All other keyword arguments (`stream`, `dl_device`, `copy`) are accepted
-    /// and ignored; this implementation is CPU-only.
+    /// Zero-copy pass-through export: the tensor carries the image's own device
+    /// (CPU or, for a DLPack-imported device image, e.g. CUDA).
+    ///
+    /// Keyword arguments:
+    /// - `stream`: ignored. This is a zero-copy pass-through that performs no
+    ///   compute or synchronization, so for device tensors the consumer is
+    ///   responsible for any stream synchronization on its side.
+    /// - `dl_device`: a cross-device request is rejected; only an explicit
+    ///   request matching the image's own device is honoured.
+    /// - `copy`: `copy=True` is not supported.
     #[pyo3(signature = (*, stream=None, max_version=None, dl_device=None, copy=None))]
     fn __dlpack__(
         slf: Bound<'_, Self>,
@@ -3148,15 +3201,20 @@ impl PyImageApi {
         dl_device: Option<Py<PyAny>>,
         copy: Option<bool>,
     ) -> PyResult<Py<PyAny>> {
-        let _ = stream; // CPU: no stream concept
-                        // Validate dl_device: only CPU (kDLCPU=1, id=0) is supported.
+        // stream is intentionally ignored: zero-copy pass-through does no compute
+        // or sync, so stream synchronization is the consumer's responsibility.
+        let _ = stream;
+        let own_device = slf.borrow().backing.device();
+        // Validate dl_device: only a request matching the image's own device is
+        // honoured. Cross-device export would require a host/device copy, which
+        // this zero-copy path does not perform.
         if let Some(ref dev) = dl_device {
             let (dev_type, dev_id): (i32, i32) = dev.extract(py)?;
-            use dlpack_rs::ffi::K_DL_CPU;
-            if dev_type != K_DL_CPU as i32 || dev_id != 0 {
+            if (dev_type, dev_id) != own_device {
                 return Err(pyo3::exceptions::PyBufferError::new_err(format!(
-                    "__dlpack__: only CPU device (kDLCPU=1, id=0) is supported; \
-                     got ({dev_type}, {dev_id})"
+                    "__dlpack__: cross-device export not supported; image is on \
+                     device ({}, {}) but ({dev_type}, {dev_id}) was requested",
+                    own_device.0, own_device.1
                 )));
             }
         }
@@ -3183,6 +3241,7 @@ impl PyImageApi {
             data,
             shape,
             dtype: dt,
+            device: own_device,
         };
         use dlpack_rs::pyo3_glue::IntoDLPack;
         // If the consumer supports DLPack v1.0+, return a versioned capsule.
@@ -3201,9 +3260,12 @@ impl PyImageApi {
         Ok(capsule.into_any().unbind())
     }
 
-    /// Return the DLPack device tuple for this image: `(kDLCPU=1, device_id=0)`.
+    /// Return the DLPack device tuple `(device_type, device_id)` for this image.
+    ///
+    /// Host images report `(kDLCPU=1, 0)`; a DLPack-imported device image reports
+    /// its source device (e.g. `(kDLCUDA=2, id)`).
     fn __dlpack_device__(&self) -> (i32, i32) {
-        (dlpack_rs::ffi::K_DL_CPU as i32, 0)
+        self.backing.device()
     }
 
     /// Zero-copy ingest of a PEP-3118 buffer (ROS2 bytearray / memoryview).
@@ -3271,6 +3333,8 @@ impl PyImageApi {
                 ptr,
                 keep,
                 readonly,
+                // PEP-3118 buffers are host memory.
+                device: (dlpack_rs::ffi::K_DL_CPU as i32, 0),
             },
             dtype: dt,
             shape: [height, width, channels],
@@ -3285,10 +3349,15 @@ impl PyImageApi {
     /// Import a DLPack tensor as a zero-copy Image (static method).
     ///
     /// Accepts any Python object that implements `__dlpack__()`: numpy arrays
-    /// (>= 1.22), PyTorch tensors, CuPy arrays (CPU only), etc.
+    /// (>= 1.22), PyTorch tensors (CPU or CUDA), CuPy arrays, etc.
+    ///
+    /// Device pass-through: CPU tensors import as host images; non-CPU tensors
+    /// (e.g. CUDA) import as device images that carry their source device. The
+    /// device buffer is never dereferenced on the host — host-only operations
+    /// (numpy export, pixel compute, save) raise `ValueError` on a device image.
+    /// A device image can be re-exported via `__dlpack__`, preserving its device.
     ///
     /// Validation:
-    /// - Device must be CPU (`kDLCPU = 1`); raises `NotImplementedError` otherwise.
     /// - Tensor must be C-contiguous; raises `ValueError` otherwise.
     /// - `ndim` must be 3 (`(H, W, C)`) or 2 (`(H, W)` → treated as `(H, W, 1)`).
     /// - dtype must be `uint8`, `uint16`, or `float32`; raises `ValueError` otherwise.
@@ -3408,8 +3477,12 @@ impl PyImageApi {
                 )));
             };
 
-        // 4. Validate device.
-        crate::dlpack::require_cpu(device)?;
+        // 4. Capture the source device for zero-copy pass-through interop.
+        //    CPU tensors stay host-accessible; non-CPU (e.g. CUDA) tensors are
+        //    imported as device images: their buffer is never dereferenced on the
+        //    host (host ops are gated by `Backing::ensure_host`), and `__dlpack__`
+        //    re-exports them carrying this same device.
+        let src_device = (device.device_type as i32, device.device_id);
 
         // 5. Validate contiguity (strides == None, or compact row-major).
         if let Some(strides) = raw_strides {
@@ -3546,6 +3619,7 @@ impl PyImageApi {
                     buffer: None,
                 },
                 readonly,
+                device: src_device,
             },
             dtype,
             shape: [h, w, c],
