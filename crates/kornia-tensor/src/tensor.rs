@@ -878,8 +878,8 @@ impl<T, const N: usize> Tensor<T, N> {
         }
 
         if self.storage.domain() != other.storage.domain() {
-            return Err(TensorError::DimensionMismatch(format!(
-                "Tensors are on different memory domains: {:?} vs {:?}",
+            return Err(TensorError::UnsupportedOperation(format!(
+                "element-wise op on tensors in different memory domains: {:?} vs {:?}",
                 self.storage.domain(),
                 other.storage.domain()
             )));

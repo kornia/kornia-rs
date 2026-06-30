@@ -239,10 +239,22 @@ impl Backing {
 ///
 /// Caller guarantees `b`'s buffer holds at least H*W*C elements of T and
 /// stays alive for the returned Image's lifetime (the Image borrows it).
+///
+/// # Panics
+///
+/// Panics if `b` is not host-accessible. This wraps the pointer in a
+/// `MemoryDomain::Host` Image (whose `as_slice` would then *not* panic), so a device
+/// backing reaching here would be a silent host-deref of device memory. The assert
+/// turns that latent UB into a panic; callers must gate with [`Backing::ensure_host`].
 pub unsafe fn borrow_image<T: Clone, const C: usize>(
     b: &Backing,
     shape: [usize; 3],
 ) -> Result<Image<T, C>, ImageError> {
+    assert!(
+        b.is_host(),
+        "borrow_image on a non-host backing (device_type={}); gate with ensure_host() first",
+        b.device().0
+    );
     let (h, w, c) = (shape[0], shape[1], shape[2]);
     if c != C {
         return Err(ImageError::InvalidChannelShape(c, C));

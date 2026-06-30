@@ -353,7 +353,10 @@ impl<T> TensorStorage<T> {
         readonly: bool,
     ) -> Self {
         unsafe {
-            let ptr = NonNull::new_unchecked(data as *mut T);
+            // Defensive null check before caching the pointer: `NonNull::new_unchecked`
+            // on a null `data` is UB, and would otherwise reach the `ForeignResource`
+            // null check below only after the invalid `NonNull` was already formed.
+            let ptr = NonNull::new(data as *mut T).expect("from_borrowed: null data pointer");
             let resource_result = if readonly {
                 ForeignResource::new_readonly(data as *mut u8, len_bytes, domain, Some(keepalive))
             } else {

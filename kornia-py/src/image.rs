@@ -2481,10 +2481,12 @@ impl PyImageApi {
         ))
     }
 
-    /// Host address (as an int) of the underlying contiguous data buffer.
+    /// Address (as an int) of the underlying contiguous data buffer.
     ///
-    /// Stable for the lifetime of this `Image`; hand it (with `.shape` / `.nbytes`)
-    /// to an external library for a host→device copy without going through numpy.
+    /// For a host image this is a host pointer; for a device (e.g. DLPack-imported CUDA)
+    /// image it is the **device** pointer in that device's address space — check
+    /// `__dlpack_device__()` to learn which. Stable for the lifetime of this `Image`; hand
+    /// it (with `.shape` / `.nbytes`) to an external library without going through numpy.
     #[getter]
     fn data_ptr(&self) -> usize {
         self.backing.data_ptr() as usize
@@ -3432,6 +3434,10 @@ impl PyImageApi {
                 let nn = capsule.pointer_checked(Some(NAME_DL))?;
                 let mt = unsafe { &*(nn.as_ptr() as *const DLManagedTensor) };
                 let t = &mt.dl_tensor;
+                // SECURITY: `ndim` is producer-controlled. Validate it (and the shape
+                // pointer) BEFORE using it as a slice length — a negative `ndim` casts
+                // to `usize::MAX` (instant UB) and an oversized one reads out of bounds.
+                crate::dlpack::validate_dlpack_rank(t.ndim, t.shape)?;
                 let sh = unsafe { std::slice::from_raw_parts(t.shape, t.ndim as usize) };
                 let st = if t.strides.is_null() {
                     None
@@ -3452,6 +3458,8 @@ impl PyImageApi {
                 let nn = capsule.pointer_checked(Some(NAME_DLV))?;
                 let mt = unsafe { &*(nn.as_ptr() as *const DLManagedTensorVersioned) };
                 let t = &mt.dl_tensor;
+                // SECURITY: see note in the `NAME_DL` branch — validate before slicing.
+                crate::dlpack::validate_dlpack_rank(t.ndim, t.shape)?;
                 let sh = unsafe { std::slice::from_raw_parts(t.shape, t.ndim as usize) };
                 let st = if t.strides.is_null() {
                     None
@@ -3535,6 +3543,19 @@ impl PyImageApi {
                 c
             )));
         }
+
+        // 8b. SECURITY: reject shapes whose host byte-extent would overflow `usize`.
+        //     `Backing::Borrowed` stores no length; `raw_bytes`/`u8_elems` recompute it
+        //     later with unchecked multiplication, so an overflowing product would wrap
+        //     to a small length over a larger (or smaller) real buffer. Check it once here.
+        h.checked_mul(w)
+            .and_then(|hw| hw.checked_mul(c))
+            .and_then(|hwc| hwc.checked_mul(dtype.itemsize()))
+            .ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err(
+                    "from_dlpack: image dimensions overflow usize",
+                )
+            })?;
 
         // 9. Compute effective data pointer (with byte_offset).
         //    Null check must happen BEFORE adding byte_offset: null+nonzero produces a

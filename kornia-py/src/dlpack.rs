@@ -107,3 +107,24 @@ pub fn dtype_to_dl(dtype: Dtype) -> DLDataType {
 pub fn dl_to_dtype(dt: DLDataType) -> PyResult<Dtype> {
     Dtype::from_dldatatype(dt)
 }
+
+/// Validate a producer-supplied DLPack rank before it is used as a slice length.
+///
+/// `ndim` comes from an untrusted `__dlpack__` producer. A negative value casts to
+/// `usize::MAX` (so `slice::from_raw_parts(shape, ndim)` is instant UB) and an
+/// oversized one reads out of bounds. Only 2D/3D images are supported, so we bound
+/// `ndim` to `2..=3` (capping any slice to ≤3 elements) and reject a null `shape`
+/// pointer, before any slice is constructed from `shape`/`strides`.
+pub fn validate_dlpack_rank(ndim: i32, shape: *const i64) -> PyResult<()> {
+    if !(2..=3).contains(&ndim) {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "from_dlpack: expected a 2D or 3D tensor, got ndim={ndim}"
+        )));
+    }
+    if shape.is_null() {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "from_dlpack: null shape pointer",
+        ));
+    }
+    Ok(())
+}

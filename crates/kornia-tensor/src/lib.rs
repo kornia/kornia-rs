@@ -27,8 +27,9 @@
 //!   - [`Device { id }`](resource::MemoryDomain::Device) — CUDA device memory,
 //!   - [`Unified { id }`](resource::MemoryDomain::Unified) — CUDA managed/unified memory;
 //! - an [`AllocHandle`] (`Arc<dyn `[`TensorAllocator`]`>`) — a cheap, reference-counted runtime
-//!   handle used **only** when an op needs to allocate (e.g. `zeros`, `cast`); it is propagated to
-//!   derived tensors, never consulted on the hot path;
+//!   handle propagated to derived tensors (`cast`, `map`, `as_contiguous`, …). It is an **advisory
+//!   tag**: host buffers are currently allocated through the global allocator (via `Vec`), so the
+//!   handle is not yet consulted to allocate host memory; it is never touched on the hot path;
 //! - a cached `NonNull<T>` pointer read directly by element access — so domain/handle add **zero**
 //!   overhead to `as_ptr`/`as_slice`/indexing.
 //!
@@ -52,10 +53,12 @@
 //! let b = Tensor::<f32, 2>::from_shape_vec_in([2, 3], vec![0.0; 6], host_alloc()).unwrap();
 //! ```
 //!
-//! Every host-default constructor has an `_in` counterpart taking an [`AllocHandle`]:
+//! Every host-default constructor has an `_in` counterpart taking an explicit [`AllocHandle`]
+//! (which it threads onto the storage as the advisory tag described above — the buffer itself is
+//! still allocated through the global allocator):
 //! `from_shape_vec`/`_in`, `from_shape_slice`/`_in`, `from_shape_val`/`_in`, `from_shape_fn`/`_in`,
 //! `zeros`/`_in`. Low-level / non-host constructors always take an explicit handle or resource:
-//! [`from_vec`](storage::TensorStorage::from_vec), `from_resource`, `from_borrowed`, `from_raw_parts`.
+//! [`from_vec`](storage::TensorStorage::from_vec), `from_raw_host`, `from_borrowed`, `from_raw_parts`.
 //! Device tensors are created through the stream-based CUDA API rather than a handle —
 //! `to_cuda`, `zeros_cuda`, `from_cudaslice` (feature `cudarc`) — which build the device
 //! allocator handle internally from the supplied `CudaStream`.
