@@ -175,8 +175,7 @@ fn image_to_gray_u8(
             width: w,
             height: h,
         };
-        return Image::from_size_slice(size, slice, kornia_image::allocator::host_alloc())
-            .map_err(to_pyerr);
+        return Image::from_size_slice(size, slice).map_err(to_pyerr);
     }
 
     if let Ok(arr) = image.cast::<PyArray3<u8>>() {
@@ -198,11 +197,8 @@ fn image_to_gray_u8(
             height: h,
         };
         let rgb_slice = unsafe { std::slice::from_raw_parts(arr.data(), h * w * 3) };
-        let rgb_img =
-            Image::<u8, 3>::from_size_slice(size, rgb_slice, kornia_image::allocator::host_alloc())
-                .map_err(to_pyerr)?;
-        let mut gray = Image::from_size_val(size, 0u8, kornia_image::allocator::host_alloc())
-            .map_err(to_pyerr)?;
+        let rgb_img = Image::<u8, 3>::from_size_slice(size, rgb_slice).map_err(to_pyerr)?;
+        let mut gray = Image::from_size_val(size, 0u8).map_err(to_pyerr)?;
         py.detach(|| gray_from_rgb_u8(&rgb_img, &mut gray))
             .map_err(to_pyerr)?;
         return Ok(gray);

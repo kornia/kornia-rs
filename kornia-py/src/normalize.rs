@@ -16,8 +16,7 @@ pub fn normalize_mean_std(
     let (mut out_img, out) = unsafe { alloc_output_pyarray_f32::<3>(py, size)? };
 
     py.detach(|| -> Result<(), ImageError> {
-        let mut dst_f32 =
-            Image::from_size_val(size, 0.0f32, kornia_image::allocator::host_alloc())?;
+        let mut dst_f32 = Image::from_size_val(size, 0.0f32)?;
         normalize::normalize_mean_std(&src_f32, &mut dst_f32, &mean, &std)?;
         out_img
             .as_slice_mut()

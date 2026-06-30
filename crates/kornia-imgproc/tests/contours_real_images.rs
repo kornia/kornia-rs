@@ -22,7 +22,6 @@
 
 use kornia_image::{Image, ImageSize};
 use kornia_imgproc::contours::{find_contours, ContourApproximationMode, RetrievalMode};
-use kornia_tensor::host_alloc;
 use std::path::PathBuf;
 
 /// Loads a fixture PNG, binarises it at threshold 127, returns the image
@@ -43,7 +42,6 @@ fn load_binary(name: &str) -> Option<Image<u8, 1>> {
             height: h,
         },
         0,
-        host_alloc(),
     )
     .ok()?;
     kornia_imgproc::color::gray_from_rgb_u8(&rgb, &mut gray).ok()?;
@@ -53,7 +51,6 @@ fn load_binary(name: &str) -> Option<Image<u8, 1>> {
             height: h,
         },
         0,
-        host_alloc(),
     )
     .ok()?;
     kornia_imgproc::threshold::threshold_binary(&gray, &mut bw, 127, 1).ok()?;

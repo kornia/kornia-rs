@@ -1,7 +1,6 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use kornia_image::Image;
 use kornia_imgproc::color::{gray_from_rgb, gray_from_rgb_u8};
-use kornia_tensor::host_alloc;
 
 // vanilla version
 fn gray_vanilla_get_unchecked(
@@ -64,7 +63,7 @@ fn gray_image_crate(image: &Image<u8, 3>) -> Image<u8, 1> {
 
     let image_gray = image_crate.grayscale();
 
-    Image::new(image.size(), image_gray.into_bytes(), host_alloc()).unwrap()
+    Image::new(image.size(), image_gray.into_bytes()).unwrap()
 }
 
 fn bench_grayscale(c: &mut Criterion) {
@@ -79,12 +78,12 @@ fn bench_grayscale(c: &mut Criterion) {
         let image_data = vec![0u8; width * height * 3];
         let image_size = [*width, *height].into();
 
-        let image_u8 = Image::new(image_size, image_data, host_alloc()).unwrap();
+        let image_u8 = Image::new(image_size, image_data).unwrap();
         let image_f32 = image_u8.clone().cast::<f32>().unwrap();
 
         // output image
-        let gray_f32 = Image::from_size_val(image_size, 0.0, host_alloc()).unwrap();
-        let gray_u8 = Image::from_size_val(image_size, 0, host_alloc()).unwrap();
+        let gray_f32 = Image::from_size_val(image_size, 0.0).unwrap();
+        let gray_u8 = Image::from_size_val(image_size, 0).unwrap();
 
         group.bench_with_input(
             BenchmarkId::new("vanilla_unchecked", &parameter_string),

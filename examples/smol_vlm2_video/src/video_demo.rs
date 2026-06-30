@@ -1,5 +1,4 @@
 use kornia::{
-    image::allocator::host_alloc,
     image::{color_spaces::Rgb8, ImageSize},
     imgproc::{self, color::YuvToRgbMode},
     io::{
@@ -78,7 +77,7 @@ pub fn video_demo(args: &crate::Args) -> Result<(), Box<dyn std::error::Error>> 
     let mut fps_counter = FpsCounter::new();
 
     // Pre-allocate RGB image buffer outside the loop
-    let mut rgb_image = Rgb8::from_size_val(img_size, 0, host_alloc())?;
+    let mut rgb_image = Rgb8::from_size_val(img_size, 0)?;
 
     let prompt = &args.prompt as &str;
     let mut smolvlm2 = SmolVlm2::new(SmolVlm2Config::default())?;

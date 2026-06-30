@@ -29,11 +29,11 @@
 //! Creating and manipulating tensors:
 //!
 //! ```rust
-//! use kornia_tensor::{Tensor, host_alloc};
+//! use kornia_tensor::Tensor;
 //!
 //! // Create a 2x3 tensor from a vector
 //! let data = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
-//! let tensor = Tensor::<f32, 2>::from_shape_vec([2, 3], data, host_alloc()).unwrap();
+//! let tensor = Tensor::<f32, 2>::from_shape_vec([2, 3], data).unwrap();
 //!
 //! // Access elements
 //! assert_eq!(tensor.get([0, 0]), Some(&1.0));
@@ -47,14 +47,14 @@
 //! Using tensor operations:
 //!
 //! ```rust
-//! use kornia_tensor::{Tensor, host_alloc};
+//! use kornia_tensor::Tensor;
 //!
 //! // Create tensors with specific values
-//! let zeros = Tensor::<f32, 2>::zeros([3, 3], host_alloc());
-//! let ones = Tensor::<f32, 2>::from_shape_val([3, 3], 1.0, host_alloc());
+//! let zeros = Tensor::<f32, 2>::zeros([3, 3]);
+//! let ones = Tensor::<f32, 2>::from_shape_val([3, 3], 1.0);
 //!
 //! // Generate data with a function
-//! let identity = Tensor::<f32, 2>::from_shape_fn([3, 3], host_alloc(), |[i, j]| {
+//! let identity = Tensor::<f32, 2>::from_shape_fn([3, 3], |[i, j]| {
 //!     if i == j { 1.0 } else { 0.0 }
 //! });
 //!
@@ -65,10 +65,10 @@
 //! Working with views:
 //!
 //! ```rust
-//! use kornia_tensor::{Tensor, host_alloc};
+//! use kornia_tensor::Tensor;
 //!
 //! let data = vec![1, 2, 3, 4, 5, 6];
-//! let tensor = Tensor::<i32, 1>::from_shape_vec([6], data, host_alloc()).unwrap();
+//! let tensor = Tensor::<i32, 1>::from_shape_vec([6], data).unwrap();
 //!
 //! // Create a reshaped view without copying data
 //! let view = tensor.reshape([2, 3]).unwrap();

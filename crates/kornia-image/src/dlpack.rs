@@ -319,7 +319,6 @@ mod tests {
                 width: 3,
             },
             data,
-            host_alloc(),
         )
         .unwrap();
 

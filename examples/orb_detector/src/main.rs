@@ -4,7 +4,6 @@ mod linux {
     use std::path::PathBuf;
 
     use kornia::{
-        image::allocator::host_alloc,
         image::{Image, ImageSize},
         imgproc::{
             self,
@@ -41,12 +40,9 @@ mod linux {
             ..Default::default()
         })?;
 
-        let mut webcam_frame =
-            Image::from_size_val(webcam_size, 0, kornia::image::allocator::host_alloc())?;
-        let mut webcam_frame_gray =
-            Image::from_size_val(webcam_size, 0, kornia::image::allocator::host_alloc())?;
-        let mut webcam_frame_grayf32 =
-            Image::from_size_val(webcam_size, 0.0, kornia::image::allocator::host_alloc())?;
+        let mut webcam_frame = Image::from_size_val(webcam_size, 0)?;
+        let mut webcam_frame_gray = Image::from_size_val(webcam_size, 0)?;
+        let mut webcam_frame_grayf32 = Image::from_size_val(webcam_size, 0.0)?;
 
         let webcam_orb_detector = OrbDetector::new();
 
@@ -55,10 +51,8 @@ mod linux {
         // read the image
         let img_rgb = read_image_any_rgb8(args.image_path)?;
 
-        let mut img_gray =
-            Image::from_size_val(img_rgb.size(), 0, kornia::image::allocator::host_alloc())?;
-        let mut img_grayf32 =
-            Image::from_size_val(img_rgb.size(), 0.0, kornia::image::allocator::host_alloc())?;
+        let mut img_gray = Image::from_size_val(img_rgb.size(), 0)?;
+        let mut img_grayf32 = Image::from_size_val(img_rgb.size(), 0.0)?;
         gray_from_rgb_u8(&img_rgb, &mut img_gray)?;
         u8_to_f32_image(&img_gray, &mut img_grayf32);
 
@@ -68,7 +62,6 @@ mod linux {
                 height: webcam_size.height.max(img_rgb.height()),
             },
             0,
-            host_alloc(),
         )?;
 
         let img_orb_detector = OrbDetector::new();

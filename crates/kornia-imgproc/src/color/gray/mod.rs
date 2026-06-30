@@ -84,24 +84,21 @@ impl GrayFromRgb for f64 {
 /// ```
 /// use kornia_image::{Image, ImageSize};
 /// use kornia_imgproc::color::gray_from_rgb;
-/// use kornia_tensor::host_alloc;
 ///
 /// // u8 — NEON / AVX2
 /// let rgb = Image::<u8, 3>::new(
 ///     ImageSize { width: 4, height: 5 },
 ///     vec![0u8; 4 * 5 * 3],
-///     host_alloc(),
 /// ).unwrap();
-/// let mut gray = Image::<u8, 1>::from_size_val(rgb.size(), 0, host_alloc()).unwrap();
+/// let mut gray = Image::<u8, 1>::from_size_val(rgb.size(), 0).unwrap();
 /// gray_from_rgb(&rgb, &mut gray).unwrap();
 ///
 /// // f32 — NEON / AVX2+FMA
 /// let rgb_f32 = Image::<f32, 3>::new(
 ///     ImageSize { width: 4, height: 5 },
 ///     vec![0f32; 4 * 5 * 3],
-///     host_alloc(),
 /// ).unwrap();
-/// let mut gray_f32 = Image::<f32, 1>::from_size_val(rgb_f32.size(), 0.0, host_alloc()).unwrap();
+/// let mut gray_f32 = Image::<f32, 1>::from_size_val(rgb_f32.size(), 0.0).unwrap();
 /// gray_from_rgb(&rgb_f32, &mut gray_f32).unwrap();
 /// ```
 pub fn gray_from_rgb<T>(src: &Image<T, 3>, dst: &mut Image<T, 1>) -> Result<(), ImageError>
@@ -232,15 +229,13 @@ impl RgbFromGray for f32 {
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
-/// use kornia_tensor::host_alloc;
 /// use kornia_imgproc::color::rgb_from_gray;
 ///
 /// let image = Image::<f32, 1>::new(
 ///     ImageSize { width: 4, height: 5 },
 ///     vec![0f32; 4 * 5 * 1],
-///     host_alloc()
 /// ).unwrap();
-/// let mut rgb = Image::<f32, 3>::from_size_val(image.size(), 0.0, host_alloc()).unwrap();
+/// let mut rgb = Image::<f32, 3>::from_size_val(image.size(), 0.0).unwrap();
 /// rgb_from_gray(&image, &mut rgb).unwrap();
 /// ```
 pub fn rgb_from_gray<T>(src: &Image<T, 1>, dst: &mut Image<T, 3>) -> Result<(), ImageError>
@@ -254,16 +249,15 @@ where
 mod tests {
     use kornia_image::{ops, Image, ImageSize};
     use kornia_io::jpeg::read_image_jpeg_rgb8;
-    use kornia_tensor::host_alloc;
 
     #[test]
     fn test_gray_from_rgb() -> Result<(), Box<dyn std::error::Error>> {
         let image = read_image_jpeg_rgb8("../../tests/data/dog.jpeg")?;
 
-        let mut image_norm = Image::from_size_val(image.size(), 0.0, host_alloc())?;
+        let mut image_norm = Image::from_size_val(image.size(), 0.0)?;
         ops::cast_and_scale(&image, &mut image_norm, 1. / 255.0)?;
 
-        let mut gray = Image::<f32, 1>::from_size_val(image_norm.size(), 0.0, host_alloc())?;
+        let mut gray = Image::<f32, 1>::from_size_val(image_norm.size(), 0.0)?;
         super::gray_from_rgb(&image_norm, &mut gray)?;
 
         assert_eq!(gray.num_channels(), 1);
@@ -286,10 +280,9 @@ mod tests {
                 0.0, 0.0, 0.0,
                 0.0, 0.0, 0.0,
             ],
-            host_alloc(),
         )?;
 
-        let mut gray = Image::<f32, 1>::from_size_val(image.size(), 0.0, host_alloc())?;
+        let mut gray = Image::<f32, 1>::from_size_val(image.size(), 0.0)?;
         super::gray_from_rgb(&image, &mut gray)?;
 
         let expected: Image<f32, 1> = Image::new(
@@ -298,7 +291,6 @@ mod tests {
                 height: 3,
             },
             vec![0.299, 0.587, 0.114, 0.0, 0.0, 0.0],
-            host_alloc(),
         )?;
 
         for (a, b) in gray.as_slice().iter().zip(expected.as_slice().iter()) {
@@ -316,10 +308,9 @@ mod tests {
                 height: 3,
             },
             vec![0.0_f32, 1.0, 2.0, 3.0, 4.0, 5.0],
-            host_alloc(),
         )?;
 
-        let mut rgb = Image::<f32, 3>::from_size_val(image.size(), 0.0, host_alloc())?;
+        let mut rgb = Image::<f32, 3>::from_size_val(image.size(), 0.0)?;
         super::rgb_from_gray(&image, &mut rgb)?;
 
         #[rustfmt::skip]
@@ -333,7 +324,6 @@ mod tests {
                 4.0, 4.0, 4.0,
                 5.0, 5.0, 5.0,
             ],
-            host_alloc(),
         )?;
 
         assert_eq!(rgb.as_slice(), expected.as_slice());
@@ -351,8 +341,8 @@ mod tests {
             height: 3,
         };
         let gray: Vec<u8> = (0..21).map(|v| (v * 11 % 256) as u8).collect();
-        let src = Image::<u8, 1>::new(size, gray.clone(), host_alloc())?;
-        let mut rgb = Image::<u8, 3>::from_size_val(size, 0, host_alloc())?;
+        let src = Image::<u8, 1>::new(size, gray.clone())?;
+        let mut rgb = Image::<u8, 3>::from_size_val(size, 0)?;
         super::rgb_from_gray(&src, &mut rgb)?;
         for (i, &g) in gray.iter().enumerate() {
             assert_eq!(rgb.as_slice()[i * 3], g);
@@ -371,8 +361,8 @@ mod tests {
         };
         let npix = 1024 * 1025;
         let gray: Vec<u8> = (0..npix).map(|v| (v % 256) as u8).collect();
-        let src = Image::<u8, 1>::new(size, gray.clone(), host_alloc())?;
-        let mut rgb = Image::<u8, 3>::from_size_val(size, 0, host_alloc())?;
+        let src = Image::<u8, 1>::new(size, gray.clone())?;
+        let mut rgb = Image::<u8, 3>::from_size_val(size, 0)?;
         super::rgb_from_gray(&src, &mut rgb)?;
         for (i, &g) in gray.iter().enumerate() {
             assert_eq!(rgb.as_slice()[i * 3], g, "px {i}");
@@ -390,8 +380,8 @@ mod tests {
         };
         let npix = 1024 * 1025;
         let gray: Vec<f32> = (0..npix).map(|v| (v % 256) as f32 * 0.25).collect();
-        let src = Image::<f32, 1>::new(size, gray.clone(), host_alloc())?;
-        let mut rgb = Image::<f32, 3>::from_size_val(size, 0.0, host_alloc())?;
+        let src = Image::<f32, 1>::new(size, gray.clone())?;
+        let mut rgb = Image::<f32, 3>::from_size_val(size, 0.0)?;
         super::rgb_from_gray(&src, &mut rgb)?;
         for (i, &g) in gray.iter().enumerate() {
             assert_eq!(rgb.as_slice()[i * 3], g, "px {i}");
@@ -409,10 +399,9 @@ mod tests {
                 height: 2,
             },
             vec![0u8, 128, 255, 128, 0, 128],
-            host_alloc(),
         )?;
 
-        let mut gray = Image::<u8, 1>::from_size_val(image.size(), 0, host_alloc())?;
+        let mut gray = Image::<u8, 1>::from_size_val(image.size(), 0)?;
         // unified entry point dispatches to the u8 NEON/AVX2 kernel
         super::gray_from_rgb(&image, &mut gray)?;
 
@@ -436,10 +425,9 @@ mod tests {
                 1.0,     1.0, 1.0,
                 0.5,     0.5, 0.5,
             ],
-            host_alloc(),
         )?;
 
-        let mut dst = Image::<f32, 1>::from_size_val(src.size(), 0.0, host_alloc())?;
+        let mut dst = Image::<f32, 1>::from_size_val(src.size(), 0.0)?;
         super::gray_from_rgb(&src, &mut dst)?;
 
         let expected = [0.299_f32, 0.587, 0.114, 0.0, 1.0, 0.5];
@@ -460,15 +448,13 @@ mod tests {
                 height: 3,
             },
             (0..63).map(|v| v as f32 / 62.0).collect::<Vec<_>>(),
-            host_alloc(),
         )?;
 
-        let mut dst_simd = Image::<f32, 1>::from_size_val(src.size(), 0.0, host_alloc())?;
-        let mut dst_scalar = Image::<f64, 1>::from_size_val(src.size(), 0.0, host_alloc())?;
+        let mut dst_simd = Image::<f32, 1>::from_size_val(src.size(), 0.0)?;
+        let mut dst_scalar = Image::<f64, 1>::from_size_val(src.size(), 0.0)?;
         let src_f64 = Image::new(
             src.size(),
             src.as_slice().iter().map(|&v| v as f64).collect::<Vec<_>>(),
-            host_alloc(),
         )?;
 
         super::gray_from_rgb(&src, &mut dst_simd)?;
@@ -502,15 +488,13 @@ mod tests {
             (0..npix * 3)
                 .map(|v| (v % 256) as f32 / 255.0)
                 .collect::<Vec<_>>(),
-            host_alloc(),
         )?;
 
-        let mut dst_simd = Image::<f32, 1>::from_size_val(src.size(), 0.0, host_alloc())?;
-        let mut dst_scalar = Image::<f64, 1>::from_size_val(src.size(), 0.0, host_alloc())?;
+        let mut dst_simd = Image::<f32, 1>::from_size_val(src.size(), 0.0)?;
+        let mut dst_scalar = Image::<f64, 1>::from_size_val(src.size(), 0.0)?;
         let src_f64 = Image::new(
             src.size(),
             src.as_slice().iter().map(|&v| v as f64).collect::<Vec<_>>(),
-            host_alloc(),
         )?;
 
         super::gray_from_rgb(&src, &mut dst_simd)?;

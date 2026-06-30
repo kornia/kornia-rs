@@ -28,11 +28,10 @@ mod kernels;
 /// use kornia_image::{Image, ImageSize};
 /// use kornia_image::color_spaces::BayerPattern;
 /// use kornia_imgproc::color::rgb_from_bayer;
-/// use kornia_tensor::host_alloc;
 ///
 /// let mosaic = Image::<u8, 1>::from_size_val(
-///     ImageSize { width: 4, height: 4 }, 128, host_alloc()).unwrap();
-/// let mut rgb = Image::<u8, 3>::from_size_val(mosaic.size(), 0, host_alloc()).unwrap();
+///     ImageSize { width: 4, height: 4 }, 128).unwrap();
+/// let mut rgb = Image::<u8, 3>::from_size_val(mosaic.size(), 0).unwrap();
 /// rgb_from_bayer(&mosaic, BayerPattern::Rggb, &mut rgb).unwrap();
 /// ```
 pub fn rgb_from_bayer(
@@ -72,7 +71,6 @@ pub fn rgb_from_bayer8(src: &Bayer8, dst: &mut Image<u8, 3>) -> Result<(), Image
 mod tests {
     use super::*;
     use kornia_image::ImageSize;
-    use kornia_tensor::host_alloc;
 
     const PATTERNS: [BayerPattern; 4] = [
         BayerPattern::Rggb,
@@ -88,10 +86,9 @@ mod tests {
                 height: h,
             },
             data.to_vec(),
-            host_alloc(),
         )
         .unwrap();
-        let mut dst = Image::<u8, 3>::from_size_val(src.size(), 0, host_alloc()).unwrap();
+        let mut dst = Image::<u8, 3>::from_size_val(src.size(), 0).unwrap();
         rgb_from_bayer(&src, p, &mut dst).unwrap();
         dst.as_slice().to_vec()
     }
@@ -181,7 +178,6 @@ mod tests {
                 height: 4,
             },
             0,
-            host_alloc(),
         )
         .unwrap();
         let mut dst = Image::<u8, 3>::from_size_val(
@@ -190,7 +186,6 @@ mod tests {
                 height: 4,
             },
             0,
-            host_alloc(),
         )
         .unwrap();
         assert!(rgb_from_bayer(&src, BayerPattern::Rggb, &mut dst).is_err());

@@ -23,7 +23,7 @@ fn example_create_from_value() -> Result<(), ImageError> {
         width: 640,
         height: 480,
     };
-    let img = Image::<u8, 3>::from_size_val(size, 128, kornia_image::allocator::host_alloc())?;
+    let img = Image::<u8, 3>::from_size_val(size, 128)?;
 
     println!("✓ Created {}x{}x{} image", img.width(), img.height(), 3);
     println!("  Fill value: {}", img.as_slice()[0]);
@@ -47,7 +47,7 @@ fn example_create_from_data() -> Result<(), ImageError> {
         width: 10,
         height: 10,
     };
-    let img = Image::<u8, 1>::new(size, data, kornia_image::allocator::host_alloc())?;
+    let img = Image::<u8, 1>::new(size, data)?;
 
     println!(
         "✓ Created {}x{} grayscale image from data",
@@ -72,7 +72,7 @@ fn example_error_handling() {
         height: 10,
     };
 
-    match Image::<u8, 3>::new(size, data, kornia_image::allocator::host_alloc()) {
+    match Image::<u8, 3>::new(size, data) {
         Ok(_) => println!("✓ Created image (should not reach here)"),
         Err(e) => {
             println!("✓ Caught expected error:");
@@ -91,7 +91,7 @@ fn example_zero_copy_access() -> Result<(), ImageError> {
         width: 5,
         height: 5,
     };
-    let img = Image::<u8, 3>::from_size_val(size, 42, kornia_image::allocator::host_alloc())?;
+    let img = Image::<u8, 3>::from_size_val(size, 42)?;
 
     // Zero-copy access to underlying data
     let data = img.as_slice(); // &[u8] - zero copy!
@@ -122,7 +122,7 @@ fn example_owned_copy() -> Result<(), ImageError> {
         width: 3,
         height: 3,
     };
-    let img = Image::<f32, 3>::from_size_val(size, 0.5, kornia_image::allocator::host_alloc())?;
+    let img = Image::<f32, 3>::from_size_val(size, 0.5)?;
 
     // Zero-copy view
     let data_view = img.as_slice();
@@ -148,17 +148,14 @@ fn example_different_types() -> Result<(), ImageError> {
     };
 
     // U8 images (8-bit unsigned)
-    let _gray_u8 = Image::<u8, 1>::from_size_val(size, 255, kornia_image::allocator::host_alloc())?;
-    let _rgb_u8 = Image::<u8, 3>::from_size_val(size, 128, kornia_image::allocator::host_alloc())?;
-    let _rgba_u8 = Image::<u8, 4>::from_size_val(size, 64, kornia_image::allocator::host_alloc())?;
+    let _gray_u8 = Image::<u8, 1>::from_size_val(size, 255)?;
+    let _rgb_u8 = Image::<u8, 3>::from_size_val(size, 128)?;
+    let _rgba_u8 = Image::<u8, 4>::from_size_val(size, 64)?;
 
     // F32 images (32-bit float, common for ML/processing)
-    let _gray_f32 =
-        Image::<f32, 1>::from_size_val(size, 1.0, kornia_image::allocator::host_alloc())?;
-    let _rgb_f32 =
-        Image::<f32, 3>::from_size_val(size, 0.5, kornia_image::allocator::host_alloc())?;
-    let _rgba_f32 =
-        Image::<f32, 4>::from_size_val(size, 0.25, kornia_image::allocator::host_alloc())?;
+    let _gray_f32 = Image::<f32, 1>::from_size_val(size, 1.0)?;
+    let _rgb_f32 = Image::<f32, 3>::from_size_val(size, 0.5)?;
+    let _rgba_f32 = Image::<f32, 4>::from_size_val(size, 0.25)?;
 
     println!("✓ Created 6 different image types:");
     println!("  U8:  Grayscale (C1), RGB (C3), RGBA (C4)");
@@ -182,7 +179,7 @@ fn example_pixel_access() -> Result<(), ImageError> {
         width: 5,
         height: 5,
     };
-    let mut img = Image::<u8, 3>::from_size_val(size, 0, kornia_image::allocator::host_alloc())?;
+    let mut img = Image::<u8, 3>::from_size_val(size, 0)?;
 
     // Set individual pixels
     img.set_pixel(0, 0, 0, 255)?; // Red channel at (0, 0)
@@ -224,7 +221,7 @@ fn example_image_from_slice() -> Result<(), ImageError> {
     };
 
     // Create image from slice (copies data)
-    let img = Image::<u8, 3>::from_size_slice(size, &data, kornia_image::allocator::host_alloc())?;
+    let img = Image::<u8, 3>::from_size_slice(size, &data)?;
 
     println!(
         "✓ Created {}x{}x{} image from slice",
@@ -256,7 +253,7 @@ fn example_channel_operations() -> Result<(), ImageError> {
         data.push(64); // B
     }
 
-    let img = Image::<u8, 3>::new(size, data, kornia_image::allocator::host_alloc())?;
+    let img = Image::<u8, 3>::new(size, data)?;
 
     // Extract single channel
     let red_channel = img.channel(0)?;

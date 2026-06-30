@@ -260,7 +260,6 @@ pub(crate) fn fast_horizontal_filter<const C: usize>(
 mod tests {
     use super::*;
     use kornia_image::ImageSize;
-    use kornia_tensor::host_alloc;
 
     #[test]
     fn test_separable_filter_f32() -> Result<(), ImageError> {
@@ -278,11 +277,10 @@ mod tests {
                 0.0, 0.0, 1.0, 0.0, 0.0,
                 0.0, 0.0, 0.0, 0.0, 0.0,
                 0.0, 0.0, 0.0, 0.0, 0.0,
-            ],
-            host_alloc()
+            ]
         )?;
 
-        let mut dst = Image::<_, 1>::from_size_val(img.size(), 0f32, host_alloc())?;
+        let mut dst = Image::<_, 1>::from_size_val(img.size(), 0f32)?;
         let kernel_x = vec![1.0, 1.0, 1.0];
         let kernel_y = vec![1.0, 1.0, 1.0];
         separable_filter(&img, &mut dst, &kernel_x, &kernel_y)?;
@@ -321,11 +319,10 @@ mod tests {
                 0, 0, 255, 0, 0,
                 0, 0, 0, 0, 0,
                 0, 0, 0, 0, 0,
-            ],
-            host_alloc()
+            ]
         )?;
 
-        let mut dst = Image::<u8, 1>::from_size_val(img.size(), 0, host_alloc())?;
+        let mut dst = Image::<u8, 1>::from_size_val(img.size(), 0)?;
         let kernel_x = vec![1.0, 1.0, 1.0];
         let kernel_y = vec![1.0, 1.0, 1.0];
         separable_filter(&img, &mut dst, &kernel_x, &kernel_y)?;
@@ -354,10 +351,10 @@ mod tests {
         let kernel_x = vec![1.0, 1.0, 1.0];
         let kernel_y = vec![1.0, 1.0, 1.0];
 
-        let mut img = Image::<u8, 1>::from_size_val(size, 0, host_alloc())?;
+        let mut img = Image::<u8, 1>::from_size_val(size, 0)?;
         img.as_slice_mut()[12] = 255;
 
-        let mut dst = Image::<u8, 1>::from_size_val(size, 0, host_alloc())?;
+        let mut dst = Image::<u8, 1>::from_size_val(size, 0)?;
         separable_filter(&img, &mut dst, &kernel_x, &kernel_y)?;
 
         #[rustfmt::skip]
@@ -388,11 +385,10 @@ mod tests {
                 0.0, 0.0, 9.0, 0.0, 0.0,
                 0.0, 0.0, 0.0, 0.0, 0.0,
                 0.0, 0.0, 0.0, 0.0, 0.0,
-            ],
-            host_alloc()
+            ]
         )?;
 
-        let mut transposed = Image::<_, 1>::from_size_val(size, 0.0, host_alloc())?;
+        let mut transposed = Image::<_, 1>::from_size_val(size, 0.0)?;
 
         fast_horizontal_filter(&img, &mut transposed, 1)?;
 
@@ -408,7 +404,7 @@ mod tests {
             ]
         );
 
-        let mut dst = Image::<_, 1>::from_size_val(size, 0.0, host_alloc())?;
+        let mut dst = Image::<_, 1>::from_size_val(size, 0.0)?;
 
         fast_horizontal_filter(&transposed, &mut dst, 1)?;
 

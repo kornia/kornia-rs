@@ -184,14 +184,7 @@ impl AprilTagDecoder {
                 height: img_size.height / config.downscale_factor,
             };
 
-            (
-                new_size,
-                Some(Image::from_size_val(
-                    new_size,
-                    0,
-                    kornia_image::allocator::host_alloc(),
-                )?),
-            )
+            (new_size, Some(Image::from_size_val(new_size, 0)?))
         };
 
         // Build the tag family cache once
@@ -205,8 +198,7 @@ impl AprilTagDecoder {
             })
             .collect();
 
-        let bin_img =
-            Image::from_size_val(img_size, Pixel::Skip, kornia_image::allocator::host_alloc())?;
+        let bin_img = Image::from_size_val(img_size, Pixel::Skip)?;
         let tile_min_max = TileMinMax::new(img_size, 4);
         let uf = UnionFind::new(img_size.width * img_size.height);
 

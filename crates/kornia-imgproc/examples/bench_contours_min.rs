@@ -5,7 +5,6 @@
 
 use kornia_image::{Image, ImageSize};
 use kornia_imgproc::contours::{ContourApproximationMode, FindContoursExecutor, RetrievalMode};
-use kornia_tensor::host_alloc;
 use std::time::Instant;
 
 const SIZES: &[(usize, usize)] = &[
@@ -80,7 +79,6 @@ fn run_one(
             height: h,
         },
         data,
-        host_alloc(),
     )
     .expect("kornia image");
     let mut exec = FindContoursExecutor::new();
@@ -140,7 +138,6 @@ fn load_test_image(path: &str) -> Option<(usize, usize, Vec<u8>)> {
             height: h,
         },
         0,
-        host_alloc(),
     )
     .unwrap();
     kornia_imgproc::color::gray_from_rgb_u8(&rgb, &mut gray).ok()?;
@@ -151,7 +148,6 @@ fn load_test_image(path: &str) -> Option<(usize, usize, Vec<u8>)> {
             height: h,
         },
         0,
-        host_alloc(),
     )
     .unwrap();
     kornia_imgproc::threshold::threshold_binary(&gray, &mut bw, 127, 1).ok()?;

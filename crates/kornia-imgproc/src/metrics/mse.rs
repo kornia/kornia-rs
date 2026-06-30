@@ -21,7 +21,6 @@ use kornia_image::{Image, ImageError};
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
-/// use kornia_tensor::host_alloc;
 /// use kornia_imgproc::metrics::mse;
 ///
 /// let image1 = Image::<f32, 1>::new(
@@ -30,7 +29,6 @@ use kornia_image::{Image, ImageError};
 ///      height: 3,
 ///    },
 ///    vec![0f32, 1f32, 2f32, 3f32, 4f32, 5f32],
-///    host_alloc()
 /// )
 /// .unwrap();
 ///
@@ -40,7 +38,6 @@ use kornia_image::{Image, ImageError};
 ///      height: 3,
 ///    },
 ///    vec![0f32, 1f32, 2f32, 3f32, 4f32, 5f32],
-///    host_alloc()
 /// )
 /// .unwrap();
 ///
@@ -95,7 +92,6 @@ pub fn mse<const C: usize>(
 /// # Example
 /// ```
 /// use kornia_image::{Image, ImageSize};
-/// use kornia_tensor::host_alloc;
 /// use kornia_imgproc::metrics::psnr;
 ///
 /// let image1 = Image::<f32, 3>::new(
@@ -104,7 +100,6 @@ pub fn mse<const C: usize>(
 ///     height: 2,
 ///   },
 ///   vec![0f32, 1f32, 2f32, 3f32, 4f32, 5f32],
-///   host_alloc()
 /// )
 /// .unwrap();
 ///
@@ -114,7 +109,6 @@ pub fn mse<const C: usize>(
 ///     height: 2,
 ///   },
 ///   vec![1f32, 3f32, 2f32, 4f32, 5f32, 6f32],
-///   host_alloc()
 /// )
 /// .unwrap();
 ///
@@ -160,7 +154,6 @@ pub fn psnr<const C: usize>(
 #[cfg(test)]
 mod tests {
     use kornia_image::{Image, ImageError, ImageSize};
-    use kornia_tensor::host_alloc;
 
     #[test]
     fn test_equal() -> Result<(), ImageError> {
@@ -170,7 +163,6 @@ mod tests {
                 height: 3,
             },
             vec![0f32, 1f32, 2f32, 3f32, 4f32, 5f32],
-            host_alloc(),
         )?;
         let image2 = Image::<_, 1>::new(
             ImageSize {
@@ -178,7 +170,6 @@ mod tests {
                 height: 3,
             },
             vec![0f32, 1f32, 2f32, 3f32, 4f32, 5f32],
-            host_alloc(),
         )?;
         let mse = crate::metrics::mse(&image1, &image2)?;
         assert_eq!(mse, 0f32);
@@ -194,7 +185,6 @@ mod tests {
                 height: 2,
             },
             vec![0f32, 1f32, 2f32, 3f32],
-            host_alloc(),
         )?;
         let image2 = Image::<_, 1>::new(
             ImageSize {
@@ -202,7 +192,6 @@ mod tests {
                 height: 2,
             },
             vec![0f32, 3f32, 2f32, 3f32],
-            host_alloc(),
         )?;
         let mse = crate::metrics::mse(&image1, &image2)?;
         assert_eq!(mse, 1.0);
@@ -218,7 +207,6 @@ mod tests {
                 height: 2,
             },
             vec![0f32, 1f32, 2f32, 3f32, 4f32, 5f32],
-            host_alloc(),
         )?;
         let image2 = Image::<_, 3>::new(
             ImageSize {
@@ -226,7 +214,6 @@ mod tests {
                 height: 2,
             },
             vec![1f32, 3f32, 2f32, 4f32, 5f32, 6f32],
-            host_alloc(),
         )?;
         let psnr = crate::metrics::psnr(&image1, &image2, 1.0)?;
         assert_eq!(psnr, 320.15698);

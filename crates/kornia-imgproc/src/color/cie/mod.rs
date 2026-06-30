@@ -159,7 +159,6 @@ f32_wrapper!(rgb_from_luv_f32, rgb_from_luv, "f32 [`rgb_from_luv`].");
 #[cfg(test)]
 mod tests {
     use kornia_image::{Image, ImageError, ImageSize};
-    use kornia_tensor::host_alloc;
 
     // Build an f32 RGB image and its f64 twin from the same [0,1] samples.
     fn pair(w: usize, h: usize) -> (Vec<f32>, Vec<f64>) {
@@ -185,10 +184,10 @@ mod tests {
             width: w,
             height: h,
         };
-        let src32 = Image::<f32, 3>::new(size, f32v, host_alloc())?;
-        let src64 = Image::<f64, 3>::new(size, f64v, host_alloc())?;
-        let mut out32 = Image::<f32, 3>::from_size_val(size, 0.0, host_alloc())?;
-        let mut out64 = Image::<f64, 3>::from_size_val(size, 0.0, host_alloc())?;
+        let src32 = Image::<f32, 3>::new(size, f32v)?;
+        let src64 = Image::<f64, 3>::new(size, f64v)?;
+        let mut out32 = Image::<f32, 3>::from_size_val(size, 0.0)?;
+        let mut out64 = Image::<f64, 3>::from_size_val(size, 0.0)?;
         fwd_f32(&src32, &mut out32)?;
         fwd_f64(&src64, &mut out64)?;
         for (i, (a, b)) in out32
@@ -221,9 +220,9 @@ mod tests {
             width: w,
             height: h,
         };
-        let src = Image::<f32, 3>::new(size, f32v, host_alloc())?;
-        let mut mid = Image::<f32, 3>::from_size_val(size, 0.0, host_alloc())?;
-        let mut back = Image::<f32, 3>::from_size_val(size, 0.0, host_alloc())?;
+        let src = Image::<f32, 3>::new(size, f32v)?;
+        let mut mid = Image::<f32, 3>::from_size_val(size, 0.0)?;
+        let mut back = Image::<f32, 3>::from_size_val(size, 0.0)?;
         fwd(&src, &mut mid)?;
         rev(&mid, &mut back)?;
         for (a, b) in src.as_slice().iter().zip(back.as_slice().iter()) {
@@ -303,14 +302,14 @@ mod tests {
             width: 2,
             height: 1,
         };
-        let src = Image::<f32, 3>::new(size, vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0], host_alloc())?;
+        let src = Image::<f32, 3>::new(size, vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0])?;
         for conv in [
             super::linear_rgb_from_rgb as fn(&_, &mut _) -> _,
             super::xyz_from_rgb,
             super::lab_from_rgb,
             super::luv_from_rgb,
         ] {
-            let mut out = Image::<f32, 3>::from_size_val(size, 0.0, host_alloc())?;
+            let mut out = Image::<f32, 3>::from_size_val(size, 0.0)?;
             conv(&src, &mut out)?;
             for v in out.as_slice() {
                 assert!(v.is_finite(), "NaN/inf in output: {v}");
@@ -329,9 +328,9 @@ mod tests {
             width: w,
             height: h,
         };
-        let src = Image::<f32, 3>::new(size, data, host_alloc())?;
-        let mut mid = Image::<f32, 3>::from_size_val(size, 0.0, host_alloc())?;
-        let mut back = Image::<f32, 3>::from_size_val(size, 0.0, host_alloc())?;
+        let src = Image::<f32, 3>::new(size, data)?;
+        let mut mid = Image::<f32, 3>::from_size_val(size, 0.0)?;
+        let mut back = Image::<f32, 3>::from_size_val(size, 0.0)?;
         super::lab_from_rgb(&src, &mut mid)?;
         super::rgb_from_lab(&mid, &mut back)?;
         for (a, b) in src.as_slice().iter().zip(back.as_slice().iter()) {

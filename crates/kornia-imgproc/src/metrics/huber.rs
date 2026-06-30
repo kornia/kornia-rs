@@ -24,7 +24,6 @@ use kornia_image::{Image, ImageError};
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
-/// use kornia_tensor::host_alloc;
 ///
 /// let image1 = Image::<f32, 1>::new(
 ///    ImageSize {
@@ -32,7 +31,6 @@ use kornia_image::{Image, ImageError};
 ///      height: 3,
 /// },
 /// vec![0f32, 1f32, 2f32, 3f32, 4f32, 5f32],
-/// host_alloc()
 /// )
 /// .unwrap();
 ///
@@ -42,7 +40,6 @@ use kornia_image::{Image, ImageError};
 ///   height: 3,
 /// },
 /// vec![5f32, 4f32, 3f32, 2f32, 1f32, 0f32],
-/// host_alloc()
 /// )
 /// .unwrap();
 ///
@@ -91,7 +88,6 @@ pub fn huber<const C: usize>(
 #[cfg(test)]
 mod tests {
     use kornia_image::{Image, ImageError, ImageSize};
-    use kornia_tensor::host_alloc;
 
     #[test]
     fn test_huber() -> Result<(), ImageError> {
@@ -101,7 +97,6 @@ mod tests {
                 height: 3,
             },
             vec![0f32, 1f32, 2f32, 3f32, 4f32, 5f32],
-            host_alloc(),
         )?;
 
         let image2 = Image::<_, 1>::new(
@@ -110,7 +105,6 @@ mod tests {
                 height: 3,
             },
             vec![5f32, 4f32, 3f32, 2f32, 1f32, 0f32],
-            host_alloc(),
         )?;
 
         let huber = super::huber(&image1, &image2, 1.0)?;

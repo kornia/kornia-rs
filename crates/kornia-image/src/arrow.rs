@@ -136,7 +136,6 @@ mod tests {
         image::Image,
         ImageError, ImageSize,
     };
-    use kornia_tensor::host_alloc;
 
     #[test]
     fn test_image_into_arrow() -> Result<(), ImageError> {
@@ -146,7 +145,6 @@ mod tests {
                 height: 3,
             },
             vec![0, 1, 2, 3, 4, 5],
-            host_alloc(),
         )?;
 
         let arrow_array = image.into_arrow();

@@ -256,7 +256,7 @@ impl<const N: usize> VideoProcessor<N> {
         new_size: ImageSize,
         interpolation: InterpolationMode,
     ) -> Result<(), VideoError> {
-        let mut buf = Image::<u8, 3>::from_size_val(new_size, 0, kornia_tensor::host_alloc())?;
+        let mut buf = Image::<u8, 3>::from_size_val(new_size, 0)?;
         resize_fast_rgb(frame, &mut buf, interpolation)?;
         *frame = buf;
         Ok(())
@@ -289,8 +289,7 @@ impl<const N: usize> VideoProcessor<N> {
         // Pad each frame spatially if needed
         let size = frame.size();
         if size.width < padded_size.width || size.height < padded_size.height {
-            let mut padded =
-                Image::<u8, 3>::from_size_val(padded_size, fill, kornia_tensor::host_alloc())?;
+            let mut padded = Image::<u8, 3>::from_size_val(padded_size, fill)?;
             let img_slice = frame.as_slice();
             let padded_img_slice = padded.as_slice_mut();
             let width = size.width;

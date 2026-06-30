@@ -805,11 +805,7 @@ mod tests {
     fn test_fit_quads() -> Result<(), Box<dyn std::error::Error>> {
         let src = read_image_png_mono8("../../tests/data/apriltag.png")?;
 
-        let mut bin = Image::from_size_val(
-            src.size(),
-            Pixel::Skip,
-            kornia_image::allocator::host_alloc(),
-        )?;
+        let mut bin = Image::from_size_val(src.size(), Pixel::Skip)?;
         let mut tile_min_max = TileMinMax::new(src.size(), 4);
         let mut uf = UnionFind::new(src.as_slice().len());
         let mut clusters = HashMap::new();
@@ -901,11 +897,7 @@ mod tests {
     #[test]
     fn test_quad_segment_maxima() -> Result<(), Box<dyn std::error::Error>> {
         let src = read_image_png_mono8("../../tests/data/apriltag.png")?;
-        let mut bin = Image::from_size_val(
-            src.size(),
-            Pixel::Skip,
-            kornia_image::allocator::host_alloc(),
-        )?;
+        let mut bin = Image::from_size_val(src.size(), Pixel::Skip)?;
         let mut tile_min_max = TileMinMax::new(src.size(), 4);
         let mut uf = UnionFind::new(src.as_slice().len());
         let mut clusters = HashMap::new();
@@ -1056,12 +1048,7 @@ mod tests {
             width: 4,
             height: 4,
         };
-        let img = Image::<Pixel, 1>::from_size_val(
-            size,
-            Pixel::White,
-            kornia_image::allocator::host_alloc(),
-        )
-        .unwrap();
+        let img = Image::<Pixel, 1>::from_size_val(size, Pixel::White).unwrap();
 
         // Test 1: Single point
         let gradient_infos = vec![GradientInfo {

@@ -2,7 +2,6 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 
 use kornia_image::Image;
 use kornia_imgproc::pyramid::{pyrdown_f32, pyrdown_u8, pyrup_f32, pyrup_u8};
-use kornia_tensor::host_alloc;
 
 fn bench_pyramid(c: &mut Criterion) {
     let mut group = c.benchmark_group("Pyramid Operations");
@@ -16,12 +15,11 @@ fn bench_pyramid(c: &mut Criterion) {
         let small_image_data = (0..((*width / 2) * (*height / 2)))
             .map(|x| x as f32)
             .collect();
-        let small_image =
-            Image::<f32, 1>::new(small_image_size, small_image_data, host_alloc()).unwrap();
+        let small_image = Image::<f32, 1>::new(small_image_size, small_image_data).unwrap();
 
         let image_size = [*width, *height].into();
 
-        let up_image = Image::<f32, 1>::from_size_val(image_size, 0.0, host_alloc()).unwrap();
+        let up_image = Image::<f32, 1>::from_size_val(image_size, 0.0).unwrap();
 
         group.bench_with_input(
             BenchmarkId::new("pyrup_f32", &parameter_string),
@@ -38,9 +36,8 @@ fn bench_pyramid(c: &mut Criterion) {
         let small_image_data_3c = (0..((*width / 2) * (*height / 2) * 3))
             .map(|x| x as f32)
             .collect();
-        let small_image_3c =
-            Image::<f32, 3>::new(small_image_size, small_image_data_3c, host_alloc()).unwrap();
-        let up_image_3c = Image::<f32, 3>::from_size_val(image_size, 0.0, host_alloc()).unwrap();
+        let small_image_3c = Image::<f32, 3>::new(small_image_size, small_image_data_3c).unwrap();
+        let up_image_3c = Image::<f32, 3>::from_size_val(image_size, 0.0).unwrap();
 
         group.bench_with_input(
             BenchmarkId::new("pyrup_f32_3c", &parameter_string),
@@ -56,12 +53,10 @@ fn bench_pyramid(c: &mut Criterion) {
         // Benchmark pyrdown (downsampling)
         let large_image_size = [*width, *height].into();
         let large_image_data = (0..((*width) * (*height))).map(|x| x as f32).collect();
-        let large_image =
-            Image::<f32, 1>::new(large_image_size, large_image_data, host_alloc()).unwrap();
+        let large_image = Image::<f32, 1>::new(large_image_size, large_image_data).unwrap();
 
         let down_image_size = [(*width).div_ceil(2), (*height).div_ceil(2)].into();
-        let down_image =
-            Image::<f32, 1>::from_size_val(down_image_size, 0.0, host_alloc()).unwrap();
+        let down_image = Image::<f32, 1>::from_size_val(down_image_size, 0.0).unwrap();
 
         group.bench_with_input(
             BenchmarkId::new("pyrdown_f32", &parameter_string),
@@ -76,10 +71,8 @@ fn bench_pyramid(c: &mut Criterion) {
 
         // For multi-channel images
         let large_image_data_3c = (0..((*width) * (*height) * 3)).map(|x| x as f32).collect();
-        let large_image_3c =
-            Image::<f32, 3>::new(large_image_size, large_image_data_3c, host_alloc()).unwrap();
-        let down_image_3c =
-            Image::<f32, 3>::from_size_val(down_image_size, 0.0, host_alloc()).unwrap();
+        let large_image_3c = Image::<f32, 3>::new(large_image_size, large_image_data_3c).unwrap();
+        let down_image_3c = Image::<f32, 3>::from_size_val(down_image_size, 0.0).unwrap();
 
         group.bench_with_input(
             BenchmarkId::new("pyrdown_f32_3c", &parameter_string),
@@ -109,10 +102,9 @@ fn bench_pyramid_u8(c: &mut Criterion) {
         let small_image_data_u8 = (0..((*width / 2) * (*height / 2)))
             .map(|x| (x % 256) as u8)
             .collect();
-        let small_image_u8 =
-            Image::<u8, 1>::new(small_image_size, small_image_data_u8, host_alloc()).unwrap();
+        let small_image_u8 = Image::<u8, 1>::new(small_image_size, small_image_data_u8).unwrap();
         let image_size = [*width, *height].into();
-        let up_image_u8 = Image::<u8, 1>::from_size_val(image_size, 0, host_alloc()).unwrap();
+        let up_image_u8 = Image::<u8, 1>::from_size_val(image_size, 0).unwrap();
 
         group.bench_with_input(
             BenchmarkId::new("pyrup_u8", &parameter_string),
@@ -130,8 +122,8 @@ fn bench_pyramid_u8(c: &mut Criterion) {
             .map(|x| (x % 256) as u8)
             .collect();
         let small_image_u8_3c =
-            Image::<u8, 3>::new(small_image_size, small_image_data_u8_3c, host_alloc()).unwrap();
-        let up_image_u8_3c = Image::<u8, 3>::from_size_val(image_size, 0, host_alloc()).unwrap();
+            Image::<u8, 3>::new(small_image_size, small_image_data_u8_3c).unwrap();
+        let up_image_u8_3c = Image::<u8, 3>::from_size_val(image_size, 0).unwrap();
 
         group.bench_with_input(
             BenchmarkId::new("pyrup_u8_3c", &parameter_string),
@@ -148,12 +140,10 @@ fn bench_pyramid_u8(c: &mut Criterion) {
         let large_image_data_u8 = (0..((*width) * (*height)))
             .map(|x| (x % 256) as u8)
             .collect();
-        let large_image_u8 =
-            Image::<u8, 1>::new(large_image_size, large_image_data_u8, host_alloc()).unwrap();
+        let large_image_u8 = Image::<u8, 1>::new(large_image_size, large_image_data_u8).unwrap();
 
         let down_image_size = [(*width).div_ceil(2), (*height).div_ceil(2)].into();
-        let down_image_u8 =
-            Image::<u8, 1>::from_size_val(down_image_size, 0, host_alloc()).unwrap();
+        let down_image_u8 = Image::<u8, 1>::from_size_val(down_image_size, 0).unwrap();
 
         group.bench_with_input(
             BenchmarkId::new("pyrdown_u8", &parameter_string),
@@ -171,9 +161,8 @@ fn bench_pyramid_u8(c: &mut Criterion) {
             .map(|x| (x % 256) as u8)
             .collect();
         let large_image_u8_3c =
-            Image::<u8, 3>::new(large_image_size, large_image_data_u8_3c, host_alloc()).unwrap();
-        let down_image_u8_3c =
-            Image::<u8, 3>::from_size_val(down_image_size, 0, host_alloc()).unwrap();
+            Image::<u8, 3>::new(large_image_size, large_image_data_u8_3c).unwrap();
+        let down_image_u8_3c = Image::<u8, 3>::from_size_val(down_image_size, 0).unwrap();
 
         group.bench_with_input(
             BenchmarkId::new("pyrdown_u8_3c", &parameter_string),

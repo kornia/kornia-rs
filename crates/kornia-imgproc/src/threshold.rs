@@ -22,13 +22,12 @@ use crate::parallel;
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
-/// use kornia_tensor::host_alloc;
 /// use kornia_imgproc::threshold::threshold_binary;
 ///
 /// let data = vec![100u8, 200, 50, 150, 200, 250];
-/// let image = Image::<_, 1>::new(ImageSize { width: 2, height: 3 }, data, host_alloc()).unwrap();
+/// let image = Image::<_, 1>::new(ImageSize { width: 2, height: 3 }, data).unwrap();
 ///
-/// let mut thresholded = Image::<_, 1>::from_size_val(image.size(), 0, host_alloc()).unwrap();
+/// let mut thresholded = Image::<_, 1>::from_size_val(image.size(), 0).unwrap();
 ///
 /// threshold_binary(&image, &mut thresholded, 100, 255).unwrap();
 /// assert_eq!(thresholded.num_channels(), 1);
@@ -82,13 +81,12 @@ where
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
-/// use kornia_tensor::host_alloc;
 /// use kornia_imgproc::threshold::threshold_binary_inverse;
 ///
 /// let data = vec![100u8, 200, 50, 150, 200, 250];
-/// let image = Image::<_, 1>::new(ImageSize { width: 2, height: 3 }, data, host_alloc()).unwrap();
+/// let image = Image::<_, 1>::new(ImageSize { width: 2, height: 3 }, data).unwrap();
 ///
-/// let mut thresholded = Image::<_, 1>::from_size_val(image.size(), 0, host_alloc()).unwrap();
+/// let mut thresholded = Image::<_, 1>::from_size_val(image.size(), 0).unwrap();
 ///
 /// threshold_binary_inverse(&image, &mut thresholded, 100, 255).unwrap();
 /// assert_eq!(thresholded.num_channels(), 1);
@@ -140,13 +138,12 @@ where
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
-/// use kornia_tensor::host_alloc;
 /// use kornia_imgproc::threshold::threshold_truncate;
 ///
 /// let data = vec![100u8, 200, 50, 150, 200, 250];
-/// let image = Image::<_, 1>::new(ImageSize { width: 2, height: 3 }, data, host_alloc()).unwrap();
+/// let image = Image::<_, 1>::new(ImageSize { width: 2, height: 3 }, data).unwrap();
 ///
-/// let mut thresholded = Image::<_, 1>::from_size_val(image.size(), 0, host_alloc()).unwrap();
+/// let mut thresholded = Image::<_, 1>::from_size_val(image.size(), 0).unwrap();
 ///
 /// threshold_truncate(&image, &mut thresholded, 150).unwrap();
 /// assert_eq!(thresholded.num_channels(), 1);
@@ -197,13 +194,12 @@ where
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
-/// use kornia_tensor::host_alloc;
 /// use kornia_imgproc::threshold::threshold_to_zero;
 ///
 /// let data = vec![100u8, 200, 50, 150, 200, 250];
-/// let image = Image::<_, 3>::new(ImageSize { width: 2, height: 1 }, data, host_alloc()).unwrap();
+/// let image = Image::<_, 3>::new(ImageSize { width: 2, height: 1 }, data).unwrap();
 ///
-/// let mut thresholded = Image::<_, 3>::from_size_val(image.size(), 0, host_alloc()).unwrap();
+/// let mut thresholded = Image::<_, 3>::from_size_val(image.size(), 0).unwrap();
 ///
 /// threshold_to_zero(&image, &mut thresholded, 150).unwrap();
 /// assert_eq!(thresholded.num_channels(), 3);
@@ -254,13 +250,12 @@ where
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
-/// use kornia_tensor::host_alloc;
 /// use kornia_imgproc::threshold::threshold_to_zero_inverse;
 ///
 /// let data = vec![100u8, 200, 50, 150, 200, 250];
-/// let image = Image::<_, 3>::new(ImageSize { width: 2, height: 1 }, data, host_alloc()).unwrap();
+/// let image = Image::<_, 3>::new(ImageSize { width: 2, height: 1 }, data).unwrap();
 ///
-/// let mut thresholded = Image::<_, 3>::from_size_val(image.size(), 0, host_alloc()).unwrap();
+/// let mut thresholded = Image::<_, 3>::from_size_val(image.size(), 0).unwrap();
 ///
 /// threshold_to_zero_inverse(&image, &mut thresholded, 150).unwrap();
 /// assert_eq!(thresholded.num_channels(), 3);
@@ -315,7 +310,6 @@ where
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
-/// use kornia_tensor::host_alloc;
 /// use kornia_imgproc::threshold::in_range;
 ///
 /// let data = vec![100u8, 200, 50, 150, 200, 250];
@@ -326,11 +320,10 @@ where
 ///       height: 1,
 ///    },
 ///    data,
-///    host_alloc()
 /// )
 /// .unwrap();
 ///
-/// let mut thresholded = Image::<u8, 1>::from_size_val(image.size(), 0, host_alloc()).unwrap();
+/// let mut thresholded = Image::<u8, 1>::from_size_val(image.size(), 0).unwrap();
 ///
 /// in_range(&image, &mut thresholded, &[100, 150, 0], &[200, 200, 200]).unwrap();
 /// assert_eq!(thresholded.num_channels(), 1);
@@ -377,7 +370,6 @@ where
 #[cfg(test)]
 mod tests {
     use kornia_image::{Image, ImageError, ImageSize};
-    use kornia_tensor::host_alloc;
 
     #[test]
     fn threshold_binary() -> Result<(), ImageError> {
@@ -389,10 +381,9 @@ mod tests {
                 height: 3,
             },
             data,
-            host_alloc(),
         )?;
 
-        let mut thresholded = Image::<_, 1>::from_size_val(image.size(), 0, host_alloc())?;
+        let mut thresholded = Image::<_, 1>::from_size_val(image.size(), 0)?;
 
         super::threshold_binary(&image, &mut thresholded, 100, 255)?;
 
@@ -415,10 +406,9 @@ mod tests {
                 height: 3,
             },
             data,
-            host_alloc(),
         )?;
 
-        let mut thresholded = Image::<_, 1>::from_size_val(image.size(), 0, host_alloc())?;
+        let mut thresholded = Image::<_, 1>::from_size_val(image.size(), 0)?;
 
         super::threshold_binary_inverse(&image, &mut thresholded, 100, 255)?;
 
@@ -441,10 +431,9 @@ mod tests {
                 height: 3,
             },
             data,
-            host_alloc(),
         )?;
 
-        let mut thresholded = Image::<_, 1>::from_size_val(image.size(), 0, host_alloc())?;
+        let mut thresholded = Image::<_, 1>::from_size_val(image.size(), 0)?;
 
         super::threshold_truncate(&image, &mut thresholded, 150)?;
 
@@ -467,10 +456,9 @@ mod tests {
                 height: 1,
             },
             data,
-            host_alloc(),
         )?;
 
-        let mut thresholded = Image::<_, 3>::from_size_val(image.size(), 0, host_alloc())?;
+        let mut thresholded = Image::<_, 3>::from_size_val(image.size(), 0)?;
 
         super::threshold_to_zero(&image, &mut thresholded, 150)?;
 
@@ -493,10 +481,9 @@ mod tests {
                 height: 1,
             },
             data,
-            host_alloc(),
         )?;
 
-        let mut thresholded = Image::<_, 3>::from_size_val(image.size(), 0, host_alloc())?;
+        let mut thresholded = Image::<_, 3>::from_size_val(image.size(), 0)?;
 
         super::threshold_to_zero_inverse(&image, &mut thresholded, 150)?;
 
@@ -521,10 +508,9 @@ mod tests {
                 height: 1,
             },
             data,
-            host_alloc(),
         )?;
 
-        let mut thresholded = Image::<_, 1>::from_size_val(image.size(), 0, host_alloc())?;
+        let mut thresholded = Image::<_, 1>::from_size_val(image.size(), 0)?;
 
         super::threshold_binary(&image, &mut thresholded, 100, 255)?;
 
@@ -545,10 +531,9 @@ mod tests {
                 height: 1,
             },
             data,
-            host_alloc(),
         )?;
 
-        let mut thresholded = Image::<u8, 1>::from_size_val(image.size(), 0, host_alloc())?;
+        let mut thresholded = Image::<u8, 1>::from_size_val(image.size(), 0)?;
 
         super::in_range(&image, &mut thresholded, &[100, 150, 0], &[200, 200, 200])?;
 

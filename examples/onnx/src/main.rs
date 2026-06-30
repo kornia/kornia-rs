@@ -59,8 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .commit_from_file(&args.onnx_model_path)?;
 
     // cast and scale the image to f32
-    let mut image_hwc_f32 =
-        Image::from_size_val(image.size(), 0.0f32, kornia_tensor::host_alloc())?;
+    let mut image_hwc_f32 = Image::from_size_val(image.size(), 0.0f32)?;
     kornia::image::ops::cast_and_scale(&image, &mut image_hwc_f32, 1.0 / 255.0)?;
 
     // convert to HWC -> CHW
@@ -75,7 +74,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             image_chw.shape[2],
         ],
         image_chw.into_vec(),
-        kornia_tensor::host_alloc(),
     )?;
 
     // make the ort tensor
@@ -122,7 +120,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             out_shape[2] as usize,
         ],
         out_ort.to_vec(),
-        kornia_tensor::host_alloc(),
     )?;
 
     println!("out_tensor: {:?}", out_tensor.shape);

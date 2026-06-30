@@ -27,7 +27,6 @@ use crate::parallel;
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
-/// use kornia_tensor::host_alloc;
 /// use kornia_imgproc::normalize::normalize_mean_std;
 ///
 /// let image_data = vec![0f32, 1.0, 0.0, 1.0, 2.0, 3.0, 0.0, 1.0, 0.0, 1.0, 2.0, 3.0];
@@ -37,11 +36,10 @@ use crate::parallel;
 ///     height: 2,
 ///   },
 ///   image_data,
-///   host_alloc()
 /// )
 /// .unwrap();
 ///
-/// let mut image_normalized = Image::<f32, 3>::from_size_val(image.size(), 0.0, host_alloc()).unwrap();
+/// let mut image_normalized = Image::<f32, 3>::from_size_val(image.size(), 0.0).unwrap();
 ///
 /// normalize_mean_std(
 ///     &image,
@@ -106,7 +104,6 @@ where
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
-/// use kornia_tensor::host_alloc;
 /// use kornia_imgproc::normalize::find_min_max;
 ///
 /// let image_data = vec![0u8, 1, 0, 1, 2, 3, 0, 1, 0, 1, 2, 3];
@@ -116,7 +113,6 @@ where
 ///     height: 2,
 ///   },
 ///   image_data,
-///   host_alloc()
 /// )
 /// .unwrap();
 ///
@@ -172,7 +168,6 @@ where
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
-/// use kornia_tensor::host_alloc;
 /// use kornia_imgproc::normalize::normalize_min_max;
 ///
 /// let image_data = vec![0.0f32, 1.0, 0.0, 1.0, 2.0, 3.0, 0.0, 1.0, 0.0, 1.0, 2.0, 3.0];
@@ -182,11 +177,10 @@ where
 ///     height: 2,
 ///   },
 ///   image_data,
-///   host_alloc()
 /// )
 /// .unwrap();
 ///
-/// let mut image_normalized = Image::<f32, 3>::from_size_val(image.size(), 0.0, host_alloc()).unwrap();
+/// let mut image_normalized = Image::<f32, 3>::from_size_val(image.size(), 0.0).unwrap();
 ///
 /// normalize_min_max(&image, &mut image_normalized, 0.0, 1.0).unwrap();
 ///
@@ -428,7 +422,6 @@ fn normalize_rgb_u8_scalar(
 #[cfg(test)]
 mod tests {
     use kornia_image::{Image, ImageError, ImageSize};
-    use kornia_tensor::host_alloc;
 
     #[test]
     fn normalize_mean_std() -> Result<(), ImageError> {
@@ -446,13 +439,12 @@ mod tests {
                 height: 2,
             },
             image_data,
-            host_alloc(),
         )?;
 
         let mean = [0.5, 1.0, 0.5];
         let std = [1.0, 1.0, 1.0];
 
-        let mut normalized = Image::<f32, 3>::from_size_val(image.size(), 0.0, host_alloc())?;
+        let mut normalized = Image::<f32, 3>::from_size_val(image.size(), 0.0)?;
 
         super::normalize_mean_std(&image, &mut normalized, &mean, &std)?;
 
@@ -480,7 +472,6 @@ mod tests {
                 height: 2,
             },
             image_data,
-            host_alloc(),
         )?;
 
         let (min, max) = super::find_min_max(&image)?;
@@ -508,10 +499,9 @@ mod tests {
                 height: 2,
             },
             image_data,
-            host_alloc(),
         )?;
 
-        let mut normalized = Image::<f32, 3>::from_size_val(image.size(), 0.0, host_alloc())?;
+        let mut normalized = Image::<f32, 3>::from_size_val(image.size(), 0.0)?;
 
         super::normalize_min_max(&image, &mut normalized, 0.0, 1.0)?;
 

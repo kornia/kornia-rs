@@ -60,7 +60,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 2. Resize it
     let new_size = ImageSize { width: 128, height: 128 };
-    let mut resized = Image::from_size_val(new_size, 0, host_alloc())?;
+    let mut resized = Image::from_size_val(new_size, 0)?;
 
     resize_fast_rgb(&image, &mut resized, InterpolationMode::Bilinear)?;
 

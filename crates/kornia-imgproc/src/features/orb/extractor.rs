@@ -1,5 +1,4 @@
 use kornia_image::{Image, ImageError, ImageSize};
-use kornia_tensor::host_alloc;
 use rayon::prelude::*;
 
 use crate::{
@@ -198,7 +197,7 @@ impl OrbDetector {
     }
 
     fn build_pyramid(&self, img: &Image<f32, 1>) -> Result<Vec<Image<f32, 1>>, ImageError> {
-        let img = Image::from_size_slice(img.size(), img.as_slice(), host_alloc())?;
+        let img = Image::from_size_slice(img.size(), img.as_slice())?;
 
         let base = img.size();
         let mut pyramid = Vec::with_capacity(self.n_scales);
@@ -275,7 +274,7 @@ impl OrbDetector {
             .filter_map(|((_, &ori), &m)| if m { Some(ori) } else { None })
             .collect();
 
-        let mut response = Image::from_size_val(octave_image.size(), 0f32, host_alloc())?;
+        let mut response = Image::from_size_val(octave_image.size(), 0f32)?;
         let mut harris_response = HarrisResponse::new(octave_image.size()).with_k(self.harris_k);
         harris_response.compute(octave_image, &mut response)?;
 
@@ -377,7 +376,7 @@ impl OrbDetector {
 
         // Apply Gaussian blur before computing descriptors (matches ORB-SLAM3).
         // ORB-SLAM3 uses 7x7 kernel with sigma=2.
-        let mut blurred = Image::from_size_val(octave_image.size(), 0.0f32, host_alloc())?;
+        let mut blurred = Image::from_size_val(octave_image.size(), 0.0f32)?;
         gaussian_blur(octave_image, &mut blurred, (7, 7), (2.0, 2.0))?;
 
         let descriptors = orb_loop(&blurred, &filtered_keypoints, &filtered_orientations);
@@ -610,7 +609,7 @@ impl OrbDetector {
         let trace = std::env::var("KORNIA_ORB_TRACE").is_ok();
         let features_per_level = self.features_per_level();
 
-        let level0 = Image::from_size_slice(img.size(), img.as_slice(), host_alloc())?;
+        let level0 = Image::from_size_slice(img.size(), img.as_slice())?;
         let mut pyramid_arcs: Vec<Arc<Image<u8, 1>>> = Vec::with_capacity(self.n_scales);
         pyramid_arcs.push(Arc::new(level0));
 
@@ -697,7 +696,7 @@ impl OrbDetector {
         // Pre-BRIEF blur via the Q8+Q8 u8 NEON path: ≤1 LSB off a float
         // reference, which is well under the bit-flip threshold that would
         // drift the 256-bit Hamming distance.
-        let mut blurred = Image::from_size_val(octave_image.size(), 0u8, host_alloc())?;
+        let mut blurred = Image::from_size_val(octave_image.size(), 0u8)?;
         gaussian_blur_u8(octave_image, &mut blurred, (7, 7), (2.0, 2.0))?;
 
         let descriptors = orb_loop_u8(&blurred, &filtered_keypoints, &filtered_orientations);
@@ -864,7 +863,7 @@ fn pyramid_reduce_u8(img: &Image<u8, 1>, target: ImageSize) -> Result<Image<u8, 
     // a 3-tap filter with weights ≈ [0.25, 0.50, 0.25]. The bilinear resize
     // kernel itself already provides equivalent low-pass over a 1.2× factor
     // on near-natural images, so the separate blur pass is skipped.
-    let mut resized = Image::from_size_val(target, 0u8, host_alloc())?;
+    let mut resized = Image::from_size_val(target, 0u8)?;
     resize_fast_u8(img, &mut resized, InterpolationMode::Bilinear)?;
     Ok(resized)
 }
@@ -878,10 +877,10 @@ fn pyramid_reduce(
     // We apply a small Gaussian blur to reduce aliasing.
     let sigma = 2.0 * downscale / 6.0;
 
-    let mut smoothed = Image::from_size_val(img.size(), 0.0, host_alloc())?;
+    let mut smoothed = Image::from_size_val(img.size(), 0.0)?;
     gaussian_blur(img, &mut smoothed, (0, 0), (sigma, 0.0))?;
 
-    let mut resized = Image::from_size_val(target, 0.0, host_alloc())?;
+    let mut resized = Image::from_size_val(target, 0.0)?;
     resize_native(
         &smoothed,
         &mut resized,
@@ -1692,10 +1691,9 @@ fn orb_loop(src: &Image<f32, 1>, keypoints: &[(i32, i32)], orientation: &[f32]) 
 mod tests {
     use super::*;
     use kornia_image::Image;
-    use kornia_tensor::host_alloc;
 
     fn make_gradient_x(size: usize) -> Image<f32, 1> {
-        let mut img = Image::from_size_val([size, size].into(), 0.0, host_alloc()).unwrap();
+        let mut img = Image::from_size_val([size, size].into(), 0.0).unwrap();
         let width = img.width();
         let height = img.height();
         let denom = (width.saturating_sub(1)).max(1) as f32;
@@ -1710,7 +1708,7 @@ mod tests {
     }
 
     fn make_gradient_y(size: usize) -> Image<f32, 1> {
-        let mut img = Image::from_size_val([size, size].into(), 0.0, host_alloc()).unwrap();
+        let mut img = Image::from_size_val([size, size].into(), 0.0).unwrap();
         let width = img.width();
         let height = img.height();
         let denom = (height.saturating_sub(1)).max(1) as f32;
@@ -1758,7 +1756,7 @@ mod tests {
                 .wrapping_add(1442695040888963407);
             *px = (s >> 32) as u8;
         }
-        let img = Image::<u8, 1>::from_size_slice([w, h].into(), &data, host_alloc()).unwrap();
+        let img = Image::<u8, 1>::from_size_slice([w, h].into(), &data).unwrap();
 
         let corners: Vec<[usize; 2]> = (0..50)
             .map(|i| {

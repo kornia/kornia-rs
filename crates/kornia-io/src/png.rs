@@ -25,11 +25,7 @@ use std::{
 /// A grayscale image (Gray8).
 pub fn read_image_png_mono8(file_path: impl AsRef<Path>) -> Result<Gray8, IoError> {
     let (buf, size) = read_png_impl(file_path)?;
-    Ok(Gray8::from_size_vec(
-        size.into(),
-        buf,
-        kornia_tensor::host_alloc(),
-    )?)
+    Ok(Gray8::from_size_vec(size.into(), buf)?)
 }
 
 /// Read a PNG image as RGB8.
@@ -43,11 +39,7 @@ pub fn read_image_png_mono8(file_path: impl AsRef<Path>) -> Result<Gray8, IoErro
 /// An RGB8 typed image.
 pub fn read_image_png_rgb8(file_path: impl AsRef<Path>) -> Result<Rgb8, IoError> {
     let (buf, size) = read_png_impl(file_path)?;
-    Ok(Rgb8::from_size_vec(
-        size.into(),
-        buf,
-        kornia_tensor::host_alloc(),
-    )?)
+    Ok(Rgb8::from_size_vec(size.into(), buf)?)
 }
 
 /// Read a PNG image as RGBA8.
@@ -61,11 +53,7 @@ pub fn read_image_png_rgb8(file_path: impl AsRef<Path>) -> Result<Rgb8, IoError>
 /// An RGBA8 typed image.
 pub fn read_image_png_rgba8(file_path: impl AsRef<Path>) -> Result<Rgba8, IoError> {
     let (buf, size) = read_png_impl(file_path)?;
-    Ok(Rgba8::from_size_vec(
-        size.into(),
-        buf,
-        kornia_tensor::host_alloc(),
-    )?)
+    Ok(Rgba8::from_size_vec(size.into(), buf)?)
 }
 
 /// Read a PNG image as RGB16.
@@ -81,11 +69,7 @@ pub fn read_image_png_rgb16(file_path: impl AsRef<Path>) -> Result<Rgb16, IoErro
     let (buf, size) = read_png_impl(file_path)?;
     let buf_u16 = convert_buf_u8_u16(buf);
 
-    Ok(Rgb16::from_size_vec(
-        size.into(),
-        buf_u16,
-        kornia_tensor::host_alloc(),
-    )?)
+    Ok(Rgb16::from_size_vec(size.into(), buf_u16)?)
 }
 
 /// Read a PNG image as RGBA16.
@@ -101,11 +85,7 @@ pub fn read_image_png_rgba16(file_path: impl AsRef<Path>) -> Result<Rgba16, IoEr
     let (buf, size) = read_png_impl(file_path)?;
     let buf_u16 = convert_buf_u8_u16(buf);
 
-    Ok(Rgba16::from_size_vec(
-        size.into(),
-        buf_u16,
-        kornia_tensor::host_alloc(),
-    )?)
+    Ok(Rgba16::from_size_vec(size.into(), buf_u16)?)
 }
 
 /// Read a PNG image as grayscale (Gray16).
@@ -121,11 +101,7 @@ pub fn read_image_png_mono16(file_path: impl AsRef<Path>) -> Result<Gray16, IoEr
     let (buf, size) = read_png_impl(file_path)?;
     let buf_u16 = convert_buf_u8_u16(buf);
 
-    Ok(Gray16::from_size_vec(
-        size.into(),
-        buf_u16,
-        kornia_tensor::host_alloc(),
-    )?)
+    Ok(Gray16::from_size_vec(size.into(), buf_u16)?)
 }
 
 /// Decodes a PNG image with as grayscale (Gray8) from Raw Bytes.
@@ -669,7 +645,7 @@ mod tests {
     #[test]
     fn decode_png() -> Result<(), IoError> {
         let bytes = read("../../tests/data/dog-rgb8.png")?;
-        let mut image = Rgb8::from_size_val([258, 195].into(), 0, kornia_tensor::host_alloc())?;
+        let mut image = Rgb8::from_size_val([258, 195].into(), 0)?;
         decode_image_png_rgb8(&bytes, &mut image)?;
 
         assert_eq!(image.cols(), 258);
@@ -692,7 +668,7 @@ mod tests {
         // PNG magic header
         assert_eq!(&buffer[..8], b"\x89PNG\r\n\x1a\n");
 
-        let mut decoded = Rgb8::from_size_val(src.size(), 0, kornia_tensor::host_alloc())?;
+        let mut decoded = Rgb8::from_size_val(src.size(), 0)?;
         decode_image_png_rgb8(&buffer, &mut decoded)?;
         assert_eq!(decoded.size(), src.size());
         assert_eq!(decoded.as_slice(), src.as_slice());
@@ -706,13 +682,13 @@ mod tests {
         for (i, b) in data.iter_mut().enumerate() {
             *b = (i % 251) as u8;
         }
-        let src = Rgba8::from_size_vec([16, 16].into(), data, kornia_tensor::host_alloc())?;
+        let src = Rgba8::from_size_vec([16, 16].into(), data)?;
 
         let mut buffer = Vec::new();
         encode_image_png_rgba8(&src, &mut buffer, None)?;
         assert_eq!(&buffer[..8], b"\x89PNG\r\n\x1a\n");
 
-        let mut decoded = Rgba8::from_size_val(src.size(), 0, kornia_tensor::host_alloc())?;
+        let mut decoded = Rgba8::from_size_val(src.size(), 0)?;
         decode_image_png_rgba8(&buffer, &mut decoded)?;
         assert_eq!(decoded.as_slice(), src.as_slice());
         Ok(())
@@ -725,7 +701,7 @@ mod tests {
         encode_image_png_gray8(&src, &mut buffer, None)?;
         assert_eq!(&buffer[..8], b"\x89PNG\r\n\x1a\n");
 
-        let mut decoded = Gray8::from_size_val(src.size(), 0, kornia_tensor::host_alloc())?;
+        let mut decoded = Gray8::from_size_val(src.size(), 0)?;
         decode_image_png_mono8(&buffer, &mut decoded)?;
         assert_eq!(decoded.as_slice(), src.as_slice());
         Ok(())
@@ -738,7 +714,7 @@ mod tests {
         encode_image_png_rgb16(&src, &mut buffer, None)?;
         assert_eq!(&buffer[..8], b"\x89PNG\r\n\x1a\n");
 
-        let mut decoded = Rgb16::from_size_val(src.size(), 0, kornia_tensor::host_alloc())?;
+        let mut decoded = Rgb16::from_size_val(src.size(), 0)?;
         decode_image_png_rgb16(&buffer, &mut decoded)?;
         assert_eq!(decoded.as_slice(), src.as_slice());
         Ok(())
@@ -760,13 +736,13 @@ mod tests {
                 data[y * w + x] = 500;
             }
         }
-        let src = Gray16::from_size_vec([w, h].into(), data, kornia_tensor::host_alloc())?;
+        let src = Gray16::from_size_vec([w, h].into(), data)?;
 
         let mut buffer = Vec::new();
         encode_image_png_gray16(&src, &mut buffer, None)?;
         assert_eq!(&buffer[..8], b"\x89PNG\r\n\x1a\n");
         // Lossless u16 round-trip is the whole point of this codec for depth.
-        let mut decoded = Gray16::from_size_val(src.size(), 0, kornia_tensor::host_alloc())?;
+        let mut decoded = Gray16::from_size_val(src.size(), 0)?;
         decode_image_png_mono16(&buffer, &mut decoded)?;
         assert_eq!(decoded.as_slice(), src.as_slice());
         Ok(())
@@ -788,7 +764,7 @@ mod tests {
 
         // Capacity should not have grown on the second encode (allocation reuse).
         assert!(buffer.capacity() <= cap_after_first.max(buffer.len()));
-        let mut decoded = Rgb8::from_size_val(src.size(), 0, kornia_tensor::host_alloc())?;
+        let mut decoded = Rgb8::from_size_val(src.size(), 0)?;
         decode_image_png_rgb8(&buffer, &mut decoded)?;
         assert_eq!(decoded.as_slice(), src.as_slice());
         Ok(())

@@ -32,11 +32,7 @@ pub fn read_image_tiff_rgb8(file_path: impl AsRef<Path>) -> Result<Rgb8, IoError
         }
     };
 
-    Ok(Rgb8::from_size_vec(
-        size.into(),
-        data,
-        kornia_tensor::host_alloc(),
-    )?)
+    Ok(Rgb8::from_size_vec(size.into(), data)?)
 }
 
 /// Read a TIFF image and return it as a grayscale image.
@@ -62,11 +58,7 @@ pub fn read_image_tiff_mono8(file_path: impl AsRef<Path>) -> Result<Gray8, IoErr
         }
     };
 
-    Ok(Gray8::from_size_vec(
-        size.into(),
-        data,
-        kornia_tensor::host_alloc(),
-    )?)
+    Ok(Gray8::from_size_vec(size.into(), data)?)
 }
 
 /// Read a TIFF image and return it as a RGB16 image.
@@ -92,11 +84,7 @@ pub fn read_image_tiff_rgb16(file_path: impl AsRef<Path>) -> Result<Rgb16, IoErr
         }
     };
 
-    Ok(Rgb16::from_size_vec(
-        size.into(),
-        data,
-        kornia_tensor::host_alloc(),
-    )?)
+    Ok(Rgb16::from_size_vec(size.into(), data)?)
 }
 
 /// Read a TIFF image and return it as a grayscale 16-bit image.
@@ -122,11 +110,7 @@ pub fn read_image_tiff_mono16(file_path: impl AsRef<Path>) -> Result<Gray16, IoE
         }
     };
 
-    Ok(Gray16::from_size_vec(
-        size.into(),
-        data,
-        kornia_tensor::host_alloc(),
-    )?)
+    Ok(Gray16::from_size_vec(size.into(), data)?)
 }
 
 /// Read a TIFF image and return it as single precision floating point grayscale image.
@@ -152,11 +136,7 @@ pub fn read_image_tiff_mono32f(file_path: impl AsRef<Path>) -> Result<Grayf32, I
         }
     };
 
-    Ok(Grayf32::from_size_vec(
-        size.into(),
-        data,
-        kornia_tensor::host_alloc(),
-    )?)
+    Ok(Grayf32::from_size_vec(size.into(), data)?)
 }
 
 /// Read a TIFF image and return it as single precision floating point RGB image.
@@ -182,11 +162,7 @@ pub fn read_image_tiff_rgb32f(file_path: impl AsRef<Path>) -> Result<Rgbf32, IoE
         }
     };
 
-    Ok(Rgbf32::from_size_vec(
-        size.into(),
-        data,
-        kornia_tensor::host_alloc(),
-    )?)
+    Ok(Rgbf32::from_size_vec(size.into(), data)?)
 }
 
 fn read_image_tiff_impl(
@@ -634,7 +610,6 @@ mod tests {
                 height: height as usize,
             },
             data,
-            kornia_tensor::host_alloc(),
         )?;
 
         let file_path = tmp_dir.path().join("rgb8.tiff");
@@ -663,7 +638,6 @@ mod tests {
                 height: height as usize,
             },
             data,
-            kornia_tensor::host_alloc(),
         )?;
 
         let file_path = tmp_dir.path().join("mono8.tiff");
@@ -692,7 +666,6 @@ mod tests {
                 height: height as usize,
             },
             data,
-            kornia_tensor::host_alloc(),
         )?;
 
         let file_path = tmp_dir.path().join("rgb16.tiff");
@@ -721,7 +694,6 @@ mod tests {
                 height: height as usize,
             },
             data,
-            kornia_tensor::host_alloc(),
         )?;
 
         let file_path = tmp_dir.path().join("mono16.tiff");
@@ -749,7 +721,6 @@ mod tests {
                 height: height as usize,
             },
             data,
-            kornia_tensor::host_alloc(),
         )?;
 
         let file_path = tmp_dir.path().join("mono32f.tiff");
@@ -777,7 +748,6 @@ mod tests {
                 height: height as usize,
             },
             data,
-            kornia_tensor::host_alloc(),
         )?;
 
         let file_path = tmp_dir.path().join("rgb32f.tiff");
@@ -797,7 +767,7 @@ mod tests {
         assert_eq!(layout.image_size.height, 195);
         assert_eq!(layout.channels, 3);
 
-        let mut image = Rgb8::from_size_val(layout.image_size, 0, kornia_tensor::host_alloc())?;
+        let mut image = Rgb8::from_size_val(layout.image_size, 0)?;
         decode_image_tiff_rgb8(&bytes, &mut image)?;
 
         assert_eq!(image.cols(), layout.image_size.width);
@@ -815,7 +785,7 @@ mod tests {
         assert_eq!(layout.image_size.height, 32);
         assert_eq!(layout.channels, 3);
 
-        let mut image = Rgb16::from_size_val(layout.image_size, 0, kornia_tensor::host_alloc())?;
+        let mut image = Rgb16::from_size_val(layout.image_size, 0)?;
         decode_image_tiff_rgb16(&bytes, &mut image)?;
 
         assert_eq!(image.cols(), layout.image_size.width);
@@ -833,8 +803,7 @@ mod tests {
         assert_eq!(layout.image_size.height, 32);
         assert_eq!(layout.channels, 3);
 
-        let mut image =
-            Rgbf32::from_size_val(layout.image_size, 0.0f32, kornia_tensor::host_alloc())?;
+        let mut image = Rgbf32::from_size_val(layout.image_size, 0.0f32)?;
         decode_image_tiff_rgb32f(&bytes, &mut image)?;
 
         assert_eq!(image.cols(), layout.image_size.width);

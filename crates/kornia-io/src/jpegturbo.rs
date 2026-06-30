@@ -154,7 +154,7 @@ impl JpegTurboDecoder {
     /// Decodes the given JPEG data as RGB8 image.
     pub fn decode_rgb8(&self, jpeg_data: &[u8]) -> Result<Image<u8, 3>, JpegTurboError> {
         let image_size = self.read_header(jpeg_data)?;
-        let mut dst = Image::from_size_val(image_size, 0u8, kornia_tensor::host_alloc())?;
+        let mut dst = Image::from_size_val(image_size, 0u8)?;
         self.decode_rgb8_into(jpeg_data, &mut dst)?;
         Ok(dst)
     }
@@ -162,7 +162,7 @@ impl JpegTurboDecoder {
     /// Decodes the given JPEG data as Gray/Mono8 image.
     pub fn decode_gray8(&self, jpeg_data: &[u8]) -> Result<Image<u8, 1>, JpegTurboError> {
         let image_size = self.read_header(jpeg_data)?;
-        let mut dst = Image::from_size_val(image_size, 0u8, kornia_tensor::host_alloc())?;
+        let mut dst = Image::from_size_val(image_size, 0u8)?;
         self.decode_gray8_into(jpeg_data, &mut dst)?;
         Ok(dst)
     }

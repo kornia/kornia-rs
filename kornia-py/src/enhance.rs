@@ -19,8 +19,7 @@ pub fn add_weighted(
     let (mut dst_u8, out) = unsafe { alloc_output_pyarray::<3>(py, size)? };
 
     py.detach(|| -> Result<(), ImageError> {
-        let mut dst_f32 =
-            Image::from_size_val(size, 0.0f32, kornia_image::allocator::host_alloc())?;
+        let mut dst_f32 = Image::from_size_val(size, 0.0f32)?;
         enhance::add_weighted(&image1, alpha, &image2, beta, gamma, &mut dst_f32)?;
         dst_u8
             .as_slice_mut()

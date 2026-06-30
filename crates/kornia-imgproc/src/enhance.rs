@@ -118,7 +118,6 @@ where
 #[cfg(test)]
 mod tests {
     use kornia_image::{Image, ImageError, ImageSize};
-    use kornia_tensor::host_alloc;
     type TestImage = Image<f32, 1>;
     #[test]
     fn test_add_weighted() -> Result<(), ImageError> {
@@ -129,7 +128,6 @@ mod tests {
                 height: 2,
             },
             src1_data,
-            host_alloc(),
         )?;
         let src2_data = vec![4.0f32, 5.0, 6.0, 7.0];
         let src2 = Image::<f32, 1>::new(
@@ -138,14 +136,13 @@ mod tests {
                 height: 2,
             },
             src2_data,
-            host_alloc(),
         )?;
         let alpha = 2.0f32;
         let beta = 2.0f32;
         let gamma = 1.0f32;
         let expected = [11.0, 15.0, 19.0, 23.0];
 
-        let mut weighted = Image::<f32, 1>::from_size_val(src1.size(), 0.0, host_alloc())?;
+        let mut weighted = Image::<f32, 1>::from_size_val(src1.size(), 0.0)?;
 
         super::add_weighted(&src1, alpha, &src2, beta, gamma, &mut weighted)?;
 
@@ -169,9 +166,8 @@ mod tests {
                 height: 1,
             },
             src_data,
-            host_alloc(),
         )?;
-        let dst = Image::<f32, 1>::from_size_val(src.size(), 0.0, host_alloc())?;
+        let dst = Image::<f32, 1>::from_size_val(src.size(), 0.0)?;
         Ok((src, dst))
     }
 

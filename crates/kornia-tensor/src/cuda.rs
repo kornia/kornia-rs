@@ -643,7 +643,7 @@ mod tests {
         let ctx = CudaContext::new(0).unwrap();
         let stream = ctx.default_stream();
 
-        let host = Tensor::<u8, 1>::from_shape_vec([4], vec![1, 2, 3, 4], host_alloc()).unwrap();
+        let host = Tensor::<u8, 1>::from_shape_vec([4], vec![1, 2, 3, 4]).unwrap();
 
         let dev = host.to_cuda(&stream).unwrap();
         assert!(
@@ -673,7 +673,7 @@ mod tests {
         let stream = ctx.default_stream();
 
         // Device tensor backed by CudaResource<u8> (via to_cuda).
-        let host = Tensor::<u8, 1>::from_shape_vec([4], vec![1, 2, 3, 4], host_alloc()).unwrap();
+        let host = Tensor::<u8, 1>::from_shape_vec([4], vec![1, 2, 3, 4]).unwrap();
         let mut dev = host.to_cuda(&stream).unwrap();
 
         // Some: same element type u8.
@@ -709,7 +709,7 @@ mod tests {
     fn as_slice_on_device_panics() {
         let ctx = CudaContext::new(0).unwrap();
         let stream = ctx.default_stream();
-        let host = Tensor::<u8, 1>::from_shape_vec([4], vec![1, 2, 3, 4], host_alloc()).unwrap();
+        let host = Tensor::<u8, 1>::from_shape_vec([4], vec![1, 2, 3, 4]).unwrap();
         let dev = host.to_cuda(&stream).unwrap();
         let _ = dev.as_slice(); // must panic: Device is not host-accessible
     }
@@ -721,7 +721,7 @@ mod tests {
         let ctx = CudaContext::new(0).unwrap();
         let stream = ctx.default_stream();
 
-        let host = Tensor::<u8, 1>::from_shape_vec([8], vec![10u8; 8], host_alloc()).unwrap();
+        let host = Tensor::<u8, 1>::from_shape_vec([8], vec![10u8; 8]).unwrap();
         let dev = host.to_cuda(&stream).unwrap();
         let slice = dev.into_cudaslice().ok().expect("must be cuda-backed");
         // The slice now owns the device memory.  Drop it — cudarc frees exactly once.

@@ -174,12 +174,11 @@ impl WorkBuffers {
 /// ```rust
 /// # use kornia_image::{Image, ImageSize};
 /// # use kornia_imgproc::contours::{FindContoursExecutor, RetrievalMode, ContourApproximationMode};
-/// # use kornia_tensor::host_alloc;
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let mut executor = FindContoursExecutor::new();
 /// # let size = ImageSize { width: 10, height: 10 };
-/// # let img = Image::<u8, 1>::from_size_val(size, 0, host_alloc())?;
-/// # let img2 = Image::<u8, 1>::from_size_val(size, 0, host_alloc())?;
+/// # let img = Image::<u8, 1>::from_size_val(size, 0)?;
+/// # let img2 = Image::<u8, 1>::from_size_val(size, 0)?;
 ///
 /// // Process multiple images with reused buffers
 /// let result1 = executor.find_contours(&img, RetrievalMode::List, ContourApproximationMode::Simple)?;
@@ -915,10 +914,9 @@ const _: () = {
 /// ```rust
 /// # use kornia_image::{Image, ImageSize};
 /// # use kornia_imgproc::contours::{find_contours, RetrievalMode, ContourApproximationMode};
-/// # use kornia_tensor::host_alloc;
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// # let size = ImageSize { width: 10, height: 10 };
-/// # let img = Image::<u8, 1>::from_size_val(size, 0, host_alloc())?;
+/// # let img = Image::<u8, 1>::from_size_val(size, 0)?;
 /// let result = find_contours(&img, RetrievalMode::External, ContourApproximationMode::Simple)?;
 /// println!("Found {} contours", result.contours.len());
 /// # Ok(())
@@ -935,11 +933,11 @@ pub fn find_contours(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kornia_tensor::host_alloc;
+
     use kornia_tensor::{Tensor3, TensorError};
 
     fn make_img(w: usize, h: usize, data: Vec<u8>) -> Result<Image<u8, 1>, TensorError> {
-        let tensor = Tensor3::from_shape_vec([h, w, 1], data, host_alloc())?;
+        let tensor = Tensor3::from_shape_vec([h, w, 1], data)?;
         Ok(Image(tensor))
     }
 

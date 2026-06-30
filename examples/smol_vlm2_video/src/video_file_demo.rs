@@ -86,11 +86,7 @@ pub fn video_file_demo(args: &Args) -> Result<(), Box<dyn Error>> {
         let height = s.height() as usize;
         let img_size = ImageSize { width, height };
         let rgb_slice = map.as_ref();
-        let image = Image::<u8, 3>::new(
-            img_size,
-            rgb_slice.to_vec(),
-            kornia::image::allocator::host_alloc(),
-        )?;
+        let image = Image::<u8, 3>::new(img_size, rgb_slice.to_vec())?;
 
         video_buffer.add_frame(image, frame_idx);
 

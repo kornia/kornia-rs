@@ -257,7 +257,6 @@ mod tests {
                 height: 4,
             },
             bin_data,
-            kornia_image::allocator::host_alloc(),
         )?;
 
         let mut uf = UnionFind::new(20);
@@ -290,11 +289,7 @@ mod tests {
     #[test]
     fn test_segmentation() -> Result<(), Box<dyn std::error::Error>> {
         let src = read_image_png_mono8("../../tests/data/apriltag.png")?;
-        let mut bin = Image::from_size_val(
-            src.size(),
-            Pixel::Skip,
-            kornia_image::allocator::host_alloc(),
-        )?;
+        let mut bin = Image::from_size_val(src.size(), Pixel::Skip)?;
 
         let mut tile_min_max = TileMinMax::new(src.size(), 4);
         adaptive_threshold(&src, &mut bin, &mut tile_min_max, 20)?;
@@ -327,11 +322,7 @@ mod tests {
     #[test]
     fn test_gradient_clusters() -> Result<(), Box<dyn std::error::Error>> {
         let src = read_image_png_mono8("../../tests/data/apriltag.png")?;
-        let mut bin = Image::from_size_val(
-            src.size(),
-            Pixel::Skip,
-            kornia_image::allocator::host_alloc(),
-        )?;
+        let mut bin = Image::from_size_val(src.size(), Pixel::Skip)?;
 
         let mut tile_min_max = TileMinMax::new(src.size(), 4);
         adaptive_threshold(&src, &mut bin, &mut tile_min_max, 20)?;

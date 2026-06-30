@@ -57,8 +57,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let img = read_image_any_rgb8(args.path)?;
 
-    let mut grayscale_img =
-        Image::from_size_val(img.size(), 0, kornia::image::allocator::host_alloc())?;
+    let mut grayscale_img = Image::from_size_val(img.size(), 0)?;
     gray_from_rgb_u8(&img, &mut grayscale_img)?;
 
     let mut config = DecodeTagsConfig::new(args.kind)?;

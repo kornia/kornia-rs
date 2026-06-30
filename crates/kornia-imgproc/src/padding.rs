@@ -255,20 +255,17 @@ impl Padding2D {
 /// ```rust
 /// use kornia_image::{Image, ImageSize};
 /// use kornia_imgproc::padding::{PaddingMode, Padding2D, spatial_padding};
-/// use kornia_tensor::host_alloc;
 ///
 /// // Create a 2x2 RGB image filled with 1s
 /// let src = Image::<u8, 3>::new(
 ///     ImageSize { width: 2, height: 2 },
 ///     vec![1u8; 2 * 2 * 3],
-///     host_alloc(),
 /// ).unwrap();
 ///
 /// // Create destination image
 /// let mut dst = Image::<u8, 3>::new(
 ///     ImageSize { width: 4, height: 4 },
 ///     vec![0u8; 4 * 4 * 3],
-///     host_alloc(),
 /// ).unwrap();
 ///
 /// // Apply 1-pixel constant padding with black (0) border
@@ -347,7 +344,6 @@ where
 mod tests {
     use super::*;
     use kornia_image::{Image, ImageError, ImageSize};
-    use kornia_tensor::host_alloc;
 
     // helper functions
     fn make_src_2x2_rgb() -> Result<Image<u8, 3>, ImageError> {
@@ -357,7 +353,6 @@ mod tests {
                 height: 2,
             },
             vec![1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4],
-            host_alloc(),
         )
     }
 
@@ -368,7 +363,6 @@ mod tests {
                 height: 4,
             },
             vec![0u8; 48],
-            host_alloc(),
         )
     }
 
@@ -494,7 +488,6 @@ mod tests {
                 height: 4,
             },
             vec![0u8; 36],
-            host_alloc(),
         )?;
 
         let res = spatial_padding(&src, &mut dst, PAD_1, PaddingMode::Replicate, [0, 0, 0]);
@@ -511,7 +504,6 @@ mod tests {
                 height: 1,
             },
             vec![7, 7, 7],
-            host_alloc(),
         )?;
 
         let padding = Padding2D {
@@ -527,7 +519,6 @@ mod tests {
                 height: 7,
             },
             vec![0u8; 189],
-            host_alloc(),
         )?;
 
         spatial_padding(&src, &mut dst, padding, PaddingMode::Replicate, [0, 0, 0])?;
@@ -547,7 +538,6 @@ mod tests {
                 height: 1,
             },
             vec![5, 5, 5],
-            host_alloc(),
         )?;
 
         let padding = Padding2D {
@@ -563,7 +553,6 @@ mod tests {
                 height: 5,
             },
             vec![0u8; 75],
-            host_alloc(),
         )?;
 
         spatial_padding(&src, &mut dst, padding, PaddingMode::Wrap, [0, 0, 0])?;

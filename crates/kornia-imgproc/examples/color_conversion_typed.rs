@@ -3,7 +3,6 @@ use kornia_imgproc::color::{
     Bgr8, Bgra8, ConvertColor, ConvertColorWithBackground, Gray8, Grayf32, Hsvf32, Rgb8, Rgba8,
     Rgbf32,
 };
-use kornia_tensor::host_alloc;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Type-Safe Color Conversion API Demo ===\n");
@@ -21,10 +20,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             0, 0, 255, // Blue
             128, 128, 128, // Gray
         ],
-        host_alloc(),
     )?;
 
-    let mut gray = Gray8::from_size_val(rgb.size(), 0, host_alloc())?;
+    let mut gray = Gray8::from_size_val(rgb.size(), 0)?;
 
     rgb.convert(&mut gray)?;
 
@@ -39,10 +37,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             height: 1,
         },
         vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
-        host_alloc(),
     )?;
 
-    let mut gray_f32 = Grayf32::from_size_val(rgb_f32.size(), 0.0, host_alloc())?;
+    let mut gray_f32 = Grayf32::from_size_val(rgb_f32.size(), 0.0)?;
 
     rgb_f32.convert(&mut gray_f32)?;
 
@@ -50,7 +47,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // === Example 3: Grayscale to RGB ===
     println!("3. Grayscale -> RGB");
-    let mut rgb_from_gray = Rgb8::from_size_val(gray.size(), 0, host_alloc())?;
+    let mut rgb_from_gray = Rgb8::from_size_val(gray.size(), 0)?;
     gray.convert(&mut rgb_from_gray)?;
 
     println!(
@@ -66,10 +63,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             height: 1,
         },
         vec![255, 128, 64], // R=255, G=128, B=64
-        host_alloc(),
     )?;
 
-    let mut bgr = Bgr8::from_size_val(rgb_test.size(), 0, host_alloc())?;
+    let mut bgr = Bgr8::from_size_val(rgb_test.size(), 0)?;
 
     rgb_test.convert(&mut bgr)?;
 
@@ -81,7 +77,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // === Example 5: BGR to RGB ===
     println!("5. BGR -> RGB");
-    let mut rgb_back = Rgb8::from_size_val(bgr.size(), 0, host_alloc())?;
+    let mut rgb_back = Rgb8::from_size_val(bgr.size(), 0)?;
     bgr.convert(&mut rgb_back)?;
 
     let rgb_data = rgb_back.as_slice();
@@ -98,10 +94,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             height: 1,
         },
         vec![255.0, 0.0, 0.0], // Pure red
-        host_alloc(),
     )?;
 
-    let mut hsv = Hsvf32::from_size_val(rgb_for_hsv.size(), 0.0, host_alloc())?;
+    let mut hsv = Hsvf32::from_size_val(rgb_for_hsv.size(), 0.0)?;
 
     rgb_for_hsv.convert(&mut hsv)?;
 
@@ -115,10 +110,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             height: 1,
         },
         vec![255, 128, 64, 200], // RGB + alpha
-        host_alloc(),
     )?;
 
-    let mut rgb_no_alpha = Rgb8::from_size_val(rgba.size(), 0, host_alloc())?;
+    let mut rgb_no_alpha = Rgb8::from_size_val(rgba.size(), 0)?;
 
     rgba.convert(&mut rgb_no_alpha)?;
 
@@ -136,10 +130,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             height: 1,
         },
         vec![255, 0, 0, 128], // Red with 50% alpha
-        host_alloc(),
     )?;
 
-    let mut rgb_blended = Rgb8::from_size_val(rgba_blend.size(), 0, host_alloc())?;
+    let mut rgb_blended = Rgb8::from_size_val(rgba_blend.size(), 0)?;
 
     // Blend with gray background [100, 100, 100]
     rgba_blend.convert_with_bg(&mut rgb_blended, Some([100, 100, 100]))?;
@@ -159,10 +152,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             height: 1,
         },
         vec![64, 128, 255, 255], // BGRA
-        host_alloc(),
     )?;
 
-    let mut rgb_from_bgra = Rgb8::from_size_val(bgra.size(), 0, host_alloc())?;
+    let mut rgb_from_bgra = Rgb8::from_size_val(bgra.size(), 0)?;
 
     bgra.convert(&mut rgb_from_bgra)?;
 
@@ -180,7 +172,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             height: 10,
         },
         vec![0; 10 * 10 * 3],
-        host_alloc(),
     )?;
 
     // Deref allows direct access to Image methods

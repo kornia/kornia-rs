@@ -23,7 +23,6 @@ use rayon::prelude::*;
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
-/// use kornia_tensor::host_alloc;
 /// use kornia_imgproc::histogram::compute_histogram;
 ///
 /// let image = Image::<u8, 1>::new(
@@ -32,7 +31,6 @@ use rayon::prelude::*;
 ///     height: 3,
 ///   },
 ///   vec![0, 2, 4, 128, 130, 132, 254, 255, 255],
-///   host_alloc()
 /// ).unwrap();
 ///
 /// let mut histogram = vec![0; 3];
@@ -93,7 +91,7 @@ pub fn compute_histogram(
 #[cfg(test)]
 mod tests {
     use kornia_image::{Image, ImageError, ImageSize};
-    use kornia_tensor::host_alloc;
+
     #[test]
     fn test_compute_histogram() -> Result<(), ImageError> {
         let image = Image::new(
@@ -102,7 +100,6 @@ mod tests {
                 height: 3,
             },
             vec![0, 2, 4, 128, 130, 132, 254, 255, 255],
-            host_alloc(),
         )?;
 
         let mut histogram = vec![0; 3];

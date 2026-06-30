@@ -282,7 +282,6 @@ mod orientation_tests {
                 height: 2,
             },
             0.0,
-            kornia_tensor::host_alloc(),
         )
         .unwrap();
         img.set_pixel(0, 0, 0, 10.0).unwrap();
@@ -385,8 +384,8 @@ pub fn apply_exif_orientation(
         _ => return Err(IoError::InvalidOrientation(o as u16)),
     };
 
-    let mut dst = Image::<f32, 3>::from_size_val(out_size, 0.0, kornia_tensor::host_alloc())
-        .map_err(IoError::ImageCreationError)?;
+    let mut dst =
+        Image::<f32, 3>::from_size_val(out_size, 0.0).map_err(IoError::ImageCreationError)?;
 
     for sy in 0..src_h {
         for sx in 0..src_w {

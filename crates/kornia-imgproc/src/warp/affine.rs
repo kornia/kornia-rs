@@ -102,7 +102,6 @@ fn transform_point(x: f32, y: f32, m: &[f32; 6]) -> (f32, f32) {
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
-/// use kornia_tensor::host_alloc;
 /// use kornia_imgproc::interpolation::InterpolationMode;
 /// use kornia_imgproc::warp::warp_affine;
 ///
@@ -112,7 +111,6 @@ fn transform_point(x: f32, y: f32, m: &[f32; 6]) -> (f32, f32) {
 ///      height: 5,
 ///  },
 ///  1f32,
-///  host_alloc()
 /// ).unwrap();
 ///
 /// let m = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
@@ -121,7 +119,7 @@ fn transform_point(x: f32, y: f32, m: &[f32; 6]) -> (f32, f32) {
 ///   height: 5,
 /// };
 ///
-/// let mut dst = Image::<_, 3>::from_size_val(new_size, 0.0, host_alloc()).unwrap();
+/// let mut dst = Image::<_, 3>::from_size_val(new_size, 0.0).unwrap();
 ///
 /// warp_affine(&src, &mut dst, &m, InterpolationMode::Nearest).unwrap();
 ///
@@ -267,7 +265,7 @@ pub fn warp_affine_u8<const C: usize>(
 mod tests {
 
     use kornia_image::{Image, ImageError, ImageSize};
-    use kornia_tensor::host_alloc;
+
     #[test]
     fn warp_affine_smoke_ch3() -> Result<(), ImageError> {
         let image = Image::<_, 3>::new(
@@ -276,7 +274,6 @@ mod tests {
                 height: 5,
             },
             vec![0f32; 4 * 5 * 3],
-            host_alloc(),
         )?;
 
         let new_size = ImageSize {
@@ -284,7 +281,7 @@ mod tests {
             height: 3,
         };
 
-        let mut image_transformed = Image::<_, 3>::from_size_val(new_size, 0.0, host_alloc())?;
+        let mut image_transformed = Image::<_, 3>::from_size_val(new_size, 0.0)?;
 
         super::warp_affine(
             &image,
@@ -308,7 +305,6 @@ mod tests {
                 height: 2,
             },
             0.0f32,
-            host_alloc(),
         )?;
         let mut dst = Image::<_, 1>::from_size_val(
             ImageSize {
@@ -316,7 +312,6 @@ mod tests {
                 height: 2,
             },
             0.0f32,
-            host_alloc(),
         )?;
         let m = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
         let err = super::warp_affine(&src, &mut dst, &m, super::InterpolationMode::Bicubic);
@@ -333,7 +328,6 @@ mod tests {
                 height: 5,
             },
             vec![0f32; 4 * 5],
-            host_alloc(),
         )?;
 
         let new_size = ImageSize {
@@ -341,7 +335,7 @@ mod tests {
             height: 3,
         };
 
-        let mut image_transformed = Image::<_, 1>::from_size_val(new_size, 0.0, host_alloc())?;
+        let mut image_transformed = Image::<_, 1>::from_size_val(new_size, 0.0)?;
 
         super::warp_affine(
             &image,
@@ -366,7 +360,6 @@ mod tests {
                 height: 5,
             },
             (0..20).map(|x| x as f32).collect(),
-            host_alloc(),
         )?;
 
         let new_size = ImageSize {
@@ -374,7 +367,7 @@ mod tests {
             height: 5,
         };
 
-        let mut image_transformed = Image::<_, 1>::from_size_val(new_size, 0.0, host_alloc())?;
+        let mut image_transformed = Image::<_, 1>::from_size_val(new_size, 0.0)?;
 
         super::warp_affine(
             &image,
@@ -398,7 +391,6 @@ mod tests {
                 height: 2,
             },
             vec![0.0f32, 1.0f32, 2.0f32, 3.0f32],
-            host_alloc(),
         )?;
 
         let new_size = ImageSize {
@@ -406,7 +398,7 @@ mod tests {
             height: 2,
         };
 
-        let mut image_transformed = Image::<_, 1>::from_size_val(new_size, 0.0, host_alloc())?;
+        let mut image_transformed = Image::<_, 1>::from_size_val(new_size, 0.0)?;
 
         super::warp_affine(
             &image,

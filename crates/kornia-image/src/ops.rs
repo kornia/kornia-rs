@@ -12,7 +12,6 @@ use crate::{Image, ImageError};
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
-/// use kornia_tensor::host_alloc;
 /// use kornia_image::ops::cast_and_scale;
 ///
 /// let image = Image::<u8, 1>::new(
@@ -21,10 +20,9 @@ use crate::{Image, ImageError};
 ///  height: 1,
 /// },
 /// vec![0u8, 255],
-/// host_alloc()
 /// ).unwrap();
 ///
-/// let mut image_f32 = Image::from_size_val(image.size(), 0.0f32, host_alloc()).unwrap();
+/// let mut image_f32 = Image::from_size_val(image.size(), 0.0f32).unwrap();
 ///
 /// cast_and_scale(&image, &mut image_f32, 1. / 255.0).unwrap();
 ///
@@ -65,7 +63,6 @@ where
 mod tests {
     use super::*;
     use crate::image::ImageSize;
-    use kornia_tensor::host_alloc;
 
     #[test]
     fn test_cast_and_scale() -> Result<(), ImageError> {
@@ -75,10 +72,9 @@ mod tests {
                 width: 1,
             },
             vec![0u8, 0, 255, 0, 0, 255],
-            host_alloc(),
         )?;
 
-        let mut image_f64: Image<f64, 3> = Image::from_size_val(image.size(), 0.0, host_alloc())?;
+        let mut image_f64: Image<f64, 3> = Image::from_size_val(image.size(), 0.0)?;
 
         super::cast_and_scale(&image, &mut image_f64, 1. / 255.0)?;
 

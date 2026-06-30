@@ -940,11 +940,7 @@ mod tests {
         config.downscale_factor = 1;
         let src = read_image_png_mono8("../../tests/data/apriltag.png")?;
 
-        let mut bin = Image::from_size_val(
-            src.size(),
-            Pixel::Skip,
-            kornia_image::allocator::host_alloc(),
-        )?;
+        let mut bin = Image::from_size_val(src.size(), Pixel::Skip)?;
         let mut tile_min_max = TileMinMax::new(bin.size(), 4);
         let mut uf = UnionFind::new(bin.as_slice().len());
         let mut clusters = HashMap::new();

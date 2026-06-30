@@ -2,7 +2,6 @@ use argh::FromArgs;
 use std::path::PathBuf;
 
 use kornia::{
-    image::allocator::host_alloc,
     image::{Image, ImageSize},
     imgproc::{color, morphology, padding, threshold},
     io::functional as F,
@@ -32,21 +31,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let size = gray.size();
     let (width, height) = (size.width, size.height);
 
-    let mut gray_single = Image::<u8, 1>::new(
-        ImageSize { width, height },
-        vec![0u8; width * height],
-        host_alloc(),
-    )?;
+    let mut gray_single =
+        Image::<u8, 1>::new(ImageSize { width, height }, vec![0u8; width * height])?;
 
     // rgb to grayscale
     color::gray_from_rgb_u8(&gray, &mut gray_single)?;
 
     // apply threshold to create binary image
-    let mut binary = Image::<u8, 1>::new(
-        ImageSize { width, height },
-        vec![0u8; width * height],
-        host_alloc(),
-    )?;
+    let mut binary = Image::<u8, 1>::new(ImageSize { width, height }, vec![0u8; width * height])?;
     threshold::threshold_binary(&gray_single, &mut binary, 128u8, 255u8)?;
 
     let kernel_shape = match args.kernel_shape.as_str() {
@@ -63,29 +55,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let kernel = morphology::Kernel::new(kernel_shape);
 
-    let mut dilated = Image::<u8, 1>::new(
-        ImageSize { width, height },
-        vec![0u8; width * height],
-        host_alloc(),
-    )?;
+    let mut dilated = Image::<u8, 1>::new(ImageSize { width, height }, vec![0u8; width * height])?;
 
-    let mut eroded = Image::<u8, 1>::new(
-        ImageSize { width, height },
-        vec![0u8; width * height],
-        host_alloc(),
-    )?;
+    let mut eroded = Image::<u8, 1>::new(ImageSize { width, height }, vec![0u8; width * height])?;
 
-    let mut opened = Image::<u8, 1>::new(
-        ImageSize { width, height },
-        vec![0u8; width * height],
-        host_alloc(),
-    )?;
+    let mut opened = Image::<u8, 1>::new(ImageSize { width, height }, vec![0u8; width * height])?;
 
-    let mut closed = Image::<u8, 1>::new(
-        ImageSize { width, height },
-        vec![0u8; width * height],
-        host_alloc(),
-    )?;
+    let mut closed = Image::<u8, 1>::new(ImageSize { width, height }, vec![0u8; width * height])?;
 
     // apply all morphological operations
     morphology::dilate(
@@ -124,46 +100,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rec = rerun::RecordingStreamBuilder::new("Kornia Morphology").spawn()?;
 
     // convert all images to rgb
-    let mut gray_rgb = Image::<u8, 3>::new(
-        ImageSize { width, height },
-        vec![0u8; width * height * 3],
-        host_alloc(),
-    )?;
+    let mut gray_rgb =
+        Image::<u8, 3>::new(ImageSize { width, height }, vec![0u8; width * height * 3])?;
     color::rgb_from_gray(&gray_single, &mut gray_rgb)?;
 
-    let mut binary_rgb = Image::<u8, 3>::new(
-        ImageSize { width, height },
-        vec![0u8; width * height * 3],
-        host_alloc(),
-    )?;
+    let mut binary_rgb =
+        Image::<u8, 3>::new(ImageSize { width, height }, vec![0u8; width * height * 3])?;
     color::rgb_from_gray(&binary, &mut binary_rgb)?;
 
-    let mut dilated_rgb = Image::<u8, 3>::new(
-        ImageSize { width, height },
-        vec![0u8; width * height * 3],
-        host_alloc(),
-    )?;
+    let mut dilated_rgb =
+        Image::<u8, 3>::new(ImageSize { width, height }, vec![0u8; width * height * 3])?;
     color::rgb_from_gray(&dilated, &mut dilated_rgb)?;
 
-    let mut eroded_rgb = Image::<u8, 3>::new(
-        ImageSize { width, height },
-        vec![0u8; width * height * 3],
-        host_alloc(),
-    )?;
+    let mut eroded_rgb =
+        Image::<u8, 3>::new(ImageSize { width, height }, vec![0u8; width * height * 3])?;
     color::rgb_from_gray(&eroded, &mut eroded_rgb)?;
 
-    let mut opened_rgb = Image::<u8, 3>::new(
-        ImageSize { width, height },
-        vec![0u8; width * height * 3],
-        host_alloc(),
-    )?;
+    let mut opened_rgb =
+        Image::<u8, 3>::new(ImageSize { width, height }, vec![0u8; width * height * 3])?;
     color::rgb_from_gray(&opened, &mut opened_rgb)?;
 
-    let mut closed_rgb = Image::<u8, 3>::new(
-        ImageSize { width, height },
-        vec![0u8; width * height * 3],
-        host_alloc(),
-    )?;
+    let mut closed_rgb =
+        Image::<u8, 3>::new(ImageSize { width, height }, vec![0u8; width * height * 3])?;
     color::rgb_from_gray(&closed, &mut closed_rgb)?;
 
     // log all images

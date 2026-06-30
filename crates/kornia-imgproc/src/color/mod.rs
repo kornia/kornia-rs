@@ -8,7 +8,6 @@
 //!
 //! ```
 //! use kornia_image::ImageSize;
-//! use kornia_tensor::host_alloc;
 //! use kornia_imgproc::color::{Rgb8, Gray8, ConvertColor};
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -16,10 +15,9 @@
 //! let rgb = Rgb8::from_size_vec(
 //!     ImageSize { width: 4, height: 5 },
 //!     vec![128u8; 4 * 5 * 3],
-//!     host_alloc()
 //! )?;
 //!
-//! let mut gray = Gray8::from_size_val(rgb.size(), 0, host_alloc())?;
+//! let mut gray = Gray8::from_size_val(rgb.size(), 0)?;
 //!
 //! // Type-safe conversion
 //! rgb.convert(&mut gray)?;
@@ -36,17 +34,15 @@
 //!
 //! ```
 //! use kornia_image::{Image, ImageSize};
-//! use kornia_tensor::host_alloc;
 //! use kornia_imgproc::color::gray_from_rgb;
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let rgb = Image::<f32, 3>::new(
 //!     ImageSize { width: 4, height: 5 },
 //!     vec![0.5f32; 4 * 5 * 3],
-//!     host_alloc()
 //! )?;
 //!
-//! let mut gray = Image::<f32, 1>::from_size_val(rgb.size(), 0.0, host_alloc())?;
+//! let mut gray = Image::<f32, 1>::from_size_val(rgb.size(), 0.0)?;
 //! gray_from_rgb(&rgb, &mut gray)?;
 //! # Ok(())
 //! # }

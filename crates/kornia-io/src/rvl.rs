@@ -256,7 +256,7 @@ unsafe fn encode_pixels_avx2(pixels: &[u16], writer: &mut NibbleWriter) -> usize
 ///
 /// let size = ImageSize { width: 4, height: 2 };
 /// let data = vec![1000u16, 1001, 1002, 1003, 0, 500, 500, 500];
-/// let img = Image::<u16, 1>::new(size, data, kornia_tensor::host_alloc()).unwrap();
+/// let img = Image::<u16, 1>::new(size, data).unwrap();
 ///
 /// let compressed = encode_image_rvl(&img).unwrap();
 /// let decoded = decode_image_rvl(&compressed).unwrap();
@@ -318,7 +318,7 @@ pub fn decode_image_rvl(src: &[u8]) -> Result<Image<u16, 1>, IoError> {
     }
 
     let size = ImageSize { width, height };
-    Ok(Image::new(size, pixels, kornia_tensor::host_alloc())?)
+    Ok(Image::new(size, pixels)?)
 }
 
 /// Writes a single-channel 16-bit depth image to an RVL file.
@@ -347,7 +347,6 @@ mod tests {
                 height: h,
             },
             data,
-            kornia_tensor::host_alloc(),
         )
         .unwrap()
     }

@@ -2,7 +2,6 @@ use crate::filter::{gaussian_blur, kernels::sobel_kernel_1d, separable_filter};
 use crate::morphology::{dilate, Kernel, KernelShape};
 use crate::padding::PaddingMode;
 use kornia_image::{Image, ImageError, ImageSize};
-use kornia_tensor::host_alloc;
 use rayon::prelude::*;
 
 /// Method to calculate gradient for feature response
@@ -536,7 +535,7 @@ pub fn dog_response(
     let ks2 = _get_kernel_size(sigma2);
 
     gaussian_blur(src, dst, (ks2, ks2), (sigma2, sigma2))?;
-    let mut gauss1 = Image::from_size_val(src.size(), 0.0, host_alloc())?;
+    let mut gauss1 = Image::from_size_val(src.size(), 0.0)?;
     gaussian_blur(src, &mut gauss1, (ks1, ks1), (sigma1, sigma1))?;
 
     let dst_data = dst.as_slice_mut();
@@ -578,7 +577,7 @@ pub fn non_max_suppression(
 
     let size = src.size();
 
-    let mut src_u32: Image<u32, 1> = Image::from_size_val(size, 0u32, host_alloc())?;
+    let mut src_u32: Image<u32, 1> = Image::from_size_val(size, 0u32)?;
     src_u32
         .as_slice_mut()
         .par_iter_mut()
@@ -588,7 +587,7 @@ pub fn non_max_suppression(
             *out_bits = v.to_bits();
         });
 
-    let mut dilated_u32: Image<u32, 1> = Image::from_size_val(size, 0u32, host_alloc())?;
+    let mut dilated_u32: Image<u32, 1> = Image::from_size_val(size, 0u32)?;
     let kernel = Kernel::new(KernelShape::Box { size: 3 });
     dilate(
         &src_u32,
@@ -668,8 +667,8 @@ pub fn gftt_response(
     let rows = src.rows();
     let cols = src.cols();
 
-    let mut dx = Image::from_size_val(image_size, 0.0f32, host_alloc())?;
-    let mut dy = Image::from_size_val(image_size, 0.0f32, host_alloc())?;
+    let mut dx = Image::from_size_val(image_size, 0.0f32)?;
+    let mut dy = Image::from_size_val(image_size, 0.0f32)?;
 
     let (kernel_deriv, kernel_smooth) = sobel_kernel_1d(sobel_size)?;
 
@@ -686,9 +685,9 @@ pub fn gftt_response(
     separable_filter(src, &mut dy, &kernel_smooth_norm, &kernel_deriv_norm)?;
 
     // compute structure tensor components
-    let mut m11: Image<f32, 1> = Image::from_size_val(image_size, 0.0f32, host_alloc())?;
-    let mut m22: Image<f32, 1> = Image::from_size_val(image_size, 0.0f32, host_alloc())?;
-    let mut m12: Image<f32, 1> = Image::from_size_val(image_size, 0.0f32, host_alloc())?;
+    let mut m11: Image<f32, 1> = Image::from_size_val(image_size, 0.0f32)?;
+    let mut m22: Image<f32, 1> = Image::from_size_val(image_size, 0.0f32)?;
+    let mut m12: Image<f32, 1> = Image::from_size_val(image_size, 0.0f32)?;
 
     let dx_slice = dx.as_slice();
     let dy_slice = dy.as_slice();
@@ -711,9 +710,9 @@ pub fn gftt_response(
         });
 
     // smoothing structure tensor
-    let mut m11_smooth = Image::from_size_val(image_size, 0.0f32, host_alloc())?;
-    let mut m22_smooth = Image::from_size_val(image_size, 0.0f32, host_alloc())?;
-    let mut m12_smooth = Image::from_size_val(image_size, 0.0f32, host_alloc())?;
+    let mut m11_smooth = Image::from_size_val(image_size, 0.0f32)?;
+    let mut m22_smooth = Image::from_size_val(image_size, 0.0f32)?;
+    let mut m12_smooth = Image::from_size_val(image_size, 0.0f32)?;
 
     let box_kernel = vec![1.0; window_size];
     separable_filter(&m11, &mut m11_smooth, &box_kernel, &box_kernel)?;
@@ -750,7 +749,7 @@ pub fn gftt_response(
 
     // conditionally apply non-maximum suppression using morphological dilation
     if apply_nms {
-        let mut tmp = Image::from_size_val(image_size, 0.0f32, host_alloc())?;
+        let mut tmp = Image::from_size_val(image_size, 0.0f32)?;
         non_max_suppression(dst, &mut tmp, 1e-6)?;
         dst.as_slice_mut().copy_from_slice(tmp.as_slice());
     }
@@ -773,11 +772,10 @@ mod tests {
                 0.0, 1.0, 0.0, 1.0, 0.0,
                 0.0, 1.0, 1.0, 1.0, 0.0,
                 0.0, 0.0, 0.0, 0.0, 0.0,
-            ],
-            host_alloc()
+            ]
         )?;
 
-        let mut dst = Image::from_size_val([5, 5].into(), 0.0, host_alloc())?;
+        let mut dst = Image::from_size_val([5, 5].into(), 0.0)?;
         hessian_response(&src, &mut dst)?;
 
         #[rustfmt::skip]
@@ -809,11 +807,10 @@ mod tests {
                 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0,
                 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
                 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-            ],
-            host_alloc()
+            ]
         )?;
 
-        let mut dst = Image::from_size_val([9, 9].into(), 0.0, host_alloc())?;
+        let mut dst = Image::from_size_val([9, 9].into(), 0.0)?;
         HarrisResponse::new(dst.size()).compute(&src, &mut dst)?;
 
         #[rustfmt::skip]
@@ -849,11 +846,10 @@ mod tests {
                 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0,
                 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
                 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-            ],
-            host_alloc()
+            ]
         )?;
 
-        let mut dst = Image::from_size_val(src.size(), 0.0, host_alloc())?;
+        let mut dst = Image::from_size_val(src.size(), 0.0)?;
         HarrisResponse::new(src.size())
             .with_k(0.01)
             .compute(&src, &mut dst)?;
@@ -892,11 +888,10 @@ mod tests {
                 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0,
                 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
                 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-            ],
-            host_alloc()
+            ]
         )?;
 
-        let mut dst = Image::from_size_val([9, 9].into(), 0.0, host_alloc())?;
+        let mut dst = Image::from_size_val([9, 9].into(), 0.0)?;
         HarrisResponse::new(dst.size())
             .with_k(0.01)
             .compute(&src, &mut dst)?;
@@ -928,11 +923,10 @@ mod tests {
                 0.0, 1.0, 1.0, 1.0, 0.0,
                 0.0, 1.0, 1.0, 1.0, 0.0,
                 0.0, 0.0, 0.0, 0.0, 0.0,
-            ],
-            host_alloc()
+            ]
         )?;
 
-        let mut dst = Image::from_size_val([5, 5].into(), 0.0, host_alloc())?;
+        let mut dst = Image::from_size_val([5, 5].into(), 0.0)?;
 
         let sigma1 = 0.5;
         let sigma2 = 1.0;
@@ -971,11 +965,10 @@ mod tests {
                 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0,
                 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
                 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-            ],
-            host_alloc()
+            ]
         )?;
 
-        let mut dst = Image::from_size_val([9, 9].into(), 0.0, host_alloc())?;
+        let mut dst = Image::from_size_val([9, 9].into(), 0.0)?;
         gftt_response(&src, &mut dst, 3, 5, false)?;
 
         #[rustfmt::skip]
@@ -1006,10 +999,9 @@ mod tests {
                 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
                 0.0,
             ],
-            host_alloc(),
         )?;
 
-        let mut dst = Image::from_size_val([9, 9].into(), 0.0, host_alloc())?;
+        let mut dst = Image::from_size_val([9, 9].into(), 0.0)?;
         gftt_response(&src, &mut dst, 3, 5, true)?;
 
         let data = dst.as_slice();

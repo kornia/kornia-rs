@@ -110,7 +110,6 @@ impl ChannelOps for f64 {
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
-/// use kornia_tensor::host_alloc;
 /// use kornia_imgproc::color::rgb_from_rgba;
 ///
 /// let src = Image::<u8, 4>::new(ImageSize { width: 3, height: 2 }, vec![
@@ -120,9 +119,9 @@ impl ChannelOps for f64 {
 ///     9, 10, 11, 255, // (1, 0)
 ///     12, 13, 14, 255, // (1, 1)
 ///     15, 16, 17, 255, // (1, 2)
-/// ], host_alloc()).unwrap();
+/// ]).unwrap();
 ///
-/// let mut dst = Image::<u8, 3>::new(ImageSize { width: 3, height: 2 }, vec![0; 18], host_alloc()).unwrap();
+/// let mut dst = Image::<u8, 3>::new(ImageSize { width: 3, height: 2 }, vec![0; 18]).unwrap();
 ///
 /// rgb_from_rgba(&src, &mut dst, None).unwrap();
 /// ```
@@ -171,7 +170,6 @@ pub fn rgb_from_rgba(
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
-/// use kornia_tensor::host_alloc;
 /// use kornia_imgproc::color::rgb_from_bgra;
 ///
 /// let src = Image::<u8, 4>::new(ImageSize { width: 3, height: 2 }, vec![
@@ -181,9 +179,9 @@ pub fn rgb_from_rgba(
 ///     9, 10, 11, 255, // (1, 0)
 ///     12, 13, 14, 255, // (1, 1)
 ///     15, 16, 17, 255, // (1, 2)
-/// ], host_alloc()).unwrap();
+/// ]).unwrap();
 ///
-/// let mut dst = Image::<u8, 3>::from_size_val(src.size(), 0, host_alloc()).unwrap();
+/// let mut dst = Image::<u8, 3>::from_size_val(src.size(), 0).unwrap();
 ///
 /// rgb_from_bgra(&src, &mut dst, None).unwrap();
 /// ```
@@ -260,15 +258,13 @@ where
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
-/// use kornia_tensor::host_alloc;
 /// use kornia_imgproc::color::rgba_from_rgb;
 ///
 /// let src = Image::<u8, 3>::new(
 ///     ImageSize { width: 2, height: 1 },
 ///     vec![1, 2, 3, 4, 5, 6],
-///     host_alloc(),
 /// ).unwrap();
-/// let mut dst = Image::<u8, 4>::from_size_val(src.size(), 0, host_alloc()).unwrap();
+/// let mut dst = Image::<u8, 4>::from_size_val(src.size(), 0).unwrap();
 /// rgba_from_rgb(&src, &mut dst).unwrap();
 /// ```
 pub fn rgba_from_rgb<T>(src: &Image<T, 3>, dst: &mut Image<T, 4>) -> Result<(), ImageError>
@@ -295,15 +291,13 @@ where
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
-/// use kornia_tensor::host_alloc;
 /// use kornia_imgproc::color::bgra_from_rgb;
 ///
 /// let src = Image::<u8, 3>::new(
 ///     ImageSize { width: 2, height: 1 },
 ///     vec![1, 2, 3, 4, 5, 6],
-///     host_alloc(),
 /// ).unwrap();
-/// let mut dst = Image::<u8, 4>::from_size_val(src.size(), 0, host_alloc()).unwrap();
+/// let mut dst = Image::<u8, 4>::from_size_val(src.size(), 0).unwrap();
 /// bgra_from_rgb(&src, &mut dst).unwrap();
 /// ```
 pub fn bgra_from_rgb<T>(src: &Image<T, 3>, dst: &mut Image<T, 4>) -> Result<(), ImageError>
@@ -325,7 +319,6 @@ fn alpha_blend(r: u8, g: u8, b: u8, a: u8, bg: &[u8; 3], rgb: &mut [u8]) {
 mod tests {
     use super::*;
     use kornia_image::ImageSize;
-    use kornia_tensor::host_alloc;
 
     #[test]
     fn test_rgb_from_rgba() -> Result<(), ImageError> {
@@ -343,10 +336,9 @@ mod tests {
                 12, 13, 14, 255, // (1, 1)
                 15, 16, 17, 255, // (1, 2)
             ],
-            host_alloc(),
         )?;
 
-        let mut dst = Image::<u8, 3>::from_size_val(src.size(), 0, host_alloc())?;
+        let mut dst = Image::<u8, 3>::from_size_val(src.size(), 0)?;
 
         let expected = Image::<u8, 3>::new(
             ImageSize {
@@ -361,7 +353,6 @@ mod tests {
                 12, 13, 14, // (1, 1)
                 15, 16, 17, // (1, 2)
             ],
-            host_alloc(),
         )?;
 
         rgb_from_rgba(&src, &mut dst, None)?;
@@ -380,10 +371,9 @@ mod tests {
                 height: 1,
             },
             vec![255, 0, 0, 128],
-            host_alloc(),
         )?;
 
-        let mut dst = Image::<u8, 3>::from_size_val(src.size(), 0, host_alloc())?;
+        let mut dst = Image::<u8, 3>::from_size_val(src.size(), 0)?;
 
         let expected = Image::<u8, 3>::new(
             ImageSize {
@@ -391,7 +381,6 @@ mod tests {
                 height: 1,
             },
             vec![178, 50, 50],
-            host_alloc(),
         )?;
 
         rgb_from_rgba(&src, &mut dst, Some([100, 100, 100]))?;
@@ -410,10 +399,9 @@ mod tests {
                 height: 1,
             },
             vec![0, 0, 255, 128],
-            host_alloc(),
         )?;
 
-        let mut dst = Image::<u8, 3>::from_size_val(src.size(), 0, host_alloc())?;
+        let mut dst = Image::<u8, 3>::from_size_val(src.size(), 0)?;
 
         let expected = Image::<u8, 3>::new(
             ImageSize {
@@ -421,7 +409,6 @@ mod tests {
                 height: 1,
             },
             vec![255, 0, 0],
-            host_alloc(),
         )?;
 
         rgb_from_bgra(&src, &mut dst, None)?;
@@ -440,10 +427,9 @@ mod tests {
                 height: 1,
             },
             vec![0, 0, 255, 128],
-            host_alloc(),
         )?;
 
-        let mut dst = Image::<u8, 3>::from_size_val(src.size(), 0, host_alloc())?;
+        let mut dst = Image::<u8, 3>::from_size_val(src.size(), 0)?;
 
         let expected = Image::<u8, 3>::new(
             ImageSize {
@@ -451,7 +437,6 @@ mod tests {
                 height: 1,
             },
             vec![178, 50, 50],
-            host_alloc(),
         )?;
 
         rgb_from_bgra(&src, &mut dst, Some([100, 100, 100]))?;
@@ -474,10 +459,9 @@ mod tests {
                 3.0, 4.0, 5.0,
                 6.0, 7.0, 8.0,
             ],
-            host_alloc(),
         )?;
 
-        let mut bgr = Image::<f32, 3>::from_size_val(image.size(), 0.0, host_alloc())?;
+        let mut bgr = Image::<f32, 3>::from_size_val(image.size(), 0.0)?;
 
         super::bgr_from_rgb(&image, &mut bgr)?;
 
@@ -492,7 +476,6 @@ mod tests {
                 5.0, 4.0, 3.0,
                 8.0, 7.0, 6.0,
             ],
-            host_alloc(),
         )?;
 
         assert_eq!(bgr.as_slice(), expected.as_slice());
@@ -518,8 +501,8 @@ mod tests {
             height: 1025,
         };
         let npix = 1024 * 1025;
-        let src = Image::<u8, 3>::new(size, ramp_u8(npix * 3), host_alloc())?;
-        let mut dst = Image::<u8, 3>::from_size_val(size, 0, host_alloc())?;
+        let src = Image::<u8, 3>::new(size, ramp_u8(npix * 3))?;
+        let mut dst = Image::<u8, 3>::from_size_val(size, 0)?;
         super::bgr_from_rgb(&src, &mut dst)?;
         let s = src.as_slice();
         let d = dst.as_slice();
@@ -540,8 +523,8 @@ mod tests {
             height: 1025,
         };
         let npix = 1024 * 1025;
-        let src = Image::<u8, 3>::new(size, ramp_u8(npix * 3), host_alloc())?;
-        let mut dst = Image::<u8, 4>::from_size_val(size, 0, host_alloc())?;
+        let src = Image::<u8, 3>::new(size, ramp_u8(npix * 3))?;
+        let mut dst = Image::<u8, 4>::from_size_val(size, 0)?;
         super::rgba_from_rgb(&src, &mut dst)?;
         let s = src.as_slice();
         let d = dst.as_slice();
@@ -560,8 +543,8 @@ mod tests {
             width: 7,
             height: 3,
         };
-        let src = Image::<u8, 3>::new(size, ramp_u8(7 * 3 * 3), host_alloc())?;
-        let mut dst = Image::<u8, 3>::from_size_val(size, 0, host_alloc())?;
+        let src = Image::<u8, 3>::new(size, ramp_u8(7 * 3 * 3))?;
+        let mut dst = Image::<u8, 3>::from_size_val(size, 0)?;
         super::bgr_from_rgb(&src, &mut dst)?;
 
         let s = src.as_slice();
@@ -579,9 +562,9 @@ mod tests {
             width: 7,
             height: 3,
         };
-        let src = Image::<u8, 3>::new(size, ramp_u8(7 * 3 * 3), host_alloc())?;
-        let mut bgr = Image::<u8, 3>::from_size_val(size, 0, host_alloc())?;
-        let mut back = Image::<u8, 3>::from_size_val(size, 0, host_alloc())?;
+        let src = Image::<u8, 3>::new(size, ramp_u8(7 * 3 * 3))?;
+        let mut bgr = Image::<u8, 3>::from_size_val(size, 0)?;
+        let mut back = Image::<u8, 3>::from_size_val(size, 0)?;
         super::bgr_from_rgb(&src, &mut bgr)?;
         super::bgr_from_rgb(&bgr, &mut back)?;
         assert_eq!(src.as_slice(), back.as_slice());
@@ -594,9 +577,9 @@ mod tests {
             width: 7,
             height: 3,
         };
-        let src = Image::<f32, 3>::new(size, ramp_f32(7 * 3 * 3), host_alloc())?;
-        let mut bgr = Image::<f32, 3>::from_size_val(size, 0.0, host_alloc())?;
-        let mut back = Image::<f32, 3>::from_size_val(size, 0.0, host_alloc())?;
+        let src = Image::<f32, 3>::new(size, ramp_f32(7 * 3 * 3))?;
+        let mut bgr = Image::<f32, 3>::from_size_val(size, 0.0)?;
+        let mut back = Image::<f32, 3>::from_size_val(size, 0.0)?;
         super::bgr_from_rgb(&src, &mut bgr)?;
         super::bgr_from_rgb(&bgr, &mut back)?;
         assert_eq!(src.as_slice(), back.as_slice());
@@ -609,8 +592,8 @@ mod tests {
             width: 7,
             height: 3,
         };
-        let src = Image::<u8, 3>::new(size, ramp_u8(7 * 3 * 3), host_alloc())?;
-        let mut dst = Image::<u8, 4>::from_size_val(size, 0, host_alloc())?;
+        let src = Image::<u8, 3>::new(size, ramp_u8(7 * 3 * 3))?;
+        let mut dst = Image::<u8, 4>::from_size_val(size, 0)?;
         super::rgba_from_rgb(&src, &mut dst)?;
 
         let s = src.as_slice();
@@ -631,9 +614,8 @@ mod tests {
                 height: 1,
             },
             vec![1, 2, 3, 4, 5, 6],
-            host_alloc(),
         )?;
-        let mut dst = Image::<u8, 4>::from_size_val(src.size(), 0, host_alloc())?;
+        let mut dst = Image::<u8, 4>::from_size_val(src.size(), 0)?;
         super::rgba_from_rgb(&src, &mut dst)?;
         assert_eq!(dst.as_slice(), &[1, 2, 3, 255, 4, 5, 6, 255]);
         Ok(())
@@ -645,8 +627,8 @@ mod tests {
             width: 7,
             height: 3,
         };
-        let src = Image::<f32, 3>::new(size, ramp_f32(7 * 3 * 3), host_alloc())?;
-        let mut dst = Image::<f32, 4>::from_size_val(size, 0.0, host_alloc())?;
+        let src = Image::<f32, 3>::new(size, ramp_f32(7 * 3 * 3))?;
+        let mut dst = Image::<f32, 4>::from_size_val(size, 0.0)?;
         super::rgba_from_rgb(&src, &mut dst)?;
 
         let s = src.as_slice();
@@ -665,8 +647,8 @@ mod tests {
             width: 7,
             height: 3,
         };
-        let src = Image::<u8, 3>::new(size, ramp_u8(7 * 3 * 3), host_alloc())?;
-        let mut dst = Image::<u8, 4>::from_size_val(size, 0, host_alloc())?;
+        let src = Image::<u8, 3>::new(size, ramp_u8(7 * 3 * 3))?;
+        let mut dst = Image::<u8, 4>::from_size_val(size, 0)?;
         super::bgra_from_rgb(&src, &mut dst)?;
 
         let s = src.as_slice();
@@ -687,9 +669,8 @@ mod tests {
                 height: 1,
             },
             vec![1, 2, 3, 4, 5, 6],
-            host_alloc(),
         )?;
-        let mut dst = Image::<u8, 4>::from_size_val(src.size(), 0, host_alloc())?;
+        let mut dst = Image::<u8, 4>::from_size_val(src.size(), 0)?;
         super::bgra_from_rgb(&src, &mut dst)?;
         assert_eq!(dst.as_slice(), &[3, 2, 1, 255, 6, 5, 4, 255]);
         Ok(())
@@ -701,8 +682,8 @@ mod tests {
             width: 7,
             height: 3,
         };
-        let src = Image::<f32, 3>::new(size, ramp_f32(7 * 3 * 3), host_alloc())?;
-        let mut dst = Image::<f32, 4>::from_size_val(size, 0.0, host_alloc())?;
+        let src = Image::<f32, 3>::new(size, ramp_f32(7 * 3 * 3))?;
+        let mut dst = Image::<f32, 4>::from_size_val(size, 0.0)?;
         super::bgra_from_rgb(&src, &mut dst)?;
 
         let s = src.as_slice();

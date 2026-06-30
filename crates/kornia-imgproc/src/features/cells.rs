@@ -315,7 +315,6 @@ pub fn fast_detect_pyramid_u8(
 mod tests {
     use super::*;
     use kornia_image::ImageSize;
-    use kornia_tensor::host_alloc;
 
     /// Black background with 5×5 bright squares placed on a regular grid.
     /// Each square has 4 strong FAST corners (center pixel bright, most of the
@@ -342,7 +341,7 @@ mod tests {
             }
             cy += spacing;
         }
-        Image::from_size_slice(size, &buf, host_alloc()).unwrap()
+        Image::from_size_slice(size, &buf).unwrap()
     }
 
     #[test]

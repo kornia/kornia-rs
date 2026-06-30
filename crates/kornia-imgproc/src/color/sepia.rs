@@ -163,7 +163,6 @@ fn sepia_u8_neon(src: &[u8], dst: &mut [u8], npixels: usize) {
 mod tests {
     use super::*;
     use kornia_image::ImageSize;
-    use kornia_tensor::host_alloc;
 
     #[test]
     fn sepia_u8_known_value() {
@@ -177,10 +176,9 @@ mod tests {
                 height: 1,
             },
             255,
-            host_alloc(),
         )
         .unwrap();
-        let mut dst = Image::<u8, 3>::from_size_val(src.size(), 0, host_alloc()).unwrap();
+        let mut dst = Image::<u8, 3>::from_size_val(src.size(), 0).unwrap();
         sepia_from_rgb_u8(&src, &mut dst).unwrap();
         assert_eq!(dst.as_slice(), &[255, 255, 240]);
     }
@@ -196,10 +194,9 @@ mod tests {
                 height: 1,
             },
             data.clone(),
-            host_alloc(),
         )
         .unwrap();
-        let mut got = Image::<u8, 3>::from_size_val(src.size(), 0, host_alloc()).unwrap();
+        let mut got = Image::<u8, 3>::from_size_val(src.size(), 0).unwrap();
         sepia_from_rgb_u8(&src, &mut got).unwrap();
         let mut oracle = vec![0u8; n * 3];
         sepia_u8_scalar(&data, &mut oracle, n);
@@ -214,10 +211,9 @@ mod tests {
                 height: 1,
             },
             vec![100.0, 150.0, 200.0],
-            host_alloc(),
         )
         .unwrap();
-        let mut dst = Image::<f32, 3>::from_size_val(src.size(), 0.0, host_alloc()).unwrap();
+        let mut dst = Image::<f32, 3>::from_size_val(src.size(), 0.0).unwrap();
         sepia_from_rgb_f32(&src, &mut dst).unwrap();
         let exp_r = 0.393 * 100.0 + 0.769 * 150.0 + 0.189 * 200.0;
         let exp_g = 0.349 * 100.0 + 0.686 * 150.0 + 0.168 * 200.0;

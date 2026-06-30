@@ -187,7 +187,6 @@ fn pyrup_vertical_pass_f32<const C: usize>(
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
-/// use kornia_tensor::host_alloc;
 /// use kornia_imgproc::pyramid::pyrup_f32;
 ///
 /// let image = Image::<f32, 1>::new(
@@ -196,7 +195,6 @@ fn pyrup_vertical_pass_f32<const C: usize>(
 ///         height: 2,
 ///     },
 ///     vec![0.0, 1.0, 2.0, 3.0],
-///     host_alloc()
 /// ).unwrap();
 ///
 /// let mut upsampled = Image::<f32, 1>::from_size_val(
@@ -205,7 +203,6 @@ fn pyrup_vertical_pass_f32<const C: usize>(
 ///         height: 4,
 ///     },
 ///     0.0,
-///     host_alloc()
 /// ).unwrap();
 ///
 /// pyrup_f32(&image, &mut upsampled).unwrap();
@@ -284,7 +281,6 @@ fn reflect_101(mut p: i32, len: i32) -> i32 {
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
-/// use kornia_tensor::host_alloc;
 /// use kornia_imgproc::pyramid::pyrdown_f32;
 ///
 /// let image = Image::<f32, 3>::new(
@@ -293,7 +289,6 @@ fn reflect_101(mut p: i32, len: i32) -> i32 {
 ///         height: 4,
 ///     },
 ///     (0..48).map(|x| x as f32).collect(),
-///     host_alloc(),
 /// ).unwrap();
 ///
 /// let mut downsampled = Image::<f32, 3>::from_size_val(
@@ -302,7 +297,6 @@ fn reflect_101(mut p: i32, len: i32) -> i32 {
 ///         height: 2,
 ///     },
 ///     0.0,
-///     host_alloc(),
 /// ).unwrap();
 ///
 /// pyrdown_f32(&image, &mut downsampled).unwrap();
@@ -432,7 +426,7 @@ pub fn build_pyramid<const C: usize>(
             height: current_img.rows().div_ceil(2),
         };
         let mut downsampled =
-            Image::from_size_val(new_size, 0.0, current_img.storage.alloc().clone())?;
+            Image::from_size_val_in(new_size, 0.0, current_img.storage.alloc().clone())?;
         pyrdown_f32(current_img, &mut downsampled)?;
         pyramid.push(downsampled);
     }
@@ -820,7 +814,6 @@ pub fn pyrup_u8<const C: usize>(
 mod tests {
     use super::*;
     use kornia_image::{Image, ImageSize};
-    use kornia_tensor::host_alloc;
 
     #[test]
     fn test_build_pyramid_levels_and_sizes_odd_dimensions() {
@@ -829,7 +822,7 @@ mod tests {
             width: 5,
             height: 7,
         };
-        let src: Image<f32, 1> = Image::from_size_val(size, 1.0_f32, host_alloc()).unwrap();
+        let src: Image<f32, 1> = Image::from_size_val(size, 1.0_f32).unwrap();
 
         let max_level = 3;
         let pyramid = build_pyramid(&src, max_level).unwrap();
@@ -864,7 +857,6 @@ mod tests {
                 height: 2,
             },
             vec![0.0, 1.0, 2.0, 3.0],
-            host_alloc(),
         )?;
 
         let mut dst = Image::<f32, 1>::from_size_val(
@@ -873,7 +865,6 @@ mod tests {
                 height: 4,
             },
             0.0,
-            host_alloc(),
         )?;
 
         pyrup_f32(&src, &mut dst)?;
@@ -900,7 +891,6 @@ mod tests {
                 0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0,
                 15.0,
             ],
-            host_alloc(),
         )?;
 
         let mut dst = Image::<f32, 1>::from_size_val(
@@ -909,7 +899,6 @@ mod tests {
                 height: 2,
             },
             0.0,
-            host_alloc(),
         )?;
 
         pyrdown_f32(&src, &mut dst)?;
@@ -939,7 +928,6 @@ mod tests {
                 height: 4,
             },
             (0..48).map(|x| x as f32).collect(),
-            host_alloc(),
         )?;
 
         let mut dst = Image::<f32, 3>::from_size_val(
@@ -948,7 +936,6 @@ mod tests {
                 height: 2,
             },
             0.0,
-            host_alloc(),
         )?;
 
         pyrdown_f32(&src, &mut dst)?;
@@ -982,7 +969,6 @@ mod tests {
                 height: 4,
             },
             vec![0.0; 16],
-            host_alloc(),
         )?;
 
         let mut dst = Image::<f32, 1>::from_size_val(
@@ -991,7 +977,6 @@ mod tests {
                 height: 3,
             },
             0.0,
-            host_alloc(),
         )?;
 
         let result = pyrdown_f32(&src, &mut dst);
@@ -1008,7 +993,6 @@ mod tests {
                 height: 7,
             },
             (0..(5 * 7)).map(|x| x as f32).collect(),
-            host_alloc(),
         )?;
 
         let mut dst = Image::<f32, 1>::from_size_val(
@@ -1017,7 +1001,6 @@ mod tests {
                 height: 4,
             },
             0.0,
-            host_alloc(),
         )?;
 
         pyrdown_f32(&src, &mut dst)?;
@@ -1039,7 +1022,6 @@ mod tests {
                 height: 1,
             },
             vec![42.0],
-            host_alloc(),
         )?;
         let mut dst1 = Image::<f32, 1>::from_size_val(
             ImageSize {
@@ -1047,7 +1029,6 @@ mod tests {
                 height: 1,
             },
             0.0,
-            host_alloc(),
         )?;
         pyrdown_f32(&src1, &mut dst1)?;
         assert_eq!(dst1.width(), 1);
@@ -1060,7 +1041,6 @@ mod tests {
                 height: 2,
             },
             vec![1.0, 2.0],
-            host_alloc(),
         )?;
         let mut dst2 = Image::<f32, 1>::from_size_val(
             ImageSize {
@@ -1068,7 +1048,6 @@ mod tests {
                 height: 1,
             },
             0.0,
-            host_alloc(),
         )?;
         pyrdown_f32(&src2, &mut dst2)?;
         assert_eq!(dst2.width(), 1);
@@ -1081,7 +1060,6 @@ mod tests {
                 height: 1,
             },
             vec![1.0, 2.0],
-            host_alloc(),
         )?;
         let mut dst3 = Image::<f32, 1>::from_size_val(
             ImageSize {
@@ -1089,7 +1067,6 @@ mod tests {
                 height: 1,
             },
             0.0,
-            host_alloc(),
         )?;
         pyrdown_f32(&src3, &mut dst3)?;
         assert_eq!(dst3.width(), 1);
@@ -1109,7 +1086,6 @@ mod tests {
                 height: 4,
             },
             vec![large_val; 16],
-            host_alloc(),
         )?;
         let mut dst = Image::<f32, 1>::from_size_val(
             ImageSize {
@@ -1117,7 +1093,6 @@ mod tests {
                 height: 2,
             },
             0.0,
-            host_alloc(),
         )?;
         pyrdown_f32(&src, &mut dst)?;
         for &v in dst.as_slice() {
@@ -1135,7 +1110,6 @@ mod tests {
                 height: 4,
             },
             vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
-            host_alloc(),
         )?;
 
         let mut dst = Image::<u8, 1>::from_size_val(
@@ -1144,7 +1118,6 @@ mod tests {
                 height: 2,
             },
             0,
-            host_alloc(),
         )?;
 
         pyrdown_u8(&src, &mut dst)?;
@@ -1167,7 +1140,6 @@ mod tests {
                 height: 2,
             },
             vec![0, 10, 20, 30],
-            host_alloc(),
         )?;
 
         let mut dst = Image::<u8, 1>::from_size_val(
@@ -1176,7 +1148,6 @@ mod tests {
                 height: 4,
             },
             0,
-            host_alloc(),
         )?;
 
         pyrup_u8(&src, &mut dst)?;
@@ -1195,7 +1166,6 @@ mod tests {
                 height: 2,
             },
             vec![0; 4],
-            host_alloc(),
         )?;
 
         let mut dst = Image::<u8, 1>::from_size_val(
@@ -1204,7 +1174,6 @@ mod tests {
                 height: 4,
             },
             0,
-            host_alloc(),
         )?;
 
         let result = pyrup_u8(&src, &mut dst);
@@ -1221,7 +1190,6 @@ mod tests {
                 height: 1,
             },
             vec![100],
-            host_alloc(),
         )?;
         let mut dst1 = Image::<u8, 1>::from_size_val(
             ImageSize {
@@ -1229,7 +1197,6 @@ mod tests {
                 height: 2,
             },
             0,
-            host_alloc(),
         )?;
 
         pyrup_u8(&src1, &mut dst1)?;
@@ -1252,7 +1219,6 @@ mod tests {
                 height: 16,
             },
             vec![val; 16 * 16],
-            host_alloc(),
         )?;
 
         let mut dst = Image::<u8, 1>::from_size_val(
@@ -1261,7 +1227,6 @@ mod tests {
                 height: 8,
             },
             0,
-            host_alloc(),
         )?;
 
         pyrdown_u8(&src, &mut dst)?;
@@ -1287,7 +1252,6 @@ mod tests {
                 height: 4,
             },
             vec![0; 16],
-            host_alloc(),
         )?;
 
         let mut dst = Image::<u8, 1>::from_size_val(
@@ -1296,7 +1260,6 @@ mod tests {
                 height: 3,
             },
             0,
-            host_alloc(),
         )?;
 
         let result = pyrdown_u8(&src, &mut dst);
@@ -1313,7 +1276,6 @@ mod tests {
                 height: 7,
             },
             (0..(5 * 7)).map(|x| x as u8).collect(),
-            host_alloc(),
         )?;
 
         let mut dst = Image::<u8, 1>::from_size_val(
@@ -1322,7 +1284,6 @@ mod tests {
                 height: 4,
             },
             0,
-            host_alloc(),
         )?;
 
         pyrdown_u8(&src, &mut dst)?;
@@ -1341,7 +1302,6 @@ mod tests {
                 height: 1,
             },
             vec![42],
-            host_alloc(),
         )?;
         let mut dst1 = Image::<u8, 1>::from_size_val(
             ImageSize {
@@ -1349,7 +1309,6 @@ mod tests {
                 height: 1,
             },
             0,
-            host_alloc(),
         )?;
         pyrdown_u8(&src1, &mut dst1)?;
         assert_eq!(dst1.width(), 1);
@@ -1362,7 +1321,6 @@ mod tests {
                 height: 2,
             },
             vec![10, 20],
-            host_alloc(),
         )?;
         let mut dst2 = Image::<u8, 1>::from_size_val(
             ImageSize {
@@ -1370,7 +1328,6 @@ mod tests {
                 height: 1,
             },
             0,
-            host_alloc(),
         )?;
         pyrdown_u8(&src2, &mut dst2)?;
         assert_eq!(dst2.width(), 1);
@@ -1390,7 +1347,6 @@ mod tests {
                 height: 4,
             },
             (0..48).map(|x| x as u8).collect(),
-            host_alloc(),
         )?;
 
         let mut dst = Image::<u8, 3>::from_size_val(
@@ -1399,7 +1355,6 @@ mod tests {
                 height: 2,
             },
             0,
-            host_alloc(),
         )?;
 
         pyrdown_u8(&src, &mut dst)?;
@@ -1442,7 +1397,6 @@ mod tests {
                 70, 80, 90, // (1,0)
                 100, 110, 120, // (1,1)
             ],
-            host_alloc(),
         )?;
 
         let mut dst = Image::<u8, 3>::from_size_val(
@@ -1451,7 +1405,6 @@ mod tests {
                 height: 4,
             },
             0,
-            host_alloc(),
         )?;
 
         pyrup_u8(&src, &mut dst)?;

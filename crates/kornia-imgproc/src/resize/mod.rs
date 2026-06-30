@@ -55,7 +55,6 @@ use common::FilterKind;
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
-/// use kornia_tensor::host_alloc;
 /// use kornia_imgproc::resize::resize_native;
 /// use kornia_imgproc::interpolation::InterpolationMode;
 ///
@@ -65,7 +64,6 @@ use common::FilterKind;
 ///         height: 5,
 ///     },
 ///     vec![0f32; 4 * 5 * 3],
-///     host_alloc()
 /// )
 /// .unwrap();
 ///
@@ -74,7 +72,7 @@ use common::FilterKind;
 ///     height: 3,
 /// };
 ///
-/// let mut image_resized = Image::<_, 3>::from_size_val(new_size, 0.0, host_alloc()).unwrap();
+/// let mut image_resized = Image::<_, 3>::from_size_val(new_size, 0.0).unwrap();
 ///
 /// resize_native(
 ///     &image,
@@ -130,7 +128,6 @@ pub fn resize_native<const C: usize>(
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
-/// use kornia_tensor::host_alloc;
 /// use kornia_imgproc::resize::resize_fast_rgb;
 /// use kornia_imgproc::interpolation::InterpolationMode;
 ///
@@ -140,7 +137,6 @@ pub fn resize_native<const C: usize>(
 ///         height: 5,
 ///     },
 ///     vec![0u8; 4 * 5 * 3],
-///     host_alloc()
 /// )
 /// .unwrap();
 ///
@@ -149,7 +145,7 @@ pub fn resize_native<const C: usize>(
 ///   height: 3,
 /// };
 ///
-/// let mut image_resized = Image::<_, 3>::from_size_val(new_size, 0, host_alloc()).unwrap();
+/// let mut image_resized = Image::<_, 3>::from_size_val(new_size, 0).unwrap();
 ///
 /// resize_fast_rgb(
 ///   &image,
@@ -347,7 +343,7 @@ fn resize_fast_impl<const C: usize>(
 #[cfg(test)]
 mod tests {
     use kornia_image::{Image, ImageError, ImageSize};
-    use kornia_tensor::{host_alloc, TensorError};
+    use kornia_tensor::TensorError;
 
     #[test]
     fn resize_smoke_ch3() -> Result<(), ImageError> {
@@ -357,7 +353,6 @@ mod tests {
                 height: 4,
             },
             (0..3 * 4 * 3).map(|x| x as f32).collect::<Vec<f32>>(),
-            host_alloc(),
         )?;
 
         let new_size = ImageSize {
@@ -365,7 +360,7 @@ mod tests {
             height: 3,
         };
 
-        let mut image_resized = Image::<_, 3>::from_size_val(new_size, 0.0, host_alloc())?;
+        let mut image_resized = Image::<_, 3>::from_size_val(new_size, 0.0)?;
 
         super::resize_native(
             &image,
@@ -397,7 +392,6 @@ mod tests {
                 height: 3,
             },
             vec![0.0f32, 1.0, 2.0, 3.0, 4.0, 5.0],
-            host_alloc(),
         )?;
 
         let new_size = ImageSize {
@@ -405,7 +399,7 @@ mod tests {
             height: 3,
         };
 
-        let mut image_resized = Image::<_, 1>::from_size_val(new_size, 0.0f32, host_alloc())?;
+        let mut image_resized = Image::<_, 1>::from_size_val(new_size, 0.0f32)?;
 
         super::resize_native(
             &image,
@@ -445,7 +439,6 @@ mod tests {
                 height: 2,
             },
             vec![0.0f32; 4],
-            host_alloc(),
         )?;
 
         let mut dst = Image::<_, 1>::from_size_val(
@@ -454,7 +447,6 @@ mod tests {
                 height: 1,
             },
             0.0f32,
-            host_alloc(),
         )?;
 
         let err = super::resize_native(&image, &mut dst, super::InterpolationMode::Bicubic);
@@ -474,7 +466,6 @@ mod tests {
                 height: 5,
             },
             vec![0u8; 4 * 5 * 3],
-            host_alloc(),
         )?;
 
         let new_size = ImageSize {
@@ -482,7 +473,7 @@ mod tests {
             height: 3,
         };
 
-        let mut image_resized = Image::<_, 3>::from_size_val(new_size, 0, host_alloc())?;
+        let mut image_resized = Image::<_, 3>::from_size_val(new_size, 0)?;
 
         super::resize_fast_rgb(
             &image,
@@ -511,7 +502,6 @@ mod tests {
                     height: h,
                 },
                 data,
-                host_alloc(),
             )?;
             let mut dst = Image::<_, 3>::from_size_val(
                 ImageSize {
@@ -519,7 +509,6 @@ mod tests {
                     height: 2 * h,
                 },
                 0u8,
-                host_alloc(),
             )?;
             super::resize_fast_rgb(&image, &mut dst, super::InterpolationMode::Bilinear)?;
 

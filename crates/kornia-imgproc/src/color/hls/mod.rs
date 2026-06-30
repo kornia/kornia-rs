@@ -141,11 +141,10 @@ fn hue2rgb_f64(p: f64, q: f64, t: f64) -> f64 {
 /// ```
 /// use kornia_image::{Image, ImageSize};
 /// use kornia_imgproc::color::hls_from_rgb;
-/// use kornia_tensor::host_alloc;
 ///
 /// let rgb = Image::<f32, 3>::from_size_val(
-///     ImageSize { width: 4, height: 5 }, 0.0, host_alloc()).unwrap();
-/// let mut hls = Image::<f32, 3>::from_size_val(rgb.size(), 0.0, host_alloc()).unwrap();
+///     ImageSize { width: 4, height: 5 }, 0.0).unwrap();
+/// let mut hls = Image::<f32, 3>::from_size_val(rgb.size(), 0.0).unwrap();
 /// hls_from_rgb(&rgb, &mut hls).unwrap();
 /// ```
 pub fn hls_from_rgb<T>(src: &Image<T, 3>, dst: &mut Image<T, 3>) -> Result<(), ImageError>
@@ -162,11 +161,10 @@ where
 /// ```
 /// use kornia_image::{Image, ImageSize};
 /// use kornia_imgproc::color::rgb_from_hls;
-/// use kornia_tensor::host_alloc;
 ///
 /// let hls = Image::<f32, 3>::from_size_val(
-///     ImageSize { width: 4, height: 5 }, 0.0, host_alloc()).unwrap();
-/// let mut rgb = Image::<f32, 3>::from_size_val(hls.size(), 0.0, host_alloc()).unwrap();
+///     ImageSize { width: 4, height: 5 }, 0.0).unwrap();
+/// let mut rgb = Image::<f32, 3>::from_size_val(hls.size(), 0.0).unwrap();
 /// rgb_from_hls(&hls, &mut rgb).unwrap();
 /// ```
 pub fn rgb_from_hls<T>(src: &Image<T, 3>, dst: &mut Image<T, 3>) -> Result<(), ImageError>
@@ -189,7 +187,6 @@ pub fn rgb_from_hls_f32(src: &Image<f32, 3>, dst: &mut Image<f32, 3>) -> Result<
 #[cfg(test)]
 mod tests {
     use kornia_image::{Image, ImageError, ImageSize};
-    use kornia_tensor::host_alloc;
 
     // Hand-computed via the documented HLS math (channel order [H, L, S]).
     #[test]
@@ -203,7 +200,6 @@ mod tests {
                 height: 1,
             },
             vec![255.0, 0.0, 0.0, 0.0, 255.0, 0.0, 0.0, 0.0, 255.0],
-            host_alloc(),
         )?;
         let expected = [
             // H_out=(H/360)*255, L_out=L*255, S_out=S*255
@@ -217,7 +213,7 @@ mod tests {
             127.5,
             255.0, // blue:  H=240
         ];
-        let mut hls = Image::<f32, 3>::from_size_val(image.size(), 0.0, host_alloc())?;
+        let mut hls = Image::<f32, 3>::from_size_val(image.size(), 0.0)?;
         super::hls_from_rgb(&image, &mut hls)?;
         for (a, b) in hls.as_slice().iter().zip(expected.iter()) {
             assert!((a - b).abs() < 1e-3, "{a} != {b}");
@@ -236,10 +232,9 @@ mod tests {
                 height: 5,
             },
             data,
-            host_alloc(),
         )?;
-        let mut hls = Image::<f32, 3>::from_size_val(src.size(), 0.0, host_alloc())?;
-        let mut back = Image::<f32, 3>::from_size_val(src.size(), 0.0, host_alloc())?;
+        let mut hls = Image::<f32, 3>::from_size_val(src.size(), 0.0)?;
+        let mut back = Image::<f32, 3>::from_size_val(src.size(), 0.0)?;
         super::hls_from_rgb(&src, &mut hls)?;
         super::rgb_from_hls(&hls, &mut back)?;
         for (a, b) in src.as_slice().iter().zip(back.as_slice().iter()) {
@@ -258,15 +253,10 @@ mod tests {
                 height: 3,
             },
             data.clone(),
-            host_alloc(),
         )?;
-        let src64 = Image::<f64, 3>::new(
-            src.size(),
-            data.iter().map(|&v| v as f64).collect(),
-            host_alloc(),
-        )?;
-        let mut simd = Image::<f32, 3>::from_size_val(src.size(), 0.0, host_alloc())?;
-        let mut scalar = Image::<f64, 3>::from_size_val(src.size(), 0.0, host_alloc())?;
+        let src64 = Image::<f64, 3>::new(src.size(), data.iter().map(|&v| v as f64).collect())?;
+        let mut simd = Image::<f32, 3>::from_size_val(src.size(), 0.0)?;
+        let mut scalar = Image::<f64, 3>::from_size_val(src.size(), 0.0)?;
         super::hls_from_rgb(&src, &mut simd)?;
         super::hls_from_rgb(&src64, &mut scalar)?;
         for (a, b) in simd.as_slice().iter().zip(scalar.as_slice().iter()) {
@@ -286,10 +276,9 @@ mod tests {
                 height: h,
             },
             data,
-            host_alloc(),
         )?;
-        let mut hls = Image::<f32, 3>::from_size_val(src.size(), 0.0, host_alloc())?;
-        let mut back = Image::<f32, 3>::from_size_val(src.size(), 0.0, host_alloc())?;
+        let mut hls = Image::<f32, 3>::from_size_val(src.size(), 0.0)?;
+        let mut back = Image::<f32, 3>::from_size_val(src.size(), 0.0)?;
         super::hls_from_rgb(&src, &mut hls)?;
         super::rgb_from_hls(&hls, &mut back)?;
         for (a, b) in src.as_slice().iter().zip(back.as_slice().iter()) {

@@ -31,11 +31,7 @@ const GRAY_B: u32 = 29;
 pub fn read_image_webp_gray8(file_path: impl AsRef<Path>) -> Result<Gray8, IoError> {
     let (rgb, size, has_alpha) = read_webp_rgb_or_rgba(file_path)?;
     let gray = rgb_or_rgba_to_gray(&rgb, has_alpha);
-    Ok(Gray8::from_size_vec(
-        size,
-        gray,
-        kornia_tensor::host_alloc(),
-    )?)
+    Ok(Gray8::from_size_vec(size, gray)?)
 }
 
 /// Read a WEBP image as RGB8.
@@ -58,7 +54,7 @@ pub fn read_image_webp_rgb8(file_path: impl AsRef<Path>) -> Result<Rgb8, IoError
             ),
         ));
     }
-    Ok(Rgb8::from_size_vec(size, buf, kornia_tensor::host_alloc())?)
+    Ok(Rgb8::from_size_vec(size, buf)?)
 }
 
 /// Read a WEBP image as RGBA8.
@@ -81,11 +77,7 @@ pub fn read_image_webp_rgba8(file_path: impl AsRef<Path>) -> Result<Rgba8, IoErr
             ),
         ));
     }
-    Ok(Rgba8::from_size_vec(
-        size,
-        buf,
-        kornia_tensor::host_alloc(),
-    )?)
+    Ok(Rgba8::from_size_vec(size, buf)?)
 }
 
 /// Decodes a WEBP image as RGB8 from raw bytes.
@@ -391,7 +383,7 @@ mod tests {
     #[test]
     fn test_decode_webp() -> Result<(), IoError> {
         let bytes = read("../../tests/data/fire.webp")?;
-        let mut image = Rgb8::from_size_val([320, 235].into(), 0, kornia_tensor::host_alloc())?;
+        let mut image = Rgb8::from_size_val([320, 235].into(), 0)?;
         decode_image_webp_rgb8(&bytes, &mut image)?;
 
         assert_eq!(image.cols(), 320);
@@ -442,7 +434,7 @@ mod tests {
                 pixels.extend_from_slice(&[x as u8, y as u8, (x + y) as u8, 0x80]);
             }
         }
-        let src = Rgba8::from_size_vec([w, h].into(), pixels, kornia_tensor::host_alloc())?;
+        let src = Rgba8::from_size_vec([w, h].into(), pixels)?;
         write_image_webp_rgba8(&file_path, &src)?;
 
         let decoded = read_image_webp_rgba8(&file_path)?;
@@ -470,7 +462,7 @@ mod tests {
         let w = 4;
         let h = 4;
         let pixels = vec![0xAAu8; w * h * 4];
-        let src = Rgba8::from_size_vec([w, h].into(), pixels, kornia_tensor::host_alloc())?;
+        let src = Rgba8::from_size_vec([w, h].into(), pixels)?;
         write_image_webp_rgba8(&file_path, &src)?;
 
         match read_image_webp_rgb8(&file_path) {

@@ -1,7 +1,6 @@
 use std::ops::ControlFlow;
 
 use kornia_image::{Image, ImageError, ImageSize};
-use kornia_tensor::host_alloc;
 use rayon::prelude::*;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -48,8 +47,8 @@ impl FastDetector {
             threshold,
             min_distance,
             arc_length,
-            corner_response: Image::from_size_val(image_size, 0.0, host_alloc())?,
-            mask: Image::from_size_val(image_size, false, host_alloc())?,
+            corner_response: Image::from_size_val(image_size, 0.0)?,
+            mask: Image::from_size_val(image_size, false)?,
             taken: vec![false; image_size.height * image_size.width],
         })
     }
@@ -1186,17 +1185,16 @@ mod tests {
     use super::*;
     use kornia_image::Image;
     use kornia_io::jpeg::read_image_jpeg_rgb8;
-    use kornia_tensor::host_alloc;
     use std::collections::HashSet;
 
     #[test]
     fn test_fast_feature_detector() -> Result<(), Box<dyn std::error::Error>> {
         #[rustfmt::skip]
         let img = read_image_jpeg_rgb8("../../tests/data/dog.jpeg")?;
-        let mut gray_img = Image::from_size_val(img.size(), 0, host_alloc())?;
+        let mut gray_img = Image::from_size_val(img.size(), 0)?;
         gray_from_rgb_u8(&img, &mut gray_img)?;
 
-        let mut gray_imgf32 = Image::from_size_val(img.size(), 0.0, host_alloc())?;
+        let mut gray_imgf32 = Image::from_size_val(img.size(), 0.0)?;
         gray_img
             .as_slice()
             .iter()
@@ -1252,7 +1250,7 @@ mod tests {
             *p = ((((x / 5) + (y / 5)) & 1) as u8 * 140)
                 .wrapping_add(((x.wrapping_mul(37)).wrapping_add(y.wrapping_mul(13)) as u8) / 4);
         }
-        let img = Image::<u8, 1>::new(sz, data, host_alloc())?;
+        let img = Image::<u8, 1>::new(sz, data)?;
 
         let mut det_neon = FastDetector::new(sz, 20.0 / 255.0, 9, 1)?;
         det_neon.compute_corner_response_u8(&img);

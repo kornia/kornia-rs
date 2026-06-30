@@ -303,7 +303,6 @@ mod tests {
                 height: 4,
             },
             data,
-            kornia_image::allocator::host_alloc(),
         )?;
 
         let tile_iter = TileIterator::from_image(&image, 4)?;
@@ -346,7 +345,6 @@ mod tests {
                 height: 7,
             },
             data,
-            kornia_image::allocator::host_alloc(),
         )?;
 
         let mut iter = TileIterator::from_image(&img, 2)?;
@@ -402,7 +400,6 @@ mod tests {
                 height: 4,
             },
             0,
-            kornia_image::allocator::host_alloc(),
         )?;
 
         let tile_iterator = TileIterator::from_image(&img, 4);

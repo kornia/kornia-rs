@@ -22,11 +22,11 @@ use crate::error::TensorOpsError;
 /// # Example
 ///
 /// ```
-/// use kornia_tensor::{host_alloc, Tensor};
+/// use kornia_tensor::Tensor;
 /// use kornia_tensor_ops::TensorOps;
 ///
 /// let data: [u8; 6] = [1, 1, 1, 1, 1, 1];
-/// let t = Tensor::<u8, 2>::from_shape_slice([2, 3], &data, host_alloc()).unwrap();
+/// let t = Tensor::<u8, 2>::from_shape_slice([2, 3], &data).unwrap();
 /// let agg = Tensor::sum_elements(&t, 1).unwrap();
 /// assert_eq!(agg.shape, [2, 1]);
 /// assert_eq!(agg.as_slice(), [3, 3]);
@@ -183,14 +183,14 @@ where
 /// # Example
 ///
 /// ```
-/// use kornia_tensor::{host_alloc, Tensor};
+/// use kornia_tensor::Tensor;
 /// use kornia_tensor_ops::TensorOps;
 ///
 /// let data1: Vec<u8> = vec![1, 2, 3, 4];
-/// let t1 = Tensor::<u8, 1>::from_shape_vec([4], data1, host_alloc()).unwrap();
+/// let t1 = Tensor::<u8, 1>::from_shape_vec([4], data1).unwrap();
 ///
 /// let data2: Vec<u8> = vec![1, 2, 3, 4];
-/// let t2 = Tensor::<u8, 1>::from_shape_vec([4], data2, host_alloc()).unwrap();
+/// let t2 = Tensor::<u8, 1>::from_shape_vec([4], data2).unwrap();
 ///
 /// let t3 = t1.add(&t2).unwrap();
 /// assert_eq!(t3.as_slice(), vec![2, 4, 6, 8]);
@@ -220,14 +220,14 @@ where
 /// # Example
 ///
 /// ```
-/// use kornia_tensor::{host_alloc, Tensor};
+/// use kornia_tensor::Tensor;
 /// use kornia_tensor_ops::TensorOps;
 ///
 /// let data1: Vec<u8> = vec![1, 2, 3, 4];
-/// let t1 = Tensor::<u8, 1>::from_shape_vec([4], data1, host_alloc()).unwrap();
+/// let t1 = Tensor::<u8, 1>::from_shape_vec([4], data1).unwrap();
 ///
 /// let data2: Vec<u8> = vec![1, 2, 3, 4];
-/// let t2 = Tensor::<u8, 1>::from_shape_vec([4], data2, host_alloc()).unwrap();
+/// let t2 = Tensor::<u8, 1>::from_shape_vec([4], data2).unwrap();
 ///
 /// let t3 = t1.sub(&t2).unwrap();
 /// assert_eq!(t3.as_slice(), vec![0, 0, 0, 0]);
@@ -257,14 +257,14 @@ where
 /// # Example
 ///
 /// ```
-/// use kornia_tensor::{host_alloc, Tensor};
+/// use kornia_tensor::Tensor;
 /// use kornia_tensor_ops::TensorOps;
 ///
 /// let data1: Vec<u8> = vec![1, 2, 3, 4];
-/// let t1 = Tensor::<u8, 1>::from_shape_vec([4], data1, host_alloc()).unwrap();
+/// let t1 = Tensor::<u8, 1>::from_shape_vec([4], data1).unwrap();
 ///
 /// let data2: Vec<u8> = vec![1, 2, 3, 4];
-/// let t2 = Tensor::<u8, 1>::from_shape_vec([4], data2, host_alloc()).unwrap();
+/// let t2 = Tensor::<u8, 1>::from_shape_vec([4], data2).unwrap();
 ///
 /// let t3 = t1.mul(&t2).unwrap();
 /// assert_eq!(t3.as_slice(), vec![1, 4, 9, 16]);
@@ -294,14 +294,14 @@ where
 /// # Example
 ///
 /// ```
-/// use kornia_tensor::{host_alloc, Tensor};
+/// use kornia_tensor::Tensor;
 /// use kornia_tensor_ops::TensorOps;
 ///
 /// let data1: Vec<u8> = vec![1, 2, 3, 4];
-/// let t1 = Tensor::<u8, 1>::from_shape_vec([4], data1, host_alloc()).unwrap();
+/// let t1 = Tensor::<u8, 1>::from_shape_vec([4], data1).unwrap();
 ///
 /// let data2: Vec<u8> = vec![1, 2, 3, 4];
-/// let t2 = Tensor::<u8, 1>::from_shape_vec([4], data2, host_alloc()).unwrap();
+/// let t2 = Tensor::<u8, 1>::from_shape_vec([4], data2).unwrap();
 ///
 /// let t3 = t1.div(&t2).unwrap();
 /// assert_eq!(t3.as_slice(), vec![1, 1, 1, 1]);
@@ -335,11 +335,11 @@ where
 /// # Example
 ///
 /// ```
-/// use kornia_tensor::{host_alloc, Tensor};
+/// use kornia_tensor::Tensor;
 /// use kornia_tensor_ops::TensorOps;
 ///
-/// let a = Tensor::<i32, 1>::from_shape_slice([3], &[1, 2, 3], host_alloc()).unwrap();
-/// let b = Tensor::<i32, 1>::from_shape_slice([3], &[4, 5, 6], host_alloc()).unwrap();
+/// let a = Tensor::<i32, 1>::from_shape_slice([3], &[1, 2, 3]).unwrap();
+/// let b = Tensor::<i32, 1>::from_shape_slice([3], &[4, 5, 6]).unwrap();
 /// let result = Tensor::<i32,1>::dot_product1(&a, &b).unwrap();
 /// assert_eq!(result, 32); // 1*4 + 2*5 + 3*6 = 4 + 10 + 18 = 32
 /// ```
@@ -376,11 +376,11 @@ where
 ///
 /// Example:
 /// ```
-/// use kornia_tensor::{host_alloc, Tensor};
+/// use kornia_tensor::Tensor;
 /// use kornia_tensor_ops::TensorOps;
 ///
-/// let a = Tensor::<f32, 1>::from_shape_slice([3], &[1.0, 2.0, 3.0], host_alloc()).unwrap();
-/// let b = Tensor::<f32, 1>::from_shape_slice([3], &[2.0, 4.0, 6.0], host_alloc()).unwrap();
+/// let a = Tensor::<f32, 1>::from_shape_slice([3], &[1.0, 2.0, 3.0]).unwrap();
+/// let b = Tensor::<f32, 1>::from_shape_slice([3], &[2.0, 4.0, 6.0]).unwrap();
 /// let result = Tensor::cosine_similarity(&a, &b).unwrap();
 /// assert!((result - 1.0).abs() < 1e-6);
 /// ```
@@ -421,11 +421,11 @@ where
 /// # Example
 ///
 /// ```
-/// use kornia_tensor::{host_alloc, Tensor};
+/// use kornia_tensor::Tensor;
 /// use kornia_tensor_ops::TensorOps;
 ///
-/// let a = Tensor::<f32, 1>::from_shape_slice([3], &[1.0, 2.0, 3.0], host_alloc()).unwrap();
-/// let b = Tensor::<f32, 1>::from_shape_slice([3], &[2.0, 4.0, 6.0], host_alloc()).unwrap();
+/// let a = Tensor::<f32, 1>::from_shape_slice([3], &[1.0, 2.0, 3.0]).unwrap();
+/// let b = Tensor::<f32, 1>::from_shape_slice([3], &[2.0, 4.0, 6.0]).unwrap();
 /// let result = Tensor::<f32,1>::cosine_distance(&a, &b).unwrap();
 /// assert!(result.abs() < 1e-6);
 /// ```
@@ -459,12 +459,12 @@ where
 /// # Examples
 ///
 /// ```
-/// use kornia_tensor::{host_alloc, Tensor};
+/// use kornia_tensor::Tensor;
 /// use kornia_tensor_ops::ops::TensorOps;
 ///
 /// // Create a tensor
 /// let data = vec![1.0, 2.0, 3.0, 4.0];
-/// let t = Tensor::<f32, 2>::from_shape_vec([2, 2], data, host_alloc()).unwrap();
+/// let t = Tensor::<f32, 2>::from_shape_vec([2, 2], data).unwrap();
 ///
 /// // Use operations through the trait
 /// let scaled = t.mul_scalar(2.0);
@@ -648,7 +648,7 @@ mod tests {
     #[test]
     fn test_sum_dim_oob() -> Result<(), TensorError> {
         let data: [u8; 4] = [2, 2, 2, 2];
-        let t = Tensor::<u8, 2>::from_shape_slice([2, 2], &data, kornia_tensor::host_alloc())?;
+        let t = Tensor::<u8, 2>::from_shape_slice([2, 2], &data)?;
         let res = sum_elements(&t, 2);
         assert!(res.is_err_and(|e| e == TensorOpsError::DimOutOfBounds(2, 1)));
         Ok(())
@@ -656,10 +656,8 @@ mod tests {
 
     #[test]
     fn test_dot_product_shape_mismatch() {
-        let a = Tensor::<i32, 1>::from_shape_slice([3], &[1, 2, 3], kornia_tensor::host_alloc())
-            .unwrap();
-        let b = Tensor::<i32, 1>::from_shape_slice([4], &[4, 5, 6, 7], kornia_tensor::host_alloc())
-            .unwrap();
+        let a = Tensor::<i32, 1>::from_shape_slice([3], &[1, 2, 3]).unwrap();
+        let b = Tensor::<i32, 1>::from_shape_slice([4], &[4, 5, 6, 7]).unwrap();
         let result = dot_product1(&a, &b);
         assert!(result.is_err());
 
@@ -674,7 +672,7 @@ mod tests {
     #[test]
     fn test_sum_1d() -> Result<(), TensorError> {
         let data: [u8; 4] = [1, 1, 1, 1];
-        let t = Tensor::<u8, 1>::from_shape_slice([4], &data, kornia_tensor::host_alloc())?;
+        let t = Tensor::<u8, 1>::from_shape_slice([4], &data)?;
         let res = sum_elements(&t, 0);
 
         assert!(res.is_ok_and(|v| v.as_slice() == [4]));
@@ -684,7 +682,7 @@ mod tests {
     #[test]
     fn test_sum_2d() -> Result<(), TensorOpsError> {
         let data: [u8; 6] = [1, 2, 3, 4, 5, 6];
-        let t = Tensor::<u8, 2>::from_shape_slice([2, 3], &data, kornia_tensor::host_alloc())?;
+        let t = Tensor::<u8, 2>::from_shape_slice([2, 3], &data)?;
         let t_f32 = t.cast::<f32>();
         let t_i32 = t.cast::<i32>();
 
@@ -707,7 +705,7 @@ mod tests {
     #[test]
     fn test_sum_3d() -> Result<(), TensorOpsError> {
         let data: [u8; 24] = [1; 24];
-        let t = Tensor::<u8, 3>::from_shape_slice([2, 3, 4], &data, kornia_tensor::host_alloc())?;
+        let t = Tensor::<u8, 3>::from_shape_slice([2, 3, 4], &data)?;
         let t_f32 = t.cast::<f32>();
         let t_i32 = t.cast::<i32>();
 
@@ -735,7 +733,7 @@ mod tests {
     #[test]
     fn test_mul_scalar_f32() -> Result<(), TensorError> {
         let data: [f32; 5] = [1.0, 2.0, 3.0, 4.0, 5.0];
-        let t = Tensor::<f32, 1>::from_shape_slice([5], &data, kornia_tensor::host_alloc())?;
+        let t = Tensor::<f32, 1>::from_shape_slice([5], &data)?;
         let result = mul_scalar(&t, 2.0);
         assert_eq!(result.as_slice(), &[2.0, 4.0, 6.0, 8.0, 10.0]);
         Ok(())
@@ -744,7 +742,7 @@ mod tests {
     #[test]
     fn test_powf_f32() -> Result<(), TensorError> {
         let data: [f32; 5] = [1.0, 2.0, 3.0, 4.0, 5.0];
-        let t = Tensor::<f32, 1>::from_shape_slice([5], &data, kornia_tensor::host_alloc())?;
+        let t = Tensor::<f32, 1>::from_shape_slice([5], &data)?;
         let result = powf(&t, 2.0);
         let expected: Vec<f32> = data.iter().map(|&x| x * x).collect();
         assert_eq!(result.as_slice(), expected.as_slice());
@@ -755,10 +753,8 @@ mod tests {
     fn test_min_f32() -> Result<(), TensorError> {
         let data_a: [f32; 5] = [3.0, 1.0, 4.0, 1.0, 5.0];
         let data_b: [f32; 5] = [2.0, 7.0, 1.0, 8.0, 2.0];
-        let tensor_a =
-            Tensor::<f32, 1>::from_shape_slice([5], &data_a, kornia_tensor::host_alloc())?;
-        let tensor_b =
-            Tensor::<f32, 1>::from_shape_slice([5], &data_b, kornia_tensor::host_alloc())?;
+        let tensor_a = Tensor::<f32, 1>::from_shape_slice([5], &data_a)?;
+        let tensor_b = Tensor::<f32, 1>::from_shape_slice([5], &data_b)?;
         let result = min(&tensor_a, &tensor_b).unwrap();
         let expected = vec![2.0, 1.0, 1.0, 1.0, 2.0];
         assert_eq!(result.as_slice(), expected.as_slice());
@@ -768,7 +764,7 @@ mod tests {
     #[test]
     fn powi_and_abs() -> Result<(), TensorError> {
         let data: Vec<f32> = vec![-1.0, 2.0, -3.0, 4.0];
-        let t = Tensor::<f32, 1>::from_shape_vec([4], data, kornia_tensor::host_alloc())?;
+        let t = Tensor::<f32, 1>::from_shape_vec([4], data)?;
 
         let t_powi = powi(&t, 2);
         assert_eq!(t_powi.as_slice(), &[1.0, 4.0, 9.0, 16.0]);
@@ -782,9 +778,9 @@ mod tests {
     #[test]
     fn add_1d() -> Result<(), TensorOpsError> {
         let data1: Vec<u8> = vec![1, 2, 3, 4];
-        let t1 = Tensor::<u8, 1>::from_shape_vec([4], data1, kornia_tensor::host_alloc())?;
+        let t1 = Tensor::<u8, 1>::from_shape_vec([4], data1)?;
         let data2: Vec<u8> = vec![1, 2, 3, 4];
-        let t2 = Tensor::<u8, 1>::from_shape_vec([4], data2, kornia_tensor::host_alloc())?;
+        let t2 = Tensor::<u8, 1>::from_shape_vec([4], data2)?;
         let t3 = add(&t1, &t2)?;
         assert_eq!(t3.as_slice(), vec![2, 4, 6, 8]);
         Ok(())
@@ -793,9 +789,9 @@ mod tests {
     #[test]
     fn add_2d() -> Result<(), TensorOpsError> {
         let data1: Vec<u8> = vec![1, 2, 3, 4];
-        let t1 = Tensor::<u8, 2>::from_shape_vec([2, 2], data1, kornia_tensor::host_alloc())?;
+        let t1 = Tensor::<u8, 2>::from_shape_vec([2, 2], data1)?;
         let data2: Vec<u8> = vec![1, 2, 3, 4];
-        let t2 = Tensor::<u8, 2>::from_shape_vec([2, 2], data2, kornia_tensor::host_alloc())?;
+        let t2 = Tensor::<u8, 2>::from_shape_vec([2, 2], data2)?;
         let t3 = add(&t1, &t2)?;
         assert_eq!(t3.as_slice(), vec![2, 4, 6, 8]);
         Ok(())
@@ -804,9 +800,9 @@ mod tests {
     #[test]
     fn add_3d() -> Result<(), TensorOpsError> {
         let data1: Vec<u8> = vec![1, 2, 3, 4, 5, 6];
-        let t1 = Tensor::<u8, 3>::from_shape_vec([2, 1, 3], data1, kornia_tensor::host_alloc())?;
+        let t1 = Tensor::<u8, 3>::from_shape_vec([2, 1, 3], data1)?;
         let data2: Vec<u8> = vec![1, 2, 3, 4, 5, 6];
-        let t2 = Tensor::<u8, 3>::from_shape_vec([2, 1, 3], data2, kornia_tensor::host_alloc())?;
+        let t2 = Tensor::<u8, 3>::from_shape_vec([2, 1, 3], data2)?;
         let t3 = add(&t1, &t2)?;
         assert_eq!(t3.as_slice(), vec![2, 4, 6, 8, 10, 12]);
         Ok(())
@@ -815,9 +811,9 @@ mod tests {
     #[test]
     fn sub_1d() -> Result<(), TensorOpsError> {
         let data1: Vec<u8> = vec![1, 2, 3, 4];
-        let t1 = Tensor::<u8, 1>::from_shape_vec([4], data1, kornia_tensor::host_alloc())?;
+        let t1 = Tensor::<u8, 1>::from_shape_vec([4], data1)?;
         let data2: Vec<u8> = vec![1, 2, 3, 4];
-        let t2 = Tensor::<u8, 1>::from_shape_vec([4], data2, kornia_tensor::host_alloc())?;
+        let t2 = Tensor::<u8, 1>::from_shape_vec([4], data2)?;
         let t3 = sub(&t1, &t2)?;
         assert_eq!(t3.as_slice(), vec![0, 0, 0, 0]);
         Ok(())
@@ -826,9 +822,9 @@ mod tests {
     #[test]
     fn sub_2d() -> Result<(), TensorOpsError> {
         let data1: Vec<u8> = vec![1, 2, 3, 4];
-        let t1 = Tensor::<u8, 2>::from_shape_vec([2, 2], data1, kornia_tensor::host_alloc())?;
+        let t1 = Tensor::<u8, 2>::from_shape_vec([2, 2], data1)?;
         let data2: Vec<u8> = vec![1, 2, 3, 4];
-        let t2 = Tensor::<u8, 2>::from_shape_vec([2, 2], data2, kornia_tensor::host_alloc())?;
+        let t2 = Tensor::<u8, 2>::from_shape_vec([2, 2], data2)?;
         let t3 = sub(&t1, &t2)?;
         assert_eq!(t3.as_slice(), vec![0, 0, 0, 0]);
         Ok(())
@@ -837,9 +833,9 @@ mod tests {
     #[test]
     fn div_1d() -> Result<(), TensorOpsError> {
         let data1: Vec<u8> = vec![1, 2, 3, 4];
-        let t1 = Tensor::<u8, 1>::from_shape_vec([4], data1, kornia_tensor::host_alloc())?;
+        let t1 = Tensor::<u8, 1>::from_shape_vec([4], data1)?;
         let data2: Vec<u8> = vec![1, 2, 3, 4];
-        let t2 = Tensor::<u8, 1>::from_shape_vec([4], data2, kornia_tensor::host_alloc())?;
+        let t2 = Tensor::<u8, 1>::from_shape_vec([4], data2)?;
         let t3 = div(&t1, &t2)?;
         assert_eq!(t3.as_slice(), vec![1, 1, 1, 1]);
         Ok(())
@@ -848,9 +844,9 @@ mod tests {
     #[test]
     fn div_2d() -> Result<(), TensorOpsError> {
         let data1: Vec<u8> = vec![1, 2, 3, 4];
-        let t1 = Tensor::<u8, 2>::from_shape_vec([2, 2], data1, kornia_tensor::host_alloc())?;
+        let t1 = Tensor::<u8, 2>::from_shape_vec([2, 2], data1)?;
         let data2: Vec<u8> = vec![1, 2, 3, 4];
-        let t2 = Tensor::<u8, 2>::from_shape_vec([2, 2], data2, kornia_tensor::host_alloc())?;
+        let t2 = Tensor::<u8, 2>::from_shape_vec([2, 2], data2)?;
         let t3 = div(&t1, &t2)?;
         assert_eq!(t3.as_slice(), vec![1, 1, 1, 1]);
         Ok(())
@@ -859,9 +855,9 @@ mod tests {
     #[test]
     fn mul_1d() -> Result<(), TensorOpsError> {
         let data1: Vec<u8> = vec![1, 2, 3, 4];
-        let t1 = Tensor::<u8, 1>::from_shape_vec([4], data1, kornia_tensor::host_alloc())?;
+        let t1 = Tensor::<u8, 1>::from_shape_vec([4], data1)?;
         let data2: Vec<u8> = vec![1, 2, 3, 4];
-        let t2 = Tensor::<u8, 1>::from_shape_vec([4], data2, kornia_tensor::host_alloc())?;
+        let t2 = Tensor::<u8, 1>::from_shape_vec([4], data2)?;
         let t3 = mul(&t1, &t2)?;
         assert_eq!(t3.as_slice(), vec![1, 4, 9, 16]);
         Ok(())
@@ -870,9 +866,9 @@ mod tests {
     #[test]
     fn mul_2d() -> Result<(), TensorOpsError> {
         let data1: Vec<u8> = vec![1, 2, 3, 4];
-        let t1 = Tensor::<u8, 2>::from_shape_vec([2, 2], data1, kornia_tensor::host_alloc())?;
+        let t1 = Tensor::<u8, 2>::from_shape_vec([2, 2], data1)?;
         let data2: Vec<u8> = vec![1, 2, 3, 4];
-        let t2 = Tensor::<u8, 2>::from_shape_vec([2, 2], data2, kornia_tensor::host_alloc())?;
+        let t2 = Tensor::<u8, 2>::from_shape_vec([2, 2], data2)?;
         let t3 = mul(&t1, &t2)?;
         assert_eq!(t3.as_slice(), vec![1, 4, 9, 16]);
         Ok(())
@@ -880,10 +876,8 @@ mod tests {
 
     #[test]
     fn test_dot_product1_f32() -> Result<(), TensorOpsError> {
-        let a_f32 =
-            Tensor::<f32, 1>::from_shape_slice([3], &[1.0, 2.0, 3.0], kornia_tensor::host_alloc())?;
-        let b_f32 =
-            Tensor::<f32, 1>::from_shape_slice([3], &[4.0, 5.0, 6.0], kornia_tensor::host_alloc())?;
+        let a_f32 = Tensor::<f32, 1>::from_shape_slice([3], &[1.0, 2.0, 3.0])?;
+        let b_f32 = Tensor::<f32, 1>::from_shape_slice([3], &[4.0, 5.0, 6.0])?;
         let result = dot_product1(&a_f32, &b_f32)?;
         assert_eq!(result, 32.0);
         Ok(())
@@ -891,8 +885,8 @@ mod tests {
 
     #[test]
     fn test_dot_product1_u8() -> Result<(), TensorOpsError> {
-        let a_u8 = Tensor::<u8, 1>::from_shape_slice([3], &[1, 2, 3], kornia_tensor::host_alloc())?;
-        let b_u8 = Tensor::<u8, 1>::from_shape_slice([3], &[4, 5, 6], kornia_tensor::host_alloc())?;
+        let a_u8 = Tensor::<u8, 1>::from_shape_slice([3], &[1, 2, 3])?;
+        let b_u8 = Tensor::<u8, 1>::from_shape_slice([3], &[4, 5, 6])?;
         let result = dot_product1(&a_u8, &b_u8)?;
         assert_eq!(result, 32);
         Ok(())
@@ -900,10 +894,8 @@ mod tests {
 
     #[test]
     fn test_cosine_similarity_orthogonal_vectors() -> Result<(), TensorOpsError> {
-        let a =
-            Tensor::<f32, 1>::from_shape_slice([3], &[1.0, 0.0, 0.0], kornia_tensor::host_alloc())?;
-        let b =
-            Tensor::<f32, 1>::from_shape_slice([3], &[0.0, 1.0, 0.0], kornia_tensor::host_alloc())?;
+        let a = Tensor::<f32, 1>::from_shape_slice([3], &[1.0, 0.0, 0.0])?;
+        let b = Tensor::<f32, 1>::from_shape_slice([3], &[0.0, 1.0, 0.0])?;
         let result = cosine_similarity(&a, &b)?;
         assert_eq!(result, 0.0);
         Ok(())
@@ -911,13 +903,8 @@ mod tests {
 
     #[test]
     fn test_cosine_similarity_opposite_vectors() -> Result<(), TensorOpsError> {
-        let e =
-            Tensor::<f32, 1>::from_shape_slice([3], &[1.0, 2.0, 3.0], kornia_tensor::host_alloc())?;
-        let f = Tensor::<f32, 1>::from_shape_slice(
-            [3],
-            &[-1.0, -2.0, -3.0],
-            kornia_tensor::host_alloc(),
-        )?;
+        let e = Tensor::<f32, 1>::from_shape_slice([3], &[1.0, 2.0, 3.0])?;
+        let f = Tensor::<f32, 1>::from_shape_slice([3], &[-1.0, -2.0, -3.0])?;
         let result = cosine_similarity(&e, &f)?;
         assert!((result - -1.0).abs() < 1e-6);
         Ok(())
@@ -925,10 +912,8 @@ mod tests {
 
     #[test]
     fn test_cosine_similarity_zero_vector() -> Result<(), TensorOpsError> {
-        let zero =
-            Tensor::<f32, 1>::from_shape_slice([3], &[0.0, 0.0, 0.0], kornia_tensor::host_alloc())?;
-        let g =
-            Tensor::<f32, 1>::from_shape_slice([3], &[1.0, 2.0, 3.0], kornia_tensor::host_alloc())?;
+        let zero = Tensor::<f32, 1>::from_shape_slice([3], &[0.0, 0.0, 0.0])?;
+        let g = Tensor::<f32, 1>::from_shape_slice([3], &[1.0, 2.0, 3.0])?;
         let result = cosine_similarity(&zero, &g)?;
         assert_eq!(result, 0.0);
         Ok(())
@@ -936,13 +921,8 @@ mod tests {
 
     #[test]
     fn test_cosine_similarity_zero_dot_product() -> Result<(), TensorOpsError> {
-        let h =
-            Tensor::<f32, 1>::from_shape_slice([3], &[1.0, 1.0, 0.0], kornia_tensor::host_alloc())?;
-        let i = Tensor::<f32, 1>::from_shape_slice(
-            [3],
-            &[-1.0, 1.0, 0.0],
-            kornia_tensor::host_alloc(),
-        )?;
+        let h = Tensor::<f32, 1>::from_shape_slice([3], &[1.0, 1.0, 0.0])?;
+        let i = Tensor::<f32, 1>::from_shape_slice([3], &[-1.0, 1.0, 0.0])?;
         let result = cosine_similarity(&h, &i)?;
         assert!(result.abs() < 1e-6);
         Ok(())
@@ -950,27 +930,18 @@ mod tests {
 
     #[test]
     fn test_cosine_distance() -> Result<(), TensorOpsError> {
-        let a =
-            Tensor::<f32, 1>::from_shape_slice([3], &[1.0, 2.0, 3.0], kornia_tensor::host_alloc())?;
-        let b =
-            Tensor::<f32, 1>::from_shape_slice([3], &[1.0, 2.0, 3.0], kornia_tensor::host_alloc())?;
+        let a = Tensor::<f32, 1>::from_shape_slice([3], &[1.0, 2.0, 3.0])?;
+        let b = Tensor::<f32, 1>::from_shape_slice([3], &[1.0, 2.0, 3.0])?;
         let result = cosine_distance(&a, &b)?;
         assert!(result.abs() < 1e-6);
 
-        let c =
-            Tensor::<f32, 1>::from_shape_slice([3], &[1.0, 0.0, 0.0], kornia_tensor::host_alloc())?;
-        let d =
-            Tensor::<f32, 1>::from_shape_slice([3], &[0.0, 1.0, 0.0], kornia_tensor::host_alloc())?;
+        let c = Tensor::<f32, 1>::from_shape_slice([3], &[1.0, 0.0, 0.0])?;
+        let d = Tensor::<f32, 1>::from_shape_slice([3], &[0.0, 1.0, 0.0])?;
         let result = cosine_distance(&c, &d)?;
         assert!((result - 1.0).abs() < 1e-6);
 
-        let e =
-            Tensor::<f32, 1>::from_shape_slice([3], &[1.0, 2.0, 3.0], kornia_tensor::host_alloc())?;
-        let f = Tensor::<f32, 1>::from_shape_slice(
-            [3],
-            &[-1.0, -2.0, -3.0],
-            kornia_tensor::host_alloc(),
-        )?;
+        let e = Tensor::<f32, 1>::from_shape_slice([3], &[1.0, 2.0, 3.0])?;
+        let f = Tensor::<f32, 1>::from_shape_slice([3], &[-1.0, -2.0, -3.0])?;
         let result = cosine_distance(&e, &f)?;
         assert!((result - 2.0).abs() < 1e-6);
 

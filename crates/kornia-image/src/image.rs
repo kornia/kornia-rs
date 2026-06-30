@@ -1,5 +1,5 @@
 use crate::error::ImageError;
-use kornia_tensor::{AllocHandle, Tensor, Tensor2, Tensor3};
+use kornia_tensor::{host_alloc, AllocHandle, Tensor, Tensor2, Tensor3};
 use rayon::prelude::*;
 
 /// Image size in pixels
@@ -160,7 +160,6 @@ impl<T, const C: usize> Image<T, C> {
     ///
     /// * `size` - The size of the image in pixels.
     /// * `data` - The pixel data of the image.
-    /// * `alloc` - The allocator of the image
     ///
     /// # Returns
     ///
@@ -174,7 +173,6 @@ impl<T, const C: usize> Image<T, C> {
     ///
     /// ```
     /// use kornia_image::{Image, ImageSize};
-    /// use kornia_tensor::host_alloc;
     ///
     /// let image = Image::<u8, 3>::new(
     ///    ImageSize {
@@ -182,14 +180,18 @@ impl<T, const C: usize> Image<T, C> {
     ///      height: 20,
     ///  },
     /// vec![0u8; 10 * 20 * 3],
-    /// host_alloc()
     /// ).unwrap();
     ///
     /// assert_eq!(image.size().width, 10);
     /// assert_eq!(image.size().height, 20);
     /// assert_eq!(image.num_channels(), 3);
     /// ```
-    pub fn new(size: ImageSize, data: Vec<T>, alloc: AllocHandle) -> Result<Self, ImageError> {
+    pub fn new(size: ImageSize, data: Vec<T>) -> Result<Self, ImageError> {
+        Self::new_in(size, data, host_alloc())
+    }
+
+    /// Like [`new`](Self::new) but with an explicit allocator handle.
+    pub fn new_in(size: ImageSize, data: Vec<T>, alloc: AllocHandle) -> Result<Self, ImageError> {
         // check if the data length matches the image size
         if data.len() != size.width * size.height * C {
             return Err(ImageError::InvalidChannelShape(
@@ -199,7 +201,7 @@ impl<T, const C: usize> Image<T, C> {
         }
 
         // allocate the image data
-        Ok(Self(Tensor3::from_shape_vec(
+        Ok(Self(Tensor3::from_shape_vec_in(
             [size.height, size.width, C],
             data,
             alloc,
@@ -212,7 +214,6 @@ impl<T, const C: usize> Image<T, C> {
     ///
     /// * `size` - The size of the image in pixels.
     /// * `val` - The default value of the pixel data.
-    /// * `alloc` - The allocator of the image
     ///
     /// # Returns
     ///
@@ -226,24 +227,31 @@ impl<T, const C: usize> Image<T, C> {
     ///
     /// ```
     /// use kornia_image::{Image, ImageSize};
-    /// use kornia_tensor::host_alloc;
     ///
     /// let image = Image::<u8, 3>::from_size_val(
     ///   ImageSize {
     ///     width: 10,
     ///    height: 20,
-    /// }, 0u8, host_alloc()).unwrap();
+    /// }, 0u8).unwrap();
     ///
     /// assert_eq!(image.size().width, 10);
     /// assert_eq!(image.size().height, 20);
     /// assert_eq!(image.num_channels(), 3);
     /// ```
-    pub fn from_size_val(size: ImageSize, val: T, alloc: AllocHandle) -> Result<Self, ImageError>
+    pub fn from_size_val(size: ImageSize, val: T) -> Result<Self, ImageError>
+    where
+        T: Clone,
+    {
+        Self::from_size_val_in(size, val, host_alloc())
+    }
+
+    /// Like [`from_size_val`](Self::from_size_val) but with an explicit allocator handle.
+    pub fn from_size_val_in(size: ImageSize, val: T, alloc: AllocHandle) -> Result<Self, ImageError>
     where
         T: Clone,
     {
         let data = vec![val; size.width * size.height * C];
-        let image = Image::new(size, data, alloc)?;
+        let image = Image::new_in(size, data, alloc)?;
 
         Ok(image)
     }
@@ -292,7 +300,15 @@ impl<T, const C: usize> Image<T, C> {
     ///
     /// Returns an error if the length of the data slice doesn't match the image dimensions,
     /// or if there's an issue creating the tensor or image.
-    pub fn from_size_slice(
+    pub fn from_size_slice(size: ImageSize, data: &[T]) -> Result<Self, ImageError>
+    where
+        T: Clone,
+    {
+        Self::from_size_slice_in(size, data, host_alloc())
+    }
+
+    /// Like [`from_size_slice`](Self::from_size_slice) but with an explicit allocator handle.
+    pub fn from_size_slice_in(
         size: ImageSize,
         data: &[T],
         alloc: AllocHandle,
@@ -300,7 +316,7 @@ impl<T, const C: usize> Image<T, C> {
     where
         T: Clone,
     {
-        Image::new(size, data.to_vec(), alloc)
+        Image::new_in(size, data.to_vec(), alloc)
     }
 
     /// Map the pixel data of the image to a different type.
@@ -315,7 +331,7 @@ impl<T, const C: usize> Image<T, C> {
     pub fn map<U>(&self, f: impl Fn(&T) -> U) -> Result<Image<U, C>, ImageError> {
         let data = self.as_slice().iter().map(f).collect::<Vec<U>>();
         let alloc = self.storage.alloc();
-        Image::<U, C>::new(self.size(), data, alloc.clone())
+        Image::<U, C>::new_in(self.size(), data, alloc.clone())
     }
 
     /// Cast the pixel data of the image to a different type.
@@ -341,12 +357,10 @@ impl<T, const C: usize> Image<T, C> {
     ///
     /// ```
     /// use kornia_image::{Image, ImageSize};
-    /// use kornia_tensor::host_alloc;
     ///
     /// let image_u8 = Image::<u8, 3>::new(
     ///     ImageSize { width: 2, height: 1 },
     ///     vec![0u8, 128, 255, 10, 20, 30],
-    ///     host_alloc(),
     /// ).unwrap();
     ///
     /// let image_f32 = image_u8.cast::<f32>().unwrap();
@@ -364,7 +378,7 @@ impl<T, const C: usize> Image<T, C> {
             .collect::<Result<Vec<U>, ImageError>>()?;
 
         let alloc = self.storage.alloc().clone();
-        let tensor = Tensor3::from_shape_vec(self.0.shape, data, alloc)?;
+        let tensor = Tensor3::from_shape_vec_in(self.0.shape, data, alloc)?;
         Ok(Image(tensor))
     }
 
@@ -398,7 +412,7 @@ impl<T, const C: usize> Image<T, C> {
 
         let alloc = self.storage.alloc();
 
-        Image::new(self.size(), channel_data, alloc.clone())
+        Image::new_in(self.size(), channel_data, alloc.clone())
     }
 
     /// Split the image into its channels.
@@ -411,15 +425,13 @@ impl<T, const C: usize> Image<T, C> {
     ///
     /// ```
     /// use kornia_image::{Image, ImageSize};
-    /// use kornia_tensor::host_alloc;
     ///
     /// let image = Image::<f32, 2>::from_size_val(
     ///   ImageSize {
     ///    width: 10,
     ///   height: 20,
     /// },
-    /// 0.0f32,
-    /// host_alloc()).unwrap();
+    /// 0.0f32).unwrap();
     ///
     /// let channels = image.split_channels().unwrap();
     /// assert_eq!(channels.len(), 2);
@@ -488,7 +500,6 @@ impl<T, const C: usize> Image<T, C> {
     ///
     /// ```
     /// use kornia_image::{Image, ImageSize};
-    /// use kornia_tensor::host_alloc;
     ///
     /// let data = vec![0u8, 0, 255, 0, 0, 255];
     ///
@@ -498,7 +509,6 @@ impl<T, const C: usize> Image<T, C> {
     ///   width: 1,
     /// },
     /// data,
-    /// host_alloc()
     /// ).unwrap();
     ///
     /// let image_f32 = image_u8.cast_and_scale::<f32>(1. / 255.0).unwrap();
@@ -528,7 +538,7 @@ impl<T, const C: usize> Image<T, C> {
             })?;
 
         let alloc = self.storage.alloc();
-        Image::new(self.size(), casted_data, alloc.clone())
+        Image::new_in(self.size(), casted_data, alloc.clone())
     }
 
     /// Cast the pixel data to a different type and scale it.
@@ -562,7 +572,7 @@ impl<T, const C: usize> Image<T, C> {
             })?;
 
         let alloc = self.storage.alloc();
-        Image::new(self.size(), casted_data, alloc.clone())
+        Image::new_in(self.size(), casted_data, alloc.clone())
     }
 
     /// Get the pixel data of the image.
@@ -660,7 +670,7 @@ impl<T> TryFrom<Tensor2<T>> for Image<T, 1> {
             width: value.shape[1],
             height: value.shape[0],
         };
-        Self::new(size, value.storage.into_vec(), alloc)
+        Self::new_in(size, value.storage.into_vec(), alloc)
     }
 }
 
@@ -726,7 +736,6 @@ mod tests {
                 height: 20,
             },
             vec![0u8; 10 * 20 * 3],
-            host_alloc(),
         )?;
         assert_eq!(image.size().width, 10);
         assert_eq!(image.size().height, 20);
@@ -743,7 +752,6 @@ mod tests {
                 width: 2,
             },
             vec![0.0; 3 * 2 * 3],
-            host_alloc(),
         )?;
         assert_eq!(image.size().width, 2);
         assert_eq!(image.size().height, 3);
@@ -760,7 +768,6 @@ mod tests {
                 width: 0,
             },
             vec![0.0; 0],
-            host_alloc(),
         );
         assert!(
             image.is_ok(),
@@ -779,7 +786,6 @@ mod tests {
                 width: 1,
             },
             data,
-            host_alloc(),
         )?;
         assert_eq!(image_u8.get([1, 0, 2]), Some(&5u8));
 
@@ -797,7 +803,6 @@ mod tests {
                 width: 3,
             },
             vec![0f32; 2 * 3 * 4],
-            host_alloc(),
         )?;
         assert_eq!(image.size().width, 3);
         assert_eq!(image.size().height, 2);
@@ -814,7 +819,6 @@ mod tests {
                 width: 1,
             },
             vec![0., 1., 2., 3., 4., 5.],
-            host_alloc(),
         )?;
 
         let channel = image.channel(2)?;
@@ -831,7 +835,6 @@ mod tests {
                 width: 1,
             },
             vec![0., 1., 2., 3., 4., 5.],
-            host_alloc(),
         )
         .unwrap();
         let channels = image.split_channels()?;
@@ -852,7 +855,6 @@ mod tests {
                 width: 1,
             },
             data,
-            host_alloc(),
         )?;
         let image_f32 = image_u8.cast_and_scale::<f32>(1. / 255.0)?;
         assert_eq!(image_f32.get([1, 0, 2]), Some(&1.0f32));
@@ -869,7 +871,6 @@ mod tests {
                 width: 1,
             },
             data,
-            host_alloc(),
         )?;
         let image_f32 = image_u8.cast_and_scale::<f32>(1. / 255.0)?;
         assert_eq!(image_f32.get([1, 0, 2]), Some(&1.0f32));
@@ -880,7 +881,7 @@ mod tests {
     #[test]
     fn test_image_from_tensor() -> Result<(), ImageError> {
         let data = vec![0u8, 1, 2, 3, 4, 5];
-        let tensor = Tensor::<u8, 2>::from_shape_vec([2, 3], data, host_alloc())?;
+        let tensor = Tensor::<u8, 2>::from_shape_vec([2, 3], data)?;
 
         let image = Image::<u8, 1>::try_from(tensor.clone())?;
         assert_eq!(image.size().width, 3);
@@ -897,8 +898,7 @@ mod tests {
 
     #[test]
     fn test_image_from_tensor_3d() -> Result<(), ImageError> {
-        let tensor =
-            Tensor::<u8, 3>::from_shape_vec([2, 3, 4], vec![0u8; 2 * 3 * 4], host_alloc())?;
+        let tensor = Tensor::<u8, 3>::from_shape_vec([2, 3, 4], vec![0u8; 2 * 3 * 4])?;
 
         let image = Image::<u8, 4>::try_from(tensor.clone())?;
         assert_eq!(image.size().width, 3);
@@ -934,7 +934,6 @@ mod tests {
                 width: 1,
             },
             vec![1, 2, 5, 19, 255, 128],
-            host_alloc(),
         )?;
         assert_eq!(image.get_pixel(0, 0, 0)?, &1);
         assert_eq!(image.get_pixel(0, 0, 1)?, &2);
@@ -953,7 +952,6 @@ mod tests {
                 width: 1,
             },
             vec![1, 2, 5, 19, 255, 128],
-            host_alloc(),
         )?;
 
         image.set_pixel(0, 0, 0, 128)?;
@@ -973,7 +971,6 @@ mod tests {
                 width: 1,
             },
             vec![0, 128],
-            host_alloc(),
         )?;
 
         let image_f32 = image_u8.map(|x| (x + 2) as f32)?;
@@ -997,7 +994,6 @@ mod tests {
                 width: 1,
             },
             data_f32.clone(),
-            host_alloc(),
         )?;
 
         let image_u8 = image_f32.cast::<u8>()?;
@@ -1021,7 +1017,6 @@ mod tests {
                 width: 1,
             },
             vec![f32::MAX],
-            host_alloc(),
         )?;
 
         let result = image_f32.cast::<u8>();
@@ -1043,7 +1038,6 @@ mod tests {
                 width: 1,
             },
             data.clone(),
-            host_alloc(),
         )?;
 
         let image_f32 = image_u8.cast::<f32>()?;

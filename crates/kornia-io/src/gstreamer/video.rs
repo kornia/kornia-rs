@@ -434,11 +434,7 @@ mod tests {
             VideoWriter::new(&file_path, VideoCodec::H264, ImageFormat::Rgb8, 30, size)?;
         writer.start()?;
 
-        let img = Image::<u8, 3>::new(
-            size,
-            vec![0; size.width * size.height * 3],
-            kornia_tensor::host_alloc(),
-        )?;
+        let img = Image::<u8, 3>::new(size, vec![0; size.width * size.height * 3])?;
         writer.write(&img)?;
         writer.close()?;
 
@@ -464,11 +460,7 @@ mod tests {
             VideoWriter::new(&file_path, VideoCodec::H264, ImageFormat::Mono8, 30, size)?;
         writer.start()?;
 
-        let img = Image::<u8, 1>::new(
-            size,
-            vec![0; size.width * size.height],
-            kornia_tensor::host_alloc(),
-        )?;
+        let img = Image::<u8, 1>::new(size, vec![0; size.width * size.height])?;
         writer.write(&img)?;
         writer.close()?;
 

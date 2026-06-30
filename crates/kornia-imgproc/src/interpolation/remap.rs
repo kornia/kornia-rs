@@ -60,7 +60,7 @@ pub fn remap<const C: usize>(
 #[cfg(test)]
 mod tests {
     use kornia_image::{Image, ImageError, ImageSize};
-    use kornia_tensor::{host_alloc, Tensor2};
+    use kornia_tensor::Tensor2;
 
     #[test]
     fn remap_unsupported_interpolation() -> Result<(), ImageError> {
@@ -70,17 +70,15 @@ mod tests {
                 height: 2,
             },
             vec![0f32; 4],
-            host_alloc(),
         )?;
-        let map_x = Tensor2::from_shape_vec([2, 2], vec![0.0, 1.0, 0.0, 1.0], host_alloc())?;
-        let map_y = Tensor2::from_shape_vec([2, 2], vec![0.0, 0.0, 1.0, 1.0], host_alloc())?;
+        let map_x = Tensor2::from_shape_vec([2, 2], vec![0.0, 1.0, 0.0, 1.0])?;
+        let map_y = Tensor2::from_shape_vec([2, 2], vec![0.0, 0.0, 1.0, 1.0])?;
         let mut dst = Image::<_, 1>::from_size_val(
             ImageSize {
                 width: 2,
                 height: 2,
             },
             0.0,
-            host_alloc(),
         )?;
         let err = super::remap(
             &image,
@@ -101,13 +99,12 @@ mod tests {
                 height: 3,
             },
             vec![0f32, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
-            host_alloc(),
         )?;
 
         let new_size = [2, 2];
 
-        let map_x = Tensor2::from_shape_vec(new_size, vec![0.0, 2.0, 0.0, 2.0], host_alloc())?;
-        let map_y = Tensor2::from_shape_vec(new_size, vec![0.0, 0.0, 2.0, 2.0], host_alloc())?;
+        let map_x = Tensor2::from_shape_vec(new_size, vec![0.0, 2.0, 0.0, 2.0])?;
+        let map_y = Tensor2::from_shape_vec(new_size, vec![0.0, 0.0, 2.0, 2.0])?;
 
         let expected = Image::<_, 1>::new(
             ImageSize {
@@ -115,11 +112,9 @@ mod tests {
                 height: 2,
             },
             vec![0.0, 2.0, 6.0, 8.0],
-            host_alloc(),
         )?;
 
-        let mut image_transformed =
-            Image::<_, 1>::from_size_val(new_size.into(), 0.0, host_alloc())?;
+        let mut image_transformed = Image::<_, 1>::from_size_val(new_size.into(), 0.0)?;
 
         super::remap(
             &image,

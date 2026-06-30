@@ -384,7 +384,7 @@ pub(crate) fn numpy_to_f32_image<const C: usize>(
 ) -> PyResult<Image<f32, C>> {
     let src = unsafe { numpy_as_image::<C>(py, image)? };
     let f32_data: Vec<f32> = src.as_slice().iter().map(|&v| v as f32).collect();
-    Image::new(src.size(), f32_data, kornia_image::allocator::host_alloc()).map_err(to_pyerr)
+    Image::new(src.size(), f32_data).map_err(to_pyerr)
 }
 
 /// Get raw u8 data and dimensions from a PyArray3.

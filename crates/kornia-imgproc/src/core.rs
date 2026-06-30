@@ -24,7 +24,6 @@ use rayon::{
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
-/// use kornia_tensor::host_alloc;
 /// use kornia_imgproc::core::std_mean;
 ///
 /// let image = Image::<u8, 3>::new(
@@ -33,7 +32,6 @@ use rayon::{
 ///      height: 2,
 ///  },
 /// vec![0, 1, 2, 253, 254, 255, 128, 129, 130, 64, 65, 66],
-/// host_alloc()
 /// ).unwrap();
 ///
 /// let (std, mean) = std_mean(&image);
@@ -88,7 +86,6 @@ pub fn std_mean(image: &Image<u8, 3>) -> ([f64; 3], [f64; 3]) {
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
-/// use kornia_tensor::host_alloc;
 /// use kornia_imgproc::core::bitwise_and;
 ///
 /// let image = Image::<u8, 3>::new(
@@ -97,7 +94,6 @@ pub fn std_mean(image: &Image<u8, 3>) -> ([f64; 3], [f64; 3]) {
 ///        height: 2,
 ///    },
 ///    vec![0, 1, 2, 253, 254, 255, 128, 129, 130, 64, 65, 66],
-///    host_alloc()
 /// ).unwrap();
 ///
 /// let mask = Image::<u8, 1>::new(
@@ -106,10 +102,9 @@ pub fn std_mean(image: &Image<u8, 3>) -> ([f64; 3], [f64; 3]) {
 ///        height: 2,
 ///    },
 ///    vec![255, 0, 255, 0],
-///    host_alloc()
 /// ).unwrap();
 ///
-/// let mut output = Image::<u8, 3>::from_size_val(image.size(), 0, host_alloc()).unwrap();
+/// let mut output = Image::<u8, 3>::from_size_val(image.size(), 0).unwrap();
 ///
 /// bitwise_and(&image, &image, &mut output, &mask).unwrap();
 ///
@@ -188,7 +183,6 @@ pub fn bitwise_and<const C: usize>(
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
-/// use kornia_tensor::host_alloc;
 /// use kornia_imgproc::core::hconcat;
 ///
 /// let image1 = Image::<u8, 3>::new(
@@ -197,7 +191,6 @@ pub fn bitwise_and<const C: usize>(
 ///         height: 2,
 ///     },
 ///     vec![0, 1, 2, 253, 254, 255, 128, 129, 130, 64, 65, 66],
-///     host_alloc()
 /// ).unwrap();
 ///
 /// let image2 = Image::<u8, 3>::new(
@@ -206,7 +199,6 @@ pub fn bitwise_and<const C: usize>(
 ///         height: 2,
 ///     },
 ///     vec![128, 129, 130, 64, 65, 66, 253, 254, 255, 0, 1, 2],
-///     host_alloc()
 /// ).unwrap();
 ///
 /// let mut output = Image::<u8, 3>::from_size_val(
@@ -215,7 +207,6 @@ pub fn bitwise_and<const C: usize>(
 ///         height: 2,
 ///     },
 ///     0,
-///     host_alloc()
 /// ).unwrap();
 ///
 /// hconcat(vec![&image1, &image2], &mut output).unwrap();
@@ -274,7 +265,6 @@ pub fn hconcat<const C: usize>(
 #[cfg(test)]
 mod tests {
     use kornia_image::{Image, ImageError, ImageSize};
-    use kornia_tensor::host_alloc;
 
     #[test]
     fn test_std_mean() -> Result<(), ImageError> {
@@ -284,7 +274,6 @@ mod tests {
                 height: 2,
             },
             vec![0, 1, 2, 253, 254, 255, 128, 129, 130, 64, 65, 66],
-            host_alloc(),
         )?;
 
         let std_expected = [93.5183805462862, 93.5183805462862, 93.5183805462862];
@@ -304,7 +293,6 @@ mod tests {
                 height: 2,
             },
             vec![0, 1, 2, 253, 254, 255, 128, 129, 130, 64, 65, 66],
-            host_alloc(),
         )?;
 
         let mask = Image::<u8, 1>::new(
@@ -313,10 +301,9 @@ mod tests {
                 height: 2,
             },
             vec![255, 0, 255, 0],
-            host_alloc(),
         )?;
 
-        let mut output = Image::<u8, 3>::from_size_val(image.size(), 0, host_alloc())?;
+        let mut output = Image::<u8, 3>::from_size_val(image.size(), 0)?;
 
         super::bitwise_and(&image, &image, &mut output, &mask)?;
 
@@ -344,8 +331,7 @@ mod tests {
                 253, 254, 255,
                 128, 129, 130,
                 64, 65, 66,
-            ],
-            host_alloc()
+            ]
         )?;
 
         #[rustfmt::skip]
@@ -359,8 +345,7 @@ mod tests {
                 64, 65, 66,
                 253, 254, 255,
                 0, 1, 2,
-            ],
-            host_alloc()
+            ]
         )?;
 
         #[rustfmt::skip]
@@ -377,7 +362,6 @@ mod tests {
                 height: 2,
             },
             0,
-            host_alloc(),
         )?;
 
         super::hconcat(vec![&image1, &image2], &mut output)?;

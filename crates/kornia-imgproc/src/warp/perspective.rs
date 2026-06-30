@@ -70,7 +70,6 @@ fn transform_point(x: f32, y: f32, m: &[f32; 9]) -> (f32, f32) {
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
-/// use kornia_tensor::host_alloc;
 /// use kornia_imgproc::interpolation::InterpolationMode;
 /// use kornia_imgproc::warp::warp_perspective;
 ///
@@ -80,7 +79,6 @@ fn transform_point(x: f32, y: f32, m: &[f32; 9]) -> (f32, f32) {
 ///     height: 5,
 ///   },
 ///   vec![0.0f32; 4 * 5],
-///   host_alloc()
 /// ).unwrap();
 ///
 /// let m = [1.0, 0.0, -1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0];
@@ -91,7 +89,6 @@ fn transform_point(x: f32, y: f32, m: &[f32; 9]) -> (f32, f32) {
 ///     height: 3,
 ///   },
 ///   0.0,
-///   host_alloc()
 /// ).unwrap();
 ///
 /// warp_perspective(&src, &mut dst, &m, InterpolationMode::Bilinear).unwrap();
@@ -310,7 +307,6 @@ pub fn warp_perspective_u8<const C: usize>(
 #[cfg(test)]
 mod tests {
     use kornia_image::{Image, ImageError, ImageSize};
-    use kornia_tensor::host_alloc;
 
     #[test]
     fn inverse_perspective_matrix() -> Result<(), ImageError> {
@@ -338,7 +334,6 @@ mod tests {
                 height: 5,
             },
             0.0f32,
-            host_alloc(),
         )?;
 
         // identity matrix
@@ -349,7 +344,7 @@ mod tests {
             height: 3,
         };
 
-        let mut image_transformed = Image::from_size_val(new_size, 0.0, host_alloc())?;
+        let mut image_transformed = Image::from_size_val(new_size, 0.0)?;
 
         super::warp_perspective(
             &image,
@@ -373,7 +368,6 @@ mod tests {
                 height: 2,
             },
             0.0,
-            host_alloc(),
         )?;
         let mut dst = Image::<f32, 1>::from_size_val(
             ImageSize {
@@ -381,7 +375,6 @@ mod tests {
                 height: 2,
             },
             0.0,
-            host_alloc(),
         )?;
         let m = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
         let err = super::warp_perspective(&src, &mut dst, &m, super::InterpolationMode::Lanczos);
@@ -397,7 +390,6 @@ mod tests {
                 height: 3,
             },
             vec![0.0f32, 1.0, 2.0, 3.0, 4.0, 5.0],
-            host_alloc(),
         )?;
 
         let image_expected = vec![1.0, 0.0, 3.0, 2.0, 5.0, 4.0];
@@ -410,7 +402,7 @@ mod tests {
             height: 3,
         };
 
-        let mut image_transformed = Image::<_, 1>::from_size_val(new_size, 0.0, host_alloc())?;
+        let mut image_transformed = Image::<_, 1>::from_size_val(new_size, 0.0)?;
 
         super::warp_perspective(
             &image,
@@ -439,7 +431,6 @@ mod tests {
                 0.0f32, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0,
                 15.0,
             ],
-            host_alloc(),
         )?;
 
         // resize matrix (from get_perspective_transform)
@@ -452,7 +443,7 @@ mod tests {
             height: 2,
         };
 
-        let mut image_transformed = Image::<_, 1>::from_size_val(new_size, 0.0, host_alloc())?;
+        let mut image_transformed = Image::<_, 1>::from_size_val(new_size, 0.0)?;
 
         super::warp_perspective(
             &image,
@@ -461,7 +452,7 @@ mod tests {
             super::InterpolationMode::Bilinear,
         )?;
 
-        let mut image_resized = Image::<_, 1>::from_size_val(new_size, 0.0, host_alloc())?;
+        let mut image_resized = Image::<_, 1>::from_size_val(new_size, 0.0)?;
 
         crate::resize::resize_native(
             &image,
@@ -490,7 +481,6 @@ mod tests {
                 0.0f32, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0,
                 15.0,
             ],
-            host_alloc(),
         )?;
 
         // shift left by 1 pixel
@@ -506,7 +496,7 @@ mod tests {
             height: image.cols(),
         };
 
-        let mut image_transformed = Image::<_, 1>::from_size_val(new_size, 0.0, host_alloc())?;
+        let mut image_transformed = Image::<_, 1>::from_size_val(new_size, 0.0)?;
 
         super::warp_perspective(
             &image,
@@ -540,7 +530,6 @@ mod tests {
                 height: h,
             },
             data,
-            host_alloc(),
         )?;
         let m = [1.02, 0.03, -5.0, -0.03, 1.01, 2.0, 0.00005, 0.00003, 1.0];
         let mut dst = Image::<u8, 3>::from_size_val(
@@ -549,7 +538,6 @@ mod tests {
                 height: h,
             },
             0u8,
-            host_alloc(),
         )?;
         super::warp_perspective_u8(&src, &mut dst, &m)?;
         // Sample a few deterministic pixels that must be non-zero (i.e.

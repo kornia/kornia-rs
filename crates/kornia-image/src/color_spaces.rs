@@ -276,21 +276,31 @@ macro_rules! define_color_space {
 
         impl $name {
             #[doc = concat!("Create ", stringify!($name), " image from size and data")]
-            pub fn from_size_vec(
+            pub fn from_size_vec(size: ImageSize, data: Vec<$type>) -> Result<Self, ImageError> {
+                Self::from_size_vec_in(size, data, kornia_tensor::host_alloc())
+            }
+
+            #[doc = concat!("Like `from_size_vec` but with an explicit allocator handle")]
+            pub fn from_size_vec_in(
                 size: ImageSize,
                 data: Vec<$type>,
                 alloc: AllocHandle,
             ) -> Result<Self, ImageError> {
-                Ok(Self(Image::new(size, data, alloc)?))
+                Ok(Self(Image::new_in(size, data, alloc)?))
             }
 
             #[doc = concat!("Create ", stringify!($name), " image from size with default value")]
-            pub fn from_size_val(
+            pub fn from_size_val(size: ImageSize, val: $type) -> Result<Self, ImageError> {
+                Self::from_size_val_in(size, val, kornia_tensor::host_alloc())
+            }
+
+            #[doc = concat!("Like `from_size_val` but with an explicit allocator handle")]
+            pub fn from_size_val_in(
                 size: ImageSize,
                 val: $type,
                 alloc: AllocHandle,
             ) -> Result<Self, ImageError> {
-                Ok(Self(Image::from_size_val(size, val, alloc)?))
+                Ok(Self(Image::from_size_val_in(size, val, alloc)?))
             }
 
             /// Unwrap into the underlying Image
@@ -825,7 +835,7 @@ impl Bayer8 {
         alloc: AllocHandle,
     ) -> Result<Self, ImageError> {
         Ok(Self {
-            image: Image::new(size, data, alloc)?,
+            image: Image::new_in(size, data, alloc)?,
             pattern,
         })
     }
@@ -874,7 +884,6 @@ mod tests {
 
     use crate::color_spaces::{Grayf32, Rgbf32};
     use crate::{ColorSpace as CS, DynImage, ImageSize};
-    use kornia_tensor::host_alloc;
     use std::convert::TryFrom;
 
     #[test]
@@ -883,7 +892,7 @@ mod tests {
             width: 2,
             height: 2,
         };
-        let rgb = Rgbf32::from_size_val(size, 0.25, host_alloc()).unwrap();
+        let rgb = Rgbf32::from_size_val(size, 0.25).unwrap();
         let dynimg = DynImage::C3(CS::Rgb, rgb.into_inner());
         assert_eq!(dynimg.color_space(), CS::Rgb);
         assert_eq!(dynimg.channels(), 3);
@@ -899,7 +908,7 @@ mod tests {
             width: 2,
             height: 2,
         };
-        let gray = Grayf32::from_size_val(size, 0.0, host_alloc()).unwrap();
+        let gray = Grayf32::from_size_val(size, 0.0).unwrap();
         let dynimg = DynImage::C1(CS::Gray, gray.into_inner());
         // recovering as Rgbf32 must fail (channel mismatch C1 vs C3)
         assert!(Rgbf32::try_from(dynimg).is_err());

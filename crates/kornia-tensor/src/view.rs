@@ -23,10 +23,10 @@ use rayon::prelude::*;
 /// Creating a view through reshaping:
 ///
 /// ```rust
-/// use kornia_tensor::{Tensor, host_alloc};
+/// use kornia_tensor::Tensor;
 ///
 /// let data = vec![1, 2, 3, 4, 5, 6];
-/// let tensor = Tensor::<i32, 1>::from_shape_vec([6], data, host_alloc()).unwrap();
+/// let tensor = Tensor::<i32, 1>::from_shape_vec([6], data).unwrap();
 ///
 /// // Create a 2x3 view of the 1D tensor
 /// let view = tensor.reshape([2, 3]).unwrap();
@@ -38,10 +38,10 @@ use rayon::prelude::*;
 /// Converting a view to a contiguous tensor:
 ///
 /// ```rust
-/// use kornia_tensor::{Tensor, host_alloc};
+/// use kornia_tensor::Tensor;
 ///
 /// let data = vec![1, 2, 3, 4];
-/// let tensor = Tensor::<i32, 2>::from_shape_vec([2, 2], data, host_alloc()).unwrap();
+/// let tensor = Tensor::<i32, 2>::from_shape_vec([2, 2], data).unwrap();
 ///
 /// // Permute creates a non-contiguous view
 /// let view = tensor.permute_axes([1, 0]);
@@ -119,10 +119,10 @@ impl<T: Send, const N: usize> TensorView<'_, T, N> {
     /// # Examples
     ///
     /// ```rust
-    /// use kornia_tensor::{Tensor, host_alloc};
+    /// use kornia_tensor::Tensor;
     ///
     /// let data = vec![1, 2, 3, 4, 5, 6];
-    /// let tensor = Tensor::<i32, 1>::from_shape_vec([6], data, host_alloc()).unwrap();
+    /// let tensor = Tensor::<i32, 1>::from_shape_vec([6], data).unwrap();
     /// let view = tensor.reshape([2, 3]).unwrap();
     ///
     /// assert_eq!(*view.get_unchecked([0, 0]), 1);
@@ -151,10 +151,10 @@ impl<T: Send, const N: usize> TensorView<'_, T, N> {
     /// # Examples
     ///
     /// ```rust
-    /// use kornia_tensor::{Tensor, host_alloc};
+    /// use kornia_tensor::Tensor;
     ///
     /// let data = vec![1, 2, 3, 4, 5, 6];
-    /// let tensor = Tensor::<i32, 2>::from_shape_vec([2, 3], data, host_alloc()).unwrap();
+    /// let tensor = Tensor::<i32, 2>::from_shape_vec([2, 3], data).unwrap();
     ///
     /// // Transpose by permuting axes
     /// let transposed = tensor.permute_axes([1, 0]);

@@ -2,7 +2,6 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 
 use kornia_image::{Image, ImageSize};
 use kornia_imgproc::{interpolation::InterpolationMode, resize};
-use kornia_tensor::host_alloc;
 
 fn resize_image_crate(image: Image<u8, 3>, new_size: ImageSize) -> Image<u8, 3> {
     let image_data = image.as_slice();
@@ -20,7 +19,7 @@ fn resize_image_crate(image: Image<u8, 3>, new_size: ImageSize) -> Image<u8, 3> 
         image::imageops::FilterType::Nearest,
     );
     let data = image_resized.into_rgb8().into_raw();
-    Image::new(new_size, data, host_alloc()).unwrap()
+    Image::new(new_size, data).unwrap()
 }
 
 fn resize_ndarray_zip(src: &Image<f32, 3>, dst: &mut Image<f32, 3>) {
@@ -88,8 +87,7 @@ fn bench_resize(c: &mut Criterion) {
 
         // input image
         let image_size = [*width, *height].into();
-        let image =
-            Image::<u8, 3>::new(image_size, vec![0u8; width * height * 3], host_alloc()).unwrap();
+        let image = Image::<u8, 3>::new(image_size, vec![0u8; width * height * 3]).unwrap();
         let image_f32 = image.clone().cast::<f32>().unwrap();
 
         // output image
@@ -98,8 +96,8 @@ fn bench_resize(c: &mut Criterion) {
             height: height / 2,
         };
 
-        let out_f32 = Image::<f32, 3>::from_size_val(new_size, 0.0, host_alloc()).unwrap();
-        let out_u8 = Image::<u8, 3>::from_size_val(new_size, 0, host_alloc()).unwrap();
+        let out_f32 = Image::<f32, 3>::from_size_val(new_size, 0.0).unwrap();
+        let out_u8 = Image::<u8, 3>::from_size_val(new_size, 0).unwrap();
 
         group.bench_with_input(
             BenchmarkId::new("image_rs", &parameter_string),

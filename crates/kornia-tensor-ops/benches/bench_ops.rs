@@ -1,5 +1,5 @@
 use criterion::{criterion_group, criterion_main, Criterion};
-use kornia_tensor::{host_alloc, Tensor};
+use kornia_tensor::Tensor;
 use kornia_tensor_ops::TensorOps;
 use rand::RngExt;
 
@@ -12,8 +12,8 @@ fn bench_dot_product1(c: &mut Criterion) {
     for size in test_sizes.clone() {
         let a: Vec<f32> = (0..size).map(|_| rng.random::<f32>()).collect();
         let b: Vec<f32> = (0..size).map(|_| rng.random::<f32>()).collect();
-        let a_tensor = Tensor::<f32, 1>::from_shape_slice([size], &a, host_alloc()).unwrap();
-        let b_tensor = Tensor::<f32, 1>::from_shape_slice([size], &b, host_alloc()).unwrap();
+        let a_tensor = Tensor::<f32, 1>::from_shape_slice([size], &a).unwrap();
+        let b_tensor = Tensor::<f32, 1>::from_shape_slice([size], &b).unwrap();
 
         group.bench_function(format!("f32_size_{size}"), |bencher| {
             bencher.iter(|| {
@@ -25,8 +25,8 @@ fn bench_dot_product1(c: &mut Criterion) {
     for size in test_sizes.clone() {
         let a: Vec<i8> = (0..size).map(|_| rng.random::<i8>()).collect();
         let b: Vec<i8> = (0..size).map(|_| rng.random::<i8>()).collect();
-        let a_tensor = Tensor::<i8, 1>::from_shape_slice([size], &a, host_alloc()).unwrap();
-        let b_tensor = Tensor::<i8, 1>::from_shape_slice([size], &b, host_alloc()).unwrap();
+        let a_tensor = Tensor::<i8, 1>::from_shape_slice([size], &a).unwrap();
+        let b_tensor = Tensor::<i8, 1>::from_shape_slice([size], &b).unwrap();
 
         group.bench_function(format!("i8_size_{size}"), |bencher| {
             bencher.iter(|| {
@@ -47,8 +47,8 @@ fn bench_cosine_similarity(c: &mut Criterion) {
     for size in test_sizes {
         let a: Vec<f32> = (0..size).map(|_| rng.random::<f32>()).collect();
         let b: Vec<f32> = (0..size).map(|_| rng.random::<f32>()).collect();
-        let a_tensor = Tensor::<f32, 1>::from_shape_slice([size], &a, host_alloc()).unwrap();
-        let b_tensor = Tensor::<f32, 1>::from_shape_slice([size], &b, host_alloc()).unwrap();
+        let a_tensor = Tensor::<f32, 1>::from_shape_slice([size], &a).unwrap();
+        let b_tensor = Tensor::<f32, 1>::from_shape_slice([size], &b).unwrap();
 
         group.bench_function(format!("f32_size_{size}"), |bencher| {
             bencher.iter(|| {

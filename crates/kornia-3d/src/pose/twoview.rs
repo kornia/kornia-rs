@@ -3337,12 +3337,7 @@ mod tests {
     }
 
     fn u8_to_f32_image(src: &kornia_image::Image<u8, 1>) -> kornia_image::Image<f32, 1> {
-        let mut dst = kornia_image::Image::from_size_val(
-            src.size(),
-            0.0,
-            kornia_image::allocator::host_alloc(),
-        )
-        .unwrap();
+        let mut dst = kornia_image::Image::from_size_val(src.size(), 0.0).unwrap();
         src.as_slice()
             .iter()
             .zip(dst.as_slice_mut())

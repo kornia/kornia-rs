@@ -18,12 +18,10 @@
 /// # #[cfg(feature = "gstreamer")]
 /// # {
 /// use kornia_vlm::video::{Video, VideoSamplingMethod};
-/// use kornia_tensor::host_alloc;
 ///
 /// let video = Video::from_video_path(
 ///     "video.mp4",
 ///     VideoSamplingMethod::Uniform(30),
-///     kornia_image::allocator::host_alloc(),
 /// ).unwrap();
 /// # }
 /// ```
@@ -132,12 +130,8 @@ pub fn from_video_path<const N: usize, P: AsRef<std::path::Path>>(
                 let size = gst_image.size();
                 let gst_data = gst_image.as_slice();
 
-                let img = Image::<u8, 3>::from_size_slice(
-                    size,
-                    gst_data,
-                    kornia_image::allocator::host_alloc(),
-                )
-                .map_err(VideoError::KorniaImage)?;
+                let img = Image::<u8, 3>::from_size_slice(size, gst_data)
+                    .map_err(VideoError::KorniaImage)?;
 
                 // Get current position for timestamp - using frame index as fallback
                 let current_pos = video_reader

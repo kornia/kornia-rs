@@ -2,10 +2,7 @@ use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
 use gstreamer_video as gst_video;
-use kornia::{
-    image::allocator::host_alloc,
-    image::{Image, ImageSize},
-};
+use kornia::image::{Image, ImageSize};
 use kornia_vlm::smolvlm::{utils::SmolVlmConfig, SmolVlm};
 
 use crate::Args;
@@ -50,7 +47,7 @@ pub fn video_file_demo(args: &Args) -> Result<(), Box<dyn Error>> {
         let height = s.height() as usize;
         let img_size = ImageSize { width, height };
         let rgb_slice = map.as_ref();
-        let image = Image::<u8, 3>::new(img_size, rgb_slice.to_vec(), host_alloc())?;
+        let image = Image::<u8, 3>::new(img_size, rgb_slice.to_vec())?;
         smolvlm.clear_context()?;
         let response = smolvlm.inference(prompt, Some(image.clone()), 20)?;
 

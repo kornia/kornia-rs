@@ -237,7 +237,6 @@ impl ImageProcessor {
                         height: new_height,
                     },
                     0,
-                    kornia_tensor::host_alloc(),
                 )?);
             }
 
@@ -281,7 +280,6 @@ impl ImageProcessor {
                     height: new_height as usize,
                 },
                 0,
-                kornia_tensor::host_alloc(),
             )?);
         }
 
@@ -296,7 +294,6 @@ impl ImageProcessor {
                     height: new_height as usize,
                 },
                 255,
-                kornia_tensor::host_alloc(),
             )?);
         }
 
@@ -478,7 +475,6 @@ mod tests {
                 height: 64,
             },
             128, // gray value
-            kornia_tensor::host_alloc(),
         )?;
 
         let device = Device::Cpu;
@@ -528,7 +524,6 @@ mod tests {
                 height: 200,
             },
             0,
-            kornia_tensor::host_alloc(),
         )?;
 
         // Test no resize needed
@@ -590,7 +585,6 @@ mod tests {
                 height: 4,
             },
             img_data.clone(),
-            kornia_tensor::host_alloc(),
         )?;
 
         let device = Device::Cpu;

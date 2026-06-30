@@ -40,7 +40,7 @@ mod tests {
 
     #[test]
     fn test_bincode() -> Result<(), Box<dyn std::error::Error>> {
-        let tensor = Tensor::<u8, 2>::from_shape_vec([2, 3], vec![1, 2, 3, 4, 5, 6], host_alloc())?;
+        let tensor = Tensor::<u8, 2>::from_shape_vec([2, 3], vec![1, 2, 3, 4, 5, 6])?;
         let mut serialized = vec![0u8; 100];
         let config = bincode::config::standard();
         let length = bincode::encode_into_slice(&tensor, &mut serialized, config)?;

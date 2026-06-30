@@ -4,7 +4,6 @@
 
 use kornia_image::{Image, ImageSize};
 use kornia_imgproc::contours::{find_contours, ContourApproximationMode, RetrievalMode};
-use kornia_tensor::host_alloc;
 use std::env;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -40,7 +39,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             height: h,
         },
         0,
-        host_alloc(),
     )?;
     kornia_imgproc::color::gray_from_rgb_u8(&rgb, &mut gray)?;
     let mut bw = Image::<u8, 1>::from_size_val(
@@ -49,7 +47,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             height: h,
         },
         0,
-        host_alloc(),
     )?;
     kornia_imgproc::threshold::threshold_binary(&gray, &mut bw, 127, 1)?;
 

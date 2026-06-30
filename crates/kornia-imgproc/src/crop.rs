@@ -169,7 +169,6 @@ fn copy_row<T: Copy>(src_row: &[T], dst_row: &mut [T]) {
 ///
 /// ```rust
 /// use kornia_image::{Image, ImageSize};
-/// use kornia_tensor::host_alloc;
 /// use kornia_imgproc::crop::crop_image;
 ///
 /// let image = Image::<_, 1>::new(ImageSize { width: 4, height: 4 }, vec![
@@ -177,9 +176,9 @@ fn copy_row<T: Copy>(src_row: &[T], dst_row: &mut [T]) {
 ///     4u8, 5, 6, 7,
 ///     8u8, 9, 10, 11,
 ///     12u8, 13, 14, 15
-/// ], host_alloc()).unwrap();
+/// ]).unwrap();
 ///
-/// let mut cropped = Image::<_, 1>::from_size_val(ImageSize { width: 2, height: 2 }, 0u8, host_alloc()).unwrap();
+/// let mut cropped = Image::<_, 1>::from_size_val(ImageSize { width: 2, height: 2 }, 0u8).unwrap();
 ///
 /// crop_image(&image, &mut cropped, 1, 1).unwrap();
 ///
@@ -242,7 +241,6 @@ where
 #[cfg(test)]
 mod tests {
     use kornia_image::{Image, ImageError, ImageSize};
-    use kornia_tensor::host_alloc;
 
     #[test]
     fn test_crop() -> Result<(), ImageError> {
@@ -258,8 +256,7 @@ mod tests {
                 0u8, 1, 2, 3, 4, 5,
                 6u8, 7, 8, 9, 10, 11,
                 12u8, 13, 14, 15, 16, 17,
-            ],
-            host_alloc()
+            ]
         )?;
 
         let data_expected = vec![9u8, 10, 11, 15, 16, 17];
@@ -269,7 +266,7 @@ mod tests {
             height: 2,
         };
 
-        let mut cropped = Image::<_, 3>::from_size_val(crop_size, 0u8, host_alloc())?;
+        let mut cropped = Image::<_, 3>::from_size_val(crop_size, 0u8)?;
 
         super::crop_image(&image, &mut cropped, 1, 1)?;
 
@@ -293,8 +290,8 @@ mod tests {
             70u8, 80, 90, 100, 110, 120,
         ];
 
-        let image = Image::<_, 2>::new(image_size, data.clone(), host_alloc())?;
-        let mut dst = Image::<_, 2>::from_size_val(image_size, 0u8, host_alloc())?;
+        let image = Image::<_, 2>::new(image_size, data.clone())?;
+        let mut dst = Image::<_, 2>::from_size_val(image_size, 0u8)?;
 
         super::crop_image(&image, &mut dst, 0, 0)?;
 
@@ -320,14 +317,13 @@ mod tests {
                  8u8,  9, 10, 11,
                 12u8, 13, 14, 15,
             ],
-            host_alloc(),
         )?;
 
         let crop_size = ImageSize {
             width: 1,
             height: 1,
         };
-        let mut dst = Image::<_, 1>::from_size_val(crop_size, 0u8, host_alloc())?;
+        let mut dst = Image::<_, 1>::from_size_val(crop_size, 0u8)?;
 
         // Pixel at column 2, row 3 is value 14.
         super::crop_image(&image, &mut dst, 2, 3)?;
@@ -353,7 +349,6 @@ mod tests {
                 height: src_h,
             },
             src_data.clone(),
-            host_alloc(),
         )?;
         let crop_w = 224;
         let crop_h = 224;
@@ -365,7 +360,6 @@ mod tests {
                 height: crop_h,
             },
             0u8,
-            host_alloc(),
         )?;
         super::crop_image(&src, &mut dst, x0, y0)?;
 
@@ -389,7 +383,6 @@ mod tests {
                 height: 4,
             },
             0u8,
-            host_alloc(),
         )
         .unwrap();
         let mut dst = Image::<u8, 1>::from_size_val(
@@ -398,7 +391,6 @@ mod tests {
                 height: 3,
             },
             0u8,
-            host_alloc(),
         )
         .unwrap();
         let result = super::crop_image(&src, &mut dst, 2, 0);
@@ -421,7 +413,6 @@ mod tests {
                 height: src_h,
             },
             src_data.clone(),
-            host_alloc(),
         )?;
         // 43 columns * 3 chans = 129 bytes row (hits main + 16-byte tail + 1-byte tail).
         let crop_w = 43;
@@ -434,7 +425,6 @@ mod tests {
                 height: crop_h,
             },
             0u8,
-            host_alloc(),
         )?;
         super::crop_image(&src, &mut dst, x0, y0)?;
         let dst_slice = dst.as_slice();

@@ -1,5 +1,4 @@
 use kornia_image::{Image, ImageError, ImageSize};
-use kornia_tensor::host_alloc;
 use rayon::{
     iter::{IndexedParallelIterator, ParallelIterator},
     slice::ParallelSliceMut,
@@ -151,10 +150,10 @@ pub fn sobel<const C: usize>(
     let (kernel_x, kernel_y) = kernels::sobel_kernel_1d(kernel_size)?;
 
     // apply the sobel filter using separable filter
-    let mut gx = Image::<f32, C>::from_size_val(src.size(), 0.0, host_alloc())?;
+    let mut gx = Image::<f32, C>::from_size_val(src.size(), 0.0)?;
     separable_filter(src, &mut gx, &kernel_x, &kernel_y)?;
 
-    let mut gy = Image::<f32, C>::from_size_val(src.size(), 0.0, host_alloc())?;
+    let mut gy = Image::<f32, C>::from_size_val(src.size(), 0.0)?;
     separable_filter(src, &mut gy, &kernel_y, &kernel_x)?;
 
     // compute the magnitude in parallel by rows
@@ -185,10 +184,10 @@ pub fn scharr<const C: usize>(
 ) -> Result<(), ImageError> {
     let (kernel_x, kernel_y) = kernels::scharr_kernel_1d(kernel_size)?;
 
-    let mut gx = Image::<f32, C>::from_size_val(src.size(), 0.0, host_alloc())?;
+    let mut gx = Image::<f32, C>::from_size_val(src.size(), 0.0)?;
     separable_filter(src, &mut gx, &kernel_x, &kernel_y)?;
 
-    let mut gy = Image::<f32, C>::from_size_val(src.size(), 0.0, host_alloc())?;
+    let mut gy = Image::<f32, C>::from_size_val(src.size(), 0.0)?;
     separable_filter(src, &mut gy, &kernel_y, &kernel_x)?;
 
     dst.as_slice_mut()
@@ -226,7 +225,7 @@ pub fn box_blur_fast<const C: usize>(
     };
 
     let mut input_img = src;
-    let mut transposed = Image::<f32, C>::from_size_val(transposed_size, 0.0, host_alloc())?;
+    let mut transposed = Image::<f32, C>::from_size_val(transposed_size, 0.0)?;
 
     for (half_kernel_x_size, half_kernel_y_size) in
         half_kernel_x_sizes.iter().zip(half_kernel_y_sizes.iter())
@@ -1984,7 +1983,6 @@ mod tests {
                 height: rows,
             },
             src_data.clone(),
-            host_alloc(),
         )?;
         let mut dst_5x5 = Image::<u8, 1>::from_size_val(
             ImageSize {
@@ -1992,7 +1990,6 @@ mod tests {
                 height: rows,
             },
             0u8,
-            host_alloc(),
         )?;
         gaussian_blur_u8(&src_img, &mut dst_5x5, (5, 5), (1.0, 1.0))?;
 
@@ -2070,7 +2067,6 @@ mod tests {
                 height: rows,
             },
             src_data,
-            host_alloc(),
         )?;
         let mut dst = Image::<u8, 1>::from_size_val(
             ImageSize {
@@ -2078,7 +2074,6 @@ mod tests {
                 height: rows,
             },
             0u8,
-            host_alloc(),
         )?;
         // Must not panic.
         gaussian_blur_u8(&src, &mut dst, (3, 3), (1.0, 1.0))?;
@@ -2098,7 +2093,6 @@ mod tests {
                 height: rows,
             },
             src_data,
-            host_alloc(),
         )?;
         let mut dst = Image::<u8, 1>::from_size_val(
             ImageSize {
@@ -2106,7 +2100,6 @@ mod tests {
                 height: rows,
             },
             0u8,
-            host_alloc(),
         )?;
         // Must not panic.
         gaussian_blur_u8(&src, &mut dst, (3, 3), (1.0, 1.0))?;
@@ -2120,8 +2113,8 @@ mod tests {
             height: 5,
         };
 
-        let img = Image::new(size, (0..25).map(|x| x as f32).collect(), host_alloc())?;
-        let mut dst = Image::<_, 1>::from_size_val(size, 0.0, host_alloc())?;
+        let img = Image::new(size, (0..25).map(|x| x as f32).collect())?;
+        let mut dst = Image::<_, 1>::from_size_val(size, 0.0)?;
 
         box_blur_fast(&img, &mut dst, (0.5, 0.5))?;
 
@@ -2147,9 +2140,9 @@ mod tests {
             height: 5,
         };
 
-        let img = Image::new(size, (0..25).map(|x| x as f32).collect(), host_alloc())?;
+        let img = Image::new(size, (0..25).map(|x| x as f32).collect())?;
 
-        let mut dst = Image::<_, 1>::from_size_val(size, 0.0, host_alloc())?;
+        let mut dst = Image::<_, 1>::from_size_val(size, 0.0)?;
 
         gaussian_blur(&img, &mut dst, (3, 3), (0.5, 0.5))?;
 
@@ -2174,9 +2167,9 @@ mod tests {
             height: 5,
         };
 
-        let img = Image::new(size, (0..25).map(|x| x as f32).collect(), host_alloc())?;
+        let img = Image::new(size, (0..25).map(|x| x as f32).collect())?;
 
-        let mut dst = Image::<_, 1>::from_size_val(size, 0.0, host_alloc())?;
+        let mut dst = Image::<_, 1>::from_size_val(size, 0.0)?;
 
         gaussian_blur(&img, &mut dst, (0, 0), (0.5, 0.5))?;
 
@@ -2200,9 +2193,9 @@ mod tests {
             height: 5,
         };
 
-        let img = Image::new(size, (0..25).map(|x| x as f32).collect(), host_alloc())?;
+        let img = Image::new(size, (0..25).map(|x| x as f32).collect())?;
 
-        let mut dst = Image::<_, 1>::from_size_val(size, 0.0, host_alloc())?;
+        let mut dst = Image::<_, 1>::from_size_val(size, 0.0)?;
 
         gaussian_blur(&img, &mut dst, (3, 3), (0.0, 0.0))?;
 
@@ -2249,11 +2242,10 @@ mod tests {
         let img = Image::<f32, 2>::new(
             size,
             (0..25).flat_map(|x| [x as f32, x as f32 + 25.0]).collect(),
-            host_alloc(),
         )?;
         for (test_fn, fn_name) in TEST_FUNCTIONS {
-            let mut dx = Image::<_, 2>::from_size_val(size, 0.0, host_alloc())?;
-            let mut dy = Image::<_, 2>::from_size_val(size, 0.0, host_alloc())?;
+            let mut dx = Image::<_, 2>::from_size_val(size, 0.0)?;
+            let mut dy = Image::<_, 2>::from_size_val(size, 0.0)?;
 
             test_fn(&img, &mut dx, &mut dy)?;
 
@@ -2323,11 +2315,10 @@ mod tests {
         let img = Image::<f32, 2>::new(
             size,
             (0..25).flat_map(|x| [x as f32, x as f32 + 25.0]).collect(),
-            host_alloc(),
         )?;
 
-        let mut dx = Image::<_, 2>::from_size_val(size, 0.0, host_alloc())?;
-        let mut dy = Image::<_, 2>::from_size_val(size, 0.0, host_alloc())?;
+        let mut dx = Image::<_, 2>::from_size_val(size, 0.0)?;
+        let mut dy = Image::<_, 2>::from_size_val(size, 0.0)?;
 
         scharr_spatial_gradient_float(&img, &mut dx, &mut dy)?;
 

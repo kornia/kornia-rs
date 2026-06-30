@@ -89,7 +89,7 @@ impl Paligemma {
         use crate::device::get_device_and_dtype;
         let (device, dtype) = get_device_and_dtype();
         let (model, tokenizer) = Self::load_model(dtype, &device)?;
-        let img_buf = Image::from_size_val([224, 224].into(), 0, kornia_tensor::host_alloc())?;
+        let img_buf = Image::from_size_val([224, 224].into(), 0)?;
         let pipeline = TextGeneration::new(model, tokenizer, device, config.into());
 
         Ok(Self {

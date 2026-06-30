@@ -242,7 +242,6 @@ impl StereoRectifier {
                 height: self.height,
             },
             &out,
-            kornia_image::allocator::host_alloc(),
         )?)
     }
 }
@@ -393,11 +392,7 @@ mod tests {
     ) -> Result<Image<u8, 1>, ImageError> {
         let mut buf = vec![0u8; width * height];
         buf[v * width + u] = 255;
-        Image::from_size_slice(
-            ImageSize { width, height },
-            &buf,
-            kornia_image::allocator::host_alloc(),
-        )
+        Image::from_size_slice(ImageSize { width, height }, &buf)
     }
 
     /// Intensity-weighted centroid `(u, v)` of all non-zero pixels.

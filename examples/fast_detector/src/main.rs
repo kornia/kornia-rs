@@ -37,15 +37,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let img_rgb8 = F::read_image_any_rgb8(args.image_path)?;
 
     // convert to grayscale
-    let mut img_gray8 =
-        Image::from_size_val(img_rgb8.size(), 0u8, kornia::image::allocator::host_alloc())?;
+    let mut img_gray8 = Image::from_size_val(img_rgb8.size(), 0u8)?;
     imgproc::color::gray_from_rgb_u8(&img_rgb8, &mut img_gray8)?;
 
-    let mut img_grayf32 = Image::from_size_val(
-        img_gray8.size(),
-        0.0,
-        kornia::image::allocator::host_alloc(),
-    )?;
+    let mut img_grayf32 = Image::from_size_val(img_gray8.size(), 0.0)?;
     img_gray8
         .as_slice()
         .iter()

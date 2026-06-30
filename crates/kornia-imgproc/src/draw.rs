@@ -209,7 +209,6 @@ pub fn draw_filled_polygon<const C: usize>(
 mod tests {
     use super::{draw_filled_polygon, draw_line, draw_polygon};
     use kornia_image::{Image, ImageError, ImageSize};
-    use kornia_tensor::host_alloc;
 
     #[test]
     fn test_draw_line() -> Result<(), ImageError> {
@@ -219,7 +218,6 @@ mod tests {
                 height: 5,
             },
             vec![0; 25],
-            host_alloc(),
         )?;
 
         draw_line(&mut img, (0, 0), (4, 4), [255], 1);
@@ -246,7 +244,6 @@ mod tests {
                 height: 5,
             },
             vec![0; 25],
-            host_alloc(),
         )?;
 
         let points: [(i64, i64); 3] = [(0, 0), (0, 3), (4, 0)];
@@ -274,7 +271,6 @@ mod tests {
                 height: 5,
             },
             vec![0; 25],
-            host_alloc(),
         )?;
 
         let points: [(i64, i64); 3] = [(0, 0), (0, 3), (4, 0)];
@@ -302,7 +298,6 @@ mod tests {
                 height: 5,
             },
             vec![0; 25],
-            host_alloc(),
         )?;
 
         let points: [(i64, i64); 3] = [(0, 0), (3, 0), (4, 0)];
@@ -324,7 +319,7 @@ mod tests {
 
     #[test]
     fn test_line_strict_endpoint_boundary() {
-        let mut img = Image::<u8, 1>::from_size_val([10, 10].into(), 0, host_alloc()).unwrap();
+        let mut img = Image::<u8, 1>::from_size_val([10, 10].into(), 0).unwrap();
 
         // Draw horizontal line (2,5) -> (7,5), thickness 5
         draw_line(&mut img, (2, 5), (7, 5), [255], 5);
@@ -339,7 +334,7 @@ mod tests {
 
     #[test]
     fn test_line_perpendicular_precision() {
-        let mut img = Image::<u8, 1>::from_size_val([20, 20].into(), 0, host_alloc()).unwrap();
+        let mut img = Image::<u8, 1>::from_size_val([20, 20].into(), 0).unwrap();
 
         // Draw horizontal line at y=10 with thickness 4. Should occupy y=[8..11].
         draw_line(&mut img, (5, 10), (15, 10), [255], 4);
@@ -354,7 +349,7 @@ mod tests {
 
     #[test]
     fn test_diagonal_flat_cap() {
-        let mut img = Image::<u8, 1>::from_size_val([20, 20].into(), 0, host_alloc()).unwrap();
+        let mut img = Image::<u8, 1>::from_size_val([20, 20].into(), 0).unwrap();
 
         // Diagonal line (0,0) -> (10,10), thickness 6
         draw_line(&mut img, (0, 0), (10, 10), [255], 6);

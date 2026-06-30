@@ -1,5 +1,4 @@
 use kornia_image::{Image, ImageError, ImageSize};
-use kornia_tensor::host_alloc;
 use rayon::prelude::*;
 
 const INF: f32 = 1e20;
@@ -31,7 +30,7 @@ pub fn distance_transform_vanilla(image: &Image<f32, 1>) -> Result<Image<f32, 1>
         }
     }
 
-    Image::new(image.size(), output, host_alloc())
+    Image::new(image.size(), output)
 }
 
 /// Executor for computing the Euclidean Distance Transform.
@@ -105,7 +104,7 @@ impl DistanceTransformExecutor {
         let mut final_data = vec![0.0f32; num_pixels];
         transpose_map(&self.scratch, &mut final_data, height, width, |x| x.sqrt());
 
-        Image::new(ImageSize { width, height }, final_data, host_alloc())
+        Image::new(ImageSize { width, height }, final_data)
     }
 }
 
@@ -172,7 +171,6 @@ where
 mod tests {
     use super::*;
     use kornia_image::{Image, ImageSize};
-    use kornia_tensor::host_alloc;
 
     #[test]
     fn test_accuracy_vs_vanilla() -> Result<(), ImageError> {
@@ -183,7 +181,7 @@ mod tests {
         data[102] = 1.0;
         data[300] = 1.0;
 
-        let image = Image::<f32, 1>::new(ImageSize { width, height }, data, host_alloc())?;
+        let image = Image::<f32, 1>::new(ImageSize { width, height }, data)?;
         let expected = distance_transform_vanilla(&image)?;
 
         let mut executor = DistanceTransformExecutor::new();
@@ -206,7 +204,6 @@ mod tests {
             vec![
                 0.0f32, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0,
             ],
-            host_alloc(),
         )?;
 
         let mut executor = DistanceTransformExecutor::new();

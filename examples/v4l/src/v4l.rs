@@ -1,6 +1,5 @@
 use argh::FromArgs;
 use kornia::{
-    image::allocator::host_alloc,
     image::{color_spaces::Rgb8, ImageSize},
     imgproc::{self, color::YuvToRgbMode},
     io::{
@@ -80,7 +79,7 @@ pub fn v4l_demo() -> Result<(), Box<dyn std::error::Error>> {
     let mut fps_counter = FpsCounter::new();
 
     // Pre-allocate RGB image buffer outside the loop
-    let mut rgb_image = Rgb8::from_size_val(img_size, 0, host_alloc())?;
+    let mut rgb_image = Rgb8::from_size_val(img_size, 0)?;
 
     while !cancel_token.load(Ordering::SeqCst) {
         let Some(frame) = webcam.grab_frame()? else {

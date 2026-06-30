@@ -1,7 +1,6 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use kornia_image::{Image, ImageSize};
 use kornia_imgproc::distance_transform::{distance_transform_vanilla, DistanceTransformExecutor};
-use kornia_tensor::host_alloc;
 use opencv::{core, imgproc, prelude::*};
 
 fn bench_distance_transform(c: &mut Criterion) {
@@ -24,7 +23,6 @@ fn bench_distance_transform(c: &mut Criterion) {
                 height: *height,
             },
             data.clone(),
-            host_alloc(),
         )
         .unwrap();
 
@@ -89,7 +87,6 @@ fn bench_distance_transform(c: &mut Criterion) {
                 height: *height,
             },
             data,
-            host_alloc(),
         )
         .unwrap();
 

@@ -10,14 +10,12 @@
 //! # #[cfg(feature = "cudarc")]
 //! # {
 //! use kornia_image::color_spaces::Rgb8;
-//! use kornia_tensor::host_alloc;
 //! use cudarc::driver::CudaContext;
 //! use std::sync::Arc;
 //!
 //! let rgb = Rgb8::from_size_val(
 //!     kornia_image::ImageSize { width: 2, height: 2 },
 //!     [0u8; 3],
-//!     host_alloc(),
 //! ).unwrap();
 //!
 //! let ctx = CudaContext::new(0).unwrap();

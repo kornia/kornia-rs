@@ -81,11 +81,7 @@ impl DecoderNode {
         let layout = decode_image_jpeg_layout(&msg.data)?;
         assert_eq!(layout.channels, 3);
 
-        let mut image = Image::<u8, 3>::from_size_val(
-            layout.image_size,
-            0,
-            kornia_image::allocator::host_alloc(),
-        )?;
+        let mut image = Image::<u8, 3>::from_size_val(layout.image_size, 0)?;
         decode_image_jpeg_rgb8(&msg.data, &mut image)?;
 
         let sequence = self.sequence;

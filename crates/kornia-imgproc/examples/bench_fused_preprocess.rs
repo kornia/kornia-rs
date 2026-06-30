@@ -9,7 +9,6 @@ use kornia_imgproc::interpolation::InterpolationMode;
 use kornia_imgproc::resize::{
     resize_fast_rgb, resize_normalize_to_tensor_u8_to_f32, NormalizeParams,
 };
-use kornia_tensor::host_alloc;
 
 fn main() {
     let src_w = 1920;
@@ -24,7 +23,6 @@ fn main() {
             height: src_h,
         },
         src_bytes.clone(),
-        host_alloc(),
     )
     .unwrap();
 
@@ -38,7 +36,6 @@ fn main() {
             height: dst_h,
         },
         0u8,
-        host_alloc(),
     )
     .unwrap();
     let mut dst_chw_f32 = vec![0f32; 3 * dst_h * dst_w];

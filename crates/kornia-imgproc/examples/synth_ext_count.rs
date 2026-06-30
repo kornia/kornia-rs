@@ -1,7 +1,6 @@
 //! Try various synthetic patterns and report kornia EXT count vs expected.
 use kornia_image::{Image, ImageSize};
 use kornia_imgproc::contours::{find_contours, ContourApproximationMode, RetrievalMode};
-use kornia_tensor::host_alloc;
 
 fn count_ext(data: &[u8], w: usize, h: usize) -> usize {
     let img = Image::<u8, 1>::new(
@@ -10,7 +9,6 @@ fn count_ext(data: &[u8], w: usize, h: usize) -> usize {
             height: h,
         },
         data.to_vec(),
-        host_alloc(),
     )
     .unwrap();
     let r = find_contours(

@@ -66,7 +66,7 @@ mod tests {
     #[test]
     fn test_serde() -> Result<(), Box<dyn std::error::Error>> {
         let data = vec![1, 2, 3, 4, 5, 6];
-        let tensor = Tensor::<u8, 2>::from_shape_vec([2, 3], data, host_alloc())?;
+        let tensor = Tensor::<u8, 2>::from_shape_vec([2, 3], data)?;
         let serialized = serde_json::to_string(&tensor)?;
         let deserialized: Tensor<u8, 2> = serde_json::from_str(&serialized)?;
         assert_eq!(tensor.as_slice(), deserialized.as_slice());

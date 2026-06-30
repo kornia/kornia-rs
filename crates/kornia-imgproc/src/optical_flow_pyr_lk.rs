@@ -1268,9 +1268,9 @@ pub fn build_lk_precomputed(
         };
 
         let mut prev_down =
-            Image::from_size_val(down_size, 0.0f32, prev_img.storage.alloc().clone())?;
+            Image::from_size_val_in(down_size, 0.0f32, prev_img.storage.alloc().clone())?;
         let mut next_down =
-            Image::from_size_val(down_size, 0.0f32, next_img.storage.alloc().clone())?;
+            Image::from_size_val_in(down_size, 0.0f32, next_img.storage.alloc().clone())?;
 
         pyrdown_f32(prev_src, &mut prev_down)?;
         pyrdown_f32(next_src, &mut next_down)?;
@@ -1282,8 +1282,8 @@ pub fn build_lk_precomputed(
     let mut grad_x_pyr = Vec::with_capacity(max_level + 1);
     let mut grad_y_pyr = Vec::with_capacity(max_level + 1);
     for img in prev_pyr.iter().take(max_level + 1) {
-        let mut ix = Image::from_size_val(img.size(), 0.0f32, prev_img.storage.alloc().clone())?;
-        let mut iy = Image::from_size_val(img.size(), 0.0f32, prev_img.storage.alloc().clone())?;
+        let mut ix = Image::from_size_val_in(img.size(), 0.0f32, prev_img.storage.alloc().clone())?;
+        let mut iy = Image::from_size_val_in(img.size(), 0.0f32, prev_img.storage.alloc().clone())?;
         scharr_spatial_gradient_float(img, &mut ix, &mut iy)?;
         grad_x_pyr.push(ix);
         grad_y_pyr.push(iy);
@@ -1438,7 +1438,6 @@ pub fn calc_optical_flow_pyr_lk_with_precomputed(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kornia_tensor::host_alloc;
 
     fn default_params() -> PyrLKParams {
         PyrLKParams::default()
@@ -1491,10 +1490,8 @@ mod tests {
         // structure-tensor entries are non-trivial.
         let size = 128;
         let img = make_gradient_image(size);
-        let mut ix =
-            Image::<f32, 1>::from_size_val([size, size].into(), 0.0, host_alloc()).unwrap();
-        let mut iy =
-            Image::<f32, 1>::from_size_val([size, size].into(), 0.0, host_alloc()).unwrap();
+        let mut ix = Image::<f32, 1>::from_size_val([size, size].into(), 0.0).unwrap();
+        let mut iy = Image::<f32, 1>::from_size_val([size, size].into(), 0.0).unwrap();
         crate::filter::scharr_spatial_gradient_float(&img, &mut ix, &mut iy).unwrap();
 
         // A few interior centres with non-trivial fractional parts so the
@@ -1644,10 +1641,8 @@ mod tests {
         let size = 128;
         let img = make_gradient_image(size);
         // Build gradient images so all three patches have non-trivial data.
-        let mut ix =
-            Image::<f32, 1>::from_size_val([size, size].into(), 0.0, host_alloc()).unwrap();
-        let mut iy =
-            Image::<f32, 1>::from_size_val([size, size].into(), 0.0, host_alloc()).unwrap();
+        let mut ix = Image::<f32, 1>::from_size_val([size, size].into(), 0.0).unwrap();
+        let mut iy = Image::<f32, 1>::from_size_val([size, size].into(), 0.0).unwrap();
         crate::filter::scharr_spatial_gradient_float(&img, &mut ix, &mut iy).unwrap();
         let cols = img.cols();
 
@@ -1733,8 +1728,7 @@ mod tests {
         let dx = 1.0_f32;
         let dy = 0.5_f32;
         let img1 = make_gradient_image(size);
-        let mut img2 =
-            Image::<f32, 1>::from_size_val([size, size].into(), 0.0, host_alloc()).unwrap();
+        let mut img2 = Image::<f32, 1>::from_size_val([size, size].into(), 0.0).unwrap();
         for y in 0..size {
             for x in 0..size {
                 let sx = (x as f32 - dx).clamp(0.0, size as f32 - 1.0);
@@ -1777,8 +1771,7 @@ mod tests {
         let dy = -0.7;
         let img1 = make_gradient_image(size);
         // Synthesise img2 as img1 shifted by (dx, dy).
-        let mut img2 =
-            Image::<f32, 1>::from_size_val([size, size].into(), 0.0, host_alloc()).unwrap();
+        let mut img2 = Image::<f32, 1>::from_size_val([size, size].into(), 0.0).unwrap();
         for y in 0..size {
             for x in 0..size {
                 let sx = (x as f32 - dx).clamp(0.0, size as f32 - 1.0);
@@ -1804,8 +1797,7 @@ mod tests {
     }
 
     fn make_circle_image(size: usize, cx: f32, cy: f32, r: f32) -> Image<f32, 1> {
-        let mut img =
-            Image::<f32, 1>::from_size_val([size, size].into(), 0.0, host_alloc()).unwrap();
+        let mut img = Image::<f32, 1>::from_size_val([size, size].into(), 0.0).unwrap();
         for y in 0..size {
             for x in 0..size {
                 let dx = x as f32 - cx;
@@ -1819,8 +1811,7 @@ mod tests {
     }
 
     fn make_gradient_image(size: usize) -> Image<f32, 1> {
-        let mut img =
-            Image::<f32, 1>::from_size_val([size, size].into(), 0.0, host_alloc()).unwrap();
+        let mut img = Image::<f32, 1>::from_size_val([size, size].into(), 0.0).unwrap();
         for y in 0..size {
             for x in 0..size {
                 let xf = x as f32;
@@ -1949,7 +1940,7 @@ mod tests {
     #[test]
     fn test_lk_low_texture_rejection() {
         let size = 64;
-        let img1 = Image::<f32, 1>::from_size_val([size, size].into(), 0.5, host_alloc()).unwrap();
+        let img1 = Image::<f32, 1>::from_size_val([size, size].into(), 0.5).unwrap();
         let img2 = img1.clone();
         let pts = vec![[32.0, 32.0]];
         let params = default_params();
@@ -2145,8 +2136,7 @@ mod tests {
         let dx = 3.0;
         let dy = -2.0;
         let img1 = make_gradient_image(size);
-        let mut img2 =
-            Image::<f32, 1>::from_size_val([size, size].into(), 0.0, host_alloc()).unwrap();
+        let mut img2 = Image::<f32, 1>::from_size_val([size, size].into(), 0.0).unwrap();
 
         // Shift image
         for y in 0..size {

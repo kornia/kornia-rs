@@ -79,7 +79,7 @@ impl ComputeNode {
                     let img = match Image::<u8, 3>::new(ImageSize {
                         width: msg.width as usize,
                         height: msg.height as usize,
-                    }, msg.data, kornia_image::allocator::host_alloc()) {
+                    }, msg.data) {
                         Ok(img) => img,
                         Err(e) => {
                             log::warn!("skipping malformed frame: {e}");

@@ -3,7 +3,6 @@ use kornia_image::{Image, ImageSize};
 use kornia_imgproc::contours::{
     find_contours, ContourApproximationMode, FindContoursExecutor, RetrievalMode,
 };
-use kornia_tensor::host_alloc;
 use opencv::{core, imgproc, prelude::*};
 
 /// Filled square with a margin of size/8 on each side.
@@ -50,7 +49,7 @@ fn make_noise(width: usize, height: usize, seed: u64) -> Vec<u8> {
 }
 
 fn kornia_image(width: usize, height: usize, data: Vec<u8>) -> Image<u8, 1> {
-    Image::<u8, 1>::new(ImageSize { width, height }, data, host_alloc()).expect("kornia image")
+    Image::<u8, 1>::new(ImageSize { width, height }, data).expect("kornia image")
 }
 
 /// OpenCV expects 0/255 for binary images, not 0/1.

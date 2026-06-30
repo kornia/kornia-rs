@@ -1,6 +1,5 @@
 use kornia_image::{Image, ImageSize};
 use kornia_imgproc::contours::{find_contours, ContourApproximationMode, RetrievalMode};
-use kornia_tensor::host_alloc;
 
 fn main() {
     let path = std::env::args().nth(1).unwrap();
@@ -12,7 +11,6 @@ fn main() {
             height: h,
         },
         0,
-        host_alloc(),
     )
     .unwrap();
     kornia_imgproc::color::gray_from_rgb_u8(&rgb, &mut gray).unwrap();
@@ -22,7 +20,6 @@ fn main() {
             height: h,
         },
         0,
-        host_alloc(),
     )
     .unwrap();
     kornia_imgproc::threshold::threshold_binary(&gray, &mut bw, 127, 1).unwrap();

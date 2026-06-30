@@ -240,7 +240,7 @@ macro_rules! define_image_type {
             // Constructor: from size and fill value
             fn [<$prefix _new>](width: usize, height: usize, value: $dtype) -> Result<Box<$wrapper>, ImageError> {
                 let size = kornia_image::ImageSize { width, height };
-                                let image = kornia_image::Image::<$dtype, $ch>::from_size_val(size, value, kornia_image::allocator::host_alloc())?;
+                                let image = kornia_image::Image::<$dtype, $ch>::from_size_val(size, value)?;
                 Ok(Box::new($wrapper(image)))
             }
 
@@ -251,7 +251,7 @@ macro_rules! define_image_type {
                 if data.len() != expected_len {
                     return Err(ImageError::InvalidChannelShape(data.len(), expected_len));
                 }
-                                let image = kornia_image::Image::<$dtype, $ch>::from_size_slice(size, data, kornia_image::allocator::host_alloc())?;
+                                let image = kornia_image::Image::<$dtype, $ch>::from_size_slice(size, data)?;
                 Ok(Box::new($wrapper(image)))
             }
         }
@@ -329,11 +329,7 @@ fn decode_image_jpeg_rgb8(jpeg_bytes: &[u8]) -> Result<Box<ImageU8C3>, Box<dyn s
     }
 
     // Create output image
-    let mut image = kornia_image::Image::<u8, 3>::from_size_val(
-        layout.image_size,
-        0,
-        kornia_image::allocator::host_alloc(),
-    )?;
+    let mut image = kornia_image::Image::<u8, 3>::from_size_val(layout.image_size, 0)?;
 
     // Decode into it (zero-copy from slice)
     jpeg::decode_image_jpeg_rgb8(jpeg_bytes, &mut image)?;

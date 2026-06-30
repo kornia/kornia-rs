@@ -17,16 +17,14 @@ use kornia_image::{
 ///
 /// ```
 /// use kornia_image::ImageSize;
-/// use kornia_tensor::host_alloc;
 /// use kornia_imgproc::color::{Rgbf32, Grayf32, ConvertColor};
 ///
 /// let rgb = Rgbf32::from_size_vec(
 ///     ImageSize { width: 4, height: 5 },
 ///     vec![0.5f32; 4 * 5 * 3],
-///     host_alloc()
 /// ).unwrap();
 ///
-/// let mut gray = Grayf32::from_size_val(rgb.size(), 0.0, host_alloc()).unwrap();
+/// let mut gray = Grayf32::from_size_val(rgb.size(), 0.0).unwrap();
 ///
 /// rgb.convert(&mut gray).unwrap();
 /// ```
@@ -196,7 +194,6 @@ impl_convert_with_bg!(Bgra8 => Rgb8, crate::color::rgb_from_bgra);
 mod tests {
     use super::*;
     use kornia_image::ImageSize;
-    use kornia_tensor::host_alloc;
 
     #[test]
     fn test_gray_from_rgb_f32() -> Result<(), ImageError> {
@@ -206,10 +203,9 @@ mod tests {
                 height: 2,
             },
             vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.5, 0.5, 0.5],
-            host_alloc(),
         )?;
 
-        let mut gray = Grayf32::from_size_val(rgb.size(), 0.0, host_alloc())?;
+        let mut gray = Grayf32::from_size_val(rgb.size(), 0.0)?;
 
         rgb.convert(&mut gray)?;
 
@@ -228,10 +224,9 @@ mod tests {
                 height: 1,
             },
             vec![255, 0, 0, 0, 255, 0],
-            host_alloc(),
         )?;
 
-        let mut gray = Gray8::from_size_val(rgb.size(), 0, host_alloc())?;
+        let mut gray = Gray8::from_size_val(rgb.size(), 0)?;
 
         rgb.convert(&mut gray)?;
 
@@ -248,10 +243,9 @@ mod tests {
                 height: 2,
             },
             vec![0.0, 0.5, 1.0, 0.25],
-            host_alloc(),
         )?;
 
-        let mut rgb = Rgbf32::from_size_val(gray.size(), 0.0, host_alloc())?;
+        let mut rgb = Rgbf32::from_size_val(gray.size(), 0.0)?;
 
         gray.convert(&mut rgb)?;
 
@@ -270,10 +264,9 @@ mod tests {
                 height: 1,
             },
             vec![255, 128, 64],
-            host_alloc(),
         )?;
 
-        let mut bgr = Bgr8::from_size_val(rgb.size(), 0, host_alloc())?;
+        let mut bgr = Bgr8::from_size_val(rgb.size(), 0)?;
 
         rgb.convert(&mut bgr)?;
 
@@ -294,10 +287,9 @@ mod tests {
                 height: 1,
             },
             vec![64, 128, 255],
-            host_alloc(),
         )?;
 
-        let mut rgb = Rgb8::from_size_val(bgr.size(), 0, host_alloc())?;
+        let mut rgb = Rgb8::from_size_val(bgr.size(), 0)?;
 
         bgr.convert(&mut rgb)?;
 
@@ -318,11 +310,11 @@ mod tests {
             height: 2,
         };
         let data: Vec<u8> = (0..4 * 2 * 3).map(|v| (v * 7 + 11) as u8).collect();
-        let rgb = Rgb8::from_size_vec(size, data, host_alloc())?;
+        let rgb = Rgb8::from_size_vec(size, data)?;
 
         // YCbCr round-trip
-        let mut ycc = YCbCr8::from_size_val(size, 0, host_alloc())?;
-        let mut back = Rgb8::from_size_val(size, 0, host_alloc())?;
+        let mut ycc = YCbCr8::from_size_val(size, 0)?;
+        let mut back = Rgb8::from_size_val(size, 0)?;
         rgb.convert(&mut ycc)?;
         ycc.convert(&mut back)?;
         for (a, b) in rgb.as_slice().iter().zip(back.as_slice().iter()) {
@@ -330,7 +322,7 @@ mod tests {
         }
 
         // YUV (swapped chroma) must differ from YCbCr in channels 1/2 but round-trip too.
-        let mut yuv = Yuv8::from_size_val(size, 0, host_alloc())?;
+        let mut yuv = Yuv8::from_size_val(size, 0)?;
         rgb.convert(&mut yuv)?;
         assert_eq!(ycc.as_slice()[1], yuv.as_slice()[2]);
         assert_eq!(ycc.as_slice()[2], yuv.as_slice()[1]);
@@ -346,7 +338,7 @@ mod tests {
         };
         // Y=16, U=V=128 -> black (limited range).
         let yuyv = Yuyv8::from_size_vec(size, vec![16, 128, 16, 128])?;
-        let mut rgb = Rgb8::from_size_val(size, 0, host_alloc())?;
+        let mut rgb = Rgb8::from_size_val(size, 0)?;
         yuyv.convert(&mut rgb)?;
         assert_eq!(rgb.as_slice(), &[0, 0, 0, 0, 0, 0]);
         Ok(())
@@ -360,10 +352,9 @@ mod tests {
                 height: 1,
             },
             vec![255.0, 0.0, 0.0],
-            host_alloc(),
         )?;
 
-        let mut hsv = Hsvf32::from_size_val(rgb.size(), 0.0, host_alloc())?;
+        let mut hsv = Hsvf32::from_size_val(rgb.size(), 0.0)?;
 
         rgb.convert(&mut hsv)?;
 
@@ -380,7 +371,6 @@ mod tests {
                 height: 4,
             },
             vec![0u8; 4 * 4 * 3],
-            host_alloc(),
         )?;
 
         // Test that Deref allows us to use Image methods
@@ -400,10 +390,9 @@ mod tests {
                 height: 1,
             },
             vec![255, 128, 64, 255, 100, 50, 25, 128],
-            host_alloc(),
         )?;
 
-        let mut rgb = Rgb8::from_size_val(rgba.size(), 0, host_alloc())?;
+        let mut rgb = Rgb8::from_size_val(rgba.size(), 0)?;
 
         rgba.convert(&mut rgb)?;
 
@@ -426,10 +415,9 @@ mod tests {
                 height: 1,
             },
             vec![255, 0, 0, 128], // Red with 50% alpha
-            host_alloc(),
         )?;
 
-        let mut rgb = Rgb8::from_size_val(rgba.size(), 0, host_alloc())?;
+        let mut rgb = Rgb8::from_size_val(rgba.size(), 0)?;
 
         // Convert with white background
         rgba.convert_with_bg(&mut rgb, Some([100, 100, 100]))?;
@@ -451,10 +439,9 @@ mod tests {
                 height: 1,
             },
             vec![64, 128, 255, 255], // BGR + A
-            host_alloc(),
         )?;
 
-        let mut rgb = Rgb8::from_size_val(bgra.size(), 0, host_alloc())?;
+        let mut rgb = Rgb8::from_size_val(bgra.size(), 0)?;
 
         bgra.convert(&mut rgb)?;
 
@@ -474,9 +461,8 @@ mod tests {
                 height: 1,
             },
             vec![1, 2, 3, 4, 5, 6],
-            host_alloc(),
         )?;
-        let mut rgba = Rgba8::from_size_val(rgb.size(), 0, host_alloc())?;
+        let mut rgba = Rgba8::from_size_val(rgb.size(), 0)?;
         rgb.convert(&mut rgba)?;
         assert_eq!(rgba.as_slice(), &[1, 2, 3, 255, 4, 5, 6, 255]);
         Ok(())
@@ -490,9 +476,8 @@ mod tests {
                 height: 1,
             },
             vec![1, 2, 3, 4, 5, 6],
-            host_alloc(),
         )?;
-        let mut bgra = Bgra8::from_size_val(rgb.size(), 0, host_alloc())?;
+        let mut bgra = Bgra8::from_size_val(rgb.size(), 0)?;
         rgb.convert(&mut bgra)?;
         assert_eq!(bgra.as_slice(), &[3, 2, 1, 255, 6, 5, 4, 255]);
         Ok(())
@@ -509,16 +494,15 @@ mod tests {
                 height: 1,
             },
             vec![255, 0, 0, 0, 255, 0],
-            host_alloc(),
         )?;
 
-        let mut gray = Gray8::from_size_val(rgb.size(), 0, host_alloc())?;
+        let mut gray = Gray8::from_size_val(rgb.size(), 0)?;
 
         rgb.convert(&mut gray)?;
         assert_eq!(gray.num_channels(), 1);
 
         // Test Bgr8
-        let mut bgr = Bgr8::from_size_val(rgb.size(), 0, host_alloc())?;
+        let mut bgr = Bgr8::from_size_val(rgb.size(), 0)?;
         rgb.convert(&mut bgr)?;
         assert_eq!(bgr.num_channels(), 3);
 
@@ -529,9 +513,8 @@ mod tests {
                 height: 1,
             },
             vec![255, 128, 64, 255],
-            host_alloc(),
         )?;
-        let mut rgb_out = Rgb8::from_size_val(rgba.size(), 0, host_alloc())?;
+        let mut rgb_out = Rgb8::from_size_val(rgba.size(), 0)?;
         rgba.convert(&mut rgb_out)?;
 
         assert_eq!(rgb_out.as_slice()[0], 255);
@@ -565,11 +548,7 @@ macro_rules! impl_color_newtype {
     ($newtype:ident, $t:ty) => {
         impl NewColorImage for kornia_image::color_spaces::$newtype {
             fn new_zeroed(size: ImageSize) -> Result<Self, ImageError> {
-                kornia_image::color_spaces::$newtype::from_size_val(
-                    size,
-                    <$t>::default(),
-                    kornia_tensor::host_alloc(),
-                )
+                kornia_image::color_spaces::$newtype::from_size_val(size, <$t>::default())
             }
         }
 
@@ -612,13 +591,11 @@ impl_color_newtype!(Bgraf32, f32);
 ///
 /// ```
 /// use kornia_image::ImageSize;
-/// use kornia_tensor::host_alloc;
 /// use kornia_imgproc::color::{Rgbf32, Hsvf32, ConvertColorExt};
 ///
 /// let rgb = Rgbf32::from_size_vec(
 ///     ImageSize { width: 4, height: 3 },
 ///     vec![0.5f32; 4 * 3 * 3],
-///     host_alloc(),
 /// ).unwrap();
 ///
 /// let hsv: Hsvf32 = rgb.cvt().unwrap();
@@ -649,7 +626,6 @@ mod cvt_color_tests {
     use crate::color::Tagged;
     use kornia_image::color_spaces::Rgbf32;
     use kornia_image::{ColorSpace, DynImage, ImageSize};
-    use kornia_tensor::host_alloc;
 
     #[test]
     fn runtime_cvt_color_returns_tagged_dynimage() {
@@ -657,7 +633,7 @@ mod cvt_color_tests {
             width: 4,
             height: 4,
         };
-        let rgb = Rgbf32::from_size_vec(size, vec![0.5f32; 4 * 4 * 3], host_alloc()).unwrap();
+        let rgb = Rgbf32::from_size_vec(size, vec![0.5f32; 4 * 4 * 3]).unwrap();
         let hsv = rgb.cvt_color(ColorSpace::Hsv).unwrap();
         assert_eq!(hsv.color_space(), ColorSpace::Hsv);
         assert_eq!(hsv.channels(), 3);
@@ -673,7 +649,7 @@ mod cvt_color_tests {
             width: 2,
             height: 2,
         };
-        let rgb = Rgbf32::from_size_vec(size, vec![0.0f32; 2 * 2 * 3], host_alloc()).unwrap();
+        let rgb = Rgbf32::from_size_vec(size, vec![0.0f32; 2 * 2 * 3]).unwrap();
         // Rgb has no direct path to YCbCr? It does — pick a truly illegal target by
         // constructing from a non-Rgb source instead:
         let hsv = rgb.cvt_color(ColorSpace::Hsv).unwrap();
@@ -688,7 +664,6 @@ mod cvt_ext_tests {
     use crate::color::ConvertColorExt;
     use kornia_image::color_spaces::{Grayf32, Hsvf32, Rgbf32};
     use kornia_image::ImageSize;
-    use kornia_tensor::host_alloc;
 
     #[test]
     fn cvt_allocates_and_converts_typed() {
@@ -696,7 +671,7 @@ mod cvt_ext_tests {
             width: 4,
             height: 3,
         };
-        let rgb = Rgbf32::from_size_vec(size, vec![0.5f32; 4 * 3 * 3], host_alloc()).unwrap();
+        let rgb = Rgbf32::from_size_vec(size, vec![0.5f32; 4 * 3 * 3]).unwrap();
         // typed, allocating: no manual dst construction
         let hsv: Hsvf32 = rgb.cvt().unwrap();
         assert_eq!(hsv.size(), size);
@@ -712,7 +687,7 @@ mod cvt_ext_tests {
             height: 8,
         };
         let data: Vec<f32> = (0..8 * 8 * 3).map(|i| (i % 255) as f32 / 255.0).collect();
-        let rgb = Rgbf32::from_size_vec(size, data.clone(), host_alloc()).unwrap();
+        let rgb = Rgbf32::from_size_vec(size, data.clone()).unwrap();
         let hsv: Hsvf32 = rgb.cvt().unwrap();
         let back: Rgbf32 = hsv.cvt().unwrap();
         for (a, b) in data.iter().zip(back.as_slice().iter()) {
@@ -844,7 +819,6 @@ mod legality_drift_tests {
         Rgba8, Rgbf32, Xyzf32, YCbCrf32, Yuvf32,
     };
     use kornia_image::{ColorSpace, ImageSize};
-    use kornia_tensor::host_alloc;
 
     /// All ColorSpace variants enumerated manually (no strum/EnumIter in scope).
     /// 13 variants × 16 source types = 208 (from, to) pairs checked.
@@ -902,57 +876,57 @@ mod legality_drift_tests {
         // ---- f32 sources (is_f32 = true) ----
 
         check_all_targets!(
-            Rgbf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 3], host_alloc()).unwrap(),
+            Rgbf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 3]).unwrap(),
             ColorSpace::Rgb,
             true
         );
         check_all_targets!(
-            Grayf32::from_size_vec(sz, vec![0.5f32; 2 * 2], host_alloc()).unwrap(),
+            Grayf32::from_size_vec(sz, vec![0.5f32; 2 * 2]).unwrap(),
             ColorSpace::Gray,
             true
         );
         check_all_targets!(
-            Hsvf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 3], host_alloc()).unwrap(),
+            Hsvf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 3]).unwrap(),
             ColorSpace::Hsv,
             true
         );
         check_all_targets!(
-            Hlsf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 3], host_alloc()).unwrap(),
+            Hlsf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 3]).unwrap(),
             ColorSpace::Hls,
             true
         );
         check_all_targets!(
-            Labf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 3], host_alloc()).unwrap(),
+            Labf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 3]).unwrap(),
             ColorSpace::Lab,
             true
         );
         check_all_targets!(
-            Luvf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 3], host_alloc()).unwrap(),
+            Luvf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 3]).unwrap(),
             ColorSpace::Luv,
             true
         );
         check_all_targets!(
-            Xyzf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 3], host_alloc()).unwrap(),
+            Xyzf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 3]).unwrap(),
             ColorSpace::Xyz,
             true
         );
         check_all_targets!(
-            LinearRgbf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 3], host_alloc()).unwrap(),
+            LinearRgbf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 3]).unwrap(),
             ColorSpace::LinearRgb,
             true
         );
         check_all_targets!(
-            YCbCrf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 3], host_alloc()).unwrap(),
+            YCbCrf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 3]).unwrap(),
             ColorSpace::YCbCr,
             true
         );
         check_all_targets!(
-            Yuvf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 3], host_alloc()).unwrap(),
+            Yuvf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 3]).unwrap(),
             ColorSpace::Yuv,
             true
         );
         check_all_targets!(
-            Bgrf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 3], host_alloc()).unwrap(),
+            Bgrf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 3]).unwrap(),
             ColorSpace::Bgr,
             true
         );
@@ -960,27 +934,27 @@ mod legality_drift_tests {
         // ---- u8 sources (is_f32 = false) ----
 
         check_all_targets!(
-            Rgb8::from_size_vec(sz, vec![128u8; 2 * 2 * 3], host_alloc()).unwrap(),
+            Rgb8::from_size_vec(sz, vec![128u8; 2 * 2 * 3]).unwrap(),
             ColorSpace::Rgb,
             false
         );
         check_all_targets!(
-            Gray8::from_size_vec(sz, vec![128u8; 2 * 2], host_alloc()).unwrap(),
+            Gray8::from_size_vec(sz, vec![128u8; 2 * 2]).unwrap(),
             ColorSpace::Gray,
             false
         );
         check_all_targets!(
-            Bgr8::from_size_vec(sz, vec![128u8; 2 * 2 * 3], host_alloc()).unwrap(),
+            Bgr8::from_size_vec(sz, vec![128u8; 2 * 2 * 3]).unwrap(),
             ColorSpace::Bgr,
             false
         );
         check_all_targets!(
-            Rgba8::from_size_vec(sz, vec![128u8; 2 * 2 * 4], host_alloc()).unwrap(),
+            Rgba8::from_size_vec(sz, vec![128u8; 2 * 2 * 4]).unwrap(),
             ColorSpace::Rgba,
             false
         );
         check_all_targets!(
-            Bgra8::from_size_vec(sz, vec![128u8; 2 * 2 * 4], host_alloc()).unwrap(),
+            Bgra8::from_size_vec(sz, vec![128u8; 2 * 2 * 4]).unwrap(),
             ColorSpace::Bgra,
             false
         );
