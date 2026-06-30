@@ -3,6 +3,7 @@ use rayon::prelude::*;
 use crate::utils::Pixel;
 use kornia_image::{allocator::ImageAllocator, Image};
 
+
 /// A single horizontal run of non-Skip pixels.
 #[derive(Clone, Copy)]
 // parent at offset 0 so uf_find's hot load is immediate (no displacement).
@@ -84,13 +85,8 @@ impl RleCC {
         let n_threads = rayon::current_num_threads().max(1);
         let strip_h = (height + n_threads - 1) / n_threads;
 
-        // Step 1: scan runs + intra-strip UF, writing directly to the shared runs buffer.
         self.scan_runs(src.as_slice(), height, width, n_threads, strip_h);
 
-        // Step 2: sequential cross-strip boundary merges (n_threads-1 boundaries).
-        // With the preallocated non-contiguous layout, row_start[t * strip_h] = base_t
-        // (start of thread t's region), NOT the end of thread t-1's last row.
-        // Use (t-1)*max_per_thread + thread_counts[t-1] as the true a_end.
         for t in 1..n_threads {
             let y = t * strip_h;
             if y >= height { break; }
@@ -393,42 +389,36 @@ fn fill_rep_cache_parallel(
             let val = if root_size >= min_size { root as u32 } else { u32::MAX };
             unsafe { *run_vals_ptr.add(r) = val; }
         }
-        // Phase 2: fill rep_cache for this thread's rows using run_vals just written above.
+        // Phase 2: fill rep_cache for this thread's rows.
+        // Strategy: pre-fill entire row with u32::MAX (one streaming store per row),
+        // then overwrite only valid-component run pixels. Eliminates per-gap fills and
+        // fill_x tracking; trades 2× total writes for 17× fewer fill() call sites.
         let y_start = t * strip_h;
         let y_end = (y_start + strip_h).min(height);
         let thread_end = base + count;
         for y in y_start..y_end {
+            // Pre-fill whole row with sentinel (borders, gaps, and below-size runs).
+            let row_off = y * width;
+            let row_slice = unsafe {
+                std::slice::from_raw_parts_mut(cache_ptr.add(row_off), width)
+            };
+            row_slice.fill(u32::MAX);
+            // Overwrite only valid (above-min_size) run pixels with the component id.
             let r_start = unsafe { *row_start_ptr.add(y) } as usize;
             let r_end = if y + 1 == y_end {
                 thread_end
             } else {
                 (unsafe { *row_start_ptr.add(y + 1) }) as usize
             };
-            let row_off = y * width;
-            unsafe { *cache_ptr.add(row_off) = u32::MAX; }
-            let mut fill_x = 1usize;
             for r in r_start..r_end {
+                let val = unsafe { *run_vals_ptr.add(r) };
+                if val == u32::MAX { continue; }
                 let run = unsafe { &*runs_ptr.add(r) };
                 let col_s = run.col_start as usize;
                 let col_e = run.col_end as usize;
-                if fill_x < col_s {
-                    let gap = unsafe {
-                        std::slice::from_raw_parts_mut(cache_ptr.add(row_off + fill_x), col_s - fill_x)
-                    };
-                    gap.fill(u32::MAX);
-                }
-                let val = unsafe { *run_vals_ptr.add(r) };
-                let seg = unsafe {
+                unsafe {
                     std::slice::from_raw_parts_mut(cache_ptr.add(row_off + col_s), col_e - col_s)
-                };
-                seg.fill(val);
-                fill_x = col_e;
-            }
-            if fill_x < width {
-                let trail = unsafe {
-                    std::slice::from_raw_parts_mut(cache_ptr.add(row_off + fill_x), width - fill_x)
-                };
-                trail.fill(u32::MAX);
+                }.fill(val);
             }
         }
     });
@@ -443,3 +433,4 @@ fn uf_find_const(runs_ptr: *const Run, mut id: usize) -> usize {
         id = p;
     }
 }
+
