@@ -602,19 +602,6 @@ fn compute_line_fit_prefix_sums<A: ImageAllocator>(
     lfw.lfps
 }
 
-/// Interior Gaussian smooth without modulo: processes `errors[half..len-half]` using
-/// plain indexing. Edge elements (wrap-around) are handled separately by the caller.
-#[cfg(not(target_arch = "aarch64"))]
-fn smooth_interior(errors: &[f32], kernel: &[f32], out: &mut [f32], half: usize, len: usize) {
-    for iy in half..len - half {
-        let mut acc = 0.0f32;
-        for (ki, &kv) in kernel.iter().enumerate() {
-            acc += errors[iy + ki - half] * kv;
-        }
-        out[iy] = acc;
-    }
-}
-
 /// NEON-vectorized interior Gaussian smooth (4 outputs per iteration).
 ///
 /// For each group of 4 output pixels [iy, iy+3], tap `ki` loads 4 consecutive
@@ -651,21 +638,64 @@ unsafe fn smooth_interior_neon(errors: &[f32], kernel: &[f32], out: &mut [f32], 
     }
 }
 
-/// Dispatch to NEON or scalar smooth_interior.
+/// AVX2+FMA interior Gaussian smooth (8 outputs per iteration), mirroring
+/// [`smooth_interior_neon`]. Each tap broadcasts one kernel weight and FMAs 8
+/// consecutive error samples into the accumulator.
+///
+/// # Safety
+/// AVX2+FMA must be available; `half <= len`.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn smooth_interior_avx2(errors: &[f32], kernel: &[f32], out: &mut [f32], half: usize, len: usize) {
+    use std::arch::x86_64::*;
+    let flen = kernel.len();
+    let interior_end = len - half;
+    let mut iy = half;
+
+    while iy + 8 <= interior_end {
+        let mut acc = _mm256_setzero_ps();
+        let base = errors.as_ptr().add(iy - half);
+        for ki in 0..flen {
+            let kv = _mm256_set1_ps(*kernel.get_unchecked(ki));
+            let ev = _mm256_loadu_ps(base.add(ki));
+            acc = _mm256_fmadd_ps(kv, ev, acc);
+        }
+        _mm256_storeu_ps(out.as_mut_ptr().add(iy), acc);
+        iy += 8;
+    }
+    // Scalar tail (up to 7 elements).
+    while iy < interior_end {
+        let mut acc = 0.0f32;
+        for ki in 0..flen {
+            acc += *errors.get_unchecked(iy - half + ki) * *kernel.get_unchecked(ki);
+        }
+        *out.get_unchecked_mut(iy) = acc;
+        iy += 1;
+    }
+}
+
+/// Dispatch to NEON (aarch64), AVX2 (x86_64), or scalar smooth_interior.
 fn smooth_interior(errors: &[f32], kernel: &[f32], out: &mut [f32], half: usize, len: usize) {
+    // AArch64: NEON is baseline.
     #[cfg(target_arch = "aarch64")]
     // SAFETY: NEON mandatory on ARMv8-A.
     return unsafe { smooth_interior_neon(errors, kernel, out, half, len) };
 
+    // x86_64: AVX2+FMA when the runtime probe confirms both.
+    #[cfg(target_arch = "x86_64")]
+    if crate::simd::has_avx2_fma() {
+        // SAFETY: AVX2+FMA confirmed by the (cached) runtime probe.
+        return unsafe { smooth_interior_avx2(errors, kernel, out, half, len) };
+    }
+
+    // Portable scalar fallback.
     #[cfg(not(target_arch = "aarch64"))]
-    {
-        for iy in half..len - half {
-            let mut acc = 0.0f32;
-            for (ki, &kv) in kernel.iter().enumerate() {
-                acc += errors[iy + ki - half] * kv;
-            }
-            out[iy] = acc;
+    for iy in half..len - half {
+        let mut acc = 0.0f32;
+        for (ki, &kv) in kernel.iter().enumerate() {
+            acc += errors[iy + ki - half] * kv;
         }
+        out[iy] = acc;
     }
 }
 
@@ -778,7 +808,78 @@ fn quad_segment_maxima_ws(
         }
     }
 
-    #[cfg(not(target_arch = "aarch64"))]
+    // x86_64: AVX2 line-fit error over 8 windows at once (exact reciprocal via div).
+    #[cfg(target_arch = "x86_64")]
+    {
+        if crate::simd::has_avx2() {
+            use std::arch::x86_64::*;
+            let p = seg.soa.as_ptr();
+            let ep = seg.errors.as_mut_ptr();
+            // SAFETY: AVX2 confirmed by runtime probe; all loads stay within
+            // seg.soa (pad = len+1) and stores within seg.errors (len) because the
+            // SIMD loop is bounded by `i + 8 <= inner_end` and `hi <= len`.
+            unsafe {
+                let mx_p = p;
+                let my_p = p.add(pad);
+                let mxx_p = p.add(2 * pad);
+                let mxy_p = p.add(3 * pad);
+                let myy_p = p.add(4 * pad);
+                let w_p = p.add(5 * pad);
+
+                let n_v = _mm256_set1_ps(n_f32);
+                let four = _mm256_set1_ps(4.0);
+                let halfv = _mm256_set1_ps(0.5);
+                let one = _mm256_set1_ps(1.0);
+
+                let mut i = ws;
+                while i + 8 <= inner_end {
+                    let hi = i + ws + 1;
+                    let lo = i - ws;
+                    let sw = |base: *const f32| {
+                        _mm256_sub_ps(
+                            _mm256_loadu_ps(base.add(hi)),
+                            _mm256_loadu_ps(base.add(lo)),
+                        )
+                    };
+                    let sw_mx = sw(mx_p);
+                    let sw_my = sw(my_p);
+                    let sw_mxx = sw(mxx_p);
+                    let sw_mxy = sw(mxy_p);
+                    let sw_myy = sw(myy_p);
+                    let sw_w = sw(w_p);
+
+                    let inv_w = _mm256_div_ps(one, sw_w);
+                    let ex = _mm256_mul_ps(sw_mx, inv_w);
+                    let ey = _mm256_mul_ps(sw_my, inv_w);
+                    let cxx = _mm256_sub_ps(_mm256_mul_ps(sw_mxx, inv_w), _mm256_mul_ps(ex, ex));
+                    let cxy = _mm256_sub_ps(_mm256_mul_ps(sw_mxy, inv_w), _mm256_mul_ps(ex, ey));
+                    let cyy = _mm256_sub_ps(_mm256_mul_ps(sw_myy, inv_w), _mm256_mul_ps(ey, ey));
+                    let diff = _mm256_sub_ps(cxx, cyy);
+                    let disc = _mm256_add_ps(
+                        _mm256_mul_ps(diff, diff),
+                        _mm256_mul_ps(four, _mm256_mul_ps(cxy, cxy)),
+                    );
+                    let eig = _mm256_mul_ps(
+                        halfv,
+                        _mm256_sub_ps(_mm256_add_ps(cxx, cyy), _mm256_sqrt_ps(disc)),
+                    );
+                    _mm256_storeu_ps(ep.add(i), _mm256_mul_ps(eig, n_v));
+                    i += 8;
+                }
+                while i < inner_end {
+                    fit_line(lfps, i - ws, i + ws, None, seg.errors.get_mut(i), None);
+                    i += 1;
+                }
+            }
+        } else {
+            for i in ws..inner_end {
+                fit_line(lfps, i - ws, i + ws, None, seg.errors.get_mut(i), None);
+            }
+        }
+    }
+
+    // Portable scalar fallback (non-aarch64, non-x86_64).
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
     for i in ws..inner_end {
         fit_line(lfps, i - ws, i + ws, None, seg.errors.get_mut(i), None);
     }

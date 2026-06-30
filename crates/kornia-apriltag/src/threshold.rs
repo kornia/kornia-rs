@@ -31,14 +31,52 @@ unsafe fn classify_row_neon(src: &[u8], dst: &mut [Pixel], thresh: u8) {
     }
 }
 
+/// AVX2 variant of [`classify_row_neon`]: 32 pixels per iteration.
+///
+/// AVX2 only has signed byte compares, so we bias both operands by `0x80` to turn
+/// the unsigned `px > thresh` into a signed `cmpgt`. The result is `0xFF`/`0x00`,
+/// which equals `Pixel::White` (255) / `Pixel::Black` (0) directly.
+///
+/// # Safety
+/// AVX2 must be available; `src.len() == dst.len()`; `Pixel` is `#[repr(u8)]`.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn classify_row_avx2(src: &[u8], dst: &mut [Pixel], thresh: u8) {
+    use std::arch::x86_64::*;
+    let len = src.len();
+    // SAFETY: Pixel is #[repr(u8)] so *mut Pixel == *mut u8 for layout purposes.
+    let dst_u8 = core::slice::from_raw_parts_mut(dst.as_mut_ptr() as *mut u8, len);
+    let bias = _mm256_set1_epi8(0x80u8 as i8);
+    let tv = _mm256_xor_si256(_mm256_set1_epi8(thresh as i8), bias);
+    let mut i = 0;
+    while i + 32 <= len {
+        let px = _mm256_loadu_si256(src.as_ptr().add(i) as *const __m256i);
+        let gt = _mm256_cmpgt_epi8(_mm256_xor_si256(px, bias), tv);
+        _mm256_storeu_si256(dst_u8.as_mut_ptr().add(i) as *mut __m256i, gt);
+        i += 32;
+    }
+    while i < len {
+        dst_u8[i] = if src[i] > thresh { 255 } else { 0 };
+        i += 1;
+    }
+}
+
 #[inline(always)]
 fn classify_row(src: &[u8], dst: &mut [Pixel], thresh: u8) {
+    // AArch64: NEON is baseline.
     #[cfg(target_arch = "aarch64")]
-    {
-        // SAFETY: aarch64 always has NEON; Pixel is #[repr(u8)].
-        return unsafe { classify_row_neon(src, dst, thresh) };
+    // SAFETY: aarch64 always has NEON; Pixel is #[repr(u8)].
+    return unsafe { classify_row_neon(src, dst, thresh) };
+
+    // x86_64: AVX2 when the runtime probe confirms it.
+    #[cfg(target_arch = "x86_64")]
+    if crate::simd::has_avx2() {
+        // SAFETY: AVX2 confirmed by runtime probe; Pixel is #[repr(u8)].
+        return unsafe { classify_row_avx2(src, dst, thresh) };
     }
-    #[allow(unreachable_code)]
+
+    // Portable fallback.
+    #[cfg(not(target_arch = "aarch64"))]
     for (s, d) in src.iter().zip(dst.iter_mut()) {
         *d = if *s > thresh { Pixel::White } else { Pixel::Black };
     }
@@ -124,6 +162,82 @@ unsafe fn fill_tile_stats_neon(
     }
 }
 
+/// AVX2 variant of [`fill_tile_stats_neon`]: batches **8** tiles per iteration.
+///
+/// For `tile_size == 4`, 32 contiguous bytes are exactly 8 side-by-side tiles, so
+/// one `loadu` covers a row of 8 tiles. After accumulating row min/max, each tile's
+/// 4 bytes lie within one 32-bit lane, so `srli_epi32` (which shifts *within* each
+/// lane, never across tile boundaries) reduces all 4 bytes into the lane's byte 0.
+///
+/// # Safety
+/// Caller must ensure `tiles_y * tile_size * img_width + tiles_x * tile_size ≤ img_data.len()`.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn fill_tile_stats_avx2(
+    img_data: &[u8],
+    img_width: usize,
+    tile_size: usize,
+    tiles_x: usize,
+    tiles_y: usize,
+    tile_min: &mut [u8],
+    tile_max: &mut [u8],
+) {
+    use std::arch::x86_64::*;
+
+    for tile_y in 0..tiles_y {
+        let mut tile_x = 0usize;
+
+        // Fast path: 8 tile-columns at a time via 32-byte contiguous loads.
+        while tile_size == 4 && tile_x + 8 <= tiles_x {
+            let mut vmin = _mm256_set1_epi8(0xFFu8 as i8);
+            let mut vmax = _mm256_setzero_si256();
+
+            for row in 0..tile_size {
+                let offset = (tile_y * tile_size + row) * img_width + tile_x * tile_size;
+                let v = _mm256_loadu_si256(img_data.as_ptr().add(offset) as *const __m256i);
+                vmin = _mm256_min_epu8(vmin, v);
+                vmax = _mm256_max_epu8(vmax, v);
+            }
+
+            // Reduce each 4-byte tile (one 32-bit lane) to its min/max in byte 0.
+            let mn = _mm256_min_epu8(vmin, _mm256_srli_epi32::<16>(vmin));
+            let mn = _mm256_min_epu8(mn, _mm256_srli_epi32::<8>(mn));
+            let mx = _mm256_max_epu8(vmax, _mm256_srli_epi32::<16>(vmax));
+            let mx = _mm256_max_epu8(mx, _mm256_srli_epi32::<8>(mx));
+
+            // Extract the low byte of each of the 8 u32 lanes.
+            let mut bmin = [0u8; 32];
+            let mut bmax = [0u8; 32];
+            _mm256_storeu_si256(bmin.as_mut_ptr() as *mut __m256i, mn);
+            _mm256_storeu_si256(bmax.as_mut_ptr() as *mut __m256i, mx);
+
+            let base = tile_y * tiles_x + tile_x;
+            for g in 0..8 {
+                tile_min[base + g] = bmin[g * 4];
+                tile_max[base + g] = bmax[g * 4];
+            }
+            tile_x += 8;
+        }
+
+        // Scalar tail: remaining tile columns (< 8, or tile_size != 4).
+        while tile_x < tiles_x {
+            let idx = tile_y * tiles_x + tile_x;
+            let mut local_min = 255u8;
+            let mut local_max = 0u8;
+            for row in 0..tile_size {
+                let row_start = (tile_y * tile_size + row) * img_width + tile_x * tile_size;
+                for &px in &img_data[row_start..row_start + tile_size] {
+                    local_min = local_min.min(px);
+                    local_max = local_max.max(px);
+                }
+            }
+            tile_min[idx] = local_min;
+            tile_max[idx] = local_max;
+            tile_x += 1;
+        }
+    }
+}
+
 /// Stores the minimum and maximum pixel values for each tile for [adaptive_threshold]
 ///
 /// The tiles are indexed in row-major order, i.e., tile IDs increase first along the x-axis (columns),
@@ -167,26 +281,29 @@ impl TileMinMax {
         let tiles_x = img_width / tile_size;
         let tiles_y = src.height() / tile_size;
 
+        // AArch64: NEON batch-of-4-tiles path.
         #[cfg(target_arch = "aarch64")]
-        {
-            // SAFETY: tiles_x/tiles_y computed from floor division, so all tile accesses are
-            // within img_data bounds.
-            unsafe {
-                fill_tile_stats_neon(
-                    img_data,
-                    img_width,
-                    tile_size,
-                    tiles_x,
-                    tiles_y,
-                    &mut self.min,
-                    &mut self.max,
-                );
-            }
-            return;
+        // SAFETY: tiles_x/tiles_y come from floor division, so all tile accesses
+        // stay within img_data bounds.
+        return unsafe {
+            fill_tile_stats_neon(
+                img_data, img_width, tile_size, tiles_x, tiles_y, &mut self.min, &mut self.max,
+            )
+        };
+
+        // x86_64: AVX2 batch-of-8-tiles path when available.
+        #[cfg(target_arch = "x86_64")]
+        if crate::simd::has_avx2() {
+            // SAFETY: AVX2 confirmed by runtime probe; bounds as above.
+            return unsafe {
+                fill_tile_stats_avx2(
+                    img_data, img_width, tile_size, tiles_x, tiles_y, &mut self.min, &mut self.max,
+                )
+            };
         }
 
-        // Scalar fallback (non-aarch64 targets, e.g. x86 CI).
-        #[allow(unreachable_code)]
+        // Portable scalar fallback (non-aarch64 without AVX2).
+        #[cfg(not(target_arch = "aarch64"))]
         for tile_y in 0..tiles_y {
             for tile_x in 0..tiles_x {
                 let idx = tile_y * tiles_x + tile_x;
@@ -607,5 +724,82 @@ mod tests {
         assert!(matches!(result, Err(AprilTagError::InvalidImageSize)));
 
         Ok(())
+    }
+
+    // Deterministic LCG pseudo-random bytes for parity inputs.
+    #[cfg(target_arch = "x86_64")]
+    fn lcg_bytes(n: usize, seed: u32) -> Vec<u8> {
+        let mut s = seed;
+        (0..n)
+            .map(|_| {
+                s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (s >> 24) as u8
+            })
+            .collect()
+    }
+
+    /// AVX2 `classify_row` must be bit-identical to scalar across all lengths/thresholds.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn test_classify_row_avx2_parity() {
+        if !crate::simd::has_avx2() {
+            eprintln!("AVX2 not present; skipping");
+            return;
+        }
+        for len in [0usize, 1, 7, 15, 16, 31, 32, 33, 100, 257] {
+            let src = lcg_bytes(len, 0xC0FFEE ^ len as u32);
+            for &thresh in &[0u8, 1, 64, 127, 128, 200, 254, 255] {
+                let mut a = vec![Pixel::Black; len];
+                let mut b = vec![Pixel::Black; len];
+                // SAFETY: guarded by has_avx2; equal lengths.
+                unsafe { classify_row_avx2(&src, &mut a, thresh) };
+                for (s, d) in src.iter().zip(b.iter_mut()) {
+                    *d = if *s > thresh { Pixel::White } else { Pixel::Black };
+                }
+                assert_eq!(a, b, "mismatch len={len} thresh={thresh}");
+            }
+        }
+    }
+
+    /// AVX2 `fill_tile_stats` must match the scalar tile min/max exactly.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn test_fill_tile_stats_avx2_parity() {
+        if !crate::simd::has_avx2() {
+            eprintln!("AVX2 not present; skipping");
+            return;
+        }
+        let tile_size = 4usize;
+        // Include widths whose tile count is and isn't a multiple of 8.
+        for &(tiles_x, tiles_y) in &[(8usize, 3usize), (10, 4), (37, 5), (3, 2)] {
+            let img_width = tiles_x * tile_size;
+            let img_height = tiles_y * tile_size;
+            let img = lcg_bytes(img_width * img_height, 0xBEEF ^ (tiles_x * 131 + tiles_y) as u32);
+
+            let n = tiles_x * tiles_y;
+            let (mut amin, mut amax) = (vec![0u8; n], vec![0u8; n]);
+            // SAFETY: dimensions are exact multiples, so all loads are in bounds.
+            unsafe {
+                fill_tile_stats_avx2(&img, img_width, tile_size, tiles_x, tiles_y, &mut amin, &mut amax)
+            };
+
+            let (mut smin, mut smax) = (vec![0u8; n], vec![0u8; n]);
+            for ty in 0..tiles_y {
+                for tx in 0..tiles_x {
+                    let (mut mn, mut mx) = (255u8, 0u8);
+                    for row in 0..tile_size {
+                        let rs = (ty * tile_size + row) * img_width + tx * tile_size;
+                        for &px in &img[rs..rs + tile_size] {
+                            mn = mn.min(px);
+                            mx = mx.max(px);
+                        }
+                    }
+                    smin[ty * tiles_x + tx] = mn;
+                    smax[ty * tiles_x + tx] = mx;
+                }
+            }
+            assert_eq!(amin, smin, "min mismatch {tiles_x}x{tiles_y}");
+            assert_eq!(amax, smax, "max mismatch {tiles_x}x{tiles_y}");
+        }
     }
 }

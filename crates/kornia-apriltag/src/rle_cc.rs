@@ -171,6 +171,24 @@ impl RleCC {
                                 }
                             }
                         }
+                        // AVX2: extend run 32 bytes at a time on x86_64.
+                        #[cfg(target_arch = "x86_64")]
+                        if crate::simd::has_avx2() {
+                            // SAFETY: AVX2 confirmed by runtime probe; reads bounded by width-1.
+                            unsafe {
+                                use std::arch::x86_64::*;
+                                let pv = _mm256_set1_epi8(pixel as u8 as i8);
+                                let base_ptr = src_ptr.0.add(row_off);
+                                while x + 32 <= width - 1 {
+                                    let chunk = _mm256_loadu_si256(base_ptr.add(x) as *const __m256i);
+                                    if _mm256_movemask_epi8(_mm256_cmpeq_epi8(chunk, pv)) == -1 {
+                                        x += 32;
+                                    } else {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
                         while x < width - 1 && unsafe { src_ptr.get(row_off + x) } == pixel {
                             x += 1;
                         }

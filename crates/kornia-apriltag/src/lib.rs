@@ -21,6 +21,9 @@ use crate::{
 /// Error types for AprilTag detection.
 pub mod errors;
 
+/// Runtime SIMD feature detection and dispatch helpers.
+pub mod simd;
+
 /// Utility functions for AprilTag detection.
 pub mod utils;
 

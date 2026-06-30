@@ -31,12 +31,14 @@ fn solid_row_color(
         return None;
     }
 
+    let mut i = 0usize;
+
+    // AArch64: NEON 16-wide equality scan.
     #[cfg(target_arch = "aarch64")]
     {
         use std::arch::aarch64::*;
         let color_v = unsafe { vdupq_n_u8(first as u8) };
         let curr_ptr = src_data.as_ptr() as *const u8;
-        let mut i = 0usize;
         unsafe {
             while i + 16 <= n {
                 let c = vld1q_u8(curr_ptr.add(row_off + 1 + i));
@@ -49,21 +51,36 @@ fn solid_row_color(
                 i += 16;
             }
         }
-        // Scalar tail.
-        while i < n {
-            if src_data[row_off + 1 + i] != first || src_data[top_off + 1 + i] != first {
-                return None;
+    }
+
+    // x86_64: AVX2 32-wide equality scan.
+    #[cfg(target_arch = "x86_64")]
+    if crate::simd::has_avx2() {
+        use std::arch::x86_64::*;
+        // SAFETY: AVX2 confirmed by runtime probe; Pixel is #[repr(u8)].
+        unsafe {
+            let color_v = _mm256_set1_epi8(first as u8 as i8);
+            let curr_ptr = src_data.as_ptr() as *const u8;
+            while i + 32 <= n {
+                let c = _mm256_loadu_si256(curr_ptr.add(row_off + 1 + i) as *const __m256i);
+                let t = _mm256_loadu_si256(curr_ptr.add(top_off + 1 + i) as *const __m256i);
+                let c_ok = _mm256_cmpeq_epi8(c, color_v);
+                let t_ok = _mm256_cmpeq_epi8(t, color_v);
+                let both = _mm256_movemask_epi8(_mm256_and_si256(c_ok, t_ok));
+                if both != -1 {
+                    return None;
+                }
+                i += 32;
             }
-            i += 1;
         }
     }
-    #[cfg(not(target_arch = "aarch64"))]
-    {
-        for i in 0..n {
-            if src_data[row_off + 1 + i] != first || src_data[top_off + 1 + i] != first {
-                return None;
-            }
+
+    // Shared scalar tail (also the full scan on targets without SIMD).
+    while i < n {
+        if src_data[row_off + 1 + i] != first || src_data[top_off + 1 + i] != first {
+            return None;
         }
+        i += 1;
     }
 
     Some(first)
@@ -92,12 +109,12 @@ fn extend_run_bulk(
     let avail = x_limit.saturating_sub(x_start);
     let mut len = 0usize;
 
+    // AArch64: NEON 16-wide scan.
     #[cfg(target_arch = "aarch64")]
     {
         use std::arch::aarch64::*;
         let pv = unsafe { vdupq_n_u8(pixel as u8) };
         let src_ptr = src_data.as_ptr() as *const u8;
-        // 16-wide scan.
         while len + 16 <= avail {
             let v = unsafe { vld1q_u8(src_ptr.add(row_off + x_start + len)) };
             let eq = unsafe { vceqq_u8(v, pv) };
@@ -107,7 +124,26 @@ fn extend_run_bulk(
             len += 16;
         }
     }
-    // Scalar tail (or entire scan on non-aarch64).
+
+    // x86_64: AVX2 32-wide scan.
+    #[cfg(target_arch = "x86_64")]
+    if crate::simd::has_avx2() {
+        use std::arch::x86_64::*;
+        // SAFETY: AVX2 confirmed by runtime probe; Pixel is #[repr(u8)].
+        unsafe {
+            let pv = _mm256_set1_epi8(pixel as u8 as i8);
+            let src_ptr = src_data.as_ptr() as *const u8;
+            while len + 32 <= avail {
+                let v = _mm256_loadu_si256(src_ptr.add(row_off + x_start + len) as *const __m256i);
+                if _mm256_movemask_epi8(_mm256_cmpeq_epi8(v, pv)) != -1 {
+                    break;
+                }
+                len += 32;
+            }
+        }
+    }
+
+    // Scalar tail (or entire scan on targets without SIMD).
     while len < avail && src_data[row_off + x_start + len] == pixel {
         len += 1;
     }
@@ -120,6 +156,7 @@ fn extend_run_bulk(
     let dst = &mut par_uf.parent[row_off + x_start - offset..row_off + x_start + len - offset];
     let rv = run_root as u32;
 
+    // AArch64: NEON u32×4 stores.
     #[cfg(target_arch = "aarch64")]
     {
         use std::arch::aarch64::*;
@@ -135,6 +172,9 @@ fn extend_run_bulk(
             k += 1;
         }
     }
+
+    // Other targets: `fill` already lowers to an optimized memset, so a hand-rolled
+    // AVX2 store wins nothing here.
     #[cfg(not(target_arch = "aarch64"))]
     dst.fill(rv);
 
@@ -590,6 +630,38 @@ macro_rules! maybe_add_gradient {
     }};
 }
 
+/// Process one pixel of the gradient-cluster scan: emit gradients to its right,
+/// below, below-left (unless the previous pixel already connected diagonally), and
+/// below-right neighbors, and update `$connected_last` for the next pixel.
+///
+/// This is the per-pixel body shared by the scalar, NEON, and AVX2 inner loops; the
+/// SIMD variants only differ in how they *skip* spans that provably have no gradient.
+macro_rules! process_grad_pixel {
+    (
+        $rep_cache:expr, $src_slice:expr, $local:expr, $width:expr,
+        $row_off:expr, $x:expr, $y:expr, $connected_last:expr
+    ) => {{
+        let x = $x;
+        let i = $row_off + x;
+        let cur_rep = $rep_cache[i];
+        if cur_rep == u32::MAX {
+            $connected_last = false;
+        } else {
+            let cur_rep_usize = cur_rep as usize;
+            let current_pixel = $src_slice[i];
+            let mut any_connected = false;
+            maybe_add_gradient!($rep_cache, $src_slice, $local, cur_rep_usize, current_pixel, x, $y, i + 1,             1i32,  0i32, any_connected);
+            maybe_add_gradient!($rep_cache, $src_slice, $local, cur_rep_usize, current_pixel, x, $y, i + $width,         0i32,  1i32, any_connected);
+            if !$connected_last {
+                maybe_add_gradient!($rep_cache, $src_slice, $local, cur_rep_usize, current_pixel, x, $y, i + $width - 1, -1i32, 1i32, any_connected);
+            }
+            any_connected = false;
+            maybe_add_gradient!($rep_cache, $src_slice, $local, cur_rep_usize, current_pixel, x, $y, i + $width + 1,     1i32,  1i32, any_connected);
+            $connected_last = any_connected;
+        }
+    }};
+}
+
 /// Scalar inner loop for gradient cluster scan (non-aarch64 fallback).
 #[cfg(not(target_arch = "aarch64"))]
 fn gradient_clusters_inner_scalar(
@@ -604,23 +676,7 @@ fn gradient_clusters_inner_scalar(
         let row_off = y * width;
         let mut connected_last = false;
         for x in 1..width - 1 {
-            let i = row_off + x;
-            let cur_rep = rep_cache[i];
-            if cur_rep == u32::MAX {
-                connected_last = false;
-                continue;
-            }
-            let cur_rep_usize = cur_rep as usize;
-            let current_pixel = src_slice[i];
-            let mut any_connected = false;
-            maybe_add_gradient!(rep_cache, src_slice, local, cur_rep_usize, current_pixel, x, y, i + 1,         1i32, 0i32, any_connected);
-            maybe_add_gradient!(rep_cache, src_slice, local, cur_rep_usize, current_pixel, x, y, i + width,     0i32, 1i32, any_connected);
-            if !connected_last {
-                maybe_add_gradient!(rep_cache, src_slice, local, cur_rep_usize, current_pixel, x, y, i + width - 1, -1i32, 1i32, any_connected);
-            }
-            any_connected = false;
-            maybe_add_gradient!(rep_cache, src_slice, local, cur_rep_usize, current_pixel, x, y, i + width + 1, 1i32, 1i32, any_connected);
-            connected_last = any_connected;
+            process_grad_pixel!(rep_cache, src_slice, local, width, row_off, x, y, connected_last);
         }
     }
     local
@@ -725,46 +781,13 @@ unsafe fn gradient_clusters_inner_neon(
                     }
                     for offset in 0..4usize {
                         if xi + offset >= chunk_end { break; }
-                        let i = row_off + xi + offset;
-                        let cur_rep = rep_cache[i];
-                        if cur_rep == u32::MAX {
-                            connected_last = false;
-                            continue;
-                        }
-                        let cur_rep_usize = cur_rep as usize;
-                        let current_pixel = src_slice[i];
-                        let xo = xi + offset;
-                        let mut any_connected = false;
-                        maybe_add_gradient!(rep_cache, src_slice, local, cur_rep_usize, current_pixel, xo, y, i + 1,             1i32,  0i32, any_connected);
-                        maybe_add_gradient!(rep_cache, src_slice, local, cur_rep_usize, current_pixel, xo, y, i + width,         0i32,  1i32, any_connected);
-                        if !connected_last {
-                            maybe_add_gradient!(rep_cache, src_slice, local, cur_rep_usize, current_pixel, xo, y, i + width - 1, -1i32, 1i32, any_connected);
-                        }
-                        any_connected = false;
-                        maybe_add_gradient!(rep_cache, src_slice, local, cur_rep_usize, current_pixel, xo, y, i + width + 1,     1i32,  1i32, any_connected);
-                        connected_last = any_connected;
+                        process_grad_pixel!(rep_cache, src_slice, local, width, row_off, xi + offset, y, connected_last);
                     }
                     xi += 4;
                 }
                 // Tail: up to 3 pixels not covered by the 4-wide inner loop.
                 while xi < chunk_end {
-                    let i = row_off + xi;
-                    let cur_rep = rep_cache[i];
-                    if cur_rep == u32::MAX {
-                        connected_last = false;
-                    } else {
-                        let cur_rep_usize = cur_rep as usize;
-                        let current_pixel = src_slice[i];
-                        let mut any_connected = false;
-                        maybe_add_gradient!(rep_cache, src_slice, local, cur_rep_usize, current_pixel, xi, y, i + 1,             1i32,  0i32, any_connected);
-                        maybe_add_gradient!(rep_cache, src_slice, local, cur_rep_usize, current_pixel, xi, y, i + width,         0i32,  1i32, any_connected);
-                        if !connected_last {
-                            maybe_add_gradient!(rep_cache, src_slice, local, cur_rep_usize, current_pixel, xi, y, i + width - 1, -1i32, 1i32, any_connected);
-                        }
-                        any_connected = false;
-                        maybe_add_gradient!(rep_cache, src_slice, local, cur_rep_usize, current_pixel, xi, y, i + width + 1,     1i32,  1i32, any_connected);
-                        connected_last = any_connected;
-                    }
+                    process_grad_pixel!(rep_cache, src_slice, local, width, row_off, xi, y, connected_last);
                     xi += 1;
                 }
                 x = chunk_end;
@@ -773,23 +796,7 @@ unsafe fn gradient_clusters_inner_neon(
 
         // Tail: up to 15 pixels at the right edge not covered by the NEON outer loop.
         while x < width - 1 {
-            let i = row_off + x;
-            let cur_rep = rep_cache[i];
-            if cur_rep == u32::MAX {
-                connected_last = false;
-            } else {
-                let cur_rep_usize = cur_rep as usize;
-                let current_pixel = src_slice[i];
-                let mut any_connected = false;
-                maybe_add_gradient!(rep_cache, src_slice, local, cur_rep_usize, current_pixel, x, y, i + 1,             1i32,  0i32, any_connected);
-                maybe_add_gradient!(rep_cache, src_slice, local, cur_rep_usize, current_pixel, x, y, i + width,         0i32,  1i32, any_connected);
-                if !connected_last {
-                    maybe_add_gradient!(rep_cache, src_slice, local, cur_rep_usize, current_pixel, x, y, i + width - 1, -1i32, 1i32, any_connected);
-                }
-                any_connected = false;
-                maybe_add_gradient!(rep_cache, src_slice, local, cur_rep_usize, current_pixel, x, y, i + width + 1,     1i32,  1i32, any_connected);
-                connected_last = any_connected;
-            }
+            process_grad_pixel!(rep_cache, src_slice, local, width, row_off, x, y, connected_last);
             x += 1;
         }
     }
@@ -797,7 +804,100 @@ unsafe fn gradient_clusters_inner_neon(
     local
 }
 
-/// Dispatch to NEON or scalar inner loop based on target architecture.
+/// AVX2-accelerated inner loop (x86_64), mirroring [`gradient_clusters_inner_neon`].
+///
+/// 32-pixel COLOR-based fast-path: one `loadu` per neighbor direction (curr/right/
+/// below/below-left/below-right); a pixel can only produce a gradient where the two
+/// colors differ and neither is `Skip`. When all 32 lanes across all 4 directions
+/// say "no gradient", the whole span is skipped. The rare boundary spans fall back
+/// to the identical per-pixel `maybe_add_gradient!` logic, so output equals scalar.
+///
+/// # Safety
+/// AVX2 must be available; row layout must allow reading `width+1` ahead (guaranteed
+/// because `y_end < height` for inner strips and the fast-path is bounded by `width-1`).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn gradient_clusters_inner_avx2(
+    src_slice: &[Pixel],
+    rep_cache: &[u32],
+    width: usize,
+    y_start: usize,
+    y_end: usize,
+) -> FxHashMap<(usize, usize), Vec<GradientInfo>> {
+    use std::arch::x86_64::*;
+    let mut local: FxHashMap<(usize, usize), Vec<GradientInfo>> =
+        FxHashMap::with_capacity_and_hasher(128, Default::default());
+    let skip_v = _mm256_set1_epi8(127i8); // Pixel::Skip = 127
+    // Mask with only byte 0 set, used to neutralize the below-left lane of pixel x
+    // when `connected_last` (that pixel skips its below-left check).
+    let lane0 = _mm256_setr_epi8(
+        -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0,
+    );
+
+    for y in y_start..y_end {
+        let row_off = y * width;
+        let mut connected_last = false;
+        let mut x = 1usize;
+
+        // 32-pixel color-based fast-path.
+        while x + 32 <= width - 1 {
+            let src_ptr = src_slice.as_ptr().add(row_off + x) as *const u8;
+            let curr = _mm256_loadu_si256(src_ptr as *const __m256i);
+            let right = _mm256_loadu_si256(src_ptr.add(1) as *const __m256i);
+            let below = _mm256_loadu_si256(src_ptr.add(width) as *const __m256i);
+            let bl = _mm256_loadu_si256(src_ptr.add(width - 1) as *const __m256i);
+            let br = _mm256_loadu_si256(src_ptr.add(width + 1) as *const __m256i);
+
+            let eqskip_curr = _mm256_cmpeq_epi8(curr, skip_v);
+            let no_r = _mm256_or_si256(
+                _mm256_cmpeq_epi8(curr, right),
+                _mm256_or_si256(eqskip_curr, _mm256_cmpeq_epi8(right, skip_v)),
+            );
+            let no_d = _mm256_or_si256(
+                _mm256_cmpeq_epi8(curr, below),
+                _mm256_or_si256(eqskip_curr, _mm256_cmpeq_epi8(below, skip_v)),
+            );
+            let mut no_bl = _mm256_or_si256(
+                _mm256_cmpeq_epi8(curr, bl),
+                _mm256_or_si256(eqskip_curr, _mm256_cmpeq_epi8(bl, skip_v)),
+            );
+            if connected_last {
+                no_bl = _mm256_or_si256(no_bl, lane0);
+            }
+            let no_br = _mm256_or_si256(
+                _mm256_cmpeq_epi8(curr, br),
+                _mm256_or_si256(eqskip_curr, _mm256_cmpeq_epi8(br, skip_v)),
+            );
+            let all_ok = _mm256_and_si256(_mm256_and_si256(no_r, no_d), _mm256_and_si256(no_bl, no_br));
+
+            if _mm256_movemask_epi8(all_ok) == -1 {
+                x += 32;
+                connected_last = false;
+                continue;
+            }
+
+            // Boundary span: process [x, chunk_end) with the exact scalar logic.
+            let chunk_end = (x + 32).min(width - 1);
+            let mut xi = x;
+            while xi < chunk_end {
+                process_grad_pixel!(rep_cache, src_slice, local, width, row_off, xi, y, connected_last);
+                xi += 1;
+            }
+            x = chunk_end;
+        }
+
+        // Tail: up to 31 pixels at the right edge.
+        while x < width - 1 {
+            process_grad_pixel!(rep_cache, src_slice, local, width, row_off, x, y, connected_last);
+            x += 1;
+        }
+    }
+
+    local
+}
+
+/// Dispatch to NEON (aarch64), AVX2 (x86_64), or scalar inner loop.
 fn gradient_clusters_inner(
     src_slice: &[Pixel],
     rep_cache: &[u32],
@@ -805,10 +905,19 @@ fn gradient_clusters_inner(
     y_start: usize,
     y_end: usize,
 ) -> FxHashMap<(usize, usize), Vec<GradientInfo>> {
+    // AArch64: NEON is baseline.
     #[cfg(target_arch = "aarch64")]
     // SAFETY: AArch64 always has NEON (mandatory in ARMv8-A).
     return unsafe { gradient_clusters_inner_neon(src_slice, rep_cache, width, y_start, y_end) };
 
+    // x86_64: AVX2 when the runtime probe confirms it.
+    #[cfg(target_arch = "x86_64")]
+    if crate::simd::has_avx2() {
+        // SAFETY: AVX2 confirmed by runtime probe.
+        return unsafe { gradient_clusters_inner_avx2(src_slice, rep_cache, width, y_start, y_end) };
+    }
+
+    // Portable scalar fallback.
     #[cfg(not(target_arch = "aarch64"))]
     gradient_clusters_inner_scalar(src_slice, rep_cache, width, y_start, y_end)
 }
