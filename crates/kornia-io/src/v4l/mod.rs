@@ -103,6 +103,18 @@ impl V4lVideoCapture {
                 PixelFormat::from_fourcc(actual_format.fourcc)
             );
         }
+        // The camera may also clamp the resolution to a supported one; record the
+        // size it actually negotiated so the buffer layout matches the frames.
+        let actual_size = ImageSize {
+            width: actual_format.width as usize,
+            height: actual_format.height as usize,
+        };
+        if actual_size.width != config.size.width || actual_size.height != config.size.height {
+            eprintln!(
+                "Warning: Requested size {}x{} not supported, using {}x{}",
+                config.size.width, config.size.height, actual_size.width, actual_size.height
+            );
+        }
 
         // Set the frame rate
         let params = Parameters::with_fps(config.fps);
@@ -117,7 +129,7 @@ impl V4lVideoCapture {
             stream,
             pixel_format: PixelFormat::from_fourcc(actual_format.fourcc),
             device,
-            size: config.size,
+            size: actual_size,
         })
     }
 
@@ -125,6 +137,12 @@ impl V4lVideoCapture {
     #[inline]
     pub fn pixel_format(&self) -> PixelFormat {
         self.pixel_format
+    }
+
+    /// Get the actual negotiated frame size (may differ from the requested size)
+    #[inline]
+    pub fn size(&self) -> ImageSize {
+        self.size
     }
 
     /// Set a camera control
