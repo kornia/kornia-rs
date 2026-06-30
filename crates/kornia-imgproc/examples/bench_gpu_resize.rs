@@ -17,7 +17,6 @@
 //! cargo run --example bench_gpu_resize --features gpu-cubecl,gpu-cuda --release
 //! ```
 
-use kornia_image::allocator::CpuAllocator;
 use kornia_image::{Image, ImageSize};
 use kornia_imgproc::interpolation::InterpolationMode;
 use kornia_imgproc::resize::resize_native;
@@ -98,7 +97,6 @@ fn run_cpu() {
                 height: sh as usize,
             },
             src_data,
-            CpuAllocator,
         )
         .expect("src image");
         let mut dst = Image::<f32, 3>::from_size_val(
@@ -107,7 +105,6 @@ fn run_cpu() {
                 height: dh as usize,
             },
             0.0,
-            CpuAllocator,
         )
         .expect("dst image");
 
@@ -202,7 +199,6 @@ fn run_gpu() {
                     height: sh as usize,
                 },
                 src_data,
-                CpuAllocator,
             )
             .expect("cpu src image");
             let mut dst_cpu = Image::<f32, 3>::from_size_val(
@@ -211,7 +207,6 @@ fn run_gpu() {
                     height: dh as usize,
                 },
                 0.0,
-                CpuAllocator,
             )
             .expect("cpu dst image");
             for _ in 0..WARMUP {

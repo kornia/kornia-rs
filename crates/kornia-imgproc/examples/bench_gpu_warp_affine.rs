@@ -7,7 +7,6 @@
 //! cargo run --example bench_gpu_warp_affine --features gpu-cuda --release
 //! ```
 
-use kornia_image::allocator::CpuAllocator;
 use kornia_image::{Image, ImageSize};
 use kornia_imgproc::{
     interpolation::InterpolationMode,
@@ -126,7 +125,6 @@ fn run_cpu() {
                     height: h as usize,
                 },
                 src_data,
-                CpuAllocator,
             )
             .expect("src");
             let mut dst = Image::<f32, 3>::from_size_val(
@@ -135,7 +133,6 @@ fn run_cpu() {
                     height: h as usize,
                 },
                 0.0,
-                CpuAllocator,
             )
             .expect("dst");
 
