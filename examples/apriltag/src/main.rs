@@ -6,10 +6,14 @@ use kornia::{
 };
 use kornia_3d::camera::PinholeCamera;
 use kornia_apriltag::{family::TagFamilyKind, AprilTagDecoder, DecodeTagsConfig};
+use std::collections::HashMap;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
+
+/// Per-tag temporal pose state (last smoothed orientation + translation), keyed by tag id.
+type PoseState = HashMap<u16, (glam::DQuat, glam::DVec3)>;
 
 /// Detect AprilTags in an image or live camera feed and visualize in Rerun (2D + optional 3D pose).
 #[derive(Debug, FromArgs)]
@@ -83,6 +87,10 @@ struct Args {
     /// number of orthogonal-iteration refinement steps for pose
     #[argh(option, default = "50")]
     n_iters: usize,
+
+    /// pose temporal smoothing toward each new frame (0 = frozen, 1 = none/raw)
+    #[argh(option, default = "0.35")]
+    pose_smoothing: f64,
 }
 
 fn parse_family(s: &str) -> Result<TagFamilyKind, String> {
@@ -143,10 +151,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let mut decoder = AprilTagDecoder::new(config, gray.size())?;
             let detections = decoder.decode(&gray)?;
+            eprintln!("{} detections in {}", detections.len(), path);
 
+            let mut pose_state = PoseState::new();
             log_frame(&rec, &rgb, gray.size(), &detections, args.tag_size.map(|ts| {
                 (PinholeCamera { fx: args.fx, fy: args.fy, cx, cy, k1: 0.0, k2: 0.0, p1: 0.0, p2: 0.0 }, ts, args.n_iters)
-            }))?;
+            }), &mut pose_state, args.pose_smoothing)?;
         }
         (None, camera) => {
             // Live camera mode (V4L, Linux only).
@@ -155,7 +165,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 use kornia::io::v4l::{PixelFormat, V4LCameraConfig, V4lVideoCapture};
 
                 let device_id = camera.unwrap_or(0);
-                let img_size = ImageSize { width: args.width as usize, height: args.height as usize };
+                let requested_size = ImageSize { width: args.width as usize, height: args.height as usize };
+
+                let cancel = Arc::new(AtomicBool::new(false));
+                let cancel2 = Arc::clone(&cancel);
+                ctrlc::set_handler(move || { cancel2.store(true, Ordering::SeqCst); })?;
+
+                let mut cam = V4lVideoCapture::new(V4LCameraConfig {
+                    device_path: format!("/dev/video{device_id}"),
+                    size: requested_size,
+                    fps: args.fps,
+                    format: PixelFormat::MJPG,
+                    buffer_size: 4,
+                })?;
+
+                // Use the size the camera actually negotiated (some devices clamp it).
+                let img_size = cam.size();
 
                 let cx = args.cx.unwrap_or(img_size.width as f64 / 2.0);
                 let cy_val = args.cy.unwrap_or(img_size.height as f64 / 2.0);
@@ -165,25 +190,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     args.n_iters,
                 ));
 
-                let cancel = Arc::new(AtomicBool::new(false));
-                let cancel2 = Arc::clone(&cancel);
-                ctrlc::set_handler(move || { cancel2.store(true, Ordering::SeqCst); })?;
-
-                let mut cam = V4lVideoCapture::new(V4LCameraConfig {
-                    device_path: format!("/dev/video{device_id}"),
-                    size: img_size,
-                    fps: args.fps,
-                    format: PixelFormat::MJPG,
-                    buffer_size: 4,
-                })?;
-
                 let mut rgb = Image::<u8, 3, CpuAllocator>::from_size_val(img_size, 0, CpuAllocator)?;
                 let mut gray = Image::<u8, 1, CpuAllocator>::from_size_val(img_size, 0u8, CpuAllocator)?;
                 let mut decoder = AprilTagDecoder::new(config, img_size)?;
                 let mut fps = FpsCounter::new();
+                let mut pose_state = PoseState::new();
 
                 while !cancel.load(Ordering::SeqCst) {
                     let Some(frame) = cam.grab_frame()? else { continue };
+                    // For most formats we decode to RGB and then derive gray below.
+                    // GREY is already single-channel luminance, so we fill `gray`
+                    // directly and replicate it into `rgb` only for visualization.
+                    let mut have_gray = false;
                     match frame.pixel_format {
                         PixelFormat::YUYV => {
                             kornia::imgproc::color::convert_yuyv_to_rgb_u8(
@@ -192,14 +210,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         PixelFormat::MJPG => {
                             jpeg::decode_image_jpeg_rgb8(frame.buffer.as_slice(), &mut rgb)?;
                         }
+                        // V4L2 GREY (8-bit grayscale): not a named variant, arrives as Custom.
+                        PixelFormat::Custom(fourcc) if &fourcc == b"GREY" => {
+                            let buf = frame.buffer.as_slice();
+                            let expected = img_size.width * img_size.height;
+                            if buf.len() < expected {
+                                continue;
+                            }
+                            let buf = &buf[..expected];
+                            gray.as_slice_mut().copy_from_slice(buf);
+                            for (px, &g) in rgb.as_slice_mut().chunks_exact_mut(3).zip(buf) {
+                                px[0] = g;
+                                px[1] = g;
+                                px[2] = g;
+                            }
+                            have_gray = true;
+                        }
                         _ => continue,
                     }
-                    gray_from_rgb_u8(&rgb, &mut gray)?;
+                    if !have_gray {
+                        gray_from_rgb_u8(&rgb, &mut gray)?;
+                    }
                     let detections = decoder.decode(&gray)?;
                     decoder.clear();
 
                     log_frame(&rec, &rgb, img_size, &detections,
-                        pinhole.as_ref().map(|(cam, ts, ni)| (cam.clone(), *ts, *ni)))?;
+                        pinhole.as_ref().map(|(cam, ts, ni)| (cam.clone(), *ts, *ni)),
+                        &mut pose_state, args.pose_smoothing)?;
 
                     fps.update();
                     eprint!("\r{} detections  {:.1} fps", detections.len(), fps.fps());
@@ -228,6 +265,8 @@ fn log_frame(
     img_size: ImageSize,
     detections: &[kornia_apriltag::decoder::Detection],
     pose_args: Option<(PinholeCamera, f64, usize)>,
+    pose_state: &mut PoseState,
+    smooth_alpha: f64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Log camera pinhole model once (static) when pose estimation is active.
     if let Some((ref cam, _, _)) = pose_args {
@@ -267,36 +306,97 @@ fn log_frame(
         // 3D pose for each tag.
         if let Some((ref cam, tag_size, n_iters)) = pose_args {
             if let Ok(pair) = det.estimate_pose(cam, tag_size, n_iters) {
-                let pose = &pair.best.pose;
-                let t = &pose.translation;
-                let r = &pose.rotation;
+                // Best candidate (lower reprojection error) in the planar ambiguity.
+                let q_best = dquat_from_mat3(&pair.best.pose.rotation);
+                let tb = pair.best.pose.translation;
+                let (mut q, mut t) = (q_best, glam::DVec3::new(tb.x, tb.y, tb.z));
 
-                // Rotation matrix → quaternion via glam internals.
-                let qd = glam_dquat_from_mat3(r);
-                let (qx, qy, qz, qw) = (qd[0] as f32, qd[1] as f32, qd[2] as f32, qd[3] as f32);
+                // Temporal disambiguation: when we've seen this tag before, choose the
+                // candidate whose orientation is closest to last frame (|dot| is
+                // hemisphere-agnostic), then low-pass toward it to damp noise. On the
+                // first sighting we trust the lower-reprojection "best" as-is.
+                if let Some(&(q_prev, t_prev)) = pose_state.get(&det.id) {
+                    // Near-frontal tags make the two reprojection errors nearly equal,
+                    // so the raw "best" flip-flops; pick the one matching last frame.
+                    let q_second = dquat_from_mat3(&pair.second.pose.rotation);
+                    if q_second.dot(q_prev).abs() > q_best.dot(q_prev).abs() {
+                        q = q_second;
+                        let ts = pair.second.pose.translation;
+                        t = glam::DVec3::new(ts.x, ts.y, ts.z);
+                    }
+                    // Align hemispheres before slerp, then low-pass orientation + position.
+                    let q_prev = if q_prev.dot(q) < 0.0 {
+                        glam::DQuat::from_xyzw(-q_prev.x, -q_prev.y, -q_prev.z, -q_prev.w)
+                    } else {
+                        q_prev
+                    };
+                    q = q_prev.slerp(q, smooth_alpha).normalize();
+                    t = t_prev.lerp(t, smooth_alpha);
+                }
+                pose_state.insert(det.id, (q, t));
+
+                let (qx, qy, qz, qw) = (q.x as f32, q.y as f32, q.z as f32, q.w as f32);
 
                 let tag_path = format!("world/tag_{}", det.id);
                 let tag_face_path = format!("world/tag_{}/face", det.id);
-                // Transform: tag frame → camera (parent) frame.
-                // p_camera = R * p_tag + t  ↔  ChildFromParent(rotation=R, translation=t)
+                let tag_plane_path = format!("world/tag_{}/plane", det.id);
+                let tag_axes_path = format!("world/tag_{}/axes", det.id);
+                // Transform: tag (child) → world/camera (parent) frame.
+                // p_camera = R * p_tag + t maps child→parent, i.e. ParentFromChild.
+                // (The camera sits at the world origin, so p_world == p_camera.)
                 rec.log(
                     tag_path.as_str(),
                     &rerun::Transform3D::from_translation_rotation(
                         [t.x as f32, t.y as f32, t.z as f32],
                         rerun::Quaternion::from_wxyz([qw, qx, qy, qz]),
                     )
-                    .with_relation(rerun::TransformRelation::ChildFromParent),
+                    .with_relation(rerun::TransformRelation::ParentFromChild),
                 )?;
 
-                // Draw a small square at the tag face to make it visible in 3D.
+                // Tag corners in the tag frame (planar, z = 0).
                 let h = (tag_size / 2.0) as f32;
+                let corners3d = [
+                    [-h, -h, 0.0f32],
+                    [h, -h, 0.0],
+                    [h, h, 0.0],
+                    [-h, h, 0.0],
+                ];
+                let col = tag_color(det.tag_family_kind.clone());
+
+                // Filled planar surface (two triangles) so the tag shows as a full plane.
+                rec.log(
+                    tag_plane_path.as_str(),
+                    &rerun::Mesh3D::new(corners3d)
+                        .with_triangle_indices([[0, 1, 2], [0, 2, 3]])
+                        .with_vertex_colors([col, col, col, col]),
+                )?;
+
+                // Crisp outline + id label on top of the plane.
                 rec.log(
                     tag_face_path.as_str(),
                     &rerun::LineStrips3D::new([[
-                        [-h, -h, 0.0f32], [h, -h, 0.0], [h, h, 0.0], [-h, h, 0.0], [-h, -h, 0.0],
+                        corners3d[0], corners3d[1], corners3d[2], corners3d[3], corners3d[0],
                     ]])
-                    .with_colors([tag_color(det.tag_family_kind.clone())])
+                    .with_colors([col])
                     .with_labels([format!("{}", det.id)]),
+                )?;
+
+                // Draw the tag's coordinate frame (X=red, Y=green, Z=blue) so the
+                // 6-DOF orientation is readable in 3D. Arrows inherit the tag pose.
+                let axis = tag_size as f32; // one tag-side long
+                rec.log(
+                    tag_axes_path.as_str(),
+                    &rerun::Arrows3D::from_vectors([
+                        [axis, 0.0, 0.0],
+                        [0.0, axis, 0.0],
+                        [0.0, 0.0, axis],
+                    ])
+                    .with_origins([[0.0f32, 0.0, 0.0]; 3])
+                    .with_colors([
+                        rerun::Color::from_rgb(255, 0, 0),
+                        rerun::Color::from_rgb(0, 255, 0),
+                        rerun::Color::from_rgb(0, 0, 255),
+                    ]),
                 )?;
             }
         }
@@ -315,13 +415,12 @@ fn log_frame(
     Ok(())
 }
 
-/// Extract [x, y, z, w] from a Mat3F64 rotation matrix.
-fn glam_dquat_from_mat3(r: &kornia_algebra::Mat3F64) -> [f64; 4] {
+/// Convert a Mat3F64 rotation matrix to a glam quaternion.
+fn dquat_from_mat3(r: &kornia_algebra::Mat3F64) -> glam::DQuat {
     // Mat3F64 wraps glam::DMat3. Build from columns.
-    let q = glam::DQuat::from_mat3(&glam::DMat3::from_cols(
+    glam::DQuat::from_mat3(&glam::DMat3::from_cols(
         glam::DVec3::new(r.x_axis.x, r.x_axis.y, r.x_axis.z),
         glam::DVec3::new(r.y_axis.x, r.y_axis.y, r.y_axis.z),
         glam::DVec3::new(r.z_axis.x, r.z_axis.y, r.z_axis.z),
-    ));
-    [q.x, q.y, q.z, q.w]
+    ))
 }
