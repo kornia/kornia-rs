@@ -36,7 +36,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::allocator::host_alloc;
 
     #[test]
     fn test_bincode() -> Result<(), Box<dyn std::error::Error>> {

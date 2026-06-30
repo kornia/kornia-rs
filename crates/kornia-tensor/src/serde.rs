@@ -61,7 +61,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::allocator::host_alloc;
 
     #[test]
     fn test_serde() -> Result<(), Box<dyn std::error::Error>> {
