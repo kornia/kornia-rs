@@ -1,46 +1,92 @@
 use argh::FromArgs;
 use kornia::{
-    image::{allocator::CpuAllocator, Image},
-    imgproc::color::gray_from_rgb_u8,
-    io::functional::read_image_any_rgb8,
+    image::{allocator::CpuAllocator, Image, ImageSize},
+    imgproc::color::{gray_from_rgb_u8, YuvToRgbMode},
+    io::{fps_counter::FpsCounter, jpeg, functional::read_image_any_rgb8},
 };
+use kornia_3d::camera::PinholeCamera;
 use kornia_apriltag::{family::TagFamilyKind, AprilTagDecoder, DecodeTagsConfig};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 
-/// Detects AprilTags in an image
+/// Detect AprilTags in an image or live camera feed and visualize in Rerun (2D + optional 3D pose).
 #[derive(Debug, FromArgs)]
 struct Args {
-    /// image path
-    #[argh(positional, short = 'p')]
-    path: String,
+    /// path to an image file (mutually exclusive with --camera-id)
+    #[argh(option, short = 'p')]
+    path: Option<String>,
 
-    /// apriltag family kind to detect
+    /// V4L camera device index (default 0; mutually exclusive with --path)
+    #[argh(option, short = 'c')]
+    camera_id: Option<u32>,
+
+    /// camera capture width in pixels
+    #[argh(option, default = "640")]
+    width: u32,
+
+    /// camera capture height in pixels
+    #[argh(option, default = "480")]
+    height: u32,
+
+    /// frames per second for camera mode
+    #[argh(option, short = 'f', default = "30")]
+    fps: u32,
+
+    /// apriltag family kinds to detect
     #[argh(
         option,
         short = 'k',
         default = "vec![TagFamilyKind::Tag36H11]",
-        from_str_fn(to_tag_family_kind)
+        from_str_fn(parse_family)
     )]
     kind: Vec<TagFamilyKind>,
 
-    /// sharpening factor for decoding
-    #[argh(option, short = 'd', default = "0.25")]
-    decode_sharpening: f32,
+    /// downscale factor (1 = none, 2 = half, …)
+    #[argh(option, short = 's', default = "2")]
+    downscale_factor: usize,
 
-    /// enable edge refinement during detection
-    #[argh(switch, short = 'r')]
-    refine_edges_enabled: bool,
-
-    /// minimum difference between white and black for detection
+    /// minimum white/black pixel difference for adaptive threshold
     #[argh(option, short = 'm', default = "5")]
     min_white_black_difference: u8,
 
-    /// downscale factor for detection
-    #[argh(option, short = 's', default = "2")]
-    downscale_factor: usize,
+    /// tag sharpening for decode (0.0–1.0)
+    #[argh(option, short = 'd', default = "0.25")]
+    decode_sharpening: f32,
+
+    /// enable sub-pixel edge refinement
+    #[argh(switch, short = 'r')]
+    refine_edges_enabled: bool,
+
+    // ── 3D pose estimation ──────────────────────────────────────────────────
+    /// physical tag side length in metres (enables 3D pose output)
+    #[argh(option)]
+    tag_size: Option<f64>,
+
+    /// camera focal length x in pixels
+    #[argh(option, default = "600.0")]
+    fx: f64,
+
+    /// camera focal length y in pixels
+    #[argh(option, default = "600.0")]
+    fy: f64,
+
+    /// camera principal point x in pixels (default: width/2)
+    #[argh(option)]
+    cx: Option<f64>,
+
+    /// camera principal point y in pixels (default: height/2)
+    #[argh(option)]
+    cy: Option<f64>,
+
+    /// number of orthogonal-iteration refinement steps for pose
+    #[argh(option, default = "50")]
+    n_iters: usize,
 }
 
-fn to_tag_family_kind(value: &str) -> Result<TagFamilyKind, String> {
-    match value {
+fn parse_family(s: &str) -> Result<TagFamilyKind, String> {
+    match s {
         "tag16_h5" => Ok(TagFamilyKind::Tag16H5),
         "tag36_h11" => Ok(TagFamilyKind::Tag36H11),
         "tag36_h10" => Ok(TagFamilyKind::Tag36H10),
@@ -50,74 +96,232 @@ fn to_tag_family_kind(value: &str) -> Result<TagFamilyKind, String> {
         "tagcustom48_h12" => Ok(TagFamilyKind::TagCustom48H12),
         "tagstandard41_h12" => Ok(TagFamilyKind::TagStandard41H12),
         "tagstandard52_h13" => Ok(TagFamilyKind::TagStandard52H13),
-        _ => Err("Unsupported TagFamilyKind".to_string()),
+        _ => Err(format!("Unknown family '{s}'")),
     }
+}
+
+fn tag_color(kind: TagFamilyKind) -> rerun::Color {
+    let [r, g, b] = match kind {
+        TagFamilyKind::Tag16H5 => [255, 0, 0],
+        TagFamilyKind::Tag36H11 => [0, 255, 0],
+        TagFamilyKind::Tag36H10 => [0, 0, 255],
+        TagFamilyKind::Tag25H9 => [255, 255, 0],
+        TagFamilyKind::TagCircle21H7 => [255, 0, 255],
+        TagFamilyKind::TagCircle49H12 => [0, 255, 255],
+        TagFamilyKind::TagCustom48H12 => [255, 128, 0],
+        TagFamilyKind::TagStandard41H12 => [128, 0, 255],
+        TagFamilyKind::TagStandard52H13 => [0, 128, 255],
+        TagFamilyKind::Custom(_) => [128, 128, 128],
+    };
+    rerun::Color::from_rgb(r, g, b)
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Args = argh::from_env();
 
-    let rec = rerun::RecordingStreamBuilder::new("Kornia AprilTag Detection Example").spawn()?;
+    let rec = rerun::RecordingStreamBuilder::new("Kornia AprilTag").spawn()?;
 
-    let img = read_image_any_rgb8(args.path)?;
+    // Camera-space convention: X-right, Y-down, Z-forward (OpenCV/RDF).
+    rec.log_static("/", &rerun::ViewCoordinates::RIGHT_HAND_Y_DOWN())?;
+    rec.log_static("world/camera", &rerun::ViewCoordinates::RDF())?;
 
-    let mut grayscale_img = Image::from_size_val(img.size(), 0, CpuAllocator)?;
-    gray_from_rgb_u8(&img, &mut grayscale_img)?;
-
-    let mut config = DecodeTagsConfig::new(args.kind)?;
-
-    config.refine_edges_enabled = args.refine_edges_enabled;
+    let mut config = DecodeTagsConfig::new(args.kind.clone())?;
+    config.downscale_factor = args.downscale_factor;
     config.min_white_black_difference = args.min_white_black_difference;
     config.decode_sharpening = args.decode_sharpening;
-    config.downscale_factor = args.downscale_factor;
+    config.refine_edges_enabled = args.refine_edges_enabled;
 
-    let mut decoder = AprilTagDecoder::new(config, grayscale_img.size())?;
-    let detections = decoder.decode(&grayscale_img)?;
+    match (&args.path, args.camera_id) {
+        (Some(path), None) => {
+            // Static image mode.
+            let rgb = read_image_any_rgb8(path)?;
+            let mut gray = Image::from_size_val(rgb.size(), 0u8, CpuAllocator)?;
+            gray_from_rgb_u8(&rgb, &mut gray)?;
 
-    let mut all_coords = Vec::new();
-    let mut all_labels = Vec::new();
-    let mut all_colors = Vec::new();
+            let cx = args.cx.unwrap_or(gray.width() as f64 / 2.0);
+            let cy = args.cy.unwrap_or(gray.height() as f64 / 2.0);
 
-    for detection in detections {
-        let coords = [
-            [detection.quad.corners[0].x, detection.quad.corners[0].y],
-            [detection.quad.corners[1].x, detection.quad.corners[1].y],
-            [detection.quad.corners[2].x, detection.quad.corners[2].y],
-            [detection.quad.corners[3].x, detection.quad.corners[3].y],
-            [detection.quad.corners[0].x, detection.quad.corners[0].y],
-        ];
+            let mut decoder = AprilTagDecoder::new(config, gray.size())?;
+            let detections = decoder.decode(&gray)?;
 
-        all_coords.push(coords);
-        all_labels.push(detection.id.to_string());
-        all_colors.push(tag_family_color(detection.tag_family_kind));
+            log_frame(&rec, &rgb, gray.size(), &detections, args.tag_size.map(|ts| {
+                (PinholeCamera { fx: args.fx, fy: args.fy, cx, cy, k1: 0.0, k2: 0.0, p1: 0.0, p2: 0.0 }, ts, args.n_iters)
+            }))?;
+        }
+        (None, camera) => {
+            // Live camera mode (V4L, Linux only).
+            #[cfg(target_os = "linux")]
+            {
+                use kornia::io::v4l::{PixelFormat, V4LCameraConfig, V4lVideoCapture};
+
+                let device_id = camera.unwrap_or(0);
+                let img_size = ImageSize { width: args.width as usize, height: args.height as usize };
+
+                let cx = args.cx.unwrap_or(img_size.width as f64 / 2.0);
+                let cy_val = args.cy.unwrap_or(img_size.height as f64 / 2.0);
+                let pinhole = args.tag_size.map(|ts| (
+                    PinholeCamera { fx: args.fx, fy: args.fy, cx, cy: cy_val, k1: 0.0, k2: 0.0, p1: 0.0, p2: 0.0 },
+                    ts,
+                    args.n_iters,
+                ));
+
+                let cancel = Arc::new(AtomicBool::new(false));
+                let cancel2 = Arc::clone(&cancel);
+                ctrlc::set_handler(move || { cancel2.store(true, Ordering::SeqCst); })?;
+
+                let mut cam = V4lVideoCapture::new(V4LCameraConfig {
+                    device_path: format!("/dev/video{device_id}"),
+                    size: img_size,
+                    fps: args.fps,
+                    format: PixelFormat::MJPG,
+                    buffer_size: 4,
+                })?;
+
+                let mut rgb = Image::<u8, 3, CpuAllocator>::from_size_val(img_size, 0, CpuAllocator)?;
+                let mut gray = Image::<u8, 1, CpuAllocator>::from_size_val(img_size, 0u8, CpuAllocator)?;
+                let mut decoder = AprilTagDecoder::new(config, img_size)?;
+                let mut fps = FpsCounter::new();
+
+                while !cancel.load(Ordering::SeqCst) {
+                    let Some(frame) = cam.grab_frame()? else { continue };
+                    match frame.pixel_format {
+                        PixelFormat::YUYV => {
+                            kornia::imgproc::color::convert_yuyv_to_rgb_u8(
+                                frame.buffer.as_slice(), &mut rgb, YuvToRgbMode::Bt601Full)?;
+                        }
+                        PixelFormat::MJPG => {
+                            jpeg::decode_image_jpeg_rgb8(frame.buffer.as_slice(), &mut rgb)?;
+                        }
+                        _ => continue,
+                    }
+                    gray_from_rgb_u8(&rgb, &mut gray)?;
+                    let detections = decoder.decode(&gray)?;
+                    decoder.clear();
+
+                    log_frame(&rec, &rgb, img_size, &detections,
+                        pinhole.as_ref().map(|(cam, ts, ni)| (cam.clone(), *ts, *ni)))?;
+
+                    fps.update();
+                    eprint!("\r{} detections  {:.1} fps", detections.len(), fps.fps());
+                }
+                eprintln!();
+            }
+
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = camera;
+                return Err("V4L camera mode is only supported on Linux".into());
+            }
+        }
+        (Some(_), Some(_)) => {
+            return Err("Provide either --path or --camera-id, not both".into());
+        }
     }
-
-    rec.log(
-        "Image",
-        &rerun::Image::from_elements(img.as_slice(), img.size().into(), rerun::ColorModel::RGB),
-    )?;
-
-    rec.log(
-        "Image",
-        &rerun::LineStrips2D::new(all_coords)
-            .with_labels(all_labels)
-            .with_colors(all_colors),
-    )?;
 
     Ok(())
 }
 
-fn tag_family_color(kind: TagFamilyKind) -> [u8; 3] {
-    match kind {
-        TagFamilyKind::Tag16H5 => [255, 0, 0],            // Red
-        TagFamilyKind::Tag36H11 => [0, 255, 0],           // Green
-        TagFamilyKind::Tag36H10 => [0, 0, 255],           // Blue
-        TagFamilyKind::Tag25H9 => [255, 255, 0],          // Yellow
-        TagFamilyKind::TagCircle21H7 => [255, 0, 255],    // Magenta
-        TagFamilyKind::TagCircle49H12 => [0, 255, 255],   // Cyan
-        TagFamilyKind::TagCustom48H12 => [255, 128, 0],   // Orange
-        TagFamilyKind::TagStandard41H12 => [128, 0, 255], // Purple
-        TagFamilyKind::TagStandard52H13 => [0, 128, 255], // Sky Blue
-        TagFamilyKind::Custom(_) => [128, 128, 128],      // Gray for custom/unknown
+/// Log one frame: image + 2D overlays + optional 3D tag poses.
+fn log_frame(
+    rec: &rerun::RecordingStream,
+    rgb: &kornia::image::Image<u8, 3, CpuAllocator>,
+    img_size: ImageSize,
+    detections: &[kornia_apriltag::decoder::Detection],
+    pose_args: Option<(PinholeCamera, f64, usize)>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Log camera pinhole model once (static) when pose estimation is active.
+    if let Some((ref cam, _, _)) = pose_args {
+        rec.log_static(
+            "world/camera/image",
+            &rerun::Pinhole::from_focal_length_and_resolution(
+                [cam.fx as f32, cam.fy as f32],
+                [img_size.width as f32, img_size.height as f32],
+            )
+            .with_principal_point([cam.cx as f32, cam.cy as f32]),
+        )?;
     }
+
+    // Log the RGB frame.
+    rec.log(
+        "world/camera/image",
+        &rerun::Image::from_elements(rgb.as_slice(), img_size.into(), rerun::ColorModel::RGB),
+    )?;
+
+    // Build per-detection 2D overlays and (optionally) 3D transforms.
+    let mut strips: Vec<[[f32; 2]; 5]> = Vec::with_capacity(detections.len());
+    let mut labels: Vec<String> = Vec::with_capacity(detections.len());
+    let mut colors: Vec<rerun::Color> = Vec::with_capacity(detections.len());
+
+    for det in detections {
+        let c = &det.quad.corners;
+        strips.push([
+            [c[0].x, c[0].y],
+            [c[1].x, c[1].y],
+            [c[2].x, c[2].y],
+            [c[3].x, c[3].y],
+            [c[0].x, c[0].y],
+        ]);
+        labels.push(format!("id={}", det.id));
+        colors.push(tag_color(det.tag_family_kind.clone()));
+
+        // 3D pose for each tag.
+        if let Some((ref cam, tag_size, n_iters)) = pose_args {
+            if let Ok(pair) = det.estimate_pose(cam, tag_size, n_iters) {
+                let pose = &pair.best.pose;
+                let t = &pose.translation;
+                let r = &pose.rotation;
+
+                // Rotation matrix → quaternion via glam internals.
+                let qd = glam_dquat_from_mat3(r);
+                let (qx, qy, qz, qw) = (qd[0] as f32, qd[1] as f32, qd[2] as f32, qd[3] as f32);
+
+                let tag_path = format!("world/tag_{}", det.id);
+                let tag_face_path = format!("world/tag_{}/face", det.id);
+                // Transform: tag frame → camera (parent) frame.
+                // p_camera = R * p_tag + t  ↔  ChildFromParent(rotation=R, translation=t)
+                rec.log(
+                    tag_path.as_str(),
+                    &rerun::Transform3D::from_translation_rotation(
+                        [t.x as f32, t.y as f32, t.z as f32],
+                        rerun::Quaternion::from_wxyz([qw, qx, qy, qz]),
+                    )
+                    .with_relation(rerun::TransformRelation::ChildFromParent),
+                )?;
+
+                // Draw a small square at the tag face to make it visible in 3D.
+                let h = (tag_size / 2.0) as f32;
+                rec.log(
+                    tag_face_path.as_str(),
+                    &rerun::LineStrips3D::new([[
+                        [-h, -h, 0.0f32], [h, -h, 0.0], [h, h, 0.0], [-h, h, 0.0], [-h, -h, 0.0],
+                    ]])
+                    .with_colors([tag_color(det.tag_family_kind.clone())])
+                    .with_labels([format!("{}", det.id)]),
+                )?;
+            }
+        }
+    }
+
+    // 2D corner overlays on the image.
+    if !strips.is_empty() {
+        rec.log(
+            "world/camera/image",
+            &rerun::LineStrips2D::new(strips)
+                .with_labels(labels)
+                .with_colors(colors),
+        )?;
+    }
+
+    Ok(())
+}
+
+/// Extract [x, y, z, w] from a Mat3F64 rotation matrix.
+fn glam_dquat_from_mat3(r: &kornia_algebra::Mat3F64) -> [f64; 4] {
+    // Mat3F64 wraps glam::DMat3. Build from columns.
+    let q = glam::DQuat::from_mat3(&glam::DMat3::from_cols(
+        glam::DVec3::new(r.x_axis.x, r.x_axis.y, r.x_axis.z),
+        glam::DVec3::new(r.y_axis.x, r.y_axis.y, r.y_axis.z),
+        glam::DVec3::new(r.z_axis.x, r.z_axis.y, r.z_axis.z),
+    ));
+    [q.x, q.y, q.z, q.w]
 }
