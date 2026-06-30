@@ -127,18 +127,20 @@ pub fn gray_from_rgb_f32<A1: ImageAllocator, A2: ImageAllocator>(
 
 /// Slice-level RGB f32 → grayscale f32 kernel dispatcher.
 ///
-/// Dispatches to AVX2+FMA on x86_64 when available, scalar otherwise.
+/// Dispatches to AVX2+FMA on x86_64 when available, scalar otherwise. There is no
+/// NEON f32 kernel yet, so AArch64 intentionally falls through to the scalar path.
 pub fn rgb_to_gray_f32(src: &[f32], dst: &mut [f32], npixels: usize) {
+    // x86_64: use AVX2+FMA when the runtime probe confirms both.
     #[cfg(target_arch = "x86_64")]
     {
         let cpu = crate::simd::cpu_features();
         if cpu.has_avx2 && cpu.has_fma {
             // SAFETY: AVX2+FMA confirmed by runtime probe.
-            unsafe { rgb_to_gray_f32_avx2(src, dst, npixels) };
-            return;
+            return unsafe { rgb_to_gray_f32_avx2(src, dst, npixels) };
         }
     }
-    #[allow(unreachable_code)]
+
+    // Portable fallback (incl. AArch64 — no NEON f32 kernel yet).
     rgb_to_gray_f32_scalar(src, dst, npixels);
 }
 
@@ -291,23 +293,26 @@ pub fn rgb_to_gray_u8(src: &[u8], dst: &mut [u8], npixels: usize) {
 }
 
 /// Kernel dispatcher: NEON (aarch64), AVX2 (x86_64), or scalar fallback.
+///
+/// Each architecture branch is `#[cfg]`-gated so exactly one path is compiled in
+/// per target; the scalar fallback is excluded on AArch64 (where NEON is always
+/// taken) to keep every branch reachable without `#[allow(unreachable_code)]`.
 #[inline]
 fn rgb_to_gray_u8_kernel(src: &[u8], dst: &mut [u8], npixels: usize) {
+    // AArch64: NEON is part of the ARMv8-A baseline — always available.
     #[cfg(target_arch = "aarch64")]
-    {
-        rgb_to_gray_u8_neon(src, dst, npixels);
-        return;
-    }
+    // SAFETY: NEON is guaranteed on AArch64.
+    return unsafe { rgb_to_gray_u8_neon(src, dst, npixels) };
+
+    // x86_64: use AVX2 when the runtime probe confirms it.
     #[cfg(target_arch = "x86_64")]
-    {
-        let cpu = crate::simd::cpu_features();
-        if cpu.has_avx2 {
-            // SAFETY: AVX2 confirmed by the runtime probe.
-            unsafe { rgb_to_gray_u8_avx2(src, dst, npixels) };
-            return;
-        }
+    if crate::simd::cpu_features().has_avx2 {
+        // SAFETY: AVX2 confirmed by the runtime probe.
+        return unsafe { rgb_to_gray_u8_avx2(src, dst, npixels) };
     }
-    #[allow(unreachable_code)]
+
+    // Portable fallback: non-AArch64 targets without AVX2 (and any other arch).
+    #[cfg(not(target_arch = "aarch64"))]
     rgb_to_gray_u8_scalar(src, dst, npixels);
 }
 
