@@ -1,7 +1,6 @@
 use std::ops::ControlFlow;
 
-use kornia_image::{allocator::ImageAllocator, Image, ImageError, ImageSize};
-use kornia_tensor::CpuAllocator;
+use kornia_image::{Image, ImageError, ImageSize};
 use rayon::prelude::*;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -20,8 +19,8 @@ pub struct FastDetector {
     pub min_distance: usize,
     /// The minimum arc length for a sequence of contiguous pixels to be considered a corner.
     pub arc_length: usize,
-    corner_response: Image<f32, 1, CpuAllocator>,
-    mask: Image<bool, 1, CpuAllocator>,
+    corner_response: Image<f32, 1>,
+    mask: Image<bool, 1>,
     taken: Vec<bool>,
 }
 
@@ -48,8 +47,8 @@ impl FastDetector {
             threshold,
             min_distance,
             arc_length,
-            corner_response: Image::from_size_val(image_size, 0.0, CpuAllocator)?,
-            mask: Image::from_size_val(image_size, false, CpuAllocator)?,
+            corner_response: Image::from_size_val(image_size, 0.0)?,
+            mask: Image::from_size_val(image_size, false)?,
             taken: vec![false; image_size.height * image_size.width],
         })
     }
@@ -62,7 +61,7 @@ impl FastDetector {
     /// Access the precomputed corner response image (populated by
     /// `compute_corner_response` / `compute_corner_response_u8`). Useful for
     /// callers that want to read per-pixel FAST score without re-running NMS.
-    pub fn corner_response_image(&self) -> &Image<f32, 1, CpuAllocator> {
+    pub fn corner_response_image(&self) -> &Image<f32, 1> {
         &self.corner_response
     }
 
@@ -74,11 +73,7 @@ impl FastDetector {
     ///
     /// The internal `corner_response` image is NOT populated. Callers that
     /// need the dense response image must still use `compute_corner_response_u8`.
-    pub fn detect_direct_u8<A: ImageAllocator>(
-        &self,
-        src: &Image<u8, 1, A>,
-        border: usize,
-    ) -> Vec<([usize; 2], f32)> {
+    pub fn detect_direct_u8(&self, src: &Image<u8, 1>, border: usize) -> Vec<([usize; 2], f32)> {
         let height = src.height();
         let margin = border.max(3);
         fast_detect_rows_u8(
@@ -99,10 +94,7 @@ impl FastDetector {
     /// # Returns
     ///
     /// Returns a reference to the image containing the corner response.
-    pub fn compute_corner_response<A: ImageAllocator>(
-        &mut self,
-        src: &Image<f32, 1, A>,
-    ) -> &Image<f32, 1, CpuAllocator> {
+    pub fn compute_corner_response(&mut self, src: &Image<f32, 1>) -> &Image<f32, 1> {
         let src_slice = src.as_slice();
 
         let width = src.width();
@@ -187,10 +179,7 @@ impl FastDetector {
     /// Reads pixels directly from a u8 source, avoiding a full image u8→f32 pass.
     /// Threshold is interpreted as a 0..1 fraction and rounded to the nearest u8.
     /// The output response image remains f32 so downstream NMS ranking is unchanged.
-    pub fn compute_corner_response_u8<A: ImageAllocator>(
-        &mut self,
-        src: &Image<u8, 1, A>,
-    ) -> &Image<f32, 1, CpuAllocator> {
+    pub fn compute_corner_response_u8(&mut self, src: &Image<u8, 1>) -> &Image<f32, 1> {
         let src_slice = src.as_slice();
         let width = src.width();
         let height = src.height();
@@ -460,8 +449,8 @@ pub fn suppress_direct_standalone(
 /// Runs the row loop in **parallel** (per-row rayon tasks). Do not call from
 /// within another `par_iter` — use [`fast_detect_rows_u8_serial`] instead to
 /// avoid nested-parallelism scheduler thrash on rayon's global pool.
-pub fn fast_detect_rows_u8<A: ImageAllocator>(
-    src: &Image<u8, 1, A>,
+pub fn fast_detect_rows_u8(
+    src: &Image<u8, 1>,
     threshold: f32,
     arc_length: usize,
     border: usize,
@@ -473,8 +462,8 @@ pub fn fast_detect_rows_u8<A: ImageAllocator>(
 /// Serial variant of [`fast_detect_rows_u8`]. Use this from inside an outer
 /// `par_iter` so the row loop runs on the caller's rayon worker rather than
 /// re-entering the global pool.
-pub fn fast_detect_rows_u8_serial<A: ImageAllocator>(
-    src: &Image<u8, 1, A>,
+pub fn fast_detect_rows_u8_serial(
+    src: &Image<u8, 1>,
     threshold: f32,
     arc_length: usize,
     border: usize,
@@ -483,8 +472,8 @@ pub fn fast_detect_rows_u8_serial<A: ImageAllocator>(
     fast_detect_rows_u8_impl(src, threshold, arc_length, border, rows, false)
 }
 
-fn fast_detect_rows_u8_impl<A: ImageAllocator>(
-    src: &Image<u8, 1, A>,
+fn fast_detect_rows_u8_impl(
+    src: &Image<u8, 1>,
     threshold: f32,
     arc_length: usize,
     border: usize,
@@ -750,79 +739,81 @@ unsafe fn fast_block_neon_16(
     n: u8,
     out_ptr: *mut u16,
 ) -> u16 {
-    use std::arch::aarch64::*;
+    unsafe {
+        use std::arch::aarch64::*;
 
-    let base = src_slice.as_ptr().add(center_ix);
-    let centers = vld1q_u8(base);
-    let threshold_v = vdupq_n_u8(threshold_u8);
-    let upper = vqaddq_u8(centers, threshold_v);
-    let lower = vqsubq_u8(centers, threshold_v);
+        let base = src_slice.as_ptr().add(center_ix);
+        let centers = vld1q_u8(base);
+        let threshold_v = vdupq_n_u8(threshold_u8);
+        let upper = vqaddq_u8(centers, threshold_v);
+        let lower = vqsubq_u8(centers, threshold_v);
 
-    // Block-level cardinal early-reject: if no lane has ≥3 cardinals outside
-    // the band, the whole 16-lane block is flat — write zeros and return.
-    let c0 = vld1q_u8(base.offset(ring[0]));
-    let c4 = vld1q_u8(base.offset(ring[4]));
-    let c8 = vld1q_u8(base.offset(ring[8]));
-    let c12 = vld1q_u8(base.offset(ring[12]));
+        // Block-level cardinal early-reject: if no lane has ≥3 cardinals outside
+        // the band, the whole 16-lane block is flat — write zeros and return.
+        let c0 = vld1q_u8(base.offset(ring[0]));
+        let c4 = vld1q_u8(base.offset(ring[4]));
+        let c8 = vld1q_u8(base.offset(ring[8]));
+        let c12 = vld1q_u8(base.offset(ring[12]));
 
-    let b0 = vshrq_n_u8::<7>(vcgtq_u8(c0, upper));
-    let b4 = vshrq_n_u8::<7>(vcgtq_u8(c4, upper));
-    let b8 = vshrq_n_u8::<7>(vcgtq_u8(c8, upper));
-    let b12 = vshrq_n_u8::<7>(vcgtq_u8(c12, upper));
-    let b_count = vaddq_u8(vaddq_u8(b0, b4), vaddq_u8(b8, b12));
+        let b0 = vshrq_n_u8::<7>(vcgtq_u8(c0, upper));
+        let b4 = vshrq_n_u8::<7>(vcgtq_u8(c4, upper));
+        let b8 = vshrq_n_u8::<7>(vcgtq_u8(c8, upper));
+        let b12 = vshrq_n_u8::<7>(vcgtq_u8(c12, upper));
+        let b_count = vaddq_u8(vaddq_u8(b0, b4), vaddq_u8(b8, b12));
 
-    let d0 = vshrq_n_u8::<7>(vcltq_u8(c0, lower));
-    let d4 = vshrq_n_u8::<7>(vcltq_u8(c4, lower));
-    let d8 = vshrq_n_u8::<7>(vcltq_u8(c8, lower));
-    let d12 = vshrq_n_u8::<7>(vcltq_u8(c12, lower));
-    let d_count = vaddq_u8(vaddq_u8(d0, d4), vaddq_u8(d8, d12));
+        let d0 = vshrq_n_u8::<7>(vcltq_u8(c0, lower));
+        let d4 = vshrq_n_u8::<7>(vcltq_u8(c4, lower));
+        let d8 = vshrq_n_u8::<7>(vcltq_u8(c8, lower));
+        let d12 = vshrq_n_u8::<7>(vcltq_u8(c12, lower));
+        let d_count = vaddq_u8(vaddq_u8(d0, d4), vaddq_u8(d8, d12));
 
-    // ⌊n/4⌋ is the minimum number of cardinals on a 16-ring arc of length n.
-    let min_card_v = vdupq_n_u8(n / 4);
-    let any_pass = vorrq_u8(vcgeq_u8(b_count, min_card_v), vcgeq_u8(d_count, min_card_v));
+        // ⌊n/4⌋ is the minimum number of cardinals on a 16-ring arc of length n.
+        let min_card_v = vdupq_n_u8(n / 4);
+        let any_pass = vorrq_u8(vcgeq_u8(b_count, min_card_v), vcgeq_u8(d_count, min_card_v));
 
-    if vmaxvq_u8(any_pass) == 0 {
-        // All 16 lanes fail cardinal check → mask = 0. Scores irrelevant,
-        // caller won't read them.
-        return 0;
+        if vmaxvq_u8(any_pass) == 0 {
+            // All 16 lanes fail cardinal check → mask = 0. Scores irrelevant,
+            // caller won't read them.
+            return 0;
+        }
+
+        // Reference FAST-9 `cornerScore`: max over 16 arc-starts of (min over
+        // 9-arc) of saturating diff, on both dark and bright sides. Replaces an
+        // earlier Σ|ring−center| proxy score, which was a poor NMS ordering even
+        // though it agreed on the pass/fail decision.
+        //
+        // `cornerScore ≥ threshold ⇔ FAST-9 arc test passes at threshold`, so we
+        // can drop the separate chain-counter pass and derive the mask from
+        // `score > threshold_u8` directly. `n` is unused on this NEON path —
+        // only FAST-9 is used by ORB; other `n` fall through to scalar in the
+        // tail loop.
+        let mut ring_vals = [vdupq_n_u8(0); 16];
+        for k in 0..16 {
+            ring_vals[k] = vld1q_u8(base.offset(ring[k]));
+        }
+        let _ = (upper, lower, n); // values used only on the scalar tail path
+        let score_u8 = corner_score_9_neon(centers, &ring_vals);
+        let pass = vcgtq_u8(score_u8, threshold_v);
+        // Widen u8 → u16 to preserve the existing `*mut u16` out buffer
+        // (scalar fallback writes score as f32 = u16/255 at the caller).
+        let score_lo = vmovl_u8(vget_low_u8(score_u8));
+        let score_hi = vmovl_u8(vget_high_u8(score_u8));
+
+        // Extract a 16-bit pass-mask from `pass` (uint8x16_t with 0x00 or 0xFF per
+        // byte). Multiply each byte by its bit-weight (1,2,4,...,128) and sum the
+        // low/high halves with vaddv_u8 — each half produces an 8-bit byte, which
+        // concatenate to the full 16-bit mask.
+        let weights = vld1q_u8(BIT_WEIGHTS.as_ptr());
+        let masked = vandq_u8(pass, weights);
+        let lo_mask = vaddv_u8(vget_low_u8(masked)) as u16;
+        let hi_mask = vaddv_u8(vget_high_u8(masked)) as u16;
+        let mask = (hi_mask << 8) | lo_mask;
+
+        vst1q_u16(out_ptr, score_lo);
+        vst1q_u16(out_ptr.add(8), score_hi);
+
+        mask
     }
-
-    // Reference FAST-9 `cornerScore`: max over 16 arc-starts of (min over
-    // 9-arc) of saturating diff, on both dark and bright sides. Replaces an
-    // earlier Σ|ring−center| proxy score, which was a poor NMS ordering even
-    // though it agreed on the pass/fail decision.
-    //
-    // `cornerScore ≥ threshold ⇔ FAST-9 arc test passes at threshold`, so we
-    // can drop the separate chain-counter pass and derive the mask from
-    // `score > threshold_u8` directly. `n` is unused on this NEON path —
-    // only FAST-9 is used by ORB; other `n` fall through to scalar in the
-    // tail loop.
-    let mut ring_vals = [vdupq_n_u8(0); 16];
-    for k in 0..16 {
-        ring_vals[k] = vld1q_u8(base.offset(ring[k]));
-    }
-    let _ = (upper, lower, n); // values used only on the scalar tail path
-    let score_u8 = corner_score_9_neon(centers, &ring_vals);
-    let pass = vcgtq_u8(score_u8, threshold_v);
-    // Widen u8 → u16 to preserve the existing `*mut u16` out buffer
-    // (scalar fallback writes score as f32 = u16/255 at the caller).
-    let score_lo = vmovl_u8(vget_low_u8(score_u8));
-    let score_hi = vmovl_u8(vget_high_u8(score_u8));
-
-    // Extract a 16-bit pass-mask from `pass` (uint8x16_t with 0x00 or 0xFF per
-    // byte). Multiply each byte by its bit-weight (1,2,4,...,128) and sum the
-    // low/high halves with vaddv_u8 — each half produces an 8-bit byte, which
-    // concatenate to the full 16-bit mask.
-    let weights = vld1q_u8(BIT_WEIGHTS.as_ptr());
-    let masked = vandq_u8(pass, weights);
-    let lo_mask = vaddv_u8(vget_low_u8(masked)) as u16;
-    let hi_mask = vaddv_u8(vget_high_u8(masked)) as u16;
-    let mask = (hi_mask << 8) | lo_mask;
-
-    vst1q_u16(out_ptr, score_lo);
-    vst1q_u16(out_ptr.add(8), score_hi);
-
-    mask
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -895,32 +886,34 @@ unsafe fn corner_score_9_neon(
     centers: std::arch::aarch64::uint8x16_t,
     ring_vals: &[std::arch::aarch64::uint8x16_t; 16],
 ) -> std::arch::aarch64::uint8x16_t {
-    use std::arch::aarch64::*;
-    let mut dark = [vdupq_n_u8(0); 16];
-    let mut bright = [vdupq_n_u8(0); 16];
-    for k in 0..16 {
-        dark[k] = vqsubq_u8(centers, ring_vals[k]);
-        bright[k] = vqsubq_u8(ring_vals[k], centers);
-    }
-    let mut dark_score = vdupq_n_u8(0);
-    let mut bright_score = vdupq_n_u8(0);
-    let mut k = 0;
-    while k < 16 {
-        let mut core_d = dark[(k + 1) & 15];
-        let mut core_b = bright[(k + 1) & 15];
-        for i in 2..=8 {
-            core_d = vminq_u8(core_d, dark[(k + i) & 15]);
-            core_b = vminq_u8(core_b, bright[(k + i) & 15]);
+    unsafe {
+        use std::arch::aarch64::*;
+        let mut dark = [vdupq_n_u8(0); 16];
+        let mut bright = [vdupq_n_u8(0); 16];
+        for k in 0..16 {
+            dark[k] = vqsubq_u8(centers, ring_vals[k]);
+            bright[k] = vqsubq_u8(ring_vals[k], centers);
         }
-        let arc_k_d = vminq_u8(core_d, dark[k & 15]);
-        let arc_k1_d = vminq_u8(core_d, dark[(k + 9) & 15]);
-        dark_score = vmaxq_u8(dark_score, vmaxq_u8(arc_k_d, arc_k1_d));
-        let arc_k_b = vminq_u8(core_b, bright[k & 15]);
-        let arc_k1_b = vminq_u8(core_b, bright[(k + 9) & 15]);
-        bright_score = vmaxq_u8(bright_score, vmaxq_u8(arc_k_b, arc_k1_b));
-        k += 2;
+        let mut dark_score = vdupq_n_u8(0);
+        let mut bright_score = vdupq_n_u8(0);
+        let mut k = 0;
+        while k < 16 {
+            let mut core_d = dark[(k + 1) & 15];
+            let mut core_b = bright[(k + 1) & 15];
+            for i in 2..=8 {
+                core_d = vminq_u8(core_d, dark[(k + i) & 15]);
+                core_b = vminq_u8(core_b, bright[(k + i) & 15]);
+            }
+            let arc_k_d = vminq_u8(core_d, dark[k & 15]);
+            let arc_k1_d = vminq_u8(core_d, dark[(k + 9) & 15]);
+            dark_score = vmaxq_u8(dark_score, vmaxq_u8(arc_k_d, arc_k1_d));
+            let arc_k_b = vminq_u8(core_b, bright[k & 15]);
+            let arc_k1_b = vminq_u8(core_b, bright[(k + 9) & 15]);
+            bright_score = vmaxq_u8(bright_score, vmaxq_u8(arc_k_b, arc_k1_b));
+            k += 2;
+        }
+        vmaxq_u8(dark_score, bright_score)
     }
-    vmaxq_u8(dark_score, bright_score)
 }
 
 /// 16-lane parallel FAST-9 cornerScore on x86_64 AVX2. Direct mirror of
@@ -1082,11 +1075,7 @@ fn corner_fast_response(
     0.0
 }
 
-fn get_peak_mask<A: ImageAllocator>(
-    src: &Image<f32, 1, A>,
-    mask: &mut Image<bool, 1, A>,
-    threshold: f32,
-) {
+fn get_peak_mask(src: &Image<f32, 1>, mask: &mut Image<bool, 1>, threshold: f32) {
     let src_slice = src.as_slice();
     let mask_slice = mask.as_slice_mut();
 
@@ -1096,7 +1085,7 @@ fn get_peak_mask<A: ImageAllocator>(
         .for_each(|(src, mask)| *mask = *src > threshold);
 }
 
-fn exclude_border<A: ImageAllocator>(label: &mut Image<bool, 1, A>, border_width: usize) {
+fn exclude_border(label: &mut Image<bool, 1>, border_width: usize) {
     let label_size = label.size();
     let label_slice = label.as_slice_mut();
 
@@ -1115,9 +1104,9 @@ fn exclude_border<A: ImageAllocator>(label: &mut Image<bool, 1, A>, border_width
     });
 }
 
-fn get_high_intensity_peaks<A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<f32, 1, A1>,
-    mask: &Image<bool, 1, A2>,
+fn get_high_intensity_peaks(
+    src: &Image<f32, 1>,
+    mask: &Image<bool, 1>,
     min_distance: usize,
     taken: &mut [bool],
     max_peaks: usize,
@@ -1196,17 +1185,16 @@ mod tests {
     use super::*;
     use kornia_image::Image;
     use kornia_io::jpeg::read_image_jpeg_rgb8;
-    use kornia_tensor::CpuAllocator;
     use std::collections::HashSet;
 
     #[test]
     fn test_fast_feature_detector() -> Result<(), Box<dyn std::error::Error>> {
         #[rustfmt::skip]
         let img = read_image_jpeg_rgb8("../../tests/data/dog.jpeg")?;
-        let mut gray_img = Image::from_size_val(img.size(), 0, CpuAllocator)?;
+        let mut gray_img = Image::from_size_val(img.size(), 0)?;
         gray_from_rgb_u8(&img, &mut gray_img)?;
 
-        let mut gray_imgf32 = Image::from_size_val(img.size(), 0.0, CpuAllocator)?;
+        let mut gray_imgf32 = Image::from_size_val(img.size(), 0.0)?;
         gray_img
             .as_slice()
             .iter()
@@ -1262,7 +1250,7 @@ mod tests {
             *p = ((((x / 5) + (y / 5)) & 1) as u8 * 140)
                 .wrapping_add(((x.wrapping_mul(37)).wrapping_add(y.wrapping_mul(13)) as u8) / 4);
         }
-        let img = Image::<u8, 1, _>::new(sz, data, CpuAllocator)?;
+        let img = Image::<u8, 1>::new(sz, data)?;
 
         let mut det_neon = FastDetector::new(sz, 20.0 / 255.0, 9, 1)?;
         det_neon.compute_corner_response_u8(&img);

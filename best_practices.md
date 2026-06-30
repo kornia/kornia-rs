@@ -242,7 +242,7 @@ color/gray/
 mod sealed { pub trait Sealed {} }
 pub trait GrayFromRgb: sealed::Sealed + Sized {
     #[doc(hidden)]
-    fn gray_from_rgb_impl<A1, A2>(...) -> Result<(), ImageError>;
+    fn gray_from_rgb_impl(...) -> Result<(), ImageError>;
 }
 impl sealed::Sealed for u8 {}
 impl GrayFromRgb for u8 { /* → kernels::rgb_to_gray_u8 */ }
@@ -251,8 +251,8 @@ impl GrayFromRgb for f32 { /* → kernels::rgb_to_gray_f32 */ }
 impl sealed::Sealed for f64 {}
 impl GrayFromRgb for f64 { /* → scalar */ }
 
-pub fn gray_from_rgb<T: GrayFromRgb, A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<T, 3, A1>, dst: &mut Image<T, 1, A2>,
+pub fn gray_from_rgb<T: GrayFromRgb>(
+    src: &Image<T, 3>, dst: &mut Image<T, 1>,
 ) -> Result<(), ImageError> {
     T::gray_from_rgb_impl(src, dst)
 }

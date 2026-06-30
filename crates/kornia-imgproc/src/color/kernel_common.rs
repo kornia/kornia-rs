@@ -7,14 +7,10 @@
 
 /// Return `Err(ImageError::InvalidImageSize)` when `src` and `dst` sizes differ.
 #[inline]
-pub(crate) fn check_size<T, U, const C1: usize, const C2: usize, A1, A2>(
-    src: &kornia_image::Image<T, C1, A1>,
-    dst: &kornia_image::Image<U, C2, A2>,
-) -> Result<(), kornia_image::ImageError>
-where
-    A1: kornia_image::allocator::ImageAllocator,
-    A2: kornia_image::allocator::ImageAllocator,
-{
+pub(crate) fn check_size<T, U, const C1: usize, const C2: usize>(
+    src: &kornia_image::Image<T, C1>,
+    dst: &kornia_image::Image<U, C2>,
+) -> Result<(), kornia_image::ImageError> {
     if src.size() != dst.size() {
         return Err(kornia_image::ImageError::InvalidImageSize(
             src.cols(),

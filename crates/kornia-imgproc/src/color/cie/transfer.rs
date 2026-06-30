@@ -55,36 +55,38 @@ pub(crate) fn linear_to_srgb_scalar(l: f32) -> f32 {
 #[inline]
 #[allow(clippy::excessive_precision)] // least-squares fit constants; keep full digits
 unsafe fn log2_f32x4(x: float32x4_t) -> float32x4_t {
-    // Extract exponent: e = ((bits >> 23) & 0xff) - 127.
-    let bits = vreinterpretq_u32_f32(x);
-    let exp = vsubq_s32(
-        vreinterpretq_s32_u32(vshrq_n_u32(bits, 23)),
-        vdupq_n_s32(127),
-    );
-    let e = vcvtq_f32_s32(exp);
+    unsafe {
+        // Extract exponent: e = ((bits >> 23) & 0xff) - 127.
+        let bits = vreinterpretq_u32_f32(x);
+        let exp = vsubq_s32(
+            vreinterpretq_s32_u32(vshrq_n_u32(bits, 23)),
+            vdupq_n_s32(127),
+        );
+        let e = vcvtq_f32_s32(exp);
 
-    // Mantissa m ∈ [1, 2): clear exponent bits, set them to 127 (bias for 2^0).
-    let mant_bits = vorrq_u32(
-        vandq_u32(bits, vdupq_n_u32(0x007f_ffff)),
-        vdupq_n_u32(0x3f80_0000),
-    );
-    let m = vreinterpretq_f32_u32(mant_bits);
+        // Mantissa m ∈ [1, 2): clear exponent bits, set them to 127 (bias for 2^0).
+        let mant_bits = vorrq_u32(
+            vandq_u32(bits, vdupq_n_u32(0x007f_ffff)),
+            vdupq_n_u32(0x3f80_0000),
+        );
+        let m = vreinterpretq_f32_u32(mant_bits);
 
-    // Least-squares fit for log2(m) on [1, 2) (degree-4, Horner). Max abs err
-    // ≈ 2.0e-4 → pow(x,2.4) rel err ≈ 4e-4, far inside the color tolerance (~1e-2).
-    // Degree chosen to match colour precision, not full f32 — this is the hot path.
-    let c0 = vdupq_n_f32(-2.496_773_8);
-    let c1 = vdupq_n_f32(4.028_372_8);
-    let c2 = vdupq_n_f32(-2.081_060_2);
-    let c3 = vdupq_n_f32(0.628_815_73);
-    let c4 = vdupq_n_f32(-0.079_150_366);
-    let mut p = c4;
-    p = vfmaq_f32(c3, p, m);
-    p = vfmaq_f32(c2, p, m);
-    p = vfmaq_f32(c1, p, m);
-    p = vfmaq_f32(c0, p, m);
-    // p ≈ log2(m); add exponent.
-    vaddq_f32(p, e)
+        // Least-squares fit for log2(m) on [1, 2) (degree-4, Horner). Max abs err
+        // ≈ 2.0e-4 → pow(x,2.4) rel err ≈ 4e-4, far inside the color tolerance (~1e-2).
+        // Degree chosen to match colour precision, not full f32 — this is the hot path.
+        let c0 = vdupq_n_f32(-2.496_773_8);
+        let c1 = vdupq_n_f32(4.028_372_8);
+        let c2 = vdupq_n_f32(-2.081_060_2);
+        let c3 = vdupq_n_f32(0.628_815_73);
+        let c4 = vdupq_n_f32(-0.079_150_366);
+        let mut p = c4;
+        p = vfmaq_f32(c3, p, m);
+        p = vfmaq_f32(c2, p, m);
+        p = vfmaq_f32(c1, p, m);
+        p = vfmaq_f32(c0, p, m);
+        // p ≈ log2(m); add exponent.
+        vaddq_f32(p, e)
+    }
 }
 
 /// NEON `exp2(x)` = `2^x`, degree-5 minimax over the fractional part.
@@ -94,33 +96,35 @@ unsafe fn log2_f32x4(x: float32x4_t) -> float32x4_t {
 #[cfg(target_arch = "aarch64")]
 #[inline]
 unsafe fn exp2_f32x4(x: float32x4_t) -> float32x4_t {
-    // Clamp to a sane range so the exponent injection can't overflow.
-    let x = vminq_f32(vmaxq_f32(x, vdupq_n_f32(-126.0)), vdupq_n_f32(126.0));
-    let n = vrndmq_f32(x); // floor(x)
-    let f = vsubq_f32(x, n); // [0, 1)
+    unsafe {
+        // Clamp to a sane range so the exponent injection can't overflow.
+        let x = vminq_f32(vmaxq_f32(x, vdupq_n_f32(-126.0)), vdupq_n_f32(126.0));
+        let n = vrndmq_f32(x); // floor(x)
+        let f = vsubq_f32(x, n); // [0, 1)
 
-    // Least-squares fit for 2^f on [0, 1) (degree-3, Horner). Max abs err ≈ 2.0e-4,
-    // matched to colour precision (see log2 note).
-    let c0 = vdupq_n_f32(0.999_811_96);
-    let c1 = vdupq_n_f32(0.696_838_58);
-    let c2 = vdupq_n_f32(0.224_126_44);
-    let c3 = vdupq_n_f32(0.079_019_94);
-    let mut p = c3;
-    p = vfmaq_f32(c2, p, f);
-    p = vfmaq_f32(c1, p, f);
-    p = vfmaq_f32(c0, p, f); // 2^f
+        // Least-squares fit for 2^f on [0, 1) (degree-3, Horner). Max abs err ≈ 2.0e-4,
+        // matched to colour precision (see log2 note).
+        let c0 = vdupq_n_f32(0.999_811_96);
+        let c1 = vdupq_n_f32(0.696_838_58);
+        let c2 = vdupq_n_f32(0.224_126_44);
+        let c3 = vdupq_n_f32(0.079_019_94);
+        let mut p = c3;
+        p = vfmaq_f32(c2, p, f);
+        p = vfmaq_f32(c1, p, f);
+        p = vfmaq_f32(c0, p, f); // 2^f
 
-    // 2^n via exponent injection: bits = (n + 127) << 23.
-    let ni = vcvtq_s32_f32(n);
-    let pow2n = vreinterpretq_f32_s32(vshlq_n_s32(vaddq_s32(ni, vdupq_n_s32(127)), 23));
-    vmulq_f32(p, pow2n)
+        // 2^n via exponent injection: bits = (n + 127) << 23.
+        let ni = vcvtq_s32_f32(n);
+        let pow2n = vreinterpretq_f32_s32(vshlq_n_s32(vaddq_s32(ni, vdupq_n_s32(127)), 23));
+        vmulq_f32(p, pow2n)
+    }
 }
 
 /// NEON `pow(x, p) = exp2(p · log2(x))` for `x > 0`.
 #[cfg(target_arch = "aarch64")]
 #[inline]
 pub(crate) unsafe fn pow_f32x4(x: float32x4_t, p: float32x4_t) -> float32x4_t {
-    exp2_f32x4(vmulq_f32(p, log2_f32x4(x)))
+    unsafe { exp2_f32x4(vmulq_f32(p, log2_f32x4(x))) }
 }
 
 #[cfg(test)]

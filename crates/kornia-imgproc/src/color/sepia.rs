@@ -9,7 +9,7 @@
 //! The f32 path reuses the shared [`matrix3_affine_f32`] kernel; the u8 path uses
 //! a NEON widening multiply-accumulate in Q8 fixed point with a scalar oracle.
 
-use kornia_image::{allocator::ImageAllocator, Image, ImageError};
+use kornia_image::{Image, ImageError};
 
 use super::kernel_common::check_size;
 use super::matrix::matrix3_affine_f32;
@@ -25,10 +25,7 @@ const SEPIA_M: [f32; 9] = [
 ///
 /// # Errors
 /// Returns [`ImageError::InvalidImageSize`] if `src` and `dst` differ in size.
-pub fn sepia_from_rgb_f32<A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<f32, 3, A1>,
-    dst: &mut Image<f32, 3, A2>,
-) -> Result<(), ImageError> {
+pub fn sepia_from_rgb_f32(src: &Image<f32, 3>, dst: &mut Image<f32, 3>) -> Result<(), ImageError> {
     check_size(src, dst)?;
     matrix3_affine_f32(
         src.as_slice(),
@@ -44,10 +41,7 @@ pub fn sepia_from_rgb_f32<A1: ImageAllocator, A2: ImageAllocator>(
 ///
 /// # Errors
 /// Returns [`ImageError::InvalidImageSize`] if `src` and `dst` differ in size.
-pub fn sepia_from_rgb_u8<A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<u8, 3, A1>,
-    dst: &mut Image<u8, 3, A2>,
-) -> Result<(), ImageError> {
+pub fn sepia_from_rgb_u8(src: &Image<u8, 3>, dst: &mut Image<u8, 3>) -> Result<(), ImageError> {
     check_size(src, dst)?;
     let n = src.rows() * src.cols();
     super::kernel_common::par_strip_dispatch(
@@ -118,15 +112,17 @@ fn sepia_u8_neon(src: &[u8], dst: &mut [u8], npixels: usize) {
             cg: u16,
             cb: u16,
         ) -> uint16x8_t {
-            // u32 accumulate to avoid overflow (max ~ 255*(101+197+48)=88230 > u16).
-            let mut lo = vmull_n_u16(vget_low_u16(r), cr);
-            lo = vmlal_n_u16(lo, vget_low_u16(g), cg);
-            lo = vmlal_n_u16(lo, vget_low_u16(b), cb);
-            let mut hi = vmull_n_u16(vget_high_u16(r), cr);
-            hi = vmlal_n_u16(hi, vget_high_u16(g), cg);
-            hi = vmlal_n_u16(hi, vget_high_u16(b), cb);
-            // (acc + 128) >> 8, rounding narrowing shift to u16.
-            vcombine_u16(vrshrn_n_u32::<8>(lo), vrshrn_n_u32::<8>(hi))
+            unsafe {
+                // u32 accumulate to avoid overflow (max ~ 255*(101+197+48)=88230 > u16).
+                let mut lo = vmull_n_u16(vget_low_u16(r), cr);
+                lo = vmlal_n_u16(lo, vget_low_u16(g), cg);
+                lo = vmlal_n_u16(lo, vget_low_u16(b), cb);
+                let mut hi = vmull_n_u16(vget_high_u16(r), cr);
+                hi = vmlal_n_u16(hi, vget_high_u16(g), cg);
+                hi = vmlal_n_u16(hi, vget_high_u16(b), cb);
+                // (acc + 128) >> 8, rounding narrowing shift to u16.
+                vcombine_u16(vrshrn_n_u32::<8>(lo), vrshrn_n_u32::<8>(hi))
+            }
         }
 
         let bulk = npixels & !15;
@@ -167,7 +163,6 @@ fn sepia_u8_neon(src: &[u8], dst: &mut [u8], npixels: usize) {
 mod tests {
     use super::*;
     use kornia_image::ImageSize;
-    use kornia_tensor::CpuAllocator;
 
     #[test]
     fn sepia_u8_known_value() {
@@ -175,16 +170,15 @@ mod tests {
         // R' = round(255*(101+197+48)/256) = round(255*346/256)=round(344.6)=345 -> 255
         // G' = 255*(89+176+43)/256 = 255*308/256 = 306.8 -> 255
         // B' = 255*(70+137+34)/256 = 255*241/256 = 240.04 -> 240
-        let src = Image::<u8, 3, _>::from_size_val(
+        let src = Image::<u8, 3>::from_size_val(
             ImageSize {
                 width: 1,
                 height: 1,
             },
             255,
-            CpuAllocator,
         )
         .unwrap();
-        let mut dst = Image::<u8, 3, _>::from_size_val(src.size(), 0, CpuAllocator).unwrap();
+        let mut dst = Image::<u8, 3>::from_size_val(src.size(), 0).unwrap();
         sepia_from_rgb_u8(&src, &mut dst).unwrap();
         assert_eq!(dst.as_slice(), &[255, 255, 240]);
     }
@@ -194,16 +188,15 @@ mod tests {
         // 37 px (16-wide block + tail) of varied values.
         let n = 37;
         let data: Vec<u8> = (0..n * 3).map(|i| ((i * 53 + 7) % 256) as u8).collect();
-        let src = Image::<u8, 3, _>::new(
+        let src = Image::<u8, 3>::new(
             ImageSize {
                 width: n,
                 height: 1,
             },
             data.clone(),
-            CpuAllocator,
         )
         .unwrap();
-        let mut got = Image::<u8, 3, _>::from_size_val(src.size(), 0, CpuAllocator).unwrap();
+        let mut got = Image::<u8, 3>::from_size_val(src.size(), 0).unwrap();
         sepia_from_rgb_u8(&src, &mut got).unwrap();
         let mut oracle = vec![0u8; n * 3];
         sepia_u8_scalar(&data, &mut oracle, n);
@@ -212,16 +205,15 @@ mod tests {
 
     #[test]
     fn sepia_f32_known_value() {
-        let src = Image::<f32, 3, _>::new(
+        let src = Image::<f32, 3>::new(
             ImageSize {
                 width: 1,
                 height: 1,
             },
             vec![100.0, 150.0, 200.0],
-            CpuAllocator,
         )
         .unwrap();
-        let mut dst = Image::<f32, 3, _>::from_size_val(src.size(), 0.0, CpuAllocator).unwrap();
+        let mut dst = Image::<f32, 3>::from_size_val(src.size(), 0.0).unwrap();
         sepia_from_rgb_f32(&src, &mut dst).unwrap();
         let exp_r = 0.393 * 100.0 + 0.769 * 150.0 + 0.189 * 200.0;
         let exp_g = 0.349 * 100.0 + 0.686 * 150.0 + 0.168 * 200.0;

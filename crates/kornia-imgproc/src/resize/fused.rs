@@ -337,68 +337,72 @@ unsafe fn fused_bilinear_row_neon(
     dst_w: usize,
     params: &NormalizeParams<3>,
 ) {
-    use std::arch::aarch64::*;
-    let sc = [
-        vdupq_n_f32(params.scale[0]),
-        vdupq_n_f32(params.scale[1]),
-        vdupq_n_f32(params.scale[2]),
-    ];
-    let bi = [
-        vdupq_n_f32(params.bias[0]),
-        vdupq_n_f32(params.bias[1]),
-        vdupq_n_f32(params.bias[2]),
-    ];
-    let wy4 = vdupq_n_f32(wy);
+    unsafe {
+        use std::arch::aarch64::*;
+        let sc = [
+            vdupq_n_f32(params.scale[0]),
+            vdupq_n_f32(params.scale[1]),
+            vdupq_n_f32(params.scale[2]),
+        ];
+        let bi = [
+            vdupq_n_f32(params.bias[0]),
+            vdupq_n_f32(params.bias[1]),
+            vdupq_n_f32(params.bias[2]),
+        ];
+        let wy4 = vdupq_n_f32(wy);
 
-    let bulk = dst_w & !3;
-    let mut dx = 0;
-    while dx < bulk {
-        let wx4 = vld1q_f32(wx.as_ptr().add(dx));
-        // Gather the 4 corner samples for the 4 output pixels, all channels.
-        let (mut p00, mut p01, mut p10, mut p11) = ([0f32; 12], [0f32; 12], [0f32; 12], [0f32; 12]);
-        for k in 0..4 {
-            let o0 = *x0b.get_unchecked(dx + k);
-            let o1 = *x1b.get_unchecked(dx + k);
-            for c in 0..3 {
-                p00[k * 3 + c] = *row0.get_unchecked(o0 + c) as f32;
-                p01[k * 3 + c] = *row0.get_unchecked(o1 + c) as f32;
-                p10[k * 3 + c] = *row1.get_unchecked(o0 + c) as f32;
-                p11[k * 3 + c] = *row1.get_unchecked(o1 + c) as f32;
+        let bulk = dst_w & !3;
+        let mut dx = 0;
+        while dx < bulk {
+            let wx4 = vld1q_f32(wx.as_ptr().add(dx));
+            // Gather the 4 corner samples for the 4 output pixels, all channels.
+            let (mut p00, mut p01, mut p10, mut p11) =
+                ([0f32; 12], [0f32; 12], [0f32; 12], [0f32; 12]);
+            for k in 0..4 {
+                let o0 = *x0b.get_unchecked(dx + k);
+                let o1 = *x1b.get_unchecked(dx + k);
+                for c in 0..3 {
+                    p00[k * 3 + c] = *row0.get_unchecked(o0 + c) as f32;
+                    p01[k * 3 + c] = *row0.get_unchecked(o1 + c) as f32;
+                    p10[k * 3 + c] = *row1.get_unchecked(o0 + c) as f32;
+                    p11[k * 3 + c] = *row1.get_unchecked(o1 + c) as f32;
+                }
             }
+            // Per channel: deinterleave the 4 lanes via a strided load into f32x4,
+            // bilinear blend, scale/bias, contiguous store.
+            for (c, out) in [r_out.as_mut_ptr(), g_out.as_mut_ptr(), b_out.as_mut_ptr()]
+                .into_iter()
+                .enumerate()
+            {
+                let gather = |arr: &[f32; 12]| {
+                    vld1q_f32([arr[c], arr[3 + c], arr[6 + c], arr[9 + c]].as_ptr())
+                };
+                let a = gather(&p00);
+                let b = gather(&p01);
+                let cc = gather(&p10);
+                let d = gather(&p11);
+                let top = vfmaq_f32(a, wx4, vsubq_f32(b, a));
+                let bot = vfmaq_f32(cc, wx4, vsubq_f32(d, cc));
+                let val = vfmaq_f32(top, wy4, vsubq_f32(bot, top));
+                vst1q_f32(out.add(dx), vfmaq_f32(bi[c], val, sc[c]));
+            }
+            dx += 4;
         }
-        // Per channel: deinterleave the 4 lanes via a strided load into f32x4,
-        // bilinear blend, scale/bias, contiguous store.
-        for (c, out) in [r_out.as_mut_ptr(), g_out.as_mut_ptr(), b_out.as_mut_ptr()]
-            .into_iter()
-            .enumerate()
-        {
-            let gather =
-                |arr: &[f32; 12]| vld1q_f32([arr[c], arr[3 + c], arr[6 + c], arr[9 + c]].as_ptr());
-            let a = gather(&p00);
-            let b = gather(&p01);
-            let cc = gather(&p10);
-            let d = gather(&p11);
-            let top = vfmaq_f32(a, wx4, vsubq_f32(b, a));
-            let bot = vfmaq_f32(cc, wx4, vsubq_f32(d, cc));
-            let val = vfmaq_f32(top, wy4, vsubq_f32(bot, top));
-            vst1q_f32(out.add(dx), vfmaq_f32(bi[c], val, sc[c]));
+        if dx < dst_w {
+            fused_bilinear_row_scalar(
+                row0,
+                row1,
+                &x0b[dx..],
+                &x1b[dx..],
+                &wx[dx..],
+                wy,
+                &mut r_out[dx..],
+                &mut g_out[dx..],
+                &mut b_out[dx..],
+                dst_w - dx,
+                params,
+            );
         }
-        dx += 4;
-    }
-    if dx < dst_w {
-        fused_bilinear_row_scalar(
-            row0,
-            row1,
-            &x0b[dx..],
-            &x1b[dx..],
-            &wx[dx..],
-            wy,
-            &mut r_out[dx..],
-            &mut g_out[dx..],
-            &mut b_out[dx..],
-            dst_w - dx,
-            params,
-        );
     }
 }
 
@@ -565,83 +569,85 @@ unsafe fn fused_row_neon(
     dst_w: usize,
     params: &NormalizeParams<3>,
 ) {
-    use std::arch::aarch64::*;
+    unsafe {
+        use std::arch::aarch64::*;
 
-    // Fold the 2×2 average's /4 into scale so the hot loop is pure FMA —
-    // no integer rounding, no u8 requantization.
-    let sr = vdupq_n_f32(params.scale[0] * 0.25);
-    let sg = vdupq_n_f32(params.scale[1] * 0.25);
-    let sb = vdupq_n_f32(params.scale[2] * 0.25);
-    let br = vdupq_n_f32(params.bias[0]);
-    let bg = vdupq_n_f32(params.bias[1]);
-    let bb = vdupq_n_f32(params.bias[2]);
+        // Fold the 2×2 average's /4 into scale so the hot loop is pure FMA —
+        // no integer rounding, no u8 requantization.
+        let sr = vdupq_n_f32(params.scale[0] * 0.25);
+        let sg = vdupq_n_f32(params.scale[1] * 0.25);
+        let sb = vdupq_n_f32(params.scale[2] * 0.25);
+        let br = vdupq_n_f32(params.bias[0]);
+        let bg = vdupq_n_f32(params.bias[1]);
+        let bb = vdupq_n_f32(params.bias[2]);
 
-    // Per-channel 16-output-pixel emitter. Takes the 4 deinterleaved u8x16
-    // channel lanes (two adjacent src chunks per row, two rows), computes
-    // the 2×2 sum in u16, then widens→cvts→FMAs into 4 f32x4 stores.
-    //
-    // Written as a macro (not a closure) because unsafe + captured `_v`
-    // vectors inside `#[target_feature]` contexts are easier to reason about
-    // when fully inlined, and Rust closures don't inherit target_feature.
-    macro_rules! emit_channel {
-        ($a:expr, $b:expr, $c:expr, $d:expr, $scale:expr, $bias:expr, $out:expr) => {{
-            let lo = vaddq_u16(vpaddlq_u8($a), vpaddlq_u8($c)); // out px 0..7
-            let hi = vaddq_u16(vpaddlq_u8($b), vpaddlq_u8($d)); // out px 8..15
-            let f0 = vcvtq_f32_u32(vmovl_u16(vget_low_u16(lo)));
-            let f1 = vcvtq_f32_u32(vmovl_high_u16(lo));
-            let f2 = vcvtq_f32_u32(vmovl_u16(vget_low_u16(hi)));
-            let f3 = vcvtq_f32_u32(vmovl_high_u16(hi));
-            vst1q_f32($out, vfmaq_f32($bias, f0, $scale));
-            vst1q_f32($out.add(4), vfmaq_f32($bias, f1, $scale));
-            vst1q_f32($out.add(8), vfmaq_f32($bias, f2, $scale));
-            vst1q_f32($out.add(12), vfmaq_f32($bias, f3, $scale));
-        }};
-    }
+        // Per-channel 16-output-pixel emitter. Takes the 4 deinterleaved u8x16
+        // channel lanes (two adjacent src chunks per row, two rows), computes
+        // the 2×2 sum in u16, then widens→cvts→FMAs into 4 f32x4 stores.
+        //
+        // Written as a macro (not a closure) because unsafe + captured `_v`
+        // vectors inside `#[target_feature]` contexts are easier to reason about
+        // when fully inlined, and Rust closures don't inherit target_feature.
+        macro_rules! emit_channel {
+            ($a:expr_2021, $b:expr_2021, $c:expr_2021, $d:expr_2021, $scale:expr_2021, $bias:expr_2021, $out:expr_2021) => {{
+                let lo = vaddq_u16(vpaddlq_u8($a), vpaddlq_u8($c)); // out px 0..7
+                let hi = vaddq_u16(vpaddlq_u8($b), vpaddlq_u8($d)); // out px 8..15
+                let f0 = vcvtq_f32_u32(vmovl_u16(vget_low_u16(lo)));
+                let f1 = vcvtq_f32_u32(vmovl_high_u16(lo));
+                let f2 = vcvtq_f32_u32(vmovl_u16(vget_low_u16(hi)));
+                let f3 = vcvtq_f32_u32(vmovl_high_u16(hi));
+                vst1q_f32($out, vfmaq_f32($bias, f0, $scale));
+                vst1q_f32($out.add(4), vfmaq_f32($bias, f1, $scale));
+                vst1q_f32($out.add(8), vfmaq_f32($bias, f2, $scale));
+                vst1q_f32($out.add(12), vfmaq_f32($bias, f3, $scale));
+            }};
+        }
 
-    let bulk = dst_w & !15;
-    let mut x = 0usize;
-    while x < bulk {
-        // 16 dst px → 32 src px per row → 2 × vld3q_u8 per row.
-        let src0 = r0.as_ptr().add(x * 2 * 3);
-        let src1 = r1.as_ptr().add(x * 2 * 3);
-        let s0 = vld3q_u8(src0);
-        let s1 = vld3q_u8(src0.add(48));
-        let s2 = vld3q_u8(src1);
-        let s3 = vld3q_u8(src1.add(48));
+        let bulk = dst_w & !15;
+        let mut x = 0usize;
+        while x < bulk {
+            // 16 dst px → 32 src px per row → 2 × vld3q_u8 per row.
+            let src0 = r0.as_ptr().add(x * 2 * 3);
+            let src1 = r1.as_ptr().add(x * 2 * 3);
+            let s0 = vld3q_u8(src0);
+            let s1 = vld3q_u8(src0.add(48));
+            let s2 = vld3q_u8(src1);
+            let s3 = vld3q_u8(src1.add(48));
 
-        emit_channel!(s0.0, s1.0, s2.0, s3.0, sr, br, r_out.as_mut_ptr().add(x));
-        emit_channel!(s0.1, s1.1, s2.1, s3.1, sg, bg, g_out.as_mut_ptr().add(x));
-        emit_channel!(s0.2, s1.2, s2.2, s3.2, sb, bb, b_out.as_mut_ptr().add(x));
+            emit_channel!(s0.0, s1.0, s2.0, s3.0, sr, br, r_out.as_mut_ptr().add(x));
+            emit_channel!(s0.1, s1.1, s2.1, s3.1, sg, bg, g_out.as_mut_ptr().add(x));
+            emit_channel!(s0.2, s1.2, s2.2, s3.2, sb, bb, b_out.as_mut_ptr().add(x));
 
-        x += 16;
-    }
+            x += 16;
+        }
 
-    // Scalar tail for the last (dst_w % 16) pixels.
-    let sr_s = params.scale[0] * 0.25;
-    let sg_s = params.scale[1] * 0.25;
-    let sb_s = params.scale[2] * 0.25;
-    let br_s = params.bias[0];
-    let bg_s = params.bias[1];
-    let bb_s = params.bias[2];
-    while x < dst_w {
-        let base0 = 2 * x * 3;
-        let base1 = base0 + 3;
-        let sum_r = *r0.get_unchecked(base0) as u32
-            + *r0.get_unchecked(base1) as u32
-            + *r1.get_unchecked(base0) as u32
-            + *r1.get_unchecked(base1) as u32;
-        let sum_g = *r0.get_unchecked(base0 + 1) as u32
-            + *r0.get_unchecked(base1 + 1) as u32
-            + *r1.get_unchecked(base0 + 1) as u32
-            + *r1.get_unchecked(base1 + 1) as u32;
-        let sum_b = *r0.get_unchecked(base0 + 2) as u32
-            + *r0.get_unchecked(base1 + 2) as u32
-            + *r1.get_unchecked(base0 + 2) as u32
-            + *r1.get_unchecked(base1 + 2) as u32;
-        *r_out.get_unchecked_mut(x) = (sum_r as f32) * sr_s + br_s;
-        *g_out.get_unchecked_mut(x) = (sum_g as f32) * sg_s + bg_s;
-        *b_out.get_unchecked_mut(x) = (sum_b as f32) * sb_s + bb_s;
-        x += 1;
+        // Scalar tail for the last (dst_w % 16) pixels.
+        let sr_s = params.scale[0] * 0.25;
+        let sg_s = params.scale[1] * 0.25;
+        let sb_s = params.scale[2] * 0.25;
+        let br_s = params.bias[0];
+        let bg_s = params.bias[1];
+        let bb_s = params.bias[2];
+        while x < dst_w {
+            let base0 = 2 * x * 3;
+            let base1 = base0 + 3;
+            let sum_r = *r0.get_unchecked(base0) as u32
+                + *r0.get_unchecked(base1) as u32
+                + *r1.get_unchecked(base0) as u32
+                + *r1.get_unchecked(base1) as u32;
+            let sum_g = *r0.get_unchecked(base0 + 1) as u32
+                + *r0.get_unchecked(base1 + 1) as u32
+                + *r1.get_unchecked(base0 + 1) as u32
+                + *r1.get_unchecked(base1 + 1) as u32;
+            let sum_b = *r0.get_unchecked(base0 + 2) as u32
+                + *r0.get_unchecked(base1 + 2) as u32
+                + *r1.get_unchecked(base0 + 2) as u32
+                + *r1.get_unchecked(base1 + 2) as u32;
+            *r_out.get_unchecked_mut(x) = (sum_r as f32) * sr_s + br_s;
+            *g_out.get_unchecked_mut(x) = (sum_g as f32) * sg_s + bg_s;
+            *b_out.get_unchecked_mut(x) = (sum_b as f32) * sb_s + bb_s;
+            x += 1;
+        }
     }
 }
 

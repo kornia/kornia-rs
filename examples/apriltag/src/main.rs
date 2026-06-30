@@ -1,9 +1,5 @@
 use argh::FromArgs;
-use kornia::{
-    image::{allocator::CpuAllocator, Image},
-    imgproc::color::gray_from_rgb_u8,
-    io::functional::read_image_any_rgb8,
-};
+use kornia::{image::Image, imgproc::color::gray_from_rgb_u8, io::functional::read_image_any_rgb8};
 use kornia_apriltag::{family::TagFamilyKind, AprilTagDecoder, DecodeTagsConfig};
 
 /// Detects AprilTags in an image
@@ -61,7 +57,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let img = read_image_any_rgb8(args.path)?;
 
-    let mut grayscale_img = Image::from_size_val(img.size(), 0, CpuAllocator)?;
+    let mut grayscale_img = Image::from_size_val(img.size(), 0)?;
     gray_from_rgb_u8(&img, &mut grayscale_img)?;
 
     let mut config = DecodeTagsConfig::new(args.kind)?;

@@ -188,50 +188,52 @@ fn transfer_error_batch_scalar_tail(
 #[target_feature(enable = "neon")]
 #[inline]
 unsafe fn transfer_error_batch_neon(h: HPacked, samples: &[Match2d2d], out: &mut [f64]) -> usize {
-    use std::arch::aarch64::*;
-    let (h00, h01, h02, h10, h11, h12, h20, h21, h22) = h;
-    let h00v = vdupq_n_f64(h00);
-    let h01v = vdupq_n_f64(h01);
-    let h02v = vdupq_n_f64(h02);
-    let h10v = vdupq_n_f64(h10);
-    let h11v = vdupq_n_f64(h11);
-    let h12v = vdupq_n_f64(h12);
-    let h20v = vdupq_n_f64(h20);
-    let h21v = vdupq_n_f64(h21);
-    let h22v = vdupq_n_f64(h22);
-    let eps = vdupq_n_f64(1e-12);
-    let inf = vdupq_n_f64(f64::INFINITY);
+    unsafe {
+        use std::arch::aarch64::*;
+        let (h00, h01, h02, h10, h11, h12, h20, h21, h22) = h;
+        let h00v = vdupq_n_f64(h00);
+        let h01v = vdupq_n_f64(h01);
+        let h02v = vdupq_n_f64(h02);
+        let h10v = vdupq_n_f64(h10);
+        let h11v = vdupq_n_f64(h11);
+        let h12v = vdupq_n_f64(h12);
+        let h20v = vdupq_n_f64(h20);
+        let h21v = vdupq_n_f64(h21);
+        let h22v = vdupq_n_f64(h22);
+        let eps = vdupq_n_f64(1e-12);
+        let inf = vdupq_n_f64(f64::INFINITY);
 
-    let n = samples.len();
-    let mut idx = 0usize;
-    while idx + 2 <= n {
-        let base = samples.as_ptr().add(idx) as *const f64;
-        let lanes = vld4q_f64(base);
-        let x1 = lanes.0;
-        let y1 = lanes.1;
-        let x2 = lanes.2;
-        let y2 = lanes.3;
+        let n = samples.len();
+        let mut idx = 0usize;
+        while idx + 2 <= n {
+            let base = samples.as_ptr().add(idx) as *const f64;
+            let lanes = vld4q_f64(base);
+            let x1 = lanes.0;
+            let y1 = lanes.1;
+            let x2 = lanes.2;
+            let y2 = lanes.3;
 
-        let mx = vfmaq_f64(vfmaq_f64(h02v, x1, h00v), y1, h01v);
-        let my = vfmaq_f64(vfmaq_f64(h12v, x1, h10v), y1, h11v);
-        let mz = vfmaq_f64(vfmaq_f64(h22v, x1, h20v), y1, h21v);
+            let mx = vfmaq_f64(vfmaq_f64(h02v, x1, h00v), y1, h01v);
+            let my = vfmaq_f64(vfmaq_f64(h12v, x1, h10v), y1, h11v);
+            let mz = vfmaq_f64(vfmaq_f64(h22v, x1, h20v), y1, h21v);
 
-        // Behind-plane mask: |mz| > eps (use bitcast-abs via subtraction trick).
-        let abs_mz = vabsq_f64(mz);
-        let mz_ok = vcgtq_f64(abs_mz, eps);
-        // Avoid divide-by-zero: replace mz with 1.0 in unsafe lanes.
-        let safe_mz = vbslq_f64(mz_ok, mz, vdupq_n_f64(1.0));
-        let inv_z = vdivq_f64(vdupq_n_f64(1.0), safe_mz);
-        let dx = vsubq_f64(vmulq_f64(mx, inv_z), x2);
-        let dy = vsubq_f64(vmulq_f64(my, inv_z), y2);
-        let dd = vfmaq_f64(vmulq_f64(dx, dx), dy, dy);
-        // Replace bad-mz lanes with +∞ (matches scalar branch).
-        let result = vbslq_f64(mz_ok, dd, inf);
+            // Behind-plane mask: |mz| > eps (use bitcast-abs via subtraction trick).
+            let abs_mz = vabsq_f64(mz);
+            let mz_ok = vcgtq_f64(abs_mz, eps);
+            // Avoid divide-by-zero: replace mz with 1.0 in unsafe lanes.
+            let safe_mz = vbslq_f64(mz_ok, mz, vdupq_n_f64(1.0));
+            let inv_z = vdivq_f64(vdupq_n_f64(1.0), safe_mz);
+            let dx = vsubq_f64(vmulq_f64(mx, inv_z), x2);
+            let dy = vsubq_f64(vmulq_f64(my, inv_z), y2);
+            let dd = vfmaq_f64(vmulq_f64(dx, dx), dy, dy);
+            // Replace bad-mz lanes with +∞ (matches scalar branch).
+            let result = vbslq_f64(mz_ok, dd, inf);
 
-        vst1q_f64(out.as_mut_ptr().add(idx), result);
-        idx += 2;
+            vst1q_f64(out.as_mut_ptr().add(idx), result);
+            idx += 2;
+        }
+        idx
     }
-    idx
 }
 
 /// 4-lane f64 AVX2+FMA kernel — same 4×4 transpose trick as F.

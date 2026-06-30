@@ -3,7 +3,6 @@ use kornia::{
     image::{ops, Image},
     imgproc,
     io::{fps_counter::FpsCounter, stream::RTSPCameraConfig},
-    tensor::CpuAllocator,
 };
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -88,12 +87,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // initialize images lazily
         let img_f32_ref = img_f32.get_or_insert_with(|| {
-            Image::<f32, 3, _>::from_size_val(img.size(), 0.0, CpuAllocator)
-                .expect("Failed to create image")
+            Image::<f32, 3>::from_size_val(img.size(), 0.0).expect("Failed to create image")
         });
         let gray_ref = gray.get_or_insert_with(|| {
-            Image::<f32, 1, _>::from_size_val(img.size(), 0.0, CpuAllocator)
-                .expect("Failed to create image")
+            Image::<f32, 1>::from_size_val(img.size(), 0.0).expect("Failed to create image")
         });
 
         // cast the image to floating point and convert to grayscale

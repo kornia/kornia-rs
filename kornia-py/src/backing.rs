@@ -2,9 +2,10 @@
 use std::alloc::{alloc, alloc_zeroed, dealloc, Layout};
 use std::ptr::NonNull;
 
-use dlpack_rs::ffi::{DLDataType, K_DL_FLOAT, K_DL_UINT};
+use dlpack_rs::ffi::{DLDataType, K_DL_CPU, K_DL_FLOAT, K_DL_UINT};
 use dlpack_rs::safe::{dtype_f32, dtype_u16, dtype_u8};
-use kornia_image::{allocator::ForeignAllocator, Image, ImageError, ImageSize};
+use kornia_image::allocator::host_alloc;
+use kornia_image::{Image, ImageError, ImageSize};
 use pyo3::prelude::*;
 
 const ALIGN: usize = 64;
@@ -171,6 +172,10 @@ pub enum Backing {
         ptr: NonNull<u8>,
         keep: BorrowGuard,
         readonly: bool,
+        /// DLPack device of the borrowed buffer as `(device_type, device_id)`.
+        /// Host buffers (numpy / PEP-3118) use `(K_DL_CPU, 0)`; a DLPack import
+        /// carries the source tensor's real device (e.g. `(K_DL_CUDA, id)`).
+        device: (i32, i32),
     },
 }
 // SAFETY: Owned is Send+Sync; Borrowed holds Send keep-alives and a raw ptr with exclusive logical ownership.
@@ -190,6 +195,42 @@ impl Backing {
             Backing::Borrowed { readonly, .. } => *readonly,
         }
     }
+
+    /// DLPack device of this backing as `(device_type, device_id)`.
+    ///
+    /// Owned buffers are always host CPU. Borrowed buffers carry the device
+    /// captured at construction (host for numpy / PEP-3118 borrows, or the
+    /// source tensor's device for a zero-copy DLPack import).
+    pub fn device(&self) -> (i32, i32) {
+        match self {
+            Backing::Owned(_) => (K_DL_CPU as i32, 0),
+            Backing::Borrowed { device, .. } => *device,
+        }
+    }
+
+    /// `true` if the backing lives in host (CPU) memory and is safe to
+    /// dereference from Rust.
+    pub fn is_host(&self) -> bool {
+        self.device().0 == K_DL_CPU as i32
+    }
+
+    /// Guard for host-only operations: returns an error if the backing is on a
+    /// non-CPU device, where any host dereference would be undefined behaviour.
+    ///
+    /// Call this at the start of every method that reads or writes the buffer on
+    /// the host (numpy export, pixel compute, encode/save, buffer protocol).
+    pub fn ensure_host(&self) -> pyo3::PyResult<()> {
+        if self.is_host() {
+            Ok(())
+        } else {
+            Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "operation requires a host (CPU) image; this image is on device \
+                 (device_type={}); transfer it to host first (e.g. call .cpu() on \
+                 the source tensor) before this operation",
+                self.device().0
+            )))
+        }
+    }
 }
 
 /// Build a typed compute borrow from a backing + shape. Validates channel count.
@@ -198,10 +239,22 @@ impl Backing {
 ///
 /// Caller guarantees `b`'s buffer holds at least H*W*C elements of T and
 /// stays alive for the returned Image's lifetime (the Image borrows it).
+///
+/// # Panics
+///
+/// Panics if `b` is not host-accessible. This wraps the pointer in a
+/// `MemoryDomain::Host` Image (whose `as_slice` would then *not* panic), so a device
+/// backing reaching here would be a silent host-deref of device memory. The assert
+/// turns that latent UB into a panic; callers must gate with [`Backing::ensure_host`].
 pub unsafe fn borrow_image<T: Clone, const C: usize>(
     b: &Backing,
     shape: [usize; 3],
-) -> Result<Image<T, C, ForeignAllocator>, ImageError> {
+) -> Result<Image<T, C>, ImageError> {
+    assert!(
+        b.is_host(),
+        "borrow_image on a non-host backing (device_type={}); gate with ensure_host() first",
+        b.device().0
+    );
     let (h, w, c) = (shape[0], shape[1], shape[2]);
     if c != C {
         return Err(ImageError::InvalidChannelShape(c, C));
@@ -213,7 +266,7 @@ pub unsafe fn borrow_image<T: Clone, const C: usize>(
         },
         b.data_ptr() as *const T,
         h * w * c * std::mem::size_of::<T>(),
-        ForeignAllocator,
+        host_alloc(),
     )
 }
 

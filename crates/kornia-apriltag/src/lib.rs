@@ -3,10 +3,7 @@
 
 use std::collections::HashMap;
 
-use kornia_image::{
-    allocator::{CpuAllocator, ImageAllocator},
-    Image, ImageSize,
-};
+use kornia_image::{Image, ImageSize};
 use kornia_imgproc::resize::resize_fast_mono;
 
 use crate::{
@@ -144,8 +141,8 @@ impl DecodeTagsConfig {
 pub struct AprilTagDecoder {
     config: DecodeTagsConfig,
     cached_families: Vec<(TagFamilyKind, TagFamily)>,
-    downscale_img: Option<Image<u8, 1, CpuAllocator>>,
-    bin_img: Image<Pixel, 1, CpuAllocator>,
+    downscale_img: Option<Image<u8, 1>>,
+    bin_img: Image<Pixel, 1>,
     tile_min_max: TileMinMax,
     uf: UnionFind,
     clusters: HashMap<(usize, usize), Vec<GradientInfo>>,
@@ -187,10 +184,7 @@ impl AprilTagDecoder {
                 height: img_size.height / config.downscale_factor,
             };
 
-            (
-                new_size,
-                Some(Image::from_size_val(new_size, 0, CpuAllocator)?),
-            )
+            (new_size, Some(Image::from_size_val(new_size, 0)?))
         };
 
         // Build the tag family cache once
@@ -204,7 +198,7 @@ impl AprilTagDecoder {
             })
             .collect();
 
-        let bin_img = Image::from_size_val(img_size, Pixel::Skip, CpuAllocator)?;
+        let bin_img = Image::from_size_val(img_size, Pixel::Skip)?;
         let tile_min_max = TileMinMax::new(img_size, 4);
         let uf = UnionFind::new(img_size.width * img_size.height);
 
@@ -234,10 +228,7 @@ impl AprilTagDecoder {
     ///
     /// If you are running this method multiple times on the same decoder instance,
     /// you should call [`AprilTagDecoder::clear`] between runs to reset internal state.
-    pub fn decode<A: ImageAllocator>(
-        &mut self,
-        src: &Image<u8, 1, A>,
-    ) -> Result<Vec<Detection>, AprilTagError> {
+    pub fn decode(&mut self, src: &Image<u8, 1>) -> Result<Vec<Detection>, AprilTagError> {
         if let Some(downscale_img) = self.downscale_img.as_mut() {
             resize_fast_mono(
                 src,

@@ -1,7 +1,6 @@
 use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
 use kornia_image::Image;
 use kornia_imgproc::draw::{draw_line, draw_polygon};
-use kornia_tensor::CpuAllocator;
 
 fn bench_draw(c: &mut Criterion) {
     let sizes = [(512, 512), (1024, 1024)];
@@ -29,10 +28,7 @@ fn bench_draw(c: &mut Criterion) {
                     &thickness,
                     |b, &t| {
                         b.iter_batched(
-                            || {
-                                Image::<u8, 1, _>::from_size_val(image_size, 0, CpuAllocator)
-                                    .unwrap()
-                            },
+                            || Image::<u8, 1>::from_size_val(image_size, 0).unwrap(),
                             |mut img| {
                                 draw_line(&mut img, p0_h, p1_h, color, *t); // Routine
                             },
@@ -47,10 +43,7 @@ fn bench_draw(c: &mut Criterion) {
                     &thickness,
                     |b, &t| {
                         b.iter_batched(
-                            || {
-                                Image::<u8, 1, _>::from_size_val(image_size, 0, CpuAllocator)
-                                    .unwrap()
-                            },
+                            || Image::<u8, 1>::from_size_val(image_size, 0).unwrap(),
                             |mut img| draw_line(&mut img, p0_d, p1_d, color, *t),
                             BatchSize::LargeInput,
                         )
@@ -98,10 +91,7 @@ fn bench_draw(c: &mut Criterion) {
                     &thickness,
                     |b, &t| {
                         b.iter_batched(
-                            || {
-                                Image::<u8, 1, _>::from_size_val(image_size, 0, CpuAllocator)
-                                    .unwrap()
-                            },
+                            || Image::<u8, 1>::from_size_val(image_size, 0).unwrap(),
                             |mut img| draw_polygon(&mut img, &bbox_points, color, *t),
                             BatchSize::LargeInput,
                         )
@@ -114,10 +104,7 @@ fn bench_draw(c: &mut Criterion) {
                     &thickness,
                     |b, &t| {
                         b.iter_batched(
-                            || {
-                                Image::<u8, 1, _>::from_size_val(image_size, 0, CpuAllocator)
-                                    .unwrap()
-                            },
+                            || Image::<u8, 1>::from_size_val(image_size, 0).unwrap(),
                             |mut img| draw_polygon(&mut img, &circle_points, color, *t),
                             BatchSize::LargeInput,
                         )

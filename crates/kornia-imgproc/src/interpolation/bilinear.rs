@@ -1,4 +1,4 @@
-use kornia_image::{allocator::ImageAllocator, Image};
+use kornia_image::Image;
 
 /// Kernel for bilinear interpolation
 ///
@@ -13,8 +13,8 @@ use kornia_image::{allocator::ImageAllocator, Image};
 ///
 /// The interpolated pixel value.
 // TODO: add support for other data types. Maybe use a trait? or template?
-pub(crate) fn bilinear_interpolation<const C: usize, A: ImageAllocator>(
-    image: &Image<f32, C, A>,
+pub(crate) fn bilinear_interpolation<const C: usize>(
+    image: &Image<f32, C>,
     u: f32,
     v: f32,
     c: usize,

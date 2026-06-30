@@ -8,7 +8,7 @@ use kornia::{
         CameraIntrinsic,
     },
     io::functional as F,
-    tensor::{CpuAllocator, Tensor},
+    tensor::Tensor,
 };
 
 #[derive(FromArgs)]
@@ -59,8 +59,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // undistort all points
-    let src = Tensor::<f64, 2, _>::from_shape_vec([num_pixels, 2], distorted_points, CpuAllocator)?;
-    let mut dst = Tensor::<f64, 2, _>::from_shape_val([num_pixels, 2], 0.0, CpuAllocator);
+    let src = Tensor::<f64, 2>::from_shape_vec([num_pixels, 2], distorted_points)?;
+    let mut dst = Tensor::<f64, 2>::from_shape_val([num_pixels, 2], 0.0);
 
     let criteria = TermCriteria {
         max_iter: 20,
@@ -80,7 +80,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // bilinear splatting (distorted is mapped on undistorted)
     let img_f32 = img_u8.cast::<f32>()?;
-    let mut img_undistorted = Image::<f32, 3, _>::from_size_val(size, 0.0, CpuAllocator)?;
+    let mut img_undistorted = Image::<f32, 3>::from_size_val(size, 0.0)?;
     let mut weight_map = vec![0.0f32; num_pixels];
 
     let dst_slice = dst.as_slice();

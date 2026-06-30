@@ -190,7 +190,6 @@ mod ffi {
     }
 }
 
-use kornia_image::allocator::CpuAllocator;
 use kornia_image::ImageError;
 use kornia_io::jpeg;
 
@@ -228,7 +227,7 @@ impl From<ffi::ImageSize> for kornia_image::ImageSize {
 /// Args: (TypeName, fn_prefix, dtype, channels)
 macro_rules! define_image_type {
     ($wrapper:ident, $prefix:ident, $dtype:ty, $ch:expr) => {
-        pub struct $wrapper(kornia_image::Image<$dtype, $ch, CpuAllocator>);
+        pub struct $wrapper(kornia_image::Image<$dtype, $ch>);
 
         ::paste::paste! {
             // Accessor functions
@@ -241,8 +240,7 @@ macro_rules! define_image_type {
             // Constructor: from size and fill value
             fn [<$prefix _new>](width: usize, height: usize, value: $dtype) -> Result<Box<$wrapper>, ImageError> {
                 let size = kornia_image::ImageSize { width, height };
-                let alloc = CpuAllocator::default();
-                let image = kornia_image::Image::<$dtype, $ch, CpuAllocator>::from_size_val(size, value, alloc)?;
+                                let image = kornia_image::Image::<$dtype, $ch>::from_size_val(size, value)?;
                 Ok(Box::new($wrapper(image)))
             }
 
@@ -253,8 +251,7 @@ macro_rules! define_image_type {
                 if data.len() != expected_len {
                     return Err(ImageError::InvalidChannelShape(data.len(), expected_len));
                 }
-                let alloc = CpuAllocator::default();
-                let image = kornia_image::Image::<$dtype, $ch, CpuAllocator>::from_size_slice(size, data, alloc)?;
+                                let image = kornia_image::Image::<$dtype, $ch>::from_size_slice(size, data)?;
                 Ok(Box::new($wrapper(image)))
             }
         }
@@ -332,11 +329,7 @@ fn decode_image_jpeg_rgb8(jpeg_bytes: &[u8]) -> Result<Box<ImageU8C3>, Box<dyn s
     }
 
     // Create output image
-    let mut image = kornia_image::Image::<u8, 3, CpuAllocator>::from_size_val(
-        layout.image_size,
-        0,
-        CpuAllocator,
-    )?;
+    let mut image = kornia_image::Image::<u8, 3>::from_size_val(layout.image_size, 0)?;
 
     // Decode into it (zero-copy from slice)
     jpeg::decode_image_jpeg_rgb8(jpeg_bytes, &mut image)?;

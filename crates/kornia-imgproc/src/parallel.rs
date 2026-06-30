@@ -1,7 +1,7 @@
 use rayon::prelude::*;
 
-use kornia_image::{allocator::ImageAllocator, Image};
-use kornia_tensor::{CpuAllocator, Tensor2};
+use kornia_image::Image;
+use kornia_tensor::Tensor2;
 
 /// Row-group granularity for per-pixel rayon sharding. At 1 row per task,
 /// spawn overhead (~2-5 μs on the 8-core Orin pool) rivals per-row work for
@@ -17,16 +17,9 @@ const ROWS_PER_TASK: usize = 16;
 /// * `src` - The input image.
 /// * `dst` - The output image.
 /// * `f` - The function to apply to each pixel.
-pub fn par_iter_rows<
-    T1,
-    const C1: usize,
-    A1: ImageAllocator,
-    T2,
-    const C2: usize,
-    A2: ImageAllocator,
->(
-    src: &Image<T1, C1, A1>,
-    dst: &mut Image<T2, C2, A2>,
+pub fn par_iter_rows<T1, const C1: usize, T2, const C2: usize>(
+    src: &Image<T1, C1>,
+    dst: &mut Image<T2, C2>,
     f: impl Fn(&[T1], &mut [T2]) + Send + Sync,
 ) where
     T1: Clone + Send + Sync,
@@ -51,16 +44,9 @@ pub fn par_iter_rows<
 }
 
 /// Apply a function to each pixel in the image in parallel with a value.
-pub fn par_iter_rows_val<
-    T1,
-    const C1: usize,
-    A1: ImageAllocator,
-    T2,
-    const C2: usize,
-    A2: ImageAllocator,
->(
-    src: &Image<T1, C1, A1>,
-    dst: &mut Image<T2, C2, A2>,
+pub fn par_iter_rows_val<T1, const C1: usize, T2, const C2: usize>(
+    src: &Image<T1, C1>,
+    dst: &mut Image<T2, C2>,
     f: impl Fn(&T1, &mut T2) + Send + Sync,
 ) where
     T1: Clone + Send + Sync,
@@ -85,20 +71,10 @@ pub fn par_iter_rows_val<
 }
 
 /// Apply a function to each pixel in the image in parallel with two values.
-pub fn par_iter_rows_val_two<
-    T1,
-    const C1: usize,
-    A1: ImageAllocator,
-    T2,
-    const C2: usize,
-    A2: ImageAllocator,
-    T3,
-    const C3: usize,
-    A3: ImageAllocator,
->(
-    src1: &Image<T1, C1, A1>,
-    src2: &Image<T2, C2, A2>,
-    dst: &mut Image<T3, C3, A3>,
+pub fn par_iter_rows_val_two<T1, const C1: usize, T2, const C2: usize, T3, const C3: usize>(
+    src1: &Image<T1, C1>,
+    src2: &Image<T2, C2>,
+    dst: &mut Image<T3, C3>,
     f: impl Fn(&T1, &T2, &mut T3) + Send + Sync,
 ) where
     T1: Clone + Send + Sync,
@@ -125,10 +101,10 @@ pub fn par_iter_rows_val_two<
 }
 
 /// Apply a function to each pixel for grid sampling in parallel.
-pub fn par_iter_rows_resample<const C: usize, A: ImageAllocator>(
-    dst: &mut Image<f32, C, A>,
-    map_x: &Tensor2<f32, CpuAllocator>,
-    map_y: &Tensor2<f32, CpuAllocator>,
+pub fn par_iter_rows_resample<const C: usize>(
+    dst: &mut Image<f32, C>,
+    map_x: &Tensor2<f32>,
+    map_y: &Tensor2<f32>,
     f: impl Fn(&f32, &f32, &mut [f32]) + Send + Sync,
 ) {
     let cols = dst.cols();
@@ -149,8 +125,8 @@ pub fn par_iter_rows_resample<const C: usize, A: ImageAllocator>(
 }
 
 /// Apply a spatial mapping function to each pixel in parallel without pre-allocating coordinate tensors.
-pub fn par_iter_rows_spatial_mapping<const C: usize, A: ImageAllocator>(
-    dst: &mut Image<f32, C, A>,
+pub fn par_iter_rows_spatial_mapping<const C: usize>(
+    dst: &mut Image<f32, C>,
     map_coord: impl Fn(usize, usize) -> (f32, f32) + Send + Sync,
     f: impl Fn(f32, f32, &mut [f32]) + Send + Sync,
 ) {

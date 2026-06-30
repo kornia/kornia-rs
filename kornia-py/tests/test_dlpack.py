@@ -119,14 +119,59 @@ def test_dlpack_import_shape():
     assert img.width == 5
 
 
-def test_dlpack_import_rejects_non_cpu():
-    """Importing a non-CPU tensor must raise NotImplementedError."""
+def test_dlpack_cuda_device_passthrough():
+    """A CUDA tensor imports as a *device* image (zero-copy pass-through):
+
+    - import succeeds (no longer rejected),
+    - ``__dlpack_device__`` reports kDLCUDA (device_type == 2),
+    - host operations (e.g. ``.numpy()``) raise rather than dereference device memory,
+    - it re-exports back to a CUDA torch tensor sharing the same device buffer.
+    """
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available():
-        pytest.skip("CUDA not available — skipping non-CPU device rejection test")
-    t = torch.zeros((4, 4, 3), dtype=torch.uint8, device="cuda")
-    with pytest.raises((NotImplementedError, Exception)):
-        Image.from_dlpack(t)
+        pytest.skip("CUDA not available — skipping device pass-through test")
+
+    t = torch.arange(4 * 5 * 3, dtype=torch.uint8, device="cuda").reshape(4, 5, 3)
+    img = Image.from_dlpack(t)
+
+    # kDLCUDA == 2; device id matches the source.
+    dev_type, dev_id = img.__dlpack_device__()
+    assert dev_type == 2, f"expected kDLCUDA (2), got {dev_type}"
+    assert dev_id in (t.device.index, 0)
+
+    # Host ops must refuse a device image (no host deref of device memory).
+    with pytest.raises(Exception):
+        img.numpy()
+    with pytest.raises(Exception):
+        img.tobytes()
+
+    # Re-export back to torch: still CUDA, same underlying device pointer (zero-copy).
+    t2 = torch.from_dlpack(img)
+    assert t2.is_cuda
+    assert t2.data_ptr() == t.data_ptr(), "device re-export is not zero-copy"
+
+
+def test_dlpack_host_image_rejects_cross_device_export_request():
+    """Requesting a non-CPU export device from a host image must be rejected."""
+    arr = np.ascontiguousarray(np.zeros((7, 5, 3), np.uint8))
+    img = Image.from_numpy(arr, copy=True)
+    # __dlpack__(dl_device=(kDLCUDA, 0)) on a host image must not silently succeed.
+    with pytest.raises(Exception):
+        img.__dlpack__(dl_device=(2, 0))
+
+
+def test_dlpack_import_rejects_bad_rank():
+    """from_dlpack must reject non-2D/3D tensors.
+
+    Exercises the `validate_dlpack_rank` guard that bounds the producer-supplied
+    `ndim` before it is used as a slice length (a negative/oversized `ndim` would
+    otherwise be UB / an out-of-bounds read). 1D and 4D numpy arrays are honest
+    producers that still drive the rank check — no GPU required.
+    """
+    for shape in [(10,), (2, 2, 2, 2), (1, 2, 3, 4, 5)]:
+        arr = np.ascontiguousarray(np.zeros(shape, np.uint8))
+        with pytest.raises((ValueError, Exception)):
+            Image.from_dlpack(arr)
 
 
 def test_dlpack_import_rejects_unsupported_dtype():

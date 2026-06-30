@@ -1,5 +1,4 @@
 use kornia_image::{
-    allocator::ImageAllocator,
     color_spaces::{
         Bgr8, Bgra8, Bgraf32, Bgrf32, Gray8, Grayf32, Grayf64, Hlsf32, Hlsf64, Hsvf32, Hsvf64,
         Labf32, Labf64, LinearRgbf32, LinearRgbf64, Luvf32, Luvf64, Nv12, Nv21, Rgb8, Rgba8,
@@ -18,16 +17,14 @@ use kornia_image::{
 ///
 /// ```
 /// use kornia_image::ImageSize;
-/// use kornia_image::allocator::CpuAllocator;
 /// use kornia_imgproc::color::{Rgbf32, Grayf32, ConvertColor};
 ///
 /// let rgb = Rgbf32::from_size_vec(
 ///     ImageSize { width: 4, height: 5 },
 ///     vec![0.5f32; 4 * 5 * 3],
-///     CpuAllocator
 /// ).unwrap();
 ///
-/// let mut gray = Grayf32::from_size_val(rgb.size(), 0.0, CpuAllocator).unwrap();
+/// let mut gray = Grayf32::from_size_val(rgb.size(), 0.0).unwrap();
 ///
 /// rgb.convert(&mut gray).unwrap();
 /// ```
@@ -39,11 +36,7 @@ pub trait ConvertColor<Dst> {
 /// Macro to implement color conversions
 macro_rules! impl_convert {
     ($src:ty => $dst:ty, $func:path) => {
-        impl<A1, A2> ConvertColor<$dst> for $src
-        where
-            A1: ImageAllocator,
-            A2: ImageAllocator,
-        {
+        impl ConvertColor<$dst> for $src {
             fn convert(&self, dst: &mut $dst) -> Result<(), ImageError> {
                 $func(&self.0, &mut dst.0)
             }
@@ -51,12 +44,8 @@ macro_rules! impl_convert {
     };
 
     // For conversions with optional parameters (like background)
-    ($src:ty => $dst:ty, $func:path, bg: $bg:expr) => {
-        impl<A1, A2> ConvertColor<$dst> for $src
-        where
-            A1: ImageAllocator,
-            A2: ImageAllocator,
-        {
+    ($src:ty => $dst:ty, $func:path, bg: $bg:expr_2021) => {
+        impl ConvertColor<$dst> for $src {
             fn convert(&self, dst: &mut $dst) -> Result<(), ImageError> {
                 $func(&self.0, &mut dst.0, $bg)
             }
@@ -67,11 +56,7 @@ macro_rules! impl_convert {
 /// Macro to implement color conversions with background support
 macro_rules! impl_convert_with_bg {
     ($src:ty => $dst:ty, $func:path) => {
-        impl<A1, A2> ConvertColorWithBackground<$dst> for $src
-        where
-            A1: ImageAllocator,
-            A2: ImageAllocator,
-        {
+        impl ConvertColorWithBackground<$dst> for $src {
             fn convert_with_bg(
                 &self,
                 dst: &mut $dst,
@@ -84,97 +69,93 @@ macro_rules! impl_convert_with_bg {
 }
 
 // ===== Bayer mosaic -> RGB (hand-written: reads the runtime pattern field) =====
-impl<A1, A2> ConvertColor<Rgb8<A2>> for kornia_image::color_spaces::Bayer8<A1>
-where
-    A1: ImageAllocator,
-    A2: ImageAllocator,
-{
-    fn convert(&self, dst: &mut Rgb8<A2>) -> Result<(), ImageError> {
+impl ConvertColor<Rgb8> for kornia_image::color_spaces::Bayer8 {
+    fn convert(&self, dst: &mut Rgb8) -> Result<(), ImageError> {
         crate::color::rgb_from_bayer(self.as_image(), self.pattern, &mut dst.0)
     }
 }
 
 // ===== RGB -> Gray Conversions =====
-impl_convert!(Rgbf32<A1> => Grayf32<A2>, crate::color::gray_from_rgb_f32);
-impl_convert!(Rgbf64<A1> => Grayf64<A2>, crate::color::gray_from_rgb);
-impl_convert!(Rgb8<A1> => Gray8<A2>, crate::color::gray_from_rgb_u8);
+impl_convert!(Rgbf32 => Grayf32, crate::color::gray_from_rgb_f32);
+impl_convert!(Rgbf64 => Grayf64, crate::color::gray_from_rgb);
+impl_convert!(Rgb8 => Gray8, crate::color::gray_from_rgb_u8);
 
 // ===== Gray -> RGB Conversions =====
-impl_convert!(Gray8<A1> => Rgb8<A2>, crate::color::rgb_from_gray);
-impl_convert!(Grayf32<A1> => Rgbf32<A2>, crate::color::rgb_from_gray);
-impl_convert!(Grayf64<A1> => Rgbf64<A2>, crate::color::rgb_from_gray);
+impl_convert!(Gray8 => Rgb8, crate::color::rgb_from_gray);
+impl_convert!(Grayf32 => Rgbf32, crate::color::rgb_from_gray);
+impl_convert!(Grayf64 => Rgbf64, crate::color::rgb_from_gray);
 
 // ===== RGB <-> BGR Conversions =====
-impl_convert!(Rgb8<A1> => Bgr8<A2>, crate::color::bgr_from_rgb);
-impl_convert!(Bgr8<A1> => Rgb8<A2>, crate::color::bgr_from_rgb);
-impl_convert!(Rgbf32<A1> => Bgrf32<A2>, crate::color::bgr_from_rgb);
-impl_convert!(Bgrf32<A1> => Rgbf32<A2>, crate::color::bgr_from_rgb);
+impl_convert!(Rgb8 => Bgr8, crate::color::bgr_from_rgb);
+impl_convert!(Bgr8 => Rgb8, crate::color::bgr_from_rgb);
+impl_convert!(Rgbf32 => Bgrf32, crate::color::bgr_from_rgb);
+impl_convert!(Bgrf32 => Rgbf32, crate::color::bgr_from_rgb);
 
 // ===== RGB <-> HSV Conversions =====
-impl_convert!(Rgbf32<A1> => Hsvf32<A2>, crate::color::hsv_from_rgb);
-impl_convert!(Hsvf32<A1> => Rgbf32<A2>, crate::color::rgb_from_hsv);
-impl_convert!(Rgbf64<A1> => Hsvf64<A2>, crate::color::hsv_from_rgb);
-impl_convert!(Hsvf64<A1> => Rgbf64<A2>, crate::color::rgb_from_hsv);
+impl_convert!(Rgbf32 => Hsvf32, crate::color::hsv_from_rgb);
+impl_convert!(Hsvf32 => Rgbf32, crate::color::rgb_from_hsv);
+impl_convert!(Rgbf64 => Hsvf64, crate::color::hsv_from_rgb);
+impl_convert!(Hsvf64 => Rgbf64, crate::color::rgb_from_hsv);
 
 // ===== RGB <-> HLS Conversions =====
-impl_convert!(Rgbf32<A1> => Hlsf32<A2>, crate::color::hls_from_rgb);
-impl_convert!(Hlsf32<A1> => Rgbf32<A2>, crate::color::rgb_from_hls);
-impl_convert!(Rgbf64<A1> => Hlsf64<A2>, crate::color::hls_from_rgb);
-impl_convert!(Hlsf64<A1> => Rgbf64<A2>, crate::color::rgb_from_hls);
+impl_convert!(Rgbf32 => Hlsf32, crate::color::hls_from_rgb);
+impl_convert!(Hlsf32 => Rgbf32, crate::color::rgb_from_hls);
+impl_convert!(Rgbf64 => Hlsf64, crate::color::hls_from_rgb);
+impl_convert!(Hlsf64 => Rgbf64, crate::color::rgb_from_hls);
 
 // ===== RGB <-> linear-RGB (sRGB transfer) =====
-impl_convert!(Rgbf32<A1> => LinearRgbf32<A2>, crate::color::linear_rgb_from_rgb);
-impl_convert!(LinearRgbf32<A1> => Rgbf32<A2>, crate::color::rgb_from_linear_rgb);
-impl_convert!(Rgbf64<A1> => LinearRgbf64<A2>, crate::color::linear_rgb_from_rgb);
-impl_convert!(LinearRgbf64<A1> => Rgbf64<A2>, crate::color::rgb_from_linear_rgb);
+impl_convert!(Rgbf32 => LinearRgbf32, crate::color::linear_rgb_from_rgb);
+impl_convert!(LinearRgbf32 => Rgbf32, crate::color::rgb_from_linear_rgb);
+impl_convert!(Rgbf64 => LinearRgbf64, crate::color::linear_rgb_from_rgb);
+impl_convert!(LinearRgbf64 => Rgbf64, crate::color::rgb_from_linear_rgb);
 
 // ===== RGB <-> XYZ Conversions =====
-impl_convert!(Rgbf32<A1> => Xyzf32<A2>, crate::color::xyz_from_rgb);
-impl_convert!(Xyzf32<A1> => Rgbf32<A2>, crate::color::rgb_from_xyz);
-impl_convert!(Rgbf64<A1> => Xyzf64<A2>, crate::color::xyz_from_rgb);
-impl_convert!(Xyzf64<A1> => Rgbf64<A2>, crate::color::rgb_from_xyz);
+impl_convert!(Rgbf32 => Xyzf32, crate::color::xyz_from_rgb);
+impl_convert!(Xyzf32 => Rgbf32, crate::color::rgb_from_xyz);
+impl_convert!(Rgbf64 => Xyzf64, crate::color::xyz_from_rgb);
+impl_convert!(Xyzf64 => Rgbf64, crate::color::rgb_from_xyz);
 
 // ===== RGB <-> Lab Conversions =====
-impl_convert!(Rgbf32<A1> => Labf32<A2>, crate::color::lab_from_rgb);
-impl_convert!(Labf32<A1> => Rgbf32<A2>, crate::color::rgb_from_lab);
-impl_convert!(Rgbf64<A1> => Labf64<A2>, crate::color::lab_from_rgb);
-impl_convert!(Labf64<A1> => Rgbf64<A2>, crate::color::rgb_from_lab);
+impl_convert!(Rgbf32 => Labf32, crate::color::lab_from_rgb);
+impl_convert!(Labf32 => Rgbf32, crate::color::rgb_from_lab);
+impl_convert!(Rgbf64 => Labf64, crate::color::lab_from_rgb);
+impl_convert!(Labf64 => Rgbf64, crate::color::rgb_from_lab);
 
 // ===== RGB <-> Luv Conversions =====
-impl_convert!(Rgbf32<A1> => Luvf32<A2>, crate::color::luv_from_rgb);
-impl_convert!(Luvf32<A1> => Rgbf32<A2>, crate::color::rgb_from_luv);
-impl_convert!(Rgbf64<A1> => Luvf64<A2>, crate::color::luv_from_rgb);
-impl_convert!(Luvf64<A1> => Rgbf64<A2>, crate::color::rgb_from_luv);
+impl_convert!(Rgbf32 => Luvf32, crate::color::luv_from_rgb);
+impl_convert!(Luvf32 => Rgbf32, crate::color::rgb_from_luv);
+impl_convert!(Rgbf64 => Luvf64, crate::color::luv_from_rgb);
+impl_convert!(Luvf64 => Rgbf64, crate::color::rgb_from_luv);
 
 // ===== RGB <-> YCbCr Conversions =====
-impl_convert!(Rgb8<A1> => YCbCr8<A2>, crate::color::ycbcr_from_rgb);
-impl_convert!(YCbCr8<A1> => Rgb8<A2>, crate::color::rgb_from_ycbcr);
-impl_convert!(Rgbf32<A1> => YCbCrf32<A2>, crate::color::ycbcr_from_rgb);
-impl_convert!(YCbCrf32<A1> => Rgbf32<A2>, crate::color::rgb_from_ycbcr);
-impl_convert!(Rgbf64<A1> => YCbCrf64<A2>, crate::color::ycbcr_from_rgb);
-impl_convert!(YCbCrf64<A1> => Rgbf64<A2>, crate::color::rgb_from_ycbcr);
+impl_convert!(Rgb8 => YCbCr8, crate::color::ycbcr_from_rgb);
+impl_convert!(YCbCr8 => Rgb8, crate::color::rgb_from_ycbcr);
+impl_convert!(Rgbf32 => YCbCrf32, crate::color::ycbcr_from_rgb);
+impl_convert!(YCbCrf32 => Rgbf32, crate::color::rgb_from_ycbcr);
+impl_convert!(Rgbf64 => YCbCrf64, crate::color::ycbcr_from_rgb);
+impl_convert!(YCbCrf64 => Rgbf64, crate::color::rgb_from_ycbcr);
 
 // ===== RGB <-> YUV (planar 3-channel) Conversions =====
-impl_convert!(Rgb8<A1> => Yuv8<A2>, crate::color::yuv_from_rgb);
-impl_convert!(Yuv8<A1> => Rgb8<A2>, crate::color::rgb_from_yuv);
-impl_convert!(Rgbf32<A1> => Yuvf32<A2>, crate::color::yuv_from_rgb);
-impl_convert!(Yuvf32<A1> => Rgbf32<A2>, crate::color::rgb_from_yuv);
-impl_convert!(Rgbf64<A1> => Yuvf64<A2>, crate::color::yuv_from_rgb);
-impl_convert!(Yuvf64<A1> => Rgbf64<A2>, crate::color::rgb_from_yuv);
+impl_convert!(Rgb8 => Yuv8, crate::color::yuv_from_rgb);
+impl_convert!(Yuv8 => Rgb8, crate::color::rgb_from_yuv);
+impl_convert!(Rgbf32 => Yuvf32, crate::color::yuv_from_rgb);
+impl_convert!(Yuvf32 => Rgbf32, crate::color::rgb_from_yuv);
+impl_convert!(Rgbf64 => Yuvf64, crate::color::yuv_from_rgb);
+impl_convert!(Yuvf64 => Rgbf64, crate::color::rgb_from_yuv);
 
 // ===== RGBA -> RGB Conversions =====
-impl_convert!(Rgba8<A1> => Rgb8<A2>, crate::color::rgb_from_rgba, bg: None);
+impl_convert!(Rgba8 => Rgb8, crate::color::rgb_from_rgba, bg: None);
 
 // ===== BGRA -> RGB Conversions =====
-impl_convert!(Bgra8<A1> => Rgb8<A2>, crate::color::rgb_from_bgra, bg: None);
+impl_convert!(Bgra8 => Rgb8, crate::color::rgb_from_bgra, bg: None);
 
 // ===== RGB -> RGBA Conversions (add opaque alpha) =====
-impl_convert!(Rgb8<A1> => Rgba8<A2>, crate::color::rgba_from_rgb);
-impl_convert!(Rgbf32<A1> => Rgbaf32<A2>, crate::color::rgba_from_rgb);
+impl_convert!(Rgb8 => Rgba8, crate::color::rgba_from_rgb);
+impl_convert!(Rgbf32 => Rgbaf32, crate::color::rgba_from_rgb);
 
 // ===== RGB -> BGRA Conversions (swap R/B + add opaque alpha) =====
-impl_convert!(Rgb8<A1> => Bgra8<A2>, crate::color::bgra_from_rgb);
-impl_convert!(Rgbf32<A1> => Bgraf32<A2>, crate::color::bgra_from_rgb);
+impl_convert!(Rgb8 => Bgra8, crate::color::bgra_from_rgb);
+impl_convert!(Rgbf32 => Bgraf32, crate::color::bgra_from_rgb);
 
 // ===== Video format decode -> RGB (BT.601 limited range) =====
 //
@@ -182,11 +163,8 @@ impl_convert!(Rgbf32<A1> => Bgraf32<A2>, crate::color::bgra_from_rgb);
 // so they get hand-written `ConvertColor` impls (the `impl_convert!` macro assumes `.0`).
 macro_rules! impl_video_decode {
     ($src:ty, $func:path) => {
-        impl<A2> ConvertColor<Rgb8<A2>> for $src
-        where
-            A2: ImageAllocator,
-        {
-            fn convert(&self, dst: &mut Rgb8<A2>) -> Result<(), ImageError> {
+        impl ConvertColor<Rgb8> for $src {
+            fn convert(&self, dst: &mut Rgb8) -> Result<(), ImageError> {
                 $func(self.as_slice(), &mut dst.0)
             }
         }
@@ -209,14 +187,13 @@ pub trait ConvertColorWithBackground<Dst> {
     fn convert_with_bg(&self, dst: &mut Dst, bg: Option<[u8; 3]>) -> Result<(), ImageError>;
 }
 
-impl_convert_with_bg!(Rgba8<A1> => Rgb8<A2>, crate::color::rgb_from_rgba);
-impl_convert_with_bg!(Bgra8<A1> => Rgb8<A2>, crate::color::rgb_from_bgra);
+impl_convert_with_bg!(Rgba8 => Rgb8, crate::color::rgb_from_rgba);
+impl_convert_with_bg!(Bgra8 => Rgb8, crate::color::rgb_from_bgra);
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use kornia_image::ImageSize;
-    use kornia_tensor::CpuAllocator;
 
     #[test]
     fn test_gray_from_rgb_f32() -> Result<(), ImageError> {
@@ -226,10 +203,9 @@ mod tests {
                 height: 2,
             },
             vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.5, 0.5, 0.5],
-            CpuAllocator,
         )?;
 
-        let mut gray = Grayf32::from_size_val(rgb.size(), 0.0, CpuAllocator)?;
+        let mut gray = Grayf32::from_size_val(rgb.size(), 0.0)?;
 
         rgb.convert(&mut gray)?;
 
@@ -248,10 +224,9 @@ mod tests {
                 height: 1,
             },
             vec![255, 0, 0, 0, 255, 0],
-            CpuAllocator,
         )?;
 
-        let mut gray = Gray8::from_size_val(rgb.size(), 0, CpuAllocator)?;
+        let mut gray = Gray8::from_size_val(rgb.size(), 0)?;
 
         rgb.convert(&mut gray)?;
 
@@ -268,10 +243,9 @@ mod tests {
                 height: 2,
             },
             vec![0.0, 0.5, 1.0, 0.25],
-            CpuAllocator,
         )?;
 
-        let mut rgb = Rgbf32::from_size_val(gray.size(), 0.0, CpuAllocator)?;
+        let mut rgb = Rgbf32::from_size_val(gray.size(), 0.0)?;
 
         gray.convert(&mut rgb)?;
 
@@ -290,10 +264,9 @@ mod tests {
                 height: 1,
             },
             vec![255, 128, 64],
-            CpuAllocator,
         )?;
 
-        let mut bgr = Bgr8::from_size_val(rgb.size(), 0, CpuAllocator)?;
+        let mut bgr = Bgr8::from_size_val(rgb.size(), 0)?;
 
         rgb.convert(&mut bgr)?;
 
@@ -314,10 +287,9 @@ mod tests {
                 height: 1,
             },
             vec![64, 128, 255],
-            CpuAllocator,
         )?;
 
-        let mut rgb = Rgb8::from_size_val(bgr.size(), 0, CpuAllocator)?;
+        let mut rgb = Rgb8::from_size_val(bgr.size(), 0)?;
 
         bgr.convert(&mut rgb)?;
 
@@ -338,11 +310,11 @@ mod tests {
             height: 2,
         };
         let data: Vec<u8> = (0..4 * 2 * 3).map(|v| (v * 7 + 11) as u8).collect();
-        let rgb = Rgb8::from_size_vec(size, data, CpuAllocator)?;
+        let rgb = Rgb8::from_size_vec(size, data)?;
 
         // YCbCr round-trip
-        let mut ycc = YCbCr8::from_size_val(size, 0, CpuAllocator)?;
-        let mut back = Rgb8::from_size_val(size, 0, CpuAllocator)?;
+        let mut ycc = YCbCr8::from_size_val(size, 0)?;
+        let mut back = Rgb8::from_size_val(size, 0)?;
         rgb.convert(&mut ycc)?;
         ycc.convert(&mut back)?;
         for (a, b) in rgb.as_slice().iter().zip(back.as_slice().iter()) {
@@ -350,7 +322,7 @@ mod tests {
         }
 
         // YUV (swapped chroma) must differ from YCbCr in channels 1/2 but round-trip too.
-        let mut yuv = Yuv8::from_size_val(size, 0, CpuAllocator)?;
+        let mut yuv = Yuv8::from_size_val(size, 0)?;
         rgb.convert(&mut yuv)?;
         assert_eq!(ycc.as_slice()[1], yuv.as_slice()[2]);
         assert_eq!(ycc.as_slice()[2], yuv.as_slice()[1]);
@@ -366,7 +338,7 @@ mod tests {
         };
         // Y=16, U=V=128 -> black (limited range).
         let yuyv = Yuyv8::from_size_vec(size, vec![16, 128, 16, 128])?;
-        let mut rgb = Rgb8::from_size_val(size, 0, CpuAllocator)?;
+        let mut rgb = Rgb8::from_size_val(size, 0)?;
         yuyv.convert(&mut rgb)?;
         assert_eq!(rgb.as_slice(), &[0, 0, 0, 0, 0, 0]);
         Ok(())
@@ -380,10 +352,9 @@ mod tests {
                 height: 1,
             },
             vec![255.0, 0.0, 0.0],
-            CpuAllocator,
         )?;
 
-        let mut hsv = Hsvf32::from_size_val(rgb.size(), 0.0, CpuAllocator)?;
+        let mut hsv = Hsvf32::from_size_val(rgb.size(), 0.0)?;
 
         rgb.convert(&mut hsv)?;
 
@@ -400,7 +371,6 @@ mod tests {
                 height: 4,
             },
             vec![0u8; 4 * 4 * 3],
-            CpuAllocator,
         )?;
 
         // Test that Deref allows us to use Image methods
@@ -420,10 +390,9 @@ mod tests {
                 height: 1,
             },
             vec![255, 128, 64, 255, 100, 50, 25, 128],
-            CpuAllocator,
         )?;
 
-        let mut rgb = Rgb8::from_size_val(rgba.size(), 0, CpuAllocator)?;
+        let mut rgb = Rgb8::from_size_val(rgba.size(), 0)?;
 
         rgba.convert(&mut rgb)?;
 
@@ -446,10 +415,9 @@ mod tests {
                 height: 1,
             },
             vec![255, 0, 0, 128], // Red with 50% alpha
-            CpuAllocator,
         )?;
 
-        let mut rgb = Rgb8::from_size_val(rgba.size(), 0, CpuAllocator)?;
+        let mut rgb = Rgb8::from_size_val(rgba.size(), 0)?;
 
         // Convert with white background
         rgba.convert_with_bg(&mut rgb, Some([100, 100, 100]))?;
@@ -471,10 +439,9 @@ mod tests {
                 height: 1,
             },
             vec![64, 128, 255, 255], // BGR + A
-            CpuAllocator,
         )?;
 
-        let mut rgb = Rgb8::from_size_val(bgra.size(), 0, CpuAllocator)?;
+        let mut rgb = Rgb8::from_size_val(bgra.size(), 0)?;
 
         bgra.convert(&mut rgb)?;
 
@@ -494,9 +461,8 @@ mod tests {
                 height: 1,
             },
             vec![1, 2, 3, 4, 5, 6],
-            CpuAllocator,
         )?;
-        let mut rgba = Rgba8::from_size_val(rgb.size(), 0, CpuAllocator)?;
+        let mut rgba = Rgba8::from_size_val(rgb.size(), 0)?;
         rgb.convert(&mut rgba)?;
         assert_eq!(rgba.as_slice(), &[1, 2, 3, 255, 4, 5, 6, 255]);
         Ok(())
@@ -510,9 +476,8 @@ mod tests {
                 height: 1,
             },
             vec![1, 2, 3, 4, 5, 6],
-            CpuAllocator,
         )?;
-        let mut bgra = Bgra8::from_size_val(rgb.size(), 0, CpuAllocator)?;
+        let mut bgra = Bgra8::from_size_val(rgb.size(), 0)?;
         rgb.convert(&mut bgra)?;
         assert_eq!(bgra.as_slice(), &[3, 2, 1, 255, 6, 5, 4, 255]);
         Ok(())
@@ -529,16 +494,15 @@ mod tests {
                 height: 1,
             },
             vec![255, 0, 0, 0, 255, 0],
-            CpuAllocator,
         )?;
 
-        let mut gray = Gray8::from_size_val(rgb.size(), 0, CpuAllocator)?;
+        let mut gray = Gray8::from_size_val(rgb.size(), 0)?;
 
         rgb.convert(&mut gray)?;
         assert_eq!(gray.num_channels(), 1);
 
         // Test Bgr8
-        let mut bgr = Bgr8::from_size_val(rgb.size(), 0, CpuAllocator)?;
+        let mut bgr = Bgr8::from_size_val(rgb.size(), 0)?;
         rgb.convert(&mut bgr)?;
         assert_eq!(bgr.num_channels(), 3);
 
@@ -549,9 +513,8 @@ mod tests {
                 height: 1,
             },
             vec![255, 128, 64, 255],
-            CpuAllocator,
         )?;
-        let mut rgb_out = Rgb8::from_size_val(rgba.size(), 0, CpuAllocator)?;
+        let mut rgb_out = Rgb8::from_size_val(rgba.size(), 0)?;
         rgba.convert(&mut rgb_out)?;
 
         assert_eq!(rgb_out.as_slice()[0], 255);
@@ -583,19 +546,13 @@ pub trait SrcSize {
 /// Emit both `NewColorImage` and `SrcSize` impls for a color-space newtype.
 macro_rules! impl_color_newtype {
     ($newtype:ident, $t:ty) => {
-        impl NewColorImage
-            for kornia_image::color_spaces::$newtype<kornia_image::allocator::CpuAllocator>
-        {
+        impl NewColorImage for kornia_image::color_spaces::$newtype {
             fn new_zeroed(size: ImageSize) -> Result<Self, ImageError> {
-                kornia_image::color_spaces::$newtype::from_size_val(
-                    size,
-                    <$t>::default(),
-                    kornia_image::allocator::CpuAllocator,
-                )
+                kornia_image::color_spaces::$newtype::from_size_val(size, <$t>::default())
             }
         }
 
-        impl<A: ImageAllocator> SrcSize for kornia_image::color_spaces::$newtype<A> {
+        impl SrcSize for kornia_image::color_spaces::$newtype {
             fn src_size(&self) -> ImageSize {
                 self.size()
             }
@@ -634,16 +591,14 @@ impl_color_newtype!(Bgraf32, f32);
 ///
 /// ```
 /// use kornia_image::ImageSize;
-/// use kornia_image::allocator::CpuAllocator;
 /// use kornia_imgproc::color::{Rgbf32, Hsvf32, ConvertColorExt};
 ///
 /// let rgb = Rgbf32::from_size_vec(
 ///     ImageSize { width: 4, height: 3 },
 ///     vec![0.5f32; 4 * 3 * 3],
-///     CpuAllocator,
 /// ).unwrap();
 ///
-/// let hsv: Hsvf32<_> = rgb.cvt().unwrap();
+/// let hsv: Hsvf32 = rgb.cvt().unwrap();
 /// assert_eq!(hsv.size(), rgb.size());
 /// ```
 pub trait ConvertColorExt {
@@ -669,7 +624,6 @@ impl<Src> ConvertColorExt for Src {
 #[cfg(test)]
 mod cvt_color_tests {
     use crate::color::Tagged;
-    use kornia_image::allocator::CpuAllocator;
     use kornia_image::color_spaces::Rgbf32;
     use kornia_image::{ColorSpace, DynImage, ImageSize};
 
@@ -679,7 +633,7 @@ mod cvt_color_tests {
             width: 4,
             height: 4,
         };
-        let rgb = Rgbf32::from_size_vec(size, vec![0.5f32; 4 * 4 * 3], CpuAllocator).unwrap();
+        let rgb = Rgbf32::from_size_vec(size, vec![0.5f32; 4 * 4 * 3]).unwrap();
         let hsv = rgb.cvt_color(ColorSpace::Hsv).unwrap();
         assert_eq!(hsv.color_space(), ColorSpace::Hsv);
         assert_eq!(hsv.channels(), 3);
@@ -695,11 +649,11 @@ mod cvt_color_tests {
             width: 2,
             height: 2,
         };
-        let rgb = Rgbf32::from_size_vec(size, vec![0.0f32; 2 * 2 * 3], CpuAllocator).unwrap();
+        let rgb = Rgbf32::from_size_vec(size, vec![0.0f32; 2 * 2 * 3]).unwrap();
         // Rgb has no direct path to YCbCr? It does — pick a truly illegal target by
         // constructing from a non-Rgb source instead:
         let hsv = rgb.cvt_color(ColorSpace::Hsv).unwrap();
-        let hsv_typed: kornia_image::color_spaces::Hsvf32<_> = hsv.try_into().unwrap();
+        let hsv_typed: kornia_image::color_spaces::Hsvf32 = hsv.try_into().unwrap();
         let err = hsv_typed.cvt_color(ColorSpace::Lab);
         assert!(err.is_err());
     }
@@ -708,7 +662,6 @@ mod cvt_color_tests {
 #[cfg(test)]
 mod cvt_ext_tests {
     use crate::color::ConvertColorExt;
-    use kornia_image::allocator::CpuAllocator;
     use kornia_image::color_spaces::{Grayf32, Hsvf32, Rgbf32};
     use kornia_image::ImageSize;
 
@@ -718,12 +671,12 @@ mod cvt_ext_tests {
             width: 4,
             height: 3,
         };
-        let rgb = Rgbf32::from_size_vec(size, vec![0.5f32; 4 * 3 * 3], CpuAllocator).unwrap();
+        let rgb = Rgbf32::from_size_vec(size, vec![0.5f32; 4 * 3 * 3]).unwrap();
         // typed, allocating: no manual dst construction
-        let hsv: Hsvf32<_> = rgb.cvt().unwrap();
+        let hsv: Hsvf32 = rgb.cvt().unwrap();
         assert_eq!(hsv.size(), size);
         // channel-changing conversion is natural — Dst encodes C
-        let gray: Grayf32<_> = rgb.cvt().unwrap();
+        let gray: Grayf32 = rgb.cvt().unwrap();
         assert_eq!(gray.num_channels(), 1);
     }
 
@@ -734,9 +687,9 @@ mod cvt_ext_tests {
             height: 8,
         };
         let data: Vec<f32> = (0..8 * 8 * 3).map(|i| (i % 255) as f32 / 255.0).collect();
-        let rgb = Rgbf32::from_size_vec(size, data.clone(), CpuAllocator).unwrap();
-        let hsv: Hsvf32<_> = rgb.cvt().unwrap();
-        let back: Rgbf32<_> = hsv.cvt().unwrap();
+        let rgb = Rgbf32::from_size_vec(size, data.clone()).unwrap();
+        let hsv: Hsvf32 = rgb.cvt().unwrap();
+        let back: Rgbf32 = hsv.cvt().unwrap();
         for (a, b) in data.iter().zip(back.as_slice().iter()) {
             assert!((a - b).abs() < 1e-3, "round-trip drift {a} vs {b}");
         }
@@ -745,7 +698,6 @@ mod cvt_ext_tests {
 
 // ===== Runtime Tagged dispatch layer =====
 
-use kornia_image::allocator::CpuAllocator;
 use kornia_image::{ColorSpace, DynImage};
 
 /// Runtime, color-space-tagged conversion. The source newtype encodes its
@@ -755,17 +707,17 @@ pub trait Tagged<T> {
     /// This image's color space.
     fn space(&self) -> ColorSpace;
     /// Convert to `to`, returning an owned tagged `DynImage`.
-    fn cvt_color(&self, to: ColorSpace) -> Result<DynImage<T, CpuAllocator>, ImageError>;
+    fn cvt_color(&self, to: ColorSpace) -> Result<DynImage<T>, ImageError>;
 }
 
 /// Generates a `Tagged` impl for one source newtype. Each `to => Dst, Cn`
 /// arm names the destination newtype and the DynImage channel constructor.
 macro_rules! impl_tagged {
-    ($src:ty, $t:ty, $space:expr, { $( $to:ident => $dst:ty , $ctor:ident );* $(;)? }) => {
-        impl<A: ImageAllocator> Tagged<$t> for $src
+    ($src:ty, $t:ty, $space:expr_2021, { $( $to:ident => $dst:ty , $ctor:ident );* $(;)? }) => {
+        impl Tagged<$t> for $src
         where Self: SrcSize {
             fn space(&self) -> ColorSpace { $space }
-            fn cvt_color(&self, to: ColorSpace) -> Result<DynImage<$t, CpuAllocator>, ImageError> {
+            fn cvt_color(&self, to: ColorSpace) -> Result<DynImage<$t>, ImageError> {
                 match to {
                     $( ColorSpace::$to => {
                         let out: $dst = self.cvt()?;
@@ -779,73 +731,73 @@ macro_rules! impl_tagged {
 }
 
 // ---- f32 RGB source: all f32 targets ----
-impl_tagged!(kornia_image::color_spaces::Rgbf32<A>, f32, ColorSpace::Rgb, {
-    Gray      => kornia_image::color_spaces::Grayf32<CpuAllocator>, C1;
-    Bgr       => kornia_image::color_spaces::Bgrf32<CpuAllocator>, C3;
-    Rgba      => kornia_image::color_spaces::Rgbaf32<CpuAllocator>, C4;
-    Bgra      => kornia_image::color_spaces::Bgraf32<CpuAllocator>, C4;
-    Hsv       => kornia_image::color_spaces::Hsvf32<CpuAllocator>, C3;
-    Hls       => kornia_image::color_spaces::Hlsf32<CpuAllocator>, C3;
-    Lab       => kornia_image::color_spaces::Labf32<CpuAllocator>, C3;
-    Luv       => kornia_image::color_spaces::Luvf32<CpuAllocator>, C3;
-    Xyz       => kornia_image::color_spaces::Xyzf32<CpuAllocator>, C3;
-    LinearRgb => kornia_image::color_spaces::LinearRgbf32<CpuAllocator>, C3;
-    YCbCr     => kornia_image::color_spaces::YCbCrf32<CpuAllocator>, C3;
-    Yuv       => kornia_image::color_spaces::Yuvf32<CpuAllocator>, C3;
+impl_tagged!(kornia_image::color_spaces::Rgbf32, f32, ColorSpace::Rgb, {
+    Gray      => kornia_image::color_spaces::Grayf32, C1;
+    Bgr       => kornia_image::color_spaces::Bgrf32, C3;
+    Rgba      => kornia_image::color_spaces::Rgbaf32, C4;
+    Bgra      => kornia_image::color_spaces::Bgraf32, C4;
+    Hsv       => kornia_image::color_spaces::Hsvf32, C3;
+    Hls       => kornia_image::color_spaces::Hlsf32, C3;
+    Lab       => kornia_image::color_spaces::Labf32, C3;
+    Luv       => kornia_image::color_spaces::Luvf32, C3;
+    Xyz       => kornia_image::color_spaces::Xyzf32, C3;
+    LinearRgb => kornia_image::color_spaces::LinearRgbf32, C3;
+    YCbCr     => kornia_image::color_spaces::YCbCrf32, C3;
+    Yuv       => kornia_image::color_spaces::Yuvf32, C3;
 });
 
 // ---- f32 inverse sources back to RGB ----
-impl_tagged!(kornia_image::color_spaces::Hsvf32<A>, f32, ColorSpace::Hsv, {
-    Rgb => kornia_image::color_spaces::Rgbf32<CpuAllocator>, C3;
+impl_tagged!(kornia_image::color_spaces::Hsvf32, f32, ColorSpace::Hsv, {
+    Rgb => kornia_image::color_spaces::Rgbf32, C3;
 });
-impl_tagged!(kornia_image::color_spaces::Hlsf32<A>, f32, ColorSpace::Hls, {
-    Rgb => kornia_image::color_spaces::Rgbf32<CpuAllocator>, C3;
+impl_tagged!(kornia_image::color_spaces::Hlsf32, f32, ColorSpace::Hls, {
+    Rgb => kornia_image::color_spaces::Rgbf32, C3;
 });
-impl_tagged!(kornia_image::color_spaces::Labf32<A>, f32, ColorSpace::Lab, {
-    Rgb => kornia_image::color_spaces::Rgbf32<CpuAllocator>, C3;
+impl_tagged!(kornia_image::color_spaces::Labf32, f32, ColorSpace::Lab, {
+    Rgb => kornia_image::color_spaces::Rgbf32, C3;
 });
-impl_tagged!(kornia_image::color_spaces::Luvf32<A>, f32, ColorSpace::Luv, {
-    Rgb => kornia_image::color_spaces::Rgbf32<CpuAllocator>, C3;
+impl_tagged!(kornia_image::color_spaces::Luvf32, f32, ColorSpace::Luv, {
+    Rgb => kornia_image::color_spaces::Rgbf32, C3;
 });
-impl_tagged!(kornia_image::color_spaces::Xyzf32<A>, f32, ColorSpace::Xyz, {
-    Rgb => kornia_image::color_spaces::Rgbf32<CpuAllocator>, C3;
+impl_tagged!(kornia_image::color_spaces::Xyzf32, f32, ColorSpace::Xyz, {
+    Rgb => kornia_image::color_spaces::Rgbf32, C3;
 });
-impl_tagged!(kornia_image::color_spaces::LinearRgbf32<A>, f32, ColorSpace::LinearRgb, {
-    Rgb => kornia_image::color_spaces::Rgbf32<CpuAllocator>, C3;
+impl_tagged!(kornia_image::color_spaces::LinearRgbf32, f32, ColorSpace::LinearRgb, {
+    Rgb => kornia_image::color_spaces::Rgbf32, C3;
 });
-impl_tagged!(kornia_image::color_spaces::YCbCrf32<A>, f32, ColorSpace::YCbCr, {
-    Rgb => kornia_image::color_spaces::Rgbf32<CpuAllocator>, C3;
+impl_tagged!(kornia_image::color_spaces::YCbCrf32, f32, ColorSpace::YCbCr, {
+    Rgb => kornia_image::color_spaces::Rgbf32, C3;
 });
-impl_tagged!(kornia_image::color_spaces::Yuvf32<A>, f32, ColorSpace::Yuv, {
-    Rgb => kornia_image::color_spaces::Rgbf32<CpuAllocator>, C3;
+impl_tagged!(kornia_image::color_spaces::Yuvf32, f32, ColorSpace::Yuv, {
+    Rgb => kornia_image::color_spaces::Rgbf32, C3;
 });
-impl_tagged!(kornia_image::color_spaces::Bgrf32<A>, f32, ColorSpace::Bgr, {
-    Rgb => kornia_image::color_spaces::Rgbf32<CpuAllocator>, C3;
+impl_tagged!(kornia_image::color_spaces::Bgrf32, f32, ColorSpace::Bgr, {
+    Rgb => kornia_image::color_spaces::Rgbf32, C3;
 });
-impl_tagged!(kornia_image::color_spaces::Grayf32<A>, f32, ColorSpace::Gray, {
-    Rgb => kornia_image::color_spaces::Rgbf32<CpuAllocator>, C3;
+impl_tagged!(kornia_image::color_spaces::Grayf32, f32, ColorSpace::Gray, {
+    Rgb => kornia_image::color_spaces::Rgbf32, C3;
 });
 
 // ---- u8 RGB source: u8-valid targets ----
-impl_tagged!(kornia_image::color_spaces::Rgb8<A>, u8, ColorSpace::Rgb, {
-    Gray  => kornia_image::color_spaces::Gray8<CpuAllocator>, C1;
-    Bgr   => kornia_image::color_spaces::Bgr8<CpuAllocator>, C3;
-    Rgba  => kornia_image::color_spaces::Rgba8<CpuAllocator>, C4;
-    Bgra  => kornia_image::color_spaces::Bgra8<CpuAllocator>, C4;
-    YCbCr => kornia_image::color_spaces::YCbCr8<CpuAllocator>, C3;
-    Yuv   => kornia_image::color_spaces::Yuv8<CpuAllocator>, C3;
+impl_tagged!(kornia_image::color_spaces::Rgb8, u8, ColorSpace::Rgb, {
+    Gray  => kornia_image::color_spaces::Gray8, C1;
+    Bgr   => kornia_image::color_spaces::Bgr8, C3;
+    Rgba  => kornia_image::color_spaces::Rgba8, C4;
+    Bgra  => kornia_image::color_spaces::Bgra8, C4;
+    YCbCr => kornia_image::color_spaces::YCbCr8, C3;
+    Yuv   => kornia_image::color_spaces::Yuv8, C3;
 });
-impl_tagged!(kornia_image::color_spaces::Gray8<A>, u8, ColorSpace::Gray, {
-    Rgb => kornia_image::color_spaces::Rgb8<CpuAllocator>, C3;
+impl_tagged!(kornia_image::color_spaces::Gray8, u8, ColorSpace::Gray, {
+    Rgb => kornia_image::color_spaces::Rgb8, C3;
 });
-impl_tagged!(kornia_image::color_spaces::Bgr8<A>, u8, ColorSpace::Bgr, {
-    Rgb => kornia_image::color_spaces::Rgb8<CpuAllocator>, C3;
+impl_tagged!(kornia_image::color_spaces::Bgr8, u8, ColorSpace::Bgr, {
+    Rgb => kornia_image::color_spaces::Rgb8, C3;
 });
-impl_tagged!(kornia_image::color_spaces::Rgba8<A>, u8, ColorSpace::Rgba, {
-    Rgb => kornia_image::color_spaces::Rgb8<CpuAllocator>, C3;
+impl_tagged!(kornia_image::color_spaces::Rgba8, u8, ColorSpace::Rgba, {
+    Rgb => kornia_image::color_spaces::Rgb8, C3;
 });
-impl_tagged!(kornia_image::color_spaces::Bgra8<A>, u8, ColorSpace::Bgra, {
-    Rgb => kornia_image::color_spaces::Rgb8<CpuAllocator>, C3;
+impl_tagged!(kornia_image::color_spaces::Bgra8, u8, ColorSpace::Bgra, {
+    Rgb => kornia_image::color_spaces::Rgb8, C3;
 });
 
 #[cfg(test)]
@@ -862,7 +814,6 @@ mod legality_drift_tests {
     //! Luv, Xyz, LinearRgb) cannot be produced from u8 source images.
 
     use super::Tagged;
-    use kornia_image::allocator::CpuAllocator;
     use kornia_image::color_spaces::{
         Bgr8, Bgra8, Bgrf32, Gray8, Grayf32, Hlsf32, Hsvf32, Labf32, LinearRgbf32, Luvf32, Rgb8,
         Rgba8, Rgbf32, Xyzf32, YCbCrf32, Yuvf32,
@@ -897,7 +848,7 @@ mod legality_drift_tests {
     /// Check one source image against every possible target.
     /// `is_f32` controls whether f32-only spaces are considered supported.
     macro_rules! check_all_targets {
-        ($src:expr, $from:expr, $is_f32:expr) => {{
+        ($src:expr_2021, $from:expr_2021, $is_f32:expr_2021) => {{
             let src = $src;
             let from: ColorSpace = $from;
             let is_f32: bool = $is_f32;
@@ -925,57 +876,57 @@ mod legality_drift_tests {
         // ---- f32 sources (is_f32 = true) ----
 
         check_all_targets!(
-            Rgbf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 3], CpuAllocator).unwrap(),
+            Rgbf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 3]).unwrap(),
             ColorSpace::Rgb,
             true
         );
         check_all_targets!(
-            Grayf32::from_size_vec(sz, vec![0.5f32; 2 * 2], CpuAllocator).unwrap(),
+            Grayf32::from_size_vec(sz, vec![0.5f32; 2 * 2]).unwrap(),
             ColorSpace::Gray,
             true
         );
         check_all_targets!(
-            Hsvf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 3], CpuAllocator).unwrap(),
+            Hsvf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 3]).unwrap(),
             ColorSpace::Hsv,
             true
         );
         check_all_targets!(
-            Hlsf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 3], CpuAllocator).unwrap(),
+            Hlsf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 3]).unwrap(),
             ColorSpace::Hls,
             true
         );
         check_all_targets!(
-            Labf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 3], CpuAllocator).unwrap(),
+            Labf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 3]).unwrap(),
             ColorSpace::Lab,
             true
         );
         check_all_targets!(
-            Luvf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 3], CpuAllocator).unwrap(),
+            Luvf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 3]).unwrap(),
             ColorSpace::Luv,
             true
         );
         check_all_targets!(
-            Xyzf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 3], CpuAllocator).unwrap(),
+            Xyzf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 3]).unwrap(),
             ColorSpace::Xyz,
             true
         );
         check_all_targets!(
-            LinearRgbf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 3], CpuAllocator).unwrap(),
+            LinearRgbf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 3]).unwrap(),
             ColorSpace::LinearRgb,
             true
         );
         check_all_targets!(
-            YCbCrf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 3], CpuAllocator).unwrap(),
+            YCbCrf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 3]).unwrap(),
             ColorSpace::YCbCr,
             true
         );
         check_all_targets!(
-            Yuvf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 3], CpuAllocator).unwrap(),
+            Yuvf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 3]).unwrap(),
             ColorSpace::Yuv,
             true
         );
         check_all_targets!(
-            Bgrf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 3], CpuAllocator).unwrap(),
+            Bgrf32::from_size_vec(sz, vec![0.5f32; 2 * 2 * 3]).unwrap(),
             ColorSpace::Bgr,
             true
         );
@@ -983,27 +934,27 @@ mod legality_drift_tests {
         // ---- u8 sources (is_f32 = false) ----
 
         check_all_targets!(
-            Rgb8::from_size_vec(sz, vec![128u8; 2 * 2 * 3], CpuAllocator).unwrap(),
+            Rgb8::from_size_vec(sz, vec![128u8; 2 * 2 * 3]).unwrap(),
             ColorSpace::Rgb,
             false
         );
         check_all_targets!(
-            Gray8::from_size_vec(sz, vec![128u8; 2 * 2], CpuAllocator).unwrap(),
+            Gray8::from_size_vec(sz, vec![128u8; 2 * 2]).unwrap(),
             ColorSpace::Gray,
             false
         );
         check_all_targets!(
-            Bgr8::from_size_vec(sz, vec![128u8; 2 * 2 * 3], CpuAllocator).unwrap(),
+            Bgr8::from_size_vec(sz, vec![128u8; 2 * 2 * 3]).unwrap(),
             ColorSpace::Bgr,
             false
         );
         check_all_targets!(
-            Rgba8::from_size_vec(sz, vec![128u8; 2 * 2 * 4], CpuAllocator).unwrap(),
+            Rgba8::from_size_vec(sz, vec![128u8; 2 * 2 * 4]).unwrap(),
             ColorSpace::Rgba,
             false
         );
         check_all_targets!(
-            Bgra8::from_size_vec(sz, vec![128u8; 2 * 2 * 4], CpuAllocator).unwrap(),
+            Bgra8::from_size_vec(sz, vec![128u8; 2 * 2 * 4]).unwrap(),
             ColorSpace::Bgra,
             false
         );

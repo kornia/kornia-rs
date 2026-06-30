@@ -1,4 +1,4 @@
-use kornia_image::{allocator::ImageAllocator, Image};
+use kornia_image::Image;
 
 /// Kernel for nearest neighbor interpolation
 ///
@@ -12,8 +12,8 @@ use kornia_image::{allocator::ImageAllocator, Image};
 /// # Returns
 ///
 /// The interpolated pixel value.
-pub(crate) fn nearest_neighbor_interpolation<const C: usize, A: ImageAllocator>(
-    image: &Image<f32, C, A>,
+pub(crate) fn nearest_neighbor_interpolation<const C: usize>(
+    image: &Image<f32, C>,
     u: f32,
     v: f32,
     c: usize,

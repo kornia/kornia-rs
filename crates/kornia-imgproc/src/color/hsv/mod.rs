@@ -1,5 +1,5 @@
 use crate::parallel;
-use kornia_image::{allocator::ImageAllocator, Image, ImageError};
+use kornia_image::{Image, ImageError};
 
 mod kernels;
 
@@ -12,36 +12,24 @@ use crate::color::kernel_common::{check_size, sealed};
 /// Implemented for `f32` (NEON / AVX2) and `f64` (portable scalar). Sealed.
 pub trait HsvFromRgb: sealed::Sealed + Sized {
     #[doc(hidden)]
-    fn hsv_from_rgb_impl<A1: ImageAllocator, A2: ImageAllocator>(
-        src: &Image<Self, 3, A1>,
-        dst: &mut Image<Self, 3, A2>,
-    ) -> Result<(), ImageError>;
+    fn hsv_from_rgb_impl(src: &Image<Self, 3>, dst: &mut Image<Self, 3>) -> Result<(), ImageError>;
 }
 
 /// Compile-time dispatch to the right HSV→RGB kernel for each pixel type.
 pub trait RgbFromHsv: sealed::Sealed + Sized {
     #[doc(hidden)]
-    fn rgb_from_hsv_impl<A1: ImageAllocator, A2: ImageAllocator>(
-        src: &Image<Self, 3, A1>,
-        dst: &mut Image<Self, 3, A2>,
-    ) -> Result<(), ImageError>;
+    fn rgb_from_hsv_impl(src: &Image<Self, 3>, dst: &mut Image<Self, 3>) -> Result<(), ImageError>;
 }
 
 impl HsvFromRgb for f32 {
-    fn hsv_from_rgb_impl<A1: ImageAllocator, A2: ImageAllocator>(
-        src: &Image<f32, 3, A1>,
-        dst: &mut Image<f32, 3, A2>,
-    ) -> Result<(), ImageError> {
+    fn hsv_from_rgb_impl(src: &Image<f32, 3>, dst: &mut Image<f32, 3>) -> Result<(), ImageError> {
         check_size(src, dst)?;
         kernels::hsv_from_rgb_f32(src.as_slice(), dst.as_slice_mut(), src.rows() * src.cols());
         Ok(())
     }
 }
 impl RgbFromHsv for f32 {
-    fn rgb_from_hsv_impl<A1: ImageAllocator, A2: ImageAllocator>(
-        src: &Image<f32, 3, A1>,
-        dst: &mut Image<f32, 3, A2>,
-    ) -> Result<(), ImageError> {
+    fn rgb_from_hsv_impl(src: &Image<f32, 3>, dst: &mut Image<f32, 3>) -> Result<(), ImageError> {
         check_size(src, dst)?;
         kernels::rgb_from_hsv_f32(src.as_slice(), dst.as_slice_mut(), src.rows() * src.cols());
         Ok(())
@@ -49,10 +37,7 @@ impl RgbFromHsv for f32 {
 }
 
 impl HsvFromRgb for f64 {
-    fn hsv_from_rgb_impl<A1: ImageAllocator, A2: ImageAllocator>(
-        src: &Image<f64, 3, A1>,
-        dst: &mut Image<f64, 3, A2>,
-    ) -> Result<(), ImageError> {
+    fn hsv_from_rgb_impl(src: &Image<f64, 3>, dst: &mut Image<f64, 3>) -> Result<(), ImageError> {
         check_size(src, dst)?;
         parallel::par_iter_rows(src, dst, |s, d| {
             let (h, sa, v) = hsv_from_rgb_scalar_f64(s[0], s[1], s[2]);
@@ -64,10 +49,7 @@ impl HsvFromRgb for f64 {
     }
 }
 impl RgbFromHsv for f64 {
-    fn rgb_from_hsv_impl<A1: ImageAllocator, A2: ImageAllocator>(
-        src: &Image<f64, 3, A1>,
-        dst: &mut Image<f64, 3, A2>,
-    ) -> Result<(), ImageError> {
+    fn rgb_from_hsv_impl(src: &Image<f64, 3>, dst: &mut Image<f64, 3>) -> Result<(), ImageError> {
         check_size(src, dst)?;
         parallel::par_iter_rows(src, dst, |s, d| {
             let (r, g, b) = rgb_from_hsv_scalar_f64(s[0], s[1], s[2]);
@@ -135,22 +117,17 @@ fn rgb_from_hsv_scalar_f64(h8: f64, s8: f64, v8: f64) -> (f64, f64, f64) {
 /// # Example
 ///
 /// ```
-/// use kornia_image::{Image, ImageSize, allocator::CpuAllocator};
+/// use kornia_image::{Image, ImageSize};
 /// use kornia_imgproc::color::hsv_from_rgb;
 ///
-/// let rgb = Image::<f32, 3, _>::from_size_val(
-///     ImageSize { width: 4, height: 5 }, 0.0, CpuAllocator).unwrap();
-/// let mut hsv = Image::<f32, 3, _>::from_size_val(rgb.size(), 0.0, CpuAllocator).unwrap();
+/// let rgb = Image::<f32, 3>::from_size_val(
+///     ImageSize { width: 4, height: 5 }, 0.0).unwrap();
+/// let mut hsv = Image::<f32, 3>::from_size_val(rgb.size(), 0.0).unwrap();
 /// hsv_from_rgb(&rgb, &mut hsv).unwrap();
 /// ```
-pub fn hsv_from_rgb<T, A1, A2>(
-    src: &Image<T, 3, A1>,
-    dst: &mut Image<T, 3, A2>,
-) -> Result<(), ImageError>
+pub fn hsv_from_rgb<T>(src: &Image<T, 3>, dst: &mut Image<T, 3>) -> Result<(), ImageError>
 where
     T: HsvFromRgb,
-    A1: ImageAllocator,
-    A2: ImageAllocator,
 {
     T::hsv_from_rgb_impl(src, dst)
 }
@@ -160,50 +137,38 @@ where
 /// # Example
 ///
 /// ```
-/// use kornia_image::{Image, ImageSize, allocator::CpuAllocator};
+/// use kornia_image::{Image, ImageSize};
 /// use kornia_imgproc::color::rgb_from_hsv;
 ///
-/// let hsv = Image::<f32, 3, _>::from_size_val(
-///     ImageSize { width: 4, height: 5 }, 0.0, CpuAllocator).unwrap();
-/// let mut rgb = Image::<f32, 3, _>::from_size_val(hsv.size(), 0.0, CpuAllocator).unwrap();
+/// let hsv = Image::<f32, 3>::from_size_val(
+///     ImageSize { width: 4, height: 5 }, 0.0).unwrap();
+/// let mut rgb = Image::<f32, 3>::from_size_val(hsv.size(), 0.0).unwrap();
 /// rgb_from_hsv(&hsv, &mut rgb).unwrap();
 /// ```
-pub fn rgb_from_hsv<T, A1, A2>(
-    src: &Image<T, 3, A1>,
-    dst: &mut Image<T, 3, A2>,
-) -> Result<(), ImageError>
+pub fn rgb_from_hsv<T>(src: &Image<T, 3>, dst: &mut Image<T, 3>) -> Result<(), ImageError>
 where
     T: RgbFromHsv,
-    A1: ImageAllocator,
-    A2: ImageAllocator,
 {
     T::rgb_from_hsv_impl(src, dst)
 }
 
 /// Convert an RGB f32 image to HSV. Thin wrapper around [`hsv_from_rgb`].
-pub fn hsv_from_rgb_f32<A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<f32, 3, A1>,
-    dst: &mut Image<f32, 3, A2>,
-) -> Result<(), ImageError> {
+pub fn hsv_from_rgb_f32(src: &Image<f32, 3>, dst: &mut Image<f32, 3>) -> Result<(), ImageError> {
     hsv_from_rgb(src, dst)
 }
 
 /// Convert an HSV f32 image to RGB. Thin wrapper around [`rgb_from_hsv`].
-pub fn rgb_from_hsv_f32<A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<f32, 3, A1>,
-    dst: &mut Image<f32, 3, A2>,
-) -> Result<(), ImageError> {
+pub fn rgb_from_hsv_f32(src: &Image<f32, 3>, dst: &mut Image<f32, 3>) -> Result<(), ImageError> {
     rgb_from_hsv(src, dst)
 }
 
 #[cfg(test)]
 mod tests {
     use kornia_image::{Image, ImageError, ImageSize};
-    use kornia_tensor::CpuAllocator;
 
     #[test]
     fn hsv_from_rgb_regression() -> Result<(), ImageError> {
-        let image = Image::<f32, 3, _>::new(
+        let image = Image::<f32, 3>::new(
             ImageSize {
                 width: 2,
                 height: 3,
@@ -212,13 +177,12 @@ mod tests {
                 0.0, 128.0, 255.0, 255.0, 128.0, 0.0, 128.0, 255.0, 0.0, 255.0, 0.0, 128.0, 0.0,
                 128.0, 255.0, 255.0, 128.0, 0.0,
             ],
-            CpuAllocator,
         )?;
         let expected = [
             148.66667, 255.0, 255.0, 21.333334, 255.0, 255.0, 63.666668, 255.0, 255.0, 233.66667,
             255.0, 255.0, 148.66667, 255.0, 255.0, 21.333334, 255.0, 255.0,
         ];
-        let mut hsv = Image::<f32, 3, _>::from_size_val(image.size(), 0.0, CpuAllocator)?;
+        let mut hsv = Image::<f32, 3>::from_size_val(image.size(), 0.0)?;
         super::hsv_from_rgb(&image, &mut hsv)?;
         for (a, b) in hsv.as_slice().iter().zip(expected.iter()) {
             assert!((a - b).abs() < 1e-3, "{a} != {b}");
@@ -231,16 +195,15 @@ mod tests {
         // dense-ish sweep; exercises 4-px NEON body + scalar tail (7 px wide)
         let npix = 7 * 5;
         let data: Vec<f32> = (0..npix * 3).map(|v| (v % 256) as f32).collect();
-        let src = Image::<f32, 3, _>::new(
+        let src = Image::<f32, 3>::new(
             ImageSize {
                 width: 7,
                 height: 5,
             },
             data,
-            CpuAllocator,
         )?;
-        let mut hsv = Image::<f32, 3, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
-        let mut back = Image::<f32, 3, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
+        let mut hsv = Image::<f32, 3>::from_size_val(src.size(), 0.0)?;
+        let mut back = Image::<f32, 3>::from_size_val(src.size(), 0.0)?;
         super::hsv_from_rgb(&src, &mut hsv)?;
         super::rgb_from_hsv(&hsv, &mut back)?;
         for (a, b) in src.as_slice().iter().zip(back.as_slice().iter()) {
@@ -253,21 +216,16 @@ mod tests {
     fn f32_simd_matches_f64_scalar() -> Result<(), ImageError> {
         let npix = 7 * 3;
         let data: Vec<f32> = (0..npix * 3).map(|v| (v * 7 % 256) as f32).collect();
-        let src = Image::<f32, 3, _>::new(
+        let src = Image::<f32, 3>::new(
             ImageSize {
                 width: 7,
                 height: 3,
             },
             data.clone(),
-            CpuAllocator,
         )?;
-        let src64 = Image::<f64, 3, _>::new(
-            src.size(),
-            data.iter().map(|&v| v as f64).collect(),
-            CpuAllocator,
-        )?;
-        let mut simd = Image::<f32, 3, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
-        let mut scalar = Image::<f64, 3, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
+        let src64 = Image::<f64, 3>::new(src.size(), data.iter().map(|&v| v as f64).collect())?;
+        let mut simd = Image::<f32, 3>::from_size_val(src.size(), 0.0)?;
+        let mut scalar = Image::<f64, 3>::from_size_val(src.size(), 0.0)?;
         super::hsv_from_rgb(&src, &mut simd)?;
         super::hsv_from_rgb(&src64, &mut scalar)?;
         for (a, b) in simd.as_slice().iter().zip(scalar.as_slice().iter()) {
@@ -281,16 +239,15 @@ mod tests {
         // > PAR_THRESHOLD (1,048,576) to exercise the rayon strip split.
         let (w, h) = (1024, 1025);
         let data: Vec<f32> = (0..w * h * 3).map(|v| (v % 256) as f32).collect();
-        let src = Image::<f32, 3, _>::new(
+        let src = Image::<f32, 3>::new(
             ImageSize {
                 width: w,
                 height: h,
             },
             data,
-            CpuAllocator,
         )?;
-        let mut hsv = Image::<f32, 3, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
-        let mut back = Image::<f32, 3, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
+        let mut hsv = Image::<f32, 3>::from_size_val(src.size(), 0.0)?;
+        let mut back = Image::<f32, 3>::from_size_val(src.size(), 0.0)?;
         super::hsv_from_rgb(&src, &mut hsv)?;
         super::rgb_from_hsv(&hsv, &mut back)?;
         for (a, b) in src.as_slice().iter().zip(back.as_slice().iter()) {

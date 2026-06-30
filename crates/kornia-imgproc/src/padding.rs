@@ -1,4 +1,4 @@
-use kornia_image::{allocator::ImageAllocator, Image, ImageError, ImageSize};
+use kornia_image::{Image, ImageError, ImageSize};
 use rayon::prelude::*;
 
 /// A border type for the spatial padding.
@@ -253,21 +253,19 @@ impl Padding2D {
 /// # Example
 ///
 /// ```rust
-/// use kornia_image::{allocator::CpuAllocator, ImageSize, Image};
+/// use kornia_image::{Image, ImageSize};
 /// use kornia_imgproc::padding::{PaddingMode, Padding2D, spatial_padding};
 ///
 /// // Create a 2x2 RGB image filled with 1s
-/// let src = Image::<u8, 3, _>::new(
+/// let src = Image::<u8, 3>::new(
 ///     ImageSize { width: 2, height: 2 },
 ///     vec![1u8; 2 * 2 * 3],
-///     CpuAllocator,
 /// ).unwrap();
 ///
 /// // Create destination image
-/// let mut dst = Image::<u8, 3, _>::new(
+/// let mut dst = Image::<u8, 3>::new(
 ///     ImageSize { width: 4, height: 4 },
 ///     vec![0u8; 4 * 4 * 3],
-///     CpuAllocator,
 /// ).unwrap();
 ///
 /// // Apply 1-pixel constant padding with black (0) border
@@ -283,9 +281,9 @@ impl Padding2D {
 /// assert_eq!(dst.size().width, 4);
 /// assert_eq!(dst.size().height, 4);
 /// ```
-pub fn spatial_padding<T, const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<T, C, A1>,
-    dst: &mut Image<T, C, A2>,
+pub fn spatial_padding<T, const C: usize>(
+    src: &Image<T, C>,
+    dst: &mut Image<T, C>,
     padding: Padding2D,
     padding_mode: PaddingMode,
     constant_value: [T; C],
@@ -345,28 +343,26 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kornia_image::{allocator::CpuAllocator, Image, ImageError, ImageSize};
+    use kornia_image::{Image, ImageError, ImageSize};
 
     // helper functions
-    fn make_src_2x2_rgb() -> Result<Image<u8, 3, CpuAllocator>, ImageError> {
+    fn make_src_2x2_rgb() -> Result<Image<u8, 3>, ImageError> {
         Image::new(
             ImageSize {
                 width: 2,
                 height: 2,
             },
             vec![1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4],
-            CpuAllocator,
         )
     }
 
-    fn make_dst_4x4_rgb() -> Result<Image<u8, 3, CpuAllocator>, ImageError> {
+    fn make_dst_4x4_rgb() -> Result<Image<u8, 3>, ImageError> {
         Image::new(
             ImageSize {
                 width: 4,
                 height: 4,
             },
             vec![0u8; 48],
-            CpuAllocator,
         )
     }
 
@@ -486,13 +482,12 @@ mod tests {
     #[test]
     fn test_spatial_padding_dst_size_mismatch() -> Result<(), ImageError> {
         let src = make_src_2x2_rgb()?;
-        let mut dst = Image::<u8, 3, _>::new(
+        let mut dst = Image::<u8, 3>::new(
             ImageSize {
                 width: 3,
                 height: 4,
             },
             vec![0u8; 36],
-            CpuAllocator,
         )?;
 
         let res = spatial_padding(&src, &mut dst, PAD_1, PaddingMode::Replicate, [0, 0, 0]);
@@ -503,13 +498,12 @@ mod tests {
 
     #[test]
     fn test_spatial_padding_larger_than_image_replicate() -> Result<(), ImageError> {
-        let src = Image::<u8, 3, _>::new(
+        let src = Image::<u8, 3>::new(
             ImageSize {
                 width: 1,
                 height: 1,
             },
             vec![7, 7, 7],
-            CpuAllocator,
         )?;
 
         let padding = Padding2D {
@@ -519,13 +513,12 @@ mod tests {
             right: 4,
         };
 
-        let mut dst = Image::<u8, 3, _>::new(
+        let mut dst = Image::<u8, 3>::new(
             ImageSize {
                 width: 9,
                 height: 7,
             },
             vec![0u8; 189],
-            CpuAllocator,
         )?;
 
         spatial_padding(&src, &mut dst, padding, PaddingMode::Replicate, [0, 0, 0])?;
@@ -539,13 +532,12 @@ mod tests {
 
     #[test]
     fn test_spatial_padding_larger_than_image_wrap() -> Result<(), ImageError> {
-        let src = Image::<u8, 3, _>::new(
+        let src = Image::<u8, 3>::new(
             ImageSize {
                 width: 1,
                 height: 1,
             },
             vec![5, 5, 5],
-            CpuAllocator,
         )?;
 
         let padding = Padding2D {
@@ -555,13 +547,12 @@ mod tests {
             right: 2,
         };
 
-        let mut dst = Image::<u8, 3, _>::new(
+        let mut dst = Image::<u8, 3>::new(
             ImageSize {
                 width: 5,
                 height: 5,
             },
             vec![0u8; 75],
-            CpuAllocator,
         )?;
 
         spatial_padding(&src, &mut dst, padding, PaddingMode::Wrap, [0, 0, 0])?;

@@ -23,13 +23,11 @@ pub enum TensorAllocatorError {
     #[error("Null pointer")]
     NullPointer,
 
-    /// A foreign allocator was asked to allocate memory, which it never does.
+    /// An allocator was asked to allocate memory but does not support it.
     ///
-    /// [`ForeignAllocator`] exists only as a type tag for externally-owned buffers;
-    /// calling `allocate` on it is always an error.
-    #[error(
-        "Cannot allocate with a foreign allocator — use from_borrowed or a wrapping constructor"
-    )]
+    /// Returned by allocators that wrap externally-owned buffers (e.g. Arrow, GStreamer);
+    /// use `from_borrowed` or a wrapping constructor instead.
+    #[error("Cannot allocate with this allocator — use from_borrowed or a wrapping constructor")]
     CannotAllocateForeign,
 
     /// Backend allocation failed with an error message.
@@ -54,7 +52,9 @@ pub enum TensorAllocatorError {
 ///
 /// # Thread Safety
 ///
-/// Implementations must be `Clone + Send + Sync` as tensors can be shared across threads.
+/// Implementations must be `Send + Sync` as tensors can be shared across threads. The
+/// allocator is held behind an [`AllocHandle`] (`Arc<dyn TensorAllocator>`), so it is
+/// shared by reference-count, not cloned by value.
 ///
 /// # Examples
 ///
@@ -70,7 +70,7 @@ pub enum TensorAllocatorError {
 /// assert_eq!(resource.len_bytes(), 64);
 /// assert!(resource.domain().is_host_accessible());
 /// ```
-pub trait TensorAllocator: Clone + Send + Sync {
+pub trait TensorAllocator: Send + Sync {
     /// Allocates memory for a tensor with the given layout and returns an owning handle.
     ///
     /// # Arguments
@@ -84,7 +84,7 @@ pub trait TensorAllocator: Clone + Send + Sync {
     /// # Errors
     ///
     /// - [`TensorAllocatorError::NullPointer`] if the allocator returns a null pointer.
-    /// - [`TensorAllocatorError::CannotAllocateForeign`] if called on [`ForeignAllocator`].
+    /// - [`TensorAllocatorError::CannotAllocateForeign`] if the allocator wraps foreign memory.
     fn allocate(&self, layout: Layout) -> Result<Box<dyn MemoryResource>, TensorAllocatorError>;
 }
 
@@ -124,27 +124,25 @@ impl TensorAllocator for CpuAllocator {
     }
 }
 
-/// A no-op allocator for foreign (externally managed) memory.
+// ── Runtime allocator handle ──────────────────────────────────────────────────
+
+use std::sync::{Arc, LazyLock};
+
+/// A cheaply-cloneable runtime allocator reference.
 ///
-/// Used as a type tag when wrapping memory that is owned by an external system
-/// (e.g. numpy arrays, GStreamer buffers, or other external allocations). Calling [`allocate`](TensorAllocator::allocate)
-/// on `ForeignAllocator` always returns [`TensorAllocatorError::CannotAllocateForeign`];
-/// use `from_borrowed` or a wrapping constructor instead.
-#[derive(Clone)]
-pub struct ForeignAllocator;
+/// `TensorAllocator` is object-safe (one non-generic method, no `Clone` supertrait),
+/// so the handle is a plain `Arc<dyn TensorAllocator>` — no separate object-safe shim.
+pub type AllocHandle = Arc<dyn TensorAllocator>;
 
-// SAFETY: ForeignAllocator is a zero-size unit struct with no interior mutability.
-unsafe impl Send for ForeignAllocator {}
-unsafe impl Sync for ForeignAllocator {}
+/// Process-global host allocator handle, initialised once on first use.
+///
+/// `CpuAllocator` is a stateless ZST, so a single shared `Arc` is safe to hand out to
+/// every host tensor; cloning it is one atomic increment with no per-tensor heap box.
+static HOST_ALLOC: LazyLock<AllocHandle> = LazyLock::new(|| Arc::new(CpuAllocator));
 
-impl TensorAllocator for ForeignAllocator {
-    /// Always returns [`TensorAllocatorError::CannotAllocateForeign`].
-    ///
-    /// Foreign allocators never allocate — they are pure type tags for externally
-    /// owned buffers.
-    fn allocate(&self, _layout: Layout) -> Result<Box<dyn MemoryResource>, TensorAllocatorError> {
-        Err(TensorAllocatorError::CannotAllocateForeign)
-    }
+/// Returns the process-global host allocator handle.
+pub fn host_alloc() -> AllocHandle {
+    HOST_ALLOC.clone()
 }
 
 #[cfg(test)]
@@ -156,27 +154,10 @@ mod tests {
     #[test]
     fn cpu_allocate_zeroed_and_aligned() {
         let l = Layout::from_size_align(64, 1).unwrap();
-        let r = CpuAllocator.allocate(l).unwrap();
+        let r = TensorAllocator::allocate(&CpuAllocator, l).unwrap();
         assert_eq!(r.len_bytes(), 64);
         assert!(r.domain().is_host_accessible());
         // Must be zeroed.
         unsafe { assert!((0..64).all(|i| *r.as_ptr().add(i) == 0)) };
-    }
-
-    /// `ForeignAllocator::allocate` must always return `CannotAllocateForeign`.
-    #[test]
-    fn foreign_allocate_returns_error() {
-        let l = Layout::from_size_align(64, 1).unwrap();
-        match ForeignAllocator.allocate(l) {
-            Err(TensorAllocatorError::CannotAllocateForeign) => {}
-            other => panic!("expected CannotAllocateForeign, got {:?}", other.err()),
-        }
-    }
-
-    /// Allocator types must be `Clone`.
-    #[test]
-    fn allocators_are_clone() {
-        let _a = CpuAllocator.clone();
-        let _b = ForeignAllocator.clone();
     }
 }
