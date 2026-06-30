@@ -2,6 +2,7 @@ use crate::iter::ImageTile;
 use crate::utils::{find_full_tiles, Pixel, Point2d};
 use crate::{errors::AprilTagError, iter::TileIterator};
 use kornia_image::{allocator::ImageAllocator, Image, ImageError, ImageSize};
+use rayon::prelude::*;
 
 /// Classifies pixels in a contiguous row: pixel > thresh → 255 (White), else 0 (Black).
 ///
@@ -377,79 +378,112 @@ pub fn adaptive_threshold<A1: ImageAllocator, A2: ImageAllocator>(
         return Err(AprilTagError::ImageTileSizeMismatch);
     }
 
-    let dst_data = dst.as_slice_mut();
-
-    // Calculate extrema (min/max grayscale value) of each tile.
-    // Uses NEON on aarch64, scalar elsewhere.
+    // Phase 1: tile statistics (sequential, NEON-accelerated, ~19 µs on Orin).
     tile_min_max.compute(src);
 
-    // Binarize the image
-    TileIterator::from_image(src, tile_min_max.tile_size)?.for_each(|tile| {
-        let (neighbor_min, neighbor_max, tile) = match tile {
-            ImageTile::FullTile(tile) => {
-                let (min, max) =
-                    tile_min_max.neighbor_blur(tile.pos, tile.full_index, tiles_full_len);
+    let width = src.width();
+    let height = src.height();
+    let ts = tile_min_max.tile_size;
+    let total_tile_cols = (width + ts - 1) / ts;
 
-                if max - min < min_white_black_diff {
-                    for y_px in 0..tile.data.len() {
-                        let row = ((tile.pos.y * tile_min_max.tile_size) + y_px) * src.width();
-                        let start_index = row + (tile.pos.x * tile_min_max.tile_size);
-                        let end_index = start_index + tile.data[0].len();
+    let src_slice = src.as_slice();
+    // Coerce &mut to & — tile_min_max is READ-ONLY after compute().
+    let tm: &TileMinMax = tile_min_max;
 
-                        for px in dst_data.iter_mut().take(end_index).skip(start_index) {
-                            *px = Pixel::Skip;
-                        }
-                    }
+    // Phase 2: classify pixels — parallel over tile rows.
+    //
+    // `par_chunks_mut(ts * width)` gives each Rayon thread one "tile row" of pixel rows
+    // at a time (ts consecutive pixel-rows, disjoint from all other threads).  The tile
+    // columns are handled sequentially within each thread, including the partial right
+    // column when width is not a multiple of ts.
+    //
+    // After the parallel phase, any partial bottom row (height % ts != 0) is processed
+    // sequentially — it is only 1–(ts-1) pixels tall and negligible in cost.
+    let full_row_pixels = tiles_full_len.y * ts * width;
+    let (full_dst, partial_dst) = dst.as_slice_mut().split_at_mut(full_row_pixels);
 
-                    return;
-                }
+    full_dst
+        .par_chunks_mut(ts * width)
+        .enumerate()
+        .for_each(|(ty, strip)| {
+            for tx in 0..total_tile_cols {
+                let px_start = tx * ts;
+                let px_end = (px_start + ts).min(width);
+                let tile_w = px_end - px_start;
 
-                (min, max, tile)
-            }
-            ImageTile::PartialTile(tile) => {
-                let is_partial_y = tile.data.len() < tile_min_max.tile_size;
-                let is_partial_x = tile.data[0].len() < tile_min_max.tile_size;
-
-                let (pos, full_index) = if is_partial_y && is_partial_x {
-                    (
-                        Point2d {
-                            x: tile.pos.x - 1,
-                            y: tile.pos.y - 1,
-                        },
-                        tile.full_index,
-                    )
-                } else if is_partial_x {
-                    (
-                        Point2d {
-                            x: tile.pos.x - 1,
-                            y: tile.pos.y,
-                        },
-                        tile.full_index,
+                // For partial right column: clamp to the last full x tile.
+                let (nb_min, nb_max) = if tx < tiles_full_len.x {
+                    tm.neighbor_blur(
+                        Point2d { x: tx, y: ty },
+                        ty * tiles_full_len.x + tx,
+                        tiles_full_len,
                     )
                 } else {
-                    (
-                        Point2d {
-                            x: tile.pos.x,
-                            y: tile.pos.y - 1,
-                        },
-                        tile.full_index + tile.pos.x + 1 - tiles_full_len.x,
+                    let cx = tiles_full_len.x - 1;
+                    tm.neighbor_blur(
+                        Point2d { x: cx, y: ty },
+                        ty * tiles_full_len.x + cx,
+                        tiles_full_len,
                     )
                 };
 
-                let (min, max) = tile_min_max.neighbor_blur(pos, full_index, tiles_full_len);
-                (min, max, tile)
+                if nb_max - nb_min < min_white_black_diff {
+                    for row in 0..ts {
+                        let row_off = row * width;
+                        strip[row_off + px_start..row_off + px_end]
+                            .iter_mut()
+                            .for_each(|p| *p = Pixel::Skip);
+                    }
+                } else {
+                    let thresh = nb_min + (nb_max - nb_min) / 2;
+                    for row in 0..ts {
+                        let row_off = row * width;
+                        let src_off = (ty * ts + row) * width;
+                        classify_row(
+                            &src_slice[src_off + px_start..src_off + px_end],
+                            &mut strip[row_off + px_start..row_off + px_end],
+                            thresh,
+                        );
+                    }
+                }
+                let _ = tile_w; // suppress unused-variable lint
             }
-        };
+        });
 
-        let thresh = neighbor_min + (neighbor_max - neighbor_min) / 2;
+    // Sequential: partial bottom row (at most ts-1 pixel rows, often 0 or 1).
+    if !partial_dst.is_empty() {
+        let py_start = tiles_full_len.y * ts;
+        let actual_rows = height - py_start;
+        let cy = tiles_full_len.y.saturating_sub(1);
 
-        for (y_px, row) in tile.data.iter().enumerate() {
-            let row_index = ((tile.pos.y * tile_min_max.tile_size) + y_px) * src.width()
-                + tile.pos.x * tile_min_max.tile_size;
-            let row_len = row.len();
-            classify_row(row, &mut dst_data[row_index..row_index + row_len], thresh);
+        for tx in 0..total_tile_cols {
+            let px_start = tx * ts;
+            let px_end = (px_start + ts).min(width);
+            let cx = tx.min(tiles_full_len.x.saturating_sub(1));
+            let (nb_min, nb_max) =
+                tm.neighbor_blur(Point2d { x: cx, y: cy }, cy * tiles_full_len.x + cx, tiles_full_len);
+
+            if nb_max - nb_min < min_white_black_diff {
+                for row in 0..actual_rows {
+                    let row_off = row * width;
+                    partial_dst[row_off + px_start..row_off + px_end]
+                        .iter_mut()
+                        .for_each(|p| *p = Pixel::Skip);
+                }
+            } else {
+                let thresh = nb_min + (nb_max - nb_min) / 2;
+                for row in 0..actual_rows {
+                    let row_off = row * width;
+                    let src_off = (py_start + row) * width;
+                    classify_row(
+                        &src_slice[src_off + px_start..src_off + px_end],
+                        &mut partial_dst[row_off + px_start..row_off + px_end],
+                        thresh,
+                    );
+                }
+            }
         }
-    });
+    }
 
     Ok(())
 }

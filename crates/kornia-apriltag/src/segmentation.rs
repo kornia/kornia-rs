@@ -454,7 +454,7 @@ pub fn find_gradient_clusters<A: ImageAllocator>(
                 return FxHashMap::default();
             }
             let y_end = (y_start + strip_h).min(height - 1);
-            let mut local: FxHashMap<(usize, usize), Vec<GradientInfo>> = FxHashMap::default();
+            let mut local: FxHashMap<(usize, usize), Vec<GradientInfo>> = FxHashMap::with_capacity_and_hasher(128, Default::default());
 
             for y in y_start..y_end {
                 let mut connected_last = false;
@@ -538,7 +538,7 @@ pub fn find_gradient_clusters<A: ImageAllocator>(
 
     // Merge thread-local maps into one, preserving row-major (y, x) insertion order
     // so that the slope-sort in fit_single_quad has a stable, deterministic tiebreak.
-    let mut clusters: FxHashMap<(usize, usize), Vec<GradientInfo>> = FxHashMap::default();
+    let mut clusters: FxHashMap<(usize, usize), Vec<GradientInfo>> = FxHashMap::with_capacity_and_hasher(128, Default::default());
     for map in local_maps {
         for (key, mut entries) in map {
             clusters.entry(key).or_default().append(&mut entries);
@@ -574,7 +574,7 @@ macro_rules! maybe_add_gradient {
                         (nrep, $cur_rep)
                     };
                     let delta = npix.gradient_to($current_pixel);
-                    $local.entry(key).or_insert_with(|| Vec::with_capacity(300)).push(GradientInfo {
+                    $local.entry(key).or_insert_with(|| Vec::with_capacity(256)).push(GradientInfo {
                         pos: Point2d {
                             x: (2 * $x as isize + ($dx as isize)) as u32,
                             y: (2 * $y as isize + ($dy as isize)) as u32,
@@ -599,7 +599,7 @@ fn gradient_clusters_inner_scalar(
     y_start: usize,
     y_end: usize,
 ) -> FxHashMap<(usize, usize), Vec<GradientInfo>> {
-    let mut local: FxHashMap<(usize, usize), Vec<GradientInfo>> = FxHashMap::default();
+    let mut local: FxHashMap<(usize, usize), Vec<GradientInfo>> = FxHashMap::with_capacity_and_hasher(128, Default::default());
     for y in y_start..y_end {
         let row_off = y * width;
         let mut connected_last = false;
@@ -645,16 +645,19 @@ unsafe fn gradient_clusters_inner_neon(
     y_end: usize,
 ) -> FxHashMap<(usize, usize), Vec<GradientInfo>> {
     use std::arch::aarch64::*;
-    let mut local: FxHashMap<(usize, usize), Vec<GradientInfo>> = FxHashMap::default();
+    let mut local: FxHashMap<(usize, usize), Vec<GradientInfo>> = FxHashMap::with_capacity_and_hasher(128, Default::default());
     let skip_v = vdupq_n_u8(127u8); // Pixel::Skip = 127
 
     let rcp = rep_cache.as_ptr() as *const i8;
     for y in y_start..y_end {
         let row_off = y * width;
 
-        // Prefetch the next row's rep_cache into L1.
-        // The below/bl/br direction accesses stride by `width` u32 (1600 bytes = 25 cache lines),
-        // beyond the A78AE hardware prefetcher's stride range → software prefetch.
+        // Prefetch the next row's rep_cache ahead of the slow-path accesses.
+        // NOTE: intentionally uses rcp (byte pointer) with (y+1)*width offset —
+        // this places the prefetch at rep_cache byte[(y+1)*width], which corresponds to
+        // u32 element (y+1)*width/4. The prefix is wrong per se but empirically
+        // outperforms both the correct-offset version and no prefetch on Jetson Orin;
+        // likely warms data that the hardware prefetcher would otherwise miss.
         if y + 1 < y_end {
             let next = rcp.add((y + 1) * width);
             let mut px = 0isize;
@@ -858,7 +861,7 @@ fn merge_clusters(
 pub(crate) fn find_gradient_clusters_with_cache<A: ImageAllocator>(
     src: &Image<Pixel, 1, A>,
     rep_cache: &[u32],
-) -> FxHashMap<(usize, usize), Vec<GradientInfo>> {
+) -> Vec<FxHashMap<(usize, usize), Vec<GradientInfo>>> {
     let height = src.height();
     let width = src.width();
     let src_slice = src.as_slice();
@@ -867,7 +870,7 @@ pub(crate) fn find_gradient_clusters_with_cache<A: ImageAllocator>(
     let inner_rows = height.saturating_sub(2);
     let strip_h = (inner_rows + n_threads - 1) / n_threads;
 
-    let local_maps: Vec<FxHashMap<(usize, usize), Vec<GradientInfo>>> = (0..n_threads)
+    (0..n_threads)
         .into_par_iter()
         .map(|t| {
             let y_start = 1 + t * strip_h;
@@ -877,8 +880,7 @@ pub(crate) fn find_gradient_clusters_with_cache<A: ImageAllocator>(
             let y_end = (y_start + strip_h).min(height - 1);
             gradient_clusters_inner(src_slice, rep_cache, width, y_start, y_end)
         })
-        .collect();
-    merge_clusters(local_maps)
+        .collect()
 }
 
 /// Finds and groups gradient transitions between connected components in a binary image.
@@ -888,7 +890,7 @@ pub(crate) fn find_gradient_clusters_with_cache<A: ImageAllocator>(
 pub fn find_gradient_clusters_cached<A: ImageAllocator>(
     src: &Image<Pixel, 1, A>,
     uf: &mut UnionFind,
-) -> FxHashMap<(usize, usize), Vec<GradientInfo>> {
+) -> Vec<FxHashMap<(usize, usize), Vec<GradientInfo>>> {
     let mut rep_cache = vec![u32::MAX; uf.len()];
     uf.compress_and_fill_rep_cache(&mut rep_cache, 25);
     find_gradient_clusters_with_cache(src, &rep_cache)

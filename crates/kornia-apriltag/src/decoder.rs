@@ -1,6 +1,6 @@
+use rayon::prelude::*;
 use std::{f32::consts::PI, ops::ControlFlow};
 
-use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 
 use crate::{
@@ -389,7 +389,7 @@ impl SharpeningBuffer {
 /// # Returns
 ///
 /// Returns a vector of `Detection` containing information about each successfully decoded tag.
-pub fn decode_tags<A: ImageAllocator>(
+pub fn decode_tags<A: ImageAllocator + Sync>(
     src: &Image<u8, 1, A>,
     quads: &mut [Quad],
     tag_families: &[(TagFamilyKind, TagFamily)],
@@ -397,16 +397,16 @@ pub fn decode_tags<A: ImageAllocator>(
     decode_sharpening: f32,
     refine_edges_range: f32,
 ) -> Vec<Detection> {
-    let mut all: Vec<Detection> = Vec::new();
+    quads.par_iter_mut().flat_map_iter(|quad| {
+        let mut detections: Vec<Detection> = Vec::new();
 
-    quads.iter_mut().for_each(|quad| {
         // Match C's pipeline: refine edges first, then compute homography and decode.
         if refine_edges_enabled {
             refine_edges(src, quad, refine_edges_range);
         }
 
         if !quad.update_homographies() {
-            return;
+            return detections;
         }
 
         let mut gmp = GrayModelPair::new();
@@ -430,7 +430,7 @@ pub fn decode_tags<A: ImageAllocator>(
                     quad.homography *= r;
                     let center = quad.homography_project(0.0, 0.0);
 
-                    all.push(Detection {
+                    detections.push(Detection {
                         _family_idx: fidx,
                         tag_family_kind: kind.clone(),
                         id: entry.id,
@@ -442,9 +442,9 @@ pub fn decode_tags<A: ImageAllocator>(
                 }
             }
         }
-    });
 
-    all
+        detections
+    }).collect()
 }
 
 /// Deduplicates a list of detections, keeping the best (lowest hamming, then highest margin)
@@ -911,7 +911,7 @@ pub fn sharpen(sharpening_buffer: &mut SharpeningBuffer, decode_sharpening: f32,
 /// * `rcode` - The codeword to look up.
 /// * `entry` - Mutable reference to a `QuickDecodeEntry` to store the result.
 fn quick_decode_codeword(tag_family: &TagFamily, mut rcode: usize, entry: &mut QuickDecodeEntry) {
-    let orig = rcode;
+    let _orig = rcode;
     if let ControlFlow::Break(_) = (0..4).try_for_each(|ridx| {
         if let Some(mut decoded) = tag_family.quick_decode.decode(rcode, &tag_family.code_data) {
             decoded.rotation = ridx as u8;
@@ -986,9 +986,9 @@ mod tests {
         let mut uf = UnionFind::new(bin.as_slice().len());
         adaptive_threshold(&src, &mut bin, &mut tile_min_max, 20)?;
         find_connected_components(&bin, &mut uf)?;
-        let mut clusters = find_gradient_clusters(&bin, &uf);
+        let clusters = find_gradient_clusters(&bin, &mut uf);
 
-        let mut quads = fit_quads(&bin, &mut clusters, &config);
+        let mut quads = fit_quads(&bin, &[clusters], &config);
 
         for quad in &mut quads {
             for corner in &mut quad.corners {
