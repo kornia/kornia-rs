@@ -1211,7 +1211,10 @@ fn nearest_row_u8_w4_c3(src_row: &[u8], xmap: &[usize], dst_row: &mut [u8]) {
     while cut > 0 && xmap[cut - 1] * 3 > src_last_w4 {
         cut -= 1;
     }
-    debug_assert!(cut * 3 + 4 <= dst_row.len() || cut == 0);
+    // Last u32-written destination index is cut-1: (cut-1)*3 + 4 <= 3*dst_w
+    // holds for every cut <= dst_w - 1, so only the source side needs the
+    // cutoff computed above.
+    debug_assert!(cut == 0 || (cut - 1) * 3 + 4 <= dst_row.len());
     let sp = src_row.as_ptr();
     let dp = dst_row.as_mut_ptr();
     // SAFETY: for x < cut, xmap[x]*3 + 4 <= src_row.len() (cutoff above) and
