@@ -1,8 +1,18 @@
 //! Image resize — dispatcher + per-algorithm kernels.
 //!
-//! Per-arch row primitives live in [`kernels`]; the algorithm files above
-//! it (bilinear, nearest, pyramid, separable, fused) stay free of
-//! `#[cfg(target_arch)]` pairs and call into kernels through a thin seam.
+//! Per-arch row primitives (scalar + aarch64 NEON + x86_64 AVX2) live in
+//! [`kernels`]; the algorithm files above it (bilinear, nearest, pyramid,
+//! separable, fused) stay free of `#[cfg(target_arch)]` pairs and call into
+//! kernels through a thin seam.
+//!
+//! # Fused ops first
+//!
+//! When the resize feeds a model input, prefer the **fused** entry points
+//! ([`resize_normalize_to_tensor_u8_to_f32`],
+//! [`resize_normalize_to_tensor_u8_to_f32_bilinear`]) over resize-then-
+//! normalize: one pass, every input byte touched once, no intermediate u8
+//! requantization. The plain resizers below are for when a u8 image is the
+//! actual product.
 //!
 //! # Dispatch cascade (u8 path, in [`resize_fast_u8_aa`])
 //!

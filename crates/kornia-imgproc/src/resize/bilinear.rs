@@ -1,9 +1,14 @@
-//! Generic N-channel bilinear u8 resize (scalar, Q14).
+//! Generic N-channel bilinear u8 resize (Q14).
 //!
 //! Fallback for arbitrary `src×dst` bilinear when the exact-2× paths in
 //! [`super::pyramid`] don't match. Supports `C ∈ {1, 3, 4}`.
+//!
+//! Algorithm file: LUT precompute + row parallelism only — the per-row inner
+//! loop lives in [`super::kernels::bilinear_row_u8`] (the per-arch seam).
 
 use rayon::prelude::*;
+
+use super::kernels::{bilinear_row_u8, BilinearXTaps};
 
 /// Generic N-channel bilinear u8 resize with precomputed x tables.
 pub(super) fn resize_bilinear_u8_nch<const C: usize>(
@@ -47,6 +52,11 @@ pub(super) fn resize_bilinear_u8_nch<const C: usize>(
         .enumerate()
         .for_each(|(chunk_idx, dst_chunk)| {
             let row_base = chunk_idx * ROWS_PER_TASK;
+            let x_taps = BilinearXTaps {
+                ofs: &xofs,
+                fx: &xfx,
+                fx1: &xfx1,
+            };
             dst_chunk
                 .chunks_exact_mut(dst_stride)
                 .enumerate()
@@ -68,23 +78,7 @@ pub(super) fn resize_bilinear_u8_nch<const C: usize>(
                     let row0 = &src[(yi as usize) * src_stride..(yi as usize + 1) * src_stride];
                     let row1 = &src[(yi as usize + 1) * src_stride..(yi as usize + 2) * src_stride];
 
-                    let round = 1u64 << 27;
-                    for x in 0..dst_w {
-                        let xi = xofs[x] as usize;
-                        let fx = xfx[x] as u64;
-                        let fx1 = xfx1[x] as u64;
-                        let off = xi * C;
-                        for ch in 0..C {
-                            let p00 = row0[off + ch] as u64;
-                            let p01 = row0[off + C + ch] as u64;
-                            let p10 = row1[off + ch] as u64;
-                            let p11 = row1[off + C + ch] as u64;
-                            let top = p00 * fx1 + p01 * fx;
-                            let bot = p10 * fx1 + p11 * fx;
-                            let v = ((top * fy1 as u64 + bot * fy as u64 + round) >> 28) as u8;
-                            dst_row[x * C + ch] = v;
-                        }
-                    }
+                    bilinear_row_u8::<C>(row0, row1, &x_taps, fy, fy1, dst_row);
                 });
         });
 }

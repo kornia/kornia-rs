@@ -22,6 +22,11 @@
 //!   shares one coefficient LUT fetch across four src rows. aarch64 only.
 //! - [`vertical_row`]           — Q14 separable vertical pass. Scalar +
 //!   aarch64 NEON.
+//! - [`bilinear_row_u8`]        — Q14 two-row bilinear blend for one
+//!   destination row (generic `C`). Scalar (NEON/AVX2 slots per the pattern
+//!   below).
+//! - [`nearest_row_u8`]         — LUT-gather nearest row (generic `C`).
+//!   Scalar (memcpy-bound).
 //!
 //! # Adding a new backend
 //!
@@ -1100,5 +1105,83 @@ unsafe fn vertical_row_avx2(rows: &[&[i16]], w: &[i16], dst_row: &mut [u8], n: u
         }
         dst_row[i] = (((acc + round2) >> 14).clamp(0, 255)) as u8;
         i += 1;
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Q14 generic bilinear: one destination row.
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Precomputed per-destination-column x taps for [`bilinear_row_u8`]:
+/// `ofs[x]` = left source pixel index, `fx`/`fx1` = Q14 fraction and its
+/// complement (`fx + fx1 == 1 << 14`).
+pub(super) struct BilinearXTaps<'a> {
+    pub ofs: &'a [u32],
+    pub fx: &'a [u32],
+    pub fx1: &'a [u32],
+}
+
+/// Q14 two-row bilinear blend for one destination row (any `C`).
+///
+/// `out = (((p00·fx1 + p01·fx)·fy1 + (p10·fx1 + p11·fx)·fy) + round) >> 28`.
+#[inline(always)]
+pub(super) fn bilinear_row_u8<const C: usize>(
+    row0: &[u8],
+    row1: &[u8],
+    x: &BilinearXTaps<'_>,
+    fy: u32,
+    fy1: u32,
+    dst_row: &mut [u8],
+) {
+    // Scalar only for now — add NEON/AVX2 per "Adding a new backend" above.
+    bilinear_row_u8_scalar::<C>(row0, row1, x, fy, fy1, dst_row);
+}
+
+#[inline]
+fn bilinear_row_u8_scalar<const C: usize>(
+    row0: &[u8],
+    row1: &[u8],
+    x: &BilinearXTaps<'_>,
+    fy: u32,
+    fy1: u32,
+    dst_row: &mut [u8],
+) {
+    let round = 1u64 << 27;
+    let dst_w = dst_row.len() / C;
+    for xi_dst in 0..dst_w {
+        let xi = x.ofs[xi_dst] as usize;
+        let fx = x.fx[xi_dst] as u64;
+        let fx1 = x.fx1[xi_dst] as u64;
+        let off = xi * C;
+        for ch in 0..C {
+            let p00 = row0[off + ch] as u64;
+            let p01 = row0[off + C + ch] as u64;
+            let p10 = row1[off + ch] as u64;
+            let p11 = row1[off + C + ch] as u64;
+            let top = p00 * fx1 + p01 * fx;
+            let bot = p10 * fx1 + p11 * fx;
+            dst_row[xi_dst * C + ch] = ((top * fy1 as u64 + bot * fy as u64 + round) >> 28) as u8;
+        }
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Nearest: one destination row.
+// ──────────────────────────────────────────────────────────────────────────
+
+/// LUT-gather nearest-neighbour copy for one destination row (any `C`).
+/// `xmap[x]` = source pixel index for destination column `x`.
+#[inline(always)]
+pub(super) fn nearest_row_u8<const C: usize>(src_row: &[u8], xmap: &[usize], dst_row: &mut [u8]) {
+    // Memcpy-bound gather; scalar is already near memory bandwidth.
+    nearest_row_u8_scalar::<C>(src_row, xmap, dst_row);
+}
+
+#[inline]
+fn nearest_row_u8_scalar<const C: usize>(src_row: &[u8], xmap: &[usize], dst_row: &mut [u8]) {
+    for (x, xi) in xmap.iter().enumerate() {
+        let so = xi * C;
+        let d_o = x * C;
+        dst_row[d_o..d_o + C].copy_from_slice(&src_row[so..so + C]);
     }
 }

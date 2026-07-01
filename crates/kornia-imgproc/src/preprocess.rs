@@ -500,14 +500,14 @@ impl Preprocessor {
         self.run_cpu::<C>(src, dst, &a)
     }
 
-    // Host path built on the crate's OPTIMIZED resize kernels, not a scalar loop:
-    // `resize_fast_u8_aa` (NEON-accelerated separable resampler; PIL-grade
-    // antialiased Lanczos) resamples to the content size, then the fused
-    // scale+bias normalize / HWC→CHW placement writes the output (with the
-    // all-bilinear stretch case collapsing to the crate's fully-fused
-    // `resize_normalize_to_tensor_u8_to_f32_bilinear`). Note the CPU resampler
-    // is antialiased on downscale, so CPU and CUDA outputs may differ at the
-    // sub-pixel level (CPU is the higher-quality reference).
+    // Host path built on the crate's OPTIMIZED resize kernels, FUSED FIRST:
+    // every RGB+bilinear case runs the crate's fused resize+normalize+CHW
+    // kernel (`resize_normalize_to_tensor_u8_to_f32_bilinear`) in one f32
+    // pass; the remaining cases (Nearest / AA-Lanczos, RGBA) ride
+    // `resize_fast_u8_aa` (NEON-accelerated) plus a fused scale+bias
+    // normalize/CHW placement. Note the CPU resampler is antialiased on
+    // downscale, so CPU and CUDA outputs may differ at the sub-pixel level
+    // (CPU is the higher-quality reference).
     fn run_cpu<const C: usize>(
         &self,
         src: &Image<u8, C>,
@@ -536,22 +536,6 @@ impl Preprocessor {
             ],
         };
 
-        // Fully-fused fast path: RGB stretch+bilinear is one crate kernel call.
-        if C == 3
-            && self.mode == ResizeMode::Stretch
-            && self.sampling == InterpolationMode::Bilinear
-        {
-            return Ok(resize_normalize_to_tensor_u8_to_f32_bilinear(
-                src.0.as_slice(),
-                src.width(),
-                src.height(),
-                dst.as_slice_mut(),
-                dst_w,
-                dst_h,
-                &params,
-            )?);
-        }
-
         // Content box: the letterboxed region the image scales into (whole
         // output for Stretch). Integer placement, centred like the CUDA affine.
         // When the pad is fractional the box is rounded to whole pixels, so the
@@ -565,8 +549,53 @@ impl Preprocessor {
             ),
         };
         let (px0, py0) = ((dst_w - cw) / 2, (dst_h - ch) / 2);
+        let padded = px0 != 0 || py0 != 0 || cw != dst_w || ch != dst_h;
+        let pad = core::array::from_fn::<f32, 3, _>(|c| {
+            self.pad_value * params.scale[c] + params.bias[c]
+        });
 
-        // 1) SIMD resample to the content size (Nearest / Bilinear / AA-Lanczos).
+        // FUSED FIRST: every RGB+bilinear case goes through the crate's fused
+        // resize+normalize+CHW kernel — resample and normalize in one f32 pass
+        // (no intermediate u8 requantization). Stretch writes dst directly;
+        // Letterbox fuses into the content box, then places it (row memcpy).
+        if C == 3 && self.sampling == InterpolationMode::Bilinear {
+            let (sw, sh) = (src.width(), src.height());
+            if !padded {
+                return Ok(resize_normalize_to_tensor_u8_to_f32_bilinear(
+                    src.0.as_slice(),
+                    sw,
+                    sh,
+                    dst.as_slice_mut(),
+                    dst_w,
+                    dst_h,
+                    &params,
+                )?);
+            }
+            let mut content = vec![0.0f32; 3 * ch * cw];
+            resize_normalize_to_tensor_u8_to_f32_bilinear(
+                src.0.as_slice(),
+                sw,
+                sh,
+                &mut content,
+                cw,
+                ch,
+                &params,
+            )?;
+            let dst_buf = dst.as_slice_mut();
+            for (c, &pad_c) in pad.iter().enumerate() {
+                let plane = &mut dst_buf[c * pixels..(c + 1) * pixels];
+                plane.fill(pad_c);
+                for y in 0..ch {
+                    let row = &content[c * ch * cw + y * cw..c * ch * cw + (y + 1) * cw];
+                    plane[(py0 + y) * dst_w + px0..(py0 + y) * dst_w + px0 + cw]
+                        .copy_from_slice(row);
+                }
+            }
+            return Ok(());
+        }
+
+        // General path (Nearest / AA-Lanczos, or RGBA):
+        // 1) SIMD resample to the content size (NEON-accelerated fast resizer).
         let mut scratch = Image::<u8, C>::from_size_val(
             ImageSize {
                 width: cw,
@@ -579,10 +608,6 @@ impl Preprocessor {
         // 2) Pad fill + fused normalize/CHW placement of the content box.
         let sbuf = scratch.0.as_slice();
         let dst_buf = dst.as_slice_mut();
-        let pad = core::array::from_fn::<f32, 3, _>(|c| {
-            self.pad_value * params.scale[c] + params.bias[c]
-        });
-        let padded = px0 != 0 || py0 != 0 || cw != dst_w || ch != dst_h;
         for (c, &pad_c) in pad.iter().enumerate() {
             let plane = &mut dst_buf[c * pixels..(c + 1) * pixels];
             if padded {
