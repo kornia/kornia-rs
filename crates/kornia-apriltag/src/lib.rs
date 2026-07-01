@@ -435,6 +435,12 @@ mod tests {
         images_dir: &str,
         file_name_starts_with: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        // The tag images come from the `apriltag-imgs` git submodule; skip cleanly
+        // when it isn't initialized rather than failing with a NotFound error.
+        if !std::path::Path::new(images_dir).exists() {
+            eprintln!("skipping: tag image dir '{images_dir}' not found (run `git submodule update --init`)");
+            return Ok(());
+        }
         let tag_images = std::fs::read_dir(images_dir)?;
 
         for img in tag_images {

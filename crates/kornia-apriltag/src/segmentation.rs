@@ -1057,12 +1057,26 @@ mod tests {
         let expected =
             std::fs::read_to_string("../../tests/data/apriltag_pixel_representatives.txt")?;
 
-        // Trim to handle trailing whitespace/newlines in either string
-        assert_eq!(
-            union_representatives
+        // The stored representatives are union-find root indices, whose absolute
+        // values depend on scan/merge order (and thus differ across the NEON/AVX2/
+        // scalar CC paths) even when the resulting partition is identical. Canonicalize
+        // both sequences to first-occurrence order so the assertion checks the component
+        // *structure* — the meaningful invariant — not the arbitrary root ids.
+        fn canonical(labels: &str) -> Vec<u32> {
+            let mut map = std::collections::HashMap::new();
+            labels
                 .split_whitespace()
-                .collect::<Vec<&str>>(),
-            expected.split_whitespace().collect::<Vec<&str>>()
+                .map(|l| {
+                    let next = map.len() as u32;
+                    *map.entry(l.to_string()).or_insert(next)
+                })
+                .collect()
+        }
+
+        assert_eq!(
+            canonical(&union_representatives),
+            canonical(&expected),
+            "connected-component partition differs from the golden fixture"
         );
 
         Ok(())
