@@ -10,7 +10,7 @@ use crate::{
     utils::value_for_pixel,
 };
 use kornia_algebra::Mat3F32;
-use kornia_image::{Image};
+use kornia_image::Image;
 
 /// Represents a model for grayscale interpolation using a quadratic surface.
 /// The model fits a function of the form f(x, y) = c.x*x + c.y*y + c.z.
@@ -396,54 +396,57 @@ pub fn decode_tags(
     decode_sharpening: f32,
     refine_edges_range: f32,
 ) -> Vec<Detection> {
-    quads.par_iter_mut().flat_map_iter(|quad| {
-        let mut detections: Vec<Detection> = Vec::new();
+    quads
+        .par_iter_mut()
+        .flat_map_iter(|quad| {
+            let mut detections: Vec<Detection> = Vec::new();
 
-        // Match C's pipeline: refine edges first, then compute homography and decode.
-        if refine_edges_enabled {
-            refine_edges(src, quad, refine_edges_range);
-        }
-
-        if !quad.update_homographies() {
-            return detections;
-        }
-
-        let mut gmp = GrayModelPair::new();
-
-        for (fidx, (kind, family)) in tag_families.iter().enumerate() {
-            if family.reversed_border != quad.reversed_border {
-                continue;
+            // Match C's pipeline: refine edges first, then compute homography and decode.
+            if refine_edges_enabled {
+                refine_edges(src, quad, refine_edges_range);
             }
 
-            gmp.reset();
-            let mut entry = QuickDecodeEntry::default();
+            if !quad.update_homographies() {
+                return detections;
+            }
 
-            let decision_margin =
-                quad_decode(src, family, quad, decode_sharpening, &mut entry, &mut gmp);
-            if let Some(decision_margin) = decision_margin {
-                if decision_margin >= 0.0 && entry.hamming < u8::MAX {
-                    let theta = entry.rotation as f32 * PI / 2.0;
-                    let c = theta.cos();
-                    let s = theta.sin();
-                    let r = Mat3F32::from_cols_array(&[c, s, 0.0, -s, c, 0.0, 0.0, 0.0, 1.0]);
-                    quad.homography *= r;
-                    let center = quad.homography_project(0.0, 0.0);
+            let mut gmp = GrayModelPair::new();
 
-                    detections.push(Detection {
-                        _family_idx: fidx,
-                        tag_family_kind: kind.clone(),
-                        id: entry.id,
-                        hamming: entry.hamming,
-                        decision_margin,
-                        center,
-                        quad: quad.clone(),
-                    });
+            for (fidx, (kind, family)) in tag_families.iter().enumerate() {
+                if family.reversed_border != quad.reversed_border {
+                    continue;
+                }
+
+                gmp.reset();
+                let mut entry = QuickDecodeEntry::default();
+
+                let decision_margin =
+                    quad_decode(src, family, quad, decode_sharpening, &mut entry, &mut gmp);
+                if let Some(decision_margin) = decision_margin {
+                    if decision_margin >= 0.0 && entry.hamming < u8::MAX {
+                        let theta = entry.rotation as f32 * PI / 2.0;
+                        let c = theta.cos();
+                        let s = theta.sin();
+                        let r = Mat3F32::from_cols_array(&[c, s, 0.0, -s, c, 0.0, 0.0, 0.0, 1.0]);
+                        quad.homography *= r;
+                        let center = quad.homography_project(0.0, 0.0);
+
+                        detections.push(Detection {
+                            _family_idx: fidx,
+                            tag_family_kind: kind.clone(),
+                            id: entry.id,
+                            hamming: entry.hamming,
+                            decision_margin,
+                            center,
+                            quad: quad.clone(),
+                        });
+                    }
                 }
             }
-        }
 
-        detections
-    }).collect()
+            detections
+        })
+        .collect()
 }
 
 /// Deduplicates a list of detections, keeping the best (lowest hamming, then highest margin)
@@ -452,7 +455,9 @@ pub fn dedup_detections(all: Vec<Detection>) -> Vec<Detection> {
     let mut dedup: FxHashMap<(usize, u16), Detection> = FxHashMap::default();
     for det in all {
         match dedup.get_mut(&(det._family_idx, det.id)) {
-            None => { dedup.insert((det._family_idx, det.id), det); }
+            None => {
+                dedup.insert((det._family_idx, det.id), det);
+            }
             Some(prev) => {
                 if det.hamming < prev.hamming
                     || (det.hamming == prev.hamming && det.decision_margin > prev.decision_margin)
@@ -526,10 +531,7 @@ fn refine_edges(src: &Image<u8, 1>, quad: &mut Quad, range: f32) {
                 let x1i = x1 as isize;
                 let y1i = y1 as isize;
 
-                if x1i < 0
-                    || y1i < 0
-                    || x1i >= src.width() as isize
-                    || y1i >= src.height() as isize
+                if x1i < 0 || y1i < 0 || x1i >= src.width() as isize || y1i >= src.height() as isize
                 {
                     return;
                 }
@@ -540,10 +542,7 @@ fn refine_edges(src: &Image<u8, 1>, quad: &mut Quad, range: f32) {
                 let x2i = x2 as isize;
                 let y2i = y2 as isize;
 
-                if x2i < 0
-                    || y2i < 0
-                    || x2i >= src.width() as isize
-                    || y2i >= src.height() as isize
+                if x2i < 0 || y2i < 0 || x2i >= src.width() as isize || y2i >= src.height() as isize
                 {
                     return;
                 }
@@ -809,8 +808,7 @@ fn quad_decode(
             + gray_model_pair.white_model.interpolate(tag_x, tag_y))
             / 2.0;
 
-        sharpening_buffer.values[(tag_family.total_width as isize
-            * (bit_y as isize - min_coord)
+        sharpening_buffer.values[(tag_family.total_width as isize * (bit_y as isize - min_coord)
             + bit_x as isize
             - min_coord) as usize] = v - thresh;
     });
@@ -984,7 +982,7 @@ mod tests {
         let mut uf = UnionFind::new(bin.as_slice().len());
         adaptive_threshold(&src, &mut bin, &mut tile_min_max, 20)?;
         find_connected_components(&bin, &mut uf)?;
-        let clusters = find_gradient_clusters(&bin, &mut uf);
+        let clusters = find_gradient_clusters(&bin, &uf);
 
         let mut quads = fit_quads(&bin, &[clusters], &config);
 

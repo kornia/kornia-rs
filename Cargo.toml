@@ -1,9 +1,9 @@
 [workspace]
 resolver = "2"
 members = [
-  "crates/*",  # kornia-rs main library crates
-  "examples/*",  # kornia examples as standalone projects
-  "kornia-cpp",  # kornia-rs C++ bindings
+  "crates/*",   # kornia-rs main library crates
+  "examples/*", # kornia examples as standalone projects
+  "kornia-cpp", # kornia-rs C++ bindings
   "kornia-py",  # kornia-rs python bindings
 ]
 exclude = ["examples/cuda_imgproc", "examples/dora"]
@@ -82,7 +82,7 @@ rustc-hash = "2"
 # a test video.)
 reqwest = { version = "0.13", default-features = false, features = [
   "blocking",
-  "native-tls"
+  "native-tls",
 ] }
 rerun = "0.30"
 serde = { version = "1", features = ["derive"] }

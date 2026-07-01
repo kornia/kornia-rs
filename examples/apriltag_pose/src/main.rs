@@ -3,7 +3,9 @@
 use argh::FromArgs;
 use kornia::io::png::read_image_png_mono8;
 use kornia_3d::camera::PinholeCamera;
-use kornia_apriltag::{decoder::Detection, family::TagFamilyKind, AprilTagDecoder, DecodeTagsConfig};
+use kornia_apriltag::{
+    decoder::Detection, family::TagFamilyKind, AprilTagDecoder, DecodeTagsConfig,
+};
 
 #[derive(FromArgs)]
 /// Detect AprilTag36H11 markers and estimate their 6-DOF poses.

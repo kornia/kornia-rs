@@ -2,7 +2,7 @@ use argh::FromArgs;
 use kornia::{
     image::{Image, ImageSize},
     imgproc::color::{gray_from_rgb_u8, YuvToRgbMode},
-    io::{fps_counter::FpsCounter, jpeg, functional::read_image_any_rgb8},
+    io::{fps_counter::FpsCounter, functional::read_image_any_rgb8, jpeg},
 };
 use kornia_3d::camera::PinholeCamera;
 use kornia_apriltag::{family::TagFamilyKind, AprilTagDecoder, DecodeTagsConfig};
@@ -154,9 +154,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             eprintln!("{} detections in {}", detections.len(), path);
 
             let mut pose_state = PoseState::new();
-            log_frame(&rec, &rgb, gray.size(), &detections, args.tag_size.map(|ts| {
-                (PinholeCamera { fx: args.fx, fy: args.fy, cx, cy, k1: 0.0, k2: 0.0, p1: 0.0, p2: 0.0 }, ts, args.n_iters)
-            }), &mut pose_state, args.pose_smoothing)?;
+            log_frame(
+                &rec,
+                &rgb,
+                gray.size(),
+                &detections,
+                args.tag_size.map(|ts| {
+                    (
+                        PinholeCamera {
+                            fx: args.fx,
+                            fy: args.fy,
+                            cx,
+                            cy,
+                            k1: 0.0,
+                            k2: 0.0,
+                            p1: 0.0,
+                            p2: 0.0,
+                        },
+                        ts,
+                        args.n_iters,
+                    )
+                }),
+                &mut pose_state,
+                args.pose_smoothing,
+            )?;
         }
         (None, camera) => {
             // Live camera mode (V4L, Linux only).
@@ -165,11 +186,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 use kornia::io::v4l::{PixelFormat, V4LCameraConfig, V4lVideoCapture};
 
                 let device_id = camera.unwrap_or(0);
-                let requested_size = ImageSize { width: args.width as usize, height: args.height as usize };
+                let requested_size = ImageSize {
+                    width: args.width as usize,
+                    height: args.height as usize,
+                };
 
                 let cancel = Arc::new(AtomicBool::new(false));
                 let cancel2 = Arc::clone(&cancel);
-                ctrlc::set_handler(move || { cancel2.store(true, Ordering::SeqCst); })?;
+                ctrlc::set_handler(move || {
+                    cancel2.store(true, Ordering::SeqCst);
+                })?;
 
                 let mut cam = V4lVideoCapture::new(V4LCameraConfig {
                     device_path: format!("/dev/video{device_id}"),
@@ -184,11 +210,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 let cx = args.cx.unwrap_or(img_size.width as f64 / 2.0);
                 let cy_val = args.cy.unwrap_or(img_size.height as f64 / 2.0);
-                let pinhole = args.tag_size.map(|ts| (
-                    PinholeCamera { fx: args.fx, fy: args.fy, cx, cy: cy_val, k1: 0.0, k2: 0.0, p1: 0.0, p2: 0.0 },
-                    ts,
-                    args.n_iters,
-                ));
+                let pinhole = args.tag_size.map(|ts| {
+                    (
+                        PinholeCamera {
+                            fx: args.fx,
+                            fy: args.fy,
+                            cx,
+                            cy: cy_val,
+                            k1: 0.0,
+                            k2: 0.0,
+                            p1: 0.0,
+                            p2: 0.0,
+                        },
+                        ts,
+                        args.n_iters,
+                    )
+                });
 
                 let mut rgb = Image::<u8, 3>::from_size_val(img_size, 0)?;
                 let mut gray = Image::<u8, 1>::from_size_val(img_size, 0u8)?;
@@ -197,7 +234,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut pose_state = PoseState::new();
 
                 while !cancel.load(Ordering::SeqCst) {
-                    let Some(frame) = cam.grab_frame()? else { continue };
+                    let Some(frame) = cam.grab_frame()? else {
+                        continue;
+                    };
                     // For most formats we decode to RGB and then derive gray below.
                     // GREY is already single-channel luminance, so we fill `gray`
                     // directly and replicate it into `rgb` only for visualization.
@@ -205,7 +244,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     match frame.pixel_format {
                         PixelFormat::YUYV => {
                             kornia::imgproc::color::convert_yuyv_to_rgb_u8(
-                                frame.buffer.as_slice(), &mut rgb, YuvToRgbMode::Bt601Full)?;
+                                frame.buffer.as_slice(),
+                                &mut rgb,
+                                YuvToRgbMode::Bt601Full,
+                            )?;
                         }
                         PixelFormat::MJPG => {
                             jpeg::decode_image_jpeg_rgb8(frame.buffer.as_slice(), &mut rgb)?;
@@ -234,9 +276,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let detections = decoder.decode(&gray)?;
                     decoder.clear();
 
-                    log_frame(&rec, &rgb, img_size, &detections,
-                        pinhole.as_ref().map(|(cam, ts, ni)| (cam.clone(), *ts, *ni)),
-                        &mut pose_state, args.pose_smoothing)?;
+                    log_frame(
+                        &rec,
+                        &rgb,
+                        img_size,
+                        &detections,
+                        pinhole
+                            .as_ref()
+                            .map(|(cam, ts, ni)| (cam.clone(), *ts, *ni)),
+                        &mut pose_state,
+                        args.pose_smoothing,
+                    )?;
 
                     fps.update();
                     eprint!("\r{} detections  {:.1} fps", detections.len(), fps.fps());
@@ -355,12 +405,7 @@ fn log_frame(
 
                 // Tag corners in the tag frame (planar, z = 0).
                 let h = (tag_size / 2.0) as f32;
-                let corners3d = [
-                    [-h, -h, 0.0f32],
-                    [h, -h, 0.0],
-                    [h, h, 0.0],
-                    [-h, h, 0.0],
-                ];
+                let corners3d = [[-h, -h, 0.0f32], [h, -h, 0.0], [h, h, 0.0], [-h, h, 0.0]];
                 let col = tag_color(det.tag_family_kind.clone());
 
                 // Filled planar surface (two triangles) so the tag shows as a full plane.
@@ -375,7 +420,11 @@ fn log_frame(
                 rec.log(
                     tag_face_path.as_str(),
                     &rerun::LineStrips3D::new([[
-                        corners3d[0], corners3d[1], corners3d[2], corners3d[3], corners3d[0],
+                        corners3d[0],
+                        corners3d[1],
+                        corners3d[2],
+                        corners3d[3],
+                        corners3d[0],
                     ]])
                     .with_colors([col])
                     .with_labels([format!("{}", det.id)]),

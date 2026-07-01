@@ -91,8 +91,7 @@ fn orthogonal_iteration(
     }
     let m1_inv = m1.inverse();
 
-    let p_mean =
-        (object_pts[0] + object_pts[1] + object_pts[2] + object_pts[3]) * 0.25;
+    let p_mean = (object_pts[0] + object_pts[1] + object_pts[2] + object_pts[3]) * 0.25;
     let p_res = [
         object_pts[0] - p_mean,
         object_pts[1] - p_mean,
@@ -149,7 +148,7 @@ fn orthogonal_iteration(
                 let dv = v_hat - image_pts[i].y;
                 error += du * du + dv * dv;
             } else {
-                error += f64::MAX / 4.0;  // degenerate: point behind camera
+                error += f64::MAX / 4.0; // degenerate: point behind camera
             }
         }
     }
@@ -203,7 +202,17 @@ pub fn estimate_tag_pose(
     ];
 
     // Pose 1: refine from H decomposition
-    let (pose1, err1) = orthogonal_iteration(object_pts, &image_rays, image_pts, init_pose, n_iters, fx, fy, cx, cy)?;
+    let (pose1, err1) = orthogonal_iteration(
+        object_pts,
+        &image_rays,
+        image_pts,
+        init_pose,
+        n_iters,
+        fx,
+        fy,
+        cx,
+        cy,
+    )?;
 
     // Pose 2: other planar ambiguity — negate first two R columns
     let r2_init = Mat3F64::from_cols(
@@ -211,13 +220,40 @@ pub fn estimate_tag_pose(
         -init_pose.rotation.y_axis(),
         init_pose.rotation.z_axis(),
     );
-    let (pose2, err2) =
-        orthogonal_iteration(object_pts, &image_rays, image_pts, Pose3d::new(r2_init, init_pose.translation), n_iters, fx, fy, cx, cy)?;
+    let (pose2, err2) = orthogonal_iteration(
+        object_pts,
+        &image_rays,
+        image_pts,
+        Pose3d::new(r2_init, init_pose.translation),
+        n_iters,
+        fx,
+        fy,
+        cx,
+        cy,
+    )?;
 
     let (best, second) = if err1 <= err2 {
-        (TagPose { pose: pose1, error: err1 }, TagPose { pose: pose2, error: err2 })
+        (
+            TagPose {
+                pose: pose1,
+                error: err1,
+            },
+            TagPose {
+                pose: pose2,
+                error: err2,
+            },
+        )
     } else {
-        (TagPose { pose: pose2, error: err2 }, TagPose { pose: pose1, error: err1 })
+        (
+            TagPose {
+                pose: pose2,
+                error: err2,
+            },
+            TagPose {
+                pose: pose1,
+                error: err1,
+            },
+        )
     };
 
     Ok(TagPosePair { best, second })
@@ -288,7 +324,11 @@ mod tests {
 
         assert!(rot_err < 1e-6, "rotation error {rot_err} >= 1e-6 rad");
         assert!(t_err < 1e-4, "translation error {t_err} >= 1e-4 m");
-        assert!(best.error < 1e-10, "reprojection error {} >= 1e-10", best.error);
+        assert!(
+            best.error < 1e-10,
+            "reprojection error {} >= 1e-10",
+            best.error
+        );
         assert!(
             best.pose.transform_point(&object_pts[0]).z > 0.0,
             "cheirality violated"
@@ -331,7 +371,10 @@ mod tests {
         let t_tol = 0.05 * t_gt.length();
 
         assert!(rot_err < PI / 180.0, "rotation error {rot_err} >= 1°");
-        assert!(t_err < t_tol, "translation error {t_err} >= 5% of depth ({t_tol})");
+        assert!(
+            t_err < t_tol,
+            "translation error {t_err} >= 5% of depth ({t_tol})"
+        );
         Ok(())
     }
 

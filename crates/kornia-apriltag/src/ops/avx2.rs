@@ -88,7 +88,13 @@ pub(crate) unsafe fn fill_tile_stats(
 /// # Safety
 /// AVX2+FMA available; `half <= len`.
 #[target_feature(enable = "avx2,fma")]
-pub(crate) unsafe fn smooth_interior(errors: &[f32], kernel: &[f32], out: &mut [f32], half: usize, len: usize) {
+pub(crate) unsafe fn smooth_interior(
+    errors: &[f32],
+    kernel: &[f32],
+    out: &mut [f32],
+    half: usize,
+    len: usize,
+) {
     let flen = kernel.len();
     let interior_end = len - half;
     let mut iy = half;

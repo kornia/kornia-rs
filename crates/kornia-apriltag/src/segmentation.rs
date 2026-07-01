@@ -8,7 +8,7 @@ use crate::{
     union_find::{ParStripUF, UnionFind},
     utils::{Pixel, Point2d},
 };
-use kornia_image::{Image};
+use kornia_image::Image;
 
 /// Returns `Some(color)` if every pixel in [row_off+1 .. row_off+width-1] and the
 /// corresponding top row [top_off+1 .. top_off+width-1] are all the same non-Skip
@@ -190,7 +190,13 @@ fn extend_run_bulk(
 ///    pixel of each same-color run (to connect it to its left neighbor, including x=0),
 ///    then extend the run via direct parent writes (O(1) per pixel instead of O(α) UF).
 /// 2. Top/diagonal-connection pass: UF connect per top-crossing.
-fn cc_strip_phase1(src_data: &[Pixel], width: usize, y_start: usize, y_end: usize, par_uf: &mut ParStripUF<'_>) {
+fn cc_strip_phase1(
+    src_data: &[Pixel],
+    width: usize,
+    y_start: usize,
+    y_end: usize,
+    par_uf: &mut ParStripUF<'_>,
+) {
     let offset = par_uf.offset;
     for y in y_start..y_end {
         let row_off = y * width;
@@ -217,7 +223,16 @@ fn cc_strip_phase1(src_data: &[Pixel], width: usize, y_start: usize, y_end: usiz
                 par_uf.size[run_root - offset] += 1;
                 x += 1;
                 // Extend run: bulk-write parent and count length for single size add.
-                let run_len = extend_run_bulk(src_data, par_uf, row_off, offset, x, width - 1, pixel, run_root);
+                let run_len = extend_run_bulk(
+                    src_data,
+                    par_uf,
+                    row_off,
+                    offset,
+                    x,
+                    width - 1,
+                    pixel,
+                    run_root,
+                );
                 x += run_len;
             } else {
                 // New run — initialize as self-root if not already set.
@@ -244,12 +259,18 @@ fn cc_strip_phase1(src_data: &[Pixel], width: usize, y_start: usize, y_end: usiz
                 let i = row_off + x;
                 let top_i = top_off + x;
                 if src_data[i] != Pixel::Skip {
-                    if src_data[i] == src_data[top_i] { par_uf.connect(i, top_i); }
+                    if src_data[i] == src_data[top_i] {
+                        par_uf.connect(i, top_i);
+                    }
                     if solid_pixel == Pixel::White {
                         let top_left_i = top_i - 1;
-                        if src_data[i] == src_data[top_left_i] { par_uf.connect(i, top_left_i); }
+                        if src_data[i] == src_data[top_left_i] {
+                            par_uf.connect(i, top_left_i);
+                        }
                         let top_right_i = top_i + 1;
-                        if src_data[top_i] != src_data[top_right_i] && src_data[i] == src_data[top_right_i] {
+                        if src_data[top_i] != src_data[top_right_i]
+                            && src_data[i] == src_data[top_right_i]
+                        {
                             par_uf.connect(i, top_right_i);
                         }
                     }
@@ -278,7 +299,8 @@ fn cc_strip_phase1(src_data: &[Pixel], width: usize, y_start: usize, y_end: usiz
                     let top_pixel = src_data[top_i];
                     if pixel == top_pixel {
                         // Skip if this pixel is interior to a matching run pair already connected.
-                        let is_interior = last_connected && pixel == last_pixel && top_pixel == last_top_pixel;
+                        let is_interior =
+                            last_connected && pixel == last_pixel && top_pixel == last_top_pixel;
                         if !is_interior {
                             par_uf.connect(i, top_i);
                             last_connected = true;
@@ -290,10 +312,17 @@ fn cc_strip_phase1(src_data: &[Pixel], width: usize, y_start: usize, y_end: usiz
                     last_top_pixel = top_pixel;
                     if pixel == Pixel::White {
                         let top_left_i = top_i - 1;
-                        if (x == 1 || !(src_data[top_left_i] == src_data[left_i] || src_data[top_left_i] == top_pixel))
-                            && pixel == src_data[top_left_i] { par_uf.connect(i, top_left_i); }
+                        if (x == 1
+                            || !(src_data[top_left_i] == src_data[left_i]
+                                || src_data[top_left_i] == top_pixel))
+                            && pixel == src_data[top_left_i]
+                        {
+                            par_uf.connect(i, top_left_i);
+                        }
                         let top_right_i = top_i + 1;
-                        if top_pixel != src_data[top_right_i] && pixel == src_data[top_right_i] { par_uf.connect(i, top_right_i); }
+                        if top_pixel != src_data[top_right_i] && pixel == src_data[top_right_i] {
+                            par_uf.connect(i, top_right_i);
+                        }
                     }
                 }
             }
@@ -332,7 +361,7 @@ pub fn find_connected_components(
     }
 
     let n_threads = rayon::current_num_threads().max(1);
-    let strip_h = (height + n_threads - 1) / n_threads;
+    let strip_h = height.div_ceil(n_threads);
     let strip_pixels = strip_h * width;
 
     // Phase 1: parallel — process each strip's interior connections.
@@ -366,7 +395,8 @@ pub fn find_connected_components(
             let top_i = top_off + x;
             let top_pixel = src_data[top_i];
             if pixel == top_pixel {
-                let is_interior = last_connected && pixel == last_pixel && top_pixel == last_top_pixel;
+                let is_interior =
+                    last_connected && pixel == last_pixel && top_pixel == last_top_pixel;
                 if !is_interior {
                     uf.connect(i, top_i);
                     last_connected = true;
@@ -482,7 +512,7 @@ pub fn find_gradient_clusters(
 
     let n_threads = rayon::current_num_threads().max(1);
     let inner_rows = height.saturating_sub(2);
-    let strip_h = (inner_rows + n_threads - 1) / n_threads;
+    let strip_h = inner_rows.div_ceil(n_threads);
 
     // Each thread processes rows [y_start, y_end) and reads the union-find without mutation
     // via get_representative_ref / get_set_size_ref (Sync, no locking needed).
@@ -494,7 +524,8 @@ pub fn find_gradient_clusters(
                 return FxHashMap::default();
             }
             let y_end = (y_start + strip_h).min(height - 1);
-            let mut local: FxHashMap<(usize, usize), Vec<GradientInfo>> = FxHashMap::with_capacity_and_hasher(128, Default::default());
+            let mut local: FxHashMap<(usize, usize), Vec<GradientInfo>> =
+                FxHashMap::with_capacity_and_hasher(128, Default::default());
 
             for y in y_start..y_end {
                 let mut connected_last = false;
@@ -578,7 +609,8 @@ pub fn find_gradient_clusters(
 
     // Merge thread-local maps into one, preserving row-major (y, x) insertion order
     // so that the slope-sort in fit_single_quad has a stable, deterministic tiebreak.
-    let mut clusters: FxHashMap<(usize, usize), Vec<GradientInfo>> = FxHashMap::with_capacity_and_hasher(128, Default::default());
+    let mut clusters: FxHashMap<(usize, usize), Vec<GradientInfo>> =
+        FxHashMap::with_capacity_and_hasher(128, Default::default());
     for map in local_maps {
         for (key, mut entries) in map {
             clusters.entry(key).or_default().append(&mut entries);
@@ -614,15 +646,18 @@ macro_rules! maybe_add_gradient {
                         (nrep, $cur_rep)
                     };
                     let delta = npix.gradient_to($current_pixel);
-                    $local.entry(key).or_insert_with(|| Vec::with_capacity(256)).push(GradientInfo {
-                        pos: Point2d {
-                            x: (2 * $x as isize + ($dx as isize)) as u32,
-                            y: (2 * $y as isize + ($dy as isize)) as u32,
-                        },
-                        gx: delta * ($dx as isize),
-                        gy: delta * ($dy as isize),
-                        slope: 0.0,
-                    });
+                    $local
+                        .entry(key)
+                        .or_insert_with(|| Vec::with_capacity(256))
+                        .push(GradientInfo {
+                            pos: Point2d {
+                                x: (2 * $x as isize + ($dx as isize)) as u32,
+                                y: (2 * $y as isize + ($dy as isize)) as u32,
+                            },
+                            gx: delta * ($dx as isize),
+                            gy: delta * ($dy as isize),
+                            slope: 0.0,
+                        });
                     $any_conn = true;
                 }
             }
@@ -640,11 +675,7 @@ macro_rules! process_grad_pixel {
     (
         $rep_cache:expr, $src_slice:expr, $local:expr, $width:expr,
         $row_off:expr, $x:expr, $y:expr, $connected_last:expr
-    ) =>
-    // `any_connected` is written by the right/below/below-left taps but only the
-    // below-right result feeds `connected_last`; the earlier writes are intentional
-    // side-effects of the shared `maybe_add_gradient!` macro, hence allow(unused_assignments).
-    {{
+    ) => {{
         #[allow(unused_assignments)]
         {
             let x = $x;
@@ -656,13 +687,61 @@ macro_rules! process_grad_pixel {
                 let cur_rep_usize = cur_rep as usize;
                 let current_pixel = $src_slice[i];
                 let mut any_connected = false;
-                maybe_add_gradient!($rep_cache, $src_slice, $local, cur_rep_usize, current_pixel, x, $y, i + 1,             1i32,  0i32, any_connected);
-                maybe_add_gradient!($rep_cache, $src_slice, $local, cur_rep_usize, current_pixel, x, $y, i + $width,         0i32,  1i32, any_connected);
+                maybe_add_gradient!(
+                    $rep_cache,
+                    $src_slice,
+                    $local,
+                    cur_rep_usize,
+                    current_pixel,
+                    x,
+                    $y,
+                    i + 1,
+                    1i32,
+                    0i32,
+                    any_connected
+                );
+                maybe_add_gradient!(
+                    $rep_cache,
+                    $src_slice,
+                    $local,
+                    cur_rep_usize,
+                    current_pixel,
+                    x,
+                    $y,
+                    i + $width,
+                    0i32,
+                    1i32,
+                    any_connected
+                );
                 if !$connected_last {
-                    maybe_add_gradient!($rep_cache, $src_slice, $local, cur_rep_usize, current_pixel, x, $y, i + $width - 1, -1i32, 1i32, any_connected);
+                    maybe_add_gradient!(
+                        $rep_cache,
+                        $src_slice,
+                        $local,
+                        cur_rep_usize,
+                        current_pixel,
+                        x,
+                        $y,
+                        i + $width - 1,
+                        -1i32,
+                        1i32,
+                        any_connected
+                    );
                 }
                 any_connected = false;
-                maybe_add_gradient!($rep_cache, $src_slice, $local, cur_rep_usize, current_pixel, x, $y, i + $width + 1,     1i32,  1i32, any_connected);
+                maybe_add_gradient!(
+                    $rep_cache,
+                    $src_slice,
+                    $local,
+                    cur_rep_usize,
+                    current_pixel,
+                    x,
+                    $y,
+                    i + $width + 1,
+                    1i32,
+                    1i32,
+                    any_connected
+                );
                 $connected_last = any_connected;
             }
         }
@@ -678,12 +757,22 @@ fn gradient_clusters_inner_scalar(
     y_start: usize,
     y_end: usize,
 ) -> FxHashMap<(usize, usize), Vec<GradientInfo>> {
-    let mut local: FxHashMap<(usize, usize), Vec<GradientInfo>> = FxHashMap::with_capacity_and_hasher(128, Default::default());
+    let mut local: FxHashMap<(usize, usize), Vec<GradientInfo>> =
+        FxHashMap::with_capacity_and_hasher(128, Default::default());
     for y in y_start..y_end {
         let row_off = y * width;
         let mut connected_last = false;
         for x in 1..width - 1 {
-            process_grad_pixel!(rep_cache, src_slice, local, width, row_off, x, y, connected_last);
+            process_grad_pixel!(
+                rep_cache,
+                src_slice,
+                local,
+                width,
+                row_off,
+                x,
+                y,
+                connected_last
+            );
         }
     }
     local
@@ -708,7 +797,8 @@ unsafe fn gradient_clusters_inner_neon(
     y_end: usize,
 ) -> FxHashMap<(usize, usize), Vec<GradientInfo>> {
     use std::arch::aarch64::*;
-    let mut local: FxHashMap<(usize, usize), Vec<GradientInfo>> = FxHashMap::with_capacity_and_hasher(128, Default::default());
+    let mut local: FxHashMap<(usize, usize), Vec<GradientInfo>> =
+        FxHashMap::with_capacity_and_hasher(128, Default::default());
     let skip_v = vdupq_n_u8(127u8); // Pixel::Skip = 127
 
     let rcp = rep_cache.as_ptr() as *const i8;
@@ -747,22 +837,30 @@ unsafe fn gradient_clusters_inner_neon(
             let curr_c = vld1q_u8(src_ptr);
             let right_c = vld1q_u8(src_ptr.add(1));
             let below_c = vld1q_u8(src_ptr.add(width));
-            let bl_c    = vld1q_u8(src_ptr.add(width - 1));
-            let br_c    = vld1q_u8(src_ptr.add(width + 1));
+            let bl_c = vld1q_u8(src_ptr.add(width - 1));
+            let br_c = vld1q_u8(src_ptr.add(width + 1));
 
-            let no_r  = vorrq_u8(vceqq_u8(curr_c, right_c),
-                        vorrq_u8(vceqq_u8(curr_c, skip_v), vceqq_u8(right_c, skip_v)));
-            let no_d  = vorrq_u8(vceqq_u8(curr_c, below_c),
-                        vorrq_u8(vceqq_u8(curr_c, skip_v), vceqq_u8(below_c, skip_v)));
-            let mut no_bl = vorrq_u8(vceqq_u8(curr_c, bl_c),
-                             vorrq_u8(vceqq_u8(curr_c, skip_v), vceqq_u8(bl_c, skip_v)));
+            let no_r = vorrq_u8(
+                vceqq_u8(curr_c, right_c),
+                vorrq_u8(vceqq_u8(curr_c, skip_v), vceqq_u8(right_c, skip_v)),
+            );
+            let no_d = vorrq_u8(
+                vceqq_u8(curr_c, below_c),
+                vorrq_u8(vceqq_u8(curr_c, skip_v), vceqq_u8(below_c, skip_v)),
+            );
+            let mut no_bl = vorrq_u8(
+                vceqq_u8(curr_c, bl_c),
+                vorrq_u8(vceqq_u8(curr_c, skip_v), vceqq_u8(bl_c, skip_v)),
+            );
             // Pixel x+0 skips its below-left check when connected_last is true;
             // mark lane 0 as "no gradient" so it doesn't block the fast-path.
             if connected_last {
                 no_bl = vsetq_lane_u8::<0>(0xFFu8, no_bl);
             }
-            let no_br = vorrq_u8(vceqq_u8(curr_c, br_c),
-                        vorrq_u8(vceqq_u8(curr_c, skip_v), vceqq_u8(br_c, skip_v)));
+            let no_br = vorrq_u8(
+                vceqq_u8(curr_c, br_c),
+                vorrq_u8(vceqq_u8(curr_c, skip_v), vceqq_u8(br_c, skip_v)),
+            );
 
             let all_ok = vandq_u8(vandq_u8(no_r, no_d), vandq_u8(no_bl, no_br));
 
@@ -787,14 +885,34 @@ unsafe fn gradient_clusters_inner_neon(
                         continue;
                     }
                     for offset in 0..4usize {
-                        if xi + offset >= chunk_end { break; }
-                        process_grad_pixel!(rep_cache, src_slice, local, width, row_off, xi + offset, y, connected_last);
+                        if xi + offset >= chunk_end {
+                            break;
+                        }
+                        process_grad_pixel!(
+                            rep_cache,
+                            src_slice,
+                            local,
+                            width,
+                            row_off,
+                            xi + offset,
+                            y,
+                            connected_last
+                        );
                     }
                     xi += 4;
                 }
                 // Tail: up to 3 pixels not covered by the 4-wide inner loop.
                 while xi < chunk_end {
-                    process_grad_pixel!(rep_cache, src_slice, local, width, row_off, xi, y, connected_last);
+                    process_grad_pixel!(
+                        rep_cache,
+                        src_slice,
+                        local,
+                        width,
+                        row_off,
+                        xi,
+                        y,
+                        connected_last
+                    );
                     xi += 1;
                 }
                 x = chunk_end;
@@ -803,7 +921,16 @@ unsafe fn gradient_clusters_inner_neon(
 
         // Tail: up to 15 pixels at the right edge not covered by the NEON outer loop.
         while x < width - 1 {
-            process_grad_pixel!(rep_cache, src_slice, local, width, row_off, x, y, connected_last);
+            process_grad_pixel!(
+                rep_cache,
+                src_slice,
+                local,
+                width,
+                row_off,
+                x,
+                y,
+                connected_last
+            );
             x += 1;
         }
     }
@@ -835,8 +962,8 @@ unsafe fn gradient_clusters_inner_avx2(
     let mut local: FxHashMap<(usize, usize), Vec<GradientInfo>> =
         FxHashMap::with_capacity_and_hasher(128, Default::default());
     let skip_v = _mm256_set1_epi8(127i8); // Pixel::Skip = 127
-    // Mask with only byte 0 set, used to neutralize the below-left lane of pixel x
-    // when `connected_last` (that pixel skips its below-left check).
+                                          // Mask with only byte 0 set, used to neutralize the below-left lane of pixel x
+                                          // when `connected_last` (that pixel skips its below-left check).
     let lane0 = _mm256_setr_epi8(
         -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 0,
@@ -848,7 +975,7 @@ unsafe fn gradient_clusters_inner_avx2(
         let mut x = 1usize;
 
         // 32-pixel color-based fast-path.
-        while x + 32 <= width - 1 {
+        while x + 32 < width {
             let src_ptr = src_slice.as_ptr().add(row_off + x) as *const u8;
             let curr = _mm256_loadu_si256(src_ptr as *const __m256i);
             let right = _mm256_loadu_si256(src_ptr.add(1) as *const __m256i);
@@ -876,7 +1003,8 @@ unsafe fn gradient_clusters_inner_avx2(
                 _mm256_cmpeq_epi8(curr, br),
                 _mm256_or_si256(eqskip_curr, _mm256_cmpeq_epi8(br, skip_v)),
             );
-            let all_ok = _mm256_and_si256(_mm256_and_si256(no_r, no_d), _mm256_and_si256(no_bl, no_br));
+            let all_ok =
+                _mm256_and_si256(_mm256_and_si256(no_r, no_d), _mm256_and_si256(no_bl, no_br));
 
             if _mm256_movemask_epi8(all_ok) == -1 {
                 x += 32;
@@ -888,7 +1016,16 @@ unsafe fn gradient_clusters_inner_avx2(
             let chunk_end = (x + 32).min(width - 1);
             let mut xi = x;
             while xi < chunk_end {
-                process_grad_pixel!(rep_cache, src_slice, local, width, row_off, xi, y, connected_last);
+                process_grad_pixel!(
+                    rep_cache,
+                    src_slice,
+                    local,
+                    width,
+                    row_off,
+                    xi,
+                    y,
+                    connected_last
+                );
                 xi += 1;
             }
             x = chunk_end;
@@ -896,7 +1033,16 @@ unsafe fn gradient_clusters_inner_avx2(
 
         // Tail: up to 31 pixels at the right edge.
         while x < width - 1 {
-            process_grad_pixel!(rep_cache, src_slice, local, width, row_off, x, y, connected_last);
+            process_grad_pixel!(
+                rep_cache,
+                src_slice,
+                local,
+                width,
+                row_off,
+                x,
+                y,
+                connected_last
+            );
             x += 1;
         }
     }
@@ -921,14 +1067,15 @@ fn gradient_clusters_inner(
     #[cfg(target_arch = "x86_64")]
     if crate::ops::has_avx2() {
         // SAFETY: AVX2 confirmed by runtime probe.
-        return unsafe { gradient_clusters_inner_avx2(src_slice, rep_cache, width, y_start, y_end) };
+        return unsafe {
+            gradient_clusters_inner_avx2(src_slice, rep_cache, width, y_start, y_end)
+        };
     }
 
     // Portable scalar fallback.
     #[cfg(not(target_arch = "aarch64"))]
     gradient_clusters_inner_scalar(src_slice, rep_cache, width, y_start, y_end)
 }
-
 
 /// Gradient-cluster scan using a pre-built rep_cache (no union-find traversal in the hot path).
 ///
@@ -944,7 +1091,7 @@ pub(crate) fn find_gradient_clusters_with_cache(
 
     let n_threads = rayon::current_num_threads().max(1);
     let inner_rows = height.saturating_sub(2);
-    let strip_h = (inner_rows + n_threads - 1) / n_threads;
+    let strip_h = inner_rows.div_ceil(n_threads);
 
     (0..n_threads)
         .into_par_iter()
@@ -976,7 +1123,7 @@ pub fn find_gradient_clusters_cached(
 mod tests {
     use super::*;
     use crate::threshold::{adaptive_threshold, TileMinMax};
-    use kornia_image::{ImageSize};
+    use kornia_image::ImageSize;
     use kornia_io::png::read_image_png_mono8;
 
     #[test]
@@ -1113,7 +1260,7 @@ mod tests {
             }
         }
 
-        for (_, infos) in gradient_clusters.iter() {
+        for infos in gradient_clusters.values() {
             let mut clusters = format!("size {}:\t", infos.len());
 
             for info in infos {

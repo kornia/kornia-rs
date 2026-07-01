@@ -65,7 +65,9 @@ pub(crate) fn fill_tile_stats(
     #[cfg(target_arch = "aarch64")]
     // SAFETY: bounds guaranteed by the caller (floor-division tile counts).
     return unsafe {
-        neon::fill_tile_stats(img_data, img_width, tile_size, tiles_x, tiles_y, tile_min, tile_max)
+        neon::fill_tile_stats(
+            img_data, img_width, tile_size, tiles_x, tiles_y, tile_min, tile_max,
+        )
     };
 
     #[cfg(target_arch = "x86_64")]
@@ -79,12 +81,20 @@ pub(crate) fn fill_tile_stats(
     }
 
     #[cfg(not(target_arch = "aarch64"))]
-    scalar::fill_tile_stats(img_data, img_width, tile_size, tiles_x, tiles_y, tile_min, tile_max);
+    scalar::fill_tile_stats(
+        img_data, img_width, tile_size, tiles_x, tiles_y, tile_min, tile_max,
+    );
 }
 
 /// Interior Gaussian smooth of `errors[half..len-half]` into `out`.
 #[inline]
-pub(crate) fn smooth_interior(errors: &[f32], kernel: &[f32], out: &mut [f32], half: usize, len: usize) {
+pub(crate) fn smooth_interior(
+    errors: &[f32],
+    kernel: &[f32],
+    out: &mut [f32],
+    half: usize,
+    len: usize,
+) {
     #[cfg(target_arch = "aarch64")]
     // SAFETY: NEON mandatory on ARMv8-A.
     return unsafe { neon::smooth_interior(errors, kernel, out, half, len) };

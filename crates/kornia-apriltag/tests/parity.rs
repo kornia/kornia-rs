@@ -22,7 +22,9 @@
 use std::{collections::HashMap, path::PathBuf};
 
 use apriltag::DetectorBuilder;
-use kornia_apriltag::{decoder::Detection as KorniaDetection, family::TagFamilyKind, AprilTagDecoder, DecodeTagsConfig};
+use kornia_apriltag::{
+    decoder::Detection as KorniaDetection, family::TagFamilyKind, AprilTagDecoder, DecodeTagsConfig,
+};
 use kornia_image::{Image, ImageSize};
 
 /// Maximum allowed per-axis pixel difference between C and kornia corner coordinates
@@ -109,9 +111,7 @@ fn run_kornia(
     height: usize,
     det: &mut AprilTagDecoder,
 ) -> Vec<KorniaDetection> {
-    let img =
-        Image::<u8, 1>::from_size_slice(ImageSize { width, height }, gray)
-            .unwrap();
+    let img = Image::<u8, 1>::from_size_slice(ImageSize { width, height }, gray).unwrap();
     let dets = det.decode_all(&img).unwrap();
     det.clear();
     dets
@@ -123,10 +123,7 @@ fn run_kornia(
 /// max-per-axis delta and the permutation that achieved it.
 ///
 /// The `perm[c_i]` value gives the kornia corner index that corresponds to C corner `c_i`.
-fn best_corner_alignment(
-    c_corners: &[[f64; 2]; 4],
-    k_det: &KorniaDetection,
-) -> (f32, [usize; 4]) {
+fn best_corner_alignment(c_corners: &[[f64; 2]; 4], k_det: &KorniaDetection) -> (f32, [usize; 4]) {
     // Extract kornia corners as plain f32 [x, y] pairs to avoid naming Vec2F32.
     let kc: [[f32; 2]; 4] = [
         [k_det.quad.corners[0].x, k_det.quad.corners[0].y],
@@ -274,8 +271,8 @@ fn check_image(
 /// Nearest resize already achieves ≤0.26 px parity so D1/D2 are deferred.
 #[test]
 fn test_parity_tag36h11_apriltags_jpg() {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/data/apriltags_tag36h11.jpg");
+    let path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/data/apriltags_tag36h11.jpg");
 
     let (gray, w, h) = load_gray(&path);
     let mut c_det = build_c_detector();
@@ -308,8 +305,7 @@ fn test_parity_tag36h11_apriltags_jpg() {
 /// Neither detector may detect the tag; if C detects it, kornia must too.
 #[test]
 fn test_parity_tag36h11_apriltag_png() {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/data/apriltag.png");
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/data/apriltag.png");
 
     let (gray, w, h) = load_gray(&path);
     let mut c_det = build_c_detector();
@@ -339,8 +335,8 @@ fn test_parity_tag36h11_apriltag_png() {
 /// The kornia detector is created once and reused (calling `clear()` between images).
 #[test]
 fn test_parity_tag36h11_submodule_images() {
-    let tag_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/data/apriltag-imgs/tag36h11");
+    let tag_dir =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/data/apriltag-imgs/tag36h11");
 
     if !tag_dir.exists() {
         println!(
@@ -382,15 +378,19 @@ fn test_parity_tag36h11_submodule_images() {
         let (gray, w, h) = load_gray(&path);
 
         if w != W || h != H {
-            println!(
-                "  Skipping {} (unexpected size {}×{})",
-                file_name_str, w, h
-            );
+            println!("  Skipping {} (unexpected size {}×{})", file_name_str, w, h);
             continue;
         }
 
-        let (c_count, k_count, max_delta) =
-            check_image(&file_name_str, &gray, W, H, &mut c_det, &mut k_det, CORNER_TOLERANCE);
+        let (c_count, k_count, max_delta) = check_image(
+            &file_name_str,
+            &gray,
+            W,
+            H,
+            &mut c_det,
+            &mut k_det,
+            CORNER_TOLERANCE,
+        );
 
         total_c += c_count;
         total_k += k_count;

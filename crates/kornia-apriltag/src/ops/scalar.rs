@@ -33,7 +33,11 @@ pub(crate) fn tile_min_max(
 #[cfg(not(target_arch = "aarch64"))]
 pub(crate) fn classify_row(src: &[u8], dst: &mut [Pixel], thresh: u8) {
     for (s, d) in src.iter().zip(dst.iter_mut()) {
-        *d = if *s > thresh { Pixel::White } else { Pixel::Black };
+        *d = if *s > thresh {
+            Pixel::White
+        } else {
+            Pixel::Black
+        };
     }
 }
 
@@ -60,7 +64,13 @@ pub(crate) fn fill_tile_stats(
 
 /// Interior Gaussian smooth of `errors[half..len-half]` into `out`.
 #[cfg(not(target_arch = "aarch64"))]
-pub(crate) fn smooth_interior(errors: &[f32], kernel: &[f32], out: &mut [f32], half: usize, len: usize) {
+pub(crate) fn smooth_interior(
+    errors: &[f32],
+    kernel: &[f32],
+    out: &mut [f32],
+    half: usize,
+    len: usize,
+) {
     for iy in half..len - half {
         let mut acc = 0.0f32;
         for (ki, &kv) in kernel.iter().enumerate() {

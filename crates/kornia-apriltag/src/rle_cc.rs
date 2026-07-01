@@ -1,8 +1,7 @@
 use rayon::prelude::*;
 
 use crate::utils::Pixel;
-use kornia_image::{Image};
-
+use kornia_image::Image;
 
 /// A single horizontal run of non-Skip pixels.
 #[derive(Clone, Copy)]
@@ -83,16 +82,18 @@ impl RleCC {
         self.reset(height, width);
 
         let n_threads = rayon::current_num_threads().max(1);
-        let strip_h = (height + n_threads - 1) / n_threads;
+        let strip_h = height.div_ceil(n_threads);
 
         self.scan_runs(src.as_slice(), height, width, n_threads, strip_h);
 
         for t in 1..n_threads {
             let y = t * strip_h;
-            if y >= height { break; }
+            if y >= height {
+                break;
+            }
             let prev_start = self.row_start[y - 1] as usize;
-            let a_end      = (t - 1) * self.max_per_thread + self.thread_counts[t - 1] as usize;
-            let cur_start  = self.row_start[y] as usize;
+            let a_end = (t - 1) * self.max_per_thread + self.thread_counts[t - 1] as usize;
+            let cur_start = self.row_start[y] as usize;
             let next_start = self.row_start[y + 1] as usize;
             let runs_ptr = RunsPtr(self.runs.as_mut_ptr());
             merge_adjacent_rows(runs_ptr, prev_start, a_end, cur_start, next_start);
@@ -111,7 +112,14 @@ impl RleCC {
         );
     }
 
-    fn scan_runs(&mut self, src: &[Pixel], height: usize, width: usize, n_threads: usize, strip_h: usize) {
+    fn scan_runs(
+        &mut self,
+        src: &[Pixel],
+        height: usize,
+        width: usize,
+        n_threads: usize,
+        strip_h: usize,
+    ) {
         // Worst-case runs per thread: one run every 2 pixels × strip height.
         let max_per_thread = ((width / 2 + 1) * strip_h).max(1);
         self.max_per_thread = max_per_thread;
@@ -126,7 +134,11 @@ impl RleCC {
             // SAFETY: all positions [0, total_capacity) are written before any read:
             //   Phase A writes [base..base+count]; Phase B writes only within that range;
             //   fill_rep_cache reads only global indices stored in row_start.
-            unsafe { self.runs.set_len(total_capacity); }
+            // `Run` is a plain POD; the reserved slots are fully overwritten before use.
+            #[allow(clippy::uninit_vec)]
+            unsafe {
+                self.runs.set_len(total_capacity);
+            }
         }
 
         let runs_ptr = RunsPtr(self.runs.as_mut_ptr());
@@ -153,7 +165,10 @@ impl RleCC {
                     let mut x = 1usize;
                     while x < width - 1 {
                         let pixel = unsafe { src_ptr.get(row_off + x) };
-                        if pixel == Pixel::Skip { x += 1; continue; }
+                        if pixel == Pixel::Skip {
+                            x += 1;
+                            continue;
+                        }
                         let col_start = x as u16;
                         x += 1;
                         // NEON: extend run 16 bytes at a time on aarch64.
@@ -179,8 +194,9 @@ impl RleCC {
                                 use std::arch::x86_64::*;
                                 let pv = _mm256_set1_epi8(pixel as u8 as i8);
                                 let base_ptr = src_ptr.0.add(row_off);
-                                while x + 32 <= width - 1 {
-                                    let chunk = _mm256_loadu_si256(base_ptr.add(x) as *const __m256i);
+                                while x + 32 < width {
+                                    let chunk =
+                                        _mm256_loadu_si256(base_ptr.add(x) as *const __m256i);
                                     if _mm256_movemask_epi8(_mm256_cmpeq_epi8(chunk, pv)) == -1 {
                                         x += 32;
                                     } else {
@@ -213,9 +229,9 @@ impl RleCC {
                 // Phase B: intra-strip UF, using global indices into the shared buffer.
                 for iy in 1..strip_rows {
                     let a_start = local_row_start[iy - 1] as usize;
-                    let a_end   = local_row_start[iy] as usize;
+                    let a_end = local_row_start[iy] as usize;
                     let b_start = local_row_start[iy] as usize;
-                    let b_end   = local_row_start[iy + 1] as usize;
+                    let b_end = local_row_start[iy + 1] as usize;
                     merge_adjacent_rows(runs_ptr, a_start, a_end, b_start, b_end);
                 }
 
@@ -229,8 +245,11 @@ impl RleCC {
         for (t, (local_row_start, count)) in per_thread.into_iter().enumerate() {
             let y_start = t * strip_h;
             let strip_rows = (y_start + strip_h).min(height).saturating_sub(y_start);
-            for iy in 0..strip_rows {
-                self.row_start[y_start + iy] = local_row_start[iy];
+            // Guard empty strips: threads whose y_start ≥ height have strip_rows == 0,
+            // and `row_start[y_start..y_start]` would be an out-of-range slice.
+            if strip_rows > 0 {
+                self.row_start[y_start..y_start + strip_rows]
+                    .copy_from_slice(&local_row_start[..strip_rows]);
             }
             // Last thread sets the sentinel for row_start[height].
             if t == n_threads - 1 {
@@ -252,7 +271,10 @@ struct RunsPtr(*mut Run);
 unsafe impl Send for RunsPtr {}
 unsafe impl Sync for RunsPtr {}
 impl RunsPtr {
-    #[inline(always)] fn add(self, n: usize) -> *mut Run { unsafe { self.0.add(n) } }
+    #[inline(always)]
+    fn add(self, n: usize) -> *mut Run {
+        unsafe { self.0.add(n) }
+    }
 }
 
 /// Read-only runs array pointer, shareable across Rayon threads.
@@ -261,8 +283,14 @@ struct RunsConstPtr(*const Run);
 unsafe impl Send for RunsConstPtr {}
 unsafe impl Sync for RunsConstPtr {}
 impl RunsConstPtr {
-    #[inline(always)] fn add(self, n: usize) -> *const Run { unsafe { self.0.add(n) } }
-    #[inline(always)] fn as_ptr(self) -> *const Run { self.0 }
+    #[inline(always)]
+    fn add(self, n: usize) -> *const Run {
+        unsafe { self.0.add(n) }
+    }
+    #[inline(always)]
+    fn as_ptr(self) -> *const Run {
+        self.0
+    }
 }
 
 /// Read-only u32 slice pointer, shareable across Rayon threads.
@@ -271,7 +299,10 @@ struct U32Ptr(*const u32);
 unsafe impl Send for U32Ptr {}
 unsafe impl Sync for U32Ptr {}
 impl U32Ptr {
-    #[inline(always)] fn add(self, n: usize) -> *const u32 { unsafe { self.0.add(n) } }
+    #[inline(always)]
+    fn add(self, n: usize) -> *const u32 {
+        unsafe { self.0.add(n) }
+    }
 }
 
 /// Read-only Pixel (u8) slice pointer, shareable across Rayon threads.
@@ -280,7 +311,8 @@ struct PixelPtr(*const u8);
 unsafe impl Send for PixelPtr {}
 unsafe impl Sync for PixelPtr {}
 impl PixelPtr {
-    #[inline(always)] unsafe fn get(self, n: usize) -> Pixel {
+    #[inline(always)]
+    unsafe fn get(self, n: usize) -> Pixel {
         // SAFETY: caller ensures n is in-bounds.
         core::mem::transmute(*self.0.add(n))
     }
@@ -293,7 +325,10 @@ struct U32MutPtr(*mut u32);
 unsafe impl Send for U32MutPtr {}
 unsafe impl Sync for U32MutPtr {}
 impl U32MutPtr {
-    #[inline(always)] fn add(self, n: usize) -> *mut u32 { unsafe { self.0.add(n) } }
+    #[inline(always)]
+    fn add(self, n: usize) -> *mut u32 {
+        unsafe { self.0.add(n) }
+    }
 }
 
 /// Merge two adjacent rows' run lists: connect overlapping same-color run pairs.
@@ -318,7 +353,11 @@ fn merge_adjacent_rows(
         if ra.color == rb.color && ra.col_start < rb.col_end && rb.col_start < ra.col_end {
             uf_union(runs_ptr, a, b);
         }
-        if ra.col_end <= rb.col_end { a += 1; } else { b += 1; }
+        if ra.col_end <= rb.col_end {
+            a += 1;
+        } else {
+            b += 1;
+        }
     }
 }
 
@@ -327,9 +366,13 @@ fn uf_find(runs_ptr: RunsPtr, mut id: usize) -> usize {
     let ptr = runs_ptr.0;
     loop {
         let p = unsafe { (*ptr.add(id)).parent as usize };
-        if p == id { return id; }
+        if p == id {
+            return id;
+        }
         let pp = unsafe { (*ptr.add(p)).parent as usize };
-        unsafe { (*ptr.add(id)).parent = pp as u32; }
+        unsafe {
+            (*ptr.add(id)).parent = pp as u32;
+        }
         id = pp;
     }
 }
@@ -338,16 +381,26 @@ fn uf_find(runs_ptr: RunsPtr, mut id: usize) -> usize {
 fn uf_union(runs_ptr: RunsPtr, a: usize, b: usize) {
     let ra = uf_find(runs_ptr, a);
     let rb = uf_find(runs_ptr, b);
-    if ra == rb { return; }
+    if ra == rb {
+        return;
+    }
     let ptr = runs_ptr.0;
     let sa = unsafe { (*ptr.add(ra)).size };
     let sb = unsafe { (*ptr.add(rb)).size };
     if sa >= sb {
-        unsafe { (*ptr.add(rb)).parent = ra as u32; }
-        unsafe { (*ptr.add(ra)).size = sa.saturating_add(sb); }
+        unsafe {
+            (*ptr.add(rb)).parent = ra as u32;
+        }
+        unsafe {
+            (*ptr.add(ra)).size = sa.saturating_add(sb);
+        }
     } else {
-        unsafe { (*ptr.add(ra)).parent = rb as u32; }
-        unsafe { (*ptr.add(rb)).size = sb.saturating_add(sa); }
+        unsafe {
+            (*ptr.add(ra)).parent = rb as u32;
+        }
+        unsafe {
+            (*ptr.add(rb)).size = sb.saturating_add(sa);
+        }
     }
 }
 
@@ -391,7 +444,7 @@ fn fill_rep_cache_parallel(
     // Fused Phase 1+2: each Rayon task resolves roots then fills rep_cache for its strip.
     // Phase 2 reads run_vals[r] only for r in [base_t, base_t+count_t) — same range Phase 1
     // just wrote → no cross-thread run_vals dependency; one fewer par_iter spawn (~50µs).
-    let strip_h = (height + n_threads - 1) / n_threads;
+    let strip_h = height.div_ceil(n_threads);
     let runs_ptr = RunsConstPtr(runs.as_ptr());
     let run_vals_ptr = U32MutPtr(run_vals.as_mut_ptr());
     let row_start_ptr = U32Ptr(row_start.as_ptr());
@@ -404,8 +457,14 @@ fn fill_rep_cache_parallel(
         for r in base..base + count {
             let root = uf_find_const(runs_ptr.as_ptr(), r);
             let root_size = unsafe { (*runs_ptr.add(root)).size } as usize;
-            let val = if root_size >= min_size { root as u32 } else { u32::MAX };
-            unsafe { *run_vals_ptr.add(r) = val; }
+            let val = if root_size >= min_size {
+                root as u32
+            } else {
+                u32::MAX
+            };
+            unsafe {
+                *run_vals_ptr.add(r) = val;
+            }
         }
         // Phase 2: fill rep_cache for this thread's rows.
         // Strategy: pre-fill entire row with u32::MAX (one streaming store per row),
@@ -417,9 +476,8 @@ fn fill_rep_cache_parallel(
         for y in y_start..y_end {
             // Pre-fill whole row with sentinel (borders, gaps, and below-size runs).
             let row_off = y * width;
-            let row_slice = unsafe {
-                std::slice::from_raw_parts_mut(cache_ptr.add(row_off), width)
-            };
+            let row_slice =
+                unsafe { std::slice::from_raw_parts_mut(cache_ptr.add(row_off), width) };
             row_slice.fill(u32::MAX);
             // Overwrite only valid (above-min_size) run pixels with the component id.
             let r_start = unsafe { *row_start_ptr.add(y) } as usize;
@@ -430,13 +488,16 @@ fn fill_rep_cache_parallel(
             };
             for r in r_start..r_end {
                 let val = unsafe { *run_vals_ptr.add(r) };
-                if val == u32::MAX { continue; }
+                if val == u32::MAX {
+                    continue;
+                }
                 let run = unsafe { &*runs_ptr.add(r) };
                 let col_s = run.col_start as usize;
                 let col_e = run.col_end as usize;
                 unsafe {
                     std::slice::from_raw_parts_mut(cache_ptr.add(row_off + col_s), col_e - col_s)
-                }.fill(val);
+                }
+                .fill(val);
             }
         }
     });
@@ -447,8 +508,9 @@ fn fill_rep_cache_parallel(
 fn uf_find_const(runs_ptr: *const Run, mut id: usize) -> usize {
     loop {
         let p = unsafe { (*runs_ptr.add(id)).parent as usize };
-        if p == id { return id; }
+        if p == id {
+            return id;
+        }
         id = p;
     }
 }
-

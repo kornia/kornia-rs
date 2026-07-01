@@ -1,11 +1,12 @@
 #![deny(missing_docs)]
+// SIMD/perf-oriented kernels: explicit (slice, width, height, …) argument lists and
+// index-based loops are intentional and clearer than the clippy-preferred forms.
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::needless_range_loop)]
 //! # Kornia AprilTag
 
 use rustc_hash::FxHashMap;
 
-use kornia_image::{
-    Image, ImageSize,
-};
 use crate::{
     decoder::{decode_tags, dedup_detections, Detection},
     errors::AprilTagError,
@@ -16,6 +17,7 @@ use crate::{
     threshold::{adaptive_threshold, TileMinMax},
     utils::Pixel,
 };
+use kornia_image::{Image, ImageSize};
 
 /// Error types for AprilTag detection.
 pub mod errors;
@@ -144,11 +146,7 @@ impl DecodeTagsConfig {
 }
 
 /// Stride-based decimation matching C's `image_u8_decimate` (top-left pixel of each factor×factor block).
-fn stride_decimate(
-    src: &Image<u8, 1>,
-    dst: &mut Image<u8, 1>,
-    factor: usize,
-) {
+fn stride_decimate(src: &Image<u8, 1>, dst: &mut Image<u8, 1>, factor: usize) {
     let src_w = src.width();
     let dst_w = dst.width();
     let dst_h = dst.height();
@@ -164,11 +162,11 @@ fn stride_decimate(
             let mut sx = 0usize;
             // Process 16 output pixels (32 source pixels) per iteration.
             while sx + 16 <= dst_w && (sx * 2 + 32) <= src_w {
-                let deinterleaved = unsafe {
-                    vld2q_u8(src_row.as_ptr().add(sx * 2))
-                };
+                let deinterleaved = unsafe { vld2q_u8(src_row.as_ptr().add(sx * 2)) };
                 // val0 = even-indexed source pixels = the ones we want (factor=2, top-left)
-                unsafe { vst1q_u8(dst_row.as_mut_ptr().add(sx), deinterleaved.0); }
+                unsafe {
+                    vst1q_u8(dst_row.as_mut_ptr().add(sx), deinterleaved.0);
+                }
                 sx += 16;
             }
             // Scalar tail.
@@ -237,10 +235,7 @@ impl AprilTagDecoder {
                 height: 1 + (img_size.height - 1) / config.downscale_factor,
             };
 
-            (
-                new_size,
-                Some(Image::from_size_val(new_size, 0)?),
-            )
+            (new_size, Some(Image::from_size_val(new_size, 0)?))
         };
 
         // Build the tag family cache once
@@ -285,10 +280,7 @@ impl AprilTagDecoder {
     ///
     /// If you are running this method multiple times on the same decoder instance,
     /// you should call [`AprilTagDecoder::clear`] between runs to reset internal state.
-    pub fn decode(
-        &mut self,
-        src: &Image<u8, 1>,
-    ) -> Result<Vec<Detection>, AprilTagError> {
+    pub fn decode(&mut self, src: &Image<u8, 1>) -> Result<Vec<Detection>, AprilTagError> {
         if let Some(downscale_img) = self.downscale_img.as_mut() {
             // Stride-based subsample matching C's image_u8_decimate: dst[sy][sx] = src[sy*f][sx*f].
             stride_decimate(src, downscale_img, self.config.downscale_factor);
@@ -338,10 +330,7 @@ impl AprilTagDecoder {
     /// Returns every detection (including multiple copies of the same id if several quads
     /// decode to it). Use this when you need the full candidate set — e.g. for parity
     /// testing where you want to find the detection closest to a known reference.
-    pub fn decode_all(
-        &mut self,
-        src: &Image<u8, 1>,
-    ) -> Result<Vec<Detection>, AprilTagError> {
+    pub fn decode_all(&mut self, src: &Image<u8, 1>) -> Result<Vec<Detection>, AprilTagError> {
         if let Some(downscale_img) = self.downscale_img.as_mut() {
             stride_decimate(src, downscale_img, self.config.downscale_factor);
             adaptive_threshold(
@@ -384,12 +373,22 @@ impl AprilTagDecoder {
             stride_decimate(src, downscale_img, self.config.downscale_factor);
             us[0] = t.elapsed().as_micros() as u64;
             let t = std::time::Instant::now();
-            adaptive_threshold(downscale_img, &mut self.bin_img, &mut self.tile_min_max, self.config.min_white_black_difference)?;
+            adaptive_threshold(
+                downscale_img,
+                &mut self.bin_img,
+                &mut self.tile_min_max,
+                self.config.min_white_black_difference,
+            )?;
             us[1] = t.elapsed().as_micros() as u64;
         } else {
             us[0] = 0;
             let t = std::time::Instant::now();
-            adaptive_threshold(src, &mut self.bin_img, &mut self.tile_min_max, self.config.min_white_black_difference)?;
+            adaptive_threshold(
+                src,
+                &mut self.bin_img,
+                &mut self.tile_min_max,
+                self.config.min_white_black_difference,
+            )?;
             us[1] = t.elapsed().as_micros() as u64;
         }
         let t = std::time::Instant::now();
@@ -403,7 +402,14 @@ impl AprilTagDecoder {
         us[4] = t.elapsed().as_micros() as u64;
         let refine_edges_range = self.config.downscale_factor as f32 + 1.0;
         let t = std::time::Instant::now();
-        let all = decode_tags(src, &mut quads, &self.cached_families, self.config.refine_edges_enabled, self.config.decode_sharpening, refine_edges_range);
+        let all = decode_tags(
+            src,
+            &mut quads,
+            &self.cached_families,
+            self.config.refine_edges_enabled,
+            self.config.decode_sharpening,
+            refine_edges_range,
+        );
         us[5] = t.elapsed().as_micros() as u64;
         Ok((dedup_detections(all), us))
     }

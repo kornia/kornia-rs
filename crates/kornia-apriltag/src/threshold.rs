@@ -44,7 +44,13 @@ impl TileMinMax {
         let tiles_x = img_width / tile_size;
         let tiles_y = src.height() / tile_size;
         crate::ops::fill_tile_stats(
-            img_data, img_width, tile_size, tiles_x, tiles_y, &mut self.min, &mut self.max,
+            img_data,
+            img_width,
+            tile_size,
+            tiles_x,
+            tiles_y,
+            &mut self.min,
+            &mut self.max,
         );
     }
 
@@ -225,7 +231,7 @@ pub fn adaptive_threshold(
     let width = src.width();
     let height = src.height();
     let ts = tile_min_max.tile_size;
-    let total_tile_cols = (width + ts - 1) / ts;
+    let total_tile_cols = width.div_ceil(ts);
 
     let src_slice = src.as_slice();
     // Coerce &mut to & — tile_min_max is READ-ONLY after compute().
@@ -301,8 +307,11 @@ pub fn adaptive_threshold(
             let px_start = tx * ts;
             let px_end = (px_start + ts).min(width);
             let cx = tx.min(tiles_full_len.x.saturating_sub(1));
-            let (nb_min, nb_max) =
-                tm.neighbor_blur(Point2d { x: cx, y: cy }, cy * tiles_full_len.x + cx, tiles_full_len);
+            let (nb_min, nb_max) = tm.neighbor_blur(
+                Point2d { x: cx, y: cy },
+                cy * tiles_full_len.x + cx,
+                tiles_full_len,
+            );
 
             if nb_max - nb_min < min_white_black_diff {
                 for row in 0..actual_rows {
@@ -332,7 +341,7 @@ pub fn adaptive_threshold(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kornia_image::{ImageSize};
+    use kornia_image::ImageSize;
     use kornia_io::png::read_image_png_mono8;
 
     #[test]
@@ -476,7 +485,11 @@ mod tests {
                 // SAFETY: guarded by has_avx2; equal lengths.
                 unsafe { crate::ops::avx2::classify_row(&src, &mut a, thresh) };
                 for (s, d) in src.iter().zip(b.iter_mut()) {
-                    *d = if *s > thresh { Pixel::White } else { Pixel::Black };
+                    *d = if *s > thresh {
+                        Pixel::White
+                    } else {
+                        Pixel::Black
+                    };
                 }
                 assert_eq!(a, b, "mismatch len={len} thresh={thresh}");
             }
@@ -496,13 +509,18 @@ mod tests {
         for &(tiles_x, tiles_y) in &[(8usize, 3usize), (10, 4), (37, 5), (3, 2)] {
             let img_width = tiles_x * tile_size;
             let img_height = tiles_y * tile_size;
-            let img = lcg_bytes(img_width * img_height, 0xBEEF ^ (tiles_x * 131 + tiles_y) as u32);
+            let img = lcg_bytes(
+                img_width * img_height,
+                0xBEEF ^ (tiles_x * 131 + tiles_y) as u32,
+            );
 
             let n = tiles_x * tiles_y;
             let (mut amin, mut amax) = (vec![0u8; n], vec![0u8; n]);
             // SAFETY: dimensions are exact multiples, so all loads are in bounds.
             unsafe {
-                crate::ops::avx2::fill_tile_stats(&img, img_width, tile_size, tiles_x, tiles_y, &mut amin, &mut amax)
+                crate::ops::avx2::fill_tile_stats(
+                    &img, img_width, tile_size, tiles_x, tiles_y, &mut amin, &mut amax,
+                )
             };
 
             let (mut smin, mut smax) = (vec![0u8; n], vec![0u8; n]);

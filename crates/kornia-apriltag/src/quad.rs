@@ -4,7 +4,7 @@ use crate::{
     DecodeTagsConfig,
 };
 use kornia_algebra::{Mat3F32, Vec3F32};
-use kornia_image::{Image};
+use kornia_image::Image;
 use kornia_imgproc::filter::kernels::gaussian_kernel_1d;
 use rayon::prelude::*;
 use rustc_hash::FxHashMap;
@@ -312,8 +312,15 @@ fn fit_single_quad(
         let mut dx = g.pos.x as f32 - cx;
         let mut dy = g.pos.y as f32 - cy;
         let quadrant = QUADRANTS[(dy > 0.0) as usize][(dx > 0.0) as usize];
-        if dy < 0.0 { dy = -dy; dx = -dx; }
-        if dx < 0.0 { let tmp = dx; dx = dy; dy = -tmp; }
+        if dy < 0.0 {
+            dy = -dy;
+            dx = -dx;
+        }
+        if dx < 0.0 {
+            let tmp = dx;
+            dx = dy;
+            dy = -tmp;
+        }
         g.slope = quadrant as f32 + dy / dx;
     }
 
@@ -323,7 +330,11 @@ fn fit_single_quad(
     #[inline(always)]
     fn slope_sort_key(v: f32) -> u32 {
         let b = v.to_bits();
-        if b >> 31 == 0 { b ^ 0x8000_0000 } else { !b }
+        if b >> 31 == 0 {
+            b ^ 0x8000_0000
+        } else {
+            !b
+        }
     }
     sort_pairs.resize(cluster.len(), 0u64);
     for (i, g) in cluster.iter().enumerate() {
@@ -524,9 +535,7 @@ fn compute_line_fit_prefix_sums_into(
                     g2[j] = (gx * gx + gy * gy) as f32;
                 }
             }
-            let wv = unsafe {
-                vaddq_f32(vsqrtq_f32(vld1q_f32(g2.as_ptr())), vdupq_n_f32(1.0))
-            };
+            let wv = unsafe { vaddq_f32(vsqrtq_f32(vld1q_f32(g2.as_ptr())), vdupq_n_f32(1.0)) };
             unsafe { vst1q_f32(weights.as_mut_ptr().add(k), wv) };
             k += 4;
         }
@@ -537,8 +546,8 @@ fn compute_line_fit_prefix_sums_into(
             let ix = x as usize;
             let iy = y as usize;
             if ix > 0 && ix + 1 < width && iy > 0 && iy + 1 < height {
-                let gx = src_slice[iy * width + ix + 1] as i32
-                    - src_slice[iy * width + ix - 1] as i32;
+                let gx =
+                    src_slice[iy * width + ix + 1] as i32 - src_slice[iy * width + ix - 1] as i32;
                 let gy = src_slice[(iy + 1) * width + ix] as i32
                     - src_slice[(iy - 1) * width + ix] as i32;
                 weights[k] = ((gx * gx + gy * gy) as f32).sqrt() + 1.0;
@@ -560,7 +569,14 @@ fn compute_line_fit_prefix_sums_into(
             smxy += w * x * y;
             smyy += w * y * y;
             sw += w;
-            lfps[i] = LineFit { mx: smx, my: smy, mxx: smxx, mxy: smxy, myy: smyy, w: sw };
+            lfps[i] = LineFit {
+                mx: smx,
+                my: smy,
+                mxx: smxx,
+                mxy: smxy,
+                myy: smyy,
+                w: sw,
+            };
         }
         return;
     }
@@ -575,8 +591,8 @@ fn compute_line_fit_prefix_sums_into(
             let ix = x as usize;
             let iy = y as usize;
             let w = if ix > 0 && ix + 1 < width && iy > 0 && iy + 1 < height {
-                let gx = src_slice[iy * width + ix + 1] as i32
-                    - src_slice[iy * width + ix - 1] as i32;
+                let gx =
+                    src_slice[iy * width + ix + 1] as i32 - src_slice[iy * width + ix - 1] as i32;
                 let gy = src_slice[(iy + 1) * width + ix] as i32
                     - src_slice[(iy - 1) * width + ix] as i32;
                 ((gx * gx + gy * gy) as f32).sqrt() + 1.0
@@ -589,7 +605,14 @@ fn compute_line_fit_prefix_sums_into(
             smxy += w * x * y;
             smyy += w * y * y;
             sw += w;
-            lfps[i] = LineFit { mx: smx, my: smy, mxx: smxx, mxy: smxy, myy: smyy, w: sw };
+            lfps[i] = LineFit {
+                mx: smx,
+                my: smy,
+                mxx: smxx,
+                mxy: smxy,
+                myy: smyy,
+                w: sw,
+            };
         }
     }
 }
@@ -640,7 +663,9 @@ fn quad_segment_maxima_ws(
     // Resize scratch buffers — no malloc if capacity already sufficient.
     seg.soa.resize(6 * pad, 0.0);
     // Zero the 6 prefix-sum sentinels at index 0 of each sub-array.
-    for k in 0..6usize { seg.soa[k * pad] = 0.0; }
+    for k in 0..6usize {
+        seg.soa[k * pad] = 0.0;
+    }
     seg.errors.resize(len, 0.0);
     seg.smoothed_errors.resize(len, 0.0);
     seg.maxima.resize(len, 0);
@@ -650,17 +675,24 @@ fn quad_segment_maxima_ws(
     let inner_end = len - ws;
 
     for i in (0..ws).chain(inner_end..len) {
-        fit_line(lfps, (i + len - ws) % len, (i + ws) % len, None, seg.errors.get_mut(i), None);
+        fit_line(
+            lfps,
+            (i + len - ws) % len,
+            (i + ws) % len,
+            None,
+            seg.errors.get_mut(i),
+            None,
+        );
     }
 
     for k in 0..len {
         let lk = &lfps[k];
-        seg.soa[k + 1]         = lk.mx;
-        seg.soa[pad + k + 1]   = lk.my;
-        seg.soa[2*pad + k + 1] = lk.mxx;
-        seg.soa[3*pad + k + 1] = lk.mxy;
-        seg.soa[4*pad + k + 1] = lk.myy;
-        seg.soa[5*pad + k + 1] = lk.w;
+        seg.soa[k + 1] = lk.mx;
+        seg.soa[pad + k + 1] = lk.my;
+        seg.soa[2 * pad + k + 1] = lk.mxx;
+        seg.soa[3 * pad + k + 1] = lk.mxy;
+        seg.soa[4 * pad + k + 1] = lk.myy;
+        seg.soa[5 * pad + k + 1] = lk.w;
     }
 
     let n_f32 = (2 * ws + 1) as f32;
@@ -670,40 +702,40 @@ fn quad_segment_maxima_ws(
         use std::arch::aarch64::*;
         let p = seg.soa.as_ptr();
         let ep = seg.errors.as_mut_ptr();
-        let mx_p  = p;
-        let my_p  = unsafe { p.add(pad) };
+        let mx_p = p;
+        let my_p = unsafe { p.add(pad) };
         let mxx_p = unsafe { p.add(2 * pad) };
         let mxy_p = unsafe { p.add(3 * pad) };
         let myy_p = unsafe { p.add(4 * pad) };
-        let w_p   = unsafe { p.add(5 * pad) };
+        let w_p = unsafe { p.add(5 * pad) };
 
-        let n_v   = unsafe { vdupq_n_f32(n_f32) };
-        let four  = unsafe { vdupq_n_f32(4.0) };
-        let half  = unsafe { vdupq_n_f32(0.5) };
+        let n_v = unsafe { vdupq_n_f32(n_f32) };
+        let four = unsafe { vdupq_n_f32(4.0) };
+        let half = unsafe { vdupq_n_f32(0.5) };
 
         let mut i = ws;
         while i + 4 <= inner_end {
             unsafe {
                 let hi = i + ws + 1;
                 let lo = i - ws;
-                let sw_mx  = vsubq_f32(vld1q_f32(mx_p.add(hi)),  vld1q_f32(mx_p.add(lo)));
-                let sw_my  = vsubq_f32(vld1q_f32(my_p.add(hi)),  vld1q_f32(my_p.add(lo)));
+                let sw_mx = vsubq_f32(vld1q_f32(mx_p.add(hi)), vld1q_f32(mx_p.add(lo)));
+                let sw_my = vsubq_f32(vld1q_f32(my_p.add(hi)), vld1q_f32(my_p.add(lo)));
                 let sw_mxx = vsubq_f32(vld1q_f32(mxx_p.add(hi)), vld1q_f32(mxx_p.add(lo)));
                 let sw_mxy = vsubq_f32(vld1q_f32(mxy_p.add(hi)), vld1q_f32(mxy_p.add(lo)));
                 let sw_myy = vsubq_f32(vld1q_f32(myy_p.add(hi)), vld1q_f32(myy_p.add(lo)));
-                let sw_w   = vsubq_f32(vld1q_f32(w_p.add(hi)),   vld1q_f32(w_p.add(lo)));
+                let sw_w = vsubq_f32(vld1q_f32(w_p.add(hi)), vld1q_f32(w_p.add(lo)));
                 // 2-step Newton-Raphson reciprocal (~32 cycles) vs 5 vdivq_f32 (~70 cycles).
                 let inv_w0 = vrecpeq_f32(sw_w);
                 let inv_w1 = vmulq_f32(vrecpsq_f32(sw_w, inv_w0), inv_w0);
-                let inv_w  = vmulq_f32(vrecpsq_f32(sw_w, inv_w1), inv_w1);
-                let ex    = vmulq_f32(sw_mx,  inv_w);
-                let ey    = vmulq_f32(sw_my,  inv_w);
-                let cxx   = vsubq_f32(vmulq_f32(sw_mxx, inv_w), vmulq_f32(ex, ex));
-                let cxy   = vsubq_f32(vmulq_f32(sw_mxy, inv_w), vmulq_f32(ex, ey));
-                let cyy   = vsubq_f32(vmulq_f32(sw_myy, inv_w), vmulq_f32(ey, ey));
-                let diff  = vsubq_f32(cxx, cyy);
-                let disc  = vaddq_f32(vmulq_f32(diff, diff), vmulq_f32(four, vmulq_f32(cxy, cxy)));
-                let eig   = vmulq_f32(half, vsubq_f32(vaddq_f32(cxx, cyy), vsqrtq_f32(disc)));
+                let inv_w = vmulq_f32(vrecpsq_f32(sw_w, inv_w1), inv_w1);
+                let ex = vmulq_f32(sw_mx, inv_w);
+                let ey = vmulq_f32(sw_my, inv_w);
+                let cxx = vsubq_f32(vmulq_f32(sw_mxx, inv_w), vmulq_f32(ex, ex));
+                let cxy = vsubq_f32(vmulq_f32(sw_mxy, inv_w), vmulq_f32(ex, ey));
+                let cyy = vsubq_f32(vmulq_f32(sw_myy, inv_w), vmulq_f32(ey, ey));
+                let diff = vsubq_f32(cxx, cyy);
+                let disc = vaddq_f32(vmulq_f32(diff, diff), vmulq_f32(four, vmulq_f32(cxy, cxy)));
+                let eig = vmulq_f32(half, vsubq_f32(vaddq_f32(cxx, cyy), vsqrtq_f32(disc)));
                 vst1q_f32(ep.add(i), vmulq_f32(eig, n_v));
             }
             i += 4;
@@ -746,10 +778,7 @@ fn quad_segment_maxima_ws(
                     let hi = i + ws + 1;
                     let lo = i - ws;
                     let sw = |base: *const f32| {
-                        _mm256_sub_ps(
-                            _mm256_loadu_ps(base.add(hi)),
-                            _mm256_loadu_ps(base.add(lo)),
-                        )
+                        _mm256_sub_ps(_mm256_loadu_ps(base.add(hi)), _mm256_loadu_ps(base.add(lo)))
                     };
                     let sw_mx = sw(mx_p);
                     let sw_my = sw(my_p);
@@ -813,7 +842,9 @@ fn quad_segment_maxima_ws(
 
     let mut nmaxima = 0usize;
     for i in 0..len {
-        if seg.errors[i] > seg.errors[(i + 1) % len] && seg.errors[i] > seg.errors[(i + len - 1) % len] {
+        if seg.errors[i] > seg.errors[(i + 1) % len]
+            && seg.errors[i] > seg.errors[(i + len - 1) % len]
+        {
             seg.maxima[nmaxima] = i;
             seg.maxima_errs[nmaxima] = seg.errors[i];
             nmaxima += 1;
@@ -863,20 +894,44 @@ fn quad_segment_maxima_ws(
         let i0 = seg.maxima[m0];
         ((m0 + 1)..(nmaxima - 2)).for_each(|m1| {
             let i1 = seg.maxima[m1];
-            fit_line(lfps, i0, i1, Some(&mut params01), Some(&mut err01), Some(&mut mse01));
-            if mse01 > config.max_line_fit_mse { return; }
+            fit_line(
+                lfps,
+                i0,
+                i1,
+                Some(&mut params01),
+                Some(&mut err01),
+                Some(&mut mse01),
+            );
+            if mse01 > config.max_line_fit_mse {
+                return;
+            }
             ((m1 + 1)..nmaxima - 1).for_each(|m2| {
                 let i2 = seg.maxima[m2];
-                fit_line(lfps, i1, i2, Some(&mut params12), Some(&mut err12), Some(&mut mse12));
-                if mse12 > config.max_line_fit_mse { return; }
+                fit_line(
+                    lfps,
+                    i1,
+                    i2,
+                    Some(&mut params12),
+                    Some(&mut err12),
+                    Some(&mut mse12),
+                );
+                if mse12 > config.max_line_fit_mse {
+                    return;
+                }
                 let dot = params01[2] * params12[2] + params01[3] * params12[3];
-                if dot.abs() > config.cos_critical_rad { return; }
+                if dot.abs() > config.cos_critical_rad {
+                    return;
+                }
                 ((m2 + 1)..nmaxima).for_each(|m3| {
                     let i3 = seg.maxima[m3];
                     fit_line(lfps, i2, i3, None, Some(&mut err23), Some(&mut mse23));
-                    if mse23 > config.max_line_fit_mse { return; }
+                    if mse23 > config.max_line_fit_mse {
+                        return;
+                    }
                     fit_line(lfps, i3, i0, None, Some(&mut err30), Some(&mut mse30));
-                    if mse30 > config.max_line_fit_mse { return; }
+                    if mse30 > config.max_line_fit_mse {
+                        return;
+                    }
                     let err = err01 + err12 + err23 + err30;
                     if err < best_error {
                         best_error = err;
@@ -894,7 +949,9 @@ fn quad_segment_maxima_ws(
         return false;
     }
 
-    best_indices.iter().enumerate().for_each(|(i, b)| { indices[i] = *b; });
+    best_indices.iter().enumerate().for_each(|(i, b)| {
+        indices[i] = *b;
+    });
     (best_error / gradient_infos.len() as f32) < config.max_line_fit_mse
 }
 
@@ -1066,7 +1123,7 @@ mod tests {
         let mut uf = UnionFind::new(src.as_slice().len());
         adaptive_threshold(&src, &mut bin, &mut tile_min_max, 20)?;
         find_connected_components(&bin, &mut uf)?;
-        let clusters = find_gradient_clusters(&bin, &mut uf);
+        let clusters = find_gradient_clusters(&bin, &uf);
 
         let mut decode_tag_config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag36H11])?;
         decode_tag_config.downscale_factor = 1;
@@ -1133,7 +1190,10 @@ mod tests {
         let mut constant_slope_infos = Vec::new();
         for i in 0..100 {
             constant_slope_infos.push(GradientInfo {
-                pos: Point2d { x: i as u32, y: i as u32 },
+                pos: Point2d {
+                    x: i as u32,
+                    y: i as u32,
+                },
                 gx: GradientDirection::TowardsWhite,
                 gy: GradientDirection::TowardsBlack,
                 slope: 0.0,
@@ -1156,7 +1216,7 @@ mod tests {
         let mut uf = UnionFind::new(src.as_slice().len());
         adaptive_threshold(&src, &mut bin, &mut tile_min_max, 20)?;
         find_connected_components(&bin, &mut uf)?;
-        let clusters = find_gradient_clusters(&bin, &mut uf);
+        let clusters = find_gradient_clusters(&bin, &uf);
 
         // Find the largest cluster to test with
         let largest_cluster = clusters

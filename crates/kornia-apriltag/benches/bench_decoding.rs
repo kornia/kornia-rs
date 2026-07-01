@@ -59,7 +59,9 @@ fn bench_decoding(c: &mut Criterion) {
         for _ in 0..SAMPLES {
             let (_, us) = kornia_detector.decode_timed(&gray_img).unwrap();
             kornia_detector.clear();
-            for i in 0..6 { total_us[i] += us[i]; }
+            for i in 0..6 {
+                total_us[i] += us[i];
+            }
         }
         eprintln!(
             "stages (avg µs over {} samples): decimate={} threshold={} conn_comp={} clusters={} fit_quads={} decode={}  total={}",

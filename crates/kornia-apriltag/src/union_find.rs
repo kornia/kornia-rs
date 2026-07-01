@@ -126,7 +126,7 @@ impl UnionFind {
     }
 
     /// Fills `cache` with one u32 entry per pixel after `compress_all` has been called.
-    pub fn fill_rep_cache_filtered(&self, cache: &mut Vec<u32>, min_size: usize) {
+    pub fn fill_rep_cache_filtered(&self, cache: &mut [u32], min_size: usize) {
         debug_assert!(cache.len() >= self.parent.len());
         for (dst, &p) in cache.iter_mut().zip(self.parent.iter()) {
             *dst = if p == u32::MAX || (self.size[p as usize] as usize) < min_size {
@@ -142,15 +142,17 @@ impl UnionFind {
         debug_assert!(cache.len() >= self.parent.len());
         let total = self.parent.len();
         let n_threads = rayon::current_num_threads().max(1);
-        let strip = (total + n_threads - 1) / n_threads;
+        let strip = total.div_ceil(n_threads);
 
         let parent_ptr = UfRawPtr32(self.parent.as_mut_ptr());
-        let size_ptr   = UfRawPtr32(self.size.as_mut_ptr());
-        let cache_ptr  = UfRawPtr32(cache.as_mut_ptr());
+        let size_ptr = UfRawPtr32(self.size.as_mut_ptr());
+        let cache_ptr = UfRawPtr32(cache.as_mut_ptr());
 
         (0..n_threads).into_par_iter().for_each(|t| {
             let start = t * strip;
-            if start >= total { return; }
+            if start >= total {
+                return;
+            }
             let end = (start + strip).min(total);
 
             // Cache last parent→root mapping. Run-based CC gives pixels in the
@@ -164,7 +166,9 @@ impl UnionFind {
             for i in start..end {
                 let p = unsafe { *parent_ptr.add(i) };
                 if p == u32::MAX {
-                    unsafe { *cache_ptr.add(i) = u32::MAX; }
+                    unsafe {
+                        *cache_ptr.add(i) = u32::MAX;
+                    }
                     last_p = u32::MAX;
                     continue;
                 }
@@ -177,23 +181,35 @@ impl UnionFind {
                         let mut cur = i;
                         loop {
                             let cur_p = unsafe { *parent_ptr.add(cur) } as usize;
-                            if cur_p == cur { break cur; }
+                            if cur_p == cur {
+                                break cur;
+                            }
                             let pp = unsafe { *parent_ptr.add(cur_p) };
                             if cur >= start && cur < end {
-                                unsafe { *parent_ptr.add(cur) = pp; }
+                                unsafe {
+                                    *parent_ptr.add(cur) = pp;
+                                }
                             }
                             cur = pp as usize;
                         }
                     };
                     let sz = unsafe { *size_ptr.add(root) } as usize;
-                    let cv = if sz >= min_size { root as u32 } else { u32::MAX };
+                    let cv = if sz >= min_size {
+                        root as u32
+                    } else {
+                        u32::MAX
+                    };
                     last_p = p;
                     last_root = root as u32;
                     last_cv = cv;
                     (root, cv)
                 };
-                unsafe { *parent_ptr.add(i) = root as u32; }
-                unsafe { *cache_ptr.add(i) = cv; }
+                unsafe {
+                    *parent_ptr.add(i) = root as u32;
+                }
+                unsafe {
+                    *cache_ptr.add(i) = cv;
+                }
             }
         });
     }
@@ -215,10 +231,8 @@ impl UnionFind {
             let end = (start + strip_pixels).min(total);
             let len = end - start;
 
-            let parent_sub =
-                unsafe { std::slice::from_raw_parts_mut(parent_ptr.add(start), len) };
-            let size_sub =
-                unsafe { std::slice::from_raw_parts_mut(size_ptr.add(start), len) };
+            let parent_sub = unsafe { std::slice::from_raw_parts_mut(parent_ptr.add(start), len) };
+            let size_sub = unsafe { std::slice::from_raw_parts_mut(size_ptr.add(start), len) };
 
             f(
                 t,

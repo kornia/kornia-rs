@@ -1,7 +1,7 @@
 // Multi-run gradient sub-phase profiler with warmup.
 // Prints sub-phase averages after the AtomicBool resets on each run via a counter approach.
 use kornia_apriltag::{family::TagFamilyKind, AprilTagDecoder, DecodeTagsConfig};
-use kornia_image::{allocator::CpuAllocator, Image};
+use kornia_image::{Image};
 use kornia_imgproc::color::gray_from_rgb_u8;
 use kornia_io::jpeg::read_image_jpeg_rgb8;
 use std::path::PathBuf;
@@ -12,7 +12,7 @@ fn main() {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/data/apriltags_tag36h11.jpg");
 
     let img = read_image_jpeg_rgb8(img_path).unwrap();
-    let mut src = Image::<u8, 1, CpuAllocator>::from_size_val(img.size(), 0, CpuAllocator).unwrap();
+    let mut src = Image::<u8, 1>::from_size_val(img.size(), 0).unwrap();
     gray_from_rgb_u8(&img, &mut src).unwrap();
 
     let config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag36H11]).unwrap();
