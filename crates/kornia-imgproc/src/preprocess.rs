@@ -215,8 +215,46 @@ struct CudaBackend {
 // always passes `src_w * C`.
 #[cfg(feature = "cudarc")]
 const KERNEL_SRC: &str = r#"
-// 1-D Lanczos-3 weight — same form as interpolation::lanczos::lanczos_weight on
-// the CPU side, so the two backends stay numerically comparable.
+// One __global__ per sampling mode: `build_cuda` compiles only the variant the
+// builder selected, so each kernel keeps the register footprint of its own
+// sampler (a single branching kernel measurably slowed the common bilinear
+// case — the 6x6 lanczos accumulators inflate register pressure for everyone).
+// The shared prologue/epilogue lives in __device__ helpers.
+
+__device__ __forceinline__ bool plan_pixel(
+    int i, int dst_w, int dst_h,
+    float scale_x, float scale_y, float pad_x, float pad_y,
+    int src_w, int src_h,
+    float* sx, float* sy
+) {
+    int ox = i % dst_w;
+    int oy = i / dst_w;
+    *sx = ((float)ox - pad_x) / scale_x;
+    *sy = ((float)oy - pad_y) / scale_y;
+    return !(*sx < 0.0f || *sy < 0.0f || *sx >= (float)src_w || *sy >= (float)src_h);
+}
+
+__device__ __forceinline__ void write_pad(
+    float* dst, int pixels, int i,
+    float pad_value, float m0, float m1, float m2, float is0, float is1, float is2
+) {
+    float pv = pad_value / 255.0f;
+    dst[i]              = (pv - m0) * is0;
+    dst[pixels + i]     = (pv - m1) * is1;
+    dst[2 * pixels + i] = (pv - m2) * is2;
+}
+
+__device__ __forceinline__ void write_px(
+    float* dst, int pixels, int i, const float px[3],
+    float m0, float m1, float m2, float is0, float is1, float is2
+) {
+    dst[i]              = (px[0] / 255.0f - m0) * is0;
+    dst[pixels + i]     = (px[1] / 255.0f - m1) * is1;
+    dst[2 * pixels + i] = (px[2] / 255.0f - m2) * is2;
+}
+
+// 1-D Lanczos-3 weight — same form as the CPU side, so the two backends stay
+// numerically comparable.
 __device__ __forceinline__ float lanczos_w(float d) {
     float ad = fabsf(d);
     if (ad < 1e-6f) return 1.0f;
@@ -225,7 +263,7 @@ __device__ __forceinline__ float lanczos_w(float d) {
     return 3.0f * sinf(pd) * sinf(pd / 3.0f) / (pd * pd);
 }
 
-extern "C" __global__ void resize_normalize_to_chw(
+extern "C" __global__ void resize_normalize_to_chw_bilinear(
     const unsigned char* __restrict__ src,
     float* __restrict__ dst,
     float scale_x, float scale_y, float pad_x, float pad_y,
@@ -233,81 +271,104 @@ extern "C" __global__ void resize_normalize_to_chw(
     int dst_w, int dst_h,
     float m0, float m1, float m2,
     float is0, float is1, float is2,
-    float pad_value,
-    int sampling  // 0 = nearest, 1 = bilinear, 2 = lanczos3
+    float pad_value
 ) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     int pixels = dst_w * dst_h;
     if (i >= pixels) return;
-    int ox = i % dst_w;
-    int oy = i / dst_w;
-
-    float mean[3] = { m0, m1, m2 };
-    float inv_std[3] = { is0, is1, is2 };
-
-    float sx = ((float)ox - pad_x) / scale_x;
-    float sy = ((float)oy - pad_y) / scale_y;
-
-    if (sx < 0.0f || sy < 0.0f || sx >= (float)src_w || sy >= (float)src_h) {
-        float pv = pad_value / 255.0f;
-        #pragma unroll
-        for (int c = 0; c < 3; ++c) dst[c * pixels + i] = (pv - mean[c]) * inv_std[c];
+    float sx, sy;
+    if (!plan_pixel(i, dst_w, dst_h, scale_x, scale_y, pad_x, pad_y, src_w, src_h, &sx, &sy)) {
+        write_pad(dst, pixels, i, pad_value, m0, m1, m2, is0, is1, is2);
         return;
     }
 
+    // Bilinear: clamp-to-edge taps (mirrors interpolation::bilinear).
+    int x0 = (int)floorf(sx), y0 = (int)floorf(sy);
+    float ax = sx - (float)x0, ay = sy - (float)y0;
+    int x1 = min(x0 + 1, src_w - 1), y1 = min(y0 + 1, src_h - 1);
+    x0 = max(x0, 0); y0 = max(y0, 0);
+
+    const unsigned char* r0 = src + (long)y0 * src_pitch;
+    const unsigned char* r1 = src + (long)y1 * src_pitch;
     float px[3];
-    if (sampling == 0) {
-        // Nearest: round + clamp-to-edge (mirrors interpolation::nearest).
-        int xn = min(max((int)roundf(sx), 0), src_w - 1);
-        int yn = min(max((int)roundf(sy), 0), src_h - 1);
-        const unsigned char* p = src + (long)yn * src_pitch + xn * src_bpp;
-        #pragma unroll
-        for (int c = 0; c < 3; ++c) px[c] = (float)p[c];
-    } else if (sampling == 2) {
-        // Lanczos-3: 6x6 windowed sinc, clamp-to-edge taps, weights renormalized
-        // by their sum (mirrors interpolation::lanczos).
-        int x0 = (int)floorf(sx), y0 = (int)floorf(sy);
-        float acc[3] = { 0.0f, 0.0f, 0.0f };
-        float wsum = 0.0f;
-        for (int j = -2; j <= 3; ++j) {
-            int yj = y0 + j;
-            float wy = lanczos_w(sy - (float)yj);
-            int yc = min(max(yj, 0), src_h - 1);
-            const unsigned char* r = src + (long)yc * src_pitch;
-            for (int ii = -2; ii <= 3; ++ii) {
-                int xi = x0 + ii;
-                float w = wy * lanczos_w(sx - (float)xi);
-                int xc = min(max(xi, 0), src_w - 1);
-                #pragma unroll
-                for (int c = 0; c < 3; ++c) acc[c] += w * (float)r[xc * src_bpp + c];
-                wsum += w;
-            }
-        }
-        #pragma unroll
-        for (int c = 0; c < 3; ++c) px[c] = acc[c] / wsum;
-    } else {
-        // Bilinear: clamp-to-edge taps (mirrors interpolation::bilinear).
-        int x0 = (int)floorf(sx), y0 = (int)floorf(sy);
-        float ax = sx - (float)x0, ay = sy - (float)y0;
-        int x1 = min(x0 + 1, src_w - 1), y1 = min(y0 + 1, src_h - 1);
-        x0 = max(x0, 0); y0 = max(y0, 0);
-
-        const unsigned char* r0 = src + (long)y0 * src_pitch;
-        const unsigned char* r1 = src + (long)y1 * src_pitch;
-        #pragma unroll
-        for (int c = 0; c < 3; ++c) {
-            float v00 = (float)r0[x0 * src_bpp + c], v10 = (float)r0[x1 * src_bpp + c];
-            float v01 = (float)r1[x0 * src_bpp + c], v11 = (float)r1[x1 * src_bpp + c];
-            float top = v00 + (v10 - v00) * ax;
-            float bot = v01 + (v11 - v01) * ax;
-            px[c] = top + (bot - top) * ay;
-        }
-    }
-
     #pragma unroll
     for (int c = 0; c < 3; ++c) {
-        dst[c * pixels + i] = (px[c] / 255.0f - mean[c]) * inv_std[c];
+        float v00 = (float)r0[x0 * src_bpp + c], v10 = (float)r0[x1 * src_bpp + c];
+        float v01 = (float)r1[x0 * src_bpp + c], v11 = (float)r1[x1 * src_bpp + c];
+        float top = v00 + (v10 - v00) * ax;
+        float bot = v01 + (v11 - v01) * ax;
+        px[c] = top + (bot - top) * ay;
     }
+    write_px(dst, pixels, i, px, m0, m1, m2, is0, is1, is2);
+}
+
+extern "C" __global__ void resize_normalize_to_chw_nearest(
+    const unsigned char* __restrict__ src,
+    float* __restrict__ dst,
+    float scale_x, float scale_y, float pad_x, float pad_y,
+    int src_w, int src_h, int src_pitch, int src_bpp,
+    int dst_w, int dst_h,
+    float m0, float m1, float m2,
+    float is0, float is1, float is2,
+    float pad_value
+) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int pixels = dst_w * dst_h;
+    if (i >= pixels) return;
+    float sx, sy;
+    if (!plan_pixel(i, dst_w, dst_h, scale_x, scale_y, pad_x, pad_y, src_w, src_h, &sx, &sy)) {
+        write_pad(dst, pixels, i, pad_value, m0, m1, m2, is0, is1, is2);
+        return;
+    }
+
+    // Nearest: round + clamp-to-edge (mirrors interpolation::nearest).
+    int xn = min(max((int)roundf(sx), 0), src_w - 1);
+    int yn = min(max((int)roundf(sy), 0), src_h - 1);
+    const unsigned char* p = src + (long)yn * src_pitch + xn * src_bpp;
+    float px[3] = { (float)p[0], (float)p[1], (float)p[2] };
+    write_px(dst, pixels, i, px, m0, m1, m2, is0, is1, is2);
+}
+
+extern "C" __global__ void resize_normalize_to_chw_lanczos(
+    const unsigned char* __restrict__ src,
+    float* __restrict__ dst,
+    float scale_x, float scale_y, float pad_x, float pad_y,
+    int src_w, int src_h, int src_pitch, int src_bpp,
+    int dst_w, int dst_h,
+    float m0, float m1, float m2,
+    float is0, float is1, float is2,
+    float pad_value
+) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int pixels = dst_w * dst_h;
+    if (i >= pixels) return;
+    float sx, sy;
+    if (!plan_pixel(i, dst_w, dst_h, scale_x, scale_y, pad_x, pad_y, src_w, src_h, &sx, &sy)) {
+        write_pad(dst, pixels, i, pad_value, m0, m1, m2, is0, is1, is2);
+        return;
+    }
+
+    // Lanczos-3: 6x6 windowed sinc, clamp-to-edge taps, weights renormalized
+    // by their sum (mirrors interpolation::lanczos).
+    int x0 = (int)floorf(sx), y0 = (int)floorf(sy);
+    float acc[3] = { 0.0f, 0.0f, 0.0f };
+    float wsum = 0.0f;
+    for (int j = -2; j <= 3; ++j) {
+        int yj = y0 + j;
+        float wy = lanczos_w(sy - (float)yj);
+        int yc = min(max(yj, 0), src_h - 1);
+        const unsigned char* r = src + (long)yc * src_pitch;
+        for (int ii = -2; ii <= 3; ++ii) {
+            int xi = x0 + ii;
+            float w = wy * lanczos_w(sx - (float)xi);
+            int xc = min(max(xi, 0), src_w - 1);
+            #pragma unroll
+            for (int c = 0; c < 3; ++c) acc[c] += w * (float)r[xc * src_bpp + c];
+            wsum += w;
+        }
+    }
+    float px[3] = { acc[0] / wsum, acc[1] / wsum, acc[2] / wsum };
+    write_px(dst, pixels, i, px, m0, m1, m2, is0, is1, is2);
 }
 "#;
 
@@ -397,7 +458,14 @@ impl PreprocessorBuilder {
         ) {
             return Err(PreprocessError::UnsupportedSampling(self.sampling));
         }
-        let kernel = CudaKernel::compile(stream.context(), KERNEL_SRC, "resize_normalize_to_chw")?;
+        let entry = match self.sampling {
+            InterpolationMode::Nearest => "resize_normalize_to_chw_nearest",
+            InterpolationMode::Bilinear => "resize_normalize_to_chw_bilinear",
+            InterpolationMode::Lanczos => "resize_normalize_to_chw_lanczos",
+            // Rejected by the sampling validation above.
+            other => return Err(PreprocessError::UnsupportedSampling(other)),
+        };
+        let kernel = CudaKernel::compile(stream.context(), KERNEL_SRC, entry)?;
         let (mean, inv_std) = self.normalize.mean_inv_std()?;
         Ok(Preprocessor {
             mode: self.mode,
@@ -653,13 +721,6 @@ impl Preprocessor {
         let total = (dst_w * dst_h) as u32;
         let ([m0, m1, m2], [is0, is1, is2]) = (self.mean, self.inv_std);
         let pv = self.pad_value;
-        let smp: i32 = match self.sampling {
-            InterpolationMode::Nearest => 0,
-            InterpolationMode::Bilinear => 1,
-            InterpolationMode::Lanczos => 2,
-            // Rejected at build; unreachable here.
-            other => return Err(PreprocessError::UnsupportedSampling(other)),
-        };
 
         cuda.kernel
             .launch_builder(&cuda.stream)
@@ -682,7 +743,6 @@ impl Preprocessor {
             .arg(&is1)
             .arg(&is2)
             .arg(&pv)
-            .arg(&smp)
             .launch_1d(total)?;
         Ok(())
     }
