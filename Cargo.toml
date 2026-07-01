@@ -86,6 +86,7 @@ reqwest = { version = "0.13", default-features = false, features = [
   "native-tls"
 ] }
 rerun = "0.30"
+rustc-hash = "2"
 serde = { version = "1", features = ["derive"] }
 serde-big-array = "0.5"
 serde_json = "1"

@@ -351,7 +351,11 @@ name = "apriltag"
 version = "0.1.14"
 dependencies = [
  "argh",
+ "ctrlc",
+ "glam 0.33.2",
  "kornia",
+ "kornia-3d",
+ "kornia-algebra",
  "kornia-apriltag",
  "rerun",
 ]
@@ -367,6 +371,16 @@ dependencies = [
  "measurements",
  "noisy_float",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "apriltag-pose"
+version = "0.1.14"
+dependencies = [
+ "argh",
+ "kornia",
+ "kornia-3d",
+ "kornia-apriltag",
 ]
 
 [[package]]
@@ -8113,10 +8127,13 @@ dependencies = [
  "apriltag 0.4.0",
  "criterion 0.8.2",
  "image",
+ "kornia-3d",
  "kornia-algebra",
  "kornia-image",
  "kornia-imgproc",
  "kornia-io",
+ "rayon",
+ "rustc-hash 2.1.2",
  "thiserror 2.0.18",
 ]
 
