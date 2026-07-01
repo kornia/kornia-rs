@@ -119,6 +119,11 @@ pub enum PreprocessError {
     /// The source channel count is not 3 (RGB) or 4 (RGBA).
     #[error("unsupported source channel count {0} (expected 3 or 4)")]
     UnsupportedChannels(usize),
+    /// Source or output dimensions exceed the kernel's 32-bit indexing (the CUDA
+    /// path indexes pixels as `int`). Unreachable on real hardware, guarded anyway.
+    #[cfg(feature = "cudarc")]
+    #[error("dimensions exceed the 32-bit CUDA kernel index limit")]
+    DimensionsTooLarge,
 }
 
 // The source→dst mapping for one call: a per-axis scale and pad offset, so
@@ -443,6 +448,12 @@ impl Preprocessor {
     ) -> Result<(), PreprocessError> {
         let (dst_h, dst_w) = (dst.shape[2], dst.shape[3]);
         let (src_w, src_h) = (src.width(), src.height());
+        // The kernel indexes pixels as `int`; keep every dim + the pixel count
+        // within i32 so the `as i32` / `as u32` launch args never truncate.
+        let lim = i32::MAX as usize;
+        if src_w > lim || src_h > lim || dst_w.saturating_mul(dst_h) > lim {
+            return Err(PreprocessError::DimensionsTooLarge);
+        }
         let src_slice = src
             .0
             .as_cudaslice()
