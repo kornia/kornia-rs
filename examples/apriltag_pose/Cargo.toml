@@ -20,5 +20,5 @@ path = "src/main.rs"
 [dependencies]
 argh = { workspace = true }
 kornia = { workspace = true }
-kornia-apriltag = { workspace = true, features = ["pose"] }
+kornia-apriltag = { workspace = true }
 kornia-3d = { workspace = true }

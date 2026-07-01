@@ -17,7 +17,7 @@ publish = false
 argh = { workspace = true }
 ctrlc = { workspace = true }
 kornia = { workspace = true, features = ["v4l"] }
-kornia-apriltag = { workspace = true, features = ["pose"] }
+kornia-apriltag = { workspace = true }
 kornia-3d = { workspace = true }
 kornia-algebra = { workspace = true }
 glam = { workspace = true }

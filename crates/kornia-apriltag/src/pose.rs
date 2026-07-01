@@ -1,10 +1,12 @@
 //! AprilTag 6-DOF pose estimation via Lu-Hager-Mjolsness orthogonal iteration.
+//!
+//! This is AprilTag-specific geometry; the reusable 3D primitives it builds on
+//! (`Pose3d`, `PinholeCamera`, `homography_4pt2d`) live in `kornia-3d`.
 
-use crate::camera::PinholeCamera;
-use crate::pose::Pose3d;
+pub use kornia_3d::camera::PinholeCamera;
+use kornia_3d::pose::{homography_4pt2d, Pose3d};
+use kornia_algebra::linalg::svd::svd3_f64;
 use kornia_algebra::{Mat3F64, Vec2F64, Vec3F64};
-
-use super::homography_4pt2d;
 
 /// A recovered tag pose with reprojection error.
 #[derive(Debug, Clone)]
@@ -32,9 +34,6 @@ pub enum AprilTagPoseError {
     /// The homography system is degenerate (coplanar-degenerate inputs).
     #[error("Homography DLT system is singular")]
     SingularHomography,
-    /// SVD failed to converge.
-    #[error("SVD failed to converge")]
-    SvdFailed,
 }
 
 /// Decompose a planar homography (mapping tag-normalized ±1 coords to pixels) into
@@ -130,23 +129,9 @@ fn orthogonal_iteration(
             m3 += Mat3F64::from_cols(dq * p_res[i].x, dq * p_res[i].y, dq * p_res[i].z);
         }
 
-        // SVD of M3; R = U·Vᵀ (faer — not svd3_f64 which has a Jacobi bug)
-        let arr: [f64; 9] = m3.into();
-        let a = faer::Mat::<f64>::from_fn(3, 3, |i, j| arr[j * 3 + i]);
-        let svd = a.svd().map_err(|_| AprilTagPoseError::SvdFailed)?;
-        let u_f = svd.U();
-        let v_f = svd.V();
-        let u = Mat3F64::from_cols(
-            Vec3F64::new(u_f[(0, 0)], u_f[(1, 0)], u_f[(2, 0)]),
-            Vec3F64::new(u_f[(0, 1)], u_f[(1, 1)], u_f[(2, 1)]),
-            Vec3F64::new(u_f[(0, 2)], u_f[(1, 2)], u_f[(2, 2)]),
-        );
-        let v = Mat3F64::from_cols(
-            Vec3F64::new(v_f[(0, 0)], v_f[(1, 0)], v_f[(2, 0)]),
-            Vec3F64::new(v_f[(0, 1)], v_f[(1, 1)], v_f[(2, 1)]),
-            Vec3F64::new(v_f[(0, 2)], v_f[(1, 2)], v_f[(2, 2)]),
-        );
-        let mut r_new = u * v.transpose();
+        // SVD of M3 via kornia-algebra's 3×3 solver; R = U·Vᵀ with a reflection fix.
+        let svd = svd3_f64(&m3);
+        let mut r_new = *svd.u() * svd.v().transpose();
         // Fix reflection (det = −1) by negating the third column, matching the C reference.
         if r_new.determinant() < 0.0 {
             r_new.z_axis = -r_new.z_axis;

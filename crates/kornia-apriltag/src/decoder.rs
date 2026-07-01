@@ -303,7 +303,6 @@ pub struct Detection {
     pub quad: Quad,
 }
 
-#[cfg(feature = "pose")]
 impl Detection {
     /// Estimate the 6-DOF pose of this tag given camera intrinsics and tag size.
     ///
@@ -316,14 +315,14 @@ impl Detection {
     ///
     /// # Returns
     ///
-    /// [`kornia_3d::pose::TagPosePair`] with `best` (lower reprojection error) and
+    /// [`crate::pose::TagPosePair`] with `best` (lower reprojection error) and
     /// `second` (higher error / ambiguous solution).
     pub fn estimate_pose(
         &self,
         camera: &kornia_3d::camera::PinholeCamera,
         tag_size: f64,
         n_iters: usize,
-    ) -> Result<kornia_3d::pose::TagPosePair, kornia_3d::pose::AprilTagPoseError> {
+    ) -> Result<crate::pose::TagPosePair, crate::pose::AprilTagPoseError> {
         use kornia_algebra::{Vec2F64, Vec3F64};
         let s = tag_size / 2.0;
         let object_pts = [
@@ -338,7 +337,7 @@ impl Detection {
             Vec2F64::new(self.quad.corners[2].x as f64, self.quad.corners[2].y as f64),
             Vec2F64::new(self.quad.corners[3].x as f64, self.quad.corners[3].y as f64),
         ];
-        kornia_3d::pose::estimate_tag_pose(&object_pts, &image_pts, camera, n_iters)
+        crate::pose::estimate_tag_pose(&object_pts, &image_pts, camera, n_iters)
     }
 }
 

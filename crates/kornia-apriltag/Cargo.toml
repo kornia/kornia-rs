@@ -24,14 +24,11 @@ name = "bench_decoding"
 harness = false
 name = "bench_tagfamily"
 
-[features]
-pose = ["dep:kornia-3d"]
-
 [dependencies]
 kornia-algebra = { workspace = true }
 kornia-image = { workspace = true }
 kornia-imgproc = { workspace = true }
-kornia-3d = { workspace = true, optional = true }
+kornia-3d = { workspace = true }
 rayon = { workspace = true }
 rustc-hash = { workspace = true }
 thiserror = { workspace = true }

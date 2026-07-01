@@ -51,12 +51,8 @@ pub mod decoder;
 /// RLE-based connected components (internal).
 pub(crate) mod rle_cc;
 
-/// Re-exports of kornia-3d pose types when the `pose` feature is enabled.
-#[cfg(feature = "pose")]
-pub mod pose {
-    pub use kornia_3d::camera::PinholeCamera;
-    pub use kornia_3d::pose::{AprilTagPoseError, TagPose, TagPosePair};
-}
+/// AprilTag 6-DOF pose estimation (built on kornia-3d geometry primitives).
+pub mod pose;
 
 /// Configuration for decoding AprilTags.
 #[derive(Debug, Clone, PartialEq)]
