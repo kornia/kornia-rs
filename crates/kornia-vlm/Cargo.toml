@@ -13,7 +13,6 @@ publish = false
 
 [dependencies]
 candle-core = { workspace = true }
-candle-examples = { workspace = true }
 candle-flash-attn = { workspace = true, optional = true }
 candle-nn = { workspace = true }
 candle-transformers = { workspace = true }

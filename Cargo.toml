@@ -29,12 +29,16 @@ argh = "0.1"
 arrow = "59"
 # TODO: update to version 3 but it requires some changes in the codebase
 bincode = { version = "2", features = ["derive"] }
-candle-core = { version = "0.11.0" }
-candle-examples = { version = "0.11.0" }
-candle-flash-attn = { version = "0.11.0" }
-candle-nn = { version = "0.11.0" }
-candle-transformers = { version = "0.11.0" }
-circular-buffer = "1.2"
+# Pinned below 0.11: candle-core 0.11.0's NEON f16 path references the unstable
+# `float16x8_t` type without a nightly gate, breaking builds wherever the `fp16`
+# target feature is enabled (macOS CI, and aarch64 Linux since we force +fp16 there).
+# Still unfixed upstream as of https://github.com/huggingface/candle/commit/39355c6c.
+# Bump back to "0.11" once that's resolved.
+candle-core = { version = "0.10.2" }
+candle-flash-attn = { version = "0.10.2" }
+candle-nn = { version = "0.10.2" }
+candle-transformers = { version = "0.10.2" }
+circular-buffer = "2.0"
 criterion = "0.8"
 ctrlc = "3.5"
 cudarc = "0.19"
@@ -89,7 +93,7 @@ serde-big-array = "0.5"
 serde_json = "1"
 tempfile = "3.27"
 thiserror = "2"
-tokenizers = { version = "0.22.2", features = ["http"] }
+tokenizers = { version = "0.23.1", features = ["http"] }
 walkdir = "2.5"
 wide = "1.4"
 
