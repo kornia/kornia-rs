@@ -89,11 +89,20 @@ impl Normalize {
     }
 
     /// Resolve to `(mean, inv_std)` in the `[0, 1]` domain. `UnitScale` is the
-    /// identity affine (mean 0, inv_std 1) so one code path handles both.
-    fn mean_inv_std(self) -> ([f32; 3], [f32; 3]) {
+    /// identity affine (mean 0, inv_std 1) so one code path handles both. A
+    /// non-finite or non-positive std would silently produce `inf`/`NaN` outputs,
+    /// so it is rejected here (surfaced by `build`/`build_cuda`).
+    fn mean_inv_std(self) -> Result<([f32; 3], [f32; 3]), PreprocessError> {
         match self {
-            Normalize::UnitScale => ([0.0; 3], [1.0; 3]),
-            Normalize::MeanStd { mean, std } => (mean, [1.0 / std[0], 1.0 / std[1], 1.0 / std[2]]),
+            Normalize::UnitScale => Ok(([0.0; 3], [1.0; 3])),
+            Normalize::MeanStd { mean, std } => {
+                if std.iter().any(|s| !s.is_finite() || *s <= 0.0)
+                    || mean.iter().any(|m| !m.is_finite())
+                {
+                    return Err(PreprocessError::InvalidNormalize { mean, std });
+                }
+                Ok((mean, [1.0 / std[0], 1.0 / std[1], 1.0 / std[2]]))
+            }
         }
     }
 }
@@ -119,6 +128,19 @@ pub enum PreprocessError {
     /// The source channel count is not 3 (RGB) or 4 (RGBA).
     #[error("unsupported source channel count {0} (expected 3 or 4)")]
     UnsupportedChannels(usize),
+    /// The destination tensor is not `[1, 3, H, W]` — the preprocessor writes
+    /// three channel planes, so any other leading dims would index out of bounds.
+    #[error("destination tensor must be [1, 3, H, W], got {0:?}")]
+    BadOutputShape([usize; 4]),
+    /// `Normalize::MeanStd` with a non-finite mean or a non-finite / non-positive
+    /// std, which would silently produce `inf`/`NaN` outputs.
+    #[error("invalid normalize: mean {mean:?} must be finite, std {std:?} must be finite and > 0")]
+    InvalidNormalize {
+        /// The rejected per-channel mean.
+        mean: [f32; 3],
+        /// The rejected per-channel std.
+        std: [f32; 3],
+    },
     /// Source or output dimensions exceed the kernel's 32-bit indexing (the CUDA
     /// path indexes pixels as `int`). Unreachable on real hardware, guarded anyway.
     #[cfg(feature = "cudarc")]
@@ -167,11 +189,13 @@ struct CudaBackend {
 }
 
 // 1-D grid over the `dst_w * dst_h` output pixels. Reads interleaved `src_bpp`-byte
-// pixels (3 = RGB, 4 = RGBA with the alpha byte skipped) at an arbitrary row pitch
-// with a hand-rolled bilinear sample (CUDA textures only support 1/2/4-channel
-// elements, not 3), applies `(v/255 - mean) * inv_std` per channel, and writes
+// pixels (3 = RGB, 4 = RGBA with the alpha byte skipped) with a hand-rolled
+// bilinear sample (CUDA textures only support 1/2/4-channel elements, not 3),
+// applies `(v/255 - mean) * inv_std` per channel, and writes
 // channel-planar (CHW) `f32`. One parameterized kernel covers every mode / format /
-// normalization — config is passed as launch args (single JIT compile).
+// normalization — config is passed as launch args (single JIT compile). `src_pitch`
+// is a parameter for generality, but kornia `Image`s are tight, so the launcher
+// always passes `src_w * C`.
 #[cfg(feature = "cudarc")]
 const KERNEL_SRC: &str = r#"
 extern "C" __global__ void resize_normalize_to_chw(
@@ -270,7 +294,7 @@ impl PreprocessorBuilder {
 
     /// Build a **CPU** preprocessor (host image → host tensor). Always available.
     pub fn build(self) -> Result<Preprocessor, PreprocessError> {
-        let (mean, inv_std) = self.normalize.mean_inv_std();
+        let (mean, inv_std) = self.normalize.mean_inv_std()?;
         Ok(Preprocessor {
             mode: self.mode,
             mean,
@@ -286,7 +310,7 @@ impl PreprocessorBuilder {
     #[cfg(feature = "cudarc")]
     pub fn build_cuda(self, stream: Arc<CudaStream>) -> Result<Preprocessor, PreprocessError> {
         let kernel = CudaKernel::compile(stream.context(), KERNEL_SRC, "resize_normalize_to_chw")?;
-        let (mean, inv_std) = self.normalize.mean_inv_std();
+        let (mean, inv_std) = self.normalize.mean_inv_std()?;
         Ok(Preprocessor {
             mode: self.mode,
             mean,
@@ -370,6 +394,11 @@ impl Preprocessor {
     ) -> Result<(), PreprocessError> {
         if C != 3 && C != 4 {
             return Err(PreprocessError::UnsupportedChannels(C));
+        }
+        // Both paths write three channel planes of dst_h*dst_w — any other
+        // leading dims would run past the buffer (an OOB device write on CUDA).
+        if dst.shape[0] != 1 || dst.shape[1] != 3 {
+            return Err(PreprocessError::BadOutputShape(dst.shape));
         }
         let (dst_h, dst_w) = (dst.shape[2], dst.shape[3]);
         let a = Affine::new(self.mode, src.width(), src.height(), dst_w, dst_h);
@@ -569,6 +598,29 @@ mod tests {
             let want = (128.0 / 255.0 - mean[c]) / std[c];
             assert!((out[c * 16] - want).abs() < 1e-4, "chan {c}");
         }
+    }
+
+    // std = 0 (or non-finite mean/std) must fail at build, not emit inf/NaN.
+    #[test]
+    fn rejects_invalid_normalize() {
+        let bad = Preprocessor::builder()
+            .normalize(Normalize::MeanStd {
+                mean: [0.5; 3],
+                std: [0.0, 0.2, 0.2],
+            })
+            .build();
+        assert!(matches!(bad, Err(PreprocessError::InvalidNormalize { .. })));
+    }
+
+    // A non-[1,3,H,W] destination must be rejected before any write.
+    #[test]
+    fn rejects_bad_output_shape() {
+        let pre = Preprocessor::builder().build().unwrap();
+        let mut dst = Tensor::<f32, 4>::from_shape_vec([1, 1, 4, 4], vec![0.0; 16]).unwrap();
+        assert!(matches!(
+            pre.run(&host_solid(2, 2, [5u8, 5, 5]), &mut dst),
+            Err(PreprocessError::BadOutputShape([1, 1, 4, 4]))
+        ));
     }
 
     #[test]
