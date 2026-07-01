@@ -4,7 +4,6 @@
 use rustc_hash::FxHashMap;
 
 use kornia_image::{
-    allocator::{CpuAllocator, ImageAllocator},
     Image, ImageSize,
 };
 use crate::{
@@ -145,9 +144,9 @@ impl DecodeTagsConfig {
 }
 
 /// Stride-based decimation matching C's `image_u8_decimate` (top-left pixel of each factor×factor block).
-fn stride_decimate<A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<u8, 1, A1>,
-    dst: &mut Image<u8, 1, A2>,
+fn stride_decimate(
+    src: &Image<u8, 1>,
+    dst: &mut Image<u8, 1>,
     factor: usize,
 ) {
     let src_w = src.width();
@@ -192,8 +191,8 @@ fn stride_decimate<A1: ImageAllocator, A2: ImageAllocator>(
 pub struct AprilTagDecoder {
     config: DecodeTagsConfig,
     cached_families: Vec<(TagFamilyKind, TagFamily)>,
-    downscale_img: Option<Image<u8, 1, CpuAllocator>>,
-    bin_img: Image<Pixel, 1, CpuAllocator>,
+    downscale_img: Option<Image<u8, 1>>,
+    bin_img: Image<Pixel, 1>,
     tile_min_max: TileMinMax,
     rle_cc: RleCC,
     /// Pre-allocated buffer reused each frame; filled by `rle_cc.process`.
@@ -240,7 +239,7 @@ impl AprilTagDecoder {
 
             (
                 new_size,
-                Some(Image::from_size_val(new_size, 0, CpuAllocator)?),
+                Some(Image::from_size_val(new_size, 0)?),
             )
         };
 
@@ -256,7 +255,7 @@ impl AprilTagDecoder {
             .collect();
 
         let n_pixels = img_size.width * img_size.height;
-        let bin_img = Image::from_size_val(img_size, Pixel::Skip, CpuAllocator)?;
+        let bin_img = Image::from_size_val(img_size, Pixel::Skip)?;
         let tile_min_max = TileMinMax::new(img_size, 4);
         let rle_cc = RleCC::new(img_size.height, img_size.width);
 
@@ -286,9 +285,9 @@ impl AprilTagDecoder {
     ///
     /// If you are running this method multiple times on the same decoder instance,
     /// you should call [`AprilTagDecoder::clear`] between runs to reset internal state.
-    pub fn decode<A: ImageAllocator + Sync>(
+    pub fn decode(
         &mut self,
-        src: &Image<u8, 1, A>,
+        src: &Image<u8, 1>,
     ) -> Result<Vec<Detection>, AprilTagError> {
         if let Some(downscale_img) = self.downscale_img.as_mut() {
             // Stride-based subsample matching C's image_u8_decimate: dst[sy][sx] = src[sy*f][sx*f].
@@ -339,9 +338,9 @@ impl AprilTagDecoder {
     /// Returns every detection (including multiple copies of the same id if several quads
     /// decode to it). Use this when you need the full candidate set — e.g. for parity
     /// testing where you want to find the detection closest to a known reference.
-    pub fn decode_all<A: ImageAllocator + Sync>(
+    pub fn decode_all(
         &mut self,
-        src: &Image<u8, 1, A>,
+        src: &Image<u8, 1>,
     ) -> Result<Vec<Detection>, AprilTagError> {
         if let Some(downscale_img) = self.downscale_img.as_mut() {
             stride_decimate(src, downscale_img, self.config.downscale_factor);
@@ -375,9 +374,9 @@ impl AprilTagDecoder {
 
     /// Decodes tags and returns per-stage timing (µs) for profiling.
     /// Returns `(detections, [decimate, threshold, conn_comp, gradient, fit_quads, decode_tags])`.
-    pub fn decode_timed<A: ImageAllocator + Sync>(
+    pub fn decode_timed(
         &mut self,
-        src: &Image<u8, 1, A>,
+        src: &Image<u8, 1>,
     ) -> Result<(Vec<Detection>, [u64; 6]), AprilTagError> {
         let mut us = [0u64; 6];
         let t = std::time::Instant::now();

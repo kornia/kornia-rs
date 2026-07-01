@@ -1,10 +1,10 @@
 use std::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, Criterion};
-use kornia_tensor::{CpuAllocator, Tensor};
+use kornia_tensor::Tensor;
 
-fn sample_tensor() -> Tensor<u8, 3, CpuAllocator> {
-    Tensor::from_shape_val([1080, 1080, 3], 0_u8, CpuAllocator)
+fn sample_tensor() -> Tensor<u8, 3> {
+    Tensor::from_shape_val([1080, 1080, 3], 0_u8)
 }
 
 fn bench_image(c: &mut Criterion) {

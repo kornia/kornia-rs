@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 use super::{
-    allocator::{CpuAllocator, TensorAllocator, TensorAllocatorError},
+    allocator::{host_alloc, AllocHandle, TensorAllocatorError},
     storage::TensorStorage,
     view::TensorView,
 };
@@ -81,13 +81,12 @@ pub fn get_strides_from_shape<const N: usize>(shape: [usize; N]) -> [usize; N] {
 ///
 /// * `T` - The element type stored in the tensor
 /// * `N` - The number of dimensions (const generic, checked at compile time)
-/// * `A` - The allocator type for memory management
 ///
 /// # Architecture
 ///
 /// The tensor consists of three main components:
 ///
-/// * **Storage** - Owns the actual data in a contiguous memory buffer managed by an allocator
+/// * **Storage** - Owns the actual data in a contiguous memory buffer managed by a runtime allocator handle
 /// * **Shape** - Defines the size of each dimension
 /// * **Strides** - Describes the memory layout for element access
 ///
@@ -99,7 +98,7 @@ pub fn get_strides_from_shape<const N: usize>(shape: [usize; N]) -> [usize; N] {
 ///
 /// # Thread Safety
 ///
-/// Tensors are `Send` and `Sync` when using thread-safe allocators, allowing safe sharing
+/// Tensors are `Send` and `Sync` when `T: Send + Sync`, allowing safe sharing
 /// across thread boundaries.
 ///
 /// # Examples
@@ -107,10 +106,10 @@ pub fn get_strides_from_shape<const N: usize>(shape: [usize; N]) -> [usize; N] {
 /// Creating a tensor from data:
 ///
 /// ```rust
-/// use kornia_tensor::{Tensor, CpuAllocator};
+/// use kornia_tensor::Tensor;
 ///
 /// let data = vec![1, 2, 3, 4, 5, 6];
-/// let tensor = Tensor::<i32, 2, _>::from_shape_vec([2, 3], data, CpuAllocator).unwrap();
+/// let tensor = Tensor::<i32, 2>::from_shape_vec([2, 3], data).unwrap();
 ///
 /// assert_eq!(tensor.shape, [2, 3]);
 /// assert_eq!(tensor.strides, [3, 1]); // Row-major layout
@@ -120,27 +119,27 @@ pub fn get_strides_from_shape<const N: usize>(shape: [usize; N]) -> [usize; N] {
 /// Creating tensors with convenience constructors:
 ///
 /// ```rust
-/// use kornia_tensor::{Tensor, CpuAllocator};
+/// use kornia_tensor::Tensor;
 ///
 /// // All zeros
-/// let zeros = Tensor::<f32, 2, _>::zeros([3, 3], CpuAllocator);
+/// let zeros = Tensor::<f32, 2>::zeros([3, 3]);
 ///
 /// // All ones
-/// let ones = Tensor::<f32, 2, _>::from_shape_val([3, 3], 1.0, CpuAllocator);
+/// let ones = Tensor::<f32, 2>::from_shape_val([3, 3], 1.0);
 ///
 /// // Generated with a function
-/// let range = Tensor::<i32, 1, _>::from_shape_fn([10], CpuAllocator, |[i]| i as i32);
+/// let range = Tensor::<i32, 1>::from_shape_fn([10], |[i]| i as i32);
 /// ```
-pub struct Tensor<T, const N: usize, A: TensorAllocator> {
+pub struct Tensor<T, const N: usize> {
     /// The storage of the tensor.
-    pub storage: TensorStorage<T, A>,
+    pub storage: TensorStorage<T>,
     /// The shape of the tensor.
     pub shape: [usize; N],
     /// The strides of the tensor data in memory.
     pub strides: [usize; N],
 }
 
-impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
+impl<T, const N: usize> Tensor<T, N> {
     /// Get the data of the tensor as a slice.
     ///
     /// # Returns
@@ -197,7 +196,6 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     ///
     /// * `shape` - An array containing the shape of the tensor.
     /// * `data` - A vector containing the data of the tensor.
-    /// * `alloc` - The allocator to use.
     ///
     /// # Returns
     ///
@@ -210,13 +208,22 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     /// # Example
     ///
     /// ```
-    /// use kornia_tensor::{Tensor, CpuAllocator};
+    /// use kornia_tensor::Tensor;
     ///
     /// let data: Vec<u8> = vec![1, 2, 3, 4];
-    /// let t = Tensor::<u8, 2, CpuAllocator>::from_shape_vec([2, 2], data, CpuAllocator).unwrap();
+    /// let t = Tensor::<u8, 2>::from_shape_vec([2, 2], data).unwrap();
     /// assert_eq!(t.shape, [2, 2]);
     /// ```
-    pub fn from_shape_vec(shape: [usize; N], data: Vec<T>, alloc: A) -> Result<Self, TensorError> {
+    pub fn from_shape_vec(shape: [usize; N], data: Vec<T>) -> Result<Self, TensorError> {
+        Self::from_shape_vec_in(shape, data, host_alloc())
+    }
+
+    /// Like [`from_shape_vec`](Self::from_shape_vec) but with an explicit allocator handle.
+    pub fn from_shape_vec_in(
+        shape: [usize; N],
+        data: Vec<T>,
+        alloc: AllocHandle,
+    ) -> Result<Self, TensorError> {
         let numel = shape.iter().product::<usize>();
         if numel != data.len() {
             return Err(TensorError::InvalidShape(numel));
@@ -236,7 +243,6 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     ///
     /// * `shape` - An array containing the shape of the tensor.
     /// * `data` - A slice containing the data of the tensor.
-    /// * `alloc` - The allocator to use.
     ///
     /// # Returns
     ///
@@ -245,21 +251,23 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     /// # Errors
     ///
     /// If the number of elements in the data does not match the shape of the tensor, an error is returned.
-    pub fn from_shape_slice(shape: [usize; N], data: &[T], alloc: A) -> Result<Self, TensorError>
+    pub fn from_shape_slice(shape: [usize; N], data: &[T]) -> Result<Self, TensorError>
     where
         T: Clone,
     {
-        let numel = shape.iter().product::<usize>();
-        if numel != data.len() {
-            return Err(TensorError::InvalidShape(numel));
-        }
-        let storage = TensorStorage::from_vec(data.to_vec(), alloc);
-        let strides = get_strides_from_shape(shape);
-        Ok(Self {
-            storage,
-            shape,
-            strides,
-        })
+        Self::from_shape_slice_in(shape, data, host_alloc())
+    }
+
+    /// Like [`from_shape_slice`](Self::from_shape_slice) but with an explicit allocator handle.
+    pub fn from_shape_slice_in(
+        shape: [usize; N],
+        data: &[T],
+        alloc: AllocHandle,
+    ) -> Result<Self, TensorError>
+    where
+        T: Clone,
+    {
+        Self::from_shape_vec_in(shape, data.to_vec(), alloc)
     }
 
     /// Creates a new `Tensor` with the given shape and raw parts.
@@ -269,7 +277,7 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     /// * `shape` - An array containing the shape of the tensor.
     /// * `data` - A pointer to the data of the tensor.
     /// * `len` - The length of the data.
-    /// * `alloc` - The allocator to use.
+    /// * `alloc` - The allocator handle to use.
     ///
     /// # Safety
     ///
@@ -278,21 +286,22 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
         shape: [usize; N],
         data: *const T,
         len: usize,
-        alloc: A,
+        alloc: AllocHandle,
     ) -> Result<Self, TensorError>
     where
         T: Clone,
     {
-        let storage = TensorStorage::from_raw_parts(data, len, alloc);
-        let strides = get_strides_from_shape(shape);
-        Ok(Self {
-            storage,
-            shape,
-            strides,
-        })
+        unsafe {
+            let storage = TensorStorage::from_raw_parts(data, len, alloc);
+            let strides = get_strides_from_shape(shape);
+            Ok(Self {
+                storage,
+                shape,
+                strides,
+            })
+        }
     }
 
-    /// Creates a new `Tensor` with the given shape and a default value.
     /// Creates a new `Tensor` with the given shape and a default value.
     ///
     /// # Arguments
@@ -307,18 +316,26 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     /// # Example
     ///
     /// ```
-    /// use kornia_tensor::{Tensor, CpuAllocator};
+    /// use kornia_tensor::Tensor;
     ///
-    /// let t = Tensor::<u8, 1, CpuAllocator>::from_shape_val([4], 0, CpuAllocator);
+    /// let t = Tensor::<u8, 1>::from_shape_val([4], 0);
     /// assert_eq!(t.as_slice(), vec![0, 0, 0, 0]);
     ///
-    /// let t = Tensor::<u8, 2, CpuAllocator>::from_shape_val([2, 2], 1, CpuAllocator);
+    /// let t = Tensor::<u8, 2>::from_shape_val([2, 2], 1);
     /// assert_eq!(t.as_slice(), vec![1, 1, 1, 1]);
     ///
-    /// let t = Tensor::<u8, 3, CpuAllocator>::from_shape_val([2, 1, 3], 2, CpuAllocator);
+    /// let t = Tensor::<u8, 3>::from_shape_val([2, 1, 3], 2);
     /// assert_eq!(t.as_slice(), vec![2, 2, 2, 2, 2, 2]);
     /// ```
-    pub fn from_shape_val(shape: [usize; N], value: T, alloc: A) -> Self
+    pub fn from_shape_val(shape: [usize; N], value: T) -> Self
+    where
+        T: Clone,
+    {
+        Self::from_shape_val_in(shape, value, host_alloc())
+    }
+
+    /// Like [`from_shape_val`](Self::from_shape_val) but with an explicit allocator handle.
+    pub fn from_shape_val_in(shape: [usize; N], value: T, alloc: AllocHandle) -> Self
     where
         T: Clone,
     {
@@ -349,15 +366,23 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     /// # Example
     ///
     /// ```
-    /// use kornia_tensor::{Tensor, CpuAllocator};
+    /// use kornia_tensor::Tensor;
     ///
-    /// let t = Tensor::<u8, 1, CpuAllocator>::from_shape_fn([4], CpuAllocator, |[i]| i as u8);
+    /// let t = Tensor::<u8, 1>::from_shape_fn([4], |[i]| i as u8);
     /// assert_eq!(t.as_slice(), vec![0, 1, 2, 3]);
     ///
-    /// let t = Tensor::<u8, 2, CpuAllocator>::from_shape_fn([2, 2], CpuAllocator, |[i, j]| (i * 2 + j) as u8);
+    /// let t = Tensor::<u8, 2>::from_shape_fn([2, 2], |[i, j]| (i * 2 + j) as u8);
     /// assert_eq!(t.as_slice(), vec![0, 1, 2, 3]);
     /// ```
-    pub fn from_shape_fn<F>(shape: [usize; N], alloc: A, f: F) -> Self
+    pub fn from_shape_fn<F>(shape: [usize; N], f: F) -> Self
+    where
+        F: Fn([usize; N]) -> T,
+    {
+        Self::from_shape_fn_in(shape, host_alloc(), f)
+    }
+
+    /// Like [`from_shape_fn`](Self::from_shape_fn) but with an explicit allocator handle.
+    pub fn from_shape_fn_in<F>(shape: [usize; N], alloc: AllocHandle, f: F) -> Self
     where
         F: Fn([usize; N]) -> T,
     {
@@ -484,11 +509,11 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     /// # Example
     ///
     /// ```
-    /// use kornia_tensor::{Tensor, CpuAllocator};
+    /// use kornia_tensor::Tensor;
     ///
     /// let data: Vec<u8> = vec![1, 2, 3, 4];
     ///
-    /// let t = Tensor::<u8, 2, CpuAllocator>::from_shape_vec([2, 2], data, CpuAllocator).unwrap();
+    /// let t = Tensor::<u8, 2>::from_shape_vec([2, 2], data).unwrap();
     /// assert_eq!(*t.get_unchecked([0, 0]), 1);
     /// assert_eq!(*t.get_unchecked([0, 1]), 2);
     /// assert_eq!(*t.get_unchecked([1, 0]), 3);
@@ -516,11 +541,11 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     /// # Example
     ///
     /// ```
-    /// use kornia_tensor::{Tensor, CpuAllocator};
+    /// use kornia_tensor::Tensor;
     ///
     /// let data: Vec<u8> = vec![1, 2, 3, 4];
     ///
-    /// let t = Tensor::<u8, 2, CpuAllocator>::from_shape_vec([2, 2], data, CpuAllocator).unwrap();
+    /// let t = Tensor::<u8, 2>::from_shape_vec([2, 2], data).unwrap();
     ///
     /// assert_eq!(t.get([0, 0]), Some(&1));
     /// assert_eq!(t.get([0, 1]), Some(&2));
@@ -551,11 +576,11 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     /// # Example
     ///
     /// ```
-    /// use kornia_tensor::{Tensor, CpuAllocator};
+    /// use kornia_tensor::Tensor;
     ///
     /// let data: Vec<u8> = vec![1, 2, 3, 4];
     ///
-    /// let t = Tensor::<u8, 1, CpuAllocator>::from_shape_vec([4], data, CpuAllocator).unwrap();
+    /// let t = Tensor::<u8, 1>::from_shape_vec([4], data).unwrap();
     /// let t2 = t.reshape([2, 2]).unwrap();
     /// assert_eq!(t2.shape, [2, 2]);
     /// assert_eq!(t2.as_slice(), vec![1, 2, 3, 4]);
@@ -565,7 +590,7 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     pub fn reshape<const M: usize>(
         &self,
         shape: [usize; M],
-    ) -> Result<TensorView<'_, T, M, A>, TensorError> {
+    ) -> Result<TensorView<'_, T, M>, TensorError> {
         let numel = shape.iter().product::<usize>();
         if numel != self.numel() {
             return Err(TensorError::DimensionMismatch(format!(
@@ -603,39 +628,16 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     /// Transposing a 2D tensor (matrix):
     ///
     /// ```rust
-    /// use kornia_tensor::{Tensor, CpuAllocator};
+    /// use kornia_tensor::Tensor;
     ///
     /// let data = vec![1, 2, 3, 4, 5, 6];
-    /// let tensor = Tensor::<i32, 2, _>::from_shape_vec([2, 3], data, CpuAllocator).unwrap();
-    ///
-    /// // Original: [[1, 2, 3],
-    /// //            [4, 5, 6]]
+    /// let tensor = Tensor::<i32, 2>::from_shape_vec([2, 3], data).unwrap();
     ///
     /// // Transpose by swapping dimensions
     /// let transposed = tensor.permute_axes([1, 0]);
     /// assert_eq!(transposed.shape, [3, 2]);
-    ///
-    /// // Result: [[1, 4],
-    /// //          [2, 5],
-    /// //          [3, 6]]
-    /// assert_eq!(*transposed.get_unchecked([0, 0]), 1);
-    /// assert_eq!(*transposed.get_unchecked([0, 1]), 4);
-    /// assert_eq!(*transposed.get_unchecked([1, 0]), 2);
     /// ```
-    ///
-    /// Reordering dimensions of a 3D tensor (e.g., changing channel order):
-    ///
-    /// ```rust
-    /// use kornia_tensor::{Tensor, CpuAllocator};
-    ///
-    /// // Create a 2x3x4 tensor (batch x height x width)
-    /// let tensor = Tensor::<i32, 3, _>::from_shape_val([2, 3, 4], 1, CpuAllocator);
-    ///
-    /// // Reorder to (batch x width x height)
-    /// let permuted = tensor.permute_axes([0, 2, 1]);
-    /// assert_eq!(permuted.shape, [2, 4, 3]);
-    /// ```
-    pub fn permute_axes(&self, axes: [usize; N]) -> TensorView<'_, T, N, A> {
+    pub fn permute_axes(&self, axes: [usize; N]) -> TensorView<'_, T, N> {
         let mut new_shape = [0; N];
         let mut new_strides = [0; N];
         for (i, &axis) in axes.iter().enumerate() {
@@ -657,7 +659,7 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     /// # Returns
     ///
     /// A `TensorView` instance.
-    pub fn view(&self) -> TensorView<'_, T, N, A> {
+    pub fn view(&self) -> TensorView<'_, T, N> {
         TensorView {
             storage: &self.storage,
             shape: self.shape,
@@ -670,15 +672,21 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     /// # Arguments
     ///
     /// * `shape` - The shape of the tensor.
-    /// * `alloc` - The allocator to use.
     ///
     /// # Returns
-    pub fn zeros(shape: [usize; N], alloc: A) -> Tensor<T, N, A>
+    pub fn zeros(shape: [usize; N]) -> Tensor<T, N>
     where
         T: Clone + num_traits::Zero,
     {
-        // TODO: add allocator parameter
-        Self::from_shape_val(shape, T::zero(), alloc)
+        Self::zeros_in(shape, host_alloc())
+    }
+
+    /// Like [`zeros`](Self::zeros) but with an explicit allocator handle.
+    pub fn zeros_in(shape: [usize; N], alloc: AllocHandle) -> Tensor<T, N>
+    where
+        T: Clone + num_traits::Zero,
+    {
+        Self::from_shape_val_in(shape, T::zero(), alloc)
     }
 
     /// Apply a function to each element of the tensor.
@@ -694,15 +702,15 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     /// # Example
     ///
     /// ```
-    /// use kornia_tensor::{Tensor, CpuAllocator};
+    /// use kornia_tensor::Tensor;
     ///
     /// let data: Vec<u8> = vec![1, 2, 3, 4];
-    /// let t = Tensor::<u8, 1, CpuAllocator>::from_shape_vec([4], data, CpuAllocator).unwrap();
+    /// let t = Tensor::<u8, 1>::from_shape_vec([4], data).unwrap();
     ///
     /// let t2 = t.map(|x| *x + 1);
     /// assert_eq!(t2.as_slice(), vec![2, 3, 4, 5]);
     /// ```
-    pub fn map<U, F>(&self, f: F) -> Tensor<U, N, A>
+    pub fn map<U, F>(&self, f: F) -> Tensor<U, N>
     where
         F: Fn(&T) -> U,
     {
@@ -726,52 +734,6 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     /// # Returns
     ///
     /// `true` if the tensor has contiguous row-major layout, `false` otherwise.
-    ///
-    /// # When is a layout non-standard?
-    ///
-    /// - After dimension permutation (e.g., transpose)
-    /// - After certain slicing operations
-    /// - When strides have been manually modified
-    /// - When the tensor is a non-contiguous view
-    ///
-    /// # Examples
-    ///
-    /// Standard layout:
-    ///
-    /// ```rust
-    /// use kornia_tensor::{Tensor, CpuAllocator};
-    ///
-    /// let tensor = Tensor::<i32, 2, _>::from_shape_val([3, 4], 0, CpuAllocator);
-    /// assert!(tensor.is_standard_layout());
-    /// ```
-    ///
-    /// Non-standard layout after transpose:
-    ///
-    /// ```rust
-    /// use kornia_tensor::{Tensor, CpuAllocator};
-    ///
-    /// let data = vec![1, 2, 3, 4];
-    /// let tensor = Tensor::<i32, 2, _>::from_shape_vec([2, 2], data, CpuAllocator).unwrap();
-    ///
-    /// // After permutation, the memory layout is no longer contiguous
-    /// let mut transposed = tensor.permute_axes([1, 0]).as_contiguous();
-    /// transposed.strides = [1, 2]; // Transpose stride pattern
-    ///
-    /// // This would need to_standard_layout() to become contiguous again
-    /// ```
-    ///
-    /// Detecting non-standard layout:
-    ///
-    /// ```rust
-    /// use kornia_tensor::{Tensor, CpuAllocator};
-    ///
-    /// let data = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
-    /// let mut tensor = Tensor::<i32, 3, _>::from_shape_vec([2, 2, 3], data, CpuAllocator).unwrap();
-    ///
-    /// // Manually corrupt the strides
-    /// tensor.strides = [10, 5, 1];
-    /// assert!(!tensor.is_standard_layout());
-    /// ```
     pub fn is_standard_layout(&self) -> bool {
         let mut expected_stride: usize = 1;
         for (&dim, &stride) in self.shape.iter().rev().zip(self.strides.iter().rev()) {
@@ -789,14 +751,9 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     /// tensor with contiguous memory by copying elements in the correct order according to
     /// the current shape and strides.
     ///
-    /// This is essential for:
-    /// - Interfacing with libraries expecting contiguous memory
-    /// - Optimizing performance of certain operations
-    /// - Ensuring consistent memory layout after transformations
-    ///
     /// # Arguments
     ///
-    /// * `alloc` - The allocator to use for the new tensor if reallocation is needed
+    /// * `alloc` - The allocator handle to use for the new tensor if reallocation is needed
     ///
     /// # Returns
     ///
@@ -805,62 +762,7 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     /// # Errors
     ///
     /// Returns [`TensorError::DimensionMismatch`] if the tensor's shape and data are inconsistent.
-    ///
-    /// # Performance
-    ///
-    /// This operation is O(1) if already standard layout (just clones), O(n) otherwise where
-    /// n is the number of elements.
-    ///
-    /// # Examples
-    ///
-    /// Converting after permutation:
-    ///
-    /// ```rust
-    /// use kornia_tensor::{Tensor, CpuAllocator};
-    ///
-    /// let data = vec![1, 2, 3, 4, 5, 6];
-    /// let tensor = Tensor::<i32, 2, _>::from_shape_vec([2, 3], data, CpuAllocator).unwrap();
-    ///
-    /// // Transpose creates non-contiguous layout
-    /// let transposed = tensor.permute_axes([1, 0]);
-    /// let owned = transposed.as_contiguous(); // Now we have an owned tensor
-    ///
-    /// // Convert to standard layout
-    /// let standard = owned.to_standard_layout(CpuAllocator).unwrap();
-    /// assert!(standard.is_standard_layout());
-    /// ```
-    ///
-    /// Fixing corrupted strides:
-    ///
-    /// ```rust
-    /// use kornia_tensor::{Tensor, CpuAllocator};
-    ///
-    /// let data = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
-    /// let mut tensor = Tensor::<i32, 3, _>::from_shape_vec([2, 2, 3], data, CpuAllocator).unwrap();
-    ///
-    /// // Simulate non-standard strides
-    /// tensor.strides = [1, 6, 2];
-    /// assert!(!tensor.is_standard_layout());
-    ///
-    /// // Restore standard layout
-    /// let fixed = tensor.to_standard_layout(CpuAllocator).unwrap();
-    /// assert!(fixed.is_standard_layout());
-    /// assert_eq!(fixed.strides, [6, 3, 1]);
-    /// ```
-    ///
-    /// No-op for already standard tensors:
-    ///
-    /// ```rust
-    /// use kornia_tensor::{Tensor, CpuAllocator};
-    ///
-    /// let tensor = Tensor::<i32, 2, _>::from_shape_val([3, 4], 42, CpuAllocator);
-    /// assert!(tensor.is_standard_layout());
-    ///
-    /// // This will just clone since it's already standard
-    /// let standard = tensor.to_standard_layout(CpuAllocator).unwrap();
-    /// assert!(standard.is_standard_layout());
-    /// ```
-    pub fn to_standard_layout(&self, alloc: A) -> Result<Self, TensorError>
+    pub fn to_standard_layout(&self, alloc: AllocHandle) -> Result<Self, TensorError>
     where
         T: Clone + std::fmt::Debug,
     {
@@ -893,7 +795,7 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
             }
         }
 
-        Tensor::from_shape_vec(self.shape, flat, alloc).map_err(|_| {
+        Tensor::from_shape_vec_in(self.shape, flat, alloc).map_err(|_| {
             TensorError::DimensionMismatch(format!(
                 "Cannot construct tensor of shape {:?} with {:?} elements",
                 self.shape, total_elems,
@@ -910,24 +812,24 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     /// # Example
     ///
     /// ```
-    /// use kornia_tensor::{Tensor, CpuAllocator};
+    /// use kornia_tensor::Tensor;
     ///
     /// let data: Vec<u8> = vec![1, 2, 3, 4];
-    /// let t = Tensor::<u8, 1, CpuAllocator>::from_shape_vec([4], data, CpuAllocator).unwrap();
+    /// let t = Tensor::<u8, 1>::from_shape_vec([4], data).unwrap();
     ///
     /// let t2 = t.cast::<f32>();
     /// assert_eq!(t2.as_slice(), vec![1.0, 2.0, 3.0, 4.0]);
     /// ```
-    pub fn cast<U>(&self) -> Tensor<U, N, CpuAllocator>
+    pub fn cast<U>(&self) -> Tensor<U, N>
     where
         U: From<T>,
         T: Clone,
     {
-        let mut data: Vec<U> = Vec::with_capacity(self.storage.len());
+        let mut data: Vec<U> = Vec::with_capacity(self.numel());
         self.as_slice().iter().for_each(|x| {
             data.push(U::from(x.clone()));
         });
-        let storage = TensorStorage::from_vec(data, CpuAllocator);
+        let storage = TensorStorage::from_vec(data, self.storage.alloc().clone());
         Tensor {
             storage,
             shape: self.shape,
@@ -949,31 +851,22 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     /// # Example
     ///
     /// ```
-    /// use kornia_tensor::{Tensor, CpuAllocator};
+    /// use kornia_tensor::Tensor;
     ///
     /// let data1: Vec<u8> = vec![1, 2, 3, 4];
-    /// let t1 = Tensor::<u8, 1, CpuAllocator>::from_shape_vec([4], data1, CpuAllocator).unwrap();
+    /// let t1 = Tensor::<u8, 1>::from_shape_vec([4], data1).unwrap();
     ///
     /// let data2: Vec<u8> = vec![1, 2, 3, 4];
-    /// let t2 = Tensor::<u8, 1, CpuAllocator>::from_shape_vec([4], data2, CpuAllocator).unwrap();
+    /// let t2 = Tensor::<u8, 1>::from_shape_vec([4], data2).unwrap();
     ///
     /// let t3 = t1.element_wise_op(&t2, |a, b| *a + *b).unwrap();
     /// assert_eq!(t3.as_slice(), vec![2, 4, 6, 8]);
-    ///
-    /// let t4 = t1.element_wise_op(&t2, |a, b| *a - *b).unwrap();
-    /// assert_eq!(t4.as_slice(), vec![0, 0, 0, 0]);
-    ///
-    /// let t5 = t1.element_wise_op(&t2, |a, b| *a * *b).unwrap();
-    /// assert_eq!(t5.as_slice(), vec![1, 4, 9, 16]);
-    ///
-    /// let t6 = t1.element_wise_op(&t2, |a, b| *a / *b).unwrap();
-    /// assert_eq!(t6.as_slice(), vec![1, 1, 1, 1]);
     /// ```
     pub fn element_wise_op<F>(
         &self,
-        other: &Tensor<T, N, CpuAllocator>,
+        other: &Tensor<T, N>,
         op: F,
-    ) -> Result<Tensor<T, N, CpuAllocator>, TensorError>
+    ) -> Result<Tensor<T, N>, TensorError>
     where
         F: Fn(&T, &T) -> T,
     {
@@ -984,6 +877,14 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
             )));
         }
 
+        if self.storage.domain() != other.storage.domain() {
+            return Err(TensorError::UnsupportedOperation(format!(
+                "element-wise op on tensors in different memory domains: {:?} vs {:?}",
+                self.storage.domain(),
+                other.storage.domain()
+            )));
+        }
+
         let data = self
             .as_slice()
             .iter()
@@ -991,7 +892,7 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
             .map(|(a, b)| op(a, b))
             .collect();
 
-        let storage = TensorStorage::from_vec(data, CpuAllocator);
+        let storage = TensorStorage::from_vec(data, self.storage.alloc().clone());
 
         Ok(Tensor {
             storage,
@@ -1001,11 +902,7 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     }
 }
 
-impl<T, const N: usize, A> Clone for Tensor<T, N, A>
-where
-    T: Clone,
-    A: TensorAllocator + Clone,
-{
+impl<T: Clone, const N: usize> Clone for Tensor<T, N> {
     fn clone(&self) -> Self {
         Self {
             storage: self.storage.clone(),
@@ -1015,10 +912,9 @@ where
     }
 }
 
-impl<T, const N: usize, A> std::fmt::Display for Tensor<T, N, A>
+impl<T, const N: usize> std::fmt::Display for Tensor<T, N>
 where
     T: std::fmt::Display + std::fmt::LowerExp,
-    A: TensorAllocator,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let width = self
@@ -1094,13 +990,13 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::allocator::CpuAllocator;
+    use crate::allocator::host_alloc;
     use crate::tensor::{Tensor, TensorError};
 
     #[test]
     fn constructor_1d() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1];
-        let t = Tensor::<u8, 1, _>::from_shape_vec([1], data, CpuAllocator)?;
+        let t = Tensor::<u8, 1>::from_shape_vec([1], data)?;
         assert_eq!(t.shape, [1]);
         assert_eq!(t.as_slice(), vec![1]);
         assert_eq!(t.strides, [1]);
@@ -1111,7 +1007,7 @@ mod tests {
     #[test]
     fn constructor_2d() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2];
-        let t = Tensor::<u8, 2, _>::from_shape_vec([1, 2], data, CpuAllocator)?;
+        let t = Tensor::<u8, 2>::from_shape_vec([1, 2], data)?;
         assert_eq!(t.shape, [1, 2]);
         assert_eq!(t.as_slice(), vec![1, 2]);
         assert_eq!(t.strides, [2, 1]);
@@ -1122,7 +1018,7 @@ mod tests {
     #[test]
     fn get_1d() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4];
-        let t = Tensor::<u8, 1, _>::from_shape_vec([4], data, CpuAllocator)?;
+        let t = Tensor::<u8, 1>::from_shape_vec([4], data)?;
         assert_eq!(t.get([0]), Some(&1));
         assert_eq!(t.get([1]), Some(&2));
         assert_eq!(t.get([2]), Some(&3));
@@ -1134,7 +1030,7 @@ mod tests {
     #[test]
     fn get_2d() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4];
-        let t = Tensor::<u8, 2, _>::from_shape_vec([2, 2], data, CpuAllocator)?;
+        let t = Tensor::<u8, 2>::from_shape_vec([2, 2], data)?;
         assert_eq!(t.get([0, 0]), Some(&1));
         assert_eq!(t.get([0, 1]), Some(&2));
         assert_eq!(t.get([1, 0]), Some(&3));
@@ -1147,7 +1043,7 @@ mod tests {
     #[test]
     fn get_3d() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4, 5, 6];
-        let t = Tensor::<u8, 3, _>::from_shape_vec([2, 1, 3], data, CpuAllocator)?;
+        let t = Tensor::<u8, 3>::from_shape_vec([2, 1, 3], data)?;
         assert_eq!(t.get([0, 0, 0]), Some(&1));
         assert_eq!(t.get([0, 0, 1]), Some(&2));
         assert_eq!(t.get([0, 0, 2]), Some(&3));
@@ -1163,7 +1059,7 @@ mod tests {
     #[test]
     fn get_checked_1d() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4];
-        let t = Tensor::<u8, 1, _>::from_shape_vec([4], data, CpuAllocator)?;
+        let t = Tensor::<u8, 1>::from_shape_vec([4], data)?;
         assert_eq!(*t.get_unchecked([0]), 1);
         assert_eq!(*t.get_unchecked([1]), 2);
         assert_eq!(*t.get_unchecked([2]), 3);
@@ -1174,7 +1070,7 @@ mod tests {
     #[test]
     fn get_checked_2d() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4];
-        let t = Tensor::<u8, 2, _>::from_shape_vec([2, 2], data, CpuAllocator)?;
+        let t = Tensor::<u8, 2>::from_shape_vec([2, 2], data)?;
         assert_eq!(*t.get_unchecked([0, 0]), 1);
         assert_eq!(*t.get_unchecked([0, 1]), 2);
         assert_eq!(*t.get_unchecked([1, 0]), 3);
@@ -1184,7 +1080,7 @@ mod tests {
     #[test]
     fn reshape_1d() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4];
-        let t = Tensor::<u8, 1, _>::from_shape_vec([4], data, CpuAllocator)?;
+        let t = Tensor::<u8, 1>::from_shape_vec([4], data)?;
 
         let view = t.reshape([2, 2])?;
 
@@ -1199,7 +1095,7 @@ mod tests {
     #[test]
     fn reshape_2d() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4];
-        let t = Tensor::<u8, 2, _>::from_shape_vec([2, 2], data, CpuAllocator)?;
+        let t = Tensor::<u8, 2>::from_shape_vec([2, 2], data)?;
         let t2 = t.reshape([4])?;
 
         assert_eq!(t2.shape, [4]);
@@ -1213,7 +1109,7 @@ mod tests {
     #[test]
     fn reshape_get_1d() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4];
-        let t = Tensor::<u8, 1, _>::from_shape_vec([4], data, CpuAllocator)?;
+        let t = Tensor::<u8, 1>::from_shape_vec([4], data)?;
         let view = t.reshape([2, 2])?;
         assert_eq!(*view.get_unchecked([0, 0]), 1);
         assert_eq!(*view.get_unchecked([0, 1]), 2);
@@ -1227,7 +1123,7 @@ mod tests {
     #[test]
     fn permute_axes_1d() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4];
-        let t = Tensor::<u8, 1, _>::from_shape_vec([4], data, CpuAllocator)?;
+        let t = Tensor::<u8, 1>::from_shape_vec([4], data)?;
         let t2 = t.permute_axes([0]);
         assert_eq!(t2.shape, [4]);
         assert_eq!(t2.as_slice(), vec![1, 2, 3, 4]);
@@ -1239,7 +1135,7 @@ mod tests {
     #[test]
     fn permute_axes_2d() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4];
-        let t = Tensor::<u8, 2, _>::from_shape_vec([2, 2], data, CpuAllocator)?;
+        let t = Tensor::<u8, 2>::from_shape_vec([2, 2], data)?;
         let view = t.permute_axes([1, 0]);
         assert_eq!(view.shape, [2, 2]);
         assert_eq!(*view.get_unchecked([0, 0]), 1u8);
@@ -1254,7 +1150,7 @@ mod tests {
     #[test]
     fn contiguous_2d() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4, 5, 6];
-        let t = Tensor::<u8, 2, _>::from_shape_vec([2, 3], data, CpuAllocator)?;
+        let t = Tensor::<u8, 2>::from_shape_vec([2, 3], data)?;
 
         let view = t.permute_axes([1, 0]);
 
@@ -1269,14 +1165,14 @@ mod tests {
 
     #[test]
     fn zeros_1d() -> Result<(), TensorError> {
-        let t = Tensor::<u8, 1, _>::zeros([4], CpuAllocator);
+        let t = Tensor::<u8, 1>::zeros([4]);
         assert_eq!(t.as_slice(), vec![0, 0, 0, 0]);
         Ok(())
     }
 
     #[test]
     fn zeros_2d() -> Result<(), TensorError> {
-        let t = Tensor::<u8, 2, _>::zeros([2, 2], CpuAllocator);
+        let t = Tensor::<u8, 2>::zeros([2, 2]);
         assert_eq!(t.as_slice(), vec![0, 0, 0, 0]);
         Ok(())
     }
@@ -1284,7 +1180,7 @@ mod tests {
     #[test]
     fn map_1d() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4];
-        let t = Tensor::<u8, 1, _>::from_shape_vec([4], data, CpuAllocator)?;
+        let t = Tensor::<u8, 1>::from_shape_vec([4], data)?;
         let t2 = t.map(|x| *x + 1);
         assert_eq!(t2.as_slice(), vec![2, 3, 4, 5]);
         Ok(())
@@ -1293,7 +1189,7 @@ mod tests {
     #[test]
     fn map_2d() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4];
-        let t = Tensor::<u8, 2, _>::from_shape_vec([2, 2], data, CpuAllocator)?;
+        let t = Tensor::<u8, 2>::from_shape_vec([2, 2], data)?;
         let t2 = t.map(|x| *x + 1);
         assert_eq!(t2.as_slice(), vec![2, 3, 4, 5]);
         Ok(())
@@ -1301,21 +1197,21 @@ mod tests {
 
     #[test]
     fn from_shape_val_1d() -> Result<(), TensorError> {
-        let t = Tensor::<u8, 1, _>::from_shape_val([4], 0, CpuAllocator);
+        let t = Tensor::<u8, 1>::from_shape_val([4], 0);
         assert_eq!(t.as_slice(), vec![0, 0, 0, 0]);
         Ok(())
     }
 
     #[test]
     fn from_shape_val_2d() -> Result<(), TensorError> {
-        let t = Tensor::<u8, 2, _>::from_shape_val([2, 2], 1, CpuAllocator);
+        let t = Tensor::<u8, 2>::from_shape_val([2, 2], 1);
         assert_eq!(t.as_slice(), vec![1, 1, 1, 1]);
         Ok(())
     }
 
     #[test]
     fn from_shape_val_3d() -> Result<(), TensorError> {
-        let t = Tensor::<u8, 3, _>::from_shape_val([2, 1, 3], 2, CpuAllocator);
+        let t = Tensor::<u8, 3>::from_shape_val([2, 1, 3], 2);
         assert_eq!(t.as_slice(), vec![2, 2, 2, 2, 2, 2]);
         Ok(())
     }
@@ -1323,7 +1219,7 @@ mod tests {
     #[test]
     fn cast_1d() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4];
-        let t = Tensor::<u8, 1, _>::from_shape_vec([4], data, CpuAllocator)?;
+        let t = Tensor::<u8, 1>::from_shape_vec([4], data)?;
         let t2 = t.cast::<u16>();
         assert_eq!(t2.as_slice(), vec![1, 2, 3, 4]);
         Ok(())
@@ -1332,7 +1228,7 @@ mod tests {
     #[test]
     fn cast_2d() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4];
-        let t = Tensor::<u8, 2, _>::from_shape_vec([2, 2], data, CpuAllocator)?;
+        let t = Tensor::<u8, 2>::from_shape_vec([2, 2], data)?;
         let t2 = t.cast::<u16>();
         assert_eq!(t2.as_slice(), vec![1, 2, 3, 4]);
         Ok(())
@@ -1340,16 +1236,16 @@ mod tests {
 
     #[test]
     fn from_shape_fn_1d() -> Result<(), TensorError> {
-        let alloc = CpuAllocator;
-        let t = Tensor::from_shape_fn([3, 3], alloc, |[i, j]| ((1 + i) * (1 + j)) as u8);
+        let alloc = host_alloc();
+        let t = Tensor::from_shape_fn_in([3, 3], alloc, |[i, j]| ((1 + i) * (1 + j)) as u8);
         assert_eq!(t.as_slice(), vec![1, 2, 3, 2, 4, 6, 3, 6, 9]);
         Ok(())
     }
 
     #[test]
     fn from_shape_fn_2d() -> Result<(), TensorError> {
-        let alloc = CpuAllocator;
-        let t = Tensor::from_shape_fn([3, 3], alloc, |[i, j]| ((1 + i) * (1 + j)) as f32);
+        let alloc = host_alloc();
+        let t = Tensor::from_shape_fn_in([3, 3], alloc, |[i, j]| ((1 + i) * (1 + j)) as f32);
         assert_eq!(
             t.as_slice(),
             vec![1.0, 2.0, 3.0, 2.0, 4.0, 6.0, 3.0, 6.0, 9.0]
@@ -1359,8 +1255,8 @@ mod tests {
 
     #[test]
     fn from_shape_fn_3d() -> Result<(), TensorError> {
-        let alloc = CpuAllocator;
-        let t = Tensor::from_shape_fn([2, 3, 3], alloc, |[x, y, c]| {
+        let alloc = host_alloc();
+        let t = Tensor::from_shape_fn_in([2, 3, 3], alloc, |[x, y, c]| {
             ((1 + x) * (1 + y) * (1 + c)) as i16
         });
         assert_eq!(
@@ -1372,9 +1268,9 @@ mod tests {
 
     #[test]
     fn view_1d() -> Result<(), TensorError> {
-        let alloc = CpuAllocator;
+        let alloc = host_alloc();
         let data: Vec<u8> = vec![1, 2, 3, 4];
-        let t = Tensor::<u8, 1, _>::from_shape_vec([4], data, alloc)?;
+        let t = Tensor::<u8, 1>::from_shape_vec_in([4], data, alloc)?;
         let view = t.view();
 
         // check that the view has the same data
@@ -1389,7 +1285,7 @@ mod tests {
     #[test]
     fn from_slice() -> Result<(), TensorError> {
         let data: [u8; 4] = [1, 2, 3, 4];
-        let t = Tensor::<u8, 2, _>::from_shape_slice([2, 2], &data, CpuAllocator)?;
+        let t = Tensor::<u8, 2>::from_shape_slice([2, 2], &data)?;
 
         assert_eq!(t.shape, [2, 2]);
         assert_eq!(t.as_slice(), &[1, 2, 3, 4]);
@@ -1400,7 +1296,7 @@ mod tests {
     #[test]
     fn display_2d() -> Result<(), TensorError> {
         let data: [u8; 4] = [1, 2, 3, 4];
-        let t = Tensor::<u8, 2, _>::from_shape_slice([2, 2], &data, CpuAllocator)?;
+        let t = Tensor::<u8, 2>::from_shape_slice([2, 2], &data)?;
         let disp = t.to_string();
         let lines = disp.lines().collect::<Vec<_>>();
 
@@ -1414,7 +1310,7 @@ mod tests {
     #[test]
     fn display_3d() -> Result<(), TensorError> {
         let data: [u8; 12] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
-        let t = Tensor::<u8, 3, _>::from_shape_slice([2, 3, 2], &data, CpuAllocator)?;
+        let t = Tensor::<u8, 3>::from_shape_slice([2, 3, 2], &data)?;
         let disp = t.to_string();
         let lines = disp.lines().collect::<Vec<_>>();
 
@@ -1433,7 +1329,7 @@ mod tests {
     #[test]
     fn display_float() -> Result<(), TensorError> {
         let data: [f32; 4] = [1.00001, 1.00009, 0.99991, 0.99999];
-        let t = Tensor::<f32, 2, _>::from_shape_slice([2, 2], &data, CpuAllocator)?;
+        let t = Tensor::<f32, 2>::from_shape_slice([2, 2], &data)?;
         let disp = t.to_string();
         let lines = disp.lines().collect::<Vec<_>>();
 
@@ -1447,7 +1343,7 @@ mod tests {
     #[test]
     fn display_big_float() -> Result<(), TensorError> {
         let data: [f32; 4] = [1000.00001, 1.00009, 0.99991, 0.99999];
-        let t = Tensor::<f32, 2, _>::from_shape_slice([2, 2], &data, CpuAllocator)?;
+        let t = Tensor::<f32, 2>::from_shape_slice([2, 2], &data)?;
         let disp = t.to_string();
         let lines = disp.lines().collect::<Vec<_>>();
 
@@ -1461,7 +1357,7 @@ mod tests {
     #[test]
     fn display_big_tensor() -> Result<(), TensorError> {
         let data: [u8; 1000] = [0; 1000];
-        let t = Tensor::<u8, 3, _>::from_shape_slice([10, 10, 10], &data, CpuAllocator)?;
+        let t = Tensor::<u8, 3>::from_shape_slice([10, 10, 10], &data)?;
         let disp = t.to_string();
         let lines = disp.lines().collect::<Vec<_>>();
 
@@ -1498,7 +1394,7 @@ mod tests {
     #[test]
     fn get_index_unchecked_1d() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4];
-        let t = Tensor::<u8, 1, CpuAllocator>::from_shape_vec([4], data, CpuAllocator)?;
+        let t = Tensor::<u8, 1>::from_shape_vec([4], data)?;
         assert_eq!(t.get_index_unchecked(0), [0]);
         assert_eq!(t.get_index_unchecked(1), [1]);
         assert_eq!(t.get_index_unchecked(2), [2]);
@@ -1509,7 +1405,7 @@ mod tests {
     #[test]
     fn get_index_unchecked_2d() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4];
-        let t = Tensor::<u8, 2, CpuAllocator>::from_shape_vec([2, 2], data, CpuAllocator)?;
+        let t = Tensor::<u8, 2>::from_shape_vec([2, 2], data)?;
         assert_eq!(t.get_index_unchecked(0), [0, 0]);
         assert_eq!(t.get_index_unchecked(1), [0, 1]);
         assert_eq!(t.get_index_unchecked(2), [1, 0]);
@@ -1520,7 +1416,7 @@ mod tests {
     #[test]
     fn get_index_unchecked_3d() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
-        let t = Tensor::<u8, 3, CpuAllocator>::from_shape_vec([2, 2, 3], data, CpuAllocator)?;
+        let t = Tensor::<u8, 3>::from_shape_vec([2, 2, 3], data)?;
         assert_eq!(t.get_index_unchecked(0), [0, 0, 0]);
         assert_eq!(t.get_index_unchecked(1), [0, 0, 1]);
         assert_eq!(t.get_index_unchecked(2), [0, 0, 2]);
@@ -1539,7 +1435,7 @@ mod tests {
     #[test]
     fn get_index_to_offset_and_back() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
-        let t = Tensor::<u8, 3, CpuAllocator>::from_shape_vec([2, 2, 3], data, CpuAllocator)?;
+        let t = Tensor::<u8, 3>::from_shape_vec([2, 2, 3], data)?;
         for offset in 0..12 {
             assert_eq!(
                 t.get_iter_offset_unchecked(t.get_index_unchecked(offset)),
@@ -1552,7 +1448,7 @@ mod tests {
     #[test]
     fn get_offset_to_index_and_back() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
-        let t = Tensor::<u8, 3, CpuAllocator>::from_shape_vec([2, 2, 3], data, CpuAllocator)?;
+        let t = Tensor::<u8, 3>::from_shape_vec([2, 2, 3], data)?;
         for ind in [
             [0, 0, 0],
             [0, 0, 1],
@@ -1575,7 +1471,7 @@ mod tests {
     #[test]
     fn get_index_1d() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4];
-        let t = Tensor::<u8, 1, CpuAllocator>::from_shape_vec([4], data, CpuAllocator)?;
+        let t = Tensor::<u8, 1>::from_shape_vec([4], data)?;
         assert_eq!(t.get_index(3), Ok([3]));
         assert!(t
             .get_index(4)
@@ -1586,7 +1482,7 @@ mod tests {
     #[test]
     fn get_index_2d() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4];
-        let t = Tensor::<u8, 2, CpuAllocator>::from_shape_vec([2, 2], data, CpuAllocator)?;
+        let t = Tensor::<u8, 2>::from_shape_vec([2, 2], data)?;
         assert_eq!(t.get_index_unchecked(3), [1, 1]);
         assert!(t
             .get_index(4)
@@ -1597,7 +1493,7 @@ mod tests {
     #[test]
     fn get_index_3d() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
-        let t = Tensor::<u8, 3, CpuAllocator>::from_shape_vec([2, 2, 3], data, CpuAllocator)?;
+        let t = Tensor::<u8, 3>::from_shape_vec([2, 2, 3], data)?;
         assert_eq!(t.get_index_unchecked(11), [1, 1, 2]);
         assert!(t
             .get_index(12)
@@ -1608,7 +1504,7 @@ mod tests {
     #[test]
     fn from_raw_parts() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4];
-        let t = unsafe { Tensor::from_raw_parts([2, 2], data.as_ptr(), data.len(), CpuAllocator)? };
+        let t = unsafe { Tensor::from_raw_parts([2, 2], data.as_ptr(), data.len(), host_alloc())? };
         std::mem::forget(data);
         assert_eq!(t.shape, [2, 2]);
         assert_eq!(t.as_slice(), &[1, 2, 3, 4]);
@@ -1618,7 +1514,7 @@ mod tests {
     #[test]
     fn test_from_shape_vec_shape_data_mismatch() {
         // 2*3 = 6 elements expected but only 3 supplied — must return InvalidShape.
-        let result = Tensor::<u8, 2, _>::from_shape_vec([2, 3], vec![1, 2, 3], CpuAllocator);
+        let result = Tensor::<u8, 2>::from_shape_vec([2, 3], vec![1, 2, 3]);
         assert!(
             matches!(result, Err(TensorError::InvalidShape(6))),
             "expected Err(TensorError::InvalidShape(6))"
@@ -1629,7 +1525,7 @@ mod tests {
     fn test_reshape_invalid_numel() -> Result<(), TensorError> {
         // 4-element tensor cannot be reshaped to [3, 2] (= 6 elements).
         let data: Vec<u8> = vec![1, 2, 3, 4];
-        let t = Tensor::<u8, 1, _>::from_shape_vec([4], data, CpuAllocator)?;
+        let t = Tensor::<u8, 1>::from_shape_vec([4], data)?;
         let result = t.reshape([3, 2]);
         assert!(
             matches!(result, Err(TensorError::DimensionMismatch(_))),
@@ -1641,7 +1537,7 @@ mod tests {
     #[test]
     fn test_zero_sized_tensor_roundtrip() -> Result<(), TensorError> {
         // A 1-D tensor with zero elements must be constructable and report correct metadata.
-        let t = Tensor::<f32, 1, _>::from_shape_vec([0], vec![], CpuAllocator)?;
+        let t = Tensor::<f32, 1>::from_shape_vec([0], vec![])?;
         assert_eq!(t.numel(), 0);
         assert!(t.as_slice().is_empty());
 
@@ -1657,7 +1553,7 @@ mod tests {
     fn test_cast_on_permuted_view() -> Result<(), TensorError> {
         // Build a 2x3 tensor [[1,2,3],[4,5,6]] and permute (transpose) to 3x2.
         let data: Vec<u8> = vec![1, 2, 3, 4, 5, 6];
-        let t = Tensor::<u8, 2, _>::from_shape_vec([2, 3], data, CpuAllocator)?;
+        let t = Tensor::<u8, 2>::from_shape_vec([2, 3], data)?;
 
         // permute_axes returns a TensorView; materialise it before casting.
         let permuted_view = t.permute_axes([1, 0]);
@@ -1680,7 +1576,7 @@ mod tests {
     #[test]
     fn contiguous_tensor_is_standard_layout_true() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
-        let t = Tensor::<u8, 3, CpuAllocator>::from_shape_vec([2, 2, 3], data, CpuAllocator)?;
+        let t = Tensor::<u8, 3>::from_shape_vec([2, 2, 3], data)?;
         assert!(t.is_standard_layout());
         Ok(())
     }
@@ -1688,7 +1584,7 @@ mod tests {
     #[test]
     fn broken_stride_is_standard_layout_false() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
-        let mut t = Tensor::<u8, 3, CpuAllocator>::from_shape_vec([2, 2, 3], data, CpuAllocator)?;
+        let mut t = Tensor::<u8, 3>::from_shape_vec([2, 2, 3], data)?;
         // arbitrary incorrect stride
         t.strides = [10, 5, 1];
         assert!(!t.is_standard_layout());
@@ -1698,10 +1594,9 @@ mod tests {
     #[test]
     fn contiguous_tensor_roundtrip() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
-        let t =
-            Tensor::<u8, 3, CpuAllocator>::from_shape_vec([2, 2, 3], data.clone(), CpuAllocator)?;
+        let t = Tensor::<u8, 3>::from_shape_vec([2, 2, 3], data.clone())?;
         assert!(t.is_standard_layout());
-        match t.to_standard_layout(CpuAllocator) {
+        match t.to_standard_layout(host_alloc()) {
             Ok(t2) => {
                 assert!(t2.is_standard_layout());
                 assert_eq!(t2.storage.as_slice(), data.as_slice());
@@ -1714,12 +1609,11 @@ mod tests {
     #[test]
     fn non_contiguous_to_standard_layout() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
-        let mut t =
-            Tensor::<u8, 3, CpuAllocator>::from_shape_vec([2, 2, 3], data.clone(), CpuAllocator)?;
+        let mut t = Tensor::<u8, 3>::from_shape_vec([2, 2, 3], data.clone())?;
         // altering strides
         t.strides = [1, 6, 2];
         assert!(!t.is_standard_layout());
-        match t.to_standard_layout(CpuAllocator) {
+        match t.to_standard_layout(host_alloc()) {
             Ok(t2) => {
                 assert!(t2.is_standard_layout());
             }

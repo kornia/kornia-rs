@@ -193,52 +193,54 @@ fn sampson_residual_batch_scalar_tail(
 #[target_feature(enable = "neon")]
 #[inline]
 unsafe fn sampson_residual_batch_neon(f: FPacked, samples: &[Match2d2d], out: &mut [f64]) -> usize {
-    use std::arch::aarch64::*;
-    let (f00, f01, f02, f10, f11, f12, f20, f21, f22) = f;
-    let f00v = vdupq_n_f64(f00);
-    let f01v = vdupq_n_f64(f01);
-    let f02v = vdupq_n_f64(f02);
-    let f10v = vdupq_n_f64(f10);
-    let f11v = vdupq_n_f64(f11);
-    let f12v = vdupq_n_f64(f12);
-    let f20v = vdupq_n_f64(f20);
-    let f21v = vdupq_n_f64(f21);
-    let f22v = vdupq_n_f64(f22);
-    let eps = vdupq_n_f64(1e-12);
-    let one = vdupq_n_f64(1.0);
+    unsafe {
+        use std::arch::aarch64::*;
+        let (f00, f01, f02, f10, f11, f12, f20, f21, f22) = f;
+        let f00v = vdupq_n_f64(f00);
+        let f01v = vdupq_n_f64(f01);
+        let f02v = vdupq_n_f64(f02);
+        let f10v = vdupq_n_f64(f10);
+        let f11v = vdupq_n_f64(f11);
+        let f12v = vdupq_n_f64(f12);
+        let f20v = vdupq_n_f64(f20);
+        let f21v = vdupq_n_f64(f21);
+        let f22v = vdupq_n_f64(f22);
+        let eps = vdupq_n_f64(1e-12);
+        let one = vdupq_n_f64(1.0);
 
-    let n = samples.len();
-    let mut idx = 0usize;
-    while idx + 2 <= n {
-        let base = samples.as_ptr().add(idx) as *const f64;
-        let lanes = vld4q_f64(base);
-        let x1 = lanes.0;
-        let y1 = lanes.1;
-        let x2 = lanes.2;
-        let y2 = lanes.3;
+        let n = samples.len();
+        let mut idx = 0usize;
+        while idx + 2 <= n {
+            let base = samples.as_ptr().add(idx) as *const f64;
+            let lanes = vld4q_f64(base);
+            let x1 = lanes.0;
+            let y1 = lanes.1;
+            let x2 = lanes.2;
+            let y2 = lanes.3;
 
-        let fx1x = vfmaq_f64(vfmaq_f64(f02v, x1, f00v), y1, f01v);
-        let fx1y = vfmaq_f64(vfmaq_f64(f12v, x1, f10v), y1, f11v);
-        let fx1z = vfmaq_f64(vfmaq_f64(f22v, x1, f20v), y1, f21v);
-        let ftx2x = vfmaq_f64(vfmaq_f64(f20v, x2, f00v), y2, f10v);
-        let ftx2y = vfmaq_f64(vfmaq_f64(f21v, x2, f01v), y2, f11v);
+            let fx1x = vfmaq_f64(vfmaq_f64(f02v, x1, f00v), y1, f01v);
+            let fx1y = vfmaq_f64(vfmaq_f64(f12v, x1, f10v), y1, f11v);
+            let fx1z = vfmaq_f64(vfmaq_f64(f22v, x1, f20v), y1, f21v);
+            let ftx2x = vfmaq_f64(vfmaq_f64(f20v, x2, f00v), y2, f10v);
+            let ftx2y = vfmaq_f64(vfmaq_f64(f21v, x2, f01v), y2, f11v);
 
-        let err = vfmaq_f64(vfmaq_f64(fx1z, x2, fx1x), y2, fx1y);
-        let denom = vfmaq_f64(
-            vfmaq_f64(vfmaq_f64(vmulq_f64(fx1x, fx1x), fx1y, fx1y), ftx2x, ftx2x),
-            ftx2y,
-            ftx2y,
-        );
-        let err_sq = vmulq_f64(err, err);
-        let denom_ok = vcgtq_f64(denom, eps);
-        let safe_denom = vbslq_f64(denom_ok, denom, one);
-        let div_val = vdivq_f64(err_sq, safe_denom);
-        let dd = vbslq_f64(denom_ok, div_val, err_sq);
+            let err = vfmaq_f64(vfmaq_f64(fx1z, x2, fx1x), y2, fx1y);
+            let denom = vfmaq_f64(
+                vfmaq_f64(vfmaq_f64(vmulq_f64(fx1x, fx1x), fx1y, fx1y), ftx2x, ftx2x),
+                ftx2y,
+                ftx2y,
+            );
+            let err_sq = vmulq_f64(err, err);
+            let denom_ok = vcgtq_f64(denom, eps);
+            let safe_denom = vbslq_f64(denom_ok, denom, one);
+            let div_val = vdivq_f64(err_sq, safe_denom);
+            let dd = vbslq_f64(denom_ok, div_val, err_sq);
 
-        vst1q_f64(out.as_mut_ptr().add(idx), dd);
-        idx += 2;
+            vst1q_f64(out.as_mut_ptr().add(idx), dd);
+            idx += 2;
+        }
+        idx
     }
-    idx
 }
 
 /// 4-lane f64 AVX2+FMA kernel.

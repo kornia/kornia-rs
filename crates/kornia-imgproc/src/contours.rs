@@ -10,7 +10,7 @@
 //! The [`FindContoursExecutor`] reuses internal buffers across multiple calls,
 //! making it suitable for processing video streams with minimal allocation overhead.
 
-use kornia_image::{allocator::ImageAllocator, Image};
+use kornia_image::Image;
 use rayon::prelude::*;
 use std::ops::Range;
 
@@ -172,13 +172,13 @@ impl WorkBuffers {
 /// # Example
 ///
 /// ```rust
-/// # use kornia_image::{Image, ImageSize, allocator::CpuAllocator};
+/// # use kornia_image::{Image, ImageSize};
 /// # use kornia_imgproc::contours::{FindContoursExecutor, RetrievalMode, ContourApproximationMode};
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let mut executor = FindContoursExecutor::new();
 /// # let size = ImageSize { width: 10, height: 10 };
-/// # let img = Image::<u8, 1, _>::from_size_val(size, 0, CpuAllocator)?;
-/// # let img2 = Image::<u8, 1, _>::from_size_val(size, 0, CpuAllocator)?;
+/// # let img = Image::<u8, 1>::from_size_val(size, 0)?;
+/// # let img2 = Image::<u8, 1>::from_size_val(size, 0)?;
 ///
 /// // Process multiple images with reused buffers
 /// let result1 = executor.find_contours(&img, RetrievalMode::List, ContourApproximationMode::Simple)?;
@@ -215,9 +215,9 @@ impl FindContoursExecutor {
     ///
     /// Returns [`ContoursError::NbdOverflow`] if the image contains more than `i16::MAX`
     /// distinct borders.
-    pub fn find_contours<A: ImageAllocator>(
+    pub fn find_contours(
         &mut self,
-        src: &Image<u8, 1, A>,
+        src: &Image<u8, 1>,
         mode: RetrievalMode,
         method: ContourApproximationMode,
     ) -> Result<ContoursResult, ContoursError> {
@@ -236,9 +236,9 @@ impl FindContoursExecutor {
     /// Note: `RetrievalMode` filtering (CCOMP/Tree-style hierarchy reshaping) is
     /// not applied here — only `External` and `List` modes return their natural
     /// arena layout. For `Ccomp`/`Tree` use `find_contours` (which post-processes).
-    pub fn find_contours_view<A: ImageAllocator>(
+    pub fn find_contours_view(
         &mut self,
-        src: &Image<u8, 1, A>,
+        src: &Image<u8, 1>,
         mode: RetrievalMode,
         method: ContourApproximationMode,
     ) -> Result<ContoursView<'_>, ContoursError> {
@@ -251,9 +251,9 @@ impl FindContoursExecutor {
         })
     }
 
-    fn execute<A: ImageAllocator>(
+    fn execute(
         &mut self,
-        src: &Image<u8, 1, A>,
+        src: &Image<u8, 1>,
         mode: RetrievalMode,
         method: ContourApproximationMode,
     ) -> Result<ContoursResult, ContoursError> {
@@ -279,9 +279,9 @@ impl FindContoursExecutor {
 
     /// The actual Suzuki/Abe scan. Fills `self.buffers` but does not allocate
     /// per-contour owned vectors. Returns `Ok(())` on success.
-    fn execute_scan<A: ImageAllocator>(
+    fn execute_scan(
         &mut self,
-        src: &Image<u8, 1, A>,
+        src: &Image<u8, 1>,
         mode: RetrievalMode,
         method: ContourApproximationMode,
     ) -> Result<(), ContoursError> {
@@ -912,18 +912,18 @@ const _: () = {
 /// # Example
 ///
 /// ```rust
-/// # use kornia_image::{Image, ImageSize, allocator::CpuAllocator};
+/// # use kornia_image::{Image, ImageSize};
 /// # use kornia_imgproc::contours::{find_contours, RetrievalMode, ContourApproximationMode};
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// # let size = ImageSize { width: 10, height: 10 };
-/// # let img = Image::<u8, 1, _>::from_size_val(size, 0, CpuAllocator)?;
+/// # let img = Image::<u8, 1>::from_size_val(size, 0)?;
 /// let result = find_contours(&img, RetrievalMode::External, ContourApproximationMode::Simple)?;
 /// println!("Found {} contours", result.contours.len());
 /// # Ok(())
 /// # }
 /// ```
-pub fn find_contours<A: ImageAllocator>(
-    src: &Image<u8, 1, A>,
+pub fn find_contours(
+    src: &Image<u8, 1>,
     mode: RetrievalMode,
     method: ContourApproximationMode,
 ) -> Result<ContoursResult, ContoursError> {
@@ -933,15 +933,11 @@ pub fn find_contours<A: ImageAllocator>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kornia_image::allocator::CpuAllocator;
+
     use kornia_tensor::{Tensor3, TensorError};
 
-    fn make_img(
-        w: usize,
-        h: usize,
-        data: Vec<u8>,
-    ) -> Result<Image<u8, 1, CpuAllocator>, TensorError> {
-        let tensor = Tensor3::from_shape_vec([h, w, 1], data, CpuAllocator)?;
+    fn make_img(w: usize, h: usize, data: Vec<u8>) -> Result<Image<u8, 1>, TensorError> {
+        let tensor = Tensor3::from_shape_vec([h, w, 1], data)?;
         Ok(Image(tensor))
     }
 

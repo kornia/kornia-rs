@@ -11,7 +11,6 @@ mod linux {
             features::{match_descriptors, OrbDetector},
         },
         io::{functional::read_image_any_rgb8, jpeg},
-        tensor::CpuAllocator,
     };
 
     use kornia::io::v4l::{PixelFormat, V4LCameraConfig, V4lVideoCapture};
@@ -41,9 +40,9 @@ mod linux {
             ..Default::default()
         })?;
 
-        let mut webcam_frame = Image::from_size_val(webcam_size, 0, CpuAllocator)?;
-        let mut webcam_frame_gray = Image::from_size_val(webcam_size, 0, CpuAllocator)?;
-        let mut webcam_frame_grayf32 = Image::from_size_val(webcam_size, 0.0, CpuAllocator)?;
+        let mut webcam_frame = Image::from_size_val(webcam_size, 0)?;
+        let mut webcam_frame_gray = Image::from_size_val(webcam_size, 0)?;
+        let mut webcam_frame_grayf32 = Image::from_size_val(webcam_size, 0.0)?;
 
         let webcam_orb_detector = OrbDetector::new();
 
@@ -52,8 +51,8 @@ mod linux {
         // read the image
         let img_rgb = read_image_any_rgb8(args.image_path)?;
 
-        let mut img_gray = Image::from_size_val(img_rgb.size(), 0, CpuAllocator)?;
-        let mut img_grayf32 = Image::from_size_val(img_rgb.size(), 0.0, CpuAllocator)?;
+        let mut img_gray = Image::from_size_val(img_rgb.size(), 0)?;
+        let mut img_grayf32 = Image::from_size_val(img_rgb.size(), 0.0)?;
         gray_from_rgb_u8(&img_rgb, &mut img_gray)?;
         u8_to_f32_image(&img_gray, &mut img_grayf32);
 
@@ -63,7 +62,6 @@ mod linux {
                 height: webcam_size.height.max(img_rgb.height()),
             },
             0,
-            CpuAllocator,
         )?;
 
         let img_orb_detector = OrbDetector::new();
@@ -162,11 +160,7 @@ mod linux {
         }
     }
 
-    fn join_images_inplace(
-        image1: &Image<u8, 1, CpuAllocator>,
-        image2: &Image<u8, 1, CpuAllocator>,
-        out: &mut Image<u8, 1, CpuAllocator>,
-    ) {
+    fn join_images_inplace(image1: &Image<u8, 1>, image2: &Image<u8, 1>, out: &mut Image<u8, 1>) {
         let width1 = image1.width();
         let width2 = image2.width();
         let height = image1.height();
@@ -197,7 +191,7 @@ mod linux {
         }
     }
 
-    fn u8_to_f32_image(src: &Image<u8, 1, CpuAllocator>, dst: &mut Image<f32, 1, CpuAllocator>) {
+    fn u8_to_f32_image(src: &Image<u8, 1>, dst: &mut Image<f32, 1>) {
         src.as_slice()
             .iter()
             .zip(dst.as_slice_mut())

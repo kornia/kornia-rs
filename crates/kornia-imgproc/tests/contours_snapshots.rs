@@ -20,7 +20,7 @@
 //!
 //! Tests are skipped (not failed) when fixture PNGs aren't downloaded.
 
-use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
+use kornia_image::{Image, ImageSize};
 use kornia_imgproc::contours::{find_contours, ContourApproximationMode, RetrievalMode};
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -132,7 +132,7 @@ fn emit_json(contours: &[Vec<[i32; 2]>]) -> String {
     s
 }
 
-fn load_binary(name: &str) -> Option<Image<u8, 1, CpuAllocator>> {
+fn load_binary(name: &str) -> Option<Image<u8, 1>> {
     let path: PathBuf = [env!("CARGO_MANIFEST_DIR"), "examples", "data", name]
         .iter()
         .collect();
@@ -141,23 +141,21 @@ fn load_binary(name: &str) -> Option<Image<u8, 1, CpuAllocator>> {
     }
     let rgb = kornia_io::png::read_image_png_rgb8(&path).ok()?;
     let (w, h) = (rgb.width(), rgb.height());
-    let mut gray = Image::<u8, 1, _>::from_size_val(
+    let mut gray = Image::<u8, 1>::from_size_val(
         ImageSize {
             width: w,
             height: h,
         },
         0,
-        CpuAllocator,
     )
     .ok()?;
     kornia_imgproc::color::gray_from_rgb_u8(&rgb, &mut gray).ok()?;
-    let mut bw = Image::<u8, 1, _>::from_size_val(
+    let mut bw = Image::<u8, 1>::from_size_val(
         ImageSize {
             width: w,
             height: h,
         },
         0,
-        CpuAllocator,
     )
     .ok()?;
     kornia_imgproc::threshold::threshold_binary(&gray, &mut bw, 127, 1).ok()?;

@@ -23,7 +23,7 @@ use std::{collections::HashMap, path::PathBuf};
 
 use apriltag::DetectorBuilder;
 use kornia_apriltag::{decoder::Detection as KorniaDetection, family::TagFamilyKind, AprilTagDecoder, DecodeTagsConfig};
-use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
+use kornia_image::{Image, ImageSize};
 
 /// Maximum allowed per-axis pixel difference between C and kornia corner coordinates
 /// after optimal alignment.
@@ -110,7 +110,7 @@ fn run_kornia(
     det: &mut AprilTagDecoder,
 ) -> Vec<KorniaDetection> {
     let img =
-        Image::<u8, 1, CpuAllocator>::from_size_slice(ImageSize { width, height }, gray, CpuAllocator)
+        Image::<u8, 1>::from_size_slice(ImageSize { width, height }, gray)
             .unwrap();
     let dets = det.decode_all(&img).unwrap();
     det.clear();

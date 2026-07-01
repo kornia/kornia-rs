@@ -32,13 +32,14 @@ kornia-image = "0.1.0"
 Here is a simple example showing how to create and manipulate an image:
 
 ```rust
-use kornia_image::{Image, ImageSize, allocator::CpuAllocator};
+use kornia_image::{Image, ImageSize};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 1. Create a dummy RGB image (3 channels) with u8 data
+    //    Host is the default — no allocator argument. (Custom allocator: `Image::new_in`.)
     let image_size = ImageSize { width: 10, height: 20 };
     let data = vec![0u8; 10 * 20 * 3];
-    let image = Image::<u8, 3, _>::new(image_size, data, CpuAllocator)?;
+    let image = Image::<u8, 3>::new(image_size, data)?;
 
     println!("Image size: {:?}", image.size());
     println!("Channels: {}", image.num_channels());

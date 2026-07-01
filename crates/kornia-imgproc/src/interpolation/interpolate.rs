@@ -1,6 +1,5 @@
 use super::bilinear::bilinear_interpolation;
 use super::nearest::nearest_neighbor_interpolation;
-use kornia_image::allocator::ImageAllocator;
 use kornia_image::{Image, ImageError};
 
 pub use kornia_image::InterpolationMode;
@@ -28,8 +27,8 @@ pub fn validate_interpolation(interpolation: InterpolationMode) -> Result<(), Im
 ///
 /// # Returns
 /// The interpolated pixel value, or an error if the interpolation mode is unsupported.
-pub fn interpolate_pixel<const C: usize, A: ImageAllocator>(
-    image: &Image<f32, C, A>,
+pub fn interpolate_pixel<const C: usize>(
+    image: &Image<f32, C>,
     u: f32,
     v: f32,
     c: usize,
@@ -40,8 +39,8 @@ pub fn interpolate_pixel<const C: usize, A: ImageAllocator>(
 }
 
 /// Fallible-free internal kernel for fast pixel interpolation (must be validated first)
-pub(crate) fn interpolate_pixel_fast<const C: usize, A: ImageAllocator>(
-    image: &Image<f32, C, A>,
+pub(crate) fn interpolate_pixel_fast<const C: usize>(
+    image: &Image<f32, C>,
     u: f32,
     v: f32,
     c: usize,

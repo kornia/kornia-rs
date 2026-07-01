@@ -6,7 +6,7 @@ members = [
   "kornia-cpp",  # kornia-rs C++ bindings
   "kornia-py",  # kornia-rs python bindings
 ]
-exclude = ["examples/dora"]
+exclude = ["examples/cuda_imgproc", "examples/dora"]
 default-members = ["crates/*"]
 
 [workspace.package]
@@ -75,7 +75,15 @@ pyo3 = "0.28"
 rand = "0.10"
 rayon = "1.12"
 rustc-hash = "2"
-reqwest = { version = "0.13", features = ["blocking"] }
+# Use native-tls (OS TLS) instead of reqwest's default rustls+aws-lc-rs: aws-lc-sys
+# fails to C-build on macOS-arm64 CI. native-tls/openssl-sys is ALREADY in the
+# workspace graph (via hf-hub), so this reuses an existing dependency with no new
+# build deps. (reqwest is a dev-dependency, used by the gstreamer bench to download
+# a test video.)
+reqwest = { version = "0.13", default-features = false, features = [
+  "blocking",
+  "native-tls"
+] }
 rerun = "0.30"
 serde = { version = "1", features = ["derive"] }
 serde-big-array = "0.5"

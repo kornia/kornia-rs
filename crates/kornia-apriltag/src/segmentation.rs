@@ -8,7 +8,7 @@ use crate::{
     union_find::{ParStripUF, UnionFind},
     utils::{Pixel, Point2d},
 };
-use kornia_image::{allocator::ImageAllocator, Image};
+use kornia_image::{Image};
 
 /// Returns `Some(color)` if every pixel in [row_off+1 .. row_off+width-1] and the
 /// corresponding top row [top_off+1 .. top_off+width-1] are all the same non-Skip
@@ -318,8 +318,8 @@ fn cc_strip_phase1(src_data: &[Pixel], width: usize, y_start: usize, y_end: usiz
 /// # Returns
 ///
 /// * `Result<(), AprilTagError>` - `Ok(())` on success.
-pub fn find_connected_components<A: ImageAllocator>(
-    src: &Image<Pixel, 1, A>,
+pub fn find_connected_components(
+    src: &Image<Pixel, 1>,
     uf: &mut UnionFind,
 ) -> Result<(), AprilTagError> {
     let width = src.width();
@@ -472,8 +472,8 @@ impl Pixel {
 /// # Returns
 ///
 /// A `FxHashMap` keyed by `(representative_a, representative_b)` pairs mapping to gradient info vectors.
-pub fn find_gradient_clusters<A: ImageAllocator>(
-    src: &Image<Pixel, 1, A>,
+pub fn find_gradient_clusters(
+    src: &Image<Pixel, 1>,
     uf: &UnionFind,
 ) -> FxHashMap<(usize, usize), Vec<GradientInfo>> {
     let height = src.height();
@@ -934,8 +934,8 @@ fn gradient_clusters_inner(
 ///
 /// rep_cache encodes u32::MAX for pixels that should be skipped (isolated or small components),
 /// else the root pixel index as u32. Built by [`UnionFind::compress_and_fill_rep_cache`].
-pub(crate) fn find_gradient_clusters_with_cache<A: ImageAllocator>(
-    src: &Image<Pixel, 1, A>,
+pub(crate) fn find_gradient_clusters_with_cache(
+    src: &Image<Pixel, 1>,
     rep_cache: &[u32],
 ) -> Vec<FxHashMap<(usize, usize), Vec<GradientInfo>>> {
     let height = src.height();
@@ -963,8 +963,8 @@ pub(crate) fn find_gradient_clusters_with_cache<A: ImageAllocator>(
 /// Builds a temporary rep_cache from `uf` internally.
 ///
 /// Callers that already have a rep_cache should prefer [`find_gradient_clusters_with_cache`].
-pub fn find_gradient_clusters_cached<A: ImageAllocator>(
-    src: &Image<Pixel, 1, A>,
+pub fn find_gradient_clusters_cached(
+    src: &Image<Pixel, 1>,
     uf: &mut UnionFind,
 ) -> Vec<FxHashMap<(usize, usize), Vec<GradientInfo>>> {
     let mut rep_cache = vec![u32::MAX; uf.len()];
@@ -976,7 +976,7 @@ pub fn find_gradient_clusters_cached<A: ImageAllocator>(
 mod tests {
     use super::*;
     use crate::threshold::{adaptive_threshold, TileMinMax};
-    use kornia_image::{allocator::CpuAllocator, ImageSize};
+    use kornia_image::{ImageSize};
     use kornia_io::png::read_image_png_mono8;
 
     #[test]
@@ -996,7 +996,6 @@ mod tests {
                 height: 4,
             },
             bin_data,
-            CpuAllocator,
         )?;
 
         let mut uf = UnionFind::new(20);
@@ -1029,7 +1028,7 @@ mod tests {
     #[test]
     fn test_segmentation() -> Result<(), Box<dyn std::error::Error>> {
         let src = read_image_png_mono8("../../tests/data/apriltag.png")?;
-        let mut bin = Image::from_size_val(src.size(), Pixel::Skip, CpuAllocator)?;
+        let mut bin = Image::from_size_val(src.size(), Pixel::Skip)?;
 
         let mut tile_min_max = TileMinMax::new(src.size(), 4);
         adaptive_threshold(&src, &mut bin, &mut tile_min_max, 20)?;
@@ -1085,7 +1084,7 @@ mod tests {
     #[test]
     fn test_gradient_clusters() -> Result<(), Box<dyn std::error::Error>> {
         let src = read_image_png_mono8("../../tests/data/apriltag.png")?;
-        let mut bin = Image::from_size_val(src.size(), Pixel::Skip, CpuAllocator)?;
+        let mut bin = Image::from_size_val(src.size(), Pixel::Skip)?;
 
         let mut tile_min_max = TileMinMax::new(src.size(), 4);
         adaptive_threshold(&src, &mut bin, &mut tile_min_max, 20)?;

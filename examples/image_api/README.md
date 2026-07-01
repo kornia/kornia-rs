@@ -58,11 +58,10 @@ Example 3: Error handling (wrong data size)
 ### 1. Creating Images from Fill Values
 
 ```rust
-use kornia_image::{Image, ImageSize, allocator::CpuAllocator};
+use kornia_image::{Image, ImageSize};
 
 let size = ImageSize { width: 640, height: 480 };
-let alloc = CpuAllocator::default();
-let img = Image::<u8, 3, _>::from_size_val(size, 128, alloc)?;
+let img = Image::<u8, 3>::from_size_val(size, 128)?;
 ```
 
 ### 2. Creating Images from Data Vectors
@@ -70,14 +69,13 @@ let img = Image::<u8, 3, _>::from_size_val(size, 128, alloc)?;
 ```rust
 let data = vec![0u8; 100];
 let size = ImageSize { width: 10, height: 10 };
-let alloc = CpuAllocator::default();
-let img = Image::<u8, 1, _>::new(size, data, alloc)?;
+let img = Image::<u8, 1>::new(size, data)?;
 ```
 
 ### 3. Zero-Copy Data Access
 
 ```rust
-let img = Image::<u8, 3, _>::from_size_val(size, 42, alloc)?;
+let img = Image::<u8, 3>::from_size_val(size, 42)?;
 let data = img.as_slice();  // &[u8] - zero copy!
 let pixel = data[0];
 ```
@@ -85,7 +83,7 @@ let pixel = data[0];
 ### 4. Owned Copy of Data
 
 ```rust
-let img = Image::<f32, 3, _>::from_size_val(size, 0.5, alloc)?;
+let img = Image::<f32, 3>::from_size_val(size, 0.5)?;
 let owned_copy = img.to_vec();  // Vec<f32>
 // Can modify independently of original
 ```
@@ -95,9 +93,8 @@ let owned_copy = img.to_vec();  // Vec<f32>
 ```rust
 let data = vec![0u8; 100];  // Wrong size
 let size = ImageSize { width: 10, height: 10 };
-let alloc = CpuAllocator::default();
 
-match Image::<u8, 3, _>::new(size, data, alloc) {
+match Image::<u8, 3>::new(size, data) {
     Ok(img) => println!("Created image"),
     Err(ImageError::InvalidChannelShape(got, expected)) => {
         println!("Error: got {} bytes, expected {}", got, expected);
@@ -109,7 +106,7 @@ match Image::<u8, 3, _>::new(size, data, alloc) {
 ### 6. Pixel-Level Access
 
 ```rust
-let mut img = Image::<u8, 3, _>::from_size_val(size, 0, alloc)?;
+let mut img = Image::<u8, 3>::from_size_val(size, 0)?;
 
 // Set individual pixels
 img.set_pixel(0, 0, 0, 255)?;  // Red channel at (0, 0)
@@ -125,13 +122,13 @@ let b = img.get_pixel(0, 0, 2)?;
 ### 7. Channel Operations
 
 ```rust
-let img = Image::<u8, 3, _>::from_size_val(size, 128, alloc)?;
+let img = Image::<u8, 3>::from_size_val(size, 128)?;
 
 // Extract single channel
-let red_channel = img.channel(0)?;  // Returns Image<u8, 1, _>
+let red_channel = img.channel(0)?;  // Returns Image<u8, 1>
 
 // Split into all channels
-let channels = img.split_channels()?;  // Vec<Image<u8, 1, _>>
+let channels = img.split_channels()?;  // Vec<Image<u8, 1>>
 for ch in channels {
     println!("Channel data: {:?}", ch.as_slice());
 }
@@ -140,7 +137,7 @@ for ch in channels {
 ### 8. Image Properties
 
 ```rust
-let img = Image::<u8, 3, _>::from_size_val(size, 0, alloc)?;
+let img = Image::<u8, 3>::from_size_val(size, 0)?;
 
 let width = img.width();      // usize
 let height = img.height();    // usize
@@ -152,25 +149,27 @@ let num_ch = img.num_channels();  // Returns 3
 
 ## Supported Image Types
 
-The `Image<T, C, A>` type is generic over:
+The `Image<T, C>` type is generic over:
 - `T`: Data type (u8, u16, f32, f64, etc.)
 - `C`: Number of channels (1, 3, 4, etc.)
-- `A`: Allocator (typically `CpuAllocator`)
+
+The allocator is **not** a type parameter — it is a runtime handle on the backing storage
+(host by default). Memory domain (Host / Device / Unified) is also runtime.
 
 | Type | Description | Example |
 |------|-------------|---------|
-| `Image<u8, 1, A>` | Grayscale 8-bit | `Image::<u8, 1, _>::from_size_val(...)` |
-| `Image<u8, 3, A>` | RGB 8-bit | `Image::<u8, 3, _>::from_size_val(...)` |
-| `Image<u8, 4, A>` | RGBA 8-bit | `Image::<u8, 4, _>::from_size_val(...)` |
-| `Image<f32, 1, A>` | Grayscale float | `Image::<f32, 1, _>::from_size_val(...)` |
-| `Image<f32, 3, A>` | RGB float | `Image::<f32, 3, _>::from_size_val(...)` |
-| `Image<f32, 4, A>` | RGBA float | `Image::<f32, 4, _>::from_size_val(...)` |
+| `Image<u8, 1>` | Grayscale 8-bit | `Image::<u8, 1>::from_size_val(...)` |
+| `Image<u8, 3>` | RGB 8-bit | `Image::<u8, 3>::from_size_val(...)` |
+| `Image<u8, 4>` | RGBA 8-bit | `Image::<u8, 4>::from_size_val(...)` |
+| `Image<f32, 1>` | Grayscale float | `Image::<f32, 1>::from_size_val(...)` |
+| `Image<f32, 3>` | RGB float | `Image::<f32, 3>::from_size_val(...)` |
+| `Image<f32, 4>` | RGBA float | `Image::<f32, 4>::from_size_val(...)` |
 
 ## Memory Management
 
 - **Ownership**: Images own their data via `Tensor3`
 - **Zero-copy**: `as_slice()` returns `&[T]` reference to internal data
-- **Allocators**: Support custom allocators (default: `CpuAllocator`)
+- **Allocators**: Runtime handle (host by default); `new_in`/`from_size_val_in` accept a custom one
 - **RAII**: Automatic cleanup when image goes out of scope
 
 ## Data Layout

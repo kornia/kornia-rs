@@ -191,3 +191,80 @@ struct Helper { kernel: Vec<f32> }
 
 
 ___
+
+<b>Pattern 8: Name color-space conversion functions `<output>_from_<input>`, not `<input>_to_<output>`. The output type always comes first.
+</b>
+
+Example code before:
+```rust
+pub fn rgb_to_gray(...) { ... }
+pub fn gray_to_rgb(...) { ... }
+pub fn rgb_to_bgr(...) { ... }
+```
+
+Example code after:
+```rust
+pub fn gray_from_rgb(...) { ... }
+pub fn rgb_from_gray(...) { ... }
+pub fn bgr_from_rgb(...) { ... }
+```
+
+This mirrors how Rust's `From`/`Into` traits read: `Gray::from(rgb)`. Consistent naming makes the conversion direction unambiguous at every call site without reading the signature.
+
+<details><summary>Examples for relevant past discussions:</summary>
+
+- PR #944 — `gray_from_rgb`, `gray_from_rgb_u8`, `gray_from_rgb_f32`, `rgb_from_gray`, `bgr_from_rgb`
+</details>
+
+
+___
+
+<b>Pattern 9: When a SIMD op has meaningfully different kernel implementations per pixel dtype, split the module into a subdir (`mod.rs` + `kernels.rs`) and route dtype dispatch through a sealed trait — not via separate public functions per type.
+</b>
+
+Example code before:
+```rust
+// color/gray.rs — 900-line monolith mixing public API with SIMD internals
+pub fn gray_from_rgb<T: Float>(...) { /* scalar */ }
+pub fn gray_from_rgb_u8(...)  { /* NEON/AVX2 u8 */ }
+pub fn gray_from_rgb_f32(...) { /* NEON/AVX2 f32 */ }
+```
+
+Example code after:
+```
+color/gray/
+  mod.rs      — public Image API, sealed trait, thin compat wrappers
+  kernels.rs  — par_strip_dispatch, NEON/AVX2/scalar kernel impls
+```
+
+```rust
+// mod.rs
+mod sealed { pub trait Sealed {} }
+pub trait GrayFromRgb: sealed::Sealed + Sized {
+    #[doc(hidden)]
+    fn gray_from_rgb_impl(...) -> Result<(), ImageError>;
+}
+impl sealed::Sealed for u8 {}
+impl GrayFromRgb for u8 { /* → kernels::rgb_to_gray_u8 */ }
+impl sealed::Sealed for f32 {}
+impl GrayFromRgb for f32 { /* → kernels::rgb_to_gray_f32 */ }
+impl sealed::Sealed for f64 {}
+impl GrayFromRgb for f64 { /* → scalar */ }
+
+pub fn gray_from_rgb<T: GrayFromRgb>(
+    src: &Image<T, 3>, dst: &mut Image<T, 1>,
+) -> Result<(), ImageError> {
+    T::gray_from_rgb_impl(src, dst)
+}
+// gray_from_rgb_u8 / gray_from_rgb_f32 → thin wrappers for backward compat only
+```
+
+The sealed trait provides compile-time dtype dispatch with zero runtime overhead. No `TypeId`, no branching on dtype at runtime, no code duplication. `mod sealed` blocks external impls. Follow `color/gray/` as the canonical example; see `SIMD.md` for the full pattern including the `check_size` helper and `par_strip_dispatch`.
+
+<details><summary>Examples for relevant past discussions:</summary>
+
+- PR #944 — `color/gray/{mod,kernels}.rs` + `GrayFromRgb` sealed trait
+</details>
+
+
+___

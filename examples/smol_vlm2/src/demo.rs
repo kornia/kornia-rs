@@ -11,7 +11,6 @@ pub fn run_video_demo(
     prompt: &str,
     max_tokens: usize,
 ) {
-    use kornia_tensor::CpuAllocator;
     use kornia_vlm::smolvlm2::{InputMedia, Line, Message, Role, SmolVlm2, SmolVlm2Config};
 
     use crate::video::{from_video_path, VideoSamplingMethod};
@@ -24,7 +23,7 @@ pub fn run_video_demo(
         _ => VideoSamplingMethod::Uniform(sample_frames),
     };
 
-    let video = from_video_path::<32, _, CpuAllocator>(video_path, sampling_method, CpuAllocator);
+    let video = from_video_path::<32, _>(video_path, sampling_method);
     let mut video = match video {
         Ok(v) => v,
         Err(e) => {
@@ -40,8 +39,7 @@ pub fn run_video_demo(
         debug: true,
         ..Default::default()
     };
-    let mut model =
-        SmolVlm2::<32, CpuAllocator>::new(config).expect("Failed to create SmolVLM2 model");
+    let mut model = SmolVlm2::<32>::new(config).expect("Failed to create SmolVLM2 model");
 
     // Prepare prompt
     let messages = vec![Message {
@@ -60,7 +58,6 @@ pub fn run_video_demo(
             messages,
             Some(InputMedia::Video(vec![&mut video])),
             max_tokens,
-            CpuAllocator,
         )
         .unwrap_or_else(|e| format!("Model error: {:?}", e));
 
@@ -70,7 +67,6 @@ pub fn run_video_demo(
 #[cfg(test)]
 mod tests {
     use kornia_io::{jpeg::read_image_jpeg_rgb8, png::read_image_png_rgb8};
-    use kornia_tensor::CpuAllocator;
     use kornia_vlm::smolvlm2::{InputMedia, Line, Message, Role, SmolVlm2, SmolVlm2Config};
     use std::path::Path;
 
@@ -106,7 +102,7 @@ mod tests {
             debug: true,
             ..Default::default()
         };
-        let mut model = SmolVlm2::<32, CpuAllocator>::new(config).unwrap();
+        let mut model = SmolVlm2::<32>::new(config).unwrap();
         let sample_len = 500;
 
         let mut inference_times = Vec::new();
@@ -133,7 +129,6 @@ mod tests {
                         }],
                         Some(InputMedia::Images(vec![image.clone()])),
                         sample_len,
-                        CpuAllocator,
                     )
                     .unwrap_or_else(|e| format!("Inference failed: {:?}", e));
                 let duration = start_time.elapsed();
@@ -190,8 +185,8 @@ mod tests {
                     debug: true,
                     ..Default::default()
                 };
-                let mut model = SmolVlm2::<32, CpuAllocator>::new(config)
-                    .expect("Failed to create SmolVLM2 model");
+                let mut model =
+                    SmolVlm2::<32>::new(config).expect("Failed to create SmolVLM2 model");
 
                 for (i, prompt) in video_prompts.iter().enumerate() {
                     model.clear_context().unwrap();
@@ -204,11 +199,8 @@ mod tests {
 
                         use crate::video::{from_video_path, VideoSamplingMethod};
                         let start_load = std::time::Instant::now();
-                        let video_result = from_video_path::<32, _, CpuAllocator>(
-                            video_path,
-                            VideoSamplingMethod::FirstN(32),
-                            CpuAllocator,
-                        );
+                        let video_result =
+                            from_video_path::<32, _>(video_path, VideoSamplingMethod::FirstN(32));
                         let load_duration = start_load.elapsed();
                         let load_secs = load_duration.as_secs_f64();
                         load_times.push(load_secs);
@@ -240,7 +232,6 @@ mod tests {
                                         messages,
                                         Some(InputMedia::Video(vec![&mut video])),
                                         500,
-                                        CpuAllocator,
                                     )
                                     .unwrap_or_else(|e| format!("Model error: {:?}", e));
                                 let infer_duration = start_infer.elapsed();
@@ -318,7 +309,7 @@ mod tests {
             debug: true,
             ..Default::default()
         };
-        let mut model = SmolVlm2::<32, CpuAllocator>::new(config).unwrap();
+        let mut model = SmolVlm2::<32>::new(config).unwrap();
 
         let prompt = "Describe the image.";
         let sample_len = 500;
@@ -336,7 +327,6 @@ mod tests {
                 }],
                 Some(InputMedia::Images(vec![image.into_inner()])),
                 sample_len,
-                CpuAllocator,
             )
             .unwrap_or_else(|e| format!("Inference failed: {:?}", e));
 

@@ -1,4 +1,4 @@
-use super::GstAllocator;
+use super::image_from_gst_buffer;
 use crate::stream::error::StreamCaptureError;
 use circular_buffer::CircularBuffer;
 use gstreamer::prelude::*;
@@ -134,7 +134,7 @@ impl StreamCapture {
     /// # Returns
     ///
     /// An Option containing the last captured Image or None if no image has been captured yet.
-    pub fn grab_rgb8(&mut self) -> Result<Option<Image<u8, 3, GstAllocator>>, StreamCaptureError> {
+    pub fn grab_rgb8(&mut self) -> Result<Option<Image<u8, 3>>, StreamCaptureError> {
         let mut circular_buffer = self
             .circular_buffer
             .lock()
@@ -153,27 +153,16 @@ impl StreamCapture {
             .into_mapped_buffer_readable()
             .map_err(|_| StreamCaptureError::GetBufferError)?;
 
-        let data_ptr = mapped_buffer.as_ptr();
-        let data_len = mapped_buffer.len();
-
-        // We are using custom `GstAllocator` and storing `gstreamer::Buffer`, as the buffer
-        // is reference counted storage maintained by gstreamer and when it is dropped the
-        // `data_ptr` becomes dangling. To avoid this, we are keeping the `Buffer` within
-        // the `GstAllocator` tied to the `Image`.
-        let alloc = GstAllocator(mapped_buffer.into_buffer());
-
-        let image = unsafe {
-            Image::from_raw_parts(
-                ImageSize {
-                    width: width as usize,
-                    height: height as usize,
-                },
-                data_ptr,
-                data_len,
-                alloc,
-            )
-            .map_err(StreamCaptureError::ImageError)
-        }?;
+        // Construct a zero-copy Image backed by the GStreamer buffer.
+        // `GstResource` keeps the MappedBuffer (and thus the Buffer ref-count) alive
+        // for exactly the lifetime of the returned Image — no unsafe ptr arithmetic here.
+        let image = image_from_gst_buffer(
+            ImageSize {
+                width: width as usize,
+                height: height as usize,
+            },
+            mapped_buffer,
+        )?;
 
         Ok(Some(image))
     }

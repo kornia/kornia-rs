@@ -10,7 +10,7 @@ use crate::{
     utils::value_for_pixel,
 };
 use kornia_algebra::Mat3F32;
-use kornia_image::{allocator::ImageAllocator, Image};
+use kornia_image::{Image};
 
 /// Represents a model for grayscale interpolation using a quadratic surface.
 /// The model fits a function of the form f(x, y) = c.x*x + c.y*y + c.z.
@@ -388,8 +388,8 @@ impl SharpeningBuffer {
 /// # Returns
 ///
 /// Returns a vector of `Detection` containing information about each successfully decoded tag.
-pub fn decode_tags<A: ImageAllocator + Sync>(
-    src: &Image<u8, 1, A>,
+pub fn decode_tags(
+    src: &Image<u8, 1>,
     quads: &mut [Quad],
     tag_families: &[(TagFamilyKind, TagFamily)],
     refine_edges_enabled: bool,
@@ -472,7 +472,7 @@ pub fn dedup_detections(all: Vec<Detection>) -> Vec<Detection> {
 /// * `src` - Reference to the grayscale source image.
 /// * `quad` - Mutable reference to the quadrilateral to refine.
 // TODO: Consider moving this somewhere in kornia-imgproc.
-fn refine_edges<A: ImageAllocator>(src: &Image<u8, 1, A>, quad: &mut Quad, range: f32) {
+fn refine_edges(src: &Image<u8, 1>, quad: &mut Quad, range: f32) {
     let src_slice = src.as_slice();
     let mut lines: [[f32; 4]; 4] = Default::default();
 
@@ -634,8 +634,8 @@ fn refine_edges<A: ImageAllocator>(src: &Image<u8, 1, A>, quad: &mut Quad, range
 /// # Returns
 ///
 /// Returns `Some(f32)` containing the decision margin if decoding is successful, or `None` otherwise.
-fn quad_decode<A: ImageAllocator>(
-    src: &Image<u8, 1, A>,
+fn quad_decode(
+    src: &Image<u8, 1>,
     tag_family: &TagFamily,
     quad: &Quad,
     decode_sharpening: f32,
@@ -969,7 +969,6 @@ mod tests {
         utils::Pixel,
     };
     use kornia_algebra::Vec2F32;
-    use kornia_image::allocator::CpuAllocator;
     use kornia_io::png::read_image_png_mono8;
 
     const EPSILON: f32 = 0.0001;
@@ -980,7 +979,7 @@ mod tests {
         config.downscale_factor = 1;
         let src = read_image_png_mono8("../../tests/data/apriltag.png")?;
 
-        let mut bin = Image::from_size_val(src.size(), Pixel::Skip, CpuAllocator)?;
+        let mut bin = Image::from_size_val(src.size(), Pixel::Skip)?;
         let mut tile_min_max = TileMinMax::new(bin.size(), 4);
         let mut uf = UnionFind::new(bin.as_slice().len());
         adaptive_threshold(&src, &mut bin, &mut tile_min_max, 20)?;

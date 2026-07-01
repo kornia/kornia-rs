@@ -7,7 +7,6 @@ use kornia::{
         jpeg,
         v4l::{camera_control, PixelFormat, V4LCameraConfig, V4lVideoCapture},
     },
-    tensor::CpuAllocator,
 };
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -80,7 +79,7 @@ pub fn v4l_demo() -> Result<(), Box<dyn std::error::Error>> {
     let mut fps_counter = FpsCounter::new();
 
     // Pre-allocate RGB image buffer outside the loop
-    let mut rgb_image = Rgb8::from_size_val(img_size, 0, CpuAllocator)?;
+    let mut rgb_image = Rgb8::from_size_val(img_size, 0)?;
 
     while !cancel_token.load(Ordering::SeqCst) {
         let Some(frame) = webcam.grab_frame()? else {

@@ -1,7 +1,7 @@
 use rayon::prelude::*;
 
 use crate::utils::Pixel;
-use kornia_image::{allocator::ImageAllocator, Image};
+use kornia_image::{Image};
 
 
 /// A single horizontal run of non-Skip pixels.
@@ -72,9 +72,9 @@ impl RleCC {
     ///
     /// After this call, `rep_cache[i]` = canonical run-index for pixel i if its
     /// component has ≥ `min_size` pixels, or `u32::MAX` otherwise.
-    pub(crate) fn process<A: ImageAllocator>(
+    pub(crate) fn process(
         &mut self,
-        src: &Image<Pixel, 1, A>,
+        src: &Image<Pixel, 1>,
         rep_cache: &mut Vec<u32>,
         min_size: usize,
     ) {

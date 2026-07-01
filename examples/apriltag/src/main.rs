@@ -1,6 +1,6 @@
 use argh::FromArgs;
 use kornia::{
-    image::{allocator::CpuAllocator, Image, ImageSize},
+    image::{Image, ImageSize},
     imgproc::color::{gray_from_rgb_u8, YuvToRgbMode},
     io::{fps_counter::FpsCounter, jpeg, functional::read_image_any_rgb8},
 };
@@ -143,7 +143,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         (Some(path), None) => {
             // Static image mode.
             let rgb = read_image_any_rgb8(path)?;
-            let mut gray = Image::from_size_val(rgb.size(), 0u8, CpuAllocator)?;
+            let mut gray = Image::from_size_val(rgb.size(), 0u8)?;
             gray_from_rgb_u8(&rgb, &mut gray)?;
 
             let cx = args.cx.unwrap_or(gray.width() as f64 / 2.0);
@@ -190,8 +190,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     args.n_iters,
                 ));
 
-                let mut rgb = Image::<u8, 3, CpuAllocator>::from_size_val(img_size, 0, CpuAllocator)?;
-                let mut gray = Image::<u8, 1, CpuAllocator>::from_size_val(img_size, 0u8, CpuAllocator)?;
+                let mut rgb = Image::<u8, 3>::from_size_val(img_size, 0)?;
+                let mut gray = Image::<u8, 1>::from_size_val(img_size, 0u8)?;
                 let mut decoder = AprilTagDecoder::new(config, img_size)?;
                 let mut fps = FpsCounter::new();
                 let mut pose_state = PoseState::new();
@@ -261,7 +261,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// Log one frame: image + 2D overlays + optional 3D tag poses.
 fn log_frame(
     rec: &rerun::RecordingStream,
-    rgb: &kornia::image::Image<u8, 3, CpuAllocator>,
+    rgb: &kornia::image::Image<u8, 3>,
     img_size: ImageSize,
     detections: &[kornia_apriltag::decoder::Detection],
     pose_args: Option<(PinholeCamera, f64, usize)>,

@@ -3,7 +3,6 @@ use humanize_duration::{prelude::*, Truncate};
 use kornia::image::{Image, ImageSize};
 use kornia::imgproc::resize::resize_fast_rgb;
 use kornia::io::stream::video::{ImageFormat, SeekFlags, VideoReader};
-use kornia::io::stream::GstAllocator;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -18,7 +17,7 @@ pub struct MyApp {
 }
 
 struct TextureStore {
-    image: Image<u8, 3, GstAllocator>,
+    image: Image<u8, 3>,
     texture_handle: egui::TextureHandle,
 }
 
@@ -311,9 +310,8 @@ fn render_image(app: &mut MyApp, ui: &mut eframe::egui::Ui) {
                         ts.texture_handle
                             .set(color_image, egui::TextureOptions::default());
                     } else {
-                        let mut dst: Image<u8, 3, GstAllocator> =
-                            Image::from_size_val(new_image_size, 0, GstAllocator::default())
-                                .expect("Failed to create Image");
+                        let mut dst: Image<u8, 3> = Image::from_size_val(new_image_size, 0)
+                            .expect("Failed to create Image");
                         resize_fast_rgb(
                             &image_frame,
                             &mut dst,
@@ -353,8 +351,11 @@ fn render_image(app: &mut MyApp, ui: &mut eframe::egui::Ui) {
                             egui::TextureOptions::default(),
                         );
 
+                        let owned =
+                            Image::from_size_slice(image_frame.size(), image_frame.as_slice())
+                                .expect("Failed to copy frame to owned buffer");
                         *texture_store = Some(TextureStore {
-                            image: image_frame,
+                            image: owned,
                             texture_handle: texture,
                         });
                     };

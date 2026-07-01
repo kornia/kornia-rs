@@ -1,4 +1,3 @@
-use kornia_image::allocator::CpuAllocator;
 use kornia_image::{color_spaces::Rgb8, ImageSize};
 use kornia_imgproc::color::{ConvertColor, Gray8};
 use kornia_io::functional as F;
@@ -11,12 +10,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("✓ Loaded RGB8 image: {}x{}", rgb.width(), rgb.height());
 
     // Convert to grayscale with type safety
-    let mut gray = Gray8::from_size_val(rgb.size(), 0, CpuAllocator)?;
+    let mut gray = Gray8::from_size_val(rgb.size(), 0)?;
     rgb.convert(&mut gray)?;
     println!("✓ Converted to Gray8: {}x{}", gray.width(), gray.height());
 
     // Convert back to RGB
-    let mut rgb_back = Rgb8::from_size_val(gray.size(), 0, CpuAllocator)?;
+    let mut rgb_back = Rgb8::from_size_val(gray.size(), 0)?;
     gray.convert(&mut rgb_back)?;
     println!("✓ Converted back to RGB8");
 
@@ -32,12 +31,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             0, 0, 255, // Blue
             128, 128, 128, // Gray
         ],
-        CpuAllocator,
     )?;
     println!("\n✓ Created 2x2 RGB8 image from scratch");
 
     // Type-safe conversions work seamlessly
-    let mut small_gray = Gray8::from_size_val(small_rgb.size(), 0, CpuAllocator)?;
+    let mut small_gray = Gray8::from_size_val(small_rgb.size(), 0)?;
     small_rgb.convert(&mut small_gray)?;
 
     println!("✓ Converted to grayscale: {:?}", small_gray.as_slice());

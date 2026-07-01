@@ -4,7 +4,7 @@
 
 use std::time::Instant;
 
-use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
+use kornia_image::{Image, ImageSize};
 use kornia_imgproc::interpolation::InterpolationMode;
 use kornia_imgproc::resize::{
     resize_fast_rgb, resize_normalize_to_tensor_u8_to_f32, NormalizeParams,
@@ -17,13 +17,12 @@ fn main() {
     let dst_h = src_h / 2;
 
     let src_bytes: Vec<u8> = (0..src_w * src_h * 3).map(|i| (i % 251) as u8).collect();
-    let src_img = Image::<u8, 3, _>::new(
+    let src_img = Image::<u8, 3>::new(
         ImageSize {
             width: src_w,
             height: src_h,
         },
         src_bytes.clone(),
-        CpuAllocator,
     )
     .unwrap();
 
@@ -31,13 +30,12 @@ fn main() {
     let std = [0.229f32, 0.224, 0.225];
     let params = NormalizeParams::<3>::from_mean_std(mean, std);
 
-    let mut dst_u8 = Image::<u8, 3, _>::from_size_val(
+    let mut dst_u8 = Image::<u8, 3>::from_size_val(
         ImageSize {
             width: dst_w,
             height: dst_h,
         },
         0u8,
-        CpuAllocator,
     )
     .unwrap();
     let mut dst_chw_f32 = vec![0f32; 3 * dst_h * dst_w];
@@ -54,7 +52,8 @@ fn main() {
             dst_w,
             dst_h,
             &params,
-        );
+        )
+        .unwrap();
     }
 
     let t0 = Instant::now();
@@ -80,7 +79,8 @@ fn main() {
             dst_w,
             dst_h,
             &params,
-        );
+        )
+        .unwrap();
     }
     let fused_ms = t0.elapsed().as_secs_f64() / n as f64 * 1000.0;
 

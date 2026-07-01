@@ -4,7 +4,7 @@ use crate::{
     DecodeTagsConfig,
 };
 use kornia_algebra::{Mat3F32, Vec3F32};
-use kornia_image::{allocator::ImageAllocator, Image};
+use kornia_image::{Image};
 use kornia_imgproc::filter::kernels::gaussian_kernel_1d;
 use rayon::prelude::*;
 use rustc_hash::FxHashMap;
@@ -169,8 +169,8 @@ impl Quad {
 ///
 /// A vector of detected `Quad` structures.
 // TODO: Support multiple tag families
-pub fn fit_quads<A: ImageAllocator + Sync>(
-    src: &Image<Pixel, 1, A>,
+pub fn fit_quads(
+    src: &Image<Pixel, 1>,
     strip_maps: &[FxHashMap<(usize, usize), Vec<GradientInfo>>],
     config: &DecodeTagsConfig,
 ) -> Vec<Quad> {
@@ -247,8 +247,8 @@ pub fn fit_quads<A: ImageAllocator + Sync>(
 /// # Returns
 ///
 /// An `Option<Quad>` containing the detected quadrilateral if successful, or `None` otherwise.
-fn fit_single_quad<A: ImageAllocator>(
-    src: &Image<Pixel, 1, A>,
+fn fit_single_quad(
+    src: &Image<Pixel, 1>,
     cluster: &mut [GradientInfo],
     min_tag_width: usize,
     normal_border: bool,
@@ -487,8 +487,8 @@ struct LineFit {
 ///
 /// A vector of `LineFit` structures containing prefix sums for each point.
 // Hot path: fills lfw.weights and lfw.lfps without allocating.
-fn compute_line_fit_prefix_sums_into<A: ImageAllocator>(
-    src: &Image<Pixel, 1, A>,
+fn compute_line_fit_prefix_sums_into(
+    src: &Image<Pixel, 1>,
     gradient_infos: &[GradientInfo],
     lfw: &mut LfpWorkspace,
 ) {
@@ -596,8 +596,8 @@ fn compute_line_fit_prefix_sums_into<A: ImageAllocator>(
 
 // Test/compatibility wrapper: allocates fresh vecs.
 #[cfg(test)]
-fn compute_line_fit_prefix_sums<A: ImageAllocator>(
-    src: &Image<Pixel, 1, A>,
+fn compute_line_fit_prefix_sums(
+    src: &Image<Pixel, 1>,
     gradient_infos: &[GradientInfo],
 ) -> Vec<LineFit> {
     let mut lfw = LfpWorkspace::default();
@@ -1043,7 +1043,6 @@ fn fit_line(
 
 #[cfg(test)]
 mod tests {
-    use kornia_image::allocator::CpuAllocator;
     use kornia_io::png::read_image_png_mono8;
 
     use crate::{
@@ -1062,7 +1061,7 @@ mod tests {
     fn test_fit_quads() -> Result<(), Box<dyn std::error::Error>> {
         let src = read_image_png_mono8("../../tests/data/apriltag.png")?;
 
-        let mut bin = Image::from_size_val(src.size(), Pixel::Skip, CpuAllocator)?;
+        let mut bin = Image::from_size_val(src.size(), Pixel::Skip)?;
         let mut tile_min_max = TileMinMax::new(src.size(), 4);
         let mut uf = UnionFind::new(src.as_slice().len());
         adaptive_threshold(&src, &mut bin, &mut tile_min_max, 20)?;
@@ -1152,7 +1151,7 @@ mod tests {
     #[test]
     fn test_quad_segment_maxima() -> Result<(), Box<dyn std::error::Error>> {
         let src = read_image_png_mono8("../../tests/data/apriltag.png")?;
-        let mut bin = Image::from_size_val(src.size(), Pixel::Skip, CpuAllocator)?;
+        let mut bin = Image::from_size_val(src.size(), Pixel::Skip)?;
         let mut tile_min_max = TileMinMax::new(src.size(), 4);
         let mut uf = UnionFind::new(src.as_slice().len());
         adaptive_threshold(&src, &mut bin, &mut tile_min_max, 20)?;
@@ -1301,7 +1300,7 @@ mod tests {
             width: 4,
             height: 4,
         };
-        let img = Image::<Pixel, 1, _>::from_size_val(size, Pixel::White, CpuAllocator).unwrap();
+        let img = Image::<Pixel, 1>::from_size_val(size, Pixel::White).unwrap();
 
         // Test 1: Single point
         let gradient_infos = vec![GradientInfo {

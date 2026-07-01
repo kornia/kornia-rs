@@ -17,6 +17,7 @@ name = "bench_view"
 [dependencies]
 bincode = { workspace = true, optional = true }
 cubecl-cuda = { version = "=0.10.0-pre.4", optional = true }
+dlpack-rs = { git = "https://github.com/kornia/dlpack-rs", tag = "v0.3.2", default-features = false, optional = true }
 num-traits = { workspace = true }
 rayon = { workspace = true }
 serde = { workspace = true, optional = true }
@@ -35,7 +36,9 @@ features = [
   "cuda-version-from-build-system",
   "driver",
   "fallback-dynamic-loading",
-  "fallback-latest"
+  "fallback-latest",
+  "nvrtc",
+  "std"
 ]
 optional = true
 
@@ -45,6 +48,11 @@ serde_json = { workspace = true }
 
 [features]
 bincode = ["dep:bincode"]
+# cudarc device-memory integration — default OFF.
+# Enables CudaResource / CudaAllocator and Tensor::to_cuda / to_host etc.
+# Verify absence: `cargo tree -p kornia-tensor -e features | grep -i cudarc`
+cudarc = ["dep:cudarc"]
+dlpack = ["dep:dlpack-rs"]
 gpu = []
 gpu-cubecl = ["dep:cubecl-core", "dep:cubecl-cuda", "dep:cudarc", "gpu"]
 serde = ["dep:serde"]
