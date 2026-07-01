@@ -121,26 +121,37 @@ pub enum PreprocessError {
     UnsupportedChannels(usize),
 }
 
-// Resize params for one call: source→dst affine (scale + pad offset). Shared by
-// the CPU and CUDA paths so both produce identical geometry.
-fn resize_params(
-    mode: ResizeMode,
-    sw: usize,
-    sh: usize,
-    dw: usize,
-    dh: usize,
-) -> (f32, f32, f32, f32) {
-    match mode {
-        ResizeMode::Letterbox => {
-            let s = f32::min(dw as f32 / sw as f32, dh as f32 / sh as f32);
-            (
-                s,
-                s,
-                (dw as f32 - sw as f32 * s) * 0.5,
-                (dh as f32 - sh as f32 * s) * 0.5,
-            )
+// The source→dst mapping for one call: a per-axis scale and pad offset, so
+// `src = (dst - pad) / scale`. Computed once and shared by the CPU and CUDA paths
+// so both produce identical geometry.
+#[derive(Clone, Copy)]
+struct Affine {
+    scale_x: f32,
+    scale_y: f32,
+    pad_x: f32,
+    pad_y: f32,
+}
+
+impl Affine {
+    fn new(mode: ResizeMode, sw: usize, sh: usize, dw: usize, dh: usize) -> Self {
+        let (scale_x, scale_y, pad_x, pad_y) = match mode {
+            ResizeMode::Letterbox => {
+                let s = f32::min(dw as f32 / sw as f32, dh as f32 / sh as f32);
+                (
+                    s,
+                    s,
+                    (dw as f32 - sw as f32 * s) * 0.5,
+                    (dh as f32 - sh as f32 * s) * 0.5,
+                )
+            }
+            ResizeMode::Stretch => (dw as f32 / sw as f32, dh as f32 / sh as f32, 0.0, 0.0),
+        };
+        Self {
+            scale_x,
+            scale_y,
+            pad_x,
+            pad_y,
         }
-        ResizeMode::Stretch => (dw as f32 / sw as f32, dh as f32 / sh as f32, 0.0, 0.0),
     }
 }
 
@@ -356,20 +367,31 @@ impl Preprocessor {
             return Err(PreprocessError::UnsupportedChannels(C));
         }
         let (dst_h, dst_w) = (dst.shape[2], dst.shape[3]);
-        let (src_w, src_h) = (src.width(), src.height());
-        let (scale_x, scale_y, pad_x, pad_y) = resize_params(self.mode, src_w, src_h, dst_w, dst_h);
+        let a = Affine::new(self.mode, src.width(), src.height(), dst_w, dst_h);
 
         #[cfg(feature = "cudarc")]
         if let Some(cuda) = &self.cuda {
-            return self.run_cuda::<C>(cuda, src, dst, scale_x, scale_y, pad_x, pad_y);
+            return self.run_cuda::<C>(cuda, src, dst, &a);
         }
+        self.run_cpu::<C>(src, dst, &a)
+    }
 
-        // CPU path — operands must be host-resident.
+    // Host path: bilinear sample (at `src_bpp = C` stride) + pad + `(v/255-mean)*inv_std`
+    // + HWC→CHW. Kept numerically identical to the CUDA kernel (`cpu_matches_cuda` test).
+    fn run_cpu<const C: usize>(
+        &self,
+        src: &Image<u8, C>,
+        dst: &mut Tensor<f32, 4>,
+        a: &Affine,
+    ) -> Result<(), PreprocessError> {
+        // CPU preprocessor requires host-resident operands.
         #[cfg(feature = "cudarc")]
         if src.0.as_cudaslice().is_some() || dst.as_cudaslice().is_some() {
             return Err(PreprocessError::NotHostData);
         }
 
+        let (dst_h, dst_w) = (dst.shape[2], dst.shape[3]);
+        let (src_w, src_h) = (src.width(), src.height());
         let (mean, inv_std, pv) = (self.mean, self.inv_std, self.pad_value);
         let pixels = dst_h * dst_w;
         let src_pitch = src_w * C;
@@ -379,8 +401,8 @@ impl Preprocessor {
         for oy in 0..dst_h {
             for ox in 0..dst_w {
                 let i = oy * dst_w + ox;
-                let sx = (ox as f32 - pad_x) / scale_x;
-                let sy = (oy as f32 - pad_y) / scale_y;
+                let sx = (ox as f32 - a.pad_x) / a.scale_x;
+                let sy = (oy as f32 - a.pad_y) / a.scale_y;
 
                 if sx < 0.0 || sy < 0.0 || sx >= src_w as f32 || sy >= src_h as f32 {
                     let pv01 = pv / 255.0;
@@ -412,16 +434,12 @@ impl Preprocessor {
     }
 
     #[cfg(feature = "cudarc")]
-    #[allow(clippy::too_many_arguments)]
     fn run_cuda<const C: usize>(
         &self,
         cuda: &CudaBackend,
         src: &Image<u8, C>,
         dst: &mut Tensor<f32, 4>,
-        scale_x: f32,
-        scale_y: f32,
-        pad_x: f32,
-        pad_y: f32,
+        a: &Affine,
     ) -> Result<(), PreprocessError> {
         let (dst_h, dst_w) = (dst.shape[2], dst.shape[3]);
         let (src_w, src_h) = (src.width(), src.height());
@@ -443,10 +461,10 @@ impl Preprocessor {
             .launch_builder(&cuda.stream)
             .arg(src_slice)
             .arg(dst_slice)
-            .arg(&scale_x)
-            .arg(&scale_y)
-            .arg(&pad_x)
-            .arg(&pad_y)
+            .arg(&a.scale_x)
+            .arg(&a.scale_y)
+            .arg(&a.pad_x)
+            .arg(&a.pad_y)
             .arg(&sw)
             .arg(&sh)
             .arg(&sp)
