@@ -286,11 +286,13 @@ impl PyApriltagDetection {
             p2: 0.0,
         };
         let s = tag_size / 2.0;
+        // Match the detector's corner order [TR, BR, BL, TL] (see the Rust
+        // `Detection::estimate_pose`); a mismatched order rotates the pose 90° in-plane.
         let object_pts = [
-            Vec3F64::new(-s, -s, 0.0),
-            Vec3F64::new(s, -s, 0.0),
-            Vec3F64::new(s, s, 0.0),
-            Vec3F64::new(-s, s, 0.0),
+            Vec3F64::new(s, -s, 0.0),  // TR
+            Vec3F64::new(s, s, 0.0),   // BR
+            Vec3F64::new(-s, s, 0.0),  // BL
+            Vec3F64::new(-s, -s, 0.0), // TL
         ];
         let image_pts = [
             Vec2F64::new(self.quad.corners[0].0 as f64, self.quad.corners[0].1 as f64),

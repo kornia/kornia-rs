@@ -6,6 +6,10 @@ use rayon::prelude::*;
 /// across Rayon threads.  Only the owning function may access the pointer; the
 /// type exists solely to satisfy Rayon's `Sync` bound on the closure.
 struct UfRawPtr32(*mut u32);
+// SAFETY: the pointer targets a single `Vec<u32>` whose lifetime outlives the Rayon
+// scope. Each worker only ever forms/derefs offsets into its own disjoint sub-range
+// (partitioned by strip), so no two threads access the same element — there is no
+// aliasing across threads, making the shared raw pointer sound to Send + Sync here.
 unsafe impl Send for UfRawPtr32 {}
 unsafe impl Sync for UfRawPtr32 {}
 impl UfRawPtr32 {
@@ -148,7 +152,13 @@ impl UnionFind {
         let size_ptr = UfRawPtr32(self.size.as_mut_ptr());
         let cache_ptr = UfRawPtr32(cache.as_mut_ptr());
 
-        (0..n_threads).into_par_iter().for_each(|t| {
+        // Iterate the strips sequentially: path-halving writes only within a strip,
+        // but a root-walk reads `parent[...]` across strip boundaries, so running the
+        // strips concurrently would race those reads against other strips' compression
+        // writes (UB, even though the eventual root is identical). This is the
+        // reference/test connected-components path — production uses the RLE-CC
+        // pipeline — so the loop stays serial rather than pay for atomics.
+        (0..n_threads).for_each(|t| {
             let start = t * strip;
             if start >= total {
                 return;

@@ -1,5 +1,12 @@
 # kornia-apriltag Baseline Benchmarks
 
+> **Note on "vs C" ratios.** The `vs C ratio` columns below are *absolute*
+> throughput comparisons against the AprilRobotics C detector. They are a different
+> metric from the PR's "NEON-accelerated" headline, which is the speedup of this
+> crate's NEON path relative to its own initial scalar-Rust implementation
+> (Rust-vs-Rust). At the time of these measurements the detector is still slower
+> than C in absolute terms, and the ≥10× target is **not yet met** — see the summary.
+
 ## Hardware
 
 | Property | Value |

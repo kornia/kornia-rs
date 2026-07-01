@@ -159,9 +159,12 @@ fn orthogonal_iteration(
 /// Estimate the 6-DOF pose of a planar AprilTag from 4 corner correspondences.
 ///
 /// # Arguments
-/// * `object_pts` — 4 object points in tag metric frame: `[(-s,-s,0),(s,-s,0),(s,s,0),(-s,s,0)]`
-///   where `s = tag_size / 2`. Pass them in this order (BL, BR, TR, TL matches kornia Detection.quad.corners order).
-/// * `image_pts` — matching 2D image coordinates (pixels), same order as object_pts.
+/// * `object_pts` — 4 coplanar tag corners in the tag metric frame (`z = 0`), each at
+///   `±tag_size/2` on x/y. Only the index-wise correspondence with `image_pts` matters,
+///   not the absolute order. `Detection::estimate_pose` lists them in the detector's
+///   `[TR, BR, BL, TL]` corner order — see its comment; using a different order there
+///   rotates the recovered pose in-plane.
+/// * `image_pts` — matching 2D image coordinates (pixels), same index order as object_pts.
 /// * `camera` — pinhole camera intrinsics (fx, fy, cx, cy). Distortion coefficients ignored.
 /// * `n_iters` — number of orthogonal-iteration refinement steps (default: 50).
 ///

@@ -325,11 +325,15 @@ impl Detection {
     ) -> Result<crate::pose::TagPosePair, crate::pose::AprilTagPoseError> {
         use kornia_algebra::{Vec2F64, Vec3F64};
         let s = tag_size / 2.0;
+        // `Quad::corners` are ordered [TR, BR, BL, TL] (image, y-down); the object
+        // points must be listed in that same order so each corner maps to the right
+        // tag coordinate. (Listing them as [(-s,-s),(s,-s),(s,s),(-s,s)] instead — as
+        // if the corners were BL,BR,TR,TL — recovers a pose rotated 90° in-plane.)
         let object_pts = [
-            Vec3F64::new(-s, -s, 0.0),
-            Vec3F64::new(s, -s, 0.0),
-            Vec3F64::new(s, s, 0.0),
-            Vec3F64::new(-s, s, 0.0),
+            Vec3F64::new(s, -s, 0.0),  // TR
+            Vec3F64::new(s, s, 0.0),   // BR
+            Vec3F64::new(-s, s, 0.0),  // BL
+            Vec3F64::new(-s, -s, 0.0), // TL
         ];
         let image_pts = [
             Vec2F64::new(self.quad.corners[0].x as f64, self.quad.corners[0].y as f64),
@@ -1022,6 +1026,43 @@ mod tests {
         assert_eq!(tags[0].hamming, 0);
         assert_eq!(tags[0].tag_family_kind, TagFamilyKind::Tag36H11);
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_estimate_pose_frontal_is_identity() -> Result<(), Box<dyn std::error::Error>> {
+        // A frontal, axis-aligned tag must recover a rotation ≈ identity. This guards
+        // against the corner/object-point ordering mismatch that otherwise rotated the
+        // recovered pose 90° in-plane (x_axis.x would be ~0 instead of ~1).
+        let mut config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag36H11])?;
+        config.downscale_factor = 1;
+        let src = read_image_png_mono8("../../tests/data/apriltag.png")?;
+        let mut decoder = crate::AprilTagDecoder::new(config, src.size())?;
+        let dets = decoder.decode(&src)?;
+        assert_eq!(dets.len(), 1);
+
+        let cam = kornia_3d::camera::PinholeCamera {
+            fx: 600.0,
+            fy: 600.0,
+            cx: src.width() as f64 / 2.0,
+            cy: src.height() as f64 / 2.0,
+            k1: 0.0,
+            k2: 0.0,
+            p1: 0.0,
+            p2: 0.0,
+        };
+        let r = dets[0].estimate_pose(&cam, 0.1, 50)?.best.pose.rotation;
+        assert!(
+            r.x_axis.x > 0.9,
+            "in-plane rotation? x_axis.x = {}",
+            r.x_axis.x
+        );
+        assert!(r.y_axis.y > 0.9, "y_axis.y = {}", r.y_axis.y);
+        assert!(
+            r.z_axis.z > 0.9,
+            "tag not facing camera: z_axis.z = {}",
+            r.z_axis.z
+        );
         Ok(())
     }
 
