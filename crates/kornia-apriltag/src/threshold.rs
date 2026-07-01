@@ -256,7 +256,6 @@ pub fn adaptive_threshold(
             for tx in 0..total_tile_cols {
                 let px_start = tx * ts;
                 let px_end = (px_start + ts).min(width);
-                let tile_w = px_end - px_start;
 
                 // For partial right column: clamp to the last full x tile.
                 let (nb_min, nb_max) = if tx < tiles_full_len.x {
@@ -293,7 +292,6 @@ pub fn adaptive_threshold(
                         );
                     }
                 }
-                let _ = tile_w; // suppress unused-variable lint
             }
         });
 

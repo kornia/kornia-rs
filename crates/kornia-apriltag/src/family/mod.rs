@@ -1,7 +1,4 @@
-use crate::{
-    decoder::{QuickDecode, SharpeningBuffer},
-    errors::AprilTagError,
-};
+use crate::{decoder::QuickDecode, errors::AprilTagError};
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -32,8 +29,6 @@ pub struct TagFamily {
     pub min_hamming: u8,
     /// A table for fast lookup of decoded tag codes and their associated metadata.
     pub quick_decode: QuickDecode,
-    /// Buffer used for storing intermediate values during the sharpening process.
-    pub sharpening_buffer: SharpeningBuffer,
 }
 
 impl TagFamily {

@@ -352,7 +352,7 @@ version = "0.1.14"
 dependencies = [
  "argh",
  "ctrlc",
- "glam 0.33.1",
+ "glam 0.33.2",
  "kornia",
  "kornia-3d",
  "kornia-algebra",

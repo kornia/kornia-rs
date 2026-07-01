@@ -432,8 +432,12 @@ pub fn decode_tags(
                         let c = theta.cos();
                         let s = theta.sin();
                         let r = Mat3F32::from_cols_array(&[c, s, 0.0, -s, c, 0.0, 0.0, 0.0, 1.0]);
-                        quad.homography *= r;
-                        let center = quad.homography_project(0.0, 0.0);
+                        // Rotate a per-detection copy — mutating the shared `quad` in
+                        // place would leave its homography rotated for the remaining tag
+                        // families tried against this same quad, corrupting their decodes.
+                        let mut det_quad = quad.clone();
+                        det_quad.homography = quad.homography * r;
+                        let center = det_quad.homography_project(0.0, 0.0);
 
                         detections.push(Detection {
                             _family_idx: fidx,
@@ -442,7 +446,7 @@ pub fn decode_tags(
                             hamming: entry.hamming,
                             decision_margin,
                             center,
-                            quad: quad.clone(),
+                            quad: det_quad,
                         });
                     }
                 }

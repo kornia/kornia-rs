@@ -19,7 +19,6 @@ impl TagFamily {
             code_data: CODE_DATA.into(),
             min_hamming: 9,
             quick_decode: QuickDecode::new(25, &CODE_DATA, 2)?,
-            sharpening_buffer: SharpeningBuffer::new(100),
         })
     }
 }

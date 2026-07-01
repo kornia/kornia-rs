@@ -101,7 +101,9 @@ impl Default for FitQuadConfig {
 pub struct Quad {
     /// The four corners of the quadrilateral, in image coordinates.
     ///
-    /// Order: [Bottom-left, Bottom-right, Top-right, Top-left]
+    /// Order: `[Top-right, Bottom-right, Bottom-left, Top-left]` — clockwise in
+    /// image coordinates (y-down) starting from the top-right. `Detection::estimate_pose`
+    /// relies on this order.
     pub corners: [kornia_algebra::Vec2F32; 4],
     /// Indicates whether the border is reversed (black border inside white border).
     pub reversed_border: bool,
