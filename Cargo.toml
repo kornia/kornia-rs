@@ -43,9 +43,7 @@ criterion = "0.8"
 ctrlc = "3.5"
 cudarc = "0.19"
 env_logger = "0.11"
-# Pinned exact version: faer has significant API breaks between minor releases;
-# update only after auditing our Schur/PGO decomposition code in kornia-3d.
-faer = "=0.23.2"
+faer = "=0.24.4"
 glam = "0.33"
 gstreamer = "0.25"
 gstreamer-app = "0.25"
