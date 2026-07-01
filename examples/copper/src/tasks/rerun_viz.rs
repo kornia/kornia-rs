@@ -16,20 +16,21 @@ impl std::ops::Deref for RerunViz {
 
 impl Freezable for RerunViz {}
 
-impl<'cl> CuSinkTask<'cl> for RerunViz {
-    type Input = input_msg!('cl, ImageRgb8Msg, ImageRgb8Msg, ImageGray8Msg);
+impl CuSinkTask for RerunViz {
+    type Input<'m> = input_msg!('m, ImageRgb8Msg, ImageRgb8Msg, ImageGray8Msg);
+    type Resources<'r> = ();
 
-    fn new(config: Option<&ComponentConfig>) -> Result<Self, CuError>
+    fn new(config: Option<&ComponentConfig>, _resources: Self::Resources<'_>) -> CuResult<Self>
     where
         Self: Sized,
     {
         let (host, port) = if let Some(config) = config {
             (
                 config
-                    .get::<String>("host")
+                    .get::<String>("host")?
                     .ok_or(CuError::from("Host is required"))?,
                 config
-                    .get::<u32>("port")
+                    .get::<u32>("port")?
                     .ok_or(CuError::from("Port is required"))?,
             )
         } else {
@@ -43,9 +44,9 @@ impl<'cl> CuSinkTask<'cl> for RerunViz {
         Ok(Self(rec))
     }
 
-    fn process(&mut self, clock: &RobotClock, input: Self::Input) -> Result<(), CuError> {
-        let (img1, img2, img3) = input;
-        let timestamp_ns = clock.now().as_nanos();
+    fn process(&mut self, ctx: &CuContext, input: &Self::Input<'_>) -> CuResult<()> {
+        let (img1, img2, img3) = *input;
+        let timestamp_ns = ctx.now().as_nanos();
 
         if let Some(img) = img1.payload() {
             log_image_rgb8(self, "webcam", timestamp_ns, img)?;

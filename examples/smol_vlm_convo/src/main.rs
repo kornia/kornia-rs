@@ -234,10 +234,8 @@ impl AppState {
                     self.scroll = max_scroll;
                 }
             }
-            KeyCode::Down => {
-                if self.scroll > 0 {
-                    self.scroll -= 1;
-                }
+            KeyCode::Down if self.scroll > 0 => {
+                self.scroll -= 1;
             }
             _ => {}
         }
@@ -392,14 +390,12 @@ impl AppState {
             KeyCode::Right => {
                 self.adjust_config(1);
             }
-            KeyCode::Char(' ') => {
-                if self.config_selected == 3 {
-                    self.config_do_sample = !self.config_do_sample;
-                    let _ = self
-                        .model_handle
-                        .tx
-                        .send(ModelRequest::SetDoSample(self.config_do_sample));
-                }
+            KeyCode::Char(' ') if self.config_selected == 3 => {
+                self.config_do_sample = !self.config_do_sample;
+                let _ = self
+                    .model_handle
+                    .tx
+                    .send(ModelRequest::SetDoSample(self.config_do_sample));
             }
             _ => {}
         }
@@ -552,10 +548,8 @@ fn run(mut terminal: DefaultTerminal) -> Result<()> {
                             state.scroll = max_scroll;
                         }
                     }
-                    MouseEventKind::ScrollDown => {
-                        if state.scroll > 0 {
-                            state.scroll -= 1;
-                        }
+                    MouseEventKind::ScrollDown if state.scroll > 0 => {
+                        state.scroll -= 1;
                     }
                     _ => {}
                 }
@@ -667,7 +661,7 @@ fn render(frame: &mut Frame, state: &AppState) {
     let max_scroll = total_lines.saturating_sub(chat_height);
     let scroll = state.scroll.min(max_scroll);
     let end = total_lines.saturating_sub(scroll);
-    let start = end.saturating_sub(chat_height).max(0);
+    let start = end.saturating_sub(chat_height);
     let visible_lines: Vec<&str> = all_lines
         .get(start..end)
         .map_or(vec![], |slice| slice.iter().map(|s| s.as_str()).collect());

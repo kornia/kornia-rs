@@ -1,5 +1,4 @@
 use cu29::prelude::*;
-use cu29_helpers::basic_copper_setup;
 
 const SLAB_SIZE: Option<usize> = Some(150 * 1024 * 1024);
 
@@ -10,17 +9,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tmp_dir = tempfile::TempDir::new().expect("could not create a tmp dir");
     let logger_path = tmp_dir.path().join("kornia_app.copper");
 
-    let copper_ctx =
-        basic_copper_setup(&logger_path, SLAB_SIZE, true, None).expect("Failed to setup copper.");
-
-    debug!("Logger path: {}", path = &logger_path);
-
-    let clock = &copper_ctx.clock;
-
-    let mut application = KorniaApplicationBuilder::new()
-        .with_context(&copper_ctx)
+    let mut application = KorniaApplication::builder()
+        .with_log_path(&logger_path, SLAB_SIZE)?
         .build()
         .expect("Failed to create application.");
+
+    let clock = application.clock();
+
+    debug!("Logger path: {}", path = &logger_path);
 
     debug!("Running... starting clock: {}.", clock.now());
 
