@@ -4,6 +4,8 @@
 //! [`tile_min_max`] for their scalar tails, so it stays un-gated; the full-scalar
 //! kernels below are only compiled where no SIMD path applies.
 
+// `Pixel` is only referenced by the full-scalar `classify_row` (compiled off aarch64).
+#[cfg(not(target_arch = "aarch64"))]
 use crate::utils::Pixel;
 
 /// Scalar min/max over one `tile_size`×`tile_size` tile at column `tile_x`, row `tile_y`.

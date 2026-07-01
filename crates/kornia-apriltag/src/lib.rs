@@ -30,9 +30,6 @@ pub mod utils;
 /// Thresholding utilities for AprilTag detection.
 pub mod threshold;
 
-/// image iteration utilities module.
-pub(crate) mod iter;
-
 /// Segmentation utilities for AprilTag detection.
 pub mod segmentation;
 

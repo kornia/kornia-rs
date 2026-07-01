@@ -300,9 +300,9 @@ pub fn rgb_to_gray_u8(src: &[u8], dst: &mut [u8], npixels: usize) {
 #[inline]
 fn rgb_to_gray_u8_kernel(src: &[u8], dst: &mut [u8], npixels: usize) {
     // AArch64: NEON is part of the ARMv8-A baseline — always available.
+    // (rgb_to_gray_u8_neon is a safe fn; its NEON intrinsics are in an inner unsafe block.)
     #[cfg(target_arch = "aarch64")]
-    // SAFETY: NEON is guaranteed on AArch64.
-    return unsafe { rgb_to_gray_u8_neon(src, dst, npixels) };
+    return rgb_to_gray_u8_neon(src, dst, npixels);
 
     // x86_64: use AVX2 when the runtime probe confirms it.
     #[cfg(target_arch = "x86_64")]

@@ -929,46 +929,6 @@ fn gradient_clusters_inner(
     gradient_clusters_inner_scalar(src_slice, rep_cache, width, y_start, y_end)
 }
 
-/// Merges per-thread gradient cluster maps in parallel over unique keys.
-///
-/// Enumerate all unique keys from the first non-empty map, then let Rayon
-/// assign one task per key — each task reads from all thread maps (shared-ref,
-/// no locking) and builds one contiguous output Vec per cluster.
-///
-/// Parallel merge turns the O(total_points) serial scan into
-/// O(total_points / n_keys) parallel tasks, saturating all cores.
-fn merge_clusters(
-    local_maps: Vec<FxHashMap<(usize, usize), Vec<GradientInfo>>>,
-) -> FxHashMap<(usize, usize), Vec<GradientInfo>> {
-    // Collect all unique keys from every thread's map.
-    let keys: Vec<(usize, usize)> = {
-        let mut seen: FxHashMap<(usize, usize), ()> = FxHashMap::default();
-        for map in &local_maps {
-            for k in map.keys() { seen.entry(*k).or_insert(()); }
-        }
-        seen.into_keys().collect()
-    };
-
-    // Parallel merge: Vec collect (no hash overhead), then build FxHashMap sequentially.
-    let pairs: Vec<((usize, usize), Vec<GradientInfo>)> = keys.into_par_iter()
-        .map(|key| {
-            let total_len: usize = local_maps.iter().filter_map(|m| m.get(&key)).map(|v| v.len()).sum();
-            let mut merged: Vec<GradientInfo> = Vec::with_capacity(total_len);
-            for map in &local_maps {
-                if let Some(entries) = map.get(&key) {
-                    merged.extend_from_slice(entries);
-                }
-            }
-            (key, merged)
-        })
-        .collect();
-    let mut result: FxHashMap<(usize, usize), Vec<GradientInfo>> =
-        FxHashMap::with_capacity_and_hasher(pairs.len(), Default::default());
-    for (k, v) in pairs {
-        result.insert(k, v);
-    }
-    result
-}
 
 /// Gradient-cluster scan using a pre-built rep_cache (no union-find traversal in the hot path).
 ///

@@ -15,6 +15,7 @@ use kornia_image::{allocator::ImageAllocator, Image, ImageSize};
 /// # Returns
 ///
 /// A `Point2d` representing the number of tiles along the x and y axes.
+#[cfg(test)]
 pub(crate) fn find_total_tiles(size: ImageSize, tile_size: usize) -> Point2d {
     Point2d {
         x: size.width.div_ceil(tile_size),

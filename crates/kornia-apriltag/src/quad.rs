@@ -498,6 +498,8 @@ fn compute_line_fit_prefix_sums_into<A: ImageAllocator>(
     let n = gradient_infos.len();
     lfw.weights.resize(n, 0.0);
     lfw.lfps.resize_with(n, LineFit::default);
+    // `weights` is only consumed by the NEON path; the scalar path computes weights inline.
+    #[cfg(target_arch = "aarch64")]
     let weights = &mut lfw.weights;
     let lfps = &mut lfw.lfps;
 
@@ -593,6 +595,7 @@ fn compute_line_fit_prefix_sums_into<A: ImageAllocator>(
 }
 
 // Test/compatibility wrapper: allocates fresh vecs.
+#[cfg(test)]
 fn compute_line_fit_prefix_sums<A: ImageAllocator>(
     src: &Image<Pixel, 1, A>,
     gradient_infos: &[GradientInfo],
@@ -896,6 +899,7 @@ fn quad_segment_maxima_ws(
 }
 
 // Test/compatibility wrapper: allocates fresh SegWorkspace.
+#[cfg(test)]
 fn quad_segment_maxima(
     gradient_infos: &[GradientInfo],
     lfps: &[LineFit],
