@@ -10,6 +10,9 @@
 //!   [`ResizeMode::Stretch`] (anisotropic, no pad).
 //! - **normalize** — [`Normalize::UnitScale`] (RGB `[0,1]`) or [`Normalize::MeanStd`]
 //!   (fold an ImageNet-style mean/std into the same pass).
+//! - **sampling** — `Nearest`, `Bilinear` (default), or `Lanczos` (3-lobe windowed
+//!   sinc), via the crate's shared [`InterpolationMode`] — the same filters
+//!   `resize`/`warp` use.
 //! - **channels** — [`run`](Preprocessor::run) is generic over the source channel
 //!   count: `Image<u8, 3>` (RGB) or `Image<u8, 4>` (RGBA — the alpha byte is
 //!   skipped), so a repacked RGBA camera surface reaches a CHW model tensor with no
@@ -48,8 +51,12 @@ use std::sync::Arc;
 
 #[cfg(feature = "cudarc")]
 use cudarc::driver::CudaStream;
-use kornia_image::Image;
+use kornia_image::{Image, ImageError, ImageSize, InterpolationMode};
 use kornia_tensor::Tensor;
+
+use crate::resize::{
+    resize_fast_u8_aa, resize_normalize_to_tensor_u8_to_f32_bilinear, NormalizeParams,
+};
 #[cfg(feature = "cudarc")]
 use kornia_tensor::{CudaError, CudaKernel};
 
@@ -141,6 +148,12 @@ pub enum PreprocessError {
         /// The rejected per-channel std.
         std: [f32; 3],
     },
+    /// An error from the underlying resize kernels or scratch-image allocation.
+    #[error(transparent)]
+    Image(#[from] ImageError),
+    /// The sampling mode is not supported (only Nearest / Bilinear / Lanczos).
+    #[error("unsupported sampling mode {0:?} (expected Nearest, Bilinear, or Lanczos)")]
+    UnsupportedSampling(InterpolationMode),
     /// Source or output dimensions exceed the kernel's 32-bit indexing (the CUDA
     /// path indexes pixels as `int`). Unreachable on real hardware, guarded anyway.
     #[cfg(feature = "cudarc")]
@@ -155,7 +168,11 @@ pub enum PreprocessError {
 struct Affine {
     scale_x: f32,
     scale_y: f32,
+    // The fractional pad offsets are consumed by the CUDA kernel's per-sample
+    // affine; the CPU path derives an integer content box from the scales.
+    #[cfg_attr(not(feature = "cudarc"), allow(dead_code))]
     pad_x: f32,
+    #[cfg_attr(not(feature = "cudarc"), allow(dead_code))]
     pad_y: f32,
 }
 
@@ -198,6 +215,16 @@ struct CudaBackend {
 // always passes `src_w * C`.
 #[cfg(feature = "cudarc")]
 const KERNEL_SRC: &str = r#"
+// 1-D Lanczos-3 weight — same form as interpolation::lanczos::lanczos_weight on
+// the CPU side, so the two backends stay numerically comparable.
+__device__ __forceinline__ float lanczos_w(float d) {
+    float ad = fabsf(d);
+    if (ad < 1e-6f) return 1.0f;
+    if (ad >= 3.0f) return 0.0f;
+    float pd = 3.14159265358979f * d;
+    return 3.0f * sinf(pd) * sinf(pd / 3.0f) / (pd * pd);
+}
+
 extern "C" __global__ void resize_normalize_to_chw(
     const unsigned char* __restrict__ src,
     float* __restrict__ dst,
@@ -206,7 +233,8 @@ extern "C" __global__ void resize_normalize_to_chw(
     int dst_w, int dst_h,
     float m0, float m1, float m2,
     float is0, float is1, float is2,
-    float pad_value
+    float pad_value,
+    int sampling  // 0 = nearest, 1 = bilinear, 2 = lanczos3
 ) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     int pixels = dst_w * dst_h;
@@ -227,21 +255,58 @@ extern "C" __global__ void resize_normalize_to_chw(
         return;
     }
 
-    int x0 = (int)floorf(sx), y0 = (int)floorf(sy);
-    float ax = sx - (float)x0, ay = sy - (float)y0;
-    int x1 = min(x0 + 1, src_w - 1), y1 = min(y0 + 1, src_h - 1);
-    x0 = max(x0, 0); y0 = max(y0, 0);
+    float px[3];
+    if (sampling == 0) {
+        // Nearest: round + clamp-to-edge (mirrors interpolation::nearest).
+        int xn = min(max((int)roundf(sx), 0), src_w - 1);
+        int yn = min(max((int)roundf(sy), 0), src_h - 1);
+        const unsigned char* p = src + (long)yn * src_pitch + xn * src_bpp;
+        #pragma unroll
+        for (int c = 0; c < 3; ++c) px[c] = (float)p[c];
+    } else if (sampling == 2) {
+        // Lanczos-3: 6x6 windowed sinc, clamp-to-edge taps, weights renormalized
+        // by their sum (mirrors interpolation::lanczos).
+        int x0 = (int)floorf(sx), y0 = (int)floorf(sy);
+        float acc[3] = { 0.0f, 0.0f, 0.0f };
+        float wsum = 0.0f;
+        for (int j = -2; j <= 3; ++j) {
+            int yj = y0 + j;
+            float wy = lanczos_w(sy - (float)yj);
+            int yc = min(max(yj, 0), src_h - 1);
+            const unsigned char* r = src + (long)yc * src_pitch;
+            for (int ii = -2; ii <= 3; ++ii) {
+                int xi = x0 + ii;
+                float w = wy * lanczos_w(sx - (float)xi);
+                int xc = min(max(xi, 0), src_w - 1);
+                #pragma unroll
+                for (int c = 0; c < 3; ++c) acc[c] += w * (float)r[xc * src_bpp + c];
+                wsum += w;
+            }
+        }
+        #pragma unroll
+        for (int c = 0; c < 3; ++c) px[c] = acc[c] / wsum;
+    } else {
+        // Bilinear: clamp-to-edge taps (mirrors interpolation::bilinear).
+        int x0 = (int)floorf(sx), y0 = (int)floorf(sy);
+        float ax = sx - (float)x0, ay = sy - (float)y0;
+        int x1 = min(x0 + 1, src_w - 1), y1 = min(y0 + 1, src_h - 1);
+        x0 = max(x0, 0); y0 = max(y0, 0);
 
-    const unsigned char* r0 = src + (long)y0 * src_pitch;
-    const unsigned char* r1 = src + (long)y1 * src_pitch;
+        const unsigned char* r0 = src + (long)y0 * src_pitch;
+        const unsigned char* r1 = src + (long)y1 * src_pitch;
+        #pragma unroll
+        for (int c = 0; c < 3; ++c) {
+            float v00 = (float)r0[x0 * src_bpp + c], v10 = (float)r0[x1 * src_bpp + c];
+            float v01 = (float)r1[x0 * src_bpp + c], v11 = (float)r1[x1 * src_bpp + c];
+            float top = v00 + (v10 - v00) * ax;
+            float bot = v01 + (v11 - v01) * ax;
+            px[c] = top + (bot - top) * ay;
+        }
+    }
+
     #pragma unroll
     for (int c = 0; c < 3; ++c) {
-        float v00 = (float)r0[x0 * src_bpp + c], v10 = (float)r0[x1 * src_bpp + c];
-        float v01 = (float)r1[x0 * src_bpp + c], v11 = (float)r1[x1 * src_bpp + c];
-        float top = v00 + (v10 - v00) * ax;
-        float bot = v01 + (v11 - v01) * ax;
-        float v = (top + (bot - top) * ay) / 255.0f;
-        dst[c * pixels + i] = (v - mean[c]) * inv_std[c];
+        dst[c * pixels + i] = (px[c] / 255.0f - mean[c]) * inv_std[c];
     }
 }
 "#;
@@ -255,6 +320,7 @@ pub struct PreprocessorBuilder {
     mode: ResizeMode,
     normalize: Normalize,
     pad_value: u8,
+    sampling: InterpolationMode,
 }
 
 impl Default for PreprocessorBuilder {
@@ -263,6 +329,7 @@ impl Default for PreprocessorBuilder {
             mode: ResizeMode::Letterbox,
             normalize: Normalize::UnitScale,
             pad_value: 114,
+            sampling: InterpolationMode::Bilinear,
         }
     }
 }
@@ -292,11 +359,26 @@ impl PreprocessorBuilder {
         self
     }
 
+    /// Set the resampling filter ([`InterpolationMode`]): `Nearest`, `Bilinear`
+    /// (the default), or `Lanczos` (3-lobe windowed sinc) — the three filters in
+    /// common CV/ML use. `Bicubic` is not implemented and is rejected at build.
+    pub fn sampling(mut self, sampling: InterpolationMode) -> Self {
+        self.sampling = sampling;
+        self
+    }
+
     /// Build a **CPU** preprocessor (host image → host tensor). Always available.
     pub fn build(self) -> Result<Preprocessor, PreprocessError> {
+        if !matches!(
+            self.sampling,
+            InterpolationMode::Nearest | InterpolationMode::Bilinear | InterpolationMode::Lanczos
+        ) {
+            return Err(PreprocessError::UnsupportedSampling(self.sampling));
+        }
         let (mean, inv_std) = self.normalize.mean_inv_std()?;
         Ok(Preprocessor {
             mode: self.mode,
+            sampling: self.sampling,
             mean,
             inv_std,
             pad_value: self.pad_value as f32,
@@ -309,10 +391,17 @@ impl PreprocessorBuilder {
     /// [`run`](Preprocessor::run) operands must then be device-resident.
     #[cfg(feature = "cudarc")]
     pub fn build_cuda(self, stream: Arc<CudaStream>) -> Result<Preprocessor, PreprocessError> {
+        if !matches!(
+            self.sampling,
+            InterpolationMode::Nearest | InterpolationMode::Bilinear | InterpolationMode::Lanczos
+        ) {
+            return Err(PreprocessError::UnsupportedSampling(self.sampling));
+        }
         let kernel = CudaKernel::compile(stream.context(), KERNEL_SRC, "resize_normalize_to_chw")?;
         let (mean, inv_std) = self.normalize.mean_inv_std()?;
         Ok(Preprocessor {
             mode: self.mode,
+            sampling: self.sampling,
             mean,
             inv_std,
             pad_value: self.pad_value as f32,
@@ -329,6 +418,7 @@ impl PreprocessorBuilder {
 /// destination tensor each call, so one instance handles every model size.
 pub struct Preprocessor {
     mode: ResizeMode,
+    sampling: InterpolationMode,
     mean: [f32; 3],
     inv_std: [f32; 3],
     pad_value: f32,
@@ -410,8 +500,14 @@ impl Preprocessor {
         self.run_cpu::<C>(src, dst, &a)
     }
 
-    // Host path: bilinear sample (at `src_bpp = C` stride) + pad + `(v/255-mean)*inv_std`
-    // + HWC→CHW. Kept numerically identical to the CUDA kernel (`cpu_matches_cuda` test).
+    // Host path built on the crate's OPTIMIZED resize kernels, not a scalar loop:
+    // `resize_fast_u8_aa` (NEON-accelerated separable resampler; PIL-grade
+    // antialiased Lanczos) resamples to the content size, then the fused
+    // scale+bias normalize / HWC→CHW placement writes the output (with the
+    // all-bilinear stretch case collapsing to the crate's fully-fused
+    // `resize_normalize_to_tensor_u8_to_f32_bilinear`). Note the CPU resampler
+    // is antialiased on downscale, so CPU and CUDA outputs may differ at the
+    // sub-pixel level (CPU is the higher-quality reference).
     fn run_cpu<const C: usize>(
         &self,
         src: &Image<u8, C>,
@@ -425,42 +521,78 @@ impl Preprocessor {
         }
 
         let (dst_h, dst_w) = (dst.shape[2], dst.shape[3]);
-        let (src_w, src_h) = (src.width(), src.height());
-        let (mean, inv_std, pv) = (self.mean, self.inv_std, self.pad_value);
         let pixels = dst_h * dst_w;
-        let src_pitch = src_w * C;
-        let src_buf = src.0.as_slice();
+        // Fused normalize as one FMA: `out = raw_u8 * scale + bias`.
+        let params = NormalizeParams::<3> {
+            scale: [
+                self.inv_std[0] / 255.0,
+                self.inv_std[1] / 255.0,
+                self.inv_std[2] / 255.0,
+            ],
+            bias: [
+                -self.mean[0] * self.inv_std[0],
+                -self.mean[1] * self.inv_std[1],
+                -self.mean[2] * self.inv_std[2],
+            ],
+        };
+
+        // Fully-fused fast path: RGB stretch+bilinear is one crate kernel call.
+        if C == 3
+            && self.mode == ResizeMode::Stretch
+            && self.sampling == InterpolationMode::Bilinear
+        {
+            return Ok(resize_normalize_to_tensor_u8_to_f32_bilinear(
+                src.0.as_slice(),
+                src.width(),
+                src.height(),
+                dst.as_slice_mut(),
+                dst_w,
+                dst_h,
+                &params,
+            )?);
+        }
+
+        // Content box: the letterboxed region the image scales into (whole
+        // output for Stretch). Integer placement, centred like the CUDA affine.
+        // When the pad is fractional the box is rounded to whole pixels, so the
+        // content/pad boundary may sit one pixel from where the GPU kernel
+        // (which pads per-sample on the fractional affine) puts it.
+        let (cw, ch) = match self.mode {
+            ResizeMode::Stretch => (dst_w, dst_h),
+            ResizeMode::Letterbox => (
+                ((src.width() as f32 * a.scale_x).round() as usize).clamp(1, dst_w),
+                ((src.height() as f32 * a.scale_y).round() as usize).clamp(1, dst_h),
+            ),
+        };
+        let (px0, py0) = ((dst_w - cw) / 2, (dst_h - ch) / 2);
+
+        // 1) SIMD resample to the content size (Nearest / Bilinear / AA-Lanczos).
+        let mut scratch = Image::<u8, C>::from_size_val(
+            ImageSize {
+                width: cw,
+                height: ch,
+            },
+            0,
+        )?;
+        resize_fast_u8_aa(src, &mut scratch, self.sampling, true)?;
+
+        // 2) Pad fill + fused normalize/CHW placement of the content box.
+        let sbuf = scratch.0.as_slice();
         let dst_buf = dst.as_slice_mut();
-
-        for oy in 0..dst_h {
-            for ox in 0..dst_w {
-                let i = oy * dst_w + ox;
-                let sx = (ox as f32 - a.pad_x) / a.scale_x;
-                let sy = (oy as f32 - a.pad_y) / a.scale_y;
-
-                if sx < 0.0 || sy < 0.0 || sx >= src_w as f32 || sy >= src_h as f32 {
-                    let pv01 = pv / 255.0;
-                    for c in 0..3 {
-                        dst_buf[c * pixels + i] = (pv01 - mean[c]) * inv_std[c];
-                    }
-                    continue;
-                }
-
-                let (x0f, y0f) = (sx.floor(), sy.floor());
-                let (ax, ay) = (sx - x0f, sy - y0f);
-                let (x0, y0) = (x0f as usize, y0f as usize);
-                let x1 = (x0 + 1).min(src_w - 1);
-                let y1 = (y0 + 1).min(src_h - 1);
-                let (r0, r1) = (y0 * src_pitch, y1 * src_pitch);
-                for c in 0..3 {
-                    let v00 = src_buf[r0 + x0 * C + c] as f32;
-                    let v10 = src_buf[r0 + x1 * C + c] as f32;
-                    let v01 = src_buf[r1 + x0 * C + c] as f32;
-                    let v11 = src_buf[r1 + x1 * C + c] as f32;
-                    let top = v00 + (v10 - v00) * ax;
-                    let bot = v01 + (v11 - v01) * ax;
-                    let v = (top + (bot - top) * ay) / 255.0;
-                    dst_buf[c * pixels + i] = (v - mean[c]) * inv_std[c];
+        let pad = core::array::from_fn::<f32, 3, _>(|c| {
+            self.pad_value * params.scale[c] + params.bias[c]
+        });
+        let padded = px0 != 0 || py0 != 0 || cw != dst_w || ch != dst_h;
+        for (c, &pad_c) in pad.iter().enumerate() {
+            let plane = &mut dst_buf[c * pixels..(c + 1) * pixels];
+            if padded {
+                plane.fill(pad_c);
+            }
+            for y in 0..ch {
+                let row = &sbuf[y * cw * C..];
+                let out = &mut plane[(py0 + y) * dst_w + px0..];
+                for x in 0..cw {
+                    out[x] = row[x * C + c] as f32 * params.scale[c] + params.bias[c];
                 }
             }
         }
@@ -496,6 +628,13 @@ impl Preprocessor {
         let total = (dst_w * dst_h) as u32;
         let ([m0, m1, m2], [is0, is1, is2]) = (self.mean, self.inv_std);
         let pv = self.pad_value;
+        let smp: i32 = match self.sampling {
+            InterpolationMode::Nearest => 0,
+            InterpolationMode::Bilinear => 1,
+            InterpolationMode::Lanczos => 2,
+            // Rejected at build; unreachable here.
+            other => return Err(PreprocessError::UnsupportedSampling(other)),
+        };
 
         cuda.kernel
             .launch_builder(&cuda.stream)
@@ -518,6 +657,7 @@ impl Preprocessor {
             .arg(&is1)
             .arg(&is2)
             .arg(&pv)
+            .arg(&smp)
             .launch_1d(total)?;
         Ok(())
     }
@@ -544,26 +684,84 @@ mod tests {
         Tensor::<f32, 4>::from_shape_vec([1, 3, h, w], vec![0.0; 3 * h * w]).unwrap()
     }
 
-    // CPU: a solid source stays solid; unit-scale gives v/255 everywhere.
+    // A deterministic non-solid image (per-pixel gradient) for resampling tests.
+    #[cfg(feature = "cudarc")]
+    fn host_gradient<const C: usize>(w: usize, h: usize) -> Image<u8, C> {
+        let data: Vec<u8> = (0..h)
+            .flat_map(|y| {
+                (0..w).flat_map(move |x| {
+                    // Smooth ramp (no wraparound) so band comparisons between
+                    // differently-aligned resamplers stay meaningful.
+                    (0..C).map(move |c| {
+                        ((x * 127 / (w - 1) + y * 127 / (h - 1)) as u8).saturating_add(c as u8 * 20)
+                    })
+                })
+            })
+            .collect();
+        Image::<u8, C>::new(
+            ImageSize {
+                width: w,
+                height: h,
+            },
+            data,
+        )
+        .unwrap()
+    }
+
+    const ALL_SAMPLING: [InterpolationMode; 3] = [
+        InterpolationMode::Nearest,
+        InterpolationMode::Bilinear,
+        InterpolationMode::Lanczos,
+    ];
+
+    // A solid source stays exactly solid through every resampler (unit DC
+    // response) under unit-scale: out == v/255 everywhere.
     #[test]
-    fn cpu_stretch_unit_scale_solid() {
-        let pre = Preprocessor::builder()
-            .mode(ResizeMode::Stretch)
-            .build()
-            .unwrap();
-        let src = host_solid(5, 3, [10u8, 20, 30]);
-        let mut dst = host_dst(4, 4);
-        pre.run(&src, &mut dst).unwrap();
-        let out = dst.as_slice();
-        let px = 4 * 4;
-        for (c, &v) in [10.0, 20.0, 30.0].iter().enumerate() {
-            for i in 0..px {
-                assert!((out[c * px + i] - v / 255.0).abs() < 1e-4, "chan {c}");
+    fn cpu_stretch_solid_all_sampling() {
+        for sampling in ALL_SAMPLING {
+            let pre = Preprocessor::builder()
+                .mode(ResizeMode::Stretch)
+                .sampling(sampling)
+                .build()
+                .unwrap();
+            let src = host_solid(5, 3, [10u8, 20, 30]);
+            let mut dst = host_dst(4, 4);
+            pre.run(&src, &mut dst).unwrap();
+            let out = dst.as_slice();
+            let px = 4 * 4;
+            for (c, &v) in [10.0f32, 20.0, 30.0].iter().enumerate() {
+                for i in 0..px {
+                    assert!(
+                        (out[c * px + i] - v / 255.0).abs() < 1e-4,
+                        "{sampling:?} chan {c}"
+                    );
+                }
             }
         }
     }
 
-    // CPU: RGBA (alpha ignored) matches tight RGB.
+    // Letterbox: content box exactly the constant, pad region exactly pad_value.
+    #[test]
+    fn cpu_letterbox_pad_geometry() {
+        let pre = Preprocessor::builder().pad_value(32).build().unwrap();
+        // Square 4×4 into 8×4 → scale 1, content columns 2..6, pad elsewhere.
+        let src = host_solid(4, 4, [100u8, 100, 100]);
+        let mut dst = host_dst(4, 8);
+        pre.run(&src, &mut dst).unwrap();
+        let out = dst.as_slice();
+        let px = 4 * 8;
+        for c in 0..3 {
+            for y in 0..4 {
+                for x in 0..8 {
+                    let got = out[c * px + y * 8 + x];
+                    let want = if (2..6).contains(&x) { 100.0 } else { 32.0 } / 255.0;
+                    assert!((got - want).abs() < 1e-4, "chan {c} ({x},{y}): {got}");
+                }
+            }
+        }
+    }
+
+    // RGBA (alpha ignored) must match tight RGB for the same colour.
     #[test]
     fn cpu_rgba_matches_rgb() {
         let pre = Preprocessor::builder()
@@ -577,11 +775,11 @@ mod tests {
         pre.run(&host_solid(6, 4, [40u8, 80, 120, 200]), &mut d4)
             .unwrap();
         for (x, y) in d3.as_slice().iter().zip(d4.as_slice()) {
-            assert!((x - y).abs() < 1e-6);
+            assert!((x - y).abs() < 1e-4);
         }
     }
 
-    // CPU: MeanStd folds the ImageNet normalize in.
+    // MeanStd folds the ImageNet normalize into the same pass.
     #[test]
     fn cpu_imagenet_normalize() {
         let pre = Preprocessor::builder()
@@ -598,6 +796,16 @@ mod tests {
             let want = (128.0 / 255.0 - mean[c]) / std[c];
             assert!((out[c * 16] - want).abs() < 1e-4, "chan {c}");
         }
+    }
+
+    #[test]
+    fn rejects_bad_channels() {
+        let pre = Preprocessor::builder().build().unwrap();
+        let mut dst = host_dst(2, 2);
+        assert!(matches!(
+            pre.run(&host_solid(2, 2, [5u8]), &mut dst),
+            Err(PreprocessError::UnsupportedChannels(1))
+        ));
     }
 
     // std = 0 (or non-finite mean/std) must fail at build, not emit inf/NaN.
@@ -623,48 +831,110 @@ mod tests {
         ));
     }
 
+    // Bicubic is declared in InterpolationMode but not wired here — reject at build.
     #[test]
-    fn rejects_bad_channels() {
-        let pre = Preprocessor::builder().build().unwrap();
-        let mut dst = host_dst(2, 2);
+    fn rejects_bicubic_sampling() {
+        let bad = Preprocessor::builder()
+            .sampling(InterpolationMode::Bicubic)
+            .build();
         assert!(matches!(
-            pre.run(&host_solid(2, 2, [5u8]), &mut dst),
-            Err(PreprocessError::UnsupportedChannels(1))
+            bad,
+            Err(PreprocessError::UnsupportedSampling(
+                InterpolationMode::Bicubic
+            ))
         ));
     }
 
-    // CPU and CUDA must agree (letterbox pad included). CUDA is the oracle check.
+    // GPU: a solid source stays exactly solid through every kernel sampling
+    // branch (nearest / bilinear / lanczos), including letterbox padding.
     #[cfg(feature = "cudarc")]
     #[test]
     #[ignore = "requires a CUDA device"]
-    fn cpu_matches_cuda() {
+    fn cuda_solid_all_sampling() {
         use cudarc::driver::CudaContext;
         use kornia_tensor::zeros_cuda;
 
         let stream = CudaContext::new(0).unwrap().default_stream();
-        let src = host_solid(7, 5, [30u8, 90, 200]);
-        for mode in [ResizeMode::Letterbox, ResizeMode::Stretch] {
-            let cpu = Preprocessor::builder()
-                .mode(mode)
-                .normalize(Normalize::imagenet())
-                .build()
-                .unwrap();
-            let gpu = Preprocessor::builder()
-                .mode(mode)
-                .normalize(Normalize::imagenet())
+        let src = host_solid(5, 3, [10u8, 20, 30]);
+        for sampling in ALL_SAMPLING {
+            let pre = Preprocessor::builder()
+                .mode(ResizeMode::Stretch)
+                .sampling(sampling)
                 .build_cuda(stream.clone())
                 .unwrap();
+            let dev: Image<u8, 3> = Image(src.0.to_cuda(&stream).unwrap());
+            let mut dst = zeros_cuda::<f32, 4>([1, 3, 4, 4], &stream).unwrap();
+            pre.run(&dev, &mut dst).unwrap();
+            let out = stream.clone_dtoh(dst.as_cudaslice().unwrap()).unwrap();
+            let px = 4 * 4;
+            for (c, &v) in [10.0f32, 20.0, 30.0].iter().enumerate() {
+                for i in 0..px {
+                    assert!(
+                        (out[c * px + i] - v / 255.0).abs() < 1e-4,
+                        "{sampling:?} chan {c}"
+                    );
+                }
+            }
+        }
+    }
 
-            let mut d_cpu = host_dst(6, 8);
-            cpu.run(&src, &mut d_cpu).unwrap();
+    // CPU vs CUDA on a real gradient: the CPU resampler is antialiased /
+    // centre-aligned (PIL-grade) while the CUDA kernel samples directly, so
+    // outputs are NOT bit-identical — but they must describe the same image.
+    // A loose band still catches the real failure modes (channel swaps, CHW
+    // transposes, normalize or pad errors), which show up as O(0.5) diffs.
+    #[cfg(feature = "cudarc")]
+    #[test]
+    #[ignore = "requires a CUDA device"]
+    fn cpu_close_to_cuda() {
+        use cudarc::driver::CudaContext;
+        use kornia_tensor::zeros_cuda;
 
-            let dev_src: Image<u8, 3> = Image(src.0.to_cuda(&stream).unwrap());
-            let mut d_gpu = zeros_cuda::<f32, 4>([1, 3, 6, 8], &stream).unwrap();
-            gpu.run(&dev_src, &mut d_gpu).unwrap();
-            let gpu_host = stream.clone_dtoh(d_gpu.as_cudaslice().unwrap()).unwrap();
+        let stream = CudaContext::new(0).unwrap().default_stream();
+        // Letterbox geometry with an INTEGER pad (20×10 → 8×6: scale 0.4, one
+        // whole pad row top+bottom) so both backends put the content/pad
+        // boundary on the same row and the band measures resampling only; the
+        // fractional-pad case differs by design (see run_cpu).
+        let src_lb = host_gradient::<3>(20, 10);
+        let src_st = host_gradient::<3>(23, 17);
+        for mode in [ResizeMode::Letterbox, ResizeMode::Stretch] {
+            let src = match mode {
+                ResizeMode::Letterbox => &src_lb,
+                ResizeMode::Stretch => &src_st,
+            };
+            for sampling in ALL_SAMPLING {
+                let cpu = Preprocessor::builder()
+                    .mode(mode)
+                    .sampling(sampling)
+                    .build()
+                    .unwrap();
+                let gpu = Preprocessor::builder()
+                    .mode(mode)
+                    .sampling(sampling)
+                    .build_cuda(stream.clone())
+                    .unwrap();
 
-            for (a, b) in d_cpu.as_slice().iter().zip(&gpu_host) {
-                assert!((a - b).abs() < 1e-4, "CPU/CUDA mismatch in {mode:?}");
+                let mut d_cpu = host_dst(6, 8);
+                cpu.run(src, &mut d_cpu).unwrap();
+
+                let dev: Image<u8, 3> = Image(src.0.to_cuda(&stream).unwrap());
+                let mut d_gpu = zeros_cuda::<f32, 4>([1, 3, 6, 8], &stream).unwrap();
+                gpu.run(&dev, &mut d_gpu).unwrap();
+                let gpu_host = stream.clone_dtoh(d_gpu.as_cudaslice().unwrap()).unwrap();
+
+                let n = gpu_host.len() as f32;
+                let mut mean_abs = 0.0f32;
+                let mut max_abs = 0.0f32;
+                for (a, b) in d_cpu.as_slice().iter().zip(&gpu_host) {
+                    let d = (a - b).abs();
+                    mean_abs += d;
+                    max_abs = max_abs.max(d);
+                }
+                mean_abs /= n;
+                assert!(
+                    mean_abs < 0.05 && max_abs < 0.25,
+                    "CPU/CUDA diverge in {mode:?}/{sampling:?}: mean {mean_abs} max {max_abs}"
+                );
             }
         }
     }
