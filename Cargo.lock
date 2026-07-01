@@ -2723,10 +2723,10 @@ dependencies = [
 name = "copper"
 version = "0.1.14"
 dependencies = [
- "bincode 2.0.1",
  "cu29",
  "kornia",
  "rerun",
+ "serde",
  "tempfile",
 ]
 
