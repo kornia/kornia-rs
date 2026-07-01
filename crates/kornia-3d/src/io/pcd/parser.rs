@@ -163,13 +163,12 @@ fn parse_pcd_layout<R: BufRead>(reader: &mut R) -> Result<PcdLayout, PcdError> {
                     return Err(PcdError::UnsupportedProperty);
                 }
             }
-            "rgb" => {
+            "rgb"
                 if !(size == 4
                     && count == 1
-                    && (types[i] == 'U' || types[i] == 'I' || types[i] == 'F'))
-                {
-                    return Err(PcdError::UnsupportedProperty);
-                }
+                    && (types[i] == 'U' || types[i] == 'I' || types[i] == 'F')) =>
+            {
+                return Err(PcdError::UnsupportedProperty);
             }
             _ => {}
         }

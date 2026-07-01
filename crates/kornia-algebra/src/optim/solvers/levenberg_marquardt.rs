@@ -325,7 +325,7 @@ impl LevenbergMarquardt {
 
         debug_assert_eq!(var_names.len(), snapshot.len());
 
-        for (var_name, old_vals) in var_names.iter().zip(snapshot.into_iter()) {
+        for (var_name, old_vals) in var_names.iter().zip(snapshot) {
             let var =
                 variables
                     .get_mut(var_name)
