@@ -3,248 +3,6 @@ use crate::utils::{find_full_tiles, Pixel, Point2d};
 use kornia_image::{allocator::ImageAllocator, Image, ImageError, ImageSize};
 use rayon::prelude::*;
 
-/// Scalar min/max over one `tile_size`×`tile_size` tile at column `tile_x`, row `tile_y`.
-///
-/// Shared by every dispatch path's scalar tail/fallback so the per-tile reduction
-/// is written exactly once.
-#[inline]
-fn tile_min_max(
-    img_data: &[u8],
-    img_width: usize,
-    tile_size: usize,
-    tile_x: usize,
-    tile_y: usize,
-) -> (u8, u8) {
-    let mut lo = 255u8;
-    let mut hi = 0u8;
-    for row in 0..tile_size {
-        let row_start = (tile_y * tile_size + row) * img_width + tile_x * tile_size;
-        for &px in &img_data[row_start..row_start + tile_size] {
-            lo = lo.min(px);
-            hi = hi.max(px);
-        }
-    }
-    (lo, hi)
-}
-
-/// Classifies pixels in a contiguous row: pixel > thresh → 255 (White), else 0 (Black).
-///
-/// On aarch64 uses NEON `vcgtq_u8` which maps exactly to Pixel::White/Black since those
-/// are repr(u8) values 255 and 0 respectively.
-///
-/// # Safety
-/// `src` and `dst` must have the same length. `Pixel` must be `#[repr(u8)]`.
-#[cfg(target_arch = "aarch64")]
-#[target_feature(enable = "neon")]
-unsafe fn classify_row_neon(src: &[u8], dst: &mut [Pixel], thresh: u8) {
-    use std::arch::aarch64::*;
-    let thresh_v = vdupq_n_u8(thresh);
-    let len = src.len();
-    // Safety: Pixel is #[repr(u8)] so *mut Pixel == *mut u8 for layout purposes.
-    let dst_u8 = core::slice::from_raw_parts_mut(dst.as_mut_ptr() as *mut u8, len);
-    let mut i = 0;
-    while i + 16 <= len {
-        let px = vld1q_u8(src.as_ptr().add(i));
-        vst1q_u8(dst_u8.as_mut_ptr().add(i), vcgtq_u8(px, thresh_v));
-        i += 16;
-    }
-    while i < len {
-        dst_u8[i] = if src[i] > thresh { 255 } else { 0 };
-        i += 1;
-    }
-}
-
-/// AVX2 variant of [`classify_row_neon`]: 32 pixels per iteration.
-///
-/// AVX2 only has signed byte compares, so we bias both operands by `0x80` to turn
-/// the unsigned `px > thresh` into a signed `cmpgt`. The result is `0xFF`/`0x00`,
-/// which equals `Pixel::White` (255) / `Pixel::Black` (0) directly.
-///
-/// # Safety
-/// AVX2 must be available; `src.len() == dst.len()`; `Pixel` is `#[repr(u8)]`.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2")]
-unsafe fn classify_row_avx2(src: &[u8], dst: &mut [Pixel], thresh: u8) {
-    use std::arch::x86_64::*;
-    let len = src.len();
-    // SAFETY: Pixel is #[repr(u8)] so *mut Pixel == *mut u8 for layout purposes.
-    let dst_u8 = core::slice::from_raw_parts_mut(dst.as_mut_ptr() as *mut u8, len);
-    let bias = _mm256_set1_epi8(0x80u8 as i8);
-    let tv = _mm256_xor_si256(_mm256_set1_epi8(thresh as i8), bias);
-    let mut i = 0;
-    while i + 32 <= len {
-        let px = _mm256_loadu_si256(src.as_ptr().add(i) as *const __m256i);
-        let gt = _mm256_cmpgt_epi8(_mm256_xor_si256(px, bias), tv);
-        _mm256_storeu_si256(dst_u8.as_mut_ptr().add(i) as *mut __m256i, gt);
-        i += 32;
-    }
-    while i < len {
-        dst_u8[i] = if src[i] > thresh { 255 } else { 0 };
-        i += 1;
-    }
-}
-
-#[inline(always)]
-fn classify_row(src: &[u8], dst: &mut [Pixel], thresh: u8) {
-    // AArch64: NEON is baseline.
-    #[cfg(target_arch = "aarch64")]
-    // SAFETY: aarch64 always has NEON; Pixel is #[repr(u8)].
-    return unsafe { classify_row_neon(src, dst, thresh) };
-
-    // x86_64: AVX2 when the runtime probe confirms it.
-    #[cfg(target_arch = "x86_64")]
-    if crate::simd::has_avx2() {
-        // SAFETY: AVX2 confirmed by runtime probe; Pixel is #[repr(u8)].
-        return unsafe { classify_row_avx2(src, dst, thresh) };
-    }
-
-    // Portable fallback.
-    #[cfg(not(target_arch = "aarch64"))]
-    for (s, d) in src.iter().zip(dst.iter_mut()) {
-        *d = if *s > thresh { Pixel::White } else { Pixel::Black };
-    }
-}
-
-/// Fills `tile_min` and `tile_max` for all full tiles in row-major order.
-///
-/// **Batch-of-4-tiles strategy for tile_size=4 (the common case):**
-/// 16 consecutive image pixels (= 4 side-by-side tiles) fit in one NEON q-register,
-/// so each `vld1q_u8` processes a whole row of 4 tiles with no gather overhead.
-/// After accumulating `tile_size` rows we apply two rounds of `vpminq_u8`/`vpmaxq_u8`
-/// to reduce the 16-lane register into 4 per-tile scalars (lanes 0-3).
-///
-/// # Safety
-/// Caller must ensure `tiles_y * tile_size * img_width + tiles_x * tile_size ≤ img_data.len()`.
-#[cfg(target_arch = "aarch64")]
-#[target_feature(enable = "neon")]
-unsafe fn fill_tile_stats_neon(
-    img_data: &[u8],
-    img_width: usize,
-    tile_size: usize,
-    tiles_x: usize,
-    tiles_y: usize,
-    tile_min: &mut [u8],
-    tile_max: &mut [u8],
-) {
-    use std::arch::aarch64::*;
-
-    for tile_y in 0..tiles_y {
-        let mut tile_x = 0usize;
-
-        // Fast path: consume 4 tile-columns at a time using 16-byte contiguous loads.
-        // One q-register covers exactly 4 consecutive tiles (4 columns × tile_size=4 pixels).
-        while tile_size == 4 && tile_x + 4 <= tiles_x {
-            // Accumulate row-min/max across tile_size rows for all 4 tiles simultaneously.
-            let mut vmin = vdupq_n_u8(255);
-            let mut vmax = vdupq_n_u8(0);
-
-            for row in 0..tile_size {
-                let offset = (tile_y * tile_size + row) * img_width + tile_x * tile_size;
-                let v = vld1q_u8(img_data.as_ptr().add(offset));
-                vmin = vminq_u8(vmin, v);
-                vmax = vmaxq_u8(vmax, v);
-            }
-
-            // Two rounds of pairwise-min collapse 16 lanes into 4 per-tile minima.
-            // Round 1: [min(px0,px1), min(px2,px3), min(px4,px5), ..., (repeat 8..15)]
-            // Round 2: [min(px0..3), min(px4..7), min(px8..11), min(px12..15), ...]
-            vmin = vpminq_u8(vmin, vmin);
-            vmin = vpminq_u8(vmin, vmin);
-            vmax = vpmaxq_u8(vmax, vmax);
-            vmax = vpmaxq_u8(vmax, vmax);
-
-            let base = tile_y * tiles_x + tile_x;
-            tile_min[base] = vgetq_lane_u8::<0>(vmin);
-            tile_min[base + 1] = vgetq_lane_u8::<1>(vmin);
-            tile_min[base + 2] = vgetq_lane_u8::<2>(vmin);
-            tile_min[base + 3] = vgetq_lane_u8::<3>(vmin);
-            tile_max[base] = vgetq_lane_u8::<0>(vmax);
-            tile_max[base + 1] = vgetq_lane_u8::<1>(vmax);
-            tile_max[base + 2] = vgetq_lane_u8::<2>(vmax);
-            tile_max[base + 3] = vgetq_lane_u8::<3>(vmax);
-
-            tile_x += 4;
-        }
-
-        // Scalar tail: remaining tile columns (< 4 when tiles_x % 4 != 0, or tile_size != 4).
-        while tile_x < tiles_x {
-            let idx = tile_y * tiles_x + tile_x;
-            let (lo, hi) = tile_min_max(img_data, img_width, tile_size, tile_x, tile_y);
-            tile_min[idx] = lo;
-            tile_max[idx] = hi;
-            tile_x += 1;
-        }
-    }
-}
-
-/// AVX2 variant of [`fill_tile_stats_neon`]: batches **8** tiles per iteration.
-///
-/// For `tile_size == 4`, 32 contiguous bytes are exactly 8 side-by-side tiles, so
-/// one `loadu` covers a row of 8 tiles. After accumulating row min/max, each tile's
-/// 4 bytes lie within one 32-bit lane, so `srli_epi32` (which shifts *within* each
-/// lane, never across tile boundaries) reduces all 4 bytes into the lane's byte 0.
-///
-/// # Safety
-/// Caller must ensure `tiles_y * tile_size * img_width + tiles_x * tile_size ≤ img_data.len()`.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2")]
-unsafe fn fill_tile_stats_avx2(
-    img_data: &[u8],
-    img_width: usize,
-    tile_size: usize,
-    tiles_x: usize,
-    tiles_y: usize,
-    tile_min: &mut [u8],
-    tile_max: &mut [u8],
-) {
-    use std::arch::x86_64::*;
-
-    for tile_y in 0..tiles_y {
-        let mut tile_x = 0usize;
-
-        // Fast path: 8 tile-columns at a time via 32-byte contiguous loads.
-        while tile_size == 4 && tile_x + 8 <= tiles_x {
-            let mut vmin = _mm256_set1_epi8(0xFFu8 as i8);
-            let mut vmax = _mm256_setzero_si256();
-
-            for row in 0..tile_size {
-                let offset = (tile_y * tile_size + row) * img_width + tile_x * tile_size;
-                let v = _mm256_loadu_si256(img_data.as_ptr().add(offset) as *const __m256i);
-                vmin = _mm256_min_epu8(vmin, v);
-                vmax = _mm256_max_epu8(vmax, v);
-            }
-
-            // Reduce each 4-byte tile (one 32-bit lane) to its min/max in byte 0.
-            let mn = _mm256_min_epu8(vmin, _mm256_srli_epi32::<16>(vmin));
-            let mn = _mm256_min_epu8(mn, _mm256_srli_epi32::<8>(mn));
-            let mx = _mm256_max_epu8(vmax, _mm256_srli_epi32::<16>(vmax));
-            let mx = _mm256_max_epu8(mx, _mm256_srli_epi32::<8>(mx));
-
-            // Extract the low byte of each of the 8 u32 lanes.
-            let mut bmin = [0u8; 32];
-            let mut bmax = [0u8; 32];
-            _mm256_storeu_si256(bmin.as_mut_ptr() as *mut __m256i, mn);
-            _mm256_storeu_si256(bmax.as_mut_ptr() as *mut __m256i, mx);
-
-            let base = tile_y * tiles_x + tile_x;
-            for g in 0..8 {
-                tile_min[base + g] = bmin[g * 4];
-                tile_max[base + g] = bmax[g * 4];
-            }
-            tile_x += 8;
-        }
-
-        // Scalar tail: remaining tile columns (< 8, or tile_size != 4).
-        while tile_x < tiles_x {
-            let idx = tile_y * tiles_x + tile_x;
-            let (lo, hi) = tile_min_max(img_data, img_width, tile_size, tile_x, tile_y);
-            tile_min[idx] = lo;
-            tile_max[idx] = hi;
-            tile_x += 1;
-        }
-    }
-}
-
 /// Stores the minimum and maximum pixel values for each tile for [adaptive_threshold]
 ///
 /// The tiles are indexed in row-major order, i.e., tile IDs increase first along the x-axis (columns),
@@ -277,48 +35,17 @@ impl TileMinMax {
         }
     }
 
-    /// Fills `self.min` and `self.max` by scanning every full tile in `src`.
-    ///
-    /// On AArch64 uses NEON with a batch-of-4-tiles fast path (tile_size=4); falls back to
-    /// scalar on other targets.
+    /// Fills `self.min` and `self.max` by scanning every full tile in `src`
+    /// (NEON / AVX2 / scalar via [`crate::ops::fill_tile_stats`]).
     pub fn compute<A: ImageAllocator>(&mut self, src: &Image<u8, 1, A>) {
         let img_data = src.as_slice();
         let img_width = src.width();
         let tile_size = self.tile_size;
         let tiles_x = img_width / tile_size;
         let tiles_y = src.height() / tile_size;
-
-        // AArch64: NEON batch-of-4-tiles path.
-        #[cfg(target_arch = "aarch64")]
-        // SAFETY: tiles_x/tiles_y come from floor division, so all tile accesses
-        // stay within img_data bounds.
-        return unsafe {
-            fill_tile_stats_neon(
-                img_data, img_width, tile_size, tiles_x, tiles_y, &mut self.min, &mut self.max,
-            )
-        };
-
-        // x86_64: AVX2 batch-of-8-tiles path when available.
-        #[cfg(target_arch = "x86_64")]
-        if crate::simd::has_avx2() {
-            // SAFETY: AVX2 confirmed by runtime probe; bounds as above.
-            return unsafe {
-                fill_tile_stats_avx2(
-                    img_data, img_width, tile_size, tiles_x, tiles_y, &mut self.min, &mut self.max,
-                )
-            };
-        }
-
-        // Portable scalar fallback (non-aarch64 without AVX2).
-        #[cfg(not(target_arch = "aarch64"))]
-        for tile_y in 0..tiles_y {
-            for tile_x in 0..tiles_x {
-                let idx = tile_y * tiles_x + tile_x;
-                let (lo, hi) = tile_min_max(img_data, img_width, tile_size, tile_x, tile_y);
-                self.min[idx] = lo;
-                self.max[idx] = hi;
-            }
-        }
+        crate::ops::fill_tile_stats(
+            img_data, img_width, tile_size, tiles_x, tiles_y, &mut self.min, &mut self.max,
+        );
     }
 
     fn neighbor_blur(
@@ -554,7 +281,7 @@ pub fn adaptive_threshold<A1: ImageAllocator, A2: ImageAllocator>(
                     for row in 0..ts {
                         let row_off = row * width;
                         let src_off = (ty * ts + row) * width;
-                        classify_row(
+                        crate::ops::classify_row(
                             &src_slice[src_off + px_start..src_off + px_end],
                             &mut strip[row_off + px_start..row_off + px_end],
                             thresh,
@@ -590,7 +317,7 @@ pub fn adaptive_threshold<A1: ImageAllocator, A2: ImageAllocator>(
                 for row in 0..actual_rows {
                     let row_off = row * width;
                     let src_off = (py_start + row) * width;
-                    classify_row(
+                    crate::ops::classify_row(
                         &src_slice[src_off + px_start..src_off + px_end],
                         &mut partial_dst[row_off + px_start..row_off + px_end],
                         thresh,
@@ -740,7 +467,7 @@ mod tests {
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn test_classify_row_avx2_parity() {
-        if !crate::simd::has_avx2() {
+        if !crate::ops::has_avx2() {
             eprintln!("AVX2 not present; skipping");
             return;
         }
@@ -750,7 +477,7 @@ mod tests {
                 let mut a = vec![Pixel::Black; len];
                 let mut b = vec![Pixel::Black; len];
                 // SAFETY: guarded by has_avx2; equal lengths.
-                unsafe { classify_row_avx2(&src, &mut a, thresh) };
+                unsafe { crate::ops::avx2::classify_row(&src, &mut a, thresh) };
                 for (s, d) in src.iter().zip(b.iter_mut()) {
                     *d = if *s > thresh { Pixel::White } else { Pixel::Black };
                 }
@@ -763,7 +490,7 @@ mod tests {
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn test_fill_tile_stats_avx2_parity() {
-        if !crate::simd::has_avx2() {
+        if !crate::ops::has_avx2() {
             eprintln!("AVX2 not present; skipping");
             return;
         }
@@ -778,7 +505,7 @@ mod tests {
             let (mut amin, mut amax) = (vec![0u8; n], vec![0u8; n]);
             // SAFETY: dimensions are exact multiples, so all loads are in bounds.
             unsafe {
-                fill_tile_stats_avx2(&img, img_width, tile_size, tiles_x, tiles_y, &mut amin, &mut amax)
+                crate::ops::avx2::fill_tile_stats(&img, img_width, tile_size, tiles_x, tiles_y, &mut amin, &mut amax)
             };
 
             let (mut smin, mut smax) = (vec![0u8; n], vec![0u8; n]);

@@ -55,7 +55,7 @@ fn solid_row_color(
 
     // x86_64: AVX2 32-wide equality scan.
     #[cfg(target_arch = "x86_64")]
-    if crate::simd::has_avx2() {
+    if crate::ops::has_avx2() {
         use std::arch::x86_64::*;
         // SAFETY: AVX2 confirmed by runtime probe; Pixel is #[repr(u8)].
         unsafe {
@@ -127,7 +127,7 @@ fn extend_run_bulk(
 
     // x86_64: AVX2 32-wide scan.
     #[cfg(target_arch = "x86_64")]
-    if crate::simd::has_avx2() {
+    if crate::ops::has_avx2() {
         use std::arch::x86_64::*;
         // SAFETY: AVX2 confirmed by runtime probe; Pixel is #[repr(u8)].
         unsafe {
@@ -919,7 +919,7 @@ fn gradient_clusters_inner(
 
     // x86_64: AVX2 when the runtime probe confirms it.
     #[cfg(target_arch = "x86_64")]
-    if crate::simd::has_avx2() {
+    if crate::ops::has_avx2() {
         // SAFETY: AVX2 confirmed by runtime probe.
         return unsafe { gradient_clusters_inner_avx2(src_slice, rep_cache, width, y_start, y_end) };
     }

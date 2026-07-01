@@ -602,103 +602,6 @@ fn compute_line_fit_prefix_sums<A: ImageAllocator>(
     lfw.lfps
 }
 
-/// NEON-vectorized interior Gaussian smooth (4 outputs per iteration).
-///
-/// For each group of 4 output pixels [iy, iy+3], tap `ki` loads 4 consecutive
-/// error values from `errors[iy-half+ki .. iy-half+ki+3]` and multiplies by the
-/// broadcast scalar `kernel[ki]`.  One `vfmaq_f32` advances all 4 outputs at once.
-#[cfg(target_arch = "aarch64")]
-#[target_feature(enable = "neon")]
-unsafe fn smooth_interior_neon(errors: &[f32], kernel: &[f32], out: &mut [f32], half: usize, len: usize) {
-    use std::arch::aarch64::*;
-    let flen = kernel.len();
-    let interior_end = len - half;
-    let mut iy = half;
-
-    while iy + 4 <= interior_end {
-        let mut acc = vdupq_n_f32(0.0);
-        let base = errors.as_ptr().add(iy - half);
-        for ki in 0..flen {
-            // Broadcast one kernel weight; load 4 consecutive error samples for this tap.
-            let kv = vdupq_n_f32(*kernel.get_unchecked(ki));
-            let ev = vld1q_f32(base.add(ki));
-            acc = vfmaq_f32(acc, kv, ev);
-        }
-        vst1q_f32(out.as_mut_ptr().add(iy), acc);
-        iy += 4;
-    }
-    // Scalar tail (up to 3 elements).
-    while iy < interior_end {
-        let mut acc = 0.0f32;
-        for ki in 0..flen {
-            acc += *errors.get_unchecked(iy - half + ki) * *kernel.get_unchecked(ki);
-        }
-        *out.get_unchecked_mut(iy) = acc;
-        iy += 1;
-    }
-}
-
-/// AVX2+FMA interior Gaussian smooth (8 outputs per iteration), mirroring
-/// [`smooth_interior_neon`]. Each tap broadcasts one kernel weight and FMAs 8
-/// consecutive error samples into the accumulator.
-///
-/// # Safety
-/// AVX2+FMA must be available; `half <= len`.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2,fma")]
-unsafe fn smooth_interior_avx2(errors: &[f32], kernel: &[f32], out: &mut [f32], half: usize, len: usize) {
-    use std::arch::x86_64::*;
-    let flen = kernel.len();
-    let interior_end = len - half;
-    let mut iy = half;
-
-    while iy + 8 <= interior_end {
-        let mut acc = _mm256_setzero_ps();
-        let base = errors.as_ptr().add(iy - half);
-        for ki in 0..flen {
-            let kv = _mm256_set1_ps(*kernel.get_unchecked(ki));
-            let ev = _mm256_loadu_ps(base.add(ki));
-            acc = _mm256_fmadd_ps(kv, ev, acc);
-        }
-        _mm256_storeu_ps(out.as_mut_ptr().add(iy), acc);
-        iy += 8;
-    }
-    // Scalar tail (up to 7 elements).
-    while iy < interior_end {
-        let mut acc = 0.0f32;
-        for ki in 0..flen {
-            acc += *errors.get_unchecked(iy - half + ki) * *kernel.get_unchecked(ki);
-        }
-        *out.get_unchecked_mut(iy) = acc;
-        iy += 1;
-    }
-}
-
-/// Dispatch to NEON (aarch64), AVX2 (x86_64), or scalar smooth_interior.
-fn smooth_interior(errors: &[f32], kernel: &[f32], out: &mut [f32], half: usize, len: usize) {
-    // AArch64: NEON is baseline.
-    #[cfg(target_arch = "aarch64")]
-    // SAFETY: NEON mandatory on ARMv8-A.
-    return unsafe { smooth_interior_neon(errors, kernel, out, half, len) };
-
-    // x86_64: AVX2+FMA when the runtime probe confirms both.
-    #[cfg(target_arch = "x86_64")]
-    if crate::simd::has_avx2_fma() {
-        // SAFETY: AVX2+FMA confirmed by the (cached) runtime probe.
-        return unsafe { smooth_interior_avx2(errors, kernel, out, half, len) };
-    }
-
-    // Portable scalar fallback.
-    #[cfg(not(target_arch = "aarch64"))]
-    for iy in half..len - half {
-        let mut acc = 0.0f32;
-        for (ki, &kv) in kernel.iter().enumerate() {
-            acc += errors[iy + ki - half] * kv;
-        }
-        out[iy] = acc;
-    }
-}
-
 /// Segments the gradient information into four maxima corresponding to the corners of a quadrilateral.
 ///
 /// This function analyzes the error profile of line fits over the gradient information and finds
@@ -815,7 +718,7 @@ fn quad_segment_maxima_ws(
     // Acceptable and consistent with the NEON path; covered by the C-parity suite.
     #[cfg(target_arch = "x86_64")]
     {
-        if crate::simd::has_avx2() {
+        if crate::ops::has_avx2() {
             use std::arch::x86_64::*;
             let p = seg.soa.as_ptr();
             let ep = seg.errors.as_mut_ptr();
@@ -900,7 +803,7 @@ fn quad_segment_maxima_ws(
         }
         seg.smoothed_errors[iy] = acc;
     }
-    smooth_interior(&seg.errors, kernel, &mut seg.smoothed_errors, half, len);
+    crate::ops::smooth_interior(&seg.errors, kernel, &mut seg.smoothed_errors, half, len);
 
     // Swap so seg.errors now holds the smoothed values (seg.smoothed_errors gets the raw, unused).
     std::mem::swap(&mut seg.errors, &mut seg.smoothed_errors);

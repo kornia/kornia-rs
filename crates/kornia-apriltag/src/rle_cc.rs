@@ -173,7 +173,7 @@ impl RleCC {
                         }
                         // AVX2: extend run 32 bytes at a time on x86_64.
                         #[cfg(target_arch = "x86_64")]
-                        if crate::simd::has_avx2() {
+                        if crate::ops::has_avx2() {
                             // SAFETY: AVX2 confirmed by runtime probe; reads bounded by width-1.
                             unsafe {
                                 use std::arch::x86_64::*;
