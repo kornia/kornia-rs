@@ -112,9 +112,13 @@ def test_apriltag_decoder():
     assert len(detection) == 1
     assert detection[0].id == 5
 
+    # Tolerance of 0.5px: the C-equivalent decimation/refine-edges corner scaling
+    # ((c - 0.5) * factor + 0.5) shifts corners by a fraction of a pixel from the
+    # ideal integer positions (matching the Rust `test_tags` 0.3px tolerance and the
+    # AprilRobotics C reference the Rust C-parity suite validates against).
     for (ax, ay), (ex, ey) in zip(detection[0].quad.corners, expected_quad):
-        assert ax == pytest.approx(ex, abs=1e-3)
-        assert ay == pytest.approx(ey, abs=1e-3)
+        assert ax == pytest.approx(ex, abs=0.5)
+        assert ay == pytest.approx(ey, abs=0.5)
 
 
 def test_decode_tags_config_tag_families_getter():

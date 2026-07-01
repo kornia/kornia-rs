@@ -1,5 +1,4 @@
 //! AVX2 (x86_64) kernel implementations, mirroring the NEON variants.
-#![cfg(target_arch = "x86_64")]
 
 use super::scalar::tile_min_max;
 use crate::utils::Pixel;

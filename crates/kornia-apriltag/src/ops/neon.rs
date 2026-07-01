@@ -1,5 +1,4 @@
 //! NEON (aarch64) kernel implementations. NEON is part of the ARMv8-A baseline.
-#![cfg(target_arch = "aarch64")]
 
 use super::scalar::tile_min_max;
 use crate::utils::Pixel;

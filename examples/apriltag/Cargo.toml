@@ -16,9 +16,9 @@ publish = false
 [dependencies]
 argh = { workspace = true }
 ctrlc = { workspace = true }
+glam = { workspace = true }
 kornia = { workspace = true, features = ["v4l"] }
-kornia-apriltag = { workspace = true }
 kornia-3d = { workspace = true }
 kornia-algebra = { workspace = true }
-glam = { workspace = true }
+kornia-apriltag = { workspace = true }
 rerun = { workspace = true }

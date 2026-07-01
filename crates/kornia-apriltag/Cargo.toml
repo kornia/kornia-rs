@@ -12,9 +12,9 @@ rust-version = { workspace = true }
 version = { workspace = true }
 
 [[test]]
+harness = true
 name = "parity"
 path = "tests/parity.rs"
-harness = true
 
 [[bench]]
 harness = false
@@ -25,10 +25,10 @@ harness = false
 name = "bench_tagfamily"
 
 [dependencies]
+kornia-3d = { workspace = true }
 kornia-algebra = { workspace = true }
 kornia-image = { workspace = true }
 kornia-imgproc = { workspace = true }
-kornia-3d = { workspace = true }
 rayon = { workspace = true }
 rustc-hash = { workspace = true }
 thiserror = { workspace = true }
