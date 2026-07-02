@@ -270,7 +270,12 @@ __device__ __forceinline__ unsigned short f2h(float f) {
     unsigned int sign = (x >> 16) & 0x8000u;
     int exp = (int)((x >> 23) & 0xFFu) - 127 + 15;
     unsigned int man = x & 0x7FFFFFu;
-    if (exp >= 31) return (unsigned short)(sign | 0x7C00u);
+    if (exp >= 31) {
+        // Inf stays Inf; NaN keeps a nonzero (quiet) mantissa instead of
+        // collapsing to Inf.
+        unsigned int nan_bit = (man != 0u) ? 0x0200u : 0u;
+        return (unsigned short)(sign | 0x7C00u | nan_bit);
+    }
     if (exp <= 0) {
         if (exp < -10) return (unsigned short)sign;
         man |= 0x800000u;
@@ -549,6 +554,37 @@ pub struct Preprocessor {
     cuda: Option<CudaBackend>,
 }
 
+fn validate_channels<const C: usize>() -> Result<(), PreprocessError> {
+    if C != 3 && C != 4 {
+        return Err(PreprocessError::UnsupportedChannels(C));
+    }
+    Ok(())
+}
+
+fn validate_dst_shape(shape: [usize; 4]) -> Result<(), PreprocessError> {
+    if shape[0] != 1 || shape[1] != 3 {
+        return Err(PreprocessError::BadOutputShape(shape));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "cudarc")]
+impl PitchedSurface<'_> {
+    fn validate(&self) -> Result<(), PreprocessError> {
+        if self.channels != 3 && self.channels != 4 {
+            return Err(PreprocessError::UnsupportedChannels(self.channels));
+        }
+        if self.row_pitch < self.width * self.channels
+            || self.data.len() < self.row_pitch * self.height
+            || self.width == 0
+            || self.height == 0
+        {
+            return Err(PreprocessError::InvalidSurface);
+        }
+        Ok(())
+    }
+}
+
 impl Preprocessor {
     /// Start a [`PreprocessorBuilder`].
     pub fn builder() -> PreprocessorBuilder {
@@ -605,14 +641,10 @@ impl Preprocessor {
         src: &Image<u8, C>,
         dst: &mut Tensor<f32, 4>,
     ) -> Result<(), PreprocessError> {
-        if C != 3 && C != 4 {
-            return Err(PreprocessError::UnsupportedChannels(C));
-        }
+        validate_channels::<C>()?;
         // Both paths write three channel planes of dst_h*dst_w — any other
         // leading dims would run past the buffer (an OOB device write on CUDA).
-        if dst.shape[0] != 1 || dst.shape[1] != 3 {
-            return Err(PreprocessError::BadOutputShape(dst.shape));
-        }
+        validate_dst_shape(dst.shape)?;
         let (dst_h, dst_w) = (dst.shape[2], dst.shape[3]);
         let a = Affine::new(self.mode, src.width(), src.height(), dst_w, dst_h);
 
@@ -792,12 +824,8 @@ impl Preprocessor {
         src: &Image<u8, C>,
         dst: &mut Tensor<half::f16, 4>,
     ) -> Result<(), PreprocessError> {
-        if C != 3 && C != 4 {
-            return Err(PreprocessError::UnsupportedChannels(C));
-        }
-        if dst.shape[0] != 1 || dst.shape[1] != 3 {
-            return Err(PreprocessError::BadOutputShape(dst.shape));
-        }
+        validate_channels::<C>()?;
+        validate_dst_shape(dst.shape)?;
         let cuda = self.cuda.as_ref().ok_or(PreprocessError::NotDeviceImage)?;
         let (src_w, src_h) = (src.width(), src.height());
         let a = Affine::new(self.mode, src_w, src_h, dst.shape[3], dst.shape[2]);
@@ -830,19 +858,8 @@ impl Preprocessor {
         src: &PitchedSurface<'_>,
         dst: &mut Tensor<f32, 4>,
     ) -> Result<(), PreprocessError> {
-        if src.channels != 3 && src.channels != 4 {
-            return Err(PreprocessError::UnsupportedChannels(src.channels));
-        }
-        if dst.shape[0] != 1 || dst.shape[1] != 3 {
-            return Err(PreprocessError::BadOutputShape(dst.shape));
-        }
-        if src.row_pitch < src.width * src.channels
-            || src.data.len() < src.row_pitch * src.height
-            || src.width == 0
-            || src.height == 0
-        {
-            return Err(PreprocessError::InvalidSurface);
-        }
+        src.validate()?;
+        validate_dst_shape(dst.shape)?;
         let cuda = self.cuda.as_ref().ok_or(PreprocessError::NotDeviceImage)?;
         let a = Affine::new(self.mode, src.width, src.height, dst.shape[3], dst.shape[2]);
         self.launch_cuda(
@@ -867,19 +884,8 @@ impl Preprocessor {
         src: &PitchedSurface<'_>,
         dst: &mut Tensor<half::f16, 4>,
     ) -> Result<(), PreprocessError> {
-        if src.channels != 3 && src.channels != 4 {
-            return Err(PreprocessError::UnsupportedChannels(src.channels));
-        }
-        if dst.shape[0] != 1 || dst.shape[1] != 3 {
-            return Err(PreprocessError::BadOutputShape(dst.shape));
-        }
-        if src.row_pitch < src.width * src.channels
-            || src.data.len() < src.row_pitch * src.height
-            || src.width == 0
-            || src.height == 0
-        {
-            return Err(PreprocessError::InvalidSurface);
-        }
+        src.validate()?;
+        validate_dst_shape(dst.shape)?;
         let cuda = self.cuda.as_ref().ok_or(PreprocessError::NotDeviceImage)?;
         let a = Affine::new(self.mode, src.width, src.height, dst.shape[3], dst.shape[2]);
         self.launch_cuda(

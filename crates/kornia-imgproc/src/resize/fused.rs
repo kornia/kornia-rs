@@ -844,6 +844,38 @@ unsafe fn fused_row_avx2(
     }
 }
 
+/// Split a `[3 * dst_h * dst_w]` CHW buffer into row bands of up to
+/// `rows_per_band` destination rows, each owning disjoint mutable slices of
+/// all three planes — the unit of rayon parallelism for the fused plane
+/// writers below.
+fn plane_bands(
+    dst: &mut [f32],
+    dst_w: usize,
+    dst_h: usize,
+    rows_per_band: usize,
+) -> Vec<(usize, [&mut [f32]; 3])> {
+    let pixels = dst_w * dst_h;
+    let (p0, rest) = dst.split_at_mut(pixels);
+    let (p1, p2) = rest.split_at_mut(pixels);
+    let mut ps: [&mut [f32]; 3] = [p0, p1, p2];
+    let mut out = Vec::with_capacity(dst_h.div_ceil(rows_per_band.max(1)));
+    let mut y = 0usize;
+    while y < dst_h {
+        let rows = rows_per_band.min(dst_h - y);
+        let mut band: Vec<&mut [f32]> = Vec::with_capacity(3);
+        let mut rem: Vec<&mut [f32]> = Vec::with_capacity(3);
+        for pl in ps {
+            let (a, b) = pl.split_at_mut(rows * dst_w);
+            band.push(a);
+            rem.push(b);
+        }
+        out.push((y, band.try_into().unwrap()));
+        ps = rem.try_into().unwrap();
+        y += rows;
+    }
+    out
+}
+
 /// Fused **nearest** resize + per-channel normalize + `HWC→CHW` for RGB u8 →
 /// f32, any target size, in a single pass (no intermediate u8 image).
 ///
@@ -876,49 +908,24 @@ pub fn resize_normalize_to_tensor_u8_to_f32_nearest(
     let xmap: Vec<usize> = (0..dst_w)
         .map(|x| ((((x as f64 + 0.5) * sx).floor() as i64).clamp(0, src_w as i64 - 1)) as usize)
         .collect();
-    let pixels = dst_w * dst_h;
-    let (p0, rest) = dst.split_at_mut(pixels);
-    let (p1, p2) = rest.split_at_mut(pixels);
-    let planes: [&mut [f32]; 3] = [p0, p1, p2];
     let (scale, bias) = (params.scale, params.bias);
-
-    // Parallelize over bands of destination rows; each band owns disjoint
-    // slices of all three planes.
-    const ROWS: usize = 32;
-    let bands: Vec<(usize, [&mut [f32]; 3])> = {
-        let mut out = Vec::new();
-        let mut ps = planes;
-        let mut y = 0usize;
-        while y < dst_h {
-            let rows = ROWS.min(dst_h - y);
-            let mut band: Vec<&mut [f32]> = Vec::with_capacity(3);
-            let mut rest: Vec<&mut [f32]> = Vec::with_capacity(3);
-            for pl in ps {
-                let (a, b) = pl.split_at_mut(rows * dst_w);
-                band.push(a);
-                rest.push(b);
+    plane_bands(dst, dst_w, dst_h, 32)
+        .into_par_iter()
+        .for_each(|(y0, band)| {
+            let rows = band[0].len() / dst_w;
+            for r in 0..rows {
+                let y = y0 + r;
+                let yi =
+                    ((((y as f64 + 0.5) * sy).floor() as i64).clamp(0, src_h as i64 - 1)) as usize;
+                let srow = &src[yi * src_w * 3..(yi + 1) * src_w * 3];
+                for (x, &xi) in xmap.iter().enumerate() {
+                    let o = xi * 3;
+                    band[0][r * dst_w + x] = srow[o] as f32 * scale[0] + bias[0];
+                    band[1][r * dst_w + x] = srow[o + 1] as f32 * scale[1] + bias[1];
+                    band[2][r * dst_w + x] = srow[o + 2] as f32 * scale[2] + bias[2];
+                }
             }
-            let band: [&mut [f32]; 3] = band.try_into().unwrap();
-            ps = rest.try_into().unwrap();
-            out.push((y, band));
-            y += rows;
-        }
-        out
-    };
-    bands.into_par_iter().for_each(|(y0, band)| {
-        let rows = band[0].len() / dst_w;
-        for r in 0..rows {
-            let y = y0 + r;
-            let yi = ((((y as f64 + 0.5) * sy).floor() as i64).clamp(0, src_h as i64 - 1)) as usize;
-            let srow = &src[yi * src_w * 3..(yi + 1) * src_w * 3];
-            for (x, &xi) in xmap.iter().enumerate() {
-                let o = xi * 3;
-                band[0][r * dst_w + x] = srow[o] as f32 * scale[0] + bias[0];
-                band[1][r * dst_w + x] = srow[o + 1] as f32 * scale[1] + bias[1];
-                band[2][r * dst_w + x] = srow[o + 2] as f32 * scale[2] + bias[2];
-            }
-        }
-    });
+        });
     Ok(())
 }
 
@@ -995,9 +1002,6 @@ pub fn resize_normalize_to_tensor_u8_to_f32_separable(
     // Vertical pass: i32 accumulate over ky i16 rows, then normalize and emit
     // f32 planes directly — `acc` is the pixel value scaled by 2^14, so the
     // FMA constants fold the /2^14 in.
-    let pixels = dst_w * dst_h;
-    let (p0, rest) = dst.split_at_mut(pixels);
-    let (p1, p2) = rest.split_at_mut(pixels);
     let inv_q = 1.0f32 / (1 << Q) as f32;
     let s = [
         params.scale[0] * inv_q,
@@ -1006,47 +1010,29 @@ pub fn resize_normalize_to_tensor_u8_to_f32_separable(
     ];
     let b = params.bias;
 
-    const V_BATCH: usize = 16;
-    let bands: Vec<(usize, [&mut [f32]; 3])> = {
-        let mut out = Vec::new();
-        let mut ps: [&mut [f32]; 3] = [p0, p1, p2];
-        let mut y = 0usize;
-        while y < dst_h {
-            let rows = V_BATCH.min(dst_h - y);
-            let mut band: Vec<&mut [f32]> = Vec::with_capacity(3);
-            let mut rest: Vec<&mut [f32]> = Vec::with_capacity(3);
-            for pl in ps {
-                let (a, r) = pl.split_at_mut(rows * dst_w);
-                band.push(a);
-                rest.push(r);
-            }
-            out.push((y, band.try_into().unwrap()));
-            ps = rest.try_into().unwrap();
-            y += rows;
-        }
-        out
-    };
-    bands.into_par_iter().for_each(|(y0, band)| {
-        let rows = band[0].len() / dst_w;
-        for r in 0..rows {
-            let yo = y0 + r;
-            let y_base = yofs[yo];
-            for x in 0..dst_w {
-                let mut acc = [0i32; 3];
-                for k in 0..ky {
-                    let sy = (y_base + k as i32).clamp(0, src_h as i32 - 1) as usize;
-                    let row = &hbuf[sy * hbuf_row_len..(sy + 1) * hbuf_row_len];
-                    let w = yw[yo * ky + k];
-                    acc[0] += row[x * 3] as i32 * w;
-                    acc[1] += row[x * 3 + 1] as i32 * w;
-                    acc[2] += row[x * 3 + 2] as i32 * w;
-                }
-                for c in 0..3 {
-                    band[c][r * dst_w + x] = acc[c] as f32 * s[c] + b[c];
+    plane_bands(dst, dst_w, dst_h, 16)
+        .into_par_iter()
+        .for_each(|(y0, band)| {
+            let rows = band[0].len() / dst_w;
+            for r in 0..rows {
+                let yo = y0 + r;
+                let y_base = yofs[yo];
+                for x in 0..dst_w {
+                    let mut acc = [0i32; 3];
+                    for k in 0..ky {
+                        let sy = (y_base + k as i32).clamp(0, src_h as i32 - 1) as usize;
+                        let row = &hbuf[sy * hbuf_row_len..(sy + 1) * hbuf_row_len];
+                        let w = yw[yo * ky + k];
+                        acc[0] += row[x * 3] as i32 * w;
+                        acc[1] += row[x * 3 + 1] as i32 * w;
+                        acc[2] += row[x * 3 + 2] as i32 * w;
+                    }
+                    for c in 0..3 {
+                        band[c][r * dst_w + x] = acc[c] as f32 * s[c] + b[c];
+                    }
                 }
             }
-        }
-    });
+        });
     Ok(())
 }
 
