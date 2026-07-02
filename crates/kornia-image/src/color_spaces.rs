@@ -340,6 +340,21 @@ macro_rules! define_color_space {
             }
 
             #[cfg(feature = "cudarc")]
+            #[doc = concat!("Allocate a zero-initialised pinned-memory host ", stringify!($name), ".")]
+            pub fn zeros_pinned(
+                size: ImageSize,
+                ctx: &std::sync::Arc<cudarc::driver::CudaContext>,
+            ) -> Result<Self, ImageError> {
+                Ok(Self(Image::zeros_pinned(size, ctx)?))
+            }
+
+            #[cfg(feature = "cudarc")]
+            #[doc = concat!("Copy a device-resident ", stringify!($name), " to host on its own carried stream.")]
+            pub fn download(&self) -> Result<Self, ImageError> {
+                Ok(Self(self.0.download()?))
+            }
+
+            #[cfg(feature = "cudarc")]
             #[doc = concat!("Copy a device-resident ", stringify!($name), " back to host (D2H).")]
             pub fn to_host(
                 &self,

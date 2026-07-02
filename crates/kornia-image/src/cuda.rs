@@ -90,6 +90,38 @@ where
         Image::try_from(dev)
     }
 
+    /// Allocate a zero-initialised host `Image` in **page-locked (pinned)**
+    /// memory — an ordinary host image for every CPU path, but H2D/D2H copies
+    /// against it are direct DMA. Allocate once and reuse (`cuMemHostAlloc`
+    /// page-locks and is too expensive for a frame loop).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ImageError::Cuda`] on allocation failure.
+    pub fn zeros_pinned(
+        size: ImageSize,
+        ctx: &Arc<cudarc::driver::CudaContext>,
+    ) -> Result<Image<T, C>, ImageError> {
+        let t = kornia_tensor::zeros_pinned::<T, 3>([size.height, size.width, C], ctx)
+            .map_err(|e| ImageError::Cuda(e.to_string()))?;
+        Image::try_from(t)
+    }
+
+    /// Copy this device-resident image back to host using the image's **own
+    /// carried stream** (no stream parameter to get wrong).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ImageError::Cuda`] on CUDA failure or if the image is not
+    /// device-backed.
+    pub fn download(&self) -> Result<Image<T, C>, ImageError> {
+        let host = self
+            .0
+            .download()
+            .map_err(|e| ImageError::Cuda(e.to_string()))?;
+        Image::try_from(host)
+    }
+
     /// Copy this device-resident image back to a new host-backed `Image` (D2H).
     ///
     /// Synchronizes `stream` before returning so the host data is valid.

@@ -282,8 +282,9 @@ pub fn apply_colormap(
     #[cfg(feature = "gpu-cuda")]
     {
         use super::cuda_dispatch::{pair_residency, Residency};
-        if let Residency::Device(stream) = pair_residency(src, dst)? {
-            return super::cuda_dispatch::apply_colormap_u8_cuda(src, dst, colormap, stream);
+        if let Residency::Device(exec) = pair_residency(src, dst)? {
+            super::cuda_dispatch::apply_colormap_u8_cuda(src, dst, colormap, exec.stream())?;
+            return exec.finish();
         }
     }
     let lut = colormap.lut();

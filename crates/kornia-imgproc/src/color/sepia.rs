@@ -30,8 +30,9 @@ pub fn sepia_from_rgb_f32(src: &Image<f32, 3>, dst: &mut Image<f32, 3>) -> Resul
     #[cfg(feature = "gpu-cuda")]
     {
         use super::cuda_dispatch::{pair_residency, Residency};
-        if let Residency::Device(stream) = pair_residency(src, dst)? {
-            return super::cuda_dispatch::sepia_from_rgb_f32_cuda(src, dst, stream);
+        if let Residency::Device(exec) = pair_residency(src, dst)? {
+            super::cuda_dispatch::sepia_from_rgb_f32_cuda(src, dst, exec.stream())?;
+            return exec.finish();
         }
     }
     matrix3_affine_f32(
@@ -53,8 +54,9 @@ pub fn sepia_from_rgb_u8(src: &Image<u8, 3>, dst: &mut Image<u8, 3>) -> Result<(
     #[cfg(feature = "gpu-cuda")]
     {
         use super::cuda_dispatch::{pair_residency, Residency};
-        if let Residency::Device(stream) = pair_residency(src, dst)? {
-            return super::cuda_dispatch::sepia_from_rgb_u8_cuda(src, dst, stream);
+        if let Residency::Device(exec) = pair_residency(src, dst)? {
+            super::cuda_dispatch::sepia_from_rgb_u8_cuda(src, dst, exec.stream())?;
+            return exec.finish();
         }
     }
     let n = src.rows() * src.cols();

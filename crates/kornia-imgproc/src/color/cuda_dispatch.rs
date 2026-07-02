@@ -21,11 +21,48 @@ use crate::color::yuv::kernels::ChromaOrder;
 use crate::gpu::color_cuda::{cie, gray, hsv_hls, misc, swizzle, yuv, CudaColorError};
 
 /// Where a (src, dst) operand pair lives.
-pub(crate) enum Residency<'a> {
+pub(crate) enum Residency {
     /// Both operands host-resident → run the CPU path.
     Host,
-    /// Both operands device-resident → launch on the source's stream.
-    Device(&'a Arc<CudaStream>),
+    /// Both operands device-resident → launch through the [`DeviceExec`].
+    Device(DeviceExec),
+}
+
+/// A checked device execution context: the stream to launch on plus the
+/// cross-stream fence obligations when src and dst live on different streams.
+///
+/// CUDA gives no implicit ordering between streams, so for a cross-stream
+/// pair [`pair_residency`] records an event on the destination's stream and
+/// makes the launch stream wait on it (the destination's pending writes —
+/// e.g. `zeros_cuda`'s async memset — complete first), and [`finish`]
+/// records the launch on an event the destination's stream then waits on
+/// (subsequent destination-stream reads see the converted pixels).
+pub(crate) struct DeviceExec {
+    stream: Arc<CudaStream>,
+    /// Destination stream to fence back to, when different from `stream`.
+    fence_back: Option<Arc<CudaStream>>,
+}
+
+impl DeviceExec {
+    /// The stream to launch the kernel on (the source's stream).
+    pub(crate) fn stream(&self) -> &Arc<CudaStream> {
+        &self.stream
+    }
+
+    /// Complete the cross-stream ordering after the kernel launch was
+    /// enqueued. Must be called once the launch is on [`stream`](Self::stream).
+    pub(crate) fn finish(self) -> Result<(), ImageError> {
+        if let Some(dst_stream) = self.fence_back {
+            let ev = self
+                .stream
+                .record_event(None)
+                .map_err(|e| ImageError::Cuda(e.to_string()))?;
+            dst_stream
+                .wait(&ev)
+                .map_err(|e| ImageError::Cuda(e.to_string()))?;
+        }
+        Ok(())
+    }
 }
 
 /// True if the image's backing memory is device- (or unified-) resident.
@@ -39,8 +76,11 @@ pub(crate) fn is_device<T, const C: usize>(img: &Image<T, C>) -> bool {
     )
 }
 
-/// Reject any device-resident operand — used by conversions that have no CUDA
-/// kernel (yet), turning what would be an `as_slice` panic into a typed error.
+/// Reject any device-resident operand — the guard for host-only conversion
+/// arms. Every current `ConvertColor` arm has a CUDA path, so this is unused
+/// today; it stays (tested) so any future host-only arm turns an `as_slice`
+/// panic into a typed error.
+#[allow(dead_code)]
 pub(crate) fn ensure_host<T, const C: usize, const D: usize>(
     src: &Image<T, C>,
     dst: &Image<T, D>,
@@ -53,18 +93,15 @@ pub(crate) fn ensure_host<T, const C: usize, const D: usize>(
 
 /// Classify a (src, dst) pair: both-host, both-device, or error on a mix.
 ///
-/// Device pairs must live on the **same stream and device**: CUDA gives no
-/// implicit ordering between streams, so launching src's kernel on a buffer
-/// whose pending writes sit on another stream would race (e.g. `zeros_cuda`'s
-/// async memset). Streams are compared by raw `CUstream` handle (every
-/// `ctx.default_stream()` call returns a fresh `Arc` over the same null
-/// handle) plus device ordinal — mismatches error with
-/// [`ImageError::StreamMismatch`], consistent with the no-implicit-transfer /
-/// no-implicit-sync policy.
-pub(crate) fn pair_residency<'a, T, const C: usize, const D: usize>(
-    src: &'a Image<T, C>,
+/// Device pairs must live on the **same device** (cross-device errors with
+/// [`ImageError::StreamMismatch`]). Different **streams** on the same device
+/// are supported via event fences — see [`DeviceExec`]. Streams are compared
+/// by raw `CUstream` handle (every `ctx.default_stream()` call returns a
+/// fresh `Arc` over the same null handle, so `Arc` identity is wrong).
+pub(crate) fn pair_residency<T, const C: usize, const D: usize>(
+    src: &Image<T, C>,
     dst: &Image<T, D>,
-) -> Result<Residency<'a>, ImageError>
+) -> Result<Residency, ImageError>
 where
     T: DeviceRepr + ValidAsZeroBits + 'static,
 {
@@ -79,15 +116,64 @@ where
                 .0
                 .cuda_stream()
                 .ok_or_else(|| untyped_device_err("destination"))?;
-            let same_device = s_stream.context().ordinal() == d_stream.context().ordinal();
-            let same_stream = s_stream.cu_stream() == d_stream.cu_stream();
-            if !(same_device && same_stream) {
+            if s_stream.context().ordinal() != d_stream.context().ordinal() {
                 return Err(ImageError::StreamMismatch);
             }
-            Ok(Residency::Device(s_stream))
+            if s_stream.cu_stream() == d_stream.cu_stream() {
+                return Ok(Residency::Device(DeviceExec {
+                    stream: s_stream.clone(),
+                    fence_back: None,
+                }));
+            }
+            // Pre-fence: the launch (source) stream waits for the
+            // destination's already-enqueued work before touching its buffer.
+            let ev = d_stream
+                .record_event(None)
+                .map_err(|e| ImageError::Cuda(e.to_string()))?;
+            s_stream
+                .wait(&ev)
+                .map_err(|e| ImageError::Cuda(e.to_string()))?;
+            Ok(Residency::Device(DeviceExec {
+                stream: s_stream.clone(),
+                fence_back: Some(d_stream.clone()),
+            }))
         }
         _ => Err(ImageError::MixedResidency),
     }
+}
+
+/// Build a [`DeviceExec`] for a known-device source stream and a destination
+/// image (used by non-`Image` sources like `DeviceVideoFrame`). Same
+/// same-device + event-fence rules as [`pair_residency`].
+pub(crate) fn device_exec_for<T>(
+    src_stream: &Arc<CudaStream>,
+    dst: &kornia_tensor::Tensor<T, 3>,
+) -> Result<DeviceExec, ImageError>
+where
+    T: DeviceRepr + ValidAsZeroBits + 'static,
+{
+    let d_stream = dst
+        .cuda_stream()
+        .ok_or_else(|| untyped_device_err("destination"))?;
+    if src_stream.context().ordinal() != d_stream.context().ordinal() {
+        return Err(ImageError::StreamMismatch);
+    }
+    if src_stream.cu_stream() == d_stream.cu_stream() {
+        return Ok(DeviceExec {
+            stream: src_stream.clone(),
+            fence_back: None,
+        });
+    }
+    let ev = d_stream
+        .record_event(None)
+        .map_err(|e| ImageError::Cuda(e.to_string()))?;
+    src_stream
+        .wait(&ev)
+        .map_err(|e| ImageError::Cuda(e.to_string()))?;
+    Ok(DeviceExec {
+        stream: src_stream.clone(),
+        fence_back: Some(d_stream.clone()),
+    })
 }
 
 fn untyped_device_err(what: &str) -> ImageError {
@@ -172,6 +258,21 @@ adapter!(rgb_from_hsv_f32_cuda, f32, 3 => 3, hsv_hls::launch_rgb_from_hsv_f32);
 adapter!(hls_from_rgb_f32_cuda, f32, 3 => 3, hsv_hls::launch_hls_from_rgb_f32);
 adapter!(rgb_from_hls_f32_cuda, f32, 3 => 3, hsv_hls::launch_rgb_from_hls_f32);
 
+adapter!(gray_from_rgb_f64_cuda, f64, 3 => 1, gray::launch_gray_from_rgb_f64);
+adapter!(rgb_from_gray_f64_cuda, f64, 1 => 3, gray::launch_rgb_from_gray_f64);
+adapter!(hsv_from_rgb_f64_cuda, f64, 3 => 3, hsv_hls::launch_hsv_from_rgb_f64);
+adapter!(rgb_from_hsv_f64_cuda, f64, 3 => 3, hsv_hls::launch_rgb_from_hsv_f64);
+adapter!(hls_from_rgb_f64_cuda, f64, 3 => 3, hsv_hls::launch_hls_from_rgb_f64);
+adapter!(rgb_from_hls_f64_cuda, f64, 3 => 3, hsv_hls::launch_rgb_from_hls_f64);
+adapter!(linear_rgb_from_rgb_f64_cuda, f64, 3 => 3, cie::launch_linear_rgb_from_rgb_f64);
+adapter!(rgb_from_linear_rgb_f64_cuda, f64, 3 => 3, cie::launch_rgb_from_linear_rgb_f64);
+adapter!(xyz_from_rgb_f64_cuda, f64, 3 => 3, cie::launch_xyz_from_rgb_f64);
+adapter!(rgb_from_xyz_f64_cuda, f64, 3 => 3, cie::launch_rgb_from_xyz_f64);
+adapter!(lab_from_rgb_f64_cuda, f64, 3 => 3, cie::launch_lab_from_rgb_f64);
+adapter!(rgb_from_lab_f64_cuda, f64, 3 => 3, cie::launch_rgb_from_lab_f64);
+adapter!(luv_from_rgb_f64_cuda, f64, 3 => 3, cie::launch_luv_from_rgb_f64);
+adapter!(rgb_from_luv_f64_cuda, f64, 3 => 3, cie::launch_rgb_from_luv_f64);
+
 adapter!(linear_rgb_from_rgb_f32_cuda, f32, 3 => 3, cie::launch_linear_rgb_from_rgb_f32);
 adapter!(rgb_from_linear_rgb_f32_cuda, f32, 3 => 3, cie::launch_rgb_from_linear_rgb_f32);
 adapter!(xyz_from_rgb_f32_cuda, f32, 3 => 3, cie::launch_xyz_from_rgb_f32);
@@ -221,6 +322,31 @@ ycc_adapter!(
     yuv::launch_rgb_from_ycc_u8,
     ChromaOrder::YuvCbCr
 );
+ycc_adapter!(
+    ycbcr_from_rgb_f64_cuda,
+    f64,
+    yuv::launch_ycc_from_rgb_f64,
+    ChromaOrder::YCrCb
+);
+ycc_adapter!(
+    rgb_from_ycbcr_f64_cuda,
+    f64,
+    yuv::launch_rgb_from_ycc_f64,
+    ChromaOrder::YCrCb
+);
+ycc_adapter!(
+    yuv_from_rgb_f64_cuda,
+    f64,
+    yuv::launch_ycc_from_rgb_f64,
+    ChromaOrder::YuvCbCr
+);
+ycc_adapter!(
+    rgb_from_yuv_f64_cuda,
+    f64,
+    yuv::launch_rgb_from_ycc_f64,
+    ChromaOrder::YuvCbCr
+);
+
 ycc_adapter!(
     ycbcr_from_rgb_f32_cuda,
     f32,
@@ -372,7 +498,7 @@ mod tests {
     }
 
     #[test]
-    fn different_streams_error_and_same_default_stream_passes() {
+    fn cross_stream_pairs_are_event_fenced() {
         use cudarc::driver::CudaContext;
 
         let ctx = CudaContext::new(0).unwrap();
@@ -380,34 +506,89 @@ mod tests {
         let s2 = ctx.new_stream().unwrap();
 
         let rgb = Rgb8::from_size_vec(SIZE, pattern_u8(SIZE.width * SIZE.height * 3)).unwrap();
+        let mut gray_cpu = Gray8::from_size_val(SIZE, 0).unwrap();
+        rgb.convert(&mut gray_cpu).unwrap();
 
-        // src on the default stream, dst on an explicit stream → StreamMismatch.
+        // src on the default stream, dst on an explicit stream: the dispatch
+        // must fence (dst's async zero-memset before the kernel; the kernel
+        // before dst-stream reads) and produce the exact CPU result.
         let rgb_d = rgb.to_cuda(&s1).unwrap();
         let mut gray_other = Gray8::zeros_cuda(SIZE, &s2).unwrap();
-        let err = rgb_d.convert(&mut gray_other).unwrap_err();
-        assert!(
-            matches!(err, kornia_image::ImageError::StreamMismatch),
-            "cross-stream pair must fail with StreamMismatch, got {err:?}"
+        rgb_d.convert(&mut gray_other).unwrap();
+        let back = gray_other.to_host(&s2).unwrap();
+        assert_eq!(
+            back.as_slice(),
+            gray_cpu.as_slice(),
+            "cross-stream fenced convert must match CPU bit-for-bit"
         );
 
         // Two separate default_stream() Arcs are the SAME stream (null handle)
-        // — must dispatch fine.
+        // — no fence needed, must dispatch fine.
         let mut gray_default = Gray8::zeros_cuda(SIZE, &ctx.default_stream()).unwrap();
         rgb_d.convert(&mut gray_default).unwrap();
     }
 
     #[test]
-    fn unported_op_on_device_errors_not_panics() {
+    fn ensure_host_guard_rejects_device_operands() {
+        // Every ConvertColor arm now has a CUDA path, so the host-only guard
+        // has no trait-level subject — test it directly: it must keep turning
+        // device operands into a typed error for any future host-only arm.
         let stream = default_stream();
-        // f64 gray has no CUDA kernel — its host-only arm must reject device
-        // operands with UnsupportedDevice instead of panicking in as_slice.
         let rgb = Rgbf64::from_size_val(SIZE, 0.5).unwrap();
         let rgb_d = rgb.to_cuda(&stream).unwrap();
-        let mut gray_d = Grayf64::zeros_cuda(SIZE, &stream).unwrap();
-        let err = rgb_d.convert(&mut gray_d).unwrap_err();
-        assert!(
-            matches!(err, kornia_image::ImageError::UnsupportedDevice),
-            "un-ported op with device operands must be UnsupportedDevice, got {err:?}"
-        );
+        let host = Rgbf64::from_size_val(SIZE, 0.0).unwrap();
+        let err = crate::color::cuda_dispatch::ensure_host(&rgb_d.0, &host.0).unwrap_err();
+        assert!(matches!(err, kornia_image::ImageError::UnsupportedDevice));
+    }
+
+    #[test]
+    fn f64_device_conversions_match_cpu_oracle() {
+        use kornia_image::color_spaces::{Hsvf64, Labf64, YCbCrf64};
+
+        let stream = default_stream();
+        let n = SIZE.width * SIZE.height;
+        // f64 RGB in [0,1].
+        let data: Vec<f64> = pattern_u8(n * 3)
+            .iter()
+            .map(|&b| b as f64 / 255.0)
+            .collect();
+        let rgb = Rgbf64::from_size_vec(SIZE, data).unwrap();
+        let rgb_d = rgb.to_cuda(&stream).unwrap();
+
+        // gray (exact-form weighted sum) — tight tolerance.
+        let mut g_cpu = Grayf64::from_size_val(SIZE, 0.0).unwrap();
+        rgb.convert(&mut g_cpu).unwrap();
+        let mut g_d = Grayf64::zeros_cuda(SIZE, &stream).unwrap();
+        rgb_d.convert(&mut g_d).unwrap();
+        let g_back = g_d.download().unwrap();
+        let diff = g_back
+            .as_slice()
+            .iter()
+            .zip(g_cpu.as_slice())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0f64, f64::max);
+        assert!(diff <= 1e-12, "f64 gray max diff {diff}");
+
+        // ycbcr / hsv / lab within 1e-6 (constant-representation and libm
+        // differences dominate; still far tighter than the f32 paths).
+        macro_rules! check {
+            ($dst_ty:ty, $tol:expr, $label:literal) => {{
+                let mut cpu = <$dst_ty>::from_size_val(SIZE, 0.0).unwrap();
+                rgb.convert(&mut cpu).unwrap();
+                let mut dev = <$dst_ty>::zeros_cuda(SIZE, &stream).unwrap();
+                rgb_d.convert(&mut dev).unwrap();
+                let back = dev.download().unwrap();
+                let diff = back
+                    .as_slice()
+                    .iter()
+                    .zip(cpu.as_slice())
+                    .map(|(a, b)| (a - b).abs())
+                    .fold(0f64, f64::max);
+                assert!(diff <= $tol, "{} f64 max diff {diff}", $label);
+            }};
+        }
+        check!(YCbCrf64, 1e-12, "ycbcr");
+        check!(Hsvf64, 1e-6, "hsv");
+        check!(Labf64, 1e-6, "lab");
     }
 }

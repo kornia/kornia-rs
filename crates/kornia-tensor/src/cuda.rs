@@ -879,6 +879,20 @@ where
         })
     }
 
+    /// Copy this device tensor to a new host tensor using the tensor's **own
+    /// carried stream** — the one it was allocated/uploaded on — removing the
+    /// footgun of passing a different stream than the data's producer (a
+    /// read-before-write hazard). Synchronizes before returning.
+    ///
+    /// # Errors
+    ///
+    /// [`CudaError::NotCudaBacked`] if the tensor is not device-backed by a
+    /// typed [`CudaResource<T>`], or [`CudaError::Driver`] on CUDA failure.
+    pub fn download(&self) -> Result<Tensor<T, N>, CudaError> {
+        let stream = self.cuda_stream().ok_or(CudaError::NotCudaBacked)?.clone();
+        self.to_host(&stream)
+    }
+
     /// Copy this device tensor to a new host tensor whose storage comes from
     /// `alloc` — e.g. [`pinned_alloc`] for a page-locked destination, which
     /// lets the driver DMA the D2H copy directly instead of staging it.
