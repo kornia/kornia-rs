@@ -360,6 +360,115 @@ fn run_fused_preprocess(stream: &Arc<CudaStream>, width: usize, height: usize, j
     }
 }
 
+/// One-shot experiments (run at the smallest size): CUDA Graph replay for the
+/// launch-overhead-bound small-image case, and an 8 px/thread gray variant
+/// probing the bandwidth headroom above the shipped 4 px/thread kernel.
+fn run_experiments(json: bool) {
+    use kornia_tensor::CudaKernel;
+
+    let ctx = CudaContext::new(0).expect("CUDA device 0 required");
+    // Stream capture is illegal on the default (null) stream.
+    let stream = ctx.new_stream().unwrap();
+
+    // ── Experiment A: CUDA Graph replay for the launch-overhead-bound small
+    // images (the rgba_from_rgb @ VGA red cell) — MEASURED NO-GO with cudarc
+    // 0.19: its safe launch path makes every kernel argument wait on the
+    // slice's tracking event, and any such event recorded outside capture
+    // makes the captured launch fail with CUDA_ERROR_STREAM_CAPTURE_ISOLATION
+    // (verified in both THREAD_LOCAL and RELAXED capture modes). Stream
+    // capture would need either raw-pointer launches or an upstream cudarc
+    // capture-aware mode. Until then, small-image launch overhead (~15 µs)
+    // stands; batch small conversions into fewer, larger launches instead.
+
+    // ── Experiment B: 8 px/thread gray (two word-triples per thread) ──
+    {
+        const GRAY8_SRC: &str = r#"
+extern "C" __global__ void gray8px(
+    const unsigned char* __restrict__ src,
+    unsigned char* __restrict__ dst,
+    unsigned int npixels)
+{
+    unsigned int g = blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned int ngroups = (npixels + 7u) / 8u;
+    if (g >= ngroups) return;
+    unsigned int p = g * 8u;
+    if (p + 8u <= npixels) {
+        const unsigned int* s32 = (const unsigned int*)src;
+        unsigned int y[8];
+        #pragma unroll
+        for (int q = 0; q < 2; ++q) {
+            unsigned int w0 = __ldg(&s32[g * 6u + q * 3u]);
+            unsigned int w1 = __ldg(&s32[g * 6u + q * 3u + 1u]);
+            unsigned int w2 = __ldg(&s32[g * 6u + q * 3u + 2u]);
+            y[q*4+0] = (77u*(w0 & 0xFFu) + 150u*((w0 >> 8) & 0xFFu) + 29u*((w0 >> 16) & 0xFFu)) >> 8;
+            y[q*4+1] = (77u*(w0 >> 24) + 150u*(w1 & 0xFFu) + 29u*((w1 >> 8) & 0xFFu)) >> 8;
+            y[q*4+2] = (77u*((w1 >> 16) & 0xFFu) + 150u*(w1 >> 24) + 29u*(w2 & 0xFFu)) >> 8;
+            y[q*4+3] = (77u*((w2 >> 8) & 0xFFu) + 150u*((w2 >> 16) & 0xFFu) + 29u*(w2 >> 24)) >> 8;
+        }
+        uint2 out;
+        out.x = y[0] | (y[1] << 8) | (y[2] << 16) | (y[3] << 24);
+        out.y = y[4] | (y[5] << 8) | (y[6] << 16) | (y[7] << 24);
+        ((uint2*)dst)[g] = out;
+    } else {
+        for (unsigned int i = p; i < npixels; ++i) {
+            unsigned int b = i * 3u;
+            dst[i] = (unsigned char)((77u*src[b] + 150u*src[b+1u] + 29u*src[b+2u]) >> 8);
+        }
+    }
+}
+"#;
+        let (w, h) = (1920usize, 1080usize);
+        let n = w * h;
+        let kernel = CudaKernel::compile(stream.context(), GRAY8_SRC, "gray8px").unwrap();
+        let src = pattern_u8(n * 3);
+        let d_srcs: Vec<CudaSlice<u8>> = (0..N_BUFFS)
+            .map(|_| stream.clone_htod(&src).unwrap())
+            .collect();
+        let mut d_dst = stream.alloc_zeros::<u8>(n).unwrap();
+        let n32 = n as u32;
+        let mut go = |i: usize| {
+            kernel
+                .launch_builder(&stream)
+                .arg(&d_srcs[i % N_BUFFS])
+                .arg(&mut d_dst)
+                .arg(&n32)
+                .launch_1d(n32.div_ceil(8))
+                .unwrap();
+        };
+        for i in 0..30 {
+            go(i);
+        }
+        stream.synchronize().unwrap();
+        let mut samples = Vec::new();
+        let mut li = 0usize;
+        for _ in 0..10 {
+            let t0 = Instant::now();
+            for _ in 0..20 {
+                go(li);
+                li += 1;
+            }
+            stream.synchronize().unwrap();
+            samples.push(t0.elapsed().as_secs_f64() * 1e3 / 20.0);
+        }
+        let st = stats_from(samples, n * 4);
+        if json {
+            println!(
+                "{{\"op\":\"exp_gray_8px_thread\",\"width\":{w},\"height\":{h},\"variant\":\"kernel\",\"min_ms\":{:.6},\"p50_ms\":{:.6},\"p95_ms\":{:.6},\"gbps\":{:.3}}}",
+                st.min_ms, st.p50_ms, st.p95_ms, st.gbps
+            );
+        } else {
+            println!(
+                "{:>26} {:>10} {:>20} min {:>9.4} ms  {:>7.1} GB/s",
+                "exp_gray_8px_thread",
+                format!("{w}x{h}"),
+                "kernel",
+                st.min_ms,
+                st.gbps
+            );
+        }
+    }
+}
+
 fn main() {
     let json = std::env::args().any(|a| a == "--json");
     let ctx = CudaContext::new(0).expect("CUDA device 0 required");
@@ -371,6 +480,8 @@ fn main() {
             "kernel-only: {KERNEL_BATCHES}x{KERNEL_PER_BATCH} launches, {N_BUFFS} rotating src buffers"
         );
     }
+
+    run_experiments(json);
 
     for &(width, height) in SIZES {
         let n = width * height;
