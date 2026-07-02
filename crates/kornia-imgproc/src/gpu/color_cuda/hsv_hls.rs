@@ -140,6 +140,135 @@ const HSV_HLS_F32_FNS: &[&str] = &[
     "rgb_from_hls_f32",
 ];
 
+// f64 twins of the four entries — same formulas with double math. Constants
+// use plain double literals (the CPU f64 path also computes in full f64).
+static HSV_HLS_F64_SRC: &str = r#"
+#define INV_255_D     (1.0 / 255.0)
+#define DEG_TO_BYTE_D (255.0 / 360.0)
+#define BYTE_TO_DEG_D (360.0 / 255.0)
+
+__device__ __forceinline__ double hue_deg_d(
+    double r, double g, double b, double maxv, double delta)
+{
+    double h;
+    if (maxv == r)      h = 60.0 * fmod((g - b) / delta, 6.0);
+    else if (maxv == g) h = 60.0 * (((b - r) / delta) + 2.0);
+    else                h = 60.0 * (((r - g) / delta) + 4.0);
+    if (h < 0.0) h += 360.0;
+    return h;
+}
+
+extern "C" __global__ void hsv_from_rgb_f64(
+    const double* __restrict__ src, double* __restrict__ dst, unsigned int npixels)
+{
+    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= npixels) return;
+    unsigned int si = i * 3u;
+    double r = __ldg(&src[si]) * INV_255_D;
+    double g = __ldg(&src[si + 1u]) * INV_255_D;
+    double b = __ldg(&src[si + 2u]) * INV_255_D;
+    double maxv = fmax(fmax(r, g), b);
+    double minv = fmin(fmin(r, g), b);
+    double delta = maxv - minv;
+    double h = (delta == 0.0) ? 0.0 : hue_deg_d(r, g, b, maxv, delta);
+    double s = (maxv == 0.0) ? 0.0 : (delta / maxv) * 255.0;
+    dst[si]      = h * DEG_TO_BYTE_D;
+    dst[si + 1u] = s;
+    dst[si + 2u] = maxv * 255.0;
+}
+
+extern "C" __global__ void rgb_from_hsv_f64(
+    const double* __restrict__ src, double* __restrict__ dst, unsigned int npixels)
+{
+    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= npixels) return;
+    unsigned int si = i * 3u;
+    double s = __ldg(&src[si + 1u]) * INV_255_D;
+    double v = __ldg(&src[si + 2u]) * INV_255_D;
+    double hh = __ldg(&src[si]) * (BYTE_TO_DEG_D / 60.0);
+    double c = v * s;
+    double hmod2 = hh - 2.0 * floor(hh * 0.5);
+    double x = c * (1.0 - fabs(hmod2 - 1.0));
+    double m = v - c;
+    int sext = (int)floor(hh);
+    double r1, g1, b1;
+    switch (sext) {
+        case 0:  r1 = c;   g1 = x;   b1 = 0.0; break;
+        case 1:  r1 = x;   g1 = c;   b1 = 0.0; break;
+        case 2:  r1 = 0.0; g1 = c;   b1 = x;   break;
+        case 3:  r1 = 0.0; g1 = x;   b1 = c;   break;
+        case 4:  r1 = x;   g1 = 0.0; b1 = c;   break;
+        default: r1 = c;   g1 = 0.0; b1 = x;   break;
+    }
+    dst[si]      = (r1 + m) * 255.0;
+    dst[si + 1u] = (g1 + m) * 255.0;
+    dst[si + 2u] = (b1 + m) * 255.0;
+}
+
+extern "C" __global__ void hls_from_rgb_f64(
+    const double* __restrict__ src, double* __restrict__ dst, unsigned int npixels)
+{
+    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= npixels) return;
+    unsigned int si = i * 3u;
+    double r = __ldg(&src[si]) * INV_255_D;
+    double g = __ldg(&src[si + 1u]) * INV_255_D;
+    double b = __ldg(&src[si + 2u]) * INV_255_D;
+    double maxv = fmax(fmax(r, g), b);
+    double minv = fmin(fmin(r, g), b);
+    double diff = maxv - minv;
+    double sum = maxv + minv;
+    double l = sum * 0.5;
+    double h = 0.0, s = 0.0;
+    if (diff != 0.0) {
+        s = (l <= 0.5) ? (diff / sum) : (diff / (2.0 - sum));
+        h = hue_deg_d(r, g, b, maxv, diff);
+    }
+    dst[si]      = h * DEG_TO_BYTE_D;
+    dst[si + 1u] = l * 255.0;
+    dst[si + 2u] = s * 255.0;
+}
+
+__device__ __forceinline__ double hue2rgb_d(double p, double q, double t)
+{
+    if (t < 0.0) t += 1.0;
+    if (t > 1.0) t -= 1.0;
+    if (t < 1.0 / 6.0) return p + (q - p) * 6.0 * t;
+    if (t < 0.5)       return q;
+    if (t < 2.0 / 3.0) return p + (q - p) * (2.0 / 3.0 - t) * 6.0;
+    return p;
+}
+
+extern "C" __global__ void rgb_from_hls_f64(
+    const double* __restrict__ src, double* __restrict__ dst, unsigned int npixels)
+{
+    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= npixels) return;
+    unsigned int si = i * 3u;
+    double l = __ldg(&src[si + 1u]) * INV_255_D;
+    double s = __ldg(&src[si + 2u]) * INV_255_D;
+    if (s == 0.0) {
+        double v = l * 255.0;
+        dst[si] = v; dst[si + 1u] = v; dst[si + 2u] = v;
+        return;
+    }
+    double h_deg = __ldg(&src[si]) * BYTE_TO_DEG_D;
+    double q = (l < 0.5) ? (l * (1.0 + s)) : (l + s - l * s);
+    double p = 2.0 * l - q;
+    double hk = h_deg / 360.0;
+    dst[si]      = hue2rgb_d(p, q, hk + 1.0 / 3.0) * 255.0;
+    dst[si + 1u] = hue2rgb_d(p, q, hk) * 255.0;
+    dst[si + 2u] = hue2rgb_d(p, q, hk - 1.0 / 3.0) * 255.0;
+}
+"#;
+const HSV_HLS_F64_FNS: &[&str] = &[
+    "hsv_from_rgb_f64",
+    "rgb_from_hsv_f64",
+    "hls_from_rgb_f64",
+    "rgb_from_hls_f64",
+];
+static HSV_HLS_F64: KernelSuiteCell = KernelSuiteCell::new();
+
 static HSV_HLS_F32: KernelSuiteCell = KernelSuiteCell::new();
 
 fn launch_entry(
@@ -167,6 +296,63 @@ fn launch_entry(
         .launch_1d(n)?;
     Ok(())
 }
+
+fn launch_entry_f64(
+    index: usize,
+    stream: &Arc<CudaStream>,
+    src: &CudaSlice<f64>,
+    dst: &mut CudaSlice<f64>,
+    npixels: usize,
+) -> Result<(), CudaColorError> {
+    check_len("src", src.len(), npixels * 3)?;
+    check_len("dst", dst.len(), npixels * 3)?;
+    let kernel = get_kernel_suite(
+        &HSV_HLS_F64,
+        stream,
+        HSV_HLS_F64_SRC,
+        HSV_HLS_F64_FNS,
+        index,
+    )?;
+    let n = npixels as u32;
+    kernel
+        .launch_builder(stream)
+        .arg(src)
+        .arg(dst)
+        .arg(&n)
+        .launch_1d(n)?;
+    Ok(())
+}
+
+macro_rules! hsv_hls_f64_launcher {
+    ($(#[$meta:meta])* $name:ident, $index:expr) => {
+        $(#[$meta])*
+        pub fn $name(
+            stream: &Arc<CudaStream>,
+            src: &CudaSlice<f64>,
+            dst: &mut CudaSlice<f64>,
+            npixels: usize,
+        ) -> Result<(), CudaColorError> {
+            launch_entry_f64($index, stream, src, dst, npixels)
+        }
+    };
+}
+
+hsv_hls_f64_launcher!(
+    /// Launch RGB f64 → HSV f64.
+    launch_hsv_from_rgb_f64, 0
+);
+hsv_hls_f64_launcher!(
+    /// Launch HSV f64 → RGB f64.
+    launch_rgb_from_hsv_f64, 1
+);
+hsv_hls_f64_launcher!(
+    /// Launch RGB f64 → HLS f64 (channel order `[H, L, S]`).
+    launch_hls_from_rgb_f64, 2
+);
+hsv_hls_f64_launcher!(
+    /// Launch HLS f64 → RGB f64.
+    launch_rgb_from_hls_f64, 3
+);
 
 /// Launch RGB f32 → HSV f32 (channels `[0,255]`, H scaled from `[0,360)`).
 pub fn launch_hsv_from_rgb_f32(

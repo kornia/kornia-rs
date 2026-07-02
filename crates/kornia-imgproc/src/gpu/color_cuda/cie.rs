@@ -207,6 +207,187 @@ const CIE_F32_FNS: &[&str] = &[
     "rgb_from_luv_f32",
 ];
 
+// f64 twins. Constants are float literals widened to double — the CPU f64
+// oracle also derives them from the shared f32 constants (`X as f64`), so
+// this reproduces the exact same values.
+static CIE_F64_SRC: &str = r#"
+#define D(x) ((double)(x))
+#define SRGB_THRESH_D     D(0.04045f)
+#define SRGB_INV_THRESH_D D(0.0031308f)
+#define SRGB_A_D          D(0.055f)
+#define XN_D D(0.950456f)
+#define ZN_D D(1.088754f)
+#define LAB_DELTA_D       D(0.008856f)
+#define LAB_F_SLOPE_D     (1.0 / D(0.12841855f))
+#define LAB_F_OFFSET_D    D(0.13793103f)
+#define LAB_FINV_THRESH_D D(0.20689655f)
+#define LAB_FINV_SLOPE_D  D(0.12841855f)
+#define LUV_UN_D    D(0.19793943f)
+#define LUV_VN_D    D(0.46831096f)
+#define LUV_KAPPA_D D(903.3f)
+
+// Transfer uses EXACT double literals — the CPU f64 oracle
+// (linear_from_srgb_scalar64) writes 12.92/1.055/0.055/2.4 as doubles, while
+// only the branch thresholds come from widened f32 constants.
+__device__ __forceinline__ double srgb_to_linear_d(double x) {
+    x = fmax(x, 0.0);
+    return (x <= SRGB_THRESH_D)
+        ? x / 12.92
+        : pow((x + 0.055) / 1.055, 2.4);
+}
+
+__device__ __forceinline__ double linear_to_srgb_d(double l) {
+    l = fmax(l, 0.0);
+    return (l <= SRGB_INV_THRESH_D)
+        ? 12.92 * l
+        : 1.055 * pow(l, 1.0 / 2.4) - 0.055;
+}
+
+__device__ __forceinline__ void xyz_mat_d(
+    double r, double g, double b, double* x, double* y, double* z)
+{
+    *x = D(0.412453f) * r + D(0.357580f) * g + D(0.180423f) * b;
+    *y = D(0.212671f) * r + D(0.715160f) * g + D(0.072169f) * b;
+    *z = D(0.019334f) * r + D(0.119193f) * g + D(0.950227f) * b;
+}
+
+__device__ __forceinline__ void rgb_mat_d(
+    double x, double y, double z, double* r, double* g, double* b)
+{
+    *r =  D(3.240479f) * x + D(-1.537150f) * y + D(-0.498535f) * z;
+    *g = D(-0.969256f) * x +  D(1.875991f) * y +  D(0.041556f) * z;
+    *b =  D(0.055648f) * x + D(-0.204043f) * y +  D(1.057311f) * z;
+}
+
+__device__ __forceinline__ double lab_f_d(double t) {
+    return (t > LAB_DELTA_D) ? cbrt(t) : (t * LAB_F_SLOPE_D + LAB_F_OFFSET_D);
+}
+
+__device__ __forceinline__ double lab_finv_d(double f) {
+    return (f > LAB_FINV_THRESH_D) ? (f * f * f) : (LAB_FINV_SLOPE_D * (f - LAB_F_OFFSET_D));
+}
+
+#define PIXEL_HEAD_D     unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;     if (i >= npixels) return;     unsigned int si = i * 3u;     double c0 = __ldg(&src[si]);     double c1 = __ldg(&src[si + 1u]);     double c2 = __ldg(&src[si + 2u]);
+
+extern "C" __global__ void linear_rgb_from_rgb_f64(
+    const double* __restrict__ src, double* __restrict__ dst, unsigned int npixels)
+{
+    PIXEL_HEAD_D
+    dst[si] = srgb_to_linear_d(c0);
+    dst[si + 1u] = srgb_to_linear_d(c1);
+    dst[si + 2u] = srgb_to_linear_d(c2);
+}
+
+extern "C" __global__ void rgb_from_linear_rgb_f64(
+    const double* __restrict__ src, double* __restrict__ dst, unsigned int npixels)
+{
+    PIXEL_HEAD_D
+    dst[si] = linear_to_srgb_d(c0);
+    dst[si + 1u] = linear_to_srgb_d(c1);
+    dst[si + 2u] = linear_to_srgb_d(c2);
+}
+
+extern "C" __global__ void xyz_from_rgb_f64(
+    const double* __restrict__ src, double* __restrict__ dst, unsigned int npixels)
+{
+    PIXEL_HEAD_D
+    double x, y, z;
+    xyz_mat_d(c0, c1, c2, &x, &y, &z);
+    dst[si] = x; dst[si + 1u] = y; dst[si + 2u] = z;
+}
+
+extern "C" __global__ void rgb_from_xyz_f64(
+    const double* __restrict__ src, double* __restrict__ dst, unsigned int npixels)
+{
+    PIXEL_HEAD_D
+    double r, g, b;
+    rgb_mat_d(c0, c1, c2, &r, &g, &b);
+    dst[si] = r; dst[si + 1u] = g; dst[si + 2u] = b;
+}
+
+extern "C" __global__ void lab_from_rgb_f64(
+    const double* __restrict__ src, double* __restrict__ dst, unsigned int npixels)
+{
+    PIXEL_HEAD_D
+    double x, y, z;
+    xyz_mat_d(srgb_to_linear_d(c0), srgb_to_linear_d(c1), srgb_to_linear_d(c2), &x, &y, &z);
+    double fx = lab_f_d(x / XN_D);
+    double fy = lab_f_d(y);
+    double fz = lab_f_d(z / ZN_D);
+    dst[si]      = 116.0 * fy - 16.0;
+    dst[si + 1u] = 500.0 * (fx - fy);
+    dst[si + 2u] = 200.0 * (fy - fz);
+}
+
+extern "C" __global__ void rgb_from_lab_f64(
+    const double* __restrict__ src, double* __restrict__ dst, unsigned int npixels)
+{
+    PIXEL_HEAD_D
+    double fy = (c0 + 16.0) / 116.0;
+    double fx = fy + c1 / 500.0;
+    double fz = fy - c2 / 200.0;
+    double r, g, b;
+    rgb_mat_d(XN_D * lab_finv_d(fx), lab_finv_d(fy), ZN_D * lab_finv_d(fz), &r, &g, &b);
+    dst[si]      = linear_to_srgb_d(r);
+    dst[si + 1u] = linear_to_srgb_d(g);
+    dst[si + 2u] = linear_to_srgb_d(b);
+}
+
+extern "C" __global__ void luv_from_rgb_f64(
+    const double* __restrict__ src, double* __restrict__ dst, unsigned int npixels)
+{
+    PIXEL_HEAD_D
+    double x, y, z;
+    xyz_mat_d(srgb_to_linear_d(c0), srgb_to_linear_d(c1), srgb_to_linear_d(c2), &x, &y, &z);
+    double l = (y > LAB_DELTA_D) ? (116.0 * cbrt(y) - 16.0) : (LUV_KAPPA_D * y);
+    double d = x + 15.0 * y + 3.0 * z;
+    double up = 0.0, vp = 0.0;
+    if (d != 0.0) {
+        up = 4.0 * x / d;
+        vp = 9.0 * y / d;
+    }
+    dst[si]      = l;
+    dst[si + 1u] = 13.0 * l * (up - LUV_UN_D);
+    dst[si + 2u] = 13.0 * l * (vp - LUV_VN_D);
+}
+
+extern "C" __global__ void rgb_from_luv_f64(
+    const double* __restrict__ src, double* __restrict__ dst, unsigned int npixels)
+{
+    PIXEL_HEAD_D
+    double x = 0.0, y = 0.0, z = 0.0;
+    if (c0 > 0.0) {
+        if (c0 > 8.0) {
+            double t = (c0 + 16.0) / 116.0;
+            y = t * t * t;
+        } else {
+            y = c0 / LUV_KAPPA_D;
+        }
+        double inv13l = 1.0 / (13.0 * c0);
+        double up = c1 * inv13l + LUV_UN_D;
+        double vp = c2 * inv13l + LUV_VN_D;
+        x = y * 9.0 * up / (4.0 * vp);
+        z = y * (12.0 - 3.0 * up - 20.0 * vp) / (4.0 * vp);
+    }
+    double r, g, b;
+    rgb_mat_d(x, y, z, &r, &g, &b);
+    dst[si]      = linear_to_srgb_d(r);
+    dst[si + 1u] = linear_to_srgb_d(g);
+    dst[si + 2u] = linear_to_srgb_d(b);
+}
+"#;
+const CIE_F64_FNS: &[&str] = &[
+    "linear_rgb_from_rgb_f64",
+    "rgb_from_linear_rgb_f64",
+    "xyz_from_rgb_f64",
+    "rgb_from_xyz_f64",
+    "lab_from_rgb_f64",
+    "rgb_from_lab_f64",
+    "luv_from_rgb_f64",
+    "rgb_from_luv_f64",
+];
+static CIE_F64: KernelSuiteCell = KernelSuiteCell::new();
+
 static CIE_F32: KernelSuiteCell = KernelSuiteCell::new();
 
 fn launch_entry(
@@ -228,6 +409,73 @@ fn launch_entry(
         .launch_1d(n)?;
     Ok(())
 }
+
+fn launch_entry_f64(
+    index: usize,
+    stream: &Arc<CudaStream>,
+    src: &CudaSlice<f64>,
+    dst: &mut CudaSlice<f64>,
+    npixels: usize,
+) -> Result<(), CudaColorError> {
+    check_len("src", src.len(), npixels * 3)?;
+    check_len("dst", dst.len(), npixels * 3)?;
+    let kernel = get_kernel_suite(&CIE_F64, stream, CIE_F64_SRC, CIE_F64_FNS, index)?;
+    let n = npixels as u32;
+    kernel
+        .launch_builder(stream)
+        .arg(src)
+        .arg(dst)
+        .arg(&n)
+        .launch_1d(n)?;
+    Ok(())
+}
+
+macro_rules! cie_launcher_f64 {
+    ($(#[$meta:meta])* $name:ident, $index:expr) => {
+        $(#[$meta])*
+        pub fn $name(
+            stream: &Arc<CudaStream>,
+            src: &CudaSlice<f64>,
+            dst: &mut CudaSlice<f64>,
+            npixels: usize,
+        ) -> Result<(), CudaColorError> {
+            launch_entry_f64($index, stream, src, dst, npixels)
+        }
+    };
+}
+
+cie_launcher_f64!(
+    /// Launch sRGB f64 → linear-RGB f64.
+    launch_linear_rgb_from_rgb_f64, 0
+);
+cie_launcher_f64!(
+    /// Launch linear-RGB f64 → sRGB f64.
+    launch_rgb_from_linear_rgb_f64, 1
+);
+cie_launcher_f64!(
+    /// Launch RGB f64 → XYZ f64.
+    launch_xyz_from_rgb_f64, 2
+);
+cie_launcher_f64!(
+    /// Launch XYZ f64 → RGB f64.
+    launch_rgb_from_xyz_f64, 3
+);
+cie_launcher_f64!(
+    /// Launch RGB f64 → Lab f64.
+    launch_lab_from_rgb_f64, 4
+);
+cie_launcher_f64!(
+    /// Launch Lab f64 → RGB f64.
+    launch_rgb_from_lab_f64, 5
+);
+cie_launcher_f64!(
+    /// Launch RGB f64 → Luv f64.
+    launch_luv_from_rgb_f64, 6
+);
+cie_launcher_f64!(
+    /// Launch Luv f64 → RGB f64.
+    launch_rgb_from_luv_f64, 7
+);
 
 macro_rules! cie_launcher {
     ($(#[$meta:meta])* $name:ident, $index:expr) => {

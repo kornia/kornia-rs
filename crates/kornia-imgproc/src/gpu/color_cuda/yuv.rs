@@ -192,6 +192,54 @@ const YCC_F32_FNS: &[&str] = &[
     "rgb_from_ycc_f32_yuv",
 ];
 
+static YCC_F64_SRC: &str = r#"
+__device__ __forceinline__ void ycc_px_f64(
+    double r, double g, double b, double* y_o, double* cr_o, double* cb_o)
+{
+    double y = 0.299 * r + 0.587 * g + 0.114 * b;
+    *y_o  = y;
+    *cr_o = (r - y) * 0.713 + 0.5;
+    *cb_o = (b - y) * 0.564 + 0.5;
+}
+
+__device__ __forceinline__ void rgb_px_f64(
+    double y, double cr, double cb, double* r_o, double* g_o, double* b_o)
+{
+    double r = y + (cr - 0.5) / 0.713;
+    double b = y + (cb - 0.5) / 0.564;
+    double g = (y - 0.299 * r - 0.114 * b) / 0.587;
+    *r_o = r; *g_o = g; *b_o = b;
+}
+
+#define YCC_F64_KERNEL(NAME, LOAD_EXPR)                                        \
+extern "C" __global__ void NAME(                                               \
+    const double* __restrict__ src, double* __restrict__ dst, unsigned int npixels) \
+{                                                                              \
+    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;                    \
+    if (i >= npixels) return;                                                  \
+    unsigned int b = i * 3u;                                                   \
+    double o0, o1, o2;                                                         \
+    LOAD_EXPR;                                                                 \
+    dst[b] = o0; dst[b + 1u] = o1; dst[b + 2u] = o2;                           \
+}
+
+YCC_F64_KERNEL(ycc_from_rgb_f64_ycrcb,
+    ycc_px_f64(__ldg(&src[b]), __ldg(&src[b+1u]), __ldg(&src[b+2u]), &o0, &o1, &o2))
+YCC_F64_KERNEL(ycc_from_rgb_f64_yuv,
+    ycc_px_f64(__ldg(&src[b]), __ldg(&src[b+1u]), __ldg(&src[b+2u]), &o0, &o2, &o1))
+YCC_F64_KERNEL(rgb_from_ycc_f64_ycrcb,
+    rgb_px_f64(__ldg(&src[b]), __ldg(&src[b+1u]), __ldg(&src[b+2u]), &o0, &o1, &o2))
+YCC_F64_KERNEL(rgb_from_ycc_f64_yuv,
+    rgb_px_f64(__ldg(&src[b]), __ldg(&src[b+2u]), __ldg(&src[b+1u]), &o0, &o1, &o2))
+"#;
+const YCC_F64_FNS: &[&str] = &[
+    "ycc_from_rgb_f64_ycrcb",
+    "ycc_from_rgb_f64_yuv",
+    "rgb_from_ycc_f64_ycrcb",
+    "rgb_from_ycc_f64_yuv",
+];
+static YCC_F64: KernelSuiteCell = KernelSuiteCell::new();
+
 static YCC_U8: KernelSuiteCell = KernelSuiteCell::new();
 static YCC_F32: KernelSuiteCell = KernelSuiteCell::new();
 
@@ -258,6 +306,55 @@ fn launch_f32(
         .arg(&n)
         .launch_1d(n)?;
     Ok(())
+}
+
+fn launch_f64(
+    forward: bool,
+    order: ChromaOrder,
+    stream: &Arc<CudaStream>,
+    src: &CudaSlice<f64>,
+    dst: &mut CudaSlice<f64>,
+    npixels: usize,
+) -> Result<(), CudaColorError> {
+    check_len("src", src.len(), npixels * 3)?;
+    check_len("dst", dst.len(), npixels * 3)?;
+    let kernel = get_kernel_suite(
+        &YCC_F64,
+        stream,
+        YCC_F64_SRC,
+        YCC_F64_FNS,
+        entry_index(forward, order),
+    )?;
+    let n = npixels as u32;
+    kernel
+        .launch_builder(stream)
+        .arg(src)
+        .arg(dst)
+        .arg(&n)
+        .launch_1d(n)?;
+    Ok(())
+}
+
+/// Launch RGB f64 → YCbCr/YUV f64 (matches the CPU f64 scalar oracle).
+pub fn launch_ycc_from_rgb_f64(
+    stream: &Arc<CudaStream>,
+    src: &CudaSlice<f64>,
+    dst: &mut CudaSlice<f64>,
+    npixels: usize,
+    order: ChromaOrder,
+) -> Result<(), CudaColorError> {
+    launch_f64(true, order, stream, src, dst, npixels)
+}
+
+/// Launch YCbCr/YUV f64 → RGB f64 (matches the CPU f64 scalar oracle).
+pub fn launch_rgb_from_ycc_f64(
+    stream: &Arc<CudaStream>,
+    src: &CudaSlice<f64>,
+    dst: &mut CudaSlice<f64>,
+    npixels: usize,
+    order: ChromaOrder,
+) -> Result<(), CudaColorError> {
+    launch_f64(false, order, stream, src, dst, npixels)
 }
 
 /// Launch RGB8 → YCbCr/YUV u8 (full-range Q14, bit-exact vs CPU).

@@ -67,6 +67,32 @@ extern "C" __global__ void gray_from_rgb_f32(
 }
 "#;
 
+static GRAY_F64_SRC: &str = r#"
+extern "C" __global__ void gray_from_rgb_f64(
+    const double* __restrict__ src,
+    double* __restrict__ dst,
+    unsigned int npixels)
+{
+    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= npixels) return;
+    unsigned int b = i * 3u;
+    dst[i] = 0.299 * __ldg(&src[b]) + 0.587 * __ldg(&src[b + 1u]) + 0.114 * __ldg(&src[b + 2u]);
+}
+
+extern "C" __global__ void rgb_from_gray_f64(
+    const double* __restrict__ src,
+    double* __restrict__ dst,
+    unsigned int npixels)
+{
+    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= npixels) return;
+    double g = __ldg(&src[i]);
+    unsigned int d = i * 3u;
+    dst[d] = g; dst[d + 1u] = g; dst[d + 2u] = g;
+}
+"#;
+const GRAY_F64_FNS: &[&str] = &["gray_from_rgb_f64", "rgb_from_gray_f64"];
+
 static RGB_FROM_GRAY_U8_SRC: &str = r#"
 extern "C" __global__ void rgb_from_gray_u8(
     const unsigned char* __restrict__ src,
@@ -95,6 +121,7 @@ extern "C" __global__ void rgb_from_gray_f32(
 }
 "#;
 
+static GRAY_F64: super::KernelSuiteCell = super::KernelSuiteCell::new();
 static GRAY_FROM_RGB_U8: KernelCell = KernelCell::new();
 static GRAY_FROM_RGB_F32: KernelCell = KernelCell::new();
 static RGB_FROM_GRAY_U8: KernelCell = KernelCell::new();
@@ -193,6 +220,46 @@ pub fn launch_rgb_from_gray_f32(
         RGB_FROM_GRAY_F32_SRC,
         "rgb_from_gray_f32",
     )?;
+    let n = npixels as u32;
+    kernel
+        .launch_builder(stream)
+        .arg(src)
+        .arg(dst)
+        .arg(&n)
+        .launch_1d(n)?;
+    Ok(())
+}
+
+/// Launch RGB f64 → Gray f64 (BT.601 weights, matches the CPU f64 oracle).
+pub fn launch_gray_from_rgb_f64(
+    stream: &Arc<CudaStream>,
+    src: &CudaSlice<f64>,
+    dst: &mut CudaSlice<f64>,
+    npixels: usize,
+) -> Result<(), CudaColorError> {
+    check_len("src", src.len(), npixels * 3)?;
+    check_len("dst", dst.len(), npixels)?;
+    let kernel = super::get_kernel_suite(&GRAY_F64, stream, GRAY_F64_SRC, GRAY_F64_FNS, 0)?;
+    let n = npixels as u32;
+    kernel
+        .launch_builder(stream)
+        .arg(src)
+        .arg(dst)
+        .arg(&n)
+        .launch_1d(n)?;
+    Ok(())
+}
+
+/// Launch Gray f64 → RGB f64 broadcast.
+pub fn launch_rgb_from_gray_f64(
+    stream: &Arc<CudaStream>,
+    src: &CudaSlice<f64>,
+    dst: &mut CudaSlice<f64>,
+    npixels: usize,
+) -> Result<(), CudaColorError> {
+    check_len("src", src.len(), npixels)?;
+    check_len("dst", dst.len(), npixels * 3)?;
+    let kernel = super::get_kernel_suite(&GRAY_F64, stream, GRAY_F64_SRC, GRAY_F64_FNS, 1)?;
     let n = npixels as u32;
     kernel
         .launch_builder(stream)
