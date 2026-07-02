@@ -23,6 +23,7 @@ COLUMNS = [
     "kornia-cpu",
     "kornia-cuda-kernel",
     "kornia-cuda-e2e",
+    "kornia-cuda-e2e-pinned",
     "opencv-cpu",
     "vpi-cpu",
     "vpi-cuda",
@@ -45,6 +46,8 @@ def main(paths):
 
     for (w, h) in sorted(data):
         ops = data[(w, h)]
+        fused_ops = {k: v for k, v in ops.items() if k.startswith("preprocess_")}
+        ops = {k: v for k, v in ops.items() if not k.startswith("preprocess_")}
         print(f"\n## {w}x{h} (min ms per call)\n")
         header = ["op", *COLUMNS, "cuda vs best-lib"]
         print("| " + " | ".join(header) + " |")
@@ -63,6 +66,16 @@ def main(paths):
             else:
                 cells.append("-")
             print("| " + " | ".join(cells) + " |")
+
+        if fused_ops:
+            print(f"\n**Fused camera preprocessing** (frame → 640×640 CHW tensor, one kernel)\n")
+            print("| pipeline | fused | chained (decode + preprocess) | speedup |")
+            print("|---|---|---|---|")
+            for op in sorted(fused_ops):
+                f = fused_ops[op].get("fused")
+                c = fused_ops[op].get("chained")
+                if f and c:
+                    print(f"| {op} | **{f:.4f}** | {c:.4f} | {c / f:.2f}x |")
 
 
 if __name__ == "__main__":
