@@ -36,6 +36,7 @@ pub mod gray;
 pub mod hsv_hls;
 pub mod misc;
 pub mod swizzle;
+pub mod video;
 pub mod yuv;
 
 /// Shared device helpers prepended to every color kernel source before NVRTC
