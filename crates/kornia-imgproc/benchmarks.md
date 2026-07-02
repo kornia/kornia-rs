@@ -212,7 +212,7 @@ cargo run --example bench_gpu_resize --features gpu-cuda --release
 | Field | Value |
 |-------|-------|
 | GPU | NVIDIA GeForce GTX 1650 4 GiB — GDDR5, ~128 GB/s peak |
-| CUDA | nvcc 12.4, cudarc 0.x, NVRTC |
+| CUDA | nvcc 12.4, cudarc 0.19.8, NVRTC |
 | Rust | 1.87.0, `--release` |
 | Warmup | 50 iters |
 | Timed | 200 iters |
@@ -221,17 +221,17 @@ cargo run --example bench_gpu_resize --features gpu-cuda --release
 
 | Source → Dest | kornia-rs ms | GB/s | cv2 CUDA ms | PyTorch GPU ms | vs cv2 CUDA | vs PyTorch |
 |---------------|-------------:|-----:|------------:|---------------:|------------:|-----------:|
-| 1024²→512² | 0.053 | 29.8 | 0.137 | 0.339 | **2.6×** | **6.4×** |
-| 1920×1080→960×540 | 0.064 | 36.7 | 0.249 | 0.667 | **3.9×** | **10.4×** |
-| 4K→1080 | 0.237 | 38.6 | 0.684 | 2.650 | **2.9×** | **11.2×** |
+| 1024²→512² | 0.053 | 118.7 | 0.137 | 0.339 | **2.6×** | **6.4×** |
+| 1920×1080→960×540 | 0.064 | 194.4 | 0.249 | 0.667 | **3.9×** | **10.4×** |
+| 4K→1080 | 0.237 | 210.0 | 0.684 | 2.650 | **2.9×** | **11.2×** |
 
 ### Bilinear downscale
 
 | Source → Dest | kornia-rs ms | GB/s | cv2 CUDA ms | PyTorch GPU ms | vs cv2 CUDA | vs PyTorch |
 |---------------|-------------:|-----:|------------:|---------------:|------------:|-----------:|
-| 1024²→512² | 0.082 | 19.3 | 0.177 | 0.096 | **2.2×** | 0.85× |
-| 1920×1080→960×540 | 0.101 | 23.0 | 0.287 | 0.184 | **2.8×** | 1.8× |
-| 4K→1080 | 0.385 | 23.8 | 0.987 | 0.716 | **2.6×** | 1.9× |
+| 1024²→512² | 0.082 | 76.7 | 0.177 | 0.096 | **2.2×** | 0.85× |
+| 1920×1080→960×540 | 0.101 | 123.2 | 0.287 | 0.184 | **2.8×** | 1.8× |
+| 4K→1080 | 0.385 | 129.3 | 0.987 | 0.716 | **2.6×** | 1.9× |
 
 **Key findings:**
 
@@ -239,8 +239,9 @@ cargo run --example bench_gpu_resize --features gpu-cuda --release
 - PyTorch bilinear is competitive (uses texture memory internally); kornia-rs
   nearest is significantly faster because PyTorch nearest does not exploit
   the spatial cache.
-- Bilinear throughput (~70 GB/s effective DRAM) is near the GDDR5 ceiling for
-  mixed read/write (4 source reads + 1 write per output pixel).
+- Bilinear bandwidth (~120 GB/s by the 1 src read + 1 dst write per output-pixel
+  formula used throughout this doc) is near the GTX 1650 DRAM ceiling; true
+  traffic is higher for bilinear downscale (4 source taps per output pixel).
 
 ---
 
@@ -265,19 +266,19 @@ PyTorch 2.9.1+cu128 via `F.affine_grid` + `F.grid_sample(align_corners=True)`.
 
 | Size | kornia-rs ms | GB/s | CPU ms | vs CPU |
 |------|-------------:|-----:|-------:|-------:|
-| 256×224 | 0.011 | 26.1 | 0.540 | **49×** |
-| 512×448 | 0.038 | 30.2 | 2.132 | **56×** |
-| 1024×896 | 0.151 | 30.6 | 8.544 | **57×** |
-| 1920×1080 | 0.353 | 28.9 | 19.15 | **54×** |
+| 256×224 | 0.011 | 125.1 | 0.540 | **49×** |
+| 512×448 | 0.038 | 144.9 | 2.132 | **56×** |
+| 1024×896 | 0.151 | 145.8 | 8.544 | **57×** |
+| 1920×1080 | 0.353 | 141.0 | 19.15 | **54×** |
 
 ### Bilinear
 
 | Size | kornia-rs ms | GB/s | cv2 CUDA ms | PyTorch GPU ms | cv2 CPU ms | vs cv2 CUDA | vs PyTorch | vs cv2 CPU |
 |------|-------------:|-----:|------------:|---------------:|-----------:|------------:|-----------:|-----------:|
-| 256×224 | 0.025 | 25.6 | 0.037 | 0.111 | 0.451 | **1.5×** | **4.5×** | **18×** |
-| 512×448 | 0.092 | 27.9 | 0.178 | 0.449 | 0.874 | **1.9×** | **4.9×** | **9.5×** |
-| 1024×896 | 0.274 | 30.0 | 0.412 | 1.471 | 4.303 | **1.5×** | **5.4×** | **15.7×** |
-| 1920×1080 | 0.572 | 33.3 | 0.753 | 3.298 | 9.610 | **1.3×** | **5.8×** | **16.8×** |
+| 256×224 | 0.025 | 55.1 | 0.037 | 0.111 | 0.451 | **1.5×** | **4.5×** | **18×** |
+| 512×448 | 0.092 | 59.8 | 0.178 | 0.449 | 0.874 | **1.9×** | **4.9×** | **9.5×** |
+| 1024×896 | 0.274 | 80.4 | 0.412 | 1.471 | 4.303 | **1.5×** | **5.4×** | **15.7×** |
+| 1920×1080 | 0.572 | 87.0 | 0.753 | 3.298 | 9.610 | **1.3×** | **5.8×** | **16.8×** |
 
 **Key findings:**
 
