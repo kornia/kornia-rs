@@ -1,5 +1,5 @@
 use crate::parallel;
-use kornia_image::{allocator::ImageAllocator, Image, ImageError};
+use kornia_image::{Image, ImageError};
 
 mod kernels;
 
@@ -12,36 +12,24 @@ use crate::color::kernel_common::{check_size, sealed};
 /// Implemented for `f32` (NEON / AVX2) and `f64` (portable scalar). Sealed.
 pub trait HlsFromRgb: sealed::Sealed + Sized {
     #[doc(hidden)]
-    fn hls_from_rgb_impl<A1: ImageAllocator, A2: ImageAllocator>(
-        src: &Image<Self, 3, A1>,
-        dst: &mut Image<Self, 3, A2>,
-    ) -> Result<(), ImageError>;
+    fn hls_from_rgb_impl(src: &Image<Self, 3>, dst: &mut Image<Self, 3>) -> Result<(), ImageError>;
 }
 
 /// Compile-time dispatch to the right HLS→RGB kernel for each pixel type.
 pub trait RgbFromHls: sealed::Sealed + Sized {
     #[doc(hidden)]
-    fn rgb_from_hls_impl<A1: ImageAllocator, A2: ImageAllocator>(
-        src: &Image<Self, 3, A1>,
-        dst: &mut Image<Self, 3, A2>,
-    ) -> Result<(), ImageError>;
+    fn rgb_from_hls_impl(src: &Image<Self, 3>, dst: &mut Image<Self, 3>) -> Result<(), ImageError>;
 }
 
 impl HlsFromRgb for f32 {
-    fn hls_from_rgb_impl<A1: ImageAllocator, A2: ImageAllocator>(
-        src: &Image<f32, 3, A1>,
-        dst: &mut Image<f32, 3, A2>,
-    ) -> Result<(), ImageError> {
+    fn hls_from_rgb_impl(src: &Image<f32, 3>, dst: &mut Image<f32, 3>) -> Result<(), ImageError> {
         check_size(src, dst)?;
         kernels::hls_from_rgb_f32(src.as_slice(), dst.as_slice_mut(), src.rows() * src.cols());
         Ok(())
     }
 }
 impl RgbFromHls for f32 {
-    fn rgb_from_hls_impl<A1: ImageAllocator, A2: ImageAllocator>(
-        src: &Image<f32, 3, A1>,
-        dst: &mut Image<f32, 3, A2>,
-    ) -> Result<(), ImageError> {
+    fn rgb_from_hls_impl(src: &Image<f32, 3>, dst: &mut Image<f32, 3>) -> Result<(), ImageError> {
         check_size(src, dst)?;
         kernels::rgb_from_hls_f32(src.as_slice(), dst.as_slice_mut(), src.rows() * src.cols());
         Ok(())
@@ -49,10 +37,7 @@ impl RgbFromHls for f32 {
 }
 
 impl HlsFromRgb for f64 {
-    fn hls_from_rgb_impl<A1: ImageAllocator, A2: ImageAllocator>(
-        src: &Image<f64, 3, A1>,
-        dst: &mut Image<f64, 3, A2>,
-    ) -> Result<(), ImageError> {
+    fn hls_from_rgb_impl(src: &Image<f64, 3>, dst: &mut Image<f64, 3>) -> Result<(), ImageError> {
         check_size(src, dst)?;
         parallel::par_iter_rows(src, dst, |s, d| {
             let (h, l, sa) = hls_from_rgb_scalar_f64(s[0], s[1], s[2]);
@@ -64,10 +49,7 @@ impl HlsFromRgb for f64 {
     }
 }
 impl RgbFromHls for f64 {
-    fn rgb_from_hls_impl<A1: ImageAllocator, A2: ImageAllocator>(
-        src: &Image<f64, 3, A1>,
-        dst: &mut Image<f64, 3, A2>,
-    ) -> Result<(), ImageError> {
+    fn rgb_from_hls_impl(src: &Image<f64, 3>, dst: &mut Image<f64, 3>) -> Result<(), ImageError> {
         check_size(src, dst)?;
         parallel::par_iter_rows(src, dst, |s, d| {
             let (r, g, b) = rgb_from_hls_scalar_f64(s[0], s[1], s[2]);
@@ -157,22 +139,17 @@ fn hue2rgb_f64(p: f64, q: f64, t: f64) -> f64 {
 /// # Example
 ///
 /// ```
-/// use kornia_image::{Image, ImageSize, allocator::CpuAllocator};
+/// use kornia_image::{Image, ImageSize};
 /// use kornia_imgproc::color::hls_from_rgb;
 ///
-/// let rgb = Image::<f32, 3, _>::from_size_val(
-///     ImageSize { width: 4, height: 5 }, 0.0, CpuAllocator).unwrap();
-/// let mut hls = Image::<f32, 3, _>::from_size_val(rgb.size(), 0.0, CpuAllocator).unwrap();
+/// let rgb = Image::<f32, 3>::from_size_val(
+///     ImageSize { width: 4, height: 5 }, 0.0).unwrap();
+/// let mut hls = Image::<f32, 3>::from_size_val(rgb.size(), 0.0).unwrap();
 /// hls_from_rgb(&rgb, &mut hls).unwrap();
 /// ```
-pub fn hls_from_rgb<T, A1, A2>(
-    src: &Image<T, 3, A1>,
-    dst: &mut Image<T, 3, A2>,
-) -> Result<(), ImageError>
+pub fn hls_from_rgb<T>(src: &Image<T, 3>, dst: &mut Image<T, 3>) -> Result<(), ImageError>
 where
     T: HlsFromRgb,
-    A1: ImageAllocator,
-    A2: ImageAllocator,
 {
     T::hls_from_rgb_impl(src, dst)
 }
@@ -182,46 +159,34 @@ where
 /// # Example
 ///
 /// ```
-/// use kornia_image::{Image, ImageSize, allocator::CpuAllocator};
+/// use kornia_image::{Image, ImageSize};
 /// use kornia_imgproc::color::rgb_from_hls;
 ///
-/// let hls = Image::<f32, 3, _>::from_size_val(
-///     ImageSize { width: 4, height: 5 }, 0.0, CpuAllocator).unwrap();
-/// let mut rgb = Image::<f32, 3, _>::from_size_val(hls.size(), 0.0, CpuAllocator).unwrap();
+/// let hls = Image::<f32, 3>::from_size_val(
+///     ImageSize { width: 4, height: 5 }, 0.0).unwrap();
+/// let mut rgb = Image::<f32, 3>::from_size_val(hls.size(), 0.0).unwrap();
 /// rgb_from_hls(&hls, &mut rgb).unwrap();
 /// ```
-pub fn rgb_from_hls<T, A1, A2>(
-    src: &Image<T, 3, A1>,
-    dst: &mut Image<T, 3, A2>,
-) -> Result<(), ImageError>
+pub fn rgb_from_hls<T>(src: &Image<T, 3>, dst: &mut Image<T, 3>) -> Result<(), ImageError>
 where
     T: RgbFromHls,
-    A1: ImageAllocator,
-    A2: ImageAllocator,
 {
     T::rgb_from_hls_impl(src, dst)
 }
 
 /// Convert an RGB f32 image to HLS. Thin wrapper around [`hls_from_rgb`].
-pub fn hls_from_rgb_f32<A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<f32, 3, A1>,
-    dst: &mut Image<f32, 3, A2>,
-) -> Result<(), ImageError> {
+pub fn hls_from_rgb_f32(src: &Image<f32, 3>, dst: &mut Image<f32, 3>) -> Result<(), ImageError> {
     hls_from_rgb(src, dst)
 }
 
 /// Convert an HLS f32 image to RGB. Thin wrapper around [`rgb_from_hls`].
-pub fn rgb_from_hls_f32<A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<f32, 3, A1>,
-    dst: &mut Image<f32, 3, A2>,
-) -> Result<(), ImageError> {
+pub fn rgb_from_hls_f32(src: &Image<f32, 3>, dst: &mut Image<f32, 3>) -> Result<(), ImageError> {
     rgb_from_hls(src, dst)
 }
 
 #[cfg(test)]
 mod tests {
     use kornia_image::{Image, ImageError, ImageSize};
-    use kornia_tensor::CpuAllocator;
 
     // Hand-computed via the documented HLS math (channel order [H, L, S]).
     #[test]
@@ -229,13 +194,12 @@ mod tests {
         // Pure red (255,0,0): max=1,min=0,diff=1,L=0.5,S=1 (L<=0.5 branch),H=0.
         // Pure green (0,255,0): H=120°,L=0.5,S=1.
         // Pure blue (0,0,255): H=240°,L=0.5,S=1.
-        let image = Image::<f32, 3, _>::new(
+        let image = Image::<f32, 3>::new(
             ImageSize {
                 width: 3,
                 height: 1,
             },
             vec![255.0, 0.0, 0.0, 0.0, 255.0, 0.0, 0.0, 0.0, 255.0],
-            CpuAllocator,
         )?;
         let expected = [
             // H_out=(H/360)*255, L_out=L*255, S_out=S*255
@@ -249,7 +213,7 @@ mod tests {
             127.5,
             255.0, // blue:  H=240
         ];
-        let mut hls = Image::<f32, 3, _>::from_size_val(image.size(), 0.0, CpuAllocator)?;
+        let mut hls = Image::<f32, 3>::from_size_val(image.size(), 0.0)?;
         super::hls_from_rgb(&image, &mut hls)?;
         for (a, b) in hls.as_slice().iter().zip(expected.iter()) {
             assert!((a - b).abs() < 1e-3, "{a} != {b}");
@@ -262,16 +226,15 @@ mod tests {
         // dense-ish sweep; exercises 4-px NEON body + scalar tail (7 px wide)
         let npix = 7 * 5;
         let data: Vec<f32> = (0..npix * 3).map(|v| (v % 256) as f32).collect();
-        let src = Image::<f32, 3, _>::new(
+        let src = Image::<f32, 3>::new(
             ImageSize {
                 width: 7,
                 height: 5,
             },
             data,
-            CpuAllocator,
         )?;
-        let mut hls = Image::<f32, 3, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
-        let mut back = Image::<f32, 3, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
+        let mut hls = Image::<f32, 3>::from_size_val(src.size(), 0.0)?;
+        let mut back = Image::<f32, 3>::from_size_val(src.size(), 0.0)?;
         super::hls_from_rgb(&src, &mut hls)?;
         super::rgb_from_hls(&hls, &mut back)?;
         for (a, b) in src.as_slice().iter().zip(back.as_slice().iter()) {
@@ -284,21 +247,16 @@ mod tests {
     fn f32_simd_matches_f64_scalar() -> Result<(), ImageError> {
         let npix = 7 * 3;
         let data: Vec<f32> = (0..npix * 3).map(|v| (v * 7 % 256) as f32).collect();
-        let src = Image::<f32, 3, _>::new(
+        let src = Image::<f32, 3>::new(
             ImageSize {
                 width: 7,
                 height: 3,
             },
             data.clone(),
-            CpuAllocator,
         )?;
-        let src64 = Image::<f64, 3, _>::new(
-            src.size(),
-            data.iter().map(|&v| v as f64).collect(),
-            CpuAllocator,
-        )?;
-        let mut simd = Image::<f32, 3, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
-        let mut scalar = Image::<f64, 3, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
+        let src64 = Image::<f64, 3>::new(src.size(), data.iter().map(|&v| v as f64).collect())?;
+        let mut simd = Image::<f32, 3>::from_size_val(src.size(), 0.0)?;
+        let mut scalar = Image::<f64, 3>::from_size_val(src.size(), 0.0)?;
         super::hls_from_rgb(&src, &mut simd)?;
         super::hls_from_rgb(&src64, &mut scalar)?;
         for (a, b) in simd.as_slice().iter().zip(scalar.as_slice().iter()) {
@@ -312,16 +270,15 @@ mod tests {
         // > PAR_THRESHOLD (1,048,576) to exercise the rayon strip split.
         let (w, h) = (1024, 1025);
         let data: Vec<f32> = (0..w * h * 3).map(|v| (v % 256) as f32).collect();
-        let src = Image::<f32, 3, _>::new(
+        let src = Image::<f32, 3>::new(
             ImageSize {
                 width: w,
                 height: h,
             },
             data,
-            CpuAllocator,
         )?;
-        let mut hls = Image::<f32, 3, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
-        let mut back = Image::<f32, 3, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
+        let mut hls = Image::<f32, 3>::from_size_val(src.size(), 0.0)?;
+        let mut back = Image::<f32, 3>::from_size_val(src.size(), 0.0)?;
         super::hls_from_rgb(&src, &mut hls)?;
         super::rgb_from_hls(&hls, &mut back)?;
         for (a, b) in src.as_slice().iter().zip(back.as_slice().iter()) {

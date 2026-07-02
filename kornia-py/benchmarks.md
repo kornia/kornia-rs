@@ -263,7 +263,7 @@ kornia-py is a **pure-CPU, NEON-optimized image pipeline** with zero-copy numpy 
 - ORB at 1080p runs end-to-end in 10.65 ms, competitive with VPI CUDA's 11.77 ms (cached-src, 4 ms/call lower than the unfair uncached measurement) — the CPU path stays in the same ballpark as the GPU kernel with zero device overhead.
 - FAST-9 beats both VPI CPU (5–8×) and VPI CUDA (6–9×) at both sizes because CUDA launch cost dominates a sub-ms kernel.
 
-**Design choices driving the numbers:** NEON kernels wherever bandwidth or arithmetic density justifies them (see `Techniques used` table); rayon parallelism at the strip/row level on every multi-pass kernel; `ForeignAllocator` wrapping the numpy buffer so PyO3 never copies in or out; hand-dispatched fast paths for common shapes (exact-2× bilinear up/down, binomial 5×5 Gaussian, 32-byte BRIEF descriptor).
+**Design choices driving the numbers:** NEON kernels wherever bandwidth or arithmetic density justifies them (see `Techniques used` table); rayon parallelism at the strip/row level on every multi-pass kernel; a borrowed `ForeignResource` wrapping the numpy buffer so PyO3 never copies in or out; hand-dispatched fast paths for common shapes (exact-2× bilinear up/down, binomial 5×5 Gaussian, 32-byte BRIEF descriptor).
 
 ### ORB benchmarking honesty note
 
@@ -311,7 +311,7 @@ An earlier revision of this file reported VPI CUDA at 15.45 ms for 1080p ORB. Th
 | NEON 4-wide reciprocal (`vrecpeq_f32` + 1 NR) | Warp Perspective | Amortizes per-pixel `nx/nd` divide across 4 lanes; ~17-bit precision |
 | Analytical branch-free valid-range | Warp Perspective | 4 linear-constraint intersections give safe `[x_lo, x_hi)` per row; no per-pixel bounds check in hot path |
 | Per-arch kernel dispatch (`warp/kernels.rs`) | Affine + Perspective | `_scalar` reference + `_neon` behind `cfg`; stable seam for future AVX / WASM-SIMD / SVE |
-| Zero-copy `ForeignAllocator` | All ops | Wrap numpy pointer, no memcpy |
+| Zero-copy `ForeignResource` | All ops | Wrap numpy pointer, no memcpy |
 | Direct PyArray output | All ops | Write into numpy buffer, skip intermediate Vec |
 
 ## NEON kernel locations (upstream in `kornia-imgproc`)

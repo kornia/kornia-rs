@@ -2,8 +2,8 @@ use candle_core::DType;
 use candle_core::Device;
 use candle_core::Shape;
 use candle_core::Tensor;
-use circular_buffer::CircularBuffer;
-use kornia_image::{allocator::ImageAllocator, Image};
+use circular_buffer::FixedCircularBuffer;
+use kornia_image::Image;
 use thiserror::Error;
 
 /// Errors that can occur during video processing operations.
@@ -44,7 +44,7 @@ pub struct VideoMetadata<const N: usize> {
     pub fps: Option<u32>,
 
     /// Timestamps in seconds for each frame in the video.
-    pub timestamps: CircularBuffer<N, u32>,
+    pub timestamps: FixedCircularBuffer<u32, N>,
 
     /// Total duration of the video in seconds, if available.
     pub duration: Option<u32>,
@@ -60,9 +60,9 @@ pub struct VideoMetadata<const N: usize> {
 ///
 /// * `A` - The image allocator type used for frame storage
 #[derive(Clone, Default)]
-pub struct VideoSample<const N: usize, A: ImageAllocator> {
+pub struct VideoSample<const N: usize> {
     /// Circular buffer of image frames that make up the video.
-    frames: CircularBuffer<N, Image<u8, 3, A>>,
+    frames: FixedCircularBuffer<Image<u8, 3>, N>,
 
     /// Metadata containing timing and video information.
     meta: VideoMetadata<N>,
@@ -72,10 +72,10 @@ pub struct VideoSample<const N: usize, A: ImageAllocator> {
     /// Each boolean value indicates whether the corresponding frame has been
     /// processed by operations like `process_frames()`. This helps avoid
     /// redundant processing and tracks which frames have been modified.
-    processed: CircularBuffer<N, bool>,
+    processed: FixedCircularBuffer<bool, N>,
 }
 
-impl<const N: usize, A: ImageAllocator + Clone> VideoSample<N, A> {
+impl<const N: usize> VideoSample<N> {
     /// Create a new Video instance with frames and timestamps.
     ///
     /// # Arguments
@@ -90,11 +90,11 @@ impl<const N: usize, A: ImageAllocator + Clone> VideoSample<N, A> {
         Self {
             meta: VideoMetadata {
                 fps: None,
-                timestamps: CircularBuffer::new(),
+                timestamps: FixedCircularBuffer::new(),
                 duration: None,
             },
-            frames: CircularBuffer::new(),
-            processed: CircularBuffer::new(),
+            frames: FixedCircularBuffer::new(),
+            processed: FixedCircularBuffer::new(),
         }
     }
 
@@ -104,7 +104,7 @@ impl<const N: usize, A: ImageAllocator + Clone> VideoSample<N, A> {
     ///
     /// * `frame` - The image frame to add
     /// * `timestamp` - Timestamp of the frame in seconds
-    pub fn add_frame(&mut self, frame: Image<u8, 3, A>, timestamp: u32) {
+    pub fn add_frame(&mut self, frame: Image<u8, 3>, timestamp: u32) {
         self.frames.push_back(frame);
         self.processed.push_back(false);
         self.meta.timestamps.push_back(timestamp);
@@ -129,9 +129,8 @@ impl<const N: usize, A: ImageAllocator + Clone> VideoSample<N, A> {
     ///
     /// ```no_run
     /// use kornia_vlm::video::VideoSample;
-    /// use kornia_tensor::CpuAllocator;
     /// use kornia_image::Image;
-    /// let mut video = VideoSample::<32, CpuAllocator>::default();
+    /// let mut video = VideoSample::<32>::default();
     /// // Apply some processing to each frame
     /// video.process_frames(|frame| {
     ///     // Example: modify frame data (e.g., apply a filter)
@@ -142,7 +141,7 @@ impl<const N: usize, A: ImageAllocator + Clone> VideoSample<N, A> {
     /// ```
     pub fn process_frames<F>(&mut self, mut processor: F) -> Result<(), VideoError>
     where
-        F: FnMut(&mut Image<u8, 3, A>) -> Result<(), VideoError>,
+        F: FnMut(&mut Image<u8, 3>) -> Result<(), VideoError>,
     {
         for (frame, processed) in self.frames.iter_mut().zip(self.processed.iter_mut()) {
             if *processed {
@@ -159,7 +158,7 @@ impl<const N: usize, A: ImageAllocator + Clone> VideoSample<N, A> {
     /// # Returns
     ///
     /// A reference to the frames vector
-    pub fn frames(&self) -> &CircularBuffer<N, Image<u8, 3, A>> {
+    pub fn frames(&self) -> &FixedCircularBuffer<Image<u8, 3>, N> {
         &self.frames
     }
 
@@ -190,10 +189,9 @@ impl<const N: usize, A: ImageAllocator + Clone> VideoSample<N, A> {
     ///
     /// ```no_run
     /// use kornia_vlm::video::VideoSample;
-    /// use kornia_tensor::CpuAllocator;
     /// use kornia_image::Image;
     /// use candle_core::Device;
-    /// let video = VideoSample::<32, CpuAllocator>::default();
+    /// let video = VideoSample::<32>::default();
     /// let device = Device::Cpu;
     /// let tensor = video.into_tensor(candle_core::DType::F32, &device).unwrap();
     /// println!("Tensor shape: {:?}", tensor.dims()); // [N, 3, H, W]
@@ -232,8 +230,7 @@ impl<const N: usize, A: ImageAllocator + Clone> VideoSample<N, A> {
     ///
     /// ```no_run
     /// use kornia_vlm::video::VideoSample;
-    /// use kornia_tensor::CpuAllocator;
-    /// let video = VideoSample::<32, CpuAllocator>::default();
+    /// let video = VideoSample::<32>::default();
     /// let metadata = video.metadata();
     /// if let Some(fps) = metadata.fps {
     ///     println!("Video FPS: {}", fps);

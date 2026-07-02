@@ -11,7 +11,7 @@
 //! Luv `L∈[0,100]`.
 
 use crate::parallel;
-use kornia_image::{allocator::ImageAllocator, Image, ImageError};
+use kornia_image::{Image, ImageError};
 
 mod kernels;
 mod nonlinear;
@@ -25,21 +25,15 @@ use crate::color::kernel_common::{check_size, sealed};
 // `cie_conv!` stamps out the trait, both impls, and the public dispatch fn.
 
 macro_rules! cie_conv {
-    ($trait:ident, $method:ident, $pub_fn:ident, $f32_kernel:path, $f64_oracle:path, $doc:expr) => {
+    ($trait:ident, $method:ident, $pub_fn:ident, $f32_kernel:path, $f64_oracle:path, $doc:expr_2021) => {
         #[doc = $doc]
         pub trait $trait: sealed::Sealed + Sized {
             #[doc(hidden)]
-            fn $method<A1: ImageAllocator, A2: ImageAllocator>(
-                src: &Image<Self, 3, A1>,
-                dst: &mut Image<Self, 3, A2>,
-            ) -> Result<(), ImageError>;
+            fn $method(src: &Image<Self, 3>, dst: &mut Image<Self, 3>) -> Result<(), ImageError>;
         }
 
         impl $trait for f32 {
-            fn $method<A1: ImageAllocator, A2: ImageAllocator>(
-                src: &Image<f32, 3, A1>,
-                dst: &mut Image<f32, 3, A2>,
-            ) -> Result<(), ImageError> {
+            fn $method(src: &Image<f32, 3>, dst: &mut Image<f32, 3>) -> Result<(), ImageError> {
                 check_size(src, dst)?;
                 $f32_kernel(src.as_slice(), dst.as_slice_mut(), src.rows() * src.cols());
                 Ok(())
@@ -47,10 +41,7 @@ macro_rules! cie_conv {
         }
 
         impl $trait for f64 {
-            fn $method<A1: ImageAllocator, A2: ImageAllocator>(
-                src: &Image<f64, 3, A1>,
-                dst: &mut Image<f64, 3, A2>,
-            ) -> Result<(), ImageError> {
+            fn $method(src: &Image<f64, 3>, dst: &mut Image<f64, 3>) -> Result<(), ImageError> {
                 check_size(src, dst)?;
                 parallel::par_iter_rows(src, dst, |s, d| {
                     let (a, b, c) = $f64_oracle(s[0], s[1], s[2]);
@@ -63,14 +54,9 @@ macro_rules! cie_conv {
         }
 
         #[doc = $doc]
-        pub fn $pub_fn<T, A1, A2>(
-            src: &Image<T, 3, A1>,
-            dst: &mut Image<T, 3, A2>,
-        ) -> Result<(), ImageError>
+        pub fn $pub_fn<T>(src: &Image<T, 3>, dst: &mut Image<T, 3>) -> Result<(), ImageError>
         where
             T: $trait,
-            A1: ImageAllocator,
-            A2: ImageAllocator,
         {
             T::$method(src, dst)
         }
@@ -145,12 +131,9 @@ cie_conv!(
 // ===== thin f32 wrappers ============================================================
 
 macro_rules! f32_wrapper {
-    ($name:ident, $generic:ident, $doc:expr) => {
+    ($name:ident, $generic:ident, $doc:expr_2021) => {
         #[doc = $doc]
-        pub fn $name<A1: ImageAllocator, A2: ImageAllocator>(
-            src: &Image<f32, 3, A1>,
-            dst: &mut Image<f32, 3, A2>,
-        ) -> Result<(), ImageError> {
+        pub fn $name(src: &Image<f32, 3>, dst: &mut Image<f32, 3>) -> Result<(), ImageError> {
             $generic(src, dst)
         }
     };
@@ -176,7 +159,6 @@ f32_wrapper!(rgb_from_luv_f32, rgb_from_luv, "f32 [`rgb_from_luv`].");
 #[cfg(test)]
 mod tests {
     use kornia_image::{Image, ImageError, ImageSize};
-    use kornia_tensor::CpuAllocator;
 
     // Build an f32 RGB image and its f64 twin from the same [0,1] samples.
     fn pair(w: usize, h: usize) -> (Vec<f32>, Vec<f64>) {
@@ -187,8 +169,7 @@ mod tests {
     }
 
     // Conversion fn-pointer aliases (keep clippy::type_complexity quiet in test helpers).
-    type ConvFn<T> =
-        fn(&Image<T, 3, CpuAllocator>, &mut Image<T, 3, CpuAllocator>) -> Result<(), ImageError>;
+    type ConvFn<T> = fn(&Image<T, 3>, &mut Image<T, 3>) -> Result<(), ImageError>;
 
     // Generic: f32-SIMD vs f64-scalar for one forward conversion.
     fn check_simd_vs_scalar(
@@ -203,10 +184,10 @@ mod tests {
             width: w,
             height: h,
         };
-        let src32 = Image::<f32, 3, _>::new(size, f32v, CpuAllocator)?;
-        let src64 = Image::<f64, 3, _>::new(size, f64v, CpuAllocator)?;
-        let mut out32 = Image::<f32, 3, _>::from_size_val(size, 0.0, CpuAllocator)?;
-        let mut out64 = Image::<f64, 3, _>::from_size_val(size, 0.0, CpuAllocator)?;
+        let src32 = Image::<f32, 3>::new(size, f32v)?;
+        let src64 = Image::<f64, 3>::new(size, f64v)?;
+        let mut out32 = Image::<f32, 3>::from_size_val(size, 0.0)?;
+        let mut out64 = Image::<f64, 3>::from_size_val(size, 0.0)?;
         fwd_f32(&src32, &mut out32)?;
         fwd_f64(&src64, &mut out64)?;
         for (i, (a, b)) in out32
@@ -239,9 +220,9 @@ mod tests {
             width: w,
             height: h,
         };
-        let src = Image::<f32, 3, _>::new(size, f32v, CpuAllocator)?;
-        let mut mid = Image::<f32, 3, _>::from_size_val(size, 0.0, CpuAllocator)?;
-        let mut back = Image::<f32, 3, _>::from_size_val(size, 0.0, CpuAllocator)?;
+        let src = Image::<f32, 3>::new(size, f32v)?;
+        let mut mid = Image::<f32, 3>::from_size_val(size, 0.0)?;
+        let mut back = Image::<f32, 3>::from_size_val(size, 0.0)?;
         fwd(&src, &mut mid)?;
         rev(&mid, &mut back)?;
         for (a, b) in src.as_slice().iter().zip(back.as_slice().iter()) {
@@ -321,14 +302,14 @@ mod tests {
             width: 2,
             height: 1,
         };
-        let src = Image::<f32, 3, _>::new(size, vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0], CpuAllocator)?;
+        let src = Image::<f32, 3>::new(size, vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0])?;
         for conv in [
             super::linear_rgb_from_rgb as fn(&_, &mut _) -> _,
             super::xyz_from_rgb,
             super::lab_from_rgb,
             super::luv_from_rgb,
         ] {
-            let mut out = Image::<f32, 3, _>::from_size_val(size, 0.0, CpuAllocator)?;
+            let mut out = Image::<f32, 3>::from_size_val(size, 0.0)?;
             conv(&src, &mut out)?;
             for v in out.as_slice() {
                 assert!(v.is_finite(), "NaN/inf in output: {v}");
@@ -347,9 +328,9 @@ mod tests {
             width: w,
             height: h,
         };
-        let src = Image::<f32, 3, _>::new(size, data, CpuAllocator)?;
-        let mut mid = Image::<f32, 3, _>::from_size_val(size, 0.0, CpuAllocator)?;
-        let mut back = Image::<f32, 3, _>::from_size_val(size, 0.0, CpuAllocator)?;
+        let src = Image::<f32, 3>::new(size, data)?;
+        let mut mid = Image::<f32, 3>::from_size_val(size, 0.0)?;
+        let mut back = Image::<f32, 3>::from_size_val(size, 0.0)?;
         super::lab_from_rgb(&src, &mut mid)?;
         super::rgb_from_lab(&mid, &mut back)?;
         for (a, b) in src.as_slice().iter().zip(back.as_slice().iter()) {

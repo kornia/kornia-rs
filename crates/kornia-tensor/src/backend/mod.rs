@@ -2,7 +2,8 @@
 //!
 //! This module defines the [`Backend`] trait and the [`GpuAllocator`] wrapper that bridges
 //! any `Backend` impl into the existing [`TensorAllocator`](crate::allocator::TensorAllocator)
-//! interface, letting `Tensor<T, N, GpuAllocator<B>>` work without changes to the core type.
+//! interface. `GpuAllocator<B>` implements `TensorAllocator` and can be wrapped in an
+//! [`AllocHandle`](crate::allocator::AllocHandle) (`Arc<dyn TensorAllocator>`) for use with `Tensor<T, N>`.
 //!
 //! # Swap-in story
 //!

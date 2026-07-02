@@ -1,5 +1,5 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
+use kornia_image::{Image, ImageSize};
 use kornia_imgproc::distance_transform::{distance_transform_vanilla, DistanceTransformExecutor};
 use opencv::{core, imgproc, prelude::*};
 
@@ -17,13 +17,12 @@ fn bench_distance_transform(c: &mut Criterion) {
             }
         }
 
-        let image = Image::<f32, 1, _>::new(
+        let image = Image::<f32, 1>::new(
             ImageSize {
                 width: *width,
                 height: *height,
             },
             data.clone(),
-            CpuAllocator,
         )
         .unwrap();
 
@@ -82,13 +81,12 @@ fn bench_distance_transform(c: &mut Criterion) {
             }
         }
 
-        let image = Image::<f32, 1, _>::new(
+        let image = Image::<f32, 1>::new(
             ImageSize {
                 width: *width,
                 height: *height,
             },
             data,
-            CpuAllocator,
         )
         .unwrap();
 

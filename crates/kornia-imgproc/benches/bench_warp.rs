@@ -5,7 +5,6 @@ use kornia_imgproc::{
     interpolation::InterpolationMode,
     warp::{get_rotation_matrix2d, warp_affine, warp_perspective},
 };
-use kornia_tensor::CpuAllocator;
 
 fn bench_warp_affine(c: &mut Criterion) {
     let mut group = c.benchmark_group("WarpAffine");
@@ -17,17 +16,11 @@ fn bench_warp_affine(c: &mut Criterion) {
 
         // input image
         let image_size = [*width, *height].into();
-        let image = Image::<u8, 3, CpuAllocator>::new(
-            image_size,
-            vec![0u8; width * height * 3],
-            CpuAllocator,
-        )
-        .unwrap();
+        let image = Image::<u8, 3>::new(image_size, vec![0u8; width * height * 3]).unwrap();
         let image_f32 = image.clone().cast::<f32>().unwrap();
 
         // output image
-        let output =
-            Image::<f32, 3, CpuAllocator>::from_size_val(image_size, 0.0, CpuAllocator).unwrap();
+        let output = Image::<f32, 3>::from_size_val(image_size, 0.0).unwrap();
         let m = get_rotation_matrix2d((*width as f32 / 2.0, *height as f32 / 2.0), 45.0, 1.0);
 
         group.bench_with_input(
@@ -59,12 +52,11 @@ fn bench_warp_perspective(c: &mut Criterion) {
 
         // input image
         let image_size = [*width, *height].into();
-        let image = Image::<u8, 3, _>::new(image_size, vec![0u8; width * height * 3], CpuAllocator)
-            .unwrap();
+        let image = Image::<u8, 3>::new(image_size, vec![0u8; width * height * 3]).unwrap();
         let image_f32 = image.clone().cast::<f32>().unwrap();
 
         // output image
-        let output = Image::<f32, 3, _>::from_size_val(image_size, 0.0, CpuAllocator).unwrap();
+        let output = Image::<f32, 3>::from_size_val(image_size, 0.0).unwrap();
         let m = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
 
         group.bench_with_input(

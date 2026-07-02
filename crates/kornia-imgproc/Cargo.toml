@@ -91,7 +91,7 @@ kornia-algebra = { workspace = true }
 kornia-image = { workspace = true }
 kornia-tensor = { workspace = true }
 num-traits = { workspace = true }
-opencv = { version = "0.98", optional = true }
+opencv = { version = "0.99", optional = true }
 rayon = { workspace = true }
 thiserror = { workspace = true }
 wide = { workspace = true }
@@ -112,6 +112,11 @@ ndarray = { workspace = true, features = ["rayon"] }
 rand = { workspace = true }
 
 [features]
+# cudarc device backend + custom CUDA kernels (enables the `preprocess` module).
+cudarc = [
+  "dep:cudarc",
+  "kornia-tensor/cudarc",
+]
 gpu-cubecl = [
   "dep:cubecl",
   "dep:cubecl-cpu",

@@ -1,4 +1,4 @@
-use kornia_image::{allocator::ImageAllocator, Image};
+use kornia_image::Image;
 
 /// Draws a line on an image inplace.
 ///
@@ -12,8 +12,8 @@ use kornia_image::{allocator::ImageAllocator, Image};
 /// * `p1` - The end point of the line as a tuple of (x, y).
 /// * `color` - The color of the line as an array of `C` elements.
 /// * `thickness` - The thickness of the line.
-pub fn draw_line<const C: usize, A: ImageAllocator>(
-    img: &mut Image<u8, C, A>,
+pub fn draw_line<const C: usize>(
+    img: &mut Image<u8, C>,
     p0: (i64, i64),
     p1: (i64, i64),
     color: [u8; C],
@@ -105,8 +105,8 @@ pub fn draw_line<const C: usize, A: ImageAllocator>(
 /// * `color` - The color of the polygon lines as an array of `C` elements.
 /// * `thickness` - The thickness of the polygon lines.
 ///
-pub fn draw_polygon<const C: usize, A: ImageAllocator>(
-    img: &mut Image<u8, C, A>,
+pub fn draw_polygon<const C: usize>(
+    img: &mut Image<u8, C>,
     points: &[(i64, i64)],
     color: [u8; C],
     thickness: usize,
@@ -137,8 +137,8 @@ pub fn draw_polygon<const C: usize, A: ImageAllocator>(
 /// * `line_color` - The color of the pen used to draw the polygon.
 /// * `thickness` - The thickness of the polygon lines.
 ///
-pub fn draw_filled_polygon<const C: usize, A: ImageAllocator>(
-    img: &mut Image<u8, C, A>,
+pub fn draw_filled_polygon<const C: usize>(
+    img: &mut Image<u8, C>,
     points: &[(i64, i64)],
     fill_color: [u8; C],
     line_color: [u8; C],
@@ -209,7 +209,6 @@ pub fn draw_filled_polygon<const C: usize, A: ImageAllocator>(
 mod tests {
     use super::{draw_filled_polygon, draw_line, draw_polygon};
     use kornia_image::{Image, ImageError, ImageSize};
-    use kornia_tensor::CpuAllocator;
 
     #[test]
     fn test_draw_line() -> Result<(), ImageError> {
@@ -219,7 +218,6 @@ mod tests {
                 height: 5,
             },
             vec![0; 25],
-            CpuAllocator,
         )?;
 
         draw_line(&mut img, (0, 0), (4, 4), [255], 1);
@@ -246,7 +244,6 @@ mod tests {
                 height: 5,
             },
             vec![0; 25],
-            CpuAllocator,
         )?;
 
         let points: [(i64, i64); 3] = [(0, 0), (0, 3), (4, 0)];
@@ -274,7 +271,6 @@ mod tests {
                 height: 5,
             },
             vec![0; 25],
-            CpuAllocator,
         )?;
 
         let points: [(i64, i64); 3] = [(0, 0), (0, 3), (4, 0)];
@@ -302,7 +298,6 @@ mod tests {
                 height: 5,
             },
             vec![0; 25],
-            CpuAllocator,
         )?;
 
         let points: [(i64, i64); 3] = [(0, 0), (3, 0), (4, 0)];
@@ -324,7 +319,7 @@ mod tests {
 
     #[test]
     fn test_line_strict_endpoint_boundary() {
-        let mut img = Image::<u8, 1, _>::from_size_val([10, 10].into(), 0, CpuAllocator).unwrap();
+        let mut img = Image::<u8, 1>::from_size_val([10, 10].into(), 0).unwrap();
 
         // Draw horizontal line (2,5) -> (7,5), thickness 5
         draw_line(&mut img, (2, 5), (7, 5), [255], 5);
@@ -339,7 +334,7 @@ mod tests {
 
     #[test]
     fn test_line_perpendicular_precision() {
-        let mut img = Image::<u8, 1, _>::from_size_val([20, 20].into(), 0, CpuAllocator).unwrap();
+        let mut img = Image::<u8, 1>::from_size_val([20, 20].into(), 0).unwrap();
 
         // Draw horizontal line at y=10 with thickness 4. Should occupy y=[8..11].
         draw_line(&mut img, (5, 10), (15, 10), [255], 4);
@@ -354,7 +349,7 @@ mod tests {
 
     #[test]
     fn test_diagonal_flat_cap() {
-        let mut img = Image::<u8, 1, _>::from_size_val([20, 20].into(), 0, CpuAllocator).unwrap();
+        let mut img = Image::<u8, 1>::from_size_val([20, 20].into(), 0).unwrap();
 
         // Diagonal line (0,0) -> (10,10), thickness 6
         draw_line(&mut img, (0, 0), (10, 10), [255], 6);

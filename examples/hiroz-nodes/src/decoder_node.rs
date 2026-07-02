@@ -4,7 +4,7 @@ use crate::protos::{CompressedImage, Header, RawImage};
 use hiroz::{
     context::ZContext, msg::ProtobufSerdes, node::ZNode, pubsub::ZSub, Builder, Result as ZResult,
 };
-use kornia_image::{allocator::CpuAllocator, Image};
+use kornia_image::Image;
 use kornia_io::jpeg::{decode_image_jpeg_layout, decode_image_jpeg_rgb8};
 use prost::Message;
 use std::sync::Arc;
@@ -81,8 +81,7 @@ impl DecoderNode {
         let layout = decode_image_jpeg_layout(&msg.data)?;
         assert_eq!(layout.channels, 3);
 
-        let mut image =
-            Image::<u8, 3, CpuAllocator>::from_size_val(layout.image_size, 0, CpuAllocator)?;
+        let mut image = Image::<u8, 3>::from_size_val(layout.image_size, 0)?;
         decode_image_jpeg_rgb8(&msg.data, &mut image)?;
 
         let sequence = self.sequence;

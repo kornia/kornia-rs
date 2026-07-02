@@ -11,7 +11,6 @@ use kornia::{
         },
     },
     io::functional as F,
-    tensor::CpuAllocator,
 };
 
 #[derive(FromArgs)]
@@ -67,7 +66,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     // apply the remap
-    let mut img_undistorted = Image::from_size_val(img.size(), 0.0, CpuAllocator)?;
+    let mut img_undistorted = Image::from_size_val(img.size(), 0.0)?;
     imgproc::interpolation::remap(
         &img.clone().cast_and_scale(1.0 / 255.0)?,
         &mut img_undistorted,

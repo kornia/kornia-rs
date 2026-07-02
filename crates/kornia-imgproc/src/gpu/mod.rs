@@ -30,3 +30,7 @@ pub mod resize;
 /// Native CUDA downscale kernels using `__ldg` read-only cache (feature `gpu-cuda`).
 #[cfg(feature = "gpu-cuda")]
 pub mod resize_cuda;
+
+/// Native CUDA warp-affine kernels (bilinear and nearest-neighbor, feature `gpu-cuda`).
+#[cfg(feature = "gpu-cuda")]
+pub mod warp_affine_cuda;

@@ -5,7 +5,6 @@
 //! result. See [`kernels`] for the per-cell interpolation rules.
 
 use kornia_image::{
-    allocator::ImageAllocator,
     color_spaces::{Bayer8, BayerPattern},
     Image, ImageError,
 };
@@ -26,19 +25,19 @@ mod kernels;
 ///
 /// # Example
 /// ```
-/// use kornia_image::{Image, ImageSize, allocator::CpuAllocator};
+/// use kornia_image::{Image, ImageSize};
 /// use kornia_image::color_spaces::BayerPattern;
 /// use kornia_imgproc::color::rgb_from_bayer;
 ///
-/// let mosaic = Image::<u8, 1, _>::from_size_val(
-///     ImageSize { width: 4, height: 4 }, 128, CpuAllocator).unwrap();
-/// let mut rgb = Image::<u8, 3, _>::from_size_val(mosaic.size(), 0, CpuAllocator).unwrap();
+/// let mosaic = Image::<u8, 1>::from_size_val(
+///     ImageSize { width: 4, height: 4 }, 128).unwrap();
+/// let mut rgb = Image::<u8, 3>::from_size_val(mosaic.size(), 0).unwrap();
 /// rgb_from_bayer(&mosaic, BayerPattern::Rggb, &mut rgb).unwrap();
 /// ```
-pub fn rgb_from_bayer<A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<u8, 1, A1>,
+pub fn rgb_from_bayer(
+    src: &Image<u8, 1>,
     pattern: BayerPattern,
-    dst: &mut Image<u8, 3, A2>,
+    dst: &mut Image<u8, 3>,
 ) -> Result<(), ImageError> {
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
@@ -64,10 +63,7 @@ pub fn rgb_from_bayer<A1: ImageAllocator, A2: ImageAllocator>(
 ///
 /// # Errors
 /// Returns [`ImageError::InvalidImageSize`] if `src` and `dst` differ in size.
-pub fn rgb_from_bayer8<A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Bayer8<A1>,
-    dst: &mut Image<u8, 3, A2>,
-) -> Result<(), ImageError> {
+pub fn rgb_from_bayer8(src: &Bayer8, dst: &mut Image<u8, 3>) -> Result<(), ImageError> {
     rgb_from_bayer(src.as_image(), src.pattern, dst)
 }
 
@@ -75,7 +71,6 @@ pub fn rgb_from_bayer8<A1: ImageAllocator, A2: ImageAllocator>(
 mod tests {
     use super::*;
     use kornia_image::ImageSize;
-    use kornia_tensor::CpuAllocator;
 
     const PATTERNS: [BayerPattern; 4] = [
         BayerPattern::Rggb,
@@ -85,16 +80,15 @@ mod tests {
     ];
 
     fn demosaic(data: &[u8], w: usize, h: usize, p: BayerPattern) -> Vec<u8> {
-        let src = Image::<u8, 1, _>::new(
+        let src = Image::<u8, 1>::new(
             ImageSize {
                 width: w,
                 height: h,
             },
             data.to_vec(),
-            CpuAllocator,
         )
         .unwrap();
-        let mut dst = Image::<u8, 3, _>::from_size_val(src.size(), 0, CpuAllocator).unwrap();
+        let mut dst = Image::<u8, 3>::from_size_val(src.size(), 0).unwrap();
         rgb_from_bayer(&src, p, &mut dst).unwrap();
         dst.as_slice().to_vec()
     }
@@ -178,22 +172,20 @@ mod tests {
 
     #[test]
     fn size_mismatch_errors() {
-        let src = Image::<u8, 1, _>::from_size_val(
+        let src = Image::<u8, 1>::from_size_val(
             ImageSize {
                 width: 4,
                 height: 4,
             },
             0,
-            CpuAllocator,
         )
         .unwrap();
-        let mut dst = Image::<u8, 3, _>::from_size_val(
+        let mut dst = Image::<u8, 3>::from_size_val(
             ImageSize {
                 width: 5,
                 height: 4,
             },
             0,
-            CpuAllocator,
         )
         .unwrap();
         assert!(rgb_from_bayer(&src, BayerPattern::Rggb, &mut dst).is_err());

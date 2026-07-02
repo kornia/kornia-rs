@@ -57,6 +57,13 @@ pub mod normalize;
 /// utility functions for resizing images.
 pub mod resize;
 
+/// GPU image → model-input preprocessing (resize + pad + normalize to CHW f32).
+///
+/// Enabled by the `cudarc` feature. Runs entirely on the device via kornia's
+/// custom-CUDA-kernel API — see [`preprocess::Preprocessor`].
+#[cfg(feature = "cudarc")]
+pub mod preprocess;
+
 /// operations to threshold images.
 pub mod threshold;
 

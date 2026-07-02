@@ -10,9 +10,9 @@
 use std::ffi::c_void;
 
 use dlpack_rs::{
-    ffi::{DLDataType, DLDevice, K_DL_CPU},
+    ffi::{DLDataType, DLDevice},
     pyo3_glue::IntoDLPack,
-    safe::{cpu_device, TensorInfo},
+    safe::TensorInfo,
 };
 use pyo3::prelude::*;
 
@@ -50,6 +50,9 @@ pub struct ImageExport {
     pub shape: Vec<i64>,
     /// DLPack data-type descriptor.
     pub dtype: DLDataType,
+    /// DLPack device as `(device_type, device_id)`. Carries the image's own
+    /// device so a zero-copy export reports the correct device (CPU or CUDA).
+    pub device: (i32, i32),
 }
 
 impl Drop for ImageExport {
@@ -79,7 +82,11 @@ unsafe impl Send for ImageExport {}
 
 impl IntoDLPack for ImageExport {
     fn tensor_info(&self) -> TensorInfo {
-        TensorInfo::contiguous(self.data, cpu_device(), self.dtype, self.shape.clone())
+        let device = DLDevice {
+            device_type: self.device.0 as u32,
+            device_id: self.device.1,
+        };
+        TensorInfo::contiguous(self.data, device, self.dtype, self.shape.clone())
     }
 }
 
@@ -101,19 +108,23 @@ pub fn dl_to_dtype(dt: DLDataType) -> PyResult<Dtype> {
     Dtype::from_dldatatype(dt)
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Helper: device validation
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Assert the device is CPU, or raise `NotImplementedError`.
-pub fn require_cpu(device: DLDevice) -> PyResult<()> {
-    if device.device_type != K_DL_CPU {
-        Err(pyo3::exceptions::PyNotImplementedError::new_err(format!(
-            "from_dlpack: only CPU (device_type={K_DL_CPU}) tensors are supported; \
-             got device_type={}. GPU/CUDA support is a future extension.",
-            device.device_type,
-        )))
-    } else {
-        Ok(())
+/// Validate a producer-supplied DLPack rank before it is used as a slice length.
+///
+/// `ndim` comes from an untrusted `__dlpack__` producer. A negative value casts to
+/// `usize::MAX` (so `slice::from_raw_parts(shape, ndim)` is instant UB) and an
+/// oversized one reads out of bounds. Only 2D/3D images are supported, so we bound
+/// `ndim` to `2..=3` (capping any slice to ≤3 elements) and reject a null `shape`
+/// pointer, before any slice is constructed from `shape`/`strides`.
+pub fn validate_dlpack_rank(ndim: i32, shape: *const i64) -> PyResult<()> {
+    if !(2..=3).contains(&ndim) {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "from_dlpack: expected a 2D or 3D tensor, got ndim={ndim}"
+        )));
     }
+    if shape.is_null() {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "from_dlpack: null shape pointer",
+        ));
+    }
+    Ok(())
 }

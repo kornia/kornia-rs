@@ -28,8 +28,6 @@ use std::sync::Arc;
 
 use kornia_tensor::resource::{MemoryDomain, MemoryResource};
 
-pub use kornia_tensor::allocator::ForeignAllocator;
-
 /// A proper [`MemoryResource`] for a GStreamer-mapped buffer (sysmem).
 ///
 /// Holds a `MappedBuffer<Readable>` which:
@@ -91,7 +89,7 @@ impl MemoryResource for GstResource {
 ///
 /// # Returns
 ///
-/// An `Image<u8, 3, ForeignAllocator>` whose memory is the GStreamer buffer.
+/// An `Image<u8, 3>` whose memory is the GStreamer buffer.
 /// The buffer remains live (and the pointer valid) for exactly the lifetime of the
 /// returned `Image`; dropping the `Image` releases the buffer ref exactly once.
 ///
@@ -101,8 +99,7 @@ impl MemoryResource for GstResource {
 pub(crate) fn image_from_gst_buffer(
     size: kornia_image::ImageSize,
     mapped_buffer: gstreamer::buffer::MappedBuffer<gstreamer::buffer::Readable>,
-) -> Result<kornia_image::Image<u8, 3, ForeignAllocator>, crate::stream::error::StreamCaptureError>
-{
+) -> Result<kornia_image::Image<u8, 3>, crate::stream::error::StreamCaptureError> {
     use kornia_tensor::storage::{MemoryDomain, TensorStorage};
     use kornia_tensor::Tensor;
 
@@ -145,11 +142,11 @@ pub(crate) fn image_from_gst_buffer(
     //   - The memory is host-accessible (MemoryDomain::Host).
     //   - The keepalive (Arc<GstResource>) holds the map alive for the storage's lifetime.
     //   - The storage is read-only: `as_mut_slice` will panic (GstMappedBuffer is Readable).
-    let storage: TensorStorage<u8, ForeignAllocator> = unsafe {
+    let storage: TensorStorage<u8> = unsafe {
         TensorStorage::from_borrowed_readonly(
             data_ptr,
             data_len,
-            ForeignAllocator,
+            kornia_tensor::host_alloc(),
             MemoryDomain::Host,
             keepalive,
         )
@@ -165,7 +162,7 @@ pub(crate) fn image_from_gst_buffer(
         strides,
     };
 
-    // TryFrom<Tensor3<T, A>> for Image<T, C, A> validates that shape[2] == C (== 3).
+    // TryFrom<Tensor3<T, >> for Image<T, C> validates that shape[2] == C (== 3).
     kornia_image::Image::try_from(tensor)
         .map_err(crate::stream::error::StreamCaptureError::ImageError)
 }

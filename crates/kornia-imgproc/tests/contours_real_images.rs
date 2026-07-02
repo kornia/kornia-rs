@@ -20,13 +20,13 @@
 //! pic4 (400x300):   844 contours (many disjoint shapes)
 //! ```
 
-use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
+use kornia_image::{Image, ImageSize};
 use kornia_imgproc::contours::{find_contours, ContourApproximationMode, RetrievalMode};
 use std::path::PathBuf;
 
 /// Loads a fixture PNG, binarises it at threshold 127, returns the image
 /// or None if the file is missing.
-fn load_binary(name: &str) -> Option<Image<u8, 1, CpuAllocator>> {
+fn load_binary(name: &str) -> Option<Image<u8, 1>> {
     let path: PathBuf = ["crates", "kornia-imgproc", "examples", "data", name]
         .iter()
         .collect();
@@ -36,30 +36,28 @@ fn load_binary(name: &str) -> Option<Image<u8, 1, CpuAllocator>> {
     }
     let rgb = kornia_io::png::read_image_png_rgb8(&path).ok()?;
     let (w, h) = (rgb.width(), rgb.height());
-    let mut gray = Image::<u8, 1, _>::from_size_val(
+    let mut gray = Image::<u8, 1>::from_size_val(
         ImageSize {
             width: w,
             height: h,
         },
         0,
-        CpuAllocator,
     )
     .ok()?;
     kornia_imgproc::color::gray_from_rgb_u8(&rgb, &mut gray).ok()?;
-    let mut bw = Image::<u8, 1, _>::from_size_val(
+    let mut bw = Image::<u8, 1>::from_size_val(
         ImageSize {
             width: w,
             height: h,
         },
         0,
-        CpuAllocator,
     )
     .ok()?;
     kornia_imgproc::threshold::threshold_binary(&gray, &mut bw, 127, 1).ok()?;
     Some(bw)
 }
 
-fn ext_count(img: &Image<u8, 1, CpuAllocator>) -> usize {
+fn ext_count(img: &Image<u8, 1>) -> usize {
     let r = find_contours(
         img,
         RetrievalMode::External,

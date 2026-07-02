@@ -1,5 +1,4 @@
 use argh::FromArgs;
-use kornia_tensor::CpuAllocator;
 use kornia_vlm::smolvlm::{utils::SmolVlmConfig, SmolVlm};
 
 use kornia_io::{jpeg::read_image_jpeg_rgb8, png::read_image_png_rgb8};
@@ -47,7 +46,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &args.text_prompt,
         image.map(|i| i.into_inner()),
         args.sample_length,
-        CpuAllocator,
     )?;
 
     Ok(())

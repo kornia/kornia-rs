@@ -13,10 +13,9 @@ use dlpack_rs::{
 };
 
 use crate::{
-    allocator::ForeignAllocator,
+    allocator::host_alloc,
     storage::MemoryDomain,
     tensor::{Tensor, TensorError},
-    TensorAllocator,
 };
 
 // ── DlpackElem trait ─────────────────────────────────────────────────────────
@@ -71,16 +70,18 @@ impl_dlpack_elem!(f64, 2u32, 64, 1);
 /// # Panics
 ///
 /// Panics if `T` does not implement [`DlpackElem`] (compile-time, via trait bound).
-pub fn tensor_to_dlpack<T, const N: usize, A>(t: Tensor<T, N, A>) -> *mut DLManagedTensor
+pub fn tensor_to_dlpack<T, const N: usize>(t: Tensor<T, N>) -> *mut DLManagedTensor
 where
     T: DlpackElem + 'static + Send,
-    A: TensorAllocator + Send + 'static,
 {
     let dtype = T::dl_dtype();
     let device = match t.storage.domain() {
         MemoryDomain::Host => safe::cpu_device(),
         MemoryDomain::Device { id } => safe::cuda_device(id),
-        MemoryDomain::Unified { id } => safe::cuda_device(id),
+        MemoryDomain::Unified { id } => dlpack_rs::ffi::DLDevice {
+            device_type: dlpack_rs::ffi::DLDeviceType::kDLCUDAManaged,
+            device_id: id,
+        },
     };
     let data_ptr = t.storage.as_ptr() as *mut std::ffi::c_void;
     let shape: Vec<i64> = t.shape.iter().map(|&s| s as i64).collect();
@@ -172,7 +173,7 @@ impl std::error::Error for DlpackError {}
 pub unsafe fn tensor_from_dlpack_raw<T, const N: usize>(
     mt: *mut DLManagedTensor,
     keepalive: Arc<dyn core::any::Any + Send + Sync>,
-) -> Result<Tensor<T, N, ForeignAllocator>, DlpackError>
+) -> Result<Tensor<T, N>, DlpackError>
 where
     T: DlpackElem + Clone,
 {
@@ -256,7 +257,7 @@ where
         crate::storage::TensorStorage::from_borrowed(
             data_ptr,
             len_bytes,
-            ForeignAllocator,
+            host_alloc(),
             domain,
             keepalive,
         )
@@ -273,9 +274,17 @@ where
 
 /// Maps a `DLDevice` to `(MemoryDomain, device_id)`.
 fn map_dl_device(device: DLDevice) -> (MemoryDomain, i32) {
-    use dlpack_rs::ffi::K_DL_CPU;
+    use dlpack_rs::ffi::{DLDeviceType, K_DL_CPU};
     if device.device_type == K_DL_CPU {
         (MemoryDomain::Host, 0)
+    } else if device.device_type == DLDeviceType::kDLCUDAManaged {
+        // kDLCUDAManaged -> Unified (CUDA managed / unified memory)
+        (
+            MemoryDomain::Unified {
+                id: device.device_id,
+            },
+            device.device_id,
+        )
     } else {
         // kDLCUDA and any other device type -> Device domain.
         (
@@ -317,10 +326,10 @@ mod tests {
         let keep: Arc<dyn core::any::Any + Send + Sync> = Arc::new(DropCounter(counter.clone()));
         let tensor = unsafe {
             use crate::storage::TensorStorage;
-            let storage = TensorStorage::<f32, crate::allocator::ForeignAllocator>::from_borrowed(
+            let storage = TensorStorage::<f32>::from_borrowed(
                 data.as_ptr(),
                 data.len() * std::mem::size_of::<f32>(),
-                crate::allocator::ForeignAllocator,
+                crate::allocator::host_alloc(),
                 crate::storage::MemoryDomain::Host,
                 keep,
             );

@@ -217,15 +217,17 @@ fn ycc_from_rgb_u8_neon(src: &[u8], dst: &mut [u8], npixels: usize, order: Chrom
 #[cfg(target_arch = "aarch64")]
 #[inline]
 unsafe fn store_ycc(dp: *mut u8, si: usize, y: u8, cr: u8, cb: u8, order: ChromaOrder) {
-    *dp.add(si) = y;
-    match order {
-        ChromaOrder::YCrCb => {
-            *dp.add(si + 1) = cr;
-            *dp.add(si + 2) = cb;
-        }
-        ChromaOrder::YuvCbCr => {
-            *dp.add(si + 1) = cb;
-            *dp.add(si + 2) = cr;
+    unsafe {
+        *dp.add(si) = y;
+        match order {
+            ChromaOrder::YCrCb => {
+                *dp.add(si + 1) = cr;
+                *dp.add(si + 2) = cb;
+            }
+            ChromaOrder::YuvCbCr => {
+                *dp.add(si + 1) = cb;
+                *dp.add(si + 2) = cr;
+            }
         }
     }
 }
@@ -468,15 +470,17 @@ fn ycc_from_rgb_f32_neon(src: &[f32], dst: &mut [f32], npixels: usize, order: Ch
 #[cfg(target_arch = "aarch64")]
 #[inline]
 unsafe fn store_ycc_f32(dp: *mut f32, si: usize, y: f32, cr: f32, cb: f32, order: ChromaOrder) {
-    *dp.add(si) = y;
-    match order {
-        ChromaOrder::YCrCb => {
-            *dp.add(si + 1) = cr;
-            *dp.add(si + 2) = cb;
-        }
-        ChromaOrder::YuvCbCr => {
-            *dp.add(si + 1) = cb;
-            *dp.add(si + 2) = cr;
+    unsafe {
+        *dp.add(si) = y;
+        match order {
+            ChromaOrder::YCrCb => {
+                *dp.add(si + 1) = cr;
+                *dp.add(si + 2) = cb;
+            }
+            ChromaOrder::YuvCbCr => {
+                *dp.add(si + 1) = cb;
+                *dp.add(si + 2) = cr;
+            }
         }
     }
 }
@@ -779,7 +783,7 @@ fn rgb_from_packed422_row_neon(src: &[u8], dst: &mut [u8], width: usize, fmt: Pa
                 )
             };
 
-            // combine yy + chroma contribution, >>shift, saturating narrow to u8x8
+            // combine yy + chroma contribution>>shift, saturating narrow to u8x8
             let finish = |yy: (int32x4_t, int32x4_t), c: (int32x4_t, int32x4_t)| -> uint8x8_t {
                 let lo = vshrq_n_s32::<ITUR_SHIFT>(vaddq_s32(yy.0, c.0));
                 let hi = vshrq_n_s32::<ITUR_SHIFT>(vaddq_s32(yy.1, c.1));
@@ -990,110 +994,112 @@ unsafe fn rgb_from_planar420_block_neon(
     cy: usize,
     fmt: Planar420,
 ) {
-    use std::arch::aarch64::*;
-    let ytp = y_top.as_ptr();
-    let ybp = y_bot.as_ptr();
-    let dtp = d_top.as_mut_ptr();
-    let dbp = d_bot.as_mut_ptr();
+    unsafe {
+        use std::arch::aarch64::*;
+        let ytp = y_top.as_ptr();
+        let ybp = y_bot.as_ptr();
+        let dtp = d_top.as_mut_ptr();
+        let dbp = d_bot.as_mut_ptr();
 
-    // Load 16 (U,V) chroma samples starting at column `cx` per layout.
-    let load_uv = |cx: usize| -> (uint8x16_t, uint8x16_t) {
-        match fmt {
-            Planar420::Nv12 => {
-                let q = vld2q_u8(c0.as_ptr().add(cy * cw * 2 + cx * 2));
-                (q.0, q.1)
+        // Load 16 (U,V) chroma samples starting at column `cx` per layout.
+        let load_uv = |cx: usize| -> (uint8x16_t, uint8x16_t) {
+            match fmt {
+                Planar420::Nv12 => {
+                    let q = vld2q_u8(c0.as_ptr().add(cy * cw * 2 + cx * 2));
+                    (q.0, q.1)
+                }
+                Planar420::Nv21 => {
+                    let q = vld2q_u8(c0.as_ptr().add(cy * cw * 2 + cx * 2));
+                    (q.1, q.0)
+                }
+                Planar420::I420 => (
+                    vld1q_u8(c0.as_ptr().add(cy * cw + cx)),
+                    vld1q_u8(c1.as_ptr().add(cy * cw + cx)),
+                ),
+                Planar420::Yv12 => (
+                    vld1q_u8(c1.as_ptr().add(cy * cw + cx)),
+                    vld1q_u8(c0.as_ptr().add(cy * cw + cx)),
+                ),
             }
-            Planar420::Nv21 => {
-                let q = vld2q_u8(c0.as_ptr().add(cy * cw * 2 + cx * 2));
-                (q.1, q.0)
+        };
+
+        // Chroma RGB contribution for a centred u8x8 (U,V) → [(r_lo,r_hi),(g..),(b..)] s32 pairs.
+        let chroma_rgb = |u8x8: uint8x8_t, v8x8: uint8x8_t| -> [(int32x4_t, int32x4_t); 3] {
+            let uc = vsubq_s16(vreinterpretq_s16_u16(vmovl_u8(u8x8)), vdupq_n_s16(128));
+            let vc = vsubq_s16(vreinterpretq_s16_u16(vmovl_u8(v8x8)), vdupq_n_s16(128));
+            let (ul, uh) = (vmovl_s16(vget_low_s16(uc)), vmovl_s16(vget_high_s16(uc)));
+            let (vl, vh) = (vmovl_s16(vget_low_s16(vc)), vmovl_s16(vget_high_s16(vc)));
+            let half = vdupq_n_s32(ITUR_HALF);
+            let r = (vmlaq_n_s32(half, vl, CVR), vmlaq_n_s32(half, vh, CVR));
+            let g = (
+                vmlaq_n_s32(vmlaq_n_s32(half, ul, CUG), vl, CVG),
+                vmlaq_n_s32(vmlaq_n_s32(half, uh, CUG), vh, CVG),
+            );
+            let b = (vmlaq_n_s32(half, ul, CUB), vmlaq_n_s32(half, uh, CUB));
+            [r, g, b]
+        };
+        let yy_pair = |y8: uint8x8_t| -> (int32x4_t, int32x4_t) {
+            let y16 = vreinterpretq_s16_u16(vmovl_u8(vqsub_u8(y8, vdup_n_u8(16))));
+            (
+                vmulq_n_s32(vmovl_s16(vget_low_s16(y16)), CY),
+                vmulq_n_s32(vmovl_s16(vget_high_s16(y16)), CY),
+            )
+        };
+        let finish = |yy: (int32x4_t, int32x4_t), c: (int32x4_t, int32x4_t)| -> uint8x8_t {
+            let lo = vshrq_n_s32::<ITUR_SHIFT>(vaddq_s32(yy.0, c.0));
+            let hi = vshrq_n_s32::<ITUR_SHIFT>(vaddq_s32(yy.1, c.1));
+            vqmovun_s16(vcombine_s16(vqmovn_s32(lo), vqmovn_s32(hi)))
+        };
+        // Decode a 16-px luma run (`yp`+col) with chroma groups for px 0..8 (clo) / 8..16 (chi).
+        let decode16_store = |yp: *const u8,
+                              dp: *mut u8,
+                              col: usize,
+                              clo: &[(int32x4_t, int32x4_t); 3],
+                              chi: &[(int32x4_t, int32x4_t); 3]| {
+            let y = vld1q_u8(yp.add(col));
+            let yl = yy_pair(vget_low_u8(y));
+            let yh = yy_pair(vget_high_u8(y));
+            let r = vcombine_u8(finish(yl, clo[0]), finish(yh, chi[0]));
+            let g = vcombine_u8(finish(yl, clo[1]), finish(yh, chi[1]));
+            let b = vcombine_u8(finish(yl, clo[2]), finish(yh, chi[2]));
+            vst3q_u8(dp.add(col * 3), uint8x16x3_t(r, g, b));
+        };
+
+        let bulk = cw & !15;
+        let mut cx = 0usize;
+        while cx < bulk {
+            let (u, v) = load_uv(cx);
+            // ×2 horizontal upsample: lane i → luma cols 2i, 2i+1.
+            let uz = vzipq_u8(u, u);
+            let vz = vzipq_u8(v, v);
+            let g0 = chroma_rgb(vget_low_u8(uz.0), vget_low_u8(vz.0)); // cols 0..8
+            let g1 = chroma_rgb(vget_high_u8(uz.0), vget_high_u8(vz.0)); // cols 8..16
+            let g2 = chroma_rgb(vget_low_u8(uz.1), vget_low_u8(vz.1)); // cols 16..24
+            let g3 = chroma_rgb(vget_high_u8(uz.1), vget_high_u8(vz.1)); // cols 24..32
+            let col = cx * 2;
+            decode16_store(ytp, dtp, col, &g0, &g1);
+            decode16_store(ytp, dtp, col + 16, &g2, &g3);
+            decode16_store(ybp, dbp, col, &g0, &g1);
+            decode16_store(ybp, dbp, col + 16, &g2, &g3);
+            cx += 16;
+        }
+        // scalar tail (cw % 16)
+        while cx < cw {
+            let (u, v) = chroma_at(c0, c1, cw, cy, cx, fmt);
+            let x = cx * 2;
+            for dx in 0..2 {
+                let dt = (x + dx) * 3;
+                let (r, g, b) = decode_px(yy_term(*ytp.add(x + dx) as i32), u, v);
+                *dtp.add(dt) = r;
+                *dtp.add(dt + 1) = g;
+                *dtp.add(dt + 2) = b;
+                let (r2, g2, b2) = decode_px(yy_term(*ybp.add(x + dx) as i32), u, v);
+                *dbp.add(dt) = r2;
+                *dbp.add(dt + 1) = g2;
+                *dbp.add(dt + 2) = b2;
             }
-            Planar420::I420 => (
-                vld1q_u8(c0.as_ptr().add(cy * cw + cx)),
-                vld1q_u8(c1.as_ptr().add(cy * cw + cx)),
-            ),
-            Planar420::Yv12 => (
-                vld1q_u8(c1.as_ptr().add(cy * cw + cx)),
-                vld1q_u8(c0.as_ptr().add(cy * cw + cx)),
-            ),
+            cx += 1;
         }
-    };
-
-    // Chroma RGB contribution for a centred u8x8 (U,V) → [(r_lo,r_hi),(g..),(b..)] s32 pairs.
-    let chroma_rgb = |u8x8: uint8x8_t, v8x8: uint8x8_t| -> [(int32x4_t, int32x4_t); 3] {
-        let uc = vsubq_s16(vreinterpretq_s16_u16(vmovl_u8(u8x8)), vdupq_n_s16(128));
-        let vc = vsubq_s16(vreinterpretq_s16_u16(vmovl_u8(v8x8)), vdupq_n_s16(128));
-        let (ul, uh) = (vmovl_s16(vget_low_s16(uc)), vmovl_s16(vget_high_s16(uc)));
-        let (vl, vh) = (vmovl_s16(vget_low_s16(vc)), vmovl_s16(vget_high_s16(vc)));
-        let half = vdupq_n_s32(ITUR_HALF);
-        let r = (vmlaq_n_s32(half, vl, CVR), vmlaq_n_s32(half, vh, CVR));
-        let g = (
-            vmlaq_n_s32(vmlaq_n_s32(half, ul, CUG), vl, CVG),
-            vmlaq_n_s32(vmlaq_n_s32(half, uh, CUG), vh, CVG),
-        );
-        let b = (vmlaq_n_s32(half, ul, CUB), vmlaq_n_s32(half, uh, CUB));
-        [r, g, b]
-    };
-    let yy_pair = |y8: uint8x8_t| -> (int32x4_t, int32x4_t) {
-        let y16 = vreinterpretq_s16_u16(vmovl_u8(vqsub_u8(y8, vdup_n_u8(16))));
-        (
-            vmulq_n_s32(vmovl_s16(vget_low_s16(y16)), CY),
-            vmulq_n_s32(vmovl_s16(vget_high_s16(y16)), CY),
-        )
-    };
-    let finish = |yy: (int32x4_t, int32x4_t), c: (int32x4_t, int32x4_t)| -> uint8x8_t {
-        let lo = vshrq_n_s32::<ITUR_SHIFT>(vaddq_s32(yy.0, c.0));
-        let hi = vshrq_n_s32::<ITUR_SHIFT>(vaddq_s32(yy.1, c.1));
-        vqmovun_s16(vcombine_s16(vqmovn_s32(lo), vqmovn_s32(hi)))
-    };
-    // Decode a 16-px luma run (`yp`+col) with chroma groups for px 0..8 (clo) / 8..16 (chi).
-    let decode16_store = |yp: *const u8,
-                          dp: *mut u8,
-                          col: usize,
-                          clo: &[(int32x4_t, int32x4_t); 3],
-                          chi: &[(int32x4_t, int32x4_t); 3]| {
-        let y = vld1q_u8(yp.add(col));
-        let yl = yy_pair(vget_low_u8(y));
-        let yh = yy_pair(vget_high_u8(y));
-        let r = vcombine_u8(finish(yl, clo[0]), finish(yh, chi[0]));
-        let g = vcombine_u8(finish(yl, clo[1]), finish(yh, chi[1]));
-        let b = vcombine_u8(finish(yl, clo[2]), finish(yh, chi[2]));
-        vst3q_u8(dp.add(col * 3), uint8x16x3_t(r, g, b));
-    };
-
-    let bulk = cw & !15;
-    let mut cx = 0usize;
-    while cx < bulk {
-        let (u, v) = load_uv(cx);
-        // ×2 horizontal upsample: lane i → luma cols 2i, 2i+1.
-        let uz = vzipq_u8(u, u);
-        let vz = vzipq_u8(v, v);
-        let g0 = chroma_rgb(vget_low_u8(uz.0), vget_low_u8(vz.0)); // cols 0..8
-        let g1 = chroma_rgb(vget_high_u8(uz.0), vget_high_u8(vz.0)); // cols 8..16
-        let g2 = chroma_rgb(vget_low_u8(uz.1), vget_low_u8(vz.1)); // cols 16..24
-        let g3 = chroma_rgb(vget_high_u8(uz.1), vget_high_u8(vz.1)); // cols 24..32
-        let col = cx * 2;
-        decode16_store(ytp, dtp, col, &g0, &g1);
-        decode16_store(ytp, dtp, col + 16, &g2, &g3);
-        decode16_store(ybp, dbp, col, &g0, &g1);
-        decode16_store(ybp, dbp, col + 16, &g2, &g3);
-        cx += 16;
-    }
-    // scalar tail (cw % 16)
-    while cx < cw {
-        let (u, v) = chroma_at(c0, c1, cw, cy, cx, fmt);
-        let x = cx * 2;
-        for dx in 0..2 {
-            let dt = (x + dx) * 3;
-            let (r, g, b) = decode_px(yy_term(*ytp.add(x + dx) as i32), u, v);
-            *dtp.add(dt) = r;
-            *dtp.add(dt + 1) = g;
-            *dtp.add(dt + 2) = b;
-            let (r2, g2, b2) = decode_px(yy_term(*ybp.add(x + dx) as i32), u, v);
-            *dbp.add(dt) = r2;
-            *dbp.add(dt + 1) = g2;
-            *dbp.add(dt + 2) = b2;
-        }
-        cx += 1;
     }
 }
 
@@ -1233,50 +1239,52 @@ fn yuyv_from_rgb_row_scalar(src: &[u8], dst: &mut [u8], width: usize) {
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 unsafe fn yuyv_from_rgb_row_neon(src: &[u8], dst: &mut [u8], width: usize) {
-    use std::arch::aarch64::*;
-    let bulk = width & !15;
-    let mut x = 0;
-    while x < bulk {
-        let rgb = vld3q_u8(src.as_ptr().add(x * 3));
-        // Luma for 16 px.
-        let yacc = |r: uint8x8_t, g: uint8x8_t, b: uint8x8_t| -> uint8x8_t {
-            let mut a = vmull_u8(r, vdup_n_u8(YR as u8));
-            a = vmlal_u8(a, g, vdup_n_u8(YG as u8));
-            a = vmlal_u8(a, b, vdup_n_u8(YB as u8));
-            vqadd_u8(vrshrn_n_u16::<8>(a), vdup_n_u8(16))
-        };
-        let y16 = vcombine_u8(
-            yacc(vget_low_u8(rgb.0), vget_low_u8(rgb.1), vget_low_u8(rgb.2)),
-            yacc(
-                vget_high_u8(rgb.0),
-                vget_high_u8(rgb.1),
-                vget_high_u8(rgb.2),
-            ),
-        );
-        // Per-pair rounded chroma averages (8 pairs).
-        let ravg = vrshrn_n_u16::<1>(vpaddlq_u8(rgb.0));
-        let gavg = vrshrn_n_u16::<1>(vpaddlq_u8(rgb.1));
-        let bavg = vrshrn_n_u16::<1>(vpaddlq_u8(rgb.2));
-        let r16 = vreinterpretq_s16_u16(vmovl_u8(ravg));
-        let g16 = vreinterpretq_s16_u16(vmovl_u8(gavg));
-        let b16 = vreinterpretq_s16_u16(vmovl_u8(bavg));
-        let chroma = |cr: i16, cg: i16, cb: i16| -> uint8x8_t {
-            let mut a = vmulq_s16(r16, vdupq_n_s16(cr));
-            a = vmlaq_s16(a, g16, vdupq_n_s16(cg));
-            a = vmlaq_s16(a, b16, vdupq_n_s16(cb));
-            // (a + 128) >> 8 (rounded, signed) + 128, saturate to u8.
-            vqmovun_s16(vaddq_s16(vrshrq_n_s16::<8>(a), vdupq_n_s16(128)))
-        };
-        let u8v = chroma(UR as i16, UG as i16, UB as i16);
-        let v8v = chroma(VR as i16, VG as i16, VB as i16);
-        // chroma stream [U0,V0,U1,V1,…]; vst2 zips it against luma → Y0 U Y1 V.
-        let uv = vzip_u8(u8v, v8v);
-        let c16 = vcombine_u8(uv.0, uv.1);
-        vst2q_u8(dst.as_mut_ptr().add(x * 2), uint8x16x2_t(y16, c16));
-        x += 16;
-    }
-    if bulk < width {
-        yuyv_from_rgb_row_scalar(&src[bulk * 3..], &mut dst[bulk * 2..], width - bulk);
+    unsafe {
+        use std::arch::aarch64::*;
+        let bulk = width & !15;
+        let mut x = 0;
+        while x < bulk {
+            let rgb = vld3q_u8(src.as_ptr().add(x * 3));
+            // Luma for 16 px.
+            let yacc = |r: uint8x8_t, g: uint8x8_t, b: uint8x8_t| -> uint8x8_t {
+                let mut a = vmull_u8(r, vdup_n_u8(YR as u8));
+                a = vmlal_u8(a, g, vdup_n_u8(YG as u8));
+                a = vmlal_u8(a, b, vdup_n_u8(YB as u8));
+                vqadd_u8(vrshrn_n_u16::<8>(a), vdup_n_u8(16))
+            };
+            let y16 = vcombine_u8(
+                yacc(vget_low_u8(rgb.0), vget_low_u8(rgb.1), vget_low_u8(rgb.2)),
+                yacc(
+                    vget_high_u8(rgb.0),
+                    vget_high_u8(rgb.1),
+                    vget_high_u8(rgb.2),
+                ),
+            );
+            // Per-pair rounded chroma averages (8 pairs).
+            let ravg = vrshrn_n_u16::<1>(vpaddlq_u8(rgb.0));
+            let gavg = vrshrn_n_u16::<1>(vpaddlq_u8(rgb.1));
+            let bavg = vrshrn_n_u16::<1>(vpaddlq_u8(rgb.2));
+            let r16 = vreinterpretq_s16_u16(vmovl_u8(ravg));
+            let g16 = vreinterpretq_s16_u16(vmovl_u8(gavg));
+            let b16 = vreinterpretq_s16_u16(vmovl_u8(bavg));
+            let chroma = |cr: i16, cg: i16, cb: i16| -> uint8x8_t {
+                let mut a = vmulq_s16(r16, vdupq_n_s16(cr));
+                a = vmlaq_s16(a, g16, vdupq_n_s16(cg));
+                a = vmlaq_s16(a, b16, vdupq_n_s16(cb));
+                // (a + 128) >> 8 (rounded, signed) + 128, saturate to u8.
+                vqmovun_s16(vaddq_s16(vrshrq_n_s16::<8>(a), vdupq_n_s16(128)))
+            };
+            let u8v = chroma(UR as i16, UG as i16, UB as i16);
+            let v8v = chroma(VR as i16, VG as i16, VB as i16);
+            // chroma stream [U0,V0,U1,V1,…]; vst2 zips it against luma → Y0 U Y1 V.
+            let uv = vzip_u8(u8v, v8v);
+            let c16 = vcombine_u8(uv.0, uv.1);
+            vst2q_u8(dst.as_mut_ptr().add(x * 2), uint8x16x2_t(y16, c16));
+            x += 16;
+        }
+        if bulk < width {
+            yuyv_from_rgb_row_scalar(&src[bulk * 3..], &mut dst[bulk * 2..], width - bulk);
+        }
     }
 }
 
@@ -1484,53 +1492,55 @@ fn encode_uv_row_scalar(top: &[u8], bot: &[u8], uv: &mut [u8], width: usize) {
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 unsafe fn encode_uv_row_neon(top: &[u8], bot: &[u8], uv: &mut [u8], width: usize) {
-    use std::arch::aarch64::*;
-    let cw = width / 2;
-    let mut cx = 0;
-    while cx + 16 <= cw {
-        let sp = cx * 2 * 3; // byte offset of src px 2*cx
-        let t0 = vld3q_u8(top.as_ptr().add(sp));
-        let t1 = vld3q_u8(top.as_ptr().add(sp + 48));
-        let b0 = vld3q_u8(bot.as_ptr().add(sp));
-        let b1 = vld3q_u8(bot.as_ptr().add(sp + 48));
-        // 2×2 block average for one channel across the two 16-px chunks → u8x16.
-        let avg = |tc0, tc1, bc0, bc1| -> uint8x16_t {
-            let blk0 = vaddq_u16(vpaddlq_u8(tc0), vpaddlq_u8(bc0));
-            let blk1 = vaddq_u16(vpaddlq_u8(tc1), vpaddlq_u8(bc1));
-            vcombine_u8(vrshrn_n_u16::<2>(blk0), vrshrn_n_u16::<2>(blk1))
-        };
-        let ravg = avg(t0.0, t1.0, b0.0, b1.0);
-        let gavg = avg(t0.1, t1.1, b0.1, b1.1);
-        let bavg = avg(t0.2, t1.2, b0.2, b1.2);
-        let chroma = |cr: i16, cg: i16, cb: i16| -> uint8x16_t {
-            let half = |r: uint8x8_t, g: uint8x8_t, b: uint8x8_t| -> uint8x8_t {
-                let r = vreinterpretq_s16_u16(vmovl_u8(r));
-                let g = vreinterpretq_s16_u16(vmovl_u8(g));
-                let b = vreinterpretq_s16_u16(vmovl_u8(b));
-                let mut a = vmulq_s16(r, vdupq_n_s16(cr));
-                a = vmlaq_s16(a, g, vdupq_n_s16(cg));
-                a = vmlaq_s16(a, b, vdupq_n_s16(cb));
-                vqmovun_s16(vaddq_s16(vrshrq_n_s16::<8>(a), vdupq_n_s16(128)))
+    unsafe {
+        use std::arch::aarch64::*;
+        let cw = width / 2;
+        let mut cx = 0;
+        while cx + 16 <= cw {
+            let sp = cx * 2 * 3; // byte offset of src px 2*cx
+            let t0 = vld3q_u8(top.as_ptr().add(sp));
+            let t1 = vld3q_u8(top.as_ptr().add(sp + 48));
+            let b0 = vld3q_u8(bot.as_ptr().add(sp));
+            let b1 = vld3q_u8(bot.as_ptr().add(sp + 48));
+            // 2×2 block average for one channel across the two 16-px chunks → u8x16.
+            let avg = |tc0, tc1, bc0, bc1| -> uint8x16_t {
+                let blk0 = vaddq_u16(vpaddlq_u8(tc0), vpaddlq_u8(bc0));
+                let blk1 = vaddq_u16(vpaddlq_u8(tc1), vpaddlq_u8(bc1));
+                vcombine_u8(vrshrn_n_u16::<2>(blk0), vrshrn_n_u16::<2>(blk1))
             };
-            vcombine_u8(
-                half(vget_low_u8(ravg), vget_low_u8(gavg), vget_low_u8(bavg)),
-                half(vget_high_u8(ravg), vget_high_u8(gavg), vget_high_u8(bavg)),
-            )
-        };
-        let u16v = chroma(UR as i16, UG as i16, UB as i16);
-        let v16v = chroma(VR as i16, VG as i16, VB as i16);
-        let uvz = vzipq_u8(u16v, v16v);
-        vst1q_u8(uv.as_mut_ptr().add(cx * 2), uvz.0);
-        vst1q_u8(uv.as_mut_ptr().add(cx * 2 + 16), uvz.1);
-        cx += 16;
-    }
-    if cx < cw {
-        encode_uv_row_scalar(
-            &top[cx * 2 * 3..],
-            &bot[cx * 2 * 3..],
-            &mut uv[cx * 2..],
-            (cw - cx) * 2,
-        );
+            let ravg = avg(t0.0, t1.0, b0.0, b1.0);
+            let gavg = avg(t0.1, t1.1, b0.1, b1.1);
+            let bavg = avg(t0.2, t1.2, b0.2, b1.2);
+            let chroma = |cr: i16, cg: i16, cb: i16| -> uint8x16_t {
+                let half = |r: uint8x8_t, g: uint8x8_t, b: uint8x8_t| -> uint8x8_t {
+                    let r = vreinterpretq_s16_u16(vmovl_u8(r));
+                    let g = vreinterpretq_s16_u16(vmovl_u8(g));
+                    let b = vreinterpretq_s16_u16(vmovl_u8(b));
+                    let mut a = vmulq_s16(r, vdupq_n_s16(cr));
+                    a = vmlaq_s16(a, g, vdupq_n_s16(cg));
+                    a = vmlaq_s16(a, b, vdupq_n_s16(cb));
+                    vqmovun_s16(vaddq_s16(vrshrq_n_s16::<8>(a), vdupq_n_s16(128)))
+                };
+                vcombine_u8(
+                    half(vget_low_u8(ravg), vget_low_u8(gavg), vget_low_u8(bavg)),
+                    half(vget_high_u8(ravg), vget_high_u8(gavg), vget_high_u8(bavg)),
+                )
+            };
+            let u16v = chroma(UR as i16, UG as i16, UB as i16);
+            let v16v = chroma(VR as i16, VG as i16, VB as i16);
+            let uvz = vzipq_u8(u16v, v16v);
+            vst1q_u8(uv.as_mut_ptr().add(cx * 2), uvz.0);
+            vst1q_u8(uv.as_mut_ptr().add(cx * 2 + 16), uvz.1);
+            cx += 16;
+        }
+        if cx < cw {
+            encode_uv_row_scalar(
+                &top[cx * 2 * 3..],
+                &bot[cx * 2 * 3..],
+                &mut uv[cx * 2..],
+                (cw - cx) * 2,
+            );
+        }
     }
 }
 
@@ -1633,33 +1643,35 @@ unsafe fn encode_uv_row_avx2(top: &[u8], bot: &[u8], uv: &mut [u8], width: usize
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 unsafe fn encode_y_row_neon(src: &[u8], dst: &mut [u8], width: usize) {
-    use std::arch::aarch64::*;
-    let bulk = width & !15;
-    let mut x = 0;
-    while x < bulk {
-        let rgb = vld3q_u8(src.as_ptr().add(x * 3));
-        // Widen each channel to two u16x8 halves and accumulate Y in u16 (Q8 coeffs
-        // fit: 66+129+25 = 220 < 256, so 220*255 = 56100 < 65535).
-        let acc = |r: uint8x8_t, g: uint8x8_t, b: uint8x8_t| -> uint8x8_t {
-            let mut a = vmull_u8(r, vdup_n_u8(YR as u8));
-            a = vmlal_u8(a, g, vdup_n_u8(YG as u8));
-            a = vmlal_u8(a, b, vdup_n_u8(YB as u8));
-            // (a + 128) >> 8, then +16, saturating to u8.
-            let y = vrshrn_n_u16::<8>(a); // rounded narrow ≈ (a+128)>>8
-            vqadd_u8(y, vdup_n_u8(16))
-        };
-        let lo = acc(vget_low_u8(rgb.0), vget_low_u8(rgb.1), vget_low_u8(rgb.2));
-        let hi = acc(
-            vget_high_u8(rgb.0),
-            vget_high_u8(rgb.1),
-            vget_high_u8(rgb.2),
-        );
-        vst1q_u8(dst.as_mut_ptr().add(x), vcombine_u8(lo, hi));
-        x += 16;
-    }
-    for (x, d) in dst.iter_mut().enumerate().skip(bulk) {
-        let s = x * 3;
-        *d = encode_y(src[s] as i32, src[s + 1] as i32, src[s + 2] as i32);
+    unsafe {
+        use std::arch::aarch64::*;
+        let bulk = width & !15;
+        let mut x = 0;
+        while x < bulk {
+            let rgb = vld3q_u8(src.as_ptr().add(x * 3));
+            // Widen each channel to two u16x8 halves and accumulate Y in u16 (Q8 coeffs
+            // fit: 66+129+25 = 220 < 256, so 220*255 = 56100 < 65535).
+            let acc = |r: uint8x8_t, g: uint8x8_t, b: uint8x8_t| -> uint8x8_t {
+                let mut a = vmull_u8(r, vdup_n_u8(YR as u8));
+                a = vmlal_u8(a, g, vdup_n_u8(YG as u8));
+                a = vmlal_u8(a, b, vdup_n_u8(YB as u8));
+                // (a + 128) >> 8, then +16, saturating to u8.
+                let y = vrshrn_n_u16::<8>(a); // rounded narrow ≈ (a+128)>>8
+                vqadd_u8(y, vdup_n_u8(16))
+            };
+            let lo = acc(vget_low_u8(rgb.0), vget_low_u8(rgb.1), vget_low_u8(rgb.2));
+            let hi = acc(
+                vget_high_u8(rgb.0),
+                vget_high_u8(rgb.1),
+                vget_high_u8(rgb.2),
+            );
+            vst1q_u8(dst.as_mut_ptr().add(x), vcombine_u8(lo, hi));
+            x += 16;
+        }
+        for (x, d) in dst.iter_mut().enumerate().skip(bulk) {
+            let s = x * 3;
+            *d = encode_y(src[s] as i32, src[s + 1] as i32, src[s + 2] as i32);
+        }
     }
 }
 

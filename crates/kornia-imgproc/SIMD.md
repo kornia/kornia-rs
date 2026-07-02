@@ -67,16 +67,16 @@ mod sealed { pub trait Sealed {} }
 
 pub trait GrayFromRgb: sealed::Sealed + Sized {
     #[doc(hidden)]
-    fn gray_from_rgb_impl<A1: ImageAllocator, A2: ImageAllocator>(
-        src: &Image<Self, 3, A1>,
-        dst: &mut Image<Self, 1, A2>,
+    fn gray_from_rgb_impl(
+        src: &Image<Self, 3>,
+        dst: &mut Image<Self, 1>,
     ) -> Result<(), ImageError>;
 }
 
 impl sealed::Sealed for u8 {}
 impl GrayFromRgb for u8 {
-    fn gray_from_rgb_impl<A1, A2>(src: &Image<u8, 3, A1>, dst: &mut Image<u8, 1, A2>)
-        -> Result<(), ImageError> where A1: ImageAllocator, A2: ImageAllocator
+    fn gray_from_rgb_impl(src: &Image<u8, 3>, dst: &mut Image<u8, 1>)
+        -> Result<(), ImageError>
     {
         check_size(src, dst)?;
         kernels::rgb_to_gray_u8(src.as_slice(), dst.as_slice_mut(), src.rows() * src.cols());
@@ -86,9 +86,9 @@ impl GrayFromRgb for u8 {
 // impl for f32 → kernels::rgb_to_gray_f32 (NEON/AVX2+FMA)
 // impl for f64 → portable scalar
 
-pub fn gray_from_rgb<T: GrayFromRgb, A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<T, 3, A1>,
-    dst: &mut Image<T, 1, A2>,
+pub fn gray_from_rgb<T: GrayFromRgb>(
+    src: &Image<T, 3>,
+    dst: &mut Image<T, 1>,
 ) -> Result<(), ImageError> {
     T::gray_from_rgb_impl(src, dst)
 }
@@ -106,9 +106,9 @@ Extract the repeated `src.size() != dst.size()` boilerplate into a private `chec
 
 ```rust
 #[inline]
-fn check_size<T, U, const C1: usize, const C2: usize, A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<T, C1, A1>,
-    dst: &Image<U, C2, A2>,
+fn check_size<T, U, const C1: usize, const C2: usize>(
+    src: &Image<T, C1>,
+    dst: &Image<U, C2>,
 ) -> Result<(), ImageError> {
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(

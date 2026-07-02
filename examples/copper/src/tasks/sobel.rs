@@ -1,5 +1,5 @@
 use cu29::prelude::*;
-use kornia::{image::Image, imgproc, io::stream::ForeignAllocator};
+use kornia::{image::Image, imgproc};
 
 use super::cu_image::{ImageGray8Msg, ImageRgb8Msg};
 
@@ -7,31 +7,32 @@ pub struct Sobel;
 
 impl Freezable for Sobel {}
 
-impl<'cl> CuTask<'cl> for Sobel {
-    type Input = input_msg!('cl, ImageRgb8Msg);
-    type Output = output_msg!('cl, ImageGray8Msg);
+impl CuTask for Sobel {
+    type Input<'m> = input_msg!(ImageRgb8Msg);
+    type Output<'m> = output_msg!(ImageGray8Msg);
+    type Resources<'r> = ();
 
-    fn new(_config: Option<&ComponentConfig>) -> Result<Self, CuError>
+    fn new(_config: Option<&ComponentConfig>, _resources: Self::Resources<'_>) -> CuResult<Self>
     where
         Self: Sized,
     {
         Ok(Self {})
     }
 
-    fn start(&mut self, _clock: &RobotClock) -> Result<(), CuError> {
+    fn start(&mut self, _ctx: &CuContext) -> CuResult<()> {
         Ok(())
     }
 
-    fn stop(&mut self, _clock: &RobotClock) -> Result<(), CuError> {
+    fn stop(&mut self, _ctx: &CuContext) -> CuResult<()> {
         Ok(())
     }
 
     fn process(
         &mut self,
-        _clock: &RobotClock,
-        input: Self::Input,
-        output: Self::Output,
-    ) -> Result<(), CuError> {
+        _ctx: &CuContext,
+        input: &Self::Input<'_>,
+        output: &mut Self::Output<'_>,
+    ) -> CuResult<()> {
         let Some(src) = input.payload() else {
             return Ok(());
         };
@@ -42,7 +43,7 @@ impl<'cl> CuTask<'cl> for Sobel {
             .map(|&x| x as f32)
             .map_err(|e| CuError::new_with_cause("Failed to cast image to f32", e))?;
 
-        let mut img_sobel = Image::from_size_val(img.size(), 0.0f32, ForeignAllocator)
+        let mut img_sobel = Image::from_size_val(img.size(), 0.0f32)
             .map_err(|e| CuError::new_with_cause("Failed to create image", e))?;
 
         imgproc::filter::sobel(&img, &mut img_sobel, 3)

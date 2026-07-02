@@ -1,9 +1,8 @@
 use super::image_from_gst_buffer;
 use crate::stream::error::StreamCaptureError;
-use circular_buffer::CircularBuffer;
+use circular_buffer::FixedCircularBuffer;
 use gstreamer::prelude::*;
 use kornia_image::{Image, ImageSize};
-use kornia_tensor::allocator::ForeignAllocator;
 use std::sync::{Arc, Mutex};
 
 // utility struct to store the frame buffer
@@ -42,7 +41,7 @@ impl From<gstreamer::State> for StreamerState {
 /// Represents a stream capture pipeline using GStreamer.
 pub struct StreamCapture {
     pub(crate) pipeline: gstreamer::Pipeline,
-    circular_buffer: Arc<Mutex<CircularBuffer<5, FrameBuffer>>>,
+    circular_buffer: Arc<Mutex<FixedCircularBuffer<FrameBuffer, 5>>>,
     fps: Arc<Mutex<gstreamer::Fraction>>,
 }
 
@@ -71,7 +70,7 @@ impl StreamCapture {
             .dynamic_cast::<gstreamer_app::AppSink>()
             .map_err(StreamCaptureError::DowncastPipelineError)?;
 
-        let circular_buffer = Arc::new(Mutex::new(CircularBuffer::new()));
+        let circular_buffer = Arc::new(Mutex::new(FixedCircularBuffer::new()));
         let fps = Arc::new(Mutex::new(gstreamer::Fraction::new(1, 1)));
 
         appsink.set_callbacks(
@@ -135,9 +134,7 @@ impl StreamCapture {
     /// # Returns
     ///
     /// An Option containing the last captured Image or None if no image has been captured yet.
-    pub fn grab_rgb8(
-        &mut self,
-    ) -> Result<Option<Image<u8, 3, ForeignAllocator>>, StreamCaptureError> {
+    pub fn grab_rgb8(&mut self) -> Result<Option<Image<u8, 3>>, StreamCaptureError> {
         let mut circular_buffer = self
             .circular_buffer
             .lock()

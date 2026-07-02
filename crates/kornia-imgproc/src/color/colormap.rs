@@ -1,4 +1,4 @@
-use kornia_image::{allocator::ImageAllocator, Image, ImageError};
+use kornia_image::{Image, ImageError};
 
 // ── LUT data ──────────────────────────────────────────────────────────────────
 
@@ -136,19 +136,21 @@ unsafe fn lookup_channel(
     idx128: std::arch::aarch64::uint8x16_t,
     idx192: std::arch::aarch64::uint8x16_t,
 ) -> std::arch::aarch64::uint8x16_t {
-    use std::arch::aarch64::*;
-    // Each vqtbl4q_u8 covers one 64-entry chunk; out-of-range indices produce 0,
-    // so OR-ing the four results gives the correct value for all 256 indices.
-    vorrq_u8(
+    unsafe {
+        use std::arch::aarch64::*;
+        // Each vqtbl4q_u8 covers one 64-entry chunk; out-of-range indices produce 0,
+        // so OR-ing the four results gives the correct value for all 256 indices.
         vorrq_u8(
-            vqtbl4q_u8(vld1q_u8_x4(p), idx),
-            vqtbl4q_u8(vld1q_u8_x4(p.add(64)), idx64),
-        ),
-        vorrq_u8(
-            vqtbl4q_u8(vld1q_u8_x4(p.add(128)), idx128),
-            vqtbl4q_u8(vld1q_u8_x4(p.add(192)), idx192),
-        ),
-    )
+            vorrq_u8(
+                vqtbl4q_u8(vld1q_u8_x4(p), idx),
+                vqtbl4q_u8(vld1q_u8_x4(p.add(64)), idx64),
+            ),
+            vorrq_u8(
+                vqtbl4q_u8(vld1q_u8_x4(p.add(128)), idx128),
+                vqtbl4q_u8(vld1q_u8_x4(p.add(192)), idx192),
+            ),
+        )
+    }
 }
 
 /// NEON kernel (aarch64): 16 pixels/iteration using `vqtbl4q_u8` + `vst3q_u8`.
@@ -162,34 +164,36 @@ unsafe fn lookup_channel(
 /// Caller must ensure `dst.len() >= src.len() * 3`.
 #[cfg(target_arch = "aarch64")]
 unsafe fn apply_neon(src: &[u8], dst: &mut [u8], lut: &ColormapLut) {
-    use std::arch::aarch64::*;
+    unsafe {
+        use std::arch::aarch64::*;
 
-    let off64 = vdupq_n_u8(64);
-    let off128 = vdupq_n_u8(128);
-    let off192 = vdupq_n_u8(192);
+        let off64 = vdupq_n_u8(64);
+        let off128 = vdupq_n_u8(128);
+        let off192 = vdupq_n_u8(192);
 
-    let n = src.len();
-    let mut si = 0usize;
-    let mut di = 0usize;
+        let n = src.len();
+        let mut si = 0usize;
+        let mut di = 0usize;
 
-    while si + 16 <= n {
-        let idx = vld1q_u8(src.as_ptr().add(si));
-        let idx64 = vsubq_u8(idx, off64);
-        let idx128 = vsubq_u8(idx, off128);
-        let idx192 = vsubq_u8(idx, off192);
+        while si + 16 <= n {
+            let idx = vld1q_u8(src.as_ptr().add(si));
+            let idx64 = vsubq_u8(idx, off64);
+            let idx128 = vsubq_u8(idx, off128);
+            let idx192 = vsubq_u8(idx, off192);
 
-        let r = lookup_channel(lut.r.as_ptr(), idx, idx64, idx128, idx192);
-        let g = lookup_channel(lut.g.as_ptr(), idx, idx64, idx128, idx192);
-        let b = lookup_channel(lut.b.as_ptr(), idx, idx64, idx128, idx192);
+            let r = lookup_channel(lut.r.as_ptr(), idx, idx64, idx128, idx192);
+            let g = lookup_channel(lut.g.as_ptr(), idx, idx64, idx128, idx192);
+            let b = lookup_channel(lut.b.as_ptr(), idx, idx64, idx128, idx192);
 
-        vst3q_u8(dst.as_mut_ptr().add(di), uint8x16x3_t(r, g, b));
+            vst3q_u8(dst.as_mut_ptr().add(di), uint8x16x3_t(r, g, b));
 
-        si += 16;
-        di += 48;
+            si += 16;
+            di += 48;
+        }
+
+        // Scalar tail for remaining pixels
+        apply_scalar(&src[si..], &mut dst[di..], lut);
     }
-
-    // Scalar tail for remaining pixels
-    apply_scalar(&src[si..], &mut dst[di..], lut);
 }
 
 /// AVX2 kernel (x86_64): 8 pixels/iteration via a 32-bit gather over a packed
@@ -252,9 +256,9 @@ unsafe fn apply_avx2(src: &[u8], dst: &mut [u8], lut: &ColormapLut) {
 ///
 /// # Errors
 /// Returns `ImageError` if `src` and `dst` sizes do not match.
-pub fn apply_colormap<A: ImageAllocator>(
-    src: &Image<u8, 1, A>,
-    dst: &mut Image<u8, 3, A>,
+pub fn apply_colormap(
+    src: &Image<u8, 1>,
+    dst: &mut Image<u8, 3>,
     colormap: ColormapType,
 ) -> Result<(), ImageError> {
     if src.size() != dst.size() {

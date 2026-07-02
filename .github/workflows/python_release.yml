@@ -32,7 +32,7 @@ jobs:
 
     steps:
       - uses: ilammy/setup-nasm@v1
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: messense/maturin-action@v1
         with:
           target: ${{ matrix.target }}
@@ -130,7 +130,7 @@ jobs:
             target: aarch64
     steps:
       - uses: ilammy/setup-nasm@v1
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
@@ -162,7 +162,7 @@ jobs:
     steps:
       - uses: ilammy/setup-nasm@v1
       - uses: ilammy/msvc-dev-cmd@v1
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}

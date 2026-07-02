@@ -311,27 +311,29 @@ unsafe fn hue2rgb_neon(
     two_third: std::arch::aarch64::float32x4_t,
     one_sixth: std::arch::aarch64::float32x4_t,
 ) -> std::arch::aarch64::float32x4_t {
-    use std::arch::aarch64::*;
-    let zero = vdupq_n_f32(0.0);
-    // wrap t into [0,1): if t<0 t+=1; if t>1 t-=1
-    let t = vbslq_f32(vcltq_f32(t, zero), vaddq_f32(t, v1), t);
-    let t = vbslq_f32(vcgtq_f32(t, v1), vsubq_f32(t, v1), t);
+    unsafe {
+        use std::arch::aarch64::*;
+        let zero = vdupq_n_f32(0.0);
+        // wrap t into [0,1): if t<0 t+=1; if t>1 t-=1
+        let t = vbslq_f32(vcltq_f32(t, zero), vaddq_f32(t, v1), t);
+        let t = vbslq_f32(vcgtq_f32(t, v1), vsubq_f32(t, v1), t);
 
-    let qmp = vsubq_f32(q, p);
-    // branch a: t<1/6 → p + (q-p)*6*t
-    let cand_a = vaddq_f32(p, vmulq_f32(qmp, vmulq_f32(v6, t)));
-    // branch b: t<1/2 → q
-    // branch c: t<2/3 → p + (q-p)*(2/3 - t)*6
-    let cand_c = vaddq_f32(p, vmulq_f32(qmp, vmulq_f32(vsubq_f32(two_third, t), v6)));
-    // branch d (else): p
+        let qmp = vsubq_f32(q, p);
+        // branch a: t<1/6 → p + (q-p)*6*t
+        let cand_a = vaddq_f32(p, vmulq_f32(qmp, vmulq_f32(v6, t)));
+        // branch b: t<1/2 → q
+        // branch c: t<2/3 → p + (q-p)*(2/3 - t)*6
+        let cand_c = vaddq_f32(p, vmulq_f32(qmp, vmulq_f32(vsubq_f32(two_third, t), v6)));
+        // branch d (else): p
 
-    // select from the bottom up: default p, then c if t<2/3, then q if t<1/2, then a if t<1/6
-    let lt_two_third = vcltq_f32(t, two_third);
-    let lt_half = vcltq_f32(t, half);
-    let lt_sixth = vcltq_f32(t, one_sixth);
-    let out = vbslq_f32(lt_two_third, cand_c, p);
-    let out = vbslq_f32(lt_half, q, out);
-    vbslq_f32(lt_sixth, cand_a, out)
+        // select from the bottom up: default p, then c if t<2/3, then q if t<1/2, then a if t<1/6
+        let lt_two_third = vcltq_f32(t, two_third);
+        let lt_half = vcltq_f32(t, half);
+        let lt_sixth = vcltq_f32(t, one_sixth);
+        let out = vbslq_f32(lt_two_third, cand_c, p);
+        let out = vbslq_f32(lt_half, q, out);
+        vbslq_f32(lt_sixth, cand_a, out)
+    }
 }
 
 #[cfg(target_arch = "x86_64")]

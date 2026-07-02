@@ -15,9 +15,12 @@ compile_error!(
 );
 
 use std::alloc::Layout;
+use std::sync::Arc;
 
 use cubecl_core::client::ComputeClient;
 use cubecl_core::Runtime;
+
+use crate::allocator::AllocHandle;
 
 use super::{Backend, GpuAllocator};
 
@@ -87,13 +90,13 @@ impl<R: Runtime> Backend for CubeclBackend<R> {
     }
 }
 
-/// Create a [`GpuAllocator`] backed by the default CUDA device.
+/// Create an [`AllocHandle`] backed by the default CUDA device.
 ///
-/// Hides the cubecl runtime types from callers; use this instead of constructing
-/// [`CubeclBackend`] and [`GpuAllocator`] manually in tests and application code.
-pub fn new_cuda_allocator() -> GpuAllocator<CubeclBackend<cubecl_cuda::CudaRuntime>> {
+/// Wraps [`GpuAllocator`] in an `Arc` so it can be used directly as a `Tensor<T, N>`
+/// allocator without exposing the cubecl runtime types to callers.
+pub fn new_cuda_allocator() -> AllocHandle {
     use cubecl_core::Runtime;
     let device = <cubecl_cuda::CudaRuntime as Runtime>::Device::default();
     let client = cubecl_cuda::CudaRuntime::client(&device);
-    GpuAllocator::new(CubeclBackend::new(client))
+    Arc::new(GpuAllocator::new(CubeclBackend::new(client))) as AllocHandle
 }

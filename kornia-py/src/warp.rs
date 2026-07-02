@@ -2,7 +2,7 @@ use numpy::PyUntypedArrayMethods;
 use pyo3::prelude::*;
 
 use crate::image::{alloc_output_pyarray, numpy_as_image, parse_interpolation, to_pyerr, PyImage};
-use kornia_image::{allocator::ForeignAllocator, Image, ImageError, ImageSize};
+use kornia_image::{Image, ImageError, ImageSize};
 use kornia_imgproc::warp;
 
 fn warp_dispatch<const C: usize, F>(
@@ -14,11 +14,7 @@ fn warp_dispatch<const C: usize, F>(
     op: F,
 ) -> PyResult<PyImage>
 where
-    F: Send
-        + FnOnce(
-            &Image<u8, C, ForeignAllocator>,
-            &mut Image<u8, C, ForeignAllocator>,
-        ) -> Result<(), ImageError>,
+    F: Send + FnOnce(&Image<u8, C>, &mut Image<u8, C>) -> Result<(), ImageError>,
 {
     let new_size = ImageSize {
         height: new_size.0,

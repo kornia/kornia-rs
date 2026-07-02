@@ -9,7 +9,6 @@ pub use matcher::{match_orb_descriptors, OrbMatchConfig};
 mod opencv_tests {
     use super::*;
     use kornia_image::Image;
-    use kornia_tensor::CpuAllocator;
     use opencv::{
         core::{no_array, Mat, Vector},
         features2d::{ORB_ScoreType, ORB},
@@ -17,8 +16,8 @@ mod opencv_tests {
         prelude::*,
     };
 
-    fn u8_to_f32_image(src: &Image<u8, 1, CpuAllocator>) -> Image<f32, 1, CpuAllocator> {
-        let mut dst = Image::from_size_val(src.size(), 0.0, CpuAllocator).unwrap();
+    fn u8_to_f32_image(src: &Image<u8, 1>) -> Image<f32, 1> {
+        let mut dst = Image::from_size_val(src.size(), 0.0).unwrap();
         src.as_slice()
             .iter()
             .zip(dst.as_slice_mut())
@@ -42,7 +41,7 @@ mod opencv_tests {
     #[test]
     fn test_orb_compare_with_opencv() -> Result<(), Box<dyn std::error::Error>> {
         let img_rgb = kornia_io::jpeg::read_image_jpeg_rgb8("../../tests/data/dog.jpeg")?;
-        let mut img_gray = Image::from_size_val(img_rgb.size(), 0u8, CpuAllocator)?;
+        let mut img_gray = Image::from_size_val(img_rgb.size(), 0u8)?;
         crate::color::gray_from_rgb_u8(&img_rgb, &mut img_gray)?;
         let img_f32 = u8_to_f32_image(&img_gray);
 
