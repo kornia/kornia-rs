@@ -7,10 +7,11 @@ pub struct VideoCapture(pub CameraCapture);
 
 impl Freezable for VideoCapture {}
 
-impl<'cl> CuSrcTask<'cl> for VideoCapture {
-    type Output = output_msg!('cl, ImageRgb8Msg);
+impl CuSrcTask for VideoCapture {
+    type Output<'m> = output_msg!(ImageRgb8Msg);
+    type Resources<'r> = ();
 
-    fn new(config: Option<&ComponentConfig>) -> Result<Self, CuError>
+    fn new(config: Option<&ComponentConfig>, _resources: Self::Resources<'_>) -> CuResult<Self>
     where
         Self: Sized,
     {
@@ -19,11 +20,11 @@ impl<'cl> CuSrcTask<'cl> for VideoCapture {
         };
 
         let source_type = config
-            .get::<String>("source_type")
+            .get::<String>("source_type")?
             .ok_or(CuError::from("No source type provided"))?;
 
         let source_uri = config
-            .get::<String>("source_uri")
+            .get::<String>("source_uri")?
             .ok_or(CuError::from("No source uri provided"))?;
 
         let cam = match source_type.as_str() {
@@ -34,13 +35,13 @@ impl<'cl> CuSrcTask<'cl> for VideoCapture {
             "v4l2" => {
                 // parse the needed parameters from the config
                 let image_cols = config
-                    .get::<u32>("image_cols")
+                    .get::<u32>("image_cols")?
                     .ok_or(CuError::from("No image cols provided"))?;
                 let image_rows = config
-                    .get::<u32>("image_rows")
+                    .get::<u32>("image_rows")?
                     .ok_or(CuError::from("No image rows provided"))?;
                 let source_fps = config
-                    .get::<u32>("source_fps")
+                    .get::<u32>("source_fps")?
                     .ok_or(CuError::from("No source fps provided"))?;
 
                 V4L2CameraConfig::new()
@@ -56,19 +57,19 @@ impl<'cl> CuSrcTask<'cl> for VideoCapture {
         Ok(Self(cam))
     }
 
-    fn start(&mut self, _clock: &RobotClock) -> Result<(), CuError> {
+    fn start(&mut self, _ctx: &CuContext) -> CuResult<()> {
         self.0
             .start()
             .map_err(|e| CuError::new_with_cause("Failed to start camera", e))
     }
 
-    fn stop(&mut self, _clock: &RobotClock) -> Result<(), CuError> {
+    fn stop(&mut self, _ctx: &CuContext) -> CuResult<()> {
         self.0
             .close()
             .map_err(|e| CuError::new_with_cause("Failed to stop camera", e))
     }
 
-    fn process(&mut self, _clock: &RobotClock, output: Self::Output) -> Result<(), CuError> {
+    fn process(&mut self, _ctx: &CuContext, output: &mut Self::Output<'_>) -> CuResult<()> {
         let Some(img) = self
             .0
             .grab_rgb8()

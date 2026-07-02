@@ -1,5 +1,5 @@
 [package]
-name = "apriltag"
+name = "apriltag-pose"
 version = { workspace = true }
 authors = { workspace = true }
 edition = { workspace = true }
@@ -13,12 +13,12 @@ categories = { workspace = true }
 include = { workspace = true }
 publish = false
 
+[[bin]]
+name = "apriltag_pose"
+path = "src/main.rs"
+
 [dependencies]
 argh = { workspace = true }
-ctrlc = { workspace = true }
-glam = { workspace = true }
-kornia = { workspace = true, features = ["v4l"] }
+kornia = { workspace = true }
 kornia-3d = { workspace = true }
-kornia-algebra = { workspace = true }
 kornia-apriltag = { workspace = true }
-rerun = { workspace = true }

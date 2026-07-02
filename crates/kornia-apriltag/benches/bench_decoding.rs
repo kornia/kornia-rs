@@ -47,6 +47,35 @@ fn bench_decoding(c: &mut Criterion) {
     let aprilgrid_detector =
         aprilgrid::detector::TagDetector::new(&aprilgrid::TagFamily::T36H11, None);
 
+    // One-shot stage breakdown before the criterion loops.
+    {
+        let mut total_us = [0u64; 6];
+        const WARMUP: usize = 20;
+        for _ in 0..WARMUP {
+            let _ = kornia_detector.decode_timed(&gray_img).unwrap();
+            kornia_detector.clear();
+        }
+        const SAMPLES: usize = 50;
+        for _ in 0..SAMPLES {
+            let (_, us) = kornia_detector.decode_timed(&gray_img).unwrap();
+            kornia_detector.clear();
+            for i in 0..6 {
+                total_us[i] += us[i];
+            }
+        }
+        eprintln!(
+            "stages (avg µs over {} samples): decimate={} threshold={} conn_comp={} clusters={} fit_quads={} decode={}  total={}",
+            SAMPLES,
+            total_us[0] / SAMPLES as u64,
+            total_us[1] / SAMPLES as u64,
+            total_us[2] / SAMPLES as u64,
+            total_us[3] / SAMPLES as u64,
+            total_us[4] / SAMPLES as u64,
+            total_us[5] / SAMPLES as u64,
+            total_us.iter().sum::<u64>() / SAMPLES as u64,
+        );
+    }
+
     c.bench_function("kornia-apriltag", |b| {
         b.iter(|| {
             std::hint::black_box(kornia_detector.decode(&gray_img).unwrap());
