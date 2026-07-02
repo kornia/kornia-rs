@@ -1,7 +1,7 @@
 use kornia_image::{Image, ImageError};
 use rayon::prelude::*;
 
-mod kernels;
+pub(crate) mod kernels;
 use kernels::ChromaOrder;
 pub use kernels::{Packed422, Planar420};
 

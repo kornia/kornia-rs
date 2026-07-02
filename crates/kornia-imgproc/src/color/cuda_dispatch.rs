@@ -17,7 +17,8 @@ use cudarc::driver::{CudaStream, DeviceRepr, ValidAsZeroBits};
 use kornia_image::{Image, ImageError};
 use kornia_tensor::MemoryDomain;
 
-use crate::gpu::color_cuda::{gray, swizzle, CudaColorError};
+use crate::color::yuv::kernels::ChromaOrder;
+use crate::gpu::color_cuda::{gray, misc, swizzle, yuv, CudaColorError};
 
 /// Where a (src, dst) operand pair lives.
 pub(crate) enum Residency<'a> {
@@ -142,6 +143,74 @@ adapter!(rgba_from_rgb_u8_cuda, u8, 3 => 4, swizzle::launch_rgba_from_rgb_u8);
 adapter!(rgba_from_rgb_f32_cuda, f32, 3 => 4, swizzle::launch_rgba_from_rgb_f32);
 adapter!(bgra_from_rgb_u8_cuda, u8, 3 => 4, swizzle::launch_bgra_from_rgb_u8);
 adapter!(bgra_from_rgb_f32_cuda, f32, 3 => 4, swizzle::launch_bgra_from_rgb_f32);
+
+adapter!(sepia_from_rgb_u8_cuda, u8, 3 => 3, misc::launch_sepia_from_rgb_u8);
+adapter!(sepia_from_rgb_f32_cuda, f32, 3 => 3, misc::launch_sepia_from_rgb_f32);
+
+/// Define a YCbCr/YUV-family adapter: fixes direction + chroma order.
+macro_rules! ycc_adapter {
+    ($name:ident, $t:ty, $launcher:path, $order:expr) => {
+        pub(crate) fn $name(
+            src: &Image<$t, 3>,
+            dst: &mut Image<$t, 3>,
+            stream: &Arc<CudaStream>,
+        ) -> Result<(), ImageError> {
+            check_same_size(src, dst)?;
+            let npixels = src.cols() * src.rows();
+            let (s, d) = device_slices!(src, dst);
+            $launcher(stream, s, d, npixels, $order).map_err(cuda_err)
+        }
+    };
+}
+
+ycc_adapter!(
+    ycbcr_from_rgb_u8_cuda,
+    u8,
+    yuv::launch_ycc_from_rgb_u8,
+    ChromaOrder::YCrCb
+);
+ycc_adapter!(
+    rgb_from_ycbcr_u8_cuda,
+    u8,
+    yuv::launch_rgb_from_ycc_u8,
+    ChromaOrder::YCrCb
+);
+ycc_adapter!(
+    yuv_from_rgb_u8_cuda,
+    u8,
+    yuv::launch_ycc_from_rgb_u8,
+    ChromaOrder::YuvCbCr
+);
+ycc_adapter!(
+    rgb_from_yuv_u8_cuda,
+    u8,
+    yuv::launch_rgb_from_ycc_u8,
+    ChromaOrder::YuvCbCr
+);
+ycc_adapter!(
+    ycbcr_from_rgb_f32_cuda,
+    f32,
+    yuv::launch_ycc_from_rgb_f32,
+    ChromaOrder::YCrCb
+);
+ycc_adapter!(
+    rgb_from_ycbcr_f32_cuda,
+    f32,
+    yuv::launch_rgb_from_ycc_f32,
+    ChromaOrder::YCrCb
+);
+ycc_adapter!(
+    yuv_from_rgb_f32_cuda,
+    f32,
+    yuv::launch_ycc_from_rgb_f32,
+    ChromaOrder::YuvCbCr
+);
+ycc_adapter!(
+    rgb_from_yuv_f32_cuda,
+    f32,
+    yuv::launch_rgb_from_ycc_f32,
+    ChromaOrder::YuvCbCr
+);
 
 /// RGBA8/BGRA8 → RGB8 with optional background blend (shared body).
 fn strip_alpha_u8_cuda(

@@ -203,18 +203,26 @@ impl_convert!(Rgbf64 => Luvf64, crate::color::luv_from_rgb);
 impl_convert!(Luvf64 => Rgbf64, crate::color::rgb_from_luv);
 
 // ===== RGB <-> YCbCr Conversions =====
-impl_convert!(Rgb8 => YCbCr8, crate::color::ycbcr_from_rgb);
-impl_convert!(YCbCr8 => Rgb8, crate::color::rgb_from_ycbcr);
-impl_convert!(Rgbf32 => YCbCrf32, crate::color::ycbcr_from_rgb);
-impl_convert!(YCbCrf32 => Rgbf32, crate::color::rgb_from_ycbcr);
+impl_convert!(Rgb8 => YCbCr8, crate::color::ycbcr_from_rgb,
+    cuda: crate::color::cuda_dispatch::ycbcr_from_rgb_u8_cuda);
+impl_convert!(YCbCr8 => Rgb8, crate::color::rgb_from_ycbcr,
+    cuda: crate::color::cuda_dispatch::rgb_from_ycbcr_u8_cuda);
+impl_convert!(Rgbf32 => YCbCrf32, crate::color::ycbcr_from_rgb,
+    cuda: crate::color::cuda_dispatch::ycbcr_from_rgb_f32_cuda);
+impl_convert!(YCbCrf32 => Rgbf32, crate::color::rgb_from_ycbcr,
+    cuda: crate::color::cuda_dispatch::rgb_from_ycbcr_f32_cuda);
 impl_convert!(Rgbf64 => YCbCrf64, crate::color::ycbcr_from_rgb);
 impl_convert!(YCbCrf64 => Rgbf64, crate::color::rgb_from_ycbcr);
 
 // ===== RGB <-> YUV (planar 3-channel) Conversions =====
-impl_convert!(Rgb8 => Yuv8, crate::color::yuv_from_rgb);
-impl_convert!(Yuv8 => Rgb8, crate::color::rgb_from_yuv);
-impl_convert!(Rgbf32 => Yuvf32, crate::color::yuv_from_rgb);
-impl_convert!(Yuvf32 => Rgbf32, crate::color::rgb_from_yuv);
+impl_convert!(Rgb8 => Yuv8, crate::color::yuv_from_rgb,
+    cuda: crate::color::cuda_dispatch::yuv_from_rgb_u8_cuda);
+impl_convert!(Yuv8 => Rgb8, crate::color::rgb_from_yuv,
+    cuda: crate::color::cuda_dispatch::rgb_from_yuv_u8_cuda);
+impl_convert!(Rgbf32 => Yuvf32, crate::color::yuv_from_rgb,
+    cuda: crate::color::cuda_dispatch::yuv_from_rgb_f32_cuda);
+impl_convert!(Yuvf32 => Rgbf32, crate::color::rgb_from_yuv,
+    cuda: crate::color::cuda_dispatch::rgb_from_yuv_f32_cuda);
 impl_convert!(Rgbf64 => Yuvf64, crate::color::yuv_from_rgb);
 impl_convert!(Yuvf64 => Rgbf64, crate::color::rgb_from_yuv);
 

@@ -32,7 +32,9 @@ use cudarc::driver::CudaStream;
 use kornia_tensor::CudaKernel;
 
 pub mod gray;
+pub mod misc;
 pub mod swizzle;
+pub mod yuv;
 
 /// Shared device helpers prepended to every color kernel source before NVRTC
 /// compilation. Constants must stay in lock-step with the CPU kernels they
@@ -57,6 +59,27 @@ __device__ __forceinline__ float clamp01(float v) {
 #define GRAY_WR_F 0.299f
 #define GRAY_WG_F 0.587f
 #define GRAY_WB_F 0.114f
+
+// YCbCr/YUV Family A — full-range OpenCV Q14 fixed point.
+// MUST match color/yuv/kernels.rs:23-37. CUDA `int >>` is an arithmetic shift,
+// same as Rust `i32 >>`, so the negative chroma terms shift identically.
+#define Q14_SHIFT 14
+#define Q14_HALF  (1 << 13)
+#define C_YR   4899
+#define C_YG   9617
+#define C_YB   1868
+#define C_YCRI 11682
+#define C_YCBI 9241
+#define C_CR2R 22987
+#define C_CR2G (-11698)
+#define C_CB2G (-5636)
+#define C_CB2B 29049
+// f32 full-range coefficients (inputs in [0,1]) — color/yuv/kernels.rs:40-44.
+#define F_YR 0.299f
+#define F_YG 0.587f
+#define F_YB 0.114f
+#define F_CR 0.713f
+#define F_CB 0.564f
 "#;
 
 // ── Error type ────────────────────────────────────────────────────────────────

@@ -27,6 +27,13 @@ const SEPIA_M: [f32; 9] = [
 /// Returns [`ImageError::InvalidImageSize`] if `src` and `dst` differ in size.
 pub fn sepia_from_rgb_f32(src: &Image<f32, 3>, dst: &mut Image<f32, 3>) -> Result<(), ImageError> {
     check_size(src, dst)?;
+    #[cfg(feature = "gpu-cuda")]
+    {
+        use super::cuda_dispatch::{pair_residency, Residency};
+        if let Residency::Device(stream) = pair_residency(src, dst)? {
+            return super::cuda_dispatch::sepia_from_rgb_f32_cuda(src, dst, stream);
+        }
+    }
     matrix3_affine_f32(
         src.as_slice(),
         dst.as_slice_mut(),
@@ -43,6 +50,13 @@ pub fn sepia_from_rgb_f32(src: &Image<f32, 3>, dst: &mut Image<f32, 3>) -> Resul
 /// Returns [`ImageError::InvalidImageSize`] if `src` and `dst` differ in size.
 pub fn sepia_from_rgb_u8(src: &Image<u8, 3>, dst: &mut Image<u8, 3>) -> Result<(), ImageError> {
     check_size(src, dst)?;
+    #[cfg(feature = "gpu-cuda")]
+    {
+        use super::cuda_dispatch::{pair_residency, Residency};
+        if let Residency::Device(stream) = pair_residency(src, dst)? {
+            return super::cuda_dispatch::sepia_from_rgb_u8_cuda(src, dst, stream);
+        }
+    }
     let n = src.rows() * src.cols();
     super::kernel_common::par_strip_dispatch(
         src.as_slice(),
@@ -72,6 +86,12 @@ const Q: [u16; 9] = [
     89, 176, 43, // G': .349,.686,.168
     70, 137, 34, // B': .272,.534,.131
 ];
+
+/// Scalar oracle re-export for the CUDA kernel tests.
+#[cfg(all(test, feature = "gpu-cuda"))]
+pub(crate) fn sepia_u8_scalar_oracle(src: &[u8], dst: &mut [u8], npixels: usize) {
+    sepia_u8_scalar(src, dst, npixels)
+}
 
 /// Scalar oracle: Q8 fixed-point MAC, rounded, saturated. Matches NEON exactly.
 fn sepia_u8_scalar(src: &[u8], dst: &mut [u8], npixels: usize) {
