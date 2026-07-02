@@ -2401,13 +2401,20 @@ impl PyImageApi {
     // --- Chainable transforms ---
 
     /// Resize image to (width, height). 8-bit only.
-    #[pyo3(signature = (width, height, interpolation="bilinear"))]
+    ///
+    /// `antialias=True` (default) matches PIL / torchvision semantics — the
+    /// cubic/lanczos kernel is widened by the downscale factor to pre-filter
+    /// aliasing. `antialias=False` matches OpenCV `INTER_CUBIC` /
+    /// `INTER_LANCZOS4` (fixed kernel, faster at strong downscale, no AA).
+    /// `Nearest` and `Bilinear` are unaffected by the flag.
+    #[pyo3(signature = (width, height, interpolation="bilinear", antialias=true))]
     fn resize(
         &self,
         py: Python<'_>,
         width: usize,
         height: usize,
         interpolation: &str,
+        antialias: bool,
     ) -> PyResult<Self> {
         self.backing.ensure_host()?;
         self.require_u8("resize")?;
@@ -2419,7 +2426,7 @@ impl PyImageApi {
             let interp = parse_interpolation(interpolation)?;
             let out_size = ImageSize { width, height };
             self.run_into_owned_u8::<3, _>(py, out_size, |dst| {
-                kornia_imgproc::resize::resize_fast_rgb_aa(&src, dst, interp, true)
+                kornia_imgproc::resize::resize_fast_rgb_aa(&src, dst, interp, antialias)
             })
         } else {
             let out = resize_nearest(self.u8_elems(), src_h, src_w, height, width, c);

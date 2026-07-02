@@ -1,163 +1,594 @@
-//! GPU image → model-input preprocessing: resize (+ optional pad) and normalize a
-//! device-resident [`Image`] straight into a CHW `f32` [`Tensor`] in one CUDA kernel.
+//! Image → model-input preprocessing: resize (+ optional pad) and normalize an
+//! [`Image`] straight into a CHW `f32` [`Tensor`], on the **CPU** or, with the
+//! `cudarc` feature, in **one CUDA kernel** on a device-resident image.
 //!
 //! This is the step every CNN / transformer vision model needs before inference:
 //! take a camera frame of arbitrary size and produce the fixed `[1, 3, H, W]`
-//! CHW `f32` tensor the network expects, in `[0, 1]` RGB. It runs entirely on the
-//! GPU (kornia's [`CudaKernel`]) with no host round-trip — the source image
-//! already lives on the device (`image.to_cuda(&stream)`), and the output tensor
-//! is written in place so it can be reused frame to frame.
+//! CHW `f32` tensor the network expects. The resize fit, normalization, and pad
+//! value are configurable via [`PreprocessorBuilder`]:
+//! - **resize** — [`ResizeMode::Letterbox`] (aspect-preserving + pad) or
+//!   [`ResizeMode::Stretch`] (anisotropic, no pad).
+//! - **normalize** — [`Normalize::UnitScale`] (RGB `[0,1]`) or [`Normalize::MeanStd`]
+//!   (fold an ImageNet-style mean/std into the same pass).
+//! - **sampling** — `Nearest`, `Bilinear` (default), or `Lanczos` (3-lobe windowed
+//!   sinc), via the crate's shared [`InterpolationMode`] — the same filters
+//!   `resize`/`warp` use.
+//! - **channels** — [`run`](Preprocessor::run) is generic over the source channel
+//!   count: `Image<u8, 3>` (RGB) or `Image<u8, 4>` (RGBA — the alpha byte is
+//!   skipped), so a repacked RGBA camera surface reaches a CHW model tensor with no
+//!   separate RGBA→RGB pass.
 //!
-//! Enabled by the `cudarc` feature.
+//! [`build`](PreprocessorBuilder::build) makes a **CPU** preprocessor (host image
+//! → host tensor, always available). [`build_cuda`](PreprocessorBuilder::build_cuda)
+//! (feature `cudarc`) makes a **GPU** one that runs a fused kernel with no host
+//! round-trip — the source already lives on the device (`image.to_cuda(&stream)`).
 //!
-//! # Example
+//! # Example (CPU)
 //!
 //! ```no_run
-//! use std::sync::Arc;
-//! use cudarc::driver::CudaContext;
 //! use kornia_image::Image;
-//! use kornia_tensor::zeros_cuda;
-//! use kornia_imgproc::preprocess::Preprocessor;
+//! use kornia_tensor::Tensor;
+//! use kornia_imgproc::preprocess::{Preprocessor, Normalize, ResizeMode};
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! let stream = CudaContext::new(0)?.default_stream();
+//! let pre = Preprocessor::builder()
+//!     .mode(ResizeMode::Stretch)
+//!     .normalize(Normalize::imagenet())
+//!     .build()?;                                    // CPU preprocessor
 //!
-//! // Build once (compiles the kernel); reuse across frames.
-//! let pre = Preprocessor::letterbox(stream.clone())?;
-//!
-//! // Model input buffer, allocated once and reused.
-//! let mut input = zeros_cuda::<f32, 4>([1, 3, 640, 640], &stream)?;
-//!
-//! // Per frame: upload the camera image and preprocess into `input`.
-//! # let host: Image<u8, 3> = Image::from_size_val([1280, 720].into(), 0)?;
-//! let frame = Image(host.0.to_cuda(&stream)?);   // device-resident Image<u8, 3>
-//! pre.run(&frame, &mut input)?;                  // input is now [1,3,640,640] RGB [0,1]
+//! let frame = Image::<u8, 3>::from_size_val([1280, 720].into(), 0)?;
+//! let mut input = Tensor::<f32, 4>::from_shape_vec([1, 3, 640, 640], vec![0.0; 3 * 640 * 640])?;
+//! pre.run(&frame, &mut input)?;                     // input is [1,3,640,640], ImageNet-normalized
 //! # Ok(())
 //! # }
 //! ```
+//!
+//! For the GPU path build with [`build_cuda`](PreprocessorBuilder::build_cuda) and
+//! pass device-resident operands (`image.to_cuda`, `zeros_cuda`).
 
+#[cfg(feature = "cudarc")]
 use std::sync::Arc;
 
+#[cfg(feature = "cudarc")]
 use cudarc::driver::CudaStream;
-use kornia_image::Image;
-use kornia_tensor::{CudaError, CudaKernel, Tensor};
+use kornia_image::{Image, ImageError, ImageSize, InterpolationMode};
+use kornia_tensor::Tensor;
+
+use crate::resize::{
+    resize_fast_u8_aa, resize_normalize_to_tensor_u8_to_f32_bilinear,
+    resize_normalize_to_tensor_u8_to_f32_nearest, resize_normalize_to_tensor_u8_to_f32_separable,
+    NormalizeParams,
+};
+#[cfg(feature = "cudarc")]
+use kornia_tensor::{CudaError, CudaKernel};
 
 /// How the source image is fit into the model's output rectangle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResizeMode {
-    /// Aspect-preserving scale + grey (114) pad — the YOLO / XFeat convention.
-    /// The whole image is kept; the unused border is filled with grey.
+    /// Aspect-preserving scale + pad (grey 114 by default) — the YOLO / XFeat
+    /// convention. The whole image is kept; the unused border is filled.
     Letterbox,
     /// Anisotropic stretch to the full target, no padding — the RT-DETR / RF-DETR
     /// convention. The aspect ratio is not preserved.
     Stretch,
 }
 
-/// Errors from GPU preprocessing.
+/// How pixel values are normalized into the output `f32` tensor.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Normalize {
+    /// Scale `[0, 255]` → `[0, 1]` (divide by 255). The default.
+    UnitScale,
+    /// Per-channel `(v/255 - mean) / std` — e.g. ImageNet (see [`Normalize::imagenet`]).
+    /// Means/stds are in the `[0, 1]` domain, matching the torchvision convention.
+    MeanStd {
+        /// Per-channel mean subtracted after scaling to `[0, 1]`.
+        mean: [f32; 3],
+        /// Per-channel standard deviation divided out.
+        std: [f32; 3],
+    },
+}
+
+impl Normalize {
+    /// The standard ImageNet mean/std (RGB), matching torchvision.
+    pub fn imagenet() -> Self {
+        Normalize::MeanStd {
+            mean: [0.485, 0.456, 0.406],
+            std: [0.229, 0.224, 0.225],
+        }
+    }
+
+    /// Resolve to `(mean, inv_std)` in the `[0, 1]` domain. `UnitScale` is the
+    /// identity affine (mean 0, inv_std 1) so one code path handles both. A
+    /// non-finite or non-positive std would silently produce `inf`/`NaN` outputs,
+    /// so it is rejected here (surfaced by `build`/`build_cuda`).
+    fn mean_inv_std(self) -> Result<([f32; 3], [f32; 3]), PreprocessError> {
+        match self {
+            Normalize::UnitScale => Ok(([0.0; 3], [1.0; 3])),
+            Normalize::MeanStd { mean, std } => {
+                if std.iter().any(|s| !s.is_finite() || *s <= 0.0)
+                    || mean.iter().any(|m| !m.is_finite())
+                {
+                    return Err(PreprocessError::InvalidNormalize { mean, std });
+                }
+                Ok((mean, [1.0 / std[0], 1.0 / std[1], 1.0 / std[2]]))
+            }
+        }
+    }
+}
+
+/// Errors from preprocessing.
 #[derive(Debug, thiserror::Error)]
 pub enum PreprocessError {
     /// A CUDA error from kernel compilation or launch.
+    #[cfg(feature = "cudarc")]
     #[error("CUDA error: {0}")]
     Cuda(#[from] CudaError),
-    /// The source image is host-resident; call `image.to_cuda(&stream)` first.
-    #[error("source image is not device-resident (call `.to_cuda(&stream)` first)")]
+    /// A CUDA preprocessor was given a host-resident source image; call
+    /// `image.to_cuda(&stream)` first (or build a CPU preprocessor).
+    #[error("CUDA preprocessor requires a device-resident source image")]
     NotDeviceImage,
-    /// The destination tensor is host-resident; allocate it with `zeros_cuda`.
-    #[error("destination tensor is not device-resident")]
+    /// A CUDA preprocessor was given a host-resident destination tensor; allocate
+    /// it with `zeros_cuda` (or build a CPU preprocessor).
+    #[error("CUDA preprocessor requires a device-resident destination tensor")]
     NotDeviceTensor,
+    /// A CPU preprocessor was given a device-resident operand; use `build_cuda`.
+    #[error("CPU preprocessor requires host-resident operands (use build_cuda for device data)")]
+    NotHostData,
+    /// The source channel count is not 3 (RGB) or 4 (RGBA).
+    #[error("unsupported source channel count {0} (expected 3 or 4)")]
+    UnsupportedChannels(usize),
+    /// The destination tensor is not `[1, 3, H, W]` — the preprocessor writes
+    /// three channel planes, so any other leading dims would index out of bounds.
+    #[error("destination tensor must be [1, 3, H, W], got {0:?}")]
+    BadOutputShape([usize; 4]),
+    /// `Normalize::MeanStd` with a non-finite mean or a non-finite / non-positive
+    /// std, which would silently produce `inf`/`NaN` outputs.
+    #[error("invalid normalize: mean {mean:?} must be finite, std {std:?} must be finite and > 0")]
+    InvalidNormalize {
+        /// The rejected per-channel mean.
+        mean: [f32; 3],
+        /// The rejected per-channel std.
+        std: [f32; 3],
+    },
+    /// An error from the underlying resize kernels or scratch-image allocation.
+    #[error(transparent)]
+    Image(#[from] ImageError),
+    /// The sampling mode is not supported (only Nearest / Bilinear / Lanczos).
+    #[error("unsupported sampling mode {0:?} (expected Nearest, Bilinear, or Lanczos)")]
+    UnsupportedSampling(InterpolationMode),
+    /// A [`PitchedSurface`] whose pitch/len don't cover `width`×`height`, or
+    /// with a channel count other than 3/4.
+    #[cfg(feature = "cudarc")]
+    #[error("invalid pitched surface (need pitch >= width*channels and len >= pitch*height)")]
+    InvalidSurface,
+    /// Source or output dimensions exceed the kernel's 32-bit indexing (the CUDA
+    /// path indexes pixels as `int`). Unreachable on real hardware, guarded anyway.
+    #[cfg(feature = "cudarc")]
+    #[error("dimensions exceed the 32-bit CUDA kernel index limit")]
+    DimensionsTooLarge,
 }
 
-// 1-D grid over the `dst_w * dst_h` output pixels. The (ox, oy) pair is recovered
-// from the flat index — consecutive threads map to consecutive `ox`, so global
-// writes stay coalesced. Reads interleaved 3-byte RGB from linear device memory
-// with a hand-rolled bilinear sample (CUDA textures only support 1/2/4-channel
-// elements, not 3) and writes channel-planar (CHW) `f32` in `[0, 1]`.
+// The source→dst mapping for one call: a per-axis scale and pad offset, so
+// `src = (dst - pad) / scale`. Computed once and shared by the CPU and CUDA paths
+// so both produce identical geometry.
+#[derive(Clone, Copy)]
+struct Affine {
+    scale_x: f32,
+    scale_y: f32,
+    // The fractional pad offsets are consumed by the CUDA kernel's per-sample
+    // affine; the CPU path derives an integer content box from the scales.
+    #[cfg_attr(not(feature = "cudarc"), allow(dead_code))]
+    pad_x: f32,
+    #[cfg_attr(not(feature = "cudarc"), allow(dead_code))]
+    pad_y: f32,
+}
+
+impl Affine {
+    fn new(mode: ResizeMode, sw: usize, sh: usize, dw: usize, dh: usize) -> Self {
+        let (scale_x, scale_y, pad_x, pad_y) = match mode {
+            ResizeMode::Letterbox => {
+                let s = f32::min(dw as f32 / sw as f32, dh as f32 / sh as f32);
+                (
+                    s,
+                    s,
+                    (dw as f32 - sw as f32 * s) * 0.5,
+                    (dh as f32 - sh as f32 * s) * 0.5,
+                )
+            }
+            ResizeMode::Stretch => (dw as f32 / sw as f32, dh as f32 / sh as f32, 0.0, 0.0),
+        };
+        Self {
+            scale_x,
+            scale_y,
+            pad_x,
+            pad_y,
+        }
+    }
+}
+
+/// A device-resident **pitched** interleaved-u8 surface — the shape camera /
+/// NVMM buffers arrive in (rows padded to a hardware pitch), which a tight
+/// kornia [`Image`] cannot represent. Lets the fused GPU kernel consume the
+/// producer's pixels directly, with no repack pass.
+///
+/// `data` must hold at least `row_pitch * height` bytes; `row_pitch >=
+/// width * channels`. `channels` is 3 (RGB) or 4 (RGBA — alpha skipped).
+#[cfg(feature = "cudarc")]
+pub struct PitchedSurface<'a> {
+    /// Device buffer holding the pitched rows.
+    pub data: &'a cudarc::driver::CudaSlice<u8>,
+    /// Surface width in pixels.
+    pub width: usize,
+    /// Surface height in pixels.
+    pub height: usize,
+    /// Bytes per row (>= `width * channels`).
+    pub row_pitch: usize,
+    /// Interleaved bytes per pixel: 3 (RGB) or 4 (RGBA, alpha skipped).
+    pub channels: usize,
+}
+
+#[cfg(feature = "cudarc")]
+struct CudaBackend {
+    kernel: CudaKernel,
+    kernel_f16: CudaKernel,
+    stream: Arc<CudaStream>,
+}
+
+// 1-D grid over the `dst_w * dst_h` output pixels. Reads interleaved `src_bpp`-byte
+// pixels (3 = RGB, 4 = RGBA with the alpha byte skipped) with a hand-rolled
+// bilinear sample (CUDA textures only support 1/2/4-channel elements, not 3),
+// applies `(v/255 - mean) * inv_std` per channel, and writes
+// channel-planar (CHW) `f32`. One parameterized kernel covers every mode / format /
+// normalization — config is passed as launch args (single JIT compile). `src_pitch`
+// is a parameter for generality, but kornia `Image`s are tight, so the launcher
+// always passes `src_w * C`.
+#[cfg(feature = "cudarc")]
 const KERNEL_SRC: &str = r#"
-extern "C" __global__ void resize_pad_to_chw_rgb8(
-    const unsigned char* __restrict__ src,
-    float* __restrict__ dst,
+// One thin extern-C entry per (sampling mode × output dtype): `build_cuda`
+// compiles only the selected sampling variant (per-variant register footprint
+// — a single branching kernel measurably slowed the common bilinear case),
+// for both f32 and f16 outputs. All sampling/normalize logic lives in shared
+// __device__ helpers.
+
+__device__ __forceinline__ bool plan_pixel(
+    int i, int dst_w, int dst_h,
     float scale_x, float scale_y, float pad_x, float pad_y,
-    int src_w, int src_h, int src_pitch,
-    int dst_w, int dst_h
+    int src_w, int src_h,
+    float* sx, float* sy
 ) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    int pixels = dst_w * dst_h;
-    if (i >= pixels) return;
     int ox = i % dst_w;
     int oy = i / dst_w;
+    *sx = ((float)ox - pad_x) / scale_x;
+    *sy = ((float)oy - pad_y) / scale_y;
+    return !(*sx < 0.0f || *sy < 0.0f || *sx >= (float)src_w || *sy >= (float)src_h);
+}
 
-    float sx = ((float)ox - pad_x) / scale_x;
-    float sy = ((float)oy - pad_y) / scale_y;
-
-    if (sx < 0.0f || sy < 0.0f || sx >= (float)src_w || sy >= (float)src_h) {
-        float g = 114.0f / 255.0f;
-        dst[i] = g; dst[pixels + i] = g; dst[2*pixels + i] = g;
-        return;
+// f32 -> IEEE binary16 bits, round-to-nearest-even. Manual conversion so the
+// kernel has no cuda_fp16.h dependency (NVRTC-safe everywhere).
+__device__ __forceinline__ unsigned short f2h(float f) {
+    unsigned int x = __float_as_uint(f);
+    unsigned int sign = (x >> 16) & 0x8000u;
+    int exp = (int)((x >> 23) & 0xFFu) - 127 + 15;
+    unsigned int man = x & 0x7FFFFFu;
+    if (exp >= 31) {
+        // Inf stays Inf; NaN keeps a nonzero (quiet) mantissa instead of
+        // collapsing to Inf.
+        unsigned int nan_bit = (man != 0u) ? 0x0200u : 0u;
+        return (unsigned short)(sign | 0x7C00u | nan_bit);
     }
+    if (exp <= 0) {
+        if (exp < -10) return (unsigned short)sign;
+        man |= 0x800000u;
+        unsigned int shift = (unsigned int)(14 - exp);
+        unsigned short h = (unsigned short)(sign | (man >> shift));
+        unsigned int rem = man & ((1u << shift) - 1u);
+        unsigned int mid = 1u << (shift - 1u);
+        if (rem > mid || (rem == mid && (h & 1u))) h++;
+        return h;
+    }
+    unsigned short h = (unsigned short)(sign | ((unsigned int)exp << 10) | (man >> 13));
+    unsigned int rem = man & 0x1FFFu;
+    if (rem > 0x1000u || (rem == 0x1000u && (h & 1u))) h++;
+    return h;
+}
 
-    // Bilinear with clamp-to-edge (texel-center convention).
+// 1-D Lanczos-3 weight — same form as the CPU side, so the two backends stay
+// numerically comparable.
+__device__ __forceinline__ float lanczos_w(float d) {
+    float ad = fabsf(d);
+    if (ad < 1e-6f) return 1.0f;
+    if (ad >= 3.0f) return 0.0f;
+    float pd = 3.14159265358979f * d;
+    return 3.0f * sinf(pd) * sinf(pd / 3.0f) / (pd * pd);
+}
+
+// ── samplers: raw (0..255-scale) rgb for one destination pixel ──
+
+__device__ __forceinline__ void sample_bilinear(
+    const unsigned char* __restrict__ src, float sx, float sy,
+    int src_w, int src_h, int src_pitch, int src_bpp, float px[3]
+) {
+    // Bilinear: clamp-to-edge taps (mirrors interpolation::bilinear).
     int x0 = (int)floorf(sx), y0 = (int)floorf(sy);
     float ax = sx - (float)x0, ay = sy - (float)y0;
     int x1 = min(x0 + 1, src_w - 1), y1 = min(y0 + 1, src_h - 1);
     x0 = max(x0, 0); y0 = max(y0, 0);
-
     const unsigned char* r0 = src + (long)y0 * src_pitch;
     const unsigned char* r1 = src + (long)y1 * src_pitch;
     #pragma unroll
     for (int c = 0; c < 3; ++c) {
-        float v00 = (float)r0[x0 * 3 + c], v10 = (float)r0[x1 * 3 + c];
-        float v01 = (float)r1[x0 * 3 + c], v11 = (float)r1[x1 * 3 + c];
+        float v00 = (float)r0[x0 * src_bpp + c], v10 = (float)r0[x1 * src_bpp + c];
+        float v01 = (float)r1[x0 * src_bpp + c], v11 = (float)r1[x1 * src_bpp + c];
         float top = v00 + (v10 - v00) * ax;
         float bot = v01 + (v11 - v01) * ax;
-        dst[c * pixels + i] = (top + (bot - top) * ay) / 255.0f;
+        px[c] = top + (bot - top) * ay;
     }
 }
+
+__device__ __forceinline__ void sample_nearest(
+    const unsigned char* __restrict__ src, float sx, float sy,
+    int src_w, int src_h, int src_pitch, int src_bpp, float px[3]
+) {
+    // Nearest: round + clamp-to-edge (mirrors interpolation::nearest).
+    int xn = min(max((int)roundf(sx), 0), src_w - 1);
+    int yn = min(max((int)roundf(sy), 0), src_h - 1);
+    const unsigned char* p = src + (long)yn * src_pitch + xn * src_bpp;
+    px[0] = (float)p[0]; px[1] = (float)p[1]; px[2] = (float)p[2];
+}
+
+__device__ __forceinline__ void sample_lanczos(
+    const unsigned char* __restrict__ src, float sx, float sy,
+    int src_w, int src_h, int src_pitch, int src_bpp, float px[3]
+) {
+    // Lanczos-3: 6x6 windowed sinc, clamp-to-edge taps, weights renormalized
+    // by their sum (mirrors interpolation::lanczos).
+    int x0 = (int)floorf(sx), y0 = (int)floorf(sy);
+    float acc[3] = { 0.0f, 0.0f, 0.0f };
+    float wsum = 0.0f;
+    for (int j = -2; j <= 3; ++j) {
+        int yj = y0 + j;
+        float wy = lanczos_w(sy - (float)yj);
+        int yc = min(max(yj, 0), src_h - 1);
+        const unsigned char* r = src + (long)yc * src_pitch;
+        for (int ii = -2; ii <= 3; ++ii) {
+            int xi = x0 + ii;
+            float w = wy * lanczos_w(sx - (float)xi);
+            int xc = min(max(xi, 0), src_w - 1);
+            #pragma unroll
+            for (int c = 0; c < 3; ++c) acc[c] += w * (float)r[xc * src_bpp + c];
+            wsum += w;
+        }
+    }
+    px[0] = acc[0] / wsum; px[1] = acc[1] / wsum; px[2] = acc[2] / wsum;
+}
+
+// ── entries: KERNEL(sampler, suffix) × output writer ──
+
+#define ARGS \
+    float scale_x, float scale_y, float pad_x, float pad_y, \
+    int src_w, int src_h, int src_pitch, int src_bpp, \
+    int dst_w, int dst_h, \
+    float m0, float m1, float m2, \
+    float is0, float is1, float is2, \
+    float pad_value
+
+#define BODY(SAMPLER, STORE) \
+    int i = blockIdx.x * blockDim.x + threadIdx.x; \
+    int pixels = dst_w * dst_h; \
+    if (i >= pixels) return; \
+    float sx, sy; \
+    float px[3]; \
+    if (plan_pixel(i, dst_w, dst_h, scale_x, scale_y, pad_x, pad_y, src_w, src_h, &sx, &sy)) { \
+        SAMPLER(src, sx, sy, src_w, src_h, src_pitch, src_bpp, px); \
+    } else { \
+        px[0] = pad_value; px[1] = pad_value; px[2] = pad_value; \
+    } \
+    float o0 = (px[0] / 255.0f - m0) * is0; \
+    float o1 = (px[1] / 255.0f - m1) * is1; \
+    float o2 = (px[2] / 255.0f - m2) * is2; \
+    STORE(o0, o1, o2)
+
+#define STORE_F32(o0, o1, o2) \
+    dst[i] = o0; dst[pixels + i] = o1; dst[2 * pixels + i] = o2;
+#define STORE_F16(o0, o1, o2) \
+    dst[i] = f2h(o0); dst[pixels + i] = f2h(o1); dst[2 * pixels + i] = f2h(o2);
+
+extern "C" __global__ void resize_normalize_to_chw_bilinear(
+    const unsigned char* __restrict__ src, float* __restrict__ dst, ARGS
+) { BODY(sample_bilinear, STORE_F32) }
+
+extern "C" __global__ void resize_normalize_to_chw_nearest(
+    const unsigned char* __restrict__ src, float* __restrict__ dst, ARGS
+) { BODY(sample_nearest, STORE_F32) }
+
+extern "C" __global__ void resize_normalize_to_chw_lanczos(
+    const unsigned char* __restrict__ src, float* __restrict__ dst, ARGS
+) { BODY(sample_lanczos, STORE_F32) }
+
+extern "C" __global__ void resize_normalize_to_chw_bilinear_f16(
+    const unsigned char* __restrict__ src, unsigned short* __restrict__ dst, ARGS
+) { BODY(sample_bilinear, STORE_F16) }
+
+extern "C" __global__ void resize_normalize_to_chw_nearest_f16(
+    const unsigned char* __restrict__ src, unsigned short* __restrict__ dst, ARGS
+) { BODY(sample_nearest, STORE_F16) }
+
+extern "C" __global__ void resize_normalize_to_chw_lanczos_f16(
+    const unsigned char* __restrict__ src, unsigned short* __restrict__ dst, ARGS
+) { BODY(sample_lanczos, STORE_F16) }
 "#;
 
-/// GPU image-to-tensor preprocessor: resize (+ optional pad) + normalize.
+/// Builder for a [`Preprocessor`]: pick the resize fit, normalization, and pad
+/// value, then [`build`](Self::build) (CPU) or [`build_cuda`](Self::build_cuda).
 ///
-/// Built once for a [`ResizeMode`] (compiles the CUDA kernel for the device
-/// behind its stream), then applied to any number of frames of any resolution via
-/// [`run`](Self::run). It owns only the JIT-compiled kernel and its stream — no
-/// per-frame buffers — so a single instance handles every input size and any
-/// model size (the target H/W is read from the destination tensor each call).
-///
-/// The output is RGB in `[0, 1]`, CHW (`[1, 3, H, W]`). For models that expect a
-/// further mean/std normalization (e.g. ImageNet), apply it as a second step on
-/// the resulting tensor.
-pub struct Preprocessor {
-    kernel: CudaKernel,
-    stream: Arc<CudaStream>,
+/// Defaults: [`ResizeMode::Letterbox`], [`Normalize::UnitScale`], pad `114`.
+#[derive(Debug, Clone, Copy)]
+pub struct PreprocessorBuilder {
     mode: ResizeMode,
+    normalize: Normalize,
+    pad_value: u8,
+    sampling: InterpolationMode,
 }
 
-impl Preprocessor {
-    /// Build a preprocessor that **letterboxes** (aspect-preserving resize + grey
-    /// pad) on `stream`. Compiles the kernel once (nvrtc JIT; CUDA caches the PTX).
-    pub fn letterbox(stream: Arc<CudaStream>) -> Result<Self, PreprocessError> {
-        Self::with_mode(stream, ResizeMode::Letterbox)
+impl Default for PreprocessorBuilder {
+    fn default() -> Self {
+        Self {
+            mode: ResizeMode::Letterbox,
+            normalize: Normalize::UnitScale,
+            pad_value: 114,
+            sampling: InterpolationMode::Bilinear,
+        }
+    }
+}
+
+impl PreprocessorBuilder {
+    /// A builder with the defaults (letterbox, unit-scale, pad 114).
+    pub fn new() -> Self {
+        Self::default()
     }
 
-    /// Build a preprocessor that **stretches** (anisotropic resize, no pad) on
-    /// `stream` — for models trained on a square stretch (e.g. RF-DETR).
-    pub fn stretch(stream: Arc<CudaStream>) -> Result<Self, PreprocessError> {
-        Self::with_mode(stream, ResizeMode::Stretch)
+    /// Set the resize fit ([`ResizeMode`]).
+    pub fn mode(mut self, mode: ResizeMode) -> Self {
+        self.mode = mode;
+        self
     }
 
-    /// Build a preprocessor for an explicit [`ResizeMode`] on `stream`.
-    pub fn with_mode(stream: Arc<CudaStream>, mode: ResizeMode) -> Result<Self, PreprocessError> {
-        let ctx = stream.context();
-        let kernel = CudaKernel::compile(ctx, KERNEL_SRC, "resize_pad_to_chw_rgb8")?;
-        Ok(Self {
-            kernel,
-            stream,
-            mode,
+    /// Set the normalization ([`Normalize`]).
+    pub fn normalize(mut self, normalize: Normalize) -> Self {
+        self.normalize = normalize;
+        self
+    }
+
+    /// Set the letterbox pad value (`[0, 255]`, applied before normalization).
+    /// Ignored by [`ResizeMode::Stretch`], which never pads.
+    pub fn pad_value(mut self, pad_value: u8) -> Self {
+        self.pad_value = pad_value;
+        self
+    }
+
+    /// Set the resampling filter ([`InterpolationMode`]): `Nearest`, `Bilinear`
+    /// (the default), or `Lanczos` (3-lobe windowed sinc) — the three filters in
+    /// common CV/ML use. `Bicubic` is not implemented and is rejected at build.
+    pub fn sampling(mut self, sampling: InterpolationMode) -> Self {
+        self.sampling = sampling;
+        self
+    }
+
+    /// Build a **CPU** preprocessor (host image → host tensor). Always available.
+    pub fn build(self) -> Result<Preprocessor, PreprocessError> {
+        if !matches!(
+            self.sampling,
+            InterpolationMode::Nearest | InterpolationMode::Bilinear | InterpolationMode::Lanczos
+        ) {
+            return Err(PreprocessError::UnsupportedSampling(self.sampling));
+        }
+        let (mean, inv_std) = self.normalize.mean_inv_std()?;
+        Ok(Preprocessor {
+            mode: self.mode,
+            sampling: self.sampling,
+            mean,
+            inv_std,
+            pad_value: self.pad_value as f32,
+            #[cfg(feature = "cudarc")]
+            cuda: None,
         })
     }
 
-    /// The CUDA stream this preprocessor launches on.
-    pub fn stream(&self) -> &Arc<CudaStream> {
-        &self.stream
+    /// Build a **CUDA** preprocessor on `stream` (compiles the kernel once). The
+    /// [`run`](Preprocessor::run) operands must then be device-resident.
+    #[cfg(feature = "cudarc")]
+    pub fn build_cuda(self, stream: Arc<CudaStream>) -> Result<Preprocessor, PreprocessError> {
+        if !matches!(
+            self.sampling,
+            InterpolationMode::Nearest | InterpolationMode::Bilinear | InterpolationMode::Lanczos
+        ) {
+            return Err(PreprocessError::UnsupportedSampling(self.sampling));
+        }
+        let (entry, entry_f16) = match self.sampling {
+            InterpolationMode::Nearest => (
+                "resize_normalize_to_chw_nearest",
+                "resize_normalize_to_chw_nearest_f16",
+            ),
+            InterpolationMode::Bilinear => (
+                "resize_normalize_to_chw_bilinear",
+                "resize_normalize_to_chw_bilinear_f16",
+            ),
+            InterpolationMode::Lanczos => (
+                "resize_normalize_to_chw_lanczos",
+                "resize_normalize_to_chw_lanczos_f16",
+            ),
+            // Rejected by the sampling validation above.
+            other => return Err(PreprocessError::UnsupportedSampling(other)),
+        };
+        let kernel = CudaKernel::compile(stream.context(), KERNEL_SRC, entry)?;
+        let kernel_f16 = CudaKernel::compile(stream.context(), KERNEL_SRC, entry_f16)?;
+        let (mean, inv_std) = self.normalize.mean_inv_std()?;
+        Ok(Preprocessor {
+            mode: self.mode,
+            sampling: self.sampling,
+            mean,
+            inv_std,
+            pad_value: self.pad_value as f32,
+            cuda: Some(CudaBackend {
+                kernel,
+                kernel_f16,
+                stream,
+            }),
+        })
+    }
+}
+
+/// Image-to-tensor preprocessor: resize (+ optional pad) + normalize, on the CPU
+/// or (feature `cudarc`) the GPU.
+///
+/// Built once via [`Preprocessor::builder`], then applied to any number of frames
+/// of any resolution via [`run`](Self::run) — the target H/W is read from the
+/// destination tensor each call, so one instance handles every model size.
+pub struct Preprocessor {
+    mode: ResizeMode,
+    sampling: InterpolationMode,
+    mean: [f32; 3],
+    inv_std: [f32; 3],
+    pad_value: f32,
+    #[cfg(feature = "cudarc")]
+    cuda: Option<CudaBackend>,
+}
+
+fn validate_channels<const C: usize>() -> Result<(), PreprocessError> {
+    if C != 3 && C != 4 {
+        return Err(PreprocessError::UnsupportedChannels(C));
+    }
+    Ok(())
+}
+
+fn validate_dst_shape(shape: [usize; 4]) -> Result<(), PreprocessError> {
+    if shape[0] != 1 || shape[1] != 3 {
+        return Err(PreprocessError::BadOutputShape(shape));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "cudarc")]
+impl PitchedSurface<'_> {
+    fn validate(&self) -> Result<(), PreprocessError> {
+        if self.channels != 3 && self.channels != 4 {
+            return Err(PreprocessError::UnsupportedChannels(self.channels));
+        }
+        if self.row_pitch < self.width * self.channels
+            || self.data.len() < self.row_pitch * self.height
+            || self.width == 0
+            || self.height == 0
+        {
+            return Err(PreprocessError::InvalidSurface);
+        }
+        Ok(())
+    }
+}
+
+impl Preprocessor {
+    /// Start a [`PreprocessorBuilder`].
+    pub fn builder() -> PreprocessorBuilder {
+        PreprocessorBuilder::new()
     }
 
     /// The resize mode this preprocessor applies.
@@ -165,62 +596,729 @@ impl Preprocessor {
         self.mode
     }
 
-    /// Resize `src` into `dst` (`[1, 3, H, W]` CHW `f32`, RGB in `[0, 1]`).
+    /// The CUDA stream this preprocessor launches on, or `None` for a CPU one.
+    #[cfg(feature = "cudarc")]
+    pub fn stream(&self) -> Option<&Arc<CudaStream>> {
+        self.cuda.as_ref().map(|c| &c.stream)
+    }
+
+    /// Build a **CUDA** letterbox preprocessor (unit-scale, pad 114) on `stream`.
+    #[cfg(feature = "cudarc")]
+    pub fn letterbox(stream: Arc<CudaStream>) -> Result<Self, PreprocessError> {
+        PreprocessorBuilder::new()
+            .mode(ResizeMode::Letterbox)
+            .build_cuda(stream)
+    }
+
+    /// Build a **CUDA** stretch preprocessor (unit-scale) on `stream`.
+    #[cfg(feature = "cudarc")]
+    pub fn stretch(stream: Arc<CudaStream>) -> Result<Self, PreprocessError> {
+        PreprocessorBuilder::new()
+            .mode(ResizeMode::Stretch)
+            .build_cuda(stream)
+    }
+
+    /// Build a **CUDA** preprocessor for an explicit [`ResizeMode`] (unit-scale, pad 114).
+    #[cfg(feature = "cudarc")]
+    pub fn with_mode(stream: Arc<CudaStream>, mode: ResizeMode) -> Result<Self, PreprocessError> {
+        PreprocessorBuilder::new().mode(mode).build_cuda(stream)
+    }
+
+    /// Resize + normalize `src` into `dst` (`[1, 3, H, W]` CHW `f32`).
     ///
-    /// The target H/W is read from `dst`'s shape, so one preprocessor handles any
-    /// model size. Both `src` and `dst` must be device-resident (the image via
-    /// `to_cuda`, the tensor via `zeros_cuda`).
+    /// Generic over the source channel count: `C = 3` (RGB) or `C = 4` (RGBA — the
+    /// alpha byte is skipped). A CUDA preprocessor requires device-resident operands
+    /// and runs one fused kernel; a CPU preprocessor requires host-resident operands.
     ///
     /// # Errors
     ///
-    /// [`PreprocessError::NotDeviceImage`] / [`PreprocessError::NotDeviceTensor`]
-    /// if either operand is host-resident, or [`PreprocessError::Cuda`] on a CUDA
-    /// launch failure.
-    pub fn run(&self, src: &Image<u8, 3>, dst: &mut Tensor<f32, 4>) -> Result<(), PreprocessError> {
+    /// [`PreprocessError::UnsupportedChannels`] if `C` is not 3 or 4;
+    /// [`PreprocessError::NotDeviceImage`] / [`PreprocessError::NotDeviceTensor`] if a
+    /// CUDA preprocessor gets host operands; [`PreprocessError::NotHostData`] if a CPU
+    /// preprocessor gets device operands; [`PreprocessError::Cuda`] on a launch failure.
+    pub fn run<const C: usize>(
+        &self,
+        src: &Image<u8, C>,
+        dst: &mut Tensor<f32, 4>,
+    ) -> Result<(), PreprocessError> {
+        validate_channels::<C>()?;
+        // Both paths write three channel planes of dst_h*dst_w — any other
+        // leading dims would run past the buffer (an OOB device write on CUDA).
+        validate_dst_shape(dst.shape)?;
         let (dst_h, dst_w) = (dst.shape[2], dst.shape[3]);
-        let (src_w, src_h) = (src.width(), src.height());
+        let a = Affine::new(self.mode, src.width(), src.height(), dst_w, dst_h);
 
-        let (scale_x, scale_y, pad_x, pad_y) = match self.mode {
-            ResizeMode::Letterbox => {
-                let s = f32::min(dst_w as f32 / src_w as f32, dst_h as f32 / src_h as f32);
-                (
-                    s,
-                    s,
-                    (dst_w as f32 - src_w as f32 * s) * 0.5,
-                    (dst_h as f32 - src_h as f32 * s) * 0.5,
-                )
-            }
-            ResizeMode::Stretch => (
-                dst_w as f32 / src_w as f32,
-                dst_h as f32 / src_h as f32,
-                0.0,
-                0.0,
-            ),
+        #[cfg(feature = "cudarc")]
+        if let Some(cuda) = &self.cuda {
+            return self.run_cuda::<C>(cuda, src, dst, &a);
+        }
+        self.run_cpu::<C>(src, dst, &a)
+    }
+
+    // Host path built on the crate's OPTIMIZED resize kernels, FUSED FIRST:
+    // every RGB+bilinear case runs the crate's fused resize+normalize+CHW
+    // kernel (`resize_normalize_to_tensor_u8_to_f32_bilinear`) in one f32
+    // pass; the remaining cases (Nearest / AA-Lanczos, RGBA) ride
+    // `resize_fast_u8_aa` (NEON-accelerated) plus a fused scale+bias
+    // normalize/CHW placement. Note the CPU resampler is antialiased on
+    // downscale, so CPU and CUDA outputs may differ at the sub-pixel level
+    // (CPU is the higher-quality reference).
+    fn run_cpu<const C: usize>(
+        &self,
+        src: &Image<u8, C>,
+        dst: &mut Tensor<f32, 4>,
+        a: &Affine,
+    ) -> Result<(), PreprocessError> {
+        // CPU preprocessor requires host-resident operands.
+        #[cfg(feature = "cudarc")]
+        if src.0.as_cudaslice().is_some() || dst.as_cudaslice().is_some() {
+            return Err(PreprocessError::NotHostData);
+        }
+
+        let (dst_h, dst_w) = (dst.shape[2], dst.shape[3]);
+        let pixels = dst_h * dst_w;
+        // Fused normalize as one FMA: `out = raw_u8 * scale + bias`.
+        let params = NormalizeParams::<3> {
+            scale: [
+                self.inv_std[0] / 255.0,
+                self.inv_std[1] / 255.0,
+                self.inv_std[2] / 255.0,
+            ],
+            bias: [
+                -self.mean[0] * self.inv_std[0],
+                -self.mean[1] * self.inv_std[1],
+                -self.mean[2] * self.inv_std[2],
+            ],
         };
 
-        let src_slice = src.as_cudaslice().ok_or(PreprocessError::NotDeviceImage)?;
+        // Content box: the letterboxed region the image scales into (whole
+        // output for Stretch). Integer placement, centred like the CUDA affine.
+        // When the pad is fractional the box is rounded to whole pixels, so the
+        // content/pad boundary may sit one pixel from where the GPU kernel
+        // (which pads per-sample on the fractional affine) puts it.
+        let (cw, ch) = match self.mode {
+            ResizeMode::Stretch => (dst_w, dst_h),
+            ResizeMode::Letterbox => (
+                ((src.width() as f32 * a.scale_x).round() as usize).clamp(1, dst_w),
+                ((src.height() as f32 * a.scale_y).round() as usize).clamp(1, dst_h),
+            ),
+        };
+        let (px0, py0) = ((dst_w - cw) / 2, (dst_h - ch) / 2);
+        let padded = px0 != 0 || py0 != 0 || cw != dst_w || ch != dst_h;
+        let pad = core::array::from_fn::<f32, 3, _>(|c| {
+            self.pad_value * params.scale[c] + params.bias[c]
+        });
+
+        // FUSED FIRST: every RGB case — bilinear, nearest, AA lanczos — goes
+        // through a fused resize+normalize+CHW kernel: one f32 pass, no
+        // intermediate u8 requantization. Stretch writes dst directly;
+        // Letterbox fuses into the content box, then places it (row memcpy).
+        if C == 3 {
+            let (sw, sh) = (src.width(), src.height());
+            let sbuf = src.0.as_slice();
+            let fused = |out: &mut [f32], w: usize, h: usize| match self.sampling {
+                InterpolationMode::Bilinear => {
+                    resize_normalize_to_tensor_u8_to_f32_bilinear(sbuf, sw, sh, out, w, h, &params)
+                }
+                InterpolationMode::Nearest => {
+                    resize_normalize_to_tensor_u8_to_f32_nearest(sbuf, sw, sh, out, w, h, &params)
+                }
+                // AA lanczos: torchvision-parity chain, fused through the
+                // separable engine's SIMD horizontal pass.
+                InterpolationMode::Lanczos => resize_normalize_to_tensor_u8_to_f32_separable(
+                    sbuf,
+                    sw,
+                    sh,
+                    out,
+                    w,
+                    h,
+                    &params,
+                    InterpolationMode::Lanczos,
+                    true,
+                ),
+                // Rejected at build.
+                other => Err(ImageError::UnsupportedInterpolation(other)),
+            };
+            if !padded {
+                fused(dst.as_slice_mut(), dst_w, dst_h)?;
+                return Ok(());
+            }
+            let mut content = vec![0.0f32; 3 * ch * cw];
+            fused(&mut content, cw, ch)?;
+            let dst_buf = dst.as_slice_mut();
+            for (c, &pad_c) in pad.iter().enumerate() {
+                let plane = &mut dst_buf[c * pixels..(c + 1) * pixels];
+                plane.fill(pad_c);
+                for y in 0..ch {
+                    let row = &content[c * ch * cw + y * cw..c * ch * cw + (y + 1) * cw];
+                    plane[(py0 + y) * dst_w + px0..(py0 + y) * dst_w + px0 + cw]
+                        .copy_from_slice(row);
+                }
+            }
+            return Ok(());
+        }
+
+        // General path (RGBA):
+        // 1) SIMD resample to the content size (NEON-accelerated fast resizer).
+        let mut scratch = Image::<u8, C>::from_size_val(
+            ImageSize {
+                width: cw,
+                height: ch,
+            },
+            0,
+        )?;
+        resize_fast_u8_aa(src, &mut scratch, self.sampling, true)?;
+
+        // 2) Pad fill + fused normalize/CHW placement of the content box.
+        let sbuf = scratch.0.as_slice();
+        let dst_buf = dst.as_slice_mut();
+        for (c, &pad_c) in pad.iter().enumerate() {
+            let plane = &mut dst_buf[c * pixels..(c + 1) * pixels];
+            if padded {
+                plane.fill(pad_c);
+            }
+            for y in 0..ch {
+                let row = &sbuf[y * cw * C..];
+                let out = &mut plane[(py0 + y) * dst_w + px0..];
+                for x in 0..cw {
+                    out[x] = row[x * C + c] as f32 * params.scale[c] + params.bias[c];
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "cudarc")]
+    fn run_cuda<const C: usize>(
+        &self,
+        cuda: &CudaBackend,
+        src: &Image<u8, C>,
+        dst: &mut Tensor<f32, 4>,
+        a: &Affine,
+    ) -> Result<(), PreprocessError> {
+        let (src_w, src_h) = (src.width(), src.height());
+        let src_slice = src
+            .0
+            .as_cudaslice()
+            .ok_or(PreprocessError::NotDeviceImage)?;
+        self.launch_cuda(
+            cuda,
+            &cuda.kernel,
+            src_slice,
+            src_w,
+            src_h,
+            src_w * C,
+            C,
+            dst,
+            a,
+        )
+    }
+
+    #[cfg(feature = "cudarc")]
+    /// [`run`](Self::run), but writing a **half-precision** (`f16`) CHW tensor —
+    /// for fp16 TensorRT engines: halves output traffic on a memory-bound op and
+    /// removes the cast pass before inference. CUDA preprocessors only;
+    /// round-to-nearest-even conversion in-kernel.
+    pub fn run_f16<const C: usize>(
+        &self,
+        src: &Image<u8, C>,
+        dst: &mut Tensor<half::f16, 4>,
+    ) -> Result<(), PreprocessError> {
+        validate_channels::<C>()?;
+        validate_dst_shape(dst.shape)?;
+        let cuda = self.cuda.as_ref().ok_or(PreprocessError::NotDeviceImage)?;
+        let (src_w, src_h) = (src.width(), src.height());
+        let a = Affine::new(self.mode, src_w, src_h, dst.shape[3], dst.shape[2]);
+        let src_slice = src
+            .0
+            .as_cudaslice()
+            .ok_or(PreprocessError::NotDeviceImage)?;
+        self.launch_cuda(
+            cuda,
+            &cuda.kernel_f16,
+            src_slice,
+            src_w,
+            src_h,
+            src_w * C,
+            C,
+            dst,
+            &a,
+        )
+    }
+
+    #[cfg(feature = "cudarc")]
+    /// Preprocess a device-resident **pitched** surface (camera / NVMM buffer)
+    /// straight into the CHW tensor — resize + normalize + (RGBA→)RGB in the
+    /// same single fused kernel, no repack pass. CUDA preprocessors only.
+    ///
+    /// The resize geometry is computed from the surface's `width`×`height`
+    /// exactly as [`run`](Self::run) does from an image's.
+    pub fn run_surface(
+        &self,
+        src: &PitchedSurface<'_>,
+        dst: &mut Tensor<f32, 4>,
+    ) -> Result<(), PreprocessError> {
+        src.validate()?;
+        validate_dst_shape(dst.shape)?;
+        let cuda = self.cuda.as_ref().ok_or(PreprocessError::NotDeviceImage)?;
+        let a = Affine::new(self.mode, src.width, src.height, dst.shape[3], dst.shape[2]);
+        self.launch_cuda(
+            cuda,
+            &cuda.kernel,
+            src.data,
+            src.width,
+            src.height,
+            src.row_pitch,
+            src.channels,
+            dst,
+            &a,
+        )
+    }
+
+    #[cfg(feature = "cudarc")]
+    /// [`run_surface`](Self::run_surface) writing a half-precision tensor — the
+    /// full camera-to-fp16-engine path (pitched NVMM in, fp16 CHW out) in one
+    /// fused kernel.
+    pub fn run_surface_f16(
+        &self,
+        src: &PitchedSurface<'_>,
+        dst: &mut Tensor<half::f16, 4>,
+    ) -> Result<(), PreprocessError> {
+        src.validate()?;
+        validate_dst_shape(dst.shape)?;
+        let cuda = self.cuda.as_ref().ok_or(PreprocessError::NotDeviceImage)?;
+        let a = Affine::new(self.mode, src.width, src.height, dst.shape[3], dst.shape[2]);
+        self.launch_cuda(
+            cuda,
+            &cuda.kernel_f16,
+            src.data,
+            src.width,
+            src.height,
+            src.row_pitch,
+            src.channels,
+            dst,
+            &a,
+        )
+    }
+
+    #[cfg(feature = "cudarc")]
+    #[allow(clippy::too_many_arguments)]
+    fn launch_cuda<T: cudarc::driver::DeviceRepr + cudarc::driver::ValidAsZeroBits + 'static>(
+        &self,
+        cuda: &CudaBackend,
+        kernel: &CudaKernel,
+        src_slice: &cudarc::driver::CudaSlice<u8>,
+        src_w: usize,
+        src_h: usize,
+        src_pitch: usize,
+        src_bpp: usize,
+        dst: &mut Tensor<T, 4>,
+        a: &Affine,
+    ) -> Result<(), PreprocessError> {
+        let (dst_h, dst_w) = (dst.shape[2], dst.shape[3]);
+        // The kernel indexes pixels as `int`; keep every dim + the pixel count
+        // within i32 so the `as i32` / `as u32` launch args never truncate.
+        let lim = i32::MAX as usize;
+        if src_w > lim || src_h > lim || src_pitch > lim || dst_w.saturating_mul(dst_h) > lim {
+            return Err(PreprocessError::DimensionsTooLarge);
+        }
         let dst_slice = dst
             .as_cudaslice_mut()
             .ok_or(PreprocessError::NotDeviceTensor)?;
 
-        let (sw, sh, sp) = (src_w as i32, src_h as i32, (src_w * 3) as i32);
+        let (sw, sh, sp, bpp) = (src_w as i32, src_h as i32, src_pitch as i32, src_bpp as i32);
         let (dw, dh) = (dst_w as i32, dst_h as i32);
         let total = (dst_w * dst_h) as u32;
+        let ([m0, m1, m2], [is0, is1, is2]) = (self.mean, self.inv_std);
+        let pv = self.pad_value;
 
-        self.kernel
-            .launch_builder(&self.stream)
+        let _ = cuda;
+        kernel
+            .launch_builder(&cuda.stream)
             .arg(src_slice)
             .arg(dst_slice)
-            .arg(&scale_x)
-            .arg(&scale_y)
-            .arg(&pad_x)
-            .arg(&pad_y)
+            .arg(&a.scale_x)
+            .arg(&a.scale_y)
+            .arg(&a.pad_x)
+            .arg(&a.pad_y)
             .arg(&sw)
             .arg(&sh)
             .arg(&sp)
+            .arg(&bpp)
             .arg(&dw)
             .arg(&dh)
+            .arg(&m0)
+            .arg(&m1)
+            .arg(&m2)
+            .arg(&is0)
+            .arg(&is1)
+            .arg(&is2)
+            .arg(&pv)
             .launch_1d(total)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kornia_image::{Image, ImageSize};
+
+    fn host_solid<const C: usize>(w: usize, h: usize, px: [u8; C]) -> Image<u8, C> {
+        let data: Vec<u8> = (0..w * h).flat_map(|_| px).collect();
+        Image::<u8, C>::new(
+            ImageSize {
+                width: w,
+                height: h,
+            },
+            data,
+        )
+        .unwrap()
+    }
+
+    fn host_dst(h: usize, w: usize) -> Tensor<f32, 4> {
+        Tensor::<f32, 4>::from_shape_vec([1, 3, h, w], vec![0.0; 3 * h * w]).unwrap()
+    }
+
+    // A deterministic non-solid image (per-pixel gradient) for resampling tests.
+    #[cfg(feature = "cudarc")]
+    fn host_gradient<const C: usize>(w: usize, h: usize) -> Image<u8, C> {
+        let data: Vec<u8> = (0..h)
+            .flat_map(|y| {
+                (0..w).flat_map(move |x| {
+                    // Smooth ramp (no wraparound) so band comparisons between
+                    // differently-aligned resamplers stay meaningful.
+                    (0..C).map(move |c| {
+                        ((x * 127 / (w - 1) + y * 127 / (h - 1)) as u8).saturating_add(c as u8 * 20)
+                    })
+                })
+            })
+            .collect();
+        Image::<u8, C>::new(
+            ImageSize {
+                width: w,
+                height: h,
+            },
+            data,
+        )
+        .unwrap()
+    }
+
+    const ALL_SAMPLING: [InterpolationMode; 3] = [
+        InterpolationMode::Nearest,
+        InterpolationMode::Bilinear,
+        InterpolationMode::Lanczos,
+    ];
+
+    // A solid source stays exactly solid through every resampler (unit DC
+    // response) under unit-scale: out == v/255 everywhere.
+    #[test]
+    fn cpu_stretch_solid_all_sampling() {
+        for sampling in ALL_SAMPLING {
+            let pre = Preprocessor::builder()
+                .mode(ResizeMode::Stretch)
+                .sampling(sampling)
+                .build()
+                .unwrap();
+            let src = host_solid(5, 3, [10u8, 20, 30]);
+            let mut dst = host_dst(4, 4);
+            pre.run(&src, &mut dst).unwrap();
+            let out = dst.as_slice();
+            let px = 4 * 4;
+            for (c, &v) in [10.0f32, 20.0, 30.0].iter().enumerate() {
+                for i in 0..px {
+                    assert!(
+                        (out[c * px + i] - v / 255.0).abs() < 1e-4,
+                        "{sampling:?} chan {c}"
+                    );
+                }
+            }
+        }
+    }
+
+    // Letterbox: content box exactly the constant, pad region exactly pad_value.
+    #[test]
+    fn cpu_letterbox_pad_geometry() {
+        let pre = Preprocessor::builder().pad_value(32).build().unwrap();
+        // Square 4×4 into 8×4 → scale 1, content columns 2..6, pad elsewhere.
+        let src = host_solid(4, 4, [100u8, 100, 100]);
+        let mut dst = host_dst(4, 8);
+        pre.run(&src, &mut dst).unwrap();
+        let out = dst.as_slice();
+        let px = 4 * 8;
+        for c in 0..3 {
+            for y in 0..4 {
+                for x in 0..8 {
+                    let got = out[c * px + y * 8 + x];
+                    let want = if (2..6).contains(&x) { 100.0 } else { 32.0 } / 255.0;
+                    assert!((got - want).abs() < 1e-4, "chan {c} ({x},{y}): {got}");
+                }
+            }
+        }
+    }
+
+    // RGBA (alpha ignored) must match tight RGB for the same colour.
+    #[test]
+    fn cpu_rgba_matches_rgb() {
+        let pre = Preprocessor::builder()
+            .mode(ResizeMode::Stretch)
+            .build()
+            .unwrap();
+        let mut d3 = host_dst(8, 8);
+        let mut d4 = host_dst(8, 8);
+        pre.run(&host_solid(6, 4, [40u8, 80, 120]), &mut d3)
+            .unwrap();
+        pre.run(&host_solid(6, 4, [40u8, 80, 120, 200]), &mut d4)
+            .unwrap();
+        for (x, y) in d3.as_slice().iter().zip(d4.as_slice()) {
+            assert!((x - y).abs() < 1e-4);
+        }
+    }
+
+    // MeanStd folds the ImageNet normalize into the same pass.
+    #[test]
+    fn cpu_imagenet_normalize() {
+        let pre = Preprocessor::builder()
+            .mode(ResizeMode::Stretch)
+            .normalize(Normalize::imagenet())
+            .build()
+            .unwrap();
+        let mut dst = host_dst(4, 4);
+        pre.run(&host_solid(4, 4, [128u8, 128, 128]), &mut dst)
+            .unwrap();
+        let out = dst.as_slice();
+        let (mean, std) = ([0.485f32, 0.456, 0.406], [0.229f32, 0.224, 0.225]);
+        for c in 0..3 {
+            let want = (128.0 / 255.0 - mean[c]) / std[c];
+            assert!((out[c * 16] - want).abs() < 1e-4, "chan {c}");
+        }
+    }
+
+    #[test]
+    fn rejects_bad_channels() {
+        let pre = Preprocessor::builder().build().unwrap();
+        let mut dst = host_dst(2, 2);
+        assert!(matches!(
+            pre.run(&host_solid(2, 2, [5u8]), &mut dst),
+            Err(PreprocessError::UnsupportedChannels(1))
+        ));
+    }
+
+    // std = 0 (or non-finite mean/std) must fail at build, not emit inf/NaN.
+    #[test]
+    fn rejects_invalid_normalize() {
+        let bad = Preprocessor::builder()
+            .normalize(Normalize::MeanStd {
+                mean: [0.5; 3],
+                std: [0.0, 0.2, 0.2],
+            })
+            .build();
+        assert!(matches!(bad, Err(PreprocessError::InvalidNormalize { .. })));
+    }
+
+    // A non-[1,3,H,W] destination must be rejected before any write.
+    #[test]
+    fn rejects_bad_output_shape() {
+        let pre = Preprocessor::builder().build().unwrap();
+        let mut dst = Tensor::<f32, 4>::from_shape_vec([1, 1, 4, 4], vec![0.0; 16]).unwrap();
+        assert!(matches!(
+            pre.run(&host_solid(2, 2, [5u8, 5, 5]), &mut dst),
+            Err(PreprocessError::BadOutputShape([1, 1, 4, 4]))
+        ));
+    }
+
+    // Bicubic is declared in InterpolationMode but not wired here — reject at build.
+    #[test]
+    fn rejects_bicubic_sampling() {
+        let bad = Preprocessor::builder()
+            .sampling(InterpolationMode::Bicubic)
+            .build();
+        assert!(matches!(
+            bad,
+            Err(PreprocessError::UnsupportedSampling(
+                InterpolationMode::Bicubic
+            ))
+        ));
+    }
+
+    // GPU: a solid source stays exactly solid through every kernel sampling
+    // branch (nearest / bilinear / lanczos), including letterbox padding.
+    #[cfg(feature = "cudarc")]
+    #[test]
+    #[ignore = "requires a CUDA device"]
+    fn cuda_solid_all_sampling() {
+        use cudarc::driver::CudaContext;
+        use kornia_tensor::zeros_cuda;
+
+        let stream = CudaContext::new(0).unwrap().default_stream();
+        let src = host_solid(5, 3, [10u8, 20, 30]);
+        for sampling in ALL_SAMPLING {
+            let pre = Preprocessor::builder()
+                .mode(ResizeMode::Stretch)
+                .sampling(sampling)
+                .build_cuda(stream.clone())
+                .unwrap();
+            let dev: Image<u8, 3> = Image(src.0.to_cuda(&stream).unwrap());
+            let mut dst = zeros_cuda::<f32, 4>([1, 3, 4, 4], &stream).unwrap();
+            pre.run(&dev, &mut dst).unwrap();
+            let out = stream.clone_dtoh(dst.as_cudaslice().unwrap()).unwrap();
+            let px = 4 * 4;
+            for (c, &v) in [10.0f32, 20.0, 30.0].iter().enumerate() {
+                for i in 0..px {
+                    assert!(
+                        (out[c * px + i] - v / 255.0).abs() < 1e-4,
+                        "{sampling:?} chan {c}"
+                    );
+                }
+            }
+        }
+    }
+
+    // A pitched RGBA surface (rows padded with garbage) must produce exactly
+    // the same output as the equivalent tight RGBA image — the kernel must
+    // step by pitch and never read the padding.
+    #[cfg(feature = "cudarc")]
+    #[test]
+    #[ignore = "requires a CUDA device"]
+    fn pitched_surface_matches_tight() {
+        use cudarc::driver::CudaContext;
+        use kornia_tensor::zeros_cuda;
+
+        let stream = CudaContext::new(0).unwrap().default_stream();
+        let (w, h, pitch) = (23usize, 17usize, 23 * 4 + 13); // odd pitch + garbage pad
+        let tight = host_gradient::<4>(w, h);
+
+        let mut pitched = vec![0xAAu8; pitch * h]; // garbage everywhere
+        for y in 0..h {
+            pitched[y * pitch..y * pitch + w * 4]
+                .copy_from_slice(&tight.0.as_slice()[y * w * 4..(y + 1) * w * 4]);
+        }
+        let dev_pitched = stream.memcpy_stod(&pitched).unwrap();
+
+        for mode in [ResizeMode::Letterbox, ResizeMode::Stretch] {
+            let pre = Preprocessor::builder()
+                .mode(mode)
+                .normalize(Normalize::imagenet())
+                .build_cuda(stream.clone())
+                .unwrap();
+
+            let dev_img: Image<u8, 4> = Image(tight.0.to_cuda(&stream).unwrap());
+            let mut d_img = zeros_cuda::<f32, 4>([1, 3, 6, 8], &stream).unwrap();
+            pre.run(&dev_img, &mut d_img).unwrap();
+
+            let surf = PitchedSurface {
+                data: &dev_pitched,
+                width: w,
+                height: h,
+                row_pitch: pitch,
+                channels: 4,
+            };
+            let mut d_surf = zeros_cuda::<f32, 4>([1, 3, 6, 8], &stream).unwrap();
+            pre.run_surface(&surf, &mut d_surf).unwrap();
+
+            let a = stream.clone_dtoh(d_img.as_cudaslice().unwrap()).unwrap();
+            let b = stream.clone_dtoh(d_surf.as_cudaslice().unwrap()).unwrap();
+            assert_eq!(
+                a, b,
+                "pitched surface diverged from tight image in {mode:?}"
+            );
+        }
+    }
+
+    // fp16 output: kernel-side round-to-nearest-even conversion must equal the
+    // half crate's from_f32 of the f32 kernel result, bit for bit.
+    #[cfg(feature = "cudarc")]
+    #[test]
+    #[ignore = "requires a CUDA device"]
+    fn f16_matches_f32_rounded() {
+        use cudarc::driver::CudaContext;
+        use kornia_tensor::zeros_cuda;
+
+        let stream = CudaContext::new(0).unwrap().default_stream();
+        let src = host_gradient::<3>(23, 17);
+        let dev: Image<u8, 3> = Image(src.0.to_cuda(&stream).unwrap());
+        for sampling in ALL_SAMPLING {
+            let pre = Preprocessor::builder()
+                .mode(ResizeMode::Letterbox)
+                .sampling(sampling)
+                .normalize(Normalize::imagenet())
+                .build_cuda(stream.clone())
+                .unwrap();
+            let mut d32 = zeros_cuda::<f32, 4>([1, 3, 6, 8], &stream).unwrap();
+            pre.run(&dev, &mut d32).unwrap();
+            let mut d16 = zeros_cuda::<half::f16, 4>([1, 3, 6, 8], &stream).unwrap();
+            pre.run_f16(&dev, &mut d16).unwrap();
+
+            let h32 = stream.clone_dtoh(d32.as_cudaslice().unwrap()).unwrap();
+            let h16 = stream.clone_dtoh(d16.as_cudaslice().unwrap()).unwrap();
+            for (i, (a, b)) in h32.iter().zip(&h16).enumerate() {
+                assert_eq!(
+                    half::f16::from_f32(*a).to_bits(),
+                    b.to_bits(),
+                    "{sampling:?} elem {i}: f32 {a} vs f16 {b}"
+                );
+            }
+        }
+    }
+
+    // CPU vs CUDA on a real gradient: the CPU resampler is antialiased /
+    // centre-aligned (PIL-grade) while the CUDA kernel samples directly, so
+    // outputs are NOT bit-identical — but they must describe the same image.
+    // A loose band still catches the real failure modes (channel swaps, CHW
+    // transposes, normalize or pad errors), which show up as O(0.5) diffs.
+    #[cfg(feature = "cudarc")]
+    #[test]
+    #[ignore = "requires a CUDA device"]
+    fn cpu_close_to_cuda() {
+        use cudarc::driver::CudaContext;
+        use kornia_tensor::zeros_cuda;
+
+        let stream = CudaContext::new(0).unwrap().default_stream();
+        // Letterbox geometry with an INTEGER pad (20×10 → 8×6: scale 0.4, one
+        // whole pad row top+bottom) so both backends put the content/pad
+        // boundary on the same row and the band measures resampling only; the
+        // fractional-pad case differs by design (see run_cpu).
+        let src_lb = host_gradient::<3>(20, 10);
+        let src_st = host_gradient::<3>(23, 17);
+        for mode in [ResizeMode::Letterbox, ResizeMode::Stretch] {
+            let src = match mode {
+                ResizeMode::Letterbox => &src_lb,
+                ResizeMode::Stretch => &src_st,
+            };
+            for sampling in ALL_SAMPLING {
+                let cpu = Preprocessor::builder()
+                    .mode(mode)
+                    .sampling(sampling)
+                    .build()
+                    .unwrap();
+                let gpu = Preprocessor::builder()
+                    .mode(mode)
+                    .sampling(sampling)
+                    .build_cuda(stream.clone())
+                    .unwrap();
+
+                let mut d_cpu = host_dst(6, 8);
+                cpu.run(src, &mut d_cpu).unwrap();
+
+                let dev: Image<u8, 3> = Image(src.0.to_cuda(&stream).unwrap());
+                let mut d_gpu = zeros_cuda::<f32, 4>([1, 3, 6, 8], &stream).unwrap();
+                gpu.run(&dev, &mut d_gpu).unwrap();
+                let gpu_host = stream.clone_dtoh(d_gpu.as_cudaslice().unwrap()).unwrap();
+
+                let n = gpu_host.len() as f32;
+                let mut mean_abs = 0.0f32;
+                let mut max_abs = 0.0f32;
+                for (a, b) in d_cpu.as_slice().iter().zip(&gpu_host) {
+                    let d = (a - b).abs();
+                    mean_abs += d;
+                    max_abs = max_abs.max(d);
+                }
+                mean_abs /= n;
+                assert!(
+                    mean_abs < 0.05 && max_abs < 0.25,
+                    "CPU/CUDA diverge in {mode:?}/{sampling:?}: mean {mean_abs} max {max_abs}"
+                );
+            }
+        }
     }
 }

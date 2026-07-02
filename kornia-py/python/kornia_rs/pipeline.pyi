@@ -6,6 +6,17 @@ from typing import Sequence
 
 import numpy as np
 
+def resize_normalize_to_tensor_batch(
+    images: list[np.ndarray],
+    new_size: tuple[int, int],
+    mean: Sequence[float],
+    std: Sequence[float],
+) -> list[np.ndarray]:
+    """Batched fused resize+normalize+HWC->CHW: GIL released once, images
+    processed in parallel across the rayon pool. One (3,H,W) float32 array per
+    input, in order."""
+    ...
+
 def resize_normalize_to_tensor(
     image: np.ndarray,
     new_size: tuple[int, int],
