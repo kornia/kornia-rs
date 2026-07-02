@@ -32,6 +32,7 @@ use cudarc::driver::CudaStream;
 use kornia_tensor::CudaKernel;
 
 pub mod gray;
+pub mod hsv_hls;
 pub mod misc;
 pub mod swizzle;
 pub mod yuv;

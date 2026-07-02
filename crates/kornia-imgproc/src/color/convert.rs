@@ -167,14 +167,18 @@ impl_convert!(Bgrf32 => Rgbf32, crate::color::bgr_from_rgb,
     cuda: crate::color::cuda_dispatch::bgr_from_rgb_f32_cuda);
 
 // ===== RGB <-> HSV Conversions =====
-impl_convert!(Rgbf32 => Hsvf32, crate::color::hsv_from_rgb);
-impl_convert!(Hsvf32 => Rgbf32, crate::color::rgb_from_hsv);
+impl_convert!(Rgbf32 => Hsvf32, crate::color::hsv_from_rgb,
+    cuda: crate::color::cuda_dispatch::hsv_from_rgb_f32_cuda);
+impl_convert!(Hsvf32 => Rgbf32, crate::color::rgb_from_hsv,
+    cuda: crate::color::cuda_dispatch::rgb_from_hsv_f32_cuda);
 impl_convert!(Rgbf64 => Hsvf64, crate::color::hsv_from_rgb);
 impl_convert!(Hsvf64 => Rgbf64, crate::color::rgb_from_hsv);
 
 // ===== RGB <-> HLS Conversions =====
-impl_convert!(Rgbf32 => Hlsf32, crate::color::hls_from_rgb);
-impl_convert!(Hlsf32 => Rgbf32, crate::color::rgb_from_hls);
+impl_convert!(Rgbf32 => Hlsf32, crate::color::hls_from_rgb,
+    cuda: crate::color::cuda_dispatch::hls_from_rgb_f32_cuda);
+impl_convert!(Hlsf32 => Rgbf32, crate::color::rgb_from_hls,
+    cuda: crate::color::cuda_dispatch::rgb_from_hls_f32_cuda);
 impl_convert!(Rgbf64 => Hlsf64, crate::color::hls_from_rgb);
 impl_convert!(Hlsf64 => Rgbf64, crate::color::rgb_from_hls);
 

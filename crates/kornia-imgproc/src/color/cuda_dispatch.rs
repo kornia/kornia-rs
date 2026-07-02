@@ -18,7 +18,7 @@ use kornia_image::{Image, ImageError};
 use kornia_tensor::MemoryDomain;
 
 use crate::color::yuv::kernels::ChromaOrder;
-use crate::gpu::color_cuda::{gray, misc, swizzle, yuv, CudaColorError};
+use crate::gpu::color_cuda::{gray, hsv_hls, misc, swizzle, yuv, CudaColorError};
 
 /// Where a (src, dst) operand pair lives.
 pub(crate) enum Residency<'a> {
@@ -146,6 +146,11 @@ adapter!(bgra_from_rgb_f32_cuda, f32, 3 => 4, swizzle::launch_bgra_from_rgb_f32)
 
 adapter!(sepia_from_rgb_u8_cuda, u8, 3 => 3, misc::launch_sepia_from_rgb_u8);
 adapter!(sepia_from_rgb_f32_cuda, f32, 3 => 3, misc::launch_sepia_from_rgb_f32);
+
+adapter!(hsv_from_rgb_f32_cuda, f32, 3 => 3, hsv_hls::launch_hsv_from_rgb_f32);
+adapter!(rgb_from_hsv_f32_cuda, f32, 3 => 3, hsv_hls::launch_rgb_from_hsv_f32);
+adapter!(hls_from_rgb_f32_cuda, f32, 3 => 3, hsv_hls::launch_hls_from_rgb_f32);
+adapter!(rgb_from_hls_f32_cuda, f32, 3 => 3, hsv_hls::launch_rgb_from_hls_f32);
 
 /// Define a YCbCr/YUV-family adapter: fixes direction + chroma order.
 macro_rules! ycc_adapter {
