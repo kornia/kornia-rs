@@ -84,6 +84,33 @@ __device__ __forceinline__ float clamp01(float v) {
 #define F_YB 0.114f
 #define F_CR 0.713f
 #define F_CB 0.564f
+
+// ── Word-vectorized 3-byte-pixel quad helpers ────────────────────────────────
+// Four interleaved RGB pixels = 12 bytes = three 32-bit words (always 4-byte
+// aligned: 12 ≡ 0 mod 4, and cudarc device allocations are 256-byte aligned).
+// Byte layout: w0 = c0 c1 c2 C0 | w1 = C1 C2 d0 d1 | w2 = d2 e0 e1 e2
+// (lowercase/uppercase = pixel 0/1, d/e = pixels 2/3, channels in order).
+__device__ __forceinline__ void load_c3_quad(
+    const unsigned int* __restrict__ s32, unsigned int q,
+    unsigned int a[4], unsigned int b[4], unsigned int c[4])
+{
+    unsigned int w0 = __ldg(&s32[q * 3u]);
+    unsigned int w1 = __ldg(&s32[q * 3u + 1u]);
+    unsigned int w2 = __ldg(&s32[q * 3u + 2u]);
+    a[0] = w0 & 0xFFu;         b[0] = (w0 >> 8) & 0xFFu;  c[0] = (w0 >> 16) & 0xFFu;
+    a[1] = w0 >> 24;           b[1] = w1 & 0xFFu;         c[1] = (w1 >> 8) & 0xFFu;
+    a[2] = (w1 >> 16) & 0xFFu; b[2] = w1 >> 24;           c[2] = w2 & 0xFFu;
+    a[3] = (w2 >> 8) & 0xFFu;  b[3] = (w2 >> 16) & 0xFFu; c[3] = w2 >> 24;
+}
+
+__device__ __forceinline__ void store_c3_quad(
+    unsigned int* __restrict__ d32, unsigned int q,
+    const unsigned int a[4], const unsigned int b[4], const unsigned int c[4])
+{
+    d32[q * 3u]      = a[0] | (b[0] << 8) | (c[0] << 16) | (a[1] << 24);
+    d32[q * 3u + 1u] = b[1] | (c[1] << 8) | (a[2] << 16) | (b[2] << 24);
+    d32[q * 3u + 2u] = c[2] | (a[3] << 8) | (b[3] << 16) | (c[3] << 24);
+}
 "#;
 
 // ── Error type ────────────────────────────────────────────────────────────────

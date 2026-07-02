@@ -17,25 +17,46 @@ pub use crate::color::ColormapType;
 
 use super::{check_len, get_kernel, CudaColorError, KernelCell};
 
+// Word-vectorized 4 px/thread; Q8 coefficients round(coeff*256) — matches
+// color/sepia.rs::Q bit-for-bit.
 static SEPIA_U8_SRC: &str = r#"
+__device__ __forceinline__ void sepia_px(
+    unsigned int r, unsigned int g, unsigned int b,
+    unsigned int* rr, unsigned int* gg, unsigned int* bb)
+{
+    *rr = min((101u * r + 197u * g + 48u * b + 128u) >> 8, 255u);
+    *gg = min(( 89u * r + 176u * g + 43u * b + 128u) >> 8, 255u);
+    *bb = min(( 70u * r + 137u * g + 34u * b + 128u) >> 8, 255u);
+}
+
 extern "C" __global__ void sepia_from_rgb_u8(
     const unsigned char* __restrict__ src,
     unsigned char* __restrict__ dst,
     unsigned int npixels)
 {
-    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= npixels) return;
-    unsigned int b = i * 3u;
-    unsigned int r  = __ldg(&src[b]);
-    unsigned int g  = __ldg(&src[b + 1u]);
-    unsigned int bl = __ldg(&src[b + 2u]);
-    // Q8 coefficients round(coeff*256) — matches color/sepia.rs::Q.
-    unsigned int rr = (101u * r + 197u * g + 48u * bl + 128u) >> 8;
-    unsigned int gg = ( 89u * r + 176u * g + 43u * bl + 128u) >> 8;
-    unsigned int bb = ( 70u * r + 137u * g + 34u * bl + 128u) >> 8;
-    dst[b]      = (unsigned char)min(rr, 255u);
-    dst[b + 1u] = (unsigned char)min(gg, 255u);
-    dst[b + 2u] = (unsigned char)min(bb, 255u);
+    unsigned int q = blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned int nquads = (npixels + 3u) / 4u;
+    if (q >= nquads) return;
+    unsigned int p = q * 4u;
+    if (p + 4u <= npixels) {
+        unsigned int r[4], g[4], b[4];
+        load_c3_quad((const unsigned int*)src, q, r, g, b);
+        #pragma unroll
+        for (int k = 0; k < 4; ++k) {
+            sepia_px(r[k], g[k], b[k], &r[k], &g[k], &b[k]);
+        }
+        store_c3_quad((unsigned int*)dst, q, r, g, b);
+    } else {
+        for (unsigned int i = p; i < npixels; ++i) {
+            unsigned int s = i * 3u;
+            unsigned int rr, gg, bb;
+            sepia_px(__ldg(&src[s]), __ldg(&src[s + 1u]), __ldg(&src[s + 2u]),
+                     &rr, &gg, &bb);
+            dst[s] = (unsigned char)rr;
+            dst[s + 1u] = (unsigned char)gg;
+            dst[s + 2u] = (unsigned char)bb;
+        }
+    }
 }
 "#;
 
@@ -72,12 +93,13 @@ pub fn launch_sepia_from_rgb_u8(
     check_len("dst", dst.len(), npixels * 3)?;
     let kernel = get_kernel(&SEPIA_U8, stream, SEPIA_U8_SRC, "sepia_from_rgb_u8")?;
     let n = npixels as u32;
+    // One thread per 4-pixel quad (see kernel source).
     kernel
         .launch_builder(stream)
         .arg(src)
         .arg(dst)
         .arg(&n)
-        .launch_1d(n)?;
+        .launch_1d(n.div_ceil(4))?;
     Ok(())
 }
 
@@ -121,8 +143,8 @@ extern "C" __global__ void apply_colormap_u8(
 static COLORMAP_KERNEL: KernelCell = KernelCell::new();
 
 /// Device-resident packed LUTs, keyed by (colormap, device ordinal).
-static LUT_CACHE: OnceLock<Mutex<HashMap<(ColormapType, usize), Arc<CudaSlice<u32>>>>> =
-    OnceLock::new();
+type LutCache = Mutex<HashMap<(ColormapType, usize), Arc<CudaSlice<u32>>>>;
+static LUT_CACHE: OnceLock<LutCache> = OnceLock::new();
 
 fn device_lut(
     stream: &Arc<CudaStream>,

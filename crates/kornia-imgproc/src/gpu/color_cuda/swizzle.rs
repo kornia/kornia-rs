@@ -11,19 +11,31 @@ use cudarc::driver::{CudaSlice, CudaStream};
 
 use super::{check_len, get_kernel, get_kernel_suite, CudaColorError, KernelCell, KernelSuiteCell};
 
+// Word-vectorized: 4 px/thread via the shared c3 quad helpers (bit-exact —
+// pure byte permutation). Partial tail falls back to byte addressing.
 static BGR_FROM_RGB_U8_SRC: &str = r#"
 extern "C" __global__ void bgr_from_rgb_u8(
     const unsigned char* __restrict__ src,
     unsigned char* __restrict__ dst,
     unsigned int npixels)
 {
-    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= npixels) return;
-    unsigned int b = i * 3u;
-    unsigned char r = __ldg(&src[b]);
-    unsigned char g = __ldg(&src[b + 1u]);
-    unsigned char bl = __ldg(&src[b + 2u]);
-    dst[b] = bl; dst[b + 1u] = g; dst[b + 2u] = r;
+    unsigned int q = blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned int nquads = (npixels + 3u) / 4u;
+    if (q >= nquads) return;
+    unsigned int p = q * 4u;
+    if (p + 4u <= npixels) {
+        unsigned int r[4], g[4], b[4];
+        load_c3_quad((const unsigned int*)src, q, r, g, b);
+        store_c3_quad((unsigned int*)dst, q, b, g, r);
+    } else {
+        for (unsigned int i = p; i < npixels; ++i) {
+            unsigned int s = i * 3u;
+            unsigned char r = __ldg(&src[s]);
+            unsigned char g = __ldg(&src[s + 1u]);
+            unsigned char bl = __ldg(&src[s + 2u]);
+            dst[s] = bl; dst[s + 1u] = g; dst[s + 2u] = r;
+        }
+    }
 }
 "#;
 
@@ -201,12 +213,13 @@ pub fn launch_bgr_from_rgb_u8(
         "bgr_from_rgb_u8",
     )?;
     let n = npixels as u32;
+    // One thread per 4-pixel quad (see kernel source).
     kernel
         .launch_builder(stream)
         .arg(src)
         .arg(dst)
         .arg(&n)
-        .launch_1d(n)?;
+        .launch_1d(n.div_ceil(4))?;
     Ok(())
 }
 

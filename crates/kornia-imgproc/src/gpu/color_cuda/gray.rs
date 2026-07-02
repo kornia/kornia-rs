@@ -9,20 +9,46 @@ use cudarc::driver::{CudaSlice, CudaStream};
 
 use super::{check_len, get_kernel, CudaColorError, KernelCell};
 
+// Vectorized: each thread handles 4 pixels = 12 src bytes (three 32-bit word
+// loads, always 4-byte aligned since 12 ≡ 0 mod 4 and cudarc allocations are
+// 256-byte aligned) and stores the 4 grays as one 32-bit word. The last
+// (partial) quad falls back to byte addressing. Math is the same truncating
+// Q8 shift as the CPU NEON path — bit-exact.
 static GRAY_FROM_RGB_U8_SRC: &str = r#"
+__device__ __forceinline__ unsigned int gray_q8(
+    unsigned int r, unsigned int g, unsigned int b)
+{
+    return (GRAY_WR_Q8 * r + GRAY_WG_Q8 * g + GRAY_WB_Q8 * b) >> 8;
+}
+
 extern "C" __global__ void gray_from_rgb_u8(
     const unsigned char* __restrict__ src,
     unsigned char* __restrict__ dst,
     unsigned int npixels)
 {
-    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= npixels) return;
-    unsigned int b = i * 3u;
-    unsigned int r  = __ldg(&src[b]);
-    unsigned int g  = __ldg(&src[b + 1u]);
-    unsigned int bl = __ldg(&src[b + 2u]);
-    // Truncating shift — identical to the CPU NEON/scalar path.
-    dst[i] = (unsigned char)((GRAY_WR_Q8 * r + GRAY_WG_Q8 * g + GRAY_WB_Q8 * bl) >> 8);
+    unsigned int q = blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned int nquads = (npixels + 3u) / 4u;
+    if (q >= nquads) return;
+
+    unsigned int p = q * 4u;
+    if (p + 4u <= npixels) {
+        const unsigned int* s32 = (const unsigned int*)src;
+        unsigned int w0 = __ldg(&s32[q * 3u]);
+        unsigned int w1 = __ldg(&s32[q * 3u + 1u]);
+        unsigned int w2 = __ldg(&s32[q * 3u + 2u]);
+        // Byte layout: w0 = r0 g0 b0 r1 | w1 = g1 b1 r2 g2 | w2 = b2 r3 g3 b3
+        unsigned int g0 = gray_q8(w0 & 0xFFu, (w0 >> 8) & 0xFFu, (w0 >> 16) & 0xFFu);
+        unsigned int g1 = gray_q8(w0 >> 24, w1 & 0xFFu, (w1 >> 8) & 0xFFu);
+        unsigned int g2 = gray_q8((w1 >> 16) & 0xFFu, w1 >> 24, w2 & 0xFFu);
+        unsigned int g3 = gray_q8((w2 >> 8) & 0xFFu, (w2 >> 16) & 0xFFu, w2 >> 24);
+        ((unsigned int*)dst)[q] = g0 | (g1 << 8) | (g2 << 16) | (g3 << 24);
+    } else {
+        for (unsigned int i = p; i < npixels; ++i) {
+            unsigned int b = i * 3u;
+            dst[i] = (unsigned char)gray_q8(
+                __ldg(&src[b]), __ldg(&src[b + 1u]), __ldg(&src[b + 2u]));
+        }
+    }
 }
 "#;
 
@@ -92,12 +118,13 @@ pub fn launch_gray_from_rgb_u8(
         "gray_from_rgb_u8",
     )?;
     let n = npixels as u32;
+    // One thread per 4-pixel quad (see kernel source).
     kernel
         .launch_builder(stream)
         .arg(src)
         .arg(dst)
         .arg(&n)
-        .launch_1d(n)?;
+        .launch_1d(n.div_ceil(4))?;
     Ok(())
 }
 
