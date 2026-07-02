@@ -86,7 +86,8 @@ required-features = ["opencv_bench"]
 [dependencies]
 cubecl-cpu = { version = "=0.10.0-pre.4", optional = true }
 cubecl-cuda = { version = "=0.10.0-pre.4", optional = true }
-cudarc = { workspace = true, optional = true }
+cudarc = { workspace = true, optional = true, features = ["f16"] }
+half = { workspace = true, optional = true }
 kornia-algebra = { workspace = true }
 kornia-image = { workspace = true }
 kornia-tensor = { workspace = true }
@@ -115,6 +116,7 @@ rand = { workspace = true }
 # cudarc device backend + custom CUDA kernels (enables the `preprocess` module).
 cudarc = [
   "dep:cudarc",
+  "dep:half",
   "kornia-tensor/cudarc",
 ]
 gpu-cubecl = [

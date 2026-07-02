@@ -16,7 +16,7 @@ use super::kernels::{horizontal_row_rgb_u8, vertical_row};
 /// through to the per-row kernel.
 #[allow(clippy::too_many_arguments)]
 #[inline(always)]
-fn horizontal_batch<const C: usize>(
+pub(super) fn horizontal_batch<const C: usize>(
     src: &[u8],
     src_stride: usize,
     out: &mut [i16],

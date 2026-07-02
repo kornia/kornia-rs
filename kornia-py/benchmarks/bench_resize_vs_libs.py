@@ -38,7 +38,7 @@ CASES = [
 ]
 
 
-def p50(iters, f):
+def timeit(iters, f):
     for _ in range(3):
         f()
     t = []
@@ -47,7 +47,11 @@ def p50(iters, f):
         f()
         t.append((time.perf_counter() - t0) * 1e3)
     t.sort()
-    return t[len(t) // 2]
+    return t[len(t) // 2], t[min(len(t) - 1, int(len(t) * 0.99))]
+
+
+def p50(iters, f):
+    return timeit(iters, f)[0]
 
 
 def np_chain(r):
@@ -83,6 +87,19 @@ def main():
         ]
         for name, ms in rows:
             print(f"  {name:22} {ms:8.3f}")
+
+        # Batched fused chain (dataloader shape): 8 images per call, p50 & p99
+        # per image. Real-time systems are judged at p99, so report it.
+        from kornia_rs.pipeline import resize_normalize_to_tensor_batch
+
+        batch = [src] * 8
+        b50, b99 = timeit(
+            max(4, it // 4),
+            lambda: resize_normalize_to_tensor_batch(batch, (dh, dw), list(MEAN), list(STD)),
+        )
+        f50, f99 = timeit(it, lambda: img.resize_normalize_to_tensor(dw, dh, list(MEAN), list(STD)))
+        print(f"  {'chain FUSED p50/p99':22} {f50:8.3f} / {f99:.3f}")
+        print(f"  {'batch x8 per-img p50/p99':26} {b50 / 8:6.3f} / {b99 / 8:.3f}")
 
         print("  -- byte fidelity --")
         print("  nearest  vs PIL     ", fidelity(img.resize(dw, dh, "nearest").numpy(), np.asarray(pil.resize((dw, dh), PILImage.NEAREST))))

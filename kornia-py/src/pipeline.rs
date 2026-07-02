@@ -57,6 +57,58 @@ pub fn resize_normalize_to_tensor(
     Ok(out_arr.unbind())
 }
 
+/// Batched [`resize_normalize_to_tensor`]: preprocess a whole list of images
+/// in one call — the GIL is released once and the images are processed in
+/// parallel across the rayon pool (parallelism ACROSS images, which is what a
+/// dataloader wants — per-image thread fan-out would fight the loader's own
+/// worker parallelism).
+///
+/// Returns one `(3, dst_h, dst_w)` float32 NCHW array per input, in order.
+#[pyfunction]
+pub fn resize_normalize_to_tensor_batch(
+    py: Python<'_>,
+    images: Vec<PyImage>,
+    new_size: (usize, usize),
+    mean: [f32; 3],
+    std: [f32; 3],
+) -> PyResult<Vec<Py<PyArray3<f32>>>> {
+    let (dst_h, dst_w) = new_size;
+    let params = NormalizeParams::<3>::from_mean_std(mean, std);
+
+    // Borrow every source and allocate every output under the GIL…
+    let mut srcs = Vec::with_capacity(images.len());
+    for image in &images {
+        let (src_h, src_w, src_slice) = validate_and_borrow_src(py, image)?;
+        validate_shapes(src_h, src_w, dst_h, dst_w)?;
+        srcs.push((src_h, src_w, src_slice));
+    }
+    let out_len = 3 * dst_h * dst_w;
+    let mut outs = Vec::with_capacity(images.len());
+    let mut out_slices: Vec<&mut [f32]> = Vec::with_capacity(images.len());
+    for _ in &images {
+        let arr = unsafe { PyArray::<f32, _>::new(py, [3, dst_h, dst_w], false) };
+        // SAFETY: freshly-allocated C-contiguous f32 PyArray3, kept alive by `outs`.
+        out_slices.push(unsafe { std::slice::from_raw_parts_mut(arr.data(), out_len) });
+        outs.push(arr.unbind());
+    }
+
+    // …then release it once and run the images back-to-back: each fused call
+    // already parallelizes internally across the rayon pool, so fanning out
+    // across images too would just oversubscribe the cores (measured slower).
+    // The batch win is amortizing the GIL round-trip and Python call overhead.
+    let result: Result<(), _> = py.detach(|| {
+        srcs.iter()
+            .zip(out_slices.iter_mut())
+            .try_for_each(|((src_h, src_w, src_slice), out)| {
+                resize_normalize_to_tensor_u8_to_f32_bilinear(
+                    src_slice, *src_w, *src_h, out, dst_w, dst_h, &params,
+                )
+            })
+    });
+    result.map_err(to_pyerr)?;
+    Ok(outs)
+}
+
 /// Pre-allocated preprocessor for the fused resize+normalize+HWC→CHW pipeline.
 ///
 /// Owns its output buffer — constructs the `(3, dst_h, dst_w)` float32 numpy

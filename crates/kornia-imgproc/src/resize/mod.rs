@@ -33,6 +33,7 @@ mod separable;
 
 pub use fused::{
     resize_normalize_to_tensor_u8_to_f32, resize_normalize_to_tensor_u8_to_f32_bilinear,
+    resize_normalize_to_tensor_u8_to_f32_nearest, resize_normalize_to_tensor_u8_to_f32_separable,
     NormalizeParams,
 };
 

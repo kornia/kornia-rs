@@ -544,6 +544,10 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
         pipeline::resize_normalize_to_tensor,
         &pipeline_mod
     )?)?;
+    pipeline_mod.add_function(wrap_pyfunction!(
+        pipeline::resize_normalize_to_tensor_batch,
+        &pipeline_mod
+    )?)?;
     pipeline_mod.add_class::<pipeline::Preprocessor>()?;
     m.add_submodule(&pipeline_mod)?;
 
