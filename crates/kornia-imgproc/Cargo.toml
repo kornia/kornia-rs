@@ -114,19 +114,12 @@ rand = { workspace = true }
 
 [features]
 # cudarc device backend + custom CUDA kernels (enables the `preprocess` module).
-cudarc = [
-  "dep:cudarc",
-  "dep:half",
-  "kornia-tensor/cudarc",
-]
+cudarc = ["dep:cudarc", "dep:half", "kornia-tensor/cudarc"]
 gpu-cubecl = [
   "dep:cubecl",
   "dep:cubecl-cpu",
   "dep:cubecl-cuda",
   "kornia-tensor/gpu-cubecl",
 ]
-gpu-cuda = [
-  "dep:cudarc",
-  "kornia-tensor/cudarc",
-]
+gpu-cuda = ["dep:cudarc", "kornia-tensor/cudarc"]
 opencv_bench = ["dep:opencv"]
