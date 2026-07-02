@@ -134,10 +134,9 @@ macro_rules! impl_convert_with_bg {
 }
 
 // ===== Bayer mosaic -> RGB (hand-written: reads the runtime pattern field) =====
+// `rgb_from_bayer` is itself residency-aware, so no host guard is needed here.
 impl ConvertColor<Rgb8> for kornia_image::color_spaces::Bayer8 {
     fn convert(&self, dst: &mut Rgb8) -> Result<(), ImageError> {
-        #[cfg(feature = "gpu-cuda")]
-        crate::color::cuda_dispatch::ensure_host(self.as_image(), &dst.0)?;
         crate::color::rgb_from_bayer(self.as_image(), self.pattern, &mut dst.0)
     }
 }

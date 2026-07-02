@@ -226,6 +226,33 @@ ycc_adapter!(
     ChromaOrder::YuvCbCr
 );
 
+/// Bayer mosaic → RGB8 demosaic (device path of `rgb_from_bayer`).
+pub(crate) fn rgb_from_bayer_u8_cuda(
+    src: &Image<u8, 1>,
+    dst: &mut Image<u8, 3>,
+    pattern: kornia_image::color_spaces::BayerPattern,
+    stream: &Arc<CudaStream>,
+) -> Result<(), ImageError> {
+    check_same_size(src, dst)?;
+    let (rows, cols) = (src.rows(), src.cols());
+    let (s, d) = device_slices!(src, dst);
+    crate::gpu::color_cuda::bayer::launch_rgb_from_bayer_u8(stream, s, d, rows, cols, pattern)
+        .map_err(cuda_err)
+}
+
+/// Gray8 → RGB8 colormap application (device path of `apply_colormap`).
+pub(crate) fn apply_colormap_u8_cuda(
+    src: &Image<u8, 1>,
+    dst: &mut Image<u8, 3>,
+    colormap: crate::color::ColormapType,
+    stream: &Arc<CudaStream>,
+) -> Result<(), ImageError> {
+    check_same_size(src, dst)?;
+    let npixels = src.cols() * src.rows();
+    let (s, d) = device_slices!(src, dst);
+    misc::launch_apply_colormap_u8(stream, s, d, npixels, colormap).map_err(cuda_err)
+}
+
 /// RGBA8/BGRA8 → RGB8 with optional background blend (shared body).
 fn strip_alpha_u8_cuda(
     src: &Image<u8, 4>,

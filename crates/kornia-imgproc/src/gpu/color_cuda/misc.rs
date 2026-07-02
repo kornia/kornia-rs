@@ -1,13 +1,19 @@
-//! CUDA kernels for miscellaneous color ops: sepia (Phase 2); colormap joins
-//! in a later phase.
+//! CUDA kernels for miscellaneous color ops: sepia and colormap application.
 //!
 //! Sepia u8 mirrors the CPU Q8 fixed-point path bit-for-bit
 //! (`color/sepia.rs::sepia_u8_scalar`); sepia f32 mirrors the shared
 //! `matrix3_affine_f32` MAC (`b + m0·c0 + m1·c1 + m2·c2` evaluation order).
+//!
+//! Colormap passes the 256-entry LUT as a device buffer of `u32` words packed
+//! `0x00BBGGRR` (the CPU AVX2 gather layout, `color/colormap.rs`). Uploaded
+//! LUTs are cached per `(ColormapType, device ordinal)` — 21 maps × 1 KiB max.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use cudarc::driver::{CudaSlice, CudaStream};
+
+pub use crate::color::ColormapType;
 
 use super::{check_len, get_kernel, CudaColorError, KernelCell};
 
@@ -95,10 +101,116 @@ pub fn launch_sepia_from_rgb_f32(
     Ok(())
 }
 
+static COLORMAP_SRC: &str = r#"
+extern "C" __global__ void apply_colormap_u8(
+    const unsigned char* __restrict__ src,
+    const unsigned int* __restrict__ lut,   // 256 x 0x00BBGGRR words
+    unsigned char* __restrict__ dst,
+    unsigned int npixels)
+{
+    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= npixels) return;
+    unsigned int w = __ldg(&lut[__ldg(&src[i])]);
+    unsigned int d = i * 3u;
+    dst[d]      = (unsigned char)(w & 0xFFu);
+    dst[d + 1u] = (unsigned char)((w >> 8) & 0xFFu);
+    dst[d + 2u] = (unsigned char)((w >> 16) & 0xFFu);
+}
+"#;
+
+static COLORMAP_KERNEL: KernelCell = KernelCell::new();
+
+/// Device-resident packed LUTs, keyed by (colormap, device ordinal).
+static LUT_CACHE: OnceLock<Mutex<HashMap<(ColormapType, usize), Arc<CudaSlice<u32>>>>> =
+    OnceLock::new();
+
+fn device_lut(
+    stream: &Arc<CudaStream>,
+    colormap: ColormapType,
+) -> Result<Arc<CudaSlice<u32>>, CudaColorError> {
+    let key = (colormap, stream.context().ordinal());
+    let mut cache = LUT_CACHE
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .expect("colormap LUT cache mutex poisoned");
+    if let Some(lut) = cache.get(&key) {
+        return Ok(lut.clone());
+    }
+    // Pack the three channel LUTs into 0x00BBGGRR words (CPU AVX2 layout).
+    let cpu = colormap.lut_channels();
+    let mut packed = [0u32; 256];
+    for (i, w) in packed.iter_mut().enumerate() {
+        *w = (cpu.0[i] as u32) | ((cpu.1[i] as u32) << 8) | ((cpu.2[i] as u32) << 16);
+    }
+    let dev = Arc::new(
+        stream
+            .clone_htod(&packed)
+            .map_err(|e| CudaColorError::Cuda(e.to_string()))?,
+    );
+    cache.insert(key, dev.clone());
+    Ok(dev)
+}
+
+/// Apply one of the 21 OpenCV colormaps to a Gray8 device buffer, producing
+/// RGB8. Bit-exact vs the CPU LUT path (a table lookup has no rounding).
+pub fn launch_apply_colormap_u8(
+    stream: &Arc<CudaStream>,
+    src: &CudaSlice<u8>,
+    dst: &mut CudaSlice<u8>,
+    npixels: usize,
+    colormap: ColormapType,
+) -> Result<(), CudaColorError> {
+    check_len("src", src.len(), npixels)?;
+    check_len("dst", dst.len(), npixels * 3)?;
+    let lut = device_lut(stream, colormap)?;
+    let kernel = get_kernel(&COLORMAP_KERNEL, stream, COLORMAP_SRC, "apply_colormap_u8")?;
+    let n = npixels as u32;
+    kernel
+        .launch_builder(stream)
+        .arg(src)
+        .arg(lut.as_ref())
+        .arg(dst)
+        .arg(&n)
+        .launch_1d(n)?;
+    Ok(())
+}
+
 #[cfg(all(test, feature = "gpu-cuda"))]
 mod tests {
     use super::*;
     use crate::gpu::color_cuda::test_utils::{default_stream, pattern_u8};
+
+    #[test]
+    fn colormap_bit_exact_vs_cpu() {
+        use kornia_image::{Image, ImageSize};
+        let stream = default_stream();
+        let (w, h) = (64usize, 48usize);
+        let gray = pattern_u8(w * h);
+
+        for colormap in [
+            ColormapType::Jet,
+            ColormapType::Viridis,
+            ColormapType::Turbo,
+        ] {
+            let src = Image::<u8, 1>::new(
+                ImageSize {
+                    width: w,
+                    height: h,
+                },
+                gray.clone(),
+            )
+            .unwrap();
+            let mut cpu = Image::<u8, 3>::from_size_val(src.size(), 0).unwrap();
+            crate::color::apply_colormap(&src, &mut cpu, colormap).unwrap();
+
+            let d_src = stream.clone_htod(&gray).unwrap();
+            let mut d_dst = stream.alloc_zeros::<u8>(w * h * 3).unwrap();
+            launch_apply_colormap_u8(&stream, &d_src, &mut d_dst, w * h, colormap).unwrap();
+            let gpu: Vec<u8> = stream.clone_dtoh(&d_dst).unwrap();
+            stream.synchronize().unwrap();
+            assert_eq!(gpu, cpu.as_slice(), "{colormap:?} must be bit-exact");
+        }
+    }
 
     #[test]
     fn sepia_u8_bit_exact_vs_cpu() {
