@@ -197,6 +197,100 @@ GPU is **8–40× faster than OpenCV** across all cases.
 
 ---
 
+## GPU resize benchmarks — native CUDA (NVRTC) — 2026-06-30
+
+Rewritten kernels using `cudarc` + NVRTC instead of CubeCL, enabling `__ldg`
+read-only cache routing and `CU_FUNC_CACHE_PREFER_L1` (32 KB → 64 KB L1).
+Downscale-only (same cases as the OpenCV comparison above).
+
+```sh
+cargo run --example bench_gpu_resize --features gpu-cuda --release
+```
+
+### Hardware / software
+
+| Field | Value |
+|-------|-------|
+| GPU | NVIDIA GeForce GTX 1650 4 GiB — GDDR5, ~128 GB/s peak |
+| CUDA | nvcc 12.4, cudarc 0.x, NVRTC |
+| Rust | 1.87.0, `--release` |
+| Warmup | 50 iters |
+| Timed | 200 iters |
+
+### Nearest-neighbor downscale
+
+| Source → Dest | kornia-rs ms | GB/s | cv2 CUDA ms | PyTorch GPU ms | vs cv2 CUDA | vs PyTorch |
+|---------------|-------------:|-----:|------------:|---------------:|------------:|-----------:|
+| 1024²→512² | 0.053 | 29.8 | 0.137 | 0.339 | **2.6×** | **6.4×** |
+| 1920×1080→960×540 | 0.064 | 36.7 | 0.249 | 0.667 | **3.9×** | **10.4×** |
+| 4K→1080 | 0.237 | 38.6 | 0.684 | 2.650 | **2.9×** | **11.2×** |
+
+### Bilinear downscale
+
+| Source → Dest | kornia-rs ms | GB/s | cv2 CUDA ms | PyTorch GPU ms | vs cv2 CUDA | vs PyTorch |
+|---------------|-------------:|-----:|------------:|---------------:|------------:|-----------:|
+| 1024²→512² | 0.082 | 19.3 | 0.177 | 0.096 | **2.2×** | 0.85× |
+| 1920×1080→960×540 | 0.101 | 23.0 | 0.287 | 0.184 | **2.8×** | 1.8× |
+| 4K→1080 | 0.385 | 23.8 | 0.987 | 0.716 | **2.6×** | 1.9× |
+
+**Key findings:**
+
+- kornia-rs NVRTC is **2.2–3.9× faster than OpenCV 4.12 CUDA** for downscale.
+- PyTorch bilinear is competitive (uses texture memory internally); kornia-rs
+  nearest is significantly faster because PyTorch nearest does not exploit
+  the spatial cache.
+- Bilinear throughput (~70 GB/s effective DRAM) is near the GDDR5 ceiling for
+  mixed read/write (4 source reads + 1 write per output pixel).
+
+---
+
+## GPU warp-affine benchmarks — native CUDA (NVRTC) — 2026-06-30
+
+45° centre rotation, same-size canvas, 3-channel f32.  Source data held on
+device across iterations; CUDA stream synchronised after each timed batch.
+
+```sh
+cargo run --example bench_gpu_warp_affine --features gpu-cuda --release
+# Python comparison (requires OpenCV built with -DWITH_CUDA=ON):
+python3 crates/kornia-imgproc/examples/bench_opencv_warp_affine.py
+```
+
+### Hardware / software
+
+Same hardware and toolchain as the resize NVRTC section above.
+OpenCV 4.12.0 built from source with `-DWITH_CUDA=ON -DCUDA_ARCH_BIN=7.5`.
+PyTorch 2.9.1+cu128 via `F.affine_grid` + `F.grid_sample(align_corners=True)`.
+
+### Nearest-neighbor
+
+| Size | kornia-rs ms | GB/s | CPU ms | vs CPU |
+|------|-------------:|-----:|-------:|-------:|
+| 256×224 | 0.011 | 26.1 | 0.540 | **49×** |
+| 512×448 | 0.038 | 30.2 | 2.132 | **56×** |
+| 1024×896 | 0.151 | 30.6 | 8.544 | **57×** |
+| 1920×1080 | 0.353 | 28.9 | 19.15 | **54×** |
+
+### Bilinear
+
+| Size | kornia-rs ms | GB/s | cv2 CUDA ms | PyTorch GPU ms | cv2 CPU ms | vs cv2 CUDA | vs PyTorch | vs cv2 CPU |
+|------|-------------:|-----:|------------:|---------------:|-----------:|------------:|-----------:|-----------:|
+| 256×224 | 0.025 | 25.6 | 0.037 | 0.111 | 0.451 | **1.5×** | **4.5×** | **18×** |
+| 512×448 | 0.092 | 27.9 | 0.178 | 0.449 | 0.874 | **1.9×** | **4.9×** | **9.5×** |
+| 1024×896 | 0.274 | 30.0 | 0.412 | 1.471 | 4.303 | **1.5×** | **5.4×** | **15.7×** |
+| 1920×1080 | 0.572 | 33.3 | 0.753 | 3.298 | 9.610 | **1.3×** | **5.8×** | **16.8×** |
+
+**Key findings:**
+
+- kornia-rs GPU bilinear warp-affine is **1.3–1.9× faster than OpenCV 4.12 CUDA**
+  and **4.5–5.8× faster than PyTorch `grid_sample`**.
+- Higher apparent GB/s vs resize: ~half of output pixels in a 45° rotation are
+  out-of-bounds black corners, written with zero without reading source DRAM,
+  reducing effective traffic and inflating the GB/s formula.
+- PyTorch gap is larger than for resize because `affine_grid` + `grid_sample`
+  allocates an intermediate coordinate grid tensor on every call.
+
+---
+
 ## How this compares to other Rust crates
 
 Most Rust crates use `criterion` or `divan` for microbenchmarks, which provide:
