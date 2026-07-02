@@ -187,6 +187,58 @@ fn elementwise_u8<'a>(
     }
 }
 
+/// End-to-end through **pinned** host memory: src and dst live in reusable
+/// page-locked staging buffers, so the driver DMAs both copies instead of
+/// staging them through an internal bounce buffer.
+#[allow(clippy::too_many_arguments)]
+fn run_pinned_e2e_u8(
+    name: &'static str,
+    stream: &Arc<CudaStream>,
+    npixels: usize,
+    cin: usize,
+    cout: usize,
+    width: usize,
+    height: usize,
+    json: bool,
+    launch: impl Fn(&Arc<CudaStream>, &CudaSlice<u8>, &mut CudaSlice<u8>, usize),
+) {
+    let ctx = stream.context().clone();
+    // Pinned staging buffers are allocated ONCE (cuMemHostAlloc page-locks —
+    // it is far too expensive to sit inside a frame loop) and reused.
+    let mut src_pin = kornia_tensor::zeros_pinned::<u8, 3>([height, width, cin], &ctx).unwrap();
+    src_pin
+        .as_slice_mut()
+        .copy_from_slice(&pattern_u8(npixels * cin));
+    let mut dst_pin = kornia_tensor::zeros_pinned::<u8, 1>([npixels * cout], &ctx).unwrap();
+
+    let mut iter = || {
+        let d_src = src_pin.to_cuda(stream).unwrap();
+        let mut d_out = stream.alloc_zeros::<u8>(npixels * cout).unwrap();
+        launch(stream, d_src.as_cudaslice().unwrap(), &mut d_out, npixels);
+        stream.memcpy_dtoh(&d_out, dst_pin.as_slice_mut()).unwrap();
+        stream.synchronize().unwrap();
+    };
+    iter(); // warm
+    let s = stats_from(time_each(E2E_ITERS, &mut iter), npixels * (cin + cout));
+    if json {
+        println!(
+            "{{\"op\":\"{}\",\"width\":{},\"height\":{},\"variant\":\"kornia-cuda-e2e-pinned\",\"min_ms\":{:.6},\"p50_ms\":{:.6},\"p95_ms\":{:.6},\"gbps\":{:.3}}}",
+            name, width, height, s.min_ms, s.p50_ms, s.p95_ms, s.gbps
+        );
+    } else {
+        println!(
+            "{:>26} {:>10} {:>20} min {:>9.4} ms  p50 {:>9.4} ms  p95 {:>9.4} ms  {:>7.1} GB/s",
+            name,
+            format!("{width}x{height}"),
+            "cuda-e2e-pinned",
+            s.min_ms,
+            s.p50_ms,
+            s.p95_ms,
+            s.gbps
+        );
+    }
+}
+
 fn main() {
     let json = std::env::args().any(|a| a == "--json");
     let ctx = CudaContext::new(0).expect("CUDA device 0 required");
@@ -510,6 +562,43 @@ fn main() {
                 }),
             });
         }
+
+        // ---- pinned-memory end-to-end (representative u8 ops) ----
+        run_pinned_e2e_u8(
+            "gray_from_rgb_u8",
+            &stream,
+            n,
+            3,
+            1,
+            width,
+            height,
+            json,
+            |s, a, b, np| gray::launch_gray_from_rgb_u8(s, a, b, np).unwrap(),
+        );
+        run_pinned_e2e_u8(
+            "bgr_from_rgb_u8",
+            &stream,
+            n,
+            3,
+            3,
+            width,
+            height,
+            json,
+            |s, a, b, np| swizzle::launch_bgr_from_rgb_u8(s, a, b, np).unwrap(),
+        );
+        run_pinned_e2e_u8(
+            "ycbcr_from_rgb_u8",
+            &stream,
+            n,
+            3,
+            3,
+            width,
+            height,
+            json,
+            |s, a, b, np| {
+                yuv::launch_ycc_from_rgb_u8(s, a, b, np, yuv::ChromaOrder::YCrCb).unwrap()
+            },
+        );
 
         if !json {
             println!();
