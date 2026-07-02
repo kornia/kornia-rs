@@ -38,7 +38,7 @@
 
 use std::sync::Arc;
 
-use cudarc::driver::CudaStream;
+use cudarc::driver::{CudaStream, DeviceRepr, ValidAsZeroBits};
 use kornia_image::Image;
 use kornia_tensor::{CudaError, CudaKernel, Tensor};
 
@@ -79,18 +79,60 @@ pub enum SourceFormat {
     Yuyv,
 }
 
-impl SourceFormat {
-    /// Kernel entry point name for this format.
-    fn entry(self) -> &'static str {
-        match self {
-            SourceFormat::Rgb8 => "resize_pad_to_chw_rgb8",
-            SourceFormat::Bgr8 => "resize_pad_to_chw_bgr8",
-            SourceFormat::Rgba8 => "resize_pad_to_chw_rgba8",
-            SourceFormat::Bgra8 => "resize_pad_to_chw_bgra8",
-            SourceFormat::Gray8 => "resize_pad_to_chw_gray8",
-            SourceFormat::Nv12 => "resize_pad_to_chw_nv12",
-            SourceFormat::Yuyv => "resize_pad_to_chw_yuyv",
+/// Interpolation used by the fused resize.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Sampling {
+    /// 4-tap bilinear, clamp-to-edge (the default).
+    #[default]
+    Bilinear,
+    /// Nearest texel (round-half-up), clamp-to-edge.
+    Nearest,
+}
+
+/// Configuration for [`Preprocessor::with_options`].
+#[derive(Debug, Clone, Copy)]
+pub struct PreprocessorOptions {
+    /// How the source is fit into the output rectangle.
+    pub mode: ResizeMode,
+    /// Source pixel format (decode is fused into the resize).
+    pub format: SourceFormat,
+    /// Resize interpolation.
+    pub sampling: Sampling,
+    /// Write `f16` output instead of `f32` (use [`Preprocessor::run_raw_f16`]).
+    pub f16_output: bool,
+}
+
+impl Default for PreprocessorOptions {
+    fn default() -> Self {
+        Self {
+            mode: ResizeMode::Letterbox,
+            format: SourceFormat::Rgb8,
+            sampling: Sampling::Bilinear,
+            f16_output: false,
         }
+    }
+}
+
+impl SourceFormat {
+    /// Kernel entry point name for a (format, sampling, dtype) combination.
+    fn entry(self, sampling: Sampling, f16: bool) -> String {
+        let base = match self {
+            SourceFormat::Rgb8 => "rgb8",
+            SourceFormat::Bgr8 => "bgr8",
+            SourceFormat::Rgba8 => "rgba8",
+            SourceFormat::Bgra8 => "bgra8",
+            SourceFormat::Gray8 => "gray8",
+            SourceFormat::Nv12 => "nv12",
+            SourceFormat::Yuyv => "yuyv",
+        };
+        let mut name = format!("resize_pad_to_chw_{base}");
+        if matches!(sampling, Sampling::Nearest) {
+            name.push_str("_nearest");
+        }
+        if f16 {
+            name.push_str("_f16");
+        }
+        name
     }
 
     /// Required source buffer length in bytes for a `w × h` frame.
@@ -144,6 +186,17 @@ pub enum PreprocessError {
     /// `run` on a typed `Image<u8, 3>` requires a 3-byte-per-pixel format.
     #[error("run() requires SourceFormat::Rgb8 or Bgr8 (got {0:?}); use run_raw()")]
     FormatNeedsRawBuffer(SourceFormat),
+    /// The destination dtype does not match how the preprocessor was built
+    /// (`f16_output` selects between [`Preprocessor::run_raw`] and
+    /// [`Preprocessor::run_raw_f16`]).
+    #[error("preprocessor was built with f16_output={built_f16}; use the matching run method")]
+    OutputDtypeMismatch {
+        /// Whether the compiled kernel writes f16.
+        built_f16: bool,
+    },
+    /// A normalization std component was zero.
+    #[error("normalization std must be non-zero in every channel")]
+    ZeroStd,
     /// Subsampled formats require even frame dimensions.
     #[error("{format:?} requires even dimensions (got {width}x{height})")]
     OddDimensions {
@@ -167,6 +220,15 @@ pub enum PreprocessError {
 // The u8 decode math is byte-identical to `gpu/color_cuda` (Q20 BT.601-limited
 // for NV12/YUYV), so fused output equals the decode-then-preprocess chain.
 const KERNEL_SRC: &str = r#"
+// f32 -> f16 bits via the hardware cvt instruction — avoids depending on
+// cuda_fp16.h, which NVRTC cannot resolve without an include search path.
+// The u16 bit pattern is exactly IEEE binary16 (what half::f16 stores).
+__device__ __forceinline__ unsigned short pp_f32_to_f16(float f) {
+    unsigned short h;
+    asm("cvt.rn.f16.f32 %0, %1;" : "=h"(h) : "f"(f));
+    return h;
+}
+
 __device__ __forceinline__ unsigned char pp_sat_u8(int v) {
     return (unsigned char)min(max(v, 0), 255);
 }
@@ -246,58 +308,105 @@ __device__ __forceinline__ void fetch_yuyv(
     pp_decode_yuv(yv, grp[1], grp[3], r, g, b);
 }
 
-#define PREPROCESS_KERNEL(NAME, FETCH)                                          \
-extern "C" __global__ void NAME(                                                \
-    const unsigned char* __restrict__ src,                                      \
-    float* __restrict__ dst,                                                    \
-    float scale_x, float scale_y, float pad_x, float pad_y,                     \
-    int src_w, int src_h, int src_pitch,                                        \
-    int dst_w, int dst_h                                                        \
-) {                                                                             \
-    int i = blockIdx.x * blockDim.x + threadIdx.x;                              \
-    int pixels = dst_w * dst_h;                                                 \
-    if (i >= pixels) return;                                                    \
-    int ox = i % dst_w;                                                         \
-    int oy = i / dst_w;                                                         \
-                                                                                \
-    float sx = ((float)ox - pad_x) / scale_x;                                   \
-    float sy = ((float)oy - pad_y) / scale_y;                                   \
-                                                                                \
-    if (sx < 0.0f || sy < 0.0f || sx >= (float)src_w || sy >= (float)src_h) {   \
-        float g = 114.0f / 255.0f;                                              \
-        dst[i] = g; dst[pixels + i] = g; dst[2*pixels + i] = g;                 \
-        return;                                                                 \
-    }                                                                           \
-                                                                                \
-    /* Bilinear with clamp-to-edge (texel-center convention). */                \
+// Bilinear: 4 fetched taps, clamp-to-edge, texel-center convention.
+#define SAMPLE_BILINEAR(FETCH, OUTV)                                            \
     int x0 = (int)floorf(sx), y0 = (int)floorf(sy);                             \
     float ax = sx - (float)x0, ay = sy - (float)y0;                             \
     int x1 = min(x0 + 1, src_w - 1), y1 = min(y0 + 1, src_h - 1);               \
     x0 = max(x0, 0); y0 = max(y0, 0);                                           \
-                                                                                \
     unsigned char t00[3], t10[3], t01[3], t11[3];                               \
     FETCH(src, x0, y0, src_w, src_h, src_pitch, &t00[0], &t00[1], &t00[2]);     \
     FETCH(src, x1, y0, src_w, src_h, src_pitch, &t10[0], &t10[1], &t10[2]);     \
     FETCH(src, x0, y1, src_w, src_h, src_pitch, &t01[0], &t01[1], &t01[2]);     \
     FETCH(src, x1, y1, src_w, src_h, src_pitch, &t11[0], &t11[1], &t11[2]);     \
-                                                                                \
+    float OUTV[3];                                                              \
     _Pragma("unroll")                                                           \
     for (int c = 0; c < 3; ++c) {                                               \
         float v00 = (float)t00[c], v10 = (float)t10[c];                         \
         float v01 = (float)t01[c], v11 = (float)t11[c];                         \
         float top = v00 + (v10 - v00) * ax;                                     \
         float bot = v01 + (v11 - v01) * ax;                                     \
-        dst[c * pixels + i] = (top + (bot - top) * ay) / 255.0f;                \
-    }                                                                           \
+        OUTV[c] = top + (bot - top) * ay;                                       \
+    }
+
+// Nearest: round-half-up to the closest texel, clamp-to-edge.
+#define SAMPLE_NEAREST(FETCH, OUTV)                                             \
+    int xi = min(max((int)floorf(sx + 0.5f), 0), src_w - 1);                    \
+    int yi = min(max((int)floorf(sy + 0.5f), 0), src_h - 1);                    \
+    unsigned char t[3];                                                          \
+    FETCH(src, xi, yi, src_w, src_h, src_pitch, &t[0], &t[1], &t[2]);           \
+    float OUTV[3] = { (float)t[0], (float)t[1], (float)t[2] };
+
+#define CVT_F32(x) (x)
+#define CVT_F16(x) pp_f32_to_f16(x)
+
+// One entry per (format, sampling, output dtype). Normalization is fused:
+// out = (v/255 - mean_c) * inv_std_c; the grey (114) pad goes through the
+// same normalization so padded regions match a CPU pad-then-normalize.
+#define PP_KERNEL(NAME, FETCH, SAMPLE, OUTT, CVT)                                \
+extern "C" __global__ void NAME(                                                 \
+    const unsigned char* __restrict__ src,                                       \
+    OUTT* __restrict__ dst,                                                      \
+    float scale_x, float scale_y, float pad_x, float pad_y,                      \
+    int src_w, int src_h, int src_pitch,                                         \
+    int dst_w, int dst_h,                                                        \
+    float mean0, float mean1, float mean2,                                       \
+    float is0, float is1, float is2                                              \
+) {                                                                              \
+    int i = blockIdx.x * blockDim.x + threadIdx.x;                               \
+    int pixels = dst_w * dst_h;                                                  \
+    if (i >= pixels) return;                                                     \
+    int ox = i % dst_w;                                                          \
+    int oy = i / dst_w;                                                          \
+    float mean[3] = { mean0, mean1, mean2 };                                     \
+    float is[3] = { is0, is1, is2 };                                             \
+                                                                                 \
+    float sx = ((float)ox - pad_x) / scale_x;                                    \
+    float sy = ((float)oy - pad_y) / scale_y;                                    \
+                                                                                 \
+    if (sx < 0.0f || sy < 0.0f || sx >= (float)src_w || sy >= (float)src_h) {    \
+        _Pragma("unroll")                                                        \
+        for (int c = 0; c < 3; ++c) {                                            \
+            dst[c * pixels + i] = CVT(((114.0f / 255.0f) - mean[c]) * is[c]);    \
+        }                                                                        \
+        return;                                                                  \
+    }                                                                            \
+                                                                                 \
+    SAMPLE(FETCH, v)                                                             \
+    _Pragma("unroll")                                                            \
+    for (int c = 0; c < 3; ++c) {                                                \
+        dst[c * pixels + i] = CVT((v[c] / 255.0f - mean[c]) * is[c]);            \
+    }                                                                            \
 }
 
-PREPROCESS_KERNEL(resize_pad_to_chw_rgb8,  fetch_rgb8)
-PREPROCESS_KERNEL(resize_pad_to_chw_bgr8,  fetch_bgr8)
-PREPROCESS_KERNEL(resize_pad_to_chw_rgba8, fetch_rgba8)
-PREPROCESS_KERNEL(resize_pad_to_chw_bgra8, fetch_bgra8)
-PREPROCESS_KERNEL(resize_pad_to_chw_gray8, fetch_gray8)
-PREPROCESS_KERNEL(resize_pad_to_chw_nv12,  fetch_nv12)
-PREPROCESS_KERNEL(resize_pad_to_chw_yuyv,  fetch_yuyv)
+PP_KERNEL(resize_pad_to_chw_rgb8,             fetch_rgb8, SAMPLE_BILINEAR, float,  CVT_F32)
+PP_KERNEL(resize_pad_to_chw_rgb8_nearest,     fetch_rgb8, SAMPLE_NEAREST,  float,  CVT_F32)
+PP_KERNEL(resize_pad_to_chw_rgb8_f16,         fetch_rgb8, SAMPLE_BILINEAR, unsigned short, CVT_F16)
+PP_KERNEL(resize_pad_to_chw_rgb8_nearest_f16, fetch_rgb8, SAMPLE_NEAREST,  unsigned short, CVT_F16)
+PP_KERNEL(resize_pad_to_chw_bgr8,             fetch_bgr8, SAMPLE_BILINEAR, float,  CVT_F32)
+PP_KERNEL(resize_pad_to_chw_bgr8_nearest,     fetch_bgr8, SAMPLE_NEAREST,  float,  CVT_F32)
+PP_KERNEL(resize_pad_to_chw_bgr8_f16,         fetch_bgr8, SAMPLE_BILINEAR, unsigned short, CVT_F16)
+PP_KERNEL(resize_pad_to_chw_bgr8_nearest_f16, fetch_bgr8, SAMPLE_NEAREST,  unsigned short, CVT_F16)
+PP_KERNEL(resize_pad_to_chw_rgba8,             fetch_rgba8, SAMPLE_BILINEAR, float,  CVT_F32)
+PP_KERNEL(resize_pad_to_chw_rgba8_nearest,     fetch_rgba8, SAMPLE_NEAREST,  float,  CVT_F32)
+PP_KERNEL(resize_pad_to_chw_rgba8_f16,         fetch_rgba8, SAMPLE_BILINEAR, unsigned short, CVT_F16)
+PP_KERNEL(resize_pad_to_chw_rgba8_nearest_f16, fetch_rgba8, SAMPLE_NEAREST,  unsigned short, CVT_F16)
+PP_KERNEL(resize_pad_to_chw_bgra8,             fetch_bgra8, SAMPLE_BILINEAR, float,  CVT_F32)
+PP_KERNEL(resize_pad_to_chw_bgra8_nearest,     fetch_bgra8, SAMPLE_NEAREST,  float,  CVT_F32)
+PP_KERNEL(resize_pad_to_chw_bgra8_f16,         fetch_bgra8, SAMPLE_BILINEAR, unsigned short, CVT_F16)
+PP_KERNEL(resize_pad_to_chw_bgra8_nearest_f16, fetch_bgra8, SAMPLE_NEAREST,  unsigned short, CVT_F16)
+PP_KERNEL(resize_pad_to_chw_gray8,             fetch_gray8, SAMPLE_BILINEAR, float,  CVT_F32)
+PP_KERNEL(resize_pad_to_chw_gray8_nearest,     fetch_gray8, SAMPLE_NEAREST,  float,  CVT_F32)
+PP_KERNEL(resize_pad_to_chw_gray8_f16,         fetch_gray8, SAMPLE_BILINEAR, unsigned short, CVT_F16)
+PP_KERNEL(resize_pad_to_chw_gray8_nearest_f16, fetch_gray8, SAMPLE_NEAREST,  unsigned short, CVT_F16)
+PP_KERNEL(resize_pad_to_chw_nv12,             fetch_nv12, SAMPLE_BILINEAR, float,  CVT_F32)
+PP_KERNEL(resize_pad_to_chw_nv12_nearest,     fetch_nv12, SAMPLE_NEAREST,  float,  CVT_F32)
+PP_KERNEL(resize_pad_to_chw_nv12_f16,         fetch_nv12, SAMPLE_BILINEAR, unsigned short, CVT_F16)
+PP_KERNEL(resize_pad_to_chw_nv12_nearest_f16, fetch_nv12, SAMPLE_NEAREST,  unsigned short, CVT_F16)
+PP_KERNEL(resize_pad_to_chw_yuyv,             fetch_yuyv, SAMPLE_BILINEAR, float,  CVT_F32)
+PP_KERNEL(resize_pad_to_chw_yuyv_nearest,     fetch_yuyv, SAMPLE_NEAREST,  float,  CVT_F32)
+PP_KERNEL(resize_pad_to_chw_yuyv_f16,         fetch_yuyv, SAMPLE_BILINEAR, unsigned short, CVT_F16)
+PP_KERNEL(resize_pad_to_chw_yuyv_nearest_f16, fetch_yuyv, SAMPLE_NEAREST,  unsigned short, CVT_F16)
 "#;
 
 /// GPU image-to-tensor preprocessor: resize (+ optional pad) + normalize.
@@ -316,6 +425,10 @@ pub struct Preprocessor {
     stream: Arc<CudaStream>,
     mode: ResizeMode,
     format: SourceFormat,
+    sampling: Sampling,
+    f16_output: bool,
+    mean: [f32; 3],
+    inv_std: [f32; 3],
 }
 
 impl Preprocessor {
@@ -346,14 +459,52 @@ impl Preprocessor {
         mode: ResizeMode,
         format: SourceFormat,
     ) -> Result<Self, PreprocessError> {
+        Self::with_options(
+            stream,
+            PreprocessorOptions {
+                mode,
+                format,
+                ..Default::default()
+            },
+        )
+    }
+
+    /// Build a preprocessor from full [`PreprocessorOptions`] — source format,
+    /// sampling, and output dtype each select a dedicated kernel entry; only
+    /// that one is compiled.
+    pub fn with_options(
+        stream: Arc<CudaStream>,
+        opts: PreprocessorOptions,
+    ) -> Result<Self, PreprocessError> {
         let ctx = stream.context();
-        let kernel = CudaKernel::compile(ctx, KERNEL_SRC, format.entry())?;
+        let entry = opts.format.entry(opts.sampling, opts.f16_output);
+        let kernel = CudaKernel::compile(ctx, KERNEL_SRC, &entry)?;
         Ok(Self {
             kernel,
             stream,
-            mode,
-            format,
+            mode: opts.mode,
+            format: opts.format,
+            sampling: opts.sampling,
+            f16_output: opts.f16_output,
+            mean: [0.0; 3],
+            inv_std: [1.0; 3],
         })
+    }
+
+    /// Fuse a per-channel mean/std normalization into the kernel:
+    /// `out = (v/255 − mean_c) / std_c` (grey padding passes through the same
+    /// normalization). Chainable; defaults to mean 0 / std 1 (plain `[0,1]`).
+    ///
+    /// # Errors
+    ///
+    /// [`PreprocessError::ZeroStd`] if any std component is zero.
+    pub fn normalize(mut self, mean: [f32; 3], std: [f32; 3]) -> Result<Self, PreprocessError> {
+        if std.contains(&0.0) {
+            return Err(PreprocessError::ZeroStd);
+        }
+        self.mean = mean;
+        self.inv_std = [1.0 / std[0], 1.0 / std[1], 1.0 / std[2]];
+        Ok(self)
     }
 
     /// The CUDA stream this preprocessor launches on.
@@ -371,6 +522,11 @@ impl Preprocessor {
         self.format
     }
 
+    /// The resize interpolation this preprocessor applies.
+    pub fn sampling(&self) -> Sampling {
+        self.sampling
+    }
+
     /// Resize `src` into `dst` (`[1, 3, H, W]` CHW `f32`, RGB in `[0, 1]`).
     ///
     /// The target H/W is read from `dst`'s shape, so one preprocessor handles any
@@ -383,6 +539,9 @@ impl Preprocessor {
     /// if either operand is host-resident, or [`PreprocessError::Cuda`] on a CUDA
     /// launch failure.
     pub fn run(&self, src: &Image<u8, 3>, dst: &mut Tensor<f32, 4>) -> Result<(), PreprocessError> {
+        if self.f16_output {
+            return Err(PreprocessError::OutputDtypeMismatch { built_f16: true });
+        }
         if !matches!(self.format, SourceFormat::Rgb8 | SourceFormat::Bgr8) {
             return Err(PreprocessError::FormatNeedsRawBuffer(self.format));
         }
@@ -411,6 +570,38 @@ impl Preprocessor {
         src_height: usize,
         dst: &mut Tensor<f32, 4>,
     ) -> Result<(), PreprocessError> {
+        if self.f16_output {
+            return Err(PreprocessError::OutputDtypeMismatch { built_f16: true });
+        }
+        self.run_raw_checked(src, src_width, src_height, dst)
+    }
+
+    /// [`run_raw`](Self::run_raw) for a preprocessor built with
+    /// `f16_output: true` — writes half-precision CHW output (half the
+    /// tensor bandwidth, the dtype most TensorRT engines consume).
+    pub fn run_raw_f16(
+        &self,
+        src: &cudarc::driver::CudaSlice<u8>,
+        src_width: usize,
+        src_height: usize,
+        dst: &mut Tensor<half::f16, 4>,
+    ) -> Result<(), PreprocessError> {
+        if !self.f16_output {
+            return Err(PreprocessError::OutputDtypeMismatch { built_f16: false });
+        }
+        self.run_raw_checked(src, src_width, src_height, dst)
+    }
+
+    fn run_raw_checked<O>(
+        &self,
+        src: &cudarc::driver::CudaSlice<u8>,
+        src_width: usize,
+        src_height: usize,
+        dst: &mut Tensor<O, 4>,
+    ) -> Result<(), PreprocessError>
+    where
+        O: DeviceRepr + ValidAsZeroBits + 'static,
+    {
         let need = self.format.buffer_len(src_width, src_height);
         if src.len() < need {
             return Err(PreprocessError::SourceBufferTooSmall {
@@ -436,13 +627,16 @@ impl Preprocessor {
         self.launch(src, src_width, src_height, dst)
     }
 
-    fn launch(
+    fn launch<O>(
         &self,
         src_slice: &cudarc::driver::CudaSlice<u8>,
         src_w: usize,
         src_h: usize,
-        dst: &mut Tensor<f32, 4>,
-    ) -> Result<(), PreprocessError> {
+        dst: &mut Tensor<O, 4>,
+    ) -> Result<(), PreprocessError>
+    where
+        O: DeviceRepr + ValidAsZeroBits + 'static,
+    {
         let (dst_h, dst_w) = (dst.shape[2], dst.shape[3]);
 
         let (scale_x, scale_y, pad_x, pad_y) = match self.mode {
@@ -484,6 +678,12 @@ impl Preprocessor {
             .arg(&sp)
             .arg(&dw)
             .arg(&dh)
+            .arg(&self.mean[0])
+            .arg(&self.mean[1])
+            .arg(&self.mean[2])
+            .arg(&self.inv_std[0])
+            .arg(&self.inv_std[1])
+            .arg(&self.inv_std[2])
             .launch_1d(total)?;
         Ok(())
     }
@@ -595,6 +795,151 @@ mod tests {
         assert_fused_matches_chained(SourceFormat::Yuyv, |s, a, b| {
             video::launch_rgb_from_packed422_u8(s, a, b, W, H, video::Packed422::Yuyv).unwrap()
         });
+    }
+
+    #[test]
+    fn nearest_fused_matches_chained() {
+        // Same fused-vs-chained equivalence, nearest sampling.
+        let ctx = CudaContext::new(0).unwrap();
+        let stream = ctx.default_stream();
+        let src_bytes = pattern(SourceFormat::Nv12.buffer_len(W, H));
+        let d_src = stream.clone_htod(&src_bytes).unwrap();
+
+        let opts = |format| PreprocessorOptions {
+            mode: ResizeMode::Letterbox,
+            format,
+            sampling: Sampling::Nearest,
+            f16_output: false,
+        };
+        let pre = Preprocessor::with_options(stream.clone(), opts(SourceFormat::Nv12)).unwrap();
+        let mut dst_fused = zeros_cuda::<f32, 4>([1, 3, OUT, OUT], &stream).unwrap();
+        pre.run_raw(&d_src, W, H, &mut dst_fused).unwrap();
+
+        let mut d_rgb = stream.alloc_zeros::<u8>(W * H * 3).unwrap();
+        crate::gpu::color_cuda::video::launch_rgb_from_planar420_u8(
+            &stream,
+            &d_src,
+            &mut d_rgb,
+            W,
+            H,
+            crate::gpu::color_cuda::video::Planar420::Nv12,
+        )
+        .unwrap();
+        let rgb_img: Image<u8, 3> = Image(kornia_tensor::Tensor::from_cudaslice(
+            d_rgb,
+            [H, W, 3],
+            stream.clone(),
+        ));
+        let pre_rgb = Preprocessor::with_options(stream.clone(), opts(SourceFormat::Rgb8)).unwrap();
+        let mut dst_ref = zeros_cuda::<f32, 4>([1, 3, OUT, OUT], &stream).unwrap();
+        pre_rgb.run(&rgb_img, &mut dst_ref).unwrap();
+
+        let fused = dst_fused.to_host(&stream).unwrap();
+        let chained = dst_ref.to_host(&stream).unwrap();
+        let max_diff = fused
+            .as_slice()
+            .iter()
+            .zip(chained.as_slice())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0f32, f32::max);
+        assert!(
+            max_diff <= 1e-6,
+            "nearest fused vs chained max diff {max_diff}"
+        );
+    }
+
+    #[test]
+    fn f16_output_close_to_f32() {
+        let ctx = CudaContext::new(0).unwrap();
+        let stream = ctx.default_stream();
+        let src_bytes = pattern(SourceFormat::Rgb8.buffer_len(W, H));
+        let d_src = stream.clone_htod(&src_bytes).unwrap();
+
+        let pre32 =
+            Preprocessor::with_format(stream.clone(), ResizeMode::Stretch, SourceFormat::Rgb8)
+                .unwrap();
+        let mut d32 = zeros_cuda::<f32, 4>([1, 3, OUT, OUT], &stream).unwrap();
+        pre32.run_raw(&d_src, W, H, &mut d32).unwrap();
+
+        let pre16 = Preprocessor::with_options(
+            stream.clone(),
+            PreprocessorOptions {
+                mode: ResizeMode::Stretch,
+                format: SourceFormat::Rgb8,
+                sampling: Sampling::Bilinear,
+                f16_output: true,
+            },
+        )
+        .unwrap();
+        let mut d16 = zeros_cuda::<half::f16, 4>([1, 3, OUT, OUT], &stream).unwrap();
+        pre16.run_raw_f16(&d_src, W, H, &mut d16).unwrap();
+
+        // Dtype guards.
+        assert!(matches!(
+            pre16.run_raw(&d_src, W, H, &mut d32),
+            Err(PreprocessError::OutputDtypeMismatch { built_f16: true })
+        ));
+        assert!(matches!(
+            pre32.run_raw_f16(&d_src, W, H, &mut d16),
+            Err(PreprocessError::OutputDtypeMismatch { built_f16: false })
+        ));
+
+        let h32 = d32.to_host(&stream).unwrap();
+        let h16 = d16.to_host(&stream).unwrap();
+        // Values live in [0,1]: half quantization step ≤ 2^-11 there.
+        let max_diff = h32
+            .as_slice()
+            .iter()
+            .zip(h16.as_slice())
+            .map(|(a, b)| (a - b.to_f32()).abs())
+            .fold(0f32, f32::max);
+        assert!(max_diff <= 5e-4, "f16 vs f32 max diff {max_diff}");
+    }
+
+    #[test]
+    fn fused_normalize_matches_post_normalize() {
+        let ctx = CudaContext::new(0).unwrap();
+        let stream = ctx.default_stream();
+        let src_bytes = pattern(SourceFormat::Rgb8.buffer_len(W, H));
+        let d_src = stream.clone_htod(&src_bytes).unwrap();
+        let mean = [0.485f32, 0.456, 0.406];
+        let std = [0.229f32, 0.224, 0.225];
+
+        let plain =
+            Preprocessor::with_format(stream.clone(), ResizeMode::Stretch, SourceFormat::Rgb8)
+                .unwrap();
+        let mut d_plain = zeros_cuda::<f32, 4>([1, 3, OUT, OUT], &stream).unwrap();
+        plain.run_raw(&d_src, W, H, &mut d_plain).unwrap();
+
+        let fused =
+            Preprocessor::with_format(stream.clone(), ResizeMode::Stretch, SourceFormat::Rgb8)
+                .unwrap()
+                .normalize(mean, std)
+                .unwrap();
+        let mut d_norm = zeros_cuda::<f32, 4>([1, 3, OUT, OUT], &stream).unwrap();
+        fused.run_raw(&d_src, W, H, &mut d_norm).unwrap();
+
+        let h_plain = d_plain.to_host(&stream).unwrap();
+        let h_norm = d_norm.to_host(&stream).unwrap();
+        let pixels = OUT * OUT;
+        let max_diff = h_norm
+            .as_slice()
+            .iter()
+            .enumerate()
+            .map(|(i, &got)| {
+                let c = i / pixels;
+                let want = (h_plain.as_slice()[i] - mean[c]) / std[c];
+                (got - want).abs()
+            })
+            .fold(0f32, f32::max);
+        assert!(max_diff <= 1e-5, "fused normalize max diff {max_diff}");
+
+        assert!(matches!(
+            Preprocessor::with_format(stream, ResizeMode::Stretch, SourceFormat::Rgb8)
+                .unwrap()
+                .normalize([0.0; 3], [0.0, 1.0, 1.0]),
+            Err(PreprocessError::ZeroStd)
+        ));
     }
 
     #[test]

@@ -8163,6 +8163,7 @@ dependencies = [
  "cubecl-cpu",
  "cubecl-cuda",
  "cudarc 0.19.7",
+ "half",
  "image",
  "imageproc 0.26.2",
  "kornia-algebra",
