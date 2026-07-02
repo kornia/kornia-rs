@@ -475,6 +475,168 @@ pub fn launch_nv12_from_rgb_u8(
     Ok(())
 }
 
+// ── DeviceVideoFrame: typed device-resident video buffer ────────────────────
+
+/// The pixel layout of a [`DeviceVideoFrame`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VideoFormat {
+    /// Packed 4:2:2 (`Yuyv`/`Uyvy`/`Yvyu`), 2 bytes/px.
+    Packed422(Packed422),
+    /// Planar 4:2:0 (`Nv12`/`Nv21`/`I420`/`Yv12`), 1.5 bytes/px.
+    Planar420(Planar420),
+}
+
+impl VideoFormat {
+    /// Required buffer length in bytes for a `w × h` frame.
+    pub fn buffer_len(self, w: usize, h: usize) -> usize {
+        match self {
+            VideoFormat::Packed422(_) => w * h * 2,
+            VideoFormat::Planar420(_) => w * h * 3 / 2,
+        }
+    }
+}
+
+/// A device-resident raw video frame with its format and geometry — the typed
+/// counterpart of the host `Yuyv8`/`Nv12`/… wrappers, closing the gap that
+/// video formats had no `ConvertColor` dispatch on the GPU.
+///
+/// The backing tensor carries its stream (see `Tensor::cuda_stream`), so
+/// [`to_rgb`](Self::to_rgb) and the [`ConvertColor<Rgb8>`] impl need no
+/// stream parameter; cross-stream destinations are event-fenced like every
+/// other device conversion.
+pub struct DeviceVideoFrame {
+    tensor: kornia_tensor::Tensor<u8, 1>,
+    width: usize,
+    height: usize,
+    format: VideoFormat,
+}
+
+impl DeviceVideoFrame {
+    /// Upload raw host bytes in `format` layout (H2D copy).
+    ///
+    /// # Errors
+    ///
+    /// [`CudaColorError::SliceTooSmall`] if `data` is shorter than the format
+    /// requires, or a CUDA error on upload failure.
+    pub fn from_host(
+        data: &[u8],
+        width: usize,
+        height: usize,
+        format: VideoFormat,
+        stream: &Arc<CudaStream>,
+    ) -> Result<Self, CudaColorError> {
+        let need = format.buffer_len(width, height);
+        check_len("src", data.len(), need)?;
+        let slice = stream
+            .clone_htod(&data[..need])
+            .map_err(|e| CudaColorError::Cuda(e.to_string()))?;
+        Ok(Self::from_cudaslice(
+            slice,
+            width,
+            height,
+            format,
+            stream.clone(),
+        ))
+    }
+
+    /// Zero-copy wrap an existing device buffer (e.g. straight from a capture
+    /// pipeline). `slice.len()` must be at least the format's buffer length.
+    pub fn from_cudaslice(
+        slice: CudaSlice<u8>,
+        width: usize,
+        height: usize,
+        format: VideoFormat,
+        stream: Arc<CudaStream>,
+    ) -> Self {
+        let len = slice.len();
+        Self {
+            tensor: kornia_tensor::Tensor::from_cudaslice(slice, [len], stream),
+            width,
+            height,
+            format,
+        }
+    }
+
+    /// Frame width in pixels.
+    pub fn width(&self) -> usize {
+        self.width
+    }
+
+    /// Frame height in pixels.
+    pub fn height(&self) -> usize {
+        self.height
+    }
+
+    /// Pixel layout of this frame.
+    pub fn format(&self) -> VideoFormat {
+        self.format
+    }
+
+    /// Decode to a device-resident RGB image (BT.601 limited range,
+    /// bit-exact vs the CPU path). `dst` must be device-resident with the
+    /// frame's dimensions; a different stream is event-fenced.
+    ///
+    /// # Errors
+    ///
+    /// [`kornia_image::ImageError`] on size/residency mismatch or CUDA failure.
+    pub fn to_rgb(
+        &self,
+        dst: &mut kornia_image::Image<u8, 3>,
+    ) -> Result<(), kornia_image::ImageError> {
+        use kornia_image::ImageError;
+        if dst.width() != self.width || dst.height() != self.height {
+            return Err(ImageError::InvalidImageSize(
+                self.width,
+                self.height,
+                dst.cols(),
+                dst.rows(),
+            ));
+        }
+        let src_stream = self
+            .tensor
+            .cuda_stream()
+            .ok_or_else(|| ImageError::Cuda("video frame is not device-backed".into()))?;
+        let exec = crate::color::cuda_dispatch::device_exec_for(src_stream, &dst.0)?;
+        let src_slice = self
+            .tensor
+            .as_cudaslice()
+            .ok_or_else(|| ImageError::Cuda("video frame is not device-backed".into()))?;
+        let dst_slice = dst
+            .0
+            .as_cudaslice_mut()
+            .ok_or(ImageError::UnsupportedDevice)?;
+        let res = match self.format {
+            VideoFormat::Packed422(fmt) => launch_rgb_from_packed422_u8(
+                exec.stream(),
+                src_slice,
+                dst_slice,
+                self.width,
+                self.height,
+                fmt,
+            ),
+            VideoFormat::Planar420(fmt) => launch_rgb_from_planar420_u8(
+                exec.stream(),
+                src_slice,
+                dst_slice,
+                self.width,
+                self.height,
+                fmt,
+            ),
+        };
+        res.map_err(|e| ImageError::Cuda(e.to_string()))?;
+        exec.finish()
+    }
+}
+
+impl crate::color::ConvertColor<kornia_image::color_spaces::Rgb8> for DeviceVideoFrame {
+    fn convert(
+        &self,
+        dst: &mut kornia_image::color_spaces::Rgb8,
+    ) -> Result<(), kornia_image::ImageError> {
+        self.to_rgb(&mut dst.0)
+    }
+}
+
 #[cfg(all(test, feature = "gpu-cuda"))]
 mod tests {
     use kornia_image::{Image, ImageSize};
@@ -484,6 +646,51 @@ mod tests {
 
     const W: usize = 64;
     const H: usize = 48;
+
+    #[test]
+    fn device_video_frame_convert_matches_cpu() {
+        use crate::color::ConvertColor;
+        use kornia_image::color_spaces::Rgb8;
+        use kornia_image::ImageSize;
+
+        let stream = default_stream();
+        let size = ImageSize {
+            width: W,
+            height: H,
+        };
+
+        for (fmt, len) in [
+            (VideoFormat::Packed422(Packed422::Yuyv), W * H * 2),
+            (VideoFormat::Planar420(Planar420::Nv12), W * H * 3 / 2),
+        ] {
+            let bytes = pattern_u8(len);
+            let frame = DeviceVideoFrame::from_host(&bytes, W, H, fmt, &stream).unwrap();
+            let mut rgb_d = Rgb8::zeros_cuda(size, &stream).unwrap();
+            frame.convert(&mut rgb_d).unwrap();
+            let rgb = rgb_d.download().unwrap();
+
+            let mut cpu = vec![0u8; W * H * 3];
+            match fmt {
+                VideoFormat::Packed422(f) => {
+                    crate::color::yuv::kernels::rgb_from_packed422(&bytes, &mut cpu, W, H, f)
+                }
+                VideoFormat::Planar420(f) => crate::color::yuv::kernels::rgb_from_planar420(
+                    &bytes[..W * H],
+                    &bytes[W * H..],
+                    &[],
+                    &mut cpu,
+                    W,
+                    H,
+                    f,
+                ),
+            }
+            assert_eq!(
+                rgb.as_slice(),
+                &cpu[..],
+                "{fmt:?} device frame must match CPU"
+            );
+        }
+    }
 
     #[test]
     fn packed422_decode_bit_exact_vs_cpu() {
