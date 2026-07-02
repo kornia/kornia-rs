@@ -18,7 +18,7 @@ use kornia_image::{Image, ImageError};
 use kornia_tensor::MemoryDomain;
 
 use crate::color::yuv::kernels::ChromaOrder;
-use crate::gpu::color_cuda::{gray, hsv_hls, misc, swizzle, yuv, CudaColorError};
+use crate::gpu::color_cuda::{cie, gray, hsv_hls, misc, swizzle, yuv, CudaColorError};
 
 /// Where a (src, dst) operand pair lives.
 pub(crate) enum Residency<'a> {
@@ -151,6 +151,15 @@ adapter!(hsv_from_rgb_f32_cuda, f32, 3 => 3, hsv_hls::launch_hsv_from_rgb_f32);
 adapter!(rgb_from_hsv_f32_cuda, f32, 3 => 3, hsv_hls::launch_rgb_from_hsv_f32);
 adapter!(hls_from_rgb_f32_cuda, f32, 3 => 3, hsv_hls::launch_hls_from_rgb_f32);
 adapter!(rgb_from_hls_f32_cuda, f32, 3 => 3, hsv_hls::launch_rgb_from_hls_f32);
+
+adapter!(linear_rgb_from_rgb_f32_cuda, f32, 3 => 3, cie::launch_linear_rgb_from_rgb_f32);
+adapter!(rgb_from_linear_rgb_f32_cuda, f32, 3 => 3, cie::launch_rgb_from_linear_rgb_f32);
+adapter!(xyz_from_rgb_f32_cuda, f32, 3 => 3, cie::launch_xyz_from_rgb_f32);
+adapter!(rgb_from_xyz_f32_cuda, f32, 3 => 3, cie::launch_rgb_from_xyz_f32);
+adapter!(lab_from_rgb_f32_cuda, f32, 3 => 3, cie::launch_lab_from_rgb_f32);
+adapter!(rgb_from_lab_f32_cuda, f32, 3 => 3, cie::launch_rgb_from_lab_f32);
+adapter!(luv_from_rgb_f32_cuda, f32, 3 => 3, cie::launch_luv_from_rgb_f32);
+adapter!(rgb_from_luv_f32_cuda, f32, 3 => 3, cie::launch_rgb_from_luv_f32);
 
 /// Define a YCbCr/YUV-family adapter: fixes direction + chroma order.
 macro_rules! ycc_adapter {

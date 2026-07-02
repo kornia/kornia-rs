@@ -31,6 +31,7 @@ use std::sync::{Arc, OnceLock};
 use cudarc::driver::CudaStream;
 use kornia_tensor::CudaKernel;
 
+pub mod cie;
 pub mod gray;
 pub mod hsv_hls;
 pub mod misc;
