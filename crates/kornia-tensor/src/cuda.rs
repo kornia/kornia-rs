@@ -81,6 +81,11 @@ pub struct CudaResource<T> {
     ptr: *mut u8,
     /// CUDA device ordinal (returned by `CudaContext::ordinal()`).
     id: i32,
+    /// Stream this allocation was created on. Carried inside the resource so that
+    /// device-dispatching code (e.g. residency-aware color conversion) can recover
+    /// a stream from the tensor itself via [`Tensor::cuda_stream`] — no global or
+    /// thread-local stream state.
+    pub(crate) stream: Arc<CudaStream>,
 }
 
 // SAFETY: CudaSlice<T> is Send + Sync.  `ptr` is a device pointer that is never
@@ -152,7 +157,12 @@ impl TensorAllocator for CudaAllocator {
         };
         let id = self.ctx.ordinal() as i32;
 
-        Ok(Box::new(CudaResource::<u8> { slice, ptr, id }))
+        Ok(Box::new(CudaResource::<u8> {
+            slice,
+            ptr,
+            id,
+            stream: self.stream.clone(),
+        }))
     }
 }
 
@@ -436,7 +446,12 @@ where
         // _sync drops here
     };
 
-    let resource = CudaResource::<T> { slice, ptr, id };
+    let resource = CudaResource::<T> {
+        slice,
+        ptr,
+        id,
+        stream: stream.clone(),
+    };
     let alloc: AllocHandle = Arc::new(CudaAllocator {
         ctx: ctx.clone(),
         stream: stream.clone(),
@@ -531,9 +546,17 @@ where
             // _sync drops here, releasing the borrow on `slice`
         };
 
-        let alloc: AllocHandle = Arc::new(CudaAllocator { ctx, stream });
+        let alloc: AllocHandle = Arc::new(CudaAllocator {
+            ctx,
+            stream: stream.clone(),
+        });
         // Move the original CudaSlice<T> in, unchanged — this is the aliasing wrap.
-        let resource = CudaResource::<T> { slice, ptr, id };
+        let resource = CudaResource::<T> {
+            slice,
+            ptr,
+            id,
+            stream,
+        };
 
         let storage =
             unsafe { storage_from_cuda_resource(resource, ptr as *mut T, n_bytes, alloc) };
@@ -556,6 +579,21 @@ where
             .as_any()
             .downcast_ref::<CudaResource<T>>()
             .map(|r| &r.slice)
+    }
+
+    /// Return the stream this device tensor's allocation was created on, if the
+    /// storage is backed by a [`CudaResource<T>`].
+    ///
+    /// This is how residency-aware dispatch (e.g. color conversion on device
+    /// images) recovers a stream without any global state: the stream travels
+    /// inside the tensor. Returns `None` for host tensors or element-type
+    /// mismatches (same rules as [`as_cudaslice`](Self::as_cudaslice)).
+    pub fn cuda_stream(&self) -> Option<&Arc<CudaStream>> {
+        self.storage
+            .owner
+            .as_any()
+            .downcast_ref::<CudaResource<T>>()
+            .map(|r| &r.stream)
     }
 
     /// Mutably borrow the underlying `CudaSlice<T>` if the storage is backed by a
@@ -616,6 +654,8 @@ where
         let mut md_res = std::mem::ManuallyDrop::new(*cuda_box);
         // SAFETY: md_res prevents CudaResource from dropping its fields; we take the slice.
         let slice = unsafe { std::ptr::read(&md_res.slice) };
+        // Drop the stream Arc explicitly — ManuallyDrop would otherwise leak it.
+        let _stream = unsafe { std::ptr::read(&md_res.stream) };
         // Poison the ptr to make residual state obviously invalid (defensive).
         md_res.ptr = std::ptr::null_mut();
 
@@ -661,6 +701,7 @@ where
             slice: dev_slice,
             ptr,
             id,
+            stream: stream.clone(),
         };
         let storage =
             unsafe { storage_from_cuda_resource(resource, ptr as *mut T, n_bytes, alloc) };
