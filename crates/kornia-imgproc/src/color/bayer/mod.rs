@@ -9,7 +9,7 @@ use kornia_image::{
     Image, ImageError,
 };
 
-mod kernels;
+pub(crate) mod kernels;
 
 /// Demosaic a single-channel Bayer mosaic into an interleaved RGB u8 image.
 ///
@@ -46,6 +46,13 @@ pub fn rgb_from_bayer(
             dst.cols(),
             dst.rows(),
         ));
+    }
+    #[cfg(feature = "gpu-cuda")]
+    {
+        use super::cuda_dispatch::{pair_residency, Residency};
+        if let Residency::Device(stream) = pair_residency(src, dst)? {
+            return super::cuda_dispatch::rgb_from_bayer_u8_cuda(src, dst, pattern, stream);
+        }
     }
     kernels::rgb_from_bayer_dispatch(
         src.as_slice(),

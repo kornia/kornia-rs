@@ -14,6 +14,10 @@ publish = true
 name = "bench_gpu_color"
 
 [[example]]
+name = "bench_gpu_color_conversions"
+required-features = ["gpu-cuda"]
+
+[[example]]
 name = "bench_gpu_resize"
 
 [[bench]]
@@ -113,18 +117,12 @@ rand = { workspace = true }
 
 [features]
 # cudarc device backend + custom CUDA kernels (enables the `preprocess` module).
-cudarc = [
-  "dep:cudarc",
-  "kornia-tensor/cudarc",
-]
+cudarc = ["dep:cudarc", "kornia-tensor/cudarc"]
 gpu-cubecl = [
   "dep:cubecl",
   "dep:cubecl-cpu",
   "dep:cubecl-cuda",
   "kornia-tensor/gpu-cubecl",
 ]
-gpu-cuda = [
-  "dep:cudarc",
-  "kornia-tensor/cudarc",
-]
+gpu-cuda = ["dep:cudarc", "kornia-image/cudarc", "kornia-tensor/cudarc"]
 opencv_bench = ["dep:opencv"]
