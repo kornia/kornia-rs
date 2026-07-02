@@ -239,6 +239,127 @@ fn run_pinned_e2e_u8(
     }
 }
 
+/// Fused color+resize+normalize (`Preprocessor` with a `SourceFormat`) vs the
+/// decode-then-preprocess chain. Device-resident src, batched launches + sync,
+/// 1080p-style frame -> 640x640 letterbox tensor.
+#[cfg(feature = "cudarc")]
+fn run_fused_preprocess(stream: &Arc<CudaStream>, width: usize, height: usize, json: bool) {
+    use kornia_imgproc::preprocess::{Preprocessor, ResizeMode, SourceFormat};
+    const OUT: usize = 640;
+    const BATCH: usize = 20;
+    const ROUNDS: usize = 8;
+    let n = width * height;
+
+    type Decode = fn(&Arc<CudaStream>, &CudaSlice<u8>, &mut CudaSlice<u8>, usize, usize);
+    let cases: [(&str, SourceFormat, usize, Decode); 3] = [
+        (
+            "preprocess_nv12_640",
+            SourceFormat::Nv12,
+            n * 3 / 2,
+            |s, a, b, w, h| {
+                video::launch_rgb_from_planar420_u8(s, a, b, w, h, video::Planar420::Nv12).unwrap()
+            },
+        ),
+        (
+            "preprocess_yuyv_640",
+            SourceFormat::Yuyv,
+            n * 2,
+            |s, a, b, w, h| {
+                video::launch_rgb_from_packed422_u8(s, a, b, w, h, video::Packed422::Yuyv).unwrap()
+            },
+        ),
+        (
+            "preprocess_bgr_640",
+            SourceFormat::Bgr8,
+            n * 3,
+            |s, a, b, w, h| swizzle::launch_bgr_from_rgb_u8(s, a, b, w * h).unwrap(),
+        ),
+    ];
+
+    for (name, format, src_len, decode) in cases {
+        let src = pattern_u8(src_len);
+        let d_src = stream.clone_htod(&src).unwrap();
+        let pre_fused =
+            Preprocessor::with_format(stream.clone(), ResizeMode::Letterbox, format).unwrap();
+        let pre_rgb = Preprocessor::letterbox(stream.clone()).unwrap();
+        let mut dst = kornia_tensor::zeros_cuda::<f32, 4>([1, 3, OUT, OUT], stream).unwrap();
+        // src bytes read + CHW f32 written (ignores the chained variant's extra
+        // intermediate traffic on purpose: same logical work for both).
+        let bytes = src_len + OUT * OUT * 3 * 4;
+
+        // Fused: one kernel per frame.
+        for _ in 0..BATCH {
+            pre_fused.run_raw(&d_src, width, height, &mut dst).unwrap();
+        }
+        stream.synchronize().unwrap();
+        let mut fused_samples = Vec::with_capacity(ROUNDS);
+        for _ in 0..ROUNDS {
+            let t0 = Instant::now();
+            for _ in 0..BATCH {
+                pre_fused.run_raw(&d_src, width, height, &mut dst).unwrap();
+            }
+            stream.synchronize().unwrap();
+            fused_samples.push(t0.elapsed().as_secs_f64() * 1e3 / BATCH as f64);
+        }
+        let s_fused = stats_from(fused_samples, bytes);
+
+        // Chained: decode to a persistent device RGB image, then RGB preprocess.
+        let d_rgb = stream.alloc_zeros::<u8>(n * 3).unwrap();
+        let mut rgb_img = Image::<u8, 3>(kornia_tensor::Tensor::from_cudaslice(
+            d_rgb,
+            [height, width, 3],
+            stream.clone(),
+        ));
+        for _ in 0..BATCH {
+            decode(
+                stream,
+                &d_src,
+                rgb_img.0.as_cudaslice_mut().unwrap(),
+                width,
+                height,
+            );
+            pre_rgb.run(&rgb_img, &mut dst).unwrap();
+        }
+        stream.synchronize().unwrap();
+        let mut chained_samples = Vec::with_capacity(ROUNDS);
+        for _ in 0..ROUNDS {
+            let t0 = Instant::now();
+            for _ in 0..BATCH {
+                decode(
+                    stream,
+                    &d_src,
+                    rgb_img.0.as_cudaslice_mut().unwrap(),
+                    width,
+                    height,
+                );
+                pre_rgb.run(&rgb_img, &mut dst).unwrap();
+            }
+            stream.synchronize().unwrap();
+            chained_samples.push(t0.elapsed().as_secs_f64() * 1e3 / BATCH as f64);
+        }
+        let s_chained = stats_from(chained_samples, bytes);
+
+        for (variant, s) in [("fused", &s_fused), ("chained", &s_chained)] {
+            if json {
+                println!(
+                    "{{\"op\":\"{}\",\"width\":{},\"height\":{},\"variant\":\"{}\",\"min_ms\":{:.6},\"p50_ms\":{:.6},\"p95_ms\":{:.6},\"gbps\":{:.3}}}",
+                    name, width, height, variant, s.min_ms, s.p50_ms, s.p95_ms, s.gbps
+                );
+            } else {
+                println!(
+                    "{:>26} {:>10} {:>20} min {:>9.4} ms  p50 {:>9.4} ms  p95 {:>9.4} ms",
+                    name,
+                    format!("{width}x{height}"),
+                    variant,
+                    s.min_ms,
+                    s.p50_ms,
+                    s.p95_ms
+                );
+            }
+        }
+    }
+}
+
 fn main() {
     let json = std::env::args().any(|a| a == "--json");
     let ctx = CudaContext::new(0).expect("CUDA device 0 required");
@@ -562,6 +683,10 @@ fn main() {
                 }),
             });
         }
+
+        // ---- fused color+preprocess vs chained ----
+        #[cfg(feature = "cudarc")]
+        run_fused_preprocess(&stream, width, height, json);
 
         // ---- pinned-memory end-to-end (representative u8 ops) ----
         run_pinned_e2e_u8(
