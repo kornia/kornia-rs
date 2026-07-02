@@ -33,11 +33,20 @@ pub trait ConvertColor<Dst> {
     fn convert(&self, dst: &mut Dst) -> Result<(), ImageError>;
 }
 
-/// Macro to implement color conversions
+/// Macro to implement color conversions.
+///
+/// Arms without `cuda:` are **host-only**: with the `gpu-cuda` feature they
+/// reject device-resident operands with [`ImageError::UnsupportedDevice`]
+/// (instead of panicking inside `as_slice`). Arms with `cuda:` are
+/// **residency-aware**: host pairs run the CPU path unchanged, device pairs
+/// dispatch to the named CUDA adapter in `super::cuda_dispatch`, and mixed
+/// pairs error with [`ImageError::MixedResidency`].
 macro_rules! impl_convert {
     ($src:ty => $dst:ty, $func:path) => {
         impl ConvertColor<$dst> for $src {
             fn convert(&self, dst: &mut $dst) -> Result<(), ImageError> {
+                #[cfg(feature = "gpu-cuda")]
+                crate::color::cuda_dispatch::ensure_host(&self.0, &dst.0)?;
                 $func(&self.0, &mut dst.0)
             }
         }
@@ -47,6 +56,40 @@ macro_rules! impl_convert {
     ($src:ty => $dst:ty, $func:path, bg: $bg:expr_2021) => {
         impl ConvertColor<$dst> for $src {
             fn convert(&self, dst: &mut $dst) -> Result<(), ImageError> {
+                #[cfg(feature = "gpu-cuda")]
+                crate::color::cuda_dispatch::ensure_host(&self.0, &dst.0)?;
+                $func(&self.0, &mut dst.0, $bg)
+            }
+        }
+    };
+
+    // Residency-aware: device operands dispatch to the CUDA adapter.
+    ($src:ty => $dst:ty, $func:path, cuda: $cuda:path) => {
+        impl ConvertColor<$dst> for $src {
+            fn convert(&self, dst: &mut $dst) -> Result<(), ImageError> {
+                #[cfg(feature = "gpu-cuda")]
+                {
+                    use crate::color::cuda_dispatch::{pair_residency, Residency};
+                    if let Residency::Device(stream) = pair_residency(&self.0, &dst.0)? {
+                        return $cuda(&self.0, &mut dst.0, stream);
+                    }
+                }
+                $func(&self.0, &mut dst.0)
+            }
+        }
+    };
+
+    // Residency-aware with an optional-parameter CPU path (like background).
+    ($src:ty => $dst:ty, $func:path, bg: $bg:expr_2021, cuda: $cuda:path) => {
+        impl ConvertColor<$dst> for $src {
+            fn convert(&self, dst: &mut $dst) -> Result<(), ImageError> {
+                #[cfg(feature = "gpu-cuda")]
+                {
+                    use crate::color::cuda_dispatch::{pair_residency, Residency};
+                    if let Residency::Device(stream) = pair_residency(&self.0, &dst.0)? {
+                        return $cuda(&self.0, &mut dst.0, stream);
+                    }
+                }
                 $func(&self.0, &mut dst.0, $bg)
             }
         }
@@ -62,6 +105,28 @@ macro_rules! impl_convert_with_bg {
                 dst: &mut $dst,
                 bg: Option<[u8; 3]>,
             ) -> Result<(), ImageError> {
+                #[cfg(feature = "gpu-cuda")]
+                crate::color::cuda_dispatch::ensure_host(&self.0, &dst.0)?;
+                $func(&self.0, &mut dst.0, bg)
+            }
+        }
+    };
+
+    // Residency-aware variant: the CUDA adapter also receives the background.
+    ($src:ty => $dst:ty, $func:path, cuda: $cuda:path) => {
+        impl ConvertColorWithBackground<$dst> for $src {
+            fn convert_with_bg(
+                &self,
+                dst: &mut $dst,
+                bg: Option<[u8; 3]>,
+            ) -> Result<(), ImageError> {
+                #[cfg(feature = "gpu-cuda")]
+                {
+                    use crate::color::cuda_dispatch::{pair_residency, Residency};
+                    if let Residency::Device(stream) = pair_residency(&self.0, &dst.0)? {
+                        return $cuda(&self.0, &mut dst.0, bg, stream);
+                    }
+                }
                 $func(&self.0, &mut dst.0, bg)
             }
         }
@@ -71,25 +136,35 @@ macro_rules! impl_convert_with_bg {
 // ===== Bayer mosaic -> RGB (hand-written: reads the runtime pattern field) =====
 impl ConvertColor<Rgb8> for kornia_image::color_spaces::Bayer8 {
     fn convert(&self, dst: &mut Rgb8) -> Result<(), ImageError> {
+        #[cfg(feature = "gpu-cuda")]
+        crate::color::cuda_dispatch::ensure_host(self.as_image(), &dst.0)?;
         crate::color::rgb_from_bayer(self.as_image(), self.pattern, &mut dst.0)
     }
 }
 
 // ===== RGB -> Gray Conversions =====
-impl_convert!(Rgbf32 => Grayf32, crate::color::gray_from_rgb_f32);
+impl_convert!(Rgbf32 => Grayf32, crate::color::gray_from_rgb_f32,
+    cuda: crate::color::cuda_dispatch::gray_from_rgb_f32_cuda);
 impl_convert!(Rgbf64 => Grayf64, crate::color::gray_from_rgb);
-impl_convert!(Rgb8 => Gray8, crate::color::gray_from_rgb_u8);
+impl_convert!(Rgb8 => Gray8, crate::color::gray_from_rgb_u8,
+    cuda: crate::color::cuda_dispatch::gray_from_rgb_u8_cuda);
 
 // ===== Gray -> RGB Conversions =====
-impl_convert!(Gray8 => Rgb8, crate::color::rgb_from_gray);
-impl_convert!(Grayf32 => Rgbf32, crate::color::rgb_from_gray);
+impl_convert!(Gray8 => Rgb8, crate::color::rgb_from_gray,
+    cuda: crate::color::cuda_dispatch::rgb_from_gray_u8_cuda);
+impl_convert!(Grayf32 => Rgbf32, crate::color::rgb_from_gray,
+    cuda: crate::color::cuda_dispatch::rgb_from_gray_f32_cuda);
 impl_convert!(Grayf64 => Rgbf64, crate::color::rgb_from_gray);
 
 // ===== RGB <-> BGR Conversions =====
-impl_convert!(Rgb8 => Bgr8, crate::color::bgr_from_rgb);
-impl_convert!(Bgr8 => Rgb8, crate::color::bgr_from_rgb);
-impl_convert!(Rgbf32 => Bgrf32, crate::color::bgr_from_rgb);
-impl_convert!(Bgrf32 => Rgbf32, crate::color::bgr_from_rgb);
+impl_convert!(Rgb8 => Bgr8, crate::color::bgr_from_rgb,
+    cuda: crate::color::cuda_dispatch::bgr_from_rgb_u8_cuda);
+impl_convert!(Bgr8 => Rgb8, crate::color::bgr_from_rgb,
+    cuda: crate::color::cuda_dispatch::bgr_from_rgb_u8_cuda);
+impl_convert!(Rgbf32 => Bgrf32, crate::color::bgr_from_rgb,
+    cuda: crate::color::cuda_dispatch::bgr_from_rgb_f32_cuda);
+impl_convert!(Bgrf32 => Rgbf32, crate::color::bgr_from_rgb,
+    cuda: crate::color::cuda_dispatch::bgr_from_rgb_f32_cuda);
 
 // ===== RGB <-> HSV Conversions =====
 impl_convert!(Rgbf32 => Hsvf32, crate::color::hsv_from_rgb);
@@ -144,18 +219,24 @@ impl_convert!(Rgbf64 => Yuvf64, crate::color::yuv_from_rgb);
 impl_convert!(Yuvf64 => Rgbf64, crate::color::rgb_from_yuv);
 
 // ===== RGBA -> RGB Conversions =====
-impl_convert!(Rgba8 => Rgb8, crate::color::rgb_from_rgba, bg: None);
+impl_convert!(Rgba8 => Rgb8, crate::color::rgb_from_rgba, bg: None,
+    cuda: crate::color::cuda_dispatch::rgb_from_rgba_u8_cuda);
 
 // ===== BGRA -> RGB Conversions =====
-impl_convert!(Bgra8 => Rgb8, crate::color::rgb_from_bgra, bg: None);
+impl_convert!(Bgra8 => Rgb8, crate::color::rgb_from_bgra, bg: None,
+    cuda: crate::color::cuda_dispatch::rgb_from_bgra_u8_cuda);
 
 // ===== RGB -> RGBA Conversions (add opaque alpha) =====
-impl_convert!(Rgb8 => Rgba8, crate::color::rgba_from_rgb);
-impl_convert!(Rgbf32 => Rgbaf32, crate::color::rgba_from_rgb);
+impl_convert!(Rgb8 => Rgba8, crate::color::rgba_from_rgb,
+    cuda: crate::color::cuda_dispatch::rgba_from_rgb_u8_cuda);
+impl_convert!(Rgbf32 => Rgbaf32, crate::color::rgba_from_rgb,
+    cuda: crate::color::cuda_dispatch::rgba_from_rgb_f32_cuda);
 
 // ===== RGB -> BGRA Conversions (swap R/B + add opaque alpha) =====
-impl_convert!(Rgb8 => Bgra8, crate::color::bgra_from_rgb);
-impl_convert!(Rgbf32 => Bgraf32, crate::color::bgra_from_rgb);
+impl_convert!(Rgb8 => Bgra8, crate::color::bgra_from_rgb,
+    cuda: crate::color::cuda_dispatch::bgra_from_rgb_u8_cuda);
+impl_convert!(Rgbf32 => Bgraf32, crate::color::bgra_from_rgb,
+    cuda: crate::color::cuda_dispatch::bgra_from_rgb_f32_cuda);
 
 // ===== Video format decode -> RGB (BT.601 limited range) =====
 //
@@ -187,8 +268,10 @@ pub trait ConvertColorWithBackground<Dst> {
     fn convert_with_bg(&self, dst: &mut Dst, bg: Option<[u8; 3]>) -> Result<(), ImageError>;
 }
 
-impl_convert_with_bg!(Rgba8 => Rgb8, crate::color::rgb_from_rgba);
-impl_convert_with_bg!(Bgra8 => Rgb8, crate::color::rgb_from_bgra);
+impl_convert_with_bg!(Rgba8 => Rgb8, crate::color::rgb_from_rgba,
+    cuda: crate::color::cuda_dispatch::rgb_from_rgba_bg_u8_cuda);
+impl_convert_with_bg!(Bgra8 => Rgb8, crate::color::rgb_from_bgra,
+    cuda: crate::color::cuda_dispatch::rgb_from_bgra_bg_u8_cuda);
 
 #[cfg(test)]
 mod tests {

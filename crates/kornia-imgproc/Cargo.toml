@@ -126,5 +126,6 @@ gpu-cubecl = [
 gpu-cuda = [
   "dep:cudarc",
   "kornia-tensor/cudarc",
+  "kornia-image/cudarc",
 ]
 opencv_bench = ["dep:opencv"]
