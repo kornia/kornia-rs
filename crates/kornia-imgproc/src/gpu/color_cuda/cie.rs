@@ -39,18 +39,21 @@ static CIE_F32_SRC: &str = r#"
 #define LUV_VN    0.46831096f
 #define LUV_KAPPA 903.3f
 
+// __powf (hardware exp2/log2) instead of powf: ~4x cheaper, and its relative
+// error (~1e-5 on this domain) sits well inside the f32 pipeline tolerance —
+// verified against the f64 oracle in the tests.
 __device__ __forceinline__ float srgb_to_linear(float x) {
     x = fmaxf(x, 0.0f);
     return (x <= SRGB_THRESH)
         ? x * SRGB_INV_1292
-        : powf((x + SRGB_A) * SRGB_INV_1055, SRGB_GAMMA);
+        : __powf((x + SRGB_A) * SRGB_INV_1055, SRGB_GAMMA);
 }
 
 __device__ __forceinline__ float linear_to_srgb(float l) {
     l = fmaxf(l, 0.0f);
     return (l <= SRGB_INV_THRESH)
         ? l * SRGB_1292
-        : SRGB_1055 * powf(l, SRGB_INV_GAMMA) - SRGB_A;
+        : SRGB_1055 * __powf(l, SRGB_INV_GAMMA) - SRGB_A;
 }
 
 // linear-RGB -> XYZ (row-major M_RGB2XYZ) and inverse — same MAC order as matvec32.
