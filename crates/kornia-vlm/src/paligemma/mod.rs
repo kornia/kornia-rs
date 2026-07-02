@@ -1,4 +1,5 @@
 mod model;
+mod token_output_stream;
 mod utils;
 
 use candle_core::{DType, Device, Tensor};

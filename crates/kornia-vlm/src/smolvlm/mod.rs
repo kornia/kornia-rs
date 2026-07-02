@@ -170,7 +170,7 @@ impl SmolVlm {
         }
 
         let mut processed_images = vec![];
-        for ((start, _), image) in image_tags_pos.iter().zip(images.into_iter()) {
+        for ((start, _), image) in image_tags_pos.iter().zip(images) {
             let (img_patches, mask_patches, size) =
                 self.preprocessor.preprocess(&image, &self.device)?;
             processed_images.push((img_patches, mask_patches));

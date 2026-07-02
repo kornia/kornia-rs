@@ -40,13 +40,13 @@ jobs:
             needs-sccache: true
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: ./.github/actions/setup-rust-cache
         with:
           with-sccache: ${{ matrix.needs-sccache }}
 
-      - uses: prefix-dev/setup-pixi@v0.9.5
+      - uses: prefix-dev/setup-pixi@v0.10.0
         with:
           pixi-version: v0.40.0
           cache: true
@@ -87,9 +87,9 @@ jobs:
     # promotes Tahoe to a stable runner and conda-forge catches up, revisit this pin.
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
-      - uses: prefix-dev/setup-pixi@v0.9.5
+      - uses: prefix-dev/setup-pixi@v0.10.0
         with:
           pixi-version: v0.40.0
           cache: true
@@ -108,7 +108,7 @@ jobs:
     name: Check - Windows
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 

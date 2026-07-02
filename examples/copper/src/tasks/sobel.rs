@@ -7,31 +7,32 @@ pub struct Sobel;
 
 impl Freezable for Sobel {}
 
-impl<'cl> CuTask<'cl> for Sobel {
-    type Input = input_msg!('cl, ImageRgb8Msg);
-    type Output = output_msg!('cl, ImageGray8Msg);
+impl CuTask for Sobel {
+    type Input<'m> = input_msg!(ImageRgb8Msg);
+    type Output<'m> = output_msg!(ImageGray8Msg);
+    type Resources<'r> = ();
 
-    fn new(_config: Option<&ComponentConfig>) -> Result<Self, CuError>
+    fn new(_config: Option<&ComponentConfig>, _resources: Self::Resources<'_>) -> CuResult<Self>
     where
         Self: Sized,
     {
         Ok(Self {})
     }
 
-    fn start(&mut self, _clock: &RobotClock) -> Result<(), CuError> {
+    fn start(&mut self, _ctx: &CuContext) -> CuResult<()> {
         Ok(())
     }
 
-    fn stop(&mut self, _clock: &RobotClock) -> Result<(), CuError> {
+    fn stop(&mut self, _ctx: &CuContext) -> CuResult<()> {
         Ok(())
     }
 
     fn process(
         &mut self,
-        _clock: &RobotClock,
-        input: Self::Input,
-        output: Self::Output,
-    ) -> Result<(), CuError> {
+        _ctx: &CuContext,
+        input: &Self::Input<'_>,
+        output: &mut Self::Output<'_>,
+    ) -> CuResult<()> {
         let Some(src) = input.payload() else {
             return Ok(());
         };
