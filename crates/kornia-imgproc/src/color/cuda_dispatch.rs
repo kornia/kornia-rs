@@ -52,6 +52,15 @@ pub(crate) fn ensure_host<T, const C: usize, const D: usize>(
 }
 
 /// Classify a (src, dst) pair: both-host, both-device, or error on a mix.
+///
+/// Device pairs must live on the **same stream and device**: CUDA gives no
+/// implicit ordering between streams, so launching src's kernel on a buffer
+/// whose pending writes sit on another stream would race (e.g. `zeros_cuda`'s
+/// async memset). Streams are compared by raw `CUstream` handle (every
+/// `ctx.default_stream()` call returns a fresh `Arc` over the same null
+/// handle) plus device ordinal — mismatches error with
+/// [`ImageError::StreamMismatch`], consistent with the no-implicit-transfer /
+/// no-implicit-sync policy.
 pub(crate) fn pair_residency<'a, T, const C: usize, const D: usize>(
     src: &'a Image<T, C>,
     dst: &Image<T, D>,
@@ -61,11 +70,22 @@ where
 {
     match (is_device(src), is_device(dst)) {
         (false, false) => Ok(Residency::Host),
-        (true, true) => src
-            .0
-            .cuda_stream()
-            .map(Residency::Device)
-            .ok_or_else(|| untyped_device_err("source")),
+        (true, true) => {
+            let s_stream = src
+                .0
+                .cuda_stream()
+                .ok_or_else(|| untyped_device_err("source"))?;
+            let d_stream = dst
+                .0
+                .cuda_stream()
+                .ok_or_else(|| untyped_device_err("destination"))?;
+            let same_device = s_stream.context().ordinal() == d_stream.context().ordinal();
+            let same_stream = s_stream.cu_stream() == d_stream.cu_stream();
+            if !(same_device && same_stream) {
+                return Err(ImageError::StreamMismatch);
+            }
+            Ok(Residency::Device(s_stream))
+        }
         _ => Err(ImageError::MixedResidency),
     }
 }
@@ -349,6 +369,31 @@ mod tests {
             matches!(err, kornia_image::ImageError::MixedResidency),
             "mixed pair must fail with MixedResidency, got {err:?}"
         );
+    }
+
+    #[test]
+    fn different_streams_error_and_same_default_stream_passes() {
+        use cudarc::driver::CudaContext;
+
+        let ctx = CudaContext::new(0).unwrap();
+        let s1 = ctx.default_stream();
+        let s2 = ctx.new_stream().unwrap();
+
+        let rgb = Rgb8::from_size_vec(SIZE, pattern_u8(SIZE.width * SIZE.height * 3)).unwrap();
+
+        // src on the default stream, dst on an explicit stream → StreamMismatch.
+        let rgb_d = rgb.to_cuda(&s1).unwrap();
+        let mut gray_other = Gray8::zeros_cuda(SIZE, &s2).unwrap();
+        let err = rgb_d.convert(&mut gray_other).unwrap_err();
+        assert!(
+            matches!(err, kornia_image::ImageError::StreamMismatch),
+            "cross-stream pair must fail with StreamMismatch, got {err:?}"
+        );
+
+        // Two separate default_stream() Arcs are the SAME stream (null handle)
+        // — must dispatch fine.
+        let mut gray_default = Gray8::zeros_cuda(SIZE, &ctx.default_stream()).unwrap();
+        rgb_d.convert(&mut gray_default).unwrap();
     }
 
     #[test]
