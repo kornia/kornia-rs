@@ -258,7 +258,7 @@ fn run_fused_preprocess(stream: &Arc<CudaStream>, width: usize, height: usize, j
         ),
         (
             "preprocess_bgr_640",
-            SourceFormat::Bgr,
+            SourceFormat::Bgr8,
             n * 3,
             |s, a, b, w, h| swizzle::launch_bgr_from_rgb_u8(s, a, b, w * h).unwrap(),
         ),

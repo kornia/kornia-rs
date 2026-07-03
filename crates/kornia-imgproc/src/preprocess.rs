@@ -125,15 +125,15 @@ impl Normalize {
 pub enum SourceFormat {
     /// Interleaved RGB, 3 bytes/px (the default; also what `run::<3>` uses).
     #[default]
-    Rgb,
+    Rgb8,
     /// Interleaved BGR, 3 bytes/px (OpenCV convention; swapped in-kernel).
-    Bgr,
+    Bgr8,
     /// Interleaved RGBA, 4 bytes/px (alpha skipped; what `run::<4>` uses).
-    Rgba,
+    Rgba8,
     /// Interleaved BGRA, 4 bytes/px (alpha skipped, swapped in-kernel).
-    Bgra,
+    Bgra8,
     /// Single-channel grayscale, 1 byte/px (broadcast to RGB).
-    Gray,
+    Gray8,
     /// Planar 4:2:0: full-res Y plane then interleaved half-res UV
     /// (`w*h*3/2` bytes, BT.601 limited — byte-identical to
     /// `gpu::color_cuda::video`). Even dimensions required.
@@ -147,9 +147,9 @@ impl SourceFormat {
     /// Kernel `fmt` launch-arg code (see the fetch_px table in KERNEL_SRC).
     fn fmt_code(self) -> i32 {
         match self {
-            SourceFormat::Rgb | SourceFormat::Rgba => 0,
-            SourceFormat::Bgr | SourceFormat::Bgra => 1,
-            SourceFormat::Gray => 2,
+            SourceFormat::Rgb8 | SourceFormat::Rgba8 => 0,
+            SourceFormat::Bgr8 | SourceFormat::Bgra8 => 1,
+            SourceFormat::Gray8 => 2,
             SourceFormat::Nv12 => 3,
             SourceFormat::Yuyv => 4,
         }
@@ -158,9 +158,9 @@ impl SourceFormat {
     /// Interleaved bytes/px passed as `src_bpp` (unused by planar formats).
     fn bpp(self) -> usize {
         match self {
-            SourceFormat::Rgb | SourceFormat::Bgr => 3,
-            SourceFormat::Rgba | SourceFormat::Bgra => 4,
-            SourceFormat::Gray | SourceFormat::Nv12 => 1,
+            SourceFormat::Rgb8 | SourceFormat::Bgr8 => 3,
+            SourceFormat::Rgba8 | SourceFormat::Bgra8 => 4,
+            SourceFormat::Gray8 | SourceFormat::Nv12 => 1,
             SourceFormat::Yuyv => 2,
         }
     }
@@ -587,7 +587,7 @@ impl Default for PreprocessorBuilder {
             normalize: Normalize::UnitScale,
             pad_value: 114,
             sampling: InterpolationMode::Bilinear,
-            source_format: SourceFormat::Rgb,
+            source_format: SourceFormat::Rgb8,
         }
     }
 }
@@ -826,8 +826,8 @@ impl Preprocessor {
     /// [`run_raw`](Self::run_raw).
     fn validate_typed_format<const C: usize>(&self) -> Result<(), PreprocessError> {
         let ok = match self.source_format {
-            SourceFormat::Rgb | SourceFormat::Bgr => true,
-            SourceFormat::Rgba | SourceFormat::Bgra => C == 4,
+            SourceFormat::Rgb8 | SourceFormat::Bgr8 => true,
+            SourceFormat::Rgba8 | SourceFormat::Bgra8 => C == 4,
             _ => false,
         };
         if ok {
@@ -1097,7 +1097,7 @@ impl Preprocessor {
     #[cfg(feature = "cudarc")]
     fn surface_fmt_code(&self) -> Result<i32, PreprocessError> {
         match self.source_format {
-            SourceFormat::Rgb | SourceFormat::Rgba | SourceFormat::Bgr | SourceFormat::Bgra => {
+            SourceFormat::Rgb8 | SourceFormat::Rgba8 | SourceFormat::Bgr8 | SourceFormat::Bgra8 => {
                 Ok(self.source_format.fmt_code())
             }
             f => Err(PreprocessError::FormatNeedsRawBuffer(f)),
@@ -1728,12 +1728,12 @@ mod tests {
         ));
         // Channel-count / format mismatch on interleaved formats too.
         let pre = Preprocessor::builder()
-            .source_format(SourceFormat::Rgba)
+            .source_format(SourceFormat::Rgba8)
             .build()
             .unwrap();
         assert!(matches!(
             pre.run(&src, &mut dst),
-            Err(PreprocessError::FormatNeedsRawBuffer(SourceFormat::Rgba))
+            Err(PreprocessError::FormatNeedsRawBuffer(SourceFormat::Rgba8))
         ));
     }
 
@@ -1781,14 +1781,14 @@ mod tests {
             let gray = Image::<u8, 1>::new(size, raw.clone()).unwrap();
             let mut rgb = Image::<u8, 3>::new(size, vec![0; w * h * 3]).unwrap();
             rgb_from_gray(&gray, &mut rgb).unwrap();
-            v.push((SourceFormat::Gray, raw, rgb));
+            v.push((SourceFormat::Gray8, raw, rgb));
 
             // BGR raw buffer; the swap is involutive so bgr_from_rgb decodes it.
             let raw = raw_bytes(w * h * 3);
             let bgr = Image::<u8, 3>::new(size, raw.clone()).unwrap();
             let mut rgb = Image::<u8, 3>::new(size, vec![0; w * h * 3]).unwrap();
             bgr_from_rgb(&bgr, &mut rgb).unwrap();
-            v.push((SourceFormat::Bgr, raw, rgb));
+            v.push((SourceFormat::Bgr8, raw, rgb));
 
             v
         };

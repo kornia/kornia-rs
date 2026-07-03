@@ -713,11 +713,11 @@ pub struct PyCudaPreprocessor {
 
 fn parse_format(s: &str) -> PyResult<SourceFormat> {
     Ok(match s.to_ascii_lowercase().as_str() {
-        "rgb" | "rgb8" => SourceFormat::Rgb,
-        "bgr" | "bgr8" => SourceFormat::Bgr,
-        "rgba" | "rgba8" => SourceFormat::Rgba,
-        "bgra" | "bgra8" => SourceFormat::Bgra,
-        "gray" | "gray8" => SourceFormat::Gray,
+        "rgb" | "rgb8" => SourceFormat::Rgb8,
+        "bgr" | "bgr8" => SourceFormat::Bgr8,
+        "rgba" | "rgba8" => SourceFormat::Rgba8,
+        "bgra" | "bgra8" => SourceFormat::Bgra8,
+        "gray" | "gray8" => SourceFormat::Gray8,
         "nv12" => SourceFormat::Nv12,
         "yuyv" => SourceFormat::Yuyv,
         f => {
