@@ -264,26 +264,32 @@ PyTorch 2.9.1+cu128 via `F.affine_grid` + `F.grid_sample(align_corners=True)`.
 
 ### Nearest-neighbor
 
-| Size | kornia-rs ms | GB/s | CPU ms | vs CPU |
+| Size | kornia-rs GPU ms | GB/s | kornia-rs CPU ms | vs CPU |
 |------|-------------:|-----:|-------:|-------:|
-| 256×224 | 0.011 | 125.1 | 0.540 | **49×** |
-| 512×448 | 0.038 | 144.9 | 2.132 | **56×** |
-| 1024×896 | 0.151 | 145.8 | 8.544 | **57×** |
-| 1920×1080 | 0.353 | 141.0 | 19.15 | **54×** |
+| 256×224 | 0.011 | 125.1 | 0.263 | **24×** |
+| 512×448 | 0.038 | 144.9 | 0.860 | **23×** |
+| 1024×896 | 0.151 | 145.8 | 3.983 | **26×** |
+| 1920×1080 | 0.353 | 141.0 | 9.869 | **28×** |
 
 ### Bilinear
 
-| Size | kornia-rs ms | GB/s | cv2 CUDA ms | PyTorch GPU ms | cv2 CPU ms | vs cv2 CUDA | vs PyTorch | vs cv2 CPU |
-|------|-------------:|-----:|------------:|---------------:|-----------:|------------:|-----------:|-----------:|
-| 256×224 | 0.025 | 55.1 | 0.037 | 0.111 | 0.451 | **1.5×** | **4.5×** | **18×** |
-| 512×448 | 0.092 | 59.8 | 0.178 | 0.449 | 0.874 | **1.9×** | **4.9×** | **9.5×** |
-| 1024×896 | 0.274 | 80.4 | 0.412 | 1.471 | 4.303 | **1.5×** | **5.4×** | **15.7×** |
-| 1920×1080 | 0.572 | 87.0 | 0.753 | 3.298 | 9.610 | **1.3×** | **5.8×** | **16.8×** |
+| Size | kornia-rs GPU ms | GB/s | kornia-rs CPU ms | cv2 CUDA ms | PyTorch GPU ms | cv2 CPU ms | kornia CPU vs cv2 CPU | vs cv2 CUDA | vs PyTorch | vs cv2 CPU |
+|------|-------------:|-----:|-------:|------------:|---------------:|-----------:|------:|------------:|-----------:|-----------:|
+| 256×224 | 0.025 | 55.1 | 0.161 | 0.037 | 0.111 | 0.584 | **3.6× faster** | **1.5×** | **4.5×** | **23×** |
+| 512×448 | 0.092 | 59.8 | 1.535 | 0.178 | 0.449 | 2.235 | **1.5× faster** | **1.9×** | **4.9×** | **24×** |
+| 1024×896 | 0.274 | 80.4 | 5.775 | 0.412 | 1.471 | 7.908 | **1.4× faster** | **1.5×** | **5.4×** | **29×** |
+| 1920×1080 | 0.572 | 87.0 | 13.82 | 0.753 | 3.298 | 31.11 | **2.3× faster** | **1.3×** | **5.8×** | **54×** |
 
 **Key findings:**
 
 - kornia-rs GPU bilinear warp-affine is **1.3–1.9× faster than OpenCV 4.12 CUDA**
   and **4.5–5.8× faster than PyTorch `grid_sample`**.
+- The optimized CPU nearest path (**incremental coords + analytical valid-range skip +
+  16-row Rayon chunks**) is **2–2.5× faster than the previous baseline**; GPU nearest
+  remains **23–28× faster** than the optimized CPU.
+- The optimized CPU bilinear path **beats cv2 CPU at every size** (1.4–3.6×) without
+  any SIMD; this holds because cv2's f32 warpAffine does not use its AVX2 dispatch
+  for this combination of type, border mode, and rotation angle.
 - Higher apparent GB/s vs resize: ~half of output pixels in a 45° rotation are
   out-of-bounds black corners, written with zero without reading source DRAM,
   reducing effective traffic and inflating the GB/s formula.
