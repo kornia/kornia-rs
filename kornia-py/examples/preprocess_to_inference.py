@@ -14,17 +14,22 @@ the framework boundary: both engines consume the fused kernel's fp16 CHW
 output directly (the TensorRT engine is built with fp16 I/O).
 
 Usage:
-    python preprocess_to_inference.py [--batch 4] [--iters 16] [--engine torch|trt]
+    python preprocess_to_inference.py [--batch 4] [--engine torch|trt]
 """
 
 import argparse
 import os
-import time
+import sys
+from pathlib import Path
 
 import numpy as np
 import torch
 
 import kornia_rs.cuda as krc
+
+# The shared bench harness lives in the sibling benchmarks/ dir (not a package).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "benchmarks"))
+from _bench import bench  # noqa: E402
 
 SRC_W, SRC_H = 1920, 1080  # camera stand-in resolution
 
@@ -108,7 +113,6 @@ class TrtRunner:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--batch", type=int, default=4)
-    ap.add_argument("--iters", type=int, default=16, help="timed batches")
     ap.add_argument("--size", type=int, default=224)
     ap.add_argument("--engine", choices=["torch", "trt"], default="torch")
     ap.add_argument(
@@ -142,23 +146,32 @@ def main() -> None:
         x = torch.from_dlpack(t)  # zero-copy: same device memory
         return infer(x)
 
+    # The harness times each fn() call individually; giving it a WINDOW of
+    # batches with a single sync keeps preprocess/inference of consecutive
+    # batches overlapped on-stream (a per-batch sync would serialize them).
+    WINDOW = 8
+
+    def window() -> None:
+        for _ in range(WINDOW):
+            step()
+        torch.cuda.synchronize()
+
     with torch.inference_mode():
         # Warmup: JIT/NVRTC, staging allocation, cuDNN autotune / engine load.
         for _ in range(5):
             step()
         torch.cuda.synchronize()
-
-        t0 = time.perf_counter()
-        for _ in range(args.iters):
-            logits = step()
+        res = bench(window, name=args.engine, target_seconds=2.0, min_iters=5)
+        logits = step()
         torch.cuda.synchronize()
-    dt = (time.perf_counter() - t0) / args.iters
 
     n = args.batch
+    per_frame = res.min_ms / WINDOW / n
     print(
         f"{args.engine}: {SRC_H}p NV12 x{n} → fused preprocess {args.size}² → "
-        f"inference: {dt * 1e3:.2f} ms/batch = {dt / n * 1e3:.2f} ms/frame "
-        f"({n / dt:.0f} FPS)"
+        f"inference: min {res.min_ms / WINDOW:.2f} ms/batch "
+        f"(p50 {res.p50_ms / WINDOW:.2f}) = {per_frame:.2f} ms/frame "
+        f"({1e3 / per_frame:.0f} FPS)"
     )
     print(f"logits: {tuple(logits.shape)} {logits.dtype}, top-1 of frame 0 = "
           f"{int(logits[0].argmax())}")
