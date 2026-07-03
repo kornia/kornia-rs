@@ -86,9 +86,7 @@ fn build_kornia_detector(width: usize, height: usize) -> AprilTagDecoder {
 }
 
 /// Run the C detector on a grayscale byte slice. Returns every detection as
-/// `(id, hamming, corners)` — a scene can legitimately contain the same tag
-/// id several times, so this must NOT be keyed by id (an id-keyed map here
-/// once masked a kornia dedup bug that dropped repeated ids).
+/// `(id, hamming, corners)` — scenes contain repeated ids; never key by id.
 fn run_c(
     gray: &[u8],
     width: usize,
@@ -195,13 +193,13 @@ fn check_image(
     let mut global_max_delta: f32 = 0.0;
 
     // Every C detection must have a spatially close Kornia candidate with matching hamming.
-    for (c_id, c_hamming, c_corners) in &c_dets {
-        let (c_id, c_hamming) = (*c_id, c_hamming);
+    for &(c_id, c_hamming, c_corners) in &c_dets {
+        let c_corners = &c_corners;
         // Filter candidates to those with same id AND hamming ≤ c_hamming (including equal).
         // We match on id AND hamming to mirror C's quick-decode semantics.
         let candidates: Vec<&KorniaDetection> = k_all
             .iter()
-            .filter(|d| d.id == c_id as u16 && d.hamming as usize == *c_hamming)
+            .filter(|d| d.id == c_id as u16 && d.hamming as usize == c_hamming)
             .collect();
 
         if candidates.is_empty() {
@@ -302,9 +300,10 @@ fn test_parity_tag36h11_apriltags_jpg() {
         "C detector found no tags in apriltags_tag36h11.jpg — image load or C library issue?"
     );
 
-    // Regression guard: the scene contains the SAME tag id at several
-    // locations. Post-dedup kornia must keep every physical instance exactly
-    // like C does (an id-keyed dedup once collapsed all seven to one).
+    // Regression guard: the scene repeats the same tag id — post-dedup kornia
+    // must keep every physical instance like C does. Exact-count equality is
+    // stricter than the tolerance-based matching above; if a borderline
+    // non-dedup divergence ever trips this, compare spatial clusters instead.
     let img = Image::<u8, 1>::from_size_slice(
         ImageSize {
             width: w,

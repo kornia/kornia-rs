@@ -455,51 +455,42 @@ pub fn decode_tags(
         .collect()
 }
 
-/// Deduplicates a list of detections, keeping the best (lowest hamming, then highest margin)
-/// per `(family_idx, id)` pair — matching C's `apriltag_detect` dedup behaviour.
+/// Deduplicates detections, keeping the best (lowest hamming, then highest
+/// margin) per cluster of **spatially overlapping** detections that share
+/// `(family_idx, id)`. Repeated ids at distinct locations all survive —
+/// mirrors C `apriltag_detect`'s reconcile step ("allow non-overlapping
+/// duplicate detections"), with a center-distance approximation of C's exact
+/// polygon-overlap test (see PARITY.md, D6).
 pub fn dedup_detections(all: Vec<Detection>) -> Vec<Detection> {
-    // The same physical tag is often decoded from several overlapping quads,
-    // but the SAME id can also legitimately appear at several places in the
-    // scene (repeated markers). Two detections are duplicates only when they
-    // share family+id AND overlap spatially — keying by id alone would keep
-    // one tag per id and silently drop every repeat (the C library keeps
-    // them). O(n²) over the per-frame detection count, which is small.
+    // O(n²) over the per-frame detection count, which is small.
     let mut kept: Vec<Detection> = Vec::with_capacity(all.len());
-    'outer: for det in all {
-        for prev in kept.iter_mut() {
-            if prev._family_idx == det._family_idx
-                && prev.id == det.id
-                && quads_overlap(&prev.quad, &det.quad)
-            {
+    for det in all {
+        match kept.iter_mut().find(|prev| is_duplicate(prev, &det)) {
+            Some(prev) => {
                 if det.hamming < prev.hamming
                     || (det.hamming == prev.hamming && det.decision_margin > prev.decision_margin)
                 {
                     *prev = det;
                 }
-                continue 'outer;
             }
+            None => kept.push(det),
         }
-        kept.push(det);
     }
     kept
 }
 
-/// Duplicate test for [`dedup_detections`]: quad centers closer than half the
-/// mean of the two quads' diagonals — i.e. the quads materially overlap.
-/// Distinct physical tags of the same id sit at least a tag width apart.
-fn quads_overlap(a: &Quad, b: &Quad) -> bool {
-    fn center_and_diag(q: &Quad) -> (f32, f32, f32) {
-        let cx = (q.corners[0].x + q.corners[1].x + q.corners[2].x + q.corners[3].x) * 0.25;
-        let cy = (q.corners[0].y + q.corners[1].y + q.corners[2].y + q.corners[3].y) * 0.25;
-        let dx = q.corners[2].x - q.corners[0].x;
-        let dy = q.corners[2].y - q.corners[0].y;
-        (cx, cy, (dx * dx + dy * dy).sqrt())
+/// Duplicate test for [`dedup_detections`]: same family+id and (homography)
+/// centers closer than half the mean of the two quads' diagonals — i.e. the
+/// quads materially overlap. Distinct physical tags of the same id sit at
+/// least a tag width apart.
+fn is_duplicate(a: &Detection, b: &Detection) -> bool {
+    if a._family_idx != b._family_idx || a.id != b.id {
+        return false;
     }
-    let (ax, ay, ad) = center_and_diag(a);
-    let (bx, by, bd) = center_and_diag(b);
-    let dist2 = (ax - bx) * (ax - bx) + (ay - by) * (ay - by);
-    let thresh = 0.25 * (ad + bd); // half the mean diagonal
-    dist2 < thresh * thresh
+    let diag = |q: &Quad| (q.corners[2] - q.corners[0]).length();
+    let d = a.center - b.center;
+    let thresh = 0.25 * (diag(&a.quad) + diag(&b.quad)); // half the mean diagonal
+    d.dot(d) < thresh * thresh
 }
 
 /// Refines the edges of a quadrilateral in the image by adjusting its corners based on local image gradients.
