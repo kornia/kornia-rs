@@ -1,10 +1,9 @@
 import numpy as np
 import pytest
 
+from kornia_rs import IMAGENET_MEAN as MEAN
+from kornia_rs import IMAGENET_STD as STD
 from kornia_rs.image import Image
-
-MEAN = (0.485, 0.456, 0.406)
-STD = (0.229, 0.224, 0.225)
 
 
 def _f64_reference(src_u8, dst_w, dst_h, mean, std):

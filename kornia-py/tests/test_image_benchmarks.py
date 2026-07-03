@@ -24,6 +24,7 @@ Coverage:
 
 import os
 
+import kornia_rs
 import numpy as np
 import pytest
 
@@ -39,12 +40,16 @@ pytestmark = pytest.mark.skipif(
 from _bench import bench as _real_bench  # noqa: E402
 
 
+# Seed-pinned so the perf gates don't flap on a pathological random draw.
+_RNG = np.random.default_rng(0)
+
+
 def _u8(h, w, c=3):
-    return np.random.randint(0, 256, (h, w, c), dtype=np.uint8)
+    return _RNG.integers(0, 256, (h, w, c), dtype=np.uint8)
 
 
 def _u16(h, w, c=3):
-    return np.random.randint(0, 65536, (h, w, c), dtype=np.uint16)
+    return _RNG.integers(0, 65536, (h, w, c), dtype=np.uint16)
 
 
 def _f32(h, w, c=3):
@@ -199,8 +204,8 @@ def test_perf_to_grayscale(img_u8_1080p):
 
 
 def test_perf_normalize(img_u8_1080p):
-    mean = (0.485, 0.456, 0.406)
-    std = (0.229, 0.224, 0.225)
+    mean = kornia_rs.IMAGENET_MEAN
+    std = kornia_rs.IMAGENET_STD
     _bench("normalize ImageNet 1080p u8",
            lambda: img_u8_1080p.normalize(mean, std), iters=5, ceiling_ms=300.0)
 
