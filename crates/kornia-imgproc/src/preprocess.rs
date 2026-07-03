@@ -116,6 +116,80 @@ impl Normalize {
     }
 }
 
+/// Pixel format of the source buffer. For non-interleaved camera formats
+/// (NV12/YUYV) and Gray, color decode is **fused** into the resize kernel —
+/// a raw capture frame becomes the CHW tensor in one launch, no intermediate
+/// RGB image in device memory. Selected per-launch as a warp-uniform kernel
+/// argument, preserving the single-JIT-compile design.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SourceFormat {
+    /// Interleaved RGB, 3 bytes/px (the default; also what `run::<3>` uses).
+    #[default]
+    Rgb,
+    /// Interleaved BGR, 3 bytes/px (OpenCV convention; swapped in-kernel).
+    Bgr,
+    /// Interleaved RGBA, 4 bytes/px (alpha skipped; what `run::<4>` uses).
+    Rgba,
+    /// Interleaved BGRA, 4 bytes/px (alpha skipped, swapped in-kernel).
+    Bgra,
+    /// Single-channel grayscale, 1 byte/px (broadcast to RGB).
+    Gray,
+    /// Planar 4:2:0: full-res Y plane then interleaved half-res UV
+    /// (`w*h*3/2` bytes, BT.601 limited — byte-identical to
+    /// `gpu::color_cuda::video`). Even dimensions required.
+    Nv12,
+    /// Packed 4:2:2 `Y0 U Y1 V`, 2 bytes/px (BT.601 limited). Even width.
+    Yuyv,
+}
+
+#[cfg(feature = "cudarc")]
+impl SourceFormat {
+    /// Kernel `fmt` launch-arg code (see the fetch_px table in KERNEL_SRC).
+    fn fmt_code(self) -> i32 {
+        match self {
+            SourceFormat::Rgb | SourceFormat::Rgba => 0,
+            SourceFormat::Bgr | SourceFormat::Bgra => 1,
+            SourceFormat::Gray => 2,
+            SourceFormat::Nv12 => 3,
+            SourceFormat::Yuyv => 4,
+        }
+    }
+
+    /// Interleaved bytes/px passed as `src_bpp` (unused by planar formats).
+    fn bpp(self) -> usize {
+        match self {
+            SourceFormat::Rgb | SourceFormat::Bgr => 3,
+            SourceFormat::Rgba | SourceFormat::Bgra => 4,
+            SourceFormat::Gray | SourceFormat::Nv12 => 1,
+            SourceFormat::Yuyv => 2,
+        }
+    }
+
+    /// Byte stride of the primary plane row.
+    fn pitch(self, w: usize) -> usize {
+        w * self.bpp()
+    }
+
+    /// Required buffer length in bytes for a `w × h` frame.
+    fn buffer_len(self, w: usize, h: usize) -> usize {
+        let chroma = if matches!(self, SourceFormat::Nv12) {
+            w * h / 2
+        } else {
+            0
+        };
+        self.pitch(w) * h + chroma
+    }
+
+    /// Even-dimension requirement for subsampled formats.
+    fn dims_ok(self, w: usize, h: usize) -> bool {
+        match self {
+            SourceFormat::Nv12 => w % 2 == 0 && h % 2 == 0,
+            SourceFormat::Yuyv => w % 2 == 0,
+            _ => true,
+        }
+    }
+}
+
 /// Errors from preprocessing.
 #[derive(Debug, thiserror::Error)]
 pub enum PreprocessError {
@@ -161,6 +235,35 @@ pub enum PreprocessError {
     #[cfg(feature = "cudarc")]
     #[error("invalid pitched surface (need pitch >= width*channels and len >= pitch*height)")]
     InvalidSurface,
+    /// The typed `run`/`run_f16` entry requires an interleaved format matching
+    /// the image's channel count; camera formats use `run_raw`.
+    #[error("source format {0:?} needs run_raw (raw device buffer), not the typed run()")]
+    FormatNeedsRawBuffer(SourceFormat),
+    /// The raw source buffer is smaller than the format requires, or the
+    /// dimensions violate the format's subsampling constraints.
+    #[cfg(feature = "cudarc")]
+    #[error("invalid raw source for {format:?} at {width}x{height} (got {got} bytes, need {need})")]
+    InvalidRawSource {
+        /// Source pixel format.
+        format: SourceFormat,
+        /// Frame width in pixels.
+        width: usize,
+        /// Frame height in pixels.
+        height: usize,
+        /// Bytes provided.
+        got: usize,
+        /// Bytes required.
+        need: usize,
+    },
+    /// The destination batch dim does not match the number of frames.
+    #[cfg(feature = "cudarc")]
+    #[error("destination batch dim {dst_n} != frame count {frames}")]
+    BatchMismatch {
+        /// Destination tensor N.
+        dst_n: usize,
+        /// Provided frame count.
+        frames: usize,
+    },
     /// Source or output dimensions exceed the kernel's 32-bit indexing (the CUDA
     /// path indexes pixels as `int`). Unreachable on real hardware, guarded anyway.
     #[cfg(feature = "cudarc")]
@@ -302,43 +405,86 @@ __device__ __forceinline__ float lanczos_w(float d) {
     return 3.0f * sinf(pd) * sinf(pd / 3.0f) / (pd * pd);
 }
 
+// ── per-format pixel fetch + samplers ──
+//
+// `fmt` selects how one (x, y) texel decodes to RGB. It is a warp-uniform
+// launch arg (same for every thread), so the branches predict perfectly and
+// the single-JIT-compile design is preserved. Q20 BT.601-limited constants
+// match gpu/color_cuda/video.rs bit-for-bit.
+//   0 = interleaved RGB-order (bpp = src_bpp: 3 or 4, alpha skipped)
+//   1 = interleaved BGR-order (bpp = src_bpp: 3 or 4)
+//   2 = gray, 1 byte/px (broadcast)
+//   3 = NV12: full-res Y plane then interleaved half-res UV (pitch = width)
+//   4 = YUYV: packed 4:2:2 `Y0 U Y1 V`, 2 bytes/px
+
+__device__ __forceinline__ void yuv_to_rgbf(int yv, int u, int v, float px[3]) {
+    int yy = max(yv - 16, 0) * 1220542;
+    u -= 128;
+    v -= 128;
+    px[2] = (float)min(max((yy + 2116026 * u + (1 << 19)) >> 20, 0), 255);
+    px[1] = (float)min(max((yy + (-409993) * u + (-852492) * v + (1 << 19)) >> 20, 0), 255);
+    px[0] = (float)min(max((yy + 1673527 * v + (1 << 19)) >> 20, 0), 255);
+}
+
+__device__ __forceinline__ void fetch_px(
+    const unsigned char* __restrict__ src, int x, int y,
+    int src_w, int src_h, int src_pitch, int src_bpp, int fmt, float px[3]
+) {
+    if (fmt <= 1) {
+        const unsigned char* p = src + (long)y * src_pitch + x * src_bpp;
+        if (fmt == 0) { px[0] = (float)p[0]; px[1] = (float)p[1]; px[2] = (float)p[2]; }
+        else          { px[0] = (float)p[2]; px[1] = (float)p[1]; px[2] = (float)p[0]; }
+    } else if (fmt == 2) {
+        float v = (float)src[(long)y * src_pitch + x];
+        px[0] = v; px[1] = v; px[2] = v;
+    } else if (fmt == 3) {
+        int yv = src[(long)y * src_w + x];
+        const unsigned char* uv = src + (long)src_w * src_h + (long)(y >> 1) * src_w + (x >> 1) * 2;
+        yuv_to_rgbf(yv, uv[0], uv[1], px);
+    } else {
+        const unsigned char* grp = src + (long)y * src_pitch + (x >> 1) * 4;
+        int yv = grp[(x & 1) ? 2 : 0];
+        yuv_to_rgbf(yv, grp[1], grp[3], px);
+    }
+}
+
 // ── samplers: raw (0..255-scale) rgb for one destination pixel ──
 
 __device__ __forceinline__ void sample_bilinear(
     const unsigned char* __restrict__ src, float sx, float sy,
-    int src_w, int src_h, int src_pitch, int src_bpp, float px[3]
+    int src_w, int src_h, int src_pitch, int src_bpp, int fmt, float px[3]
 ) {
     // Bilinear: clamp-to-edge taps (mirrors interpolation::bilinear).
     int x0 = (int)floorf(sx), y0 = (int)floorf(sy);
     float ax = sx - (float)x0, ay = sy - (float)y0;
     int x1 = min(x0 + 1, src_w - 1), y1 = min(y0 + 1, src_h - 1);
     x0 = max(x0, 0); y0 = max(y0, 0);
-    const unsigned char* r0 = src + (long)y0 * src_pitch;
-    const unsigned char* r1 = src + (long)y1 * src_pitch;
+    float t00[3], t10[3], t01[3], t11[3];
+    fetch_px(src, x0, y0, src_w, src_h, src_pitch, src_bpp, fmt, t00);
+    fetch_px(src, x1, y0, src_w, src_h, src_pitch, src_bpp, fmt, t10);
+    fetch_px(src, x0, y1, src_w, src_h, src_pitch, src_bpp, fmt, t01);
+    fetch_px(src, x1, y1, src_w, src_h, src_pitch, src_bpp, fmt, t11);
     #pragma unroll
     for (int c = 0; c < 3; ++c) {
-        float v00 = (float)r0[x0 * src_bpp + c], v10 = (float)r0[x1 * src_bpp + c];
-        float v01 = (float)r1[x0 * src_bpp + c], v11 = (float)r1[x1 * src_bpp + c];
-        float top = v00 + (v10 - v00) * ax;
-        float bot = v01 + (v11 - v01) * ax;
+        float top = t00[c] + (t10[c] - t00[c]) * ax;
+        float bot = t01[c] + (t11[c] - t01[c]) * ax;
         px[c] = top + (bot - top) * ay;
     }
 }
 
 __device__ __forceinline__ void sample_nearest(
     const unsigned char* __restrict__ src, float sx, float sy,
-    int src_w, int src_h, int src_pitch, int src_bpp, float px[3]
+    int src_w, int src_h, int src_pitch, int src_bpp, int fmt, float px[3]
 ) {
     // Nearest: round + clamp-to-edge (mirrors interpolation::nearest).
     int xn = min(max((int)roundf(sx), 0), src_w - 1);
     int yn = min(max((int)roundf(sy), 0), src_h - 1);
-    const unsigned char* p = src + (long)yn * src_pitch + xn * src_bpp;
-    px[0] = (float)p[0]; px[1] = (float)p[1]; px[2] = (float)p[2];
+    fetch_px(src, xn, yn, src_w, src_h, src_pitch, src_bpp, fmt, px);
 }
 
 __device__ __forceinline__ void sample_lanczos(
     const unsigned char* __restrict__ src, float sx, float sy,
-    int src_w, int src_h, int src_pitch, int src_bpp, float px[3]
+    int src_w, int src_h, int src_pitch, int src_bpp, int fmt, float px[3]
 ) {
     // Lanczos-3: 6x6 windowed sinc, clamp-to-edge taps, weights renormalized
     // by their sum (mirrors interpolation::lanczos).
@@ -349,13 +495,14 @@ __device__ __forceinline__ void sample_lanczos(
         int yj = y0 + j;
         float wy = lanczos_w(sy - (float)yj);
         int yc = min(max(yj, 0), src_h - 1);
-        const unsigned char* r = src + (long)yc * src_pitch;
         for (int ii = -2; ii <= 3; ++ii) {
             int xi = x0 + ii;
             float w = wy * lanczos_w(sx - (float)xi);
             int xc = min(max(xi, 0), src_w - 1);
+            float t[3];
+            fetch_px(src, xc, yc, src_w, src_h, src_pitch, src_bpp, fmt, t);
             #pragma unroll
-            for (int c = 0; c < 3; ++c) acc[c] += w * (float)r[xc * src_bpp + c];
+            for (int c = 0; c < 3; ++c) acc[c] += w * t[c];
             wsum += w;
         }
     }
@@ -366,7 +513,7 @@ __device__ __forceinline__ void sample_lanczos(
 
 #define ARGS \
     float scale_x, float scale_y, float pad_x, float pad_y, \
-    int src_w, int src_h, int src_pitch, int src_bpp, \
+    int src_w, int src_h, int src_pitch, int src_bpp, int fmt, \
     int dst_w, int dst_h, \
     float m0, float m1, float m2, \
     float is0, float is1, float is2, \
@@ -379,7 +526,7 @@ __device__ __forceinline__ void sample_lanczos(
     float sx, sy; \
     float px[3]; \
     if (plan_pixel(i, dst_w, dst_h, scale_x, scale_y, pad_x, pad_y, src_w, src_h, &sx, &sy)) { \
-        SAMPLER(src, sx, sy, src_w, src_h, src_pitch, src_bpp, px); \
+        SAMPLER(src, sx, sy, src_w, src_h, src_pitch, src_bpp, fmt, px); \
     } else { \
         px[0] = pad_value; px[1] = pad_value; px[2] = pad_value; \
     } \
@@ -428,6 +575,7 @@ pub struct PreprocessorBuilder {
     normalize: Normalize,
     pad_value: u8,
     sampling: InterpolationMode,
+    source_format: SourceFormat,
 }
 
 impl Default for PreprocessorBuilder {
@@ -437,6 +585,7 @@ impl Default for PreprocessorBuilder {
             normalize: Normalize::UnitScale,
             pad_value: 114,
             sampling: InterpolationMode::Bilinear,
+            source_format: SourceFormat::Rgb,
         }
     }
 }
@@ -445,6 +594,14 @@ impl PreprocessorBuilder {
     /// A builder with the defaults (letterbox, unit-scale, pad 114).
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Set the source pixel format ([`SourceFormat`]) — camera formats
+    /// (NV12/YUYV/Gray) fuse their decode into the resize kernel and are fed
+    /// through [`Preprocessor::run_raw`].
+    pub fn source_format(mut self, format: SourceFormat) -> Self {
+        self.source_format = format;
+        self
     }
 
     /// Set the resize fit ([`ResizeMode`]).
@@ -486,6 +643,7 @@ impl PreprocessorBuilder {
         Ok(Preprocessor {
             mode: self.mode,
             sampling: self.sampling,
+            source_format: self.source_format,
             mean,
             inv_std,
             pad_value: self.pad_value as f32,
@@ -526,6 +684,7 @@ impl PreprocessorBuilder {
         Ok(Preprocessor {
             mode: self.mode,
             sampling: self.sampling,
+            source_format: self.source_format,
             mean,
             inv_std,
             pad_value: self.pad_value as f32,
@@ -547,6 +706,7 @@ impl PreprocessorBuilder {
 pub struct Preprocessor {
     mode: ResizeMode,
     sampling: InterpolationMode,
+    source_format: SourceFormat,
     mean: [f32; 3],
     inv_std: [f32; 3],
     pad_value: f32,
@@ -648,11 +808,31 @@ impl Preprocessor {
         let (dst_h, dst_w) = (dst.shape[2], dst.shape[3]);
         let a = Affine::new(self.mode, src.width(), src.height(), dst_w, dst_h);
 
+        self.validate_typed_format::<C>()?;
         #[cfg(feature = "cudarc")]
         if let Some(cuda) = &self.cuda {
             return self.run_cuda::<C>(cuda, src, dst, &a);
         }
         self.run_cpu::<C>(src, dst, &a)
+    }
+
+    /// The typed `run` entries feed interleaved pixels; the source format must
+    /// agree with the image's `C`. The byte stride comes from `C` itself, so
+    /// `Rgb`/`Bgr` also accept `C = 4` (that's exactly the RGBA/BGRA
+    /// alpha-skipped layout — keeps `run::<4>` working on a default builder).
+    /// Camera formats have no typed image and go through
+    /// [`run_raw`](Self::run_raw).
+    fn validate_typed_format<const C: usize>(&self) -> Result<(), PreprocessError> {
+        let ok = match self.source_format {
+            SourceFormat::Rgb | SourceFormat::Bgr => true,
+            SourceFormat::Rgba | SourceFormat::Bgra => C == 4,
+            _ => false,
+        };
+        if ok {
+            Ok(())
+        } else {
+            Err(PreprocessError::FormatNeedsRawBuffer(self.source_format))
+        }
     }
 
     // Host path built on the crate's OPTIMIZED resize kernels, FUSED FIRST:
@@ -809,6 +989,7 @@ impl Preprocessor {
             src_h,
             src_w * C,
             C,
+            self.source_format.fmt_code(),
             dst,
             a,
         )
@@ -833,6 +1014,7 @@ impl Preprocessor {
             .0
             .as_cudaslice()
             .ok_or(PreprocessError::NotDeviceImage)?;
+        self.validate_typed_format::<C>()?;
         self.launch_cuda(
             cuda,
             &cuda.kernel_f16,
@@ -841,6 +1023,7 @@ impl Preprocessor {
             src_h,
             src_w * C,
             C,
+            self.source_format.fmt_code(),
             dst,
             &a,
         )
@@ -870,6 +1053,7 @@ impl Preprocessor {
             src.height,
             src.row_pitch,
             src.channels,
+            self.surface_fmt_code()?,
             dst,
             &a,
         )
@@ -896,9 +1080,174 @@ impl Preprocessor {
             src.height,
             src.row_pitch,
             src.channels,
+            self.surface_fmt_code()?,
             dst,
             &a,
         )
+    }
+
+    /// Pitched surfaces are interleaved by construction (pitch covers
+    /// `width*channels`); the subsampled camera formats address chroma from the
+    /// frame *width*, so a pitched NV12/YUYV surface would decode garbage —
+    /// those go through the tightly-packed [`run_raw`](Self::run_raw) instead.
+    /// The format only selects the in-kernel swizzle; the byte stride comes
+    /// from the surface's own `channels`.
+    #[cfg(feature = "cudarc")]
+    fn surface_fmt_code(&self) -> Result<i32, PreprocessError> {
+        match self.source_format {
+            SourceFormat::Rgb | SourceFormat::Rgba | SourceFormat::Bgr | SourceFormat::Bgra => {
+                Ok(self.source_format.fmt_code())
+            }
+            f => Err(PreprocessError::FormatNeedsRawBuffer(f)),
+        }
+    }
+
+    /// Preprocess a **raw device frame buffer** (`CudaSlice<u8>`) in the
+    /// builder's [`SourceFormat`] — the entry point for camera formats
+    /// (NV12 / YUYV / Gray, and tightly-packed interleaved buffers): color
+    /// decode is fused into the resize taps, so a capture frame becomes the
+    /// normalized CHW tensor in **one kernel launch** with no intermediate
+    /// RGB image in device memory.
+    ///
+    /// The buffer must be tightly packed (`SourceFormat::buffer_len` bytes or
+    /// more; extra tail bytes — e.g. V4L2 buffer padding — are ignored).
+    ///
+    /// # Errors
+    ///
+    /// [`PreprocessError::InvalidRawSource`] if the buffer is too small or the
+    /// dimensions violate the format's subsampling constraints (even dims for
+    /// NV12, even width for YUYV); [`PreprocessError::NotDeviceImage`] on a
+    /// CPU preprocessor.
+    #[cfg(feature = "cudarc")]
+    pub fn run_raw(
+        &self,
+        src: &cudarc::driver::CudaSlice<u8>,
+        src_w: usize,
+        src_h: usize,
+        dst: &mut Tensor<f32, 4>,
+    ) -> Result<(), PreprocessError> {
+        validate_dst_shape(dst.shape)?;
+        let cuda = self.cuda.as_ref().ok_or(PreprocessError::NotDeviceImage)?;
+        self.validate_raw(src.len(), src_w, src_h)?;
+        let a = Affine::new(self.mode, src_w, src_h, dst.shape[3], dst.shape[2]);
+        let f = self.source_format;
+        self.launch_cuda(
+            cuda,
+            &cuda.kernel,
+            src,
+            src_w,
+            src_h,
+            f.pitch(src_w),
+            f.bpp(),
+            f.fmt_code(),
+            dst,
+            &a,
+        )
+    }
+
+    /// [`run_raw`](Self::run_raw) writing a half-precision tensor — raw camera
+    /// frame to fp16 CHW engine input in one fused kernel.
+    #[cfg(feature = "cudarc")]
+    pub fn run_raw_f16(
+        &self,
+        src: &cudarc::driver::CudaSlice<u8>,
+        src_w: usize,
+        src_h: usize,
+        dst: &mut Tensor<half::f16, 4>,
+    ) -> Result<(), PreprocessError> {
+        validate_dst_shape(dst.shape)?;
+        let cuda = self.cuda.as_ref().ok_or(PreprocessError::NotDeviceImage)?;
+        self.validate_raw(src.len(), src_w, src_h)?;
+        let a = Affine::new(self.mode, src_w, src_h, dst.shape[3], dst.shape[2]);
+        let f = self.source_format;
+        self.launch_cuda(
+            cuda,
+            &cuda.kernel_f16,
+            src,
+            src_w,
+            src_h,
+            f.pitch(src_w),
+            f.bpp(),
+            f.fmt_code(),
+            dst,
+            &a,
+        )
+    }
+
+    /// Preprocess `N` same-sized raw frames into a **batched** `[N, 3, H, W]`
+    /// tensor — one [`run_raw`](Self::run_raw) launch per frame, each writing
+    /// its own CHW plane of `dst`. All launches queue on the preprocessor's
+    /// stream, so a single sync covers the whole batch (multi-camera rigs,
+    /// batched TensorRT engines).
+    ///
+    /// # Errors
+    ///
+    /// [`PreprocessError::BatchMismatch`] if `dst.shape[0] != frames.len()`;
+    /// otherwise as [`run_raw`](Self::run_raw), checked per frame.
+    #[cfg(feature = "cudarc")]
+    pub fn run_raw_batch(
+        &self,
+        frames: &[&cudarc::driver::CudaSlice<u8>],
+        src_w: usize,
+        src_h: usize,
+        dst: &mut Tensor<f32, 4>,
+    ) -> Result<(), PreprocessError> {
+        let cuda = self.cuda.as_ref().ok_or(PreprocessError::NotDeviceImage)?;
+        if dst.shape[1] != 3 {
+            return Err(PreprocessError::BadOutputShape(dst.shape));
+        }
+        if dst.shape[0] != frames.len() {
+            return Err(PreprocessError::BatchMismatch {
+                dst_n: dst.shape[0],
+                frames: frames.len(),
+            });
+        }
+        let (dst_h, dst_w) = (dst.shape[2], dst.shape[3]);
+        let a = Affine::new(self.mode, src_w, src_h, dst_w, dst_h);
+        let f = self.source_format;
+        for src in frames {
+            self.validate_raw(src.len(), src_w, src_h)?;
+        }
+        let dst_slice = dst
+            .as_cudaslice_mut()
+            .ok_or(PreprocessError::NotDeviceTensor)?;
+        let plane = 3 * dst_h * dst_w;
+        for (i, src) in frames.iter().enumerate() {
+            let mut view = dst_slice.slice_mut(i * plane..(i + 1) * plane);
+            self.launch_view(
+                cuda,
+                &cuda.kernel,
+                src,
+                src_w,
+                src_h,
+                f.pitch(src_w),
+                f.bpp(),
+                f.fmt_code(),
+                &mut view,
+                dst_w,
+                dst_h,
+                &a,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// A raw frame must satisfy the format's subsampling constraints and cover
+    /// at least `buffer_len` bytes (longer is fine — capture buffers often pad).
+    #[cfg(feature = "cudarc")]
+    fn validate_raw(&self, got: usize, w: usize, h: usize) -> Result<(), PreprocessError> {
+        let f = self.source_format;
+        let need = f.buffer_len(w, h);
+        if !f.dims_ok(w, h) || got < need {
+            return Err(PreprocessError::InvalidRawSource {
+                format: f,
+                width: w,
+                height: h,
+                got,
+                need,
+            });
+        }
+        Ok(())
     }
 
     #[cfg(feature = "cudarc")]
@@ -912,19 +1261,57 @@ impl Preprocessor {
         src_h: usize,
         src_pitch: usize,
         src_bpp: usize,
+        fmt: i32,
         dst: &mut Tensor<T, 4>,
         a: &Affine,
     ) -> Result<(), PreprocessError> {
         let (dst_h, dst_w) = (dst.shape[2], dst.shape[3]);
+        let dst_slice = dst
+            .as_cudaslice_mut()
+            .ok_or(PreprocessError::NotDeviceTensor)?;
+        let mut dst_view = dst_slice.slice_mut(..);
+        self.launch_view(
+            cuda,
+            kernel,
+            src_slice,
+            src_w,
+            src_h,
+            src_pitch,
+            src_bpp,
+            fmt,
+            &mut dst_view,
+            dst_w,
+            dst_h,
+            a,
+        )
+    }
+
+    /// The single launch seam: every entry point ends here. `dst_view` is one
+    /// image's `3*dst_h*dst_w` CHW plane — for batches, a sub-slice of the
+    /// `[N, 3, H, W]` tensor.
+    #[cfg(feature = "cudarc")]
+    #[allow(clippy::too_many_arguments)]
+    fn launch_view<T: cudarc::driver::DeviceRepr + cudarc::driver::ValidAsZeroBits + 'static>(
+        &self,
+        cuda: &CudaBackend,
+        kernel: &CudaKernel,
+        src_slice: &cudarc::driver::CudaSlice<u8>,
+        src_w: usize,
+        src_h: usize,
+        src_pitch: usize,
+        src_bpp: usize,
+        fmt: i32,
+        dst_view: &mut cudarc::driver::CudaViewMut<'_, T>,
+        dst_w: usize,
+        dst_h: usize,
+        a: &Affine,
+    ) -> Result<(), PreprocessError> {
         // The kernel indexes pixels as `int`; keep every dim + the pixel count
         // within i32 so the `as i32` / `as u32` launch args never truncate.
         let lim = i32::MAX as usize;
         if src_w > lim || src_h > lim || src_pitch > lim || dst_w.saturating_mul(dst_h) > lim {
             return Err(PreprocessError::DimensionsTooLarge);
         }
-        let dst_slice = dst
-            .as_cudaslice_mut()
-            .ok_or(PreprocessError::NotDeviceTensor)?;
 
         let (sw, sh, sp, bpp) = (src_w as i32, src_h as i32, src_pitch as i32, src_bpp as i32);
         let (dw, dh) = (dst_w as i32, dst_h as i32);
@@ -936,7 +1323,7 @@ impl Preprocessor {
         kernel
             .launch_builder(&cuda.stream)
             .arg(src_slice)
-            .arg(dst_slice)
+            .arg(dst_view)
             .arg(&a.scale_x)
             .arg(&a.scale_y)
             .arg(&a.pad_x)
@@ -945,6 +1332,7 @@ impl Preprocessor {
             .arg(&sh)
             .arg(&sp)
             .arg(&bpp)
+            .arg(&fmt)
             .arg(&dw)
             .arg(&dh)
             .arg(&m0)
@@ -1320,5 +1708,204 @@ mod tests {
                 );
             }
         }
+    }
+
+    // The typed run() entries only accept interleaved formats matching C;
+    // camera formats must be routed to run_raw. No GPU needed.
+    #[test]
+    fn typed_run_rejects_camera_formats() {
+        let pre = Preprocessor::builder()
+            .source_format(SourceFormat::Nv12)
+            .build()
+            .unwrap();
+        let src = host_solid(4, 4, [1u8, 2, 3]);
+        let mut dst = host_dst(4, 4);
+        assert!(matches!(
+            pre.run(&src, &mut dst),
+            Err(PreprocessError::FormatNeedsRawBuffer(SourceFormat::Nv12))
+        ));
+        // Channel-count / format mismatch on interleaved formats too.
+        let pre = Preprocessor::builder()
+            .source_format(SourceFormat::Rgba)
+            .build()
+            .unwrap();
+        assert!(matches!(
+            pre.run(&src, &mut dst),
+            Err(PreprocessError::FormatNeedsRawBuffer(SourceFormat::Rgba))
+        ));
+    }
+
+    // Deterministic raw bytes for camera-format buffers.
+    #[cfg(feature = "cudarc")]
+    fn raw_bytes(len: usize) -> Vec<u8> {
+        (0..len).map(|i| ((i * 7 + 13) % 251) as u8).collect()
+    }
+
+    // Fused decode-in-the-taps must equal the chained path (CPU decode to RGB
+    // — bit-exact to the GPU Q20 kernels — then the typed RGB run) for every
+    // camera format and sampling mode. The kernel quantizes each decoded tap
+    // to integer 0..255 exactly like the standalone decoders, so the resample
+    // arithmetic sees identical inputs and the outputs match bit-for-bit.
+    #[cfg(feature = "cudarc")]
+    #[test]
+    #[ignore = "requires a CUDA device"]
+    fn cuda_fused_formats_match_chained() {
+        use crate::color::{bgr_from_rgb, rgb_from_gray, rgb_from_nv12, rgb_from_yuyv};
+        use cudarc::driver::CudaContext;
+        use kornia_tensor::zeros_cuda;
+
+        let stream = CudaContext::new(0).unwrap().default_stream();
+        let (w, h) = (8usize, 6usize);
+        let size = ImageSize {
+            width: w,
+            height: h,
+        };
+
+        // (format, raw buffer, CPU-decoded RGB reference)
+        let cases: Vec<(SourceFormat, Vec<u8>, Image<u8, 3>)> = {
+            let mut v = Vec::new();
+
+            let raw = raw_bytes(w * h * 3 / 2);
+            let mut rgb = Image::<u8, 3>::new(size, vec![0; w * h * 3]).unwrap();
+            rgb_from_nv12(&raw, &mut rgb).unwrap();
+            v.push((SourceFormat::Nv12, raw, rgb));
+
+            let raw = raw_bytes(w * h * 2);
+            let mut rgb = Image::<u8, 3>::new(size, vec![0; w * h * 3]).unwrap();
+            rgb_from_yuyv(&raw, &mut rgb).unwrap();
+            v.push((SourceFormat::Yuyv, raw, rgb));
+
+            let raw = raw_bytes(w * h);
+            let gray = Image::<u8, 1>::new(size, raw.clone()).unwrap();
+            let mut rgb = Image::<u8, 3>::new(size, vec![0; w * h * 3]).unwrap();
+            rgb_from_gray(&gray, &mut rgb).unwrap();
+            v.push((SourceFormat::Gray, raw, rgb));
+
+            // BGR raw buffer; the swap is involutive so bgr_from_rgb decodes it.
+            let raw = raw_bytes(w * h * 3);
+            let bgr = Image::<u8, 3>::new(size, raw.clone()).unwrap();
+            let mut rgb = Image::<u8, 3>::new(size, vec![0; w * h * 3]).unwrap();
+            bgr_from_rgb(&bgr, &mut rgb).unwrap();
+            v.push((SourceFormat::Bgr, raw, rgb));
+
+            v
+        };
+
+        for (fmt, raw, rgb_ref) in &cases {
+            let d_raw = stream.memcpy_stod(raw).unwrap();
+            let d_rgb: Image<u8, 3> = Image(rgb_ref.0.to_cuda(&stream).unwrap());
+            for sampling in ALL_SAMPLING {
+                let fused = Preprocessor::builder()
+                    .sampling(sampling)
+                    .source_format(*fmt)
+                    .build_cuda(stream.clone())
+                    .unwrap();
+                let chained = Preprocessor::builder()
+                    .sampling(sampling)
+                    .build_cuda(stream.clone())
+                    .unwrap();
+
+                let mut d_fused = zeros_cuda::<f32, 4>([1, 3, 5, 7], &stream).unwrap();
+                fused.run_raw(&d_raw, w, h, &mut d_fused).unwrap();
+                let mut d_chain = zeros_cuda::<f32, 4>([1, 3, 5, 7], &stream).unwrap();
+                chained.run(&d_rgb, &mut d_chain).unwrap();
+
+                let a = stream.clone_dtoh(d_fused.as_cudaslice().unwrap()).unwrap();
+                let b = stream.clone_dtoh(d_chain.as_cudaslice().unwrap()).unwrap();
+                for (i, (x, y)) in a.iter().zip(&b).enumerate() {
+                    assert!(
+                        (x - y).abs() <= 1e-6,
+                        "{fmt:?}/{sampling:?} idx {i}: fused {x} chained {y}"
+                    );
+                }
+            }
+        }
+    }
+
+    // run_raw_batch writes each frame's CHW plane exactly as a run_raw into a
+    // single-image tensor would; batch-dim mismatch errors out.
+    #[cfg(feature = "cudarc")]
+    #[test]
+    #[ignore = "requires a CUDA device"]
+    fn cuda_run_raw_batch_matches_single() {
+        use cudarc::driver::CudaContext;
+        use kornia_tensor::zeros_cuda;
+
+        let stream = CudaContext::new(0).unwrap().default_stream();
+        let (w, h) = (8usize, 6usize);
+        let pre = Preprocessor::builder()
+            .source_format(SourceFormat::Nv12)
+            .build_cuda(stream.clone())
+            .unwrap();
+
+        let raws: Vec<_> = (0..3)
+            .map(|k| {
+                let mut b = raw_bytes(w * h * 3 / 2);
+                b.iter_mut().for_each(|v| *v = v.wrapping_add(k * 31));
+                stream.memcpy_stod(&b).unwrap()
+            })
+            .collect();
+        let frames: Vec<_> = raws.iter().collect();
+
+        let mut d_batch = zeros_cuda::<f32, 4>([3, 3, 5, 7], &stream).unwrap();
+        pre.run_raw_batch(&frames, w, h, &mut d_batch).unwrap();
+        let batch = stream.clone_dtoh(d_batch.as_cudaslice().unwrap()).unwrap();
+
+        let plane = 3 * 5 * 7;
+        for (i, raw) in raws.iter().enumerate() {
+            let mut d_one = zeros_cuda::<f32, 4>([1, 3, 5, 7], &stream).unwrap();
+            pre.run_raw(raw, w, h, &mut d_one).unwrap();
+            let one = stream.clone_dtoh(d_one.as_cudaslice().unwrap()).unwrap();
+            assert_eq!(&batch[i * plane..(i + 1) * plane], &one[..], "frame {i}");
+        }
+
+        // Batch-dim mismatch.
+        let mut d_bad = zeros_cuda::<f32, 4>([2, 3, 5, 7], &stream).unwrap();
+        assert!(matches!(
+            pre.run_raw_batch(&frames, w, h, &mut d_bad),
+            Err(PreprocessError::BatchMismatch { dst_n: 2, frames: 3 })
+        ));
+    }
+
+    // run_raw validates buffer length and subsampling dims before launching.
+    #[cfg(feature = "cudarc")]
+    #[test]
+    #[ignore = "requires a CUDA device"]
+    fn cuda_run_raw_validates_source() {
+        use cudarc::driver::CudaContext;
+        use kornia_tensor::zeros_cuda;
+
+        let stream = CudaContext::new(0).unwrap().default_stream();
+        let pre = Preprocessor::builder()
+            .source_format(SourceFormat::Nv12)
+            .build_cuda(stream.clone())
+            .unwrap();
+        let mut dst = zeros_cuda::<f32, 4>([1, 3, 4, 4], &stream).unwrap();
+
+        // Too small for 8x6 NV12 (needs 72 bytes).
+        let short = stream.memcpy_stod(&raw_bytes(60)).unwrap();
+        assert!(matches!(
+            pre.run_raw(&short, 8, 6, &mut dst),
+            Err(PreprocessError::InvalidRawSource { need: 72, .. })
+        ));
+        // Odd height violates NV12 subsampling.
+        let raw = stream.memcpy_stod(&raw_bytes(8 * 5 * 2)).unwrap();
+        assert!(matches!(
+            pre.run_raw(&raw, 8, 5, &mut dst),
+            Err(PreprocessError::InvalidRawSource { .. })
+        ));
+        // A pitched surface with a camera format is rejected.
+        let surf_buf = stream.memcpy_stod(&raw_bytes(8 * 6 * 4)).unwrap();
+        let surf = PitchedSurface {
+            data: &surf_buf,
+            width: 8,
+            height: 6,
+            row_pitch: 32,
+            channels: 4,
+        };
+        assert!(matches!(
+            pre.run_surface(&surf, &mut dst),
+            Err(PreprocessError::FormatNeedsRawBuffer(SourceFormat::Nv12))
+        ));
     }
 }
