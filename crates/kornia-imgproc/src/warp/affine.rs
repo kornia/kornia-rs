@@ -230,8 +230,8 @@ pub fn warp_affine<const C: usize>(
                          sx: &mut f32,
                          sy: &mut f32| {
                             for dst_pixel in dst_row[x_lo * C..x_hi * C].chunks_exact_mut(C) {
-                                let sx_c = sx.min(src_w_f - 1.0);
-                                let sy_c = sy.min(src_h_f - 1.0);
+                                let sx_c = sx.clamp(0.0, src_w_f - 1.0);
+                                let sy_c = sy.clamp(0.0, src_h_f - 1.0);
                                 let x0 = sx_c as usize;
                                 let y0 = sy_c as usize;
                                 let x1 = (x0 + 1).min(src_w - 1);
