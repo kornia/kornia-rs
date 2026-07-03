@@ -1,3 +1,23 @@
+# CUDA color conversion benchmark
+
+## System
+
+| | |
+|---|---|
+| Date (UTC) | 2026-07-03 04:22 |
+| Host | nvidia-orin00 |
+| Machine | NVIDIA Jetson Orin Nano Engineering Reference Developer Kit Super |
+| Kernel / arch | 5.15.148-tegra aarch64 |
+| CPU | Cortex-A78AE x6 |
+| L4T | # R36 (release), REVISION: 4.3, GCID: 38968081, BOARD: generic, EABI: aarch64, DATE: Wed Jan  8 01:49:37 UTC 2025 |
+| GPU | nvidia,ga10b |
+| CUDA | 12.6.11 |
+| Power mode | MAXN_SUPER |
+| rustc | rustc 1.93.0 (254b59607 2026-01-19) |
+| OpenCV (py) | 4.13.0 |
+| VPI | 3.2.4 |
+| Git commit | f865362e3a (dirty) |
+
 
 ## 640x480 (min ms per call)
 

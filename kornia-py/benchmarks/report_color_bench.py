@@ -15,9 +15,57 @@ Usage:
 
 from __future__ import annotations
 
+import datetime
 import json
+import platform
+import subprocess
 import sys
 from collections import defaultdict
+
+
+def _run(cmd):
+    try:
+        return subprocess.run(
+            cmd, shell=True, capture_output=True, text=True, timeout=10
+        ).stdout.strip()
+    except Exception:
+        return ""
+
+
+def system_info_header():
+    """Markdown provenance block: everything needed to attribute the numbers
+    to a specific machine, software stack, and power state."""
+    rows = []
+
+    def add(k, v):
+        if v:
+            rows.append((k, v))
+
+    add("Date (UTC)", datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M"))
+    add("Host", platform.node())
+    add("Machine", _run("cat /proc/device-tree/model 2>/dev/null | tr -d '\\0'"))
+    add("Kernel / arch", f"{platform.release()} {platform.machine()}")
+    add("CPU", _run("lscpu | grep -m1 'Model name' | sed 's/.*: *//'")
+        + f" x{_run('nproc')}")
+    add("L4T", _run("head -c 200 /etc/nv_tegra_release 2>/dev/null | head -1"))
+    add("GPU", _run("cat /sys/devices/platform/*.gpu/of_node/compatible 2>/dev/null | tr -d '\\0'")
+        or "integrated (see L4T)")
+    add("CUDA", _run(
+        "python3 -c \"import json;print(json.load(open('/usr/local/cuda/version.json'))['cuda']['version'])\" 2>/dev/null"
+    ))
+    add("Power mode", _run("nvpmodel -q 2>/dev/null | grep -m1 'NV Power Mode' | sed 's/.*: *//'"))
+    add("rustc", _run("rustc -V"))
+    add("OpenCV (py)", _run("python3 -c 'import cv2;print(cv2.__version__)' 2>/dev/null"))
+    add("VPI", _run(
+        "python3 -c \"import glob,sys;sys.path.insert(0,next(iter(glob.glob('/opt/nvidia/vpi*/lib/*/python')),''));import vpi;print(vpi.__version__)\" 2>/dev/null"
+    ))
+    add("Git commit", _run("git rev-parse --short=10 HEAD 2>/dev/null")
+        + (" (dirty)" if _run("git status --porcelain 2>/dev/null") else ""))
+
+    out = ["# CUDA color conversion benchmark", "", "## System", "",
+           "| | |", "|---|---|"]
+    out += [f"| {k} | {v} |" for k, v in rows]
+    return chr(10).join(out) + chr(10)
 
 COLUMNS = [
     "kornia-cpu",
@@ -43,6 +91,8 @@ def main(paths):
                     continue
                 r = json.loads(line)
                 data[(r["width"], r["height"])][r["op"]][r["variant"]] = r["min_ms"]
+
+    print(system_info_header())
 
     for (w, h) in sorted(data):
         ops = data[(w, h)]
