@@ -19,7 +19,7 @@
 //! coordinate offset, D4 refine_edges search-range difference) cause sub-pixel gaps that will
 //! be fixed in A3, after which the tolerance should tighten to ≤ 0.1 px.
 
-use std::{collections::HashMap, path::PathBuf};
+use std::path::PathBuf;
 
 use apriltag::DetectorBuilder;
 use kornia_apriltag::{
@@ -85,18 +85,19 @@ fn build_kornia_detector(width: usize, height: usize) -> AprilTagDecoder {
     AprilTagDecoder::new(config, ImageSize { width, height }).unwrap()
 }
 
-/// Run the C detector on a grayscale byte slice and return `id → (hamming, corners)`.
+/// Run the C detector on a grayscale byte slice. Returns every detection as
+/// `(id, hamming, corners)` — scenes contain repeated ids; never key by id.
 fn run_c(
     gray: &[u8],
     width: usize,
     height: usize,
     det: &mut apriltag::Detector,
-) -> HashMap<usize, (usize, [[f64; 2]; 4])> {
+) -> Vec<(usize, usize, [[f64; 2]; 4])> {
     let mut c_img = apriltag::Image::zeros_with_stride(width, height, width).unwrap();
     c_img.as_slice_mut().copy_from_slice(gray);
     det.detect(&c_img)
         .into_iter()
-        .map(|d| (d.id(), (d.hamming(), d.corners())))
+        .map(|d| (d.id(), d.hamming(), d.corners()))
         .collect()
 }
 
@@ -179,25 +180,26 @@ fn check_image(
 ) -> (usize, usize, f32) {
     println!("=== Testing: {} ({}×{}) ===", label, width, height);
 
-    let c_map = run_c(gray, width, height, c_det);
+    let c_dets = run_c(gray, width, height, c_det);
     // All kornia detections before dedup — lets us match C by spatial proximity.
     let k_all = run_kornia(gray, width, height, k_det);
 
     println!(
         "  C detections: {}, kornia detections: {}",
-        c_map.len(),
+        c_dets.len(),
         k_all.len()
     );
 
     let mut global_max_delta: f32 = 0.0;
 
     // Every C detection must have a spatially close Kornia candidate with matching hamming.
-    for (&c_id, (c_hamming, c_corners)) in &c_map {
+    for &(c_id, c_hamming, c_corners) in &c_dets {
+        let c_corners = &c_corners;
         // Filter candidates to those with same id AND hamming ≤ c_hamming (including equal).
         // We match on id AND hamming to mirror C's quick-decode semantics.
         let candidates: Vec<&KorniaDetection> = k_all
             .iter()
-            .filter(|d| d.id == c_id as u16 && d.hamming as usize == *c_hamming)
+            .filter(|d| d.id == c_id as u16 && d.hamming as usize == c_hamming)
             .collect();
 
         if candidates.is_empty() {
@@ -259,7 +261,7 @@ fn check_image(
         );
     }
 
-    (c_map.len(), k_all.len(), global_max_delta)
+    (c_dets.len(), k_all.len(), global_max_delta)
 }
 
 // ─── test functions ──────────────────────────────────────────────────────────
@@ -296,6 +298,25 @@ fn test_parity_tag36h11_apriltags_jpg() {
     assert!(
         c_count > 0,
         "C detector found no tags in apriltags_tag36h11.jpg — image load or C library issue?"
+    );
+
+    // Regression guard: the scene repeats the same tag id — post-dedup kornia
+    // must keep every physical instance like C does. Exact-count equality is
+    // stricter than the tolerance-based matching above; if a borderline
+    // non-dedup divergence ever trips this, compare spatial clusters instead.
+    let img = Image::<u8, 1>::from_size_slice(
+        ImageSize {
+            width: w,
+            height: h,
+        },
+        &gray,
+    )
+    .unwrap();
+    let deduped = k_det.decode(&img).unwrap();
+    assert_eq!(
+        deduped.len(),
+        c_count,
+        "post-dedup kornia detection count must match C on the repeated-id scene"
     );
 }
 

@@ -1,8 +1,6 @@
 use rayon::prelude::*;
 use std::{f32::consts::PI, ops::ControlFlow};
 
-use rustc_hash::FxHashMap;
-
 use crate::{
     errors::AprilTagError,
     family::{TagFamily, TagFamilyKind},
@@ -457,15 +455,17 @@ pub fn decode_tags(
         .collect()
 }
 
-/// Deduplicates a list of detections, keeping the best (lowest hamming, then highest margin)
-/// per `(family_idx, id)` pair — matching C's `apriltag_detect` dedup behaviour.
+/// Deduplicates detections, keeping the best (lowest hamming, then highest
+/// margin) per cluster of **spatially overlapping** detections that share
+/// `(family_idx, id)`. Repeated ids at distinct locations all survive —
+/// mirrors C `apriltag_detect`'s reconcile step ("allow non-overlapping
+/// duplicate detections"), with a center-distance approximation of C's exact
+/// polygon-overlap test (see PARITY.md, D6).
 pub fn dedup_detections(all: Vec<Detection>) -> Vec<Detection> {
-    let mut dedup: FxHashMap<(usize, u16), Detection> = FxHashMap::default();
+    // O(n²) over the per-frame detection count, which is small.
+    let mut kept: Vec<Detection> = Vec::with_capacity(all.len());
     for det in all {
-        match dedup.get_mut(&(det._family_idx, det.id)) {
-            None => {
-                dedup.insert((det._family_idx, det.id), det);
-            }
+        match kept.iter_mut().find(|prev| is_duplicate(prev, &det)) {
             Some(prev) => {
                 if det.hamming < prev.hamming
                     || (det.hamming == prev.hamming && det.decision_margin > prev.decision_margin)
@@ -473,9 +473,24 @@ pub fn dedup_detections(all: Vec<Detection>) -> Vec<Detection> {
                     *prev = det;
                 }
             }
+            None => kept.push(det),
         }
     }
-    dedup.into_values().collect()
+    kept
+}
+
+/// Duplicate test for [`dedup_detections`]: same family+id and (homography)
+/// centers closer than half the mean of the two quads' diagonals — i.e. the
+/// quads materially overlap. Distinct physical tags of the same id sit at
+/// least a tag width apart.
+fn is_duplicate(a: &Detection, b: &Detection) -> bool {
+    if a._family_idx != b._family_idx || a.id != b.id {
+        return false;
+    }
+    let diag = |q: &Quad| (q.corners[2] - q.corners[0]).length();
+    let d = a.center - b.center;
+    let thresh = 0.25 * (diag(&a.quad) + diag(&b.quad)); // half the mean diagonal
+    d.dot(d) < thresh * thresh
 }
 
 /// Refines the edges of a quadrilateral in the image by adjusting its corners based on local image gradients.
@@ -978,6 +993,51 @@ mod tests {
     use kornia_io::png::read_image_png_mono8;
 
     const EPSILON: f32 = 0.0001;
+
+    fn det_at(x: f32, y: f32, size: f32, id: u16, margin: f32) -> Detection {
+        let h = size * 0.5;
+        let quad = Quad {
+            corners: [
+                Vec2F32::new(x - h, y + h),
+                Vec2F32::new(x + h, y + h),
+                Vec2F32::new(x + h, y - h),
+                Vec2F32::new(x - h, y - h),
+            ],
+            ..Default::default()
+        };
+        Detection {
+            _family_idx: 0,
+            tag_family_kind: TagFamilyKind::Tag36H11,
+            id,
+            hamming: 0,
+            decision_margin: margin,
+            center: Vec2F32::new(x, y),
+            quad,
+        }
+    }
+
+    /// Repeated ids at distinct locations are distinct physical tags and must
+    /// all survive dedup; overlapping same-id quads collapse to the best one.
+    #[test]
+    fn dedup_keeps_repeated_ids_merges_overlaps() {
+        let dets = vec![
+            det_at(100.0, 100.0, 40.0, 0, 50.0), // tag A
+            det_at(102.0, 101.0, 40.0, 0, 80.0), // overlaps A, better margin
+            det_at(300.0, 100.0, 40.0, 0, 60.0), // same id, far away: distinct tag B
+            det_at(100.0, 300.0, 40.0, 7, 60.0), // different id entirely
+        ];
+        let mut out = dedup_detections(dets);
+        out.sort_by(|a, b| (a.id, a.center.x as i32).cmp(&(b.id, b.center.x as i32)));
+        assert_eq!(out.len(), 3, "two id-0 tags + one id-7 tag");
+        assert_eq!(out[0].id, 0);
+        assert_eq!(
+            out[0].decision_margin, 80.0,
+            "overlap kept the better margin"
+        );
+        assert_eq!(out[1].id, 0);
+        assert_eq!(out[1].center.x, 300.0);
+        assert_eq!(out[2].id, 7);
+    }
 
     #[test]
     fn test_decode_tags() -> Result<(), Box<dyn std::error::Error>> {

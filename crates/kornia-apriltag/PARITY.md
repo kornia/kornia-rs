@@ -28,6 +28,7 @@ Key C files: `apriltag.c`, `apriltag_quad_thresh.c`, `common/image_u8.c`, `commo
 | `decode_sharpening` default | `lib.rs:109` | MATCH | Both default to `0.25` |
 | `refine_edges` enabled default | `lib.rs:107` | MATCH | Both default to `true` |
 | `quad_decimate` default | `lib.rs:76` | MATCH (effective) | C default=2.0; Rust `DEFAULT_DOWNSCALE_FACTOR=2` |
+| reconcile / dedup (apriltag.c Step 3) | `decoder.rs` `dedup_detections` | **DIVERGENCE D6** (intentional) | Same semantics (repeated non-overlapping ids survive; best hamming/margin wins per overlap cluster); overlap predicate is a center-distance heuristic, not C's exact `g2d_polygon_overlaps_polygon` |
 
 ---
 
@@ -154,6 +155,18 @@ back at the end. Should be done if the numeric parity test (Task A2) shows bit-d
 disagreements attributable to homography precision.
 
 ---
+
+### D6. Detection reconcile — overlap predicate (LOW, intentional)
+
+C's `apriltag_detect` Step 3 dedups detections that share family+id AND whose
+quads pass `g2d_polygon_overlaps_polygon` (exact convex-polygon intersection);
+non-overlapping repeats of the same id all survive. Rust `dedup_detections`
+mirrors the semantics but approximates the overlap test: centers closer than
+half the mean of the two quads' 0→2 diagonals. Duplicate candidates originate
+from the same physical quad boundary, so their centers nearly coincide — the
+approximation only diverges for strongly perspective-skewed overlapping quads.
+Exact SAT-based quad overlap (~25 lines) is the upgrade path if a parity count
+mismatch ever appears on skewed repeated-tag scenes.
 
 ## Intentional Omissions
 
