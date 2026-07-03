@@ -1,18 +1,8 @@
-"""Shared pytest fixtures for kornia-py tests.
-
-Centralizes the seeded 1080p test image so the bench gates are
-reproducible across runs and the same array isn't rebuilt three times
-across ``test_against_pil_cv2``, ``test_image_benchmarks``, and
-``test_zero_copy_io``.
-"""
+"""Shared test fixtures."""
 
 import numpy as np
-import pytest
 
 
-@pytest.fixture(scope="session")
-def rand_u8_1080p() -> np.ndarray:
-    """Deterministic 1080p uint8 RGB. Seed-pinned so the perf gate
-    doesn't flap on a pathological random draw."""
-    rng = np.random.default_rng(0)
-    return rng.integers(0, 256, (1080, 1920, 3), dtype=np.uint8)
+def nv12_frame(w: int, h: int, rng: np.random.Generator) -> np.ndarray:
+    """A synthetic tightly-packed NV12 buffer (w*h luma + w*h/2 chroma)."""
+    return rng.integers(0, 256, (w * h * 3 // 2,), dtype=np.uint8)

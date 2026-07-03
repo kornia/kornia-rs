@@ -2,6 +2,7 @@
 built without the `cuda` feature)."""
 
 import numpy as np
+from conftest import nv12_frame
 import pytest
 
 import kornia_rs
@@ -64,7 +65,7 @@ def test_colormap_and_bayer():
 
 def test_preprocessor_nv12_fused():
     w, h = 128, 96
-    frame = RNG.integers(0, 256, (w * h * 3 // 2,), dtype=np.uint8)
+    frame = nv12_frame(w, h, RNG)
     pre = cuda.CudaPreprocessor(mode="letterbox", format="nv12")
     t = pre.run(frame, w, h, 64, 64)
     assert t.shape == (1, 3, 64, 64)
@@ -157,7 +158,7 @@ def test_from_dlpack_zero_copy_aliases_producer():
 def test_preprocessor_run_batch_matches_single():
     w, h = 64, 48
     frames = [
-        RNG.integers(0, 256, (w * h * 3 // 2,), dtype=np.uint8) for _ in range(3)
+        nv12_frame(w, h, RNG) for _ in range(3)
     ]
     pre = cuda.CudaPreprocessor(mode="letterbox", format="nv12")
     batch = pre.run_batch(frames, w, h, 32, 32)

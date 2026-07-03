@@ -14,7 +14,7 @@ the framework boundary: both engines consume the fused kernel's fp16 CHW
 output directly (the TensorRT engine is built with fp16 I/O).
 
 Usage:
-    python preprocess_to_inference.py [--batch 4] [--frames 64] [--engine torch|trt]
+    python preprocess_to_inference.py [--batch 4] [--iters 16] [--engine torch|trt]
 """
 
 import argparse
@@ -26,8 +26,6 @@ import torch
 
 import kornia_rs.cuda as krc
 
-IMAGENET_MEAN = (0.485, 0.456, 0.406)
-IMAGENET_STD = (0.229, 0.224, 0.225)
 SRC_W, SRC_H = 1920, 1080  # camera stand-in resolution
 
 
@@ -110,7 +108,7 @@ class TrtRunner:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--batch", type=int, default=4)
-    ap.add_argument("--frames", type=int, default=64)
+    ap.add_argument("--iters", type=int, default=16, help="timed batches")
     ap.add_argument("--size", type=int, default=224)
     ap.add_argument("--engine", choices=["torch", "trt"], default="torch")
     ap.add_argument(
@@ -129,8 +127,8 @@ def main() -> None:
         mode="letterbox",
         format="nv12",
         f16=True,
-        mean=IMAGENET_MEAN,
-        std=IMAGENET_STD,
+        mean=krc.IMAGENET_MEAN,
+        std=krc.IMAGENET_STD,
     )
     if args.engine == "torch":
         # Fixed input shape: let cuDNN autotune conv algorithms during warmup.
@@ -150,12 +148,11 @@ def main() -> None:
             step()
         torch.cuda.synchronize()
 
-        iters = max(1, args.frames // args.batch)
         t0 = time.perf_counter()
-        for _ in range(iters):
+        for _ in range(args.iters):
             logits = step()
         torch.cuda.synchronize()
-    dt = (time.perf_counter() - t0) / iters
+    dt = (time.perf_counter() - t0) / args.iters
 
     n = args.batch
     print(

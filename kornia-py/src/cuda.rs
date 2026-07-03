@@ -46,6 +46,39 @@ pub fn is_available() -> bool {
     default_stream().is_ok()
 }
 
+/// Make the producer's pending work visible to the DLPack consumer's stream
+/// **without blocking the host** whenever the protocol allows.
+///
+/// Per the array-API `__dlpack__` spec (CUDA): `None` = consumer gave no
+/// stream → conservative host sync; `-1` = consumer wants no sync; `1`/`2` =
+/// legacy / per-thread default stream; any other value = a raw `CUstream`
+/// handle. This module launches everything on the legacy default stream, so
+/// `1`/`2` are already ordered and a foreign stream gets an event fence —
+/// modern consumers (torch, cupy) never pay a host block.
+fn dlpack_sync_for_consumer(stream: Option<isize>) -> PyResult<()> {
+    let s = default_stream()?;
+    match stream {
+        Some(-1) => Ok(()),
+        Some(1) | Some(2) => Ok(()),
+        Some(h) if h > 2 => {
+            let ev = s.record_event(None).map_err(err)?;
+            // SAFETY: `h` is the consumer's live CUstream per the protocol;
+            // the wait is enqueued before the event is dropped (legal —
+            // CUDA keeps the event alive until the enqueued wait completes).
+            unsafe {
+                cudarc::driver::sys::cuStreamWaitEvent(
+                    h as cudarc::driver::sys::CUstream,
+                    ev.cu_event(),
+                    0,
+                )
+            }
+            .result()
+            .map_err(err)
+        }
+        _ => s.synchronize().map_err(err),
+    }
+}
+
 // ── CudaImage ────────────────────────────────────────────────────────────────
 
 /// Device-resident pixels, one variant per supported (dtype, channels).
@@ -195,13 +228,11 @@ impl PyCudaImage {
         dl_device: Option<Py<PyAny>>,
         copy: Option<bool>,
     ) -> PyResult<Py<PyAny>> {
-        let _ = (stream, max_version, dl_device);
+        let _ = (max_version, dl_device);
         if copy == Some(true) {
             return Err(PyValueError::new_err("copy=True is not supported"));
         }
-        // Conservative cross-stream safety: complete our work first.
-        let s = default_stream()?;
-        s.synchronize().map_err(err)?;
+        dlpack_sync_for_consumer(stream)?;
         use kornia_tensor::dlpack::DlpackElem;
         match &*self.inner {
             Inner::U8C1(i) => arc_dlpack_capsule(py, self.inner.clone(), &i.0, u8::dl_dtype()),
@@ -751,12 +782,11 @@ impl PyCudaTensor {
         dl_device: Option<Py<PyAny>>,
         copy: Option<bool>,
     ) -> PyResult<Py<PyAny>> {
-        let _ = (stream, max_version, dl_device);
+        let _ = (max_version, dl_device);
         if copy == Some(true) {
             return Err(PyValueError::new_err("copy=True is not supported"));
         }
-        let s = default_stream()?;
-        s.synchronize().map_err(err)?;
+        dlpack_sync_for_consumer(stream)?;
         use kornia_tensor::dlpack::DlpackElem;
         // f16: kDLFloat (code 2), 16 bits — half::f16 is IEEE binary16.
         let f16_dtype = dlpack_rs::ffi::DLDataType {
@@ -1015,6 +1045,9 @@ pub fn register(py: Python<'_>, parent: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(sepia_from_rgb, &m)?)?;
     m.add_function(wrap_pyfunction!(apply_colormap, &m)?)?;
     m.add_function(wrap_pyfunction!(rgb_from_bayer, &m)?)?;
+    let (mean, std) = kornia_imgproc::preprocess::IMAGENET_NORMALIZE;
+    m.add("IMAGENET_MEAN", mean)?;
+    m.add("IMAGENET_STD", std)?;
     m.add_class::<PyCudaImage>()?;
     m.add_class::<PyCudaTensor>()?;
     m.add_class::<PyCudaPreprocessor>()?;
