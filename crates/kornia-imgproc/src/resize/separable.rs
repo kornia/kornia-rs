@@ -16,7 +16,7 @@ use super::kernels::{horizontal_row_rgb_u8, vertical_row};
 /// through to the per-row kernel.
 #[allow(clippy::too_many_arguments)]
 #[inline(always)]
-fn horizontal_batch<const C: usize>(
+pub(super) fn horizontal_batch<const C: usize>(
     src: &[u8],
     src_stride: usize,
     out: &mut [i16],
@@ -178,7 +178,25 @@ pub(super) fn resize_separable_u8<const C: usize>(
     // with tile sizes chosen so the local hbuf stays in L2.
     let per_thread_global = src_h.div_ceil(nthreads) * per_row;
     let l2_target = 192 * 1024;
-    let use_strips = per_thread_global > l2_target;
+
+    // Strip sizing (also needed for the strip/global decision below): bound
+    // strip_h so (strip_h*scale_y + ky) * per_row ≤ L2.
+    let scale_y_q8 = ((src_h as u64) << 8) / (dst_h.max(1) as u64);
+    let band_cap = (l2_target / per_row.max(1)).saturating_sub(ky);
+    let strip_h_mem = ((band_cap as u64) << 8) / scale_y_q8.max(1);
+    let strip_h_par = dst_h.div_ceil(nthreads);
+    let strip_h = (strip_h_mem as usize)
+        .min(strip_h_par.max(8))
+        .min(dst_h)
+        .max(1);
+
+    // Strip fusion re-runs the horizontal pass over the ky-row overlap between
+    // consecutive strips. When the kernel is tall relative to the strip's
+    // source band (antialiased downscale: ky ≈ 12+), that redundancy dwarfs
+    // the L2 win — measured 2.9× slower at 4K→1080p AA lanczos. Only fuse
+    // strips when the overlap is a minor fraction of the band.
+    let strip_src_rows = (strip_h as u64 * scale_y_q8) >> 8;
+    let use_strips = per_thread_global > l2_target && strip_src_rows >= 6 * ky as u64;
 
     if !use_strips {
         // Global two-pass: cheap for small dst_w where per-thread hbuf fits L2.
@@ -201,16 +219,6 @@ pub(super) fn resize_separable_u8<const C: usize>(
         );
         return;
     }
-
-    // Strip-fused H→V: bound strip_h so (strip_h*scale_y + ky) * per_row ≤ L2.
-    let scale_y_q8 = ((src_h as u64) << 8) / (dst_h.max(1) as u64);
-    let band_cap = (l2_target / per_row.max(1)).saturating_sub(ky);
-    let strip_h_mem = ((band_cap as u64) << 8) / scale_y_q8.max(1);
-    let strip_h_par = dst_h.div_ceil(nthreads);
-    let strip_h = (strip_h_mem as usize)
-        .min(strip_h_par.max(8))
-        .min(dst_h)
-        .max(1);
 
     let mut strip_slices: Vec<&mut [u8]> = dst.chunks_mut(strip_h * dst_stride).collect();
     let strips: Vec<(usize, usize)> = (0..dst_h)

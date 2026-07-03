@@ -105,3 +105,49 @@ def test_dlpack_export_to_torch():
     ct = pre.run(img.reshape(-1).copy(), 64, 48, 32, 32)
     tt = torch.from_dlpack(ct)
     assert tt.is_cuda and tt.shape == (1, 3, 32, 32) and tt.dtype == torch.float32
+
+
+def test_from_dlpack_torch_roundtrip():
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("torch without CUDA")
+    src = RNG.integers(0, 256, (48, 64, 3), dtype=np.uint8)
+    t = torch.from_numpy(src).cuda()
+    img = cuda.from_dlpack(t)
+    assert (img.height, img.width, img.channels) == (48, 64, 3)
+    assert img.dtype == "uint8"
+    np.testing.assert_array_equal(img.download(), src)
+
+    # Owned copy: mutating the producer afterwards must not affect the image.
+    t.zero_()
+    np.testing.assert_array_equal(img.download(), src)
+
+    # f32 single-channel too.
+    fsrc = RNG.random((16, 20, 1), dtype=np.float32)
+    fimg = cuda.from_dlpack(torch.from_numpy(fsrc).cuda())
+    assert fimg.dtype == "float32"
+    np.testing.assert_array_equal(fimg.download(), fsrc)
+
+    # Host tensors are rejected with a pointer to upload().
+    with pytest.raises(ValueError, match="upload"):
+        cuda.from_dlpack(torch.from_numpy(src))
+
+
+def test_preprocessor_run_batch_matches_single():
+    w, h = 64, 48
+    frames = [
+        RNG.integers(0, 256, (w * h * 3 // 2,), dtype=np.uint8) for _ in range(3)
+    ]
+    pre = cuda.CudaPreprocessor(mode="letterbox", format="nv12")
+    batch = pre.run_batch(frames, w, h, 32, 32)
+    assert batch.shape == (3, 3, 32, 32)
+    got = batch.download()
+    for i, f in enumerate(frames):
+        single = pre.run(f, w, h, 32, 32).download()
+        np.testing.assert_array_equal(got[i : i + 1], single)
+
+    # f16 batch follows the constructor flag.
+    pre16 = cuda.CudaPreprocessor(mode="letterbox", format="nv12", f16=True)
+    b16 = pre16.run_batch(frames, w, h, 32, 32)
+    assert b16.dtype == "float16" and b16.shape == (3, 3, 32, 32)
+    np.testing.assert_allclose(b16.download(), got, atol=1e-3)

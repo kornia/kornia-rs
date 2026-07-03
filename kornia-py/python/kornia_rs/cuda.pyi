@@ -10,7 +10,7 @@ from the CUDA toolkit or the ``nvidia-cuda-nvrtc-cu12`` pip package —
 ``False`` and the rest of kornia_rs works as usual.
 """
 
-from typing import Any, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 import numpy as np
 
@@ -19,6 +19,13 @@ def is_available() -> bool:
 
 def upload(array: np.ndarray) -> CudaImage:
     """Upload an (H, W, C) uint8 (C in 1/3/4) or float32 (C in 1/3) array."""
+
+def from_dlpack(tensor: Any) -> CudaImage:
+    """Import a device-resident (H, W, C) DLPack tensor (torch/cupy).
+
+    The pixels are copied device-to-device into an owned buffer; the
+    producer keeps its allocation and may free it immediately after.
+    """
 
 class CudaImage:
     """Device-resident image (HWC) — the device twin of ``kornia_rs.image.Image``."""
@@ -64,9 +71,13 @@ class CudaPreprocessor:
     def __init__(self, mode: str = "letterbox", format: str = "rgb",
                  sampling: str = "bilinear", f16: bool = False,
                  mean: Optional[Tuple[float, float, float]] = None,
-                 std: Optional[Tuple[float, float, float]] = None) -> None: ...
+                 std: Optional[Tuple[float, float, float]] = None,
+                 pad_value: int = 114) -> None: ...
     def run(self, frame: np.ndarray, width: int, height: int,
             out_height: int, out_width: int) -> CudaTensor: ...
+    def run_batch(self, frames: List[np.ndarray], width: int, height: int,
+                  out_height: int, out_width: int) -> CudaTensor:
+        """N same-sized frames -> [N, 3, out_h, out_w]; dtype follows f16 flag."""
 
 def gray_from_rgb(img: CudaImage) -> CudaImage: ...
 def rgb_from_gray(img: CudaImage) -> CudaImage: ...

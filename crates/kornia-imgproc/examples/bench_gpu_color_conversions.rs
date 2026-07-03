@@ -267,8 +267,11 @@ fn run_fused_preprocess(stream: &Arc<CudaStream>, width: usize, height: usize, j
     for (name, format, src_len, decode) in cases {
         let src = pattern_u8(src_len);
         let d_src = stream.clone_htod(&src).unwrap();
-        let pre_fused =
-            Preprocessor::with_format(stream.clone(), ResizeMode::Letterbox, format).unwrap();
+        let pre_fused = Preprocessor::builder()
+            .mode(ResizeMode::Letterbox)
+            .source_format(format)
+            .build_cuda(stream.clone())
+            .unwrap();
         let pre_rgb = Preprocessor::letterbox(stream.clone()).unwrap();
         let mut dst = kornia_tensor::zeros_cuda::<f32, 4>([1, 3, OUT, OUT], stream).unwrap();
         // src bytes read + CHW f32 written (ignores the chained variant's extra

@@ -1,6 +1,11 @@
 //! Nearest-neighbor resize. Works for any channel count and any ratio.
+//!
+//! Algorithm file: LUT precompute + row parallelism only — the per-row gather
+//! lives in [`super::kernels::nearest_row_u8`] (the per-arch seam).
 
 use rayon::prelude::*;
+
+use super::kernels::nearest_row_u8;
 
 /// Nearest-neighbor u8 resize. Precomputes an `x → src_x` LUT (branch-free
 /// row/col index map) and parallelizes over destination rows.
@@ -37,11 +42,7 @@ pub(super) fn resize_nearest_u8<const C: usize>(
                     let yi = (((y as f64 + 0.5) * sy).floor() as i64).clamp(0, src_h as i64 - 1)
                         as usize;
                     let src_row = &src[yi * src_stride..(yi + 1) * src_stride];
-                    for (x, xi) in xmap.iter().enumerate() {
-                        let so = xi * C;
-                        let d_o = x * C;
-                        dst_row[d_o..d_o + C].copy_from_slice(&src_row[so..so + C]);
-                    }
+                    nearest_row_u8::<C>(src_row, &xmap, dst_row);
                 });
         });
 }

@@ -844,6 +844,198 @@ unsafe fn fused_row_avx2(
     }
 }
 
+/// Split a `[3 * dst_h * dst_w]` CHW buffer into row bands of up to
+/// `rows_per_band` destination rows, each owning disjoint mutable slices of
+/// all three planes — the unit of rayon parallelism for the fused plane
+/// writers below.
+fn plane_bands(
+    dst: &mut [f32],
+    dst_w: usize,
+    dst_h: usize,
+    rows_per_band: usize,
+) -> Vec<(usize, [&mut [f32]; 3])> {
+    let pixels = dst_w * dst_h;
+    let (p0, rest) = dst.split_at_mut(pixels);
+    let (p1, p2) = rest.split_at_mut(pixels);
+    let mut ps: [&mut [f32]; 3] = [p0, p1, p2];
+    let mut out = Vec::with_capacity(dst_h.div_ceil(rows_per_band.max(1)));
+    let mut y = 0usize;
+    while y < dst_h {
+        let rows = rows_per_band.min(dst_h - y);
+        let mut band: Vec<&mut [f32]> = Vec::with_capacity(3);
+        let mut rem: Vec<&mut [f32]> = Vec::with_capacity(3);
+        for pl in ps {
+            let (a, b) = pl.split_at_mut(rows * dst_w);
+            band.push(a);
+            rem.push(b);
+        }
+        out.push((y, band.try_into().unwrap()));
+        ps = rem.try_into().unwrap();
+        y += rows;
+    }
+    out
+}
+
+/// Fused **nearest** resize + per-channel normalize + `HWC→CHW` for RGB u8 →
+/// f32, any target size, in a single pass (no intermediate u8 image).
+///
+/// Same centre-convention index maps as `resize_fast_u8` nearest, so the
+/// sampled bytes are identical to the two-step path — only the u8→f32 FMA is
+/// fused in.
+pub fn resize_normalize_to_tensor_u8_to_f32_nearest(
+    src: &[u8],
+    src_w: usize,
+    src_h: usize,
+    dst: &mut [f32],
+    dst_w: usize,
+    dst_h: usize,
+    params: &NormalizeParams<3>,
+) -> Result<(), kornia_image::ImageError> {
+    if src.len() != src_h * src_w * 3 {
+        return Err(kornia_image::ImageError::InvalidChannelShape(
+            src.len(),
+            src_h * src_w * 3,
+        ));
+    }
+    if dst.len() != 3 * dst_h * dst_w {
+        return Err(kornia_image::ImageError::InvalidChannelShape(
+            dst.len(),
+            3 * dst_h * dst_w,
+        ));
+    }
+    let sx = src_w as f64 / dst_w as f64;
+    let sy = src_h as f64 / dst_h as f64;
+    let xmap: Vec<usize> = (0..dst_w)
+        .map(|x| ((((x as f64 + 0.5) * sx).floor() as i64).clamp(0, src_w as i64 - 1)) as usize)
+        .collect();
+    let (scale, bias) = (params.scale, params.bias);
+    plane_bands(dst, dst_w, dst_h, 32)
+        .into_par_iter()
+        .for_each(|(y0, band)| {
+            let rows = band[0].len() / dst_w;
+            for r in 0..rows {
+                let y = y0 + r;
+                let yi =
+                    ((((y as f64 + 0.5) * sy).floor() as i64).clamp(0, src_h as i64 - 1)) as usize;
+                let srow = &src[yi * src_w * 3..(yi + 1) * src_w * 3];
+                for (x, &xi) in xmap.iter().enumerate() {
+                    let o = xi * 3;
+                    band[0][r * dst_w + x] = srow[o] as f32 * scale[0] + bias[0];
+                    band[1][r * dst_w + x] = srow[o + 1] as f32 * scale[1] + bias[1];
+                    band[2][r * dst_w + x] = srow[o + 2] as f32 * scale[2] + bias[2];
+                }
+            }
+        });
+    Ok(())
+}
+
+/// Fused **separable (bicubic / lanczos, ± antialias)** resize + normalize +
+/// `HWC→CHW` for RGB u8 → f32: the horizontal pass reuses the SIMD separable
+/// machinery; the vertical pass accumulates in i32 and emits normalized f32
+/// straight into the three planes — the final u8 quantization of the two-step
+/// path is skipped entirely (one less pass AND more accurate).
+#[allow(clippy::too_many_arguments)]
+pub fn resize_normalize_to_tensor_u8_to_f32_separable(
+    src: &[u8],
+    src_w: usize,
+    src_h: usize,
+    dst: &mut [f32],
+    dst_w: usize,
+    dst_h: usize,
+    params: &NormalizeParams<3>,
+    filter: crate::interpolation::InterpolationMode,
+    antialias: bool,
+) -> Result<(), kornia_image::ImageError> {
+    use super::common::{build_xsrc_lut, pack_xw_i16, precompute_contribs, FilterKind};
+    use super::separable::horizontal_batch;
+
+    if src.len() != src_h * src_w * 3 {
+        return Err(kornia_image::ImageError::InvalidChannelShape(
+            src.len(),
+            src_h * src_w * 3,
+        ));
+    }
+    if dst.len() != 3 * dst_h * dst_w {
+        return Err(kornia_image::ImageError::InvalidChannelShape(
+            dst.len(),
+            3 * dst_h * dst_w,
+        ));
+    }
+    let filt = match filter {
+        crate::interpolation::InterpolationMode::Lanczos => FilterKind::Lanczos3,
+        crate::interpolation::InterpolationMode::Bicubic => FilterKind::Cubic,
+        other => {
+            return Err(kornia_image::ImageError::UnsupportedInterpolation(other));
+        }
+    };
+    const Q: i32 = 14;
+    let (xofs, xw, kx) = precompute_contribs(src_w, dst_w, filt, antialias);
+    let (yofs, yw, ky) = precompute_contribs(src_h, dst_h, filt, antialias);
+    let xsrc = build_xsrc_lut(&xofs, dst_w, kx, src_w);
+    let xw = pack_xw_i16(&xw);
+    let last_sx_safe = src_w.saturating_sub(1);
+    let src_stride = src_w * 3;
+    let hbuf_row_len = dst_w * 3;
+    let round1: i32 = 1 << (Q - 1);
+
+    // Horizontal pass (SIMD row kernels) into the full i16 intermediate.
+    let mut hbuf = vec![0i16; src_h * hbuf_row_len];
+    const H_BATCH: usize = 16;
+    hbuf.par_chunks_mut(hbuf_row_len * H_BATCH)
+        .enumerate()
+        .for_each(|(bi, batch_out)| {
+            horizontal_batch::<3>(
+                src,
+                src_stride,
+                batch_out,
+                hbuf_row_len,
+                bi * H_BATCH,
+                dst_w,
+                kx,
+                &xsrc,
+                &xw,
+                last_sx_safe,
+                round1,
+            );
+        });
+
+    // Vertical pass: i32 accumulate over ky i16 rows, then normalize and emit
+    // f32 planes directly — `acc` is the pixel value scaled by 2^14, so the
+    // FMA constants fold the /2^14 in.
+    let inv_q = 1.0f32 / (1 << Q) as f32;
+    let s = [
+        params.scale[0] * inv_q,
+        params.scale[1] * inv_q,
+        params.scale[2] * inv_q,
+    ];
+    let b = params.bias;
+
+    plane_bands(dst, dst_w, dst_h, 16)
+        .into_par_iter()
+        .for_each(|(y0, band)| {
+            let rows = band[0].len() / dst_w;
+            for r in 0..rows {
+                let yo = y0 + r;
+                let y_base = yofs[yo];
+                for x in 0..dst_w {
+                    let mut acc = [0i32; 3];
+                    for k in 0..ky {
+                        let sy = (y_base + k as i32).clamp(0, src_h as i32 - 1) as usize;
+                        let row = &hbuf[sy * hbuf_row_len..(sy + 1) * hbuf_row_len];
+                        let w = yw[yo * ky + k];
+                        acc[0] += row[x * 3] as i32 * w;
+                        acc[1] += row[x * 3 + 1] as i32 * w;
+                        acc[2] += row[x * 3 + 2] as i32 * w;
+                    }
+                    for c in 0..3 {
+                        band[c][r * dst_w + x] = acc[c] as f32 * s[c] + b[c];
+                    }
+                }
+            }
+        });
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
