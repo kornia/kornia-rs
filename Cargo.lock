@@ -8230,13 +8230,16 @@ dependencies = [
 name = "kornia-py"
 version = "0.1.14"
 dependencies = [
+ "cudarc 0.19.8",
  "dlpack-rs",
+ "half",
  "kornia-3d",
  "kornia-algebra",
  "kornia-apriltag",
  "kornia-image",
  "kornia-imgproc",
  "kornia-io",
+ "kornia-tensor",
  "numpy",
  "pyo3",
  "rand 0.10.1",
