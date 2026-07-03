@@ -19,9 +19,7 @@ use pyo3::prelude::*;
 use kornia_image::color_spaces::{Bgr8, Bgra8, Gray8, Hsvf32, Labf32, Rgb8, Rgba8, Rgbf32, YCbCr8};
 use kornia_image::{Image, ImageSize, InterpolationMode};
 use kornia_imgproc::color::{self, ConvertColor};
-use kornia_imgproc::preprocess::{
-    Normalize, Preprocessor, ResizeMode, SourceFormat,
-};
+use kornia_imgproc::preprocess::{Normalize, Preprocessor, ResizeMode, SourceFormat};
 use kornia_tensor::Tensor;
 
 fn err<E: std::fmt::Display>(e: E) -> PyErr {
@@ -845,9 +843,7 @@ impl PyCudaPreprocessor {
             .iter()
             .map(|f| {
                 let arr = f.extract::<Bound<'_, PyArray1<u8>>>(py).map_err(|_| {
-                    PyValueError::new_err(
-                        "each frame must be a contiguous 1-D uint8 numpy array",
-                    )
+                    PyValueError::new_err("each frame must be a contiguous 1-D uint8 numpy array")
                 })?;
                 let arr = arr.try_readonly()?;
                 self.stream.clone_htod(arr.as_slice()?).map_err(err)

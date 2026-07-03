@@ -183,8 +183,8 @@ impl SourceFormat {
     /// Even-dimension requirement for subsampled formats.
     fn dims_ok(self, w: usize, h: usize) -> bool {
         match self {
-            SourceFormat::Nv12 => w % 2 == 0 && h % 2 == 0,
-            SourceFormat::Yuyv => w % 2 == 0,
+            SourceFormat::Nv12 => w.is_multiple_of(2) && h.is_multiple_of(2),
+            SourceFormat::Yuyv => w.is_multiple_of(2),
             _ => true,
         }
     }
@@ -242,7 +242,9 @@ pub enum PreprocessError {
     /// The raw source buffer is smaller than the format requires, or the
     /// dimensions violate the format's subsampling constraints.
     #[cfg(feature = "cudarc")]
-    #[error("invalid raw source for {format:?} at {width}x{height} (got {got} bytes, need {need})")]
+    #[error(
+        "invalid raw source for {format:?} at {width}x{height} (got {got} bytes, need {need})"
+    )]
     InvalidRawSource {
         /// Source pixel format.
         format: SourceFormat,
@@ -1581,7 +1583,7 @@ mod tests {
             pitched[y * pitch..y * pitch + w * 4]
                 .copy_from_slice(&tight.0.as_slice()[y * w * 4..(y + 1) * w * 4]);
         }
-        let dev_pitched = stream.memcpy_stod(&pitched).unwrap();
+        let dev_pitched = stream.clone_htod(&pitched).unwrap();
 
         for mode in [ResizeMode::Letterbox, ResizeMode::Stretch] {
             let pre = Preprocessor::builder()
@@ -1792,7 +1794,7 @@ mod tests {
         };
 
         for (fmt, raw, rgb_ref) in &cases {
-            let d_raw = stream.memcpy_stod(raw).unwrap();
+            let d_raw = stream.clone_htod(raw).unwrap();
             let d_rgb: Image<u8, 3> = Image(rgb_ref.0.to_cuda(&stream).unwrap());
             for sampling in ALL_SAMPLING {
                 let fused = Preprocessor::builder()
@@ -1842,7 +1844,7 @@ mod tests {
             .map(|k| {
                 let mut b = raw_bytes(w * h * 3 / 2);
                 b.iter_mut().for_each(|v| *v = v.wrapping_add(k * 31));
-                stream.memcpy_stod(&b).unwrap()
+                stream.clone_htod(&b).unwrap()
             })
             .collect();
         let frames: Vec<_> = raws.iter().collect();
@@ -1863,7 +1865,10 @@ mod tests {
         let mut d_bad = zeros_cuda::<f32, 4>([2, 3, 5, 7], &stream).unwrap();
         assert!(matches!(
             pre.run_raw_batch(&frames, w, h, &mut d_bad),
-            Err(PreprocessError::BatchMismatch { dst_n: 2, frames: 3 })
+            Err(PreprocessError::BatchMismatch {
+                dst_n: 2,
+                frames: 3
+            })
         ));
     }
 
@@ -1883,19 +1888,19 @@ mod tests {
         let mut dst = zeros_cuda::<f32, 4>([1, 3, 4, 4], &stream).unwrap();
 
         // Too small for 8x6 NV12 (needs 72 bytes).
-        let short = stream.memcpy_stod(&raw_bytes(60)).unwrap();
+        let short = stream.clone_htod(&raw_bytes(60)).unwrap();
         assert!(matches!(
             pre.run_raw(&short, 8, 6, &mut dst),
             Err(PreprocessError::InvalidRawSource { need: 72, .. })
         ));
         // Odd height violates NV12 subsampling.
-        let raw = stream.memcpy_stod(&raw_bytes(8 * 5 * 2)).unwrap();
+        let raw = stream.clone_htod(&raw_bytes(8 * 5 * 2)).unwrap();
         assert!(matches!(
             pre.run_raw(&raw, 8, 5, &mut dst),
             Err(PreprocessError::InvalidRawSource { .. })
         ));
         // A pitched surface with a camera format is rejected.
-        let surf_buf = stream.memcpy_stod(&raw_bytes(8 * 6 * 4)).unwrap();
+        let surf_buf = stream.clone_htod(&raw_bytes(8 * 6 * 4)).unwrap();
         let surf = PitchedSurface {
             data: &surf_buf,
             width: 8,
