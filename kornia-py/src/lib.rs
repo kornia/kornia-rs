@@ -293,6 +293,15 @@ pub fn warp_perspective_deprecated(
 
 // Main Python Module Definition
 
+/// Register the device-agnostic ImageNet normalization presets on `module`.
+pub(crate) fn add_imagenet_consts(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    let [m0, m1, m2] = kornia_imgproc::preprocess::IMAGENET_MEAN;
+    let [s0, s1, s2] = kornia_imgproc::preprocess::IMAGENET_STD;
+    module.add("IMAGENET_MEAN", (m0, m1, m2))?;
+    module.add("IMAGENET_STD", (s0, s1, s2))?;
+    Ok(())
+}
+
 #[pymodule(gil_used = false)]
 pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let py = m.py();
@@ -584,6 +593,8 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     ] {
         modules.set_item(name, submod)?;
     }
+
+    add_imagenet_consts(m)?;
 
     #[cfg(feature = "cuda")]
     cuda_ext::register(py, m)?;

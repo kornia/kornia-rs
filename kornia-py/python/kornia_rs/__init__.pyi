@@ -18,6 +18,11 @@ from . import k3d as k3d
 from . import pipeline as pipeline
 from . import segmentation as segmentation
 
+IMAGENET_MEAN: tuple[float, float, float]
+"""Standard ImageNet per-channel mean (RGB), matching torchvision."""
+IMAGENET_STD: tuple[float, float, float]
+"""Standard ImageNet per-channel std (RGB), matching torchvision."""
+
 __version__: str
 
 def __getattr__(name: str) -> Any: ...

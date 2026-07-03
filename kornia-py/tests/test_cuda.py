@@ -15,6 +15,11 @@ pytestmark = pytest.mark.skipif(
 RNG = np.random.default_rng(42)
 
 
+def nv12_frame(w: int, h: int, rng: np.random.Generator) -> np.ndarray:
+    """A synthetic tightly-packed NV12 buffer (w*h luma + w*h/2 chroma)."""
+    return rng.integers(0, 256, (w * h * 3 // 2,), dtype=np.uint8)
+
+
 def _rgb(h=48, w=64):
     return RNG.integers(0, 256, (h, w, 3), dtype=np.uint8)
 
@@ -64,7 +69,7 @@ def test_colormap_and_bayer():
 
 def test_preprocessor_nv12_fused():
     w, h = 128, 96
-    frame = RNG.integers(0, 256, (w * h * 3 // 2,), dtype=np.uint8)
+    frame = nv12_frame(w, h, RNG)
     pre = cuda.CudaPreprocessor(mode="letterbox", format="nv12")
     t = pre.run(frame, w, h, 64, 64)
     assert t.shape == (1, 3, 64, 64)
@@ -77,7 +82,7 @@ def test_preprocessor_nv12_fused():
 def test_preprocessor_f16_and_normalize():
     w, h = 64, 48
     frame = RNG.integers(0, 256, (w * h * 3,), dtype=np.uint8)
-    mean, std = (0.485, 0.456, 0.406), (0.229, 0.224, 0.225)
+    mean, std = cuda.IMAGENET_MEAN, cuda.IMAGENET_STD
     pre16 = cuda.CudaPreprocessor(format="rgb", f16=True, mean=mean, std=std)
     t = pre16.run(frame, w, h, 32, 32)
     assert t.dtype == "float16"
@@ -156,9 +161,7 @@ def test_from_dlpack_zero_copy_aliases_producer():
 
 def test_preprocessor_run_batch_matches_single():
     w, h = 64, 48
-    frames = [
-        RNG.integers(0, 256, (w * h * 3 // 2,), dtype=np.uint8) for _ in range(3)
-    ]
+    frames = [nv12_frame(w, h, RNG) for _ in range(3)]
     pre = cuda.CudaPreprocessor(mode="letterbox", format="nv12")
     batch = pre.run_batch(frames, w, h, 32, 32)
     assert batch.shape == (3, 3, 32, 32)

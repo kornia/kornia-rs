@@ -34,12 +34,16 @@ skip_on_ci = pytest.mark.skipif(
 # --------------------------------------------------------------------- helpers
 
 
+# Seed-pinned so the perf smoke checks don't flap on a pathological draw.
+_RNG = np.random.default_rng(0)
+
+
 def _rand_u8(h, w, c=3):
-    return np.random.randint(0, 256, (h, w, c), dtype=np.uint8)
+    return _RNG.integers(0, 256, (h, w, c), dtype=np.uint8)
 
 
 def _rand_u16(h, w, c=3):
-    return np.random.randint(0, 65536, (h, w, c), dtype=np.uint16)
+    return _RNG.integers(0, 65536, (h, w, c), dtype=np.uint16)
 
 
 def _bench(fn, *, iters=None, warmup=None):

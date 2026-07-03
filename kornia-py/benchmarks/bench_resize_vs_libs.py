@@ -23,13 +23,14 @@ Semantics map (why the pairs are what they are):
 """
 import time
 
+import kornia_rs
 import numpy as np
 import cv2
 from PIL import Image as PILImage
 from kornia_rs.image import Image
 
-MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
-STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+MEAN = np.array(kornia_rs.IMAGENET_MEAN, dtype=np.float32)
+STD = np.array(kornia_rs.IMAGENET_STD, dtype=np.float32)
 CASES = [
     ((3840, 2160), (1920, 1080)),
     ((1920, 1080), (640, 480)),

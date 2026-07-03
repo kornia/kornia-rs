@@ -88,12 +88,18 @@ pub enum Normalize {
     },
 }
 
+/// The standard ImageNet per-channel mean (RGB order), matching torchvision —
+/// the single source for [`Normalize::imagenet`] and language bindings.
+pub const IMAGENET_MEAN: [f32; 3] = [0.485, 0.456, 0.406];
+/// The standard ImageNet per-channel std (RGB order), matching torchvision.
+pub const IMAGENET_STD: [f32; 3] = [0.229, 0.224, 0.225];
+
 impl Normalize {
     /// The standard ImageNet mean/std (RGB), matching torchvision.
     pub fn imagenet() -> Self {
         Normalize::MeanStd {
-            mean: [0.485, 0.456, 0.406],
-            std: [0.229, 0.224, 0.225],
+            mean: IMAGENET_MEAN,
+            std: IMAGENET_STD,
         }
     }
 

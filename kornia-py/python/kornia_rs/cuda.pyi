@@ -14,6 +14,11 @@ from typing import Any, List, Optional, Tuple
 
 import numpy as np
 
+IMAGENET_MEAN: Tuple[float, float, float]
+"""Re-export of ``kornia_rs.IMAGENET_MEAN``."""
+IMAGENET_STD: Tuple[float, float, float]
+"""Re-export of ``kornia_rs.IMAGENET_STD``."""
+
 def is_available() -> bool:
     """True if a CUDA driver and device 0 are usable in this process."""
 

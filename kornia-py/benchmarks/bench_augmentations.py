@@ -138,10 +138,10 @@ def run_benchmarks():
 
         # Normalize — kornia returns f32 HWC; OpenCV equivalent: float32 convert + subtract/divide
         print("\n--- Normalize ---")
-        mean_arr = np.array([0.485, 0.456, 0.406], dtype=np.float32) * 255
-        std_arr = np.array([0.229, 0.224, 0.225], dtype=np.float32) * 255
+        mean_arr = np.array(kornia_rs.IMAGENET_MEAN, dtype=np.float32) * 255
+        std_arr = np.array(kornia_rs.IMAGENET_STD, dtype=np.float32) * 255
         res["normalize"] = {
-            "kornia": bench("kornia-rs", lambda: img.normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))),
+            "kornia": bench("kornia-rs", lambda: img.normalize(kornia_rs.IMAGENET_MEAN, kornia_rs.IMAGENET_STD)),
             "opencv": bench("opencv", lambda: (data.astype(np.float32) - mean_arr) / std_arr),
         }
 
