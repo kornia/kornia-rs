@@ -133,6 +133,27 @@ def test_from_dlpack_torch_roundtrip():
         cuda.from_dlpack(torch.from_numpy(src))
 
 
+def test_from_dlpack_zero_copy_aliases_producer():
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("torch without CUDA")
+    src = RNG.integers(0, 256, (24, 32, 3), dtype=np.uint8)
+    t = torch.from_numpy(src).cuda()
+    img = cuda.from_dlpack(t, copy=False)
+    np.testing.assert_array_equal(img.download(), src)
+
+    # Aliasing: producer mutation is visible through the image.
+    t.zero_()
+    torch.cuda.synchronize()
+    assert img.download().max() == 0
+
+    # Keepalive: dropping the python name must not free the memory while the
+    # image lives (torch's allocator would poison/reuse it otherwise).
+    del t
+    conv = cuda.gray_from_rgb(img)
+    assert conv.download().max() == 0
+
+
 def test_preprocessor_run_batch_matches_single():
     w, h = 64, 48
     frames = [

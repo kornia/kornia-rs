@@ -20,11 +20,13 @@ def is_available() -> bool:
 def upload(array: np.ndarray) -> CudaImage:
     """Upload an (H, W, C) uint8 (C in 1/3/4) or float32 (C in 1/3) array."""
 
-def from_dlpack(tensor: Any) -> CudaImage:
+def from_dlpack(tensor: Any, copy: bool = True) -> CudaImage:
     """Import a device-resident (H, W, C) DLPack tensor (torch/cupy).
 
-    The pixels are copied device-to-device into an owned buffer; the
-    producer keeps its allocation and may free it immediately after.
+    copy=True: pixels are copied device-to-device into an owned buffer; the
+    producer may free its tensor immediately after.
+    copy=False: zero-copy — the image aliases the producer's memory and keeps
+    the producer object alive; mutating the producer mutates the image.
     """
 
 class CudaImage:

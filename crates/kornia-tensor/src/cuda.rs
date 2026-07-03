@@ -75,8 +75,11 @@ use crate::{
 /// `CudaSlice<T>` without any host round-trip or byte coercion.  The
 /// [`CudaAllocator`] produces `CudaResource<u8>`.
 pub struct CudaResource<T> {
-    /// Owns the device allocation; freed when this struct is dropped.
-    pub(crate) slice: CudaSlice<T>,
+    /// Owns the device allocation; freed when this struct is dropped —
+    /// unless `foreign` is set, in which case the slice is leaked (the memory
+    /// belongs to an external producer) and the keepalive is released instead.
+    /// `ManuallyDrop` so [`Drop`] can decide between the two.
+    pub(crate) slice: std::mem::ManuallyDrop<CudaSlice<T>>,
     /// Cached raw device pointer (device-addressable; NOT safe to dereference on host).
     ptr: *mut u8,
     /// CUDA device ordinal (returned by `CudaContext::ordinal()`).
@@ -86,6 +89,23 @@ pub struct CudaResource<T> {
     /// a stream from the tensor itself via [`Tensor::cuda_stream`] — no global or
     /// thread-local stream state.
     pub(crate) stream: Arc<CudaStream>,
+    /// `Some` when the device memory belongs to an external producer (e.g. a
+    /// zero-copy DLPack import): the boxed value keeps the producer alive and
+    /// is dropped — releasing it — after the slice is leaked.
+    pub(crate) foreign: Option<Box<dyn std::any::Any + Send>>,
+}
+
+impl<T> Drop for CudaResource<T> {
+    fn drop(&mut self) {
+        // SAFETY: Drop runs exactly once and `slice` is never used afterwards.
+        let slice = unsafe { std::mem::ManuallyDrop::take(&mut self.slice) };
+        if self.foreign.is_some() {
+            // Foreign memory is not ours to free: leak the aliasing slice so
+            // cuMemFree never runs. The `foreign` keepalive drops right after
+            // this fn returns, releasing the producer's reference.
+            slice.leak();
+        }
+    }
 }
 
 // SAFETY: CudaSlice<T> is Send + Sync.  `ptr` is a device pointer that is never
@@ -158,10 +178,11 @@ impl TensorAllocator for CudaAllocator {
         let id = self.ctx.ordinal() as i32;
 
         Ok(Box::new(CudaResource::<u8> {
-            slice,
+            slice: std::mem::ManuallyDrop::new(slice),
             ptr,
             id,
             stream: self.stream.clone(),
+            foreign: None,
         }))
     }
 }
@@ -580,10 +601,11 @@ where
     };
 
     let resource = CudaResource::<T> {
-        slice,
+        slice: std::mem::ManuallyDrop::new(slice),
         ptr,
         id,
         stream: stream.clone(),
+        foreign: None,
     };
     let alloc: AllocHandle = Arc::new(CudaAllocator {
         ctx: ctx.clone(),
@@ -658,6 +680,32 @@ where
     ///
     /// Panics if `slice.len() != shape.iter().product()`.
     pub fn from_cudaslice(slice: CudaSlice<T>, shape: [usize; N], stream: Arc<CudaStream>) -> Self {
+        Self::from_cudaslice_impl(slice, shape, stream, None)
+    }
+
+    /// Wrap a **foreign** device allocation (e.g. a DLPack producer's memory
+    /// aliased via `upgrade_device_ptr`) as a tensor, zero-copy.
+    ///
+    /// The tensor never frees the memory: on drop the aliasing `CudaSlice` is
+    /// leaked and `keepalive` is dropped instead — the keepalive must hold
+    /// whatever reference keeps the producer's allocation valid.
+    /// [`into_cudaslice`](Self::into_cudaslice) refuses such tensors (the
+    /// slice must not outlive the keepalive).
+    pub fn from_foreign_cudaslice(
+        slice: CudaSlice<T>,
+        shape: [usize; N],
+        stream: Arc<CudaStream>,
+        keepalive: Box<dyn std::any::Any + Send>,
+    ) -> Self {
+        Self::from_cudaslice_impl(slice, shape, stream, Some(keepalive))
+    }
+
+    fn from_cudaslice_impl(
+        slice: CudaSlice<T>,
+        shape: [usize; N],
+        stream: Arc<CudaStream>,
+        foreign: Option<Box<dyn std::any::Any + Send>>,
+    ) -> Self {
         let numel = shape.iter().product::<usize>();
         assert_eq!(
             slice.len(),
@@ -685,10 +733,11 @@ where
         });
         // Move the original CudaSlice<T> in, unchanged — this is the aliasing wrap.
         let resource = CudaResource::<T> {
-            slice,
+            slice: std::mem::ManuallyDrop::new(slice),
             ptr,
             id,
             stream,
+            foreign,
         };
 
         let storage =
@@ -711,7 +760,7 @@ where
             .owner
             .as_any()
             .downcast_ref::<CudaResource<T>>()
-            .map(|r| &r.slice)
+            .map(|r| &*r.slice)
     }
 
     /// Return the stream this device tensor's allocation was created on, if the
@@ -742,7 +791,7 @@ where
             .owner
             .as_any_mut()
             .downcast_mut::<CudaResource<T>>()
-            .map(|r| &mut r.slice)
+            .map(|r| &mut *r.slice)
     }
 
     /// Consume the tensor and return the underlying `CudaSlice<T>`.
@@ -757,14 +806,18 @@ where
     /// `Box<CudaResource<T>>` heap allocation is freed (struct metadata only); the
     /// device memory is now owned by the returned `CudaSlice<T>`.
     pub fn into_cudaslice(self) -> Result<CudaSlice<T>, Self> {
-        if self
+        match self
             .storage
             .owner
             .as_any()
             .downcast_ref::<CudaResource<T>>()
-            .is_none()
         {
-            return Err(self);
+            // Foreign memory: handing out an owned CudaSlice would let it
+            // outlive the keepalive (and its drop would cuMemFree memory we
+            // do not own).
+            Some(r) if r.foreign.is_some() => return Err(self),
+            Some(_) => {}
+            None => return Err(self),
         }
 
         // Consume `self` without running TensorStorage's Drop or CudaResource's Drop.
@@ -786,9 +839,12 @@ where
         // Move CudaSlice<T> out without running CudaResource's Drop.
         let mut md_res = std::mem::ManuallyDrop::new(*cuda_box);
         // SAFETY: md_res prevents CudaResource from dropping its fields; we take the slice.
-        let slice = unsafe { std::ptr::read(&md_res.slice) };
+        let slice = std::mem::ManuallyDrop::into_inner(unsafe { std::ptr::read(&md_res.slice) });
         // Drop the stream Arc explicitly — ManuallyDrop would otherwise leak it.
         let _stream = unsafe { std::ptr::read(&md_res.stream) };
+        // `foreign` is None (checked above) but must still be read out so the
+        // Option itself is not leaked.
+        let _foreign = unsafe { std::ptr::read(&md_res.foreign) };
         // Poison the ptr to make residual state obviously invalid (defensive).
         md_res.ptr = std::ptr::null_mut();
 
@@ -831,10 +887,11 @@ where
         });
         // Store as CudaResource<T> so as_cudaslice::<T>() also works on to_cuda results.
         let resource = CudaResource::<T> {
-            slice: dev_slice,
+            slice: std::mem::ManuallyDrop::new(dev_slice),
             ptr,
             id,
             stream: stream.clone(),
+            foreign: None,
         };
         let storage =
             unsafe { storage_from_cuda_resource(resource, ptr as *mut T, n_bytes, alloc) };
@@ -864,7 +921,7 @@ where
 
         // D→H typed copy into a Vec<T> (this is a transfer, copy is correct).
         let host_data: Vec<T> = stream
-            .clone_dtoh(&cuda_res.slice)
+            .clone_dtoh(&*cuda_res.slice)
             .map_err(|e| CudaError::Driver(e.to_string()))?;
         stream
             .synchronize()
@@ -927,7 +984,7 @@ where
         // SAFETY: `owner` holds at least `numel * size_of::<T>()` bytes at `ptr`.
         let dst = unsafe { std::slice::from_raw_parts_mut(ptr, numel) };
         stream
-            .memcpy_dtoh(&cuda_res.slice, dst)
+            .memcpy_dtoh(&*cuda_res.slice, dst)
             .map_err(|e| CudaError::Driver(e.to_string()))?;
         stream
             .synchronize()
@@ -1052,6 +1109,57 @@ mod tests {
         let _s2 = stream
             .alloc_zeros::<u8>(8)
             .expect("second alloc must succeed after into_cudaslice+drop");
+    }
+
+    /// Foreign tensors never free the producer's memory: the owner keeps its
+    /// allocation valid, `into_cudaslice` refuses, and the keepalive is
+    /// released exactly once on drop.
+    #[test]
+    fn from_foreign_cudaslice_leaks_slice_releases_keepalive() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc as StdArc;
+
+        struct Keepalive(StdArc<AtomicUsize>);
+        impl Drop for Keepalive {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let ctx = CudaContext::new(0).unwrap();
+        let stream = ctx.default_stream();
+
+        // "Producer" allocation that must survive the tensor.
+        let producer: CudaSlice<u8> = stream.alloc_zeros::<u8>(32).unwrap();
+        let (cu_ptr, _sync) = producer.device_ptr(&stream);
+        drop(_sync);
+        // Alias it the way a DLPack import does.
+        let alias = unsafe { stream.upgrade_device_ptr::<u8>(cu_ptr, 32) };
+
+        let released = StdArc::new(AtomicUsize::new(0));
+        let tensor = Tensor::<u8, 1>::from_foreign_cudaslice(
+            alias,
+            [32],
+            stream.clone(),
+            Box::new(Keepalive(released.clone())),
+        );
+        assert!(tensor.as_cudaslice().is_some());
+
+        // Foreign tensors must not hand out an owned slice.
+        let Err(tensor) = tensor.into_cudaslice() else {
+            panic!("foreign must refuse into_cudaslice");
+        };
+
+        drop(tensor);
+        assert_eq!(
+            released.load(Ordering::SeqCst),
+            1,
+            "keepalive released once"
+        );
+
+        // Producer memory must still be usable (no cuMemFree ran on it).
+        let host: Vec<u8> = stream.clone_dtoh(&producer).unwrap();
+        assert_eq!(host, vec![0u8; 32]);
     }
 
     /// `from_cudaslice` → drop: device memory freed once, no double-free.

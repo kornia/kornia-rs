@@ -170,8 +170,9 @@ impl SourceFormat {
         w * self.bpp()
     }
 
-    /// Required buffer length in bytes for a `w × h` frame.
-    fn buffer_len(self, w: usize, h: usize) -> usize {
+    /// Required buffer length in bytes for a `w × h` frame — what
+    /// [`Preprocessor::run_raw`] validates against (longer buffers are fine).
+    pub fn buffer_len(self, w: usize, h: usize) -> usize {
         let chroma = if matches!(self, SourceFormat::Nv12) {
             w * h / 2
         } else {
