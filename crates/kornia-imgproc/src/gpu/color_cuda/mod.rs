@@ -136,6 +136,15 @@ pub enum CudaColorError {
     },
 }
 
+impl From<CudaColorError> for kornia_image::ImageError {
+    /// Single crossing point from the CUDA color layer into the image error
+    /// domain (kornia-image cannot depend on this crate, so the bridge is a
+    /// string by design — but it is stringified exactly once, here).
+    fn from(e: CudaColorError) -> Self {
+        kornia_image::ImageError::Cuda(e.to_string())
+    }
+}
+
 impl From<kornia_tensor::CudaError> for CudaColorError {
     fn from(e: kornia_tensor::CudaError) -> Self {
         CudaColorError::Cuda(e.to_string())
@@ -202,6 +211,62 @@ pub(crate) fn get_kernel_suite<'a>(
     Ok(&suite[index])
 }
 
+/// How many pixels each kernel thread handles (drives the 1-D grid size).
+#[derive(Clone, Copy)]
+pub(crate) enum PxPerThread {
+    /// One pixel per thread.
+    One,
+    /// Four pixels per thread (the word-vectorized u8 kernels).
+    Four,
+}
+
+/// Shared elementwise launch tail: length checks, then
+/// `kernel(src, dst, npixels)` on a 1-D grid sized by `px_per_thread`.
+/// `src_mul`/`dst_mul` are elements-per-pixel of each buffer.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn launch_map<T>(
+    kernel: &CudaKernel,
+    stream: &Arc<CudaStream>,
+    src: &cudarc::driver::CudaSlice<T>,
+    dst: &mut cudarc::driver::CudaSlice<T>,
+    npixels: usize,
+    src_mul: usize,
+    dst_mul: usize,
+    px_per_thread: PxPerThread,
+) -> Result<(), CudaColorError>
+where
+    T: cudarc::driver::DeviceRepr,
+{
+    check_len("src", src.len(), npixels * src_mul)?;
+    check_len("dst", dst.len(), npixels * dst_mul)?;
+    let n = npixels as u32;
+    let threads = match px_per_thread {
+        PxPerThread::One => n,
+        PxPerThread::Four => n.div_ceil(4),
+    };
+    kernel
+        .launch_builder(stream)
+        .arg(src)
+        .arg(dst)
+        .arg(&n)
+        .launch_1d(threads)?;
+    Ok(())
+}
+
+// 32×8 blocks for 2-D neighborhood kernels: a warp spans one output row
+// segment (coalesced writes).
+pub(crate) const BLOCK_W: u32 = 32;
+pub(crate) const BLOCK_H: u32 = 8;
+
+/// Standard 2-D launch config over a `width × height` thread grid.
+pub(crate) fn config_2d(width: u32, height: u32) -> cudarc::driver::LaunchConfig {
+    cudarc::driver::LaunchConfig {
+        block_dim: (BLOCK_W, BLOCK_H, 1),
+        grid_dim: (width.div_ceil(BLOCK_W), height.div_ceil(BLOCK_H), 1),
+        shared_mem_bytes: 0,
+    }
+}
+
 /// Validate that a device slice holds at least `need` elements.
 pub(crate) fn check_len(what: &'static str, got: usize, need: usize) -> Result<(), CudaColorError> {
     if got < need {
@@ -238,6 +303,14 @@ pub(crate) mod test_utils {
     /// Deterministic f32 pattern in [0, 1] including exact 0.0 / 1.0.
     pub fn pattern_f32(len: usize) -> Vec<f32> {
         pattern_u8(len).iter().map(|&b| b as f32 / 255.0).collect()
+    }
+
+    /// Largest absolute elementwise difference between two slices.
+    pub fn max_abs_diff_f32(a: &[f32], b: &[f32]) -> f32 {
+        a.iter()
+            .zip(b)
+            .map(|(x, y)| (x - y).abs())
+            .fold(0f32, f32::max)
     }
 
     /// Default-stream handle for device tests (Jetson: single GPU, ordinal 0).

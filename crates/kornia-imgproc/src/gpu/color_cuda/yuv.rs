@@ -12,7 +12,7 @@ use cudarc::driver::{CudaSlice, CudaStream};
 
 pub use crate::color::yuv::kernels::ChromaOrder;
 
-use super::{check_len, get_kernel_suite, CudaColorError, KernelSuiteCell};
+use super::{get_kernel_suite, launch_map, CudaColorError, KernelSuiteCell, PxPerThread};
 
 static YCC_U8_SRC: &str = r#"
 // Forward: RGB u8 -> (Y, Cr, Cb) u8, full-range Q14 (matches ycc_from_rgb_u8_px).
@@ -141,49 +141,26 @@ __device__ __forceinline__ void rgb_px_f32(
     *r_o = r; *g_o = g; *b_o = b;
 }
 
-extern "C" __global__ void ycc_from_rgb_f32_ycrcb(
-    const float* __restrict__ src, float* __restrict__ dst, unsigned int npixels)
-{
-    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= npixels) return;
-    unsigned int b = i * 3u;
-    float y, cr, cb;
-    ycc_px_f32(__ldg(&src[b]), __ldg(&src[b + 1u]), __ldg(&src[b + 2u]), &y, &cr, &cb);
-    dst[b] = y; dst[b + 1u] = cr; dst[b + 2u] = cb;
+#define YCC_F32_KERNEL(NAME, LOAD_EXPR)                                        \
+extern "C" __global__ void NAME(                                               \
+    const float* __restrict__ src, float* __restrict__ dst, unsigned int npixels) \
+{                                                                              \
+    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;                    \
+    if (i >= npixels) return;                                                  \
+    unsigned int b = i * 3u;                                                   \
+    float o0, o1, o2;                                                          \
+    LOAD_EXPR;                                                                 \
+    dst[b] = o0; dst[b + 1u] = o1; dst[b + 2u] = o2;                           \
 }
 
-extern "C" __global__ void ycc_from_rgb_f32_yuv(
-    const float* __restrict__ src, float* __restrict__ dst, unsigned int npixels)
-{
-    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= npixels) return;
-    unsigned int b = i * 3u;
-    float y, cr, cb;
-    ycc_px_f32(__ldg(&src[b]), __ldg(&src[b + 1u]), __ldg(&src[b + 2u]), &y, &cr, &cb);
-    dst[b] = y; dst[b + 1u] = cb; dst[b + 2u] = cr;
-}
-
-extern "C" __global__ void rgb_from_ycc_f32_ycrcb(
-    const float* __restrict__ src, float* __restrict__ dst, unsigned int npixels)
-{
-    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= npixels) return;
-    unsigned int b = i * 3u;
-    float r, g, bl;
-    rgb_px_f32(__ldg(&src[b]), __ldg(&src[b + 1u]), __ldg(&src[b + 2u]), &r, &g, &bl);
-    dst[b] = r; dst[b + 1u] = g; dst[b + 2u] = bl;
-}
-
-extern "C" __global__ void rgb_from_ycc_f32_yuv(
-    const float* __restrict__ src, float* __restrict__ dst, unsigned int npixels)
-{
-    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= npixels) return;
-    unsigned int b = i * 3u;
-    float r, g, bl;
-    rgb_px_f32(__ldg(&src[b]), __ldg(&src[b + 2u]), __ldg(&src[b + 1u]), &r, &g, &bl);
-    dst[b] = r; dst[b + 1u] = g; dst[b + 2u] = bl;
-}
+YCC_F32_KERNEL(ycc_from_rgb_f32_ycrcb,
+    ycc_px_f32(__ldg(&src[b]), __ldg(&src[b+1u]), __ldg(&src[b+2u]), &o0, &o1, &o2))
+YCC_F32_KERNEL(ycc_from_rgb_f32_yuv,
+    ycc_px_f32(__ldg(&src[b]), __ldg(&src[b+1u]), __ldg(&src[b+2u]), &o0, &o2, &o1))
+YCC_F32_KERNEL(rgb_from_ycc_f32_ycrcb,
+    rgb_px_f32(__ldg(&src[b]), __ldg(&src[b+1u]), __ldg(&src[b+2u]), &o0, &o1, &o2))
+YCC_F32_KERNEL(rgb_from_ycc_f32_yuv,
+    rgb_px_f32(__ldg(&src[b]), __ldg(&src[b+2u]), __ldg(&src[b+1u]), &o0, &o1, &o2))
 "#;
 const YCC_F32_FNS: &[&str] = &[
     "ycc_from_rgb_f32_ycrcb",
@@ -261,8 +238,6 @@ fn launch_u8(
     dst: &mut CudaSlice<u8>,
     npixels: usize,
 ) -> Result<(), CudaColorError> {
-    check_len("src", src.len(), npixels * 3)?;
-    check_len("dst", dst.len(), npixels * 3)?;
     let kernel = get_kernel_suite(
         &YCC_U8,
         stream,
@@ -270,15 +245,7 @@ fn launch_u8(
         YCC_U8_FNS,
         entry_index(forward, order),
     )?;
-    let n = npixels as u32;
-    // One thread per 4-pixel quad (see kernel source).
-    kernel
-        .launch_builder(stream)
-        .arg(src)
-        .arg(dst)
-        .arg(&n)
-        .launch_1d(n.div_ceil(4))?;
-    Ok(())
+    launch_map(kernel, stream, src, dst, npixels, 3, 3, PxPerThread::Four)
 }
 
 fn launch_f32(
@@ -289,8 +256,6 @@ fn launch_f32(
     dst: &mut CudaSlice<f32>,
     npixels: usize,
 ) -> Result<(), CudaColorError> {
-    check_len("src", src.len(), npixels * 3)?;
-    check_len("dst", dst.len(), npixels * 3)?;
     let kernel = get_kernel_suite(
         &YCC_F32,
         stream,
@@ -298,14 +263,7 @@ fn launch_f32(
         YCC_F32_FNS,
         entry_index(forward, order),
     )?;
-    let n = npixels as u32;
-    kernel
-        .launch_builder(stream)
-        .arg(src)
-        .arg(dst)
-        .arg(&n)
-        .launch_1d(n)?;
-    Ok(())
+    launch_map(kernel, stream, src, dst, npixels, 3, 3, PxPerThread::One)
 }
 
 fn launch_f64(
@@ -316,8 +274,6 @@ fn launch_f64(
     dst: &mut CudaSlice<f64>,
     npixels: usize,
 ) -> Result<(), CudaColorError> {
-    check_len("src", src.len(), npixels * 3)?;
-    check_len("dst", dst.len(), npixels * 3)?;
     let kernel = get_kernel_suite(
         &YCC_F64,
         stream,
@@ -325,14 +281,7 @@ fn launch_f64(
         YCC_F64_FNS,
         entry_index(forward, order),
     )?;
-    let n = npixels as u32;
-    kernel
-        .launch_builder(stream)
-        .arg(src)
-        .arg(dst)
-        .arg(&n)
-        .launch_1d(n)?;
-    Ok(())
+    launch_map(kernel, stream, src, dst, npixels, 3, 3, PxPerThread::One)
 }
 
 /// Launch RGB f64 → YCbCr/YUV f64 (matches the CPU f64 scalar oracle).
@@ -449,11 +398,7 @@ mod tests {
         let gpu: Vec<f32> = stream.clone_dtoh(&d_dst).unwrap();
         stream.synchronize().unwrap();
 
-        let max_diff = gpu
-            .iter()
-            .zip(&cpu)
-            .map(|(a, b)| (a - b).abs())
-            .fold(0f32, f32::max);
+        let max_diff = crate::gpu::color_cuda::test_utils::max_abs_diff_f32(&gpu, &cpu);
         assert!(max_diff <= 1e-3, "f32 ycc max diff {max_diff}");
     }
 }

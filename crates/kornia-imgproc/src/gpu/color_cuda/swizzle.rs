@@ -9,7 +9,10 @@ use std::sync::Arc;
 
 use cudarc::driver::{CudaSlice, CudaStream};
 
-use super::{check_len, get_kernel, get_kernel_suite, CudaColorError, KernelCell, KernelSuiteCell};
+use super::{
+    check_len, get_kernel, get_kernel_suite, launch_map, CudaColorError, KernelCell,
+    KernelSuiteCell, PxPerThread,
+};
 
 // Word-vectorized: 4 px/thread via the shared c3 quad helpers (bit-exact —
 // pure byte permutation). Partial tail falls back to byte addressing.
@@ -197,30 +200,21 @@ static EXPAND_U8: KernelSuiteCell = KernelSuiteCell::new();
 static EXPAND_F32: KernelSuiteCell = KernelSuiteCell::new();
 static STRIP_U8: KernelSuiteCell = KernelSuiteCell::new();
 
-/// Launch RGB8 ↔ BGR8 channel swap (symmetric — also BGR → RGB).
+/// Launch RGB8 ↔ BGR8 channel swap (symmetric — also BGR → RGB;
+/// word-vectorized 4 px/thread).
 pub fn launch_bgr_from_rgb_u8(
     stream: &Arc<CudaStream>,
     src: &CudaSlice<u8>,
     dst: &mut CudaSlice<u8>,
     npixels: usize,
 ) -> Result<(), CudaColorError> {
-    check_len("src", src.len(), npixels * 3)?;
-    check_len("dst", dst.len(), npixels * 3)?;
     let kernel = get_kernel(
         &BGR_FROM_RGB_U8,
         stream,
         BGR_FROM_RGB_U8_SRC,
         "bgr_from_rgb_u8",
     )?;
-    let n = npixels as u32;
-    // One thread per 4-pixel quad (see kernel source).
-    kernel
-        .launch_builder(stream)
-        .arg(src)
-        .arg(dst)
-        .arg(&n)
-        .launch_1d(n.div_ceil(4))?;
-    Ok(())
+    launch_map(kernel, stream, src, dst, npixels, 3, 3, PxPerThread::Four)
 }
 
 /// Launch RGB f32 ↔ BGR f32 channel swap (symmetric).
@@ -230,22 +224,13 @@ pub fn launch_bgr_from_rgb_f32(
     dst: &mut CudaSlice<f32>,
     npixels: usize,
 ) -> Result<(), CudaColorError> {
-    check_len("src", src.len(), npixels * 3)?;
-    check_len("dst", dst.len(), npixels * 3)?;
     let kernel = get_kernel(
         &BGR_FROM_RGB_F32,
         stream,
         BGR_FROM_RGB_F32_SRC,
         "bgr_from_rgb_f32",
     )?;
-    let n = npixels as u32;
-    kernel
-        .launch_builder(stream)
-        .arg(src)
-        .arg(dst)
-        .arg(&n)
-        .launch_1d(n)?;
-    Ok(())
+    launch_map(kernel, stream, src, dst, npixels, 3, 3, PxPerThread::One)
 }
 
 /// Which 3→4 expansion to run.
@@ -262,8 +247,6 @@ fn launch_expand_u8(
     dst: &mut CudaSlice<u8>,
     npixels: usize,
 ) -> Result<(), CudaColorError> {
-    check_len("src", src.len(), npixels * 3)?;
-    check_len("dst", dst.len(), npixels * 4)?;
     let kernel = get_kernel_suite(
         &EXPAND_U8,
         stream,
@@ -271,14 +254,7 @@ fn launch_expand_u8(
         EXPAND_U8_FNS,
         which as usize,
     )?;
-    let n = npixels as u32;
-    kernel
-        .launch_builder(stream)
-        .arg(src)
-        .arg(dst)
-        .arg(&n)
-        .launch_1d(n)?;
-    Ok(())
+    launch_map(kernel, stream, src, dst, npixels, 3, 4, PxPerThread::One)
 }
 
 fn launch_expand_f32(
@@ -288,8 +264,6 @@ fn launch_expand_f32(
     dst: &mut CudaSlice<f32>,
     npixels: usize,
 ) -> Result<(), CudaColorError> {
-    check_len("src", src.len(), npixels * 3)?;
-    check_len("dst", dst.len(), npixels * 4)?;
     let kernel = get_kernel_suite(
         &EXPAND_F32,
         stream,
@@ -297,14 +271,7 @@ fn launch_expand_f32(
         EXPAND_F32_FNS,
         which as usize,
     )?;
-    let n = npixels as u32;
-    kernel
-        .launch_builder(stream)
-        .arg(src)
-        .arg(dst)
-        .arg(&n)
-        .launch_1d(n)?;
-    Ok(())
+    launch_map(kernel, stream, src, dst, npixels, 3, 4, PxPerThread::One)
 }
 
 /// Launch RGB8 → RGBA8 (append opaque alpha 255).
@@ -453,24 +420,21 @@ mod tests {
     #[test]
     fn strip_with_background_close_to_cpu_blend() {
         let stream = default_stream();
-        let n = 4096;
+        let n = 64 * 64;
         let rgba = pattern_u8(n * 4);
         let bg = [10u8, 200, 45];
 
-        // CPU oracle: replicate color/rgb/mod.rs::alpha_blend per pixel.
-        let mut cpu = vec![0u8; n * 3];
-        for i in 0..n {
-            let (r, g, b, a) = (
-                rgba[i * 4],
-                rgba[i * 4 + 1],
-                rgba[i * 4 + 2],
-                rgba[i * 4 + 3],
-            );
-            let alpha = a as f32 / 255.0;
-            cpu[i * 3] = (r as f32 * alpha + bg[0] as f32 * (1.0 - alpha)).round() as u8;
-            cpu[i * 3 + 1] = (g as f32 * alpha + bg[1] as f32 * (1.0 - alpha)).round() as u8;
-            cpu[i * 3 + 2] = (b as f32 * alpha + bg[2] as f32 * (1.0 - alpha)).round() as u8;
-        }
+        // Oracle = the production CPU path, so the GPU is always validated
+        // against whatever blend semantics ship.
+        use kornia_image::{Image, ImageSize};
+        let size = ImageSize {
+            width: 64,
+            height: 64,
+        };
+        let src_img = Image::<u8, 4>::new(size, rgba.clone()).unwrap();
+        let mut cpu_img = Image::<u8, 3>::from_size_val(size, 0).unwrap();
+        crate::color::rgb_from_rgba(&src_img, &mut cpu_img, Some(bg)).unwrap();
+        let cpu = cpu_img.as_slice().to_vec();
 
         let d_src = stream.clone_htod(&rgba).unwrap();
         let mut d_dst = stream.alloc_zeros::<u8>(n * 3).unwrap();

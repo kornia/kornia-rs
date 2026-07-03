@@ -100,22 +100,12 @@ impl ColormapType {
             .map(|&(_, variant, _)| variant)
     }
 
-    fn lut(self) -> &'static ColormapLut {
+    pub(crate) fn lut(self) -> &'static ColormapLut {
         COLORMAPS
             .iter()
             .find(|(_, v, _)| *v == self)
             .map(|&(_, _, lut)| lut)
             .expect("all ColormapType variants are in COLORMAPS")
-    }
-
-    /// The raw (R, G, B) channel LUTs — used by the CUDA path to build its
-    /// packed device-side table.
-    #[cfg(feature = "gpu-cuda")]
-    pub(crate) fn lut_channels(
-        self,
-    ) -> (&'static [u8; 256], &'static [u8; 256], &'static [u8; 256]) {
-        let lut = self.lut();
-        (&lut.r, &lut.g, &lut.b)
     }
 }
 
@@ -283,8 +273,9 @@ pub fn apply_colormap(
     {
         use super::cuda_dispatch::{pair_residency, Residency};
         if let Residency::Device(exec) = pair_residency(src, dst)? {
-            super::cuda_dispatch::apply_colormap_u8_cuda(src, dst, colormap, exec.stream())?;
-            return exec.finish();
+            return exec.run(|stream| {
+                super::cuda_dispatch::apply_colormap_u8_cuda(src, dst, colormap, stream)
+            });
         }
     }
     let lut = colormap.lut();

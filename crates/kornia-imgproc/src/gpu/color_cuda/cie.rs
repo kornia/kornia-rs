@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use cudarc::driver::{CudaSlice, CudaStream};
 
-use super::{check_len, get_kernel_suite, CudaColorError, KernelSuiteCell};
+use super::{get_kernel_suite, launch_map, CudaColorError, KernelSuiteCell, PxPerThread};
 
 static CIE_F32_SRC: &str = r#"
 // sRGB transfer — constants from color/cie/transfer.rs.
@@ -397,17 +397,8 @@ fn launch_entry(
     dst: &mut CudaSlice<f32>,
     npixels: usize,
 ) -> Result<(), CudaColorError> {
-    check_len("src", src.len(), npixels * 3)?;
-    check_len("dst", dst.len(), npixels * 3)?;
     let kernel = get_kernel_suite(&CIE_F32, stream, CIE_F32_SRC, CIE_F32_FNS, index)?;
-    let n = npixels as u32;
-    kernel
-        .launch_builder(stream)
-        .arg(src)
-        .arg(dst)
-        .arg(&n)
-        .launch_1d(n)?;
-    Ok(())
+    launch_map(kernel, stream, src, dst, npixels, 3, 3, PxPerThread::One)
 }
 
 fn launch_entry_f64(
@@ -417,17 +408,8 @@ fn launch_entry_f64(
     dst: &mut CudaSlice<f64>,
     npixels: usize,
 ) -> Result<(), CudaColorError> {
-    check_len("src", src.len(), npixels * 3)?;
-    check_len("dst", dst.len(), npixels * 3)?;
     let kernel = get_kernel_suite(&CIE_F64, stream, CIE_F64_SRC, CIE_F64_FNS, index)?;
-    let n = npixels as u32;
-    kernel
-        .launch_builder(stream)
-        .arg(src)
-        .arg(dst)
-        .arg(&n)
-        .launch_1d(n)?;
-    Ok(())
+    launch_map(kernel, stream, src, dst, npixels, 3, 3, PxPerThread::One)
 }
 
 macro_rules! cie_launcher_f64 {
@@ -564,11 +546,7 @@ mod tests {
     }
 
     fn assert_close(name: &str, gpu: &[f32], oracle: &[f32], tol: f32) {
-        let max_diff = gpu
-            .iter()
-            .zip(oracle)
-            .map(|(a, b)| (a - b).abs())
-            .fold(0f32, f32::max);
+        let max_diff = crate::gpu::color_cuda::test_utils::max_abs_diff_f32(gpu, oracle);
         assert!(max_diff <= tol, "{name} max diff {max_diff} > {tol}");
     }
 

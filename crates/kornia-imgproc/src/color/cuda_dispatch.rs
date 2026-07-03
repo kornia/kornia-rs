@@ -18,7 +18,7 @@ use kornia_image::{Image, ImageError};
 use kornia_tensor::MemoryDomain;
 
 use crate::color::yuv::kernels::ChromaOrder;
-use crate::gpu::color_cuda::{cie, gray, hsv_hls, misc, swizzle, yuv, CudaColorError};
+use crate::gpu::color_cuda::{cie, gray, hsv_hls, misc, swizzle, yuv};
 
 /// Where a (src, dst) operand pair lives.
 pub(crate) enum Residency {
@@ -44,25 +44,46 @@ pub(crate) struct DeviceExec {
 }
 
 impl DeviceExec {
-    /// The stream to launch the kernel on (the source's stream).
-    pub(crate) fn stream(&self) -> &Arc<CudaStream> {
-        &self.stream
+    /// Build the execution context for a (launch, destination) stream pair —
+    /// the single home of the cross-stream fence protocol. Same device
+    /// required; same stream = no fence; different streams = pre-fence now
+    /// (launch stream waits for the destination's pending work) and a
+    /// post-fence obligation discharged by [`run`](Self::run).
+    fn for_streams(launch: &Arc<CudaStream>, dst: &Arc<CudaStream>) -> Result<Self, ImageError> {
+        if launch.context().ordinal() != dst.context().ordinal() {
+            return Err(ImageError::DeviceMismatch);
+        }
+        if launch.cu_stream() == dst.cu_stream() {
+            return Ok(DeviceExec {
+                stream: launch.clone(),
+                fence_back: None,
+            });
+        }
+        let ev = dst.record_event(None).map_err(driver_err)?;
+        launch.wait(&ev).map_err(driver_err)?;
+        Ok(DeviceExec {
+            stream: launch.clone(),
+            fence_back: Some(dst.clone()),
+        })
     }
 
-    /// Complete the cross-stream ordering after the kernel launch was
-    /// enqueued. Must be called once the launch is on [`stream`](Self::stream).
-    pub(crate) fn finish(self) -> Result<(), ImageError> {
+    /// Launch through `f` and complete the cross-stream ordering — fusing the
+    /// launch and the post-fence so forgetting the fence is unrepresentable.
+    pub(crate) fn run(
+        self,
+        f: impl FnOnce(&Arc<CudaStream>) -> Result<(), ImageError>,
+    ) -> Result<(), ImageError> {
+        f(&self.stream)?;
         if let Some(dst_stream) = self.fence_back {
-            let ev = self
-                .stream
-                .record_event(None)
-                .map_err(|e| ImageError::Cuda(e.to_string()))?;
-            dst_stream
-                .wait(&ev)
-                .map_err(|e| ImageError::Cuda(e.to_string()))?;
+            let ev = self.stream.record_event(None).map_err(driver_err)?;
+            dst_stream.wait(&ev).map_err(driver_err)?;
         }
         Ok(())
     }
+}
+
+fn driver_err(e: cudarc::driver::DriverError) -> ImageError {
+    ImageError::Cuda(e.to_string())
 }
 
 /// True if the image's backing memory is device- (or unified-) resident.
@@ -76,25 +97,10 @@ pub(crate) fn is_device<T, const C: usize>(img: &Image<T, C>) -> bool {
     )
 }
 
-/// Reject any device-resident operand — the guard for host-only conversion
-/// arms. Every current `ConvertColor` arm has a CUDA path, so this is unused
-/// today; it stays (tested) so any future host-only arm turns an `as_slice`
-/// panic into a typed error.
-#[allow(dead_code)]
-pub(crate) fn ensure_host<T, const C: usize, const D: usize>(
-    src: &Image<T, C>,
-    dst: &Image<T, D>,
-) -> Result<(), ImageError> {
-    if is_device(src) || is_device(dst) {
-        return Err(ImageError::UnsupportedDevice);
-    }
-    Ok(())
-}
-
 /// Classify a (src, dst) pair: both-host, both-device, or error on a mix.
 ///
 /// Device pairs must live on the **same device** (cross-device errors with
-/// [`ImageError::StreamMismatch`]). Different **streams** on the same device
+/// [`ImageError::DeviceMismatch`]). Different **streams** on the same device
 /// are supported via event fences — see [`DeviceExec`]. Streams are compared
 /// by raw `CUstream` handle (every `ctx.default_stream()` call returns a
 /// fresh `Arc` over the same null handle, so `Arc` identity is wrong).
@@ -116,27 +122,9 @@ where
                 .0
                 .cuda_stream()
                 .ok_or_else(|| untyped_device_err("destination"))?;
-            if s_stream.context().ordinal() != d_stream.context().ordinal() {
-                return Err(ImageError::StreamMismatch);
-            }
-            if s_stream.cu_stream() == d_stream.cu_stream() {
-                return Ok(Residency::Device(DeviceExec {
-                    stream: s_stream.clone(),
-                    fence_back: None,
-                }));
-            }
-            // Pre-fence: the launch (source) stream waits for the
-            // destination's already-enqueued work before touching its buffer.
-            let ev = d_stream
-                .record_event(None)
-                .map_err(|e| ImageError::Cuda(e.to_string()))?;
-            s_stream
-                .wait(&ev)
-                .map_err(|e| ImageError::Cuda(e.to_string()))?;
-            Ok(Residency::Device(DeviceExec {
-                stream: s_stream.clone(),
-                fence_back: Some(d_stream.clone()),
-            }))
+            Ok(Residency::Device(DeviceExec::for_streams(
+                s_stream, d_stream,
+            )?))
         }
         _ => Err(ImageError::MixedResidency),
     }
@@ -155,25 +143,7 @@ where
     let d_stream = dst
         .cuda_stream()
         .ok_or_else(|| untyped_device_err("destination"))?;
-    if src_stream.context().ordinal() != d_stream.context().ordinal() {
-        return Err(ImageError::StreamMismatch);
-    }
-    if src_stream.cu_stream() == d_stream.cu_stream() {
-        return Ok(DeviceExec {
-            stream: src_stream.clone(),
-            fence_back: None,
-        });
-    }
-    let ev = d_stream
-        .record_event(None)
-        .map_err(|e| ImageError::Cuda(e.to_string()))?;
-    src_stream
-        .wait(&ev)
-        .map_err(|e| ImageError::Cuda(e.to_string()))?;
-    Ok(DeviceExec {
-        stream: src_stream.clone(),
-        fence_back: Some(d_stream.clone()),
-    })
+    DeviceExec::for_streams(src_stream, d_stream)
 }
 
 fn untyped_device_err(what: &str) -> ImageError {
@@ -182,10 +152,6 @@ fn untyped_device_err(what: &str) -> ImageError {
          create device images via Image::to_cuda_image / zeros_cuda (or the \
          color-space newtype to_cuda / zeros_cuda helpers)"
     ))
-}
-
-fn cuda_err(e: CudaColorError) -> ImageError {
-    ImageError::Cuda(e.to_string())
 }
 
 fn check_same_size<T, const C: usize, const D: usize>(
@@ -231,7 +197,7 @@ macro_rules! adapter {
             check_same_size(src, dst)?;
             let npixels = src.cols() * src.rows();
             let (s, d) = device_slices!(src, dst);
-            $launcher(stream, s, d, npixels).map_err(cuda_err)
+            $launcher(stream, s, d, npixels).map_err(ImageError::from)
         }
     };
 }
@@ -293,7 +259,7 @@ macro_rules! ycc_adapter {
             check_same_size(src, dst)?;
             let npixels = src.cols() * src.rows();
             let (s, d) = device_slices!(src, dst);
-            $launcher(stream, s, d, npixels, $order).map_err(cuda_err)
+            $launcher(stream, s, d, npixels, $order).map_err(ImageError::from)
         }
     };
 }
@@ -383,7 +349,7 @@ pub(crate) fn rgb_from_bayer_u8_cuda(
     let (rows, cols) = (src.rows(), src.cols());
     let (s, d) = device_slices!(src, dst);
     crate::gpu::color_cuda::bayer::launch_rgb_from_bayer_u8(stream, s, d, rows, cols, pattern)
-        .map_err(cuda_err)
+        .map_err(ImageError::from)
 }
 
 /// Gray8 → RGB8 colormap application (device path of `apply_colormap`).
@@ -396,7 +362,7 @@ pub(crate) fn apply_colormap_u8_cuda(
     check_same_size(src, dst)?;
     let npixels = src.cols() * src.rows();
     let (s, d) = device_slices!(src, dst);
-    misc::launch_apply_colormap_u8(stream, s, d, npixels, colormap).map_err(cuda_err)
+    misc::launch_apply_colormap_u8(stream, s, d, npixels, colormap).map_err(ImageError::from)
 }
 
 /// RGBA8/BGRA8 → RGB8 with optional background blend (shared body).
@@ -410,7 +376,8 @@ fn strip_alpha_u8_cuda(
     check_same_size(src, dst)?;
     let npixels = src.cols() * src.rows();
     let (s, d) = device_slices!(src, dst);
-    swizzle::launch_rgb_from_rgba_u8(stream, s, d, npixels, swapped, background).map_err(cuda_err)
+    swizzle::launch_rgb_from_rgba_u8(stream, s, d, npixels, swapped, background)
+        .map_err(ImageError::from)
 }
 
 /// RGBA8 → RGB8, alpha dropped (`bg: None` trait path).
@@ -526,19 +493,6 @@ mod tests {
         // — no fence needed, must dispatch fine.
         let mut gray_default = Gray8::zeros_cuda(SIZE, &ctx.default_stream()).unwrap();
         rgb_d.convert(&mut gray_default).unwrap();
-    }
-
-    #[test]
-    fn ensure_host_guard_rejects_device_operands() {
-        // Every ConvertColor arm now has a CUDA path, so the host-only guard
-        // has no trait-level subject — test it directly: it must keep turning
-        // device operands into a typed error for any future host-only arm.
-        let stream = default_stream();
-        let rgb = Rgbf64::from_size_val(SIZE, 0.5).unwrap();
-        let rgb_d = rgb.to_cuda(&stream).unwrap();
-        let host = Rgbf64::from_size_val(SIZE, 0.0).unwrap();
-        let err = crate::color::cuda_dispatch::ensure_host(&rgb_d.0, &host.0).unwrap_err();
-        assert!(matches!(err, kornia_image::ImageError::UnsupportedDevice));
     }
 
     #[test]

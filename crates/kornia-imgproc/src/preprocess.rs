@@ -114,9 +114,9 @@ impl Default for PreprocessorOptions {
 }
 
 impl SourceFormat {
-    /// Kernel entry point name for a (format, sampling, dtype) combination.
-    fn entry(self, sampling: Sampling, f16: bool) -> String {
-        let base = match self {
+    /// Base kernel-name fragment (also the `fetch_*` suffix).
+    fn base(self) -> &'static str {
+        match self {
             SourceFormat::Rgb8 => "rgb8",
             SourceFormat::Bgr8 => "bgr8",
             SourceFormat::Rgba8 => "rgba8",
@@ -124,8 +124,12 @@ impl SourceFormat {
             SourceFormat::Gray8 => "gray8",
             SourceFormat::Nv12 => "nv12",
             SourceFormat::Yuyv => "yuyv",
-        };
-        let mut name = format!("resize_pad_to_chw_{base}");
+        }
+    }
+
+    /// Kernel entry point name for a (format, sampling, dtype) combination.
+    fn entry(self, sampling: Sampling, f16: bool) -> String {
+        let mut name = format!("resize_pad_to_chw_{}", self.base());
         if matches!(sampling, Sampling::Nearest) {
             name.push_str("_nearest");
         }
@@ -135,15 +139,15 @@ impl SourceFormat {
         name
     }
 
-    /// Required source buffer length in bytes for a `w × h` frame.
+    /// Required source buffer length in bytes for a `w × h` frame: `h` rows of
+    /// the primary plane, plus NV12's half-size interleaved chroma plane.
     fn buffer_len(self, w: usize, h: usize) -> usize {
-        match self {
-            SourceFormat::Rgb8 | SourceFormat::Bgr8 => w * h * 3,
-            SourceFormat::Rgba8 | SourceFormat::Bgra8 => w * h * 4,
-            SourceFormat::Gray8 => w * h,
-            SourceFormat::Nv12 => w * h * 3 / 2,
-            SourceFormat::Yuyv => w * h * 2,
-        }
+        let chroma = if matches!(self, SourceFormat::Nv12) {
+            w * h / 2
+        } else {
+            0
+        };
+        self.pitch(w) * h + chroma
     }
 
     /// Byte stride of the primary plane row (passed to the kernel).
@@ -219,7 +223,7 @@ pub enum PreprocessError {
 //
 // The u8 decode math is byte-identical to `gpu/color_cuda` (Q20 BT.601-limited
 // for NV12/YUYV), so fused output equals the decode-then-preprocess chain.
-const KERNEL_SRC: &str = r#"
+const KERNEL_TEMPLATE: &str = r#"
 // f32 -> f16 bits via the hardware cvt instruction — avoids depending on
 // cuda_fp16.h, which NVRTC cannot resolve without an include search path.
 // The u16 bit pattern is exactly IEEE binary16 (what half::f16 stores).
@@ -379,34 +383,6 @@ extern "C" __global__ void NAME(                                                
     }                                                                            \
 }
 
-PP_KERNEL(resize_pad_to_chw_rgb8,             fetch_rgb8, SAMPLE_BILINEAR, float,  CVT_F32)
-PP_KERNEL(resize_pad_to_chw_rgb8_nearest,     fetch_rgb8, SAMPLE_NEAREST,  float,  CVT_F32)
-PP_KERNEL(resize_pad_to_chw_rgb8_f16,         fetch_rgb8, SAMPLE_BILINEAR, unsigned short, CVT_F16)
-PP_KERNEL(resize_pad_to_chw_rgb8_nearest_f16, fetch_rgb8, SAMPLE_NEAREST,  unsigned short, CVT_F16)
-PP_KERNEL(resize_pad_to_chw_bgr8,             fetch_bgr8, SAMPLE_BILINEAR, float,  CVT_F32)
-PP_KERNEL(resize_pad_to_chw_bgr8_nearest,     fetch_bgr8, SAMPLE_NEAREST,  float,  CVT_F32)
-PP_KERNEL(resize_pad_to_chw_bgr8_f16,         fetch_bgr8, SAMPLE_BILINEAR, unsigned short, CVT_F16)
-PP_KERNEL(resize_pad_to_chw_bgr8_nearest_f16, fetch_bgr8, SAMPLE_NEAREST,  unsigned short, CVT_F16)
-PP_KERNEL(resize_pad_to_chw_rgba8,             fetch_rgba8, SAMPLE_BILINEAR, float,  CVT_F32)
-PP_KERNEL(resize_pad_to_chw_rgba8_nearest,     fetch_rgba8, SAMPLE_NEAREST,  float,  CVT_F32)
-PP_KERNEL(resize_pad_to_chw_rgba8_f16,         fetch_rgba8, SAMPLE_BILINEAR, unsigned short, CVT_F16)
-PP_KERNEL(resize_pad_to_chw_rgba8_nearest_f16, fetch_rgba8, SAMPLE_NEAREST,  unsigned short, CVT_F16)
-PP_KERNEL(resize_pad_to_chw_bgra8,             fetch_bgra8, SAMPLE_BILINEAR, float,  CVT_F32)
-PP_KERNEL(resize_pad_to_chw_bgra8_nearest,     fetch_bgra8, SAMPLE_NEAREST,  float,  CVT_F32)
-PP_KERNEL(resize_pad_to_chw_bgra8_f16,         fetch_bgra8, SAMPLE_BILINEAR, unsigned short, CVT_F16)
-PP_KERNEL(resize_pad_to_chw_bgra8_nearest_f16, fetch_bgra8, SAMPLE_NEAREST,  unsigned short, CVT_F16)
-PP_KERNEL(resize_pad_to_chw_gray8,             fetch_gray8, SAMPLE_BILINEAR, float,  CVT_F32)
-PP_KERNEL(resize_pad_to_chw_gray8_nearest,     fetch_gray8, SAMPLE_NEAREST,  float,  CVT_F32)
-PP_KERNEL(resize_pad_to_chw_gray8_f16,         fetch_gray8, SAMPLE_BILINEAR, unsigned short, CVT_F16)
-PP_KERNEL(resize_pad_to_chw_gray8_nearest_f16, fetch_gray8, SAMPLE_NEAREST,  unsigned short, CVT_F16)
-PP_KERNEL(resize_pad_to_chw_nv12,             fetch_nv12, SAMPLE_BILINEAR, float,  CVT_F32)
-PP_KERNEL(resize_pad_to_chw_nv12_nearest,     fetch_nv12, SAMPLE_NEAREST,  float,  CVT_F32)
-PP_KERNEL(resize_pad_to_chw_nv12_f16,         fetch_nv12, SAMPLE_BILINEAR, unsigned short, CVT_F16)
-PP_KERNEL(resize_pad_to_chw_nv12_nearest_f16, fetch_nv12, SAMPLE_NEAREST,  unsigned short, CVT_F16)
-PP_KERNEL(resize_pad_to_chw_yuyv,             fetch_yuyv, SAMPLE_BILINEAR, float,  CVT_F32)
-PP_KERNEL(resize_pad_to_chw_yuyv_nearest,     fetch_yuyv, SAMPLE_NEAREST,  float,  CVT_F32)
-PP_KERNEL(resize_pad_to_chw_yuyv_f16,         fetch_yuyv, SAMPLE_BILINEAR, unsigned short, CVT_F16)
-PP_KERNEL(resize_pad_to_chw_yuyv_nearest_f16, fetch_yuyv, SAMPLE_NEAREST,  unsigned short, CVT_F16)
 "#;
 
 /// GPU image-to-tensor preprocessor: resize (+ optional pad) + normalize.
@@ -452,8 +428,8 @@ impl Preprocessor {
 
     /// Build a preprocessor whose kernel **fuses color decode** for `format`
     /// into the resize — e.g. `SourceFormat::Nv12` turns a raw capture frame
-    /// into the model tensor in one launch. Only the entry for the requested
-    /// format is compiled.
+    /// into the model tensor in one launch. Only the requested
+    /// (format, sampling, dtype) kernel is instantiated and compiled.
     pub fn with_format(
         stream: Arc<CudaStream>,
         mode: ResizeMode,
@@ -478,7 +454,23 @@ impl Preprocessor {
     ) -> Result<Self, PreprocessError> {
         let ctx = stream.context();
         let entry = opts.format.entry(opts.sampling, opts.f16_output);
-        let kernel = CudaKernel::compile(ctx, KERNEL_SRC, &entry)?;
+        // Instantiate exactly ONE (format, sampling, dtype) kernel — compiling
+        // all 28 variants to load one would multiply NVRTC time ~28x on every
+        // construction.
+        let sample = match opts.sampling {
+            Sampling::Bilinear => "SAMPLE_BILINEAR",
+            Sampling::Nearest => "SAMPLE_NEAREST",
+        };
+        let (outt, cvt) = if opts.f16_output {
+            ("unsigned short", "CVT_F16")
+        } else {
+            ("float", "CVT_F32")
+        };
+        let src = format!(
+            "{KERNEL_TEMPLATE}\nPP_KERNEL({entry}, fetch_{base}, {sample}, {outt}, {cvt})\n",
+            base = opts.format.base(),
+        );
+        let kernel = CudaKernel::compile(ctx, &src, &entry)?;
         Ok(Self {
             kernel,
             stream,
@@ -547,7 +539,7 @@ impl Preprocessor {
         }
         let (src_w, src_h) = (src.width(), src.height());
         let src_slice = src.as_cudaslice().ok_or(PreprocessError::NotDeviceImage)?;
-        self.launch(src_slice, src_w, src_h, dst)
+        self.run_raw_checked(src_slice, src_w, src_h, dst)
     }
 
     /// Preprocess a raw device buffer in this preprocessor's [`SourceFormat`]
@@ -700,15 +692,7 @@ mod tests {
     const H: usize = 62;
     const OUT: usize = 64;
 
-    fn pattern(len: usize) -> Vec<u8> {
-        let mut v = Vec::with_capacity(len);
-        let mut state = 0x9e37_79b9u32;
-        while v.len() < len {
-            state = state.wrapping_mul(1664525).wrapping_add(1013904223);
-            v.push((state >> 24) as u8);
-        }
-        v
-    }
+    use crate::gpu::color_cuda::test_utils::pattern_u8 as pattern;
 
     /// Fused decode+resize must equal decode-then-resize: identical u8 taps
     /// through identical interpolation code.

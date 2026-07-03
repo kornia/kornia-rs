@@ -51,8 +51,9 @@ pub fn rgb_from_bayer(
     {
         use super::cuda_dispatch::{pair_residency, Residency};
         if let Residency::Device(exec) = pair_residency(src, dst)? {
-            super::cuda_dispatch::rgb_from_bayer_u8_cuda(src, dst, pattern, exec.stream())?;
-            return exec.finish();
+            return exec.run(|stream| {
+                super::cuda_dispatch::rgb_from_bayer_u8_cuda(src, dst, pattern, stream)
+            });
         }
     }
     kernels::rgb_from_bayer_dispatch(

@@ -20,26 +20,16 @@
 //! 2 bytes/px; planar 4:2:0 is the full Y plane followed by the chroma
 //! plane(s); RGB is 3 bytes/px.
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
-use cudarc::driver::{CudaSlice, CudaStream, LaunchConfig};
+use cudarc::driver::{CudaSlice, CudaStream};
 
 pub use crate::color::yuv::kernels::{Packed422, Planar420};
 pub use crate::color::YuvToRgbMode;
 
 use super::{check_len, get_kernel, get_kernel_suite, CudaColorError, KernelCell, KernelSuiteCell};
 
-// 32×8 blocks: a warp spans one output row segment (coalesced RGB writes).
-const BLOCK_W: u32 = 32;
-const BLOCK_H: u32 = 8;
-
-fn config_2d(width: u32, height: u32) -> LaunchConfig {
-    LaunchConfig {
-        block_dim: (BLOCK_W, BLOCK_H, 1),
-        grid_dim: (width.div_ceil(BLOCK_W), height.div_ceil(BLOCK_H), 1),
-        shared_mem_bytes: 0,
-    }
-}
+use super::config_2d;
 
 // Q20 BT.601-limited decode helpers — constants match color/yuv/kernels.rs:620-626.
 static DECODE_COMMON: &str = r#"
@@ -283,19 +273,23 @@ extern "C" __global__ void nv12_from_rgb_u8(
 "#;
 const ENCODE_FNS: &[&str] = &["yuyv_from_rgb_u8", "nv12_from_rgb_u8"];
 
+// Joined once — get_kernel only reads the source on first compile, so a
+// per-call format! would allocate ~2 KB per frame for nothing.
+static PACKED422_SRC: LazyLock<String> =
+    LazyLock::new(|| format!("{DECODE_COMMON}\n{PACKED422_SRC_TAIL}"));
+static PLANAR420_SRC: LazyLock<String> =
+    LazyLock::new(|| format!("{DECODE_COMMON}\n{PLANAR420_SRC_TAIL}"));
+
 static PACKED422: KernelCell = KernelCell::new();
 static PLANAR420: KernelCell = KernelCell::new();
 static YUYV_MODES: KernelSuiteCell = KernelSuiteCell::new();
 static ENCODE: KernelSuiteCell = KernelSuiteCell::new();
 
-/// Byte offsets `(y0, u, y1, v)` within a 4-byte packed group — mirrors
-/// `Packed422::offsets`.
+/// Byte offsets `(y0, u, y1, v)` within a 4-byte packed group — delegates to
+/// the CPU path's format-defining table so the two can never drift.
 fn packed_offsets(fmt: Packed422) -> (u32, u32, u32, u32) {
-    match fmt {
-        Packed422::Yuyv => (0, 1, 2, 3),
-        Packed422::Uyvy => (1, 0, 3, 2),
-        Packed422::Yvyu => (0, 3, 2, 1),
-    }
+    let (y0, u, y1, v) = fmt.offsets();
+    (y0 as u32, u as u32, y1 as u32, v as u32)
 }
 
 /// Decode a packed 4:2:2 device buffer (2 bytes/px) to RGB (3 bytes/px),
@@ -312,8 +306,7 @@ pub fn launch_rgb_from_packed422_u8(
     let npixels = width * height;
     check_len("src", src.len(), npixels * 2)?;
     check_len("dst", dst.len(), npixels * 3)?;
-    let src_full = format!("{DECODE_COMMON}\n{PACKED422_SRC_TAIL}");
-    let kernel = get_kernel(&PACKED422, stream, &src_full, "rgb_from_packed422_u8")?;
+    let kernel = get_kernel(&PACKED422, stream, &PACKED422_SRC, "rgb_from_packed422_u8")?;
     let ngroups = (npixels / 2) as u32;
     let (o_y0, o_u, o_y1, o_v) = packed_offsets(fmt);
     kernel
@@ -349,8 +342,7 @@ pub fn launch_rgb_from_planar420_u8(
     check_len("src", src.len(), y_len + 2 * c_len)?;
     check_len("dst", dst.len(), y_len * 3)?;
 
-    let src_full = format!("{DECODE_COMMON}\n{PLANAR420_SRC_TAIL}");
-    let kernel = get_kernel(&PLANAR420, stream, &src_full, "rgb_from_planar420_u8")?;
+    let kernel = get_kernel(&PLANAR420, stream, &PLANAR420_SRC, "rgb_from_planar420_u8")?;
 
     let y_plane = src.slice(0..y_len);
     // (u_plane, v_plane, chroma index step) per format — mirrors chroma_at().
@@ -488,6 +480,9 @@ pub enum VideoFormat {
 
 impl VideoFormat {
     /// Required buffer length in bytes for a `w × h` frame.
+    /// (Kept consistent with `preprocess::SourceFormat::buffer_len` for the
+    /// overlapping NV12/YUYV layouts — the enums live on different feature
+    /// gates, so they cannot share code.)
     pub fn buffer_len(self, w: usize, h: usize) -> usize {
         match self {
             VideoFormat::Packed422(_) => w * h * 2,
@@ -605,26 +600,27 @@ impl DeviceVideoFrame {
             .0
             .as_cudaslice_mut()
             .ok_or(ImageError::UnsupportedDevice)?;
-        let res = match self.format {
-            VideoFormat::Packed422(fmt) => launch_rgb_from_packed422_u8(
-                exec.stream(),
-                src_slice,
-                dst_slice,
-                self.width,
-                self.height,
-                fmt,
-            ),
-            VideoFormat::Planar420(fmt) => launch_rgb_from_planar420_u8(
-                exec.stream(),
-                src_slice,
-                dst_slice,
-                self.width,
-                self.height,
-                fmt,
-            ),
-        };
-        res.map_err(|e| ImageError::Cuda(e.to_string()))?;
-        exec.finish()
+        exec.run(|stream| {
+            match self.format {
+                VideoFormat::Packed422(fmt) => launch_rgb_from_packed422_u8(
+                    stream,
+                    src_slice,
+                    dst_slice,
+                    self.width,
+                    self.height,
+                    fmt,
+                ),
+                VideoFormat::Planar420(fmt) => launch_rgb_from_planar420_u8(
+                    stream,
+                    src_slice,
+                    dst_slice,
+                    self.width,
+                    self.height,
+                    fmt,
+                ),
+            }
+            .map_err(ImageError::from)
+        })
     }
 }
 

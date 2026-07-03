@@ -81,6 +81,26 @@ fn time_each<F: FnMut()>(iters: usize, mut f: F) -> Vec<f64> {
     out
 }
 
+/// Single source of truth for the output row — the JSON schema must stay
+/// stable for report_color_bench.py.
+fn print_row(op: &str, w: usize, h: usize, variant: &str, s: &BenchStats, json: bool) {
+    if json {
+        println!(
+            "{{\"op\":\"{op}\",\"width\":{w},\"height\":{h},\"variant\":\"{variant}\",\"min_ms\":{:.6},\"p50_ms\":{:.6},\"p95_ms\":{:.6},\"gbps\":{:.3}}}",
+            s.min_ms, s.p50_ms, s.p95_ms, s.gbps
+        );
+    } else {
+        println!(
+            "{op:>26} {:>10} {variant:>20} min {:>9.4} ms  p50 {:>9.4} ms  p95 {:>9.4} ms  {:>7.1} GB/s",
+            format!("{w}x{h}"),
+            s.min_ms,
+            s.p50_ms,
+            s.p95_ms,
+            s.gbps
+        );
+    }
+}
+
 /// One benchmarked conversion: closures own their buffers.
 struct OpBench<'a> {
     name: &'static str,
@@ -124,23 +144,7 @@ fn run_op(op: &mut OpBench, stream: &Arc<CudaStream>, width: usize, height: usiz
         ("kornia-cuda-kernel", &kernel),
         ("kornia-cuda-e2e", &e2e),
     ] {
-        if json {
-            println!(
-                "{{\"op\":\"{}\",\"width\":{},\"height\":{},\"variant\":\"{}\",\"min_ms\":{:.6},\"p50_ms\":{:.6},\"p95_ms\":{:.6},\"gbps\":{:.3}}}",
-                op.name, width, height, variant, s.min_ms, s.p50_ms, s.p95_ms, s.gbps
-            );
-        } else {
-            println!(
-                "{:>26} {:>10} {:>20} min {:>9.4} ms  p50 {:>9.4} ms  p95 {:>9.4} ms  {:>7.1} GB/s",
-                op.name,
-                format!("{width}x{height}"),
-                variant,
-                s.min_ms,
-                s.p50_ms,
-                s.p95_ms,
-                s.gbps
-            );
-        }
+        print_row(op.name, width, height, variant, s, json);
     }
 }
 
@@ -220,23 +224,7 @@ fn run_pinned_e2e_u8(
     };
     iter(); // warm
     let s = stats_from(time_each(E2E_ITERS, &mut iter), npixels * (cin + cout));
-    if json {
-        println!(
-            "{{\"op\":\"{}\",\"width\":{},\"height\":{},\"variant\":\"kornia-cuda-e2e-pinned\",\"min_ms\":{:.6},\"p50_ms\":{:.6},\"p95_ms\":{:.6},\"gbps\":{:.3}}}",
-            name, width, height, s.min_ms, s.p50_ms, s.p95_ms, s.gbps
-        );
-    } else {
-        println!(
-            "{:>26} {:>10} {:>20} min {:>9.4} ms  p50 {:>9.4} ms  p95 {:>9.4} ms  {:>7.1} GB/s",
-            name,
-            format!("{width}x{height}"),
-            "cuda-e2e-pinned",
-            s.min_ms,
-            s.p50_ms,
-            s.p95_ms,
-            s.gbps
-        );
-    }
+    print_row(name, width, height, "kornia-cuda-e2e-pinned", &s, json);
 }
 
 /// Fused color+resize+normalize (`Preprocessor` with a `SourceFormat`) vs the
@@ -340,22 +328,7 @@ fn run_fused_preprocess(stream: &Arc<CudaStream>, width: usize, height: usize, j
         let s_chained = stats_from(chained_samples, bytes);
 
         for (variant, s) in [("fused", &s_fused), ("chained", &s_chained)] {
-            if json {
-                println!(
-                    "{{\"op\":\"{}\",\"width\":{},\"height\":{},\"variant\":\"{}\",\"min_ms\":{:.6},\"p50_ms\":{:.6},\"p95_ms\":{:.6},\"gbps\":{:.3}}}",
-                    name, width, height, variant, s.min_ms, s.p50_ms, s.p95_ms, s.gbps
-                );
-            } else {
-                println!(
-                    "{:>26} {:>10} {:>20} min {:>9.4} ms  p50 {:>9.4} ms  p95 {:>9.4} ms",
-                    name,
-                    format!("{width}x{height}"),
-                    variant,
-                    s.min_ms,
-                    s.p50_ms,
-                    s.p95_ms
-                );
-            }
+            print_row(name, width, height, variant, s, json);
         }
     }
 }

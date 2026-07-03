@@ -31,8 +31,8 @@ pub fn sepia_from_rgb_f32(src: &Image<f32, 3>, dst: &mut Image<f32, 3>) -> Resul
     {
         use super::cuda_dispatch::{pair_residency, Residency};
         if let Residency::Device(exec) = pair_residency(src, dst)? {
-            super::cuda_dispatch::sepia_from_rgb_f32_cuda(src, dst, exec.stream())?;
-            return exec.finish();
+            return exec
+                .run(|stream| super::cuda_dispatch::sepia_from_rgb_f32_cuda(src, dst, stream));
         }
     }
     matrix3_affine_f32(
@@ -55,8 +55,8 @@ pub fn sepia_from_rgb_u8(src: &Image<u8, 3>, dst: &mut Image<u8, 3>) -> Result<(
     {
         use super::cuda_dispatch::{pair_residency, Residency};
         if let Residency::Device(exec) = pair_residency(src, dst)? {
-            super::cuda_dispatch::sepia_from_rgb_u8_cuda(src, dst, exec.stream())?;
-            return exec.finish();
+            return exec
+                .run(|stream| super::cuda_dispatch::sepia_from_rgb_u8_cuda(src, dst, stream));
         }
     }
     let n = src.rows() * src.cols();
@@ -89,14 +89,8 @@ const Q: [u16; 9] = [
     70, 137, 34, // B': .272,.534,.131
 ];
 
-/// Scalar oracle re-export for the CUDA kernel tests.
-#[cfg(all(test, feature = "gpu-cuda"))]
-pub(crate) fn sepia_u8_scalar_oracle(src: &[u8], dst: &mut [u8], npixels: usize) {
-    sepia_u8_scalar(src, dst, npixels)
-}
-
 /// Scalar oracle: Q8 fixed-point MAC, rounded, saturated. Matches NEON exactly.
-fn sepia_u8_scalar(src: &[u8], dst: &mut [u8], npixels: usize) {
+pub(crate) fn sepia_u8_scalar(src: &[u8], dst: &mut [u8], npixels: usize) {
     for i in 0..npixels {
         let si = i * 3;
         let (r, g, b) = (src[si] as u32, src[si + 1] as u32, src[si + 2] as u32);

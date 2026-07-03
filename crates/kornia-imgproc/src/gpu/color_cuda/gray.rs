@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use cudarc::driver::{CudaSlice, CudaStream};
 
-use super::{check_len, get_kernel, CudaColorError, KernelCell};
+use super::{get_kernel, launch_map, CudaColorError, KernelCell, PxPerThread};
 
 // Vectorized: each thread handles 4 pixels = 12 src bytes (three 32-bit word
 // loads, always 4-byte aligned since 12 ≡ 0 mod 4 and cudarc allocations are
@@ -129,30 +129,20 @@ static RGB_FROM_GRAY_F32: KernelCell = KernelCell::new();
 
 /// Launch RGB8 → Gray8: `gray = (77·R + 150·G + 29·B) >> 8` (bit-exact vs CPU).
 ///
-/// `src` holds `npixels × 3` u8, `dst` at least `npixels` u8.
+/// Word-vectorized 4 px/thread (see kernel source).
 pub fn launch_gray_from_rgb_u8(
     stream: &Arc<CudaStream>,
     src: &CudaSlice<u8>,
     dst: &mut CudaSlice<u8>,
     npixels: usize,
 ) -> Result<(), CudaColorError> {
-    check_len("src", src.len(), npixels * 3)?;
-    check_len("dst", dst.len(), npixels)?;
     let kernel = get_kernel(
         &GRAY_FROM_RGB_U8,
         stream,
         GRAY_FROM_RGB_U8_SRC,
         "gray_from_rgb_u8",
     )?;
-    let n = npixels as u32;
-    // One thread per 4-pixel quad (see kernel source).
-    kernel
-        .launch_builder(stream)
-        .arg(src)
-        .arg(dst)
-        .arg(&n)
-        .launch_1d(n.div_ceil(4))?;
-    Ok(())
+    launch_map(kernel, stream, src, dst, npixels, 3, 1, PxPerThread::Four)
 }
 
 /// Launch RGB f32 → Gray f32 with BT.601 weights (0.299, 0.587, 0.114).
@@ -162,22 +152,13 @@ pub fn launch_gray_from_rgb_f32(
     dst: &mut CudaSlice<f32>,
     npixels: usize,
 ) -> Result<(), CudaColorError> {
-    check_len("src", src.len(), npixels * 3)?;
-    check_len("dst", dst.len(), npixels)?;
     let kernel = get_kernel(
         &GRAY_FROM_RGB_F32,
         stream,
         GRAY_FROM_RGB_F32_SRC,
         "gray_from_rgb_f32",
     )?;
-    let n = npixels as u32;
-    kernel
-        .launch_builder(stream)
-        .arg(src)
-        .arg(dst)
-        .arg(&n)
-        .launch_1d(n)?;
-    Ok(())
+    launch_map(kernel, stream, src, dst, npixels, 3, 1, PxPerThread::One)
 }
 
 /// Launch Gray8 → RGB8 broadcast (replicate the channel).
@@ -187,22 +168,13 @@ pub fn launch_rgb_from_gray_u8(
     dst: &mut CudaSlice<u8>,
     npixels: usize,
 ) -> Result<(), CudaColorError> {
-    check_len("src", src.len(), npixels)?;
-    check_len("dst", dst.len(), npixels * 3)?;
     let kernel = get_kernel(
         &RGB_FROM_GRAY_U8,
         stream,
         RGB_FROM_GRAY_U8_SRC,
         "rgb_from_gray_u8",
     )?;
-    let n = npixels as u32;
-    kernel
-        .launch_builder(stream)
-        .arg(src)
-        .arg(dst)
-        .arg(&n)
-        .launch_1d(n)?;
-    Ok(())
+    launch_map(kernel, stream, src, dst, npixels, 1, 3, PxPerThread::One)
 }
 
 /// Launch Gray f32 → RGB f32 broadcast (replicate the channel).
@@ -212,22 +184,13 @@ pub fn launch_rgb_from_gray_f32(
     dst: &mut CudaSlice<f32>,
     npixels: usize,
 ) -> Result<(), CudaColorError> {
-    check_len("src", src.len(), npixels)?;
-    check_len("dst", dst.len(), npixels * 3)?;
     let kernel = get_kernel(
         &RGB_FROM_GRAY_F32,
         stream,
         RGB_FROM_GRAY_F32_SRC,
         "rgb_from_gray_f32",
     )?;
-    let n = npixels as u32;
-    kernel
-        .launch_builder(stream)
-        .arg(src)
-        .arg(dst)
-        .arg(&n)
-        .launch_1d(n)?;
-    Ok(())
+    launch_map(kernel, stream, src, dst, npixels, 1, 3, PxPerThread::One)
 }
 
 /// Launch RGB f64 → Gray f64 (BT.601 weights, matches the CPU f64 oracle).
@@ -237,17 +200,8 @@ pub fn launch_gray_from_rgb_f64(
     dst: &mut CudaSlice<f64>,
     npixels: usize,
 ) -> Result<(), CudaColorError> {
-    check_len("src", src.len(), npixels * 3)?;
-    check_len("dst", dst.len(), npixels)?;
     let kernel = super::get_kernel_suite(&GRAY_F64, stream, GRAY_F64_SRC, GRAY_F64_FNS, 0)?;
-    let n = npixels as u32;
-    kernel
-        .launch_builder(stream)
-        .arg(src)
-        .arg(dst)
-        .arg(&n)
-        .launch_1d(n)?;
-    Ok(())
+    launch_map(kernel, stream, src, dst, npixels, 3, 1, PxPerThread::One)
 }
 
 /// Launch Gray f64 → RGB f64 broadcast.
@@ -257,17 +211,8 @@ pub fn launch_rgb_from_gray_f64(
     dst: &mut CudaSlice<f64>,
     npixels: usize,
 ) -> Result<(), CudaColorError> {
-    check_len("src", src.len(), npixels)?;
-    check_len("dst", dst.len(), npixels * 3)?;
     let kernel = super::get_kernel_suite(&GRAY_F64, stream, GRAY_F64_SRC, GRAY_F64_FNS, 1)?;
-    let n = npixels as u32;
-    kernel
-        .launch_builder(stream)
-        .arg(src)
-        .arg(dst)
-        .arg(&n)
-        .launch_1d(n)?;
-    Ok(())
+    launch_map(kernel, stream, src, dst, npixels, 1, 3, PxPerThread::One)
 }
 
 #[cfg(all(test, feature = "gpu-cuda"))]
@@ -310,11 +255,7 @@ mod tests {
         let gpu: Vec<f32> = stream.clone_dtoh(&d_dst).unwrap();
         stream.synchronize().unwrap();
 
-        let max_diff = gpu
-            .iter()
-            .zip(&cpu)
-            .map(|(a, b)| (a - b).abs())
-            .fold(0f32, f32::max);
+        let max_diff = crate::gpu::color_cuda::test_utils::max_abs_diff_f32(&gpu, &cpu);
         assert!(max_diff <= 1e-3, "f32 gray max diff {max_diff} > 1e-3");
     }
 

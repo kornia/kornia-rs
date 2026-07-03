@@ -662,7 +662,7 @@ pub enum Packed422 {
 impl Packed422 {
     /// Offsets `(y0, u, y1, v)` within a 4-byte group.
     #[inline]
-    fn offsets(self) -> (usize, usize, usize, usize) {
+    pub(crate) fn offsets(self) -> (usize, usize, usize, usize) {
         match self {
             Packed422::Yuyv => (0, 1, 2, 3),
             Packed422::Uyvy => (1, 0, 3, 2),

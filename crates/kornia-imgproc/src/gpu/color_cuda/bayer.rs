@@ -11,11 +11,11 @@
 
 use std::sync::Arc;
 
-use cudarc::driver::{CudaSlice, CudaStream, LaunchConfig};
+use cudarc::driver::{CudaSlice, CudaStream};
 
 pub use kornia_image::color_spaces::BayerPattern;
 
-use super::{check_len, get_kernel, CudaColorError, KernelCell};
+use super::{check_len, config_2d, get_kernel, CudaColorError, KernelCell};
 
 static BAYER_SRC: &str = r#"
 // Cell codes: 0 = R, 1 = G-on-R-row, 2 = G-on-B-row, 3 = B.
@@ -113,15 +113,19 @@ extern "C" __global__ void rgb_from_bayer_u8(
 
 static BAYER: KernelCell = KernelCell::new();
 
-/// Phase table as kernel cell codes `[row&1][col&1]` — mirrors
-/// `color/bayer/kernels.rs::phase_table` (0=R, 1=G-on-R-row, 2=G-on-B-row, 3=B).
+/// Phase table as kernel cell codes `[row&1][col&1]` — derived from the CPU
+/// path's format-defining `phase_table` so the two can never drift
+/// (0=R, 1=G-on-R-row, 2=G-on-B-row, 3=B, matching the kernel's CELL_*).
 fn cell_codes(pattern: BayerPattern) -> [i32; 4] {
-    match pattern {
-        BayerPattern::Rggb => [0, 1, 2, 3],
-        BayerPattern::Bggr => [3, 2, 1, 0],
-        BayerPattern::Grbg => [1, 0, 3, 2],
-        BayerPattern::Gbrg => [2, 3, 0, 1],
-    }
+    use crate::color::bayer::kernels::{phase_table, Cell};
+    let code = |c: Cell| match c {
+        Cell::R => 0,
+        Cell::GonRRow => 1,
+        Cell::GonBRow => 2,
+        Cell::B => 3,
+    };
+    let t = phase_table(pattern);
+    [code(t[0][0]), code(t[0][1]), code(t[1][0]), code(t[1][1])]
 }
 
 /// Demosaic a Bayer mosaic device buffer (`rows*cols` u8) to interleaved RGB
@@ -143,11 +147,7 @@ pub fn launch_rgb_from_bayer_u8(
     let [c00, c01, c10, c11] = cell_codes(pattern);
     let (rows_i, cols_i) = (rows as i32, cols as i32);
     let (qw, qh) = ((cols as u32).div_ceil(2), (rows as u32).div_ceil(2));
-    let cfg = LaunchConfig {
-        block_dim: (32, 8, 1),
-        grid_dim: (qw.div_ceil(32), qh.div_ceil(8), 1),
-        shared_mem_bytes: 0,
-    };
+    let cfg = config_2d(qw, qh);
     kernel
         .launch_builder(stream)
         .arg(src)

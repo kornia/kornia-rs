@@ -35,34 +35,11 @@ pub trait ConvertColor<Dst> {
 
 /// Macro to implement color conversions.
 ///
-/// Arms without `cuda:` are **host-only**: with the `gpu-cuda` feature they
-/// reject device-resident operands with [`ImageError::UnsupportedDevice`]
-/// (instead of panicking inside `as_slice`). Arms with `cuda:` are
-/// **residency-aware**: host pairs run the CPU path unchanged, device pairs
-/// dispatch to the named CUDA adapter in `super::cuda_dispatch`, and mixed
+/// Every arm is **residency-aware**: host pairs run the CPU path unchanged,
+/// device pairs dispatch to the named CUDA adapter in `super::cuda_dispatch`
+/// (with cross-stream event fencing handled by `DeviceExec::run`), and mixed
 /// pairs error with [`ImageError::MixedResidency`].
 macro_rules! impl_convert {
-    ($src:ty => $dst:ty, $func:path) => {
-        impl ConvertColor<$dst> for $src {
-            fn convert(&self, dst: &mut $dst) -> Result<(), ImageError> {
-                #[cfg(feature = "gpu-cuda")]
-                crate::color::cuda_dispatch::ensure_host(&self.0, &dst.0)?;
-                $func(&self.0, &mut dst.0)
-            }
-        }
-    };
-
-    // For conversions with optional parameters (like background)
-    ($src:ty => $dst:ty, $func:path, bg: $bg:expr_2021) => {
-        impl ConvertColor<$dst> for $src {
-            fn convert(&self, dst: &mut $dst) -> Result<(), ImageError> {
-                #[cfg(feature = "gpu-cuda")]
-                crate::color::cuda_dispatch::ensure_host(&self.0, &dst.0)?;
-                $func(&self.0, &mut dst.0, $bg)
-            }
-        }
-    };
-
     // Residency-aware: device operands dispatch to the CUDA adapter.
     ($src:ty => $dst:ty, $func:path, cuda: $cuda:path) => {
         impl ConvertColor<$dst> for $src {
@@ -71,8 +48,7 @@ macro_rules! impl_convert {
                 {
                     use crate::color::cuda_dispatch::{pair_residency, Residency};
                     if let Residency::Device(exec) = pair_residency(&self.0, &dst.0)? {
-                        $cuda(&self.0, &mut dst.0, exec.stream())?;
-                        return exec.finish();
+                        return exec.run(|stream| $cuda(&self.0, &mut dst.0, stream));
                     }
                 }
                 $func(&self.0, &mut dst.0)
@@ -88,8 +64,7 @@ macro_rules! impl_convert {
                 {
                     use crate::color::cuda_dispatch::{pair_residency, Residency};
                     if let Residency::Device(exec) = pair_residency(&self.0, &dst.0)? {
-                        $cuda(&self.0, &mut dst.0, exec.stream())?;
-                        return exec.finish();
+                        return exec.run(|stream| $cuda(&self.0, &mut dst.0, stream));
                     }
                 }
                 $func(&self.0, &mut dst.0, $bg)
@@ -100,21 +75,7 @@ macro_rules! impl_convert {
 
 /// Macro to implement color conversions with background support
 macro_rules! impl_convert_with_bg {
-    ($src:ty => $dst:ty, $func:path) => {
-        impl ConvertColorWithBackground<$dst> for $src {
-            fn convert_with_bg(
-                &self,
-                dst: &mut $dst,
-                bg: Option<[u8; 3]>,
-            ) -> Result<(), ImageError> {
-                #[cfg(feature = "gpu-cuda")]
-                crate::color::cuda_dispatch::ensure_host(&self.0, &dst.0)?;
-                $func(&self.0, &mut dst.0, bg)
-            }
-        }
-    };
-
-    // Residency-aware variant: the CUDA adapter also receives the background.
+    // Residency-aware: the CUDA adapter also receives the background.
     ($src:ty => $dst:ty, $func:path, cuda: $cuda:path) => {
         impl ConvertColorWithBackground<$dst> for $src {
             fn convert_with_bg(
@@ -126,8 +87,7 @@ macro_rules! impl_convert_with_bg {
                 {
                     use crate::color::cuda_dispatch::{pair_residency, Residency};
                     if let Residency::Device(exec) = pair_residency(&self.0, &dst.0)? {
-                        $cuda(&self.0, &mut dst.0, bg, exec.stream())?;
-                        return exec.finish();
+                        return exec.run(|stream| $cuda(&self.0, &mut dst.0, bg, stream));
                     }
                 }
                 $func(&self.0, &mut dst.0, bg)
