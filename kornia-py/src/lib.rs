@@ -11,6 +11,9 @@ mod color;
 mod color_space;
 mod cpu;
 mod crop;
+#[cfg(feature = "cuda")]
+#[path = "cuda.rs"]
+mod cuda_ext;
 mod depth;
 mod dlpack;
 mod enhance;
@@ -577,6 +580,9 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     ] {
         modules.set_item(name, submod)?;
     }
+
+    #[cfg(feature = "cuda")]
+    cuda_ext::register(py, m)?;
 
     Ok(())
 }
