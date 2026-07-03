@@ -188,6 +188,57 @@ impl SourceFormat {
             _ => true,
         }
     }
+
+    /// Source-geometry launch args for a tightly-packed `w × h` frame.
+    fn geom(self, w: usize, h: usize) -> SrcGeom {
+        SrcGeom {
+            w,
+            h,
+            pitch: self.pitch(w),
+            bpp: self.bpp(),
+            fmt: self.fmt_code(),
+        }
+    }
+}
+
+impl SourceFormat {
+    /// True for the interleaved RGB-order formats — the ones a typed image or
+    /// pitched surface can carry. Camera formats (Gray/NV12/YUYV) need the
+    /// raw-buffer entry points.
+    fn interleaved(self) -> bool {
+        matches!(
+            self,
+            SourceFormat::Rgb8 | SourceFormat::Bgr8 | SourceFormat::Rgba8 | SourceFormat::Bgra8
+        )
+    }
+
+    /// Parse a case-insensitive format name (`"rgb"`/`"rgb8"`, `"bgr"`,
+    /// `"rgba"`, `"bgra"`, `"gray"`, `"nv12"`, `"yuyv"`) — the single naming
+    /// authority for language bindings.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name.to_ascii_lowercase().as_str() {
+            "rgb" | "rgb8" => Self::Rgb8,
+            "bgr" | "bgr8" => Self::Bgr8,
+            "rgba" | "rgba8" => Self::Rgba8,
+            "bgra" | "bgra8" => Self::Bgra8,
+            "gray" | "gray8" => Self::Gray8,
+            "nv12" => Self::Nv12,
+            "yuyv" => Self::Yuyv,
+            _ => return None,
+        })
+    }
+}
+
+/// Source-buffer geometry as the kernel sees it: dimensions, primary-plane
+/// byte pitch, interleaved bytes/px, and the `fmt` decode selector.
+#[cfg(feature = "cudarc")]
+#[derive(Clone, Copy)]
+struct SrcGeom {
+    w: usize,
+    h: usize,
+    pitch: usize,
+    bpp: usize,
+    fmt: i32,
 }
 
 /// Errors from preprocessing.
@@ -337,6 +388,27 @@ struct CudaBackend {
     kernel: CudaKernel,
     kernel_f16: CudaKernel,
     stream: Arc<CudaStream>,
+}
+
+/// Output element types the CUDA path can write; each selects its
+/// pre-compiled kernel variant (`f32` or round-to-nearest-even `f16`).
+#[cfg(feature = "cudarc")]
+trait OutElem: cudarc::driver::DeviceRepr + cudarc::driver::ValidAsZeroBits + 'static {
+    fn kernel(cuda: &CudaBackend) -> &CudaKernel;
+}
+
+#[cfg(feature = "cudarc")]
+impl OutElem for f32 {
+    fn kernel(cuda: &CudaBackend) -> &CudaKernel {
+        &cuda.kernel
+    }
+}
+
+#[cfg(feature = "cudarc")]
+impl OutElem for half::f16 {
+    fn kernel(cuda: &CudaBackend) -> &CudaKernel {
+        &cuda.kernel_f16
+    }
 }
 
 // 1-D grid over the `dst_w * dst_h` output pixels. Reads interleaved `src_bpp`-byte
@@ -723,9 +795,16 @@ fn validate_channels<const C: usize>() -> Result<(), PreprocessError> {
     Ok(())
 }
 
-fn validate_dst_shape(shape: [usize; 4]) -> Result<(), PreprocessError> {
-    if shape[0] != 1 || shape[1] != 3 {
+fn validate_dst_shape(shape: [usize; 4], expected_n: usize) -> Result<(), PreprocessError> {
+    if shape[1] != 3 || (expected_n == 1 && shape[0] != 1) {
         return Err(PreprocessError::BadOutputShape(shape));
+    }
+    #[cfg(feature = "cudarc")]
+    if shape[0] != expected_n {
+        return Err(PreprocessError::BatchMismatch {
+            dst_n: shape[0],
+            frames: expected_n,
+        });
     }
     Ok(())
 }
@@ -806,14 +885,14 @@ impl Preprocessor {
         validate_channels::<C>()?;
         // Both paths write three channel planes of dst_h*dst_w — any other
         // leading dims would run past the buffer (an OOB device write on CUDA).
-        validate_dst_shape(dst.shape)?;
+        validate_dst_shape(dst.shape, 1)?;
         let (dst_h, dst_w) = (dst.shape[2], dst.shape[3]);
         let a = Affine::new(self.mode, src.width(), src.height(), dst_w, dst_h);
 
         self.validate_typed_format::<C>()?;
         #[cfg(feature = "cudarc")]
         if let Some(cuda) = &self.cuda {
-            return self.run_cuda::<C>(cuda, src, dst, &a);
+            return self.run_typed_cuda::<f32, C>(cuda, src, dst, &a);
         }
         self.run_cpu::<C>(src, dst, &a)
     }
@@ -826,9 +905,8 @@ impl Preprocessor {
     /// [`run_raw`](Self::run_raw).
     fn validate_typed_format<const C: usize>(&self) -> Result<(), PreprocessError> {
         let ok = match self.source_format {
-            SourceFormat::Rgb8 | SourceFormat::Bgr8 => true,
             SourceFormat::Rgba8 | SourceFormat::Bgra8 => C == 4,
-            _ => false,
+            f => f.interleaved(),
         };
         if ok {
             Ok(())
@@ -971,11 +1049,11 @@ impl Preprocessor {
     }
 
     #[cfg(feature = "cudarc")]
-    fn run_cuda<const C: usize>(
+    fn run_typed_cuda<T: OutElem, const C: usize>(
         &self,
         cuda: &CudaBackend,
         src: &Image<u8, C>,
-        dst: &mut Tensor<f32, 4>,
+        dst: &mut Tensor<T, 4>,
         a: &Affine,
     ) -> Result<(), PreprocessError> {
         let (src_w, src_h) = (src.width(), src.height());
@@ -983,18 +1061,14 @@ impl Preprocessor {
             .0
             .as_cudaslice()
             .ok_or(PreprocessError::NotDeviceImage)?;
-        self.launch_cuda(
-            cuda,
-            &cuda.kernel,
-            src_slice,
-            src_w,
-            src_h,
-            src_w * C,
-            C,
-            self.source_format.fmt_code(),
-            dst,
-            a,
-        )
+        let g = SrcGeom {
+            w: src_w,
+            h: src_h,
+            pitch: src_w * C,
+            bpp: C,
+            fmt: self.source_format.fmt_code(),
+        };
+        self.launch_cuda(cuda, src_slice, g, dst, a)
     }
 
     #[cfg(feature = "cudarc")]
@@ -1008,27 +1082,17 @@ impl Preprocessor {
         dst: &mut Tensor<half::f16, 4>,
     ) -> Result<(), PreprocessError> {
         validate_channels::<C>()?;
-        validate_dst_shape(dst.shape)?;
-        let cuda = self.cuda.as_ref().ok_or(PreprocessError::NotDeviceImage)?;
-        let (src_w, src_h) = (src.width(), src.height());
-        let a = Affine::new(self.mode, src_w, src_h, dst.shape[3], dst.shape[2]);
-        let src_slice = src
-            .0
-            .as_cudaslice()
-            .ok_or(PreprocessError::NotDeviceImage)?;
+        validate_dst_shape(dst.shape, 1)?;
         self.validate_typed_format::<C>()?;
-        self.launch_cuda(
-            cuda,
-            &cuda.kernel_f16,
-            src_slice,
-            src_w,
-            src_h,
-            src_w * C,
-            C,
-            self.source_format.fmt_code(),
-            dst,
-            &a,
-        )
+        let cuda = self.cuda.as_ref().ok_or(PreprocessError::NotDeviceImage)?;
+        let a = Affine::new(
+            self.mode,
+            src.width(),
+            src.height(),
+            dst.shape[3],
+            dst.shape[2],
+        );
+        self.run_typed_cuda::<half::f16, C>(cuda, src, dst, &a)
     }
 
     #[cfg(feature = "cudarc")]
@@ -1043,22 +1107,7 @@ impl Preprocessor {
         src: &PitchedSurface<'_>,
         dst: &mut Tensor<f32, 4>,
     ) -> Result<(), PreprocessError> {
-        src.validate()?;
-        validate_dst_shape(dst.shape)?;
-        let cuda = self.cuda.as_ref().ok_or(PreprocessError::NotDeviceImage)?;
-        let a = Affine::new(self.mode, src.width, src.height, dst.shape[3], dst.shape[2]);
-        self.launch_cuda(
-            cuda,
-            &cuda.kernel,
-            src.data,
-            src.width,
-            src.height,
-            src.row_pitch,
-            src.channels,
-            self.surface_fmt_code()?,
-            dst,
-            &a,
-        )
+        self.run_surface_impl(src, dst)
     }
 
     #[cfg(feature = "cudarc")]
@@ -1070,22 +1119,27 @@ impl Preprocessor {
         src: &PitchedSurface<'_>,
         dst: &mut Tensor<half::f16, 4>,
     ) -> Result<(), PreprocessError> {
+        self.run_surface_impl(src, dst)
+    }
+
+    #[cfg(feature = "cudarc")]
+    fn run_surface_impl<T: OutElem>(
+        &self,
+        src: &PitchedSurface<'_>,
+        dst: &mut Tensor<T, 4>,
+    ) -> Result<(), PreprocessError> {
         src.validate()?;
-        validate_dst_shape(dst.shape)?;
+        validate_dst_shape(dst.shape, 1)?;
         let cuda = self.cuda.as_ref().ok_or(PreprocessError::NotDeviceImage)?;
         let a = Affine::new(self.mode, src.width, src.height, dst.shape[3], dst.shape[2]);
-        self.launch_cuda(
-            cuda,
-            &cuda.kernel_f16,
-            src.data,
-            src.width,
-            src.height,
-            src.row_pitch,
-            src.channels,
-            self.surface_fmt_code()?,
-            dst,
-            &a,
-        )
+        let g = SrcGeom {
+            w: src.width,
+            h: src.height,
+            pitch: src.row_pitch,
+            bpp: src.channels,
+            fmt: self.surface_fmt_code()?,
+        };
+        self.launch_cuda(cuda, src.data, g, dst, &a)
     }
 
     /// Pitched surfaces are interleaved by construction (pitch covers
@@ -1096,11 +1150,10 @@ impl Preprocessor {
     /// from the surface's own `channels`.
     #[cfg(feature = "cudarc")]
     fn surface_fmt_code(&self) -> Result<i32, PreprocessError> {
-        match self.source_format {
-            SourceFormat::Rgb8 | SourceFormat::Rgba8 | SourceFormat::Bgr8 | SourceFormat::Bgra8 => {
-                Ok(self.source_format.fmt_code())
-            }
-            f => Err(PreprocessError::FormatNeedsRawBuffer(f)),
+        if self.source_format.interleaved() {
+            Ok(self.source_format.fmt_code())
+        } else {
+            Err(PreprocessError::FormatNeedsRawBuffer(self.source_format))
         }
     }
 
@@ -1128,23 +1181,7 @@ impl Preprocessor {
         src_h: usize,
         dst: &mut Tensor<f32, 4>,
     ) -> Result<(), PreprocessError> {
-        validate_dst_shape(dst.shape)?;
-        let cuda = self.cuda.as_ref().ok_or(PreprocessError::NotDeviceImage)?;
-        self.validate_raw(src.len(), src_w, src_h)?;
-        let a = Affine::new(self.mode, src_w, src_h, dst.shape[3], dst.shape[2]);
-        let f = self.source_format;
-        self.launch_cuda(
-            cuda,
-            &cuda.kernel,
-            src,
-            src_w,
-            src_h,
-            f.pitch(src_w),
-            f.bpp(),
-            f.fmt_code(),
-            dst,
-            &a,
-        )
+        self.run_raw_impl(src, src_w, src_h, dst)
     }
 
     /// [`run_raw`](Self::run_raw) writing a half-precision tensor — raw camera
@@ -1157,23 +1194,23 @@ impl Preprocessor {
         src_h: usize,
         dst: &mut Tensor<half::f16, 4>,
     ) -> Result<(), PreprocessError> {
-        validate_dst_shape(dst.shape)?;
+        self.run_raw_impl(src, src_w, src_h, dst)
+    }
+
+    #[cfg(feature = "cudarc")]
+    fn run_raw_impl<T: OutElem>(
+        &self,
+        src: &cudarc::driver::CudaSlice<u8>,
+        src_w: usize,
+        src_h: usize,
+        dst: &mut Tensor<T, 4>,
+    ) -> Result<(), PreprocessError> {
+        validate_dst_shape(dst.shape, 1)?;
         let cuda = self.cuda.as_ref().ok_or(PreprocessError::NotDeviceImage)?;
         self.validate_raw(src.len(), src_w, src_h)?;
         let a = Affine::new(self.mode, src_w, src_h, dst.shape[3], dst.shape[2]);
-        let f = self.source_format;
-        self.launch_cuda(
-            cuda,
-            &cuda.kernel_f16,
-            src,
-            src_w,
-            src_h,
-            f.pitch(src_w),
-            f.bpp(),
-            f.fmt_code(),
-            dst,
-            &a,
-        )
+        let g = self.source_format.geom(src_w, src_h);
+        self.launch_cuda(cuda, src, g, dst, &a)
     }
 
     /// Preprocess `N` same-sized raw frames into a **batched** `[N, 3, H, W]`
@@ -1194,19 +1231,35 @@ impl Preprocessor {
         src_h: usize,
         dst: &mut Tensor<f32, 4>,
     ) -> Result<(), PreprocessError> {
+        self.run_raw_batch_impl(frames, src_w, src_h, dst)
+    }
+
+    /// [`run_raw_batch`](Self::run_raw_batch) writing a half-precision tensor —
+    /// batched raw frames straight into an fp16 engine input.
+    #[cfg(feature = "cudarc")]
+    pub fn run_raw_batch_f16(
+        &self,
+        frames: &[&cudarc::driver::CudaSlice<u8>],
+        src_w: usize,
+        src_h: usize,
+        dst: &mut Tensor<half::f16, 4>,
+    ) -> Result<(), PreprocessError> {
+        self.run_raw_batch_impl(frames, src_w, src_h, dst)
+    }
+
+    #[cfg(feature = "cudarc")]
+    fn run_raw_batch_impl<T: OutElem>(
+        &self,
+        frames: &[&cudarc::driver::CudaSlice<u8>],
+        src_w: usize,
+        src_h: usize,
+        dst: &mut Tensor<T, 4>,
+    ) -> Result<(), PreprocessError> {
         let cuda = self.cuda.as_ref().ok_or(PreprocessError::NotDeviceImage)?;
-        if dst.shape[1] != 3 {
-            return Err(PreprocessError::BadOutputShape(dst.shape));
-        }
-        if dst.shape[0] != frames.len() {
-            return Err(PreprocessError::BatchMismatch {
-                dst_n: dst.shape[0],
-                frames: frames.len(),
-            });
-        }
+        validate_dst_shape(dst.shape, frames.len())?;
         let (dst_h, dst_w) = (dst.shape[2], dst.shape[3]);
         let a = Affine::new(self.mode, src_w, src_h, dst_w, dst_h);
-        let f = self.source_format;
+        let g = self.source_format.geom(src_w, src_h);
         for src in frames {
             self.validate_raw(src.len(), src_w, src_h)?;
         }
@@ -1216,20 +1269,7 @@ impl Preprocessor {
         let plane = 3 * dst_h * dst_w;
         for (i, src) in frames.iter().enumerate() {
             let mut view = dst_slice.slice_mut(i * plane..(i + 1) * plane);
-            self.launch_view(
-                cuda,
-                &cuda.kernel,
-                src,
-                src_w,
-                src_h,
-                f.pitch(src_w),
-                f.bpp(),
-                f.fmt_code(),
-                &mut view,
-                dst_w,
-                dst_h,
-                &a,
-            )?;
+            self.launch_view(cuda, src, g, &mut view, dst_w, dst_h, &a)?;
         }
         Ok(())
     }
@@ -1253,17 +1293,11 @@ impl Preprocessor {
     }
 
     #[cfg(feature = "cudarc")]
-    #[allow(clippy::too_many_arguments)]
-    fn launch_cuda<T: cudarc::driver::DeviceRepr + cudarc::driver::ValidAsZeroBits + 'static>(
+    fn launch_cuda<T: OutElem>(
         &self,
         cuda: &CudaBackend,
-        kernel: &CudaKernel,
         src_slice: &cudarc::driver::CudaSlice<u8>,
-        src_w: usize,
-        src_h: usize,
-        src_pitch: usize,
-        src_bpp: usize,
-        fmt: i32,
+        g: SrcGeom,
         dst: &mut Tensor<T, 4>,
         a: &Affine,
     ) -> Result<(), PreprocessError> {
@@ -1272,20 +1306,7 @@ impl Preprocessor {
             .as_cudaslice_mut()
             .ok_or(PreprocessError::NotDeviceTensor)?;
         let mut dst_view = dst_slice.slice_mut(..);
-        self.launch_view(
-            cuda,
-            kernel,
-            src_slice,
-            src_w,
-            src_h,
-            src_pitch,
-            src_bpp,
-            fmt,
-            &mut dst_view,
-            dst_w,
-            dst_h,
-            a,
-        )
+        self.launch_view(cuda, src_slice, g, &mut dst_view, dst_w, dst_h, a)
     }
 
     /// The single launch seam: every entry point ends here. `dst_view` is one
@@ -1293,16 +1314,11 @@ impl Preprocessor {
     /// `[N, 3, H, W]` tensor.
     #[cfg(feature = "cudarc")]
     #[allow(clippy::too_many_arguments)]
-    fn launch_view<T: cudarc::driver::DeviceRepr + cudarc::driver::ValidAsZeroBits + 'static>(
+    fn launch_view<T: OutElem>(
         &self,
         cuda: &CudaBackend,
-        kernel: &CudaKernel,
         src_slice: &cudarc::driver::CudaSlice<u8>,
-        src_w: usize,
-        src_h: usize,
-        src_pitch: usize,
-        src_bpp: usize,
-        fmt: i32,
+        g: SrcGeom,
         dst_view: &mut cudarc::driver::CudaViewMut<'_, T>,
         dst_w: usize,
         dst_h: usize,
@@ -1311,18 +1327,18 @@ impl Preprocessor {
         // The kernel indexes pixels as `int`; keep every dim + the pixel count
         // within i32 so the `as i32` / `as u32` launch args never truncate.
         let lim = i32::MAX as usize;
-        if src_w > lim || src_h > lim || src_pitch > lim || dst_w.saturating_mul(dst_h) > lim {
+        if g.w > lim || g.h > lim || g.pitch > lim || dst_w.saturating_mul(dst_h) > lim {
             return Err(PreprocessError::DimensionsTooLarge);
         }
 
-        let (sw, sh, sp, bpp) = (src_w as i32, src_h as i32, src_pitch as i32, src_bpp as i32);
+        let (sw, sh, sp, bpp) = (g.w as i32, g.h as i32, g.pitch as i32, g.bpp as i32);
+        let fmt = g.fmt;
         let (dw, dh) = (dst_w as i32, dst_h as i32);
         let total = (dst_w * dst_h) as u32;
         let ([m0, m1, m2], [is0, is1, is2]) = (self.mean, self.inv_std);
         let pv = self.pad_value;
 
-        let _ = cuda;
-        kernel
+        T::kernel(cuda)
             .launch_builder(&cuda.stream)
             .arg(src_slice)
             .arg(dst_view)

@@ -145,3 +145,9 @@ def test_preprocessor_run_batch_matches_single():
     for i, f in enumerate(frames):
         single = pre.run(f, w, h, 32, 32).download()
         np.testing.assert_array_equal(got[i : i + 1], single)
+
+    # f16 batch follows the constructor flag.
+    pre16 = cuda.CudaPreprocessor(mode="letterbox", format="nv12", f16=True)
+    b16 = pre16.run_batch(frames, w, h, 32, 32)
+    assert b16.dtype == "float16" and b16.shape == (3, 3, 32, 32)
+    np.testing.assert_allclose(b16.download(), got, atol=1e-3)

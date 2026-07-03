@@ -17,7 +17,7 @@ use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 
 use kornia_image::color_spaces::{Bgr8, Bgra8, Gray8, Hsvf32, Labf32, Rgb8, Rgba8, Rgbf32, YCbCr8};
-use kornia_image::{Image, ImageSize, InterpolationMode};
+use kornia_image::{Image, ImageSize};
 use kornia_imgproc::color::{self, ConvertColor};
 use kornia_imgproc::preprocess::{Normalize, Preprocessor, ResizeMode, SourceFormat};
 use kornia_tensor::Tensor;
@@ -346,6 +346,19 @@ pub fn from_dlpack(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<PyCudaIma
 
     let stream = default_stream()?;
 
+    // Probe the protocol's device query first: host tensors get the helpful
+    // redirect before any `__dlpack__` call (some producers, e.g. torch-CPU,
+    // reject the `stream` kwarg with errors other than TypeError).
+    if let Ok(dev) = obj.call_method0("__dlpack_device__") {
+        let (ty, _id): (u32, i32) = dev.extract()?;
+        if ty != dlpack_rs::ffi::DLDeviceType::kDLCUDA as u32 {
+            return Err(PyValueError::new_err(
+                "from_dlpack: tensor is not on a CUDA device; \
+                 for host tensors use kornia_rs.cuda.upload",
+            ));
+        }
+    }
+
     // Per the DLPack protocol `stream=1` is CUDA's legacy default stream — the
     // one this module launches on — so a compliant producer (torch, cupy)
     // makes the data stream-ordered against our copy below. Fall back for
@@ -354,15 +367,23 @@ pub fn from_dlpack(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<PyCudaIma
         let kwargs = PyDict::new(py);
         kwargs.set_item("stream", 1i64)?;
         kwargs.set_item("max_version", (1u32, 0u32))?;
+        // Retry with fewer keywords only on TypeError (pre-spec producer
+        // rejecting the kwarg); any other error is the producer's real
+        // failure and is surfaced as-is.
         obj.call_method("__dlpack__", (), Some(&kwargs))
-            .or_else(|_| {
+            .or_else(|e| {
+                if !e.is_instance_of::<pyo3::exceptions::PyTypeError>(py) {
+                    return Err(e);
+                }
                 let kwargs = PyDict::new(py);
                 kwargs.set_item("stream", 1i64)?;
                 obj.call_method("__dlpack__", (), Some(&kwargs))
             })
-            .or_else(|_| obj.call_method0("__dlpack__"))
-            .map_err(|_| {
-                PyValueError::new_err("from_dlpack: object does not implement __dlpack__()")
+            .or_else(|e| {
+                if !e.is_instance_of::<pyo3::exceptions::PyTypeError>(py) {
+                    return Err(e);
+                }
+                obj.call_method0("__dlpack__")
             })?
     };
     let capsule: Bound<'_, PyCapsule> = capsule_obj.cast_into()?;
@@ -393,7 +414,7 @@ pub fn from_dlpack(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<PyCudaIma
         )));
     };
 
-    if t.device.device_type != dlpack_rs::ffi::DLDeviceType::kDLCUDA as u32 {
+    if t.device.device_type != dlpack_rs::ffi::DLDeviceType::kDLCUDA {
         return Err(PyValueError::new_err(
             "from_dlpack: tensor is not on a CUDA device (device_type != kDLCUDA); \
              for host tensors use kornia_rs.cuda.upload",
@@ -416,54 +437,48 @@ pub fn from_dlpack(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<PyCudaIma
         }
     }
     let (h, w, c) = (shape[0] as usize, shape[1] as usize, shape[2] as usize);
-    let n = h * w * c;
     let ptr = t.data as u64 + t.byte_offset;
 
-    /// Copy `n` elements of `T` at device pointer `ptr` into an owned slice.
-    fn dtod_copy<T: cudarc::driver::DeviceRepr + cudarc::driver::ValidAsZeroBits>(
+    /// Copy the producer's `h*w*C` elements at `ptr` into an owned device image.
+    fn dl_image<T, const C: usize>(
         stream: &Arc<CudaStream>,
         ptr: u64,
-        n: usize,
-    ) -> PyResult<cudarc::driver::CudaSlice<T>> {
+        h: usize,
+        w: usize,
+    ) -> PyResult<Image<T, C>>
+    where
+        T: cudarc::driver::DeviceRepr + cudarc::driver::ValidAsZeroBits + 'static,
+    {
+        let n = h * w * C;
         // SAFETY: ptr/len come from the live DLPack tensor validated above;
         // the borrowed slice is `leak()`ed after the copy so the producer's
-        // allocation is never freed by us.
+        // allocation is never freed by us. The uninitialized destination is
+        // fully overwritten by the copy before anything reads it.
         let src = unsafe { stream.upgrade_device_ptr::<T>(ptr, n) };
-        let mut owned = stream.alloc_zeros::<T>(n).map_err(err)?;
-        let copy = stream.memcpy_dtod(&src, &mut owned).map_err(err);
+        let owned = unsafe { stream.alloc::<T>(n) }
+            .map_err(err)
+            .and_then(|mut owned| {
+                stream.memcpy_dtod(&src, &mut owned).map_err(err)?;
+                Ok(owned)
+            });
         src.leak();
-        copy?;
+        let owned = owned?;
         // The producer may free its buffer as soon as we return.
         stream.synchronize().map_err(err)?;
-        Ok(owned)
+        Ok(Image(Tensor::from_cudaslice(
+            owned,
+            [h, w, C],
+            stream.clone(),
+        )))
     }
 
+    use dlpack_rs::ffi::{K_DL_FLOAT, K_DL_UINT};
     let inner = match (t.dtype.code, t.dtype.bits, t.dtype.lanes, c) {
-        (1, 8, 1, 1) => Inner::U8C1(Image(Tensor::from_cudaslice(
-            dtod_copy::<u8>(&stream, ptr, n)?,
-            [h, w, 1],
-            stream.clone(),
-        ))),
-        (1, 8, 1, 3) => Inner::U8C3(Image(Tensor::from_cudaslice(
-            dtod_copy::<u8>(&stream, ptr, n)?,
-            [h, w, 3],
-            stream.clone(),
-        ))),
-        (1, 8, 1, 4) => Inner::U8C4(Image(Tensor::from_cudaslice(
-            dtod_copy::<u8>(&stream, ptr, n)?,
-            [h, w, 4],
-            stream.clone(),
-        ))),
-        (2, 32, 1, 1) => Inner::F32C1(Image(Tensor::from_cudaslice(
-            dtod_copy::<f32>(&stream, ptr, n)?,
-            [h, w, 1],
-            stream.clone(),
-        ))),
-        (2, 32, 1, 3) => Inner::F32C3(Image(Tensor::from_cudaslice(
-            dtod_copy::<f32>(&stream, ptr, n)?,
-            [h, w, 3],
-            stream.clone(),
-        ))),
+        (code, 8, 1, 1) if code == K_DL_UINT => Inner::U8C1(dl_image(&stream, ptr, h, w)?),
+        (code, 8, 1, 3) if code == K_DL_UINT => Inner::U8C3(dl_image(&stream, ptr, h, w)?),
+        (code, 8, 1, 4) if code == K_DL_UINT => Inner::U8C4(dl_image(&stream, ptr, h, w)?),
+        (code, 32, 1, 1) if code == K_DL_FLOAT => Inner::F32C1(dl_image(&stream, ptr, h, w)?),
+        (code, 32, 1, 3) if code == K_DL_FLOAT => Inner::F32C3(dl_image(&stream, ptr, h, w)?),
         (code, bits, lanes, c) => {
             return Err(PyValueError::new_err(format!(
                 "from_dlpack: unsupported dtype (code {code}, {bits} bits, {lanes} lanes) \
@@ -712,20 +727,8 @@ pub struct PyCudaPreprocessor {
 }
 
 fn parse_format(s: &str) -> PyResult<SourceFormat> {
-    Ok(match s.to_ascii_lowercase().as_str() {
-        "rgb" | "rgb8" => SourceFormat::Rgb8,
-        "bgr" | "bgr8" => SourceFormat::Bgr8,
-        "rgba" | "rgba8" => SourceFormat::Rgba8,
-        "bgra" | "bgra8" => SourceFormat::Bgra8,
-        "gray" | "gray8" => SourceFormat::Gray8,
-        "nv12" => SourceFormat::Nv12,
-        "yuyv" => SourceFormat::Yuyv,
-        f => {
-            return Err(PyValueError::new_err(format!(
-                "unknown source format '{f}'"
-            )))
-        }
-    })
+    SourceFormat::from_name(s)
+        .ok_or_else(|| PyValueError::new_err(format!("unknown source format '{s}'")))
 }
 
 #[pymethods]
@@ -757,12 +760,7 @@ impl PyCudaPreprocessor {
                 m => return Err(PyValueError::new_err(format!("unknown mode '{m}'"))),
             })
             .source_format(parse_format(format)?)
-            .sampling(match sampling.to_ascii_lowercase().as_str() {
-                "bilinear" => InterpolationMode::Bilinear,
-                "nearest" => InterpolationMode::Nearest,
-                "lanczos" => InterpolationMode::Lanczos,
-                s => return Err(PyValueError::new_err(format!("unknown sampling '{s}'"))),
-            })
+            .sampling(crate::image::parse_interpolation(sampling)?)
             .pad_value(pad_value);
         if mean.is_some() || std.is_some() {
             builder = builder.normalize(Normalize::MeanStd {
@@ -779,20 +777,13 @@ impl PyCudaPreprocessor {
     #[pyo3(signature = (frame, width, height, out_height, out_width))]
     fn run(
         &self,
-        py: Python<'_>,
-        frame: Py<PyAny>,
+        frame: numpy::PyReadonlyArray1<'_, u8>,
         width: usize,
         height: usize,
         out_height: usize,
         out_width: usize,
     ) -> PyResult<PyCudaTensor> {
-        let arr = frame.extract::<Bound<'_, PyArray1<u8>>>(py).map_err(|_| {
-            PyValueError::new_err("frame must be a contiguous 1-D uint8 numpy array")
-        })?;
-        let arr = arr.try_readonly()?;
-        let bytes = arr.as_slice()?;
-        let d_src = self.stream.clone_htod(bytes).map_err(err)?;
-
+        let d_src = self.stream.clone_htod(frame.as_slice()?).map_err(err)?;
         let inner = if self.f16 {
             let mut dst = kornia_tensor::zeros_cuda::<half::f16, 4>(
                 [1, 3, out_height, out_width],
@@ -820,46 +811,42 @@ impl PyCudaPreprocessor {
     /// Preprocess a **batch** of same-sized raw frames into one
     /// `[N, 3, out_h, out_w]` [`CudaTensor`] — one fused kernel launch per
     /// frame, all on the same stream, one sync for the whole batch
-    /// (multi-camera rigs, batched engines). f32 output only.
+    /// (multi-camera rigs, batched engines). Output dtype follows the
+    /// constructor's `f16` flag, like [`run`](Self::run).
     #[pyo3(signature = (frames, width, height, out_height, out_width))]
     fn run_batch(
         &self,
-        py: Python<'_>,
-        frames: Vec<Py<PyAny>>,
+        frames: Vec<numpy::PyReadonlyArray1<'_, u8>>,
         width: usize,
         height: usize,
         out_height: usize,
         out_width: usize,
     ) -> PyResult<PyCudaTensor> {
-        if self.f16 {
-            return Err(PyValueError::new_err(
-                "run_batch currently outputs float32 only (build with f16=False)",
-            ));
-        }
         if frames.is_empty() {
             return Err(PyValueError::new_err("run_batch needs at least one frame"));
         }
         let d_frames = frames
             .iter()
-            .map(|f| {
-                let arr = f.extract::<Bound<'_, PyArray1<u8>>>(py).map_err(|_| {
-                    PyValueError::new_err("each frame must be a contiguous 1-D uint8 numpy array")
-                })?;
-                let arr = arr.try_readonly()?;
-                self.stream.clone_htod(arr.as_slice()?).map_err(err)
-            })
+            .map(|f| self.stream.clone_htod(f.as_slice()?).map_err(err))
             .collect::<PyResult<Vec<_>>>()?;
         let refs: Vec<_> = d_frames.iter().collect();
-        let mut dst = kornia_tensor::zeros_cuda::<f32, 4>(
-            [frames.len(), 3, out_height, out_width],
-            &self.stream,
-        )
-        .map_err(err)?;
-        self.pre
-            .run_raw_batch(&refs, width, height, &mut dst)
-            .map_err(err)?;
+        let shape = [frames.len(), 3, out_height, out_width];
+        let inner = if self.f16 {
+            let mut dst =
+                kornia_tensor::zeros_cuda::<half::f16, 4>(shape, &self.stream).map_err(err)?;
+            self.pre
+                .run_raw_batch_f16(&refs, width, height, &mut dst)
+                .map_err(err)?;
+            TensorInnerEnum::F16(dst)
+        } else {
+            let mut dst = kornia_tensor::zeros_cuda::<f32, 4>(shape, &self.stream).map_err(err)?;
+            self.pre
+                .run_raw_batch(&refs, width, height, &mut dst)
+                .map_err(err)?;
+            TensorInnerEnum::F32(dst)
+        };
         Ok(PyCudaTensor {
-            inner: Arc::new(TensorInnerEnum::F32(dst)),
+            inner: Arc::new(inner),
         })
     }
 }
