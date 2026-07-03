@@ -1005,13 +1005,15 @@ mod tests {
 
     fn det_at(x: f32, y: f32, size: f32, id: u16, margin: f32) -> Detection {
         let h = size * 0.5;
-        let mut quad = Quad::default();
-        quad.corners = [
-            Vec2F32::new(x - h, y + h),
-            Vec2F32::new(x + h, y + h),
-            Vec2F32::new(x + h, y - h),
-            Vec2F32::new(x - h, y - h),
-        ];
+        let quad = Quad {
+            corners: [
+                Vec2F32::new(x - h, y + h),
+                Vec2F32::new(x + h, y + h),
+                Vec2F32::new(x + h, y - h),
+                Vec2F32::new(x - h, y - h),
+            ],
+            ..Default::default()
+        };
         Detection {
             _family_idx: 0,
             tag_family_kind: TagFamilyKind::Tag36H11,

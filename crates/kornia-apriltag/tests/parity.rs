@@ -19,7 +19,7 @@
 //! coordinate offset, D4 refine_edges search-range difference) cause sub-pixel gaps that will
 //! be fixed in A3, after which the tolerance should tighten to ≤ 0.1 px.
 
-use std::{collections::HashMap, path::PathBuf};
+use std::path::PathBuf;
 
 use apriltag::DetectorBuilder;
 use kornia_apriltag::{
