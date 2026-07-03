@@ -293,6 +293,15 @@ pub fn warp_perspective_deprecated(
 
 // Main Python Module Definition
 
+/// Register the device-agnostic ImageNet normalization presets on `module`.
+pub(crate) fn add_imagenet_consts(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    let [m0, m1, m2] = kornia_imgproc::preprocess::IMAGENET_MEAN;
+    let [s0, s1, s2] = kornia_imgproc::preprocess::IMAGENET_STD;
+    module.add("IMAGENET_MEAN", (m0, m1, m2))?;
+    module.add("IMAGENET_STD", (s0, s1, s2))?;
+    Ok(())
+}
+
 #[pymodule(gil_used = false)]
 pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let py = m.py();
@@ -585,12 +594,7 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
         modules.set_item(name, submod)?;
     }
 
-    // Device-agnostic normalization presets (the CPU pipeline's
-    // resize_normalize_to_tensor wants these just as much as the CUDA one).
-    let [m0, m1, m2] = kornia_imgproc::preprocess::IMAGENET_MEAN;
-    let [s0, s1, s2] = kornia_imgproc::preprocess::IMAGENET_STD;
-    m.add("IMAGENET_MEAN", (m0, m1, m2))?;
-    m.add("IMAGENET_STD", (s0, s1, s2))?;
+    add_imagenet_consts(m)?;
 
     #[cfg(feature = "cuda")]
     cuda_ext::register(py, m)?;

@@ -82,7 +82,7 @@ def test_preprocessor_nv12_fused():
 def test_preprocessor_f16_and_normalize():
     w, h = 64, 48
     frame = RNG.integers(0, 256, (w * h * 3,), dtype=np.uint8)
-    mean, std = (0.485, 0.456, 0.406), (0.229, 0.224, 0.225)
+    mean, std = cuda.IMAGENET_MEAN, cuda.IMAGENET_STD
     pre16 = cuda.CudaPreprocessor(format="rgb", f16=True, mean=mean, std=std)
     t = pre16.run(frame, w, h, 32, 32)
     assert t.dtype == "float16"

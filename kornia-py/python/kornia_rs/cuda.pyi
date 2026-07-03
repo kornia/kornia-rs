@@ -15,9 +15,9 @@ from typing import Any, List, Optional, Tuple
 import numpy as np
 
 IMAGENET_MEAN: Tuple[float, float, float]
-"""Standard ImageNet per-channel mean (RGB), matching torchvision."""
+"""Re-export of ``kornia_rs.IMAGENET_MEAN``."""
 IMAGENET_STD: Tuple[float, float, float]
-"""Standard ImageNet per-channel std (RGB), matching torchvision."""
+"""Re-export of ``kornia_rs.IMAGENET_STD``."""
 
 def is_available() -> bool:
     """True if a CUDA driver and device 0 are usable in this process."""

@@ -54,7 +54,7 @@ pub fn is_available() -> bool {
 /// raw `CUstream` handle. This module launches everything on the legacy
 /// default stream, so `1`/`2` are already ordered and a foreign stream gets
 /// an event fence — modern consumers (torch, cupy) never pay a host block.
-/// `None` (spec: producer may assume the legacy default stream) keeps a
+/// `None` (spec: producer must assume the legacy default stream) keeps a
 /// stricter-than-spec host sync by choice — it only reaches legacy consumers
 /// calling `__dlpack__()` bare, where safety beats a blocked host.
 fn dlpack_sync_for_consumer(stream: Option<isize>) -> PyResult<()> {
@@ -1045,11 +1045,8 @@ pub fn register(py: Python<'_>, parent: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(sepia_from_rgb, &m)?)?;
     m.add_function(wrap_pyfunction!(apply_colormap, &m)?)?;
     m.add_function(wrap_pyfunction!(rgb_from_bayer, &m)?)?;
-    // Re-exports of the top-level constants (device-agnostic, but handy here).
-    let [m0, m1, m2] = kornia_imgproc::preprocess::IMAGENET_MEAN;
-    let [s0, s1, s2] = kornia_imgproc::preprocess::IMAGENET_STD;
-    m.add("IMAGENET_MEAN", (m0, m1, m2))?;
-    m.add("IMAGENET_STD", (s0, s1, s2))?;
+    // Kept on the cuda submodule too as a re-export convenience.
+    crate::add_imagenet_consts(&m)?;
     m.add_class::<PyCudaImage>()?;
     m.add_class::<PyCudaTensor>()?;
     m.add_class::<PyCudaPreprocessor>()?;
