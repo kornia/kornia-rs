@@ -86,6 +86,25 @@ pub enum ImageError {
     #[error("operation not supported on device memory; copy to host first")]
     UnsupportedDevice,
 
+    /// Source and destination images have different memory residency
+    /// (one host, one device). Operations require both operands on the same
+    /// side; there is no implicit transfer.
+    #[error("source and destination have different residency (host vs device)")]
+    MixedResidency,
+
+    /// A CUDA driver / kernel error occurred while executing a device operation.
+    #[error("CUDA error: {0}")]
+    Cuda(String),
+
+    /// Source and destination device images live on different CUDA devices.
+    /// (Different streams on the same device are supported — the dispatch
+    /// layer orders them with event fences.)
+    #[error(
+        "source and destination device images are on different CUDA devices; \
+         move both to one device"
+    )]
+    DeviceMismatch,
+
     /// The pixel format (dtype) of the buffer does not match what was expected.
     #[error("pixel format mismatch: expected {expected:?}, got {got:?}")]
     DtypeMismatch {

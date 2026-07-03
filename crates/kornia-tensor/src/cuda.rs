@@ -81,6 +81,11 @@ pub struct CudaResource<T> {
     ptr: *mut u8,
     /// CUDA device ordinal (returned by `CudaContext::ordinal()`).
     id: i32,
+    /// Stream this allocation was created on. Carried inside the resource so that
+    /// device-dispatching code (e.g. residency-aware color conversion) can recover
+    /// a stream from the tensor itself via [`Tensor::cuda_stream`] — no global or
+    /// thread-local stream state.
+    pub(crate) stream: Arc<CudaStream>,
 }
 
 // SAFETY: CudaSlice<T> is Send + Sync.  `ptr` is a device pointer that is never
@@ -152,8 +157,146 @@ impl TensorAllocator for CudaAllocator {
         };
         let id = self.ctx.ordinal() as i32;
 
-        Ok(Box::new(CudaResource::<u8> { slice, ptr, id }))
+        Ok(Box::new(CudaResource::<u8> {
+            slice,
+            ptr,
+            id,
+            stream: self.stream.clone(),
+        }))
     }
+}
+
+// ── PinnedResource / PinnedAllocator ─────────────────────────────────────────
+
+/// An owning [`MemoryResource`] over page-locked (pinned) **host** memory
+/// (`cuMemHostAlloc`, cacheable — no write-combining, so CPU reads stay fast).
+///
+/// Pinned memory is host-accessible like any heap allocation (domain is
+/// [`MemoryDomain::Host`]; `as_slice` and every CPU path work unchanged), but
+/// the CUDA driver recognises the registered range and services H2D/D2H
+/// copies with direct DMA instead of staging through an internal bounce
+/// buffer — on Jetson this roughly halves transfer cost. Freed with
+/// `cuMemFreeHost` exactly once on drop.
+pub struct PinnedResource {
+    ptr: NonNull<u8>,
+    len_bytes: usize,
+    /// Keeps the driver context alive for the free call.
+    _ctx: Arc<CudaContext>,
+}
+
+// SAFETY: pinned host memory is plain host memory; the pointer is uniquely
+// owned by this resource.
+unsafe impl Send for PinnedResource {}
+unsafe impl Sync for PinnedResource {}
+
+impl MemoryResource for PinnedResource {
+    fn as_ptr(&self) -> *mut u8 {
+        self.ptr.as_ptr()
+    }
+    fn len_bytes(&self) -> usize {
+        self.len_bytes
+    }
+    fn domain(&self) -> MemoryDomain {
+        MemoryDomain::Host
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
+impl Drop for PinnedResource {
+    fn drop(&mut self) {
+        // SAFETY: `ptr` came from cuMemHostAlloc and is freed exactly once.
+        unsafe {
+            let _ = cudarc::driver::result::free_host(self.ptr.as_ptr() as *mut _);
+        }
+    }
+}
+
+/// A [`TensorAllocator`] that allocates zero-initialised page-locked host
+/// memory. Use via [`pinned_alloc`] with the `_in` constructors
+/// (`Image::from_size_val_in`, `Tensor::from_shape_vec` etc. take a plain
+/// handle) to make a host image whose uploads/downloads are DMA-fast.
+#[derive(Clone)]
+pub struct PinnedAllocator {
+    /// Context that owns the pinned registration.
+    pub ctx: Arc<CudaContext>,
+}
+
+impl TensorAllocator for PinnedAllocator {
+    fn allocate(
+        &self,
+        layout: std::alloc::Layout,
+    ) -> Result<Box<dyn MemoryResource>, TensorAllocatorError> {
+        let n_bytes = layout.size().max(1);
+        // SAFETY: flags = 0 → cacheable, portable pinned host memory.
+        let ptr = unsafe { cudarc::driver::result::malloc_host(n_bytes, 0) }
+            .map_err(|e| TensorAllocatorError::CudaError(e.to_string()))?;
+        let ptr = NonNull::new(ptr as *mut u8)
+            .ok_or_else(|| TensorAllocatorError::CudaError("null pinned alloc".into()))?;
+        // Zero-initialise to match the other allocators' contract.
+        // SAFETY: freshly allocated n_bytes at ptr.
+        unsafe { std::ptr::write_bytes(ptr.as_ptr(), 0, n_bytes) };
+        Ok(Box::new(PinnedResource {
+            ptr,
+            len_bytes: layout.size(),
+            _ctx: self.ctx.clone(),
+        }))
+    }
+}
+
+/// Convenience: an [`AllocHandle`] for page-locked host memory on `ctx`.
+///
+/// Note: the `Vec`-based `_in` constructors (`from_shape_vec_in` etc.) adopt
+/// the vec's own heap memory and only *carry* the handle — they do not route
+/// the allocation through it. To get storage that actually lives in pinned
+/// memory, use [`zeros_pinned`] and fill via `as_slice_mut`.
+pub fn pinned_alloc(ctx: &Arc<CudaContext>) -> AllocHandle {
+    Arc::new(PinnedAllocator { ctx: ctx.clone() })
+}
+
+/// Allocate a zero-initialised **host** tensor in page-locked (pinned) memory.
+///
+/// The result is an ordinary host tensor (every CPU path works on it), but
+/// H2D/D2H copies against it are direct DMA — pair with
+/// [`Tensor::to_cuda`] / [`Tensor::to_host_in`] for the fast transfer path.
+///
+/// # Errors
+///
+/// Returns [`CudaError::Driver`] on allocation failure.
+pub fn zeros_pinned<T, const N: usize>(
+    shape: [usize; N],
+    ctx: &Arc<CudaContext>,
+) -> Result<Tensor<T, N>, CudaError>
+where
+    T: DeviceRepr + ValidAsZeroBits + 'static,
+{
+    let alloc = pinned_alloc(ctx);
+    let numel: usize = shape.iter().product();
+    let layout =
+        std::alloc::Layout::array::<T>(numel).map_err(|e| CudaError::Driver(e.to_string()))?;
+    let owner = alloc
+        .allocate(layout)
+        .map_err(|e| CudaError::Driver(e.to_string()))?;
+    let ptr = owner.as_ptr() as *mut T;
+    // SAFETY: allocator returned non-null storage of `layout.size()` bytes.
+    let nn_ptr = unsafe { NonNull::new_unchecked(ptr) };
+    let storage = TensorStorage {
+        ptr: nn_ptr,
+        len: layout.size(),
+        owner,
+        alloc,
+        _marker: PhantomData,
+    };
+    let strides = get_strides_from_shape(shape);
+    Ok(Tensor {
+        storage,
+        shape,
+        strides,
+    })
 }
 
 // ── Error type ────────────────────────────────────────────────────────────────
@@ -436,7 +579,12 @@ where
         // _sync drops here
     };
 
-    let resource = CudaResource::<T> { slice, ptr, id };
+    let resource = CudaResource::<T> {
+        slice,
+        ptr,
+        id,
+        stream: stream.clone(),
+    };
     let alloc: AllocHandle = Arc::new(CudaAllocator {
         ctx: ctx.clone(),
         stream: stream.clone(),
@@ -531,9 +679,17 @@ where
             // _sync drops here, releasing the borrow on `slice`
         };
 
-        let alloc: AllocHandle = Arc::new(CudaAllocator { ctx, stream });
+        let alloc: AllocHandle = Arc::new(CudaAllocator {
+            ctx,
+            stream: stream.clone(),
+        });
         // Move the original CudaSlice<T> in, unchanged — this is the aliasing wrap.
-        let resource = CudaResource::<T> { slice, ptr, id };
+        let resource = CudaResource::<T> {
+            slice,
+            ptr,
+            id,
+            stream,
+        };
 
         let storage =
             unsafe { storage_from_cuda_resource(resource, ptr as *mut T, n_bytes, alloc) };
@@ -556,6 +712,21 @@ where
             .as_any()
             .downcast_ref::<CudaResource<T>>()
             .map(|r| &r.slice)
+    }
+
+    /// Return the stream this device tensor's allocation was created on, if the
+    /// storage is backed by a [`CudaResource<T>`].
+    ///
+    /// This is how residency-aware dispatch (e.g. color conversion on device
+    /// images) recovers a stream without any global state: the stream travels
+    /// inside the tensor. Returns `None` for host tensors or element-type
+    /// mismatches (same rules as [`as_cudaslice`](Self::as_cudaslice)).
+    pub fn cuda_stream(&self) -> Option<&Arc<CudaStream>> {
+        self.storage
+            .owner
+            .as_any()
+            .downcast_ref::<CudaResource<T>>()
+            .map(|r| &r.stream)
     }
 
     /// Mutably borrow the underlying `CudaSlice<T>` if the storage is backed by a
@@ -616,6 +787,8 @@ where
         let mut md_res = std::mem::ManuallyDrop::new(*cuda_box);
         // SAFETY: md_res prevents CudaResource from dropping its fields; we take the slice.
         let slice = unsafe { std::ptr::read(&md_res.slice) };
+        // Drop the stream Arc explicitly — ManuallyDrop would otherwise leak it.
+        let _stream = unsafe { std::ptr::read(&md_res.stream) };
         // Poison the ptr to make residual state obviously invalid (defensive).
         md_res.ptr = std::ptr::null_mut();
 
@@ -661,6 +834,7 @@ where
             slice: dev_slice,
             ptr,
             id,
+            stream: stream.clone(),
         };
         let storage =
             unsafe { storage_from_cuda_resource(resource, ptr as *mut T, n_bytes, alloc) };
@@ -704,6 +878,77 @@ where
             strides,
         })
     }
+
+    /// Copy this device tensor to a new host tensor using the tensor's **own
+    /// carried stream** — the one it was allocated/uploaded on — removing the
+    /// footgun of passing a different stream than the data's producer (a
+    /// read-before-write hazard). Synchronizes before returning.
+    ///
+    /// # Errors
+    ///
+    /// [`CudaError::NotCudaBacked`] if the tensor is not device-backed by a
+    /// typed [`CudaResource<T>`], or [`CudaError::Driver`] on CUDA failure.
+    pub fn download(&self) -> Result<Tensor<T, N>, CudaError> {
+        let stream = self.cuda_stream().ok_or(CudaError::NotCudaBacked)?.clone();
+        self.to_host(&stream)
+    }
+
+    /// Copy this device tensor to a new host tensor whose storage comes from
+    /// `alloc` — e.g. [`pinned_alloc`] for a page-locked destination, which
+    /// lets the driver DMA the D2H copy directly instead of staging it.
+    ///
+    /// Synchronizes the stream before returning so the host data is valid.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CudaError::Driver`] on CUDA/allocation failure or
+    /// [`CudaError::NotCudaBacked`] if the storage owner is not a
+    /// [`CudaResource<T>`].
+    pub fn to_host_in(
+        &self,
+        stream: &Arc<CudaStream>,
+        alloc: AllocHandle,
+    ) -> Result<Tensor<T, N>, CudaError> {
+        let cuda_res = self
+            .storage
+            .owner
+            .as_any()
+            .downcast_ref::<CudaResource<T>>()
+            .ok_or(CudaError::NotCudaBacked)?;
+
+        let numel: usize = self.shape.iter().product();
+        let layout =
+            std::alloc::Layout::array::<T>(numel).map_err(|e| CudaError::Driver(e.to_string()))?;
+        let owner = alloc
+            .allocate(layout)
+            .map_err(|e| CudaError::Driver(e.to_string()))?;
+        let ptr = owner.as_ptr() as *mut T;
+
+        // SAFETY: `owner` holds at least `numel * size_of::<T>()` bytes at `ptr`.
+        let dst = unsafe { std::slice::from_raw_parts_mut(ptr, numel) };
+        stream
+            .memcpy_dtoh(&cuda_res.slice, dst)
+            .map_err(|e| CudaError::Driver(e.to_string()))?;
+        stream
+            .synchronize()
+            .map_err(|e| CudaError::Driver(e.to_string()))?;
+
+        // SAFETY: ptr is non-null (checked by the allocator) and owned by `owner`.
+        let nn_ptr = unsafe { NonNull::new_unchecked(ptr) };
+        let storage = TensorStorage {
+            ptr: nn_ptr,
+            len: layout.size(),
+            owner,
+            alloc,
+            _marker: PhantomData,
+        };
+        let strides = get_strides_from_shape(self.shape);
+        Ok(Tensor {
+            storage,
+            shape: self.shape,
+            strides,
+        })
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -711,7 +956,6 @@ where
 #[cfg(all(test, feature = "cudarc"))]
 mod tests {
     use super::*;
-    use crate::allocator::host_alloc;
     use crate::Tensor;
 
     /// Device round-trip: host → GPU → host, bytes must match exactly.
@@ -869,6 +1113,33 @@ mod tests {
             result, input_data,
             "copy_bytes kernel output must match input"
         );
+    }
+
+    /// Pinned round-trip: pinned host tensor → device → pinned host via
+    /// `to_host_in(pinned_alloc)`; bytes must match and CPU access must work.
+    #[test]
+    fn pinned_alloc_roundtrip() {
+        let ctx = CudaContext::new(0).unwrap();
+        let stream = ctx.default_stream();
+
+        // Host tensor in pinned memory — behaves like any host tensor.
+        let data: Vec<u8> = (0u8..64).collect();
+        let mut host = zeros_pinned::<u8, 1>([64], &ctx).unwrap();
+        host.as_slice_mut().copy_from_slice(&data);
+        assert_eq!(
+            host.as_slice(),
+            &data[..],
+            "pinned tensor is host-accessible"
+        );
+        assert!(
+            matches!(host.storage.domain(), MemoryDomain::Host),
+            "pinned memory is host-domain"
+        );
+
+        // Upload (driver DMA path), download into a pinned destination.
+        let dev = host.to_cuda(&stream).unwrap();
+        let back = dev.to_host_in(&stream, pinned_alloc(&ctx)).unwrap();
+        assert_eq!(back.as_slice(), &data[..], "pinned round-trip must match");
     }
 
     /// `zeros_cuda` allocates a device tensor; `to_host` must return all-zero bytes.

@@ -57,21 +57,23 @@ pub use kornia_image::color_spaces::{
 };
 
 mod convert;
+#[cfg(feature = "gpu-cuda")]
+pub(crate) mod cuda_dispatch;
 mod kernel_common;
 
-mod bayer;
-mod cie;
+pub(crate) mod bayer;
+pub(crate) mod cie;
 /// Colormap application (LUT-based, NEON-accelerated on aarch64).
 pub mod colormap;
-mod gray;
-mod hls;
-mod hsv;
+pub(crate) mod gray;
+pub(crate) mod hls;
+pub(crate) mod hsv;
 // Shared generic 3×3 affine kernel; the CIE pipelines fuse the matrix in-register
 // instead of calling it, but it stays available for the YUV/YCbCr family.
 mod matrix;
-mod rgb;
-mod sepia;
-mod yuv;
+pub(crate) mod rgb;
+pub(crate) mod sepia;
+pub(crate) mod yuv;
 
 // Export traits for type-safe conversions
 pub use convert::{

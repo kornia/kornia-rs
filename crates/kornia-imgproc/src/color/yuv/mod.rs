@@ -1,7 +1,7 @@
 use kornia_image::{Image, ImageError};
 use rayon::prelude::*;
 
-mod kernels;
+pub(crate) mod kernels;
 use kernels::ChromaOrder;
 pub use kernels::{Packed422, Planar420};
 
@@ -315,6 +315,7 @@ pub fn nv12_from_rgb(src: &Image<u8, 3>, dst: &mut [u8]) -> Result<(), ImageErro
 /// ## Additional Resources:
 /// - [ITU-R BT.2407-0](https://www.itu.int/dms_pub/itu-r/opb/rep/R-REP-BT.2407-2017-PDF-E.pdf) - Color gamut conversion guide
 /// - [Ultra HD Forum Guidelines](https://ultrahdforum.org/wp-content/uploads/UHD-Guidelines-V2.5-Fall2021.pdf) - Industry best practices
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum YuvToRgbMode {
     /// BT.601 full range (0-255 for Y, U, V).
     /// Used for SDTV, older cameras, and JPEG images.

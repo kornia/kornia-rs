@@ -59,6 +59,26 @@ jobs:
         run: |
           sccache --show-stats 2>&1 || echo "::warning::sccache stats unavailable - server may have exited"
 
+  cuda-feature-check:
+    name: Check - CUDA features
+    # Compile + clippy coverage for the CUDA-gated code on a GPU-less runner.
+    # kornia's cudarc is built with `fallback-dynamic-loading`: libcuda.so is
+    # dlopen'd at RUNTIME only, so nothing here needs a GPU or the CUDA toolkit.
+    # Kernel-execution tests run on real hardware (Jetson) outside CI.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Clippy CUDA-gated crates (deny warnings)
+        run: |
+          cargo clippy -p kornia-tensor --features cudarc -- -D warnings
+          cargo clippy -p kornia-image --features cudarc -- -D warnings
+          cargo clippy -p kornia-imgproc --features "cudarc,gpu-cuda" -- -D warnings
+
   cross-platform-check-macos:
     name: Check - macOS
     # Pinned to macOS 15 (Sequoia) to avoid the macOS 26 (Tahoe) beta runner, where

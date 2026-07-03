@@ -317,6 +317,51 @@ macro_rules! define_color_space {
             pub fn as_image_mut(&mut self) -> &mut Image<$type, $channels> {
                 &mut self.0
             }
+
+            #[cfg(feature = "cudarc")]
+            #[doc = concat!("Upload to a device-resident ", stringify!($name), " (H2D copy).")]
+            ///
+            /// The result stays typed, so it flows through the same `ConvertColor`
+            /// APIs as host images — device operands dispatch to CUDA kernels.
+            pub fn to_cuda(
+                &self,
+                stream: &std::sync::Arc<cudarc::driver::CudaStream>,
+            ) -> Result<Self, ImageError> {
+                Ok(Self(self.0.to_cuda_image(stream)?))
+            }
+
+            #[cfg(feature = "cudarc")]
+            #[doc = concat!("Allocate a zero-initialised device-resident ", stringify!($name), ".")]
+            pub fn zeros_cuda(
+                size: ImageSize,
+                stream: &std::sync::Arc<cudarc::driver::CudaStream>,
+            ) -> Result<Self, ImageError> {
+                Ok(Self(Image::zeros_cuda(size, stream)?))
+            }
+
+            #[cfg(feature = "cudarc")]
+            #[doc = concat!("Allocate a zero-initialised pinned-memory host ", stringify!($name), ".")]
+            pub fn zeros_pinned(
+                size: ImageSize,
+                ctx: &std::sync::Arc<cudarc::driver::CudaContext>,
+            ) -> Result<Self, ImageError> {
+                Ok(Self(Image::zeros_pinned(size, ctx)?))
+            }
+
+            #[cfg(feature = "cudarc")]
+            #[doc = concat!("Copy a device-resident ", stringify!($name), " to host on its own carried stream.")]
+            pub fn download(&self) -> Result<Self, ImageError> {
+                Ok(Self(self.0.download()?))
+            }
+
+            #[cfg(feature = "cudarc")]
+            #[doc = concat!("Copy a device-resident ", stringify!($name), " back to host (D2H).")]
+            pub fn to_host(
+                &self,
+                stream: &std::sync::Arc<cudarc::driver::CudaStream>,
+            ) -> Result<Self, ImageError> {
+                Ok(Self(self.0.to_host_image(stream)?))
+            }
         }
 
         impl Deref for $name {
