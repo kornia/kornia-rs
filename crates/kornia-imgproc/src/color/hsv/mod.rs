@@ -1,7 +1,7 @@
 use crate::parallel;
 use kornia_image::{Image, ImageError};
 
-mod kernels;
+pub(crate) mod kernels;
 
 // ===== Sealed-trait dispatch =========================================================
 

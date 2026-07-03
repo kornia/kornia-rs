@@ -17,7 +17,7 @@ use kornia_image::color_spaces::BayerPattern;
 
 /// The color a sensel carries, resolved from the pattern + pixel parity.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Cell {
+pub(crate) enum Cell {
     R,
     GonRRow,
     GonBRow,
@@ -27,7 +27,7 @@ enum Cell {
 /// Resolve the per-cell color layout into a 2×2 phase table indexed by
 /// `[row & 1][col & 1]`.
 #[inline]
-fn phase_table(pattern: BayerPattern) -> [[Cell; 2]; 2] {
+pub(crate) fn phase_table(pattern: BayerPattern) -> [[Cell; 2]; 2] {
     use Cell::*;
     match pattern {
         // R G / G B  → row0 has R, row1 has B

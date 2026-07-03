@@ -14,6 +14,10 @@ publish = true
 name = "bench_gpu_color"
 
 [[example]]
+name = "bench_gpu_color_conversions"
+required-features = ["gpu-cuda"]
+
+[[example]]
 name = "bench_gpu_resize"
 
 [[bench]]
@@ -121,5 +125,5 @@ gpu-cubecl = [
   "dep:cubecl-cuda",
   "kornia-tensor/gpu-cubecl",
 ]
-gpu-cuda = ["dep:cudarc", "kornia-tensor/cudarc"]
+gpu-cuda = ["dep:cudarc", "kornia-image/cudarc", "kornia-tensor/cudarc"]
 opencv_bench = ["dep:opencv"]

@@ -34,3 +34,7 @@ pub mod resize_cuda;
 /// Native CUDA warp-affine kernels (bilinear and nearest-neighbor, feature `gpu-cuda`).
 #[cfg(feature = "gpu-cuda")]
 pub mod warp_affine_cuda;
+
+/// Native CUDA color-space conversion kernels (feature `gpu-cuda`).
+#[cfg(feature = "gpu-cuda")]
+pub mod color_cuda;

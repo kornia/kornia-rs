@@ -649,7 +649,7 @@ fn yy_term(y: i32) -> i32 {
 // ---- 4:2:2 packed ----------------------------------------------------------------
 
 /// Byte layout of a packed 4:2:2 stream within each 4-byte (2-pixel) group.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Packed422 {
     /// `Y0 U Y1 V`
     Yuyv,
@@ -662,7 +662,7 @@ pub enum Packed422 {
 impl Packed422 {
     /// Offsets `(y0, u, y1, v)` within a 4-byte group.
     #[inline]
-    fn offsets(self) -> (usize, usize, usize, usize) {
+    pub(crate) fn offsets(self) -> (usize, usize, usize, usize) {
         match self {
             Packed422::Yuyv => (0, 1, 2, 3),
             Packed422::Uyvy => (1, 0, 3, 2),
@@ -878,7 +878,7 @@ pub fn rgb_from_packed422_row_scalar(src: &[u8], dst: &mut [u8], width: usize, f
 // ---- 4:2:0 planar ----------------------------------------------------------------
 
 /// Chroma layout of a planar 4:2:0 stream after the Y plane.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Planar420 {
     /// Interleaved `UV` (NV12).
     Nv12,

@@ -14,7 +14,7 @@ include!("colormap_luts.rs");
 // ── Colormap type ─────────────────────────────────────────────────────────────
 
 /// All 21 OpenCV colormaps, re-implemented as pure-Rust LUT tables.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ColormapType {
     /// Sequential red→yellow gradient.
     Autumn,
@@ -100,7 +100,7 @@ impl ColormapType {
             .map(|&(_, variant, _)| variant)
     }
 
-    fn lut(self) -> &'static ColormapLut {
+    pub(crate) fn lut(self) -> &'static ColormapLut {
         COLORMAPS
             .iter()
             .find(|(_, v, _)| *v == self)
@@ -268,6 +268,15 @@ pub fn apply_colormap(
             dst.cols(),
             dst.rows(),
         ));
+    }
+    #[cfg(feature = "gpu-cuda")]
+    {
+        use super::cuda_dispatch::{pair_residency, Residency};
+        if let Residency::Device(exec) = pair_residency(src, dst)? {
+            return exec.run(|stream| {
+                super::cuda_dispatch::apply_colormap_u8_cuda(src, dst, colormap, stream)
+            });
+        }
     }
     let lut = colormap.lut();
 

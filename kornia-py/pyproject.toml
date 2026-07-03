@@ -51,6 +51,9 @@ homepage = "http://www.kornia.org"
 repository = "https://github.com/kornia/kornia-rs"
 
 [project.optional-dependencies]
+# NVRTC for the kornia_rs.cuda module on machines without the CUDA toolkit
+# (the driver alone does not ship libnvrtc). Jetson/toolkit installs need nothing.
+cuda = ["nvidia-cuda-nvrtc-cu12; platform_system == 'Linux'"]
 dev = ["pytest", "pytest-run-parallel", "numpy", "torch"]
 
 [build-system]
