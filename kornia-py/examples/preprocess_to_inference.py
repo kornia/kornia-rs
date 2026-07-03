@@ -32,6 +32,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "benchmarks"))
 from _bench import bench  # noqa: E402
 
 SRC_W, SRC_H = 1920, 1080  # camera stand-in resolution
+# Batches per timed sample: sync once per window so consecutive batches stay
+# overlapped on-stream (a per-batch sync would serialize the pipeline).
+WINDOW = 8
 
 
 def make_nv12_frames(n: int, w: int, h: int) -> list[np.ndarray]:
@@ -146,30 +149,25 @@ def main() -> None:
         x = torch.from_dlpack(t)  # zero-copy: same device memory
         return infer(x)
 
-    # The harness times each fn() call individually; giving it a WINDOW of
-    # batches with a single sync keeps preprocess/inference of consecutive
-    # batches overlapped on-stream (a per-batch sync would serialize them).
-    WINDOW = 8
-
     def window() -> None:
         for _ in range(WINDOW):
             step()
         torch.cuda.synchronize()
 
     with torch.inference_mode():
-        # Warmup: JIT/NVRTC, staging allocation, cuDNN autotune / engine load.
-        for _ in range(5):
-            step()
-        torch.cuda.synchronize()
+        # bench()'s own warmup runs window() repeatedly — that covers
+        # JIT/NVRTC compilation, staging allocation, and cuDNN autotune.
         res = bench(window, name=args.engine, target_seconds=2.0, min_iters=5)
+        # One extra run just to grab logits for the sanity print below
+        # (reading logits[0] does the device→host sync implicitly).
         logits = step()
-        torch.cuda.synchronize()
 
     n = args.batch
-    per_frame = res.min_ms / WINDOW / n
+    per_batch = res.min_ms / WINDOW
+    per_frame = per_batch / n
     print(
         f"{args.engine}: {SRC_H}p NV12 x{n} → fused preprocess {args.size}² → "
-        f"inference: min {res.min_ms / WINDOW:.2f} ms/batch "
+        f"inference: min {per_batch:.2f} ms/batch "
         f"(p50 {res.p50_ms / WINDOW:.2f}) = {per_frame:.2f} ms/frame "
         f"({1e3 / per_frame:.0f} FPS)"
     )

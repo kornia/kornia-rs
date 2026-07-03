@@ -49,19 +49,19 @@ pub fn is_available() -> bool {
 /// Make the producer's pending work visible to the DLPack consumer's stream
 /// **without blocking the host** whenever the protocol allows.
 ///
-/// Per the array-API `__dlpack__` spec (CUDA): `None` = consumer gave no
-/// stream → conservative host sync; `-1` = consumer wants no sync; `1`/`2` =
-/// legacy / per-thread default stream; any other value = a raw `CUstream`
-/// handle. This module launches everything on the legacy default stream, so
-/// `1`/`2` are already ordered and a foreign stream gets an event fence —
-/// modern consumers (torch, cupy) never pay a host block.
+/// Per the array-API `__dlpack__` spec (CUDA): `-1` = consumer wants no
+/// sync; `1`/`2` = legacy / per-thread default stream; any other value = a
+/// raw `CUstream` handle. This module launches everything on the legacy
+/// default stream, so `1`/`2` are already ordered and a foreign stream gets
+/// an event fence — modern consumers (torch, cupy) never pay a host block.
+/// `None` (spec: producer may assume the legacy default stream) keeps a
+/// stricter-than-spec host sync by choice — it only reaches legacy consumers
+/// calling `__dlpack__()` bare, where safety beats a blocked host.
 fn dlpack_sync_for_consumer(stream: Option<isize>) -> PyResult<()> {
-    let s = default_stream()?;
     match stream {
-        Some(-1) => Ok(()),
-        Some(1) | Some(2) => Ok(()),
+        Some(-1) | Some(1) | Some(2) => Ok(()),
         Some(h) if h > 2 => {
-            let ev = s.record_event(None).map_err(err)?;
+            let ev = default_stream()?.record_event(None).map_err(err)?;
             // SAFETY: `h` is the consumer's live CUstream per the protocol;
             // the wait is enqueued before the event is dropped (legal —
             // CUDA keeps the event alive until the enqueued wait completes).
@@ -75,7 +75,7 @@ fn dlpack_sync_for_consumer(stream: Option<isize>) -> PyResult<()> {
             .result()
             .map_err(err)
         }
-        _ => s.synchronize().map_err(err),
+        _ => default_stream()?.synchronize().map_err(err),
     }
 }
 
@@ -1045,9 +1045,11 @@ pub fn register(py: Python<'_>, parent: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(sepia_from_rgb, &m)?)?;
     m.add_function(wrap_pyfunction!(apply_colormap, &m)?)?;
     m.add_function(wrap_pyfunction!(rgb_from_bayer, &m)?)?;
-    let (mean, std) = kornia_imgproc::preprocess::IMAGENET_NORMALIZE;
-    m.add("IMAGENET_MEAN", mean)?;
-    m.add("IMAGENET_STD", std)?;
+    // Re-exports of the top-level constants (device-agnostic, but handy here).
+    let [m0, m1, m2] = kornia_imgproc::preprocess::IMAGENET_MEAN;
+    let [s0, s1, s2] = kornia_imgproc::preprocess::IMAGENET_STD;
+    m.add("IMAGENET_MEAN", (m0, m1, m2))?;
+    m.add("IMAGENET_STD", (s0, s1, s2))?;
     m.add_class::<PyCudaImage>()?;
     m.add_class::<PyCudaTensor>()?;
     m.add_class::<PyCudaPreprocessor>()?;

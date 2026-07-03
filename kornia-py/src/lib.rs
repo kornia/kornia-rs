@@ -585,6 +585,13 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
         modules.set_item(name, submod)?;
     }
 
+    // Device-agnostic normalization presets (the CPU pipeline's
+    // resize_normalize_to_tensor wants these just as much as the CUDA one).
+    let [m0, m1, m2] = kornia_imgproc::preprocess::IMAGENET_MEAN;
+    let [s0, s1, s2] = kornia_imgproc::preprocess::IMAGENET_STD;
+    m.add("IMAGENET_MEAN", (m0, m1, m2))?;
+    m.add("IMAGENET_STD", (s0, s1, s2))?;
+
     #[cfg(feature = "cuda")]
     cuda_ext::register(py, m)?;
 

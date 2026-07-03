@@ -4,7 +4,7 @@
 permissive (``Any``) for now and can be fleshed out incrementally.
 """
 
-from typing import Any
+from typing import Any, Tuple
 
 from . import apriltag as apriltag
 from . import augmentations as augmentations
@@ -17,6 +17,11 @@ from . import io as io
 from . import k3d as k3d
 from . import pipeline as pipeline
 from . import segmentation as segmentation
+
+IMAGENET_MEAN: Tuple[float, float, float]
+"""Standard ImageNet per-channel mean (RGB), matching torchvision."""
+IMAGENET_STD: Tuple[float, float, float]
+"""Standard ImageNet per-channel std (RGB), matching torchvision."""
 
 __version__: str
 

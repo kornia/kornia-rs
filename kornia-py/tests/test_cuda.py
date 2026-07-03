@@ -2,7 +2,6 @@
 built without the `cuda` feature)."""
 
 import numpy as np
-from conftest import nv12_frame
 import pytest
 
 import kornia_rs
@@ -14,6 +13,11 @@ pytestmark = pytest.mark.skipif(
 )
 
 RNG = np.random.default_rng(42)
+
+
+def nv12_frame(w: int, h: int, rng: np.random.Generator) -> np.ndarray:
+    """A synthetic tightly-packed NV12 buffer (w*h luma + w*h/2 chroma)."""
+    return rng.integers(0, 256, (w * h * 3 // 2,), dtype=np.uint8)
 
 
 def _rgb(h=48, w=64):
@@ -157,9 +161,7 @@ def test_from_dlpack_zero_copy_aliases_producer():
 
 def test_preprocessor_run_batch_matches_single():
     w, h = 64, 48
-    frames = [
-        nv12_frame(w, h, RNG) for _ in range(3)
-    ]
+    frames = [nv12_frame(w, h, RNG) for _ in range(3)]
     pre = cuda.CudaPreprocessor(mode="letterbox", format="nv12")
     batch = pre.run_batch(frames, w, h, 32, 32)
     assert batch.shape == (3, 3, 32, 32)
