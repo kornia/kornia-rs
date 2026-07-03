@@ -85,18 +85,21 @@ fn build_kornia_detector(width: usize, height: usize) -> AprilTagDecoder {
     AprilTagDecoder::new(config, ImageSize { width, height }).unwrap()
 }
 
-/// Run the C detector on a grayscale byte slice and return `id → (hamming, corners)`.
+/// Run the C detector on a grayscale byte slice. Returns every detection as
+/// `(id, hamming, corners)` — a scene can legitimately contain the same tag
+/// id several times, so this must NOT be keyed by id (an id-keyed map here
+/// once masked a kornia dedup bug that dropped repeated ids).
 fn run_c(
     gray: &[u8],
     width: usize,
     height: usize,
     det: &mut apriltag::Detector,
-) -> HashMap<usize, (usize, [[f64; 2]; 4])> {
+) -> Vec<(usize, usize, [[f64; 2]; 4])> {
     let mut c_img = apriltag::Image::zeros_with_stride(width, height, width).unwrap();
     c_img.as_slice_mut().copy_from_slice(gray);
     det.detect(&c_img)
         .into_iter()
-        .map(|d| (d.id(), (d.hamming(), d.corners())))
+        .map(|d| (d.id(), d.hamming(), d.corners()))
         .collect()
 }
 
@@ -179,20 +182,21 @@ fn check_image(
 ) -> (usize, usize, f32) {
     println!("=== Testing: {} ({}×{}) ===", label, width, height);
 
-    let c_map = run_c(gray, width, height, c_det);
+    let c_dets = run_c(gray, width, height, c_det);
     // All kornia detections before dedup — lets us match C by spatial proximity.
     let k_all = run_kornia(gray, width, height, k_det);
 
     println!(
         "  C detections: {}, kornia detections: {}",
-        c_map.len(),
+        c_dets.len(),
         k_all.len()
     );
 
     let mut global_max_delta: f32 = 0.0;
 
     // Every C detection must have a spatially close Kornia candidate with matching hamming.
-    for (&c_id, (c_hamming, c_corners)) in &c_map {
+    for (c_id, c_hamming, c_corners) in &c_dets {
+        let (c_id, c_hamming) = (*c_id, c_hamming);
         // Filter candidates to those with same id AND hamming ≤ c_hamming (including equal).
         // We match on id AND hamming to mirror C's quick-decode semantics.
         let candidates: Vec<&KorniaDetection> = k_all
@@ -259,7 +263,7 @@ fn check_image(
         );
     }
 
-    (c_map.len(), k_all.len(), global_max_delta)
+    (c_dets.len(), k_all.len(), global_max_delta)
 }
 
 // ─── test functions ──────────────────────────────────────────────────────────
@@ -296,6 +300,24 @@ fn test_parity_tag36h11_apriltags_jpg() {
     assert!(
         c_count > 0,
         "C detector found no tags in apriltags_tag36h11.jpg — image load or C library issue?"
+    );
+
+    // Regression guard: the scene contains the SAME tag id at several
+    // locations. Post-dedup kornia must keep every physical instance exactly
+    // like C does (an id-keyed dedup once collapsed all seven to one).
+    let img = Image::<u8, 1>::from_size_slice(
+        ImageSize {
+            width: w,
+            height: h,
+        },
+        &gray,
+    )
+    .unwrap();
+    let deduped = k_det.decode(&img).unwrap();
+    assert_eq!(
+        deduped.len(),
+        c_count,
+        "post-dedup kornia detection count must match C on the repeated-id scene"
     );
 }
 
