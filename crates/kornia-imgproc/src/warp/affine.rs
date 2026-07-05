@@ -4,7 +4,7 @@ use kornia_image::{Image, ImageError};
 use rayon::prelude::*;
 
 use super::kernels::process_affine_span;
-use crate::interpolation::{interpolate_pixel_fast, validate_interpolation, InterpolationMode};
+use crate::interpolation::{validate_interpolation, InterpolationMode};
 
 /// Inverts a 2x3 affine transformation matrix.
 ///
