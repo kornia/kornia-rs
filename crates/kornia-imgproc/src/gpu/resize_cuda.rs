@@ -196,18 +196,12 @@ extern "C" __global__ void resize_bilinear_normalize_3c(
 
 // ── CUDA C source: bicubic resize ─────────────────────────────────────────────
 //
-// Reuses the same Keys cubic weight and 4×4 tap loop as the warp-affine
-// bicubic kernel. Half-pixel centre alignment matches the bilinear kernel.
-// Works for both upscale and downscale.
+// Same Keys cubic (a = -0.5) as the warp-affine bicubic kernel. Applies the
+// same Horner-form weight precomputation, row-base hoisting, #pragma unroll,
+// and fmaf accumulation. Half-pixel centre alignment (matches OpenCV/PIL).
+// Handles both upscale and downscale.
 
 static BICUBIC_SRC: &str = r#"
-__device__ __forceinline__ float cubic_w(float t) {
-    t = fabsf(t);
-    if (t < 1.0f) return 1.5f*t*t*t - 2.5f*t*t + 1.0f;
-    if (t < 2.0f) return -0.5f*t*t*t + 2.5f*t*t - 4.0f*t + 2.0f;
-    return 0.0f;
-}
-
 extern "C" __global__ void resize_bicubic_3c(
     const float* __restrict__ src,
     float* __restrict__       dst,
@@ -231,18 +225,38 @@ extern "C" __global__ void resize_bicubic_3c(
     float frac_x = sx - (float)x0;
     float frac_y = sy - (float)y0;
 
+    // Horner-form cubic weights — see warp_affine_bicubic_3c for derivation.
+    float wx[4], wy[4];
+    {
+        float t;
+        t = 1.0f + frac_x; wx[0] = ((-0.5f*t + 2.5f)*t - 4.0f)*t + 2.0f;
+        t =         frac_x; wx[1] = (( 1.5f*t - 2.5f)*t       )*t + 1.0f;
+        t = 1.0f - frac_x; wx[2] = (( 1.5f*t - 2.5f)*t       )*t + 1.0f;
+        t = 2.0f - frac_x; wx[3] = ((-0.5f*t + 2.5f)*t - 4.0f)*t + 2.0f;
+        t = 1.0f + frac_y; wy[0] = ((-0.5f*t + 2.5f)*t - 4.0f)*t + 2.0f;
+        t =         frac_y; wy[1] = (( 1.5f*t - 2.5f)*t       )*t + 1.0f;
+        t = 1.0f - frac_y; wy[2] = (( 1.5f*t - 2.5f)*t       )*t + 1.0f;
+        t = 2.0f - frac_y; wy[3] = ((-0.5f*t + 2.5f)*t - 4.0f)*t + 2.0f;
+    }
+
+    unsigned int row[4];
+    #pragma unroll
+    for (int i = 0; i < 4; ++i) {
+        int yi = max(0, min(y0 + i - 1, (int)src_h - 1));
+        row[i] = (unsigned int)yi * src_w * 3u;
+    }
+
     float acc0 = 0.0f, acc1 = 0.0f, acc2 = 0.0f;
-    for (int dy = -1; dy <= 2; ++dy) {
-        float wy = cubic_w((float)dy - frac_y);
-        for (int dx = -1; dx <= 2; ++dx) {
-            float wx = cubic_w((float)dx - frac_x);
-            int xi = max(0, min(x0 + dx, (int)src_w - 1));
-            int yi = max(0, min(y0 + dy, (int)src_h - 1));
-            unsigned int b = ((unsigned int)yi * src_w + (unsigned int)xi) * 3u;
-            float w = wx * wy;
-            acc0 += w * __ldg(&src[b]);
-            acc1 += w * __ldg(&src[b+1]);
-            acc2 += w * __ldg(&src[b+2]);
+    #pragma unroll
+    for (int dy = 0; dy < 4; ++dy) {
+        #pragma unroll
+        for (int dx = 0; dx < 4; ++dx) {
+            int xi = max(0, min(x0 + dx - 1, (int)src_w - 1));
+            unsigned int b = row[dy] + (unsigned int)xi * 3u;
+            float w = wx[dx] * wy[dy];
+            acc0 = fmaf(w, __ldg(&src[b]),   acc0);
+            acc1 = fmaf(w, __ldg(&src[b+1]), acc1);
+            acc2 = fmaf(w, __ldg(&src[b+2]), acc2);
         }
     }
     unsigned int out = (dst_y * dst_w + dst_x) * 3u;

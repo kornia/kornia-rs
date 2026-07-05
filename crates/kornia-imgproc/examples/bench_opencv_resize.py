@@ -26,6 +26,15 @@ CASES = [
     ((3840, 2160), (1920, 1080)),
 ]
 
+# All cases including upscale (matches bicubic section of bench_gpu_resize.rs).
+CASES_BICUBIC = [
+    ((1024, 1024), (512, 512)),
+    ((512, 512), (1024, 1024)),
+    ((1920, 1080), (960, 540)),
+    ((1920, 1080), (3840, 2160)),
+    ((3840, 2160), (1920, 1080)),
+]
+
 try:
     import torch
     import torch.nn.functional as F
@@ -193,3 +202,83 @@ print("    bilinear: 1024²→512²=0.082ms  1920×1080→960×540=0.101ms  4K�
 bench_cv2_cpu()
 bench_cv2_cuda()
 bench_torch_gpu()
+
+# ── bicubic ───────────────────────────────────────────────────────────────────
+
+def bench_cv2_cpu_bicubic():
+    print(f"\n=== cv2 {cv2.__version__} CPU  resize bicubic (INTER_CUBIC)  ({ITERS} iters) ===")
+    print(f"  {'case':<28}  {'ms/iter':>9}  {'GB/s':>8}")
+    print("  " + "-" * 50)
+    for (sw, sh), (dw, dh) in CASES_BICUBIC:
+        src = np.random.rand(sh, sw, 3).astype(np.float32)
+        for _ in range(WARMUP):
+            cv2.resize(src, (dw, dh), interpolation=cv2.INTER_CUBIC)
+        t0 = time.perf_counter()
+        for _ in range(ITERS):
+            cv2.resize(src, (dw, dh), interpolation=cv2.INTER_CUBIC)
+        ms = (time.perf_counter() - t0) * 1e3 / ITERS
+        print(f"  {case_label(sw,sh,dw,dh):<28}  {ms:>9.3f}  {gb_per_sec_resize(sw,sh,dw,dh,ms):>8.2f}")
+
+def bench_cv2_cuda_bicubic():
+    if not HAS_CV2_CUDA:
+        print(f"\n=== cv2 CUDA resize bicubic — SKIPPED (no CUDA OpenCV) ===")
+        return
+    print(f"\n=== cv2 CUDA  resize bicubic  ({ITERS} iters) ===")
+    print(f"  {'case':<28}  {'ms/iter':>9}  {'GB/s':>8}  {'vs RS GPU':>12}")
+    print("  " + "-" * 65)
+    rs_ms_bicubic = {
+        (1024,1024,512,512): 0.120, (512,512,1024,1024): 0.207,
+        (1920,1080,960,540): 0.245, (1920,1080,3840,2160): 1.709,
+        (3840,2160,1920,1080): 0.959,
+    }
+    for (sw, sh), (dw, dh) in CASES_BICUBIC:
+        src = np.random.rand(sh, sw, 3).astype(np.float32)
+        gpu_src = cv2.cuda_GpuMat()
+        gpu_src.upload(src)
+        for _ in range(WARMUP):
+            cv2.cuda.resize(gpu_src, (dw, dh), interpolation=cv2.INTER_CUBIC)
+        cv2.cuda.Stream_Null().waitForCompletion()
+        t0 = time.perf_counter()
+        for _ in range(ITERS):
+            cv2.cuda.resize(gpu_src, (dw, dh), interpolation=cv2.INTER_CUBIC)
+        cv2.cuda.Stream_Null().waitForCompletion()
+        ms = (time.perf_counter() - t0) * 1e3 / ITERS
+        rs_ms = rs_ms_bicubic.get((sw, sh, dw, dh), ms)
+        ratio = ms / rs_ms
+        cmp = f"{ratio:.2f}× {'slower' if ratio > 1 else 'faster'}"
+        print(f"  {case_label(sw,sh,dw,dh):<28}  {ms:>9.3f}  {gb_per_sec_resize(sw,sh,dw,dh,ms):>8.2f}  {cmp:>12}")
+
+def bench_torch_gpu_bicubic():
+    if not TORCH_CUDA:
+        print(f"\n=== PyTorch GPU resize bicubic — SKIPPED (no CUDA torch) ===")
+        return
+    print(f"\n=== PyTorch {torch.__version__} GPU  interpolate bicubic  ({ITERS} iters) ===")
+    print(f"  {'case':<28}  {'ms/iter':>9}  {'GB/s':>8}  {'vs RS GPU':>12}")
+    print("  " + "-" * 65)
+    rs_ms_bicubic = {
+        (1024,1024,512,512): 0.120, (512,512,1024,1024): 0.207,
+        (1920,1080,960,540): 0.245, (1920,1080,3840,2160): 1.709,
+        (3840,2160,1920,1080): 0.959,
+    }
+    for (sw, sh), (dw, dh) in CASES_BICUBIC:
+        src_np = np.random.rand(sh, sw, 3).astype(np.float32)
+        src_t  = torch.from_numpy(src_np).permute(2, 0, 1).unsqueeze(0).cuda()
+        for _ in range(WARMUP):
+            F.interpolate(src_t, size=(dh, dw), mode="bicubic", align_corners=False)
+        torch.cuda.synchronize()
+        start = torch.cuda.Event(enable_timing=True)
+        end   = torch.cuda.Event(enable_timing=True)
+        start.record()
+        for _ in range(ITERS):
+            F.interpolate(src_t, size=(dh, dw), mode="bicubic", align_corners=False)
+        end.record()
+        torch.cuda.synchronize()
+        ms = start.elapsed_time(end) / ITERS
+        rs_ms = rs_ms_bicubic.get((sw, sh, dw, dh), ms)
+        ratio = ms / rs_ms
+        cmp = f"{ratio:.2f}× {'slower' if ratio > 1 else 'faster'}"
+        print(f"  {case_label(sw,sh,dw,dh):<28}  {ms:>9.3f}  {gb_per_sec_resize(sw,sh,dw,dh,ms):>8.2f}  {cmp:>12}")
+
+bench_cv2_cpu_bicubic()
+bench_cv2_cuda_bicubic()
+bench_torch_gpu_bicubic()

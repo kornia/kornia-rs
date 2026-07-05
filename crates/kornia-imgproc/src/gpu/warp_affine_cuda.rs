@@ -127,23 +127,16 @@ extern "C" __global__ void warp_affine_nearest_3c(
 
 // ── CUDA C source: bicubic warp affine ───────────────────────────────────────
 //
-// Keys cubic weight (a = -0.5, matches OpenCV INTER_CUBIC):
-//   w(t) = 1.5t³ - 2.5t² + 1       for |t| ≤ 1
-//   w(t) = -0.5t³ + 2.5t² - 4t + 2 for 1 < |t| ≤ 2
-//
-// The 4×4 tap neighborhood spans dx, dy ∈ {-1, 0, 1, 2} relative to
-// floor(sx)/floor(sy). Out-of-range taps are clamped to the image border
-// (BORDER_REPLICATE). Pixels whose centre falls outside the source image
-// are filled with zero (BORDER_CONSTANT), matching the bilinear kernel.
+// Keys cubic (a = -0.5, matches OpenCV INTER_CUBIC). Weights are computed via
+// Horner form without branches: frac ∈ [0,1) places each tap in a known
+// polynomial region, eliminating fabsf and the two conditionals of a generic
+// cubic_w helper. Precomputing wx[4]/wy[4] before the loop removes the 12
+// redundant x-weight evaluations the naive loop would incur. Row base addresses
+// are precomputed outside the inner loop to move the row-multiply out of the
+// critical path. #pragma unroll lets ptxas allocate wx/wy in registers and
+// issue all 16 __ldg loads without loop overhead.
 
 static BICUBIC_SRC: &str = r#"
-__device__ __forceinline__ float cubic_w(float t) {
-    t = fabsf(t);
-    if (t < 1.0f) return 1.5f*t*t*t - 2.5f*t*t + 1.0f;
-    if (t < 2.0f) return -0.5f*t*t*t + 2.5f*t*t - 4.0f*t + 2.0f;
-    return 0.0f;
-}
-
 extern "C" __global__ void warp_affine_bicubic_3c(
     const float* __restrict__ src,
     float* __restrict__       dst,
@@ -173,18 +166,43 @@ extern "C" __global__ void warp_affine_bicubic_3c(
     float frac_x = sx - (float)x0;
     float frac_y = sy - (float)y0;
 
+    // Horner-form cubic weights, branch-free. frac in [0,1) gives:
+    //   i=0 (tap -1): |t|=1+frac → second poly  -0.5t³+2.5t²-4t+2
+    //   i=1 (tap  0): |t|=frac   → first poly    1.5t³-2.5t²+1
+    //   i=2 (tap +1): |t|=1-frac → first poly
+    //   i=3 (tap +2): |t|=2-frac → second poly
+    float wx[4], wy[4];
+    {
+        float t;
+        t = 1.0f + frac_x; wx[0] = ((-0.5f*t + 2.5f)*t - 4.0f)*t + 2.0f;
+        t =         frac_x; wx[1] = (( 1.5f*t - 2.5f)*t       )*t + 1.0f;
+        t = 1.0f - frac_x; wx[2] = (( 1.5f*t - 2.5f)*t       )*t + 1.0f;
+        t = 2.0f - frac_x; wx[3] = ((-0.5f*t + 2.5f)*t - 4.0f)*t + 2.0f;
+        t = 1.0f + frac_y; wy[0] = ((-0.5f*t + 2.5f)*t - 4.0f)*t + 2.0f;
+        t =         frac_y; wy[1] = (( 1.5f*t - 2.5f)*t       )*t + 1.0f;
+        t = 1.0f - frac_y; wy[2] = (( 1.5f*t - 2.5f)*t       )*t + 1.0f;
+        t = 2.0f - frac_y; wy[3] = ((-0.5f*t + 2.5f)*t - 4.0f)*t + 2.0f;
+    }
+
+    // Row base addresses precomputed: moves the row multiply outside the inner loop.
+    unsigned int row[4];
+    #pragma unroll
+    for (int i = 0; i < 4; ++i) {
+        int yi = max(0, min(y0 + i - 1, (int)src_h - 1));
+        row[i] = (unsigned int)yi * src_w * 3u;
+    }
+
     float acc0 = 0.0f, acc1 = 0.0f, acc2 = 0.0f;
-    for (int dy = -1; dy <= 2; ++dy) {
-        float wy = cubic_w((float)dy - frac_y);
-        for (int dx = -1; dx <= 2; ++dx) {
-            float wx = cubic_w((float)dx - frac_x);
-            int xi = max(0, min(x0 + dx, (int)src_w - 1));
-            int yi = max(0, min(y0 + dy, (int)src_h - 1));
-            unsigned int b = ((unsigned int)yi * src_w + (unsigned int)xi) * 3u;
-            float w = wx * wy;
-            acc0 += w * __ldg(&src[b]);
-            acc1 += w * __ldg(&src[b+1]);
-            acc2 += w * __ldg(&src[b+2]);
+    #pragma unroll
+    for (int dy = 0; dy < 4; ++dy) {
+        #pragma unroll
+        for (int dx = 0; dx < 4; ++dx) {
+            int xi = max(0, min(x0 + dx - 1, (int)src_w - 1));
+            unsigned int b = row[dy] + (unsigned int)xi * 3u;
+            float w = wx[dx] * wy[dy];
+            acc0 = fmaf(w, __ldg(&src[b]),   acc0);
+            acc1 = fmaf(w, __ldg(&src[b+1]), acc1);
+            acc2 = fmaf(w, __ldg(&src[b+2]), acc2);
         }
     }
     dst[out]     = acc0;

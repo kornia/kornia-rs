@@ -316,6 +316,94 @@ and AVX2 paths separately and in isolation from any GPU activity.
 
 ---
 
+---
+
+## GPU bicubic benchmarks — native CUDA (NVRTC) — 2026-07-06
+
+Keys cubic interpolation (`a = -0.5`, matching OpenCV `INTER_CUBIC`).  4×4 tap
+neighborhood; out-of-range taps clamped (BORDER_REPLICATE); OOB centre pixels
+zero-filled (BORDER_CONSTANT).  All 16 source reads via `__ldg`.
+
+**Kernel optimisations** (relative to the first implementation):
+
+- **Horner-form weight precomputation** — `frac ∈ [0,1)` places each tap in a
+  known polynomial region, making all 8 weight computations branch-free.
+  Eliminates `fabsf` + two conditionals from the naive `cubic_w` helper, and
+  removes the 12 redundant x-weight evaluations the original loop incurred.
+- **Row base hoisting** — 4 row-address multiplies moved outside the inner loop.
+- **`#pragma unroll` + `fmaf`** — ptxas fully unrolls the 4×4 tap loop and
+  emits one fused multiply-add per channel per tap.
+
+Result: **+7–10% downscale**, **+33–34% upscale** vs the unoptimised version.
+Warp-affine bicubic unchanged (scattered DRAM reads from rotation are the bottleneck).
+
+```sh
+cargo run --example bench_gpu_resize    --features gpu-cuda --release
+cargo run --example bench_gpu_warp_affine --features gpu-cuda --release
+# Python comparison (requires opencv-python and/or torch with CUDA)
+python3 crates/kornia-imgproc/examples/bench_opencv_resize.py
+python3 crates/kornia-imgproc/examples/bench_opencv_warp_affine.py
+```
+
+### Hardware / software
+
+| Field | Value |
+|-------|-------|
+| GPU | NVIDIA GeForce GTX 1650 4 GiB — GDDR5, ~128 GB/s peak |
+| CUDA | nvcc 12.4, cudarc 0.19.8, NVRTC |
+| Rust | 1.87.0, `--release` |
+| OpenCV | 5.0.0 (CPU only — no CUDA build; GPU column N/A) |
+| PyTorch | 2.9.1+cu128 |
+| Warmup | 50 iters; Timed | 200 iters |
+
+### Bicubic resize
+
+| Source → Dest | kornia-rs ms | GB/s | cv2 CPU ms | PyTorch GPU ms | vs cv2 CPU | vs PyTorch GPU |
+|---------------|-------------:|-----:|-----------:|---------------:|-----------:|---------------:|
+| 1024²→512² | 0.120 | 52.6 | 1.826 | 0.814 | **15×** | **6.8×** |
+| 512²→1024² | 0.207 | 121.4 | 4.987 | 2.875 | **24×** | **13.9×** |
+| 1920×1080→960×540 | 0.245 | 50.8 | 5.691 | 1.610 | **23×** | **6.6×** |
+| 1920×1080→3840×2160 | 1.709 | 116.5 | 32.204 | 23.170 | **19×** | **13.6×** |
+| 3840×2160→1920×1080 | 0.959 | 51.9 | 15.091 | 6.550 | **16×** | **6.8×** |
+
+### Bicubic warp-affine (45° centre rotation)
+
+| Size | kornia-rs ms | GB/s | cv2 CPU ms | PyTorch GPU ms | vs cv2 CPU | vs PyTorch GPU |
+|------|-------------:|-----:|-----------:|---------------:|-----------:|---------------:|
+| 256×224 | 0.065 | 21.1 | 0.156 | 0.207 | **2.4×** | **3.2×** |
+| 512×448 | 0.244 | 22.6 | 1.072 | 0.750 | **4.4×** | **3.1×** |
+| 1024×896 | 0.936 | 23.5 | 6.916 | 2.769 | **7.4×** | **3.0×** |
+| 1920×1080 | 1.951 | 25.5 | 12.333 | 5.924 | **6.3×** | **3.0×** |
+
+OpenCV CUDA and OpenCV 4.13 CUDA columns are N/A — no CUDA-enabled OpenCV build
+available on this machine; add `-DWITH_CUDA=ON -DCUDA_ARCH_BIN=7.5` when building
+OpenCV from source and rerun the Python scripts to populate these columns.
+
+**Key findings:**
+
+- kornia-rs bicubic resize is **6.6–24× faster than OpenCV 5.0 CPU** and
+  **6.6–14× faster than PyTorch bicubic GPU** across all cases.
+- The upscale cases (512→1024, 1080p→4K) are significantly faster than
+  downscale because output-pixel count drives latency and cache reuse is
+  excellent (many output pixels map to the same small source region).
+- Warp-affine bicubic at 45° rotation is bandwidth-limited by scattered
+  DRAM reads; `__ldg` and `CU_FUNC_CACHE_PREFER_L1` are the main levers.
+  PyTorch `grid_sample(bicubic)` allocates an intermediate grid tensor per
+  call, explaining the 3× gap even for small sizes.
+- Bicubic downscale is ~2× slower than bilinear downscale (both are DRAM-bound;
+  16 reads vs 4 reads, partially amortised by L1 reuse within the 4×4 tap
+  neighbourhood).
+
+### Interpolation comparison — resize 1920×1080→960×540
+
+| Method | kornia-rs ms | GB/s | vs bilinear |
+|--------|-------------:|-----:|------------:|
+| Nearest | 0.107 | 116.5 | 1.6× faster |
+| Bilinear | 0.178 | 70.0 | baseline |
+| Bicubic | 0.245 | 50.8 | 1.4× slower |
+
+---
+
 ## CUDA driver status
 
 Confirmed working as of 2026-06-15.  If the kernel-module / userspace mismatch
