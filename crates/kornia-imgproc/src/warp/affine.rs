@@ -147,6 +147,8 @@ pub fn warp_affine<const C: usize>(
     let compute_range = |sx0: f32, sy0: f32| -> (usize, usize) {
         let (mut lo, mut hi) = (0i64, dst_w as i64);
         for (d, s0, upper) in [(dsx, sx0, src_w_f), (dsy, sy0, src_h_f)] {
+            // 1e-6 covers f32 trig imprecision (e.g. cos(π/2) ≈ −4.4e-8);
+            // assumes source step ≥ ~1e-6 px/col (extreme downscale > 1e6:1 is not a use case here).
             if d.abs() < 1e-6 {
                 if s0 < 0.0 || s0 >= upper {
                     return (0, 0);
@@ -259,34 +261,9 @@ pub fn warp_affine<const C: usize>(
                     );
                 });
         }
-        _ => {
-            dst.as_slice_mut()
-                .par_chunks_mut(row_len * ROWS_PER_TASK)
-                .enumerate()
-                .for_each(|(ci, chunk)| {
-                    let y_base = ci * ROWS_PER_TASK;
-                    for (dy, dst_row) in chunk.chunks_exact_mut(row_len).enumerate() {
-                        let y_f = (y_base + dy) as f32;
-                        let sx0 = m_inv[1] * y_f + m_inv[2];
-                        let sy0 = m_inv[4] * y_f + m_inv[5];
-                        let (x_lo, x_hi) = compute_range(sx0, sy0);
-                        dst_row[..x_lo * C].fill(0.0);
-                        dst_row[x_hi * C..].fill(0.0);
-                        let mut sx_fb = sx0;
-                        let mut sy_fb = sy0;
-                        for (x, dst_pixel) in dst_row.chunks_exact_mut(C).enumerate() {
-                            if x >= x_lo && x < x_hi {
-                                dst_pixel.iter_mut().enumerate().for_each(|(k, p)| {
-                                    *p =
-                                        interpolate_pixel_fast(src, sx_fb, sy_fb, k, interpolation);
-                                });
-                            }
-                            sx_fb += dsx;
-                            sy_fb += dsy;
-                        }
-                    }
-                });
-        }
+        // validate_interpolation at the top of this function rejects every mode
+        // other than Nearest and Bilinear, so this arm is unreachable.
+        _ => unreachable!(),
     }
 
     Ok(())
