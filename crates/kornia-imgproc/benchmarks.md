@@ -14,6 +14,13 @@ cargo run --example bench_gpu_resize --features gpu-cubecl --release
 # OpenCV CPU comparison (requires Python + opencv-python)
 python3 crates/kornia-imgproc/examples/bench_opencv_color.py
 python3 crates/kornia-imgproc/examples/bench_opencv_resize.py
+
+# OpenCV CUDA comparison (requires OpenCV built with -DWITH_CUDA=ON)
+# If cv2 CUDA build is in dist-packages rather than site-packages:
+PYTHONPATH=/path/to/cuda-opencv/dist-packages \
+  python3 crates/kornia-imgproc/examples/bench_opencv_resize.py
+PYTHONPATH=/path/to/cuda-opencv/dist-packages \
+  python3 crates/kornia-imgproc/examples/bench_opencv_warp_affine.py
 ```
 
 ## Methodology
@@ -340,9 +347,12 @@ Warp-affine bicubic unchanged (scattered DRAM reads from rotation are the bottle
 ```sh
 cargo run --example bench_gpu_resize    --features gpu-cuda --release
 cargo run --example bench_gpu_warp_affine --features gpu-cuda --release
-# Python comparison (requires opencv-python and/or torch with CUDA)
-python3 crates/kornia-imgproc/examples/bench_opencv_resize.py
-python3 crates/kornia-imgproc/examples/bench_opencv_warp_affine.py
+# Python comparison (requires CUDA-built OpenCV + torch with CUDA)
+# PYTHONPATH points to the CUDA-enabled cv2 build in dist-packages:
+PYTHONPATH=/home/incharanew/.local/lib/python3.10/dist-packages \
+  python3 crates/kornia-imgproc/examples/bench_opencv_resize.py
+PYTHONPATH=/home/incharanew/.local/lib/python3.10/dist-packages \
+  python3 crates/kornia-imgproc/examples/bench_opencv_warp_affine.py
 ```
 
 ### Hardware / software
@@ -352,53 +362,47 @@ python3 crates/kornia-imgproc/examples/bench_opencv_warp_affine.py
 | GPU | NVIDIA GeForce GTX 1650 4 GiB — GDDR5, ~128 GB/s peak |
 | CUDA | nvcc 12.4, cudarc 0.19.8, NVRTC |
 | Rust | 1.87.0, `--release` |
-| OpenCV | 5.0.0 (CPU only — no CUDA build; GPU column N/A) |
+| OpenCV | 4.12.0 built with `-DWITH_CUDA=ON -DCUDA_ARCH_BIN=7.5` |
 | PyTorch | 2.9.1+cu128 |
 | Warmup | 50 iters; Timed | 200 iters |
 
 ### Bicubic resize
 
-| Source → Dest | kornia-rs ms | GB/s | cv2 CPU ms | PyTorch GPU ms | vs cv2 CPU | vs PyTorch GPU |
-|---------------|-------------:|-----:|-----------:|---------------:|-----------:|---------------:|
-| 1024²→512² | 0.120 | 52.6 | 1.826 | 0.814 | **15×** | **6.8×** |
-| 512²→1024² | 0.207 | 121.4 | 4.987 | 2.875 | **24×** | **13.9×** |
-| 1920×1080→960×540 | 0.245 | 50.8 | 5.691 | 1.610 | **23×** | **6.6×** |
-| 1920×1080→3840×2160 | 1.709 | 116.5 | 32.204 | 23.170 | **19×** | **13.6×** |
-| 3840×2160→1920×1080 | 0.959 | 51.9 | 15.091 | 6.550 | **16×** | **6.8×** |
+| Source → Dest | kornia-rs ms | GB/s | cv2 CPU ms | cv2 CUDA ms | PyTorch GPU ms | vs cv2 CPU | vs cv2 CUDA | vs PyTorch GPU |
+|---------------|-------------:|-----:|-----------:|------------:|---------------:|-----------:|------------:|---------------:|
+| 1024²→512² | 0.120 | 52.6 | 1.071 | 0.320 | 0.803 | **8.9×** | **2.7×** | **6.7×** |
+| 512²→1024² | 0.207 | 121.4 | 2.026 | 0.539 | 2.875 | **9.8×** | **2.6×** | **13.9×** |
+| 1920×1080→960×540 | 0.245 | 50.8 | 2.559 | 0.464 | 1.611 | **10.4×** | **1.9×** | **6.6×** |
+| 1920×1080→3840×2160 | 1.709 | 116.5 | 23.620 | 3.289 | 23.168 | **13.8×** | **1.9×** | **13.6×** |
+| 3840×2160→1920×1080 | 0.959 | 51.9 | 10.896 | 1.696 | 6.549 | **11.4×** | **1.8×** | **6.8×** |
 
 ### Bicubic warp-affine (45° centre rotation)
 
-| Size | kornia-rs ms | GB/s | cv2 CPU ms | PyTorch GPU ms | vs cv2 CPU | vs PyTorch GPU |
-|------|-------------:|-----:|-----------:|---------------:|-----------:|---------------:|
-| 256×224 | 0.065 | 21.1 | 0.156 | 0.207 | **2.4×** | **3.2×** |
-| 512×448 | 0.244 | 22.6 | 1.072 | 0.750 | **4.4×** | **3.1×** |
-| 1024×896 | 0.936 | 23.5 | 6.916 | 2.769 | **7.4×** | **3.0×** |
-| 1920×1080 | 1.951 | 25.5 | 12.333 | 5.924 | **6.3×** | **3.0×** |
-
-OpenCV CUDA and OpenCV 4.13 CUDA columns are N/A — no CUDA-enabled OpenCV build
-available on this machine; add `-DWITH_CUDA=ON -DCUDA_ARCH_BIN=7.5` when building
-OpenCV from source and rerun the Python scripts to populate these columns.
+| Size | kornia-rs ms | GB/s | cv2 CPU ms | cv2 CUDA ms | PyTorch GPU ms | vs cv2 CPU | vs cv2 CUDA | vs PyTorch GPU |
+|------|-------------:|-----:|-----------:|------------:|---------------:|-----------:|------------:|---------------:|
+| 256×224 | 0.065 | 21.1 | 1.172 | 0.109 | 0.163 | **18×** | **1.7×** | **2.5×** |
+| 512×448 | 0.244 | 22.6 | 3.278 | 0.419 | 0.657 | **13×** | **1.7×** | **2.7×** |
+| 1024×896 | 0.936 | 23.5 | 10.061 | 1.288 | 2.738 | **11×** | **1.4×** | **2.9×** |
+| 1920×1080 | 1.951 | 25.5 | 32.304 | 2.576 | 5.849 | **17×** | **1.3×** | **3.0×** |
 
 **Key findings:**
 
-- kornia-rs bicubic resize is **6.6–24× faster than OpenCV 5.0 CPU** and
-  **6.6–14× faster than PyTorch bicubic GPU** across all cases.
-- The upscale cases (512→1024, 1080p→4K) are significantly faster than
-  downscale because output-pixel count drives latency and cache reuse is
-  excellent (many output pixels map to the same small source region).
-- Warp-affine bicubic at 45° rotation is bandwidth-limited by scattered
-  DRAM reads; `__ldg` and `CU_FUNC_CACHE_PREFER_L1` are the main levers.
-  PyTorch `grid_sample(bicubic)` allocates an intermediate grid tensor per
-  call, explaining the 3× gap even for small sizes.
-- Bicubic downscale is ~2× slower than bilinear downscale (both are DRAM-bound;
-  16 reads vs 4 reads, partially amortised by L1 reuse within the 4×4 tap
-  neighbourhood).
+- kornia-rs bicubic resize is **8.9–13.8× faster than OpenCV 4.12 CPU** and
+  **1.8–2.7× faster than OpenCV 4.12 CUDA** and **6.6–14× faster than PyTorch GPU**.
+- The upscale cases (512→1024, 1080p→4K) show the largest gap vs PyTorch (~14×)
+  because output-pixel count drives latency, cache reuse is excellent, and
+  PyTorch adds Python/dispatcher overhead per call.
+- Warp-affine bicubic is **1.3–1.7× faster than OpenCV CUDA** and **2.5–3× faster
+  than PyTorch `grid_sample(bicubic)`** (which allocates an intermediate grid
+  tensor per call at every size).
+- Bicubic downscale is ~1.4× slower than bilinear downscale (DRAM-bound; 16
+  reads vs 4, partially amortised by L1 reuse within the 4×4 tap neighbourhood).
 
 ### Interpolation comparison — resize 1920×1080→960×540
 
 | Method | kornia-rs ms | GB/s | vs bilinear |
 |--------|-------------:|-----:|------------:|
-| Nearest | 0.107 | 116.5 | 1.6× faster |
+| Nearest | 0.107 | 116.5 | 1.7× faster |
 | Bilinear | 0.178 | 70.0 | baseline |
 | Bicubic | 0.245 | 50.8 | 1.4× slower |
 
