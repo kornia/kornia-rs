@@ -3,7 +3,7 @@ use candle_core::{DType, Device};
 // helper function to know if the gpu supports bf16
 #[cfg(feature = "cuda")]
 fn cuda_supports_bf16(ordinal: usize) -> bool {
-    use cudarc::driver::CudaDevice;
+    use cudarc::driver::safe::CudaDevice;
     match CudaDevice::new(ordinal) {
         Ok(dev) => {
             let major = dev.attribute(cudarc::driver::sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR)
