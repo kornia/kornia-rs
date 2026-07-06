@@ -65,6 +65,9 @@ fn main() {
     run_gpu_cuda();
 
     #[cfg(feature = "gpu-cuda")]
+    run_gpu_cuda_bicubic();
+
+    #[cfg(feature = "gpu-cuda")]
     run_gpu_cuda_fused_normalize();
 
     #[cfg(not(feature = "gpu-cuda"))]
@@ -308,6 +311,60 @@ fn run_gpu_cuda() {
                 gb_per_sec(npix_dst, ms),
             );
         }
+    }
+}
+
+// --------------------------------------------------------------------------
+// Bicubic resize section (feature gpu-cuda)
+// --------------------------------------------------------------------------
+
+#[cfg(feature = "gpu-cuda")]
+fn run_gpu_cuda_bicubic() {
+    use cudarc::driver::CudaContext;
+    use kornia_imgproc::gpu::resize_cuda::launch_resize_bicubic_cuda;
+
+    let ctx = std::sync::Arc::new(CudaContext::new(0).expect("CUDA context"));
+    let stream = ctx.default_stream();
+
+    println!("\n=== native CUDA bicubic resize (__ldg, 4×4 taps, 32×8 grid, {ITERS} iters) ===");
+    println!(
+        "  {:<24}  {:>10}  {:>10}",
+        "case (src→dst)", "ms/iter", "GB/s"
+    );
+    println!("  {}", "-".repeat(50));
+
+    for &(sw, sh, dw, dh) in CASES {
+        let npix_src = (sw * sh) as usize;
+        let npix_dst = (dw * dh) as usize;
+        let nc = NC as usize;
+
+        let src_data: Vec<f32> = (0..npix_src * nc)
+            .map(|i| (i % 256) as f32 / 255.0)
+            .collect();
+
+        let src_dev = stream.clone_htod(&src_data).expect("H→D src copy");
+        let mut dst_dev = stream.alloc_zeros::<f32>(npix_dst * nc).expect("alloc dst");
+
+        for _ in 0..WARMUP {
+            launch_resize_bicubic_cuda(&ctx, &stream, &src_dev, &mut dst_dev, sw, sh, dw, dh)
+                .expect("bicubic launch");
+        }
+        stream.synchronize().expect("sync");
+
+        let t = std::time::Instant::now();
+        for _ in 0..ITERS {
+            launch_resize_bicubic_cuda(&ctx, &stream, &src_dev, &mut dst_dev, sw, sh, dw, dh)
+                .expect("bicubic launch");
+        }
+        stream.synchronize().expect("sync");
+        let ms = t.elapsed().as_secs_f64() * 1e3 / ITERS as f64;
+
+        println!(
+            "  {:<24}  {:>10.3}  {:>10.2}",
+            format!("{sw}×{sh}→{dw}×{dh}"),
+            ms,
+            gb_per_sec(npix_dst, ms),
+        );
     }
 }
 

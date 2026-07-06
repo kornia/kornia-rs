@@ -60,6 +60,7 @@
 //! * [`launch_resize_bilinear_downscale_cuda`]  — bilinear downscale, 3-ch f32.
 //! * [`launch_resize_nearest_downscale_cuda`]   — nearest-neighbor, 3-ch f32.
 //! * [`launch_resize_bilinear_normalize_cuda`]  — bilinear downscale + normalise, 3-ch f32.
+//! * [`launch_resize_bicubic_cuda`]             — bicubic resize (up or down), 3-ch f32.
 
 use std::sync::{Arc, OnceLock};
 
@@ -193,11 +194,84 @@ extern "C" __global__ void resize_bilinear_normalize_3c(
 }
 "#;
 
+// ── CUDA C source: bicubic resize ─────────────────────────────────────────────
+//
+// Same Keys cubic (a = -0.5) as the warp-affine bicubic kernel. Applies the
+// same Horner-form weight precomputation, row-base hoisting, #pragma unroll,
+// and fmaf accumulation. Half-pixel centre alignment (matches OpenCV/PIL).
+// Handles both upscale and downscale.
+
+static BICUBIC_SRC: &str = r#"
+extern "C" __global__ void resize_bicubic_3c(
+    const float* __restrict__ src,
+    float* __restrict__       dst,
+    unsigned int src_w,
+    unsigned int src_h,
+    unsigned int dst_w,
+    unsigned int dst_h,
+    float scale_x,
+    float scale_y
+) {
+    unsigned int dst_x = blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned int dst_y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (dst_x >= dst_w || dst_y >= dst_h) return;
+
+    // Half-pixel centre alignment (matches OpenCV / PIL convention).
+    float sx = fmaxf(fminf((dst_x + 0.5f) * scale_x - 0.5f, (float)(src_w - 1u)), 0.0f);
+    float sy = fmaxf(fminf((dst_y + 0.5f) * scale_y - 0.5f, (float)(src_h - 1u)), 0.0f);
+
+    int x0 = (int)floorf(sx);
+    int y0 = (int)floorf(sy);
+    float frac_x = sx - (float)x0;
+    float frac_y = sy - (float)y0;
+
+    // Horner-form cubic weights — see warp_affine_bicubic_3c for derivation.
+    float wx[4], wy[4];
+    {
+        float t;
+        t = 1.0f + frac_x; wx[0] = ((-0.5f*t + 2.5f)*t - 4.0f)*t + 2.0f;
+        t =         frac_x; wx[1] = (( 1.5f*t - 2.5f)*t       )*t + 1.0f;
+        t = 1.0f - frac_x; wx[2] = (( 1.5f*t - 2.5f)*t       )*t + 1.0f;
+        t = 2.0f - frac_x; wx[3] = ((-0.5f*t + 2.5f)*t - 4.0f)*t + 2.0f;
+        t = 1.0f + frac_y; wy[0] = ((-0.5f*t + 2.5f)*t - 4.0f)*t + 2.0f;
+        t =         frac_y; wy[1] = (( 1.5f*t - 2.5f)*t       )*t + 1.0f;
+        t = 1.0f - frac_y; wy[2] = (( 1.5f*t - 2.5f)*t       )*t + 1.0f;
+        t = 2.0f - frac_y; wy[3] = ((-0.5f*t + 2.5f)*t - 4.0f)*t + 2.0f;
+    }
+
+    unsigned int row[4];
+    #pragma unroll
+    for (int i = 0; i < 4; ++i) {
+        int yi = max(0, min(y0 + i - 1, (int)src_h - 1));
+        row[i] = (unsigned int)yi * src_w * 3u;
+    }
+
+    float acc0 = 0.0f, acc1 = 0.0f, acc2 = 0.0f;
+    #pragma unroll
+    for (int dy = 0; dy < 4; ++dy) {
+        #pragma unroll
+        for (int dx = 0; dx < 4; ++dx) {
+            int xi = max(0, min(x0 + dx - 1, (int)src_w - 1));
+            unsigned int b = row[dy] + (unsigned int)xi * 3u;
+            float w = wx[dx] * wy[dy];
+            acc0 = fmaf(w, __ldg(&src[b]),   acc0);
+            acc1 = fmaf(w, __ldg(&src[b+1]), acc1);
+            acc2 = fmaf(w, __ldg(&src[b+2]), acc2);
+        }
+    }
+    unsigned int out = (dst_y * dst_w + dst_x) * 3u;
+    dst[out]     = acc0;
+    dst[out + 1] = acc1;
+    dst[out + 2] = acc2;
+}
+"#;
+
 // ── Kernel caches ─────────────────────────────────────────────────────────────
 
 static BILINEAR_KERNEL: OnceLock<CudaKernel> = OnceLock::new();
 static NEAREST_KERNEL: OnceLock<CudaKernel> = OnceLock::new();
 static BILINEAR_NORMALIZE_KERNEL: OnceLock<CudaKernel> = OnceLock::new();
+static BICUBIC_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
 
 // 32 threads wide → full warp maps to one output row (better write coalescing).
 // 8 threads tall → 256 threads total, same occupancy as 16×16.
@@ -239,6 +313,17 @@ fn compile_with_l1(ctx: &Arc<CudaContext>, src: &str, fn_name: &str) -> CudaKern
     // Ignoring errors: unsupported on some platforms but never fatal.
     let _ = k.prefer_l1_cache();
     k
+}
+
+fn try_compile_with_l1(
+    ctx: &Arc<CudaContext>,
+    src: &str,
+    fn_name: &str,
+) -> Result<CudaKernel, String> {
+    let k = CudaKernel::compile(ctx, src, fn_name)
+        .map_err(|e| format!("failed to compile {fn_name}: {e}"))?;
+    let _ = k.prefer_l1_cache();
+    Ok(k)
 }
 
 // ── Public launchers ──────────────────────────────────────────────────────────
@@ -412,6 +497,71 @@ pub fn launch_resize_nearest_downscale_cuda(
 
     let kernel = NEAREST_KERNEL
         .get_or_init(|| compile_with_l1(ctx, NEAREST_SRC, "resize_nearest_downscale_3c"));
+
+    let scale_x = src_width as f32 / dst_width as f32;
+    let scale_y = src_height as f32 / dst_height as f32;
+
+    kernel
+        .launch_builder(stream)
+        .arg(src)
+        .arg(dst)
+        .arg(&src_width)
+        .arg(&src_height)
+        .arg(&dst_width)
+        .arg(&dst_height)
+        .arg(&scale_x)
+        .arg(&scale_y)
+        .launch_2d(dst_width, dst_height, make_config(dst_width, dst_height))
+        .map_err(|e| CudaResizeError::Cuda(e.to_string()))
+}
+
+/// Launch the bicubic resize kernel for a 3-channel f32 image.
+///
+/// Uses Keys cubic interpolation (`a = -0.5`, matches OpenCV `INTER_CUBIC`)
+/// with a 4×4 tap neighborhood and half-pixel centre alignment.  Supports
+/// both upscale and downscale.  Out-of-range taps are clamped to the image
+/// border (BORDER_REPLICATE).
+///
+/// Bicubic reads 16 source values per output pixel — more bandwidth-intensive
+/// than bilinear (4 reads) but produces sharper results without ringing at the
+/// default `a = -0.5` coefficient.
+///
+/// # Arguments
+///
+/// See [`launch_resize_bilinear_downscale_cuda`] — arguments are identical.
+///
+/// # Errors
+///
+/// Returns [`CudaResizeError`] on compile failure, launch error, or size mismatch.
+#[allow(clippy::too_many_arguments)]
+pub fn launch_resize_bicubic_cuda(
+    ctx: &Arc<CudaContext>,
+    stream: &Arc<CudaStream>,
+    src: &CudaSlice<f32>,
+    dst: &mut CudaSlice<f32>,
+    src_width: u32,
+    src_height: u32,
+    dst_width: u32,
+    dst_height: u32,
+) -> Result<(), CudaResizeError> {
+    if src_width == 0 || src_height == 0 || dst_width == 0 || dst_height == 0 {
+        return Err(CudaResizeError::Cuda(
+            "src and dst dimensions must be non-zero".into(),
+        ));
+    }
+
+    let need = (dst_width as usize) * (dst_height as usize) * 3;
+    if dst.len() < need {
+        return Err(CudaResizeError::SliceTooSmall {
+            got: dst.len(),
+            need,
+        });
+    }
+
+    let kernel = BICUBIC_KERNEL
+        .get_or_init(|| try_compile_with_l1(ctx, BICUBIC_SRC, "resize_bicubic_3c"))
+        .as_ref()
+        .map_err(|e| CudaResizeError::Cuda(e.clone()))?;
 
     let scale_x = src_width as f32 / dst_width as f32;
     let scale_y = src_height as f32 / dst_height as f32;

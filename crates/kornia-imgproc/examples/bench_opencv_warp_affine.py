@@ -184,3 +184,92 @@ print("    bilinear: 256×224=0.025ms  512×448=0.092ms  1024×896=0.274ms  1920
 bench_cv2_cpu()
 bench_cv2_cuda()
 bench_torch_gpu()
+
+# ── bicubic ───────────────────────────────────────────────────────────────────
+
+def bench_cv2_cpu_bicubic():
+    print(f"\n=== cv2 {cv2.__version__} CPU  warpAffine bicubic (INTER_CUBIC)  ({ITERS} iters) ===")
+    print(f"  {'case':<16}  {'ms/iter':>9}  {'GB/s':>8}  {'speedup vs kornia-rs GPU':>26}")
+    print("  " + "-" * 66)
+    rs_gpu_ms = {(256,224): 0.065, (512,448): 0.244, (1024,896): 0.936, (1920,1080): 1.951}
+    for w, h in CASES:
+        src = np.random.rand(h, w, 3).astype(np.float32)
+        M   = rotation_M(w, h)
+        for _ in range(WARMUP):
+            cv2.warpAffine(src, M, (w, h), flags=cv2.INTER_CUBIC,
+                           borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+        t0 = time.perf_counter()
+        for _ in range(ITERS):
+            cv2.warpAffine(src, M, (w, h), flags=cv2.INTER_CUBIC,
+                           borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+        ms = (time.perf_counter() - t0) * 1e3 / ITERS
+        speedup = ms / rs_gpu_ms.get((w, h), ms)
+        print(f"  {w}×{h:<10}  {ms:>9.3f}  {gb_per_sec(w,h,ms):>8.2f}  {speedup:>6.1f}× slower than RS GPU")
+
+def bench_cv2_cuda_bicubic():
+    if not HAS_CV2_CUDA:
+        print(f"\n=== cv2 CUDA warpAffine bicubic — SKIPPED (no CUDA OpenCV) ===")
+        return
+    print(f"\n=== cv2 CUDA  warpAffine bicubic  ({ITERS} iters) ===")
+    print(f"  {'case':<16}  {'ms/iter':>9}  {'GB/s':>8}  {'vs RS GPU':>12}")
+    print("  " + "-" * 52)
+    rs_gpu_ms = {(256,224): 0.065, (512,448): 0.244, (1024,896): 0.936, (1920,1080): 1.951}
+    for w, h in CASES:
+        src = np.random.rand(h, w, 3).astype(np.float32)
+        M   = rotation_M(w, h)
+        gpu_src = cv2.cuda_GpuMat()
+        gpu_src.upload(src)
+        for _ in range(WARMUP):
+            cv2.cuda.warpAffine(gpu_src, M, (w, h),
+                                flags=cv2.INTER_CUBIC,
+                                borderMode=cv2.BORDER_CONSTANT)
+        cv2.cuda.Stream_Null().waitForCompletion()
+        t0 = time.perf_counter()
+        for _ in range(ITERS):
+            cv2.cuda.warpAffine(gpu_src, M, (w, h),
+                                flags=cv2.INTER_CUBIC,
+                                borderMode=cv2.BORDER_CONSTANT)
+        cv2.cuda.Stream_Null().waitForCompletion()
+        ms = (time.perf_counter() - t0) * 1e3 / ITERS
+        rs_ms = rs_gpu_ms.get((w, h), ms)
+        ratio = ms / rs_ms
+        cmp = f"{ratio:.2f}× {'slower' if ratio > 1 else 'faster'}"
+        print(f"  {w}×{h:<10}  {ms:>9.3f}  {gb_per_sec(w,h,ms):>8.2f}  {cmp:>12}")
+
+def bench_torch_gpu_bicubic():
+    if not TORCH_CUDA:
+        print(f"\n=== PyTorch GPU warpAffine bicubic — SKIPPED (no CUDA torch) ===")
+        return
+    print(f"\n=== PyTorch {torch.__version__} GPU  grid_sample bicubic  ({ITERS} iters) ===")
+    print(f"  {'case':<16}  {'ms/iter':>9}  {'GB/s':>8}  {'vs RS GPU':>12}")
+    print("  " + "-" * 52)
+    rs_gpu_ms = {(256,224): 0.065, (512,448): 0.244, (1024,896): 0.936, (1920,1080): 1.951}
+    for w, h in CASES:
+        src_np = np.random.rand(h, w, 3).astype(np.float32)
+        M      = rotation_M(w, h)
+        theta  = opencv_M_to_torch_theta(M, w, h)
+        theta_t = torch.from_numpy(theta).unsqueeze(0).cuda()
+        src_t   = torch.from_numpy(src_np).permute(2, 0, 1).unsqueeze(0).cuda()
+        for _ in range(WARMUP):
+            grid = F.affine_grid(theta_t, src_t.shape, align_corners=True)
+            F.grid_sample(src_t, grid, mode="bicubic", padding_mode="zeros",
+                          align_corners=True)
+        torch.cuda.synchronize()
+        start = torch.cuda.Event(enable_timing=True)
+        end   = torch.cuda.Event(enable_timing=True)
+        start.record()
+        for _ in range(ITERS):
+            grid = F.affine_grid(theta_t, src_t.shape, align_corners=True)
+            F.grid_sample(src_t, grid, mode="bicubic", padding_mode="zeros",
+                          align_corners=True)
+        end.record()
+        torch.cuda.synchronize()
+        ms = start.elapsed_time(end) / ITERS
+        rs_ms = rs_gpu_ms.get((w, h), ms)
+        ratio = ms / rs_ms
+        cmp = f"{ratio:.2f}× {'slower' if ratio > 1 else 'faster'}"
+        print(f"  {w}×{h:<10}  {ms:>9.3f}  {gb_per_sec(w,h,ms):>8.2f}  {cmp:>12}")
+
+bench_cv2_cpu_bicubic()
+bench_cv2_cuda_bicubic()
+bench_torch_gpu_bicubic()
