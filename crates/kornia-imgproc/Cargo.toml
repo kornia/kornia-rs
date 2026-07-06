@@ -11,14 +11,8 @@ license = { workspace = true }
 publish = true
 
 [[example]]
-name = "bench_gpu_color"
-
-[[example]]
 name = "bench_gpu_color_conversions"
-required-features = ["gpu-cuda"]
-
-[[example]]
-name = "bench_gpu_resize"
+required-features = ["cuda"]
 
 [[bench]]
 harness = false
@@ -88,8 +82,6 @@ name = "bench_contours"
 required-features = ["opencv_bench"]
 
 [dependencies]
-cubecl-cpu = { version = "=0.10.0-pre.4", optional = true }
-cubecl-cuda = { version = "=0.10.0-pre.4", optional = true }
 cudarc = { workspace = true, features = ["f16"], optional = true }
 half = { workspace = true, optional = true }
 kornia-algebra = { workspace = true }
@@ -100,13 +92,6 @@ opencv = { version = "0.99", optional = true }
 rayon = { workspace = true }
 thiserror = { workspace = true }
 wide = { workspace = true }
-
-[dependencies.cubecl]
-package = "cubecl-core"
-version = "=0.10.0-pre.4"
-default-features = false
-features = ["std"]
-optional = true
 
 [dev-dependencies]
 criterion = { workspace = true }
@@ -119,11 +104,5 @@ rand = { workspace = true }
 [features]
 # cudarc device backend + custom CUDA kernels (enables the `preprocess` module).
 cudarc = ["dep:cudarc", "dep:half", "kornia-tensor/cudarc"]
-gpu-cubecl = [
-  "dep:cubecl",
-  "dep:cubecl-cpu",
-  "dep:cubecl-cuda",
-  "kornia-tensor/gpu-cubecl",
-]
-gpu-cuda = ["dep:cudarc", "kornia-image/cudarc", "kornia-tensor/cudarc"]
+cuda = ["dep:cudarc", "kornia-image/cudarc", "kornia-tensor/cudarc"]
 opencv_bench = ["dep:opencv"]

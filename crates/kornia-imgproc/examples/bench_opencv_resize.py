@@ -4,7 +4,7 @@ Run:
     python3 crates/kornia-imgproc/examples/bench_opencv_resize.py
 
 Compare against the Rust GPU kernel with:
-    cargo run --example bench_gpu_resize --features gpu-cuda --release
+    cargo run --example bench_gpu_resize --features cuda --release
 
 Requires:
   - opencv-python (CPU baseline, always)
@@ -193,7 +193,7 @@ if TORCH_CUDA:
 print("=" * 66)
 print()
 print("  kornia-rs GPU reference (run separately):")
-print("    cargo run --example bench_gpu_resize --features gpu-cuda --release")
+print("    cargo run --example bench_gpu_resize --features cuda --release")
 print()
 print("  kornia-rs results (GTX 1650, 200 iters):")
 print("    nearest : 1024²→512²=0.053ms  1920×1080→960×540=0.064ms  4K→1080=0.237ms")

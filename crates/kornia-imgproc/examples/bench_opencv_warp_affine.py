@@ -4,7 +4,7 @@ Run:
     python3 crates/kornia-imgproc/examples/bench_opencv_warp_affine.py
 
 Compare against the Rust GPU kernel with:
-    cargo run --example bench_gpu_warp_affine --features gpu-cuda --release
+    cargo run --example bench_gpu_warp_affine --features cuda --release
 
 Requires:
   - opencv-python (CPU baseline, always)
@@ -175,7 +175,7 @@ if TORCH_CUDA:
 print("=" * 66)
 print()
 print("  kornia-rs GPU reference (run separately):")
-print("    cargo run --example bench_gpu_warp_affine --features gpu-cuda --release")
+print("    cargo run --example bench_gpu_warp_affine --features cuda --release")
 print()
 print("  kornia-rs results (GTX 1650, 200 iters):")
 print("    nearest : 256×224=0.011ms  512×448=0.038ms  1024×896=0.151ms  1920×1080=0.353ms")

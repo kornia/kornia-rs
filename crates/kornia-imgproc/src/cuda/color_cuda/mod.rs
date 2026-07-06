@@ -1,6 +1,6 @@
 //! Native CUDA (cudarc + NVRTC) kernels for color-space conversion.
 //!
-//! Enabled by the `gpu-cuda` feature. Each conversion follows the
+//! Enabled by the `cuda` feature. Each conversion follows the
 //! [`super::resize_cuda`] pattern: an inline CUDA-C source string compiled once
 //! per process via NVRTC (cached in a `OnceLock`), launched through
 //! [`kornia_tensor::CudaKernel`] on device slices.
@@ -316,7 +316,7 @@ pub(crate) mod test_utils {
     /// Default-stream handle for device tests (Jetson: single GPU, ordinal 0).
     pub fn default_stream() -> Arc<CudaStream> {
         CudaContext::new(0)
-            .expect("CUDA device 0 must be available for gpu-cuda tests")
+            .expect("CUDA device 0 must be available for cuda tests")
             .default_stream()
     }
 }

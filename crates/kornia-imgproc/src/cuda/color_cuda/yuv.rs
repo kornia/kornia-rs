@@ -350,10 +350,10 @@ pub fn launch_rgb_from_ycc_f32(
     launch_f32(false, order, stream, src, dst, npixels)
 }
 
-#[cfg(all(test, feature = "gpu-cuda"))]
+#[cfg(all(test, feature = "cuda"))]
 mod tests {
     use super::*;
-    use crate::gpu::color_cuda::test_utils::{default_stream, pattern_f32, pattern_u8};
+    use crate::cuda::color_cuda::test_utils::{default_stream, pattern_f32, pattern_u8};
 
     #[test]
     fn ycc_u8_roundtrip_entries_bit_exact_vs_cpu() {
@@ -398,7 +398,7 @@ mod tests {
         let gpu: Vec<f32> = stream.clone_dtoh(&d_dst).unwrap();
         stream.synchronize().unwrap();
 
-        let max_diff = crate::gpu::color_cuda::test_utils::max_abs_diff_f32(&gpu, &cpu);
+        let max_diff = crate::cuda::color_cuda::test_utils::max_abs_diff_f32(&gpu, &cpu);
         assert!(max_diff <= 1e-3, "f32 ycc max diff {max_diff}");
     }
 }

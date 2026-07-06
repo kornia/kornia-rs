@@ -376,10 +376,10 @@ pub fn launch_rgb_from_hls_f32(
     launch_entry(3, stream, src, dst, npixels)
 }
 
-#[cfg(all(test, feature = "gpu-cuda"))]
+#[cfg(all(test, feature = "cuda"))]
 mod tests {
     use super::*;
-    use crate::gpu::color_cuda::test_utils::{default_stream, pattern_u8};
+    use crate::cuda::color_cuda::test_utils::{default_stream, pattern_u8};
 
     /// [0,255]-scaled f32 RGB pattern with gray pixels (delta == 0), saturated
     /// primaries (hue sextant boundaries), and LCG noise.
@@ -403,7 +403,7 @@ mod tests {
         v
     }
 
-    use crate::gpu::color_cuda::test_utils::max_abs_diff_f32 as max_abs_diff;
+    use crate::cuda::color_cuda::test_utils::max_abs_diff_f32 as max_abs_diff;
 
     #[test]
     fn hsv_hls_roundtrip_close_to_cpu() {

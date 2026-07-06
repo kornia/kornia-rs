@@ -44,7 +44,7 @@ macro_rules! impl_convert {
     ($src:ty => $dst:ty, $func:path, cuda: $cuda:path) => {
         impl ConvertColor<$dst> for $src {
             fn convert(&self, dst: &mut $dst) -> Result<(), ImageError> {
-                #[cfg(feature = "gpu-cuda")]
+                #[cfg(feature = "cuda")]
                 {
                     use crate::color::cuda_dispatch::{pair_residency, Residency};
                     if let Residency::Device(exec) = pair_residency(&self.0, &dst.0)? {
@@ -60,7 +60,7 @@ macro_rules! impl_convert {
     ($src:ty => $dst:ty, $func:path, bg: $bg:expr_2021, cuda: $cuda:path) => {
         impl ConvertColor<$dst> for $src {
             fn convert(&self, dst: &mut $dst) -> Result<(), ImageError> {
-                #[cfg(feature = "gpu-cuda")]
+                #[cfg(feature = "cuda")]
                 {
                     use crate::color::cuda_dispatch::{pair_residency, Residency};
                     if let Residency::Device(exec) = pair_residency(&self.0, &dst.0)? {
@@ -83,7 +83,7 @@ macro_rules! impl_convert_with_bg {
                 dst: &mut $dst,
                 bg: Option<[u8; 3]>,
             ) -> Result<(), ImageError> {
-                #[cfg(feature = "gpu-cuda")]
+                #[cfg(feature = "cuda")]
                 {
                     use crate::color::cuda_dispatch::{pair_residency, Residency};
                     if let Residency::Device(exec) = pair_residency(&self.0, &dst.0)? {

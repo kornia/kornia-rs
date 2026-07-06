@@ -40,7 +40,7 @@ cuda = [
   "dep:kornia-tensor",
   "kornia-image/cudarc",
   "kornia-imgproc/cudarc",
-  "kornia-imgproc/gpu-cuda",
+  "kornia-imgproc/cuda",
   "kornia-tensor/cudarc",
   "kornia-tensor/dlpack",
 ]

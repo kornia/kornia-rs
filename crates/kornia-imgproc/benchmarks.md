@@ -4,12 +4,12 @@
 
 ```sh
 # CPU baseline (no CUDA required)
-cargo run --example bench_gpu_color --release
 cargo run --example bench_gpu_resize --release
 
-# CPU + GPU comparison (requires CUDA driver)
-cargo run --example bench_gpu_color --features gpu-cubecl --release
-cargo run --example bench_gpu_resize --features gpu-cubecl --release
+# Native CUDA (NVRTC) GPU + CPU comparison (requires CUDA driver)
+cargo run --example bench_gpu_resize --features cuda --release
+cargo run --example bench_gpu_color_conversions --features cuda --release
+cargo run --example bench_gpu_warp_affine --features cuda --release
 
 # OpenCV CPU comparison (requires Python + opencv-python)
 python3 crates/kornia-imgproc/examples/bench_opencv_color.py
@@ -211,7 +211,7 @@ read-only cache routing and `CU_FUNC_CACHE_PREFER_L1` (32 KB → 64 KB L1).
 Downscale-only (same cases as the OpenCV comparison above).
 
 ```sh
-cargo run --example bench_gpu_resize --features gpu-cuda --release
+cargo run --example bench_gpu_resize --features cuda --release
 ```
 
 ### Hardware / software
@@ -258,7 +258,7 @@ cargo run --example bench_gpu_resize --features gpu-cuda --release
 device across iterations; CUDA stream synchronised after each timed batch.
 
 ```sh
-cargo run --example bench_gpu_warp_affine --features gpu-cuda --release
+cargo run --example bench_gpu_warp_affine --features cuda --release
 # Python comparison (requires OpenCV built with -DWITH_CUDA=ON):
 python3 crates/kornia-imgproc/examples/bench_opencv_warp_affine.py
 ```
@@ -345,8 +345,8 @@ Result: **+7–10% downscale**, **+33–34% upscale** vs the unoptimised version
 Warp-affine bicubic unchanged (scattered DRAM reads from rotation are the bottleneck).
 
 ```sh
-cargo run --example bench_gpu_resize    --features gpu-cuda --release
-cargo run --example bench_gpu_warp_affine --features gpu-cuda --release
+cargo run --example bench_gpu_resize    --features cuda --release
+cargo run --example bench_gpu_warp_affine --features cuda --release
 # Python comparison (requires CUDA-built OpenCV + torch with CUDA)
 # PYTHONPATH points to the CUDA-enabled cv2 build in dist-packages.
 # Replace <dist-packages> with the path reported by your custom OpenCV build.

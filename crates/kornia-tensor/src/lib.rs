@@ -148,14 +148,6 @@ pub mod allocator;
 #[cfg(feature = "dlpack")]
 pub mod dlpack;
 
-/// GPU backend module providing the [`Backend`] trait and [`GpuAllocator`] abstraction.
-///
-/// Enabled by the `gpu` feature. Backend implementations live in sub-modules gated by
-/// per-backend features such as `gpu-cubecl`. To add a new backend, implement `Backend`
-/// for your type and gate the module behind a `gpu-<name>` feature flag.
-#[cfg(feature = "gpu")]
-pub mod backend;
-
 /// Bincode module for binary serialization and deserialization.
 ///
 /// This module provides efficient binary serialization support for tensors when the

@@ -16,18 +16,11 @@ name = "bench_view"
 
 [dependencies]
 bincode = { workspace = true, optional = true }
-cubecl-cuda = { version = "=0.10.0-pre.4", optional = true }
 dlpack-rs = { version = "0.3.3", default-features = false, optional = true }
 num-traits = { workspace = true }
 rayon = { workspace = true }
 serde = { workspace = true, optional = true }
 thiserror = { workspace = true }
-
-[dependencies.cubecl-core]
-version = "=0.10.0-pre.4"
-default-features = false
-features = ["std"]
-optional = true
 
 [dependencies.cudarc]
 version = "0.19.0"
@@ -53,6 +46,4 @@ bincode = ["dep:bincode"]
 # Verify absence: `cargo tree -p kornia-tensor -e features | grep -i cudarc`
 cudarc = ["dep:cudarc"]
 dlpack = ["dep:dlpack-rs"]
-gpu = []
-gpu-cubecl = ["dep:cubecl-core", "dep:cubecl-cuda", "dep:cudarc", "gpu"]
 serde = ["dep:serde"]
