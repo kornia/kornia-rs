@@ -11,6 +11,16 @@ changes early: `cargo add kornia-imgproc@0.1.15-rc.1` or `pip install --pre korn
      dated section and reset [Unreleased]. Reference the diff range and prior tag
      so the changelog stays navigable (see the "Full changelog" links below). -->
 
+## [0.1.15-rc.2] — 2026-07-06 (pre-release)
+
+Same contents as rc.1; unblocks the **crates.io** publish. The `dlpack-rs`
+dependency moved from a git tag to a published crate (`0.3.3` on crates.io, with
+its `dlpack-sys` internals inlined), so `kornia-tensor` / `kornia-image` no
+longer carry a git dependency and the workspace can publish to crates.io. Python
+wheels are unchanged from rc.1.
+
+**Full changelog:** `v0.1.15-rc.1...v0.1.15-rc.2`
+
 ## [0.1.15-rc.1] — 2026-07-06 (pre-release)
 
 First pre-release since 0.1.14 (2026-05-19), bundling ~247 commits. Headline is
@@ -92,6 +102,7 @@ linear layer / kornia-nn, kornia-apriltag, zero-copy gstreamer images. See the
 [GitHub release](https://github.com/kornia/kornia-rs/releases/tag/v0.1.10) for
 the full per-PR list.
 
+[0.1.15-rc.2]: https://github.com/kornia/kornia-rs/compare/v0.1.15-rc.1...v0.1.15-rc.2
 [0.1.15-rc.1]: https://github.com/kornia/kornia-rs/compare/v0.1.14...v0.1.15-rc.1
 [0.1.14]: https://github.com/kornia/kornia-rs/releases/tag/v0.1.14
 [0.1.13]: https://github.com/kornia/kornia-rs/releases/tag/v0.1.13
