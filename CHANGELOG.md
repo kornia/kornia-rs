@@ -11,6 +11,21 @@ changes early: `cargo add kornia-imgproc@0.1.15-rc.1` or `pip install --pre korn
      dated section and reset [Unreleased]. Reference the diff range and prior tag
      so the changelog stays navigable (see the "Full changelog" links below). -->
 
+## [0.1.15-rc.3] — 2026-07-06 (pre-release)
+
+Two fixes on top of rc.2 (which brought the crates.io publish):
+
+- **AprilTag**: bias the adaptive binarization toward white (`threshold_split`,
+  default `0.33`) so small / glary / low-contrast Tag36H11 markers decode instead
+  of returning zero detections; the tag's black border no longer merges with
+  adjacent dark regions (#985).
+- **imgproc (GPU/CUDA)**: texture-object warp-affine kernels — a `CudaTexObject`
+  RAII wrapper with `CU_TR_ADDRESS_MODE_BORDER` replaces the per-pixel OOB
+  bounds-check branch, cutting warp divergence on rotated images (~30–40% of
+  output pixels map outside the source); optional `block_dim` tuning (#979).
+
+**Full changelog:** `v0.1.15-rc.2...v0.1.15-rc.3`
+
 ## [0.1.15-rc.2] — 2026-07-06 (pre-release)
 
 Same contents as rc.1; unblocks the **crates.io** publish. The `dlpack-rs`
@@ -102,6 +117,7 @@ linear layer / kornia-nn, kornia-apriltag, zero-copy gstreamer images. See the
 [GitHub release](https://github.com/kornia/kornia-rs/releases/tag/v0.1.10) for
 the full per-PR list.
 
+[0.1.15-rc.3]: https://github.com/kornia/kornia-rs/compare/v0.1.15-rc.2...v0.1.15-rc.3
 [0.1.15-rc.2]: https://github.com/kornia/kornia-rs/compare/v0.1.15-rc.1...v0.1.15-rc.2
 [0.1.15-rc.1]: https://github.com/kornia/kornia-rs/compare/v0.1.14...v0.1.15-rc.1
 [0.1.14]: https://github.com/kornia/kornia-rs/releases/tag/v0.1.14
