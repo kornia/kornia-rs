@@ -591,6 +591,7 @@ pub fn launch_resize_bicubic_cuda(
     src_height: u32,
     dst_width: u32,
     dst_height: u32,
+    block_dim: Option<(u32, u32)>,
 ) -> Result<(), CudaResizeError> {
     if src_width == 0 || src_height == 0 || dst_width == 0 || dst_height == 0 {
         return Err(CudaResizeError::Cuda(
@@ -627,7 +628,7 @@ pub fn launch_resize_bicubic_cuda(
         .launch_2d(
             dst_width,
             dst_height,
-            make_config(dst_width, dst_height, None),
+            make_config(dst_width, dst_height, block_dim),
         )
         .map_err(|e| CudaResizeError::Cuda(e.to_string()))
 }
