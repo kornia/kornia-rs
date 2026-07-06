@@ -72,14 +72,14 @@ fn run_gpu_cuda() {
 
             let launch = |dst: &mut cudarc::driver::CudaSlice<f32>| match method {
                 "nearest" => {
-                    launch_warp_affine_nearest_cuda(&ctx, &stream, &src_dev, dst, w, h, w, h, &m)
+                    launch_warp_affine_nearest_cuda(&ctx, &stream, &src_dev, dst, w, h, w, h, &m, None)
                         .expect("nearest launch")
                 }
                 "bicubic" => {
                     launch_warp_affine_bicubic_cuda(&ctx, &stream, &src_dev, dst, w, h, w, h, &m)
                         .expect("bicubic launch")
                 }
-                _ => launch_warp_affine_bilinear_cuda(&ctx, &stream, &src_dev, dst, w, h, w, h, &m)
+                _ => launch_warp_affine_bilinear_cuda(&ctx, &stream, &src_dev, dst, w, h, w, h, &m, None)
                     .expect("bilinear launch"),
             };
 
