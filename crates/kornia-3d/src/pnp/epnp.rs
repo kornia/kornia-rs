@@ -314,7 +314,7 @@ fn select_control_points(points_world: &[Vec3AF32]) -> [Vec3AF32; 4] {
         (s_diag[1].sqrt(), Vec3AF32::new(v_y.x, v_y.y, v_y.z)),
         (s_diag[2].sqrt(), Vec3AF32::new(v_z.x, v_z.y, v_z.z)),
     ];
-    axes_sig.sort_by(|a, b| a.0.total_cmp(&b.0).reverse());
+    axes_sig.sort_by(|a, b| b.0.total_cmp(&a.0));
 
     let mut cw = [Vec3AF32::ZERO; 4];
     cw[0] = c;
