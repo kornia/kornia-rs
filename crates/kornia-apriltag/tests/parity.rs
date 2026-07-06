@@ -80,7 +80,12 @@ fn build_c_detector() -> apriltag::Detector {
 
 /// Build a kornia `AprilTagDecoder` for the given image dimensions.
 fn build_kornia_detector(width: usize, height: usize) -> AprilTagDecoder {
-    let config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag36H11]).unwrap();
+    let mut config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag36H11]).unwrap();
+    // Pin the classic 0.5 midpoint split so this test measures algorithmic parity
+    // with the reference C AprilTag (which uses `min + (max - min) / 2`). The
+    // library default (0.33) intentionally biases toward white for small/glary
+    // tags and is exercised separately, not against the C corners here.
+    config.threshold_split = 0.5;
     // downscale_factor = 2 and refine_edges = true by default
     AprilTagDecoder::new(config, ImageSize { width, height }).unwrap()
 }
