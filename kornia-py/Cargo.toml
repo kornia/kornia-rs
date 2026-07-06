@@ -16,9 +16,7 @@ name = "kornia_rs"
 
 [dependencies]
 cudarc = { workspace = true, optional = true }
-dlpack-rs = { git = "https://github.com/kornia/dlpack-rs", tag = "v0.3.2", features = [
-  "pyo3"
-] }
+dlpack-rs = { version = "0.3.3", features = ["pyo3"] }
 half = { workspace = true, optional = true }
 kornia-3d = { workspace = true }
 kornia-algebra = { workspace = true }
