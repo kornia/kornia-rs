@@ -11,6 +11,22 @@ changes early: `cargo add kornia-imgproc@0.1.15-rc.1` or `pip install --pre korn
      dated section and reset [Unreleased]. Reference the diff range and prior tag
      so the changelog stays navigable (see the "Full changelog" links below). -->
 
+## [0.1.15-rc.4] — 2026-07-06 (pre-release)
+
+**GPU wheels.** Linux wheels now build with `--features cuda`, so
+`pip install --pre kornia-rs` ships the `kornia_rs.cuda` module (GPU color
+conversions, `CudaImage`/`CudaPreprocessor`, zero-copy DLPack). The wheel loads
+CUDA lazily (cudarc `fallback-dynamic-loading`): it runs on CPU when no GPU is
+present and activates CUDA at runtime when an NVIDIA driver + `nvrtc` are
+available. Same crate/library contents as rc.3 otherwise.
+
+- `python_release.yml`: linux job builds `--features cuda` (macOS/Windows stay
+  CPU-only — no NVIDIA hardware).
+- README: added a **GPU / CUDA** usage section with an `upload → op → download`
+  snippet and the runtime requirements.
+
+**Full changelog:** `v0.1.15-rc.3...v0.1.15-rc.4`
+
 ## [0.1.15-rc.3] — 2026-07-06 (pre-release)
 
 Two fixes on top of rc.2 (which brought the crates.io publish):
@@ -117,6 +133,7 @@ linear layer / kornia-nn, kornia-apriltag, zero-copy gstreamer images. See the
 [GitHub release](https://github.com/kornia/kornia-rs/releases/tag/v0.1.10) for
 the full per-PR list.
 
+[0.1.15-rc.4]: https://github.com/kornia/kornia-rs/compare/v0.1.15-rc.3...v0.1.15-rc.4
 [0.1.15-rc.3]: https://github.com/kornia/kornia-rs/compare/v0.1.15-rc.2...v0.1.15-rc.3
 [0.1.15-rc.2]: https://github.com/kornia/kornia-rs/compare/v0.1.15-rc.1...v0.1.15-rc.2
 [0.1.15-rc.1]: https://github.com/kornia/kornia-rs/compare/v0.1.14...v0.1.15-rc.1

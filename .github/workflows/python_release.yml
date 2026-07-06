@@ -49,11 +49,14 @@ jobs:
           before-script-linux: |
             if command -v dnf &> /dev/null; then dnf install cmake3 -y; elif command -v yum &> /dev/null; then yum install cmake3 -y; elif command -v apt-get &> /dev/null; then apt-get update && apt-get install cmake -y; else echo "None of dnf, yum, or apt found."; fi
             if command -v cmake3 &> /dev/null; then export CMAKE=cmake3; fi
-          # No --sdist: the sdist build is not self-contained (kornia-tensor's
-          # optional dlpack-rs git dependency can't resolve inside the extracted
-          # tarball), which breaks the manylinux build. Wheels build directly
-          # like the macOS/Windows jobs. Revisit once dlpack-rs is on crates.io.
-          args: --release --out dist -i python${{ matrix.python-version }} -m kornia-py/Cargo.toml
+          # --features cuda: ship GPU-capable linux wheels. cudarc uses
+          # `fallback-dynamic-loading`, so the wheel builds in the CUDA-less
+          # manylinux container and dlopens libcuda/libnvrtc at runtime — one
+          # universal wheel that runs on CPU when no GPU/driver is present and
+          # activates CUDA when it is. (macOS/Windows stay CPU-only: no NVIDIA.)
+          # No --sdist: not self-contained (bindgen/vendored deps); wheels build
+          # directly like the macOS/Windows jobs.
+          args: --release --out dist -i python${{ matrix.python-version }} -m kornia-py/Cargo.toml --features cuda
       - name: Verify SIMD paths are present in the built wheel
         env:
           MATRIX_TARGET: ${{ matrix.target }}

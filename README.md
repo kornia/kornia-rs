@@ -312,6 +312,39 @@ resized_img = K.resize(img, (128, 128), interpolation="bilinear")
 assert resized_img.shape == (128, 128, 3)
 ```
 
+### GPU / CUDA
+
+The `kornia_rs.cuda` module runs image ops on an NVIDIA GPU. The published
+wheels are GPU-capable but load CUDA lazily, so the **same wheel runs on CPU
+when no GPU is present** and activates CUDA when it is.
+
+**Runtime requirements for the GPU path:** an NVIDIA driver (`libcuda`) **and**
+`nvrtc` (from the CUDA toolkit — kernels are JIT-compiled), matching your
+architecture (x86_64 / aarch64 / Jetson). Without them the GPU calls are
+unavailable; CPU ops keep working.
+
+```python
+import numpy as np
+import kornia_rs as K
+
+# Guard: falls back to CPU when no CUDA runtime is available.
+if K.cuda.is_available():
+    rgb = np.ascontiguousarray(
+        np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8)
+    )
+
+    cu_img = K.cuda.upload(rgb)              # host -> GPU  (CudaImage)
+    cu_gray = K.cuda.gray_from_rgb(cu_img)   # runs on the GPU
+    gray = np.asarray(cu_gray.download())    # GPU -> host  (H, W, 1) uint8
+
+    assert gray.shape == (480, 640, 1)
+```
+
+Available on the GPU: color conversions (`gray_from_rgb`, `bgr_from_rgb`,
+`hsv_from_rgb`, `lab_from_rgb`, `ycbcr_from_rgb`, `rgb_from_bayer`, `rgba_from_rgb`, …),
+`apply_colormap`, a fused `CudaPreprocessor`, and zero-copy DLPack import
+(`K.cuda.from_dlpack`) for handing tensors to/from PyTorch without a host copy.
+
 ## 🧑‍💻 Development
 
 ### Prerequisites
