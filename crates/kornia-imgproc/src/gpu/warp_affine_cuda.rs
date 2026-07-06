@@ -250,7 +250,7 @@ pub enum CudaWarpAffineError {
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 fn make_config(dst_width: u32, dst_height: u32, block_dim: Option<(u32, u32)>) -> LaunchConfig {
-    let (bw, bh) = block_dim.unwrap_or((BLOCK_W, BLOCK_H));
+    let (bw, bh) = block_dim.unwrap_or_else(|| (BLOCK_W.min(dst_width), BLOCK_H.min(dst_height)));
     LaunchConfig {
         block_dim: (bw, bh, 1),
         grid_dim: (dst_width.div_ceil(bw), dst_height.div_ceil(bh), 1),
