@@ -207,6 +207,28 @@ pub fn adaptive_threshold(
     tile_min_max: &mut TileMinMax,
     min_white_black_diff: u8,
 ) -> Result<(), AprilTagError> {
+    // Default split of 0.5 reproduces the classic AprilTag midpoint threshold
+    // `min + (max - min) / 2`.
+    adaptive_threshold_with_split(src, dst, tile_min_max, min_white_black_diff, 0.5)
+}
+
+/// Like [`adaptive_threshold`], but with a configurable `split` controlling where between
+/// each tile's local minimum and maximum the black/white cut is placed.
+///
+/// The per-tile threshold is `min + (max - min) * split`. A value of `0.5` matches the
+/// classic AprilTag midpoint behaviour. Lowering it (e.g. `0.33`) biases the binarization
+/// toward white, which preserves thin bright quiet-zone margins around small or low-contrast
+/// tags and prevents a tag's black border from merging with neighbouring dark regions.
+///
+/// `split` is clamped to `[0.0, 1.0]`.
+pub fn adaptive_threshold_with_split(
+    src: &Image<u8, 1>,
+    dst: &mut Image<Pixel, 1>,
+    tile_min_max: &mut TileMinMax,
+    min_white_black_diff: u8,
+    split: f32,
+) -> Result<(), AprilTagError> {
+    let split = split.clamp(0.0, 1.0);
     if src.size() != dst.size() {
         return Err(
             ImageError::InvalidImageSize(src.cols(), src.rows(), dst.cols(), dst.rows()).into(),
@@ -281,7 +303,7 @@ pub fn adaptive_threshold(
                             .for_each(|p| *p = Pixel::Skip);
                     }
                 } else {
-                    let thresh = nb_min + (nb_max - nb_min) / 2;
+                    let thresh = nb_min + ((nb_max - nb_min) as f32 * split) as u8;
                     for row in 0..ts {
                         let row_off = row * width;
                         let src_off = (ty * ts + row) * width;
@@ -319,7 +341,7 @@ pub fn adaptive_threshold(
                         .for_each(|p| *p = Pixel::Skip);
                 }
             } else {
-                let thresh = nb_min + (nb_max - nb_min) / 2;
+                let thresh = nb_min + ((nb_max - nb_min) as f32 * split) as u8;
                 for row in 0..actual_rows {
                     let row_off = row * width;
                     let src_off = (py_start + row) * width;

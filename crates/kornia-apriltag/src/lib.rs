@@ -14,7 +14,7 @@ use crate::{
     quad::{fit_quads, FitQuadConfig},
     rle_cc::RleCC,
     segmentation::{find_gradient_clusters_with_cache, GradientInfo},
-    threshold::{adaptive_threshold, TileMinMax},
+    threshold::{adaptive_threshold_with_split, TileMinMax},
     utils::Pixel,
 };
 use kornia_image::{Image, ImageSize};
@@ -73,12 +73,22 @@ pub struct DecodeTagsConfig {
     pub min_white_black_difference: u8,
     /// Downscale factor for input images.
     pub downscale_factor: usize,
+    /// Fraction between each tile's local min and max at which the adaptive binarization
+    /// splits black from white (`threshold = min + (max - min) * threshold_split`).
+    ///
+    /// `0.5` is the classic AprilTag midpoint. A lower value (default `0.33`) biases toward
+    /// white, preserving thin bright quiet-zone margins around small or glary tags so their
+    /// black border does not merge with adjacent dark regions. Clamped to `[0.0, 1.0]`.
+    pub threshold_split: f32,
 }
 
 impl DecodeTagsConfig {
     /// Creates a new `DecodeTagsConfig` with the given tag family kinds.
     pub fn new(tag_family_kinds: Vec<TagFamilyKind>) -> Result<Self, AprilTagError> {
         const DEFAULT_DOWNSCALE_FACTOR: usize = 2;
+        // Slightly below the classic 0.5 midpoint: biases binarization toward white so thin
+        // bright margins around small/glary tags survive and the black border stays isolated.
+        const DEFAULT_THRESHOLD_SPLIT: f32 = 0.33;
 
         if tag_family_kinds.is_empty() {
             return Err(AprilTagError::EmptyTagFamilies);
@@ -115,6 +125,7 @@ impl DecodeTagsConfig {
             min_tag_width,
             min_white_black_difference: 5,
             downscale_factor: DEFAULT_DOWNSCALE_FACTOR,
+            threshold_split: DEFAULT_THRESHOLD_SPLIT,
         })
     }
 
@@ -286,19 +297,21 @@ impl AprilTagDecoder {
             stride_decimate(src, downscale_img, self.config.downscale_factor);
 
             // Step 1: Adaptive Threshold
-            adaptive_threshold(
+            adaptive_threshold_with_split(
                 downscale_img,
                 &mut self.bin_img,
                 &mut self.tile_min_max,
                 self.config.min_white_black_difference,
+                self.config.threshold_split,
             )?;
         } else {
             // Step 1: Adaptive Threshold
-            adaptive_threshold(
+            adaptive_threshold_with_split(
                 src,
                 &mut self.bin_img,
                 &mut self.tile_min_max,
                 self.config.min_white_black_difference,
+                self.config.threshold_split,
             )?;
         }
 
@@ -333,18 +346,20 @@ impl AprilTagDecoder {
     pub fn decode_all(&mut self, src: &Image<u8, 1>) -> Result<Vec<Detection>, AprilTagError> {
         if let Some(downscale_img) = self.downscale_img.as_mut() {
             stride_decimate(src, downscale_img, self.config.downscale_factor);
-            adaptive_threshold(
+            adaptive_threshold_with_split(
                 downscale_img,
                 &mut self.bin_img,
                 &mut self.tile_min_max,
                 self.config.min_white_black_difference,
+                self.config.threshold_split,
             )?;
         } else {
-            adaptive_threshold(
+            adaptive_threshold_with_split(
                 src,
                 &mut self.bin_img,
                 &mut self.tile_min_max,
                 self.config.min_white_black_difference,
+                self.config.threshold_split,
             )?;
         }
         self.rle_cc.process(&self.bin_img, &mut self.rep_cache, 25);
@@ -373,21 +388,23 @@ impl AprilTagDecoder {
             stride_decimate(src, downscale_img, self.config.downscale_factor);
             us[0] = t.elapsed().as_micros() as u64;
             let t = std::time::Instant::now();
-            adaptive_threshold(
+            adaptive_threshold_with_split(
                 downscale_img,
                 &mut self.bin_img,
                 &mut self.tile_min_max,
                 self.config.min_white_black_difference,
+                self.config.threshold_split,
             )?;
             us[1] = t.elapsed().as_micros() as u64;
         } else {
             us[0] = 0;
             let t = std::time::Instant::now();
-            adaptive_threshold(
+            adaptive_threshold_with_split(
                 src,
                 &mut self.bin_img,
                 &mut self.tile_min_max,
                 self.config.min_white_black_difference,
+                self.config.threshold_split,
             )?;
             us[1] = t.elapsed().as_micros() as u64;
         }
