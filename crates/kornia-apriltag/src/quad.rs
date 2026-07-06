@@ -859,7 +859,7 @@ fn quad_segment_maxima_ws(
 
     if nmaxima > config.max_nmaxima {
         let mut maxima_errs_copy = seg.maxima_errs[..nmaxima].to_vec();
-        maxima_errs_copy.sort_by(|a, b| b.total_cmp(a));
+        maxima_errs_copy.sort_by(|a, b| a.total_cmp(b).reverse());
         let maxima_thresh = maxima_errs_copy[config.max_nmaxima];
         let mut out = 0usize;
         for i in 0..nmaxima {

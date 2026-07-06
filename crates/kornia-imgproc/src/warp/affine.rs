@@ -1,10 +1,10 @@
 use std::f32::consts::PI;
 
 use kornia_image::{Image, ImageError};
+use rayon::prelude::*;
 
 use super::kernels::process_affine_span;
-use crate::interpolation::{interpolate_pixel_fast, validate_interpolation, InterpolationMode};
-use crate::parallel;
+use crate::interpolation::{validate_interpolation, InterpolationMode};
 
 /// Inverts a 2x3 affine transformation matrix.
 ///
@@ -79,12 +79,6 @@ pub fn get_rotation_matrix2d(center: (f32, f32), angle: f32, scale: f32) -> [f32
 }
 
 /// Applies an affine transformation to a point.
-fn transform_point(x: f32, y: f32, m: &[f32; 6]) -> (f32, f32) {
-    let u = m[0] * x + m[1] * y + m[2];
-    let v = m[3] * x + m[4] * y + m[5];
-    (u, v)
-}
-
 /// Applies an affine transformation to an image.
 ///
 /// # Arguments
@@ -134,23 +128,143 @@ pub fn warp_affine<const C: usize>(
 ) -> Result<(), ImageError> {
     validate_interpolation(interpolation)?;
 
-    // invert affine transform matrix to find corresponding positions in src from dst
     let m_inv = invert_affine_transform(m);
 
-    // apply affine transformation without pre-allocating coordinate maps
-    parallel::par_iter_rows_spatial_mapping(
-        dst,
-        |x, y| transform_point(x as f32, y as f32, &m_inv),
-        |x, y, dst_pixel| {
-            // check if the position is within the bounds of the src image
-            if x >= 0.0f32 && x < src.cols() as f32 && y >= 0.0f32 && y < src.rows() as f32 {
-                // interpolate the pixel value for each channel
-                dst_pixel.iter_mut().enumerate().for_each(|(k, pixel)| {
-                    *pixel = interpolate_pixel_fast(src, x, y, k, interpolation);
-                });
+    let src_w = src.cols();
+    let src_h = src.rows();
+    let dst_w = dst.cols();
+    let row_len = dst_w * C;
+
+    // Per-column increments (affine: same for every row).
+    let dsx = m_inv[0];
+    let dsy = m_inv[3];
+    let src_w_f = src_w as f32;
+    let src_h_f = src_h as f32;
+
+    // Analytical valid-x range helpers — same logic as warp_affine_u8.
+    // Solve 0 <= dsx*x + sx0 < src_w and 0 <= dsy*x + sy0 < src_h for x,
+    // then intersect to get [x_lo, x_hi) where both coords are in-bounds.
+    let compute_range = |sx0: f32, sy0: f32| -> (usize, usize) {
+        let (mut lo, mut hi) = (0i64, dst_w as i64);
+        for (d, s0, upper) in [(dsx, sx0, src_w_f), (dsy, sy0, src_h_f)] {
+            // 1e-6 covers f32 trig imprecision (e.g. cos(π/2) ≈ −4.4e-8);
+            // assumes source step ≥ ~1e-6 px/col (extreme downscale > 1e6:1 is not a use case here).
+            if d.abs() < 1e-6 {
+                if s0 < 0.0 || s0 >= upper {
+                    return (0, 0);
+                }
+            } else {
+                let a = (-s0) / d;
+                let b = (upper - s0) / d;
+                let (lf, hf) = if d > 0.0 { (a, b) } else { (b, a) };
+                lo = lo.max(lf.ceil().max(0.0) as i64);
+                hi = hi.min(hf.ceil().min(dst_w as f32) as i64);
             }
-        },
-    );
+        }
+        if lo >= hi {
+            (0, 0)
+        } else {
+            (lo as usize, hi as usize)
+        }
+    };
+
+    // 16 rows per Rayon task — same granularity as parallel.rs — keeps spawn
+    // overhead low without sacrificing work-stealing balance.
+    const ROWS_PER_TASK: usize = 16;
+    let src_slice = src.as_slice();
+
+    // Lift the interpolation branch outside the parallel loop so each task is
+    // branch-free in its inner loop.
+    macro_rules! run_rows {
+        ($chunk:expr, $y_base:expr, $inner:expr) => {
+            for (dy, dst_row) in $chunk.chunks_exact_mut(row_len).enumerate() {
+                let y_f = ($y_base + dy) as f32;
+                let sx0 = m_inv[1] * y_f + m_inv[2];
+                let sy0 = m_inv[4] * y_f + m_inv[5];
+                let (x_lo, x_hi) = compute_range(sx0, sy0);
+                dst_row[..x_lo * C].fill(0.0);
+                dst_row[x_hi * C..].fill(0.0);
+                if x_lo < x_hi {
+                    let mut sx = sx0 + dsx * x_lo as f32;
+                    let mut sy = sy0 + dsy * x_lo as f32;
+                    $inner(dst_row, x_lo, x_hi, &mut sx, &mut sy);
+                }
+            }
+        };
+    }
+
+    match interpolation {
+        InterpolationMode::Nearest => {
+            dst.as_slice_mut()
+                .par_chunks_mut(row_len * ROWS_PER_TASK)
+                .enumerate()
+                .for_each(|(ci, chunk)| {
+                    run_rows!(
+                        chunk,
+                        ci * ROWS_PER_TASK,
+                        |dst_row: &mut [f32],
+                         x_lo: usize,
+                         x_hi: usize,
+                         sx: &mut f32,
+                         sy: &mut f32| {
+                            for dst_pixel in dst_row[x_lo * C..x_hi * C].chunks_exact_mut(C) {
+                                let xi = sx.round().clamp(0.0, src_w_f - 1.0) as usize;
+                                let yi = sy.round().clamp(0.0, src_h_f - 1.0) as usize;
+                                dst_pixel.copy_from_slice(&src_slice[(yi * src_w + xi) * C..][..C]);
+                                *sx += dsx;
+                                *sy += dsy;
+                            }
+                        }
+                    );
+                });
+        }
+        InterpolationMode::Bilinear => {
+            dst.as_slice_mut()
+                .par_chunks_mut(row_len * ROWS_PER_TASK)
+                .enumerate()
+                .for_each(|(ci, chunk)| {
+                    run_rows!(
+                        chunk,
+                        ci * ROWS_PER_TASK,
+                        |dst_row: &mut [f32],
+                         x_lo: usize,
+                         x_hi: usize,
+                         sx: &mut f32,
+                         sy: &mut f32| {
+                            for dst_pixel in dst_row[x_lo * C..x_hi * C].chunks_exact_mut(C) {
+                                let sx_c = sx.clamp(0.0, src_w_f - 1.0);
+                                let sy_c = sy.clamp(0.0, src_h_f - 1.0);
+                                let x0 = sx_c as usize;
+                                let y0 = sy_c as usize;
+                                let x1 = (x0 + 1).min(src_w - 1);
+                                let y1 = (y0 + 1).min(src_h - 1);
+                                let fx = sx_c - x0 as f32;
+                                let fy = sy_c - y0 as f32;
+                                let w00 = (1.0 - fy) * (1.0 - fx);
+                                let w10 = (1.0 - fy) * fx;
+                                let w01 = fy * (1.0 - fx);
+                                let w11 = fy * fx;
+                                let b00 = (y0 * src_w + x0) * C;
+                                let b10 = (y0 * src_w + x1) * C;
+                                let b01 = (y1 * src_w + x0) * C;
+                                let b11 = (y1 * src_w + x1) * C;
+                                for k in 0..C {
+                                    dst_pixel[k] = w00 * src_slice[b00 + k]
+                                        + w10 * src_slice[b10 + k]
+                                        + w01 * src_slice[b01 + k]
+                                        + w11 * src_slice[b11 + k];
+                                }
+                                *sx += dsx;
+                                *sy += dsy;
+                            }
+                        }
+                    );
+                });
+        }
+        // validate_interpolation at the top of this function rejects every mode
+        // other than Nearest and Bilinear, so this arm is unreachable.
+        _ => unreachable!(),
+    }
 
     Ok(())
 }
