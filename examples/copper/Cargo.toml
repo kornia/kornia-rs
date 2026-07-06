@@ -14,7 +14,7 @@ include = { workspace = true }
 publish = false
 
 [dependencies]
-cu29 = "0.15.0"
+cu29 = "1.0.0"
 kornia = { workspace = true, features = ["gstreamer"] }
 rerun = { workspace = true }
 serde = { workspace = true }

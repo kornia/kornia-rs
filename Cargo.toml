@@ -34,10 +34,10 @@ bincode = { version = "2", features = ["derive"] }
 # target feature is enabled (macOS CI, and aarch64 Linux since we force +fp16 there).
 # Still unfixed upstream as of https://github.com/huggingface/candle/commit/39355c6c.
 # Bump back to "0.11" once that's resolved.
-candle-core = { version = "0.10.2" }
-candle-flash-attn = { version = "0.10.2" }
-candle-nn = { version = "0.10.2" }
-candle-transformers = { version = "0.10.2" }
+candle-core = { version = "0.11.0" }
+candle-flash-attn = { version = "0.11.0" }
+candle-nn = { version = "0.11.0" }
+candle-transformers = { version = "0.11.0" }
 circular-buffer = "2.0"
 criterion = "0.8"
 ctrlc = "3.5"
