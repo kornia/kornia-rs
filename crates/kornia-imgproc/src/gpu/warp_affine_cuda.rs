@@ -10,14 +10,19 @@
 //!
 //! # Optimisations applied
 //!
-//! * **32×8 thread block** — full warp per output row, same reasoning as
-//!   `resize_cuda`: better write coalescing and source reads confined to nearby
-//!   rows per warp.
-//! * **`__ldg` source reads** — routes through the read-only L1 cache.
-//!   Warp-affine source accesses are scattered (angle determines stride between
-//!   consecutive threads), so the 2D spatial locality of `__ldg` is critical.
+//! * **32×8 thread block (default)** — full warp per output row, same
+//!   reasoning as `resize_cuda`: better write coalescing and source reads
+//!   confined to nearby rows per warp.
+//! * **CUDA texture objects** — source reads route through the dedicated
+//!   2D-spatial texture cache.  `CU_TR_ADDRESS_MODE_BORDER` returns 0 for
+//!   any out-of-bounds fetch, eliminating the divergent `if OOB return 0`
+//!   branch that affects every corner pixel under rotation.
 //! * **`CU_FUNC_CACHE_PREFER_L1`** — enlarges L1 to 64 KB on Turing since
 //!   neither kernel uses shared memory.
+//! * **Dynamic block size** — [`launch_warp_affine_bilinear_cuda`] and
+//!   [`launch_warp_affine_nearest_cuda`] accept an optional `block_dim`
+//!   parameter; `None` selects 32×8 (optimal for most sizes) while `Some`
+//!   lets callers override for small images.
 //!
 //! # Public API
 //!
@@ -27,101 +32,105 @@
 
 use std::sync::{Arc, OnceLock};
 
-use cudarc::driver::{CudaContext, CudaSlice, CudaStream, LaunchConfig};
+use cudarc::driver::{CudaContext, CudaSlice, CudaStream, DevicePtr, LaunchConfig};
 use kornia_tensor::CudaKernel;
 
 use crate::warp::invert_affine_transform;
 
-// ── CUDA C source: bilinear warp affine ──────────────────────────────────────
+use super::texture::CudaTexObject;
+
+// ── CUDA C source: bilinear warp affine via texture object ───────────────────
+//
+// Passes the source as a 1-channel pitch-2D texture (width = src_w * 3) so
+// that interleaved RGB channels are accessible as individual texels.  Border
+// mode (CU_TR_ADDRESS_MODE_BORDER) returns 0 for any OOB fetch, implementing
+// BORDER_CONSTANT=0 without an explicit bounds-check branch.
 
 static BILINEAR_SRC: &str = r#"
-extern "C" __global__ void warp_affine_bilinear_3c(
-    const float* __restrict__ src,
-    float* __restrict__       dst,
-    unsigned int src_w,
-    unsigned int src_h,
+extern "C" __global__ void warp_affine_bilinear_tex_3c(
+    unsigned long long tex,
+    float* __restrict__  dst,
     unsigned int dst_w,
     unsigned int dst_h,
     float m0, float m1, float m2,
     float m3, float m4, float m5
 ) {
-    unsigned int dst_x = blockIdx.x * blockDim.x + threadIdx.x;
-    unsigned int dst_y = blockIdx.y * blockDim.y + threadIdx.y;
-    if (dst_x >= dst_w || dst_y >= dst_h) return;
+    unsigned int gx = blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned int gy = blockIdx.y * blockDim.y + threadIdx.y;
+    if (gx >= dst_w || gy >= dst_h) return;
 
     // Inverse affine: map output pixel → floating-point source coordinate.
-    float sx = m0 * (float)dst_x + m1 * (float)dst_y + m2;
-    float sy = m3 * (float)dst_x + m4 * (float)dst_y + m5;
+    float sx = m0 * (float)gx + m1 * (float)gy + m2;
+    float sy = m3 * (float)gx + m4 * (float)gy + m5;
 
-    unsigned int out = (dst_y * dst_w + dst_x) * 3u;
-
-    // Out-of-bounds: BORDER_CONSTANT = 0.
-    if (sx < 0.0f || sx >= (float)src_w || sy < 0.0f || sy >= (float)src_h) {
-        dst[out] = 0.0f; dst[out + 1] = 0.0f; dst[out + 2] = 0.0f;
-        return;
-    }
-
-    // Clamp so that x0+1 / y0+1 stay within the last valid index.
-    sx = fminf(sx, (float)(src_w - 1u));
-    sy = fminf(sy, (float)(src_h - 1u));
-
-    unsigned int x0 = (unsigned int)sx;
-    unsigned int y0 = (unsigned int)sy;
-    unsigned int x1 = min(x0 + 1u, src_w - 1u);
-    unsigned int y1 = min(y0 + 1u, src_h - 1u);
-
-    float fx  = sx - (float)x0;
-    float fy  = sy - (float)y0;
+    // Bilinear weights.
+    float x0f = floorf(sx);
+    float y0f = floorf(sy);
+    float fx   = sx - x0f;
+    float fy   = sy - y0f;
     float w00 = (1.0f - fy) * (1.0f - fx);
     float w10 = (1.0f - fy) * fx;
     float w01 = fy * (1.0f - fx);
     float w11 = fy * fx;
 
-    unsigned int b00 = (y0 * src_w + x0) * 3u;
-    unsigned int b10 = (y0 * src_w + x1) * 3u;
-    unsigned int b01 = (y1 * src_w + x0) * 3u;
-    unsigned int b11 = (y1 * src_w + x1) * 3u;
+    // Texture x-base for the left column of the 2×2 tap (pixel x0, RGB offset 0).
+    // Right column (pixel x0+1) is at tx0 + 3.0f.
+    float tx0 = x0f * 3.0f;
+    float ty0 = y0f;
+    float ty1 = y0f + 1.0f;
 
-    dst[out]     = w00*__ldg(&src[b00])   + w10*__ldg(&src[b10])   + w01*__ldg(&src[b01])   + w11*__ldg(&src[b11]);
-    dst[out + 1] = w00*__ldg(&src[b00+1]) + w10*__ldg(&src[b10+1]) + w01*__ldg(&src[b01+1]) + w11*__ldg(&src[b11+1]);
-    dst[out + 2] = w00*__ldg(&src[b00+2]) + w10*__ldg(&src[b10+2]) + w01*__ldg(&src[b01+2]) + w11*__ldg(&src[b11+2]);
+    // Border mode: OOB fetches return 0.0 — no explicit bounds check needed.
+    cudaTextureObject_t t = (cudaTextureObject_t)tex;
+    unsigned int out = (gy * dst_w + gx) * 3u;
+
+    float r00 = tex2D<float>(t, tx0,       ty0);
+    float r10 = tex2D<float>(t, tx0+3.0f,  ty0);
+    float r01 = tex2D<float>(t, tx0,       ty1);
+    float r11 = tex2D<float>(t, tx0+3.0f,  ty1);
+    dst[out]   = fmaf(w00, r00, fmaf(w10, r10, fmaf(w01, r01, w11 * r11)));
+
+    float g00 = tex2D<float>(t, tx0+1.0f,  ty0);
+    float g10 = tex2D<float>(t, tx0+4.0f,  ty0);
+    float g01 = tex2D<float>(t, tx0+1.0f,  ty1);
+    float g11 = tex2D<float>(t, tx0+4.0f,  ty1);
+    dst[out+1] = fmaf(w00, g00, fmaf(w10, g10, fmaf(w01, g01, w11 * g11)));
+
+    float b00 = tex2D<float>(t, tx0+2.0f,  ty0);
+    float b10 = tex2D<float>(t, tx0+5.0f,  ty0);
+    float b01 = tex2D<float>(t, tx0+2.0f,  ty1);
+    float b11 = tex2D<float>(t, tx0+5.0f,  ty1);
+    dst[out+2] = fmaf(w00, b00, fmaf(w10, b10, fmaf(w01, b01, w11 * b11)));
 }
 "#;
 
-// ── CUDA C source: nearest-neighbor warp affine ───────────────────────────────
+// ── CUDA C source: nearest-neighbor warp affine via texture object ────────────
 
 static NEAREST_SRC: &str = r#"
-extern "C" __global__ void warp_affine_nearest_3c(
-    const float* __restrict__ src,
-    float* __restrict__       dst,
-    unsigned int src_w,
-    unsigned int src_h,
+extern "C" __global__ void warp_affine_nearest_tex_3c(
+    unsigned long long tex,
+    float* __restrict__  dst,
     unsigned int dst_w,
     unsigned int dst_h,
     float m0, float m1, float m2,
     float m3, float m4, float m5
 ) {
-    unsigned int dst_x = blockIdx.x * blockDim.x + threadIdx.x;
-    unsigned int dst_y = blockIdx.y * blockDim.y + threadIdx.y;
-    if (dst_x >= dst_w || dst_y >= dst_h) return;
+    unsigned int gx = blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned int gy = blockIdx.y * blockDim.y + threadIdx.y;
+    if (gx >= dst_w || gy >= dst_h) return;
 
-    float sx = m0 * (float)dst_x + m1 * (float)dst_y + m2;
-    float sy = m3 * (float)dst_x + m4 * (float)dst_y + m5;
+    float sx = m0 * (float)gx + m1 * (float)gy + m2;
+    float sy = m3 * (float)gx + m4 * (float)gy + m5;
 
-    unsigned int out = (dst_y * dst_w + dst_x) * 3u;
+    // Round to nearest; border mode handles OOB → 0.
+    float xi = roundf(sx);
+    float yi  = roundf(sy);
+    float tx  = xi * 3.0f;
 
-    if (sx < 0.0f || sx >= (float)src_w || sy < 0.0f || sy >= (float)src_h) {
-        dst[out] = 0.0f; dst[out + 1] = 0.0f; dst[out + 2] = 0.0f;
-        return;
-    }
-
-    unsigned int xi = min((unsigned int)roundf(sx), src_w - 1u);
-    unsigned int yi = min((unsigned int)roundf(sy), src_h - 1u);
-
-    unsigned int base = (yi * src_w + xi) * 3u;
-    dst[out]     = __ldg(&src[base]);
-    dst[out + 1] = __ldg(&src[base + 1]);
-    dst[out + 2] = __ldg(&src[base + 2]);
+    cudaTextureObject_t t = (cudaTextureObject_t)tex;
+    unsigned int out = (gy * dst_w + gx) * 3u;
+    dst[out]   = tex2D<float>(t, tx,       yi);
+    dst[out+1] = tex2D<float>(t, tx+1.0f,  yi);
+    dst[out+2] = tex2D<float>(t, tx+2.0f,  yi);
 }
 "#;
 
@@ -240,10 +249,11 @@ pub enum CudaWarpAffineError {
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
-fn make_config(dst_width: u32, dst_height: u32) -> LaunchConfig {
+fn make_config(dst_width: u32, dst_height: u32, block_dim: Option<(u32, u32)>) -> LaunchConfig {
+    let (bw, bh) = block_dim.unwrap_or((BLOCK_W, BLOCK_H));
     LaunchConfig {
-        block_dim: (BLOCK_W, BLOCK_H, 1),
-        grid_dim: (dst_width.div_ceil(BLOCK_W), dst_height.div_ceil(BLOCK_H), 1),
+        block_dim: (bw, bh, 1),
+        grid_dim: (dst_width.div_ceil(bw), dst_height.div_ceil(bh), 1),
         shared_mem_bytes: 0,
     }
 }
@@ -281,14 +291,34 @@ fn check_dst(
     Ok(())
 }
 
+fn make_tex(
+    src: &CudaSlice<f32>,
+    stream: &Arc<CudaStream>,
+    src_width: u32,
+    src_height: u32,
+) -> Result<(CudaTexObject, u64), CudaWarpAffineError> {
+    // Safety: DevicePtr::device_ptr returns the raw CUdeviceptr; the _guard
+    // records a stream event on drop (after the texture is destroyed) which is
+    // the correct ordering.
+    let (dev_ptr, _guard) = src.device_ptr(stream);
+    let tex =
+        CudaTexObject::new_pitch2d_border(dev_ptr, src_width as usize * 3, src_height as usize)
+            .map_err(CudaWarpAffineError::Cuda)?;
+    let handle = tex.handle();
+    Ok((tex, handle))
+}
+
 // ── Public launchers ──────────────────────────────────────────────────────────
 
 /// Launch the bilinear warp-affine kernel for a 3-channel f32 image.
 ///
 /// Applies the 2×3 forward affine matrix `m` to warp `src` into `dst`.
 /// The matrix is inverted internally so the API matches the CPU
-/// [`warp_affine`](crate::warp::warp_affine).  Source coordinates that fall
-/// outside the image boundary are filled with zero (`BORDER_CONSTANT`).
+/// [`warp_affine`](crate::warp::warp_affine).
+///
+/// Source pixels are fetched via a CUDA texture object (1-channel pitch-2D,
+/// border-mode).  Out-of-bounds source coordinates return 0 (`BORDER_CONSTANT`)
+/// without a divergent branch in the inner loop.
 ///
 /// # Arguments
 ///
@@ -299,11 +329,15 @@ fn check_dst(
 /// * `src_width`, `src_height` – Source image dimensions.
 /// * `dst_width`, `dst_height` – Output canvas dimensions (may differ from source).
 /// * `m`          – Forward 2×3 affine matrix `[a, b, tx, d, e, ty]`.
+/// * `block_dim`  – Optional thread-block override `(width, height)`.
+///   Pass `None` to use the default 32×8 block (optimal for large images).
+///   For small images (≤ 128×128), passing a smaller block avoids wasted
+///   threads: e.g. `Some((16, 4))` for a 64×64 output.
 ///
 /// # Errors
 ///
-/// Returns [`CudaWarpAffineError`] on compile failure, launch error, or if
-/// `dst` is too small.
+/// Returns [`CudaWarpAffineError`] on compile failure, texture-creation error,
+/// launch error, or if `dst` is too small.
 #[allow(clippy::too_many_arguments)]
 pub fn launch_warp_affine_bilinear_cuda(
     ctx: &Arc<CudaContext>,
@@ -315,20 +349,20 @@ pub fn launch_warp_affine_bilinear_cuda(
     dst_width: u32,
     dst_height: u32,
     m: &[f32; 6],
+    block_dim: Option<(u32, u32)>,
 ) -> Result<(), CudaWarpAffineError> {
     check_dst(dst, dst_width, dst_height)?;
 
     let kernel = BILINEAR_KERNEL
-        .get_or_init(|| compile_with_l1(ctx, BILINEAR_SRC, "warp_affine_bilinear_3c"));
+        .get_or_init(|| compile_with_l1(ctx, BILINEAR_SRC, "warp_affine_bilinear_tex_3c"));
 
+    let (_tex, tex_handle) = make_tex(src, stream, src_width, src_height)?;
     let mi = invert_affine_transform(m);
 
     kernel
         .launch_builder(stream)
-        .arg(src)
+        .arg(&tex_handle)
         .arg(dst)
-        .arg(&src_width)
-        .arg(&src_height)
         .arg(&dst_width)
         .arg(&dst_height)
         .arg(&mi[0])
@@ -337,7 +371,11 @@ pub fn launch_warp_affine_bilinear_cuda(
         .arg(&mi[3])
         .arg(&mi[4])
         .arg(&mi[5])
-        .launch_2d(dst_width, dst_height, make_config(dst_width, dst_height))
+        .launch_2d(
+            dst_width,
+            dst_height,
+            make_config(dst_width, dst_height, block_dim),
+        )
         .map_err(|e| CudaWarpAffineError::Cuda(e.to_string()))
 }
 
@@ -347,14 +385,17 @@ pub fn launch_warp_affine_bilinear_cuda(
 /// source sampling.  Faster; suitable for integer-aligned transforms (pure
 /// translation, 90°/180° rotation, flip).
 ///
+/// Source reads are texture-cached; out-of-bounds coords return 0 without
+/// a divergent branch.
+///
 /// # Arguments
 ///
 /// See [`launch_warp_affine_bilinear_cuda`] — arguments are identical.
 ///
 /// # Errors
 ///
-/// Returns [`CudaWarpAffineError`] on compile failure, launch error, or if
-/// `dst` is too small.
+/// Returns [`CudaWarpAffineError`] on compile failure, texture-creation error,
+/// launch error, or if `dst` is too small.
 #[allow(clippy::too_many_arguments)]
 pub fn launch_warp_affine_nearest_cuda(
     ctx: &Arc<CudaContext>,
@@ -366,20 +407,20 @@ pub fn launch_warp_affine_nearest_cuda(
     dst_width: u32,
     dst_height: u32,
     m: &[f32; 6],
+    block_dim: Option<(u32, u32)>,
 ) -> Result<(), CudaWarpAffineError> {
     check_dst(dst, dst_width, dst_height)?;
 
-    let kernel =
-        NEAREST_KERNEL.get_or_init(|| compile_with_l1(ctx, NEAREST_SRC, "warp_affine_nearest_3c"));
+    let kernel = NEAREST_KERNEL
+        .get_or_init(|| compile_with_l1(ctx, NEAREST_SRC, "warp_affine_nearest_tex_3c"));
 
+    let (_tex, tex_handle) = make_tex(src, stream, src_width, src_height)?;
     let mi = invert_affine_transform(m);
 
     kernel
         .launch_builder(stream)
-        .arg(src)
+        .arg(&tex_handle)
         .arg(dst)
-        .arg(&src_width)
-        .arg(&src_height)
         .arg(&dst_width)
         .arg(&dst_height)
         .arg(&mi[0])
@@ -388,7 +429,11 @@ pub fn launch_warp_affine_nearest_cuda(
         .arg(&mi[3])
         .arg(&mi[4])
         .arg(&mi[5])
-        .launch_2d(dst_width, dst_height, make_config(dst_width, dst_height))
+        .launch_2d(
+            dst_width,
+            dst_height,
+            make_config(dst_width, dst_height, block_dim),
+        )
         .map_err(|e| CudaWarpAffineError::Cuda(e.to_string()))
 }
 
@@ -402,9 +447,13 @@ pub fn launch_warp_affine_nearest_cuda(
 /// more compute- and bandwidth-intensive than bilinear (4 reads).  Best used
 /// when visual quality matters more than raw throughput.
 ///
+/// Hardware texture bilinear cannot accelerate a 4×4 bicubic stencil, so this
+/// kernel continues to use `__ldg` with explicit clamping.
+///
 /// # Arguments
 ///
-/// See [`launch_warp_affine_bilinear_cuda`] — arguments are identical.
+/// See [`launch_warp_affine_bilinear_cuda`] — arguments are identical except
+/// no `block_dim` parameter (always uses 32×8).
 ///
 /// # Errors
 ///
@@ -450,6 +499,10 @@ pub fn launch_warp_affine_bicubic_cuda(
         .arg(&mi[3])
         .arg(&mi[4])
         .arg(&mi[5])
-        .launch_2d(dst_width, dst_height, make_config(dst_width, dst_height))
+        .launch_2d(
+            dst_width,
+            dst_height,
+            make_config(dst_width, dst_height, None),
+        )
         .map_err(|e| CudaWarpAffineError::Cuda(e.to_string()))
 }

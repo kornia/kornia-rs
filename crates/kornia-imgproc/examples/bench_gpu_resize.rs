@@ -281,11 +281,11 @@ fn run_gpu_cuda() {
                           dst: &mut cudarc::driver::CudaSlice<f32>| {
                 match method {
                     "nearest" => launch_resize_nearest_downscale_cuda(
-                        &ctx, &stream, src, dst, sw, sh, dw, dh,
+                        &ctx, &stream, src, dst, sw, sh, dw, dh, None,
                     )
                     .expect("nearest launch"),
                     _ => launch_resize_bilinear_downscale_cuda(
-                        &ctx, &stream, src, dst, sw, sh, dw, dh,
+                        &ctx, &stream, src, dst, sw, sh, dw, dh, None,
                     )
                     .expect("bilinear launch"),
                 }
@@ -422,6 +422,7 @@ fn run_gpu_cuda_fused_normalize() {
                 sh,
                 dw,
                 dh,
+                None,
             )
             .expect("bilinear launch");
         }
@@ -438,6 +439,7 @@ fn run_gpu_cuda_fused_normalize() {
                 sh,
                 dw,
                 dh,
+                None,
             )
             .expect("bilinear launch");
         }
@@ -457,6 +459,7 @@ fn run_gpu_cuda_fused_normalize() {
                 dh,
                 mean,
                 std,
+                None,
             )
             .expect("fused launch");
         }
@@ -475,6 +478,7 @@ fn run_gpu_cuda_fused_normalize() {
                 dh,
                 mean,
                 std,
+                None,
             )
             .expect("fused launch");
         }
