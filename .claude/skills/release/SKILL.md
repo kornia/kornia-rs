@@ -8,6 +8,26 @@ description: Use when cutting a kornia-rs release or pre-release (rc) — bumps 
 Publishing is **irreversible** (crates.io only yanks, never deletes). Never run
 the publish step without explicit human confirmation of version + scope.
 
+## CUDA — always in scope (unless the human opts out)
+
+**Every release must include the CUDA/GPU path.** The default `python_release.yml`
+builds wheels **without** `--features cuda`, so `pip install kornia-rs` ships a
+**CPU-only** wheel (no `kornia_rs.cuda`). Do NOT ship a release calling out GPU
+features from a wheel that lacks them.
+
+Before publishing wheels, confirm the GPU story:
+- kornia-py's `cuda` feature uses cudarc **dynamic loading** — a `--features cuda`
+  wheel still imports on machines without CUDA and should fall back to CPU; the
+  GPU path activates at runtime when `libcuda` + `libnvrtc` are present. So a
+  single cuda-built wheel is the goal (universal), not a separate variant.
+- Add `--features cuda` to the linux wheel `args:` in `python_release.yml` (and
+  verify import still works with no CUDA present) so pip users get GPU.
+- Runtime requirements to put in the release notes: NVIDIA driver (`libcuda.so`)
+  **and** `nvrtc` (kernels are JIT-compiled), matching arch (x86_64 / aarch64 /
+  Jetson Tegra). Without nvrtc the GPU path can't compile kernels.
+- Verify on a GPU box before announcing: `bench_gpu_warp_affine --features
+  gpu-cuda` (Rust) and `import kornia_rs; kornia_rs.cuda...` (Python).
+
 ## Facts about this repo
 
 - Workspace version: single source in root `Cargo.toml` (`version = "..."`, all
