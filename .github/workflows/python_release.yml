@@ -15,13 +15,6 @@ jobs:
       matrix:
         python-version: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13", "3.13t", "3.14", "3.14t"]
         target: [x86_64, aarch64]
-        exclude:
-          # The maturin bundled in the manylinux image cannot build the
-          # free-threaded 3.13 interpreter ("Free-threaded Python interpreter
-          # is only supported on 3.14 and later"). 3.13t wheels still build on
-          # macOS/Windows (newer host maturin). Restore here once the manylinux
-          # maturin gains free-threaded 3.13 support.
-          - python-version: "3.13t"
     # Neutralize the in-repo `.cargo/config.toml` (which targets the local
     # Jetson cross-test setup: `x86_64-linux-gnu-gcc` cross-linker plus
     # `x86-64-v3` / `aarch64+fp16+fhm` baselines). Released wheels need
@@ -43,6 +36,11 @@ jobs:
       - uses: actions/checkout@v7
       - uses: messense/maturin-action@v1
         with:
+          # Pin latest maturin (as macOS/Windows jobs do). Without this, linux
+          # uses the action's default bundled maturin, whose free-threaded 3.13
+          # (3.13t) support regressed to "only supported on 3.14 and later" —
+          # 3.13t-linux built fine until the action's default maturin drifted.
+          maturin-version: latest
           target: ${{ matrix.target }}
           manylinux: auto
           command: build
