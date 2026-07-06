@@ -67,12 +67,20 @@ class CudaTensor:
 class CudaPreprocessor:
     """Fused camera preprocessing: raw frame -> normalized CHW tensor, one kernel.
 
+    Frames are passed as a **flat 1-D ``uint8`` array** of the raw packed bytes
+    (not an (H, W, C) image): ``H*W*C`` bytes for ``rgb``/``bgr``, or the packed
+    plane layout for ``nv12``. Reshape image arrays with ``.reshape(-1)`` first.
+
     Example::
 
         pre = CudaPreprocessor(mode="letterbox", format="nv12", f16=True,
                                mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))
         t = pre.run(nv12_bytes, w, h, 640, 640)     # CudaTensor [1,3,640,640] f16
         torch_t = torch.from_dlpack(t)              # zero-copy
+
+        # from an (H, W, 3) RGB image array:
+        pre = CudaPreprocessor(format="rgb")
+        t = pre.run(rgb.reshape(-1), w, h, 224, 224)
     """
 
     def __init__(self, mode: str = "letterbox", format: str = "rgb",
@@ -81,10 +89,11 @@ class CudaPreprocessor:
                  std: Optional[Tuple[float, float, float]] = None,
                  pad_value: int = 114) -> None: ...
     def run(self, frame: np.ndarray, width: int, height: int,
-            out_height: int, out_width: int) -> CudaTensor: ...
+            out_height: int, out_width: int) -> CudaTensor:
+        """Flat 1-D ``uint8`` frame bytes -> ``CudaTensor`` [1, 3, out_h, out_w]."""
     def run_batch(self, frames: List[np.ndarray], width: int, height: int,
                   out_height: int, out_width: int) -> CudaTensor:
-        """N same-sized frames -> [N, 3, out_h, out_w]; dtype follows f16 flag."""
+        """N flat ``uint8`` same-sized frames -> [N, 3, out_h, out_w]; dtype follows f16 flag."""
 
 def gray_from_rgb(img: CudaImage) -> CudaImage: ...
 def rgb_from_gray(img: CudaImage) -> CudaImage: ...
