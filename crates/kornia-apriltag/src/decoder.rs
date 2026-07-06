@@ -1027,7 +1027,7 @@ mod tests {
             det_at(100.0, 300.0, 40.0, 7, 60.0), // different id entirely
         ];
         let mut out = dedup_detections(dets);
-        out.sort_by(|a, b| (a.id, a.center.x as i32).cmp(&(b.id, b.center.x as i32)));
+        out.sort_by_key(|a| (a.id, a.center.x as i32));
         assert_eq!(out.len(), 3, "two id-0 tags + one id-7 tag");
         assert_eq!(out[0].id, 0);
         assert_eq!(
