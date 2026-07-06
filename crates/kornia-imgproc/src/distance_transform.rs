@@ -1,4 +1,3 @@
-use kornia_image::allocator::{CpuAllocator, ImageAllocator};
 use kornia_image::{Image, ImageError, ImageSize};
 use rayon::prelude::*;
 
@@ -9,12 +8,7 @@ pub(crate) fn euclidean_distance(x1: Vec<f32>, x2: Vec<f32>) -> f32 {
 }
 
 /// NOTE: only for testing, extremely slow
-pub fn distance_transform_vanilla<A>(
-    image: &Image<f32, 1, A>,
-) -> Result<Image<f32, 1, CpuAllocator>, ImageError>
-where
-    A: ImageAllocator,
-{
+pub fn distance_transform_vanilla(image: &Image<f32, 1>) -> Result<Image<f32, 1>, ImageError> {
     let mut output = vec![0.0f32; image.width() * image.height()];
     let slice = image.as_slice();
 
@@ -36,7 +30,7 @@ where
         }
     }
 
-    Image::new(image.size(), output, CpuAllocator)
+    Image::new(image.size(), output)
 }
 
 /// Executor for computing the Euclidean Distance Transform.
@@ -63,13 +57,7 @@ impl DistanceTransformExecutor {
     }
 
     /// Computes the Euclidean Distance Transform of a binary image.
-    pub fn execute<A>(
-        &mut self,
-        image: &Image<f32, 1, A>,
-    ) -> Result<Image<f32, 1, CpuAllocator>, ImageError>
-    where
-        A: ImageAllocator,
-    {
+    pub fn execute(&mut self, image: &Image<f32, 1>) -> Result<Image<f32, 1>, ImageError> {
         let width = image.width();
         let height = image.height();
         let num_pixels = width * height;
@@ -116,7 +104,7 @@ impl DistanceTransformExecutor {
         let mut final_data = vec![0.0f32; num_pixels];
         transpose_map(&self.scratch, &mut final_data, height, width, |x| x.sqrt());
 
-        Image::new(ImageSize { width, height }, final_data, CpuAllocator)
+        Image::new(ImageSize { width, height }, final_data)
     }
 }
 
@@ -182,7 +170,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kornia_image::allocator::CpuAllocator;
     use kornia_image::{Image, ImageSize};
 
     #[test]
@@ -194,7 +181,7 @@ mod tests {
         data[102] = 1.0;
         data[300] = 1.0;
 
-        let image = Image::<f32, 1, _>::new(ImageSize { width, height }, data, CpuAllocator)?;
+        let image = Image::<f32, 1>::new(ImageSize { width, height }, data)?;
         let expected = distance_transform_vanilla(&image)?;
 
         let mut executor = DistanceTransformExecutor::new();
@@ -209,7 +196,7 @@ mod tests {
 
     #[test]
     fn distance_transform_smoke() -> Result<(), ImageError> {
-        let image = Image::<f32, 1, _>::new(
+        let image = Image::<f32, 1>::new(
             ImageSize {
                 width: 3,
                 height: 4,
@@ -217,7 +204,6 @@ mod tests {
             vec![
                 0.0f32, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0,
             ],
-            CpuAllocator,
         )?;
 
         let mut executor = DistanceTransformExecutor::new();

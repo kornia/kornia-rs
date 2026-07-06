@@ -16,6 +16,15 @@ name = "bench_image"
 
 [dependencies]
 arrow = { workspace = true, optional = true }
+cudarc = { version = "0.19.0", default-features = false, features = [
+  "cuda-version-from-build-system",
+  "driver",
+  "fallback-dynamic-loading",
+  "fallback-latest",
+  "nvrtc",
+  "std",
+], optional = true }
+dlpack-rs = { git = "https://github.com/kornia/dlpack-rs", tag = "v0.3.2", default-features = false, optional = true }
 kornia-tensor = { workspace = true }
 num-traits = { workspace = true }
 rayon = { workspace = true }
@@ -28,3 +37,8 @@ half = { workspace = true }
 [features]
 default = []
 arrow = ["dep:arrow"]
+# cudarc device-memory integration — default OFF.
+# Enables Image::to_cuda for H2D uploads.
+# Verify absence: `cargo tree -p kornia-image -e features | grep -i cudarc`
+cudarc = ["dep:cudarc", "kornia-tensor/cudarc"]
+dlpack = ["dep:dlpack-rs", "kornia-tensor/dlpack"]

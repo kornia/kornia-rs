@@ -57,6 +57,12 @@ pub mod normalize;
 /// utility functions for resizing images.
 pub mod resize;
 
+/// Image → model-input preprocessing (resize + pad + normalize to CHW f32).
+///
+/// CPU by default; the `cudarc` feature adds a fused GPU kernel path (build with
+/// [`preprocess::PreprocessorBuilder::build_cuda`]). See [`preprocess::Preprocessor`].
+pub mod preprocess;
+
 /// operations to threshold images.
 pub mod threshold;
 
@@ -74,3 +80,9 @@ pub mod optical_flow_pyr_lk;
 
 /// contours
 pub mod contours;
+
+/// GPU-accelerated image processing kernels (CubeCL and native CUDA paths).
+///
+/// Enabled by the `gpu-cubecl` or `gpu-cuda` feature.
+#[cfg(any(feature = "gpu-cubecl", feature = "gpu-cuda"))]
+pub mod gpu;

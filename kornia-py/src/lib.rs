@@ -1,12 +1,21 @@
+// Special/internal
+pub(crate) mod backing;
+pub(crate) mod numpy_view;
+// Feature modules (alphabetical)
 mod apriltag;
 mod augmentations;
 mod ba;
 mod blur;
 mod brightness;
 mod color;
+mod color_space;
 mod cpu;
 mod crop;
+#[cfg(feature = "cuda")]
+#[path = "cuda.rs"]
+mod cuda_ext;
 mod depth;
+mod dlpack;
 mod enhance;
 mod feature_match;
 mod flip;
@@ -284,6 +293,15 @@ pub fn warp_perspective_deprecated(
 
 // Main Python Module Definition
 
+/// Register the device-agnostic ImageNet normalization presets on `module`.
+pub(crate) fn add_imagenet_consts(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    let [m0, m1, m2] = kornia_imgproc::preprocess::IMAGENET_MEAN;
+    let [s0, s1, s2] = kornia_imgproc::preprocess::IMAGENET_STD;
+    module.add("IMAGENET_MEAN", (m0, m1, m2))?;
+    module.add("IMAGENET_STD", (s0, s1, s2))?;
+    Ok(())
+}
+
 #[pymodule(gil_used = false)]
 pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let py = m.py();
@@ -324,6 +342,7 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     image_mod.add_class::<PyPixelFormat>()?;
     image_mod.add_class::<PyImageLayout>()?;
     image_mod.add_class::<image::PyImageApi>()?;
+    image_mod.add_class::<crate::color_space::PyColorSpace>()?;
     m.add_submodule(&image_mod)?;
 
     // ---------------------------------------------------------------------------
@@ -396,7 +415,36 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_bgra, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(color::bgr_from_rgb, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(color::gray_from_rgb, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::gray_from_rgb_f32, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(color::apply_colormap, &imgproc_mod)?)?;
+    // f32 perceptual / cylindrical color conversions (3→3)
+    imgproc_mod.add_function(wrap_pyfunction!(color::hsv_from_rgb, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_hsv, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::hls_from_rgb, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_hls, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::xyz_from_rgb, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_xyz, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::lab_from_rgb, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_lab, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::luv_from_rgb, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_luv, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::linear_rgb_from_rgb, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_linear_rgb, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::ycbcr_from_rgb, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_ycbcr, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::yuv_from_rgb, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_yuv, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::sepia_from_rgb, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_bayer, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_yuyv, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_uyvy, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_yvyu, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_nv12, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_nv21, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_i420, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_yv12, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::yuyv_from_rgb, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::nv12_from_rgb, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(enhance::add_weighted, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(
         histogram::compute_histogram,
@@ -448,6 +496,7 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // K3D submodule — 3D geometry: ICP, two-view pose, F/H/E model fits, triangulation.
     let k3d_mod = PyModule::new(py, "k3d")?;
     k3d_mod.add_function(wrap_pyfunction!(icp::icp_vanilla, &k3d_mod)?)?;
+    k3d_mod.add_class::<pnp::PnPSolverMethod>()?;
     k3d_mod.add_class::<PyICPConvergenceCriteria>()?;
     k3d_mod.add_class::<PyICPResult>()?;
     k3d_mod.add_class::<twoview::PyTwoViewPose>()?;
@@ -475,6 +524,7 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     apriltag_mod.add_class::<apriltag::PyAprilTagDecoder>()?;
     apriltag_mod.add_class::<apriltag::PyApriltagDetection>()?;
     apriltag_mod.add_class::<apriltag::PyQuad>()?;
+    apriltag_mod.add_class::<apriltag::PyTagPose>()?;
     apriltag_mod.add_class::<apriltag::family::PyTagFamilyKind>()?;
 
     let apriltag_family_mod = PyModule::new(py, "family")?;
@@ -505,6 +555,10 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let pipeline_mod = PyModule::new(py, "pipeline")?;
     pipeline_mod.add_function(wrap_pyfunction!(
         pipeline::resize_normalize_to_tensor,
+        &pipeline_mod
+    )?)?;
+    pipeline_mod.add_function(wrap_pyfunction!(
+        pipeline::resize_normalize_to_tensor_batch,
         &pipeline_mod
     )?)?;
     pipeline_mod.add_class::<pipeline::Preprocessor>()?;
@@ -539,6 +593,11 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     ] {
         modules.set_item(name, submod)?;
     }
+
+    add_imagenet_consts(m)?;
+
+    #[cfg(feature = "cuda")]
+    cuda_ext::register(py, m)?;
 
     Ok(())
 }

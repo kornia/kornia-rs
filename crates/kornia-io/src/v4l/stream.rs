@@ -122,10 +122,10 @@ impl std::ops::Deref for MmapBuffer {
 
 /// Information about memory-mapped buffer
 pub(crate) struct MmapInfo {
-    ptr: *mut u8, // Stored as *mut for munmap compatibility
-    length: usize,
+    pub(crate) ptr: *mut u8, // Stored as *mut for munmap compatibility
+    pub(crate) length: usize,
     #[allow(dead_code)]
-    offset: u32,
+    pub(crate) offset: u32,
 }
 
 /// # Safety

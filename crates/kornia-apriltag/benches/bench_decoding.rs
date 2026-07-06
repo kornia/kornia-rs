@@ -1,7 +1,7 @@
 use apriltag::DetectorBuilder;
 use criterion::{criterion_group, criterion_main, Criterion};
 use kornia_apriltag::{family::TagFamilyKind, AprilTagDecoder, DecodeTagsConfig};
-use kornia_image::{allocator::CpuAllocator, Image};
+use kornia_image::Image;
 use kornia_imgproc::color::gray_from_rgb_u8;
 use kornia_io::jpeg::read_image_jpeg_rgb8;
 use std::path::PathBuf;
@@ -12,7 +12,7 @@ fn bench_decoding(c: &mut Criterion) {
 
     // Kornia
     let img = read_image_jpeg_rgb8(img_path).unwrap();
-    let mut gray_img = Image::from_size_val(img.size(), 0, CpuAllocator).unwrap();
+    let mut gray_img = Image::from_size_val(img.size(), 0).unwrap();
     gray_from_rgb_u8(&img, &mut gray_img).unwrap();
 
     let kornia_detector_config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag36H11]).unwrap();
@@ -46,6 +46,35 @@ fn bench_decoding(c: &mut Criterion) {
 
     let aprilgrid_detector =
         aprilgrid::detector::TagDetector::new(&aprilgrid::TagFamily::T36H11, None);
+
+    // One-shot stage breakdown before the criterion loops.
+    {
+        let mut total_us = [0u64; 6];
+        const WARMUP: usize = 20;
+        for _ in 0..WARMUP {
+            let _ = kornia_detector.decode_timed(&gray_img).unwrap();
+            kornia_detector.clear();
+        }
+        const SAMPLES: usize = 50;
+        for _ in 0..SAMPLES {
+            let (_, us) = kornia_detector.decode_timed(&gray_img).unwrap();
+            kornia_detector.clear();
+            for i in 0..6 {
+                total_us[i] += us[i];
+            }
+        }
+        eprintln!(
+            "stages (avg µs over {} samples): decimate={} threshold={} conn_comp={} clusters={} fit_quads={} decode={}  total={}",
+            SAMPLES,
+            total_us[0] / SAMPLES as u64,
+            total_us[1] / SAMPLES as u64,
+            total_us[2] / SAMPLES as u64,
+            total_us[3] / SAMPLES as u64,
+            total_us[4] / SAMPLES as u64,
+            total_us[5] / SAMPLES as u64,
+            total_us.iter().sum::<u64>() / SAMPLES as u64,
+        );
+    }
 
     c.bench_function("kornia-apriltag", |b| {
         b.iter(|| {

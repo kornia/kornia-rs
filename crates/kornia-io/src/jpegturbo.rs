@@ -1,8 +1,5 @@
 use crate::error::IoError;
-use kornia_image::{
-    allocator::{CpuAllocator, ImageAllocator},
-    Image, ImageError, ImageSize,
-};
+use kornia_image::{Image, ImageError, ImageSize};
 use std::{path::Path, sync::Mutex};
 use turbojpeg;
 
@@ -69,10 +66,7 @@ impl JpegTurboEncoder {
     /// # Returns
     ///
     /// The encoded data as `Vec<u8>`.
-    pub fn encode_rgb8<A: ImageAllocator>(
-        &self,
-        image: &Image<u8, 3, A>,
-    ) -> Result<Vec<u8>, JpegTurboError> {
+    pub fn encode_rgb8(&self, image: &Image<u8, 3>) -> Result<Vec<u8>, JpegTurboError> {
         // get the image data
         let image_data = image.as_slice();
 
@@ -158,32 +152,26 @@ impl JpegTurboDecoder {
     }
 
     /// Decodes the given JPEG data as RGB8 image.
-    pub fn decode_rgb8(
-        &self,
-        jpeg_data: &[u8],
-    ) -> Result<Image<u8, 3, CpuAllocator>, JpegTurboError> {
+    pub fn decode_rgb8(&self, jpeg_data: &[u8]) -> Result<Image<u8, 3>, JpegTurboError> {
         let image_size = self.read_header(jpeg_data)?;
-        let mut dst = Image::from_size_val(image_size, 0u8, CpuAllocator)?;
+        let mut dst = Image::from_size_val(image_size, 0u8)?;
         self.decode_rgb8_into(jpeg_data, &mut dst)?;
         Ok(dst)
     }
 
     /// Decodes the given JPEG data as Gray/Mono8 image.
-    pub fn decode_gray8(
-        &self,
-        jpeg_data: &[u8],
-    ) -> Result<Image<u8, 1, CpuAllocator>, JpegTurboError> {
+    pub fn decode_gray8(&self, jpeg_data: &[u8]) -> Result<Image<u8, 1>, JpegTurboError> {
         let image_size = self.read_header(jpeg_data)?;
-        let mut dst = Image::from_size_val(image_size, 0u8, CpuAllocator)?;
+        let mut dst = Image::from_size_val(image_size, 0u8)?;
         self.decode_gray8_into(jpeg_data, &mut dst)?;
         Ok(dst)
     }
 
     /// Decodes JPEG bytes as RGB8 into a pre-allocated buffer.
-    pub fn decode_rgb8_into<A: ImageAllocator>(
+    pub fn decode_rgb8_into(
         &self,
         jpeg_data: &[u8],
-        dst: &mut Image<u8, 3, A>,
+        dst: &mut Image<u8, 3>,
     ) -> Result<(), JpegTurboError> {
         let size = dst.size();
         self.decode_into(
@@ -195,10 +183,10 @@ impl JpegTurboDecoder {
     }
 
     /// Decodes JPEG bytes as Gray/Mono8 into a pre-allocated buffer.
-    pub fn decode_gray8_into<A: ImageAllocator>(
+    pub fn decode_gray8_into(
         &self,
         jpeg_data: &[u8],
-        dst: &mut Image<u8, 1, A>,
+        dst: &mut Image<u8, 1>,
     ) -> Result<(), JpegTurboError> {
         let size = dst.size();
         self.decode_into(
@@ -263,15 +251,13 @@ impl JpegTurboDecoder {
 /// use kornia_image::Image;
 /// use kornia_io::jpegturbo as F;
 ///
-/// let image: Image<u8, 3, _> = F::read_image_jpegturbo_rgb8("../../tests/data/dog.jpeg").unwrap();
+/// let image: Image<u8, 3> = F::read_image_jpegturbo_rgb8("../../tests/data/dog.jpeg").unwrap();
 ///
 /// assert_eq!(image.cols(), 258);
 /// assert_eq!(image.rows(), 195);
 /// assert_eq!(image.num_channels(), 3);
 /// ```
-pub fn read_image_jpegturbo_rgb8(
-    file_path: impl AsRef<Path>,
-) -> Result<Image<u8, 3, CpuAllocator>, IoError> {
+pub fn read_image_jpegturbo_rgb8(file_path: impl AsRef<Path>) -> Result<Image<u8, 3>, IoError> {
     let file_path = file_path.as_ref().to_owned();
     // verify the file exists and is a JPEG
     if !file_path.exists() {
@@ -304,9 +290,9 @@ pub fn read_image_jpegturbo_rgb8(
 /// * `file_path` - The path to the JPEG image.
 /// * `image` - The tensor containing the JPEG image data.
 /// * `quality` - The quality of the JPEG encoding, range from 0 (lowest) to 100 (highest)
-pub fn write_image_jpegturbo_rgb8<A: ImageAllocator>(
+pub fn write_image_jpegturbo_rgb8(
     file_path: impl AsRef<Path>,
-    image: &Image<u8, 3, A>,
+    image: &Image<u8, 3>,
     quality: u8,
 ) -> Result<(), IoError> {
     let file_path = file_path.as_ref().to_owned();

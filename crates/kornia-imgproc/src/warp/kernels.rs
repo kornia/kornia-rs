@@ -159,71 +159,73 @@ unsafe fn process_perspective_span_neon<const C: usize>(
     dny: f32,
     dnd: f32,
 ) {
-    use std::arch::aarch64::*;
+    unsafe {
+        use std::arch::aarch64::*;
 
-    let n4 = (x_hi - x_lo) & !3;
-    if n4 >= 4 {
-        let dnx_v = vdupq_n_f32(dnx);
-        let dny_v = vdupq_n_f32(dny);
-        let dnd_v = vdupq_n_f32(dnd);
-        let lane_offsets: [f32; 4] = [0.0, 1.0, 2.0, 3.0];
-        let lo_v = vld1q_f32(lane_offsets.as_ptr());
-        let mut nx_v = vaddq_f32(vdupq_n_f32(nx), vmulq_f32(dnx_v, lo_v));
-        let mut ny_v = vaddq_f32(vdupq_n_f32(ny), vmulq_f32(dny_v, lo_v));
-        let mut nd_v = vaddq_f32(vdupq_n_f32(nd), vmulq_f32(dnd_v, lo_v));
-        let step_nx = vmulq_n_f32(dnx_v, 4.0);
-        let step_ny = vmulq_n_f32(dny_v, 4.0);
-        let step_nd = vmulq_n_f32(dnd_v, 4.0);
-        let q10_v = vdupq_n_f32(1024.0);
+        let n4 = (x_hi - x_lo) & !3;
+        if n4 >= 4 {
+            let dnx_v = vdupq_n_f32(dnx);
+            let dny_v = vdupq_n_f32(dny);
+            let dnd_v = vdupq_n_f32(dnd);
+            let lane_offsets: [f32; 4] = [0.0, 1.0, 2.0, 3.0];
+            let lo_v = vld1q_f32(lane_offsets.as_ptr());
+            let mut nx_v = vaddq_f32(vdupq_n_f32(nx), vmulq_f32(dnx_v, lo_v));
+            let mut ny_v = vaddq_f32(vdupq_n_f32(ny), vmulq_f32(dny_v, lo_v));
+            let mut nd_v = vaddq_f32(vdupq_n_f32(nd), vmulq_f32(dnd_v, lo_v));
+            let step_nx = vmulq_n_f32(dnx_v, 4.0);
+            let step_ny = vmulq_n_f32(dny_v, 4.0);
+            let step_nd = vmulq_n_f32(dnd_v, 4.0);
+            let q10_v = vdupq_n_f32(1024.0);
 
-        let mut xs = [0i32; 4];
-        let mut ys = [0i32; 4];
-        let mut fxs = [0u32; 4];
-        let mut fys = [0u32; 4];
+            let mut xs = [0i32; 4];
+            let mut ys = [0i32; 4];
+            let mut fxs = [0u32; 4];
+            let mut fys = [0u32; 4];
 
-        let end = x_lo + n4;
-        let mut xi = x_lo;
-        while xi < end {
-            // Reciprocal: 1 NR step → ~17-bit precision, sufficient for
-            // image-domain coords (worst-case fractional weight error
-            // below 1 Q10 ULP).
-            let r0 = vrecpeq_f32(nd_v);
-            let inv_nd = vmulq_f32(vrecpsq_f32(nd_v, r0), r0);
-            let xf = vmulq_f32(nx_v, inv_nd);
-            let yf = vmulq_f32(ny_v, inv_nd);
-            let xi_v = vcvtq_s32_f32(vrndmq_f32(xf));
-            let yi_v = vcvtq_s32_f32(vrndmq_f32(yf));
-            let fx_v = vcvtq_u32_f32(vmulq_f32(vsubq_f32(xf, vcvtq_f32_s32(xi_v)), q10_v));
-            let fy_v = vcvtq_u32_f32(vmulq_f32(vsubq_f32(yf, vcvtq_f32_s32(yi_v)), q10_v));
-            vst1q_s32(xs.as_mut_ptr(), xi_v);
-            vst1q_s32(ys.as_mut_ptr(), yi_v);
-            vst1q_u32(fxs.as_mut_ptr(), fx_v);
-            vst1q_u32(fys.as_mut_ptr(), fy_v);
+            let end = x_lo + n4;
+            let mut xi = x_lo;
+            while xi < end {
+                // Reciprocal: 1 NR step → ~17-bit precision, sufficient for
+                // image-domain coords (worst-case fractional weight error
+                // below 1 Q10 ULP).
+                let r0 = vrecpeq_f32(nd_v);
+                let inv_nd = vmulq_f32(vrecpsq_f32(nd_v, r0), r0);
+                let xf = vmulq_f32(nx_v, inv_nd);
+                let yf = vmulq_f32(ny_v, inv_nd);
+                let xi_v = vcvtq_s32_f32(vrndmq_f32(xf));
+                let yi_v = vcvtq_s32_f32(vrndmq_f32(yf));
+                let fx_v = vcvtq_u32_f32(vmulq_f32(vsubq_f32(xf, vcvtq_f32_s32(xi_v)), q10_v));
+                let fy_v = vcvtq_u32_f32(vmulq_f32(vsubq_f32(yf, vcvtq_f32_s32(yi_v)), q10_v));
+                vst1q_s32(xs.as_mut_ptr(), xi_v);
+                vst1q_s32(ys.as_mut_ptr(), yi_v);
+                vst1q_u32(fxs.as_mut_ptr(), fx_v);
+                vst1q_u32(fys.as_mut_ptr(), fy_v);
 
-            for lane in 0..4 {
-                let dst_pixel = &mut dst_row[(xi + lane) * C..(xi + lane) * C + C];
-                bilinear_sample_u8_valid::<C>(
-                    src, src_w, src_h, src_stride, xs[lane], ys[lane], fxs[lane], fys[lane],
-                    dst_pixel,
-                );
+                for lane in 0..4 {
+                    let dst_pixel = &mut dst_row[(xi + lane) * C..(xi + lane) * C + C];
+                    bilinear_sample_u8_valid::<C>(
+                        src, src_w, src_h, src_stride, xs[lane], ys[lane], fxs[lane], fys[lane],
+                        dst_pixel,
+                    );
+                }
+
+                nx_v = vaddq_f32(nx_v, step_nx);
+                ny_v = vaddq_f32(ny_v, step_ny);
+                nd_v = vaddq_f32(nd_v, step_nd);
+                xi += 4;
             }
-
-            nx_v = vaddq_f32(nx_v, step_nx);
-            ny_v = vaddq_f32(ny_v, step_ny);
-            nd_v = vaddq_f32(nd_v, step_nd);
-            xi += 4;
+            // Pull scalar state from vector lane 0 for the tail.
+            nx = vgetq_lane_f32::<0>(nx_v);
+            ny = vgetq_lane_f32::<0>(ny_v);
+            nd = vgetq_lane_f32::<0>(nd_v);
         }
-        // Pull scalar state from vector lane 0 for the tail.
-        nx = vgetq_lane_f32::<0>(nx_v);
-        ny = vgetq_lane_f32::<0>(ny_v);
-        nd = vgetq_lane_f32::<0>(nd_v);
-    }
 
-    // 1-3 trailing columns: scalar tail.
-    let tail_start = x_lo + n4;
-    process_perspective_span_scalar::<C>(
-        src, src_w, src_h, src_stride, dst_row, tail_start, x_hi, nx, ny, nd, dnx, dny, dnd,
-    );
+        // 1-3 trailing columns: scalar tail.
+        let tail_start = x_lo + n4;
+        process_perspective_span_scalar::<C>(
+            src, src_w, src_h, src_stride, dst_row, tail_start, x_hi, nx, ny, nd, dnx, dny, dnd,
+        );
+    }
 }
 
 /// AVX2 implementation: 4-wide reciprocal (rcp + Newton–Raphson refine) +

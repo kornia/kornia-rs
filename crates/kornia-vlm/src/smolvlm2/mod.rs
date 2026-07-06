@@ -10,7 +10,6 @@ use std::time::Instant;
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
 use hf_hub::api::sync::Api;
-use kornia_image::allocator::ImageAllocator;
 
 use crate::context::InferenceContext;
 use crate::smolvlm2::image_processor::{ImageProcessor, ImageProcessorConfig};
@@ -116,12 +115,12 @@ impl Default for SmolVlm2Config {
     }
 }
 
-pub enum InputMedia<'v, const N: usize, A: ImageAllocator> {
-    Images(Vec<Image<u8, 3, A>>),
-    Video(Vec<&'v mut VideoSample<N, A>>),
+pub enum InputMedia<'v, const N: usize> {
+    Images(Vec<Image<u8, 3>>),
+    Video(Vec<&'v mut VideoSample<N>>),
 }
 
-pub struct SmolVlm2<const N: usize, A: ImageAllocator> {
+pub struct SmolVlm2<const N: usize> {
     model: model::Model,
     config: SmolVlm2Config,
     device: Device,
@@ -129,14 +128,14 @@ pub struct SmolVlm2<const N: usize, A: ImageAllocator> {
     index_pos: usize, // index of the next token to be processed
 
     txt_processor: TextProcessor,
-    img_processor: ImageProcessor<A>,
+    img_processor: ImageProcessor,
     vid_processor: VideoProcessor<N>,
     response: String,
 
     buf_single_zero_tensor: Tensor, // buffer for a single zero tensor
 }
 
-impl<const N: usize, A: ImageAllocator> SmolVlm2<N, A> {
+impl<const N: usize> SmolVlm2<N> {
     const MODEL_IDENTIFIER: &'static str = "HuggingFaceTB/SmolVLM2-2.2B-Instruct";
     const IMG_PROCESSOR_CONFIG: ImageProcessorConfig = ImageProcessorConfig {
         size_longest_edge: 1536,
@@ -203,7 +202,7 @@ impl<const N: usize, A: ImageAllocator> SmolVlm2<N, A> {
     ///     "/path/to/model-00001-of-00002.safetensors",
     ///     "/path/to/model-00002-of-00002.safetensors",
     /// ];
-    /// let model = SmolVlm2::<32, kornia_tensor::CpuAllocator>::from_safetensors(weights, SmolVlm2Config::default()).unwrap();
+    /// let model = SmolVlm2::<32>::from_safetensors(weights, SmolVlm2Config::default()).unwrap();
     /// ```
     pub fn from_safetensors<P: Into<std::path::PathBuf>>(
         weights_paths: Vec<P>,
@@ -225,7 +224,7 @@ impl<const N: usize, A: ImageAllocator> SmolVlm2<N, A> {
     /// ```no_run
     /// use kornia_vlm::smolvlm2::{SmolVlm2, SmolVlm2Config};
     ///
-    /// let model = SmolVlm2::<32, kornia_tensor::CpuAllocator>::from_single_safetensor(
+    /// let model = SmolVlm2::<32>::from_single_safetensor(
     ///     "/path/to/model.safetensors",
     ///     SmolVlm2Config::default()
     /// ).unwrap();
@@ -248,7 +247,7 @@ impl<const N: usize, A: ImageAllocator> SmolVlm2<N, A> {
     /// Run inference with prompt formatting and media input.
     /// # Arguments
     /// * `prompt` - Vector of `Message` representing the conversation history and user prompt.
-    /// * `media` - Input media (images, video, or none) as `InputMedia<A>`.
+    /// * `media` - Input media (images, video, or none) as `InputMedia`.
     /// * `sample_len` - Maximum number of tokens to generate.
     /// * `alloc` - Image allocator for image/video processing.
     /// # Returns
@@ -256,21 +255,20 @@ impl<const N: usize, A: ImageAllocator> SmolVlm2<N, A> {
     pub fn inference(
         &mut self,
         prompt: Vec<text_processor::Message>,
-        media: Option<InputMedia<N, A>>,
+        media: Option<InputMedia<N>>,
         sample_len: usize,
-        alloc: A,
     ) -> Result<String, SmolVlm2Error> {
         let full_prompt = self
             .txt_processor
             .reformat_with_additional_prompts(prompt, true)?;
-        let response = self.inference_raw(&full_prompt, media, sample_len, alloc)?;
+        let response = self.inference_raw(&full_prompt, media, sample_len)?;
         Ok(response)
     }
 
     /// Run inference with a pre-formatted prompt and media input.
     /// # Arguments
     /// * `full_prompt` - The fully formatted prompt string (should include any required tags for media).
-    /// * `media` - Input media (images, video, or none) as `InputMedia<A>`.
+    /// * `media` - Input media (images, video, or none) as `InputMedia`.
     /// * `sample_len` - Maximum number of tokens to generate.
     /// * `alloc` - Image allocator for image/video processing.
     /// # Returns
@@ -278,9 +276,8 @@ impl<const N: usize, A: ImageAllocator> SmolVlm2<N, A> {
     pub fn inference_raw(
         &mut self,
         full_prompt: &str,
-        media: Option<InputMedia<N, A>>,
+        media: Option<InputMedia<N>>,
         sample_len: usize,
-        alloc: A,
     ) -> Result<String, SmolVlm2Error> {
         if self.config.debug {
             std::io::stdout().flush()?;
@@ -309,7 +306,6 @@ impl<const N: usize, A: ImageAllocator> SmolVlm2<N, A> {
                         images,
                         self.dtype,
                         &self.device,
-                        alloc,
                     )?;
                 }
                 InputMedia::Video(videos) => {
@@ -326,7 +322,6 @@ impl<const N: usize, A: ImageAllocator> SmolVlm2<N, A> {
                         videos,
                         self.dtype,
                         &self.device,
-                        alloc,
                     )?;
 
                     use_video = true;
@@ -416,7 +411,7 @@ impl<const N: usize, A: ImageAllocator> SmolVlm2<N, A> {
         (
             model::Model,
             TextProcessor,
-            ImageProcessor<A>,
+            ImageProcessor,
             VideoProcessor<N>,
         ),
         SmolVlm2Error,
@@ -458,7 +453,6 @@ mod tests {
     use std::path::Path;
 
     use kornia_io::{jpeg::read_image_jpeg_rgb8, png::read_image_png_rgb8};
-    use kornia_tensor::CpuAllocator;
 
     use super::*;
 
@@ -484,7 +478,7 @@ mod tests {
             debug: true,
             ..Default::default()
         };
-        let mut model = SmolVlm2::<32, _>::new(config).unwrap();
+        let mut model = SmolVlm2::<32>::new(config).unwrap();
 
         let prompt = "Describe the image.";
         let sample_len = 500;
@@ -502,7 +496,6 @@ mod tests {
                 }],
                 Some(InputMedia::Images(vec![image.into_inner()])),
                 sample_len,
-                CpuAllocator,
             )
             .expect("Inference failed");
     }

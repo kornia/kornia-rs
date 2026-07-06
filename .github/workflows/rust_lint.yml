@@ -40,13 +40,13 @@ jobs:
             needs-sccache: true
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: ./.github/actions/setup-rust-cache
         with:
           with-sccache: ${{ matrix.needs-sccache }}
 
-      - uses: prefix-dev/setup-pixi@v0.9.5
+      - uses: prefix-dev/setup-pixi@v0.10.0
         with:
           pixi-version: v0.40.0
           cache: true
@@ -59,25 +59,56 @@ jobs:
         run: |
           sccache --show-stats 2>&1 || echo "::warning::sccache stats unavailable - server may have exited"
 
-  cross-platform-check-macos:
-    name: Check - macOS
-    runs-on: macos-latest
+  cuda-feature-check:
+    name: Check - CUDA features
+    # Compile + clippy coverage for the CUDA-gated code on a GPU-less runner.
+    # kornia's cudarc is built with `fallback-dynamic-loading`: libcuda.so is
+    # dlopen'd at RUNTIME only, so nothing here needs a GPU or the CUDA toolkit.
+    # Kernel-execution tests run on real hardware (Jetson) outside CI.
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
 
-      - uses: prefix-dev/setup-pixi@v0.9.5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Clippy CUDA-gated crates (deny warnings)
+        run: |
+          cargo clippy -p kornia-tensor --features cudarc -- -D warnings
+          cargo clippy -p kornia-image --features cudarc -- -D warnings
+          cargo clippy -p kornia-imgproc --features "cudarc,gpu-cuda" -- -D warnings
+
+  cross-platform-check-macos:
+    name: Check - macOS
+    # Pinned to macOS 15 (Sequoia) to avoid the macOS 26 (Tahoe) beta runner, where
+    # the conda/pixi cxx-compiler clang fails to resolve libSystem symbols (___stderrp)
+    # when building turbojpeg-sys's bundled libjpeg-turbo CLI tools.  When GitHub
+    # promotes Tahoe to a stable runner and conda-forge catches up, revisit this pin.
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: prefix-dev/setup-pixi@v0.10.0
         with:
           pixi-version: v0.40.0
           cache: true
 
       - name: Run cargo check
-        run: pixi run rust-check
+        # The pixi/conda cxx-compiler has no SDKROOT, so its clang can't find the
+        # macOS SDK / libSystem when building C/native deps from scratch (e.g.
+        # turbojpeg-sys's bundled libjpeg-turbo). Point it at the Xcode SDK so the
+        # C builds link libSystem (_fprintf/_malloc/etc.).
+        run: |
+          export SDKROOT="$(xcrun --show-sdk-path)"
+          export CONDA_BUILD_SYSROOT="$SDKROOT"
+          pixi run rust-check
 
   cross-platform-check-windows:
     name: Check - Windows
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 

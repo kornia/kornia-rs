@@ -14,7 +14,7 @@
 
 use crate::camera::PinholeCamera;
 use kornia_algebra::{Mat3F64, Vec3F64, SO3F64};
-use kornia_image::{allocator::CpuAllocator, Image, ImageError, ImageSize};
+use kornia_image::{Image, ImageError, ImageSize};
 use kornia_imgproc::calibration::distortion::{distort_point_polynomial, PolynomialDistortion};
 use kornia_imgproc::calibration::CameraIntrinsic;
 
@@ -63,6 +63,8 @@ pub struct StereoRectifier {
     cy: f64,
     /// Metric stereo baseline (‖translation between cameras‖).
     baseline: f64,
+    /// Rotation mapping raw left-camera coordinates into the rectified frame.
+    rect_left: Mat3F64,
     /// Per-output-pixel source coordinate in the raw left image (`[u, v]`).
     left_map: Vec<[f32; 2]>,
     /// Per-output-pixel source coordinate in the raw right image.
@@ -162,9 +164,17 @@ impl StereoRectifier {
             cx,
             cy,
             baseline: nt,
+            rect_left: rect_l,
             left_map,
             right_map,
         })
+    }
+
+    /// Rotation mapping raw left-camera coordinates into the rectified frame
+    /// (`p_rect = R · p_left_raw`). Lets callers re-express raw-frame
+    /// extrinsics (e.g. a camera-IMU `T_BS`) for the rectified virtual camera.
+    pub fn left_rectifying_rotation(&self) -> Mat3F64 {
+        self.rect_left
     }
 
     /// Rectified pinhole camera (shared by both views; zero distortion).
@@ -196,10 +206,7 @@ impl StereoRectifier {
     /// # Errors
     /// [`StereoError::ImageSizeMismatch`] if `img`'s resolution differs from
     /// the rectifier's.
-    pub fn rectify_left(
-        &self,
-        img: &Image<u8, 1, CpuAllocator>,
-    ) -> Result<Image<u8, 1, CpuAllocator>, StereoError> {
+    pub fn rectify_left(&self, img: &Image<u8, 1>) -> Result<Image<u8, 1>, StereoError> {
         self.remap(img, &self.left_map)
     }
 
@@ -208,18 +215,11 @@ impl StereoRectifier {
     /// # Errors
     /// [`StereoError::ImageSizeMismatch`] if `img`'s resolution differs from
     /// the rectifier's.
-    pub fn rectify_right(
-        &self,
-        img: &Image<u8, 1, CpuAllocator>,
-    ) -> Result<Image<u8, 1, CpuAllocator>, StereoError> {
+    pub fn rectify_right(&self, img: &Image<u8, 1>) -> Result<Image<u8, 1>, StereoError> {
         self.remap(img, &self.right_map)
     }
 
-    fn remap(
-        &self,
-        img: &Image<u8, 1, CpuAllocator>,
-        map: &[[f32; 2]],
-    ) -> Result<Image<u8, 1, CpuAllocator>, StereoError> {
+    fn remap(&self, img: &Image<u8, 1>, map: &[[f32; 2]]) -> Result<Image<u8, 1>, StereoError> {
         if (img.width(), img.height()) != (self.width, self.height) {
             return Err(StereoError::ImageSizeMismatch {
                 got: (img.width(), img.height()),
@@ -242,7 +242,6 @@ impl StereoRectifier {
                 height: self.height,
             },
             &out,
-            CpuAllocator,
         )?)
     }
 }
@@ -390,14 +389,14 @@ mod tests {
         height: usize,
         u: usize,
         v: usize,
-    ) -> Result<Image<u8, 1, CpuAllocator>, ImageError> {
+    ) -> Result<Image<u8, 1>, ImageError> {
         let mut buf = vec![0u8; width * height];
         buf[v * width + u] = 255;
-        Image::from_size_slice(ImageSize { width, height }, &buf, CpuAllocator)
+        Image::from_size_slice(ImageSize { width, height }, &buf)
     }
 
     /// Intensity-weighted centroid `(u, v)` of all non-zero pixels.
-    fn centroid(img: &Image<u8, 1, CpuAllocator>) -> Option<(f64, f64)> {
+    fn centroid(img: &Image<u8, 1>) -> Option<(f64, f64)> {
         let w = img.width();
         let (mut su, mut sv, mut sw) = (0.0, 0.0, 0.0);
         for (i, &p) in img.as_slice().iter().enumerate() {

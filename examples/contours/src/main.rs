@@ -3,7 +3,6 @@ use argh::FromArgs;
 use kornia::{
     image::{ops, Image},
     imgproc::{color, contours, threshold},
-    tensor::CpuAllocator,
 };
 
 #[derive(FromArgs)]
@@ -60,22 +59,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let img = kornia::io::functional::read_image_any_rgb8(&args.image)?;
     let size = img.size();
 
-    let mut img_f32 = Image::from_size_val(size, 0f32, CpuAllocator)?;
-    let mut gray = Image::from_size_val(size, 0f32, CpuAllocator)?;
+    let mut img_f32 = Image::from_size_val(size, 0f32)?;
+    let mut gray = Image::from_size_val(size, 0f32)?;
 
     // convert to gray scale
     ops::cast_and_scale(&img, &mut img_f32, 1.0 / 255.0)?;
     color::gray_from_rgb(&img_f32, &mut gray)?;
 
     // convert to binary image
-    let mut binary_f32 = Image::from_size_val(size, 0f32, CpuAllocator)?;
+    let mut binary_f32 = Image::from_size_val(size, 0f32)?;
     threshold::threshold_binary(
         &gray,
         &mut binary_f32,
         args.threshold as f32 / 255.0,
         1.0f32,
     )?;
-    let mut binary = Image::from_size_val(size, 0u8, CpuAllocator)?;
+    let mut binary = Image::from_size_val(size, 0u8)?;
     ops::cast_and_scale(&binary_f32, &mut binary, 1)?;
 
     // find contours

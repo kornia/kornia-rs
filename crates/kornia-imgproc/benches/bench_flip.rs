@@ -3,13 +3,12 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use kornia_image::Image;
 use kornia_imgproc::flip;
 
-use kornia_tensor::CpuAllocator;
 use rayon::{
     iter::{IndexedParallelIterator, ParallelIterator},
     slice::{ParallelSlice, ParallelSliceMut},
 };
 
-fn par_par_slicecopy(src: &Image<f32, 3, CpuAllocator>, dst: &mut Image<f32, 3, CpuAllocator>) {
+fn par_par_slicecopy(src: &Image<f32, 3>, dst: &mut Image<f32, 3>) {
     dst.as_slice_mut()
         .par_chunks_exact_mut(src.cols() * 3)
         .zip_eq(src.as_slice().par_chunks_exact(src.cols() * 3))
@@ -23,7 +22,7 @@ fn par_par_slicecopy(src: &Image<f32, 3, CpuAllocator>, dst: &mut Image<f32, 3, 
         });
 }
 
-fn par_loop_loop(src: &Image<f32, 3, CpuAllocator>, dst: &mut Image<f32, 3, CpuAllocator>) {
+fn par_loop_loop(src: &Image<f32, 3>, dst: &mut Image<f32, 3>) {
     dst.as_slice_mut()
         .par_chunks_exact_mut(src.cols() * 3)
         .zip_eq(src.as_slice().par_chunks_exact(src.cols() * 3))
@@ -39,7 +38,7 @@ fn par_loop_loop(src: &Image<f32, 3, CpuAllocator>, dst: &mut Image<f32, 3, CpuA
         });
 }
 
-fn par_loop_slicecopy(src: &Image<f32, 3, CpuAllocator>, dst: &mut Image<f32, 3, CpuAllocator>) {
+fn par_loop_slicecopy(src: &Image<f32, 3>, dst: &mut Image<f32, 3>) {
     dst.as_slice_mut()
         .par_chunks_exact_mut(src.cols() * 3)
         .zip_eq(src.as_slice().par_chunks_exact(src.cols() * 3))
@@ -53,7 +52,7 @@ fn par_loop_slicecopy(src: &Image<f32, 3, CpuAllocator>, dst: &mut Image<f32, 3,
         });
 }
 
-fn par_seq_slicecopy(src: &Image<f32, 3, CpuAllocator>, dst: &mut Image<f32, 3, CpuAllocator>) {
+fn par_seq_slicecopy(src: &Image<f32, 3>, dst: &mut Image<f32, 3>) {
     dst.as_slice_mut()
         .par_chunks_exact_mut(src.cols() * 3)
         .zip_eq(src.as_slice().par_chunks_exact(src.cols() * 3))
@@ -77,12 +76,11 @@ fn bench_flip(c: &mut Criterion) {
 
         // input image
         let image_size = [*width, *height].into();
-        let image = Image::<u8, 3, _>::new(image_size, vec![0u8; width * height * 3], CpuAllocator)
-            .unwrap();
+        let image = Image::<u8, 3>::new(image_size, vec![0u8; width * height * 3]).unwrap();
         let image_f32 = image.clone().cast::<f32>().unwrap();
 
         // output image
-        let output = Image::<f32, 3, _>::from_size_val(image_size, 0.0, CpuAllocator).unwrap();
+        let output = Image::<f32, 3>::from_size_val(image_size, 0.0).unwrap();
 
         group.bench_with_input(
             BenchmarkId::new("par_par_slicecopy", &parameter_string),

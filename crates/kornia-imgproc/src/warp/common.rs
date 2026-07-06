@@ -189,59 +189,61 @@ unsafe fn bilinear_sample_u8_valid_c3_neon(
     fy_q10: u32,
     dst_pixel: *mut u8,
 ) {
-    use std::arch::aarch64::*;
+    unsafe {
+        use std::arch::aarch64::*;
 
-    let xi1 = if xi + 1 < src_w {
-        (xi + 1) as usize
-    } else {
-        xi as usize
-    };
-    let yi1 = if yi + 1 < src_h {
-        (yi + 1) as usize
-    } else {
-        yi as usize
-    };
+        let xi1 = if xi + 1 < src_w {
+            (xi + 1) as usize
+        } else {
+            xi as usize
+        };
+        let yi1 = if yi + 1 < src_h {
+            (yi + 1) as usize
+        } else {
+            yi as usize
+        };
 
-    let row0 = (yi as usize) * src_stride;
-    let row1 = yi1 * src_stride;
-    let xoff0 = (xi as usize) * 3;
-    let xoff1 = xi1 * 3;
+        let row0 = (yi as usize) * src_stride;
+        let row1 = yi1 * src_stride;
+        let xoff0 = (xi as usize) * 3;
+        let xoff1 = xi1 * 3;
 
-    // Load 4 bytes per corner via unaligned u32 read, widen u8x4 → u32x4.
-    // Lane 3 is garbage (next pixel's R or padding) — ignored by the
-    // narrow at the end since we only store 3 bytes.
-    let load = |off: usize| -> uint32x4_t {
-        let raw = core::ptr::read_unaligned(src.add(off) as *const u32);
-        let u8_vec = vreinterpret_u8_u32(vcreate_u32(raw as u64));
-        let u16_vec = vmovl_u8(u8_vec);
-        vmovl_u16(vget_low_u16(u16_vec))
-    };
+        // Load 4 bytes per corner via unaligned u32 read, widen u8x4 → u32x4.
+        // Lane 3 is garbage (next pixel's R or padding) — ignored by the
+        // narrow at the end since we only store 3 bytes.
+        let load = |off: usize| -> uint32x4_t {
+            let raw = core::ptr::read_unaligned(src.add(off) as *const u32);
+            let u8_vec = vreinterpret_u8_u32(vcreate_u32(raw as u64));
+            let u16_vec = vmovl_u8(u8_vec);
+            vmovl_u16(vget_low_u16(u16_vec))
+        };
 
-    let p00 = load(row0 + xoff0);
-    let p01 = load(row0 + xoff1);
-    let p10 = load(row1 + xoff0);
-    let p11 = load(row1 + xoff1);
+        let p00 = load(row0 + xoff0);
+        let p01 = load(row0 + xoff1);
+        let p10 = load(row1 + xoff0);
+        let p11 = load(row1 + xoff1);
 
-    let fx_v = vdupq_n_u32(fx_q10);
-    let fx1_v = vdupq_n_u32(1024 - fx_q10);
-    let fy_v = vdupq_n_u32(fy_q10);
-    let fy1_v = vdupq_n_u32(1024 - fy_q10);
+        let fx_v = vdupq_n_u32(fx_q10);
+        let fx1_v = vdupq_n_u32(1024 - fx_q10);
+        let fy_v = vdupq_n_u32(fy_q10);
+        let fy1_v = vdupq_n_u32(1024 - fy_q10);
 
-    // top = p00 * fx1 + p01 * fx   (values ≤ 255 * 1024 * 2 = 522k, fits u32)
-    // bot = p10 * fx1 + p11 * fx
-    let top = vmlaq_u32(vmulq_u32(p00, fx1_v), p01, fx_v);
-    let bot = vmlaq_u32(vmulq_u32(p10, fx1_v), p11, fx_v);
-    // sum = top * fy1 + bot * fy + (1<<19)  (≤ 522k * 1024 + 522k * 1024 = 1.07e9, fits u32)
-    let sum = vmlaq_u32(vmulq_u32(top, fy1_v), bot, fy_v);
-    let sum = vaddq_u32(sum, vdupq_n_u32(1 << 19));
-    let res = vshrq_n_u32::<20>(sum);
+        // top = p00 * fx1 + p01 * fx   (values ≤ 255 * 1024 * 2 = 522k, fits u32)
+        // bot = p10 * fx1 + p11 * fx
+        let top = vmlaq_u32(vmulq_u32(p00, fx1_v), p01, fx_v);
+        let bot = vmlaq_u32(vmulq_u32(p10, fx1_v), p11, fx_v);
+        // sum = top * fy1 + bot * fy + (1<<19)  (≤ 522k * 1024 + 522k * 1024 = 1.07e9, fits u32)
+        let sum = vmlaq_u32(vmulq_u32(top, fy1_v), bot, fy_v);
+        let sum = vaddq_u32(sum, vdupq_n_u32(1 << 19));
+        let res = vshrq_n_u32::<20>(sum);
 
-    // Narrow u32x4 → u8 (first 3 bytes are R, G, B).
-    let u16x4 = vmovn_u32(res);
-    let u8x8 = vmovn_u16(vcombine_u16(u16x4, u16x4));
-    *dst_pixel.add(0) = vget_lane_u8::<0>(u8x8);
-    *dst_pixel.add(1) = vget_lane_u8::<1>(u8x8);
-    *dst_pixel.add(2) = vget_lane_u8::<2>(u8x8);
+        // Narrow u32x4 → u8 (first 3 bytes are R, G, B).
+        let u16x4 = vmovn_u32(res);
+        let u8x8 = vmovn_u16(vcombine_u16(u16x4, u16x4));
+        *dst_pixel.add(0) = vget_lane_u8::<0>(u8x8);
+        *dst_pixel.add(1) = vget_lane_u8::<1>(u8x8);
+        *dst_pixel.add(2) = vget_lane_u8::<2>(u8x8);
+    }
 }
 
 /// AVX2 u8 bilinear sampler, C=3 specialization.

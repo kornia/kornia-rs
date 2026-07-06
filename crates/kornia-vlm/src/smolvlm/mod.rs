@@ -18,12 +18,12 @@ use crate::{
 use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_transformers::generation::{LogitsProcessor, Sampling};
 use hf_hub::api::sync::Api;
-use kornia_image::{allocator::ImageAllocator, Image};
+use kornia_image::Image;
 use log::debug;
 use preprocessor::get_prompt_split_image;
 use tokenizers::Tokenizer;
 
-pub struct SmolVlm<A: ImageAllocator> {
+pub struct SmolVlm {
     model: SmolModel,
     tokenizer: Tokenizer,
     image_token_tensor: Tensor,
@@ -34,11 +34,11 @@ pub struct SmolVlm<A: ImageAllocator> {
     index_pos: usize,        // index of the next token to be processed
     first_prompt: bool,      // whether this is the first prompt
     token_history: Vec<u32>, // stores the history of generated tokens
-    preprocessor: SmolVlmImagePreprocessor<A>,
+    preprocessor: SmolVlmImagePreprocessor,
     response: String,
 }
 
-impl<A: ImageAllocator> SmolVlm<A> {
+impl SmolVlm {
     /// Create a new SmolVlm model
     ///
     /// # Arguments
@@ -100,9 +100,8 @@ impl<A: ImageAllocator> SmolVlm<A> {
     pub fn inference(
         &mut self,
         prompt: &str, // TODO: make it structured
-        image: Option<Image<u8, 3, A>>,
+        image: Option<Image<u8, 3>>,
         sample_len: usize, // per prompt
-        alloc: A,
     ) -> Result<String, SmolVlmError> {
         let mut full_prompt = if self.first_prompt {
             self.first_prompt = false;
@@ -126,7 +125,7 @@ impl<A: ImageAllocator> SmolVlm<A> {
             vec![]
         };
 
-        let response = self.inference_raw(&full_prompt, images, sample_len, alloc, false)?;
+        let response = self.inference_raw(&full_prompt, images, sample_len, false)?;
 
         Ok(response)
     }
@@ -146,9 +145,8 @@ impl<A: ImageAllocator> SmolVlm<A> {
     pub fn inference_raw(
         &mut self,
         full_prompt: &str,
-        images: Vec<Image<u8, 3, A>>,
+        images: Vec<Image<u8, 3>>,
         sample_len: usize, // per prompt
-        alloc: A,
         debug: bool,
     ) -> Result<String, SmolVlmError> {
         if debug {
@@ -172,10 +170,9 @@ impl<A: ImageAllocator> SmolVlm<A> {
         }
 
         let mut processed_images = vec![];
-        for ((start, _), image) in image_tags_pos.iter().zip(images.into_iter()) {
+        for ((start, _), image) in image_tags_pos.iter().zip(images) {
             let (img_patches, mask_patches, size) =
-                self.preprocessor
-                    .preprocess(&image, &self.device, alloc.clone())?;
+                self.preprocessor.preprocess(&image, &self.device)?;
             processed_images.push((img_patches, mask_patches));
 
             let img_token = get_prompt_split_image(81, size);

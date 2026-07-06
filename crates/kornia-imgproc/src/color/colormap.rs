@@ -1,4 +1,4 @@
-use kornia_image::{allocator::ImageAllocator, Image, ImageError};
+use kornia_image::{Image, ImageError};
 
 // ── LUT data ──────────────────────────────────────────────────────────────────
 
@@ -14,7 +14,7 @@ include!("colormap_luts.rs");
 // ── Colormap type ─────────────────────────────────────────────────────────────
 
 /// All 21 OpenCV colormaps, re-implemented as pure-Rust LUT tables.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ColormapType {
     /// Sequential red→yellow gradient.
     Autumn,
@@ -100,7 +100,7 @@ impl ColormapType {
             .map(|&(_, variant, _)| variant)
     }
 
-    fn lut(self) -> &'static ColormapLut {
+    pub(crate) fn lut(self) -> &'static ColormapLut {
         COLORMAPS
             .iter()
             .find(|(_, v, _)| *v == self)
@@ -136,19 +136,21 @@ unsafe fn lookup_channel(
     idx128: std::arch::aarch64::uint8x16_t,
     idx192: std::arch::aarch64::uint8x16_t,
 ) -> std::arch::aarch64::uint8x16_t {
-    use std::arch::aarch64::*;
-    // Each vqtbl4q_u8 covers one 64-entry chunk; out-of-range indices produce 0,
-    // so OR-ing the four results gives the correct value for all 256 indices.
-    vorrq_u8(
+    unsafe {
+        use std::arch::aarch64::*;
+        // Each vqtbl4q_u8 covers one 64-entry chunk; out-of-range indices produce 0,
+        // so OR-ing the four results gives the correct value for all 256 indices.
         vorrq_u8(
-            vqtbl4q_u8(vld1q_u8_x4(p), idx),
-            vqtbl4q_u8(vld1q_u8_x4(p.add(64)), idx64),
-        ),
-        vorrq_u8(
-            vqtbl4q_u8(vld1q_u8_x4(p.add(128)), idx128),
-            vqtbl4q_u8(vld1q_u8_x4(p.add(192)), idx192),
-        ),
-    )
+            vorrq_u8(
+                vqtbl4q_u8(vld1q_u8_x4(p), idx),
+                vqtbl4q_u8(vld1q_u8_x4(p.add(64)), idx64),
+            ),
+            vorrq_u8(
+                vqtbl4q_u8(vld1q_u8_x4(p.add(128)), idx128),
+                vqtbl4q_u8(vld1q_u8_x4(p.add(192)), idx192),
+            ),
+        )
+    }
 }
 
 /// NEON kernel (aarch64): 16 pixels/iteration using `vqtbl4q_u8` + `vst3q_u8`.
@@ -162,33 +164,86 @@ unsafe fn lookup_channel(
 /// Caller must ensure `dst.len() >= src.len() * 3`.
 #[cfg(target_arch = "aarch64")]
 unsafe fn apply_neon(src: &[u8], dst: &mut [u8], lut: &ColormapLut) {
-    use std::arch::aarch64::*;
+    unsafe {
+        use std::arch::aarch64::*;
 
-    let off64 = vdupq_n_u8(64);
-    let off128 = vdupq_n_u8(128);
-    let off192 = vdupq_n_u8(192);
+        let off64 = vdupq_n_u8(64);
+        let off128 = vdupq_n_u8(128);
+        let off192 = vdupq_n_u8(192);
+
+        let n = src.len();
+        let mut si = 0usize;
+        let mut di = 0usize;
+
+        while si + 16 <= n {
+            let idx = vld1q_u8(src.as_ptr().add(si));
+            let idx64 = vsubq_u8(idx, off64);
+            let idx128 = vsubq_u8(idx, off128);
+            let idx192 = vsubq_u8(idx, off192);
+
+            let r = lookup_channel(lut.r.as_ptr(), idx, idx64, idx128, idx192);
+            let g = lookup_channel(lut.g.as_ptr(), idx, idx64, idx128, idx192);
+            let b = lookup_channel(lut.b.as_ptr(), idx, idx64, idx128, idx192);
+
+            vst3q_u8(dst.as_mut_ptr().add(di), uint8x16x3_t(r, g, b));
+
+            si += 16;
+            di += 48;
+        }
+
+        // Scalar tail for remaining pixels
+        apply_scalar(&src[si..], &mut dst[di..], lut);
+    }
+}
+
+/// AVX2 kernel (x86_64): 8 pixels/iteration via a 32-bit gather over a packed
+/// RGBA LUT.
+///
+/// AVX2's `_mm256_shuffle_epi8` is a 16-entry in-lane table, too small for the
+/// 256-entry colormap. Instead we pack the three channel LUTs into a single
+/// 256-entry `u32` table (`0x00BBGGRR` per index) and `_mm256_i32gather_epi32`
+/// eight RGBA words per iteration. The interleaved RGB store is done scalar from
+/// the gathered words (a full SIMD RGBA→RGB repack buys little for this
+/// gather-bound kernel).
+///
+/// # Safety
+/// Caller must ensure AVX2 is available and `dst.len() >= src.len() * 3`.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn apply_avx2(src: &[u8], dst: &mut [u8], lut: &ColormapLut) {
+    use std::arch::x86_64::*;
+
+    // Pack the 3 channel LUTs into one 256-entry RGBA word table: 0x00BBGGRR.
+    let mut packed = [0u32; 256];
+    for (i, w) in packed.iter_mut().enumerate() {
+        *w = (lut.r[i] as u32) | ((lut.g[i] as u32) << 8) | ((lut.b[i] as u32) << 16);
+    }
+    let base = packed.as_ptr() as *const i32;
 
     let n = src.len();
     let mut si = 0usize;
     let mut di = 0usize;
 
-    while si + 16 <= n {
-        let idx = vld1q_u8(src.as_ptr().add(si));
-        let idx64 = vsubq_u8(idx, off64);
-        let idx128 = vsubq_u8(idx, off128);
-        let idx192 = vsubq_u8(idx, off192);
+    while si + 8 <= n {
+        // Load 8 indices (u8) and zero-extend to 8×i32.
+        let idx8 = _mm_loadl_epi64(src.as_ptr().add(si) as *const __m128i);
+        let idx32 = _mm256_cvtepu8_epi32(idx8);
+        // Gather 8 RGBA words: packed[idx]. scale=4 (u32 stride).
+        let rgba = _mm256_i32gather_epi32::<4>(base, idx32);
 
-        let r = lookup_channel(lut.r.as_ptr(), idx, idx64, idx128, idx192);
-        let g = lookup_channel(lut.g.as_ptr(), idx, idx64, idx128, idx192);
-        let b = lookup_channel(lut.b.as_ptr(), idx, idx64, idx128, idx192);
-
-        vst3q_u8(dst.as_mut_ptr().add(di), uint8x16x3_t(r, g, b));
-
-        si += 16;
-        di += 48;
+        // Store gathered words and emit interleaved RGB (drop the alpha byte).
+        let mut words = [0u32; 8];
+        _mm256_storeu_si256(words.as_mut_ptr() as *mut __m256i, rgba);
+        for &w in words.iter() {
+            *dst.as_mut_ptr().add(di) = w as u8;
+            *dst.as_mut_ptr().add(di + 1) = (w >> 8) as u8;
+            *dst.as_mut_ptr().add(di + 2) = (w >> 16) as u8;
+            di += 3;
+        }
+        si += 8;
     }
 
-    // Scalar tail for remaining pixels
+    // Scalar tail.
     apply_scalar(&src[si..], &mut dst[di..], lut);
 }
 
@@ -201,9 +256,9 @@ unsafe fn apply_neon(src: &[u8], dst: &mut [u8], lut: &ColormapLut) {
 ///
 /// # Errors
 /// Returns `ImageError` if `src` and `dst` sizes do not match.
-pub fn apply_colormap<A: ImageAllocator>(
-    src: &Image<u8, 1, A>,
-    dst: &mut Image<u8, 3, A>,
+pub fn apply_colormap(
+    src: &Image<u8, 1>,
+    dst: &mut Image<u8, 3>,
     colormap: ColormapType,
 ) -> Result<(), ImageError> {
     if src.size() != dst.size() {
@@ -214,15 +269,36 @@ pub fn apply_colormap<A: ImageAllocator>(
             dst.rows(),
         ));
     }
+    #[cfg(feature = "gpu-cuda")]
+    {
+        use super::cuda_dispatch::{pair_residency, Residency};
+        if let Residency::Device(exec) = pair_residency(src, dst)? {
+            return exec.run(|stream| {
+                super::cuda_dispatch::apply_colormap_u8_cuda(src, dst, colormap, stream)
+            });
+        }
+    }
     let lut = colormap.lut();
 
     #[cfg(target_arch = "aarch64")]
-    unsafe {
-        apply_neon(src.as_slice(), dst.as_slice_mut(), lut)
-    };
+    {
+        // SAFETY: NEON is baseline on aarch64; size check passed above.
+        unsafe { apply_neon(src.as_slice(), dst.as_slice_mut(), lut) };
+        return Ok(());
+    }
 
-    #[cfg(not(target_arch = "aarch64"))]
-    apply_scalar(src.as_slice(), dst.as_slice_mut(), lut);
+    #[cfg(target_arch = "x86_64")]
+    {
+        if crate::simd::cpu_features().has_avx2 {
+            // SAFETY: AVX2 confirmed by the runtime probe; size check passed.
+            unsafe { apply_avx2(src.as_slice(), dst.as_slice_mut(), lut) };
+            return Ok(());
+        }
+    }
 
-    Ok(())
+    #[allow(unreachable_code)]
+    {
+        apply_scalar(src.as_slice(), dst.as_slice_mut(), lut);
+        Ok(())
+    }
 }

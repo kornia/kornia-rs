@@ -36,19 +36,18 @@ kornia-imgproc = "0.1.0"
 ### Normalizing an Image
 
 ```rust
-use kornia_image::{Image, ImageSize, allocator::CpuAllocator};
+use kornia_image::{Image, ImageSize};
 use kornia_imgproc::normalize::normalize_mean_std;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 1. Create a dummy f32 image
-    let src = Image::<f32, 3, _>::new(
+    let src = Image::<f32, 3>::new(
         ImageSize { width: 100, height: 100 },
-        vec![0.5f32; 100 * 100 * 3],
-        CpuAllocator
+        vec![0.5f32; 100 * 100 * 3]
     )?;
 
     // 2. Normalize with mean and std
-    let mut dst = Image::<f32, 3, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
+    let mut dst = Image::<f32, 3>::from_size_val(src.size(), 0.0)?;
     let mean = [0.485, 0.456, 0.406];
     let std = [0.229, 0.224, 0.225];
 
@@ -62,18 +61,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### Color Conversion
 
 ```rust
-use kornia_image::{Image, ImageSize, allocator::CpuAllocator};
+use kornia_image::{Image, ImageSize};
 use kornia_imgproc::color::{Rgb8, Gray8, ConvertColor};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rgb = Rgb8::new(
         ImageSize { width: 10, height: 10 },
-        vec![0u8; 10 * 10 * 3],
-        CpuAllocator
+        vec![0u8; 10 * 10 * 3]
     )?;
 
     // Convert RGB to Grayscale
-    let mut gray = Gray8::from_size_val(rgb.size(), 0, CpuAllocator)?;
+    let mut gray = Gray8::from_size_val(rgb.size(), 0)?;
     rgb.convert(&mut gray)?;
 
     assert_eq!(gray.num_channels(), 1);

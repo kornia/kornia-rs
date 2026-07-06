@@ -2,7 +2,7 @@
 use crate::filter::scharr_spatial_gradient_float;
 use crate::interpolation::{interpolate_pixel_fast, InterpolationMode};
 use crate::pyramid::pyrdown_f32;
-use kornia_image::{allocator::ImageAllocator, Image, ImageError, ImageSize};
+use kornia_image::{Image, ImageError, ImageSize};
 use rayon::prelude::*;
 use thiserror::Error;
 
@@ -81,15 +81,15 @@ pub struct PyrLKResult {
 
 /// Precomputed data for sparse pyramidal LK tracking.
 #[derive(Clone)]
-pub struct PyrLKPrecomputed<A: ImageAllocator> {
+pub struct PyrLKPrecomputed {
     /// Gaussian pyramid of previous image.
-    pub prev_pyr: Vec<Image<f32, 1, A>>,
+    pub prev_pyr: Vec<Image<f32, 1>>,
     /// Gaussian pyramid of next image.
-    pub next_pyr: Vec<Image<f32, 1, A>>,
+    pub next_pyr: Vec<Image<f32, 1>>,
     /// X gradient pyramid for previous image.
-    pub grad_x_pyr: Vec<Image<f32, 1, A>>,
+    pub grad_x_pyr: Vec<Image<f32, 1>>,
     /// Y gradient pyramid for previous image.
-    pub grad_y_pyr: Vec<Image<f32, 1, A>>,
+    pub grad_y_pyr: Vec<Image<f32, 1>>,
 }
 
 /// Error type for sparse pyramidal Lucas–Kanade optical flow.
@@ -169,7 +169,7 @@ fn mirror_coord(x: f32, max: f32) -> f32 {
 }
 
 #[inline]
-fn sample_at<A: ImageAllocator>(img: &Image<f32, 1, A>, x: f32, y: f32, mode: BorderMode) -> f32 {
+fn sample_at(img: &Image<f32, 1>, x: f32, y: f32, mode: BorderMode) -> f32 {
     let max_x = img.cols() as f32 - 1.0;
     let max_y = img.rows() as f32 - 1.0;
     let (xf, yf) = match mode {
@@ -220,10 +220,10 @@ fn is_interior_for_lk(cx: f32, cy: f32, cols: usize, rows: usize) -> bool {
 /// `calc_optical_flow_pyr_lk_with_precomputed`).
 #[inline(always)]
 #[allow(clippy::too_many_arguments)]
-fn build_three_patches_interior<A: ImageAllocator>(
-    prev: &Image<f32, 1, A>,
-    ix: &Image<f32, 1, A>,
-    iy: &Image<f32, 1, A>,
+fn build_three_patches_interior(
+    prev: &Image<f32, 1>,
+    ix: &Image<f32, 1>,
+    iy: &Image<f32, 1>,
     cx: f32,
     cy: f32,
     prev_out: &mut [f32; 441],
@@ -457,105 +457,109 @@ unsafe fn build_three_patches_interior_neon(
     ix_out: &mut [f32; 441],
     iy_out: &mut [f32; 441],
 ) -> (f32, f32, f32) {
-    use std::arch::aarch64::*;
-    let w00v = vdupq_n_f32(w.w00);
-    let w01v = vdupq_n_f32(w.w01);
-    let w10v = vdupq_n_f32(w.w10);
-    let w11v = vdupq_n_f32(w.w11);
-    let mut a_acc = vdupq_n_f32(0.0);
-    let mut b_acc = vdupq_n_f32(0.0);
-    let mut c_acc = vdupq_n_f32(0.0);
-    let mut a_scalar = 0.0_f32;
-    let mut b_scalar = 0.0_f32;
-    let mut c_scalar = 0.0_f32;
+    unsafe {
+        use std::arch::aarch64::*;
+        let w00v = vdupq_n_f32(w.w00);
+        let w01v = vdupq_n_f32(w.w01);
+        let w10v = vdupq_n_f32(w.w10);
+        let w11v = vdupq_n_f32(w.w11);
+        let mut a_acc = vdupq_n_f32(0.0);
+        let mut b_acc = vdupq_n_f32(0.0);
+        let mut c_acc = vdupq_n_f32(0.0);
+        let mut a_scalar = 0.0_f32;
+        let mut b_scalar = 0.0_f32;
+        let mut c_scalar = 0.0_f32;
 
-    #[inline(always)]
-    unsafe fn bilin4(
-        data: *const f32,
-        base_top: usize,
-        base_bot: usize,
-        w00v: float32x4_t,
-        w01v: float32x4_t,
-        w10v: float32x4_t,
-        w11v: float32x4_t,
-    ) -> float32x4_t {
-        let p00 = vld1q_f32(data.add(base_top));
-        let p01 = vld1q_f32(data.add(base_top + 1));
-        let p10 = vld1q_f32(data.add(base_bot));
-        let p11 = vld1q_f32(data.add(base_bot + 1));
-        let mut v = vmulq_f32(p00, w00v);
-        v = vfmaq_f32(v, p01, w01v);
-        v = vfmaq_f32(v, p10, w10v);
-        v = vfmaq_f32(v, p11, w11v);
-        v
-    }
-
-    let prev_ptr = prev_data.as_ptr();
-    let ix_ptr = ix_data.as_ptr();
-    let iy_ptr = iy_data.as_ptr();
-    let prev_out_ptr = prev_out.as_mut_ptr();
-    let ix_out_ptr = ix_out.as_mut_ptr();
-    let iy_out_ptr = iy_out.as_mut_ptr();
-    let mut idx = 0usize;
-
-    for wy in -10i32..=10 {
-        let iv = (iv_base + wy) as usize;
-        let row_top = iv * cols;
-        let row_bot = row_top + cols;
-        let iu_start = (iu_base - 10) as usize;
-
-        for batch in 0..5usize {
-            let off = batch * 4;
-            let base_top = row_top + iu_start + off;
-            let base_bot = row_bot + iu_start + off;
-
-            let pv = bilin4(prev_ptr, base_top, base_bot, w00v, w01v, w10v, w11v);
-            let xv = bilin4(ix_ptr, base_top, base_bot, w00v, w01v, w10v, w11v);
-            let yv = bilin4(iy_ptr, base_top, base_bot, w00v, w01v, w10v, w11v);
-
-            vst1q_f32(prev_out_ptr.add(idx + off), pv);
-            vst1q_f32(ix_out_ptr.add(idx + off), xv);
-            vst1q_f32(iy_out_ptr.add(idx + off), yv);
-
-            a_acc = vfmaq_f32(a_acc, xv, xv);
-            b_acc = vfmaq_f32(b_acc, xv, yv);
-            c_acc = vfmaq_f32(c_acc, yv, yv);
+        #[inline(always)]
+        unsafe fn bilin4(
+            data: *const f32,
+            base_top: usize,
+            base_bot: usize,
+            w00v: float32x4_t,
+            w01v: float32x4_t,
+            w10v: float32x4_t,
+            w11v: float32x4_t,
+        ) -> float32x4_t {
+            unsafe {
+                let p00 = vld1q_f32(data.add(base_top));
+                let p01 = vld1q_f32(data.add(base_top + 1));
+                let p10 = vld1q_f32(data.add(base_bot));
+                let p11 = vld1q_f32(data.add(base_bot + 1));
+                let mut v = vmulq_f32(p00, w00v);
+                v = vfmaq_f32(v, p01, w01v);
+                v = vfmaq_f32(v, p10, w10v);
+                v = vfmaq_f32(v, p11, w11v);
+                v
+            }
         }
 
-        let iu = iu_start + 20;
-        let p00 = prev_data[row_top + iu];
-        let p01 = prev_data[row_top + iu + 1];
-        let p10 = prev_data[row_bot + iu];
-        let p11 = prev_data[row_bot + iu + 1];
-        let pv = p00 * w.w00 + p01 * w.w01 + p10 * w.w10 + p11 * w.w11;
-        prev_out[idx + 20] = pv;
+        let prev_ptr = prev_data.as_ptr();
+        let ix_ptr = ix_data.as_ptr();
+        let iy_ptr = iy_data.as_ptr();
+        let prev_out_ptr = prev_out.as_mut_ptr();
+        let ix_out_ptr = ix_out.as_mut_ptr();
+        let iy_out_ptr = iy_out.as_mut_ptr();
+        let mut idx = 0usize;
 
-        let x00 = ix_data[row_top + iu];
-        let x01 = ix_data[row_top + iu + 1];
-        let x10 = ix_data[row_bot + iu];
-        let x11 = ix_data[row_bot + iu + 1];
-        let xv = x00 * w.w00 + x01 * w.w01 + x10 * w.w10 + x11 * w.w11;
-        ix_out[idx + 20] = xv;
+        for wy in -10i32..=10 {
+            let iv = (iv_base + wy) as usize;
+            let row_top = iv * cols;
+            let row_bot = row_top + cols;
+            let iu_start = (iu_base - 10) as usize;
 
-        let y00 = iy_data[row_top + iu];
-        let y01 = iy_data[row_top + iu + 1];
-        let y10 = iy_data[row_bot + iu];
-        let y11 = iy_data[row_bot + iu + 1];
-        let yv = y00 * w.w00 + y01 * w.w01 + y10 * w.w10 + y11 * w.w11;
-        iy_out[idx + 20] = yv;
+            for batch in 0..5usize {
+                let off = batch * 4;
+                let base_top = row_top + iu_start + off;
+                let base_bot = row_bot + iu_start + off;
 
-        a_scalar += xv * xv;
-        b_scalar += xv * yv;
-        c_scalar += yv * yv;
+                let pv = bilin4(prev_ptr, base_top, base_bot, w00v, w01v, w10v, w11v);
+                let xv = bilin4(ix_ptr, base_top, base_bot, w00v, w01v, w10v, w11v);
+                let yv = bilin4(iy_ptr, base_top, base_bot, w00v, w01v, w10v, w11v);
 
-        idx += 21;
+                vst1q_f32(prev_out_ptr.add(idx + off), pv);
+                vst1q_f32(ix_out_ptr.add(idx + off), xv);
+                vst1q_f32(iy_out_ptr.add(idx + off), yv);
+
+                a_acc = vfmaq_f32(a_acc, xv, xv);
+                b_acc = vfmaq_f32(b_acc, xv, yv);
+                c_acc = vfmaq_f32(c_acc, yv, yv);
+            }
+
+            let iu = iu_start + 20;
+            let p00 = prev_data[row_top + iu];
+            let p01 = prev_data[row_top + iu + 1];
+            let p10 = prev_data[row_bot + iu];
+            let p11 = prev_data[row_bot + iu + 1];
+            let pv = p00 * w.w00 + p01 * w.w01 + p10 * w.w10 + p11 * w.w11;
+            prev_out[idx + 20] = pv;
+
+            let x00 = ix_data[row_top + iu];
+            let x01 = ix_data[row_top + iu + 1];
+            let x10 = ix_data[row_bot + iu];
+            let x11 = ix_data[row_bot + iu + 1];
+            let xv = x00 * w.w00 + x01 * w.w01 + x10 * w.w10 + x11 * w.w11;
+            ix_out[idx + 20] = xv;
+
+            let y00 = iy_data[row_top + iu];
+            let y01 = iy_data[row_top + iu + 1];
+            let y10 = iy_data[row_bot + iu];
+            let y11 = iy_data[row_bot + iu + 1];
+            let yv = y00 * w.w00 + y01 * w.w01 + y10 * w.w10 + y11 * w.w11;
+            iy_out[idx + 20] = yv;
+
+            a_scalar += xv * xv;
+            b_scalar += xv * yv;
+            c_scalar += yv * yv;
+
+            idx += 21;
+        }
+
+        (
+            vaddvq_f32(a_acc) + a_scalar,
+            vaddvq_f32(b_acc) + b_scalar,
+            vaddvq_f32(c_acc) + c_scalar,
+        )
     }
-
-    (
-        vaddvq_f32(a_acc) + a_scalar,
-        vaddvq_f32(b_acc) + b_scalar,
-        vaddvq_f32(c_acc) + c_scalar,
-    )
 }
 
 /// Fast-path single Gauss-Newton iteration step: samples `next` at
@@ -596,8 +600,8 @@ fn weights_for(cx: f32, cy: f32) -> (i32, i32, BilinearWeights) {
 }
 
 #[inline(always)]
-fn iter_step_interior<A: ImageAllocator>(
-    next: &Image<f32, 1, A>,
+fn iter_step_interior(
+    next: &Image<f32, 1>,
     cx: f32,
     cy: f32,
     prev_patch: &[f32; 441],
@@ -802,70 +806,72 @@ unsafe fn iter_step_interior_neon(
     ix_patch: &[f32; 441],
     iy_patch: &[f32; 441],
 ) -> (f32, f32) {
-    use std::arch::aarch64::*;
-    let w00v = vdupq_n_f32(w.w00);
-    let w01v = vdupq_n_f32(w.w01);
-    let w10v = vdupq_n_f32(w.w10);
-    let w11v = vdupq_n_f32(w.w11);
-    let mut d_acc = vdupq_n_f32(0.0);
-    let mut e_acc = vdupq_n_f32(0.0);
-    let mut d_scalar = 0.0_f32;
-    let mut e_scalar = 0.0_f32;
+    unsafe {
+        use std::arch::aarch64::*;
+        let w00v = vdupq_n_f32(w.w00);
+        let w01v = vdupq_n_f32(w.w01);
+        let w10v = vdupq_n_f32(w.w10);
+        let w11v = vdupq_n_f32(w.w11);
+        let mut d_acc = vdupq_n_f32(0.0);
+        let mut e_acc = vdupq_n_f32(0.0);
+        let mut d_scalar = 0.0_f32;
+        let mut e_scalar = 0.0_f32;
 
-    let next_ptr = next_data.as_ptr();
-    let prev_ptr = prev_patch.as_ptr();
-    let ix_ptr = ix_patch.as_ptr();
-    let iy_ptr = iy_patch.as_ptr();
-    let mut idx = 0usize;
+        let next_ptr = next_data.as_ptr();
+        let prev_ptr = prev_patch.as_ptr();
+        let ix_ptr = ix_patch.as_ptr();
+        let iy_ptr = iy_patch.as_ptr();
+        let mut idx = 0usize;
 
-    for wy in -10i32..=10 {
-        let iv = (iv_base + wy) as usize;
-        let row_top = iv * cols;
-        let row_bot = row_top + cols;
-        let iu_start = (iu_base - 10) as usize;
+        for wy in -10i32..=10 {
+            let iv = (iv_base + wy) as usize;
+            let row_top = iv * cols;
+            let row_bot = row_top + cols;
+            let iu_start = (iu_base - 10) as usize;
 
-        // Five 4-wide batches: pixels [0..4], [4..8], [8..12], [12..16], [16..20].
-        for batch in 0..5usize {
-            let off = batch * 4;
-            let base_top = row_top + iu_start + off;
-            let base_bot = row_bot + iu_start + off;
+            // Five 4-wide batches: pixels [0..4], [4..8], [8..12], [12..16], [16..20].
+            for batch in 0..5usize {
+                let off = batch * 4;
+                let base_top = row_top + iu_start + off;
+                let base_bot = row_bot + iu_start + off;
 
-            let p00 = vld1q_f32(next_ptr.add(base_top));
-            let p01 = vld1q_f32(next_ptr.add(base_top + 1));
-            let p10 = vld1q_f32(next_ptr.add(base_bot));
-            let p11 = vld1q_f32(next_ptr.add(base_bot + 1));
+                let p00 = vld1q_f32(next_ptr.add(base_top));
+                let p01 = vld1q_f32(next_ptr.add(base_top + 1));
+                let p10 = vld1q_f32(next_ptr.add(base_bot));
+                let p11 = vld1q_f32(next_ptr.add(base_bot + 1));
 
-            let mut i1 = vmulq_f32(p00, w00v);
-            i1 = vfmaq_f32(i1, p01, w01v);
-            i1 = vfmaq_f32(i1, p10, w10v);
-            i1 = vfmaq_f32(i1, p11, w11v);
+                let mut i1 = vmulq_f32(p00, w00v);
+                i1 = vfmaq_f32(i1, p01, w01v);
+                i1 = vfmaq_f32(i1, p10, w10v);
+                i1 = vfmaq_f32(i1, p11, w11v);
 
-            let prev_v = vld1q_f32(prev_ptr.add(idx + off));
-            let it = vsubq_f32(i1, prev_v);
+                let prev_v = vld1q_f32(prev_ptr.add(idx + off));
+                let it = vsubq_f32(i1, prev_v);
 
-            let ix_v = vld1q_f32(ix_ptr.add(idx + off));
-            let iy_v = vld1q_f32(iy_ptr.add(idx + off));
+                let ix_v = vld1q_f32(ix_ptr.add(idx + off));
+                let iy_v = vld1q_f32(iy_ptr.add(idx + off));
 
-            // d -= ix*it  ==  fma-subtract: d_acc = d_acc - ix*it.
-            d_acc = vfmsq_f32(d_acc, ix_v, it);
-            e_acc = vfmsq_f32(e_acc, iy_v, it);
+                // d -= ix*it  ==  fma-subtract: d_acc = d_acc - ix*it.
+                d_acc = vfmsq_f32(d_acc, ix_v, it);
+                e_acc = vfmsq_f32(e_acc, iy_v, it);
+            }
+
+            // 1-pixel scalar tail (k = 20).
+            let iu = iu_start + 20;
+            let p00 = next_data[row_top + iu];
+            let p01 = next_data[row_top + iu + 1];
+            let p10 = next_data[row_bot + iu];
+            let p11 = next_data[row_bot + iu + 1];
+            let i1 = p00 * w.w00 + p01 * w.w01 + p10 * w.w10 + p11 * w.w11;
+            let it = i1 - prev_patch[idx + 20];
+            d_scalar -= ix_patch[idx + 20] * it;
+            e_scalar -= iy_patch[idx + 20] * it;
+
+            idx += 21;
         }
 
-        // 1-pixel scalar tail (k = 20).
-        let iu = iu_start + 20;
-        let p00 = next_data[row_top + iu];
-        let p01 = next_data[row_top + iu + 1];
-        let p10 = next_data[row_bot + iu];
-        let p11 = next_data[row_bot + iu + 1];
-        let i1 = p00 * w.w00 + p01 * w.w01 + p10 * w.w10 + p11 * w.w11;
-        let it = i1 - prev_patch[idx + 20];
-        d_scalar -= ix_patch[idx + 20] * it;
-        e_scalar -= iy_patch[idx + 20] * it;
-
-        idx += 21;
+        (vaddvq_f32(d_acc) + d_scalar, vaddvq_f32(e_acc) + e_scalar)
     }
-
-    (vaddvq_f32(d_acc) + d_scalar, vaddvq_f32(e_acc) + e_scalar)
 }
 
 /// Fast-path final error pass: samples `next` and accumulates
@@ -875,12 +881,7 @@ unsafe fn iter_step_interior_neon(
 ///
 /// Caller MUST have established [`is_interior_for_lk`] for `(cx, cy)`.
 #[inline(always)]
-fn error_pass_interior<A: ImageAllocator>(
-    next: &Image<f32, 1, A>,
-    cx: f32,
-    cy: f32,
-    prev_patch: &[f32; 441],
-) -> f32 {
+fn error_pass_interior(next: &Image<f32, 1>, cx: f32, cy: f32, prev_patch: &[f32; 441]) -> f32 {
     let cols = next.cols();
     let next_data = next.as_slice();
     let (iu_base, iv_base, w) = weights_for(cx, cy);
@@ -1015,62 +1016,64 @@ unsafe fn error_pass_interior_neon(
     w: BilinearWeights,
     prev_patch: &[f32; 441],
 ) -> f32 {
-    use std::arch::aarch64::*;
-    let w00v = vdupq_n_f32(w.w00);
-    let w01v = vdupq_n_f32(w.w01);
-    let w10v = vdupq_n_f32(w.w10);
-    let w11v = vdupq_n_f32(w.w11);
-    let mut err_acc = vdupq_n_f32(0.0);
-    let mut err_scalar = 0.0_f32;
+    unsafe {
+        use std::arch::aarch64::*;
+        let w00v = vdupq_n_f32(w.w00);
+        let w01v = vdupq_n_f32(w.w01);
+        let w10v = vdupq_n_f32(w.w10);
+        let w11v = vdupq_n_f32(w.w11);
+        let mut err_acc = vdupq_n_f32(0.0);
+        let mut err_scalar = 0.0_f32;
 
-    let next_ptr = next_data.as_ptr();
-    let prev_ptr = prev_patch.as_ptr();
-    let mut idx = 0usize;
+        let next_ptr = next_data.as_ptr();
+        let prev_ptr = prev_patch.as_ptr();
+        let mut idx = 0usize;
 
-    for wy in -10i32..=10 {
-        let iv = (iv_base + wy) as usize;
-        let row_top = iv * cols;
-        let row_bot = row_top + cols;
-        let iu_start = (iu_base - 10) as usize;
+        for wy in -10i32..=10 {
+            let iv = (iv_base + wy) as usize;
+            let row_top = iv * cols;
+            let row_bot = row_top + cols;
+            let iu_start = (iu_base - 10) as usize;
 
-        for batch in 0..5usize {
-            let off = batch * 4;
-            let base_top = row_top + iu_start + off;
-            let base_bot = row_bot + iu_start + off;
+            for batch in 0..5usize {
+                let off = batch * 4;
+                let base_top = row_top + iu_start + off;
+                let base_bot = row_bot + iu_start + off;
 
-            let p00 = vld1q_f32(next_ptr.add(base_top));
-            let p01 = vld1q_f32(next_ptr.add(base_top + 1));
-            let p10 = vld1q_f32(next_ptr.add(base_bot));
-            let p11 = vld1q_f32(next_ptr.add(base_bot + 1));
+                let p00 = vld1q_f32(next_ptr.add(base_top));
+                let p01 = vld1q_f32(next_ptr.add(base_top + 1));
+                let p10 = vld1q_f32(next_ptr.add(base_bot));
+                let p11 = vld1q_f32(next_ptr.add(base_bot + 1));
 
-            let mut i1 = vmulq_f32(p00, w00v);
-            i1 = vfmaq_f32(i1, p01, w01v);
-            i1 = vfmaq_f32(i1, p10, w10v);
-            i1 = vfmaq_f32(i1, p11, w11v);
+                let mut i1 = vmulq_f32(p00, w00v);
+                i1 = vfmaq_f32(i1, p01, w01v);
+                i1 = vfmaq_f32(i1, p10, w10v);
+                i1 = vfmaq_f32(i1, p11, w11v);
 
-            let prev_v = vld1q_f32(prev_ptr.add(idx + off));
-            let diff = vsubq_f32(i1, prev_v);
-            err_acc = vaddq_f32(err_acc, vabsq_f32(diff));
+                let prev_v = vld1q_f32(prev_ptr.add(idx + off));
+                let diff = vsubq_f32(i1, prev_v);
+                err_acc = vaddq_f32(err_acc, vabsq_f32(diff));
+            }
+
+            let iu = iu_start + 20;
+            let p00 = next_data[row_top + iu];
+            let p01 = next_data[row_top + iu + 1];
+            let p10 = next_data[row_bot + iu];
+            let p11 = next_data[row_bot + iu + 1];
+            let i1 = p00 * w.w00 + p01 * w.w01 + p10 * w.w10 + p11 * w.w11;
+            err_scalar += (i1 - prev_patch[idx + 20]).abs();
+
+            idx += 21;
         }
 
-        let iu = iu_start + 20;
-        let p00 = next_data[row_top + iu];
-        let p01 = next_data[row_top + iu + 1];
-        let p10 = next_data[row_bot + iu];
-        let p11 = next_data[row_bot + iu + 1];
-        let i1 = p00 * w.w00 + p01 * w.w01 + p10 * w.w10 + p11 * w.w11;
-        err_scalar += (i1 - prev_patch[idx + 20]).abs();
-
-        idx += 21;
+        vaddvq_f32(err_acc) + err_scalar
     }
-
-    vaddvq_f32(err_acc) + err_scalar
 }
 
-fn track_feature<A: ImageAllocator>(
+fn track_feature(
     pt: [f32; 2],
     initial_flow: Option<[f32; 2]>,
-    precomputed: &PyrLKPrecomputed<A>,
+    precomputed: &PyrLKPrecomputed,
     params: &PyrLKParams,
 ) -> Option<([f32; 2], f32)> {
     const WIN_SIZE: usize = 21;
@@ -1237,11 +1240,11 @@ fn track_feature<A: ImageAllocator>(
 }
 
 /// Build Gaussian pyramids and gradients required by sparse LK.
-pub fn build_lk_precomputed<A: ImageAllocator>(
-    prev_img: &Image<f32, 1, A>,
-    next_img: &Image<f32, 1, A>,
+pub fn build_lk_precomputed(
+    prev_img: &Image<f32, 1>,
+    next_img: &Image<f32, 1>,
     max_level: usize,
-) -> Result<PyrLKPrecomputed<A>, PyrLKError> {
+) -> Result<PyrLKPrecomputed, PyrLKError> {
     if prev_img.size() != next_img.size() {
         return Err(PyrLKError::ImageSizeMismatch {
             prev_width: prev_img.width(),
@@ -1265,9 +1268,9 @@ pub fn build_lk_precomputed<A: ImageAllocator>(
         };
 
         let mut prev_down =
-            Image::from_size_val(down_size, 0.0f32, prev_img.storage.alloc().clone())?;
+            Image::from_size_val_in(down_size, 0.0f32, prev_img.storage.alloc().clone())?;
         let mut next_down =
-            Image::from_size_val(down_size, 0.0f32, next_img.storage.alloc().clone())?;
+            Image::from_size_val_in(down_size, 0.0f32, next_img.storage.alloc().clone())?;
 
         pyrdown_f32(prev_src, &mut prev_down)?;
         pyrdown_f32(next_src, &mut next_down)?;
@@ -1279,8 +1282,8 @@ pub fn build_lk_precomputed<A: ImageAllocator>(
     let mut grad_x_pyr = Vec::with_capacity(max_level + 1);
     let mut grad_y_pyr = Vec::with_capacity(max_level + 1);
     for img in prev_pyr.iter().take(max_level + 1) {
-        let mut ix = Image::from_size_val(img.size(), 0.0f32, prev_img.storage.alloc().clone())?;
-        let mut iy = Image::from_size_val(img.size(), 0.0f32, prev_img.storage.alloc().clone())?;
+        let mut ix = Image::from_size_val_in(img.size(), 0.0f32, prev_img.storage.alloc().clone())?;
+        let mut iy = Image::from_size_val_in(img.size(), 0.0f32, prev_img.storage.alloc().clone())?;
         scharr_spatial_gradient_float(img, &mut ix, &mut iy)?;
         grad_x_pyr.push(ix);
         grad_y_pyr.push(iy);
@@ -1305,9 +1308,9 @@ pub fn build_lk_precomputed<A: ImageAllocator>(
 ///
 /// # Returns
 /// * `Result<PyrLKResult, PyrLKError>` with next points, status, and error
-pub fn calc_optical_flow_pyr_lk<A: ImageAllocator>(
-    prev_img: &Image<f32, 1, A>,
-    next_img: &Image<f32, 1, A>,
+pub fn calc_optical_flow_pyr_lk(
+    prev_img: &Image<f32, 1>,
+    next_img: &Image<f32, 1>,
     prev_pts: &[[f32; 2]],
     next_pts_in: Option<&[[f32; 2]]>,
     params: &PyrLKParams,
@@ -1339,8 +1342,8 @@ pub fn calc_optical_flow_pyr_lk<A: ImageAllocator>(
 }
 
 /// Compute sparse pyramidal LK flow using precomputed pyramids and gradients.
-pub fn calc_optical_flow_pyr_lk_with_precomputed<A: ImageAllocator>(
-    precomputed: &PyrLKPrecomputed<A>,
+pub fn calc_optical_flow_pyr_lk_with_precomputed(
+    precomputed: &PyrLKPrecomputed,
     prev_pts: &[[f32; 2]],
     next_pts_in: Option<&[[f32; 2]]>,
     params: &PyrLKParams,
@@ -1435,7 +1438,6 @@ pub fn calc_optical_flow_pyr_lk_with_precomputed<A: ImageAllocator>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kornia_image::allocator::CpuAllocator;
 
     fn default_params() -> PyrLKParams {
         PyrLKParams::default()
@@ -1445,9 +1447,9 @@ mod tests {
     /// `sample_at` / BorderMode path. Used as the byte-equality oracle for
     /// the fast-path kernels.
     fn build_three_patches_slow(
-        prev: &Image<f32, 1, CpuAllocator>,
-        ix: &Image<f32, 1, CpuAllocator>,
-        iy: &Image<f32, 1, CpuAllocator>,
+        prev: &Image<f32, 1>,
+        ix: &Image<f32, 1>,
+        iy: &Image<f32, 1>,
         cx: f32,
         cy: f32,
     ) -> (Vec<f32>, Vec<f32>, Vec<f32>, f32, f32, f32) {
@@ -1488,12 +1490,8 @@ mod tests {
         // structure-tensor entries are non-trivial.
         let size = 128;
         let img = make_gradient_image(size);
-        let mut ix =
-            Image::<f32, 1, CpuAllocator>::from_size_val([size, size].into(), 0.0, CpuAllocator)
-                .unwrap();
-        let mut iy =
-            Image::<f32, 1, CpuAllocator>::from_size_val([size, size].into(), 0.0, CpuAllocator)
-                .unwrap();
+        let mut ix = Image::<f32, 1>::from_size_val([size, size].into(), 0.0).unwrap();
+        let mut iy = Image::<f32, 1>::from_size_val([size, size].into(), 0.0).unwrap();
         crate::filter::scharr_spatial_gradient_float(&img, &mut ix, &mut iy).unwrap();
 
         // A few interior centres with non-trivial fractional parts so the
@@ -1643,12 +1641,8 @@ mod tests {
         let size = 128;
         let img = make_gradient_image(size);
         // Build gradient images so all three patches have non-trivial data.
-        let mut ix =
-            Image::<f32, 1, CpuAllocator>::from_size_val([size, size].into(), 0.0, CpuAllocator)
-                .unwrap();
-        let mut iy =
-            Image::<f32, 1, CpuAllocator>::from_size_val([size, size].into(), 0.0, CpuAllocator)
-                .unwrap();
+        let mut ix = Image::<f32, 1>::from_size_val([size, size].into(), 0.0).unwrap();
+        let mut iy = Image::<f32, 1>::from_size_val([size, size].into(), 0.0).unwrap();
         crate::filter::scharr_spatial_gradient_float(&img, &mut ix, &mut iy).unwrap();
         let cols = img.cols();
 
@@ -1658,6 +1652,9 @@ mod tests {
             let mut sp = [0.0_f32; 441];
             let mut sx = [0.0_f32; 441];
             let mut sy = [0.0_f32; 441];
+            // `scalar` is consumed only by the x86_64 AVX2 parity check below; on
+            // other arches the comparison is cfg'd out, so the binding is unused.
+            #[cfg_attr(not(target_arch = "x86_64"), allow(unused_variables))]
             let scalar = build_three_patches_interior_scalar(
                 img.as_slice(),
                 ix.as_slice(),
@@ -1731,9 +1728,7 @@ mod tests {
         let dx = 1.0_f32;
         let dy = 0.5_f32;
         let img1 = make_gradient_image(size);
-        let mut img2 =
-            Image::<f32, 1, CpuAllocator>::from_size_val([size, size].into(), 0.0, CpuAllocator)
-                .unwrap();
+        let mut img2 = Image::<f32, 1>::from_size_val([size, size].into(), 0.0).unwrap();
         for y in 0..size {
             for x in 0..size {
                 let sx = (x as f32 - dx).clamp(0.0, size as f32 - 1.0);
@@ -1776,9 +1771,7 @@ mod tests {
         let dy = -0.7;
         let img1 = make_gradient_image(size);
         // Synthesise img2 as img1 shifted by (dx, dy).
-        let mut img2 =
-            Image::<f32, 1, CpuAllocator>::from_size_val([size, size].into(), 0.0, CpuAllocator)
-                .unwrap();
+        let mut img2 = Image::<f32, 1>::from_size_val([size, size].into(), 0.0).unwrap();
         for y in 0..size {
             for x in 0..size {
                 let sx = (x as f32 - dx).clamp(0.0, size as f32 - 1.0);
@@ -1803,10 +1796,8 @@ mod tests {
         );
     }
 
-    fn make_circle_image(size: usize, cx: f32, cy: f32, r: f32) -> Image<f32, 1, CpuAllocator> {
-        let mut img =
-            Image::<f32, 1, CpuAllocator>::from_size_val([size, size].into(), 0.0, CpuAllocator)
-                .unwrap();
+    fn make_circle_image(size: usize, cx: f32, cy: f32, r: f32) -> Image<f32, 1> {
+        let mut img = Image::<f32, 1>::from_size_val([size, size].into(), 0.0).unwrap();
         for y in 0..size {
             for x in 0..size {
                 let dx = x as f32 - cx;
@@ -1819,10 +1810,8 @@ mod tests {
         img
     }
 
-    fn make_gradient_image(size: usize) -> Image<f32, 1, CpuAllocator> {
-        let mut img =
-            Image::<f32, 1, CpuAllocator>::from_size_val([size, size].into(), 0.0, CpuAllocator)
-                .unwrap();
+    fn make_gradient_image(size: usize) -> Image<f32, 1> {
+        let mut img = Image::<f32, 1>::from_size_val([size, size].into(), 0.0).unwrap();
         for y in 0..size {
             for x in 0..size {
                 let xf = x as f32;
@@ -1951,9 +1940,7 @@ mod tests {
     #[test]
     fn test_lk_low_texture_rejection() {
         let size = 64;
-        let img1 =
-            Image::<f32, 1, CpuAllocator>::from_size_val([size, size].into(), 0.5, CpuAllocator)
-                .unwrap();
+        let img1 = Image::<f32, 1>::from_size_val([size, size].into(), 0.5).unwrap();
         let img2 = img1.clone();
         let pts = vec![[32.0, 32.0]];
         let params = default_params();
@@ -2149,9 +2136,7 @@ mod tests {
         let dx = 3.0;
         let dy = -2.0;
         let img1 = make_gradient_image(size);
-        let mut img2 =
-            Image::<f32, 1, CpuAllocator>::from_size_val([size, size].into(), 0.0, CpuAllocator)
-                .unwrap();
+        let mut img2 = Image::<f32, 1>::from_size_val([size, size].into(), 0.0).unwrap();
 
         // Shift image
         for y in 0..size {

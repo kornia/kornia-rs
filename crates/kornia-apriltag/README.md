@@ -33,7 +33,7 @@ kornia-apriltag = "0.1.0"
 
 ```rust
 use kornia_apriltag::{AprilTagDecoder, DecodeTagsConfig, family::TagFamilyKind};
-use kornia_image::{Image, ImageSize, allocator::CpuAllocator};
+use kornia_image::{Image, ImageSize};
 // use kornia_io::functional as F; // Assuming you have an image reader
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -45,10 +45,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // let gray_image = kornia_imgproc::color::rgb_to_gray(&image)?;
 
     // Create dummy image for example
-    let gray_image = Image::<u8, 1, _>::new(
+    let gray_image = Image::<u8, 1>::new(
         ImageSize { width: 100, height: 100 },
         vec![0u8; 10000],
-        CpuAllocator
     )?;
 
     // 3. Initialize decoder

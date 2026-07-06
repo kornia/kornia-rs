@@ -7,12 +7,13 @@ use numpy::{PyArray, PyArray3, PyArrayMethods, PyUntypedArrayMethods};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-use kornia_imgproc::resize::{resize_normalize_to_tensor_u8_to_f32, NormalizeParams};
+use kornia_imgproc::resize::{resize_normalize_to_tensor_u8_to_f32_bilinear, NormalizeParams};
 
-use crate::image::PyImage;
+use crate::image::{to_pyerr, PyImage};
 
-/// Fused resize (2× exact downscale) + per-channel normalize + HWC→CHW layout
-/// convert, all in one NEON pass.
+/// Fused resize (general bilinear, any target size) + per-channel normalize +
+/// HWC→CHW layout convert, all in one pass. Exact 2× downscale takes a faster
+/// fused box path internally.
 ///
 /// This is the stateless entry point — each call allocates a fresh output
 /// array. For zero-allocation hot loops, use the `Preprocessor` class.
@@ -20,7 +21,7 @@ use crate::image::PyImage;
 /// # Arguments
 ///
 /// * `image` — `(H, W, 3)` uint8 numpy array (HWC, C-contiguous).
-/// * `new_size` — `(dst_h, dst_w)`. Must equal `(H/2, W/2)`.
+/// * `new_size` — `(dst_h, dst_w)`. Any positive size (up- or down-scale).
 /// * `mean` — per-channel mean in `[0, 1]` range (PyTorch convention).
 /// * `std`  — per-channel std in `[0, 1]` range.
 ///
@@ -46,13 +47,66 @@ pub fn resize_normalize_to_tensor(
     // SAFETY: out_arr is a freshly-allocated C-contiguous f32 PyArray3.
     let out_slice = unsafe { std::slice::from_raw_parts_mut(out_arr.data(), out_len) };
 
-    py.detach(|| {
-        resize_normalize_to_tensor_u8_to_f32(
+    let result = py.detach(|| {
+        resize_normalize_to_tensor_u8_to_f32_bilinear(
             src_slice, src_w, src_h, out_slice, dst_w, dst_h, &params,
-        );
+        )
     });
+    result.map_err(to_pyerr)?;
 
     Ok(out_arr.unbind())
+}
+
+/// Batched [`resize_normalize_to_tensor`]: preprocess a whole list of images
+/// in one call — the GIL is released once and the images are processed in
+/// parallel across the rayon pool (parallelism ACROSS images, which is what a
+/// dataloader wants — per-image thread fan-out would fight the loader's own
+/// worker parallelism).
+///
+/// Returns one `(3, dst_h, dst_w)` float32 NCHW array per input, in order.
+#[pyfunction]
+pub fn resize_normalize_to_tensor_batch(
+    py: Python<'_>,
+    images: Vec<PyImage>,
+    new_size: (usize, usize),
+    mean: [f32; 3],
+    std: [f32; 3],
+) -> PyResult<Vec<Py<PyArray3<f32>>>> {
+    let (dst_h, dst_w) = new_size;
+    let params = NormalizeParams::<3>::from_mean_std(mean, std);
+
+    // Borrow every source and allocate every output under the GIL…
+    let mut srcs = Vec::with_capacity(images.len());
+    for image in &images {
+        let (src_h, src_w, src_slice) = validate_and_borrow_src(py, image)?;
+        validate_shapes(src_h, src_w, dst_h, dst_w)?;
+        srcs.push((src_h, src_w, src_slice));
+    }
+    let out_len = 3 * dst_h * dst_w;
+    let mut outs = Vec::with_capacity(images.len());
+    let mut out_slices: Vec<&mut [f32]> = Vec::with_capacity(images.len());
+    for _ in &images {
+        let arr = unsafe { PyArray::<f32, _>::new(py, [3, dst_h, dst_w], false) };
+        // SAFETY: freshly-allocated C-contiguous f32 PyArray3, kept alive by `outs`.
+        out_slices.push(unsafe { std::slice::from_raw_parts_mut(arr.data(), out_len) });
+        outs.push(arr.unbind());
+    }
+
+    // …then release it once and run the images back-to-back: each fused call
+    // already parallelizes internally across the rayon pool, so fanning out
+    // across images too would just oversubscribe the cores (measured slower).
+    // The batch win is amortizing the GIL round-trip and Python call overhead.
+    let result: Result<(), _> = py.detach(|| {
+        srcs.iter()
+            .zip(out_slices.iter_mut())
+            .try_for_each(|((src_h, src_w, src_slice), out)| {
+                resize_normalize_to_tensor_u8_to_f32_bilinear(
+                    src_slice, *src_w, *src_h, out, dst_w, dst_h, &params,
+                )
+            })
+    });
+    result.map_err(to_pyerr)?;
+    Ok(outs)
 }
 
 /// Pre-allocated preprocessor for the fused resize+normalize+HWC→CHW pipeline.
@@ -147,8 +201,8 @@ impl Preprocessor {
         // `&mut self` on __call__ prevents concurrent Python-level aliasing.
         let out_slice = unsafe { std::slice::from_raw_parts_mut(out_bound.data(), out_len) };
 
-        py.detach(|| {
-            resize_normalize_to_tensor_u8_to_f32(
+        let result = py.detach(|| {
+            resize_normalize_to_tensor_u8_to_f32_bilinear(
                 src_slice,
                 self.src_w,
                 self.src_h,
@@ -156,8 +210,9 @@ impl Preprocessor {
                 self.dst_w,
                 self.dst_h,
                 &self.params,
-            );
+            )
         });
+        result.map_err(to_pyerr)?;
 
         Ok(self.out.clone_ref(py))
     }
@@ -203,10 +258,7 @@ fn validate_shapes(src_h: usize, src_w: usize, dst_h: usize, dst_w: usize) -> Py
             "source/destination shape has zero extent",
         ));
     }
-    if src_h != 2 * dst_h || src_w != 2 * dst_w {
-        return Err(PyErr::new::<PyValueError, _>(format!(
-            "only exact 2× downscale is supported: src=({src_h}, {src_w}) → dst=({dst_h}, {dst_w}) requires src = 2·dst"
-        )));
-    }
+    // Any src→dst ratio is supported (general bilinear); exact 2× downscale takes
+    // a faster fused box path internally.
     Ok(())
 }

@@ -4,7 +4,6 @@ use std::num::NonZeroU8;
 use std::path::Path;
 
 use crate::error::IoError;
-use kornia_image::allocator::CpuAllocator;
 use kornia_image::{Image, ImageSize};
 use little_exif::filetype::FileExtension;
 
@@ -272,18 +271,17 @@ mod tests {
 #[cfg(test)]
 mod orientation_tests {
     use super::*;
-    use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
+    use kornia_image::{Image, ImageSize};
     use std::num::NonZeroU8;
 
-    // 1. make_test_image returns Image<f32, 3, CpuAllocator>
-    fn make_test_image() -> Image<f32, 3, CpuAllocator> {
-        let mut img = Image::<f32, 3, _>::from_size_val(
+    // 1. make_test_image returns Image<f32, 3>
+    fn make_test_image() -> Image<f32, 3> {
+        let mut img = Image::<f32, 3>::from_size_val(
             ImageSize {
                 width: 3,
                 height: 2,
             },
             0.0,
-            CpuAllocator,
         )
         .unwrap();
         img.set_pixel(0, 0, 0, 10.0).unwrap();
@@ -367,9 +365,9 @@ use crate::jpeg::read_image_jpeg_rgb8;
 
 /// Applies EXIF orientation correction using exact pixel remapping.
 pub fn apply_exif_orientation(
-    image: Image<f32, 3, CpuAllocator>,
+    image: Image<f32, 3>,
     orientation: NonZeroU8,
-) -> Result<Image<f32, 3, CpuAllocator>, IoError> {
+) -> Result<Image<f32, 3>, IoError> {
     let src_w = image.size().width;
     let src_h = image.size().height;
     let o = orientation.get();
@@ -386,8 +384,8 @@ pub fn apply_exif_orientation(
         _ => return Err(IoError::InvalidOrientation(o as u16)),
     };
 
-    let mut dst = Image::<f32, 3, CpuAllocator>::from_size_val(out_size, 0.0, CpuAllocator)
-        .map_err(IoError::ImageCreationError)?;
+    let mut dst =
+        Image::<f32, 3>::from_size_val(out_size, 0.0).map_err(IoError::ImageCreationError)?;
 
     for sy in 0..src_h {
         for sx in 0..src_w {
@@ -416,9 +414,7 @@ pub fn apply_exif_orientation(
 
 /// Convenience reader: loads JPEG and applies EXIF orientation if present.
 /// Returns an f32 image in [0, 255] range.
-pub fn read_image_jpeg_auto_orient<P: AsRef<Path>>(
-    path: P,
-) -> Result<Image<f32, 3, CpuAllocator>, IoError> {
+pub fn read_image_jpeg_auto_orient<P: AsRef<Path>>(path: P) -> Result<Image<f32, 3>, IoError> {
     let meta = read_image_metadata(&path)?;
     let rgb8 = read_image_jpeg_rgb8(&path)?;
     // Convert Rgb8 → Image<f32, 3>

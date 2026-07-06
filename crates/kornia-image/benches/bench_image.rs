@@ -1,17 +1,15 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 use half::f16;
 use kornia_image::{Image, ImageSize};
-use kornia_tensor::CpuAllocator;
 use std::hint::black_box;
 
-fn sample_image() -> Image<u8, 3, CpuAllocator> {
+fn sample_image() -> Image<u8, 3> {
     Image::from_size_val(
         ImageSize {
             width: 1920,
             height: 1080,
         },
         127,
-        CpuAllocator,
     )
     .unwrap()
 }

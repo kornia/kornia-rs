@@ -11,9 +11,17 @@ jobs:
   linux:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13", "3.13t", "3.14", "3.14t"]
         target: [x86_64, aarch64]
+        exclude:
+          # The maturin bundled in the manylinux image cannot build the
+          # free-threaded 3.13 interpreter ("Free-threaded Python interpreter
+          # is only supported on 3.14 and later"). 3.13t wheels still build on
+          # macOS/Windows (newer host maturin). Restore here once the manylinux
+          # maturin gains free-threaded 3.13 support.
+          - python-version: "3.13t"
     # Neutralize the in-repo `.cargo/config.toml` (which targets the local
     # Jetson cross-test setup: `x86_64-linux-gnu-gcc` cross-linker plus
     # `x86-64-v3` / `aarch64+fp16+fhm` baselines). Released wheels need
@@ -32,7 +40,7 @@ jobs:
 
     steps:
       - uses: ilammy/setup-nasm@v1
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: messense/maturin-action@v1
         with:
           target: ${{ matrix.target }}
@@ -41,7 +49,11 @@ jobs:
           before-script-linux: |
             if command -v dnf &> /dev/null; then dnf install cmake3 -y; elif command -v yum &> /dev/null; then yum install cmake3 -y; elif command -v apt-get &> /dev/null; then apt-get update && apt-get install cmake -y; else echo "None of dnf, yum, or apt found."; fi
             if command -v cmake3 &> /dev/null; then export CMAKE=cmake3; fi
-          args: --release --out dist -i python${{ matrix.python-version }} -m kornia-py/Cargo.toml --sdist
+          # No --sdist: the sdist build is not self-contained (kornia-tensor's
+          # optional dlpack-rs git dependency can't resolve inside the extracted
+          # tarball), which breaks the manylinux build. Wheels build directly
+          # like the macOS/Windows jobs. Revisit once dlpack-rs is on crates.io.
+          args: --release --out dist -i python${{ matrix.python-version }} -m kornia-py/Cargo.toml
       - name: Verify SIMD paths are present in the built wheel
         env:
           MATRIX_TARGET: ${{ matrix.target }}
@@ -130,7 +142,7 @@ jobs:
             target: aarch64
     steps:
       - uses: ilammy/setup-nasm@v1
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
@@ -162,7 +174,7 @@ jobs:
     steps:
       - uses: ilammy/setup-nasm@v1
       - uses: ilammy/msvc-dev-cmd@v1
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}

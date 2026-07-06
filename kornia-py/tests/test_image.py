@@ -7,7 +7,7 @@ import os
 import numpy as np
 import pytest
 
-from kornia_rs.image import Image
+from kornia_rs.image import Image, ColorSpace
 from kornia_rs.augmentations import (
     ColorJitter, RandomHorizontalFlip, RandomVerticalFlip,
     RandomCrop, RandomRotation, Compose, set_seed,
@@ -1078,3 +1078,28 @@ class TestMultiprocessing:
         assert len(results) == 2
         for r in results:
             assert r.shape == (40, 50, 3)
+
+
+# --- Regression tests for I1, I2, I3 ---
+
+def test_to_float_to_uint8_mode_compat():
+    """I1 regression: to_float().to_uint8() must not corrupt mode / dtype."""
+    arr = np.zeros((4, 4, 3), dtype=np.uint8)
+    img = Image(arr)
+    # to_float should produce an image whose mode is correctly derived, not inherited from u8
+    f = img.to_float()
+    # to_uint8 should round-trip without mode corruption
+    b = f.to_uint8()
+    assert f.numpy().dtype == np.float32
+    assert b.numpy().dtype == np.uint8
+
+
+def test_wrap_vec_preserves_color_space():
+    """I2 regression: geometric transforms via wrap_vec must preserve color_space tag."""
+    arr = np.zeros((8, 8, 3), dtype=np.uint8)
+    img = Image(arr, color_space=ColorSpace.Bgr)
+    assert img.color_space == ColorSpace.Bgr
+    # flip_horizontal uses wrap_vec
+    flipped = img.flip_horizontal()
+    assert flipped.color_space == ColorSpace.Bgr, \
+        f"flip_horizontal reset color_space from Bgr to {flipped.color_space}"

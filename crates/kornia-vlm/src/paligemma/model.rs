@@ -1,6 +1,6 @@
+use crate::paligemma::token_output_stream::TokenOutputStream;
 use crate::paligemma::PaligemmaError;
 use candle_core::{DType, Device, Tensor};
-use candle_examples::token_output_stream::TokenOutputStream;
 use candle_transformers::generation::LogitsProcessor;
 use candle_transformers::models::paligemma::Model;
 use std::io::Write;

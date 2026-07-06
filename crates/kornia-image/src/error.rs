@@ -60,4 +60,62 @@ pub enum ImageError {
     /// Error when interpolation mode is unsupported.
     #[error("Unsupported interpolation mode: {0:?}")]
     UnsupportedInterpolation(crate::image::InterpolationMode),
+
+    /// No direct kernel exists for this color-space pair.
+    #[error("no direct {from:?}->{to:?} color conversion; convert via Rgb")]
+    UnsupportedColorConversion {
+        /// The source color space.
+        from: crate::color_spaces::ColorSpace,
+        /// The target color space.
+        to: crate::color_spaces::ColorSpace,
+    },
+
+    /// A `DynImage` was tagged with a color space that does not match the
+    /// expected space when recovering a typed wrapper.
+    #[error("cannot recover DynImage tagged {got:?} as {expected:?}")]
+    ColorSpaceMismatch {
+        /// The color space the caller expected.
+        expected: crate::color_spaces::ColorSpace,
+        /// The color space the `DynImage` was actually tagged with.
+        got: crate::color_spaces::ColorSpace,
+    },
+
+    /// The operation is not supported on device memory.
+    ///
+    /// Copy the buffer to host first before attempting this operation.
+    #[error("operation not supported on device memory; copy to host first")]
+    UnsupportedDevice,
+
+    /// Source and destination images have different memory residency
+    /// (one host, one device). Operations require both operands on the same
+    /// side; there is no implicit transfer.
+    #[error("source and destination have different residency (host vs device)")]
+    MixedResidency,
+
+    /// A CUDA driver / kernel error occurred while executing a device operation.
+    #[error("CUDA error: {0}")]
+    Cuda(String),
+
+    /// Source and destination device images live on different CUDA devices.
+    /// (Different streams on the same device are supported — the dispatch
+    /// layer orders them with event fences.)
+    #[error(
+        "source and destination device images are on different CUDA devices; \
+         move both to one device"
+    )]
+    DeviceMismatch,
+
+    /// The pixel format (dtype) of the buffer does not match what was expected.
+    #[error("pixel format mismatch: expected {expected:?}, got {got:?}")]
+    DtypeMismatch {
+        /// The pixel format the caller expected.
+        expected: crate::image::PixelFormat,
+        /// The pixel format the buffer was actually tagged with.
+        got: crate::image::PixelFormat,
+    },
+
+    /// A DLPack tensor had an invalid or unsupported shape (e.g. ndim != 3, non-positive dim).
+    #[cfg(feature = "dlpack")]
+    #[error("dlpack shape error: {0}")]
+    DlpackShapeError(String),
 }

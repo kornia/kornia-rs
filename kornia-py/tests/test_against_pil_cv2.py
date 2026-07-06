@@ -21,6 +21,7 @@ cv2 = pytest.importorskip("cv2")
 from PIL import ImageFilter as _PIL_Filter  # noqa: E402
 
 from kornia_rs.image import Image  # noqa: E402
+from kornia_rs import imgproc as _kornia_imgproc  # noqa: E402
 
 # Shared best-of-N bench helper. ``benchmarks/`` is on the pythonpath
 # via ``pyproject.toml [tool.pytest.ini_options]``.
@@ -35,6 +36,15 @@ def arr(rand_u8_1080p):
     """Seeded 1080p RGB from conftest — deterministic across runs so the
     perf-gate envelope doesn't flap on a pathological random draw."""
     return rand_u8_1080p
+
+
+@pytest.fixture(scope="module")
+def arr_f32(arr):
+    """Float32 version of the 1080p RGB array, values in [0, 1].
+
+    Contiguous in memory so cv2 and numpy baselines don't pay an extra copy.
+    """
+    return np.ascontiguousarray(arr.astype(np.float32) / 255.0)
 
 
 @pytest.fixture(scope="module")
@@ -144,6 +154,16 @@ def test_to_grayscale_ties(pil_img, arr, k_img):
           lambda: cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY),
           lambda: k_img.to_grayscale(),
           iters=10, kornia_max_ratio=1.5)
+
+
+def test_to_grayscale_f32_no_regression(arr_f32):
+    # PIL has no float-gray API. Use cv2 in both slots so fastest_other is always cv2.
+    # (numpy matmul can be faster than cv2 on x86+MKL, which would flip the gate.)
+    _race("to_grayscale_f32",
+          lambda: cv2.cvtColor(arr_f32, cv2.COLOR_RGB2GRAY),
+          lambda: cv2.cvtColor(arr_f32, cv2.COLOR_RGB2GRAY),
+          lambda: _kornia_imgproc.gray_from_rgb_f32(arr_f32),
+          kornia_max_ratio=1.5)
 
 
 def test_gaussian_blur_wins(pil_img, arr, k_img):
