@@ -345,7 +345,6 @@ fn try_compile_with_l1(
     Ok(k)
 }
 
-
 // ── Public launchers ──────────────────────────────────────────────────────────
 
 /// Launch the bilinear downscale kernel for a 3-channel f32 image.
@@ -409,7 +408,11 @@ pub fn launch_resize_bilinear_downscale_cuda(
         .arg(&dst_height)
         .arg(&scale_x)
         .arg(&scale_y)
-        .launch_2d(dst_width, dst_height, make_config(dst_width, dst_height, block_dim))
+        .launch_2d(
+            dst_width,
+            dst_height,
+            make_config(dst_width, dst_height, block_dim),
+        )
         .map_err(|e| CudaResizeError::Cuda(e.to_string()))
 }
 
@@ -490,7 +493,11 @@ pub fn launch_resize_bilinear_normalize_cuda(
         .arg(&inv_std0)
         .arg(&inv_std1)
         .arg(&inv_std2)
-        .launch_2d(dst_width, dst_height, make_config(dst_width, dst_height, block_dim))
+        .launch_2d(
+            dst_width,
+            dst_height,
+            make_config(dst_width, dst_height, block_dim),
+        )
         .map_err(|e| CudaResizeError::Cuda(e.to_string()))
 }
 
@@ -542,7 +549,11 @@ pub fn launch_resize_nearest_downscale_cuda(
         .arg(&dst_height)
         .arg(&scale_x)
         .arg(&scale_y)
-        .launch_2d(dst_width, dst_height, make_config(dst_width, dst_height, block_dim))
+        .launch_2d(
+            dst_width,
+            dst_height,
+            make_config(dst_width, dst_height, block_dim),
+        )
         .map_err(|e| CudaResizeError::Cuda(e.to_string()))
 }
 
@@ -613,6 +624,10 @@ pub fn launch_resize_bicubic_cuda(
         .arg(&dst_height)
         .arg(&scale_x)
         .arg(&scale_y)
-        .launch_2d(dst_width, dst_height, make_config(dst_width, dst_height, None))
+        .launch_2d(
+            dst_width,
+            dst_height,
+            make_config(dst_width, dst_height, None),
+        )
         .map_err(|e| CudaResizeError::Cuda(e.to_string()))
 }

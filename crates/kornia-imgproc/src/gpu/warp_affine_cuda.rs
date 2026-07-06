@@ -301,8 +301,9 @@ fn make_tex(
     // records a stream event on drop (after the texture is destroyed) which is
     // the correct ordering.
     let (dev_ptr, _guard) = src.device_ptr(stream);
-    let tex = CudaTexObject::new_pitch2d_border(dev_ptr, src_width as usize * 3, src_height as usize)
-        .map_err(CudaWarpAffineError::Cuda)?;
+    let tex =
+        CudaTexObject::new_pitch2d_border(dev_ptr, src_width as usize * 3, src_height as usize)
+            .map_err(CudaWarpAffineError::Cuda)?;
     let handle = tex.handle();
     Ok((tex, handle))
 }
@@ -370,7 +371,11 @@ pub fn launch_warp_affine_bilinear_cuda(
         .arg(&mi[3])
         .arg(&mi[4])
         .arg(&mi[5])
-        .launch_2d(dst_width, dst_height, make_config(dst_width, dst_height, block_dim))
+        .launch_2d(
+            dst_width,
+            dst_height,
+            make_config(dst_width, dst_height, block_dim),
+        )
         .map_err(|e| CudaWarpAffineError::Cuda(e.to_string()))
 }
 
@@ -424,7 +429,11 @@ pub fn launch_warp_affine_nearest_cuda(
         .arg(&mi[3])
         .arg(&mi[4])
         .arg(&mi[5])
-        .launch_2d(dst_width, dst_height, make_config(dst_width, dst_height, block_dim))
+        .launch_2d(
+            dst_width,
+            dst_height,
+            make_config(dst_width, dst_height, block_dim),
+        )
         .map_err(|e| CudaWarpAffineError::Cuda(e.to_string()))
 }
 
@@ -490,6 +499,10 @@ pub fn launch_warp_affine_bicubic_cuda(
         .arg(&mi[3])
         .arg(&mi[4])
         .arg(&mi[5])
-        .launch_2d(dst_width, dst_height, make_config(dst_width, dst_height, None))
+        .launch_2d(
+            dst_width,
+            dst_height,
+            make_config(dst_width, dst_height, None),
+        )
         .map_err(|e| CudaWarpAffineError::Cuda(e.to_string()))
 }

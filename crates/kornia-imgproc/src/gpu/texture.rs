@@ -10,9 +10,9 @@
 //! in the kernel — the primary source of warp-affine branch divergence.
 
 use cudarc::driver::sys::{
-    CUaddress_mode, CUarray_format, CUfilter_mode, CUresourcetype, CUtexObject,
     CUDA_RESOURCE_DESC_st, CUDA_RESOURCE_DESC_st__bindgen_ty_1,
-    CUDA_RESOURCE_DESC_st__bindgen_ty_1__bindgen_ty_4, CUDA_TEXTURE_DESC_st,
+    CUDA_RESOURCE_DESC_st__bindgen_ty_1__bindgen_ty_4, CUDA_TEXTURE_DESC_st, CUaddress_mode,
+    CUarray_format, CUfilter_mode, CUresourcetype, CUtexObject,
 };
 
 /// RAII guard for a CUDA texture object handle.
