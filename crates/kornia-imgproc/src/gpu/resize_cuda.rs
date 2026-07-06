@@ -36,20 +36,11 @@
 //! (GTX 1650) this enlarges L1 from the default 32 KB to 64 KB, directly
 //! improving hit rates.
 //!
-//! ## CUDA texture objects
-//!
-//! Nearest-neighbor and bilinear resize use a 1-channel pitch-2D texture
-//! object (`CU_TR_ADDRESS_MODE_BORDER`, point filter) built from the source
-//! `CudaSlice`.  Three interleaved RGB channels are encoded by setting
-//! `tex_width = src_w * 3`.  The texture cache (dedicated 2D-spatial L1) has
-//! higher hit rates than the unified L1 for the strided access pattern of
-//! downscale.  Nearest-neighbor in particular benefits most: its single-tap
-//! reads achieve higher cache reuse through the texture unit.
-//!
 //! # Nearest-neighbor
 //!
 //! Reads exactly one source pixel per output pixel (no bilinear reuse), so
-//! the texture path reaches ~80+ % of DRAM peak.  Same 32×8 block applied.
+//! `__ldg` alone reaches ~91 % of DRAM peak.  Same 32×8 block and `float2`
+//! stores applied for consistency.
 //!
 //! # Fused bilinear + normalise
 //!
@@ -80,27 +71,22 @@
 
 use std::sync::{Arc, OnceLock};
 
-use cudarc::driver::{CudaContext, CudaSlice, CudaStream, DevicePtr, LaunchConfig};
+use cudarc::driver::{CudaContext, CudaSlice, CudaStream, LaunchConfig};
 use kornia_tensor::CudaKernel;
 
-use super::texture::CudaTexObject;
-
-// ── CUDA C source: bilinear downscale via texture object ─────────────────────
+// ── CUDA C source: bilinear, 32×8 block, __ldg reads ─────────────────────────
 //
-// Replaces the 12 `__ldg` reads of the original kernel with `tex2D<float>`
-// fetches through the dedicated 2D-spatial texture cache.  The 1-channel
-// pitch-2D texture encodes interleaved RGB by setting width = src_w * 3;
-// channel c of pixel (x, y) is at texel column (x*3 + c).
-//
-// Source coordinates are clamped to [0, src_dim-1] before computing the tap
-// indices, so border mode does not alter the result — it only provides a safe
-// fallback for extreme upscale ratios where x0+1 or y0+1 exceeds the texture
-// boundary (those taps carry zero weight via fx=0 / fy=0 at the edge).
+// For regular downscale, consecutive output pixels in a row sample predictable
+// source locations. The unified L1 cache (`__ldg`) coalesces these reads well
+// and already achieves ~84–88% DRAM bandwidth. Texture objects would route
+// reads through the texture cache but the non-unit stride of the 1-channel
+// pitch-2D trick (width = src_w * 3) hurts cache-line efficiency — benchmarks
+// show a 10% regression vs the __ldg path for this pattern.
 
 static BILINEAR_SRC: &str = r#"
-extern "C" __global__ void resize_bilinear_tex_3c(
-    unsigned long long tex,
-    float* __restrict__ dst,
+extern "C" __global__ void resize_bilinear_downscale_3c(
+    const float* __restrict__ src,
+    float* __restrict__       dst,
     unsigned int src_w,
     unsigned int src_h,
     unsigned int dst_w,
@@ -116,50 +102,38 @@ extern "C" __global__ void resize_bilinear_tex_3c(
     float sx = fmaxf(fminf((dst_x + 0.5f) * scale_x - 0.5f, (float)(src_w - 1u)), 0.0f);
     float sy = fmaxf(fminf((dst_y + 0.5f) * scale_y - 0.5f, (float)(src_h - 1u)), 0.0f);
 
-    float x0f = floorf(sx);
-    float y0f = floorf(sy);
-    float fx   = sx - x0f;
-    float fy   = sy - y0f;
+    unsigned int x0 = (unsigned int)sx;
+    unsigned int y0 = (unsigned int)sy;
+    unsigned int x1 = min(x0 + 1u, src_w - 1u);
+    unsigned int y1 = min(y0 + 1u, src_h - 1u);
+
+    float fx  = sx - (float)x0;
+    float fy  = sy - (float)y0;
     float w00 = (1.0f - fy) * (1.0f - fx);
     float w10 = (1.0f - fy) * fx;
     float w01 = fy * (1.0f - fx);
     float w11 = fy * fx;
 
-    // x1 = x0+1 may equal src_w at the right edge, but fy=0 there so its
-    // weight is 0; border mode returns 0 safely.
-    float tx0 = x0f * 3.0f;
-    float ty0 = y0f;
-    float ty1 = y0f + 1.0f;
+    unsigned int b00 = (y0 * src_w + x0) * 3u;
+    unsigned int b10 = (y0 * src_w + x1) * 3u;
+    unsigned int b01 = (y1 * src_w + x0) * 3u;
+    unsigned int b11 = (y1 * src_w + x1) * 3u;
 
-    cudaTextureObject_t t = (cudaTextureObject_t)tex;
     unsigned int out = (dst_y * dst_w + dst_x) * 3u;
-
-    float r00 = tex2D<float>(t, tx0,       ty0);
-    float r10 = tex2D<float>(t, tx0+3.0f,  ty0);
-    float r01 = tex2D<float>(t, tx0,       ty1);
-    float r11 = tex2D<float>(t, tx0+3.0f,  ty1);
-    dst[out]   = fmaf(w00, r00, fmaf(w10, r10, fmaf(w01, r01, w11 * r11)));
-
-    float g00 = tex2D<float>(t, tx0+1.0f,  ty0);
-    float g10 = tex2D<float>(t, tx0+4.0f,  ty0);
-    float g01 = tex2D<float>(t, tx0+1.0f,  ty1);
-    float g11 = tex2D<float>(t, tx0+4.0f,  ty1);
-    dst[out+1] = fmaf(w00, g00, fmaf(w10, g10, fmaf(w01, g01, w11 * g11)));
-
-    float b00 = tex2D<float>(t, tx0+2.0f,  ty0);
-    float b10 = tex2D<float>(t, tx0+5.0f,  ty0);
-    float b01 = tex2D<float>(t, tx0+2.0f,  ty1);
-    float b11 = tex2D<float>(t, tx0+5.0f,  ty1);
-    dst[out+2] = fmaf(w00, b00, fmaf(w10, b10, fmaf(w01, b01, w11 * b11)));
+    dst[out]     = w00*__ldg(&src[b00])   + w10*__ldg(&src[b10])   + w01*__ldg(&src[b01])   + w11*__ldg(&src[b11]);
+    dst[out + 1] = w00*__ldg(&src[b00+1]) + w10*__ldg(&src[b10+1]) + w01*__ldg(&src[b01+1]) + w11*__ldg(&src[b11+1]);
+    dst[out + 2] = w00*__ldg(&src[b00+2]) + w10*__ldg(&src[b10+2]) + w01*__ldg(&src[b01+2]) + w11*__ldg(&src[b11+2]);
 }
 "#;
 
-// ── CUDA C source: nearest-neighbor downscale via texture object ──────────────
+// ── CUDA C source: nearest-neighbor downscale, __ldg reads ───────────────────
 
 static NEAREST_SRC: &str = r#"
-extern "C" __global__ void resize_nearest_tex_3c(
-    unsigned long long tex,
-    float* __restrict__ dst,
+extern "C" __global__ void resize_nearest_downscale_3c(
+    const float* __restrict__ src,
+    float* __restrict__       dst,
+    unsigned int src_w,
+    unsigned int src_h,
     unsigned int dst_w,
     unsigned int dst_h,
     float scale_x,
@@ -169,17 +143,15 @@ extern "C" __global__ void resize_nearest_tex_3c(
     unsigned int dst_y = blockIdx.y * blockDim.y + threadIdx.y;
     if (dst_x >= dst_w || dst_y >= dst_h) return;
 
-    // Half-pixel center alignment; floorf gives the same result as the
-    // original (unsigned int)() truncation for positive values.
-    float xi = floorf((dst_x + 0.5f) * scale_x);
-    float yi  = floorf((dst_y + 0.5f) * scale_y);
-    float tx  = xi * 3.0f;
+    // Half-pixel center alignment.
+    unsigned int src_xi = min((unsigned int)((dst_x + 0.5f) * scale_x), src_w - 1u);
+    unsigned int src_yi = min((unsigned int)((dst_y + 0.5f) * scale_y), src_h - 1u);
 
-    cudaTextureObject_t t = (cudaTextureObject_t)tex;
+    unsigned int src_base = (src_yi * src_w + src_xi) * 3u;
     unsigned int out = (dst_y * dst_w + dst_x) * 3u;
-    dst[out]   = tex2D<float>(t, tx,       yi);
-    dst[out+1] = tex2D<float>(t, tx+1.0f,  yi);
-    dst[out+2] = tex2D<float>(t, tx+2.0f,  yi);
+    dst[out]     = __ldg(&src[src_base]);
+    dst[out + 1] = __ldg(&src[src_base + 1]);
+    dst[out + 2] = __ldg(&src[src_base + 2]);
 }
 "#;
 
@@ -373,28 +345,19 @@ fn try_compile_with_l1(
     Ok(k)
 }
 
-fn make_tex(
-    src: &CudaSlice<f32>,
-    stream: &Arc<CudaStream>,
-    src_width: u32,
-    src_height: u32,
-) -> Result<(CudaTexObject, u64), CudaResizeError> {
-    let (dev_ptr, _guard) = src.device_ptr(stream);
-    let tex =
-        CudaTexObject::new_pitch2d_border(dev_ptr, src_width as usize * 3, src_height as usize)
-            .map_err(CudaResizeError::Cuda)?;
-    let handle = tex.handle();
-    Ok((tex, handle))
-}
 
 // ── Public launchers ──────────────────────────────────────────────────────────
 
 /// Launch the bilinear downscale kernel for a 3-channel f32 image.
 ///
-/// Source pixels are fetched via a CUDA texture object (1-channel pitch-2D,
-/// border-mode) routed through the dedicated 2D-spatial texture cache.
-/// For 2× downscale at 1080p→540p on GTX 1650, measured at ~70 GB/s
-/// effective bandwidth.
+/// Uses `__ldg` (read-only L1 cache) for source reads and a 32×8 thread block
+/// for write coalescing.  For 2× downscale at 1080p→540p on GTX 1650,
+/// measured at ~70 GB/s effective write bandwidth (84–88% DRAM utilisation).
+///
+/// Texture objects were evaluated but regressed ~10% for downscale: the
+/// `tex2D` instruction latency (~100 cycles vs ~30 for `__ldg`) outweighs any
+/// 2D-cache benefit because the sequential downscale pattern is already
+/// well-served by the unified L1 via `__ldg`.
 ///
 /// # Arguments
 ///
@@ -409,8 +372,7 @@ fn make_tex(
 ///
 /// # Errors
 ///
-/// Returns [`CudaResizeError`] on compile failure, texture-creation error,
-/// launch error, or size mismatch.
+/// Returns [`CudaResizeError`] on compile failure, launch error, or size mismatch.
 #[allow(clippy::too_many_arguments)]
 pub fn launch_resize_bilinear_downscale_cuda(
     ctx: &Arc<CudaContext>,
@@ -432,16 +394,14 @@ pub fn launch_resize_bilinear_downscale_cuda(
     }
 
     let kernel = BILINEAR_KERNEL
-        .get_or_init(|| compile_with_l1(ctx, BILINEAR_SRC, "resize_bilinear_tex_3c"));
-
-    let (_tex, tex_handle) = make_tex(src, stream, src_width, src_height)?;
+        .get_or_init(|| compile_with_l1(ctx, BILINEAR_SRC, "resize_bilinear_downscale_3c"));
 
     let scale_x = src_width as f32 / dst_width as f32;
     let scale_y = src_height as f32 / dst_height as f32;
 
     kernel
         .launch_builder(stream)
-        .arg(&tex_handle)
+        .arg(src)
         .arg(dst)
         .arg(&src_width)
         .arg(&src_height)
@@ -536,9 +496,8 @@ pub fn launch_resize_bilinear_normalize_cuda(
 
 /// Launch the nearest-neighbor downscale kernel for a 3-channel f32 image.
 ///
-/// Source reads are routed through the CUDA 2D-spatial texture cache
-/// (1-channel pitch-2D texture).  For strided downscale access patterns,
-/// the texture cache achieves higher hit rates than the unified L1.
+/// Uses `__ldg` and a 32×8 thread block.  Reaches ~91 % of theoretical DRAM
+/// bandwidth on GTX 1650 (single source read per output pixel).
 ///
 /// # Arguments
 ///
@@ -546,8 +505,7 @@ pub fn launch_resize_bilinear_normalize_cuda(
 ///
 /// # Errors
 ///
-/// Returns [`CudaResizeError`] on compile failure, texture-creation error,
-/// launch error, or size mismatch.
+/// Returns [`CudaResizeError`] on compile failure, launch error, or size mismatch.
 #[allow(clippy::too_many_arguments)]
 pub fn launch_resize_nearest_downscale_cuda(
     ctx: &Arc<CudaContext>,
@@ -569,17 +527,17 @@ pub fn launch_resize_nearest_downscale_cuda(
     }
 
     let kernel = NEAREST_KERNEL
-        .get_or_init(|| compile_with_l1(ctx, NEAREST_SRC, "resize_nearest_tex_3c"));
-
-    let (_tex, tex_handle) = make_tex(src, stream, src_width, src_height)?;
+        .get_or_init(|| compile_with_l1(ctx, NEAREST_SRC, "resize_nearest_downscale_3c"));
 
     let scale_x = src_width as f32 / dst_width as f32;
     let scale_y = src_height as f32 / dst_height as f32;
 
     kernel
         .launch_builder(stream)
-        .arg(&tex_handle)
+        .arg(src)
         .arg(dst)
+        .arg(&src_width)
+        .arg(&src_height)
         .arg(&dst_width)
         .arg(&dst_height)
         .arg(&scale_x)

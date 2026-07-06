@@ -39,6 +39,6 @@ pub mod warp_affine_cuda;
 #[cfg(feature = "gpu-cuda")]
 pub mod color_cuda;
 
-/// CUDA texture object RAII wrapper (used internally by resize and warp-affine kernels).
+/// CUDA texture object RAII wrapper (used internally by warp-affine kernels).
 #[cfg(feature = "gpu-cuda")]
 mod texture;
