@@ -3261,6 +3261,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cuda-imgproc"
+version = "0.1.0"
+dependencies = [
+ "cudarc 0.19.8",
+ "kornia-image",
+ "kornia-io",
+ "kornia-tensor",
+]
+
+[[package]]
 name = "cudaforge"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
