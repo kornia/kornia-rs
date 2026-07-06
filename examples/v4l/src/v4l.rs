@@ -63,9 +63,12 @@ pub fn v4l_demo() -> Result<(), Box<dyn std::error::Error>> {
         buffer_size: 4,
     })?;
 
+    // The driver may clamp the resolution; use the size it actually negotiated.
+    let size = webcam.size();
+
     println!("📹 Starting webcam capture...");
     println!("Requested FPS: {0}", args.fps);
-    println!("Image size: {img_size:?}");
+    println!("Image size: {size:?}");
 
     // Enable auto exposure and auto white balance for best image quality
     if let Err(e) = webcam.set_control(AutoExposure(AutoExposureMode::Priority)) {
@@ -78,23 +81,19 @@ pub fn v4l_demo() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut fps_counter = FpsCounter::new();
 
-    // Pre-allocate RGB image buffer outside the loop
-    let mut rgb_image = Rgb8::from_size_val(img_size, 0)?;
+    // Pre-allocate RGB image buffer outside the loop, sized to the negotiated size.
+    let mut rgb_image = Rgb8::from_size_val(size, 0)?;
 
     while !cancel_token.load(Ordering::SeqCst) {
         let Some(frame) = webcam.grab_frame()? else {
             continue;
         };
 
-        // Convert YUYV to RGB if needed - reuse the pre-allocated buffer
+        // Convert the raw frame to RGB, reusing the pre-allocated buffer.
         let buf = frame.buffer.as_slice();
         match frame.pixel_format {
             PixelFormat::YUYV => {
-                imgproc::color::convert_yuyv_to_rgb_u8(
-                    buf,
-                    &mut rgb_image,
-                    YuvToRgbMode::Bt601Full,
-                )?;
+                imgproc::color::convert_yuyv_to_rgb_u8(buf, &mut rgb_image, YuvToRgbMode::Bt601Full)?;
             }
             PixelFormat::MJPG => {
                 jpeg::decode_image_jpeg_rgb8(buf, &mut rgb_image)?;
@@ -109,7 +108,7 @@ pub fn v4l_demo() -> Result<(), Box<dyn std::error::Error>> {
             "video_capture",
             &rerun::Image::from_elements(
                 rgb_image.as_slice(),
-                img_size.into(),
+                size.into(),
                 rerun::ColorModel::RGB,
             ),
         )?;

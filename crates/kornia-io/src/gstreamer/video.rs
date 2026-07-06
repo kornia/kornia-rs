@@ -177,27 +177,56 @@ impl VideoWriter {
     /// * `img` - The image to write to the video file.
     // TODO: explore supporting write_async
     pub fn write<const C: usize>(&mut self, img: &Image<u8, C>) -> Result<(), StreamCaptureError> {
-        // check if the image channels are correct
-        match self.format {
-            ImageFormat::Mono8 => {
-                if C != 1 {
-                    return Err(StreamCaptureError::InvalidImageFormat(format!(
-                        "Invalid number of channels: expected 1, got {C}"
-                    )));
-                }
-            }
-            ImageFormat::Rgb8 => {
-                if C != 3 {
-                    return Err(StreamCaptureError::InvalidImageFormat(format!(
-                        "Invalid number of channels: expected 3, got {C}"
-                    )));
-                }
+        self.validate_channels::<C>()?;
+
+        // A single copy into a GStreamer-owned buffer is unavoidable here because
+        // `img` is only borrowed. Callers that can yield ownership should use
+        // [`write_owned`](Self::write_owned) to avoid the copy.
+        let buffer = gstreamer::Buffer::from_mut_slice(img.as_slice().to_vec());
+        self.push_frame(buffer)
+    }
+
+    /// Write an image to the video file without copying its pixel data.
+    ///
+    /// Unlike [`write`](Self::write) — which must copy the borrowed image into a
+    /// GStreamer-owned buffer — this takes ownership of `img` and hands its backing
+    /// memory directly to GStreamer, keeping the image alive for the buffer's
+    /// lifetime. Use it on hot paths when the caller can give up the frame.
+    pub fn write_owned<const C: usize>(
+        &mut self,
+        img: Image<u8, C>,
+    ) -> Result<(), StreamCaptureError> {
+        self.validate_channels::<C>()?;
+
+        // Wrap the owned image so GStreamer can borrow its bytes with no copy; the
+        // image is dropped (freeing its memory) when the buffer is released.
+        struct ImageBytes<const C: usize>(Image<u8, C>);
+        impl<const C: usize> AsRef<[u8]> for ImageBytes<C> {
+            fn as_ref(&self) -> &[u8] {
+                self.0.as_slice()
             }
         }
 
-        // TODO: verify is there is a cheaper way to copy the buffer
-        let mut buffer = gstreamer::Buffer::from_mut_slice(img.as_slice().to_vec());
+        let buffer = gstreamer::Buffer::from_slice(ImageBytes(img));
+        self.push_frame(buffer)
+    }
 
+    /// Check that the image's channel count matches the writer's configured format.
+    fn validate_channels<const C: usize>(&self) -> Result<(), StreamCaptureError> {
+        let expected = match self.format {
+            ImageFormat::Mono8 => 1,
+            ImageFormat::Rgb8 => 3,
+        };
+        if C != expected {
+            return Err(StreamCaptureError::InvalidImageFormat(format!(
+                "Invalid number of channels: expected {expected}, got {C}"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Stamp `buffer` with the next PTS/duration and push it into the appsrc.
+    fn push_frame(&mut self, mut buffer: gstreamer::Buffer) -> Result<(), StreamCaptureError> {
         let pts =
             gstreamer::ClockTime::from_nseconds(self.counter * 1_000_000_000 / self.fps as u64);
         let duration = gstreamer::ClockTime::from_nseconds(1_000_000_000 / self.fps as u64);
@@ -227,7 +256,7 @@ impl Drop for VideoWriter {
 }
 
 /// A struct for reading video files
-pub struct VideoReader(StreamCapture);
+pub struct VideoReader(StreamCapture, ImageFormat);
 
 impl VideoReader {
     /// Creates a new `VideoReader`
@@ -255,7 +284,7 @@ impl VideoReader {
 
         let capture = StreamCapture::new(&pipeline)?;
 
-        Ok(Self(capture))
+        Ok(Self(capture, format))
     }
 
     /// Starts the video reader pipeline
@@ -287,15 +316,39 @@ impl VideoReader {
         self.0.get_fps()
     }
 
-    /// Grabs the last captured image frame.
+    /// Grabs the last captured frame as an RGB8 image.
     ///
-    /// # Returns
-    ///
-    /// An Option containing the last captured Image or None if no image has been captured yet.
+    /// Returns [`VideoReaderError::StreamCaptureError`] with
+    /// [`StreamCaptureError::InvalidImageFormat`] if the reader was created with a
+    /// non-RGB [`ImageFormat`] (use [`grab_mono8`](Self::grab_mono8) instead).
     #[inline]
     pub fn grab_rgb8(&mut self) -> Result<Option<Image<u8, 3>>, VideoReaderError> {
+        if !matches!(self.1, ImageFormat::Rgb8) {
+            return Err(StreamCaptureError::InvalidImageFormat(
+                "reader was created with a non-RGB format; use grab_mono8".to_string(),
+            )
+            .into());
+        }
         self.0
             .grab_rgb8()
+            .map_err(VideoReaderError::StreamCaptureError)
+    }
+
+    /// Grabs the last captured frame as a single-channel (mono8) image.
+    ///
+    /// Returns [`VideoReaderError::StreamCaptureError`] with
+    /// [`StreamCaptureError::InvalidImageFormat`] if the reader was created with a
+    /// non-mono [`ImageFormat`] (use [`grab_rgb8`](Self::grab_rgb8) instead).
+    #[inline]
+    pub fn grab_mono8(&mut self) -> Result<Option<Image<u8, 1>>, VideoReaderError> {
+        if !matches!(self.1, ImageFormat::Mono8) {
+            return Err(StreamCaptureError::InvalidImageFormat(
+                "reader was created with a non-mono format; use grab_rgb8".to_string(),
+            )
+            .into());
+        }
+        self.0
+            .grab_mono8()
             .map_err(VideoReaderError::StreamCaptureError)
     }
 

@@ -110,6 +110,18 @@ impl MmapBuffer {
     pub fn into_vec(self) -> Vec<u8> {
         self.as_slice().to_vec()
     }
+
+    /// Returns `true` when this is the only [`MmapBuffer`] referencing the
+    /// underlying mmap region — i.e. no clone handed out to a caller is still
+    /// alive.
+    ///
+    /// [`MmapStream`] uses this as a borrow tracker: a kernel buffer is only
+    /// safe to re-queue (which lets the kernel overwrite it) once no outstanding
+    /// `MmapBuffer` still points at it. This is what keeps the zero-copy capture
+    /// path free of data races.
+    pub(crate) fn is_uniquely_owned(&self) -> bool {
+        Arc::strong_count(&self._mmap_info) == 1
+    }
 }
 
 impl std::ops::Deref for MmapBuffer {
@@ -153,14 +165,21 @@ impl Drop for MmapInfo {
             unsafe {
                 let result = libc::munmap(self.ptr as *mut libc::c_void, self.length);
                 if result == -1 {
-                    eprintln!(
-                        "Error: munmap failed with errno {}",
-                        *libc::__errno_location()
-                    );
+                    log::error!("munmap failed with errno {}", *libc::__errno_location());
                 }
             }
         }
     }
+}
+
+/// Ownership state of a single kernel capture buffer.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum BufferState {
+    /// Handed to the kernel via `VIDIOC_QBUF`; waiting to be filled and dequeued.
+    Queued,
+    /// Held by user space — either freshly mmap'd-but-never-queued, or dequeued
+    /// and possibly still referenced by an outstanding [`MmapBuffer`] clone.
+    Dequeued,
 }
 
 /// Zero-copy mmap stream that returns owned references
@@ -169,9 +188,10 @@ pub struct MmapStream {
     buffers: Vec<MmapBuffer>,
     buf_type: Type,
     buf_meta: Vec<Metadata>,
+    /// Per-buffer ownership state (indexed by buffer index).
+    states: Vec<BufferState>,
     active: bool,
     timeout: Option<i32>,
-    current_index: usize,
 }
 
 impl MmapStream {
@@ -248,15 +268,57 @@ impl MmapStream {
             buf_meta.push(Metadata::default());
         }
 
+        let states = vec![BufferState::Dequeued; actual_count];
+
         Ok(Self {
             handle,
             buffers,
             buf_type,
             buf_meta,
+            states,
             active: false,
             timeout: None,
-            current_index: 0,
         })
+    }
+
+    /// Set the per-frame dequeue timeout in milliseconds.
+    ///
+    /// `None` (the default) blocks indefinitely until a frame is ready. A value
+    /// of `Some(ms)` causes [`next_frame`](Self::next_frame) to return an error
+    /// of kind [`io::ErrorKind::TimedOut`] if no frame arrives within `ms`.
+    pub fn set_timeout(&mut self, timeout_ms: Option<i32>) {
+        self.timeout = timeout_ms;
+    }
+
+    /// Queue all buffers and start streaming without dequeuing a frame.
+    ///
+    /// This primes the capture pipeline so the first [`next_frame`](Self::next_frame)
+    /// returns a genuine frame instead of discarding one.
+    pub fn start_streaming(&mut self) -> io::Result<()> {
+        if self.active {
+            return Ok(());
+        }
+        for i in 0..self.buffers.len() {
+            self.queue_buffer(i)?;
+            self.states[i] = BufferState::Queued;
+        }
+        self.start()
+    }
+
+    /// Hand any buffers the caller has finished with back to the kernel.
+    ///
+    /// A dequeued buffer is only re-queued once no [`MmapBuffer`] clone of it is
+    /// still alive ([`MmapBuffer::is_uniquely_owned`]). Re-queueing a buffer lets
+    /// the kernel overwrite it, so doing that while the caller still holds a frame
+    /// would be a data race — this check is what makes the zero-copy path sound.
+    fn reclaim_buffers(&mut self) -> io::Result<()> {
+        for i in 0..self.buffers.len() {
+            if self.states[i] == BufferState::Dequeued && self.buffers[i].is_uniquely_owned() {
+                self.queue_buffer(i)?;
+                self.states[i] = BufferState::Queued;
+            }
+        }
+        Ok(())
     }
 
     fn queue_buffer(&mut self, index: usize) -> io::Result<()> {
@@ -317,26 +379,41 @@ impl MmapStream {
     /// The buffer uses `Arc<MmapInfo>` to keep the mmap'd memory alive, enabling
     /// zero-copy access. Only the actual used bytes (from metadata.bytesused) are
     /// exposed if available, while the full mmap remains alive.
+    ///
+    /// # Soundness
+    ///
+    /// A dequeued buffer is only returned to the kernel once every [`MmapBuffer`]
+    /// clone handed to the caller has been dropped, so the kernel never overwrites
+    /// memory that user space is still reading. If the caller pins *every* buffer
+    /// (holds more live frames than `buffer_size`), this returns an error of kind
+    /// [`io::ErrorKind::WouldBlock`] rather than risking a data race — drop older
+    /// frames or construct the stream with a larger buffer count.
     pub fn next_frame(&mut self) -> io::Result<(MmapBuffer, Metadata)> {
         if !self.active {
-            // Queue all buffers and start streaming
-            for i in 0..self.buffers.len() {
-                self.queue_buffer(i)?;
-            }
-            self.start()?;
+            self.start_streaming()?;
         } else {
-            // Re-queue the current buffer
-            self.queue_buffer(self.current_index)?;
+            // Reclaim buffers the caller has finished with before dequeuing.
+            self.reclaim_buffers()?;
         }
 
-        // Dequeue the next available buffer
-        self.current_index = self.dequeue_buffer()?;
+        // The kernel needs at least one queued buffer to fill; if the caller is
+        // holding all of them we cannot make progress without a data race.
+        if !self.states.contains(&BufferState::Queued) {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "all V4L2 buffers are still held by the caller; drop old frames or increase buffer_size",
+            ));
+        }
 
-        let buffer = &self.buffers[self.current_index];
-        let metadata = self.buf_meta[self.current_index];
+        // Dequeue the next available buffer.
+        let index = self.dequeue_buffer()?;
+        self.states[index] = BufferState::Dequeued;
 
-        // Create a zero-copy buffer that only covers the used bytes
-        // The Arc<MmapInfo> keeps the full mmap alive
+        let buffer = &self.buffers[index];
+        let metadata = self.buf_meta[index];
+
+        // Create a zero-copy buffer that only covers the used bytes.
+        // The Arc<MmapInfo> keeps the full mmap alive.
         let used_bytes = if metadata.bytesused > 0 {
             metadata.bytesused as usize
         } else {
@@ -397,7 +474,7 @@ impl Drop for MmapStream {
                     return;
                 }
             }
-            eprintln!("Error stopping stream: {e}");
+            log::error!("Error stopping stream: {e}");
         }
 
         // Release buffers
@@ -638,5 +715,52 @@ mod tests {
 
         // All buffers should share the same mmap_info
         assert_eq!(Arc::strong_count(&mmap_info), 5); // 1 original + 4 buffers
+    }
+
+    /// The re-queue gate: a pool buffer must report `is_uniquely_owned() == true`
+    /// only while no clone handed to a caller is still alive. This is exactly the
+    /// invariant `MmapStream::reclaim_buffers` relies on to avoid handing a buffer
+    /// back to the kernel (which would let it overwrite memory the caller reads).
+    #[test]
+    fn test_is_uniquely_owned_tracks_outstanding_clones() {
+        let test_data = b"frame bytes";
+        let mmap_info = Arc::new(MmapInfo {
+            ptr: std::ptr::null_mut(),
+            length: test_data.len(),
+            offset: 0,
+        });
+
+        // The pool's copy of the buffer. Drop the extra `mmap_info` handle so the
+        // pool buffer is the sole owner, mirroring `MmapStream::with_buffers`.
+        let pool_buffer =
+            unsafe { MmapBuffer::new(test_data.as_ptr(), test_data.len(), mmap_info.clone()) };
+        drop(mmap_info);
+        assert!(
+            pool_buffer.is_uniquely_owned(),
+            "no outstanding frame yet → safe to re-queue"
+        );
+
+        // Hand a frame to the "caller" exactly as `next_frame` does.
+        let frame = pool_buffer.with_length(test_data.len());
+        assert!(
+            !pool_buffer.is_uniquely_owned(),
+            "caller still holds the frame → must NOT re-queue"
+        );
+
+        // A further clone (e.g. moved to another thread) keeps it pinned.
+        let frame_clone = frame.clone();
+        assert!(!pool_buffer.is_uniquely_owned());
+
+        drop(frame);
+        assert!(
+            !pool_buffer.is_uniquely_owned(),
+            "one clone still alive → still pinned"
+        );
+
+        drop(frame_clone);
+        assert!(
+            pool_buffer.is_uniquely_owned(),
+            "all caller frames dropped → safe to re-queue again"
+        );
     }
 }

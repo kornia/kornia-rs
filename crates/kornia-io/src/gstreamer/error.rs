@@ -86,6 +86,10 @@ pub enum StreamCaptureError {
     /// An error occurred when joining a thread.
     #[error("Failed to join thread")]
     JoinThreadError,
+
+    /// The GStreamer pipeline reported a fatal error on its bus.
+    #[error("Pipeline error: {0}")]
+    PipelineError(String),
 }
 
 /// Error type for video reader

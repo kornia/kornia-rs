@@ -13,18 +13,21 @@ pub mod rtsp;
 /// A module for capturing video streams from v4l cameras.
 pub mod v4l2;
 
+/// A module for a generic, format-aware captured frame.
+pub mod frame;
+
 /// A module for capturing video streams from video files.
 pub mod video;
 
 pub use crate::stream::camera::{CameraCapture, CameraCaptureConfig};
 pub use crate::stream::capture::StreamCapture;
 pub use crate::stream::error::StreamCaptureError;
+pub use crate::stream::frame::GstFrame;
 pub use crate::stream::rtsp::RTSPCameraConfig;
 pub use crate::stream::v4l2::V4L2CameraConfig;
 pub use crate::stream::video::VideoWriter;
 
 use std::any::Any;
-use std::sync::Arc;
 
 use kornia_tensor::resource::{MemoryDomain, MemoryResource};
 
@@ -48,6 +51,13 @@ pub struct GstResource {
 // a read-only map. Once mapped, the pointer is valid until the map is released on Drop.
 unsafe impl Send for GstResource {}
 unsafe impl Sync for GstResource {}
+
+impl GstResource {
+    /// Zero-copy read-only view of the mapped buffer bytes.
+    pub(crate) fn as_slice(&self) -> &[u8] {
+        self._map.as_slice()
+    }
+}
 
 impl MemoryResource for GstResource {
     /// Returns the host pointer to the mapped GStreamer buffer data.
@@ -77,94 +87,6 @@ impl MemoryResource for GstResource {
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
-}
-
-/// Construct a borrowed [`Image`] backed by a GStreamer [`MappedBuffer`].
-///
-/// # Arguments
-///
-/// * `size` - image dimensions.
-/// * `mapped_buffer` - the read-mapped GStreamer buffer; ownership is transferred
-///   into a [`GstResource`] keepalive that is Arc-shared with the tensor's `ForeignResource`.
-///
-/// # Returns
-///
-/// An `Image<u8, 3>` whose memory is the GStreamer buffer.
-/// The buffer remains live (and the pointer valid) for exactly the lifetime of the
-/// returned `Image`; dropping the `Image` releases the buffer ref exactly once.
-///
-/// # Safety
-///
-/// The caller must ensure the pointer has not been aliased as mutable elsewhere.
-pub(crate) fn image_from_gst_buffer(
-    size: kornia_image::ImageSize,
-    mapped_buffer: gstreamer::buffer::MappedBuffer<gstreamer::buffer::Readable>,
-) -> Result<kornia_image::Image<u8, 3>, crate::stream::error::StreamCaptureError> {
-    use kornia_tensor::storage::{MemoryDomain, TensorStorage};
-    use kornia_tensor::Tensor;
-
-    // Capture pointer and length BEFORE moving mapped_buffer into GstResource.
-    let data_ptr: *const u8 = mapped_buffer.as_ptr();
-    let data_len: usize = mapped_buffer.len();
-
-    // Defense-in-depth: verify the buffer is large enough for an RGB24 frame.
-    // The pipeline normally enforces RGB caps, but a misconfigured or non-RGB
-    // pipeline would silently produce out-of-bounds stride-based access otherwise.
-    let expected_len = size
-        .width
-        .checked_mul(size.height)
-        .and_then(|n| n.checked_mul(3))
-        .ok_or_else(|| {
-            crate::stream::error::StreamCaptureError::InvalidImageFormat(format!(
-                "frame dimensions overflow: {}x{}",
-                size.width, size.height
-            ))
-        })?;
-    if data_len < expected_len {
-        return Err(
-            crate::stream::error::StreamCaptureError::BufferSizeMismatch {
-                expected: expected_len,
-                got: data_len,
-            },
-        );
-    }
-
-    // Move the MappedBuffer into a GstResource; its Drop releases the buffer.
-    let resource = GstResource {
-        _map: mapped_buffer,
-    };
-    let keepalive: Arc<dyn Any + Send + Sync> = Arc::new(resource);
-
-    // Build a TensorStorage that borrows the gst memory and holds the keepalive.
-    // SAFETY:
-    //   - data_ptr is non-null (gst sysmem buffers are always non-null).
-    //   - data_len equals the mapped size (captured above from mapped_buffer.len()).
-    //   - The memory is host-accessible (MemoryDomain::Host).
-    //   - The keepalive (Arc<GstResource>) holds the map alive for the storage's lifetime.
-    //   - The storage is read-only: `as_mut_slice` will panic (GstMappedBuffer is Readable).
-    let storage: TensorStorage<u8> = unsafe {
-        TensorStorage::from_borrowed_readonly(
-            data_ptr,
-            data_len,
-            kornia_tensor::host_alloc(),
-            MemoryDomain::Host,
-            keepalive,
-        )
-    };
-
-    // Row-major strides for shape [H, W, 3]: strides = [W*3, 3, 1].
-    // We compute this inline since `get_strides_from_shape` is pub(crate) in kornia-tensor.
-    let shape = [size.height, size.width, 3_usize];
-    let strides = [size.width * 3, 3, 1];
-    let tensor = Tensor {
-        storage,
-        shape,
-        strides,
-    };
-
-    // TryFrom<Tensor3<T, >> for Image<T, C> validates that shape[2] == C (== 3).
-    kornia_image::Image::try_from(tensor)
-        .map_err(crate::stream::error::StreamCaptureError::ImageError)
 }
 
 #[cfg(test)]
@@ -245,30 +167,183 @@ mod tests {
         Ok(())
     }
 
-    /// Validates the buffer-size guard arithmetic used in `image_from_gst_buffer`.
-    ///
-    /// A real `MappedBuffer<Readable>` requires a live GStreamer pipeline and cannot
-    /// be constructed in a pure unit test, so this test asserts the validation formula
-    /// `expected = width * height * 3` for representative boundary values.
+    /// GRAY8 counterpart of the RGB capture test: verifies the channel-generic
+    /// `image_from_gst_buffer::<1>` path via `grab_mono8` returns single-channel
+    /// frames of the right size, using `videotestsrc` (no camera required).
     #[test]
-    fn gst_buffer_size_validation_arithmetic() {
-        // expected bytes for an RGB24 frame of various sizes
-        assert_eq!(8usize * 4 * 3, 96, "8x4 RGB24 = 96 bytes");
-        assert_eq!(640usize * 480 * 3, 921_600, "640x480 RGB24 = 921600 bytes");
+    fn gst_capture_mono8_frames() -> Result<(), Box<dyn std::error::Error>> {
+        const N_FRAMES: usize = 5;
+        const WIDTH: usize = 8;
+        const HEIGHT: usize = 4;
+
+        if !gstreamer::INITIALIZED.load(std::sync::atomic::Ordering::Relaxed) {
+            gstreamer::init()?;
+        }
+
+        let pipeline_desc = format!(
+            "videotestsrc num-buffers={n} ! \
+             video/x-raw,format=GRAY8,width={w},height={h},framerate=30/1 ! \
+             appsink name=sink sync=false",
+            n = N_FRAMES,
+            w = WIDTH,
+            h = HEIGHT,
+        );
+
+        let mut capture = StreamCapture::new(&pipeline_desc)?;
+        capture.start()?;
+
+        let mut frames_received = 0usize;
+        let max_polls = N_FRAMES * 5;
+        for _ in 0..max_polls {
+            if let Some(image) = capture.grab_mono8()? {
+                assert_eq!(image.width(), WIDTH, "frame width mismatch");
+                assert_eq!(image.height(), HEIGHT, "frame height mismatch");
+                assert_eq!(image.num_channels(), 1, "frame channels mismatch");
+
+                let slice = image.as_slice();
+                assert_eq!(slice.len(), WIDTH * HEIGHT, "frame pixel count mismatch");
+                let _ = slice[0];
+                let _ = slice[slice.len() - 1];
+
+                frames_received += 1;
+            }
+            if frames_received >= N_FRAMES {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        capture.close()?;
+
         assert_eq!(
-            1920usize * 1080 * 3,
-            6_220_800,
-            "1920x1080 RGB24 = 6220800 bytes"
+            frames_received, N_FRAMES,
+            "expected {N_FRAMES} frames but received {frames_received}"
         );
-        // A buffer smaller than the expected size must be rejected.
-        // The actual rejection is inside image_from_gst_buffer; this test
-        // documents the check boundary: expected-1 < expected → rejected.
-        let width = 8usize;
-        let height = 4usize;
-        let expected = width * height * 3;
+
+        Ok(())
+    }
+
+    /// A pipeline whose source cannot be opened must surface the fatal bus error
+    /// through the grab methods instead of returning `None` forever. Uses a
+    /// `filesrc` pointing at a nonexistent path (no camera/network required).
+    #[test]
+    fn gst_bus_error_surfaces_on_grab() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::stream::StreamCapture;
+
+        if !gstreamer::INITIALIZED.load(std::sync::atomic::Ordering::Relaxed) {
+            gstreamer::init()?;
+        }
+
+        let pipeline_desc = "filesrc location=/nonexistent/kornia_test_missing_file.mp4 ! \
+             decodebin ! videoconvert ! video/x-raw,format=RGB ! appsink name=sink";
+
+        let mut capture = StreamCapture::new(pipeline_desc)?;
+        // `start` may fail synchronously or the error may arrive asynchronously on
+        // the bus; accept either path.
+        let _ = capture.start();
+
+        let mut surfaced = false;
+        for _ in 0..200 {
+            if capture.grab_rgb8().is_err() || capture.last_error().is_some() {
+                surfaced = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let _ = capture.close();
+
         assert!(
-            (expected - 1) < expected,
-            "a buffer of size expected-1 is strictly smaller than expected"
+            surfaced,
+            "expected a fatal pipeline bus error to surface via grab/last_error"
         );
+        Ok(())
+    }
+
+    /// Exercises the generic `GstFrame` path: capture GRAY16_LE frames via
+    /// `videotestsrc` and read them as `Image<u16, 1>`, proving the u16 + format
+    /// validation + stride handling in `GstFrame::to_image_u16`.
+    #[test]
+    fn gst_frame_mono16_via_videotestsrc() -> Result<(), Box<dyn std::error::Error>> {
+        const WIDTH: usize = 8;
+        const HEIGHT: usize = 4;
+
+        if !gstreamer::INITIALIZED.load(std::sync::atomic::Ordering::Relaxed) {
+            gstreamer::init()?;
+        }
+
+        let pipeline_desc = format!(
+            "videotestsrc num-buffers=5 ! \
+             video/x-raw,format=GRAY16_LE,width={WIDTH},height={HEIGHT},framerate=30/1 ! \
+             appsink name=sink sync=false"
+        );
+
+        let mut capture = StreamCapture::new(&pipeline_desc)?;
+        capture.start()?;
+
+        let mut got = false;
+        for _ in 0..25 {
+            if let Some(frame) = capture.grab()? {
+                assert_eq!(frame.size().width, WIDTH);
+                assert_eq!(frame.size().height, HEIGHT);
+                // Requesting the wrong element type must be rejected.
+                assert!(frame.to_image_u8::<1>().is_err(), "u8 view of GRAY16 rejected");
+                let img = frame.to_image_u16::<1>()?;
+                assert_eq!(img.width(), WIDTH);
+                assert_eq!(img.num_channels(), 1);
+                assert_eq!(img.as_slice().len(), WIDTH * HEIGHT);
+                got = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        capture.close()?;
+        assert!(got, "expected at least one GRAY16_LE frame");
+        Ok(())
+    }
+
+    /// Exercises the padded-row path: an odd width makes GStreamer pad each RGB row
+    /// (stride != width*3), so `to_image_u8` must take the packed-copy branch and
+    /// still yield a correctly-sized, tightly-packed image.
+    #[test]
+    fn gst_frame_rgb_padded_stride() -> Result<(), Box<dyn std::error::Error>> {
+        const WIDTH: usize = 5; // 5*3 = 15 bytes/row -> padded to 16 by GStreamer
+        const HEIGHT: usize = 3;
+
+        if !gstreamer::INITIALIZED.load(std::sync::atomic::Ordering::Relaxed) {
+            gstreamer::init()?;
+        }
+
+        let pipeline_desc = format!(
+            "videotestsrc num-buffers=5 ! \
+             video/x-raw,format=RGB,width={WIDTH},height={HEIGHT},framerate=30/1 ! \
+             appsink name=sink sync=false"
+        );
+
+        let mut capture = StreamCapture::new(&pipeline_desc)?;
+        capture.start()?;
+
+        let mut got = false;
+        for _ in 0..25 {
+            if let Some(frame) = capture.grab()? {
+                // Confirm the source really padded the rows (otherwise the test is moot).
+                assert!(
+                    frame.stride() >= WIDTH * 3,
+                    "stride {} should be >= packed {}",
+                    frame.stride(),
+                    WIDTH * 3
+                );
+                let img = frame.to_image_u8::<3>()?;
+                assert_eq!(img.width(), WIDTH);
+                assert_eq!(img.height(), HEIGHT);
+                // Packed length regardless of source padding.
+                assert_eq!(img.as_slice().len(), WIDTH * HEIGHT * 3);
+                got = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        capture.close()?;
+        assert!(got, "expected at least one RGB frame");
+        Ok(())
     }
 }

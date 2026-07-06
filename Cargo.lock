@@ -8191,6 +8191,7 @@ dependencies = [
  "criterion 0.8.2",
  "gstreamer",
  "gstreamer-app",
+ "gstreamer-video",
  "image-webp",
  "jpeg-encoder",
  "kornia-image",

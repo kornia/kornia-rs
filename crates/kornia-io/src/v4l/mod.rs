@@ -14,130 +14,7 @@ use v4l::{
     buffer::Type, control::Value, video::capture::Parameters, video::Capture, Device, Timestamp,
 };
 
-use std::any::Any;
-use std::sync::Arc;
-
-use kornia_tensor::resource::{MemoryDomain, MemoryResource};
-
-/// A proper [`MemoryResource`] for a V4L2 mmap'd frame buffer.
-///
-/// Wraps a [`MmapBuffer`] which internally holds an `Arc<MmapInfo>`. When this
-/// resource is dropped the Arc's reference count decrements; when it reaches zero
-/// `MmapInfo::Drop` calls `munmap` — exactly once.
-///
-/// Zero-copy: the pointer exposed through `as_ptr` is the kernel mmap address;
-/// no data is copied into or out of kornia-managed heap memory.
-pub struct V4lResource {
-    /// The mmap'd buffer; Drop decrements the Arc<MmapInfo> reference count.
-    buffer: MmapBuffer,
-}
-
-// SAFETY: V4L2 mmap memory is page-mapped by the kernel and thread-safe for
-// concurrent reads. MmapBuffer is Send + Sync (verified by its own unsafe impls).
-unsafe impl Send for V4lResource {}
-unsafe impl Sync for V4lResource {}
-
-impl MemoryResource for V4lResource {
-    /// Returns the host pointer to the mmap'd frame data.
-    ///
-    /// `MmapBuffer` exposes a `*const u8` via `as_slice`; we cast to `*mut u8`
-    /// as the `MemoryResource` contract requires. Callers must not write through
-    /// this pointer — V4L2 capture buffers are logically read-only.
-    fn as_ptr(&self) -> *mut u8 {
-        // NonNull<u8> stored inside MmapBuffer — extract via as_slice then cast.
-        self.buffer.as_slice().as_ptr() as *mut u8
-    }
-
-    /// Length of the mmap'd region in bytes (the "used bytes" of the frame).
-    fn len_bytes(&self) -> usize {
-        self.buffer.len()
-    }
-
-    /// V4L2 mmap frames live in host-accessible memory.
-    fn domain(&self) -> MemoryDomain {
-        MemoryDomain::Host
-    }
-
-    /// Downcast hook.
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    /// Mutable downcast hook.
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
-    }
-}
-
-/// Construct a borrowed [`Image`] backed by a V4L2 mmap'd frame buffer.
-// image_from_v4l_buffer is exercised by tests and available for caller use; the
-// compiler sees it as dead code when compiled without tests because grab_frame still
-// returns a raw EncodedFrame.  Allow dead_code rather than making it pub.
-#[allow(dead_code)]
-///
-/// # Arguments
-///
-/// * `size`   - image dimensions (`{ width, height }`).
-/// * `buffer` - the zero-copy `MmapBuffer` returned by [`MmapStream::next_frame`];
-///   ownership is transferred into a [`V4lResource`] keepalive that is
-///   `Arc`-shared with the tensor's `ForeignResource`.
-///
-/// # Returns
-///
-/// An `Image<u8, 3>` whose memory is the V4L2 mmap region.
-/// The kernel buffer remains live for exactly the lifetime of the returned `Image`;
-/// dropping the `Image` releases the mmap region exactly once (via `Arc<MmapInfo>`).
-///
-/// # Safety
-///
-/// The caller must ensure `buffer` is not aliased as mutable elsewhere while the
-/// returned `Image` is alive. V4L2 capture buffers are single-owner (the stream
-/// dequeues them and re-queues only after the caller is done), so this is satisfied
-/// by normal capture usage.
-pub(crate) fn image_from_v4l_buffer(
-    size: kornia_image::ImageSize,
-    buffer: MmapBuffer,
-) -> Result<kornia_image::Image<u8, 3>, kornia_image::ImageError> {
-    use kornia_tensor::storage::TensorStorage;
-    use kornia_tensor::Tensor;
-
-    // Capture pointer and length BEFORE moving buffer into V4lResource.
-    let data_ptr: *const u8 = buffer.as_slice().as_ptr();
-    let data_len: usize = buffer.len();
-
-    // Move the MmapBuffer into a V4lResource; its implicit Drop releases the mmap.
-    let resource = V4lResource { buffer };
-    let keepalive: Arc<dyn Any + Send + Sync> = Arc::new(resource);
-
-    // Build a TensorStorage that borrows the mmap memory and holds the keepalive.
-    // SAFETY:
-    //   - data_ptr is non-null (kernel mmap always returns a valid page-aligned address).
-    //   - data_len equals the "used bytes" of the frame (captured above).
-    //   - The memory is host-accessible (MemoryDomain::Host).
-    //   - The keepalive (Arc<V4lResource>) holds the MmapBuffer (and Arc<MmapInfo>) alive.
-    //   - The storage is read-only: `as_mut_slice` will panic (v4l mmap is read-only mapped memory).
-    let storage: TensorStorage<u8> = unsafe {
-        TensorStorage::from_borrowed_readonly(
-            data_ptr,
-            data_len,
-            kornia_tensor::host_alloc(),
-            MemoryDomain::Host,
-            keepalive,
-        )
-    };
-
-    // Row-major strides for shape [H, W, 3]: strides = [W*3, 3, 1].
-    let shape = [size.height, size.width, 3_usize];
-    let strides = [size.width * 3, 3, 1];
-    let tensor = Tensor {
-        storage,
-        shape,
-        strides,
-    };
-
-    // TryFrom<Tensor3<T, >> for Image<T, C> validates that shape[2] == C (== 3).
-    kornia_image::Image::try_from(tensor)
-}
+use std::io;
 
 /// Error types for the v4l2 module.
 #[derive(Debug, thiserror::Error)]
@@ -146,9 +23,14 @@ pub enum V4L2Error {
     #[error(transparent)]
     ImageError(#[from] kornia_image::ImageError),
 
-    /// Failed to set parameters
+    /// Failed to set parameters or read from the device
     #[error(transparent)]
     IoError(#[from] std::io::Error),
+
+    /// Every capture buffer is still held by the caller, so no buffer can be
+    /// handed back to the kernel. Drop older frames or increase `buffer_size`.
+    #[error("all V4L2 capture buffers are still in use; drop old frames or increase buffer_size")]
+    BuffersExhausted,
 }
 
 /// Configuration for V4L video capture.
@@ -219,13 +101,27 @@ impl V4lVideoCapture {
 
         device.set_format(&format)?;
 
-        // Verify the format was actually set (camera might not support it)
+        // Read back what the driver actually negotiated. Cameras may fall back to
+        // a different pixel format and/or clamp the resolution to one they support.
         let actual_format = device.format()?;
         if actual_format.fourcc != format.fourcc {
-            eprintln!(
-                "Warning: Requested format {} not supported, using {}",
+            log::warn!(
+                "requested format {} not supported, using {}",
                 config.format,
                 PixelFormat::from_fourcc(actual_format.fourcc)
+            );
+        }
+        let actual_size = ImageSize {
+            width: actual_format.width as usize,
+            height: actual_format.height as usize,
+        };
+        if actual_size.width != config.size.width || actual_size.height != config.size.height {
+            log::warn!(
+                "requested size {}x{} not supported, using {}x{}",
+                config.size.width,
+                config.size.height,
+                actual_size.width,
+                actual_size.height
             );
         }
 
@@ -233,16 +129,17 @@ impl V4lVideoCapture {
         let params = Parameters::with_fps(config.fps);
         device.set_params(&params)?;
 
-        // Create the stream
+        // Create the stream and prime it (queue buffers + STREAMON) without
+        // discarding a frame.
         let mut stream =
             stream::MmapStream::with_buffers(&device, Type::VideoCapture, config.buffer_size)?;
-        stream.next_frame()?;
+        stream.start_streaming()?;
 
         Ok(Self {
             stream,
             pixel_format: PixelFormat::from_fourcc(actual_format.fourcc),
             device,
-            size: config.size,
+            size: actual_size,
         })
     }
 
@@ -250,6 +147,25 @@ impl V4lVideoCapture {
     #[inline]
     pub fn pixel_format(&self) -> PixelFormat {
         self.pixel_format
+    }
+
+    /// Get the frame size the driver actually negotiated.
+    ///
+    /// This may differ from the size requested in [`V4LCameraConfig`] if the
+    /// camera clamped the resolution; allocate decode buffers from this value.
+    #[inline]
+    pub fn size(&self) -> ImageSize {
+        self.size
+    }
+
+    /// Set the per-frame dequeue timeout in milliseconds.
+    ///
+    /// `None` (the default) blocks until a frame is ready. `Some(ms)` makes
+    /// [`grab_frame`](Self::grab_frame) return `Ok(None)` if no frame arrives
+    /// within `ms` milliseconds.
+    #[inline]
+    pub fn set_timeout(&mut self, timeout_ms: Option<u32>) {
+        self.stream.set_timeout(timeout_ms.map(|ms| ms as i32));
     }
 
     /// Set a camera control
@@ -265,10 +181,23 @@ impl V4lVideoCapture {
             .map_err(V4L2Error::IoError)
     }
 
-    /// Grab a frame from the camera
+    /// Grab a raw, zero-copy frame from the camera.
+    ///
+    /// The returned [`EncodedFrame`] borrows a kernel mmap buffer; it stays valid
+    /// (and the buffer is not recycled) until it and all its clones are dropped.
+    ///
+    /// Returns `Ok(None)` when a configured timeout elapsed with no frame. Errors
+    /// are surfaced rather than swallowed: a device error propagates, and
+    /// [`V4L2Error::BuffersExhausted`] means every buffer is still held by the
+    /// caller (drop older frames or raise `buffer_size`).
     pub fn grab_frame(&mut self) -> Result<Option<EncodedFrame>, V4L2Error> {
-        let Ok((buffer, metadata)) = self.stream.next_frame() else {
-            return Ok(None);
+        let (buffer, metadata) = match self.stream.next_frame() {
+            Ok(frame) => frame,
+            Err(e) if e.kind() == io::ErrorKind::TimedOut => return Ok(None),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                return Err(V4L2Error::BuffersExhausted)
+            }
+            Err(e) => return Err(V4L2Error::IoError(e)),
         };
 
         let frame = EncodedFrame {
@@ -280,201 +209,5 @@ impl V4lVideoCapture {
         };
 
         Ok(Some(frame))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::v4l::stream::MmapInfo;
-
-    /// Unit test: build a `V4lResource` over an anonymous mmap region, read through
-    /// an `Image` backed by it, then drop — verifying that `munmap` fires exactly
-    /// once and the drop completes without fault.
-    ///
-    /// Uses `libc::mmap(MAP_ANONYMOUS | MAP_PRIVATE)` so no real camera is required.
-    ///
-    /// The "exactly once" guarantee is structural: `V4lResource` holds a `MmapBuffer`
-    /// which holds an `Arc<MmapInfo>`.  Moving the buffer into the resource transfers
-    /// the sole remaining `Arc` reference; when `V4lResource` drops, the `Arc` hits
-    /// zero and `MmapInfo::Drop` calls `munmap` — once.  A second `munmap` on the
-    /// same address would return `EINVAL` (Linux) or fault, which `MmapInfo::Drop`
-    /// already prints as an error; the drop-counter below verifies the count.
-    #[test]
-    fn v4l_resource_anonymous_mmap_drop_once() {
-        // We verify "exactly once" via Arc<MmapInfo> reference counting: after image
-        // drop, the Weak reference must not upgrade (Arc gone → munmap fired).
-        let page_size = 4096_usize;
-        let total_bytes = page_size; // one page for the test
-
-        // mmap an anonymous, private page — no file descriptor required.
-        let raw_ptr = unsafe {
-            libc::mmap(
-                std::ptr::null_mut(),
-                total_bytes,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
-                -1,
-                0,
-            )
-        };
-        assert_ne!(
-            raw_ptr,
-            libc::MAP_FAILED,
-            "anonymous mmap failed: {}",
-            std::io::Error::last_os_error()
-        );
-
-        // Write a known pattern so we can verify read-through.
-        unsafe {
-            let bytes = std::slice::from_raw_parts_mut(raw_ptr as *mut u8, total_bytes);
-            for (i, b) in bytes.iter_mut().enumerate() {
-                *b = (i % 251) as u8; // 251 is prime — avoids wrap-around repetition
-            }
-        }
-
-        // Wrap in Arc<MmapInfo> exactly as MmapStream does.
-        let mmap_info = Arc::new(MmapInfo {
-            ptr: raw_ptr as *mut u8,
-            length: total_bytes,
-            offset: 0,
-        });
-
-        // Keep a weak-count handle to observe the Arc going to zero.
-        let arc_weak = Arc::downgrade(&mmap_info);
-
-        // Build a MmapBuffer covering exactly H*W*3 bytes (12×4×3 = 144 ≤ 4096).
-        const W: usize = 12;
-        const H: usize = 4;
-        const FRAME_BYTES: usize = W * H * 3;
-        assert!(FRAME_BYTES <= total_bytes, "frame fits in one page");
-
-        let buffer =
-            unsafe { MmapBuffer::new(raw_ptr as *const u8, FRAME_BYTES, mmap_info.clone()) };
-
-        // Drop the Arc we kept for observation — now only buffer (and arc_weak) hold it.
-        drop(mmap_info);
-        // Arc strong count == 1 (buffer's _mmap_info); weak count == 1 (arc_weak).
-        assert!(
-            arc_weak.upgrade().is_some(),
-            "MmapInfo still alive via buffer"
-        );
-
-        // Build an Image via image_from_v4l_buffer — this moves `buffer` into V4lResource
-        // and wraps it in Arc<dyn Any>; the V4lResource is then the sole holder of buffer
-        // which is the sole holder of Arc<MmapInfo>.
-        let size = ImageSize {
-            width: W,
-            height: H,
-        };
-        let image = image_from_v4l_buffer(size, buffer)
-            .expect("image_from_v4l_buffer must succeed for a valid mmap region");
-
-        // Verify dimensions and pixel data read-through.
-        assert_eq!(image.width(), W);
-        assert_eq!(image.height(), H);
-        assert_eq!(image.num_channels(), 3);
-
-        let slice = image.as_slice();
-        assert_eq!(slice.len(), FRAME_BYTES);
-        // Spot-check the pattern written above.
-        for (i, &byte) in slice.iter().enumerate() {
-            assert_eq!(byte, (i % 251) as u8, "pixel mismatch at index {i}");
-        }
-
-        // Arc<MmapInfo> still alive (held by V4lResource inside the Image).
-        assert!(
-            arc_weak.upgrade().is_some(),
-            "MmapInfo must still be alive while Image is alive"
-        );
-
-        // Drop the Image → Image::Drop → Tensor::Drop → TensorStorage::Drop →
-        // ForeignResource::Drop → Arc<V4lResource>::Drop (count → 0) →
-        // V4lResource::Drop → MmapBuffer::Drop → Arc<MmapInfo>::Drop (count → 0) →
-        // MmapInfo::Drop → munmap().  This is the path under test.
-        drop(image);
-
-        // After drop, the Arc<MmapInfo> must be gone (count == 0, munmap fired).
-        assert!(
-            arc_weak.upgrade().is_none(),
-            "MmapInfo must have been released (munmap'd) when Image was dropped"
-        );
-    }
-
-    /// Verify that a captured frame constructed via `image_from_v4l_buffer` is read-only:
-    /// `as_slice()` must succeed, but `as_mut_slice()` must panic with "read-only".
-    ///
-    /// The read-only-ness comes from `from_borrowed_readonly` (not from OS mmap protection),
-    /// so a PROT_READ | PROT_WRITE mapping is fine for the test.
-    #[test]
-    #[should_panic(expected = "read-only")]
-    fn v4l_captured_frame_readonly_rejects_as_mut_slice() {
-        let page_size = 4096_usize;
-        let raw_ptr = unsafe {
-            libc::mmap(
-                std::ptr::null_mut(),
-                page_size,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
-                -1,
-                0,
-            )
-        };
-        assert_ne!(raw_ptr, libc::MAP_FAILED, "mmap failed");
-
-        let mmap_info = Arc::new(MmapInfo {
-            ptr: raw_ptr as *mut u8,
-            length: page_size,
-            offset: 0,
-        });
-
-        const W: usize = 12;
-        const H: usize = 4;
-        const FRAME_BYTES: usize = W * H * 3;
-
-        let buffer = unsafe { MmapBuffer::new(raw_ptr as *const u8, FRAME_BYTES, mmap_info) };
-        let size = ImageSize {
-            width: W,
-            height: H,
-        };
-        let mut image = image_from_v4l_buffer(size, buffer)
-            .expect("image_from_v4l_buffer must succeed for a valid mmap region");
-
-        // as_slice() must succeed (read-only is still readable).
-        assert!(!image.as_slice().is_empty());
-
-        // as_slice_mut() delegates to TensorStorage::as_mut_slice and must panic with "read-only".
-        let _ = image.as_slice_mut();
-    }
-
-    /// Verify that `V4lResource` implements `MemoryResource` correctly for a synthetic
-    /// non-null pointer (no camera required).
-    #[test]
-    fn v4l_resource_memory_resource_accessors() {
-        // Use a stack-allocated array as backing memory (not mmap — no munmap needed).
-        // We give MmapInfo a null ptr so its Drop is a no-op, and verify the resource fields.
-        let data: [u8; 9] = [1, 2, 3, 4, 5, 6, 7, 8, 9]; // 3×3×1 = 9 bytes
-
-        let mmap_info = Arc::new(MmapInfo {
-            ptr: std::ptr::null_mut(), // null → Drop is a no-op (safe)
-            length: 9,
-            offset: 0,
-        });
-
-        let buffer = unsafe { MmapBuffer::new(data.as_ptr(), 9, mmap_info) };
-        let resource = V4lResource { buffer };
-
-        // MemoryResource trait checks.
-        assert!(!resource.as_ptr().is_null(), "as_ptr must be non-null");
-        assert_eq!(resource.len_bytes(), 9);
-        assert!(
-            matches!(resource.domain(), MemoryDomain::Host),
-            "V4L2 frames are host-accessible"
-        );
-        // as_any downcast works.
-        assert!(
-            resource.as_any().downcast_ref::<V4lResource>().is_some(),
-            "as_any downcast must succeed"
-        );
     }
 }
