@@ -41,7 +41,11 @@ jobs:
           before-script-linux: |
             if command -v dnf &> /dev/null; then dnf install cmake3 -y; elif command -v yum &> /dev/null; then yum install cmake3 -y; elif command -v apt-get &> /dev/null; then apt-get update && apt-get install cmake -y; else echo "None of dnf, yum, or apt found."; fi
             if command -v cmake3 &> /dev/null; then export CMAKE=cmake3; fi
-          args: --release --out dist -i python${{ matrix.python-version }} -m kornia-py/Cargo.toml --sdist
+          # No --sdist: the sdist build is not self-contained (kornia-tensor's
+          # optional dlpack-rs git dependency can't resolve inside the extracted
+          # tarball), which breaks the manylinux build. Wheels build directly
+          # like the macOS/Windows jobs. Revisit once dlpack-rs is on crates.io.
+          args: --release --out dist -i python${{ matrix.python-version }} -m kornia-py/Cargo.toml
       - name: Verify SIMD paths are present in the built wheel
         env:
           MATRIX_TARGET: ${{ matrix.target }}
