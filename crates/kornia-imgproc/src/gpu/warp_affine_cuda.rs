@@ -452,8 +452,8 @@ pub fn launch_warp_affine_nearest_cuda(
 ///
 /// # Arguments
 ///
-/// See [`launch_warp_affine_bilinear_cuda`] — arguments are identical except
-/// no `block_dim` parameter (always uses 32×8).
+/// See [`launch_warp_affine_bilinear_cuda`] — arguments are identical including
+/// the optional `block_dim` override.
 ///
 /// # Errors
 ///
@@ -470,6 +470,7 @@ pub fn launch_warp_affine_bicubic_cuda(
     dst_width: u32,
     dst_height: u32,
     m: &[f32; 6],
+    block_dim: Option<(u32, u32)>,
 ) -> Result<(), CudaWarpAffineError> {
     if src_width == 0 || src_height == 0 || dst_width == 0 || dst_height == 0 {
         return Err(CudaWarpAffineError::Cuda(
@@ -502,7 +503,7 @@ pub fn launch_warp_affine_bicubic_cuda(
         .launch_2d(
             dst_width,
             dst_height,
-            make_config(dst_width, dst_height, None),
+            make_config(dst_width, dst_height, block_dim),
         )
         .map_err(|e| CudaWarpAffineError::Cuda(e.to_string()))
 }
