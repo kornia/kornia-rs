@@ -396,6 +396,19 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     io_mod.add_class::<PyImageEncoder>()?;
     m.add_submodule(&io_mod)?;
 
+    // Capture submodule (webcam / video capture backends).
+    #[cfg(all(feature = "v4l", target_os = "linux"))]
+    {
+        let capture_mod = PyModule::new(py, "capture")?;
+        capture_mod.add_class::<io::v4l::PyV4lCapture>()?;
+        capture_mod.add_class::<io::v4l::PyV4lFrame>()?;
+        m.add_submodule(&capture_mod)?;
+        // Register in sys.modules so `from kornia_rs.capture import V4lCapture` works.
+        let modules =
+            unsafe { pyo3::Bound::from_borrowed_ptr(py, pyo3::ffi::PyImport_GetModuleDict()) };
+        modules.set_item("kornia_rs.capture", &capture_mod)?;
+    }
+
     // Imgproc submodule
     let imgproc_mod = PyModule::new(py, "imgproc")?;
     imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_gray, &imgproc_mod)?)?;

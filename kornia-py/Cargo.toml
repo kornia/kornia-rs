@@ -32,3 +32,5 @@ rayon = { workspace = true }
 [features]
 default = ["turbojpeg"]
 turbojpeg = ["kornia-io/turbojpeg"]
+# Native V4L2 webcam capture (Linux-only; no system runtime deps).
+v4l = ["kornia-io/v4l"]
