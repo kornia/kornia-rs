@@ -22,12 +22,20 @@
 //! region (3 cache lines); bilinear reads are confined to two source rows
 //! instead of four.
 //!
-//! ## Dynamic block size
+//! ## Block size — fixed tap count, adaptive thread layout
 //!
-//! All launchers accept an optional `block_dim: Option<(u32, u32)>` override.
-//! `None` keeps the 32×8 default (best for most image sizes).  For small
-//! images (≤ 128×128) callers can pass a smaller block, e.g. `Some((16, 4))`,
-//! to avoid launching thread blocks that are mostly idle.
+//! The interpolation tap count is **fixed at compile time** per mode
+//! (bilinear = 2×2, bicubic = 4×4), which lets the compiler fully unroll the
+//! weight loops and pipeline the `__ldg` reads.  This is the correct design
+//! for GPU — a runtime-variable tap count would prevent unrolling and add
+//! branch overhead per tap.
+//!
+//! The *thread block layout* is separate from the tap count and is tunable:
+//! all launchers accept `block_dim: Option<(u32, u32)>`.  `None` selects
+//! **auto mode**: 32×8 for images wider than 32 px and taller than 8 px,
+//! clamped to `(min(32, dst_width), min(8, dst_height))` for smaller images
+//! so thread blocks don't launch mostly-idle warps.  Pass `Some((bw, bh))`
+//! to override manually (e.g. `Some((16, 4))` for a narrow portrait crop).
 //!
 //! ## L1 cache preference (`CU_FUNC_CACHE_PREFER_L1`)
 //!
@@ -317,7 +325,12 @@ pub enum CudaResizeError {
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 fn make_config(dst_width: u32, dst_height: u32, block_dim: Option<(u32, u32)>) -> LaunchConfig {
-    let (bw, bh) = block_dim.unwrap_or((BLOCK_W, BLOCK_H));
+    let (bw, bh) = block_dim.unwrap_or_else(|| {
+        // Auto mode: clamp to image size so small images don't launch
+        // blocks that are mostly idle (e.g. a 4×4 image with 32×8 = 256
+        // threads has 93% idle threads).
+        (BLOCK_W.min(dst_width), BLOCK_H.min(dst_height))
+    });
     LaunchConfig {
         block_dim: (bw, bh, 1),
         grid_dim: (dst_width.div_ceil(bw), dst_height.div_ceil(bh), 1),
