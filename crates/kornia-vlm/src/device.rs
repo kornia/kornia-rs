@@ -1,4 +1,24 @@
 use candle_core::{DType, Device};
+
+// helper function to know if the gpu supports bf16
+#[cfg(feature = "cuda")]
+fn cuda_supports_bf16(ordinal: usize) -> bool {
+    use cudarc::driver::safe::CudaContext;
+
+    match CudaContext::new(ordinal) {
+        Ok(ctx) => {
+            let major = ctx
+                .attribute(
+                    cudarc::driver::sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR,
+                )
+                .unwrap_or(0);
+
+            major >= 8
+        }
+        Err(_) => false,
+    }
+}
+
 pub fn get_device_and_dtype() -> (Device, DType) {
     #[cfg(feature = "cuda")]
     {
@@ -9,8 +29,7 @@ pub fn get_device_and_dtype() -> (Device, DType) {
                     DType::BF16
                 } else {
                     log::warn!(
-                        "GPU does not support BF16, falling back to FP16. \
-                        Note: FP16 may overflow in attention logits and produce lower-quality results."
+                        "GPU does not support BF16. Using FP16 instead; numerical stability may be slightly reduced on some models."
                     );
                     DType::F16
                 };
