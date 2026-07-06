@@ -215,7 +215,7 @@ extern "C" __global__ void warp_affine_bicubic_3c(
 
 static BILINEAR_KERNEL: OnceLock<CudaKernel> = OnceLock::new();
 static NEAREST_KERNEL: OnceLock<CudaKernel> = OnceLock::new();
-static BICUBIC_KERNEL: OnceLock<CudaKernel> = OnceLock::new();
+static BICUBIC_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
 
 const BLOCK_W: u32 = 32;
 const BLOCK_H: u32 = 8;
@@ -253,6 +253,17 @@ fn compile_with_l1(ctx: &Arc<CudaContext>, src: &str, fn_name: &str) -> CudaKern
         .unwrap_or_else(|e| panic!("failed to compile {fn_name}: {e}"));
     let _ = k.prefer_l1_cache();
     k
+}
+
+fn try_compile_with_l1(
+    ctx: &Arc<CudaContext>,
+    src: &str,
+    fn_name: &str,
+) -> Result<CudaKernel, String> {
+    let k = CudaKernel::compile(ctx, src, fn_name)
+        .map_err(|e| format!("failed to compile {fn_name}: {e}"))?;
+    let _ = k.prefer_l1_cache();
+    Ok(k)
 }
 
 fn check_dst(
@@ -411,10 +422,17 @@ pub fn launch_warp_affine_bicubic_cuda(
     dst_height: u32,
     m: &[f32; 6],
 ) -> Result<(), CudaWarpAffineError> {
+    if src_width == 0 || src_height == 0 || dst_width == 0 || dst_height == 0 {
+        return Err(CudaWarpAffineError::Cuda(
+            "src and dst dimensions must be non-zero".into(),
+        ));
+    }
     check_dst(dst, dst_width, dst_height)?;
 
-    let kernel =
-        BICUBIC_KERNEL.get_or_init(|| compile_with_l1(ctx, BICUBIC_SRC, "warp_affine_bicubic_3c"));
+    let kernel = BICUBIC_KERNEL
+        .get_or_init(|| try_compile_with_l1(ctx, BICUBIC_SRC, "warp_affine_bicubic_3c"))
+        .as_ref()
+        .map_err(|e| CudaWarpAffineError::Cuda(e.clone()))?;
 
     let mi = invert_affine_transform(m);
 

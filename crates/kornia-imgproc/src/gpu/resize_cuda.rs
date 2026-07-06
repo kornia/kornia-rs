@@ -271,7 +271,7 @@ extern "C" __global__ void resize_bicubic_3c(
 static BILINEAR_KERNEL: OnceLock<CudaKernel> = OnceLock::new();
 static NEAREST_KERNEL: OnceLock<CudaKernel> = OnceLock::new();
 static BILINEAR_NORMALIZE_KERNEL: OnceLock<CudaKernel> = OnceLock::new();
-static BICUBIC_KERNEL: OnceLock<CudaKernel> = OnceLock::new();
+static BICUBIC_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
 
 // 32 threads wide → full warp maps to one output row (better write coalescing).
 // 8 threads tall → 256 threads total, same occupancy as 16×16.
@@ -313,6 +313,17 @@ fn compile_with_l1(ctx: &Arc<CudaContext>, src: &str, fn_name: &str) -> CudaKern
     // Ignoring errors: unsupported on some platforms but never fatal.
     let _ = k.prefer_l1_cache();
     k
+}
+
+fn try_compile_with_l1(
+    ctx: &Arc<CudaContext>,
+    src: &str,
+    fn_name: &str,
+) -> Result<CudaKernel, String> {
+    let k = CudaKernel::compile(ctx, src, fn_name)
+        .map_err(|e| format!("failed to compile {fn_name}: {e}"))?;
+    let _ = k.prefer_l1_cache();
+    Ok(k)
 }
 
 // ── Public launchers ──────────────────────────────────────────────────────────
@@ -533,6 +544,12 @@ pub fn launch_resize_bicubic_cuda(
     dst_width: u32,
     dst_height: u32,
 ) -> Result<(), CudaResizeError> {
+    if src_width == 0 || src_height == 0 || dst_width == 0 || dst_height == 0 {
+        return Err(CudaResizeError::Cuda(
+            "src and dst dimensions must be non-zero".into(),
+        ));
+    }
+
     let need = (dst_width as usize) * (dst_height as usize) * 3;
     if dst.len() < need {
         return Err(CudaResizeError::SliceTooSmall {
@@ -541,8 +558,10 @@ pub fn launch_resize_bicubic_cuda(
         });
     }
 
-    let kernel =
-        BICUBIC_KERNEL.get_or_init(|| compile_with_l1(ctx, BICUBIC_SRC, "resize_bicubic_3c"));
+    let kernel = BICUBIC_KERNEL
+        .get_or_init(|| try_compile_with_l1(ctx, BICUBIC_SRC, "resize_bicubic_3c"))
+        .as_ref()
+        .map_err(|e| CudaResizeError::Cuda(e.clone()))?;
 
     let scale_x = src_width as f32 / dst_width as f32;
     let scale_y = src_height as f32 / dst_height as f32;

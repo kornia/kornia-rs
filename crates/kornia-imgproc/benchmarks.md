@@ -348,10 +348,12 @@ Warp-affine bicubic unchanged (scattered DRAM reads from rotation are the bottle
 cargo run --example bench_gpu_resize    --features gpu-cuda --release
 cargo run --example bench_gpu_warp_affine --features gpu-cuda --release
 # Python comparison (requires CUDA-built OpenCV + torch with CUDA)
-# PYTHONPATH points to the CUDA-enabled cv2 build in dist-packages:
-PYTHONPATH=/home/incharanew/.local/lib/python3.10/dist-packages \
+# PYTHONPATH points to the CUDA-enabled cv2 build in dist-packages.
+# Replace <dist-packages> with the path reported by your custom OpenCV build.
+# Example: $(python3 -c "import site; print(site.getusersitepackages())")
+PYTHONPATH=/path/to/cuda-opencv/dist-packages \
   python3 crates/kornia-imgproc/examples/bench_opencv_resize.py
-PYTHONPATH=/home/incharanew/.local/lib/python3.10/dist-packages \
+PYTHONPATH=/path/to/cuda-opencv/dist-packages \
   python3 crates/kornia-imgproc/examples/bench_opencv_warp_affine.py
 ```
 
