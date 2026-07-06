@@ -41,9 +41,9 @@ serde_json = { workspace = true }
 
 [features]
 bincode = ["dep:bincode"]
-# cudarc device-memory integration — default OFF.
+# CUDA device-memory integration (via the cudarc crate) — default OFF.
 # Enables CudaResource / CudaAllocator and Tensor::to_cuda / to_host etc.
 # Verify absence: `cargo tree -p kornia-tensor -e features | grep -i cudarc`
-cudarc = ["dep:cudarc"]
+cuda = ["dep:cudarc"]
 dlpack = ["dep:dlpack-rs"]
 serde = ["dep:serde"]

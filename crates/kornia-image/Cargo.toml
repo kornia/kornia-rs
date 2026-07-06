@@ -37,8 +37,8 @@ half = { workspace = true }
 [features]
 default = []
 arrow = ["dep:arrow"]
-# cudarc device-memory integration — default OFF.
+# CUDA device-memory integration (via the cudarc crate) — default OFF.
 # Enables Image::to_cuda for H2D uploads.
 # Verify absence: `cargo tree -p kornia-image -e features | grep -i cudarc`
-cudarc = ["dep:cudarc", "kornia-tensor/cudarc"]
+cuda = ["dep:cudarc", "kornia-tensor/cuda"]
 dlpack = ["dep:dlpack-rs", "kornia-tensor/dlpack"]

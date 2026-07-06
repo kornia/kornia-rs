@@ -102,7 +102,7 @@ ndarray = { workspace = true, features = ["rayon"] }
 rand = { workspace = true }
 
 [features]
-# cudarc device backend + custom CUDA kernels (enables the `preprocess` module).
-cudarc = ["dep:cudarc", "dep:half", "kornia-tensor/cudarc"]
-cuda = ["dep:cudarc", "kornia-image/cudarc", "kornia-tensor/cudarc"]
+# CUDA device backend + custom CUDA kernels (via the cudarc crate).
+# Enables the `preprocess` module and the `cuda` kernels module.
+cuda = ["dep:cudarc", "dep:half", "kornia-image/cuda", "kornia-tensor/cuda"]
 opencv_bench = ["dep:opencv"]

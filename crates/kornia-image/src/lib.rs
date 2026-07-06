@@ -59,5 +59,5 @@ pub mod arrow;
 pub mod dlpack;
 
 /// CUDA device-memory integration: [`Image::to_cuda`].
-#[cfg(feature = "cudarc")]
+#[cfg(feature = "cuda")]
 pub mod cuda;

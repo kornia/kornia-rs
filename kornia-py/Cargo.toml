@@ -38,10 +38,9 @@ cuda = [
   "dep:cudarc",
   "dep:half",
   "dep:kornia-tensor",
-  "kornia-image/cudarc",
-  "kornia-imgproc/cudarc",
+  "kornia-image/cuda",
   "kornia-imgproc/cuda",
-  "kornia-tensor/cudarc",
+  "kornia-tensor/cuda",
   "kornia-tensor/dlpack",
 ]
 turbojpeg = ["kornia-io/turbojpeg"]

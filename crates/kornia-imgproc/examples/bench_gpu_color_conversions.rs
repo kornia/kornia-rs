@@ -230,7 +230,7 @@ fn run_pinned_e2e_u8(
 /// Fused color+resize+normalize (`Preprocessor` with a `SourceFormat`) vs the
 /// decode-then-preprocess chain. Device-resident src, batched launches + sync,
 /// 1080p-style frame -> 640x640 letterbox tensor.
-#[cfg(feature = "cudarc")]
+#[cfg(feature = "cuda")]
 fn run_fused_preprocess(stream: &Arc<CudaStream>, width: usize, height: usize, json: bool) {
     use kornia_imgproc::preprocess::{Preprocessor, ResizeMode, SourceFormat};
     const OUT: usize = 640;
@@ -772,7 +772,7 @@ fn main() {
         }
 
         // ---- fused color+preprocess vs chained ----
-        #[cfg(feature = "cudarc")]
+        #[cfg(feature = "cuda")]
         run_fused_preprocess(&stream, width, height, json);
 
         // ---- pinned-memory end-to-end (representative u8 ops) ----

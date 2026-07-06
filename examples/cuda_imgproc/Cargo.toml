@@ -13,6 +13,6 @@ cudarc = { version = "0.19", default-features = false, features = [
   "nvrtc",
   "std",
 ] }
-kornia-image = { path = "../../crates/kornia-image", features = ["cudarc"] }
+kornia-image = { path = "../../crates/kornia-image", features = ["cuda"] }
 kornia-io = { path = "../../crates/kornia-io" }
-kornia-tensor = { path = "../../crates/kornia-tensor", features = ["cudarc"] }
+kornia-tensor = { path = "../../crates/kornia-tensor", features = ["cuda"] }

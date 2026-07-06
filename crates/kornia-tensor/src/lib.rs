@@ -175,10 +175,10 @@ pub mod resource;
 /// [`cuda::CudaAllocator`], [`cuda::CudaKernel`], [`cuda::CudaLaunchBuilder`],
 /// [`cuda::zeros_cuda`], and `Tensor` methods `to_cuda`/`to_host`/`from_cudaslice`/
 /// `as_cudaslice`/`into_cudaslice` for first-class device tensor support.
-#[cfg(feature = "cudarc")]
+#[cfg(feature = "cuda")]
 pub mod cuda;
 
-#[cfg(feature = "cudarc")]
+#[cfg(feature = "cuda")]
 pub use crate::cuda::{
     pinned_alloc, zeros_cuda, zeros_pinned, CudaAllocator, CudaError, CudaKernel,
     CudaLaunchBuilder, PinnedAllocator, PinnedResource,

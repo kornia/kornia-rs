@@ -7,7 +7,7 @@
 //! # Example
 //!
 //! ```no_run
-//! # #[cfg(feature = "cudarc")]
+//! # #[cfg(feature = "cuda")]
 //! # {
 //! use kornia_image::color_spaces::Rgb8;
 //! use cudarc::driver::CudaContext;
