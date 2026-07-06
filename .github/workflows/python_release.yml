@@ -36,11 +36,13 @@ jobs:
       - uses: actions/checkout@v7
       - uses: messense/maturin-action@v1
         with:
-          # Pin latest maturin (as macOS/Windows jobs do). Without this, linux
-          # uses the action's default bundled maturin, whose free-threaded 3.13
-          # (3.13t) support regressed to "only supported on 3.14 and later" —
-          # 3.13t-linux built fine until the action's default maturin drifted.
-          maturin-version: latest
+          # Pin maturin 1.13.3 — the version that shipped v0.1.14 and built the
+          # whole matrix incl. free-threaded 3.13 (3.13t). Newer maturin sets
+          # FREE_THREADED_MINIMUM_PYTHON_MINOR=14 and drops 3.13t (upstream
+          # deprecated it for 3.14t), so `latest`/default fails 3.13t-linux with
+          # "Free-threaded Python interpreter is only supported on 3.14 and
+          # later". Revisit (unpin) if/when we move to 3.14t-only wheels.
+          maturin-version: v1.13.3
           target: ${{ matrix.target }}
           manylinux: auto
           command: build
