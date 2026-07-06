@@ -46,13 +46,13 @@ fn run_gpu_cuda() {
     use cudarc::driver::CudaContext;
     use kornia_imgproc::cuda::warp_affine::{
         launch_warp_affine_bicubic_cuda, launch_warp_affine_bilinear_cuda,
-        launch_warp_affine_nearest_cuda,
+        launch_warp_affine_lanczos_cuda, launch_warp_affine_nearest_cuda,
     };
 
     let ctx = std::sync::Arc::new(CudaContext::new(0).expect("CUDA context"));
     let stream = ctx.default_stream();
 
-    for method in ["nearest", "bilinear", "bicubic"] {
+    for method in ["nearest", "bilinear", "bicubic", "lanczos"] {
         println!(
             "\n=== GPU warp-affine {method} (45° rotation, __ldg, 32×8 grid, {ITERS} iters) ==="
         );
@@ -79,6 +79,10 @@ fn run_gpu_cuda() {
                     &ctx, &stream, &src_dev, dst, w, h, w, h, &m, None,
                 )
                 .expect("bicubic launch"),
+                "lanczos" => launch_warp_affine_lanczos_cuda(
+                    &ctx, &stream, &src_dev, dst, w, h, w, h, &m, None,
+                )
+                .expect("lanczos launch"),
                 _ => launch_warp_affine_bilinear_cuda(
                     &ctx, &stream, &src_dev, dst, w, h, w, h, &m, None,
                 )
