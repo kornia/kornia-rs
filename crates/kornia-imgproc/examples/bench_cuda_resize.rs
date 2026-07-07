@@ -228,14 +228,14 @@ fn run_gpu_cuda_bicubic() {
         let mut dst_dev = stream.alloc_zeros::<f32>(npix_dst * nc).expect("alloc dst");
 
         for _ in 0..WARMUP {
-            launch_resize_bicubic_cuda(&ctx, &stream, &src_dev, &mut dst_dev, sw, sh, dw, dh)
+            launch_resize_bicubic_cuda(&ctx, &stream, &src_dev, &mut dst_dev, sw, sh, dw, dh, None)
                 .expect("bicubic launch");
         }
         stream.synchronize().expect("sync");
 
         let t = std::time::Instant::now();
         for _ in 0..ITERS {
-            launch_resize_bicubic_cuda(&ctx, &stream, &src_dev, &mut dst_dev, sw, sh, dw, dh)
+            launch_resize_bicubic_cuda(&ctx, &stream, &src_dev, &mut dst_dev, sw, sh, dw, dh, None)
                 .expect("bicubic launch");
         }
         stream.synchronize().expect("sync");
