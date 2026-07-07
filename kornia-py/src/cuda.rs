@@ -929,9 +929,12 @@ impl PyCudaPreprocessor {
         let consumer = stream.map(|s| s.raw_handle());
         let frame_len = frame.len();
         let mut staging = self.staging.lock().expect("staging mutex poisoned");
-        staging.ensure(&self.stream, 1, frame_len)?;
-        // Prior call's H2D must finish before we overwrite the shared pinned buffer.
+        // Drain the prior call's H2D BEFORE ensure() — ensure() may free/realloc
+        // the shared pinned buffer on a size increase, and that host free
+        // (cuMemFreeHost) is not ordered against an in-flight upload reading it.
+        // Waiting first also protects the copy_from_slice overwrite below.
         staging.wait_prev_upload()?;
+        staging.ensure(&self.stream, 1, frame_len)?;
         staging.pinned.as_mut().expect("ensured").as_slice_mut()[..frame_len]
             .copy_from_slice(frame.as_slice()?);
         let staging = &mut *staging;
@@ -948,22 +951,22 @@ impl PyCudaPreprocessor {
             // Record upload-complete so the next call can host-wait just this DMA.
             staging.mark_upload(&self.stream)?;
             let d_src = &staging.device[0];
+            // SAFETY: the resize/normalize kernel writes every output element —
+            // the sampled region and the letterbox pad border (one thread per
+            // pixel, bounds-guarded) — so the uninitialized dst is fully
+            // overwritten before it is read.
+            let shape = [1, 3, out_height, out_width];
             if self.f16 {
-                let mut dst = kornia_tensor::zeros_cuda::<half::f16, 4>(
-                    [1, 3, out_height, out_width],
-                    &self.stream,
-                )
-                .map_err(err)?;
+                let mut dst =
+                    unsafe { kornia_tensor::uninit_cuda::<half::f16, 4>(shape, &self.stream) }
+                        .map_err(err)?;
                 self.pre
                     .run_raw_f16(d_src, width, height, &mut dst)
                     .map_err(err)?;
                 Ok(TensorInnerEnum::F16(dst))
             } else {
-                let mut dst = kornia_tensor::zeros_cuda::<f32, 4>(
-                    [1, 3, out_height, out_width],
-                    &self.stream,
-                )
-                .map_err(err)?;
+                let mut dst = unsafe { kornia_tensor::uninit_cuda::<f32, 4>(shape, &self.stream) }
+                    .map_err(err)?;
                 self.pre
                     .run_raw(d_src, width, height, &mut dst)
                     .map_err(err)?;
@@ -1000,9 +1003,10 @@ impl PyCudaPreprocessor {
         let n = frames.len();
         let frame_len = frames[0].len();
         let mut staging = self.staging.lock().expect("staging mutex poisoned");
-        staging.ensure(&self.stream, n, frame_len)?;
-        // Prior call's H2D must finish before we overwrite the shared pinned buffer.
+        // Drain the prior call's H2D BEFORE ensure() (which may free/realloc the
+        // shared pinned buffer) and before we overwrite it below.
         staging.wait_prev_upload()?;
+        staging.ensure(&self.stream, n, frame_len)?;
         {
             let pinned = staging.pinned.as_mut().expect("ensured").as_slice_mut();
             for (i, f) in frames.iter().enumerate() {
@@ -1018,28 +1022,43 @@ impl PyCudaPreprocessor {
         let staging = &mut *staging;
 
         let inner = py.detach(|| -> PyResult<TensorInnerEnum> {
-            {
+            // Enqueue every frame's H2D. If one fails mid-loop, earlier copies are
+            // already in-flight DMAs reading `pinned`, so we still record the
+            // upload event (below) before propagating — otherwise the next call
+            // would skip its wait and could free/reuse `pinned` under those DMAs.
+            let copies = {
                 let pinned = staging.pinned.as_ref().expect("ensured").as_slice();
+                let mut res = Ok(());
                 for (i, d) in staging.device[..n].iter_mut().enumerate() {
-                    self.stream
+                    if let Err(e) = self
+                        .stream
                         .memcpy_htod(&pinned[i * frame_len..(i + 1) * frame_len], d)
-                        .map_err(err)?;
+                    {
+                        res = Err(err(e));
+                        break;
+                    }
                 }
-            }
-            // Record upload-complete so the next call can host-wait just this DMA.
+                res
+            };
+            // Record upload-complete (gates whatever DMAs were enqueued) BEFORE
+            // surfacing a partial-copy error, so the next call always waits them.
             staging.mark_upload(&self.stream)?;
+            copies?;
             let refs: Vec<_> = staging.device[..n].iter().collect();
             let shape = [n, 3, out_height, out_width];
+            // SAFETY: run_raw_batch writes every element of all N output planes
+            // (per-pixel, bounds-guarded, pad border included), so the
+            // uninitialized dst is fully overwritten before it is read.
             if self.f16 {
-                let mut dst =
-                    kornia_tensor::zeros_cuda::<half::f16, 4>(shape, &self.stream).map_err(err)?;
+                let mut dst = unsafe { kornia_tensor::uninit_cuda::<half::f16, 4>(shape, &self.stream) }
+                    .map_err(err)?;
                 self.pre
                     .run_raw_batch_f16(&refs, width, height, &mut dst)
                     .map_err(err)?;
                 Ok(TensorInnerEnum::F16(dst))
             } else {
-                let mut dst =
-                    kornia_tensor::zeros_cuda::<f32, 4>(shape, &self.stream).map_err(err)?;
+                let mut dst = unsafe { kornia_tensor::uninit_cuda::<f32, 4>(shape, &self.stream) }
+                    .map_err(err)?;
                 self.pre
                     .run_raw_batch(&refs, width, height, &mut dst)
                     .map_err(err)?;
@@ -1131,9 +1150,12 @@ impl PyCudaPreprocessor {
 
         let frame_len = frame.len();
         let mut staging = self.staging.lock().expect("staging mutex poisoned");
-        staging.ensure(&self.stream, 1, frame_len)?;
-        // Prior call's H2D must finish before we overwrite the shared pinned buffer.
+        // Drain the prior call's H2D BEFORE ensure() — ensure() may free/realloc
+        // the shared pinned buffer on a size increase, and that host free
+        // (cuMemFreeHost) is not ordered against an in-flight upload reading it.
+        // Waiting first also protects the copy_from_slice overwrite below.
         staging.wait_prev_upload()?;
+        staging.ensure(&self.stream, 1, frame_len)?;
         staging.pinned.as_mut().expect("ensured").as_slice_mut()[..frame_len]
             .copy_from_slice(frame.as_slice()?);
         let staging = &mut *staging;
