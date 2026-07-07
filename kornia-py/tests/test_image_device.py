@@ -153,6 +153,44 @@ def test_foreign_stream_threaded_through_transfers():
     np.testing.assert_array_equal(z.numpy(), np.zeros((6, 8, 3), np.uint8))
 
 
+def test_device_numpy_is_readonly_copy():
+    """`.numpy()` / `.data` / `np.asarray` on a device image return a read-only
+    host copy — writes must not silently vanish into the throwaway D2H buffer."""
+    a = _rgb()
+    dev = Image.cuda.from_numpy(a)
+    for arr in (dev.numpy(), dev.data, np.asarray(dev)):
+        assert not arr.flags.writeable
+        with pytest.raises(ValueError):
+            arr[:] = 0
+    # A host image stays a writable zero-copy view.
+    host = Image.from_numpy(a.copy())
+    assert host.numpy().flags.writeable
+
+
+def test_host_only_transforms_raise_on_device():
+    """Host transforms are host-only and raise a clear error on a device image
+    (the stubs document this); `.cpu()` first is the fix."""
+    dev = Image.cuda.from_numpy(_rgb())
+    with pytest.raises(ValueError):
+        dev.resize(16, 16)
+    with pytest.raises(ValueError):
+        dev.copy()
+    with pytest.raises(ValueError):
+        dev.crop(0, 0, 8, 8)
+    # After moving to host the same call works.
+    assert dev.cpu().resize(16, 16).device == "cpu"
+
+
+def test_dlpack_stream_argument_paths():
+    """The device `__dlpack__` accepts the DLPack `stream` argument: -1 (no
+    sync), a concrete handle (non-blocking fence), and None (host sync). Each
+    returns a capsule without error — exercised without a torch consumer."""
+    dev = Image.cuda.from_numpy(_rgb())
+    for stream in (-1, Stream.default().cuda_stream_ptr, None):
+        cap = dev.__dlpack__(stream=stream)
+        assert "PyCapsule" in repr(type(cap)) or cap is not None
+
+
 def test_dlpack_roundtrip_with_torch():
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available():
@@ -168,6 +206,37 @@ def test_dlpack_roundtrip_with_torch():
     img2 = Image.cuda.from_dlpack(t2)
     assert img2.device == "cuda:0"
     np.testing.assert_array_equal(img2.numpy(), a)
+
+
+def test_from_dlpack_copy_isolates_and_zerocopy_keepalive():
+    """DLPack import copy semantics + keepalive (regression coverage):
+
+    - `copy=True` (default) produces an OWNED device buffer; mutating the
+      producer afterwards must NOT change the imported image.
+    - `copy=False` aliases the producer AND keeps it alive: dropping the source
+      tensor while the image lives must not free the device memory (no UAF).
+    """
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("no torch CUDA")
+    a = _rgb()
+
+    # copy=True: independent buffer.
+    t = torch.as_tensor(a, device="cuda")
+    owned = Image.cuda.from_dlpack(t, copy=True)
+    t.zero_()
+    torch.cuda.synchronize()
+    np.testing.assert_array_equal(owned.numpy(), a)  # unchanged by producer write
+
+    # copy=False: zero-copy alias that survives the producer being dropped.
+    t2 = torch.as_tensor(a, device="cuda")
+    aliased = Image.cuda.from_dlpack(t2, copy=False)
+    del t2
+    import gc
+
+    gc.collect()
+    torch.cuda.synchronize()
+    np.testing.assert_array_equal(aliased.numpy(), a)  # keepalive prevented free
 
 
 def test_from_dlpack_infers_device():

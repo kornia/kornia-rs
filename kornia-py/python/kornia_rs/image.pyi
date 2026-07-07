@@ -165,10 +165,15 @@ class Image:
         The argument is positional-or-keyword (not keyword-only)."""
         ...
     def numpy(self) -> np.ndarray:
-        """Numpy array of the underlying buffer. Host images share memory
-        (zero-copy view); a device (CUDA) image is copied back to host (D2H)."""
+        """Numpy array of the underlying buffer. A host image shares memory
+        (zero-copy view). A device (CUDA) image is copied back to host (D2H) and
+        the result is **read-only** — it does not share the device buffer, so
+        writes would be lost; use ``.cpu()`` for a writable host image."""
         ...
-    def copy(self) -> Image: ...
+    def copy(self) -> Image:
+        """Deep copy. Host-only: raises ``ValueError`` on a device image
+        (call ``.cpu()`` first)."""
+        ...
 
     # --- device (CUDA) ---
     @property
@@ -191,6 +196,10 @@ class Image:
         ...
 
     # --- transforms ---
+    # NOTE: every transform below reads/writes pixels on the host and is
+    # host-only — it raises ``ValueError`` on a device (CUDA) image. Move the
+    # image to the host first with ``.cpu()``. (GPU color ops live in
+    # ``kornia_rs.cuda`` and take/return device images.)
     def resize(self, width: int, height: int, interpolation: str = ..., antialias: bool = ...) -> Image: ...
     def resize_normalize_to_tensor(
         self,

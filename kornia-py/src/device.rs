@@ -31,16 +31,25 @@ pub enum DeviceImage {
     F32C3(Image<f32, 3>),
 }
 
+/// Bind the inner typed `Image<T, C>` of any variant as `$i` and evaluate
+/// `$body` — collapses the otherwise-identical 5-arm variant match that every
+/// type-agnostic accessor would spell out by hand.
+macro_rules! dispatch {
+    ($self:expr, $i:ident => $body:expr) => {
+        match $self {
+            DeviceImage::U8C1($i) => $body,
+            DeviceImage::U8C3($i) => $body,
+            DeviceImage::U8C4($i) => $body,
+            DeviceImage::F32C1($i) => $body,
+            DeviceImage::F32C3($i) => $body,
+        }
+    };
+}
+
 impl DeviceImage {
     /// Pixel dimensions.
     pub fn size(&self) -> ImageSize {
-        match self {
-            DeviceImage::U8C1(i) => i.size(),
-            DeviceImage::U8C3(i) => i.size(),
-            DeviceImage::U8C4(i) => i.size(),
-            DeviceImage::F32C1(i) => i.size(),
-            DeviceImage::F32C3(i) => i.size(),
-        }
+        dispatch!(self, i => i.size())
     }
 
     /// Channel count (1, 3, or 4).
@@ -68,40 +77,27 @@ impl DeviceImage {
 
     /// CUDA device ordinal this image is resident on.
     pub fn device_id(&self) -> i32 {
-        match self {
-            DeviceImage::U8C1(i) => i.0.storage.device_id(),
-            DeviceImage::U8C3(i) => i.0.storage.device_id(),
-            DeviceImage::U8C4(i) => i.0.storage.device_id(),
-            DeviceImage::F32C1(i) => i.0.storage.device_id(),
-            DeviceImage::F32C3(i) => i.0.storage.device_id(),
-        }
+        dispatch!(self, i => i.0.storage.device_id())
+    }
+
+    /// The `Arc<CudaStream>` this image was produced on, if the backing carries
+    /// one. Shared by [`Self::stream_ptr`], [`Self::synchronize`], and the DLPack
+    /// export's non-blocking consumer-stream fence.
+    pub(crate) fn cuda_stream(&self) -> Option<&std::sync::Arc<cudarc::driver::CudaStream>> {
+        dispatch!(self, i => i.0.cuda_stream())
     }
 
     /// Raw `CUstream` handle (address) of the stream this image was produced on,
     /// for the CUDA Array Interface / cuda-python stream handshake. `None` if the
     /// backing does not carry a stream.
     pub fn stream_ptr(&self) -> Option<usize> {
-        let s = match self {
-            DeviceImage::U8C1(i) => i.0.cuda_stream(),
-            DeviceImage::U8C3(i) => i.0.cuda_stream(),
-            DeviceImage::U8C4(i) => i.0.cuda_stream(),
-            DeviceImage::F32C1(i) => i.0.cuda_stream(),
-            DeviceImage::F32C3(i) => i.0.cuda_stream(),
-        };
-        s.map(|s| s.cu_stream() as usize)
+        self.cuda_stream().map(|s| s.cu_stream() as usize)
     }
 
     /// Block until this image's producing stream has completed, so a consumer
     /// (DLPack export) sees fully-written pixels.
     pub fn synchronize(&self) -> PyResult<()> {
-        let s = match self {
-            DeviceImage::U8C1(i) => i.0.cuda_stream(),
-            DeviceImage::U8C3(i) => i.0.cuda_stream(),
-            DeviceImage::U8C4(i) => i.0.cuda_stream(),
-            DeviceImage::F32C1(i) => i.0.cuda_stream(),
-            DeviceImage::F32C3(i) => i.0.cuda_stream(),
-        };
-        if let Some(s) = s {
+        if let Some(s) = self.cuda_stream() {
             s.synchronize().map_err(err)?;
         }
         Ok(())
@@ -110,13 +106,7 @@ impl DeviceImage {
     /// Raw device pointer (`CUdeviceptr` as `*mut u8`) — for DLPack export and
     /// the `data_ptr` getter. Never dereferenced on the host.
     pub fn as_ptr(&self) -> *mut u8 {
-        match self {
-            DeviceImage::U8C1(i) => i.0.as_ptr() as *mut u8,
-            DeviceImage::U8C3(i) => i.0.as_ptr() as *mut u8,
-            DeviceImage::U8C4(i) => i.0.as_ptr() as *mut u8,
-            DeviceImage::F32C1(i) => i.0.as_ptr() as *mut u8,
-            DeviceImage::F32C3(i) => i.0.as_ptr() as *mut u8,
-        }
+        dispatch!(self, i => i.0.as_ptr() as *mut u8)
     }
 
     /// Copy this device image back to host (D2H) into an owned, 64-byte-aligned
@@ -126,17 +116,17 @@ impl DeviceImage {
         &self,
         py: Python<'_>,
     ) -> PyResult<(AlignedBytes, [usize; 3], Dtype)> {
-        py.detach(|| match self {
-            DeviceImage::U8C1(i) => dl_owned(i, Dtype::U8),
-            DeviceImage::U8C3(i) => dl_owned(i, Dtype::U8),
-            DeviceImage::U8C4(i) => dl_owned(i, Dtype::U8),
-            DeviceImage::F32C1(i) => dl_owned(i, Dtype::F32),
-            DeviceImage::F32C3(i) => dl_owned(i, Dtype::F32),
-        })
+        let dt = self.dtype_enum();
+        py.detach(|| dispatch!(self, i => dl_owned(i, dt)))
     }
 }
 
 /// D2H a single typed device image into an owned aligned host byte buffer.
+///
+/// The copy targets the final aligned buffer directly (via
+/// [`Image::download_into`]), so there is no intermediate `Vec<T>` + second host
+/// memcpy — a device→host round-trip is a single DMA into the numpy-backing
+/// storage.
 fn dl_owned<T, const C: usize>(
     img: &Image<T, C>,
     dt: Dtype,
@@ -144,11 +134,15 @@ fn dl_owned<T, const C: usize>(
 where
     T: DeviceRepr + ValidAsZeroBits + Clone + Default + 'static,
 {
-    let host = img.download().map_err(err)?;
-    let (h, w) = (host.height(), host.width());
-    let s = host.as_slice();
-    // SAFETY: `s` is a contiguous host slice of `T`; reinterpret as its bytes.
-    let bytes =
-        unsafe { std::slice::from_raw_parts(s.as_ptr() as *const u8, std::mem::size_of_val(s)) };
-    Ok((AlignedBytes::from_slice(bytes), [h, w, C], dt))
+    let s = img.size();
+    let (h, w) = (s.height, s.width);
+    let numel = h * w * C;
+    let mut bytes = AlignedBytes::uninit(numel * std::mem::size_of::<T>());
+    // SAFETY: `bytes` owns `numel * size_of::<T>()` bytes, 64-byte aligned (>=
+    // align_of::<T>() for u8/f32); reinterpret as a `&mut [T]` of exactly `numel`
+    // elements. `download_into` writes every element (a full D2H copy) before any
+    // read, satisfying the uninit-buffer contract.
+    let dst = unsafe { std::slice::from_raw_parts_mut(bytes.as_mut_ptr() as *mut T, numel) };
+    img.download_into(dst).map_err(err)?;
+    Ok((bytes, [h, w, C], dt))
 }

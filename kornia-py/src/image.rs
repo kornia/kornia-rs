@@ -828,6 +828,16 @@ pub(crate) fn mode_from_channels_f32(channels: usize) -> String {
     }
 }
 
+/// Default PIL-style mode string for a `(dtype, channels)` pair — the single
+/// mapping every "infer the mode from the buffer's dtype" call site shares.
+pub(crate) fn mode_for_dtype(dtype: backing::Dtype, channels: usize) -> String {
+    match dtype {
+        backing::Dtype::U8 => mode_from_channels(channels, false),
+        backing::Dtype::U16 => mode_from_channels(channels, true),
+        backing::Dtype::F32 => mode_from_channels_f32(channels),
+    }
+}
+
 /// A high-level image object backed by a numpy-agnostic [`backing::Backing`]
 /// buffer plus shape/dtype/color metadata.
 ///
@@ -1284,11 +1294,7 @@ impl PyImageApi {
             }
         };
 
-        let mode = mode.unwrap_or_else(|| match dtype {
-            backing::Dtype::U8 => mode_from_channels(c, false),
-            backing::Dtype::U16 => mode_from_channels(c, true),
-            backing::Dtype::F32 => mode_from_channels_f32(c),
-        });
+        let mode = mode.unwrap_or_else(|| mode_for_dtype(dtype, c));
         let cs = cs.unwrap_or_else(|| default_color_space(c));
 
         if copy || !c_contig {
@@ -1497,12 +1503,19 @@ impl PyImageApi {
         let py = slf.py();
         let me = slf.borrow();
         // Device-resident: auto-copy back to host (D2H), then view the owned host
-        // buffer. Unlike the host path below, this always copies.
+        // buffer. Unlike the host path below, this always copies — the array does
+        // NOT share the device buffer, so it is returned read-only. Writing it
+        // would land on the throwaway host copy and be silently lost; callers who
+        // want a writable host image must go through `.cpu()`.
         #[cfg(feature = "cuda")]
         if me.as_device().is_some() {
             let host = me.to_host_internal(py)?;
             drop(me);
-            return Self::numpy_view_of(Bound::new(py, host)?);
+            let arr = Self::numpy_view_of(Bound::new(py, host)?)?;
+            let kwargs = pyo3::types::PyDict::new(py);
+            kwargs.set_item("write", false)?;
+            arr.bind(py).call_method("setflags", (), Some(&kwargs))?;
+            return Ok(arr);
         }
         // Host guard: numpy views dereference the buffer on the host.
         me.backing.ensure_host()?;
@@ -2313,9 +2326,12 @@ impl PyImageApi {
         self.dtype_obj(py)
     }
 
-    /// The underlying numpy array (zero-copy view sharing memory with the
-    /// backing). For a borrowed-numpy Image this is the original ndarray; for
-    /// an owned buffer it is a fresh view whose base is this Image (kept alive).
+    /// The underlying numpy array. For a **host** image this is a zero-copy view
+    /// sharing memory with the backing (the original ndarray for a borrowed-numpy
+    /// Image; otherwise a fresh view whose base is this Image, kept alive). For a
+    /// **device** image it is a read-only host copy (D2H) — it does not share the
+    /// device buffer, so writes would be lost; use `.cpu()` for a writable host
+    /// image.
     #[getter]
     pub fn data(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         Self::numpy_view_of(slf)
@@ -3266,9 +3282,11 @@ impl PyImageApi {
     /// (CPU or, for a DLPack-imported device image, e.g. CUDA).
     ///
     /// Keyword arguments:
-    /// - `stream`: ignored. This is a zero-copy pass-through that performs no
-    ///   compute or synchronization, so for device tensors the consumer is
-    ///   responsible for any stream synchronization on its side.
+    /// - `stream`: the consumer's CUDA stream (DLPack convention). For a device
+    ///   image the producing stream is ordered *before* it without blocking the
+    ///   host — a record-event + `cuStreamWaitEvent` fence. `-1` means "no
+    ///   synchronization"; `None` (or an image with no carried stream) falls back
+    ///   to a full host sync so the consumer always sees fully-written pixels.
     /// - `dl_device`: a cross-device request is rejected; only an explicit
     ///   request matching the image's own device is honoured.
     /// - `copy`: `copy=True` is not supported.
@@ -3281,15 +3299,27 @@ impl PyImageApi {
         dl_device: Option<Py<PyAny>>,
         copy: Option<bool>,
     ) -> PyResult<Py<PyAny>> {
-        // stream is intentionally ignored: zero-copy pass-through does no compute
-        // or sync, so stream synchronization is the consumer's responsibility.
-        let _ = stream;
-        // Device export: flush the producing stream first so the consumer sees
-        // fully-written pixels regardless of which stream it reads on.
+        // Device export: order the producing stream before the consumer's so it
+        // sees fully-written pixels. A concrete consumer stream is fenced into
+        // without blocking the host (record-event + wait); `-1` skips sync at the
+        // consumer's request; `None` (or no carried stream) does a full host sync.
         #[cfg(feature = "cuda")]
         if let Some(dev) = slf.borrow().as_device() {
-            dev.synchronize()?;
+            let consumer: Option<isize> = match &stream {
+                Some(obj) => Some(obj.bind(py).extract::<isize>()?),
+                None => None,
+            };
+            match consumer {
+                Some(-1) => {} // consumer explicitly requested no synchronization
+                Some(h) => match dev.cuda_stream() {
+                    Some(s) => crate::cuda_ext::fence_stream_into(s, Some(h as usize))?,
+                    None => dev.synchronize()?,
+                },
+                None => dev.synchronize()?,
+            }
         }
+        #[cfg(not(feature = "cuda"))]
+        let _ = stream;
         let own_device = slf.borrow().backing.device();
         // Validate dl_device: only a request matching the image's own device is
         // honoured. Cross-device export would require a host/device copy, which
@@ -3464,11 +3494,7 @@ impl PyImageApi {
                 if ty == dlpack_rs::ffi::DLDeviceType::kDLCUDA as i32 {
                     let arc = crate::cuda_ext::dlpack_to_device_arc(py, obj, true)?;
                     let cs = default_color_space(arc.channels());
-                    let mode = match arc.dtype_enum() {
-                        backing::Dtype::U8 => mode_from_channels(arc.channels(), false),
-                        backing::Dtype::F32 => mode_from_channels_f32(arc.channels()),
-                        backing::Dtype::U16 => mode_from_channels(arc.channels(), true),
-                    };
+                    let mode = mode_for_dtype(arc.dtype_enum(), arc.channels());
                     return Ok(Self::from_device_arc(arc, false, cs, mode));
                 }
             }
@@ -3730,11 +3756,7 @@ impl PyImageApi {
             }
         }
 
-        let mode = match dtype {
-            backing::Dtype::U8 => mode_from_channels(c, false),
-            backing::Dtype::U16 => mode_from_channels(c, true),
-            backing::Dtype::F32 => mode_from_channels_f32(c),
-        };
+        let mode = mode_for_dtype(dtype, c);
 
         Ok(Self {
             backing: backing::Backing::Borrowed {
@@ -3937,22 +3959,9 @@ fn resolve_stream(stream: Option<PyRef<'_, PyStream>>) -> PyResult<ResolvedStrea
 /// foreign stream to fence into.
 #[cfg(feature = "cuda")]
 fn fence_into_foreign(resolved: &ResolvedStream) -> PyResult<()> {
-    let Some(h) = resolved.foreign else {
-        return Ok(());
-    };
-    let ev = resolved.launch.record_event(None).map_err(to_pyerr)?;
-    // SAFETY: `h` is the caller's live `CUstream` (vouched for via from_handle /
-    // from_cuda_stream); the wait is enqueued before `ev` is dropped, and CUDA
-    // keeps the event alive until the enqueued wait completes.
-    unsafe {
-        cudarc::driver::sys::cuStreamWaitEvent(
-            h as cudarc::driver::sys::CUstream,
-            ev.cu_event(),
-            0,
-        )
-    }
-    .result()
-    .map_err(to_pyerr)
+    // Same record-event + `cuStreamWaitEvent` primitive the preprocessor uses;
+    // a `ResolvedStream` just carries the (launch, foreign-handle) pair it needs.
+    crate::cuda_ext::fence_stream_into(&resolved.launch, resolved.foreign)
 }
 
 /// `Image.cuda` — namespace of CUDA constructors. Reached as a class attribute
@@ -4029,11 +4038,7 @@ impl ImageCudaNs {
             let _ = stream;
             let arc = crate::cuda_ext::dlpack_to_device_arc(py, obj, copy)?;
             let cs = default_color_space(arc.channels());
-            let mode = match arc.dtype_enum() {
-                backing::Dtype::U8 => mode_from_channels(arc.channels(), false),
-                backing::Dtype::F32 => mode_from_channels_f32(arc.channels()),
-                backing::Dtype::U16 => mode_from_channels(arc.channels(), true),
-            };
+            let mode = mode_for_dtype(arc.dtype_enum(), arc.channels());
             // A zero-copy alias (copy=false) may reference a read-only producer.
             Ok(PyImageApi::from_device_arc(arc, !copy, cs, mode))
         }

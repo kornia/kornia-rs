@@ -283,7 +283,7 @@ pub(crate) fn dlpack_to_device_arc(
         if ty != dlpack_rs::ffi::DLDeviceType::kDLCUDA {
             return Err(PyValueError::new_err(
                 "from_dlpack: tensor is not on a CUDA device; \
-                 for host tensors use kornia_rs.cuda.upload",
+                 for host tensors use Image.from_numpy or Image.from_dlpack",
             ));
         }
     }
@@ -346,7 +346,7 @@ pub(crate) fn dlpack_to_device_arc(
     if t.device.device_type != dlpack_rs::ffi::DLDeviceType::kDLCUDA {
         return Err(PyValueError::new_err(
             "from_dlpack: tensor is not on a CUDA device (device_type != kDLCUDA); \
-             for host tensors use kornia_rs.cuda.upload",
+             for host tensors use Image.from_numpy or Image.from_dlpack",
         ));
     }
     crate::dlpack::validate_dlpack_rank(t.ndim, t.shape)?;
@@ -480,7 +480,10 @@ macro_rules! conv_fn {
         pub fn $pyname(img: &PyImageApi) -> PyResult<PyImageApi> {
             let stream = default_stream()?;
             let src = device_src!(img, stringify!($pyname), $srcvar);
-            let mut dst = Image::<$t, $dc>::zeros_cuda(src.size(), &stream).map_err(err)?;
+            // SAFETY: the ConvertColor kernel writes every output pixel (one
+            // thread per pixel, bounds-guarded), so the uninitialized destination
+            // is fully overwritten before any read.
+            let mut dst = unsafe { Image::<$t, $dc>::uninit_cuda(src.size(), &stream) }.map_err(err)?;
             convert_pair!(src, $snt, &mut dst, $dnt)?;
             Ok(PyImageApi::from_device(
                 Inner::$dvar(dst),
@@ -545,7 +548,9 @@ conv_fn!(
 pub fn sepia_from_rgb(img: &PyImageApi) -> PyResult<PyImageApi> {
     let stream = default_stream()?;
     let src = device_src!(img, "sepia_from_rgb", U8C3);
-    let mut dst = Image::<u8, 3>::zeros_cuda(src.size(), &stream).map_err(err)?;
+    // SAFETY: the sepia kernel writes every output pixel, so the uninitialized
+    // destination is fully overwritten before any read.
+    let mut dst = unsafe { Image::<u8, 3>::uninit_cuda(src.size(), &stream) }.map_err(err)?;
     color::sepia_from_rgb_u8(src, &mut dst).map_err(err)?;
     Ok(PyImageApi::from_device(
         Inner::U8C3(dst),
@@ -562,7 +567,9 @@ pub fn apply_colormap(img: &PyImageApi, colormap: &str) -> PyResult<PyImageApi> 
     let src = device_src!(img, "apply_colormap", U8C1);
     let cmap = color::ColormapType::from_name(colormap)
         .ok_or_else(|| PyValueError::new_err(format!("unknown colormap '{colormap}'")))?;
-    let mut dst = Image::<u8, 3>::zeros_cuda(src.size(), &stream).map_err(err)?;
+    // SAFETY: the colormap kernel writes every output pixel, so the uninitialized
+    // destination is fully overwritten before any read.
+    let mut dst = unsafe { Image::<u8, 3>::uninit_cuda(src.size(), &stream) }.map_err(err)?;
     color::apply_colormap(src, &mut dst, cmap).map_err(err)?;
     Ok(PyImageApi::from_device(
         Inner::U8C3(dst),
@@ -588,7 +595,10 @@ pub fn rgb_from_bayer(img: &PyImageApi, pattern: &str) -> PyResult<PyImageApi> {
             )))
         }
     };
-    let mut dst = Image::<u8, 3>::zeros_cuda(src.size(), &stream).map_err(err)?;
+    // SAFETY: the bayer demosaic kernel writes every output pixel (bounds-guarded,
+    // replicate-border reads), so the uninitialized destination is fully
+    // overwritten before any read.
+    let mut dst = unsafe { Image::<u8, 3>::uninit_cuda(src.size(), &stream) }.map_err(err)?;
     color::rgb_from_bayer(src, pat, &mut dst).map_err(err)?;
     Ok(PyImageApi::from_device(
         Inner::U8C3(dst),
@@ -812,7 +822,7 @@ fn parse_format(s: &str) -> PyResult<SourceFormat> {
 /// completion (record an event, `cuStreamWaitEvent`) so the caller's subsequent
 /// work — e.g. `execute_async_v3(their_stream)` — is ordered after the
 /// preprocess without a host sync. No-op when `consumer` is `None`.
-fn fence_stream_into(launch: &Arc<CudaStream>, consumer: Option<usize>) -> PyResult<()> {
+pub(crate) fn fence_stream_into(launch: &Arc<CudaStream>, consumer: Option<usize>) -> PyResult<()> {
     let Some(h) = consumer else { return Ok(()) };
     let ev = launch.record_event(None).map_err(err)?;
     // SAFETY: `h` is the caller's live `CUstream`; the wait is enqueued before
@@ -1100,25 +1110,23 @@ impl PyCudaPreprocessor {
             // ownership and frees it.
             // SAFETY: `out_ptr`/`n_elem` come from the live `out` CudaTensor of
             // exactly this shape & dtype, kept alive for this whole call.
+            macro_rules! run_into_foreign {
+                ($ty:ty, $run:ident) => {{
+                    let slice =
+                        unsafe { self.stream.upgrade_device_ptr::<$ty>(out_ptr, n_elem) };
+                    let mut dst = Tensor::from_foreign_cudaslice(
+                        slice,
+                        shape,
+                        self.stream.clone(),
+                        Box::new(()),
+                    );
+                    self.pre.$run(d_src, width, height, &mut dst).map_err(err)?;
+                }};
+            }
             if self.f16 {
-                let slice =
-                    unsafe { self.stream.upgrade_device_ptr::<half::f16>(out_ptr, n_elem) };
-                let mut dst = Tensor::from_foreign_cudaslice(
-                    slice,
-                    shape,
-                    self.stream.clone(),
-                    Box::new(()),
-                );
-                self.pre.run_raw_f16(d_src, width, height, &mut dst).map_err(err)?;
+                run_into_foreign!(half::f16, run_raw_f16);
             } else {
-                let slice = unsafe { self.stream.upgrade_device_ptr::<f32>(out_ptr, n_elem) };
-                let mut dst = Tensor::from_foreign_cudaslice(
-                    slice,
-                    shape,
-                    self.stream.clone(),
-                    Box::new(()),
-                );
-                self.pre.run_raw(d_src, width, height, &mut dst).map_err(err)?;
+                run_into_foreign!(f32, run_raw);
             }
             Ok(())
         })?;

@@ -244,8 +244,8 @@ impl Backing {
         } else {
             Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "operation requires a host (CPU) image; this image is on device \
-                 (device_type={}); transfer it to host first (e.g. call .cpu() on \
-                 the source tensor) before this operation",
+                 (device_type={}); move it to the host first by calling .cpu() on \
+                 this image before this operation",
                 self.device().0
             )))
         }
