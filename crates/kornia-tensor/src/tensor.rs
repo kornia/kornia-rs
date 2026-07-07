@@ -972,9 +972,9 @@ where
                     let num = format!("{v:.4e}");
                     let (before, after) = num.split_once('e').unwrap_or((num.as_str(), ""));
                     let after = if let Some(stripped) = after.strip_prefix('-') {
-                        format!("-{:0>2}", &stripped)
+                        format!("-{stripped:0>2}")
                     } else {
-                        format!("+{:0>2}", &after)
+                        format!("+{after:0>2}")
                     };
                     format!("{before}e{after}")
                 } else {

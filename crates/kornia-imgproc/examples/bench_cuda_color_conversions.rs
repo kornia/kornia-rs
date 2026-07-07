@@ -650,8 +650,7 @@ fn main() {
             &CudaSlice<f32>,
             &mut CudaSlice<f32>,
             usize,
-        )
-            -> Result<(), kornia_imgproc::cuda::color::CudaColorError>;
+        ) -> Result<(), kornia_imgproc::cuda::color::CudaColorError>;
         let f32_cases: [(&'static str, CpuF32Fn, LaunchF32Fn); 2] = [
             (
                 "hsv_from_rgb_f32",
