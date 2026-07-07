@@ -129,7 +129,8 @@ pub fn gray_from_rgb_deprecated(py: Python<'_>, image: image::PyImage) -> PyResu
         py,
         "kornia_rs.gray_from_rgb is deprecated. Use kornia_rs.imgproc.gray_from_rgb.",
     )?;
-    color::gray_from_rgb(py, image)
+    let out = color::gray_from_rgb(py, image.bind(py).as_any())?;
+    out.bind(py).extract::<image::PyImage>().map_err(Into::into)
 }
 
 // Enhance / Histogram

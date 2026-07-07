@@ -3,10 +3,32 @@ use pyo3::prelude::*;
 
 use crate::image::{
     alloc_output_pyarray, alloc_output_pyarray_f32, numpy_as_image, numpy_as_image_f32, to_pyerr,
-    PyImage, PyImageF32,
+    PyImage, PyImageApi, PyImageF32,
 };
 use kornia_image::ImageSize;
 use kornia_imgproc::color;
+
+/// Residency dispatch for a color op that accepts numpy **or** a device `Image`.
+///
+/// If `image` is a `kornia_rs.image.Image` on a CUDA device, run the GPU
+/// conversion `dev_op` (returning a device `Image`); a host `Image` is rejected
+/// by `dev_op` with a clear hint. Returns `None` for a plain numpy input so the
+/// caller falls through to its CPU path (numpy in → numpy out).
+#[cfg(feature = "cuda")]
+fn dispatch_device<F>(
+    py: Python<'_>,
+    image: &Bound<'_, PyAny>,
+    dev_op: F,
+) -> PyResult<Option<Py<PyAny>>>
+where
+    F: FnOnce(&PyImageApi) -> PyResult<PyImageApi>,
+{
+    if let Ok(api) = image.downcast::<PyImageApi>() {
+        let out = dev_op(&api.borrow())?;
+        return Ok(Some(Py::new(py, out)?.into_any()));
+    }
+    Ok(None)
+}
 
 #[pyfunction]
 pub fn rgb_from_gray(py: Python<'_>, image: PyImage) -> PyResult<PyImage> {
@@ -40,12 +62,17 @@ pub fn gray_from_rgb_f32(py: Python<'_>, image: PyImageF32) -> PyResult<PyImageF
 }
 
 #[pyfunction]
-pub fn gray_from_rgb(py: Python<'_>, image: PyImage) -> PyResult<PyImage> {
+pub fn gray_from_rgb(py: Python<'_>, image: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+    #[cfg(feature = "cuda")]
+    if let Some(dev) = dispatch_device(py, image, crate::cuda_ext::gray_from_rgb)? {
+        return Ok(dev);
+    }
+    let image: PyImage = image.extract()?;
     let src = unsafe { numpy_as_image::<3>(py, &image)? };
     let (mut dst, out) = unsafe { alloc_output_pyarray::<1>(py, src.size())? };
     py.detach(|| color::gray_from_rgb_u8(&src, &mut dst))
         .map_err(to_pyerr)?;
-    Ok(out)
+    Ok(out.into_any())
 }
 
 #[pyfunction]
