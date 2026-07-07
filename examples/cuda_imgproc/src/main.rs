@@ -7,7 +7,7 @@
 //! Pipeline (all device buffers stay kornia `Tensor`s):
 //!   load RGB8 (kornia-io) → to_cuda (H2D) → kernel → to_host (D2H) → write PNG
 //!
-//! Eased CUDA API used here (from `kornia_tensor`, behind the `cudarc` feature):
+//! Eased CUDA API used here (from `kornia_tensor`, behind the `cuda` feature):
 //!   - `Tensor::to_cuda`        — upload a host tensor to device (no manual flatten/copy)
 //!   - `zeros_cuda`             — allocate a zero-filled device output tensor
 //!   - `CudaKernel::compile`    — NVRTC compile with the device arch auto-detected
@@ -59,7 +59,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── Eased device path: everything stays a kornia Tensor ──────────────────
     // Upload the RGB image directly — `to_cuda` copies the contiguous
     // h*w*3 bytes to a device tensor (no manual host flatten / Vec copy).
-    let dev_rgb: Tensor<u8, 3> = rgb.to_cuda(&stream)?;
+    // `rgb.0` is the inner `Image<u8, 3>`, whose `to_cuda` yields a `Tensor`
+    // (the `Rgb8::to_cuda` that shadows it returns a device-resident `Rgb8`).
+    let dev_rgb: Tensor<u8, 3> = rgb.0.to_cuda(&stream)?;
     // Allocate the device output as a zero-filled device tensor (no raw CudaSlice).
     let mut dev_gray = zeros_cuda::<u8, 1>([npix], &stream)?;
 
@@ -92,7 +94,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             height: h,
         },
         gray_slice.to_vec(),
-        kornia_image::allocator::host_alloc(),
     )?;
     let out_path = "/tmp/cuda_imgproc_output.png";
     write_image_png_gray8(out_path, &gray_img)?;

@@ -269,7 +269,7 @@ pub fn apply_colormap(
             dst.rows(),
         ));
     }
-    #[cfg(feature = "gpu-cuda")]
+    #[cfg(feature = "cuda")]
     {
         use super::cuda_dispatch::{pair_residency, Residency};
         if let Residency::Device(exec) = pair_residency(src, dst)? {

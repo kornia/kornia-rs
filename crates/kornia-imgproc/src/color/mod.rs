@@ -57,7 +57,7 @@ pub use kornia_image::color_spaces::{
 };
 
 mod convert;
-#[cfg(feature = "gpu-cuda")]
+#[cfg(feature = "cuda")]
 pub(crate) mod cuda_dispatch;
 mod kernel_common;
 

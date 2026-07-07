@@ -11,7 +11,7 @@
 //! # Optimisations applied
 //!
 //! * **32×8 thread block (default)** — full warp per output row, same
-//!   reasoning as `resize_cuda`: better write coalescing and source reads
+//!   reasoning as `resize`: better write coalescing and source reads
 //!   confined to nearby rows per warp.
 //! * **CUDA texture objects** — source reads route through the dedicated
 //!   2D-spatial texture cache.  `CU_TR_ADDRESS_MODE_BORDER` returns 0 for

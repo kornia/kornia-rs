@@ -39,7 +39,7 @@
 //!   they are host↔device transfers, which is correct.)
 //!
 //! - `miri` cannot execute CUDA driver calls; device tests are guarded by
-//!   `#[cfg(all(test, feature = "cudarc"))]` and run on the real Jetson Orin.
+//!   `#[cfg(all(test, feature = "cuda"))]` and run on the real Jetson Orin.
 
 use std::{
     any::Any,
@@ -1010,7 +1010,7 @@ where
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-#[cfg(all(test, feature = "cudarc"))]
+#[cfg(all(test, feature = "cuda"))]
 mod tests {
     use super::*;
     use crate::Tensor;

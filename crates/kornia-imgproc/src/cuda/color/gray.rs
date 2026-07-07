@@ -215,10 +215,10 @@ pub fn launch_rgb_from_gray_f64(
     launch_map(kernel, stream, src, dst, npixels, 1, 3, PxPerThread::One)
 }
 
-#[cfg(all(test, feature = "gpu-cuda"))]
+#[cfg(all(test, feature = "cuda"))]
 mod tests {
     use super::*;
-    use crate::gpu::color_cuda::test_utils::{default_stream, pattern_f32, pattern_u8};
+    use crate::cuda::color::test_utils::{default_stream, pattern_f32, pattern_u8};
 
     // Odd size (tail coverage) + a realistic size.
     const SIZES: &[usize] = &[1, 37 * 23, 640 * 480];
@@ -255,7 +255,7 @@ mod tests {
         let gpu: Vec<f32> = stream.clone_dtoh(&d_dst).unwrap();
         stream.synchronize().unwrap();
 
-        let max_diff = crate::gpu::color_cuda::test_utils::max_abs_diff_f32(&gpu, &cpu);
+        let max_diff = crate::cuda::color::test_utils::max_abs_diff_f32(&gpu, &cpu);
         assert!(max_diff <= 1e-3, "f32 gray max diff {max_diff} > 1e-3");
     }
 

@@ -4,7 +4,7 @@
 //! for bilinear and nearest-neighbor interpolation on both GPU and CPU paths.
 //!
 //! ```text
-//! cargo run --example bench_gpu_warp_affine --features gpu-cuda --release
+//! cargo run --example bench_cuda_warp_affine --features cuda --release
 //! ```
 
 use kornia_image::{Image, ImageSize};
@@ -28,11 +28,11 @@ fn gb_per_sec(npix: usize, ms: f64) -> f64 {
 }
 
 fn main() {
-    #[cfg(feature = "gpu-cuda")]
+    #[cfg(feature = "cuda")]
     run_gpu_cuda();
 
-    #[cfg(not(feature = "gpu-cuda"))]
-    println!("(native CUDA section skipped — build with --features gpu-cuda to enable)");
+    #[cfg(not(feature = "cuda"))]
+    println!("(native CUDA section skipped — build with --features cuda to enable)");
 
     run_cpu();
 }
@@ -41,10 +41,10 @@ fn main() {
 // GPU section
 // --------------------------------------------------------------------------
 
-#[cfg(feature = "gpu-cuda")]
+#[cfg(feature = "cuda")]
 fn run_gpu_cuda() {
     use cudarc::driver::CudaContext;
-    use kornia_imgproc::gpu::warp_affine_cuda::{
+    use kornia_imgproc::cuda::warp_affine::{
         launch_warp_affine_bicubic_cuda, launch_warp_affine_bilinear_cuda,
         launch_warp_affine_nearest_cuda,
     };

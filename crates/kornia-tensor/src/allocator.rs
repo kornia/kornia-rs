@@ -39,7 +39,7 @@ pub enum TensorAllocatorError {
     /// A CUDA allocation or driver call failed.
     ///
     /// Only produced when the `cudarc` feature is enabled.
-    #[cfg(feature = "cudarc")]
+    #[cfg(feature = "cuda")]
     #[error("CUDA allocator error: {0}")]
     CudaError(String),
 }

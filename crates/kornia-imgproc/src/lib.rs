@@ -81,8 +81,8 @@ pub mod optical_flow_pyr_lk;
 /// contours
 pub mod contours;
 
-/// GPU-accelerated image processing kernels (CubeCL and native CUDA paths).
+/// CUDA-accelerated image processing kernels (native NVRTC path).
 ///
-/// Enabled by the `gpu-cubecl` or `gpu-cuda` feature.
-#[cfg(any(feature = "gpu-cubecl", feature = "gpu-cuda"))]
-pub mod gpu;
+/// Enabled by the `cuda` feature.
+#[cfg(feature = "cuda")]
+pub mod cuda;

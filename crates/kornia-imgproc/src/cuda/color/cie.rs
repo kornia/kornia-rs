@@ -506,12 +506,12 @@ cie_launcher!(
     launch_rgb_from_luv_f32, 7
 );
 
-#[cfg(all(test, feature = "gpu-cuda"))]
+#[cfg(all(test, feature = "cuda"))]
 mod tests {
     use kornia_image::{Image, ImageSize};
 
     use super::*;
-    use crate::gpu::color_cuda::test_utils::{default_stream, pattern_f32};
+    use crate::cuda::color::test_utils::{default_stream, pattern_f32};
 
     type CpuF64Fn = fn(&Image<f64, 3>, &mut Image<f64, 3>) -> Result<(), kornia_image::ImageError>;
     type Launch = fn(
@@ -546,7 +546,7 @@ mod tests {
     }
 
     fn assert_close(name: &str, gpu: &[f32], oracle: &[f32], tol: f32) {
-        let max_diff = crate::gpu::color_cuda::test_utils::max_abs_diff_f32(gpu, oracle);
+        let max_diff = crate::cuda::color::test_utils::max_abs_diff_f32(gpu, oracle);
         assert!(max_diff <= tol, "{name} max diff {max_diff} > {tol}");
     }
 

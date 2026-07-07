@@ -46,10 +46,10 @@
 //! For the GPU path build with [`build_cuda`](PreprocessorBuilder::build_cuda) and
 //! pass device-resident operands (`image.to_cuda`, `zeros_cuda`).
 
-#[cfg(feature = "cudarc")]
+#[cfg(feature = "cuda")]
 use std::sync::Arc;
 
-#[cfg(feature = "cudarc")]
+#[cfg(feature = "cuda")]
 use cudarc::driver::CudaStream;
 use kornia_image::{Image, ImageError, ImageSize, InterpolationMode};
 use kornia_tensor::Tensor;
@@ -59,7 +59,7 @@ use crate::resize::{
     resize_normalize_to_tensor_u8_to_f32_nearest, resize_normalize_to_tensor_u8_to_f32_separable,
     NormalizeParams,
 };
-#[cfg(feature = "cudarc")]
+#[cfg(feature = "cuda")]
 use kornia_tensor::{CudaError, CudaKernel};
 
 /// How the source image is fit into the model's output rectangle.
@@ -142,13 +142,13 @@ pub enum SourceFormat {
     Gray8,
     /// Planar 4:2:0: full-res Y plane then interleaved half-res UV
     /// (`w*h*3/2` bytes, BT.601 limited — byte-identical to
-    /// `gpu::color_cuda::video`). Even dimensions required.
+    /// `gpu::color::video`). Even dimensions required.
     Nv12,
     /// Packed 4:2:2 `Y0 U Y1 V`, 2 bytes/px (BT.601 limited). Even width.
     Yuyv,
 }
 
-#[cfg(feature = "cudarc")]
+#[cfg(feature = "cuda")]
 impl SourceFormat {
     /// Kernel `fmt` launch-arg code (see the fetch_px table in KERNEL_SRC).
     fn fmt_code(self) -> i32 {
@@ -238,7 +238,7 @@ impl SourceFormat {
 
 /// Source-buffer geometry as the kernel sees it: dimensions, primary-plane
 /// byte pitch, interleaved bytes/px, and the `fmt` decode selector.
-#[cfg(feature = "cudarc")]
+#[cfg(feature = "cuda")]
 #[derive(Clone, Copy)]
 struct SrcGeom {
     w: usize,
@@ -252,7 +252,7 @@ struct SrcGeom {
 #[derive(Debug, thiserror::Error)]
 pub enum PreprocessError {
     /// A CUDA error from kernel compilation or launch.
-    #[cfg(feature = "cudarc")]
+    #[cfg(feature = "cuda")]
     #[error("CUDA error: {0}")]
     Cuda(#[from] CudaError),
     /// A CUDA preprocessor was given a host-resident source image; call
@@ -290,7 +290,7 @@ pub enum PreprocessError {
     UnsupportedSampling(InterpolationMode),
     /// A [`PitchedSurface`] whose pitch/len don't cover `width`×`height`, or
     /// with a channel count other than 3/4.
-    #[cfg(feature = "cudarc")]
+    #[cfg(feature = "cuda")]
     #[error("invalid pitched surface (need pitch >= width*channels and len >= pitch*height)")]
     InvalidSurface,
     /// The typed `run`/`run_f16` entry requires an interleaved format matching
@@ -299,7 +299,7 @@ pub enum PreprocessError {
     FormatNeedsRawBuffer(SourceFormat),
     /// The raw source buffer is smaller than the format requires, or the
     /// dimensions violate the format's subsampling constraints.
-    #[cfg(feature = "cudarc")]
+    #[cfg(feature = "cuda")]
     #[error(
         "invalid raw source for {format:?} at {width}x{height} (got {got} bytes, need {need})"
     )]
@@ -316,7 +316,7 @@ pub enum PreprocessError {
         need: usize,
     },
     /// The destination batch dim does not match the number of frames.
-    #[cfg(feature = "cudarc")]
+    #[cfg(feature = "cuda")]
     #[error("destination batch dim {dst_n} != frame count {frames}")]
     BatchMismatch {
         /// Destination tensor N.
@@ -326,7 +326,7 @@ pub enum PreprocessError {
     },
     /// Source or output dimensions exceed the kernel's 32-bit indexing (the CUDA
     /// path indexes pixels as `int`). Unreachable on real hardware, guarded anyway.
-    #[cfg(feature = "cudarc")]
+    #[cfg(feature = "cuda")]
     #[error("dimensions exceed the 32-bit CUDA kernel index limit")]
     DimensionsTooLarge,
 }
@@ -340,9 +340,9 @@ struct Affine {
     scale_y: f32,
     // The fractional pad offsets are consumed by the CUDA kernel's per-sample
     // affine; the CPU path derives an integer content box from the scales.
-    #[cfg_attr(not(feature = "cudarc"), allow(dead_code))]
+    #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
     pad_x: f32,
-    #[cfg_attr(not(feature = "cudarc"), allow(dead_code))]
+    #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
     pad_y: f32,
 }
 
@@ -376,7 +376,7 @@ impl Affine {
 ///
 /// `data` must hold at least `row_pitch * height` bytes; `row_pitch >=
 /// width * channels`. `channels` is 3 (RGB) or 4 (RGBA — alpha skipped).
-#[cfg(feature = "cudarc")]
+#[cfg(feature = "cuda")]
 pub struct PitchedSurface<'a> {
     /// Device buffer holding the pitched rows.
     pub data: &'a cudarc::driver::CudaSlice<u8>,
@@ -390,7 +390,7 @@ pub struct PitchedSurface<'a> {
     pub channels: usize,
 }
 
-#[cfg(feature = "cudarc")]
+#[cfg(feature = "cuda")]
 struct CudaBackend {
     kernel: CudaKernel,
     kernel_f16: CudaKernel,
@@ -399,19 +399,19 @@ struct CudaBackend {
 
 /// Output element types the CUDA path can write; each selects its
 /// pre-compiled kernel variant (`f32` or round-to-nearest-even `f16`).
-#[cfg(feature = "cudarc")]
+#[cfg(feature = "cuda")]
 trait OutElem: cudarc::driver::DeviceRepr + cudarc::driver::ValidAsZeroBits + 'static {
     fn kernel(cuda: &CudaBackend) -> &CudaKernel;
 }
 
-#[cfg(feature = "cudarc")]
+#[cfg(feature = "cuda")]
 impl OutElem for f32 {
     fn kernel(cuda: &CudaBackend) -> &CudaKernel {
         &cuda.kernel
     }
 }
 
-#[cfg(feature = "cudarc")]
+#[cfg(feature = "cuda")]
 impl OutElem for half::f16 {
     fn kernel(cuda: &CudaBackend) -> &CudaKernel {
         &cuda.kernel_f16
@@ -426,7 +426,7 @@ impl OutElem for half::f16 {
 // normalization — config is passed as launch args (single JIT compile). `src_pitch`
 // is a parameter for generality, but kornia `Image`s are tight, so the launcher
 // always passes `src_w * C`.
-#[cfg(feature = "cudarc")]
+#[cfg(feature = "cuda")]
 const KERNEL_SRC: &str = r#"
 // One thin extern-C entry per (sampling mode × output dtype): `build_cuda`
 // compiles only the selected sampling variant (per-variant register footprint
@@ -491,7 +491,7 @@ __device__ __forceinline__ float lanczos_w(float d) {
 // `fmt` selects how one (x, y) texel decodes to RGB. It is a warp-uniform
 // launch arg (same for every thread), so the branches predict perfectly and
 // the single-JIT-compile design is preserved. Q20 BT.601-limited constants
-// match gpu/color_cuda/video.rs bit-for-bit.
+// match gpu/color/video.rs bit-for-bit.
 //   0 = interleaved RGB-order (bpp = src_bpp: 3 or 4, alpha skipped)
 //   1 = interleaved BGR-order (bpp = src_bpp: 3 or 4)
 //   2 = gray, 1 byte/px (broadcast)
@@ -728,14 +728,14 @@ impl PreprocessorBuilder {
             mean,
             inv_std,
             pad_value: self.pad_value as f32,
-            #[cfg(feature = "cudarc")]
+            #[cfg(feature = "cuda")]
             cuda: None,
         })
     }
 
     /// Build a **CUDA** preprocessor on `stream` (compiles the kernel once). The
     /// [`run`](Preprocessor::run) operands must then be device-resident.
-    #[cfg(feature = "cudarc")]
+    #[cfg(feature = "cuda")]
     pub fn build_cuda(self, stream: Arc<CudaStream>) -> Result<Preprocessor, PreprocessError> {
         if !matches!(
             self.sampling,
@@ -791,7 +791,7 @@ pub struct Preprocessor {
     mean: [f32; 3],
     inv_std: [f32; 3],
     pad_value: f32,
-    #[cfg(feature = "cudarc")]
+    #[cfg(feature = "cuda")]
     cuda: Option<CudaBackend>,
 }
 
@@ -806,7 +806,7 @@ fn validate_dst_shape(shape: [usize; 4], expected_n: usize) -> Result<(), Prepro
     if shape[1] != 3 || (expected_n == 1 && shape[0] != 1) {
         return Err(PreprocessError::BadOutputShape(shape));
     }
-    #[cfg(feature = "cudarc")]
+    #[cfg(feature = "cuda")]
     if shape[0] != expected_n {
         return Err(PreprocessError::BatchMismatch {
             dst_n: shape[0],
@@ -816,7 +816,7 @@ fn validate_dst_shape(shape: [usize; 4], expected_n: usize) -> Result<(), Prepro
     Ok(())
 }
 
-#[cfg(feature = "cudarc")]
+#[cfg(feature = "cuda")]
 impl PitchedSurface<'_> {
     fn validate(&self) -> Result<(), PreprocessError> {
         if self.channels != 3 && self.channels != 4 {
@@ -845,13 +845,13 @@ impl Preprocessor {
     }
 
     /// The CUDA stream this preprocessor launches on, or `None` for a CPU one.
-    #[cfg(feature = "cudarc")]
+    #[cfg(feature = "cuda")]
     pub fn stream(&self) -> Option<&Arc<CudaStream>> {
         self.cuda.as_ref().map(|c| &c.stream)
     }
 
     /// Build a **CUDA** letterbox preprocessor (unit-scale, pad 114) on `stream`.
-    #[cfg(feature = "cudarc")]
+    #[cfg(feature = "cuda")]
     pub fn letterbox(stream: Arc<CudaStream>) -> Result<Self, PreprocessError> {
         PreprocessorBuilder::new()
             .mode(ResizeMode::Letterbox)
@@ -859,7 +859,7 @@ impl Preprocessor {
     }
 
     /// Build a **CUDA** stretch preprocessor (unit-scale) on `stream`.
-    #[cfg(feature = "cudarc")]
+    #[cfg(feature = "cuda")]
     pub fn stretch(stream: Arc<CudaStream>) -> Result<Self, PreprocessError> {
         PreprocessorBuilder::new()
             .mode(ResizeMode::Stretch)
@@ -867,7 +867,7 @@ impl Preprocessor {
     }
 
     /// Build a **CUDA** preprocessor for an explicit [`ResizeMode`] (unit-scale, pad 114).
-    #[cfg(feature = "cudarc")]
+    #[cfg(feature = "cuda")]
     pub fn with_mode(stream: Arc<CudaStream>, mode: ResizeMode) -> Result<Self, PreprocessError> {
         PreprocessorBuilder::new().mode(mode).build_cuda(stream)
     }
@@ -897,7 +897,7 @@ impl Preprocessor {
         let a = Affine::new(self.mode, src.width(), src.height(), dst_w, dst_h);
 
         self.validate_typed_format::<C>()?;
-        #[cfg(feature = "cudarc")]
+        #[cfg(feature = "cuda")]
         if let Some(cuda) = &self.cuda {
             return self.run_typed_cuda::<f32, C>(cuda, src, dst, &a);
         }
@@ -937,7 +937,7 @@ impl Preprocessor {
         a: &Affine,
     ) -> Result<(), PreprocessError> {
         // CPU preprocessor requires host-resident operands.
-        #[cfg(feature = "cudarc")]
+        #[cfg(feature = "cuda")]
         if src.0.as_cudaslice().is_some() || dst.as_cudaslice().is_some() {
             return Err(PreprocessError::NotHostData);
         }
@@ -1055,7 +1055,7 @@ impl Preprocessor {
         Ok(())
     }
 
-    #[cfg(feature = "cudarc")]
+    #[cfg(feature = "cuda")]
     fn run_typed_cuda<T: OutElem, const C: usize>(
         &self,
         cuda: &CudaBackend,
@@ -1078,7 +1078,7 @@ impl Preprocessor {
         self.launch_cuda(cuda, src_slice, g, dst, a)
     }
 
-    #[cfg(feature = "cudarc")]
+    #[cfg(feature = "cuda")]
     /// [`run`](Self::run), but writing a **half-precision** (`f16`) CHW tensor —
     /// for fp16 TensorRT engines: halves output traffic on a memory-bound op and
     /// removes the cast pass before inference. CUDA preprocessors only;
@@ -1102,7 +1102,7 @@ impl Preprocessor {
         self.run_typed_cuda::<half::f16, C>(cuda, src, dst, &a)
     }
 
-    #[cfg(feature = "cudarc")]
+    #[cfg(feature = "cuda")]
     /// Preprocess a device-resident **pitched** surface (camera / NVMM buffer)
     /// straight into the CHW tensor — resize + normalize + (RGBA→)RGB in the
     /// same single fused kernel, no repack pass. CUDA preprocessors only.
@@ -1117,7 +1117,7 @@ impl Preprocessor {
         self.run_surface_impl(src, dst)
     }
 
-    #[cfg(feature = "cudarc")]
+    #[cfg(feature = "cuda")]
     /// [`run_surface`](Self::run_surface) writing a half-precision tensor — the
     /// full camera-to-fp16-engine path (pitched NVMM in, fp16 CHW out) in one
     /// fused kernel.
@@ -1129,7 +1129,7 @@ impl Preprocessor {
         self.run_surface_impl(src, dst)
     }
 
-    #[cfg(feature = "cudarc")]
+    #[cfg(feature = "cuda")]
     fn run_surface_impl<T: OutElem>(
         &self,
         src: &PitchedSurface<'_>,
@@ -1155,7 +1155,7 @@ impl Preprocessor {
     /// those go through the tightly-packed [`run_raw`](Self::run_raw) instead.
     /// The format only selects the in-kernel swizzle; the byte stride comes
     /// from the surface's own `channels`.
-    #[cfg(feature = "cudarc")]
+    #[cfg(feature = "cuda")]
     fn surface_fmt_code(&self) -> Result<i32, PreprocessError> {
         if self.source_format.interleaved() {
             Ok(self.source_format.fmt_code())
@@ -1180,7 +1180,7 @@ impl Preprocessor {
     /// dimensions violate the format's subsampling constraints (even dims for
     /// NV12, even width for YUYV); [`PreprocessError::NotDeviceImage`] on a
     /// CPU preprocessor.
-    #[cfg(feature = "cudarc")]
+    #[cfg(feature = "cuda")]
     pub fn run_raw(
         &self,
         src: &cudarc::driver::CudaSlice<u8>,
@@ -1193,7 +1193,7 @@ impl Preprocessor {
 
     /// [`run_raw`](Self::run_raw) writing a half-precision tensor — raw camera
     /// frame to fp16 CHW engine input in one fused kernel.
-    #[cfg(feature = "cudarc")]
+    #[cfg(feature = "cuda")]
     pub fn run_raw_f16(
         &self,
         src: &cudarc::driver::CudaSlice<u8>,
@@ -1204,7 +1204,7 @@ impl Preprocessor {
         self.run_raw_impl(src, src_w, src_h, dst)
     }
 
-    #[cfg(feature = "cudarc")]
+    #[cfg(feature = "cuda")]
     fn run_raw_impl<T: OutElem>(
         &self,
         src: &cudarc::driver::CudaSlice<u8>,
@@ -1230,7 +1230,7 @@ impl Preprocessor {
     ///
     /// [`PreprocessError::BatchMismatch`] if `dst.shape[0] != frames.len()`;
     /// otherwise as [`run_raw`](Self::run_raw), checked per frame.
-    #[cfg(feature = "cudarc")]
+    #[cfg(feature = "cuda")]
     pub fn run_raw_batch(
         &self,
         frames: &[&cudarc::driver::CudaSlice<u8>],
@@ -1243,7 +1243,7 @@ impl Preprocessor {
 
     /// [`run_raw_batch`](Self::run_raw_batch) writing a half-precision tensor —
     /// batched raw frames straight into an fp16 engine input.
-    #[cfg(feature = "cudarc")]
+    #[cfg(feature = "cuda")]
     pub fn run_raw_batch_f16(
         &self,
         frames: &[&cudarc::driver::CudaSlice<u8>],
@@ -1254,7 +1254,7 @@ impl Preprocessor {
         self.run_raw_batch_impl(frames, src_w, src_h, dst)
     }
 
-    #[cfg(feature = "cudarc")]
+    #[cfg(feature = "cuda")]
     fn run_raw_batch_impl<T: OutElem>(
         &self,
         frames: &[&cudarc::driver::CudaSlice<u8>],
@@ -1283,7 +1283,7 @@ impl Preprocessor {
 
     /// A raw frame must satisfy the format's subsampling constraints and cover
     /// at least `buffer_len` bytes (longer is fine — capture buffers often pad).
-    #[cfg(feature = "cudarc")]
+    #[cfg(feature = "cuda")]
     fn validate_raw(&self, got: usize, w: usize, h: usize) -> Result<(), PreprocessError> {
         let f = self.source_format;
         let need = f.buffer_len(w, h);
@@ -1299,7 +1299,7 @@ impl Preprocessor {
         Ok(())
     }
 
-    #[cfg(feature = "cudarc")]
+    #[cfg(feature = "cuda")]
     fn launch_cuda<T: OutElem>(
         &self,
         cuda: &CudaBackend,
@@ -1319,7 +1319,7 @@ impl Preprocessor {
     /// The single launch seam: every entry point ends here. `dst_view` is one
     /// image's `3*dst_h*dst_w` CHW plane — for batches, a sub-slice of the
     /// `[N, 3, H, W]` tensor.
-    #[cfg(feature = "cudarc")]
+    #[cfg(feature = "cuda")]
     #[allow(clippy::too_many_arguments)]
     fn launch_view<T: OutElem>(
         &self,
@@ -1394,7 +1394,7 @@ mod tests {
     }
 
     // A deterministic non-solid image (per-pixel gradient) for resampling tests.
-    #[cfg(feature = "cudarc")]
+    #[cfg(feature = "cuda")]
     fn host_gradient<const C: usize>(w: usize, h: usize) -> Image<u8, C> {
         let data: Vec<u8> = (0..h)
             .flat_map(|y| {
@@ -1556,7 +1556,7 @@ mod tests {
 
     // GPU: a solid source stays exactly solid through every kernel sampling
     // branch (nearest / bilinear / lanczos), including letterbox padding.
-    #[cfg(feature = "cudarc")]
+    #[cfg(feature = "cuda")]
     #[test]
     #[ignore = "requires a CUDA device"]
     fn cuda_solid_all_sampling() {
@@ -1590,7 +1590,7 @@ mod tests {
     // A pitched RGBA surface (rows padded with garbage) must produce exactly
     // the same output as the equivalent tight RGBA image — the kernel must
     // step by pitch and never read the padding.
-    #[cfg(feature = "cudarc")]
+    #[cfg(feature = "cuda")]
     #[test]
     #[ignore = "requires a CUDA device"]
     fn pitched_surface_matches_tight() {
@@ -1640,7 +1640,7 @@ mod tests {
 
     // fp16 output: kernel-side round-to-nearest-even conversion must equal the
     // half crate's from_f32 of the f32 kernel result, bit for bit.
-    #[cfg(feature = "cudarc")]
+    #[cfg(feature = "cuda")]
     #[test]
     #[ignore = "requires a CUDA device"]
     fn f16_matches_f32_rounded() {
@@ -1679,7 +1679,7 @@ mod tests {
     // outputs are NOT bit-identical — but they must describe the same image.
     // A loose band still catches the real failure modes (channel swaps, CHW
     // transposes, normalize or pad errors), which show up as O(0.5) diffs.
-    #[cfg(feature = "cudarc")]
+    #[cfg(feature = "cuda")]
     #[test]
     #[ignore = "requires a CUDA device"]
     fn cpu_close_to_cuda() {
@@ -1761,7 +1761,7 @@ mod tests {
     }
 
     // Deterministic raw bytes for camera-format buffers.
-    #[cfg(feature = "cudarc")]
+    #[cfg(feature = "cuda")]
     fn raw_bytes(len: usize) -> Vec<u8> {
         (0..len).map(|i| ((i * 7 + 13) % 251) as u8).collect()
     }
@@ -1771,7 +1771,7 @@ mod tests {
     // camera format and sampling mode. The kernel quantizes each decoded tap
     // to integer 0..255 exactly like the standalone decoders, so the resample
     // arithmetic sees identical inputs and the outputs match bit-for-bit.
-    #[cfg(feature = "cudarc")]
+    #[cfg(feature = "cuda")]
     #[test]
     #[ignore = "requires a CUDA device"]
     fn cuda_fused_formats_match_chained() {
@@ -1849,7 +1849,7 @@ mod tests {
 
     // run_raw_batch writes each frame's CHW plane exactly as a run_raw into a
     // single-image tensor would; batch-dim mismatch errors out.
-    #[cfg(feature = "cudarc")]
+    #[cfg(feature = "cuda")]
     #[test]
     #[ignore = "requires a CUDA device"]
     fn cuda_run_raw_batch_matches_single() {
@@ -1896,7 +1896,7 @@ mod tests {
     }
 
     // run_raw validates buffer length and subsampling dims before launching.
-    #[cfg(feature = "cudarc")]
+    #[cfg(feature = "cuda")]
     #[test]
     #[ignore = "requires a CUDA device"]
     fn cuda_run_raw_validates_source() {

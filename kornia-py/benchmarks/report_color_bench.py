@@ -1,7 +1,7 @@
 """Merge kornia (Rust) + OpenCV/VPI (Python) color benchmark JSON into tables.
 
 Inputs are JSON-lines files produced by:
-  - `cargo run --example bench_gpu_color_conversions --features gpu-cuda \
+  - `cargo run --example bench_cuda_color_conversions --features cuda \
      --release -- --json > kornia.jsonl`
   - `python3 bench_color_vs_libs.py --json libs.jsonl`
 

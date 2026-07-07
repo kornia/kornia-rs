@@ -318,7 +318,7 @@ macro_rules! define_color_space {
                 &mut self.0
             }
 
-            #[cfg(feature = "cudarc")]
+            #[cfg(feature = "cuda")]
             #[doc = concat!("Upload to a device-resident ", stringify!($name), " (H2D copy).")]
             ///
             /// The result stays typed, so it flows through the same `ConvertColor`
@@ -330,7 +330,7 @@ macro_rules! define_color_space {
                 Ok(Self(self.0.to_cuda_image(stream)?))
             }
 
-            #[cfg(feature = "cudarc")]
+            #[cfg(feature = "cuda")]
             #[doc = concat!("Allocate a zero-initialised device-resident ", stringify!($name), ".")]
             pub fn zeros_cuda(
                 size: ImageSize,
@@ -339,7 +339,7 @@ macro_rules! define_color_space {
                 Ok(Self(Image::zeros_cuda(size, stream)?))
             }
 
-            #[cfg(feature = "cudarc")]
+            #[cfg(feature = "cuda")]
             #[doc = concat!("Allocate a zero-initialised pinned-memory host ", stringify!($name), ".")]
             pub fn zeros_pinned(
                 size: ImageSize,
@@ -348,13 +348,13 @@ macro_rules! define_color_space {
                 Ok(Self(Image::zeros_pinned(size, ctx)?))
             }
 
-            #[cfg(feature = "cudarc")]
+            #[cfg(feature = "cuda")]
             #[doc = concat!("Copy a device-resident ", stringify!($name), " to host on its own carried stream.")]
             pub fn download(&self) -> Result<Self, ImageError> {
                 Ok(Self(self.0.download()?))
             }
 
-            #[cfg(feature = "cudarc")]
+            #[cfg(feature = "cuda")]
             #[doc = concat!("Copy a device-resident ", stringify!($name), " back to host (D2H).")]
             pub fn to_host(
                 &self,

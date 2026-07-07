@@ -75,9 +75,9 @@ jobs:
 
       - name: Clippy CUDA-gated crates (deny warnings)
         run: |
-          cargo clippy -p kornia-tensor --features cudarc -- -D warnings
-          cargo clippy -p kornia-image --features cudarc -- -D warnings
-          cargo clippy -p kornia-imgproc --features "cudarc,gpu-cuda" -- -D warnings
+          cargo clippy -p kornia-tensor --features cuda -- -D warnings
+          cargo clippy -p kornia-image --features cuda -- -D warnings
+          cargo clippy -p kornia-imgproc --features cuda -- -D warnings
 
   cross-platform-check-macos:
     name: Check - macOS

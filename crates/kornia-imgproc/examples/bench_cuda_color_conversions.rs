@@ -13,9 +13,9 @@
 //! kornia-py/benchmarks/report_color_bench.py).
 //!
 //! ```text
-//! cargo run --example bench_gpu_color_conversions --features gpu-cuda --release [-- --json]
+//! cargo run --example bench_cuda_color_conversions --features cuda --release [-- --json]
 //! ```
-#![cfg(feature = "gpu-cuda")]
+#![cfg(feature = "cuda")]
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -24,7 +24,7 @@ use cudarc::driver::{CudaContext, CudaSlice, CudaStream};
 use kornia_image::color_spaces::BayerPattern;
 use kornia_image::{Image, ImageSize};
 use kornia_imgproc::color::{self, ColormapType};
-use kornia_imgproc::gpu::color_cuda::{bayer, gray, hsv_hls, misc, swizzle, video, yuv};
+use kornia_imgproc::cuda::color::{bayer, gray, hsv_hls, misc, swizzle, video, yuv};
 
 const SIZES: &[(usize, usize)] = &[(640, 480), (1280, 720), (1920, 1080), (3840, 2160)];
 const N_BUFFS: usize = 8;
@@ -230,7 +230,7 @@ fn run_pinned_e2e_u8(
 /// Fused color+resize+normalize (`Preprocessor` with a `SourceFormat`) vs the
 /// decode-then-preprocess chain. Device-resident src, batched launches + sync,
 /// 1080p-style frame -> 640x640 letterbox tensor.
-#[cfg(feature = "cudarc")]
+#[cfg(feature = "cuda")]
 fn run_fused_preprocess(stream: &Arc<CudaStream>, width: usize, height: usize, json: bool) {
     use kornia_imgproc::preprocess::{Preprocessor, ResizeMode, SourceFormat};
     const OUT: usize = 640;
@@ -650,8 +650,7 @@ fn main() {
             &CudaSlice<f32>,
             &mut CudaSlice<f32>,
             usize,
-        )
-            -> Result<(), kornia_imgproc::gpu::color_cuda::CudaColorError>;
+        ) -> Result<(), kornia_imgproc::cuda::color::CudaColorError>;
         let f32_cases: [(&'static str, CpuF32Fn, LaunchF32Fn); 2] = [
             (
                 "hsv_from_rgb_f32",
@@ -661,7 +660,7 @@ fn main() {
             (
                 "lab_from_rgb_f32",
                 color::lab_from_rgb,
-                kornia_imgproc::gpu::color_cuda::cie::launch_lab_from_rgb_f32,
+                kornia_imgproc::cuda::color::cie::launch_lab_from_rgb_f32,
             ),
         ];
         for (name, cpu_fn, launch_fn) in f32_cases {
@@ -772,7 +771,7 @@ fn main() {
         }
 
         // ---- fused color+preprocess vs chained ----
-        #[cfg(feature = "cudarc")]
+        #[cfg(feature = "cuda")]
         run_fused_preprocess(&stream, width, height, json);
 
         // ---- pinned-memory end-to-end (representative u8 ops) ----

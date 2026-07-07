@@ -27,7 +27,7 @@ const SEPIA_M: [f32; 9] = [
 /// Returns [`ImageError::InvalidImageSize`] if `src` and `dst` differ in size.
 pub fn sepia_from_rgb_f32(src: &Image<f32, 3>, dst: &mut Image<f32, 3>) -> Result<(), ImageError> {
     check_size(src, dst)?;
-    #[cfg(feature = "gpu-cuda")]
+    #[cfg(feature = "cuda")]
     {
         use super::cuda_dispatch::{pair_residency, Residency};
         if let Residency::Device(exec) = pair_residency(src, dst)? {
@@ -51,7 +51,7 @@ pub fn sepia_from_rgb_f32(src: &Image<f32, 3>, dst: &mut Image<f32, 3>) -> Resul
 /// Returns [`ImageError::InvalidImageSize`] if `src` and `dst` differ in size.
 pub fn sepia_from_rgb_u8(src: &Image<u8, 3>, dst: &mut Image<u8, 3>) -> Result<(), ImageError> {
     check_size(src, dst)?;
-    #[cfg(feature = "gpu-cuda")]
+    #[cfg(feature = "cuda")]
     {
         use super::cuda_dispatch::{pair_residency, Residency};
         if let Residency::Device(exec) = pair_residency(src, dst)? {

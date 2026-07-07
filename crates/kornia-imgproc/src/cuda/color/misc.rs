@@ -179,10 +179,10 @@ pub fn launch_apply_colormap_u8(
     Ok(())
 }
 
-#[cfg(all(test, feature = "gpu-cuda"))]
+#[cfg(all(test, feature = "cuda"))]
 mod tests {
     use super::*;
-    use crate::gpu::color_cuda::test_utils::{default_stream, pattern_u8};
+    use crate::cuda::color::test_utils::{default_stream, pattern_u8};
 
     #[test]
     fn colormap_bit_exact_vs_cpu() {
