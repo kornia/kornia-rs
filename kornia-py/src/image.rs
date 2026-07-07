@@ -1000,9 +1000,18 @@ impl PyImageApi {
         }
     }
 
-    /// True when the image is device-resident (CUDA). Cheap; no feature gate.
+    /// True when the image is device-resident (CUDA) — derived from the same
+    /// `Backing::Device` variant that [`Self::as_device`] matches, so the two
+    /// residency checks can never skew.
     pub(crate) fn is_device(&self) -> bool {
-        self.backing.device().0 == dlpack_rs::ffi::DLDeviceType::kDLCUDA as i32
+        #[cfg(feature = "cuda")]
+        {
+            self.as_device().is_some()
+        }
+        #[cfg(not(feature = "cuda"))]
+        {
+            false
+        }
     }
 
     /// Clone the shared handle to the underlying device image (cheap `Arc`
@@ -3926,11 +3935,7 @@ fn zeros_device(
         })
     })?;
     let cs = default_color_space(channels);
-    let mode = match dt {
-        backing::Dtype::U8 => mode_from_channels(channels, false),
-        backing::Dtype::F32 => mode_from_channels_f32(channels),
-        backing::Dtype::U16 => unreachable!("u16 rejected above"),
-    };
+    let mode = mode_for_dtype(dt, channels);
     Ok(PyImageApi::from_device(dev, cs, mode))
 }
 

@@ -21,8 +21,9 @@ where
     F: FnOnce(&PyImageApi) -> PyResult<PyImageApi>,
 {
     if let Ok(api) = image.cast::<PyImageApi>() {
-        if api.borrow().is_device() {
-            let out = dev_op(&api.borrow())?;
+        let img = api.borrow();
+        if img.is_device() {
+            let out = dev_op(&img)?;
             return Ok(Some(Py::new(py, out)?.into_any()));
         }
     }

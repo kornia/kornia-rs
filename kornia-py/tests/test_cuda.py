@@ -12,6 +12,8 @@ import pytest
 import kornia_rs
 from kornia_rs.image import Image
 
+from _cuda_helpers import dev as _dev
+
 cuda = getattr(kornia_rs, "cuda", None)
 pytestmark = pytest.mark.skipif(
     cuda is None or not cuda.is_available(),
@@ -28,11 +30,6 @@ def nv12_frame(w: int, h: int, rng: np.random.Generator) -> np.ndarray:
 
 def _rgb(h=48, w=64):
     return RNG.integers(0, 256, (h, w, 3), dtype=np.uint8)
-
-
-def _dev(a):
-    """Host numpy array -> device Image."""
-    return Image.from_numpy(a).to_cuda()
 
 
 def test_gray_matches_cpu_bit_exact():

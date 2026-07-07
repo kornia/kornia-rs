@@ -76,6 +76,13 @@ fn warn_deprecation(py: Python<'_>, message: &str) -> PyResult<()> {
 
 // Root Level Deprecated Wrappers
 
+/// The deprecated root-level color shims always pass a numpy array, so the
+/// now-polymorphic `imgproc.*` op returns numpy — recover the concrete
+/// `PyImage` for the shim's declared return type.
+fn as_pyimage(py: Python<'_>, obj: pyo3::Py<pyo3::PyAny>) -> PyResult<image::PyImage> {
+    obj.bind(py).extract::<image::PyImage>().map_err(Into::into)
+}
+
 // Color
 #[pyfunction(name = "rgb_from_gray")]
 pub fn rgb_from_gray_deprecated(py: Python<'_>, image: image::PyImage) -> PyResult<image::PyImage> {
@@ -83,10 +90,7 @@ pub fn rgb_from_gray_deprecated(py: Python<'_>, image: image::PyImage) -> PyResu
         py,
         "kornia_rs.rgb_from_gray is deprecated. Use kornia_rs.imgproc.rgb_from_gray.",
     )?;
-    color::rgb_from_gray(py, image.bind(py).as_any())?
-        .bind(py)
-        .extract::<image::PyImage>()
-        .map_err(Into::into)
+    as_pyimage(py, color::rgb_from_gray(py, image.bind(py).as_any())?)
 }
 
 #[pyfunction(name = "rgb_from_rgba")]
@@ -100,10 +104,10 @@ pub fn rgb_from_rgba_deprecated(
         py,
         "kornia_rs.rgb_from_rgba is deprecated. Use kornia_rs.imgproc.rgb_from_rgba.",
     )?;
-    color::rgb_from_rgba(py, image.bind(py).as_any(), background)?
-        .bind(py)
-        .extract::<image::PyImage>()
-        .map_err(Into::into)
+    as_pyimage(
+        py,
+        color::rgb_from_rgba(py, image.bind(py).as_any(), background)?,
+    )
 }
 
 #[pyfunction(name = "rgb_from_bgra")]
@@ -117,10 +121,10 @@ pub fn rgb_from_bgra_deprecated(
         py,
         "kornia_rs.rgb_from_bgra is deprecated. Use kornia_rs.imgproc.rgb_from_bgra.",
     )?;
-    color::rgb_from_bgra(py, image.bind(py).as_any(), background)?
-        .bind(py)
-        .extract::<image::PyImage>()
-        .map_err(Into::into)
+    as_pyimage(
+        py,
+        color::rgb_from_bgra(py, image.bind(py).as_any(), background)?,
+    )
 }
 
 #[pyfunction(name = "bgr_from_rgb")]
@@ -129,10 +133,7 @@ pub fn bgr_from_rgb_deprecated(py: Python<'_>, image: image::PyImage) -> PyResul
         py,
         "kornia_rs.bgr_from_rgb is deprecated. Use kornia_rs.imgproc.bgr_from_rgb.",
     )?;
-    color::bgr_from_rgb(py, image.bind(py).as_any())?
-        .bind(py)
-        .extract::<image::PyImage>()
-        .map_err(Into::into)
+    as_pyimage(py, color::bgr_from_rgb(py, image.bind(py).as_any())?)
 }
 
 #[pyfunction(name = "gray_from_rgb")]
@@ -141,8 +142,7 @@ pub fn gray_from_rgb_deprecated(py: Python<'_>, image: image::PyImage) -> PyResu
         py,
         "kornia_rs.gray_from_rgb is deprecated. Use kornia_rs.imgproc.gray_from_rgb.",
     )?;
-    let out = color::gray_from_rgb(py, image.bind(py).as_any())?;
-    out.bind(py).extract::<image::PyImage>().map_err(Into::into)
+    as_pyimage(py, color::gray_from_rgb(py, image.bind(py).as_any())?)
 }
 
 // Enhance / Histogram

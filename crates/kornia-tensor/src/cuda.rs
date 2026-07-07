@@ -908,42 +908,13 @@ where
     /// Returns [`CudaError::Driver`] on CUDA failure.
     pub fn to_cuda(&self, stream: &Arc<CudaStream>) -> Result<Tensor<T, N>, CudaError> {
         let src_slice = self.as_slice(); // panics (correctly) if non-host-accessible
-
-        let ctx = stream.context().clone();
-        let id = ctx.ordinal() as i32;
-        let n_bytes = std::mem::size_of_val(src_slice);
-
-        // Copy host slice → a new device CudaSlice<T> (this is a transfer, copy is correct).
+        // Copy host slice → a new device CudaSlice<T> (this is a transfer, copy is
+        // correct), then wrap it via the shared owner/pointer-caching path so
+        // as_cudaslice::<T>() works on the result.
         let dev_slice: CudaSlice<T> = stream
             .clone_htod(src_slice)
             .map_err(|e| CudaError::Driver(e.to_string()))?;
-
-        // Extract device pointer; _sync must drop before dev_slice is moved.
-        let ptr = {
-            let (cu_ptr, _sync) = dev_slice.device_ptr(stream);
-            cu_ptr as *mut u8
-            // _sync drops here
-        };
-        let alloc: AllocHandle = Arc::new(CudaAllocator {
-            ctx,
-            stream: stream.clone(),
-        });
-        // Store as CudaResource<T> so as_cudaslice::<T>() also works on to_cuda results.
-        let resource = CudaResource::<T> {
-            slice: std::mem::ManuallyDrop::new(dev_slice),
-            ptr,
-            id,
-            stream: stream.clone(),
-            foreign: None,
-        };
-        let storage =
-            unsafe { storage_from_cuda_resource(resource, ptr as *mut T, n_bytes, alloc) };
-        let strides = get_strides_from_shape(self.shape);
-        Ok(Tensor {
-            storage,
-            shape: self.shape,
-            strides,
-        })
+        Ok(wrap_device_slice(dev_slice, self.shape, stream))
     }
 
     /// Copy this device tensor to a new host-backed tensor.

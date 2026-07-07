@@ -24,6 +24,8 @@ import kornia_rs
 from kornia_rs.image import Image
 from kornia_rs.cuda import Stream
 
+from _cuda_helpers import dev as _dev, dzeros as _dzeros
+
 cuda = getattr(kornia_rs, "cuda", None)
 pytestmark = pytest.mark.skipif(
     cuda is None or not cuda.is_available() or not hasattr(cuda, "mem_get_info"),
@@ -36,16 +38,6 @@ RNG = np.random.default_rng(0)
 # below are sized (and iterations chosen) so any true per-iteration leak is
 # tens of MB — an order of magnitude past this tolerance.
 TOL = 8 * 1024 * 1024  # 8 MiB
-
-
-def _dev(a, stream=None):
-    """Host numpy/array -> device Image (mirrors the old Image.cuda.from_numpy)."""
-    return Image.from_numpy(a).to_cuda(stream)
-
-
-def _dzeros(*args, stream=None, **kw):
-    """Zero-init device Image (mirrors the old Image.cuda.zeros)."""
-    return Image.zeros(*args, **kw, stream=stream if stream is not None else Stream.default())
 
 
 def _rgb(h=256, w=256):
