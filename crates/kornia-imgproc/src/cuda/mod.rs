@@ -1,20 +1,17 @@
 //! Experimental GPU-accelerated image processing kernels.
 //!
-//! Backed by native CUDA kernels compiled at runtime via NVRTC (feature
-//! `cuda`), using `cudarc` for device memory and launches.
+//! Backed by native CUDA kernels compiled at runtime via NVRTC, using `cudarc`
+//! for device memory and launches. The whole module is gated on the `cuda`
+//! feature at its declaration in `lib.rs`.
 
-/// Native CUDA downscale kernels using `__ldg` read-only cache (feature `cuda`).
-#[cfg(feature = "cuda")]
+/// Native CUDA downscale kernels using `__ldg` read-only cache.
 pub mod resize;
 
-/// Native CUDA warp-affine kernels (bilinear and nearest-neighbor, feature `cuda`).
-#[cfg(feature = "cuda")]
+/// Native CUDA warp-affine kernels (bilinear and nearest-neighbor).
 pub mod warp_affine;
 
-/// Native CUDA color-space conversion kernels (feature `cuda`).
-#[cfg(feature = "cuda")]
+/// Native CUDA color-space conversion kernels.
 pub mod color;
 
 /// CUDA texture object RAII wrapper (used internally by warp-affine kernels).
-#[cfg(feature = "cuda")]
 mod texture;
