@@ -42,6 +42,24 @@ def test_gray_matches_cpu_bit_exact():
     np.testing.assert_array_equal(gpu.squeeze(-1), np.asarray(cpu).squeeze())
 
 
+@pytest.mark.parametrize("h,w", [(17, 23), (65, 31), (1, 1), (3, 97), (100, 1)])
+def test_color_ops_bit_exact_odd_dims(h, w):
+    """Non-block-aligned / prime / degenerate dims: a grid-remainder partial write
+    over the uninitialized device destination (`uninit_cuda`) would leave garbage
+    in border pixels. Deterministic bit-exact + identity checks at these sizes
+    guard that every color kernel writes every output pixel."""
+    a = RNG.integers(0, 256, (h, w, 3), dtype=np.uint8)
+    d = _dev(a)
+    # gray has a CPU oracle -> bit-exact over every pixel including borders.
+    gpu_gray = cuda.gray_from_rgb(d).numpy().reshape(h, w)
+    cpu_gray = np.asarray(kornia_rs.imgproc.gray_from_rgb(a)).reshape(h, w)
+    np.testing.assert_array_equal(gpu_gray, cpu_gray)
+    # Channel-expand (u8c4 dst) + swap (u8c3 dst) round-trips are identities; any
+    # unwritten border pixel (uninit garbage) breaks the exact comparison.
+    np.testing.assert_array_equal(cuda.rgb_from_rgba(cuda.rgba_from_rgb(d)).numpy(), a)
+    np.testing.assert_array_equal(cuda.bgr_from_rgb(cuda.bgr_from_rgb(d)).numpy(), a)
+
+
 def test_color_ops_require_device_image():
     # A host image is rejected by the GPU color ops with a clear hint.
     host = Image.from_numpy(_rgb())

@@ -2586,7 +2586,10 @@ impl PyImageApi {
         self.backing.data_ptr() as usize
     }
 
-    /// Zero-copy numpy view of the underlying buffer (shares memory; no copy).
+    /// Numpy array of the underlying buffer. A host image shares memory
+    /// (zero-copy view). A device (CUDA) image is copied back to host (D2H) and
+    /// returned **read-only** — writes would land on the throwaway copy, not the
+    /// device buffer; use `.cpu()` for a writable host image.
     /// Distinct from `to_numpy()`, which returns an owned deep copy.
     fn numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         Self::numpy_view_of(slf)
@@ -3309,13 +3312,13 @@ impl PyImageApi {
                 Some(obj) => Some(obj.bind(py).extract::<isize>()?),
                 None => None,
             };
-            match consumer {
-                Some(-1) => {} // consumer explicitly requested no synchronization
-                Some(h) => match dev.cuda_stream() {
-                    Some(s) => crate::cuda_ext::fence_stream_into(s, Some(h as usize))?,
-                    None => dev.synchronize()?,
-                },
-                None => dev.synchronize()?,
+            // Same consumer-stream policy as CudaTensor::__dlpack__ (validates the
+            // handle, fences without a host block, -1 skips, None host-syncs).
+            match dev.cuda_stream() {
+                Some(s) => crate::cuda_ext::dlpack_fence_consumer(s, consumer)?,
+                // No carried stream: nothing to fence; honor an explicit -1 opt-out.
+                None if consumer != Some(-1) => dev.synchronize()?,
+                None => {}
             }
         }
         #[cfg(not(feature = "cuda"))]

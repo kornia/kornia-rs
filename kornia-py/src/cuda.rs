@@ -62,36 +62,30 @@ pub fn mem_get_info(py: Python<'_>) -> PyResult<(usize, usize)> {
     })
 }
 
-/// Make the producer's pending work visible to the DLPack consumer's stream
-/// **without blocking the host** whenever the protocol allows.
+/// Order a DLPack consumer's stream after the producer's `launch` stream per the
+/// array-API `__dlpack__` (CUDA) convention — **without blocking the host**
+/// whenever the protocol allows. Shared by both device DLPack exporters
+/// (`CudaTensor` and the unified `Image`) so they can't diverge.
 ///
-/// Per the array-API `__dlpack__` spec (CUDA): `-1` = consumer wants no
-/// sync; `1`/`2` = legacy / per-thread default stream; any other value = a
-/// raw `CUstream` handle. This module launches everything on the legacy
-/// default stream, so `1`/`2` are already ordered and a foreign stream gets
-/// an event fence — modern consumers (torch, cupy) never pay a host block.
-/// `None` (spec: producer must assume the legacy default stream) keeps a
-/// stricter-than-spec host sync by choice — it only reaches legacy consumers
-/// calling `__dlpack__()` bare, where safety beats a blocked host.
-fn dlpack_sync_for_consumer(stream: Option<isize>) -> PyResult<()> {
-    match stream {
-        Some(-1) | Some(1) | Some(2) => Ok(()),
-        Some(h) if h > 2 => {
-            let ev = default_stream()?.record_event(None).map_err(err)?;
-            // SAFETY: `h` is the consumer's live CUstream per the protocol;
-            // the wait is enqueued before the event is dropped (legal —
-            // CUDA keeps the event alive until the enqueued wait completes).
-            unsafe {
-                cudarc::driver::sys::cuStreamWaitEvent(
-                    h as cudarc::driver::sys::CUstream,
-                    ev.cu_event(),
-                    0,
-                )
-            }
-            .result()
-            .map_err(err)
-        }
-        _ => default_stream()?.synchronize().map_err(err),
+/// Consumer stream: `-1` = no sync (skip); `0` = the null/legacy default stream,
+/// `1` = legacy default, `2` = per-thread default, any other positive = a raw
+/// `CUstream` handle — each is event-fenced against `launch` (a foreign or
+/// default stream is ordered after the producer without a host block); `None` =
+/// a stricter-than-spec host sync of `launch` for bare `__dlpack__()` callers.
+/// Negatives other than `-1` are invalid and rejected. Fencing against the
+/// actual producing `launch` stream (rather than assuming the legacy default)
+/// keeps it correct even when the producer ran on a custom stream.
+pub(crate) fn dlpack_fence_consumer(launch: &Arc<CudaStream>, consumer: Option<isize>) -> PyResult<()> {
+    match consumer {
+        Some(-1) => Ok(()),
+        Some(h) if h < -1 => Err(PyValueError::new_err(format!(
+            "__dlpack__: invalid stream handle {h}; expected -1 (no sync), 0, 1, 2, \
+             or a valid CUDA stream address"
+        ))),
+        // 0/1/2 are valid default-stream sentinels; >2 is a real handle. All are
+        // legal CUstream values for cuStreamWaitEvent.
+        Some(h) => fence_stream_into(launch, Some(h as usize)),
+        None => launch.synchronize().map_err(err),
     }
 }
 
@@ -734,7 +728,17 @@ impl PyCudaTensor {
         if copy == Some(true) {
             return Err(PyValueError::new_err("copy=True is not supported"));
         }
-        dlpack_sync_for_consumer(stream)?;
+        // Fence the consumer against this tensor's own producing stream (same
+        // policy as Image::__dlpack__), falling back to the default stream if the
+        // tensor carries none.
+        let launch = match &*self.inner {
+            TensorInnerEnum::F32(t) => t.cuda_stream().cloned(),
+            TensorInnerEnum::F16(t) => t.cuda_stream().cloned(),
+        };
+        match launch {
+            Some(s) => dlpack_fence_consumer(&s, stream)?,
+            None => dlpack_fence_consumer(&default_stream()?, stream)?,
+        }
         use kornia_tensor::dlpack::DlpackElem;
         // f16: kDLFloat (code 2), 16 bits — half::f16 is IEEE binary16.
         let f16_dtype = dlpack_rs::ffi::DLDataType {
@@ -789,9 +793,32 @@ struct Staging {
     pinned: Option<Tensor<u8, 1>>,
     /// Device destination per batch slot.
     device: Vec<cudarc::driver::CudaSlice<u8>>,
+    /// Event recorded right after the previous call's H2D upload. The next call
+    /// must host-wait it before overwriting `pinned`, otherwise the plain host
+    /// `copy_from_slice` (not stream-ordered) clobbers page-locked bytes while
+    /// the prior async `memcpy_htod` is still draining — corrupting that frame's
+    /// device input. Waiting only the upload keeps the kernel + consumer fence
+    /// asynchronous.
+    upload_done: Option<cudarc::driver::CudaEvent>,
 }
 
 impl Staging {
+    /// Block the host until the previous call's H2D upload has completed, so the
+    /// shared pinned buffer is safe to overwrite. No-op on the first call.
+    fn wait_prev_upload(&mut self) -> PyResult<()> {
+        if let Some(ev) = self.upload_done.take() {
+            ev.synchronize().map_err(err)?;
+        }
+        Ok(())
+    }
+
+    /// Record an upload-complete event on `stream` (after the H2D copies) for the
+    /// next call to wait on.
+    fn mark_upload(&mut self, stream: &Arc<CudaStream>) -> PyResult<()> {
+        self.upload_done = Some(stream.record_event(None).map_err(err)?);
+        Ok(())
+    }
+
     /// Grow (never shrink) to hold `slots` frames of `frame_len` bytes and
     /// return the pinned host slice covering all of them.
     fn ensure(&mut self, stream: &Arc<CudaStream>, slots: usize, frame_len: usize) -> PyResult<()> {
@@ -903,6 +930,8 @@ impl PyCudaPreprocessor {
         let frame_len = frame.len();
         let mut staging = self.staging.lock().expect("staging mutex poisoned");
         staging.ensure(&self.stream, 1, frame_len)?;
+        // Prior call's H2D must finish before we overwrite the shared pinned buffer.
+        staging.wait_prev_upload()?;
         staging.pinned.as_mut().expect("ensured").as_slice_mut()[..frame_len]
             .copy_from_slice(frame.as_slice()?);
         let staging = &mut *staging;
@@ -910,11 +939,15 @@ impl PyCudaPreprocessor {
         // Everything past the numpy borrow runs without the GIL: the pinned
         // H2D DMA, the fused kernel launch, and the output allocation.
         let inner = py.detach(|| -> PyResult<TensorInnerEnum> {
-            let pinned = staging.pinned.as_ref().expect("ensured");
-            let d_src = &mut staging.device[0];
             self.stream
-                .memcpy_htod(&pinned.as_slice()[..frame_len], d_src)
+                .memcpy_htod(
+                    &staging.pinned.as_ref().expect("ensured").as_slice()[..frame_len],
+                    &mut staging.device[0],
+                )
                 .map_err(err)?;
+            // Record upload-complete so the next call can host-wait just this DMA.
+            staging.mark_upload(&self.stream)?;
+            let d_src = &staging.device[0];
             if self.f16 {
                 let mut dst = kornia_tensor::zeros_cuda::<half::f16, 4>(
                     [1, 3, out_height, out_width],
@@ -968,6 +1001,8 @@ impl PyCudaPreprocessor {
         let frame_len = frames[0].len();
         let mut staging = self.staging.lock().expect("staging mutex poisoned");
         staging.ensure(&self.stream, n, frame_len)?;
+        // Prior call's H2D must finish before we overwrite the shared pinned buffer.
+        staging.wait_prev_upload()?;
         {
             let pinned = staging.pinned.as_mut().expect("ensured").as_slice_mut();
             for (i, f) in frames.iter().enumerate() {
@@ -983,12 +1018,16 @@ impl PyCudaPreprocessor {
         let staging = &mut *staging;
 
         let inner = py.detach(|| -> PyResult<TensorInnerEnum> {
-            let pinned = staging.pinned.as_ref().expect("ensured").as_slice();
-            for (i, d) in staging.device[..n].iter_mut().enumerate() {
-                self.stream
-                    .memcpy_htod(&pinned[i * frame_len..(i + 1) * frame_len], d)
-                    .map_err(err)?;
+            {
+                let pinned = staging.pinned.as_ref().expect("ensured").as_slice();
+                for (i, d) in staging.device[..n].iter_mut().enumerate() {
+                    self.stream
+                        .memcpy_htod(&pinned[i * frame_len..(i + 1) * frame_len], d)
+                        .map_err(err)?;
+                }
             }
+            // Record upload-complete so the next call can host-wait just this DMA.
+            staging.mark_upload(&self.stream)?;
             let refs: Vec<_> = staging.device[..n].iter().collect();
             let shape = [n, 3, out_height, out_width];
             if self.f16 {
@@ -1093,16 +1132,22 @@ impl PyCudaPreprocessor {
         let frame_len = frame.len();
         let mut staging = self.staging.lock().expect("staging mutex poisoned");
         staging.ensure(&self.stream, 1, frame_len)?;
+        // Prior call's H2D must finish before we overwrite the shared pinned buffer.
+        staging.wait_prev_upload()?;
         staging.pinned.as_mut().expect("ensured").as_slice_mut()[..frame_len]
             .copy_from_slice(frame.as_slice()?);
         let staging = &mut *staging;
 
         py.detach(|| -> PyResult<()> {
-            let pinned = staging.pinned.as_ref().expect("ensured");
-            let d_src = &mut staging.device[0];
             self.stream
-                .memcpy_htod(&pinned.as_slice()[..frame_len], d_src)
+                .memcpy_htod(
+                    &staging.pinned.as_ref().expect("ensured").as_slice()[..frame_len],
+                    &mut staging.device[0],
+                )
                 .map_err(err)?;
+            // Record upload-complete so the next call can host-wait just this DMA.
+            staging.mark_upload(&self.stream)?;
+            let d_src = &staging.device[0];
             let n_elem = 3 * out_h * out_w;
             let shape = [1, 3, out_h, out_w];
             // Wrap the caller's device buffer as a non-owning destination tensor:

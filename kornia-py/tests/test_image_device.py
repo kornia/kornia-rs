@@ -154,41 +154,60 @@ def test_foreign_stream_threaded_through_transfers():
 
 
 def test_device_numpy_is_readonly_copy():
-    """`.numpy()` / `.data` / `np.asarray` on a device image return a read-only
-    host copy — writes must not silently vanish into the throwaway D2H buffer."""
+    """`.numpy()` / `.data` / `np.asarray` / `to_numpy(copy=False)` on a device
+    image return a read-only host copy — writes must not silently vanish into the
+    throwaway D2H buffer."""
     a = _rgb()
     dev = Image.cuda.from_numpy(a)
-    for arr in (dev.numpy(), dev.data, np.asarray(dev)):
+    for arr in (dev.numpy(), dev.data, np.asarray(dev), dev.to_numpy(copy=False)):
         assert not arr.flags.writeable
         with pytest.raises(ValueError):
             arr[:] = 0
+        np.testing.assert_array_equal(arr, a)
     # A host image stays a writable zero-copy view.
     host = Image.from_numpy(a.copy())
     assert host.numpy().flags.writeable
 
 
 def test_host_only_transforms_raise_on_device():
-    """Host transforms are host-only and raise a clear error on a device image
-    (the stubs document this); `.cpu()` first is the fix."""
+    """Every host transform is host-only and raises on a device image (the stubs
+    document this); `.cpu()` first is the fix."""
     dev = Image.cuda.from_numpy(_rgb())
-    with pytest.raises(ValueError):
-        dev.resize(16, 16)
-    with pytest.raises(ValueError):
-        dev.copy()
-    with pytest.raises(ValueError):
-        dev.crop(0, 0, 8, 8)
+    host_only = [
+        ("resize", lambda i: i.resize(16, 16)),
+        ("copy", lambda i: i.copy()),
+        ("crop", lambda i: i.crop(0, 0, 8, 8)),
+        ("flip_horizontal", lambda i: i.flip_horizontal()),
+        ("flip_vertical", lambda i: i.flip_vertical()),
+        ("rotate", lambda i: i.rotate(90.0)),
+        (
+            "resize_normalize_to_tensor",
+            lambda i: i.resize_normalize_to_tensor(
+                16, 16, [0.5, 0.5, 0.5], [0.5, 0.5, 0.5]
+            ),
+        ),
+        ("memoryview", lambda i: memoryview(i)),
+    ]
+    for name, call in host_only:
+        # memoryview surfaces the host guard as BufferError; the rest as ValueError.
+        with pytest.raises((ValueError, BufferError)):
+            call(dev)
     # After moving to host the same call works.
     assert dev.cpu().resize(16, 16).device == "cpu"
 
 
 def test_dlpack_stream_argument_paths():
-    """The device `__dlpack__` accepts the DLPack `stream` argument: -1 (no
-    sync), a concrete handle (non-blocking fence), and None (host sync). Each
-    returns a capsule without error — exercised without a torch consumer."""
+    """The device `__dlpack__` validates/handles the DLPack `stream` argument:
+    -1 (no sync), 0/1/2 default sentinels + a real handle (non-blocking fence),
+    None (host sync) each return a PyCapsule; invalid negatives are rejected.
+    Exercised without a torch consumer."""
     dev = Image.cuda.from_numpy(_rgb())
-    for stream in (-1, Stream.default().cuda_stream_ptr, None):
+    for stream in (-1, 0, 1, 2, Stream.default().cuda_stream_ptr, None):
         cap = dev.__dlpack__(stream=stream)
-        assert "PyCapsule" in repr(type(cap)) or cap is not None
+        assert type(cap).__name__ == "PyCapsule"
+    for bad in (-2, -100):
+        with pytest.raises(ValueError):
+            dev.__dlpack__(stream=bad)
 
 
 def test_dlpack_roundtrip_with_torch():
@@ -235,7 +254,13 @@ def test_from_dlpack_copy_isolates_and_zerocopy_keepalive():
     import gc
 
     gc.collect()
+    # Force torch's caching allocator to actually recycle the freed block: churn
+    # a batch of same-shaped tensors so a broken keepalive (premature free) would
+    # have its bytes overwritten here rather than lingering intact by luck.
+    churn = [torch.full_like(torch.as_tensor(a, device="cuda"), 0) for _ in range(8)]
     torch.cuda.synchronize()
+    del churn
+    gc.collect()
     np.testing.assert_array_equal(aliased.numpy(), a)  # keepalive prevented free
 
 

@@ -581,16 +581,59 @@ pub fn zeros_cuda<T, const N: usize>(
 where
     T: DeviceRepr + ValidAsZeroBits + 'static,
 {
-    let ctx = stream.context().clone();
-
     let numel: usize = shape.iter().product();
-    let n_bytes = numel * std::mem::size_of::<T>();
-
-    // Allocate zero-initialised, **typed** device memory so the storage is backed
-    // by `CudaResource<T>` (not `CudaResource<u8>`) — `as_cudaslice::<T>()` then works.
+    // Zero-initialised, **typed** device memory so the storage is backed by
+    // `CudaResource<T>` (not `CudaResource<u8>`) — `as_cudaslice::<T>()` then works.
     let slice: CudaSlice<T> = stream
         .alloc_zeros::<T>(numel)
         .map_err(|e| CudaError::Driver(e.to_string()))?;
+    Ok(wrap_device_slice(slice, shape, stream))
+}
+
+/// Allocate **uninitialized**, typed device memory backed by `CudaResource<T>` —
+/// [`zeros_cuda`] without the zeroing memset.
+///
+/// This is the fast path for a destination a kernel will fully overwrite: the
+/// per-allocation device-wide `memset` that [`zeros_cuda`] pays is pure waste
+/// when every output element is written before it is ever read.
+///
+/// # Safety
+///
+/// The returned tensor's device memory is uninitialized. The caller MUST fully
+/// write every element (e.g. launch a kernel that writes the whole output)
+/// before any host or device code reads it. Reading before the overwrite yields
+/// indeterminate values. Prefer [`zeros_cuda`] unless the full-overwrite is
+/// guaranteed.
+pub unsafe fn uninit_cuda<T, const N: usize>(
+    shape: [usize; N],
+    stream: &Arc<CudaStream>,
+) -> Result<Tensor<T, N>, CudaError>
+where
+    T: DeviceRepr + 'static,
+{
+    let numel: usize = shape.iter().product();
+    // SAFETY: the caller's contract (documented above) guarantees the memory is
+    // fully written before it is read; this mirrors `zeros_cuda` minus the memset.
+    let slice: CudaSlice<T> = unsafe { stream.alloc::<T>(numel) }
+        .map_err(|e| CudaError::Driver(e.to_string()))?;
+    Ok(wrap_device_slice(slice, shape, stream))
+}
+
+/// Wrap an already-allocated typed device `slice` into a `Tensor<T, N>` backed by
+/// a `CudaResource<T>`. The single owner/pointer-caching path shared by
+/// [`zeros_cuda`] and [`uninit_cuda`] — they differ only in how `slice` is
+/// allocated (zeroed vs uninitialized).
+fn wrap_device_slice<T, const N: usize>(
+    slice: CudaSlice<T>,
+    shape: [usize; N],
+    stream: &Arc<CudaStream>,
+) -> Tensor<T, N>
+where
+    T: DeviceRepr + 'static,
+{
+    let ctx = stream.context().clone();
+    let numel: usize = shape.iter().product();
+    let n_bytes = numel * std::mem::size_of::<T>();
 
     // Cache device pointer before moving `slice` into CudaResource.
     let id = ctx.ordinal() as i32;
@@ -616,72 +659,11 @@ where
     // allocation size; `resource` is the sole owner of that device memory.
     let storage = unsafe { storage_from_cuda_resource(resource, ptr as *mut T, n_bytes, alloc) };
     let strides = get_strides_from_shape(shape);
-    Ok(Tensor {
+    Tensor {
         storage,
         shape,
         strides,
-    })
-}
-
-/// Allocate **uninitialized**, typed device memory backed by `CudaResource<T>` —
-/// [`zeros_cuda`] without the zeroing memset.
-///
-/// This is the fast path for a destination a kernel will fully overwrite: the
-/// per-allocation device-wide `memset` that [`zeros_cuda`] pays is pure waste
-/// when every output element is written before it is ever read.
-///
-/// # Safety
-///
-/// The returned tensor's device memory is uninitialized. The caller MUST fully
-/// write every element (e.g. launch a kernel that writes the whole output)
-/// before any host or device code reads it. Reading before the overwrite yields
-/// indeterminate values. Prefer [`zeros_cuda`] unless the full-overwrite is
-/// guaranteed.
-pub unsafe fn uninit_cuda<T, const N: usize>(
-    shape: [usize; N],
-    stream: &Arc<CudaStream>,
-) -> Result<Tensor<T, N>, CudaError>
-where
-    T: DeviceRepr + 'static,
-{
-    let ctx = stream.context().clone();
-
-    let numel: usize = shape.iter().product();
-    let n_bytes = numel * std::mem::size_of::<T>();
-
-    // SAFETY: the caller's contract (documented above) guarantees the memory is
-    // fully written before it is read; this mirrors `zeros_cuda` minus the memset.
-    let slice: CudaSlice<T> = stream
-        .alloc::<T>(numel)
-        .map_err(|e| CudaError::Driver(e.to_string()))?;
-
-    let id = ctx.ordinal() as i32;
-    let ptr = {
-        let (cu_ptr, _sync) = slice.device_ptr(stream);
-        cu_ptr as *mut u8
-    };
-
-    let resource = CudaResource::<T> {
-        slice: std::mem::ManuallyDrop::new(slice),
-        ptr,
-        id,
-        stream: stream.clone(),
-        foreign: None,
-    };
-    let alloc: AllocHandle = Arc::new(CudaAllocator {
-        ctx: ctx.clone(),
-        stream: stream.clone(),
-    });
-
-    // SAFETY: `ptr` is the device pointer inside `resource`; `n_bytes` is the
-    // allocation size; `resource` is the sole owner of that device memory.
-    let storage = unsafe { storage_from_cuda_resource(resource, ptr as *mut T, n_bytes, alloc) };
-    let strides = get_strides_from_shape(shape);
-    Ok(Tensor {
-        storage,
-        shape,
-        strides,
-    })
+    }
 }
 
 // ── Helper: build a TensorStorage from a CudaResource ─────────────────────────
