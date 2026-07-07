@@ -12,11 +12,11 @@ from the CUDA toolkit or the ``nvidia-cuda-nvrtc-cu12`` pip package —
 ``False`` and the rest of kornia_rs works as usual.
 """
 
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 import numpy as np
 
-from .image import Image
+from .image import Image, Stream
 
 IMAGENET_MEAN: Tuple[float, float, float]
 """Re-export of ``kornia_rs.IMAGENET_MEAN``."""
@@ -34,16 +34,35 @@ def mem_get_info() -> Tuple[int, int]:
     device memory leaked across the iterations."""
 
 class CudaTensor:
-    """Device-resident [N, C, H, W] tensor — model input (preprocessor output)."""
+    """Device-resident [N, C, H, W] tensor — model input (preprocessor output).
+
+    Share it zero-copy with an inference engine: hand :attr:`data_ptr` straight
+    to TensorRT's ``context.set_tensor_address(name, ptr)``, or consume it via
+    ``__dlpack__`` (torch / cupy) or ``__cuda_array_interface__`` (cupy / numba).
+    """
 
     @property
     def shape(self) -> Tuple[int, int, int, int]: ...
     @property
     def dtype(self) -> str: ...
+    @property
+    def device(self) -> str:
+        """Always ``"cuda:0"``."""
+    @property
+    def data_ptr(self) -> int:
+        """Raw device pointer (int) to the contiguous ``[N, C, H, W]`` buffer.
+        Bind it directly to a TensorRT input: ``ctx.set_tensor_address(name,
+        t.data_ptr)``. Valid while this ``CudaTensor`` is alive."""
+    @property
+    def __cuda_array_interface__(self) -> dict:
+        """CUDA Array Interface (v3) for zero-copy sharing with cupy / numba /
+        cuda-python. The ``stream`` entry carries the producing stream."""
     def download(self) -> np.ndarray:
         """Copy to host as float32 numpy (f16 tensors are widened)."""
     def __dlpack__(self, *, stream: object = None, max_version: object = None,
-                   dl_device: object = None, copy: object = None) -> object: ...
+                   dl_device: object = None, copy: object = None) -> object:
+        """DLPack capsule (zero-copy). Consumers negotiating ``max_version >=
+        (1, 0)`` get a versioned (``dltensor_versioned``) capsule."""
     def __dlpack_device__(self) -> Tuple[int, int]: ...
 
 class CudaPreprocessor:
@@ -67,11 +86,31 @@ class CudaPreprocessor:
                  std: Optional[Tuple[float, float, float]] = None,
                  pad_value: int = 114) -> None: ...
     def run(self, frame: np.ndarray, width: int, height: int,
-            out_height: int, out_width: int) -> CudaTensor:
-        """Flat 1-D ``uint8`` frame bytes -> ``CudaTensor`` [1, 3, out_h, out_w]."""
+            out_height: int, out_width: int,
+            stream: Optional[Stream] = None) -> CudaTensor:
+        """Flat 1-D ``uint8`` frame bytes -> ``CudaTensor`` [1, 3, out_h, out_w].
+
+        ``stream``: optional consumer ``Stream`` (e.g. your TensorRT execution
+        stream via ``Stream.from_handle``) to fence the output into, so
+        ``execute_async_v3`` on it is ordered after this preprocess with no host
+        sync."""
     def run_batch(self, frames: List[np.ndarray], width: int, height: int,
-                  out_height: int, out_width: int) -> CudaTensor:
-        """N flat ``uint8`` same-sized frames -> [N, 3, out_h, out_w]; dtype follows f16 flag."""
+                  out_height: int, out_width: int,
+                  stream: Optional[Stream] = None) -> CudaTensor:
+        """N flat ``uint8`` same-sized frames -> [N, 3, out_h, out_w]; dtype follows
+        f16 flag. ``stream`` fences the output like :meth:`run`."""
+    def alloc_output(self, out_height: int, out_width: int,
+                     batch: int = 1) -> CudaTensor:
+        """Allocate a zero-initialized ``[batch, 3, out_h, out_w]`` output tensor
+        (dtype follows the ``f16`` flag). Preallocate once and reuse across
+        frames with :meth:`run_into` for an allocation-free serving loop."""
+    def run_into(self, out: CudaTensor, frame: np.ndarray, width: int, height: int,
+                 stream: Optional[Stream] = None) -> None:
+        """Preprocess one frame **into** a preallocated ``out`` ([1, 3, H, W],
+        matching dtype) — no per-call allocation. Bind ``out.data_ptr`` to a
+        fixed TensorRT input once, then call each frame. The write is async: do
+        not read/free ``out`` until the work completes (sync, or pass ``stream``
+        and order your consumer after it)."""
 
 # GPU color conversions — input and output are device-resident ``Image``s.
 def gray_from_rgb(img: Image) -> Image: ...

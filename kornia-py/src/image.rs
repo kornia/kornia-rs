@@ -4045,6 +4045,20 @@ impl ImageCudaNs {
     }
 }
 
+/// Map a producer's raw `CUstream` handle to the value the CUDA Array Interface
+/// (v3) `stream` key expects: `None` when there is no stream, `1` for the legacy
+/// default stream (CAI disallows the ambiguous `0`), otherwise the handle. Real
+/// CAI consumers (CuPy, Numba) reject a literal `0`.
+#[cfg(feature = "cuda")]
+pub(crate) fn cai_stream_value(py: Python<'_>, raw: Option<usize>) -> Py<PyAny> {
+    use pyo3::IntoPyObject;
+    match raw {
+        None => py.None(),
+        Some(0) => 1i64.into_pyobject(py).unwrap().into_any().unbind(),
+        Some(h) => (h as i64).into_pyobject(py).unwrap().into_any().unbind(),
+    }
+}
+
 /// Backing of a [`PyStream`]: either a cudarc-owned stream (kornia's own
 /// default stream) or a *borrowed* foreign `CUstream` handle adopted from
 /// NVIDIA's stack (`cuda-python` / `cuda.core` / CuPy / a raw handle).
@@ -4060,6 +4074,18 @@ impl ImageCudaNs {
 pub(crate) enum StreamInner {
     Owned(std::sync::Arc<cudarc::driver::CudaStream>),
     Foreign(usize),
+}
+
+#[cfg(feature = "cuda")]
+impl PyStream {
+    /// Raw `CUstream` handle (address) of this stream, regardless of variant.
+    /// Used by other modules (e.g. the preprocessor) to fence work into it.
+    pub(crate) fn raw_handle(&self) -> usize {
+        match &self.inner {
+            StreamInner::Owned(s) => s.cu_stream() as usize,
+            StreamInner::Foreign(h) => *h,
+        }
+    }
 }
 
 /// A CUDA stream handle, shareable with kornia device transfers and the DLPack
@@ -4260,10 +4286,7 @@ impl PyImageApi {
             d.set_item("strides", py.None())?;
             d.set_item("version", 3)?;
             // Producer stream so a consumer can order its work after ours.
-            match dev.stream_ptr() {
-                Some(ptr) => d.set_item("stream", ptr)?,
-                None => d.set_item("stream", py.None())?,
-            }
+            d.set_item("stream", cai_stream_value(py, dev.stream_ptr()))?;
             Ok(d.into_any().unbind())
         }
         #[cfg(not(feature = "cuda"))]

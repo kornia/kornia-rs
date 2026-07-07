@@ -176,6 +176,58 @@ unsafe extern "C" fn dlpack_capsule_destructor(capsule: *mut pyo3::ffi::PyObject
     }
 }
 
+/// DLPack 1.0 (versioned) sibling of [`arc_dlpack_capsule`]: emits a
+/// `"dltensor_versioned"` capsule for consumers that negotiate `max_version >=
+/// (1, 0)` (modern torch / NumPy 2 / TensorRT tooling). `flags` carries the
+/// DLPack bitmask (e.g. read-only); device tensors here pass `0`.
+fn arc_dlpack_capsule_versioned<T, K, const N: usize>(
+    py: Python<'_>,
+    keepalive: Arc<K>,
+    t: &Tensor<T, N>,
+    dtype: dlpack_rs::ffi::DLDataType,
+    flags: u64,
+) -> PyResult<Py<PyAny>>
+where
+    K: Send + Sync + 'static,
+{
+    use dlpack_rs::safe::{self, TensorInfo};
+    let device = dlpack_rs::ffi::DLDevice {
+        device_type: dlpack_rs::ffi::DLDeviceType::kDLCUDA,
+        device_id: 0,
+    };
+    let shape: Vec<i64> = t.shape.iter().map(|&s| s as i64).collect();
+    let info = TensorInfo::contiguous(t.as_ptr() as *mut std::ffi::c_void, device, dtype, shape);
+    // SAFETY: the Arc keepalive owns (a reference to) the device buffer and is
+    // dropped by the capsule deleter.
+    let managed = safe::pack_versioned(keepalive, info, flags);
+    unsafe {
+        let capsule = pyo3::ffi::PyCapsule_New(
+            managed as *mut std::ffi::c_void,
+            c"dltensor_versioned".as_ptr(),
+            Some(dlpack_capsule_destructor_versioned),
+        );
+        if capsule.is_null() {
+            return Err(PyRuntimeError::new_err("failed to create DLPack capsule"));
+        }
+        Ok(Bound::from_owned_ptr(py, capsule).unbind())
+    }
+}
+
+unsafe extern "C" fn dlpack_capsule_destructor_versioned(capsule: *mut pyo3::ffi::PyObject) {
+    // Only delete if the consumer never claimed it (name still "dltensor_versioned").
+    unsafe {
+        if pyo3::ffi::PyCapsule_IsValid(capsule, c"dltensor_versioned".as_ptr()) == 1 {
+            let managed = pyo3::ffi::PyCapsule_GetPointer(capsule, c"dltensor_versioned".as_ptr())
+                as *mut dlpack_rs::ffi::DLManagedTensorVersioned;
+            if !managed.is_null() {
+                if let Some(deleter) = (*managed).deleter {
+                    deleter(managed);
+                }
+            }
+        }
+    }
+}
+
 
 /// Keeps the DLPack producer's Python object alive for a zero-copy import.
 ///
@@ -581,6 +633,57 @@ impl PyCudaTensor {
         }
     }
 
+    /// Device this tensor lives on — always `"cuda:0"`.
+    #[getter]
+    fn device(&self) -> &'static str {
+        "cuda:0"
+    }
+
+    /// Raw device pointer (`CUdeviceptr` as an integer) to the contiguous
+    /// `[N, C, H, W]` buffer. Hand it straight to `context.set_tensor_address()`
+    /// for a zero-copy TensorRT input binding. Valid while this `CudaTensor` is
+    /// alive; never dereference it on the host.
+    #[getter]
+    fn data_ptr(&self) -> usize {
+        match &*self.inner {
+            TensorInnerEnum::F32(t) => t.as_ptr() as usize,
+            TensorInnerEnum::F16(t) => t.as_ptr() as usize,
+        }
+    }
+
+    /// The [CUDA Array Interface] (v3) for zero-copy sharing with CuPy / Numba /
+    /// nvidia `cuda-python` (and, via them, TensorRT). The `stream` entry carries
+    /// the producing stream so a consumer can order its work after ours.
+    ///
+    /// [CUDA Array Interface]: https://numba.readthedocs.io/en/stable/cuda/cuda_array_interface.html
+    #[getter]
+    fn __cuda_array_interface__(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        use pyo3::types::PyDict;
+        let (shape, typestr, ptr, stream) = match &*self.inner {
+            TensorInnerEnum::F32(t) => (
+                t.shape,
+                "<f4",
+                t.as_ptr() as usize,
+                t.cuda_stream().map(|s| s.cu_stream() as usize),
+            ),
+            TensorInnerEnum::F16(t) => (
+                t.shape,
+                "<f2",
+                t.as_ptr() as usize,
+                t.cuda_stream().map(|s| s.cu_stream() as usize),
+            ),
+        };
+        let d = PyDict::new(py);
+        d.set_item("shape", (shape[0], shape[1], shape[2], shape[3]))?;
+        d.set_item("typestr", typestr)?;
+        d.set_item("data", (ptr, false))?;
+        // C-contiguous NCHW — `strides = None` per the interface.
+        d.set_item("strides", py.None())?;
+        d.set_item("version", 3)?;
+        d.set_item("stream", crate::image::cai_stream_value(py, stream))?;
+        Ok(d.into_any().unbind())
+    }
+
     /// Copy to host as a float32 numpy array (f16 tensors are widened).
     fn download<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
         let (data, shape): (Vec<f32>, [usize; 4]) = match &*self.inner {
@@ -613,11 +716,11 @@ impl PyCudaTensor {
         &self,
         py: Python<'py>,
         stream: Option<isize>,
-        max_version: Option<Py<PyAny>>,
+        max_version: Option<(u32, u32)>,
         dl_device: Option<Py<PyAny>>,
         copy: Option<bool>,
     ) -> PyResult<Py<PyAny>> {
-        let _ = (max_version, dl_device);
+        let _ = dl_device;
         if copy == Some(true) {
             return Err(PyValueError::new_err("copy=True is not supported"));
         }
@@ -629,11 +732,26 @@ impl PyCudaTensor {
             bits: 16,
             lanes: 1,
         };
+        // Consumers advertising DLPack v1.0+ get the versioned capsule; older
+        // ones fall back to the unversioned "dltensor". Device output is
+        // writable and not a copy, so flags = 0.
+        let versioned = max_version.is_some_and(|(maj, _)| maj >= 1);
         match &*self.inner {
             TensorInnerEnum::F32(t) => {
-                arc_dlpack_capsule(py, self.inner.clone(), t, f32::dl_dtype())
+                let dt = f32::dl_dtype();
+                if versioned {
+                    arc_dlpack_capsule_versioned(py, self.inner.clone(), t, dt, 0)
+                } else {
+                    arc_dlpack_capsule(py, self.inner.clone(), t, dt)
+                }
             }
-            TensorInnerEnum::F16(t) => arc_dlpack_capsule(py, self.inner.clone(), t, f16_dtype),
+            TensorInnerEnum::F16(t) => {
+                if versioned {
+                    arc_dlpack_capsule_versioned(py, self.inner.clone(), t, f16_dtype, 0)
+                } else {
+                    arc_dlpack_capsule(py, self.inner.clone(), t, f16_dtype)
+                }
+            }
         }
     }
 }
@@ -690,6 +808,22 @@ fn parse_format(s: &str) -> PyResult<SourceFormat> {
         .ok_or_else(|| PyValueError::new_err(format!("unknown source format '{s}'")))
 }
 
+/// After work is enqueued on `launch`, make a consumer stream wait on its
+/// completion (record an event, `cuStreamWaitEvent`) so the caller's subsequent
+/// work — e.g. `execute_async_v3(their_stream)` — is ordered after the
+/// preprocess without a host sync. No-op when `consumer` is `None`.
+fn fence_stream_into(launch: &Arc<CudaStream>, consumer: Option<usize>) -> PyResult<()> {
+    let Some(h) = consumer else { return Ok(()) };
+    let ev = launch.record_event(None).map_err(err)?;
+    // SAFETY: `h` is the caller's live `CUstream`; the wait is enqueued before
+    // `ev` drops and CUDA keeps the event alive until the wait completes.
+    unsafe {
+        cudarc::driver::sys::cuStreamWaitEvent(h as cudarc::driver::sys::CUstream, ev.cu_event(), 0)
+    }
+    .result()
+    .map_err(err)
+}
+
 #[pymethods]
 impl PyCudaPreprocessor {
     /// Build a preprocessor. Compiles one CUDA kernel per output dtype at
@@ -738,7 +872,13 @@ impl PyCudaPreprocessor {
 
     /// Preprocess one raw frame (flat bytes in the constructor's format
     /// layout) into a fresh `[1, 3, out_h, out_w]` [`CudaTensor`].
-    #[pyo3(signature = (frame, width, height, out_height, out_width))]
+    ///
+    /// `stream`: an optional consumer `Stream` (e.g. your TensorRT execution
+    /// stream, adopted via `Stream.from_handle`) to fence the output into, so
+    /// `execute_async_v3` on that stream is ordered after this preprocess with
+    /// no host sync.
+    #[pyo3(signature = (frame, width, height, out_height, out_width, stream = None))]
+    #[allow(clippy::too_many_arguments)]
     fn run(
         &self,
         py: Python<'_>,
@@ -747,7 +887,9 @@ impl PyCudaPreprocessor {
         height: usize,
         out_height: usize,
         out_width: usize,
+        stream: Option<PyRef<'_, crate::image::PyStream>>,
     ) -> PyResult<PyCudaTensor> {
+        let consumer = stream.map(|s| s.raw_handle());
         let frame_len = frame.len();
         let mut staging = self.staging.lock().expect("staging mutex poisoned");
         staging.ensure(&self.stream, 1, frame_len)?;
@@ -785,6 +927,7 @@ impl PyCudaPreprocessor {
                 Ok(TensorInnerEnum::F32(dst))
             }
         })?;
+        fence_stream_into(&self.stream, consumer)?;
         Ok(PyCudaTensor {
             inner: Arc::new(inner),
         })
@@ -795,7 +938,8 @@ impl PyCudaPreprocessor {
     /// frame, all on the same stream, one sync for the whole batch
     /// (multi-camera rigs, batched engines). Output dtype follows the
     /// constructor's `f16` flag, like [`run`](Self::run).
-    #[pyo3(signature = (frames, width, height, out_height, out_width))]
+    #[pyo3(signature = (frames, width, height, out_height, out_width, stream = None))]
+    #[allow(clippy::too_many_arguments)]
     fn run_batch(
         &self,
         py: Python<'_>,
@@ -804,10 +948,12 @@ impl PyCudaPreprocessor {
         height: usize,
         out_height: usize,
         out_width: usize,
+        stream: Option<PyRef<'_, crate::image::PyStream>>,
     ) -> PyResult<PyCudaTensor> {
         if frames.is_empty() {
             return Err(PyValueError::new_err("run_batch needs at least one frame"));
         }
+        let consumer = stream.map(|s| s.raw_handle());
         let n = frames.len();
         let frame_len = frames[0].len();
         let mut staging = self.staging.lock().expect("staging mutex poisoned");
@@ -851,9 +997,133 @@ impl PyCudaPreprocessor {
                 Ok(TensorInnerEnum::F32(dst))
             }
         })?;
+        fence_stream_into(&self.stream, consumer)?;
         Ok(PyCudaTensor {
             inner: Arc::new(inner),
         })
+    }
+
+    /// Allocate a zero-initialized output [`CudaTensor`] of shape
+    /// `[batch, 3, out_height, out_width]`, dtype following this preprocessor's
+    /// `f16` flag. Preallocate one and reuse it across frames with
+    /// [`run_into`](Self::run_into) for an allocation-free serving loop.
+    #[pyo3(signature = (out_height, out_width, batch = 1))]
+    fn alloc_output(
+        &self,
+        py: Python<'_>,
+        out_height: usize,
+        out_width: usize,
+        batch: usize,
+    ) -> PyResult<PyCudaTensor> {
+        let shape = [batch, 3, out_height, out_width];
+        let inner = py.detach(|| -> PyResult<TensorInnerEnum> {
+            if self.f16 {
+                Ok(TensorInnerEnum::F16(
+                    kornia_tensor::zeros_cuda::<half::f16, 4>(shape, &self.stream).map_err(err)?,
+                ))
+            } else {
+                Ok(TensorInnerEnum::F32(
+                    kornia_tensor::zeros_cuda::<f32, 4>(shape, &self.stream).map_err(err)?,
+                ))
+            }
+        })?;
+        Ok(PyCudaTensor {
+            inner: Arc::new(inner),
+        })
+    }
+
+    /// Preprocess one raw frame **into a preallocated** `out` [`CudaTensor`]
+    /// (shape `[1, 3, H, W]`, dtype matching this preprocessor) — no per-call
+    /// output allocation. Ideal for a fixed TensorRT input binding: allocate
+    /// once with [`alloc_output`](Self::alloc_output), bind its `data_ptr`, then
+    /// call `run_into` each frame.
+    ///
+    /// The write is in place and asynchronous; do not read or free `out` until
+    /// the work has completed (sync a stream, or pass your `stream` and order
+    /// your consumer after it). `stream` fences like [`run`](Self::run).
+    #[pyo3(signature = (out, frame, width, height, stream = None))]
+    fn run_into(
+        &self,
+        py: Python<'_>,
+        out: PyRef<'_, PyCudaTensor>,
+        frame: numpy::PyReadonlyArray1<'_, u8>,
+        width: usize,
+        height: usize,
+        stream: Option<PyRef<'_, crate::image::PyStream>>,
+    ) -> PyResult<()> {
+        // Validate the destination matches this preprocessor's dtype & shape.
+        let out_shape = match &*out.inner {
+            TensorInnerEnum::F32(t) => {
+                if self.f16 {
+                    return Err(PyValueError::new_err(
+                        "run_into: output is float32 but this preprocessor is f16",
+                    ));
+                }
+                t.shape
+            }
+            TensorInnerEnum::F16(t) => {
+                if !self.f16 {
+                    return Err(PyValueError::new_err(
+                        "run_into: output is float16 but this preprocessor is float32",
+                    ));
+                }
+                t.shape
+            }
+        };
+        if out_shape[0] != 1 || out_shape[1] != 3 {
+            return Err(PyValueError::new_err(format!(
+                "run_into: expected a single-frame [1, 3, H, W] output, got {out_shape:?} \
+                 (use run_batch for batches)"
+            )));
+        }
+        let (out_h, out_w) = (out_shape[2], out_shape[3]);
+        let out_ptr = out.data_ptr() as u64;
+        let consumer = stream.map(|s| s.raw_handle());
+
+        let frame_len = frame.len();
+        let mut staging = self.staging.lock().expect("staging mutex poisoned");
+        staging.ensure(&self.stream, 1, frame_len)?;
+        staging.pinned.as_mut().expect("ensured").as_slice_mut()[..frame_len]
+            .copy_from_slice(frame.as_slice()?);
+        let staging = &mut *staging;
+
+        py.detach(|| -> PyResult<()> {
+            let pinned = staging.pinned.as_ref().expect("ensured");
+            let d_src = &mut staging.device[0];
+            self.stream
+                .memcpy_htod(&pinned.as_slice()[..frame_len], d_src)
+                .map_err(err)?;
+            let n_elem = 3 * out_h * out_w;
+            let shape = [1, 3, out_h, out_w];
+            // Wrap the caller's device buffer as a non-owning destination tensor:
+            // on drop the aliasing slice is leaked (never freed) — `out` keeps
+            // ownership and frees it.
+            // SAFETY: `out_ptr`/`n_elem` come from the live `out` CudaTensor of
+            // exactly this shape & dtype, kept alive for this whole call.
+            if self.f16 {
+                let slice =
+                    unsafe { self.stream.upgrade_device_ptr::<half::f16>(out_ptr, n_elem) };
+                let mut dst = Tensor::from_foreign_cudaslice(
+                    slice,
+                    shape,
+                    self.stream.clone(),
+                    Box::new(()),
+                );
+                self.pre.run_raw_f16(d_src, width, height, &mut dst).map_err(err)?;
+            } else {
+                let slice = unsafe { self.stream.upgrade_device_ptr::<f32>(out_ptr, n_elem) };
+                let mut dst = Tensor::from_foreign_cudaslice(
+                    slice,
+                    shape,
+                    self.stream.clone(),
+                    Box::new(()),
+                );
+                self.pre.run_raw(d_src, width, height, &mut dst).map_err(err)?;
+            }
+            Ok(())
+        })?;
+        fence_stream_into(&self.stream, consumer)?;
+        Ok(())
     }
 }
 

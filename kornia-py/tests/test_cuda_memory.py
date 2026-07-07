@@ -224,6 +224,19 @@ def test_no_leak_preprocessor_run():
     assert_no_leak(body)
 
 
+def test_no_leak_preprocessor_run_into():
+    """run_into reuses a preallocated output — no per-call device allocation,
+    and the non-owning destination wrapper must not free/leak the buffer."""
+    pre = cuda.CudaPreprocessor(format="rgb")
+    frame = _rgb(192, 256).reshape(-1).copy()
+    out = pre.alloc_output(128, 128)
+
+    def body():
+        pre.run_into(out, frame, 256, 192)
+
+    assert_no_leak(body)
+
+
 def test_no_leak_preprocessor_run_batch():
     pre = cuda.CudaPreprocessor(mode="letterbox", format="rgb")
     frames = [_rgb(192, 256).reshape(-1).copy() for _ in range(4)]

@@ -123,6 +123,95 @@ def test_dlpack_export_to_torch():
     assert tt.is_cuda and tt.shape == (1, 3, 32, 32) and tt.dtype == torch.float32
 
 
+def test_cuda_tensor_interop_surface():
+    """CudaTensor exposes the zero-copy handoff surface TensorRT / cupy need:
+    data_ptr, device, and the CUDA Array Interface."""
+    w, h = 64, 48
+    frame = RNG.integers(0, 256, (w * h * 3,), dtype=np.uint8)
+    t = cuda.CudaPreprocessor(format="rgb").run(frame, w, h, 32, 32)
+
+    assert t.device == "cuda:0"
+    assert isinstance(t.data_ptr, int) and t.data_ptr != 0
+
+    cai = t.__cuda_array_interface__
+    assert cai["version"] == 3
+    assert cai["shape"] == (1, 3, 32, 32)
+    assert cai["typestr"] == "<f4"
+    ptr, readonly = cai["data"]
+    assert ptr == t.data_ptr and readonly is False
+    # CAI stream must be None or a positive int — never the ambiguous 0.
+    assert cai["stream"] is None or (isinstance(cai["stream"], int) and cai["stream"] >= 1)
+
+    # f16 advertises the half typestr.
+    t16 = cuda.CudaPreprocessor(format="rgb", f16=True).run(frame, w, h, 32, 32)
+    assert t16.__cuda_array_interface__["typestr"] == "<f2"
+
+
+def test_preprocessor_run_with_consumer_stream():
+    """Passing a consumer stream is accepted and the result is correct (output
+    is fenced into that stream)."""
+    from kornia_rs.image import Stream
+
+    w, h = 64, 48
+    frame = RNG.integers(0, 256, (w * h * 3,), dtype=np.uint8)
+    pre = cuda.CudaPreprocessor(format="rgb")
+    fs = Stream.from_handle(Stream.default().cuda_stream_ptr)
+    t = pre.run(frame, w, h, 32, 32, stream=fs)
+    plain = pre.run(frame, w, h, 32, 32)
+    np.testing.assert_array_equal(t.download(), plain.download())
+
+
+def test_preprocessor_run_into_matches_run():
+    """run_into writes into a preallocated output identical to what run() would
+    produce, without allocating a new tensor per call."""
+    w, h = 64, 48
+    frame = RNG.integers(0, 256, (w * h * 3,), dtype=np.uint8)
+    pre = cuda.CudaPreprocessor(format="rgb")
+
+    out = pre.alloc_output(32, 32)
+    assert out.shape == (1, 3, 32, 32) and out.dtype == "float32"
+    pre.run_into(out, frame, w, h)
+    want = pre.run(frame, w, h, 32, 32).download()
+    np.testing.assert_array_equal(out.download(), want)
+
+    # Reusing the same buffer for a second frame overwrites it in place.
+    frame2 = RNG.integers(0, 256, (w * h * 3,), dtype=np.uint8)
+    pre.run_into(out, frame2, w, h)
+    np.testing.assert_array_equal(out.download(), pre.run(frame2, w, h, 32, 32).download())
+
+
+def test_preprocessor_run_into_f16_and_dtype_mismatch():
+    w, h = 48, 32
+    frame = RNG.integers(0, 256, (w * h * 3,), dtype=np.uint8)
+    pre16 = cuda.CudaPreprocessor(format="rgb", f16=True)
+    out16 = pre16.alloc_output(16, 16)
+    assert out16.dtype == "float16"
+    pre16.run_into(out16, frame, w, h)
+    np.testing.assert_allclose(
+        out16.download(), pre16.run(frame, w, h, 16, 16).download(), atol=1e-3
+    )
+
+    # A dtype-mismatched output is rejected.
+    pre32 = cuda.CudaPreprocessor(format="rgb")
+    with pytest.raises(ValueError):
+        pre32.run_into(out16, frame, w, h)  # f32 preprocessor, f16 buffer
+
+
+def test_cuda_tensor_dlpack_versioned_capsule():
+    """Requesting max_version >= (1,0) yields a versioned capsule; the default
+    stays unversioned. Both must round-trip through torch when available."""
+    w, h = 64, 48
+    frame = RNG.integers(0, 256, (w * h * 3,), dtype=np.uint8)
+    t = cuda.CudaPreprocessor(format="rgb").run(frame, w, h, 32, 32)
+
+    cap_v = t.__dlpack__(max_version=(1, 0))
+    assert "dltensor_versioned" in str(cap_v)
+    cap_u = t.__dlpack__()
+    # Unversioned capsule name is plain "dltensor".
+    name = str(cap_u)
+    assert "dltensor" in name and "versioned" not in name
+
+
 def test_preprocessor_run_batch_matches_single():
     w, h = 64, 48
     frames = [nv12_frame(w, h, RNG) for _ in range(3)]
