@@ -4,7 +4,7 @@ Run:
     python3 crates/kornia-imgproc/examples/bench_opencv_warp_affine.py
 
 Compare against the Rust GPU kernel with:
-    cargo run --example bench_gpu_warp_affine --features cuda --release
+    cargo run --example bench_cuda_warp_affine --features cuda --release
 
 Requires:
   - opencv-python (CPU baseline, always)
@@ -19,7 +19,7 @@ import numpy as np
 WARMUP = 50
 ITERS  = 200
 
-# Same cases as bench_gpu_warp_affine.rs: 45° centre rotation, same-size canvas.
+# Same cases as bench_cuda_warp_affine.rs: 45° centre rotation, same-size canvas.
 CASES = [(256, 224), (512, 448), (1024, 896), (1920, 1080)]
 
 try:
@@ -72,7 +72,7 @@ def bench_cv2_cpu():
     print(f"\n=== cv2 {cv2.__version__} CPU  warpAffine bilinear  ({ITERS} iters) ===")
     print(f"  {'case':<16}  {'ms/iter':>9}  {'GB/s':>8}  {'speedup vs kornia-rs GPU':>26}")
     print("  " + "-" * 66)
-    # kornia-rs GPU bilinear numbers from bench_gpu_warp_affine (for reference)
+    # kornia-rs GPU bilinear numbers from bench_cuda_warp_affine (for reference)
     rs_gpu_ms = {(256,224): 0.025, (512,448): 0.092, (1024,896): 0.274, (1920,1080): 0.572}
     for w, h in CASES:
         src = np.random.rand(h, w, 3).astype(np.float32)
@@ -175,7 +175,7 @@ if TORCH_CUDA:
 print("=" * 66)
 print()
 print("  kornia-rs GPU reference (run separately):")
-print("    cargo run --example bench_gpu_warp_affine --features cuda --release")
+print("    cargo run --example bench_cuda_warp_affine --features cuda --release")
 print()
 print("  kornia-rs results (GTX 1650, 200 iters):")
 print("    nearest : 256×224=0.011ms  512×448=0.038ms  1024×896=0.151ms  1920×1080=0.353ms")

@@ -1,6 +1,6 @@
 """Color-conversion benchmark: OpenCV (CPU) and NVIDIA VPI (CPU + CUDA).
 
-Companion to the Rust example `bench_gpu_color_conversions` (kornia CPU/CUDA
+Companion to the Rust example `bench_cuda_color_conversions` (kornia CPU/CUDA
 numbers). Emits the SAME JSON-lines schema so `report_color_bench.py` can merge
 both:
 

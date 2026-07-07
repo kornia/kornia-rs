@@ -25,7 +25,7 @@ Before publishing wheels, confirm the GPU story:
 - Runtime requirements to put in the release notes: NVIDIA driver (`libcuda.so`)
   **and** `nvrtc` (kernels are JIT-compiled), matching arch (x86_64 / aarch64 /
   Jetson Tegra). Without nvrtc the GPU path can't compile kernels.
-- Verify on a GPU box before announcing: `bench_gpu_warp_affine --features
+- Verify on a GPU box before announcing: `bench_cuda_warp_affine --features
   gpu-cuda` (Rust) and `import kornia_rs; kornia_rs.cuda...` (Python).
 
 ## Facts about this repo

@@ -4,7 +4,7 @@
 //! for bilinear and nearest-neighbor interpolation on both GPU and CPU paths.
 //!
 //! ```text
-//! cargo run --example bench_gpu_warp_affine --features cuda --release
+//! cargo run --example bench_cuda_warp_affine --features cuda --release
 //! ```
 
 use kornia_image::{Image, ImageSize};

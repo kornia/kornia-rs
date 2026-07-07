@@ -13,7 +13,7 @@
 //! kornia-py/benchmarks/report_color_bench.py).
 //!
 //! ```text
-//! cargo run --example bench_gpu_color_conversions --features cuda --release [-- --json]
+//! cargo run --example bench_cuda_color_conversions --features cuda --release [-- --json]
 //! ```
 #![cfg(feature = "cuda")]
 

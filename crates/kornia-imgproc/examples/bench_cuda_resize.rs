@@ -7,10 +7,10 @@
 //!
 //! ```text
 //! # CPU only (no CUDA needed)
-//! cargo run --example bench_gpu_resize --release
+//! cargo run --example bench_cuda_resize --release
 //!
 //! # Native CUDA downscale + CPU comparison
-//! cargo run --example bench_gpu_resize --features cuda --release
+//! cargo run --example bench_cuda_resize --features cuda --release
 //! ```
 
 use kornia_image::{Image, ImageSize};

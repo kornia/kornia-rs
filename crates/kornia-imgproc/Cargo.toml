@@ -11,7 +11,7 @@ license = { workspace = true }
 publish = true
 
 [[example]]
-name = "bench_gpu_color_conversions"
+name = "bench_cuda_color_conversions"
 required-features = ["cuda"]
 
 [[bench]]
