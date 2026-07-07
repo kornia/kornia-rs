@@ -90,6 +90,29 @@ where
         Image::try_from(dev)
     }
 
+    /// Allocate an **uninitialized** device-resident image — [`Self::zeros_cuda`]
+    /// without the zeroing memset. The fast path for a destination a kernel will
+    /// fully overwrite (e.g. a color conversion that writes every output pixel).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ImageError::Cuda`] on CUDA allocation failure.
+    ///
+    /// # Safety
+    ///
+    /// The image's device memory is uninitialized; the caller MUST fully write
+    /// every pixel before any read. See [`kornia_tensor::uninit_cuda`].
+    pub unsafe fn uninit_cuda(
+        size: ImageSize,
+        stream: &Arc<CudaStream>,
+    ) -> Result<Image<T, C>, ImageError> {
+        // SAFETY: forwarded to the caller — the returned image must be fully
+        // written before it is read.
+        let dev = unsafe { kornia_tensor::uninit_cuda::<T, 3>([size.height, size.width, C], stream) }
+            .map_err(|e| ImageError::Cuda(e.to_string()))?;
+        Image::try_from(dev)
+    }
+
     /// Allocate a zero-initialised host `Image` in **page-locked (pinned)**
     /// memory — an ordinary host image for every CPU path, but H2D/D2H copies
     /// against it are direct DMA. Allocate once and reuse (`cuMemHostAlloc`
@@ -120,6 +143,21 @@ where
             .download()
             .map_err(|e| ImageError::Cuda(e.to_string()))?;
         Image::try_from(host)
+    }
+
+    /// D2H-copy this device-resident image directly into a caller-provided host
+    /// slice (its own carried stream, synchronized before returning) — avoiding
+    /// the extra `Vec<T>` allocation + copy that [`Self::download`] performs when
+    /// the caller already owns the destination buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ImageError::Cuda`] on CUDA failure, a `dst`-length mismatch, or
+    /// if the image is not device-backed.
+    pub fn download_into(&self, dst: &mut [T]) -> Result<(), ImageError> {
+        self.0
+            .download_into(dst)
+            .map_err(|e| ImageError::Cuda(e.to_string()))
     }
 
     /// Copy this device-resident image back to a new host-backed `Image` (D2H).
