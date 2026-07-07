@@ -21,7 +21,7 @@ import numpy as np
 import pytest
 
 import kornia_rs
-from kornia_rs.image import Image
+from kornia_rs.image import Image, Stream
 
 cuda = getattr(kornia_rs, "cuda", None)
 pytestmark = pytest.mark.skipif(
@@ -193,6 +193,19 @@ def test_no_leak_dlpack_import_zerocopy():
         alias = Image.cuda.from_dlpack(src, copy=False)  # keepalive alias
         del alias
         del src
+
+    assert_no_leak(body)
+
+
+def test_no_leak_foreign_stream_fence():
+    """A foreign stream fences each op with a freshly recorded CUDA event; those
+    events must be destroyed, not leaked, across the loop."""
+    a = _rgb()
+    fs = Stream.from_handle(Stream.default().cuda_stream_ptr)
+
+    def body():
+        dev = Image.cuda.from_numpy(a, stream=fs)
+        del dev
 
     assert_no_leak(body)
 

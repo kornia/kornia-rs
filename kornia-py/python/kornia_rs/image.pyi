@@ -298,6 +298,21 @@ class Stream:
     def default() -> Stream:
         """The process-wide default CUDA stream for device 0."""
         ...
+    @staticmethod
+    def from_handle(handle: int) -> Stream:
+        """Adopt an existing raw ``CUstream`` handle (an integer) from NVIDIA's
+        stack — e.g. ``cuda.core.Stream.handle``, a cuda-python ``CUstream``, or
+        a CuPy ``stream.ptr``. kornia does **not** take ownership (the stream is
+        never destroyed here); device ops fence their work into it via a CUDA
+        event so your later work on the same stream is ordered after kornia's."""
+        ...
+    @staticmethod
+    def from_cuda_stream(obj: Any) -> Stream:
+        """Adopt a stream from any object implementing the cuda-python /
+        ``cuda.core`` protocol (``__cuda_stream__() -> (version, handle)``),
+        exposing an integer ``.ptr`` / ``.handle``, or that is itself an int.
+        See :meth:`from_handle` for the ownership / fencing model."""
+        ...
     def synchronize(self) -> None:
         """Block the host until all work on this stream completes."""
         ...

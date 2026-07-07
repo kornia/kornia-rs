@@ -101,6 +101,58 @@ def test_stream_default_and_protocol():
     assert img.device == "cuda:0"
 
 
+def test_stream_from_handle_roundtrips():
+    s = Stream.from_handle(0)  # 0 == the (valid) legacy default stream
+    assert s.cuda_stream_ptr == 0
+    ver, handle = s.__cuda_stream__()
+    assert ver == 0 and handle == 0
+    s.synchronize()  # syncing the null stream is valid
+
+
+def test_stream_from_cuda_stream_protocol_object():
+    # Any object implementing the cuda-python / cuda.core __cuda_stream__
+    # protocol is accepted — kornia's own Stream is one such object.
+    base = Stream.default()
+    adopted = Stream.from_cuda_stream(base)
+    assert adopted.cuda_stream_ptr == base.cuda_stream_ptr
+
+
+def test_stream_from_cuda_stream_int_and_attrs():
+    assert Stream.from_cuda_stream(0).cuda_stream_ptr == 0  # bare int handle
+
+    class WithPtr:  # cupy-style .ptr
+        ptr = 0
+
+    class WithHandle:  # cuda.core-style .handle
+        handle = 0
+
+    assert Stream.from_cuda_stream(WithPtr()).cuda_stream_ptr == 0
+    assert Stream.from_cuda_stream(WithHandle()).cuda_stream_ptr == 0
+
+
+def test_stream_from_cuda_stream_rejects_non_stream():
+    with pytest.raises(ValueError):
+        Stream.from_cuda_stream("not a stream")
+
+
+def test_foreign_stream_threaded_through_transfers():
+    """A foreign (adopted) stream is accepted by every device constructor; the
+    result is correct (kornia runs on its default stream, fenced into the
+    foreign one)."""
+    a = _rgb()
+    fs = Stream.from_handle(Stream.default().cuda_stream_ptr)
+
+    dev = Image.cuda.from_numpy(a, stream=fs)
+    assert dev.device == "cuda:0"
+    np.testing.assert_array_equal(dev.numpy(), a)
+
+    dev2 = Image.from_numpy(a).to_cuda(stream=fs)
+    np.testing.assert_array_equal(dev2.numpy(), a)
+
+    z = Image.cuda.zeros(8, 6, 3, dtype="uint8", stream=fs)
+    np.testing.assert_array_equal(z.numpy(), np.zeros((6, 8, 3), np.uint8))
+
+
 def test_dlpack_roundtrip_with_torch():
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available():

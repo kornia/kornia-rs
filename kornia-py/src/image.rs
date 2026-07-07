@@ -3897,16 +3897,62 @@ fn zeros_device(
     Ok(PyImageApi::from_device(dev, cs, mode))
 }
 
-/// Resolve an optional Python `Stream` to a concrete stream, defaulting to the
-/// process-wide default stream for device 0.
+/// The stream kornia device work actually runs on, plus an optional foreign
+/// `CUstream` handle to fence completion into afterwards (see [`resolve_stream`]).
 #[cfg(feature = "cuda")]
-fn resolve_stream(
-    stream: Option<PyRef<'_, PyStream>>,
-) -> PyResult<std::sync::Arc<cudarc::driver::CudaStream>> {
-    match stream {
-        Some(s) => Ok(s.inner.clone()),
-        None => crate::cuda_ext::default_stream(),
+pub(crate) struct ResolvedStream {
+    /// Stream kornia submits its copy / kernel onto.
+    pub(crate) launch: std::sync::Arc<cudarc::driver::CudaStream>,
+    /// A borrowed foreign stream to order *after* `launch` completes, or `None`.
+    pub(crate) foreign: Option<usize>,
+}
+
+/// Resolve an optional Python `Stream` for a device op.
+///
+/// An owned kornia stream is submitted onto directly. A foreign (adopted)
+/// stream can't be submitted onto through cudarc 0.19, so work runs on kornia's
+/// default stream and the foreign handle is returned for [`fence_into_foreign`]
+/// to order the caller's stream after ours. `None` uses the default stream.
+#[cfg(feature = "cuda")]
+fn resolve_stream(stream: Option<PyRef<'_, PyStream>>) -> PyResult<ResolvedStream> {
+    match stream.map(|s| s.inner.clone()) {
+        Some(StreamInner::Owned(s)) => Ok(ResolvedStream {
+            launch: s,
+            foreign: None,
+        }),
+        Some(StreamInner::Foreign(h)) => Ok(ResolvedStream {
+            launch: crate::cuda_ext::default_stream()?,
+            foreign: Some(h),
+        }),
+        None => Ok(ResolvedStream {
+            launch: crate::cuda_ext::default_stream()?,
+            foreign: None,
+        }),
     }
+}
+
+/// After device work is enqueued on `launch`, make a borrowed foreign stream
+/// wait on its completion, so the caller's subsequent work on that stream is
+/// ordered after kornia's — without blocking the host. No-op when there is no
+/// foreign stream to fence into.
+#[cfg(feature = "cuda")]
+fn fence_into_foreign(resolved: &ResolvedStream) -> PyResult<()> {
+    let Some(h) = resolved.foreign else {
+        return Ok(());
+    };
+    let ev = resolved.launch.record_event(None).map_err(to_pyerr)?;
+    // SAFETY: `h` is the caller's live `CUstream` (vouched for via from_handle /
+    // from_cuda_stream); the wait is enqueued before `ev` is dropped, and CUDA
+    // keeps the event alive until the enqueued wait completes.
+    unsafe {
+        cudarc::driver::sys::cuStreamWaitEvent(
+            h as cudarc::driver::sys::CUstream,
+            ev.cu_event(),
+            0,
+        )
+    }
+    .result()
+    .map_err(to_pyerr)
 }
 
 /// `Image.cuda` — namespace of CUDA constructors. Reached as a class attribute
@@ -3929,8 +3975,10 @@ impl ImageCudaNs {
         {
             // Zero-copy borrow the host ndarray, then H2D it to the device.
             let host = PyImageApi::from_numpy_borrow(py, array, None, None, false)?;
-            let s = resolve_stream(stream)?;
-            host.to_device_internal(py, s)
+            let resolved = resolve_stream(stream)?;
+            let dev = host.to_device_internal(py, resolved.launch.clone())?;
+            fence_into_foreign(&resolved)?;
+            Ok(dev)
         }
         #[cfg(not(feature = "cuda"))]
         {
@@ -3953,8 +4001,10 @@ impl ImageCudaNs {
     ) -> PyResult<PyImageApi> {
         #[cfg(feature = "cuda")]
         {
-            let s = resolve_stream(stream)?;
-            zeros_device(py, width, height, channels, dtype, &s)
+            let resolved = resolve_stream(stream)?;
+            let dev = zeros_device(py, width, height, channels, dtype, &resolved.launch)?;
+            fence_into_foreign(&resolved)?;
+            Ok(dev)
         }
         #[cfg(not(feature = "cuda"))]
         {
@@ -3995,12 +4045,33 @@ impl ImageCudaNs {
     }
 }
 
+/// Backing of a [`PyStream`]: either a cudarc-owned stream (kornia's own
+/// default stream) or a *borrowed* foreign `CUstream` handle adopted from
+/// NVIDIA's stack (`cuda-python` / `cuda.core` / CuPy / a raw handle).
+///
+/// A foreign handle is never owned: we do not create it and must never
+/// `cuStreamDestroy` it. cudarc 0.19 exposes no non-owning `CudaStream`
+/// wrapper, so kornia can't submit kernels directly onto a foreign stream;
+/// instead device work runs on kornia's default stream and is **fenced into**
+/// the foreign stream with a CUDA event (see [`resolve_stream`] /
+/// [`fence_into_foreign`]), which is equivalent for cross-stream ordering.
+#[cfg(feature = "cuda")]
+#[derive(Clone)]
+pub(crate) enum StreamInner {
+    Owned(std::sync::Arc<cudarc::driver::CudaStream>),
+    Foreign(usize),
+}
+
 /// A CUDA stream handle, shareable with kornia device transfers and the DLPack
-/// `stream=` protocol. Only meaningful on a `cuda`-enabled build.
+/// / `cuda.core` `stream=` protocols. Only meaningful on a `cuda`-enabled build.
+///
+/// Build one with [`Stream::default`], or adopt an existing NVIDIA stream with
+/// [`Stream::from_handle`] / [`Stream::from_cuda_stream`] so kornia device ops
+/// order their work into your stream.
 #[pyclass(name = "Stream", module = "kornia_rs.image", frozen)]
 pub struct PyStream {
     #[cfg(feature = "cuda")]
-    pub(crate) inner: std::sync::Arc<cudarc::driver::CudaStream>,
+    pub(crate) inner: StreamInner,
 }
 
 #[pymethods]
@@ -4012,7 +4083,7 @@ impl PyStream {
         #[cfg(feature = "cuda")]
         {
             Ok(Self {
-                inner: crate::cuda_ext::default_stream()?,
+                inner: StreamInner::Owned(crate::cuda_ext::default_stream()?),
             })
         }
         #[cfg(not(feature = "cuda"))]
@@ -4021,11 +4092,64 @@ impl PyStream {
         }
     }
 
+    /// Adopt an existing raw `CUstream` handle (as an integer) from NVIDIA's
+    /// stack — e.g. `cuda.core.Stream.handle`, a cuda-python `CUstream`, or a
+    /// CuPy `stream.ptr`. kornia does **not** take ownership of the stream (it
+    /// is never destroyed here); device ops fence their work into it via a CUDA
+    /// event so your subsequent work on the same stream is correctly ordered
+    /// after kornia's.
+    #[staticmethod]
+    fn from_handle(handle: usize) -> PyResult<Self> {
+        #[cfg(feature = "cuda")]
+        {
+            Ok(Self {
+                inner: StreamInner::Foreign(handle),
+            })
+        }
+        #[cfg(not(feature = "cuda"))]
+        {
+            let _ = handle;
+            Err(cuda_not_compiled())
+        }
+    }
+
+    /// Adopt a stream from any object implementing the `cuda-python` /
+    /// `cuda.core` stream protocol (`__cuda_stream__() -> (version, handle)`),
+    /// or exposing an integer `.ptr` / `.handle`, or that is itself an int.
+    /// See [`from_handle`](Self::from_handle) for the ownership/fencing model.
+    #[staticmethod]
+    fn from_cuda_stream(obj: &Bound<'_, PyAny>) -> PyResult<Self> {
+        #[cfg(feature = "cuda")]
+        {
+            let handle = extract_stream_handle(obj)?;
+            Ok(Self {
+                inner: StreamInner::Foreign(handle),
+            })
+        }
+        #[cfg(not(feature = "cuda"))]
+        {
+            let _ = obj;
+            Err(cuda_not_compiled())
+        }
+    }
+
     /// Block the host until all work on this stream completes.
     fn synchronize(&self) -> PyResult<()> {
         #[cfg(feature = "cuda")]
         {
-            self.inner.synchronize().map_err(to_pyerr)
+            match &self.inner {
+                StreamInner::Owned(s) => s.synchronize().map_err(to_pyerr),
+                StreamInner::Foreign(h) => {
+                    // SAFETY: `h` is a live `CUstream` the caller vouched for.
+                    unsafe {
+                        cudarc::driver::sys::cuStreamSynchronize(
+                            *h as cudarc::driver::sys::CUstream,
+                        )
+                    }
+                    .result()
+                    .map_err(to_pyerr)
+                }
+            }
         }
         #[cfg(not(feature = "cuda"))]
         {
@@ -4033,12 +4157,16 @@ impl PyStream {
         }
     }
 
-    /// Raw `CUstream` handle as an integer, for the DLPack `stream=` protocol.
+    /// Raw `CUstream` handle as an integer, for the DLPack / `cuda.core`
+    /// `stream=` protocols.
     #[getter]
     fn cuda_stream_ptr(&self) -> usize {
         #[cfg(feature = "cuda")]
         {
-            self.inner.cu_stream() as usize
+            match &self.inner {
+                StreamInner::Owned(s) => s.cu_stream() as usize,
+                StreamInner::Foreign(h) => *h,
+            }
         }
         #[cfg(not(feature = "cuda"))]
         {
@@ -4050,15 +4178,36 @@ impl PyStream {
     /// `(protocol_version, cuStream_handle)` so a kornia `Stream` can be passed
     /// wherever `cuda.core` accepts a stream-like object.
     fn __cuda_stream__(&self) -> (i32, usize) {
-        #[cfg(feature = "cuda")]
-        {
-            (0, self.inner.cu_stream() as usize)
-        }
-        #[cfg(not(feature = "cuda"))]
-        {
-            (0, 0)
+        (0, self.cuda_stream_ptr())
+    }
+}
+
+/// Pull a raw `CUstream` handle out of a Python object: the `cuda-python` /
+/// `cuda.core` `__cuda_stream__()` protocol first, then a plain integer, then a
+/// `.ptr` / `.handle` attribute (CuPy / cuda.core).
+#[cfg(feature = "cuda")]
+fn extract_stream_handle(obj: &Bound<'_, PyAny>) -> PyResult<usize> {
+    // 1) __cuda_stream__() -> (version, handle)
+    if let Ok(res) = obj.call_method0("__cuda_stream__") {
+        let (_ver, handle): (i32, usize) = res.extract().map_err(|_| {
+            value_err("__cuda_stream__() did not return a (version, handle) tuple of ints")
+        })?;
+        return Ok(handle);
+    }
+    // 2) a bare integer handle
+    if let Ok(handle) = obj.extract::<usize>() {
+        return Ok(handle);
+    }
+    // 3) an object carrying an integer `.ptr` (CuPy) or `.handle` (cuda.core)
+    for attr in ["ptr", "handle"] {
+        if let Ok(v) = obj.getattr(attr).and_then(|a| a.extract::<usize>()) {
+            return Ok(v);
         }
     }
+    Err(value_err(
+        "expected a CUDA stream: an object with __cuda_stream__(), an int handle, \
+         or a .ptr / .handle integer attribute",
+    ))
 }
 
 #[pymethods]
@@ -4152,8 +4301,10 @@ impl PyImageApi {
     fn to_cuda(&self, py: Python<'_>, stream: Option<PyRef<'_, PyStream>>) -> PyResult<Self> {
         #[cfg(feature = "cuda")]
         {
-            let s = resolve_stream(stream)?;
-            self.to_device_internal(py, s)
+            let resolved = resolve_stream(stream)?;
+            let dev = self.to_device_internal(py, resolved.launch.clone())?;
+            fence_into_foreign(&resolved)?;
+            Ok(dev)
         }
         #[cfg(not(feature = "cuda"))]
         {
