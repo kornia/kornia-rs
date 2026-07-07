@@ -125,7 +125,7 @@ fn run_cpu() {
 #[cfg(feature = "cuda")]
 fn run_gpu_cuda() {
     use cudarc::driver::CudaContext;
-    use kornia_imgproc::cuda::resize_cuda::{
+    use kornia_imgproc::cuda::resize::{
         launch_resize_bilinear_downscale_cuda, launch_resize_nearest_downscale_cuda,
     };
 
@@ -203,7 +203,7 @@ fn run_gpu_cuda() {
 #[cfg(feature = "cuda")]
 fn run_gpu_cuda_bicubic() {
     use cudarc::driver::CudaContext;
-    use kornia_imgproc::cuda::resize_cuda::launch_resize_bicubic_cuda;
+    use kornia_imgproc::cuda::resize::launch_resize_bicubic_cuda;
 
     let ctx = std::sync::Arc::new(CudaContext::new(0).expect("CUDA context"));
     let stream = ctx.default_stream();
@@ -257,7 +257,7 @@ fn run_gpu_cuda_bicubic() {
 #[cfg(feature = "cuda")]
 fn run_gpu_cuda_fused_normalize() {
     use cudarc::driver::CudaContext;
-    use kornia_imgproc::cuda::resize_cuda::{
+    use kornia_imgproc::cuda::resize::{
         launch_resize_bilinear_downscale_cuda, launch_resize_bilinear_normalize_cuda,
     };
 

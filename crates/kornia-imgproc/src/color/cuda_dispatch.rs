@@ -3,7 +3,7 @@
 //! Enabled by the `cuda` feature. The `impl_convert!` macro in
 //! [`super::convert`] calls [`pair_residency`] on the operands: host pairs run
 //! the existing CPU (NEON/AVX2) path unchanged, device pairs are routed to the
-//! native CUDA launchers in [`crate::cuda::color_cuda`], and mixed pairs are a
+//! native CUDA launchers in [`crate::cuda::color`], and mixed pairs are a
 //! typed error — there is **no implicit transfer** in either direction.
 //!
 //! The stream used for the launch is recovered from the *source* image
@@ -18,7 +18,7 @@ use kornia_image::{Image, ImageError};
 use kornia_tensor::MemoryDomain;
 
 use crate::color::yuv::kernels::ChromaOrder;
-use crate::cuda::color_cuda::{cie, gray, hsv_hls, misc, swizzle, yuv};
+use crate::cuda::color::{cie, gray, hsv_hls, misc, swizzle, yuv};
 
 /// Where a (src, dst) operand pair lives.
 pub(crate) enum Residency {
@@ -348,7 +348,7 @@ pub(crate) fn rgb_from_bayer_u8_cuda(
     check_same_size(src, dst)?;
     let (rows, cols) = (src.rows(), src.cols());
     let (s, d) = device_slices!(src, dst);
-    crate::cuda::color_cuda::bayer::launch_rgb_from_bayer_u8(stream, s, d, rows, cols, pattern)
+    crate::cuda::color::bayer::launch_rgb_from_bayer_u8(stream, s, d, rows, cols, pattern)
         .map_err(ImageError::from)
 }
 
@@ -426,7 +426,7 @@ mod tests {
     use kornia_image::ImageSize;
 
     use crate::color::ConvertColor;
-    use crate::cuda::color_cuda::test_utils::{default_stream, pattern_u8};
+    use crate::cuda::color::test_utils::{default_stream, pattern_u8};
 
     const SIZE: ImageSize = ImageSize {
         width: 640,

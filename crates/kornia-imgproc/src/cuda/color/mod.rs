@@ -1,7 +1,7 @@
 //! Native CUDA (cudarc + NVRTC) kernels for color-space conversion.
 //!
 //! Enabled by the `cuda` feature. Each conversion follows the
-//! [`super::resize_cuda`] pattern: an inline CUDA-C source string compiled once
+//! [`super::resize`] pattern: an inline CUDA-C source string compiled once
 //! per process via NVRTC (cached in a `OnceLock`), launched through
 //! [`kornia_tensor::CudaKernel`] on device slices.
 //!

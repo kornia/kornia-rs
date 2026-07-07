@@ -5,15 +5,15 @@
 
 /// Native CUDA downscale kernels using `__ldg` read-only cache (feature `cuda`).
 #[cfg(feature = "cuda")]
-pub mod resize_cuda;
+pub mod resize;
 
 /// Native CUDA warp-affine kernels (bilinear and nearest-neighbor, feature `cuda`).
 #[cfg(feature = "cuda")]
-pub mod warp_affine_cuda;
+pub mod warp_affine;
 
 /// Native CUDA color-space conversion kernels (feature `cuda`).
 #[cfg(feature = "cuda")]
-pub mod color_cuda;
+pub mod color;
 
 /// CUDA texture object RAII wrapper (used internally by warp-affine kernels).
 #[cfg(feature = "cuda")]

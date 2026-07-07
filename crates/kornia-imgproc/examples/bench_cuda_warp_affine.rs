@@ -44,7 +44,7 @@ fn main() {
 #[cfg(feature = "cuda")]
 fn run_gpu_cuda() {
     use cudarc::driver::CudaContext;
-    use kornia_imgproc::cuda::warp_affine_cuda::{
+    use kornia_imgproc::cuda::warp_affine::{
         launch_warp_affine_bicubic_cuda, launch_warp_affine_bilinear_cuda,
         launch_warp_affine_nearest_cuda,
     };

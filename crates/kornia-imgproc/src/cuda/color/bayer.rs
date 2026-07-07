@@ -165,7 +165,7 @@ pub fn launch_rgb_from_bayer_u8(
 #[cfg(all(test, feature = "cuda"))]
 mod tests {
     use super::*;
-    use crate::cuda::color_cuda::test_utils::{default_stream, pattern_u8};
+    use crate::cuda::color::test_utils::{default_stream, pattern_u8};
 
     #[test]
     fn bayer_demosaic_bit_exact_vs_cpu_all_patterns_and_odd_sizes() {

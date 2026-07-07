@@ -638,7 +638,7 @@ mod tests {
     use kornia_image::{Image, ImageSize};
 
     use super::*;
-    use crate::cuda::color_cuda::test_utils::{default_stream, pattern_u8};
+    use crate::cuda::color::test_utils::{default_stream, pattern_u8};
 
     const W: usize = 64;
     const H: usize = 48;

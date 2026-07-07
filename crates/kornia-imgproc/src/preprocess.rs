@@ -142,7 +142,7 @@ pub enum SourceFormat {
     Gray8,
     /// Planar 4:2:0: full-res Y plane then interleaved half-res UV
     /// (`w*h*3/2` bytes, BT.601 limited — byte-identical to
-    /// `gpu::color_cuda::video`). Even dimensions required.
+    /// `gpu::color::video`). Even dimensions required.
     Nv12,
     /// Packed 4:2:2 `Y0 U Y1 V`, 2 bytes/px (BT.601 limited). Even width.
     Yuyv,
@@ -491,7 +491,7 @@ __device__ __forceinline__ float lanczos_w(float d) {
 // `fmt` selects how one (x, y) texel decodes to RGB. It is a warp-uniform
 // launch arg (same for every thread), so the branches predict perfectly and
 // the single-JIT-compile design is preserved. Q20 BT.601-limited constants
-// match gpu/color_cuda/video.rs bit-for-bit.
+// match gpu/color/video.rs bit-for-bit.
 //   0 = interleaved RGB-order (bpp = src_bpp: 3 or 4, alpha skipped)
 //   1 = interleaved BGR-order (bpp = src_bpp: 3 or 4)
 //   2 = gray, 1 byte/px (broadcast)
