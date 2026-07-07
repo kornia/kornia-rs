@@ -235,7 +235,7 @@ __device__ inline float lanczos3_wa(float x) {
     if (fabsf(x) >= 3.0f) return 0.0f;
     float pix  = PI * x;
     float pix3 = pix * 0.33333333f;
-    return sinf(pix) * sinf(pix3) / (pix * pix3);
+    return __sinf(pix) * __sinf(pix3) * __fdividef(1.0f, pix * pix3);
 }
 
 extern "C" __global__ void warp_affine_lanczos_3c(
@@ -279,8 +279,8 @@ extern "C" __global__ void warp_affine_lanczos_3c(
     // Normalise to guard against brightness drift at clamped boundaries.
     float sum_wx = wx[0]+wx[1]+wx[2]+wx[3]+wx[4]+wx[5];
     float sum_wy = wy[0]+wy[1]+wy[2]+wy[3]+wy[4]+wy[5];
-    float inv_x = 1.0f / sum_wx;
-    float inv_y = 1.0f / sum_wy;
+    float inv_x = __fdividef(1.0f, sum_wx);
+    float inv_y = __fdividef(1.0f, sum_wy);
     #pragma unroll
     for (int i = 0; i < 6; i++) { wx[i] *= inv_x; wy[i] *= inv_y; }
 
