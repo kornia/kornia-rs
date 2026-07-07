@@ -1000,6 +1000,11 @@ impl PyImageApi {
         }
     }
 
+    /// True when the image is device-resident (CUDA). Cheap; no feature gate.
+    pub(crate) fn is_device(&self) -> bool {
+        self.backing.device().0 == dlpack_rs::ffi::DLDeviceType::kDLCUDA as i32
+    }
+
     /// Clone the shared handle to the underlying device image (cheap `Arc`
     /// clone) — used as a DLPack keep-alive and by `.cuda()` on a device image.
     #[cfg(feature = "cuda")]
@@ -1226,7 +1231,7 @@ impl PyImageApi {
     /// Borrow a numpy ndarray zero-copy as the default ingest path. Keeps the
     /// original ndarray alive (memory identity preserved). Optionally forces a
     /// deep copy into an owned aligned buffer.
-    fn from_numpy_borrow(
+    pub(crate) fn from_numpy_borrow(
         py: Python<'_>,
         arr: &Bound<'_, PyAny>,
         mode: Option<String>,

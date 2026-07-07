@@ -8,12 +8,9 @@ use crate::image::{
 use kornia_image::ImageSize;
 use kornia_imgproc::color;
 
-/// Residency dispatch for a color op that accepts numpy **or** a device `Image`.
-///
-/// If `image` is a `kornia_rs.image.Image` on a CUDA device, run the GPU
-/// conversion `dev_op` (returning a device `Image`); a host `Image` is rejected
-/// by `dev_op` with a clear hint. Returns `None` for a plain numpy input so the
-/// caller falls through to its CPU path (numpy in → numpy out).
+/// Device half of the residency dispatch: if `image` is a **device** `Image`,
+/// run the GPU conversion `dev_op` and return the device `Image`. Returns `None`
+/// for a numpy array or a host `Image` (the caller's CPU path handles those).
 #[cfg(feature = "cuda")]
 fn dispatch_device<F>(
     py: Python<'_>,
@@ -23,11 +20,62 @@ fn dispatch_device<F>(
 where
     F: FnOnce(&PyImageApi) -> PyResult<PyImageApi>,
 {
-    if let Ok(api) = image.downcast::<PyImageApi>() {
-        let out = dev_op(&api.borrow())?;
-        return Ok(Some(Py::new(py, out)?.into_any()));
+    if let Ok(api) = image.cast::<PyImageApi>() {
+        if api.borrow().is_device() {
+            let out = dev_op(&api.borrow())?;
+            return Ok(Some(Py::new(py, out)?.into_any()));
+        }
     }
     Ok(None)
+}
+
+/// Run a u8 CPU color op that accepts numpy **or** a host `Image`, returning the
+/// same kind: numpy → numpy, host `Image` → host `Image`. (Device images are
+/// handled by [`dispatch_device`] before this is reached.)
+fn cpu_color<C>(py: Python<'_>, image: &Bound<'_, PyAny>, cpu: C) -> PyResult<Py<PyAny>>
+where
+    C: FnOnce(Python<'_>, PyImage) -> PyResult<PyImage>,
+{
+    if let Ok(api) = image.cast::<PyImageApi>() {
+        no_gpu_kernel_if_device(&api.borrow())?;
+        // Host Image: run on its numpy view, wrap the numpy result as a host Image.
+        let view = api.call_method0("numpy")?;
+        let arr: PyImage = view.extract()?;
+        let out = cpu(py, arr)?;
+        let img = PyImageApi::from_numpy_borrow(py, out.bind(py).as_any(), None, None, false)?;
+        return Ok(Py::new(py, img)?.into_any());
+    }
+    let arr: PyImage = image.extract()?;
+    Ok(cpu(py, arr)?.into_any())
+}
+
+/// f32 sibling of [`cpu_color`].
+fn cpu_color_f32<C>(py: Python<'_>, image: &Bound<'_, PyAny>, cpu: C) -> PyResult<Py<PyAny>>
+where
+    C: FnOnce(Python<'_>, PyImageF32) -> PyResult<PyImageF32>,
+{
+    if let Ok(api) = image.cast::<PyImageApi>() {
+        no_gpu_kernel_if_device(&api.borrow())?;
+        let view = api.call_method0("numpy")?;
+        let arr: PyImageF32 = view.extract()?;
+        let out = cpu(py, arr)?;
+        let img = PyImageApi::from_numpy_borrow(py, out.bind(py).as_any(), None, None, false)?;
+        return Ok(Py::new(py, img)?.into_any());
+    }
+    let arr: PyImageF32 = image.extract()?;
+    Ok(cpu(py, arr)?.into_any())
+}
+
+/// A device `Image` reaching a CPU-only op (no GPU kernel) is an error — we do
+/// not silently D2H-download. Host images fall through.
+fn no_gpu_kernel_if_device(api: &PyImageApi) -> PyResult<()> {
+    if api.is_device() {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "this color op has no GPU kernel for a device Image; move it to the host \
+             with .cpu() first (or pass a numpy array)",
+        ));
+    }
+    Ok(())
 }
 
 #[pyfunction]
@@ -36,12 +84,13 @@ pub fn rgb_from_gray(py: Python<'_>, image: &Bound<'_, PyAny>) -> PyResult<Py<Py
     if let Some(dev) = dispatch_device(py, image, crate::cuda_ext::rgb_from_gray)? {
         return Ok(dev);
     }
-    let image: PyImage = image.extract()?;
-    let src = unsafe { numpy_as_image::<1>(py, &image)? };
-    let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, src.size())? };
-    py.detach(|| color::rgb_from_gray(&src, &mut dst))
-        .map_err(to_pyerr)?;
-    Ok(out.into_any())
+    cpu_color(py, image, |py, image| {
+        let src = unsafe { numpy_as_image::<1>(py, &image)? };
+        let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, src.size())? };
+        py.detach(|| color::rgb_from_gray(&src, &mut dst))
+            .map_err(to_pyerr)?;
+        Ok(out)
+    })
 }
 
 #[pyfunction]
@@ -50,12 +99,13 @@ pub fn bgr_from_rgb(py: Python<'_>, image: &Bound<'_, PyAny>) -> PyResult<Py<PyA
     if let Some(dev) = dispatch_device(py, image, crate::cuda_ext::bgr_from_rgb)? {
         return Ok(dev);
     }
-    let image: PyImage = image.extract()?;
-    let src = unsafe { numpy_as_image::<3>(py, &image)? };
-    let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, src.size())? };
-    py.detach(|| color::bgr_from_rgb(&src, &mut dst))
-        .map_err(to_pyerr)?;
-    Ok(out.into_any())
+    cpu_color(py, image, |py, image| {
+        let src = unsafe { numpy_as_image::<3>(py, &image)? };
+        let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, src.size())? };
+        py.detach(|| color::bgr_from_rgb(&src, &mut dst))
+            .map_err(to_pyerr)?;
+        Ok(out)
+    })
 }
 
 /// RGB f32 → grayscale f32, zero-copy in and out.
@@ -77,12 +127,13 @@ pub fn gray_from_rgb(py: Python<'_>, image: &Bound<'_, PyAny>) -> PyResult<Py<Py
     if let Some(dev) = dispatch_device(py, image, crate::cuda_ext::gray_from_rgb)? {
         return Ok(dev);
     }
-    let image: PyImage = image.extract()?;
-    let src = unsafe { numpy_as_image::<3>(py, &image)? };
-    let (mut dst, out) = unsafe { alloc_output_pyarray::<1>(py, src.size())? };
-    py.detach(|| color::gray_from_rgb_u8(&src, &mut dst))
-        .map_err(to_pyerr)?;
-    Ok(out.into_any())
+    cpu_color(py, image, |py, image| {
+        let src = unsafe { numpy_as_image::<3>(py, &image)? };
+        let (mut dst, out) = unsafe { alloc_output_pyarray::<1>(py, src.size())? };
+        py.detach(|| color::gray_from_rgb_u8(&src, &mut dst))
+            .map_err(to_pyerr)?;
+        Ok(out)
+    })
 }
 
 #[pyfunction]
@@ -91,12 +142,13 @@ pub fn rgba_from_rgb(py: Python<'_>, image: &Bound<'_, PyAny>) -> PyResult<Py<Py
     if let Some(dev) = dispatch_device(py, image, crate::cuda_ext::rgba_from_rgb)? {
         return Ok(dev);
     }
-    let image: PyImage = image.extract()?;
-    let src = unsafe { numpy_as_image::<3>(py, &image)? };
-    let (mut dst, out) = unsafe { alloc_output_pyarray::<4>(py, src.size())? };
-    py.detach(|| color::rgba_from_rgb(&src, &mut dst))
-        .map_err(to_pyerr)?;
-    Ok(out.into_any())
+    cpu_color(py, image, |py, image| {
+        let src = unsafe { numpy_as_image::<3>(py, &image)? };
+        let (mut dst, out) = unsafe { alloc_output_pyarray::<4>(py, src.size())? };
+        py.detach(|| color::rgba_from_rgb(&src, &mut dst))
+            .map_err(to_pyerr)?;
+        Ok(out)
+    })
 }
 
 #[pyfunction]
@@ -111,12 +163,13 @@ pub fn rgb_from_rgba(
     if let Some(dev) = dispatch_device(py, image, crate::cuda_ext::rgb_from_rgba)? {
         return Ok(dev);
     }
-    let image: PyImage = image.extract()?;
-    let src = unsafe { numpy_as_image::<4>(py, &image)? };
-    let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, src.size())? };
-    py.detach(|| color::rgb_from_rgba(&src, &mut dst, background))
-        .map_err(to_pyerr)?;
-    Ok(out.into_any())
+    cpu_color(py, image, |py, image| {
+        let src = unsafe { numpy_as_image::<4>(py, &image)? };
+        let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, src.size())? };
+        py.detach(|| color::rgb_from_rgba(&src, &mut dst, background))
+            .map_err(to_pyerr)?;
+        Ok(out)
+    })
 }
 
 #[pyfunction]
@@ -139,12 +192,13 @@ pub fn apply_colormap(
              viridis, cividis, twilight, turbo, deepgreen"
         ))
     })?;
-    let image: PyImage = image.extract()?;
-    let src = unsafe { numpy_as_image::<1>(py, &image)? };
-    let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, src.size())? };
-    py.detach(|| color::apply_colormap(&src, &mut dst, cm))
-        .map_err(to_pyerr)?;
-    Ok(out.into_any())
+    cpu_color(py, image, |py, image| {
+        let src = unsafe { numpy_as_image::<1>(py, &image)? };
+        let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, src.size())? };
+        py.detach(|| color::apply_colormap(&src, &mut dst, cm))
+            .map_err(to_pyerr)?;
+        Ok(out)
+    })
 }
 
 #[pyfunction]
@@ -158,12 +212,13 @@ pub fn rgb_from_bgra(
     if let Some(dev) = dispatch_device(py, image, crate::cuda_ext::rgb_from_bgra)? {
         return Ok(dev);
     }
-    let image: PyImage = image.extract()?;
-    let src = unsafe { numpy_as_image::<4>(py, &image)? };
-    let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, src.size())? };
-    py.detach(|| color::rgb_from_bgra(&src, &mut dst, background))
-        .map_err(to_pyerr)?;
-    Ok(out.into_any())
+    cpu_color(py, image, |py, image| {
+        let src = unsafe { numpy_as_image::<4>(py, &image)? };
+        let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, src.size())? };
+        py.detach(|| color::rgb_from_bgra(&src, &mut dst, background))
+            .map_err(to_pyerr)?;
+        Ok(out)
+    })
 }
 
 /// Generates a zero-copy f32 3→3 channel color-conversion `#[pyfunction]`.
@@ -174,17 +229,19 @@ macro_rules! py_f32_3to3 {
     ($name:ident, $func:path, $doc:literal) => {
         #[doc = $doc]
         #[pyfunction]
-        pub fn $name(py: Python<'_>, image: PyImageF32) -> PyResult<PyImageF32> {
-            let src = unsafe { numpy_as_image_f32::<3>(py, &image)? };
-            let (mut dst, out) = unsafe { alloc_output_pyarray_f32::<3>(py, src.size())? };
-            py.detach(|| $func(&src, &mut dst)).map_err(to_pyerr)?;
-            Ok(out)
+        pub fn $name(py: Python<'_>, image: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+            cpu_color_f32(py, image, |py, image| {
+                let src = unsafe { numpy_as_image_f32::<3>(py, &image)? };
+                let (mut dst, out) = unsafe { alloc_output_pyarray_f32::<3>(py, src.size())? };
+                py.detach(|| $func(&src, &mut dst)).map_err(to_pyerr)?;
+                Ok(out)
+            })
         }
     };
 }
 
 /// Like [`py_f32_3to3`], but residency-dispatching: a device `Image` runs the
-/// GPU op `$dev` (returning a device `Image`); numpy f32 runs the CPU `$func`.
+/// GPU op `$dev` (returning a device `Image`); numpy / host `Image` run CPU.
 #[cfg(feature = "cuda")]
 macro_rules! py_f32_3to3_dev {
     ($name:ident, $func:path, $dev:path, $doc:literal) => {
@@ -194,11 +251,12 @@ macro_rules! py_f32_3to3_dev {
             if let Some(dev) = dispatch_device(py, image, $dev)? {
                 return Ok(dev);
             }
-            let image: PyImageF32 = image.extract()?;
-            let src = unsafe { numpy_as_image_f32::<3>(py, &image)? };
-            let (mut dst, out) = unsafe { alloc_output_pyarray_f32::<3>(py, src.size())? };
-            py.detach(|| $func(&src, &mut dst)).map_err(to_pyerr)?;
-            Ok(out.into_any())
+            cpu_color_f32(py, image, |py, image| {
+                let src = unsafe { numpy_as_image_f32::<3>(py, &image)? };
+                let (mut dst, out) = unsafe { alloc_output_pyarray_f32::<3>(py, src.size())? };
+                py.detach(|| $func(&src, &mut dst)).map_err(to_pyerr)?;
+                Ok(out)
+            })
         }
     };
 }
@@ -315,12 +373,13 @@ pub fn rgb_from_bayer(
             )))
         }
     };
-    let image: PyImage = image.extract()?;
-    let src = unsafe { numpy_as_image::<1>(py, &image)? };
-    let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, src.size())? };
-    py.detach(|| color::rgb_from_bayer(&src, pat, &mut dst))
-        .map_err(to_pyerr)?;
-    Ok(out.into_any())
+    cpu_color(py, image, |py, image| {
+        let src = unsafe { numpy_as_image::<1>(py, &image)? };
+        let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, src.size())? };
+        py.detach(|| color::rgb_from_bayer(&src, pat, &mut dst))
+            .map_err(to_pyerr)?;
+        Ok(out)
+    })
 }
 
 /// Decode a raw packed/planar YUV byte buffer (1-D `uint8`) to an `(H, W, 3)` RGB image.

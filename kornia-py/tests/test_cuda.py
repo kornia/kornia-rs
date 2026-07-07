@@ -60,11 +60,24 @@ def test_color_ops_bit_exact_odd_dims(h, w):
     np.testing.assert_array_equal(kornia_rs.imgproc.bgr_from_rgb(kornia_rs.imgproc.bgr_from_rgb(d)).numpy(), a)
 
 
-def test_color_ops_require_device_image():
-    # A host image is rejected by the GPU color ops with a clear hint.
-    host = Image.from_numpy(_rgb())
-    with pytest.raises(ValueError, match="device Image"):
-        kornia_rs.imgproc.gray_from_rgb(host)
+def test_color_op_dispatches_on_residency():
+    # One imgproc op, three inputs: numpy -> numpy (CPU), host Image -> host
+    # Image (CPU), device Image -> device Image (GPU); all bit-exact.
+    a = _rgb()
+    ref = np.asarray(kornia_rs.imgproc.gray_from_rgb(a)).reshape(a.shape[:2])
+
+    host = kornia_rs.imgproc.gray_from_rgb(Image.from_numpy(a))
+    assert host.device == "cpu"
+    np.testing.assert_array_equal(host.numpy().reshape(a.shape[:2]), ref)
+
+    dev = kornia_rs.imgproc.gray_from_rgb(_dev(a))
+    assert dev.device == "cuda:0"
+    np.testing.assert_array_equal(dev.numpy().reshape(a.shape[:2]), ref)
+
+    # A CPU-only op (no GPU kernel) on a device image raises a clear error.
+    af = (a.astype(np.float32) / 255.0).copy()
+    with pytest.raises(ValueError, match="no GPU kernel"):
+        kornia_rs.imgproc.hls_from_rgb(_dev(af))
 
 
 def test_conversion_chain_stays_on_device():
