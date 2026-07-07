@@ -2,7 +2,7 @@
 
 A device ``Image`` is the *same* ``Image`` type as a host one — only its
 ``.device`` differs. There is no separate CudaImage / upload / download: you
-create device images with ``Image.cuda.from_numpy`` (or move an existing image
+create device images by moving a host image to the GPU with ``.to_cuda`` (an existing image
 with ``.to_cuda()``), bring data back with ``.numpy()`` / ``.cpu()``, and share
 it zero-copy with torch / cupy / cuda-python via DLPack and the CUDA Array
 Interface.
@@ -15,7 +15,8 @@ Run:
 import numpy as np
 
 import kornia_rs
-from kornia_rs.image import Image, Stream
+from kornia_rs.image import Image
+from kornia_rs.cuda import Stream
 
 
 def main() -> None:
@@ -27,7 +28,7 @@ def main() -> None:
     a = np.random.default_rng(0).integers(0, 256, (240, 320, 3), dtype=np.uint8)
 
     # 1) Host numpy -> device Image (zero-copy the host buffer, then H2D).
-    img = Image.cuda.from_numpy(a)
+    img = Image.from_numpy(a).to_cuda()
     print("device:", img.device, "shape:", img.shape, "dtype:", img.dtype)
 
     # 2) .numpy() auto-copies a device image back to host (D2H).
@@ -44,12 +45,12 @@ def main() -> None:
     print("gray:", gray.device, gray.channels, "channels")
 
     # 5) Allocate directly on device.
-    zeros = Image.cuda.zeros(width=64, height=48, channels=3, dtype="uint8")
+    zeros = Image.zeros(width=64, height=48, channels=3, dtype="uint8", stream=Stream.default())
     assert zeros.numpy().sum() == 0
 
     # 6) Explicit CUDA stream (optional; defaults to the process default stream).
     stream = Stream.default()
-    img2 = Image.cuda.from_numpy(a, stream=stream)
+    img2 = Image.from_numpy(a).to_cuda(stream)
     stream.synchronize()
     print("stream handle:", hex(stream.cuda_stream_ptr))
 

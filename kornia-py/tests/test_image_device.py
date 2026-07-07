@@ -10,7 +10,8 @@ import numpy as np
 import pytest
 
 import kornia_rs
-from kornia_rs.image import Image, Stream
+from kornia_rs.image import Image
+from kornia_rs.cuda import Stream
 
 cuda = getattr(kornia_rs, "cuda", None)
 pytestmark = pytest.mark.skipif(
@@ -19,6 +20,16 @@ pytestmark = pytest.mark.skipif(
 )
 
 RNG = np.random.default_rng(0)
+
+
+def _dev(a, stream=None):
+    """Host numpy/array -> device Image (mirrors the old Image.cuda.from_numpy)."""
+    return Image.from_numpy(a).to_cuda(stream)
+
+
+def _dzeros(*args, stream=None, **kw):
+    """Zero-init device Image (mirrors the old Image.cuda.zeros)."""
+    return Image.zeros(*args, **kw, stream=stream if stream is not None else Stream.default())
 
 
 def _rgb(h=48, w=64):
@@ -31,7 +42,7 @@ def _rgbf(h=32, w=40):
 
 def test_from_numpy_roundtrip_uint8():
     a = _rgb()
-    img = Image.cuda.from_numpy(a)
+    img = _dev(a)
     assert img.device == "cuda:0"
     # .numpy() auto-downloads (D2H) a device image.
     np.testing.assert_array_equal(img.numpy(), a)
@@ -39,7 +50,7 @@ def test_from_numpy_roundtrip_uint8():
 
 def test_from_numpy_roundtrip_float32():
     a = _rgbf()
-    img = Image.cuda.from_numpy(a)
+    img = _dev(a)
     assert img.device == "cuda:0"
     np.testing.assert_array_equal(img.numpy(), a)
 
@@ -61,7 +72,7 @@ def test_to_cuda_then_cpu_roundtrip():
 
 
 def test_cuda_zeros():
-    img = Image.cuda.zeros(width=8, height=6, channels=3, dtype="uint8")
+    img = _dzeros(width=8, height=6, channels=3, dtype="uint8")
     assert img.device == "cuda:0"
     assert (img.height, img.width, img.channels) == (6, 8, 3)
     np.testing.assert_array_equal(img.numpy(), np.zeros((6, 8, 3), np.uint8))
@@ -70,12 +81,12 @@ def test_cuda_zeros():
 def test_unsupported_dtype_on_device_raises():
     a = RNG.integers(0, 1000, (8, 8, 3), dtype=np.uint16)
     with pytest.raises(ValueError):
-        Image.cuda.from_numpy(a)
+        _dev(a)
 
 
 def test_cuda_array_interface_present_on_device_only():
     a = _rgb()
-    dev = Image.cuda.from_numpy(a)
+    dev = _dev(a)
     cai = dev.__cuda_array_interface__
     assert cai["version"] == 3
     assert cai["shape"] == (a.shape[0], a.shape[1], a.shape[2])
@@ -97,7 +108,7 @@ def test_stream_default_and_protocol():
     assert handle == s.cuda_stream_ptr
     s.synchronize()
     # A stream can be threaded through a transfer.
-    img = Image.cuda.from_numpy(_rgb(), stream=s)
+    img = _dev(_rgb(), stream=s)
     assert img.device == "cuda:0"
 
 
@@ -142,14 +153,14 @@ def test_foreign_stream_threaded_through_transfers():
     a = _rgb()
     fs = Stream.from_handle(Stream.default().cuda_stream_ptr)
 
-    dev = Image.cuda.from_numpy(a, stream=fs)
+    dev = _dev(a, stream=fs)
     assert dev.device == "cuda:0"
     np.testing.assert_array_equal(dev.numpy(), a)
 
     dev2 = Image.from_numpy(a).to_cuda(stream=fs)
     np.testing.assert_array_equal(dev2.numpy(), a)
 
-    z = Image.cuda.zeros(8, 6, 3, dtype="uint8", stream=fs)
+    z = _dzeros(8, 6, 3, dtype="uint8", stream=fs)
     np.testing.assert_array_equal(z.numpy(), np.zeros((6, 8, 3), np.uint8))
 
 
@@ -158,7 +169,7 @@ def test_device_numpy_is_readonly_copy():
     image return a read-only host copy — writes must not silently vanish into the
     throwaway D2H buffer."""
     a = _rgb()
-    dev = Image.cuda.from_numpy(a)
+    dev = _dev(a)
     for arr in (dev.numpy(), dev.data, np.asarray(dev), dev.to_numpy(copy=False)):
         assert not arr.flags.writeable
         with pytest.raises(ValueError):
@@ -172,7 +183,7 @@ def test_device_numpy_is_readonly_copy():
 def test_host_only_transforms_raise_on_device():
     """Every host transform is host-only and raises on a device image (the stubs
     document this); `.cpu()` first is the fix."""
-    dev = Image.cuda.from_numpy(_rgb())
+    dev = _dev(_rgb())
     host_only = [
         ("resize", lambda i: i.resize(16, 16)),
         ("copy", lambda i: i.copy()),
@@ -201,7 +212,7 @@ def test_dlpack_stream_argument_paths():
     -1 (no sync), 0/1/2 default sentinels + a real handle (non-blocking fence),
     None (host sync) each return a PyCapsule; invalid negatives are rejected.
     Exercised without a torch consumer."""
-    dev = Image.cuda.from_numpy(_rgb())
+    dev = _dev(_rgb())
     for stream in (-1, 0, 1, 2, Stream.default().cuda_stream_ptr, None):
         cap = dev.__dlpack__(stream=stream)
         assert type(cap).__name__ == "PyCapsule"
@@ -215,14 +226,14 @@ def test_dlpack_roundtrip_with_torch():
     if not torch.cuda.is_available():
         pytest.skip("no torch CUDA")
     a = _rgb()
-    dev = Image.cuda.from_numpy(a)
+    dev = _dev(a)
     # Export device Image -> torch (zero-copy), values match.
     t = torch.from_dlpack(dev)
     assert t.is_cuda
     np.testing.assert_array_equal(t.cpu().numpy(), a)
     # Import a device torch tensor back into a unified device Image.
     t2 = torch.as_tensor(a, device="cuda")
-    img2 = Image.cuda.from_dlpack(t2)
+    img2 = Image.from_dlpack(t2)
     assert img2.device == "cuda:0"
     np.testing.assert_array_equal(img2.numpy(), a)
 
@@ -242,14 +253,14 @@ def test_from_dlpack_copy_isolates_and_zerocopy_keepalive():
 
     # copy=True: independent buffer.
     t = torch.as_tensor(a, device="cuda")
-    owned = Image.cuda.from_dlpack(t, copy=True)
+    owned = Image.from_dlpack(t, copy=True)
     t.zero_()
     torch.cuda.synchronize()
     np.testing.assert_array_equal(owned.numpy(), a)  # unchanged by producer write
 
     # copy=False: zero-copy alias that survives the producer being dropped.
     t2 = torch.as_tensor(a, device="cuda")
-    aliased = Image.cuda.from_dlpack(t2, copy=False)
+    aliased = Image.from_dlpack(t2, copy=False)
     del t2
     import gc
 
@@ -281,7 +292,7 @@ def test_from_dlpack_infers_device():
 
 def test_cuda_color_op_on_unified_image():
     a = _rgb()
-    gray = cuda.gray_from_rgb(Image.cuda.from_numpy(a))
+    gray = cuda.gray_from_rgb(_dev(a))
     assert gray.device == "cuda:0" and gray.channels == 1
     cpu_gray = np.asarray(kornia_rs.imgproc.gray_from_rgb(a)).squeeze()
     np.testing.assert_array_equal(gray.numpy().squeeze(-1), cpu_gray)

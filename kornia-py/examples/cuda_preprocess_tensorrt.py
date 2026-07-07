@@ -23,7 +23,7 @@ Run:
 import numpy as np
 
 import kornia_rs
-from kornia_rs.image import Stream
+from kornia_rs.cuda import Stream
 
 
 def main() -> None:

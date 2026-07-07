@@ -996,9 +996,9 @@ where
     /// D2H-copy this device tensor directly into a caller-provided host slice,
     /// using the tensor's own carried stream and synchronizing before returning.
     ///
-    /// Unlike [`Self::download`] / [`Self::to_host`] (which allocate a fresh
-    /// `Vec<T>` destination), this targets memory the caller already owns — e.g.
-    /// an aligned buffer that will back a numpy view — so no second host copy is
+    /// Unlike [`Self::to_host`] / [`Self::to_host_in`] (which allocate a fresh
+    /// destination), this targets memory the caller already owns — e.g. an
+    /// aligned buffer that will back a numpy view — so no second host copy is
     /// needed to move the pixels into their final home.
     ///
     /// # Errors
@@ -1006,11 +1006,11 @@ where
     /// [`CudaError::NotCudaBacked`] if the tensor is not device-backed by a typed
     /// [`CudaResource<T>`], or [`CudaError::Driver`] on a `dst`-length mismatch or
     /// CUDA failure.
-    pub fn download_into(&self, dst: &mut [T]) -> Result<(), CudaError> {
+    pub fn to_host_into(&self, dst: &mut [T]) -> Result<(), CudaError> {
         let numel: usize = self.shape.iter().product();
         if dst.len() != numel {
             return Err(CudaError::Driver(format!(
-                "download_into: dst len {} != tensor element count {numel}",
+                "to_host_into: dst len {} != tensor element count {numel}",
                 dst.len()
             )));
         }
@@ -1123,10 +1123,10 @@ mod tests {
         );
     }
 
-    /// `download_into` D2H-copies into a caller-provided slice (no intermediate
+    /// `to_host_into` D2H-copies into a caller-provided slice (no intermediate
     /// Vec) and rejects a length mismatch.
     #[test]
-    fn download_into_matches_and_checks_len() {
+    fn to_host_into_matches_and_checks_len() {
         let ctx = CudaContext::new(0).unwrap();
         let stream = ctx.default_stream();
 
@@ -1134,12 +1134,12 @@ mod tests {
         let dev = host.to_cuda(&stream).unwrap();
 
         let mut dst = vec![0u8; 4];
-        dev.download_into(&mut dst).unwrap();
-        assert_eq!(dst, vec![10, 20, 30, 40], "download_into bytes must match");
+        dev.to_host_into(&mut dst).unwrap();
+        assert_eq!(dst, vec![10, 20, 30, 40], "to_host_into bytes must match");
 
         let mut wrong = vec![0u8; 3];
         assert!(
-            dev.download_into(&mut wrong).is_err(),
+            dev.to_host_into(&mut wrong).is_err(),
             "a dst-length mismatch must be rejected"
         );
     }

@@ -1,8 +1,8 @@
 """GPU color conversions and fused camera preprocessing (CUDA).
 
 Data model: device pixels live in the unified :class:`kornia_rs.image.Image`
-(create one with ``Image.cuda.from_numpy(...)``); the color-conversion functions
-here take and return such a device ``Image``. Model input (CHW) becomes a
+(create one with ``Image.from_numpy(a).to_cuda()``); the color-conversion
+functions here take and return such a device ``Image``. Model input (CHW) becomes a
 :class:`CudaTensor` via :class:`CudaPreprocessor`. Everything exports zero-copy
 to torch / cupy / cuda-python via ``__dlpack__`` and ``__cuda_array_interface__``.
 
@@ -16,7 +16,43 @@ from typing import Any, List, Optional, Tuple
 
 import numpy as np
 
-from .image import Image, Stream
+from .image import Image
+
+
+class Stream:
+    """A CUDA stream handle, shareable with kornia device transfers and the
+    DLPack / cuda-python stream protocols. The stream's device is the selector
+    for where ``Image.to_cuda(stream)`` / ``Image.zeros(..., stream=stream)``
+    place data. Only meaningful on a ``cuda`` build."""
+
+    @staticmethod
+    def default(device: int = ...) -> Stream:
+        """The process-wide default CUDA stream for ``device`` (default 0)."""
+        ...
+    @staticmethod
+    def from_handle(handle: int) -> Stream:
+        """Adopt an existing raw ``CUstream`` handle (an integer) from NVIDIA's
+        stack — e.g. ``cuda.core.Stream.handle``, a cuda-python ``CUstream``, or
+        a CuPy ``stream.ptr``. kornia does **not** take ownership (the stream is
+        never destroyed here); device ops fence their work into it via a CUDA
+        event so your later work on the same stream is ordered after kornia's."""
+        ...
+    @staticmethod
+    def from_cuda_stream(obj: Any) -> Stream:
+        """Adopt a stream from any object implementing the cuda-python /
+        ``cuda.core`` protocol (``__cuda_stream__() -> (version, handle)``),
+        exposing an integer ``.ptr`` / ``.handle``, or that is itself an int."""
+        ...
+    def synchronize(self) -> None:
+        """Block the host until all work on this stream completes."""
+        ...
+    @property
+    def cuda_stream_ptr(self) -> int:
+        """Raw ``CUstream`` handle as an integer (DLPack ``stream=`` protocol)."""
+        ...
+    def __cuda_stream__(self) -> tuple[int, int]:
+        """cuda-python / ``cuda.core`` protocol: ``(protocol_version, handle)``."""
+        ...
 
 IMAGENET_MEAN: Tuple[float, float, float]
 """Re-export of ``kornia_rs.IMAGENET_MEAN``."""
@@ -57,7 +93,7 @@ class CudaTensor:
     def __cuda_array_interface__(self) -> dict:
         """CUDA Array Interface (v3) for zero-copy sharing with cupy / numba /
         cuda-python. The ``stream`` entry carries the producing stream."""
-    def download(self) -> np.ndarray:
+    def numpy(self) -> np.ndarray:
         """Copy to host as float32 numpy (f16 tensors are widened)."""
     def __dlpack__(self, *, stream: object = None, max_version: object = None,
                    dl_device: object = None, copy: object = None) -> object:

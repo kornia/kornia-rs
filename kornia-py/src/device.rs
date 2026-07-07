@@ -124,7 +124,7 @@ impl DeviceImage {
 /// D2H a single typed device image into an owned aligned host byte buffer.
 ///
 /// The copy targets the final aligned buffer directly (via
-/// [`Image::download_into`]), so there is no intermediate `Vec<T>` + second host
+/// [`Image::to_host_into`]), so there is no intermediate `Vec<T>` + second host
 /// memcpy — a device→host round-trip is a single DMA into the numpy-backing
 /// storage.
 fn dl_owned<T, const C: usize>(
@@ -140,9 +140,9 @@ where
     let mut bytes = AlignedBytes::uninit(numel * std::mem::size_of::<T>());
     // SAFETY: `bytes` owns `numel * size_of::<T>()` bytes, 64-byte aligned (>=
     // align_of::<T>() for u8/f32); reinterpret as a `&mut [T]` of exactly `numel`
-    // elements. `download_into` writes every element (a full D2H copy) before any
+    // elements. `to_host_into` writes every element (a full D2H copy) before any
     // read, satisfying the uninit-buffer contract.
     let dst = unsafe { std::slice::from_raw_parts_mut(bytes.as_mut_ptr() as *mut T, numel) };
-    img.download_into(dst).map_err(err)?;
+    img.to_host_into(dst).map_err(err)?;
     Ok((bytes, [h, w, C], dt))
 }

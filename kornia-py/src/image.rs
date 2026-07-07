@@ -3482,10 +3482,14 @@ impl PyImageApi {
     /// - dtype must be `uint8`, `uint16`, or `float32`; raises `ValueError` otherwise.
     /// - Channel count `C` must be in `{1, 3, 4}`; raises `ValueError` otherwise.
     #[staticmethod]
-    fn from_dlpack(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Self> {
+    #[pyo3(signature = (obj, copy = true))]
+    fn from_dlpack(py: Python<'_>, obj: &Bound<'_, PyAny>, copy: bool) -> PyResult<Self> {
         use dlpack_rs::ffi::{DLManagedTensor, DLManagedTensorVersioned};
         use pyo3::types::{PyCapsule, PyCapsuleMethods};
         use std::ffi::CStr;
+        // `copy` only affects the CUDA branch (host imports are always the
+        // zero-copy producer-keepalive borrow below).
+        let _ = copy;
 
         // Device inference: a CUDA source imports as a proper device-resident
         // `Image` (carries a stream + typed resource, so `.numpy()`/`.cpu()` and
@@ -3495,10 +3499,11 @@ impl PyImageApi {
         if let Ok(dev) = obj.call_method0("__dlpack_device__") {
             if let Ok((ty, _id)) = dev.extract::<(i32, i32)>() {
                 if ty == dlpack_rs::ffi::DLDeviceType::kDLCUDA as i32 {
-                    let arc = crate::cuda_ext::dlpack_to_device_arc(py, obj, true)?;
+                    let arc = crate::cuda_ext::dlpack_to_device_arc(py, obj, copy)?;
                     let cs = default_color_space(arc.channels());
                     let mode = mode_for_dtype(arc.dtype_enum(), arc.channels());
-                    return Ok(Self::from_device_arc(arc, false, cs, mode));
+                    // A zero-copy alias (copy=false) may reference a read-only producer.
+                    return Ok(Self::from_device_arc(arc, !copy, cs, mode));
                 }
             }
         }
@@ -3967,92 +3972,6 @@ fn fence_into_foreign(resolved: &ResolvedStream) -> PyResult<()> {
     crate::cuda_ext::fence_stream_into(&resolved.launch, resolved.foreign)
 }
 
-/// `Image.cuda` — namespace of CUDA constructors. Reached as a class attribute
-/// (`Image.cuda.from_numpy(arr)`), so a device `Image` is still just an `Image`.
-#[pyclass(name = "ImageCuda", module = "kornia_rs.image", frozen)]
-pub struct ImageCudaNs;
-
-#[pymethods]
-impl ImageCudaNs {
-    /// Zero-copy the host numpy buffer and copy it to CUDA device memory (H2D),
-    /// returning a device-resident `Image`. `stream`: optional `Stream`.
-    #[staticmethod]
-    #[pyo3(signature = (array, stream = None))]
-    fn from_numpy(
-        py: Python<'_>,
-        array: &Bound<'_, PyAny>,
-        stream: Option<PyRef<'_, PyStream>>,
-    ) -> PyResult<PyImageApi> {
-        #[cfg(feature = "cuda")]
-        {
-            // Zero-copy borrow the host ndarray, then H2D it to the device.
-            let host = PyImageApi::from_numpy_borrow(py, array, None, None, false)?;
-            let resolved = resolve_stream(stream)?;
-            let dev = host.to_device_internal(py, resolved.launch.clone())?;
-            fence_into_foreign(&resolved)?;
-            Ok(dev)
-        }
-        #[cfg(not(feature = "cuda"))]
-        {
-            let _ = (py, array, stream);
-            Err(cuda_not_compiled())
-        }
-    }
-
-    /// Allocate a zero-initialized device-resident `Image` of `(height, width,
-    /// channels)`. `dtype` is `"uint8"` or `"float32"`.
-    #[staticmethod]
-    #[pyo3(signature = (width, height, channels, dtype = "uint8", stream = None))]
-    fn zeros(
-        py: Python<'_>,
-        width: usize,
-        height: usize,
-        channels: usize,
-        dtype: &str,
-        stream: Option<PyRef<'_, PyStream>>,
-    ) -> PyResult<PyImageApi> {
-        #[cfg(feature = "cuda")]
-        {
-            let resolved = resolve_stream(stream)?;
-            let dev = zeros_device(py, width, height, channels, dtype, &resolved.launch)?;
-            fence_into_foreign(&resolved)?;
-            Ok(dev)
-        }
-        #[cfg(not(feature = "cuda"))]
-        {
-            let _ = (py, width, height, channels, dtype, stream);
-            Err(cuda_not_compiled())
-        }
-    }
-
-    /// Import a device-resident DLPack tensor (torch / cupy) as a device
-    /// `Image` (zero-copy when `copy=False`). For device inference from any
-    /// source (host or CUDA), prefer `Image.from_dlpack`.
-    #[staticmethod]
-    #[pyo3(signature = (obj, copy = true, stream = None))]
-    fn from_dlpack(
-        py: Python<'_>,
-        obj: &Bound<'_, PyAny>,
-        copy: bool,
-        stream: Option<PyRef<'_, PyStream>>,
-    ) -> PyResult<PyImageApi> {
-        #[cfg(feature = "cuda")]
-        {
-            let _ = stream;
-            let arc = crate::cuda_ext::dlpack_to_device_arc(py, obj, copy)?;
-            let cs = default_color_space(arc.channels());
-            let mode = mode_for_dtype(arc.dtype_enum(), arc.channels());
-            // A zero-copy alias (copy=false) may reference a read-only producer.
-            Ok(PyImageApi::from_device_arc(arc, !copy, cs, mode))
-        }
-        #[cfg(not(feature = "cuda"))]
-        {
-            let _ = (py, obj, copy, stream);
-            Err(cuda_not_compiled())
-        }
-    }
-}
-
 /// Map a producer's raw `CUstream` handle to the value the CUDA Array Interface
 /// (v3) `stream` key expects: `None` when there is no stream, `1` for the legacy
 /// default stream (CAI disallows the ambiguous `0`), otherwise the handle. Real
@@ -4102,7 +4021,7 @@ impl PyStream {
 /// Build one with [`Stream::default`], or adopt an existing NVIDIA stream with
 /// [`Stream::from_handle`] / [`Stream::from_cuda_stream`] so kornia device ops
 /// order their work into your stream.
-#[pyclass(name = "Stream", module = "kornia_rs.image", frozen)]
+#[pyclass(name = "Stream", module = "kornia_rs.cuda", frozen)]
 pub struct PyStream {
     #[cfg(feature = "cuda")]
     pub(crate) inner: StreamInner,
@@ -4110,18 +4029,23 @@ pub struct PyStream {
 
 #[pymethods]
 impl PyStream {
-    /// The process-wide default CUDA stream for device 0.
+    /// The process-wide default CUDA stream for `device` (default 0). The
+    /// stream's device is the selector for where `Image.to_cuda(stream)` /
+    /// `Image.zeros(..., stream=stream)` place data — mirrors Rust's
+    /// `CudaContext::new(ordinal).default_stream()`.
     #[staticmethod]
-    fn default(py: Python<'_>) -> PyResult<Self> {
+    #[pyo3(signature = (device = 0))]
+    fn default(py: Python<'_>, device: i32) -> PyResult<Self> {
         let _ = py;
         #[cfg(feature = "cuda")]
         {
             Ok(Self {
-                inner: StreamInner::Owned(crate::cuda_ext::default_stream()?),
+                inner: StreamInner::Owned(crate::cuda_ext::default_stream_for(device)?),
             })
         }
         #[cfg(not(feature = "cuda"))]
         {
+            let _ = device;
             Err(cuda_not_compiled())
         }
     }
@@ -4246,14 +4170,47 @@ fn extract_stream_handle(obj: &Bound<'_, PyAny>) -> PyResult<usize> {
 
 #[pymethods]
 impl PyImageApi {
-    /// Namespace of CUDA constructors — `Image.cuda.from_numpy(arr)`,
-    /// `Image.cuda.zeros(...)`, `Image.cuda.from_dlpack(...)`.
-    #[classattr]
-    fn cuda(py: Python<'_>) -> PyResult<Py<ImageCudaNs>> {
-        Py::new(py, ImageCudaNs)
+    /// Allocate a zero-initialized `Image` of `(height, width, channels)`.
+    /// `dtype` is `"uint8"` or `"float32"`. With `stream=None` the image is on
+    /// the host; passing a `Stream` allocates directly on that stream's CUDA
+    /// device (mirrors Rust `zeros_cuda(size, &stream)`), avoiding a host→device
+    /// bounce. To place existing data on a device, use `.to_cuda(stream)`.
+    #[staticmethod]
+    #[pyo3(signature = (width, height, channels, dtype = "uint8", stream = None))]
+    fn zeros(
+        py: Python<'_>,
+        width: usize,
+        height: usize,
+        channels: usize,
+        dtype: &str,
+        stream: Option<PyRef<'_, PyStream>>,
+    ) -> PyResult<Self> {
+        #[cfg(feature = "cuda")]
+        if stream.is_some() {
+            let resolved = resolve_stream(stream)?;
+            let dev = zeros_device(py, width, height, channels, dtype, &resolved.launch)?;
+            fence_into_foreign(&resolved)?;
+            return Ok(dev);
+        }
+        #[cfg(not(feature = "cuda"))]
+        let _ = &stream;
+
+        let dt = backing::Dtype::from_numpy_str(dtype)?;
+        let nbytes = backing::byte_len(height, width, channels, dt)?;
+        let bytes = backing::AlignedBytes::zeroed(nbytes);
+        let cs = default_color_space(channels);
+        let mode = mode_for_dtype(dt, channels);
+        Ok(Self::from_owned_bytes(
+            bytes,
+            dt,
+            [height, width, channels],
+            cs,
+            mode,
+        ))
     }
 
-    /// Device this image lives on: `"cpu"` or `"cuda:{id}"`.
+    /// Device this image lives on: `"cpu"` or `"cuda:{id}"` (mirrors Rust's
+    /// `MemoryDomain`). Placement is via `.to_cuda(stream)` / `.cpu()`.
     #[getter]
     fn device(&self) -> String {
         let (ty, id) = self.backing.device();

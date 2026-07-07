@@ -21,7 +21,8 @@ import numpy as np
 import pytest
 
 import kornia_rs
-from kornia_rs.image import Image, Stream
+from kornia_rs.image import Image
+from kornia_rs.cuda import Stream
 
 cuda = getattr(kornia_rs, "cuda", None)
 pytestmark = pytest.mark.skipif(
@@ -35,6 +36,16 @@ RNG = np.random.default_rng(0)
 # below are sized (and iterations chosen) so any true per-iteration leak is
 # tens of MB — an order of magnitude past this tolerance.
 TOL = 8 * 1024 * 1024  # 8 MiB
+
+
+def _dev(a, stream=None):
+    """Host numpy/array -> device Image (mirrors the old Image.cuda.from_numpy)."""
+    return Image.from_numpy(a).to_cuda(stream)
+
+
+def _dzeros(*args, stream=None, **kw):
+    """Zero-init device Image (mirrors the old Image.cuda.zeros)."""
+    return Image.zeros(*args, **kw, stream=stream if stream is not None else Stream.default())
 
 
 def _rgb(h=256, w=256):
@@ -77,7 +88,7 @@ def test_mem_probe_is_sensitive():
     allocations grow and shrink."""
     base = _free()
     # 8 x 1024*1024*3 f32 ≈ 8 x 12.6 MB ≈ 100 MB held live.
-    hold = [Image.cuda.zeros(1024, 1024, 3, dtype="float32") for _ in range(8)]
+    hold = [_dzeros(1024, 1024, 3, dtype="float32") for _ in range(8)]
     held_free = _free()
     assert base - held_free > 32 * 1024 * 1024, (
         "mem_get_info did not observe ~100 MB of live device allocations — "
@@ -95,7 +106,7 @@ def test_no_leak_from_numpy_download_roundtrip():
     a = _rgb()
 
     def body():
-        img = Image.cuda.from_numpy(a)  # H2D alloc
+        img = _dev(a)  # H2D alloc
         _ = img.numpy()  # D2H copy
         del img
 
@@ -115,7 +126,7 @@ def test_no_leak_to_cuda_cpu_roundtrip():
 
 def test_no_leak_cuda_zeros():
     def body():
-        img = Image.cuda.zeros(256, 256, 3, dtype="float32")
+        img = _dzeros(256, 256, 3, dtype="float32")
         del img
 
     assert_no_leak(body)
@@ -125,7 +136,7 @@ def test_no_leak_cuda_zeros():
 
 
 def test_no_leak_color_op_chain():
-    dev = Image.cuda.from_numpy(_rgb())
+    dev = _dev(_rgb())
 
     def body():
         ycc = cuda.ycbcr_from_rgb(dev)  # alloc dst
@@ -136,7 +147,7 @@ def test_no_leak_color_op_chain():
 
 
 def test_no_leak_f32_color_op():
-    dev = Image.cuda.from_numpy(_rgbf())
+    dev = _dev(_rgbf())
 
     def body():
         lab = cuda.lab_from_rgb(dev)
@@ -147,7 +158,7 @@ def test_no_leak_f32_color_op():
 
 
 def test_no_leak_channel_expanding_ops():
-    gray = Image.cuda.from_numpy(RNG.integers(0, 256, (256, 256, 1), dtype=np.uint8))
+    gray = _dev(RNG.integers(0, 256, (256, 256, 1), dtype=np.uint8))
 
     def body():
         cmap = cuda.apply_colormap(gray, "jet")  # 1 -> 3ch
@@ -163,7 +174,7 @@ def test_no_leak_channel_expanding_ops():
 def test_no_leak_dlpack_export_capsule_unconsumed():
     """An exported capsule that no consumer ever claims must run its deleter on
     GC (release the keepalive) rather than leak it."""
-    dev = Image.cuda.from_numpy(_rgb())
+    dev = _dev(_rgb())
 
     def body():
         cap = dev.__dlpack__()  # never handed to a consumer
@@ -175,10 +186,10 @@ def test_no_leak_dlpack_export_capsule_unconsumed():
 def test_no_leak_dlpack_import_copy():
     """copy=True: device-to-device into an owned buffer; the borrowed producer
     alias is leaked (not freed) but our owned copy must be released each iter."""
-    dev = Image.cuda.from_numpy(_rgb())
+    dev = _dev(_rgb())
 
     def body():
-        d2 = Image.cuda.from_dlpack(dev, copy=True)
+        d2 = Image.from_dlpack(dev, copy=True)
         del d2
 
     assert_no_leak(body)
@@ -189,8 +200,8 @@ def test_no_leak_dlpack_import_zerocopy():
     both drop, the single underlying buffer must be freed exactly once."""
 
     def body():
-        src = Image.cuda.from_numpy(_rgb())  # alloc
-        alias = Image.cuda.from_dlpack(src, copy=False)  # keepalive alias
+        src = _dev(_rgb())  # alloc
+        alias = Image.from_dlpack(src, copy=False)  # keepalive alias
         del alias
         del src
 
@@ -204,7 +215,7 @@ def test_no_leak_foreign_stream_fence():
     fs = Stream.from_handle(Stream.default().cuda_stream_ptr)
 
     def body():
-        dev = Image.cuda.from_numpy(a, stream=fs)
+        dev = _dev(a, stream=fs)
         del dev
 
     assert_no_leak(body)
@@ -243,7 +254,7 @@ def test_no_leak_preprocessor_run_batch():
 
     def body():
         t = pre.run_batch(frames, 256, 192, 128, 128)
-        _ = t.download()
+        _ = t.numpy()
         del t
 
     assert_no_leak(body, iters=60)
@@ -256,7 +267,7 @@ def test_no_leak_full_pipeline():
     a = _rgb()
 
     def body():
-        dev = Image.cuda.from_numpy(a)
+        dev = _dev(a)
         gray = cuda.gray_from_rgb(dev)
         rgb = cuda.rgb_from_gray(gray)
         cap = rgb.__dlpack__()

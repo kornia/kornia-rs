@@ -27,18 +27,34 @@ fn err<E: std::fmt::Display>(e: E) -> PyErr {
     PyRuntimeError::new_err(e.to_string())
 }
 
-/// Default-stream handle for device 0 (created lazily, shared per process).
-pub(crate) fn default_stream() -> PyResult<Arc<CudaStream>> {
-    use std::sync::OnceLock;
-    static STREAM: OnceLock<Result<Arc<CudaStream>, String>> = OnceLock::new();
-    STREAM
-        .get_or_init(|| {
-            CudaContext::new(0)
+/// Default-stream handle for CUDA device `ordinal` (created lazily, cached per
+/// device for the process). The stream's context is the device selector — the
+/// residency of any image produced on it (`to_cuda`/`zeros_cuda`) is that
+/// ordinal, mirroring Rust's `CudaContext::new(ordinal)`.
+pub(crate) fn default_stream_for(ordinal: i32) -> PyResult<Arc<CudaStream>> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<HashMap<i32, Result<Arc<CudaStream>, String>>>> = OnceLock::new();
+    if ordinal < 0 {
+        return Err(PyRuntimeError::new_err(format!(
+            "invalid CUDA device ordinal {ordinal}"
+        )));
+    }
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut map = cache.lock().expect("stream cache poisoned");
+    map.entry(ordinal)
+        .or_insert_with(|| {
+            CudaContext::new(ordinal as usize)
                 .map(|ctx| ctx.default_stream())
                 .map_err(|e| e.to_string())
         })
         .clone()
         .map_err(PyRuntimeError::new_err)
+}
+
+/// Default-stream handle for device 0.
+pub(crate) fn default_stream() -> PyResult<Arc<CudaStream>> {
+    default_stream_for(0)
 }
 
 /// True if a CUDA driver and device 0 are usable in this process.
@@ -689,7 +705,7 @@ impl PyCudaTensor {
     }
 
     /// Copy to host as a float32 numpy array (f16 tensors are widened).
-    fn download<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+    fn numpy<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
         let (data, shape): (Vec<f32>, [usize; 4]) = match &*self.inner {
             TensorInnerEnum::F32(t) => {
                 let host = t.download().map_err(err)?;
@@ -1228,6 +1244,7 @@ pub fn register(py: Python<'_>, parent: &Bound<'_, PyModule>) -> PyResult<()> {
     crate::add_imagenet_consts(&m)?;
     m.add_class::<PyCudaTensor>()?;
     m.add_class::<PyCudaPreprocessor>()?;
+    m.add_class::<crate::image::PyStream>()?;
     parent.add_submodule(&m)?;
     // Make `import kornia_rs.cuda` work (mirror of the other submodules).
     py.import("sys")?

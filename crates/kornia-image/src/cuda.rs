@@ -147,16 +147,16 @@ where
 
     /// D2H-copy this device-resident image directly into a caller-provided host
     /// slice (its own carried stream, synchronized before returning) — avoiding
-    /// the extra `Vec<T>` allocation + copy that [`Self::download`] performs when
-    /// the caller already owns the destination buffer.
+    /// the extra allocation + copy that [`Self::to_host_image`] performs when the
+    /// caller already owns the destination buffer.
     ///
     /// # Errors
     ///
     /// Returns [`ImageError::Cuda`] on CUDA failure, a `dst`-length mismatch, or
     /// if the image is not device-backed.
-    pub fn download_into(&self, dst: &mut [T]) -> Result<(), ImageError> {
+    pub fn to_host_into(&self, dst: &mut [T]) -> Result<(), ImageError> {
         self.0
-            .download_into(dst)
+            .to_host_into(dst)
             .map_err(|e| ImageError::Cuda(e.to_string()))
     }
 

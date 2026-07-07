@@ -344,8 +344,6 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     image_mod.add_class::<PyPixelFormat>()?;
     image_mod.add_class::<PyImageLayout>()?;
     image_mod.add_class::<image::PyImageApi>()?;
-    image_mod.add_class::<image::ImageCudaNs>()?;
-    image_mod.add_class::<image::PyStream>()?;
     image_mod.add_class::<crate::color_space::PyColorSpace>()?;
     m.add_submodule(&image_mod)?;
 

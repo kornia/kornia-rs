@@ -2,8 +2,8 @@
 
 Skipped wholesale when no GPU (or the wheel was built without the `cuda`
 feature). Device pixels now live in the unified ``kornia_rs.image.Image``
-(``Image.cuda.from_numpy``); the color-conversion functions take and return
-such a device ``Image``.
+(``Image.from_numpy(a).to_cuda()``); the color-conversion functions take and
+return such a device ``Image``.
 """
 
 import numpy as np
@@ -32,7 +32,7 @@ def _rgb(h=48, w=64):
 
 def _dev(a):
     """Host numpy array -> device Image."""
-    return Image.cuda.from_numpy(a)
+    return Image.from_numpy(a).to_cuda()
 
 
 def test_gray_matches_cpu_bit_exact():
@@ -103,7 +103,7 @@ def test_preprocessor_nv12_fused():
     t = pre.run(frame, w, h, 64, 64)
     assert t.shape == (1, 3, 64, 64)
     assert t.dtype == "float32"
-    out = t.download()
+    out = t.numpy()
     assert out.shape == (1, 3, 64, 64)
     assert 0.0 <= out.min() and out.max() <= 1.0
 
@@ -115,9 +115,9 @@ def test_preprocessor_f16_and_normalize():
     pre16 = cuda.CudaPreprocessor(format="rgb", f16=True, mean=mean, std=std)
     t = pre16.run(frame, w, h, 32, 32)
     assert t.dtype == "float16"
-    got = t.download()  # widened to f32
+    got = t.numpy()  # widened to f32
 
-    plain = cuda.CudaPreprocessor(format="rgb").run(frame, w, h, 32, 32).download()
+    plain = cuda.CudaPreprocessor(format="rgb").run(frame, w, h, 32, 32).numpy()
     want = (plain - np.asarray(mean).reshape(1, 3, 1, 1)) / np.asarray(std).reshape(
         1, 3, 1, 1
     )
@@ -168,7 +168,7 @@ def test_cuda_tensor_interop_surface():
 def test_preprocessor_run_with_consumer_stream():
     """Passing a consumer stream is accepted and the result is correct (output
     is fenced into that stream)."""
-    from kornia_rs.image import Stream
+    from kornia_rs.cuda import Stream
 
     w, h = 64, 48
     frame = RNG.integers(0, 256, (w * h * 3,), dtype=np.uint8)
@@ -176,7 +176,7 @@ def test_preprocessor_run_with_consumer_stream():
     fs = Stream.from_handle(Stream.default().cuda_stream_ptr)
     t = pre.run(frame, w, h, 32, 32, stream=fs)
     plain = pre.run(frame, w, h, 32, 32)
-    np.testing.assert_array_equal(t.download(), plain.download())
+    np.testing.assert_array_equal(t.numpy(), plain.numpy())
 
 
 def test_preprocessor_run_into_matches_run():
@@ -189,13 +189,13 @@ def test_preprocessor_run_into_matches_run():
     out = pre.alloc_output(32, 32)
     assert out.shape == (1, 3, 32, 32) and out.dtype == "float32"
     pre.run_into(out, frame, w, h)
-    want = pre.run(frame, w, h, 32, 32).download()
-    np.testing.assert_array_equal(out.download(), want)
+    want = pre.run(frame, w, h, 32, 32).numpy()
+    np.testing.assert_array_equal(out.numpy(), want)
 
     # Reusing the same buffer for a second frame overwrites it in place.
     frame2 = RNG.integers(0, 256, (w * h * 3,), dtype=np.uint8)
     pre.run_into(out, frame2, w, h)
-    np.testing.assert_array_equal(out.download(), pre.run(frame2, w, h, 32, 32).download())
+    np.testing.assert_array_equal(out.numpy(), pre.run(frame2, w, h, 32, 32).numpy())
 
 
 def test_preprocessor_run_into_f16_and_dtype_mismatch():
@@ -206,7 +206,7 @@ def test_preprocessor_run_into_f16_and_dtype_mismatch():
     assert out16.dtype == "float16"
     pre16.run_into(out16, frame, w, h)
     np.testing.assert_allclose(
-        out16.download(), pre16.run(frame, w, h, 16, 16).download(), atol=1e-3
+        out16.numpy(), pre16.run(frame, w, h, 16, 16).numpy(), atol=1e-3
     )
 
     # A dtype-mismatched output is rejected.
@@ -236,13 +236,13 @@ def test_preprocessor_run_batch_matches_single():
     pre = cuda.CudaPreprocessor(mode="letterbox", format="nv12")
     batch = pre.run_batch(frames, w, h, 32, 32)
     assert batch.shape == (3, 3, 32, 32)
-    got = batch.download()
+    got = batch.numpy()
     for i, f in enumerate(frames):
-        single = pre.run(f, w, h, 32, 32).download()
+        single = pre.run(f, w, h, 32, 32).numpy()
         np.testing.assert_array_equal(got[i : i + 1], single)
 
     # f16 batch follows the constructor flag.
     pre16 = cuda.CudaPreprocessor(mode="letterbox", format="nv12", f16=True)
     b16 = pre16.run_batch(frames, w, h, 32, 32)
     assert b16.dtype == "float16" and b16.shape == (3, 3, 32, 32)
-    np.testing.assert_allclose(b16.download(), got, atol=1e-3)
+    np.testing.assert_allclose(b16.numpy(), got, atol=1e-3)
