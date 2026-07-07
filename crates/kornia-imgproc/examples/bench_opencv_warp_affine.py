@@ -273,3 +273,60 @@ def bench_torch_gpu_bicubic():
 bench_cv2_cpu_bicubic()
 bench_cv2_cuda_bicubic()
 bench_torch_gpu_bicubic()
+
+# ── Lanczos ───────────────────────────────────────────────────────────────────
+# cv2 uses INTER_LANCZOS4 (4-lobe, 8-tap/axis).
+# kornia-rs uses Lanczos-3 (3-lobe, 6-tap/axis, 2D kernel for warp-affine).
+# PyTorch grid_sample has no Lanczos mode.
+
+RS_GPU_LANCZOS = {
+    (256, 224): 0.143,
+    (512, 448): 0.538,
+    (1024, 896): 2.059,
+    (1920, 1080): 4.262,
+}
+
+
+def bench_cv2_cpu_lanczos():
+    print(f"\n=== cv2 {cv2.__version__} CPU  warpAffine INTER_LANCZOS4  ({ITERS} iters) ===")
+    print(f"  (cv2=8-tap Lanczos-4, kornia-rs=6-tap Lanczos-3 2D)")
+    print(f"  {'case':<16}  {'ms/iter':>9}  {'GB/s':>8}  {'vs RS GPU':>12}")
+    print("  " + "-" * 52)
+    for w, h in CASES:
+        src = np.random.rand(h, w, 3).astype(np.float32)
+        M = rotation_M(w, h)
+        for _ in range(WARMUP):
+            cv2.warpAffine(
+                src, M, (w, h),
+                flags=cv2.INTER_LANCZOS4,
+                borderMode=cv2.BORDER_CONSTANT,
+                borderValue=0,
+            )
+        t0 = time.perf_counter()
+        for _ in range(ITERS):
+            cv2.warpAffine(
+                src, M, (w, h),
+                flags=cv2.INTER_LANCZOS4,
+                borderMode=cv2.BORDER_CONSTANT,
+                borderValue=0,
+            )
+        ms = (time.perf_counter() - t0) * 1e3 / ITERS
+        rs_ms = RS_GPU_LANCZOS.get((w, h), ms)
+        speedup = ms / rs_ms
+        print(
+            f"  {w}×{h:<10}  {ms:>9.3f}  {gb_per_sec(w,h,ms):>8.2f}  "
+            f"{speedup:>6.1f}× slower than RS GPU"
+        )
+
+
+def bench_cv2_cuda_lanczos():
+    # cv2.cuda.warpAffine only supports NEAREST, LINEAR, CUBIC — not LANCZOS4.
+    # kornia-rs is the only library with a GPU Lanczos warp-affine implementation.
+    print(f"\n=== cv2 CUDA warpAffine INTER_LANCZOS4 — NOT SUPPORTED by cv2.cuda ===")
+    print("  cv2.cuda.warpAffine only supports: NEAREST, LINEAR, CUBIC.")
+    print("  kornia-rs is the only GPU Lanczos warp-affine available in this comparison.")
+
+
+print("\n  [PyTorch grid_sample has no Lanczos mode — skipped]")
+bench_cv2_cpu_lanczos()
+bench_cv2_cuda_lanczos()

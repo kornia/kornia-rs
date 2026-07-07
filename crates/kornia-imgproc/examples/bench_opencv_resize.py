@@ -282,3 +282,52 @@ def bench_torch_gpu_bicubic():
 bench_cv2_cpu_bicubic()
 bench_cv2_cuda_bicubic()
 bench_torch_gpu_bicubic()
+
+# ── Lanczos ───────────────────────────────────────────────────────────────────
+# Note: cv2 uses INTER_LANCZOS4 (4-lobe, 8-tap/axis); kornia-rs uses Lanczos-3
+# (3-lobe, 6-tap/axis, separable 2-pass).  PyTorch has no Lanczos mode.
+
+RS_MS_LANCZOS = {
+    (1024, 1024, 512, 512): 0.207,
+    (512, 512, 1024, 1024): 0.250,
+    (1920, 1080, 960, 540): 0.402,
+    (1920, 1080, 3840, 2160): 1.995,
+    (3840, 2160, 1920, 1080): 1.592,
+}
+
+
+def bench_cv2_cpu_lanczos():
+    print(f"\n=== cv2 {cv2.__version__} CPU  resize INTER_LANCZOS4  ({ITERS} iters) ===")
+    print(f"  (cv2=8-tap Lanczos-4, kornia-rs=6-tap Lanczos-3 separable)")
+    print(f"  {'case':<28}  {'ms/iter':>9}  {'GB/s':>8}  {'vs RS GPU':>12}")
+    print("  " + "-" * 65)
+    for (sw, sh), (dw, dh) in CASES_BICUBIC:
+        src = np.random.rand(sh, sw, 3).astype(np.float32)
+        for _ in range(WARMUP):
+            cv2.resize(src, (dw, dh), interpolation=cv2.INTER_LANCZOS4)
+        t0 = time.perf_counter()
+        for _ in range(ITERS):
+            cv2.resize(src, (dw, dh), interpolation=cv2.INTER_LANCZOS4)
+        ms = (time.perf_counter() - t0) * 1e3 / ITERS
+        rs_ms = RS_MS_LANCZOS.get((sw, sh, dw, dh), ms)
+        speedup = ms / rs_ms
+        print(
+            f"  {case_label(sw,sh,dw,dh):<28}  {ms:>9.3f}  "
+            f"{gb_per_sec_resize(sw,sh,dw,dh,ms):>8.2f}  {speedup:>6.1f}× slower"
+        )
+
+
+def bench_cv2_cuda_lanczos():
+    if not HAS_CV2_CUDA:
+        print(f"\n=== cv2 CUDA resize INTER_LANCZOS4 — SKIPPED (no CUDA OpenCV) ===")
+        return
+    # cv2.cuda.resize does NOT support INTER_LANCZOS4 (only nearest/linear/cubic/area).
+    # kornia-rs is the only library with a GPU Lanczos resize implementation here.
+    print(f"\n=== cv2 CUDA resize INTER_LANCZOS4 — NOT SUPPORTED by cv2.cuda ===")
+    print("  cv2.cuda.resize only supports: NEAREST, LINEAR, CUBIC, AREA.")
+    print("  kornia-rs is the only GPU Lanczos resize available in this comparison.")
+
+
+print("\n  [PyTorch has no Lanczos interpolation mode — skipped]")
+bench_cv2_cpu_lanczos()
+bench_cv2_cuda_lanczos()

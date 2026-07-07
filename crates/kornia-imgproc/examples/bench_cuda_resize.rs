@@ -265,10 +265,11 @@ fn run_gpu_cuda_lanczos() {
     let ctx = std::sync::Arc::new(CudaContext::new(0).expect("CUDA context"));
     let stream = ctx.default_stream();
 
+    println!("\n=== native CUDA Lanczos-3 resize (separable 2-pass, 6+6 taps, {ITERS} iters) ===");
     println!(
-        "\n=== native CUDA Lanczos-3 resize (separable 2-pass, 6+6 taps, {ITERS} iters) ==="
+        "  {:<24}  {:>10}  {:>10}",
+        "case (src→dst)", "ms/iter", "GB/s"
     );
-    println!("  {:<24}  {:>10}  {:>10}", "case (src→dst)", "ms/iter", "GB/s");
     println!("  {}", "-".repeat(50));
 
     for &(sw, sh, dw, dh) in CASES {
