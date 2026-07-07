@@ -93,10 +93,15 @@ class Image:
         """Zero-copy ingest of a PEP-3118 buffer (bytearray, memoryview, etc.).
         The Image borrows the caller's buffer and keeps the source alive."""
         ...
+    cuda: ImageCuda
+    """Namespace of CUDA constructors: ``Image.cuda.from_numpy(arr)``,
+    ``Image.cuda.zeros(...)``, ``Image.cuda.from_dlpack(...)``."""
+
     @staticmethod
     def from_dlpack(obj: Any) -> Image:
-        """Import a DLPack tensor (numpy >= 1.22, PyTorch, CuPy CPU) as a
-        zero-copy Image.  The producer object is kept alive as a keep-alive."""
+        """Import a DLPack tensor (numpy >= 1.22, PyTorch, CuPy, cuda-python…),
+        **inferring the device**: a CPU tensor becomes a host ``Image`` (zero-copy,
+        producer kept alive), a CUDA tensor becomes a device-resident ``Image``."""
         ...
     @staticmethod
     def load(path: str) -> Image: ...
@@ -160,9 +165,30 @@ class Image:
         The argument is positional-or-keyword (not keyword-only)."""
         ...
     def numpy(self) -> np.ndarray:
-        """Zero-copy numpy view of the underlying buffer (shares memory)."""
+        """Numpy array of the underlying buffer. Host images share memory
+        (zero-copy view); a device (CUDA) image is copied back to host (D2H)."""
         ...
     def copy(self) -> Image: ...
+
+    # --- device (CUDA) ---
+    @property
+    def device(self) -> str:
+        """``"cpu"`` or ``"cuda:{id}"``."""
+        ...
+    def cpu(self, stream: Optional[Stream] = ...) -> Image:
+        """Copy to host (CPU) memory. A device image is copied back (D2H);
+        a host image returns an owned copy."""
+        ...
+    def to_cuda(self, stream: Optional[Stream] = ...) -> Image:
+        """Copy to CUDA device memory (H2D), returning a device ``Image``.
+        A no-op handle share if already on device. Requires the ``cuda`` feature."""
+        ...
+    @property
+    def __cuda_array_interface__(self) -> dict:
+        """CUDA Array Interface (v3) for zero-copy sharing with cupy / numba /
+        cuda-python. Present on device images only; raises ``AttributeError`` on
+        host images."""
+        ...
 
     # --- transforms ---
     def resize(self, width: int, height: int, interpolation: str = ..., antialias: bool = ...) -> Image: ...
@@ -234,4 +260,51 @@ class Image:
         ...
     def __dlpack_device__(self) -> tuple[int, int]:
         """Return the DLPack device tuple: ``(kDLCPU=1, device_id=0)``."""
+        ...
+
+
+class ImageCuda:
+    """CUDA constructor namespace, reached as ``Image.cuda`` (a class attribute).
+
+    A device ``Image`` created here is still a plain ``Image`` — only its
+    ``.device`` differs. Move data back with ``.cpu()`` / ``.numpy()`` and share
+    it zero-copy via ``__dlpack__`` / ``__cuda_array_interface__``.
+    """
+
+    @staticmethod
+    def from_numpy(array: Any, stream: Optional[Stream] = ...) -> Image:
+        """Zero-copy the host numpy buffer and copy it to CUDA device memory
+        (H2D), returning a device-resident ``Image`` (uint8 1/3/4 ch or
+        float32 1/3 ch)."""
+        ...
+    @staticmethod
+    def zeros(width: int, height: int, channels: int, dtype: str = ...,
+              stream: Optional[Stream] = ...) -> Image:
+        """Allocate a zero-initialized device ``Image`` (``dtype`` uint8/float32)."""
+        ...
+    @staticmethod
+    def from_dlpack(obj: Any, copy: bool = ..., stream: Optional[Stream] = ...) -> Image:
+        """Import a device DLPack tensor (torch/cupy) as a device ``Image``
+        (zero-copy when ``copy=False``). For device inference from any source,
+        prefer ``Image.from_dlpack``."""
+        ...
+
+
+class Stream:
+    """A CUDA stream handle, shareable with kornia device transfers and the
+    DLPack / cuda-python stream protocols. Only meaningful on a ``cuda`` build."""
+
+    @staticmethod
+    def default() -> Stream:
+        """The process-wide default CUDA stream for device 0."""
+        ...
+    def synchronize(self) -> None:
+        """Block the host until all work on this stream completes."""
+        ...
+    @property
+    def cuda_stream_ptr(self) -> int:
+        """Raw ``CUstream`` handle as an integer (DLPack ``stream=`` protocol)."""
+        ...
+    def __cuda_stream__(self) -> tuple[int, int]:
+        """cuda-python / ``cuda.core`` protocol: ``(protocol_version, handle)``."""
         ...

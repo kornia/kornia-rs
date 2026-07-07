@@ -1,10 +1,16 @@
-"""Tests for kornia_rs.cuda — skipped wholesale when no GPU (or the wheel was
-built without the `cuda` feature)."""
+"""Tests for kornia_rs.cuda — GPU color conversions + fused preprocessing.
+
+Skipped wholesale when no GPU (or the wheel was built without the `cuda`
+feature). Device pixels now live in the unified ``kornia_rs.image.Image``
+(``Image.cuda.from_numpy``); the color-conversion functions take and return
+such a device ``Image``.
+"""
 
 import numpy as np
 import pytest
 
 import kornia_rs
+from kornia_rs.image import Image
 
 cuda = getattr(kornia_rs, "cuda", None)
 pytestmark = pytest.mark.skipif(
@@ -24,43 +30,48 @@ def _rgb(h=48, w=64):
     return RNG.integers(0, 256, (h, w, 3), dtype=np.uint8)
 
 
-def test_upload_download_roundtrip():
-    img = _rgb()
-    d = cuda.upload(img)
-    assert (d.height, d.width, d.channels, d.dtype) == (48, 64, 3, "uint8")
-    back = d.download()
-    np.testing.assert_array_equal(back, img)
+def _dev(a):
+    """Host numpy array -> device Image."""
+    return Image.cuda.from_numpy(a)
 
 
 def test_gray_matches_cpu_bit_exact():
     img = _rgb()
-    gpu = cuda.gray_from_rgb(cuda.upload(img)).download()
+    gpu = cuda.gray_from_rgb(_dev(img)).numpy()
     cpu = kornia_rs.imgproc.gray_from_rgb(img)
     np.testing.assert_array_equal(gpu.squeeze(-1), np.asarray(cpu).squeeze())
 
 
+def test_color_ops_require_device_image():
+    # A host image is rejected by the GPU color ops with a clear hint.
+    host = Image.from_numpy(_rgb())
+    with pytest.raises(ValueError, match="device Image"):
+        cuda.gray_from_rgb(host)
+
+
 def test_conversion_chain_stays_on_device():
-    d = cuda.upload(_rgb())
+    d = _dev(_rgb())
     ycc = cuda.ycbcr_from_rgb(d)
+    assert ycc.device == "cuda:0"
     rgb = cuda.rgb_from_ycbcr(ycc)
-    out = rgb.download()
+    out = rgb.numpy()
     assert out.shape == (48, 64, 3)
     # Round-trip within the documented tolerance of the fixed-point path.
-    assert np.max(np.abs(out.astype(int) - d.download().astype(int))) <= 3
+    assert np.max(np.abs(out.astype(int) - d.numpy().astype(int))) <= 3
 
 
 def test_f32_ops():
     img = (_rgb().astype(np.float32) / 255.0).copy()
-    d = cuda.upload(img)
+    d = _dev(img)
     lab = cuda.lab_from_rgb(d)
-    back = cuda.rgb_from_lab(lab).download()
+    back = cuda.rgb_from_lab(lab).numpy()
     assert back.dtype == np.float32
     np.testing.assert_allclose(back, img, atol=2e-2)
 
 
 def test_colormap_and_bayer():
     gray = RNG.integers(0, 256, (48, 64, 1), dtype=np.uint8)
-    d = cuda.upload(gray)
+    d = _dev(gray)
     assert cuda.apply_colormap(d, "jet").channels == 3
     assert cuda.rgb_from_bayer(d, "rggb").channels == 3
     with pytest.raises(ValueError):
@@ -100,63 +111,16 @@ def test_dlpack_export_to_torch():
     if not torch.cuda.is_available():
         pytest.skip("torch without CUDA")
     img = _rgb()
-    d = cuda.gray_from_rgb(cuda.upload(img))
+    d = cuda.gray_from_rgb(_dev(img))
     t = torch.from_dlpack(d)
     assert t.is_cuda and t.shape == (48, 64, 1) and t.dtype == torch.uint8
-    np.testing.assert_array_equal(t.cpu().numpy(), d.download())
+    np.testing.assert_array_equal(t.cpu().numpy(), d.numpy())
 
     # Tensor export too (f32 CHW).
     pre = cuda.CudaPreprocessor(format="rgb")
     ct = pre.run(img.reshape(-1).copy(), 64, 48, 32, 32)
     tt = torch.from_dlpack(ct)
     assert tt.is_cuda and tt.shape == (1, 3, 32, 32) and tt.dtype == torch.float32
-
-
-def test_from_dlpack_torch_roundtrip():
-    torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available():
-        pytest.skip("torch without CUDA")
-    src = RNG.integers(0, 256, (48, 64, 3), dtype=np.uint8)
-    t = torch.from_numpy(src).cuda()
-    img = cuda.from_dlpack(t)
-    assert (img.height, img.width, img.channels) == (48, 64, 3)
-    assert img.dtype == "uint8"
-    np.testing.assert_array_equal(img.download(), src)
-
-    # Owned copy: mutating the producer afterwards must not affect the image.
-    t.zero_()
-    np.testing.assert_array_equal(img.download(), src)
-
-    # f32 single-channel too.
-    fsrc = RNG.random((16, 20, 1), dtype=np.float32)
-    fimg = cuda.from_dlpack(torch.from_numpy(fsrc).cuda())
-    assert fimg.dtype == "float32"
-    np.testing.assert_array_equal(fimg.download(), fsrc)
-
-    # Host tensors are rejected with a pointer to upload().
-    with pytest.raises(ValueError, match="upload"):
-        cuda.from_dlpack(torch.from_numpy(src))
-
-
-def test_from_dlpack_zero_copy_aliases_producer():
-    torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available():
-        pytest.skip("torch without CUDA")
-    src = RNG.integers(0, 256, (24, 32, 3), dtype=np.uint8)
-    t = torch.from_numpy(src).cuda()
-    img = cuda.from_dlpack(t, copy=False)
-    np.testing.assert_array_equal(img.download(), src)
-
-    # Aliasing: producer mutation is visible through the image.
-    t.zero_()
-    torch.cuda.synchronize()
-    assert img.download().max() == 0
-
-    # Keepalive: dropping the python name must not free the memory while the
-    # image lives (torch's allocator would poison/reuse it otherwise).
-    del t
-    conv = cuda.gray_from_rgb(img)
-    assert conv.download().max() == 0
 
 
 def test_preprocessor_run_batch_matches_single():

@@ -4,20 +4,21 @@
 //! module compiles everywhere; at runtime [`is_available`] probes for a
 //! usable driver and everything degrades gracefully without one.
 //!
-//! Design: data stays a **[`CudaImage`]** while it is pixels (HWC, typed
-//! channels) and becomes a **[`CudaTensor`]** only when it turns into model
-//! input (the preprocessor's CHW output). Both export zero-copy to
-//! torch/cupy via `__dlpack__`.
+//! Design: device pixels live in the unified `kornia_rs.image.Image` (create one
+//! with `Image.cuda.from_numpy(...)`); the color-conversion functions here take
+//! and return such a device `Image`. Model input (CHW) becomes a [`CudaTensor`]
+//! via [`CudaPreprocessor`]. Everything exports zero-copy to torch / cupy /
+//! cuda-python via `__dlpack__` and `__cuda_array_interface__`.
 
 use std::sync::Arc;
 
 use cudarc::driver::{CudaContext, CudaStream};
-use numpy::{PyArray1, PyArray3, PyArrayMethods, PyUntypedArrayMethods};
+use numpy::{PyArray1, PyArrayMethods, PyUntypedArrayMethods};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 
 use kornia_image::color_spaces::{Bgr8, Bgra8, Gray8, Hsvf32, Labf32, Rgb8, Rgba8, Rgbf32, YCbCr8};
-use kornia_image::{Image, ImageSize};
+use kornia_image::Image;
 use kornia_imgproc::color::{self, ConvertColor};
 use kornia_imgproc::preprocess::{Normalize, Preprocessor, ResizeMode, SourceFormat};
 use kornia_tensor::Tensor;
@@ -27,7 +28,7 @@ fn err<E: std::fmt::Display>(e: E) -> PyErr {
 }
 
 /// Default-stream handle for device 0 (created lazily, shared per process).
-fn default_stream() -> PyResult<Arc<CudaStream>> {
+pub(crate) fn default_stream() -> PyResult<Arc<CudaStream>> {
     use std::sync::OnceLock;
     static STREAM: OnceLock<Result<Arc<CudaStream>, String>> = OnceLock::new();
     STREAM
@@ -44,6 +45,21 @@ fn default_stream() -> PyResult<Arc<CudaStream>> {
 #[pyfunction]
 pub fn is_available() -> bool {
     default_stream().is_ok()
+}
+
+/// Free and total device-0 global memory in bytes, as `(free, total)`.
+///
+/// Wraps `cuMemGetInfo`; use it to bracket a loop and assert the free byte
+/// count returns to its baseline — the primitive behind the memory-leak
+/// integration tests. Synchronizes the default stream first so all pending
+/// frees/allocs are reflected in the reading.
+#[pyfunction]
+pub fn mem_get_info(py: Python<'_>) -> PyResult<(usize, usize)> {
+    let stream = default_stream()?;
+    py.detach(|| {
+        stream.synchronize().map_err(err)?;
+        stream.context().mem_get_info().map_err(err)
+    })
 }
 
 /// Make the producer's pending work visible to the DLPack consumer's stream
@@ -79,52 +95,14 @@ fn dlpack_sync_for_consumer(stream: Option<isize>) -> PyResult<()> {
     }
 }
 
-// ── CudaImage ────────────────────────────────────────────────────────────────
+// ── GPU color conversions (operate on device-resident unified `Image`) ────────
 
-/// Device-resident pixels, one variant per supported (dtype, channels).
-enum Inner {
-    U8C1(Image<u8, 1>),
-    U8C3(Image<u8, 3>),
-    U8C4(Image<u8, 4>),
-    F32C1(Image<f32, 1>),
-    F32C3(Image<f32, 3>),
-}
-
-impl Inner {
-    fn size(&self) -> ImageSize {
-        match self {
-            Inner::U8C1(i) => i.size(),
-            Inner::U8C3(i) => i.size(),
-            Inner::U8C4(i) => i.size(),
-            Inner::F32C1(i) => i.size(),
-            Inner::F32C3(i) => i.size(),
-        }
-    }
-
-    fn channels(&self) -> usize {
-        match self {
-            Inner::U8C1(_) | Inner::F32C1(_) => 1,
-            Inner::U8C3(_) | Inner::F32C3(_) => 3,
-            Inner::U8C4(_) => 4,
-        }
-    }
-
-    fn dtype(&self) -> &'static str {
-        match self {
-            Inner::U8C1(_) | Inner::U8C3(_) | Inner::U8C4(_) => "uint8",
-            Inner::F32C1(_) | Inner::F32C3(_) => "float32",
-        }
-    }
-}
-
-/// A device-resident image (HWC). The device twin of `kornia_rs.image.Image`:
-/// created with [`upload`], consumed by the `kornia_rs.cuda` color
-/// conversions, brought back with `download()`, or handed zero-copy to
-/// torch/cupy via `__dlpack__`.
-#[pyclass(name = "CudaImage", frozen, module = "kornia_rs.cuda")]
-pub struct PyCudaImage {
-    inner: Arc<Inner>,
-}
+/// Device-resident pixels, monomorphized per supported (dtype, channels).
+///
+/// Shared with the unified `Image` (`Backing::Device`); see [`crate::device`].
+use crate::device::DeviceImage as Inner;
+use crate::image::{mode_from_channels, mode_from_channels_f32, PyImageApi};
+use kornia_image::ColorSpace;
 
 /// View a plain `Image` as its `#[repr(transparent)]` color-space newtype.
 ///
@@ -148,101 +126,6 @@ macro_rules! convert_pair {
     }};
 }
 
-#[pymethods]
-impl PyCudaImage {
-    /// Image width in pixels.
-    #[getter]
-    fn width(&self) -> usize {
-        self.inner.size().width
-    }
-
-    /// Image height in pixels.
-    #[getter]
-    fn height(&self) -> usize {
-        self.inner.size().height
-    }
-
-    /// Channel count (1, 3, or 4).
-    #[getter]
-    fn channels(&self) -> usize {
-        self.inner.channels()
-    }
-
-    /// Element dtype: `"uint8"` or `"float32"`.
-    #[getter]
-    fn dtype(&self) -> &'static str {
-        self.inner.dtype()
-    }
-
-    /// Copy the image back to host as an (H, W, C) numpy array.
-    fn download<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        fn dl<'py, T>(py: Python<'py>, img: &Image<T, 3>) -> PyResult<Py<PyAny>>
-        where
-            T: numpy::Element
-                + cudarc::driver::DeviceRepr
-                + cudarc::driver::ValidAsZeroBits
-                + Copy
-                + Default
-                + 'static,
-        {
-            let host = img.download().map_err(err)?;
-            let (h, w) = (host.height(), host.width());
-            let arr = PyArray1::from_slice(py, host.as_slice());
-            let arr = arr.reshape([h, w, 3])?;
-            Ok(arr.into_any().unbind())
-        }
-        // 1/4-channel variants share the same shape logic with C != 3.
-        macro_rules! dl_c {
-            ($img:expr, $c:literal, $t:ty) => {{
-                let host = $img.download().map_err(err)?;
-                let (h, w) = (host.height(), host.width());
-                let arr = PyArray1::from_slice(py, host.as_slice());
-                let arr = arr.reshape([h, w, $c])?;
-                Ok(arr.into_any().unbind())
-            }};
-        }
-        match &*self.inner {
-            Inner::U8C1(i) => dl_c!(i, 1, u8),
-            Inner::U8C3(i) => dl(py, i),
-            Inner::U8C4(i) => dl_c!(i, 4, u8),
-            Inner::F32C1(i) => dl_c!(i, 1, f32),
-            Inner::F32C3(i) => dl(py, i),
-        }
-    }
-
-    /// DLPack device tuple: `(kDLCUDA, device_id)`.
-    fn __dlpack_device__(&self) -> (i32, i32) {
-        (dlpack_rs::ffi::DLDeviceType::kDLCUDA as i32, 0)
-    }
-
-    /// Export as a DLPack capsule (zero-copy; the capsule keeps this image's
-    /// buffer alive). `stream`: for safety this synchronizes the producing
-    /// stream before export, so the consumer sees completed pixels on any
-    /// stream.
-    #[pyo3(signature = (*, stream = None, max_version = None, dl_device = None, copy = None))]
-    fn __dlpack__<'py>(
-        &self,
-        py: Python<'py>,
-        stream: Option<isize>,
-        max_version: Option<Py<PyAny>>,
-        dl_device: Option<Py<PyAny>>,
-        copy: Option<bool>,
-    ) -> PyResult<Py<PyAny>> {
-        let _ = (max_version, dl_device);
-        if copy == Some(true) {
-            return Err(PyValueError::new_err("copy=True is not supported"));
-        }
-        dlpack_sync_for_consumer(stream)?;
-        use kornia_tensor::dlpack::DlpackElem;
-        match &*self.inner {
-            Inner::U8C1(i) => arc_dlpack_capsule(py, self.inner.clone(), &i.0, u8::dl_dtype()),
-            Inner::U8C3(i) => arc_dlpack_capsule(py, self.inner.clone(), &i.0, u8::dl_dtype()),
-            Inner::U8C4(i) => arc_dlpack_capsule(py, self.inner.clone(), &i.0, u8::dl_dtype()),
-            Inner::F32C1(i) => arc_dlpack_capsule(py, self.inner.clone(), &i.0, f32::dl_dtype()),
-            Inner::F32C3(i) => arc_dlpack_capsule(py, self.inner.clone(), &i.0, f32::dl_dtype()),
-        }
-    }
-}
 
 /// Pack a DLPack capsule whose keepalive is an `Arc` clone of the owner —
 /// export without consuming, buffer freed when both Python sides drop.
@@ -293,89 +176,7 @@ unsafe extern "C" fn dlpack_capsule_destructor(capsule: *mut pyo3::ffi::PyObject
     }
 }
 
-/// Upload an (H, W, C) numpy array (uint8 C∈{1,3,4} or float32 C∈{1,3}) to
-/// the GPU as a [`CudaImage`].
-#[pyfunction]
-pub fn upload(py: Python<'_>, array: Py<PyAny>) -> PyResult<PyCudaImage> {
-    let stream = default_stream()?;
 
-    // Try u8 first, then f32.
-    if let Ok(arr) = array.extract::<Bound<'_, PyArray3<u8>>>(py) {
-        let arr = arr.try_readonly()?;
-        let shape = arr.shape();
-        let (h, w, c) = (shape[0], shape[1], shape[2]);
-        let size = ImageSize {
-            width: w,
-            height: h,
-        };
-        let data = arr.as_slice()?;
-        let inner = match c {
-            1 => Inner::U8C1(host_to_cuda::<u8, 1>(size, data, &stream)?),
-            3 => Inner::U8C3(host_to_cuda::<u8, 3>(size, data, &stream)?),
-            4 => Inner::U8C4(host_to_cuda::<u8, 4>(size, data, &stream)?),
-            c => {
-                return Err(PyValueError::new_err(format!(
-                    "unsupported channel count {c} (expected 1, 3, or 4)"
-                )))
-            }
-        };
-        return Ok(PyCudaImage {
-            inner: Arc::new(inner),
-        });
-    }
-    if let Ok(arr) = array.extract::<Bound<'_, PyArray3<f32>>>(py) {
-        let arr = arr.try_readonly()?;
-        let shape = arr.shape();
-        let (h, w, c) = (shape[0], shape[1], shape[2]);
-        let size = ImageSize {
-            width: w,
-            height: h,
-        };
-        let data = arr.as_slice()?;
-        let inner = match c {
-            1 => Inner::F32C1(host_to_cuda::<f32, 1>(size, data, &stream)?),
-            3 => Inner::F32C3(host_to_cuda::<f32, 3>(size, data, &stream)?),
-            c => {
-                return Err(PyValueError::new_err(format!(
-                    "unsupported float32 channel count {c} (expected 1 or 3)"
-                )))
-            }
-        };
-        return Ok(PyCudaImage {
-            inner: Arc::new(inner),
-        });
-    }
-    Err(PyValueError::new_err(
-        "expected a contiguous (H, W, C) uint8 or float32 numpy array",
-    ))
-}
-
-fn host_to_cuda<T, const C: usize>(
-    size: ImageSize,
-    data: &[T],
-    stream: &Arc<CudaStream>,
-) -> PyResult<Image<T, C>>
-where
-    T: cudarc::driver::DeviceRepr + cudarc::driver::ValidAsZeroBits + Clone + Default + 'static,
-{
-    let host = Image::<T, C>::new(size, data.to_vec()).map_err(err)?;
-    host.to_cuda_image(stream).map_err(err)
-}
-
-/// Import a device-resident DLPack tensor (torch / cupy) as a [`CudaImage`].
-///
-/// Accepts a 3-D C-contiguous `(H, W, C)` tensor on a CUDA device — uint8 with
-/// C∈{1,3,4} or float32 with C∈{1,3}.
-///
-/// `copy=True` (default): the pixels are copied device-to-device into a buffer
-/// this image owns; the copy is synchronized before returning, so the producer
-/// tensor may be freed immediately after.
-///
-/// `copy=False`: **zero-copy** — the image aliases the producer's memory and
-/// holds a reference to `obj` for as long as the image (or anything derived
-/// from its buffer, e.g. a re-export) lives. Mutating the producer mutates
-/// the image. The producer's work is stream-ordered against this module's
-/// launches via the `stream=1` protocol handshake.
 /// Keeps the DLPack producer's Python object alive for a zero-copy import.
 ///
 /// The DLPack consumer may drop the tensor off-GIL (e.g. from a worker
@@ -403,9 +204,19 @@ impl Drop for PyKeepalive {
     }
 }
 
-#[pyfunction]
-#[pyo3(signature = (obj, copy = true))]
-pub fn from_dlpack(py: Python<'_>, obj: &Bound<'_, PyAny>, copy: bool) -> PyResult<PyCudaImage> {
+/// Import a device-resident DLPack tensor (torch / cupy) into a shared
+/// [`DeviceImage`] handle — the core behind `Image.from_dlpack` (device
+/// inference) and `Image.cuda.from_dlpack`.
+///
+/// Accepts a 3-D C-contiguous `(H, W, C)` CUDA tensor — uint8 `C∈{1,3,4}` or
+/// float32 `C∈{1,3}`. `copy=True` (default): device-to-device into an owned
+/// buffer, synchronized before return. `copy=False`: zero-copy alias that keeps
+/// `obj` alive for the image's lifetime.
+pub(crate) fn dlpack_to_device_arc(
+    py: Python<'_>,
+    obj: &Bound<'_, PyAny>,
+    copy: bool,
+) -> PyResult<Arc<Inner>> {
     use dlpack_rs::ffi::{DLManagedTensor, DLManagedTensorVersioned};
     use pyo3::types::{PyCapsule, PyCapsuleMethods, PyDict};
     use std::ffi::CStr;
@@ -575,123 +386,145 @@ pub fn from_dlpack(py: Python<'_>, obj: &Bound<'_, PyAny>, copy: bool) -> PyResu
             )))
         }
     };
-    Ok(PyCudaImage {
-        inner: Arc::new(inner),
-    })
+    Ok(Arc::new(inner))
 }
 
-// ── Color conversions ────────────────────────────────────────────────────────
+// ── Color conversions (device-resident unified `Image` in and out) ────────────
 
-/// Allocate a device destination and run one `ConvertColor` pair.
+/// PIL-style mode string for a device output of channel count `channels`.
+fn device_mode<T: 'static>(channels: usize) -> String {
+    if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f32>() {
+        mode_from_channels_f32(channels)
+    } else {
+        mode_from_channels(channels, false)
+    }
+}
+
+/// Borrow a `&PyImageApi` as its device source variant, or raise a clear error.
+macro_rules! device_src {
+    ($img:expr, $pyname:expr, $srcvar:ident) => {{
+        let dev = $img.as_device().ok_or_else(|| {
+            PyValueError::new_err(concat!(
+                $pyname,
+                ": expected a CUDA device Image (create one with Image.cuda.from_numpy)"
+            ))
+        })?;
+        let Inner::$srcvar(src) = dev else {
+            return Err(PyValueError::new_err(concat!(
+                $pyname,
+                ": wrong input dtype/channels for this conversion"
+            )));
+        };
+        src
+    }};
+}
+
+/// Allocate a device destination and run one `ConvertColor` pair, returning a
+/// device-resident unified `Image` tagged with the output color space.
 macro_rules! conv_fn {
-    ($(#[$meta:meta])* $pyname:ident, $srcvar:ident, $snt:ty, $t:ty, $dc:literal, $dvar:ident, $dnt:ty) => {
+    ($(#[$meta:meta])* $pyname:ident, $srcvar:ident, $snt:ty, $t:ty, $dc:literal, $dvar:ident, $dnt:ty, $dcs:expr) => {
         $(#[$meta])*
         #[pyfunction]
-        pub fn $pyname(img: &PyCudaImage) -> PyResult<PyCudaImage> {
+        pub fn $pyname(img: &PyImageApi) -> PyResult<PyImageApi> {
             let stream = default_stream()?;
-            let Inner::$srcvar(src) = &*img.inner else {
-                return Err(PyValueError::new_err(concat!(
-                    stringify!($pyname),
-                    ": wrong input dtype/channels for this conversion"
-                )));
-            };
+            let src = device_src!(img, stringify!($pyname), $srcvar);
             let mut dst = Image::<$t, $dc>::zeros_cuda(src.size(), &stream).map_err(err)?;
             convert_pair!(src, $snt, &mut dst, $dnt)?;
-            Ok(PyCudaImage {
-                inner: Arc::new(Inner::$dvar(dst)),
-            })
+            Ok(PyImageApi::from_device(
+                Inner::$dvar(dst),
+                $dcs,
+                device_mode::<$t>($dc),
+            ))
         }
     };
 }
 
 conv_fn!(
     /// RGB8 → Gray8 (BT.601, bit-exact vs the CPU path).
-    gray_from_rgb, U8C3, Rgb8, u8, 1, U8C1, Gray8
+    gray_from_rgb, U8C3, Rgb8, u8, 1, U8C1, Gray8, ColorSpace::Gray
 );
 conv_fn!(
     /// Gray8 → RGB8 broadcast.
-    rgb_from_gray, U8C1, Gray8, u8, 3, U8C3, Rgb8
+    rgb_from_gray, U8C1, Gray8, u8, 3, U8C3, Rgb8, ColorSpace::Rgb
 );
 conv_fn!(
     /// RGB8 → BGR8 channel swap (symmetric).
-    bgr_from_rgb, U8C3, Rgb8, u8, 3, U8C3, Bgr8
+    bgr_from_rgb, U8C3, Rgb8, u8, 3, U8C3, Bgr8, ColorSpace::Bgr
 );
 conv_fn!(
     /// RGB8 → RGBA8 (opaque alpha).
-    rgba_from_rgb, U8C3, Rgb8, u8, 4, U8C4, Rgba8
+    rgba_from_rgb, U8C3, Rgb8, u8, 4, U8C4, Rgba8, ColorSpace::Rgba
 );
 conv_fn!(
     /// RGBA8 → RGB8 (alpha dropped).
-    rgb_from_rgba, U8C4, Rgba8, u8, 3, U8C3, Rgb8
+    rgb_from_rgba, U8C4, Rgba8, u8, 3, U8C3, Rgb8, ColorSpace::Rgb
 );
 conv_fn!(
     /// BGRA8 → RGB8.
-    rgb_from_bgra, U8C4, Bgra8, u8, 3, U8C3, Rgb8
+    rgb_from_bgra, U8C4, Bgra8, u8, 3, U8C3, Rgb8, ColorSpace::Rgb
 );
 conv_fn!(
     /// RGB8 → YCbCr8 (full-range Q14, bit-exact vs the CPU path).
-    ycbcr_from_rgb, U8C3, Rgb8, u8, 3, U8C3, YCbCr8
+    ycbcr_from_rgb, U8C3, Rgb8, u8, 3, U8C3, YCbCr8, ColorSpace::YCbCr
 );
 conv_fn!(
     /// YCbCr8 → RGB8.
-    rgb_from_ycbcr, U8C3, YCbCr8, u8, 3, U8C3, Rgb8
+    rgb_from_ycbcr, U8C3, YCbCr8, u8, 3, U8C3, Rgb8, ColorSpace::Rgb
 );
 conv_fn!(
     /// RGB f32 → HSV f32 (kornia conventions, [0,255] scale).
-    hsv_from_rgb, F32C3, Rgbf32, f32, 3, F32C3, Hsvf32
+    hsv_from_rgb, F32C3, Rgbf32, f32, 3, F32C3, Hsvf32, ColorSpace::Hsv
 );
 conv_fn!(
     /// HSV f32 → RGB f32.
-    rgb_from_hsv, F32C3, Hsvf32, f32, 3, F32C3, Rgbf32
+    rgb_from_hsv, F32C3, Hsvf32, f32, 3, F32C3, Rgbf32, ColorSpace::Rgb
 );
 conv_fn!(
     /// RGB f32 → CIE Lab f32 (RGB in [0,1], L in [0,100]).
-    lab_from_rgb, F32C3, Rgbf32, f32, 3, F32C3, Labf32
+    lab_from_rgb, F32C3, Rgbf32, f32, 3, F32C3, Labf32, ColorSpace::Lab
 );
 conv_fn!(
     /// Lab f32 → RGB f32.
-    rgb_from_lab, F32C3, Labf32, f32, 3, F32C3, Rgbf32
+    rgb_from_lab, F32C3, Labf32, f32, 3, F32C3, Rgbf32, ColorSpace::Rgb
 );
 
 /// Sepia tone on RGB8 (Q8 fixed point, bit-exact vs the CPU path).
 #[pyfunction]
-pub fn sepia_from_rgb(img: &PyCudaImage) -> PyResult<PyCudaImage> {
+pub fn sepia_from_rgb(img: &PyImageApi) -> PyResult<PyImageApi> {
     let stream = default_stream()?;
-    let Inner::U8C3(src) = &*img.inner else {
-        return Err(PyValueError::new_err("sepia_from_rgb expects uint8 HxWx3"));
-    };
+    let src = device_src!(img, "sepia_from_rgb", U8C3);
     let mut dst = Image::<u8, 3>::zeros_cuda(src.size(), &stream).map_err(err)?;
     color::sepia_from_rgb_u8(src, &mut dst).map_err(err)?;
-    Ok(PyCudaImage {
-        inner: Arc::new(Inner::U8C3(dst)),
-    })
+    Ok(PyImageApi::from_device(
+        Inner::U8C3(dst),
+        ColorSpace::Rgb,
+        device_mode::<u8>(3),
+    ))
 }
 
 /// Apply one of the 21 OpenCV colormaps to a Gray8 image (name as in
 /// `kornia_rs.imgproc.apply_colormap`).
 #[pyfunction]
-pub fn apply_colormap(img: &PyCudaImage, colormap: &str) -> PyResult<PyCudaImage> {
+pub fn apply_colormap(img: &PyImageApi, colormap: &str) -> PyResult<PyImageApi> {
     let stream = default_stream()?;
-    let Inner::U8C1(src) = &*img.inner else {
-        return Err(PyValueError::new_err("apply_colormap expects uint8 HxWx1"));
-    };
+    let src = device_src!(img, "apply_colormap", U8C1);
     let cmap = color::ColormapType::from_name(colormap)
         .ok_or_else(|| PyValueError::new_err(format!("unknown colormap '{colormap}'")))?;
     let mut dst = Image::<u8, 3>::zeros_cuda(src.size(), &stream).map_err(err)?;
     color::apply_colormap(src, &mut dst, cmap).map_err(err)?;
-    Ok(PyCudaImage {
-        inner: Arc::new(Inner::U8C3(dst)),
-    })
+    Ok(PyImageApi::from_device(
+        Inner::U8C3(dst),
+        ColorSpace::Rgb,
+        device_mode::<u8>(3),
+    ))
 }
 
 /// Bayer demosaic (pattern: "rggb" | "bggr" | "grbg" | "gbrg").
 #[pyfunction]
-pub fn rgb_from_bayer(img: &PyCudaImage, pattern: &str) -> PyResult<PyCudaImage> {
+pub fn rgb_from_bayer(img: &PyImageApi, pattern: &str) -> PyResult<PyImageApi> {
     use kornia_image::color_spaces::BayerPattern;
     let stream = default_stream()?;
-    let Inner::U8C1(src) = &*img.inner else {
-        return Err(PyValueError::new_err("rgb_from_bayer expects uint8 HxWx1"));
-    };
+    let src = device_src!(img, "rgb_from_bayer", U8C1);
     let pat = match pattern.to_ascii_lowercase().as_str() {
         "rggb" => BayerPattern::Rggb,
         "bggr" => BayerPattern::Bggr,
@@ -705,9 +538,11 @@ pub fn rgb_from_bayer(img: &PyCudaImage, pattern: &str) -> PyResult<PyCudaImage>
     };
     let mut dst = Image::<u8, 3>::zeros_cuda(src.size(), &stream).map_err(err)?;
     color::rgb_from_bayer(src, pat, &mut dst).map_err(err)?;
-    Ok(PyCudaImage {
-        inner: Arc::new(Inner::U8C3(dst)),
-    })
+    Ok(PyImageApi::from_device(
+        Inner::U8C3(dst),
+        ColorSpace::Rgb,
+        device_mode::<u8>(3),
+    ))
 }
 
 // ── CudaTensor (model input) ─────────────────────────────────────────────────
@@ -1028,8 +863,7 @@ impl PyCudaPreprocessor {
 pub fn register(py: Python<'_>, parent: &Bound<'_, PyModule>) -> PyResult<()> {
     let m = PyModule::new(py, "cuda")?;
     m.add_function(wrap_pyfunction!(is_available, &m)?)?;
-    m.add_function(wrap_pyfunction!(upload, &m)?)?;
-    m.add_function(wrap_pyfunction!(from_dlpack, &m)?)?;
+    m.add_function(wrap_pyfunction!(mem_get_info, &m)?)?;
     m.add_function(wrap_pyfunction!(gray_from_rgb, &m)?)?;
     m.add_function(wrap_pyfunction!(rgb_from_gray, &m)?)?;
     m.add_function(wrap_pyfunction!(bgr_from_rgb, &m)?)?;
@@ -1047,7 +881,6 @@ pub fn register(py: Python<'_>, parent: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(rgb_from_bayer, &m)?)?;
     // Kept on the cuda submodule too as a re-export convenience.
     crate::add_imagenet_consts(&m)?;
-    m.add_class::<PyCudaImage>()?;
     m.add_class::<PyCudaTensor>()?;
     m.add_class::<PyCudaPreprocessor>()?;
     parent.add_submodule(&m)?;
