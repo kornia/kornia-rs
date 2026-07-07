@@ -139,8 +139,8 @@ def test_no_leak_color_op_chain():
     dev = _dev(_rgb())
 
     def body():
-        ycc = cuda.ycbcr_from_rgb(dev)  # alloc dst
-        rgb = cuda.rgb_from_ycbcr(ycc)  # alloc dst
+        ycc = kornia_rs.imgproc.ycbcr_from_rgb(dev)  # alloc dst
+        rgb = kornia_rs.imgproc.rgb_from_ycbcr(ycc)  # alloc dst
         del ycc, rgb
 
     assert_no_leak(body)
@@ -150,8 +150,8 @@ def test_no_leak_f32_color_op():
     dev = _dev(_rgbf())
 
     def body():
-        lab = cuda.lab_from_rgb(dev)
-        back = cuda.rgb_from_lab(lab)
+        lab = kornia_rs.imgproc.lab_from_rgb(dev)
+        back = kornia_rs.imgproc.rgb_from_lab(lab)
         del lab, back
 
     assert_no_leak(body)
@@ -161,8 +161,8 @@ def test_no_leak_channel_expanding_ops():
     gray = _dev(RNG.integers(0, 256, (256, 256, 1), dtype=np.uint8))
 
     def body():
-        cmap = cuda.apply_colormap(gray, "jet")  # 1 -> 3ch
-        rgba = cuda.rgba_from_rgb(cmap)  # 3 -> 4ch
+        cmap = kornia_rs.imgproc.apply_colormap(gray, "jet")  # 1 -> 3ch
+        rgba = kornia_rs.imgproc.rgba_from_rgb(cmap)  # 3 -> 4ch
         del cmap, rgba
 
     assert_no_leak(body)
@@ -268,8 +268,8 @@ def test_no_leak_full_pipeline():
 
     def body():
         dev = _dev(a)
-        gray = cuda.gray_from_rgb(dev)
-        rgb = cuda.rgb_from_gray(gray)
+        gray = kornia_rs.imgproc.gray_from_rgb(dev)
+        rgb = kornia_rs.imgproc.rgb_from_gray(gray)
         cap = rgb.__dlpack__()
         _ = rgb.numpy()
         del dev, gray, rgb, cap

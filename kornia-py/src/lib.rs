@@ -83,7 +83,10 @@ pub fn rgb_from_gray_deprecated(py: Python<'_>, image: image::PyImage) -> PyResu
         py,
         "kornia_rs.rgb_from_gray is deprecated. Use kornia_rs.imgproc.rgb_from_gray.",
     )?;
-    color::rgb_from_gray(py, image)
+    color::rgb_from_gray(py, image.bind(py).as_any())?
+        .bind(py)
+        .extract::<image::PyImage>()
+        .map_err(Into::into)
 }
 
 #[pyfunction(name = "rgb_from_rgba")]
@@ -97,7 +100,10 @@ pub fn rgb_from_rgba_deprecated(
         py,
         "kornia_rs.rgb_from_rgba is deprecated. Use kornia_rs.imgproc.rgb_from_rgba.",
     )?;
-    color::rgb_from_rgba(py, image, background)
+    color::rgb_from_rgba(py, image.bind(py).as_any(), background)?
+        .bind(py)
+        .extract::<image::PyImage>()
+        .map_err(Into::into)
 }
 
 #[pyfunction(name = "rgb_from_bgra")]
@@ -111,7 +117,10 @@ pub fn rgb_from_bgra_deprecated(
         py,
         "kornia_rs.rgb_from_bgra is deprecated. Use kornia_rs.imgproc.rgb_from_bgra.",
     )?;
-    color::rgb_from_bgra(py, image, background)
+    color::rgb_from_bgra(py, image.bind(py).as_any(), background)?
+        .bind(py)
+        .extract::<image::PyImage>()
+        .map_err(Into::into)
 }
 
 #[pyfunction(name = "bgr_from_rgb")]
@@ -120,7 +129,10 @@ pub fn bgr_from_rgb_deprecated(py: Python<'_>, image: image::PyImage) -> PyResul
         py,
         "kornia_rs.bgr_from_rgb is deprecated. Use kornia_rs.imgproc.bgr_from_rgb.",
     )?;
-    color::bgr_from_rgb(py, image)
+    color::bgr_from_rgb(py, image.bind(py).as_any())?
+        .bind(py)
+        .extract::<image::PyImage>()
+        .map_err(Into::into)
 }
 
 #[pyfunction(name = "gray_from_rgb")]
@@ -414,6 +426,7 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Imgproc submodule
     let imgproc_mod = PyModule::new(py, "imgproc")?;
     imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_gray, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::rgba_from_rgb, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_rgba, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_bgra, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(color::bgr_from_rgb, &imgproc_mod)?)?;

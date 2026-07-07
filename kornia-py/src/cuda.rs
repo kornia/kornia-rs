@@ -468,7 +468,8 @@ macro_rules! device_src {
         let dev = $img.as_device().ok_or_else(|| {
             PyValueError::new_err(concat!(
                 $pyname,
-                ": expected a CUDA device Image (create one with Image.cuda.from_numpy)"
+                ": expected a device Image (on a CUDA device); for a host image pass \
+                 its numpy array, or move it to a device with .to_cuda(stream)"
             ))
         })?;
         let Inner::$srcvar(src) = dev else {
@@ -1225,22 +1226,10 @@ pub fn register(py: Python<'_>, parent: &Bound<'_, PyModule>) -> PyResult<()> {
     let m = PyModule::new(py, "cuda")?;
     m.add_function(wrap_pyfunction!(is_available, &m)?)?;
     m.add_function(wrap_pyfunction!(mem_get_info, &m)?)?;
-    m.add_function(wrap_pyfunction!(gray_from_rgb, &m)?)?;
-    m.add_function(wrap_pyfunction!(rgb_from_gray, &m)?)?;
-    m.add_function(wrap_pyfunction!(bgr_from_rgb, &m)?)?;
-    m.add_function(wrap_pyfunction!(rgba_from_rgb, &m)?)?;
-    m.add_function(wrap_pyfunction!(rgb_from_rgba, &m)?)?;
-    m.add_function(wrap_pyfunction!(rgb_from_bgra, &m)?)?;
-    m.add_function(wrap_pyfunction!(ycbcr_from_rgb, &m)?)?;
-    m.add_function(wrap_pyfunction!(rgb_from_ycbcr, &m)?)?;
-    m.add_function(wrap_pyfunction!(hsv_from_rgb, &m)?)?;
-    m.add_function(wrap_pyfunction!(rgb_from_hsv, &m)?)?;
-    m.add_function(wrap_pyfunction!(lab_from_rgb, &m)?)?;
-    m.add_function(wrap_pyfunction!(rgb_from_lab, &m)?)?;
-    m.add_function(wrap_pyfunction!(sepia_from_rgb, &m)?)?;
-    m.add_function(wrap_pyfunction!(apply_colormap, &m)?)?;
-    m.add_function(wrap_pyfunction!(rgb_from_bayer, &m)?)?;
-    // Kept on the cuda submodule too as a re-export convenience.
+    // Color conversions are no longer exposed here — they live behind the
+    // residency-dispatching `kornia_rs.imgproc.*` ops (which route a device
+    // `Image` to these same device kernels). The functions below stay
+    // `pub(crate)` and are called by `crate::color`.
     crate::add_imagenet_consts(&m)?;
     m.add_class::<PyCudaTensor>()?;
     m.add_class::<PyCudaPreprocessor>()?;

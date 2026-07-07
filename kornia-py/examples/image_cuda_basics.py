@@ -40,8 +40,9 @@ def main() -> None:
     assert dev.device == "cuda:0"
     assert np.array_equal(dev.cpu().numpy(), a)
 
-    # 4) GPU color conversion — takes and returns a device Image.
-    gray = cuda.gray_from_rgb(img)
+    # 4) Color conversion dispatches on residency: a device Image runs on the GPU
+    #    (returns a device Image); the same imgproc op takes a numpy array on CPU.
+    gray = kornia_rs.imgproc.gray_from_rgb(img)
     print("gray:", gray.device, gray.channels, "channels")
 
     # 5) Allocate directly on device.

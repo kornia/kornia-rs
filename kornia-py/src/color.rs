@@ -31,21 +31,31 @@ where
 }
 
 #[pyfunction]
-pub fn rgb_from_gray(py: Python<'_>, image: PyImage) -> PyResult<PyImage> {
+pub fn rgb_from_gray(py: Python<'_>, image: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+    #[cfg(feature = "cuda")]
+    if let Some(dev) = dispatch_device(py, image, crate::cuda_ext::rgb_from_gray)? {
+        return Ok(dev);
+    }
+    let image: PyImage = image.extract()?;
     let src = unsafe { numpy_as_image::<1>(py, &image)? };
     let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, src.size())? };
     py.detach(|| color::rgb_from_gray(&src, &mut dst))
         .map_err(to_pyerr)?;
-    Ok(out)
+    Ok(out.into_any())
 }
 
 #[pyfunction]
-pub fn bgr_from_rgb(py: Python<'_>, image: PyImage) -> PyResult<PyImage> {
+pub fn bgr_from_rgb(py: Python<'_>, image: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+    #[cfg(feature = "cuda")]
+    if let Some(dev) = dispatch_device(py, image, crate::cuda_ext::bgr_from_rgb)? {
+        return Ok(dev);
+    }
+    let image: PyImage = image.extract()?;
     let src = unsafe { numpy_as_image::<3>(py, &image)? };
     let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, src.size())? };
     py.detach(|| color::bgr_from_rgb(&src, &mut dst))
         .map_err(to_pyerr)?;
-    Ok(out)
+    Ok(out.into_any())
 }
 
 /// RGB f32 → grayscale f32, zero-copy in and out.
@@ -76,21 +86,51 @@ pub fn gray_from_rgb(py: Python<'_>, image: &Bound<'_, PyAny>) -> PyResult<Py<Py
 }
 
 #[pyfunction]
+pub fn rgba_from_rgb(py: Python<'_>, image: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+    #[cfg(feature = "cuda")]
+    if let Some(dev) = dispatch_device(py, image, crate::cuda_ext::rgba_from_rgb)? {
+        return Ok(dev);
+    }
+    let image: PyImage = image.extract()?;
+    let src = unsafe { numpy_as_image::<3>(py, &image)? };
+    let (mut dst, out) = unsafe { alloc_output_pyarray::<4>(py, src.size())? };
+    py.detach(|| color::rgba_from_rgb(&src, &mut dst))
+        .map_err(to_pyerr)?;
+    Ok(out.into_any())
+}
+
+#[pyfunction]
 #[pyo3(signature = (image, background=None))]
 pub fn rgb_from_rgba(
     py: Python<'_>,
-    image: PyImage,
+    image: &Bound<'_, PyAny>,
     background: Option<[u8; 3]>,
-) -> PyResult<PyImage> {
+) -> PyResult<Py<PyAny>> {
+    // The GPU path (opaque alpha drop) ignores `background`.
+    #[cfg(feature = "cuda")]
+    if let Some(dev) = dispatch_device(py, image, crate::cuda_ext::rgb_from_rgba)? {
+        return Ok(dev);
+    }
+    let image: PyImage = image.extract()?;
     let src = unsafe { numpy_as_image::<4>(py, &image)? };
     let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, src.size())? };
     py.detach(|| color::rgb_from_rgba(&src, &mut dst, background))
         .map_err(to_pyerr)?;
-    Ok(out)
+    Ok(out.into_any())
 }
 
 #[pyfunction]
-pub fn apply_colormap(py: Python<'_>, image: PyImage, colormap: &str) -> PyResult<PyImage> {
+pub fn apply_colormap(
+    py: Python<'_>,
+    image: &Bound<'_, PyAny>,
+    colormap: &str,
+) -> PyResult<Py<PyAny>> {
+    #[cfg(feature = "cuda")]
+    if let Some(dev) =
+        dispatch_device(py, image, |api| crate::cuda_ext::apply_colormap(api, colormap))?
+    {
+        return Ok(dev);
+    }
     // Validate name before touching the image array — fail fast on bad input.
     let cm = color::ColormapType::from_name(colormap).ok_or_else(|| {
         pyo3::exceptions::PyValueError::new_err(format!(
@@ -99,25 +139,31 @@ pub fn apply_colormap(py: Python<'_>, image: PyImage, colormap: &str) -> PyResul
              viridis, cividis, twilight, turbo, deepgreen"
         ))
     })?;
+    let image: PyImage = image.extract()?;
     let src = unsafe { numpy_as_image::<1>(py, &image)? };
     let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, src.size())? };
     py.detach(|| color::apply_colormap(&src, &mut dst, cm))
         .map_err(to_pyerr)?;
-    Ok(out)
+    Ok(out.into_any())
 }
 
 #[pyfunction]
 #[pyo3(signature = (image, background=None))]
 pub fn rgb_from_bgra(
     py: Python<'_>,
-    image: PyImage,
+    image: &Bound<'_, PyAny>,
     background: Option<[u8; 3]>,
-) -> PyResult<PyImage> {
+) -> PyResult<Py<PyAny>> {
+    #[cfg(feature = "cuda")]
+    if let Some(dev) = dispatch_device(py, image, crate::cuda_ext::rgb_from_bgra)? {
+        return Ok(dev);
+    }
+    let image: PyImage = image.extract()?;
     let src = unsafe { numpy_as_image::<4>(py, &image)? };
     let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, src.size())? };
     py.detach(|| color::rgb_from_bgra(&src, &mut dst, background))
         .map_err(to_pyerr)?;
-    Ok(out)
+    Ok(out.into_any())
 }
 
 /// Generates a zero-copy f32 3→3 channel color-conversion `#[pyfunction]`.
@@ -137,12 +183,44 @@ macro_rules! py_f32_3to3 {
     };
 }
 
-py_f32_3to3!(
+/// Like [`py_f32_3to3`], but residency-dispatching: a device `Image` runs the
+/// GPU op `$dev` (returning a device `Image`); numpy f32 runs the CPU `$func`.
+#[cfg(feature = "cuda")]
+macro_rules! py_f32_3to3_dev {
+    ($name:ident, $func:path, $dev:path, $doc:literal) => {
+        #[doc = $doc]
+        #[pyfunction]
+        pub fn $name(py: Python<'_>, image: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+            if let Some(dev) = dispatch_device(py, image, $dev)? {
+                return Ok(dev);
+            }
+            let image: PyImageF32 = image.extract()?;
+            let src = unsafe { numpy_as_image_f32::<3>(py, &image)? };
+            let (mut dst, out) = unsafe { alloc_output_pyarray_f32::<3>(py, src.size())? };
+            py.detach(|| $func(&src, &mut dst)).map_err(to_pyerr)?;
+            Ok(out.into_any())
+        }
+    };
+}
+#[cfg(not(feature = "cuda"))]
+macro_rules! py_f32_3to3_dev {
+    ($name:ident, $func:path, $dev:path, $doc:literal) => {
+        py_f32_3to3!($name, $func, $doc);
+    };
+}
+
+py_f32_3to3_dev!(
     hsv_from_rgb,
     color::hsv_from_rgb,
+    crate::cuda_ext::hsv_from_rgb,
     "RGB f32 → HSV f32 (H,S,V in [0,255])."
 );
-py_f32_3to3!(rgb_from_hsv, color::rgb_from_hsv, "HSV f32 → RGB f32.");
+py_f32_3to3_dev!(
+    rgb_from_hsv,
+    color::rgb_from_hsv,
+    crate::cuda_ext::rgb_from_hsv,
+    "HSV f32 → RGB f32."
+);
 py_f32_3to3!(hls_from_rgb, color::hls_from_rgb, "RGB f32 → HLS f32.");
 py_f32_3to3!(rgb_from_hls, color::rgb_from_hls, "HLS f32 → RGB f32.");
 py_f32_3to3!(
@@ -151,14 +229,16 @@ py_f32_3to3!(
     "RGB f32 → CIE XYZ f32 (D65)."
 );
 py_f32_3to3!(rgb_from_xyz, color::rgb_from_xyz, "CIE XYZ f32 → RGB f32.");
-py_f32_3to3!(
+py_f32_3to3_dev!(
     lab_from_rgb,
     color::lab_from_rgb,
+    crate::cuda_ext::lab_from_rgb,
     "RGB f32 → CIE L*a*b* f32."
 );
-py_f32_3to3!(
+py_f32_3to3_dev!(
     rgb_from_lab,
     color::rgb_from_lab,
+    crate::cuda_ext::rgb_from_lab,
     "CIE L*a*b* f32 → RGB f32."
 );
 py_f32_3to3!(
@@ -181,14 +261,16 @@ py_f32_3to3!(
     color::rgb_from_linear_rgb,
     "linear-RGB f32 → sRGB f32 (gamma compress)."
 );
-py_f32_3to3!(
+py_f32_3to3_dev!(
     ycbcr_from_rgb,
     color::ycbcr_from_rgb,
+    crate::cuda_ext::ycbcr_from_rgb,
     "RGB f32 → YCbCr f32 (full range)."
 );
-py_f32_3to3!(
+py_f32_3to3_dev!(
     rgb_from_ycbcr,
     color::rgb_from_ycbcr,
+    crate::cuda_ext::rgb_from_ycbcr,
     "YCbCr f32 → RGB f32."
 );
 py_f32_3to3!(
@@ -197,9 +279,10 @@ py_f32_3to3!(
     "RGB f32 → YUV f32 (planar, full range)."
 );
 py_f32_3to3!(rgb_from_yuv, color::rgb_from_yuv, "YUV f32 → RGB f32.");
-py_f32_3to3!(
+py_f32_3to3_dev!(
     sepia_from_rgb,
     color::sepia_from_rgb_f32,
+    crate::cuda_ext::sepia_from_rgb,
     "RGB f32 → sepia-toned RGB f32."
 );
 
@@ -209,7 +292,17 @@ py_f32_3to3!(
 /// `"rggb"`, `"bggr"`, `"grbg"`, `"gbrg"` (R at (0,0) for rggb, etc.). Note OpenCV's
 /// naming offset: kornia `"rggb"` == `cv2.COLOR_BayerBG2RGB`.
 #[pyfunction]
-pub fn rgb_from_bayer(py: Python<'_>, image: PyImage, pattern: &str) -> PyResult<PyImage> {
+pub fn rgb_from_bayer(
+    py: Python<'_>,
+    image: &Bound<'_, PyAny>,
+    pattern: &str,
+) -> PyResult<Py<PyAny>> {
+    #[cfg(feature = "cuda")]
+    if let Some(dev) =
+        dispatch_device(py, image, |api| crate::cuda_ext::rgb_from_bayer(api, pattern))?
+    {
+        return Ok(dev);
+    }
     use kornia_imgproc::color::BayerPattern;
     let pat = match pattern.to_lowercase().as_str() {
         "rggb" => BayerPattern::Rggb,
@@ -222,11 +315,12 @@ pub fn rgb_from_bayer(py: Python<'_>, image: PyImage, pattern: &str) -> PyResult
             )))
         }
     };
+    let image: PyImage = image.extract()?;
     let src = unsafe { numpy_as_image::<1>(py, &image)? };
     let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, src.size())? };
     py.detach(|| color::rgb_from_bayer(&src, pat, &mut dst))
         .map_err(to_pyerr)?;
-    Ok(out)
+    Ok(out.into_any())
 }
 
 /// Decode a raw packed/planar YUV byte buffer (1-D `uint8`) to an `(H, W, 3)` RGB image.

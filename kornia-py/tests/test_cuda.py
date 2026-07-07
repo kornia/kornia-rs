@@ -37,7 +37,7 @@ def _dev(a):
 
 def test_gray_matches_cpu_bit_exact():
     img = _rgb()
-    gpu = cuda.gray_from_rgb(_dev(img)).numpy()
+    gpu = kornia_rs.imgproc.gray_from_rgb(_dev(img)).numpy()
     cpu = kornia_rs.imgproc.gray_from_rgb(img)
     np.testing.assert_array_equal(gpu.squeeze(-1), np.asarray(cpu).squeeze())
 
@@ -51,27 +51,27 @@ def test_color_ops_bit_exact_odd_dims(h, w):
     a = RNG.integers(0, 256, (h, w, 3), dtype=np.uint8)
     d = _dev(a)
     # gray has a CPU oracle -> bit-exact over every pixel including borders.
-    gpu_gray = cuda.gray_from_rgb(d).numpy().reshape(h, w)
+    gpu_gray = kornia_rs.imgproc.gray_from_rgb(d).numpy().reshape(h, w)
     cpu_gray = np.asarray(kornia_rs.imgproc.gray_from_rgb(a)).reshape(h, w)
     np.testing.assert_array_equal(gpu_gray, cpu_gray)
     # Channel-expand (u8c4 dst) + swap (u8c3 dst) round-trips are identities; any
     # unwritten border pixel (uninit garbage) breaks the exact comparison.
-    np.testing.assert_array_equal(cuda.rgb_from_rgba(cuda.rgba_from_rgb(d)).numpy(), a)
-    np.testing.assert_array_equal(cuda.bgr_from_rgb(cuda.bgr_from_rgb(d)).numpy(), a)
+    np.testing.assert_array_equal(kornia_rs.imgproc.rgb_from_rgba(kornia_rs.imgproc.rgba_from_rgb(d)).numpy(), a)
+    np.testing.assert_array_equal(kornia_rs.imgproc.bgr_from_rgb(kornia_rs.imgproc.bgr_from_rgb(d)).numpy(), a)
 
 
 def test_color_ops_require_device_image():
     # A host image is rejected by the GPU color ops with a clear hint.
     host = Image.from_numpy(_rgb())
     with pytest.raises(ValueError, match="device Image"):
-        cuda.gray_from_rgb(host)
+        kornia_rs.imgproc.gray_from_rgb(host)
 
 
 def test_conversion_chain_stays_on_device():
     d = _dev(_rgb())
-    ycc = cuda.ycbcr_from_rgb(d)
+    ycc = kornia_rs.imgproc.ycbcr_from_rgb(d)
     assert ycc.device == "cuda:0"
-    rgb = cuda.rgb_from_ycbcr(ycc)
+    rgb = kornia_rs.imgproc.rgb_from_ycbcr(ycc)
     out = rgb.numpy()
     assert out.shape == (48, 64, 3)
     # Round-trip within the documented tolerance of the fixed-point path.
@@ -81,8 +81,8 @@ def test_conversion_chain_stays_on_device():
 def test_f32_ops():
     img = (_rgb().astype(np.float32) / 255.0).copy()
     d = _dev(img)
-    lab = cuda.lab_from_rgb(d)
-    back = cuda.rgb_from_lab(lab).numpy()
+    lab = kornia_rs.imgproc.lab_from_rgb(d)
+    back = kornia_rs.imgproc.rgb_from_lab(lab).numpy()
     assert back.dtype == np.float32
     np.testing.assert_allclose(back, img, atol=2e-2)
 
@@ -90,10 +90,10 @@ def test_f32_ops():
 def test_colormap_and_bayer():
     gray = RNG.integers(0, 256, (48, 64, 1), dtype=np.uint8)
     d = _dev(gray)
-    assert cuda.apply_colormap(d, "jet").channels == 3
-    assert cuda.rgb_from_bayer(d, "rggb").channels == 3
+    assert kornia_rs.imgproc.apply_colormap(d, "jet").channels == 3
+    assert kornia_rs.imgproc.rgb_from_bayer(d, "rggb").channels == 3
     with pytest.raises(ValueError):
-        cuda.apply_colormap(d, "nope")
+        kornia_rs.imgproc.apply_colormap(d, "nope")
 
 
 def test_preprocessor_nv12_fused():
@@ -129,7 +129,7 @@ def test_dlpack_export_to_torch():
     if not torch.cuda.is_available():
         pytest.skip("torch without CUDA")
     img = _rgb()
-    d = cuda.gray_from_rgb(_dev(img))
+    d = kornia_rs.imgproc.gray_from_rgb(_dev(img))
     t = torch.from_dlpack(d)
     assert t.is_cuda and t.shape == (48, 64, 1) and t.dtype == torch.uint8
     np.testing.assert_array_equal(t.cpu().numpy(), d.numpy())

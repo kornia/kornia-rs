@@ -292,7 +292,7 @@ def test_from_dlpack_infers_device():
 
 def test_cuda_color_op_on_unified_image():
     a = _rgb()
-    gray = cuda.gray_from_rgb(_dev(a))
+    gray = kornia_rs.imgproc.gray_from_rgb(_dev(a))
     assert gray.device == "cuda:0" and gray.channels == 1
     cpu_gray = np.asarray(kornia_rs.imgproc.gray_from_rgb(a)).squeeze()
     np.testing.assert_array_equal(gray.numpy().squeeze(-1), cpu_gray)

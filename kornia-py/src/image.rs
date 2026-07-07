@@ -2895,10 +2895,11 @@ impl PyImageApi {
         let arr = self.as_numpy_u8(py)?;
         if c == 1 || c == 4 {
             let result = if c == 1 {
-                crate::color::rgb_from_gray(py, arr)?
+                crate::color::rgb_from_gray(py, arr.bind(py).as_any())?
             } else {
-                crate::color::rgb_from_rgba(py, arr, None)?
+                crate::color::rgb_from_rgba(py, arr.bind(py).as_any(), None)?
             };
+            let result: PyImage = result.bind(py).extract().map_err(to_pyerr)?;
             let mut out = self.owned_from_numpy_u8(py, result, Some("RGB".to_string()));
             out.color_space = default_color_space(3);
             Ok(out)
@@ -3040,7 +3041,8 @@ impl PyImageApi {
             )));
         }
         let arr = self.as_numpy_u8(py)?;
-        let result = crate::color::apply_colormap(py, arr, colormap)?;
+        let result = crate::color::apply_colormap(py, arr.bind(py).as_any(), colormap)?;
+        let result: PyImage = result.bind(py).extract().map_err(to_pyerr)?;
         let mut out = self.owned_from_numpy_u8(py, result, Some("RGB".to_string()));
         out.color_space = default_color_space(3);
         Ok(out)
