@@ -30,6 +30,20 @@ where
     Ok(None)
 }
 
+/// Early-return the GPU result when `$image` is a device `Image`; otherwise
+/// fall through to the caller's CPU path below. Centralizes the per-op device
+/// prologue that every residency-dispatching color `#[pyfunction]` repeats.
+/// `$dev` (a GPU op fn or closure) is referenced only under the `cuda` feature,
+/// so a CPU-only build never needs it to exist; expands to nothing there.
+macro_rules! try_dispatch_device {
+    ($py:expr, $image:expr, $dev:expr) => {
+        #[cfg(feature = "cuda")]
+        if let Some(dev) = dispatch_device($py, $image, $dev)? {
+            return Ok(dev);
+        }
+    };
+}
+
 /// Run a CPU color op (element type `E` — `u8` for [`PyImage`], `f32` for
 /// [`PyImageF32`]) that accepts numpy **or** a host `Image`, returning the same
 /// kind: numpy → numpy, host `Image` → host `Image`. (Device images are handled
@@ -69,10 +83,7 @@ fn no_gpu_kernel_if_device(api: &PyImageApi) -> PyResult<()> {
 
 #[pyfunction]
 pub fn rgb_from_gray(py: Python<'_>, image: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-    #[cfg(feature = "cuda")]
-    if let Some(dev) = dispatch_device(py, image, crate::cuda_ext::rgb_from_gray)? {
-        return Ok(dev);
-    }
+    try_dispatch_device!(py, image, crate::cuda_ext::rgb_from_gray);
     cpu_color(py, image, |py, image| {
         let src = unsafe { numpy_as_image::<1>(py, &image)? };
         let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, src.size())? };
@@ -84,10 +95,7 @@ pub fn rgb_from_gray(py: Python<'_>, image: &Bound<'_, PyAny>) -> PyResult<Py<Py
 
 #[pyfunction]
 pub fn bgr_from_rgb(py: Python<'_>, image: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-    #[cfg(feature = "cuda")]
-    if let Some(dev) = dispatch_device(py, image, crate::cuda_ext::bgr_from_rgb)? {
-        return Ok(dev);
-    }
+    try_dispatch_device!(py, image, crate::cuda_ext::bgr_from_rgb);
     cpu_color(py, image, |py, image| {
         let src = unsafe { numpy_as_image::<3>(py, &image)? };
         let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, src.size())? };
@@ -112,10 +120,7 @@ pub fn gray_from_rgb_f32(py: Python<'_>, image: PyImageF32) -> PyResult<PyImageF
 
 #[pyfunction]
 pub fn gray_from_rgb(py: Python<'_>, image: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-    #[cfg(feature = "cuda")]
-    if let Some(dev) = dispatch_device(py, image, crate::cuda_ext::gray_from_rgb)? {
-        return Ok(dev);
-    }
+    try_dispatch_device!(py, image, crate::cuda_ext::gray_from_rgb);
     cpu_color(py, image, |py, image| {
         let src = unsafe { numpy_as_image::<3>(py, &image)? };
         let (mut dst, out) = unsafe { alloc_output_pyarray::<1>(py, src.size())? };
@@ -127,10 +132,7 @@ pub fn gray_from_rgb(py: Python<'_>, image: &Bound<'_, PyAny>) -> PyResult<Py<Py
 
 #[pyfunction]
 pub fn rgba_from_rgb(py: Python<'_>, image: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-    #[cfg(feature = "cuda")]
-    if let Some(dev) = dispatch_device(py, image, crate::cuda_ext::rgba_from_rgb)? {
-        return Ok(dev);
-    }
+    try_dispatch_device!(py, image, crate::cuda_ext::rgba_from_rgb);
     cpu_color(py, image, |py, image| {
         let src = unsafe { numpy_as_image::<3>(py, &image)? };
         let (mut dst, out) = unsafe { alloc_output_pyarray::<4>(py, src.size())? };
@@ -149,12 +151,9 @@ pub fn rgb_from_rgba(
 ) -> PyResult<Py<PyAny>> {
     // The GPU path honors `background` too (alpha composite when set, else
     // opaque drop) — same result as the CPU path below.
-    #[cfg(feature = "cuda")]
-    if let Some(dev) =
-        dispatch_device(py, image, |api| crate::cuda_ext::rgb_from_rgba_bg(api, background))?
-    {
-        return Ok(dev);
-    }
+    try_dispatch_device!(py, image, |api| crate::cuda_ext::rgb_from_rgba_bg(
+        api, background
+    ));
     cpu_color(py, image, |py, image| {
         let src = unsafe { numpy_as_image::<4>(py, &image)? };
         let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, src.size())? };
@@ -170,12 +169,9 @@ pub fn apply_colormap(
     image: &Bound<'_, PyAny>,
     colormap: &str,
 ) -> PyResult<Py<PyAny>> {
-    #[cfg(feature = "cuda")]
-    if let Some(dev) =
-        dispatch_device(py, image, |api| crate::cuda_ext::apply_colormap(api, colormap))?
-    {
-        return Ok(dev);
-    }
+    try_dispatch_device!(py, image, |api| crate::cuda_ext::apply_colormap(
+        api, colormap
+    ));
     // Validate name before touching the image array — fail fast on bad input.
     let cm = color::ColormapType::from_name(colormap).ok_or_else(|| {
         pyo3::exceptions::PyValueError::new_err(format!(
@@ -201,12 +197,9 @@ pub fn rgb_from_bgra(
     background: Option<[u8; 3]>,
 ) -> PyResult<Py<PyAny>> {
     // GPU path honors `background` (see `rgb_from_rgba`).
-    #[cfg(feature = "cuda")]
-    if let Some(dev) =
-        dispatch_device(py, image, |api| crate::cuda_ext::rgb_from_bgra_bg(api, background))?
-    {
-        return Ok(dev);
-    }
+    try_dispatch_device!(py, image, |api| crate::cuda_ext::rgb_from_bgra_bg(
+        api, background
+    ));
     cpu_color(py, image, |py, image| {
         let src = unsafe { numpy_as_image::<4>(py, &image)? };
         let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, src.size())? };
@@ -238,10 +231,7 @@ macro_rules! py_f32_3to3 {
         #[doc = $doc]
         #[pyfunction]
         pub fn $name(py: Python<'_>, image: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-            #[cfg(feature = "cuda")]
-            if let Some(dev) = dispatch_device(py, image, $dev)? {
-                return Ok(dev);
-            }
+            try_dispatch_device!(py, image, $dev);
             cpu_color(py, image, |py, image| {
                 let src = unsafe { numpy_as_image_f32::<3>(py, &image)? };
                 let (mut dst, out) = unsafe { alloc_output_pyarray_f32::<3>(py, src.size())? };
@@ -340,12 +330,9 @@ pub fn rgb_from_bayer(
     image: &Bound<'_, PyAny>,
     pattern: &str,
 ) -> PyResult<Py<PyAny>> {
-    #[cfg(feature = "cuda")]
-    if let Some(dev) =
-        dispatch_device(py, image, |api| crate::cuda_ext::rgb_from_bayer(api, pattern))?
-    {
-        return Ok(dev);
-    }
+    try_dispatch_device!(py, image, |api| crate::cuda_ext::rgb_from_bayer(
+        api, pattern
+    ));
     use kornia_imgproc::color::BayerPattern;
     let pat = match pattern.to_lowercase().as_str() {
         "rggb" => BayerPattern::Rggb,

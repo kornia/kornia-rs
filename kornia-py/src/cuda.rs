@@ -90,6 +90,28 @@ pub(crate) fn default_stream() -> PyResult<Arc<CudaStream>> {
 /// that can't be probed still works (on device 0) exactly as before.
 #[cfg(feature = "cuda")]
 pub(crate) fn foreign_stream_device(handle: usize) -> i32 {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    // A stream's owning device is immutable for its lifetime, so memoize
+    // handle -> ordinal (same cache shape as `default_stream_for`): a serving
+    // loop that re-adopts one TensorRT stream every frame then skips the 4-call
+    // driver probe below after the first lookup.
+    static CACHE: OnceLock<Mutex<HashMap<usize, i32>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(&ord) = cache.lock().expect("stream-device cache poisoned").get(&handle) {
+        return ord;
+    }
+    let ord = probe_foreign_stream_device(handle);
+    cache
+        .lock()
+        .expect("stream-device cache poisoned")
+        .insert(handle, ord);
+    ord
+}
+
+/// The uncached driver probe behind [`foreign_stream_device`].
+#[cfg(feature = "cuda")]
+fn probe_foreign_stream_device(handle: usize) -> i32 {
     use cudarc::driver::sys;
     // The default-stream sentinels (0 = legacy/null, 1 = legacy default,
     // 2 = per-thread default) have no distinct owning context to query.
@@ -239,6 +261,70 @@ macro_rules! convert_pair_bg {
 }
 
 
+/// Build the `TensorInfo` (device + C-contiguous shape + dtype) that both
+/// capsule packers below share. Pure data construction, no `unsafe`.
+fn build_dl_tensor_info<T, const N: usize>(
+    t: &Tensor<T, N>,
+    dtype: dlpack_rs::ffi::DLDataType,
+    dl_device: (i32, i32),
+) -> dlpack_rs::safe::TensorInfo {
+    let device = dlpack_rs::ffi::DLDevice {
+        device_type: dl_device.0 as u32,
+        device_id: dl_device.1,
+    };
+    let shape: Vec<i64> = t.shape.iter().map(|&s| s as i64).collect();
+    dlpack_rs::safe::TensorInfo::contiguous(t.as_ptr() as *mut std::ffi::c_void, device, dtype, shape)
+}
+
+/// Wrap an already-packed `DLManagedTensor*` in a named PyCapsule with `deleter`.
+///
+/// # Safety
+/// `managed` must be a live pointer from `safe::pack`/`pack_versioned` and
+/// `deleter` the matching destructor for `name` (see `dlpack_capsule_destructor!`).
+unsafe fn wrap_dlpack_capsule(
+    py: Python<'_>,
+    managed: *mut std::ffi::c_void,
+    name: &std::ffi::CStr,
+    deleter: unsafe extern "C" fn(*mut pyo3::ffi::PyObject),
+) -> PyResult<Py<PyAny>> {
+    let capsule = unsafe { pyo3::ffi::PyCapsule_New(managed, name.as_ptr(), Some(deleter)) };
+    if capsule.is_null() {
+        return Err(PyRuntimeError::new_err("failed to create DLPack capsule"));
+    }
+    Ok(unsafe { Bound::from_owned_ptr(py, capsule) }.unbind())
+}
+
+/// Generate a capsule destructor: run the producer's deleter iff the consumer
+/// never renamed the capsule (i.e. never claimed it). The two DLPack variants
+/// differ only in capsule name + managed struct type, so they share this shape.
+macro_rules! dlpack_capsule_destructor {
+    ($name:ident, $cstr:literal, $managed:ty) => {
+        unsafe extern "C" fn $name(capsule: *mut pyo3::ffi::PyObject) {
+            unsafe {
+                if pyo3::ffi::PyCapsule_IsValid(capsule, $cstr.as_ptr()) == 1 {
+                    let managed = pyo3::ffi::PyCapsule_GetPointer(capsule, $cstr.as_ptr())
+                        as *mut $managed;
+                    if !managed.is_null() {
+                        if let Some(deleter) = (*managed).deleter {
+                            deleter(managed);
+                        }
+                    }
+                }
+            }
+        }
+    };
+}
+dlpack_capsule_destructor!(
+    dlpack_capsule_destructor,
+    c"dltensor",
+    dlpack_rs::ffi::DLManagedTensor
+);
+dlpack_capsule_destructor!(
+    dlpack_capsule_destructor_versioned,
+    c"dltensor_versioned",
+    dlpack_rs::ffi::DLManagedTensorVersioned
+);
+
 /// Pack a DLPack capsule whose keepalive is an `Arc` clone of the owner —
 /// export without consuming, buffer freed when both Python sides drop.
 fn arc_dlpack_capsule<T, K, const N: usize>(
@@ -251,41 +337,18 @@ fn arc_dlpack_capsule<T, K, const N: usize>(
 where
     K: Send + Sync + 'static,
 {
-    use dlpack_rs::safe::{self, TensorInfo};
-    let device = dlpack_rs::ffi::DLDevice {
-        device_type: dl_device.0 as u32,
-        device_id: dl_device.1,
-    };
-    let shape: Vec<i64> = t.shape.iter().map(|&s| s as i64).collect();
-    let info = TensorInfo::contiguous(t.as_ptr() as *mut std::ffi::c_void, device, dtype, shape);
+    let info = build_dl_tensor_info(t, dtype, dl_device);
     // SAFETY: the Arc keepalive owns (a reference to) the device buffer and is
-    // dropped by the capsule deleter.
-    let managed = safe::pack(keepalive, info);
+    // dropped by the capsule deleter; `dlpack_capsule_destructor` matches the
+    // "dltensor" name and `DLManagedTensor` type packed here.
+    let managed = dlpack_rs::safe::pack(keepalive, info);
     unsafe {
-        let capsule = pyo3::ffi::PyCapsule_New(
+        wrap_dlpack_capsule(
+            py,
             managed as *mut std::ffi::c_void,
-            c"dltensor".as_ptr(),
-            Some(dlpack_capsule_destructor),
-        );
-        if capsule.is_null() {
-            return Err(PyRuntimeError::new_err("failed to create DLPack capsule"));
-        }
-        Ok(Bound::from_owned_ptr(py, capsule).unbind())
-    }
-}
-
-unsafe extern "C" fn dlpack_capsule_destructor(capsule: *mut pyo3::ffi::PyObject) {
-    // Only delete if the consumer never claimed it (name still "dltensor").
-    unsafe {
-        if pyo3::ffi::PyCapsule_IsValid(capsule, c"dltensor".as_ptr()) == 1 {
-            let managed = pyo3::ffi::PyCapsule_GetPointer(capsule, c"dltensor".as_ptr())
-                as *mut dlpack_rs::ffi::DLManagedTensor;
-            if !managed.is_null() {
-                if let Some(deleter) = (*managed).deleter {
-                    deleter(managed);
-                }
-            }
-        }
+            c"dltensor",
+            dlpack_capsule_destructor,
+        )
     }
 }
 
@@ -304,41 +367,16 @@ fn arc_dlpack_capsule_versioned<T, K, const N: usize>(
 where
     K: Send + Sync + 'static,
 {
-    use dlpack_rs::safe::{self, TensorInfo};
-    let device = dlpack_rs::ffi::DLDevice {
-        device_type: dl_device.0 as u32,
-        device_id: dl_device.1,
-    };
-    let shape: Vec<i64> = t.shape.iter().map(|&s| s as i64).collect();
-    let info = TensorInfo::contiguous(t.as_ptr() as *mut std::ffi::c_void, device, dtype, shape);
-    // SAFETY: the Arc keepalive owns (a reference to) the device buffer and is
-    // dropped by the capsule deleter.
-    let managed = safe::pack_versioned(keepalive, info, flags);
+    let info = build_dl_tensor_info(t, dtype, dl_device);
+    // SAFETY: as in `arc_dlpack_capsule`, with the versioned name/type pair.
+    let managed = dlpack_rs::safe::pack_versioned(keepalive, info, flags);
     unsafe {
-        let capsule = pyo3::ffi::PyCapsule_New(
+        wrap_dlpack_capsule(
+            py,
             managed as *mut std::ffi::c_void,
-            c"dltensor_versioned".as_ptr(),
-            Some(dlpack_capsule_destructor_versioned),
-        );
-        if capsule.is_null() {
-            return Err(PyRuntimeError::new_err("failed to create DLPack capsule"));
-        }
-        Ok(Bound::from_owned_ptr(py, capsule).unbind())
-    }
-}
-
-unsafe extern "C" fn dlpack_capsule_destructor_versioned(capsule: *mut pyo3::ffi::PyObject) {
-    // Only delete if the consumer never claimed it (name still "dltensor_versioned").
-    unsafe {
-        if pyo3::ffi::PyCapsule_IsValid(capsule, c"dltensor_versioned".as_ptr()) == 1 {
-            let managed = pyo3::ffi::PyCapsule_GetPointer(capsule, c"dltensor_versioned".as_ptr())
-                as *mut dlpack_rs::ffi::DLManagedTensorVersioned;
-            if !managed.is_null() {
-                if let Some(deleter) = (*managed).deleter {
-                    deleter(managed);
-                }
-            }
-        }
+            c"dltensor_versioned",
+            dlpack_capsule_destructor_versioned,
+        )
     }
 }
 
@@ -759,38 +797,37 @@ pub fn rgb_from_bayer(img: &PyImageApi, pattern: &str) -> PyResult<PyImageApi> {
     ))
 }
 
-/// RGBA8 → RGB8 on device, compositing over `background` when given (mirrors the
-/// CPU path's `background=` — otherwise a device image would silently drop alpha
-/// while the host path composited). `None` = opaque alpha drop.
-pub fn rgb_from_rgba_bg(img: &PyImageApi, background: Option<[u8; 3]>) -> PyResult<PyImageApi> {
-    let src = device_src!(img, "rgb_from_rgba", U8C4);
-    let stream = source_stream(src)?;
-    // SAFETY: the blend/drop kernel writes every output pixel (one thread per
-    // pixel, bounds-guarded), so the uninitialized destination is fully
-    // overwritten before any read.
-    let mut dst = unsafe { Image::<u8, 3>::uninit_cuda(src.size(), &stream) }.map_err(err)?;
-    convert_pair_bg!(src, Rgba8, &mut dst, Rgb8, background)?;
-    Ok(PyImageApi::from_device(
-        Inner::U8C3(dst),
-        ColorSpace::Rgb,
-        device_mode::<u8>(3),
-    ))
+/// `{Rgba8,Bgra8}8 → RGB8` on device with optional `background` alpha
+/// compositing (mirrors the CPU path's `background=` — otherwise a device image
+/// would silently drop alpha while the host path composited; `None` = opaque
+/// alpha drop). The two only differ by source newtype, so share this body.
+macro_rules! conv_bg_fn {
+    ($(#[$meta:meta])* $pyname:ident, $snt:ty, $errname:literal) => {
+        $(#[$meta])*
+        pub fn $pyname(img: &PyImageApi, background: Option<[u8; 3]>) -> PyResult<PyImageApi> {
+            let src = device_src!(img, $errname, U8C4);
+            let stream = source_stream(src)?;
+            // SAFETY: the blend/drop kernel writes every output pixel (one
+            // thread per pixel, bounds-guarded), so the uninitialized
+            // destination is fully overwritten before any read.
+            let mut dst = unsafe { Image::<u8, 3>::uninit_cuda(src.size(), &stream) }.map_err(err)?;
+            convert_pair_bg!(src, $snt, &mut dst, Rgb8, background)?;
+            Ok(PyImageApi::from_device(
+                Inner::U8C3(dst),
+                ColorSpace::Rgb,
+                device_mode::<u8>(3),
+            ))
+        }
+    };
 }
-
-/// BGRA8 → RGB8 on device, compositing over `background` when given. See
-/// [`rgb_from_rgba_bg`].
-pub fn rgb_from_bgra_bg(img: &PyImageApi, background: Option<[u8; 3]>) -> PyResult<PyImageApi> {
-    let src = device_src!(img, "rgb_from_bgra", U8C4);
-    let stream = source_stream(src)?;
-    // SAFETY: as in `rgb_from_rgba_bg`.
-    let mut dst = unsafe { Image::<u8, 3>::uninit_cuda(src.size(), &stream) }.map_err(err)?;
-    convert_pair_bg!(src, Bgra8, &mut dst, Rgb8, background)?;
-    Ok(PyImageApi::from_device(
-        Inner::U8C3(dst),
-        ColorSpace::Rgb,
-        device_mode::<u8>(3),
-    ))
-}
+conv_bg_fn!(
+    /// RGBA8 → RGB8 on device, compositing over `background` when given.
+    rgb_from_rgba_bg, Rgba8, "rgb_from_rgba"
+);
+conv_bg_fn!(
+    /// BGRA8 → RGB8 on device, compositing over `background` when given.
+    rgb_from_bgra_bg, Bgra8, "rgb_from_bgra"
+);
 
 } // mod cuda_color
 #[cfg(feature = "cuda")]
@@ -810,6 +847,19 @@ enum TensorInnerEnum {
     F16(Tensor<half::f16, 4>),
 }
 
+/// Bind the inner typed `Tensor` of either dtype variant as `$t` and evaluate
+/// `$body` — collapses the identical 2-arm `F32 | F16` match that every
+/// type-agnostic accessor would otherwise spell out (mirrors `device.rs`'s
+/// `dispatch!`). Only usable where `$body` type-checks for both element types.
+macro_rules! tdispatch {
+    ($self:expr, $t:ident => $body:expr) => {
+        match &*$self.inner {
+            TensorInnerEnum::F32($t) => $body,
+            TensorInnerEnum::F16($t) => $body,
+        }
+    };
+}
+
 /// A device-resident `[N, C, H, W]` tensor — the preprocessor's output, i.e.
 /// model input. Feed it to torch/TensorRT zero-copy via `__dlpack__`, or
 /// `.numpy()` an f32 copy.
@@ -823,10 +873,7 @@ impl PyTensor {
     /// source of truth every other method here checks.
     fn is_device(&self) -> bool {
         use kornia_tensor::MemoryDomain;
-        let domain = match &*self.inner {
-            TensorInnerEnum::F32(t) => t.storage.domain(),
-            TensorInnerEnum::F16(t) => t.storage.domain(),
-        };
+        let domain = tdispatch!(self, t => t.storage.domain());
         matches!(domain, MemoryDomain::Device { .. } | MemoryDomain::Unified { .. })
     }
 
@@ -838,10 +885,8 @@ impl PyTensor {
     #[cfg(feature = "cuda")]
     fn device_ordinal(&self) -> Option<i32> {
         use kornia_tensor::MemoryDomain;
-        let (domain, device_id) = match &*self.inner {
-            TensorInnerEnum::F32(t) => (t.storage.domain(), t.storage.device_id()),
-            TensorInnerEnum::F16(t) => (t.storage.domain(), t.storage.device_id()),
-        };
+        let (domain, device_id) =
+            tdispatch!(self, t => (t.storage.domain(), t.storage.device_id()));
         matches!(
             domain,
             MemoryDomain::Device { .. } | MemoryDomain::Unified { .. }
@@ -855,10 +900,7 @@ impl PyTensor {
     /// Tensor shape `(N, C, H, W)`.
     #[getter]
     fn shape(&self) -> (usize, usize, usize, usize) {
-        let s = match &*self.inner {
-            TensorInnerEnum::F32(t) => t.shape,
-            TensorInnerEnum::F16(t) => t.shape,
-        };
+        let s = tdispatch!(self, t => t.shape);
         (s[0], s[1], s[2], s[3])
     }
 
@@ -889,10 +931,7 @@ impl PyTensor {
     /// alive; never dereference it on the host.
     #[getter]
     fn data_ptr(&self) -> usize {
-        match &*self.inner {
-            TensorInnerEnum::F32(t) => t.as_ptr() as usize,
-            TensorInnerEnum::F16(t) => t.as_ptr() as usize,
-        }
+        tdispatch!(self, t => t.as_ptr() as usize)
     }
 
     /// The [CUDA Array Interface] (v3) for zero-copy sharing with CuPy / Numba /
@@ -1024,10 +1063,7 @@ impl PyTensor {
         // the otherwise-unused `stream` param.
         #[cfg(feature = "cuda")]
         if self.is_device() {
-            let launch = match &*self.inner {
-                TensorInnerEnum::F32(t) => t.cuda_stream().cloned(),
-                TensorInnerEnum::F16(t) => t.cuda_stream().cloned(),
-            };
+            let launch = tdispatch!(self, t => t.cuda_stream().cloned());
             match launch {
                 Some(s) => dlpack_fence_consumer(&s, stream)?,
                 None => dlpack_fence_consumer(&default_stream()?, stream)?,
