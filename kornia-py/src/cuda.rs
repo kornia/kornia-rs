@@ -34,7 +34,7 @@ use kornia_image::color_spaces::{Bgr8, Bgra8, Gray8, Hsvf32, Labf32, Rgb8, Rgba8
 #[cfg(feature = "cuda")]
 use kornia_image::Image;
 #[cfg(feature = "cuda")]
-use kornia_imgproc::color::{self, ConvertColor};
+use kornia_imgproc::color::{self, ConvertColor, ConvertColorWithBackground};
 use kornia_imgproc::preprocess::{Normalize, Preprocessor, ResizeMode, SourceFormat};
 use kornia_tensor::Tensor;
 
@@ -80,6 +80,50 @@ pub(crate) fn default_stream_for(ordinal: i32) -> PyResult<Arc<CudaStream>> {
 #[cfg(feature = "cuda")]
 pub(crate) fn default_stream() -> PyResult<Arc<CudaStream>> {
     default_stream_for(0)
+}
+
+/// Best-effort CUDA device ordinal that a raw foreign `CUstream` handle belongs
+/// to, so an adopted foreign stream (`Stream.from_handle`) from a non-zero GPU
+/// causes kornia to launch its work on that same GPU rather than always
+/// device 0. Returns `0` (the historical default) for a default-stream sentinel
+/// handle or if the driver can't resolve it — never errors, so a foreign stream
+/// that can't be probed still works (on device 0) exactly as before.
+#[cfg(feature = "cuda")]
+pub(crate) fn foreign_stream_device(handle: usize) -> i32 {
+    use cudarc::driver::sys;
+    // The default-stream sentinels (0 = legacy/null, 1 = legacy default,
+    // 2 = per-thread default) have no distinct owning context to query.
+    if handle <= 2 {
+        return 0;
+    }
+    // SAFETY: raw driver queries. `handle` is a `CUstream` the caller vouched
+    // for via `Stream.from_handle`/`from_cuda_stream`. We push the stream's
+    // context, read its device, and ALWAYS pop it back so the thread's context
+    // stack is restored on every path; any driver error falls back to device 0
+    // instead of propagating.
+    unsafe {
+        let mut ctx: sys::CUcontext = std::ptr::null_mut();
+        if sys::cuStreamGetCtx(handle as sys::CUstream, &mut ctx)
+            .result()
+            .is_err()
+            || ctx.is_null()
+        {
+            return 0;
+        }
+        if sys::cuCtxPushCurrent_v2(ctx).result().is_err() {
+            return 0;
+        }
+        let mut dev: sys::CUdevice = 0;
+        let dev_ok = sys::cuCtxGetDevice(&mut dev).result().is_ok();
+        // Restore the previous context regardless of the query result.
+        let mut popped: sys::CUcontext = std::ptr::null_mut();
+        let _ = sys::cuCtxPopCurrent_v2(&mut popped);
+        if dev_ok {
+            dev
+        } else {
+            0
+        }
+    }
 }
 
 /// True if a CUDA driver and device 0 are usable in this process. Always
@@ -180,6 +224,17 @@ macro_rules! convert_pair {
         let s = as_newtype!($src, $snt);
         let d = as_newtype!(mut $dst, $dnt);
         s.convert(d).map_err(err)
+    }};
+}
+
+/// Run `src.convert_with_bg(&mut dst, bg)` through the repr(transparent)
+/// newtypes — the alpha-compositing sibling of [`convert_pair!`].
+#[cfg(feature = "cuda")]
+macro_rules! convert_pair_bg {
+    ($src:expr, $snt:ty, $dst:expr, $dnt:ty, $bg:expr) => {{
+        let s = as_newtype!($src, $snt);
+        let d = as_newtype!(mut $dst, $dnt);
+        s.convert_with_bg(d, $bg).map_err(err)
     }};
 }
 
@@ -432,6 +487,11 @@ pub(crate) fn dlpack_to_device_arc(
         }
     }
     let (h, w, c) = (shape[0] as usize, shape[1] as usize, shape[2] as usize);
+    // Reject a shape whose byte extent would overflow `usize` up front, so no
+    // downstream `h * w * C * size_of` (device alloc here, or the D2H buffer in
+    // `device::dl_owned`) can silently wrap to an undersized allocation. Guard
+    // with the largest supported itemsize (f32 = 4B) so it holds for any dtype.
+    crate::backing::byte_len(h, w, c, crate::backing::Dtype::F32)?;
     let ptr = t.data as u64 + t.byte_offset;
 
     /// Materialize the producer's `h*w*C` elements at `ptr` as a device image:
@@ -547,6 +607,19 @@ macro_rules! device_src {
     }};
 }
 
+/// The stream a device source image lives on, for allocating a same-device
+/// destination. Falls back to device 0's default stream if the backing carries
+/// no stream (shouldn't normally happen for a typed device image).
+fn source_stream<T, const C: usize>(src: &Image<T, C>) -> PyResult<Arc<CudaStream>>
+where
+    T: cudarc::driver::DeviceRepr + cudarc::driver::ValidAsZeroBits + 'static,
+{
+    match src.cuda_stream() {
+        Some(s) => Ok(s.clone()),
+        None => default_stream(),
+    }
+}
+
 /// Allocate a device destination and run one `ConvertColor` pair, returning a
 /// device-resident unified `Image` tagged with the output color space.
 macro_rules! conv_fn {
@@ -554,8 +627,13 @@ macro_rules! conv_fn {
         $(#[$meta])*
         #[pyfunction]
         pub fn $pyname(img: &PyImageApi) -> PyResult<PyImageApi> {
-            let stream = default_stream()?;
             let src = device_src!(img, stringify!($pyname), $srcvar);
+            // Allocate the destination on the SOURCE's own stream/device, not a
+            // hardcoded device 0: a source resident on a non-default GPU would
+            // otherwise get a device-0 dst and the downstream residency check
+            // (`pair_residency`) would reject the mismatched pair with
+            // `DeviceMismatch` on multi-GPU systems.
+            let stream = source_stream(src)?;
             // SAFETY: the ConvertColor kernel writes every output pixel (one
             // thread per pixel, bounds-guarded), so the uninitialized destination
             // is fully overwritten before any read.
@@ -586,14 +664,9 @@ conv_fn!(
     /// RGB8 → RGBA8 (opaque alpha).
     rgba_from_rgb, U8C3, Rgb8, u8, 4, U8C4, Rgba8, ColorSpace::Rgba
 );
-conv_fn!(
-    /// RGBA8 → RGB8 (alpha dropped).
-    rgb_from_rgba, U8C4, Rgba8, u8, 3, U8C3, Rgb8, ColorSpace::Rgb
-);
-conv_fn!(
-    /// BGRA8 → RGB8.
-    rgb_from_bgra, U8C4, Bgra8, u8, 3, U8C3, Rgb8, ColorSpace::Rgb
-);
+// RGBA8/BGRA8 → RGB8 are provided by `rgb_from_rgba_bg`/`rgb_from_bgra_bg`
+// (below) instead of `conv_fn!`, so the device path can honor the `background`
+// alpha-composite argument like the CPU path rather than only dropping alpha.
 conv_fn!(
     /// RGB8 → YCbCr8 (full-range Q14, bit-exact vs the CPU path).
     ycbcr_from_rgb, U8C3, Rgb8, u8, 3, U8C3, YCbCr8, ColorSpace::YCbCr
@@ -622,8 +695,9 @@ conv_fn!(
 /// Sepia tone on RGB8 (Q8 fixed point, bit-exact vs the CPU path).
 #[pyfunction]
 pub fn sepia_from_rgb(img: &PyImageApi) -> PyResult<PyImageApi> {
-    let stream = default_stream()?;
     let src = device_src!(img, "sepia_from_rgb", U8C3);
+    // Allocate the destination on the source's own stream/device (see `conv_fn!`).
+    let stream = source_stream(src)?;
     // SAFETY: the sepia kernel writes every output pixel, so the uninitialized
     // destination is fully overwritten before any read.
     let mut dst = unsafe { Image::<u8, 3>::uninit_cuda(src.size(), &stream) }.map_err(err)?;
@@ -639,10 +713,11 @@ pub fn sepia_from_rgb(img: &PyImageApi) -> PyResult<PyImageApi> {
 /// `kornia_rs.imgproc.apply_colormap`).
 #[pyfunction]
 pub fn apply_colormap(img: &PyImageApi, colormap: &str) -> PyResult<PyImageApi> {
-    let stream = default_stream()?;
     let src = device_src!(img, "apply_colormap", U8C1);
     let cmap = color::ColormapType::from_name(colormap)
         .ok_or_else(|| PyValueError::new_err(format!("unknown colormap '{colormap}'")))?;
+    // Allocate the destination on the source's own stream/device (see `conv_fn!`).
+    let stream = source_stream(src)?;
     // SAFETY: the colormap kernel writes every output pixel, so the uninitialized
     // destination is fully overwritten before any read.
     let mut dst = unsafe { Image::<u8, 3>::uninit_cuda(src.size(), &stream) }.map_err(err)?;
@@ -658,8 +733,9 @@ pub fn apply_colormap(img: &PyImageApi, colormap: &str) -> PyResult<PyImageApi> 
 #[pyfunction]
 pub fn rgb_from_bayer(img: &PyImageApi, pattern: &str) -> PyResult<PyImageApi> {
     use kornia_image::color_spaces::BayerPattern;
-    let stream = default_stream()?;
     let src = device_src!(img, "rgb_from_bayer", U8C1);
+    // Allocate the destination on the source's own stream/device (see `conv_fn!`).
+    let stream = source_stream(src)?;
     let pat = match pattern.to_ascii_lowercase().as_str() {
         "rggb" => BayerPattern::Rggb,
         "bggr" => BayerPattern::Bggr,
@@ -676,6 +752,39 @@ pub fn rgb_from_bayer(img: &PyImageApi, pattern: &str) -> PyResult<PyImageApi> {
     // overwritten before any read.
     let mut dst = unsafe { Image::<u8, 3>::uninit_cuda(src.size(), &stream) }.map_err(err)?;
     color::rgb_from_bayer(src, pat, &mut dst).map_err(err)?;
+    Ok(PyImageApi::from_device(
+        Inner::U8C3(dst),
+        ColorSpace::Rgb,
+        device_mode::<u8>(3),
+    ))
+}
+
+/// RGBA8 → RGB8 on device, compositing over `background` when given (mirrors the
+/// CPU path's `background=` — otherwise a device image would silently drop alpha
+/// while the host path composited). `None` = opaque alpha drop.
+pub fn rgb_from_rgba_bg(img: &PyImageApi, background: Option<[u8; 3]>) -> PyResult<PyImageApi> {
+    let src = device_src!(img, "rgb_from_rgba", U8C4);
+    let stream = source_stream(src)?;
+    // SAFETY: the blend/drop kernel writes every output pixel (one thread per
+    // pixel, bounds-guarded), so the uninitialized destination is fully
+    // overwritten before any read.
+    let mut dst = unsafe { Image::<u8, 3>::uninit_cuda(src.size(), &stream) }.map_err(err)?;
+    convert_pair_bg!(src, Rgba8, &mut dst, Rgb8, background)?;
+    Ok(PyImageApi::from_device(
+        Inner::U8C3(dst),
+        ColorSpace::Rgb,
+        device_mode::<u8>(3),
+    ))
+}
+
+/// BGRA8 → RGB8 on device, compositing over `background` when given. See
+/// [`rgb_from_rgba_bg`].
+pub fn rgb_from_bgra_bg(img: &PyImageApi, background: Option<[u8; 3]>) -> PyResult<PyImageApi> {
+    let src = device_src!(img, "rgb_from_bgra", U8C4);
+    let stream = source_stream(src)?;
+    // SAFETY: as in `rgb_from_rgba_bg`.
+    let mut dst = unsafe { Image::<u8, 3>::uninit_cuda(src.size(), &stream) }.map_err(err)?;
+    convert_pair_bg!(src, Bgra8, &mut dst, Rgb8, background)?;
     Ok(PyImageApi::from_device(
         Inner::U8C3(dst),
         ColorSpace::Rgb,
@@ -720,6 +829,22 @@ impl PyTensor {
         };
         matches!(domain, MemoryDomain::Device { .. } | MemoryDomain::Unified { .. })
     }
+
+    /// This tensor's real CUDA device ordinal (not always 0), or `0` as a
+    /// last-resort default when it's device-resident but carries no stream
+    /// (shouldn't normally happen). `None` on a host tensor. Single source of
+    /// truth for `device()`/`__dlpack_device__` so they can't diverge.
+    #[cfg(feature = "cuda")]
+    fn device_ordinal(&self) -> Option<i32> {
+        if !self.is_device() {
+            return None;
+        }
+        let stream = match &*self.inner {
+            TensorInnerEnum::F32(t) => t.cuda_stream(),
+            TensorInnerEnum::F16(t) => t.cuda_stream(),
+        };
+        Some(stream.map(|s| s.context().ordinal() as i32).unwrap_or(0))
+    }
 }
 
 #[pymethods]
@@ -749,16 +874,8 @@ impl PyTensor {
     #[getter]
     fn device(&self) -> String {
         #[cfg(feature = "cuda")]
-        {
-            let stream = match &*self.inner {
-                TensorInnerEnum::F32(t) => t.cuda_stream(),
-                TensorInnerEnum::F16(t) => t.cuda_stream(),
-            };
-            match stream {
-                Some(s) => return format!("cuda:{}", s.context().ordinal()),
-                None if self.is_device() => return "cuda:0".to_string(),
-                None => {}
-            }
+        if let Some(ordinal) = self.device_ordinal() {
+            return format!("cuda:{ordinal}");
         }
         "cpu".to_string()
     }
@@ -871,13 +988,15 @@ impl PyTensor {
         Ok(arr.into_any().unbind())
     }
 
-    /// DLPack device tuple: `(kDLCUDA, device_id)` or `(kDLCPU, 0)`.
+    /// DLPack device tuple: `(kDLCUDA, device_id)` or `(kDLCPU, 0)`. `device_id`
+    /// is this tensor's real CUDA ordinal (not always 0) so a multi-GPU
+    /// consumer (e.g. `torch.from_dlpack`) selects the right device.
     fn __dlpack_device__(&self) -> (i32, i32) {
-        if self.is_device() {
-            (dlpack_rs::ffi::DLDeviceType::kDLCUDA as i32, 0)
-        } else {
-            (dlpack_rs::ffi::DLDeviceType::kDLCPU as i32, 0)
+        #[cfg(feature = "cuda")]
+        if let Some(ordinal) = self.device_ordinal() {
+            return (dlpack_rs::ffi::DLDeviceType::kDLCUDA as i32, ordinal);
         }
+        (dlpack_rs::ffi::DLDeviceType::kDLCPU as i32, 0)
     }
 
     /// Export as a DLPack capsule (zero-copy). Synchronizes the producing
@@ -1584,8 +1703,29 @@ impl PyPreprocessor {
             )));
         }
         let (out_h, out_w) = (out_shape[2], out_shape[3]);
-        let out_ptr = out.data_ptr() as u64;
         let cuda = self.cuda_backing("run (out=)")?;
+        // `out.data_ptr()` is written by the fused CUDA kernel as a raw device
+        // pointer, so `out` MUST be device-resident and on this preprocessor's
+        // device — a host tensor's address (or a different GPU's) would launch
+        // a kernel through an invalid pointer (undefined behavior; on unified
+        // memory a host VA can even alias real device memory). dtype/shape
+        // matching alone does not establish residency.
+        let pre_ordinal = cuda.stream.context().ordinal() as i32;
+        match out.device_ordinal() {
+            Some(ord) if ord == pre_ordinal => {}
+            Some(ord) => {
+                return Err(PyValueError::new_err(format!(
+                    "run: out= is on cuda:{ord} but this preprocessor runs on \
+                     cuda:{pre_ordinal}; allocate out with alloc_output() on the same device"
+                )));
+            }
+            None => {
+                return Err(PyValueError::new_err(
+                    "run: out= must be a device Tensor (e.g. from alloc_output()), got a host tensor",
+                ));
+            }
+        }
+        let out_ptr = out.data_ptr() as u64;
         let consumer = stream.map(|s| s.raw_handle());
 
         let (mut staging, frame_len) = stage_single_upload(cuda, &frame)?;

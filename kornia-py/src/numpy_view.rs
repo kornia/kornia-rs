@@ -35,7 +35,17 @@ pub unsafe fn view<'py, T: Element>(
     base: Py<PyAny>,
     readonly: bool,
 ) -> PyResult<Bound<'py, PyAny>> {
-    debug_assert!(dims.len() <= MAX_RANK, "view: rank {} > MAX_RANK", dims.len());
+    // Real (release-safe) bound check, not a debug_assert: `dims.len()` is
+    // passed to numpy as the array rank against the fixed `dims_buf` below, so a
+    // rank past MAX_RANK would make numpy read uninitialized stack past the
+    // buffer. No current caller exceeds MAX_RANK, but this keeps the `pub unsafe`
+    // contract enforced in release builds too.
+    if dims.len() > MAX_RANK {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "numpy_view::view: rank {} exceeds MAX_RANK {MAX_RANK}",
+            dims.len()
+        )));
+    }
     let mut dims_buf = [0 as npy_intp; MAX_RANK];
     for (slot, &d) in dims_buf.iter_mut().zip(dims) {
         *slot = d as npy_intp;

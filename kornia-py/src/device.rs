@@ -138,8 +138,20 @@ where
 {
     let s = img.size();
     let (h, w) = (s.height, s.width);
-    let numel = h * w * C;
-    let mut bytes = AlignedBytes::uninit(numel * std::mem::size_of::<T>());
+    // Checked arithmetic (like `backing::byte_len`, used for every other
+    // allocation in the crate): a device image imported from a crafted DLPack
+    // producer can carry an oversized shape that only passed a `> 0` check, so
+    // an unchecked `h * w * C` could wrap to an undersized allocation and make
+    // the `to_host_into` D2H copy below write out of bounds.
+    let overflow = || err("image dimensions overflow usize");
+    let numel = h
+        .checked_mul(w)
+        .and_then(|x| x.checked_mul(C))
+        .ok_or_else(overflow)?;
+    let nbytes = numel
+        .checked_mul(std::mem::size_of::<T>())
+        .ok_or_else(overflow)?;
+    let mut bytes = AlignedBytes::uninit(nbytes);
     // SAFETY: `bytes` owns `numel * size_of::<T>()` bytes, 64-byte aligned (>=
     // align_of::<T>() for u8/f32); reinterpret as a `&mut [T]` of exactly `numel`
     // elements. `to_host_into` writes every element (a full D2H copy) before any

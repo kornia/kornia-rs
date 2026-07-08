@@ -3963,8 +3963,11 @@ pub(crate) struct ResolvedStream {
 ///
 /// An owned kornia stream is submitted onto directly. A foreign (adopted)
 /// stream can't be submitted onto through cudarc 0.19, so work runs on kornia's
-/// default stream and the foreign handle is returned for [`fence_into_foreign`]
-/// to order the caller's stream after ours. `None` uses the default stream.
+/// default stream *for the foreign stream's own device* (probed via
+/// [`crate::cuda_ext::foreign_stream_device`], so a foreign stream from a
+/// non-zero GPU lands on that GPU, not always device 0), and the foreign handle
+/// is returned for [`fence_into_foreign`] to order the caller's stream after
+/// ours. `None` uses device 0's default stream.
 #[cfg(feature = "cuda")]
 fn resolve_stream(stream: Option<PyRef<'_, PyStream>>) -> PyResult<ResolvedStream> {
     match stream.map(|s| s.inner.clone()) {
@@ -3973,7 +3976,7 @@ fn resolve_stream(stream: Option<PyRef<'_, PyStream>>) -> PyResult<ResolvedStrea
             foreign: None,
         }),
         Some(StreamInner::Foreign(h)) => Ok(ResolvedStream {
-            launch: crate::cuda_ext::default_stream()?,
+            launch: crate::cuda_ext::default_stream_for(crate::cuda_ext::foreign_stream_device(h))?,
             foreign: Some(h),
         }),
         None => Ok(ResolvedStream {
@@ -4313,7 +4316,21 @@ impl PyImageApi {
         {
             let resolved = resolve_stream(stream)?;
             let dev = self.to_device_internal(py, resolved.launch.clone())?;
-            fence_into_foreign(&resolved)?;
+            // Fence the foreign consumer against the RESULT image's own
+            // producing stream, not `resolved.launch`. When `self` was already
+            // on device, `to_device_internal` shared its handle and enqueued
+            // nothing on `resolved.launch`, so fencing that idle stream would
+            // give no ordering against the image's real in-flight writes.
+            // `dev`'s own stream is the upload stream for a fresh H2D and the
+            // original producer for a shared handle — correct in both cases
+            // (mirrors `__dlpack__`'s fence against `dev.cuda_stream()`).
+            if let Some(foreign) = resolved.foreign {
+                let launch = dev
+                    .as_device()
+                    .and_then(|d| d.cuda_stream())
+                    .unwrap_or(&resolved.launch);
+                crate::cuda_ext::fence_stream_into(launch, Some(foreign))?;
+            }
             Ok(dev)
         }
         #[cfg(not(feature = "cuda"))]

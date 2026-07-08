@@ -147,9 +147,12 @@ pub fn rgb_from_rgba(
     image: &Bound<'_, PyAny>,
     background: Option<[u8; 3]>,
 ) -> PyResult<Py<PyAny>> {
-    // The GPU path (opaque alpha drop) ignores `background`.
+    // The GPU path honors `background` too (alpha composite when set, else
+    // opaque drop) — same result as the CPU path below.
     #[cfg(feature = "cuda")]
-    if let Some(dev) = dispatch_device(py, image, crate::cuda_ext::rgb_from_rgba)? {
+    if let Some(dev) =
+        dispatch_device(py, image, |api| crate::cuda_ext::rgb_from_rgba_bg(api, background))?
+    {
         return Ok(dev);
     }
     cpu_color(py, image, |py, image| {
@@ -197,8 +200,11 @@ pub fn rgb_from_bgra(
     image: &Bound<'_, PyAny>,
     background: Option<[u8; 3]>,
 ) -> PyResult<Py<PyAny>> {
+    // GPU path honors `background` (see `rgb_from_rgba`).
     #[cfg(feature = "cuda")]
-    if let Some(dev) = dispatch_device(py, image, crate::cuda_ext::rgb_from_bgra)? {
+    if let Some(dev) =
+        dispatch_device(py, image, |api| crate::cuda_ext::rgb_from_bgra_bg(api, background))?
+    {
         return Ok(dev);
     }
     cpu_color(py, image, |py, image| {
