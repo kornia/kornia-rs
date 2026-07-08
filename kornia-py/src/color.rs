@@ -30,40 +30,28 @@ where
     Ok(None)
 }
 
-/// Run a u8 CPU color op that accepts numpy **or** a host `Image`, returning the
-/// same kind: numpy → numpy, host `Image` → host `Image`. (Device images are
-/// handled by [`dispatch_device`] before this is reached.)
-fn cpu_color<C>(py: Python<'_>, image: &Bound<'_, PyAny>, cpu: C) -> PyResult<Py<PyAny>>
+/// Run a CPU color op (element type `E` — `u8` for [`PyImage`], `f32` for
+/// [`PyImageF32`]) that accepts numpy **or** a host `Image`, returning the same
+/// kind: numpy → numpy, host `Image` → host `Image`. (Device images are handled
+/// by [`dispatch_device`] before this is reached.) `E` is pinned by the
+/// concrete `Py<PyArray3<E>>` type the caller's closure body operates on
+/// (`numpy_as_image`/`numpy_as_image_f32` etc. each fix one element type), so
+/// call sites need no turbofish.
+fn cpu_color<E, C>(py: Python<'_>, image: &Bound<'_, PyAny>, cpu: C) -> PyResult<Py<PyAny>>
 where
-    C: FnOnce(Python<'_>, PyImage) -> PyResult<PyImage>,
+    E: numpy::Element,
+    C: FnOnce(Python<'_>, Py<numpy::PyArray3<E>>) -> PyResult<Py<numpy::PyArray3<E>>>,
 {
     if let Ok(api) = image.cast::<PyImageApi>() {
         no_gpu_kernel_if_device(&api.borrow())?;
         // Host Image: run on its numpy view, wrap the numpy result as a host Image.
         let view = api.call_method0("numpy")?;
-        let arr: PyImage = view.extract()?;
+        let arr: Py<numpy::PyArray3<E>> = view.extract()?;
         let out = cpu(py, arr)?;
         let img = PyImageApi::from_numpy_borrow(py, out.bind(py).as_any(), None, None, false)?;
         return Ok(Py::new(py, img)?.into_any());
     }
-    let arr: PyImage = image.extract()?;
-    Ok(cpu(py, arr)?.into_any())
-}
-
-/// f32 sibling of [`cpu_color`].
-fn cpu_color_f32<C>(py: Python<'_>, image: &Bound<'_, PyAny>, cpu: C) -> PyResult<Py<PyAny>>
-where
-    C: FnOnce(Python<'_>, PyImageF32) -> PyResult<PyImageF32>,
-{
-    if let Ok(api) = image.cast::<PyImageApi>() {
-        no_gpu_kernel_if_device(&api.borrow())?;
-        let view = api.call_method0("numpy")?;
-        let arr: PyImageF32 = view.extract()?;
-        let out = cpu(py, arr)?;
-        let img = PyImageApi::from_numpy_borrow(py, out.bind(py).as_any(), None, None, false)?;
-        return Ok(Py::new(py, img)?.into_any());
-    }
-    let arr: PyImageF32 = image.extract()?;
+    let arr: Py<numpy::PyArray3<E>> = image.extract()?;
     Ok(cpu(py, arr)?.into_any())
 }
 
@@ -222,16 +210,17 @@ pub fn rgb_from_bgra(
     })
 }
 
-/// Generates a zero-copy f32 3→3 channel color-conversion `#[pyfunction]`.
-///
-/// All perceptual/cylindrical conversions share the same shape: a (H, W, 3) float32
-/// input → (H, W, 3) float32 output, GIL released for the NEON/AVX2 kernel.
+/// Generates a residency-dispatching f32 3→3 channel color-conversion
+/// `#[pyfunction]`: numpy / host `Image` run CPU (`$func`, GIL released for the
+/// NEON/AVX2 kernel), a device `Image` runs the GPU op (`$dev`, if given —
+/// returning a device `Image`). All perceptual/cylindrical conversions share
+/// this (H, W, 3) float32 → (H, W, 3) float32 shape.
 macro_rules! py_f32_3to3 {
     ($name:ident, $func:path, $doc:literal) => {
         #[doc = $doc]
         #[pyfunction]
         pub fn $name(py: Python<'_>, image: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-            cpu_color_f32(py, image, |py, image| {
+            cpu_color(py, image, |py, image| {
                 let src = unsafe { numpy_as_image_f32::<3>(py, &image)? };
                 let (mut dst, out) = unsafe { alloc_output_pyarray_f32::<3>(py, src.size())? };
                 py.detach(|| $func(&src, &mut dst)).map_err(to_pyerr)?;
@@ -239,20 +228,15 @@ macro_rules! py_f32_3to3 {
             })
         }
     };
-}
-
-/// Like [`py_f32_3to3`], but residency-dispatching: a device `Image` runs the
-/// GPU op `$dev` (returning a device `Image`); numpy / host `Image` run CPU.
-#[cfg(feature = "cuda")]
-macro_rules! py_f32_3to3_dev {
     ($name:ident, $func:path, $dev:path, $doc:literal) => {
         #[doc = $doc]
         #[pyfunction]
         pub fn $name(py: Python<'_>, image: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+            #[cfg(feature = "cuda")]
             if let Some(dev) = dispatch_device(py, image, $dev)? {
                 return Ok(dev);
             }
-            cpu_color_f32(py, image, |py, image| {
+            cpu_color(py, image, |py, image| {
                 let src = unsafe { numpy_as_image_f32::<3>(py, &image)? };
                 let (mut dst, out) = unsafe { alloc_output_pyarray_f32::<3>(py, src.size())? };
                 py.detach(|| $func(&src, &mut dst)).map_err(to_pyerr)?;
@@ -261,20 +245,14 @@ macro_rules! py_f32_3to3_dev {
         }
     };
 }
-#[cfg(not(feature = "cuda"))]
-macro_rules! py_f32_3to3_dev {
-    ($name:ident, $func:path, $dev:path, $doc:literal) => {
-        py_f32_3to3!($name, $func, $doc);
-    };
-}
 
-py_f32_3to3_dev!(
+py_f32_3to3!(
     hsv_from_rgb,
     color::hsv_from_rgb,
     crate::cuda_ext::hsv_from_rgb,
     "RGB f32 → HSV f32 (H,S,V in [0,255])."
 );
-py_f32_3to3_dev!(
+py_f32_3to3!(
     rgb_from_hsv,
     color::rgb_from_hsv,
     crate::cuda_ext::rgb_from_hsv,
@@ -288,13 +266,13 @@ py_f32_3to3!(
     "RGB f32 → CIE XYZ f32 (D65)."
 );
 py_f32_3to3!(rgb_from_xyz, color::rgb_from_xyz, "CIE XYZ f32 → RGB f32.");
-py_f32_3to3_dev!(
+py_f32_3to3!(
     lab_from_rgb,
     color::lab_from_rgb,
     crate::cuda_ext::lab_from_rgb,
     "RGB f32 → CIE L*a*b* f32."
 );
-py_f32_3to3_dev!(
+py_f32_3to3!(
     rgb_from_lab,
     color::rgb_from_lab,
     crate::cuda_ext::rgb_from_lab,
@@ -320,13 +298,13 @@ py_f32_3to3!(
     color::rgb_from_linear_rgb,
     "linear-RGB f32 → sRGB f32 (gamma compress)."
 );
-py_f32_3to3_dev!(
+py_f32_3to3!(
     ycbcr_from_rgb,
     color::ycbcr_from_rgb,
     crate::cuda_ext::ycbcr_from_rgb,
     "RGB f32 → YCbCr f32 (full range)."
 );
-py_f32_3to3_dev!(
+py_f32_3to3!(
     rgb_from_ycbcr,
     color::rgb_from_ycbcr,
     crate::cuda_ext::rgb_from_ycbcr,
@@ -338,7 +316,7 @@ py_f32_3to3!(
     "RGB f32 → YUV f32 (planar, full range)."
 );
 py_f32_3to3!(rgb_from_yuv, color::rgb_from_yuv, "YUV f32 → RGB f32.");
-py_f32_3to3_dev!(
+py_f32_3to3!(
     sepia_from_rgb,
     color::sepia_from_rgb_f32,
     crate::cuda_ext::sepia_from_rgb,
