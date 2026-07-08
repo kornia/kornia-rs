@@ -114,10 +114,7 @@ impl DeviceImage {
     /// Copy this device image back to host (D2H) into an owned, 64-byte-aligned
     /// buffer, returning `(bytes, hwc_shape, dtype)`. The GIL is released for the
     /// duration of the copy + synchronize.
-    pub fn download_to_owned(
-        &self,
-        py: Python<'_>,
-    ) -> PyResult<(AlignedBytes, [usize; 3], Dtype)> {
+    pub fn download_to_owned(&self, py: Python<'_>) -> PyResult<(AlignedBytes, [usize; 3], Dtype)> {
         let dt = self.dtype_enum();
         py.detach(|| dispatch!(self, i => dl_owned(i, dt)))
     }

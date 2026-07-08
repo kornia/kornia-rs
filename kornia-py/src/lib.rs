@@ -12,9 +12,9 @@ mod color_space;
 mod cpu;
 mod crop;
 mod cuda_ext;
+mod depth;
 #[cfg(feature = "cuda")]
 mod device;
-mod depth;
 mod dlpack;
 mod enhance;
 mod feature_match;

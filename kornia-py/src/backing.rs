@@ -226,9 +226,10 @@ impl Backing {
             Backing::Owned(_) => (K_DL_CPU as i32, 0),
             Backing::Borrowed { device, .. } => *device,
             #[cfg(feature = "cuda")]
-            Backing::Device { img, .. } => {
-                (dlpack_rs::ffi::DLDeviceType::kDLCUDA as i32, img.device_id())
-            }
+            Backing::Device { img, .. } => (
+                dlpack_rs::ffi::DLDeviceType::kDLCUDA as i32,
+                img.device_id(),
+            ),
         }
     }
 

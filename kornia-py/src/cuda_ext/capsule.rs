@@ -19,7 +19,12 @@ fn build_dl_tensor_info<T, const N: usize>(
         device_id: dl_device.1,
     };
     let shape: Vec<i64> = t.shape.iter().map(|&s| s as i64).collect();
-    dlpack_rs::safe::TensorInfo::contiguous(t.as_ptr() as *mut std::ffi::c_void, device, dtype, shape)
+    dlpack_rs::safe::TensorInfo::contiguous(
+        t.as_ptr() as *mut std::ffi::c_void,
+        device,
+        dtype,
+        shape,
+    )
 }
 
 /// Wrap an already-packed `DLManagedTensor*` in a named PyCapsule with `deleter`.
@@ -48,8 +53,8 @@ macro_rules! dlpack_capsule_destructor {
         unsafe extern "C" fn $name(capsule: *mut pyo3::ffi::PyObject) {
             unsafe {
                 if pyo3::ffi::PyCapsule_IsValid(capsule, $cstr.as_ptr()) == 1 {
-                    let managed = pyo3::ffi::PyCapsule_GetPointer(capsule, $cstr.as_ptr())
-                        as *mut $managed;
+                    let managed =
+                        pyo3::ffi::PyCapsule_GetPointer(capsule, $cstr.as_ptr()) as *mut $managed;
                     if !managed.is_null() {
                         if let Some(deleter) = (*managed).deleter {
                             deleter(managed);
@@ -126,7 +131,6 @@ where
     }
 }
 
-
 /// Import a device-resident DLPack tensor (torch / cupy) into a shared
 /// [`DeviceImage`] handle — the core behind `Image.from_dlpack` (device
 /// inference).
@@ -137,10 +141,7 @@ where
 /// tensor, running its deleter on drop to release the producer's buffer.
 /// Callers who want an independent buffer should copy it themselves afterward.
 #[cfg(feature = "cuda")]
-pub(crate) fn dlpack_to_device_arc(
-    py: Python<'_>,
-    obj: &Bound<'_, PyAny>,
-) -> PyResult<Arc<Inner>> {
+pub(crate) fn dlpack_to_device_arc(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Arc<Inner>> {
     use dlpack_rs::ffi::{DLManagedTensor, DLManagedTensorVersioned};
     use pyo3::types::{PyCapsule, PyCapsuleMethods, PyDict};
     use std::ffi::CStr;

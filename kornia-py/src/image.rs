@@ -3585,65 +3585,75 @@ impl PyImageApi {
 
         // Extract the DLTensor reference (borrowed; valid while capsule is alive)
         // plus the raw managed pointer + versioned flag, so we can own it below.
-        let (device, ndim, raw_shape, raw_strides, dtype_raw, data_raw, byte_offset, readonly, managed, versioned) =
-            if name_cstr == NAME_DL {
-                let nn = capsule.pointer_checked(Some(NAME_DL))?;
-                let mt = unsafe { &*(nn.as_ptr() as *const DLManagedTensor) };
-                let t = &mt.dl_tensor;
-                // SECURITY: `ndim` is producer-controlled. Validate it (and the shape
-                // pointer) BEFORE using it as a slice length — a negative `ndim` casts
-                // to `usize::MAX` (instant UB) and an oversized one reads out of bounds.
-                crate::dlpack::validate_dlpack_rank(t.ndim, t.shape)?;
-                let sh = unsafe { std::slice::from_raw_parts(t.shape, t.ndim as usize) };
-                let st = if t.strides.is_null() {
-                    None
-                } else {
-                    Some(unsafe { std::slice::from_raw_parts(t.strides, t.ndim as usize) })
-                };
-                (
-                    t.device,
-                    t.ndim as usize,
-                    sh,
-                    st,
-                    t.dtype,
-                    t.data,
-                    t.byte_offset,
-                    false,
-                    nn.as_ptr(),
-                    false,
-                )
-            } else if name_cstr == NAME_DLV {
-                let nn = capsule.pointer_checked(Some(NAME_DLV))?;
-                let mt = unsafe { &*(nn.as_ptr() as *const DLManagedTensorVersioned) };
-                let t = &mt.dl_tensor;
-                // SECURITY: see note in the `NAME_DL` branch — validate before slicing.
-                crate::dlpack::validate_dlpack_rank(t.ndim, t.shape)?;
-                let sh = unsafe { std::slice::from_raw_parts(t.shape, t.ndim as usize) };
-                let st = if t.strides.is_null() {
-                    None
-                } else {
-                    Some(unsafe { std::slice::from_raw_parts(t.strides, t.ndim as usize) })
-                };
-                let ro = (mt.flags & dlpack_rs::ffi::DLPACK_FLAG_BITMASK_READ_ONLY) != 0;
-                (
-                    t.device,
-                    t.ndim as usize,
-                    sh,
-                    st,
-                    t.dtype,
-                    t.data,
-                    t.byte_offset,
-                    ro,
-                    nn.as_ptr(),
-                    true,
-                )
+        let (
+            device,
+            ndim,
+            raw_shape,
+            raw_strides,
+            dtype_raw,
+            data_raw,
+            byte_offset,
+            readonly,
+            managed,
+            versioned,
+        ) = if name_cstr == NAME_DL {
+            let nn = capsule.pointer_checked(Some(NAME_DL))?;
+            let mt = unsafe { &*(nn.as_ptr() as *const DLManagedTensor) };
+            let t = &mt.dl_tensor;
+            // SECURITY: `ndim` is producer-controlled. Validate it (and the shape
+            // pointer) BEFORE using it as a slice length — a negative `ndim` casts
+            // to `usize::MAX` (instant UB) and an oversized one reads out of bounds.
+            crate::dlpack::validate_dlpack_rank(t.ndim, t.shape)?;
+            let sh = unsafe { std::slice::from_raw_parts(t.shape, t.ndim as usize) };
+            let st = if t.strides.is_null() {
+                None
             } else {
-                return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                    "from_dlpack: unexpected capsule name {:?}; expected 'dltensor' or \
-                     'dltensor_versioned'",
-                    name_cstr
-                )));
+                Some(unsafe { std::slice::from_raw_parts(t.strides, t.ndim as usize) })
             };
+            (
+                t.device,
+                t.ndim as usize,
+                sh,
+                st,
+                t.dtype,
+                t.data,
+                t.byte_offset,
+                false,
+                nn.as_ptr(),
+                false,
+            )
+        } else if name_cstr == NAME_DLV {
+            let nn = capsule.pointer_checked(Some(NAME_DLV))?;
+            let mt = unsafe { &*(nn.as_ptr() as *const DLManagedTensorVersioned) };
+            let t = &mt.dl_tensor;
+            // SECURITY: see note in the `NAME_DL` branch — validate before slicing.
+            crate::dlpack::validate_dlpack_rank(t.ndim, t.shape)?;
+            let sh = unsafe { std::slice::from_raw_parts(t.shape, t.ndim as usize) };
+            let st = if t.strides.is_null() {
+                None
+            } else {
+                Some(unsafe { std::slice::from_raw_parts(t.strides, t.ndim as usize) })
+            };
+            let ro = (mt.flags & dlpack_rs::ffi::DLPACK_FLAG_BITMASK_READ_ONLY) != 0;
+            (
+                t.device,
+                t.ndim as usize,
+                sh,
+                st,
+                t.dtype,
+                t.data,
+                t.byte_offset,
+                ro,
+                nn.as_ptr(),
+                true,
+            )
+        } else {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "from_dlpack: unexpected capsule name {:?}; expected 'dltensor' or \
+                     'dltensor_versioned'",
+                name_cstr
+            )));
+        };
 
         // 4. Capture the source device for zero-copy pass-through interop.
         //    CPU tensors stay host-accessible; non-CPU (e.g. CUDA) tensors are
@@ -3848,8 +3858,7 @@ impl PyImageApi {
         let shape = self.shape;
         let dtype = self.dtype;
         let channels = self.shape[2];
-        let dev =
-            py.detach(move || upload_device(backing, shape, dtype, channels, &stream))?;
+        let dev = py.detach(move || upload_device(backing, shape, dtype, channels, &stream))?;
         Ok(Self::from_device(dev, self.color_space, self.mode.clone()))
     }
 

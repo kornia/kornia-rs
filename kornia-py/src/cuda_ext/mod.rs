@@ -23,9 +23,9 @@ use std::sync::Arc;
 
 #[cfg(feature = "cuda")]
 use cudarc::driver::{CudaContext, CudaStream};
-use numpy::{PyArray1, PyArrayMethods};
 #[cfg(feature = "cuda")]
 use numpy::PyUntypedArrayMethods;
+use numpy::{PyArray1, PyArrayMethods};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 
@@ -98,7 +98,11 @@ pub(crate) fn foreign_stream_device(handle: usize) -> i32 {
     // driver probe below after the first lookup.
     static CACHE: OnceLock<Mutex<HashMap<usize, i32>>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Some(&ord) = cache.lock().expect("stream-device cache poisoned").get(&handle) {
+    if let Some(&ord) = cache
+        .lock()
+        .expect("stream-device cache poisoned")
+        .get(&handle)
+    {
         return ord;
     }
     let ord = probe_foreign_stream_device(handle);
@@ -199,7 +203,10 @@ pub fn mem_get_info(py: Python<'_>) -> PyResult<(usize, usize)> {
 /// actual producing `launch` stream (rather than assuming the legacy default)
 /// keeps it correct even when the producer ran on a custom stream.
 #[cfg(feature = "cuda")]
-pub(crate) fn dlpack_fence_consumer(launch: &Arc<CudaStream>, consumer: Option<isize>) -> PyResult<()> {
+pub(crate) fn dlpack_fence_consumer(
+    launch: &Arc<CudaStream>,
+    consumer: Option<isize>,
+) -> PyResult<()> {
     match consumer {
         Some(-1) => Ok(()),
         Some(h) if h < -1 => Err(PyValueError::new_err(format!(
@@ -229,9 +236,9 @@ use kornia_image::ColorSpace;
 // `arc_dlpack_capsule*` are always compiled (host Tensor export via DLPack);
 // `dlpack_to_device_arc` is `cuda`-gated (device import).
 mod capsule;
-use capsule::{arc_dlpack_capsule, arc_dlpack_capsule_versioned};
 #[cfg(feature = "cuda")]
 pub(crate) use capsule::dlpack_to_device_arc;
+use capsule::{arc_dlpack_capsule, arc_dlpack_capsule_versioned};
 
 // ── GPU color conversions (device-resident `Image` in and out) ────────────────
 // Self-contained device-only submodule; re-exported so `crate::cuda_ext::<op>`
@@ -282,7 +289,10 @@ impl PyTensor {
     fn is_device(&self) -> bool {
         use kornia_tensor::MemoryDomain;
         let domain = tdispatch!(self, t => t.storage.domain());
-        matches!(domain, MemoryDomain::Device { .. } | MemoryDomain::Unified { .. })
+        matches!(
+            domain,
+            MemoryDomain::Device { .. } | MemoryDomain::Unified { .. }
+        )
     }
 
     /// This tensor's real CUDA device ordinal (not always 0) when device- or
@@ -404,13 +414,7 @@ impl PyTensor {
                 // SAFETY: `t.as_ptr()` points to `t.shape.iter().product()` live
                 // f32 elements for as long as `self.inner` (the base) is alive.
                 return Ok(unsafe {
-                    crate::numpy_view::view::<f32>(
-                        py,
-                        t.as_ptr() as *mut u8,
-                        &t.shape,
-                        base,
-                        false,
-                    )
+                    crate::numpy_view::view::<f32>(py, t.as_ptr() as *mut u8, &t.shape, base, false)
                 }?
                 .unbind());
             }
@@ -502,14 +506,7 @@ impl PyTensor {
             }
             TensorInnerEnum::F16(t) => {
                 if versioned {
-                    arc_dlpack_capsule_versioned(
-                        py,
-                        self.inner.clone(),
-                        t,
-                        f16_dtype,
-                        0,
-                        dl_device,
-                    )
+                    arc_dlpack_capsule_versioned(py, self.inner.clone(), t, f16_dtype, 0, dl_device)
                 } else {
                     arc_dlpack_capsule(py, self.inner.clone(), t, f16_dtype, dl_device)
                 }
@@ -724,7 +721,8 @@ impl PyPreprocessor {
                         )
                     }
                     .map_err(err)?;
-                    let mut dst = kornia_tensor::Tensor::<f32, 4>::zeros([1, 3, out_height, out_width]);
+                    let mut dst =
+                        kornia_tensor::Tensor::<f32, 4>::zeros([1, 3, out_height, out_width]);
                     self.pre.run::<$c>(&img, &mut dst).map_err(err)?;
                     dst
                 }};
@@ -735,8 +733,11 @@ impl PyPreprocessor {
                 _ => unreachable!("c is only ever 3 or 4, checked above"),
             };
             let inner = if self.f16 {
-                let data: Vec<half::f16> =
-                    dst.as_slice().iter().map(|&v| half::f16::from_f32(v)).collect();
+                let data: Vec<half::f16> = dst
+                    .as_slice()
+                    .iter()
+                    .map(|&v| half::f16::from_f32(v))
+                    .collect();
                 let dst16 = kornia_tensor::Tensor::<half::f16, 4>::from_shape_vec(dst.shape, data)
                     .map_err(err)?;
                 TensorInnerEnum::F16(dst16)
@@ -907,11 +908,15 @@ impl PyPreprocessor {
         }
         #[cfg(feature = "cuda")]
         if let Ok(frames) = frame.extract::<Vec<numpy::PyReadonlyArray1<'_, u8>>>() {
-            let t = self.run_batch_impl(py, frames, width, height, out_height, out_width, stream)?;
+            let t =
+                self.run_batch_impl(py, frames, width, height, out_height, out_width, stream)?;
             return Py::new(py, t);
         }
         #[cfg(not(feature = "cuda"))]
-        if frame.extract::<Vec<numpy::PyReadonlyArray1<'_, u8>>>().is_ok() {
+        if frame
+            .extract::<Vec<numpy::PyReadonlyArray1<'_, u8>>>()
+            .is_ok()
+        {
             return Err(cuda_not_compiled());
         }
         Err(PyValueError::new_err(
@@ -939,7 +944,8 @@ impl PyPreprocessor {
             let inner = py.detach(|| -> PyResult<TensorInnerEnum> {
                 if self.f16 {
                     Ok(TensorInnerEnum::F16(
-                        kornia_tensor::zeros_cuda::<half::f16, 4>(shape, &cuda.stream).map_err(err)?,
+                        kornia_tensor::zeros_cuda::<half::f16, 4>(shape, &cuda.stream)
+                            .map_err(err)?,
                     ))
                 } else {
                     Ok(TensorInnerEnum::F32(
@@ -979,62 +985,61 @@ impl PyPreprocessor {
         }
         #[cfg(feature = "cuda")]
         {
-        let Some(cuda) = &self.cuda else {
-            // A CPU preprocessor has no device work to fence, so a consumer
-            // `stream` is meaningless — reject it rather than silently ignoring
-            // it and leaving the caller to believe their stream was ordered.
-            if stream.is_some() {
-                return Err(PyValueError::new_err(
-                    "run: stream= is device-only; a CPU Preprocessor (device=None) \
+            let Some(cuda) = &self.cuda else {
+                // A CPU preprocessor has no device work to fence, so a consumer
+                // `stream` is meaningless — reject it rather than silently ignoring
+                // it and leaving the caller to believe their stream was ordered.
+                if stream.is_some() {
+                    return Err(PyValueError::new_err(
+                        "run: stream= is device-only; a CPU Preprocessor (device=None) \
                      has no stream to fence",
-                ));
-            }
-            return self.run_cpu(py, frame, width, height, out_height, out_width);
-        };
-        let consumer = stream.map(|s| s.raw_handle());
-        let (mut staging, frame_len) = stage_single_upload(cuda, &frame)?;
-        let staging = &mut *staging;
-
-        // Everything past the numpy borrow runs without the GIL: the pinned
-        // H2D DMA, the fused kernel launch, and the output allocation.
-        let inner = py.detach(|| -> PyResult<TensorInnerEnum> {
-            cuda.stream
-                .memcpy_htod(
-                    &staging.pinned.as_ref().expect("ensured").as_slice()[..frame_len],
-                    &mut staging.device[0],
-                )
-                .map_err(err)?;
-            // Record upload-complete so the next call can host-wait just this DMA.
-            staging.mark_upload(&cuda.stream)?;
-            let d_src = &staging.device[0];
-            // SAFETY: the resize/normalize kernel writes every output element —
-            // the sampled region and the letterbox pad border (one thread per
-            // pixel, bounds-guarded) — so the uninitialized dst is fully
-            // overwritten before it is read.
-            let shape = [1, 3, out_height, out_width];
-            if self.f16 {
-                let mut dst = unsafe {
-                    kornia_tensor::uninit_cuda::<half::f16, 4>(shape, &cuda.stream)
+                    ));
                 }
-                .map_err(err)?;
-                self.pre
-                    .run_raw_f16(d_src, width, height, &mut dst)
+                return self.run_cpu(py, frame, width, height, out_height, out_width);
+            };
+            let consumer = stream.map(|s| s.raw_handle());
+            let (mut staging, frame_len) = stage_single_upload(cuda, &frame)?;
+            let staging = &mut *staging;
+
+            // Everything past the numpy borrow runs without the GIL: the pinned
+            // H2D DMA, the fused kernel launch, and the output allocation.
+            let inner = py.detach(|| -> PyResult<TensorInnerEnum> {
+                cuda.stream
+                    .memcpy_htod(
+                        &staging.pinned.as_ref().expect("ensured").as_slice()[..frame_len],
+                        &mut staging.device[0],
+                    )
                     .map_err(err)?;
-                Ok(TensorInnerEnum::F16(dst))
-            } else {
-                let mut dst =
-                    unsafe { kornia_tensor::uninit_cuda::<f32, 4>(shape, &cuda.stream) }
+                // Record upload-complete so the next call can host-wait just this DMA.
+                staging.mark_upload(&cuda.stream)?;
+                let d_src = &staging.device[0];
+                // SAFETY: the resize/normalize kernel writes every output element —
+                // the sampled region and the letterbox pad border (one thread per
+                // pixel, bounds-guarded) — so the uninitialized dst is fully
+                // overwritten before it is read.
+                let shape = [1, 3, out_height, out_width];
+                if self.f16 {
+                    let mut dst =
+                        unsafe { kornia_tensor::uninit_cuda::<half::f16, 4>(shape, &cuda.stream) }
+                            .map_err(err)?;
+                    self.pre
+                        .run_raw_f16(d_src, width, height, &mut dst)
                         .map_err(err)?;
-                self.pre
-                    .run_raw(d_src, width, height, &mut dst)
-                    .map_err(err)?;
-                Ok(TensorInnerEnum::F32(dst))
-            }
-        })?;
-        fence_stream_into(&cuda.stream, consumer)?;
-        Ok(PyTensor {
-            inner: Arc::new(inner),
-        })
+                    Ok(TensorInnerEnum::F16(dst))
+                } else {
+                    let mut dst =
+                        unsafe { kornia_tensor::uninit_cuda::<f32, 4>(shape, &cuda.stream) }
+                            .map_err(err)?;
+                    self.pre
+                        .run_raw(d_src, width, height, &mut dst)
+                        .map_err(err)?;
+                    Ok(TensorInnerEnum::F32(dst))
+                }
+            })?;
+            fence_stream_into(&cuda.stream, consumer)?;
+            Ok(PyTensor {
+                inner: Arc::new(inner),
+            })
         } // cfg(feature = "cuda")
     }
 
@@ -1108,8 +1113,9 @@ impl PyPreprocessor {
             // (per-pixel, bounds-guarded, pad border included), so the
             // uninitialized dst is fully overwritten before it is read.
             if self.f16 {
-                let mut dst = unsafe { kornia_tensor::uninit_cuda::<half::f16, 4>(shape, &cuda.stream) }
-                    .map_err(err)?;
+                let mut dst =
+                    unsafe { kornia_tensor::uninit_cuda::<half::f16, 4>(shape, &cuda.stream) }
+                        .map_err(err)?;
                 self.pre
                     .run_raw_batch_f16(&refs, width, height, &mut dst)
                     .map_err(err)?;
@@ -1225,8 +1231,7 @@ impl PyPreprocessor {
             // exactly this shape & dtype, kept alive for this whole call.
             macro_rules! run_into_foreign {
                 ($ty:ty, $run:ident) => {{
-                    let slice =
-                        unsafe { cuda.stream.upgrade_device_ptr::<$ty>(out_ptr, n_elem) };
+                    let slice = unsafe { cuda.stream.upgrade_device_ptr::<$ty>(out_ptr, n_elem) };
                     let mut dst = Tensor::from_foreign_cudaslice(
                         slice,
                         shape,
