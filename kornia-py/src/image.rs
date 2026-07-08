@@ -3816,7 +3816,7 @@ impl PyImageApi {
 /// Error raised when a CUDA operation is attempted on a build without the
 /// `cuda` feature.
 #[allow(dead_code)] // used only in `#[cfg(not(feature = "cuda"))]` arms
-fn cuda_not_compiled() -> PyErr {
+pub(crate) fn cuda_not_compiled() -> PyErr {
     pyo3::exceptions::PyRuntimeError::new_err(
         "CUDA support is not compiled in (build kornia-rs with the 'cuda' feature)",
     )
@@ -4215,7 +4215,7 @@ impl PyImageApi {
             return Ok(dev);
         }
         #[cfg(not(feature = "cuda"))]
-        let _ = &stream;
+        let _ = (&py, &stream);
 
         let dt = backing::Dtype::from_numpy_str(dtype)?;
         let nbytes = backing::byte_len(height, width, channels, dt)?;

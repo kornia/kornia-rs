@@ -17,14 +17,17 @@ name = "kornia_rs"
 [dependencies]
 cudarc = { workspace = true, optional = true }
 dlpack-rs = { version = "0.3.3", features = ["pyo3"] }
-half = { workspace = true, optional = true }
+half = { workspace = true }
 kornia-3d = { workspace = true }
 kornia-algebra = { workspace = true }
 kornia-apriltag = { workspace = true }
 kornia-image = { workspace = true }
 kornia-imgproc = { workspace = true }
 kornia-io = { workspace = true }
-kornia-tensor = { workspace = true, optional = true }
+# Base (host) Tensor + DLPack support is unconditional — `Tensor`/`Preprocessor`
+# work on CPU-only builds too. Only `kornia-tensor/cuda` (device support) is
+# gated behind this crate's own `cuda` feature, below.
+kornia-tensor = { workspace = true, features = ["dlpack"] }
 numpy = { workspace = true }
 pyo3 = { workspace = true, features = ["extension-module", "multiple-pymethods"] }
 rand = { workspace = true }
@@ -32,15 +35,15 @@ rayon = { workspace = true }
 
 [features]
 default = ["turbojpeg"]
-# GPU color conversions + fused preprocessing (cudarc dynamic-loading: builds
-# without CUDA; activates at runtime when libcuda/libnvrtc are present).
+# Device (GPU) support: color conversions, device Image residency, and the
+# CUDA path of Tensor/Preprocessor (cudarc dynamic-loading: builds without
+# CUDA; activates at runtime when libcuda/libnvrtc are present). Tensor and
+# Preprocessor themselves are NOT gated by this — they run CPU-only without
+# it — only their device-resident branches are.
 cuda = [
   "dep:cudarc",
-  "dep:half",
-  "dep:kornia-tensor",
   "kornia-image/cuda",
   "kornia-imgproc/cuda",
   "kornia-tensor/cuda",
-  "kornia-tensor/dlpack",
 ]
 turbojpeg = ["kornia-io/turbojpeg"]

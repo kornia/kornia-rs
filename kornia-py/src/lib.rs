@@ -11,7 +11,6 @@ mod color;
 mod color_space;
 mod cpu;
 mod crop;
-#[cfg(feature = "cuda")]
 #[path = "cuda.rs"]
 mod cuda_ext;
 #[cfg(feature = "cuda")]
@@ -612,16 +611,15 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     add_imagenet_consts(m)?;
 
-    #[cfg(feature = "cuda")]
-    {
-        // Tensor is not CUDA-specific in spirit (mirrors kornia_tensor::Tensor),
-        // so it lives at the top level rather than under kornia_rs.cuda — the
-        // implementation is device-only for now (gated on this feature), but
-        // the name shouldn't imply that.
-        m.add_class::<cuda_ext::PyTensor>()?;
-        m.add_class::<cuda_ext::PyPreprocessor>()?;
-        cuda_ext::register(py, m)?;
-    }
+    // Tensor/Preprocessor are not CUDA-specific — both run CPU-only without the
+    // `cuda` feature — so they're registered unconditionally at the top level
+    // rather than under kornia_rs.cuda. `cuda_ext::register` (the `kornia_rs.cuda`
+    // submodule: Stream, is_available, mem_get_info) is likewise always present,
+    // degrading gracefully (`is_available() == False`, clear errors on
+    // device-only calls) on a build without `cuda`.
+    m.add_class::<cuda_ext::PyTensor>()?;
+    m.add_class::<cuda_ext::PyPreprocessor>()?;
+    cuda_ext::register(py, m)?;
 
     Ok(())
 }
