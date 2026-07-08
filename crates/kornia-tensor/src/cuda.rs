@@ -619,8 +619,8 @@ where
     let numel: usize = shape.iter().product();
     // SAFETY: the caller's contract (documented above) guarantees the memory is
     // fully written before it is read; this mirrors `zeros_cuda` minus the memset.
-    let slice: CudaSlice<T> = unsafe { stream.alloc::<T>(numel) }
-        .map_err(|e| CudaError::Driver(e.to_string()))?;
+    let slice: CudaSlice<T> =
+        unsafe { stream.alloc::<T>(numel) }.map_err(|e| CudaError::Driver(e.to_string()))?;
     Ok(wrap_device_slice(slice, shape, stream))
 }
 
@@ -913,9 +913,9 @@ where
     /// Returns [`CudaError::Driver`] on CUDA failure.
     pub fn to_cuda(&self, stream: &Arc<CudaStream>) -> Result<Tensor<T, N>, CudaError> {
         let src_slice = self.as_slice(); // panics (correctly) if non-host-accessible
-        // Copy host slice → a new device CudaSlice<T> (this is a transfer, copy is
-        // correct), then wrap it via the shared owner/pointer-caching path so
-        // as_cudaslice::<T>() works on the result.
+                                         // Copy host slice → a new device CudaSlice<T> (this is a transfer, copy is
+                                         // correct), then wrap it via the shared owner/pointer-caching path so
+                                         // as_cudaslice::<T>() works on the result.
         let dev_slice: CudaSlice<T> = stream
             .clone_htod(src_slice)
             .map_err(|e| CudaError::Driver(e.to_string()))?;

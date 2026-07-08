@@ -108,8 +108,9 @@ where
     ) -> Result<Image<T, C>, ImageError> {
         // SAFETY: forwarded to the caller — the returned image must be fully
         // written before it is read.
-        let dev = unsafe { kornia_tensor::uninit_cuda::<T, 3>([size.height, size.width, C], stream) }
-            .map_err(|e| ImageError::Cuda(e.to_string()))?;
+        let dev =
+            unsafe { kornia_tensor::uninit_cuda::<T, 3>([size.height, size.width, C], stream) }
+                .map_err(|e| ImageError::Cuda(e.to_string()))?;
         Image::try_from(dev)
     }
 
