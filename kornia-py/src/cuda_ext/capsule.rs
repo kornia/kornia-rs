@@ -131,15 +131,44 @@ where
     }
 }
 
+/// Keeps the DLPack producer's Python object alive for a zero-copy import.
+///
+/// The DLPack consumer may drop the tensor off-GIL (e.g. from a worker
+/// thread), so the handle is released under a re-acquired GIL — same
+/// discipline as `dlpack::ImageExport`. During interpreter finalization the
+/// handle is forgotten instead (CPython reclaims everything anyway and
+/// `Python::attach` would panic).
+#[cfg(feature = "cuda")]
+struct PyKeepalive(std::mem::ManuallyDrop<Py<PyAny>>);
+
+#[cfg(feature = "cuda")]
+impl PyKeepalive {
+    fn new(obj: Py<PyAny>) -> Self {
+        Self(std::mem::ManuallyDrop::new(obj))
+    }
+}
+
+#[cfg(feature = "cuda")]
+impl Drop for PyKeepalive {
+    fn drop(&mut self) {
+        // SAFETY: we own the handle inside ManuallyDrop and drop it exactly once.
+        let keepalive = unsafe { std::mem::ManuallyDrop::take(&mut self.0) };
+        if unsafe { pyo3::ffi::Py_IsInitialized() } != 0 {
+            Python::attach(|_py| drop(keepalive));
+        } else {
+            std::mem::forget(keepalive);
+        }
+    }
+}
+
 /// Import a device-resident DLPack tensor (torch / cupy) into a shared
 /// [`DeviceImage`] handle — the core behind `Image.from_dlpack` (device
 /// inference).
 ///
 /// Accepts a 3-D C-contiguous `(H, W, C)` CUDA tensor — uint8 `C∈{1,3,4}` or
 /// float32 `C∈{1,3}`. Always a zero-copy alias (mirroring torch's zero-copy
-/// DLPack): the capsule is consumed and the returned image owns the managed
-/// tensor, running its deleter on drop to release the producer's buffer.
-/// Callers who want an independent buffer should copy it themselves afterward.
+/// DLPack): the returned image keeps `obj` alive for its lifetime. Callers who
+/// want an independent buffer should copy it themselves afterward.
 #[cfg(feature = "cuda")]
 pub(crate) fn dlpack_to_device_arc(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Arc<Inner>> {
     use dlpack_rs::ffi::{DLManagedTensor, DLManagedTensorVersioned};
@@ -199,37 +228,29 @@ pub(crate) fn dlpack_to_device_arc(py: Python<'_>, obj: &Bound<'_, PyAny>) -> Py
             ))
         }
     };
-    // Borrow the DLTensor from the managed struct and capture the raw managed
-    // pointer (+ versioned flag) so we can OWN it below (renaming does not move
-    // or free it, so both `t` and `managed` stay valid).
-    let (t, managed, versioned): (&dlpack_rs::ffi::DLTensor, *mut std::ffi::c_void, bool) =
-        if name_cstr == NAME_DL {
-            let nn = capsule.pointer_checked(Some(NAME_DL))?;
-            (
-                unsafe { &(*(nn.as_ptr() as *const DLManagedTensor)).dl_tensor },
-                nn.as_ptr(),
-                false,
-            )
-        } else if name_cstr == NAME_DLV {
-            let nn = capsule.pointer_checked(Some(NAME_DLV))?;
-            (
-                unsafe { &(*(nn.as_ptr() as *const DLManagedTensorVersioned)).dl_tensor },
-                nn.as_ptr(),
-                true,
-            )
-        } else {
-            return Err(PyValueError::new_err(format!(
-                "from_dlpack: unexpected capsule name {name_cstr:?}"
-            )));
-        };
+    // Borrow the DLTensor from the managed struct (renaming below does not move
+    // or free it, so `t` stays valid).
+    let t: &dlpack_rs::ffi::DLTensor = if name_cstr == NAME_DL {
+        let nn = capsule.pointer_checked(Some(NAME_DL))?;
+        unsafe { &(*(nn.as_ptr() as *const DLManagedTensor)).dl_tensor }
+    } else if name_cstr == NAME_DLV {
+        let nn = capsule.pointer_checked(Some(NAME_DLV))?;
+        unsafe { &(*(nn.as_ptr() as *const DLManagedTensorVersioned)).dl_tensor }
+    } else {
+        return Err(PyValueError::new_err(format!(
+            "from_dlpack: unexpected capsule name {name_cstr:?}"
+        )));
+    };
 
     // CONSUME the capsule (rename to "used_dltensor[_versioned]") so its C
     // destructor will NOT run the producer's deleter when the borrowed capsule
-    // GCs at function end — ownership of the managed tensor transfers to us. We
-    // then own it via `DlpackManaged` below and run the deleter exactly once on
-    // drop (releasing the producer's storage reference). Without consuming, a
-    // spec-conformant producer that hands buffer ownership to the managed tensor
-    // would free it at import time, dangling our zero-copy alias (use-after-free).
+    // GCs at function end — same discipline as the host `Image::from_dlpack`.
+    // Without this, a spec-conformant producer whose `__dlpack__` transfers
+    // buffer ownership to the managed tensor (rather than keeping an
+    // independent reference like torch/cupy do) would free the buffer at import
+    // time, dangling our zero-copy alias (a use-after-free; torch/cupy happen to
+    // be safe only because `obj` retains its own ref). The buffer then stays
+    // alive via the `obj` keep-alive below.
     {
         use pyo3::ffi::PyCapsule_SetName;
         let consumed: &'static CStr = if name_cstr == NAME_DLV {
@@ -282,50 +303,37 @@ pub(crate) fn dlpack_to_device_arc(py: Python<'_>, obj: &Bound<'_, PyAny>) -> Py
     let ptr = t.data as u64 + t.byte_offset;
 
     /// Zero-copy alias of the producer's `h*w*C` elements at `ptr` as a device
-    /// image; the buffer is kept valid by owning the consumed managed tensor
-    /// (`managed`/`versioned`) whose deleter frees it exactly once on drop.
+    /// image, kept valid by holding `obj` (the producer) alive.
     fn dl_image<T, const C: usize>(
         stream: &Arc<CudaStream>,
         ptr: u64,
         h: usize,
         w: usize,
-        managed: *mut std::ffi::c_void,
-        versioned: bool,
+        obj: &Bound<'_, PyAny>,
     ) -> PyResult<Image<T, C>>
     where
         T: cudarc::driver::DeviceRepr + cudarc::driver::ValidAsZeroBits + 'static,
     {
         let n = h * w * C;
         // SAFETY: ptr/len come from the live DLPack tensor validated above. The
-        // foreign tensor leaks the aliasing slice on drop (never frees); the
-        // `DlpackManaged` keep-alive owns the managed tensor and frees the buffer
-        // via its deleter — exactly once, since the capsule was consumed.
+        // foreign tensor leaks the aliasing slice on drop (never frees) and
+        // releases the producer handle instead; the buffer is owned by `obj`.
         let src = unsafe { stream.upgrade_device_ptr::<T>(ptr, n) };
         Ok(Image(Tensor::from_foreign_cudaslice(
             src,
             [h, w, C],
             stream.clone(),
-            Box::new(unsafe { crate::dlpack::DlpackManaged::new(managed, versioned) }),
+            Box::new(PyKeepalive::new(obj.clone().unbind())),
         )))
     }
 
     use dlpack_rs::ffi::{K_DL_FLOAT, K_DL_UINT};
     let inner = match (t.dtype.code, t.dtype.bits, t.dtype.lanes, c) {
-        (code, 8, 1, 1) if code == K_DL_UINT => {
-            Inner::U8C1(dl_image(&stream, ptr, h, w, managed, versioned)?)
-        }
-        (code, 8, 1, 3) if code == K_DL_UINT => {
-            Inner::U8C3(dl_image(&stream, ptr, h, w, managed, versioned)?)
-        }
-        (code, 8, 1, 4) if code == K_DL_UINT => {
-            Inner::U8C4(dl_image(&stream, ptr, h, w, managed, versioned)?)
-        }
-        (code, 32, 1, 1) if code == K_DL_FLOAT => {
-            Inner::F32C1(dl_image(&stream, ptr, h, w, managed, versioned)?)
-        }
-        (code, 32, 1, 3) if code == K_DL_FLOAT => {
-            Inner::F32C3(dl_image(&stream, ptr, h, w, managed, versioned)?)
-        }
+        (code, 8, 1, 1) if code == K_DL_UINT => Inner::U8C1(dl_image(&stream, ptr, h, w, obj)?),
+        (code, 8, 1, 3) if code == K_DL_UINT => Inner::U8C3(dl_image(&stream, ptr, h, w, obj)?),
+        (code, 8, 1, 4) if code == K_DL_UINT => Inner::U8C4(dl_image(&stream, ptr, h, w, obj)?),
+        (code, 32, 1, 1) if code == K_DL_FLOAT => Inner::F32C1(dl_image(&stream, ptr, h, w, obj)?),
+        (code, 32, 1, 3) if code == K_DL_FLOAT => Inner::F32C3(dl_image(&stream, ptr, h, w, obj)?),
         (code, bits, lanes, c) => {
             return Err(PyValueError::new_err(format!(
                 "from_dlpack: unsupported dtype (code {code}, {bits} bits, {lanes} lanes) \

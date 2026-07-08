@@ -3534,15 +3534,18 @@ impl PyImageApi {
         // "dltensor_versioned"). We read the pointer and extract metadata, then
         // CONSUME (rename) the capsule to "used_dltensor" / "used_dltensor_versioned"
         // so the capsule's C destructor will NOT call the producer's deleter when
-        // the capsule is later GC'd — ownership of the managed tensor transfers to
-        // us. We store it as a `BorrowGuard::Dlpack(DlpackManaged)` keep-alive and
-        // run the deleter exactly once when our Image drops (releasing the
-        // producer's storage reference / freeing the manager struct). This is the
-        // correct DLPack consumer contract: consuming prevents the double-free that
-        // an un-renamed capsule's destructor would cause, and owning-then-deleting
-        // (rather than merely keeping `obj` alive and never calling the deleter)
-        // avoids leaking the producer's manager context (e.g. a torch `at::Storage`
-        // reference that would otherwise never be released).
+        // the capsule is later GC'd.
+        //
+        // Instead, `obj` (the original producer: numpy array, torch tensor, etc.)
+        // is stored as our BorrowGuard::PyObject keep-alive.  While `obj` is alive,
+        // the buffer is valid.  When our Image drops, `obj` is dropped (its Python
+        // refcount decrements), and the GC eventually frees the producer and its buffer.
+        //
+        // Consuming the capsule prevents double-free: if the capsule were not renamed,
+        // its C destructor would also call the producer's internal deleter (e.g.
+        // decrement `at::Storage` refcount), which could free the buffer while `obj`
+        // still holds it — undefined behaviour.  Renaming disables the destructor path
+        // and transfers lifetime management to `obj` exclusively.
 
         // 1. Call `obj.__dlpack__(max_version=(1,0))` to get the capsule.
         //    Passing max_version lets compliant producers (NumPy ≥1.24, PyTorch ≥2.0) return
@@ -3583,77 +3586,62 @@ impl PyImageApi {
             }
         };
 
-        // Extract the DLTensor reference (borrowed; valid while capsule is alive)
-        // plus the raw managed pointer + versioned flag, so we can own it below.
-        let (
-            device,
-            ndim,
-            raw_shape,
-            raw_strides,
-            dtype_raw,
-            data_raw,
-            byte_offset,
-            readonly,
-            managed,
-            versioned,
-        ) = if name_cstr == NAME_DL {
-            let nn = capsule.pointer_checked(Some(NAME_DL))?;
-            let mt = unsafe { &*(nn.as_ptr() as *const DLManagedTensor) };
-            let t = &mt.dl_tensor;
-            // SECURITY: `ndim` is producer-controlled. Validate it (and the shape
-            // pointer) BEFORE using it as a slice length — a negative `ndim` casts
-            // to `usize::MAX` (instant UB) and an oversized one reads out of bounds.
-            crate::dlpack::validate_dlpack_rank(t.ndim, t.shape)?;
-            let sh = unsafe { std::slice::from_raw_parts(t.shape, t.ndim as usize) };
-            let st = if t.strides.is_null() {
-                None
+        // Extract the DLTensor reference (borrowed; valid while capsule is alive).
+        let (device, ndim, raw_shape, raw_strides, dtype_raw, data_raw, byte_offset, readonly) =
+            if name_cstr == NAME_DL {
+                let nn = capsule.pointer_checked(Some(NAME_DL))?;
+                let mt = unsafe { &*(nn.as_ptr() as *const DLManagedTensor) };
+                let t = &mt.dl_tensor;
+                // SECURITY: `ndim` is producer-controlled. Validate it (and the shape
+                // pointer) BEFORE using it as a slice length — a negative `ndim` casts
+                // to `usize::MAX` (instant UB) and an oversized one reads out of bounds.
+                crate::dlpack::validate_dlpack_rank(t.ndim, t.shape)?;
+                let sh = unsafe { std::slice::from_raw_parts(t.shape, t.ndim as usize) };
+                let st = if t.strides.is_null() {
+                    None
+                } else {
+                    Some(unsafe { std::slice::from_raw_parts(t.strides, t.ndim as usize) })
+                };
+                (
+                    t.device,
+                    t.ndim as usize,
+                    sh,
+                    st,
+                    t.dtype,
+                    t.data,
+                    t.byte_offset,
+                    false,
+                )
+            } else if name_cstr == NAME_DLV {
+                let nn = capsule.pointer_checked(Some(NAME_DLV))?;
+                let mt = unsafe { &*(nn.as_ptr() as *const DLManagedTensorVersioned) };
+                let t = &mt.dl_tensor;
+                // SECURITY: see note in the `NAME_DL` branch — validate before slicing.
+                crate::dlpack::validate_dlpack_rank(t.ndim, t.shape)?;
+                let sh = unsafe { std::slice::from_raw_parts(t.shape, t.ndim as usize) };
+                let st = if t.strides.is_null() {
+                    None
+                } else {
+                    Some(unsafe { std::slice::from_raw_parts(t.strides, t.ndim as usize) })
+                };
+                let ro = (mt.flags & dlpack_rs::ffi::DLPACK_FLAG_BITMASK_READ_ONLY) != 0;
+                (
+                    t.device,
+                    t.ndim as usize,
+                    sh,
+                    st,
+                    t.dtype,
+                    t.data,
+                    t.byte_offset,
+                    ro,
+                )
             } else {
-                Some(unsafe { std::slice::from_raw_parts(t.strides, t.ndim as usize) })
-            };
-            (
-                t.device,
-                t.ndim as usize,
-                sh,
-                st,
-                t.dtype,
-                t.data,
-                t.byte_offset,
-                false,
-                nn.as_ptr(),
-                false,
-            )
-        } else if name_cstr == NAME_DLV {
-            let nn = capsule.pointer_checked(Some(NAME_DLV))?;
-            let mt = unsafe { &*(nn.as_ptr() as *const DLManagedTensorVersioned) };
-            let t = &mt.dl_tensor;
-            // SECURITY: see note in the `NAME_DL` branch — validate before slicing.
-            crate::dlpack::validate_dlpack_rank(t.ndim, t.shape)?;
-            let sh = unsafe { std::slice::from_raw_parts(t.shape, t.ndim as usize) };
-            let st = if t.strides.is_null() {
-                None
-            } else {
-                Some(unsafe { std::slice::from_raw_parts(t.strides, t.ndim as usize) })
-            };
-            let ro = (mt.flags & dlpack_rs::ffi::DLPACK_FLAG_BITMASK_READ_ONLY) != 0;
-            (
-                t.device,
-                t.ndim as usize,
-                sh,
-                st,
-                t.dtype,
-                t.data,
-                t.byte_offset,
-                ro,
-                nn.as_ptr(),
-                true,
-            )
-        } else {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "from_dlpack: unexpected capsule name {:?}; expected 'dltensor' or \
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "from_dlpack: unexpected capsule name {:?}; expected 'dltensor' or \
                      'dltensor_versioned'",
-                name_cstr
-            )));
-        };
+                    name_cstr
+                )));
+            };
 
         // 4. Capture the source device for zero-copy pass-through interop.
         //    CPU tensors stay host-accessible; non-CPU (e.g. CUDA) tensors are
@@ -3801,14 +3789,10 @@ impl PyImageApi {
         Ok(Self {
             backing: backing::Backing::Borrowed {
                 ptr,
-                // Own the consumed managed tensor: its deleter frees the borrowed
-                // buffer (or releases the producer's ref) exactly once on drop —
-                // no leak of the producer's manager context, and no dependence on
-                // keeping `obj` alive. SAFETY: the capsule was consumed (renamed)
-                // above, so this is the only owner of the managed tensor.
-                keep: backing::BorrowGuard::Dlpack(unsafe {
-                    crate::dlpack::DlpackManaged::new(managed, versioned)
-                }),
+                keep: backing::BorrowGuard::PyObject {
+                    obj: obj.clone().unbind(),
+                    buffer: None,
+                },
                 readonly,
                 device: src_device,
             },
