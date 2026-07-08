@@ -11,6 +11,9 @@ use numpy::{Element, PyArray3, PyArrayDescrMethods};
 use pyo3::prelude::*;
 use std::os::raw::c_int;
 
+/// Ranks used anywhere in this crate: 3 (`Image`, HWC) and 4 (`Tensor`, NCHW).
+const MAX_RANK: usize = 4;
+
 /// Create a C-contiguous numpy view of rank `dims.len()` and element type `T`
 /// over `data_ptr`, tying its lifetime to `base`.
 ///
@@ -24,14 +27,19 @@ use std::os::raw::c_int;
 /// - `data_ptr` must point to at least `dims.iter().product()` valid elements
 ///   of `T`, laid out C-contiguously.
 /// - `base` must own / keep alive that memory.
-pub unsafe fn view<T: Element>(
-    py: Python<'_>,
+/// - `dims.len() <= MAX_RANK`.
+pub unsafe fn view<'py, T: Element>(
+    py: Python<'py>,
     data_ptr: *mut u8,
     dims: &[usize],
     base: Py<PyAny>,
     readonly: bool,
-) -> PyResult<Py<PyAny>> {
-    let mut dims: Vec<npy_intp> = dims.iter().map(|&d| d as npy_intp).collect();
+) -> PyResult<Bound<'py, PyAny>> {
+    debug_assert!(dims.len() <= MAX_RANK, "view: rank {} > MAX_RANK", dims.len());
+    let mut dims_buf = [0 as npy_intp; MAX_RANK];
+    for (slot, &d) in dims_buf.iter_mut().zip(dims) {
+        *slot = d as npy_intp;
+    }
     let flags = if readonly {
         0
     } else {
@@ -44,7 +52,7 @@ pub unsafe fn view<T: Element>(
             PY_ARRAY_API.get_type_object(py, npyffi::NpyTypes::PyArray_Type),
             T::get_dtype(py).into_dtype_ptr(),
             dims.len() as c_int,
-            dims.as_mut_ptr(),
+            dims_buf.as_mut_ptr(),
             std::ptr::null_mut(), // strides: NULL => C-contiguous
             data_ptr as *mut std::ffi::c_void,
             flags as c_int,
@@ -68,7 +76,7 @@ pub unsafe fn view<T: Element>(
         return Err(PyErr::fetch(py));
     }
     // SAFETY: ptr is an owned reference to a PyAny wrapping the fresh ndarray.
-    Ok(unsafe { Bound::from_owned_ptr(py, ptr) }.unbind())
+    Ok(unsafe { Bound::from_owned_ptr(py, ptr) })
 }
 
 /// Create a C-contiguous `PyArray3<T>` view over `data_ptr` with shape
@@ -87,5 +95,5 @@ pub unsafe fn view3<T: Element>(
 ) -> PyResult<Py<PyArray3<T>>> {
     // SAFETY: forwarded from the caller's contract on `view`.
     let arr = unsafe { view::<T>(py, data_ptr, &[h, w, c], base, readonly)? };
-    Ok(arr.bind(py).clone().cast_into_unchecked::<PyArray3<T>>().unbind())
+    Ok(arr.cast_into_unchecked::<PyArray3<T>>().unbind())
 }

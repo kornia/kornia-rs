@@ -29,6 +29,11 @@ fn err<E: std::fmt::Display>(e: E) -> PyErr {
     PyRuntimeError::new_err(e.to_string())
 }
 
+/// Widen an f16 slice to an owned f32 `Vec` (element-wise, unavoidable copy).
+fn widen_f16_to_f32(data: &[half::f16]) -> Vec<f32> {
+    data.iter().map(|v| v.to_f32()).collect()
+}
+
 /// Default-stream handle for CUDA device `ordinal` (created lazily, cached per
 /// device for the process). The stream's context is the device selector — the
 /// residency of any image produced on it (`to_cuda`/`zeros_cuda`) is that
@@ -757,13 +762,14 @@ impl PyTensor {
     /// copy of the raw bytes beyond the f16->f32 widen when applicable.
     fn numpy<'py>(slf: Bound<'py, Self>, py: Python<'py>) -> PyResult<Py<PyAny>> {
         let me = slf.borrow();
-        let device = me.is_device();
-        if !device {
+        // The four (residency x dtype) cases, spelled out explicitly: only
+        // host+F32 is a true zero-copy view, the other three all copy.
+        if !me.is_device() {
             if let TensorInnerEnum::F32(t) = &*me.inner {
                 let base: Py<PyAny> = slf.clone().into_any().unbind();
                 // SAFETY: `t.as_ptr()` points to `t.shape.iter().product()` live
                 // f32 elements for as long as `self.inner` (the base) is alive.
-                return unsafe {
+                return Ok(unsafe {
                     crate::numpy_view::view::<f32>(
                         py,
                         t.as_ptr() as *mut u8,
@@ -771,7 +777,8 @@ impl PyTensor {
                         base,
                         false,
                     )
-                };
+                }?
+                .unbind());
             }
         }
         let (data, shape): (Vec<f32>, [usize; 4]) = match &*me.inner {
@@ -779,17 +786,11 @@ impl PyTensor {
                 let host = t.to_host_owned().map_err(err)?;
                 (host.as_slice().to_vec(), t.shape)
             }
-            TensorInnerEnum::F16(t) if device => {
+            TensorInnerEnum::F16(t) if me.is_device() => {
                 let host = t.to_host_owned().map_err(err)?;
-                (
-                    host.as_slice().iter().map(|v| v.to_f32()).collect(),
-                    t.shape,
-                )
+                (widen_f16_to_f32(host.as_slice()), t.shape)
             }
-            TensorInnerEnum::F16(t) => (
-                t.as_slice().iter().map(|v| v.to_f32()).collect(),
-                t.shape,
-            ),
+            TensorInnerEnum::F16(t) => (widen_f16_to_f32(t.as_slice()), t.shape),
         };
         let arr = PyArray1::from_vec(py, data);
         let arr = arr.reshape(shape)?;
@@ -884,6 +885,28 @@ struct CudaBacking {
     /// frame loop, and pinned memory turns the H2D copy into a straight DMA
     /// instead of a bounce through the driver's pageable staging buffer.
     staging: std::sync::Mutex<Staging>,
+}
+
+/// Copy a single frame into `cuda`'s shared pinned staging buffer, after
+/// draining the previous call's in-flight H2D upload. Shared by the
+/// single-frame and `out=`-in-place bodies of `run`. Returns the locked
+/// staging guard (drop it, or take `&mut *guard`, before entering
+/// `py.detach`) and the frame length.
+fn stage_single_upload<'a>(
+    cuda: &'a CudaBacking,
+    frame: &numpy::PyReadonlyArray1<'_, u8>,
+) -> PyResult<(std::sync::MutexGuard<'a, Staging>, usize)> {
+    let frame_len = frame.len();
+    let mut staging = cuda.staging.lock().expect("staging mutex poisoned");
+    // Drain the prior call's H2D BEFORE ensure() — ensure() may free/realloc
+    // the shared pinned buffer on a size increase, and that host free
+    // (cuMemFreeHost) is not ordered against an in-flight upload reading it.
+    // Waiting first also protects the copy_from_slice overwrite below.
+    staging.wait_prev_upload()?;
+    staging.ensure(&cuda.stream, 1, frame_len)?;
+    staging.pinned.as_mut().expect("ensured").as_slice_mut()[..frame_len]
+        .copy_from_slice(frame.as_slice()?);
+    Ok((staging, frame_len))
 }
 
 /// Fused camera preprocessing: raw frame → normalized `[1, 3, H, W]` CHW
@@ -1179,22 +1202,19 @@ impl PyPreprocessor {
         out: Option<Py<PyTensor>>,
         stream: Option<PyRef<'_, crate::image::PyStream>>,
     ) -> PyResult<Py<PyTensor>> {
-        if let Some(out_py) = out {
-            let single = frame.extract::<numpy::PyReadonlyArray1<'_, u8>>().map_err(|_| {
-                PyValueError::new_err(
-                    "run: out= only supports a single-frame frame argument, not a batch list",
-                )
-            })?;
-            {
-                let bound = out_py.bind(py);
-                let out_ref = bound.borrow();
-                self.run_into_impl(py, out_ref, single, width, height, stream)?;
-            }
-            return Ok(out_py);
-        }
         if let Ok(single) = frame.extract::<numpy::PyReadonlyArray1<'_, u8>>() {
+            if let Some(out_py) = out {
+                let out_ref = out_py.bind(py).borrow();
+                self.run_into_impl(py, out_ref, single, width, height, stream)?;
+                return Ok(out_py);
+            }
             let t = self.run_single(py, single, width, height, out_height, out_width, stream)?;
             return Py::new(py, t);
+        }
+        if out.is_some() {
+            return Err(PyValueError::new_err(
+                "run: out= only supports a single-frame frame argument, not a batch list",
+            ));
         }
         if let Ok(frames) = frame.extract::<Vec<numpy::PyReadonlyArray1<'_, u8>>>() {
             let t = self.run_batch_impl(py, frames, width, height, out_height, out_width, stream)?;
@@ -1253,16 +1273,7 @@ impl PyPreprocessor {
             return self.run_cpu(py, frame, width, height, out_height, out_width);
         };
         let consumer = stream.map(|s| s.raw_handle());
-        let frame_len = frame.len();
-        let mut staging = cuda.staging.lock().expect("staging mutex poisoned");
-        // Drain the prior call's H2D BEFORE ensure() — ensure() may free/realloc
-        // the shared pinned buffer on a size increase, and that host free
-        // (cuMemFreeHost) is not ordered against an in-flight upload reading it.
-        // Waiting first also protects the copy_from_slice overwrite below.
-        staging.wait_prev_upload()?;
-        staging.ensure(&cuda.stream, 1, frame_len)?;
-        staging.pinned.as_mut().expect("ensured").as_slice_mut()[..frame_len]
-            .copy_from_slice(frame.as_slice()?);
+        let (mut staging, frame_len) = stage_single_upload(cuda, &frame)?;
         let staging = &mut *staging;
 
         // Everything past the numpy borrow runs without the GIL: the pinned
@@ -1437,16 +1448,7 @@ impl PyPreprocessor {
         let cuda = self.cuda_backing("run (out=)")?;
         let consumer = stream.map(|s| s.raw_handle());
 
-        let frame_len = frame.len();
-        let mut staging = cuda.staging.lock().expect("staging mutex poisoned");
-        // Drain the prior call's H2D BEFORE ensure() — ensure() may free/realloc
-        // the shared pinned buffer on a size increase, and that host free
-        // (cuMemFreeHost) is not ordered against an in-flight upload reading it.
-        // Waiting first also protects the copy_from_slice overwrite below.
-        staging.wait_prev_upload()?;
-        staging.ensure(&cuda.stream, 1, frame_len)?;
-        staging.pinned.as_mut().expect("ensured").as_slice_mut()[..frame_len]
-            .copy_from_slice(frame.as_slice()?);
+        let (mut staging, frame_len) = stage_single_upload(cuda, &frame)?;
         let staging = &mut *staging;
 
         py.detach(|| -> PyResult<()> {
