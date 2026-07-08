@@ -57,12 +57,13 @@ def main() -> None:
         print(f"{label:>7} {mb:5.1f} | {t_zc:9.1f}us {t_cpy:11.1f}us {t_cpy / max(t_zc, 1e-6):6.0f}x"
               f" | {t_gpu:7.1f}us {t_cpu:7.1f}us")
 
-    # Fused serving path: preallocate once, run_into each frame (zero per-frame alloc).
-    pre = kornia_rs.cuda.CudaPreprocessor(mode="letterbox", format="rgb", f16=True)
+    # Fused serving path: preallocate once, run(..., out=out) each frame (zero
+    # per-frame alloc).
+    pre = kornia_rs.Preprocessor(mode="letterbox", format="rgb", f16=True)
     out = pre.alloc_output(640, 640)
     frame = np.random.default_rng(0).integers(0, 256, (1280 * 720 * 3,), dtype=np.uint8)
-    t_run = bench(lambda: pre.run_into(out, frame, 1280, 720), n=300)
-    print(f"\npreprocess 720p -> 640x640 f16 letterbox (run_into): "
+    t_run = bench(lambda: pre.run(frame, 1280, 720, 640, 640, out=out), n=300)
+    print(f"\npreprocess 720p -> 640x640 f16 letterbox (run out=): "
           f"{t_run:.1f}us/frame  ({1e6 / t_run:.0f} fps)")
 
     # imgproc dispatcher overhead: bench a color op at 1x1 (kernel cost ~0) so

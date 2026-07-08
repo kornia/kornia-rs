@@ -1,4 +1,4 @@
-"""Zero-copy camera → TensorRT preprocessing with ``CudaPreprocessor``.
+"""Zero-copy camera → TensorRT preprocessing with ``kornia_rs.Preprocessor``.
 
 The fused preprocessor turns a raw camera frame (NV12 / YUYV / RGB / …) into a
 normalized ``[N, 3, H, W]`` model-input ``Tensor`` in one kernel launch. The
@@ -43,7 +43,7 @@ def main() -> None:
     # A raw packed RGB frame as flat uint8 bytes (use format="nv12" for NV12, etc.).
     frame = rng.integers(0, 256, (W * H * 3,), dtype=np.uint8)
 
-    pre = cuda.CudaPreprocessor(
+    pre = kornia_rs.Preprocessor(
         mode="letterbox",
         format="rgb",
         f16=True,                         # half-precision engine input
@@ -59,12 +59,12 @@ def main() -> None:
     #   ctx.set_tensor_address("images", t.data_ptr)
     #   ctx.execute_async_v3(stream_handle)
 
-    # ---- serving loop: preallocate once, run_into each frame, on your stream ----
+    # ---- serving loop: preallocate once, run(..., out=out) each frame, on your stream ----
     engine_stream = Stream.default()      # or Stream.from_handle(trt_stream_handle)
     out = pre.alloc_output(OUT_H, OUT_W)  # reused every iteration — zero per-frame alloc
     for _ in range(3):
         frame = rng.integers(0, 256, (W * H * 3,), dtype=np.uint8)
-        pre.run_into(out, frame, W, H, stream=engine_stream)
+        pre.run(frame, W, H, OUT_H, OUT_W, out=out, stream=engine_stream)
         # engine_stream is now ordered after the preprocess:
         #   ctx.set_tensor_address("images", out.data_ptr)
         #   ctx.execute_async_v3(engine_stream.cuda_stream_ptr)

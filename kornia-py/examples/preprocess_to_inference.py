@@ -3,7 +3,7 @@
 Demonstrates the full kornia-rs CUDA pipeline:
 
     raw NV12 frames (host)
-      → CudaPreprocessor.run_batch      one fused kernel per frame:
+      → Preprocessor.run (batch)        one fused kernel per frame:
                                         YUV decode + letterbox resize +
                                         ImageNet normalize + CHW pack (fp16)
       → torch.from_dlpack               ZERO-COPY device handoff
@@ -25,6 +25,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
+import kornia_rs
 import kornia_rs.cuda as krc
 
 # The shared bench harness lives in the sibling benchmarks/ dir (not a package).
@@ -130,7 +131,7 @@ def main() -> None:
 
     # Both engines consume fp16 directly — the fused kernel emits the final
     # model input; nothing between the kernel and the network touches pixels.
-    pre = krc.CudaPreprocessor(
+    pre = kornia_rs.Preprocessor(
         mode="letterbox",
         format="nv12",
         f16=True,
@@ -145,7 +146,7 @@ def main() -> None:
         infer = TrtRunner(args.batch, args.size, args.trt_cache)
 
     def step() -> torch.Tensor:
-        t = pre.run_batch(frames, SRC_W, SRC_H, args.size, args.size)
+        t = pre.run(frames, SRC_W, SRC_H, args.size, args.size)
         x = torch.from_dlpack(t)  # zero-copy: same device memory
         return infer(x)
 

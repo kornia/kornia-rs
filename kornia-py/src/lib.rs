@@ -619,6 +619,7 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
         // implementation is device-only for now (gated on this feature), but
         // the name shouldn't imply that.
         m.add_class::<cuda_ext::PyTensor>()?;
+        m.add_class::<cuda_ext::PyPreprocessor>()?;
         cuda_ext::register(py, m)?;
     }
 

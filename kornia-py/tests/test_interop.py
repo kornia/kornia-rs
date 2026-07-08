@@ -88,12 +88,12 @@ def test_cai_and_dlpack_agree():
 
 
 def test_tensor_zero_copy_to_torch():
-    """CudaPreprocessor output -> torch is zero-copy; CAI ptr == data_ptr."""
+    """Preprocessor output -> torch is zero-copy; CAI ptr == data_ptr."""
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available():
         pytest.skip("no torch CUDA")
     a = _rgb()
-    pre = cuda.CudaPreprocessor(format="rgb")
+    pre = kornia_rs.Preprocessor(format="rgb")
     ct = pre.run(a.reshape(-1).copy(), a.shape[1], a.shape[0], 32, 32)
     t = torch.from_dlpack(ct)
     assert t.data_ptr() == ct.data_ptr == ct.__cuda_array_interface__["data"][0]
@@ -120,7 +120,7 @@ def test_adopt_torch_stream():
     dev = Image.from_numpy(a).to_cuda(ks)
     np.testing.assert_array_equal(dev.numpy(), a)
 
-    pre = cuda.CudaPreprocessor(format="rgb")
+    pre = kornia_rs.Preprocessor(format="rgb")
     out = pre.run(a.reshape(-1).copy(), a.shape[1], a.shape[0], 32, 32, stream=ks)
     with torch.cuda.stream(ts):
         t = torch.from_dlpack(out)
@@ -150,7 +150,7 @@ def test_tensorrt_binds_kornia_data_ptr_zero_copy():
     ctx = engine.create_execution_context()
 
     a = RNG.integers(0, 256, (H * W * 3,), dtype=np.uint8)
-    pre = cuda.CudaPreprocessor(format="rgb")
+    pre = kornia_rs.Preprocessor(format="rgb")
     tin = pre.run(a, W, H, H, W)  # device Tensor, zero-copy handoff
     tout = torch.empty((N, C, H, W), dtype=torch.float32, device="cuda")
 

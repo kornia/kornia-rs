@@ -9,7 +9,7 @@
 //! `Image.zeros(..., stream=stream)`); the `kornia_rs.imgproc` color-conversion
 //! ops dispatch to these device functions when given a device `Image`, returning
 //! a device `Image` in turn. Model input (CHW) becomes a [`Tensor`] via
-//! [`CudaPreprocessor`]. Everything exports zero-copy to torch / cupy /
+//! [`Preprocessor`]. Everything exports zero-copy to torch / cupy /
 //! cuda-python via `__dlpack__` and `__cuda_array_interface__`.
 
 use std::sync::Arc;
@@ -146,14 +146,15 @@ fn arc_dlpack_capsule<T, K, const N: usize>(
     keepalive: Arc<K>,
     t: &Tensor<T, N>,
     dtype: dlpack_rs::ffi::DLDataType,
+    dl_device: (i32, i32),
 ) -> PyResult<Py<PyAny>>
 where
     K: Send + Sync + 'static,
 {
     use dlpack_rs::safe::{self, TensorInfo};
     let device = dlpack_rs::ffi::DLDevice {
-        device_type: dlpack_rs::ffi::DLDeviceType::kDLCUDA,
-        device_id: 0,
+        device_type: dl_device.0 as u32,
+        device_id: dl_device.1,
     };
     let shape: Vec<i64> = t.shape.iter().map(|&s| s as i64).collect();
     let info = TensorInfo::contiguous(t.as_ptr() as *mut std::ffi::c_void, device, dtype, shape);
@@ -198,14 +199,15 @@ fn arc_dlpack_capsule_versioned<T, K, const N: usize>(
     t: &Tensor<T, N>,
     dtype: dlpack_rs::ffi::DLDataType,
     flags: u64,
+    dl_device: (i32, i32),
 ) -> PyResult<Py<PyAny>>
 where
     K: Send + Sync + 'static,
 {
     use dlpack_rs::safe::{self, TensorInfo};
     let device = dlpack_rs::ffi::DLDevice {
-        device_type: dlpack_rs::ffi::DLDeviceType::kDLCUDA,
-        device_id: 0,
+        device_type: dl_device.0 as u32,
+        device_id: dl_device.1,
     };
     let shape: Vec<i64> = t.shape.iter().map(|&s| s as i64).collect();
     let info = TensorInfo::contiguous(t.as_ptr() as *mut std::ffi::c_void, device, dtype, shape);
@@ -646,6 +648,19 @@ pub struct PyTensor {
     inner: Arc<TensorInnerEnum>,
 }
 
+impl PyTensor {
+    /// True when the tensor is device-resident. Cheap; the single residency
+    /// source of truth every other method here checks.
+    fn is_device(&self) -> bool {
+        use kornia_tensor::MemoryDomain;
+        let domain = match &*self.inner {
+            TensorInnerEnum::F32(t) => t.storage.domain(),
+            TensorInnerEnum::F16(t) => t.storage.domain(),
+        };
+        matches!(domain, MemoryDomain::Device { .. } | MemoryDomain::Unified { .. })
+    }
+}
+
 #[pymethods]
 impl PyTensor {
     /// Tensor shape `(N, C, H, W)`.
@@ -667,8 +682,8 @@ impl PyTensor {
         }
     }
 
-    /// Device this tensor lives on: `"cuda:{id}"` (the ordinal of the
-    /// `CudaPreprocessor` that produced it, not always 0 — see its `device=`
+    /// Device this tensor lives on: `"cpu"` or `"cuda:{id}"` (the ordinal of
+    /// the `Preprocessor` that produced it, not always 0 — see its `device=`
     /// constructor argument).
     #[getter]
     fn device(&self) -> String {
@@ -678,7 +693,8 @@ impl PyTensor {
         };
         match stream {
             Some(s) => format!("cuda:{}", s.context().ordinal()),
-            None => "cuda:0".to_string(),
+            None if self.is_device() => "cuda:0".to_string(),
+            None => "cpu".to_string(),
         }
     }
 
@@ -698,10 +714,18 @@ impl PyTensor {
     /// nvidia `cuda-python` (and, via them, TensorRT). The `stream` entry carries
     /// the producing stream so a consumer can order its work after ours.
     ///
+    /// Present on a device tensor only; raises `AttributeError` on a host one
+    /// (matching `Image`).
+    ///
     /// [CUDA Array Interface]: https://numba.readthedocs.io/en/stable/cuda/cuda_array_interface.html
     #[getter]
     fn __cuda_array_interface__(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         use pyo3::types::PyDict;
+        if !self.is_device() {
+            return Err(pyo3::exceptions::PyAttributeError::new_err(
+                "__cuda_array_interface__ is only present on a device Tensor",
+            ));
+        }
         let (shape, typestr, ptr, stream) = match &*self.inner {
             TensorInnerEnum::F32(t) => (
                 t.shape,
@@ -727,29 +751,42 @@ impl PyTensor {
         Ok(d.into_any().unbind())
     }
 
-    /// Copy to host as a float32 numpy array (f16 tensors are widened).
+    /// Numpy array of the buffer, as float32 (f16 tensors are widened). A
+    /// device tensor is copied back to host (D2H) first; a host tensor is read
+    /// directly (already host-accessible — no copy of the raw bytes beyond the
+    /// f16->f32 widen when applicable).
     fn numpy<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        let device = self.is_device();
         let (data, shape): (Vec<f32>, [usize; 4]) = match &*self.inner {
-            TensorInnerEnum::F32(t) => {
+            TensorInnerEnum::F32(t) if device => {
                 let host = t.to_host_owned().map_err(err)?;
                 (host.as_slice().to_vec(), t.shape)
             }
-            TensorInnerEnum::F16(t) => {
+            TensorInnerEnum::F32(t) => (t.as_slice().to_vec(), t.shape),
+            TensorInnerEnum::F16(t) if device => {
                 let host = t.to_host_owned().map_err(err)?;
                 (
                     host.as_slice().iter().map(|v| v.to_f32()).collect(),
                     t.shape,
                 )
             }
+            TensorInnerEnum::F16(t) => (
+                t.as_slice().iter().map(|v| v.to_f32()).collect(),
+                t.shape,
+            ),
         };
         let arr = PyArray1::from_vec(py, data);
         let arr = arr.reshape(shape)?;
         Ok(arr.into_any().unbind())
     }
 
-    /// DLPack device tuple: `(kDLCUDA, device_id)`.
+    /// DLPack device tuple: `(kDLCUDA, device_id)` or `(kDLCPU, 0)`.
     fn __dlpack_device__(&self) -> (i32, i32) {
-        (dlpack_rs::ffi::DLDeviceType::kDLCUDA as i32, 0)
+        if self.is_device() {
+            (dlpack_rs::ffi::DLDeviceType::kDLCUDA as i32, 0)
+        } else {
+            (dlpack_rs::ffi::DLDeviceType::kDLCPU as i32, 0)
+        }
     }
 
     /// Export as a DLPack capsule (zero-copy). Synchronizes the producing
@@ -768,16 +805,19 @@ impl PyTensor {
             return Err(PyValueError::new_err("copy=True is not supported"));
         }
         // Fence the consumer against this tensor's own producing stream (same
-        // policy as Image::__dlpack__), falling back to the default stream if the
-        // tensor carries none.
-        let launch = match &*self.inner {
-            TensorInnerEnum::F32(t) => t.cuda_stream().cloned(),
-            TensorInnerEnum::F16(t) => t.cuda_stream().cloned(),
-        };
-        match launch {
-            Some(s) => dlpack_fence_consumer(&s, stream)?,
-            None => dlpack_fence_consumer(&default_stream()?, stream)?,
+        // policy as Image::__dlpack__). A host tensor has no device work to
+        // order against — nothing to fence.
+        if self.is_device() {
+            let launch = match &*self.inner {
+                TensorInnerEnum::F32(t) => t.cuda_stream().cloned(),
+                TensorInnerEnum::F16(t) => t.cuda_stream().cloned(),
+            };
+            match launch {
+                Some(s) => dlpack_fence_consumer(&s, stream)?,
+                None => dlpack_fence_consumer(&default_stream()?, stream)?,
+            }
         }
+        let dl_device = self.__dlpack_device__();
         use kornia_tensor::dlpack::DlpackElem;
         // f16: kDLFloat (code 2), 16 bits — half::f16 is IEEE binary16.
         let f16_dtype = dlpack_rs::ffi::DLDataType {
@@ -786,44 +826,64 @@ impl PyTensor {
             lanes: 1,
         };
         // Consumers advertising DLPack v1.0+ get the versioned capsule; older
-        // ones fall back to the unversioned "dltensor". Device output is
-        // writable and not a copy, so flags = 0.
+        // ones fall back to the unversioned "dltensor". Output is writable and
+        // not a copy, so flags = 0.
         let versioned = max_version.is_some_and(|(maj, _)| maj >= 1);
         match &*self.inner {
             TensorInnerEnum::F32(t) => {
                 let dt = f32::dl_dtype();
                 if versioned {
-                    arc_dlpack_capsule_versioned(py, self.inner.clone(), t, dt, 0)
+                    arc_dlpack_capsule_versioned(py, self.inner.clone(), t, dt, 0, dl_device)
                 } else {
-                    arc_dlpack_capsule(py, self.inner.clone(), t, dt)
+                    arc_dlpack_capsule(py, self.inner.clone(), t, dt, dl_device)
                 }
             }
             TensorInnerEnum::F16(t) => {
                 if versioned {
-                    arc_dlpack_capsule_versioned(py, self.inner.clone(), t, f16_dtype, 0)
+                    arc_dlpack_capsule_versioned(
+                        py,
+                        self.inner.clone(),
+                        t,
+                        f16_dtype,
+                        0,
+                        dl_device,
+                    )
                 } else {
-                    arc_dlpack_capsule(py, self.inner.clone(), t, f16_dtype)
+                    arc_dlpack_capsule(py, self.inner.clone(), t, f16_dtype, dl_device)
                 }
             }
         }
     }
 }
 
-// ── CudaPreprocessor ─────────────────────────────────────────────────────────
+// ── Preprocessor ─────────────────────────────────────────────────────────────
 
-/// Fused camera preprocessing on the GPU: raw frame (NV12/YUYV/RGB/BGR/RGBA/
-/// BGRA/Gray) → normalized `[1, 3, H, W]` CHW tensor in **one kernel launch**.
-#[pyclass(name = "CudaPreprocessor", frozen, module = "kornia_rs.cuda")]
-pub struct PyCudaPreprocessor {
-    pre: Preprocessor,
+/// The device-only half of [`PyPreprocessor`]'s state — absent for a CPU
+/// (`device=None`) instance.
+struct CudaBacking {
     stream: Arc<CudaStream>,
-    f16: bool,
     /// Persistent upload staging: one page-locked host buffer + one device
     /// buffer per batch slot, grown on demand and reused across calls.
     /// Page-locking (`cuMemHostAlloc`) is a syscall far too expensive for a
     /// frame loop, and pinned memory turns the H2D copy into a straight DMA
     /// instead of a bounce through the driver's pageable staging buffer.
     staging: std::sync::Mutex<Staging>,
+}
+
+/// Fused camera preprocessing: raw frame → normalized `[1, 3, H, W]` CHW
+/// [`Tensor`] in one pass. `device=<ordinal>` (default 0) runs on the GPU —
+/// every format (NV12/YUYV/RGB/BGR/RGBA/BGRA/Gray), fused color-decode +
+/// resize + normalize in **one kernel launch**. `device=None` runs on the
+/// CPU via the crate's SIMD resize+normalize kernel — interleaved formats
+/// only (`rgb`/`bgr`/`rgba`/`bgra`; there is no CPU fused decoder for
+/// `gray`/`nv12`/`yuyv`, which raise a clear error) and always f32 output
+/// (`f16=True` casts the result afterward, since there is no CPU f16 kernel).
+#[pyclass(name = "Preprocessor", frozen, module = "kornia_rs")]
+pub struct PyPreprocessor {
+    pre: Preprocessor,
+    cuda: Option<CudaBacking>,
+    f16: bool,
+    format: SourceFormat,
 }
 
 #[derive(Default)]
@@ -900,17 +960,113 @@ pub(crate) fn fence_stream_into(launch: &Arc<CudaStream>, consumer: Option<usize
     .map_err(err)
 }
 
+impl PyPreprocessor {
+    /// The `CudaBacking` or a clear error — for the methods that stay
+    /// device-only for now (`run_batch`/`alloc_output`/`run_into`; unlike
+    /// `run`, these exist to avoid per-frame host/device allocation in a GPU
+    /// serving loop, a concern that doesn't apply to a CPU preprocessor).
+    fn cuda_backing(&self, method: &str) -> PyResult<&CudaBacking> {
+        self.cuda.as_ref().ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "{method}: CPU Preprocessor (device=None) only supports run(); \
+                 construct with device=<ordinal> for batching/serving-loop methods"
+            ))
+        })
+    }
+
+    /// CPU branch of [`run`](Self::run): interleaved formats only
+    /// (`rgb`/`bgr`/`rgba`/`bgra` — there is no CPU fused decoder for
+    /// `gray`/`nv12`/`yuyv`, so those raise here); always runs the crate's
+    /// f32 SIMD kernel (`self.f16` widens/narrows the result afterward — no
+    /// fused CPU f16 path exists).
+    fn run_cpu(
+        &self,
+        py: Python<'_>,
+        frame: numpy::PyReadonlyArray1<'_, u8>,
+        width: usize,
+        height: usize,
+        out_height: usize,
+        out_width: usize,
+    ) -> PyResult<PyTensor> {
+        let c = match self.format {
+            SourceFormat::Rgb8 | SourceFormat::Bgr8 => 3,
+            SourceFormat::Rgba8 | SourceFormat::Bgra8 => 4,
+            fmt => {
+                return Err(PyValueError::new_err(format!(
+                    "run: CPU Preprocessor (device=None) has no kernel for format \
+                     {fmt:?}; pass device=<ordinal> for GPU, or construct with an \
+                     rgb/bgr/rgba/bgra format"
+                )))
+            }
+        };
+        let frame_slice = frame.as_slice()?;
+        let expected = width * height * c;
+        if frame_slice.len() < expected {
+            return Err(PyValueError::new_err(format!(
+                "run: frame too small: got {} bytes, need >= {expected} ({height}x{width}x{c})",
+                frame_slice.len(),
+            )));
+        }
+        // Raw pointers aren't Send; carry it across the detach boundary as an
+        // address and cast back inside (the numpy borrow — and thus the bytes
+        // at this address — outlives the whole call).
+        let ptr_addr = frame_slice.as_ptr() as usize;
+        py.detach(|| -> PyResult<PyTensor> {
+            macro_rules! run_typed {
+                ($c:literal) => {{
+                    // SAFETY: `ptr_addr`/`expected` describe exactly
+                    // `height*width*C` live host bytes for the duration of this
+                    // call (the numpy borrow that produced `frame_slice`
+                    // outlives it).
+                    let img = unsafe {
+                        kornia_image::Image::<u8, $c>::from_raw_parts(
+                            kornia_image::ImageSize { width, height },
+                            ptr_addr as *const u8,
+                            expected,
+                            kornia_image::allocator::host_alloc(),
+                        )
+                    }
+                    .map_err(err)?;
+                    let mut dst = kornia_tensor::Tensor::<f32, 4>::zeros([1, 3, out_height, out_width]);
+                    self.pre.run::<$c>(&img, &mut dst).map_err(err)?;
+                    dst
+                }};
+            }
+            let dst = match c {
+                3 => run_typed!(3),
+                4 => run_typed!(4),
+                _ => unreachable!("c is only ever 3 or 4, checked above"),
+            };
+            let inner = if self.f16 {
+                let data: Vec<half::f16> =
+                    dst.as_slice().iter().map(|&v| half::f16::from_f32(v)).collect();
+                let dst16 = kornia_tensor::Tensor::<half::f16, 4>::from_shape_vec(dst.shape, data)
+                    .map_err(err)?;
+                TensorInnerEnum::F16(dst16)
+            } else {
+                TensorInnerEnum::F32(dst)
+            };
+            Ok(PyTensor {
+                inner: Arc::new(inner),
+            })
+        })
+    }
+}
+
 #[pymethods]
-impl PyCudaPreprocessor {
-    /// Build a preprocessor. Compiles one CUDA kernel per output dtype at
-    /// construction; the source format is a runtime kernel argument, so reuse
-    /// the instance across frames (and formats need no recompilation).
+impl PyPreprocessor {
+    /// Build a preprocessor. On a device build (`device=<ordinal>`, default 0)
+    /// this compiles one CUDA kernel per output dtype at construction; the
+    /// source format is a runtime kernel argument, so reuse the instance
+    /// across frames (and formats need no recompilation).
     ///
     /// mode: "letterbox" | "stretch"; format: "rgb"|"bgr"|"rgba"|"bgra"|
-    /// "gray"|"nv12"|"yuyv"; sampling: "bilinear"|"nearest"|"lanczos";
-    /// f16: half output; mean/std: optional per-channel normalization fused
-    /// into the kernel; pad_value: letterbox padding byte (default 114);
-    /// device: CUDA device ordinal to build and run on (default 0).
+    /// "gray"|"nv12"|"yuyv" (the last three need `device` — no CPU fused
+    /// decoder); sampling: "bilinear"|"nearest"|"lanczos"; f16: half output
+    /// (device only — a CPU build always produces f32; see `run`); mean/std:
+    /// optional per-channel normalization; pad_value: letterbox padding byte
+    /// (default 114); device: CUDA device ordinal (default 0), or `None` to
+    /// build a CPU preprocessor.
     #[new]
     #[pyo3(signature = (mode = "letterbox", format = "rgb", sampling = "bilinear", f16 = false, mean = None, std = None, pad_value = 114, device = 0))]
     #[allow(clippy::too_many_arguments)]
@@ -922,16 +1078,16 @@ impl PyCudaPreprocessor {
         mean: Option<[f32; 3]>,
         std: Option<[f32; 3]>,
         pad_value: u8,
-        device: i32,
+        device: Option<i32>,
     ) -> PyResult<Self> {
-        let stream = default_stream_for(device)?;
+        let src_fmt = parse_format(format)?;
         let mut builder = Preprocessor::builder()
             .mode(match mode.to_ascii_lowercase().as_str() {
                 "letterbox" => ResizeMode::Letterbox,
                 "stretch" => ResizeMode::Stretch,
                 m => return Err(PyValueError::new_err(format!("unknown mode '{m}'"))),
             })
-            .source_format(parse_format(format)?)
+            .source_format(src_fmt)
             .sampling(crate::image::parse_interpolation(sampling)?)
             .pad_value(pad_value);
         if mean.is_some() || std.is_some() {
@@ -940,25 +1096,133 @@ impl PyCudaPreprocessor {
                 std: std.unwrap_or([1.0; 3]),
             });
         }
-        let pre = builder.build_cuda(stream.clone()).map_err(err)?;
-        Ok(Self {
-            pre,
-            stream,
-            f16,
-            staging: std::sync::Mutex::new(Staging::default()),
-        })
+        match device {
+            Some(dev) => {
+                let stream = default_stream_for(dev)?;
+                let pre = builder.build_cuda(stream.clone()).map_err(err)?;
+                Ok(Self {
+                    pre,
+                    cuda: Some(CudaBacking {
+                        stream,
+                        staging: std::sync::Mutex::new(Staging::default()),
+                    }),
+                    f16,
+                    format: src_fmt,
+                })
+            }
+            None => {
+                let pre = builder.build().map_err(err)?;
+                Ok(Self {
+                    pre,
+                    cuda: None,
+                    f16,
+                    format: src_fmt,
+                })
+            }
+        }
     }
 
-    /// Preprocess one raw frame (flat bytes in the constructor's format
-    /// layout) into a fresh `[1, 3, out_h, out_w]` [`Tensor`].
+    /// Preprocess one raw frame, or a batch of same-sized frames, into a
+    /// `[N, 3, out_h, out_w]` [`Tensor`] (`N=1` for a single frame). The one
+    /// entry point for this preprocessor:
     ///
-    /// `stream`: an optional consumer `Stream` (e.g. your TensorRT execution
-    /// stream, adopted via `Stream.from_handle`) to fence the output into, so
-    /// `execute_async_v3` on that stream is ordered after this preprocess with
-    /// no host sync.
-    #[pyo3(signature = (frame, width, height, out_height, out_width, stream = None))]
+    /// - `frame`: a flat 1-D `uint8` array (single frame, in the constructor's
+    ///   format layout) **or** a list of them (batch — one fused kernel launch
+    ///   per frame, all on the same stream, one sync for the whole batch;
+    ///   device build only, no CPU batch path).
+    /// - `out`: an existing [`Tensor`] (e.g. from a prior `run()`, or
+    ///   [`alloc_output`](Self::alloc_output)) to write into **in place**
+    ///   instead of allocating — for a fixed inference-engine input binding in
+    ///   a serving loop, call this every frame with no per-call allocation.
+    ///   Must be single-frame shape `[1, 3, H, W]` matching this
+    ///   preprocessor's dtype; the *same* `Tensor` object is returned. The
+    ///   write is asynchronous — do not read or free it until the work
+    ///   completes (sync, or pass `stream` and order your consumer after it).
+    ///   Device build only; incompatible with a batch `frame`.
+    /// - `stream`: device build only — an optional consumer `Stream` (e.g.
+    ///   your TensorRT execution stream, adopted via `Stream.from_handle`) to
+    ///   fence the output into, so `execute_async_v3` on it is ordered after
+    ///   this preprocess with no host sync.
+    ///
+    /// A CPU preprocessor (`device=None`) only supports the single-frame,
+    /// fresh-output case (`out=None`); always produces `float32` output
+    /// (`f16=True` casts it afterward — no CPU f16 kernel); and only the
+    /// interleaved formats (`rgb`/`bgr`/`rgba`/`bgra` — no CPU fused decoder
+    /// for `gray`/`nv12`/`yuyv`).
+    #[pyo3(signature = (frame, width, height, out_height, out_width, out = None, stream = None))]
     #[allow(clippy::too_many_arguments)]
     fn run(
+        &self,
+        py: Python<'_>,
+        frame: &Bound<'_, PyAny>,
+        width: usize,
+        height: usize,
+        out_height: usize,
+        out_width: usize,
+        out: Option<Py<PyTensor>>,
+        stream: Option<PyRef<'_, crate::image::PyStream>>,
+    ) -> PyResult<Py<PyTensor>> {
+        if let Some(out_py) = out {
+            let single = frame.extract::<numpy::PyReadonlyArray1<'_, u8>>().map_err(|_| {
+                PyValueError::new_err(
+                    "run: out= only supports a single-frame frame argument, not a batch list",
+                )
+            })?;
+            {
+                let bound = out_py.bind(py);
+                let out_ref = bound.borrow();
+                self.run_into_impl(py, out_ref, single, width, height, stream)?;
+            }
+            return Ok(out_py);
+        }
+        if let Ok(single) = frame.extract::<numpy::PyReadonlyArray1<'_, u8>>() {
+            let t = self.run_single(py, single, width, height, out_height, out_width, stream)?;
+            return Py::new(py, t);
+        }
+        if let Ok(frames) = frame.extract::<Vec<numpy::PyReadonlyArray1<'_, u8>>>() {
+            let t = self.run_batch_impl(py, frames, width, height, out_height, out_width, stream)?;
+            return Py::new(py, t);
+        }
+        Err(PyValueError::new_err(
+            "run: frame must be a 1-D uint8 numpy array (single frame) or a list of them (batch)",
+        ))
+    }
+
+    /// Allocate a zero-initialized output [`Tensor`] of shape
+    /// `[batch, 3, out_height, out_width]`, dtype following this preprocessor's
+    /// `f16` flag. Preallocate one and reuse it across frames via `run(...,
+    /// out=...)` for an allocation-free serving loop. Device build only.
+    #[pyo3(signature = (out_height, out_width, batch = 1))]
+    fn alloc_output(
+        &self,
+        py: Python<'_>,
+        out_height: usize,
+        out_width: usize,
+        batch: usize,
+    ) -> PyResult<PyTensor> {
+        let cuda = self.cuda_backing("alloc_output")?;
+        let shape = [batch, 3, out_height, out_width];
+        let inner = py.detach(|| -> PyResult<TensorInnerEnum> {
+            if self.f16 {
+                Ok(TensorInnerEnum::F16(
+                    kornia_tensor::zeros_cuda::<half::f16, 4>(shape, &cuda.stream).map_err(err)?,
+                ))
+            } else {
+                Ok(TensorInnerEnum::F32(
+                    kornia_tensor::zeros_cuda::<f32, 4>(shape, &cuda.stream).map_err(err)?,
+                ))
+            }
+        })?;
+        Ok(PyTensor {
+            inner: Arc::new(inner),
+        })
+    }
+}
+
+impl PyPreprocessor {
+    /// Single-frame, fresh-output body of [`run`](Self::run).
+    #[allow(clippy::too_many_arguments)]
+    fn run_single(
         &self,
         py: Python<'_>,
         frame: numpy::PyReadonlyArray1<'_, u8>,
@@ -968,15 +1232,18 @@ impl PyCudaPreprocessor {
         out_width: usize,
         stream: Option<PyRef<'_, crate::image::PyStream>>,
     ) -> PyResult<PyTensor> {
+        let Some(cuda) = &self.cuda else {
+            return self.run_cpu(py, frame, width, height, out_height, out_width);
+        };
         let consumer = stream.map(|s| s.raw_handle());
         let frame_len = frame.len();
-        let mut staging = self.staging.lock().expect("staging mutex poisoned");
+        let mut staging = cuda.staging.lock().expect("staging mutex poisoned");
         // Drain the prior call's H2D BEFORE ensure() — ensure() may free/realloc
         // the shared pinned buffer on a size increase, and that host free
         // (cuMemFreeHost) is not ordered against an in-flight upload reading it.
         // Waiting first also protects the copy_from_slice overwrite below.
         staging.wait_prev_upload()?;
-        staging.ensure(&self.stream, 1, frame_len)?;
+        staging.ensure(&cuda.stream, 1, frame_len)?;
         staging.pinned.as_mut().expect("ensured").as_slice_mut()[..frame_len]
             .copy_from_slice(frame.as_slice()?);
         let staging = &mut *staging;
@@ -984,14 +1251,14 @@ impl PyCudaPreprocessor {
         // Everything past the numpy borrow runs without the GIL: the pinned
         // H2D DMA, the fused kernel launch, and the output allocation.
         let inner = py.detach(|| -> PyResult<TensorInnerEnum> {
-            self.stream
+            cuda.stream
                 .memcpy_htod(
                     &staging.pinned.as_ref().expect("ensured").as_slice()[..frame_len],
                     &mut staging.device[0],
                 )
                 .map_err(err)?;
             // Record upload-complete so the next call can host-wait just this DMA.
-            staging.mark_upload(&self.stream)?;
+            staging.mark_upload(&cuda.stream)?;
             let d_src = &staging.device[0];
             // SAFETY: the resize/normalize kernel writes every output element —
             // the sampled region and the letterbox pad border (one thread per
@@ -999,36 +1266,35 @@ impl PyCudaPreprocessor {
             // overwritten before it is read.
             let shape = [1, 3, out_height, out_width];
             if self.f16 {
-                let mut dst =
-                    unsafe { kornia_tensor::uninit_cuda::<half::f16, 4>(shape, &self.stream) }
-                        .map_err(err)?;
+                let mut dst = unsafe {
+                    kornia_tensor::uninit_cuda::<half::f16, 4>(shape, &cuda.stream)
+                }
+                .map_err(err)?;
                 self.pre
                     .run_raw_f16(d_src, width, height, &mut dst)
                     .map_err(err)?;
                 Ok(TensorInnerEnum::F16(dst))
             } else {
-                let mut dst = unsafe { kornia_tensor::uninit_cuda::<f32, 4>(shape, &self.stream) }
-                    .map_err(err)?;
+                let mut dst =
+                    unsafe { kornia_tensor::uninit_cuda::<f32, 4>(shape, &cuda.stream) }
+                        .map_err(err)?;
                 self.pre
                     .run_raw(d_src, width, height, &mut dst)
                     .map_err(err)?;
                 Ok(TensorInnerEnum::F32(dst))
             }
         })?;
-        fence_stream_into(&self.stream, consumer)?;
+        fence_stream_into(&cuda.stream, consumer)?;
         Ok(PyTensor {
             inner: Arc::new(inner),
         })
     }
 
-    /// Preprocess a **batch** of same-sized raw frames into one
-    /// `[N, 3, out_h, out_w]` [`Tensor`] — one fused kernel launch per
-    /// frame, all on the same stream, one sync for the whole batch
-    /// (multi-camera rigs, batched engines). Output dtype follows the
-    /// constructor's `f16` flag, like [`run`](Self::run).
-    #[pyo3(signature = (frames, width, height, out_height, out_width, stream = None))]
+    /// Batch body of [`run`](Self::run): one fused kernel launch per frame,
+    /// all on the same stream, one sync for the whole batch (multi-camera
+    /// rigs, batched engines). Output dtype follows `self.f16`. Device only.
     #[allow(clippy::too_many_arguments)]
-    fn run_batch(
+    fn run_batch_impl(
         &self,
         py: Python<'_>,
         frames: Vec<numpy::PyReadonlyArray1<'_, u8>>,
@@ -1039,23 +1305,24 @@ impl PyCudaPreprocessor {
         stream: Option<PyRef<'_, crate::image::PyStream>>,
     ) -> PyResult<PyTensor> {
         if frames.is_empty() {
-            return Err(PyValueError::new_err("run_batch needs at least one frame"));
+            return Err(PyValueError::new_err("run: batch needs at least one frame"));
         }
+        let cuda = self.cuda_backing("run (batch)")?;
         let consumer = stream.map(|s| s.raw_handle());
         let n = frames.len();
         let frame_len = frames[0].len();
-        let mut staging = self.staging.lock().expect("staging mutex poisoned");
+        let mut staging = cuda.staging.lock().expect("staging mutex poisoned");
         // Drain the prior call's H2D BEFORE ensure() (which may free/realloc the
         // shared pinned buffer) and before we overwrite it below.
         staging.wait_prev_upload()?;
-        staging.ensure(&self.stream, n, frame_len)?;
+        staging.ensure(&cuda.stream, n, frame_len)?;
         {
             let pinned = staging.pinned.as_mut().expect("ensured").as_slice_mut();
             for (i, f) in frames.iter().enumerate() {
                 let src = f.as_slice()?;
                 if src.len() != frame_len {
                     return Err(PyValueError::new_err(
-                        "run_batch frames must all have the same length",
+                        "run: batch frames must all have the same length",
                     ));
                 }
                 pinned[i * frame_len..(i + 1) * frame_len].copy_from_slice(src);
@@ -1072,7 +1339,7 @@ impl PyCudaPreprocessor {
                 let pinned = staging.pinned.as_ref().expect("ensured").as_slice();
                 let mut res = Ok(());
                 for (i, d) in staging.device[..n].iter_mut().enumerate() {
-                    if let Err(e) = self
+                    if let Err(e) = cuda
                         .stream
                         .memcpy_htod(&pinned[i * frame_len..(i + 1) * frame_len], d)
                     {
@@ -1084,7 +1351,7 @@ impl PyCudaPreprocessor {
             };
             // Record upload-complete (gates whatever DMAs were enqueued) BEFORE
             // surfacing a partial-copy error, so the next call always waits them.
-            staging.mark_upload(&self.stream)?;
+            staging.mark_upload(&cuda.stream)?;
             copies?;
             let refs: Vec<_> = staging.device[..n].iter().collect();
             let shape = [n, 3, out_height, out_width];
@@ -1092,14 +1359,14 @@ impl PyCudaPreprocessor {
             // (per-pixel, bounds-guarded, pad border included), so the
             // uninitialized dst is fully overwritten before it is read.
             if self.f16 {
-                let mut dst = unsafe { kornia_tensor::uninit_cuda::<half::f16, 4>(shape, &self.stream) }
+                let mut dst = unsafe { kornia_tensor::uninit_cuda::<half::f16, 4>(shape, &cuda.stream) }
                     .map_err(err)?;
                 self.pre
                     .run_raw_batch_f16(&refs, width, height, &mut dst)
                     .map_err(err)?;
                 Ok(TensorInnerEnum::F16(dst))
             } else {
-                let mut dst = unsafe { kornia_tensor::uninit_cuda::<f32, 4>(shape, &self.stream) }
+                let mut dst = unsafe { kornia_tensor::uninit_cuda::<f32, 4>(shape, &cuda.stream) }
                     .map_err(err)?;
                 self.pre
                     .run_raw_batch(&refs, width, height, &mut dst)
@@ -1107,52 +1374,14 @@ impl PyCudaPreprocessor {
                 Ok(TensorInnerEnum::F32(dst))
             }
         })?;
-        fence_stream_into(&self.stream, consumer)?;
+        fence_stream_into(&cuda.stream, consumer)?;
         Ok(PyTensor {
             inner: Arc::new(inner),
         })
     }
 
-    /// Allocate a zero-initialized output [`Tensor`] of shape
-    /// `[batch, 3, out_height, out_width]`, dtype following this preprocessor's
-    /// `f16` flag. Preallocate one and reuse it across frames with
-    /// [`run_into`](Self::run_into) for an allocation-free serving loop.
-    #[pyo3(signature = (out_height, out_width, batch = 1))]
-    fn alloc_output(
-        &self,
-        py: Python<'_>,
-        out_height: usize,
-        out_width: usize,
-        batch: usize,
-    ) -> PyResult<PyTensor> {
-        let shape = [batch, 3, out_height, out_width];
-        let inner = py.detach(|| -> PyResult<TensorInnerEnum> {
-            if self.f16 {
-                Ok(TensorInnerEnum::F16(
-                    kornia_tensor::zeros_cuda::<half::f16, 4>(shape, &self.stream).map_err(err)?,
-                ))
-            } else {
-                Ok(TensorInnerEnum::F32(
-                    kornia_tensor::zeros_cuda::<f32, 4>(shape, &self.stream).map_err(err)?,
-                ))
-            }
-        })?;
-        Ok(PyTensor {
-            inner: Arc::new(inner),
-        })
-    }
-
-    /// Preprocess one raw frame **into a preallocated** `out` [`Tensor`]
-    /// (shape `[1, 3, H, W]`, dtype matching this preprocessor) — no per-call
-    /// output allocation. Ideal for a fixed TensorRT input binding: allocate
-    /// once with [`alloc_output`](Self::alloc_output), bind its `data_ptr`, then
-    /// call `run_into` each frame.
-    ///
-    /// The write is in place and asynchronous; do not read or free `out` until
-    /// the work has completed (sync a stream, or pass your `stream` and order
-    /// your consumer after it). `stream` fences like [`run`](Self::run).
-    #[pyo3(signature = (out, frame, width, height, stream = None))]
-    fn run_into(
+    /// `out=`-in-place body of [`run`](Self::run). Device only.
+    fn run_into_impl(
         &self,
         py: Python<'_>,
         out: PyRef<'_, PyTensor>,
@@ -1166,7 +1395,7 @@ impl PyCudaPreprocessor {
             TensorInnerEnum::F32(t) => {
                 if self.f16 {
                     return Err(PyValueError::new_err(
-                        "run_into: output is float32 but this preprocessor is f16",
+                        "run: out= is float32 but this preprocessor is f16",
                     ));
                 }
                 t.shape
@@ -1174,7 +1403,7 @@ impl PyCudaPreprocessor {
             TensorInnerEnum::F16(t) => {
                 if !self.f16 {
                     return Err(PyValueError::new_err(
-                        "run_into: output is float16 but this preprocessor is float32",
+                        "run: out= is float16 but this preprocessor is float32",
                     ));
                 }
                 t.shape
@@ -1182,35 +1411,36 @@ impl PyCudaPreprocessor {
         };
         if out_shape[0] != 1 || out_shape[1] != 3 {
             return Err(PyValueError::new_err(format!(
-                "run_into: expected a single-frame [1, 3, H, W] output, got {out_shape:?} \
-                 (use run_batch for batches)"
+                "run: out= must be a single-frame [1, 3, H, W] tensor, got {out_shape:?} \
+                 (pass a list of frames without out= for a batch)"
             )));
         }
         let (out_h, out_w) = (out_shape[2], out_shape[3]);
         let out_ptr = out.data_ptr() as u64;
+        let cuda = self.cuda_backing("run (out=)")?;
         let consumer = stream.map(|s| s.raw_handle());
 
         let frame_len = frame.len();
-        let mut staging = self.staging.lock().expect("staging mutex poisoned");
+        let mut staging = cuda.staging.lock().expect("staging mutex poisoned");
         // Drain the prior call's H2D BEFORE ensure() — ensure() may free/realloc
         // the shared pinned buffer on a size increase, and that host free
         // (cuMemFreeHost) is not ordered against an in-flight upload reading it.
         // Waiting first also protects the copy_from_slice overwrite below.
         staging.wait_prev_upload()?;
-        staging.ensure(&self.stream, 1, frame_len)?;
+        staging.ensure(&cuda.stream, 1, frame_len)?;
         staging.pinned.as_mut().expect("ensured").as_slice_mut()[..frame_len]
             .copy_from_slice(frame.as_slice()?);
         let staging = &mut *staging;
 
         py.detach(|| -> PyResult<()> {
-            self.stream
+            cuda.stream
                 .memcpy_htod(
                     &staging.pinned.as_ref().expect("ensured").as_slice()[..frame_len],
                     &mut staging.device[0],
                 )
                 .map_err(err)?;
             // Record upload-complete so the next call can host-wait just this DMA.
-            staging.mark_upload(&self.stream)?;
+            staging.mark_upload(&cuda.stream)?;
             let d_src = &staging.device[0];
             let n_elem = 3 * out_h * out_w;
             let shape = [1, 3, out_h, out_w];
@@ -1222,11 +1452,11 @@ impl PyCudaPreprocessor {
             macro_rules! run_into_foreign {
                 ($ty:ty, $run:ident) => {{
                     let slice =
-                        unsafe { self.stream.upgrade_device_ptr::<$ty>(out_ptr, n_elem) };
+                        unsafe { cuda.stream.upgrade_device_ptr::<$ty>(out_ptr, n_elem) };
                     let mut dst = Tensor::from_foreign_cudaslice(
                         slice,
                         shape,
-                        self.stream.clone(),
+                        cuda.stream.clone(),
                         Box::new(()),
                     );
                     self.pre.$run(d_src, width, height, &mut dst).map_err(err)?;
@@ -1239,7 +1469,7 @@ impl PyCudaPreprocessor {
             }
             Ok(())
         })?;
-        fence_stream_into(&self.stream, consumer)?;
+        fence_stream_into(&cuda.stream, consumer)?;
         Ok(())
     }
 }
@@ -1256,7 +1486,6 @@ pub fn register(py: Python<'_>, parent: &Bound<'_, PyModule>) -> PyResult<()> {
     // `Image` to these same device kernels). The functions below stay
     // `pub(crate)` and are called by `crate::color`.
     crate::add_imagenet_consts(&m)?;
-    m.add_class::<PyCudaPreprocessor>()?;
     m.add_class::<crate::image::PyStream>()?;
     parent.add_submodule(&m)?;
     // Make `import kornia_rs.cuda` work (mirror of the other submodules).

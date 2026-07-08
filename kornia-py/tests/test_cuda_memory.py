@@ -217,7 +217,7 @@ def test_no_leak_foreign_stream_fence():
 
 
 def test_no_leak_preprocessor_run():
-    pre = cuda.CudaPreprocessor(format="rgb")
+    pre = kornia_rs.Preprocessor(format="rgb")
     frame = _rgb(192, 256).reshape(-1).copy()
 
     def body():
@@ -228,24 +228,25 @@ def test_no_leak_preprocessor_run():
 
 
 def test_no_leak_preprocessor_run_into():
-    """run_into reuses a preallocated output — no per-call device allocation,
-    and the non-owning destination wrapper must not free/leak the buffer."""
-    pre = cuda.CudaPreprocessor(format="rgb")
+    """run(..., out=out) reuses a preallocated output — no per-call device
+    allocation, and the non-owning destination wrapper must not free/leak the
+    buffer."""
+    pre = kornia_rs.Preprocessor(format="rgb")
     frame = _rgb(192, 256).reshape(-1).copy()
     out = pre.alloc_output(128, 128)
 
     def body():
-        pre.run_into(out, frame, 256, 192)
+        pre.run(frame, 256, 192, 128, 128, out=out)
 
     assert_no_leak(body)
 
 
 def test_no_leak_preprocessor_run_batch():
-    pre = cuda.CudaPreprocessor(mode="letterbox", format="rgb")
+    pre = kornia_rs.Preprocessor(mode="letterbox", format="rgb")
     frames = [_rgb(192, 256).reshape(-1).copy() for _ in range(4)]
 
     def body():
-        t = pre.run_batch(frames, 256, 192, 128, 128)
+        t = pre.run(frames, 256, 192, 128, 128)
         _ = t.numpy()
         del t
 

@@ -3,7 +3,7 @@
 Data model: device pixels live in the unified :class:`kornia_rs.image.Image`
 (create one with ``Image.from_numpy(a).to_cuda()``); the color-conversion
 functions here take and return such a device ``Image``. Model input (CHW) becomes a
-:class:`Tensor` via :class:`CudaPreprocessor`. Everything exports zero-copy
+:class:`kornia_rs.Tensor` via :class:`kornia_rs.Preprocessor`. Everything exports zero-copy
 to torch / cupy / cuda-python via ``__dlpack__`` and ``__cuda_array_interface__``.
 
 Requires an NVIDIA driver at runtime (``libcuda``) plus NVRTC (``libnvrtc``,
@@ -12,9 +12,7 @@ from the CUDA toolkit or the ``nvidia-cuda-nvrtc-cu12`` pip package —
 ``False`` and the rest of kornia_rs works as usual.
 """
 
-from typing import Any, List, Optional, Tuple
-
-import numpy as np
+from typing import Any, Tuple
 
 from . import Tensor as Tensor
 
@@ -68,55 +66,6 @@ def mem_get_info() -> Tuple[int, int]:
     Wraps ``cuMemGetInfo`` (synchronizes the default stream first). Bracket a
     loop with it to assert the free byte count returns to baseline — i.e. no
     device memory leaked across the iterations."""
-
-class CudaPreprocessor:
-    """Fused camera preprocessing: raw frame -> normalized CHW tensor, one kernel.
-
-    Frames are passed as a **flat 1-D ``uint8`` array** of the raw packed bytes
-    (not an (H, W, C) image): ``H*W*C`` bytes for ``rgb``/``bgr``, or the packed
-    plane layout for ``nv12``. Reshape image arrays with ``.reshape(-1)`` first.
-
-    Example::
-
-        pre = CudaPreprocessor(mode="letterbox", format="nv12", f16=True,
-                               mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))
-        t = pre.run(nv12_bytes, w, h, 640, 640)     # Tensor [1,3,640,640] f16
-        torch_t = torch.from_dlpack(t)              # zero-copy
-    """
-
-    def __init__(self, mode: str = "letterbox", format: str = "rgb",
-                 sampling: str = "bilinear", f16: bool = False,
-                 mean: Optional[Tuple[float, float, float]] = None,
-                 std: Optional[Tuple[float, float, float]] = None,
-                 pad_value: int = 114, device: int = 0) -> None:
-        """``device``: CUDA device ordinal to build and run this preprocessor on
-        (default 0). All its outputs (``Tensor.device``) live there."""
-    def run(self, frame: np.ndarray, width: int, height: int,
-            out_height: int, out_width: int,
-            stream: Optional[Stream] = None) -> Tensor:
-        """Flat 1-D ``uint8`` frame bytes -> ``Tensor`` [1, 3, out_h, out_w].
-
-        ``stream``: optional consumer ``Stream`` (e.g. your TensorRT execution
-        stream via ``Stream.from_handle``) to fence the output into, so
-        ``execute_async_v3`` on it is ordered after this preprocess with no host
-        sync."""
-    def run_batch(self, frames: List[np.ndarray], width: int, height: int,
-                  out_height: int, out_width: int,
-                  stream: Optional[Stream] = None) -> Tensor:
-        """N flat ``uint8`` same-sized frames -> [N, 3, out_h, out_w]; dtype follows
-        f16 flag. ``stream`` fences the output like :meth:`run`."""
-    def alloc_output(self, out_height: int, out_width: int,
-                     batch: int = 1) -> Tensor:
-        """Allocate a zero-initialized ``[batch, 3, out_h, out_w]`` output tensor
-        (dtype follows the ``f16`` flag). Preallocate once and reuse across
-        frames with :meth:`run_into` for an allocation-free serving loop."""
-    def run_into(self, out: Tensor, frame: np.ndarray, width: int, height: int,
-                 stream: Optional[Stream] = None) -> None:
-        """Preprocess one frame **into** a preallocated ``out`` ([1, 3, H, W],
-        matching dtype) — no per-call allocation. Bind ``out.data_ptr`` to a
-        fixed TensorRT input once, then call each frame. The write is async: do
-        not read/free ``out`` until the work completes (sync, or pass ``stream``
-        and order your consumer after it)."""
 
 # GPU color conversions are no longer exposed here — call them through the
 # residency-dispatching ``kornia_rs.imgproc.*`` ops (a device ``Image`` routes to
