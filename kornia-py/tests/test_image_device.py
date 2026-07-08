@@ -230,34 +230,24 @@ def test_dlpack_roundtrip_with_torch():
     np.testing.assert_array_equal(img2.numpy(), a)
 
 
-def test_from_dlpack_copy_isolates_and_zerocopy_keepalive():
-    """DLPack import copy semantics + keepalive (regression coverage):
-
-    - `copy=True` (default) produces an OWNED device buffer; mutating the
-      producer afterwards must NOT change the imported image.
-    - `copy=False` aliases the producer AND keeps it alive: dropping the source
-      tensor while the image lives must not free the device memory (no UAF).
+def test_from_dlpack_zerocopy_keepalive():
+    """DLPack import is a zero-copy alias that OWNS the consumed managed tensor:
+    dropping the source producer while the image lives must not free the device
+    memory (no UAF), and the deleter frees it exactly once on the image's drop.
     """
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available():
         pytest.skip("no torch CUDA")
     a = _rgb()
 
-    # copy=True: independent buffer.
-    t = torch.as_tensor(a, device="cuda")
-    owned = Image.from_dlpack(t, copy=True)
-    t.zero_()
-    torch.cuda.synchronize()
-    np.testing.assert_array_equal(owned.numpy(), a)  # unchanged by producer write
-
-    # copy=False: zero-copy alias that survives the producer being dropped.
+    # Zero-copy alias that survives the producer being dropped.
     t2 = torch.as_tensor(a, device="cuda")
-    aliased = Image.from_dlpack(t2, copy=False)
+    aliased = Image.from_dlpack(t2)
     del t2
     import gc
 
     gc.collect()
-    # Force torch's caching allocator to actually recycle the freed block: churn
+    # Force torch's caching allocator to actually recycle any freed block: churn
     # a batch of same-shaped tensors so a broken keepalive (premature free) would
     # have its bytes overwritten here rather than lingering intact by luck.
     churn = [torch.full_like(torch.as_tensor(a, device="cuda"), 0) for _ in range(8)]
