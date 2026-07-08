@@ -830,20 +830,23 @@ impl PyTensor {
         matches!(domain, MemoryDomain::Device { .. } | MemoryDomain::Unified { .. })
     }
 
-    /// This tensor's real CUDA device ordinal (not always 0), or `0` as a
-    /// last-resort default when it's device-resident but carries no stream
-    /// (shouldn't normally happen). `None` on a host tensor. Single source of
-    /// truth for `device()`/`__dlpack_device__` so they can't diverge.
+    /// This tensor's real CUDA device ordinal (not always 0) when device- or
+    /// unified-resident; `None` on a host tensor. Reads the residency straight
+    /// from `storage` (like `DeviceImage::device_id`) rather than hopping
+    /// through the stream, so it's correct even for a stream-less device/unified
+    /// buffer. Single source of truth for `device()`/`__dlpack_device__`.
     #[cfg(feature = "cuda")]
     fn device_ordinal(&self) -> Option<i32> {
-        if !self.is_device() {
-            return None;
-        }
-        let stream = match &*self.inner {
-            TensorInnerEnum::F32(t) => t.cuda_stream(),
-            TensorInnerEnum::F16(t) => t.cuda_stream(),
+        use kornia_tensor::MemoryDomain;
+        let (domain, device_id) = match &*self.inner {
+            TensorInnerEnum::F32(t) => (t.storage.domain(), t.storage.device_id()),
+            TensorInnerEnum::F16(t) => (t.storage.domain(), t.storage.device_id()),
         };
-        Some(stream.map(|s| s.context().ordinal() as i32).unwrap_or(0))
+        matches!(
+            domain,
+            MemoryDomain::Device { .. } | MemoryDomain::Unified { .. }
+        )
+        .then_some(device_id)
     }
 }
 
@@ -1245,7 +1248,12 @@ impl PyPreprocessor {
             }
         };
         let frame_slice = frame.as_slice()?;
-        let expected = width * height * c;
+        // Checked (like `backing::byte_len`): an unchecked `width * height * c`
+        // could wrap for adversarial dims and pass the too-small guard below,
+        // then `Image::from_raw_parts` (which does NOT validate len vs shape)
+        // would sample far past the buffer. u8 itemsize is 1, so this byte
+        // length is exactly the required element count.
+        let expected = crate::backing::byte_len(height, width, c, crate::backing::Dtype::U8)?;
         if frame_slice.len() < expected {
             return Err(PyValueError::new_err(format!(
                 "run: frame too small: got {} bytes, need >= {expected} ({height}x{width}x{c})",
@@ -1434,12 +1442,14 @@ impl PyPreprocessor {
                 #[cfg(feature = "cuda")]
                 {
                     let out_ref = out_py.bind(py).borrow();
-                    self.run_into_impl(py, out_ref, single, width, height, stream)?;
+                    self.run_into_impl(
+                        py, out_ref, single, width, height, out_height, out_width, stream,
+                    )?;
                     return Ok(out_py);
                 }
                 #[cfg(not(feature = "cuda"))]
                 {
-                    let _ = out_py;
+                    let _ = (out_py, out_height, out_width);
                     return Err(cuda_not_compiled());
                 }
             }
@@ -1526,6 +1536,15 @@ impl PyPreprocessor {
         #[cfg(feature = "cuda")]
         {
         let Some(cuda) = &self.cuda else {
+            // A CPU preprocessor has no device work to fence, so a consumer
+            // `stream` is meaningless — reject it rather than silently ignoring
+            // it and leaving the caller to believe their stream was ordered.
+            if stream.is_some() {
+                return Err(PyValueError::new_err(
+                    "run: stream= is device-only; a CPU Preprocessor (device=None) \
+                     has no stream to fence",
+                ));
+            }
             return self.run_cpu(py, frame, width, height, out_height, out_width);
         };
         let consumer = stream.map(|s| s.raw_handle());
@@ -1668,6 +1687,7 @@ impl PyPreprocessor {
 
     /// `out=`-in-place body of [`run`](Self::run). Device only.
     #[cfg(feature = "cuda")]
+    #[allow(clippy::too_many_arguments)]
     fn run_into_impl(
         &self,
         py: Python<'_>,
@@ -1675,6 +1695,8 @@ impl PyPreprocessor {
         frame: numpy::PyReadonlyArray1<'_, u8>,
         width: usize,
         height: usize,
+        out_height: usize,
+        out_width: usize,
         stream: Option<PyRef<'_, crate::image::PyStream>>,
     ) -> PyResult<()> {
         // Validate the destination matches this preprocessor's dtype & shape.
@@ -1703,6 +1725,15 @@ impl PyPreprocessor {
             )));
         }
         let (out_h, out_w) = (out_shape[2], out_shape[3]);
+        // The requested output size must match `out`'s shape — otherwise the
+        // `out_height`/`out_width` args would be silently ignored in favor of
+        // whatever `out` was allocated as, producing wrong-resolution output.
+        if (out_h, out_w) != (out_height, out_width) {
+            return Err(PyValueError::new_err(format!(
+                "run: out_height/out_width ({out_height}x{out_width}) do not match the out= \
+                 tensor's shape ({out_h}x{out_w}); they must agree"
+            )));
+        }
         let cuda = self.cuda_backing("run (out=)")?;
         // `out.data_ptr()` is written by the fused CUDA kernel as a raw device
         // pointer, so `out` MUST be device-resident and on this preprocessor's

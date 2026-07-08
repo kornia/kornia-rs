@@ -28,8 +28,9 @@ IMAGENET_STD: tuple[float, float, float]
 class Tensor:
     """An N-D tensor, mirroring ``kornia_tensor::Tensor`` — not CUDA-specific
     in spirit, and residency-aware (host or device, e.g. produced by
-    :class:`Preprocessor`'s ``[N, C, H, W]`` model input). Only present on a
-    ``cuda``-feature build.
+    :class:`Preprocessor`'s ``[N, C, H, W]`` model input). Always available;
+    device residency additionally needs the ``cuda`` feature (a CPU-only build
+    produces host tensors).
 
     A device-resident ``Tensor`` shares zero-copy with an inference engine:
     hand :attr:`data_ptr` straight to TensorRT's
@@ -69,8 +70,9 @@ class Preprocessor:
     ``kornia_imgproc::preprocess::Preprocessor``. Dispatches internally on
     ``device``: ``device=None`` runs on the CPU (rgb/bgr/rgba/bgra sources
     only), ``device=<ordinal>`` (the default, ``0``) runs the fused CUDA
-    kernel and additionally supports gray/nv12/yuyv sources. Only present on
-    a ``cuda``-feature build.
+    kernel and additionally supports gray/nv12/yuyv sources. Always available;
+    ``device=<ordinal>`` needs the ``cuda`` feature (``device=None`` works on a
+    CPU-only build).
     """
 
     def __init__(
