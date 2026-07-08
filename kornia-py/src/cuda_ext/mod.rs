@@ -225,42 +225,6 @@ use crate::image::PyImageApi;
 #[cfg(feature = "cuda")]
 use kornia_image::ColorSpace;
 
-/// View a plain `Image` as its `#[repr(transparent)]` color-space newtype.
-///
-/// SAFETY: every `define_color_space!` newtype is `#[repr(transparent)]` over
-/// `Image<T, C>`, so the pointer casts are layout-sound.
-#[cfg(feature = "cuda")]
-macro_rules! as_newtype {
-    ($img:expr, $nt:ty) => {
-        unsafe { &*($img as *const _ as *const $nt) }
-    };
-    (mut $img:expr, $nt:ty) => {
-        unsafe { &mut *($img as *mut _ as *mut $nt) }
-    };
-}
-
-/// Run `src.convert(&mut dst)` through the repr(transparent) newtypes.
-#[cfg(feature = "cuda")]
-macro_rules! convert_pair {
-    ($src:expr, $snt:ty, $dst:expr, $dnt:ty) => {{
-        let s = as_newtype!($src, $snt);
-        let d = as_newtype!(mut $dst, $dnt);
-        s.convert(d).map_err(err)
-    }};
-}
-
-/// Run `src.convert_with_bg(&mut dst, bg)` through the repr(transparent)
-/// newtypes — the alpha-compositing sibling of [`convert_pair!`].
-#[cfg(feature = "cuda")]
-macro_rules! convert_pair_bg {
-    ($src:expr, $snt:ty, $dst:expr, $dnt:ty, $bg:expr) => {{
-        let s = as_newtype!($src, $snt);
-        let d = as_newtype!(mut $dst, $dnt);
-        s.convert_with_bg(d, $bg).map_err(err)
-    }};
-}
-
-
 /// Build the `TensorInfo` (device + C-contiguous shape + dtype) that both
 /// capsule packers below share. Pure data construction, no `unsafe`.
 fn build_dl_tensor_info<T, const N: usize>(
@@ -413,17 +377,16 @@ impl Drop for PyKeepalive {
 
 /// Import a device-resident DLPack tensor (torch / cupy) into a shared
 /// [`DeviceImage`] handle — the core behind `Image.from_dlpack` (device
-/// inference) and `Image.cuda.from_dlpack`.
+/// inference).
 ///
 /// Accepts a 3-D C-contiguous `(H, W, C)` CUDA tensor — uint8 `C∈{1,3,4}` or
-/// float32 `C∈{1,3}`. `copy=True` (default): device-to-device into an owned
-/// buffer, synchronized before return. `copy=False`: zero-copy alias that keeps
-/// `obj` alive for the image's lifetime.
+/// float32 `C∈{1,3}`. Always a zero-copy alias (mirroring torch's zero-copy
+/// DLPack): the returned image keeps `obj` alive for its lifetime. Callers who
+/// want an independent buffer should copy it themselves afterward.
 #[cfg(feature = "cuda")]
 pub(crate) fn dlpack_to_device_arc(
     py: Python<'_>,
     obj: &Bound<'_, PyAny>,
-    copy: bool,
 ) -> PyResult<Arc<Inner>> {
     use dlpack_rs::ffi::{DLManagedTensor, DLManagedTensorVersioned};
     use pyo3::types::{PyCapsule, PyCapsuleMethods, PyDict};
@@ -482,9 +445,8 @@ pub(crate) fn dlpack_to_device_arc(
             ))
         }
     };
-    // Borrow the DLTensor; the capsule stays alive for this whole function and
-    // its destructor (which runs the producer's deleter) fires on normal GC —
-    // correct here because we copy rather than take ownership.
+    // Borrow the DLTensor from the managed struct (renaming below does not move
+    // or free it, so `t` stays valid).
     let t: &dlpack_rs::ffi::DLTensor = if name_cstr == NAME_DL {
         let nn = capsule.pointer_checked(Some(NAME_DL))?;
         unsafe { &(*(nn.as_ptr() as *const DLManagedTensor)).dl_tensor }
@@ -496,6 +458,31 @@ pub(crate) fn dlpack_to_device_arc(
             "from_dlpack: unexpected capsule name {name_cstr:?}"
         )));
     };
+
+    // CONSUME the capsule (rename to "used_dltensor[_versioned]") so its C
+    // destructor will NOT run the producer's deleter when the borrowed capsule
+    // GCs at function end — same discipline as the host `Image::from_dlpack`.
+    // Without this, a spec-conformant producer whose `__dlpack__` transfers
+    // buffer ownership to the managed tensor (rather than keeping an
+    // independent reference like torch/cupy do) would free the buffer at import
+    // time, dangling our zero-copy alias (a use-after-free; torch/cupy happen to
+    // be safe only because `obj` retains its own ref). The buffer then stays
+    // alive via the `obj` keep-alive below.
+    {
+        use pyo3::ffi::PyCapsule_SetName;
+        let consumed: &'static CStr = if name_cstr == NAME_DLV {
+            c"used_dltensor_versioned"
+        } else {
+            c"used_dltensor"
+        };
+        // SAFETY: `capsule` is a valid PyCapsule (cast_into validated it) and
+        // `consumed` is a 'static C string.
+        if unsafe { PyCapsule_SetName(capsule.as_ptr(), consumed.as_ptr()) } != 0 {
+            return Err(PyRuntimeError::new_err(
+                "from_dlpack: failed to consume DLPack capsule (PyCapsule_SetName failed)",
+            ));
+        }
+    }
 
     if t.device.device_type != dlpack_rs::ffi::DLDeviceType::kDLCUDA {
         return Err(PyValueError::new_err(
@@ -532,68 +519,47 @@ pub(crate) fn dlpack_to_device_arc(
     crate::backing::byte_len(h, w, c, crate::backing::Dtype::F32)?;
     let ptr = t.data as u64 + t.byte_offset;
 
-    /// Materialize the producer's `h*w*C` elements at `ptr` as a device image:
-    /// an owned copy, or (copy=false) a zero-copy alias kept valid by `obj`.
+    /// Zero-copy alias of the producer's `h*w*C` elements at `ptr` as a device
+    /// image, kept valid by holding `obj` (the producer) alive.
     fn dl_image<T, const C: usize>(
         stream: &Arc<CudaStream>,
         ptr: u64,
         h: usize,
         w: usize,
-        copy: bool,
         obj: &Bound<'_, PyAny>,
     ) -> PyResult<Image<T, C>>
     where
         T: cudarc::driver::DeviceRepr + cudarc::driver::ValidAsZeroBits + 'static,
     {
         let n = h * w * C;
-        // SAFETY: ptr/len come from the live DLPack tensor validated above.
+        // SAFETY: ptr/len come from the live DLPack tensor validated above. The
+        // foreign tensor leaks the aliasing slice on drop (never frees) and
+        // releases the producer handle instead; the buffer is owned by `obj`.
         let src = unsafe { stream.upgrade_device_ptr::<T>(ptr, n) };
-        if !copy {
-            // Zero-copy: the foreign tensor leaks the aliasing slice on drop
-            // and releases the producer handle instead of freeing.
-            return Ok(Image(Tensor::from_foreign_cudaslice(
-                src,
-                [h, w, C],
-                stream.clone(),
-                Box::new(PyKeepalive::new(obj.clone().unbind())),
-            )));
-        }
-        // Owned copy into an uninitialized buffer (fully overwritten by the
-        // copy); the borrowed alias is `leak()`ed so the producer's
-        // allocation is never freed by us.
-        let owned = unsafe { stream.alloc::<T>(n) }
-            .map_err(err)
-            .and_then(|mut owned| {
-                stream.memcpy_dtod(&src, &mut owned).map_err(err)?;
-                Ok(owned)
-            });
-        src.leak();
-        let owned = owned?;
-        // The producer may free its buffer as soon as we return.
-        stream.synchronize().map_err(err)?;
-        Ok(Image(Tensor::from_cudaslice(
-            owned,
+        Ok(Image(Tensor::from_foreign_cudaslice(
+            src,
             [h, w, C],
             stream.clone(),
+            Box::new(PyKeepalive::new(obj.clone().unbind())),
         )))
     }
 
     use dlpack_rs::ffi::{K_DL_FLOAT, K_DL_UINT};
     let inner = match (t.dtype.code, t.dtype.bits, t.dtype.lanes, c) {
         (code, 8, 1, 1) if code == K_DL_UINT => {
-            Inner::U8C1(dl_image(&stream, ptr, h, w, copy, obj)?)
+            Inner::U8C1(dl_image(&stream, ptr, h, w, obj)?)
         }
         (code, 8, 1, 3) if code == K_DL_UINT => {
-            Inner::U8C3(dl_image(&stream, ptr, h, w, copy, obj)?)
+            Inner::U8C3(dl_image(&stream, ptr, h, w, obj)?)
         }
         (code, 8, 1, 4) if code == K_DL_UINT => {
-            Inner::U8C4(dl_image(&stream, ptr, h, w, copy, obj)?)
+            Inner::U8C4(dl_image(&stream, ptr, h, w, obj)?)
         }
         (code, 32, 1, 1) if code == K_DL_FLOAT => {
-            Inner::F32C1(dl_image(&stream, ptr, h, w, copy, obj)?)
+            Inner::F32C1(dl_image(&stream, ptr, h, w, obj)?)
         }
         (code, 32, 1, 3) if code == K_DL_FLOAT => {
-            Inner::F32C3(dl_image(&stream, ptr, h, w, copy, obj)?)
+            Inner::F32C3(dl_image(&stream, ptr, h, w, obj)?)
         }
         (code, bits, lanes, c) => {
             return Err(PyValueError::new_err(format!(
@@ -605,231 +571,11 @@ pub(crate) fn dlpack_to_device_arc(
     Ok(Arc::new(inner))
 }
 
-// ── Color conversions (device-resident unified `Image` in and out) ────────────
-//
-// Genuinely device-only — wrapped in its own module so the whole span can be
-// `#[cfg(feature = "cuda")]`-gated with one attribute instead of one per item,
-// then re-exported so `crate::cuda_ext::gray_from_rgb` etc. (used by
-// `crate::color`'s dispatch) keeps resolving unchanged.
+// ── GPU color conversions (device-resident `Image` in and out) ────────────────
+// Self-contained device-only submodule; re-exported so `crate::cuda_ext::<op>`
+// (used by `crate::color`'s residency dispatch) keeps resolving unchanged.
 #[cfg(feature = "cuda")]
-mod cuda_color {
-    use super::*;
-
-/// PIL-style mode string for a device output of channel count `channels`.
-fn device_mode<T: 'static>(channels: usize) -> String {
-    let dt = if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f32>() {
-        crate::backing::Dtype::F32
-    } else {
-        crate::backing::Dtype::U8
-    };
-    crate::image::mode_for_dtype(dt, channels)
-}
-
-/// Borrow a `&PyImageApi` as its device source variant, or raise a clear error.
-macro_rules! device_src {
-    ($img:expr, $pyname:expr, $srcvar:ident) => {{
-        let dev = $img.as_device().ok_or_else(|| {
-            PyValueError::new_err(concat!(
-                $pyname,
-                ": expected a device Image (on a CUDA device); for a host image pass \
-                 its numpy array, or move it to a device with .to_cuda(stream)"
-            ))
-        })?;
-        let Inner::$srcvar(src) = dev else {
-            return Err(PyValueError::new_err(concat!(
-                $pyname,
-                ": wrong input dtype/channels for this conversion"
-            )));
-        };
-        src
-    }};
-}
-
-/// The stream a device source image lives on, for allocating a same-device
-/// destination. Falls back to device 0's default stream if the backing carries
-/// no stream (shouldn't normally happen for a typed device image).
-fn source_stream<T, const C: usize>(src: &Image<T, C>) -> PyResult<Arc<CudaStream>>
-where
-    T: cudarc::driver::DeviceRepr + cudarc::driver::ValidAsZeroBits + 'static,
-{
-    match src.cuda_stream() {
-        Some(s) => Ok(s.clone()),
-        None => default_stream(),
-    }
-}
-
-/// Allocate a device destination and run one `ConvertColor` pair, returning a
-/// device-resident unified `Image` tagged with the output color space.
-macro_rules! conv_fn {
-    ($(#[$meta:meta])* $pyname:ident, $srcvar:ident, $snt:ty, $t:ty, $dc:literal, $dvar:ident, $dnt:ty, $dcs:expr) => {
-        $(#[$meta])*
-        #[pyfunction]
-        pub fn $pyname(img: &PyImageApi) -> PyResult<PyImageApi> {
-            let src = device_src!(img, stringify!($pyname), $srcvar);
-            // Allocate the destination on the SOURCE's own stream/device, not a
-            // hardcoded device 0: a source resident on a non-default GPU would
-            // otherwise get a device-0 dst and the downstream residency check
-            // (`pair_residency`) would reject the mismatched pair with
-            // `DeviceMismatch` on multi-GPU systems.
-            let stream = source_stream(src)?;
-            // SAFETY: the ConvertColor kernel writes every output pixel (one
-            // thread per pixel, bounds-guarded), so the uninitialized destination
-            // is fully overwritten before any read.
-            let mut dst = unsafe { Image::<$t, $dc>::uninit_cuda(src.size(), &stream) }.map_err(err)?;
-            convert_pair!(src, $snt, &mut dst, $dnt)?;
-            Ok(PyImageApi::from_device(
-                Inner::$dvar(dst),
-                $dcs,
-                device_mode::<$t>($dc),
-            ))
-        }
-    };
-}
-
-conv_fn!(
-    /// RGB8 → Gray8 (BT.601, bit-exact vs the CPU path).
-    gray_from_rgb, U8C3, Rgb8, u8, 1, U8C1, Gray8, ColorSpace::Gray
-);
-conv_fn!(
-    /// Gray8 → RGB8 broadcast.
-    rgb_from_gray, U8C1, Gray8, u8, 3, U8C3, Rgb8, ColorSpace::Rgb
-);
-conv_fn!(
-    /// RGB8 → BGR8 channel swap (symmetric).
-    bgr_from_rgb, U8C3, Rgb8, u8, 3, U8C3, Bgr8, ColorSpace::Bgr
-);
-conv_fn!(
-    /// RGB8 → RGBA8 (opaque alpha).
-    rgba_from_rgb, U8C3, Rgb8, u8, 4, U8C4, Rgba8, ColorSpace::Rgba
-);
-// RGBA8/BGRA8 → RGB8 are provided by `rgb_from_rgba_bg`/`rgb_from_bgra_bg`
-// (below) instead of `conv_fn!`, so the device path can honor the `background`
-// alpha-composite argument like the CPU path rather than only dropping alpha.
-conv_fn!(
-    /// RGB8 → YCbCr8 (full-range Q14, bit-exact vs the CPU path).
-    ycbcr_from_rgb, U8C3, Rgb8, u8, 3, U8C3, YCbCr8, ColorSpace::YCbCr
-);
-conv_fn!(
-    /// YCbCr8 → RGB8.
-    rgb_from_ycbcr, U8C3, YCbCr8, u8, 3, U8C3, Rgb8, ColorSpace::Rgb
-);
-conv_fn!(
-    /// RGB f32 → HSV f32 (kornia conventions, [0,255] scale).
-    hsv_from_rgb, F32C3, Rgbf32, f32, 3, F32C3, Hsvf32, ColorSpace::Hsv
-);
-conv_fn!(
-    /// HSV f32 → RGB f32.
-    rgb_from_hsv, F32C3, Hsvf32, f32, 3, F32C3, Rgbf32, ColorSpace::Rgb
-);
-conv_fn!(
-    /// RGB f32 → CIE Lab f32 (RGB in [0,1], L in [0,100]).
-    lab_from_rgb, F32C3, Rgbf32, f32, 3, F32C3, Labf32, ColorSpace::Lab
-);
-conv_fn!(
-    /// Lab f32 → RGB f32.
-    rgb_from_lab, F32C3, Labf32, f32, 3, F32C3, Rgbf32, ColorSpace::Rgb
-);
-
-/// Sepia tone on RGB8 (Q8 fixed point, bit-exact vs the CPU path).
-#[pyfunction]
-pub fn sepia_from_rgb(img: &PyImageApi) -> PyResult<PyImageApi> {
-    let src = device_src!(img, "sepia_from_rgb", U8C3);
-    // Allocate the destination on the source's own stream/device (see `conv_fn!`).
-    let stream = source_stream(src)?;
-    // SAFETY: the sepia kernel writes every output pixel, so the uninitialized
-    // destination is fully overwritten before any read.
-    let mut dst = unsafe { Image::<u8, 3>::uninit_cuda(src.size(), &stream) }.map_err(err)?;
-    color::sepia_from_rgb_u8(src, &mut dst).map_err(err)?;
-    Ok(PyImageApi::from_device(
-        Inner::U8C3(dst),
-        ColorSpace::Rgb,
-        device_mode::<u8>(3),
-    ))
-}
-
-/// Apply one of the 21 OpenCV colormaps to a Gray8 image (name as in
-/// `kornia_rs.imgproc.apply_colormap`).
-#[pyfunction]
-pub fn apply_colormap(img: &PyImageApi, colormap: &str) -> PyResult<PyImageApi> {
-    let src = device_src!(img, "apply_colormap", U8C1);
-    let cmap = color::ColormapType::from_name(colormap)
-        .ok_or_else(|| PyValueError::new_err(format!("unknown colormap '{colormap}'")))?;
-    // Allocate the destination on the source's own stream/device (see `conv_fn!`).
-    let stream = source_stream(src)?;
-    // SAFETY: the colormap kernel writes every output pixel, so the uninitialized
-    // destination is fully overwritten before any read.
-    let mut dst = unsafe { Image::<u8, 3>::uninit_cuda(src.size(), &stream) }.map_err(err)?;
-    color::apply_colormap(src, &mut dst, cmap).map_err(err)?;
-    Ok(PyImageApi::from_device(
-        Inner::U8C3(dst),
-        ColorSpace::Rgb,
-        device_mode::<u8>(3),
-    ))
-}
-
-/// Bayer demosaic (pattern: "rggb" | "bggr" | "grbg" | "gbrg").
-#[pyfunction]
-pub fn rgb_from_bayer(img: &PyImageApi, pattern: &str) -> PyResult<PyImageApi> {
-    use kornia_image::color_spaces::BayerPattern;
-    let src = device_src!(img, "rgb_from_bayer", U8C1);
-    // Allocate the destination on the source's own stream/device (see `conv_fn!`).
-    let stream = source_stream(src)?;
-    let pat = match pattern.to_ascii_lowercase().as_str() {
-        "rggb" => BayerPattern::Rggb,
-        "bggr" => BayerPattern::Bggr,
-        "grbg" => BayerPattern::Grbg,
-        "gbrg" => BayerPattern::Gbrg,
-        p => {
-            return Err(PyValueError::new_err(format!(
-                "unknown bayer pattern '{p}'"
-            )))
-        }
-    };
-    // SAFETY: the bayer demosaic kernel writes every output pixel (bounds-guarded,
-    // replicate-border reads), so the uninitialized destination is fully
-    // overwritten before any read.
-    let mut dst = unsafe { Image::<u8, 3>::uninit_cuda(src.size(), &stream) }.map_err(err)?;
-    color::rgb_from_bayer(src, pat, &mut dst).map_err(err)?;
-    Ok(PyImageApi::from_device(
-        Inner::U8C3(dst),
-        ColorSpace::Rgb,
-        device_mode::<u8>(3),
-    ))
-}
-
-/// `{Rgba8,Bgra8}8 → RGB8` on device with optional `background` alpha
-/// compositing (mirrors the CPU path's `background=` — otherwise a device image
-/// would silently drop alpha while the host path composited; `None` = opaque
-/// alpha drop). The two only differ by source newtype, so share this body.
-macro_rules! conv_bg_fn {
-    ($(#[$meta:meta])* $pyname:ident, $snt:ty, $errname:literal) => {
-        $(#[$meta])*
-        pub fn $pyname(img: &PyImageApi, background: Option<[u8; 3]>) -> PyResult<PyImageApi> {
-            let src = device_src!(img, $errname, U8C4);
-            let stream = source_stream(src)?;
-            // SAFETY: the blend/drop kernel writes every output pixel (one
-            // thread per pixel, bounds-guarded), so the uninitialized
-            // destination is fully overwritten before any read.
-            let mut dst = unsafe { Image::<u8, 3>::uninit_cuda(src.size(), &stream) }.map_err(err)?;
-            convert_pair_bg!(src, $snt, &mut dst, Rgb8, background)?;
-            Ok(PyImageApi::from_device(
-                Inner::U8C3(dst),
-                ColorSpace::Rgb,
-                device_mode::<u8>(3),
-            ))
-        }
-    };
-}
-conv_bg_fn!(
-    /// RGBA8 → RGB8 on device, compositing over `background` when given.
-    rgb_from_rgba_bg, Rgba8, "rgb_from_rgba"
-);
-conv_bg_fn!(
-    /// BGRA8 → RGB8 on device, compositing over `background` when given.
-    rgb_from_bgra_bg, Bgra8, "rgb_from_bgra"
-);
-
-} // mod cuda_color
+mod cuda_color;
 #[cfg(feature = "cuda")]
 pub(crate) use cuda_color::*;
 

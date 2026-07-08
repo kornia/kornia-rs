@@ -11,7 +11,6 @@ mod color;
 mod color_space;
 mod cpu;
 mod crop;
-#[path = "cuda.rs"]
 mod cuda_ext;
 #[cfg(feature = "cuda")]
 mod device;

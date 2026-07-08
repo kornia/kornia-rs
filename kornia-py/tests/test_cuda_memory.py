@@ -175,25 +175,13 @@ def test_no_leak_dlpack_export_capsule_unconsumed():
     assert_no_leak(body)
 
 
-def test_no_leak_dlpack_import_copy():
-    """copy=True: device-to-device into an owned buffer; the borrowed producer
-    alias is leaked (not freed) but our owned copy must be released each iter."""
-    dev = _dev(_rgb())
-
-    def body():
-        d2 = Image.from_dlpack(dev, copy=True)
-        del d2
-
-    assert_no_leak(body)
-
-
 def test_no_leak_dlpack_import_zerocopy():
-    """copy=False: the imported alias holds a keepalive on the producer; when
-    both drop, the single underlying buffer must be freed exactly once."""
+    """Zero-copy import: the imported alias holds a keepalive on the producer;
+    when both drop, the single underlying buffer must be freed exactly once."""
 
     def body():
         src = _dev(_rgb())  # alloc
-        alias = Image.from_dlpack(src, copy=False)  # keepalive alias
+        alias = Image.from_dlpack(src)  # keepalive alias
         del alias
         del src
 

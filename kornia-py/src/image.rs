@@ -3494,13 +3494,10 @@ impl PyImageApi {
     /// compute, save) raise `ValueError` on a device image. A device image can
     /// be re-exported via `__dlpack__`, preserving its device.
     ///
-    /// `copy` (default `False`, matching `torch`/`numpy`'s DLPack convention):
-    /// `False` aliases the producer's buffer zero-copy (kept alive for this
-    /// Image's lifetime; read-only, since writes would land in the producer's
-    /// memory); `True` makes an owned device-to-device copy (writable). Host
-    /// imports are always the zero-copy producer-keepalive borrow regardless of
-    /// `copy` (its read-only-ness instead follows the producer's advertised
-    /// DLPack read-only flag).
+    /// Always a zero-copy alias of the producer's buffer (mirroring
+    /// `torch`/`numpy`'s zero-copy DLPack), kept alive for this Image's lifetime
+    /// and read-only (writes would land in the producer's memory). Callers who
+    /// need an independent, writable buffer should copy the result themselves.
     ///
     /// Validation:
     /// - Tensor must be C-contiguous; raises `ValueError` otherwise.
@@ -3508,14 +3505,10 @@ impl PyImageApi {
     /// - dtype must be `uint8`, `uint16`, or `float32`; raises `ValueError` otherwise.
     /// - Channel count `C` must be in `{1, 3, 4}`; raises `ValueError` otherwise.
     #[staticmethod]
-    #[pyo3(signature = (obj, copy = false))]
-    fn from_dlpack(py: Python<'_>, obj: &Bound<'_, PyAny>, copy: bool) -> PyResult<Self> {
+    fn from_dlpack(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Self> {
         use dlpack_rs::ffi::{DLManagedTensor, DLManagedTensorVersioned};
         use pyo3::types::{PyCapsule, PyCapsuleMethods};
         use std::ffi::CStr;
-        // `copy` only affects the CUDA branch (host imports are always the
-        // zero-copy producer-keepalive borrow below).
-        let _ = copy;
 
         // Device inference: a CUDA source imports as a proper device-resident
         // `Image` (carries a stream + typed resource, so `.numpy()`/`.cpu()` and
@@ -3525,11 +3518,12 @@ impl PyImageApi {
         if let Ok(dev) = obj.call_method0("__dlpack_device__") {
             if let Ok((ty, _id)) = dev.extract::<(i32, i32)>() {
                 if ty == dlpack_rs::ffi::DLDeviceType::kDLCUDA as i32 {
-                    let arc = crate::cuda_ext::dlpack_to_device_arc(py, obj, copy)?;
+                    let arc = crate::cuda_ext::dlpack_to_device_arc(py, obj)?;
                     let cs = default_color_space(arc.channels());
                     let mode = mode_for_dtype(arc.dtype_enum(), arc.channels());
-                    // A zero-copy alias (copy=false) may reference a read-only producer.
-                    return Ok(Self::from_device_arc(arc, !copy, cs, mode));
+                    // Always a zero-copy alias into the producer's buffer, so
+                    // mark it read-only (writes would land in producer memory).
+                    return Ok(Self::from_device_arc(arc, true, cs, mode));
                 }
             }
         }

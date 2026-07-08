@@ -104,16 +104,16 @@ class Image:
         ``zeros_cuda``). To move existing data to a device, use ``.to_cuda(stream)``."""
         ...
     @staticmethod
-    def from_dlpack(obj: Any, copy: bool = False) -> Image:
+    def from_dlpack(obj: Any) -> Image:
         """Import a DLPack tensor (numpy >= 1.22, PyTorch, CuPy, cuda-python…),
-        **inferring the device**: a CPU tensor becomes a host ``Image`` (always
-        zero-copy, producer kept alive), a CUDA tensor becomes a device-resident
-        ``Image`` on its own source device (not always ``cuda:0``).
+        **inferring the device**: a CPU tensor becomes a host ``Image``, a CUDA
+        tensor becomes a device-resident ``Image`` on its own source device (not
+        always ``cuda:0``).
 
-        ``copy`` (default ``False``, matching ``torch``/``numpy``'s DLPack
-        convention) only affects the CUDA case: ``False`` aliases the producer's
-        buffer zero-copy (read-only — writes would land in the producer's
-        memory); ``True`` makes an owned, writable device-to-device copy."""
+        Always a zero-copy alias of the producer's buffer (mirroring
+        ``torch``/``numpy``'s zero-copy DLPack), kept alive for this ``Image``'s
+        lifetime and read-only (writes would land in the producer's memory). To
+        get an independent, writable buffer, copy the result yourself."""
         ...
     @staticmethod
     def load(path: str) -> Image: ...

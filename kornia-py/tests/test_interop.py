@@ -50,32 +50,18 @@ def test_dlpack_export_is_zero_copy():
 
 
 def test_dlpack_import_zero_copy_alias():
-    """torch CUDA tensor -> Image.from_dlpack(copy=False) aliases the producer."""
+    """torch CUDA tensor -> Image.from_dlpack aliases the producer (zero-copy)."""
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available():
         pytest.skip("no torch CUDA")
     a = _rgb()
     t = torch.as_tensor(a, device="cuda")
-    img = Image.from_dlpack(t, copy=False)
+    img = Image.from_dlpack(t)
     assert img.device == "cuda:0"
     assert _dptr(img) == t.data_ptr()
     t[1, 1, 1] = 9
     torch.cuda.synchronize()
     assert img.numpy()[1, 1, 1] == 9
-
-
-def test_dlpack_import_copy_isolates():
-    """copy=True produces an owned buffer that the producer can't mutate."""
-    torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available():
-        pytest.skip("no torch CUDA")
-    a = _rgb()
-    t = torch.as_tensor(a, device="cuda")
-    owned = Image.from_dlpack(t, copy=True)
-    assert _dptr(owned) != t.data_ptr()
-    t.zero_()
-    torch.cuda.synchronize()
-    np.testing.assert_array_equal(owned.numpy(), a)
 
 
 def test_cai_and_dlpack_agree():
