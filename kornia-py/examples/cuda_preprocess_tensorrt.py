@@ -49,6 +49,9 @@ def main() -> None:
         f16=True,                         # half-precision engine input
         mean=cuda.IMAGENET_MEAN,
         std=cuda.IMAGENET_STD,
+        device=0,                         # run on CUDA device 0 (the fused GPU
+                                          # kernel). device=None would run on the
+                                          # CPU and produce a host Tensor instead.
     )
 
     # ---- one-shot: fused preprocess -> Tensor -------------------------------
