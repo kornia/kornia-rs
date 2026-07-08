@@ -68,13 +68,18 @@ def main() -> None:
     except ImportError:
         pass
 
-    # 8) Zero-copy interop with cupy / numba / cuda-python via the CUDA Array
-    #    Interface (device images expose __cuda_array_interface__).
+    # 8) Zero-copy interop with cupy / numba / cuda-python, both directions.
     try:
         import cupy as cp
 
+        # device Image -> cupy: via the CUDA Array Interface (cp.asarray reads it).
         arr = cp.asarray(img)  # zero-copy view of the device buffer
         print("cupy:", arr.shape, arr.dtype, "ptr", hex(arr.data.ptr))
+        # cupy -> device Image: cupy implements __dlpack__, so the same universal
+        # Image.from_dlpack used for torch above works unchanged (device inferred).
+        img4 = Image.from_dlpack(arr)
+        assert img4.device == "cuda:0"
+        print("cupy -> Image:", img4.device, img4.shape)
     except ImportError:
         cai = img.__cuda_array_interface__
         print("__cuda_array_interface__:", {k: cai[k] for k in ("shape", "typestr", "version")})

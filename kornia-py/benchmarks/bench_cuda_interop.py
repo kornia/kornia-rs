@@ -7,7 +7,10 @@ Reports, per image size:
 - DLPack export (device Image -> torch): the zero-copy hand-off cost.
 - D2H + H2D round-trip (what a copy-based `.download()`/upload API costs).
 - gray_from_rgb on device (GPU) vs numpy (CPU).
-And the fused preprocessor serving throughput (run_into, no per-frame alloc).
+And:
+- the fused preprocessor serving throughput (run_into, no per-frame alloc).
+- the imgproc residency-dispatcher's FIXED overhead, isolated by running a
+  color op at a tiny (1x1) size against a near-zero-cost PyO3 call floor.
 """
 
 import time
@@ -61,6 +64,27 @@ def main() -> None:
     t_run = bench(lambda: pre.run_into(out, frame, 1280, 720), n=300)
     print(f"\npreprocess 720p -> 640x640 f16 letterbox (run_into): "
           f"{t_run:.1f}us/frame  ({1e6 / t_run:.0f} fps)")
+
+    # imgproc dispatcher overhead: bench a color op at 1x1 (kernel cost ~0) so
+    # the timing is dominated by the numpy|Image residency check + PyO3 call
+    # itself, then compare against a near-zero-cost baseline PyO3 call (no
+    # dispatch, no array work) to see how much the dispatcher adds on top of
+    # the call floor every pyo3 function already pays.
+    def ns(fn, n=20000, warm=2000):
+        for _ in range(warm):
+            fn()
+        t = time.perf_counter()
+        for _ in range(n):
+            fn()
+        return (time.perf_counter() - t) / n * 1e9
+
+    tiny = np.zeros((1, 1, 3), np.uint8)
+    t_floor = ns(kornia_rs.cuda.is_available)
+    t_dispatch = ns(lambda: ip.gray_from_rgb(tiny))
+    print(f"\ndispatcher overhead: baseline PyO3 call {t_floor:.0f}ns, "
+          f"gray_from_rgb(1x1 numpy) {t_dispatch:.0f}ns "
+          f"(+{t_dispatch - t_floor:.0f}ns over floor) — "
+          f"negligible next to any real image's kernel time (>80us, see above).")
 
 
 if __name__ == "__main__":

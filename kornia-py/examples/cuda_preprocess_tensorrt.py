@@ -15,8 +15,12 @@ overwrite it every frame with ``run_into`` (no per-frame allocation), and pass
 your engine's execution stream so the preprocess is ordered before
 ``execute_async_v3`` without a host sync.
 
-Run:
-    pip install "kornia-rs[cuda]"       # needs an NVIDIA driver + NVRTC
+Run (Linux only — the published wheels always build with the ``cuda`` feature,
+so plain ``pip install kornia-rs`` already has this module; the ``[cuda]``
+extra just pulls in the ``nvidia-cuda-nvrtc-cu12`` pip package for machines
+whose CUDA toolkit doesn't already provide ``libnvrtc``, e.g. driver-only
+installs — Jetson/toolkit installs need nothing extra):
+    pip install "kornia-rs[cuda]"       # needs an NVIDIA driver; NVRTC via the extra
     python examples/cuda_preprocess_tensorrt.py
 """
 

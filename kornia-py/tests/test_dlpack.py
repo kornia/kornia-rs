@@ -124,7 +124,12 @@ def test_dlpack_cuda_device_passthrough():
 
     - import succeeds (no longer rejected),
     - ``__dlpack_device__`` reports kDLCUDA (device_type == 2),
-    - host operations (e.g. ``.numpy()``) raise rather than dereference device memory,
+    - ``.numpy()`` auto-downloads (D2H) rather than dereferencing device memory
+      on the host, and the result is read-only (it doesn't share the device
+      buffer, so writes would be silently lost) — see ``.cpu()`` for a writable
+      host copy,
+    - a raw host op that never copies (``.tobytes()``) still refuses a device
+      image outright,
     - it re-exports back to a CUDA torch tensor sharing the same device buffer.
     """
     torch = pytest.importorskip("torch")
@@ -139,9 +144,13 @@ def test_dlpack_cuda_device_passthrough():
     assert dev_type == 2, f"expected kDLCUDA (2), got {dev_type}"
     assert dev_id in (t.device.index, 0)
 
-    # Host ops must refuse a device image (no host deref of device memory).
-    with pytest.raises(Exception):
-        img.numpy()
+    # .numpy() auto-downloads a device image (D2H) instead of raising; the
+    # result is a read-only host copy (does not share the device buffer).
+    arr = img.numpy()
+    assert not arr.flags.writeable
+    np.testing.assert_array_equal(arr, t.cpu().numpy())
+
+    # tobytes() never copies — it refuses a device image outright.
     with pytest.raises(Exception):
         img.tobytes()
 

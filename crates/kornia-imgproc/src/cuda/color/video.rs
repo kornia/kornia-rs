@@ -663,7 +663,7 @@ mod tests {
             let frame = DeviceVideoFrame::from_host(&bytes, W, H, fmt, &stream).unwrap();
             let mut rgb_d = Rgb8::zeros_cuda(size, &stream).unwrap();
             frame.convert(&mut rgb_d).unwrap();
-            let rgb = rgb_d.download().unwrap();
+            let rgb = rgb_d.to_host_owned().unwrap();
 
             let mut cpu = vec![0u8; W * H * 3];
             match fmt {

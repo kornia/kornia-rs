@@ -3,8 +3,10 @@
 //! [`DeviceImage`] monomorphizes the supported `(dtype, channels)` combinations
 //! of a device-resident [`kornia_image::Image<T, C>`] — each backed by a typed
 //! `CudaResource<T>` that carries its own `Arc<CudaStream>` internally. It is the
-//! single device representation shared by the unified `Image` (via
-//! [`crate::backing::Backing::Device`]) and the legacy `kornia_rs.cuda.CudaImage`.
+//! single device representation behind the unified `Image`
+//! ([`crate::backing::Backing::Device`]): a device-resident `Image` is the same
+//! Python type as a host one, distinguished only by `.device`, and the
+//! `kornia_rs.cuda` module's color/preprocessing ops read and produce it too.
 //!
 //! Enabled only under the `cuda` feature.
 

@@ -130,17 +130,17 @@ where
         Image::try_from(t)
     }
 
-    /// Copy this device-resident image back to host using the image's **own
-    /// carried stream** (no stream parameter to get wrong).
+    /// Copy this device-resident image back to a new, owned host image using
+    /// the image's **own carried stream** (no stream parameter to get wrong).
     ///
     /// # Errors
     ///
     /// Returns [`ImageError::Cuda`] on CUDA failure or if the image is not
     /// device-backed.
-    pub fn download(&self) -> Result<Image<T, C>, ImageError> {
+    pub fn to_host_owned(&self) -> Result<Image<T, C>, ImageError> {
         let host = self
             .0
-            .download()
+            .to_host_owned()
             .map_err(|e| ImageError::Cuda(e.to_string()))?;
         Image::try_from(host)
     }

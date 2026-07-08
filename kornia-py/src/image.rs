@@ -3487,10 +3487,20 @@ impl PyImageApi {
     /// (>= 1.22), PyTorch tensors (CPU or CUDA), CuPy arrays, etc.
     ///
     /// Device pass-through: CPU tensors import as host images; non-CPU tensors
-    /// (e.g. CUDA) import as device images that carry their source device. The
-    /// device buffer is never dereferenced on the host — host-only operations
-    /// (numpy export, pixel compute, save) raise `ValueError` on a device image.
-    /// A device image can be re-exported via `__dlpack__`, preserving its device.
+    /// (e.g. CUDA) import as device images that carry their source device (its
+    /// actual CUDA device, not always device 0 — a multi-GPU producer is
+    /// imported through its own device's context). The device buffer is never
+    /// dereferenced on the host — host-only operations (numpy export, pixel
+    /// compute, save) raise `ValueError` on a device image. A device image can
+    /// be re-exported via `__dlpack__`, preserving its device.
+    ///
+    /// `copy` (default `False`, matching `torch`/`numpy`'s DLPack convention):
+    /// `False` aliases the producer's buffer zero-copy (kept alive for this
+    /// Image's lifetime; read-only, since writes would land in the producer's
+    /// memory); `True` makes an owned device-to-device copy (writable). Host
+    /// imports are always the zero-copy producer-keepalive borrow regardless of
+    /// `copy` (its read-only-ness instead follows the producer's advertised
+    /// DLPack read-only flag).
     ///
     /// Validation:
     /// - Tensor must be C-contiguous; raises `ValueError` otherwise.
@@ -3498,7 +3508,7 @@ impl PyImageApi {
     /// - dtype must be `uint8`, `uint16`, or `float32`; raises `ValueError` otherwise.
     /// - Channel count `C` must be in `{1, 3, 4}`; raises `ValueError` otherwise.
     #[staticmethod]
-    #[pyo3(signature = (obj, copy = true))]
+    #[pyo3(signature = (obj, copy = false))]
     fn from_dlpack(py: Python<'_>, obj: &Bound<'_, PyAny>, copy: bool) -> PyResult<Self> {
         use dlpack_rs::ffi::{DLManagedTensor, DLManagedTensorVersioned};
         use pyo3::types::{PyCapsule, PyCapsuleMethods};

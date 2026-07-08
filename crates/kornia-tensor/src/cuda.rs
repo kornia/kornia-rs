@@ -9,12 +9,17 @@
 //! - [`CudaAllocator`]: a [`TensorAllocator`] that allocates zero-initialised device
 //!   memory via `stream.alloc_zeros::<u8>(n)` and wraps the result in a `CudaResource`.
 //!
-//! - Five methods on [`Tensor`]:
+//! - Methods on [`Tensor`]:
 //!   - [`Tensor::from_cudaslice`] — wrap an existing `CudaSlice<T>` as a device tensor.
 //!   - [`Tensor::as_cudaslice`] — borrow the underlying `CudaSlice<u8>` (if any).
 //!   - [`Tensor::into_cudaslice`] — consume the tensor and return the `CudaSlice<u8>`.
 //!   - [`Tensor::to_cuda`] — copy a host tensor to a new device tensor (h→d).
-//!   - [`Tensor::to_host`] — copy a device tensor back to a new host tensor (d→h).
+//!   - [`Tensor::to_host`] — copy a device tensor back to a new host tensor on an
+//!     explicit stream (d→h).
+//!   - [`Tensor::to_host_owned`] — like `to_host`, using the tensor's own carried
+//!     stream (no stream parameter to get wrong).
+//!   - [`Tensor::to_host_into`] — copy into a caller-owned host slice (no new
+//!     allocation) using the tensor's own carried stream.
 //!
 //! # Memory-safety invariants
 //!
@@ -950,16 +955,16 @@ where
         })
     }
 
-    /// Copy this device tensor to a new host tensor using the tensor's **own
-    /// carried stream** — the one it was allocated/uploaded on — removing the
-    /// footgun of passing a different stream than the data's producer (a
-    /// read-before-write hazard). Synchronizes before returning.
+    /// Copy this device tensor to a new, owned host tensor using the tensor's
+    /// **own carried stream** — the one it was allocated/transferred on —
+    /// removing the footgun of passing a different stream than the data's
+    /// producer (a read-before-write hazard). Synchronizes before returning.
     ///
     /// # Errors
     ///
     /// [`CudaError::NotCudaBacked`] if the tensor is not device-backed by a
     /// typed [`CudaResource<T>`], or [`CudaError::Driver`] on CUDA failure.
-    pub fn download(&self) -> Result<Tensor<T, N>, CudaError> {
+    pub fn to_host_owned(&self) -> Result<Tensor<T, N>, CudaError> {
         let stream = self.cuda_stream().ok_or(CudaError::NotCudaBacked)?.clone();
         self.to_host(&stream)
     }
@@ -1129,7 +1134,7 @@ mod tests {
         let slice = dev.as_cudaslice_mut().unwrap();
         stream.memcpy_htod(&[7u8, 8, 9, 11], slice).unwrap();
 
-        let back = dev.download().unwrap();
+        let back = dev.to_host_owned().unwrap();
         assert_eq!(back.as_slice(), &[7u8, 8, 9, 11]);
     }
 

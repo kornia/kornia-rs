@@ -83,7 +83,8 @@ class CudaTensor:
     def dtype(self) -> str: ...
     @property
     def device(self) -> str:
-        """Always ``"cuda:0"``."""
+        """``"cuda:{id}"`` — the device of the ``CudaPreprocessor`` that produced
+        this tensor (see its ``device=`` constructor argument; not always 0)."""
     @property
     def data_ptr(self) -> int:
         """Raw device pointer (int) to the contiguous ``[N, C, H, W]`` buffer.
@@ -120,7 +121,9 @@ class CudaPreprocessor:
                  sampling: str = "bilinear", f16: bool = False,
                  mean: Optional[Tuple[float, float, float]] = None,
                  std: Optional[Tuple[float, float, float]] = None,
-                 pad_value: int = 114) -> None: ...
+                 pad_value: int = 114, device: int = 0) -> None:
+        """``device``: CUDA device ordinal to build and run this preprocessor on
+        (default 0). All its outputs (``CudaTensor.device``) live there."""
     def run(self, frame: np.ndarray, width: int, height: int,
             out_height: int, out_width: int,
             stream: Optional[Stream] = None) -> CudaTensor:

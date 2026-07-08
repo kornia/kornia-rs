@@ -5,9 +5,11 @@
 //! usable driver and everything degrades gracefully without one.
 //!
 //! Design: device pixels live in the unified `kornia_rs.image.Image` (create one
-//! with `Image.cuda.from_numpy(...)`); the color-conversion functions here take
-//! and return such a device `Image`. Model input (CHW) becomes a [`CudaTensor`]
-//! via [`CudaPreprocessor`]. Everything exports zero-copy to torch / cupy /
+//! with `Image.from_numpy(a).to_cuda(stream)`, or allocate directly with
+//! `Image.zeros(..., stream=stream)`); the `kornia_rs.imgproc` color-conversion
+//! ops dispatch to these device functions when given a device `Image`, returning
+//! a device `Image` in turn. Model input (CHW) becomes a [`CudaTensor`] via
+//! [`CudaPreprocessor`]. Everything exports zero-copy to torch / cupy /
 //! cuda-python via `__dlpack__` and `__cuda_array_interface__`.
 
 use std::sync::Arc;
@@ -111,7 +113,7 @@ pub(crate) fn dlpack_fence_consumer(launch: &Arc<CudaStream>, consumer: Option<i
 ///
 /// Shared with the unified `Image` (`Backing::Device`); see [`crate::device`].
 use crate::device::DeviceImage as Inner;
-use crate::image::{mode_from_channels, mode_from_channels_f32, PyImageApi};
+use crate::image::PyImageApi;
 use kornia_image::ColorSpace;
 
 /// View a plain `Image` as its `#[repr(transparent)]` color-space newtype.
@@ -283,8 +285,6 @@ pub(crate) fn dlpack_to_device_arc(
     use pyo3::types::{PyCapsule, PyCapsuleMethods, PyDict};
     use std::ffi::CStr;
 
-    let stream = default_stream()?;
-
     // Probe the protocol's device query first: host tensors get the helpful
     // redirect before any `__dlpack__` call (some producers, e.g. torch-CPU,
     // reject the `stream` kwarg with errors other than TypeError).
@@ -359,6 +359,11 @@ pub(crate) fn dlpack_to_device_arc(
              for host tensors use Image.from_numpy or Image.from_dlpack",
         ));
     }
+    // Resolve the stream from the TENSOR's own device, not a hardcoded device 0
+    // — a multi-GPU producer's data must be imported (and, for copy=false,
+    // later operated on) through its actual device's context, or CUDA ops
+    // against it are undefined / target the wrong GPU.
+    let stream = default_stream_for(t.device.device_id)?;
     crate::dlpack::validate_dlpack_rank(t.ndim, t.shape)?;
     let shape = unsafe { std::slice::from_raw_parts(t.shape, t.ndim as usize) };
     if shape.len() != 3 || shape.iter().any(|&d| d <= 0) {
@@ -455,11 +460,12 @@ pub(crate) fn dlpack_to_device_arc(
 
 /// PIL-style mode string for a device output of channel count `channels`.
 fn device_mode<T: 'static>(channels: usize) -> String {
-    if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f32>() {
-        mode_from_channels_f32(channels)
+    let dt = if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f32>() {
+        crate::backing::Dtype::F32
     } else {
-        mode_from_channels(channels, false)
-    }
+        crate::backing::Dtype::U8
+    };
+    crate::image::mode_for_dtype(dt, channels)
 }
 
 /// Borrow a `&PyImageApi` as its device source variant, or raise a clear error.
@@ -627,7 +633,7 @@ enum TensorInnerEnum {
 
 /// A device-resident `[N, C, H, W]` tensor — the preprocessor's output, i.e.
 /// model input. Feed it to torch/TensorRT zero-copy via `__dlpack__`, or
-/// `download()` an f32 numpy copy.
+/// `.numpy()` an f32 copy.
 #[pyclass(name = "CudaTensor", frozen, module = "kornia_rs.cuda")]
 pub struct PyCudaTensor {
     inner: Arc<TensorInnerEnum>,
@@ -654,10 +660,19 @@ impl PyCudaTensor {
         }
     }
 
-    /// Device this tensor lives on — always `"cuda:0"`.
+    /// Device this tensor lives on: `"cuda:{id}"` (the ordinal of the
+    /// `CudaPreprocessor` that produced it, not always 0 — see its `device=`
+    /// constructor argument).
     #[getter]
-    fn device(&self) -> &'static str {
-        "cuda:0"
+    fn device(&self) -> String {
+        let stream = match &*self.inner {
+            TensorInnerEnum::F32(t) => t.cuda_stream(),
+            TensorInnerEnum::F16(t) => t.cuda_stream(),
+        };
+        match stream {
+            Some(s) => format!("cuda:{}", s.context().ordinal()),
+            None => "cuda:0".to_string(),
+        }
     }
 
     /// Raw device pointer (`CUdeviceptr` as an integer) to the contiguous
@@ -709,11 +724,11 @@ impl PyCudaTensor {
     fn numpy<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
         let (data, shape): (Vec<f32>, [usize; 4]) = match &*self.inner {
             TensorInnerEnum::F32(t) => {
-                let host = t.download().map_err(err)?;
+                let host = t.to_host_owned().map_err(err)?;
                 (host.as_slice().to_vec(), t.shape)
             }
             TensorInnerEnum::F16(t) => {
-                let host = t.download().map_err(err)?;
+                let host = t.to_host_owned().map_err(err)?;
                 (
                     host.as_slice().iter().map(|v| v.to_f32()).collect(),
                     t.shape,
@@ -887,9 +902,11 @@ impl PyCudaPreprocessor {
     /// mode: "letterbox" | "stretch"; format: "rgb"|"bgr"|"rgba"|"bgra"|
     /// "gray"|"nv12"|"yuyv"; sampling: "bilinear"|"nearest"|"lanczos";
     /// f16: half output; mean/std: optional per-channel normalization fused
-    /// into the kernel; pad_value: letterbox padding byte (default 114).
+    /// into the kernel; pad_value: letterbox padding byte (default 114);
+    /// device: CUDA device ordinal to build and run on (default 0).
     #[new]
-    #[pyo3(signature = (mode = "letterbox", format = "rgb", sampling = "bilinear", f16 = false, mean = None, std = None, pad_value = 114))]
+    #[pyo3(signature = (mode = "letterbox", format = "rgb", sampling = "bilinear", f16 = false, mean = None, std = None, pad_value = 114, device = 0))]
+    #[allow(clippy::too_many_arguments)]
     fn new(
         mode: &str,
         format: &str,
@@ -898,8 +915,9 @@ impl PyCudaPreprocessor {
         mean: Option<[f32; 3]>,
         std: Option<[f32; 3]>,
         pad_value: u8,
+        device: i32,
     ) -> PyResult<Self> {
-        let stream = default_stream()?;
+        let stream = default_stream_for(device)?;
         let mut builder = Preprocessor::builder()
             .mode(match mode.to_ascii_lowercase().as_str() {
                 "letterbox" => ResizeMode::Letterbox,

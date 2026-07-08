@@ -514,7 +514,7 @@ mod tests {
         rgb.convert(&mut g_cpu).unwrap();
         let mut g_d = Grayf64::zeros_cuda(SIZE, &stream).unwrap();
         rgb_d.convert(&mut g_d).unwrap();
-        let g_back = g_d.download().unwrap();
+        let g_back = g_d.to_host_owned().unwrap();
         let diff = g_back
             .as_slice()
             .iter()
@@ -531,7 +531,7 @@ mod tests {
                 rgb.convert(&mut cpu).unwrap();
                 let mut dev = <$dst_ty>::zeros_cuda(SIZE, &stream).unwrap();
                 rgb_d.convert(&mut dev).unwrap();
-                let back = dev.download().unwrap();
+                let back = dev.to_host_owned().unwrap();
                 let diff = back
                     .as_slice()
                     .iter()
