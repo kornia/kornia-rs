@@ -11,8 +11,8 @@ round-trip**:
 - ``torch.from_dlpack(t)``  → PyTorch (versioned DLPack when negotiated)
 
 For a steady serving loop, preallocate the output once with ``alloc_output`` and
-overwrite it every frame with ``run_into`` (no per-frame allocation), and pass
-your engine's execution stream so the preprocess is ordered before
+overwrite it every frame with ``run(..., out=out)`` (no per-frame allocation),
+and pass your engine's execution stream so the preprocess is ordered before
 ``execute_async_v3`` without a host sync.
 
 Run (Linux only — the published wheels always build with the ``cuda`` feature,
@@ -69,7 +69,7 @@ def main() -> None:
         #   ctx.set_tensor_address("images", out.data_ptr)
         #   ctx.execute_async_v3(engine_stream.cuda_stream_ptr)
     engine_stream.synchronize()
-    print("run_into output:", out.shape, out.dtype, "reused ptr", hex(out.data_ptr))
+    print("run(out=) output:", out.shape, out.dtype, "reused ptr", hex(out.data_ptr))
 
     # ---- optional zero-copy handoffs --------------------------------------------
     try:

@@ -977,10 +977,11 @@ pub(crate) fn fence_stream_into(launch: &Arc<CudaStream>, consumer: Option<usize
 }
 
 impl PyPreprocessor {
-    /// The `CudaBacking` or a clear error — for the methods that stay
-    /// device-only for now (`run_batch`/`alloc_output`/`run_into`; unlike
-    /// `run`, these exist to avoid per-frame host/device allocation in a GPU
-    /// serving loop, a concern that doesn't apply to a CPU preprocessor).
+    /// The `CudaBacking` or a clear error — for the paths that stay
+    /// device-only for now (`alloc_output`, and `run`'s batch/`out=` cases;
+    /// unlike the single-frame CPU case, these exist to avoid per-frame
+    /// host/device allocation in a GPU serving loop, a concern that doesn't
+    /// apply to a CPU preprocessor).
     fn cuda_backing(&self, method: &str) -> PyResult<&CudaBacking> {
         self.cuda.as_ref().ok_or_else(|| {
             PyValueError::new_err(format!(

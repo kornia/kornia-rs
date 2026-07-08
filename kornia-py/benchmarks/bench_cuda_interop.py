@@ -5,10 +5,10 @@ Run (needs a CUDA build + torch-CUDA):
 
 Reports, per image size:
 - DLPack export (device Image -> torch): the zero-copy hand-off cost.
-- D2H + H2D round-trip (what a copy-based `.download()`/upload API costs).
+- D2H + H2D round-trip (what a copy-based `.numpy()`/`.to_cuda()` API costs).
 - gray_from_rgb on device (GPU) vs numpy (CPU).
 And:
-- the fused preprocessor serving throughput (run_into, no per-frame alloc).
+- the fused preprocessor serving throughput (run(..., out=out), no per-frame alloc).
 - the imgproc residency-dispatcher's FIXED overhead, isolated by running a
   color op at a tiny (1x1) size against a near-zero-cost PyO3 call floor.
 """
