@@ -8,7 +8,7 @@
 //! with `Image.from_numpy(a).to_cuda(stream)`, or allocate directly with
 //! `Image.zeros(..., stream=stream)`); the `kornia_rs.imgproc` color-conversion
 //! ops dispatch to these device functions when given a device `Image`, returning
-//! a device `Image` in turn. Model input (CHW) becomes a [`CudaTensor`] via
+//! a device `Image` in turn. Model input (CHW) becomes a [`Tensor`] via
 //! [`CudaPreprocessor`]. Everything exports zero-copy to torch / cupy /
 //! cuda-python via `__dlpack__` and `__cuda_array_interface__`.
 
@@ -83,7 +83,7 @@ pub fn mem_get_info(py: Python<'_>) -> PyResult<(usize, usize)> {
 /// Order a DLPack consumer's stream after the producer's `launch` stream per the
 /// array-API `__dlpack__` (CUDA) convention — **without blocking the host**
 /// whenever the protocol allows. Shared by both device DLPack exporters
-/// (`CudaTensor` and the unified `Image`) so they can't diverge.
+/// (`Tensor` and the unified `Image`) so they can't diverge.
 ///
 /// Consumer stream: `-1` = no sync (skip); `0` = the null/legacy default stream,
 /// `1` = legacy default, `2` = per-thread default, any other positive = a raw
@@ -624,7 +624,14 @@ pub fn rgb_from_bayer(img: &PyImageApi, pattern: &str) -> PyResult<PyImageApi> {
     ))
 }
 
-// ── CudaTensor (model input) ─────────────────────────────────────────────────
+// ── Tensor (model input) ──────────────────────────────────────────────────────
+//
+// Mirrors `kornia_tensor::Tensor<T, N>` as its own Python type instead of a
+// bespoke "CudaTensor" — `Image` is for 2-D HWC pixel data (with color-space
+// semantics); this is for the N-D device/host arrays (e.g. the preprocessor's
+// `[N, C, H, W]` model input) that don't fit that shape. Currently scoped to
+// the CUDA preprocessor's 4-D f32/f16 output; a fuller rank/dtype-generic
+// binding can grow from here.
 
 enum TensorInnerEnum {
     F32(Tensor<f32, 4>),
@@ -634,13 +641,13 @@ enum TensorInnerEnum {
 /// A device-resident `[N, C, H, W]` tensor — the preprocessor's output, i.e.
 /// model input. Feed it to torch/TensorRT zero-copy via `__dlpack__`, or
 /// `.numpy()` an f32 copy.
-#[pyclass(name = "CudaTensor", frozen, module = "kornia_rs.cuda")]
-pub struct PyCudaTensor {
+#[pyclass(name = "Tensor", frozen, module = "kornia_rs.cuda")]
+pub struct PyTensor {
     inner: Arc<TensorInnerEnum>,
 }
 
 #[pymethods]
-impl PyCudaTensor {
+impl PyTensor {
     /// Tensor shape `(N, C, H, W)`.
     #[getter]
     fn shape(&self) -> (usize, usize, usize, usize) {
@@ -677,7 +684,7 @@ impl PyCudaTensor {
 
     /// Raw device pointer (`CUdeviceptr` as an integer) to the contiguous
     /// `[N, C, H, W]` buffer. Hand it straight to `context.set_tensor_address()`
-    /// for a zero-copy TensorRT input binding. Valid while this `CudaTensor` is
+    /// for a zero-copy TensorRT input binding. Valid while this `Tensor` is
     /// alive; never dereference it on the host.
     #[getter]
     fn data_ptr(&self) -> usize {
@@ -943,7 +950,7 @@ impl PyCudaPreprocessor {
     }
 
     /// Preprocess one raw frame (flat bytes in the constructor's format
-    /// layout) into a fresh `[1, 3, out_h, out_w]` [`CudaTensor`].
+    /// layout) into a fresh `[1, 3, out_h, out_w]` [`Tensor`].
     ///
     /// `stream`: an optional consumer `Stream` (e.g. your TensorRT execution
     /// stream, adopted via `Stream.from_handle`) to fence the output into, so
@@ -960,7 +967,7 @@ impl PyCudaPreprocessor {
         out_height: usize,
         out_width: usize,
         stream: Option<PyRef<'_, crate::image::PyStream>>,
-    ) -> PyResult<PyCudaTensor> {
+    ) -> PyResult<PyTensor> {
         let consumer = stream.map(|s| s.raw_handle());
         let frame_len = frame.len();
         let mut staging = self.staging.lock().expect("staging mutex poisoned");
@@ -1009,13 +1016,13 @@ impl PyCudaPreprocessor {
             }
         })?;
         fence_stream_into(&self.stream, consumer)?;
-        Ok(PyCudaTensor {
+        Ok(PyTensor {
             inner: Arc::new(inner),
         })
     }
 
     /// Preprocess a **batch** of same-sized raw frames into one
-    /// `[N, 3, out_h, out_w]` [`CudaTensor`] — one fused kernel launch per
+    /// `[N, 3, out_h, out_w]` [`Tensor`] — one fused kernel launch per
     /// frame, all on the same stream, one sync for the whole batch
     /// (multi-camera rigs, batched engines). Output dtype follows the
     /// constructor's `f16` flag, like [`run`](Self::run).
@@ -1030,7 +1037,7 @@ impl PyCudaPreprocessor {
         out_height: usize,
         out_width: usize,
         stream: Option<PyRef<'_, crate::image::PyStream>>,
-    ) -> PyResult<PyCudaTensor> {
+    ) -> PyResult<PyTensor> {
         if frames.is_empty() {
             return Err(PyValueError::new_err("run_batch needs at least one frame"));
         }
@@ -1101,12 +1108,12 @@ impl PyCudaPreprocessor {
             }
         })?;
         fence_stream_into(&self.stream, consumer)?;
-        Ok(PyCudaTensor {
+        Ok(PyTensor {
             inner: Arc::new(inner),
         })
     }
 
-    /// Allocate a zero-initialized output [`CudaTensor`] of shape
+    /// Allocate a zero-initialized output [`Tensor`] of shape
     /// `[batch, 3, out_height, out_width]`, dtype following this preprocessor's
     /// `f16` flag. Preallocate one and reuse it across frames with
     /// [`run_into`](Self::run_into) for an allocation-free serving loop.
@@ -1117,7 +1124,7 @@ impl PyCudaPreprocessor {
         out_height: usize,
         out_width: usize,
         batch: usize,
-    ) -> PyResult<PyCudaTensor> {
+    ) -> PyResult<PyTensor> {
         let shape = [batch, 3, out_height, out_width];
         let inner = py.detach(|| -> PyResult<TensorInnerEnum> {
             if self.f16 {
@@ -1130,12 +1137,12 @@ impl PyCudaPreprocessor {
                 ))
             }
         })?;
-        Ok(PyCudaTensor {
+        Ok(PyTensor {
             inner: Arc::new(inner),
         })
     }
 
-    /// Preprocess one raw frame **into a preallocated** `out` [`CudaTensor`]
+    /// Preprocess one raw frame **into a preallocated** `out` [`Tensor`]
     /// (shape `[1, 3, H, W]`, dtype matching this preprocessor) — no per-call
     /// output allocation. Ideal for a fixed TensorRT input binding: allocate
     /// once with [`alloc_output`](Self::alloc_output), bind its `data_ptr`, then
@@ -1148,7 +1155,7 @@ impl PyCudaPreprocessor {
     fn run_into(
         &self,
         py: Python<'_>,
-        out: PyRef<'_, PyCudaTensor>,
+        out: PyRef<'_, PyTensor>,
         frame: numpy::PyReadonlyArray1<'_, u8>,
         width: usize,
         height: usize,
@@ -1210,7 +1217,7 @@ impl PyCudaPreprocessor {
             // Wrap the caller's device buffer as a non-owning destination tensor:
             // on drop the aliasing slice is leaked (never freed) — `out` keeps
             // ownership and frees it.
-            // SAFETY: `out_ptr`/`n_elem` come from the live `out` CudaTensor of
+            // SAFETY: `out_ptr`/`n_elem` come from the live `out` Tensor of
             // exactly this shape & dtype, kept alive for this whole call.
             macro_rules! run_into_foreign {
                 ($ty:ty, $run:ident) => {{
@@ -1249,7 +1256,7 @@ pub fn register(py: Python<'_>, parent: &Bound<'_, PyModule>) -> PyResult<()> {
     // `Image` to these same device kernels). The functions below stay
     // `pub(crate)` and are called by `crate::color`.
     crate::add_imagenet_consts(&m)?;
-    m.add_class::<PyCudaTensor>()?;
+    m.add_class::<PyTensor>()?;
     m.add_class::<PyCudaPreprocessor>()?;
     m.add_class::<crate::image::PyStream>()?;
     parent.add_submodule(&m)?;

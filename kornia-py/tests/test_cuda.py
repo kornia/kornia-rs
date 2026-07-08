@@ -152,7 +152,7 @@ def test_dlpack_export_to_torch():
 
 
 def test_cuda_tensor_interop_surface():
-    """CudaTensor exposes the zero-copy handoff surface TensorRT / cupy need:
+    """Tensor exposes the zero-copy handoff surface TensorRT / cupy need:
     data_ptr, device, and the CUDA Array Interface."""
     w, h = 64, 48
     frame = RNG.integers(0, 256, (w * h * 3,), dtype=np.uint8)

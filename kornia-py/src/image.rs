@@ -3328,7 +3328,7 @@ impl PyImageApi {
                 Some(obj) => Some(obj.bind(py).extract::<isize>()?),
                 None => None,
             };
-            // Same consumer-stream policy as CudaTensor::__dlpack__ (validates the
+            // Same consumer-stream policy as Tensor::__dlpack__ (validates the
             // handle, fences without a host block, -1 skips, None host-syncs).
             match dev.cuda_stream() {
                 Some(s) => crate::cuda_ext::dlpack_fence_consumer(s, consumer)?,

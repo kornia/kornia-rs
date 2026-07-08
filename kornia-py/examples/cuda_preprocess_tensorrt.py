@@ -1,7 +1,7 @@
 """Zero-copy camera → TensorRT preprocessing with ``CudaPreprocessor``.
 
 The fused preprocessor turns a raw camera frame (NV12 / YUYV / RGB / …) into a
-normalized ``[N, 3, H, W]`` model-input ``CudaTensor`` in one kernel launch. The
+normalized ``[N, 3, H, W]`` model-input ``Tensor`` in one kernel launch. The
 output stays on the GPU and hands off to an inference engine with **no host
 round-trip**:
 
@@ -51,7 +51,7 @@ def main() -> None:
         std=cuda.IMAGENET_STD,
     )
 
-    # ---- one-shot: fused preprocess -> CudaTensor -------------------------------
+    # ---- one-shot: fused preprocess -> Tensor -------------------------------
     t = pre.run(frame, W, H, OUT_H, OUT_W)
     print("model input:", t.shape, t.dtype, t.device, "data_ptr", hex(t.data_ptr))
 

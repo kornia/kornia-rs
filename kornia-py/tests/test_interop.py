@@ -87,7 +87,7 @@ def test_cai_and_dlpack_agree():
     assert _dptr(dev) == torch.from_dlpack(dev).data_ptr()
 
 
-def test_cudatensor_zero_copy_to_torch():
+def test_tensor_zero_copy_to_torch():
     """CudaPreprocessor output -> torch is zero-copy; CAI ptr == data_ptr."""
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available():
@@ -130,7 +130,7 @@ def test_adopt_torch_stream():
 
 
 def test_tensorrt_binds_kornia_data_ptr_zero_copy():
-    """Bind a kornia CudaTensor's device pointer straight into a TensorRT engine
+    """Bind a kornia Tensor's device pointer straight into a TensorRT engine
     input (set_tensor_address) — no copy — and verify inference."""
     torch = pytest.importorskip("torch")
     trt = pytest.importorskip("tensorrt")
@@ -151,7 +151,7 @@ def test_tensorrt_binds_kornia_data_ptr_zero_copy():
 
     a = RNG.integers(0, 256, (H * W * 3,), dtype=np.uint8)
     pre = cuda.CudaPreprocessor(format="rgb")
-    tin = pre.run(a, W, H, H, W)  # device CudaTensor, zero-copy handoff
+    tin = pre.run(a, W, H, H, W)  # device Tensor, zero-copy handoff
     tout = torch.empty((N, C, H, W), dtype=torch.float32, device="cuda")
 
     stream = torch.cuda.Stream()

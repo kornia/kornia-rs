@@ -3,7 +3,7 @@
 Data model: device pixels live in the unified :class:`kornia_rs.image.Image`
 (create one with ``Image.from_numpy(a).to_cuda()``); the color-conversion
 functions here take and return such a device ``Image``. Model input (CHW) becomes a
-:class:`CudaTensor` via :class:`CudaPreprocessor`. Everything exports zero-copy
+:class:`Tensor` via :class:`CudaPreprocessor`. Everything exports zero-copy
 to torch / cupy / cuda-python via ``__dlpack__`` and ``__cuda_array_interface__``.
 
 Requires an NVIDIA driver at runtime (``libcuda``) plus NVRTC (``libnvrtc``,
@@ -69,7 +69,7 @@ def mem_get_info() -> Tuple[int, int]:
     loop with it to assert the free byte count returns to baseline — i.e. no
     device memory leaked across the iterations."""
 
-class CudaTensor:
+class Tensor:
     """Device-resident [N, C, H, W] tensor — model input (preprocessor output).
 
     Share it zero-copy with an inference engine: hand :attr:`data_ptr` straight
@@ -89,7 +89,7 @@ class CudaTensor:
     def data_ptr(self) -> int:
         """Raw device pointer (int) to the contiguous ``[N, C, H, W]`` buffer.
         Bind it directly to a TensorRT input: ``ctx.set_tensor_address(name,
-        t.data_ptr)``. Valid while this ``CudaTensor`` is alive."""
+        t.data_ptr)``. Valid while this ``Tensor`` is alive."""
     @property
     def __cuda_array_interface__(self) -> dict:
         """CUDA Array Interface (v3) for zero-copy sharing with cupy / numba /
@@ -113,7 +113,7 @@ class CudaPreprocessor:
 
         pre = CudaPreprocessor(mode="letterbox", format="nv12", f16=True,
                                mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))
-        t = pre.run(nv12_bytes, w, h, 640, 640)     # CudaTensor [1,3,640,640] f16
+        t = pre.run(nv12_bytes, w, h, 640, 640)     # Tensor [1,3,640,640] f16
         torch_t = torch.from_dlpack(t)              # zero-copy
     """
 
@@ -123,11 +123,11 @@ class CudaPreprocessor:
                  std: Optional[Tuple[float, float, float]] = None,
                  pad_value: int = 114, device: int = 0) -> None:
         """``device``: CUDA device ordinal to build and run this preprocessor on
-        (default 0). All its outputs (``CudaTensor.device``) live there."""
+        (default 0). All its outputs (``Tensor.device``) live there."""
     def run(self, frame: np.ndarray, width: int, height: int,
             out_height: int, out_width: int,
-            stream: Optional[Stream] = None) -> CudaTensor:
-        """Flat 1-D ``uint8`` frame bytes -> ``CudaTensor`` [1, 3, out_h, out_w].
+            stream: Optional[Stream] = None) -> Tensor:
+        """Flat 1-D ``uint8`` frame bytes -> ``Tensor`` [1, 3, out_h, out_w].
 
         ``stream``: optional consumer ``Stream`` (e.g. your TensorRT execution
         stream via ``Stream.from_handle``) to fence the output into, so
@@ -135,15 +135,15 @@ class CudaPreprocessor:
         sync."""
     def run_batch(self, frames: List[np.ndarray], width: int, height: int,
                   out_height: int, out_width: int,
-                  stream: Optional[Stream] = None) -> CudaTensor:
+                  stream: Optional[Stream] = None) -> Tensor:
         """N flat ``uint8`` same-sized frames -> [N, 3, out_h, out_w]; dtype follows
         f16 flag. ``stream`` fences the output like :meth:`run`."""
     def alloc_output(self, out_height: int, out_width: int,
-                     batch: int = 1) -> CudaTensor:
+                     batch: int = 1) -> Tensor:
         """Allocate a zero-initialized ``[batch, 3, out_h, out_w]`` output tensor
         (dtype follows the ``f16`` flag). Preallocate once and reuse across
         frames with :meth:`run_into` for an allocation-free serving loop."""
-    def run_into(self, out: CudaTensor, frame: np.ndarray, width: int, height: int,
+    def run_into(self, out: Tensor, frame: np.ndarray, width: int, height: int,
                  stream: Optional[Stream] = None) -> None:
         """Preprocess one frame **into** a preallocated ``out`` ([1, 3, H, W],
         matching dtype) — no per-call allocation. Bind ``out.data_ptr`` to a
