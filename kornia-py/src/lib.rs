@@ -613,7 +613,14 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     add_imagenet_consts(m)?;
 
     #[cfg(feature = "cuda")]
-    cuda_ext::register(py, m)?;
+    {
+        // Tensor is not CUDA-specific in spirit (mirrors kornia_tensor::Tensor),
+        // so it lives at the top level rather than under kornia_rs.cuda — the
+        // implementation is device-only for now (gated on this feature), but
+        // the name shouldn't imply that.
+        m.add_class::<cuda_ext::PyTensor>()?;
+        cuda_ext::register(py, m)?;
+    }
 
     Ok(())
 }

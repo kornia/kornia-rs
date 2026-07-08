@@ -16,7 +16,7 @@ from typing import Any, List, Optional, Tuple
 
 import numpy as np
 
-from .image import Image
+from . import Tensor as Tensor
 
 
 class Stream:
@@ -68,39 +68,6 @@ def mem_get_info() -> Tuple[int, int]:
     Wraps ``cuMemGetInfo`` (synchronizes the default stream first). Bracket a
     loop with it to assert the free byte count returns to baseline — i.e. no
     device memory leaked across the iterations."""
-
-class Tensor:
-    """Device-resident [N, C, H, W] tensor — model input (preprocessor output).
-
-    Share it zero-copy with an inference engine: hand :attr:`data_ptr` straight
-    to TensorRT's ``context.set_tensor_address(name, ptr)``, or consume it via
-    ``__dlpack__`` (torch / cupy) or ``__cuda_array_interface__`` (cupy / numba).
-    """
-
-    @property
-    def shape(self) -> Tuple[int, int, int, int]: ...
-    @property
-    def dtype(self) -> str: ...
-    @property
-    def device(self) -> str:
-        """``"cuda:{id}"`` — the device of the ``CudaPreprocessor`` that produced
-        this tensor (see its ``device=`` constructor argument; not always 0)."""
-    @property
-    def data_ptr(self) -> int:
-        """Raw device pointer (int) to the contiguous ``[N, C, H, W]`` buffer.
-        Bind it directly to a TensorRT input: ``ctx.set_tensor_address(name,
-        t.data_ptr)``. Valid while this ``Tensor`` is alive."""
-    @property
-    def __cuda_array_interface__(self) -> dict:
-        """CUDA Array Interface (v3) for zero-copy sharing with cupy / numba /
-        cuda-python. The ``stream`` entry carries the producing stream."""
-    def numpy(self) -> np.ndarray:
-        """Copy to host as float32 numpy (f16 tensors are widened)."""
-    def __dlpack__(self, *, stream: object = None, max_version: object = None,
-                   dl_device: object = None, copy: object = None) -> object:
-        """DLPack capsule (zero-copy). Consumers negotiating ``max_version >=
-        (1, 0)`` get a versioned (``dltensor_versioned``) capsule."""
-    def __dlpack_device__(self) -> Tuple[int, int]: ...
 
 class CudaPreprocessor:
     """Fused camera preprocessing: raw frame -> normalized CHW tensor, one kernel.

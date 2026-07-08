@@ -641,7 +641,7 @@ enum TensorInnerEnum {
 /// A device-resident `[N, C, H, W]` tensor — the preprocessor's output, i.e.
 /// model input. Feed it to torch/TensorRT zero-copy via `__dlpack__`, or
 /// `.numpy()` an f32 copy.
-#[pyclass(name = "Tensor", frozen, module = "kornia_rs.cuda")]
+#[pyclass(name = "Tensor", frozen, module = "kornia_rs")]
 pub struct PyTensor {
     inner: Arc<TensorInnerEnum>,
 }
@@ -1256,7 +1256,6 @@ pub fn register(py: Python<'_>, parent: &Bound<'_, PyModule>) -> PyResult<()> {
     // `Image` to these same device kernels). The functions below stay
     // `pub(crate)` and are called by `crate::color`.
     crate::add_imagenet_consts(&m)?;
-    m.add_class::<PyTensor>()?;
     m.add_class::<PyCudaPreprocessor>()?;
     m.add_class::<crate::image::PyStream>()?;
     parent.add_submodule(&m)?;
