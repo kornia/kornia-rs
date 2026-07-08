@@ -49,9 +49,10 @@ def main() -> None:
         f16=True,                         # half-precision engine input
         mean=cuda.IMAGENET_MEAN,
         std=cuda.IMAGENET_STD,
-        device=0,                         # run on CUDA device 0 (the fused GPU
-                                          # kernel). device=None would run on the
-                                          # CPU and produce a host Tensor instead.
+        stream=Stream.default(0),         # run on CUDA device 0 (the fused GPU
+                                          # kernel); the stream selects the device.
+                                          # stream=None would run on the CPU and
+                                          # produce a host Tensor instead.
     )
 
     # ---- one-shot: fused preprocess -> Tensor -------------------------------
@@ -67,7 +68,7 @@ def main() -> None:
     out = pre.alloc_output(OUT_H, OUT_W)  # reused every iteration — zero per-frame alloc
     for _ in range(3):
         frame = rng.integers(0, 256, (W * H * 3,), dtype=np.uint8)
-        pre.run(frame, W, H, OUT_H, OUT_W, out=out, stream=engine_stream)
+        pre.run(frame, W, H, OUT_H, OUT_W, out=out, consumer_stream=engine_stream)
         # engine_stream is now ordered after the preprocess:
         #   ctx.set_tensor_address("images", out.data_ptr)
         #   ctx.execute_async_v3(engine_stream.cuda_stream_ptr)

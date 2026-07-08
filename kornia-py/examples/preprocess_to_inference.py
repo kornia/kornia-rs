@@ -137,7 +137,8 @@ def main() -> None:
         f16=True,
         mean=krc.IMAGENET_MEAN,
         std=krc.IMAGENET_STD,
-        device=0,  # CUDA device 0 — the fused GPU decode+resize+normalize kernel.
+        stream=krc.Stream.default(0),  # CUDA device 0 (the stream selects the
+        # device) — the fused GPU decode+resize+normalize kernel.
     )
     if args.engine == "torch":
         # Fixed input shape: let cuDNN autotune conv algorithms during warmup.

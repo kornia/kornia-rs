@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 import kornia_rs
+from kornia_rs.cuda import Stream
 from kornia_rs.image import Image
 
 from _cuda_helpers import dev as _dev
@@ -109,7 +110,7 @@ def test_colormap_and_bayer():
 def test_preprocessor_nv12_fused():
     w, h = 128, 96
     frame = nv12_frame(w, h, RNG)
-    pre = kornia_rs.Preprocessor(mode="letterbox", format="nv12")
+    pre = kornia_rs.Preprocessor(stream=Stream.default(), mode="letterbox", format="nv12")
     t = pre.run(frame, w, h, 64, 64)
     assert t.shape == (1, 3, 64, 64)
     assert t.dtype == "float32"
@@ -122,12 +123,12 @@ def test_preprocessor_f16_and_normalize():
     w, h = 64, 48
     frame = RNG.integers(0, 256, (w * h * 3,), dtype=np.uint8)
     mean, std = cuda.IMAGENET_MEAN, cuda.IMAGENET_STD
-    pre16 = kornia_rs.Preprocessor(format="rgb", f16=True, mean=mean, std=std)
+    pre16 = kornia_rs.Preprocessor(stream=Stream.default(), format="rgb", f16=True, mean=mean, std=std)
     t = pre16.run(frame, w, h, 32, 32)
     assert t.dtype == "float16"
     got = t.numpy()  # widened to f32
 
-    plain = kornia_rs.Preprocessor(format="rgb").run(frame, w, h, 32, 32).numpy()
+    plain = kornia_rs.Preprocessor(stream=Stream.default(), format="rgb").run(frame, w, h, 32, 32).numpy()
     want = (plain - np.asarray(mean).reshape(1, 3, 1, 1)) / np.asarray(std).reshape(
         1, 3, 1, 1
     )
@@ -145,7 +146,7 @@ def test_dlpack_export_to_torch():
     np.testing.assert_array_equal(t.cpu().numpy(), d.numpy())
 
     # Tensor export too (f32 CHW).
-    pre = kornia_rs.Preprocessor(format="rgb")
+    pre = kornia_rs.Preprocessor(stream=Stream.default(), format="rgb")
     ct = pre.run(img.reshape(-1).copy(), 64, 48, 32, 32)
     tt = torch.from_dlpack(ct)
     assert tt.is_cuda and tt.shape == (1, 3, 32, 32) and tt.dtype == torch.float32
@@ -156,7 +157,7 @@ def test_cuda_tensor_interop_surface():
     data_ptr, device, and the CUDA Array Interface."""
     w, h = 64, 48
     frame = RNG.integers(0, 256, (w * h * 3,), dtype=np.uint8)
-    t = kornia_rs.Preprocessor(format="rgb").run(frame, w, h, 32, 32)
+    t = kornia_rs.Preprocessor(stream=Stream.default(), format="rgb").run(frame, w, h, 32, 32)
 
     assert t.device == "cuda:0"
     assert isinstance(t.data_ptr, int) and t.data_ptr != 0
@@ -171,7 +172,7 @@ def test_cuda_tensor_interop_surface():
     assert cai["stream"] is None or (isinstance(cai["stream"], int) and cai["stream"] >= 1)
 
     # f16 advertises the half typestr.
-    t16 = kornia_rs.Preprocessor(format="rgb", f16=True).run(frame, w, h, 32, 32)
+    t16 = kornia_rs.Preprocessor(stream=Stream.default(), format="rgb", f16=True).run(frame, w, h, 32, 32)
     assert t16.__cuda_array_interface__["typestr"] == "<f2"
 
 
@@ -182,9 +183,9 @@ def test_preprocessor_run_with_consumer_stream():
 
     w, h = 64, 48
     frame = RNG.integers(0, 256, (w * h * 3,), dtype=np.uint8)
-    pre = kornia_rs.Preprocessor(format="rgb")
+    pre = kornia_rs.Preprocessor(stream=Stream.default(), format="rgb")
     fs = Stream.from_handle(Stream.default().cuda_stream_ptr)
-    t = pre.run(frame, w, h, 32, 32, stream=fs)
+    t = pre.run(frame, w, h, 32, 32, consumer_stream=fs)
     plain = pre.run(frame, w, h, 32, 32)
     np.testing.assert_array_equal(t.numpy(), plain.numpy())
 
@@ -194,7 +195,7 @@ def test_preprocessor_run_into_matches_run():
     run() would produce, without allocating a new tensor per call."""
     w, h = 64, 48
     frame = RNG.integers(0, 256, (w * h * 3,), dtype=np.uint8)
-    pre = kornia_rs.Preprocessor(format="rgb")
+    pre = kornia_rs.Preprocessor(stream=Stream.default(), format="rgb")
 
     out = pre.alloc_output(32, 32)
     assert out.shape == (1, 3, 32, 32) and out.dtype == "float32"
@@ -211,7 +212,7 @@ def test_preprocessor_run_into_matches_run():
 def test_preprocessor_run_into_f16_and_dtype_mismatch():
     w, h = 48, 32
     frame = RNG.integers(0, 256, (w * h * 3,), dtype=np.uint8)
-    pre16 = kornia_rs.Preprocessor(format="rgb", f16=True)
+    pre16 = kornia_rs.Preprocessor(stream=Stream.default(), format="rgb", f16=True)
     out16 = pre16.alloc_output(16, 16)
     assert out16.dtype == "float16"
     pre16.run(frame, w, h, 16, 16, out=out16)
@@ -220,7 +221,7 @@ def test_preprocessor_run_into_f16_and_dtype_mismatch():
     )
 
     # A dtype-mismatched output is rejected.
-    pre32 = kornia_rs.Preprocessor(format="rgb")
+    pre32 = kornia_rs.Preprocessor(stream=Stream.default(), format="rgb")
     with pytest.raises(ValueError):
         pre32.run(frame, w, h, 16, 16, out=out16)  # f32 preprocessor, f16 buffer
 
@@ -230,7 +231,7 @@ def test_cuda_tensor_dlpack_versioned_capsule():
     stays unversioned. Both must round-trip through torch when available."""
     w, h = 64, 48
     frame = RNG.integers(0, 256, (w * h * 3,), dtype=np.uint8)
-    t = kornia_rs.Preprocessor(format="rgb").run(frame, w, h, 32, 32)
+    t = kornia_rs.Preprocessor(stream=Stream.default(), format="rgb").run(frame, w, h, 32, 32)
 
     cap_v = t.__dlpack__(max_version=(1, 0))
     assert "dltensor_versioned" in str(cap_v)
@@ -243,7 +244,7 @@ def test_cuda_tensor_dlpack_versioned_capsule():
 def test_preprocessor_run_batch_matches_single():
     w, h = 64, 48
     frames = [nv12_frame(w, h, RNG) for _ in range(3)]
-    pre = kornia_rs.Preprocessor(mode="letterbox", format="nv12")
+    pre = kornia_rs.Preprocessor(stream=Stream.default(), mode="letterbox", format="nv12")
     batch = pre.run(frames, w, h, 32, 32)
     assert batch.shape == (3, 3, 32, 32)
     got = batch.numpy()
@@ -252,7 +253,7 @@ def test_preprocessor_run_batch_matches_single():
         np.testing.assert_array_equal(got[i : i + 1], single)
 
     # f16 batch follows the constructor flag.
-    pre16 = kornia_rs.Preprocessor(mode="letterbox", format="nv12", f16=True)
+    pre16 = kornia_rs.Preprocessor(stream=Stream.default(), mode="letterbox", format="nv12", f16=True)
     b16 = pre16.run(frames, w, h, 32, 32)
     assert b16.dtype == "float16" and b16.shape == (3, 3, 32, 32)
     np.testing.assert_allclose(b16.numpy(), got, atol=1e-3)

@@ -67,12 +67,13 @@ class Tensor:
 
 class Preprocessor:
     """Fused resize + normalize + HWC→CHW camera preprocessing, mirroring
-    ``kornia_imgproc::preprocess::Preprocessor``. Dispatches internally on
-    ``device``: ``device=None`` runs on the CPU (rgb/bgr/rgba/bgra sources
-    only), ``device=<ordinal>`` (the default, ``0``) runs the fused CUDA
-    kernel and additionally supports gray/nv12/yuyv sources. Always available;
-    ``device=<ordinal>`` needs the ``cuda`` feature (``device=None`` works on a
-    CPU-only build).
+    ``kornia_imgproc::preprocess::Preprocessor``. The ``stream`` selects the
+    device, exactly like the rest of the API (``Image.to_cuda(stream)``,
+    ``Image.zeros(stream=)``) and mirroring Rust ``build_cuda(stream)``:
+    ``stream=None`` (the default) runs on the **CPU** (rgb/bgr/rgba/bgra sources
+    only); ``stream=<Stream>`` runs the fused **CUDA** kernel on that stream's
+    device and additionally supports gray/nv12/yuyv sources. The GPU path needs
+    the ``cuda`` feature; ``stream=None`` (CPU) works on a CPU-only build.
     """
 
     def __init__(
@@ -84,22 +85,25 @@ class Preprocessor:
         mean: Optional[Tuple[float, float, float]] = ...,
         std: Optional[Tuple[float, float, float]] = ...,
         pad_value: float = ...,
-        device: Optional[int] = ...,
+        stream: Optional[Any] = ...,
     ) -> None: ...
     def run(
         self,
-        frame: Union[np.ndarray, List[np.ndarray]],
+        frame: Union[np.ndarray, List[np.ndarray], Any],
         width: int,
         height: int,
         out_height: int,
         out_width: int,
         out: Optional[Tensor] = None,
-        stream: object = None,
+        consumer_stream: object = None,
     ) -> Tensor:
-        """Preprocess a single raw frame (1-D uint8 numpy array) or a batch
-        (list of them) into a model-input ``Tensor``. Pass ``out=`` (from
-        :meth:`alloc_output`) to write into a preallocated buffer instead of
-        allocating a fresh one — only valid for a single frame, not a batch."""
+        """Preprocess a single raw frame (1-D uint8 numpy array), a batch (list
+        of them), or an already-decoded interleaved ``Image`` (rgb/bgr/rgba/bgra
+        — a device ``Image`` feeds the fused kernel its buffer zero-copy) into a
+        model-input ``Tensor``. Pass ``out=`` (from :meth:`alloc_output`) to
+        write into a preallocated buffer instead of allocating a fresh one — only
+        valid for a single raw frame. ``consumer_stream`` (GPU only) fences the
+        output into your engine's execution stream."""
     def alloc_output(self, out_height: int, out_width: int, batch: int = ...) -> Tensor:
         """Preallocate a ``[batch, 3, out_height, out_width]`` output buffer
         for reuse across calls via ``run(..., out=...)``."""

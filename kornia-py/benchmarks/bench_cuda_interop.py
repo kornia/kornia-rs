@@ -24,6 +24,7 @@ except ImportError:
 
 import kornia_rs
 from kornia_rs.image import Image
+from kornia_rs.cuda import Stream
 
 if not (kornia_rs.cuda.is_available() and torch.cuda.is_available()):
     raise SystemExit("no CUDA device / torch-CUDA")
@@ -59,7 +60,7 @@ def main() -> None:
 
     # Fused serving path: preallocate once, run(..., out=out) each frame (zero
     # per-frame alloc).
-    pre = kornia_rs.Preprocessor(mode="letterbox", format="rgb", f16=True)
+    pre = kornia_rs.Preprocessor(stream=Stream.default(), mode="letterbox", format="rgb", f16=True)
     out = pre.alloc_output(640, 640)
     frame = np.random.default_rng(0).integers(0, 256, (1280 * 720 * 3,), dtype=np.uint8)
     t_run = bench(lambda: pre.run(frame, 1280, 720, 640, 640, out=out), n=300)

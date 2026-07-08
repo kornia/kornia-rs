@@ -3962,7 +3962,7 @@ pub(crate) struct ResolvedStream {
 /// is returned for [`fence_into_foreign`] to order the caller's stream after
 /// ours. `None` uses device 0's default stream.
 #[cfg(feature = "cuda")]
-fn resolve_stream(stream: Option<PyRef<'_, PyStream>>) -> PyResult<ResolvedStream> {
+pub(crate) fn resolve_stream(stream: Option<PyRef<'_, PyStream>>) -> PyResult<ResolvedStream> {
     match stream.map(|s| s.inner.clone()) {
         Some(StreamInner::Owned(s)) => Ok(ResolvedStream {
             launch: s,

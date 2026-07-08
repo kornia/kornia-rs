@@ -205,7 +205,7 @@ def test_no_leak_foreign_stream_fence():
 
 
 def test_no_leak_preprocessor_run():
-    pre = kornia_rs.Preprocessor(format="rgb")
+    pre = kornia_rs.Preprocessor(stream=Stream.default(), format="rgb")
     frame = _rgb(192, 256).reshape(-1).copy()
 
     def body():
@@ -219,7 +219,7 @@ def test_no_leak_preprocessor_run_into():
     """run(..., out=out) reuses a preallocated output — no per-call device
     allocation, and the non-owning destination wrapper must not free/leak the
     buffer."""
-    pre = kornia_rs.Preprocessor(format="rgb")
+    pre = kornia_rs.Preprocessor(stream=Stream.default(), format="rgb")
     frame = _rgb(192, 256).reshape(-1).copy()
     out = pre.alloc_output(128, 128)
 
@@ -230,7 +230,7 @@ def test_no_leak_preprocessor_run_into():
 
 
 def test_no_leak_preprocessor_run_batch():
-    pre = kornia_rs.Preprocessor(mode="letterbox", format="rgb")
+    pre = kornia_rs.Preprocessor(stream=Stream.default(), mode="letterbox", format="rgb")
     frames = [_rgb(192, 256).reshape(-1).copy() for _ in range(4)]
 
     def body():
