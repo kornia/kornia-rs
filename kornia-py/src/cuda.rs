@@ -752,17 +752,33 @@ impl PyTensor {
     }
 
     /// Numpy array of the buffer, as float32 (f16 tensors are widened). A
-    /// device tensor is copied back to host (D2H) first; a host tensor is read
-    /// directly (already host-accessible — no copy of the raw bytes beyond the
-    /// f16->f32 widen when applicable).
-    fn numpy<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        let device = self.is_device();
-        let (data, shape): (Vec<f32>, [usize; 4]) = match &*self.inner {
-            TensorInnerEnum::F32(t) if device => {
+    /// device tensor is copied back to host (D2H) first; a host f32 tensor is
+    /// exposed as a zero-copy view (this `Tensor` as the keep-alive base) — no
+    /// copy of the raw bytes beyond the f16->f32 widen when applicable.
+    fn numpy<'py>(slf: Bound<'py, Self>, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        let me = slf.borrow();
+        let device = me.is_device();
+        if !device {
+            if let TensorInnerEnum::F32(t) = &*me.inner {
+                let base: Py<PyAny> = slf.clone().into_any().unbind();
+                // SAFETY: `t.as_ptr()` points to `t.shape.iter().product()` live
+                // f32 elements for as long as `self.inner` (the base) is alive.
+                return unsafe {
+                    crate::numpy_view::view::<f32>(
+                        py,
+                        t.as_ptr() as *mut u8,
+                        &t.shape,
+                        base,
+                        false,
+                    )
+                };
+            }
+        }
+        let (data, shape): (Vec<f32>, [usize; 4]) = match &*me.inner {
+            TensorInnerEnum::F32(t) => {
                 let host = t.to_host_owned().map_err(err)?;
                 (host.as_slice().to_vec(), t.shape)
             }
-            TensorInnerEnum::F32(t) => (t.as_slice().to_vec(), t.shape),
             TensorInnerEnum::F16(t) if device => {
                 let host = t.to_host_owned().map_err(err)?;
                 (
