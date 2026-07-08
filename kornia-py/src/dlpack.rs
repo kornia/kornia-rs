@@ -4,8 +4,9 @@
 //! Image object keeps the backing alive while the consumer holds the tensor.
 //! No bytes are copied.
 //!
-//! **Import (`from_dlpack`)** — zero-copy via non-consuming capsule keep-alive.
-//! See `image.rs::from_dlpack` for the import path.
+//! **Import (`from_dlpack`)** — zero-copy: the capsule is consumed and its
+//! managed tensor owned by a [`DlpackManaged`] keep-alive that runs the deleter
+//! on drop. See `image.rs::from_dlpack` (host) and `cuda_ext::capsule` (device).
 
 use std::ffi::c_void;
 
@@ -17,6 +18,73 @@ use dlpack_rs::{
 use pyo3::prelude::*;
 
 use crate::backing::Dtype;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Import: consumed-managed-tensor owner
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Owns a *consumed* DLPack managed tensor and runs its deleter exactly once on
+/// drop — the correct zero-copy import keep-alive.
+///
+/// When `from_dlpack` consumes a capsule (renames it to `used_dltensor*`), the
+/// capsule's own C destructor will no longer call the producer's deleter, so
+/// ownership of the `DLManagedTensor` transfers to us. Holding this and running
+/// the deleter on drop releases the producer's storage reference (and frees the
+/// manager struct) — versus the older "keep the producer object alive, never
+/// call the deleter" model, which leaked the manager context for producers
+/// (e.g. PyTorch) whose export takes an extra reference.
+pub(crate) struct DlpackManaged {
+    managed: *mut c_void,
+    versioned: bool,
+}
+
+// SAFETY: `managed` is logically owned here and only dereferenced on drop; a
+// DLPack deleter is required by the spec to be callable from any thread.
+unsafe impl Send for DlpackManaged {}
+
+impl DlpackManaged {
+    /// # Safety
+    /// `managed` must be a live `DLManagedTensor*` (`versioned == false`) or
+    /// `DLManagedTensorVersioned*` (`versioned == true`) whose capsule has been
+    /// consumed (renamed), so this owner is the *only* caller of its deleter.
+    pub(crate) unsafe fn new(managed: *mut c_void, versioned: bool) -> Self {
+        Self { managed, versioned }
+    }
+}
+
+impl Drop for DlpackManaged {
+    fn drop(&mut self) {
+        use dlpack_rs::ffi::{DLManagedTensor, DLManagedTensorVersioned};
+        if self.managed.is_null() {
+            return;
+        }
+        let (managed, versioned) = (self.managed, self.versioned);
+        // SAFETY: `managed` is the live, consumed managed tensor; its deleter is
+        // called exactly once (here, on drop) — the capsule was renamed so its
+        // own destructor will not also call it.
+        let call = move || unsafe {
+            if versioned {
+                let m = managed as *mut DLManagedTensorVersioned;
+                if let Some(del) = (*m).deleter {
+                    del(m);
+                }
+            } else {
+                let m = managed as *mut DLManagedTensor;
+                if let Some(del) = (*m).deleter {
+                    del(m);
+                }
+            }
+        };
+        // The deleter may `Py_DECREF` (numpy) or free device memory (torch-CUDA)
+        // and can run off-GIL (e.g. a worker thread drops the tensor); re-acquire
+        // the GIL when the interpreter is alive, mirroring `ImageExport::drop`.
+        if unsafe { pyo3::ffi::Py_IsInitialized() } != 0 {
+            Python::attach(|_| call());
+        } else {
+            call();
+        }
+    }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Export: keep-alive wrapper

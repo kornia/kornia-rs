@@ -146,6 +146,11 @@ pub enum BorrowGuard {
         obj: Py<PyAny>,
         buffer: Option<Box<pyo3::ffi::Py_buffer>>,
     },
+    /// A consumed DLPack managed tensor (from `Image::from_dlpack`); its deleter
+    /// frees the borrowed buffer exactly once when this guard drops. Held purely
+    /// for that `Drop` side effect, never read.
+    #[allow(dead_code)]
+    Dlpack(crate::dlpack::DlpackManaged),
 }
 impl Drop for BorrowGuard {
     fn drop(&mut self) {
@@ -156,7 +161,7 @@ impl Drop for BorrowGuard {
             // SAFETY: `view` was filled by PyObject_GetBuffer in from_buffer; release exactly once.
             unsafe { pyo3::ffi::PyBuffer_Release(view.as_mut()) };
         }
-        // Py<PyAny> drops itself.
+        // `Py<PyAny>` and `DlpackManaged` (which runs the deleter) drop themselves.
     }
 }
 
