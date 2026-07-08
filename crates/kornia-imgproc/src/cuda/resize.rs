@@ -307,8 +307,11 @@ extern "C" __global__ void resize_bicubic_3c(
 // Both kernels use `__sinf` / `__fdividef` fast intrinsics (single-precision
 // image processing does not need full double-rounding sinf precision).
 
+// Each of the three Lanczos NVRTC modules (H, V, and warp-affine) defines the
+// same `lanczos3` device helper. They are compiled as separate translation units,
+// so sharing the name is fine — no ODR violation across NVRTC compilations.
 static LANCZOS_H_SRC: &str = r#"
-__device__ inline float lanczos3_h(float x) {
+__device__ inline float lanczos3(float x) {
     const float PI = 3.14159265358979f;
     if (fabsf(x) < 1e-5f) return 1.0f;
     if (fabsf(x) >= 3.0f) return 0.0f;
@@ -334,9 +337,9 @@ extern "C" __global__ void resize_lanczos_h_3c(
     float frac = sx - (float)x0;
 
     float wx[6];
-    wx[0] = lanczos3_h(frac + 2.0f); wx[1] = lanczos3_h(frac + 1.0f);
-    wx[2] = lanczos3_h(frac);        wx[3] = lanczos3_h(frac - 1.0f);
-    wx[4] = lanczos3_h(frac - 2.0f); wx[5] = lanczos3_h(frac - 3.0f);
+    wx[0] = lanczos3(frac + 2.0f); wx[1] = lanczos3(frac + 1.0f);
+    wx[2] = lanczos3(frac);        wx[3] = lanczos3(frac - 1.0f);
+    wx[4] = lanczos3(frac - 2.0f); wx[5] = lanczos3(frac - 3.0f);
 
     float sum = wx[0]+wx[1]+wx[2]+wx[3]+wx[4]+wx[5];
     float inv = __fdividef(1.0f, sum);
@@ -362,7 +365,7 @@ extern "C" __global__ void resize_lanczos_h_3c(
 "#;
 
 static LANCZOS_V_SRC: &str = r#"
-__device__ inline float lanczos3_v(float x) {
+__device__ inline float lanczos3(float x) {
     const float PI = 3.14159265358979f;
     if (fabsf(x) < 1e-5f) return 1.0f;
     if (fabsf(x) >= 3.0f) return 0.0f;
@@ -388,9 +391,9 @@ extern "C" __global__ void resize_lanczos_v_3c(
     float frac = sy - (float)y0;
 
     float wy[6];
-    wy[0] = lanczos3_v(frac + 2.0f); wy[1] = lanczos3_v(frac + 1.0f);
-    wy[2] = lanczos3_v(frac);        wy[3] = lanczos3_v(frac - 1.0f);
-    wy[4] = lanczos3_v(frac - 2.0f); wy[5] = lanczos3_v(frac - 3.0f);
+    wy[0] = lanczos3(frac + 2.0f); wy[1] = lanczos3(frac + 1.0f);
+    wy[2] = lanczos3(frac);        wy[3] = lanczos3(frac - 1.0f);
+    wy[4] = lanczos3(frac - 2.0f); wy[5] = lanczos3(frac - 3.0f);
 
     float sum = wy[0]+wy[1]+wy[2]+wy[3]+wy[4]+wy[5];
     float inv = __fdividef(1.0f, sum);
@@ -805,6 +808,7 @@ pub fn launch_resize_lanczos_cuda(
     src_height: u32,
     dst_width: u32,
     dst_height: u32,
+    block_dim: Option<(u32, u32)>,
 ) -> Result<(), CudaResizeError> {
     if src_width == 0 || src_height == 0 || dst_width == 0 || dst_height == 0 {
         return Err(CudaResizeError::Cuda(
@@ -831,9 +835,9 @@ pub fn launch_resize_lanczos_cuda(
         .map_err(|e| CudaResizeError::Cuda(e.clone()))?;
 
     // Intermediate: dst_w columns, src_h rows — horizontal pass output.
+    // Pass 1 writes every element before pass 2 reads; no zero-fill needed.
     let inter_len = (dst_width as usize) * (src_height as usize) * 3;
-    let mut intermediate = stream
-        .alloc_zeros::<f32>(inter_len)
+    let mut intermediate = unsafe { stream.alloc::<f32>(inter_len) }
         .map_err(|e| CudaResizeError::Cuda(e.to_string()))?;
 
     // Pass 1 — horizontal: (src_w, src_h) → (dst_w, src_h).
@@ -849,7 +853,7 @@ pub fn launch_resize_lanczos_cuda(
         .launch_2d(
             dst_width,
             src_height,
-            make_config(dst_width, src_height, None),
+            make_config(dst_width, src_height, block_dim),
         )
         .map_err(|e| CudaResizeError::Cuda(e.to_string()))?;
 
@@ -866,7 +870,7 @@ pub fn launch_resize_lanczos_cuda(
         .launch_2d(
             dst_width,
             dst_height,
-            make_config(dst_width, dst_height, None),
+            make_config(dst_width, dst_height, block_dim),
         )
         .map_err(|e| CudaResizeError::Cuda(e.to_string()))
 }

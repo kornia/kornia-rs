@@ -229,7 +229,7 @@ extern "C" __global__ void warp_affine_bicubic_3c(
 // Taps within the 6×6 neighbourhood that fall outside are clamped (BORDER_REPLICATE).
 
 static LANCZOS_SRC: &str = r#"
-__device__ inline float lanczos3_wa(float x) {
+__device__ inline float lanczos3(float x) {
     const float PI = 3.14159265358979f;
     if (fabsf(x) < 1e-5f) return 1.0f;
     if (fabsf(x) >= 3.0f) return 0.0f;
@@ -269,12 +269,12 @@ extern "C" __global__ void warp_affine_lanczos_3c(
 
     // 6 weights per axis; tap i is at offset (i-2) from x0/y0.
     float wx[6], wy[6];
-    wx[0] = lanczos3_wa(frac_x + 2.0f); wx[1] = lanczos3_wa(frac_x + 1.0f);
-    wx[2] = lanczos3_wa(frac_x);        wx[3] = lanczos3_wa(frac_x - 1.0f);
-    wx[4] = lanczos3_wa(frac_x - 2.0f); wx[5] = lanczos3_wa(frac_x - 3.0f);
-    wy[0] = lanczos3_wa(frac_y + 2.0f); wy[1] = lanczos3_wa(frac_y + 1.0f);
-    wy[2] = lanczos3_wa(frac_y);        wy[3] = lanczos3_wa(frac_y - 1.0f);
-    wy[4] = lanczos3_wa(frac_y - 2.0f); wy[5] = lanczos3_wa(frac_y - 3.0f);
+    wx[0] = lanczos3(frac_x + 2.0f); wx[1] = lanczos3(frac_x + 1.0f);
+    wx[2] = lanczos3(frac_x);        wx[3] = lanczos3(frac_x - 1.0f);
+    wx[4] = lanczos3(frac_x - 2.0f); wx[5] = lanczos3(frac_x - 3.0f);
+    wy[0] = lanczos3(frac_y + 2.0f); wy[1] = lanczos3(frac_y + 1.0f);
+    wy[2] = lanczos3(frac_y);        wy[3] = lanczos3(frac_y - 1.0f);
+    wy[4] = lanczos3(frac_y - 2.0f); wy[5] = lanczos3(frac_y - 3.0f);
 
     // Normalise to guard against brightness drift at clamped boundaries.
     float sum_wx = wx[0]+wx[1]+wx[2]+wx[3]+wx[4]+wx[5];
