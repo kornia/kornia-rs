@@ -662,6 +662,47 @@ impl PyPreprocessor {
         })
     }
 
+    /// Host-`Image` branch of [`run`](Self::run) on **non-CUDA builds**: with no
+    /// device residency, every `Image` is host-backed, so validate it against
+    /// the passed dims and run the CPU kernel. (On CUDA builds this case is
+    /// handled inside `run_image`'s host branch, which is compiled out here
+    /// along with the rest of the device path.)
+    #[cfg(not(feature = "cuda"))]
+    fn run_host_image_cpu(
+        &self,
+        py: Python<'_>,
+        img: &crate::image::PyImageApi,
+        width: usize,
+        height: usize,
+        out_height: usize,
+        out_width: usize,
+    ) -> PyResult<PyTensor> {
+        let c = match self.format {
+            SourceFormat::Rgb8 | SourceFormat::Bgr8 => 3,
+            SourceFormat::Rgba8 | SourceFormat::Bgra8 => 4,
+            fmt => {
+                return Err(PyValueError::new_err(format!(
+                    "run: an Image input is only supported for rgb/bgr/rgba/bgra formats, not \
+                     {fmt:?}; pass raw bytes for gray/nv12/yuyv"
+                )))
+            }
+        };
+        if img.dtype != crate::backing::Dtype::U8 {
+            return Err(PyValueError::new_err(
+                "run: host Image must be uint8 for the fused preprocessor input",
+            ));
+        }
+        let (ih, iw, ic) = img.shape_hwc();
+        if (iw, ih, ic) != (width, height, c) {
+            return Err(PyValueError::new_err(format!(
+                "run: Image is {ih}x{iw}x{ic} but run(width={width}, height={height}) with format \
+                 {:?} expects {height}x{width}x{c}",
+                self.format
+            )));
+        }
+        self.run_cpu(py, img.u8_elems(), width, height, out_height, out_width)
+    }
+
     /// CPU branch of [`run`](Self::run): interleaved formats only
     /// (`rgb`/`bgr`/`rgba`/`bgra` — there is no CPU fused decoder for
     /// `gray`/`nv12`/`yuyv`, so those raise here); always runs the crate's
@@ -894,19 +935,29 @@ impl PyPreprocessor {
     ) -> PyResult<Py<PyTensor>> {
         // An already-decoded interleaved `Image` (device or host) — dispatch on
         // its residency, feeding a same-device buffer to the kernel zero-copy.
-        #[cfg(feature = "cuda")]
         if let Ok(img) = frame.extract::<PyRef<'_, crate::image::PyImageApi>>() {
-            let t = self.run_image(
-                py,
-                &img,
-                width,
-                height,
-                out_height,
-                out_width,
-                out,
-                consumer_stream,
-            )?;
-            return Ok(t);
+            #[cfg(feature = "cuda")]
+            {
+                let t = self.run_image(
+                    py,
+                    &img,
+                    width,
+                    height,
+                    out_height,
+                    out_width,
+                    out,
+                    consumer_stream,
+                )?;
+                return Ok(t);
+            }
+            // Non-CUDA build: no device residency exists, so every Image is
+            // host-backed — run its bytes on the CPU (mirrors run_image's host
+            // branch, which is compiled out with the rest of the device path).
+            #[cfg(not(feature = "cuda"))]
+            {
+                let t = self.run_host_image_cpu(py, &img, width, height, out_height, out_width)?;
+                return Py::new(py, t);
+            }
         }
         if let Ok(single) = frame.extract::<numpy::PyReadonlyArray1<'_, u8>>() {
             if let Some(out_py) = out {
@@ -1360,6 +1411,17 @@ impl PyPreprocessor {
                         "run: device Image must be uint8 for the fused preprocessor input",
                     ));
                 }
+                // Cross-stream fence: if the Image was produced on a different
+                // stream than the preprocessor's, make our launch stream wait on
+                // the producer's pending writes before the kernel reads the
+                // buffer (same event-fence discipline as imgproc's
+                // cuda_dispatch). Same stream => already ordered, skip.
+                if let Some(src_stream) = dev.cuda_stream() {
+                    if !Arc::ptr_eq(src_stream, &cuda.stream) {
+                        let ev = src_stream.record_event(None).map_err(err)?;
+                        cuda.stream.wait(&ev).map_err(err)?;
+                    }
+                }
                 let consumer = consumer_stream.map(|s| s.raw_handle());
                 let src_ptr = dev.as_ptr() as u64;
                 let n = width * height * c;
@@ -1407,6 +1469,11 @@ impl PyPreprocessor {
             }
             // HOST Image: run its bytes on the CPU, or upload + GPU kernel.
             None => {
+                if img.dtype != crate::backing::Dtype::U8 {
+                    return Err(PyValueError::new_err(
+                        "run: host Image must be uint8 for the fused preprocessor input",
+                    ));
+                }
                 let bytes = img.u8_elems();
                 let Some(cuda) = &self.cuda else {
                     if consumer_stream.is_some() {

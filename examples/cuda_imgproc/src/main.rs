@@ -59,9 +59,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── Eased device path: everything stays a kornia Tensor ──────────────────
     // Upload the RGB image directly — `to_cuda` copies the contiguous
     // h*w*3 bytes to a device tensor (no manual host flatten / Vec copy).
-    // `rgb.0` is the inner `Image<u8, 3>`, whose `to_cuda` yields a `Tensor`
-    // (the `Rgb8::to_cuda` that shadows it returns a device-resident `Rgb8`).
-    let dev_rgb: Tensor<u8, 3> = rgb.0.to_cuda(&stream)?;
+    // `rgb.0` is the inner `Image<u8, 3>` and `rgb.0.0` is its backing
+    // `Tensor<u8, 3>`, whose `to_cuda` yields a device `Tensor` (the
+    // `Image::to_cuda` one layer up returns a device-resident `Image`).
+    let dev_rgb: Tensor<u8, 3> = rgb.0 .0.to_cuda(&stream)?;
     // Allocate the device output as a zero-filled device tensor (no raw CudaSlice).
     let mut dev_gray = zeros_cuda::<u8, 1>([npix], &stream)?;
 
