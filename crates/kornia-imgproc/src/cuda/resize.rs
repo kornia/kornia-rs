@@ -76,6 +76,7 @@
 //! * [`launch_resize_nearest_downscale_cuda`]   — nearest-neighbor, 3-ch f32.
 //! * [`launch_resize_bilinear_normalize_cuda`]  — bilinear downscale + normalise, 3-ch f32.
 //! * [`launch_resize_bicubic_cuda`]             — bicubic resize (up or down), 3-ch f32.
+//! * [`launch_resize_lanczos_cuda`]             — Lanczos-3 separable 2-pass resize (up or down), 3-ch f32.
 
 use std::sync::{Arc, OnceLock};
 
@@ -292,12 +293,138 @@ extern "C" __global__ void resize_bicubic_3c(
 }
 "#;
 
+// ── CUDA C source: Lanczos-3 resize — separable 2-pass ───────────────────────
+//
+// Lanczos is separable: L(x,y) = L(x)·L(y). Instead of a 6×6=36 tap 2D
+// kernel, two 6-tap 1D passes (horizontal then vertical) are used with an
+// intermediate buffer of shape (dst_w × src_h × 3).
+//
+// Read reduction vs 2D:  2D = 36·dst_w·dst_h
+//                        sep = 6·dst_w·(src_h + dst_h)
+//   2× downscale: ~2× fewer reads   (e.g. 1080p→540p: 18.7M → 9.3M)
+//   2× upscale:   ~4× fewer reads   (e.g. 1080p→4K:   299M  → 75M)
+//
+// Both kernels use `__sinf` / `__fdividef` fast intrinsics (single-precision
+// image processing does not need full double-rounding sinf precision).
+
+// Each of the three Lanczos NVRTC modules (H, V, and warp-affine) defines the
+// same `lanczos3` device helper. They are compiled as separate translation units,
+// so sharing the name is fine — no ODR violation across NVRTC compilations.
+static LANCZOS_H_SRC: &str = r#"
+__device__ inline float lanczos3(float x) {
+    const float PI = 3.14159265358979f;
+    if (fabsf(x) < 1e-5f) return 1.0f;
+    if (fabsf(x) >= 3.0f) return 0.0f;
+    float pix  = PI * x;
+    float pix3 = pix * 0.33333333f;
+    return __sinf(pix) * __sinf(pix3) * __fdividef(1.0f, pix * pix3);
+}
+
+extern "C" __global__ void resize_lanczos_h_3c(
+    const float* __restrict__ src,
+    float* __restrict__       dst,
+    unsigned int src_w,
+    unsigned int src_h,
+    unsigned int dst_w,
+    float scale_x
+) {
+    unsigned int dst_x = blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned int src_y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (dst_x >= dst_w || src_y >= src_h) return;
+
+    float sx = fmaxf(fminf((dst_x + 0.5f) * scale_x - 0.5f, (float)(src_w - 1u)), 0.0f);
+    int x0 = (int)floorf(sx);
+    float frac = sx - (float)x0;
+
+    float wx[6];
+    wx[0] = lanczos3(frac + 2.0f); wx[1] = lanczos3(frac + 1.0f);
+    wx[2] = lanczos3(frac);        wx[3] = lanczos3(frac - 1.0f);
+    wx[4] = lanczos3(frac - 2.0f); wx[5] = lanczos3(frac - 3.0f);
+
+    float sum = wx[0]+wx[1]+wx[2]+wx[3]+wx[4]+wx[5];
+    float inv = __fdividef(1.0f, sum);
+    #pragma unroll
+    for (int i = 0; i < 6; i++) wx[i] *= inv;
+
+    unsigned int row = src_y * src_w * 3u;
+    float acc0 = 0.0f, acc1 = 0.0f, acc2 = 0.0f;
+    #pragma unroll
+    for (int dx = 0; dx < 6; dx++) {
+        int xi = max(0, min(x0 + dx - 2, (int)src_w - 1));
+        unsigned int b = row + (unsigned int)xi * 3u;
+        acc0 = fmaf(wx[dx], __ldg(&src[b]),   acc0);
+        acc1 = fmaf(wx[dx], __ldg(&src[b+1]), acc1);
+        acc2 = fmaf(wx[dx], __ldg(&src[b+2]), acc2);
+    }
+
+    unsigned int out = (src_y * dst_w + dst_x) * 3u;
+    dst[out]     = acc0;
+    dst[out + 1] = acc1;
+    dst[out + 2] = acc2;
+}
+"#;
+
+static LANCZOS_V_SRC: &str = r#"
+__device__ inline float lanczos3(float x) {
+    const float PI = 3.14159265358979f;
+    if (fabsf(x) < 1e-5f) return 1.0f;
+    if (fabsf(x) >= 3.0f) return 0.0f;
+    float pix  = PI * x;
+    float pix3 = pix * 0.33333333f;
+    return __sinf(pix) * __sinf(pix3) * __fdividef(1.0f, pix * pix3);
+}
+
+extern "C" __global__ void resize_lanczos_v_3c(
+    const float* __restrict__ src,
+    float* __restrict__       dst,
+    unsigned int inter_w,
+    unsigned int inter_h,
+    unsigned int dst_h,
+    float scale_y
+) {
+    unsigned int dst_x = blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned int dst_y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (dst_x >= inter_w || dst_y >= dst_h) return;
+
+    float sy = fmaxf(fminf((dst_y + 0.5f) * scale_y - 0.5f, (float)(inter_h - 1u)), 0.0f);
+    int y0 = (int)floorf(sy);
+    float frac = sy - (float)y0;
+
+    float wy[6];
+    wy[0] = lanczos3(frac + 2.0f); wy[1] = lanczos3(frac + 1.0f);
+    wy[2] = lanczos3(frac);        wy[3] = lanczos3(frac - 1.0f);
+    wy[4] = lanczos3(frac - 2.0f); wy[5] = lanczos3(frac - 3.0f);
+
+    float sum = wy[0]+wy[1]+wy[2]+wy[3]+wy[4]+wy[5];
+    float inv = __fdividef(1.0f, sum);
+    #pragma unroll
+    for (int i = 0; i < 6; i++) wy[i] *= inv;
+
+    float acc0 = 0.0f, acc1 = 0.0f, acc2 = 0.0f;
+    #pragma unroll
+    for (int dy = 0; dy < 6; dy++) {
+        int yi = max(0, min(y0 + dy - 2, (int)inter_h - 1));
+        unsigned int b = ((unsigned int)yi * inter_w + dst_x) * 3u;
+        acc0 = fmaf(wy[dy], __ldg(&src[b]),   acc0);
+        acc1 = fmaf(wy[dy], __ldg(&src[b+1]), acc1);
+        acc2 = fmaf(wy[dy], __ldg(&src[b+2]), acc2);
+    }
+
+    unsigned int out = (dst_y * inter_w + dst_x) * 3u;
+    dst[out]     = acc0;
+    dst[out + 1] = acc1;
+    dst[out + 2] = acc2;
+}
+"#;
+
 // ── Kernel caches ─────────────────────────────────────────────────────────────
 
 static BILINEAR_KERNEL: OnceLock<CudaKernel> = OnceLock::new();
 static NEAREST_KERNEL: OnceLock<CudaKernel> = OnceLock::new();
 static BILINEAR_NORMALIZE_KERNEL: OnceLock<CudaKernel> = OnceLock::new();
 static BICUBIC_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
+static LANCZOS_H_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
+static LANCZOS_V_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
 
 // 32 threads wide → full warp maps to one output row (better write coalescing).
 // 8 threads tall → 256 threads total, same occupancy as 16×16.
@@ -637,6 +764,108 @@ pub fn launch_resize_bicubic_cuda(
         .arg(&dst_width)
         .arg(&dst_height)
         .arg(&scale_x)
+        .arg(&scale_y)
+        .launch_2d(
+            dst_width,
+            dst_height,
+            make_config(dst_width, dst_height, block_dim),
+        )
+        .map_err(|e| CudaResizeError::Cuda(e.to_string()))
+}
+
+/// Launch the Lanczos-3 resize kernel for a 3-channel f32 image.
+///
+/// Implements a separable 2-pass filter: a horizontal 6-tap pass writes an
+/// intermediate buffer of shape `(dst_w × src_h × 3)`, then a vertical 6-tap
+/// pass produces the final `(dst_w × dst_h × 3)` output.  This reduces source
+/// reads from 36 (2D kernel) to 6+6=12, roughly 2× faster on 2× downscale and
+/// ~4× faster on 2× upscale.
+///
+/// The intermediate buffer is allocated on the stream per call.  For tight
+/// loops that resize the same dimensions repeatedly, the kernel compilations
+/// are cached in `OnceLock`s so the NVRTC cost is paid only once.
+///
+/// # Arguments
+///
+/// * `ctx`       – CUDA context for one-time kernel compilation.
+/// * `stream`    – Stream for kernel execution and scratch allocation.
+/// * `src`       – Device slice: `src_h × src_w × 3` f32 values.
+/// * `dst`       – Device slice: `dst_h × dst_w × 3` f32 values (written).
+/// * `src_width`, `src_height` – Source image dimensions (must be non-zero).
+/// * `dst_width`, `dst_height` – Output dimensions (must be non-zero).
+///
+/// # Errors
+///
+/// Returns [`CudaResizeError`] on compile failure, allocation failure, launch
+/// error, or size mismatch.
+#[allow(clippy::too_many_arguments)]
+pub fn launch_resize_lanczos_cuda(
+    ctx: &Arc<CudaContext>,
+    stream: &Arc<CudaStream>,
+    src: &CudaSlice<f32>,
+    dst: &mut CudaSlice<f32>,
+    src_width: u32,
+    src_height: u32,
+    dst_width: u32,
+    dst_height: u32,
+    block_dim: Option<(u32, u32)>,
+) -> Result<(), CudaResizeError> {
+    if src_width == 0 || src_height == 0 || dst_width == 0 || dst_height == 0 {
+        return Err(CudaResizeError::Cuda(
+            "src and dst dimensions must be non-zero".into(),
+        ));
+    }
+
+    let need = (dst_width as usize) * (dst_height as usize) * 3;
+    if dst.len() < need {
+        return Err(CudaResizeError::SliceTooSmall {
+            got: dst.len(),
+            need,
+        });
+    }
+
+    let kernel_h = LANCZOS_H_KERNEL
+        .get_or_init(|| try_compile_with_l1(ctx, LANCZOS_H_SRC, "resize_lanczos_h_3c"))
+        .as_ref()
+        .map_err(|e| CudaResizeError::Cuda(e.clone()))?;
+
+    let kernel_v = LANCZOS_V_KERNEL
+        .get_or_init(|| try_compile_with_l1(ctx, LANCZOS_V_SRC, "resize_lanczos_v_3c"))
+        .as_ref()
+        .map_err(|e| CudaResizeError::Cuda(e.clone()))?;
+
+    // Intermediate: dst_w columns, src_h rows — horizontal pass output.
+    // Pass 1 writes every element before pass 2 reads; no zero-fill needed.
+    let inter_len = (dst_width as usize) * (src_height as usize) * 3;
+    let mut intermediate = unsafe { stream.alloc::<f32>(inter_len) }
+        .map_err(|e| CudaResizeError::Cuda(e.to_string()))?;
+
+    // Pass 1 — horizontal: (src_w, src_h) → (dst_w, src_h).
+    let scale_x = src_width as f32 / dst_width as f32;
+    kernel_h
+        .launch_builder(stream)
+        .arg(src)
+        .arg(&mut intermediate)
+        .arg(&src_width)
+        .arg(&src_height)
+        .arg(&dst_width)
+        .arg(&scale_x)
+        .launch_2d(
+            dst_width,
+            src_height,
+            make_config(dst_width, src_height, block_dim),
+        )
+        .map_err(|e| CudaResizeError::Cuda(e.to_string()))?;
+
+    // Pass 2 — vertical: (dst_w, src_h) → (dst_w, dst_h).
+    let scale_y = src_height as f32 / dst_height as f32;
+    kernel_v
+        .launch_builder(stream)
+        .arg(&intermediate)
+        .arg(dst)
+        .arg(&dst_width)
+        .arg(&src_height)
+        .arg(&dst_height)
         .arg(&scale_y)
         .launch_2d(
             dst_width,

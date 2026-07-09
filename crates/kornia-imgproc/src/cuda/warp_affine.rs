@@ -29,6 +29,7 @@
 //! * [`launch_warp_affine_bilinear_cuda`] — bilinear warp affine, 3-ch f32.
 //! * [`launch_warp_affine_nearest_cuda`]  — nearest-neighbor warp affine, 3-ch f32.
 //! * [`launch_warp_affine_bicubic_cuda`]  — bicubic warp affine, 3-ch f32.
+//! * [`launch_warp_affine_lanczos_cuda`]  — Lanczos-3 warp affine, 3-ch f32.
 
 use std::sync::{Arc, OnceLock};
 
@@ -220,11 +221,106 @@ extern "C" __global__ void warp_affine_bicubic_3c(
 }
 "#;
 
+// ── CUDA C source: Lanczos-3 warp affine ─────────────────────────────────────
+//
+// 3-lobe Lanczos filter using a 6×6 tap grid (36 source reads per output pixel).
+// Weights are normalised after computation to prevent brightness drift at clamped
+// boundaries. OOB pixels (centre outside source) are zero-filled (BORDER_CONSTANT).
+// Taps within the 6×6 neighbourhood that fall outside are clamped (BORDER_REPLICATE).
+
+static LANCZOS_SRC: &str = r#"
+__device__ inline float lanczos3(float x) {
+    const float PI = 3.14159265358979f;
+    if (fabsf(x) < 1e-5f) return 1.0f;
+    if (fabsf(x) >= 3.0f) return 0.0f;
+    float pix  = PI * x;
+    float pix3 = pix * 0.33333333f;
+    return __sinf(pix) * __sinf(pix3) * __fdividef(1.0f, pix * pix3);
+}
+
+extern "C" __global__ void warp_affine_lanczos_3c(
+    const float* __restrict__ src,
+    float* __restrict__       dst,
+    unsigned int src_w,
+    unsigned int src_h,
+    unsigned int dst_w,
+    unsigned int dst_h,
+    float m0, float m1, float m2,
+    float m3, float m4, float m5
+) {
+    unsigned int dst_x = blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned int dst_y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (dst_x >= dst_w || dst_y >= dst_h) return;
+
+    float sx = m0 * (float)dst_x + m1 * (float)dst_y + m2;
+    float sy = m3 * (float)dst_x + m4 * (float)dst_y + m5;
+
+    unsigned int out = (dst_y * dst_w + dst_x) * 3u;
+
+    if (sx < 0.0f || sx >= (float)src_w || sy < 0.0f || sy >= (float)src_h) {
+        dst[out] = 0.0f; dst[out+1] = 0.0f; dst[out+2] = 0.0f;
+        return;
+    }
+
+    int x0 = (int)floorf(sx);
+    int y0 = (int)floorf(sy);
+    float frac_x = sx - (float)x0;
+    float frac_y = sy - (float)y0;
+
+    // 6 weights per axis; tap i is at offset (i-2) from x0/y0.
+    float wx[6], wy[6];
+    wx[0] = lanczos3(frac_x + 2.0f); wx[1] = lanczos3(frac_x + 1.0f);
+    wx[2] = lanczos3(frac_x);        wx[3] = lanczos3(frac_x - 1.0f);
+    wx[4] = lanczos3(frac_x - 2.0f); wx[5] = lanczos3(frac_x - 3.0f);
+    wy[0] = lanczos3(frac_y + 2.0f); wy[1] = lanczos3(frac_y + 1.0f);
+    wy[2] = lanczos3(frac_y);        wy[3] = lanczos3(frac_y - 1.0f);
+    wy[4] = lanczos3(frac_y - 2.0f); wy[5] = lanczos3(frac_y - 3.0f);
+
+    // Normalise to guard against brightness drift at clamped boundaries.
+    float sum_wx = wx[0]+wx[1]+wx[2]+wx[3]+wx[4]+wx[5];
+    float sum_wy = wy[0]+wy[1]+wy[2]+wy[3]+wy[4]+wy[5];
+    float inv_x = __fdividef(1.0f, sum_wx);
+    float inv_y = __fdividef(1.0f, sum_wy);
+    #pragma unroll
+    for (int i = 0; i < 6; i++) { wx[i] *= inv_x; wy[i] *= inv_y; }
+
+    // Row base addresses precomputed to move the multiply outside the inner loop.
+    unsigned int row[6];
+    #pragma unroll
+    for (int i = 0; i < 6; i++) {
+        int yi = max(0, min(y0 + i - 2, (int)src_h - 1));
+        row[i] = (unsigned int)yi * src_w * 3u;
+    }
+
+    float acc0 = 0.0f, acc1 = 0.0f, acc2 = 0.0f;
+    #pragma unroll
+    for (int dy = 0; dy < 6; dy++) {
+        float rx = 0.0f, gx = 0.0f, bx = 0.0f;
+        #pragma unroll
+        for (int dx = 0; dx < 6; dx++) {
+            int xi = max(0, min(x0 + dx - 2, (int)src_w - 1));
+            unsigned int b = row[dy] + (unsigned int)xi * 3u;
+            rx = fmaf(wx[dx], __ldg(&src[b]),   rx);
+            gx = fmaf(wx[dx], __ldg(&src[b+1]), gx);
+            bx = fmaf(wx[dx], __ldg(&src[b+2]), bx);
+        }
+        acc0 = fmaf(wy[dy], rx, acc0);
+        acc1 = fmaf(wy[dy], gx, acc1);
+        acc2 = fmaf(wy[dy], bx, acc2);
+    }
+
+    dst[out]     = acc0;
+    dst[out + 1] = acc1;
+    dst[out + 2] = acc2;
+}
+"#;
+
 // ── Kernel caches ─────────────────────────────────────────────────────────────
 
 static BILINEAR_KERNEL: OnceLock<CudaKernel> = OnceLock::new();
 static NEAREST_KERNEL: OnceLock<CudaKernel> = OnceLock::new();
 static BICUBIC_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
+static LANCZOS_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
 
 const BLOCK_W: u32 = 32;
 const BLOCK_H: u32 = 8;
@@ -481,6 +577,75 @@ pub fn launch_warp_affine_bicubic_cuda(
 
     let kernel = BICUBIC_KERNEL
         .get_or_init(|| try_compile_with_l1(ctx, BICUBIC_SRC, "warp_affine_bicubic_3c"))
+        .as_ref()
+        .map_err(|e| CudaWarpAffineError::Cuda(e.clone()))?;
+
+    let mi = invert_affine_transform(m);
+
+    kernel
+        .launch_builder(stream)
+        .arg(src)
+        .arg(dst)
+        .arg(&src_width)
+        .arg(&src_height)
+        .arg(&dst_width)
+        .arg(&dst_height)
+        .arg(&mi[0])
+        .arg(&mi[1])
+        .arg(&mi[2])
+        .arg(&mi[3])
+        .arg(&mi[4])
+        .arg(&mi[5])
+        .launch_2d(
+            dst_width,
+            dst_height,
+            make_config(dst_width, dst_height, block_dim),
+        )
+        .map_err(|e| CudaWarpAffineError::Cuda(e.to_string()))
+}
+
+/// Launch the Lanczos-3 warp-affine kernel for a 3-channel f32 image.
+///
+/// Uses a 6×6 tap Lanczos-3 filter (36 source reads per output pixel).
+/// Weights are normalised after computation to prevent brightness drift at
+/// clamped image borders.  Pixels whose centre maps outside the source are
+/// zero-filled (`BORDER_CONSTANT`); taps within the neighbourhood that fall
+/// outside are clamped (`BORDER_REPLICATE`).
+///
+/// Lanczos reads 36 source values per output pixel via `__ldg`.  Best used
+/// when highest visual quality is required regardless of throughput cost.
+///
+/// # Arguments
+///
+/// See [`launch_warp_affine_bilinear_cuda`] — arguments are identical except
+/// no `block_dim` parameter (always uses 32×8).
+///
+/// # Errors
+///
+/// Returns [`CudaWarpAffineError`] on compile failure, launch error, or if
+/// `dst` is too small.
+#[allow(clippy::too_many_arguments)]
+pub fn launch_warp_affine_lanczos_cuda(
+    ctx: &Arc<CudaContext>,
+    stream: &Arc<CudaStream>,
+    src: &CudaSlice<f32>,
+    dst: &mut CudaSlice<f32>,
+    src_width: u32,
+    src_height: u32,
+    dst_width: u32,
+    dst_height: u32,
+    m: &[f32; 6],
+    block_dim: Option<(u32, u32)>,
+) -> Result<(), CudaWarpAffineError> {
+    if src_width == 0 || src_height == 0 || dst_width == 0 || dst_height == 0 {
+        return Err(CudaWarpAffineError::Cuda(
+            "src and dst dimensions must be non-zero".into(),
+        ));
+    }
+    check_dst(dst, dst_width, dst_height)?;
+
+    let kernel = LANCZOS_KERNEL
+        .get_or_init(|| try_compile_with_l1(ctx, LANCZOS_SRC, "warp_affine_lanczos_3c"))
         .as_ref()
         .map_err(|e| CudaWarpAffineError::Cuda(e.clone()))?;
 
