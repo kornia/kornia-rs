@@ -2,7 +2,7 @@
 //!
 //! This module is enabled by the `cudarc` feature flag. It provides
 //! [`Image::to_cuda`], which uploads a host-backed image to a new
-//! device-backed [`kornia_tensor::Tensor`] via a host-to-device copy.
+//! device-resident [`Image`] via a host-to-device copy.
 //!
 //! # Example
 //!
@@ -32,36 +32,25 @@ use cudarc::driver::{CudaStream, DeviceRepr, ValidAsZeroBits};
 
 use crate::error::ImageError;
 use crate::image::{Image, ImageSize};
-use kornia_tensor::{CudaError, Tensor};
 
 impl<T, const C: usize> Image<T, C>
 where
     T: DeviceRepr + ValidAsZeroBits + Clone + Default + 'static,
 {
-    /// Upload this image's buffer to a new device tensor (H2D) on `stream`.
+    /// Upload this image to a new **device-resident `Image`** (H2D copy) on
+    /// `stream`.
     ///
-    /// The entire contiguous `H × W × C` byte buffer is copied from host to
-    /// device in a single `clone_htod` call. The returned tensor has shape
-    /// `[H, W, C]` and is backed by a [`CudaAllocator`].
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CudaError::Driver`] on CUDA failure.
-    pub fn to_cuda(&self, stream: &Arc<CudaStream>) -> Result<Tensor<T, 3>, CudaError> {
-        self.0.to_cuda(stream)
-    }
-
-    /// Upload this image to a new **device-resident `Image`** (H2D copy).
-    ///
-    /// Unlike [`to_cuda`](Self::to_cuda), the result keeps the `Image<T, C>`
-    /// type, so device images flow through the same typed APIs as host images
-    /// (e.g. residency-aware color conversion). The backing storage is a typed
-    /// `CudaResource<T>`, so `as_cudaslice::<T>()` / `cuda_stream()` work on it.
+    /// The entire contiguous `H × W × C` byte buffer is copied host→device in a
+    /// single `clone_htod` call. The result keeps the `Image<T, C>` type (backed
+    /// by a typed `CudaResource<T>`, so `as_cudaslice::<T>()` / `cuda_stream()`
+    /// work on it), so device images flow through the same typed APIs as host
+    /// ones (e.g. residency-aware color conversion). To get the underlying
+    /// device `Tensor` instead, use `image.0.to_cuda(stream)`.
     ///
     /// # Errors
     ///
     /// Returns [`ImageError::Cuda`] on CUDA failure.
-    pub fn to_cuda_image(&self, stream: &Arc<CudaStream>) -> Result<Image<T, C>, ImageError> {
+    pub fn to_cuda(&self, stream: &Arc<CudaStream>) -> Result<Image<T, C>, ImageError> {
         let dev = self
             .0
             .to_cuda(stream)
@@ -75,7 +64,7 @@ where
     /// [`kornia_tensor::zeros_cuda`]), so `as_cudaslice::<T>()` and
     /// `cuda_stream()` work on the result. Device images intended for
     /// kernel dispatch must be created through this or
-    /// [`to_cuda_image`](Self::to_cuda_image) — the raw `CudaAllocator` path
+    /// [`to_cuda`](Self::to_cuda) — the raw `CudaAllocator` path
     /// stores untyped `CudaResource<u8>` and will not downcast for `T ≠ u8`.
     ///
     /// # Errors

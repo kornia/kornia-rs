@@ -1571,7 +1571,7 @@ mod tests {
                 .sampling(sampling)
                 .build_cuda(stream.clone())
                 .unwrap();
-            let dev: Image<u8, 3> = Image(src.0.to_cuda(&stream).unwrap());
+            let dev: Image<u8, 3> = src.to_cuda(&stream).unwrap();
             let mut dst = zeros_cuda::<f32, 4>([1, 3, 4, 4], &stream).unwrap();
             pre.run(&dev, &mut dst).unwrap();
             let out = stream.clone_dtoh(dst.as_cudaslice().unwrap()).unwrap();
@@ -1615,7 +1615,7 @@ mod tests {
                 .build_cuda(stream.clone())
                 .unwrap();
 
-            let dev_img: Image<u8, 4> = Image(tight.0.to_cuda(&stream).unwrap());
+            let dev_img: Image<u8, 4> = tight.to_cuda(&stream).unwrap();
             let mut d_img = zeros_cuda::<f32, 4>([1, 3, 6, 8], &stream).unwrap();
             pre.run(&dev_img, &mut d_img).unwrap();
 
@@ -1649,7 +1649,7 @@ mod tests {
 
         let stream = CudaContext::new(0).unwrap().default_stream();
         let src = host_gradient::<3>(23, 17);
-        let dev: Image<u8, 3> = Image(src.0.to_cuda(&stream).unwrap());
+        let dev: Image<u8, 3> = src.to_cuda(&stream).unwrap();
         for sampling in ALL_SAMPLING {
             let pre = Preprocessor::builder()
                 .mode(ResizeMode::Letterbox)
@@ -1713,7 +1713,7 @@ mod tests {
                 let mut d_cpu = host_dst(6, 8);
                 cpu.run(src, &mut d_cpu).unwrap();
 
-                let dev: Image<u8, 3> = Image(src.0.to_cuda(&stream).unwrap());
+                let dev: Image<u8, 3> = src.to_cuda(&stream).unwrap();
                 let mut d_gpu = zeros_cuda::<f32, 4>([1, 3, 6, 8], &stream).unwrap();
                 gpu.run(&dev, &mut d_gpu).unwrap();
                 let gpu_host = stream.clone_dtoh(d_gpu.as_cudaslice().unwrap()).unwrap();
@@ -1818,7 +1818,7 @@ mod tests {
 
         for (fmt, raw, rgb_ref) in &cases {
             let d_raw = stream.clone_htod(raw).unwrap();
-            let d_rgb: Image<u8, 3> = Image(rgb_ref.0.to_cuda(&stream).unwrap());
+            let d_rgb: Image<u8, 3> = rgb_ref.to_cuda(&stream).unwrap();
             for sampling in ALL_SAMPLING {
                 let fused = Preprocessor::builder()
                     .sampling(sampling)

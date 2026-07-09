@@ -3883,7 +3883,7 @@ fn upload_device(
             // SAFETY: caller validated a host backing (ensure_host); borrow bytes.
             let host =
                 unsafe { backing::borrow_image::<$t, $c>(backing, shape) }.map_err(to_pyerr)?;
-            let dev = host.to_cuda_image(stream).map_err(to_pyerr)?;
+            let dev = host.to_cuda(stream).map_err(to_pyerr)?;
             DeviceImage::$variant(dev)
         }};
     }

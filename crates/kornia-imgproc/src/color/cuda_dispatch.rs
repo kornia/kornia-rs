@@ -149,7 +149,7 @@ where
 fn untyped_device_err(what: &str) -> ImageError {
     ImageError::Cuda(format!(
         "{what} image is device-resident but not backed by a typed CudaResource; \
-         create device images via Image::to_cuda_image / zeros_cuda (or the \
+         create device images via Image::to_cuda / zeros_cuda (or the \
          color-space newtype to_cuda / zeros_cuda helpers)"
     ))
 }
