@@ -2451,6 +2451,7 @@ checksum = "3d7b894f5411737b7867f4827955924d7c254fc9f4d91a6aad6b097804b1018b"
 name = "color_spaces"
 version = "0.1.15-rc.4"
 dependencies = [
+ "cudarc 0.19.8",
  "kornia-image",
  "kornia-imgproc",
  "kornia-io",

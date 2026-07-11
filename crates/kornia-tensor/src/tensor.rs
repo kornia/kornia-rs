@@ -1596,13 +1596,9 @@ mod tests {
         let data: Vec<u8> = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
         let t = Tensor::<u8, 3>::from_shape_vec([2, 2, 3], data.clone())?;
         assert!(t.is_standard_layout());
-        match t.to_standard_layout(host_alloc()) {
-            Ok(t2) => {
-                assert!(t2.is_standard_layout());
-                assert_eq!(t2.storage.as_slice(), data.as_slice());
-            }
-            Err(e) => return Err(e),
-        }
+        let t2 = t.to_standard_layout(host_alloc())?;
+        assert!(t2.is_standard_layout());
+        assert_eq!(t2.storage.as_slice(), data.as_slice());
         Ok(())
     }
 
@@ -1613,12 +1609,8 @@ mod tests {
         // altering strides
         t.strides = [1, 6, 2];
         assert!(!t.is_standard_layout());
-        match t.to_standard_layout(host_alloc()) {
-            Ok(t2) => {
-                assert!(t2.is_standard_layout());
-            }
-            Err(e) => return Err(e),
-        }
+        let t2 = t.to_standard_layout(host_alloc())?;
+        assert!(t2.is_standard_layout());
         Ok(())
     }
 }

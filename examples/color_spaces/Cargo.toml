@@ -10,13 +10,7 @@ repository = { workspace = true }
 license = { workspace = true }
 publish = false
 
-[features]
-cuda = ["dep:cudarc", "kornia-image/cuda", "kornia-imgproc/cuda"]
-
 [dependencies]
-kornia-image = { workspace = true }
-kornia-imgproc = { workspace = true }
-kornia-io = { workspace = true }
 cudarc = { version = "0.19", default-features = false, features = [
   "cuda-version-from-build-system",
   "driver",
@@ -25,3 +19,9 @@ cudarc = { version = "0.19", default-features = false, features = [
   "nvrtc",
   "std",
 ], optional = true }
+kornia-image = { workspace = true }
+kornia-imgproc = { workspace = true }
+kornia-io = { workspace = true }
+
+[features]
+cuda = ["dep:cudarc", "kornia-image/cuda", "kornia-imgproc/cuda"]
