@@ -29,6 +29,25 @@ fn adjugate3x3(m: &[f32; 9]) -> [f32; 9] {
     ]
 }
 
+/// Invert a 3×3 homography matrix.
+///
+/// Returns `None` for degenerate matrices (|det| < 1e-10).  The CUDA
+/// warp-perspective kernel writes zeros for any output pixel whose w-coordinate
+/// falls below the same threshold.
+pub(crate) fn invert_homography(m: &[f32; 9]) -> Option<[f32; 9]> {
+    let det = determinant3x3(m);
+    if det.abs() < 1e-10 {
+        return None;
+    }
+    let adj = adjugate3x3(m);
+    let inv_det = 1.0 / det;
+    let mut inv = [0.0f32; 9];
+    for i in 0..9 {
+        inv[i] = adj[i] * inv_det;
+    }
+    Some(inv)
+}
+
 fn inverse_perspective_matrix(m: &[f32; 9]) -> Result<[f32; 9], ImageError> {
     let det = determinant3x3(m);
 
