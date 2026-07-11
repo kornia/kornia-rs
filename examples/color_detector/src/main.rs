@@ -23,9 +23,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut rgb_f32 = Image::<f32, 3>::from_size_val(rgb.size(), 0.0)?;
     ops::cast_and_scale(&rgb, &mut rgb_f32, 1.0)?;
 
-    // binarize the image as u8
+    // convert RGB to HSV for color-range thresholding
     let mut hsv = Image::<f32, 3>::from_size_val(rgb.size(), 0.0)?;
-    imgproc::color::hsv_from_rgb(&rgb_f32, &mut hsv)?; // convert to u8 (0-255)
+    imgproc::color::hsv_from_rgb(&rgb_f32, &mut hsv)?;
 
     // create the mask for the green color
     let mut mask = Image::<u8, 1>::from_size_val(hsv.size(), 0)?;

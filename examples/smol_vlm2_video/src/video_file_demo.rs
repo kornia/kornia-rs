@@ -9,33 +9,13 @@ use kornia_vlm::video::VideoSample;
 use crate::Args;
 use std::error::Error;
 
-/// Video file demo with intelligent frame buffering and native video understanding.
+/// Run SmolVLM2 over a video file.
 ///
-/// This function demonstrates how to process video files with SmolVLM2 using proper
-/// video understanding with `Line::Video` and the `Video` struct, providing comprehensive
-/// temporal context analysis with configurable FPS streaming.
+/// Reads the file with `--fps` frame-rate control at the GStreamer pipeline
+/// (`videorate`), keeps a rolling buffer of the last `max_frames_in_buffer`
+/// frames, and passes the buffer to SmolVLM2 as `InputMedia::Video` so the model
+/// sees temporal context. Results are logged to Rerun.
 ///
-/// ## Features:
-/// - **Native Video Understanding**: Uses `Line::Video` and `InputMedia::Video` for true video comprehension
-/// - **FPS Streaming Control**: Processes frames at the specified FPS rate to control processing speed
-/// - **Automatic Frame Management**: Maintains a rolling buffer of frames with configurable size
-/// - **Memory Optimization**: Automatically removes old frames to prevent memory accumulation
-/// - **Temporal Context**: Analyzes entire video sequences for motion and temporal understanding
-/// - **Real-time Logging**: Streams results to Rerun for visualization
-///
-/// ## Video Buffer Management:
-/// - Creates a `VideoSample` object to manage frame history
-/// - Adds new frames with timestamps for temporal tracking
-/// - Automatically removes old frames when buffer exceeds `max_frames_in_buffer`
-/// - Passes entire video buffer to SmolVLM2 for holistic video analysis
-///
-/// ## FPS Control:
-/// - Uses the `--fps` argument to control video frame rate at the GStreamer pipeline level
-/// - Employs `videorate` element to limit frame rate at the source, not just processing delays
-/// - Ensures actual frame rate control rather than post-processing timing adjustments
-/// - Provides consistent, hardware-level frame rate limiting
-///
-/// ## Usage:
 /// ```bash
 /// cargo run --bin smol_vlm2_video --video-file video.mp4 --prompt "What do you see?" --fps 2
 /// ```

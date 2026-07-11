@@ -11,6 +11,17 @@ license = { workspace = true }
 publish = false
 
 [dependencies]
+cudarc = { version = "0.19", default-features = false, features = [
+  "cuda-version-from-build-system",
+  "driver",
+  "fallback-dynamic-loading",
+  "fallback-latest",
+  "nvrtc",
+  "std",
+], optional = true }
 kornia-image = { workspace = true }
 kornia-imgproc = { workspace = true }
 kornia-io = { workspace = true }
+
+[features]
+cuda = ["dep:cudarc", "kornia-image/cuda", "kornia-imgproc/cuda"]

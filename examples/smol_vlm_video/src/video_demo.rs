@@ -55,21 +55,21 @@ pub fn video_demo(args: &crate::Args) -> Result<(), Box<dyn std::error::Error>> 
         buffer_size: 4,
     })?;
 
-    println!("📹 Starting webcam capture...");
+    println!("Starting webcam capture");
     println!("Requested FPS: {0}", args.fps);
     println!("Image size: {img_size:?}");
 
     if let Err(e) = webcam.set_control(ExposureDynamicFramerate(false)) {
-        println!("⚠️ Could not disable dynamic framerate: {e}");
+        println!("Could not disable dynamic framerate: {e}");
     }
 
     // Enable auto exposure and auto white balance for best image quality
     if let Err(e) = webcam.set_control(AutoExposure(AutoExposureMode::Priority)) {
-        println!("⚠️ Could not enable aperture priority mode: {e}");
+        println!("Could not enable aperture priority mode: {e}");
     }
 
     if let Err(e) = webcam.set_control(WhiteBalanceAutomatic(true)) {
-        println!("⚠️ Could not enable white balance automatic: {e}");
+        println!("Could not enable white balance automatic: {e}");
     }
 
     let mut fps_counter = FpsCounter::new();

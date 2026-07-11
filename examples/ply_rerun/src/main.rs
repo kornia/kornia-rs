@@ -24,7 +24,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ => return Err(format!("Unsupported property: {}", args.ply_type).into()),
     };
 
-    // read the image
+    // read the point cloud
     let pointcloud = k3d::io::ply::read_ply_binary(args.ply_path, ply_type)?;
     println!("Read #{} points", pointcloud.len());
 

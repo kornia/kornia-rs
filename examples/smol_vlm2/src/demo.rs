@@ -78,9 +78,7 @@ mod tests {
     fn test_smolvlm2_image_inference_speed() {
         env_logger::init();
 
-        log::info!("============================================================");
-        log::info!("SMOLVLM2 RUST IMAGE INFERENCE SPEED TEST");
-        log::info!("============================================================");
+        log::info!("SmolVLM2 image inference speed test");
 
         let path = Path::new("../../100462016.jpeg");
         let image = match path.extension().and_then(|ext| ext.to_str()) {
@@ -158,9 +156,7 @@ mod tests {
     fn test_smolvlm2_video_inference_speed() {
         env_logger::init();
 
-        log::info!("============================================================");
-        log::info!("SMOLVLM2 RUST SPEED TEST RESULTS");
-        log::info!("============================================================");
+        log::info!("SmolVLM2 speed test results");
 
         // Video test section (measure video loading and model inference speed)
         #[cfg(feature = "gstreamer")]
@@ -263,7 +259,7 @@ mod tests {
                 if video_test_count > 0 {
                     let video_avg_time = video_total_time / video_test_count as f64;
                     let inference_avg_time = inference_total_time / video_test_count as f64;
-                    log::info!("🏁 Video 32 frames Section Performance:");
+                    log::info!("Video 32 frames section performance:");
                     log::info!("   Average Load Time: {:.3}s", video_avg_time);
                     log::info!("   Average Inference Time: {:.3}s", inference_avg_time);
                     log::info!("   Total Tests: {}", video_test_count);

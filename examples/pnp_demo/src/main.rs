@@ -262,21 +262,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Compute pose accuracy
     let trans_error = (result.translation - gt_t).length();
 
-    println!("\n=== Results ===");
     println!("Translation error: {trans_error:.3} units");
     if let Some(rmse) = result.reproj_rmse {
         println!("Reprojection RMSE: {rmse:.3} px");
     }
-
-    println!("\n=== Configuration ===");
-    println!("To use RANSAC: run with --use-ransac");
-    println!("To use direct EPnP: run without --use-ransac");
-    println!("To enable LM refinement: run with --refine");
-
-    println!("\n=== Visualization ===");
-    println!("- Green points: Observed 2D points");
-    println!("- Blue points: Reprojected 3D points using estimated pose");
-    println!("- Yellow points: Original 3D cube structure");
-    println!("- Orange point: Estimated camera center");
     Ok(())
 }
