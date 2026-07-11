@@ -114,9 +114,9 @@ pub fn from_video_path<const N: usize, P: AsRef<std::path::Path>>(
     // Give the pipeline time to start up and begin buffering frames
     std::thread::sleep(std::time::Duration::from_millis(100));
 
-    // Read frames from the video with a more patient approach
+    // Read frames from the video, tolerating gaps while the stream fills.
     let mut consecutive_no_frames = 0;
-    let max_consecutive_no_frames = 50; // More patience for streaming
+    let max_consecutive_no_frames = 50;
     let frame_wait_ms = 33; // ~30fps equivalent wait time
 
     loop {
@@ -183,11 +183,11 @@ pub fn from_video_path<const N: usize, P: AsRef<std::path::Path>>(
                     if take && frames.len() < N {
                         frames.push(img);
                         frame_pts.push(current_pos);
-                        log::debug!("[kornia-io] ✓ SAMPLED frame {} (pos: {}, timestamp: {}s) - Total sampled: {}",
+                        log::debug!("[kornia-io] sampled frame {} (pos: {}, timestamp: {}s) - total sampled: {}",
                                    frame_idx, current_pos, current_pos as f64 / 1_000_000_000.0, frames.len());
                     } else if take {
                         log::debug!(
-                            "[kornia-io] ✗ Skipped frame {} due to N (max frame) limit",
+                            "[kornia-io] skipped frame {} due to N (max frame) limit",
                             frame_idx
                         );
                     }
@@ -298,7 +298,7 @@ pub fn from_video_path<const N: usize, P: AsRef<std::path::Path>>(
                 for (i, &idx) in indices_to_sample.iter().enumerate() {
                     frames.push(all_frames[idx].clone());
                     ts.push((all_pts[idx] / 1_000_000_000) as u32);
-                    log::debug!("[kornia-io] ✓ SAMPLED frame at index {} (pos: {}, timestamp: {}s) - Uniform selection {}/{}",
+                    log::debug!("[kornia-io] sampled frame at index {} (pos: {}, timestamp: {}s) - uniform selection {}/{}",
                                idx, all_pts[idx], all_pts[idx] as f64 / 1_000_000_000.0, i + 1, num);
                 }
             }

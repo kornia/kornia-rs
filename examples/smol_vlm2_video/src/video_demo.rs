@@ -57,21 +57,21 @@ pub fn video_demo(args: &crate::Args) -> Result<(), Box<dyn std::error::Error>> 
         buffer_size: 4,
     })?;
 
-    println!("📹 Starting webcam capture...");
+    println!("Starting webcam capture");
     println!("Requested FPS: {0}", args.fps);
     println!("Image size: {img_size:?}");
 
     if let Err(e) = webcam.set_control(ExposureDynamicFramerate(false)) {
-        println!("⚠️ Could not disable dynamic framerate: {e}");
+        println!("Could not disable dynamic framerate: {e}");
     }
 
     // Enable auto exposure and auto white balance for best image quality
     if let Err(e) = webcam.set_control(AutoExposure(AutoExposureMode::Priority)) {
-        println!("⚠️ Could not enable aperture priority mode: {e}");
+        println!("Could not enable aperture priority mode: {e}");
     }
 
     if let Err(e) = webcam.set_control(WhiteBalanceAutomatic(true)) {
-        println!("⚠️ Could not enable white balance automatic: {e}");
+        println!("Could not enable white balance automatic: {e}");
     }
 
     let mut fps_counter = FpsCounter::new();
@@ -82,15 +82,9 @@ pub fn video_demo(args: &crate::Args) -> Result<(), Box<dyn std::error::Error>> 
     let prompt = &args.prompt as &str;
     let mut smolvlm2 = SmolVlm2::new(SmolVlm2Config::default())?;
 
-    // === Video Understanding Implementation ===
-    // This implementation uses Line::Video and InputMedia::Video for proper video understanding:
-    //    - Uses Line::Video in message content
-    //    - Passes entire VideoSample via InputMedia::Video
-    //    - Leverages SmolVLM2's native video processing for temporal analysis
-    //    - Provides holistic understanding of motion and temporal relationships
-    //
-    // The video buffer maintains a rolling window of frames with automatic cleanup
-    // to prevent memory accumulation during long camera streaming.
+    // Pass frames as InputMedia::Video (not per-image) so the model sees temporal
+    // context. The buffer below keeps a rolling window with automatic cleanup so
+    // memory stays bounded during long camera streams.
 
     // Create a video object to manage frames with a rolling buffer
     const MAX_FRAMES_IN_BUFFER: usize = 32; // After around keeping 50 frames, CUDA OOM for 24gb GPU

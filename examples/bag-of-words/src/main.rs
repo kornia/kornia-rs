@@ -6,10 +6,7 @@ const BRANCHING_FACTOR: usize = 10;
 const DESC_DIM: usize = 4;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("=== kornia-bow Feature Demo ===\n");
-
-    // Generate dummy data
-    println!("-> Generating descriptors...");
+    // Generate dummy descriptors.
     let mut rng = StdRng::seed_from_u64(42);
 
     let train_data: Vec<Feature<u64, DESC_DIM>> = (0..10_000)
@@ -40,24 +37,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .collect();
 
-    // Train
-    println!("-> Training vocabulary...");
+    // Train the vocabulary tree.
     let vocab = Vocabulary::<BRANCHING_FACTOR, Hamming<DESC_DIM>>::train(&train_data, 3)?;
 
-    // Persistence
-    println!("-> Saving and loading...");
+    // Round-trip through disk.
     let path = "temp_vocab.bin";
     vocab.save(path)?;
     let loaded_vocab = Vocabulary::<BRANCHING_FACTOR, Hamming<DESC_DIM>>::load(path)?;
     std::fs::remove_file(path)?;
 
-    // Transform
-    println!("-> Transforming to BoW vectors...");
+    // Transform the queries into BoW vectors.
     let mut bow1 = loaded_vocab.transform(&query1)?;
     let mut bow2 = loaded_vocab.transform(&query2)?;
 
     // Similarity scores (L1)
-    println!("-> Similarity Scores (L1-normalized):");
+    println!("Similarity scores (L1-normalized):");
     bow1.normalize_l1();
     bow2.normalize_l1();
 
@@ -72,7 +66,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("   KL Divergence: {:.4}", s_kl);
 
     // Similarity scores (L2)
-    println!("\n-> Similarity Scores (L2-normalized):");
+    println!("\nSimilarity scores (L2-normalized):");
     let mut bow1_l2 = bow1.clone();
     let mut bow2_l2 = bow2.clone();
     bow1_l2.normalize_l2();
@@ -81,11 +75,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("   L2 Score:      {:.4}", bow1_l2.l2(&bow2_l2));
     println!("   Dot Product:   {:.4}", bow1_l2.dot_product(&bow2_l2));
 
-    // Direct Index
-    println!("\n-> Direct Index (level 2):");
+    // Direct index
+    println!("\nDirect index (level 2):");
     let (_bow, direct_index) = loaded_vocab.transform_with_direct_index(&query1, 2)?;
     println!("   Nodes at level 2: {}", direct_index.0.len());
 
-    println!("\n=== Demo Complete ===");
     Ok(())
 }
