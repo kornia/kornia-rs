@@ -10,9 +10,9 @@ English | [简体中文](README.zh-CN.md)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Discord](https://img.shields.io/badge/Discord-5865F2?logo=discord&logoColor=white)](https://discord.gg/HfnywwpBnD)
 
-The `kornia` crate is a low level library for Computer Vision written in [Rust](https://www.rust-lang.org/) 🦀
+The `kornia` crate is a low-level computer vision library for [Rust](https://www.rust-lang.org/) 🦀
 
-Use the library to perform image I/O, visualization and other low level operations in your machine learning and data-science projects in a thread-safe and efficient way.
+Fast, thread-safe image I/O and processing with a single API that runs on the CPU or an NVIDIA GPU — the same `Image` and operators dispatch on where the data lives. It hands results to PyTorch and TensorRT with no host copy (DLPack, CUDA Array Interface), and fuses a camera frame into a normalized model input in one CUDA kernel — built for real-time pipelines.
 
 ## 📚 Table of Contents
 
@@ -57,11 +57,12 @@ Goodbyte!
 
 ## Features
 
-- 🦀 The library is primarily written in [Rust](https://www.rust-lang.org/).
-- 🚀 Multi-threaded and efficient image I/O, image processing and advanced computer vision operators.
-- 🔢 Efficient Tensor and Image API for deep learning and scientific computing.
-- 🐍 Python bindings are created with [PyO3/Maturin](https://github.com/PyO3/maturin).
-- 📦 We package with support for Linux [amd64/arm64], macOS and Windows.
+- 🦀 Written in [Rust](https://www.rust-lang.org/): memory- and thread-safe, no GIL — usable from the free-threaded Python build.
+- ⚡ Fast image I/O and processing: libjpeg-turbo decoding and SIMD (NEON/AVX2) kernels.
+- 🎯 One API, CPU or GPU: the same `Image` and operators dispatch on residency — no separate GPU types.
+- 🔌 Zero-copy ML interop: DLPack and `__cuda_array_interface__` to and from PyTorch, plus numpy views.
+- 🎥 Real-time ready: V4L2 camera capture and a fused NV12/YUYV → normalized CHW CUDA kernel for inference.
+- 🐍 Python bindings via [PyO3/Maturin](https://github.com/PyO3/maturin), packaged for Linux (amd64/arm64, incl. Jetson), macOS and Windows; the same wheel is CPU-only or activates CUDA when an NVIDIA GPU is present.
 - Supported Python versions are 3.8 through 3.14, including the free-threaded (3.13t/3.14t) build.
 
 ### Supported image formats
