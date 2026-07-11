@@ -2,7 +2,7 @@
 //!
 //! This module is enabled by the `cudarc` feature flag. It provides
 //! [`Image::to_cuda`], which uploads a host-backed image to a new
-//! device-backed [`kornia_tensor::Tensor`] via a host-to-device copy.
+//! device-resident [`Image`] via a host-to-device copy.
 //!
 //! # Example
 //!
@@ -32,36 +32,25 @@ use cudarc::driver::{CudaStream, DeviceRepr, ValidAsZeroBits};
 
 use crate::error::ImageError;
 use crate::image::{Image, ImageSize};
-use kornia_tensor::{CudaError, Tensor};
 
 impl<T, const C: usize> Image<T, C>
 where
     T: DeviceRepr + ValidAsZeroBits + Clone + Default + 'static,
 {
-    /// Upload this image's buffer to a new device tensor (H2D) on `stream`.
+    /// Upload this image to a new **device-resident `Image`** (H2D copy) on
+    /// `stream`.
     ///
-    /// The entire contiguous `H × W × C` byte buffer is copied from host to
-    /// device in a single `clone_htod` call. The returned tensor has shape
-    /// `[H, W, C]` and is backed by a [`CudaAllocator`].
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CudaError::Driver`] on CUDA failure.
-    pub fn to_cuda(&self, stream: &Arc<CudaStream>) -> Result<Tensor<T, 3>, CudaError> {
-        self.0.to_cuda(stream)
-    }
-
-    /// Upload this image to a new **device-resident `Image`** (H2D copy).
-    ///
-    /// Unlike [`to_cuda`](Self::to_cuda), the result keeps the `Image<T, C>`
-    /// type, so device images flow through the same typed APIs as host images
-    /// (e.g. residency-aware color conversion). The backing storage is a typed
-    /// `CudaResource<T>`, so `as_cudaslice::<T>()` / `cuda_stream()` work on it.
+    /// The entire contiguous `H × W × C` byte buffer is copied host→device in a
+    /// single `clone_htod` call. The result keeps the `Image<T, C>` type (backed
+    /// by a typed `CudaResource<T>`, so `as_cudaslice::<T>()` / `cuda_stream()`
+    /// work on it), so device images flow through the same typed APIs as host
+    /// ones (e.g. residency-aware color conversion). To get the underlying
+    /// device `Tensor` instead, use `image.0.to_cuda(stream)`.
     ///
     /// # Errors
     ///
     /// Returns [`ImageError::Cuda`] on CUDA failure.
-    pub fn to_cuda_image(&self, stream: &Arc<CudaStream>) -> Result<Image<T, C>, ImageError> {
+    pub fn to_cuda(&self, stream: &Arc<CudaStream>) -> Result<Image<T, C>, ImageError> {
         let dev = self
             .0
             .to_cuda(stream)
@@ -75,7 +64,7 @@ where
     /// [`kornia_tensor::zeros_cuda`]), so `as_cudaslice::<T>()` and
     /// `cuda_stream()` work on the result. Device images intended for
     /// kernel dispatch must be created through this or
-    /// [`to_cuda_image`](Self::to_cuda_image) — the raw `CudaAllocator` path
+    /// [`to_cuda`](Self::to_cuda) — the raw `CudaAllocator` path
     /// stores untyped `CudaResource<u8>` and will not downcast for `T ≠ u8`.
     ///
     /// # Errors
@@ -87,6 +76,30 @@ where
     ) -> Result<Image<T, C>, ImageError> {
         let dev = kornia_tensor::zeros_cuda::<T, 3>([size.height, size.width, C], stream)
             .map_err(|e| ImageError::Cuda(e.to_string()))?;
+        Image::try_from(dev)
+    }
+
+    /// Allocate an **uninitialized** device-resident image — [`Self::zeros_cuda`]
+    /// without the zeroing memset. The fast path for a destination a kernel will
+    /// fully overwrite (e.g. a color conversion that writes every output pixel).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ImageError::Cuda`] on CUDA allocation failure.
+    ///
+    /// # Safety
+    ///
+    /// The image's device memory is uninitialized; the caller MUST fully write
+    /// every pixel before any read. See [`kornia_tensor::uninit_cuda`].
+    pub unsafe fn uninit_cuda(
+        size: ImageSize,
+        stream: &Arc<CudaStream>,
+    ) -> Result<Image<T, C>, ImageError> {
+        // SAFETY: forwarded to the caller — the returned image must be fully
+        // written before it is read.
+        let dev =
+            unsafe { kornia_tensor::uninit_cuda::<T, 3>([size.height, size.width, C], stream) }
+                .map_err(|e| ImageError::Cuda(e.to_string()))?;
         Image::try_from(dev)
     }
 
@@ -107,19 +120,34 @@ where
         Image::try_from(t)
     }
 
-    /// Copy this device-resident image back to host using the image's **own
-    /// carried stream** (no stream parameter to get wrong).
+    /// Copy this device-resident image back to a new, owned host image using
+    /// the image's **own carried stream** (no stream parameter to get wrong).
     ///
     /// # Errors
     ///
     /// Returns [`ImageError::Cuda`] on CUDA failure or if the image is not
     /// device-backed.
-    pub fn download(&self) -> Result<Image<T, C>, ImageError> {
+    pub fn to_host_owned(&self) -> Result<Image<T, C>, ImageError> {
         let host = self
             .0
-            .download()
+            .to_host_owned()
             .map_err(|e| ImageError::Cuda(e.to_string()))?;
         Image::try_from(host)
+    }
+
+    /// D2H-copy this device-resident image directly into a caller-provided host
+    /// slice (its own carried stream, synchronized before returning) — avoiding
+    /// the extra allocation + copy that [`Self::to_host_image`] performs when the
+    /// caller already owns the destination buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ImageError::Cuda`] on CUDA failure, a `dst`-length mismatch, or
+    /// if the image is not device-backed.
+    pub fn to_host_into(&self, dst: &mut [T]) -> Result<(), ImageError> {
+        self.0
+            .to_host_into(dst)
+            .map_err(|e| ImageError::Cuda(e.to_string()))
     }
 
     /// Copy this device-resident image back to a new host-backed `Image` (D2H).

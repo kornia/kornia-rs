@@ -11,10 +11,10 @@ mod color;
 mod color_space;
 mod cpu;
 mod crop;
-#[cfg(feature = "cuda")]
-#[path = "cuda.rs"]
 mod cuda_ext;
 mod depth;
+#[cfg(feature = "cuda")]
+mod device;
 mod dlpack;
 mod enhance;
 mod feature_match;
@@ -74,6 +74,13 @@ fn warn_deprecation(py: Python<'_>, message: &str) -> PyResult<()> {
 
 // Root Level Deprecated Wrappers
 
+/// The deprecated root-level color shims always pass a numpy array, so the
+/// now-polymorphic `imgproc.*` op returns numpy — recover the concrete
+/// `PyImage` for the shim's declared return type.
+fn as_pyimage(py: Python<'_>, obj: pyo3::Py<pyo3::PyAny>) -> PyResult<image::PyImage> {
+    obj.bind(py).extract::<image::PyImage>().map_err(Into::into)
+}
+
 // Color
 #[pyfunction(name = "rgb_from_gray")]
 pub fn rgb_from_gray_deprecated(py: Python<'_>, image: image::PyImage) -> PyResult<image::PyImage> {
@@ -81,7 +88,7 @@ pub fn rgb_from_gray_deprecated(py: Python<'_>, image: image::PyImage) -> PyResu
         py,
         "kornia_rs.rgb_from_gray is deprecated. Use kornia_rs.imgproc.rgb_from_gray.",
     )?;
-    color::rgb_from_gray(py, image)
+    as_pyimage(py, color::rgb_from_gray(py, image.bind(py).as_any())?)
 }
 
 #[pyfunction(name = "rgb_from_rgba")]
@@ -95,7 +102,10 @@ pub fn rgb_from_rgba_deprecated(
         py,
         "kornia_rs.rgb_from_rgba is deprecated. Use kornia_rs.imgproc.rgb_from_rgba.",
     )?;
-    color::rgb_from_rgba(py, image, background)
+    as_pyimage(
+        py,
+        color::rgb_from_rgba(py, image.bind(py).as_any(), background)?,
+    )
 }
 
 #[pyfunction(name = "rgb_from_bgra")]
@@ -109,7 +119,10 @@ pub fn rgb_from_bgra_deprecated(
         py,
         "kornia_rs.rgb_from_bgra is deprecated. Use kornia_rs.imgproc.rgb_from_bgra.",
     )?;
-    color::rgb_from_bgra(py, image, background)
+    as_pyimage(
+        py,
+        color::rgb_from_bgra(py, image.bind(py).as_any(), background)?,
+    )
 }
 
 #[pyfunction(name = "bgr_from_rgb")]
@@ -118,7 +131,7 @@ pub fn bgr_from_rgb_deprecated(py: Python<'_>, image: image::PyImage) -> PyResul
         py,
         "kornia_rs.bgr_from_rgb is deprecated. Use kornia_rs.imgproc.bgr_from_rgb.",
     )?;
-    color::bgr_from_rgb(py, image)
+    as_pyimage(py, color::bgr_from_rgb(py, image.bind(py).as_any())?)
 }
 
 #[pyfunction(name = "gray_from_rgb")]
@@ -127,7 +140,7 @@ pub fn gray_from_rgb_deprecated(py: Python<'_>, image: image::PyImage) -> PyResu
         py,
         "kornia_rs.gray_from_rgb is deprecated. Use kornia_rs.imgproc.gray_from_rgb.",
     )?;
-    color::gray_from_rgb(py, image)
+    as_pyimage(py, color::gray_from_rgb(py, image.bind(py).as_any())?)
 }
 
 // Enhance / Histogram
@@ -411,6 +424,7 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Imgproc submodule
     let imgproc_mod = PyModule::new(py, "imgproc")?;
     imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_gray, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(color::rgba_from_rgb, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_rgba, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(color::rgb_from_bgra, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(color::bgr_from_rgb, &imgproc_mod)?)?;
@@ -596,7 +610,14 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     add_imagenet_consts(m)?;
 
-    #[cfg(feature = "cuda")]
+    // Tensor/Preprocessor are not CUDA-specific — both run CPU-only without the
+    // `cuda` feature — so they're registered unconditionally at the top level
+    // rather than under kornia_rs.cuda. `cuda_ext::register` (the `kornia_rs.cuda`
+    // submodule: Stream, is_available, mem_get_info) is likewise always present,
+    // degrading gracefully (`is_available() == False`, clear errors on
+    // device-only calls) on a build without `cuda`.
+    m.add_class::<cuda_ext::PyTensor>()?;
+    m.add_class::<cuda_ext::PyPreprocessor>()?;
     cuda_ext::register(py, m)?;
 
     Ok(())

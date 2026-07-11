@@ -9,12 +9,17 @@
 //! - [`CudaAllocator`]: a [`TensorAllocator`] that allocates zero-initialised device
 //!   memory via `stream.alloc_zeros::<u8>(n)` and wraps the result in a `CudaResource`.
 //!
-//! - Five methods on [`Tensor`]:
+//! - Methods on [`Tensor`]:
 //!   - [`Tensor::from_cudaslice`] — wrap an existing `CudaSlice<T>` as a device tensor.
 //!   - [`Tensor::as_cudaslice`] — borrow the underlying `CudaSlice<u8>` (if any).
 //!   - [`Tensor::into_cudaslice`] — consume the tensor and return the `CudaSlice<u8>`.
 //!   - [`Tensor::to_cuda`] — copy a host tensor to a new device tensor (h→d).
-//!   - [`Tensor::to_host`] — copy a device tensor back to a new host tensor (d→h).
+//!   - [`Tensor::to_host`] — copy a device tensor back to a new host tensor on an
+//!     explicit stream (d→h).
+//!   - [`Tensor::to_host_owned`] — like `to_host`, using the tensor's own carried
+//!     stream (no stream parameter to get wrong).
+//!   - [`Tensor::to_host_into`] — copy into a caller-owned host slice (no new
+//!     allocation) using the tensor's own carried stream.
 //!
 //! # Memory-safety invariants
 //!
@@ -581,16 +586,59 @@ pub fn zeros_cuda<T, const N: usize>(
 where
     T: DeviceRepr + ValidAsZeroBits + 'static,
 {
-    let ctx = stream.context().clone();
-
     let numel: usize = shape.iter().product();
-    let n_bytes = numel * std::mem::size_of::<T>();
-
-    // Allocate zero-initialised, **typed** device memory so the storage is backed
-    // by `CudaResource<T>` (not `CudaResource<u8>`) — `as_cudaslice::<T>()` then works.
+    // Zero-initialised, **typed** device memory so the storage is backed by
+    // `CudaResource<T>` (not `CudaResource<u8>`) — `as_cudaslice::<T>()` then works.
     let slice: CudaSlice<T> = stream
         .alloc_zeros::<T>(numel)
         .map_err(|e| CudaError::Driver(e.to_string()))?;
+    Ok(wrap_device_slice(slice, shape, stream))
+}
+
+/// Allocate **uninitialized**, typed device memory backed by `CudaResource<T>` —
+/// [`zeros_cuda`] without the zeroing memset.
+///
+/// This is the fast path for a destination a kernel will fully overwrite: the
+/// per-allocation device-wide `memset` that [`zeros_cuda`] pays is pure waste
+/// when every output element is written before it is ever read.
+///
+/// # Safety
+///
+/// The returned tensor's device memory is uninitialized. The caller MUST fully
+/// write every element (e.g. launch a kernel that writes the whole output)
+/// before any host or device code reads it. Reading before the overwrite yields
+/// indeterminate values. Prefer [`zeros_cuda`] unless the full-overwrite is
+/// guaranteed.
+pub unsafe fn uninit_cuda<T, const N: usize>(
+    shape: [usize; N],
+    stream: &Arc<CudaStream>,
+) -> Result<Tensor<T, N>, CudaError>
+where
+    T: DeviceRepr + 'static,
+{
+    let numel: usize = shape.iter().product();
+    // SAFETY: the caller's contract (documented above) guarantees the memory is
+    // fully written before it is read; this mirrors `zeros_cuda` minus the memset.
+    let slice: CudaSlice<T> =
+        unsafe { stream.alloc::<T>(numel) }.map_err(|e| CudaError::Driver(e.to_string()))?;
+    Ok(wrap_device_slice(slice, shape, stream))
+}
+
+/// Wrap an already-allocated typed device `slice` into a `Tensor<T, N>` backed by
+/// a `CudaResource<T>`. The single owner/pointer-caching path shared by
+/// [`zeros_cuda`] and [`uninit_cuda`] — they differ only in how `slice` is
+/// allocated (zeroed vs uninitialized).
+fn wrap_device_slice<T, const N: usize>(
+    slice: CudaSlice<T>,
+    shape: [usize; N],
+    stream: &Arc<CudaStream>,
+) -> Tensor<T, N>
+where
+    T: DeviceRepr + 'static,
+{
+    let ctx = stream.context().clone();
+    let numel: usize = shape.iter().product();
+    let n_bytes = numel * std::mem::size_of::<T>();
 
     // Cache device pointer before moving `slice` into CudaResource.
     let id = ctx.ordinal() as i32;
@@ -616,11 +664,11 @@ where
     // allocation size; `resource` is the sole owner of that device memory.
     let storage = unsafe { storage_from_cuda_resource(resource, ptr as *mut T, n_bytes, alloc) };
     let strides = get_strides_from_shape(shape);
-    Ok(Tensor {
+    Tensor {
         storage,
         shape,
         strides,
-    })
+    }
 }
 
 // ── Helper: build a TensorStorage from a CudaResource ─────────────────────────
@@ -865,42 +913,13 @@ where
     /// Returns [`CudaError::Driver`] on CUDA failure.
     pub fn to_cuda(&self, stream: &Arc<CudaStream>) -> Result<Tensor<T, N>, CudaError> {
         let src_slice = self.as_slice(); // panics (correctly) if non-host-accessible
-
-        let ctx = stream.context().clone();
-        let id = ctx.ordinal() as i32;
-        let n_bytes = std::mem::size_of_val(src_slice);
-
-        // Copy host slice → a new device CudaSlice<T> (this is a transfer, copy is correct).
+                                         // Copy host slice → a new device CudaSlice<T> (this is a transfer, copy is
+                                         // correct), then wrap it via the shared owner/pointer-caching path so
+                                         // as_cudaslice::<T>() works on the result.
         let dev_slice: CudaSlice<T> = stream
             .clone_htod(src_slice)
             .map_err(|e| CudaError::Driver(e.to_string()))?;
-
-        // Extract device pointer; _sync must drop before dev_slice is moved.
-        let ptr = {
-            let (cu_ptr, _sync) = dev_slice.device_ptr(stream);
-            cu_ptr as *mut u8
-            // _sync drops here
-        };
-        let alloc: AllocHandle = Arc::new(CudaAllocator {
-            ctx,
-            stream: stream.clone(),
-        });
-        // Store as CudaResource<T> so as_cudaslice::<T>() also works on to_cuda results.
-        let resource = CudaResource::<T> {
-            slice: std::mem::ManuallyDrop::new(dev_slice),
-            ptr,
-            id,
-            stream: stream.clone(),
-            foreign: None,
-        };
-        let storage =
-            unsafe { storage_from_cuda_resource(resource, ptr as *mut T, n_bytes, alloc) };
-        let strides = get_strides_from_shape(self.shape);
-        Ok(Tensor {
-            storage,
-            shape: self.shape,
-            strides,
-        })
+        Ok(wrap_device_slice(dev_slice, self.shape, stream))
     }
 
     /// Copy this device tensor to a new host-backed tensor.
@@ -936,18 +955,55 @@ where
         })
     }
 
-    /// Copy this device tensor to a new host tensor using the tensor's **own
-    /// carried stream** — the one it was allocated/uploaded on — removing the
-    /// footgun of passing a different stream than the data's producer (a
-    /// read-before-write hazard). Synchronizes before returning.
+    /// Copy this device tensor to a new, owned host tensor using the tensor's
+    /// **own carried stream** — the one it was allocated/transferred on —
+    /// removing the footgun of passing a different stream than the data's
+    /// producer (a read-before-write hazard). Synchronizes before returning.
     ///
     /// # Errors
     ///
     /// [`CudaError::NotCudaBacked`] if the tensor is not device-backed by a
     /// typed [`CudaResource<T>`], or [`CudaError::Driver`] on CUDA failure.
-    pub fn download(&self) -> Result<Tensor<T, N>, CudaError> {
+    pub fn to_host_owned(&self) -> Result<Tensor<T, N>, CudaError> {
         let stream = self.cuda_stream().ok_or(CudaError::NotCudaBacked)?.clone();
         self.to_host(&stream)
+    }
+
+    /// D2H-copy this device tensor directly into a caller-provided host slice,
+    /// using the tensor's own carried stream and synchronizing before returning.
+    ///
+    /// Unlike [`Self::to_host`] / [`Self::to_host_in`] (which allocate a fresh
+    /// destination), this targets memory the caller already owns — e.g. an
+    /// aligned buffer that will back a numpy view — so no second host copy is
+    /// needed to move the pixels into their final home.
+    ///
+    /// # Errors
+    ///
+    /// [`CudaError::NotCudaBacked`] if the tensor is not device-backed by a typed
+    /// [`CudaResource<T>`], or [`CudaError::Driver`] on a `dst`-length mismatch or
+    /// CUDA failure.
+    pub fn to_host_into(&self, dst: &mut [T]) -> Result<(), CudaError> {
+        let numel: usize = self.shape.iter().product();
+        if dst.len() != numel {
+            return Err(CudaError::Driver(format!(
+                "to_host_into: dst len {} != tensor element count {numel}",
+                dst.len()
+            )));
+        }
+        let cuda_res = self
+            .storage
+            .owner
+            .as_any()
+            .downcast_ref::<CudaResource<T>>()
+            .ok_or(CudaError::NotCudaBacked)?;
+        let stream = self.cuda_stream().ok_or(CudaError::NotCudaBacked)?;
+        stream
+            .memcpy_dtoh(&*cuda_res.slice, dst)
+            .map_err(|e| CudaError::Driver(e.to_string()))?;
+        stream
+            .synchronize()
+            .map_err(|e| CudaError::Driver(e.to_string()))?;
+        Ok(())
     }
 
     /// Copy this device tensor to a new host tensor whose storage comes from
@@ -1041,6 +1097,45 @@ mod tests {
             &[1u8, 2, 3, 4],
             "round-trip bytes must match"
         );
+    }
+
+    /// `to_host_into` D2H-copies into a caller-provided slice (no intermediate
+    /// Vec) and rejects a length mismatch.
+    #[test]
+    fn to_host_into_matches_and_checks_len() {
+        let ctx = CudaContext::new(0).unwrap();
+        let stream = ctx.default_stream();
+
+        let host = Tensor::<u8, 1>::from_shape_vec([4], vec![10, 20, 30, 40]).unwrap();
+        let dev = host.to_cuda(&stream).unwrap();
+
+        let mut dst = vec![0u8; 4];
+        dev.to_host_into(&mut dst).unwrap();
+        assert_eq!(dst, vec![10, 20, 30, 40], "to_host_into bytes must match");
+
+        let mut wrong = vec![0u8; 3];
+        assert!(
+            dev.to_host_into(&mut wrong).is_err(),
+            "a dst-length mismatch must be rejected"
+        );
+    }
+
+    /// `uninit_cuda` allocates a typed device tensor that is correct once fully
+    /// overwritten (the full-overwrite safety contract).
+    #[test]
+    fn uninit_cuda_full_overwrite_roundtrip() {
+        let ctx = CudaContext::new(0).unwrap();
+        let stream = ctx.default_stream();
+
+        // SAFETY: the tensor is fully overwritten via memcpy_htod before any read.
+        let mut dev = unsafe { uninit_cuda::<u8, 1>([4], &stream) }.unwrap();
+        assert!(dev.as_cudaslice().is_some());
+
+        let slice = dev.as_cudaslice_mut().unwrap();
+        stream.memcpy_htod(&[7u8, 8, 9, 11], slice).unwrap();
+
+        let back = dev.to_host_owned().unwrap();
+        assert_eq!(back.as_slice(), &[7u8, 8, 9, 11]);
     }
 
     /// `as_cudaslice_mut` returns `Some` for a device tensor (CudaResource<T>-backed) and

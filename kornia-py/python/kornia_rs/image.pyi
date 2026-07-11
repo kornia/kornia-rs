@@ -6,6 +6,8 @@ from typing import Any, Optional, Sequence
 
 import numpy as np
 
+from .cuda import Stream
+
 class ImageSize:
     def __init__(self, width: int, height: int) -> None: ...
     @property
@@ -94,9 +96,24 @@ class Image:
         The Image borrows the caller's buffer and keeps the source alive."""
         ...
     @staticmethod
+    def zeros(width: int, height: int, channels: int, dtype: str = ...,
+              stream: Optional[Stream] = ...) -> Image:
+        """Zero-initialized ``(height, width, channels)`` Image. ``dtype`` is
+        ``"uint8"`` or ``"float32"``. ``stream=None`` → host; passing a ``Stream``
+        allocates directly on that stream's CUDA device (mirrors Rust
+        ``zeros_cuda``). To move existing data to a device, use ``.to_cuda(stream)``."""
+        ...
+    @staticmethod
     def from_dlpack(obj: Any) -> Image:
-        """Import a DLPack tensor (numpy >= 1.22, PyTorch, CuPy CPU) as a
-        zero-copy Image.  The producer object is kept alive as a keep-alive."""
+        """Import a DLPack tensor (numpy >= 1.22, PyTorch, CuPy, cuda-python…),
+        **inferring the device**: a CPU tensor becomes a host ``Image``, a CUDA
+        tensor becomes a device-resident ``Image`` on its own source device (not
+        always ``cuda:0``).
+
+        Always a zero-copy alias of the producer's buffer (mirroring
+        ``torch``/``numpy``'s zero-copy DLPack), kept alive for this ``Image``'s
+        lifetime and read-only (writes would land in the producer's memory). To
+        get an independent, writable buffer, copy the result yourself."""
         ...
     @staticmethod
     def load(path: str) -> Image: ...
@@ -160,11 +177,41 @@ class Image:
         The argument is positional-or-keyword (not keyword-only)."""
         ...
     def numpy(self) -> np.ndarray:
-        """Zero-copy numpy view of the underlying buffer (shares memory)."""
+        """Numpy array of the underlying buffer. A host image shares memory
+        (zero-copy view). A device (CUDA) image is copied back to host (D2H) and
+        the result is **read-only** — it does not share the device buffer, so
+        writes would be lost; use ``.cpu()`` for a writable host image."""
         ...
-    def copy(self) -> Image: ...
+    def copy(self) -> Image:
+        """Deep copy. Host-only: raises ``ValueError`` on a device image
+        (call ``.cpu()`` first)."""
+        ...
+
+    # --- device (CUDA) ---
+    @property
+    def device(self) -> str:
+        """``"cpu"`` or ``"cuda:{id}"``."""
+        ...
+    def cpu(self, stream: Optional[Stream] = ...) -> Image:
+        """Copy to host (CPU) memory. A device image is copied back (D2H);
+        a host image returns an owned copy."""
+        ...
+    def to_cuda(self, stream: Optional[Stream] = ...) -> Image:
+        """Copy to CUDA device memory (H2D), returning a device ``Image``.
+        A no-op handle share if already on device. Requires the ``cuda`` feature."""
+        ...
+    @property
+    def __cuda_array_interface__(self) -> dict:
+        """CUDA Array Interface (v3) for zero-copy sharing with cupy / numba /
+        cuda-python. Present on device images only; raises ``AttributeError`` on
+        host images."""
+        ...
 
     # --- transforms ---
+    # NOTE: every transform below reads/writes pixels on the host and is
+    # host-only — it raises ``ValueError`` on a device (CUDA) image. Move the
+    # image to the host first with ``.cpu()``. (GPU color ops live in
+    # ``kornia_rs.cuda`` and take/return device images.)
     def resize(self, width: int, height: int, interpolation: str = ..., antialias: bool = ...) -> Image: ...
     def resize_normalize_to_tensor(
         self,

@@ -177,6 +177,15 @@ pub enum Backing {
         /// carries the source tensor's real device (e.g. `(K_DL_CUDA, id)`).
         device: (i32, i32),
     },
+    /// A device-resident image (CUDA). Owns its typed device buffer (and the
+    /// `Arc<CudaStream>` carried inside it), so it can download, run kernels and
+    /// export DLPack zero-copy — unlike a raw `Borrowed` device pointer. Shared
+    /// via `Arc` so `.cuda()`/DLPack export can clone a keep-alive cheaply.
+    #[cfg(feature = "cuda")]
+    Device {
+        img: std::sync::Arc<crate::device::DeviceImage>,
+        readonly: bool,
+    },
 }
 // SAFETY: Owned is Send+Sync; Borrowed holds Send keep-alives and a raw ptr with exclusive logical ownership.
 // Sync is sound because all mutation of the pointed-to memory happens under the Python GIL.
@@ -187,12 +196,18 @@ impl Backing {
         match self {
             Backing::Owned(b) => b.ptr.as_ptr(),
             Backing::Borrowed { ptr, .. } => ptr.as_ptr(),
+            // Device pointer (CUdeviceptr). Only read by `__dlpack__` / the
+            // `data_ptr` getter; never dereferenced on the host.
+            #[cfg(feature = "cuda")]
+            Backing::Device { img, .. } => img.as_ptr(),
         }
     }
     pub fn readonly(&self) -> bool {
         match self {
             Backing::Owned(_) => false,
             Backing::Borrowed { readonly, .. } => *readonly,
+            #[cfg(feature = "cuda")]
+            Backing::Device { readonly, .. } => *readonly,
         }
     }
 
@@ -205,6 +220,11 @@ impl Backing {
         match self {
             Backing::Owned(_) => (K_DL_CPU as i32, 0),
             Backing::Borrowed { device, .. } => *device,
+            #[cfg(feature = "cuda")]
+            Backing::Device { img, .. } => (
+                dlpack_rs::ffi::DLDeviceType::kDLCUDA as i32,
+                img.device_id(),
+            ),
         }
     }
 
@@ -225,8 +245,8 @@ impl Backing {
         } else {
             Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "operation requires a host (CPU) image; this image is on device \
-                 (device_type={}); transfer it to host first (e.g. call .cpu() on \
-                 the source tensor) before this operation",
+                 (device_type={}); move it to the host first by calling .cpu() on \
+                 this image before this operation",
                 self.device().0
             )))
         }

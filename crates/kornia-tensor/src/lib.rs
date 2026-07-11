@@ -180,7 +180,7 @@ pub mod cuda;
 
 #[cfg(feature = "cuda")]
 pub use crate::cuda::{
-    pinned_alloc, zeros_cuda, zeros_pinned, CudaAllocator, CudaError, CudaKernel,
+    pinned_alloc, uninit_cuda, zeros_cuda, zeros_pinned, CudaAllocator, CudaError, CudaKernel,
     CudaLaunchBuilder, PinnedAllocator, PinnedResource,
 };
 

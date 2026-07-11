@@ -327,7 +327,7 @@ macro_rules! define_color_space {
                 &self,
                 stream: &std::sync::Arc<cudarc::driver::CudaStream>,
             ) -> Result<Self, ImageError> {
-                Ok(Self(self.0.to_cuda_image(stream)?))
+                Ok(Self(self.0.to_cuda(stream)?))
             }
 
             #[cfg(feature = "cuda")]
@@ -349,9 +349,9 @@ macro_rules! define_color_space {
             }
 
             #[cfg(feature = "cuda")]
-            #[doc = concat!("Copy a device-resident ", stringify!($name), " to host on its own carried stream.")]
-            pub fn download(&self) -> Result<Self, ImageError> {
-                Ok(Self(self.0.download()?))
+            #[doc = concat!("Copy a device-resident ", stringify!($name), " to a new, owned host ", stringify!($name), " on its own carried stream.")]
+            pub fn to_host_owned(&self) -> Result<Self, ImageError> {
+                Ok(Self(self.0.to_host_owned()?))
             }
 
             #[cfg(feature = "cuda")]

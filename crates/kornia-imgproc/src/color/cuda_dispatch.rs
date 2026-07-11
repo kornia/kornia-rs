@@ -149,7 +149,7 @@ where
 fn untyped_device_err(what: &str) -> ImageError {
     ImageError::Cuda(format!(
         "{what} image is device-resident but not backed by a typed CudaResource; \
-         create device images via Image::to_cuda_image / zeros_cuda (or the \
+         create device images via Image::to_cuda / zeros_cuda (or the \
          color-space newtype to_cuda / zeros_cuda helpers)"
     ))
 }
@@ -514,7 +514,7 @@ mod tests {
         rgb.convert(&mut g_cpu).unwrap();
         let mut g_d = Grayf64::zeros_cuda(SIZE, &stream).unwrap();
         rgb_d.convert(&mut g_d).unwrap();
-        let g_back = g_d.download().unwrap();
+        let g_back = g_d.to_host_owned().unwrap();
         let diff = g_back
             .as_slice()
             .iter()
@@ -531,7 +531,7 @@ mod tests {
                 rgb.convert(&mut cpu).unwrap();
                 let mut dev = <$dst_ty>::zeros_cuda(SIZE, &stream).unwrap();
                 rgb_d.convert(&mut dev).unwrap();
-                let back = dev.download().unwrap();
+                let back = dev.to_host_owned().unwrap();
                 let diff = back
                     .as_slice()
                     .iter()

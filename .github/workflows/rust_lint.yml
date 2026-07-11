@@ -74,10 +74,13 @@ jobs:
           components: clippy
 
       - name: Clippy CUDA-gated crates (deny warnings)
+        # `--tests` also compiles + lints the `#[cfg(test)]` cuda code. The tests
+        # need a GPU to RUN (Jetson, outside CI), but compiling them here catches
+        # API/signature rot in the device paths on a GPU-less runner.
         run: |
-          cargo clippy -p kornia-tensor --features cuda -- -D warnings
-          cargo clippy -p kornia-image --features cuda -- -D warnings
-          cargo clippy -p kornia-imgproc --features cuda -- -D warnings
+          cargo clippy --tests -p kornia-tensor --features cuda -- -D warnings
+          cargo clippy --tests -p kornia-image --features cuda -- -D warnings
+          cargo clippy --tests -p kornia-imgproc --features cuda -- -D warnings
 
   cross-platform-check-macos:
     name: Check - macOS
