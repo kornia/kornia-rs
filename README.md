@@ -21,6 +21,7 @@ Use the library to perform image I/O, visualization and other low level operatio
 - [Installation](#️-installation)
 - [Examples](#examples-image-processing)
 - [Python Usage](#python-usage)
+- [GPU / CUDA](#gpu--cuda)
 - [Development](#-development)
 - [Contributing](#-contributing)
 - [Citation](#citation)
@@ -61,11 +62,11 @@ Goodbyte!
 - 🔢 Efficient Tensor and Image API for deep learning and scientific computing.
 - 🐍 Python bindings are created with [PyO3/Maturin](https://github.com/PyO3/maturin).
 - 📦 We package with support for Linux [amd64/arm64], macOS and Windows.
-- Supported Python versions are 3.7/3.8/3.9/3.10/3.11/3.12/3.13, including the free-threaded build.
+- Supported Python versions are 3.8 through 3.14, including the free-threaded (3.13t/3.14t) build.
 
 ### Supported image formats
 
-- Read images from AVIF, BMP, DDS, Farbeld, GIF, HDR, ICO, JPEG (libjpeg-turbo), OpenEXR, PNG, PNM, TGA, TIFF, WebP.
+- Read images from AVIF, BMP, DDS, Farbfeld, GIF, HDR, ICO, JPEG (libjpeg-turbo), OpenEXR, PNG, PNM, TGA, TIFF, WebP.
 
 ### Image processing
 
@@ -220,11 +221,11 @@ import kornia_rs as K
 import numpy as np
 import torch
 
-# load an image with using libjpeg-turbo
-img: np.ndarray = K.read_image_jpeg("dog.jpeg")
+# load a JPEG with libjpeg-turbo
+img: np.ndarray = K.io.read_image_jpeg("dog.jpeg", "rgb")
 
-# alternatively, load other formats
-# img: np.ndarray = K.read_image_any("dog.png")
+# or read any supported format
+# img: np.ndarray = K.io.read_image("dog.png")
 
 assert img.shape == (195, 258, 3)
 
@@ -241,11 +242,11 @@ Write an image to disk:
 import kornia_rs as K
 import numpy as np
 
-# load an image with using libjpeg-turbo
-img: np.ndarray = K.read_image_jpeg("dog.jpeg")
+# load a JPEG with libjpeg-turbo
+img: np.ndarray = K.io.read_image_jpeg("dog.jpeg", "rgb")
 
-# write the image to disk
-K.write_image_jpeg("dog_copy.jpeg", img)
+# write the image to disk (mode, JPEG quality)
+K.io.write_image_jpeg("dog_copy.jpeg", img, "rgb", 95)
 ```
 
 ### `Image` — PIL-style class with uint8 + uint16 support
@@ -286,13 +287,13 @@ JPEG-only workflows that want the explicit `turbojpeg` backend object:
 ```python
 import kornia_rs as K
 
-img = K.read_image_jpeg("dog.jpeg")
+img = K.io.read_image_jpeg("dog.jpeg", "rgb")
 
-image_encoder = K.ImageEncoder()
+image_encoder = K.io.ImageEncoder()
 image_encoder.set_quality(95)
 img_encoded: list[int] = image_encoder.encode(img)
 
-image_decoder = K.ImageDecoder()
+image_decoder = K.io.ImageDecoder()
 decoded_img: np.ndarray = image_decoder.decode(bytes(img_encoded))
 ```
 
@@ -304,10 +305,10 @@ Resize an image using the `kornia-rs` backend with SIMD acceleration:
 import kornia_rs as K
 
 # load image with kornia-rs
-img = K.read_image_jpeg("dog.jpeg")
+img = K.io.read_image_jpeg("dog.jpeg", "rgb")
 
 # resize the image
-resized_img = K.resize(img, (128, 128), interpolation="bilinear")
+resized_img = K.imgproc.resize(img, (128, 128), interpolation="bilinear")
 
 assert resized_img.shape == (128, 128, 3)
 ```
