@@ -77,23 +77,22 @@ extern "C" __global__ void remap_bilinear_3c(
     float w11  = fy * fx;
 
     float tx0 = x0f * 3.0f;
-    float ty0 = y0f;
     float ty1 = y0f + 1.0f;
 
     // Border mode: OOB fetches return 0.0 — no explicit bounds check needed.
     cudaTextureObject_t t = (cudaTextureObject_t)tex;
     unsigned int out = idx * 3u;
 
-    dst[out]   = fmaf(w00, tex2D<float>(t, tx0,       ty0),
-                fmaf(w10, tex2D<float>(t, tx0+3.0f,  ty0),
+    dst[out]   = fmaf(w00, tex2D<float>(t, tx0,       y0f),
+                fmaf(w10, tex2D<float>(t, tx0+3.0f,  y0f),
                 fmaf(w01, tex2D<float>(t, tx0,       ty1),
                      w11 * tex2D<float>(t, tx0+3.0f,  ty1))));
-    dst[out+1] = fmaf(w00, tex2D<float>(t, tx0+1.0f,  ty0),
-                fmaf(w10, tex2D<float>(t, tx0+4.0f,  ty0),
+    dst[out+1] = fmaf(w00, tex2D<float>(t, tx0+1.0f,  y0f),
+                fmaf(w10, tex2D<float>(t, tx0+4.0f,  y0f),
                 fmaf(w01, tex2D<float>(t, tx0+1.0f,  ty1),
                      w11 * tex2D<float>(t, tx0+4.0f,  ty1))));
-    dst[out+2] = fmaf(w00, tex2D<float>(t, tx0+2.0f,  ty0),
-                fmaf(w10, tex2D<float>(t, tx0+5.0f,  ty0),
+    dst[out+2] = fmaf(w00, tex2D<float>(t, tx0+2.0f,  y0f),
+                fmaf(w10, tex2D<float>(t, tx0+5.0f,  y0f),
                 fmaf(w01, tex2D<float>(t, tx0+2.0f,  ty1),
                      w11 * tex2D<float>(t, tx0+5.0f,  ty1))));
 }
@@ -170,12 +169,17 @@ fn make_tex(
     Ok((tex, handle))
 }
 
-fn check_dst(dst: &CudaSlice<f32>, dst_width: u32, dst_height: u32) -> Result<(), CudaRemapError> {
-    let need = (dst_width as usize) * (dst_height as usize) * 3;
-    if dst.len() < need {
+fn check_image_slice(
+    slice: &CudaSlice<f32>,
+    what: &'static str,
+    width: u32,
+    height: u32,
+) -> Result<(), CudaRemapError> {
+    let need = (width as usize) * (height as usize) * 3;
+    if slice.len() < need {
         return Err(CudaRemapError::SliceTooSmall {
-            what: "dst",
-            got: dst.len(),
+            what,
+            got: slice.len(),
             need,
         });
     }
@@ -210,7 +214,7 @@ pub enum CudaRemapError {
     /// A device slice is smaller than required.
     #[error("device slice '{what}' length {got} < required {need}")]
     SliceTooSmall {
-        /// Which operand was too small (e.g. `"dst"`, `"map_x"`, `"map_y"`).
+        /// Which operand was too small (e.g. `"src"`, `"dst"`, `"map_x"`, `"map_y"`).
         what: &'static str,
         /// Actual slice length (in elements).
         got: usize,
@@ -231,11 +235,12 @@ pub enum CudaRemapError {
 /// inverted internally so callers can pass the same matrix they would pass to
 /// `launch_warp_affine_*`.
 ///
+/// Out-of-bounds coordinates are left as-is; the texture sampler returns 0
+/// for them (`BORDER_CONSTANT = 0`).
+///
 /// The returned vecs have `dst_w * dst_h` elements each, in row-major order.
 pub fn remap_maps_from_affine(
     m: &[f32; 6],
-    src_width: u32,
-    src_height: u32,
     dst_width: u32,
     dst_height: u32,
 ) -> (Vec<f32>, Vec<f32>) {
@@ -244,16 +249,12 @@ pub fn remap_maps_from_affine(
     let npix = (dst_width * dst_height) as usize;
     let mut mx = Vec::with_capacity(npix);
     let mut my = Vec::with_capacity(npix);
-    let sw = src_width as f32;
-    let sh = src_height as f32;
     for dy in 0..dst_height {
+        let base_sx = mi[1] * dy as f32 + mi[2];
+        let base_sy = mi[4] * dy as f32 + mi[5];
         for dx in 0..dst_width {
-            let sx = mi[0] * dx as f32 + mi[1] * dy as f32 + mi[2];
-            let sy = mi[3] * dx as f32 + mi[4] * dy as f32 + mi[5];
-            // Clamp to source extents (matches warp_affine BORDER_REPLICATE for
-            // map-based callers; OOB stays as-is and the texture border returns 0).
-            mx.push(sx.clamp(0.0, sw - 1.0));
-            my.push(sy.clamp(0.0, sh - 1.0));
+            mx.push(mi[0] * dx as f32 + base_sx);
+            my.push(mi[3] * dx as f32 + base_sy);
         }
     }
     (mx, my)
@@ -299,19 +300,72 @@ pub fn remap_maps_from_homography(
     let mut mx = Vec::with_capacity(npix);
     let mut my = Vec::with_capacity(npix);
     for dy in 0..dst_height {
+        let y = dy as f32;
+        let row_sx = i[1] * y + i[2];
+        let row_sy = i[4] * y + i[5];
+        let row_w = i[7] * y + i[8];
         for dx in 0..dst_width {
-            let (x, y) = (dx as f32, dy as f32);
-            let w = i[6] * x + i[7] * y + i[8];
+            let x = dx as f32;
+            let w = i[6] * x + row_w;
             if w.abs() < 1e-10 {
                 mx.push(-1.0);
                 my.push(-1.0);
             } else {
-                mx.push((i[0] * x + i[1] * y + i[2]) / w);
-                my.push((i[3] * x + i[4] * y + i[5]) / w);
+                let inv_w = 1.0 / w;
+                mx.push((i[0] * x + row_sx) * inv_w);
+                my.push((i[3] * x + row_sy) * inv_w);
             }
         }
     }
     (mx, my)
+}
+
+// ── Private launcher core ─────────────────────────────────────────────────────
+
+#[allow(clippy::too_many_arguments)]
+fn launch_remap(
+    kernel_cell: &OnceLock<CudaKernel>,
+    kernel_src: &'static str,
+    fn_name: &'static str,
+    ctx: &Arc<CudaContext>,
+    stream: &Arc<CudaStream>,
+    src: &CudaSlice<f32>,
+    map_x: &CudaSlice<f32>,
+    map_y: &CudaSlice<f32>,
+    dst: &mut CudaSlice<f32>,
+    src_width: u32,
+    src_height: u32,
+    dst_width: u32,
+    dst_height: u32,
+    block_dim: Option<(u32, u32)>,
+) -> Result<(), CudaRemapError> {
+    if src_width == 0 || src_height == 0 || dst_width == 0 || dst_height == 0 {
+        return Err(CudaRemapError::Cuda(
+            "image dimensions must be non-zero".into(),
+        ));
+    }
+    check_image_slice(src, "src", src_width, src_height)?;
+    check_image_slice(dst, "dst", dst_width, dst_height)?;
+    check_map(map_x, "map_x", dst_width, dst_height)?;
+    check_map(map_y, "map_y", dst_width, dst_height)?;
+
+    let kernel = kernel_cell.get_or_init(|| compile_with_l1(ctx, kernel_src, fn_name));
+    let (_tex, tex_handle) = make_tex(src, stream, src_width, src_height)?;
+
+    kernel
+        .launch_builder(stream)
+        .arg(&tex_handle)
+        .arg(map_x)
+        .arg(map_y)
+        .arg(dst)
+        .arg(&dst_width)
+        .arg(&dst_height)
+        .launch_2d(
+            dst_width,
+            dst_height,
+            make_config(dst_width, dst_height, block_dim),
+        )
+        .map_err(|e| CudaRemapError::Cuda(e.to_string()))
 }
 
 // ── Public launchers ──────────────────────────────────────────────────────────
@@ -353,29 +407,22 @@ pub fn launch_remap_bilinear_cuda(
     dst_height: u32,
     block_dim: Option<(u32, u32)>,
 ) -> Result<(), CudaRemapError> {
-    check_dst(dst, dst_width, dst_height)?;
-    check_map(map_x, "map_x", dst_width, dst_height)?;
-    check_map(map_y, "map_y", dst_width, dst_height)?;
-
-    let kernel =
-        BILINEAR_KERNEL.get_or_init(|| compile_with_l1(ctx, BILINEAR_SRC, "remap_bilinear_3c"));
-
-    let (_tex, tex_handle) = make_tex(src, stream, src_width, src_height)?;
-
-    kernel
-        .launch_builder(stream)
-        .arg(&tex_handle)
-        .arg(map_x)
-        .arg(map_y)
-        .arg(dst)
-        .arg(&dst_width)
-        .arg(&dst_height)
-        .launch_2d(
-            dst_width,
-            dst_height,
-            make_config(dst_width, dst_height, block_dim),
-        )
-        .map_err(|e| CudaRemapError::Cuda(e.to_string()))
+    launch_remap(
+        &BILINEAR_KERNEL,
+        BILINEAR_SRC,
+        "remap_bilinear_3c",
+        ctx,
+        stream,
+        src,
+        map_x,
+        map_y,
+        dst,
+        src_width,
+        src_height,
+        dst_width,
+        dst_height,
+        block_dim,
+    )
 }
 
 /// Launch the nearest-neighbor remap kernel for a 3-channel f32 image.
@@ -406,27 +453,20 @@ pub fn launch_remap_nearest_cuda(
     dst_height: u32,
     block_dim: Option<(u32, u32)>,
 ) -> Result<(), CudaRemapError> {
-    check_dst(dst, dst_width, dst_height)?;
-    check_map(map_x, "map_x", dst_width, dst_height)?;
-    check_map(map_y, "map_y", dst_width, dst_height)?;
-
-    let kernel =
-        NEAREST_KERNEL.get_or_init(|| compile_with_l1(ctx, NEAREST_SRC, "remap_nearest_3c"));
-
-    let (_tex, tex_handle) = make_tex(src, stream, src_width, src_height)?;
-
-    kernel
-        .launch_builder(stream)
-        .arg(&tex_handle)
-        .arg(map_x)
-        .arg(map_y)
-        .arg(dst)
-        .arg(&dst_width)
-        .arg(&dst_height)
-        .launch_2d(
-            dst_width,
-            dst_height,
-            make_config(dst_width, dst_height, block_dim),
-        )
-        .map_err(|e| CudaRemapError::Cuda(e.to_string()))
+    launch_remap(
+        &NEAREST_KERNEL,
+        NEAREST_SRC,
+        "remap_nearest_3c",
+        ctx,
+        stream,
+        src,
+        map_x,
+        map_y,
+        dst,
+        src_width,
+        src_height,
+        dst_width,
+        dst_height,
+        block_dim,
+    )
 }
