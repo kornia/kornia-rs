@@ -45,7 +45,9 @@ pub type OrbVocabulary = Vocabulary<ORB_BRANCHING, Hamming<ORB_WORDS>>;
 pub fn pack_orb_descriptor(bytes: &[u8; 32]) -> Feature<u64, ORB_WORDS> {
     let mut words = [0u64; ORB_WORDS];
     for (w, chunk) in words.iter_mut().zip(bytes.chunks_exact(8)) {
-        *w = u64::from_le_bytes(chunk.try_into().expect("8-byte chunk"));
+        let mut arr = [0u8; 8];
+        arr.copy_from_slice(chunk);
+        *w = u64::from_le_bytes(arr);
     }
     Feature(words)
 }
