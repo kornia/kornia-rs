@@ -22,6 +22,23 @@
 
 use std::time::Instant;
 
+fn print_comparison_row(w: u32, h: u32, remap_ms: f64, affine_ms: f64) {
+    let overhead_pct = (remap_ms - affine_ms) / affine_ms * 100.0;
+    let decision = if overhead_pct.abs() <= 10.0 {
+        "USE REMAP"
+    } else {
+        "FUSED FASTER"
+    };
+    println!(
+        "  {:<20}  {:>12.3}  {:>12.3}  {:>11.1}%  {:>10}",
+        format!("{w}×{h}"),
+        remap_ms,
+        affine_ms,
+        overhead_pct,
+        decision,
+    );
+}
+
 const WARMUP: u32 = 50;
 const ITERS: u32 = 200;
 const NC: u32 = 3;
@@ -73,7 +90,7 @@ fn run_benchmark() {
         let m = get_rotation_matrix2d(center, 45.0_f32.to_radians(), 1.0);
 
         // Precompute maps (CPU side — done once, not timed).
-        let (host_mx, host_my) = remap_maps_from_affine(&m, w, h, w, h);
+        let (host_mx, host_my) = remap_maps_from_affine(&m, w, h);
 
         let src_dev = stream.clone_htod(&src_data).expect("H→D src");
         let map_x_dev = stream.clone_htod(&host_mx).expect("H→D map_x");
@@ -158,21 +175,7 @@ fn run_benchmark() {
         stream.synchronize().expect("sync");
         let affine_ms = t.elapsed().as_secs_f64() * 1e3 / ITERS as f64;
 
-        let overhead_pct = (remap_ms - affine_ms) / affine_ms * 100.0;
-        let decision = if overhead_pct.abs() <= 10.0 {
-            "USE REMAP"
-        } else {
-            "FUSED FASTER"
-        };
-
-        println!(
-            "  {:<20}  {:>12.3}  {:>12.3}  {:>11.1}%  {:>10}",
-            format!("{w}×{h}"),
-            remap_ms,
-            affine_ms,
-            overhead_pct,
-            decision,
-        );
+        print_comparison_row(w, h, remap_ms, affine_ms);
     }
 
     // ── Nearest-neighbor comparison ──────────────────────────────────────────
@@ -189,7 +192,7 @@ fn run_benchmark() {
             .collect();
         let center = (w as f32 / 2.0, h as f32 / 2.0);
         let m = get_rotation_matrix2d(center, 45.0_f32.to_radians(), 1.0);
-        let (host_mx, host_my) = remap_maps_from_affine(&m, w, h, w, h);
+        let (host_mx, host_my) = remap_maps_from_affine(&m, w, h);
 
         let src_dev = stream.clone_htod(&src_data).expect("H→D src");
         let map_x_dev = stream.clone_htod(&host_mx).expect("H→D map_x");
@@ -271,21 +274,7 @@ fn run_benchmark() {
         stream.synchronize().expect("sync");
         let affine_ms = t.elapsed().as_secs_f64() * 1e3 / ITERS as f64;
 
-        let overhead_pct = (remap_ms - affine_ms) / affine_ms * 100.0;
-        let decision = if overhead_pct.abs() <= 10.0 {
-            "USE REMAP"
-        } else {
-            "FUSED FASTER"
-        };
-
-        println!(
-            "  {:<20}  {:>12.3}  {:>12.3}  {:>11.1}%  {:>10}",
-            format!("{w}×{h}"),
-            remap_ms,
-            affine_ms,
-            overhead_pct,
-            decision,
-        );
+        print_comparison_row(w, h, remap_ms, affine_ms);
     }
 
     // ── Homography (perspective) remap ───────────────────────────────────────
