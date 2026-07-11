@@ -314,36 +314,69 @@ assert resized_img.shape == (128, 128, 3)
 
 ### GPU / CUDA
 
-The `kornia_rs.cuda` module runs image ops on an NVIDIA GPU. The published
-wheels are GPU-capable but load CUDA lazily, so the **same wheel runs on CPU
-when no GPU is present** and activates CUDA when it is.
+The published wheels are GPU-capable but load CUDA lazily: the same wheel runs on
+CPU when no GPU is present and uses the GPU when one is. The GPU path needs an
+NVIDIA driver (`libcuda`) and `nvrtc` from the CUDA toolkit; without them the CPU
+ops keep working.
 
-**Runtime requirements for the GPU path:** an NVIDIA driver (`libcuda`) **and**
-`nvrtc` (from the CUDA toolkit — kernels are JIT-compiled), matching your
-architecture (x86_64 / aarch64 / Jetson). Without them the GPU calls are
-unavailable; CPU ops keep working.
+Device pixels use the same `Image` type. `.device` reads `"cpu"` or `"cuda:{id}"`,
+`.to_cuda(stream)` uploads, `.cpu()` downloads. Color ops live under
+`kornia_rs.imgproc` and dispatch on residency: a device `Image` runs the CUDA
+kernel, a host `Image` or numpy array runs the CPU kernel.
 
 ```python
 import numpy as np
 import kornia_rs as K
+from kornia_rs.image import Image
+from kornia_rs.cuda import Stream
 
-# Guard: falls back to CPU when no CUDA runtime is available.
 if K.cuda.is_available():
-    rgb = np.ascontiguousarray(
-        np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8)
-    )
+    rgb = np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8)
 
-    cu_img = K.cuda.upload(rgb)              # host -> GPU  (CudaImage)
-    cu_gray = K.cuda.gray_from_rgb(cu_img)   # runs on the GPU
-    gray = np.asarray(cu_gray.download())    # GPU -> host  (H, W, 1) uint8
-
-    assert gray.shape == (480, 640, 1)
+    img = Image.from_numpy(rgb).to_cuda(Stream.default())  # -> "cuda:0"
+    gray = K.imgproc.gray_from_rgb(img)                    # runs on the GPU
+    out = gray.cpu().numpy()                               # -> host, (480, 640, 1)
 ```
 
-Available on the GPU: color conversions (`gray_from_rgb`, `bgr_from_rgb`,
-`hsv_from_rgb`, `lab_from_rgb`, `ycbcr_from_rgb`, `rgb_from_bayer`, `rgba_from_rgb`, …),
-`apply_colormap`, a fused `CudaPreprocessor`, and zero-copy DLPack import
-(`K.cuda.from_dlpack`) for handing tensors to/from PyTorch without a host copy.
+GPU color conversions (`gray_from_rgb`, `bgr_from_rgb`, `hsv_from_rgb`,
+`lab_from_rgb`, `ycbcr_from_rgb`, `sepia_from_rgb`, `apply_colormap`, …) and the
+fused `Preprocessor` are the GPU entry points. Tensors cross to PyTorch with no
+copy through DLPack (`torch.from_dlpack`) and `__cuda_array_interface__`.
+
+### Production: GPU-resident camera → model
+
+`Preprocessor` fuses resize, normalize and HWC→CHW into one CUDA kernel per
+frame. It emits a device tensor that feeds an inference engine with no host copy
+— the path for real-time camera pipelines.
+
+```python
+import torch
+from kornia_rs import Preprocessor, IMAGENET_MEAN, IMAGENET_STD
+from kornia_rs.cuda import Stream
+
+# One kernel per frame: NV12 -> normalized fp16 [1, 3, 640, 640] on the GPU.
+pre = Preprocessor(mode="letterbox", format="nv12", f16=True,
+                   mean=IMAGENET_MEAN, std=IMAGENET_STD, stream=Stream.default(0))
+
+t = pre.run(nv12_frame, 1920, 1080, 640, 640)  # device Tensor
+x = torch.from_dlpack(t)                        # zero-copy handoff to PyTorch
+# TensorRT: ctx.set_tensor_address("images", t.data_ptr)
+```
+
+The same one-call-per-residency model holds in Rust — `convert` picks CPU or GPU
+from where the images live:
+
+```rust
+let stream = CudaContext::new(0)?.default_stream();
+let rgb = Rgb8::from_size_vec(size, data)?.to_cuda(&stream)?;  // device image
+let mut gray = Gray8::zeros_cuda(size, &stream)?;
+rgb.convert(&mut gray)?;                                       // runs on the GPU
+```
+
+Full pipelines: [`examples/cuda_camera_preprocess`](examples/cuda_camera_preprocess)
+(V4L2 camera → fused CUDA preprocess) and
+[`kornia-py/examples/preprocess_to_inference.py`](kornia-py/examples/preprocess_to_inference.py)
+(NV12 → fused preprocess → ResNet-18 / TensorRT, GPU-resident end to end).
 
 ## 🧑‍💻 Development
 
