@@ -395,6 +395,9 @@ fn make_tex(
     src_width: u32,
     src_height: u32,
 ) -> Result<(CudaTexObject, u64), CudaWarpPerspectiveError> {
+    // Safety: DevicePtr::device_ptr returns the raw CUdeviceptr; the _guard
+    // records a stream event on drop (after the texture is destroyed) which is
+    // the correct ordering.
     let (dev_ptr, _guard) = src.device_ptr(stream);
     let tex =
         CudaTexObject::new_pitch2d_border(dev_ptr, src_width as usize * 3, src_height as usize)
@@ -403,6 +406,7 @@ fn make_tex(
     Ok((tex, handle))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn validate_and_invert(
     src: &CudaSlice<f32>,
     dst: &CudaSlice<f32>,
@@ -418,7 +422,7 @@ fn validate_and_invert(
             "image dimensions must be non-zero".into(),
         ));
     }
-    if block_dim.map_or(false, |(bw, bh)| bw == 0 || bh == 0) {
+    if block_dim.is_some_and(|(bw, bh)| bw == 0 || bh == 0) {
         return Err(CudaWarpPerspectiveError::Cuda(
             "block_dim components must be non-zero".into(),
         ));

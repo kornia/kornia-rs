@@ -15,14 +15,6 @@
 //! cargo run --example bench_cuda_warp_perspective --features cuda --release
 //! ```
 
-use std::time::Instant;
-
-const WARMUP: u32 = 50;
-const ITERS: u32 = 200;
-const NC: u32 = 3;
-
-const CASES: &[(u32, u32)] = &[(512, 512), (1280, 720), (1920, 1080), (3840, 2160)];
-
 fn main() {
     #[cfg(feature = "cuda")]
     run_benchmark();
@@ -34,6 +26,12 @@ fn main() {
 #[cfg(feature = "cuda")]
 fn run_benchmark() {
     use std::sync::Arc;
+    use std::time::Instant;
+
+    const WARMUP: u32 = 50;
+    const ITERS: u32 = 200;
+    const NC: u32 = 3;
+    const CASES: &[(u32, u32)] = &[(512, 512), (1280, 720), (1920, 1080), (3840, 2160)];
 
     use cudarc::driver::CudaContext;
     use kornia_imgproc::cuda::warp_perspective::{
