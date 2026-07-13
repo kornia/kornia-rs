@@ -49,21 +49,7 @@ pub(crate) fn invert_homography(m: &[f32; 9]) -> Option<[f32; 9]> {
 }
 
 fn inverse_perspective_matrix(m: &[f32; 9]) -> Result<[f32; 9], ImageError> {
-    let det = determinant3x3(m);
-
-    if det.abs() < 1e-10 {
-        return Err(ImageError::CannotComputeDeterminant);
-    }
-
-    let adj = adjugate3x3(m);
-    let inv_det = 1.0 / det;
-
-    let mut inv_m = [0.0; 9];
-    for i in 0..9 {
-        inv_m[i] = adj[i] * inv_det;
-    }
-
-    Ok(inv_m)
+    invert_homography(m).ok_or(ImageError::CannotComputeDeterminant)
 }
 
 // implement later as batched operation

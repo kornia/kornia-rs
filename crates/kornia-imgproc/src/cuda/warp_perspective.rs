@@ -403,6 +403,31 @@ fn make_tex(
     Ok((tex, handle))
 }
 
+fn validate_and_invert(
+    src: &CudaSlice<f32>,
+    dst: &CudaSlice<f32>,
+    src_width: u32,
+    src_height: u32,
+    dst_width: u32,
+    dst_height: u32,
+    h: &[f32; 9],
+    block_dim: Option<(u32, u32)>,
+) -> Result<[f32; 9], CudaWarpPerspectiveError> {
+    if src_width == 0 || src_height == 0 || dst_width == 0 || dst_height == 0 {
+        return Err(CudaWarpPerspectiveError::Cuda(
+            "image dimensions must be non-zero".into(),
+        ));
+    }
+    if block_dim.map_or(false, |(bw, bh)| bw == 0 || bh == 0) {
+        return Err(CudaWarpPerspectiveError::Cuda(
+            "block_dim components must be non-zero".into(),
+        ));
+    }
+    check_image_slice(src, "src", src_width, src_height)?;
+    check_image_slice(dst, "dst", dst_width, dst_height)?;
+    invert_homography(h).ok_or(CudaWarpPerspectiveError::SingularHomography)
+}
+
 // ── Public launchers ──────────────────────────────────────────────────────────
 
 /// Launch the bilinear warp-perspective kernel for a 3-channel f32 image.
@@ -444,20 +469,9 @@ pub fn launch_warp_perspective_bilinear_cuda(
     h: &[f32; 9],
     block_dim: Option<(u32, u32)>,
 ) -> Result<(), CudaWarpPerspectiveError> {
-    if src_width == 0 || src_height == 0 || dst_width == 0 || dst_height == 0 {
-        return Err(CudaWarpPerspectiveError::Cuda(
-            "image dimensions must be non-zero".into(),
-        ));
-    }
-    if block_dim.map_or(false, |(bw, bh)| bw == 0 || bh == 0) {
-        return Err(CudaWarpPerspectiveError::Cuda(
-            "block_dim components must be non-zero".into(),
-        ));
-    }
-    check_image_slice(src, "src", src_width, src_height)?;
-    check_image_slice(dst, "dst", dst_width, dst_height)?;
-
-    let hi = invert_homography(h).ok_or(CudaWarpPerspectiveError::SingularHomography)?;
+    let hi = validate_and_invert(
+        src, dst, src_width, src_height, dst_width, dst_height, h, block_dim,
+    )?;
     let kernel = BILINEAR_KERNEL
         .get_or_init(|| try_compile_with_l1(ctx, BILINEAR_SRC, "warp_perspective_bilinear_tex_3c"))
         .as_ref()
@@ -513,20 +527,9 @@ pub fn launch_warp_perspective_nearest_cuda(
     h: &[f32; 9],
     block_dim: Option<(u32, u32)>,
 ) -> Result<(), CudaWarpPerspectiveError> {
-    if src_width == 0 || src_height == 0 || dst_width == 0 || dst_height == 0 {
-        return Err(CudaWarpPerspectiveError::Cuda(
-            "image dimensions must be non-zero".into(),
-        ));
-    }
-    if block_dim.map_or(false, |(bw, bh)| bw == 0 || bh == 0) {
-        return Err(CudaWarpPerspectiveError::Cuda(
-            "block_dim components must be non-zero".into(),
-        ));
-    }
-    check_image_slice(src, "src", src_width, src_height)?;
-    check_image_slice(dst, "dst", dst_width, dst_height)?;
-
-    let hi = invert_homography(h).ok_or(CudaWarpPerspectiveError::SingularHomography)?;
+    let hi = validate_and_invert(
+        src, dst, src_width, src_height, dst_width, dst_height, h, block_dim,
+    )?;
     let kernel = NEAREST_KERNEL
         .get_or_init(|| try_compile_with_l1(ctx, NEAREST_SRC, "warp_perspective_nearest_tex_3c"))
         .as_ref()
@@ -586,20 +589,9 @@ pub fn launch_warp_perspective_bicubic_cuda(
     h: &[f32; 9],
     block_dim: Option<(u32, u32)>,
 ) -> Result<(), CudaWarpPerspectiveError> {
-    if src_width == 0 || src_height == 0 || dst_width == 0 || dst_height == 0 {
-        return Err(CudaWarpPerspectiveError::Cuda(
-            "image dimensions must be non-zero".into(),
-        ));
-    }
-    if block_dim.map_or(false, |(bw, bh)| bw == 0 || bh == 0) {
-        return Err(CudaWarpPerspectiveError::Cuda(
-            "block_dim components must be non-zero".into(),
-        ));
-    }
-    check_image_slice(src, "src", src_width, src_height)?;
-    check_image_slice(dst, "dst", dst_width, dst_height)?;
-
-    let hi = invert_homography(h).ok_or(CudaWarpPerspectiveError::SingularHomography)?;
+    let hi = validate_and_invert(
+        src, dst, src_width, src_height, dst_width, dst_height, h, block_dim,
+    )?;
     let kernel = BICUBIC_KERNEL
         .get_or_init(|| try_compile_with_l1(ctx, BICUBIC_SRC, "warp_perspective_bicubic_3c"))
         .as_ref()
@@ -661,20 +653,9 @@ pub fn launch_warp_perspective_lanczos_cuda(
     h: &[f32; 9],
     block_dim: Option<(u32, u32)>,
 ) -> Result<(), CudaWarpPerspectiveError> {
-    if src_width == 0 || src_height == 0 || dst_width == 0 || dst_height == 0 {
-        return Err(CudaWarpPerspectiveError::Cuda(
-            "image dimensions must be non-zero".into(),
-        ));
-    }
-    if block_dim.map_or(false, |(bw, bh)| bw == 0 || bh == 0) {
-        return Err(CudaWarpPerspectiveError::Cuda(
-            "block_dim components must be non-zero".into(),
-        ));
-    }
-    check_image_slice(src, "src", src_width, src_height)?;
-    check_image_slice(dst, "dst", dst_width, dst_height)?;
-
-    let hi = invert_homography(h).ok_or(CudaWarpPerspectiveError::SingularHomography)?;
+    let hi = validate_and_invert(
+        src, dst, src_width, src_height, dst_width, dst_height, h, block_dim,
+    )?;
     let kernel = LANCZOS_KERNEL
         .get_or_init(|| try_compile_with_l1(ctx, LANCZOS_SRC, "warp_perspective_lanczos_3c"))
         .as_ref()
