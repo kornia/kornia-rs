@@ -31,9 +31,10 @@
 //!
 //! # Public API
 //!
-//! * [`launch_remap_bilinear_cuda`] — bilinear remap, 3-ch f32.
-//! * [`launch_remap_nearest_cuda`]  — nearest-neighbor remap, 3-ch f32.
-//! * [`remap_maps_from_affine`]     — build map_x/map_y from a 2×3 affine matrix.
+//! * [`launch_remap_bilinear_cuda`]    — bilinear remap, 3-ch f32.
+//! * [`launch_remap_nearest_cuda`]     — nearest-neighbor remap, 3-ch f32.
+//! * [`remap_maps_from_affine`]        — build map_x/map_y from a 2×3 affine matrix.
+//! * [`remap_maps_from_homography`]    — build map_x/map_y from a 3×3 homography.
 
 use std::sync::{Arc, OnceLock};
 
@@ -161,6 +162,9 @@ fn make_tex(
     src_width: u32,
     src_height: u32,
 ) -> Result<(CudaTexObject, u64), CudaRemapError> {
+    // Safety: DevicePtr::device_ptr returns the raw CUdeviceptr; the _guard
+    // records a stream event on drop (after the texture is destroyed) which is
+    // the correct ordering.
     let (dev_ptr, _guard) = src.device_ptr(stream);
     let tex =
         CudaTexObject::new_pitch2d_border(dev_ptr, src_width as usize * 3, src_height as usize)
@@ -267,8 +271,10 @@ pub fn remap_maps_from_affine(
 /// so that remap produces the same result as a fused warp-perspective kernel.
 ///
 /// The returned vecs have `dst_w * dst_h` elements each, in row-major order.
-/// Pixels whose homogeneous w-coordinate is zero or negative are mapped to
-/// `(-1.0, -1.0)`, which falls outside the source and returns 0 via border mode.
+/// Pixels whose homogeneous w-coordinate is zero or negative (i.e. `w < 1e-10`)
+/// are mapped to `(-1.0, -1.0)`, which falls outside the source and returns 0
+/// via border mode.  This culls back-projected points (negative w) as well as
+/// near-degenerate projections.
 pub fn remap_maps_from_homography(
     h: &[f32; 9],
     dst_width: u32,
@@ -307,7 +313,7 @@ pub fn remap_maps_from_homography(
         for dx in 0..dst_width {
             let x = dx as f32;
             let w = i[6] * x + row_w;
-            if w.abs() < 1e-10 {
+            if w < 1e-10 {
                 mx.push(-1.0);
                 my.push(-1.0);
             } else {
