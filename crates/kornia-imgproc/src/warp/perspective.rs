@@ -346,10 +346,7 @@ mod tests {
         let expected: [f32; 9] = [1.0, 0.0, -2.0, 0.0, 1.0, -3.0, 0.0, 0.0, 1.0];
         let inv = super::invert_homography(&h).expect("translation H must be invertible");
         for (a, b) in inv.iter().zip(expected.iter()) {
-            assert!(
-                (a - b).abs() < 1e-6,
-                "inv[i]={a} expected {b}"
-            );
+            assert!((a - b).abs() < 1e-6, "inv[i]={a} expected {b}");
         }
     }
 
