@@ -8,6 +8,7 @@
 //! 2. `warp_perspective_nearest`   — texture-backed nearest-neighbor, 3-ch f32.
 //! 3. `warp_perspective_bicubic`   — Keys a=−0.5 via `__ldg`, 3-ch f32.
 //! 4. `warp_perspective_lanczos`   — Lanczos-3 (6×6 taps) via `__ldg`, 3-ch f32.
+//!
 //! All use a perspective-tilt homography so the homogeneous w-divide is exercised
 //! on every pixel.
 //!
