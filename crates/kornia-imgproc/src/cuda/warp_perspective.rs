@@ -2,17 +2,22 @@
 //!
 //! # Algorithm
 //!
-//! Both kernels use **inverse mapping**: each output thread computes the
+//! All kernels use **inverse mapping**: each output thread computes the
 //! floating-point source coordinate by applying the inverted 3×3 homography
 //! to its `(dst_x, dst_y)` position and dividing by the homogeneous weight `w`.
 //! Pixels whose `|w| < 1e-10` (degenerate projection) are written as 0.
-//! Source coordinates outside the image also return 0 (`BORDER_CONSTANT`),
-//! matching [`warp_perspective`](crate::warp::warp_perspective).
+//!
+//! **Border handling differs by interpolation mode:**
+//! * Bilinear / nearest: source reads via a texture object with
+//!   `CU_TR_ADDRESS_MODE_BORDER`; out-of-bounds taps return 0 (`BORDER_CONSTANT`).
+//! * Bicubic / Lanczos-3: OOB taps in the 4×4 / 6×6 support window are clamped
+//!   to the nearest source border pixel (`BORDER_REPLICATE`); pixels whose
+//!   inverse-mapped centre falls outside the source are written as 0.
 //!
 //! # Optimisations
 //!
-//! * **CUDA texture objects** — source reads via the 2D-spatial texture cache
-//!   with `CU_TR_ADDRESS_MODE_BORDER`, eliminating divergent OOB branches.
+//! * **CUDA texture objects** — bilinear/nearest reads via the 2D-spatial texture
+//!   cache with `CU_TR_ADDRESS_MODE_BORDER`, eliminating divergent OOB branches.
 //! * **`CU_FUNC_CACHE_PREFER_L1`** — enlarges L1 to 64 KB; no shared memory used.
 //! * **32×8 thread block (default)** — full warp per output row for coalesced writes.
 //! * **`1/w` reciprocal** — one FP division replaces two per output pixel.
@@ -314,8 +319,8 @@ extern "C" __global__ void warp_perspective_lanczos_3c(
 
 // ── Kernel caches ─────────────────────────────────────────────────────────────
 
-static BILINEAR_KERNEL: OnceLock<CudaKernel> = OnceLock::new();
-static NEAREST_KERNEL: OnceLock<CudaKernel> = OnceLock::new();
+static BILINEAR_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
+static NEAREST_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
 static BICUBIC_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
 static LANCZOS_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
 
@@ -354,13 +359,6 @@ fn make_config(dst_width: u32, dst_height: u32, block_dim: Option<(u32, u32)>) -
         grid_dim: (dst_width.div_ceil(bw), dst_height.div_ceil(bh), 1),
         shared_mem_bytes: 0,
     }
-}
-
-fn compile_with_l1(ctx: &Arc<CudaContext>, src: &str, fn_name: &str) -> CudaKernel {
-    let k = CudaKernel::compile(ctx, src, fn_name)
-        .unwrap_or_else(|e| panic!("failed to compile {fn_name}: {e}"));
-    let _ = k.prefer_l1_cache();
-    k
 }
 
 fn try_compile_with_l1(
@@ -451,12 +449,19 @@ pub fn launch_warp_perspective_bilinear_cuda(
             "image dimensions must be non-zero".into(),
         ));
     }
+    if block_dim.map_or(false, |(bw, bh)| bw == 0 || bh == 0) {
+        return Err(CudaWarpPerspectiveError::Cuda(
+            "block_dim components must be non-zero".into(),
+        ));
+    }
     check_image_slice(src, "src", src_width, src_height)?;
     check_image_slice(dst, "dst", dst_width, dst_height)?;
 
     let hi = invert_homography(h).ok_or(CudaWarpPerspectiveError::SingularHomography)?;
     let kernel = BILINEAR_KERNEL
-        .get_or_init(|| compile_with_l1(ctx, BILINEAR_SRC, "warp_perspective_bilinear_tex_3c"));
+        .get_or_init(|| try_compile_with_l1(ctx, BILINEAR_SRC, "warp_perspective_bilinear_tex_3c"))
+        .as_ref()
+        .map_err(|e| CudaWarpPerspectiveError::Cuda(e.clone()))?;
     let (_tex, tex_handle) = make_tex(src, stream, src_width, src_height)?;
 
     kernel
@@ -513,12 +518,19 @@ pub fn launch_warp_perspective_nearest_cuda(
             "image dimensions must be non-zero".into(),
         ));
     }
+    if block_dim.map_or(false, |(bw, bh)| bw == 0 || bh == 0) {
+        return Err(CudaWarpPerspectiveError::Cuda(
+            "block_dim components must be non-zero".into(),
+        ));
+    }
     check_image_slice(src, "src", src_width, src_height)?;
     check_image_slice(dst, "dst", dst_width, dst_height)?;
 
     let hi = invert_homography(h).ok_or(CudaWarpPerspectiveError::SingularHomography)?;
     let kernel = NEAREST_KERNEL
-        .get_or_init(|| compile_with_l1(ctx, NEAREST_SRC, "warp_perspective_nearest_tex_3c"));
+        .get_or_init(|| try_compile_with_l1(ctx, NEAREST_SRC, "warp_perspective_nearest_tex_3c"))
+        .as_ref()
+        .map_err(|e| CudaWarpPerspectiveError::Cuda(e.clone()))?;
     let (_tex, tex_handle) = make_tex(src, stream, src_width, src_height)?;
 
     kernel
@@ -577,6 +589,11 @@ pub fn launch_warp_perspective_bicubic_cuda(
     if src_width == 0 || src_height == 0 || dst_width == 0 || dst_height == 0 {
         return Err(CudaWarpPerspectiveError::Cuda(
             "image dimensions must be non-zero".into(),
+        ));
+    }
+    if block_dim.map_or(false, |(bw, bh)| bw == 0 || bh == 0) {
+        return Err(CudaWarpPerspectiveError::Cuda(
+            "block_dim components must be non-zero".into(),
         ));
     }
     check_image_slice(src, "src", src_width, src_height)?;
@@ -647,6 +664,11 @@ pub fn launch_warp_perspective_lanczos_cuda(
     if src_width == 0 || src_height == 0 || dst_width == 0 || dst_height == 0 {
         return Err(CudaWarpPerspectiveError::Cuda(
             "image dimensions must be non-zero".into(),
+        ));
+    }
+    if block_dim.map_or(false, |(bw, bh)| bw == 0 || bh == 0) {
+        return Err(CudaWarpPerspectiveError::Cuda(
+            "block_dim components must be non-zero".into(),
         ));
     }
     check_image_slice(src, "src", src_width, src_height)?;

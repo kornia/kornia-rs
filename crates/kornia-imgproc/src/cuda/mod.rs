@@ -10,7 +10,7 @@ pub mod resize;
 /// Native CUDA warp-affine kernels (bilinear and nearest-neighbor).
 pub mod warp_affine;
 
-/// Native CUDA warp-perspective kernels (homography, bilinear / nearest / bicubic).
+/// Native CUDA warp-perspective kernels (homography, bilinear / nearest / bicubic / Lanczos-3).
 pub mod warp_perspective;
 
 /// Native CUDA color-space conversion kernels.

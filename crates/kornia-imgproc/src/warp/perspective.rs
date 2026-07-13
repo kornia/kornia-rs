@@ -51,7 +51,7 @@ pub(crate) fn invert_homography(m: &[f32; 9]) -> Option<[f32; 9]> {
 fn inverse_perspective_matrix(m: &[f32; 9]) -> Result<[f32; 9], ImageError> {
     let det = determinant3x3(m);
 
-    if det == 0.0 {
+    if det.abs() < 1e-10 {
         return Err(ImageError::CannotComputeDeterminant);
     }
 
