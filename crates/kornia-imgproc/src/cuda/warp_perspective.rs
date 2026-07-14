@@ -34,9 +34,10 @@
 
 use std::sync::{Arc, OnceLock};
 
-use cudarc::driver::{CudaContext, CudaSlice, CudaStream, LaunchConfig};
+use cudarc::driver::{CudaContext, CudaSlice, CudaStream};
 use kornia_tensor::CudaKernel;
 
+use super::{check_geometry, make_config, try_compile_with_l1};
 use crate::warp::invert_homography;
 
 // ── CUDA C source: bilinear warp perspective ─────────────────────────────────
@@ -61,7 +62,7 @@ extern "C" __global__ void warp_perspective_bilinear_3c(
     unsigned int gy = blockIdx.y * blockDim.y + threadIdx.y;
     if (gx >= dst_w || gy >= dst_h) return;
 
-    unsigned int out = (gy * dst_w + gx) * 3u;
+    unsigned long long out = ((unsigned long long)gy * dst_w + gx) * 3ull;
     float w = h6 * (float)gx + h7 * (float)gy + h8;
     if (fabsf(w) < 1e-10f) {
         dst[out] = 0.0f; dst[out+1] = 0.0f; dst[out+2] = 0.0f;
@@ -86,11 +87,13 @@ extern "C" __global__ void warp_perspective_bilinear_3c(
     bool has_x1 = (x0 + 1u) < src_w;
     bool has_y1 = (y0 + 1u) < src_h;
 
-    unsigned int b00 = (y0 * src_w + x0) * 3u;
-    unsigned int b01 = has_x1 ? b00 + 3u         : b00;
-    unsigned int b10 = has_y1 ? b00 + src_w * 3u : b00;
+    // 64-bit index math: (y*w + x)*3 wraps 32 bits at ~1.43 gigapixels.
+    unsigned long long b00 = ((unsigned long long)y0 * src_w + x0) * 3ull;
+    unsigned long long b01 = has_x1 ? b00 + 3ull                : b00;
+    unsigned long long b10 = has_y1 ? b00 + (unsigned long long)src_w * 3ull : b00;
     // val11 replicates val00 when EITHER axis overflows — CPU rule.
-    unsigned int b11 = (has_x1 && has_y1) ? b00 + src_w * 3u + 3u : b00;
+    unsigned long long b11 =
+        (has_x1 && has_y1) ? b00 + (unsigned long long)src_w * 3ull + 3ull : b00;
 
     float fxx = 1.0f - fx;
     float fyy = 1.0f - fy;
@@ -128,7 +131,7 @@ extern "C" __global__ void warp_perspective_nearest_3c(
     unsigned int gy = blockIdx.y * blockDim.y + threadIdx.y;
     if (gx >= dst_w || gy >= dst_h) return;
 
-    unsigned int out = (gy * dst_w + gx) * 3u;
+    unsigned long long out = ((unsigned long long)gy * dst_w + gx) * 3ull;
     float w = h6 * (float)gx + h7 * (float)gy + h8;
     if (fabsf(w) < 1e-10f) {
         dst[out] = 0.0f; dst[out+1] = 0.0f; dst[out+2] = 0.0f;
@@ -146,7 +149,7 @@ extern "C" __global__ void warp_perspective_nearest_3c(
     unsigned int xi = min((unsigned int)roundf(sx), src_w - 1u);
     unsigned int yi = min((unsigned int)roundf(sy), src_h - 1u);
 
-    unsigned int b = (yi * src_w + xi) * 3u;
+    unsigned long long b = ((unsigned long long)yi * src_w + xi) * 3ull;
     dst[out]   = __ldg(&src[b]);
     dst[out+1] = __ldg(&src[b+1]);
     dst[out+2] = __ldg(&src[b+2]);
@@ -174,7 +177,7 @@ extern "C" __global__ void warp_perspective_bicubic_3c(
     unsigned int dst_y = blockIdx.y * blockDim.y + threadIdx.y;
     if (dst_x >= dst_w || dst_y >= dst_h) return;
 
-    unsigned int out = (dst_y * dst_w + dst_x) * 3u;
+    unsigned long long out = ((unsigned long long)dst_y * dst_w + dst_x) * 3ull;
     float w = h6 * (float)dst_x + h7 * (float)dst_y + h8;
     if (fabsf(w) < 1e-10f) {
         dst[out] = 0.0f; dst[out+1] = 0.0f; dst[out+2] = 0.0f;
@@ -208,11 +211,11 @@ extern "C" __global__ void warp_perspective_bicubic_3c(
         t = 2.0f - frac_y; wy[3] = ((-0.5f*t + 2.5f)*t - 4.0f)*t + 2.0f;
     }
 
-    unsigned int row[4];
+    unsigned long long row[4];
     #pragma unroll
     for (int i = 0; i < 4; ++i) {
         int yi = max(0, min(y0 + i - 1, (int)src_h - 1));
-        row[i] = (unsigned int)yi * src_w * 3u;
+        row[i] = (unsigned long long)yi * src_w * 3ull;
     }
 
     float acc0 = 0.0f, acc1 = 0.0f, acc2 = 0.0f;
@@ -221,7 +224,7 @@ extern "C" __global__ void warp_perspective_bicubic_3c(
         #pragma unroll
         for (int dx = 0; dx < 4; ++dx) {
             int xi = max(0, min(x0 + dx - 1, (int)src_w - 1));
-            unsigned int b = row[dy] + (unsigned int)xi * 3u;
+            unsigned long long b = row[dy] + (unsigned long long)xi * 3ull;
             float wt = wx[dx] * wy[dy];
             acc0 = fmaf(wt, __ldg(&src[b]),   acc0);
             acc1 = fmaf(wt, __ldg(&src[b+1]), acc1);
@@ -265,7 +268,7 @@ extern "C" __global__ void warp_perspective_lanczos_3c(
     unsigned int dst_y = blockIdx.y * blockDim.y + threadIdx.y;
     if (dst_x >= dst_w || dst_y >= dst_h) return;
 
-    unsigned int out = (dst_y * dst_w + dst_x) * 3u;
+    unsigned long long out = ((unsigned long long)dst_y * dst_w + dst_x) * 3ull;
     float w = h6 * (float)dst_x + h7 * (float)dst_y + h8;
     if (fabsf(w) < 1e-10f) {
         dst[out] = 0.0f; dst[out+1] = 0.0f; dst[out+2] = 0.0f;
@@ -300,11 +303,11 @@ extern "C" __global__ void warp_perspective_lanczos_3c(
     #pragma unroll
     for (int i = 0; i < 6; i++) { wx[i] *= inv_x; wy[i] *= inv_y; }
 
-    unsigned int row[6];
+    unsigned long long row[6];
     #pragma unroll
     for (int i = 0; i < 6; i++) {
         int yi = max(0, min(y0 + i - 2, (int)src_h - 1));
-        row[i] = (unsigned int)yi * src_w * 3u;
+        row[i] = (unsigned long long)yi * src_w * 3ull;
     }
 
     float acc0 = 0.0f, acc1 = 0.0f, acc2 = 0.0f;
@@ -314,7 +317,7 @@ extern "C" __global__ void warp_perspective_lanczos_3c(
         #pragma unroll
         for (int dx = 0; dx < 6; dx++) {
             int xi = max(0, min(x0 + dx - 2, (int)src_w - 1));
-            unsigned int b = row[dy] + (unsigned int)xi * 3u;
+            unsigned long long b = row[dy] + (unsigned long long)xi * 3ull;
             rx = fmaf(wx[dx], __ldg(&src[b]),   rx);
             gx = fmaf(wx[dx], __ldg(&src[b+1]), gx);
             bx = fmaf(wx[dx], __ldg(&src[b+2]), bx);
@@ -335,9 +338,6 @@ static BILINEAR_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
 static NEAREST_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
 static BICUBIC_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
 static LANCZOS_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
-
-const BLOCK_W: u32 = 32;
-const BLOCK_H: u32 = 8;
 
 // ── Error type ────────────────────────────────────────────────────────────────
 
@@ -363,26 +363,6 @@ pub enum CudaWarpPerspectiveError {
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
-
-fn make_config(dst_width: u32, dst_height: u32, block_dim: Option<(u32, u32)>) -> LaunchConfig {
-    let (bw, bh) = block_dim.unwrap_or_else(|| (BLOCK_W.min(dst_width), BLOCK_H.min(dst_height)));
-    LaunchConfig {
-        block_dim: (bw, bh, 1),
-        grid_dim: (dst_width.div_ceil(bw), dst_height.div_ceil(bh), 1),
-        shared_mem_bytes: 0,
-    }
-}
-
-fn try_compile_with_l1(
-    ctx: &Arc<CudaContext>,
-    src: &str,
-    fn_name: &str,
-) -> Result<CudaKernel, String> {
-    let k = CudaKernel::compile(ctx, src, fn_name)
-        .map_err(|e| format!("failed to compile {fn_name}: {e}"))?;
-    let _ = k.prefer_l1_cache();
-    Ok(k)
-}
 
 fn check_image_slice(
     slice: &CudaSlice<f32>,
@@ -412,16 +392,8 @@ fn validate_and_invert(
     h: &[f32; 9],
     block_dim: Option<(u32, u32)>,
 ) -> Result<[f32; 9], CudaWarpPerspectiveError> {
-    if src_width == 0 || src_height == 0 || dst_width == 0 || dst_height == 0 {
-        return Err(CudaWarpPerspectiveError::Cuda(
-            "image dimensions must be non-zero".into(),
-        ));
-    }
-    if block_dim.is_some_and(|(bw, bh)| bw == 0 || bh == 0) {
-        return Err(CudaWarpPerspectiveError::Cuda(
-            "block_dim components must be non-zero".into(),
-        ));
-    }
+    check_geometry(src_width, src_height, dst_width, dst_height, block_dim)
+        .map_err(CudaWarpPerspectiveError::Cuda)?;
     check_image_slice(src, "src", src_width, src_height)?;
     check_image_slice(dst, "dst", dst_width, dst_height)?;
     invert_homography(h).ok_or(CudaWarpPerspectiveError::SingularHomography)
@@ -565,8 +537,8 @@ pub fn launch_warp_perspective_nearest_cuda(
 /// Launch the bicubic warp-perspective kernel for a 3-channel f32 image.
 ///
 /// Uses Keys cubic (a = −0.5), matching OpenCV `INTER_CUBIC`.
-/// Unlike bilinear/nearest, this kernel reads from a raw device pointer via
-/// `__ldg` on the source pointer with a 4×4 tap window.
+/// Reads the source via `__ldg` with a 4×4 tap window, like all kernels in
+/// this module.
 /// Out-of-bounds taps are clamped to the source border (BORDER_REPLICATE);
 /// pixels whose inverse-mapped centre falls outside the source are written as 0.
 ///

@@ -4,8 +4,8 @@
 //! typical image sizes, and compare each against the equivalent warp-affine mode.
 //!
 //! **What is measured:**
-//! 1. `warp_perspective_bilinear`  — texture-backed bilinear, 3-ch f32.
-//! 2. `warp_perspective_nearest`   — texture-backed nearest-neighbor, 3-ch f32.
+//! 1. `warp_perspective_bilinear`  — bilinear via `__ldg`, 3-ch f32.
+//! 2. `warp_perspective_nearest`   — nearest-neighbor via `__ldg`, 3-ch f32.
 //! 3. `warp_perspective_bicubic`   — Keys a=−0.5 via `__ldg`, 3-ch f32.
 //! 4. `warp_perspective_lanczos`   — Lanczos-3 (6×6 taps) via `__ldg`, 3-ch f32.
 //!
@@ -150,6 +150,6 @@ fn run_benchmark() {
         println!();
     }
 
-    println!("  Note: nearest/bilinear use texture objects; bicubic/lanczos use __ldg on raw src.");
+    println!("  Note: all kernels read the source via __ldg on a raw pointer.");
     println!("  Bicubic/Lanczos OOB taps clamped (BORDER_REPLICATE); OOB centre → 0.");
 }

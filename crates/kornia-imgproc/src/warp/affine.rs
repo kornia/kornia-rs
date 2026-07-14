@@ -141,49 +141,15 @@ pub fn warp_affine<const C: usize>(
     let src_w_f = src_w as f32;
     let src_h_f = src_h as f32;
 
-    // Analytical valid-x range helpers — same logic as warp_affine_u8.
-    // Solve 0 <= dsx*x + sx0 < src_w and 0 <= dsy*x + sy0 < src_h for x,
-    // then intersect to get [x_lo, x_hi) where both coords are in-bounds.
+    // Analytical valid-x range: solve 0 <= dsx*x + sx0 < src_w and
+    // 0 <= dsy*x + sy0 < src_h for x, intersected to [x_lo, x_hi) — see
+    // `warp::span` for the inclusive/strict boundary rules.
     //
-    // The bound is inclusive on one side and strict on the other, and which side
-    // is which flips with the sign of `d`. Getting this wrong costs a column:
-    //
-    //   d > 0:  x >= -s0/d          (inclusive)  and  x <  (upper-s0)/d (strict)
-    //           => x in [ceil(-s0/d), ceil((upper-s0)/d))
-    //   d < 0:  x <= -s0/d          (inclusive)  and  x >  (upper-s0)/d (strict)
-    //           => x in [floor((upper-s0)/d) + 1, floor(-s0/d) + 1)
-    //
-    // Using `ceil` on both ends for `d < 0` (as an earlier revision did) drops the
-    // valid `x = -s0/d` when that lands exactly on an integer, zeroing a pixel
-    // whose source coordinate sits exactly on the top/left edge, and conversely
-    // admits an out-of-range `x` at the strict end. Exact-integer boundaries are
-    // common for axis-aligned and dyadic transforms, so this is not a corner case.
+    // 1e-6 degenerate-step threshold covers f32 trig imprecision (e.g.
+    // cos(π/2) ≈ −4.4e-8); assumes source step ≥ ~1e-6 px/col (extreme
+    // downscale > 1e6:1 is not a use case here).
     let compute_range = |sx0: f32, sy0: f32| -> (usize, usize) {
-        let (mut lo, mut hi) = (0i64, dst_w as i64);
-        for (d, s0, upper) in [(dsx, sx0, src_w_f), (dsy, sy0, src_h_f)] {
-            // 1e-6 covers f32 trig imprecision (e.g. cos(π/2) ≈ −4.4e-8);
-            // assumes source step ≥ ~1e-6 px/col (extreme downscale > 1e6:1 is not a use case here).
-            if d.abs() < 1e-6 {
-                if s0 < 0.0 || s0 >= upper {
-                    return (0, 0);
-                }
-            } else {
-                let a = (-s0) / d; // inclusive bound
-                let b = (upper - s0) / d; // strict bound
-                let (lf, hf) = if d > 0.0 {
-                    (a.ceil(), b.ceil())
-                } else {
-                    (b.floor() + 1.0, a.floor() + 1.0)
-                };
-                lo = lo.max(lf.max(0.0) as i64);
-                hi = hi.min(hf.min(dst_w as f32) as i64);
-            }
-        }
-        if lo >= hi {
-            (0, 0)
-        } else {
-            (lo as usize, hi as usize)
-        }
+        super::span::affine_valid_span([(dsx, sx0, src_w_f), (dsy, sy0, src_h_f)], dst_w, 1e-6)
     };
 
     // 16 rows per Rayon task — same granularity as parallel.rs — keeps spawn
@@ -329,56 +295,14 @@ pub fn warp_affine_u8<const C: usize>(
             let sx0 = m_inv[1] * y_f + m_inv[2];
             let sy0 = m_inv[4] * y_f + m_inv[5];
 
-            // Analytical valid-x range so the inner loop is branch-free.
-            // Solve: 0 <= dsx*x + sx0 < sx_upper; same for y; intersect.
-            let (mut x_lo, mut x_hi) = (0i64, dst_w as i64);
-            // For the x-axis constraint: 0 <= dsx*x + sx0 < sx_upper.
-            if dsx.abs() < 1e-12 {
-                if !(sx0 >= 0.0 && sx0 < sx_upper) {
-                    x_lo = 0;
-                    x_hi = 0;
-                }
-            } else {
-                let a = (-sx0) / dsx; // inclusive bound
-                let b = (sx_upper - sx0) / dsx; // strict bound
-                                                // Which end is inclusive flips with the sign of dsx — see the
-                                                // derivation on `compute_range` in `warp_affine`.
-                let (lo_f, hi_f) = if dsx > 0.0 {
-                    (a.ceil(), b.ceil())
-                } else {
-                    (b.floor() + 1.0, a.floor() + 1.0)
-                };
-                let new_lo = lo_f.max(0.0) as i64;
-                let new_hi = hi_f.min(dst_w as f32) as i64;
-                x_lo = x_lo.max(new_lo);
-                x_hi = x_hi.min(new_hi);
-            }
-            if dsy.abs() < 1e-12 {
-                if !(sy0 >= 0.0 && sy0 < sy_upper) {
-                    x_lo = 0;
-                    x_hi = 0;
-                }
-            } else {
-                let a = (-sy0) / dsy; // inclusive bound
-                let b = (sy_upper - sy0) / dsy; // strict bound
-                let (lo_f, hi_f) = if dsy > 0.0 {
-                    (a.ceil(), b.ceil())
-                } else {
-                    (b.floor() + 1.0, a.floor() + 1.0)
-                };
-                let new_lo = lo_f.max(0.0) as i64;
-                let new_hi = hi_f.min(dst_w as f32) as i64;
-                x_lo = x_lo.max(new_lo);
-                x_hi = x_hi.min(new_hi);
-            }
-            if x_lo > x_hi {
-                x_lo = 0;
-                x_hi = 0;
-            }
-
-            // Left/right invalid ranges: zero-fill via memset.
-            let x_lo_u = x_lo as usize;
-            let x_hi_u = x_hi as usize;
+            // Analytical valid-x range so the inner loop is branch-free:
+            // 0 <= dsx*x + sx0 < sx_upper (same for y), intersected — see
+            // `warp::span` for the inclusive/strict boundary rules.
+            let (x_lo_u, x_hi_u) = super::span::affine_valid_span(
+                [(dsx, sx0, sx_upper), (dsy, sy0, sy_upper)],
+                dst_w,
+                1e-12,
+            );
             dst_row[..x_lo_u * C].fill(0);
             dst_row[x_hi_u * C..].fill(0);
 
