@@ -15,6 +15,3 @@ pub mod warp_perspective;
 
 /// Native CUDA color-space conversion kernels.
 pub mod color;
-
-/// CUDA texture object RAII wrapper (used internally by warp-affine kernels).
-mod texture;

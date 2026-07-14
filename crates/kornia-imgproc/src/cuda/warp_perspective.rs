@@ -7,17 +7,20 @@
 //! to its `(dst_x, dst_y)` position and dividing by the homogeneous weight `w`.
 //! Pixels whose `|w| < 1e-10` (degenerate projection) are written as 0.
 //!
-//! **Border handling differs by interpolation mode:**
-//! * Bilinear / nearest: source reads via a texture object with
-//!   `CU_TR_ADDRESS_MODE_BORDER`; out-of-bounds taps return 0 (`BORDER_CONSTANT`).
-//! * Bicubic / Lanczos-3: OOB taps in the 4×4 / 6×6 support window are clamped
-//!   to the nearest source border pixel (`BORDER_REPLICATE`); pixels whose
-//!   inverse-mapped centre falls outside the source are written as 0.
+//! **Border handling.** A destination pixel whose inverse-mapped source
+//! coordinate falls outside `[0, src_w) × [0, src_h)` is written as 0
+//! (`BORDER_CONSTANT`). Inside that range:
+//! * Bilinear replicates `val00` for taps that leave the right/bottom edge, and
+//!   nearest rounds-then-clamps — both matching the CPU interpolators exactly.
+//! * Bicubic / Lanczos-3 clamp OOB taps in the 4×4 / 6×6 support window to the
+//!   nearest source border pixel (`BORDER_REPLICATE`).
 //!
 //! # Optimisations
 //!
-//! * **CUDA texture objects** — bilinear/nearest reads via the 2D-spatial texture
-//!   cache with `CU_TR_ADDRESS_MODE_BORDER`, eliminating divergent OOB branches.
+//! * **`__ldg` source reads** — all kernels read the source through the read-only
+//!   data cache. Bilinear/nearest previously used a pitch-2D texture object,
+//!   which constrained `src_w` to multiples of 8 (issue #1000); see
+//!   [`super::warp_affine`] for the full rationale.
 //! * **`CU_FUNC_CACHE_PREFER_L1`** — enlarges L1 to 64 KB; no shared memory used.
 //! * **32×8 thread block (default)** — full warp per output row for coalesced writes.
 //! * **`1/w` reciprocal** — one FP division replaces two per output pixel.
@@ -31,23 +34,23 @@
 
 use std::sync::{Arc, OnceLock};
 
-use cudarc::driver::{CudaContext, CudaSlice, CudaStream, DevicePtr, LaunchConfig};
+use cudarc::driver::{CudaContext, CudaSlice, CudaStream, LaunchConfig};
 use kornia_tensor::CudaKernel;
 
 use crate::warp::invert_homography;
 
-use super::texture::CudaTexObject;
-
-// ── CUDA C source: bilinear warp perspective via texture object ───────────────
+// ── CUDA C source: bilinear warp perspective ─────────────────────────────────
 //
-// The only difference from warp_affine_bilinear_tex_3c is the coordinate
-// transform: affine uses a 2×3 linear map; perspective adds a w-divide from
-// the third row of the 3×3 homography.
+// The only difference from warp_affine_bilinear_3c is the coordinate transform:
+// affine uses a 2×3 linear map; perspective adds a w-divide from the third row
+// of the 3×3 homography.
 
 static BILINEAR_SRC: &str = r#"
-extern "C" __global__ void warp_perspective_bilinear_tex_3c(
-    unsigned long long tex,
-    float* __restrict__  dst,
+extern "C" __global__ void warp_perspective_bilinear_3c(
+    const float* __restrict__ src,
+    float* __restrict__       dst,
+    unsigned int src_w,
+    unsigned int src_h,
     unsigned int dst_w,
     unsigned int dst_h,
     float h0, float h1, float h2,
@@ -68,48 +71,53 @@ extern "C" __global__ void warp_perspective_bilinear_tex_3c(
     float sx = (h0 * (float)gx + h1 * (float)gy + h2) * rw;
     float sy = (h3 * (float)gx + h4 * (float)gy + h5) * rw;
 
-    // Bilinear weights.
-    float x0f = floorf(sx);
-    float y0f = floorf(sy);
-    float fx   = sx - x0f;
-    float fy   = sy - y0f;
-    float w00 = (1.0f - fy) * (1.0f - fx);
-    float w10 = (1.0f - fy) * fx;
-    float w01 = fy * (1.0f - fx);
-    float w11 = fy * fx;
+    // BORDER_CONSTANT: outside the source, emit 0 (CPU valid-range guard).
+    if (sx < 0.0f || sx >= (float)src_w || sy < 0.0f || sy >= (float)src_h) {
+        dst[out] = 0.0f; dst[out+1] = 0.0f; dst[out+2] = 0.0f;
+        return;
+    }
 
-    float tx0 = x0f * 3.0f;
-    float ty1 = y0f + 1.0f;
+    // sx, sy >= 0 here, so truncation == floor (matches CPU `u.trunc()`).
+    unsigned int x0 = (unsigned int)sx;
+    unsigned int y0 = (unsigned int)sy;
+    float fx = sx - (float)x0;
+    float fy = sy - (float)y0;
 
-    // Border mode: OOB fetches return 0.0.
-    cudaTextureObject_t t = (cudaTextureObject_t)tex;
+    bool has_x1 = (x0 + 1u) < src_w;
+    bool has_y1 = (y0 + 1u) < src_h;
 
-    float r00 = tex2D<float>(t, tx0,       y0f);
-    float r10 = tex2D<float>(t, tx0+3.0f,  y0f);
-    float r01 = tex2D<float>(t, tx0,       ty1);
-    float r11 = tex2D<float>(t, tx0+3.0f,  ty1);
-    dst[out]   = fmaf(w00, r00, fmaf(w10, r10, fmaf(w01, r01, w11 * r11)));
+    unsigned int b00 = (y0 * src_w + x0) * 3u;
+    unsigned int b01 = has_x1 ? b00 + 3u         : b00;
+    unsigned int b10 = has_y1 ? b00 + src_w * 3u : b00;
+    // val11 replicates val00 when EITHER axis overflows — CPU rule.
+    unsigned int b11 = (has_x1 && has_y1) ? b00 + src_w * 3u + 3u : b00;
 
-    float g00 = tex2D<float>(t, tx0+1.0f,  y0f);
-    float g10 = tex2D<float>(t, tx0+4.0f,  y0f);
-    float g01 = tex2D<float>(t, tx0+1.0f,  ty1);
-    float g11 = tex2D<float>(t, tx0+4.0f,  ty1);
-    dst[out+1] = fmaf(w00, g00, fmaf(w10, g10, fmaf(w01, g01, w11 * g11)));
+    float fxx = 1.0f - fx;
+    float fyy = 1.0f - fy;
+    float w00 = fxx * fyy;
+    float w01 = fx  * fyy;
+    float w10 = fxx * fy;
+    float w11 = fx  * fy;
 
-    float b00 = tex2D<float>(t, tx0+2.0f,  y0f);
-    float b10 = tex2D<float>(t, tx0+5.0f,  y0f);
-    float b01 = tex2D<float>(t, tx0+2.0f,  ty1);
-    float b11 = tex2D<float>(t, tx0+5.0f,  ty1);
-    dst[out+2] = fmaf(w00, b00, fmaf(w10, b10, fmaf(w01, b01, w11 * b11)));
+    #pragma unroll
+    for (unsigned int c = 0u; c < 3u; ++c) {
+        float v00 = __ldg(&src[b00 + c]);
+        float v01 = __ldg(&src[b01 + c]);
+        float v10 = __ldg(&src[b10 + c]);
+        float v11 = __ldg(&src[b11 + c]);
+        dst[out + c] = fmaf(w00, v00, fmaf(w01, v01, fmaf(w10, v10, w11 * v11)));
+    }
 }
 "#;
 
-// ── CUDA C source: nearest-neighbor warp perspective via texture object ───────
+// ── CUDA C source: nearest-neighbor warp perspective ─────────────────────────
 
 static NEAREST_SRC: &str = r#"
-extern "C" __global__ void warp_perspective_nearest_tex_3c(
-    unsigned long long tex,
-    float* __restrict__  dst,
+extern "C" __global__ void warp_perspective_nearest_3c(
+    const float* __restrict__ src,
+    float* __restrict__       dst,
+    unsigned int src_w,
+    unsigned int src_h,
     unsigned int dst_w,
     unsigned int dst_h,
     float h0, float h1, float h2,
@@ -130,14 +138,18 @@ extern "C" __global__ void warp_perspective_nearest_tex_3c(
     float sx = (h0 * (float)gx + h1 * (float)gy + h2) * rw;
     float sy = (h3 * (float)gx + h4 * (float)gy + h5) * rw;
 
-    // Round to nearest; border mode handles OOB → 0.
-    float tx = roundf(sx) * 3.0f;
-    float ty = roundf(sy);
+    if (sx < 0.0f || sx >= (float)src_w || sy < 0.0f || sy >= (float)src_h) {
+        dst[out] = 0.0f; dst[out+1] = 0.0f; dst[out+2] = 0.0f;
+        return;
+    }
 
-    cudaTextureObject_t t = (cudaTextureObject_t)tex;
-    dst[out]   = tex2D<float>(t, tx,       ty);
-    dst[out+1] = tex2D<float>(t, tx+1.0f,  ty);
-    dst[out+2] = tex2D<float>(t, tx+2.0f,  ty);
+    unsigned int xi = min((unsigned int)roundf(sx), src_w - 1u);
+    unsigned int yi = min((unsigned int)roundf(sy), src_h - 1u);
+
+    unsigned int b = (yi * src_w + xi) * 3u;
+    dst[out]   = __ldg(&src[b]);
+    dst[out+1] = __ldg(&src[b+1]);
+    dst[out+2] = __ldg(&src[b+2]);
 }
 "#;
 
@@ -389,23 +401,6 @@ fn check_image_slice(
     Ok(())
 }
 
-fn make_tex(
-    src: &CudaSlice<f32>,
-    stream: &Arc<CudaStream>,
-    src_width: u32,
-    src_height: u32,
-) -> Result<(CudaTexObject, u64), CudaWarpPerspectiveError> {
-    // Safety: DevicePtr::device_ptr returns the raw CUdeviceptr; the _guard
-    // records a stream event on drop (after the texture is destroyed) which is
-    // the correct ordering.
-    let (dev_ptr, _guard) = src.device_ptr(stream);
-    let tex =
-        CudaTexObject::new_pitch2d_border(dev_ptr, src_width as usize * 3, src_height as usize)
-            .map_err(CudaWarpPerspectiveError::Cuda)?;
-    let handle = tex.handle();
-    Ok((tex, handle))
-}
-
 #[allow(clippy::too_many_arguments)]
 fn validate_and_invert(
     src: &CudaSlice<f32>,
@@ -440,8 +435,9 @@ fn validate_and_invert(
 /// The matrix is inverted internally so the API matches the CPU
 /// [`warp_perspective`](crate::warp::warp_perspective).
 ///
-/// Source pixels are fetched via a CUDA texture object (border-mode).
-/// Out-of-bounds coordinates return 0 (`BORDER_CONSTANT`).
+/// Source pixels are read via `__ldg`; any source width is supported.
+/// Out-of-bounds coordinates return 0 (`BORDER_CONSTANT`), and taps that leave
+/// the right/bottom edge replicate `val00`, matching the CPU interpolator.
 /// Pixels whose homogeneous weight `|w| < 1e-10` after inversion are
 /// written as 0 (degenerate projection).
 ///
@@ -459,7 +455,7 @@ fn validate_and_invert(
 /// # Errors
 ///
 /// Returns [`CudaWarpPerspectiveError`] on compile failure, singular homography,
-/// texture-creation error, launch error, or if any slice is too small.
+/// launch error, or if any slice is too small.
 #[allow(clippy::too_many_arguments)]
 pub fn launch_warp_perspective_bilinear_cuda(
     ctx: &Arc<CudaContext>,
@@ -477,15 +473,16 @@ pub fn launch_warp_perspective_bilinear_cuda(
         src, dst, src_width, src_height, dst_width, dst_height, h, block_dim,
     )?;
     let kernel = BILINEAR_KERNEL
-        .get_or_init(|| try_compile_with_l1(ctx, BILINEAR_SRC, "warp_perspective_bilinear_tex_3c"))
+        .get_or_init(|| try_compile_with_l1(ctx, BILINEAR_SRC, "warp_perspective_bilinear_3c"))
         .as_ref()
         .map_err(|e| CudaWarpPerspectiveError::Cuda(e.clone()))?;
-    let (_tex, tex_handle) = make_tex(src, stream, src_width, src_height)?;
 
     kernel
         .launch_builder(stream)
-        .arg(&tex_handle)
+        .arg(src)
         .arg(dst)
+        .arg(&src_width)
+        .arg(&src_height)
         .arg(&dst_width)
         .arg(&dst_height)
         .arg(&hi[0])
@@ -508,7 +505,8 @@ pub fn launch_warp_perspective_bilinear_cuda(
 /// Launch the nearest-neighbor warp-perspective kernel for a 3-channel f32 image.
 ///
 /// Same as [`launch_warp_perspective_bilinear_cuda`] but uses round-to-nearest
-/// source sampling.  Faster; suitable for integer-aligned transforms.
+/// source sampling (half-away-from-zero, then clamped — matching the CPU
+/// nearest interpolator).  Faster; suitable for integer-aligned transforms.
 ///
 /// # Arguments
 ///
@@ -517,7 +515,7 @@ pub fn launch_warp_perspective_bilinear_cuda(
 /// # Errors
 ///
 /// Returns [`CudaWarpPerspectiveError`] on compile failure, singular homography,
-/// texture-creation error, launch error, or if any slice is too small.
+/// launch error, or if any slice is too small.
 #[allow(clippy::too_many_arguments)]
 pub fn launch_warp_perspective_nearest_cuda(
     ctx: &Arc<CudaContext>,
@@ -535,15 +533,16 @@ pub fn launch_warp_perspective_nearest_cuda(
         src, dst, src_width, src_height, dst_width, dst_height, h, block_dim,
     )?;
     let kernel = NEAREST_KERNEL
-        .get_or_init(|| try_compile_with_l1(ctx, NEAREST_SRC, "warp_perspective_nearest_tex_3c"))
+        .get_or_init(|| try_compile_with_l1(ctx, NEAREST_SRC, "warp_perspective_nearest_3c"))
         .as_ref()
         .map_err(|e| CudaWarpPerspectiveError::Cuda(e.clone()))?;
-    let (_tex, tex_handle) = make_tex(src, stream, src_width, src_height)?;
 
     kernel
         .launch_builder(stream)
-        .arg(&tex_handle)
+        .arg(src)
         .arg(dst)
+        .arg(&src_width)
+        .arg(&src_height)
         .arg(&dst_width)
         .arg(&dst_height)
         .arg(&hi[0])
@@ -567,7 +566,7 @@ pub fn launch_warp_perspective_nearest_cuda(
 ///
 /// Uses Keys cubic (a = −0.5), matching OpenCV `INTER_CUBIC`.
 /// Unlike bilinear/nearest, this kernel reads from a raw device pointer via
-/// `__ldg` rather than a texture object (required for the 4×4 tap window).
+/// `__ldg` on the source pointer with a 4×4 tap window.
 /// Out-of-bounds taps are clamped to the source border (BORDER_REPLICATE);
 /// pixels whose inverse-mapped centre falls outside the source are written as 0.
 ///
