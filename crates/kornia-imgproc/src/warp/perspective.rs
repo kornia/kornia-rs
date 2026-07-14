@@ -29,22 +29,38 @@ fn adjugate3x3(m: &[f32; 9]) -> [f32; 9] {
     ]
 }
 
-fn inverse_perspective_matrix(m: &[f32; 9]) -> Result<[f32; 9], ImageError> {
+/// Invert a 3×3 homography matrix.
+///
+/// Returns `None` for singular or near-singular matrices.  The singularity
+/// test is **scale-invariant**: the determinant is normalised by `|h[8]|³`
+/// before comparison so that a geometrically valid but unnormalised homography
+/// (all entries multiplied by a small scalar) is not incorrectly rejected —
+/// `det(kH) = k³ det(H)` would shrink the raw det below a fixed ε even when
+/// the geometry is perfectly sound.  Falls back to the raw det when `h[8]`
+/// itself is near zero.
+pub(crate) fn invert_homography(m: &[f32; 9]) -> Option<[f32; 9]> {
     let det = determinant3x3(m);
-
-    if det == 0.0 {
-        return Err(ImageError::CannotComputeDeterminant);
+    // Normalise by |h[8]|³ to get a scale-invariant singularity indicator.
+    let h8_sq = m[8] * m[8];
+    let det_norm = if h8_sq > f32::EPSILON {
+        det / (h8_sq * m[8].abs())
+    } else {
+        det
+    };
+    if det_norm.abs() < 1e-10 {
+        return None;
     }
-
     let adj = adjugate3x3(m);
     let inv_det = 1.0 / det;
-
-    let mut inv_m = [0.0; 9];
+    let mut inv = [0.0f32; 9];
     for i in 0..9 {
-        inv_m[i] = adj[i] * inv_det;
+        inv[i] = adj[i] * inv_det;
     }
+    Some(inv)
+}
 
-    Ok(inv_m)
+fn inverse_perspective_matrix(m: &[f32; 9]) -> Result<[f32; 9], ImageError> {
+    invert_homography(m).ok_or(ImageError::CannotComputeDeterminant)
 }
 
 // implement later as batched operation
@@ -307,6 +323,68 @@ pub fn warp_perspective_u8<const C: usize>(
 #[cfg(test)]
 mod tests {
     use kornia_image::{Image, ImageError, ImageSize};
+
+    // ── invert_homography unit tests ──────────────────────────────────────────
+
+    /// Helper: multiply two 3×3 row-major matrices.
+    fn mat3_mul(a: &[f32; 9], b: &[f32; 9]) -> [f32; 9] {
+        let mut c = [0.0f32; 9];
+        for row in 0..3 {
+            for col in 0..3 {
+                for k in 0..3 {
+                    c[row * 3 + col] += a[row * 3 + k] * b[k * 3 + col];
+                }
+            }
+        }
+        c
+    }
+
+    #[test]
+    fn invert_homography_known() {
+        // Translation: H maps (x,y) → (x+2, y+3).  Inverse: (x,y) → (x-2, y-3).
+        let h: [f32; 9] = [1.0, 0.0, 2.0, 0.0, 1.0, 3.0, 0.0, 0.0, 1.0];
+        let expected: [f32; 9] = [1.0, 0.0, -2.0, 0.0, 1.0, -3.0, 0.0, 0.0, 1.0];
+        let inv = super::invert_homography(&h).expect("translation H must be invertible");
+        for (a, b) in inv.iter().zip(expected.iter()) {
+            assert!((a - b).abs() < 1e-6, "inv[i]={a} expected {b}");
+        }
+    }
+
+    #[test]
+    fn invert_homography_round_trip() {
+        // Non-trivial projective H; H · H⁻¹ must be ≈ identity.
+        let h: [f32; 9] = [1.02, 0.03, -5.0, -0.01, 0.99, 2.0, 0.00005, 0.00003, 1.0];
+        let inv = super::invert_homography(&h).expect("valid H must be invertible");
+        let prod = mat3_mul(&h, &inv);
+        let identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        for (a, b) in prod.iter().zip(identity.iter()) {
+            assert!((a - b).abs() < 1e-5, "H·H⁻¹[i]={a} expected {b}");
+        }
+    }
+
+    #[test]
+    fn invert_homography_singular_returns_none() {
+        // All-zero matrix is singular.
+        let h = [0.0f32; 9];
+        assert!(super::invert_homography(&h).is_none());
+
+        // Rank-1 matrix (rows are scalar multiples).
+        let h2: [f32; 9] = [1.0, 2.0, 3.0, 2.0, 4.0, 6.0, 3.0, 6.0, 9.0];
+        assert!(super::invert_homography(&h2).is_none());
+    }
+
+    #[test]
+    fn invert_homography_small_scale_accepted() {
+        // Scale-invariant check: H/1000 must still be accepted.
+        // A fixed-magnitude det threshold would reject this even though the
+        // geometry is perfectly valid.
+        let h: [f32; 9] = [1.0, 0.0, 2.0, 0.0, 1.0, 3.0, 0.0, 0.0, 1.0];
+        let small: [f32; 9] = h.map(|v| v * 0.001);
+        assert!(
+            super::invert_homography(&small).is_some(),
+            "scaled-down valid H must not be rejected as singular"
+        );
+    }
 
     #[test]
     fn inverse_perspective_matrix() -> Result<(), ImageError> {
