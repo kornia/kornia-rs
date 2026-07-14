@@ -46,8 +46,16 @@ pub(crate) fn bilinear_interpolation<const C: usize>(
     let frac_uu = 1. - frac_u;
     let frac_vv = 1. - frac_v;
 
-    val00 * frac_uu * frac_vv
-        + val01 * frac_u * frac_vv
-        + val10 * frac_uu * frac_v
-        + val11 * frac_u * frac_v
+    // Weights are formed first and the terms summed left to right — the same
+    // expression shape as the CUDA bilinear kernels, which compile with
+    // `--fmad=false` (uncontracted multiply-adds). Same ops in the same order
+    // means bit-identical results, which the CPU/GPU resize parity tests
+    // assert. `(val * w1) * w2` is NOT the same rounding as `val * (w1 * w2)`;
+    // keep this shape in sync with the kernels.
+    let w00 = frac_vv * frac_uu;
+    let w10 = frac_vv * frac_u;
+    let w01 = frac_v * frac_uu;
+    let w11 = frac_v * frac_u;
+
+    w00 * val00 + w10 * val01 + w01 * val10 + w11 * val11
 }

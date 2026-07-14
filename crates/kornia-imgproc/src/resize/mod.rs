@@ -125,18 +125,27 @@ pub fn resize_native<const C: usize>(
     // GPU agree. Earlier releases used align-corners
     // (`sx = x * (src-1)/(dst-1)`), which shifts content relative to every
     // mainstream library; outputs changed accordingly.
-    let scale_x = src.cols() as f32 / dst.cols() as f32;
-    let scale_y = src.rows() as f32 / dst.rows() as f32;
-    let x_max = (src.cols() - 1) as f32;
-    let y_max = (src.rows() - 1) as f32;
     // The grid is separable: evaluate each axis once (dst_w + dst_h values)
     // and let the per-pixel closure be two table loads.
-    let xs: Vec<f32> = (0..dst_cols)
-        .map(|x| ((x as f32 + 0.5) * scale_x - 0.5).clamp(0.0, x_max))
-        .collect();
-    let ys: Vec<f32> = (0..dst_rows)
-        .map(|y| ((y as f32 + 0.5) * scale_y - 0.5).clamp(0.0, y_max))
-        .collect();
+    //
+    // BYTE-EXACT CONTRACT with the CUDA resize kernels: the coordinate is
+    // computed as `a*x + b` with `a = src/dst` and `b = 0.5*a - 0.5` — the
+    // exact f32 expression `cuda::resize::PixelMapping::HalfPixel.coeffs`
+    // feeds the kernels, which evaluate `a*x + b` as an uncontracted
+    // multiply-add (`--fmad=false`). Same ops, same roundings, identical
+    // coordinates — the CPU/GPU parity tests assert bit-equality on top of
+    // this. Algebraically equivalent forms like `(x + 0.5)*a - 0.5` round
+    // differently; don't "simplify" one side without the other.
+    let axis_lut = |src_len: usize, dst_len: usize| -> Vec<f32> {
+        let a = src_len as f32 / dst_len as f32;
+        let b = 0.5 * a - 0.5;
+        let max = (src_len - 1) as f32;
+        (0..dst_len)
+            .map(|i| (a * i as f32 + b).clamp(0.0, max))
+            .collect()
+    };
+    let xs = axis_lut(src.cols(), dst_cols);
+    let ys = axis_lut(src.rows(), dst_rows);
     let (map_x, map_y) = meshgrid_from_fn(dst_cols, dst_rows, |x, y| Ok((xs[x], ys[y])))?;
 
     parallel::par_iter_rows_resample(dst, &map_x, &map_y, |&x, &y, dst_pixel| {

@@ -434,6 +434,16 @@ impl CudaKernel {
             src,
             CompileOptions {
                 arch: Some(arch_str),
+                // No automatic FP contraction: a plain `a*b + c` in kernel
+                // source compiles to a multiply and an add with two roundings,
+                // exactly like the same expression on the CPU. This is what
+                // makes CPU↔GPU byte-exactness achievable for kernels written
+                // to mirror their CPU reference. Explicit `fmaf()` calls are
+                // NOT affected — kernels that want fusion (tap accumulation in
+                // bicubic/Lanczos, Horner polynomials) say so in the source.
+                // Measured on Jetson Orin: no throughput change on the
+                // bandwidth-bound image kernels in this workspace.
+                fmad: Some(false),
                 ..Default::default()
             },
         )
