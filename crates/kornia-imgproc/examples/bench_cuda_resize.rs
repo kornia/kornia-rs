@@ -14,6 +14,7 @@
 //! ```
 
 use kornia_image::{Image, ImageSize};
+#[cfg(feature = "cuda")]
 use kornia_imgproc::cuda::resize::PixelMapping;
 use kornia_imgproc::interpolation::InterpolationMode;
 use kornia_imgproc::resize::resize_native;
