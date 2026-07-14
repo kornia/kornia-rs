@@ -511,10 +511,15 @@ mod tests {
             ],
         )?;
 
-        // resize matrix (from get_perspective_transform)
-        let m = [0.3333, 0.0, 0.0, 0.0, 0.3333, 0.0, 0.0, 0.0, 1.0];
+        // The homography equivalent of a half-pixel 2× downscale: resize
+        // samples at sx = (dst_x + 0.5) * 2 - 0.5 = 2*dst_x + 0.5, so the
+        // forward (src → dst) map is dst_x = 0.5*sx - 0.25. All entries are
+        // dyadic, so the internal inversion and the interpolation are exact
+        // and the equality with `resize_native` below is bit-exact.
+        let m = [0.5, 0.0, -0.25, 0.0, 0.5, -0.25, 0.0, 0.0, 1.0];
 
-        let image_expected = vec![0.0, 3.0, 12.0, 15.0];
+        // v(sx, sy) = 4*sy + sx sampled at (2x+0.5, 2y+0.5).
+        let image_expected = vec![2.5, 4.5, 10.5, 12.5];
 
         let new_size = ImageSize {
             width: 2,

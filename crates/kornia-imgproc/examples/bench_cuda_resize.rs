@@ -14,6 +14,7 @@
 //! ```
 
 use kornia_image::{Image, ImageSize};
+use kornia_imgproc::cuda::resize::PixelMapping;
 use kornia_imgproc::interpolation::InterpolationMode;
 use kornia_imgproc::resize::resize_native;
 use std::time::Instant;
@@ -129,7 +130,7 @@ fn run_cpu() {
 fn run_gpu_cuda() {
     use cudarc::driver::CudaContext;
     use kornia_imgproc::cuda::resize::{
-        launch_resize_bilinear_downscale_cuda, launch_resize_nearest_downscale_cuda,
+        launch_resize_bilinear_downscale_cuda, launch_resize_nearest_downscale_cuda, PixelMapping,
     };
 
     // Only downscale cases — the CubeCL path already handles upscale well.
@@ -166,11 +167,29 @@ fn run_gpu_cuda() {
                           dst: &mut cudarc::driver::CudaSlice<f32>| {
                 match method {
                     "nearest" => launch_resize_nearest_downscale_cuda(
-                        &ctx, &stream, src, dst, sw, sh, dw, dh, None,
+                        &ctx,
+                        &stream,
+                        src,
+                        dst,
+                        sw,
+                        sh,
+                        dw,
+                        dh,
+                        PixelMapping::HalfPixel,
+                        None,
                     )
                     .expect("nearest launch"),
                     _ => launch_resize_bilinear_downscale_cuda(
-                        &ctx, &stream, src, dst, sw, sh, dw, dh, None,
+                        &ctx,
+                        &stream,
+                        src,
+                        dst,
+                        sw,
+                        sh,
+                        dw,
+                        dh,
+                        PixelMapping::HalfPixel,
+                        None,
                     )
                     .expect("bilinear launch"),
                 }
@@ -231,15 +250,37 @@ fn run_gpu_cuda_bicubic() {
         let mut dst_dev = stream.alloc_zeros::<f32>(npix_dst * nc).expect("alloc dst");
 
         for _ in 0..WARMUP {
-            launch_resize_bicubic_cuda(&ctx, &stream, &src_dev, &mut dst_dev, sw, sh, dw, dh, None)
-                .expect("bicubic launch");
+            launch_resize_bicubic_cuda(
+                &ctx,
+                &stream,
+                &src_dev,
+                &mut dst_dev,
+                sw,
+                sh,
+                dw,
+                dh,
+                PixelMapping::HalfPixel,
+                None,
+            )
+            .expect("bicubic launch");
         }
         stream.synchronize().expect("sync");
 
         let t = std::time::Instant::now();
         for _ in 0..ITERS {
-            launch_resize_bicubic_cuda(&ctx, &stream, &src_dev, &mut dst_dev, sw, sh, dw, dh, None)
-                .expect("bicubic launch");
+            launch_resize_bicubic_cuda(
+                &ctx,
+                &stream,
+                &src_dev,
+                &mut dst_dev,
+                sw,
+                sh,
+                dw,
+                dh,
+                PixelMapping::HalfPixel,
+                None,
+            )
+            .expect("bicubic launch");
         }
         stream.synchronize().expect("sync");
         let ms = t.elapsed().as_secs_f64() * 1e3 / ITERS as f64;
@@ -285,15 +326,37 @@ fn run_gpu_cuda_lanczos() {
         let mut dst_dev = stream.alloc_zeros::<f32>(npix_dst * nc).expect("alloc dst");
 
         for _ in 0..WARMUP {
-            launch_resize_lanczos_cuda(&ctx, &stream, &src_dev, &mut dst_dev, sw, sh, dw, dh, None)
-                .expect("lanczos launch");
+            launch_resize_lanczos_cuda(
+                &ctx,
+                &stream,
+                &src_dev,
+                &mut dst_dev,
+                sw,
+                sh,
+                dw,
+                dh,
+                PixelMapping::HalfPixel,
+                None,
+            )
+            .expect("lanczos launch");
         }
         stream.synchronize().expect("sync");
 
         let t = std::time::Instant::now();
         for _ in 0..ITERS {
-            launch_resize_lanczos_cuda(&ctx, &stream, &src_dev, &mut dst_dev, sw, sh, dw, dh, None)
-                .expect("lanczos launch");
+            launch_resize_lanczos_cuda(
+                &ctx,
+                &stream,
+                &src_dev,
+                &mut dst_dev,
+                sw,
+                sh,
+                dw,
+                dh,
+                PixelMapping::HalfPixel,
+                None,
+            )
+            .expect("lanczos launch");
         }
         stream.synchronize().expect("sync");
         let ms = t.elapsed().as_secs_f64() * 1e3 / ITERS as f64;
@@ -315,7 +378,7 @@ fn run_gpu_cuda_lanczos() {
 fn run_gpu_cuda_fused_normalize() {
     use cudarc::driver::CudaContext;
     use kornia_imgproc::cuda::resize::{
-        launch_resize_bilinear_downscale_cuda, launch_resize_bilinear_normalize_cuda,
+        launch_resize_bilinear_downscale_cuda, launch_resize_bilinear_normalize_cuda, PixelMapping,
     };
 
     const DOWNSCALE_CASES: &[(u32, u32, u32, u32)] = &[
@@ -361,6 +424,7 @@ fn run_gpu_cuda_fused_normalize() {
                 sh,
                 dw,
                 dh,
+                PixelMapping::HalfPixel,
                 None,
             )
             .expect("bilinear launch");
@@ -378,6 +442,7 @@ fn run_gpu_cuda_fused_normalize() {
                 sh,
                 dw,
                 dh,
+                PixelMapping::HalfPixel,
                 None,
             )
             .expect("bilinear launch");
@@ -398,6 +463,7 @@ fn run_gpu_cuda_fused_normalize() {
                 dh,
                 mean,
                 std,
+                PixelMapping::HalfPixel,
                 None,
             )
             .expect("fused launch");
@@ -417,6 +483,7 @@ fn run_gpu_cuda_fused_normalize() {
                 dh,
                 mean,
                 std,
+                PixelMapping::HalfPixel,
                 None,
             )
             .expect("fused launch");

@@ -100,16 +100,16 @@ extern "C" __global__ void resize_bilinear_downscale_3c(
     unsigned int src_h,
     unsigned int dst_w,
     unsigned int dst_h,
-    float scale_x,
-    float scale_y
+    float ax, float bx,
+    float ay, float by
 ) {
     unsigned int dst_x = blockIdx.x * blockDim.x + threadIdx.x;
     unsigned int dst_y = blockIdx.y * blockDim.y + threadIdx.y;
     if (dst_x >= dst_w || dst_y >= dst_h) return;
 
     // Half-pixel center alignment: matches OpenCV / PIL convention.
-    float sx = fmaxf(fminf((dst_x + 0.5f) * scale_x - 0.5f, (float)(src_w - 1u)), 0.0f);
-    float sy = fmaxf(fminf((dst_y + 0.5f) * scale_y - 0.5f, (float)(src_h - 1u)), 0.0f);
+    float sx = fmaxf(fminf(fmaf(ax, (float)dst_x, bx), (float)(src_w - 1u)), 0.0f);
+    float sy = fmaxf(fminf(fmaf(ay, (float)dst_y, by), (float)(src_h - 1u)), 0.0f);
 
     unsigned int x0 = (unsigned int)sx;
     unsigned int y0 = (unsigned int)sy;
@@ -145,16 +145,19 @@ extern "C" __global__ void resize_nearest_downscale_3c(
     unsigned int src_h,
     unsigned int dst_w,
     unsigned int dst_h,
-    float scale_x,
-    float scale_y
+    float ax, float bx,
+    float ay, float by
 ) {
     unsigned int dst_x = blockIdx.x * blockDim.x + threadIdx.x;
     unsigned int dst_y = blockIdx.y * blockDim.y + threadIdx.y;
     if (dst_x >= dst_w || dst_y >= dst_h) return;
 
     // Half-pixel center alignment.
-    unsigned int src_xi = min((unsigned int)((dst_x + 0.5f) * scale_x), src_w - 1u);
-    unsigned int src_yi = min((unsigned int)((dst_y + 0.5f) * scale_y), src_h - 1u);
+    // Round-to-nearest source pixel: the sample coordinate is fmaf(a,x,b);
+    // +0.5-then-truncate is round-half-up, which equals the CPU's
+    // half-away-from-zero `round()` for the non-negative coords produced here.
+    unsigned int src_xi = min((unsigned int)(fmaf(ax, (float)dst_x, bx) + 0.5f), src_w - 1u);
+    unsigned int src_yi = min((unsigned int)(fmaf(ay, (float)dst_y, by) + 0.5f), src_h - 1u);
 
     unsigned int src_base = (src_yi * src_w + src_xi) * 3u;
     unsigned int out = (dst_y * dst_w + dst_x) * 3u;
@@ -178,8 +181,8 @@ extern "C" __global__ void resize_bilinear_normalize_3c(
     unsigned int src_h,
     unsigned int dst_w,
     unsigned int dst_h,
-    float scale_x,
-    float scale_y,
+    float ax, float bx,
+    float ay, float by,
     float mean0,    float mean1,    float mean2,
     float inv_std0, float inv_std1, float inv_std2
 ) {
@@ -188,8 +191,8 @@ extern "C" __global__ void resize_bilinear_normalize_3c(
     if (dst_x >= dst_w || dst_y >= dst_h) return;
 
     // Half-pixel center alignment: matches OpenCV / PIL convention.
-    float sx = fmaxf(fminf((dst_x + 0.5f) * scale_x - 0.5f, (float)(src_w - 1u)), 0.0f);
-    float sy = fmaxf(fminf((dst_y + 0.5f) * scale_y - 0.5f, (float)(src_h - 1u)), 0.0f);
+    float sx = fmaxf(fminf(fmaf(ax, (float)dst_x, bx), (float)(src_w - 1u)), 0.0f);
+    float sy = fmaxf(fminf(fmaf(ay, (float)dst_y, by), (float)(src_h - 1u)), 0.0f);
 
     unsigned int x0 = (unsigned int)sx;
     unsigned int y0 = (unsigned int)sy;
@@ -236,16 +239,16 @@ extern "C" __global__ void resize_bicubic_3c(
     unsigned int src_h,
     unsigned int dst_w,
     unsigned int dst_h,
-    float scale_x,
-    float scale_y
+    float ax, float bx,
+    float ay, float by
 ) {
     unsigned int dst_x = blockIdx.x * blockDim.x + threadIdx.x;
     unsigned int dst_y = blockIdx.y * blockDim.y + threadIdx.y;
     if (dst_x >= dst_w || dst_y >= dst_h) return;
 
     // Half-pixel centre alignment (matches OpenCV / PIL convention).
-    float sx = fmaxf(fminf((dst_x + 0.5f) * scale_x - 0.5f, (float)(src_w - 1u)), 0.0f);
-    float sy = fmaxf(fminf((dst_y + 0.5f) * scale_y - 0.5f, (float)(src_h - 1u)), 0.0f);
+    float sx = fmaxf(fminf(fmaf(ax, (float)dst_x, bx), (float)(src_w - 1u)), 0.0f);
+    float sy = fmaxf(fminf(fmaf(ay, (float)dst_y, by), (float)(src_h - 1u)), 0.0f);
 
     int x0 = (int)floorf(sx);
     int y0 = (int)floorf(sy);
@@ -326,13 +329,13 @@ extern "C" __global__ void resize_lanczos_h_3c(
     unsigned int src_w,
     unsigned int src_h,
     unsigned int dst_w,
-    float scale_x
+    float ax, float bx
 ) {
     unsigned int dst_x = blockIdx.x * blockDim.x + threadIdx.x;
     unsigned int src_y = blockIdx.y * blockDim.y + threadIdx.y;
     if (dst_x >= dst_w || src_y >= src_h) return;
 
-    float sx = fmaxf(fminf((dst_x + 0.5f) * scale_x - 0.5f, (float)(src_w - 1u)), 0.0f);
+    float sx = fmaxf(fminf(fmaf(ax, (float)dst_x, bx), (float)(src_w - 1u)), 0.0f);
     int x0 = (int)floorf(sx);
     float frac = sx - (float)x0;
 
@@ -380,13 +383,13 @@ extern "C" __global__ void resize_lanczos_v_3c(
     unsigned int inter_w,
     unsigned int inter_h,
     unsigned int dst_h,
-    float scale_y
+    float ay, float by
 ) {
     unsigned int dst_x = blockIdx.x * blockDim.x + threadIdx.x;
     unsigned int dst_y = blockIdx.y * blockDim.y + threadIdx.y;
     if (dst_x >= inter_w || dst_y >= dst_h) return;
 
-    float sy = fmaxf(fminf((dst_y + 0.5f) * scale_y - 0.5f, (float)(inter_h - 1u)), 0.0f);
+    float sy = fmaxf(fminf(fmaf(ay, (float)dst_y, by), (float)(inter_h - 1u)), 0.0f);
     int y0 = (int)floorf(sy);
     float frac = sy - (float)y0;
 
@@ -485,6 +488,49 @@ fn try_compile_with_l1(
     Ok(k)
 }
 
+// ── Pixel mapping ─────────────────────────────────────────────────────────────
+
+/// How destination pixel coordinates map to source coordinates.
+///
+/// Every mapping is affine in the destination index, `src = a*dst + b`; the
+/// variants only differ in the coefficients.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PixelMapping {
+    /// Pixel-center sampling, `src = (dst + 0.5) * (src_len/dst_len) - 0.5`.
+    ///
+    /// The convention of OpenCV, Pillow, ONNX `Resize`
+    /// (`coordinate_transformation_mode = half_pixel`), PyTorch
+    /// (`align_corners=False`), and NVIDIA VPI — and of the CPU
+    /// [`resize_native`](crate::resize::resize_native). Use this unless you
+    /// specifically need to reproduce align-corners output.
+    HalfPixel,
+    /// Corner-aligned sampling, `src = dst * (src_len-1)/(dst_len-1)`.
+    ///
+    /// Matches kornia's pre-0.2 CPU resize and frameworks running with
+    /// `align_corners=True`. A single-pixel destination axis maps to source
+    /// coordinate 0.
+    AlignCorners,
+}
+
+impl PixelMapping {
+    /// Per-axis affine coefficients `(a, b)` of `src = a*dst + b`.
+    fn coeffs(self, src_len: u32, dst_len: u32) -> (f32, f32) {
+        match self {
+            PixelMapping::HalfPixel => {
+                let a = src_len as f32 / dst_len as f32;
+                (a, 0.5 * a - 0.5)
+            }
+            PixelMapping::AlignCorners => {
+                if dst_len > 1 {
+                    ((src_len - 1) as f32 / (dst_len - 1) as f32, 0.0)
+                } else {
+                    (0.0, 0.0)
+                }
+            }
+        }
+    }
+}
+
 // ── Public launchers ──────────────────────────────────────────────────────────
 
 /// Launch the bilinear downscale kernel for a 3-channel f32 image.
@@ -522,6 +568,7 @@ pub fn launch_resize_bilinear_downscale_cuda(
     src_height: u32,
     dst_width: u32,
     dst_height: u32,
+    mapping: PixelMapping,
     block_dim: Option<(u32, u32)>,
 ) -> Result<(), CudaResizeError> {
     let need = (dst_width as usize) * (dst_height as usize) * 3;
@@ -535,8 +582,8 @@ pub fn launch_resize_bilinear_downscale_cuda(
     let kernel = BILINEAR_KERNEL
         .get_or_init(|| compile_with_l1(ctx, BILINEAR_SRC, "resize_bilinear_downscale_3c"));
 
-    let scale_x = src_width as f32 / dst_width as f32;
-    let scale_y = src_height as f32 / dst_height as f32;
+    let (ax, bx) = mapping.coeffs(src_width, dst_width);
+    let (ay, by) = mapping.coeffs(src_height, dst_height);
 
     kernel
         .launch_builder(stream)
@@ -546,8 +593,10 @@ pub fn launch_resize_bilinear_downscale_cuda(
         .arg(&src_height)
         .arg(&dst_width)
         .arg(&dst_height)
-        .arg(&scale_x)
-        .arg(&scale_y)
+        .arg(&ax)
+        .arg(&bx)
+        .arg(&ay)
+        .arg(&by)
         .launch_2d(
             dst_width,
             dst_height,
@@ -591,6 +640,7 @@ pub fn launch_resize_bilinear_normalize_cuda(
     dst_height: u32,
     mean: [f32; 3],
     std: [f32; 3],
+    mapping: PixelMapping,
     block_dim: Option<(u32, u32)>,
 ) -> Result<(), CudaResizeError> {
     let need = (dst_width as usize) * (dst_height as usize) * 3;
@@ -610,8 +660,8 @@ pub fn launch_resize_bilinear_normalize_cuda(
         compile_with_l1(ctx, BILINEAR_NORMALIZE_SRC, "resize_bilinear_normalize_3c")
     });
 
-    let scale_x = src_width as f32 / dst_width as f32;
-    let scale_y = src_height as f32 / dst_height as f32;
+    let (ax, bx) = mapping.coeffs(src_width, dst_width);
+    let (ay, by) = mapping.coeffs(src_height, dst_height);
 
     let inv_std0 = 1.0_f32 / std[0];
     let inv_std1 = 1.0_f32 / std[1];
@@ -625,8 +675,10 @@ pub fn launch_resize_bilinear_normalize_cuda(
         .arg(&src_height)
         .arg(&dst_width)
         .arg(&dst_height)
-        .arg(&scale_x)
-        .arg(&scale_y)
+        .arg(&ax)
+        .arg(&bx)
+        .arg(&ay)
+        .arg(&by)
         .arg(&mean[0])
         .arg(&mean[1])
         .arg(&mean[2])
@@ -663,6 +715,7 @@ pub fn launch_resize_nearest_downscale_cuda(
     src_height: u32,
     dst_width: u32,
     dst_height: u32,
+    mapping: PixelMapping,
     block_dim: Option<(u32, u32)>,
 ) -> Result<(), CudaResizeError> {
     let need = (dst_width as usize) * (dst_height as usize) * 3;
@@ -676,8 +729,8 @@ pub fn launch_resize_nearest_downscale_cuda(
     let kernel = NEAREST_KERNEL
         .get_or_init(|| compile_with_l1(ctx, NEAREST_SRC, "resize_nearest_downscale_3c"));
 
-    let scale_x = src_width as f32 / dst_width as f32;
-    let scale_y = src_height as f32 / dst_height as f32;
+    let (ax, bx) = mapping.coeffs(src_width, dst_width);
+    let (ay, by) = mapping.coeffs(src_height, dst_height);
 
     kernel
         .launch_builder(stream)
@@ -687,8 +740,10 @@ pub fn launch_resize_nearest_downscale_cuda(
         .arg(&src_height)
         .arg(&dst_width)
         .arg(&dst_height)
-        .arg(&scale_x)
-        .arg(&scale_y)
+        .arg(&ax)
+        .arg(&bx)
+        .arg(&ay)
+        .arg(&by)
         .launch_2d(
             dst_width,
             dst_height,
@@ -731,6 +786,7 @@ pub fn launch_resize_bicubic_cuda(
     src_height: u32,
     dst_width: u32,
     dst_height: u32,
+    mapping: PixelMapping,
     block_dim: Option<(u32, u32)>,
 ) -> Result<(), CudaResizeError> {
     if src_width == 0 || src_height == 0 || dst_width == 0 || dst_height == 0 {
@@ -752,8 +808,8 @@ pub fn launch_resize_bicubic_cuda(
         .as_ref()
         .map_err(|e| CudaResizeError::Cuda(e.clone()))?;
 
-    let scale_x = src_width as f32 / dst_width as f32;
-    let scale_y = src_height as f32 / dst_height as f32;
+    let (ax, bx) = mapping.coeffs(src_width, dst_width);
+    let (ay, by) = mapping.coeffs(src_height, dst_height);
 
     kernel
         .launch_builder(stream)
@@ -763,8 +819,10 @@ pub fn launch_resize_bicubic_cuda(
         .arg(&src_height)
         .arg(&dst_width)
         .arg(&dst_height)
-        .arg(&scale_x)
-        .arg(&scale_y)
+        .arg(&ax)
+        .arg(&bx)
+        .arg(&ay)
+        .arg(&by)
         .launch_2d(
             dst_width,
             dst_height,
@@ -808,6 +866,7 @@ pub fn launch_resize_lanczos_cuda(
     src_height: u32,
     dst_width: u32,
     dst_height: u32,
+    mapping: PixelMapping,
     block_dim: Option<(u32, u32)>,
 ) -> Result<(), CudaResizeError> {
     if src_width == 0 || src_height == 0 || dst_width == 0 || dst_height == 0 {
@@ -841,7 +900,7 @@ pub fn launch_resize_lanczos_cuda(
         .map_err(|e| CudaResizeError::Cuda(e.to_string()))?;
 
     // Pass 1 — horizontal: (src_w, src_h) → (dst_w, src_h).
-    let scale_x = src_width as f32 / dst_width as f32;
+    let (ax, bx) = mapping.coeffs(src_width, dst_width);
     kernel_h
         .launch_builder(stream)
         .arg(src)
@@ -849,7 +908,8 @@ pub fn launch_resize_lanczos_cuda(
         .arg(&src_width)
         .arg(&src_height)
         .arg(&dst_width)
-        .arg(&scale_x)
+        .arg(&ax)
+        .arg(&bx)
         .launch_2d(
             dst_width,
             src_height,
@@ -858,7 +918,7 @@ pub fn launch_resize_lanczos_cuda(
         .map_err(|e| CudaResizeError::Cuda(e.to_string()))?;
 
     // Pass 2 — vertical: (dst_w, src_h) → (dst_w, dst_h).
-    let scale_y = src_height as f32 / dst_height as f32;
+    let (ay, by) = mapping.coeffs(src_height, dst_height);
     kernel_v
         .launch_builder(stream)
         .arg(&intermediate)
@@ -866,11 +926,218 @@ pub fn launch_resize_lanczos_cuda(
         .arg(&dst_width)
         .arg(&src_height)
         .arg(&dst_height)
-        .arg(&scale_y)
+        .arg(&ay)
+        .arg(&by)
         .launch_2d(
             dst_width,
             dst_height,
             make_config(dst_width, dst_height, block_dim),
         )
         .map_err(|e| CudaResizeError::Cuda(e.to_string()))
+}
+
+// ── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(all(test, feature = "cuda"))]
+mod tests {
+    use super::*;
+    use crate::cuda::color::test_utils::{default_stream, pattern_f32};
+    use crate::interpolation::InterpolationMode;
+    use crate::resize::resize_native;
+    use kornia_image::{Image, ImageSize};
+
+    #[test]
+    fn pixel_mapping_coeffs() {
+        // HalfPixel: a = src/dst, b = a/2 - 1/2.
+        assert_eq!(PixelMapping::HalfPixel.coeffs(640, 320), (2.0, 0.5));
+        assert_eq!(PixelMapping::HalfPixel.coeffs(320, 640), (0.5, -0.25));
+        // A 1-wide destination samples the source centre.
+        assert_eq!(PixelMapping::HalfPixel.coeffs(9, 1), (9.0, 4.0));
+        // AlignCorners: a = (src-1)/(dst-1), b = 0; 1-wide dst pins to 0.
+        assert_eq!(PixelMapping::AlignCorners.coeffs(641, 321), (2.0, 0.0));
+        assert_eq!(PixelMapping::AlignCorners.coeffs(9, 1), (0.0, 0.0));
+    }
+
+    /// Run CPU `resize_native` (half-pixel) and the GPU launcher on the same
+    /// deterministic input; return both outputs.
+    fn cpu_and_gpu(
+        (sw, sh): (usize, usize),
+        (dw, dh): (usize, usize),
+        interpolation: InterpolationMode,
+    ) -> (Vec<f32>, Vec<f32>) {
+        let data = pattern_f32(sw * sh * 3);
+        let src = Image::<f32, 3>::new(
+            ImageSize {
+                width: sw,
+                height: sh,
+            },
+            data.clone(),
+        )
+        .unwrap();
+        let mut cpu = Image::<f32, 3>::from_size_val(
+            ImageSize {
+                width: dw,
+                height: dh,
+            },
+            0.0,
+        )
+        .unwrap();
+        resize_native(&src, &mut cpu, interpolation).unwrap();
+
+        let stream = default_stream();
+        let ctx = &stream.context();
+        let d_src = stream.clone_htod(&data).unwrap();
+        let mut d_dst = stream.alloc_zeros::<f32>(dw * dh * 3).unwrap();
+        let (swu, shu, dwu, dhu) = (sw as u32, sh as u32, dw as u32, dh as u32);
+        match interpolation {
+            InterpolationMode::Bilinear => launch_resize_bilinear_downscale_cuda(
+                ctx,
+                &stream,
+                &d_src,
+                &mut d_dst,
+                swu,
+                shu,
+                dwu,
+                dhu,
+                PixelMapping::HalfPixel,
+                None,
+            ),
+            InterpolationMode::Nearest => launch_resize_nearest_downscale_cuda(
+                ctx,
+                &stream,
+                &d_src,
+                &mut d_dst,
+                swu,
+                shu,
+                dwu,
+                dhu,
+                PixelMapping::HalfPixel,
+                None,
+            ),
+            other => panic!("unsupported mode in test: {other:?}"),
+        }
+        .unwrap_or_else(|e| panic!("launch failed {sw}x{sh}->{dw}x{dh} ({interpolation:?}): {e}"));
+        let gpu: Vec<f32> = stream.clone_dtoh(&d_dst).unwrap();
+        stream.synchronize().unwrap();
+        (cpu.as_slice().to_vec(), gpu)
+    }
+
+    /// Destination pixels whose source coordinate sits within `eps` of a `.5`
+    /// rounding tie — only meaningful for nearest. The CPU computes
+    /// `(x+0.5)*scale - 0.5` while the GPU computes `fmaf(a, x, b)`; the two
+    /// agree only to within a float ulp, so a coordinate an ulp either side of
+    /// the tie can legitimately snap to different source pixels, a full-pixel
+    /// value jump. Bilinear needs no exclusion: it is continuous across tap
+    /// boundaries, so the same ulp drift moves the value by ~gradient·ulp,
+    /// which the tolerance absorbs. Excluded pixels must stay rare — asserted
+    /// by the caller.
+    fn ambiguous(
+        (sw, sh): (usize, usize),
+        (dw, dh): (usize, usize),
+        interpolation: InterpolationMode,
+        eps: f32,
+    ) -> Vec<bool> {
+        let (ax, bx) = PixelMapping::HalfPixel.coeffs(sw as u32, dw as u32);
+        let (ay, by) = PixelMapping::HalfPixel.coeffs(sh as u32, dh as u32);
+        if !matches!(interpolation, InterpolationMode::Nearest) {
+            return vec![false; dw * dh];
+        }
+        let near_boundary = |v: f32| {
+            let frac = v - v.floor();
+            (frac - 0.5).abs() < eps
+        };
+        let mut out = vec![false; dw * dh];
+        for y in 0..dh {
+            for x in 0..dw {
+                let sx = ax * x as f32 + bx;
+                let sy = ay * y as f32 + by;
+                out[y * dw + x] = near_boundary(sx) || near_boundary(sy);
+            }
+        }
+        out
+    }
+
+    fn assert_matches(
+        src: (usize, usize),
+        dst: (usize, usize),
+        interpolation: InterpolationMode,
+        tol: f32,
+        eps: f32,
+    ) {
+        let (cpu, gpu) = cpu_and_gpu(src, dst, interpolation);
+        let amb = ambiguous(src, dst, interpolation, eps);
+        let mut skipped = 0usize;
+        for (p, &is_amb) in amb.iter().enumerate() {
+            if is_amb {
+                skipped += 1;
+                continue;
+            }
+            for c in 0..3 {
+                let i = p * 3 + c;
+                let d = (gpu[i] - cpu[i]).abs();
+                assert!(
+                    d <= tol,
+                    "{src:?}->{dst:?} {interpolation:?}: pixel {p} ch {c} diff {d} > {tol} \
+                     (cpu {} gpu {})",
+                    cpu[i],
+                    gpu[i]
+                );
+            }
+        }
+        assert!(
+            skipped * 10 < amb.len(),
+            "{skipped}/{} pixels excluded as boundary-ambiguous — too many for a \
+             sound comparison",
+            amb.len()
+        );
+    }
+
+    /// Dyadic 2× downscale: every coefficient and coordinate is exact in f32 on
+    /// both paths, so nearest must be bit-exact and bilinear near-exact (the
+    /// only residue is fmaf vs separate multiply-add in the weight arithmetic).
+    #[test]
+    fn resize_2x_downscale_matches_cpu() {
+        let (cpu, gpu) = cpu_and_gpu((640, 480), (320, 240), InterpolationMode::Nearest);
+        assert_eq!(gpu, cpu, "dyadic nearest resize must be bit-exact vs CPU");
+
+        assert_matches(
+            (640, 480),
+            (320, 240),
+            InterpolationMode::Bilinear,
+            1e-6,
+            0.0,
+        );
+    }
+
+    /// Upscale goes through the same kernels (the "downscale" in the launcher
+    /// names is historical) — parity must hold in both directions.
+    #[test]
+    fn resize_2x_upscale_matches_cpu() {
+        assert_matches(
+            (320, 240),
+            (640, 480),
+            InterpolationMode::Bilinear,
+            1e-6,
+            0.0,
+        );
+        let (cpu, gpu) = cpu_and_gpu((320, 240), (640, 480), InterpolationMode::Nearest);
+        assert_eq!(gpu, cpu, "dyadic nearest upscale must be bit-exact vs CPU");
+    }
+
+    /// Odd, prime-ish, and unaligned sizes: catches block-clamping and any
+    /// residual alignment assumption. Non-dyadic scales drift by a coordinate
+    /// ulp between the two paths, so boundary-ambiguous pixels are excluded
+    /// and the tolerance is looser.
+    #[test]
+    fn resize_odd_sizes_match_cpu() {
+        for &(src, dst) in &[
+            ((127, 63), (65, 33)),
+            ((129, 97), (64, 48)),
+            ((255, 130), (133, 67)),
+            ((63, 129), (127, 255)), // upscale
+        ] {
+            assert_matches(src, dst, InterpolationMode::Bilinear, 1e-3, 0.0);
+            assert_matches(src, dst, InterpolationMode::Nearest, 0.0, 1e-3);
+        }
+    }
 }
