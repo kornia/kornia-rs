@@ -25,6 +25,8 @@
 
 mod bilinear;
 mod common;
+#[cfg(feature = "cuda")]
+mod cuda;
 mod fused;
 mod kernels;
 mod nearest;
@@ -111,6 +113,18 @@ pub fn resize_native<const C: usize>(
     interpolation: InterpolationMode,
 ) -> Result<(), ImageError> {
     validate_interpolation(interpolation)?;
+
+    // Device pairs route to the CUDA kernels (bit-identical output — see the
+    // byte-exact contract below). This must run BEFORE the same-size
+    // short-circuit: `as_slice_mut` on a device image would be a host access
+    // of device memory. Mixed host/device pairs are a typed error; there is
+    // no implicit transfer in either direction.
+    #[cfg(feature = "cuda")]
+    if let crate::cuda::dispatch::Residency::Device(exec) =
+        crate::cuda::dispatch::pair_residency(src, dst)?
+    {
+        return exec.run(|stream| cuda::resize_f32_cuda(src, dst, interpolation, stream));
+    }
 
     // Short-circuit when the resize is a no-op.
     if src.size() == dst.size() {

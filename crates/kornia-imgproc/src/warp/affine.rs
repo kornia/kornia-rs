@@ -128,6 +128,17 @@ pub fn warp_affine<const C: usize>(
 ) -> Result<(), ImageError> {
     validate_interpolation(interpolation)?;
 
+    // Device pairs route to the CUDA kernels (bit-identical output — the
+    // byte-exact contract asserted in `cuda::warp_affine`). Mixed pairs are a
+    // typed error; no implicit transfers.
+    #[cfg(feature = "cuda")]
+    if let crate::cuda::dispatch::Residency::Device(exec) =
+        crate::cuda::dispatch::pair_residency(src, dst)?
+    {
+        return exec
+            .run(|stream| super::cuda::warp_affine_f32_cuda(src, dst, m, interpolation, stream));
+    }
+
     let m_inv = invert_affine_transform(m);
 
     let src_w = src.cols();
