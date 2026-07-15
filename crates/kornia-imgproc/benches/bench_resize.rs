@@ -129,7 +129,7 @@ fn bench_resize(c: &mut Criterion) {
             |b, i| {
                 let (src, mut dst) = (i.0, i.1.clone());
                 b.iter(|| {
-                    resize::resize_native(
+                    resize::resize(
                         std::hint::black_box(src),
                         std::hint::black_box(&mut dst),
                         std::hint::black_box(InterpolationMode::Nearest),

@@ -171,3 +171,22 @@ macro_rules! __device_slices {
 
 /// Extract the typed device slices from a checked device pair.
 pub(crate) use crate::__device_slices as device_slices;
+
+/// Checked `usize → u32` image dimensions for the CUDA launchers.
+pub(crate) fn dims_u32<T, const C: usize>(img: &Image<T, C>) -> Result<(u32, u32), ImageError> {
+    let w = u32::try_from(img.cols())
+        .map_err(|_| ImageError::Cuda("image width exceeds u32".into()))?;
+    let h = u32::try_from(img.rows())
+        .map_err(|_| ImageError::Cuda("image height exceeds u32".into()))?;
+    Ok((w, h))
+}
+
+/// The uniform error for a device pair whose dtype/channel combination has no
+/// GPU kernel: never a silent CPU fallback (that would be an implicit
+/// device→host→device round trip), never an implicit conversion.
+pub(crate) fn no_gpu_kernel_err(op: &str, constraint: &str) -> ImageError {
+    ImageError::Cuda(format!(
+        "CUDA {op} supports {constraint} only; move the images to the host \
+         (Image::to_host) to use the CPU path"
+    ))
+}

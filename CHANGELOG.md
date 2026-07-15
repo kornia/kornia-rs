@@ -13,6 +13,18 @@ changes early: `cargo add kornia-imgproc@0.1.15-rc.1` or `pip install --pre korn
 
 ## [Unreleased]
 
+**`resize_native` is renamed to `resize`** (deprecated alias kept for one
+release).
+
+**GPU resize and warps from the high-level API.** `resize` (né `resize_native`),
+`warp_affine`, and `warp_perspective` now run on the GPU when called with
+device-resident images (`Image::to_cuda` / `zeros_cuda`), with **bit-identical
+output to the CPU path**. Same rules as the color conversions: both operands
+must be on the same device (mixed pairs are a typed error, no implicit
+transfers), and unsupported dtype/channel combinations error instead of
+silently falling back (the GPU kernels are 3-channel f32).
+
+
 **OpenCV-compatible resize (opt-in).** New `resize_opencv_u8` / `resize_opencv_f32`
 reproduce OpenCV's reference `INTER_LINEAR` (u8: 11-bit fixed point; f32:
 separable float) and floor-based `INTER_NEAREST` semantics, for migrating from

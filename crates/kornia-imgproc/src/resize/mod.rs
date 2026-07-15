@@ -25,6 +25,8 @@
 
 mod bilinear;
 mod common;
+#[cfg(feature = "cuda")]
+mod cuda;
 mod fused;
 mod kernels;
 mod nearest;
@@ -75,7 +77,7 @@ use common::FilterKind;
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
-/// use kornia_imgproc::resize::resize_native;
+/// use kornia_imgproc::resize::resize;
 /// use kornia_imgproc::interpolation::InterpolationMode;
 ///
 /// let image = Image::<_, 3>::new(
@@ -94,7 +96,7 @@ use common::FilterKind;
 ///
 /// let mut image_resized = Image::<_, 3>::from_size_val(new_size, 0.0).unwrap();
 ///
-/// resize_native(
+/// resize(
 ///     &image,
 ///     &mut image_resized,
 ///     InterpolationMode::Nearest,
@@ -105,12 +107,24 @@ use common::FilterKind;
 /// assert_eq!(image_resized.size().width, 2);
 /// assert_eq!(image_resized.size().height, 3);
 /// ```
-pub fn resize_native<const C: usize>(
+pub fn resize<const C: usize>(
     src: &Image<f32, C>,
     dst: &mut Image<f32, C>,
     interpolation: InterpolationMode,
 ) -> Result<(), ImageError> {
     validate_interpolation(interpolation)?;
+
+    // Device pairs route to the CUDA kernels (bit-identical output — see the
+    // byte-exact contract below). This must run BEFORE the same-size
+    // short-circuit: `as_slice_mut` on a device image would be a host access
+    // of device memory. Mixed host/device pairs are a typed error; there is
+    // no implicit transfer in either direction.
+    #[cfg(feature = "cuda")]
+    if let crate::cuda::dispatch::Residency::Device(exec) =
+        crate::cuda::dispatch::pair_residency(src, dst)?
+    {
+        return exec.run(|stream| cuda::resize_f32_cuda(src, dst, interpolation, stream));
+    }
 
     // Short-circuit when the resize is a no-op.
     if src.size() == dst.size() {
@@ -158,6 +172,16 @@ pub fn resize_native<const C: usize>(
     });
 
     Ok(())
+}
+
+/// Deprecated name of [`resize`].
+#[deprecated(since = "0.1.15", note = "renamed to `resize`")]
+pub fn resize_native<const C: usize>(
+    src: &Image<f32, C>,
+    dst: &mut Image<f32, C>,
+    interpolation: InterpolationMode,
+) -> Result<(), ImageError> {
+    resize(src, dst, interpolation)
 }
 
 /// Resize a 3-channel u8 image. Convenience wrapper around [`resize_fast_u8`].
@@ -400,7 +424,7 @@ mod tests {
 
         let mut image_resized = Image::<_, 3>::from_size_val(new_size, 0.0)?;
 
-        super::resize_native(
+        super::resize(
             &image,
             &mut image_resized,
             super::InterpolationMode::Bilinear,
@@ -446,7 +470,7 @@ mod tests {
 
         let mut image_resized = Image::<_, 1>::from_size_val(new_size, 0.0f32)?;
 
-        super::resize_native(
+        super::resize(
             &image,
             &mut image_resized,
             super::InterpolationMode::Nearest,
@@ -477,7 +501,7 @@ mod tests {
     }
 
     #[test]
-    fn resize_native_unsupported_interpolation() -> Result<(), ImageError> {
+    fn resize_unsupported_interpolation() -> Result<(), ImageError> {
         let image = Image::<_, 1>::new(
             ImageSize {
                 width: 2,
@@ -494,10 +518,10 @@ mod tests {
             0.0f32,
         )?;
 
-        let err = super::resize_native(&image, &mut dst, super::InterpolationMode::Bicubic);
+        let err = super::resize(&image, &mut dst, super::InterpolationMode::Bicubic);
         assert!(err.is_err());
 
-        let err = super::resize_native(&image, &mut dst, super::InterpolationMode::Lanczos);
+        let err = super::resize(&image, &mut dst, super::InterpolationMode::Lanczos);
         assert!(err.is_err());
         Ok(())
     }
