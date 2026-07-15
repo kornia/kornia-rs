@@ -23,7 +23,9 @@
 //!   [`super::warp_affine`] for the full rationale.
 //! * **`CU_FUNC_CACHE_PREFER_L1`** — enlarges L1 to 64 KB; no shared memory used.
 //! * **32×8 thread block (default)** — full warp per output row for coalesced writes.
-//! * **`1/w` reciprocal** — one FP division replaces two per output pixel.
+//! * **`1/w` reciprocal** (bicubic/Lanczos only) — one FP division replaces two
+//!   per output pixel. Bilinear/nearest divide directly to stay byte-exact with
+//!   the CPU `transform_point`, which divides.
 //!
 //! # Public API
 //!
@@ -68,9 +70,12 @@ extern "C" __global__ void warp_perspective_bilinear_3c(
         dst[out] = 0.0f; dst[out+1] = 0.0f; dst[out+2] = 0.0f;
         return;
     }
-    float rw = 1.0f / w;
-    float sx = (h0 * (float)gx + h1 * (float)gy + h2) * rw;
-    float sy = (h3 * (float)gx + h4 * (float)gy + h5) * rw;
+    // Direct division, NOT reciprocal-multiply: the CPU `transform_point`
+    // divides, and x/w rounds differently from x*(1/w). Numerator grouping is
+    // the CPU's left-to-right `m0*x + m1*y + m2`. Byte-exact contract with the
+    // parity tests; do not "optimize" back to a reciprocal.
+    float sx = (h0 * (float)gx + h1 * (float)gy + h2) / w;
+    float sy = (h3 * (float)gx + h4 * (float)gy + h5) / w;
 
     // BORDER_CONSTANT: outside the source, emit 0 (CPU valid-range guard).
     if (sx < 0.0f || sx >= (float)src_w || sy < 0.0f || sy >= (float)src_h) {
@@ -108,7 +113,9 @@ extern "C" __global__ void warp_perspective_bilinear_3c(
         float v01 = __ldg(&src[b01 + c]);
         float v10 = __ldg(&src[b10 + c]);
         float v11 = __ldg(&src[b11 + c]);
-        dst[out + c] = fmaf(w00, v00, fmaf(w01, v01, fmaf(w10, v10, w11 * v11)));
+        // Plain sum in the CPU tap order (val00, x+1, y+1, both): matches
+        // `bilinear_interpolation` under --fmad=false. Same ops, same roundings.
+        dst[out + c] = w00 * v00 + w01 * v01 + w10 * v10 + w11 * v11;
     }
 }
 "#;
@@ -137,9 +144,12 @@ extern "C" __global__ void warp_perspective_nearest_3c(
         dst[out] = 0.0f; dst[out+1] = 0.0f; dst[out+2] = 0.0f;
         return;
     }
-    float rw = 1.0f / w;
-    float sx = (h0 * (float)gx + h1 * (float)gy + h2) * rw;
-    float sy = (h3 * (float)gx + h4 * (float)gy + h5) * rw;
+    // Direct division, NOT reciprocal-multiply: the CPU `transform_point`
+    // divides, and x/w rounds differently from x*(1/w). Numerator grouping is
+    // the CPU's left-to-right `m0*x + m1*y + m2`. Byte-exact contract with the
+    // parity tests; do not "optimize" back to a reciprocal.
+    float sx = (h0 * (float)gx + h1 * (float)gy + h2) / w;
+    float sy = (h3 * (float)gx + h4 * (float)gy + h5) / w;
 
     if (sx < 0.0f || sx >= (float)src_w || sy < 0.0f || sy >= (float)src_h) {
         dst[out] = 0.0f; dst[out+1] = 0.0f; dst[out+2] = 0.0f;
@@ -659,4 +669,132 @@ pub fn launch_warp_perspective_lanczos_cuda(
             make_config(dst_width, dst_height, block_dim),
         )
         .map_err(|e| CudaWarpPerspectiveError::Cuda(e.to_string()))
+}
+
+// ── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(all(test, feature = "cuda"))]
+mod tests {
+    use super::*;
+    use crate::cuda::color::test_utils::{default_stream, pattern_f32};
+    use crate::interpolation::InterpolationMode;
+    use crate::warp::warp_perspective;
+    use kornia_image::{Image, ImageSize};
+
+    /// Run the CPU reference and the CUDA kernel on the same input and return
+    /// both buffers. Both destinations start zeroed — the CPU leaves
+    /// out-of-bounds pixels untouched while the kernel writes 0, so a zeroed
+    /// destination is part of the comparison contract.
+    fn cpu_and_gpu(
+        w: usize,
+        h: usize,
+        hm: &[f32; 9],
+        interpolation: InterpolationMode,
+    ) -> (Vec<f32>, Vec<f32>) {
+        let data = pattern_f32(w * h * 3);
+        let size = ImageSize {
+            width: w,
+            height: h,
+        };
+
+        let src = Image::<f32, 3>::new(size, data.clone()).unwrap();
+        let mut cpu = Image::<f32, 3>::from_size_val(size, 0.0).unwrap();
+        warp_perspective(&src, &mut cpu, hm, interpolation).unwrap();
+
+        let stream = default_stream();
+        let ctx = &stream.context();
+        let d_src = stream.clone_htod(&data).unwrap();
+        let mut d_dst = stream.alloc_zeros::<f32>(w * h * 3).unwrap();
+
+        let (wu, hu) = (w as u32, h as u32);
+        match interpolation {
+            InterpolationMode::Bilinear => launch_warp_perspective_bilinear_cuda(
+                ctx, &stream, &d_src, &mut d_dst, wu, hu, wu, hu, hm, None,
+            ),
+            InterpolationMode::Nearest => launch_warp_perspective_nearest_cuda(
+                ctx, &stream, &d_src, &mut d_dst, wu, hu, wu, hu, hm, None,
+            ),
+            other => panic!("unsupported mode in test: {other:?}"),
+        }
+        .unwrap_or_else(|e| panic!("launch failed at {w}x{h} ({interpolation:?}): {e}"));
+
+        let gpu: Vec<f32> = stream.clone_dtoh(&d_dst).unwrap();
+        stream.synchronize().unwrap();
+
+        (cpu.as_slice().to_vec(), gpu)
+    }
+
+    /// Byte-exact: the CPU `transform_point` divides the identically grouped
+    /// numerator by `w`, and the kernels do the same (direct division, not
+    /// reciprocal-multiply) under `--fmad=false`; `bilinear_interpolation`'s
+    /// expression shape matches the kernel's tap sum. Both paths evaluate the
+    /// coordinate per pixel, so there is no span/accumulation caveat at all.
+    fn assert_bit_exact(w: usize, h: usize, hm: &[f32; 9], interpolation: InterpolationMode) {
+        let (cpu, gpu) = cpu_and_gpu(w, h, hm, interpolation);
+        for (i, (c, g)) in cpu.iter().zip(&gpu).enumerate() {
+            assert!(
+                c.to_bits() == g.to_bits(),
+                "{w}x{h} {interpolation:?}: element {i}: cpu {c} ({:#010x}) gpu {g} ({:#010x})",
+                c.to_bits(),
+                g.to_bits()
+            );
+        }
+    }
+
+    /// Genuinely projective homography (non-zero third row) at a non-dyadic,
+    /// unaligned size: the w-divide is exercised on every pixel.
+    #[test]
+    fn warp_perspective_projective_matches_cpu() {
+        let hm = [
+            1.03,
+            0.05,
+            -3.0,
+            -0.02,
+            0.97,
+            4.0,
+            2.0 / (97.0 * 129.0),
+            1.5 / (129.0 * 97.0),
+            1.0,
+        ];
+        assert_bit_exact(129, 97, &hm, InterpolationMode::Bilinear);
+        assert_bit_exact(129, 97, &hm, InterpolationMode::Nearest);
+    }
+
+    /// An affine-equivalent homography (third row [0, 0, 1]) must also agree —
+    /// and cross-checks the internal inversion against the CPU's.
+    #[test]
+    fn warp_perspective_affine_equivalent_matches_cpu() {
+        let hm = [0.9, 0.15, 10.0, -0.1, 1.1, -6.0, 0.0, 0.0, 1.0];
+        assert_bit_exact(320, 240, &hm, InterpolationMode::Bilinear);
+        assert_bit_exact(320, 240, &hm, InterpolationMode::Nearest);
+    }
+
+    /// Identity homography reproduces the source exactly.
+    #[test]
+    fn warp_perspective_identity_is_exact_copy() {
+        let hm = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        for mode in [InterpolationMode::Bilinear, InterpolationMode::Nearest] {
+            let (cpu, gpu) = cpu_and_gpu(65, 33, &hm, mode);
+            assert_eq!(
+                gpu, cpu,
+                "identity warp ({mode:?}) must reproduce the source"
+            );
+        }
+    }
+
+    /// A singular homography must be rejected before any launch.
+    #[test]
+    fn warp_perspective_rejects_singular_homography() {
+        let stream = default_stream();
+        let ctx = &stream.context();
+        let d_src = stream.clone_htod(&vec![0.0f32; 8 * 8 * 3]).unwrap();
+        let mut d_dst = stream.alloc_zeros::<f32>(8 * 8 * 3).unwrap();
+        // Rank-1 matrix.
+        let hm = [1.0, 2.0, 3.0, 2.0, 4.0, 6.0, 3.0, 6.0, 9.0];
+        let err = launch_warp_perspective_bilinear_cuda(
+            ctx, &stream, &d_src, &mut d_dst, 8, 8, 8, 8, &hm, None,
+        )
+        .unwrap_err();
+        assert!(matches!(err, CudaWarpPerspectiveError::SingularHomography));
+    }
 }
