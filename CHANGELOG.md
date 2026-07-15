@@ -19,8 +19,10 @@ bilinear arithmetic use the identical expression shapes on both sides, so
 `resize_native` and the CUDA resize kernels produce bit-identical f32 output —
 asserted by parity tests across dyadic and non-dyadic sizes. Kernels that want
 fused multiply-adds keep them via explicit `fmaf()` (unaffected by the flag);
-no measured throughput change on Jetson Orin. `bilinear_interpolation` values
-shift by ~1 ulp (weights are now formed before the tap products).
+no measured throughput change on Jetson Orin. The `bilinear_interpolation`
+restructure (weights formed before the tap products) shifts f32 bilinear
+output by up to 1 ulp in every consumer — `warp_perspective`, `remap`, and
+the optical-flow border path, not just resize.
 
 **BREAKING — `resize_native` now samples on the half-pixel grid.** The f32
 resize previously used align-corners (`sx = x * (src-1)/(dst-1)`); it now uses
