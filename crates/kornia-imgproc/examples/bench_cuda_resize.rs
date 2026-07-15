@@ -131,7 +131,7 @@ fn run_cpu() {
 fn run_gpu_cuda() {
     use cudarc::driver::CudaContext;
     use kornia_imgproc::cuda::resize::{
-        launch_resize_bilinear_downscale_cuda, launch_resize_nearest_downscale_cuda, PixelMapping,
+        launch_resize_bilinear_downscale_cuda, launch_resize_nearest_downscale_cuda,
     };
 
     // Only downscale cases — the CubeCL path already handles upscale well.
@@ -379,7 +379,7 @@ fn run_gpu_cuda_lanczos() {
 fn run_gpu_cuda_fused_normalize() {
     use cudarc::driver::CudaContext;
     use kornia_imgproc::cuda::resize::{
-        launch_resize_bilinear_downscale_cuda, launch_resize_bilinear_normalize_cuda, PixelMapping,
+        launch_resize_bilinear_downscale_cuda, launch_resize_bilinear_normalize_cuda,
     };
 
     const DOWNSCALE_CASES: &[(u32, u32, u32, u32)] = &[

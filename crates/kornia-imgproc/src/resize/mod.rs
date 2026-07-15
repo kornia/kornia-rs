@@ -55,7 +55,7 @@ use common::FilterKind;
 /// Sampling uses the **half-pixel** (pixel-center) grid,
 /// `sx = (x + 0.5) * src/dst - 0.5`, the convention shared by OpenCV, Pillow,
 /// ONNX `Resize`, PyTorch (`align_corners=False`), and NVIDIA VPI, and by this
-/// crate's CUDA resize kernels. Versions up to 0.1.x used align-corners, which
+/// crate's CUDA resize kernels. Earlier releases used align-corners, which
 /// produced different pixel values for the same inputs.
 ///
 /// # Arguments

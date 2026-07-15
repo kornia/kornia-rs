@@ -506,7 +506,8 @@ pub enum PixelMapping {
     HalfPixel,
     /// Corner-aligned sampling, `src = dst * (src_len-1)/(dst_len-1)`.
     ///
-    /// Matches kornia's pre-0.2 CPU resize and frameworks running with
+    /// Reproduces the align-corners output kornia's CPU resize produced
+    /// before the half-pixel switch, and matches frameworks running with
     /// `align_corners=True`. A single-pixel destination axis maps to source
     /// coordinate 0.
     AlignCorners,
@@ -571,6 +572,11 @@ pub fn launch_resize_bilinear_downscale_cuda(
     mapping: PixelMapping,
     block_dim: Option<(u32, u32)>,
 ) -> Result<(), CudaResizeError> {
+    if src_width == 0 || src_height == 0 || dst_width == 0 || dst_height == 0 {
+        return Err(CudaResizeError::Cuda(
+            "image dimensions must be non-zero".into(),
+        ));
+    }
     let need = (dst_width as usize) * (dst_height as usize) * 3;
     if dst.len() < need {
         return Err(CudaResizeError::SliceTooSmall {
@@ -643,6 +649,11 @@ pub fn launch_resize_bilinear_normalize_cuda(
     mapping: PixelMapping,
     block_dim: Option<(u32, u32)>,
 ) -> Result<(), CudaResizeError> {
+    if src_width == 0 || src_height == 0 || dst_width == 0 || dst_height == 0 {
+        return Err(CudaResizeError::Cuda(
+            "image dimensions must be non-zero".into(),
+        ));
+    }
     let need = (dst_width as usize) * (dst_height as usize) * 3;
     if dst.len() < need {
         return Err(CudaResizeError::SliceTooSmall {
@@ -718,6 +729,11 @@ pub fn launch_resize_nearest_downscale_cuda(
     mapping: PixelMapping,
     block_dim: Option<(u32, u32)>,
 ) -> Result<(), CudaResizeError> {
+    if src_width == 0 || src_height == 0 || dst_width == 0 || dst_height == 0 {
+        return Err(CudaResizeError::Cuda(
+            "image dimensions must be non-zero".into(),
+        ));
+    }
     let need = (dst_width as usize) * (dst_height as usize) * 3;
     if dst.len() < need {
         return Err(CudaResizeError::SliceTooSmall {

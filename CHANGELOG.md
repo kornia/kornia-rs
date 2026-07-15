@@ -20,8 +20,9 @@ OpenCV, Pillow, ONNX `Resize` (`half_pixel` default), PyTorch
 (`align_corners=False`), and NVIDIA VPI. Pixel values change for every
 non-identity resize — typically a sub-pixel content shift. The u8 fast paths
 (`resize_fast_*`) are unaffected. This also makes the CPU and CUDA resize
-sample the same grid for the first time; CPU/GPU parity is now tested
-(nearest is bit-exact at dyadic scales).
+sample the same grid (`resize_native` was the sole align-corners holdout —
+the fused CPU preprocess path and the CUDA kernels already sampled
+half-pixel), and CPU/GPU parity is now tested.
 
 - `kornia_imgproc::cuda::resize`: launchers take a new `PixelMapping`
   parameter (`HalfPixel` — the default convention — or `AlignCorners` to
