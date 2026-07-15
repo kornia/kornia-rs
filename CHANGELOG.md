@@ -13,6 +13,19 @@ changes early: `cargo add kornia-imgproc@0.1.15-rc.1` or `pip install --pre korn
 
 ## [Unreleased]
 
+**CPU and CUDA warp-affine / warp-perspective are now byte-exact** (f32,
+bilinear + nearest): the CPU evaluates the source coordinate per pixel with the
+same expression tree as the kernels (no more per-row accumulation drift), the
+perspective kernels divide by `w` directly instead of multiplying by a
+reciprocal, and the interpolation expression shapes match — parity tests assert
+`f32::to_bits` equality on rotations, shears, and projective homographies.
+Fixes a real GPU artifact along the way: `cos(90°)` is an ulp of noise rather
+than zero, and the old strict border test zero-filled edge pixels of exact
+right-angle rotations (splitting rows into half-warped, half-black); validity
+of a near-constant axis is now judged on its row constant on both CPU and GPU.
+No measured throughput change on Jetson Orin (CPU and GPU within run-to-run
+jitter).
+
 **CPU and CUDA resize are now byte-exact.** NVRTC kernels compile with
 `--fmad=false` (no automatic FP contraction), and the resize coordinate and
 bilinear arithmetic use the identical expression shapes on both sides, so

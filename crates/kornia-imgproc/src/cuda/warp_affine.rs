@@ -90,19 +90,35 @@ extern "C" __global__ void warp_affine_bilinear_3c(
     unsigned long long out = ((unsigned long long)gy * dst_w + gx) * 3ull;
 
     // Inverse affine: map output pixel → floating-point source coordinate.
-    float sx = m0 * (float)gx + m1 * (float)gy + m2;
-    float sy = m3 * (float)gx + m4 * (float)gy + m5;
+    // Grouped as mul + (row term): identical expression tree to the CPU's
+    // per-row `sx0 = m1*y + m2` then per-pixel `sx = m0*x + sx0`. With
+    // --fmad=false both sides round identically — the byte-exact contract the
+    // parity tests assert. Do not regroup.
+    float sx0 = m1 * (float)gy + m2;
+    float sy0 = m4 * (float)gy + m5;
+    float sx = m0 * (float)gx + sx0;
+    float sy = m3 * (float)gx + sy0;
 
-    // BORDER_CONSTANT: outside the source, emit 0 (CPU valid-range guard).
-    if (sx < 0.0f || sx >= (float)src_w || sy < 0.0f || sy >= (float)src_h) {
+    // BORDER_CONSTANT validity — the CPU rule, exactly. For a degenerate axis
+    // (per-column step below 1e-6, e.g. cos(90°) ≈ -4.4e-8 in a right-angle
+    // rotation) validity is judged on the row constant, so ulp noise cannot
+    // split a row into half-warped, half-zeroed output; the noise is absorbed
+    // by the interpolation clamp below.
+    bool x_ok = (fabsf(m0) < 1e-6f) ? (sx0 >= 0.0f && sx0 < (float)src_w)
+                                    : (sx  >= 0.0f && sx  < (float)src_w);
+    bool y_ok = (fabsf(m3) < 1e-6f) ? (sy0 >= 0.0f && sy0 < (float)src_h)
+                                    : (sy  >= 0.0f && sy  < (float)src_h);
+    if (!x_ok || !y_ok) {
         dst[out] = 0.0f; dst[out+1] = 0.0f; dst[out+2] = 0.0f;
         return;
     }
 
     // Clamp into [0, src-1] and take the +1 tap with a per-axis edge clamp —
-    // the rule the CPU f32 `warp_affine` inner loop uses.
-    float sxc = fminf(sx, (float)(src_w - 1u));
-    float syc = fminf(sy, (float)(src_h - 1u));
+    // the rule the CPU f32 `warp_affine` inner loop uses. The lower clamp is
+    // required: degenerate-axis pixels can arrive with an ulp-negative
+    // coordinate that the CPU clamps to exactly 0.
+    float sxc = fmaxf(fminf(sx, (float)(src_w - 1u)), 0.0f);
+    float syc = fmaxf(fminf(sy, (float)(src_h - 1u)), 0.0f);
 
     unsigned int x0 = (unsigned int)sxc;
     unsigned int y0 = (unsigned int)syc;
@@ -131,7 +147,9 @@ extern "C" __global__ void warp_affine_bilinear_3c(
         float v10 = __ldg(&src[b10 + c]);
         float v01 = __ldg(&src[b01 + c]);
         float v11 = __ldg(&src[b11 + c]);
-        dst[out + c] = fmaf(w00, v00, fmaf(w10, v10, fmaf(w01, v01, w11 * v11)));
+        // Plain left-to-right sum, NOT an fmaf chain: matches the CPU inner
+        // loop's expression under --fmad=false. Same ops, same roundings.
+        dst[out + c] = w00 * v00 + w10 * v10 + w01 * v01 + w11 * v11;
     }
 }
 "#;
@@ -159,14 +177,29 @@ extern "C" __global__ void warp_affine_nearest_3c(
 
     unsigned long long out = ((unsigned long long)gy * dst_w + gx) * 3ull;
 
-    float sx = m0 * (float)gx + m1 * (float)gy + m2;
-    float sy = m3 * (float)gx + m4 * (float)gy + m5;
+    // Grouped as mul + (row term): identical expression tree to the CPU's
+    // per-row `sx0 = m1*y + m2` then per-pixel `sx = m0*x + sx0`. With
+    // --fmad=false both sides round identically — the byte-exact contract the
+    // parity tests assert. Do not regroup.
+    float sx0 = m1 * (float)gy + m2;
+    float sy0 = m4 * (float)gy + m5;
+    float sx = m0 * (float)gx + sx0;
+    float sy = m3 * (float)gx + sy0;
 
-    if (sx < 0.0f || sx >= (float)src_w || sy < 0.0f || sy >= (float)src_h) {
+    // Same degenerate-axis validity rule as the bilinear kernel above (and
+    // the CPU): judge a near-constant axis on its row constant so trig noise
+    // cannot zero-fill right-angle rotations.
+    bool x_ok = (fabsf(m0) < 1e-6f) ? (sx0 >= 0.0f && sx0 < (float)src_w)
+                                    : (sx  >= 0.0f && sx  < (float)src_w);
+    bool y_ok = (fabsf(m3) < 1e-6f) ? (sy0 >= 0.0f && sy0 < (float)src_h)
+                                    : (sy  >= 0.0f && sy  < (float)src_h);
+    if (!x_ok || !y_ok) {
         dst[out] = 0.0f; dst[out+1] = 0.0f; dst[out+2] = 0.0f;
         return;
     }
 
+    // roundf of an ulp-negative degenerate-axis coordinate gives -0.0, which
+    // casts to index 0 — the same pixel the CPU's round-then-clamp selects.
     unsigned int xi = min((unsigned int)roundf(sx), src_w - 1u);
     unsigned int yi = min((unsigned int)roundf(sy), src_h - 1u);
 
@@ -700,52 +733,8 @@ mod tests {
     use crate::warp::warp_affine;
     use kornia_image::{Image, ImageSize};
 
-    /// A transform whose **inverse** has dyadic coefficients (exact in binary).
-    /// The CPU walks a row by accumulating `sx += dsx` where `dsx` comes from the
-    /// *inverted* matrix; when that is dyadic the accumulation is exact, so CPU
-    /// and GPU derive bit-identical source coordinates and the comparison
-    /// isolates what we actually want to test — the interpolation and edge rules
-    /// — instead of measuring the CPU's coordinate drift.
-    ///
-    /// Integer entries with a power-of-two determinant guarantee it: here
-    /// `det = 2*4 - 2*2 = 4`, so every inverse entry is an integer over 4.
-    /// `dyadic_m_inverse_is_exact` pins that property. Both axes shear (`dsx` and
-    /// `dsy` are both non-zero) and the translation pushes part of the output off
-    /// the source, so the border path is exercised too.
-    const DYADIC_M: [f32; 6] = [2.0, 2.0, -8.0, 2.0, 4.0, 6.0];
-
-    /// Guards the premise of every strict comparison below: if this ever stops
-    /// holding, the tight tolerances are measuring float drift, not the kernel.
-    #[test]
-    fn dyadic_m_inverse_is_exact() {
-        let mi = crate::warp::invert_affine_transform(&DYADIC_M);
-        for (i, v) in mi.iter().enumerate() {
-            let scaled = v * 4.0;
-            assert_eq!(
-                scaled,
-                scaled.round(),
-                "m_inv[{i}] = {v} is not an exact multiple of 1/4; the CPU's \
-                 `sx += dsx` accumulation will drift and the strict tolerances \
-                 in this module are no longer meaningful"
-            );
-        }
-    }
-
-    /// With DYADIC_M the only remaining divergence is `fmaf` fusing the weighted
-    /// accumulate where the CPU rounds each product — a few ulps on values in
-    /// [0, 1]. An edge-rule mismatch is ~0.5 (an earlier revision of this kernel
-    /// used the wrong rule and the test caught it at 0.7), so this is strict.
-    const BILINEAR_TOL: f32 = 1e-5;
-
-    /// A realistic non-dyadic transform. Here the CPU's accumulated `sx` drifts a
-    /// few ulps from the GPU's direct evaluation, and on the deliberately random
-    /// test pattern (adjacent pixels differ by up to 1.0) that surfaces as a
-    /// ~1e-3 value difference. Loose on purpose: this case guards against gross
-    /// errors under a rotation, while DYADIC_M does the strict rule-checking.
-    const ROTATION_TOL: f32 = 5e-3;
-
     /// Run the CPU reference and the CUDA kernel on the same input and return
-    /// both buffers. `dst` dims equal `src` dims.
+    /// both buffers. `dst` dims equal `src` dims; both start zeroed.
     fn cpu_and_gpu(
         w: usize,
         h: usize,
@@ -785,146 +774,75 @@ mod tests {
         (cpu.as_slice().to_vec(), gpu)
     }
 
-    /// Pixels whose CPU/GPU results may legitimately differ, for either of two
-    /// reasons — both rooted in the same ulp-level coordinate drift:
-    ///
-    /// * **Validity boundary.** The CPU decides in/out-of-source from `sx`
-    ///   accumulated along the row (`compute_range`); the GPU evaluates the map
-    ///   directly. A coordinate sitting within an ulp of 0 or `src_w` can be
-    ///   judged inside by one and outside by the other — one writes an
-    ///   interpolated value, the other writes the `BORDER_CONSTANT` 0.
-    /// * **Rounding tie (nearest only).** A coordinate landing on an exact `.5`
-    ///   can round to either neighbour.
-    ///
-    /// Excluding only these keeps the assertion strict everywhere else — nearest
-    /// stays bit-exact — instead of hiding real disagreement behind a tolerance.
-    ///
-    /// Pass `eps = 0.0` to disable exclusion entirely. That is correct whenever
-    /// both sides compute the coordinate *exactly* (see [`DYADIC_M`]): with no
-    /// drift there is nothing to be ambiguous about — a `.5` tie resolves the
-    /// same way on both paths, since `roundf` and Rust's `f32::round` are both
-    /// half-away-from-zero — so those runs demand agreement even on ties.
-    fn ambiguous_pixels(
-        w: usize,
-        h: usize,
-        m: &[f32; 6],
-        mode: InterpolationMode,
-        eps: f32,
-    ) -> Vec<bool> {
-        let mi = crate::warp::invert_affine_transform(m);
-        let (fw, fh) = (w as f32, h as f32);
-        let mut out = vec![false; w * h];
-        for y in 0..h {
-            for x in 0..w {
-                let sx = mi[0] * x as f32 + mi[1] * y as f32 + mi[2];
-                let sy = mi[3] * x as f32 + mi[4] * y as f32 + mi[5];
-
-                let near = |v: f32, edge: f32| (v - edge).abs() < eps;
-                let mut amb = near(sx, 0.0) || near(sx, fw) || near(sy, 0.0) || near(sy, fh);
-
-                if matches!(mode, InterpolationMode::Nearest) {
-                    let near_half = |v: f32| (v - v.floor() - 0.5).abs() < eps;
-                    amb = amb || near_half(sx) || near_half(sy);
-                }
-                out[y * w + x] = amb;
-            }
+    /// Byte-exact comparison: the CPU evaluates `dsx*x + (m1*y + m2)` per pixel
+    /// and the kernel evaluates the identically grouped expression under
+    /// `--fmad=false`, with matching interpolation expression shapes and a
+    /// valid-span refined against the same per-pixel predicate the GPU uses —
+    /// so CPU and GPU must agree bit-for-bit. No tolerance, no exclusions,
+    /// arbitrary (non-dyadic) transforms included.
+    fn assert_bit_exact(w: usize, h: usize, m: &[f32; 6], interpolation: InterpolationMode) {
+        let (cpu, gpu) = cpu_and_gpu(w, h, m, interpolation);
+        for (i, (c, g)) in cpu.iter().zip(&gpu).enumerate() {
+            assert!(
+                c.to_bits() == g.to_bits(),
+                "{w}x{h} {interpolation:?}: element {i}: cpu {c} ({:#010x}) gpu {g} ({:#010x})",
+                c.to_bits(),
+                g.to_bits()
+            );
         }
-        out
     }
 
-    /// Compare CPU vs GPU, skipping the ambiguous pixels above. Returns how many
-    /// were skipped so callers can assert they stay a rounding curiosity.
-    fn assert_matches_cpu(
-        w: usize,
-        h: usize,
-        m: &[f32; 6],
-        mode: InterpolationMode,
-        tol: f32,
-        eps: f32,
-    ) -> usize {
-        let (cpu, gpu) = cpu_and_gpu(w, h, m, mode);
-        let amb = ambiguous_pixels(w, h, m, mode, eps);
-        let mut skipped = 0;
-        for (p, &is_amb) in amb.iter().enumerate() {
-            if is_amb {
-                skipped += 1;
-                continue;
-            }
-            for c in 0..3 {
-                let i = p * 3 + c;
-                let d = (gpu[i] - cpu[i]).abs();
-                assert!(
-                    d <= tol,
-                    "{w}x{h} {mode:?}: pixel {p} ch {c} diff {d} > {tol} (cpu {} gpu {})",
-                    cpu[i],
-                    gpu[i]
-                );
-            }
-        }
-        assert!(
-            skipped * 20 < w * h,
-            "{skipped}/{} pixels excluded as ambiguous — too many to still be a \
-             boundary/tie effect; the coordinate mapping itself is probably wrong",
-            w * h
-        );
-        skipped
-    }
-
-    /// Regression for issue #1000: the pitch-2D texture path required
-    /// `src_w * 3 * 4` bytes to be a multiple of the 32-byte texture pitch
-    /// alignment, so every width not a multiple of 8 failed the launch outright
-    /// with `CUDA_ERROR_INVALID_VALUE`. The `__ldg` kernels have no such
-    /// constraint — every width below must both launch and match the CPU.
+    /// Regression for issue #1000: the old pitch-2D texture path failed the
+    /// launch outright for any source width not a multiple of 8. Every width
+    /// here must launch and match the CPU bit-for-bit.
     #[test]
     fn warp_affine_unaligned_widths_match_cpu() {
-        // 128/136 are 8-aligned (worked before); the rest are the regression.
         const WIDTHS: &[usize] = &[128, 129, 130, 132, 133, 135, 136];
+        let m = crate::warp::get_rotation_matrix2d((32.0, 24.0), 30.0, 1.0);
 
         for &w in WIDTHS {
-            assert_matches_cpu(
-                w,
-                49,
-                &DYADIC_M,
-                InterpolationMode::Bilinear,
-                BILINEAR_TOL,
-                0.0,
-            );
-            assert_matches_cpu(w, 49, &DYADIC_M, InterpolationMode::Nearest, 0.0, 0.0);
+            assert_bit_exact(w, 49, &m, InterpolationMode::Bilinear);
+            assert_bit_exact(w, 49, &m, InterpolationMode::Nearest);
         }
     }
 
-    #[test]
-    fn warp_affine_bilinear_matches_cpu() {
-        assert_matches_cpu(
-            320,
-            240,
-            &DYADIC_M,
-            InterpolationMode::Bilinear,
-            BILINEAR_TOL,
-            0.0,
-        );
-    }
-
-    /// Non-dyadic rotation: guards against gross errors on a realistic transform.
-    /// See ROTATION_TOL for why this cannot be strict.
+    /// Non-dyadic rotation + scale — exactly the case that needed tolerances
+    /// and rounding-tie exclusions before the byte-exact contract.
     #[test]
     fn warp_affine_rotation_matches_cpu() {
         let m = crate::warp::get_rotation_matrix2d((160.0, 120.0), 37.0, 1.3);
-        assert_matches_cpu(
-            320,
-            240,
-            &m,
-            InterpolationMode::Bilinear,
-            ROTATION_TOL,
-            1e-3,
+        assert_bit_exact(320, 240, &m, InterpolationMode::Bilinear);
+        assert_bit_exact(320, 240, &m, InterpolationMode::Nearest);
+    }
+
+    /// Exact right-angle rotation: cos(90°) is an ulp of noise, not zero, so
+    /// this pins the degenerate-axis validity rule on both sides. Before that
+    /// rule, the GPU zero-filled edge pixels of every 90° rotation (and a
+    /// strict CPU refine briefly reproduced the same bug).
+    #[test]
+    fn warp_affine_rot90_matches_cpu_with_no_dropped_edges() {
+        let m = crate::warp::get_rotation_matrix2d((32.0, 32.0), 90.0, 1.0);
+        assert_bit_exact(64, 64, &m, InterpolationMode::Nearest);
+        assert_bit_exact(64, 64, &m, InterpolationMode::Bilinear);
+
+        // And the rotation must actually carry pixels into the edge rows —
+        // bit-equality alone would also pass if both sides dropped them.
+        let (cpu, _) = cpu_and_gpu(64, 64, &m, InterpolationMode::Nearest);
+        let last_row = &cpu[63 * 64 * 3..];
+        assert!(
+            last_row.iter().any(|&v| v != 0.0),
+            "90° rotation must populate the last row, not zero-fill it"
         );
     }
 
-    /// Nearest selects a single source pixel on both paths, so away from exact
-    /// rounding ties any difference is a coordinate-rule bug, not float error.
+    /// Shear + translation with negative steps on both axes: exercises the
+    /// refined valid-span logic (negative-step boundaries land on exact
+    /// integers) and the border zero-fill agreement.
     #[test]
-    fn warp_affine_nearest_is_bit_exact_vs_cpu() {
-        assert_matches_cpu(320, 240, &DYADIC_M, InterpolationMode::Nearest, 0.0, 0.0);
+    fn warp_affine_flip_shear_matches_cpu() {
+        let m = [-0.75, 0.25, 200.0, 0.5, -1.25, 180.0];
+        assert_bit_exact(320, 240, &m, InterpolationMode::Bilinear);
+        assert_bit_exact(320, 240, &m, InterpolationMode::Nearest);
     }
 
     #[test]

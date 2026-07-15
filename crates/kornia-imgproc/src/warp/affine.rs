@@ -157,6 +157,75 @@ pub fn warp_affine<const C: usize>(
     const ROWS_PER_TASK: usize = 16;
     let src_slice = src.as_slice();
 
+    // BYTE-EXACT CONTRACT with the CUDA warp kernels: the source coordinate is
+    // `dsx * x + sx0` with `sx0 = m_inv[1]*y + m_inv[2]`, evaluated PER PIXEL
+    // (not accumulated `sx += dsx`, which drifts by an ulp per column), and the
+    // kernels compute the identically grouped `m0*gx + (m1*gy + m2)` under
+    // `--fmad=false`. Same expression tree, same roundings, bit-identical
+    // coordinates — asserted by the CPU/GPU parity tests. Do not regroup or
+    // reintroduce accumulation on one side only.
+    let coord_at = move |d: f32, s0: f32, x: usize| d * x as f32 + s0;
+
+    // Per-call product tables: `xstep[x] = fl(d * x)`, so the inner loop's
+    // `xstep[x] + s0` performs the identical mul-then-add (one rounding each)
+    // as `coord_at` and the GPU kernel — bit-identical, but the int→float
+    // convert and multiply leave the per-pixel path. Without this the direct
+    // per-pixel evaluation costs 15–60% on the CPU warp bench.
+    let xstep_x: Vec<f32> = (0..dst_w).map(|x| dsx * x as f32).collect();
+    let xstep_y: Vec<f32> = (0..dst_w).map(|x| dsy * x as f32).collect();
+
+    // The analytic span from `compute_range` can disagree with the per-pixel
+    // float predicate by one column when a boundary quotient rounds across an
+    // integer, so each end is refined against the exact validity predicate —
+    // a couple of probes per row. The GPU kernels evaluate this IDENTICAL
+    // predicate per pixel, so the zero-filled region matches bit-for-bit.
+    //
+    // The degenerate-axis branch is load-bearing: for an axis whose per-column
+    // step is below 1e-6 (e.g. cos(90°) ≈ -4.4e-8 in a right-angle rotation),
+    // the coordinate is the row constant plus trig noise, and an ulp-negative
+    // value must NOT invalidate the pixel — validity is judged on the row
+    // constant and the noise is absorbed by the interpolation clamp. A strict
+    // per-pixel test here zero-fills edge pixels of exact 90° rotations
+    // (which is what the GPU kernels used to do).
+    let in_bounds = move |sx0: f32, sy0: f32, x: usize| -> bool {
+        let x_ok = if dsx.abs() < 1e-6 {
+            sx0 >= 0.0 && sx0 < src_w_f
+        } else {
+            let sx = coord_at(dsx, sx0, x);
+            sx >= 0.0 && sx < src_w_f
+        };
+        let y_ok = if dsy.abs() < 1e-6 {
+            sy0 >= 0.0 && sy0 < src_h_f
+        } else {
+            let sy = coord_at(dsy, sy0, x);
+            sy >= 0.0 && sy < src_h_f
+        };
+        x_ok && y_ok
+    };
+    let refine_range = move |sx0: f32, sy0: f32| -> (usize, usize) {
+        let (mut lo, mut hi) = compute_range(sx0, sy0);
+        if lo >= hi {
+            return (0, 0);
+        }
+        while lo < hi && !in_bounds(sx0, sy0, lo) {
+            lo += 1;
+        }
+        while lo > 0 && in_bounds(sx0, sy0, lo - 1) {
+            lo -= 1;
+        }
+        while hi > lo && !in_bounds(sx0, sy0, hi - 1) {
+            hi -= 1;
+        }
+        while hi < dst_w && in_bounds(sx0, sy0, hi) {
+            hi += 1;
+        }
+        if lo >= hi {
+            (0, 0)
+        } else {
+            (lo, hi)
+        }
+    };
+
     // Lift the interpolation branch outside the parallel loop so each task is
     // branch-free in its inner loop.
     macro_rules! run_rows {
@@ -165,13 +234,11 @@ pub fn warp_affine<const C: usize>(
                 let y_f = ($y_base + dy) as f32;
                 let sx0 = m_inv[1] * y_f + m_inv[2];
                 let sy0 = m_inv[4] * y_f + m_inv[5];
-                let (x_lo, x_hi) = compute_range(sx0, sy0);
+                let (x_lo, x_hi) = refine_range(sx0, sy0);
                 dst_row[..x_lo * C].fill(0.0);
                 dst_row[x_hi * C..].fill(0.0);
                 if x_lo < x_hi {
-                    let mut sx = sx0 + dsx * x_lo as f32;
-                    let mut sy = sy0 + dsy * x_lo as f32;
-                    $inner(dst_row, x_lo, x_hi, &mut sx, &mut sy);
+                    $inner(dst_row, x_lo, x_hi, sx0, sy0);
                 }
             }
         };
@@ -186,17 +253,15 @@ pub fn warp_affine<const C: usize>(
                     run_rows!(
                         chunk,
                         ci * ROWS_PER_TASK,
-                        |dst_row: &mut [f32],
-                         x_lo: usize,
-                         x_hi: usize,
-                         sx: &mut f32,
-                         sy: &mut f32| {
-                            for dst_pixel in dst_row[x_lo * C..x_hi * C].chunks_exact_mut(C) {
+                        |dst_row: &mut [f32], x_lo: usize, x_hi: usize, sx0: f32, sy0: f32| {
+                            let pixels = dst_row[x_lo * C..x_hi * C].chunks_exact_mut(C);
+                            let steps = xstep_x[x_lo..x_hi].iter().zip(&xstep_y[x_lo..x_hi]);
+                            for (dst_pixel, (&tx, &ty)) in pixels.zip(steps) {
+                                let sx = tx + sx0;
+                                let sy = ty + sy0;
                                 let xi = sx.round().clamp(0.0, src_w_f - 1.0) as usize;
                                 let yi = sy.round().clamp(0.0, src_h_f - 1.0) as usize;
                                 dst_pixel.copy_from_slice(&src_slice[(yi * src_w + xi) * C..][..C]);
-                                *sx += dsx;
-                                *sy += dsy;
                             }
                         }
                     );
@@ -210,12 +275,12 @@ pub fn warp_affine<const C: usize>(
                     run_rows!(
                         chunk,
                         ci * ROWS_PER_TASK,
-                        |dst_row: &mut [f32],
-                         x_lo: usize,
-                         x_hi: usize,
-                         sx: &mut f32,
-                         sy: &mut f32| {
-                            for dst_pixel in dst_row[x_lo * C..x_hi * C].chunks_exact_mut(C) {
+                        |dst_row: &mut [f32], x_lo: usize, x_hi: usize, sx0: f32, sy0: f32| {
+                            let pixels = dst_row[x_lo * C..x_hi * C].chunks_exact_mut(C);
+                            let steps = xstep_x[x_lo..x_hi].iter().zip(&xstep_y[x_lo..x_hi]);
+                            for (dst_pixel, (&tx, &ty)) in pixels.zip(steps) {
+                                let sx = tx + sx0;
+                                let sy = ty + sy0;
                                 let sx_c = sx.clamp(0.0, src_w_f - 1.0);
                                 let sy_c = sy.clamp(0.0, src_h_f - 1.0);
                                 let x0 = sx_c as usize;
@@ -238,8 +303,6 @@ pub fn warp_affine<const C: usize>(
                                         + w01 * src_slice[b01 + k]
                                         + w11 * src_slice[b11 + k];
                                 }
-                                *sx += dsx;
-                                *sy += dsy;
                             }
                         }
                     );
