@@ -11,6 +11,24 @@ changes early: `cargo add kornia-imgproc@0.1.15-rc.1` or `pip install --pre korn
      dated section and reset [Unreleased]. Reference the diff range and prior tag
      so the changelog stays navigable (see the "Full changelog" links below). -->
 
+## [Unreleased]
+
+**BREAKING — `resize_native` now samples on the half-pixel grid.** The f32
+resize previously used align-corners (`sx = x * (src-1)/(dst-1)`); it now uses
+the pixel-center convention (`sx = (x + 0.5) * src/dst - 0.5`) shared by
+OpenCV, Pillow, ONNX `Resize` (`half_pixel` default), PyTorch
+(`align_corners=False`), and NVIDIA VPI. Pixel values change for every
+non-identity resize — typically a sub-pixel content shift. The u8 fast paths
+(`resize_fast_*`) are unaffected. This also makes the CPU and CUDA resize
+sample the same grid (`resize_native` was the sole align-corners holdout —
+the fused CPU preprocess path and the CUDA kernels already sampled
+half-pixel), and CPU/GPU parity is now tested.
+
+- `kornia_imgproc::cuda::resize`: launchers take a new `PixelMapping`
+  parameter (`HalfPixel` — the default convention — or `AlignCorners` to
+  reproduce pre-change output); kernels generalized to per-axis affine
+  coefficients with no measured throughput change on Jetson Orin.
+
 ## [0.1.15-rc.4] — 2026-07-06 (pre-release)
 
 **GPU wheels.** Linux wheels now build with `--features cuda`, so

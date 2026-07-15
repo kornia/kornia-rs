@@ -52,6 +52,12 @@ use common::FilterKind;
 /// The function resizes an image to a new size using the specified interpolation mode.
 /// It supports any number of channels and data types.
 ///
+/// Sampling uses the **half-pixel** (pixel-center) grid,
+/// `sx = (x + 0.5) * src/dst - 0.5`, the convention shared by OpenCV, Pillow,
+/// ONNX `Resize`, PyTorch (`align_corners=False`), and NVIDIA VPI, and by this
+/// crate's CUDA resize kernels. Earlier releases used align-corners, which
+/// produced different pixel values for the same inputs.
+///
 /// # Arguments
 ///
 /// * `src` - The input image container.
@@ -110,19 +116,28 @@ pub fn resize_native<const C: usize>(
     }
 
     let (dst_rows, dst_cols) = (dst.rows(), dst.cols());
-    let step_x = if dst.cols() > 1 {
-        (src.cols() - 1) as f32 / (dst.cols() - 1) as f32
-    } else {
-        0.0
-    };
-    let step_y = if dst.rows() > 1 {
-        (src.rows() - 1) as f32 / (dst.rows() - 1) as f32
-    } else {
-        0.0
-    };
-    let (map_x, map_y) = meshgrid_from_fn(dst_cols, dst_rows, |x, y| {
-        Ok((x as f32 * step_x, y as f32 * step_y))
-    })?;
+
+    // Half-pixel (pixel-center) sampling grid: `sx = (x + 0.5) * scale - 0.5`,
+    // clamped to the source. This is the convention of OpenCV, Pillow, ONNX
+    // `Resize` (default `coordinate_transformation_mode = half_pixel`),
+    // PyTorch's recommended `align_corners=False`, and NVIDIA VPI — and the
+    // grid the CUDA resize kernels in this crate already sample on, so CPU and
+    // GPU agree. Earlier releases used align-corners
+    // (`sx = x * (src-1)/(dst-1)`), which shifts content relative to every
+    // mainstream library; outputs changed accordingly.
+    let scale_x = src.cols() as f32 / dst.cols() as f32;
+    let scale_y = src.rows() as f32 / dst.rows() as f32;
+    let x_max = (src.cols() - 1) as f32;
+    let y_max = (src.rows() - 1) as f32;
+    // The grid is separable: evaluate each axis once (dst_w + dst_h values)
+    // and let the per-pixel closure be two table loads.
+    let xs: Vec<f32> = (0..dst_cols)
+        .map(|x| ((x as f32 + 0.5) * scale_x - 0.5).clamp(0.0, x_max))
+        .collect();
+    let ys: Vec<f32> = (0..dst_rows)
+        .map(|y| ((y as f32 + 0.5) * scale_y - 0.5).clamp(0.0, y_max))
+        .collect();
+    let (map_x, map_y) = meshgrid_from_fn(dst_cols, dst_rows, |x, y| Ok((xs[x], ys[y])))?;
 
     parallel::par_iter_rows_resample(dst, &map_x, &map_y, |&x, &y, dst_pixel| {
         for (k, pixel) in dst_pixel.iter_mut().enumerate() {
@@ -383,13 +398,20 @@ mod tests {
         assert_eq!(image_resized.size().width, 2);
         assert_eq!(image_resized.size().height, 3);
 
-        assert_eq!(
-            image_resized.as_slice(),
-            [
-                0.0, 1.0, 2.0, 6.0, 7.0, 8.0, 13.5, 14.5, 15.5, 19.5, 20.5, 21.5, 27.0, 28.0, 29.0,
-                33.0, 34.0, 35.0
-            ]
-        );
+        // Half-pixel grid: sx = (x+0.5)*3/2 - 0.5 ∈ {0.25, 1.75},
+        // sy = (y+0.5)*4/3 - 0.5 ∈ {1/6, 1.5, 17/6}. The source value is
+        // linear in position (v = 9y + 3x + c), so bilinear reproduces it
+        // exactly up to float error: v = 9*sy + 3*sx + c.
+        let expected = [
+            2.25, 3.25, 4.25, 6.75, 7.75, 8.75, 14.25, 15.25, 16.25, 18.75, 19.75, 20.75, 26.25,
+            27.25, 28.25, 30.75, 31.75, 32.75,
+        ];
+        for (i, (got, want)) in image_resized.as_slice().iter().zip(expected).enumerate() {
+            assert!(
+                (got - want).abs() < 1e-4,
+                "pixel {i}: got {got}, want {want}"
+            );
+        }
 
         Ok(())
     }
