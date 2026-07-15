@@ -13,6 +13,17 @@ changes early: `cargo add kornia-imgproc@0.1.15-rc.1` or `pip install --pre korn
 
 ## [Unreleased]
 
+**CPU and CUDA resize are now byte-exact.** NVRTC kernels compile with
+`--fmad=false` (no automatic FP contraction), and the resize coordinate and
+bilinear arithmetic use the identical expression shapes on both sides, so
+`resize_native` and the CUDA resize kernels produce bit-identical f32 output —
+asserted by parity tests across dyadic and non-dyadic sizes. Kernels that want
+fused multiply-adds keep them via explicit `fmaf()` (unaffected by the flag);
+no measured throughput change on Jetson Orin. The `bilinear_interpolation`
+restructure (weights formed before the tap products) shifts f32 bilinear
+output by up to 1 ulp in every consumer — `warp_perspective`, `remap`, and
+the optical-flow border path, not just resize.
+
 **BREAKING — `resize_native` now samples on the half-pixel grid.** The f32
 resize previously used align-corners (`sx = x * (src-1)/(dst-1)`); it now uses
 the pixel-center convention (`sx = (x + 0.5) * src/dst - 0.5`) shared by

@@ -107,9 +107,12 @@ extern "C" __global__ void resize_bilinear_downscale_3c(
     unsigned int dst_y = blockIdx.y * blockDim.y + threadIdx.y;
     if (dst_x >= dst_w || dst_y >= dst_h) return;
 
-    // Half-pixel center alignment: matches OpenCV / PIL convention.
-    float sx = fmaxf(fminf(fmaf(ax, (float)dst_x, bx), (float)(src_w - 1u)), 0.0f);
-    float sy = fmaxf(fminf(fmaf(ay, (float)dst_y, by), (float)(src_h - 1u)), 0.0f);
+    // Plain multiply-add, NOT fmaf: with --fmad=false this rounds twice,
+    // exactly like the CPU LUT's `a * x + b` — the coordinate is byte-exact
+    // across CPU and GPU, which the parity tests assert. Clamp order (min
+    // then max) is equivalent to Rust's f32::clamp for lo <= hi.
+    float sx = fmaxf(fminf(ax * (float)dst_x + bx, (float)(src_w - 1u)), 0.0f);
+    float sy = fmaxf(fminf(ay * (float)dst_y + by, (float)(src_h - 1u)), 0.0f);
 
     unsigned int x0 = (unsigned int)sx;
     unsigned int y0 = (unsigned int)sy;
@@ -153,11 +156,13 @@ extern "C" __global__ void resize_nearest_downscale_3c(
     if (dst_x >= dst_w || dst_y >= dst_h) return;
 
     // Half-pixel center alignment.
-    // Round-to-nearest source pixel: the sample coordinate is fmaf(a,x,b);
-    // +0.5-then-truncate is round-half-up, which equals the CPU's
-    // half-away-from-zero `round()` for the non-negative coords produced here.
-    unsigned int src_xi = min((unsigned int)(fmaf(ax, (float)dst_x, bx) + 0.5f), src_w - 1u);
-    unsigned int src_yi = min((unsigned int)(fmaf(ay, (float)dst_y, by) + 0.5f), src_h - 1u);
+    // Plain multiply-add (not fmaf) so the coordinate is bit-identical to the
+    // CPU LUT under --fmad=false. +0.5-then-truncate is round-half-up, which
+    // equals the CPU's half-away-from-zero `round()` for the non-negative
+    // coordinates produced here — including exact .5 ties, since both sides
+    // compute the identical f32 coordinate.
+    unsigned int src_xi = min((unsigned int)((ax * (float)dst_x + bx) + 0.5f), src_w - 1u);
+    unsigned int src_yi = min((unsigned int)((ay * (float)dst_y + by) + 0.5f), src_h - 1u);
 
     unsigned int src_base = (src_yi * src_w + src_xi) * 3u;
     unsigned int out = (dst_y * dst_w + dst_x) * 3u;
@@ -190,9 +195,12 @@ extern "C" __global__ void resize_bilinear_normalize_3c(
     unsigned int dst_y = blockIdx.y * blockDim.y + threadIdx.y;
     if (dst_x >= dst_w || dst_y >= dst_h) return;
 
-    // Half-pixel center alignment: matches OpenCV / PIL convention.
-    float sx = fmaxf(fminf(fmaf(ax, (float)dst_x, bx), (float)(src_w - 1u)), 0.0f);
-    float sy = fmaxf(fminf(fmaf(ay, (float)dst_y, by), (float)(src_h - 1u)), 0.0f);
+    // Plain multiply-add, NOT fmaf: with --fmad=false this rounds twice,
+    // exactly like the CPU LUT's `a * x + b` — the coordinate is byte-exact
+    // across CPU and GPU, which the parity tests assert. Clamp order (min
+    // then max) is equivalent to Rust's f32::clamp for lo <= hi.
+    float sx = fmaxf(fminf(ax * (float)dst_x + bx, (float)(src_w - 1u)), 0.0f);
+    float sy = fmaxf(fminf(ay * (float)dst_y + by, (float)(src_h - 1u)), 0.0f);
 
     unsigned int x0 = (unsigned int)sx;
     unsigned int y0 = (unsigned int)sy;
@@ -259,14 +267,14 @@ extern "C" __global__ void resize_bicubic_3c(
     float wx[4], wy[4];
     {
         float t;
-        t = 1.0f + frac_x; wx[0] = ((-0.5f*t + 2.5f)*t - 4.0f)*t + 2.0f;
-        t =         frac_x; wx[1] = (( 1.5f*t - 2.5f)*t       )*t + 1.0f;
-        t = 1.0f - frac_x; wx[2] = (( 1.5f*t - 2.5f)*t       )*t + 1.0f;
-        t = 2.0f - frac_x; wx[3] = ((-0.5f*t + 2.5f)*t - 4.0f)*t + 2.0f;
-        t = 1.0f + frac_y; wy[0] = ((-0.5f*t + 2.5f)*t - 4.0f)*t + 2.0f;
-        t =         frac_y; wy[1] = (( 1.5f*t - 2.5f)*t       )*t + 1.0f;
-        t = 1.0f - frac_y; wy[2] = (( 1.5f*t - 2.5f)*t       )*t + 1.0f;
-        t = 2.0f - frac_y; wy[3] = ((-0.5f*t + 2.5f)*t - 4.0f)*t + 2.0f;
+        t = 1.0f + frac_x; wx[0] = fmaf(fmaf(fmaf(-0.5f, t, 2.5f), t, -4.0f), t, 2.0f);
+        t =         frac_x; wx[1] = fmaf(fmaf( 1.5f, t, -2.5f) * t,       t, 1.0f);
+        t = 1.0f - frac_x; wx[2] = fmaf(fmaf( 1.5f, t, -2.5f) * t,       t, 1.0f);
+        t = 2.0f - frac_x; wx[3] = fmaf(fmaf(fmaf(-0.5f, t, 2.5f), t, -4.0f), t, 2.0f);
+        t = 1.0f + frac_y; wy[0] = fmaf(fmaf(fmaf(-0.5f, t, 2.5f), t, -4.0f), t, 2.0f);
+        t =         frac_y; wy[1] = fmaf(fmaf( 1.5f, t, -2.5f) * t,       t, 1.0f);
+        t = 1.0f - frac_y; wy[2] = fmaf(fmaf( 1.5f, t, -2.5f) * t,       t, 1.0f);
+        t = 2.0f - frac_y; wy[3] = fmaf(fmaf(fmaf(-0.5f, t, 2.5f), t, -4.0f), t, 2.0f);
     }
 
     unsigned int row[4];
@@ -1038,112 +1046,50 @@ mod tests {
         (cpu.as_slice().to_vec(), gpu)
     }
 
-    /// Destination pixels whose source coordinate sits within `eps` of a `.5`
-    /// rounding tie — only meaningful for nearest. The CPU computes
-    /// `(x+0.5)*scale - 0.5` while the GPU computes `fmaf(a, x, b)`; the two
-    /// agree only to within a float ulp, so a coordinate an ulp either side of
-    /// the tie can legitimately snap to different source pixels, a full-pixel
-    /// value jump. Bilinear needs no exclusion: it is continuous across tap
-    /// boundaries, so the same ulp drift moves the value by ~gradient·ulp,
-    /// which the tolerance absorbs. Excluded pixels must stay rare — asserted
-    /// by the caller.
-    fn ambiguous(
-        (sw, sh): (usize, usize),
-        (dw, dh): (usize, usize),
-        interpolation: InterpolationMode,
-        eps: f32,
-    ) -> Vec<bool> {
-        let (ax, bx) = PixelMapping::HalfPixel.coeffs(sw as u32, dw as u32);
-        let (ay, by) = PixelMapping::HalfPixel.coeffs(sh as u32, dh as u32);
-        if !matches!(interpolation, InterpolationMode::Nearest) {
-            return vec![false; dw * dh];
-        }
-        let near_boundary = |v: f32| {
-            let frac = v - v.floor();
-            (frac - 0.5).abs() < eps
-        };
-        let mut out = vec![false; dw * dh];
-        for y in 0..dh {
-            for x in 0..dw {
-                let sx = ax * x as f32 + bx;
-                let sy = ay * y as f32 + by;
-                out[y * dw + x] = near_boundary(sx) || near_boundary(sy);
-            }
-        }
-        out
-    }
-
-    fn assert_matches(
+    /// Byte-exact comparison: the CPU LUT and the kernels compute the identical
+    /// uncontracted `a*x + b` coordinate (see the contract note in
+    /// `resize_native`), and the bilinear weight/sum expression shapes match,
+    /// so CPU and GPU must agree bit-for-bit — no tolerance, no exclusions.
+    fn assert_bit_exact(
         src: (usize, usize),
         dst: (usize, usize),
         interpolation: InterpolationMode,
-        tol: f32,
-        eps: f32,
     ) {
         let (cpu, gpu) = cpu_and_gpu(src, dst, interpolation);
-        let amb = ambiguous(src, dst, interpolation, eps);
-        let mut skipped = 0usize;
-        for (p, &is_amb) in amb.iter().enumerate() {
-            if is_amb {
-                skipped += 1;
-                continue;
-            }
-            for c in 0..3 {
-                let i = p * 3 + c;
-                let d = (gpu[i] - cpu[i]).abs();
-                assert!(
-                    d <= tol,
-                    "{src:?}->{dst:?} {interpolation:?}: pixel {p} ch {c} diff {d} > {tol} \
-                     (cpu {} gpu {})",
-                    cpu[i],
-                    gpu[i]
-                );
-            }
+        let bad = cpu
+            .iter()
+            .zip(&gpu)
+            .enumerate()
+            .find(|(_, (c, g))| c.to_bits() != g.to_bits());
+        if let Some((i, (c, g))) = bad {
+            panic!(
+                "{src:?}->{dst:?} {interpolation:?}: first mismatch at element {i}: cpu {c} ({:#010x}) gpu {g} ({:#010x})",
+                c.to_bits(),
+                g.to_bits()
+            );
         }
-        assert!(
-            skipped * 10 < amb.len(),
-            "{skipped}/{} pixels excluded as boundary-ambiguous — too many for a \
-             sound comparison",
-            amb.len()
-        );
     }
 
-    /// Dyadic 2× downscale: every coefficient and coordinate is exact in f32 on
-    /// both paths, so nearest must be bit-exact and bilinear near-exact (the
-    /// only residue is fmaf vs separate multiply-add in the weight arithmetic).
+    /// Dyadic 2× downscale — historically the easy case; now just one instance
+    /// of the blanket byte-exact contract.
     #[test]
     fn resize_2x_downscale_matches_cpu() {
-        let (cpu, gpu) = cpu_and_gpu((640, 480), (320, 240), InterpolationMode::Nearest);
-        assert_eq!(gpu, cpu, "dyadic nearest resize must be bit-exact vs CPU");
-
-        assert_matches(
-            (640, 480),
-            (320, 240),
-            InterpolationMode::Bilinear,
-            1e-6,
-            0.0,
-        );
+        assert_bit_exact((640, 480), (320, 240), InterpolationMode::Nearest);
+        assert_bit_exact((640, 480), (320, 240), InterpolationMode::Bilinear);
     }
 
     /// Upscale goes through the same kernels (the "downscale" in the launcher
     /// names is historical) — parity must hold in both directions.
     #[test]
     fn resize_2x_upscale_matches_cpu() {
-        assert_matches(
-            (320, 240),
-            (640, 480),
-            InterpolationMode::Bilinear,
-            1e-6,
-            0.0,
-        );
-        let (cpu, gpu) = cpu_and_gpu((320, 240), (640, 480), InterpolationMode::Nearest);
-        assert_eq!(gpu, cpu, "dyadic nearest upscale must be bit-exact vs CPU");
+        assert_bit_exact((320, 240), (640, 480), InterpolationMode::Bilinear);
+        assert_bit_exact((320, 240), (640, 480), InterpolationMode::Nearest);
     }
 
-    /// Odd, prime-ish, and unaligned sizes: catches block-clamping and any
-    /// residual alignment assumption. Non-dyadic scales drift by a coordinate
-    /// ulp between the two paths, so boundary-ambiguous pixels are excluded
-    /// and the tolerance is looser.
+    /// Odd, prime-ish, and unaligned sizes with non-dyadic scales: exactly the
+    /// cases where the pre-byte-exact code needed tolerances and rounding-tie
+    /// exclusions. Bit-equality here is the point of the fmad=false +
+    /// mirrored-expression contract.
     #[test]
     fn resize_odd_sizes_match_cpu() {
         for &(src, dst) in &[
@@ -1152,8 +1098,8 @@ mod tests {
             ((255, 130), (133, 67)),
             ((63, 129), (127, 255)), // upscale
         ] {
-            assert_matches(src, dst, InterpolationMode::Bilinear, 1e-3, 0.0);
-            assert_matches(src, dst, InterpolationMode::Nearest, 0.0, 1e-3);
+            assert_bit_exact(src, dst, InterpolationMode::Bilinear);
+            assert_bit_exact(src, dst, InterpolationMode::Nearest);
         }
     }
 }
