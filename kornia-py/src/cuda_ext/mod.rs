@@ -243,10 +243,39 @@ use capsule::{arc_dlpack_capsule, arc_dlpack_capsule_versioned};
 // ── GPU color conversions (device-resident `Image` in and out) ────────────────
 // Self-contained device-only submodule; re-exported so `crate::cuda_ext::<op>`
 // (used by `crate::color`'s residency dispatch) keeps resolving unchanged.
+/// PIL-style mode string for a device output of channel count `channels`.
+#[cfg(feature = "cuda")]
+pub(crate) fn device_mode<T: 'static>(channels: usize) -> String {
+    let dt = if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f32>() {
+        crate::backing::Dtype::F32
+    } else {
+        crate::backing::Dtype::U8
+    };
+    crate::image::mode_for_dtype(dt, channels)
+}
+
+/// The stream a device source image lives on, for allocating a same-device
+/// destination. Falls back to device 0's default stream if the backing carries
+/// no stream (shouldn't normally happen for a typed device image).
+#[cfg(feature = "cuda")]
+pub(crate) fn source_stream<T, const C: usize>(src: &Image<T, C>) -> PyResult<Arc<CudaStream>>
+where
+    T: cudarc::driver::DeviceRepr + cudarc::driver::ValidAsZeroBits + 'static,
+{
+    match src.cuda_stream() {
+        Some(s) => Ok(s.clone()),
+        None => default_stream(),
+    }
+}
+
 #[cfg(feature = "cuda")]
 mod cuda_color;
 #[cfg(feature = "cuda")]
+pub(crate) mod cuda_geometry;
+#[cfg(feature = "cuda")]
 pub(crate) use cuda_color::*;
+#[cfg(feature = "cuda")]
+pub(crate) use cuda_geometry as geometry;
 
 // ── Tensor (model input) ──────────────────────────────────────────────────────
 //

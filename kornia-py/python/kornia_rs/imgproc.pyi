@@ -78,30 +78,40 @@ def nv12_from_rgb(image: np.ndarray) -> np.ndarray:
 
 # --- geometric ---
 def resize(
-    image: np.ndarray,
+    image: np.ndarray | Image,
     new_size: tuple[int, int],
     interpolation: str,
     antialias: bool = ...,
-) -> np.ndarray:
-    """``new_size`` is ``(height, width)``; ``interpolation`` is e.g. ``"bilinear"`` / ``"nearest"``."""
+) -> np.ndarray | Image:
+    """``new_size`` is ``(height, width)``; ``interpolation`` is e.g. ``"bilinear"`` / ``"nearest"``.
+
+    A device ``Image`` (f32, 3-channel) runs on the GPU, bit-identical to the
+    CPU f32 path, and returns a device ``Image``. ``antialias`` applies only
+    to the u8 numpy path."""
     ...
 def warp_affine(
-    image: np.ndarray,
+    image: np.ndarray | Image,
     m: Sequence[float],
     new_size: tuple[int, int],
     interpolation: str,
     out: Optional[np.ndarray] = ...,
-) -> np.ndarray:
-    """``m`` is the 2x3 affine matrix (row-major, length 6)."""
+) -> np.ndarray | Image:
+    """``m`` is the 2x3 affine matrix (row-major, length 6).
+
+    A device ``Image`` (f32, 3-channel) runs on the GPU and returns a device
+    ``Image``; ``out=`` is unsupported there."""
     ...
 def warp_perspective(
-    image: np.ndarray,
+    image: np.ndarray | Image,
     m: Sequence[float],
     new_size: tuple[int, int],
     interpolation: str,
     out: Optional[np.ndarray] = ...,
-) -> np.ndarray:
-    """``m`` is the 3x3 perspective matrix (row-major, length 9)."""
+) -> np.ndarray | Image:
+    """``m`` is the 3x3 perspective matrix (row-major, length 9).
+
+    A device ``Image`` (f32, 3-channel) runs on the GPU and returns a device
+    ``Image``; ``out=`` is unsupported there."""
     ...
 def crop(image: np.ndarray, x: int, y: int, width: int, height: int) -> np.ndarray: ...
 def horizontal_flip(image: np.ndarray) -> np.ndarray: ...

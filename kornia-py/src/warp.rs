@@ -1,6 +1,7 @@
 use numpy::PyUntypedArrayMethods;
 use pyo3::prelude::*;
 
+use crate::dispatch::{cpu_op, try_dispatch_device};
 use crate::image::{alloc_output_pyarray, numpy_as_image, parse_interpolation, to_pyerr, PyImage};
 use kornia_image::{Image, ImageError, ImageSize};
 use kornia_imgproc::warp;
@@ -53,50 +54,84 @@ fn unsupported_channels(c: usize) -> PyErr {
     ))
 }
 
+/// Warp an image with a 2×3 affine transform.
+///
+/// Residency-dispatched: a device `Image` (f32, 3-channel) runs the CUDA
+/// kernels, bit-identical to the CPU f32 path (`out=` is not supported on the
+/// device path); a host `Image` or numpy u8 array runs the CPU fast path.
 #[pyfunction]
 #[pyo3(signature = (image, m, new_size, interpolation, out=None))]
 pub fn warp_affine(
     py: Python<'_>,
-    image: PyImage,
+    image: &Bound<'_, PyAny>,
     m: [f32; 6],
     new_size: (usize, usize),
     interpolation: &str,
     out: Option<PyImage>,
-) -> PyResult<PyImage> {
-    match src_channels(py, &image)? {
-        1 => warp_dispatch::<1, _>(py, image, new_size, interpolation, out, |s, d| {
-            warp::warp_affine_u8(s, d, &m)
-        }),
-        3 => warp_dispatch::<3, _>(py, image, new_size, interpolation, out, |s, d| {
-            warp::warp_affine_u8(s, d, &m)
-        }),
-        4 => warp_dispatch::<4, _>(py, image, new_size, interpolation, out, |s, d| {
-            warp::warp_affine_u8(s, d, &m)
-        }),
-        c => Err(unsupported_channels(c)),
-    }
+) -> PyResult<Py<PyAny>> {
+    try_dispatch_device!(py, image, |api| {
+        if out.is_some() {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "warp_affine: out= is not supported for device images",
+            ));
+        }
+        crate::cuda_ext::geometry::warp_affine(api, m, new_size, interpolation)
+    });
+    let interp = interpolation.to_string();
+    cpu_op(
+        py,
+        image,
+        move |py, arr: Py<numpy::PyArray3<u8>>| match src_channels(py, &arr)? {
+            1 => warp_dispatch::<1, _>(py, arr, new_size, &interp, out, |s, d| {
+                warp::warp_affine_u8(s, d, &m)
+            }),
+            3 => warp_dispatch::<3, _>(py, arr, new_size, &interp, out, |s, d| {
+                warp::warp_affine_u8(s, d, &m)
+            }),
+            4 => warp_dispatch::<4, _>(py, arr, new_size, &interp, out, |s, d| {
+                warp::warp_affine_u8(s, d, &m)
+            }),
+            c => Err(unsupported_channels(c)),
+        },
+    )
 }
 
+/// Warp an image with a 3×3 homography.
+///
+/// Residency-dispatched — see [`warp_affine`].
 #[pyfunction]
 #[pyo3(signature = (image, m, new_size, interpolation, out=None))]
 pub fn warp_perspective(
     py: Python<'_>,
-    image: PyImage,
+    image: &Bound<'_, PyAny>,
     m: [f32; 9],
     new_size: (usize, usize),
     interpolation: &str,
     out: Option<PyImage>,
-) -> PyResult<PyImage> {
-    match src_channels(py, &image)? {
-        1 => warp_dispatch::<1, _>(py, image, new_size, interpolation, out, |s, d| {
-            warp::warp_perspective_u8(s, d, &m)
-        }),
-        3 => warp_dispatch::<3, _>(py, image, new_size, interpolation, out, |s, d| {
-            warp::warp_perspective_u8(s, d, &m)
-        }),
-        4 => warp_dispatch::<4, _>(py, image, new_size, interpolation, out, |s, d| {
-            warp::warp_perspective_u8(s, d, &m)
-        }),
-        c => Err(unsupported_channels(c)),
-    }
+) -> PyResult<Py<PyAny>> {
+    try_dispatch_device!(py, image, |api| {
+        if out.is_some() {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "warp_perspective: out= is not supported for device images",
+            ));
+        }
+        crate::cuda_ext::geometry::warp_perspective(api, m, new_size, interpolation)
+    });
+    let interp = interpolation.to_string();
+    cpu_op(
+        py,
+        image,
+        move |py, arr: Py<numpy::PyArray3<u8>>| match src_channels(py, &arr)? {
+            1 => warp_dispatch::<1, _>(py, arr, new_size, &interp, out, |s, d| {
+                warp::warp_perspective_u8(s, d, &m)
+            }),
+            3 => warp_dispatch::<3, _>(py, arr, new_size, &interp, out, |s, d| {
+                warp::warp_perspective_u8(s, d, &m)
+            }),
+            4 => warp_dispatch::<4, _>(py, arr, new_size, &interp, out, |s, d| {
+                warp::warp_perspective_u8(s, d, &m)
+            }),
+            c => Err(unsupported_channels(c)),
+        },
+    )
 }

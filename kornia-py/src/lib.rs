@@ -15,6 +15,7 @@ mod cuda_ext;
 mod depth;
 #[cfg(feature = "cuda")]
 mod device;
+mod dispatch;
 mod dlpack;
 mod enhance;
 mod feature_match;
@@ -270,7 +271,10 @@ pub fn resize_deprecated(
         py,
         "kornia_rs.resize is deprecated. Use kornia_rs.imgproc.resize.",
     )?;
-    resize::resize(py, image, new_size, interpolation, true)
+    as_pyimage(
+        py,
+        resize::resize(py, image.bind(py).as_any(), new_size, interpolation, true)?,
+    )
 }
 
 // Warp
@@ -286,7 +290,17 @@ pub fn warp_affine_deprecated(
         py,
         "kornia_rs.warp_affine is deprecated. Use kornia_rs.imgproc.warp_affine.",
     )?;
-    warp::warp_affine(py, image, m, new_size, interpolation, None)
+    as_pyimage(
+        py,
+        warp::warp_affine(
+            py,
+            image.bind(py).as_any(),
+            m,
+            new_size,
+            interpolation,
+            None,
+        )?,
+    )
 }
 
 #[pyfunction(name = "warp_perspective")]
@@ -301,7 +315,17 @@ pub fn warp_perspective_deprecated(
         py,
         "kornia_rs.warp_perspective is deprecated. Use kornia_rs.imgproc.warp_perspective.",
     )?;
-    warp::warp_perspective(py, image, m, new_size, interpolation, None)
+    as_pyimage(
+        py,
+        warp::warp_perspective(
+            py,
+            image.bind(py).as_any(),
+            m,
+            new_size,
+            interpolation,
+            None,
+        )?,
+    )
 }
 
 // Main Python Module Definition

@@ -174,16 +174,6 @@ pub fn resize<const C: usize>(
     Ok(())
 }
 
-/// Deprecated name of [`resize`].
-#[deprecated(since = "0.1.15", note = "renamed to `resize`")]
-pub fn resize_native<const C: usize>(
-    src: &Image<f32, C>,
-    dst: &mut Image<f32, C>,
-    interpolation: InterpolationMode,
-) -> Result<(), ImageError> {
-    resize(src, dst, interpolation)
-}
-
 /// Resize a 3-channel u8 image. Convenience wrapper around [`resize_fast_u8`].
 ///
 /// # Example
