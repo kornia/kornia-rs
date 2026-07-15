@@ -4,7 +4,6 @@ Deterministic LCG inputs (matching kornia's test pattern generator) so the
 fixtures are reproducible from this script alone. Output: flat little-endian
 binaries + a JSON manifest.
 """
-import json, os, struct
 import numpy as np
 import cv2
 
@@ -40,7 +39,7 @@ CASES = [
 ]
 INTERPS = {"linear": cv2.INTER_LINEAR, "nearest": cv2.INTER_NEAREST}
 
-manifest = []
+count = 0
 for (sh, sw, dh, dw) in CASES:
     for cn in (1, 3):
         for dtype in ("u8", "f32"):
@@ -50,16 +49,11 @@ for (sh, sw, dh, dw) in CASES:
                 dst = cv2.resize(src_sq, (dw, dh), interpolation=iflag)
                 if cn == 1:
                     dst = dst.reshape(dh, dw, 1)
+                # All parameters live in the filename; the Rust test parses it,
+                # so no manifest file is needed.
                 key = f"{dtype}_c{cn}_{sh}x{sw}_to_{dh}x{dw}_{iname}"
                 src.tofile(f"{OUT}/{key}.src")
-                dst_arr = np.ascontiguousarray(dst)
-                dst_arr.tofile(f"{OUT}/{key}.dst")
-                manifest.append({
-                    "key": key, "dtype": dtype, "channels": cn,
-                    "src_h": sh, "src_w": sw, "dst_h": dh, "dst_w": dw,
-                    "interp": iname,
-                })
+                np.ascontiguousarray(dst).tofile(f"{OUT}/{key}.dst")
+                count += 1
 
-with open(f"{OUT}/manifest.json", "w") as f:
-    json.dump({"opencv_version": cv2.__version__, "cases": manifest}, f, indent=1)
-print(f"{len(manifest)} fixtures, cv2 {cv2.__version__}")
+print(f"{count} fixtures, cv2 {cv2.__version__}")
