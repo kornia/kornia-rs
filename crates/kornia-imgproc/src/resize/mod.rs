@@ -28,8 +28,11 @@ mod common;
 mod fused;
 mod kernels;
 mod nearest;
+mod opencv_compat;
 mod pyramid;
 mod separable;
+
+pub use opencv_compat::{resize_opencv_f32, resize_opencv_u8};
 
 pub use fused::{
     resize_normalize_to_tensor_u8_to_f32, resize_normalize_to_tensor_u8_to_f32_bilinear,

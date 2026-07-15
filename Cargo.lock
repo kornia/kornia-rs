@@ -7818,6 +7818,8 @@ dependencies = [
  "opencv",
  "rand 0.10.1",
  "rayon",
+ "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "wide 1.5.0",
 ]
