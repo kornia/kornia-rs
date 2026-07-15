@@ -35,7 +35,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let mut gray_resize = Image::<f32, 1>::from_size_val(new_size, 0.0)?;
-    imgproc::resize::resize_native(
+    imgproc::resize::resize(
         &gray_f32,
         &mut gray_resize,
         imgproc::interpolation::InterpolationMode::Bilinear,

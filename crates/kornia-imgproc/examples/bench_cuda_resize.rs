@@ -17,7 +17,7 @@ use kornia_image::{Image, ImageSize};
 #[cfg(feature = "cuda")]
 use kornia_imgproc::cuda::resize::PixelMapping;
 use kornia_imgproc::interpolation::InterpolationMode;
-use kornia_imgproc::resize::resize_native;
+use kornia_imgproc::resize::resize;
 use std::time::Instant;
 
 const WARMUP: u32 = 50;
@@ -105,12 +105,12 @@ fn run_cpu() {
         .expect("dst image");
 
         for _ in 0..WARMUP {
-            resize_native(&src, &mut dst, InterpolationMode::Bilinear).expect("resize");
+            resize(&src, &mut dst, InterpolationMode::Bilinear).expect("resize");
             std::hint::black_box(dst.as_slice());
         }
         let t = Instant::now();
         for _ in 0..ITERS {
-            resize_native(&src, &mut dst, InterpolationMode::Bilinear).expect("resize");
+            resize(&src, &mut dst, InterpolationMode::Bilinear).expect("resize");
             std::hint::black_box(dst.as_slice());
         }
         let ms = t.elapsed().as_secs_f64() * 1e3 / ITERS as f64;

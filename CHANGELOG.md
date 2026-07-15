@@ -13,7 +13,10 @@ changes early: `cargo add kornia-imgproc@0.1.15-rc.1` or `pip install --pre korn
 
 ## [Unreleased]
 
-**GPU resize and warps from the high-level API.** `resize_native`,
+**`resize_native` is renamed to `resize`** (deprecated alias kept for one
+release).
+
+**GPU resize and warps from the high-level API.** `resize` (né `resize_native`),
 `warp_affine`, and `warp_perspective` now run on the GPU when called with
 device-resident images (`Image::to_cuda` / `zeros_cuda`), with **bit-identical
 output to the CPU path**. Same rules as the color conversions: both operands

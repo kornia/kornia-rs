@@ -540,7 +540,7 @@ mod tests {
         // samples at sx = (dst_x + 0.5) * 2 - 0.5 = 2*dst_x + 0.5, so the
         // forward (src → dst) map is dst_x = 0.5*sx - 0.25. All entries are
         // dyadic, so the internal inversion and the interpolation are exact
-        // and the equality with `resize_native` below is bit-exact.
+        // and the equality with `resize` below is bit-exact.
         let m = [0.5, 0.0, -0.25, 0.0, 0.5, -0.25, 0.0, 0.0, 1.0];
 
         // v(sx, sy) = 4*sy + sx sampled at (2x+0.5, 2y+0.5).
@@ -562,7 +562,7 @@ mod tests {
 
         let mut image_resized = Image::<_, 1>::from_size_val(new_size, 0.0)?;
 
-        crate::resize::resize_native(
+        crate::resize::resize(
             &image,
             &mut image_resized,
             super::InterpolationMode::Bilinear,

@@ -509,7 +509,7 @@ pub enum PixelMapping {
     /// The convention of OpenCV, Pillow, ONNX `Resize`
     /// (`coordinate_transformation_mode = half_pixel`), PyTorch
     /// (`align_corners=False`), and NVIDIA VPI — and of the CPU
-    /// [`resize_native`](crate::resize::resize_native). Use this unless you
+    /// [`resize`](crate::resize::resize). Use this unless you
     /// specifically need to reproduce align-corners output.
     HalfPixel,
     /// Corner-aligned sampling, `src = dst * (src_len-1)/(dst_len-1)`.
@@ -967,7 +967,7 @@ mod tests {
     use super::*;
     use crate::cuda::color::test_utils::{default_stream, pattern_f32};
     use crate::interpolation::InterpolationMode;
-    use crate::resize::resize_native;
+    use crate::resize::resize;
     use kornia_image::{Image, ImageSize};
 
     #[test]
@@ -982,7 +982,7 @@ mod tests {
         assert_eq!(PixelMapping::AlignCorners.coeffs(9, 1), (0.0, 0.0));
     }
 
-    /// Run CPU `resize_native` (half-pixel) and the GPU launcher on the same
+    /// Run CPU `resize` (half-pixel) and the GPU launcher on the same
     /// deterministic input; return both outputs.
     fn cpu_and_gpu(
         (sw, sh): (usize, usize),
@@ -1006,7 +1006,7 @@ mod tests {
             0.0,
         )
         .unwrap();
-        resize_native(&src, &mut cpu, interpolation).unwrap();
+        resize(&src, &mut cpu, interpolation).unwrap();
 
         let stream = default_stream();
         let ctx = &stream.context();
@@ -1048,7 +1048,7 @@ mod tests {
 
     /// Byte-exact comparison: the CPU LUT and the kernels compute the identical
     /// uncontracted `a*x + b` coordinate (see the contract note in
-    /// `resize_native`), and the bilinear weight/sum expression shapes match,
+    /// `resize`), and the bilinear weight/sum expression shapes match,
     /// so CPU and GPU must agree bit-for-bit — no tolerance, no exclusions.
     fn assert_bit_exact(
         src: (usize, usize),

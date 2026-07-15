@@ -1,4 +1,4 @@
-//! Device adapter for [`resize_native`](super::resize_native): routes a
+//! Device adapter for [`resize`](super::resize): routes a
 //! checked device pair to the native CUDA resize kernels.
 
 use std::sync::Arc;
@@ -16,7 +16,7 @@ use crate::interpolation::InterpolationMode;
 ///
 /// The kernels are 3-channel only, so `C != 3` errors (never a silent CPU
 /// fallback — see `cuda::dispatch`). Output is bit-identical to the CPU
-/// [`resize_native`](super::resize_native) — the byte-exact contract
+/// [`resize`](super::resize) — the byte-exact contract
 /// established with the half-pixel grid and `--fmad=false`, asserted by the
 /// parity tests in `cuda::resize`.
 pub(super) fn resize_f32_cuda<const C: usize>(
@@ -58,7 +58,7 @@ pub(super) fn resize_f32_cuda<const C: usize>(
             PixelMapping::HalfPixel,
             None,
         ),
-        // validate_interpolation in resize_native rejects everything else
+        // validate_interpolation in resize rejects everything else
         // before this adapter is reached.
         mode => return Err(ImageError::UnsupportedInterpolation(mode)),
     }
@@ -71,7 +71,7 @@ pub(super) fn resize_f32_cuda<const C: usize>(
 mod tests {
     use crate::cuda::color::test_utils::{default_stream, pattern_f32};
     use crate::interpolation::InterpolationMode;
-    use crate::resize::resize_native;
+    use crate::resize::resize;
     use kornia_image::{Image, ImageError, ImageSize};
 
     fn sized(w: usize, h: usize) -> ImageSize {
@@ -81,7 +81,7 @@ mod tests {
         }
     }
 
-    /// The public `resize_native`, called with device images, must produce
+    /// The public `resize`, called with device images, must produce
     /// bit-identical output to the same call with host images — for both
     /// modes, downscale and upscale, at non-dyadic sizes.
     #[test]
@@ -91,11 +91,11 @@ mod tests {
             let src = Image::<f32, 3>::new(sized(sw, sh), pattern_f32(sw * sh * 3)).unwrap();
             for mode in [InterpolationMode::Bilinear, InterpolationMode::Nearest] {
                 let mut cpu_dst = Image::<f32, 3>::from_size_val(sized(dw, dh), 0.0).unwrap();
-                resize_native(&src, &mut cpu_dst, mode).unwrap();
+                resize(&src, &mut cpu_dst, mode).unwrap();
 
                 let d_src = src.to_cuda(&stream).unwrap();
                 let mut d_dst = Image::<f32, 3>::zeros_cuda(sized(dw, dh), &stream).unwrap();
-                resize_native(&d_src, &mut d_dst, mode).unwrap();
+                resize(&d_src, &mut d_dst, mode).unwrap();
 
                 let back = d_dst.to_host_owned().unwrap();
                 assert_eq!(
@@ -116,7 +116,7 @@ mod tests {
         let src = Image::<f32, 3>::new(sized(33, 21), pattern_f32(33 * 21 * 3)).unwrap();
         let d_src = src.to_cuda(&stream).unwrap();
         let mut d_dst = Image::<f32, 3>::zeros_cuda(sized(33, 21), &stream).unwrap();
-        resize_native(&d_src, &mut d_dst, InterpolationMode::Bilinear).unwrap();
+        resize(&d_src, &mut d_dst, InterpolationMode::Bilinear).unwrap();
         let back = d_dst.to_host_owned().unwrap();
         assert_eq!(back.as_slice(), src.as_slice(), "identity resize");
     }
@@ -129,13 +129,13 @@ mod tests {
         let src = Image::<f32, 3>::new(sized(16, 16), pattern_f32(16 * 16 * 3)).unwrap();
         let d_src = src.to_cuda(&stream).unwrap();
         let mut host_dst = Image::<f32, 3>::from_size_val(sized(8, 8), 0.0).unwrap();
-        let err = resize_native(&d_src, &mut host_dst, InterpolationMode::Bilinear).unwrap_err();
+        let err = resize(&d_src, &mut host_dst, InterpolationMode::Bilinear).unwrap_err();
         assert!(matches!(err, ImageError::MixedResidency), "got {err:?}");
 
         let src1 = Image::<f32, 1>::new(sized(16, 16), pattern_f32(16 * 16)).unwrap();
         let d_src1 = src1.to_cuda(&stream).unwrap();
         let mut d_dst1 = Image::<f32, 1>::zeros_cuda(sized(8, 8), &stream).unwrap();
-        let err = resize_native(&d_src1, &mut d_dst1, InterpolationMode::Bilinear).unwrap_err();
+        let err = resize(&d_src1, &mut d_dst1, InterpolationMode::Bilinear).unwrap_err();
         assert!(
             matches!(&err, ImageError::Cuda(msg) if msg.contains("3-channel")),
             "got {err:?}"

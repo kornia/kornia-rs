@@ -36,9 +36,9 @@ pub(super) fn warp_affine_f32_cuda<const C: usize>(
     let (s, d) = device_slices!(src, dst);
 
     match interpolation {
-        InterpolationMode::Bilinear => launch_warp_affine_bilinear_cuda(
-            ctx, stream, s, d, src_w, src_h, dst_w, dst_h, m, None,
-        ),
+        InterpolationMode::Bilinear => {
+            launch_warp_affine_bilinear_cuda(ctx, stream, s, d, src_w, src_h, dst_w, dst_h, m, None)
+        }
         InterpolationMode::Nearest => {
             launch_warp_affine_nearest_cuda(ctx, stream, s, d, src_w, src_h, dst_w, dst_h, m, None)
         }
