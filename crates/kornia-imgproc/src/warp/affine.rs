@@ -141,31 +141,15 @@ pub fn warp_affine<const C: usize>(
     let src_w_f = src_w as f32;
     let src_h_f = src_h as f32;
 
-    // Analytical valid-x range helpers — same logic as warp_affine_u8.
-    // Solve 0 <= dsx*x + sx0 < src_w and 0 <= dsy*x + sy0 < src_h for x,
-    // then intersect to get [x_lo, x_hi) where both coords are in-bounds.
+    // Analytical valid-x range: solve 0 <= dsx*x + sx0 < src_w and
+    // 0 <= dsy*x + sy0 < src_h for x, intersected to [x_lo, x_hi) — see
+    // `warp::span` for the inclusive/strict boundary rules.
+    //
+    // 1e-6 degenerate-step threshold covers f32 trig imprecision (e.g.
+    // cos(π/2) ≈ −4.4e-8); assumes source step ≥ ~1e-6 px/col (extreme
+    // downscale > 1e6:1 is not a use case here).
     let compute_range = |sx0: f32, sy0: f32| -> (usize, usize) {
-        let (mut lo, mut hi) = (0i64, dst_w as i64);
-        for (d, s0, upper) in [(dsx, sx0, src_w_f), (dsy, sy0, src_h_f)] {
-            // 1e-6 covers f32 trig imprecision (e.g. cos(π/2) ≈ −4.4e-8);
-            // assumes source step ≥ ~1e-6 px/col (extreme downscale > 1e6:1 is not a use case here).
-            if d.abs() < 1e-6 {
-                if s0 < 0.0 || s0 >= upper {
-                    return (0, 0);
-                }
-            } else {
-                let a = (-s0) / d;
-                let b = (upper - s0) / d;
-                let (lf, hf) = if d > 0.0 { (a, b) } else { (b, a) };
-                lo = lo.max(lf.ceil().max(0.0) as i64);
-                hi = hi.min(hf.ceil().min(dst_w as f32) as i64);
-            }
-        }
-        if lo >= hi {
-            (0, 0)
-        } else {
-            (lo as usize, hi as usize)
-        }
+        super::span::affine_valid_span([(dsx, sx0, src_w_f), (dsy, sy0, src_h_f)], dst_w, 1e-6)
     };
 
     // 16 rows per Rayon task — same granularity as parallel.rs — keeps spawn
@@ -311,48 +295,14 @@ pub fn warp_affine_u8<const C: usize>(
             let sx0 = m_inv[1] * y_f + m_inv[2];
             let sy0 = m_inv[4] * y_f + m_inv[5];
 
-            // Analytical valid-x range so the inner loop is branch-free.
-            // Solve: 0 <= dsx*x + sx0 < sx_upper; same for y; intersect.
-            let (mut x_lo, mut x_hi) = (0i64, dst_w as i64);
-            // For the x-axis constraint: 0 <= dsx*x + sx0 < sx_upper.
-            if dsx.abs() < 1e-12 {
-                if !(sx0 >= 0.0 && sx0 < sx_upper) {
-                    x_lo = 0;
-                    x_hi = 0;
-                }
-            } else {
-                let a = (-sx0) / dsx;
-                let b = (sx_upper - sx0) / dsx;
-                let (lo_f, hi_f) = if dsx > 0.0 { (a, b) } else { (b, a) };
-                // x in [ceil(lo_f), ceil(hi_f)): strict < hi means the first
-                // invalid x is ceil(hi_f) when hi_f is non-integer, else hi_f.
-                let new_lo = lo_f.ceil().max(0.0) as i64;
-                let new_hi = hi_f.ceil().min(dst_w as f32) as i64;
-                x_lo = x_lo.max(new_lo);
-                x_hi = x_hi.min(new_hi);
-            }
-            if dsy.abs() < 1e-12 {
-                if !(sy0 >= 0.0 && sy0 < sy_upper) {
-                    x_lo = 0;
-                    x_hi = 0;
-                }
-            } else {
-                let a = (-sy0) / dsy;
-                let b = (sy_upper - sy0) / dsy;
-                let (lo_f, hi_f) = if dsy > 0.0 { (a, b) } else { (b, a) };
-                let new_lo = lo_f.ceil().max(0.0) as i64;
-                let new_hi = hi_f.ceil().min(dst_w as f32) as i64;
-                x_lo = x_lo.max(new_lo);
-                x_hi = x_hi.min(new_hi);
-            }
-            if x_lo > x_hi {
-                x_lo = 0;
-                x_hi = 0;
-            }
-
-            // Left/right invalid ranges: zero-fill via memset.
-            let x_lo_u = x_lo as usize;
-            let x_hi_u = x_hi as usize;
+            // Analytical valid-x range so the inner loop is branch-free:
+            // 0 <= dsx*x + sx0 < sx_upper (same for y), intersected — see
+            // `warp::span` for the inclusive/strict boundary rules.
+            let (x_lo_u, x_hi_u) = super::span::affine_valid_span(
+                [(dsx, sx0, sx_upper), (dsy, sy0, sy_upper)],
+                dst_w,
+                1e-12,
+            );
             dst_row[..x_lo_u * C].fill(0);
             dst_row[x_hi_u * C..].fill(0);
 
@@ -379,6 +329,46 @@ pub fn warp_affine_u8<const C: usize>(
 mod tests {
 
     use kornia_image::{Image, ImageError, ImageSize};
+
+    /// A destination pixel whose source coordinate lands *exactly* on the top or
+    /// left edge (`sx == 0.0` / `sy == 0.0`) is inside the image and must be
+    /// sampled, not zero-filled.
+    ///
+    /// `compute_range` derives the valid column span analytically. When the step
+    /// along an axis is negative, the inclusive/strict ends of the interval swap;
+    /// an earlier revision applied `ceil` to both, which dropped the valid column
+    /// whenever the boundary fell on an exact integer — zeroing a real pixel.
+    /// Exact-integer boundaries are the common case for axis-aligned transforms,
+    /// so this is not a corner case.
+    ///
+    /// Here a horizontal flip maps dst x=3 to src x=0.0 exactly; that column must
+    /// carry the source's first column, not zeros.
+    #[test]
+    fn warp_affine_samples_pixels_exactly_on_the_edge() -> Result<(), ImageError> {
+        let size = ImageSize {
+            width: 4,
+            height: 2,
+        };
+        // Distinct non-zero values so a zero-fill is unmistakable.
+        let src = Image::<f32, 1>::new(size, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0])?;
+        let mut dst = Image::<f32, 1>::from_size_val(size, -1.0)?;
+
+        // Horizontal flip: dst_x = 3 - src_x, so dst x=3 <- src x=0 (dsx = -1).
+        let m = [-1.0, 0.0, 3.0, 0.0, 1.0, 0.0];
+        super::warp_affine(
+            &src,
+            &mut dst,
+            &m,
+            crate::interpolation::InterpolationMode::Nearest,
+        )?;
+
+        assert_eq!(
+            dst.as_slice(),
+            &[4.0, 3.0, 2.0, 1.0, 8.0, 7.0, 6.0, 5.0],
+            "flip must sample every column, including the one landing exactly on src x=0"
+        );
+        Ok(())
+    }
 
     #[test]
     fn warp_affine_smoke_ch3() -> Result<(), ImageError> {

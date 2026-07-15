@@ -16,5 +16,61 @@ pub mod warp_perspective;
 /// Native CUDA color-space conversion kernels.
 pub mod color;
 
-/// CUDA texture object RAII wrapper (used internally by warp-affine kernels).
-mod texture;
+use std::sync::Arc;
+
+use cudarc::driver::{CudaContext, LaunchConfig};
+use kornia_tensor::CudaKernel;
+
+/// Default thread block for the 2D geometry kernels: a full warp per output
+/// row for coalesced writes, 8 rows per block.
+pub(crate) const BLOCK_W: u32 = 32;
+pub(crate) const BLOCK_H: u32 = 8;
+
+/// Build the 2D launch configuration, clamping the default block to the image
+/// so tiny outputs don't waste threads. `block_dim` components are assumed
+/// non-zero — enforced by [`check_geometry`], which every launcher calls first.
+pub(crate) fn make_config(
+    dst_width: u32,
+    dst_height: u32,
+    block_dim: Option<(u32, u32)>,
+) -> LaunchConfig {
+    let (bw, bh) = block_dim.unwrap_or_else(|| (BLOCK_W.min(dst_width), BLOCK_H.min(dst_height)));
+    LaunchConfig {
+        block_dim: (bw, bh, 1),
+        grid_dim: (dst_width.div_ceil(bw), dst_height.div_ceil(bh), 1),
+        shared_mem_bytes: 0,
+    }
+}
+
+/// Compile a kernel and set `CU_FUNC_CACHE_PREFER_L1` (none of the geometry
+/// kernels use shared memory, so give the space to L1 for `__ldg` hit rate).
+pub(crate) fn try_compile_with_l1(
+    ctx: &Arc<CudaContext>,
+    src: &str,
+    fn_name: &str,
+) -> Result<CudaKernel, String> {
+    let k = CudaKernel::compile(ctx, src, fn_name)
+        .map_err(|e| format!("failed to compile {fn_name}: {e}"))?;
+    let _ = k.prefer_l1_cache();
+    Ok(k)
+}
+
+/// Validate the launch geometry shared by every warp/resize launcher: all
+/// image dimensions non-zero (zero dims would underflow the kernels' `-1u`
+/// clamps) and, when a `block_dim` override is given, both components non-zero
+/// (a zero component would divide-by-zero in [`make_config`]).
+pub(crate) fn check_geometry(
+    src_width: u32,
+    src_height: u32,
+    dst_width: u32,
+    dst_height: u32,
+    block_dim: Option<(u32, u32)>,
+) -> Result<(), String> {
+    if src_width == 0 || src_height == 0 || dst_width == 0 || dst_height == 0 {
+        return Err("image dimensions must be non-zero".into());
+    }
+    if block_dim.is_some_and(|(bw, bh)| bw == 0 || bh == 0) {
+        return Err("block_dim components must be non-zero".into());
+    }
+    Ok(())
+}

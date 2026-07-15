@@ -2,27 +2,51 @@
 //!
 //! # Algorithm
 //!
-//! Both kernels use **inverse mapping**: each output thread computes the
+//! All kernels use **inverse mapping**: each output thread computes the
 //! floating-point source coordinate by applying the inverted 2×3 affine matrix
-//! to its `(dst_x, dst_y)` position.  Source coordinates that fall outside the
-//! image are filled with zero (`BORDER_CONSTANT`), matching the CPU
-//! [`warp_affine`](crate::warp::warp_affine) default.
+//! to its `(dst_x, dst_y)` position.
+//!
+//! # Border handling
+//!
+//! The kernels reproduce the CPU [`warp_affine`](crate::warp::warp_affine)
+//! contract:
+//!
+//! * A destination pixel whose inverse-mapped source coordinate falls outside
+//!   `[0, src_w) × [0, src_h)` is written as 0 (`BORDER_CONSTANT`), matching the
+//!   CPU valid-range guard.
+//! * Inside that range, bilinear clamps the coordinate to `[0, src-1]` and takes
+//!   the `+1` tap as `min(x0 + 1, src_w - 1)` — a per-axis edge clamp. Note this
+//!   is *not* the rule in `interpolation::bilinear::bilinear_interpolation`
+//!   (which replicates `val00`); the f32 `warp_affine` inner loop does not use
+//!   that helper. `warp_perspective` does, and its kernels match it instead.
+//! * Nearest rounds half-away-from-zero then clamps.
+//!
+//! **Exact-tie caveat.** The CPU walks a row by accumulating `sx += dsx`, while
+//! each GPU thread evaluates `m0*x + m1*y + m2` independently. The two agree to
+//! within a float ulp, so a source coordinate landing exactly on a `.5` boundary
+//! can round to different pixels on the two paths. This affects only nearest,
+//! only at exact ties, and is inherent to any parallel evaluation of the map.
 //!
 //! # Optimisations applied
 //!
 //! * **32×8 thread block (default)** — full warp per output row, same
 //!   reasoning as `resize`: better write coalescing and source reads
 //!   confined to nearby rows per warp.
-//! * **CUDA texture objects** — source reads route through the dedicated
-//!   2D-spatial texture cache.  `CU_TR_ADDRESS_MODE_BORDER` returns 0 for
-//!   any out-of-bounds fetch, eliminating the divergent `if OOB return 0`
-//!   branch that affects every corner pixel under rotation.
-//! * **`CU_FUNC_CACHE_PREFER_L1`** — enlarges L1 to 64 KB on Turing since
-//!   neither kernel uses shared memory.
-//! * **Dynamic block size** — [`launch_warp_affine_bilinear_cuda`] and
-//!   [`launch_warp_affine_nearest_cuda`] accept an optional `block_dim`
-//!   parameter; `None` selects 32×8 (optimal for most sizes) while `Some`
-//!   lets callers override for small images.
+//! * **`__ldg` source reads** — all four kernels read the source through the
+//!   read-only data cache from a raw pointer. An earlier revision routed
+//!   bilinear/nearest through a 1-channel pitch-2D texture object; that made
+//!   `pitchInBytes = src_w * 3 * 4`, which CUDA requires to be a multiple of
+//!   `CU_DEVICE_ATTRIBUTE_TEXTURE_PITCH_ALIGNMENT` (32 B), so the kernels
+//!   failed outright for every source width not a multiple of 8 (issue #1000).
+//!   The source rows are densely packed, so an aligned pitch would have needed
+//!   a padded device-to-device copy per call. `__ldg` avoids the constraint,
+//!   lets the kernels implement the CPU border rules above, and matches
+//!   what `cuda::resize` already found faster for interleaved RGB.
+//! * **`CU_FUNC_CACHE_PREFER_L1`** — enlarges L1 to 64 KB since no kernel here
+//!   uses shared memory.
+//! * **Dynamic block size** — every launcher accepts an optional `block_dim`;
+//!   `None` selects 32×8 (optimal for most sizes) while `Some` lets callers
+//!   override for small images.
 //!
 //! # Public API
 //!
@@ -33,24 +57,26 @@
 
 use std::sync::{Arc, OnceLock};
 
-use cudarc::driver::{CudaContext, CudaSlice, CudaStream, DevicePtr, LaunchConfig};
+use cudarc::driver::{CudaContext, CudaSlice, CudaStream};
 use kornia_tensor::CudaKernel;
 
+use super::{check_geometry, make_config, try_compile_with_l1};
 use crate::warp::invert_affine_transform;
 
-use super::texture::CudaTexObject;
-
-// ── CUDA C source: bilinear warp affine via texture object ───────────────────
+// ── CUDA C source: bilinear warp affine ──────────────────────────────────────
 //
-// Passes the source as a 1-channel pitch-2D texture (width = src_w * 3) so
-// that interleaved RGB channels are accessible as individual texels.  Border
-// mode (CU_TR_ADDRESS_MODE_BORDER) returns 0 for any OOB fetch, implementing
-// BORDER_CONSTANT=0 without an explicit bounds-check branch.
+// Reads the source through __ldg on a raw pointer. Edge rule: the coordinate is
+// clamped into [0, src-1] and the +1 tap per axis is `min(x0+1, src_w-1)` — the
+// per-axis edge clamp of the CPU f32 `warp_affine` inner loop. (This is NOT the
+// val00-replicate rule of `bilinear_interpolation`; that one belongs to
+// `warp_perspective`, whose kernels implement it instead.)
 
 static BILINEAR_SRC: &str = r#"
-extern "C" __global__ void warp_affine_bilinear_tex_3c(
-    unsigned long long tex,
-    float* __restrict__  dst,
+extern "C" __global__ void warp_affine_bilinear_3c(
+    const float* __restrict__ src,
+    float* __restrict__       dst,
+    unsigned int src_w,
+    unsigned int src_h,
     unsigned int dst_w,
     unsigned int dst_h,
     float m0, float m1, float m2,
@@ -59,57 +85,69 @@ extern "C" __global__ void warp_affine_bilinear_tex_3c(
     unsigned int gx = blockIdx.x * blockDim.x + threadIdx.x;
     unsigned int gy = blockIdx.y * blockDim.y + threadIdx.y;
     if (gx >= dst_w || gy >= dst_h) return;
+
+    // 64-bit index math: (y*w + x)*3 wraps 32 bits at ~1.43 gigapixels.
+    unsigned long long out = ((unsigned long long)gy * dst_w + gx) * 3ull;
 
     // Inverse affine: map output pixel → floating-point source coordinate.
     float sx = m0 * (float)gx + m1 * (float)gy + m2;
     float sy = m3 * (float)gx + m4 * (float)gy + m5;
 
-    // Bilinear weights.
-    float x0f = floorf(sx);
-    float y0f = floorf(sy);
-    float fx   = sx - x0f;
-    float fy   = sy - y0f;
-    float w00 = (1.0f - fy) * (1.0f - fx);
-    float w10 = (1.0f - fy) * fx;
-    float w01 = fy * (1.0f - fx);
-    float w11 = fy * fx;
+    // BORDER_CONSTANT: outside the source, emit 0 (CPU valid-range guard).
+    if (sx < 0.0f || sx >= (float)src_w || sy < 0.0f || sy >= (float)src_h) {
+        dst[out] = 0.0f; dst[out+1] = 0.0f; dst[out+2] = 0.0f;
+        return;
+    }
 
-    // Texture x-base for the left column of the 2×2 tap (pixel x0, RGB offset 0).
-    // Right column (pixel x0+1) is at tx0 + 3.0f.
-    float tx0 = x0f * 3.0f;
-    float ty0 = y0f;
-    float ty1 = y0f + 1.0f;
+    // Clamp into [0, src-1] and take the +1 tap with a per-axis edge clamp —
+    // the rule the CPU f32 `warp_affine` inner loop uses.
+    float sxc = fminf(sx, (float)(src_w - 1u));
+    float syc = fminf(sy, (float)(src_h - 1u));
 
-    // Border mode: OOB fetches return 0.0 — no explicit bounds check needed.
-    cudaTextureObject_t t = (cudaTextureObject_t)tex;
-    unsigned int out = (gy * dst_w + gx) * 3u;
+    unsigned int x0 = (unsigned int)sxc;
+    unsigned int y0 = (unsigned int)syc;
+    unsigned int x1 = min(x0 + 1u, src_w - 1u);
+    unsigned int y1 = min(y0 + 1u, src_h - 1u);
+    float fx = sxc - (float)x0;
+    float fy = syc - (float)y0;
 
-    float r00 = tex2D<float>(t, tx0,       ty0);
-    float r10 = tex2D<float>(t, tx0+3.0f,  ty0);
-    float r01 = tex2D<float>(t, tx0,       ty1);
-    float r11 = tex2D<float>(t, tx0+3.0f,  ty1);
-    dst[out]   = fmaf(w00, r00, fmaf(w10, r10, fmaf(w01, r01, w11 * r11)));
+    unsigned long long r0 = (unsigned long long)y0 * src_w;
+    unsigned long long r1 = (unsigned long long)y1 * src_w;
+    unsigned long long b00 = (r0 + x0) * 3ull;
+    unsigned long long b10 = (r0 + x1) * 3ull;
+    unsigned long long b01 = (r1 + x0) * 3ull;
+    unsigned long long b11 = (r1 + x1) * 3ull;
 
-    float g00 = tex2D<float>(t, tx0+1.0f,  ty0);
-    float g10 = tex2D<float>(t, tx0+4.0f,  ty0);
-    float g01 = tex2D<float>(t, tx0+1.0f,  ty1);
-    float g11 = tex2D<float>(t, tx0+4.0f,  ty1);
-    dst[out+1] = fmaf(w00, g00, fmaf(w10, g10, fmaf(w01, g01, w11 * g11)));
+    float fxx = 1.0f - fx;
+    float fyy = 1.0f - fy;
+    float w00 = fyy * fxx;
+    float w10 = fyy * fx;
+    float w01 = fy  * fxx;
+    float w11 = fy  * fx;
 
-    float b00 = tex2D<float>(t, tx0+2.0f,  ty0);
-    float b10 = tex2D<float>(t, tx0+5.0f,  ty0);
-    float b01 = tex2D<float>(t, tx0+2.0f,  ty1);
-    float b11 = tex2D<float>(t, tx0+5.0f,  ty1);
-    dst[out+2] = fmaf(w00, b00, fmaf(w10, b10, fmaf(w01, b01, w11 * b11)));
+    #pragma unroll
+    for (unsigned int c = 0u; c < 3u; ++c) {
+        float v00 = __ldg(&src[b00 + c]);
+        float v10 = __ldg(&src[b10 + c]);
+        float v01 = __ldg(&src[b01 + c]);
+        float v11 = __ldg(&src[b11 + c]);
+        dst[out + c] = fmaf(w00, v00, fmaf(w10, v10, fmaf(w01, v01, w11 * v11)));
+    }
 }
 "#;
 
-// ── CUDA C source: nearest-neighbor warp affine via texture object ────────────
+// ── CUDA C source: nearest-neighbor warp affine ──────────────────────────────
+//
+// roundf is half-away-from-zero, matching Rust's f32::round; the clamp then
+// mirrors `nearest_neighbor_interpolation`, where a coordinate like src_w-0.2
+// rounds up to src_w and is clamped back to the last column.
 
 static NEAREST_SRC: &str = r#"
-extern "C" __global__ void warp_affine_nearest_tex_3c(
-    unsigned long long tex,
-    float* __restrict__  dst,
+extern "C" __global__ void warp_affine_nearest_3c(
+    const float* __restrict__ src,
+    float* __restrict__       dst,
+    unsigned int src_w,
+    unsigned int src_h,
     unsigned int dst_w,
     unsigned int dst_h,
     float m0, float m1, float m2,
@@ -119,19 +157,23 @@ extern "C" __global__ void warp_affine_nearest_tex_3c(
     unsigned int gy = blockIdx.y * blockDim.y + threadIdx.y;
     if (gx >= dst_w || gy >= dst_h) return;
 
+    unsigned long long out = ((unsigned long long)gy * dst_w + gx) * 3ull;
+
     float sx = m0 * (float)gx + m1 * (float)gy + m2;
     float sy = m3 * (float)gx + m4 * (float)gy + m5;
 
-    // Round to nearest; border mode handles OOB → 0.
-    float xi = roundf(sx);
-    float yi  = roundf(sy);
-    float tx  = xi * 3.0f;
+    if (sx < 0.0f || sx >= (float)src_w || sy < 0.0f || sy >= (float)src_h) {
+        dst[out] = 0.0f; dst[out+1] = 0.0f; dst[out+2] = 0.0f;
+        return;
+    }
 
-    cudaTextureObject_t t = (cudaTextureObject_t)tex;
-    unsigned int out = (gy * dst_w + gx) * 3u;
-    dst[out]   = tex2D<float>(t, tx,       yi);
-    dst[out+1] = tex2D<float>(t, tx+1.0f,  yi);
-    dst[out+2] = tex2D<float>(t, tx+2.0f,  yi);
+    unsigned int xi = min((unsigned int)roundf(sx), src_w - 1u);
+    unsigned int yi = min((unsigned int)roundf(sy), src_h - 1u);
+
+    unsigned long long b = ((unsigned long long)yi * src_w + xi) * 3ull;
+    dst[out]   = __ldg(&src[b]);
+    dst[out+1] = __ldg(&src[b+1]);
+    dst[out+2] = __ldg(&src[b+2]);
 }
 "#;
 
@@ -164,7 +206,7 @@ extern "C" __global__ void warp_affine_bicubic_3c(
     float sx = m0 * (float)dst_x + m1 * (float)dst_y + m2;
     float sy = m3 * (float)dst_x + m4 * (float)dst_y + m5;
 
-    unsigned int out = (dst_y * dst_w + dst_x) * 3u;
+    unsigned long long out = ((unsigned long long)dst_y * dst_w + dst_x) * 3ull;
 
     if (sx < 0.0f || sx >= (float)src_w || sy < 0.0f || sy >= (float)src_h) {
         dst[out] = 0.0f; dst[out+1] = 0.0f; dst[out+2] = 0.0f;
@@ -195,11 +237,11 @@ extern "C" __global__ void warp_affine_bicubic_3c(
     }
 
     // Row base addresses precomputed: moves the row multiply outside the inner loop.
-    unsigned int row[4];
+    unsigned long long row[4];
     #pragma unroll
     for (int i = 0; i < 4; ++i) {
         int yi = max(0, min(y0 + i - 1, (int)src_h - 1));
-        row[i] = (unsigned int)yi * src_w * 3u;
+        row[i] = (unsigned long long)yi * src_w * 3ull;
     }
 
     float acc0 = 0.0f, acc1 = 0.0f, acc2 = 0.0f;
@@ -208,7 +250,7 @@ extern "C" __global__ void warp_affine_bicubic_3c(
         #pragma unroll
         for (int dx = 0; dx < 4; ++dx) {
             int xi = max(0, min(x0 + dx - 1, (int)src_w - 1));
-            unsigned int b = row[dy] + (unsigned int)xi * 3u;
+            unsigned long long b = row[dy] + (unsigned long long)xi * 3ull;
             float w = wx[dx] * wy[dy];
             acc0 = fmaf(w, __ldg(&src[b]),   acc0);
             acc1 = fmaf(w, __ldg(&src[b+1]), acc1);
@@ -255,7 +297,7 @@ extern "C" __global__ void warp_affine_lanczos_3c(
     float sx = m0 * (float)dst_x + m1 * (float)dst_y + m2;
     float sy = m3 * (float)dst_x + m4 * (float)dst_y + m5;
 
-    unsigned int out = (dst_y * dst_w + dst_x) * 3u;
+    unsigned long long out = ((unsigned long long)dst_y * dst_w + dst_x) * 3ull;
 
     if (sx < 0.0f || sx >= (float)src_w || sy < 0.0f || sy >= (float)src_h) {
         dst[out] = 0.0f; dst[out+1] = 0.0f; dst[out+2] = 0.0f;
@@ -285,11 +327,11 @@ extern "C" __global__ void warp_affine_lanczos_3c(
     for (int i = 0; i < 6; i++) { wx[i] *= inv_x; wy[i] *= inv_y; }
 
     // Row base addresses precomputed to move the multiply outside the inner loop.
-    unsigned int row[6];
+    unsigned long long row[6];
     #pragma unroll
     for (int i = 0; i < 6; i++) {
         int yi = max(0, min(y0 + i - 2, (int)src_h - 1));
-        row[i] = (unsigned int)yi * src_w * 3u;
+        row[i] = (unsigned long long)yi * src_w * 3ull;
     }
 
     float acc0 = 0.0f, acc1 = 0.0f, acc2 = 0.0f;
@@ -299,7 +341,7 @@ extern "C" __global__ void warp_affine_lanczos_3c(
         #pragma unroll
         for (int dx = 0; dx < 6; dx++) {
             int xi = max(0, min(x0 + dx - 2, (int)src_w - 1));
-            unsigned int b = row[dy] + (unsigned int)xi * 3u;
+            unsigned long long b = row[dy] + (unsigned long long)xi * 3ull;
             rx = fmaf(wx[dx], __ldg(&src[b]),   rx);
             gx = fmaf(wx[dx], __ldg(&src[b+1]), gx);
             bx = fmaf(wx[dx], __ldg(&src[b+2]), bx);
@@ -317,13 +359,10 @@ extern "C" __global__ void warp_affine_lanczos_3c(
 
 // ── Kernel caches ─────────────────────────────────────────────────────────────
 
-static BILINEAR_KERNEL: OnceLock<CudaKernel> = OnceLock::new();
-static NEAREST_KERNEL: OnceLock<CudaKernel> = OnceLock::new();
+static BILINEAR_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
+static NEAREST_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
 static BICUBIC_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
 static LANCZOS_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
-
-const BLOCK_W: u32 = 32;
-const BLOCK_H: u32 = 8;
 
 // ── Error type ────────────────────────────────────────────────────────────────
 
@@ -345,63 +384,36 @@ pub enum CudaWarpAffineError {
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
-fn make_config(dst_width: u32, dst_height: u32, block_dim: Option<(u32, u32)>) -> LaunchConfig {
-    let (bw, bh) = block_dim.unwrap_or_else(|| (BLOCK_W.min(dst_width), BLOCK_H.min(dst_height)));
-    LaunchConfig {
-        block_dim: (bw, bh, 1),
-        grid_dim: (dst_width.div_ceil(bw), dst_height.div_ceil(bh), 1),
-        shared_mem_bytes: 0,
-    }
-}
-
-fn compile_with_l1(ctx: &Arc<CudaContext>, src: &str, fn_name: &str) -> CudaKernel {
-    let k = CudaKernel::compile(ctx, src, fn_name)
-        .unwrap_or_else(|e| panic!("failed to compile {fn_name}: {e}"));
-    let _ = k.prefer_l1_cache();
-    k
-}
-
-fn try_compile_with_l1(
-    ctx: &Arc<CudaContext>,
-    src: &str,
-    fn_name: &str,
-) -> Result<CudaKernel, String> {
-    let k = CudaKernel::compile(ctx, src, fn_name)
-        .map_err(|e| format!("failed to compile {fn_name}: {e}"))?;
-    let _ = k.prefer_l1_cache();
-    Ok(k)
-}
-
-fn check_dst(
-    dst: &CudaSlice<f32>,
-    dst_width: u32,
-    dst_height: u32,
-) -> Result<(), CudaWarpAffineError> {
-    let need = (dst_width as usize) * (dst_height as usize) * 3;
-    if dst.len() < need {
+fn check_slice(slice: &CudaSlice<f32>, width: u32, height: u32) -> Result<(), CudaWarpAffineError> {
+    let need = (width as usize) * (height as usize) * 3;
+    if slice.len() < need {
         return Err(CudaWarpAffineError::SliceTooSmall {
-            got: dst.len(),
+            got: slice.len(),
             need,
         });
     }
     Ok(())
 }
 
-fn make_tex(
+/// Shared pre-launch validation for all four launchers: non-zero dims and
+/// block components (a zero would underflow the kernels' `-1u` clamps or
+/// divide-by-zero in `make_config`), and both slice lengths — every kernel
+/// here indexes `src` directly via `__ldg`, so a short source slice is an
+/// out-of-bounds device read rather than a recoverable error.
+#[allow(clippy::too_many_arguments)]
+fn validate(
     src: &CudaSlice<f32>,
-    stream: &Arc<CudaStream>,
+    dst: &CudaSlice<f32>,
     src_width: u32,
     src_height: u32,
-) -> Result<(CudaTexObject, u64), CudaWarpAffineError> {
-    // Safety: DevicePtr::device_ptr returns the raw CUdeviceptr; the _guard
-    // records a stream event on drop (after the texture is destroyed) which is
-    // the correct ordering.
-    let (dev_ptr, _guard) = src.device_ptr(stream);
-    let tex =
-        CudaTexObject::new_pitch2d_border(dev_ptr, src_width as usize * 3, src_height as usize)
-            .map_err(CudaWarpAffineError::Cuda)?;
-    let handle = tex.handle();
-    Ok((tex, handle))
+    dst_width: u32,
+    dst_height: u32,
+    block_dim: Option<(u32, u32)>,
+) -> Result<(), CudaWarpAffineError> {
+    check_geometry(src_width, src_height, dst_width, dst_height, block_dim)
+        .map_err(CudaWarpAffineError::Cuda)?;
+    check_slice(src, src_width, src_height)?;
+    check_slice(dst, dst_width, dst_height)
 }
 
 // ── Public launchers ──────────────────────────────────────────────────────────
@@ -412,9 +424,10 @@ fn make_tex(
 /// The matrix is inverted internally so the API matches the CPU
 /// [`warp_affine`](crate::warp::warp_affine).
 ///
-/// Source pixels are fetched via a CUDA texture object (1-channel pitch-2D,
-/// border-mode).  Out-of-bounds source coordinates return 0 (`BORDER_CONSTANT`)
-/// without a divergent branch in the inner loop.
+/// Source pixels are read via `__ldg`. Out-of-bounds source coordinates yield 0
+/// (`BORDER_CONSTANT`); inside the source, the coordinate is clamped and the
+/// +1 tap is edge-clamped per axis, matching the CPU `warp_affine` inner loop.
+/// Any source width is supported.
 ///
 /// # Arguments
 ///
@@ -432,8 +445,8 @@ fn make_tex(
 ///
 /// # Errors
 ///
-/// Returns [`CudaWarpAffineError`] on compile failure, texture-creation error,
-/// launch error, or if `dst` is too small.
+/// Returns [`CudaWarpAffineError`] on compile failure, launch error, or if
+/// either slice is too small for its stated dimensions.
 #[allow(clippy::too_many_arguments)]
 pub fn launch_warp_affine_bilinear_cuda(
     ctx: &Arc<CudaContext>,
@@ -447,18 +460,23 @@ pub fn launch_warp_affine_bilinear_cuda(
     m: &[f32; 6],
     block_dim: Option<(u32, u32)>,
 ) -> Result<(), CudaWarpAffineError> {
-    check_dst(dst, dst_width, dst_height)?;
+    validate(
+        src, dst, src_width, src_height, dst_width, dst_height, block_dim,
+    )?;
 
     let kernel = BILINEAR_KERNEL
-        .get_or_init(|| compile_with_l1(ctx, BILINEAR_SRC, "warp_affine_bilinear_tex_3c"));
+        .get_or_init(|| try_compile_with_l1(ctx, BILINEAR_SRC, "warp_affine_bilinear_3c"))
+        .as_ref()
+        .map_err(|e| CudaWarpAffineError::Cuda(e.clone()))?;
 
-    let (_tex, tex_handle) = make_tex(src, stream, src_width, src_height)?;
     let mi = invert_affine_transform(m);
 
     kernel
         .launch_builder(stream)
-        .arg(&tex_handle)
+        .arg(src)
         .arg(dst)
+        .arg(&src_width)
+        .arg(&src_height)
         .arg(&dst_width)
         .arg(&dst_height)
         .arg(&mi[0])
@@ -481,8 +499,8 @@ pub fn launch_warp_affine_bilinear_cuda(
 /// source sampling.  Faster; suitable for integer-aligned transforms (pure
 /// translation, 90°/180° rotation, flip).
 ///
-/// Source reads are texture-cached; out-of-bounds coords return 0 without
-/// a divergent branch.
+/// Source reads go through `__ldg`; out-of-bounds coords yield 0. Rounding is
+/// half-away-from-zero then clamped, matching the CPU nearest interpolator.
 ///
 /// # Arguments
 ///
@@ -490,8 +508,8 @@ pub fn launch_warp_affine_bilinear_cuda(
 ///
 /// # Errors
 ///
-/// Returns [`CudaWarpAffineError`] on compile failure, texture-creation error,
-/// launch error, or if `dst` is too small.
+/// Returns [`CudaWarpAffineError`] on compile failure, launch error, or if
+/// either slice is too small for its stated dimensions.
 #[allow(clippy::too_many_arguments)]
 pub fn launch_warp_affine_nearest_cuda(
     ctx: &Arc<CudaContext>,
@@ -505,18 +523,23 @@ pub fn launch_warp_affine_nearest_cuda(
     m: &[f32; 6],
     block_dim: Option<(u32, u32)>,
 ) -> Result<(), CudaWarpAffineError> {
-    check_dst(dst, dst_width, dst_height)?;
+    validate(
+        src, dst, src_width, src_height, dst_width, dst_height, block_dim,
+    )?;
 
     let kernel = NEAREST_KERNEL
-        .get_or_init(|| compile_with_l1(ctx, NEAREST_SRC, "warp_affine_nearest_tex_3c"));
+        .get_or_init(|| try_compile_with_l1(ctx, NEAREST_SRC, "warp_affine_nearest_3c"))
+        .as_ref()
+        .map_err(|e| CudaWarpAffineError::Cuda(e.clone()))?;
 
-    let (_tex, tex_handle) = make_tex(src, stream, src_width, src_height)?;
     let mi = invert_affine_transform(m);
 
     kernel
         .launch_builder(stream)
-        .arg(&tex_handle)
+        .arg(src)
         .arg(dst)
+        .arg(&src_width)
+        .arg(&src_height)
         .arg(&dst_width)
         .arg(&dst_height)
         .arg(&mi[0])
@@ -553,8 +576,8 @@ pub fn launch_warp_affine_nearest_cuda(
 ///
 /// # Errors
 ///
-/// Returns [`CudaWarpAffineError`] on compile failure, launch error, or if
-/// `dst` is too small.
+/// Returns [`CudaWarpAffineError`] on compile failure, launch error, zero
+/// dimensions, or if either slice is too small for its stated dimensions.
 #[allow(clippy::too_many_arguments)]
 pub fn launch_warp_affine_bicubic_cuda(
     ctx: &Arc<CudaContext>,
@@ -568,12 +591,9 @@ pub fn launch_warp_affine_bicubic_cuda(
     m: &[f32; 6],
     block_dim: Option<(u32, u32)>,
 ) -> Result<(), CudaWarpAffineError> {
-    if src_width == 0 || src_height == 0 || dst_width == 0 || dst_height == 0 {
-        return Err(CudaWarpAffineError::Cuda(
-            "src and dst dimensions must be non-zero".into(),
-        ));
-    }
-    check_dst(dst, dst_width, dst_height)?;
+    validate(
+        src, dst, src_width, src_height, dst_width, dst_height, block_dim,
+    )?;
 
     let kernel = BICUBIC_KERNEL
         .get_or_init(|| try_compile_with_l1(ctx, BICUBIC_SRC, "warp_affine_bicubic_3c"))
@@ -622,8 +642,8 @@ pub fn launch_warp_affine_bicubic_cuda(
 ///
 /// # Errors
 ///
-/// Returns [`CudaWarpAffineError`] on compile failure, launch error, or if
-/// `dst` is too small.
+/// Returns [`CudaWarpAffineError`] on compile failure, launch error, zero
+/// dimensions, or if either slice is too small for its stated dimensions.
 #[allow(clippy::too_many_arguments)]
 pub fn launch_warp_affine_lanczos_cuda(
     ctx: &Arc<CudaContext>,
@@ -637,12 +657,9 @@ pub fn launch_warp_affine_lanczos_cuda(
     m: &[f32; 6],
     block_dim: Option<(u32, u32)>,
 ) -> Result<(), CudaWarpAffineError> {
-    if src_width == 0 || src_height == 0 || dst_width == 0 || dst_height == 0 {
-        return Err(CudaWarpAffineError::Cuda(
-            "src and dst dimensions must be non-zero".into(),
-        ));
-    }
-    check_dst(dst, dst_width, dst_height)?;
+    validate(
+        src, dst, src_width, src_height, dst_width, dst_height, block_dim,
+    )?;
 
     let kernel = LANCZOS_KERNEL
         .get_or_init(|| try_compile_with_l1(ctx, LANCZOS_SRC, "warp_affine_lanczos_3c"))
@@ -671,4 +688,379 @@ pub fn launch_warp_affine_lanczos_cuda(
             make_config(dst_width, dst_height, block_dim),
         )
         .map_err(|e| CudaWarpAffineError::Cuda(e.to_string()))
+}
+
+// ── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(all(test, feature = "cuda"))]
+mod tests {
+    use super::*;
+    use crate::cuda::color::test_utils::{default_stream, pattern_f32};
+    use crate::interpolation::InterpolationMode;
+    use crate::warp::warp_affine;
+    use kornia_image::{Image, ImageSize};
+
+    /// A transform whose **inverse** has dyadic coefficients (exact in binary).
+    /// The CPU walks a row by accumulating `sx += dsx` where `dsx` comes from the
+    /// *inverted* matrix; when that is dyadic the accumulation is exact, so CPU
+    /// and GPU derive bit-identical source coordinates and the comparison
+    /// isolates what we actually want to test — the interpolation and edge rules
+    /// — instead of measuring the CPU's coordinate drift.
+    ///
+    /// Integer entries with a power-of-two determinant guarantee it: here
+    /// `det = 2*4 - 2*2 = 4`, so every inverse entry is an integer over 4.
+    /// `dyadic_m_inverse_is_exact` pins that property. Both axes shear (`dsx` and
+    /// `dsy` are both non-zero) and the translation pushes part of the output off
+    /// the source, so the border path is exercised too.
+    const DYADIC_M: [f32; 6] = [2.0, 2.0, -8.0, 2.0, 4.0, 6.0];
+
+    /// Guards the premise of every strict comparison below: if this ever stops
+    /// holding, the tight tolerances are measuring float drift, not the kernel.
+    #[test]
+    fn dyadic_m_inverse_is_exact() {
+        let mi = crate::warp::invert_affine_transform(&DYADIC_M);
+        for (i, v) in mi.iter().enumerate() {
+            let scaled = v * 4.0;
+            assert_eq!(
+                scaled,
+                scaled.round(),
+                "m_inv[{i}] = {v} is not an exact multiple of 1/4; the CPU's \
+                 `sx += dsx` accumulation will drift and the strict tolerances \
+                 in this module are no longer meaningful"
+            );
+        }
+    }
+
+    /// With DYADIC_M the only remaining divergence is `fmaf` fusing the weighted
+    /// accumulate where the CPU rounds each product — a few ulps on values in
+    /// [0, 1]. An edge-rule mismatch is ~0.5 (an earlier revision of this kernel
+    /// used the wrong rule and the test caught it at 0.7), so this is strict.
+    const BILINEAR_TOL: f32 = 1e-5;
+
+    /// A realistic non-dyadic transform. Here the CPU's accumulated `sx` drifts a
+    /// few ulps from the GPU's direct evaluation, and on the deliberately random
+    /// test pattern (adjacent pixels differ by up to 1.0) that surfaces as a
+    /// ~1e-3 value difference. Loose on purpose: this case guards against gross
+    /// errors under a rotation, while DYADIC_M does the strict rule-checking.
+    const ROTATION_TOL: f32 = 5e-3;
+
+    /// Run the CPU reference and the CUDA kernel on the same input and return
+    /// both buffers. `dst` dims equal `src` dims.
+    fn cpu_and_gpu(
+        w: usize,
+        h: usize,
+        m: &[f32; 6],
+        interpolation: InterpolationMode,
+    ) -> (Vec<f32>, Vec<f32>) {
+        let data = pattern_f32(w * h * 3);
+        let size = ImageSize {
+            width: w,
+            height: h,
+        };
+
+        let src = Image::<f32, 3>::new(size, data.clone()).unwrap();
+        let mut cpu = Image::<f32, 3>::from_size_val(size, 0.0).unwrap();
+        warp_affine(&src, &mut cpu, m, interpolation).unwrap();
+
+        let stream = default_stream();
+        let ctx = &stream.context();
+        let d_src = stream.clone_htod(&data).unwrap();
+        let mut d_dst = stream.alloc_zeros::<f32>(w * h * 3).unwrap();
+
+        let (wu, hu) = (w as u32, h as u32);
+        match interpolation {
+            InterpolationMode::Bilinear => launch_warp_affine_bilinear_cuda(
+                ctx, &stream, &d_src, &mut d_dst, wu, hu, wu, hu, m, None,
+            ),
+            InterpolationMode::Nearest => launch_warp_affine_nearest_cuda(
+                ctx, &stream, &d_src, &mut d_dst, wu, hu, wu, hu, m, None,
+            ),
+            other => panic!("unsupported mode in test: {other:?}"),
+        }
+        .unwrap_or_else(|e| panic!("launch failed at {w}x{h} ({interpolation:?}): {e}"));
+
+        let gpu: Vec<f32> = stream.clone_dtoh(&d_dst).unwrap();
+        stream.synchronize().unwrap();
+
+        (cpu.as_slice().to_vec(), gpu)
+    }
+
+    /// Pixels whose CPU/GPU results may legitimately differ, for either of two
+    /// reasons — both rooted in the same ulp-level coordinate drift:
+    ///
+    /// * **Validity boundary.** The CPU decides in/out-of-source from `sx`
+    ///   accumulated along the row (`compute_range`); the GPU evaluates the map
+    ///   directly. A coordinate sitting within an ulp of 0 or `src_w` can be
+    ///   judged inside by one and outside by the other — one writes an
+    ///   interpolated value, the other writes the `BORDER_CONSTANT` 0.
+    /// * **Rounding tie (nearest only).** A coordinate landing on an exact `.5`
+    ///   can round to either neighbour.
+    ///
+    /// Excluding only these keeps the assertion strict everywhere else — nearest
+    /// stays bit-exact — instead of hiding real disagreement behind a tolerance.
+    ///
+    /// Pass `eps = 0.0` to disable exclusion entirely. That is correct whenever
+    /// both sides compute the coordinate *exactly* (see [`DYADIC_M`]): with no
+    /// drift there is nothing to be ambiguous about — a `.5` tie resolves the
+    /// same way on both paths, since `roundf` and Rust's `f32::round` are both
+    /// half-away-from-zero — so those runs demand agreement even on ties.
+    fn ambiguous_pixels(
+        w: usize,
+        h: usize,
+        m: &[f32; 6],
+        mode: InterpolationMode,
+        eps: f32,
+    ) -> Vec<bool> {
+        let mi = crate::warp::invert_affine_transform(m);
+        let (fw, fh) = (w as f32, h as f32);
+        let mut out = vec![false; w * h];
+        for y in 0..h {
+            for x in 0..w {
+                let sx = mi[0] * x as f32 + mi[1] * y as f32 + mi[2];
+                let sy = mi[3] * x as f32 + mi[4] * y as f32 + mi[5];
+
+                let near = |v: f32, edge: f32| (v - edge).abs() < eps;
+                let mut amb = near(sx, 0.0) || near(sx, fw) || near(sy, 0.0) || near(sy, fh);
+
+                if matches!(mode, InterpolationMode::Nearest) {
+                    let near_half = |v: f32| (v - v.floor() - 0.5).abs() < eps;
+                    amb = amb || near_half(sx) || near_half(sy);
+                }
+                out[y * w + x] = amb;
+            }
+        }
+        out
+    }
+
+    /// Compare CPU vs GPU, skipping the ambiguous pixels above. Returns how many
+    /// were skipped so callers can assert they stay a rounding curiosity.
+    fn assert_matches_cpu(
+        w: usize,
+        h: usize,
+        m: &[f32; 6],
+        mode: InterpolationMode,
+        tol: f32,
+        eps: f32,
+    ) -> usize {
+        let (cpu, gpu) = cpu_and_gpu(w, h, m, mode);
+        let amb = ambiguous_pixels(w, h, m, mode, eps);
+        let mut skipped = 0;
+        for (p, &is_amb) in amb.iter().enumerate() {
+            if is_amb {
+                skipped += 1;
+                continue;
+            }
+            for c in 0..3 {
+                let i = p * 3 + c;
+                let d = (gpu[i] - cpu[i]).abs();
+                assert!(
+                    d <= tol,
+                    "{w}x{h} {mode:?}: pixel {p} ch {c} diff {d} > {tol} (cpu {} gpu {})",
+                    cpu[i],
+                    gpu[i]
+                );
+            }
+        }
+        assert!(
+            skipped * 20 < w * h,
+            "{skipped}/{} pixels excluded as ambiguous — too many to still be a \
+             boundary/tie effect; the coordinate mapping itself is probably wrong",
+            w * h
+        );
+        skipped
+    }
+
+    /// Regression for issue #1000: the pitch-2D texture path required
+    /// `src_w * 3 * 4` bytes to be a multiple of the 32-byte texture pitch
+    /// alignment, so every width not a multiple of 8 failed the launch outright
+    /// with `CUDA_ERROR_INVALID_VALUE`. The `__ldg` kernels have no such
+    /// constraint — every width below must both launch and match the CPU.
+    #[test]
+    fn warp_affine_unaligned_widths_match_cpu() {
+        // 128/136 are 8-aligned (worked before); the rest are the regression.
+        const WIDTHS: &[usize] = &[128, 129, 130, 132, 133, 135, 136];
+
+        for &w in WIDTHS {
+            assert_matches_cpu(
+                w,
+                49,
+                &DYADIC_M,
+                InterpolationMode::Bilinear,
+                BILINEAR_TOL,
+                0.0,
+            );
+            assert_matches_cpu(w, 49, &DYADIC_M, InterpolationMode::Nearest, 0.0, 0.0);
+        }
+    }
+
+    #[test]
+    fn warp_affine_bilinear_matches_cpu() {
+        assert_matches_cpu(
+            320,
+            240,
+            &DYADIC_M,
+            InterpolationMode::Bilinear,
+            BILINEAR_TOL,
+            0.0,
+        );
+    }
+
+    /// Non-dyadic rotation: guards against gross errors on a realistic transform.
+    /// See ROTATION_TOL for why this cannot be strict.
+    #[test]
+    fn warp_affine_rotation_matches_cpu() {
+        let m = crate::warp::get_rotation_matrix2d((160.0, 120.0), 37.0, 1.3);
+        assert_matches_cpu(
+            320,
+            240,
+            &m,
+            InterpolationMode::Bilinear,
+            ROTATION_TOL,
+            1e-3,
+        );
+    }
+
+    /// Nearest selects a single source pixel on both paths, so away from exact
+    /// rounding ties any difference is a coordinate-rule bug, not float error.
+    #[test]
+    fn warp_affine_nearest_is_bit_exact_vs_cpu() {
+        assert_matches_cpu(320, 240, &DYADIC_M, InterpolationMode::Nearest, 0.0, 0.0);
+    }
+
+    #[test]
+    fn warp_affine_identity_is_exact_copy() {
+        let m = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+        for mode in [InterpolationMode::Bilinear, InterpolationMode::Nearest] {
+            let (cpu, gpu) = cpu_and_gpu(65, 33, &m, mode);
+            assert_eq!(
+                gpu, cpu,
+                "identity warp ({mode:?}) must reproduce the source"
+            );
+        }
+    }
+
+    /// Every launcher must reject a short src slice — the kernels read src via
+    /// raw `__ldg`, so an unvalidated short slice is an OOB device read.
+    #[test]
+    fn all_launchers_reject_short_src_slices() {
+        let stream = default_stream();
+        let ctx = &stream.context();
+        let m = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+
+        // src holds only half the pixels it claims to.
+        let d_src = stream.clone_htod(&vec![0.0f32; 32 * 32 * 3 / 2]).unwrap();
+        let mut d_dst = stream.alloc_zeros::<f32>(32 * 32 * 3).unwrap();
+
+        type Launcher = fn(
+            &std::sync::Arc<cudarc::driver::CudaContext>,
+            &std::sync::Arc<cudarc::driver::CudaStream>,
+            &cudarc::driver::CudaSlice<f32>,
+            &mut cudarc::driver::CudaSlice<f32>,
+            u32,
+            u32,
+            u32,
+            u32,
+            &[f32; 6],
+            Option<(u32, u32)>,
+        ) -> Result<(), CudaWarpAffineError>;
+        const LAUNCHERS: [(&str, Launcher); 4] = [
+            ("bilinear", launch_warp_affine_bilinear_cuda),
+            ("nearest", launch_warp_affine_nearest_cuda),
+            ("bicubic", launch_warp_affine_bicubic_cuda),
+            ("lanczos", launch_warp_affine_lanczos_cuda),
+        ];
+
+        for (name, launch) in LAUNCHERS {
+            let err =
+                launch(ctx, &stream, &d_src, &mut d_dst, 32, 32, 32, 32, &m, None).expect_err(name);
+            assert!(
+                matches!(err, CudaWarpAffineError::SliceTooSmall { .. }),
+                "{name}: expected SliceTooSmall, got {err:?}"
+            );
+
+            // Zero dst dims and a zero block component must be clean errors,
+            // not the div_ceil(0) panic an earlier revision hit in make_config.
+            let ok_src = stream.clone_htod(&vec![0.0f32; 8 * 8 * 3]).unwrap();
+            let mut ok_dst = stream.alloc_zeros::<f32>(8 * 8 * 3).unwrap();
+            assert!(
+                launch(ctx, &stream, &ok_src, &mut ok_dst, 8, 8, 0, 8, &m, None).is_err(),
+                "{name}: zero dst width must error"
+            );
+            assert!(
+                launch(
+                    ctx,
+                    &stream,
+                    &ok_src,
+                    &mut ok_dst,
+                    8,
+                    8,
+                    8,
+                    8,
+                    &m,
+                    Some((0, 8))
+                )
+                .is_err(),
+                "{name}: zero block component must error"
+            );
+        }
+    }
+
+    /// Bicubic identity: Keys weights at frac 0 are exactly [0, 1, 0, 0], so an
+    /// identity warp must be a bit-exact copy. Guards the (otherwise untested)
+    /// bicubic kernel, including its 64-bit index math.
+    #[test]
+    fn warp_affine_bicubic_identity_is_exact_copy() {
+        let (w, h) = (65usize, 33usize);
+        let data = pattern_f32(w * h * 3);
+        let stream = default_stream();
+        let ctx = &stream.context();
+        let d_src = stream.clone_htod(&data).unwrap();
+        let mut d_dst = stream.alloc_zeros::<f32>(w * h * 3).unwrap();
+        launch_warp_affine_bicubic_cuda(
+            ctx,
+            &stream,
+            &d_src,
+            &mut d_dst,
+            w as u32,
+            h as u32,
+            w as u32,
+            h as u32,
+            &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            None,
+        )
+        .unwrap();
+        let gpu: Vec<f32> = stream.clone_dtoh(&d_dst).unwrap();
+        stream.synchronize().unwrap();
+        assert_eq!(gpu, data, "bicubic identity warp must reproduce the source");
+    }
+
+    /// Lanczos identity: lanczos3(0) = 1 exactly, but the ±1/±2 weights are
+    /// only ~1e-7 (sin(πk) under a float π), so identity is near-copy within
+    /// normalization error, not bit-exact.
+    #[test]
+    fn warp_affine_lanczos_identity_is_near_copy() {
+        let (w, h) = (65usize, 33usize);
+        let data = pattern_f32(w * h * 3);
+        let stream = default_stream();
+        let ctx = &stream.context();
+        let d_src = stream.clone_htod(&data).unwrap();
+        let mut d_dst = stream.alloc_zeros::<f32>(w * h * 3).unwrap();
+        launch_warp_affine_lanczos_cuda(
+            ctx,
+            &stream,
+            &d_src,
+            &mut d_dst,
+            w as u32,
+            h as u32,
+            w as u32,
+            h as u32,
+            &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            None,
+        )
+        .unwrap();
+        let gpu: Vec<f32> = stream.clone_dtoh(&d_dst).unwrap();
+        stream.synchronize().unwrap();
+        let diff = crate::cuda::color::test_utils::max_abs_diff_f32(&gpu, &data);
+        assert!(diff <= 1e-4, "lanczos identity max abs diff {diff} > 1e-4");
+    }
 }

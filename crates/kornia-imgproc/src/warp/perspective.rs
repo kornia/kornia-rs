@@ -213,54 +213,36 @@ pub fn warp_perspective_u8<const C: usize>(
                 (-nx0, -ny0, -nd0, -dnx, -dny, -dnd)
             };
 
-            // Constraint helpers on linear `a*x + b op 0`:
-            let apply_ge = |a: f32, b: f32, lo: &mut f32, hi: &mut f32| {
-                if a > 0.0 {
-                    let k = -b / a;
-                    if k > *lo {
-                        *lo = k;
-                    }
-                } else if a < 0.0 {
-                    let k = -b / a;
-                    if k < *hi {
-                        *hi = k;
-                    }
-                } else if b < 0.0 {
-                    *hi = *lo; // infeasible
-                }
-            };
-            let apply_lt = |a: f32, b: f32, lo: &mut f32, hi: &mut f32| {
-                if a > 0.0 {
-                    let k = -b / a;
-                    if k < *hi {
-                        *hi = k;
-                    }
-                } else if a < 0.0 {
-                    let k = -b / a;
-                    if k > *lo {
-                        *lo = k;
-                    }
-                } else if b >= 0.0 {
-                    *hi = *lo;
-                }
-            };
-
-            let mut lo: f32 = 0.0;
-            let mut hi: f32 = dst_w as f32;
-
+            // Linear constraints `a*x + b op 0` intersected on the integer
+            // column range — `warp::span::constrain_span` owns the
+            // inclusive/strict boundary rounding (an earlier revision applied
+            // `ceil` to both ends, dropping a valid edge column whenever the
+            // boundary landed exactly on an integer).
+            let (mut lo, mut hi) = (0i64, dst_w as i64);
             // nx + dnx*x >= 0
-            apply_ge(dnx, nx0, &mut lo, &mut hi);
+            super::span::constrain_span(dnx, nx0, true, 0.0, &mut lo, &mut hi);
             // nx - src_w*nd + (dnx - src_w*dnd)*x < 0
-            apply_lt(dnx - src_w_f * dnd, nx0 - src_w_f * nd0, &mut lo, &mut hi);
-            apply_ge(dny, ny0, &mut lo, &mut hi);
-            apply_lt(dny - src_h_f * dnd, ny0 - src_h_f * nd0, &mut lo, &mut hi);
+            super::span::constrain_span(
+                dnx - src_w_f * dnd,
+                nx0 - src_w_f * nd0,
+                false,
+                0.0,
+                &mut lo,
+                &mut hi,
+            );
+            super::span::constrain_span(dny, ny0, true, 0.0, &mut lo, &mut hi);
+            super::span::constrain_span(
+                dny - src_h_f * dnd,
+                ny0 - src_h_f * nd0,
+                false,
+                0.0,
+                &mut lo,
+                &mut hi,
+            );
 
-            let mut x_lo = lo.ceil().max(0.0) as usize;
-            let mut x_hi = hi.ceil().min(dst_w as f32) as usize;
-            if x_lo > x_hi {
-                x_lo = 0;
-                x_hi = 0;
-            }
+            let x_lo = lo.clamp(0, dst_w as i64) as usize;
+            let x_hi = hi.clamp(0, dst_w as i64) as usize;
+            let (x_lo, x_hi) = if x_lo >= x_hi { (0, 0) } else { (x_lo, x_hi) };
 
             // Zero-fill left/right invalid regions with memset.
             dst_row[..x_lo * C].fill(0);
@@ -322,6 +304,37 @@ pub fn warp_perspective_u8<const C: usize>(
 
 #[cfg(test)]
 mod tests {
+
+    /// A destination pixel whose source coordinate lands exactly on the
+    /// top/left edge is inside the image and must be sampled, not zero-filled.
+    ///
+    /// The u8 fast path derives the valid column span from linear constraints
+    /// whose inclusive/strict ends swap with the coefficient sign; an earlier
+    /// revision applied `ceil` to both ends, zero-filling the valid column
+    /// whenever the boundary fell on an exact integer (`warp_affine` had the
+    /// same bug — see `warp::span`). A horizontal flip hits it on every row.
+    #[test]
+    fn warp_perspective_u8_samples_pixels_exactly_on_the_edge(
+    ) -> Result<(), kornia_image::ImageError> {
+        use kornia_image::{Image, ImageSize};
+        let size = ImageSize {
+            width: 4,
+            height: 2,
+        };
+        let src = Image::<u8, 1>::new(size, vec![10, 20, 30, 40, 50, 60, 70, 80])?;
+        let mut dst = Image::<u8, 1>::from_size_val(size, 255)?;
+
+        // Horizontal flip as a homography: dst_x = 3 - src_x.
+        let m = [-1.0, 0.0, 3.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        super::warp_perspective_u8(&src, &mut dst, &m)?;
+
+        assert_eq!(
+            dst.as_slice(),
+            &[40, 30, 20, 10, 80, 70, 60, 50],
+            "flip must sample every column, including the one landing exactly on src x=0"
+        );
+        Ok(())
+    }
     use kornia_image::{Image, ImageError, ImageSize};
 
     // ── invert_homography unit tests ──────────────────────────────────────────
