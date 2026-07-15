@@ -95,13 +95,13 @@ wide = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
-serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true }
 image = { workspace = true }
 imageproc = { workspace = true }
 kornia-io = { workspace = true }
 ndarray = { workspace = true, features = ["rayon"] }
 rand = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 
 [features]
 # CUDA device backend + custom CUDA kernels (via the cudarc crate).

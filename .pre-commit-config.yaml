@@ -8,8 +8,11 @@ repos:
     - id: check-symlinks
     - id: check-yaml
     - id: end-of-file-fixer
+      exclude: '^crates/kornia-imgproc/tests/data/opencv_resize/.*\.(src|dst)$'
     - id: mixed-line-ending
+      exclude: '^crates/kornia-imgproc/tests/data/opencv_resize/.*\.(src|dst)$'
     - id: trailing-whitespace
+      exclude: '^crates/kornia-imgproc/tests/data/opencv_resize/.*\.(src|dst)$'
   - repo: https://github.com/doublify/pre-commit-rust
     rev: v1.0
     hooks:
