@@ -16,6 +16,9 @@ pub mod warp_perspective;
 /// Native CUDA color-space conversion kernels.
 pub mod color;
 
+/// Residency-aware dispatch machinery shared by all device-capable ops.
+pub(crate) mod dispatch;
+
 use std::sync::Arc;
 
 use cudarc::driver::{CudaContext, LaunchConfig};
