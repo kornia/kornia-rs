@@ -13,8 +13,14 @@ changes early: `cargo add kornia-imgproc@0.1.15-rc.1` or `pip install --pre korn
 
 ## [Unreleased]
 
-**`resize_native` is renamed to `resize`** (deprecated alias kept for one
-release).
+**Python: GPU resize and warps.** `kornia_rs.imgproc.resize` / `warp_affine` /
+`warp_perspective` now accept a device `Image` (f32, 3-channel) and run the
+CUDA kernels, returning a device `Image` — output bit-identical to the CPU f32
+path. numpy u8 inputs behave exactly as before; a device image with an
+unsupported dtype/channel count raises instead of silently copying to the
+host. `out=` is unsupported on the device path.
+
+**`resize_native` is renamed to `resize`** (clean rename, no alias).
 
 **GPU resize and warps from the high-level API.** `resize` (né `resize_native`),
 `warp_affine`, and `warp_perspective` now run on the GPU when called with

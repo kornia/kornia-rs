@@ -40,16 +40,6 @@ macro_rules! convert_pair_bg {
     }};
 }
 
-/// PIL-style mode string for a device output of channel count `channels`.
-fn device_mode<T: 'static>(channels: usize) -> String {
-    let dt = if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f32>() {
-        crate::backing::Dtype::F32
-    } else {
-        crate::backing::Dtype::U8
-    };
-    crate::image::mode_for_dtype(dt, channels)
-}
-
 /// Borrow a `&PyImageApi` as its device source variant, or raise a clear error.
 macro_rules! device_src {
     ($img:expr, $pyname:expr, $srcvar:ident) => {{
@@ -68,19 +58,6 @@ macro_rules! device_src {
         };
         src
     }};
-}
-
-/// The stream a device source image lives on, for allocating a same-device
-/// destination. Falls back to device 0's default stream if the backing carries
-/// no stream (shouldn't normally happen for a typed device image).
-fn source_stream<T, const C: usize>(src: &Image<T, C>) -> PyResult<Arc<CudaStream>>
-where
-    T: cudarc::driver::DeviceRepr + cudarc::driver::ValidAsZeroBits + 'static,
-{
-    match src.cuda_stream() {
-        Some(s) => Ok(s.clone()),
-        None => default_stream(),
-    }
 }
 
 /// Allocate a device destination and run one `ConvertColor` pair, returning a

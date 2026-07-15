@@ -3097,7 +3097,9 @@ impl PyImageApi {
         let ty = (cy - sin_a as f64 * cx - cos_a as f64 * cy) as f32;
         let m = [cos_a, -sin_a, tx, sin_a, cos_a, ty];
         let arr = self.as_numpy_u8(py)?;
-        let result = crate::warp::warp_affine(py, arr, m, (h, w), "bilinear", None)?;
+        let result =
+            crate::warp::warp_affine(py, arr.bind(py).as_any(), m, (h, w), "bilinear", None)?;
+        let result: crate::image::PyImage = result.extract(py)?;
         Ok(self.wrap_u8_result(py, result))
     }
 
