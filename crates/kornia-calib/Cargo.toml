@@ -1,0 +1,29 @@
+[package]
+name = "kornia-calib"
+version = { workspace = true }
+authors = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+description = "Multi-camera extrinsic calibration (AprilTag depth-free bundle adjustment)"
+homepage = { workspace = true }
+repository = { workspace = true }
+license = { workspace = true }
+categories = { workspace = true }
+# Not published: transitively depends on kornia-apriltag, which is excluded from
+# crates.io (large git submodule of test images). See scripts/release_rust.sh.
+publish = false
+
+[[bench]]
+harness = false
+name = "bench_calibrate"
+
+[dependencies]
+kornia-3d = { workspace = true }
+kornia-algebra = { workspace = true }
+kornia-apriltag = { workspace = true }
+log = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+approx = { workspace = true }
+criterion = { workspace = true }

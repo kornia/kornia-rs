@@ -68,6 +68,7 @@ kornia-cpp/         ← C++ bindings
 | `kornia-algebra` | `kornia::linalg` | Linear algebra |
 | `kornia-vlm` | (direct) | Visual language model integration (candle) |
 | `kornia-apriltag` | (standalone) | AprilTag detection |
+| `kornia-calib` | (standalone) | Multi-camera extrinsic calibration (AprilTag BA) |
 | `kornia-bow` | (standalone) | Bag of words |
 
 ### Feature Flags

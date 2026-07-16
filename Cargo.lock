@@ -7775,6 +7775,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "kornia-calib"
+version = "0.1.15-rc.4"
+dependencies = [
+ "approx",
+ "criterion 0.8.2",
+ "kornia-3d",
+ "kornia-algebra",
+ "kornia-apriltag",
+ "log",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "kornia-cpp"
 version = "0.1.15-rc.4"
 dependencies = [

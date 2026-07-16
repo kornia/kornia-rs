@@ -60,6 +60,7 @@ kornia-3d = { path = "crates/kornia-3d", version = "0.1.15-rc.4" }
 kornia-algebra = { path = "crates/kornia-algebra", version = "0.1.15-rc.4" }
 kornia-apriltag = { path = "crates/kornia-apriltag", version = "0.1.15-rc.4" }
 kornia-bow = { path = "crates/kornia-bow", version = "0.1.15-rc.4" }
+kornia-calib = { path = "crates/kornia-calib", version = "0.1.15-rc.4" }
 kornia-image = { path = "crates/kornia-image", version = "0.1.15-rc.4" }
 kornia-imgproc = { path = "crates/kornia-imgproc", version = "0.1.15-rc.4" }
 kornia-io = { path = "crates/kornia-io", version = "0.1.15-rc.4" }
