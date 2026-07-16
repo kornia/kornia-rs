@@ -290,7 +290,94 @@ pub(crate) fn resize(
     }
 }
 
-/// Device f32 warp-affine (forward 2×3 matrix, inverted internally like CPU).
+/// One u8 channel-count warp arm (affine or perspective — `op` is the
+/// public residency-dispatched u8 warp). Matches the numpy u8 path's
+/// semantics: the interpolation string is validated but the u8 warps are
+/// bilinear-only, on host and device alike.
+#[allow(clippy::too_many_arguments)]
+fn warp_u8<const C: usize>(
+    py: Python<'_>,
+    img: &PyImageApi,
+    src: &Image<u8, C>,
+    dst_size: kornia_image::ImageSize,
+    op_name: &'static str,
+    out: Option<Py<PyAny>>,
+    unwrap: fn(&mut Inner) -> Option<&mut Image<u8, C>>,
+    wrap: fn(Image<u8, C>) -> Inner,
+    op: impl Fn(&Image<u8, C>, &mut Image<u8, C>) -> Result<(), kornia_image::ImageError>,
+) -> PyResult<PyOut> {
+    if let Some(out) = out {
+        with_out_t(
+            py,
+            &out,
+            src,
+            dst_size,
+            op_name,
+            "u8, same channel count as the input",
+            unwrap,
+            |dst| op(src, dst).map_err(err),
+        )?;
+        return Ok(PyOut::Reused(out));
+    }
+    run_geometry_t(src, img.color_space, dst_size, wrap, |dst| op(src, dst)).map(PyOut::New)
+}
+
+/// Dispatch a warp over the device image's dtype/channels: f32 C3 keeps the
+/// full interpolation-mode set; u8 C1/C3/C4 run the bilinear u8 kernels.
+macro_rules! warp_arms {
+    ($py:ident, $img:ident, $dst_size:ident, $out:ident, $name:literal,
+     $f32_arm:expr, $u8_op:expr) => {{
+        let dev = $img.as_device().ok_or_else(|| no_device_err($name))?;
+        match dev {
+            Inner::F32C3(src) => $f32_arm(src),
+            Inner::U8C1(src) => warp_u8::<1>(
+                $py,
+                $img,
+                src,
+                $dst_size,
+                $name,
+                $out,
+                unwrap_u8c1,
+                Inner::U8C1,
+                $u8_op,
+            ),
+            Inner::U8C3(src) => warp_u8::<3>(
+                $py,
+                $img,
+                src,
+                $dst_size,
+                $name,
+                $out,
+                unwrap_u8c3,
+                Inner::U8C3,
+                $u8_op,
+            ),
+            Inner::U8C4(src) => warp_u8::<4>(
+                $py,
+                $img,
+                src,
+                $dst_size,
+                $name,
+                $out,
+                unwrap_u8c4,
+                Inner::U8C4,
+                $u8_op,
+            ),
+            other => Err(PyValueError::new_err(format!(
+                concat!(
+                    $name,
+                    ": the GPU path supports f32 3-channel and u8 1/3/4-channel \
+                     device images, got {:?} with {} channel(s)"
+                ),
+                other.dtype_enum(),
+                other.channels()
+            ))),
+        }
+    }};
+}
+
+/// Device warp-affine (forward 2×3 matrix, inverted internally like CPU) —
+/// f32 C3 with the full mode set, or u8 C1/C3/C4 bilinear.
 pub(crate) fn warp_affine(
     py: Python<'_>,
     img: &PyImageApi,
@@ -300,24 +387,34 @@ pub(crate) fn warp_affine(
     out: Option<Py<PyAny>>,
 ) -> PyResult<PyOut> {
     let mode = crate::image::parse_interpolation(interpolation)?;
-    let src = device_f32c3(img, "warp_affine")?;
     let dst_size = kornia_image::ImageSize {
         height: new_size.0,
         width: new_size.1,
     };
-    if let Some(out) = out {
-        with_out(py, &out, src, dst_size, "warp_affine", |dst| {
-            kornia_imgproc::warp::warp_affine(src, dst, &m, mode).map_err(err)
-        })?;
-        return Ok(PyOut::Reused(out));
-    }
-    run_geometry(src, img.color_space, dst_size, |dst| {
-        kornia_imgproc::warp::warp_affine(src, dst, &m, mode)
-    })
-    .map(PyOut::New)
+    warp_arms!(
+        py,
+        img,
+        dst_size,
+        out,
+        "warp_affine",
+        |src: &Image<f32, 3>| {
+            if let Some(out) = out {
+                with_out(py, &out, src, dst_size, "warp_affine", |dst| {
+                    kornia_imgproc::warp::warp_affine(src, dst, &m, mode).map_err(err)
+                })?;
+                return Ok(PyOut::Reused(out));
+            }
+            run_geometry(src, img.color_space, dst_size, |dst| {
+                kornia_imgproc::warp::warp_affine(src, dst, &m, mode)
+            })
+            .map(PyOut::New)
+        },
+        |s: &Image<u8, _>, d: &mut Image<u8, _>| kornia_imgproc::warp::warp_affine_u8(s, d, &m)
+    )
 }
 
-/// Device f32 warp-perspective (forward 3×3 homography).
+/// Device warp-perspective (forward 3×3 homography) — f32 C3 with the full
+/// mode set, or u8 C1/C3/C4 bilinear.
 pub(crate) fn warp_perspective(
     py: Python<'_>,
     img: &PyImageApi,
@@ -327,19 +424,30 @@ pub(crate) fn warp_perspective(
     out: Option<Py<PyAny>>,
 ) -> PyResult<PyOut> {
     let mode = crate::image::parse_interpolation(interpolation)?;
-    let src = device_f32c3(img, "warp_perspective")?;
     let dst_size = kornia_image::ImageSize {
         height: new_size.0,
         width: new_size.1,
     };
-    if let Some(out) = out {
-        with_out(py, &out, src, dst_size, "warp_perspective", |dst| {
-            kornia_imgproc::warp::warp_perspective(src, dst, &m, mode).map_err(err)
-        })?;
-        return Ok(PyOut::Reused(out));
-    }
-    run_geometry(src, img.color_space, dst_size, |dst| {
-        kornia_imgproc::warp::warp_perspective(src, dst, &m, mode)
-    })
-    .map(PyOut::New)
+    warp_arms!(
+        py,
+        img,
+        dst_size,
+        out,
+        "warp_perspective",
+        |src: &Image<f32, 3>| {
+            if let Some(out) = out {
+                with_out(py, &out, src, dst_size, "warp_perspective", |dst| {
+                    kornia_imgproc::warp::warp_perspective(src, dst, &m, mode).map_err(err)
+                })?;
+                return Ok(PyOut::Reused(out));
+            }
+            run_geometry(src, img.color_space, dst_size, |dst| {
+                kornia_imgproc::warp::warp_perspective(src, dst, &m, mode)
+            })
+            .map(PyOut::New)
+        },
+        |s: &Image<u8, _>, d: &mut Image<u8, _>| kornia_imgproc::warp::warp_perspective_u8(
+            s, d, &m
+        )
+    )
 }

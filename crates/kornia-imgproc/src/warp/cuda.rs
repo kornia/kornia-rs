@@ -17,6 +17,7 @@ use crate::cuda::warp_perspective::{
     launch_warp_perspective_bicubic_cuda, launch_warp_perspective_bilinear_cuda,
     launch_warp_perspective_lanczos_cuda, launch_warp_perspective_nearest_cuda,
 };
+use crate::cuda::warp_perspective_u8::launch_warp_perspective_u8_bilinear_cuda;
 use crate::interpolation::InterpolationMode;
 
 /// Run the CUDA warp-affine for a device-resident f32 pair.
@@ -128,6 +129,34 @@ pub(super) fn warp_affine_u8_cuda<const C: usize>(
     .map_err(|e| ImageError::Cuda(e.to_string()))
 }
 
+/// Run the CUDA u8 warp-perspective (bilinear) for a device-resident pair,
+/// byte-exact with [`warp_perspective_u8`](super::warp_perspective_u8) —
+/// every CPU backend evaluates the coordinate directly per column, and the
+/// kernel mirrors the same expression tree (see `cuda::warp_perspective_u8`).
+pub(super) fn warp_perspective_u8_cuda<const C: usize>(
+    src: &Image<u8, C>,
+    dst: &mut Image<u8, C>,
+    m: &[f32; 9],
+    stream: &Arc<CudaStream>,
+) -> Result<(), ImageError> {
+    if !(C == 1 || C == 3 || C == 4) {
+        return Err(no_gpu_kernel_err(
+            "warp_perspective_u8",
+            "1/3/4-channel u8 images",
+        ));
+    }
+    let (src_w, src_h) = dims_u32(src)?;
+    let (dst_w, dst_h) = dims_u32(dst)?;
+    let ctx = stream.context();
+    let (s, d) = device_slices!(src, dst);
+    let m_inv = super::perspective::inverse_perspective_matrix(m)?;
+
+    launch_warp_perspective_u8_bilinear_cuda(
+        ctx, stream, s, d, &m_inv, src_w, src_h, dst_w, dst_h, C as u32, None,
+    )
+    .map_err(|e| ImageError::Cuda(e.to_string()))
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -194,6 +223,61 @@ mod tests {
         }
         // Odd small size exercises span-clamps and single-warp blocks.
         run::<3>(33, 21, &rot, &stream);
+    }
+
+    /// The public `warp_perspective_u8`, device vs host, bit-identical —
+    /// including the negative-denominator branch and an affine-equivalent
+    /// homography that must take the uniform-nd span path.
+    #[test]
+    fn public_warp_perspective_u8_device_equals_host() {
+        use crate::cuda::color::test_utils::pattern_u8;
+        let stream = default_stream();
+
+        fn run<const C: usize>(
+            w: usize,
+            h: usize,
+            m: &[f32; 9],
+            stream: &std::sync::Arc<cudarc::driver::CudaStream>,
+        ) {
+            let size = ImageSize {
+                width: w,
+                height: h,
+            };
+            let src = Image::<u8, C>::new(size, pattern_u8(w * h * C)).unwrap();
+            let mut cpu_dst = Image::<u8, C>::from_size_val(size, 0).unwrap();
+            crate::warp::warp_perspective_u8(&src, &mut cpu_dst, m).unwrap();
+
+            let d_src = src.to_cuda(stream).unwrap();
+            let mut d_dst = Image::<u8, C>::zeros_cuda(size, stream).unwrap();
+            crate::warp::warp_perspective_u8(&d_src, &mut d_dst, m).unwrap();
+
+            assert_eq!(
+                d_dst.to_host_owned().unwrap().as_slice(),
+                cpu_dst.as_slice(),
+                "{w}x{h} C={C} m={m:?}: device must be bit-identical to host"
+            );
+        }
+
+        // Genuine projective transform (non-zero perspective terms).
+        let proj: [f32; 9] = [
+            0.9, 0.12, 4.0, //
+            -0.08, 1.05, -2.0, //
+            6.0e-4, -4.5e-4, 1.0,
+        ];
+        // Affine-equivalent homography — uniform-nd span path, nd == 1.
+        let affine_h: [f32; 9] = [1.1, 0.1, -3.0, -0.05, 0.95, 2.0, 0.0, 0.0, 1.0];
+        // Negated homography — same geometry, exercises the nd < 0 branch
+        // (xf = nx/nd is invariant, and IEEE negation keeps it bit-exact).
+        let mut neg = proj;
+        for v in neg.iter_mut() {
+            *v = -*v;
+        }
+        for m in [&proj, &affine_h, &neg] {
+            run::<1>(129, 97, m, &stream);
+            run::<3>(129, 97, m, &stream);
+            run::<4>(129, 97, m, &stream);
+        }
+        run::<3>(33, 21, &proj, &stream);
     }
 
     /// The public `warp_affine`, called with device images, must produce

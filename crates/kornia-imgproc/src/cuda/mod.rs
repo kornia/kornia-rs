@@ -21,6 +21,10 @@ pub mod warp_affine_u8;
 /// Native CUDA warp-perspective kernels (homography, bilinear / nearest / bicubic / Lanczos-3).
 pub mod warp_perspective;
 
+/// Native CUDA u8 warp-perspective kernel (direct rational coords + Q10
+/// fixed point, byte-exact with the CPU `warp_perspective_u8`).
+pub mod warp_perspective_u8;
+
 /// Native CUDA color-space conversion kernels.
 pub mod color;
 
