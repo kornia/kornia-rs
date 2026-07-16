@@ -1,7 +1,7 @@
 use super::common::bilinear_sample_u8;
 use super::kernels::process_perspective_span;
 use crate::{
-    interpolation::{interpolate_pixel_fast, validate_interpolation, InterpolationMode},
+    interpolation::{validate_interpolation, InterpolationMode},
     parallel,
 };
 
@@ -137,17 +137,29 @@ pub fn warp_perspective<const C: usize>(
     let inv_m = inverse_perspective_matrix(m)?;
 
     // apply perspective transformation without pre-allocating coordinate maps
-    parallel::par_iter_rows_spatial_mapping(
-        dst,
-        |x, y| transform_point(x as f32, y as f32, &inv_m),
-        |x, y, dst_pixel| {
-            if x >= 0.0f32 && x < src.cols() as f32 && y >= 0.0f32 && y < src.rows() as f32 {
-                dst_pixel.iter_mut().enumerate().for_each(|(k, pixel)| {
-                    *pixel = interpolate_pixel_fast(src, x, y, k, interpolation);
-                });
-            }
-        },
-    );
+    // One monomorphic pixel loop per mode — see the note in `resize`.
+    macro_rules! run {
+        ($sampler:path) => {
+            parallel::par_iter_rows_spatial_mapping(
+                dst,
+                |x, y| transform_point(x as f32, y as f32, &inv_m),
+                |x, y, dst_pixel| {
+                    if x >= 0.0f32 && x < src.cols() as f32 && y >= 0.0f32 && y < src.rows() as f32
+                    {
+                        dst_pixel.iter_mut().enumerate().for_each(|(k, pixel)| {
+                            *pixel = $sampler(src, x, y, k);
+                        });
+                    }
+                },
+            )
+        };
+    }
+    match interpolation {
+        InterpolationMode::Bilinear => run!(crate::interpolation::bilinear_interpolation),
+        InterpolationMode::Nearest => run!(crate::interpolation::nearest_neighbor_interpolation),
+        InterpolationMode::Bicubic => run!(crate::interpolation::bicubic_sample),
+        InterpolationMode::Lanczos => run!(crate::interpolation::lanczos_sample),
+    }
 
     Ok(())
 }
@@ -463,8 +475,9 @@ mod tests {
         Ok(())
     }
 
+    /// Bicubic/Lanczos are supported since the CPU samplers landed.
     #[test]
-    fn warp_perspective_unsupported_interpolation() -> Result<(), ImageError> {
+    fn warp_perspective_supports_all_modes() -> Result<(), ImageError> {
         let src = Image::<f32, 1>::from_size_val(
             ImageSize {
                 width: 2,
@@ -480,8 +493,8 @@ mod tests {
             0.0,
         )?;
         let m = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
-        let err = super::warp_perspective(&src, &mut dst, &m, super::InterpolationMode::Lanczos);
-        assert!(err.is_err());
+        super::warp_perspective(&src, &mut dst, &m, super::InterpolationMode::Bicubic)?;
+        super::warp_perspective(&src, &mut dst, &m, super::InterpolationMode::Lanczos)?;
         Ok(())
     }
 

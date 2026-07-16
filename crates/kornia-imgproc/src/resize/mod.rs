@@ -43,9 +43,7 @@ pub use fused::{
 };
 
 use crate::{
-    interpolation::{
-        grid::meshgrid_from_fn, interpolate_pixel_fast, validate_interpolation, InterpolationMode,
-    },
+    interpolation::{grid::meshgrid_from_fn, validate_interpolation, InterpolationMode},
     parallel,
 };
 use kornia_image::{Image, ImageError};
@@ -132,6 +130,15 @@ pub fn resize<const C: usize>(
         return Ok(());
     }
 
+    // Lanczos is separable on both backends (the CUDA pipeline is H-then-V
+    // with host-built tables); the direct per-pixel sampler below would give
+    // a different — and slower — result. Bicubic stays per-pixel: the kernel
+    // is direct 4×4 too.
+    if interpolation == InterpolationMode::Lanczos {
+        crate::interpolation::lanczos::resize_lanczos_separable(src, dst);
+        return Ok(());
+    }
+
     let (dst_rows, dst_cols) = (dst.rows(), dst.cols());
 
     // Half-pixel (pixel-center) sampling grid: `sx = (x + 0.5) * scale - 0.5`,
@@ -165,11 +172,25 @@ pub fn resize<const C: usize>(
     let ys = axis_lut(src.rows(), dst_rows);
     let (map_x, map_y) = meshgrid_from_fn(dst_cols, dst_rows, |x, y| Ok((xs[x], ys[y])))?;
 
-    parallel::par_iter_rows_resample(dst, &map_x, &map_y, |&x, &y, dst_pixel| {
-        for (k, pixel) in dst_pixel.iter_mut().enumerate() {
-            *pixel = interpolate_pixel_fast(src, x, y, k, interpolation);
-        }
-    });
+    // One monomorphic pixel loop per mode: dispatching inside the loop makes
+    // the closure body carry all four samplers and deoptimizes the hot
+    // bilinear path (measured +25-65% on the CPU resize bench).
+    macro_rules! run {
+        ($sampler:path) => {
+            parallel::par_iter_rows_resample(dst, &map_x, &map_y, |&x, &y, dst_pixel| {
+                for (k, pixel) in dst_pixel.iter_mut().enumerate() {
+                    *pixel = $sampler(src, x, y, k);
+                }
+            })
+        };
+    }
+    match interpolation {
+        InterpolationMode::Bilinear => run!(crate::interpolation::bilinear_interpolation),
+        InterpolationMode::Nearest => run!(crate::interpolation::nearest_neighbor_interpolation),
+        InterpolationMode::Bicubic => run!(crate::interpolation::bicubic_sample),
+        // Handled by the separable branch above.
+        InterpolationMode::Lanczos => unreachable!(),
+    }
 
     Ok(())
 }
@@ -490,8 +511,10 @@ mod tests {
         Ok(())
     }
 
+    /// All four interpolation modes are supported since the bicubic/lanczos
+    /// CPU paths landed.
     #[test]
-    fn resize_unsupported_interpolation() -> Result<(), ImageError> {
+    fn resize_supports_all_modes() -> Result<(), ImageError> {
         let image = Image::<_, 1>::new(
             ImageSize {
                 width: 2,
@@ -508,11 +531,8 @@ mod tests {
             0.0f32,
         )?;
 
-        let err = super::resize(&image, &mut dst, super::InterpolationMode::Bicubic);
-        assert!(err.is_err());
-
-        let err = super::resize(&image, &mut dst, super::InterpolationMode::Lanczos);
-        assert!(err.is_err());
+        super::resize(&image, &mut dst, super::InterpolationMode::Bicubic)?;
+        super::resize(&image, &mut dst, super::InterpolationMode::Lanczos)?;
         Ok(())
     }
 

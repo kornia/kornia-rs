@@ -238,12 +238,21 @@ extern "C" __global__ void warp_affine_bicubic_3c(
 
     // Grouped as mul + (row term) — the CPU coordinate contract (see the
     // bilinear kernel above). Do not regroup.
-    float sx = m0 * (float)dst_x + (m1 * (float)dst_y + m2);
-    float sy = m3 * (float)dst_x + (m4 * (float)dst_y + m5);
+    float sx0 = m1 * (float)dst_y + m2;
+    float sy0 = m4 * (float)dst_y + m5;
+    float sx = m0 * (float)dst_x + sx0;
+    float sy = m3 * (float)dst_x + sy0;
 
     unsigned long long out = ((unsigned long long)dst_y * dst_w + dst_x) * 3ull;
 
-    if (sx < 0.0f || sx >= (float)src_w || sy < 0.0f || sy >= (float)src_h) {
+    // Same degenerate-axis validity rule as the bilinear/nearest kernels (and
+    // the CPU span refinement): a near-constant axis is judged on its row
+    // constant so trig noise cannot zero-fill right-angle rotations.
+    bool x_ok = (fabsf(m0) < 1e-6f) ? (sx0 >= 0.0f && sx0 < (float)src_w)
+                                    : (sx  >= 0.0f && sx  < (float)src_w);
+    bool y_ok = (fabsf(m3) < 1e-6f) ? (sy0 >= 0.0f && sy0 < (float)src_h)
+                                    : (sy  >= 0.0f && sy  < (float)src_h);
+    if (!x_ok || !y_ok) {
         dst[out] = 0.0f; dst[out+1] = 0.0f; dst[out+2] = 0.0f;
         return;
     }
@@ -261,14 +270,16 @@ extern "C" __global__ void warp_affine_bicubic_3c(
     float wx[4], wy[4];
     {
         float t;
-        t = 1.0f + frac_x; wx[0] = ((-0.5f*t + 2.5f)*t - 4.0f)*t + 2.0f;
-        t =         frac_x; wx[1] = (( 1.5f*t - 2.5f)*t       )*t + 1.0f;
-        t = 1.0f - frac_x; wx[2] = (( 1.5f*t - 2.5f)*t       )*t + 1.0f;
-        t = 2.0f - frac_x; wx[3] = ((-0.5f*t + 2.5f)*t - 4.0f)*t + 2.0f;
-        t = 1.0f + frac_y; wy[0] = ((-0.5f*t + 2.5f)*t - 4.0f)*t + 2.0f;
-        t =         frac_y; wy[1] = (( 1.5f*t - 2.5f)*t       )*t + 1.0f;
-        t = 1.0f - frac_y; wy[2] = (( 1.5f*t - 2.5f)*t       )*t + 1.0f;
-        t = 2.0f - frac_y; wy[3] = ((-0.5f*t + 2.5f)*t - 4.0f)*t + 2.0f;
+        // Explicit fmaf: --fmad=false no longer contracts plain expressions,
+        // and the CPU twin (keys_weights) uses mul_add — same fused chain.
+        t = 1.0f + frac_x; wx[0] = fmaf(fmaf(fmaf(-0.5f, t, 2.5f), t, -4.0f), t, 2.0f);
+        t =         frac_x; wx[1] = fmaf(fmaf( 1.5f, t, -2.5f) * t,       t, 1.0f);
+        t = 1.0f - frac_x; wx[2] = fmaf(fmaf( 1.5f, t, -2.5f) * t,       t, 1.0f);
+        t = 2.0f - frac_x; wx[3] = fmaf(fmaf(fmaf(-0.5f, t, 2.5f), t, -4.0f), t, 2.0f);
+        t = 1.0f + frac_y; wy[0] = fmaf(fmaf(fmaf(-0.5f, t, 2.5f), t, -4.0f), t, 2.0f);
+        t =         frac_y; wy[1] = fmaf(fmaf( 1.5f, t, -2.5f) * t,       t, 1.0f);
+        t = 1.0f - frac_y; wy[2] = fmaf(fmaf( 1.5f, t, -2.5f) * t,       t, 1.0f);
+        t = 2.0f - frac_y; wy[3] = fmaf(fmaf(fmaf(-0.5f, t, 2.5f), t, -4.0f), t, 2.0f);
     }
 
     // Row base addresses precomputed: moves the row multiply outside the inner loop.
@@ -349,12 +360,21 @@ extern "C" __global__ void warp_affine_lanczos_3c(
 
     // Grouped as mul + (row term) — the CPU coordinate contract (see the
     // bilinear kernel above). Do not regroup.
-    float sx = m0 * (float)dst_x + (m1 * (float)dst_y + m2);
-    float sy = m3 * (float)dst_x + (m4 * (float)dst_y + m5);
+    float sx0 = m1 * (float)dst_y + m2;
+    float sy0 = m4 * (float)dst_y + m5;
+    float sx = m0 * (float)dst_x + sx0;
+    float sy = m3 * (float)dst_x + sy0;
 
     unsigned long long out = ((unsigned long long)dst_y * dst_w + dst_x) * 3ull;
 
-    if (sx < 0.0f || sx >= (float)src_w || sy < 0.0f || sy >= (float)src_h) {
+    // Same degenerate-axis validity rule as the bilinear/nearest kernels (and
+    // the CPU span refinement): a near-constant axis is judged on its row
+    // constant so trig noise cannot zero-fill right-angle rotations.
+    bool x_ok = (fabsf(m0) < 1e-6f) ? (sx0 >= 0.0f && sx0 < (float)src_w)
+                                    : (sx  >= 0.0f && sx  < (float)src_w);
+    bool y_ok = (fabsf(m3) < 1e-6f) ? (sy0 >= 0.0f && sy0 < (float)src_h)
+                                    : (sy  >= 0.0f && sy  < (float)src_h);
+    if (!x_ok || !y_ok) {
         dst[out] = 0.0f; dst[out+1] = 0.0f; dst[out+2] = 0.0f;
         return;
     }

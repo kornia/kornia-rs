@@ -212,14 +212,16 @@ extern "C" __global__ void warp_perspective_bicubic_3c(
     float wx[4], wy[4];
     {
         float t;
-        t = 1.0f + frac_x; wx[0] = ((-0.5f*t + 2.5f)*t - 4.0f)*t + 2.0f;
-        t =         frac_x; wx[1] = (( 1.5f*t - 2.5f)*t       )*t + 1.0f;
-        t = 1.0f - frac_x; wx[2] = (( 1.5f*t - 2.5f)*t       )*t + 1.0f;
-        t = 2.0f - frac_x; wx[3] = ((-0.5f*t + 2.5f)*t - 4.0f)*t + 2.0f;
-        t = 1.0f + frac_y; wy[0] = ((-0.5f*t + 2.5f)*t - 4.0f)*t + 2.0f;
-        t =         frac_y; wy[1] = (( 1.5f*t - 2.5f)*t       )*t + 1.0f;
-        t = 1.0f - frac_y; wy[2] = (( 1.5f*t - 2.5f)*t       )*t + 1.0f;
-        t = 2.0f - frac_y; wy[3] = ((-0.5f*t + 2.5f)*t - 4.0f)*t + 2.0f;
+        // Explicit fmaf: --fmad=false no longer contracts plain expressions,
+        // and the CPU twin (keys_weights) uses mul_add — same fused chain.
+        t = 1.0f + frac_x; wx[0] = fmaf(fmaf(fmaf(-0.5f, t, 2.5f), t, -4.0f), t, 2.0f);
+        t =         frac_x; wx[1] = fmaf(fmaf( 1.5f, t, -2.5f) * t,       t, 1.0f);
+        t = 1.0f - frac_x; wx[2] = fmaf(fmaf( 1.5f, t, -2.5f) * t,       t, 1.0f);
+        t = 2.0f - frac_x; wx[3] = fmaf(fmaf(fmaf(-0.5f, t, 2.5f), t, -4.0f), t, 2.0f);
+        t = 1.0f + frac_y; wy[0] = fmaf(fmaf(fmaf(-0.5f, t, 2.5f), t, -4.0f), t, 2.0f);
+        t =         frac_y; wy[1] = fmaf(fmaf( 1.5f, t, -2.5f) * t,       t, 1.0f);
+        t = 1.0f - frac_y; wy[2] = fmaf(fmaf( 1.5f, t, -2.5f) * t,       t, 1.0f);
+        t = 2.0f - frac_y; wy[3] = fmaf(fmaf(fmaf(-0.5f, t, 2.5f), t, -4.0f), t, 2.0f);
     }
 
     unsigned long long row[4];
