@@ -8,9 +8,13 @@ use cudarc::driver::CudaStream;
 use kornia_image::{Image, ImageError};
 
 use crate::cuda::dispatch::{device_slices, dims_u32, no_gpu_kernel_err, untyped_device_err};
-use crate::cuda::warp_affine::{launch_warp_affine_bilinear_cuda, launch_warp_affine_nearest_cuda};
+use crate::cuda::warp_affine::{
+    launch_warp_affine_bicubic_cuda, launch_warp_affine_bilinear_cuda,
+    launch_warp_affine_lanczos_cuda, launch_warp_affine_nearest_cuda,
+};
 use crate::cuda::warp_perspective::{
-    launch_warp_perspective_bilinear_cuda, launch_warp_perspective_nearest_cuda,
+    launch_warp_perspective_bicubic_cuda, launch_warp_perspective_bilinear_cuda,
+    launch_warp_perspective_lanczos_cuda, launch_warp_perspective_nearest_cuda,
 };
 use crate::interpolation::InterpolationMode;
 
@@ -42,7 +46,12 @@ pub(super) fn warp_affine_f32_cuda<const C: usize>(
         InterpolationMode::Nearest => {
             launch_warp_affine_nearest_cuda(ctx, stream, s, d, src_w, src_h, dst_w, dst_h, m, None)
         }
-        mode => return Err(ImageError::UnsupportedInterpolation(mode)),
+        InterpolationMode::Bicubic => {
+            launch_warp_affine_bicubic_cuda(ctx, stream, s, d, src_w, src_h, dst_w, dst_h, m, None)
+        }
+        InterpolationMode::Lanczos => {
+            launch_warp_affine_lanczos_cuda(ctx, stream, s, d, src_w, src_h, dst_w, dst_h, m, None)
+        }
     }
     .map_err(|e| ImageError::Cuda(e.to_string()))
 }
@@ -76,7 +85,12 @@ pub(super) fn warp_perspective_f32_cuda<const C: usize>(
         InterpolationMode::Nearest => launch_warp_perspective_nearest_cuda(
             ctx, stream, s, d, src_w, src_h, dst_w, dst_h, m, None,
         ),
-        mode => return Err(ImageError::UnsupportedInterpolation(mode)),
+        InterpolationMode::Bicubic => launch_warp_perspective_bicubic_cuda(
+            ctx, stream, s, d, src_w, src_h, dst_w, dst_h, m, None,
+        ),
+        InterpolationMode::Lanczos => launch_warp_perspective_lanczos_cuda(
+            ctx, stream, s, d, src_w, src_h, dst_w, dst_h, m, None,
+        ),
     }
     .map_err(|e| ImageError::Cuda(e.to_string()))
 }
@@ -154,6 +168,47 @@ mod tests {
             cpu_dst.as_slice(),
             "device warp_perspective must be bit-identical to host"
         );
+    }
+
+    /// Bicubic and Lanczos through the public functions: device == host,
+    /// bit for bit — the last two modes to join the byte-exact contract.
+    #[test]
+    fn public_warp_bicubic_lanczos_device_equals_host() {
+        let stream = default_stream();
+        let (src, _) = host_pair(129, 97);
+        let ma = crate::warp::get_rotation_matrix2d((64.0, 48.0), 37.0, 1.3);
+        let hm = [0.9, 0.15, 10.0, -0.1, 1.1, -6.0, 1e-5, -2e-5, 1.0];
+
+        for mode in [InterpolationMode::Bicubic, InterpolationMode::Lanczos] {
+            let mut cpu_dst = Image::<f32, 3>::from_size_val(src.size(), 0.0).unwrap();
+            warp_affine(&src, &mut cpu_dst, &ma, mode).unwrap();
+            let d_src = src.to_cuda(&stream).unwrap();
+            let mut d_dst = Image::<f32, 3>::zeros_cuda(src.size(), &stream).unwrap();
+            warp_affine(&d_src, &mut d_dst, &ma, mode).unwrap();
+            let back = d_dst.to_host_owned().unwrap();
+            for (i, (c, g)) in cpu_dst.as_slice().iter().zip(back.as_slice()).enumerate() {
+                assert!(
+                    c.to_bits() == g.to_bits(),
+                    "affine {mode:?} element {i}: cpu {c} ({:#010x}) gpu {g} ({:#010x})",
+                    c.to_bits(),
+                    g.to_bits()
+                );
+            }
+
+            let mut cpu_dst = Image::<f32, 3>::from_size_val(src.size(), 0.0).unwrap();
+            warp_perspective(&src, &mut cpu_dst, &hm, mode).unwrap();
+            let mut d_dst = Image::<f32, 3>::zeros_cuda(src.size(), &stream).unwrap();
+            warp_perspective(&d_src, &mut d_dst, &hm, mode).unwrap();
+            let back = d_dst.to_host_owned().unwrap();
+            for (i, (c, g)) in cpu_dst.as_slice().iter().zip(back.as_slice()).enumerate() {
+                assert!(
+                    c.to_bits() == g.to_bits(),
+                    "perspective {mode:?} element {i}: cpu {c} ({:#010x}) gpu {g} ({:#010x})",
+                    c.to_bits(),
+                    g.to_bits()
+                );
+            }
+        }
     }
 
     /// Mixed residency is a typed error, not an implicit transfer.

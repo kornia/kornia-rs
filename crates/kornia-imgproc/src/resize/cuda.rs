@@ -8,7 +8,8 @@ use kornia_image::{Image, ImageError};
 
 use crate::cuda::dispatch::{device_slices, dims_u32, no_gpu_kernel_err, untyped_device_err};
 use crate::cuda::resize::{
-    launch_resize_bilinear_downscale_cuda, launch_resize_nearest_downscale_cuda, PixelMapping,
+    launch_resize_bicubic_cuda, launch_resize_bilinear_downscale_cuda, launch_resize_lanczos_cuda,
+    launch_resize_nearest_downscale_cuda, PixelMapping,
 };
 use crate::interpolation::InterpolationMode;
 
@@ -58,9 +59,30 @@ pub(super) fn resize_f32_cuda<const C: usize>(
             PixelMapping::HalfPixel,
             None,
         ),
-        // validate_interpolation in resize rejects everything else
-        // before this adapter is reached.
-        mode => return Err(ImageError::UnsupportedInterpolation(mode)),
+        InterpolationMode::Bicubic => launch_resize_bicubic_cuda(
+            ctx,
+            stream,
+            s,
+            d,
+            src_w,
+            src_h,
+            dst_w,
+            dst_h,
+            PixelMapping::HalfPixel,
+            None,
+        ),
+        InterpolationMode::Lanczos => launch_resize_lanczos_cuda(
+            ctx,
+            stream,
+            s,
+            d,
+            src_w,
+            src_h,
+            dst_w,
+            dst_h,
+            PixelMapping::HalfPixel,
+            None,
+        ),
     }
     .map_err(|e| ImageError::Cuda(e.to_string()))
 }
@@ -103,6 +125,35 @@ mod tests {
                     cpu_dst.as_slice(),
                     "{sw}x{sh}->{dw}x{dh} {mode:?}: device must be bit-identical to host"
                 );
+            }
+        }
+    }
+
+    /// Bicubic and Lanczos through the public resize: device == host, bit for
+    /// bit — bicubic is direct 4×4 on both sides; lanczos is separable with
+    /// shared host-built weight tables.
+    #[test]
+    fn public_resize_bicubic_lanczos_device_equals_host() {
+        let stream = default_stream();
+        for &((sw, sh), (dw, dh)) in &[((129, 97), (64, 48)), ((63, 41), (127, 90))] {
+            let src = Image::<f32, 3>::new(sized(sw, sh), pattern_f32(sw * sh * 3)).unwrap();
+            for mode in [InterpolationMode::Bicubic, InterpolationMode::Lanczos] {
+                let mut cpu_dst = Image::<f32, 3>::from_size_val(sized(dw, dh), 0.0).unwrap();
+                resize(&src, &mut cpu_dst, mode).unwrap();
+
+                let d_src = src.to_cuda(&stream).unwrap();
+                let mut d_dst = Image::<f32, 3>::zeros_cuda(sized(dw, dh), &stream).unwrap();
+                resize(&d_src, &mut d_dst, mode).unwrap();
+
+                let back = d_dst.to_host_owned().unwrap();
+                for (i, (c, g)) in cpu_dst.as_slice().iter().zip(back.as_slice()).enumerate() {
+                    assert!(
+                        c.to_bits() == g.to_bits(),
+                        "{sw}x{sh}->{dw}x{dh} {mode:?} element {i}: cpu {c} ({:#010x}) gpu {g} ({:#010x})",
+                        c.to_bits(),
+                        g.to_bits()
+                    );
+                }
             }
         }
     }
