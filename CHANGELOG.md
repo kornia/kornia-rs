@@ -13,6 +13,15 @@ changes early: `cargo add kornia-imgproc@0.1.15-rc.1` or `pip install --pre korn
 
 ## [Unreleased]
 
+**Jetson/CUDA: per-call device allocations no longer stall frame loops.** The
+default CUDA memory pool releases freed blocks back to the OS at every stream
+synchronization (release threshold 0), so a per-frame `op(); sync()` pattern
+re-paid the full allocation cost each frame — ~8.5 ms/frame of alloc/free churn
+for 1080p f32 on Jetson Orin. kornia-tensor now raises the pool's release
+threshold once per device at first allocation: the same loop drops to 1.3
+ms/frame (and pipelined use improves 1.08 → 0.60 ms). Applies to every device
+op (color conversions included).
+
 **Bicubic and Lanczos-3 for the f32 geometry ops, byte-exact CPU↔GPU.**
 `resize`, `warp_affine`, `warp_perspective`, and `remap` accept
 `InterpolationMode::Bicubic` and `::Lanczos` on the CPU, and device images
