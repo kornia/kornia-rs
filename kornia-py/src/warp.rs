@@ -1,7 +1,7 @@
 use numpy::PyUntypedArrayMethods;
 use pyo3::prelude::*;
 
-use crate::dispatch::{cpu_op, try_dispatch_device};
+use crate::dispatch::cpu_op;
 use crate::image::{alloc_output_pyarray, numpy_as_image, parse_interpolation, to_pyerr, PyImage};
 use kornia_image::{Image, ImageError, ImageSize};
 use kornia_imgproc::warp;
@@ -67,28 +67,47 @@ pub fn warp_affine(
     m: [f32; 6],
     new_size: (usize, usize),
     interpolation: &str,
-    out: Option<PyImage>,
+    out: Option<Py<PyAny>>,
 ) -> PyResult<Py<PyAny>> {
-    try_dispatch_device!(py, image, |api| {
-        if out.is_some() {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "warp_affine: out= is not supported for device images",
-            ));
+    #[cfg(feature = "cuda")]
+    if let Ok(api) = image.cast::<crate::image::PyImageApi>() {
+        let img = api.borrow();
+        if img.is_device() {
+            let dev_out = match out {
+                Some(o) => Some(o.extract::<Py<PyAny>>(py)?),
+                None => None,
+            };
+            return crate::cuda_ext::geometry::warp_affine(
+                py,
+                &img,
+                m,
+                new_size,
+                interpolation,
+                dev_out,
+            )?
+            .into_py(py);
         }
-        crate::cuda_ext::geometry::warp_affine(api, m, new_size, interpolation)
-    });
+    }
+    let np_out: Option<PyImage> = match out {
+        Some(o) => Some(o.extract::<PyImage>(py).map_err(|_| {
+            pyo3::exceptions::PyValueError::new_err(
+                "warp_affine: out= must be a numpy u8 array on the CPU path",
+            )
+        })?),
+        None => None,
+    };
     let interp = interpolation.to_string();
     cpu_op(
         py,
         image,
         move |py, arr: Py<numpy::PyArray3<u8>>| match src_channels(py, &arr)? {
-            1 => warp_dispatch::<1, _>(py, arr, new_size, &interp, out, |s, d| {
+            1 => warp_dispatch::<1, _>(py, arr, new_size, &interp, np_out, |s, d| {
                 warp::warp_affine_u8(s, d, &m)
             }),
-            3 => warp_dispatch::<3, _>(py, arr, new_size, &interp, out, |s, d| {
+            3 => warp_dispatch::<3, _>(py, arr, new_size, &interp, np_out, |s, d| {
                 warp::warp_affine_u8(s, d, &m)
             }),
-            4 => warp_dispatch::<4, _>(py, arr, new_size, &interp, out, |s, d| {
+            4 => warp_dispatch::<4, _>(py, arr, new_size, &interp, np_out, |s, d| {
                 warp::warp_affine_u8(s, d, &m)
             }),
             c => Err(unsupported_channels(c)),
@@ -107,28 +126,47 @@ pub fn warp_perspective(
     m: [f32; 9],
     new_size: (usize, usize),
     interpolation: &str,
-    out: Option<PyImage>,
+    out: Option<Py<PyAny>>,
 ) -> PyResult<Py<PyAny>> {
-    try_dispatch_device!(py, image, |api| {
-        if out.is_some() {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "warp_perspective: out= is not supported for device images",
-            ));
+    #[cfg(feature = "cuda")]
+    if let Ok(api) = image.cast::<crate::image::PyImageApi>() {
+        let img = api.borrow();
+        if img.is_device() {
+            let dev_out = match out {
+                Some(o) => Some(o.extract::<Py<PyAny>>(py)?),
+                None => None,
+            };
+            return crate::cuda_ext::geometry::warp_perspective(
+                py,
+                &img,
+                m,
+                new_size,
+                interpolation,
+                dev_out,
+            )?
+            .into_py(py);
         }
-        crate::cuda_ext::geometry::warp_perspective(api, m, new_size, interpolation)
-    });
+    }
+    let np_out: Option<PyImage> = match out {
+        Some(o) => Some(o.extract::<PyImage>(py).map_err(|_| {
+            pyo3::exceptions::PyValueError::new_err(
+                "warp_perspective: out= must be a numpy u8 array on the CPU path",
+            )
+        })?),
+        None => None,
+    };
     let interp = interpolation.to_string();
     cpu_op(
         py,
         image,
         move |py, arr: Py<numpy::PyArray3<u8>>| match src_channels(py, &arr)? {
-            1 => warp_dispatch::<1, _>(py, arr, new_size, &interp, out, |s, d| {
+            1 => warp_dispatch::<1, _>(py, arr, new_size, &interp, np_out, |s, d| {
                 warp::warp_perspective_u8(s, d, &m)
             }),
-            3 => warp_dispatch::<3, _>(py, arr, new_size, &interp, out, |s, d| {
+            3 => warp_dispatch::<3, _>(py, arr, new_size, &interp, np_out, |s, d| {
                 warp::warp_perspective_u8(s, d, &m)
             }),
-            4 => warp_dispatch::<4, _>(py, arr, new_size, &interp, out, |s, d| {
+            4 => warp_dispatch::<4, _>(py, arr, new_size, &interp, np_out, |s, d| {
                 warp::warp_perspective_u8(s, d, &m)
             }),
             c => Err(unsupported_channels(c)),

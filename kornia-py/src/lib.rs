@@ -273,7 +273,14 @@ pub fn resize_deprecated(
     )?;
     as_pyimage(
         py,
-        resize::resize(py, image.bind(py).as_any(), new_size, interpolation, true)?,
+        resize::resize(
+            py,
+            image.bind(py).as_any(),
+            new_size,
+            interpolation,
+            true,
+            None,
+        )?,
     )
 }
 

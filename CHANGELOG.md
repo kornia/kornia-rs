@@ -13,6 +13,15 @@ changes early: `cargo add kornia-imgproc@0.1.15-rc.1` or `pip install --pre korn
 
 ## [Unreleased]
 
+**Python: `out=` and CUDA Graphs for allocation-free frame loops.** The device
+geometry ops accept a preallocated device `out=` image (torch-style, returned
+back); `kornia_rs.cuda.Stream.new()` creates a capturable non-default stream;
+and `kornia_rs.cuda.Graph.capture(f, retain, stream)` records an
+allocation-free op sequence for microsecond-overhead `replay()`. Measured on
+Jetson Orin (1080p→720p f32 resize, per frame with sync): 1.31 ms → 0.62 ms
+with `out=` on a created stream → **0.42 ms** with graph replay — 20× the
+naive pattern of two days ago, byte-exact output preserved through capture.
+
 **Jetson/CUDA: per-call device allocations no longer stall frame loops.** The
 default CUDA memory pool releases freed blocks back to the OS at every stream
 synchronization (release threshold 0), so a per-frame `op(); sync()` pattern

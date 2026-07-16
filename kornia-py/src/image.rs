@@ -1000,6 +1000,34 @@ impl PyImageApi {
         }
     }
 
+    #[cfg(feature = "cuda")]
+    /// Mutable access to the device image for writing kernel outputs into a
+    /// caller-provided destination (`out=`). Requires the backing to be
+    /// writable and **uniquely held** — the `Arc` is shared with every Python
+    /// alias and DLPack export, and writing through a shared handle would be
+    /// invisible aliasing. Returns `None` when device-less; `Err`-like `None`
+    /// distinction is handled by callers via [`Self::is_device`].
+    pub(crate) fn as_device_mut(
+        &mut self,
+    ) -> pyo3::PyResult<Option<&mut crate::device::DeviceImage>> {
+        match &mut self.backing {
+            backing::Backing::Device { img, readonly } => {
+                if *readonly {
+                    return Err(pyo3::exceptions::PyValueError::new_err(
+                        "out= image is read-only",
+                    ));
+                }
+                match std::sync::Arc::get_mut(img) {
+                    Some(m) => Ok(Some(m)),
+                    None => Err(pyo3::exceptions::PyValueError::new_err(
+                        "out= image is shared (another Python reference or DLPack                          export holds it); pass an exclusively-owned device Image",
+                    )),
+                }
+            }
+            _ => Ok(None),
+        }
+    }
+
     /// True when the image is device-resident (CUDA) — derived from the same
     /// `Backing::Device` variant that [`Self::as_device`] matches, so the two
     /// residency checks can never skew.
@@ -4025,6 +4053,17 @@ pub(crate) enum StreamInner {
 
 #[cfg(feature = "cuda")]
 impl PyStream {
+    /// The owned `Arc<CudaStream>`, or an error for foreign (DLPack-imported)
+    /// stream handles, which cannot drive capture.
+    pub(crate) fn owned_arc(&self) -> pyo3::PyResult<std::sync::Arc<cudarc::driver::CudaStream>> {
+        match &self.inner {
+            StreamInner::Owned(arc) => Ok(arc.clone()),
+            StreamInner::Foreign(_) => Err(pyo3::exceptions::PyValueError::new_err(
+                "this operation needs a kornia-owned Stream (got a foreign handle)",
+            )),
+        }
+    }
+
     /// Raw `CUstream` handle (address) of this stream, regardless of variant.
     /// Used by other modules (e.g. the preprocessor) to fence work into it.
     pub(crate) fn raw_handle(&self) -> usize {
@@ -4061,6 +4100,33 @@ impl PyStream {
         {
             Ok(Self {
                 inner: StreamInner::Owned(crate::cuda_ext::default_stream_for(device)?),
+            })
+        }
+        #[cfg(not(feature = "cuda"))]
+        {
+            let _ = device;
+            Err(cuda_not_compiled())
+        }
+    }
+
+    /// Create a **new** (non-default) CUDA stream on `device`. Required for
+    /// `cuda.Graph.capture` — CUDA cannot capture the legacy default stream —
+    /// and useful for overlapping independent work. Allocate the images the
+    /// captured ops touch on this same stream (`Image.to_cuda(stream)` /
+    /// `Image.zeros(..., stream=stream)`): device ops launch on their
+    /// operands' carried stream, so capture and work must live together.
+    #[staticmethod]
+    #[pyo3(signature = (device = 0))]
+    fn new(device: i32) -> PyResult<Self> {
+        #[cfg(feature = "cuda")]
+        {
+            let default = crate::cuda_ext::default_stream_for(device)?;
+            let stream = default
+                .context()
+                .new_stream()
+                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+            Ok(Self {
+                inner: StreamInner::Owned(stream),
             })
         }
         #[cfg(not(feature = "cuda"))]
