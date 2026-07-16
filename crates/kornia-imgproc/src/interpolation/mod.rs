@@ -1,4 +1,5 @@
 mod bilinear;
+pub(crate) mod lanczos;
 
 /// Utility functions to generate meshgrid and remap images
 pub mod grid;

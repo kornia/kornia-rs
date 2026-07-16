@@ -193,9 +193,10 @@ extern "C" __global__ void warp_perspective_bicubic_3c(
         dst[out] = 0.0f; dst[out+1] = 0.0f; dst[out+2] = 0.0f;
         return;
     }
-    float rw = 1.0f / w;
-    float sx = (h0 * (float)dst_x + h1 * (float)dst_y + h2) * rw;
-    float sy = (h3 * (float)dst_x + h4 * (float)dst_y + h5) * rw;
+    // Direct division like the CPU transform_point — x/w rounds differently
+    // from x*(1/w). Same contract as the bilinear/nearest kernels above.
+    float sx = (h0 * (float)dst_x + h1 * (float)dst_y + h2) / w;
+    float sy = (h3 * (float)dst_x + h4 * (float)dst_y + h5) / w;
 
     if (sx < 0.0f || sx >= (float)src_w || sy < 0.0f || sy >= (float)src_h) {
         dst[out] = 0.0f; dst[out+1] = 0.0f; dst[out+2] = 0.0f;
@@ -254,13 +255,31 @@ extern "C" __global__ void warp_perspective_bicubic_3c(
 // transform differs (w-divide from the homography third row).
 
 static LANCZOS_SRC: &str = r#"
+__device__ inline float sin_pi(float x) {
+    // sin(pi*x) via exact integer reduction + odd Taylor polynomial in plain
+    // mul/add. Deterministic and bit-identical to the Rust twin under
+    // --fmad=false — unlike sinf, whose rounding differs between the CUDA
+    // math library and host libm. |x| <= 3 here, so k is exact.
+    float k = roundf(x);
+    float r = x - k;
+    float z = 3.14159265358979f * r;
+    float z2 = z * z;
+    float p = -2.5052108385e-08f;
+    p = p * z2 + 2.7557319224e-06f;
+    p = p * z2 + -1.9841269841e-04f;
+    p = p * z2 + 8.3333333333e-03f;
+    p = p * z2 + -1.6666666667e-01f;
+    float s = z + z * z2 * p;
+    return (((int)k) & 1) ? -s : s;
+}
+
 __device__ inline float lanczos3(float x) {
     const float PI = 3.14159265358979f;
     if (fabsf(x) < 1e-5f) return 1.0f;
     if (fabsf(x) >= 3.0f) return 0.0f;
     float pix  = PI * x;
     float pix3 = pix * 0.33333333f;
-    return __sinf(pix) * __sinf(pix3) * __fdividef(1.0f, pix * pix3);
+    return sin_pi(x) * sin_pi(x * (1.0f / 3.0f)) / (pix * pix3);
 }
 
 extern "C" __global__ void warp_perspective_lanczos_3c(
@@ -284,9 +303,10 @@ extern "C" __global__ void warp_perspective_lanczos_3c(
         dst[out] = 0.0f; dst[out+1] = 0.0f; dst[out+2] = 0.0f;
         return;
     }
-    float rw = 1.0f / w;
-    float sx = (h0 * (float)dst_x + h1 * (float)dst_y + h2) * rw;
-    float sy = (h3 * (float)dst_x + h4 * (float)dst_y + h5) * rw;
+    // Direct division like the CPU transform_point — x/w rounds differently
+    // from x*(1/w). Same contract as the bilinear/nearest kernels above.
+    float sx = (h0 * (float)dst_x + h1 * (float)dst_y + h2) / w;
+    float sy = (h3 * (float)dst_x + h4 * (float)dst_y + h5) / w;
 
     if (sx < 0.0f || sx >= (float)src_w || sy < 0.0f || sy >= (float)src_h) {
         dst[out] = 0.0f; dst[out+1] = 0.0f; dst[out+2] = 0.0f;
@@ -308,8 +328,8 @@ extern "C" __global__ void warp_perspective_lanczos_3c(
 
     float sum_wx = wx[0]+wx[1]+wx[2]+wx[3]+wx[4]+wx[5];
     float sum_wy = wy[0]+wy[1]+wy[2]+wy[3]+wy[4]+wy[5];
-    float inv_x = __fdividef(1.0f, sum_wx);
-    float inv_y = __fdividef(1.0f, sum_wy);
+    float inv_x = 1.0f / sum_wx;
+    float inv_y = 1.0f / sum_wy;
     #pragma unroll
     for (int i = 0; i < 6; i++) { wx[i] *= inv_x; wy[i] *= inv_y; }
 
