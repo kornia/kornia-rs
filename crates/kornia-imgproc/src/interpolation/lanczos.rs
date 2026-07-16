@@ -19,7 +19,7 @@
 pub(crate) fn sin_pi(x: f32) -> f32 {
     let k = x.round();
     let r = x - k;
-    let z = 3.141_592_7_f32 * r;
+    let z = std::f32::consts::PI * r;
     let z2 = z * z;
     let mut p = -2.505_210_8e-8_f32;
     p = p * z2 + 2.755_731_9e-6;
@@ -37,7 +37,7 @@ pub(crate) fn sin_pi(x: f32) -> f32 {
 /// 3-lobe Lanczos window — twin of the kernels' `lanczos3`.
 #[inline]
 pub(crate) fn lanczos3(x: f32) -> f32 {
-    const PI: f32 = 3.141_592_7;
+    const PI: f32 = std::f32::consts::PI;
     if x.abs() < 1e-5 {
         return 1.0;
     }
