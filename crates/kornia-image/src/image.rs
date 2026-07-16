@@ -54,7 +54,7 @@ impl PixelFormat {
 }
 
 /// Interpolation mode for the image operations
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum InterpolationMode {
     /// Bilinear interpolation
     Bilinear,

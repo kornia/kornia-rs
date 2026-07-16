@@ -201,6 +201,12 @@ static SEP_H_SRC: &str = r#"
 // i32 accumulate over kx taps, round-half-up at Q14, CLAMP TO i16 — the
 // signed 16-bit intermediate (overshooting lobes included) is part of the
 // CPU contract, not an optimization.
+//
+// Loop order is tap-outer / channel-inner with register accumulators: each
+// LUT entry is loaded once (not once per channel) and the C pixel bytes of a
+// tap are consecutive, which roughly halved the kernel time vs the
+// channel-outer form. Accumulation order over taps is unchanged, so the
+// result is bit-identical.
 extern "C" __global__ void resize_u8_sep_h(
     const unsigned char* __restrict__  src,
     short* __restrict__                hbuf,
@@ -220,14 +226,18 @@ extern "C" __global__ void resize_u8_sep_h(
     size_t ibase = (size_t)x * kx;
     size_t d = ((size_t)y * dst_w + x) * channels;
 
-    for (unsigned int ch = 0; ch < channels; ++ch) {
-        int acc = 0;
-        for (unsigned int t = 0; t < kx; ++t) {
-            unsigned int sx = (unsigned int)__ldg(&xsrc[ibase + t]);
-            acc += (int)__ldg(&src[row + (size_t)sx * channels + ch])
-                 * (int)__ldg(&xw[ibase + t]);
+    int acc[4] = {0, 0, 0, 0};
+    for (unsigned int t = 0; t < kx; ++t) {
+        int w = (int)__ldg(&xw[ibase + t]);
+        const unsigned char* p =
+            src + row + (size_t)__ldg(&xsrc[ibase + t]) * channels;
+        #pragma unroll 4
+        for (unsigned int ch = 0; ch < channels; ++ch) {
+            acc[ch] += (int)__ldg(&p[ch]) * w;
         }
-        int v = (acc + (1 << 13)) >> 14;
+    }
+    for (unsigned int ch = 0; ch < channels; ++ch) {
+        int v = (acc[ch] + (1 << 13)) >> 14;
         v = min(max(v, -32768), 32767);
         hbuf[d + ch] = (short)v;
     }
@@ -258,14 +268,20 @@ extern "C" __global__ void resize_u8_sep_v(
     size_t wbase = (size_t)y * ky;
     size_t d = ((size_t)y * dst_w + x) * channels;
 
-    for (unsigned int ch = 0; ch < channels; ++ch) {
-        int acc = 0;
-        for (unsigned int k = 0; k < ky; ++k) {
-            int sy = min(max(y0 + (int)k, 0), (int)src_h - 1);
-            acc += (int)__ldg(&hbuf[((size_t)sy * dst_w + x) * channels + ch])
-                 * (int)__ldg(&yw[wbase + k]);
+    // Tap-outer / channel-inner (see the horizontal kernel): one LUT load
+    // and one row-base computation per tap, C consecutive i16 reads.
+    int acc[4] = {0, 0, 0, 0};
+    for (unsigned int k = 0; k < ky; ++k) {
+        int w = (int)__ldg(&yw[wbase + k]);
+        int sy = min(max(y0 + (int)k, 0), (int)src_h - 1);
+        const short* p = hbuf + ((size_t)sy * dst_w + x) * channels;
+        #pragma unroll 4
+        for (unsigned int ch = 0; ch < channels; ++ch) {
+            acc[ch] += (int)__ldg(&p[ch]) * w;
         }
-        int v = (acc + (1 << 13)) >> 14;
+    }
+    for (unsigned int ch = 0; ch < channels; ++ch) {
+        int v = (acc[ch] + (1 << 13)) >> 14;
         dst[d + ch] = (unsigned char)min(max(v, 0), 255);
     }
 }
@@ -295,10 +311,6 @@ fn check_dst_len(dst_len: usize, w: u32, h: u32, channels: u32) -> Result<(), Cu
         return Err(CudaResizeError::SliceTooSmall { got: dst_len, need });
     }
     Ok(())
-}
-
-fn to_cuda_err(e: cudarc::driver::result::DriverError) -> CudaResizeError {
-    CudaResizeError::Cuda(e.to_string())
 }
 
 // ── Public launchers ──────────────────────────────────────────────────────────
@@ -376,10 +388,12 @@ pub fn launch_resize_u8_pyrup2x_rgb_cuda(
         .map_err(|e| CudaResizeError::Cuda(e.to_string()))
 }
 
-/// Nearest-neighbor u8 resize via host-built index LUTs (pure gather).
+/// Nearest-neighbor u8 resize via device index LUTs (pure gather).
 ///
-/// `xmap`/`ymap` MUST come from `nearest_axis_lut` for CPU parity; entries
-/// must lie in `[0, src_len-1]` (the builders clamp).
+/// `xmap`/`ymap` are device uploads of `nearest_axis_lut` output (the
+/// `resize::cuda` adapter caches them per geometry — per-call pageable H2D
+/// uploads on Jetson have a catastrophic latency tail, ~250 µs average).
+/// Entries must lie in `[0, src_len-1]` (the builders clamp).
 #[allow(clippy::too_many_arguments)]
 pub fn launch_resize_u8_nearest_cuda(
     ctx: &Arc<CudaContext>,
@@ -391,8 +405,8 @@ pub fn launch_resize_u8_nearest_cuda(
     dst_width: u32,
     dst_height: u32,
     channels: u32,
-    xmap: &[i32],
-    ymap: &[i32],
+    xmap: &CudaSlice<i32>,
+    ymap: &CudaSlice<i32>,
     block_dim: Option<(u32, u32)>,
 ) -> Result<(), CudaResizeError> {
     super::check_geometry(src_width, src_height, dst_width, dst_height, block_dim)
@@ -405,15 +419,13 @@ pub fn launch_resize_u8_nearest_cuda(
     }
 
     let kernel = get_kernel(&NEAREST_KERNEL, ctx, NEAREST_SRC, "resize_u8_nearest")?;
-    let d_xmap = stream.clone_htod(xmap).map_err(to_cuda_err)?;
-    let d_ymap = stream.clone_htod(ymap).map_err(to_cuda_err)?;
 
     kernel
         .launch_builder(stream)
         .arg(src)
         .arg(dst)
-        .arg(&d_xmap)
-        .arg(&d_ymap)
+        .arg(xmap)
+        .arg(ymap)
         .arg(&src_width)
         .arg(&dst_width)
         .arg(&dst_height)
@@ -426,11 +438,12 @@ pub fn launch_resize_u8_nearest_cuda(
         .map_err(|e| CudaResizeError::Cuda(e.to_string()))
 }
 
-/// Q14 bilinear u8 resize via host-built tap LUTs.
+/// Q14 bilinear u8 resize via device tap LUTs.
 ///
-/// `xofs`/`xfx` and `yofs`/`yfy` MUST come from `bilinear_axis_lut` for CPU
-/// parity: offsets clamped to `[0, src_len-2]`, weights in `[0, 16384]`.
-/// Requires a source of at least 2×2 (the `ofs+1` neighbor read).
+/// `xofs`/`xfx` and `yofs`/`yfy` are device uploads of `bilinear_axis_lut`
+/// output (cached per geometry by the `resize::cuda` adapter): offsets
+/// clamped to `[0, src_len-2]`, weights in `[0, 16384]`. Requires a source
+/// of at least 2×2 (the `ofs+1` neighbor read).
 #[allow(clippy::too_many_arguments)]
 pub fn launch_resize_u8_bilinear_cuda(
     ctx: &Arc<CudaContext>,
@@ -442,10 +455,10 @@ pub fn launch_resize_u8_bilinear_cuda(
     dst_width: u32,
     dst_height: u32,
     channels: u32,
-    xofs: &[u32],
-    xfx: &[u32],
-    yofs: &[u32],
-    yfy: &[u32],
+    xofs: &CudaSlice<u32>,
+    xfx: &CudaSlice<u32>,
+    yofs: &CudaSlice<u32>,
+    yfy: &CudaSlice<u32>,
     block_dim: Option<(u32, u32)>,
 ) -> Result<(), CudaResizeError> {
     super::check_geometry(src_width, src_height, dst_width, dst_height, block_dim)
@@ -467,19 +480,15 @@ pub fn launch_resize_u8_bilinear_cuda(
     }
 
     let kernel = get_kernel(&BILINEAR_KERNEL, ctx, BILINEAR_SRC, "resize_u8_bilinear")?;
-    let d_xofs = stream.clone_htod(xofs).map_err(to_cuda_err)?;
-    let d_xfx = stream.clone_htod(xfx).map_err(to_cuda_err)?;
-    let d_yofs = stream.clone_htod(yofs).map_err(to_cuda_err)?;
-    let d_yfy = stream.clone_htod(yfy).map_err(to_cuda_err)?;
 
     kernel
         .launch_builder(stream)
         .arg(src)
         .arg(dst)
-        .arg(&d_xofs)
-        .arg(&d_xfx)
-        .arg(&d_yofs)
-        .arg(&d_yfy)
+        .arg(xofs)
+        .arg(xfx)
+        .arg(yofs)
+        .arg(yfy)
         .arg(&src_width)
         .arg(&dst_width)
         .arg(&dst_height)
@@ -494,11 +503,11 @@ pub fn launch_resize_u8_bilinear_cuda(
 
 /// Q14 separable bicubic / lanczos u8 resize (two passes, i16 intermediate).
 ///
-/// Tables MUST come from `precompute_contribs` + `build_xsrc_lut` +
-/// `pack_xw_i16` — including the antialias kernel widening — for CPU parity.
-/// The i16 scratch (`src_h × dst_w × channels`) is stream-ordered allocated
-/// per call; with the mempool release threshold raised, steady-state cost
-/// is a pool lookup.
+/// Device tables are uploads of `precompute_contribs` + `build_xsrc_lut` +
+/// `pack_xw_i16` output — including the antialias kernel widening — cached
+/// per geometry by the `resize::cuda` adapter. The i16 scratch
+/// (`src_h × dst_w × channels`) is stream-ordered allocated per call; with
+/// the mempool release threshold raised, steady-state cost is a pool lookup.
 #[allow(clippy::too_many_arguments)]
 pub fn launch_resize_u8_separable_cuda(
     ctx: &Arc<CudaContext>,
@@ -510,11 +519,11 @@ pub fn launch_resize_u8_separable_cuda(
     dst_width: u32,
     dst_height: u32,
     channels: u32,
-    xsrc: &[u16],
-    xw: &[i16],
+    xsrc: &CudaSlice<u16>,
+    xw: &CudaSlice<i16>,
     kx: u32,
-    yofs: &[i32],
-    yw: &[i16],
+    yofs: &CudaSlice<i32>,
+    yw: &CudaSlice<i16>,
     ky: u32,
     block_dim: Option<(u32, u32)>,
 ) -> Result<(), CudaResizeError> {
@@ -536,11 +545,6 @@ pub fn launch_resize_u8_separable_cuda(
     let kernel_h = get_kernel(&SEP_H_KERNEL, ctx, SEP_H_SRC, "resize_u8_sep_h")?;
     let kernel_v = get_kernel(&SEP_V_KERNEL, ctx, SEP_V_SRC, "resize_u8_sep_v")?;
 
-    let d_xsrc = stream.clone_htod(xsrc).map_err(to_cuda_err)?;
-    let d_xw = stream.clone_htod(xw).map_err(to_cuda_err)?;
-    let d_yofs = stream.clone_htod(yofs).map_err(to_cuda_err)?;
-    let d_yw = stream.clone_htod(yw).map_err(to_cuda_err)?;
-
     // Intermediate: src_h rows of dst_w pixels, i16. Pass 1 writes every
     // element before pass 2 reads; no zero-fill needed.
     let inter_len = (src_height as usize) * (dst_width as usize) * (channels as usize);
@@ -551,8 +555,8 @@ pub fn launch_resize_u8_separable_cuda(
         .launch_builder(stream)
         .arg(src)
         .arg(&mut hbuf)
-        .arg(&d_xsrc)
-        .arg(&d_xw)
+        .arg(xsrc)
+        .arg(xw)
         .arg(&kx)
         .arg(&src_width)
         .arg(&dst_width)
@@ -569,8 +573,8 @@ pub fn launch_resize_u8_separable_cuda(
         .launch_builder(stream)
         .arg(&hbuf)
         .arg(dst)
-        .arg(&d_yofs)
-        .arg(&d_yw)
+        .arg(yofs)
+        .arg(yw)
         .arg(&ky)
         .arg(&src_height)
         .arg(&dst_width)

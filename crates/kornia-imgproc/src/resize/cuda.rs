@@ -2,9 +2,10 @@
 //! [`resize_fast_u8_aa`](super::resize_fast_u8_aa): route a checked device
 //! pair to the native CUDA resize kernels.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 
-use cudarc::driver::CudaStream;
+use cudarc::driver::{CudaSlice, CudaStream};
 use kornia_image::{Image, ImageError};
 
 use crate::cuda::dispatch::{device_slices, dims_u32, no_gpu_kernel_err, untyped_device_err};
@@ -97,6 +98,85 @@ pub(super) fn resize_f32_cuda<const C: usize>(
     .map_err(|e| ImageError::Cuda(e.to_string()))
 }
 
+/// Device-resident coordinate/weight tables for one u8 resize geometry.
+///
+/// Cached because Jetson pageable H2D uploads have a catastrophic latency
+/// tail (~250 µs average per `cuMemcpyHtoDAsync` measured under nsys), and
+/// the lanczos host table build re-evaluates f64 `sin` per tap — together
+/// they dominated the GPU op several times over. A cache hit makes a repeat
+/// resize pure kernel launches, which also keeps it CUDA-Graph-capturable
+/// (a pageable upload inside a capture would fail); warm the cache with one
+/// call before capturing.
+enum U8Luts {
+    Nearest {
+        xmap: CudaSlice<i32>,
+        ymap: CudaSlice<i32>,
+    },
+    Bilinear {
+        xofs: CudaSlice<u32>,
+        xfx: CudaSlice<u32>,
+        yofs: CudaSlice<u32>,
+        yfy: CudaSlice<u32>,
+    },
+    Separable {
+        xsrc: CudaSlice<u16>,
+        xw: CudaSlice<i16>,
+        kx: u32,
+        yofs: CudaSlice<i32>,
+        yw: CudaSlice<i16>,
+        ky: u32,
+    },
+}
+
+/// Cache key: device ordinal + everything that determines table contents.
+/// (`antialias` only matters for the separable modes; the other tags store
+/// `false`.) Channel count does not affect the tables.
+#[derive(PartialEq, Eq, Hash, Clone, Copy)]
+struct U8LutKey {
+    dev: usize,
+    mode: InterpolationMode,
+    antialias: bool,
+    src_w: u32,
+    src_h: u32,
+    dst_w: u32,
+    dst_h: u32,
+}
+
+static U8_LUT_CACHE: OnceLock<Mutex<HashMap<U8LutKey, Arc<U8Luts>>>> = OnceLock::new();
+
+/// Bound on cached geometries. Each entry is a few KB of device memory
+/// (worst case ~100 KB for a wide antialiased lanczos); on overflow the
+/// cache is cleared wholesale — resize-target sets are small and stable in
+/// practice, so eviction is a non-event.
+const U8_LUT_CACHE_CAP: usize = 128;
+
+fn cached_luts(
+    key: U8LutKey,
+    build: impl FnOnce() -> Result<U8Luts, ImageError>,
+) -> Result<Arc<U8Luts>, ImageError> {
+    let cache = U8_LUT_CACHE.get_or_init(Default::default);
+    if let Some(hit) = cache.lock().expect("u8 LUT cache poisoned").get(&key) {
+        return Ok(hit.clone());
+    }
+    // Build + upload outside the lock; a racing duplicate upload is harmless
+    // and the entry API keeps the first insertion.
+    let built = Arc::new(build()?);
+    let mut map = cache.lock().expect("u8 LUT cache poisoned");
+    if map.len() >= U8_LUT_CACHE_CAP {
+        map.clear();
+    }
+    Ok(map.entry(key).or_insert(built).clone())
+}
+
+fn htod<T: cudarc::driver::DeviceRepr>(
+    stream: &Arc<CudaStream>,
+    host: &[T],
+) -> Result<CudaSlice<T>, ImageError> {
+    stream
+        .clone_htod(host)
+        .map_err(|e| ImageError::Cuda(e.to_string()))
+}
+
 /// Run the CUDA u8 resize for a device-resident pair, byte-exact with
 /// [`resize_fast_u8_aa`](super::resize_fast_u8_aa).
 ///
@@ -106,9 +186,10 @@ pub(super) fn resize_f32_cuda<const C: usize>(
 /// would take. Do not reorder one side without the other.
 ///
 /// All coordinate/weight tables are built by the same host functions the CPU
-/// uses (`bilinear_axis_lut`, `nearest_axis_lut`, `precompute_contribs`) and
-/// uploaded; the kernels are integer-only. Output is bit-identical to the
-/// CPU, which the parity tests assert with `assert_eq!`.
+/// uses (`bilinear_axis_lut`, `nearest_axis_lut`, `precompute_contribs`),
+/// uploaded once per geometry (see [`U8Luts`]); the kernels are integer-only.
+/// Output is bit-identical to the CPU, which the parity tests assert with
+/// `assert_eq!`.
 pub(super) fn resize_fast_u8_cuda<const C: usize>(
     src: &Image<u8, C>,
     dst: &mut Image<u8, C>,
@@ -150,41 +231,99 @@ pub(super) fn resize_fast_u8_cuda<const C: usize>(
             .map_err(err);
     }
 
+    let key = U8LutKey {
+        dev: ctx.ordinal(),
+        mode: interpolation,
+        // Only the separable modes read the flag; normalize so nearest and
+        // bilinear share one entry regardless of the caller's antialias.
+        antialias: antialias
+            && matches!(
+                interpolation,
+                InterpolationMode::Bicubic | InterpolationMode::Lanczos
+            ),
+        src_w,
+        src_h,
+        dst_w,
+        dst_h,
+    };
+
     match interpolation {
         InterpolationMode::Nearest => {
-            let xmap = nearest_axis_lut(src_w as usize, dst_w as usize);
-            let ymap = nearest_axis_lut(src_h as usize, dst_h as usize);
+            let luts = cached_luts(key, || {
+                Ok(U8Luts::Nearest {
+                    xmap: htod(stream, &nearest_axis_lut(src_w as usize, dst_w as usize))?,
+                    ymap: htod(stream, &nearest_axis_lut(src_h as usize, dst_h as usize))?,
+                })
+            })?;
+            let U8Luts::Nearest { xmap, ymap } = &*luts else {
+                unreachable!("cache key encodes the mode")
+            };
             launch_resize_u8_nearest_cuda(
-                ctx, stream, s, d, src_w, src_h, dst_w, dst_h, C as u32, &xmap, &ymap, None,
+                ctx, stream, s, d, src_w, src_h, dst_w, dst_h, C as u32, xmap, ymap, None,
             )
             .map_err(err)
         }
         InterpolationMode::Bilinear => {
-            let (xofs, xfx, _) = bilinear_axis_lut(src_w as usize, dst_w as usize);
-            let (yofs, yfy, _) = bilinear_axis_lut(src_h as usize, dst_h as usize);
+            let luts = cached_luts(key, || {
+                let (xofs, xfx, _) = bilinear_axis_lut(src_w as usize, dst_w as usize);
+                let (yofs, yfy, _) = bilinear_axis_lut(src_h as usize, dst_h as usize);
+                Ok(U8Luts::Bilinear {
+                    xofs: htod(stream, &xofs)?,
+                    xfx: htod(stream, &xfx)?,
+                    yofs: htod(stream, &yofs)?,
+                    yfy: htod(stream, &yfy)?,
+                })
+            })?;
+            let U8Luts::Bilinear {
+                xofs,
+                xfx,
+                yofs,
+                yfy,
+            } = &*luts
+            else {
+                unreachable!("cache key encodes the mode")
+            };
             launch_resize_u8_bilinear_cuda(
-                ctx, stream, s, d, src_w, src_h, dst_w, dst_h, C as u32, &xofs, &xfx, &yofs, &yfy,
-                None,
+                ctx, stream, s, d, src_w, src_h, dst_w, dst_h, C as u32, xofs, xfx, yofs, yfy, None,
             )
             .map_err(err)
         }
         InterpolationMode::Bicubic | InterpolationMode::Lanczos => {
-            let filt = if interpolation == InterpolationMode::Bicubic {
-                FilterKind::Cubic
-            } else {
-                FilterKind::Lanczos3
+            let luts = cached_luts(key, || {
+                let filt = if interpolation == InterpolationMode::Bicubic {
+                    FilterKind::Cubic
+                } else {
+                    FilterKind::Lanczos3
+                };
+                let (xofs, xw_q14, kx) =
+                    precompute_contribs(src_w as usize, dst_w as usize, filt, antialias);
+                let (yofs, yw_q14, ky) =
+                    precompute_contribs(src_h as usize, dst_h as usize, filt, antialias);
+                let xsrc = build_xsrc_lut(&xofs, dst_w as usize, kx, src_w as usize);
+                Ok(U8Luts::Separable {
+                    xsrc: htod(stream, &xsrc)?,
+                    xw: htod(stream, &pack_xw_i16(&xw_q14))?,
+                    kx: kx as u32,
+                    yofs: htod(stream, &yofs)?,
+                    // Same i32 → i16 cast the CPU vertical pass applies per tap.
+                    yw: htod(stream, &pack_xw_i16(&yw_q14))?,
+                    ky: ky as u32,
+                })
+            })?;
+            let U8Luts::Separable {
+                xsrc,
+                xw,
+                kx,
+                yofs,
+                yw,
+                ky,
+            } = &*luts
+            else {
+                unreachable!("cache key encodes the mode")
             };
-            let (xofs, xw_q14, kx) =
-                precompute_contribs(src_w as usize, dst_w as usize, filt, antialias);
-            let (yofs, yw_q14, ky) =
-                precompute_contribs(src_h as usize, dst_h as usize, filt, antialias);
-            let xsrc = build_xsrc_lut(&xofs, dst_w as usize, kx, src_w as usize);
-            let xw = pack_xw_i16(&xw_q14);
-            // Same i32 → i16 cast the CPU vertical pass applies per tap.
-            let yw = pack_xw_i16(&yw_q14);
             launch_resize_u8_separable_cuda(
-                ctx, stream, s, d, src_w, src_h, dst_w, dst_h, C as u32, &xsrc, &xw, kx as u32,
-                &yofs, &yw, ky as u32, None,
+                ctx, stream, s, d, src_w, src_h, dst_w, dst_h, C as u32, xsrc, xw, *kx, yofs, yw,
+                *ky, None,
             )
             .map_err(err)
         }
