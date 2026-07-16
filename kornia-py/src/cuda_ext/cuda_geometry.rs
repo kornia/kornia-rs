@@ -9,7 +9,6 @@
 
 use super::*;
 use cudarc::driver::{DeviceRepr, ValidAsZeroBits};
-use pyo3::types::PyAnyMethods;
 
 /// Element types the geometry helpers can allocate device outputs for.
 trait GeomElem: DeviceRepr + ValidAsZeroBits + Clone + Default + 'static {}
@@ -116,7 +115,16 @@ fn with_out<R>(
     op: &str,
     f: impl FnOnce(&mut Image<f32, 3>) -> PyResult<R>,
 ) -> PyResult<R> {
-    with_out_t(py, out, src, dst_size, op, "f32, 3-channel", unwrap_f32c3, f)
+    with_out_t(
+        py,
+        out,
+        src,
+        dst_size,
+        op,
+        "f32, 3-channel",
+        unwrap_f32c3,
+        f,
+    )
 }
 
 fn unwrap_f32c3(i: &mut Inner) -> Option<&mut Image<f32, 3>> {
@@ -240,13 +248,37 @@ pub(crate) fn resize(
             .map(PyOut::New)
         }
         Inner::U8C1(src) => resize_u8::<1>(
-            py, img, src, dst_size, mode, antialias, out, unwrap_u8c1, Inner::U8C1,
+            py,
+            img,
+            src,
+            dst_size,
+            mode,
+            antialias,
+            out,
+            unwrap_u8c1,
+            Inner::U8C1,
         ),
         Inner::U8C3(src) => resize_u8::<3>(
-            py, img, src, dst_size, mode, antialias, out, unwrap_u8c3, Inner::U8C3,
+            py,
+            img,
+            src,
+            dst_size,
+            mode,
+            antialias,
+            out,
+            unwrap_u8c3,
+            Inner::U8C3,
         ),
         Inner::U8C4(src) => resize_u8::<4>(
-            py, img, src, dst_size, mode, antialias, out, unwrap_u8c4, Inner::U8C4,
+            py,
+            img,
+            src,
+            dst_size,
+            mode,
+            antialias,
+            out,
+            unwrap_u8c4,
+            Inner::U8C4,
         ),
         other => Err(PyValueError::new_err(format!(
             "resize: the GPU path supports f32 3-channel and u8 1/3/4-channel \

@@ -21,6 +21,7 @@ pub(super) fn nearest_index(i: usize, scale: f64, src_len: usize) -> usize {
 }
 
 /// Per-axis nearest LUT as `i32` (the CUDA kernel's gather index type).
+#[cfg(feature = "cuda")]
 pub(super) fn nearest_axis_lut(src_len: usize, dst_len: usize) -> Vec<i32> {
     let scale = src_len as f64 / dst_len as f64;
     (0..dst_len)

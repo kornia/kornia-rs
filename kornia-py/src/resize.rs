@@ -1,9 +1,7 @@
 use pyo3::prelude::*;
 
 use crate::dispatch::cpu_op;
-use crate::image::{
-    alloc_output_pyarray, numpy_as_image, parse_interpolation, to_pyerr, PyImageApi,
-};
+use crate::image::{alloc_output_pyarray, numpy_as_image, parse_interpolation, to_pyerr};
 use kornia_image::ImageSize;
 use kornia_imgproc::resize::resize_fast_rgb_aa;
 
@@ -26,7 +24,7 @@ pub fn resize(
     out: Option<Py<PyAny>>,
 ) -> PyResult<Py<PyAny>> {
     #[cfg(feature = "cuda")]
-    if let Ok(api) = image.cast::<PyImageApi>() {
+    if let Ok(api) = image.cast::<crate::image::PyImageApi>() {
         let img = api.borrow();
         if img.is_device() {
             return crate::cuda_ext::geometry::resize(
