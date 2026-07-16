@@ -1571,10 +1571,121 @@ pub fn register(py: Python<'_>, parent: &Bound<'_, PyModule>) -> PyResult<()> {
     // `pub(crate)` and are called by `crate::color`.
     crate::add_imagenet_consts(&m)?;
     m.add_class::<crate::image::PyStream>()?;
+    #[cfg(feature = "cuda")]
+    m.add_class::<PyGraph>()?;
     parent.add_submodule(&m)?;
     // Make `import kornia_rs.cuda` work (mirror of the other submodules).
     py.import("sys")?
         .getattr("modules")?
         .set_item("kornia_rs.cuda", &m)?;
     Ok(())
+}
+
+// ── CUDA Graph capture / replay ───────────────────────────────────────────────
+
+/// A captured CUDA graph: record a fixed sequence of device ops once, replay
+/// it per frame with microsecond launch overhead.
+///
+/// Capture requires the recorded ops to be **allocation-free** — pass
+/// preallocated `out=` device images to the geometry ops (allocations inside
+/// a capture become graph-owned memory nodes and typically fail with the
+/// stream-ordered allocator). The captured topology is fixed: same shapes,
+/// same source/destination buffers every replay; update the *contents* of the
+/// input image between replays (e.g. `img.copy_from_numpy(...)` or an
+/// upstream graph node), not the objects.
+#[cfg(feature = "cuda")]
+#[pyclass(name = "Graph", module = "kornia_rs.cuda", frozen)]
+pub struct PyGraph {
+    graph: cudarc::driver::CudaGraph,
+    /// Keep-alives: every Python object the captured kernels read or write.
+    /// The graph holds raw device pointers; dropping the images would free
+    /// the memory under the next replay.
+    #[allow(dead_code)]
+    retained: Vec<Py<PyAny>>,
+}
+
+// SAFETY: CUgraph/CUgraphExec are opaque driver handles; the CUDA driver API
+// is thread-safe for graph launch/destroy, and cudarc's CudaGraph carries the
+// owning Arc<CudaStream> (itself Send+Sync). The raw pointers are only handed
+// back to driver calls, never dereferenced on the host.
+#[cfg(feature = "cuda")]
+unsafe impl Send for PyGraph {}
+#[cfg(feature = "cuda")]
+unsafe impl Sync for PyGraph {}
+
+#[cfg(feature = "cuda")]
+#[pymethods]
+impl PyGraph {
+    /// Capture `f()` — a callable that enqueues device ops on `stream` (the
+    /// default stream if `None`) — and return a replayable `Graph`.
+    ///
+    /// `retain` must list every device `Image` the callable reads from or
+    /// writes into; the graph keeps them alive for its own lifetime.
+    #[staticmethod]
+    #[pyo3(signature = (f, retain, stream=None))]
+    fn capture(
+        py: Python<'_>,
+        f: Py<PyAny>,
+        retain: Vec<Py<PyAny>>,
+        stream: Option<PyRef<'_, crate::image::PyStream>>,
+    ) -> PyResult<Self> {
+        let arc = match stream {
+            Some(s) => s.owned_arc()?,
+            None => default_stream()?,
+        };
+        // cudarc's automatic multi-stream fencing waits on legacy CudaEvents
+        // recorded before the capture began, and cuStreamWaitEvent on a
+        // pre-capture legacy event invalidates a capture. The check happens at
+        // kernel-arg time, so suspending event tracking for the capture window
+        // keeps the recorded graph clean. Cross-stream correctness inside
+        // kornia ops is unaffected — the residency dispatch does its own
+        // explicit event fencing — and drop-safety holds because frees are
+        // stream-ordered (cuMemFreeAsync).
+        //
+        // SAFETY (disable/enable_event_tracking): scoped to the capture; the
+        // flag is context-global, so concurrent slice *creation* on other
+        // threads during this window would skip tracking — capture is a
+        // setup-time operation, documented as such.
+        let ctx = arc.context();
+        let was_tracking = ctx.is_event_tracking();
+        if was_tracking {
+            unsafe { ctx.disable_event_tracking() };
+        }
+        let restore = |on: bool| {
+            if on {
+                unsafe { ctx.enable_event_tracking() };
+            }
+        };
+        if let Err(e) = arc.begin_capture(
+            cudarc::driver::sys::CUstreamCaptureMode::CU_STREAM_CAPTURE_MODE_THREAD_LOCAL,
+        ) {
+            restore(was_tracking);
+            return Err(err(e));
+        }
+        // Run the recording callable. Always end the capture (even on error)
+        // so the stream is usable again, then surface the original error.
+        let call_result = f.call0(py);
+        let graph = arc.end_capture(
+            cudarc::driver::sys::CUgraphInstantiate_flags::CUDA_GRAPH_INSTANTIATE_FLAG_USE_NODE_PRIORITY,
+        );
+        restore(was_tracking);
+        let graph = graph.map_err(err)?;
+        call_result?;
+        let graph = graph.ok_or_else(|| {
+            PyValueError::new_err(
+                "Graph.capture: nothing was captured (the callable enqueued no \
+                 device work on this stream)",
+            )
+        })?;
+        Ok(Self {
+            graph,
+            retained: retain,
+        })
+    }
+
+    /// Enqueue one replay of the captured work on the capture stream.
+    /// Asynchronous — pair with `Stream.synchronize()` (or another replay).
+    fn replay(&self) -> PyResult<()> {
+        self.graph.launch().map_err(err)
+    }
 }

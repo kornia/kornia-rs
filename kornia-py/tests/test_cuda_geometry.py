@@ -89,3 +89,62 @@ class TestDeviceWarps:
         out = imgproc.warp_affine(a, m, (16, 16), "nearest")
         assert isinstance(out, np.ndarray)
         np.testing.assert_array_equal(out, a)
+
+
+class TestOutAndGraph:
+    def _setup(self):
+        from kornia_rs.cuda import Stream
+        from kornia_rs.image import Image
+        st = Stream.new()
+        a = _pattern_f32(96, 128)
+        d = Image.from_numpy(a).to_cuda(st)
+        o = Image.zeros(64, 48, 3, dtype="float32", stream=st)
+        return st, a, d, o
+
+    def test_out_reuse_matches_fresh(self):
+        st, a, d, o = self._setup()
+        got = imgproc.resize(d, (48, 64), "bilinear", out=o)
+        st.synchronize()
+        fresh = imgproc.resize(d, (48, 64), "bilinear")
+        np.testing.assert_array_equal(got.cpu().numpy(), fresh.cpu().numpy())
+        # torch-style: the returned object IS the out object
+        assert got is o
+
+    def test_out_wrong_size_rejected(self):
+        st, a, d, o = self._setup()
+        with pytest.raises(ValueError, match="size"):
+            imgproc.resize(d, (10, 10), "bilinear", out=o)
+
+    def test_out_must_not_alias_input(self):
+        from kornia_rs.cuda import Stream
+        from kornia_rs.image import Image
+        st = Stream.new()
+        a = _pattern_f32(64, 64)
+        d = Image.from_numpy(a).to_cuda(st)
+        m = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+        with pytest.raises(ValueError, match="alias"):
+            imgproc.warp_affine(d, m, (64, 64), "nearest", out=d)
+
+    def test_graph_capture_replay_bit_exact(self):
+        from kornia_rs.cuda import Graph
+        st, a, d, o = self._setup()
+        g = Graph.capture(
+            lambda: imgproc.resize(d, (48, 64), "bilinear", out=o), [d, o], st
+        )
+        g.replay()
+        st.synchronize()
+        fresh = imgproc.resize(d, (48, 64), "bilinear")
+        st.synchronize()
+        np.testing.assert_array_equal(o.cpu().numpy(), fresh.cpu().numpy())
+
+    def test_graph_empty_capture_is_harmless(self):
+        # CUDA yields a valid empty graph for an empty capture; replay is a
+        # no-op rather than an error.
+        from kornia_rs.cuda import Graph, Stream
+        st = Stream.new()
+        try:
+            g = Graph.capture(lambda: None, [], st)
+        except ValueError:
+            return  # older drivers return a null graph — also fine
+        g.replay()
+        st.synchronize()

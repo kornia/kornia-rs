@@ -14,6 +14,8 @@ from the CUDA toolkit or the ``nvidia-cuda-nvrtc-cu12`` pip package —
 
 from typing import Any, Tuple
 
+from typing import Callable
+
 from . import Tensor as Tensor
 
 
@@ -23,6 +25,10 @@ class Stream:
     for where ``Image.to_cuda(stream)`` / ``Image.zeros(..., stream=stream)``
     place data. Only meaningful on a ``cuda`` build."""
 
+    @staticmethod
+    def new(device: int = ...) -> Stream:
+        """Create a new (non-default) stream — required for Graph capture."""
+        ...
     @staticmethod
     def default(device: int = ...) -> Stream:
         """The process-wide default CUDA stream for ``device`` (default 0)."""
@@ -70,3 +76,14 @@ def mem_get_info() -> Tuple[int, int]:
 # GPU color conversions are no longer exposed here — call them through the
 # residency-dispatching ``kornia_rs.imgproc.*`` ops (a device ``Image`` routes to
 # the GPU kernel, a numpy array runs on the CPU).
+
+class Graph:
+    """A captured CUDA graph: record once, replay per frame at microsecond cost.
+
+    Capture requires allocation-free ops — pass preallocated ``out=`` device
+    images — on a non-default stream (``Stream.new()``), with the operand
+    images allocated on that same stream."""
+
+    @staticmethod
+    def capture(f: Callable[[], object], retain: list, stream: Stream | None = ...) -> Graph: ...
+    def replay(self) -> None: ...

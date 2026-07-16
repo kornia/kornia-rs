@@ -82,6 +82,7 @@ def resize(
     new_size: tuple[int, int],
     interpolation: str,
     antialias: bool = ...,
+    out: Image | None = ...,
 ) -> np.ndarray | Image:
     """``new_size`` is ``(height, width)``; ``interpolation`` is e.g. ``"bilinear"`` / ``"nearest"``.
 
