@@ -265,6 +265,18 @@ pub fn resize_fast_u8_aa<const C: usize>(
     interpolation: InterpolationMode,
     antialias: bool,
 ) -> Result<(), ImageError> {
+    // Device pairs route to the CUDA u8 kernels (bit-identical output — the
+    // coordinate/weight tables come from the same host builders the CPU
+    // uses). Mixed host/device pairs are a typed error; there is no implicit
+    // transfer in either direction.
+    #[cfg(feature = "cuda")]
+    if let crate::cuda::dispatch::Residency::Device(exec) =
+        crate::cuda::dispatch::pair_residency(src, dst)?
+    {
+        return exec
+            .run(|stream| cuda::resize_fast_u8_cuda(src, dst, interpolation, antialias, stream));
+    }
+
     let (src_w, src_h) = (src.cols(), src.rows());
     let (dst_w, dst_h) = (dst.cols(), dst.rows());
 

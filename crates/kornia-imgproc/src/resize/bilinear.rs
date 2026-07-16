@@ -38,10 +38,7 @@ pub(super) fn bilinear_tap(i: usize, scale: f64, src_len: usize) -> (u32, u32) {
 }
 
 /// Per-axis Q14 bilinear LUT: `(ofs, fx, fx1)` with `fx1 = 16384 - fx`.
-pub(super) fn bilinear_axis_lut(
-    src_len: usize,
-    dst_len: usize,
-) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
+pub(super) fn bilinear_axis_lut(src_len: usize, dst_len: usize) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
     let scale = src_len as f64 / dst_len as f64;
     let mut ofs = Vec::with_capacity(dst_len);
     let mut fx = Vec::with_capacity(dst_len);

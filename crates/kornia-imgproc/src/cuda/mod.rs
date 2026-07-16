@@ -7,6 +7,10 @@
 /// Native CUDA downscale kernels using `__ldg` read-only cache.
 pub mod resize;
 
+/// Native CUDA u8 resize kernels (integer LUT-driven, byte-exact with the
+/// CPU u8 fast paths).
+pub mod resize_u8;
+
 /// Native CUDA warp-affine kernels (bilinear and nearest-neighbor).
 pub mod warp_affine;
 

@@ -1,5 +1,6 @@
-//! Device adapter for [`resize`](super::resize): routes a
-//! checked device pair to the native CUDA resize kernels.
+//! Device adapters for [`resize`](super::resize) and
+//! [`resize_fast_u8_aa`](super::resize_fast_u8_aa): route a checked device
+//! pair to the native CUDA resize kernels.
 
 use std::sync::Arc;
 
@@ -11,7 +12,16 @@ use crate::cuda::resize::{
     launch_resize_bicubic_cuda, launch_resize_bilinear_downscale_cuda, launch_resize_lanczos_cuda,
     launch_resize_nearest_downscale_cuda, PixelMapping,
 };
+use crate::cuda::resize_u8::{
+    launch_resize_u8_bilinear_cuda, launch_resize_u8_nearest_cuda,
+    launch_resize_u8_pyrdown2x_rgb_cuda, launch_resize_u8_pyrup2x_rgb_cuda,
+    launch_resize_u8_separable_cuda,
+};
 use crate::interpolation::InterpolationMode;
+
+use super::bilinear::bilinear_axis_lut;
+use super::common::{build_xsrc_lut, pack_xw_i16, precompute_contribs, FilterKind};
+use super::nearest::nearest_axis_lut;
 
 /// Run the CUDA resize for a device-resident f32 pair.
 ///
@@ -87,13 +97,107 @@ pub(super) fn resize_f32_cuda<const C: usize>(
     .map_err(|e| ImageError::Cuda(e.to_string()))
 }
 
+/// Run the CUDA u8 resize for a device-resident pair, byte-exact with
+/// [`resize_fast_u8_aa`](super::resize_fast_u8_aa).
+///
+/// The dispatch cascade below mirrors the CPU cascade in
+/// `resize_fast_u8_aa` BRANCH FOR BRANCH — same guards, same order — so the
+/// kernel a device pair takes is always the twin of the CPU path a host pair
+/// would take. Do not reorder one side without the other.
+///
+/// All coordinate/weight tables are built by the same host functions the CPU
+/// uses (`bilinear_axis_lut`, `nearest_axis_lut`, `precompute_contribs`) and
+/// uploaded; the kernels are integer-only. Output is bit-identical to the
+/// CPU, which the parity tests assert with `assert_eq!`.
+pub(super) fn resize_fast_u8_cuda<const C: usize>(
+    src: &Image<u8, C>,
+    dst: &mut Image<u8, C>,
+    interpolation: InterpolationMode,
+    antialias: bool,
+    stream: &Arc<CudaStream>,
+) -> Result<(), ImageError> {
+    if !(C == 1 || C == 3 || C == 4) {
+        return Err(no_gpu_kernel_err(
+            "resize_fast_u8",
+            "1/3/4-channel u8 images",
+        ));
+    }
+    let (src_w, src_h) = dims_u32(src)?;
+    let (dst_w, dst_h) = dims_u32(dst)?;
+    let ctx = stream.context();
+    let (s, d) = device_slices!(src, dst);
+    let err = |e: crate::cuda::resize::CudaResizeError| ImageError::Cuda(e.to_string());
+
+    // Branch 1/2: exact-2× RGB fast paths (bilinear only).
+    if interpolation == InterpolationMode::Bilinear
+        && C == 3
+        && src_w == dst_w * 2
+        && src_h == dst_h * 2
+        && src_w >= 2
+        && src_h >= 2
+    {
+        return launch_resize_u8_pyrdown2x_rgb_cuda(ctx, stream, s, d, dst_w, dst_h, None)
+            .map_err(err);
+    }
+    if interpolation == InterpolationMode::Bilinear
+        && C == 3
+        && dst_w == src_w * 2
+        && dst_h == src_h * 2
+        && src_w >= 2
+        && src_h >= 2
+    {
+        return launch_resize_u8_pyrup2x_rgb_cuda(ctx, stream, s, d, src_w, src_h, None)
+            .map_err(err);
+    }
+
+    match interpolation {
+        InterpolationMode::Nearest => {
+            let xmap = nearest_axis_lut(src_w as usize, dst_w as usize);
+            let ymap = nearest_axis_lut(src_h as usize, dst_h as usize);
+            launch_resize_u8_nearest_cuda(
+                ctx, stream, s, d, src_w, src_h, dst_w, dst_h, C as u32, &xmap, &ymap, None,
+            )
+            .map_err(err)
+        }
+        InterpolationMode::Bilinear => {
+            let (xofs, xfx, _) = bilinear_axis_lut(src_w as usize, dst_w as usize);
+            let (yofs, yfy, _) = bilinear_axis_lut(src_h as usize, dst_h as usize);
+            launch_resize_u8_bilinear_cuda(
+                ctx, stream, s, d, src_w, src_h, dst_w, dst_h, C as u32, &xofs, &xfx, &yofs, &yfy,
+                None,
+            )
+            .map_err(err)
+        }
+        InterpolationMode::Bicubic | InterpolationMode::Lanczos => {
+            let filt = if interpolation == InterpolationMode::Bicubic {
+                FilterKind::Cubic
+            } else {
+                FilterKind::Lanczos3
+            };
+            let (xofs, xw_q14, kx) =
+                precompute_contribs(src_w as usize, dst_w as usize, filt, antialias);
+            let (yofs, yw_q14, ky) =
+                precompute_contribs(src_h as usize, dst_h as usize, filt, antialias);
+            let xsrc = build_xsrc_lut(&xofs, dst_w as usize, kx, src_w as usize);
+            let xw = pack_xw_i16(&xw_q14);
+            // Same i32 → i16 cast the CPU vertical pass applies per tap.
+            let yw = pack_xw_i16(&yw_q14);
+            launch_resize_u8_separable_cuda(
+                ctx, stream, s, d, src_w, src_h, dst_w, dst_h, C as u32, &xsrc, &xw, kx as u32,
+                &yofs, &yw, ky as u32, None,
+            )
+            .map_err(err)
+        }
+    }
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
-    use crate::cuda::color::test_utils::{default_stream, pattern_f32};
+    use crate::cuda::color::test_utils::{default_stream, pattern_f32, pattern_u8};
     use crate::interpolation::InterpolationMode;
-    use crate::resize::resize;
+    use crate::resize::{resize, resize_fast_u8_aa};
     use kornia_image::{Image, ImageError, ImageSize};
 
     fn sized(w: usize, h: usize) -> ImageSize {
@@ -101,6 +205,109 @@ mod tests {
             width: w,
             height: h,
         }
+    }
+
+    /// Run `resize_fast_u8_aa` on host and device for the same input and
+    /// assert the outputs are bit-identical.
+    fn assert_u8_device_equals_host<const C: usize>(
+        (sw, sh): (usize, usize),
+        (dw, dh): (usize, usize),
+        mode: InterpolationMode,
+        antialias: bool,
+    ) {
+        let stream = default_stream();
+        let src = Image::<u8, C>::new(sized(sw, sh), pattern_u8(sw * sh * C)).unwrap();
+
+        let mut cpu_dst = Image::<u8, C>::from_size_val(sized(dw, dh), 0).unwrap();
+        resize_fast_u8_aa(&src, &mut cpu_dst, mode, antialias).unwrap();
+
+        let d_src = src.to_cuda(&stream).unwrap();
+        let mut d_dst = Image::<u8, C>::zeros_cuda(sized(dw, dh), &stream).unwrap();
+        resize_fast_u8_aa(&d_src, &mut d_dst, mode, antialias).unwrap();
+
+        let back = d_dst.to_host_owned().unwrap();
+        assert_eq!(
+            back.as_slice(),
+            cpu_dst.as_slice(),
+            "{sw}x{sh}->{dw}x{dh} C={C} {mode:?} aa={antialias}: device must be bit-identical to host"
+        );
+    }
+
+    /// Branches 1+2 of the cascade: exact-2× RGB pyrdown/pyrup fast paths.
+    #[test]
+    fn u8_pyr2x_fast_paths_device_equal_host() {
+        // Odd-ish dst dims exercise the tail columns of the CPU NEON kernels.
+        assert_u8_device_equals_host::<3>((130, 98), (65, 49), InterpolationMode::Bilinear, true);
+        assert_u8_device_equals_host::<3>((65, 49), (130, 98), InterpolationMode::Bilinear, true);
+    }
+
+    /// Branch 3: nearest, all supported channel counts, odd sizes, up + down.
+    #[test]
+    fn u8_nearest_device_equals_host() {
+        for &(s, d) in &[((129, 97), (64, 48)), ((63, 41), (127, 90))] {
+            assert_u8_device_equals_host::<1>(s, d, InterpolationMode::Nearest, true);
+            assert_u8_device_equals_host::<3>(s, d, InterpolationMode::Nearest, true);
+            assert_u8_device_equals_host::<4>(s, d, InterpolationMode::Nearest, true);
+        }
+    }
+
+    /// Branch 4: generic Q14 bilinear, non-2× ratios.
+    #[test]
+    fn u8_bilinear_device_equals_host() {
+        for &(s, d) in &[
+            ((129, 97), (64, 48)),
+            ((63, 41), (127, 90)),
+            ((33, 21), (33, 21)),
+        ] {
+            assert_u8_device_equals_host::<1>(s, d, InterpolationMode::Bilinear, true);
+            assert_u8_device_equals_host::<3>(s, d, InterpolationMode::Bilinear, true);
+            assert_u8_device_equals_host::<4>(s, d, InterpolationMode::Bilinear, true);
+        }
+    }
+
+    /// Branch 5: Q14 separable bicubic/lanczos, antialiased (PIL semantics,
+    /// wide kernels) and non-antialiased (OpenCV semantics, fixed taps).
+    #[test]
+    fn u8_separable_device_equals_host() {
+        for mode in [InterpolationMode::Bicubic, InterpolationMode::Lanczos] {
+            for antialias in [true, false] {
+                assert_u8_device_equals_host::<3>((129, 97), (64, 48), mode, antialias);
+                assert_u8_device_equals_host::<1>((63, 41), (127, 90), mode, antialias);
+                assert_u8_device_equals_host::<4>((100, 80), (47, 33), mode, antialias);
+            }
+        }
+    }
+
+    /// Extreme antialiased downscale: tall kernels (ksize grows with the
+    /// scale factor) stress the i32 accumulator bound and the tap loops.
+    #[test]
+    fn u8_separable_extreme_downscale_device_equals_host() {
+        assert_u8_device_equals_host::<3>((1024, 64), (50, 40), InterpolationMode::Lanczos, true);
+        assert_u8_device_equals_host::<3>((1024, 64), (50, 40), InterpolationMode::Bicubic, true);
+    }
+
+    /// u8 device pairs with unsupported channel counts error; mixed
+    /// residency errors — never a silent CPU fallback or transfer.
+    #[test]
+    fn u8_resize_error_semantics() {
+        let stream = default_stream();
+
+        let src = Image::<u8, 2>::new(sized(16, 16), pattern_u8(16 * 16 * 2)).unwrap();
+        let d_src = src.to_cuda(&stream).unwrap();
+        let mut d_dst = Image::<u8, 2>::zeros_cuda(sized(8, 8), &stream).unwrap();
+        let err =
+            resize_fast_u8_aa(&d_src, &mut d_dst, InterpolationMode::Bilinear, true).unwrap_err();
+        assert!(
+            matches!(&err, ImageError::Cuda(msg) if msg.contains("1/3/4-channel")),
+            "got {err:?}"
+        );
+
+        let src3 = Image::<u8, 3>::new(sized(16, 16), pattern_u8(16 * 16 * 3)).unwrap();
+        let d_src3 = src3.to_cuda(&stream).unwrap();
+        let mut host_dst = Image::<u8, 3>::from_size_val(sized(8, 8), 0).unwrap();
+        let err = resize_fast_u8_aa(&d_src3, &mut host_dst, InterpolationMode::Bilinear, true)
+            .unwrap_err();
+        assert!(matches!(err, ImageError::MixedResidency), "got {err:?}");
     }
 
     /// The public `resize`, called with device images, must produce
