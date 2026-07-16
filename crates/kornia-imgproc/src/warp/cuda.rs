@@ -12,6 +12,7 @@ use crate::cuda::warp_affine::{
     launch_warp_affine_bicubic_cuda, launch_warp_affine_bilinear_cuda,
     launch_warp_affine_lanczos_cuda, launch_warp_affine_nearest_cuda,
 };
+use crate::cuda::warp_affine_u8::launch_warp_affine_u8_bilinear_cuda;
 use crate::cuda::warp_perspective::{
     launch_warp_perspective_bicubic_cuda, launch_warp_perspective_bilinear_cuda,
     launch_warp_perspective_lanczos_cuda, launch_warp_perspective_nearest_cuda,
@@ -95,6 +96,38 @@ pub(super) fn warp_perspective_f32_cuda<const C: usize>(
     .map_err(|e| ImageError::Cuda(e.to_string()))
 }
 
+/// Run the CUDA u8 warp-affine (bilinear) for a device-resident pair,
+/// byte-exact with [`warp_affine_u8`](super::warp_affine_u8).
+///
+/// The forward matrix is inverted here with the same
+/// [`invert_affine_transform`](super::invert_affine_transform) the CPU path
+/// calls — shared code, not mirrored code — and the kernel reproduces the
+/// CPU's per-row span + Q16/Q10 fixed-point arithmetic exactly (see
+/// `cuda::warp_affine_u8`).
+pub(super) fn warp_affine_u8_cuda<const C: usize>(
+    src: &Image<u8, C>,
+    dst: &mut Image<u8, C>,
+    m: &[f32; 6],
+    stream: &Arc<CudaStream>,
+) -> Result<(), ImageError> {
+    if !(C == 1 || C == 3 || C == 4) {
+        return Err(no_gpu_kernel_err(
+            "warp_affine_u8",
+            "1/3/4-channel u8 images",
+        ));
+    }
+    let (src_w, src_h) = dims_u32(src)?;
+    let (dst_w, dst_h) = dims_u32(dst)?;
+    let ctx = stream.context();
+    let (s, d) = device_slices!(src, dst);
+    let m_inv = super::invert_affine_transform(m);
+
+    launch_warp_affine_u8_bilinear_cuda(
+        ctx, stream, s, d, &m_inv, src_w, src_h, dst_w, dst_h, C as u32, None,
+    )
+    .map_err(|e| ImageError::Cuda(e.to_string()))
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -113,6 +146,54 @@ mod tests {
             Image::<f32, 3>::new(size, pattern_f32(w * h * 3)).unwrap(),
             Image::<f32, 3>::from_size_val(size, 0.0).unwrap(),
         )
+    }
+
+    /// The public `warp_affine_u8`, called with device images, must be
+    /// bit-identical to the host path — spans, Q16 anchors, Q10 sampler and
+    /// all. Rotation+scale exercises fractional spans; the flip and the 90°
+    /// rotation pin the exact-integer span boundaries `warp::span` exists
+    /// for; translation by half a pixel exercises the sampler everywhere.
+    #[test]
+    fn public_warp_affine_u8_device_equals_host() {
+        use crate::cuda::color::test_utils::pattern_u8;
+        let stream = default_stream();
+
+        fn run<const C: usize>(
+            w: usize,
+            h: usize,
+            m: &[f32; 6],
+            stream: &std::sync::Arc<cudarc::driver::CudaStream>,
+        ) {
+            let size = ImageSize {
+                width: w,
+                height: h,
+            };
+            let src = Image::<u8, C>::new(size, pattern_u8(w * h * C)).unwrap();
+            let mut cpu_dst = Image::<u8, C>::from_size_val(size, 0).unwrap();
+            crate::warp::warp_affine_u8(&src, &mut cpu_dst, m).unwrap();
+
+            let d_src = src.to_cuda(stream).unwrap();
+            let mut d_dst = Image::<u8, C>::zeros_cuda(size, stream).unwrap();
+            crate::warp::warp_affine_u8(&d_src, &mut d_dst, m).unwrap();
+
+            assert_eq!(
+                d_dst.to_host_owned().unwrap().as_slice(),
+                cpu_dst.as_slice(),
+                "{w}x{h} C={C} m={m:?}: device must be bit-identical to host"
+            );
+        }
+
+        let rot = crate::warp::get_rotation_matrix2d((64.0, 48.0), 37.0, 1.3);
+        let rot90 = crate::warp::get_rotation_matrix2d((64.0, 48.0), 90.0, 1.0);
+        let flip: [f32; 6] = [-1.0, 0.0, 128.0, 0.0, 1.0, 0.0];
+        let half: [f32; 6] = [1.0, 0.0, 0.5, 0.0, 1.0, 0.5];
+        for m in [&rot, &rot90, &flip, &half] {
+            run::<1>(129, 97, m, &stream);
+            run::<3>(129, 97, m, &stream);
+            run::<4>(129, 97, m, &stream);
+        }
+        // Odd small size exercises span-clamps and single-warp blocks.
+        run::<3>(33, 21, &rot, &stream);
     }
 
     /// The public `warp_affine`, called with device images, must produce

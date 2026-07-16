@@ -14,6 +14,10 @@ pub mod resize_u8;
 /// Native CUDA warp-affine kernels (bilinear and nearest-neighbor).
 pub mod warp_affine;
 
+/// Native CUDA u8 warp-affine kernel (Q16/Q10 fixed point, byte-exact with
+/// the CPU `warp_affine_u8`).
+pub mod warp_affine_u8;
+
 /// Native CUDA warp-perspective kernels (homography, bilinear / nearest / bicubic / Lanczos-3).
 pub mod warp_perspective;
 
