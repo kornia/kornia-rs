@@ -49,11 +49,52 @@ class TestDeviceResize:
         assert isinstance(out, np.ndarray)
         assert out.shape == (16, 16, 3)
 
-    def test_wrong_dtype_device_errors(self):
-        a = (np.zeros((16, 16, 3), dtype=np.uint8))
+    def test_wrong_dtype_device_warp_errors(self):
+        # Warps stay f32-only on the device path (resize gained u8 kernels).
+        a = np.zeros((16, 16, 3), dtype=np.uint8)
         d = _dev(a)  # u8 device image
         with pytest.raises(ValueError, match="3-channel f32"):
-            imgproc.resize(d, (8, 8), "bilinear")
+            imgproc.warp_affine(d, [1, 0, 0, 0, 1, 0], (8, 8), "bilinear")
+
+
+class TestDeviceResizeU8:
+    """u8 device resize runs the integer CUDA kernel cascade, bit-identical
+    to the numpy u8 CPU path (same host-built coordinate tables)."""
+
+    def _pattern_u8(self, h, w, c=3):
+        rng = np.random.default_rng(7)
+        return rng.integers(0, 256, size=(h, w, c), dtype=np.uint8)
+
+    @pytest.mark.parametrize("mode", ["nearest", "bilinear", "bicubic", "lanczos"])
+    @pytest.mark.parametrize("antialias", [True, False])
+    def test_matches_numpy_cpu_bit_exact(self, mode, antialias):
+        a = self._pattern_u8(97, 129)
+        cpu = imgproc.resize(a, (48, 64), mode, antialias=antialias)
+        out = imgproc.resize(_dev(a), (48, 64), mode, antialias=antialias)
+        assert "cuda" in str(out.device)
+        np.testing.assert_array_equal(out.cpu().numpy(), cpu)
+
+    def test_pyr2x_fast_paths_bit_exact(self):
+        a = self._pattern_u8(98, 130)
+        for new_size in [(49, 65), (196, 260)]:
+            cpu = imgproc.resize(a, new_size, "bilinear")
+            out = imgproc.resize(_dev(a), new_size, "bilinear")
+            np.testing.assert_array_equal(out.cpu().numpy(), cpu)
+
+    def test_out_reuse_matches_fresh(self):
+        a = self._pattern_u8(64, 64)
+        d = _dev(a)
+        fresh = imgproc.resize(d, (32, 32), "bilinear")
+        out_buf = imgproc.resize(d, (32, 32), "nearest")  # u8 device buffer
+        reused = imgproc.resize(d, (32, 32), "bilinear", out=out_buf)
+        assert reused is out_buf
+        np.testing.assert_array_equal(reused.cpu().numpy(), fresh.cpu().numpy())
+
+    def test_out_dtype_mismatch_rejected(self):
+        a = self._pattern_u8(64, 64)
+        f32_out = imgproc.resize(_dev(_pattern_f32(32, 32)), (32, 32), "bilinear")
+        with pytest.raises(ValueError, match="matching the input"):
+            imgproc.resize(_dev(a), (32, 32), "bilinear", out=f32_out)
 
 
 class TestDeviceWarps:

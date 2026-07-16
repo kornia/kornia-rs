@@ -73,13 +73,17 @@ pub(super) fn precompute_contribs(
     let mut offsets = vec![0i32; dst_size];
     let mut weights = vec![0i32; dst_size * ksize];
 
+    // Scratch hoisted out of the loop: two per-column heap allocations here
+    // were the dominant host cost of the GPU separable launchers (the tables
+    // are rebuilt per call), ~1 ms at 1080p.
+    let mut raw = vec![0f64; ksize];
+    let inv_filt_scale = 1.0 / filt_scale;
+
     for i in 0..dst_size {
         let center = (i as f64 + 0.5) * scale - 0.5;
         let left = (center - support).ceil() as i64;
         offsets[i] = left as i32;
 
-        let inv_filt_scale = 1.0 / filt_scale;
-        let mut raw = vec![0f64; ksize];
         let mut sum = 0f64;
         for k in 0..ksize {
             let x = (left + k as i64) as f64 - center;
@@ -87,7 +91,7 @@ pub(super) fn precompute_contribs(
             raw[k] = w;
             sum += w;
         }
-        let mut qw = vec![0i32; ksize];
+        let qw = &mut weights[i * ksize..(i + 1) * ksize];
         let mut qsum = 0i32;
         let norm = if sum.abs() > 1e-12 {
             SCALE as f64 / sum
@@ -110,7 +114,6 @@ pub(super) fn precompute_contribs(
             }
             qw[max_k] += SCALE - qsum;
         }
-        weights[i * ksize..(i + 1) * ksize].copy_from_slice(&qw);
     }
     (offsets, weights, ksize)
 }
