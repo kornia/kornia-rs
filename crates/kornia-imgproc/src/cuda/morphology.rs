@@ -136,7 +136,7 @@ extern "C" __global__ void morphology_u8(
     }
     let _ = tap_lits; // literals are emitted per-stanza above
 
-    format!(
+    let scalar_kernel = format!(
         r#"
 // Mirrors padding::PaddingMode::map_index (iterative reflect loops match
 // the CPU exactly; pads are tiny).
@@ -198,13 +198,130 @@ extern "C" __global__ void morphology_u8(
 "#,
         neg_min_dx = -min_dx,
         neg_min_dy = -min_dy,
-    )
+    );
+
+    // ── C=1 vector kernel: 4 output pixels per thread ─────────────────────
+    //
+    // Per active row (taps grouped by dy) the kernel loads the aligned u32
+    // words covering the 4-pixel window plus the dx span, normalizes them to
+    // a byte stream starting exactly at `x0 + min_dx` with one __byte_perm
+    // per word, then folds each dx window with __vmaxu4 / __vminu4 —
+    // per-byte-lane u8 min/max over exactly the CPU's tap multiset, so the
+    // result stays byte-exact. Threads whose quad touches a border or the
+    // buffer ends fall back to the scalar bounds-checked taps per lane.
+    use std::collections::BTreeMap;
+    let mut rows: BTreeMap<i32, Vec<i32>> = BTreeMap::new();
+    for pair in taps.chunks_exact(2) {
+        rows.entry(pair[0]).or_default().push(pair[1]);
+    }
+    let span = (max_dx - min_dx) as usize;
+    // Normalized stream words R[0..rn]: highest byte read is span + 3.
+    let rn = (span + 3) / 4 + 1;
+    let wn = rn + 1;
+    let vfold = match op {
+        MorphOp::Dilate => "__vmaxu4",
+        MorphOp::Erode => "__vminu4",
+    };
+    let vinit = match op {
+        MorphOp::Dilate => "0u",
+        MorphOp::Erode => "0xffffffffu",
+    };
+
+    let mut row_blocks = String::new();
+    for (dy, dxs) in &rows {
+        let mut w_loads = String::new();
+        for i in 0..wn {
+            let _ = writeln!(w_loads, "        unsigned int W{i} = __ldg(wp + {i});");
+        }
+        let mut r_norms = String::new();
+        for i in 0..rn {
+            let _ = writeln!(
+                r_norms,
+                "        unsigned int R{i} = __byte_perm(W{i}, W{}, sel_n);",
+                i + 1
+            );
+        }
+        let mut folds = String::new();
+        for dx in dxs {
+            let o = (dx - min_dx) as usize;
+            let (wi, rem) = (o / 4, o % 4);
+            if rem == 0 {
+                let _ = writeln!(folds, "        acc4 = {vfold}(acc4, R{wi});");
+            } else {
+                let sel = 0x3210u32 + 0x1111 * rem as u32;
+                let _ = writeln!(
+                    folds,
+                    "        acc4 = {vfold}(acc4, __byte_perm(R{wi}, R{}, 0x{sel:04x}u));",
+                    wi + 1
+                );
+            }
+        }
+        let _ = write!(
+            row_blocks,
+            "    {{ // row dy = {dy}\n\
+             \x20       const unsigned char* p = src + (ptrdiff_t)(y + ({dy})) * width + x0 + ({min_dx});\n\
+             \x20       unsigned int s = (unsigned int)((size_t)p & 3u);\n\
+             \x20       const unsigned int* wp = (const unsigned int*)(p - s);\n\
+             \x20       unsigned int sel_n = 0x3210u + 0x1111u * s;\n\
+             {w_loads}{r_norms}{folds}    }}\n"
+        );
+    }
+
+    let vector_kernel = format!(
+        r#"
+extern "C" __global__ void morphology_u8_c1v4(
+    const unsigned char* __restrict__ src,
+    unsigned char* __restrict__       dst,
+    const unsigned char* __restrict__ constant_value,
+    int width, int height, unsigned int channels, int border
+) {{
+    int x0 = 4 * (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    unsigned int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x0 >= width || y >= (unsigned int)height) return;
+
+    bool vec_ok = x0 >= {neg_min_dx} && x0 + 3 < width - ({max_dx})
+               && (int)y >= {neg_min_dy} && (int)y < height - ({max_dy});
+    // The aligned word loads may reach up to 3 bytes before / after the
+    // window; keep them inside the buffer (corner quads take the scalar
+    // fallback, whose values are identical).
+    long long idx_lo = (long long)((int)y + ({min_dy})) * width + x0 + ({min_dx});
+    long long idx_hi = (long long)((int)y + ({max_dy})) * width + x0 + ({min_dx});
+    vec_ok = vec_ok && idx_lo >= 3
+          && idx_hi + {load_span} <= (long long)width * height;
+
+    if (vec_ok) {{
+        unsigned int acc4 = {vinit};
+{row_blocks}
+        size_t d = (size_t)y * width + x0;
+        dst[d + 0] = (unsigned char)(acc4 & 0xffu);
+        dst[d + 1] = (unsigned char)((acc4 >> 8) & 0xffu);
+        dst[d + 2] = (unsigned char)((acc4 >> 16) & 0xffu);
+        dst[d + 3] = (unsigned char)((acc4 >> 24) & 0xffu);
+        return;
+    }}
+
+    unsigned int ch = 0u; // C == 1
+    for (int lane = 0; lane < 4; ++lane) {{
+        int x = x0 + lane;
+        if (x >= width) break;
+        unsigned int acc = {acc_init};
+{border_stanzas_lane}        dst[(size_t)y * width + x] = (unsigned char)acc;
+    }}
+}}
+"#,
+        neg_min_dx = -min_dx,
+        neg_min_dy = -min_dy,
+        load_span = 4 * wn as i64,
+        border_stanzas_lane = border_stanzas,
+    );
+
+    scalar_kernel + &vector_kernel
 }
 
 /// Compiled specialized kernels, keyed by (taps content, op). Structuring
 /// elements are static per pipeline, so this stays tiny; on overflow the
 /// cache is cleared wholesale.
-type MorphKernelCache = Mutex<HashMap<(Vec<i32>, MorphOp), Arc<CudaKernel>>>;
+type MorphKernelCache = Mutex<HashMap<(Vec<i32>, MorphOp, bool), Arc<CudaKernel>>>;
 static MORPH_KERNELS: OnceLock<MorphKernelCache> = OnceLock::new();
 const MORPH_KERNEL_CACHE_CAP: usize = 64;
 
@@ -258,8 +375,18 @@ pub fn launch_morphology_u8_cuda(
         ));
     }
 
+    // Single-channel images take the 4-pixel-per-thread vector kernel
+    // (same tap multiset per byte lane via __vmaxu4/__vminu4 — byte-exact);
+    // multi-channel and zero-tap elements use the scalar kernel.
+    let vectorized = channels == 1 && !taps.is_empty();
+    let fn_name = if vectorized {
+        "morphology_u8_c1v4"
+    } else {
+        "morphology_u8"
+    };
+
     let cache = MORPH_KERNELS.get_or_init(Default::default);
-    let key = (taps.to_vec(), op);
+    let key = (taps.to_vec(), op, vectorized);
     let cached = cache
         .lock()
         .expect("morph kernel cache poisoned")
@@ -270,8 +397,7 @@ pub fn launch_morphology_u8_cuda(
     } else {
         let src_code = morph_source(taps, op);
         let built = Arc::new(
-            try_compile_with_l1(ctx, &src_code, "morphology_u8")
-                .map_err(CudaMorphologyError::Cuda)?,
+            try_compile_with_l1(ctx, &src_code, fn_name).map_err(CudaMorphologyError::Cuda)?,
         );
         let mut map = cache.lock().expect("morph kernel cache poisoned");
         if map.len() >= MORPH_KERNEL_CACHE_CAP {
@@ -282,6 +408,7 @@ pub fn launch_morphology_u8_cuda(
 
     let border_i = border as i32;
     let (w_i, h_i) = (width as i32, height as i32);
+    let grid_w = if vectorized { width.div_ceil(4) } else { width };
 
     kernel
         .launch_builder(stream)
@@ -292,6 +419,6 @@ pub fn launch_morphology_u8_cuda(
         .arg(&h_i)
         .arg(&channels)
         .arg(&border_i)
-        .launch_2d(width, height, make_config(width, height, block_dim))
+        .launch_2d(grid_w, height, make_config(grid_w, height, block_dim))
         .map_err(|e| CudaMorphologyError::Cuda(e.to_string()))
 }
