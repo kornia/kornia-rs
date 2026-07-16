@@ -80,8 +80,10 @@
 
 use std::sync::{Arc, OnceLock};
 
-use cudarc::driver::{CudaContext, CudaSlice, CudaStream, LaunchConfig};
+use cudarc::driver::{CudaContext, CudaSlice, CudaStream};
 use kornia_tensor::CudaKernel;
+
+use super::{make_config, try_compile_with_l1};
 
 // ── CUDA C source: bilinear, 32×8 block, __ldg reads ─────────────────────────
 //
@@ -401,17 +403,12 @@ extern "C" __global__ void resize_lanczos_v_3c(
 
 // ── Kernel caches ─────────────────────────────────────────────────────────────
 
-static BILINEAR_KERNEL: OnceLock<CudaKernel> = OnceLock::new();
-static NEAREST_KERNEL: OnceLock<CudaKernel> = OnceLock::new();
-static BILINEAR_NORMALIZE_KERNEL: OnceLock<CudaKernel> = OnceLock::new();
+static BILINEAR_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
+static NEAREST_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
+static BILINEAR_NORMALIZE_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
 static BICUBIC_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
 static LANCZOS_H_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
 static LANCZOS_V_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
-
-// 32 threads wide → full warp maps to one output row (better write coalescing).
-// 8 threads tall → 256 threads total, same occupancy as 16×16.
-const BLOCK_W: u32 = 32;
-const BLOCK_H: u32 = 8;
 
 // ── Error type ────────────────────────────────────────────────────────────────
 
@@ -429,42 +426,6 @@ pub enum CudaResizeError {
         /// Minimum required length (dst_w × dst_h × 3).
         need: usize,
     },
-}
-
-// ── Internal helpers ──────────────────────────────────────────────────────────
-
-fn make_config(dst_width: u32, dst_height: u32, block_dim: Option<(u32, u32)>) -> LaunchConfig {
-    let (bw, bh) = block_dim.unwrap_or_else(|| {
-        // Auto mode: clamp to image size so small images don't launch
-        // blocks that are mostly idle (e.g. a 4×4 image with 32×8 = 256
-        // threads has 93% idle threads).
-        (BLOCK_W.min(dst_width), BLOCK_H.min(dst_height))
-    });
-    LaunchConfig {
-        block_dim: (bw, bh, 1),
-        grid_dim: (dst_width.div_ceil(bw), dst_height.div_ceil(bh), 1),
-        shared_mem_bytes: 0,
-    }
-}
-
-fn compile_with_l1(ctx: &Arc<CudaContext>, src: &str, fn_name: &str) -> CudaKernel {
-    let k = CudaKernel::compile(ctx, src, fn_name)
-        .unwrap_or_else(|e| panic!("failed to compile {fn_name}: {e}"));
-    // Prefer L1 over shared memory (kernel uses no smem).
-    // Ignoring errors: unsupported on some platforms but never fatal.
-    let _ = k.prefer_l1_cache();
-    k
-}
-
-fn try_compile_with_l1(
-    ctx: &Arc<CudaContext>,
-    src: &str,
-    fn_name: &str,
-) -> Result<CudaKernel, String> {
-    let k = CudaKernel::compile(ctx, src, fn_name)
-        .map_err(|e| format!("failed to compile {fn_name}: {e}"))?;
-    let _ = k.prefer_l1_cache();
-    Ok(k)
 }
 
 // ── Pixel mapping ─────────────────────────────────────────────────────────────
@@ -565,7 +526,9 @@ pub fn launch_resize_bilinear_downscale_cuda(
     }
 
     let kernel = BILINEAR_KERNEL
-        .get_or_init(|| compile_with_l1(ctx, BILINEAR_SRC, "resize_bilinear_downscale_3c"));
+        .get_or_init(|| try_compile_with_l1(ctx, BILINEAR_SRC, "resize_bilinear_downscale_3c"))
+        .as_ref()
+        .map_err(|e| CudaResizeError::Cuda(e.clone()))?;
 
     let (ax, bx) = mapping.coeffs(src_width, dst_width);
     let (ay, by) = mapping.coeffs(src_height, dst_height);
@@ -646,9 +609,12 @@ pub fn launch_resize_bilinear_normalize_cuda(
         ));
     }
 
-    let kernel = BILINEAR_NORMALIZE_KERNEL.get_or_init(|| {
-        compile_with_l1(ctx, BILINEAR_NORMALIZE_SRC, "resize_bilinear_normalize_3c")
-    });
+    let kernel = BILINEAR_NORMALIZE_KERNEL
+        .get_or_init(|| {
+            try_compile_with_l1(ctx, BILINEAR_NORMALIZE_SRC, "resize_bilinear_normalize_3c")
+        })
+        .as_ref()
+        .map_err(|e| CudaResizeError::Cuda(e.clone()))?;
 
     let (ax, bx) = mapping.coeffs(src_width, dst_width);
     let (ay, by) = mapping.coeffs(src_height, dst_height);
@@ -722,7 +688,9 @@ pub fn launch_resize_nearest_downscale_cuda(
     }
 
     let kernel = NEAREST_KERNEL
-        .get_or_init(|| compile_with_l1(ctx, NEAREST_SRC, "resize_nearest_downscale_3c"));
+        .get_or_init(|| try_compile_with_l1(ctx, NEAREST_SRC, "resize_nearest_downscale_3c"))
+        .as_ref()
+        .map_err(|e| CudaResizeError::Cuda(e.clone()))?;
 
     let (ax, bx) = mapping.coeffs(src_width, dst_width);
     let (ay, by) = mapping.coeffs(src_height, dst_height);
