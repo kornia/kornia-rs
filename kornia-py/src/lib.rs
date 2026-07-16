@@ -25,6 +25,7 @@ mod homography;
 mod icp;
 mod image;
 mod io;
+mod morphology;
 mod normalize;
 mod orb;
 mod pgo;
@@ -503,6 +504,8 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     imgproc_mod.add_function(wrap_pyfunction!(crop::crop, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(blur::gaussian_blur, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(blur::box_blur, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(morphology::dilate, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(morphology::erode, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(
         brightness::adjust_brightness_py,
         &imgproc_mod

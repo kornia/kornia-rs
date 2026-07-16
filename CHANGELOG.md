@@ -13,6 +13,18 @@ changes early: `cargo add kornia-imgproc@0.1.15-rc.1` or `pip install --pre korn
 
 ## [Unreleased]
 
+**u8 CUDA morphology (dilate / erode), bit-identical to the CPU ops, plus
+first-time Python bindings.** `dilate` / `erode` route u8 device images
+(1/3/4-channel) to a CUDA kernel that samples the exact tap multiset the CPU
+does — same active structuring-element offsets, same border index mapping
+for all five padding modes — so min/max output is byte-for-byte equal
+(`assert_eq!` parity tests over box/cross/ellipse and even-sized kernels).
+The structuring element is cached on-device per geometry (Jetson pageable
+H2D tail; warm path is CUDA-Graph-capturable). New
+`kornia_rs.imgproc.dilate` / `erode` Python functions cover the numpy u8 CPU
+path and u8 device images alike. Non-u8 device pairs error with the typed
+no-GPU-kernel message instead of touching device memory from the CPU.
+
 **u8 CUDA warps (bilinear), bit-identical to the CPU fast paths — which are
 now bit-identical to each other too.** `warp_affine_u8` and
 `warp_perspective_u8` route u8 device images (1/3/4-channel) to new
