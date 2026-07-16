@@ -22,22 +22,6 @@ fn no_device_err(op: &str) -> PyErr {
     ))
 }
 
-/// Borrow a device `Image<f32, 3>` out of a unified image, or raise the
-/// uniform "no GPU kernel for this dtype/channels" error.
-fn device_f32c3<'a>(img: &'a PyImageApi, op: &str) -> PyResult<&'a Image<f32, 3>> {
-    let dev = img.as_device().ok_or_else(|| no_device_err(op))?;
-    match dev {
-        Inner::F32C3(src) => Ok(src),
-        other => Err(PyValueError::new_err(format!(
-            "{op}: the GPU path supports 3-channel f32 device images, got \
-             {:?} with {} channel(s); convert on the host or move the image \
-             back with .cpu()",
-            other.dtype_enum(),
-            other.channels()
-        ))),
-    }
-}
-
 /// A geometry-op result: a freshly allocated device image, or the caller's
 /// `out=` object handed back (torch-style) so frame loops allocate nothing.
 pub(crate) enum PyOut {
