@@ -200,20 +200,40 @@ extern "C" __global__ void morphology_u8(
         neg_min_dy = -min_dy,
     );
 
-    // ── C=1 vector kernel: 4 output pixels per thread ─────────────────────
+    // ── C=1 vector kernel: 4×4 output tile per thread ─────────────────────
     //
-    // Per active row (taps grouped by dy) the kernel loads the aligned u32
-    // words covering the 4-pixel window plus the dx span, normalizes them to
-    // a byte stream starting exactly at `x0 + min_dx` with one __byte_perm
-    // per word, then folds each dx window with __vmaxu4 / __vminu4 —
-    // per-byte-lane u8 min/max over exactly the CPU's tap multiset, so the
-    // result stays byte-exact. Threads whose quad touches a border or the
-    // buffer ends fall back to the scalar bounds-checked taps per lane.
+    // Each thread produces a 4-wide × 4-tall output tile. Per INPUT row
+    // (indices `min_dy ..= max_dy + 3`) the kernel loads the aligned u32
+    // words covering the tile plus the dx span once, normalizes them to a
+    // byte stream anchored at `x0 + min_dx` with one __byte_perm per word,
+    // and computes one horizontal fold per distinct dx-set of the element
+    // (box: one; cross: two). Each output row then folds the horizontal
+    // results of its tap rows vertically — for a 3×3 box that is 6 row
+    // loads + 6 horizontal folds serving 16 outputs, instead of 36 loads.
+    // All folds are __vmaxu4 / __vminu4: per-byte-lane u8 min/max over
+    // exactly the CPU's tap multiset, so the result stays byte-exact.
+    // Tiles touching a border or the buffer ends fall back to the scalar
+    // bounds-checked taps per lane, which compute identical values.
     use std::collections::BTreeMap;
     let mut rows: BTreeMap<i32, Vec<i32>> = BTreeMap::new();
     for pair in taps.chunks_exact(2) {
-        rows.entry(pair[0]).or_default().push(pair[1]);
+        let mut dxs = rows.remove(&pair[0]).unwrap_or_default();
+        dxs.push(pair[1]);
+        rows.insert(pair[0], dxs);
     }
+    // Distinct dx-sets → horizontal-fold classes.
+    let mut classes: Vec<Vec<i32>> = Vec::new();
+    let mut row_class: BTreeMap<i32, usize> = BTreeMap::new();
+    for (dy, dxs) in &rows {
+        let mut key = dxs.clone();
+        key.sort_unstable();
+        let cid = classes.iter().position(|c| *c == key).unwrap_or_else(|| {
+            classes.push(key.clone());
+            classes.len() - 1
+        });
+        row_class.insert(*dy, cid);
+    }
+
     let span = (max_dx - min_dx) as usize;
     // Normalized stream words R[0..rn]: highest byte read is span + 3.
     let rn = (span + 3) / 4 + 1;
@@ -227,8 +247,49 @@ extern "C" __global__ void morphology_u8(
         MorphOp::Erode => "0xffffffffu",
     };
 
+    // Which classes are needed at each input row rr = dy + j (j in 0..4).
+    let rr_lo = min_dy;
+    let rr_hi = max_dy + 3;
+    let mut needed: BTreeMap<i32, Vec<usize>> = BTreeMap::new();
+    for (dy, _) in &rows {
+        let cid = row_class[dy];
+        for j in 0..4 {
+            let e = needed.entry(dy + j).or_default();
+            if !e.contains(&cid) {
+                e.push(cid);
+            }
+        }
+    }
+
+    // Horizontal-fold expression for class `cid` over stream words R{k}_{i}.
+    let hfold_expr = |cid: usize, k: usize| -> String {
+        let mut expr = String::new();
+        for (n, dx) in classes[cid].iter().enumerate() {
+            let o = (dx - min_dx) as usize;
+            let (wi, rem) = (o / 4, o % 4);
+            let window = if rem == 0 {
+                format!("R{k}_{wi}")
+            } else {
+                let sel = 0x3210u32 + 0x1111 * rem as u32;
+                format!("__byte_perm(R{k}_{wi}, R{k}_{}, 0x{sel:04x}u)", wi + 1)
+            };
+            expr = if n == 0 {
+                window
+            } else {
+                format!("{vfold}({expr}, {window})")
+            };
+        }
+        expr
+    };
+
+    // Per-input-row blocks: declare H vars, then load + normalize + fold.
+    let mut h_decls = String::new();
     let mut row_blocks = String::new();
-    for (dy, dxs) in &rows {
+    for (rr, cids) in &needed {
+        let k = (rr - rr_lo) as usize;
+        for cid in cids {
+            let _ = writeln!(h_decls, "    unsigned int H{cid}_{k};");
+        }
         let mut w_loads = String::new();
         for i in 0..wn {
             let _ = writeln!(w_loads, "        unsigned int W{i} = __ldg(wp + {i});");
@@ -237,33 +298,44 @@ extern "C" __global__ void morphology_u8(
         for i in 0..rn {
             let _ = writeln!(
                 r_norms,
-                "        unsigned int R{i} = __byte_perm(W{i}, W{}, sel_n);",
+                "        unsigned int R{k}_{i} = __byte_perm(W{i}, W{}, sel_n);",
                 i + 1
             );
         }
-        let mut folds = String::new();
-        for dx in dxs {
-            let o = (dx - min_dx) as usize;
-            let (wi, rem) = (o / 4, o % 4);
-            if rem == 0 {
-                let _ = writeln!(folds, "        acc4 = {vfold}(acc4, R{wi});");
-            } else {
-                let sel = 0x3210u32 + 0x1111 * rem as u32;
-                let _ = writeln!(
-                    folds,
-                    "        acc4 = {vfold}(acc4, __byte_perm(R{wi}, R{}, 0x{sel:04x}u));",
-                    wi + 1
-                );
-            }
+        let mut h_folds = String::new();
+        for cid in cids {
+            let _ = writeln!(h_folds, "        H{cid}_{k} = {};", hfold_expr(*cid, k));
         }
         let _ = write!(
             row_blocks,
-            "    {{ // row dy = {dy}\n\
-             \x20       const unsigned char* p = src + (ptrdiff_t)(y + ({dy})) * width + x0 + ({min_dx});\n\
+            "    {{ // input row y0 + ({rr})\n\
+             \x20       const unsigned char* p = src + (ptrdiff_t)(y0 + ({rr})) * width + x0 + ({min_dx});\n\
              \x20       unsigned int s = (unsigned int)((size_t)p & 3u);\n\
              \x20       const unsigned int* wp = (const unsigned int*)(p - s);\n\
              \x20       unsigned int sel_n = 0x3210u + 0x1111u * s;\n\
-             {w_loads}{r_norms}{folds}    }}\n"
+             {w_loads}{r_norms}{h_folds}    }}\n"
+        );
+    }
+
+    // Vertical folds + stores per output row.
+    let mut out_rows = String::new();
+    for j in 0..4 {
+        let mut expr = String::from(vinit);
+        for (dy, _) in &rows {
+            let cid = row_class[dy];
+            let k = (dy + j - rr_lo) as usize;
+            expr = format!("{vfold}({expr}, H{cid}_{k})");
+        }
+        let _ = write!(
+            out_rows,
+            "    {{\n\
+             \x20       unsigned int acc4 = {expr};\n\
+             \x20       size_t d = (size_t)(y0 + {j}) * width + x0;\n\
+             \x20       dst[d + 0] = (unsigned char)(acc4 & 0xffu);\n\
+             \x20       dst[d + 1] = (unsigned char)((acc4 >> 8) & 0xffu);\n\
+             \x20       dst[d + 2] = (unsigned char)((acc4 >> 16) & 0xffu);\n\
+             \x20       dst[d + 3] = (unsigned char)((acc4 >> 24) & 0xffu);\n\
+             \x20   }}\n"
         );
     }
 
@@ -276,36 +348,38 @@ extern "C" __global__ void morphology_u8_c1v4(
     int width, int height, unsigned int channels, int border
 ) {{
     int x0 = 4 * (int)(blockIdx.x * blockDim.x + threadIdx.x);
-    unsigned int y = blockIdx.y * blockDim.y + threadIdx.y;
-    if (x0 >= width || y >= (unsigned int)height) return;
+    int y0 = 4 * (int)(blockIdx.y * blockDim.y + threadIdx.y);
+    if (x0 >= width || y0 >= height) return;
 
-    bool vec_ok = x0 >= {neg_min_dx} && x0 + 3 < width - ({max_dx})
-               && (int)y >= {neg_min_dy} && (int)y < height - ({max_dy});
+    bool vec_ok = x0 + 3 < width && y0 + 3 < height
+               && x0 >= {neg_min_dx} && x0 + 3 < width - ({max_dx})
+               && y0 >= {neg_min_dy} && y0 + 3 < height - ({max_dy});
     // The aligned word loads may reach up to 3 bytes before / after the
-    // window; keep them inside the buffer (corner quads take the scalar
+    // window; keep them inside the buffer (corner tiles take the scalar
     // fallback, whose values are identical).
-    long long idx_lo = (long long)((int)y + ({min_dy})) * width + x0 + ({min_dx});
-    long long idx_hi = (long long)((int)y + ({max_dy})) * width + x0 + ({min_dx});
+    long long idx_lo = (long long)(y0 + ({rr_lo})) * width + x0 + ({min_dx});
+    long long idx_hi = (long long)(y0 + ({rr_hi})) * width + x0 + ({min_dx});
     vec_ok = vec_ok && idx_lo >= 3
           && idx_hi + {load_span} <= (long long)width * height;
 
     if (vec_ok) {{
-        unsigned int acc4 = {vinit};
+{h_decls}
 {row_blocks}
-        size_t d = (size_t)y * width + x0;
-        dst[d + 0] = (unsigned char)(acc4 & 0xffu);
-        dst[d + 1] = (unsigned char)((acc4 >> 8) & 0xffu);
-        dst[d + 2] = (unsigned char)((acc4 >> 16) & 0xffu);
-        dst[d + 3] = (unsigned char)((acc4 >> 24) & 0xffu);
+{out_rows}
         return;
     }}
 
     unsigned int ch = 0u; // C == 1
-    for (int lane = 0; lane < 4; ++lane) {{
-        int x = x0 + lane;
-        if (x >= width) break;
-        unsigned int acc = {acc_init};
-{border_stanzas_lane}        dst[(size_t)y * width + x] = (unsigned char)acc;
+    for (int jj = 0; jj < 4; ++jj) {{
+        int yy = y0 + jj;
+        if (yy >= height) break;
+        unsigned int y = (unsigned int)yy;
+        for (int lane = 0; lane < 4; ++lane) {{
+            int x = x0 + lane;
+            if (x >= width) break;
+            unsigned int acc = {acc_init};
+{border_stanzas_lane}            dst[(size_t)y * width + x] = (unsigned char)acc;
+        }}
     }}
 }}
 "#,
@@ -408,7 +482,11 @@ pub fn launch_morphology_u8_cuda(
 
     let border_i = border as i32;
     let (w_i, h_i) = (width as i32, height as i32);
-    let grid_w = if vectorized { width.div_ceil(4) } else { width };
+    let (grid_w, grid_h) = if vectorized {
+        (width.div_ceil(4), height.div_ceil(4))
+    } else {
+        (width, height)
+    };
 
     kernel
         .launch_builder(stream)
@@ -419,6 +497,6 @@ pub fn launch_morphology_u8_cuda(
         .arg(&h_i)
         .arg(&channels)
         .arg(&border_i)
-        .launch_2d(grid_w, height, make_config(grid_w, height, block_dim))
+        .launch_2d(grid_w, grid_h, make_config(grid_w, grid_h, block_dim))
         .map_err(|e| CudaMorphologyError::Cuda(e.to_string()))
 }
