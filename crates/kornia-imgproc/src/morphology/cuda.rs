@@ -270,12 +270,17 @@ mod bench_probe {
     #[test]
     #[ignore]
     fn probe_dilate_1080p() {
-        use crate::cuda::color::test_utils::{default_stream, pattern_u8};
+        use crate::cuda::color::test_utils::pattern_u8;
         use crate::morphology::{dilate, Kernel, KernelShape};
         use crate::padding::PaddingMode;
         use kornia_image::{Image, ImageSize};
 
-        let stream = default_stream();
+        // Owned (non-legacy) stream: the context default stream serializes
+        // globally and inflates timings ~2x.
+        let stream = cudarc::driver::CudaContext::new(0)
+            .expect("CUDA device 0")
+            .new_stream()
+            .expect("stream");
         let size = ImageSize {
             width: 1920,
             height: 1080,
