@@ -379,7 +379,6 @@ mod tests {
     use crate::cuda::color::test_utils::{default_stream, pattern_f32};
     use crate::interpolation::InterpolationMode;
     use kornia_image::{Image, ImageSize};
-    use kornia_tensor::Tensor2;
 
     fn cpu_and_gpu(
         w: usize,
@@ -407,8 +406,22 @@ mod tests {
             0.0,
         )
         .unwrap();
-        let map_x_t = Tensor2::from_shape_vec([h, w], mx.clone()).unwrap();
-        let map_y_t = Tensor2::from_shape_vec([h, w], my.clone()).unwrap();
+        let map_x_t = Image::<f32, 1>::new(
+            ImageSize {
+                width: w,
+                height: h,
+            },
+            mx.clone(),
+        )
+        .unwrap();
+        let map_y_t = Image::<f32, 1>::new(
+            ImageSize {
+                width: w,
+                height: h,
+            },
+            my.clone(),
+        )
+        .unwrap();
         crate::interpolation::remap(&src_img, &mut dst_img, &map_x_t, &map_y_t, interpolation)
             .unwrap();
         let cpu = dst_img.as_slice().to_vec();

@@ -1,5 +1,7 @@
 mod bicubic;
 mod bilinear;
+#[cfg(feature = "cuda")]
+pub(crate) mod cuda;
 pub(crate) mod lanczos;
 
 /// Utility functions to generate meshgrid and remap images

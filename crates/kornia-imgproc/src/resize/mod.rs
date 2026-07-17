@@ -177,11 +177,16 @@ pub fn resize<const C: usize>(
     // bilinear path (measured +25-65% on the CPU resize bench).
     macro_rules! run {
         ($sampler:path) => {
-            parallel::par_iter_rows_resample(dst, &map_x, &map_y, |&x, &y, dst_pixel| {
-                for (k, pixel) in dst_pixel.iter_mut().enumerate() {
-                    *pixel = $sampler(src, x, y, k);
-                }
-            })
+            parallel::par_iter_rows_resample(
+                dst,
+                map_x.as_slice(),
+                map_y.as_slice(),
+                |&x, &y, dst_pixel| {
+                    for (k, pixel) in dst_pixel.iter_mut().enumerate() {
+                        *pixel = $sampler(src, x, y, k);
+                    }
+                },
+            )
         };
     }
     match interpolation {
