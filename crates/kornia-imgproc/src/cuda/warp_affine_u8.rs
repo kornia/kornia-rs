@@ -24,7 +24,8 @@
 //! the same `invert_affine_transform` the CPU path calls, so the f32
 //! inversion arithmetic is shared, not mirrored.
 
-use std::sync::{Arc, OnceLock};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use cudarc::driver::{CudaContext, CudaSlice, CudaStream};
 use kornia_tensor::CudaKernel;
@@ -32,36 +33,38 @@ use kornia_tensor::CudaKernel;
 use super::resize::CudaResizeError as CudaWarpU8Error;
 use super::{make_config, try_compile_with_l1};
 
-static AFFINE_U8_SRC: &str = r#"
+fn affine_u8_src(channels: usize) -> String {
+    format!(
+        r#"
+#define C {channels}
 // Mirror of warp::span::constrain_span (f32; compiled with --fmad=false so
 // -b/a, ceilf, floorf round exactly like the CPU expressions).
 __device__ __forceinline__ void constrain_span(
     float a, float b, bool ge, float eps, long long* lo, long long* hi
-) {
-    if (fabsf(a) < eps || a == 0.0f) {
+) {{
+    if (fabsf(a) < eps || a == 0.0f) {{
         bool feasible = ge ? (b >= 0.0f) : (b < 0.0f);
-        if (!feasible) { *hi = *lo; }
+        if (!feasible) {{ *hi = *lo; }}
         return;
-    }
+    }}
     float k = -b / a;
-    if (ge) {
-        if (a > 0.0f) { long long v = (long long)ceilf(k);      if (v > *lo) *lo = v; }
-        else          { long long v = (long long)floorf(k) + 1; if (v < *hi) *hi = v; }
-    } else {
-        if (a > 0.0f) { long long v = (long long)ceilf(k);      if (v < *hi) *hi = v; }
-        else          { long long v = (long long)floorf(k) + 1; if (v > *lo) *lo = v; }
-    }
-}
+    if (ge) {{
+        if (a > 0.0f) {{ long long v = (long long)ceilf(k);      if (v > *lo) *lo = v; }}
+        else          {{ long long v = (long long)floorf(k) + 1; if (v < *hi) *hi = v; }}
+    }} else {{
+        if (a > 0.0f) {{ long long v = (long long)ceilf(k);      if (v < *hi) *hi = v; }}
+        else          {{ long long v = (long long)floorf(k) + 1; if (v > *lo) *lo = v; }}
+    }}
+}}
 
-extern "C" __global__ void warp_affine_u8_bilinear(
+extern "C" __global__ void warp_affine_u8_bilinear_c{channels}(
     const unsigned char* __restrict__ src,
     unsigned char* __restrict__       dst,
     float m0, float m1, float m2, float m3, float m4, float m5, // inverse map
     int   dsx_q, int dsy_q,       // host-quantized Q16 increments
     int   src_w, int src_h,
-    unsigned int dst_w, unsigned int dst_h,
-    unsigned int channels
-) {
+    unsigned int dst_w, unsigned int dst_h
+) {{
     // Row prologue: one thread per block-row mirrors the CPU span + Q16
     // anchor computation; blockDim.y <= 8 (see make_config).
     __shared__ int s_xlo[8];
@@ -72,7 +75,7 @@ extern "C" __global__ void warp_affine_u8_bilinear(
     unsigned int x = blockIdx.x * blockDim.x + threadIdx.x;
     unsigned int y = blockIdx.y * blockDim.y + threadIdx.y;
 
-    if (threadIdx.x == 0 && y < dst_h) {
+    if (threadIdx.x == 0 && y < dst_h) {{
         float y_f = (float)y;
         float sx0 = m1 * y_f + m2;
         float sy0 = m4 * y_f + m5;
@@ -81,10 +84,10 @@ extern "C" __global__ void warp_affine_u8_bilinear(
         long long lo = 0, hi = (long long)dst_w;
         constrain_span(m0, sx0, true, 1e-12f, &lo, &hi);
         constrain_span(m0, sx0 - (float)src_w, false, 1e-12f, &lo, &hi);
-        if (lo < hi) {
+        if (lo < hi) {{
             constrain_span(m3, sy0, true, 1e-12f, &lo, &hi);
             constrain_span(m3, sy0 - (float)src_h, false, 1e-12f, &lo, &hi);
-        }
+        }}
         long long lo_c = min(max(lo, 0ll), (long long)dst_w);
         long long hi_c = min(max(hi, 0ll), (long long)dst_w);
         int xlo = (lo >= hi || lo_c >= hi_c) ? 0 : (int)lo_c;
@@ -94,18 +97,19 @@ extern "C" __global__ void warp_affine_u8_bilinear(
         // Q16 anchors at x_lo — same f32 expression + truncating cast as CPU.
         s_sxq[threadIdx.y] = (int)((sx0 + m0 * (float)xlo) * 65536.0f);
         s_syq[threadIdx.y] = (int)((sy0 + m3 * (float)xlo) * 65536.0f);
-    }
+    }}
     __syncthreads();
 
     if (x >= dst_w || y >= dst_h) return;
 
-    size_t d = ((size_t)y * dst_w + x) * channels;
+    size_t d = ((size_t)y * dst_w + x) * C;
     int xlo = s_xlo[threadIdx.y];
     int xhi = s_xhi[threadIdx.y];
-    if ((int)x < xlo || (int)x >= xhi) {
-        for (unsigned int ch = 0; ch < channels; ++ch) dst[d + ch] = 0;
+    if ((int)x < xlo || (int)x >= xhi) {{
+        #pragma unroll
+    for (unsigned int ch = 0; ch < C; ++ch) dst[d + ch] = 0;
         return;
-    }
+    }}
 
     // Wrapping i32 coordinate, identical to the CPU's repeated wrapping_add.
     unsigned int rel = x - (unsigned int)xlo;
@@ -122,12 +126,13 @@ extern "C" __global__ void warp_affine_u8_bilinear(
     int xi1 = (xi + 1 < src_w) ? xi + 1 : xi;             // replicate far edge
     int yi1 = (yi + 1 < src_h) ? yi + 1 : yi;
 
-    size_t row0 = (size_t)yi * src_w * channels;
-    size_t row1 = (size_t)yi1 * src_w * channels;
-    size_t off0 = (size_t)xi * channels;
-    size_t off1 = (size_t)xi1 * channels;
+    size_t row0 = (size_t)yi * src_w * C;
+    size_t row1 = (size_t)yi1 * src_w * C;
+    size_t off0 = (size_t)xi * C;
+    size_t off1 = (size_t)xi1 * C;
 
-    for (unsigned int ch = 0; ch < channels; ++ch) {
+    #pragma unroll
+    for (unsigned int ch = 0; ch < C; ++ch) {{
         unsigned int p00 = (unsigned int)__ldg(&src[row0 + off0 + ch]);
         unsigned int p01 = (unsigned int)__ldg(&src[row0 + off1 + ch]);
         unsigned int p10 = (unsigned int)__ldg(&src[row1 + off0 + ch]);
@@ -135,11 +140,14 @@ extern "C" __global__ void warp_affine_u8_bilinear(
         unsigned int top = p00 * fx1 + p01 * fx;
         unsigned int bot = p10 * fx1 + p11 * fx;
         dst[d + ch] = (unsigned char)((top * fy1 + bot * fy + (1u << 19)) >> 20);
-    }
+    }}
+}}
+"#
+    )
 }
-"#;
 
-static AFFINE_U8_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
+type PerCKernelCache = Mutex<HashMap<u32, Arc<CudaKernel>>>;
+static AFFINE_U8_KERNELS: OnceLock<PerCKernelCache> = OnceLock::new();
 
 /// Launch the u8 bilinear warp-affine kernel.
 ///
@@ -176,10 +184,27 @@ pub fn launch_warp_affine_u8_bilinear_cuda(
         });
     }
 
-    let kernel = AFFINE_U8_KERNEL
-        .get_or_init(|| try_compile_with_l1(ctx, AFFINE_U8_SRC, "warp_affine_u8_bilinear"))
-        .as_ref()
-        .map_err(|e| CudaWarpU8Error::Cuda(e.clone()))?;
+    // Per-C specialized kernel (scoped-guard cache lookup).
+    let cache = AFFINE_U8_KERNELS.get_or_init(Default::default);
+    let cached = cache
+        .lock()
+        .expect("warp kernel cache poisoned")
+        .get(&channels)
+        .cloned();
+    let kernel = if let Some(hit) = cached {
+        hit
+    } else {
+        let src_code = affine_u8_src(channels as usize);
+        let name = format!("warp_affine_u8_bilinear_c{channels}");
+        let built =
+            Arc::new(try_compile_with_l1(ctx, &src_code, &name).map_err(CudaWarpU8Error::Cuda)?);
+        cache
+            .lock()
+            .expect("warp kernel cache poisoned")
+            .entry(channels)
+            .or_insert(built)
+            .clone()
+    };
 
     // Same Q16 quantization (f32 -> i32 truncating cast) the CPU applies.
     let dsx_q = (m_inv[0] * 65536.0) as i32;
@@ -202,7 +227,6 @@ pub fn launch_warp_affine_u8_bilinear_cuda(
         .arg(&src_h_i)
         .arg(&dst_width)
         .arg(&dst_height)
-        .arg(&channels)
         .launch_2d(
             dst_width,
             dst_height,

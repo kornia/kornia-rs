@@ -407,3 +407,59 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod bench_probe {
+    /// Release-build device-throughput probe (min of 5 vs unlocked DVFS):
+    /// `cargo test --release ... warp::cuda::bench_probe -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn probe_warps_1080p() {
+        use crate::cuda::color::test_utils::{default_stream, pattern_u8};
+        use kornia_image::{Image, ImageSize};
+
+        let stream = default_stream();
+        let size = ImageSize {
+            width: 1920,
+            height: 1080,
+        };
+        let src = Image::<u8, 3>::new(size, pattern_u8(1920 * 1080 * 3)).unwrap();
+        let d_src = src.to_cuda(&stream).unwrap();
+        let mut d_dst = Image::<u8, 3>::zeros_cuda(size, &stream).unwrap();
+        let aff = crate::warp::get_rotation_matrix2d((960.0, 540.0), 20.0, 1.1);
+        let psp: [f32; 9] = [0.9, 0.12, 40.0, -0.08, 1.05, -20.0, 6.0e-5, -4.5e-5, 1.0];
+
+        for _ in 0..200 {
+            crate::warp::warp_affine_u8(&d_src, &mut d_dst, &aff).unwrap();
+        }
+        stream.synchronize().unwrap();
+
+        let mut best_a = f64::MAX;
+        let mut best_p = f64::MAX;
+        for _ in 0..5 {
+            for _ in 0..50 {
+                crate::warp::warp_affine_u8(&d_src, &mut d_dst, &aff).unwrap();
+            }
+            stream.synchronize().unwrap();
+            let t0 = std::time::Instant::now();
+            for _ in 0..200 {
+                crate::warp::warp_affine_u8(&d_src, &mut d_dst, &aff).unwrap();
+            }
+            stream.synchronize().unwrap();
+            best_a = best_a.min(t0.elapsed().as_secs_f64() * 1000.0 / 200.0);
+
+            for _ in 0..50 {
+                crate::warp::warp_perspective_u8(&d_src, &mut d_dst, &psp).unwrap();
+            }
+            stream.synchronize().unwrap();
+            let t0 = std::time::Instant::now();
+            for _ in 0..200 {
+                crate::warp::warp_perspective_u8(&d_src, &mut d_dst, &psp).unwrap();
+            }
+            stream.synchronize().unwrap();
+            best_p = best_p.min(t0.elapsed().as_secs_f64() * 1000.0 / 200.0);
+        }
+        println!("affine: {best_a:.3} ms/op (min of 5)");
+        println!("perspective: {best_p:.3} ms/op (min of 5)");
+    }
+}
