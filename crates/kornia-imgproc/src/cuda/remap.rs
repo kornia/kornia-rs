@@ -409,14 +409,8 @@ mod tests {
         .unwrap();
         let map_x_t = Tensor2::from_shape_vec([h, w], mx.clone()).unwrap();
         let map_y_t = Tensor2::from_shape_vec([h, w], my.clone()).unwrap();
-        crate::interpolation::remap::remap(
-            &src_img,
-            &mut dst_img,
-            &map_x_t,
-            &map_y_t,
-            interpolation,
-        )
-        .unwrap();
+        crate::interpolation::remap(&src_img, &mut dst_img, &map_x_t, &map_y_t, interpolation)
+            .unwrap();
         let cpu = dst_img.as_slice().to_vec();
 
         let stream = default_stream();
@@ -428,10 +422,10 @@ mod tests {
         let (wu, hu) = (w as u32, h as u32);
         match interpolation {
             InterpolationMode::Bilinear => launch_remap_bilinear_cuda(
-                &ctx, &stream, &d_src, &d_mx, &d_my, &mut d_dst, wu, hu, wu, hu, None,
+                ctx, &stream, &d_src, &d_mx, &d_my, &mut d_dst, wu, hu, wu, hu, None,
             ),
             InterpolationMode::Nearest => launch_remap_nearest_cuda(
-                &ctx, &stream, &d_src, &d_mx, &d_my, &mut d_dst, wu, hu, wu, hu, None,
+                ctx, &stream, &d_src, &d_mx, &d_my, &mut d_dst, wu, hu, wu, hu, None,
             ),
             other => panic!("unsupported mode in test: {other:?}"),
         }
@@ -459,7 +453,7 @@ mod tests {
     fn remap_identity_bilinear() {
         let (w, h) = (65, 33);
         let mx: Vec<f32> = (0..h).flat_map(|_| (0..w).map(|x| x as f32)).collect();
-        let my: Vec<f32> = (0..h).flat_map(|y| (0..w).map(|_| y as f32)).collect();
+        let my: Vec<f32> = (0..h).flat_map(|y| (0..w).map(move |_| y as f32)).collect();
         assert_bit_exact(w, h, mx, my, InterpolationMode::Bilinear);
     }
 
@@ -468,7 +462,7 @@ mod tests {
     fn remap_identity_nearest() {
         let (w, h) = (65, 33);
         let mx: Vec<f32> = (0..h).flat_map(|_| (0..w).map(|x| x as f32)).collect();
-        let my: Vec<f32> = (0..h).flat_map(|y| (0..w).map(|_| y as f32)).collect();
+        let my: Vec<f32> = (0..h).flat_map(|y| (0..w).map(move |_| y as f32)).collect();
         assert_bit_exact(w, h, mx, my, InterpolationMode::Nearest);
     }
 
@@ -485,7 +479,7 @@ mod tests {
             .flat_map(|_| (0..w).map(|x| (x as f32 + 0.3).min((w - 2) as f32)))
             .collect();
         let my: Vec<f32> = (0..h)
-            .flat_map(|y| (0..w).map(|_| (y as f32 + 0.4).min((h - 2) as f32)))
+            .flat_map(|y| (0..w).map(move |_| (y as f32 + 0.4).min((h - 2) as f32)))
             .collect();
         assert_bit_exact(w, h, mx, my, InterpolationMode::Bilinear);
     }
@@ -505,8 +499,8 @@ mod tests {
         let d_my = stream.clone_htod(&my).unwrap();
         let mut d_dst = stream.alloc_zeros::<f32>(w * h * 3).unwrap();
         launch_remap_bilinear_cuda(
-            &ctx, &stream, &d_src, &d_mx, &d_my, &mut d_dst, w as u32, h as u32, w as u32,
-            h as u32, None,
+            ctx, &stream, &d_src, &d_mx, &d_my, &mut d_dst, w as u32, h as u32, w as u32, h as u32,
+            None,
         )
         .unwrap();
         let gpu = stream.clone_dtoh(&d_dst).unwrap();
