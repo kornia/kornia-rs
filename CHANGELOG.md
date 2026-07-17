@@ -24,6 +24,15 @@ real arithmetic, rounding differs). Measured on Jetson AGX Orin (locked
 clocks, 1080p→1080p 3-channel f32): warp-affine lanczos 5.49→4.26 ms,
 warp-perspective lanczos 5.93→4.28 ms sustained.
 
+**Python: every color conversion with a CUDA kernel now accepts a device
+`Image`.** Previously ~10 GPU color paths existed in the Rust crates but the
+Python surface raised "no GPU kernel for a device Image": HLS, Luv, XYZ,
+linear-RGB (f32 pairs), planar YUV (u8 **and** f32 pairs), plus the f32 arms
+of YCbCr, sepia and gray (`imgproc.gray_from_rgb` on an f32 device image now
+returns a device gray f32 image). u8 arms stay bit-exact with the CPU path;
+f32 arms follow the existing tolerance contract. Covered by device-vs-CPU
+parity tests and a memory-leak loop over the new arms.
+
 **u8 CUDA morphology (dilate / erode), bit-identical to the CPU ops, plus
 first-time Python bindings.** `dilate` / `erode` route u8 device images
 (1/3/4-channel) to a CUDA kernel that samples the exact tap multiset the CPU

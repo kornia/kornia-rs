@@ -30,7 +30,10 @@ use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 
 #[cfg(feature = "cuda")]
-use kornia_image::color_spaces::{Bgr8, Bgra8, Gray8, Hsvf32, Labf32, Rgb8, Rgba8, Rgbf32, YCbCr8};
+use kornia_image::color_spaces::{
+    Bgr8, Bgra8, Gray8, Grayf32, Hlsf32, Hsvf32, Labf32, LinearRgbf32, Luvf32, Rgb8, Rgba8, Rgbf32,
+    Xyzf32, YCbCr8, YCbCrf32, Yuv8, Yuvf32,
+};
 #[cfg(feature = "cuda")]
 use kornia_image::Image;
 #[cfg(feature = "cuda")]
