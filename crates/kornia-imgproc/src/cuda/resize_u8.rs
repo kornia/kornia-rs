@@ -136,6 +136,79 @@ extern "C" __global__ void resize_u8_pyrup2x_rgb(
 /// output pixels per thread with the channel loop fully unrolled so every
 /// load issues independently.
 fn nearest_src(channels: usize) -> String {
+    // Per-C gather bodies: 4 output pixels per thread, output assembled in
+    // registers and written as whole u32 words when the destination offset
+    // is 4-byte aligned (checked at runtime; byte-store fallback otherwise).
+    // C1: 4 px = one word. C3: 4 px = 12 B = three words packed from the
+    // gathered bytes. C4: each px is naturally one word.
+    let body = match channels {
+        1 => r#"
+        unsigned int b0 = (unsigned int)__ldg(&src[row + (size_t)__ldg(&xmap[x0 + 0u])]);
+        unsigned int b1 = (unsigned int)__ldg(&src[row + (size_t)__ldg(&xmap[x0 + 1u])]);
+        unsigned int b2 = (unsigned int)__ldg(&src[row + (size_t)__ldg(&xmap[x0 + 2u])]);
+        unsigned int b3 = (unsigned int)__ldg(&src[row + (size_t)__ldg(&xmap[x0 + 3u])]);
+        unsigned int w0 = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+        if (((size_t)(dst + d) & 3u) == 0u) {
+            *(unsigned int*)(dst + d) = w0;
+        } else {
+            dst[d + 0] = (unsigned char)b0;
+            dst[d + 1] = (unsigned char)b1;
+            dst[d + 2] = (unsigned char)b2;
+            dst[d + 3] = (unsigned char)b3;
+        }
+"#
+        .to_string(),
+        3 => r#"
+        size_t s0 = row3 + (size_t)__ldg(&xmap[x0 + 0u]) * 3u;
+        size_t s1 = row3 + (size_t)__ldg(&xmap[x0 + 1u]) * 3u;
+        size_t s2 = row3 + (size_t)__ldg(&xmap[x0 + 2u]) * 3u;
+        size_t s3 = row3 + (size_t)__ldg(&xmap[x0 + 3u]) * 3u;
+        unsigned int a0 = (unsigned int)__ldg(&src[s0 + 0u]);
+        unsigned int a1 = (unsigned int)__ldg(&src[s0 + 1u]);
+        unsigned int a2 = (unsigned int)__ldg(&src[s0 + 2u]);
+        unsigned int b0 = (unsigned int)__ldg(&src[s1 + 0u]);
+        unsigned int b1 = (unsigned int)__ldg(&src[s1 + 1u]);
+        unsigned int b2 = (unsigned int)__ldg(&src[s1 + 2u]);
+        unsigned int c0 = (unsigned int)__ldg(&src[s2 + 0u]);
+        unsigned int c1 = (unsigned int)__ldg(&src[s2 + 1u]);
+        unsigned int c2 = (unsigned int)__ldg(&src[s2 + 2u]);
+        unsigned int e0 = (unsigned int)__ldg(&src[s3 + 0u]);
+        unsigned int e1 = (unsigned int)__ldg(&src[s3 + 1u]);
+        unsigned int e2 = (unsigned int)__ldg(&src[s3 + 2u]);
+        if (((size_t)(dst + d) & 3u) == 0u) {
+            *(unsigned int*)(dst + d)      = a0 | (a1 << 8) | (a2 << 16) | (b0 << 24);
+            *(unsigned int*)(dst + d + 4)  = b1 | (b2 << 8) | (c0 << 16) | (c1 << 24);
+            *(unsigned int*)(dst + d + 8)  = c2 | (e0 << 8) | (e1 << 16) | (e2 << 24);
+        } else {
+            dst[d + 0]  = (unsigned char)a0;  dst[d + 1]  = (unsigned char)a1;
+            dst[d + 2]  = (unsigned char)a2;  dst[d + 3]  = (unsigned char)b0;
+            dst[d + 4]  = (unsigned char)b1;  dst[d + 5]  = (unsigned char)b2;
+            dst[d + 6]  = (unsigned char)c0;  dst[d + 7]  = (unsigned char)c1;
+            dst[d + 8]  = (unsigned char)c2;  dst[d + 9]  = (unsigned char)e0;
+            dst[d + 10] = (unsigned char)e1;  dst[d + 11] = (unsigned char)e2;
+        }
+"#
+        .to_string(),
+        _ => r#"
+        #pragma unroll
+        for (unsigned int px = 0; px < 4u; ++px) {
+            size_t so = rowC + (size_t)__ldg(&xmap[x0 + px]) * C;
+            unsigned int w = (unsigned int)__ldg(&src[so + 0u])
+                           | ((unsigned int)__ldg(&src[so + 1u]) << 8)
+                           | ((unsigned int)__ldg(&src[so + 2u]) << 16)
+                           | ((unsigned int)__ldg(&src[so + 3u]) << 24);
+            if (((size_t)(dst + d + (size_t)px * 4u) & 3u) == 0u) {
+                *(unsigned int*)(dst + d + (size_t)px * 4u) = w;
+            } else {
+                dst[d + px * 4u + 0u] = (unsigned char)(w & 0xffu);
+                dst[d + px * 4u + 1u] = (unsigned char)((w >> 8) & 0xffu);
+                dst[d + px * 4u + 2u] = (unsigned char)((w >> 16) & 0xffu);
+                dst[d + px * 4u + 3u] = (unsigned char)((w >> 24) & 0xffu);
+            }
+        }
+"#
+        .to_string(),
+    };
     format!(
         r#"
 #define C {channels}
@@ -148,19 +221,25 @@ extern "C" __global__ void resize_u8_nearest_c{channels}(
     unsigned int dst_w,
     unsigned int dst_h
 ) {{
-    // One pixel per thread: nearest is a pure scatter-gather and hides
-    // latency through occupancy — a 4-px/thread ILP variant measured ~35%
-    // SLOWER (fewer threads, no reuse to exploit). The baked channel count
-    // still unrolls the copy.
-    unsigned int x = blockIdx.x * blockDim.x + threadIdx.x;
-    unsigned int y = blockIdx.y * blockDim.y + threadIdx.y;
-    if (x >= dst_w || y >= dst_h) return;
+    unsigned int x0 = 4u * (blockIdx.x * blockDim.x + threadIdx.x);
+    unsigned int y  = blockIdx.y * blockDim.y + threadIdx.y;
+    if (y >= dst_h) return;
+    size_t row  = (size_t)__ldg(&ymap[y]) * src_w;
+    size_t row3 = row * 3u;
+    size_t rowC = row * C;
+    (void)row3; (void)rowC;
+    size_t d = ((size_t)y * dst_w + x0) * C;
 
-    size_t so = ((size_t)__ldg(&ymap[y]) * src_w + (size_t)__ldg(&xmap[x])) * C;
-    size_t d  = ((size_t)y * dst_w + x) * C;
-    #pragma unroll
-    for (unsigned int ch = 0; ch < C; ++ch) {{
-        dst[d + ch] = __ldg(&src[so + ch]);
+    if (x0 + 3u < dst_w) {{
+{body}        return;
+    }}
+    if (x0 >= dst_w) return;
+    for (unsigned int x = x0; x < dst_w; ++x) {{
+        size_t so = (row + (size_t)__ldg(&xmap[x])) * C;
+        #pragma unroll
+        for (unsigned int ch = 0; ch < C; ++ch) {{
+            dst[((size_t)y * dst_w + x) * C + ch] = __ldg(&src[so + ch]);
+        }}
     }}
 }}
 "#
@@ -488,7 +567,8 @@ pub fn launch_resize_u8_nearest_cuda(
             .clone()
     };
 
-    let grid_w = dst_width;
+    // Four output pixels per thread in x.
+    let grid_w = dst_width.div_ceil(4);
     kernel
         .launch_builder(stream)
         .arg(src)
