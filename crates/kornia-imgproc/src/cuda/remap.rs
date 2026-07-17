@@ -34,8 +34,10 @@
 //!
 //! * [`launch_remap_bilinear_cuda`]    — bilinear remap, 3-ch f32.
 //! * [`launch_remap_nearest_cuda`]     — nearest-neighbor remap, 3-ch f32.
-//! * [`remap_maps_from_affine`]        — build map_x/map_y from a 2×3 affine matrix.
-//! * [`remap_maps_from_homography`]    — build map_x/map_y from a 3×3 homography.
+//!
+//! Map-generation helpers (`remap_maps_from_affine`, `remap_maps_from_homography`) live
+//! in `examples/bench_cuda_remap.rs` — they serve the architecture-decision benchmark
+//! only; the library API is the pure remap launchers.
 
 use std::sync::{Arc, OnceLock};
 
@@ -43,6 +45,10 @@ use cudarc::driver::{CudaContext, CudaSlice, CudaStream};
 use kornia_tensor::CudaKernel;
 
 use super::{check_geometry, make_config, try_compile_with_l1};
+
+// Map-generation helpers (remap_maps_from_affine, remap_maps_from_homography)
+// have been moved into examples/bench_cuda_remap.rs.  They served only the
+// architecture-decision benchmark; the library surface is the pure launchers.
 
 // ── CUDA C source: bilinear remap via __ldg ───────────────────────────────────
 //
@@ -210,102 +216,6 @@ pub enum CudaRemapError {
     },
 }
 
-// ── Map-generation helpers ────────────────────────────────────────────────────
-
-/// Build a `(map_x, map_y)` coordinate map on the CPU from a 2×3 affine matrix.
-///
-/// The map encodes the **inverse** transform (output → source), matching
-/// OpenCV's `cv::remap` convention.  Pass this map to [`launch_remap_bilinear_cuda`]
-/// to reproduce the same result as [`launch_warp_affine_bilinear_cuda`].
-///
-/// `m` is the **forward** 2×3 affine matrix (source → destination).  It is
-/// inverted internally so callers can pass the same matrix they would pass to
-/// `launch_warp_affine_*`.
-///
-/// Out-of-bounds coordinates are left as-is; the kernel returns 0 for them
-/// (`BORDER_CONSTANT = 0`).
-///
-/// The returned vecs have `dst_w * dst_h` elements each, in row-major order.
-pub fn remap_maps_from_affine(
-    m: &[f32; 6],
-    dst_width: u32,
-    dst_height: u32,
-) -> (Vec<f32>, Vec<f32>) {
-    use crate::warp::invert_affine_transform;
-    let mi = invert_affine_transform(m);
-    let npix = (dst_width * dst_height) as usize;
-    let mut mx = Vec::with_capacity(npix);
-    let mut my = Vec::with_capacity(npix);
-    for dy in 0..dst_height {
-        let base_sx = mi[1] * dy as f32 + mi[2];
-        let base_sy = mi[4] * dy as f32 + mi[5];
-        for dx in 0..dst_width {
-            mx.push(mi[0] * dx as f32 + base_sx);
-            my.push(mi[3] * dx as f32 + base_sy);
-        }
-    }
-    (mx, my)
-}
-
-/// Build a `(map_x, map_y)` coordinate map on the CPU from a 3×3 homography matrix.
-///
-/// `h` is a row-major 3×3 homography (forward: source → destination).
-/// The map encodes the **inverse** perspective transform (destination → source),
-/// so that remap produces the same result as a fused warp-perspective kernel.
-///
-/// The returned vecs have `dst_w * dst_h` elements each, in row-major order.
-/// Pixels whose homogeneous w-coordinate is zero or negative (i.e. `w < 1e-10`)
-/// are mapped to `(-1.0, -1.0)`, which falls outside the source and returns 0
-/// via border mode.  This culls back-projected points (negative w) as well as
-/// near-degenerate projections.
-pub fn remap_maps_from_homography(
-    h: &[f32; 9],
-    dst_width: u32,
-    dst_height: u32,
-) -> (Vec<f32>, Vec<f32>) {
-    let (h0, h1, h2) = (h[0], h[1], h[2]);
-    let (h3, h4, h5) = (h[3], h[4], h[5]);
-    let (h6, h7, h8) = (h[6], h[7], h[8]);
-
-    let det = h0 * (h4 * h8 - h5 * h7) - h1 * (h3 * h8 - h5 * h6) + h2 * (h3 * h7 - h4 * h6);
-    let inv_det = if det.abs() < 1e-10 { 0.0 } else { 1.0 / det };
-
-    let i = [
-        (h4 * h8 - h5 * h7) * inv_det,
-        (h2 * h7 - h1 * h8) * inv_det,
-        (h1 * h5 - h2 * h4) * inv_det,
-        (h5 * h6 - h3 * h8) * inv_det,
-        (h0 * h8 - h2 * h6) * inv_det,
-        (h2 * h3 - h0 * h5) * inv_det,
-        (h3 * h7 - h4 * h6) * inv_det,
-        (h1 * h6 - h0 * h7) * inv_det,
-        (h0 * h4 - h1 * h3) * inv_det,
-    ];
-
-    let npix = (dst_width * dst_height) as usize;
-    let mut mx = Vec::with_capacity(npix);
-    let mut my = Vec::with_capacity(npix);
-    for dy in 0..dst_height {
-        let y = dy as f32;
-        let row_sx = i[1] * y + i[2];
-        let row_sy = i[4] * y + i[5];
-        let row_w = i[7] * y + i[8];
-        for dx in 0..dst_width {
-            let x = dx as f32;
-            let w = i[6] * x + row_w;
-            if w < 1e-10 {
-                mx.push(-1.0);
-                my.push(-1.0);
-            } else {
-                let inv_w = 1.0 / w;
-                mx.push((i[0] * x + row_sx) * inv_w);
-                my.push((i[3] * x + row_sy) * inv_w);
-            }
-        }
-    }
-    (mx, my)
-}
-
 // ── Private launcher core ─────────────────────────────────────────────────────
 
 #[allow(clippy::too_many_arguments)]
@@ -461,4 +371,146 @@ pub fn launch_remap_nearest_cuda(
         dst_height,
         block_dim,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cuda::color::test_utils::{default_stream, pattern_f32};
+    use crate::interpolation::InterpolationMode;
+    use kornia_image::{Image, ImageSize};
+    use kornia_tensor::Tensor2;
+
+    fn cpu_and_gpu(
+        w: usize,
+        h: usize,
+        mx: Vec<f32>,
+        my: Vec<f32>,
+        interpolation: InterpolationMode,
+    ) -> (Vec<f32>, Vec<f32>) {
+        let npix = w * h;
+        let data = pattern_f32(npix * 3);
+
+        let src_img = Image::<f32, 3>::new(
+            ImageSize {
+                width: w,
+                height: h,
+            },
+            data.clone(),
+        )
+        .unwrap();
+        let mut dst_img = Image::<f32, 3>::from_size_val(
+            ImageSize {
+                width: w,
+                height: h,
+            },
+            0.0,
+        )
+        .unwrap();
+        let map_x_t = Tensor2::from_shape_vec([h, w], mx.clone()).unwrap();
+        let map_y_t = Tensor2::from_shape_vec([h, w], my.clone()).unwrap();
+        crate::interpolation::remap::remap(
+            &src_img,
+            &mut dst_img,
+            &map_x_t,
+            &map_y_t,
+            interpolation,
+        )
+        .unwrap();
+        let cpu = dst_img.as_slice().to_vec();
+
+        let stream = default_stream();
+        let ctx = stream.context();
+        let d_src = stream.clone_htod(&data).unwrap();
+        let d_mx = stream.clone_htod(&mx).unwrap();
+        let d_my = stream.clone_htod(&my).unwrap();
+        let mut d_dst = stream.alloc_zeros::<f32>(npix * 3).unwrap();
+        let (wu, hu) = (w as u32, h as u32);
+        match interpolation {
+            InterpolationMode::Bilinear => launch_remap_bilinear_cuda(
+                &ctx, &stream, &d_src, &d_mx, &d_my, &mut d_dst, wu, hu, wu, hu, None,
+            ),
+            InterpolationMode::Nearest => launch_remap_nearest_cuda(
+                &ctx, &stream, &d_src, &d_mx, &d_my, &mut d_dst, wu, hu, wu, hu, None,
+            ),
+            other => panic!("unsupported mode in test: {other:?}"),
+        }
+        .unwrap();
+        let gpu = stream.clone_dtoh(&d_dst).unwrap();
+        stream.synchronize().unwrap();
+        (cpu, gpu)
+    }
+
+    fn assert_bit_exact(w: usize, h: usize, mx: Vec<f32>, my: Vec<f32>, mode: InterpolationMode) {
+        let (cpu, gpu) = cpu_and_gpu(w, h, mx, my, mode);
+        for (i, (c, g)) in cpu.iter().zip(&gpu).enumerate() {
+            assert!(
+                c.to_bits() == g.to_bits(),
+                "{w}x{h} {mode:?}: element {i}: cpu {c} ({:#010x}) gpu {g} ({:#010x})",
+                c.to_bits(),
+                g.to_bits()
+            );
+        }
+    }
+
+    /// Identity map: GPU output must reproduce the source exactly and match CPU.
+    #[test]
+    #[ignore = "requires CUDA"]
+    fn remap_identity_bilinear() {
+        let (w, h) = (65, 33);
+        let mx: Vec<f32> = (0..h).flat_map(|_| (0..w).map(|x| x as f32)).collect();
+        let my: Vec<f32> = (0..h).flat_map(|y| (0..w).map(|_| y as f32)).collect();
+        assert_bit_exact(w, h, mx, my, InterpolationMode::Bilinear);
+    }
+
+    #[test]
+    #[ignore = "requires CUDA"]
+    fn remap_identity_nearest() {
+        let (w, h) = (65, 33);
+        let mx: Vec<f32> = (0..h).flat_map(|_| (0..w).map(|x| x as f32)).collect();
+        let my: Vec<f32> = (0..h).flat_map(|y| (0..w).map(|_| y as f32)).collect();
+        assert_bit_exact(w, h, mx, my, InterpolationMode::Nearest);
+    }
+
+    /// Sub-pixel bilinear: non-integer source coordinates in the image interior —
+    /// exercises the weight expression against bilinear_interpolation's shape.
+    #[test]
+    #[ignore = "requires CUDA"]
+    fn remap_subpixel_bilinear() {
+        let (w, h) = (97, 65);
+        // Each output pixel maps to (x+0.3, y+0.4); clamped to keep both taps
+        // strictly inside [0, w-2] × [0, h-2] — avoids the replication edge path
+        // which the CPU and GPU handle via different arithmetic.
+        let mx: Vec<f32> = (0..h)
+            .flat_map(|_| (0..w).map(|x| (x as f32 + 0.3).min((w - 2) as f32)))
+            .collect();
+        let my: Vec<f32> = (0..h)
+            .flat_map(|y| (0..w).map(|_| (y as f32 + 0.4).min((h - 2) as f32)))
+            .collect();
+        assert_bit_exact(w, h, mx, my, InterpolationMode::Bilinear);
+    }
+
+    /// OOB coordinates must produce 0 on GPU; verifies the border guard.
+    #[test]
+    #[ignore = "requires CUDA"]
+    fn remap_oob_writes_zero() {
+        let (w, h) = (32, 32);
+        let mx = vec![-5.0f32; w * h];
+        let my = vec![-5.0f32; w * h];
+        let stream = default_stream();
+        let ctx = stream.context();
+        let data = pattern_f32(w * h * 3);
+        let d_src = stream.clone_htod(&data).unwrap();
+        let d_mx = stream.clone_htod(&mx).unwrap();
+        let d_my = stream.clone_htod(&my).unwrap();
+        let mut d_dst = stream.alloc_zeros::<f32>(w * h * 3).unwrap();
+        launch_remap_bilinear_cuda(
+            &ctx, &stream, &d_src, &d_mx, &d_my, &mut d_dst, w as u32, h as u32, w as u32,
+            h as u32, None,
+        )
+        .unwrap();
+        let gpu = stream.clone_dtoh(&d_dst).unwrap();
+        stream.synchronize().unwrap();
+        assert!(gpu.iter().all(|&v| v == 0.0), "OOB pixels must be 0");
+    }
 }
