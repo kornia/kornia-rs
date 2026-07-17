@@ -189,6 +189,13 @@ pub struct FusedPipeline {
     dst_w: u32,
     dst_h: u32,
     source: String,
+    /// Batch size (1 = unbatched kernel without the z prologue).
+    batch: u32,
+    /// Word index in the blob where the per-image src pointers start
+    /// (batched pipelines only).
+    ptr_base: usize,
+    /// Per-image dst element stride (batched pipelines only).
+    dst_stride: usize,
 }
 
 type PipelineKernelCache = Mutex<HashMap<String, Arc<CudaKernel>>>;
@@ -205,6 +212,40 @@ impl FusedPipeline {
         stages: &[&dyn FusedStage],
         dst_w: u32,
         dst_h: u32,
+    ) -> Result<Self, FusionError> {
+        Self::build_inner(ctx, stages, dst_w, dst_h, 1, 0)
+    }
+
+    /// Compose a BATCHED pipeline: one launch processes `batch` images via
+    /// `blockIdx.z` (the FKL DivergentBatchTransformDPP pattern, homogeneous
+    /// variant — same chain per slice, per-image source pointers).
+    ///
+    /// Per-image src pointers are carried in the `__grid_constant__` blob
+    /// and re-pointed in a prologue, so stage snippets are identical to the
+    /// unbatched kernel. `dst` is one contiguous tensor; each image writes
+    /// at `z * out_elems_per_image` (e.g. `3 * dst_w * dst_h` for the CHW
+    /// sink → an NCHW batch tensor).
+    pub fn build_batched(
+        ctx: &Arc<CudaContext>,
+        stages: &[&dyn FusedStage],
+        dst_w: u32,
+        dst_h: u32,
+        batch: u32,
+        out_elems_per_image: usize,
+    ) -> Result<Self, FusionError> {
+        if batch == 0 {
+            return Err(FusionError::Pipeline("batch must be >= 1".into()));
+        }
+        Self::build_inner(ctx, stages, dst_w, dst_h, batch, out_elems_per_image)
+    }
+
+    fn build_inner(
+        ctx: &Arc<CudaContext>,
+        stages: &[&dyn FusedStage],
+        dst_w: u32,
+        dst_h: u32,
+        batch: u32,
+        out_elems_per_image: usize,
     ) -> Result<Self, FusionError> {
         if stages.len() < 2 {
             return Err(FusionError::Pipeline(
@@ -235,6 +276,34 @@ impl FusedPipeline {
             names.push(stage.name());
         }
 
+        // Batched: reserve blob slots for the per-image src pointers
+        // (lo/hi u32 pairs, filled at launch time) and emit the z prologue
+        // that re-points src/dst — stage snippets stay untouched.
+        let mut prologue = String::new();
+        let mut ptr_base = 0usize;
+        if batch > 1 {
+            ptr_base = packer.words_used;
+            for b in 0..batch {
+                packer.u32(usize::MAX, &format!("srclo{b}"), 0)?;
+                packer.u32(usize::MAX, &format!("srchi{b}"), 0)?;
+            }
+            // Pointer slots are accessed by dynamic index, not macros —
+            // drop their auto-generated accessors.
+            packer
+                .fields
+                .truncate(packer.fields.len() - 2 * batch as usize);
+            let _ = write!(
+                prologue,
+                "    unsigned int b = blockIdx.z;\n\
+                 \x20   src = (const unsigned char*)(((unsigned long long)P.raw[{hi}] << 32) \
+                 | (unsigned long long)P.raw[{lo}]);\n\
+                 \x20   dst += (size_t)b * {stride}u;\n",
+                lo = format!("{ptr_base}u + 2u * b"),
+                hi = format!("{ptr_base}u + 2u * b + 1u"),
+                stride = out_elems_per_image,
+            );
+        }
+
         let accessors = packer.accessor_defines();
         let kernel_name = "fused_pipeline";
         let source = format!(
@@ -254,7 +323,7 @@ extern "C" __global__ void {kernel_name}(
     unsigned int y = blockIdx.y * blockDim.y + threadIdx.y;
     if (x >= dst_w || y >= dst_h) return;
 
-{body}}}
+{prologue}{body}}}
 "#,
             words = PARAM_BLOB_BYTES / 4,
         );
@@ -288,12 +357,64 @@ extern "C" __global__ void {kernel_name}(
             dst_w,
             dst_h,
             source,
+            batch,
+            ptr_base,
+            dst_stride: out_elems_per_image,
         })
     }
 
     /// The generated CUDA source (introspection / debugging).
     pub fn generated_source(&self) -> &str {
         &self.source
+    }
+
+    /// Launch a batched pipeline: `srcs.len()` must equal the built batch
+    /// size, `dst` holds `batch * out_elems_per_image` elements. All
+    /// sources must live on `stream`'s device; the blob carries their raw
+    /// pointers, so the borrows here keep them alive through the enqueue.
+    pub fn launch_batched(
+        &self,
+        stream: &Arc<CudaStream>,
+        srcs: &[&CudaSlice<u8>],
+        dst: &mut CudaSlice<f32>,
+    ) -> Result<(), FusionError> {
+        use cudarc::driver::DevicePtr;
+        if self.batch as usize != srcs.len() {
+            return Err(FusionError::Pipeline(format!(
+                "pipeline built for batch {}, got {} sources",
+                self.batch,
+                srcs.len()
+            )));
+        }
+        if dst.len() < self.batch as usize * self.dst_stride {
+            return Err(FusionError::Pipeline(format!(
+                "dst holds {} elements; batch needs {}",
+                dst.len(),
+                self.batch as usize * self.dst_stride
+            )));
+        }
+        let mut params = self.params;
+        let mut guards = Vec::with_capacity(srcs.len());
+        for (b, s) in srcs.iter().enumerate() {
+            let (ptr, guard) = s.device_ptr(stream);
+            params.raw[self.ptr_base + 2 * b] = (ptr & 0xffff_ffff) as u32;
+            params.raw[self.ptr_base + 2 * b + 1] = (ptr >> 32) as u32;
+            guards.push(guard);
+        }
+        let cfg = cudarc::driver::LaunchConfig {
+            block_dim: (32, 8, 1),
+            grid_dim: (self.dst_w.div_ceil(32), self.dst_h.div_ceil(8), self.batch),
+            shared_mem_bytes: 0,
+        };
+        self.kernel
+            .launch_builder(stream)
+            .arg(srcs[0])
+            .arg(dst)
+            .arg(&params)
+            .arg(&self.dst_w)
+            .arg(&self.dst_h)
+            .launch_cfg(cfg)
+            .map_err(|e| FusionError::Cuda(e.to_string()))
     }
 
     /// Launch over the destination grid. `src` and `dst` element meanings
@@ -304,6 +425,11 @@ extern "C" __global__ void {kernel_name}(
         src: &CudaSlice<u8>,
         dst: &mut CudaSlice<f32>,
     ) -> Result<(), FusionError> {
+        if self.batch > 1 {
+            return Err(FusionError::Pipeline(
+                "pipeline was built batched; use launch_batched".into(),
+            ));
+        }
         self.kernel
             .launch_builder(stream)
             .arg(src)
@@ -717,5 +843,147 @@ mod show_source {
         };
         let pipe = FusedPipeline::build(&ctx, &[&read, &norm, &WriteChwF32], 640, 640).unwrap();
         println!("{}", pipe.generated_source());
+    }
+}
+
+#[cfg(test)]
+mod batch_tests {
+    use super::*;
+    use crate::cuda::color::test_utils::pattern_u8;
+
+    /// A batch-4 launch must produce exactly the concatenation of four
+    /// single-image launches of the same pipeline shape.
+    #[test]
+    fn batched_matches_single_launches() {
+        let ctx = CudaContext::new(0).expect("CUDA device 0");
+        let stream = ctx.new_stream().expect("stream");
+        let (sw, sh, dw, dh) = (129u32, 97u32, 64u32, 48u32);
+        let out_elems = 3 * (dw as usize) * (dh as usize);
+
+        let read = ReadU8RgbBilinear {
+            src_w: sw,
+            src_h: sh,
+            dst_w: dw,
+            dst_h: dh,
+        };
+        let norm = Normalize {
+            scale: [1.0 / 255.0; 3],
+            bias: [-0.5; 3],
+        };
+
+        let single = FusedPipeline::build(&ctx, &[&read, &norm, &WriteChwF32], dw, dh).unwrap();
+        let batched =
+            FusedPipeline::build_batched(&ctx, &[&read, &norm, &WriteChwF32], dw, dh, 4, out_elems)
+                .unwrap();
+
+        // Four distinct images.
+        let hosts: Vec<Vec<u8>> = (0..4)
+            .map(|i| {
+                let mut v = pattern_u8((sw * sh * 3) as usize);
+                v.iter_mut().for_each(|b| *b = b.wrapping_add(i * 37));
+                v
+            })
+            .collect();
+        let d_srcs: Vec<CudaSlice<u8>> = hosts
+            .iter()
+            .map(|h| stream.clone_htod(h).unwrap())
+            .collect();
+
+        // Reference: single launches.
+        let mut want = Vec::new();
+        for d in &d_srcs {
+            let mut d_dst = stream.alloc_zeros::<f32>(out_elems).unwrap();
+            single.launch(&stream, d, &mut d_dst).unwrap();
+            want.extend(stream.clone_dtoh(&d_dst).unwrap());
+        }
+
+        // Batched launch into one NCHW tensor.
+        let mut d_batch = stream.alloc_zeros::<f32>(4 * out_elems).unwrap();
+        let refs: Vec<&CudaSlice<u8>> = d_srcs.iter().collect();
+        batched
+            .launch_batched(&stream, &refs, &mut d_batch)
+            .unwrap();
+        let got = stream.clone_dtoh(&d_batch).unwrap();
+        stream.synchronize().unwrap();
+
+        assert_eq!(got.len(), want.len());
+        for (i, (g, w)) in got.iter().zip(&want).enumerate() {
+            assert!(
+                (g - w).to_bits() == 0 || (g - w).abs() == 0.0,
+                "element {i}: batched {g} vs single {w}"
+            );
+        }
+    }
+
+    /// Wrong source count and unbatched-launch-on-batched both error.
+    #[test]
+    fn batch_misuse_errors() {
+        let ctx = CudaContext::new(0).expect("CUDA device 0");
+        let stream = ctx.new_stream().expect("stream");
+        let read = ReadU8RgbBilinear {
+            src_w: 64,
+            src_h: 64,
+            dst_w: 32,
+            dst_h: 32,
+        };
+        let norm = Normalize {
+            scale: [1.0; 3],
+            bias: [0.0; 3],
+        };
+        let out_elems = 3 * 32 * 32;
+        let batched =
+            FusedPipeline::build_batched(&ctx, &[&read, &norm, &WriteChwF32], 32, 32, 2, out_elems)
+                .unwrap();
+        let host = pattern_u8(64 * 64 * 3);
+        let d = stream.clone_htod(&host).unwrap();
+        let mut d_dst = stream.alloc_zeros::<f32>(2 * out_elems).unwrap();
+        assert!(batched.launch_batched(&stream, &[&d], &mut d_dst).is_err());
+        assert!(batched.launch(&stream, &d, &mut d_dst).is_err());
+    }
+
+    /// Batch throughput probe (ignored): batch-4 1080p -> 640 CHW norm.
+    #[test]
+    #[ignore]
+    fn probe_batch4_1080p() {
+        let ctx = CudaContext::new(0).expect("CUDA device 0");
+        let stream = ctx.new_stream().expect("stream");
+        let (sw, sh, dw, dh) = (1920u32, 1080u32, 640u32, 640u32);
+        let out_elems = 3 * (dw as usize) * (dh as usize);
+        let read = ReadU8RgbBilinear {
+            src_w: sw,
+            src_h: sh,
+            dst_w: dw,
+            dst_h: dh,
+        };
+        let norm = Normalize {
+            scale: [1.0 / 255.0; 3],
+            bias: [0.0; 3],
+        };
+        let pipe =
+            FusedPipeline::build_batched(&ctx, &[&read, &norm, &WriteChwF32], dw, dh, 4, out_elems)
+                .unwrap();
+        let host = pattern_u8((sw * sh * 3) as usize);
+        let d_srcs: Vec<CudaSlice<u8>> =
+            (0..4).map(|_| stream.clone_htod(&host).unwrap()).collect();
+        let refs: Vec<&CudaSlice<u8>> = d_srcs.iter().collect();
+        let mut d_dst = stream.alloc_zeros::<f32>(4 * out_elems).unwrap();
+
+        for _ in 0..50 {
+            pipe.launch_batched(&stream, &refs, &mut d_dst).unwrap();
+        }
+        stream.synchronize().unwrap();
+        let mut best = f64::MAX;
+        for _ in 0..5 {
+            let t0 = std::time::Instant::now();
+            for _ in 0..100 {
+                pipe.launch_batched(&stream, &refs, &mut d_dst).unwrap();
+            }
+            stream.synchronize().unwrap();
+            best = best.min(t0.elapsed().as_secs_f64() * 1000.0 / 100.0);
+        }
+        println!(
+            "fused batch-4 1080p->640 CHW norm: {best:.3} ms/batch ({:.3} ms/image, min of 5)",
+            best / 4.0
+        );
     }
 }
