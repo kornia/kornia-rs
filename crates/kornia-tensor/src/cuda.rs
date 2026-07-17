@@ -520,6 +520,23 @@ impl CudaKernel {
             .set_function_cache_config(CU_FUNC_CACHE_PREFER_L1)
             .map_err(|e| CudaError::Driver(e.to_string()))
     }
+
+    /// Prefer shared memory over L1 cache for this kernel.
+    ///
+    /// Allocates the maximum possible shared memory budget to the kernel's
+    /// `extern __shared__` array.  On Turing (sm_75) this raises the available
+    /// shared memory from 16 KB (L1-preferred default) to 48 KB — needed when
+    /// the kernel's dynamic shared memory allocation exceeds 16 KB.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CudaError::Driver`] if the driver call fails.
+    pub fn prefer_shared_memory(&self) -> Result<(), CudaError> {
+        use cudarc::driver::sys::CUfunc_cache_enum::CU_FUNC_CACHE_PREFER_SHARED;
+        self.func
+            .set_function_cache_config(CU_FUNC_CACHE_PREFER_SHARED)
+            .map_err(|e| CudaError::Driver(e.to_string()))
+    }
 }
 
 // ── CudaLaunchBuilder ─────────────────────────────────────────────────────────
