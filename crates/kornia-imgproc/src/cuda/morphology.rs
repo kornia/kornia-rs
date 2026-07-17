@@ -236,7 +236,7 @@ extern "C" __global__ void morphology_u8(
 
     let span = (max_dx - min_dx) as usize;
     // Normalized stream words R[0..rn]: highest byte read is span + 3.
-    let rn = (span + 3) / 4 + 1;
+    let rn = span.div_ceil(4) + 1;
     let wn = rn + 1;
     let vfold = match op {
         MorphOp::Dilate => "__vmaxu4",
@@ -251,7 +251,7 @@ extern "C" __global__ void morphology_u8(
     let rr_lo = min_dy;
     let rr_hi = max_dy + 3;
     let mut needed: BTreeMap<i32, Vec<usize>> = BTreeMap::new();
-    for (dy, _) in &rows {
+    for dy in rows.keys() {
         let cid = row_class[dy];
         for j in 0..4 {
             let e = needed.entry(dy + j).or_default();
@@ -321,7 +321,7 @@ extern "C" __global__ void morphology_u8(
     let mut out_rows = String::new();
     for j in 0..4 {
         let mut expr = String::from(vinit);
-        for (dy, _) in &rows {
+        for dy in rows.keys() {
             let cid = row_class[dy];
             let k = (dy + j - rr_lo) as usize;
             expr = format!("{vfold}({expr}, H{cid}_{k})");
