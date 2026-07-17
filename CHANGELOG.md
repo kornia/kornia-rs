@@ -13,6 +13,17 @@ changes early: `cargo add kornia-imgproc@0.1.15-rc.1` or `pip install --pre korn
 
 ## [Unreleased]
 
+**Faster Lanczos-3 warps on CUDA; sub-ULP output change in Lanczos warp/remap
+sampling.** The warp kernels now derive all six tap weights per axis from four
+`sin(πx)` evaluations instead of twelve, using the sinc lattice's periodicity
+(`sin(π(frac+n)) = ±sin(π·frac)`); the CPU sampler (`lanczos_sample`, used by
+`warp_affine`/`warp_perspective`/`remap` with `InterpolationMode::Lanczos`) is
+refactored identically, so CPU and GPU remain bit-exact to each other. Absolute
+values shift by ≤1e-6 relative to previous releases (weights are identical in
+real arithmetic, rounding differs). Measured on Jetson AGX Orin (locked
+clocks, 1080p→1080p 3-channel f32): warp-affine lanczos 5.49→4.26 ms,
+warp-perspective lanczos 5.93→4.28 ms sustained.
+
 **u8 CUDA morphology (dilate / erode), bit-identical to the CPU ops, plus
 first-time Python bindings.** `dilate` / `erode` route u8 device images
 (1/3/4-channel) to a CUDA kernel that samples the exact tap multiset the CPU
