@@ -226,18 +226,22 @@ extern "C" __global__ void resize_u8_bilinear_c{channels}(
     )
 }
 
-static SEP_H_SRC: &str = r#"
-// Q14 separable horizontal pass, byte-exact with horizontal_row_scalar:
-// i32 accumulate over kx taps, round-half-up at Q14, CLAMP TO i16 — the
-// signed 16-bit intermediate (overshooting lobes included) is part of the
-// CPU contract, not an optimization.
-//
-// Loop order is tap-outer / channel-inner with register accumulators: each
-// LUT entry is loaded once (not once per channel) and the C pixel bytes of a
-// tap are consecutive, which roughly halved the kernel time vs the
-// channel-outer form. Accumulation order over taps is unchanged, so the
-// result is bit-identical.
-extern "C" __global__ void resize_u8_sep_h(
+/// Separable-pass kernel sources, specialized per channel count and —
+/// when the element is narrow enough (`k <= 32`) — per tap count, so both
+/// loops fully unroll into independent load issues. Wide antialiased
+/// kernels (k > 32) keep a runtime tap loop (KTAPS == 0 variant).
+/// Byte-exact either way: same i32 accumulation order, same
+/// round-half-up, same i16 clamp.
+fn sep_h_src(channels: usize, ktaps: usize) -> String {
+    let (loop_head, bound) = if ktaps > 0 {
+        ("#pragma unroll".to_string(), format!("{ktaps}u"))
+    } else {
+        (String::new(), "kx".to_string())
+    };
+    format!(
+        r#"
+#define C {channels}
+extern "C" __global__ void resize_u8_sep_h_c{channels}_k{ktaps}(
     const unsigned char* __restrict__  src,
     short* __restrict__                hbuf,
     const unsigned short* __restrict__ xsrc,
@@ -245,41 +249,48 @@ extern "C" __global__ void resize_u8_sep_h(
     unsigned int kx,
     unsigned int src_w,
     unsigned int dst_w,
-    unsigned int src_h,
-    unsigned int channels
-) {
+    unsigned int src_h
+) {{
     unsigned int x = blockIdx.x * blockDim.x + threadIdx.x;
     unsigned int y = blockIdx.y * blockDim.y + threadIdx.y;
     if (x >= dst_w || y >= src_h) return;
 
-    size_t row = (size_t)y * src_w * channels;
+    size_t row = (size_t)y * src_w * C;
     size_t ibase = (size_t)x * kx;
-    size_t d = ((size_t)y * dst_w + x) * channels;
+    size_t d = ((size_t)y * dst_w + x) * C;
 
-    int acc[4] = {0, 0, 0, 0};
-    for (unsigned int t = 0; t < kx; ++t) {
+    int acc[C] = {{0}};
+    {loop_head}
+    for (unsigned int t = 0; t < {bound}; ++t) {{
         int w = (int)__ldg(&xw[ibase + t]);
         const unsigned char* p =
-            src + row + (size_t)__ldg(&xsrc[ibase + t]) * channels;
-        #pragma unroll 4
-        for (unsigned int ch = 0; ch < channels; ++ch) {
+            src + row + (size_t)__ldg(&xsrc[ibase + t]) * C;
+        #pragma unroll
+        for (unsigned int ch = 0; ch < C; ++ch) {{
             acc[ch] += (int)__ldg(&p[ch]) * w;
-        }
-    }
-    for (unsigned int ch = 0; ch < channels; ++ch) {
+        }}
+    }}
+    #pragma unroll
+    for (unsigned int ch = 0; ch < C; ++ch) {{
         int v = (acc[ch] + (1 << 13)) >> 14;
         v = min(max(v, -32768), 32767);
         hbuf[d + ch] = (short)v;
-    }
+    }}
+}}
+"#
+    )
 }
-"#;
 
-static SEP_V_SRC: &str = r#"
-// Q14 separable vertical pass, byte-exact with vertical_row_scalar: i16
-// intermediate in, i32 accumulate, round-half-up at Q14, clamp to u8.
-// Row indices clamp to [0, src_h-1] per tap (border replicate), exactly as
-// the CPU's per-tap clamp.
-extern "C" __global__ void resize_u8_sep_v(
+fn sep_v_src(channels: usize, ktaps: usize) -> String {
+    let (loop_head, bound) = if ktaps > 0 {
+        ("#pragma unroll".to_string(), format!("{ktaps}u"))
+    } else {
+        (String::new(), "ky".to_string())
+    };
+    format!(
+        r#"
+#define C {channels}
+extern "C" __global__ void resize_u8_sep_v_c{channels}_k{ktaps}(
     const short* __restrict__ hbuf,
     unsigned char* __restrict__ dst,
     const int* __restrict__     yofs,
@@ -287,35 +298,36 @@ extern "C" __global__ void resize_u8_sep_v(
     unsigned int ky,
     unsigned int src_h,
     unsigned int dst_w,
-    unsigned int dst_h,
-    unsigned int channels
-) {
+    unsigned int dst_h
+) {{
     unsigned int x = blockIdx.x * blockDim.x + threadIdx.x;
     unsigned int y = blockIdx.y * blockDim.y + threadIdx.y;
     if (x >= dst_w || y >= dst_h) return;
 
     int y0 = __ldg(&yofs[y]);
     size_t wbase = (size_t)y * ky;
-    size_t d = ((size_t)y * dst_w + x) * channels;
+    size_t d = ((size_t)y * dst_w + x) * C;
 
-    // Tap-outer / channel-inner (see the horizontal kernel): one LUT load
-    // and one row-base computation per tap, C consecutive i16 reads.
-    int acc[4] = {0, 0, 0, 0};
-    for (unsigned int k = 0; k < ky; ++k) {
+    int acc[C] = {{0}};
+    {loop_head}
+    for (unsigned int k = 0; k < {bound}; ++k) {{
         int w = (int)__ldg(&yw[wbase + k]);
         int sy = min(max(y0 + (int)k, 0), (int)src_h - 1);
-        const short* p = hbuf + ((size_t)sy * dst_w + x) * channels;
-        #pragma unroll 4
-        for (unsigned int ch = 0; ch < channels; ++ch) {
+        const short* p = hbuf + ((size_t)sy * dst_w + x) * C;
+        #pragma unroll
+        for (unsigned int ch = 0; ch < C; ++ch) {{
             acc[ch] += (int)__ldg(&p[ch]) * w;
-        }
-    }
-    for (unsigned int ch = 0; ch < channels; ++ch) {
+        }}
+    }}
+    #pragma unroll
+    for (unsigned int ch = 0; ch < C; ++ch) {{
         int v = (acc[ch] + (1 << 13)) >> 14;
         dst[d + ch] = (unsigned char)min(max(v, 0), 255);
-    }
+    }}
+}}
+"#
+    )
 }
-"#;
 
 static PYRDOWN2X_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
 static PYRUP2X_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
@@ -324,8 +336,11 @@ static NEAREST_KERNELS: OnceLock<PerCKernelCache> = OnceLock::new();
 /// Per-channel-count specialized bilinear kernels (C is baked into the
 /// source so the pixel loop fully unrolls).
 static BILINEAR_KERNELS: OnceLock<PerCKernelCache> = OnceLock::new();
-static SEP_H_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
-static SEP_V_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
+type SepKernelCache = Mutex<HashMap<(u32, u32, bool), Arc<CudaKernel>>>;
+static SEP_KERNELS: OnceLock<SepKernelCache> = OnceLock::new();
+/// Tap counts up to this are baked into specialized kernels; wider
+/// (strongly antialiased) elements use the runtime-loop variant.
+const SEP_MAX_BAKED_TAPS: u32 = 32;
 
 fn get_kernel<'a>(
     cell: &'a OnceLock<Result<CudaKernel, String>>,
@@ -616,8 +631,42 @@ pub fn launch_resize_u8_separable_cuda(
         ));
     }
 
-    let kernel_h = get_kernel(&SEP_H_KERNEL, ctx, SEP_H_SRC, "resize_u8_sep_h")?;
-    let kernel_v = get_kernel(&SEP_V_KERNEL, ctx, SEP_V_SRC, "resize_u8_sep_v")?;
+    // Per-(C, taps) specialized kernels; wide antialiased elements fall back
+    // to the runtime-loop variant (ktaps = 0). Scoped-guard cache lookups.
+    let sep_kernel = |horizontal: bool, k: u32| -> Result<Arc<CudaKernel>, CudaResizeError> {
+        let baked = if k <= SEP_MAX_BAKED_TAPS { k } else { 0 };
+        let cache = SEP_KERNELS.get_or_init(Default::default);
+        let key = (channels, baked, horizontal);
+        let cached = cache
+            .lock()
+            .expect("separable kernel cache poisoned")
+            .get(&key)
+            .cloned();
+        if let Some(hit) = cached {
+            return Ok(hit);
+        }
+        let (src_code, name) = if horizontal {
+            (
+                sep_h_src(channels as usize, baked as usize),
+                format!("resize_u8_sep_h_c{channels}_k{baked}"),
+            )
+        } else {
+            (
+                sep_v_src(channels as usize, baked as usize),
+                format!("resize_u8_sep_v_c{channels}_k{baked}"),
+            )
+        };
+        let built =
+            Arc::new(try_compile_with_l1(ctx, &src_code, &name).map_err(CudaResizeError::Cuda)?);
+        Ok(cache
+            .lock()
+            .expect("separable kernel cache poisoned")
+            .entry(key)
+            .or_insert(built)
+            .clone())
+    };
+    let kernel_h = sep_kernel(true, kx)?;
+    let kernel_v = sep_kernel(false, ky)?;
 
     // Intermediate: src_h rows of dst_w pixels, i16. Pass 1 writes every
     // element before pass 2 reads; no zero-fill needed.
@@ -635,7 +684,6 @@ pub fn launch_resize_u8_separable_cuda(
         .arg(&src_width)
         .arg(&dst_width)
         .arg(&src_height)
-        .arg(&channels)
         .launch_2d(
             dst_width,
             src_height,
@@ -653,7 +701,6 @@ pub fn launch_resize_u8_separable_cuda(
         .arg(&src_height)
         .arg(&dst_width)
         .arg(&dst_height)
-        .arg(&channels)
         .launch_2d(
             dst_width,
             dst_height,

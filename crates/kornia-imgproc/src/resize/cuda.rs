@@ -457,7 +457,12 @@ mod tests {
         let stream = default_stream();
         for &((sw, sh), (dw, dh)) in &[((129, 97), (64, 48)), ((63, 41), (127, 90))] {
             let src = Image::<f32, 3>::new(sized(sw, sh), pattern_f32(sw * sh * 3)).unwrap();
-            for mode in [InterpolationMode::Bilinear, InterpolationMode::Nearest] {
+            for mode in [
+                InterpolationMode::Bilinear,
+                InterpolationMode::Nearest,
+                InterpolationMode::Bicubic,
+                InterpolationMode::Lanczos,
+            ] {
                 let mut cpu_dst = Image::<f32, 3>::from_size_val(sized(dw, dh), 0.0).unwrap();
                 resize(&src, &mut cpu_dst, mode).unwrap();
 
@@ -572,7 +577,12 @@ mod bench_probe {
         }
         stream.synchronize().unwrap();
 
-        for mode in [InterpolationMode::Bilinear, InterpolationMode::Nearest] {
+        for mode in [
+            InterpolationMode::Bilinear,
+            InterpolationMode::Nearest,
+            InterpolationMode::Bicubic,
+            InterpolationMode::Lanczos,
+        ] {
             // DVFS is unlocked on this box: 5 rounds, min = closest to the
             // max-clock condition.
             let mut best = f64::MAX;
