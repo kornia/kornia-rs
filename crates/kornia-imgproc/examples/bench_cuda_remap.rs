@@ -11,6 +11,7 @@
 //! **What is measured:**
 //! 1. `remap_bilinear`   — reads map_x/map_y from device, then bilinear sample.
 //! 2. `warp_affine_bilinear` — computes source coord from matrix (no map reads).
+//!
 //! Both perform the same 45° rotation so the sampling work is identical.
 //!
 //! **Timing methodology:**
