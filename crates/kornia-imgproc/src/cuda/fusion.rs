@@ -188,6 +188,7 @@ pub struct FusedPipeline {
     params: FusedParams,
     dst_w: u32,
     dst_h: u32,
+    source: String,
 }
 
 type PipelineKernelCache = Mutex<HashMap<String, Arc<CudaKernel>>>;
@@ -286,7 +287,13 @@ extern "C" __global__ void {kernel_name}(
             params: packer.blob,
             dst_w,
             dst_h,
+            source,
         })
+    }
+
+    /// The generated CUDA source (introspection / debugging).
+    pub fn generated_source(&self) -> &str {
+        &self.source
     }
 
     /// Launch over the destination grid. `src` and `dst` element meanings
@@ -681,5 +688,34 @@ mod tests {
             best = best.min(t0.elapsed().as_secs_f64() * 1000.0 / 200.0);
         }
         println!("fused engine 1080p->640 CHW norm: {best:.3} ms/op (min of 5)");
+    }
+}
+
+#[cfg(test)]
+mod show_source {
+    use super::*;
+
+    /// Print the generated kernel for the Pipeline-A chain (run with
+    /// `-- --ignored --nocapture` to inspect).
+    #[test]
+    #[ignore]
+    fn print_pipeline_a_source() {
+        let ctx = CudaContext::new(0).expect("CUDA device 0");
+        let read = ReadU8RgbBilinear {
+            src_w: 1920,
+            src_h: 1080,
+            dst_w: 640,
+            dst_h: 640,
+        };
+        let norm = Normalize {
+            scale: [
+                1.0 / 255.0 / 0.229,
+                1.0 / 255.0 / 0.224,
+                1.0 / 255.0 / 0.225,
+            ],
+            bias: [-0.485 / 0.229, -0.456 / 0.224, -0.406 / 0.225],
+        };
+        let pipe = FusedPipeline::build(&ctx, &[&read, &norm, &WriteChwF32], 640, 640).unwrap();
+        println!("{}", pipe.generated_source());
     }
 }
