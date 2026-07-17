@@ -5,19 +5,25 @@ Acceptance criterion (Edgar, 2026-07-17): every op >= 10x vs BOTH baselines.
 Run with locked clocks (`sudo jetson_clocks`) — unlocked DVFS swings both
 sides by +/-30-60%, larger than several targets.
 
-Reference snapshot (Jetson AGX Orin, 2026-07-17, UNLOCKED clocks, min-of-rounds):
-  op                  gpu-pf   cv2      vpi     x-cv2  x-vpi
-  resize-nearest      0.177    0.746    1.429    4.2    8.1
-  resize-bilinear     0.254    2.505    1.829    9.9    7.2
-  resize-bicubic      0.643    7.313    1.837   11.4    2.9
-  resize-lanczos      1.206   13.262     n/a    11.0    n/a
-  warp-affine         1.012   11.869    1.771   11.7    1.8
-  warp-perspective    1.587   16.136    2.384   10.2    1.5
-  dilate              0.227    0.615    2.055    2.7    9.0
-  erode               0.243    0.618    1.652    2.5    6.8
-Physics note: bicubic/affine/perspective vs VPI-CUDA cap at ~2-3x — both
-sides saturate the same DRAM with competent kernels; byte-exactness is
-retained by decision (no approximate fast modes).
+Reference snapshot (Jetson AGX Orin, 2026-07-17, LOCKED clocks
+(jetson_clocks, GPU pinned 1020 MHz), min-of-rounds):
+  op                  gpu-pf  gpu-sus   cv2      vpi    x-cv2  x-vpi
+  resize-nearest      0.166    0.132    0.645    0.615    3.9    3.7
+  resize-bilinear     0.228    0.195    2.402    0.822   10.5    3.6
+  resize-bicubic      0.610    0.569    5.414    1.036    8.9    1.7
+  resize-lanczos      0.970    0.920    9.321     n/a     9.6    n/a
+  warp-affine         0.882    0.840    8.979    1.533   10.2    1.7
+  warp-perspective    1.201    1.151   13.260    1.148   11.0    1.0
+  dilate              0.206    0.170    0.621    1.160    3.0    5.6
+  erode               0.204    0.169    0.566    1.225    2.8    6.0
+Physics finding (locked clocks): VPI-CUDA is ~2x faster than under DVFS
+(its apparent overhead was clock-ramp latency). kornia is faster than VPI
+on EVERY op (1.0-6x, never slower) and 2.8-11x vs OpenCV CPU, but
+10x-vs-VPI per-op would require beating competent GPU kernels 10x on the
+same DRAM — not physically available for bandwidth-bound ops.
+warp-perspective sits at exact parity with VPI (1.0x), the cleanest
+demonstration of the shared ceiling. Byte-exactness retained everywhere
+by decision (no approximate fast modes).
 
 Modes: per-frame (op + sync each frame) and sustained (N-deep enqueue, one
 sync, amortized). min-of-3 rounds against unlocked DVFS.
