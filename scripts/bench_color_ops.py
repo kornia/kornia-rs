@@ -50,9 +50,9 @@ add("bgr_from_rgb",   lambda: imgproc.bgr_from_rgb(d_u8),   lambda: cv2.cvtColor
 add("rgba_from_rgb",  lambda: imgproc.rgba_from_rgb(d_u8),  lambda: cv2.cvtColor(img, cv2.COLOR_RGB2RGBA))
 add("hsv_from_rgb",   lambda: imgproc.hsv_from_rgb(d_f32),  lambda: cv2.cvtColor(imgf, cv2.COLOR_RGB2HSV))
 add("lab_from_rgb",   lambda: imgproc.lab_from_rgb(d_f32),  lambda: cv2.cvtColor(imgf, cv2.COLOR_RGB2Lab))
-add("ycbcr_from_rgb", lambda: imgproc.ycbcr_from_rgb(d_f32),lambda: cv2.cvtColor(imgf, cv2.COLOR_RGB2YCrCb))
-add("yuv_from_rgb",   lambda: imgproc.yuv_from_rgb(d_f32),  lambda: cv2.cvtColor(imgf, cv2.COLOR_RGB2YUV))
-add("sepia_from_rgb", lambda: imgproc.sepia_from_rgb(d_f32), None)
+add("ycbcr_from_rgb", lambda: imgproc.ycbcr_from_rgb(d_u8), lambda: cv2.cvtColor(img, cv2.COLOR_RGB2YCrCb))
+
+add("sepia_from_rgb", lambda: imgproc.sepia_from_rgb(d_u8), None)
 
 print(f"\nColor ops, 1080p (sustained GPU vs cv2 CPU, ms)")
 print(f"{'op':16s} {'gpu':>8s} {'cv2':>8s} {'x-cv2':>7s}")

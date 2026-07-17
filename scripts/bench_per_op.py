@@ -16,17 +16,19 @@ Reference snapshot (Jetson AGX Orin, 2026-07-17, LOCKED clocks
   warp-perspective    1.201    1.151   13.260    1.148   11.0    1.0
   dilate              0.206    0.170    0.621    1.160    3.0    5.6
   erode               0.204    0.169    0.566    1.225    2.8    6.0
-Color-op section (same machine, sustained GPU vs cv2 CPU; VPI equivalents
-pending — VPI ConvertImageFormat covers only a subset):
-  gray_from_rgb       0.149    0.459    3.1x
-  bgr_from_rgb        0.252    0.587    2.3x
-  rgba_from_rgb       0.409    0.680    1.7x
-  hsv_from_rgb        1.028    2.795    2.7x
-  lab_from_rgb        1.028   28.275   27.5x
-The ~40 color kernels predate the per-C specialization sweep and are the
-next optimization surface; the whole-library scope of the 10x goal covers
-them and every op the roadmap adds (filters, pyramids, histogram, Canny,
-features, CCL, template matching).
+Color-op section (locked clocks, sustained GPU vs cv2 CPU; VPI
+ConvertImageFormat equivalents cover only a subset, pending):
+  gray_from_rgb       0.100    0.512    5.1x
+  bgr_from_rgb        0.233    0.707    3.0x
+  rgba_from_rgb       0.470    1.018    2.2x
+  hsv_from_rgb        0.983    2.860    2.9x
+  lab_from_rgb        1.055   26.562   25.2x  PASS
+  ycbcr_from_rgb      0.181    2.743   15.1x  PASS
+  sepia_from_rgb      0.178      n/a
+u8 color kernels already run near the ~80 GB/s platform envelope; the f32
+AoS kernels (hsv notably) hold ~4x headroom that neither vectorized IO nor
+de-branching recovered — root-causing needs hardware counters (ncu, root).
+Remaining CPU-only ops gain GPU + table rows via roadmap PRs 4-14.
 
 Physics finding (locked clocks): VPI-CUDA is ~2x faster than under DVFS
 (its apparent overhead was clock-ramp latency). kornia is faster than VPI
