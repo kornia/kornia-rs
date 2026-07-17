@@ -331,10 +331,14 @@ extern "C" __global__ void morphology_u8(
             "    {{\n\
              \x20       unsigned int acc4 = {expr};\n\
              \x20       size_t d = (size_t)(y0 + {j}) * width + x0;\n\
-             \x20       dst[d + 0] = (unsigned char)(acc4 & 0xffu);\n\
-             \x20       dst[d + 1] = (unsigned char)((acc4 >> 8) & 0xffu);\n\
-             \x20       dst[d + 2] = (unsigned char)((acc4 >> 16) & 0xffu);\n\
-             \x20       dst[d + 3] = (unsigned char)((acc4 >> 24) & 0xffu);\n\
+             \x20       if (((size_t)(dst + d) & 3u) == 0u) {{\n\
+             \x20           *(unsigned int*)(dst + d) = acc4;\n\
+             \x20       }} else {{\n\
+             \x20           dst[d + 0] = (unsigned char)(acc4 & 0xffu);\n\
+             \x20           dst[d + 1] = (unsigned char)((acc4 >> 8) & 0xffu);\n\
+             \x20           dst[d + 2] = (unsigned char)((acc4 >> 16) & 0xffu);\n\
+             \x20           dst[d + 3] = (unsigned char)((acc4 >> 24) & 0xffu);\n\
+             \x20       }}\n\
              \x20   }}\n"
         );
     }
@@ -397,6 +401,9 @@ extern "C" __global__ void morphology_u8_c1v4(
 /// cache is cleared wholesale.
 type MorphKernelCache = Mutex<HashMap<(Vec<i32>, MorphOp, bool), Arc<CudaKernel>>>;
 static MORPH_KERNELS: OnceLock<MorphKernelCache> = OnceLock::new();
+type SepMorphKey = (i32, i32, i32, i32, MorphOp);
+type SepMorphCache = Mutex<HashMap<SepMorphKey, (Arc<CudaKernel>, Arc<CudaKernel>)>>;
+static SEP_MORPH_KERNELS: OnceLock<SepMorphCache> = OnceLock::new();
 const MORPH_KERNEL_CACHE_CAP: usize = 64;
 
 /// Launch the u8 morphology kernel (dilate or erode), specialized for the
@@ -449,6 +456,79 @@ pub fn launch_morphology_u8_cuda(
         ));
     }
 
+    // FULL-BOX structuring elements on C1 take the separable two-pass fast
+    // path: max/min are associative, so row-fold + column-fold is EXACTLY
+    // the 2D fold (byte-exact; borders map per axis, matching the direct
+    // kernel for every padding mode).
+    if channels == 1 && !taps.is_empty() {
+        let mut ext = (i32::MAX, i32::MIN, i32::MAX, i32::MIN); // dy_lo, dy_hi, dx_lo, dx_hi
+        for pair in taps.chunks_exact(2) {
+            ext.0 = ext.0.min(pair[0]);
+            ext.1 = ext.1.max(pair[0]);
+            ext.2 = ext.2.min(pair[1]);
+            ext.3 = ext.3.max(pair[1]);
+        }
+        let area = ((ext.1 - ext.0 + 1) as usize) * ((ext.3 - ext.2 + 1) as usize);
+        let is_box = taps.len() / 2 == area;
+        let wide_enough = (ext.1 - ext.0 + 1) >= 5 || (ext.3 - ext.2 + 1) >= 5;
+        if is_box && wide_enough {
+            let key = (ext.0, ext.1, ext.2, ext.3, op);
+            let cache = SEP_MORPH_KERNELS.get_or_init(Default::default);
+            let cached = cache
+                .lock()
+                .expect("sep morph cache poisoned")
+                .get(&key)
+                .cloned();
+            let (kh, kv) = if let Some(hit) = cached {
+                hit
+            } else {
+                let src_code = morph_sep_src(ext.2, ext.3, ext.0, ext.1, op);
+                let built_h = Arc::new(
+                    try_compile_with_l1(ctx, &src_code, "morph_sep_h")
+                        .map_err(CudaMorphologyError::Cuda)?,
+                );
+                let built_v = Arc::new(
+                    try_compile_with_l1(ctx, &src_code, "morph_sep_v")
+                        .map_err(CudaMorphologyError::Cuda)?,
+                );
+                let mut map = cache.lock().expect("sep morph cache poisoned");
+                if map.len() >= MORPH_KERNEL_CACHE_CAP {
+                    map.clear();
+                }
+                map.entry(key).or_insert((built_h, built_v)).clone()
+            };
+
+            let tmp_len = (width as usize) * (height as usize);
+            let mut tmp = unsafe { stream.alloc::<u8>(tmp_len) }
+                .map_err(|e| CudaMorphologyError::Cuda(e.to_string()))?;
+
+            let border_i = border as i32;
+            let (w_i, h_i) = (width as i32, height as i32);
+            let grid_w = width.div_ceil(4);
+
+            kh.launch_builder(stream)
+                .arg(src)
+                .arg(&mut tmp)
+                .arg(constant_value)
+                .arg(&w_i)
+                .arg(&h_i)
+                .arg(&border_i)
+                .launch_2d(grid_w, height, make_config(grid_w, height, block_dim))
+                .map_err(|e| CudaMorphologyError::Cuda(e.to_string()))?;
+
+            return kv
+                .launch_builder(stream)
+                .arg(&tmp)
+                .arg(dst)
+                .arg(constant_value)
+                .arg(&w_i)
+                .arg(&h_i)
+                .arg(&border_i)
+                .launch_2d(grid_w, height, make_config(grid_w, height, block_dim))
+                .map_err(|e| CudaMorphologyError::Cuda(e.to_string()));
+        }
+    }
+
     // Single-channel images take the 4-pixel-per-thread vector kernel
     // (same tap multiset per byte lane via __vmaxu4/__vminu4 — byte-exact);
     // multi-channel and zero-tap elements use the scalar kernel.
@@ -499,4 +579,180 @@ pub fn launch_morphology_u8_cuda(
         .arg(&border_i)
         .launch_2d(grid_w, grid_h, make_config(grid_w, grid_h, block_dim))
         .map_err(|e| CudaMorphologyError::Cuda(e.to_string()))
+}
+
+// ── Separable box fast path ───────────────────────────────────────────────────
+
+/// Separable two-pass kernels for FULL BOX structuring elements on C1.
+///
+/// `max`/`min` are associative and commutative, so a box dilate/erode
+/// decomposes EXACTLY into a row pass followed by a column pass — the same
+/// value multiset folds, byte-exact with the direct kernel and the CPU.
+/// Both passes process 4 pixels per thread on u32 words: the row pass
+/// assembles shifted 4-byte windows with `__byte_perm` (as in the direct
+/// C1 kernel), the column pass reads whole words from consecutive rows —
+/// fully coalesced. Borders are handled per pass with the same
+/// `map_index` semantics; the horizontal pass resolves x borders, the
+/// vertical pass y borders, which matches the 2D border sampling of the
+/// direct kernel for every padding mode (each axis' index mapping is
+/// independent).
+fn morph_sep_src(dx_lo: i32, dx_hi: i32, dy_lo: i32, dy_hi: i32, op: MorphOp) -> String {
+    let (vfold, vinit, sfold, sinit) = match op {
+        MorphOp::Dilate => ("__vmaxu4", "0u", "max", "0u"),
+        MorphOp::Erode => ("__vminu4", "0xffffffffu", "min", "255u"),
+    };
+    let span = (dx_hi - dx_lo) as usize;
+    let rn = span.div_ceil(4) + 1;
+    let wn = rn + 1;
+    let mut h_folds = String::new();
+    for dx in dx_lo..=dx_hi {
+        let o = (dx - dx_lo) as usize;
+        let (wi, rem) = (o / 4, o % 4);
+        if rem == 0 {
+            let _ = writeln!(h_folds, "        acc = {vfold}(acc, R{wi});");
+        } else {
+            let sel = 0x3210u32 + 0x1111 * rem as u32;
+            let _ = writeln!(
+                h_folds,
+                "        acc = {vfold}(acc, __byte_perm(R{wi}, R{}, 0x{sel:04x}u));",
+                wi + 1
+            );
+        }
+    }
+    let mut w_loads = String::new();
+    for i in 0..wn {
+        let _ = writeln!(w_loads, "        unsigned int W{i} = __ldg(wp + {i});");
+    }
+    let mut r_norms = String::new();
+    for i in 0..rn {
+        let _ = writeln!(
+            r_norms,
+            "        unsigned int R{i} = __byte_perm(W{i}, W{}, sel_n);",
+            i + 1
+        );
+    }
+    let mut v_folds = String::new();
+    for dy in dy_lo..=dy_hi {
+        let _ = writeln!(
+            v_folds,
+            "        acc = {vfold}(acc, __ldg((const unsigned int*)(tmp + \
+             (size_t)(y + ({dy})) * width) + xw));"
+        );
+    }
+
+    format!(
+        r#"
+__device__ __forceinline__ int map_index(int i, int len, int mode) {{
+    if (mode == 1) {{ return min(max(i, 0), len - 1); }}
+    if (mode == 2) {{
+        if (len == 1) return 0;
+        while (i < 0 || i >= len) {{ if (i < 0) i = -i; else i = 2 * len - i - 2; }}
+        return i;
+    }}
+    if (mode == 3) {{
+        if (len == 1) return 0;
+        while (i < 0 || i >= len) {{ if (i < 0) i = -i - 1; else i = 2 * len - i - 1; }}
+        return i;
+    }}
+    if (mode == 4) {{ int m = i % len; return m < 0 ? m + len : m; }}
+    return 0;
+}}
+
+// Row pass: tmp[y][x] = fold over dx of src[y][x+dx].
+extern "C" __global__ void morph_sep_h(
+    const unsigned char* __restrict__ src,
+    unsigned char* __restrict__       tmp,
+    const unsigned char* __restrict__ constant_value,
+    int width, int height, int border
+) {{
+    int x0 = 4 * (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    int y  = (int)(blockIdx.y * blockDim.y + threadIdx.y);
+    if (x0 >= width || y >= height) return;
+
+    long long idx = (long long)y * width + x0 + ({dx_lo});
+    bool vec_ok = x0 >= {neg_dx_lo} && x0 + 3 < width - ({dx_hi})
+               && idx >= 3
+               && idx + {load_span} <= (long long)width * height;
+    if (vec_ok) {{
+        const unsigned char* p = src + (size_t)y * width + x0 + ({dx_lo});
+        unsigned int s = (unsigned int)((size_t)p & 3u);
+        const unsigned int* wp = (const unsigned int*)(p - s);
+        unsigned int sel_n = 0x3210u + 0x1111u * s;
+{w_loads}{r_norms}        unsigned int acc = {vinit};
+{h_folds}        size_t d = (size_t)y * width + x0;
+        if (((size_t)(tmp + d) & 3u) == 0u) {{
+            *(unsigned int*)(tmp + d) = acc;
+        }} else {{
+            tmp[d + 0] = (unsigned char)(acc & 0xffu);
+            tmp[d + 1] = (unsigned char)((acc >> 8) & 0xffu);
+            tmp[d + 2] = (unsigned char)((acc >> 16) & 0xffu);
+            tmp[d + 3] = (unsigned char)((acc >> 24) & 0xffu);
+        }}
+        return;
+    }}
+    for (int x = x0; x < min(x0 + 4, width); ++x) {{
+        unsigned int acc = {sinit};
+        for (int dx = {dx_lo}; dx <= {dx_hi}; ++dx) {{
+            int sx = x + dx;
+            unsigned int v;
+            if (sx >= 0 && sx < width) {{
+                v = (unsigned int)__ldg(&src[(size_t)y * width + sx]);
+            }} else if (border == 0) {{
+                v = (unsigned int)__ldg(&constant_value[0]);
+            }} else {{
+                v = (unsigned int)__ldg(&src[(size_t)y * width + map_index(sx, width, border)]);
+            }}
+            acc = {sfold}(acc, v);
+        }}
+        tmp[(size_t)y * width + x] = (unsigned char)acc;
+    }}
+}}
+
+// Column pass: dst[y][x] = fold over dy of tmp[y+dy][x] — whole-word reads,
+// fully coalesced.
+extern "C" __global__ void morph_sep_v(
+    const unsigned char* __restrict__ tmp,
+    unsigned char* __restrict__       dst,
+    const unsigned char* __restrict__ constant_value,
+    int width, int height, int border
+) {{
+    int x0 = 4 * (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    int y  = (int)(blockIdx.y * blockDim.y + threadIdx.y);
+    if (x0 >= width || y >= height) return;
+
+    bool vec_ok = x0 + 3 < width
+               && y >= {neg_dy_lo} && y < height - ({dy_hi})
+               && ((width & 3) == 0) && ((x0 & 3) == 0);
+    if (vec_ok) {{
+        unsigned int xw = (unsigned int)x0 >> 2;
+        unsigned int acc = {vinit};
+{v_folds}        size_t d = (size_t)y * width + x0;
+        *(unsigned int*)(dst + d) = acc;
+        return;
+    }}
+    for (int x = x0; x < min(x0 + 4, width); ++x) {{
+        unsigned int acc = {sinit};
+        for (int dy = {dy_lo}; dy <= {dy_hi}; ++dy) {{
+            int sy = y + dy;
+            unsigned int v;
+            if (sy >= 0 && sy < height) {{
+                v = (unsigned int)__ldg(&tmp[(size_t)sy * width + x]);
+            }} else if (border == 0) {{
+                // The horizontal pass has already folded x; a y-border
+                // constant contributes the raw constant, matching the 2D
+                // direct kernel where out-of-y taps all read the constant.
+                v = (unsigned int)__ldg(&constant_value[0]);
+            }} else {{
+                v = (unsigned int)__ldg(&tmp[(size_t)map_index(sy, height, border) * width + x]);
+            }}
+            acc = {sfold}(acc, v);
+        }}
+        dst[(size_t)y * width + x] = (unsigned char)acc;
+    }}
+}}
+"#,
+        neg_dx_lo = -dx_lo,
+        neg_dy_lo = -dy_lo,
+        load_span = 4 * wn as i64,
+    )
 }
