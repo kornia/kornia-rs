@@ -33,7 +33,8 @@
 //! separable kernels rely on for negative bicubic/lanczos accumulators —
 //! same guarantee `cuda/color` documents.
 
-use std::sync::{Arc, OnceLock};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use cudarc::driver::{CudaContext, CudaSlice, CudaStream};
 use kornia_tensor::CudaKernel;
@@ -131,34 +132,57 @@ extern "C" __global__ void resize_u8_pyrup2x_rgb(
 }
 "#;
 
-static NEAREST_SRC: &str = r#"
-extern "C" __global__ void resize_u8_nearest(
+/// Nearest kernel source, specialized per channel count: pure gather, four
+/// output pixels per thread with the channel loop fully unrolled so every
+/// load issues independently.
+fn nearest_src(channels: usize) -> String {
+    format!(
+        r#"
+#define C {channels}
+extern "C" __global__ void resize_u8_nearest_c{channels}(
     const unsigned char* __restrict__ src,
     unsigned char* __restrict__       dst,
     const int* __restrict__           xmap,
     const int* __restrict__           ymap,
     unsigned int src_w,
     unsigned int dst_w,
-    unsigned int dst_h,
-    unsigned int channels
-) {
+    unsigned int dst_h
+) {{
+    // One pixel per thread: nearest is a pure scatter-gather and hides
+    // latency through occupancy — a 4-px/thread ILP variant measured ~35%
+    // SLOWER (fewer threads, no reuse to exploit). The baked channel count
+    // still unrolls the copy.
     unsigned int x = blockIdx.x * blockDim.x + threadIdx.x;
     unsigned int y = blockIdx.y * blockDim.y + threadIdx.y;
     if (x >= dst_w || y >= dst_h) return;
 
-    size_t so = ((size_t)__ldg(&ymap[y]) * src_w + (size_t)__ldg(&xmap[x])) * channels;
-    size_t d  = ((size_t)y * dst_w + x) * channels;
-    for (unsigned int ch = 0; ch < channels; ++ch) {
+    size_t so = ((size_t)__ldg(&ymap[y]) * src_w + (size_t)__ldg(&xmap[x])) * C;
+    size_t d  = ((size_t)y * dst_w + x) * C;
+    #pragma unroll
+    for (unsigned int ch = 0; ch < C; ++ch) {{
         dst[d + ch] = __ldg(&src[so + ch]);
-    }
+    }}
+}}
+"#
+    )
 }
-"#;
 
-static BILINEAR_SRC: &str = r#"
-// Q14 bilinear, byte-exact with bilinear_row_u8: the blend runs in 64-bit,
-// with ONE round-half-up at the final Q28 shift. fx/fy come from the host
-// f64 LUTs; fx1 = 16384 - fx is exact in integer arithmetic.
-extern "C" __global__ void resize_u8_bilinear(
+/// Q14 bilinear kernel source, specialized per channel count.
+///
+/// Byte-exact with `bilinear_row_u8`: the blend runs in 64-bit with ONE
+/// round-half-up at the final Q28 shift; fx/fy come from the host f64 LUTs
+/// and `fx1 = 16384 - fx` is exact integer arithmetic.
+///
+/// The channel count is baked into the source (`#pragma unroll` on a
+/// compile-time bound), and each thread produces TWO output pixels, so all
+/// corner loads are named registers issuing independently — the runtime
+/// channel loop of the first version serialized them (the same
+/// latency-bound profile the morphology kernels had before specialization).
+fn bilinear_src(channels: usize) -> String {
+    format!(
+        r#"
+#define C {channels}
+extern "C" __global__ void resize_u8_bilinear_c{channels}(
     const unsigned char* __restrict__ src,
     unsigned char* __restrict__       dst,
     const unsigned int* __restrict__  xofs,
@@ -167,34 +191,40 @@ extern "C" __global__ void resize_u8_bilinear(
     const unsigned int* __restrict__  yfy,
     unsigned int src_w,
     unsigned int dst_w,
-    unsigned int dst_h,
-    unsigned int channels
-) {
+    unsigned int dst_h
+) {{
+    // One pixel per thread (occupancy beats ILP for gather kernels — the
+    // 2-px pair variant measured no better than 1-px, same as nearest's
+    // 4-px quad); the baked channel count unrolls the corner loads into
+    // independent issues.
     unsigned int x = blockIdx.x * blockDim.x + threadIdx.x;
     unsigned int y = blockIdx.y * blockDim.y + threadIdx.y;
     if (x >= dst_w || y >= dst_h) return;
 
     const unsigned long long SCALE = 16384ull;
-    unsigned long long fx  = (unsigned long long)__ldg(&xfx[x]);
     unsigned long long fy  = (unsigned long long)__ldg(&yfy[y]);
-    unsigned long long fx1 = SCALE - fx;
     unsigned long long fy1 = SCALE - fy;
+    unsigned long long fx  = (unsigned long long)__ldg(&xfx[x]);
+    unsigned long long fx1 = SCALE - fx;
+    size_t row0 = (size_t)__ldg(&yofs[y]) * src_w * C;
+    size_t row1 = row0 + (size_t)src_w * C;
+    size_t c0   = (size_t)__ldg(&xofs[x]) * C;
+    size_t d    = ((size_t)y * dst_w + x) * C;
 
-    size_t r0 = ((size_t)__ldg(&yofs[y]) * src_w + (size_t)__ldg(&xofs[x])) * channels;
-    size_t r1 = r0 + (size_t)src_w * channels;
-    size_t d  = ((size_t)y * dst_w + x) * channels;
-
-    for (unsigned int ch = 0; ch < channels; ++ch) {
-        unsigned long long p00 = (unsigned long long)__ldg(&src[r0 + ch]);
-        unsigned long long p01 = (unsigned long long)__ldg(&src[r0 + channels + ch]);
-        unsigned long long p10 = (unsigned long long)__ldg(&src[r1 + ch]);
-        unsigned long long p11 = (unsigned long long)__ldg(&src[r1 + channels + ch]);
+    #pragma unroll
+    for (unsigned int ch = 0; ch < C; ++ch) {{
+        unsigned long long p00 = (unsigned long long)__ldg(&src[row0 + c0 + ch]);
+        unsigned long long p01 = (unsigned long long)__ldg(&src[row0 + c0 + C + ch]);
+        unsigned long long p10 = (unsigned long long)__ldg(&src[row1 + c0 + ch]);
+        unsigned long long p11 = (unsigned long long)__ldg(&src[row1 + c0 + C + ch]);
         unsigned long long top = p00 * fx1 + p01 * fx;
         unsigned long long bot = p10 * fx1 + p11 * fx;
         dst[d + ch] = (unsigned char)((top * fy1 + bot * fy + (1ull << 27)) >> 28);
-    }
+    }}
+}}
+"#
+    )
 }
-"#;
 
 static SEP_H_SRC: &str = r#"
 // Q14 separable horizontal pass, byte-exact with horizontal_row_scalar:
@@ -289,8 +319,11 @@ extern "C" __global__ void resize_u8_sep_v(
 
 static PYRDOWN2X_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
 static PYRUP2X_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
-static NEAREST_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
-static BILINEAR_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
+type PerCKernelCache = Mutex<HashMap<u32, Arc<CudaKernel>>>;
+static NEAREST_KERNELS: OnceLock<PerCKernelCache> = OnceLock::new();
+/// Per-channel-count specialized bilinear kernels (C is baked into the
+/// source so the pixel loop fully unrolls).
+static BILINEAR_KERNELS: OnceLock<PerCKernelCache> = OnceLock::new();
 static SEP_H_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
 static SEP_V_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
 
@@ -418,8 +451,29 @@ pub fn launch_resize_u8_nearest_cuda(
         ));
     }
 
-    let kernel = get_kernel(&NEAREST_KERNEL, ctx, NEAREST_SRC, "resize_u8_nearest")?;
+    // Per-C specialized kernel (see bilinear for the cache pattern).
+    let cache = NEAREST_KERNELS.get_or_init(Default::default);
+    let cached = cache
+        .lock()
+        .expect("nearest kernel cache poisoned")
+        .get(&channels)
+        .cloned();
+    let kernel = if let Some(hit) = cached {
+        hit
+    } else {
+        let src_code = nearest_src(channels as usize);
+        let name = format!("resize_u8_nearest_c{channels}");
+        let built =
+            Arc::new(try_compile_with_l1(ctx, &src_code, &name).map_err(CudaResizeError::Cuda)?);
+        cache
+            .lock()
+            .expect("nearest kernel cache poisoned")
+            .entry(channels)
+            .or_insert(built)
+            .clone()
+    };
 
+    let grid_w = dst_width;
     kernel
         .launch_builder(stream)
         .arg(src)
@@ -429,11 +483,10 @@ pub fn launch_resize_u8_nearest_cuda(
         .arg(&src_width)
         .arg(&dst_width)
         .arg(&dst_height)
-        .arg(&channels)
         .launch_2d(
-            dst_width,
+            grid_w,
             dst_height,
-            make_config(dst_width, dst_height, block_dim),
+            make_config(grid_w, dst_height, block_dim),
         )
         .map_err(|e| CudaResizeError::Cuda(e.to_string()))
 }
@@ -479,8 +532,30 @@ pub fn launch_resize_u8_bilinear_cuda(
         ));
     }
 
-    let kernel = get_kernel(&BILINEAR_KERNEL, ctx, BILINEAR_SRC, "resize_u8_bilinear")?;
+    // Per-C specialized kernel (scoped-guard lookup: binding `.get()` in an
+    // `if let` scrutinee would hold the lock through the else branch).
+    let cache = BILINEAR_KERNELS.get_or_init(Default::default);
+    let cached = cache
+        .lock()
+        .expect("bilinear kernel cache poisoned")
+        .get(&channels)
+        .cloned();
+    let kernel = if let Some(hit) = cached {
+        hit
+    } else {
+        let src_code = bilinear_src(channels as usize);
+        let name = format!("resize_u8_bilinear_c{channels}");
+        let built =
+            Arc::new(try_compile_with_l1(ctx, &src_code, &name).map_err(CudaResizeError::Cuda)?);
+        cache
+            .lock()
+            .expect("bilinear kernel cache poisoned")
+            .entry(channels)
+            .or_insert(built)
+            .clone()
+    };
 
+    let grid_w = dst_width;
     kernel
         .launch_builder(stream)
         .arg(src)
@@ -492,11 +567,10 @@ pub fn launch_resize_u8_bilinear_cuda(
         .arg(&src_width)
         .arg(&dst_width)
         .arg(&dst_height)
-        .arg(&channels)
         .launch_2d(
-            dst_width,
+            grid_w,
             dst_height,
-            make_config(dst_width, dst_height, block_dim),
+            make_config(grid_w, dst_height, block_dim),
         )
         .map_err(|e| CudaResizeError::Cuda(e.to_string()))
 }

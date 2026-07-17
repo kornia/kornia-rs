@@ -539,3 +539,56 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod bench_probe {
+    /// Release-build device-throughput probe:
+    /// `cargo test --release -p kornia-imgproc --features cuda --lib \
+    ///  resize::cuda::bench_probe -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn probe_resize_1080p_to_720p() {
+        use crate::cuda::color::test_utils::{default_stream, pattern_u8};
+        use crate::interpolation::InterpolationMode;
+        use crate::resize::resize_fast_u8_aa;
+        use kornia_image::{Image, ImageSize};
+
+        let stream = default_stream();
+        let src_size = ImageSize {
+            width: 1920,
+            height: 1080,
+        };
+        let dst_size = ImageSize {
+            width: 1280,
+            height: 720,
+        };
+        let src = Image::<u8, 3>::new(src_size, pattern_u8(1920 * 1080 * 3)).unwrap();
+        let d_src = src.to_cuda(&stream).unwrap();
+        let mut d_dst = Image::<u8, 3>::zeros_cuda(dst_size, &stream).unwrap();
+
+        // Clock warmup.
+        for _ in 0..300 {
+            resize_fast_u8_aa(&d_src, &mut d_dst, InterpolationMode::Bilinear, true).unwrap();
+        }
+        stream.synchronize().unwrap();
+
+        for mode in [InterpolationMode::Bilinear, InterpolationMode::Nearest] {
+            // DVFS is unlocked on this box: 5 rounds, min = closest to the
+            // max-clock condition.
+            let mut best = f64::MAX;
+            for _ in 0..5 {
+                for _ in 0..100 {
+                    resize_fast_u8_aa(&d_src, &mut d_dst, mode, true).unwrap();
+                }
+                stream.synchronize().unwrap();
+                let t0 = std::time::Instant::now();
+                for _ in 0..300 {
+                    resize_fast_u8_aa(&d_src, &mut d_dst, mode, true).unwrap();
+                }
+                stream.synchronize().unwrap();
+                best = best.min(t0.elapsed().as_secs_f64() * 1000.0 / 300.0);
+            }
+            println!("{mode:?}: {best:.3} ms/op (min of 5)");
+        }
+    }
+}
