@@ -111,12 +111,6 @@ pub(super) fn warp_affine_u8_cuda<const C: usize>(
     m: &[f32; 6],
     stream: &Arc<CudaStream>,
 ) -> Result<(), ImageError> {
-    if !(C == 1 || C == 3 || C == 4) {
-        return Err(no_gpu_kernel_err(
-            "warp_affine_u8",
-            "1/3/4-channel u8 images",
-        ));
-    }
     let (src_w, src_h) = dims_u32(src)?;
     let (dst_w, dst_h) = dims_u32(dst)?;
     let ctx = stream.context();
@@ -139,12 +133,6 @@ pub(super) fn warp_perspective_u8_cuda<const C: usize>(
     m: &[f32; 9],
     stream: &Arc<CudaStream>,
 ) -> Result<(), ImageError> {
-    if !(C == 1 || C == 3 || C == 4) {
-        return Err(no_gpu_kernel_err(
-            "warp_perspective_u8",
-            "1/3/4-channel u8 images",
-        ));
-    }
     let (src_w, src_h) = dims_u32(src)?;
     let (dst_w, dst_h) = dims_u32(dst)?;
     let ctx = stream.context();
@@ -461,5 +449,47 @@ mod bench_probe {
         }
         println!("affine: {best_a:.3} ms/op (min of 5)");
         println!("perspective: {best_p:.3} ms/op (min of 5)");
+    }
+
+    /// The u8 warp kernels are per-byte generic over C — a 2-channel warp
+    /// must work on BOTH residencies and agree byte-for-byte (the adapter
+    /// previously gated {1,3,4} while the CPU path accepted any C).
+    #[test]
+    fn warp_u8_c2_device_matches_cpu() {
+        use kornia_image::{Image, ImageSize};
+        let stream = crate::cuda::color::test_utils::default_stream();
+        let src = Image::<u8, 2>::new(
+            ImageSize {
+                width: 37,
+                height: 29,
+            },
+            crate::cuda::color::test_utils::pattern_u8(37 * 29 * 2),
+        )
+        .unwrap();
+        let m = [0.9f32, 0.1, 2.0, -0.05, 1.05, -1.0];
+        let mut cpu_dst = Image::<u8, 2>::from_size_val(
+            ImageSize {
+                width: 31,
+                height: 23,
+            },
+            0,
+        )
+        .unwrap();
+        crate::warp::warp_affine_u8(&src, &mut cpu_dst, &m).unwrap();
+
+        let d_src = src.to_cuda(&stream).unwrap();
+        let mut d_dst = Image::<u8, 2>::zeros_cuda(
+            ImageSize {
+                width: 31,
+                height: 23,
+            },
+            &stream,
+        )
+        .unwrap();
+        crate::warp::warp_affine_u8(&d_src, &mut d_dst, &m).unwrap();
+        assert_eq!(
+            d_dst.to_host_owned().unwrap().as_slice(),
+            cpu_dst.as_slice()
+        );
     }
 }

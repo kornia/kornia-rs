@@ -208,6 +208,15 @@ pub fn launch_warp_perspective_u8_bilinear_cuda(
             need,
         });
     }
+    // Symmetric source check: the kernel gathers up to src_w*src_h*C-1 and
+    // the adapter is not the only caller of this pub launcher.
+    let src_need = (src_width as usize) * (src_height as usize) * (channels as usize);
+    if src.len() < src_need {
+        return Err(CudaWarpU8Error::SliceTooSmall {
+            got: src.len(),
+            need: src_need,
+        });
+    }
 
     // Per-C specialized kernel (scoped-guard cache lookup).
     let cache = PERSPECTIVE_U8_KERNELS.get_or_init(Default::default);
