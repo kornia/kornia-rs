@@ -19,13 +19,29 @@ use rayon::prelude::*;
 /// # Returns
 ///
 /// Ok(()) on success, or [`ImageError`] if shapes don't match.
-pub fn dilate<T: Copy + Default + Send + Sync + Ord, const C: usize>(
+pub fn dilate<T: Copy + Default + Send + Sync + Ord + 'static, const C: usize>(
     src: &Image<T, C>,
     dst: &mut Image<T, C>,
     kernel: &Kernel,
     padding_mode: PaddingMode,
     constant_value: [T; C],
 ) -> Result<(), ImageError> {
+    // Device-resident operands route to the CUDA u8 kernel (bit-identical
+    // output — min/max over the same tap multiset). Non-u8 device pairs and
+    // mixed host/device pairs are typed errors; the CPU path below must
+    // never see device pointers.
+    #[cfg(feature = "cuda")]
+    if crate::cuda::dispatch::is_device(src) || crate::cuda::dispatch::is_device(dst) {
+        return super::cuda::morphology_device(
+            src,
+            dst,
+            kernel,
+            padding_mode,
+            constant_value,
+            crate::cuda::morphology::MorphOp::Dilate,
+        );
+    }
+
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
             dst.width(),
@@ -106,13 +122,26 @@ pub fn dilate<T: Copy + Default + Send + Sync + Ord, const C: usize>(
 /// # Returns
 ///
 /// Ok(()) on success, or [`ImageError`] if shapes don't match.
-pub fn erode<T: Copy + Default + Send + Sync + Ord, const C: usize>(
+pub fn erode<T: Copy + Default + Send + Sync + Ord + 'static, const C: usize>(
     src: &Image<T, C>,
     dst: &mut Image<T, C>,
     kernel: &Kernel,
     padding_mode: PaddingMode,
     constant_value: [T; C],
 ) -> Result<(), ImageError> {
+    // See `dilate` — same device routing, min instead of max.
+    #[cfg(feature = "cuda")]
+    if crate::cuda::dispatch::is_device(src) || crate::cuda::dispatch::is_device(dst) {
+        return super::cuda::morphology_device(
+            src,
+            dst,
+            kernel,
+            padding_mode,
+            constant_value,
+            crate::cuda::morphology::MorphOp::Erode,
+        );
+    }
+
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
             dst.width(),
@@ -195,7 +224,7 @@ pub fn erode<T: Copy + Default + Send + Sync + Ord, const C: usize>(
 /// # Returns
 ///
 /// Ok(()) on success, or [`ImageError`] if shapes don't match.
-pub fn open<T: Copy + Default + Send + Sync + Ord, const C: usize>(
+pub fn open<T: Copy + Default + Send + Sync + Ord + 'static, const C: usize>(
     src: &Image<T, C>,
     dst: &mut Image<T, C>,
     kernel: &Kernel,
@@ -223,7 +252,7 @@ pub fn open<T: Copy + Default + Send + Sync + Ord, const C: usize>(
 /// # Returns
 ///
 /// Ok(()) on success, or [`ImageError`] if shapes don't match.
-pub fn close<T: Copy + Default + Send + Sync + Ord, const C: usize>(
+pub fn close<T: Copy + Default + Send + Sync + Ord + 'static, const C: usize>(
     src: &Image<T, C>,
     dst: &mut Image<T, C>,
     kernel: &Kernel,

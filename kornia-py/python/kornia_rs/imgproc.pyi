@@ -124,6 +124,28 @@ def gaussian_blur(
     image: np.ndarray, kernel_size: tuple[int, int], sigma: tuple[float, float]
 ) -> np.ndarray: ...
 def box_blur(image: np.ndarray, kernel_size: tuple[int, int]) -> np.ndarray: ...
+def dilate(
+    image: np.ndarray | Image,
+    kernel: str = ...,
+    size: tuple[int, int] = ...,
+    border: str = ...,
+    constant_value: int = ...,
+) -> np.ndarray | Image:
+    """Neighborhood maximum over a ``"box"`` / ``"cross"`` / ``"ellipse"``
+    structuring element of ``size`` ``(height, width)``. ``border`` is one of
+    ``"constant"`` / ``"replicate"`` / ``"reflect101"`` / ``"reflect"`` /
+    ``"wrap"``. A u8 device ``Image`` (1/3/4-channel) runs on the GPU,
+    bit-identical to the numpy CPU path."""
+    ...
+def erode(
+    image: np.ndarray | Image,
+    kernel: str = ...,
+    size: tuple[int, int] = ...,
+    border: str = ...,
+    constant_value: int = ...,
+) -> np.ndarray | Image:
+    """Neighborhood minimum — see :func:`dilate` for parameters and the GPU path."""
+    ...
 def adjust_brightness(image: np.ndarray, factor: float) -> np.ndarray: ...
 def add_weighted(
     src1: np.ndarray, alpha: float, src2: np.ndarray, beta: float, gamma: float

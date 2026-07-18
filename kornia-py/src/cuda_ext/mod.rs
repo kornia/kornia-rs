@@ -273,9 +273,13 @@ mod cuda_color;
 #[cfg(feature = "cuda")]
 pub(crate) mod cuda_geometry;
 #[cfg(feature = "cuda")]
+pub(crate) mod cuda_morphology;
+#[cfg(feature = "cuda")]
 pub(crate) use cuda_color::*;
 #[cfg(feature = "cuda")]
 pub(crate) use cuda_geometry as geometry;
+#[cfg(feature = "cuda")]
+pub(crate) use cuda_morphology as morphology;
 
 // ── Tensor (model input) ──────────────────────────────────────────────────────
 //
