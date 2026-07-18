@@ -274,6 +274,19 @@ def test_no_leak_histogram_device_arms():
     assert_no_leak(body)
 
 
+def test_no_leak_clahe_device_arm():
+    """clahe allocates a fresh device destination plus per-call tile-LUT
+    scratch."""
+    rng = np.random.default_rng(9)
+    dev = _dev(rng.integers(0, 256, size=(240, 320, 1), dtype=np.uint8))
+
+    def body():
+        out = kornia_rs.imgproc.clahe(dev)
+        del out
+
+    assert_no_leak(body)
+
+
 def test_no_leak_new_color_device_arms():
     """The dual-dtype / f32 arms wired 2026-07-18 (hls/luv/xyz/linear/yuv/
     f32-ycbcr/f32-sepia/f32-gray) allocate fresh device destinations — chain a

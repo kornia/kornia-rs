@@ -13,6 +13,18 @@ changes early: `cargo add kornia-imgproc@0.1.15-rc.1` or `pip install --pre korn
 
 ## [Unreleased]
 
+**CLAHE (CPU and CUDA), byte-for-byte with OpenCV.** New `clahe` for u8
+single-channel images (`kornia_rs.imgproc.clahe` in Python), matching
+`cv2.createCLAHE(clip, grid).apply()` exactly — including OpenCV's
+reflect_101 tile padding rule, integer clip limit with two-phase excess
+redistribution, f32 LUT quantization (round-half-to-even) and the f32
+bilinear blend of the four surrounding tile LUTs with the exact FMA
+contraction OpenCV's aarch64 wheels compile to (calibrated empirically:
+22 configurations, zero differing bytes). CPU and GPU outputs are
+byte-identical (`f32::mul_add` / explicit `fmaf`, mirrored expression
+trees). Measured 1080p sustained: GPU 0.040 ms ≈ 100× `cv2.createCLAHE`
+CPU (VPI has no CLAHE op).
+
 **GPU histogram + `equalize_hist` (CPU and CUDA), byte-for-byte with
 OpenCV.** New `equalize_hist` for u8 single-channel images on CPU and
 device (`kornia_rs.imgproc.equalize_hist` in Python), matching
