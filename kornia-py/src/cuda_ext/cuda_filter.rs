@@ -6,39 +6,25 @@
 use super::cuda_geometry::PyOut;
 use super::*;
 
-fn run_u8<const C: usize>(
+fn run<T, const C: usize>(
     img: &PyImageApi,
-    src: &Image<u8, C>,
-    wrap: fn(Image<u8, C>) -> Inner,
-    op: impl Fn(&Image<u8, C>, &mut Image<u8, C>) -> Result<(), kornia_image::ImageError>,
-) -> PyResult<PyOut> {
+    src: &Image<T, C>,
+    wrap: fn(Image<T, C>) -> Inner,
+    op: impl Fn(&Image<T, C>, &mut Image<T, C>) -> Result<(), kornia_image::ImageError>,
+) -> PyResult<PyOut>
+where
+    T: cudarc::driver::DeviceRepr + cudarc::driver::ValidAsZeroBits + Clone + Default + 'static,
+{
     let stream = source_stream(src)?;
     // SAFETY: the filter kernels write every output pixel (bounds-guarded
     // grid, all channels), so the uninitialized destination is fully
     // overwritten.
-    let mut dst = unsafe { Image::<u8, C>::uninit_cuda(src.size(), &stream) }.map_err(err)?;
+    let mut dst = unsafe { Image::<T, C>::uninit_cuda(src.size(), &stream) }.map_err(err)?;
     op(src, &mut dst).map_err(err)?;
     Ok(PyOut::New(PyImageApi::from_device(
         wrap(dst),
         img.color_space,
-        device_mode::<u8>(C),
-    )))
-}
-
-fn run_f32<const C: usize>(
-    img: &PyImageApi,
-    src: &Image<f32, C>,
-    wrap: fn(Image<f32, C>) -> Inner,
-    op: impl Fn(&Image<f32, C>, &mut Image<f32, C>) -> Result<(), kornia_image::ImageError>,
-) -> PyResult<PyOut> {
-    let stream = source_stream(src)?;
-    // SAFETY: as above.
-    let mut dst = unsafe { Image::<f32, C>::uninit_cuda(src.size(), &stream) }.map_err(err)?;
-    op(src, &mut dst).map_err(err)?;
-    Ok(PyOut::New(PyImageApi::from_device(
-        wrap(dst),
-        img.color_space,
-        device_mode::<f32>(C),
+        device_mode::<T>(C),
     )))
 }
 
@@ -52,11 +38,11 @@ macro_rules! blur_dev {
                 ))
             })?;
             match dev {
-                Inner::U8C1(src) => run_u8::<1>(img, src, Inner::U8C1, |s, d| $op_u8(s, d, $($arg),*)),
-                Inner::U8C3(src) => run_u8::<3>(img, src, Inner::U8C3, |s, d| $op_u8(s, d, $($arg),*)),
-                Inner::U8C4(src) => run_u8::<4>(img, src, Inner::U8C4, |s, d| $op_u8(s, d, $($arg),*)),
-                Inner::F32C1(src) => run_f32::<1>(img, src, Inner::F32C1, |s, d| $op_f32(s, d, $($arg),*)),
-                Inner::F32C3(src) => run_f32::<3>(img, src, Inner::F32C3, |s, d| $op_f32(s, d, $($arg),*)),
+                Inner::U8C1(src) => run::<u8, 1>(img, src, Inner::U8C1, |s, d| $op_u8(s, d, $($arg),*)),
+                Inner::U8C3(src) => run::<u8, 3>(img, src, Inner::U8C3, |s, d| $op_u8(s, d, $($arg),*)),
+                Inner::U8C4(src) => run::<u8, 4>(img, src, Inner::U8C4, |s, d| $op_u8(s, d, $($arg),*)),
+                Inner::F32C1(src) => run::<f32, 1>(img, src, Inner::F32C1, |s, d| $op_f32(s, d, $($arg),*)),
+                Inner::F32C3(src) => run::<f32, 3>(img, src, Inner::F32C3, |s, d| $op_f32(s, d, $($arg),*)),
                 other => Err(PyValueError::new_err(format!(
                     concat!(
                         stringify!($name),
@@ -92,10 +78,10 @@ pub(crate) fn sobel(img: &PyImageApi, kernel_size: usize) -> PyResult<PyOut> {
         )
     })?;
     match dev {
-        Inner::F32C1(src) => run_f32::<1>(img, src, Inner::F32C1, |s, d| {
+        Inner::F32C1(src) => run::<f32, 1>(img, src, Inner::F32C1, |s, d| {
             kornia_imgproc::filter::sobel(s, d, kernel_size)
         }),
-        Inner::F32C3(src) => run_f32::<3>(img, src, Inner::F32C3, |s, d| {
+        Inner::F32C3(src) => run::<f32, 3>(img, src, Inner::F32C3, |s, d| {
             kornia_imgproc::filter::sobel(s, d, kernel_size)
         }),
         other => Err(PyValueError::new_err(format!(

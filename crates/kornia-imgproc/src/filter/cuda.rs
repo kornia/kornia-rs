@@ -23,94 +23,80 @@ use crate::cuda::filter::{
     launch_separable_filter_f32,
 };
 
-// ── tap-table device cache ───────────────────────────────────────────────────
+// ── tap-table device caches ──────────────────────────────────────────────────
+//
+// One typed map per dtype: lookups clone exactly the wanted Arc, no enum
+// round-trip. (A shared generic device-table cache usable by resize's weight
+// tables too is tracked as a follow-up.)
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct TapKey {
     dev: usize,
-    /// Tap values as raw bit patterns (f32 taps) or widened bytes (u8 taps),
-    /// so one map serves both dtypes without float-Eq issues.
+    /// Tap values as raw bit patterns, so f32 keys hash/compare exactly.
     bits: Vec<u32>,
-    is_u8: bool,
 }
 
-enum TapTable {
-    F32(Arc<CudaSlice<f32>>),
-    U8(Arc<CudaSlice<u8>>),
-}
-
-type TapCache = Mutex<HashMap<TapKey, TapTable>>;
-static TAP_CACHE: OnceLock<TapCache> = OnceLock::new();
+type TapCache<T> = Mutex<HashMap<TapKey, Arc<CudaSlice<T>>>>;
+static TAP_CACHE_F32: OnceLock<TapCache<f32>> = OnceLock::new();
+static TAP_CACHE_U8: OnceLock<TapCache<u8>> = OnceLock::new();
 const TAP_CACHE_CAP: usize = 128;
 
 fn err_cuda(e: impl std::fmt::Display) -> ImageError {
     ImageError::Cuda(e.to_string())
 }
 
-fn insert_tap(key: TapKey, built: TapTable, stream: &Arc<CudaStream>) -> Result<(), ImageError> {
-    // Uploads are async on THIS stream but the cache is shared across
-    // streams; synchronize once before the entry becomes visible.
-    stream.synchronize().map_err(err_cuda)?;
-    let mut map = TAP_CACHE
-        .get_or_init(Default::default)
+/// Get-or-upload a tap table. The upload is async on `stream`; synchronize
+/// once before the entry becomes visible so cross-stream hits always read
+/// completed tables (miss-only cost). Evicts one entry at cap.
+fn cached_taps<T: cudarc::driver::DeviceRepr + Clone>(
+    cache: &'static OnceLock<TapCache<T>>,
+    stream: &Arc<CudaStream>,
+    taps: &[T],
+    bits: Vec<u32>,
+) -> Result<Arc<CudaSlice<T>>, ImageError> {
+    let key = TapKey {
+        dev: stream.context().ordinal(),
+        bits,
+    };
+    let map = cache.get_or_init(Default::default);
+    if let Some(hit) = map
         .lock()
-        .expect("filter tap cache poisoned");
+        .expect("filter tap cache poisoned")
+        .get(&key)
+        .cloned()
+    {
+        return Ok(hit);
+    }
+    let built = Arc::new(stream.clone_htod(taps).map_err(err_cuda)?);
+    stream.synchronize().map_err(err_cuda)?;
+    let mut map = map.lock().expect("filter tap cache poisoned");
     if map.len() >= TAP_CACHE_CAP {
         if let Some(k) = map.keys().next().cloned() {
             map.remove(&k);
         }
     }
-    map.entry(key).or_insert(built);
-    Ok(())
+    Ok(map.entry(key).or_insert(built).clone())
 }
 
 fn cached_taps_f32(
     stream: &Arc<CudaStream>,
     taps: &[f32],
 ) -> Result<Arc<CudaSlice<f32>>, ImageError> {
-    let key = TapKey {
-        dev: stream.context().ordinal(),
-        bits: taps.iter().map(|t| t.to_bits()).collect(),
-        is_u8: false,
-    };
-    if let Some(TapTable::F32(hit)) = TAP_CACHE
-        .get_or_init(Default::default)
-        .lock()
-        .expect("filter tap cache poisoned")
-        .get(&key)
-        .map(|t| match t {
-            TapTable::F32(a) => TapTable::F32(a.clone()),
-            TapTable::U8(a) => TapTable::U8(a.clone()),
-        })
-    {
-        return Ok(hit);
-    }
-    let built = Arc::new(stream.clone_htod(taps).map_err(err_cuda)?);
-    insert_tap(key, TapTable::F32(built.clone()), stream)?;
-    Ok(built)
+    cached_taps(
+        &TAP_CACHE_F32,
+        stream,
+        taps,
+        taps.iter().map(|t| t.to_bits()).collect(),
+    )
 }
 
 fn cached_taps_u8(stream: &Arc<CudaStream>, taps: &[u8]) -> Result<Arc<CudaSlice<u8>>, ImageError> {
-    let key = TapKey {
-        dev: stream.context().ordinal(),
-        bits: taps.iter().map(|&t| t as u32).collect(),
-        is_u8: true,
-    };
-    if let Some(TapTable::U8(hit)) = TAP_CACHE
-        .get_or_init(Default::default)
-        .lock()
-        .expect("filter tap cache poisoned")
-        .get(&key)
-        .map(|t| match t {
-            TapTable::F32(a) => TapTable::F32(a.clone()),
-            TapTable::U8(a) => TapTable::U8(a.clone()),
-        })
-    {
-        return Ok(hit);
-    }
-    let built = Arc::new(stream.clone_htod(taps).map_err(err_cuda)?);
-    insert_tap(key, TapTable::U8(built.clone()), stream)?;
-    Ok(built)
+    cached_taps(
+        &TAP_CACHE_U8,
+        stream,
+        taps,
+        taps.iter().map(|&t| t as u32).collect(),
+    )
 }
 
 // ── adapters ─────────────────────────────────────────────────────────────────

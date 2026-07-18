@@ -6,6 +6,19 @@ use rayon::{
 
 use super::{fast_horizontal_filter, kernels, separable_filter};
 
+/// One-line residency arm: run `$body(stream)` on the device when the pair
+/// is device-resident, else fall through to the CPU path below the call.
+macro_rules! try_device {
+    ($src:expr, $dst:expr, $body:expr) => {
+        #[cfg(feature = "cuda")]
+        if let crate::cuda::dispatch::Residency::Device(exec) =
+            crate::cuda::dispatch::pair_residency($src, $dst)?
+        {
+            return exec.run($body);
+        }
+    };
+}
+
 /// Which u8 gaussian-blur kernel a `(kernel, sigma)` combination resolves to
 /// — the single decision shared by the CPU fast-path branch and the CUDA
 /// adapter, so the two sides route identically (see the one-selector rule
@@ -42,14 +55,9 @@ pub fn box_blur<const C: usize>(
 ) -> Result<(), ImageError> {
     let kernel_x = kernels::box_blur_kernel_1d(kernel_size.0);
     let kernel_y = kernels::box_blur_kernel_1d(kernel_size.1);
-    #[cfg(feature = "cuda")]
-    if let crate::cuda::dispatch::Residency::Device(exec) =
-        crate::cuda::dispatch::pair_residency(src, dst)?
-    {
-        return exec.run(|stream| {
-            super::cuda::separable_filter_f32_cuda(src, dst, &kernel_x, &kernel_y, stream)
-        });
-    }
+    try_device!(src, dst, |stream| super::cuda::separable_filter_f32_cuda(
+        src, dst, &kernel_x, &kernel_y, stream
+    ));
     separable_filter(src, dst, &kernel_x, &kernel_y)?;
     Ok(())
 }
@@ -82,13 +90,9 @@ pub fn box_blur_u8<const C: usize>(
     let ikx = quantize_kernel_256(&kernels::box_blur_kernel_1d(kx));
     let iky = quantize_kernel_256(&kernels::box_blur_kernel_1d(ky));
 
-    #[cfg(feature = "cuda")]
-    if let crate::cuda::dispatch::Residency::Device(exec) =
-        crate::cuda::dispatch::pair_residency(src, dst)?
-    {
-        return exec
-            .run(|stream| super::cuda::separable_blur_u8_cuda(src, dst, &ikx, &iky, stream));
-    }
+    try_device!(src, dst, |stream| super::cuda::separable_blur_u8_cuda(
+        src, dst, &ikx, &iky, stream
+    ));
     separable_blur_u8_striped(
         src.as_slice(),
         dst.as_slice_mut(),
@@ -162,14 +166,9 @@ pub fn gaussian_blur<const C: usize>(
 
     let kernel_x = kernels::gaussian_kernel_1d(kernel_x, sigma_x);
     let kernel_y = kernels::gaussian_kernel_1d(kernel_y, sigma_y);
-    #[cfg(feature = "cuda")]
-    if let crate::cuda::dispatch::Residency::Device(exec) =
-        crate::cuda::dispatch::pair_residency(src, dst)?
-    {
-        return exec.run(|stream| {
-            super::cuda::separable_filter_f32_cuda(src, dst, &kernel_x, &kernel_y, stream)
-        });
-    }
+    try_device!(src, dst, |stream| super::cuda::separable_filter_f32_cuda(
+        src, dst, &kernel_x, &kernel_y, stream
+    ));
     separable_filter(src, dst, &kernel_x, &kernel_y)?;
 
     Ok(())
@@ -192,14 +191,9 @@ pub fn sobel<const C: usize>(
     // get the sobel kernels
     let (kernel_x, kernel_y) = kernels::sobel_kernel_1d(kernel_size)?;
 
-    #[cfg(feature = "cuda")]
-    if let crate::cuda::dispatch::Residency::Device(exec) =
-        crate::cuda::dispatch::pair_residency(src, dst)?
-    {
-        return exec.run(|stream| {
-            super::cuda::gradient_magnitude_f32_cuda(src, dst, &kernel_x, &kernel_y, stream)
-        });
-    }
+    try_device!(src, dst, |stream| super::cuda::gradient_magnitude_f32_cuda(
+        src, dst, &kernel_x, &kernel_y, stream
+    ));
 
     // apply the sobel filter using separable filter
     let mut gx = Image::<f32, C>::from_size_val(src.size(), 0.0)?;
@@ -236,14 +230,9 @@ pub fn scharr<const C: usize>(
 ) -> Result<(), ImageError> {
     let (kernel_x, kernel_y) = kernels::scharr_kernel_1d(kernel_size)?;
 
-    #[cfg(feature = "cuda")]
-    if let crate::cuda::dispatch::Residency::Device(exec) =
-        crate::cuda::dispatch::pair_residency(src, dst)?
-    {
-        return exec.run(|stream| {
-            super::cuda::gradient_magnitude_f32_cuda(src, dst, &kernel_x, &kernel_y, stream)
-        });
-    }
+    try_device!(src, dst, |stream| super::cuda::gradient_magnitude_f32_cuda(
+        src, dst, &kernel_x, &kernel_y, stream
+    ));
 
     let mut gx = Image::<f32, C>::from_size_val(src.size(), 0.0)?;
     separable_filter(src, &mut gx, &kernel_x, &kernel_y)?;
@@ -677,19 +666,14 @@ pub fn gaussian_blur_u8<const C: usize>(
     let ((kx, ky), (sx, sy)) = resolve_gaussian_params(kernel_size, sigma)?;
     let path = blur_u8_path(kx, ky, sx, sy);
 
-    #[cfg(feature = "cuda")]
-    if let crate::cuda::dispatch::Residency::Device(exec) =
-        crate::cuda::dispatch::pair_residency(src, dst)?
-    {
-        return exec.run(|stream| match path {
-            BlurU8Path::Binomial3 => super::cuda::binomial3_u8_cuda(src, dst, stream),
-            BlurU8Path::GeneralQ8 => {
-                let ikx = quantize_kernel_256(&kernels::gaussian_kernel_1d(kx, sx));
-                let iky = quantize_kernel_256(&kernels::gaussian_kernel_1d(ky, sy));
-                super::cuda::separable_blur_u8_cuda(src, dst, &ikx, &iky, stream)
-            }
-        });
-    }
+    try_device!(src, dst, |stream| match path {
+        BlurU8Path::Binomial3 => super::cuda::binomial3_u8_cuda(src, dst, stream),
+        BlurU8Path::GeneralQ8 => {
+            let ikx = quantize_kernel_256(&kernels::gaussian_kernel_1d(kx, sx));
+            let iky = quantize_kernel_256(&kernels::gaussian_kernel_1d(ky, sy));
+            super::cuda::separable_blur_u8_cuda(src, dst, &ikx, &iky, stream)
+        }
+    });
 
     // Binomial fast path for k=3, sigma in the [1,2,1]/4 range (sigma≈0.7–1.2).
     // The [1,2,1]/4 separable kernel (one H-pass + one V-pass of halving-adds) is

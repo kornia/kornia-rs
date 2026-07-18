@@ -28,7 +28,6 @@ pub fn gaussian_blur(
         }
     }
     cpu_op(py, image, move |py, arr: Py<numpy::PyArray3<u8>>| {
-        let _ = arr.bind(py).shape();
         let src = unsafe { numpy_as_image::<3>(py, &arr)? };
         let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, src.size())? };
         py.detach(|| filter::gaussian_blur_u8(&src, &mut dst, kernel_size, sigma))
@@ -54,7 +53,6 @@ pub fn box_blur(
         }
     }
     cpu_op(py, image, move |py, arr: Py<numpy::PyArray3<u8>>| {
-        let _ = arr.bind(py).shape();
         let src = unsafe { numpy_as_image::<3>(py, &arr)? };
         let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, src.size())? };
         py.detach(|| filter::box_blur_u8(&src, &mut dst, kernel_size))

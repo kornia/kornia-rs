@@ -57,16 +57,22 @@ fn check_slice(what: &'static str, got: usize, need: usize) -> Result<(), CudaFi
 
 // ── f32 kernels ──────────────────────────────────────────────────────────────
 
+/// Shared `#pragma unroll` prelude: baked tap counts get an unrolled literal
+/// bound; 0 means the runtime-loop fallback.
+fn unroll_prelude(ktaps: usize, runtime_var: &str) -> (String, String) {
+    if ktaps > 0 {
+        ("#pragma unroll".to_string(), format!("{ktaps}u"))
+    } else {
+        (String::new(), runtime_var.to_string())
+    }
+}
+
 /// f32 horizontal/vertical pass source. `horizontal` picks the axis; taps are
 /// applied in ascending order with plain multiply-add (`--fmad=false` at
 /// compile keeps the expression tree identical to the CPU's `acc += v * k`).
 /// Out-of-bounds taps are skipped — the CPU engine's constant-zero border.
 fn sep_f32_src(channels: usize, ktaps: usize, horizontal: bool) -> String {
-    let (loop_head, bound) = if ktaps > 0 {
-        ("#pragma unroll".to_string(), format!("{ktaps}u"))
-    } else {
-        (String::new(), "ktaps".to_string())
-    };
+    let (loop_head, bound) = unroll_prelude(ktaps, "ktaps");
     let axis = if horizontal { "h" } else { "v" };
     let coord = if horizontal {
         r#"
@@ -127,11 +133,7 @@ extern "C" __global__ void sep_filter_f32_{axis}_c{channels}_k{ktaps}(
 /// u8 Q8 pass source. Mirrors `hpass_u8_row`/the striped V-pass: replicate-
 /// clamped taps, `(acc + 128) >> 8` rounding, u8 output per pass.
 fn sep_u8q8_src(channels: usize, ktaps: usize, horizontal: bool) -> String {
-    let (loop_head, bound) = if ktaps > 0 {
-        ("#pragma unroll".to_string(), format!("{ktaps}u"))
-    } else {
-        (String::new(), "ktaps".to_string())
-    };
+    let (loop_head, bound) = unroll_prelude(ktaps, "ktaps");
     let axis = if horizontal { "h" } else { "v" };
     let coord = if horizontal {
         r#"
@@ -230,8 +232,7 @@ extern "C" __global__ void binomial3_u8_{axis}_c{channels}(
         unsigned int a = (unsigned int)__ldg(&src[ia + ch]);
         unsigned int b = (unsigned int)__ldg(&src[ib + ch]);
         unsigned int d = (unsigned int)__ldg(&src[id + ch]);
-        dst[((size_t)y * cols + (size_t)x) * C + ch] =
-            (unsigned char)rhadd_u8(rhadd_u8(a, b), rhadd_u8(b, d));
+        dst[ib + ch] = (unsigned char)rhadd_u8(rhadd_u8(a, b), rhadd_u8(b, d));
     }}
 }}
 "#
@@ -240,19 +241,38 @@ extern "C" __global__ void binomial3_u8_{axis}_c{channels}(
 
 // ── Kernel cache ─────────────────────────────────────────────────────────────
 
-type SepKernelCache = Mutex<HashMap<(u32, u32, bool, u8), Arc<CudaKernel>>>;
+/// Cache key: each kernel family carries exactly its real parameters — no
+/// don't-care fields, no numeric discriminants.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum SepKernelKey {
+    F32 {
+        channels: u32,
+        baked_taps: u32,
+        horizontal: bool,
+    },
+    U8Q8 {
+        channels: u32,
+        baked_taps: u32,
+        horizontal: bool,
+    },
+    Binomial {
+        channels: u32,
+        horizontal: bool,
+    },
+    Magnitude,
+}
+
+type SepKernelCache = Mutex<HashMap<SepKernelKey, Arc<CudaKernel>>>;
 static SEP_FILTER_KERNELS: OnceLock<SepKernelCache> = OnceLock::new();
 const SEP_FILTER_CACHE_CAP: usize = 64;
 
-const VAR_F32: u8 = 0;
-const VAR_U8Q8: u8 = 1;
-const VAR_BINOMIAL: u8 = 2;
-
+/// `src_code` is a closure so the multi-KB kernel source is only rendered on
+/// a cache miss — steady-state launches skip the `format!` entirely.
 fn get_or_compile(
     ctx: &Arc<CudaContext>,
-    key: (u32, u32, bool, u8),
+    key: SepKernelKey,
     name: &str,
-    src_code: &str,
+    src_code: impl FnOnce() -> String,
 ) -> Result<Arc<CudaKernel>, CudaFilterError> {
     let cache = SEP_FILTER_KERNELS.get_or_init(Default::default);
     let cached = cache
@@ -263,7 +283,8 @@ fn get_or_compile(
     if let Some(hit) = cached {
         return Ok(hit);
     }
-    let built = Arc::new(try_compile_with_l1(ctx, src_code, name).map_err(CudaFilterError::Cuda)?);
+    let built =
+        Arc::new(try_compile_with_l1(ctx, &src_code(), name).map_err(CudaFilterError::Cuda)?);
     let mut map = cache
         .lock()
         .expect("separable filter kernel cache poisoned");
@@ -286,6 +307,34 @@ fn baked(k: u32) -> u32 {
 
 // ── Launchers ────────────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
+fn validate_separable<T, U>(
+    src: &CudaSlice<T>,
+    dst: &CudaSlice<T>,
+    scratch: &CudaSlice<T>,
+    kx: &CudaSlice<U>,
+    kx_len: u32,
+    ky: &CudaSlice<U>,
+    ky_len: u32,
+    cols: u32,
+    rows: u32,
+    channels: u32,
+) -> Result<(), CudaFilterError> {
+    super::check_geometry(cols, rows, cols, rows, None).map_err(CudaFilterError::Cuda)?;
+    if channels == 0 || kx_len == 0 || ky_len == 0 {
+        return Err(CudaFilterError::Cuda(
+            "channels and tap counts must be at least 1".into(),
+        ));
+    }
+    let n = cols as usize * rows as usize * channels as usize;
+    check_slice("src", src.len(), n)?;
+    check_slice("dst", dst.len(), n)?;
+    check_slice("scratch", scratch.len(), n)?;
+    check_slice("kx", kx.len(), kx_len as usize)?;
+    check_slice("ky", ky.len(), ky_len as usize)?;
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)] // mirrors the kernel's parameter surface
 fn launch_sep_f32_pass(
     ctx: &Arc<CudaContext>,
@@ -302,8 +351,14 @@ fn launch_sep_f32_pass(
     let kb = baked(ktaps);
     let axis = if horizontal { "h" } else { "v" };
     let name = format!("sep_filter_f32_{axis}_c{channels}_k{kb}");
-    let src_code = sep_f32_src(channels as usize, kb as usize, horizontal);
-    let kernel = get_or_compile(ctx, (channels, kb, horizontal, VAR_F32), &name, &src_code)?;
+    let key = SepKernelKey::F32 {
+        channels,
+        baked_taps: kb,
+        horizontal,
+    };
+    let kernel = get_or_compile(ctx, key, &name, || {
+        sep_f32_src(channels as usize, kb as usize, horizontal)
+    })?;
     kernel
         .launch_builder(stream)
         .arg(src)
@@ -336,18 +391,9 @@ pub fn launch_separable_filter_f32(
     rows: u32,
     channels: u32,
 ) -> Result<(), CudaFilterError> {
-    super::check_geometry(cols, rows, cols, rows, None).map_err(CudaFilterError::Cuda)?;
-    if channels == 0 || kx_len == 0 || ky_len == 0 {
-        return Err(CudaFilterError::Cuda(
-            "channels and tap counts must be at least 1".into(),
-        ));
-    }
-    let n = cols as usize * rows as usize * channels as usize;
-    check_slice("src", src.len(), n)?;
-    check_slice("dst", dst.len(), n)?;
-    check_slice("scratch", scratch.len(), n)?;
-    check_slice("kx", kx.len(), kx_len as usize)?;
-    check_slice("ky", ky.len(), ky_len as usize)?;
+    validate_separable(
+        src, dst, scratch, kx, kx_len, ky, ky_len, cols, rows, channels,
+    )?;
 
     launch_sep_f32_pass(
         ctx, stream, src, scratch, kx, kx_len, cols, rows, channels, true,
@@ -373,8 +419,14 @@ fn launch_sep_u8q8_pass(
     let kb = baked(ktaps);
     let axis = if horizontal { "h" } else { "v" };
     let name = format!("sep_filter_u8_{axis}_c{channels}_k{kb}");
-    let src_code = sep_u8q8_src(channels as usize, kb as usize, horizontal);
-    let kernel = get_or_compile(ctx, (channels, kb, horizontal, VAR_U8Q8), &name, &src_code)?;
+    let key = SepKernelKey::U8Q8 {
+        channels,
+        baked_taps: kb,
+        horizontal,
+    };
+    let kernel = get_or_compile(ctx, key, &name, || {
+        sep_u8q8_src(channels as usize, kb as usize, horizontal)
+    })?;
     kernel
         .launch_builder(stream)
         .arg(src)
@@ -406,18 +458,9 @@ pub fn launch_separable_blur_u8q8(
     rows: u32,
     channels: u32,
 ) -> Result<(), CudaFilterError> {
-    super::check_geometry(cols, rows, cols, rows, None).map_err(CudaFilterError::Cuda)?;
-    if channels == 0 || kx_len == 0 || ky_len == 0 {
-        return Err(CudaFilterError::Cuda(
-            "channels and tap counts must be at least 1".into(),
-        ));
-    }
-    let n = cols as usize * rows as usize * channels as usize;
-    check_slice("src", src.len(), n)?;
-    check_slice("dst", dst.len(), n)?;
-    check_slice("scratch", scratch.len(), n)?;
-    check_slice("kx", kx.len(), kx_len as usize)?;
-    check_slice("ky", ky.len(), ky_len as usize)?;
+    validate_separable(
+        src, dst, scratch, kx, kx_len, ky, ky_len, cols, rows, channels,
+    )?;
 
     launch_sep_u8q8_pass(
         ctx, stream, src, scratch, kx, kx_len, cols, rows, channels, true,
@@ -451,9 +494,12 @@ pub fn launch_binomial3_u8(
 
     let h_kernel = get_or_compile(
         ctx,
-        (channels, 3, true, VAR_BINOMIAL),
+        SepKernelKey::Binomial {
+            channels,
+            horizontal: true,
+        },
         &format!("binomial3_u8_h_c{channels}"),
-        &binomial3_src(channels as usize, true),
+        || binomial3_src(channels as usize, true),
     )?;
     h_kernel
         .launch_builder(stream)
@@ -466,9 +512,12 @@ pub fn launch_binomial3_u8(
 
     let v_kernel = get_or_compile(
         ctx,
-        (channels, 3, false, VAR_BINOMIAL),
+        SepKernelKey::Binomial {
+            channels,
+            horizontal: false,
+        },
         &format!("binomial3_u8_v_c{channels}"),
-        &binomial3_src(channels as usize, false),
+        || binomial3_src(channels as usize, false),
     )?;
     v_kernel
         .launch_builder(stream)
@@ -514,9 +563,9 @@ pub fn launch_gradient_magnitude_f32(
     check_slice("dst", dst.len(), n)?;
     let kernel = get_or_compile(
         ctx,
-        (0, 0, false, 3),
+        SepKernelKey::Magnitude,
         "gradient_magnitude_f32",
-        MAGNITUDE_SRC,
+        || MAGNITUDE_SRC.to_string(),
     )?;
     let n_u32 = u32::try_from(n).map_err(|_| CudaFilterError::Cuda("n exceeds u32".into()))?;
     let cfg = cudarc::driver::LaunchConfig {
