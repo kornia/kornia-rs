@@ -13,6 +13,16 @@ changes early: `cargo add kornia-imgproc@0.1.15-rc.1` or `pip install --pre korn
 
 ## [Unreleased]
 
+**GPU Gaussian pyramids + `PyramidPlan`.** `pyrdown_f32` (one fused
+5×5-Gaussian+subsample kernel), `pyrup_f32` (polyphase pair), `pyrdown_u8`
+and `pyrup_u8` (separable `[1,4,6,4,1]` integer pairs) now route device
+images to CUDA kernels that are bit-identical (f32) / byte-identical (u8)
+to the CPU paths, including the `reflect_101` borders and 1-pixel-wide
+degenerate sources. `PyramidPlan` preallocates every level buffer so a
+steady-state pyramid build launches kernels only (CUDA-Graph-capturable);
+its levels are bit-identical to `build_pyramid`. Measured 1080p: pyrdown
+u8 RGB 0.62 ms (4.1× OpenCV CPU), 4-level f32 plan 0.68 ms.
+
 **Faster Lanczos-3 warps on CUDA; sub-ULP output change in Lanczos warp/remap
 sampling.** The warp kernels now derive all six tap weights per axis from four
 `sin(πx)` evaluations instead of twelve, using the sinc lattice's periodicity
