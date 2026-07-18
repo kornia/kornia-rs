@@ -170,6 +170,16 @@ pub trait FusedStage {
         in_var: &str,
         out_var: &str,
     ) -> Result<(String, String), FusionError>;
+    /// Bytes this stage reads from the kernel's `src` argument (source
+    /// stages). Lets the pipeline length-check `src` at launch.
+    fn src_bytes_required(&self) -> Option<usize> {
+        None
+    }
+    /// Elements this stage writes per image to `dst` (sink stages). Lets
+    /// the pipeline length-check `dst` at launch.
+    fn out_elems(&self, _dst_w: u32, _dst_h: u32) -> Option<usize> {
+        None
+    }
 }
 
 /// Role annotations for validation.
@@ -196,6 +206,10 @@ pub struct FusedPipeline {
     ptr_base: usize,
     /// Per-image dst element stride (batched pipelines only).
     dst_stride: usize,
+    /// Bytes the source stage reads from `src` (0 = unknown; no check).
+    src_bytes: usize,
+    /// Elements the sink stage writes per image (0 = unknown; no check).
+    out_elems: usize,
 }
 
 type PipelineKernelCache = Mutex<HashMap<String, Arc<CudaKernel>>>;
@@ -345,10 +359,31 @@ extern "C" __global__ void {kernel_name}(
             );
             let mut map = cache.lock().expect("fusion cache poisoned");
             if map.len() >= PIPELINE_CACHE_CAP {
-                map.clear();
+                // Evict one entry, not the whole map — wholesale clearing
+                // stampedes >cap shape sets into ~1s NVRTC recompiles each.
+                if let Some(k) = map.keys().next().cloned() {
+                    map.remove(&k);
+                }
             }
             map.entry(key).or_insert(built).clone()
         };
+
+        // Size contracts from the stages, so the launch paths can length-
+        // check the buffers the kernel will actually touch.
+        let src_bytes = stages
+            .iter()
+            .find_map(|st| st.src_bytes_required())
+            .unwrap_or(0);
+        let out_elems = stages
+            .iter()
+            .find_map(|st| st.out_elems(dst_w, dst_h))
+            .unwrap_or(0);
+        if batch > 1 && out_elems > 0 && out_elems_per_image < out_elems {
+            return Err(FusionError::Pipeline(format!(
+                "out_elems_per_image {out_elems_per_image} is smaller than the sink's \
+                 per-image output ({out_elems} elements)"
+            )));
+        }
 
         Ok(Self {
             kernel,
@@ -359,6 +394,8 @@ extern "C" __global__ void {kernel_name}(
             batch,
             ptr_base,
             dst_stride: out_elems_per_image,
+            src_bytes,
+            out_elems,
         })
     }
 
@@ -391,6 +428,22 @@ extern "C" __global__ void {kernel_name}(
                 dst.len(),
                 self.batch as usize * self.dst_stride
             )));
+        }
+        let launch_ord = stream.context().ordinal();
+        for (b, s) in srcs.iter().enumerate() {
+            if s.stream().context().ordinal() != launch_ord {
+                return Err(FusionError::Pipeline(format!(
+                    "source {b} lives on device {}, launch stream is device {launch_ord}",
+                    s.stream().context().ordinal()
+                )));
+            }
+            if self.src_bytes > 0 && s.len() < self.src_bytes {
+                return Err(FusionError::Pipeline(format!(
+                    "source {b} holds {} bytes; the source stage reads {}",
+                    s.len(),
+                    self.src_bytes
+                )));
+            }
         }
         let mut params = self.params;
         let mut guards = Vec::with_capacity(srcs.len());
@@ -428,6 +481,20 @@ extern "C" __global__ void {kernel_name}(
             return Err(FusionError::Pipeline(
                 "pipeline was built batched; use launch_batched".into(),
             ));
+        }
+        if self.src_bytes > 0 && src.len() < self.src_bytes {
+            return Err(FusionError::Pipeline(format!(
+                "src holds {} bytes; the source stage reads {}",
+                src.len(),
+                self.src_bytes
+            )));
+        }
+        if self.out_elems > 0 && dst.len() < self.out_elems {
+            return Err(FusionError::Pipeline(format!(
+                "dst holds {} elements; the sink writes {}",
+                dst.len(),
+                self.out_elems
+            )));
         }
         self.kernel
             .launch_builder(stream)
@@ -516,6 +583,9 @@ impl FusedStage for ReadU8RgbBilinear {
         );
         Ok((String::new(), snippet))
     }
+    fn src_bytes_required(&self) -> Option<usize> {
+        Some(self.src_w as usize * self.src_h as usize * 3)
+    }
 }
 
 /// Map: per-channel `v * scale + bias` (e.g. `(x/255 - mean)/std` folded).
@@ -590,6 +660,9 @@ impl FusedStage for WriteChwF32 {
         );
         Ok((String::new(), snippet))
     }
+    fn out_elems(&self, dst_w: u32, dst_h: u32) -> Option<usize> {
+        Some(3 * dst_w as usize * dst_h as usize)
+    }
 }
 
 /// Sink: write a single-channel f32 plane from lane x.
@@ -608,6 +681,9 @@ impl FusedStage for WriteC1F32 {
     ) -> Result<(String, String), FusionError> {
         let snippet = format!("    dst[(size_t)y * dst_w + x] = {inv}.x;\n");
         Ok((String::new(), snippet))
+    }
+    fn out_elems(&self, dst_w: u32, dst_h: u32) -> Option<usize> {
+        Some(dst_w as usize * dst_h as usize)
     }
 }
 
@@ -913,6 +989,45 @@ mod batch_tests {
                 "element {i}: batched {g} vs single {w}"
             );
         }
+    }
+
+    /// Undersized buffers are typed errors, not OOB device accesses: the
+    /// stages publish their size contracts and both launch paths check.
+    #[test]
+    fn undersized_buffers_error() {
+        let ctx = CudaContext::new(0).expect("CUDA device 0");
+        let stream = ctx.new_stream().expect("stream");
+        let read = ReadU8RgbBilinear {
+            src_w: 64,
+            src_h: 64,
+            dst_w: 32,
+            dst_h: 32,
+        };
+        let norm = Normalize {
+            scale: [1.0; 3],
+            bias: [0.0; 3],
+        };
+        let pipe = FusedPipeline::build(&ctx, &[&read, &norm, &WriteChwF32], 32, 32).unwrap();
+        let short_src = stream.alloc_zeros::<u8>(64 * 64 * 3 - 1).unwrap();
+        let mut dst = stream.alloc_zeros::<f32>(3 * 32 * 32).unwrap();
+        assert!(pipe.launch(&stream, &short_src, &mut dst).is_err());
+        let src = stream.alloc_zeros::<u8>(64 * 64 * 3).unwrap();
+        let mut short_dst = stream.alloc_zeros::<f32>(3 * 32 * 32 - 1).unwrap();
+        assert!(pipe.launch(&stream, &src, &mut short_dst).is_err());
+        // Batched: undersized per-image source is caught too.
+        let batched = FusedPipeline::build_batched(
+            &ctx,
+            &[&read, &norm, &WriteChwF32],
+            32,
+            32,
+            2,
+            3 * 32 * 32,
+        )
+        .unwrap();
+        let mut bdst = stream.alloc_zeros::<f32>(2 * 3 * 32 * 32).unwrap();
+        assert!(batched
+            .launch_batched(&stream, &[&src, &short_src], &mut bdst)
+            .is_err());
     }
 
     /// Wrong source count and unbatched-launch-on-batched both error.
