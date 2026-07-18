@@ -132,6 +132,19 @@ extern "C" __global__ void resize_u8_pyrup2x_rgb(
 }
 "#;
 
+// Closed experiment (2026-07-18): a fused separable kernel (H-pass into a
+// dynamic-shared i16 band, V-pass out of it, 32x8 output tiles) was built
+// to eliminate the intermediate's DRAM round-trip (~55% of two-pass
+// traffic at 1080p->720p) and REGRESSED decisively: bicubic 0.60->0.90 ms,
+// lanczos 0.96->1.20 ms sustained (interleaved 3-cycle A/B, locked
+// clocks). ncu autopsy: with the PREFER_L1 carveout these kernels rely on,
+// the per-SM shared-memory budget admits only TWO resident blocks
+// (Block Limit Shared Mem = 2), capping occupancy at 33% vs ~85% for the
+// two-pass pair — the lost latency hiding outweighs the traffic saved
+// (L2 absorbs part of the round-trip regardless). Fifth confirmation of
+// the occupancy-over-cleverness rule on Orin; do not re-try smem banding
+// here without first solving the carveout conflict.
+
 /// Nearest kernel source, specialized per channel count: pure gather, four
 /// output pixels per thread with the channel loop fully unrolled so every
 /// load issues independently.
