@@ -13,6 +13,15 @@ changes early: `cargo add kornia-imgproc@0.1.15-rc.1` or `pip install --pre korn
 
 ## [Unreleased]
 
+**GPU histogram + `equalize_hist` (CPU and CUDA), byte-for-byte with
+OpenCV.** New `equalize_hist` for u8 single-channel images on CPU and
+device (`kornia_rs.imgproc.equalize_hist` in Python), matching
+`cv2.equalizeHist` exactly — including its f32 round-half-to-even LUT
+rounding and identity behavior on constant images. `compute_histogram`
+now routes device images to a CUDA shared-memory-bins kernel whose counts
+are exactly equal to the CPU's for any bin count. CPU and GPU equalize
+outputs are byte-identical.
+
 **GPU Gaussian pyramids + `PyramidPlan`.** `pyrdown_f32` (one fused
 5×5-Gaussian+subsample kernel), `pyrup_f32` (polyphase pair), `pyrdown_u8`
 and `pyrup_u8` (separable `[1,4,6,4,1]` integer pairs) now route device

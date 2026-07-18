@@ -172,7 +172,7 @@ pub fn compute_histogram_deprecated(
         py,
         "kornia_rs.compute_histogram is deprecated. Use kornia_rs.imgproc.compute_histogram.",
     )?;
-    histogram::compute_histogram(py, image, nbins)
+    histogram::compute_histogram(py, image.bind(py).as_any(), nbins)
 }
 
 // ICP
@@ -496,6 +496,7 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
         histogram::compute_histogram,
         &imgproc_mod
     )?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(histogram::equalize_hist, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(resize::resize, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(warp::warp_affine, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(warp::warp_perspective, &imgproc_mod)?)?;

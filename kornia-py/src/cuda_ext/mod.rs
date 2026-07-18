@@ -277,6 +277,7 @@ mod cuda_color;
 pub(crate) mod cuda_filter;
 #[cfg(feature = "cuda")]
 pub(crate) mod cuda_geometry;
+pub(crate) mod cuda_histogram;
 pub(crate) mod cuda_morphology;
 #[cfg(feature = "cuda")]
 pub(crate) use cuda_color::*;
@@ -284,6 +285,7 @@ pub(crate) use cuda_color::*;
 pub(crate) use cuda_filter as filter;
 #[cfg(feature = "cuda")]
 pub(crate) use cuda_geometry as geometry;
+pub(crate) use cuda_histogram as histogram;
 pub(crate) use cuda_morphology as morphology;
 
 // ── Tensor (model input) ──────────────────────────────────────────────────────
