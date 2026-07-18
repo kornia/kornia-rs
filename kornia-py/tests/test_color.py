@@ -111,12 +111,13 @@ def test_bgr_from_rgb():
     assert np.allclose(img_bgr, np.array([[[3, 2, 1]]]))
 
 def test_gray_from_rgb():
-    # Formula: (77*R + 150*G + 29*B) >> 8  (integer BT.601, same as PIL convert("L"))
-    # R=0, G=128, B=255 → (0 + 19200 + 7395) >> 8 = 103
+    # Formula: (4899*R + 9617*G + 1868*B + 8192) >> 14 — OpenCV's exact Q14
+    # BT.601 (byte-parity with cv2.cvtColor RGB2GRAY).
+    # R=0, G=128, B=255 → (0 + 1230976 + 476340 + 8192) >> 14 = 104
     img: np.ndarray = np.array([[[0, 128, 255]]], dtype=np.uint8)
     img_gray: np.ndarray = K.imgproc.gray_from_rgb(img)
     assert img_gray.shape == (1, 1, 1)
-    assert np.allclose(img_gray, np.array([[[103]]]))
+    assert np.allclose(img_gray, np.array([[[104]]]))
 
 def test_rgb_from_rgba():
     img: np.ndarray = np.array([[[0, 1, 2, 255]]], dtype=np.uint8)

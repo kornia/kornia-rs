@@ -404,11 +404,17 @@ mod tests {
             assert!((*a as i32 - *b as i32).abs() <= 3);
         }
 
-        // YUV (swapped chroma) must differ from YCbCr in channels 1/2 but round-trip too.
+        // YUV uses cv2's Y'UV chroma constants (0.492/0.877) — no longer a
+        // plain chroma swap of YCbCr. Same luma; chroma near-swapped but
+        // scaled; and it must round-trip within cv2's own inverse error.
         let mut yuv = Yuv8::from_size_val(size, 0)?;
         rgb.convert(&mut yuv)?;
-        assert_eq!(ycc.as_slice()[1], yuv.as_slice()[2]);
-        assert_eq!(ycc.as_slice()[2], yuv.as_slice()[1]);
+        assert_eq!(ycc.as_slice()[0], yuv.as_slice()[0]);
+        let mut back2 = Rgb8::from_size_val(size, 0)?;
+        yuv.convert(&mut back2)?;
+        for (a, b) in rgb.as_slice().iter().zip(back2.as_slice().iter()) {
+            assert!((*a as i32 - *b as i32).abs() <= 3);
+        }
         Ok(())
     }
 

@@ -405,7 +405,8 @@ mod tests {
         // unified entry point dispatches to the u8 NEON/AVX2 kernel
         super::gray_from_rgb(&image, &mut gray)?;
 
-        assert_eq!(gray.as_slice(), &[103, 53]);
+        // OpenCV Q14 values — cv2.cvtColor(RGB2GRAY) of these pixels gives exactly this.
+        assert_eq!(gray.as_slice(), &[104, 53]);
 
         Ok(())
     }

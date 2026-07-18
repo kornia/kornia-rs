@@ -24,6 +24,19 @@ real arithmetic, rounding differs). Measured on Jetson AGX Orin (locked
 clocks, 1080p→1080p 3-channel f32): warp-affine lanczos 5.49→4.26 ms,
 warp-perspective lanczos 5.93→4.28 ms sustained.
 
+**u8 color conversions are now byte-for-byte with OpenCV.** Three alignments
+(CPU and CUDA changed together, so device output stays `assert_eq!`-equal to
+host): u8 grayscale now uses cv2's exact Q14 formula
+(`(4899·R + 9617·G + 1868·B + 8192) >> 14`; ±1 LSB vs previous releases);
+`yuv_from_rgb`/`rgb_from_yuv` switch to the classic Y'UV chroma constants
+cv2 and kornia-python use (0.492/0.877 forward, 1.140/2.032/−0.395/−0.581
+inverse) instead of Cb/Cr in YUV order — a semantic change for chroma
+values; and Bayer demosaic adopts cv2's border rule (the 1-px frame is the
+interior neighbour's result). Verified byte-exact against cv2 for
+yuv (both directions), bayer (all pixels), ycbcr, bgr, rgba and colormap;
+gray matches cv2's documented formula exactly (cv2's own NEON build deviates
+from its spec on ~0.25% of pixels). BGR/YCbCr/colormap already matched.
+
 **Python: every color conversion with a CUDA kernel now accepts a device
 `Image`.** Previously ~10 GPU color paths existed in the Rust crates but the
 Python surface raised "no GPU kernel for a device Image": HLS, Luv, XYZ,
