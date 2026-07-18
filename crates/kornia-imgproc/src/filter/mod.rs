@@ -5,6 +5,9 @@
 /// Filter kernels
 pub mod kernels;
 
+#[cfg(feature = "cuda")]
+mod cuda;
+
 /// Filter operations
 mod ops;
 pub use ops::*;

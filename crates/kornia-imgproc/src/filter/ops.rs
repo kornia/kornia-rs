@@ -6,6 +6,26 @@ use rayon::{
 
 use super::{fast_horizontal_filter, kernels, separable_filter};
 
+/// Which u8 gaussian-blur kernel a `(kernel, sigma)` combination resolves to
+/// — the single decision shared by the CPU fast-path branch and the CUDA
+/// adapter, so the two sides route identically (see the one-selector rule
+/// applied to resize in `resize::resize_u8_path`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BlurU8Path {
+    /// `[1,2,1]/4` nested halving-adds (k=3, sigma ≈ 1).
+    Binomial3,
+    /// General Q8 two-pass with `quantize_kernel_256` weights.
+    GeneralQ8,
+}
+
+pub(crate) fn blur_u8_path(kx: usize, ky: usize, sx: f32, sy: f32) -> BlurU8Path {
+    if kx == 3 && ky == 3 && (0.6..=1.2).contains(&sx) && (0.6..=1.2).contains(&sy) {
+        BlurU8Path::Binomial3
+    } else {
+        BlurU8Path::GeneralQ8
+    }
+}
+
 /// Blur an image using a box blur filter
 ///
 /// # Arguments
@@ -22,6 +42,14 @@ pub fn box_blur<const C: usize>(
 ) -> Result<(), ImageError> {
     let kernel_x = kernels::box_blur_kernel_1d(kernel_size.0);
     let kernel_y = kernels::box_blur_kernel_1d(kernel_size.1);
+    #[cfg(feature = "cuda")]
+    if let crate::cuda::dispatch::Residency::Device(exec) =
+        crate::cuda::dispatch::pair_residency(src, dst)?
+    {
+        return exec.run(|stream| {
+            super::cuda::separable_filter_f32_cuda(src, dst, &kernel_x, &kernel_y, stream)
+        });
+    }
     separable_filter(src, dst, &kernel_x, &kernel_y)?;
     Ok(())
 }
@@ -54,6 +82,13 @@ pub fn box_blur_u8<const C: usize>(
     let ikx = quantize_kernel_256(&kernels::box_blur_kernel_1d(kx));
     let iky = quantize_kernel_256(&kernels::box_blur_kernel_1d(ky));
 
+    #[cfg(feature = "cuda")]
+    if let crate::cuda::dispatch::Residency::Device(exec) =
+        crate::cuda::dispatch::pair_residency(src, dst)?
+    {
+        return exec
+            .run(|stream| super::cuda::separable_blur_u8_cuda(src, dst, &ikx, &iky, stream));
+    }
     separable_blur_u8_striped(
         src.as_slice(),
         dst.as_slice_mut(),
@@ -127,6 +162,14 @@ pub fn gaussian_blur<const C: usize>(
 
     let kernel_x = kernels::gaussian_kernel_1d(kernel_x, sigma_x);
     let kernel_y = kernels::gaussian_kernel_1d(kernel_y, sigma_y);
+    #[cfg(feature = "cuda")]
+    if let crate::cuda::dispatch::Residency::Device(exec) =
+        crate::cuda::dispatch::pair_residency(src, dst)?
+    {
+        return exec.run(|stream| {
+            super::cuda::separable_filter_f32_cuda(src, dst, &kernel_x, &kernel_y, stream)
+        });
+    }
     separable_filter(src, dst, &kernel_x, &kernel_y)?;
 
     Ok(())
@@ -148,6 +191,15 @@ pub fn sobel<const C: usize>(
 ) -> Result<(), ImageError> {
     // get the sobel kernels
     let (kernel_x, kernel_y) = kernels::sobel_kernel_1d(kernel_size)?;
+
+    #[cfg(feature = "cuda")]
+    if let crate::cuda::dispatch::Residency::Device(exec) =
+        crate::cuda::dispatch::pair_residency(src, dst)?
+    {
+        return exec.run(|stream| {
+            super::cuda::gradient_magnitude_f32_cuda(src, dst, &kernel_x, &kernel_y, stream)
+        });
+    }
 
     // apply the sobel filter using separable filter
     let mut gx = Image::<f32, C>::from_size_val(src.size(), 0.0)?;
@@ -183,6 +235,15 @@ pub fn scharr<const C: usize>(
     kernel_size: usize,
 ) -> Result<(), ImageError> {
     let (kernel_x, kernel_y) = kernels::scharr_kernel_1d(kernel_size)?;
+
+    #[cfg(feature = "cuda")]
+    if let crate::cuda::dispatch::Residency::Device(exec) =
+        crate::cuda::dispatch::pair_residency(src, dst)?
+    {
+        return exec.run(|stream| {
+            super::cuda::gradient_magnitude_f32_cuda(src, dst, &kernel_x, &kernel_y, stream)
+        });
+    }
 
     let mut gx = Image::<f32, C>::from_size_val(src.size(), 0.0)?;
     separable_filter(src, &mut gx, &kernel_x, &kernel_y)?;
@@ -614,13 +675,28 @@ pub fn gaussian_blur_u8<const C: usize>(
     }
 
     let ((kx, ky), (sx, sy)) = resolve_gaussian_params(kernel_size, sigma)?;
+    let path = blur_u8_path(kx, ky, sx, sy);
+
+    #[cfg(feature = "cuda")]
+    if let crate::cuda::dispatch::Residency::Device(exec) =
+        crate::cuda::dispatch::pair_residency(src, dst)?
+    {
+        return exec.run(|stream| match path {
+            BlurU8Path::Binomial3 => super::cuda::binomial3_u8_cuda(src, dst, stream),
+            BlurU8Path::GeneralQ8 => {
+                let ikx = quantize_kernel_256(&kernels::gaussian_kernel_1d(kx, sx));
+                let iky = quantize_kernel_256(&kernels::gaussian_kernel_1d(ky, sy));
+                super::cuda::separable_blur_u8_cuda(src, dst, &ikx, &iky, stream)
+            }
+        });
+    }
 
     // Binomial fast path for k=3, sigma in the [1,2,1]/4 range (sigma≈0.7–1.2).
     // The [1,2,1]/4 separable kernel (one H-pass + one V-pass of halving-adds) is
     // within ±4% of a true Gaussian at sigma=1.0 and stays entirely in u8
     // (no vmull/widen/pack). cv2.GaussianBlur((3,3), 1.0) uses the same kernel.
     // Uses the [1,2,1]/4 separable NEON/AVX2 helpers (identical arithmetic).
-    if kx == 3 && ky == 3 && (0.6..=1.2).contains(&sx) && (0.6..=1.2).contains(&sy) {
+    if path == BlurU8Path::Binomial3 {
         #[cfg(target_arch = "aarch64")]
         {
             gaussian_blur_3x3_binomial_u8::<C>(
@@ -1154,7 +1230,7 @@ fn hpass_binomial_row<const C: usize>(src: &[u8], dst: &mut [u8], cols: usize) {
         let b = a;
         // Clamp right neighbor: when cols==1, stride==C, so right neighbor is self.
         let d = if stride > C { src[C + c] as u16 } else { b };
-        dst[c] = ((a + 2 * b + d + 2) >> 2) as u8;
+        dst[c] = ((((a + b + 1) >> 1) + ((b + d + 1) >> 1) + 1) >> 1) as u8;
     }
 
     // Middle bytes: compute (src[i-C] + 2*src[i] + src[i+C] + 2) / 4 per byte.
@@ -1176,7 +1252,7 @@ fn hpass_binomial_row<const C: usize>(src: &[u8], dst: &mut [u8], cols: usize) {
             let a = src[i - C] as u16;
             let b = src[i] as u16;
             let d = src[i + C] as u16;
-            dst[i] = ((a + 2 * b + d + 2) >> 2) as u8;
+            dst[i] = ((((a + b + 1) >> 1) + ((b + d + 1) >> 1) + 1) >> 1) as u8;
             i += 1;
         }
     }
@@ -1191,7 +1267,7 @@ fn hpass_binomial_row<const C: usize>(src: &[u8], dst: &mut [u8], cols: usize) {
         };
         let b = src[stride - C + c] as u16;
         let d = b;
-        dst[stride - C + c] = ((a + 2 * b + d + 2) >> 2) as u8;
+        dst[stride - C + c] = ((((a + b + 1) >> 1) + ((b + d + 1) >> 1) + 1) >> 1) as u8;
     }
 }
 
@@ -1217,7 +1293,7 @@ fn vpass_binomial_row(top: &[u8], mid: &[u8], bot: &[u8], dst: &mut [u8]) {
             let a = top[i] as u16;
             let b = mid[i] as u16;
             let d = bot[i] as u16;
-            dst[i] = ((a + 2 * b + d + 2) >> 2) as u8;
+            dst[i] = ((((a + b + 1) >> 1) + ((b + d + 1) >> 1) + 1) >> 1) as u8;
             i += 1;
         }
     }
@@ -1568,7 +1644,7 @@ unsafe fn hpass_binomial_row_avx2<const C: usize>(src: &[u8], dst: &mut [u8], co
         let b = a;
         // Clamp right neighbor: when cols==1, stride==C, so right neighbor is self.
         let d = if stride > C { src[C + c] as u16 } else { b };
-        dst[c] = ((a + 2 * b + d + 2) >> 2) as u8;
+        dst[c] = ((((a + b + 1) >> 1) + ((b + d + 1) >> 1) + 1) >> 1) as u8;
     }
 
     let mut i = C;
@@ -1586,7 +1662,7 @@ unsafe fn hpass_binomial_row_avx2<const C: usize>(src: &[u8], dst: &mut [u8], co
         let a = src[i - C] as u16;
         let b = src[i] as u16;
         let d = src[i + C] as u16;
-        dst[i] = ((a + 2 * b + d + 2) >> 2) as u8;
+        dst[i] = ((((a + b + 1) >> 1) + ((b + d + 1) >> 1) + 1) >> 1) as u8;
         i += 1;
     }
 
@@ -1600,7 +1676,7 @@ unsafe fn hpass_binomial_row_avx2<const C: usize>(src: &[u8], dst: &mut [u8], co
         };
         let b = src[stride - C + c] as u16;
         let d = b;
-        dst[stride - C + c] = ((a + 2 * b + d + 2) >> 2) as u8;
+        dst[stride - C + c] = ((((a + b + 1) >> 1) + ((b + d + 1) >> 1) + 1) >> 1) as u8;
     }
 }
 
@@ -1625,7 +1701,7 @@ unsafe fn vpass_binomial_row_avx2(top: &[u8], mid: &[u8], bot: &[u8], dst: &mut 
         let a = top[i] as u16;
         let b = mid[i] as u16;
         let d = bot[i] as u16;
-        dst[i] = ((a + 2 * b + d + 2) >> 2) as u8;
+        dst[i] = ((((a + b + 1) >> 1) + ((b + d + 1) >> 1) + 1) >> 1) as u8;
         i += 1;
     }
 }
