@@ -22,8 +22,10 @@ bilinear blend of the four surrounding tile LUTs with the exact FMA
 contraction OpenCV's aarch64 wheels compile to (calibrated empirically:
 22 configurations, zero differing bytes). CPU and GPU outputs are
 byte-identical (`f32::mul_add` / explicit `fmaf`, mirrored expression
-trees). Measured 1080p sustained: GPU 0.040 ms ≈ 100× `cv2.createCLAHE`
-CPU (VPI has no CLAHE op).
+trees). The CPU interpolation stage is NEON-vectorized with packed
+per-span LUT tables (one gather per pixel; identical bytes, pure
+access-pattern change). Measured 1080p sustained: GPU 0.033 ms ≈ 130×
+and CPU 2.2 ms ≈ 2× `cv2.createCLAHE` CPU (VPI has no CLAHE op).
 
 **GPU histogram + `equalize_hist` (CPU and CUDA), byte-for-byte with
 OpenCV.** New `equalize_hist` for u8 single-channel images on CPU and
