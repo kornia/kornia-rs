@@ -59,7 +59,7 @@ pub(crate) fn invert_homography(m: &[f32; 9]) -> Option<[f32; 9]> {
     Some(inv)
 }
 
-fn inverse_perspective_matrix(m: &[f32; 9]) -> Result<[f32; 9], ImageError> {
+pub(super) fn inverse_perspective_matrix(m: &[f32; 9]) -> Result<[f32; 9], ImageError> {
     invert_homography(m).ok_or(ImageError::CannotComputeDeterminant)
 }
 
@@ -182,6 +182,18 @@ pub fn warp_perspective_u8<const C: usize>(
     m: &[f32; 9],
 ) -> Result<(), ImageError> {
     use rayon::prelude::*;
+
+    // Device pairs route to the CUDA u8 kernel (bit-identical output — the
+    // kernel mirrors this function's direct per-column coordinates and Q10
+    // sampler; see `cuda::warp_perspective_u8`). Mixed host/device pairs are
+    // a typed error; there is no implicit transfer in either direction.
+    #[cfg(feature = "cuda")]
+    if let crate::cuda::dispatch::Residency::Device(exec) =
+        crate::cuda::dispatch::pair_residency(src, dst)?
+    {
+        return exec.run(|stream| super::cuda::warp_perspective_u8_cuda(src, dst, m, stream));
+    }
+
     let inv = inverse_perspective_matrix(m)?;
     let src_w = src.cols() as i32;
     let src_h = src.rows() as i32;
@@ -210,19 +222,14 @@ pub fn warp_perspective_u8<const C: usize>(
             let nd_uniform_neg = nd0 < -1e-6 && nd_end < -1e-6;
 
             if !(nd_uniform_pos || nd_uniform_neg) {
-                // Fallback: per-pixel bounds-checked scalar path.
-                let mut nx = nx0;
-                let mut ny = ny0;
-                let mut nd = nd0;
+                // Fallback: per-pixel bounds-checked scalar path, direct
+                // coordinate evaluation (no `+= dn` drift — the same
+                // expression tree every backend and the CUDA u8 kernel use).
                 for x in 0..dst_w {
-                    let inv_nd = 1.0 / nd;
-                    let xf = nx * inv_nd;
-                    let yf = ny * inv_nd;
+                    let (xf, yf) =
+                        super::kernels::perspective_coord_at(x, nx0, ny0, nd0, dnx, dny, dnd);
                     let dst_pixel = &mut dst_row[x * C..x * C + C];
                     bilinear_sample_u8::<C>(src_slice, src_w, src_h, src_stride, xf, yf, dst_pixel);
-                    nx += dnx;
-                    ny += dny;
-                    nd += dnd;
                 }
                 return;
             }
@@ -280,46 +287,36 @@ pub fn warp_perspective_u8<const C: usize>(
             // float roundoff producing xf = src_w_f exactly (which would
             // overflow xi to src_w and break the valid-sampler's
             // clamp-to-(src_w-1) assumption). The 2 edge pixels per row
-            // are rendered via the scalar bounds-checked sampler.
+            // are rendered via the scalar bounds-checked sampler — with
+            // direct coordinates it produces the same bytes as the valid
+            // sampler whenever the coordinate is in bounds.
             let x_safe_lo = x_lo + 1;
             let x_safe_hi = x_hi.saturating_sub(1);
 
-            let mut nx = nx0 + dnx * x_lo as f32;
-            let mut ny = ny0 + dny * x_lo as f32;
-            let mut nd = nd0 + dnd * x_lo as f32;
+            let edge = |x: usize, dst_row: &mut [u8]| {
+                let (xf, yf) =
+                    super::kernels::perspective_coord_at(x, nx0, ny0, nd0, dnx, dny, dnd);
+                let dst_pixel = &mut dst_row[x * C..x * C + C];
+                bilinear_sample_u8::<C>(src_slice, src_w, src_h, src_stride, xf, yf, dst_pixel);
+            };
 
             if x_safe_lo > x_lo && x_lo < x_hi {
-                let inv_nd = 1.0 / nd;
-                let xf = nx * inv_nd;
-                let yf = ny * inv_nd;
-                let dst_pixel = &mut dst_row[x_lo * C..x_lo * C + C];
-                bilinear_sample_u8::<C>(src_slice, src_w, src_h, src_stride, xf, yf, dst_pixel);
-                nx += dnx;
-                ny += dny;
-                nd += dnd;
+                edge(x_lo, dst_row);
             }
 
             // Dispatch the valid-span inner loop to the best available
-            // backend (NEON on aarch64, scalar elsewhere). Semantics and
-            // numerical behavior are identical across backends (up to
-            // sub-ULP reciprocal-refinement noise).
+            // backend (NEON on aarch64, scalar elsewhere). All backends
+            // evaluate the coordinate directly per column and are
+            // bit-identical (see `process_perspective_span`).
             if x_safe_lo < x_safe_hi {
                 process_perspective_span::<C>(
-                    src_slice, src_w, src_h, src_stride, dst_row, x_safe_lo, x_safe_hi, nx, ny, nd,
-                    dnx, dny, dnd,
+                    src_slice, src_w, src_h, src_stride, dst_row, x_safe_lo, x_safe_hi, nx0, ny0,
+                    nd0, dnx, dny, dnd,
                 );
             }
 
             if x_safe_hi < x_hi && x_safe_hi >= x_safe_lo {
-                // Advance state from x_safe_lo over (x_safe_hi - x_safe_lo)
-                // steps to reach x_safe_hi.
-                let steps = (x_safe_hi - x_safe_lo) as f32;
-                let nd_edge = nd + dnd * steps;
-                let inv_nd = 1.0 / nd_edge;
-                let xf = (nx + dnx * steps) * inv_nd;
-                let yf = (ny + dny * steps) * inv_nd;
-                let dst_pixel = &mut dst_row[x_safe_hi * C..x_safe_hi * C + C];
-                bilinear_sample_u8::<C>(src_slice, src_w, src_h, src_stride, xf, yf, dst_pixel);
+                edge(x_safe_hi, dst_row);
             }
         });
 

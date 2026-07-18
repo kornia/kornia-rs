@@ -50,10 +50,10 @@ class TestDeviceResize:
         assert out.shape == (16, 16, 3)
 
     def test_wrong_dtype_device_warp_errors(self):
-        # Warps stay f32-only on the device path (resize gained u8 kernels).
-        a = np.zeros((16, 16, 3), dtype=np.uint8)
-        d = _dev(a)  # u8 device image
-        with pytest.raises(ValueError, match="3-channel f32"):
+        # f32 single-channel has no GPU warp kernel — typed error, no fallback.
+        a = np.zeros((16, 16, 1), dtype=np.float32)
+        d = _dev(a)
+        with pytest.raises(ValueError, match="channel"):
             imgproc.warp_affine(d, [1, 0, 0, 0, 1, 0], (8, 8), "bilinear")
 
 
@@ -130,6 +130,40 @@ class TestDeviceWarps:
         out = imgproc.warp_affine(a, m, (16, 16), "nearest")
         assert isinstance(out, np.ndarray)
         np.testing.assert_array_equal(out, a)
+
+
+class TestDeviceWarpsU8:
+    """u8 device warps run the integer CUDA kernels, bit-identical to the
+    numpy u8 CPU path (same span math, same Q16/Q10 fixed point)."""
+
+    def _pattern_u8(self, h, w, c=3):
+        rng = np.random.default_rng(11)
+        return rng.integers(0, 256, size=(h, w, c), dtype=np.uint8)
+
+    def test_affine_matches_numpy_cpu_bit_exact(self):
+        a = self._pattern_u8(97, 129)
+        m = [0.87, -0.5, 40.0, 0.5, 0.87, -10.0]  # rotation + translation
+        cpu = imgproc.warp_affine(a, m, (97, 129), "bilinear")
+        out = imgproc.warp_affine(_dev(a), m, (97, 129), "bilinear")
+        assert "cuda" in str(out.device)
+        np.testing.assert_array_equal(out.cpu().numpy(), cpu)
+
+    def test_perspective_matches_numpy_cpu_bit_exact(self):
+        a = self._pattern_u8(97, 129)
+        m = [0.9, 0.12, 4.0, -0.08, 1.05, -2.0, 6.0e-4, -4.5e-4, 1.0]
+        cpu = imgproc.warp_perspective(a, m, (97, 129), "bilinear")
+        out = imgproc.warp_perspective(_dev(a), m, (97, 129), "bilinear")
+        np.testing.assert_array_equal(out.cpu().numpy(), cpu)
+
+    def test_affine_out_reuse_matches_fresh(self):
+        a = self._pattern_u8(64, 64)
+        d = _dev(a)
+        m = [1.0, 0.0, 3.5, 0.0, 1.0, -2.5]
+        fresh = imgproc.warp_affine(d, m, (64, 64), "bilinear")
+        buf = imgproc.warp_affine(d, m, (64, 64), "bilinear")
+        reused = imgproc.warp_affine(d, m, (64, 64), "bilinear", out=buf)
+        assert reused is buf
+        np.testing.assert_array_equal(reused.cpu().numpy(), fresh.cpu().numpy())
 
 
 class TestOutAndGraph:

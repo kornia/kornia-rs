@@ -376,6 +376,18 @@ pub fn warp_affine_u8<const C: usize>(
     m: &[f32; 6],
 ) -> Result<(), ImageError> {
     use rayon::prelude::*;
+
+    // Device pairs route to the CUDA u8 kernel (bit-identical output — the
+    // kernel mirrors this function's span + Q16/Q10 arithmetic; see
+    // `cuda::warp_affine_u8`). Mixed host/device pairs are a typed error;
+    // there is no implicit transfer in either direction.
+    #[cfg(feature = "cuda")]
+    if let crate::cuda::dispatch::Residency::Device(exec) =
+        crate::cuda::dispatch::pair_residency(src, dst)?
+    {
+        return exec.run(|stream| super::cuda::warp_affine_u8_cuda(src, dst, m, stream));
+    }
+
     let m_inv = invert_affine_transform(m);
     let src_w = src.cols() as i32;
     let src_h = src.rows() as i32;

@@ -13,6 +13,20 @@ changes early: `cargo add kornia-imgproc@0.1.15-rc.1` or `pip install --pre korn
 
 ## [Unreleased]
 
+**u8 CUDA warps (bilinear), bit-identical to the CPU fast paths — which are
+now bit-identical to each other too.** `warp_affine_u8` and
+`warp_perspective_u8` route u8 device images (1/3/4-channel) to new
+integer-only CUDA kernels that mirror the CPU's per-row span math and
+Q16/Q10 fixed-point sampling exactly; `kornia_rs.imgproc.warp_affine` /
+`warp_perspective` accept u8 device images including `out=`. Along the way
+the CPU u8 perspective warp switched from incremental coordinate updates
+(`nx += dnx` per column, with a SIMD reciprocal estimate) to direct
+per-column evaluation with exact IEEE division — scalar, NEON, and AVX2 now
+produce identical bytes instead of agreeing "up to sub-ULP noise". Output
+shifts by at most one Q10 quantum on some pixels relative to earlier
+releases; benchmarks show no measurable CPU cost (the division latency hides
+behind the 4-lane structure).
+
 **u8 CUDA resize — every mode, bit-identical to the CPU fast paths.** Camera
 data is u8; until now the GPU only resized f32 (4× the memory traffic once you
 count the conversion). `resize_fast_u8_aa` (Rust) and `kornia_rs.imgproc.resize`

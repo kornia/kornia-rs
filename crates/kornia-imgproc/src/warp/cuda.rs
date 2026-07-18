@@ -12,10 +12,12 @@ use crate::cuda::warp_affine::{
     launch_warp_affine_bicubic_cuda, launch_warp_affine_bilinear_cuda,
     launch_warp_affine_lanczos_cuda, launch_warp_affine_nearest_cuda,
 };
+use crate::cuda::warp_affine_u8::launch_warp_affine_u8_bilinear_cuda;
 use crate::cuda::warp_perspective::{
     launch_warp_perspective_bicubic_cuda, launch_warp_perspective_bilinear_cuda,
     launch_warp_perspective_lanczos_cuda, launch_warp_perspective_nearest_cuda,
 };
+use crate::cuda::warp_perspective_u8::launch_warp_perspective_u8_bilinear_cuda;
 use crate::interpolation::InterpolationMode;
 
 /// Run the CUDA warp-affine for a device-resident f32 pair.
@@ -95,6 +97,54 @@ pub(super) fn warp_perspective_f32_cuda<const C: usize>(
     .map_err(|e| ImageError::Cuda(e.to_string()))
 }
 
+/// Run the CUDA u8 warp-affine (bilinear) for a device-resident pair,
+/// byte-exact with [`warp_affine_u8`](super::warp_affine_u8).
+///
+/// The forward matrix is inverted here with the same
+/// [`invert_affine_transform`](super::invert_affine_transform) the CPU path
+/// calls — shared code, not mirrored code — and the kernel reproduces the
+/// CPU's per-row span + Q16/Q10 fixed-point arithmetic exactly (see
+/// `cuda::warp_affine_u8`).
+pub(super) fn warp_affine_u8_cuda<const C: usize>(
+    src: &Image<u8, C>,
+    dst: &mut Image<u8, C>,
+    m: &[f32; 6],
+    stream: &Arc<CudaStream>,
+) -> Result<(), ImageError> {
+    let (src_w, src_h) = dims_u32(src)?;
+    let (dst_w, dst_h) = dims_u32(dst)?;
+    let ctx = stream.context();
+    let (s, d) = device_slices!(src, dst);
+    let m_inv = super::invert_affine_transform(m);
+
+    launch_warp_affine_u8_bilinear_cuda(
+        ctx, stream, s, d, &m_inv, src_w, src_h, dst_w, dst_h, C as u32, None,
+    )
+    .map_err(|e| ImageError::Cuda(e.to_string()))
+}
+
+/// Run the CUDA u8 warp-perspective (bilinear) for a device-resident pair,
+/// byte-exact with [`warp_perspective_u8`](super::warp_perspective_u8) —
+/// every CPU backend evaluates the coordinate directly per column, and the
+/// kernel mirrors the same expression tree (see `cuda::warp_perspective_u8`).
+pub(super) fn warp_perspective_u8_cuda<const C: usize>(
+    src: &Image<u8, C>,
+    dst: &mut Image<u8, C>,
+    m: &[f32; 9],
+    stream: &Arc<CudaStream>,
+) -> Result<(), ImageError> {
+    let (src_w, src_h) = dims_u32(src)?;
+    let (dst_w, dst_h) = dims_u32(dst)?;
+    let ctx = stream.context();
+    let (s, d) = device_slices!(src, dst);
+    let m_inv = super::perspective::inverse_perspective_matrix(m)?;
+
+    launch_warp_perspective_u8_bilinear_cuda(
+        ctx, stream, s, d, &m_inv, src_w, src_h, dst_w, dst_h, C as u32, None,
+    )
+    .map_err(|e| ImageError::Cuda(e.to_string()))
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -113,6 +163,109 @@ mod tests {
             Image::<f32, 3>::new(size, pattern_f32(w * h * 3)).unwrap(),
             Image::<f32, 3>::from_size_val(size, 0.0).unwrap(),
         )
+    }
+
+    /// The public `warp_affine_u8`, called with device images, must be
+    /// bit-identical to the host path — spans, Q16 anchors, Q10 sampler and
+    /// all. Rotation+scale exercises fractional spans; the flip and the 90°
+    /// rotation pin the exact-integer span boundaries `warp::span` exists
+    /// for; translation by half a pixel exercises the sampler everywhere.
+    #[test]
+    fn public_warp_affine_u8_device_equals_host() {
+        use crate::cuda::color::test_utils::pattern_u8;
+        let stream = default_stream();
+
+        fn run<const C: usize>(
+            w: usize,
+            h: usize,
+            m: &[f32; 6],
+            stream: &std::sync::Arc<cudarc::driver::CudaStream>,
+        ) {
+            let size = ImageSize {
+                width: w,
+                height: h,
+            };
+            let src = Image::<u8, C>::new(size, pattern_u8(w * h * C)).unwrap();
+            let mut cpu_dst = Image::<u8, C>::from_size_val(size, 0).unwrap();
+            crate::warp::warp_affine_u8(&src, &mut cpu_dst, m).unwrap();
+
+            let d_src = src.to_cuda(stream).unwrap();
+            let mut d_dst = Image::<u8, C>::zeros_cuda(size, stream).unwrap();
+            crate::warp::warp_affine_u8(&d_src, &mut d_dst, m).unwrap();
+
+            assert_eq!(
+                d_dst.to_host_owned().unwrap().as_slice(),
+                cpu_dst.as_slice(),
+                "{w}x{h} C={C} m={m:?}: device must be bit-identical to host"
+            );
+        }
+
+        let rot = crate::warp::get_rotation_matrix2d((64.0, 48.0), 37.0, 1.3);
+        let rot90 = crate::warp::get_rotation_matrix2d((64.0, 48.0), 90.0, 1.0);
+        let flip: [f32; 6] = [-1.0, 0.0, 128.0, 0.0, 1.0, 0.0];
+        let half: [f32; 6] = [1.0, 0.0, 0.5, 0.0, 1.0, 0.5];
+        for m in [&rot, &rot90, &flip, &half] {
+            run::<1>(129, 97, m, &stream);
+            run::<3>(129, 97, m, &stream);
+            run::<4>(129, 97, m, &stream);
+        }
+        // Odd small size exercises span-clamps and single-warp blocks.
+        run::<3>(33, 21, &rot, &stream);
+    }
+
+    /// The public `warp_perspective_u8`, device vs host, bit-identical —
+    /// including the negative-denominator branch and an affine-equivalent
+    /// homography that must take the uniform-nd span path.
+    #[test]
+    fn public_warp_perspective_u8_device_equals_host() {
+        use crate::cuda::color::test_utils::pattern_u8;
+        let stream = default_stream();
+
+        fn run<const C: usize>(
+            w: usize,
+            h: usize,
+            m: &[f32; 9],
+            stream: &std::sync::Arc<cudarc::driver::CudaStream>,
+        ) {
+            let size = ImageSize {
+                width: w,
+                height: h,
+            };
+            let src = Image::<u8, C>::new(size, pattern_u8(w * h * C)).unwrap();
+            let mut cpu_dst = Image::<u8, C>::from_size_val(size, 0).unwrap();
+            crate::warp::warp_perspective_u8(&src, &mut cpu_dst, m).unwrap();
+
+            let d_src = src.to_cuda(stream).unwrap();
+            let mut d_dst = Image::<u8, C>::zeros_cuda(size, stream).unwrap();
+            crate::warp::warp_perspective_u8(&d_src, &mut d_dst, m).unwrap();
+
+            assert_eq!(
+                d_dst.to_host_owned().unwrap().as_slice(),
+                cpu_dst.as_slice(),
+                "{w}x{h} C={C} m={m:?}: device must be bit-identical to host"
+            );
+        }
+
+        // Genuine projective transform (non-zero perspective terms).
+        let proj: [f32; 9] = [
+            0.9, 0.12, 4.0, //
+            -0.08, 1.05, -2.0, //
+            6.0e-4, -4.5e-4, 1.0,
+        ];
+        // Affine-equivalent homography — uniform-nd span path, nd == 1.
+        let affine_h: [f32; 9] = [1.1, 0.1, -3.0, -0.05, 0.95, 2.0, 0.0, 0.0, 1.0];
+        // Negated homography — same geometry, exercises the nd < 0 branch
+        // (xf = nx/nd is invariant, and IEEE negation keeps it bit-exact).
+        let mut neg = proj;
+        for v in neg.iter_mut() {
+            *v = -*v;
+        }
+        for m in [&proj, &affine_h, &neg] {
+            run::<1>(129, 97, m, &stream);
+            run::<3>(129, 97, m, &stream);
+            run::<4>(129, 97, m, &stream);
+        }
+        run::<3>(33, 21, &proj, &stream);
     }
 
     /// The public `warp_affine`, called with device images, must produce
@@ -239,6 +392,104 @@ mod tests {
         assert!(
             matches!(&err, ImageError::Cuda(msg) if msg.contains("3-channel")),
             "got {err:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod bench_probe {
+    /// Release-build device-throughput probe (min of 5 vs unlocked DVFS):
+    /// `cargo test --release ... warp::cuda::bench_probe -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn probe_warps_1080p() {
+        use crate::cuda::color::test_utils::{default_stream, pattern_u8};
+        use kornia_image::{Image, ImageSize};
+
+        let stream = default_stream();
+        let size = ImageSize {
+            width: 1920,
+            height: 1080,
+        };
+        let src = Image::<u8, 3>::new(size, pattern_u8(1920 * 1080 * 3)).unwrap();
+        let d_src = src.to_cuda(&stream).unwrap();
+        let mut d_dst = Image::<u8, 3>::zeros_cuda(size, &stream).unwrap();
+        let aff = crate::warp::get_rotation_matrix2d((960.0, 540.0), 20.0, 1.1);
+        let psp: [f32; 9] = [0.9, 0.12, 40.0, -0.08, 1.05, -20.0, 6.0e-5, -4.5e-5, 1.0];
+
+        for _ in 0..200 {
+            crate::warp::warp_affine_u8(&d_src, &mut d_dst, &aff).unwrap();
+        }
+        stream.synchronize().unwrap();
+
+        let mut best_a = f64::MAX;
+        let mut best_p = f64::MAX;
+        for _ in 0..5 {
+            for _ in 0..50 {
+                crate::warp::warp_affine_u8(&d_src, &mut d_dst, &aff).unwrap();
+            }
+            stream.synchronize().unwrap();
+            let t0 = std::time::Instant::now();
+            for _ in 0..200 {
+                crate::warp::warp_affine_u8(&d_src, &mut d_dst, &aff).unwrap();
+            }
+            stream.synchronize().unwrap();
+            best_a = best_a.min(t0.elapsed().as_secs_f64() * 1000.0 / 200.0);
+
+            for _ in 0..50 {
+                crate::warp::warp_perspective_u8(&d_src, &mut d_dst, &psp).unwrap();
+            }
+            stream.synchronize().unwrap();
+            let t0 = std::time::Instant::now();
+            for _ in 0..200 {
+                crate::warp::warp_perspective_u8(&d_src, &mut d_dst, &psp).unwrap();
+            }
+            stream.synchronize().unwrap();
+            best_p = best_p.min(t0.elapsed().as_secs_f64() * 1000.0 / 200.0);
+        }
+        println!("affine: {best_a:.3} ms/op (min of 5)");
+        println!("perspective: {best_p:.3} ms/op (min of 5)");
+    }
+
+    /// The u8 warp kernels are per-byte generic over C — a 2-channel warp
+    /// must work on BOTH residencies and agree byte-for-byte (the adapter
+    /// previously gated {1,3,4} while the CPU path accepted any C).
+    #[test]
+    fn warp_u8_c2_device_matches_cpu() {
+        use kornia_image::{Image, ImageSize};
+        let stream = crate::cuda::color::test_utils::default_stream();
+        let src = Image::<u8, 2>::new(
+            ImageSize {
+                width: 37,
+                height: 29,
+            },
+            crate::cuda::color::test_utils::pattern_u8(37 * 29 * 2),
+        )
+        .unwrap();
+        let m = [0.9f32, 0.1, 2.0, -0.05, 1.05, -1.0];
+        let mut cpu_dst = Image::<u8, 2>::from_size_val(
+            ImageSize {
+                width: 31,
+                height: 23,
+            },
+            0,
+        )
+        .unwrap();
+        crate::warp::warp_affine_u8(&src, &mut cpu_dst, &m).unwrap();
+
+        let d_src = src.to_cuda(&stream).unwrap();
+        let mut d_dst = Image::<u8, 2>::zeros_cuda(
+            ImageSize {
+                width: 31,
+                height: 23,
+            },
+            &stream,
+        )
+        .unwrap();
+        crate::warp::warp_affine_u8(&d_src, &mut d_dst, &m).unwrap();
+        assert_eq!(
+            d_dst.to_host_owned().unwrap().as_slice(),
+            cpu_dst.as_slice()
         );
     }
 }
