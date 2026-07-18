@@ -35,6 +35,9 @@ pub mod morphology;
 /// Residency-aware dispatch machinery shared by all device-capable ops.
 pub(crate) mod dispatch;
 
+/// FKL-style kernel fusion engine (register-flow stage composition).
+pub mod fusion;
+
 use std::sync::Arc;
 
 use cudarc::driver::{CudaContext, LaunchConfig};
