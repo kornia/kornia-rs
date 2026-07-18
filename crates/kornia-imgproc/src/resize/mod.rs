@@ -248,6 +248,81 @@ pub fn resize_fast_u8<const C: usize>(
     resize_fast_u8_aa::<C>(src, dst, interpolation, true)
 }
 
+/// Which u8 kernel a `(mode, geometry, channel count)` combination resolves
+/// to — the SINGLE routing decision consumed by both the CPU cascade
+/// ([`resize_fast_u8_aa`]) and the CUDA cascade
+/// (`cuda::resize_fast_u8_cuda`), so the two sides cannot drift: a device
+/// pair always runs the GPU twin of the kernel a host pair would run.
+/// Kernel-support errors (channel counts, degenerate bilinear sources) are
+/// decided here too, so the error VARIANT is residency-independent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResizeU8Path {
+    /// Exact-2× RGB box downscale (bilinear fast path).
+    PyrDown2xRgb,
+    /// Exact-2× RGB upscale (bilinear fast path).
+    PyrUp2xRgb,
+    /// Nearest gather (any channel count).
+    Nearest,
+    /// Generic Q14 bilinear (C ∈ {1, 3, 4}, source at least 2×2).
+    Bilinear,
+    /// Two-pass separable Q14 (bicubic / lanczos, C ∈ {1, 3, 4}).
+    Separable(FilterKind),
+}
+
+pub(crate) fn resize_u8_path(
+    channels: usize,
+    mode: InterpolationMode,
+    src_w: usize,
+    src_h: usize,
+    dst_w: usize,
+    dst_h: usize,
+) -> Result<ResizeU8Path, ImageError> {
+    use InterpolationMode as I;
+    Ok(match mode {
+        I::Bilinear
+            if channels == 3
+                && src_w == dst_w * 2
+                && src_h == dst_h * 2
+                && src_w >= 2
+                && src_h >= 2 =>
+        {
+            ResizeU8Path::PyrDown2xRgb
+        }
+        I::Bilinear
+            if channels == 3
+                && dst_w == src_w * 2
+                && dst_h == src_h * 2
+                && src_w >= 2
+                && src_h >= 2 =>
+        {
+            ResizeU8Path::PyrUp2xRgb
+        }
+        I::Nearest => ResizeU8Path::Nearest,
+        I::Bilinear => {
+            if !(channels == 1 || channels == 3 || channels == 4) {
+                return Err(ImageError::UnsupportedChannelCount(channels));
+            }
+            // A 1-pixel axis has no second bilinear tap; previously the CPU
+            // fall-through PANICKED on this (LUT offset underflow) while the
+            // GPU returned a typed error. Both sides now share this error.
+            if src_w < 2 || src_h < 2 {
+                return Err(ImageError::InvalidImageSize(src_w, src_h, 2, 2));
+            }
+            ResizeU8Path::Bilinear
+        }
+        I::Bicubic | I::Lanczos => {
+            if !(channels == 1 || channels == 3 || channels == 4) {
+                return Err(ImageError::UnsupportedChannelCount(channels));
+            }
+            ResizeU8Path::Separable(if mode == I::Bicubic {
+                FilterKind::Cubic
+            } else {
+                FilterKind::Lanczos3
+            })
+        }
+    })
+}
+
 /// Generic fast u8 resize with explicit antialias control.
 ///
 /// `antialias=true` (default via [`resize_fast_u8`]) matches PIL / torchvision
@@ -265,60 +340,62 @@ pub fn resize_fast_u8_aa<const C: usize>(
     interpolation: InterpolationMode,
     antialias: bool,
 ) -> Result<(), ImageError> {
+    // Device pairs route to the CUDA u8 kernels (bit-identical output — the
+    // coordinate/weight tables come from the same host builders the CPU
+    // uses). Mixed host/device pairs are a typed error; there is no implicit
+    // transfer in either direction.
+    #[cfg(feature = "cuda")]
+    if let crate::cuda::dispatch::Residency::Device(exec) =
+        crate::cuda::dispatch::pair_residency(src, dst)?
+    {
+        return exec
+            .run(|stream| cuda::resize_fast_u8_cuda(src, dst, interpolation, antialias, stream));
+    }
+
     let (src_w, src_h) = (src.cols(), src.rows());
     let (dst_w, dst_h) = (dst.cols(), dst.rows());
 
-    if matches!(interpolation, InterpolationMode::Bilinear)
-        && C == 3
-        && src_w == dst_w * 2
-        && src_h == dst_h * 2
-        && src_w >= 2
-        && src_h >= 2
-    {
-        pyramid::pyrdown_2x_rgb_u8(src.as_slice(), dst.as_slice_mut(), src_w, src_h);
-        return Ok(());
+    match resize_u8_path(C, interpolation, src_w, src_h, dst_w, dst_h)? {
+        ResizeU8Path::PyrDown2xRgb => {
+            pyramid::pyrdown_2x_rgb_u8(src.as_slice(), dst.as_slice_mut(), src_w, src_h);
+        }
+        ResizeU8Path::PyrUp2xRgb => {
+            pyramid::pyrup_2x_rgb_u8(src.as_slice(), dst.as_slice_mut(), src_w, src_h);
+        }
+        ResizeU8Path::Nearest => {
+            nearest::resize_nearest_u8::<C>(
+                src.as_slice(),
+                src_w,
+                src_h,
+                dst.as_slice_mut(),
+                dst_w,
+                dst_h,
+            );
+        }
+        ResizeU8Path::Bilinear => {
+            bilinear::resize_bilinear_u8_nch::<C>(
+                src.as_slice(),
+                src_w,
+                src_h,
+                dst.as_slice_mut(),
+                dst_w,
+                dst_h,
+            );
+        }
+        ResizeU8Path::Separable(filt) => {
+            separable::resize_separable_u8::<C>(
+                src.as_slice(),
+                src_w,
+                src_h,
+                dst.as_slice_mut(),
+                dst_w,
+                dst_h,
+                filt,
+                antialias,
+            );
+        }
     }
-
-    if matches!(interpolation, InterpolationMode::Bilinear)
-        && C == 3
-        && dst_w == src_w * 2
-        && dst_h == src_h * 2
-        && src_w >= 2
-        && src_h >= 2
-    {
-        pyramid::pyrup_2x_rgb_u8(src.as_slice(), dst.as_slice_mut(), src_w, src_h);
-        return Ok(());
-    }
-
-    if matches!(interpolation, InterpolationMode::Nearest) && src_w >= 1 && src_h >= 1 {
-        nearest::resize_nearest_u8::<C>(
-            src.as_slice(),
-            src_w,
-            src_h,
-            dst.as_slice_mut(),
-            dst_w,
-            dst_h,
-        );
-        return Ok(());
-    }
-
-    if matches!(interpolation, InterpolationMode::Bilinear)
-        && src_w >= 2
-        && src_h >= 2
-        && (C == 1 || C == 3 || C == 4)
-    {
-        bilinear::resize_bilinear_u8_nch::<C>(
-            src.as_slice(),
-            src_w,
-            src_h,
-            dst.as_slice_mut(),
-            dst_w,
-            dst_h,
-        );
-        return Ok(());
-    }
-
-    resize_fast_impl(src, dst, interpolation, antialias)
+    Ok(())
 }
 
 /// Resize a 1-channel u8 image. Convenience wrapper around [`resize_fast_u8`].
@@ -348,69 +425,6 @@ pub fn resize_fast_rgb_aa(
     antialias: bool,
 ) -> Result<(), ImageError> {
     resize_fast_u8_aa::<3>(src, dst, interpolation, antialias)
-}
-
-/// Slow-path per-interpolation dispatch for cases that didn't take the
-/// fast paths in [`resize_fast_u8_aa`] (primarily bicubic / lanczos and
-/// non-exact-2× bilinear on unusual channel counts).
-fn resize_fast_impl<const C: usize>(
-    src: &Image<u8, C>,
-    dst: &mut Image<u8, C>,
-    interpolation: InterpolationMode,
-    antialias: bool,
-) -> Result<(), ImageError> {
-    if !(C == 1 || C == 3 || C == 4) {
-        return Err(ImageError::UnsupportedChannelCount(C));
-    }
-    let (src_w, src_h) = (src.cols(), src.rows());
-    let (dst_w, dst_h) = (dst.cols(), dst.rows());
-    match interpolation {
-        InterpolationMode::Nearest => {
-            nearest::resize_nearest_u8::<C>(
-                src.as_slice(),
-                src_w,
-                src_h,
-                dst.as_slice_mut(),
-                dst_w,
-                dst_h,
-            );
-        }
-        InterpolationMode::Bilinear => {
-            bilinear::resize_bilinear_u8_nch::<C>(
-                src.as_slice(),
-                src_w,
-                src_h,
-                dst.as_slice_mut(),
-                dst_w,
-                dst_h,
-            );
-        }
-        InterpolationMode::Bicubic => {
-            separable::resize_separable_u8::<C>(
-                src.as_slice(),
-                src_w,
-                src_h,
-                dst.as_slice_mut(),
-                dst_w,
-                dst_h,
-                FilterKind::Cubic,
-                antialias,
-            );
-        }
-        InterpolationMode::Lanczos => {
-            separable::resize_separable_u8::<C>(
-                src.as_slice(),
-                src_w,
-                src_h,
-                dst.as_slice_mut(),
-                dst_w,
-                dst_h,
-                FilterKind::Lanczos3,
-                antialias,
-            );
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]

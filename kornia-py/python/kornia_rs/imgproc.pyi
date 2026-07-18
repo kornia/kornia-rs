@@ -86,9 +86,10 @@ def resize(
 ) -> np.ndarray | Image:
     """``new_size`` is ``(height, width)``; ``interpolation`` is e.g. ``"bilinear"`` / ``"nearest"``.
 
-    A device ``Image`` (f32, 3-channel) runs on the GPU, bit-identical to the
-    CPU f32 path, and returns a device ``Image``. ``antialias`` applies only
-    to the u8 numpy path."""
+    A device ``Image`` (f32 3-channel, or u8 1/3/4-channel) runs on the GPU,
+    bit-identical to the matching CPU path, and returns a device ``Image``.
+    ``antialias`` shapes the u8 bicubic/lanczos kernels (CPU and GPU alike)
+    and is ignored for f32 and for nearest/bilinear."""
     ...
 def warp_affine(
     image: np.ndarray | Image,

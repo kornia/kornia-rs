@@ -13,6 +13,23 @@ changes early: `cargo add kornia-imgproc@0.1.15-rc.1` or `pip install --pre korn
 
 ## [Unreleased]
 
+**u8 CUDA resize — every mode, bit-identical to the CPU fast paths.** Camera
+data is u8; until now the GPU only resized f32 (4× the memory traffic once you
+count the conversion). `resize_fast_u8_aa` (Rust) and `kornia_rs.imgproc.resize`
+(Python, including `out=`) now route u8 device images — 1/3/4-channel — to new
+integer-only CUDA kernels covering the full CPU cascade: exact-2× pyramid fast
+paths, nearest, Q14 bilinear, and antialiased/plain separable bicubic and
+Lanczos-3. The coordinate and weight tables are built by the same host
+functions the CPU uses and uploaded once per geometry (a device-side LUT
+cache — Jetson pageable H2D uploads have a ~250 µs average latency tail that
+otherwise dominates, and the warm path is CUDA-Graph-capturable), so device
+output is byte-for-byte equal to host output (asserted with `assert_eq!`
+across modes, channel counts, odd sizes, and extreme downscales). Measured on
+Jetson Orin at 1080p→720p u8 RGB (median, out= reuse): nearest 0.22 ms,
+bilinear 0.38 ms, bicubic 1.20 ms — faster than VPI-CUDA on every comparable
+op (5.4× / 3.4× / 1.1×) and 3–6× ahead of OpenCV CPU. Kernel compile failures
+now surface as errors instead of panics across all resize launchers.
+
 **Python: `out=` and CUDA Graphs for allocation-free frame loops.** The device
 geometry ops accept a preallocated device `out=` image (torch-style, returned
 back); `kornia_rs.cuda.Stream.new()` creates a capturable non-default stream;

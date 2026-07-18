@@ -1,20 +1,18 @@
 use pyo3::prelude::*;
 
 use crate::dispatch::cpu_op;
-use crate::image::{
-    alloc_output_pyarray, numpy_as_image, parse_interpolation, to_pyerr, PyImageApi,
-};
+use crate::image::{alloc_output_pyarray, numpy_as_image, parse_interpolation, to_pyerr};
 use kornia_image::ImageSize;
 use kornia_imgproc::resize::resize_fast_rgb_aa;
 
 /// Resize an image.
 ///
-/// Residency-dispatched like the color ops: a device `Image` (f32, 3-channel)
-/// runs the CUDA kernels — bit-identical to the CPU f32 path — and accepts a
-/// preallocated device `out=` (torch-style) so frame loops allocate nothing;
-/// a host `Image` or numpy u8 array runs the CPU fast path. `antialias`
-/// applies only to the u8 CPU path (the f32 paths, CPU and GPU alike, have
-/// never antialiased).
+/// Residency-dispatched like the color ops: a device `Image` (f32 3-channel,
+/// or u8 1/3/4-channel) runs the CUDA kernels — bit-identical to the CPU
+/// twins — and accepts a preallocated device `out=` (torch-style) so frame
+/// loops allocate nothing; a host `Image` or numpy u8 array runs the CPU
+/// fast path. `antialias` shapes the u8 bicubic/lanczos kernels (CPU and
+/// GPU alike); the f32 paths have never antialiased.
 #[pyfunction]
 #[pyo3(signature = (image, new_size, interpolation, antialias=true, out=None))]
 pub fn resize(
@@ -26,11 +24,18 @@ pub fn resize(
     out: Option<Py<PyAny>>,
 ) -> PyResult<Py<PyAny>> {
     #[cfg(feature = "cuda")]
-    if let Ok(api) = image.cast::<PyImageApi>() {
+    if let Ok(api) = image.cast::<crate::image::PyImageApi>() {
         let img = api.borrow();
         if img.is_device() {
-            return crate::cuda_ext::geometry::resize(py, &img, new_size, interpolation, out)?
-                .into_py(py);
+            return crate::cuda_ext::geometry::resize(
+                py,
+                &img,
+                new_size,
+                interpolation,
+                antialias,
+                out,
+            )?
+            .into_py(py);
         }
     }
     if out.is_some() {
