@@ -183,14 +183,30 @@ py_f32_3to3!(
     crate::cuda_ext::rgb_from_hsv,
     "HSV f32 → RGB f32."
 );
-py_f32_3to3!(hls_from_rgb, color::hls_from_rgb, "RGB f32 → HLS f32.");
-py_f32_3to3!(rgb_from_hls, color::rgb_from_hls, "HLS f32 → RGB f32.");
+py_f32_3to3!(
+    hls_from_rgb,
+    color::hls_from_rgb,
+    crate::cuda_ext::hls_from_rgb,
+    "RGB f32 → HLS f32."
+);
+py_f32_3to3!(
+    rgb_from_hls,
+    color::rgb_from_hls,
+    crate::cuda_ext::rgb_from_hls,
+    "HLS f32 → RGB f32."
+);
 py_f32_3to3!(
     xyz_from_rgb,
     color::xyz_from_rgb,
+    crate::cuda_ext::xyz_from_rgb,
     "RGB f32 → CIE XYZ f32 (D65)."
 );
-py_f32_3to3!(rgb_from_xyz, color::rgb_from_xyz, "CIE XYZ f32 → RGB f32.");
+py_f32_3to3!(
+    rgb_from_xyz,
+    color::rgb_from_xyz,
+    crate::cuda_ext::rgb_from_xyz,
+    "CIE XYZ f32 → RGB f32."
+);
 py_f32_3to3!(
     lab_from_rgb,
     color::lab_from_rgb,
@@ -206,21 +222,25 @@ py_f32_3to3!(
 py_f32_3to3!(
     luv_from_rgb,
     color::luv_from_rgb,
+    crate::cuda_ext::luv_from_rgb,
     "RGB f32 → CIE L*u*v* f32."
 );
 py_f32_3to3!(
     rgb_from_luv,
     color::rgb_from_luv,
+    crate::cuda_ext::rgb_from_luv,
     "CIE L*u*v* f32 → RGB f32."
 );
 py_f32_3to3!(
     linear_rgb_from_rgb,
     color::linear_rgb_from_rgb,
+    crate::cuda_ext::linear_rgb_from_rgb,
     "sRGB f32 → linear-RGB f32 (gamma expand)."
 );
 py_f32_3to3!(
     rgb_from_linear_rgb,
     color::rgb_from_linear_rgb,
+    crate::cuda_ext::rgb_from_linear_rgb,
     "linear-RGB f32 → sRGB f32 (gamma compress)."
 );
 py_f32_3to3!(
@@ -238,9 +258,15 @@ py_f32_3to3!(
 py_f32_3to3!(
     yuv_from_rgb,
     color::yuv_from_rgb,
+    crate::cuda_ext::yuv_from_rgb,
     "RGB f32 → YUV f32 (planar, full range)."
 );
-py_f32_3to3!(rgb_from_yuv, color::rgb_from_yuv, "YUV f32 → RGB f32.");
+py_f32_3to3!(
+    rgb_from_yuv,
+    color::rgb_from_yuv,
+    crate::cuda_ext::rgb_from_yuv,
+    "YUV f32 → RGB f32."
+);
 py_f32_3to3!(
     sepia_from_rgb,
     color::sepia_from_rgb_f32,

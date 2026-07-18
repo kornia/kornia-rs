@@ -256,3 +256,24 @@ def test_no_leak_full_pipeline():
         del dev, gray, rgb, cap
 
     assert_no_leak(body)
+
+
+def test_no_leak_new_color_device_arms():
+    """The dual-dtype / f32 arms wired 2026-07-18 (hls/luv/xyz/linear/yuv/
+    f32-ycbcr/f32-sepia/f32-gray) allocate fresh device destinations — chain a
+    representative set and assert steady-state."""
+    dev = _dev(_rgbf())
+    dev8 = _dev(_rgb())
+
+    def body():
+        hls = kornia_rs.imgproc.hls_from_rgb(dev)
+        luv = kornia_rs.imgproc.luv_from_rgb(dev)
+        xyz = kornia_rs.imgproc.rgb_from_xyz(kornia_rs.imgproc.xyz_from_rgb(dev))
+        lin = kornia_rs.imgproc.linear_rgb_from_rgb(dev)
+        yuvf = kornia_rs.imgproc.rgb_from_yuv(kornia_rs.imgproc.yuv_from_rgb(dev))
+        yuv8 = kornia_rs.imgproc.yuv_from_rgb(dev8)
+        sep = kornia_rs.imgproc.sepia_from_rgb(dev)
+        gray = kornia_rs.imgproc.gray_from_rgb(dev)
+        del hls, luv, xyz, lin, yuvf, yuv8, sep, gray
+
+    assert_no_leak(body)

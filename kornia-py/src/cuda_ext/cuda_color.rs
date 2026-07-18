@@ -88,13 +88,70 @@ macro_rules! conv_fn {
     };
 }
 
-conv_fn!(
-    /// RGB8 → Gray8 (BT.601, bit-exact vs the CPU path).
-    gray_from_rgb, U8C3, Rgb8, u8, 1, U8C1, Gray8, ColorSpace::Gray
+/// Dtype-dispatching sibling of `conv_fn!`: the same conversion exists for a
+/// u8 and an f32 device source (different `ConvertColor` pairs), so route on
+/// the source's `Inner` variant instead of demanding one.
+macro_rules! conv_fn_dual {
+    ($(#[$meta:meta])* $pyname:ident, $dcs:expr,
+     u8: ($svar8:ident, $snt8:ty, $dc8:literal, $dvar8:ident, $dnt8:ty),
+     f32: ($svarf:ident, $sntf:ty, $dcf:literal, $dvarf:ident, $dntf:ty)) => {
+        $(#[$meta])*
+        #[pyfunction]
+        pub fn $pyname(img: &PyImageApi) -> PyResult<PyImageApi> {
+            let dev = img.as_device().ok_or_else(|| {
+                PyValueError::new_err(concat!(
+                    stringify!($pyname),
+                    ": expected a device Image (on a CUDA device); for a host image pass \
+                     its numpy array, or move it to a device with .to_cuda(stream)"
+                ))
+            })?;
+            match dev {
+                Inner::$svar8(src) => {
+                    let stream = source_stream(src)?;
+                    // SAFETY: the ConvertColor kernel writes every output pixel (one
+                    // thread per pixel, bounds-guarded), so the uninitialized
+                    // destination is fully overwritten before any read.
+                    let mut dst =
+                        unsafe { Image::<u8, $dc8>::uninit_cuda(src.size(), &stream) }.map_err(err)?;
+                    convert_pair!(src, $snt8, &mut dst, $dnt8)?;
+                    Ok(PyImageApi::from_device(
+                        Inner::$dvar8(dst),
+                        $dcs,
+                        device_mode::<u8>($dc8),
+                    ))
+                }
+                Inner::$svarf(src) => {
+                    let stream = source_stream(src)?;
+                    // SAFETY: as above.
+                    let mut dst =
+                        unsafe { Image::<f32, $dcf>::uninit_cuda(src.size(), &stream) }.map_err(err)?;
+                    convert_pair!(src, $sntf, &mut dst, $dntf)?;
+                    Ok(PyImageApi::from_device(
+                        Inner::$dvarf(dst),
+                        $dcs,
+                        device_mode::<f32>($dcf),
+                    ))
+                }
+                _ => Err(PyValueError::new_err(concat!(
+                    stringify!($pyname),
+                    ": wrong input dtype/channels for this conversion"
+                ))),
+            }
+        }
+    };
+}
+
+conv_fn_dual!(
+    /// RGB → Gray (BT.601; u8 bit-exact vs the CPU path, f32 mirrored math).
+    gray_from_rgb, ColorSpace::Gray,
+    u8: (U8C3, Rgb8, 1, U8C1, Gray8),
+    f32: (F32C3, Rgbf32, 1, F32C1, Grayf32)
 );
-conv_fn!(
-    /// Gray8 → RGB8 broadcast.
-    rgb_from_gray, U8C1, Gray8, u8, 3, U8C3, Rgb8, ColorSpace::Rgb
+conv_fn_dual!(
+    /// Gray → RGB broadcast (u8 and f32).
+    rgb_from_gray, ColorSpace::Rgb,
+    u8: (U8C1, Gray8, 3, U8C3, Rgb8),
+    f32: (F32C1, Grayf32, 3, F32C3, Rgbf32)
 );
 conv_fn!(
     /// RGB8 → BGR8 channel swap (symmetric).
@@ -107,13 +164,29 @@ conv_fn!(
 // RGBA8/BGRA8 → RGB8 are provided by `rgb_from_rgba_bg`/`rgb_from_bgra_bg`
 // (below) instead of `conv_fn!`, so the device path can honor the `background`
 // alpha-composite argument like the CPU path rather than only dropping alpha.
-conv_fn!(
-    /// RGB8 → YCbCr8 (full-range Q14, bit-exact vs the CPU path).
-    ycbcr_from_rgb, U8C3, Rgb8, u8, 3, U8C3, YCbCr8, ColorSpace::YCbCr
+conv_fn_dual!(
+    /// RGB → YCbCr (full range; u8 Q14 bit-exact vs the CPU path, f32 mirrored).
+    ycbcr_from_rgb, ColorSpace::YCbCr,
+    u8: (U8C3, Rgb8, 3, U8C3, YCbCr8),
+    f32: (F32C3, Rgbf32, 3, F32C3, YCbCrf32)
 );
-conv_fn!(
-    /// YCbCr8 → RGB8.
-    rgb_from_ycbcr, U8C3, YCbCr8, u8, 3, U8C3, Rgb8, ColorSpace::Rgb
+conv_fn_dual!(
+    /// YCbCr → RGB (u8 and f32).
+    rgb_from_ycbcr, ColorSpace::Rgb,
+    u8: (U8C3, YCbCr8, 3, U8C3, Rgb8),
+    f32: (F32C3, YCbCrf32, 3, F32C3, Rgbf32)
+);
+conv_fn_dual!(
+    /// RGB → planar YUV (full range; u8 and f32).
+    yuv_from_rgb, ColorSpace::Yuv,
+    u8: (U8C3, Rgb8, 3, U8C3, Yuv8),
+    f32: (F32C3, Rgbf32, 3, F32C3, Yuvf32)
+);
+conv_fn_dual!(
+    /// Planar YUV → RGB (u8 and f32).
+    rgb_from_yuv, ColorSpace::Rgb,
+    u8: (U8C3, Yuv8, 3, U8C3, Rgb8),
+    f32: (F32C3, Yuvf32, 3, F32C3, Rgbf32)
 );
 conv_fn!(
     /// RGB f32 → HSV f32 (kornia conventions, [0,255] scale).
@@ -131,22 +204,80 @@ conv_fn!(
     /// Lab f32 → RGB f32.
     rgb_from_lab, F32C3, Labf32, f32, 3, F32C3, Rgbf32, ColorSpace::Rgb
 );
+conv_fn!(
+    /// RGB f32 → HLS f32.
+    hls_from_rgb, F32C3, Rgbf32, f32, 3, F32C3, Hlsf32, ColorSpace::Hls
+);
+conv_fn!(
+    /// HLS f32 → RGB f32.
+    rgb_from_hls, F32C3, Hlsf32, f32, 3, F32C3, Rgbf32, ColorSpace::Rgb
+);
+conv_fn!(
+    /// RGB f32 → CIE Luv f32.
+    luv_from_rgb, F32C3, Rgbf32, f32, 3, F32C3, Luvf32, ColorSpace::Luv
+);
+conv_fn!(
+    /// Luv f32 → RGB f32.
+    rgb_from_luv, F32C3, Luvf32, f32, 3, F32C3, Rgbf32, ColorSpace::Rgb
+);
+conv_fn!(
+    /// RGB f32 → CIE XYZ f32 (D65).
+    xyz_from_rgb, F32C3, Rgbf32, f32, 3, F32C3, Xyzf32, ColorSpace::Xyz
+);
+conv_fn!(
+    /// XYZ f32 → RGB f32.
+    rgb_from_xyz, F32C3, Xyzf32, f32, 3, F32C3, Rgbf32, ColorSpace::Rgb
+);
+conv_fn!(
+    /// sRGB f32 → linear-RGB f32 (gamma expand).
+    linear_rgb_from_rgb, F32C3, Rgbf32, f32, 3, F32C3, LinearRgbf32, ColorSpace::LinearRgb
+);
+conv_fn!(
+    /// linear-RGB f32 → sRGB f32 (gamma compress).
+    rgb_from_linear_rgb, F32C3, LinearRgbf32, f32, 3, F32C3, Rgbf32, ColorSpace::Rgb
+);
 
-/// Sepia tone on RGB8 (Q8 fixed point, bit-exact vs the CPU path).
+/// Sepia tone on RGB (u8 Q8 fixed point bit-exact vs the CPU path; f32
+/// mirrored float math). Direct fns rather than `ConvertColor` — they
+/// device-dispatch internally.
 #[pyfunction]
 pub fn sepia_from_rgb(img: &PyImageApi) -> PyResult<PyImageApi> {
-    let src = device_src!(img, "sepia_from_rgb", U8C3);
-    // Allocate the destination on the source's own stream/device (see `conv_fn!`).
-    let stream = source_stream(src)?;
-    // SAFETY: the sepia kernel writes every output pixel, so the uninitialized
-    // destination is fully overwritten before any read.
-    let mut dst = unsafe { Image::<u8, 3>::uninit_cuda(src.size(), &stream) }.map_err(err)?;
-    color::sepia_from_rgb_u8(src, &mut dst).map_err(err)?;
-    Ok(PyImageApi::from_device(
-        Inner::U8C3(dst),
-        ColorSpace::Rgb,
-        device_mode::<u8>(3),
-    ))
+    let dev = img.as_device().ok_or_else(|| {
+        PyValueError::new_err(
+            "sepia_from_rgb: expected a device Image (on a CUDA device); for a host image pass \
+             its numpy array, or move it to a device with .to_cuda(stream)",
+        )
+    })?;
+    match dev {
+        Inner::U8C3(src) => {
+            let stream = source_stream(src)?;
+            // SAFETY: the sepia kernel writes every output pixel, so the
+            // uninitialized destination is fully overwritten before any read.
+            let mut dst =
+                unsafe { Image::<u8, 3>::uninit_cuda(src.size(), &stream) }.map_err(err)?;
+            color::sepia_from_rgb_u8(src, &mut dst).map_err(err)?;
+            Ok(PyImageApi::from_device(
+                Inner::U8C3(dst),
+                ColorSpace::Rgb,
+                device_mode::<u8>(3),
+            ))
+        }
+        Inner::F32C3(src) => {
+            let stream = source_stream(src)?;
+            // SAFETY: as above.
+            let mut dst =
+                unsafe { Image::<f32, 3>::uninit_cuda(src.size(), &stream) }.map_err(err)?;
+            color::sepia_from_rgb_f32(src, &mut dst).map_err(err)?;
+            Ok(PyImageApi::from_device(
+                Inner::F32C3(dst),
+                ColorSpace::Rgb,
+                device_mode::<f32>(3),
+            ))
+        }
+        _ => Err(PyValueError::new_err(
+            "sepia_from_rgb: wrong input dtype/channels for this conversion",
+        )),
+    }
 }
 
 /// Apply one of the 21 OpenCV colormaps to a Gray8 image (name as in
