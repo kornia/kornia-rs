@@ -32,6 +32,7 @@ pub mod color;
 /// Native CUDA u8 morphology kernels (dilate / erode, byte-exact with the
 /// CPU ops).
 pub mod morphology;
+pub mod pyramid;
 
 /// Residency-aware dispatch machinery shared by all device-capable ops.
 pub(crate) mod dispatch;
