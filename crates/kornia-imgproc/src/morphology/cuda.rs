@@ -63,9 +63,6 @@ pub(super) fn morphology_device<T: 'static, const C: usize>(
     if TypeId::of::<T>() != TypeId::of::<u8>() {
         return Err(no_gpu_kernel_err(op_name, "u8 device images"));
     }
-    if !(C == 1 || C == 3 || C == 4) {
-        return Err(no_gpu_kernel_err(op_name, "1/3/4-channel u8 images"));
-    }
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
             dst.width(),
@@ -138,9 +135,20 @@ pub(super) fn morphology_device<T: 'static, const C: usize>(
                     .clone_htod(&cval_u8[..])
                     .map_err(|e| ImageError::Cuda(e.to_string()))?,
             );
+            // The upload above is async on THIS stream but the cache is
+            // shared across streams; synchronize once before the entry
+            // becomes visible so any cross-stream hit reads a completed
+            // buffer (miss-only cost).
+            stream
+                .synchronize()
+                .map_err(|e| ImageError::Cuda(e.to_string()))?;
             let mut map = cache.lock().expect("cval cache poisoned");
             if map.len() >= CVAL_CACHE_CAP {
-                map.clear();
+                // Evict one entry, not the whole map — wholesale clearing
+                // makes >cap working sets stampede.
+                if let Some(k) = map.keys().next().copied() {
+                    map.remove(&k);
+                }
             }
             map.entry(key).or_insert(built).clone()
         };
@@ -227,6 +235,9 @@ mod tests {
             PaddingMode::Wrap,
         ] {
             run::<1>(63, 41, &box3, mode, [7], &stream);
+            // C=2: the scalar kernel is per-byte generic; parity must hold
+            // for channel counts outside {1, 3, 4} too (skill-audit fix).
+            run::<2>(63, 41, &box3, mode, [7, 9], &stream);
             run::<3>(63, 41, &cross5, mode, [7, 200, 128], &stream);
         }
         run::<4>(

@@ -438,6 +438,14 @@ pub fn launch_morphology_u8_cuda(
             need,
         });
     }
+    // Symmetric source check — the kernel gathers up to the same extent and
+    // the adapter is not the only caller of this pub launcher.
+    if src.len() < need {
+        return Err(CudaMorphologyError::SliceTooSmall {
+            got: src.len(),
+            need,
+        });
+    }
     if !taps.len().is_multiple_of(2) {
         return Err(CudaMorphologyError::Cuda(
             "taps must be (dy, dx) pairs".into(),
@@ -493,7 +501,10 @@ pub fn launch_morphology_u8_cuda(
                 );
                 let mut map = cache.lock().expect("sep morph cache poisoned");
                 if map.len() >= MORPH_KERNEL_CACHE_CAP {
-                    map.clear();
+                    // Evict one entry, not the whole map (stampede guard).
+                    if let Some(k) = map.keys().next().copied() {
+                        map.remove(&k);
+                    }
                 }
                 map.entry(key).or_insert((built_h, built_v)).clone()
             };
@@ -555,7 +566,10 @@ pub fn launch_morphology_u8_cuda(
         );
         let mut map = cache.lock().expect("morph kernel cache poisoned");
         if map.len() >= MORPH_KERNEL_CACHE_CAP {
-            map.clear();
+            // Evict one entry, not the whole map (stampede guard).
+            if let Some(k) = map.keys().next().cloned() {
+                map.remove(&k);
+            }
         }
         map.entry(key).or_insert(built).clone()
     };
