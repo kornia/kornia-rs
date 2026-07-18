@@ -403,11 +403,12 @@ type PyrKernelCache = Mutex<HashMap<PyrKernelKey, Arc<CudaKernel>>>;
 static PYR_KERNELS: OnceLock<PyrKernelCache> = OnceLock::new();
 const PYR_CACHE_CAP: usize = 32;
 
+/// `make` renders `(kernel_name, source)` and runs ONLY on a cache miss —
+/// steady-state launches allocate nothing host-side.
 fn get_or_compile(
     ctx: &Arc<CudaContext>,
     key: PyrKernelKey,
-    name: &str,
-    src_code: impl FnOnce() -> String,
+    make: impl FnOnce() -> (String, String),
 ) -> Result<Arc<CudaKernel>, CudaPyramidError> {
     let cache = PYR_KERNELS.get_or_init(Default::default);
     let cached = cache
@@ -418,8 +419,9 @@ fn get_or_compile(
     if let Some(hit) = cached {
         return Ok(hit);
     }
+    let (name, src_code) = make();
     let built =
-        Arc::new(try_compile_with_l1(ctx, &src_code(), name).map_err(CudaPyramidError::Cuda)?);
+        Arc::new(try_compile_with_l1(ctx, &src_code, &name).map_err(CudaPyramidError::Cuda)?);
     let mut map = cache.lock().expect("pyramid kernel cache poisoned");
     if map.len() >= PYR_CACHE_CAP {
         // Evict one entry, not the whole map (stampede guard).
@@ -459,12 +461,12 @@ pub fn launch_pyrdown_f32(
         dst.len(),
         dst_w as usize * dst_h as usize * channels as usize,
     )?;
-    let kernel = get_or_compile(
-        ctx,
-        PyrKernelKey::DownF32 { channels },
-        &format!("pyrdown_f32_c{channels}"),
-        || pyrdown_f32_src(channels as usize),
-    )?;
+    let kernel = get_or_compile(ctx, PyrKernelKey::DownF32 { channels }, || {
+        (
+            format!("pyrdown_f32_c{channels}"),
+            pyrdown_f32_src(channels as usize),
+        )
+    })?;
     kernel
         .launch_builder(stream)
         .arg(src)
@@ -504,12 +506,12 @@ pub fn launch_pyrup_f32(
     check_slice("scratch", scratch.len(), stride * src_h as usize)?;
     check_slice("dst", dst.len(), stride * 2 * src_h as usize)?;
 
-    let h = get_or_compile(
-        ctx,
-        PyrKernelKey::UpHF32 { channels },
-        &format!("pyrup_h_f32_c{channels}"),
-        || pyrup_h_f32_src(channels as usize),
-    )?;
+    let h = get_or_compile(ctx, PyrKernelKey::UpHF32 { channels }, || {
+        (
+            format!("pyrup_h_f32_c{channels}"),
+            pyrup_h_f32_src(channels as usize),
+        )
+    })?;
     h.launch_builder(stream)
         .arg(src)
         .arg(&mut *scratch)
@@ -520,12 +522,12 @@ pub fn launch_pyrup_f32(
         .map_err(|e| CudaPyramidError::Cuda(e.to_string()))?;
 
     let stride_elems = stride as u32;
-    let v = get_or_compile(
-        ctx,
-        PyrKernelKey::UpVF32 { channels },
-        &format!("pyrup_v_f32_c{channels}"),
-        || pyrup_v_f32_src(channels as usize),
-    )?;
+    let v = get_or_compile(ctx, PyrKernelKey::UpVF32 { channels }, || {
+        (
+            format!("pyrup_v_f32_c{channels}"),
+            pyrup_v_f32_src(channels as usize),
+        )
+    })?;
     v.launch_builder(stream)
         .arg(&*scratch)
         .arg(dst)
@@ -563,12 +565,12 @@ pub fn launch_pyrdown_u8(
     check_slice("scratch", scratch.len(), stride * src_h as usize)?;
     check_slice("dst", dst.len(), stride * dst_h as usize)?;
 
-    let h = get_or_compile(
-        ctx,
-        PyrKernelKey::DownHU8 { channels },
-        &format!("pyrdown_h_u8_c{channels}"),
-        || pyrdown_h_u8_src(channels as usize),
-    )?;
+    let h = get_or_compile(ctx, PyrKernelKey::DownHU8 { channels }, || {
+        (
+            format!("pyrdown_h_u8_c{channels}"),
+            pyrdown_h_u8_src(channels as usize),
+        )
+    })?;
     h.launch_builder(stream)
         .arg(src)
         .arg(&mut *scratch)
@@ -579,12 +581,12 @@ pub fn launch_pyrdown_u8(
         .map_err(|e| CudaPyramidError::Cuda(e.to_string()))?;
 
     let stride_elems = stride as u32;
-    let v = get_or_compile(
-        ctx,
-        PyrKernelKey::DownVU8 { channels },
-        &format!("pyrdown_v_u8_c{channels}"),
-        || pyrdown_v_u8_src(channels as usize),
-    )?;
+    let v = get_or_compile(ctx, PyrKernelKey::DownVU8 { channels }, || {
+        (
+            format!("pyrdown_v_u8_c{channels}"),
+            pyrdown_v_u8_src(channels as usize),
+        )
+    })?;
     v.launch_builder(stream)
         .arg(&*scratch)
         .arg(dst)
@@ -622,12 +624,12 @@ pub fn launch_pyrup_u8(
     check_slice("scratch", scratch.len(), stride * src_h as usize)?;
     check_slice("dst", dst.len(), stride * 2 * src_h as usize)?;
 
-    let h = get_or_compile(
-        ctx,
-        PyrKernelKey::UpHU8 { channels },
-        &format!("pyrup_h_u8_c{channels}"),
-        || pyrup_h_u8_src(channels as usize),
-    )?;
+    let h = get_or_compile(ctx, PyrKernelKey::UpHU8 { channels }, || {
+        (
+            format!("pyrup_h_u8_c{channels}"),
+            pyrup_h_u8_src(channels as usize),
+        )
+    })?;
     h.launch_builder(stream)
         .arg(src)
         .arg(&mut *scratch)
@@ -638,12 +640,12 @@ pub fn launch_pyrup_u8(
         .map_err(|e| CudaPyramidError::Cuda(e.to_string()))?;
 
     let stride_elems = stride as u32;
-    let v = get_or_compile(
-        ctx,
-        PyrKernelKey::UpVU8 { channels },
-        &format!("pyrup_v_u8_c{channels}"),
-        || pyrup_v_u8_src(channels as usize),
-    )?;
+    let v = get_or_compile(ctx, PyrKernelKey::UpVU8 { channels }, || {
+        (
+            format!("pyrup_v_u8_c{channels}"),
+            pyrup_v_u8_src(channels as usize),
+        )
+    })?;
     v.launch_builder(stream)
         .arg(&*scratch)
         .arg(dst)

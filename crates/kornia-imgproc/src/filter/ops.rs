@@ -5,19 +5,8 @@ use rayon::{
 };
 
 use super::{fast_horizontal_filter, kernels, separable_filter};
-
-/// One-line residency arm: run `$body(stream)` on the device when the pair
-/// is device-resident, else fall through to the CPU path below the call.
-macro_rules! try_device {
-    ($src:expr, $dst:expr, $body:expr) => {
-        #[cfg(feature = "cuda")]
-        if let crate::cuda::dispatch::Residency::Device(exec) =
-            crate::cuda::dispatch::pair_residency($src, $dst)?
-        {
-            return exec.run($body);
-        }
-    };
-}
+#[cfg(feature = "cuda")]
+use crate::cuda::dispatch::try_device;
 
 /// Which u8 gaussian-blur kernel a `(kernel, sigma)` combination resolves to
 /// — the single decision shared by the CPU fast-path branch and the CUDA

@@ -224,10 +224,11 @@ pub fn pyrup_f32<const C: usize>(
     }
 
     #[cfg(feature = "cuda")]
-    if let crate::cuda::dispatch::Residency::Device(exec) =
-        crate::cuda::dispatch::pair_residency(src, dst)?
     {
-        return exec.run(|stream| cuda_adapters::pyrup_f32_cuda(src, dst, stream));
+        use crate::cuda::dispatch::try_device;
+        try_device!(src, dst, |stream| cuda_adapters::pyrup_f32_cuda(
+            src, dst, stream
+        ));
     }
 
     // Intermediate buffer for horizontal pass, pyrup_horizontal writes here
@@ -325,10 +326,11 @@ pub fn pyrdown_f32<const C: usize>(
     }
 
     #[cfg(feature = "cuda")]
-    if let crate::cuda::dispatch::Residency::Device(exec) =
-        crate::cuda::dispatch::pair_residency(src, dst)?
     {
-        return exec.run(|stream| cuda_adapters::pyrdown_f32_cuda(src, dst, stream));
+        use crate::cuda::dispatch::try_device;
+        try_device!(src, dst, |stream| cuda_adapters::pyrdown_f32_cuda(
+            src, dst, stream
+        ));
     }
 
     let src_width = src.width();
@@ -481,10 +483,11 @@ pub fn pyrdown_u8<const C: usize>(
     }
 
     #[cfg(feature = "cuda")]
-    if let crate::cuda::dispatch::Residency::Device(exec) =
-        crate::cuda::dispatch::pair_residency(src, dst)?
     {
-        return exec.run(|stream| cuda_adapters::pyrdown_u8_cuda(src, dst, stream));
+        use crate::cuda::dispatch::try_device;
+        try_device!(src, dst, |stream| cuda_adapters::pyrdown_u8_cuda(
+            src, dst, stream
+        ));
     }
 
     let buffer_width = dst.width();
@@ -816,10 +819,11 @@ pub fn pyrup_u8<const C: usize>(
 
     // Intermediate buffer for horizontal pass
     #[cfg(feature = "cuda")]
-    if let crate::cuda::dispatch::Residency::Device(exec) =
-        crate::cuda::dispatch::pair_residency(src, dst)?
     {
-        return exec.run(|stream| cuda_adapters::pyrup_u8_cuda(src, dst, stream));
+        use crate::cuda::dispatch::try_device;
+        try_device!(src, dst, |stream| cuda_adapters::pyrup_u8_cuda(
+            src, dst, stream
+        ));
     }
 
     let mut buffer = vec![0u8; dst.width() * src.height() * C];
@@ -1523,7 +1527,6 @@ mod cuda_adapters {
 #[cfg(feature = "cuda")]
 pub struct PyramidPlan<const C: usize> {
     levels: Vec<Image<f32, C>>,
-    scratch: Vec<cudarc::driver::CudaSlice<u16>>, // unused for f32; kept sized 0
     stream: std::sync::Arc<cudarc::driver::CudaStream>,
 }
 
@@ -1551,7 +1554,6 @@ impl<const C: usize> PyramidPlan<C> {
         }
         Ok(Self {
             levels,
-            scratch: Vec::new(),
             stream: stream.clone(),
         })
     }
@@ -1559,7 +1561,6 @@ impl<const C: usize> PyramidPlan<C> {
     /// Run the pyramid: `src` must match level 0's size and residency.
     /// After return, [`Self::levels`] holds the Gaussian pyramid.
     pub fn run(&mut self, src: &Image<f32, C>) -> Result<(), ImageError> {
-        let _ = &self.scratch;
         if src.size() != self.levels[0].size() {
             return Err(ImageError::InvalidImageSize(
                 self.levels[0].width(),
@@ -1582,33 +1583,12 @@ impl<const C: usize> PyramidPlan<C> {
                 .memcpy_dtod(s0, d0)
                 .map_err(|e| ImageError::Cuda(e.to_string()))?;
         }
+        // Levels are device-resident by construction, so call the adapter
+        // directly (no per-level residency re-check) — one shared path to
+        // the launcher instead of open-coding slice extraction here.
         for i in 1..self.levels.len() {
             let (prev, rest) = self.levels.split_at_mut(i);
-            let src_lvl = &prev[i - 1];
-            let dst_lvl = &mut rest[0];
-            let (sw, sh) = (src_lvl.width() as u32, src_lvl.height() as u32);
-            let (dw, dh) = (dst_lvl.width() as u32, dst_lvl.height() as u32);
-            let ctx = self.stream.context();
-            let s = src_lvl
-                .0
-                .as_cudaslice()
-                .ok_or_else(|| ImageError::Cuda("plan level not device-resident".into()))?;
-            let d = dst_lvl
-                .0
-                .as_cudaslice_mut()
-                .ok_or_else(|| ImageError::Cuda("plan level not device-resident".into()))?;
-            crate::cuda::pyramid::launch_pyrdown_f32(
-                ctx,
-                &self.stream,
-                s,
-                d,
-                sw,
-                sh,
-                dw,
-                dh,
-                C as u32,
-            )
-            .map_err(|e| ImageError::Cuda(e.to_string()))?;
+            cuda_adapters::pyrdown_f32_cuda(&prev[i - 1], &mut rest[0], &self.stream)?;
         }
         Ok(())
     }
@@ -1755,47 +1735,36 @@ mod cuda_probe {
         let mut df_d = Image::<f32, 1>::zeros_cuda(dsz, &stream).unwrap();
         let mut du_d = Image::<u8, 3>::zeros_cuda(dsz, &stream).unwrap();
 
-        for (name, f_run) in [("pyrdown_f32 C1", true), ("pyrdown_u8 C3", false)] {
-            let mut best = f64::MAX;
+        let bench_min = |name: &str, mut op: Box<dyn FnMut() + '_>| {
             for _ in 0..30 {
-                if f_run {
-                    pyrdown_f32(&df, &mut df_d).unwrap();
-                } else {
-                    pyrdown_u8(&du, &mut du_d).unwrap();
-                }
+                op();
             }
             stream.synchronize().unwrap();
+            let mut best = f64::MAX;
             for _ in 0..5 {
                 let t0 = std::time::Instant::now();
                 for _ in 0..100 {
-                    if f_run {
-                        pyrdown_f32(&df, &mut df_d).unwrap();
-                    } else {
-                        pyrdown_u8(&du, &mut du_d).unwrap();
-                    }
+                    op();
                 }
                 stream.synchronize().unwrap();
                 best = best.min(t0.elapsed().as_secs_f64() * 1000.0 / 100.0);
             }
             println!("{name}: {best:.3} ms (min of 5x100)");
-        }
+        };
 
-        // plan: 4-level f32 pyramid sustained
+        bench_min(
+            "pyrdown_f32 C1",
+            Box::new(|| pyrdown_f32(&df, &mut df_d).unwrap()),
+        );
+        bench_min(
+            "pyrdown_u8 C3",
+            Box::new(|| pyrdown_u8(&du, &mut du_d).unwrap()),
+        );
         let mut plan = PyramidPlan::<1>::new(&stream, sz, 3).unwrap();
-        for _ in 0..20 {
-            plan.run(&df).unwrap();
-        }
-        stream.synchronize().unwrap();
-        let mut best = f64::MAX;
-        for _ in 0..5 {
-            let t0 = std::time::Instant::now();
-            for _ in 0..100 {
-                plan.run(&df).unwrap();
-            }
-            stream.synchronize().unwrap();
-            best = best.min(t0.elapsed().as_secs_f64() * 1000.0 / 100.0);
-        }
-        println!("PyramidPlan 4-level f32 C1 1080p: {best:.3} ms (min of 5x100)");
+        bench_min(
+            "PyramidPlan 4-level f32 C1 1080p",
+            Box::new(|| plan.run(&df).unwrap()),
+        );
     }
 
     /// One launch per kernel for ncu (ignored).
