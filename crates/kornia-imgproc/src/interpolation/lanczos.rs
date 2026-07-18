@@ -89,6 +89,49 @@ pub(crate) fn lanczos_axis(src_len: usize, dst_len: usize) -> (Vec<i32>, Vec<f32
     (x0s, weights)
 }
 
+/// All six Lanczos-3 tap weights for `frac ∈ [0, 1)` from FOUR `sin_pi`
+/// evaluations instead of twelve — the textual twin of the CUDA kernels'
+/// `lanczos3_weights`. `sin(π(frac+n)) = ±sin(π·frac)` and
+/// `sin(π(frac+n)/3)` cycles through three magnitudes with sign flips, so
+/// the six numerators collapse to `±s·t1, s·t2, s·t0` and only the
+/// denominators `(πx)·(πx/3)` differ per tap. The two epsilon patches
+/// mirror the original per-tap `lanczos3` special cases exactly (the
+/// `frac == 0` zero at tap 5 falls out of `s == 0` on its own).
+///
+/// Keep the expression shapes in sync with the CUDA sources or
+/// byte-exactness dies.
+#[inline]
+pub(crate) fn lanczos3_weights(frac: f32) -> [f32; 6] {
+    const PI: f32 = std::f32::consts::PI;
+    let s = sin_pi(frac);
+    let t0 = sin_pi(frac * (1.0 / 3.0));
+    let t1 = sin_pi((frac - 1.0) * (1.0 / 3.0));
+    let t2 = sin_pi((frac - 2.0) * (1.0 / 3.0));
+    let st0 = s * t0;
+    let st1 = s * t1;
+    let st2 = s * t2;
+    let den = |x: f32| {
+        let pix = PI * x;
+        let pix3 = pix * 0.333_333_34;
+        pix * pix3
+    };
+    let mut w = [
+        -st1 / den(frac + 2.0),
+        st2 / den(frac + 1.0),
+        st0 / den(frac),
+        -st1 / den(frac - 1.0),
+        st2 / den(frac - 2.0),
+        st0 / den(frac - 3.0),
+    ];
+    if frac < 1e-5 {
+        w[2] = 1.0;
+    }
+    if (frac - 1.0).abs() < 1e-5 {
+        w[3] = 1.0;
+    }
+    w
+}
+
 /// Direct 6×6 Lanczos-3 sample at coordinate `(sx, sy)` for channel `c` —
 /// the warp kernels' inner loop: per-axis weights normalized separately, then
 /// a two-level fused accumulation (per-row `fmaf` over `dx`, then `fmaf` of
@@ -109,22 +152,8 @@ pub(crate) fn lanczos_sample<const C: usize>(
     let frac_y = sy - y0;
     let (x0, y0) = (x0 as i64, y0 as i64);
 
-    let mut wx = [
-        lanczos3(frac_x + 2.0),
-        lanczos3(frac_x + 1.0),
-        lanczos3(frac_x),
-        lanczos3(frac_x - 1.0),
-        lanczos3(frac_x - 2.0),
-        lanczos3(frac_x - 3.0),
-    ];
-    let mut wy = [
-        lanczos3(frac_y + 2.0),
-        lanczos3(frac_y + 1.0),
-        lanczos3(frac_y),
-        lanczos3(frac_y - 1.0),
-        lanczos3(frac_y - 2.0),
-        lanczos3(frac_y - 3.0),
-    ];
+    let mut wx = lanczos3_weights(frac_x);
+    let mut wy = lanczos3_weights(frac_y);
     let sum_wx = wx[0] + wx[1] + wx[2] + wx[3] + wx[4] + wx[5];
     let sum_wy = wy[0] + wy[1] + wy[2] + wy[3] + wy[4] + wy[5];
     let inv_x = 1.0 / sum_wx;
@@ -199,5 +228,36 @@ pub(crate) fn resize_lanczos_separable<const C: usize>(
                 drow[dx * C + k] = acc;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod weight_tests {
+    use super::*;
+
+    /// The 4-eval weight path must agree with the per-tap `lanczos3` form to
+    /// float tolerance across the whole frac range (they differ only in
+    /// rounding: the periodicity identities are exact in real arithmetic).
+    #[test]
+    fn four_eval_weights_match_per_tap_form() {
+        for i in 0..=10_000 {
+            let frac = i as f32 / 10_001.0;
+            let w = lanczos3_weights(frac);
+            let per_tap = [
+                lanczos3(frac + 2.0),
+                lanczos3(frac + 1.0),
+                lanczos3(frac),
+                lanczos3(frac - 1.0),
+                lanczos3(frac - 2.0),
+                lanczos3(frac - 3.0),
+            ];
+            for (t, (a, b)) in w.iter().zip(&per_tap).enumerate() {
+                assert!((a - b).abs() < 1e-6, "frac={frac} tap={t}: {a} vs {b}");
+            }
+        }
+        // Exact edge values.
+        let w0 = lanczos3_weights(0.0);
+        assert_eq!(w0[2], 1.0);
+        assert_eq!(w0[5], 0.0);
     }
 }
