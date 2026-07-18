@@ -5,8 +5,7 @@ use rayon::{
 };
 
 use super::{fast_horizontal_filter, kernels, separable_filter};
-#[cfg(feature = "cuda")]
-use crate::cuda::dispatch::try_device;
+use crate::try_device;
 
 /// Which u8 gaussian-blur kernel a `(kernel, sigma)` combination resolves to
 /// — the single decision shared by the CPU fast-path branch and the CUDA

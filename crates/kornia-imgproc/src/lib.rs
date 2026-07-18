@@ -1,5 +1,24 @@
 #![deny(missing_docs)]
 #![doc = env!("CARGO_PKG_DESCRIPTION")]
+/// One-line residency arm: run `$body(stream)` on the device when the pair
+/// is device-resident, else fall through to the CPU path below the call.
+/// Defined at crate root (not inside the cfg-gated `cuda` module) so
+/// non-CUDA builds can still see the macro — its expansion is what gates.
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __try_device {
+    ($src:expr, $dst:expr, $body:expr) => {
+        #[cfg(feature = "cuda")]
+        if let $crate::cuda::dispatch::Residency::Device(exec) =
+            $crate::cuda::dispatch::pair_residency($src, $dst)?
+        {
+            return exec.run($body);
+        }
+    };
+}
+/// One-line residency arm (see [`__try_device`]).
+pub(crate) use crate::__try_device as try_device;
+
 /// image undistortion module.
 pub mod calibration;
 

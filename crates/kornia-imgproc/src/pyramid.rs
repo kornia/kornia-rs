@@ -225,7 +225,7 @@ pub fn pyrup_f32<const C: usize>(
 
     #[cfg(feature = "cuda")]
     {
-        use crate::cuda::dispatch::try_device;
+        use crate::try_device;
         try_device!(src, dst, |stream| cuda_adapters::pyrup_f32_cuda(
             src, dst, stream
         ));
@@ -327,7 +327,7 @@ pub fn pyrdown_f32<const C: usize>(
 
     #[cfg(feature = "cuda")]
     {
-        use crate::cuda::dispatch::try_device;
+        use crate::try_device;
         try_device!(src, dst, |stream| cuda_adapters::pyrdown_f32_cuda(
             src, dst, stream
         ));
@@ -484,7 +484,7 @@ pub fn pyrdown_u8<const C: usize>(
 
     #[cfg(feature = "cuda")]
     {
-        use crate::cuda::dispatch::try_device;
+        use crate::try_device;
         try_device!(src, dst, |stream| cuda_adapters::pyrdown_u8_cuda(
             src, dst, stream
         ));
@@ -820,7 +820,7 @@ pub fn pyrup_u8<const C: usize>(
     // Intermediate buffer for horizontal pass
     #[cfg(feature = "cuda")]
     {
-        use crate::cuda::dispatch::try_device;
+        use crate::try_device;
         try_device!(src, dst, |stream| cuda_adapters::pyrup_u8_cuda(
             src, dst, stream
         ));
