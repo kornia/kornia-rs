@@ -21,7 +21,7 @@ use crate::cuda::resize_u8::{
 use crate::interpolation::InterpolationMode;
 
 use super::bilinear::bilinear_axis_lut;
-use super::common::{build_xsrc_lut, pack_xw_i16, precompute_contribs, FilterKind};
+use super::common::{build_xsrc_lut, pack_xw_i16, precompute_contribs};
 use super::nearest::nearest_axis_lut;
 
 /// Run the CUDA resize for a device-resident f32 pair.
@@ -152,6 +152,7 @@ const U8_LUT_CACHE_CAP: usize = 128;
 
 fn cached_luts(
     key: U8LutKey,
+    stream: &Arc<CudaStream>,
     build: impl FnOnce() -> Result<U8Luts, ImageError>,
 ) -> Result<Arc<U8Luts>, ImageError> {
     let cache = U8_LUT_CACHE.get_or_init(Default::default);
@@ -161,9 +162,22 @@ fn cached_luts(
     // Build + upload outside the lock; a racing duplicate upload is harmless
     // and the entry API keeps the first insertion.
     let built = Arc::new(build()?);
+    // The uploads above are async on THIS call's stream, but the cache is
+    // shared across streams: a later same-geometry call on another stream
+    // has no ordering edge to these copies. Synchronize once before the
+    // entry becomes visible so every cache hit reads completed tables.
+    // Miss-only cost; hits never sync.
+    stream
+        .synchronize()
+        .map_err(|e| ImageError::Cuda(e.to_string()))?;
     let mut map = cache.lock().expect("u8 LUT cache poisoned");
     if map.len() >= U8_LUT_CACHE_CAP {
-        map.clear();
+        // Evict a single arbitrary entry, not the whole map: wholesale
+        // clearing makes >cap working sets stampede (every geometry misses,
+        // rebuilds and re-uploads until the map refills, then clears again).
+        if let Some(k) = map.keys().next().copied() {
+            map.remove(&k);
+        }
     }
     Ok(map.entry(key).or_insert(built).clone())
 }
@@ -197,38 +211,35 @@ pub(super) fn resize_fast_u8_cuda<const C: usize>(
     antialias: bool,
     stream: &Arc<CudaStream>,
 ) -> Result<(), ImageError> {
-    if !(C == 1 || C == 3 || C == 4) {
-        return Err(no_gpu_kernel_err(
-            "resize_fast_u8",
-            "1/3/4-channel u8 images",
-        ));
-    }
     let (src_w, src_h) = dims_u32(src)?;
     let (dst_w, dst_h) = dims_u32(dst)?;
     let ctx = stream.context();
     let (s, d) = device_slices!(src, dst);
     let err = |e: crate::cuda::resize::CudaResizeError| ImageError::Cuda(e.to_string());
 
-    // Branch 1/2: exact-2× RGB fast paths (bilinear only).
-    if interpolation == InterpolationMode::Bilinear
-        && C == 3
-        && src_w == dst_w * 2
-        && src_h == dst_h * 2
-        && src_w >= 2
-        && src_h >= 2
-    {
-        return launch_resize_u8_pyrdown2x_rgb_cuda(ctx, stream, s, d, dst_w, dst_h, None)
-            .map_err(err);
-    }
-    if interpolation == InterpolationMode::Bilinear
-        && C == 3
-        && dst_w == src_w * 2
-        && dst_h == src_h * 2
-        && src_w >= 2
-        && src_h >= 2
-    {
-        return launch_resize_u8_pyrup2x_rgb_cuda(ctx, stream, s, d, src_w, src_h, None)
-            .map_err(err);
+    // The SAME selector the CPU cascade consumes (see `resize_u8_path`):
+    // routing and support errors are decided once, so a device pair can
+    // never take a different kernel — or return a different error variant —
+    // than its host twin.
+    let path = super::resize_u8_path(
+        C,
+        interpolation,
+        src_w as usize,
+        src_h as usize,
+        dst_w as usize,
+        dst_h as usize,
+    )?;
+
+    match path {
+        super::ResizeU8Path::PyrDown2xRgb => {
+            return launch_resize_u8_pyrdown2x_rgb_cuda(ctx, stream, s, d, dst_w, dst_h, None)
+                .map_err(err);
+        }
+        super::ResizeU8Path::PyrUp2xRgb => {
+            return launch_resize_u8_pyrup2x_rgb_cuda(ctx, stream, s, d, src_w, src_h, None)
+                .map_err(err);
+        }
+        _ => {}
     }
 
     let key = U8LutKey {
@@ -247,9 +258,9 @@ pub(super) fn resize_fast_u8_cuda<const C: usize>(
         dst_h,
     };
 
-    match interpolation {
-        InterpolationMode::Nearest => {
-            let luts = cached_luts(key, || {
+    match path {
+        super::ResizeU8Path::Nearest => {
+            let luts = cached_luts(key, stream, || {
                 Ok(U8Luts::Nearest {
                     xmap: htod(stream, &nearest_axis_lut(src_w as usize, dst_w as usize))?,
                     ymap: htod(stream, &nearest_axis_lut(src_h as usize, dst_h as usize))?,
@@ -263,8 +274,8 @@ pub(super) fn resize_fast_u8_cuda<const C: usize>(
             )
             .map_err(err)
         }
-        InterpolationMode::Bilinear => {
-            let luts = cached_luts(key, || {
+        super::ResizeU8Path::Bilinear => {
+            let luts = cached_luts(key, stream, || {
                 let (xofs, xfx, _) = bilinear_axis_lut(src_w as usize, dst_w as usize);
                 let (yofs, yfy, _) = bilinear_axis_lut(src_h as usize, dst_h as usize);
                 Ok(U8Luts::Bilinear {
@@ -288,13 +299,8 @@ pub(super) fn resize_fast_u8_cuda<const C: usize>(
             )
             .map_err(err)
         }
-        InterpolationMode::Bicubic | InterpolationMode::Lanczos => {
-            let luts = cached_luts(key, || {
-                let filt = if interpolation == InterpolationMode::Bicubic {
-                    FilterKind::Cubic
-                } else {
-                    FilterKind::Lanczos3
-                };
+        super::ResizeU8Path::Separable(filt) => {
+            let luts = cached_luts(key, stream, || {
                 let (xofs, xw_q14, kx) =
                     precompute_contribs(src_w as usize, dst_w as usize, filt, antialias);
                 let (yofs, yw_q14, ky) =
@@ -326,6 +332,9 @@ pub(super) fn resize_fast_u8_cuda<const C: usize>(
                 *ky, None,
             )
             .map_err(err)
+        }
+        super::ResizeU8Path::PyrDown2xRgb | super::ResizeU8Path::PyrUp2xRgb => {
+            unreachable!("handled above")
         }
     }
 }
@@ -431,14 +440,25 @@ mod tests {
     fn u8_resize_error_semantics() {
         let stream = default_stream();
 
+        // Unsupported channel count: the error VARIANT must match the CPU
+        // path (the shared selector decides it) — residency-independent.
         let src = Image::<u8, 2>::new(sized(16, 16), pattern_u8(16 * 16 * 2)).unwrap();
         let d_src = src.to_cuda(&stream).unwrap();
         let mut d_dst = Image::<u8, 2>::zeros_cuda(sized(8, 8), &stream).unwrap();
         let err =
             resize_fast_u8_aa(&d_src, &mut d_dst, InterpolationMode::Bilinear, true).unwrap_err();
         assert!(
-            matches!(&err, ImageError::Cuda(msg) if msg.contains("1/3/4-channel")),
+            matches!(err, ImageError::UnsupportedChannelCount(2)),
             "got {err:?}"
+        );
+        let host_src = Image::<u8, 2>::new(sized(16, 16), pattern_u8(16 * 16 * 2)).unwrap();
+        let mut host_dst = Image::<u8, 2>::from_size_val(sized(8, 8), 0).unwrap();
+        let cpu_err =
+            resize_fast_u8_aa(&host_src, &mut host_dst, InterpolationMode::Bilinear, true)
+                .unwrap_err();
+        assert!(
+            matches!(cpu_err, ImageError::UnsupportedChannelCount(2)),
+            "got {cpu_err:?}"
         );
 
         let src3 = Image::<u8, 3>::new(sized(16, 16), pattern_u8(16 * 16 * 3)).unwrap();
@@ -447,6 +467,50 @@ mod tests {
         let err = resize_fast_u8_aa(&d_src3, &mut host_dst, InterpolationMode::Bilinear, true)
             .unwrap_err();
         assert!(matches!(err, ImageError::MixedResidency), "got {err:?}");
+    }
+
+    /// C=2 Nearest must WORK on both residencies (the CPU nearest kernel is
+    /// channel-generic; the GPU generic arm gathers per byte) and agree
+    /// byte-for-byte.
+    #[test]
+    fn u8_nearest_c2_device_matches_cpu() {
+        let stream = default_stream();
+        let src = Image::<u8, 2>::new(sized(37, 23), pattern_u8(37 * 23 * 2)).unwrap();
+        let mut cpu_dst = Image::<u8, 2>::from_size_val(sized(17, 11), 0).unwrap();
+        resize_fast_u8_aa(&src, &mut cpu_dst, InterpolationMode::Nearest, true).unwrap();
+
+        let d_src = src.to_cuda(&stream).unwrap();
+        let mut d_dst = Image::<u8, 2>::zeros_cuda(sized(17, 11), &stream).unwrap();
+        resize_fast_u8_aa(&d_src, &mut d_dst, InterpolationMode::Nearest, true).unwrap();
+        assert_eq!(
+            d_dst.to_host_owned().unwrap().as_slice(),
+            cpu_dst.as_slice()
+        );
+    }
+
+    /// A 1-pixel-wide bilinear source is a typed error on BOTH residencies
+    /// (previously: CPU panicked on the LUT underflow, GPU errored — the
+    /// shared selector now decides once).
+    #[test]
+    fn u8_bilinear_degenerate_source_same_error_both_sides() {
+        let stream = default_stream();
+        let src = Image::<u8, 3>::new(sized(1, 16), pattern_u8(16 * 3)).unwrap();
+        let mut cpu_dst = Image::<u8, 3>::from_size_val(sized(8, 8), 0).unwrap();
+        let cpu_err =
+            resize_fast_u8_aa(&src, &mut cpu_dst, InterpolationMode::Bilinear, true).unwrap_err();
+        assert!(
+            matches!(cpu_err, ImageError::InvalidImageSize(..)),
+            "got {cpu_err:?}"
+        );
+
+        let d_src = src.to_cuda(&stream).unwrap();
+        let mut d_dst = Image::<u8, 3>::zeros_cuda(sized(8, 8), &stream).unwrap();
+        let gpu_err =
+            resize_fast_u8_aa(&d_src, &mut d_dst, InterpolationMode::Bilinear, true).unwrap_err();
+        assert!(
+            matches!(gpu_err, ImageError::InvalidImageSize(..)),
+            "got {gpu_err:?}"
+        );
     }
 
     /// The public `resize`, called with device images, must produce

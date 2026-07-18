@@ -189,7 +189,7 @@ fn nearest_src(channels: usize) -> String {
         }
 "#
         .to_string(),
-        _ => r#"
+        4 => r#"
         #pragma unroll
         for (unsigned int px = 0; px < 4u; ++px) {
             size_t so = rowC + (size_t)__ldg(&xmap[x0 + px]) * C;
@@ -204,6 +204,22 @@ fn nearest_src(channels: usize) -> String {
                 dst[d + px * 4u + 1u] = (unsigned char)((w >> 8) & 0xffu);
                 dst[d + px * 4u + 2u] = (unsigned char)((w >> 16) & 0xffu);
                 dst[d + px * 4u + 3u] = (unsigned char)((w >> 24) & 0xffu);
+            }
+        }
+"#
+        .to_string(),
+        // Any other channel count: plain per-byte gather. The 4-byte packed
+        // form above is only correct when a pixel is exactly one word — the
+        // old catch-all applied it to every C, which over-read the source
+        // and stored at the wrong stride for C != 4.
+        _ => r#"
+        #pragma unroll
+        for (unsigned int px = 0; px < 4u; ++px) {
+            size_t so = rowC + (size_t)__ldg(&xmap[x0 + px]) * C;
+            size_t dd = d + (size_t)px * C;
+            #pragma unroll
+            for (unsigned int ch = 0; ch < C; ++ch) {
+                dst[dd + ch] = __ldg(&src[so + ch]);
             }
         }
 "#
@@ -538,6 +554,9 @@ pub fn launch_resize_u8_nearest_cuda(
 ) -> Result<(), CudaResizeError> {
     super::check_geometry(src_width, src_height, dst_width, dst_height, block_dim)
         .map_err(CudaResizeError::Cuda)?;
+    if channels == 0 {
+        return Err(CudaResizeError::Cuda("channels must be at least 1".into()));
+    }
     check_dst_len(dst.len(), dst_width, dst_height, channels)?;
     if xmap.len() != dst_width as usize || ymap.len() != dst_height as usize {
         return Err(CudaResizeError::Cuda(
@@ -611,6 +630,11 @@ pub fn launch_resize_u8_bilinear_cuda(
 ) -> Result<(), CudaResizeError> {
     super::check_geometry(src_width, src_height, dst_width, dst_height, block_dim)
         .map_err(CudaResizeError::Cuda)?;
+    if !(channels == 1 || channels == 3 || channels == 4) {
+        return Err(CudaResizeError::Cuda(
+            "bilinear supports 1/3/4-channel u8 images".into(),
+        ));
+    }
     if src_width < 2 || src_height < 2 {
         return Err(CudaResizeError::Cuda(
             "bilinear requires source at least 2x2".into(),
@@ -698,6 +722,11 @@ pub fn launch_resize_u8_separable_cuda(
 ) -> Result<(), CudaResizeError> {
     super::check_geometry(src_width, src_height, dst_width, dst_height, block_dim)
         .map_err(CudaResizeError::Cuda)?;
+    if !(channels == 1 || channels == 3 || channels == 4) {
+        return Err(CudaResizeError::Cuda(
+            "separable resize supports 1/3/4-channel u8 images".into(),
+        ));
+    }
     check_dst_len(dst.len(), dst_width, dst_height, channels)?;
     if kx == 0
         || ky == 0

@@ -2,8 +2,8 @@
 
 /// Which separable kernel to use. `Cubic` is bicubic (a = -0.5), `Lanczos3` is
 /// 3-lobe Lanczos.
-#[derive(Copy, Clone)]
-pub(super) enum FilterKind {
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub(crate) enum FilterKind {
     Cubic,
     Lanczos3,
 }
