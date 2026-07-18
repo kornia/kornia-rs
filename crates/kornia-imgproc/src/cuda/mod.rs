@@ -29,6 +29,7 @@ pub mod warp_perspective_u8;
 /// Native CUDA color-space conversion kernels.
 pub mod color;
 
+pub mod histogram;
 /// Native CUDA u8 morphology kernels (dilate / erode, byte-exact with the
 /// CPU ops).
 pub mod morphology;

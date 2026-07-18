@@ -258,6 +258,22 @@ def test_no_leak_full_pipeline():
     assert_no_leak(body)
 
 
+def test_no_leak_histogram_device_arms():
+    """equalize_hist allocates a fresh device destination plus per-call
+    hist/lut scratch; compute_histogram allocates per-call device bins."""
+    dev = _dev(_gray()) if "_gray" in globals() else None
+    if dev is None:
+        rng = np.random.default_rng(7)
+        dev = _dev(rng.integers(0, 256, size=(240, 320, 1), dtype=np.uint8))
+
+    def body():
+        eq = kornia_rs.imgproc.equalize_hist(dev)
+        _ = kornia_rs.imgproc.compute_histogram(dev, num_bins=256)
+        del eq
+
+    assert_no_leak(body)
+
+
 def test_no_leak_new_color_device_arms():
     """The dual-dtype / f32 arms wired 2026-07-18 (hls/luv/xyz/linear/yuv/
     f32-ycbcr/f32-sepia/f32-gray) allocate fresh device destinations — chain a

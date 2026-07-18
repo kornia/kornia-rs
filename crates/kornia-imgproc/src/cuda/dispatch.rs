@@ -128,6 +128,24 @@ where
     }
 }
 
+/// Residency of a single image (for ops whose other operand is host data,
+/// e.g. a histogram slice): Host, or a [`DeviceExec`] on the image's stream.
+pub(crate) fn single_residency<T, const C: usize>(
+    src: &Image<T, C>,
+) -> Result<Residency, ImageError>
+where
+    T: DeviceRepr + ValidAsZeroBits + 'static,
+{
+    if !is_device(src) {
+        return Ok(Residency::Host);
+    }
+    let stream = src
+        .0
+        .cuda_stream()
+        .ok_or_else(|| untyped_device_err("source"))?;
+    Ok(Residency::Device(DeviceExec::for_streams(stream, stream)?))
+}
+
 /// Build a [`DeviceExec`] for a known-device source stream and a destination
 /// image (used by non-`Image` sources like `DeviceVideoFrame`). Same
 /// same-device + event-fence rules as [`pair_residency`].
