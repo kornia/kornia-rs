@@ -12,13 +12,13 @@ use super::{get_kernel, launch_map, CudaColorError, KernelCell, PxPerThread};
 // Vectorized: each thread handles 4 pixels = 12 src bytes (three 32-bit word
 // loads, always 4-byte aligned since 12 ≡ 0 mod 4 and cudarc allocations are
 // 256-byte aligned) and stores the 4 grays as one 32-bit word. The last
-// (partial) quad falls back to byte addressing. Math is the same truncating
-// Q8 shift as the CPU NEON path — bit-exact.
+// (partial) quad falls back to byte addressing. Math is the same rounding
+// Q14 formula as the CPU path (OpenCV's) — bit-exact with CPU and cv2.
 static GRAY_FROM_RGB_U8_SRC: &str = r#"
-__device__ __forceinline__ unsigned int gray_q8(
+__device__ __forceinline__ unsigned int gray_q14(
     unsigned int r, unsigned int g, unsigned int b)
 {
-    return (GRAY_WR_Q8 * r + GRAY_WG_Q8 * g + GRAY_WB_Q8 * b) >> 8;
+    return (GRAY_WR_Q14 * r + GRAY_WG_Q14 * g + GRAY_WB_Q14 * b + GRAY_Q14_HALF) >> 14;
 }
 
 extern "C" __global__ void gray_from_rgb_u8(
@@ -37,15 +37,15 @@ extern "C" __global__ void gray_from_rgb_u8(
         unsigned int w1 = __ldg(&s32[q * 3u + 1u]);
         unsigned int w2 = __ldg(&s32[q * 3u + 2u]);
         // Byte layout: w0 = r0 g0 b0 r1 | w1 = g1 b1 r2 g2 | w2 = b2 r3 g3 b3
-        unsigned int g0 = gray_q8(w0 & 0xFFu, (w0 >> 8) & 0xFFu, (w0 >> 16) & 0xFFu);
-        unsigned int g1 = gray_q8(w0 >> 24, w1 & 0xFFu, (w1 >> 8) & 0xFFu);
-        unsigned int g2 = gray_q8((w1 >> 16) & 0xFFu, w1 >> 24, w2 & 0xFFu);
-        unsigned int g3 = gray_q8((w2 >> 8) & 0xFFu, (w2 >> 16) & 0xFFu, w2 >> 24);
+        unsigned int g0 = gray_q14(w0 & 0xFFu, (w0 >> 8) & 0xFFu, (w0 >> 16) & 0xFFu);
+        unsigned int g1 = gray_q14(w0 >> 24, w1 & 0xFFu, (w1 >> 8) & 0xFFu);
+        unsigned int g2 = gray_q14((w1 >> 16) & 0xFFu, w1 >> 24, w2 & 0xFFu);
+        unsigned int g3 = gray_q14((w2 >> 8) & 0xFFu, (w2 >> 16) & 0xFFu, w2 >> 24);
         ((unsigned int*)dst)[q] = g0 | (g1 << 8) | (g2 << 16) | (g3 << 24);
     } else {
         for (unsigned int i = p; i < npixels; ++i) {
             unsigned int b = i * 3u;
-            dst[i] = (unsigned char)gray_q8(
+            dst[i] = (unsigned char)gray_q14(
                 __ldg(&src[b]), __ldg(&src[b + 1u]), __ldg(&src[b + 2u]));
         }
     }

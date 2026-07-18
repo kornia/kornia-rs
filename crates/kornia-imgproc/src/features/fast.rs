@@ -1203,15 +1203,17 @@ mod tests {
                 *m = p as f32 / 255.0;
             });
 
+        // Keypoints under the OpenCV-exact Q14 u8 gray conversion (the ±1 LSB
+        // shift vs the old Q8 formula moves two borderline corners).
         let expected_keypoints = vec![
             [32, 86],
+            [50, 178],
             [60, 75],
             [69, 184],
             [71, 84],
-            [72, 169],
             [109, 69],
             [109, 125],
-            [120, 64],
+            [122, 63],
             [129, 162],
             [134, 95],
             [141, 121],

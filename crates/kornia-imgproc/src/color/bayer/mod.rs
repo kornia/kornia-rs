@@ -112,6 +112,7 @@ mod tests {
             for &p in &PATTERNS {
                 let mut oracle = vec![0u8; w * h * 3];
                 kernels::rgb_from_bayer_scalar(&data, &mut oracle, h, w, p);
+                kernels::bayer_border_replicate(&mut oracle, h, w);
                 let got = demosaic(&data, w, h, p);
                 assert_eq!(got, oracle, "pattern {p:?} size {w}x{h}");
             }
@@ -158,11 +159,10 @@ mod tests {
         assert_eq!(out[o2 + 2], 70, "B@(1,2)");
     }
 
-    /// Corner pixels exercise replicate-border addressing.
+    /// Border pixels use cv2's semantics: the 1-px frame is the interior
+    /// neighbour's demosaic (corners resolve to the (1,1) pixel).
     #[test]
     fn corners_use_replicate_border() {
-        // 4x4 RGGB, (0,0) is R. With replicate border all out-of-bounds
-        // neighbors clamp to in-bounds edge values.
         #[rustfmt::skip]
         let data: [u8; 16] = [
             10, 20, 30, 40,
@@ -171,12 +171,13 @@ mod tests {
            130,140,150,160,
         ];
         let out = demosaic(&data, 4, 4, BayerPattern::Rggb);
-        // (0,0) R-sensel value 10.
-        // G = avg4(N=10(clamp),S=50,W=10(clamp),E=20) = (90+2)>>2 = 23
-        // B = avg4(NW=10,NE=20,SW=50,SE=60) (clamped) = (140+2)>>2 = 35
-        assert_eq!(out[0], 10, "R@(0,0)");
-        assert_eq!(out[1], 23, "G@(0,0)");
-        assert_eq!(out[2], 35, "B@(0,0)");
+        // Corner (0,0) equals interior (1,1): a B-sensel (value 60) whose
+        // R = avg4 of diagonals (10,30,90,110) = 60 and
+        // G = avg4 of N/S/W/E (20,100,50,70) = 60.
+        assert_eq!(&out[0..3], &[60, 60, 60], "corner == interior (1,1)");
+        // Row 0 interior equals row 1: (1,2) is G-on-B-row (value 70),
+        // same values must appear at (0,2).
+        assert_eq!(&out[(4 + 2) * 3..(4 + 3) * 3], &out[2 * 3..3 * 3]);
     }
 
     #[test]
