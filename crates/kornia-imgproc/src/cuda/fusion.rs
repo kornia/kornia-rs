@@ -295,11 +295,10 @@ impl FusedPipeline {
             let _ = write!(
                 prologue,
                 "    unsigned int b = blockIdx.z;\n\
-                 \x20   src = (const unsigned char*)(((unsigned long long)P.raw[{hi}] << 32) \
-                 | (unsigned long long)P.raw[{lo}]);\n\
+                 \x20   src = (const unsigned char*)(((unsigned long long)P.raw[{base}u + 2u * b + 1u] << 32) \
+                 | (unsigned long long)P.raw[{base}u + 2u * b]);\n\
                  \x20   dst += (size_t)b * {stride}u;\n",
-                lo = format!("{ptr_base}u + 2u * b"),
-                hi = format!("{ptr_base}u + 2u * b + 1u"),
+                base = ptr_base,
                 stride = out_elems_per_image,
             );
         }
@@ -627,6 +626,7 @@ mod tests {
 
     /// CPU reference of the fused semantics (f32 register flow, half-pixel
     /// bilinear), for tolerance comparison.
+    #[allow(clippy::too_many_arguments)] // test oracle mirrors the kernel's parameter surface
     fn cpu_reference(
         src: &[u8],
         sw: usize,
