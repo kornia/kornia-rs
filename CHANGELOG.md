@@ -24,6 +24,19 @@ real arithmetic, rounding differs). Measured on Jetson AGX Orin (locked
 clocks, 1080p→1080p 3-channel f32): warp-affine lanczos 5.49→4.26 ms,
 warp-perspective lanczos 5.93→4.28 ms sustained.
 
+**GPU separable filters: gaussian, box, sobel, scharr.** New CUDA separable
+engine (`cuda/filter.rs`) with residency dispatch on `gaussian_blur`,
+`box_blur`, `sobel`, `scharr` (f32) and `gaussian_blur_u8`, `box_blur_u8` —
+f32 paths bit-identical to the CPU engine (skip-zero border, sequential
+taps, fmad-free), u8 paths byte-identical to the Q8 striped blur (replicate
+borders) and the 3×3 binomial fast path, with the u8 kernel/sigma routing
+decided by one selector shared with the CPU. Python `gaussian_blur` /
+`box_blur` accept device images; new `imgproc.sobel` (f32, numpy + device).
+Measured 1080p vs OpenCV CPU: gaussian 5×5 u8 RGB 9.2×, box 5×5 9.5×,
+sobel-3 f32 13×. The u8 binomial tails/edges now use the same nested
+halving-add rounding as the SIMD bulk (≤1 LSB shift on border bytes vs
+previous releases).
+
 **u8 color conversions are now byte-for-byte with OpenCV.** Three alignments
 (CPU and CUDA changed together, so device output stays `assert_eq!`-equal to
 host): u8 grayscale now uses cv2's exact Q14 formula

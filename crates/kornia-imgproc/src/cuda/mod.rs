@@ -9,6 +9,7 @@ pub mod resize;
 
 /// Native CUDA u8 resize kernels (integer LUT-driven, byte-exact with the
 /// CPU u8 fast paths).
+pub mod filter;
 pub mod resize_u8;
 
 /// Native CUDA warp-affine kernels (bilinear and nearest-neighbor).

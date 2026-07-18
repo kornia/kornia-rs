@@ -504,6 +504,7 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     imgproc_mod.add_function(wrap_pyfunction!(crop::crop, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(blur::gaussian_blur, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(blur::box_blur, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(blur::sobel, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(morphology::dilate, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(morphology::erode, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(
