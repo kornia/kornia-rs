@@ -1,12 +1,21 @@
-# CUDA kernel fusion (FKL-style)
+# CUDA kernel fusion
 
 Compose per-op stages into **one generated CUDA kernel** where
 intermediates flow through registers — no global-memory round trips
-between ops. The design follows the [Fused Kernel Library]
-(https://github.com/Libraries-Openly-Fused) build/exec model, but composes
-at **runtime** via NVRTC (compiled once per pipeline shape, then cached;
-measured at exact performance parity with FKL's compile-time templates on
-Jetson AGX Orin).
+between ops. The build/exec stage split and the `__grid_constant__`
+parameter-blob technique are borrowed from the [Fused Kernel Library]
+(https://github.com/Libraries-Openly-Fused) (Amoros / Nuñez / Peña);
+composition here happens at **runtime** via NVRTC (compiled once per
+pipeline shape, then cached).
+
+**Scope — this is NOT a general FKL equivalent.** The current engine
+composes *linear, per-output-pixel transform chains only*: one `Source`
+stage (single input buffer) → `Map` stages passing a `float3` value in
+registers → one `Sink` stage (single output buffer). No multi-input
+stages, no reductions, no other inter-stage value types yet. FKL's
+template machinery composes considerably more (arbitrary value types,
+multi-operand operations, reduction patterns). Within this transform-chain
+scope, per-stage code is arbitrary CUDA.
 
 ```bash
 cargo run -p cuda-fusion --release
@@ -15,10 +24,11 @@ cargo run -p cuda-fusion --release
 The example composes:
 
 1. the DNN-preprocess chain `resize → normalize(ImageNet) → planar CHW`
-   (≈0.13 ms/frame for 1080p → 640×640 on Orin — one kernel, one u8 read,
-   one f32 write);
-2. a **novel** chain `resize → normalize → gray → single-plane write` that
-   exists nowhere as hand-written kernel code;
+   (≈0.13 ms/frame for 1080p → 640×640 on Jetson AGX Orin — one kernel,
+   one u8 read, one f32 write);
+2. a chain with no hand-written kernel anywhere in the library
+   (`resize → normalize → gray → single-plane write`), generated from the
+   same stage library;
 3. prints the generated CUDA source so you can see exactly what runs.
 
 ## Composing a pipeline
@@ -65,24 +75,21 @@ reads: zero registers, warp-broadcast), so chains don't pay register cost
 for carrying state. Same-shape pipelines with different parameter values
 share one compiled kernel — params are data, shapes are code.
 
-## FKL head-to-head (the paper's pipeline)
+## Benchmark vs the FKL binary — one pipeline only
 
-The example also runs FusedKernelLibrary's flagship pipeline —
-`bilinear resize → Mul(1/255) → SplitWrite planar` — in single and
-batch-4 form, matching FKL's own benchmark harness (their
-`executeOperations<TransformDPP<>>` example). Measured same-minute
-against the FKL C++ binary compiled on the same Jetson AGX Orin
-(sm_87, locked clocks):
+For the one pipeline both implementations express (bilinear resize →
+Mul(1/255) → planar split; FKL's `TransformDPP` example), measured
+same-minute against the FKL C++ binary compiled on the same Jetson AGX
+Orin (sm_87, locked clocks):
 
-| pipeline (1080p → 640×640) | kornia fused | FKL (C++ templates) |
+| 1080p → 640×640 | this engine | FKL |
 |---|---|---|
 | single | 0.13–0.14 ms | 0.12–0.13 ms |
 | batch-4 | 0.49–0.50 ms | 0.49 ms |
 
-Runtime NVRTC composition matches compile-time template fusion at
-steady state — the composed kernels are the same shape; only the
-composition mechanism differs (and ours composes at runtime, e.g. from
-Python-driven pipeline definitions).
+This says the *generated kernel* for this chain is as good as FKL's
+template-instantiated one — it says nothing about the many pipeline
+shapes FKL can express and this engine cannot (see Scope above).
 
 ## Precision contract
 

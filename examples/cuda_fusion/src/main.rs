@@ -1,5 +1,8 @@
-//! FKL-style kernel fusion: compose per-op stages into ONE generated CUDA
-//! kernel where intermediates stay in registers.
+//! Kernel fusion: compose per-op transform stages into ONE generated CUDA
+//! kernel where intermediates stay in registers. Build/exec split and the
+//! grid_constant parameter blob follow the Fused Kernel Library's design;
+//! scope is linear per-pixel transform chains (see README — NOT a general
+//! FKL equivalent).
 //!
 //! ```bash
 //! cargo run -p cuda-fusion --release

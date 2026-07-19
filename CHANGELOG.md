@@ -14,7 +14,9 @@ changes early: `cargo add kornia-imgproc@0.1.15-rc.1` or `pip install --pre korn
 ## [Unreleased]
 
 **`cuda-fusion` example + docs.** New runnable example
-(`examples/cuda_fusion`) showing the FKL-style kernel-fusion API:
+(`examples/cuda_fusion`) showing the kernel-fusion API (build/exec model
+borrowed from the Fused Kernel Library; scoped to linear per-pixel
+transform chains — documented explicitly as narrower than FKL):
 composing the DNN-preprocess chain and a novel resize→normalize→gray
 chain from the stage library, printing the generated CUDA source, and a
 sustained benchmark (~0.13 ms/frame, 1080p → 640×640 CHW on Orin). The
