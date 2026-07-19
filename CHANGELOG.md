@@ -23,8 +23,12 @@ polynomial for the color table, circular taps, reflect_101 borders, fma
 accumulation — including cv2's different tap-summation order between its
 16-pixel SIMD region and its scalar row tail; VPI's bilateral uses a
 different formula and is not byte-comparable). CPU and GPU outputs are
-byte-identical. Measured 1080p sustained (GPU): median 0.015 ms (16–132×
-cv2, 43–80× VPI), bilateral d=5 0.065 ms (139× cv2, 10× VPI).
+byte-identical. The CPU paths are NEON-vectorized (3×3 median via the
+exact `med3(max-lows, med-mids, min-highs)` column identity, 5×5 via the
+fully unrolled network, bilateral 16 lanes per tap) and land at parity
+with OpenCV's CPU speeds. Measured 1080p sustained (GPU): median
+0.015 ms (16–132× cv2, 43–80× VPI), bilateral d=5 0.065 ms (139× cv2,
+10× VPI).
 
 **CLAHE (CPU and CUDA), byte-for-byte with OpenCV.** New `clahe` for u8
 single-channel images (`kornia_rs.imgproc.clahe` in Python), matching

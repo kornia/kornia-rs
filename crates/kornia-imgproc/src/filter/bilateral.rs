@@ -231,7 +231,19 @@ pub fn bilateral_filter(
         .enumerate()
         .for_each(|(y, drow)| {
             let simd_end = simd_region_end(w);
-            for (x, dpx) in drow.iter_mut().enumerate() {
+
+            // NEON: 16 pixels per iteration, per-tap. Lane-wise the op
+            // sequence is IDENTICAL to the scalar loop below (vabd -> f32
+            // widen -> mul -> add/fma -> IEEE div -> vcvtn), and blocks are
+            // 16-aligned so every vectorized pixel is inside cv2's SIMD
+            // region (permuted tap order) — byte parity preserved. Blocks
+            // needing horizontal reflect fall through to scalar.
+            #[cfg(target_arch = "aarch64")]
+            let scalar_start = neon_row(s, drow, w, h, y, &t, simd_end);
+            #[cfg(not(target_arch = "aarch64"))]
+            let scalar_start = 0usize;
+
+            for (x, dpx) in drow.iter_mut().enumerate().skip(scalar_start) {
                 let val0 = s[y * w + x] as i32;
                 let mut wsum = 0f32;
                 let mut sum = 0f32;
@@ -256,6 +268,105 @@ pub fn bilateral_filter(
             }
         });
     Ok(())
+}
+
+/// NEON row kernel: processes 16-aligned blocks that need no horizontal
+/// reflection, all inside cv2's SIMD region (permuted tap order). Returns
+/// the first x the scalar loop must still handle (border blocks at the
+/// row start are delegated back to scalar via returning 0).
+#[cfg(target_arch = "aarch64")]
+fn neon_row(
+    s: &[u8],
+    drow: &mut [u8],
+    w: usize,
+    h: usize,
+    y: usize,
+    t: &BilateralTables,
+    simd_end: usize,
+) -> usize {
+    use std::arch::aarch64::*;
+    let r = t.radius as usize;
+    // First 16-aligned block whose x-r stays in bounds; last block must
+    // keep x+15+r < w AND stay below simd_end.
+    let x0 = r.div_ceil(16) * 16;
+    if x0 + 16 > simd_end || w < x0 + 16 + r {
+        return 0;
+    }
+    // The scalar loop resumes at `end`; it re-handles [0, x0) too, so we
+    // only vectorize when the row splits cleanly: scalar handles the
+    // prefix separately below.
+    let mut end = simd_end.min(((w - r - 16) / 16) * 16 + 16);
+    if end <= x0 {
+        return 0;
+    }
+    // SAFETY: for x in [x0, end-16] all loads read within [0, w) columns
+    // (x-r .. x+15+r) and clamped rows; tables are 256/ntaps long.
+    unsafe {
+        for x in (x0..end).step_by(16) {
+            let val0 = vld1q_u8(s.as_ptr().add(y * w + x));
+            let mut wsum = [vdupq_n_f32(0.0); 4];
+            let mut sum = [vdupq_n_f32(0.0); 4];
+            for kk in 0..t.taps.len() {
+                let k = t.simd_order[kk];
+                let (dy, dx) = t.taps[k];
+                let sy = reflect_101(y as i64 + dy as i64, h as i64) as usize;
+                let ptr = s.as_ptr().add(sy * w).offset(x as isize + dx as isize);
+                let val = vld1q_u8(ptr);
+                let diff = vabdq_u8(val, val0);
+                let da: [u8; 16] = std::mem::transmute(diff);
+                let mut cw = [0f32; 16];
+                for (l, c) in cw.iter_mut().zip(da.iter()) {
+                    *l = *t.color_weight.get_unchecked(*c as usize);
+                }
+                let sw = t.space_weight[k];
+                // Widen val to 4 f32 groups.
+                let v16_lo = vmovl_u8(vget_low_u8(val));
+                let v16_hi = vmovl_u8(vget_high_u8(val));
+                let vgrp = [
+                    vcvtq_f32_u32(vmovl_u16(vget_low_u16(v16_lo))),
+                    vcvtq_f32_u32(vmovl_u16(vget_high_u16(v16_lo))),
+                    vcvtq_f32_u32(vmovl_u16(vget_low_u16(v16_hi))),
+                    vcvtq_f32_u32(vmovl_u16(vget_high_u16(v16_hi))),
+                ];
+                for g in 0..4 {
+                    // wgt = space*color; wsum += wgt; sum = fma(val, wgt, sum)
+                    let wgt = vmulq_n_f32(vld1q_f32(cw.as_ptr().add(g * 4)), sw);
+                    wsum[g] = vaddq_f32(wsum[g], wgt);
+                    sum[g] = vfmaq_f32(sum[g], vgrp[g], wgt);
+                }
+            }
+            let mut out = [0u8; 16];
+            for g in 0..4 {
+                let res = vdivq_f32(sum[g], wsum[g]);
+                let r_i32 = vcvtnq_s32_f32(res);
+                let r_u16 = vqmovun_s32(r_i32);
+                let r_u8 = vqmovn_u16(vcombine_u16(r_u16, r_u16));
+                let o: [u8; 8] = std::mem::transmute(r_u8);
+                out[g * 4..g * 4 + 4].copy_from_slice(&o[..4]);
+            }
+            std::ptr::copy_nonoverlapping(out.as_ptr(), drow.as_mut_ptr().add(x), 16);
+        }
+        // Scalar must still do [0, x0): do it here so the caller resumes at `end`.
+        for x in 0..x0 {
+            let val0 = s[y * w + x] as i32;
+            let mut wsum_s = 0f32;
+            let mut sum_s = 0f32;
+            let in_simd = x < simd_end;
+            for kk in 0..t.taps.len() {
+                let k = if in_simd { t.simd_order[kk] } else { kk };
+                let (dy, dx) = t.taps[k];
+                let sy = reflect_101(y as i64 + dy as i64, h as i64) as usize;
+                let sx = reflect_101(x as i64 + dx as i64, w as i64) as usize;
+                let val = s[sy * w + sx] as i32;
+                let wgt = t.space_weight[k] * t.color_weight[(val - val0).unsigned_abs() as usize];
+                wsum_s += wgt;
+                sum_s = (val as f32).mul_add(wgt, sum_s);
+            }
+            drow[x] = (sum_s / wsum_s).round_ties_even() as u8;
+        }
+        let _ = &mut end;
+    }
+    end
 }
 
 #[cfg(feature = "cuda")]
