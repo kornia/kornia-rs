@@ -13,30 +13,11 @@ use kornia_tensor::CudaKernel;
 
 use super::try_compile_with_l1;
 
-/// Error type for the CUDA median launcher.
-#[derive(Debug, thiserror::Error)]
-pub enum CudaMedianError {
-    /// CUDA driver / compile / launch error.
-    #[error("CUDA median error: {0}")]
-    Cuda(String),
-    /// A slice is smaller than required.
-    #[error("device slice '{what}' length {got} < required {need}")]
-    SliceTooSmall {
-        /// Which operand was too small.
-        what: &'static str,
-        /// Actual length (elements).
-        got: usize,
-        /// Required length (elements).
-        need: usize,
-    },
-}
-
-fn check_slice(what: &'static str, got: usize, need: usize) -> Result<(), CudaMedianError> {
-    if got < need {
-        return Err(CudaMedianError::SliceTooSmall { what, got, need });
-    }
-    Ok(())
-}
+super::define_cuda_error!(
+    /// Error type for the CUDA median launcher.
+    CudaMedianError,
+    "CUDA median error: {0}"
+);
 
 use crate::filter::median::{NET25, NET9};
 
@@ -138,8 +119,8 @@ pub fn launch_median_u8(
             "image dimensions must be non-zero".into(),
         ));
     }
-    check_slice("src", src.len(), width * height * channels)?;
-    check_slice("dst", dst.len(), width * height * channels)?;
+    CudaMedianError::check_slice("src", src.len(), width * height * channels)?;
+    CudaMedianError::check_slice("dst", dst.len(), width * height * channels)?;
     let w = i32::try_from(width).map_err(|_| CudaMedianError::Cuda("width exceeds i32".into()))?;
     let h =
         i32::try_from(height).map_err(|_| CudaMedianError::Cuda("height exceeds i32".into()))?;

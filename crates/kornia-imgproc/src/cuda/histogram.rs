@@ -21,30 +21,11 @@ use kornia_tensor::CudaKernel;
 
 use super::try_compile_with_l1;
 
-/// Error type for the CUDA histogram launchers.
-#[derive(Debug, thiserror::Error)]
-pub enum CudaHistogramError {
-    /// CUDA driver / compile / launch error.
-    #[error("CUDA histogram error: {0}")]
-    Cuda(String),
-    /// A slice is smaller than required.
-    #[error("device slice '{what}' length {got} < required {need}")]
-    SliceTooSmall {
-        /// Which operand was too small.
-        what: &'static str,
-        /// Actual length (elements).
-        got: usize,
-        /// Required length (elements).
-        need: usize,
-    },
-}
-
-fn check_slice(what: &'static str, got: usize, need: usize) -> Result<(), CudaHistogramError> {
-    if got < need {
-        return Err(CudaHistogramError::SliceTooSmall { what, got, need });
-    }
-    Ok(())
-}
+super::define_cuda_error!(
+    /// Error type for the CUDA histogram launchers.
+    CudaHistogramError,
+    "CUDA histogram error: {0}"
+);
 
 static HISTOGRAM_SRC: &str = r#"
 extern "C" __global__ void histogram_u8(
@@ -142,9 +123,7 @@ fn get_kernel(
     src: &str,
     name: &str,
 ) -> Result<&'static CudaKernel, CudaHistogramError> {
-    cell.get_or_init(|| try_compile_with_l1(ctx, src, name))
-        .as_ref()
-        .map_err(|e| CudaHistogramError::Cuda(e.clone()))
+    super::get_kernel_cached(cell, ctx, src, name).map_err(CudaHistogramError::Cuda)
 }
 
 /// Accumulate the u8 histogram of `src` into `hist` (`num_bins` u32 bins,
@@ -164,8 +143,8 @@ pub fn launch_histogram_u8(
             "num_bins must be in [1, 256]".into(),
         ));
     }
-    check_slice("src", src.len(), n)?;
-    check_slice("hist", hist.len(), num_bins as usize)?;
+    CudaHistogramError::check_slice("src", src.len(), n)?;
+    CudaHistogramError::check_slice("hist", hist.len(), num_bins as usize)?;
     let n_u32 = u32::try_from(n).map_err(|_| CudaHistogramError::Cuda("n exceeds u32".into()))?;
     let kernel = get_kernel(&HISTOGRAM_KERNEL, ctx, HISTOGRAM_SRC, "histogram_u8")?;
     // Grid-stride: enough blocks to fill the device, capped for tiny inputs.
@@ -194,8 +173,8 @@ pub fn launch_equalize_lut_u8(
     lut: &mut CudaSlice<u8>,
     total: usize,
 ) -> Result<(), CudaHistogramError> {
-    check_slice("hist", hist.len(), 256)?;
-    check_slice("lut", lut.len(), 256)?;
+    CudaHistogramError::check_slice("hist", hist.len(), 256)?;
+    CudaHistogramError::check_slice("lut", lut.len(), 256)?;
     let total_u32 =
         u32::try_from(total).map_err(|_| CudaHistogramError::Cuda("total exceeds u32".into()))?;
     let kernel = get_kernel(
@@ -227,9 +206,9 @@ pub fn launch_apply_lut_u8(
     lut: &CudaSlice<u8>,
     n: usize,
 ) -> Result<(), CudaHistogramError> {
-    check_slice("src", src.len(), n)?;
-    check_slice("dst", dst.len(), n)?;
-    check_slice("lut", lut.len(), 256)?;
+    CudaHistogramError::check_slice("src", src.len(), n)?;
+    CudaHistogramError::check_slice("dst", dst.len(), n)?;
+    CudaHistogramError::check_slice("lut", lut.len(), 256)?;
     let n_u32 = u32::try_from(n).map_err(|_| CudaHistogramError::Cuda("n exceeds u32".into()))?;
     let kernel = get_kernel(&APPLY_LUT_KERNEL, ctx, APPLY_LUT_SRC, "apply_lut_u8")?;
     let cfg = cudarc::driver::LaunchConfig {

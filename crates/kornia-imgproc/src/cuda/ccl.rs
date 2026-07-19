@@ -16,30 +16,11 @@ use kornia_tensor::CudaKernel;
 
 use super::try_compile_with_l1;
 
-/// Error type for the CUDA CCL launcher.
-#[derive(Debug, thiserror::Error)]
-pub enum CudaCclError {
-    /// CUDA driver / compile / launch error.
-    #[error("CUDA ccl error: {0}")]
-    Cuda(String),
-    /// A slice is smaller than required.
-    #[error("device slice '{what}' length {got} < required {need}")]
-    SliceTooSmall {
-        /// Which operand was too small.
-        what: &'static str,
-        /// Actual length (elements).
-        got: usize,
-        /// Required length (elements).
-        need: usize,
-    },
-}
-
-fn check_slice(what: &'static str, got: usize, need: usize) -> Result<(), CudaCclError> {
-    if got < need {
-        return Err(CudaCclError::SliceTooSmall { what, got, need });
-    }
-    Ok(())
-}
+super::define_cuda_error!(
+    /// Error type for the CUDA CCL launcher.
+    CudaCclError,
+    "CUDA ccl error: {0}"
+);
 
 const BG: &str = "0x7FFFFFFF"; // background sentinel (i32 max)
 
@@ -256,8 +237,8 @@ pub fn launch_connected_components(
     )
     .map_err(CudaCclError::Cuda)?;
     let n = width * height;
-    check_slice("src", src.len(), n)?;
-    check_slice("out", out.len(), n)?;
+    CudaCclError::check_slice("src", src.len(), n)?;
+    CudaCclError::check_slice("out", out.len(), n)?;
     let w = i32::try_from(width).map_err(|_| CudaCclError::Cuda("width exceeds i32".into()))?;
     let h = i32::try_from(height).map_err(|_| CudaCclError::Cuda("height exceeds i32".into()))?;
     let n_i32 = i32::try_from(n).map_err(|_| CudaCclError::Cuda("size exceeds i32".into()))?;

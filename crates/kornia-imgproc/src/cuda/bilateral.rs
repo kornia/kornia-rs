@@ -16,30 +16,11 @@ use kornia_tensor::CudaKernel;
 use super::try_compile_with_l1;
 use crate::filter::bilateral::BilateralTables;
 
-/// Error type for the CUDA bilateral launcher.
-#[derive(Debug, thiserror::Error)]
-pub enum CudaBilateralError {
-    /// CUDA driver / compile / launch error.
-    #[error("CUDA bilateral error: {0}")]
-    Cuda(String),
-    /// A slice is smaller than required.
-    #[error("device slice '{what}' length {got} < required {need}")]
-    SliceTooSmall {
-        /// Which operand was too small.
-        what: &'static str,
-        /// Actual length (elements).
-        got: usize,
-        /// Required length (elements).
-        need: usize,
-    },
-}
-
-fn check_slice(what: &'static str, got: usize, need: usize) -> Result<(), CudaBilateralError> {
-    if got < need {
-        return Err(CudaBilateralError::SliceTooSmall { what, got, need });
-    }
-    Ok(())
-}
+super::define_cuda_error!(
+    /// Error type for the CUDA bilateral launcher.
+    CudaBilateralError,
+    "CUDA bilateral error: {0}"
+);
 
 // Kernel body; the shared `REFLECT_101` device preamble (cuda/pyramid.rs)
 // is prepended at compile time — it computes the same indices as the CPU
@@ -102,8 +83,8 @@ pub fn launch_bilateral_u8(
             "inconsistent bilateral tables".into(),
         ));
     }
-    check_slice("src", src.len(), width * height)?;
-    check_slice("dst", dst.len(), width * height)?;
+    CudaBilateralError::check_slice("src", src.len(), width * height)?;
+    CudaBilateralError::check_slice("dst", dst.len(), width * height)?;
     let w =
         i32::try_from(width).map_err(|_| CudaBilateralError::Cuda("width exceeds i32".into()))?;
     let h =

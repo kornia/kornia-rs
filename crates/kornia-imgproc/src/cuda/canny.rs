@@ -22,30 +22,11 @@ use kornia_tensor::CudaKernel;
 
 use super::try_compile_with_l1;
 
-/// Error type for the CUDA Canny launchers.
-#[derive(Debug, thiserror::Error)]
-pub enum CudaCannyError {
-    /// CUDA driver / compile / launch error.
-    #[error("CUDA canny error: {0}")]
-    Cuda(String),
-    /// A slice is smaller than required.
-    #[error("device slice '{what}' length {got} < required {need}")]
-    SliceTooSmall {
-        /// Which operand was too small.
-        what: &'static str,
-        /// Actual length (elements).
-        got: usize,
-        /// Required length (elements).
-        need: usize,
-    },
-}
-
-fn check_slice(what: &'static str, got: usize, need: usize) -> Result<(), CudaCannyError> {
-    if got < need {
-        return Err(CudaCannyError::SliceTooSmall { what, got, need });
-    }
-    Ok(())
-}
+super::define_cuda_error!(
+    /// Error type for the CUDA Canny launchers.
+    CudaCannyError,
+    "CUDA canny error: {0}"
+);
 
 static SOBEL_MAG_SRC: &str = r#"
 extern "C" __global__ void canny_sobel_mag(
@@ -282,9 +263,7 @@ fn get_kernel(
     src: &str,
     name: &str,
 ) -> Result<&'static CudaKernel, CudaCannyError> {
-    cell.get_or_init(|| try_compile_with_l1(ctx, src, name))
-        .as_ref()
-        .map_err(|e| CudaCannyError::Cuda(e.clone()))
+    super::get_kernel_cached(cell, ctx, src, name).map_err(CudaCannyError::Cuda)
 }
 
 /// Full device Canny: gradients + NMS + hysteresis relaunch loop +
@@ -311,8 +290,8 @@ pub fn launch_canny_u8(
         None,
     )
     .map_err(CudaCannyError::Cuda)?;
-    check_slice("src", src.len(), width * height)?;
-    check_slice("dst", dst.len(), width * height)?;
+    CudaCannyError::check_slice("src", src.len(), width * height)?;
+    CudaCannyError::check_slice("dst", dst.len(), width * height)?;
     let w = i32::try_from(width).map_err(|_| CudaCannyError::Cuda("width exceeds i32".into()))?;
     let h = i32::try_from(height).map_err(|_| CudaCannyError::Cuda("height exceeds i32".into()))?;
     // Magnitude fits i32 for both L1 (<= 2040) and L2 (<= 2*1020^2).

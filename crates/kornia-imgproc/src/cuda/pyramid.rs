@@ -61,6 +61,19 @@ __device__ __forceinline__ int reflect_101(int p, int len) {
     if (p >= len) p = period - p;
     return p;
 }
+
+// Single-fold variant for taps within +/-2 of an in-range coordinate:
+// exact for len >= 3 (|p| <= 2 reflects once; p <= len+1 reflects once),
+// falls back to the modulo form for degenerate sizes. Avoids the integer
+// modulo on the hot path.
+__device__ __forceinline__ int reflect_101_near(int p, int len) {
+    if (len >= 3) {
+        if (p < 0) return -p;
+        if (p >= len) return 2 * (len - 1) - p;
+        return p;
+    }
+    return reflect_101(p, len);
+}
 "#;
 
 // ── f32 pyrdown (fused 5x5 + subsample) ──────────────────────────────────────
@@ -110,10 +123,10 @@ extern "C" __global__ void pyrdown_f32_c{channels}(
     int k_idx = 0;
     #pragma unroll
     for (int ky = 0; ky < 5; ++ky) {{
-        int sy = interior ? (scy + ky - 2) : reflect_101(scy + ky - 2, (int)src_h);
+        int sy = interior ? (scy + ky - 2) : reflect_101_near(scy + ky - 2, (int)src_h);
         #pragma unroll
         for (int kx = 0; kx < 5; ++kx) {{
-            int sx = interior ? (scx + kx - 2) : reflect_101(scx + kx - 2, (int)src_w);
+            int sx = interior ? (scx + kx - 2) : reflect_101_near(scx + kx - 2, (int)src_w);
             size_t si = ((size_t)sy * src_w + (size_t)sx) * C;
             float w = kw[k_idx];
             #pragma unroll
@@ -260,11 +273,11 @@ extern "C" __global__ void pyrdown_h_u8_c{channels}(
     if (interior) {{
         xm2 = scx - 2; xm1 = scx - 1; x0 = scx; xp1 = scx + 1; xp2 = scx + 2;
     }} else {{
-        xm2 = reflect_101(scx - 2, (int)src_w);
-        xm1 = reflect_101(scx - 1, (int)src_w);
-        x0  = reflect_101(scx,     (int)src_w);
-        xp1 = reflect_101(scx + 1, (int)src_w);
-        xp2 = reflect_101(scx + 2, (int)src_w);
+        xm2 = reflect_101_near(scx - 2, (int)src_w);
+        xm1 = reflect_101_near(scx - 1, (int)src_w);
+        x0  = reflect_101_near(scx,     (int)src_w);
+        xp1 = reflect_101_near(scx + 1, (int)src_w);
+        xp2 = reflect_101_near(scx + 2, (int)src_w);
     }}
     size_t d = ((size_t)y * dst_w + (size_t)x) * C;
     #pragma unroll
@@ -297,11 +310,11 @@ extern "C" __global__ void pyrdown_v_u8_c{channels}(
     unsigned int y = blockIdx.y * blockDim.y + threadIdx.y;
     if (i >= stride_elems || y >= dst_h) return;
     int scy = (int)(y * 2u);
-    int ym2 = reflect_101(scy - 2, (int)src_h);
-    int ym1 = reflect_101(scy - 1, (int)src_h);
-    int y0  = reflect_101(scy,     (int)src_h);
-    int yp1 = reflect_101(scy + 1, (int)src_h);
-    int yp2 = reflect_101(scy + 2, (int)src_h);
+    int ym2 = reflect_101_near(scy - 2, (int)src_h);
+    int ym1 = reflect_101_near(scy - 1, (int)src_h);
+    int y0  = reflect_101_near(scy,     (int)src_h);
+    int yp1 = reflect_101_near(scy + 1, (int)src_h);
+    int yp2 = reflect_101_near(scy + 2, (int)src_h);
 
     unsigned int vm2 = __ldg(&buf[(size_t)ym2 * stride_elems + i]);
     unsigned int vm1 = __ldg(&buf[(size_t)ym1 * stride_elems + i]);
@@ -338,8 +351,8 @@ extern "C" __global__ void pyrup_h_u8_c{channels}(
     size_t drow = (size_t)y * dst_w * C;
     size_t dst_stride = (size_t)dst_w * C;
 
-    int prev_i = reflect_101((int)x - 1, (int)src_w);
-    int next_i = reflect_101((int)x + 1, (int)src_w);
+    int prev_i = reflect_101_near((int)x - 1, (int)src_w);
+    int next_i = reflect_101_near((int)x + 1, (int)src_w);
     #pragma unroll
     for (unsigned int ch = 0; ch < C; ++ch) {{
         unsigned int curr = __ldg(&src[row + (size_t)x * C + ch]);
@@ -371,8 +384,8 @@ extern "C" __global__ void pyrup_v_u8_c{channels}(
     unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
     unsigned int y = blockIdx.y * blockDim.y + threadIdx.y;
     if (i >= stride_elems || y >= src_h) return;
-    int yp = reflect_101((int)y - 1, (int)src_h);
-    int yn = reflect_101((int)y + 1, (int)src_h);
+    int yp = reflect_101_near((int)y - 1, (int)src_h);
+    int yn = reflect_101_near((int)y + 1, (int)src_h);
 
     unsigned int c = __ldg(&buf[(size_t)y  * stride_elems + i]);
     unsigned int p = __ldg(&buf[(size_t)yp * stride_elems + i]);

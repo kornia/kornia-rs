@@ -23,30 +23,11 @@ use kornia_tensor::CudaKernel;
 use super::try_compile_with_l1;
 use crate::clahe::ClaheGeometry;
 
-/// Error type for the CUDA CLAHE launchers.
-#[derive(Debug, thiserror::Error)]
-pub enum CudaClaheError {
-    /// CUDA driver / compile / launch error.
-    #[error("CUDA CLAHE error: {0}")]
-    Cuda(String),
-    /// A slice is smaller than required.
-    #[error("device slice '{what}' length {got} < required {need}")]
-    SliceTooSmall {
-        /// Which operand was too small.
-        what: &'static str,
-        /// Actual length (elements).
-        got: usize,
-        /// Required length (elements).
-        need: usize,
-    },
-}
-
-fn check_slice(what: &'static str, got: usize, need: usize) -> Result<(), CudaClaheError> {
-    if got < need {
-        return Err(CudaClaheError::SliceTooSmall { what, got, need });
-    }
-    Ok(())
-}
+super::define_cuda_error!(
+    /// Error type for the CUDA CLAHE launchers.
+    CudaClaheError,
+    "CUDA CLAHE error: {0}"
+);
 
 fn dim_u32(what: &'static str, v: usize) -> Result<u32, CudaClaheError> {
     u32::try_from(v).map_err(|_| CudaClaheError::Cuda(format!("{what} exceeds u32")))
@@ -178,9 +159,7 @@ fn get_kernel(
     src: &str,
     name: &str,
 ) -> Result<&'static CudaKernel, CudaClaheError> {
-    cell.get_or_init(|| try_compile_with_l1(ctx, src, name))
-        .as_ref()
-        .map_err(|e| CudaClaheError::Cuda(e.clone()))
+    super::get_kernel_cached(cell, ctx, src, name).map_err(CudaClaheError::Cuda)
 }
 
 /// Build the per-tile CLAHE LUTs on device (`tiles_y · tiles_x · 256`
@@ -198,8 +177,8 @@ pub fn launch_clahe_lut_u8(
     if tiles == 0 || g.tile_w == 0 || g.tile_h == 0 {
         return Err(CudaClaheError::Cuda("empty tile geometry".into()));
     }
-    check_slice("src", src.len(), width * height)?;
-    check_slice("luts", luts.len(), tiles * 256)?;
+    CudaClaheError::check_slice("src", src.len(), width * height)?;
+    CudaClaheError::check_slice("luts", luts.len(), tiles * 256)?;
     let w = dim_u32("width", width)? as i32;
     let h = dim_u32("height", height)? as i32;
     let tiles_u32 = dim_u32("tiles", tiles)?;
@@ -247,9 +226,9 @@ pub fn launch_clahe_apply_u8(
     if g.tiles_x == 0 || g.tiles_y == 0 {
         return Err(CudaClaheError::Cuda("empty tile geometry".into()));
     }
-    check_slice("src", src.len(), width * height)?;
-    check_slice("dst", dst.len(), width * height)?;
-    check_slice("luts", luts.len(), g.tiles_x * g.tiles_y * 256)?;
+    CudaClaheError::check_slice("src", src.len(), width * height)?;
+    CudaClaheError::check_slice("dst", dst.len(), width * height)?;
+    CudaClaheError::check_slice("luts", luts.len(), g.tiles_x * g.tiles_y * 256)?;
     let w32 = dim_u32("width", width)?;
     let h32 = dim_u32("height", height)?;
     let (w, h) = (w32 as i32, h32 as i32);
