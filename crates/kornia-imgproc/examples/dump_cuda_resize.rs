@@ -13,7 +13,7 @@ use std::sync::Arc;
 use cudarc::driver::CudaContext;
 use kornia_imgproc::cuda::resize::{
     launch_resize_bicubic_cuda, launch_resize_bilinear_downscale_cuda,
-    launch_resize_lanczos_cuda, launch_resize_nearest_downscale_cuda,
+    launch_resize_lanczos_cuda, launch_resize_nearest_downscale_cuda, PixelMapping,
 };
 
 fn usage() -> ! {
@@ -48,21 +48,21 @@ fn main() {
 
     match mode {
         "bilinear" => launch_resize_bilinear_downscale_cuda(
-            &ctx, &stream, &src_dev, &mut dst_dev, sw, sh, dw, dh, None,
+            &ctx, &stream, &src_dev, &mut dst_dev, sw, sh, dw, dh, PixelMapping::HalfPixel, None,
         )
         .expect("launch bilinear"),
         "nearest" => launch_resize_nearest_downscale_cuda(
-            &ctx, &stream, &src_dev, &mut dst_dev, sw, sh, dw, dh, None,
+            &ctx, &stream, &src_dev, &mut dst_dev, sw, sh, dw, dh, PixelMapping::HalfPixel, None,
         )
         .expect("launch nearest"),
-        "bicubic" => {
-            launch_resize_bicubic_cuda(&ctx, &stream, &src_dev, &mut dst_dev, sw, sh, dw, dh, None)
-                .expect("launch bicubic")
-        }
-        "lanczos" => {
-            launch_resize_lanczos_cuda(&ctx, &stream, &src_dev, &mut dst_dev, sw, sh, dw, dh, None)
-                .expect("launch lanczos")
-        }
+        "bicubic" => launch_resize_bicubic_cuda(
+            &ctx, &stream, &src_dev, &mut dst_dev, sw, sh, dw, dh, PixelMapping::HalfPixel, None,
+        )
+        .expect("launch bicubic"),
+        "lanczos" => launch_resize_lanczos_cuda(
+            &ctx, &stream, &src_dev, &mut dst_dev, sw, sh, dw, dh, PixelMapping::HalfPixel, None,
+        )
+        .expect("launch lanczos"),
         _ => usage(),
     }
 
