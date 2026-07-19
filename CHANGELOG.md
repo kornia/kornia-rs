@@ -13,6 +13,14 @@ changes early: `cargo add kornia-imgproc@0.1.15-rc.1` or `pip install --pre korn
 
 ## [Unreleased]
 
+**CUDA module cleanup + faster pyramid borders.** The per-module CUDA
+error enums and `check_slice`/`get_kernel` helpers of the newer kernel
+families (histogram, CLAHE, bilateral, median, Canny, CCL) are now
+generated from one shared definition (public error types unchanged), and
+the pyramid kernels use a single-fold `reflect_101` variant for their
+±2-tap borders instead of the integer-modulo form — 1080p u8 `pyrdown`
+0.62 → 0.44 ms, bit-exactness pinned by the existing parity suites.
+
 **`cuda-fusion` example + docs.** New runnable example
 (`examples/cuda_fusion`) showing the kernel-fusion API (build/exec model
 borrowed from the Fused Kernel Library; scoped to linear per-pixel
@@ -80,9 +88,9 @@ subspace via the zero-one principle — pinned by a unit test over all 6^5
 column-sorted 0-1 patterns); bilateral 16 lanes per tap — and beat
 OpenCV's CPU on 5×5 median (1.15×) and bilateral (1.1×), with 3×3 median
 at 0.77× (both sides at the DRAM wall). `out=` supported on the CPU
-paths. Measured 1080p sustained (GPU): median
-0.015 ms (16–132× cv2, 43–80× VPI), bilateral d=5 0.065 ms (139× cv2,
-10× VPI).
+paths. Measured 1080p sustained (GPU, stream-synchronized): median3 0.31 ms
+(1.1× cv2, 2.3× VPI), median5 1.18 ms (1.5× cv2, 1.1× VPI), bilateral
+d=5 3.24 ms (2.9× cv2; VPI's non-comparable variant is faster).
 
 **CLAHE (CPU and CUDA), byte-for-byte with OpenCV.** New `clahe` for u8
 single-channel images (`kornia_rs.imgproc.clahe` in Python), matching
@@ -96,8 +104,8 @@ byte-identical (`f32::mul_add` / explicit `fmaf`, mirrored expression
 trees). The CPU interpolation stage is NEON-vectorized with packed
 per-span LUT tables (one gather per pixel; identical bytes, pure
 access-pattern change). The Python binding takes `out=` on the CPU path.
-Measured 1080p sustained: GPU 0.033 ms ≈ 130× and CPU 1.9 ms ≈ 2.1×
-`cv2.createCLAHE` CPU (VPI has no CLAHE op).
+Measured 1080p sustained (stream-synchronized): GPU 0.54 ms ≈ 7.1× and
+CPU 1.9 ms ≈ 2.1× `cv2.createCLAHE` CPU (VPI has no CLAHE op).
 
 **GPU histogram + `equalize_hist` (CPU and CUDA), byte-for-byte with
 OpenCV.** New `equalize_hist` for u8 single-channel images on CPU and

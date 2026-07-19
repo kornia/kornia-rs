@@ -20,48 +20,19 @@ use std::sync::{Arc, OnceLock};
 use cudarc::driver::{CudaContext, CudaSlice, CudaStream};
 use kornia_tensor::CudaKernel;
 
-use super::try_compile_with_l1;
 use crate::clahe::ClaheGeometry;
 
-/// Error type for the CUDA CLAHE launchers.
-#[derive(Debug, thiserror::Error)]
-pub enum CudaClaheError {
-    /// CUDA driver / compile / launch error.
-    #[error("CUDA CLAHE error: {0}")]
-    Cuda(String),
-    /// A slice is smaller than required.
-    #[error("device slice '{what}' length {got} < required {need}")]
-    SliceTooSmall {
-        /// Which operand was too small.
-        what: &'static str,
-        /// Actual length (elements).
-        got: usize,
-        /// Required length (elements).
-        need: usize,
-    },
-}
-
-fn check_slice(what: &'static str, got: usize, need: usize) -> Result<(), CudaClaheError> {
-    if got < need {
-        return Err(CudaClaheError::SliceTooSmall { what, got, need });
-    }
-    Ok(())
-}
+super::define_cuda_error!(
+    /// Error type for the CUDA CLAHE launchers.
+    CudaClaheError,
+    "CUDA CLAHE error: {0}"
+);
 
 fn dim_u32(what: &'static str, v: usize) -> Result<u32, CudaClaheError> {
     u32::try_from(v).map_err(|_| CudaClaheError::Cuda(format!("{what} exceeds u32")))
 }
 
 static LUT_SRC: &str = r#"
-// Textual twin of clahe.rs::reflect_101.
-__device__ __forceinline__ int reflect_101(int p, int len) {
-    if (len == 1) return 0;
-    while (p < 0 || p >= len) {
-        if (p < 0) p = -p; else p = 2 * (len - 1) - p;
-    }
-    return p;
-}
-
 extern "C" __global__ void clahe_lut_u8(
     const unsigned char* __restrict__ src,
     unsigned char* __restrict__       luts,
@@ -172,17 +143,6 @@ extern "C" __global__ void clahe_apply_u8(
 static LUT_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
 static APPLY_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
 
-fn get_kernel(
-    cell: &'static OnceLock<Result<CudaKernel, String>>,
-    ctx: &Arc<CudaContext>,
-    src: &str,
-    name: &str,
-) -> Result<&'static CudaKernel, CudaClaheError> {
-    cell.get_or_init(|| try_compile_with_l1(ctx, src, name))
-        .as_ref()
-        .map_err(|e| CudaClaheError::Cuda(e.clone()))
-}
-
 /// Build the per-tile CLAHE LUTs on device (`tiles_y · tiles_x · 256`
 /// bytes, tile-major — same layout as `build_tile_luts`).
 pub fn launch_clahe_lut_u8(
@@ -198,8 +158,8 @@ pub fn launch_clahe_lut_u8(
     if tiles == 0 || g.tile_w == 0 || g.tile_h == 0 {
         return Err(CudaClaheError::Cuda("empty tile geometry".into()));
     }
-    check_slice("src", src.len(), width * height)?;
-    check_slice("luts", luts.len(), tiles * 256)?;
+    CudaClaheError::check_slice("src", src.len(), width * height)?;
+    CudaClaheError::check_slice("luts", luts.len(), tiles * 256)?;
     let w = dim_u32("width", width)? as i32;
     let h = dim_u32("height", height)? as i32;
     let tiles_u32 = dim_u32("tiles", tiles)?;
@@ -210,7 +170,11 @@ pub fn launch_clahe_lut_u8(
     // Tile area must fit i32 (histogram counts are i32, like cv2's).
     i32::try_from(g.tile_w * g.tile_h)
         .map_err(|_| CudaClaheError::Cuda("tile area exceeds i32".into()))?;
-    let kernel = get_kernel(&LUT_KERNEL, ctx, LUT_SRC, "clahe_lut_u8")?;
+    let kernel = {
+        static COMPOSED: OnceLock<String> = OnceLock::new();
+        let src = COMPOSED.get_or_init(|| format!("{}{}", super::pyramid::REFLECT_101, LUT_SRC));
+        CudaClaheError::get_kernel(&LUT_KERNEL, ctx, src, "clahe_lut_u8")
+    }?;
     let cfg = cudarc::driver::LaunchConfig {
         block_dim: (256, 1, 1),
         grid_dim: (tiles_u32, 1, 1),
@@ -247,13 +211,13 @@ pub fn launch_clahe_apply_u8(
     if g.tiles_x == 0 || g.tiles_y == 0 {
         return Err(CudaClaheError::Cuda("empty tile geometry".into()));
     }
-    check_slice("src", src.len(), width * height)?;
-    check_slice("dst", dst.len(), width * height)?;
-    check_slice("luts", luts.len(), g.tiles_x * g.tiles_y * 256)?;
+    CudaClaheError::check_slice("src", src.len(), width * height)?;
+    CudaClaheError::check_slice("dst", dst.len(), width * height)?;
+    CudaClaheError::check_slice("luts", luts.len(), g.tiles_x * g.tiles_y * 256)?;
     let w32 = dim_u32("width", width)?;
     let h32 = dim_u32("height", height)?;
     let (w, h) = (w32 as i32, h32 as i32);
-    let kernel = get_kernel(&APPLY_KERNEL, ctx, APPLY_SRC, "clahe_apply_u8")?;
+    let kernel = CudaClaheError::get_kernel(&APPLY_KERNEL, ctx, APPLY_SRC, "clahe_apply_u8")?;
     let cfg = super::make_config(w32, h32, None);
     let (tiles_x, tiles_y) = (g.tiles_x as i32, g.tiles_y as i32);
     kernel

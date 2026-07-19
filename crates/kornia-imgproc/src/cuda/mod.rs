@@ -83,6 +83,79 @@ pub(crate) fn make_config(
     }
 }
 
+/// Generate a per-module CUDA error enum (`Cuda(String)` +
+/// `SliceTooSmall`) plus its `check_slice` helper — the shape every
+/// launcher module shares. Public error types stay per-module (API
+/// compatibility); only the definition is centralized.
+macro_rules! define_cuda_error {
+    ($(#[$meta:meta])* $name:ident, $msg:literal) => {
+        $(#[$meta])*
+        #[derive(Debug, thiserror::Error)]
+        pub enum $name {
+            /// CUDA driver / compile / launch error.
+            #[error($msg)]
+            Cuda(String),
+            /// A slice is smaller than required.
+            #[error("device slice '{what}' length {got} < required {need}")]
+            SliceTooSmall {
+                /// Which operand was too small.
+                what: &'static str,
+                /// Actual length (elements).
+                got: usize,
+                /// Required length (elements).
+                need: usize,
+            },
+        }
+
+        impl $name {
+            fn check_slice(
+                what: &'static str,
+                got: usize,
+                need: usize,
+            ) -> Result<(), $name> {
+                if got < need {
+                    return Err($name::SliceTooSmall { what, got, need });
+                }
+                Ok(())
+            }
+
+            /// Once-compiled kernel accessor for parameter-free kernels
+            /// (modules with keyed caches roll their own).
+            #[allow(dead_code)]
+            fn get_kernel(
+                cell: &'static std::sync::OnceLock<Result<CudaKernel, String>>,
+                ctx: &Arc<CudaContext>,
+                src: &str,
+                name: &str,
+            ) -> Result<&'static CudaKernel, $name> {
+                $crate::cuda::get_kernel_cached(cell, ctx, src, name).map_err($name::Cuda)
+            }
+        }
+
+        impl From<cudarc::driver::DriverError> for $name {
+            fn from(e: cudarc::driver::DriverError) -> Self {
+                $name::Cuda(e.to_string())
+            }
+        }
+    };
+}
+pub(crate) use define_cuda_error;
+
+/// Shared once-compiled kernel accessor for modules whose kernels have no
+/// shape parameters: compile into the `OnceLock` on first use, hand out
+/// the cached reference afterwards. The `String` error is mapped into the
+/// module's error type at the call site.
+pub(crate) fn get_kernel_cached(
+    cell: &'static std::sync::OnceLock<Result<CudaKernel, String>>,
+    ctx: &Arc<CudaContext>,
+    src: &str,
+    name: &str,
+) -> Result<&'static CudaKernel, String> {
+    cell.get_or_init(|| try_compile_with_l1(ctx, src, name))
+        .as_ref()
+        .map_err(String::clone)
+}
+
 /// Compile a kernel and set `CU_FUNC_CACHE_PREFER_L1` (none of the geometry
 /// kernels use shared memory, so give the space to L1 for `__ldg` hit rate).
 pub(crate) fn try_compile_with_l1(

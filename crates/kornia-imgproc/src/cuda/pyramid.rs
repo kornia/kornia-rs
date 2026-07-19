@@ -25,30 +25,11 @@ use kornia_tensor::CudaKernel;
 
 use super::{make_config, try_compile_with_l1};
 
-/// Error type for the CUDA pyramid launchers.
-#[derive(Debug, thiserror::Error)]
-pub enum CudaPyramidError {
-    /// CUDA driver / compile / launch error.
-    #[error("CUDA pyramid error: {0}")]
-    Cuda(String),
-    /// A slice is smaller than required.
-    #[error("device slice '{what}' length {got} < required {need}")]
-    SliceTooSmall {
-        /// Which operand was too small.
-        what: &'static str,
-        /// Actual length (elements).
-        got: usize,
-        /// Required length (elements).
-        need: usize,
-    },
-}
-
-fn check_slice(what: &'static str, got: usize, need: usize) -> Result<(), CudaPyramidError> {
-    if got < need {
-        return Err(CudaPyramidError::SliceTooSmall { what, got, need });
-    }
-    Ok(())
-}
+super::define_cuda_error!(
+    /// Error type for the CUDA pyramid launchers.
+    CudaPyramidError,
+    "CUDA pyramid error: {0}"
+);
 
 /// `reflect_101` device preamble, shared by every kernel family that
 /// samples reflected borders (pyramids, bilateral).
@@ -60,6 +41,22 @@ __device__ __forceinline__ int reflect_101(int p, int len) {
     p %= period;
     if (p >= len) p = period - p;
     return p;
+}
+
+"#;
+
+/// Pyramid-local addition to the shared preamble: single-fold reflect for
+/// taps within ±2 of an in-range coordinate (exact for len >= 3, falls
+/// back to the modulo form for degenerate sizes). Kept out of
+/// `REFLECT_101` so other consumers don't carry it.
+const REFLECT_101_NEAR: &str = r#"
+__device__ __forceinline__ int reflect_101_near(int p, int len) {
+    if (len >= 3) {
+        if (p < 0) return -p;
+        if (p >= len) return 2 * (len - 1) - p;
+        return p;
+    }
+    return reflect_101(p, len);
 }
 "#;
 
@@ -83,7 +80,7 @@ fn pyrdown_f32_src(channels: usize) -> String {
     format!(
         r#"
 #define C {channels}
-{REFLECT_101}
+{REFLECT_101}{REFLECT_101_NEAR}
 extern "C" __global__ void pyrdown_f32_c{channels}(
     const float* __restrict__ src,
     float* __restrict__       dst,
@@ -110,10 +107,10 @@ extern "C" __global__ void pyrdown_f32_c{channels}(
     int k_idx = 0;
     #pragma unroll
     for (int ky = 0; ky < 5; ++ky) {{
-        int sy = interior ? (scy + ky - 2) : reflect_101(scy + ky - 2, (int)src_h);
+        int sy = interior ? (scy + ky - 2) : reflect_101_near(scy + ky - 2, (int)src_h);
         #pragma unroll
         for (int kx = 0; kx < 5; ++kx) {{
-            int sx = interior ? (scx + kx - 2) : reflect_101(scx + kx - 2, (int)src_w);
+            int sx = interior ? (scx + kx - 2) : reflect_101_near(scx + kx - 2, (int)src_w);
             size_t si = ((size_t)sy * src_w + (size_t)sx) * C;
             float w = kw[k_idx];
             #pragma unroll
@@ -139,7 +136,7 @@ fn pyrup_h_f32_src(channels: usize) -> String {
     format!(
         r#"
 #define C {channels}
-{REFLECT_101}
+{REFLECT_101}{REFLECT_101_NEAR}
 // One thread per SOURCE pixel; writes the even and odd output columns with
 // the exact expression groupings of pyrup_horizontal_pass_f32 (border
 // phases special-cased identically).
@@ -190,7 +187,7 @@ fn pyrup_v_f32_src(channels: usize) -> String {
     format!(
         r#"
 #define C {channels}
-{REFLECT_101}
+{REFLECT_101}{REFLECT_101_NEAR}
 // One thread per intermediate element (i in [0, dst_w*C), y in [0, src_h));
 // writes the even and odd output rows — pyrup_vertical_pass_f32 mirrored.
 extern "C" __global__ void pyrup_v_f32_c{channels}(
@@ -237,7 +234,7 @@ fn pyrdown_h_u8_src(channels: usize) -> String {
     format!(
         r#"
 #define C {channels}
-{REFLECT_101}
+{REFLECT_101}{REFLECT_101_NEAR}
 extern "C" __global__ void pyrdown_h_u8_c{channels}(
     const unsigned char* __restrict__ src,
     unsigned short* __restrict__      buf,
@@ -260,11 +257,11 @@ extern "C" __global__ void pyrdown_h_u8_c{channels}(
     if (interior) {{
         xm2 = scx - 2; xm1 = scx - 1; x0 = scx; xp1 = scx + 1; xp2 = scx + 2;
     }} else {{
-        xm2 = reflect_101(scx - 2, (int)src_w);
-        xm1 = reflect_101(scx - 1, (int)src_w);
-        x0  = reflect_101(scx,     (int)src_w);
-        xp1 = reflect_101(scx + 1, (int)src_w);
-        xp2 = reflect_101(scx + 2, (int)src_w);
+        xm2 = reflect_101_near(scx - 2, (int)src_w);
+        xm1 = reflect_101_near(scx - 1, (int)src_w);
+        x0  = reflect_101_near(scx,     (int)src_w);
+        xp1 = reflect_101_near(scx + 1, (int)src_w);
+        xp2 = reflect_101_near(scx + 2, (int)src_w);
     }}
     size_t d = ((size_t)y * dst_w + (size_t)x) * C;
     #pragma unroll
@@ -285,7 +282,7 @@ fn pyrdown_v_u8_src(channels: usize) -> String {
     format!(
         r#"
 #define C {channels}
-{REFLECT_101}
+{REFLECT_101}{REFLECT_101_NEAR}
 extern "C" __global__ void pyrdown_v_u8_c{channels}(
     const unsigned short* __restrict__ buf,
     unsigned char* __restrict__        dst,
@@ -297,11 +294,11 @@ extern "C" __global__ void pyrdown_v_u8_c{channels}(
     unsigned int y = blockIdx.y * blockDim.y + threadIdx.y;
     if (i >= stride_elems || y >= dst_h) return;
     int scy = (int)(y * 2u);
-    int ym2 = reflect_101(scy - 2, (int)src_h);
-    int ym1 = reflect_101(scy - 1, (int)src_h);
-    int y0  = reflect_101(scy,     (int)src_h);
-    int yp1 = reflect_101(scy + 1, (int)src_h);
-    int yp2 = reflect_101(scy + 2, (int)src_h);
+    int ym2 = reflect_101_near(scy - 2, (int)src_h);
+    int ym1 = reflect_101_near(scy - 1, (int)src_h);
+    int y0  = reflect_101_near(scy,     (int)src_h);
+    int yp1 = reflect_101_near(scy + 1, (int)src_h);
+    int yp2 = reflect_101_near(scy + 2, (int)src_h);
 
     unsigned int vm2 = __ldg(&buf[(size_t)ym2 * stride_elems + i]);
     unsigned int vm1 = __ldg(&buf[(size_t)ym1 * stride_elems + i]);
@@ -323,7 +320,7 @@ fn pyrup_h_u8_src(channels: usize) -> String {
     format!(
         r#"
 #define C {channels}
-{REFLECT_101}
+{REFLECT_101}{REFLECT_101_NEAR}
 extern "C" __global__ void pyrup_h_u8_c{channels}(
     const unsigned char* __restrict__ src,
     unsigned char* __restrict__       buf,
@@ -338,8 +335,8 @@ extern "C" __global__ void pyrup_h_u8_c{channels}(
     size_t drow = (size_t)y * dst_w * C;
     size_t dst_stride = (size_t)dst_w * C;
 
-    int prev_i = reflect_101((int)x - 1, (int)src_w);
-    int next_i = reflect_101((int)x + 1, (int)src_w);
+    int prev_i = reflect_101_near((int)x - 1, (int)src_w);
+    int next_i = reflect_101_near((int)x + 1, (int)src_w);
     #pragma unroll
     for (unsigned int ch = 0; ch < C; ++ch) {{
         unsigned int curr = __ldg(&src[row + (size_t)x * C + ch]);
@@ -361,7 +358,7 @@ fn pyrup_v_u8_src(channels: usize) -> String {
     format!(
         r#"
 #define C {channels}
-{REFLECT_101}
+{REFLECT_101}{REFLECT_101_NEAR}
 extern "C" __global__ void pyrup_v_u8_c{channels}(
     const unsigned char* __restrict__ buf,
     unsigned char* __restrict__       dst,
@@ -371,8 +368,8 @@ extern "C" __global__ void pyrup_v_u8_c{channels}(
     unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
     unsigned int y = blockIdx.y * blockDim.y + threadIdx.y;
     if (i >= stride_elems || y >= src_h) return;
-    int yp = reflect_101((int)y - 1, (int)src_h);
-    int yn = reflect_101((int)y + 1, (int)src_h);
+    int yp = reflect_101_near((int)y - 1, (int)src_h);
+    int yn = reflect_101_near((int)y + 1, (int)src_h);
 
     unsigned int c = __ldg(&buf[(size_t)y  * stride_elems + i]);
     unsigned int p = __ldg(&buf[(size_t)yp * stride_elems + i]);
@@ -452,12 +449,12 @@ pub fn launch_pyrdown_f32(
     if channels == 0 {
         return Err(CudaPyramidError::Cuda("channels must be at least 1".into()));
     }
-    check_slice(
+    CudaPyramidError::check_slice(
         "src",
         src.len(),
         src_w as usize * src_h as usize * channels as usize,
     )?;
-    check_slice(
+    CudaPyramidError::check_slice(
         "dst",
         dst.len(),
         dst_w as usize * dst_h as usize * channels as usize,
@@ -499,13 +496,13 @@ pub fn launch_pyrup_f32(
     }
     let dst_w = src_w * 2;
     let stride = dst_w as usize * channels as usize;
-    check_slice(
+    CudaPyramidError::check_slice(
         "src",
         src.len(),
         src_w as usize * src_h as usize * channels as usize,
     )?;
-    check_slice("scratch", scratch.len(), stride * src_h as usize)?;
-    check_slice("dst", dst.len(), stride * 2 * src_h as usize)?;
+    CudaPyramidError::check_slice("scratch", scratch.len(), stride * src_h as usize)?;
+    CudaPyramidError::check_slice("dst", dst.len(), stride * 2 * src_h as usize)?;
 
     let h = get_or_compile(ctx, PyrKernelKey::UpHF32 { channels }, || {
         (
@@ -558,13 +555,13 @@ pub fn launch_pyrdown_u8(
         return Err(CudaPyramidError::Cuda("channels must be at least 1".into()));
     }
     let stride = dst_w as usize * channels as usize;
-    check_slice(
+    CudaPyramidError::check_slice(
         "src",
         src.len(),
         src_w as usize * src_h as usize * channels as usize,
     )?;
-    check_slice("scratch", scratch.len(), stride * src_h as usize)?;
-    check_slice("dst", dst.len(), stride * dst_h as usize)?;
+    CudaPyramidError::check_slice("scratch", scratch.len(), stride * src_h as usize)?;
+    CudaPyramidError::check_slice("dst", dst.len(), stride * dst_h as usize)?;
 
     let h = get_or_compile(ctx, PyrKernelKey::DownHU8 { channels }, || {
         (
@@ -617,13 +614,13 @@ pub fn launch_pyrup_u8(
     }
     let dst_w = src_w * 2;
     let stride = dst_w as usize * channels as usize;
-    check_slice(
+    CudaPyramidError::check_slice(
         "src",
         src.len(),
         src_w as usize * src_h as usize * channels as usize,
     )?;
-    check_slice("scratch", scratch.len(), stride * src_h as usize)?;
-    check_slice("dst", dst.len(), stride * 2 * src_h as usize)?;
+    CudaPyramidError::check_slice("scratch", scratch.len(), stride * src_h as usize)?;
+    CudaPyramidError::check_slice("dst", dst.len(), stride * 2 * src_h as usize)?;
 
     let h = get_or_compile(ctx, PyrKernelKey::UpHU8 { channels }, || {
         (

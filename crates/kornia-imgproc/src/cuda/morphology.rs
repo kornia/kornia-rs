@@ -80,7 +80,7 @@ pub enum MorphBorder {
 pub const MORPH_MAX_TAPS: usize = 1024;
 
 /// Generate the specialized source for one structuring element + op.
-fn morph_source(taps: &[i32], op: MorphOp) -> String {
+fn morph_source(taps: &[i32], op: MorphOp, channels: u32) -> String {
     let ntaps = taps.len() / 2;
     let (mut min_dy, mut max_dy, mut min_dx, mut max_dx) = (0i32, 0i32, 0i32, 0i32);
     let mut tap_lits = String::new();
@@ -112,10 +112,12 @@ extern "C" __global__ void morphology_u8(
     unsigned int x = blockIdx.x * blockDim.x + threadIdx.x;
     unsigned int y = blockIdx.y * blockDim.y + threadIdx.y;
     if (x >= (unsigned int)width || y >= (unsigned int)height) return;
-    size_t d = ((size_t)y * width + x) * channels;
-    for (unsigned int ch = 0; ch < channels; ++ch) dst[d + ch] = 0;
+    size_t d = ((size_t)y * width + x) * CHN;
+    #pragma unroll
+    for (unsigned int ch = 0; ch < CHN; ++ch) dst[d + ch] = 0;
 }
 "#
+        .replace("CHN", &format!("{channels}u"))
         .to_string();
     }
 
@@ -130,7 +132,7 @@ extern "C" __global__ void morphology_u8(
         let _ = writeln!(
             interior_stanzas,
             "        acc = {fold}(acc, (unsigned int)__ldg(base + \
-             ((ptrdiff_t)({dy}) * width + ({dx})) * (ptrdiff_t)channels));"
+             ((ptrdiff_t)({dy}) * width + ({dx})) * (ptrdiff_t)CHN));"
         );
         let _ = writeln!(border_stanzas, "        BORDER_TAP({dy}, {dx});");
     }
@@ -161,13 +163,13 @@ __device__ __forceinline__ int map_index(int i, int len, int mode) {{
     int sx = (int)x + (dx); \
     unsigned int v; \
     if (sx >= 0 && sx < width && sy >= 0 && sy < height) {{ \
-        v = (unsigned int)__ldg(&src[((size_t)sy * width + sx) * channels + ch]); \
+        v = (unsigned int)__ldg(&src[((size_t)sy * width + sx) * CHN + ch]); \
     }} else if (border == 0) {{ \
         v = (unsigned int)__ldg(&constant_value[ch]); \
     }} else {{ \
         int mx = map_index(sx, width, border); \
         int my = map_index(sy, height, border); \
-        v = (unsigned int)__ldg(&src[((size_t)my * width + mx) * channels + ch]); \
+        v = (unsigned int)__ldg(&src[((size_t)my * width + mx) * CHN + ch]); \
     }} \
     acc = {fold}(acc, v); \
 }} while (0)
@@ -185,8 +187,9 @@ extern "C" __global__ void morphology_u8(
     bool interior = (int)x >= {neg_min_dx} && (int)x < width - ({max_dx})
                  && (int)y >= {neg_min_dy} && (int)y < height - ({max_dy});
 
-    size_t d = ((size_t)y * width + x) * channels;
-    for (unsigned int ch = 0; ch < channels; ++ch) {{
+    size_t d = ((size_t)y * width + x) * CHN;
+    #pragma unroll
+    for (unsigned int ch = 0; ch < CHN; ++ch) {{
         unsigned int acc = {acc_init};
         if (interior) {{
             const unsigned char* base = src + d + ch;
@@ -199,6 +202,10 @@ extern "C" __global__ void morphology_u8(
         neg_min_dx = -min_dx,
         neg_min_dy = -min_dy,
     );
+    // Channel count baked as a literal: the runtime `channels` argument
+    // stays in the signature (launch ABI unchanged) but the body unrolls
+    // over the literal — the C3 runtime loop cost 92 registers.
+    let scalar_kernel = scalar_kernel.replace("CHN", &format!("{channels}u"));
 
     // ── C=1 vector kernel: 4×4 output tile per thread ─────────────────────
     //
@@ -399,7 +406,7 @@ extern "C" __global__ void morphology_u8_c1v4(
 /// Compiled specialized kernels, keyed by (taps content, op). Structuring
 /// elements are static per pipeline, so this stays tiny; on overflow the
 /// cache is cleared wholesale.
-type MorphKernelCache = Mutex<HashMap<(Vec<i32>, MorphOp, bool), Arc<CudaKernel>>>;
+type MorphKernelCache = Mutex<HashMap<(Vec<i32>, MorphOp, bool, u32), Arc<CudaKernel>>>;
 static MORPH_KERNELS: OnceLock<MorphKernelCache> = OnceLock::new();
 type SepMorphKey = (i32, i32, i32, i32, MorphOp);
 type SepMorphCache = Mutex<HashMap<SepMorphKey, (Arc<CudaKernel>, Arc<CudaKernel>)>>;
@@ -551,7 +558,7 @@ pub fn launch_morphology_u8_cuda(
     };
 
     let cache = MORPH_KERNELS.get_or_init(Default::default);
-    let key = (taps.to_vec(), op, vectorized);
+    let key = (taps.to_vec(), op, vectorized, channels);
     let cached = cache
         .lock()
         .expect("morph kernel cache poisoned")
@@ -560,7 +567,7 @@ pub fn launch_morphology_u8_cuda(
     let kernel = if let Some(hit) = cached {
         hit
     } else {
-        let src_code = morph_source(taps, op);
+        let src_code = morph_source(taps, op, channels);
         let built = Arc::new(
             try_compile_with_l1(ctx, &src_code, fn_name).map_err(CudaMorphologyError::Cuda)?,
         );
