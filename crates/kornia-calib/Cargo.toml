@@ -4,7 +4,7 @@ version = { workspace = true }
 authors = { workspace = true }
 edition = { workspace = true }
 rust-version = { workspace = true }
-description = "Multi-camera extrinsic calibration (AprilTag depth-free bundle adjustment)"
+description = "Multi-camera extrinsic calibration: depth-free AprilTag/board bundle adjustment, multi-view feature tracks, per-camera observability, and multi-shot focal self-calibration"
 homepage = { workspace = true }
 repository = { workspace = true }
 license = { workspace = true }

@@ -4,6 +4,23 @@
 #![allow(clippy::needless_range_loop)]
 #![doc = env!("CARGO_PKG_DESCRIPTION")]
 //!
+//! # Entry points
+//!
+//! - [`calibrate_apriltag`] — extrinsics from free AprilTag corners (+ optional feature matches). A
+//!   second tag is auto-measured into fixed board geometry (per-camera PnP averaged into the
+//!   reference-tag frame) so any rigid multi-tag arrangement constrains rotation without a layout.
+//! - [`calibrate_board`] — extrinsics from a known rigid [`AprilGridBoard`] (every corner a fixed
+//!   metric anchor) plus optional multi-view feature tracks ([`build_tracks`]).
+//! - [`calibrate_multishot`] — multi-shot self-calibration: **refines each camera's focal**
+//!   ([`estimate_focal`], Zhang median across shots) and averages the extrinsics over N board poses
+//!   for a real empirical covariance. Single-view focal is unobservable (the pose absorbs it); N
+//!   views break that coupling.
+//!
+//! Bundle adjustment runs on the Schur-complement solver ([`kornia_3d::ba_schur`]) so cost scales
+//! with the camera count, not the (often >1000) feature-track points. Per-camera pose covariance +
+//! observability (the min-eigenvalue that flags the single-tag rotation degeneracy) is in
+//! [`RigCalibration::per_camera`].
+//!
 //! # Conventions
 //!
 //! - **Output pose = `T_world_cam`** — maps a point from the camera OPTICAL
@@ -24,11 +41,15 @@ mod board;
 mod covariance;
 mod error;
 mod init;
+mod intrinsics;
+mod multishot;
 mod tracks;
 mod types;
 
 pub use board::AprilGridBoard;
 pub use error::CalibError;
+pub use intrinsics::estimate_focal;
+pub use multishot::{calibrate_multishot, MultiShotCalibration, MultiShotConfig, Shot};
 pub use tracks::{build_tracks, TrackEdge};
 pub use types::{
     CalibConfig, CameraStats, FeatureMatch, FeatureTrack, RigCalibration, TagObservation,
@@ -38,7 +59,12 @@ pub use types::{
 // `kornia-3d` directly — this crate is the calibration facade.
 pub use kornia_3d::pose::Pose3d;
 
-use kornia_3d::ba::{bundle_adjust, BaObservation, BaParams};
+use kornia_3d::ba::{BaObservation, BaParams};
+// Schur-complement BA: the point block (feature tracks — often >1000) is eliminated per LM iteration
+// via the reduced camera system, so cost scales with the handful of camera poses, not the point count.
+// The non-Schur `bundle_adjust` is O((6C+3N)³)-ish and took ~50s on ~1100 tracks; this is seconds. It
+// honours the same Huber/Cauchy IRLS + fixed-pose/point flags, so robustness is unchanged.
+use kornia_3d::ba_schur::bundle_adjust_schur;
 use kornia_3d::camera::PinholeCamera;
 use kornia_3d::ransac::RobustKernelKind;
 use kornia_algebra::Vec3F64;
@@ -141,7 +167,7 @@ fn finalize(
     let idcam = init::identity_camera();
 
     // Pass 1: Huber warm-start over ALL observations.
-    let res1 = bundle_adjust(
+    let res1 = bundle_adjust_schur(
         poses_init,
         points,
         obs,
@@ -172,7 +198,7 @@ fn finalize(
         .collect();
 
     // Pass 2: Cauchy redescender on the surviving observations, warm-started from pass 1.
-    let res = bundle_adjust(
+    let res = bundle_adjust_schur(
         &res1.poses,
         &res1.points,
         &obs2,

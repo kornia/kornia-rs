@@ -64,12 +64,34 @@ pub(crate) fn assemble_problem(
         }
     }
 
-    // Other tags: each corner is a FREE point triangulated from two registered
-    // cameras that see it (exact same-physical-point correspondences).
+    // Other tags: turn the observed RIGID arrangement into fixed metric anchors. Measure each tag's
+    // 4 world corners via per-camera PnP averaged into the reference-tag frame (no grid layout
+    // assumed — the observed geometry IS the board), then FIX them like the reference tag. Fixed,
+    // spatially-spread corners are what constrain rotation and what the per-camera observability
+    // covariance counts — so a multi-tag rig reports strong instead of the single-tag weak-rotation
+    // trap. Falls back to per-corner FREE triangulation when a tag can't be measured (no registered
+    // camera sees it).
     for (ti, tag) in tags.iter().enumerate() {
         if ti == ref_ti {
             continue;
         }
+        if let Some(world_corners) =
+            crate::init::measure_tag_corners(cameras, tag, poses, have, config)
+        {
+            let base = points.len();
+            points.extend_from_slice(&world_corners);
+            for (cam_idx, corners) in &tag.per_camera {
+                if !have[*cam_idx] {
+                    continue;
+                }
+                for k in 0..4 {
+                    let n = normalize(&cameras[*cam_idx], corners[k]);
+                    obs.push(ba_obs(*cam_idx, base + k, n, true)); // FIXED measured board corner
+                }
+            }
+            continue;
+        }
+        // Fallback: per-corner FREE point triangulated from two registered cameras that see it.
         for k in 0..4 {
             let seers: Vec<(usize, Vec2F64)> = tag
                 .per_camera

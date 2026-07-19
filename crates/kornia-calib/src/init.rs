@@ -162,6 +162,69 @@ pub(crate) fn init_poses(
     })
 }
 
+/// Measure a tag's 4 world corners (aruco winding TL,TR,BR,BL) directly from observations, WITHOUT
+/// assuming any grid layout. PnP each registered camera that sees the tag (`estimate_tag_pose`),
+/// map the tag square into that camera, lift to the world (reference-tag) frame via the camera's
+/// init pose, and average across cameras. This turns an arbitrary *rigid* multi-tag arrangement into
+/// fixed metric anchors: the observed geometry itself becomes the "board", so no rows/cols/spacing/
+/// orientation must be specified and mirrored/rotated boards just work. `None` if no registered
+/// camera sees the tag or every PnP fails.
+pub(crate) fn measure_tag_corners(
+    cameras: &[PinholeCamera],
+    tag: &TagObservation,
+    poses: &[Pose3d],
+    have: &[bool],
+    config: &CalibConfig,
+) -> Option<[Vec3F64; 4]> {
+    let h = config.tag_size_m / 2.0;
+    // estimate_tag_pose object frame is (BL, BR, TR, TL); our corners are aruco (TL, TR, BR, BL).
+    let object_pts = [
+        Vec3F64::new(-h, -h, 0.0), // BL
+        Vec3F64::new(h, -h, 0.0),  // BR
+        Vec3F64::new(h, h, 0.0),   // TR
+        Vec3F64::new(-h, h, 0.0),  // TL
+    ];
+    // Accumulate in aruco order; object index for aruco k is [TL,TR,BR,BL] = object[3,2,1,0].
+    let aruco_from_object = [3usize, 2, 1, 0];
+    let mut acc = [[0.0f64; 3]; 4];
+    let mut n = 0usize;
+    for (c, corners) in &tag.per_camera {
+        if !have[*c] {
+            continue;
+        }
+        let cam = &cameras[*c];
+        let image_pts = [
+            cam.undistort(corners[3].x, corners[3].y),
+            cam.undistort(corners[2].x, corners[2].y),
+            cam.undistort(corners[1].x, corners[1].y),
+            cam.undistort(corners[0].x, corners[0].y),
+        ];
+        let Ok(result) = estimate_tag_pose(&object_pts, &image_pts, cam, 50) else {
+            continue;
+        };
+        let t_cam_tag = result.best.pose; // tag-centre → cam
+        let cam_to_world = poses[*c].inverse(); // cam → world
+        for (ak, &oi) in aruco_from_object.iter().enumerate() {
+            let cam_pt = t_cam_tag.transform_point(&object_pts[oi]);
+            let w = cam_to_world.transform_point(&cam_pt);
+            acc[ak][0] += w.x;
+            acc[ak][1] += w.y;
+            acc[ak][2] += w.z;
+        }
+        n += 1;
+    }
+    if n == 0 {
+        return None;
+    }
+    let inv = 1.0 / n as f64;
+    Some([
+        Vec3F64::new(acc[0][0] * inv, acc[0][1] * inv, acc[0][2] * inv),
+        Vec3F64::new(acc[1][0] * inv, acc[1][1] * inv, acc[1][2] * inv),
+        Vec3F64::new(acc[2][0] * inv, acc[2][1] * inv, acc[2][2] * inv),
+        Vec3F64::new(acc[3][0] * inv, acc[3][1] * inv, acc[3][2] * inv),
+    ])
+}
+
 /// Mean squared reprojection error (px²) of every board corner this camera observes, under a
 /// candidate `T_cam_board` pose. Points behind the camera are heavily penalised.
 fn board_reproj_err(
