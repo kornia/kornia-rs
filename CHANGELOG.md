@@ -13,6 +13,21 @@ changes early: `cargo add kornia-imgproc@0.1.15-rc.1` or `pip install --pre korn
 
 ## [Unreleased]
 
+**Connected components 3-5x faster on CPU, ~2x on GPU.** The CPU path
+now indexes its union-find by run id instead of pixel index (tables stay
+cache-resident rather than costing two full-image allocations per call)
+and scans rows with u64 word tricks that skip 8 background/foreground
+pixels per step; the CUDA path replaces the serial 1-thread-per-row init
+with a block-parallel ballot/shared-scan run-start kernel, a
+warp-shuffle compaction scan, and a u16 rank array. 1080p,
+stream-synchronized, labels still exactly equal to cv2's `CCL_WU`
+(SAUF): CPU 4.9-6.1 ms → 0.67-1.40 ms — now faster than OpenCV's
+*default* (Spaghetti) algorithm on every tested content/connectivity
+(1.1-2.2x); GPU 2.5-3.0 ms → 1.09-1.60 ms — faster than or tied with
+cv2's default except many-small-components 8-connectivity content
+(0.82x), where Spaghetti's specialized decision tree still wins against
+the fixed 5-kernel pipeline cost. VPI has no CCL op.
+
 **CUDA module cleanup + faster pyramid borders.** The per-module CUDA
 error enums and `check_slice`/`get_kernel` helpers of the newer kernel
 families (histogram, CLAHE, bilateral, median, Canny, CCL) are now
