@@ -32,6 +32,9 @@ pub mod color;
 /// Bilateral-filter kernel (byte-exact vs the CPU path and cv2).
 pub mod bilateral;
 
+/// Canny edge-detection kernels (byte-exact vs the CPU path and cv2).
+pub mod canny;
+
 /// CLAHE LUT-build + blend kernels (byte-exact vs the CPU path and cv2).
 pub mod clahe;
 pub mod histogram;
