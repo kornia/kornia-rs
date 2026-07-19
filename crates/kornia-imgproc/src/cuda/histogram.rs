@@ -19,8 +19,6 @@ use std::sync::{Arc, OnceLock};
 use cudarc::driver::{CudaContext, CudaSlice, CudaStream};
 use kornia_tensor::CudaKernel;
 
-use super::try_compile_with_l1;
-
 super::define_cuda_error!(
     /// Error type for the CUDA histogram launchers.
     CudaHistogramError,
