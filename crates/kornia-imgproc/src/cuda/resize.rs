@@ -44,26 +44,6 @@
 //! On Turing (GTX 1650) this enlarges L1 from the default 32 KB to 64 KB,
 //! directly improving hit rates.
 //!
-//! ## Shared-memory tiling (`resize_bilinear_smem_3c`)
-//!
-//! For integer downscale factors ≥ 2 (auto block dim only), the bilinear
-//! launcher transparently switches to a shared-memory tiling kernel.  The
-//! thread block cooperatively loads a source tile of
-//! `(bw × scale_x + 1) × (bh × scale_y + 1)` source pixels into
-//! `extern __shared__ float smem[]` with a single sequential sweep, then
-//! reads exclusively from smem during the bilinear computation phase
-//! (~2-cycle SRAM vs ~30-cycle L1 latency).
-//!
-//! Block dimensions are chosen so the tile fits within the 48 KB smem budget
-//! (Turing, `CU_FUNC_CACHE_PREFER_SHARED`): 32×8 for scale ≤ 3, 16×8 for
-//! scale ≤ 5, 16×4 for scale ≤ 7, 8×4 for scale ≤ 11, 8×2 for scale ≤ 15.
-//! Larger scale factors fall back to the `__ldg` kernel.
-//!
-//! Output is bit-identical to the `__ldg` kernel — the tile is loaded via the
-//! same clamped `__ldg` reads, and the bilinear weight/sum expressions are
-//! the same; only the data source (smem vs global) changes.  Callers that
-//! pass an explicit `block_dim` bypass the smem path and use `__ldg` directly.
-//!
 //! # Nearest-neighbor
 //!
 //! Reads exactly one source pixel per output pixel (no bilinear reuse), so
@@ -92,7 +72,7 @@
 //!
 //! # Public API
 //!
-//! * [`launch_resize_bilinear_downscale_cuda`]  — bilinear downscale, 3-ch f32 (smem-tiled for integer scale ≥ 2).
+//! * [`launch_resize_bilinear_downscale_cuda`]  — bilinear downscale, 3-ch f32.
 //! * [`launch_resize_nearest_downscale_cuda`]   — nearest-neighbor, 3-ch f32.
 //! * [`launch_resize_bilinear_normalize_cuda`]  — bilinear downscale + normalise, 3-ch f32.
 //! * [`launch_resize_bicubic_cuda`]             — bicubic resize (up or down), 3-ch f32.
@@ -100,7 +80,7 @@
 
 use std::sync::{Arc, OnceLock};
 
-use cudarc::driver::{CudaContext, CudaSlice, CudaStream, LaunchConfig};
+use cudarc::driver::{CudaContext, CudaSlice, CudaStream};
 use kornia_tensor::CudaKernel;
 
 use super::{make_config, try_compile_with_l1};
@@ -268,88 +248,6 @@ extern "C" __global__ void resize_bilinear_normalize_3c(
 // edge are clamped to the nearest valid source row/column, exactly matching the
 // `min(x0+1, src_w-1)` guard in the __ldg kernel.  The computation path is
 // identical to `resize_bilinear_downscale_3c`, so the outputs are bit-exact.
-
-static BILINEAR_SMEM_SRC: &str = r#"
-extern "C" __global__ void resize_bilinear_smem_3c(
-    const float* __restrict__ src,
-    float* __restrict__       dst,
-    unsigned int src_w,
-    unsigned int src_h,
-    unsigned int dst_w,
-    unsigned int dst_h,
-    float ax, float bx,
-    float ay, float by,
-    unsigned int tile_w,
-    unsigned int tile_h
-) {
-    extern __shared__ float smem[];
-
-    const unsigned int bw = blockDim.x;
-    const unsigned int bh = blockDim.y;
-    const unsigned int tid = threadIdx.y * bw + threadIdx.x;
-    const unsigned int n_threads = bw * bh;
-
-    // Source tile origin: same half-pixel formula as the scalar kernel, applied
-    // to the block's top-left destination pixel.
-    int x0_tile = (int)floorf(ax * (float)(blockIdx.x * bw) + bx);
-    int y0_tile = (int)floorf(ay * (float)(blockIdx.y * bh) + by);
-
-    // Cooperatively load (tile_h × tile_w × 3) source floats into smem.
-    // Sequential linear scan → coalesced global reads.
-    const unsigned int tile_elems = tile_w * tile_h * 3u;
-    for (unsigned int i = tid; i < tile_elems; i += n_threads) {
-        unsigned int pi = i / 3u;
-        unsigned int c  = i - pi * 3u;
-        int ty = (int)(pi / tile_w);
-        int tx = (int)(pi - (unsigned int)ty * tile_w);
-        int sxi = x0_tile + tx;
-        int syi = y0_tile + ty;
-        // BORDER_REPLICATE: clamp to [0, src_w-1] × [0, src_h-1].
-        sxi = max(0, min(sxi, (int)src_w - 1));
-        syi = max(0, min(syi, (int)src_h - 1));
-        smem[i] = __ldg(&src[((unsigned int)syi * src_w + (unsigned int)sxi) * 3u + c]);
-    }
-    __syncthreads();
-
-    const unsigned int gx = blockIdx.x * bw + threadIdx.x;
-    const unsigned int gy = blockIdx.y * bh + threadIdx.y;
-    if (gx >= dst_w || gy >= dst_h) return;
-
-    // Same half-pixel formula + clamp as resize_bilinear_downscale_3c — required
-    // for byte-exact parity (--fmad=false applies to both kernels).
-    float sx = fmaxf(fminf(ax * (float)gx + bx, (float)(src_w - 1u)), 0.0f);
-    float sy = fmaxf(fminf(ay * (float)gy + by, (float)(src_h - 1u)), 0.0f);
-
-    unsigned int x0 = (unsigned int)sx;
-    unsigned int y0 = (unsigned int)sy;
-
-    float fx  = sx - (float)x0;
-    float fy  = sy - (float)y0;
-    float w00 = (1.0f - fy) * (1.0f - fx);
-    float w10 = (1.0f - fy) * fx;
-    float w01 = fy * (1.0f - fx);
-    float w11 = fy * fx;
-
-    // Tile-relative indices. x0_tile ≤ x0 for any downscale destination pixel
-    // in this block (half-pixel formula produces non-negative offset), so the
-    // cast to unsigned is safe.  tx1/ty1 are within tile bounds by construction
-    // (tile_w = bw*scale_x+1 ≥ max_relative_x0 + 1).
-    unsigned int tx0 = (unsigned int)((int)x0 - x0_tile);
-    unsigned int ty0 = (unsigned int)((int)y0 - y0_tile);
-    unsigned int tx1 = tx0 + 1u;
-    unsigned int ty1 = ty0 + 1u;
-
-    unsigned int b00 = (ty0 * tile_w + tx0) * 3u;
-    unsigned int b10 = (ty0 * tile_w + tx1) * 3u;
-    unsigned int b01 = (ty1 * tile_w + tx0) * 3u;
-    unsigned int b11 = (ty1 * tile_w + tx1) * 3u;
-
-    unsigned int out = (gy * dst_w + gx) * 3u;
-    dst[out]     = w00*smem[b00]   + w10*smem[b10]   + w01*smem[b01]   + w11*smem[b11];
-    dst[out + 1] = w00*smem[b00+1] + w10*smem[b10+1] + w01*smem[b01+1] + w11*smem[b11+1];
-    dst[out + 2] = w00*smem[b00+2] + w10*smem[b10+2] + w01*smem[b01+2] + w11*smem[b11+2];
-}
-"#;
 
 // ── CUDA C source: bicubic resize ─────────────────────────────────────────────
 //
@@ -521,7 +419,6 @@ extern "C" __global__ void resize_lanczos_v_3c(
 // ── Kernel caches ─────────────────────────────────────────────────────────────
 
 static BILINEAR_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
-static BILINEAR_SMEM_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
 static NEAREST_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
 static BILINEAR_NORMALIZE_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
 static BICUBIC_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
@@ -544,54 +441,6 @@ pub enum CudaResizeError {
         /// Minimum required length (dst_w × dst_h × 3).
         need: usize,
     },
-}
-
-fn try_compile_with_shared(
-    ctx: &Arc<CudaContext>,
-    src: &str,
-    fn_name: &str,
-) -> Result<CudaKernel, String> {
-    let k = CudaKernel::compile(ctx, src, fn_name)
-        .map_err(|e| format!("failed to compile {fn_name}: {e}"))?;
-    // Give the kernel maximum shared memory budget (48 KB on Turing with
-    // CU_FUNC_CACHE_PREFER_SHARED), instead of the L1-preferred 16 KB.
-    let _ = k.prefer_shared_memory();
-    Ok(k)
-}
-
-// Returns (block_w, block_h, tile_w, tile_h) for the smem bilinear kernel, or
-// None when the scale is non-integer, < 2, or the resulting tile exceeds the
-// 48 KB shared-memory budget (Turing / sm_75 with PREFER_SHARED).
-//
-// The block dims shrink as the scale grows so the tile stays within budget;
-// this keeps the loaded tile size roughly constant (~12–29 KB) across all
-// supported integer scale factors.
-fn smem_config(
-    src_width: u32,
-    dst_width: u32,
-    src_height: u32,
-    dst_height: u32,
-) -> Option<(u32, u32, u32, u32)> {
-    // Integer downscale ≥ 2× in both dimensions.
-    if src_width < dst_width * 2 || src_height < dst_height * 2 {
-        return None;
-    }
-    if !src_width.is_multiple_of(dst_width) || !src_height.is_multiple_of(dst_height) {
-        return None;
-    }
-    let scale_x = src_width / dst_width;
-    let scale_y = src_height / dst_height;
-
-    // 48 KB: CU_FUNC_CACHE_PREFER_SHARED on Turing (sm_75).
-    const MAX_SMEM: u32 = 49152;
-    for &(bw, bh) in &[(32u32, 8u32), (16, 8), (16, 4), (8, 4), (8, 2)] {
-        let tile_w = bw * scale_x + 1;
-        let tile_h = bh * scale_y + 1;
-        if tile_w * tile_h * 3 * 4 <= MAX_SMEM {
-            return Some((bw, bh, tile_w, tile_h));
-        }
-    }
-    None // scale too large; fall back to __ldg kernel
 }
 
 // ── Pixel mapping ─────────────────────────────────────────────────────────────
@@ -689,46 +538,6 @@ pub fn launch_resize_bilinear_downscale_cuda(
             got: dst.len(),
             need,
         });
-    }
-
-    // Transparent smem optimisation: for auto block dim on integer downscale ≥ 2×,
-    // use the shared-memory tiling kernel (byte-exact parity with __ldg path).
-    // A caller that passes an explicit `block_dim` gets the __ldg kernel as-is.
-    if block_dim.is_none() {
-        if let Some((bw, bh, tile_w, tile_h)) =
-            smem_config(src_width, dst_width, src_height, dst_height)
-        {
-            let smem_bytes = tile_w * tile_h * 3 * 4;
-            let kernel_res = BILINEAR_SMEM_KERNEL.get_or_init(|| {
-                try_compile_with_shared(ctx, BILINEAR_SMEM_SRC, "resize_bilinear_smem_3c")
-            });
-            if let Ok(kernel) = kernel_res {
-                let (ax, bx) = mapping.coeffs(src_width, dst_width);
-                let (ay, by) = mapping.coeffs(src_height, dst_height);
-                let cfg = LaunchConfig {
-                    block_dim: (bw, bh, 1),
-                    grid_dim: (dst_width.div_ceil(bw), dst_height.div_ceil(bh), 1),
-                    shared_mem_bytes: smem_bytes,
-                };
-                return kernel
-                    .launch_builder(stream)
-                    .arg(src)
-                    .arg(dst)
-                    .arg(&src_width)
-                    .arg(&src_height)
-                    .arg(&dst_width)
-                    .arg(&dst_height)
-                    .arg(&ax)
-                    .arg(&bx)
-                    .arg(&ay)
-                    .arg(&by)
-                    .arg(&tile_w)
-                    .arg(&tile_h)
-                    .launch_2d(dst_width, dst_height, cfg)
-                    .map_err(|e| CudaResizeError::Cuda(e.to_string()));
-            }
-            // If the smem kernel failed to compile, fall through to __ldg.
-        }
     }
 
     let kernel = BILINEAR_KERNEL
@@ -1266,104 +1075,4 @@ mod tests {
         }
     }
 
-    /// 4× isotropic downscale routes through the smem kernel (scale ≥ 2, integer,
-    /// tile = 65×17 floats × 3ch with bw=16/bh=4 — fits in 48 KB budget).
-    /// Output must be bit-identical to the CPU half-pixel bilinear path.
-    #[test]
-    fn resize_4x_downscale_smem_matches_cpu() {
-        // (1280×960) → (320×240): isotropic 4× — activates smem path.
-        assert_bit_exact((1280, 960), (320, 240), InterpolationMode::Bilinear);
-    }
-
-    /// Anisotropic 2×4 downscale: scale_x=2, scale_y=4.  The smem tile uses
-    /// independent per-axis scale factors (tile_w=bw*2+1, tile_h=bh*4+1).
-    #[test]
-    fn resize_anisotropic_smem_matches_cpu() {
-        // (640×960) → (320×240): scale_x=2, scale_y=4.
-        assert_bit_exact((640, 960), (320, 240), InterpolationMode::Bilinear);
-    }
-
-    /// smem_config must return None for non-integer, upscale, or 1× sizes.
-    #[test]
-    fn smem_config_rejects_non_integer_and_upscale() {
-        assert!(
-            smem_config(640, 320, 480, 240).is_some(),
-            "2× should be accepted"
-        );
-        assert!(
-            smem_config(640, 320, 480, 241).is_none(),
-            "non-integer y should be rejected"
-        );
-        assert!(
-            smem_config(641, 320, 480, 240).is_none(),
-            "non-integer x should be rejected"
-        );
-        assert!(
-            smem_config(320, 640, 240, 480).is_none(),
-            "upscale should be rejected"
-        );
-        assert!(
-            smem_config(640, 640, 480, 480).is_none(),
-            "1× (no downscale) should be rejected"
-        );
-    }
-
-    /// An explicit block_dim bypasses the smem path and falls through to the
-    /// __ldg kernel — the output must still be CPU-bit-exact.
-    #[test]
-    fn resize_explicit_block_dim_bypasses_smem() {
-        // 2× integer downscale that would normally go through smem, but caller
-        // overrides block_dim → __ldg kernel.  Output still must be bit-exact.
-        let (sw, sh) = (640usize, 480);
-        let (dw, dh) = (320usize, 240);
-        let data = pattern_f32(sw * sh * 3);
-        let src = Image::<f32, 3>::new(
-            ImageSize {
-                width: sw,
-                height: sh,
-            },
-            data.clone(),
-        )
-        .unwrap();
-        let mut cpu = Image::<f32, 3>::from_size_val(
-            ImageSize {
-                width: dw,
-                height: dh,
-            },
-            0.0,
-        )
-        .unwrap();
-        resize(&src, &mut cpu, InterpolationMode::Bilinear).unwrap();
-
-        let stream = default_stream();
-        let ctx = &stream.context();
-        let d_src = stream.clone_htod(&data).unwrap();
-        let mut d_dst = stream.alloc_zeros::<f32>(dw * dh * 3).unwrap();
-        launch_resize_bilinear_downscale_cuda(
-            ctx,
-            &stream,
-            &d_src,
-            &mut d_dst,
-            sw as u32,
-            sh as u32,
-            dw as u32,
-            dh as u32,
-            PixelMapping::HalfPixel,
-            Some((16, 4)), // explicit dim → bypasses smem path
-        )
-        .unwrap();
-        let gpu: Vec<f32> = stream.clone_dtoh(&d_dst).unwrap();
-        stream.synchronize().unwrap();
-        let bad = cpu
-            .as_slice()
-            .iter()
-            .zip(&gpu)
-            .enumerate()
-            .find(|(_, (c, g))| c.to_bits() != g.to_bits());
-        assert!(
-            bad.is_none(),
-            "explicit block_dim: CPU/GPU mismatch at element {}",
-            bad.unwrap().0
-        );
-    }
 }
