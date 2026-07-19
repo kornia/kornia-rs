@@ -108,6 +108,12 @@ extern "C" __global__ void canny_nms(
 "#;
 
 static HYSTERESIS_SRC: &str = r#"
+// (A PERSISTENT-KERNEL variant — 16 resident blocks, hand-rolled grid
+// barrier, single launch — was tried and REGRESSED ~2.4x on dense
+// content: the small resident grid underutilizes the SMs and the spin
+// barrier serializes every round on the slowest block, while this
+// relaunch design gets full-grid parallelism per sweep and the worklist
+// makes converged sweeps nearly free. Task #37, 2026-07-20.)
 // Block-local fixpoint over a 64x16 macro-tile (each 32x8 thread owns a
 // 2x2 cell quad in shared memory) with an ACTIVE-TILE worklist (128-wide
 // tiles were tried and regressed ~25%: more wasted work per active tile): a tile
