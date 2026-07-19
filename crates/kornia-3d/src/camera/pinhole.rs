@@ -54,6 +54,38 @@ pub fn project_point(
 }
 
 impl PinholeCamera {
+    /// The identity pinhole: `fx = fy = 1`, `cx = cy = 0`, no distortion.
+    ///
+    /// A point projected through this camera stays in normalized image coordinates (`x/z`, `y/z`).
+    /// Useful as the camera model for optimizers/triangulators that work in normalized coordinates
+    /// after each observation has been pre-normalized with [`PinholeCamera::normalize`].
+    pub const IDENTITY: Self = Self {
+        fx: 1.0,
+        fy: 1.0,
+        cx: 0.0,
+        cy: 0.0,
+        k1: 0.0,
+        k2: 0.0,
+        p1: 0.0,
+        p2: 0.0,
+    };
+
+    /// Map a pixel to **normalized image coordinates** — the point `(x, y)` on the `z = 1` plane
+    /// whose ideal-pinhole projection is this pixel (Hartley & Zisserman's `x̂ = K⁻¹·x`; the output
+    /// of OpenCV's `undistortPoints`).
+    ///
+    /// Removes distortion via [`PinholeCamera::undistort`], then applies `K⁻¹`:
+    /// `((u_ideal − cx) / fx, (v_ideal − cy) / fy)`; with zero distortion just
+    /// `((u − cx) / fx, (v − cy) / fy)`. It is the inverse of the ideal-pinhole projection, so a
+    /// camera-frame point `p` satisfies `normalize(project(p)) == (p.x/p.z, p.y/p.z)`.
+    ///
+    /// Note: this is the projective normalization onto the `z = 1` plane, **not** an L2 (unit-length)
+    /// vector normalization — the result is a 2D image-plane point, not a unit bearing ray.
+    pub fn normalize(&self, uv: Vec2F64) -> Vec2F64 {
+        let up = self.undistort(uv.x, uv.y);
+        Vec2F64::new((up.x - self.cx) / self.fx, (up.y - self.cy) / self.fy)
+    }
+
     /// Undistorts a pixel using iterative Brown-Conrady inversion.
     ///
     /// Returns the undistorted pixel `(u, v)` in the ideal pinhole image plane.
@@ -289,5 +321,30 @@ mod tests {
             .reprojection_error_sq_world(&pose, &p_world, 320.0, 240.0)
             .unwrap();
         assert!(err < 1e-12);
+    }
+
+    #[test]
+    fn test_identity_and_normalize_roundtrip() {
+        // IDENTITY leaves normalized coords untouched.
+        let id = PinholeCamera::IDENTITY;
+        assert_eq!(id.fx, 1.0);
+        let n = id.normalize(Vec2F64::new(0.3, -0.2));
+        assert!((n.x - 0.3).abs() < 1e-12 && (n.y + 0.2).abs() < 1e-12);
+        // normalize is the inverse of the (distortion-free) pinhole projection.
+        let cam = PinholeCamera {
+            fx: 500.0,
+            fy: 480.0,
+            cx: 320.0,
+            cy: 240.0,
+            k1: 0.0,
+            k2: 0.0,
+            p1: 0.0,
+            p2: 0.0,
+        };
+        let (xn, yn) = (0.12, -0.05);
+        let u = cam.fx * xn + cam.cx;
+        let v = cam.fy * yn + cam.cy;
+        let back = cam.normalize(Vec2F64::new(u, v));
+        assert!((back.x - xn).abs() < 1e-9 && (back.y - yn).abs() < 1e-9);
     }
 }
