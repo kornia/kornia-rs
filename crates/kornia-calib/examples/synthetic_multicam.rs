@@ -124,7 +124,7 @@ fn main() {
             s.reproj_rmse_px,
             s.rot_sigma_deg,
             s.trans_sigma_m * 1000.0,
-            s.min_eigenvalue,
+            s.min_eigenvalue.unwrap_or(f64::NAN),
         );
     }
 }

@@ -152,16 +152,7 @@ pub(crate) fn camera_stats(
         }
 
         if !have[c] || num * 2 <= 6 {
-            out.push(CameraStats {
-                camera: c,
-                registered: have[c],
-                num_obs: num,
-                reproj_rmse_px: -1.0,
-                rot_sigma_deg: f64::INFINITY,
-                trans_sigma_m: f64::INFINITY,
-                min_eigenvalue: 0.0,
-                weakest_dof: [0.0; 6],
-            });
+            out.push(CameraStats::unconstrained(c, have[c], num));
             continue;
         }
 
@@ -224,8 +215,8 @@ pub(crate) fn camera_stats(
             reproj_rmse_px,
             rot_sigma_deg,
             trans_sigma_m,
-            min_eigenvalue: eig_nd[kmin],
-            weakest_dof,
+            min_eigenvalue: Some(eig_nd[kmin]),
+            weakest_dof: Some(weakest_dof),
         });
     }
     out

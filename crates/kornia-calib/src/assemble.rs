@@ -23,6 +23,44 @@ fn ba_obs(pose_idx: usize, point_idx: usize, n: Vec2F64, fixed_point: bool) -> B
     }
 }
 
+/// Triangulate one FREE point from the registered camera pair `(ca, ua)`/`(cb, ub)`, push it, and
+/// attach a free observation for every `(camera, pixel)` in `attach`. Returns `false` (adding
+/// nothing) if triangulation fails or is degenerate. Shared by every free-point site (feature tracks,
+/// feature matches, and the non-measurable-tag fallback).
+#[allow(clippy::too_many_arguments)]
+fn add_free_point(
+    points: &mut Vec<Vec3F64>,
+    obs: &mut Vec<BaObservation>,
+    cameras: &[PinholeCamera],
+    poses: &[Pose3d],
+    tcfg: &TriangulationConfig,
+    (ca, ua): (usize, Vec2F64),
+    (cb, ub): (usize, Vec2F64),
+    attach: &[(usize, Vec2F64)],
+) -> bool {
+    let na = cameras[ca].normalize(ua);
+    let nb = cameras[cb].normalize(ub);
+    let Ok(pts) = triangulate_matched_points(
+        &[na],
+        &[nb],
+        &poses[ca],
+        &poses[cb],
+        &PinholeCamera::IDENTITY,
+        tcfg,
+    ) else {
+        return false;
+    };
+    if pts.len() != 1 {
+        return false;
+    }
+    let pidx = points.len();
+    points.push(pts[0].position);
+    for (c, uv) in attach {
+        obs.push(ba_obs(*c, pidx, cameras[*c].normalize(*uv), false));
+    }
+    true
+}
+
 /// Assemble `(points, observations)` for bundle adjustment. World frame = the
 /// reference tag's frame: its 4 corners are FIXED (gauge + metric scale); every
 /// other tag corner and feature point is a FREE point triangulated from two
@@ -36,7 +74,6 @@ pub(crate) fn assemble_problem(
     ref_ti: usize,
     config: &CalibConfig,
 ) -> (Vec<Vec3F64>, Vec<BaObservation>) {
-    let idcam = PinholeCamera::IDENTITY;
     let tcfg = TriangulationConfig {
         min_parallax_deg: config.min_parallax_deg,
         max_reprojection_error: config.max_reprojection_error,
@@ -101,52 +138,34 @@ pub(crate) fn assemble_problem(
             if seers.len() < 2 {
                 continue;
             }
-            let (ca, ua) = seers[0];
-            let (cb, ub) = seers[1];
-            let na = cameras[ca].normalize(ua);
-            let nb = cameras[cb].normalize(ub);
-            let Ok(pts) =
-                triangulate_matched_points(&[na], &[nb], &poses[ca], &poses[cb], &idcam, &tcfg)
-            else {
-                continue;
-            };
-            if pts.len() != 1 {
-                continue;
-            }
-            let pidx = points.len();
-            points.push(pts[0].position);
-            for (c, uv) in &seers {
-                let n = cameras[*c].normalize(*uv);
-                obs.push(ba_obs(*c, pidx, n, false));
-            }
+            add_free_point(
+                &mut points,
+                &mut obs,
+                cameras,
+                poses,
+                &tcfg,
+                seers[0],
+                seers[1],
+                &seers,
+            );
         }
     }
 
-    // Feature matches: triangulate each pair with the init poses (per-point, so
-    // the observation mapping is exact).
+    // Feature matches: one free point per pair (the pair IS the observation set).
     for f in features {
         if !have[f.cam_a] || !have[f.cam_b] {
             continue;
         }
-        let na = cameras[f.cam_a].normalize(f.uv_a);
-        let nb = cameras[f.cam_b].normalize(f.uv_b);
-        let Ok(pts) = triangulate_matched_points(
-            &[na],
-            &[nb],
-            &poses[f.cam_a],
-            &poses[f.cam_b],
-            &idcam,
+        add_free_point(
+            &mut points,
+            &mut obs,
+            cameras,
+            poses,
             &tcfg,
-        ) else {
-            continue;
-        };
-        if pts.len() != 1 {
-            continue;
-        }
-        let pidx = points.len();
-        points.push(pts[0].position);
-        obs.push(ba_obs(f.cam_a, pidx, na, false));
-        obs.push(ba_obs(f.cam_b, pidx, nb, false));
+            (f.cam_a, f.uv_a),
+            (f.cam_b, f.uv_b),
+            &[(f.cam_a, f.uv_a), (f.cam_b, f.uv_b)],
+        );
     }
 
     (points, obs)
@@ -166,7 +185,6 @@ pub(crate) fn assemble_board(
     have: &[bool],
     config: &CalibConfig,
 ) -> (Vec<Vec3F64>, Vec<BaObservation>) {
-    let idcam = PinholeCamera::IDENTITY;
     let tcfg = TriangulationConfig {
         min_parallax_deg: config.min_parallax_deg,
         max_reprojection_error: config.max_reprojection_error,
@@ -211,36 +229,31 @@ pub(crate) fn assemble_board(
         if regs.len() < 2 {
             continue;
         }
-        // Widest-baseline registered pair (camera centre = pose.inverse().translation).
+        // Widest-baseline registered pair. Camera centres (pose.inverse().translation) are computed
+        // ONCE per track here, not O(n²) inside the pair search.
+        let centers: Vec<Vec3F64> = regs
+            .iter()
+            .map(|(c, _)| poses[*c].inverse().translation)
+            .collect();
         let mut best = (0usize, 1usize, -1.0f64);
         for i in 0..regs.len() {
             for j in (i + 1)..regs.len() {
-                let ci = poses[regs[i].0].inverse().translation;
-                let cj = poses[regs[j].0].inverse().translation;
-                let d = (ci - cj).length();
+                let d = (centers[i] - centers[j]).length();
                 if d > best.2 {
                     best = (i, j, d);
                 }
             }
         }
-        let (ca, ua) = regs[best.0];
-        let (cb, ub) = regs[best.1];
-        let na = cameras[ca].normalize(ua);
-        let nb = cameras[cb].normalize(ub);
-        let Ok(pts) =
-            triangulate_matched_points(&[na], &[nb], &poses[ca], &poses[cb], &idcam, &tcfg)
-        else {
-            continue;
-        };
-        if pts.len() != 1 {
-            continue;
-        }
-        let pidx = points.len();
-        points.push(pts[0].position);
-        for (c, uv) in &regs {
-            let n = cameras[*c].normalize(*uv);
-            obs.push(ba_obs(*c, pidx, n, false));
-        }
+        add_free_point(
+            &mut points,
+            &mut obs,
+            cameras,
+            poses,
+            &tcfg,
+            regs[best.0],
+            regs[best.1],
+            &regs,
+        );
     }
 
     (points, obs)

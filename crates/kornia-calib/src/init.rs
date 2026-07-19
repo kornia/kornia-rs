@@ -75,16 +75,32 @@ pub(crate) fn init_poses(
     // each camera's lower-error branch (2^nb combos is too many).
     let nb = branches.len();
     let ncomb = if nb <= 6 { 1u32 << nb } else { 1 };
-    // Normalized feature coords depend only on (camera, pixel), not the branch combo — compute once
-    // (undistort is an iterative Brown-Conrady inversion, so recomputing it up to 2^n times is waste).
-    let feat_norm: Vec<(Vec2F64, Vec2F64)> = features
+    // Correspondences for branch scoring: the XFeat feature matches PLUS every non-reference tag
+    // corner as an exact cross-camera match. The tag corners let the multi-tag rigid geometry
+    // disambiguate the planar branch even with NO natural features (the correct branch combo is the
+    // only one under which the shared corners triangulate + reproject consistently). One tag alone
+    // still can't be disambiguated — that's the documented single-planar-tag degeneracy.
+    let mut corr: Vec<(usize, Vec2F64, usize, Vec2F64)> = features
         .iter()
-        .map(|f| {
-            (
-                cameras[f.cam_a].normalize(f.uv_a),
-                cameras[f.cam_b].normalize(f.uv_b),
-            )
-        })
+        .map(|f| (f.cam_a, f.uv_a, f.cam_b, f.uv_b))
+        .collect();
+    for (ti, tag) in tags.iter().enumerate() {
+        if ti == ref_ti {
+            continue;
+        }
+        for k in 0..4 {
+            let seers: Vec<(usize, Vec2F64)> =
+                tag.per_camera.iter().map(|(c, cs)| (*c, cs[k])).collect();
+            for j in 1..seers.len() {
+                corr.push((seers[0].0, seers[0].1, seers[j].0, seers[j].1));
+            }
+        }
+    }
+    // Normalized coords depend only on (camera, pixel), not the branch combo — compute once
+    // (undistort is an iterative Brown-Conrady inversion, so recomputing it per combo is waste).
+    let corr_norm: Vec<(Vec2F64, Vec2F64)> = corr
+        .iter()
+        .map(|&(ca, ua, cb, ub)| (cameras[ca].normalize(ua), cameras[cb].normalize(ub)))
         .collect();
     let mut best_combo = (f64::INFINITY, 0u32);
     let mut ps = vec![Pose3d::IDENTITY; n_cams];
@@ -98,20 +114,13 @@ pub(crate) fn init_poses(
         }
         let mut err = 0.0f64;
         let mut cnt = 0usize;
-        for (fi, f) in features.iter().enumerate() {
-            if !hv[f.cam_a] || !hv[f.cam_b] {
+        for (i, &(ca, _, cb, _)) in corr.iter().enumerate() {
+            if !hv[ca] || !hv[cb] {
                 continue;
             }
-            let (na, nb2) = feat_norm[fi];
+            let (na, nb2) = corr_norm[i];
             cnt += 2;
-            let tri = triangulate_matched_points(
-                &[na],
-                &[nb2],
-                &ps[f.cam_a],
-                &ps[f.cam_b],
-                &idcam,
-                &tcfg,
-            );
+            let tri = triangulate_matched_points(&[na], &[nb2], &ps[ca], &ps[cb], &idcam, &tcfg);
             let pts = match &tri {
                 Ok(p) if p.len() == 1 => p,
                 _ => {
@@ -120,7 +129,7 @@ pub(crate) fn init_poses(
                 }
             };
             let pw = pts[0].position;
-            for (ci, nn) in [(f.cam_a, na), (f.cam_b, nb2)] {
+            for (ci, nn) in [(ca, na), (cb, nb2)] {
                 let pc = ps[ci].transform_point(&pw);
                 if pc.z <= 1e-6 {
                     err += 4.0;
@@ -171,10 +180,24 @@ pub(crate) fn measure_tag_corners(
         Vec3F64::new(h, h, 0.0),   // TR
         Vec3F64::new(-h, h, 0.0),  // TL
     ];
-    // Accumulate in aruco order; object index for aruco k is [TL,TR,BR,BL] = object[3,2,1,0].
+    // aruco corner k maps to object index [TL,TR,BR,BL] = object[3,2,1,0].
     let aruco_from_object = [3usize, 2, 1, 0];
-    let mut acc = [[0.0f64; 3]; 4];
-    let mut n = 0usize;
+    // World corners of a candidate tag→cam pose, lifted into the world (reference-tag) frame.
+    let world_corners = |t_cam_tag: &Pose3d, cam_to_world: &Pose3d| -> [Vec3F64; 4] {
+        let mut w = [Vec3F64::ZERO; 4];
+        for (ak, &oi) in aruco_from_object.iter().enumerate() {
+            w[ak] = cam_to_world.transform_point(&t_cam_tag.transform_point(&object_pts[oi]));
+        }
+        w
+    };
+    let set_dist = |a: &[Vec3F64; 4], b: &[Vec3F64; 4]| -> f64 {
+        (0..4).map(|k| (a[k] - b[k]).length()).sum()
+    };
+
+    // Per registered camera, BOTH planar-pose branches lifted to world corners. A planar tag has a
+    // 2-fold pose ambiguity; `best` is usually right but flips near fronto-parallel, so we resolve it
+    // by cross-camera consistency rather than trusting `best` blindly.
+    let mut cands: Vec<[[Vec3F64; 4]; 2]> = Vec::new();
     for (c, corners) in &tag.per_camera {
         if !have[*c] {
             continue;
@@ -189,27 +212,40 @@ pub(crate) fn measure_tag_corners(
         let Ok(result) = estimate_tag_pose(&object_pts, &image_pts, cam, 50) else {
             continue;
         };
-        let t_cam_tag = result.best.pose; // tag-centre → cam
-        let cam_to_world = poses[*c].inverse(); // cam → world
-        for (ak, &oi) in aruco_from_object.iter().enumerate() {
-            let cam_pt = t_cam_tag.transform_point(&object_pts[oi]);
-            let w = cam_to_world.transform_point(&cam_pt);
-            acc[ak][0] += w.x;
-            acc[ak][1] += w.y;
-            acc[ak][2] += w.z;
-        }
-        n += 1;
+        let cam_to_world = poses[*c].inverse();
+        cands.push([
+            world_corners(&result.best.pose, &cam_to_world),
+            world_corners(&result.second.pose, &cam_to_world),
+        ]);
     }
-    if n == 0 {
+    if cands.is_empty() {
         return None;
     }
-    let inv = 1.0 / n as f64;
-    Some([
-        Vec3F64::new(acc[0][0] * inv, acc[0][1] * inv, acc[0][2] * inv),
-        Vec3F64::new(acc[1][0] * inv, acc[1][1] * inv, acc[1][2] * inv),
-        Vec3F64::new(acc[2][0] * inv, acc[2][1] * inv, acc[2][2] * inv),
-        Vec3F64::new(acc[3][0] * inv, acc[3][1] * inv, acc[3][2] * inv),
-    ])
+
+    // Anchor = the camera whose two branches disagree MOST (the most head-on view — least ambiguous,
+    // so its `best` is the most trustworthy). Then each camera contributes the branch closest to the
+    // anchor's `best`, and we average the agreeing branches.
+    let anchor_i = (0..cands.len())
+        .max_by(|&a, &b| {
+            set_dist(&cands[a][0], &cands[a][1])
+                .partial_cmp(&set_dist(&cands[b][0], &cands[b][1]))
+                .unwrap()
+        })
+        .unwrap();
+    let anchor = cands[anchor_i][0];
+    let mut acc = [Vec3F64::ZERO; 4];
+    for cand in &cands {
+        let pick = if set_dist(&cand[0], &anchor) <= set_dist(&cand[1], &anchor) {
+            &cand[0]
+        } else {
+            &cand[1]
+        };
+        for k in 0..4 {
+            acc[k] += pick[k];
+        }
+    }
+    let inv = 1.0 / cands.len() as f64;
+    Some(acc.map(|v| v * inv))
 }
 
 /// Mean squared reprojection error (px²) of every board corner this camera observes, under a

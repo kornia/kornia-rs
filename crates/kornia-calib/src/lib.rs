@@ -88,11 +88,15 @@ fn x84_threshold(res: &mut [f64], k: f64) -> f64 {
     if res.len() < 10 {
         return f64::INFINITY;
     }
-    res.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let med = res[res.len() / 2];
+    // Median via quickselect (O(n)); we only need the middle element, not a full sort.
+    let cmp = |a: &f64, b: &f64| a.partial_cmp(b).unwrap();
+    let mid = res.len() / 2;
+    res.select_nth_unstable_by(mid, cmp);
+    let med = res[mid];
     let mut dev: Vec<f64> = res.iter().map(|r| (r - med).abs()).collect();
-    dev.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let mad = dev[dev.len() / 2];
+    let dmid = dev.len() / 2;
+    dev.select_nth_unstable_by(dmid, cmp);
+    let mad = dev[dmid];
     if mad < 1e-9 {
         return f64::INFINITY;
     }
@@ -578,14 +582,13 @@ mod tests {
         let board_min_eig = board_cal
             .per_camera
             .iter()
-            .filter(|s| s.registered)
-            .map(|s| s.min_eigenvalue)
+            .filter_map(|s| s.min_eigenvalue)
             .fold(f64::INFINITY, f64::min);
         // All board cameras are well-observed.
         assert_eq!(board_cal.per_camera.len(), 3);
         for s in &board_cal.per_camera {
             assert!(s.registered && s.num_obs > 0);
-            assert!(s.min_eigenvalue > 0.0 && s.rot_sigma_deg.is_finite());
+            assert!(s.min_eigenvalue.is_some_and(|e| e > 0.0) && s.rot_sigma_deg.is_finite());
         }
 
         // A single centered planar tag at the world origin → only 4 coplanar fixed corners.
@@ -610,8 +613,7 @@ mod tests {
         let tag_min_eig = tag_cal
             .per_camera
             .iter()
-            .filter(|s| s.registered)
-            .map(|s| s.min_eigenvalue)
+            .filter_map(|s| s.min_eigenvalue)
             .fold(f64::INFINITY, f64::min);
 
         assert!(

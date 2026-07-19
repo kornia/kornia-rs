@@ -95,10 +95,29 @@ pub struct CameraStats {
     pub trans_sigma_m: f64,
     /// Smallest eigenvalue of the non-dimensionalized pose Hessian. Near zero ⇒ an **unobservable**
     /// DOF (e.g. the in-plane tilt a single planar tag cannot fix). Larger ⇒ better constrained.
-    pub min_eigenvalue: f64,
+    /// `None` when there is no Hessian to analyse — an unregistered camera, or the empirical
+    /// (multi-shot) path whose uncertainty is a measured sample spread, not a linearized covariance.
+    pub min_eigenvalue: Option<f64>,
     /// Eigenvector of `min_eigenvalue` — the weakest direction `[ωx,ωy,ωz, νx,νy,νz]` in the camera
-    /// frame.
-    pub weakest_dof: [f64; 6],
+    /// frame. `None` in the same cases as [`CameraStats::min_eigenvalue`].
+    pub weakest_dof: Option<[f64; 6]>,
+}
+
+impl CameraStats {
+    /// An entry for a camera with no usable pose covariance: unregistered, or too few fixed-point
+    /// observations to form the `6×6` Hessian. All uncertainty fields are the "unknown" sentinels.
+    pub(crate) fn unconstrained(camera: usize, registered: bool, num_obs: usize) -> Self {
+        Self {
+            camera,
+            registered,
+            num_obs,
+            reproj_rmse_px: -1.0,
+            rot_sigma_deg: f64::INFINITY,
+            trans_sigma_m: f64::INFINITY,
+            min_eigenvalue: None,
+            weakest_dof: None,
+        }
+    }
 }
 
 /// Result of a multi-camera extrinsic calibration.

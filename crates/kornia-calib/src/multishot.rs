@@ -21,6 +21,7 @@ use kornia_algebra::{Mat3F64, Vec2F64, Vec3F64, SO3F64};
 use crate::error::CalibError;
 use crate::intrinsics::estimate_focal;
 use crate::types::{CalibConfig, CameraStats, TagObservation};
+use kornia_apriltag::board::AprilGridBoard;
 
 /// One captured shot: the tags each camera saw with the board at a single (unknown) pose. Move the
 /// board between shots so each camera observes it from several angles.
@@ -38,6 +39,9 @@ pub struct MultiShotConfig {
     pub refine_focal: bool,
     /// Minimum per-camera focal samples (shots seeing a tag) required to trust the refined focal.
     pub min_focal_samples: usize,
+    /// Known rigid board layout. `Some` → each shot solves with [`crate::calibrate_board`] (fixed grid
+    /// anchors); `None` → [`crate::calibrate_apriltag`] auto-measures the tag arrangement per shot.
+    pub board: Option<AprilGridBoard>,
 }
 
 impl MultiShotConfig {
@@ -47,6 +51,7 @@ impl MultiShotConfig {
             base: CalibConfig::new(tag_size_m),
             refine_focal: true,
             min_focal_samples: 3,
+            board: None,
         }
     }
 }
@@ -132,7 +137,11 @@ pub fn calibrate_multishot(
     let mut rms_sum = 0.0;
     let mut rms_n = 0usize;
     for shot in shots {
-        match crate::calibrate_apriltag(&refined, &shot.tags, &[], &config.base) {
+        let solved = match &config.board {
+            Some(board) => crate::calibrate_board(&refined, &shot.tags, &[], board, &config.base),
+            None => crate::calibrate_apriltag(&refined, &shot.tags, &[], &config.base),
+        };
+        match solved {
             Ok(cal) => {
                 per_shot_poses.push(cal.poses);
                 if cal.reproj_rmse_px >= 0.0 {
@@ -179,16 +188,7 @@ pub fn calibrate_multishot(
     for c in 0..n_cams {
         let sm = &samples[c];
         if sm.is_empty() {
-            per_camera.push(CameraStats {
-                camera: c,
-                registered: false,
-                num_obs: 0,
-                reproj_rmse_px: -1.0,
-                rot_sigma_deg: f64::INFINITY,
-                trans_sigma_m: f64::INFINITY,
-                min_eigenvalue: 0.0,
-                weakest_dof: [0.0; 6],
-            });
+            per_camera.push(CameraStats::unconstrained(c, false, 0));
             continue;
         }
         let mean_rot = rotation_mean(sm.iter().map(|p| p.rotation));
@@ -226,10 +226,10 @@ pub fn calibrate_multishot(
             reproj_rmse_px: -1.0, // per-shot RMS is reported globally; empirical stats are the point
             rot_sigma_deg,
             trans_sigma_m,
-            // Empirical stats are observed (not a linearized Hessian); flag as observable so the UI's
-            // weak gate keys on the real repeatability σ above, not a near-zero eigenvalue.
-            min_eigenvalue: 1.0,
-            weakest_dof: [0.0; 6],
+            // Empirical spread, not a linearized Hessian — there is no eigenvalue/weak-DOF to report.
+            // Consumers key on the repeatability σ above (a `None` here is not "unobservable").
+            min_eigenvalue: None,
+            weakest_dof: None,
         });
     }
 
