@@ -115,15 +115,6 @@ static HISTOGRAM_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
 static EQUALIZE_LUT_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
 static APPLY_LUT_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
 
-fn get_kernel(
-    cell: &'static OnceLock<Result<CudaKernel, String>>,
-    ctx: &Arc<CudaContext>,
-    src: &str,
-    name: &str,
-) -> Result<&'static CudaKernel, CudaHistogramError> {
-    super::get_kernel_cached(cell, ctx, src, name).map_err(CudaHistogramError::Cuda)
-}
-
 /// Accumulate the u8 histogram of `src` into `hist` (`num_bins` u32 bins,
 /// zeroed by the caller). Counts are exactly equal to the CPU's
 /// `compute_histogram` (same binning expression, commutative adds).
@@ -144,7 +135,8 @@ pub fn launch_histogram_u8(
     CudaHistogramError::check_slice("src", src.len(), n)?;
     CudaHistogramError::check_slice("hist", hist.len(), num_bins as usize)?;
     let n_u32 = u32::try_from(n).map_err(|_| CudaHistogramError::Cuda("n exceeds u32".into()))?;
-    let kernel = get_kernel(&HISTOGRAM_KERNEL, ctx, HISTOGRAM_SRC, "histogram_u8")?;
+    let kernel =
+        CudaHistogramError::get_kernel(&HISTOGRAM_KERNEL, ctx, HISTOGRAM_SRC, "histogram_u8")?;
     // Grid-stride: enough blocks to fill the device, capped for tiny inputs.
     let blocks = n_u32.div_ceil(256).clamp(1, 1024);
     let cfg = cudarc::driver::LaunchConfig {
@@ -175,7 +167,7 @@ pub fn launch_equalize_lut_u8(
     CudaHistogramError::check_slice("lut", lut.len(), 256)?;
     let total_u32 =
         u32::try_from(total).map_err(|_| CudaHistogramError::Cuda("total exceeds u32".into()))?;
-    let kernel = get_kernel(
+    let kernel = CudaHistogramError::get_kernel(
         &EQUALIZE_LUT_KERNEL,
         ctx,
         EQUALIZE_LUT_SRC,
@@ -208,7 +200,8 @@ pub fn launch_apply_lut_u8(
     CudaHistogramError::check_slice("dst", dst.len(), n)?;
     CudaHistogramError::check_slice("lut", lut.len(), 256)?;
     let n_u32 = u32::try_from(n).map_err(|_| CudaHistogramError::Cuda("n exceeds u32".into()))?;
-    let kernel = get_kernel(&APPLY_LUT_KERNEL, ctx, APPLY_LUT_SRC, "apply_lut_u8")?;
+    let kernel =
+        CudaHistogramError::get_kernel(&APPLY_LUT_KERNEL, ctx, APPLY_LUT_SRC, "apply_lut_u8")?;
     let cfg = cudarc::driver::LaunchConfig {
         block_dim: (256, 1, 1),
         grid_dim: (n_u32.div_ceil(256), 1, 1),

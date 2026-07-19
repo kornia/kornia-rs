@@ -255,15 +255,6 @@ static HYST_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
 static FINAL_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
 static FILL_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
 
-fn get_kernel(
-    cell: &'static OnceLock<Result<CudaKernel, String>>,
-    ctx: &Arc<CudaContext>,
-    src: &str,
-    name: &str,
-) -> Result<&'static CudaKernel, CudaCannyError> {
-    super::get_kernel_cached(cell, ctx, src, name).map_err(CudaCannyError::Cuda)
-}
-
 /// Full device Canny: gradients + NMS + hysteresis relaunch loop +
 /// finalize. Byte-identical to the CPU `canny` (integer pipeline +
 /// reachability fixpoint). Synchronizes the stream between hysteresis
@@ -293,20 +284,19 @@ pub fn launch_canny_u8(
     let w = i32::try_from(width).map_err(|_| CudaCannyError::Cuda("width exceeds i32".into()))?;
     let h = i32::try_from(height).map_err(|_| CudaCannyError::Cuda("height exceeds i32".into()))?;
     // Magnitude fits i32 for both L1 (<= 2040) and L2 (<= 2*1020^2).
-    let err = |e: cudarc::driver::DriverError| CudaCannyError::Cuda(e.to_string());
     let mstep = width + 2;
     let ring = mstep * (height + 2);
 
     // SAFETY: dx/dy/mag interiors and the map interior are fully written
     // by canny_sobel_mag / canny_nms before any read; the rings are set by
     // canny_fill_rings below. No uninitialized element is ever read.
-    let mut d_dx = unsafe { stream.alloc::<i16>(width * height) }.map_err(err)?;
-    let mut d_dy = unsafe { stream.alloc::<i16>(width * height) }.map_err(err)?;
-    let mut d_mag = unsafe { stream.alloc::<i32>(ring) }.map_err(err)?;
-    let mut d_map = unsafe { stream.alloc::<u8>(ring) }.map_err(err)?;
+    let mut d_dx = unsafe { stream.alloc::<i16>(width * height) }?;
+    let mut d_dy = unsafe { stream.alloc::<i16>(width * height) }?;
+    let mut d_mag = unsafe { stream.alloc::<i32>(ring) }?;
+    let mut d_map = unsafe { stream.alloc::<u8>(ring) }?;
     {
         let per = 2 * (width + 2) + 2 * height;
-        let k = get_kernel(&FILL_KERNEL, ctx, FILL_SRC, "canny_fill_rings")?;
+        let k = CudaCannyError::get_kernel(&FILL_KERNEL, ctx, FILL_SRC, "canny_fill_rings")?;
         let cfg1 = super::make_config(per as u32, 1, Some((256, 1)));
         k.launch_builder(stream)
             .arg(&mut d_map)
@@ -316,12 +306,12 @@ pub fn launch_canny_u8(
             .launch_cfg(cfg1)
             .map_err(|e| CudaCannyError::Cuda(e.to_string()))?;
     }
-    let mut d_flag = stream.alloc_zeros::<u32>(1).map_err(err)?; // hysteresis `changed`
+    let mut d_flag = stream.alloc_zeros::<u32>(1)?; // hysteresis `changed`
 
     let cfg = super::make_config(w as u32, h as u32, None);
     let l2 = i32::from(l2_gradient);
 
-    let k = get_kernel(&SOBEL_KERNEL, ctx, SOBEL_MAG_SRC, "canny_sobel_mag")?;
+    let k = CudaCannyError::get_kernel(&SOBEL_KERNEL, ctx, SOBEL_MAG_SRC, "canny_sobel_mag")?;
     k.launch_builder(stream)
         .arg(src)
         .arg(&mut d_dx)
@@ -333,7 +323,7 @@ pub fn launch_canny_u8(
         .launch_cfg(cfg)
         .map_err(|e| CudaCannyError::Cuda(e.to_string()))?;
 
-    let k = get_kernel(&NMS_KERNEL, ctx, NMS_SRC, "canny_nms")?;
+    let k = CudaCannyError::get_kernel(&NMS_KERNEL, ctx, NMS_SRC, "canny_nms")?;
     k.launch_builder(stream)
         .arg(&d_dx)
         .arg(&d_dy)
@@ -348,7 +338,7 @@ pub fn launch_canny_u8(
 
     // Hysteresis: relaunch the block-fixpoint sweep until no block changes.
     {
-        let hk = get_kernel(&HYST_KERNEL, ctx, HYSTERESIS_SRC, "canny_hysteresis")?;
+        let hk = CudaCannyError::get_kernel(&HYST_KERNEL, ctx, HYSTERESIS_SRC, "canny_hysteresis")?;
         let tiles_x = width.div_ceil(64);
         let tiles_y = height.div_ceil(16);
         let ntiles = tiles_x * tiles_y;
@@ -362,8 +352,8 @@ pub fn launch_canny_u8(
         // `first_sweep` kernel flag), afterwards only tiles woken by a
         // changed neighbor run. Blocks read-and-clear their own entry, so
         // neither buffer ever needs a host-side reset.
-        let mut d_active_a = stream.alloc_zeros::<u8>(ntiles).map_err(err)?;
-        let mut d_active_b = stream.alloc_zeros::<u8>(ntiles).map_err(err)?;
+        let mut d_active_a = stream.alloc_zeros::<u8>(ntiles)?;
+        let mut d_active_b = stream.alloc_zeros::<u8>(ntiles)?;
         // Termination: every sweep that reports `changed` converted at
         // least one candidate, and candidates are finite — so w·h is an
         // absolute upper bound (typical images converge in a handful).
@@ -372,7 +362,7 @@ pub fn launch_canny_u8(
         let max_rounds = width * height;
         let mut first = 1i32;
         for _ in 0..max_rounds {
-            stream.memset_zeros(&mut d_flag).map_err(err)?;
+            stream.memset_zeros(&mut d_flag)?;
             for _ in 0..3 {
                 hk.launch_builder(stream)
                     .arg(&mut d_map)
@@ -389,15 +379,15 @@ pub fn launch_canny_u8(
                 first = 0;
                 std::mem::swap(&mut d_active_a, &mut d_active_b);
             }
-            let f: Vec<u32> = stream.clone_dtoh(&d_flag).map_err(err)?;
-            stream.synchronize().map_err(err)?;
+            let f: Vec<u32> = stream.clone_dtoh(&d_flag)?;
+            stream.synchronize()?;
             if f[0] == 0 {
                 break;
             }
         }
     }
 
-    let k = get_kernel(&FINAL_KERNEL, ctx, FINALIZE_SRC, "canny_finalize")?;
+    let k = CudaCannyError::get_kernel(&FINAL_KERNEL, ctx, FINALIZE_SRC, "canny_finalize")?;
     k.launch_builder(stream)
         .arg(&d_map)
         .arg(dst)

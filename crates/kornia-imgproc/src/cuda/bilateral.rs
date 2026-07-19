@@ -100,15 +100,14 @@ pub fn launch_bilateral_u8(
     let simd_end = i32::try_from(crate::filter::bilateral::simd_region_end(width))
         .map_err(|_| CudaBilateralError::Cuda("width exceeds i32".into()))?;
 
-    let err = |e: cudarc::driver::DriverError| CudaBilateralError::Cuda(e.to_string());
     let dys: Vec<i32> = t.taps.iter().map(|&(dy, _)| dy).collect();
     let dxs: Vec<i32> = t.taps.iter().map(|&(_, dx)| dx).collect();
     let ord: Vec<i32> = t.simd_order.iter().map(|&k| k as i32).collect();
-    let d_dy = stream.clone_htod(&dys).map_err(err)?;
-    let d_dx = stream.clone_htod(&dxs).map_err(err)?;
-    let d_sw = stream.clone_htod(&t.space_weight).map_err(err)?;
-    let d_cw = stream.clone_htod(&t.color_weight).map_err(err)?;
-    let d_or = stream.clone_htod(&ord).map_err(err)?;
+    let d_dy = stream.clone_htod(&dys)?;
+    let d_dx = stream.clone_htod(&dxs)?;
+    let d_sw = stream.clone_htod(&t.space_weight)?;
+    let d_cw = stream.clone_htod(&t.color_weight)?;
+    let d_or = stream.clone_htod(&ord)?;
 
     let kernel = KERNEL
         .get_or_init(|| {

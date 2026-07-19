@@ -108,7 +108,6 @@ macro_rules! define_cuda_error {
         }
 
         impl $name {
-            #[allow(dead_code)]
             fn check_slice(
                 what: &'static str,
                 got: usize,
@@ -118,6 +117,24 @@ macro_rules! define_cuda_error {
                     return Err($name::SliceTooSmall { what, got, need });
                 }
                 Ok(())
+            }
+
+            /// Once-compiled kernel accessor for parameter-free kernels
+            /// (modules with keyed caches roll their own).
+            #[allow(dead_code)]
+            fn get_kernel(
+                cell: &'static std::sync::OnceLock<Result<CudaKernel, String>>,
+                ctx: &Arc<CudaContext>,
+                src: &str,
+                name: &str,
+            ) -> Result<&'static CudaKernel, $name> {
+                $crate::cuda::get_kernel_cached(cell, ctx, src, name).map_err($name::Cuda)
+            }
+        }
+
+        impl From<cudarc::driver::DriverError> for $name {
+            fn from(e: cudarc::driver::DriverError) -> Self {
+                $name::Cuda(e.to_string())
             }
         }
     };
@@ -136,7 +153,7 @@ pub(crate) fn get_kernel_cached(
 ) -> Result<&'static CudaKernel, String> {
     cell.get_or_init(|| try_compile_with_l1(ctx, src, name))
         .as_ref()
-        .map_err(|e| e.clone())
+        .map_err(String::clone)
 }
 
 /// Compile a kernel and set `CU_FUNC_CACHE_PREFER_L1` (none of the geometry

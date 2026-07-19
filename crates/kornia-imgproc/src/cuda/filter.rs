@@ -30,30 +30,11 @@ use super::{make_config, try_compile_with_l1};
 /// Above this tap count the runtime-loop kernel variant is used.
 pub const SEP_FILTER_MAX_BAKED_TAPS: u32 = 32;
 
-/// Error type for the CUDA filter launchers.
-#[derive(Debug, thiserror::Error)]
-pub enum CudaFilterError {
-    /// CUDA driver / compile / launch error.
-    #[error("CUDA filter error: {0}")]
-    Cuda(String),
-    /// A slice is smaller than required.
-    #[error("device slice '{what}' length {got} < required {need}")]
-    SliceTooSmall {
-        /// Which operand was too small.
-        what: &'static str,
-        /// Actual length (elements).
-        got: usize,
-        /// Required length (elements).
-        need: usize,
-    },
-}
-
-fn check_slice(what: &'static str, got: usize, need: usize) -> Result<(), CudaFilterError> {
-    if got < need {
-        return Err(CudaFilterError::SliceTooSmall { what, got, need });
-    }
-    Ok(())
-}
+super::define_cuda_error!(
+    /// Error type for the CUDA filter launchers.
+    CudaFilterError,
+    "CUDA filter error: {0}"
+);
 
 // ── f32 kernels ──────────────────────────────────────────────────────────────
 
@@ -327,11 +308,11 @@ fn validate_separable<T, U>(
         ));
     }
     let n = cols as usize * rows as usize * channels as usize;
-    check_slice("src", src.len(), n)?;
-    check_slice("dst", dst.len(), n)?;
-    check_slice("scratch", scratch.len(), n)?;
-    check_slice("kx", kx.len(), kx_len as usize)?;
-    check_slice("ky", ky.len(), ky_len as usize)?;
+    CudaFilterError::check_slice("src", src.len(), n)?;
+    CudaFilterError::check_slice("dst", dst.len(), n)?;
+    CudaFilterError::check_slice("scratch", scratch.len(), n)?;
+    CudaFilterError::check_slice("kx", kx.len(), kx_len as usize)?;
+    CudaFilterError::check_slice("ky", ky.len(), ky_len as usize)?;
     Ok(())
 }
 
@@ -488,9 +469,9 @@ pub fn launch_binomial3_u8(
         return Err(CudaFilterError::Cuda("channels must be at least 1".into()));
     }
     let n = cols as usize * rows as usize * channels as usize;
-    check_slice("src", src.len(), n)?;
-    check_slice("dst", dst.len(), n)?;
-    check_slice("scratch", scratch.len(), n)?;
+    CudaFilterError::check_slice("src", src.len(), n)?;
+    CudaFilterError::check_slice("dst", dst.len(), n)?;
+    CudaFilterError::check_slice("scratch", scratch.len(), n)?;
 
     let h_kernel = get_or_compile(
         ctx,
@@ -558,9 +539,9 @@ pub fn launch_gradient_magnitude_f32(
     dst: &mut CudaSlice<f32>,
     n: usize,
 ) -> Result<(), CudaFilterError> {
-    check_slice("gx", gx.len(), n)?;
-    check_slice("gy", gy.len(), n)?;
-    check_slice("dst", dst.len(), n)?;
+    CudaFilterError::check_slice("gx", gx.len(), n)?;
+    CudaFilterError::check_slice("gy", gy.len(), n)?;
+    CudaFilterError::check_slice("dst", dst.len(), n)?;
     let kernel = get_or_compile(
         ctx,
         SepKernelKey::Magnitude,

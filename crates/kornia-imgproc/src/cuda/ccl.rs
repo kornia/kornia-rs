@@ -242,16 +242,15 @@ pub fn launch_connected_components(
     let w = i32::try_from(width).map_err(|_| CudaCclError::Cuda("width exceeds i32".into()))?;
     let h = i32::try_from(height).map_err(|_| CudaCclError::Cuda("height exceeds i32".into()))?;
     let n_i32 = i32::try_from(n).map_err(|_| CudaCclError::Cuda("size exceeds i32".into()))?;
-    let err = |e: cudarc::driver::DriverError| CudaCclError::Cuda(e.to_string());
     let k = get_kernels(ctx)?;
 
     // SAFETY: label/pos interiors are fully written by ccl_init /
     // ccl_scan_partial before any read.
-    let mut label = unsafe { stream.alloc::<i32>(n) }.map_err(err)?;
-    let mut pos = unsafe { stream.alloc::<i32>(n) }.map_err(err)?;
+    let mut label = unsafe { stream.alloc::<i32>(n) }?;
+    let mut pos = unsafe { stream.alloc::<i32>(n) }?;
     let nblocks = n.div_ceil(512);
-    let mut block_sums = unsafe { stream.alloc::<i32>(nblocks) }.map_err(err)?;
-    let mut d_total = stream.alloc_zeros::<i32>(1).map_err(err)?;
+    let mut block_sums = unsafe { stream.alloc::<i32>(nblocks) }?;
+    let mut d_total = stream.alloc_zeros::<i32>(1)?;
 
     let cfg1 = super::make_config(n as u32, 1, Some((256, 1)));
     let cfg2 = super::make_config(w as u32, h as u32, None);
@@ -315,7 +314,7 @@ pub fn launch_connected_components(
         .launch_cfg(cfg1)
         .map_err(launch_err)?;
 
-    let total: Vec<i32> = stream.clone_dtoh(&d_total).map_err(err)?;
-    stream.synchronize().map_err(err)?;
+    let total: Vec<i32> = stream.clone_dtoh(&d_total)?;
+    stream.synchronize()?;
     Ok(total[0] + 1)
 }
