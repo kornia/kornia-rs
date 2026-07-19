@@ -91,6 +91,19 @@ This says the *generated kernel* for this chain is as good as FKL's
 template-instantiated one — it says nothing about the many pipeline
 shapes FKL can express and this engine cannot (see Scope above).
 
+## Roadmap
+
+The engine is planned to grow toward general pipeline composition in the
+spirit of FKL and GStreamer:
+
+- typed inter-stage values (`float`, `float3`, `float4`, packed u8) with
+  build-time compatibility checking;
+- multi-input stages (two-image ops: add_weighted, masking) via the same
+  per-image pointer blob the batch path already uses;
+- reduction sinks (histograms, statistics) as a second grid contract;
+- longer term: branching pipeline graphs (GStreamer-style tees/muxes)
+  and a Python surface for runtime-composed chains.
+
 ## Precision contract
 
 Fused chains keep intermediates in f32 registers, so output is NOT
