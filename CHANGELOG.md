@@ -13,6 +13,20 @@ changes early: `cargo add kornia-imgproc@0.1.15-rc.1` or `pip install --pre korn
 
 ## [Unreleased]
 
+**Canny edge detection (CPU and CUDA), byte-for-byte with OpenCV.** New
+`canny` for u8 single-channel images (`kornia_rs.imgproc.canny` in
+Python), matching `cv2.Canny` exactly — the all-integer pipeline (Sobel
+3×3 `CV_16S` replicate-border gradients, L1/L2 magnitude with cv2's
+threshold clamp-and-square rules, the fixed-point TG22 sector test with
+cv2's exact per-sector tie-breaks, and hysteresis as pure reachability)
+transcribes cv2's semantics, so CPU, GPU and cv2 agree on every byte.
+CPU is NEON-vectorized (separable Sobel, magnitude, block-skip NMS,
+map finalize); the CUDA path runs fused sobel+magnitude, NMS, an
+active-tile-worklist block-fixpoint hysteresis and finalize. (VPI's CUDA
+Canny uses a different algorithm — ~5% differing pixels vs cv2 — and is
+not byte-comparable.) Measured 1080p: GPU 1.5–4.0 ms (content-dependent
+hysteresis) ≈ 2.7–3.3× `cv2.Canny` CPU; kornia CPU ≈ 1.0× cv2.
+
 **Median blur + bilateral filter (CPU and CUDA), byte-for-byte with
 OpenCV — median also bit-identical to VPI.** New `median_blur` (u8, 3×3
 and 5×5, replicate borders, exact sorting-network medians — NEON on CPU,

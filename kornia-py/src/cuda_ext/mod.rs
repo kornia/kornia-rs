@@ -272,6 +272,8 @@ where
 }
 
 #[cfg(feature = "cuda")]
+pub(crate) mod cuda_canny;
+#[cfg(feature = "cuda")]
 pub(crate) mod cuda_clahe;
 #[cfg(feature = "cuda")]
 mod cuda_color;
@@ -283,6 +285,8 @@ pub(crate) mod cuda_geometry;
 pub(crate) mod cuda_histogram;
 #[cfg(feature = "cuda")]
 pub(crate) mod cuda_morphology;
+#[cfg(feature = "cuda")]
+pub(crate) use cuda_canny as canny_dev;
 #[cfg(feature = "cuda")]
 pub(crate) use cuda_clahe as clahe_dev;
 #[cfg(feature = "cuda")]
