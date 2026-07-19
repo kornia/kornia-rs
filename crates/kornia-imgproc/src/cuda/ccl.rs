@@ -23,9 +23,20 @@ super::define_cuda_error!(
 );
 
 const BG: &str = "0x7FFFFFFF"; // background sentinel (i32 max)
+/// ccl_init block width (power of two). Single source for the init
+/// launch config AND the run-stitch boundary in ccl_union — runs are
+/// split at this boundary by construction, so both must agree.
+const INIT_BW: u32 = 256;
+/// Elements per ccl_scan_partial block (2 per thread). Single source
+/// for the scan launch geometry, the block_sums indexing in
+/// ccl_relabel, and the nblocks computation. Must stay <= 65536 so
+/// block-local ranks fit the u16 pos array.
+const SCAN_BLOCK: usize = 512;
 
 static CCL_SRC_TMPL: &str = r#"
 #define BG __BG__
+#define INIT_BW __INIT_BW__
+#define SCAN_BLOCK __SCAN_BLOCK__
 
 // Row-run initialization, block-parallel: every foreground pixel starts
 // with the index of its horizontal run's first pixel WITHIN ITS 256-WIDE
@@ -41,7 +52,7 @@ extern "C" __global__ void ccl_init(
     int* __restrict__                 label,
     int w, int h
 ) {
-    __shared__ unsigned warp_mask[8];
+    __shared__ unsigned warp_mask[INIT_BW / 32];
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y;
     int i = y * w + x;
@@ -127,7 +138,8 @@ extern "C" __global__ void ccl_union(
     if (!__ldg(&src[i])) return;
     // Stitch runs split at 256-pixel block boundaries by ccl_init (every
     // row, including y == 0): one union per boundary inside a run.
-    if ((x & 255) == 0 && x > 0 && __ldg(&src[i - 1])) {
+    // INIT_BW is the init kernel's block width — the split granularity.
+    if ((x & (INIT_BW - 1)) == 0 && x > 0 && __ldg(&src[i - 1])) {
         union_labels(label, i, i - 1);
     }
     if (y == 0) return;
@@ -159,9 +171,9 @@ extern "C" __global__ void ccl_scan_partial(
     int* __restrict__             block_sums,
     int n
 ) {
-    __shared__ int warp_tot[8];
+    __shared__ int warp_tot[SCAN_BLOCK / 64];
     int t = threadIdx.x;
-    int j0 = blockIdx.x * 512 + t * 2;
+    int j0 = blockIdx.x * SCAN_BLOCK + t * 2;
     int f0 = 0, f1 = 0;
     if (j0 + 1 < n) {
         int2 l = *(const int2*)(label + j0);
@@ -181,19 +193,19 @@ extern "C" __global__ void ccl_scan_partial(
     if (lane == 31) warp_tot[warp] = inc;
     __syncthreads();
     if (warp == 0) {
-        int v = (lane < 8) ? warp_tot[lane] : 0;
-        for (int off = 1; off < 8; off <<= 1) {
+        int v = (lane < SCAN_BLOCK / 64) ? warp_tot[lane] : 0;
+        for (int off = 1; off < SCAN_BLOCK / 64; off <<= 1) {
             int u = __shfl_up_sync(0xFFFFFFFFu, v, off);
             if (lane >= off) v += u;
         }
-        if (lane < 8) warp_tot[lane] = v;
+        if (lane < SCAN_BLOCK / 64) warp_tot[lane] = v;
     }
     __syncthreads();
     // Exclusive prefix of this thread's pair within the block.
     int pre = (inc - s) + (warp ? warp_tot[warp - 1] : 0);
     if (j0 < n)     pos[j0]     = (unsigned short)pre;
     if (j0 + 1 < n) pos[j0 + 1] = (unsigned short)(pre + f0);
-    if (t == 255) block_sums[blockIdx.x] = pre + s;
+    if (t == SCAN_BLOCK / 2 - 1) block_sums[blockIdx.x] = pre + s;
 }
 
 // Compaction phase 2: exclusive scan of the block sums + total. Single
@@ -205,17 +217,17 @@ extern "C" __global__ void ccl_scan_offsets(
     int* __restrict__ total,
     int nblocks
 ) {
-    __shared__ int buf[512];
+    __shared__ int buf[SCAN_BLOCK];
     __shared__ int carry;
     int t = threadIdx.x;
     if (t == 0) carry = 0;
     __syncthreads();
-    for (int base = 0; base < nblocks; base += 512) {
+    for (int base = 0; base < nblocks; base += SCAN_BLOCK) {
         int j = base + t;
         int v = (j < nblocks) ? block_sums[j] : 0;
         buf[t] = v;
         __syncthreads();
-        for (int off = 1; off < 512; off <<= 1) {
+        for (int off = 1; off < SCAN_BLOCK; off <<= 1) {
             int u = (t >= off) ? buf[t - off] : 0;
             __syncthreads();
             buf[t] += u;
@@ -223,7 +235,7 @@ extern "C" __global__ void ccl_scan_offsets(
         }
         if (j < nblocks) block_sums[j] = carry + buf[t] - v; // exclusive
         __syncthreads();
-        if (t == 0) carry += buf[511];
+        if (t == 0) carry += buf[SCAN_BLOCK - 1];
         __syncthreads();
     }
     if (t == 0) *total = carry;
@@ -245,7 +257,7 @@ extern "C" __global__ void ccl_relabel(
         out[i] = 0;
     } else {
         l = find_root(label, i);
-        out[i] = block_sums[l / 512] + pos[l] + 1;
+        out[i] = block_sums[l / SCAN_BLOCK] + pos[l] + 1;
     }
 }
 "#;
@@ -263,7 +275,10 @@ static KERNELS: OnceLock<Result<Kernels, String>> = OnceLock::new();
 fn get_kernels(ctx: &Arc<CudaContext>) -> Result<&'static Kernels, CudaCclError> {
     KERNELS
         .get_or_init(|| {
-            let src = CCL_SRC_TMPL.replace("__BG__", BG);
+            let src = CCL_SRC_TMPL
+                .replace("__BG__", BG)
+                .replace("__INIT_BW__", &format!("{INIT_BW}u"))
+                .replace("__SCAN_BLOCK__", &SCAN_BLOCK.to_string());
             Ok(Kernels {
                 init: try_compile_with_l1(ctx, &src, "ccl_init")?,
                 union_k: try_compile_with_l1(ctx, &src, "ccl_union")?,
@@ -310,7 +325,7 @@ pub fn launch_connected_components(
     // ccl_scan_partial before any read.
     let mut label = unsafe { stream.alloc::<i32>(n) }?;
     let mut pos = unsafe { stream.alloc::<u16>(n) }?;
-    let nblocks = n.div_ceil(512);
+    let nblocks = n.div_ceil(SCAN_BLOCK);
     let mut block_sums = unsafe { stream.alloc::<i32>(nblocks) }?;
     let mut d_total = stream.alloc_zeros::<i32>(1)?;
 
@@ -326,11 +341,7 @@ pub fn launch_connected_components(
         .arg(&mut label)
         .arg(&w)
         .arg(&h)
-        .launch_cfg(cudarc::driver::LaunchConfig {
-            block_dim: (256, 1, 1),
-            grid_dim: ((w as u32).div_ceil(256), h as u32, 1),
-            shared_mem_bytes: 0,
-        })
+        .launch_cfg(super::make_config(w as u32, h as u32, Some((INIT_BW, 1))))
         .map_err(launch_err)?;
 
     let eight_i = i32::from(eight);
@@ -354,7 +365,7 @@ pub fn launch_connected_components(
         .arg(&mut block_sums)
         .arg(&n_i32)
         .launch_cfg(cudarc::driver::LaunchConfig {
-            block_dim: (256, 1, 1),
+            block_dim: (SCAN_BLOCK as u32 / 2, 1, 1),
             grid_dim: (nblocks as u32, 1, 1),
             shared_mem_bytes: 0,
         })
@@ -365,7 +376,7 @@ pub fn launch_connected_components(
         .arg(&mut d_total)
         .arg(&nblocks_i32)
         .launch_cfg(cudarc::driver::LaunchConfig {
-            block_dim: (512, 1, 1),
+            block_dim: (SCAN_BLOCK as u32, 1, 1),
             grid_dim: (1, 1, 1),
             shared_mem_bytes: 0,
         })

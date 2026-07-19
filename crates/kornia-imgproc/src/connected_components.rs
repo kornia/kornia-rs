@@ -63,6 +63,42 @@ fn next_zero(row: &[u8], mut x: usize) -> usize {
     x
 }
 
+/// Two-pointer sweep shared by the stripe pass and the stitch pass:
+/// union run `id` with every run of `prev_runs[.. prev_end]` (union ids
+/// offset by `prev_id_base`) that overlaps `span` under the given
+/// connectivity, advancing the shared cursor `pi`. The last overlapping
+/// prev run may also overlap the NEXT current run, so the cursor never
+/// advances past it.
+#[inline]
+#[allow(clippy::too_many_arguments)]
+fn union_overlapping(
+    parent: &mut [u32],
+    id: u32,
+    span: (u32, u32),
+    w: u32,
+    eight: bool,
+    prev_runs: &[(u32, u32)],
+    prev_end: u32,
+    prev_id_base: u32,
+    pi: &mut u32,
+) {
+    let (start, end) = span;
+    let (lo, hi) = if eight {
+        (start.saturating_sub(1), (end + 1).min(w))
+    } else {
+        (start, end)
+    };
+    while *pi < prev_end && prev_runs[*pi as usize].1 <= lo {
+        *pi += 1;
+    }
+    let mut pj = *pi;
+    while pj < prev_end && prev_runs[pj as usize].0 < hi {
+        union(parent, id, prev_id_base + pj);
+        pj += 1;
+    }
+    *pi = pj.saturating_sub(1).max(*pi);
+}
+
 #[inline]
 fn find(parent: &mut [u32], mut x: u32) -> u32 {
     // Path halving.
@@ -134,15 +170,18 @@ pub fn connected_components(
     // rows in a stripe-LOCAL union-find. Stripe boundaries are stitched
     // serially afterwards on the global table.
     struct StripeRuns {
-        y0: usize,
         /// (start_x, end_x) per run, raster order within the stripe.
         runs: Vec<(u32, u32)>,
-        /// Local run-count prefix per row: runs of row y0+k are
-        /// row_ptr[k]..row_ptr[k+1].
+        /// Local run-count prefix per row: runs of the stripe's k-th row
+        /// are row_ptr[k]..row_ptr[k+1].
         row_ptr: Vec<u32>,
         /// Stripe-local union-find over local run ids.
         parent: Vec<u32>,
     }
+    let eight = connectivity == Connectivity::Eight;
+    // One stripe per thread. Oversubscribing (finer stripes for load
+    // balance on content-skewed images) is a tuning candidate — needs a
+    // quiet-machine A/B before shipping.
     let stripes = rayon::current_num_threads().max(1);
     let rows_per = h.div_ceil(stripes).max(1);
     let bounds: Vec<(usize, usize)> = (0..stripes)
@@ -169,22 +208,17 @@ pub fn connected_components(
                     runs.push((start as u32, x as u32));
                     parent.push(id);
                     if y > y0 {
-                        let (lo, hi) = if connectivity == Connectivity::Eight {
-                            (start.saturating_sub(1) as u32, (x + 1).min(w) as u32)
-                        } else {
-                            (start as u32, x as u32)
-                        };
-                        while pi < prev_row.end && runs[pi as usize].1 <= lo {
-                            pi += 1;
-                        }
-                        let mut pj = pi;
-                        while pj < prev_row.end && runs[pj as usize].0 < hi {
-                            union(&mut parent, id, pj);
-                            pj += 1;
-                        }
-                        // The last overlapping prev run may also overlap
-                        // the next current run — don't advance past it.
-                        pi = pj.saturating_sub(1).max(pi);
+                        union_overlapping(
+                            &mut parent,
+                            id,
+                            (start as u32, x as u32),
+                            w as u32,
+                            eight,
+                            &runs,
+                            prev_row.end,
+                            0,
+                            &mut pi,
+                        );
                     }
                     x = next_nonzero(row, x + 1);
                 }
@@ -192,7 +226,6 @@ pub fn connected_components(
                 row_ptr.push(runs.len() as u32);
             }
             StripeRuns {
-                y0,
                 runs,
                 row_ptr,
                 parent,
@@ -203,48 +236,39 @@ pub fn connected_components(
     // Merge stripe-local forests into one global table (local ids get a
     // per-stripe offset) and stitch each stripe's first row against the
     // row above it.
-    let offsets: Vec<u32> = {
-        let mut acc = 0u32;
-        let mut v = Vec::with_capacity(stripe_runs.len());
-        for sr in &stripe_runs {
-            v.push(acc);
+    let mut acc = 0u32;
+    let offsets: Vec<u32> = stripe_runs
+        .iter()
+        .map(|sr| {
+            let off = acc;
             acc += sr.runs.len() as u32;
-        }
-        v
-    };
-    let n_runs: usize = stripe_runs.iter().map(|sr| sr.runs.len()).sum();
+            off
+        })
+        .collect();
+    let n_runs = acc as usize;
     let mut parent: Vec<u32> = Vec::with_capacity(n_runs);
     for (sr, &off) in stripe_runs.iter_mut().zip(&offsets) {
-        parent.extend(sr.parent.iter().map(|&p| p + off));
-        sr.parent = Vec::new();
+        parent.extend(std::mem::take(&mut sr.parent).into_iter().map(|p| p + off));
     }
     for k in 1..stripe_runs.len() {
-        let (below, above) = {
-            let (a, b) = stripe_runs.split_at(k);
-            (&a[k - 1], &b[0])
-        };
+        let below = &stripe_runs[k - 1];
+        let above = &stripe_runs[k];
         // Last row of the stripe below vs first row of the stripe above.
         let prev_lo = below.row_ptr[below.row_ptr.len() - 2];
         let prev_hi = below.row_ptr[below.row_ptr.len() - 1];
-        let cur_hi = above.row_ptr[1];
-        let (prev_off, cur_off) = (offsets[k - 1], offsets[k]);
         let mut pi = prev_lo;
-        for cid in 0..cur_hi {
-            let (start, end) = above.runs[cid as usize];
-            let (lo, hi) = if connectivity == Connectivity::Eight {
-                (start.saturating_sub(1), (end + 1).min(w as u32))
-            } else {
-                (start, end)
-            };
-            while pi < prev_hi && below.runs[pi as usize].1 <= lo {
-                pi += 1;
-            }
-            let mut pj = pi;
-            while pj < prev_hi && below.runs[pj as usize].0 < hi {
-                union(&mut parent, cur_off + cid, prev_off + pj);
-                pj += 1;
-            }
-            pi = pj.saturating_sub(1).max(pi);
+        for cid in 0..above.row_ptr[1] {
+            union_overlapping(
+                &mut parent,
+                offsets[k] + cid,
+                above.runs[cid as usize],
+                w as u32,
+                eight,
+                &below.runs,
+                prev_hi,
+                offsets[k - 1],
+                &mut pi,
+            );
         }
     }
 
@@ -263,20 +287,25 @@ pub fn connected_components(
         run_label[rid as usize] = compact[r];
     }
 
-    // Pass 2b (row-parallel): fill the output image from the run spans.
+    // Pass 2b (stripe-parallel): fill the output image from the run
+    // spans. Chunking by rows_per*w reproduces exactly the stripe row
+    // ranges of pass 1, so no partition arithmetic is re-derived.
+    // (Zero-fill + span overwrite double-writes foreground; gap-only
+    // fills are a tuning candidate — needs a quiet-machine A/B.)
     let out = labels.as_slice_mut();
-    out.par_chunks_mut(w).enumerate().for_each(|(y, orow)| {
-        let k = y / rows_per;
-        let sr = &stripe_runs[k];
-        let base = offsets[k];
-        let lo = sr.row_ptr[y - sr.y0] as usize;
-        let hi = sr.row_ptr[y - sr.y0 + 1] as usize;
-        orow.fill(0);
-        for rid in lo..hi {
-            let (a, b) = sr.runs[rid];
-            orow[a as usize..b as usize].fill(run_label[base as usize + rid]);
-        }
-    });
+    out.par_chunks_mut(rows_per * w)
+        .zip(stripe_runs.par_iter().zip(&offsets))
+        .for_each(|(chunk, (sr, &base))| {
+            for (r, orow) in chunk.chunks_mut(w).enumerate() {
+                let lo = sr.row_ptr[r] as usize;
+                let hi = sr.row_ptr[r + 1] as usize;
+                orow.fill(0);
+                for rid in lo..hi {
+                    let (a, b) = sr.runs[rid];
+                    orow[a as usize..b as usize].fill(run_label[base as usize + rid]);
+                }
+            }
+        });
     Ok(next)
 }
 
