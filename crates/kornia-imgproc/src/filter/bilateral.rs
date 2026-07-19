@@ -229,6 +229,7 @@ pub fn bilateral_filter(
     dst.as_slice_mut()
         .par_chunks_mut(w)
         .enumerate()
+        .with_min_len(8)
         .for_each(|(y, drow)| {
             let simd_end = simd_region_end(w);
 

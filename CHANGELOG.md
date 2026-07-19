@@ -23,10 +23,16 @@ polynomial for the color table, circular taps, reflect_101 borders, fma
 accumulation — including cv2's different tap-summation order between its
 16-pixel SIMD region and its scalar row tail; VPI's bilateral uses a
 different formula and is not byte-comparable). CPU and GPU outputs are
-byte-identical. The CPU paths are NEON-vectorized (3×3 median via the
-exact `med3(max-lows, med-mids, min-highs)` column identity, 5×5 via the
-fully unrolled network, bilateral 16 lanes per tap) and land at parity
-with OpenCV's CPU speeds. Measured 1080p sustained (GPU): median
+byte-identical. The CPU paths are NEON-vectorized — 3×3 median via the
+exact `med3(max-lows, med-mids, min-highs)` column identity with rolling
+`vext`-shared column sorts and two output rows per pass; 5×5 via rolling
+sorted columns feeding a 71-exchange selection network (derived from
+Smith's 99 by greedy deletion, proven exact on the sorted-column input
+subspace via the zero-one principle — pinned by a unit test over all 6^5
+column-sorted 0-1 patterns); bilateral 16 lanes per tap — and beat
+OpenCV's CPU on 5×5 median (1.15×) and bilateral (1.1×), with 3×3 median
+at 0.77× (both sides at the DRAM wall). `out=` supported on the CPU
+paths. Measured 1080p sustained (GPU): median
 0.015 ms (16–132× cv2, 43–80× VPI), bilateral d=5 0.065 ms (139× cv2,
 10× VPI).
 

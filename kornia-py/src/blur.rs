@@ -107,36 +107,57 @@ pub fn sobel(py: Python<'_>, image: &Bound<'_, PyAny>, kernel_size: usize) -> Py
 /// sorting-network kernel (byte-identical to the CPU path); a numpy u8
 /// array of shape (H, W, 1|3) runs the CPU path.
 #[pyfunction]
-#[pyo3(signature = (image, kernel_size=3))]
+#[pyo3(signature = (image, kernel_size=3, out=None))]
 pub fn median_blur(
     py: Python<'_>,
     image: &Bound<'_, PyAny>,
     kernel_size: usize,
+    out: Option<crate::image::PyImage>,
 ) -> PyResult<Py<PyAny>> {
     #[cfg(feature = "cuda")]
     if let Ok(api) = image.cast::<crate::image::PyImageApi>() {
         let img = api.borrow();
         if img.is_device() {
+            if out.is_some() {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "median_blur: out= is only supported on the CPU (numpy) path",
+                ));
+            }
             return crate::cuda_ext::filter::median_blur(&img, kernel_size)?.into_py(py);
         }
     }
     cpu_op(py, image, move |py, arr: Py<numpy::PyArray3<u8>>| {
+        fn run<const C: usize>(
+            py: Python<'_>,
+            arr: &Py<numpy::PyArray3<u8>>,
+            kernel_size: usize,
+            out: Option<crate::image::PyImage>,
+        ) -> PyResult<crate::image::PyImage> {
+            let src = unsafe { numpy_as_image::<C>(py, arr)? };
+            let (mut dst, out_arr) = match out {
+                Some(out_pyarr) => {
+                    let shape: Vec<usize> = out_pyarr.bind(py).shape().to_vec();
+                    if shape != [src.rows(), src.cols(), C] {
+                        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                            "median_blur: out shape {:?} must match the source ({}, {}, {C})",
+                            shape,
+                            src.rows(),
+                            src.cols()
+                        )));
+                    }
+                    let img = unsafe { numpy_as_image::<C>(py, &out_pyarr)? };
+                    (img, out_pyarr)
+                }
+                None => unsafe { alloc_output_pyarray::<C>(py, src.size())? },
+            };
+            py.detach(|| filter::median_blur(&src, &mut dst, kernel_size))
+                .map_err(to_pyerr)?;
+            Ok(out_arr)
+        }
         let c = arr.bind(py).shape()[2];
         match c {
-            1 => {
-                let src = unsafe { numpy_as_image::<1>(py, &arr)? };
-                let (mut dst, out) = unsafe { alloc_output_pyarray::<1>(py, src.size())? };
-                py.detach(|| filter::median_blur(&src, &mut dst, kernel_size))
-                    .map_err(to_pyerr)?;
-                Ok(out)
-            }
-            3 => {
-                let src = unsafe { numpy_as_image::<3>(py, &arr)? };
-                let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, src.size())? };
-                py.detach(|| filter::median_blur(&src, &mut dst, kernel_size))
-                    .map_err(to_pyerr)?;
-                Ok(out)
-            }
+            1 => run::<1>(py, &arr, kernel_size, out),
+            3 => run::<3>(py, &arr, kernel_size, out),
             c => Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "median_blur supports 1 or 3 channels; got {c}"
             ))),
@@ -153,27 +174,48 @@ pub fn median_blur(
 /// kernel (byte-identical to the CPU path); a numpy u8 array of shape
 /// (H, W, 1) runs the CPU path.
 #[pyfunction]
-#[pyo3(signature = (image, d=5, sigma_color=50.0, sigma_space=50.0))]
+#[pyo3(signature = (image, d=5, sigma_color=50.0, sigma_space=50.0, out=None))]
 pub fn bilateral_filter(
     py: Python<'_>,
     image: &Bound<'_, PyAny>,
     d: i32,
     sigma_color: f64,
     sigma_space: f64,
+    out: Option<crate::image::PyImage>,
 ) -> PyResult<Py<PyAny>> {
     #[cfg(feature = "cuda")]
     if let Ok(api) = image.cast::<crate::image::PyImageApi>() {
         let img = api.borrow();
         if img.is_device() {
+            if out.is_some() {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "bilateral_filter: out= is only supported on the CPU (numpy) path",
+                ));
+            }
             return crate::cuda_ext::filter::bilateral_filter(&img, d, sigma_color, sigma_space)?
                 .into_py(py);
         }
     }
     cpu_op(py, image, move |py, arr: Py<numpy::PyArray3<u8>>| {
         let src = unsafe { numpy_as_image::<1>(py, &arr)? };
-        let (mut dst, out) = unsafe { alloc_output_pyarray::<1>(py, src.size())? };
+        let (mut dst, out_arr) = match out {
+            Some(out_pyarr) => {
+                let shape: Vec<usize> = out_pyarr.bind(py).shape().to_vec();
+                if shape != [src.rows(), src.cols(), 1] {
+                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                        "bilateral_filter: out shape {:?} must match the source ({}, {}, 1)",
+                        shape,
+                        src.rows(),
+                        src.cols()
+                    )));
+                }
+                let img = unsafe { numpy_as_image::<1>(py, &out_pyarr)? };
+                (img, out_pyarr)
+            }
+            None => unsafe { alloc_output_pyarray::<1>(py, src.size())? },
+        };
         py.detach(|| filter::bilateral_filter(&src, &mut dst, d, sigma_color, sigma_space))
             .map_err(to_pyerr)?;
-        Ok(out)
+        Ok(out_arr)
     })
 }

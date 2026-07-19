@@ -200,9 +200,33 @@ pub fn median_blur<const C: usize>(
     let s = src.as_slice();
     let r = (ksize / 2) as i64;
 
+    // 3×3 C1 on aarch64: two output rows per task share source loads
+    // (memory-bound op). Other shapes take the per-row path below.
+    #[cfg(target_arch = "aarch64")]
+    if C == 1 && ksize == 3 && w >= 34 && h >= 2 {
+        dst.as_slice_mut()
+            .par_chunks_mut(w * 2)
+            .enumerate()
+            .with_min_len(8)
+            .for_each(|(i, dchunk)| {
+                let y = i * 2;
+                if dchunk.len() == w * 2 && neon::median3_row2(s, dchunk, w, h, y) {
+                    return;
+                }
+                // Odd final row (or fallback): per-row kernel.
+                for (j, drow) in dchunk.chunks_mut(w).enumerate() {
+                    if !neon::median3_row(s, drow, w, h, y + j) {
+                        unreachable!("w >= 34 guaranteed");
+                    }
+                }
+            });
+        return Ok(());
+    }
+
     dst.as_slice_mut()
         .par_chunks_mut(w * C)
         .enumerate()
+        .with_min_len(16)
         .for_each(|(y, drow)| {
             // NEON C1 fast path: run the same network on 16 lanes at once
             // (u8 min/max are exact — byte-identical to the scalar walk).
@@ -269,200 +293,313 @@ mod neon {
         vmaxq_u8(vminq_u8(a, b), vminq_u8(vmaxq_u8(a, b), c))
     }
 
-    /// Scalar fallback for border columns / narrow images — the caller's
-    /// generic clamp walk (same exact medians).
-    #[allow(clippy::too_many_arguments)]
-    fn scalar_px<const TAPS: usize>(
-        s: &[u8],
-        drow: &mut [u8],
-        w: usize,
-        h: usize,
-        y: usize,
-        r: usize,
-        net: &[(usize, usize)],
-        center: usize,
-        x: usize,
-    ) {
-        let k = 2 * r + 1;
-        let mut win = [0u8; TAPS];
-        let mut n = 0;
-        for dy in 0..k {
-            let sy = (y + dy).saturating_sub(r).min(h - 1);
-            for dx in 0..k {
-                let sx = (x + dx).saturating_sub(r).min(w - 1);
-                win[n] = s[sy * w + sx];
-                n += 1;
-            }
-        }
-        for &(a, b) in net.iter() {
-            let (lo, hi) = (win[a].min(win[b]), win[a].max(win[b]));
-            win[a] = lo;
-            win[b] = hi;
-        }
-        drow[x] = win[center];
-    }
-
     /// One output row, C1, 3×3: the classic exact identity
     /// `med9 = med3(max(col_lows), med3(col_mids), min(col_highs))` on 16
-    /// lanes (columns sorted lane-wise). Exact median — byte-identical to
-    /// the network walk. Returns false for rows too narrow to vectorize.
+    /// lanes with rolling `vext`-shared column sorts and synthetic
+    /// replicate border columns (see [`median3_row2`], the two-row variant
+    /// used on the hot path; this single-row form serves odd final rows).
+    /// Exact median — byte-identical to the network walk.
     pub(super) fn median3_row(s: &[u8], drow: &mut [u8], w: usize, h: usize, y: usize) -> bool {
-        if w < 18 {
+        if w < 34 {
             return false;
         }
-        // SAFETY: loads span x-1..x+16 for x in [1, w-17]; rows clamped.
+        // SAFETY: aligned blocks read [x, x+16) with x+16 <= w; unaligned
+        // tail blocks read within [w-17, w); rows are clamp-mapped.
         unsafe {
             let r0 = s.as_ptr().add(y.saturating_sub(1).min(h - 1) * w);
             let r1 = s.as_ptr().add(y * w);
             let r2 = s.as_ptr().add((y + 1).min(h - 1) * w);
-            let mut x = 1usize;
-            while x + 16 <= w - 1 {
-                // Column sort at offsets -1, 0, +1.
-                let sort3 = |p0: *const u8, p1: *const u8, p2: *const u8, off: usize| {
-                    let a = vld1q_u8(p0.add(off));
-                    let b = vld1q_u8(p1.add(off));
-                    let c = vld1q_u8(p2.add(off));
-                    let lo = min3(a, b, c);
-                    let hi = max3(a, b, c);
-                    let mid = med3(a, b, c);
-                    (lo, mid, hi)
-                };
-                let (lo_a, mid_a, hi_a) = sort3(r0, r1, r2, x - 1);
-                let (lo_b, mid_b, hi_b) = sort3(r0, r1, r2, x);
-                let (lo_c, mid_c, hi_c) = sort3(r0, r1, r2, x + 1);
-                let m = med3(
-                    max3(lo_a, lo_b, lo_c),
-                    med3(mid_a, mid_b, mid_c),
-                    min3(hi_a, hi_b, hi_c),
+            type S = (uint8x16_t, uint8x16_t, uint8x16_t);
+            let sort3v = |off: usize| -> S {
+                let a = vld1q_u8(r0.add(off));
+                let b = vld1q_u8(r1.add(off));
+                let c = vld1q_u8(r2.add(off));
+                (min3(a, b, c), med3(a, b, c), max3(a, b, c))
+            };
+            let fold = |l: S, m: S, r: S| {
+                med3(
+                    max3(l.0, m.0, r.0),
+                    med3(l.1, m.1, r.1),
+                    min3(l.2, m.2, r.2),
+                )
+            };
+            let mut cur = sort3v(0);
+            let mut prev: S = (
+                vdupq_laneq_u8(cur.0, 0),
+                vdupq_laneq_u8(cur.1, 0),
+                vdupq_laneq_u8(cur.2, 0),
+            );
+            let mut x = 0usize;
+            while x + 32 <= w {
+                let next = sort3v(x + 16);
+                let l: S = (
+                    vextq_u8(prev.0, cur.0, 15),
+                    vextq_u8(prev.1, cur.1, 15),
+                    vextq_u8(prev.2, cur.2, 15),
                 );
-                vst1q_u8(drow.as_mut_ptr().add(x), m);
+                let r: S = (
+                    vextq_u8(cur.0, next.0, 1),
+                    vextq_u8(cur.1, next.1, 1),
+                    vextq_u8(cur.2, next.2, 1),
+                );
+                vst1q_u8(drow.as_mut_ptr().add(x), fold(l, cur, r));
+                prev = cur;
+                cur = next;
                 x += 16;
             }
-            for xx in (0..1).chain(x..w) {
-                scalar_px::<9>(s, drow, w, h, y, 1, &super::NET9, 4, xx);
+            let xt = w - 16;
+            let c = sort3v(xt);
+            let l = sort3v(xt - 1);
+            let n: S = (
+                vdupq_laneq_u8(c.0, 15),
+                vdupq_laneq_u8(c.1, 15),
+                vdupq_laneq_u8(c.2, 15),
+            );
+            let r: S = (
+                vextq_u8(c.0, n.0, 1),
+                vextq_u8(c.1, n.1, 1),
+                vextq_u8(c.2, n.2, 1),
+            );
+            vst1q_u8(drow.as_mut_ptr().add(xt), fold(l, c, r));
+            let mut xg = x;
+            while xg < xt {
+                let c = sort3v(xg);
+                let l = sort3v(xg - 1);
+                let n = sort3v(xg + 1);
+                vst1q_u8(drow.as_mut_ptr().add(xg), fold(l, c, n));
+                xg += 16;
             }
         }
         true
     }
 
-    /// One output row, C1, 5×5: the full Smith network unrolled on NAMED
-    /// vectors (no array indexing — keeps everything in registers). Same
-    /// exchange list as `NET25`; exact median, byte-identical.
-    pub(super) fn median5_row(s: &[u8], drow: &mut [u8], w: usize, h: usize, y: usize) -> bool {
-        if w < 20 {
+    /// TWO output rows, C1, 3×3: same identity as [`median3_row`] but rows
+    /// y and y+1 share their 4 source-row loads (the op is memory-bound —
+    /// 4 loads per 2 outputs instead of 6). Byte-identical.
+    pub(super) fn median3_row2(s: &[u8], drow2: &mut [u8], w: usize, h: usize, y: usize) -> bool {
+        if w < 34 || y + 1 >= h {
             return false;
         }
-        // SAFETY: loads span x-2..x+17 for x in [2, w-18]; rows clamped.
+        // SAFETY: same bounds as median3_row; rows clamp-mapped.
+        unsafe {
+            let r0 = s.as_ptr().add(y.saturating_sub(1).min(h - 1) * w);
+            let r1 = s.as_ptr().add(y * w);
+            let r2 = s.as_ptr().add((y + 1).min(h - 1) * w);
+            let r3 = s.as_ptr().add((y + 2).min(h - 1) * w);
+            let (d0, d1) = drow2.split_at_mut(w);
+            type S = (uint8x16_t, uint8x16_t, uint8x16_t);
+            let sort2 = |off: usize| -> (S, S) {
+                let a = vld1q_u8(r0.add(off));
+                let b = vld1q_u8(r1.add(off));
+                let c = vld1q_u8(r2.add(off));
+                let d = vld1q_u8(r3.add(off));
+                (
+                    (min3(a, b, c), med3(a, b, c), max3(a, b, c)),
+                    (min3(b, c, d), med3(b, c, d), max3(b, c, d)),
+                )
+            };
+            let fold = |l: S, m: S, r: S| {
+                med3(
+                    max3(l.0, m.0, r.0),
+                    med3(l.1, m.1, r.1),
+                    min3(l.2, m.2, r.2),
+                )
+            };
+            let shl = |p: &S, c: &S| -> S {
+                (
+                    vextq_u8(p.0, c.0, 15),
+                    vextq_u8(p.1, c.1, 15),
+                    vextq_u8(p.2, c.2, 15),
+                )
+            };
+            let shr = |c: &S, n: &S| -> S {
+                (
+                    vextq_u8(c.0, n.0, 1),
+                    vextq_u8(c.1, n.1, 1),
+                    vextq_u8(c.2, n.2, 1),
+                )
+            };
+            let dup0 = |c: &S| -> S {
+                (
+                    vdupq_laneq_u8(c.0, 0),
+                    vdupq_laneq_u8(c.1, 0),
+                    vdupq_laneq_u8(c.2, 0),
+                )
+            };
+            let dup15 = |c: &S| -> S {
+                (
+                    vdupq_laneq_u8(c.0, 15),
+                    vdupq_laneq_u8(c.1, 15),
+                    vdupq_laneq_u8(c.2, 15),
+                )
+            };
+
+            let (mut cur_a, mut cur_b) = sort2(0);
+            let mut prev_a = dup0(&cur_a);
+            let mut prev_b = dup0(&cur_b);
+            let mut x = 0usize;
+            while x + 32 <= w {
+                let (next_a, next_b) = sort2(x + 16);
+                vst1q_u8(
+                    d0.as_mut_ptr().add(x),
+                    fold(shl(&prev_a, &cur_a), cur_a, shr(&cur_a, &next_a)),
+                );
+                vst1q_u8(
+                    d1.as_mut_ptr().add(x),
+                    fold(shl(&prev_b, &cur_b), cur_b, shr(&cur_b, &next_b)),
+                );
+                prev_a = cur_a;
+                prev_b = cur_b;
+                cur_a = next_a;
+                cur_b = next_b;
+                x += 16;
+            }
+            let xt = w - 16;
+            let (c_a, c_b) = sort2(xt);
+            let (l_a, l_b) = sort2(xt - 1);
+            vst1q_u8(
+                d0.as_mut_ptr().add(xt),
+                fold(l_a, c_a, shr(&c_a, &dup15(&c_a))),
+            );
+            vst1q_u8(
+                d1.as_mut_ptr().add(xt),
+                fold(l_b, c_b, shr(&c_b, &dup15(&c_b))),
+            );
+            let mut xg = x;
+            while xg < xt {
+                let (c_a, c_b) = sort2(xg);
+                let (l_a, l_b) = sort2(xg - 1);
+                let (n_a, n_b) = sort2(xg + 1);
+                vst1q_u8(d0.as_mut_ptr().add(xg), fold(l_a, c_a, n_a));
+                vst1q_u8(d1.as_mut_ptr().add(xg), fold(l_b, c_b, n_b));
+                xg += 16;
+            }
+        }
+        true
+    }
+
+    /// One output row, C1, 5×5: rolling SORTED-COLUMN scheme. Each aligned
+    /// 16-column block sorts its 5-element columns once (9 exchanges); the
+    /// ±1/±2-shifted sorted columns come from `vext` against neighbor
+    /// blocks. The remaining median-of-25 selection uses a 71-exchange
+    /// network derived from Smith's 99 by greedy deletion, PROVEN exact on
+    /// the sorted-column input subspace via the zero-one principle (all
+    /// 6^5 column-sorted 0-1 patterns verified — see the unit test).
+    /// Borders synthesize replicate columns by broadcasting edge lanes.
+    /// Exact median — byte-identical to the scalar network walk.
+    pub(super) fn median5_row(s: &[u8], drow: &mut [u8], w: usize, h: usize, y: usize) -> bool {
+        if w < 48 {
+            return false;
+        }
+        // SAFETY: aligned blocks read [x, x+16) with x+16 <= w; unaligned
+        // tail blocks read within [w-18, w); rows are clamp-mapped.
         unsafe {
             let mut rows: [*const u8; 5] = [std::ptr::null(); 5];
             for (dy, row) in rows.iter_mut().enumerate() {
                 let sy = (y + dy).saturating_sub(2).min(h - 1);
                 *row = s.as_ptr().add(sy * w);
             }
-            let mut x = 2usize;
-            while x + 16 <= w - 2 {
-                let mut v0 = vld1q_u8(rows[0].add(x - 2));
-                let mut v1 = vld1q_u8(rows[0].add(x - 1));
-                let mut v2 = vld1q_u8(rows[0].add(x));
-                let mut v3 = vld1q_u8(rows[0].add(x + 1));
-                let mut v4 = vld1q_u8(rows[0].add(x + 2));
-                let mut v5 = vld1q_u8(rows[1].add(x - 2));
-                let mut v6 = vld1q_u8(rows[1].add(x - 1));
-                let mut v7 = vld1q_u8(rows[1].add(x));
-                let mut v8 = vld1q_u8(rows[1].add(x + 1));
-                let mut v9 = vld1q_u8(rows[1].add(x + 2));
-                let mut v10 = vld1q_u8(rows[2].add(x - 2));
-                let mut v11 = vld1q_u8(rows[2].add(x - 1));
-                let mut v12 = vld1q_u8(rows[2].add(x));
-                let mut v13 = vld1q_u8(rows[2].add(x + 1));
-                let mut v14 = vld1q_u8(rows[2].add(x + 2));
-                let mut v15 = vld1q_u8(rows[3].add(x - 2));
-                let mut v16 = vld1q_u8(rows[3].add(x - 1));
-                let mut v17 = vld1q_u8(rows[3].add(x));
-                let mut v18 = vld1q_u8(rows[3].add(x + 1));
-                let mut v19 = vld1q_u8(rows[3].add(x + 2));
-                let mut v20 = vld1q_u8(rows[4].add(x - 2));
-                let mut v21 = vld1q_u8(rows[4].add(x - 1));
-                let mut v22 = vld1q_u8(rows[4].add(x));
-                let mut v23 = vld1q_u8(rows[4].add(x + 1));
-                let mut v24 = vld1q_u8(rows[4].add(x + 2));
-                let (lo, hi) = (vminq_u8(v0, v1), vmaxq_u8(v0, v1));
-                v0 = lo;
-                v1 = hi;
-                let (lo, hi) = (vminq_u8(v3, v4), vmaxq_u8(v3, v4));
-                v3 = lo;
-                v4 = hi;
-                let (lo, hi) = (vminq_u8(v2, v4), vmaxq_u8(v2, v4));
-                v2 = lo;
-                v4 = hi;
-                let (lo, hi) = (vminq_u8(v2, v3), vmaxq_u8(v2, v3));
-                v2 = lo;
-                v3 = hi;
-                let (lo, hi) = (vminq_u8(v6, v7), vmaxq_u8(v6, v7));
-                v6 = lo;
-                v7 = hi;
-                let (lo, hi) = (vminq_u8(v5, v7), vmaxq_u8(v5, v7));
-                v5 = lo;
-                v7 = hi;
-                let (lo, hi) = (vminq_u8(v5, v6), vmaxq_u8(v5, v6));
-                v5 = lo;
-                v6 = hi;
+            let sort_cols = |off: usize| -> [uint8x16_t; 5] {
+                let mut c = [
+                    vld1q_u8(rows[0].add(off)),
+                    vld1q_u8(rows[1].add(off)),
+                    vld1q_u8(rows[2].add(off)),
+                    vld1q_u8(rows[3].add(off)),
+                    vld1q_u8(rows[4].add(off)),
+                ];
+                let (lo, hi) = (vminq_u8(c[0], c[1]), vmaxq_u8(c[0], c[1]));
+                c[0] = lo;
+                c[1] = hi;
+                let (lo, hi) = (vminq_u8(c[3], c[4]), vmaxq_u8(c[3], c[4]));
+                c[3] = lo;
+                c[4] = hi;
+                let (lo, hi) = (vminq_u8(c[2], c[4]), vmaxq_u8(c[2], c[4]));
+                c[2] = lo;
+                c[4] = hi;
+                let (lo, hi) = (vminq_u8(c[2], c[3]), vmaxq_u8(c[2], c[3]));
+                c[2] = lo;
+                c[3] = hi;
+                let (lo, hi) = (vminq_u8(c[1], c[4]), vmaxq_u8(c[1], c[4]));
+                c[1] = lo;
+                c[4] = hi;
+                let (lo, hi) = (vminq_u8(c[0], c[3]), vmaxq_u8(c[0], c[3]));
+                c[0] = lo;
+                c[3] = hi;
+                let (lo, hi) = (vminq_u8(c[0], c[2]), vmaxq_u8(c[0], c[2]));
+                c[0] = lo;
+                c[2] = hi;
+                let (lo, hi) = (vminq_u8(c[1], c[3]), vmaxq_u8(c[1], c[3]));
+                c[1] = lo;
+                c[3] = hi;
+                let (lo, hi) = (vminq_u8(c[1], c[2]), vmaxq_u8(c[1], c[2]));
+                c[1] = lo;
+                c[2] = hi;
+                c
+            };
+            let dup_lane0 = |v: &[uint8x16_t; 5]| -> [uint8x16_t; 5] {
+                [
+                    vdupq_laneq_u8(v[0], 0),
+                    vdupq_laneq_u8(v[1], 0),
+                    vdupq_laneq_u8(v[2], 0),
+                    vdupq_laneq_u8(v[3], 0),
+                    vdupq_laneq_u8(v[4], 0),
+                ]
+            };
+            let dup_lane15 = |v: &[uint8x16_t; 5]| -> [uint8x16_t; 5] {
+                [
+                    vdupq_laneq_u8(v[0], 15),
+                    vdupq_laneq_u8(v[1], 15),
+                    vdupq_laneq_u8(v[2], 15),
+                    vdupq_laneq_u8(v[3], 15),
+                    vdupq_laneq_u8(v[4], 15),
+                ]
+            };
+            let run_block = |prev: &[uint8x16_t; 5],
+                             cur: &[uint8x16_t; 5],
+                             next: &[uint8x16_t; 5]|
+             -> uint8x16_t {
+                let mut v0 = vextq_u8(prev[0], cur[0], 14);
+                let mut v1 = vextq_u8(prev[1], cur[1], 14);
+                let mut v2 = vextq_u8(prev[2], cur[2], 14);
+                let mut v3 = vextq_u8(prev[3], cur[3], 14);
+                let mut v4 = vextq_u8(prev[4], cur[4], 14);
+                let mut v5 = vextq_u8(prev[0], cur[0], 15);
+                let mut v6 = vextq_u8(prev[1], cur[1], 15);
+                let mut v7 = vextq_u8(prev[2], cur[2], 15);
+                let mut v8 = vextq_u8(prev[3], cur[3], 15);
+                let mut v9 = vextq_u8(prev[4], cur[4], 15);
+                let mut v10 = cur[0];
+                let mut v11 = cur[1];
+                let mut v12 = cur[2];
+                let mut v13 = cur[3];
+                let mut v14 = cur[4];
+                let mut v15 = vextq_u8(cur[0], next[0], 1);
+                let mut v16 = vextq_u8(cur[1], next[1], 1);
+                let mut v17 = vextq_u8(cur[2], next[2], 1);
+                let mut v18 = vextq_u8(cur[3], next[3], 1);
+                let mut v19 = vextq_u8(cur[4], next[4], 1);
+                let mut v20 = vextq_u8(cur[0], next[0], 2);
+                let mut v21 = vextq_u8(cur[1], next[1], 2);
+                let mut v22 = vextq_u8(cur[2], next[2], 2);
+                let mut v23 = vextq_u8(cur[3], next[3], 2);
+                let mut v24 = vextq_u8(cur[4], next[4], 2);
                 let (lo, hi) = (vminq_u8(v9, v10), vmaxq_u8(v9, v10));
                 v9 = lo;
-                v10 = hi;
-                let (lo, hi) = (vminq_u8(v8, v10), vmaxq_u8(v8, v10));
-                v8 = lo;
                 v10 = hi;
                 let (lo, hi) = (vminq_u8(v8, v9), vmaxq_u8(v8, v9));
                 v8 = lo;
                 v9 = hi;
-                let (lo, hi) = (vminq_u8(v12, v13), vmaxq_u8(v12, v13));
-                v12 = lo;
-                v13 = hi;
-                let (lo, hi) = (vminq_u8(v11, v13), vmaxq_u8(v11, v13));
-                v11 = lo;
-                v13 = hi;
-                let (lo, hi) = (vminq_u8(v11, v12), vmaxq_u8(v11, v12));
-                v11 = lo;
-                v12 = hi;
-                let (lo, hi) = (vminq_u8(v15, v16), vmaxq_u8(v15, v16));
-                v15 = lo;
-                v16 = hi;
                 let (lo, hi) = (vminq_u8(v14, v16), vmaxq_u8(v14, v16));
                 v14 = lo;
                 v16 = hi;
                 let (lo, hi) = (vminq_u8(v14, v15), vmaxq_u8(v14, v15));
                 v14 = lo;
                 v15 = hi;
-                let (lo, hi) = (vminq_u8(v18, v19), vmaxq_u8(v18, v19));
-                v18 = lo;
-                v19 = hi;
-                let (lo, hi) = (vminq_u8(v17, v19), vmaxq_u8(v17, v19));
-                v17 = lo;
-                v19 = hi;
-                let (lo, hi) = (vminq_u8(v17, v18), vmaxq_u8(v17, v18));
-                v17 = lo;
-                v18 = hi;
-                let (lo, hi) = (vminq_u8(v21, v22), vmaxq_u8(v21, v22));
-                v21 = lo;
-                v22 = hi;
-                let (lo, hi) = (vminq_u8(v20, v22), vmaxq_u8(v20, v22));
-                v20 = lo;
-                v22 = hi;
-                let (lo, hi) = (vminq_u8(v20, v21), vmaxq_u8(v20, v21));
-                v20 = lo;
-                v21 = hi;
-                let (lo, hi) = (vminq_u8(v23, v24), vmaxq_u8(v23, v24));
-                v23 = lo;
-                v24 = hi;
                 let (lo, hi) = (vminq_u8(v2, v5), vmaxq_u8(v2, v5));
                 v2 = lo;
                 v5 = hi;
                 let (lo, hi) = (vminq_u8(v3, v6), vmaxq_u8(v3, v6));
                 v3 = lo;
-                v6 = hi;
-                let (lo, hi) = (vminq_u8(v0, v6), vmaxq_u8(v0, v6));
-                v0 = lo;
                 v6 = hi;
                 let (lo, hi) = (vminq_u8(v0, v3), vmaxq_u8(v0, v3));
                 v0 = lo;
@@ -470,17 +607,11 @@ mod neon {
                 let (lo, hi) = (vminq_u8(v4, v7), vmaxq_u8(v4, v7));
                 v4 = lo;
                 v7 = hi;
-                let (lo, hi) = (vminq_u8(v1, v7), vmaxq_u8(v1, v7));
-                v1 = lo;
-                v7 = hi;
                 let (lo, hi) = (vminq_u8(v1, v4), vmaxq_u8(v1, v4));
                 v1 = lo;
                 v4 = hi;
                 let (lo, hi) = (vminq_u8(v11, v14), vmaxq_u8(v11, v14));
                 v11 = lo;
-                v14 = hi;
-                let (lo, hi) = (vminq_u8(v8, v14), vmaxq_u8(v8, v14));
-                v8 = lo;
                 v14 = hi;
                 let (lo, hi) = (vminq_u8(v8, v11), vmaxq_u8(v8, v11));
                 v8 = lo;
@@ -494,27 +625,18 @@ mod neon {
                 let (lo, hi) = (vminq_u8(v9, v12), vmaxq_u8(v9, v12));
                 v9 = lo;
                 v12 = hi;
-                let (lo, hi) = (vminq_u8(v13, v16), vmaxq_u8(v13, v16));
-                v13 = lo;
-                v16 = hi;
                 let (lo, hi) = (vminq_u8(v10, v16), vmaxq_u8(v10, v16));
                 v10 = lo;
                 v16 = hi;
                 let (lo, hi) = (vminq_u8(v10, v13), vmaxq_u8(v10, v13));
                 v10 = lo;
                 v13 = hi;
-                let (lo, hi) = (vminq_u8(v20, v23), vmaxq_u8(v20, v23));
-                v20 = lo;
-                v23 = hi;
                 let (lo, hi) = (vminq_u8(v17, v23), vmaxq_u8(v17, v23));
                 v17 = lo;
                 v23 = hi;
                 let (lo, hi) = (vminq_u8(v17, v20), vmaxq_u8(v17, v20));
                 v17 = lo;
                 v20 = hi;
-                let (lo, hi) = (vminq_u8(v21, v24), vmaxq_u8(v21, v24));
-                v21 = lo;
-                v24 = hi;
                 let (lo, hi) = (vminq_u8(v18, v24), vmaxq_u8(v18, v24));
                 v18 = lo;
                 v24 = hi;
@@ -529,9 +651,6 @@ mod neon {
                 v17 = hi;
                 let (lo, hi) = (vminq_u8(v9, v18), vmaxq_u8(v9, v18));
                 v9 = lo;
-                v18 = hi;
-                let (lo, hi) = (vminq_u8(v0, v18), vmaxq_u8(v0, v18));
-                v0 = lo;
                 v18 = hi;
                 let (lo, hi) = (vminq_u8(v0, v9), vmaxq_u8(v0, v9));
                 v0 = lo;
@@ -572,18 +691,12 @@ mod neon {
                 let (lo, hi) = (vminq_u8(v4, v13), vmaxq_u8(v4, v13));
                 v4 = lo;
                 v13 = hi;
-                let (lo, hi) = (vminq_u8(v14, v23), vmaxq_u8(v14, v23));
-                v14 = lo;
-                v23 = hi;
                 let (lo, hi) = (vminq_u8(v5, v23), vmaxq_u8(v5, v23));
                 v5 = lo;
                 v23 = hi;
                 let (lo, hi) = (vminq_u8(v5, v14), vmaxq_u8(v5, v14));
                 v5 = lo;
                 v14 = hi;
-                let (lo, hi) = (vminq_u8(v15, v24), vmaxq_u8(v15, v24));
-                v15 = lo;
-                v24 = hi;
                 let (lo, hi) = (vminq_u8(v6, v24), vmaxq_u8(v6, v24));
                 v6 = lo;
                 v24 = hi;
@@ -683,15 +796,66 @@ mod neon {
                 let (lo, hi) = (vminq_u8(v10, v12), vmaxq_u8(v10, v12));
                 v10 = lo;
                 v12 = hi;
-                vst1q_u8(drow.as_mut_ptr().add(x), v12);
                 let _ = (
                     v0, v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11, v13, v14, v15, v16, v17, v18,
                     v19, v20, v21, v22, v23, v24,
                 );
+                v12
+            };
+
+            let mut cur = sort_cols(0);
+            let mut prev = dup_lane0(&cur);
+            let mut x = 0usize;
+            while x + 32 <= w {
+                let next = sort_cols(x + 16);
+                vst1q_u8(drow.as_mut_ptr().add(x), run_block(&prev, &cur, &next));
+                prev = cur;
+                cur = next;
                 x += 16;
             }
-            for xx in (0..2).chain(x..w) {
-                scalar_px::<25>(s, drow, w, h, y, 2, &super::NET25, 12, xx);
+            // Tail: overlapped unaligned block ending at w; columns beyond
+            // w-1 replicate the edge.
+            let xt = w - 16;
+            let c = sort_cols(xt);
+            let p = sort_cols(xt - 2);
+            // Rotate so lanes 14,15 carry cols xt-2, xt-1 (run_block only
+            // consumes prev's top two lanes).
+            let p_sh = [
+                vextq_u8(p[0], p[0], 2),
+                vextq_u8(p[1], p[1], 2),
+                vextq_u8(p[2], p[2], 2),
+                vextq_u8(p[3], p[3], 2),
+                vextq_u8(p[4], p[4], 2),
+            ];
+            let n = dup_lane15(&c);
+            vst1q_u8(drow.as_mut_ptr().add(xt), run_block(&p_sh, &c, &n));
+            // Cover any gap between the aligned loop and the tail block.
+            let mut xg = x;
+            while xg < xt {
+                let c = sort_cols(xg);
+                let p = sort_cols(xg - 2);
+                let n = sort_cols(xg + 2);
+                // vext(p, c, 14/15) needs p's lanes 14,15 = cols xg-2, xg-1:
+                // p loaded at xg-2 gives lanes 0..15 = cols xg-2..xg+13 —
+                // wrong alignment for the shared run_block; recompute via
+                // an aligned-style pair: emulate by shifting p so its lane
+                // 14 is col xg-2.
+                let p_sh = [
+                    vextq_u8(p[0], p[0], 2),
+                    vextq_u8(p[1], p[1], 2),
+                    vextq_u8(p[2], p[2], 2),
+                    vextq_u8(p[3], p[3], 2),
+                    vextq_u8(p[4], p[4], 2),
+                ];
+                let n_sh = [
+                    vextq_u8(n[0], n[0], 14),
+                    vextq_u8(n[1], n[1], 14),
+                    vextq_u8(n[2], n[2], 14),
+                    vextq_u8(n[3], n[3], 14),
+                    vextq_u8(n[4], n[4], 14),
+                ];
+                vst1q_u8(drow.as_mut_ptr().add(xg), run_block(&p_sh, &c, &n_sh));
+                xg += 16;
             }
         }
         true
@@ -761,6 +925,105 @@ mod tests {
             }
             let mut sorted = w25.to_vec();
             assert_eq!(median25(&mut w25.clone()), median_naive(&mut sorted));
+        }
+    }
+
+    /// Pin the 71-exchange sorted-column network: exact median for every
+    /// column-sorted 0-1 pattern (zero-one principle => exact for all u8).
+    #[test]
+    fn reduced_net_exact_on_sorted_columns() {
+        // Mirrors the NEON median5_row layout: idx = col*5 + rank.
+        const NET71: [(usize, usize); 71] = [
+            (9, 10),
+            (8, 9),
+            (14, 16),
+            (14, 15),
+            (2, 5),
+            (3, 6),
+            (0, 3),
+            (4, 7),
+            (1, 4),
+            (11, 14),
+            (8, 11),
+            (12, 15),
+            (9, 15),
+            (9, 12),
+            (10, 16),
+            (10, 13),
+            (17, 23),
+            (17, 20),
+            (18, 24),
+            (18, 21),
+            (19, 22),
+            (8, 17),
+            (9, 18),
+            (0, 9),
+            (10, 19),
+            (1, 19),
+            (1, 10),
+            (11, 20),
+            (2, 20),
+            (2, 11),
+            (12, 21),
+            (3, 21),
+            (3, 12),
+            (13, 22),
+            (4, 22),
+            (4, 13),
+            (5, 23),
+            (5, 14),
+            (6, 24),
+            (6, 15),
+            (7, 16),
+            (7, 19),
+            (13, 21),
+            (15, 23),
+            (7, 13),
+            (7, 15),
+            (1, 9),
+            (3, 11),
+            (5, 17),
+            (11, 17),
+            (9, 17),
+            (4, 10),
+            (6, 12),
+            (7, 14),
+            (4, 6),
+            (4, 7),
+            (12, 14),
+            (10, 14),
+            (6, 7),
+            (10, 12),
+            (6, 10),
+            (6, 17),
+            (12, 17),
+            (7, 17),
+            (7, 10),
+            (12, 18),
+            (7, 12),
+            (10, 18),
+            (12, 20),
+            (10, 20),
+            (10, 12),
+        ];
+        for pattern in 0..6usize.pow(5) {
+            let mut v = [0u8; 25];
+            let mut ones = 0;
+            let mut p = pattern;
+            for c in 0..5 {
+                let t = p % 6;
+                p /= 6;
+                for j in 0..t {
+                    v[c * 5 + 4 - j] = 1;
+                }
+                ones += t;
+            }
+            for &(a, b) in NET71.iter() {
+                let (lo, hi) = (v[a].min(v[b]), v[a].max(v[b]));
+                v[a] = lo;
+                v[b] = hi;
+            }
+            assert_eq!(v[12], u8::from(ones >= 13), "pattern {pattern}");
         }
     }
 
