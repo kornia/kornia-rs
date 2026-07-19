@@ -29,10 +29,15 @@ resize lanczos   — Our kernel is Lanczos-3 (3-lobe, 6-tap separable).
                    DIFFERENT KERNEL — results will diverge. We report max error
                    for information only; no pass/fail threshold applied.
 
-warp bilinear    — CUDA texture hardware bilinear, BORDER_ZERO for OOB taps.
-                   cv2 INTER_LINEAR + BORDER_CONSTANT=0. Should match closely.
+warp bilinear    — Centre-pixel OOB → zero (BORDER_CONSTANT). The +1 tap at
+                   source edges is clamped to the last row/column (BORDER_REPLICATE),
+                   mirroring the CPU warp_affine inner loop.
+                   cv2 warpAffine uses BORDER_CONSTANT for both, so pixels whose
+                   bilinear stencil touches the source border differ. Identity and
+                   interior pixels match cv2 closely; edge-touching pixels do not.
 
-warp nearest     — same OOB convention. Matches cv2.INTER_NEAREST.
+warp nearest     — Centre-pixel OOB → zero, rounded tap clamped into [0, src-1].
+                   Matches cv2.INTER_NEAREST.
 
 warp bicubic     — Keys a=-0.5, BORDER_REPLICATE for the 4×4 OOB taps.
                    cv2 INTER_CUBIC + BORDER_CONSTANT=0 uses zero for OOB taps.
@@ -180,15 +185,21 @@ def check_warp() -> bool:
     print("\n=== warp-affine vs cv2 ===")
     all_ok = True
 
+    # bilinear non-identity: the +1 bilinear tap at source edges uses BORDER_REPLICATE
+    # (matches our CPU warp_affine), while cv2 warpAffine uses BORDER_CONSTANT=0.
+    # Pixels whose stencil touches the source border will differ; those far from any
+    # source edge match within floating-point tolerance. Identity is exact because
+    # integer source coordinates carry zero fractional weight on the replicated tap.
+    #
     # bicubic non-identity: kornia-rs uses BORDER_REPLICATE for OOB 4×4 taps.
     # cv2 warpAffine with BORDER_CONSTANT=0 uses zero for OOB taps.
     # These differ for pixels whose 4×4 neighbourhood extends outside the source.
     # Identity transform has no OOB taps → matches exactly.
     cases = [
         # (mode,      w,   h,  angle,  tol,    interior)
-        ("bilinear",  64,  64,   0.0,  2e-5,   False),   # identity
-        ("bilinear",  64,  64,  45.0,  2e-5,   False),
-        ("bilinear", 128,  96,  30.0,  2e-5,   False),
+        ("bilinear",  64,  64,   0.0,  2e-5,   False),   # identity — exact
+        ("bilinear",  64,  64,  45.0,  None,   False),   # BORDER_REPLICATE vs cv2's BORDER_CONSTANT
+        ("bilinear", 128,  96,  30.0,  None,   False),   # BORDER_REPLICATE vs cv2's BORDER_CONSTANT
         ("nearest",   64,  64,   0.0,  1e-6,   False),
         ("nearest",   64,  64,  90.0,  1e-6,   False),
         ("bicubic",   64,  64,   0.0,  3e-4,   False),   # identity — no border effect
