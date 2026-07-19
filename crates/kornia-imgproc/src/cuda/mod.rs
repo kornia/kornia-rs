@@ -29,6 +29,8 @@ pub mod warp_perspective_u8;
 /// Native CUDA color-space conversion kernels.
 pub mod color;
 
+/// CLAHE LUT-build + blend kernels (byte-exact vs the CPU path and cv2).
+pub mod clahe;
 pub mod histogram;
 /// Native CUDA u8 morphology kernels (dilate / erode, byte-exact with the
 /// CPU ops).

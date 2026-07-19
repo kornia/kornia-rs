@@ -22,6 +22,9 @@ pub(crate) use crate::__try_device as try_device;
 /// image undistortion module.
 pub mod calibration;
 
+/// contrast-limited adaptive histogram equalization (CLAHE) module.
+pub mod clahe;
+
 /// color transformations module.
 pub mod color;
 
