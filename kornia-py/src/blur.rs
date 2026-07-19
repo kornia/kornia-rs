@@ -99,3 +99,127 @@ pub fn sobel(py: Python<'_>, image: &Bound<'_, PyAny>, kernel_size: usize) -> Py
         }
     })
 }
+
+/// Resolve `out=` (shape-validated view) or allocate a fresh output array.
+/// Shared by the median/bilateral CPU paths.
+fn resolve_out<const C: usize>(
+    py: Python<'_>,
+    op: &str,
+    rows: usize,
+    cols: usize,
+    out: Option<crate::image::PyImage>,
+) -> PyResult<(kornia_image::Image<u8, C>, crate::image::PyImage)> {
+    match out {
+        Some(out_pyarr) => {
+            if out_pyarr.bind(py).shape() != [rows, cols, C] {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "{op}: out shape {:?} must match the source ({rows}, {cols}, {C})",
+                    out_pyarr.bind(py).shape(),
+                )));
+            }
+            let img = unsafe { numpy_as_image::<C>(py, &out_pyarr)? };
+            Ok((img, out_pyarr))
+        }
+        None => unsafe {
+            alloc_output_pyarray::<C>(
+                py,
+                kornia_image::ImageSize {
+                    width: cols,
+                    height: rows,
+                },
+            )
+        },
+    }
+}
+
+/// Median blur — byte-for-byte with `cv2.medianBlur` and VPI's CUDA
+/// `MedianFilter`. `kernel_size` must be 3 or 5; borders replicate.
+///
+/// Residency-dispatched: a u8 device `Image` (1/3/4-channel) runs the CUDA
+/// sorting-network kernel (byte-identical to the CPU path); a numpy u8
+/// array of shape (H, W, 1|3) runs the CPU path.
+#[pyfunction]
+#[pyo3(signature = (image, kernel_size=3, out=None))]
+pub fn median_blur(
+    py: Python<'_>,
+    image: &Bound<'_, PyAny>,
+    kernel_size: usize,
+    out: Option<crate::image::PyImage>,
+) -> PyResult<Py<PyAny>> {
+    #[cfg(feature = "cuda")]
+    if let Ok(api) = image.cast::<crate::image::PyImageApi>() {
+        let img = api.borrow();
+        if img.is_device() {
+            if out.is_some() {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "median_blur: out= is only supported on the CPU (numpy) path",
+                ));
+            }
+            return crate::cuda_ext::filter::median_blur(&img, kernel_size)?.into_py(py);
+        }
+    }
+    cpu_op(py, image, move |py, arr: Py<numpy::PyArray3<u8>>| {
+        fn run<const C: usize>(
+            py: Python<'_>,
+            arr: &Py<numpy::PyArray3<u8>>,
+            kernel_size: usize,
+            out: Option<crate::image::PyImage>,
+        ) -> PyResult<crate::image::PyImage> {
+            let src = unsafe { numpy_as_image::<C>(py, arr)? };
+            let (mut dst, out_arr) =
+                resolve_out::<C>(py, "median_blur", src.rows(), src.cols(), out)?;
+            py.detach(|| filter::median_blur(&src, &mut dst, kernel_size))
+                .map_err(to_pyerr)?;
+            Ok(out_arr)
+        }
+        let c = arr.bind(py).shape()[2];
+        match c {
+            1 => run::<1>(py, &arr, kernel_size, out),
+            3 => run::<3>(py, &arr, kernel_size, out),
+            c => Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "median_blur supports 1 or 3 channels; got {c}"
+            ))),
+        }
+    })
+}
+
+/// Bilateral filter — byte-for-byte with
+/// `cv2.bilateralFilter(src, d, sigma_color, sigma_space)` for u8
+/// single-channel images (VPI's bilateral uses a different formula and is
+/// NOT byte-comparable).
+///
+/// Residency-dispatched: a u8 single-channel device `Image` runs the CUDA
+/// kernel (byte-identical to the CPU path); a numpy u8 array of shape
+/// (H, W, 1) runs the CPU path.
+#[pyfunction]
+#[pyo3(signature = (image, d=5, sigma_color=50.0, sigma_space=50.0, out=None))]
+pub fn bilateral_filter(
+    py: Python<'_>,
+    image: &Bound<'_, PyAny>,
+    d: i32,
+    sigma_color: f64,
+    sigma_space: f64,
+    out: Option<crate::image::PyImage>,
+) -> PyResult<Py<PyAny>> {
+    #[cfg(feature = "cuda")]
+    if let Ok(api) = image.cast::<crate::image::PyImageApi>() {
+        let img = api.borrow();
+        if img.is_device() {
+            if out.is_some() {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "bilateral_filter: out= is only supported on the CPU (numpy) path",
+                ));
+            }
+            return crate::cuda_ext::filter::bilateral_filter(&img, d, sigma_color, sigma_space)?
+                .into_py(py);
+        }
+    }
+    cpu_op(py, image, move |py, arr: Py<numpy::PyArray3<u8>>| {
+        let src = unsafe { numpy_as_image::<1>(py, &arr)? };
+        let (mut dst, out_arr) =
+            resolve_out::<1>(py, "bilateral_filter", src.rows(), src.cols(), out)?;
+        py.detach(|| filter::bilateral_filter(&src, &mut dst, d, sigma_color, sigma_space))
+            .map_err(to_pyerr)?;
+        Ok(out_arr)
+    })
+}

@@ -287,6 +287,20 @@ def test_no_leak_clahe_device_arm():
     assert_no_leak(body)
 
 
+def test_no_leak_median_bilateral_device_arms():
+    """median_blur / bilateral_filter allocate fresh device destinations;
+    bilateral also uploads per-call tap/weight tables."""
+    rng = np.random.default_rng(11)
+    dev = _dev(rng.integers(0, 256, size=(240, 320, 1), dtype=np.uint8))
+
+    def body():
+        m = kornia_rs.imgproc.median_blur(dev, kernel_size=3)
+        b = kornia_rs.imgproc.bilateral_filter(dev)
+        del m, b
+
+    assert_no_leak(body)
+
+
 def test_no_leak_new_color_device_arms():
     """The dual-dtype / f32 arms wired 2026-07-18 (hls/luv/xyz/linear/yuv/
     f32-ycbcr/f32-sepia/f32-gray) allocate fresh device destinations — chain a

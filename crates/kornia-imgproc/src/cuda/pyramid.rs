@@ -50,8 +50,9 @@ fn check_slice(what: &'static str, got: usize, need: usize) -> Result<(), CudaPy
     Ok(())
 }
 
-/// `reflect_101` device twin (pyramid.rs) — shared preamble for every kernel.
-const REFLECT_101: &str = r#"
+/// `reflect_101` device preamble, shared by every kernel family that
+/// samples reflected borders (pyramids, bilateral).
+pub(crate) const REFLECT_101: &str = r#"
 __device__ __forceinline__ int reflect_101(int p, int len) {
     if (len == 1) return 0;
     if (p < 0) p = -p;

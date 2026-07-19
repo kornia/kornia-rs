@@ -156,6 +156,18 @@ def normalize_mean_std(
     """Per-channel ``(x/255 - mean) / std`` (3-channel u8 -> float32 HWC)."""
     ...
 def compute_histogram(image: np.ndarray | Image, num_bins: int) -> list[int]: ...
+def median_blur(
+    image: np.ndarray | Image,
+    kernel_size: int = 3,
+    out: Optional[np.ndarray] = None,
+) -> np.ndarray | Image: ...
+def bilateral_filter(
+    image: np.ndarray | Image,
+    d: int = 5,
+    sigma_color: float = 50.0,
+    sigma_space: float = 50.0,
+    out: Optional[np.ndarray] = None,
+) -> np.ndarray | Image: ...
 def equalize_hist(image: np.ndarray | Image) -> np.ndarray | Image: ...
 def clahe(
     image: np.ndarray | Image,
