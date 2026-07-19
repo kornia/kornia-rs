@@ -82,19 +82,88 @@ pub fn connected_components(
     let (w, h) = (src.cols(), src.rows());
     let s = src.as_slice();
     let n_px = w * h;
+    let _ = &n_px;
 
     // Pass 1: RUN-based union-find — horizontal runs collapse to their
     // start index for free (parent chain along the run), and only runs
     // overlapping a run in the previous row union. Far fewer union/find
     // operations than per-pixel scanning; identical min-index roots.
     let mut parent: Vec<u32> = (0..n_px as u32).collect();
-    // (run_start, run_end_exclusive) per row, reused buffers.
-    let mut prev_runs: Vec<(usize, usize)> = Vec::new();
-    let mut cur_runs: Vec<(usize, usize)> = Vec::new();
-    for y in 0..h {
-        cur_runs.clear();
+
+    // Stripe-parallel: each stripe unions rows [y0+1, y1) against their
+    // predecessor internally (disjoint parent index ranges — safe to
+    // split via chunks of the parent array is not possible with a shared
+    // Vec, so stripes serialize on a raw pointer with provably disjoint
+    // touch sets), then the stripe boundary rows are stitched serially.
+    let stripes = rayon::current_num_threads().max(1);
+    let rows_per = h.div_ceil(stripes).max(1);
+    struct P(*mut u32);
+    unsafe impl Send for P {}
+    unsafe impl Sync for P {}
+    impl P {
+        /// Accessor so closures capture the Sync wrapper, not the raw
+        /// pointer field (edition-2021 disjoint capture).
+        fn get(&self) -> *mut u32 {
+            self.0
+        }
+    }
+    let pp = P(parent.as_mut_ptr());
+    let bounds: Vec<(usize, usize)> = (0..stripes)
+        .map(|k| (k * rows_per, ((k + 1) * rows_per).min(h)))
+        .filter(|&(a, b)| a < b)
+        .collect();
+    use rayon::prelude::*;
+    bounds.par_iter().for_each(|&(y0, y1)| {
+        // SAFETY: this stripe only touches parent entries of its own rows
+        // [y0, y1) — run chaining and unions are between the current row
+        // and the previous row, and the first row of a stripe skips the
+        // cross-stripe union (done in the stitch pass below).
+        let parent = unsafe { std::slice::from_raw_parts_mut(pp.get(), w * h) };
+        let mut prev_runs: Vec<(usize, usize)> = Vec::new();
+        let mut cur_runs: Vec<(usize, usize)> = Vec::new();
+        for y in y0..y1 {
+            cur_runs.clear();
+            let row = &s[y * w..y * w + w];
+            let mut pi = 0usize;
+            let mut x = 0;
+            while x < w {
+                if row[x] == 0 {
+                    x += 1;
+                    continue;
+                }
+                let start = x;
+                while x < w && row[x] != 0 {
+                    x += 1;
+                }
+                let gs = y * w + start;
+                parent[gs + 1..y * w + x].fill(gs as u32);
+                cur_runs.push((start, x));
+                if y > y0 {
+                    let (lo, hi) = if connectivity == Connectivity::Eight {
+                        (start.saturating_sub(1), (x + 1).min(w))
+                    } else {
+                        (start, x)
+                    };
+                    while pi < prev_runs.len() && prev_runs[pi].1 <= lo {
+                        pi += 1;
+                    }
+                    let mut pj = pi;
+                    while pj < prev_runs.len() && prev_runs[pj].0 < hi {
+                        union(parent, gs as u32, ((y - 1) * w + prev_runs[pj].0) as u32);
+                        pj += 1;
+                    }
+                    pi = pj.saturating_sub(1).max(pi);
+                }
+            }
+            std::mem::swap(&mut prev_runs, &mut cur_runs);
+        }
+    });
+    // Stitch stripe boundaries (first row of each stripe vs the row
+    // above), serial.
+    for &(y0, _) in bounds.iter().skip(1) {
+        let y = y0;
         let row = &s[y * w..y * w + w];
-        let mut pi = 0usize; // two-pointer into prev_runs (both sorted)
+        let prev = &s[(y - 1) * w..y * w];
         let mut x = 0;
         while x < w {
             if row[x] == 0 {
@@ -105,56 +174,62 @@ pub fn connected_components(
             while x < w && row[x] != 0 {
                 x += 1;
             }
-            let (gs, ge) = (y * w + start, y * w + x);
-            // Chain the run to its start (min index of the run).
-            parent[gs + 1..ge].fill(gs as u32);
-            cur_runs.push((start, x));
-            // Union with overlapping runs of the previous row. For
-            // 8-connectivity a run [a, b) touches prev runs overlapping
-            // [a-1, b+1).
+            let gs = y * w + start;
             let (lo, hi) = if connectivity == Connectivity::Eight {
                 (start.saturating_sub(1), (x + 1).min(w))
             } else {
                 (start, x)
             };
-            // Runs are sorted: skip prev runs ending before this one,
-            // union all overlapping, keep the pointer for the next run
-            // (a prev run can overlap two consecutive current runs, so
-            // back up one on exit).
-            while pi < prev_runs.len() && prev_runs[pi].1 <= lo {
-                pi += 1;
+            let mut px = lo;
+            while px < hi {
+                if prev[px] != 0 {
+                    let rstart = {
+                        let mut r = px;
+                        while r > 0 && prev[r - 1] != 0 {
+                            r -= 1;
+                        }
+                        r
+                    };
+                    union(&mut parent, gs as u32, ((y - 1) * w + rstart) as u32);
+                    while px < hi && prev[px] != 0 {
+                        px += 1;
+                    }
+                } else {
+                    px += 1;
+                }
             }
-            let mut pj = pi;
-            while pj < prev_runs.len() && prev_runs[pj].0 < hi {
-                union(
-                    &mut parent,
-                    gs as u32,
-                    ((y - 1) * w + prev_runs[pj].0) as u32,
-                );
-                pj += 1;
-            }
-            pi = pj.saturating_sub(1).max(pi);
         }
-        std::mem::swap(&mut prev_runs, &mut cur_runs);
     }
 
     // Pass 2: compact labels in raster order of the root's first
     // appearance (root = component's min linear index, so this IS the
-    // raster order of each component's first pixel).
+    // raster order of each component's first pixel). Resolved once per
+    // RUN — every pixel of a run shares its root — then the output span
+    // is filled.
     let out = labels.as_slice_mut();
     let mut next = 1i32;
     let mut compact: Vec<i32> = vec![0; n_px];
-    for i in 0..n_px {
-        if s[i] == 0 {
-            out[i] = 0;
-            continue;
+    for y in 0..h {
+        let row = &s[y * w..y * w + w];
+        let orow = &mut out[y * w..y * w + w];
+        let mut x = 0;
+        while x < w {
+            if row[x] == 0 {
+                orow[x] = 0;
+                x += 1;
+                continue;
+            }
+            let start = x;
+            while x < w && row[x] != 0 {
+                x += 1;
+            }
+            let r = find(&mut parent, (y * w + start) as u32) as usize;
+            if compact[r] == 0 {
+                compact[r] = next;
+                next += 1;
+            }
+            orow[start..x].fill(compact[r]);
         }
-        let r = find(&mut parent, i as u32) as usize;
-        if compact[r] == 0 {
-            compact[r] = next;
-            next += 1;
-        }
-        out[i] = compact[r];
     }
     Ok(next)
 }

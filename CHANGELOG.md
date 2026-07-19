@@ -23,9 +23,13 @@ for both 4- and 8-connectivity. (cv2's default 8-way algorithm, BBDT,
 produces the same partition with a different numbering.) The CPU path is
 a run-based min-index union-find; the CUDA path is an atomicMin
 label-equivalence fixpoint with row-run initialization plus a device
-compaction — device labels are identical to the CPU's. Python `Image`
-gains int32 (label map) dtype support. Performance follow-up tracked:
-current implementations prioritize the exactness contract.
+compaction — device labels are identical to the CPU's; the union phase
+is a single lock-free pass (Komura atomicMin-with-retry union, atomic
+path halving), no iteration loop. Python `Image` gains int32 (label map)
+dtype support. Measured 1080p: GPU 4.3 ms vs cv2 5.8 ms on dense 40%
+noise (1.3×); sparse-blob content is fixed-overhead-bound (task #38
+tracks the block-local rewrite). CPU is a stripe-parallel run-based
+union-find (~22 ms dense; SAUF two-pass is the same follow-up).
 
 **Canny edge detection (CPU and CUDA), byte-for-byte with OpenCV.** New
 `canny` for u8 single-channel images (`kornia_rs.imgproc.canny` in

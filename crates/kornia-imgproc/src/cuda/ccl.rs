@@ -72,56 +72,66 @@ extern "C" __global__ void ccl_init(
     }
 }
 
-__device__ __forceinline__ int find_root(const int* label, int i) {
+// Find with path halving. The shortcut write must be atomicMin: a plain
+// store could overwrite (raise) a link a concurrent union just installed
+// with atomicMin, losing that union. atomicMin keeps every entry
+// monotonically decreasing, so any interleaving converges to the same
+// min-index fixpoint.
+__device__ __forceinline__ int find_root(int* label, int i) {
     int l = label[i];
-    while (l != label[l]) l = label[l];
+    while (l != label[l]) {
+        int p = label[l];
+        int pp = label[p];
+        if (pp < p) atomicMin(&label[l], pp);
+        l = pp;
+    }
     return l;
 }
 
-// One merge step: every foreground pixel pulls the minimum root among its
-// connected neighbors onto its own root via atomicMin. Iterated with
-// compression until stable; the fixpoint is the min-index labeling.
-extern "C" __global__ void ccl_merge(
+// Lock-free union (Komura): link the larger root under the smaller with
+// atomicMin, retrying with the displaced value on contention. After ONE
+// pass over all edges the parent forest is complete — no global
+// iteration needed; a single compress pass then resolves every pixel to
+// its component's min index.
+__device__ void union_labels(int* label, int a, int b) {
+    a = find_root(label, a);
+    b = find_root(label, b);
+    while (a != b) {
+        int lo = min(a, b);
+        int hi = max(a, b);
+        int old = atomicMin(&label[hi], lo);
+        if (old == hi) return;   // linked
+        a = lo;                  // retry: displaced value keeps the chain
+        b = old;
+    }
+}
+
+// One pass: every foreground pixel unions with its already-scanned
+// neighbors (up row; left is free via the row-run init).
+extern "C" __global__ void ccl_union(
     const unsigned char* __restrict__ src,
     int* __restrict__                 label,
-    unsigned int* __restrict__        changed,
     int w, int h, int eight
 ) {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
-    if (x >= w || y >= h) return;
+    if (x >= w || y >= h || y == 0) return;
     int i = y * w + x;
     if (!__ldg(&src[i])) return;
-
-    int best = label[i];
-    // All 4/8 neighbors (symmetric — atomicMin makes direction irrelevant).
-    if (x > 0 && __ldg(&src[i - 1])) best = min(best, label[i - 1]);
-    if (x + 1 < w && __ldg(&src[i + 1])) best = min(best, label[i + 1]);
-    if (y > 0 && __ldg(&src[i - w])) best = min(best, label[i - w]);
-    if (y + 1 < h && __ldg(&src[i + w])) best = min(best, label[i + w]);
+    int up = i - w;
+    // Skip unions already implied by horizontal run chains: (i,up) is
+    // implied when (i-1) and (up-1) are both foreground. Cuts unions from
+    // O(area) to O(run overlaps) on blob content.
+    bool left = x > 0 && __ldg(&src[i - 1]);
+    bool upl = x > 0 && __ldg(&src[up - 1]);
+    bool upc = __ldg(&src[up]) != 0;
+    if (upc && !(left && upl)) union_labels(label, i, up);
     if (eight) {
-        if (x > 0 && y > 0 && __ldg(&src[i - w - 1])) best = min(best, label[i - w - 1]);
-        if (x + 1 < w && y > 0 && __ldg(&src[i - w + 1])) best = min(best, label[i - w + 1]);
-        if (x > 0 && y + 1 < h && __ldg(&src[i + w - 1])) best = min(best, label[i + w - 1]);
-        if (x + 1 < w && y + 1 < h && __ldg(&src[i + w + 1])) best = min(best, label[i + w + 1]);
+        // Diagonals: (i,up-1) implied by (i-1,up-1)+run or (i,up)+run.
+        if (upl && !left && !upc) union_labels(label, i, up - 1);
+        // (i,up+1) implied by (i,up)+run of up row.
+        if (x + 1 < w && __ldg(&src[up + 1]) && !upc) union_labels(label, i, up + 1);
     }
-    int r = find_root(label, i);
-    if (best < label[r]) {
-        atomicMin(&label[r], best);
-        atomicAdd(changed, 1u);
-    }
-}
-
-// Pointer jumping: label[i] = root(i).
-extern "C" __global__ void ccl_compress(
-    const unsigned char* __restrict__ src,
-    int* __restrict__                 label,
-    int n
-) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n) return;
-    if (!__ldg(&src[i])) return;
-    label[i] = find_root(label, i);
 }
 
 // Compaction phase 1: per-block (512 elems, 256 threads) exclusive scan
@@ -179,7 +189,7 @@ extern "C" __global__ void ccl_scan_offsets(
 // Compaction phase 3: final labels — 0 for background, compact root rank
 // + 1 for foreground (rank of the component's min-index pixel).
 extern "C" __global__ void ccl_relabel(
-    const int* __restrict__ label,
+    int* __restrict__       label,
     const int* __restrict__ pos,
     const int* __restrict__ block_sums,
     int* __restrict__       out,
@@ -191,6 +201,7 @@ extern "C" __global__ void ccl_relabel(
     if (l == BG) {
         out[i] = 0;
     } else {
+        l = find_root(label, i);
         out[i] = block_sums[l / 512] + pos[l] + 1;
     }
 }
@@ -198,8 +209,7 @@ extern "C" __global__ void ccl_relabel(
 
 struct Kernels {
     init: CudaKernel,
-    merge: CudaKernel,
-    compress: CudaKernel,
+    union_k: CudaKernel,
     scan_partial: CudaKernel,
     scan_offsets: CudaKernel,
     relabel: CudaKernel,
@@ -213,8 +223,7 @@ fn get_kernels(ctx: &Arc<CudaContext>) -> Result<&'static Kernels, CudaCclError>
             let src = CCL_SRC_TMPL.replace("__BG__", BG);
             Ok(Kernels {
                 init: try_compile_with_l1(ctx, &src, "ccl_init")?,
-                merge: try_compile_with_l1(ctx, &src, "ccl_merge")?,
-                compress: try_compile_with_l1(ctx, &src, "ccl_compress")?,
+                union_k: try_compile_with_l1(ctx, &src, "ccl_union")?,
                 scan_partial: try_compile_with_l1(ctx, &src, "ccl_scan_partial")?,
                 scan_offsets: try_compile_with_l1(ctx, &src, "ccl_scan_offsets")?,
                 relabel: try_compile_with_l1(ctx, &src, "ccl_relabel")?,
@@ -262,7 +271,6 @@ pub fn launch_connected_components(
     let nblocks = n.div_ceil(512);
     let mut block_sums = unsafe { stream.alloc::<i32>(nblocks) }.map_err(err)?;
     let mut d_total = stream.alloc_zeros::<i32>(1).map_err(err)?;
-    let mut d_changed = stream.alloc_zeros::<u32>(1).map_err(err)?;
 
     let cfg1 = super::make_config(n as u32, 1, Some((256, 1)));
     let cfg2 = super::make_config(w as u32, h as u32, None);
@@ -280,37 +288,16 @@ pub fn launch_connected_components(
         .map_err(launch_err)?;
 
     let eight_i = i32::from(eight);
-    // Merge + compress to fixpoint, two sweeps per host sync. (A
-    // geometrically growing batch was tried and regressed — post-
-    // convergence merge sweeps are expensive on dense content.)
-    for _ in 0..n.max(1) {
-        stream.memset_zeros(&mut d_changed).map_err(err)?;
-        for _ in 0..2 {
-            k.merge
-                .launch_builder(stream)
-                .arg(src)
-                .arg(&mut label)
-                .arg(&mut d_changed)
-                .arg(&w)
-                .arg(&h)
-                .arg(&eight_i)
-                .launch_cfg(cfg2)
-                .map_err(launch_err)?;
-            k.compress
-                .launch_builder(stream)
-                .arg(src)
-                .arg(&mut label)
-                .arg(&n_i32)
-                .launch_cfg(cfg1)
-                .map_err(launch_err)?;
-        }
-        let f: Vec<u32> = stream.clone_dtoh(&d_changed).map_err(err)?;
-        stream.synchronize().map_err(err)?;
-        if f[0] == 0 {
-            break;
-        }
-    }
-
+    // One union pass (lock-free) + one compress pass — no host iteration.
+    k.union_k
+        .launch_builder(stream)
+        .arg(src)
+        .arg(&mut label)
+        .arg(&w)
+        .arg(&h)
+        .arg(&eight_i)
+        .launch_cfg(cfg2)
+        .map_err(launch_err)?;
     // Compaction: rank roots in index order (== cv2-SAUF numbering).
     let nblocks_i32 =
         i32::try_from(nblocks).map_err(|_| CudaCclError::Cuda("nblocks exceeds i32".into()))?;
@@ -339,7 +326,7 @@ pub fn launch_connected_components(
         .map_err(launch_err)?;
     k.relabel
         .launch_builder(stream)
-        .arg(&label)
+        .arg(&mut label)
         .arg(&pos)
         .arg(&block_sums)
         .arg(out)
