@@ -8,6 +8,7 @@ mod ba;
 mod blur;
 mod brightness;
 mod canny;
+mod ccl;
 mod color;
 mod color_space;
 mod cpu;
@@ -500,6 +501,10 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     imgproc_mod.add_function(wrap_pyfunction!(histogram::equalize_hist, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(histogram::clahe, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(canny::canny, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(
+        ccl::connected_components_op,
+        &imgproc_mod
+    )?)?;
     imgproc_mod.add_function(wrap_pyfunction!(resize::resize, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(warp::warp_affine, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(warp::warp_perspective, &imgproc_mod)?)?;

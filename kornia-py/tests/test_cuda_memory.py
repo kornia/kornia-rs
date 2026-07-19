@@ -314,6 +314,19 @@ def test_no_leak_canny_device_arm():
     assert_no_leak(body)
 
 
+def test_no_leak_ccl_device_arm():
+    """connected_components allocates label/pos/scan scratch and an i32
+    destination per call."""
+    rng = np.random.default_rng(17)
+    dev = _dev(((rng.random((240, 320)) < 0.4) * 255).astype(np.uint8)[..., None])
+
+    def body():
+        n, lab = kornia_rs.imgproc.connected_components(dev)
+        del lab
+
+    assert_no_leak(body)
+
+
 def test_no_leak_new_color_device_arms():
     """The dual-dtype / f32 arms wired 2026-07-18 (hls/luv/xyz/linear/yuv/
     f32-ycbcr/f32-sepia/f32-gray) allocate fresh device destinations — chain a

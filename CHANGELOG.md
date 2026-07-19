@@ -13,6 +13,20 @@ changes early: `cargo add kornia-imgproc@0.1.15-rc.1` or `pip install --pre korn
 
 ## [Unreleased]
 
+**Connected-component labeling (CPU and CUDA), label-exact with OpenCV's
+SAUF.** New `connected_components` for u8 single-channel masks
+(`kornia_rs.imgproc.connected_components` in Python, returning
+`(n, labels)` with int32 labels), matching
+`cv2.connectedComponentsWithAlgorithm(..., cv2.CCL_WU)` label-for-label:
+background 0, components numbered in raster order of first appearance,
+for both 4- and 8-connectivity. (cv2's default 8-way algorithm, BBDT,
+produces the same partition with a different numbering.) The CPU path is
+a run-based min-index union-find; the CUDA path is an atomicMin
+label-equivalence fixpoint with row-run initialization plus a device
+compaction — device labels are identical to the CPU's. Python `Image`
+gains int32 (label map) dtype support. Performance follow-up tracked:
+current implementations prioritize the exactness contract.
+
 **Canny edge detection (CPU and CUDA), byte-for-byte with OpenCV.** New
 `canny` for u8 single-channel images (`kornia_rs.imgproc.canny` in
 Python), matching `cv2.Canny` exactly — the all-integer pipeline (Sobel
