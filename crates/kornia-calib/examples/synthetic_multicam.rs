@@ -45,17 +45,6 @@ fn project(pw: Vec3F64, t_world_cam: &Pose3d, k: &PinholeCamera) -> Vec2F64 {
     Vec2F64::new(k.fx * pc.x / pc.z + k.cx, k.fy * pc.y / pc.z + k.cy)
 }
 
-/// Camera centre in the world frame for a world→camera pose (`C = -Rᵀ t`).
-fn center_world_to_cam(p: &Pose3d) -> Vec3F64 {
-    let r = p.rotation.transpose();
-    let t = p.translation;
-    Vec3F64::new(
-        -(r.to_cols_array()[0] * t.x + r.to_cols_array()[3] * t.y + r.to_cols_array()[6] * t.z),
-        -(r.to_cols_array()[1] * t.x + r.to_cols_array()[4] * t.y + r.to_cols_array()[7] * t.z),
-        -(r.to_cols_array()[2] * t.x + r.to_cols_array()[5] * t.y + r.to_cols_array()[8] * t.z),
-    )
-}
-
 fn main() {
     // --- Ground-truth scene ------------------------------------------------------------------
     // 3 cameras (different focals) viewing a 3x3, 8 cm AprilGrid board ~2.5 m away from oblique angles.
@@ -106,7 +95,9 @@ fn main() {
         .iter()
         .map(|p| p.as_ref().map(|q| q.translation).unwrap_or(Vec3F64::ZERO))
         .collect();
-    let gt_c: Vec<Vec3F64> = gt_pose.iter().map(center_world_to_cam).collect();
+    // Recovered poses are T_world_cam (their translation is the camera centre in world); ground-truth
+    // poses are world→cam, so invert for the centre.
+    let gt_c: Vec<Vec3F64> = gt_pose.iter().map(|p| p.inverse().translation).collect();
     let dist = |a: &Vec3F64, b: &Vec3F64| (*a - *b).length();
     println!("\nbaseline (m)      recovered   ground-truth   error");
     for (i, j) in [(0, 1), (0, 2), (1, 2)] {

@@ -75,22 +75,34 @@ pub(crate) fn init_poses(
     // each camera's lower-error branch (2^nb combos is too many).
     let nb = branches.len();
     let ncomb = if nb <= 6 { 1u32 << nb } else { 1 };
+    // Normalized feature coords depend only on (camera, pixel), not the branch combo — compute once
+    // (undistort is an iterative Brown-Conrady inversion, so recomputing it up to 2^n times is waste).
+    let feat_norm: Vec<(Vec2F64, Vec2F64)> = features
+        .iter()
+        .map(|f| {
+            (
+                cameras[f.cam_a].normalize(f.uv_a),
+                cameras[f.cam_b].normalize(f.uv_b),
+            )
+        })
+        .collect();
     let mut best_combo = (f64::INFINITY, 0u32);
+    let mut ps = vec![Pose3d::IDENTITY; n_cams];
+    let mut hv = vec![false; n_cams];
     for combo in 0..ncomb {
-        let mut ps = vec![Pose3d::IDENTITY; n_cams];
-        let mut hv = vec![false; n_cams];
+        ps.iter_mut().for_each(|p| *p = Pose3d::IDENTITY);
+        hv.iter_mut().for_each(|h| *h = false);
         for (bi, (cam_idx, brs)) in branches.iter().enumerate() {
             ps[*cam_idx] = brs[((combo >> bi) & 1) as usize];
             hv[*cam_idx] = true;
         }
         let mut err = 0.0f64;
         let mut cnt = 0usize;
-        for f in features {
+        for (fi, f) in features.iter().enumerate() {
             if !hv[f.cam_a] || !hv[f.cam_b] {
                 continue;
             }
-            let na = cameras[f.cam_a].normalize(f.uv_a);
-            let nb2 = cameras[f.cam_b].normalize(f.uv_b);
+            let (na, nb2) = feat_norm[fi];
             cnt += 2;
             let tri = triangulate_matched_points(
                 &[na],

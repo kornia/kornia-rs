@@ -99,18 +99,6 @@ fn x84_threshold(res: &mut [f64], k: f64) -> f64 {
     med + k * 1.4826 * mad
 }
 
-fn copy_obs(o: &BaObservation) -> BaObservation {
-    BaObservation {
-        pose_idx: o.pose_idx,
-        point_idx: o.point_idx,
-        pixel: o.pixel,
-        fixed_pose: o.fixed_pose,
-        fixed_point: o.fixed_point,
-        depth_meas: o.depth_meas,
-        depth_sigma: o.depth_sigma,
-    }
-}
-
 /// Calibrate multi-camera rig extrinsics from AprilTag corners (and optional
 /// feature matches) via depth-free reprojection bundle adjustment.
 ///
@@ -195,7 +183,7 @@ fn finalize(
         .filter(|o| {
             o.fixed_point || obs_residual(o, &res1.poses, &res1.points).is_some_and(|r| r <= thr)
         })
-        .map(copy_obs)
+        .copied()
         .collect();
 
     // Pass 2: Cauchy redescender on the surviving observations, warm-started from pass 1.
