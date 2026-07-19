@@ -3262,6 +3262,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "cuda-fusion"
+version = "0.1.0"
+dependencies = [
+ "cudarc 0.19.8",
+ "kornia-imgproc",
+]
+
+[[package]]
 name = "cuda-imgproc"
 version = "0.1.0"
 dependencies = [
