@@ -24,8 +24,9 @@ contraction OpenCV's aarch64 wheels compile to (calibrated empirically:
 byte-identical (`f32::mul_add` / explicit `fmaf`, mirrored expression
 trees). The CPU interpolation stage is NEON-vectorized with packed
 per-span LUT tables (one gather per pixel; identical bytes, pure
-access-pattern change). Measured 1080p sustained: GPU 0.033 ms ≈ 130×
-and CPU 2.2 ms ≈ 2× `cv2.createCLAHE` CPU (VPI has no CLAHE op).
+access-pattern change). The Python binding takes `out=` on the CPU path.
+Measured 1080p sustained: GPU 0.033 ms ≈ 130× and CPU 1.9 ms ≈ 2.1×
+`cv2.createCLAHE` CPU (VPI has no CLAHE op).
 
 **GPU histogram + `equalize_hist` (CPU and CUDA), byte-for-byte with
 OpenCV.** New `equalize_hist` for u8 single-channel images on CPU and

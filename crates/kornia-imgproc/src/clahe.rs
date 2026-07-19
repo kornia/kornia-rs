@@ -136,20 +136,25 @@ pub(crate) fn build_tile_luts(src: &Image<u8, 1>, g: &ClaheGeometry) -> Vec<u8> 
         let x0 = tx * g.tile_w;
         let y0 = ty * g.tile_h;
         if x0 + g.tile_w <= w && y0 + g.tile_h <= h {
+            // Dual accumulators break the store->load dependency chain when
+            // neighboring pixels land in the same bin; integer addition is
+            // commutative, so the merged counts are exactly the same.
+            let mut hist_b = [0i32; 256];
             for ly in 0..g.tile_h {
                 let row = &s[(y0 + ly) * w + x0..(y0 + ly) * w + x0 + g.tile_w];
                 let mut chunks = row.chunks_exact(4);
                 for c in &mut chunks {
-                    // 4-way unroll (mirrors cv2's): distinct bins can't
-                    // alias a single increment chain.
                     hist[c[0] as usize] += 1;
-                    hist[c[1] as usize] += 1;
+                    hist_b[c[1] as usize] += 1;
                     hist[c[2] as usize] += 1;
-                    hist[c[3] as usize] += 1;
+                    hist_b[c[3] as usize] += 1;
                 }
                 for &px in chunks.remainder() {
                     hist[px as usize] += 1;
                 }
+            }
+            for (a, b) in hist.iter_mut().zip(hist_b.iter()) {
+                *a += *b;
             }
         } else {
             for ly in 0..g.tile_h {
@@ -374,9 +379,12 @@ fn interpolate_span(
         // 8 px/iteration: the 8 independent scalar gathers fill the load
         // pipes while the previous iteration's f32 chain retires.
         while x + 8 <= w {
+            // Load the 8 source bytes once (single 64-bit load) before the
+            // dependent table gathers.
+            let sv: [u8; 8] = std::ptr::read_unaligned(srow.as_ptr().add(x) as *const [u8; 8]);
             let mut a = [0u32; 8];
             for (k, ak) in a.iter_mut().enumerate() {
-                *ak = *tt.get_unchecked(*srow.get_unchecked(x + k) as usize);
+                *ak = *tt.get_unchecked(sv[k] as usize);
             }
             let blend = |packed: uint32x4_t, xa_v: float32x4_t, xa1_v: float32x4_t| {
                 let l00 = vcvtq_f32_u32(vandq_u32(packed, mask));

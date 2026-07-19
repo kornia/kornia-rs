@@ -161,4 +161,5 @@ def clahe(
     image: np.ndarray | Image,
     clip_limit: float = 40.0,
     grid_size: tuple[int, int] = (8, 8),
+    out: Optional[np.ndarray] = None,
 ) -> np.ndarray | Image: ...
