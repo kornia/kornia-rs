@@ -13,6 +13,8 @@ changes early: `cargo add kornia-imgproc@0.1.15-rc.1` or `pip install --pre korn
 
 ## [Unreleased]
 
+## [0.1.15-rc.5] — 2026-07-19 (pre-release)
+
 **Connected components 3-5x faster on CPU, ~2x on GPU.** The CPU path
 now indexes its union-find by run id instead of pixel index (tables stay
 cache-resident rather than costing two full-image allocations per call)
@@ -454,6 +456,7 @@ linear layer / kornia-nn, kornia-apriltag, zero-copy gstreamer images. See the
 [GitHub release](https://github.com/kornia/kornia-rs/releases/tag/v0.1.10) for
 the full per-PR list.
 
+[0.1.15-rc.5]: https://github.com/kornia/kornia-rs/compare/v0.1.15-rc.4...v0.1.15-rc.5
 [0.1.15-rc.4]: https://github.com/kornia/kornia-rs/compare/v0.1.15-rc.3...v0.1.15-rc.4
 [0.1.15-rc.3]: https://github.com/kornia/kornia-rs/compare/v0.1.15-rc.2...v0.1.15-rc.3
 [0.1.15-rc.2]: https://github.com/kornia/kornia-rs/compare/v0.1.15-rc.1...v0.1.15-rc.2
