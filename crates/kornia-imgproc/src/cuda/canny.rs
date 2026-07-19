@@ -83,7 +83,6 @@ extern "C" __global__ void canny_nms(
     const short* __restrict__ dy,
     const int* __restrict__   mag,
     unsigned char* __restrict__ map,
-    unsigned int* __restrict__  strong_count,
     int w, int h, int low, int high
 ) {
     const int TG22 = 13573;
@@ -120,7 +119,6 @@ extern "C" __global__ void canny_nms(
         if (is_max) {
             if (m > high) {
                 label = 2; // EDGE (strong seed)
-                atomicAdd(strong_count, 1u);
             } else {
                 label = 0; // CANDIDATE
             }
@@ -141,13 +139,22 @@ static HYSTERESIS_SRC: &str = r#"
 #define TH 16
 extern "C" __global__ void canny_hysteresis(
     unsigned char* __restrict__ map,
-    const unsigned char* __restrict__ active_in,
-    unsigned char* __restrict__       active_out,
+    unsigned char* __restrict__ active_in,
+    unsigned char* __restrict__ active_out,
     unsigned int* __restrict__  changed,
-    int w, int h, int tiles_x, int tiles_y
+    int w, int h, int tiles_x, int tiles_y, int first_sweep
 ) {
     int bx = blockIdx.x, by = blockIdx.y;
-    if (!active_in[by * tiles_x + bx]) return;
+    __shared__ int s_active;
+    if (threadIdx.x == 0 && threadIdx.y == 0) {
+        // Read-and-clear this block's worklist entry (no other block ever
+        // touches it), so the buffer is already empty when the host swap
+        // turns it into next sweep's active_out — no memset launch needed.
+        s_active = first_sweep | (int)active_in[by * tiles_x + bx];
+        active_in[by * tiles_x + bx] = 0;
+    }
+    __syncthreads();
+    if (!s_active) return;
 
     __shared__ unsigned char tile[TH + 2][TW + 2];
     __shared__ int block_state; // bit0: any candidate, bit1: changed
@@ -296,11 +303,14 @@ pub fn launch_canny_u8(
     high: i32,
     l2_gradient: bool,
 ) -> Result<(), CudaCannyError> {
-    if width == 0 || height == 0 {
-        return Err(CudaCannyError::Cuda(
-            "image dimensions must be non-zero".into(),
-        ));
-    }
+    super::check_geometry(
+        width as u32,
+        height as u32,
+        width as u32,
+        height as u32,
+        None,
+    )
+    .map_err(CudaCannyError::Cuda)?;
     check_slice("src", src.len(), width * height)?;
     check_slice("dst", dst.len(), width * height)?;
     let w = i32::try_from(width).map_err(|_| CudaCannyError::Cuda("width exceeds i32".into()))?;
@@ -320,11 +330,7 @@ pub fn launch_canny_u8(
     {
         let per = 2 * (width + 2) + 2 * height;
         let k = get_kernel(&FILL_KERNEL, ctx, FILL_SRC, "canny_fill_rings")?;
-        let cfg1 = cudarc::driver::LaunchConfig {
-            block_dim: (256, 1, 1),
-            grid_dim: ((per as u32).div_ceil(256), 1, 1),
-            shared_mem_bytes: 0,
-        };
+        let cfg1 = super::make_config(per as u32, 1, Some((256, 1)));
         k.launch_builder(stream)
             .arg(&mut d_map)
             .arg(&mut d_mag)
@@ -333,7 +339,7 @@ pub fn launch_canny_u8(
             .launch_cfg(cfg1)
             .map_err(|e| CudaCannyError::Cuda(e.to_string()))?;
     }
-    let mut d_flag = stream.alloc_zeros::<u32>(2).map_err(err)?; // [strong, changed]
+    let mut d_flag = stream.alloc_zeros::<u32>(1).map_err(err)?; // hysteresis `changed`
 
     let cfg = super::make_config(w as u32, h as u32, None);
     let l2 = i32::from(l2_gradient);
@@ -356,7 +362,6 @@ pub fn launch_canny_u8(
         .arg(&d_dy)
         .arg(&d_mag)
         .arg(&mut d_map)
-        .arg(&mut d_flag)
         .arg(&w)
         .arg(&h)
         .arg(&low)
@@ -365,8 +370,6 @@ pub fn launch_canny_u8(
         .map_err(|e| CudaCannyError::Cuda(e.to_string()))?;
 
     // Hysteresis: relaunch the block-fixpoint sweep until no block changes.
-    // (No early strong-count check: the sync it needs costs more than the
-    // worklist sweeps it could skip.)
     {
         let hk = get_kernel(&HYST_KERNEL, ctx, HYSTERESIS_SRC, "canny_hysteresis")?;
         let tiles_x = width.div_ceil(64);
@@ -378,10 +381,11 @@ pub fn launch_canny_u8(
             shared_mem_bytes: 0,
         };
         let (tx_i, ty_i) = (tiles_x as i32, tiles_y as i32);
-        // Active-tile ping-pong: everything active for sweep 1; afterwards
-        // only tiles woken by a changed neighbor run.
-        let all_active = vec![1u8; ntiles];
-        let mut d_active_a = stream.clone_htod(&all_active).map_err(err)?;
+        // Active-tile ping-pong: sweep 0 is unconditionally active (the
+        // `first_sweep` kernel flag), afterwards only tiles woken by a
+        // changed neighbor run. Blocks read-and-clear their own entry, so
+        // neither buffer ever needs a host-side reset.
+        let mut d_active_a = stream.alloc_zeros::<u8>(ntiles).map_err(err)?;
         let mut d_active_b = stream.alloc_zeros::<u8>(ntiles).map_err(err)?;
         // Termination: every sweep that reports `changed` converted at
         // least one candidate, and candidates are finite — so w·h is an
@@ -389,21 +393,23 @@ pub fn launch_canny_u8(
         // Batch 3 sweeps per host sync (a sync stall costs more than a
         // worklist-empty sweep).
         let max_rounds = width * height;
+        let mut first = 1i32;
         for _ in 0..max_rounds {
             stream.memset_zeros(&mut d_flag).map_err(err)?;
             for _ in 0..3 {
-                stream.memset_zeros(&mut d_active_b).map_err(err)?;
                 hk.launch_builder(stream)
                     .arg(&mut d_map)
-                    .arg(&d_active_a)
+                    .arg(&mut d_active_a)
                     .arg(&mut d_active_b)
                     .arg(&mut d_flag)
                     .arg(&w)
                     .arg(&h)
                     .arg(&tx_i)
                     .arg(&ty_i)
+                    .arg(&first)
                     .launch_cfg(hcfg)
                     .map_err(|e| CudaCannyError::Cuda(e.to_string()))?;
+                first = 0;
                 std::mem::swap(&mut d_active_a, &mut d_active_b);
             }
             let f: Vec<u32> = stream.clone_dtoh(&d_flag).map_err(err)?;

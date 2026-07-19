@@ -20,12 +20,18 @@ Python), matching `cv2.Canny` exactly — the all-integer pipeline (Sobel
 threshold clamp-and-square rules, the fixed-point TG22 sector test with
 cv2's exact per-sector tie-breaks, and hysteresis as pure reachability)
 transcribes cv2's semantics, so CPU, GPU and cv2 agree on every byte.
-CPU is NEON-vectorized (separable Sobel, magnitude, block-skip NMS,
-map finalize); the CUDA path runs fused sobel+magnitude, NMS, an
-active-tile-worklist block-fixpoint hysteresis and finalize. (VPI's CUDA
-Canny uses a different algorithm — ~5% differing pixels vs cv2 — and is
-not byte-comparable.) Measured 1080p: GPU 1.5–4.0 ms (content-dependent
-hysteresis) ≈ 2.7–3.3× `cv2.Canny` CPU; kornia CPU ≈ 1.0× cv2.
+CPU is NEON-vectorized end to end (separable Sobel, magnitude, a
+branchless 4-lane NMS evaluating all three sector tests and selecting by
+mask, map finalize) with hysteresis as a parallel tile-worklist flood
+(round 1 floods from strong seeds, woken rounds re-scan only tile
+boundary rings); the CUDA path runs fused sobel+magnitude, NMS, an
+active-tile-worklist block-fixpoint hysteresis (blocks read-and-clear
+their own worklist entries — no per-sweep buffer resets) and finalize.
+(VPI's CUDA Canny uses a different algorithm — ~5% differing pixels vs
+cv2, and its L2 threshold semantics diverge from the standard convention
+— so it is not byte-comparable.) Measured 1080p under load: GPU
+1.6–4.3 ms ≈ 2.1–2.6× `cv2.Canny` CPU; kornia CPU 3.4–5.7 ms ≈ 1.2–1.6×
+cv2.
 
 **Median blur + bilateral filter (CPU and CUDA), byte-for-byte with
 OpenCV — median also bit-identical to VPI.** New `median_blur` (u8, 3×3

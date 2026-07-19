@@ -222,102 +222,51 @@ pub fn canny(
     // independent (pure function of three magnitude rows), so this
     // parallelizes; strong seeds are collected per row.
     let mut map = vec![NON_EDGE; mstep * (h + 2)];
-    let seeds: Vec<Vec<(usize, usize)>> = map[mstep..mstep * (h + 1)]
+    let seeds: Vec<Vec<usize>> = map[mstep..mstep * (h + 1)]
         .par_chunks_mut(mstep)
         .enumerate()
         .map(|(y, mprow)| {
             let mut row_seeds = Vec::new();
-            let mag_p = &mag[y * mstep..];
-            let mag_a = &mag[(y + 1) * mstep..];
-            let mag_n = &mag[(y + 2) * mstep..];
+            let mag_p = &mag[y * mstep..(y + 1) * mstep];
+            let mag_a = &mag[(y + 1) * mstep..(y + 2) * mstep];
+            let mag_n = &mag[(y + 2) * mstep..(y + 3) * mstep];
             let (dxr, dyr) = (&dx[y * w..y * w + w], &dy[y * w..y * w + w]);
-            let mut j = 0usize;
-            while j < w {
-                // Fast-skip: map rows default to NON_EDGE, so 8-pixel
-                // blocks with every magnitude <= low need no work at all.
-                #[cfg(target_arch = "aarch64")]
-                {
-                    use std::arch::aarch64::*;
-                    // SAFETY: reads mag_a[j+1 .. j+9] which stays within the
-                    // padded row (mstep = w + 2) plus the next row's prefix
-                    // of the same allocation for j near w — bounded by the
-                    // ring buffer size since y < h rows always have a
-                    // successor row in `mag`.
-                    unsafe {
-                        while j + 8 <= w {
-                            let a = vld1q_s32(mag_a.as_ptr().add(j + 1));
-                            let b = vld1q_s32(mag_a.as_ptr().add(j + 5));
-                            if vmaxvq_s32(vmaxq_s32(a, b)) > low {
-                                break;
-                            }
-                            j += 8;
-                        }
-                    }
-                    if j >= w {
-                        break;
-                    }
+            #[cfg(not(target_arch = "aarch64"))]
+            let j = 0usize;
+            #[cfg(target_arch = "aarch64")]
+            let j = {
+                neon::nms_row(
+                    mag_p,
+                    mag_a,
+                    mag_n,
+                    dxr,
+                    dyr,
+                    mprow,
+                    w,
+                    low,
+                    high,
+                    &mut row_seeds,
+                )
+            };
+            for j in j..w {
+                let k = j + 1;
+                if nms_pixel(mag_p, mag_a, mag_n, dxr[j], dyr[j], k, low, high, mprow) {
+                    row_seeds.push(k);
                 }
-                let k = j + 1; // magnitude/map column (ring offset)
-                let m = mag_a[k];
-                let mut label = NON_EDGE;
-                if m > low {
-                    let xs = dxr[j] as i32;
-                    let ys = dyr[j] as i32;
-                    let x = xs.abs();
-                    let y15 = ys.abs() << 15;
-                    let tg22x = x * TG22;
-                    // cv2's exact sector conditions and tie-breaks.
-                    let is_max = if y15 < tg22x {
-                        m > mag_a[k - 1] && m >= mag_a[k + 1]
-                    } else {
-                        let tg67x = tg22x + (x << 16);
-                        if y15 > tg67x {
-                            m > mag_p[k] && m >= mag_n[k]
-                        } else {
-                            let s = if (xs ^ ys) < 0 { -1i64 } else { 1 };
-                            m > mag_p[(k as i64 - s) as usize] && m > mag_n[(k as i64 + s) as usize]
-                        }
-                    };
-                    if is_max {
-                        if m > high {
-                            label = EDGE;
-                            row_seeds.push((k, y + 1));
-                        } else {
-                            label = CANDIDATE;
-                        }
-                    }
-                }
-                mprow[k] = label;
-                j += 1;
             }
-            row_seeds
+            row_seeds.into_iter().map(|k| (y + 1) * mstep + k).collect()
         })
         .collect();
 
-    // Hysteresis: stack flood from strong pixels over weak candidates.
-    // Reachability — order-independent, so the parallel seed collection
-    // order does not affect the result.
-    let mut stack: Vec<usize> = seeds
-        .into_iter()
-        .flatten()
-        .map(|(k, row)| row * mstep + k)
-        .collect();
-    while let Some(p) = stack.pop() {
-        for off in [
-            p - mstep - 1,
-            p - mstep,
-            p - mstep + 1,
-            p - 1,
-            p + 1,
-            p + mstep - 1,
-            p + mstep,
-            p + mstep + 1,
-        ] {
-            if map[off] == CANDIDATE {
-                map[off] = EDGE;
-                stack.push(off);
-            }
-        }
+    // Hysteresis: parallel tile-worklist flood (the CPU mirror of the GPU
+    // kernel). Each active tile floods locally; a changed tile wakes its 8
+    // neighbors for the next round. Edge marking is monotonic (0 → 2 only)
+    // and the fixpoint is pure reachability, so racy halo reads at tile
+    // borders can only delay propagation by a round, never change the
+    // final set — the result is byte-identical to a serial stack flood.
+    let seeds: Vec<usize> = seeds.into_iter().flatten().collect();
+    if !seeds.is_empty() {
+        hysteresis_parallel(&mut map, w, h, mstep, &seeds);
     }
 
     // Final pass: 255 where map == EDGE.
@@ -346,6 +295,297 @@ pub fn canny(
             }
         });
     Ok(())
+}
+
+const TILE_W: usize = 256;
+const TILE_H: usize = 64;
+
+/// Shared-map handle for the tile flood: tiles write only their own
+/// cells; halo reads may race with a neighbor's monotonic 0→2 writes,
+/// which is benign (see call site).
+struct MapPtr(*mut u8);
+unsafe impl Send for MapPtr {}
+unsafe impl Sync for MapPtr {}
+impl MapPtr {
+    /// Accessor (rather than direct field use) so closures capture the
+    /// Sync wrapper, not the raw pointer (edition-2021 disjoint capture).
+    fn get(&self) -> *mut u8 {
+        self.0
+    }
+}
+
+fn hysteresis_parallel(map: &mut [u8], w: usize, h: usize, mstep: usize, seeds: &[usize]) {
+    let tiles_x = w.div_ceil(TILE_W);
+    let tiles_y = h.div_ceil(TILE_H);
+    let ntiles = tiles_x * tiles_y;
+    let ptr = MapPtr(map.as_mut_ptr());
+
+    // Round 1 floods each tile from its own strong seeds; later rounds
+    // only need the tile's 1-pixel boundary ring (the interior is already
+    // a local fixpoint — new conversions can only enter from the halo).
+    let mut tile_seeds: Vec<Vec<usize>> = vec![Vec::new(); ntiles];
+    for &p in seeds {
+        let (x, y) = (p % mstep - 1, p / mstep - 1);
+        tile_seeds[(y / TILE_H) * tiles_x + x / TILE_W].push(p);
+    }
+
+    let neighbors = |p: usize| {
+        [
+            p - mstep - 1,
+            p - mstep,
+            p - mstep + 1,
+            p - 1,
+            p + 1,
+            p + mstep - 1,
+            p + mstep,
+            p + mstep + 1,
+        ]
+    };
+
+    let flood_tile = |t: usize, init: &[usize], boundary_scan: bool| -> bool {
+        let (ty, tx) = (t / tiles_x, t % tiles_x);
+        let x0 = tx * TILE_W + 1; // map coords (ring offset)
+        let y0 = ty * TILE_H + 1;
+        let x1 = (x0 + TILE_W).min(w + 1);
+        let y1 = (y0 + TILE_H).min(h + 1);
+        // SAFETY: this tile writes only cells in [x0,x1)×[y0,y1); halo
+        // reads race only with monotonic single-byte 0→2 writes.
+        let m = ptr.get();
+        let mut stack: Vec<usize> = init.to_vec();
+        let mut changed = false;
+        unsafe {
+            if boundary_scan {
+                // Candidates on the boundary ring adjacent to an edge
+                // (halo or own).
+                let mut check = |p: usize| {
+                    if *m.add(p) == CANDIDATE && neighbors(p).iter().any(|&q| *m.add(q) == EDGE) {
+                        *m.add(p) = EDGE;
+                        stack.push(p);
+                        changed = true;
+                    }
+                };
+                for x in x0..x1 {
+                    check(y0 * mstep + x);
+                    check((y1 - 1) * mstep + x);
+                }
+                for y in y0..y1 {
+                    check(y * mstep + x0);
+                    check(y * mstep + (x1 - 1));
+                }
+            }
+            while let Some(p) = stack.pop() {
+                for q in neighbors(p) {
+                    if *m.add(q) == CANDIDATE {
+                        let qx = q % mstep;
+                        let qy = q / mstep;
+                        if qx >= x0 && qx < x1 && qy >= y0 && qy < y1 {
+                            *m.add(q) = EDGE;
+                            stack.push(q);
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+        changed
+    };
+
+    let wake_neighbors = |t: usize, active: &mut [bool]| {
+        let (ty, tx) = (t / tiles_x, t % tiles_x);
+        for dy in -1i64..=1 {
+            for dx in -1i64..=1 {
+                if dx == 0 && dy == 0 {
+                    continue;
+                }
+                let (nx, ny) = (tx as i64 + dx, ty as i64 + dy);
+                if nx >= 0 && nx < tiles_x as i64 && ny >= 0 && ny < tiles_y as i64 {
+                    active[ny as usize * tiles_x + nx as usize] = true;
+                }
+            }
+        }
+    };
+
+    // Round 1: seed-driven.
+    let changed_tiles: Vec<usize> = (0..ntiles)
+        .into_par_iter()
+        .filter(|&t| !tile_seeds[t].is_empty())
+        .filter(|&t| flood_tile(t, &tile_seeds[t], false))
+        .collect();
+    let mut active = vec![false; ntiles];
+    for t in changed_tiles {
+        wake_neighbors(t, &mut active);
+    }
+
+    // Later rounds: boundary-ring driven, worklist ping-pong.
+    let mut round = 0usize;
+    while active.iter().any(|&a| a) && round <= w * h {
+        round += 1;
+        let changed_tiles: Vec<usize> = (0..ntiles)
+            .into_par_iter()
+            .filter(|&t| active[t])
+            .filter(|&t| flood_tile(t, &[], true))
+            .collect();
+        active.iter_mut().for_each(|a| *a = false);
+        for t in changed_tiles {
+            wake_neighbors(t, &mut active);
+        }
+    }
+}
+
+/// Scalar NMS for one pixel — cv2's exact sector conditions and
+/// tie-breaks. Writes the map label; returns true for a strong seed. The
+/// NEON row kernel and the CUDA kernel evaluate the same integer
+/// expressions.
+#[allow(clippy::too_many_arguments)]
+#[inline]
+fn nms_pixel(
+    mag_p: &[i32],
+    mag_a: &[i32],
+    mag_n: &[i32],
+    xs: i16,
+    ys: i16,
+    k: usize,
+    low: i32,
+    high: i32,
+    mprow: &mut [u8],
+) -> bool {
+    let m = mag_a[k];
+    let mut label = NON_EDGE;
+    let mut strong = false;
+    if m > low {
+        let xs = xs as i32;
+        let ys = ys as i32;
+        let x = xs.abs();
+        let y15 = ys.abs() << 15;
+        let tg22x = x * TG22;
+        let is_max = if y15 < tg22x {
+            m > mag_a[k - 1] && m >= mag_a[k + 1]
+        } else {
+            let tg67x = tg22x + (x << 16);
+            if y15 > tg67x {
+                m > mag_p[k] && m >= mag_n[k]
+            } else {
+                let s = if (xs ^ ys) < 0 { -1i64 } else { 1 };
+                m > mag_p[(k as i64 - s) as usize] && m > mag_n[(k as i64 + s) as usize]
+            }
+        };
+        if is_max {
+            if m > high {
+                label = EDGE;
+                strong = true;
+            } else {
+                label = CANDIDATE;
+            }
+        }
+    }
+    mprow[k] = label;
+    strong
+}
+
+#[cfg(target_arch = "aarch64")]
+mod neon {
+    use super::{CANDIDATE, EDGE, NON_EDGE, TG22};
+    use std::arch::aarch64::*;
+
+    /// Branchless 4-lane NMS over a row: evaluates all three sector tests
+    /// and selects by sector mask — every compare is the same integer
+    /// compare the scalar path does, so labels are byte-identical. Blocks
+    /// whose 4 magnitudes are all <= low are skipped outright (the map
+    /// row is pre-filled NON_EDGE). Returns the first unprocessed column.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn nms_row(
+        mag_p: &[i32],
+        mag_a: &[i32],
+        mag_n: &[i32],
+        dxr: &[i16],
+        dyr: &[i16],
+        mprow: &mut [u8],
+        w: usize,
+        low: i32,
+        high: i32,
+        seeds: &mut Vec<usize>,
+    ) -> usize {
+        let mut j = 0usize;
+        if w < 4 {
+            return 0;
+        }
+        // SAFETY: for j+4 <= w, k = j+1 reads mag rows at k-1..k+4 within
+        // the (w+2)-wide padded rows; dx/dy reads j..j+4 <= w; map writes
+        // k..k+4 <= w+1.
+        unsafe {
+            let lowv = vdupq_n_s32(low);
+            let highv = vdupq_n_s32(high);
+            let tg22v = vdupq_n_s32(TG22);
+            let one = vdupq_n_s32(1);
+            let two = vdupq_n_s32(2);
+            let zero = vdupq_n_s32(0);
+            while j + 4 <= w {
+                let k = j + 1;
+                let m = vld1q_s32(mag_a.as_ptr().add(k));
+                // Fast skip: all four below low → labels stay NON_EDGE.
+                if vmaxvq_s32(m) <= low {
+                    j += 4;
+                    continue;
+                }
+                let dx4 = vmovl_s16(vld1_s16(dxr.as_ptr().add(j)));
+                let dy4 = vmovl_s16(vld1_s16(dyr.as_ptr().add(j)));
+                let x = vabsq_s32(dx4);
+                let y15 = vshlq_n_s32(vabsq_s32(dy4), 15);
+                let tg22x = vmulq_s32(x, tg22v);
+                let tg67x = vaddq_s32(tg22x, vshlq_n_s32(x, 16));
+
+                let ma_m1 = vld1q_s32(mag_a.as_ptr().add(k - 1));
+                let ma_p1 = vld1q_s32(mag_a.as_ptr().add(k + 1));
+                let mp_m1 = vld1q_s32(mag_p.as_ptr().add(k - 1));
+                let mp = vld1q_s32(mag_p.as_ptr().add(k));
+                let mp_p1 = vld1q_s32(mag_p.as_ptr().add(k + 1));
+                let mn_m1 = vld1q_s32(mag_n.as_ptr().add(k - 1));
+                let mn = vld1q_s32(mag_n.as_ptr().add(k));
+                let mn_p1 = vld1q_s32(mag_n.as_ptr().add(k + 1));
+
+                // Sector masks (mutually exclusive, mirroring the scalar
+                // if/else chain).
+                let mh = vcltq_s32(y15, tg22x);
+                let mv = vcgtq_s32(y15, tg67x);
+                let md = vbicq_u32(vbicq_u32(vdupq_n_u32(!0), mh), mv);
+
+                // s = sign(dx ^ dy): lane-select the diagonal neighbors.
+                let sneg = vcltq_s32(veorq_s32(dx4, dy4), zero);
+                let dp = vbslq_s32(sneg, mp_p1, mp_m1);
+                let dn = vbslq_s32(sneg, mn_m1, mn_p1);
+
+                let h_max = vandq_u32(vcgtq_s32(m, ma_m1), vcgeq_s32(m, ma_p1));
+                let v_max = vandq_u32(vcgtq_s32(m, mp), vcgeq_s32(m, mn));
+                let d_max = vandq_u32(vcgtq_s32(m, dp), vcgtq_s32(m, dn));
+
+                let is_max = vorrq_u32(
+                    vorrq_u32(vandq_u32(mh, h_max), vandq_u32(mv, v_max)),
+                    vandq_u32(md, d_max),
+                );
+                let cand = vandq_u32(vcgtq_s32(m, lowv), is_max);
+                let strong = vandq_u32(vcgtq_s32(m, highv), cand);
+
+                // label = cand ? (strong ? 2 : 0) : 1
+                let label = vbslq_s32(cand, vbslq_s32(strong, two, zero), one);
+                let l16 = vmovn_s32(label);
+                let l8 = vmovn_s16(vcombine_s16(l16, l16));
+                let bytes: [u8; 8] = std::mem::transmute(l8);
+                mprow[k..k + 4].copy_from_slice(&bytes[..4]);
+
+                if vmaxvq_u32(strong) != 0 {
+                    let sm: [u32; 4] = std::mem::transmute(strong);
+                    for (l, &sv) in sm.iter().enumerate() {
+                        if sv != 0 {
+                            seeds.push(k + l);
+                        }
+                    }
+                }
+                j += 4;
+            }
+        }
+        let _ = (CANDIDATE, EDGE, NON_EDGE);
+        j
+    }
 }
 
 #[cfg(feature = "cuda")]
@@ -514,11 +754,27 @@ mod probe_tests {
     #[ignore]
     fn canny_stage_probe() {
         let (w, h) = (1920usize, 1080usize);
-        // smoothed-ish pattern: sum of ramps (deterministic, cheap)
+        // dense content: smoothed pseudo-noise (worst-case NMS/hysteresis)
+        let mut state = 0x9e3779b9u64;
+        let noise: Vec<u8> = (0..w * h)
+            .map(|_| {
+                state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+                (state >> 33) as u8
+            })
+            .collect();
+        // cheap 3x3 box smooth to mimic GaussianBlur'd noise
         let data: Vec<u8> = (0..w * h)
             .map(|i| {
                 let (x, y) = (i % w, i / w);
-                (((x / 7 + y / 5) % 64) * 4) as u8
+                let mut acc = 0u32;
+                for dy in 0..3i64 {
+                    let sy = (y as i64 + dy - 1).clamp(0, h as i64 - 1) as usize;
+                    for dx in 0..3i64 {
+                        let sx = (x as i64 + dx - 1).clamp(0, w as i64 - 1) as usize;
+                        acc += noise[sy * w + sx] as u32;
+                    }
+                }
+                (acc / 9) as u8
             })
             .collect();
         let src = Image::<u8, 1>::new(
@@ -543,14 +799,20 @@ mod probe_tests {
         }
         println!("sobel: {:.3} ms", best * 1e3);
 
-        let mut best = f64::INFINITY;
-        for _ in 0..5 {
-            let t = std::time::Instant::now();
-            for _ in 0..10 {
-                canny(&src, &mut dst, 50.0, 150.0, false).unwrap();
+        for (name, lo, hi) in [
+            ("full", 50.0, 150.0),
+            ("no-strong", 50.0, 1e5),
+            ("no-cand", 1e5, 1e5 + 1.0),
+        ] {
+            let mut best = f64::INFINITY;
+            for _ in 0..5 {
+                let t = std::time::Instant::now();
+                for _ in 0..10 {
+                    canny(&src, &mut dst, lo, hi, false).unwrap();
+                }
+                best = best.min(t.elapsed().as_secs_f64() / 10.0);
             }
-            best = best.min(t.elapsed().as_secs_f64() / 10.0);
+            println!("{name}: {:.3} ms", best * 1e3);
         }
-        println!("full: {:.3} ms", best * 1e3);
     }
 }
