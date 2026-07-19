@@ -22,6 +22,10 @@ required-features = ["cuda"]
 name = "dump_cuda_warp_affine"
 required-features = ["cuda"]
 
+[[example]]
+name = "dump_cuda_warp_perspective"
+required-features = ["cuda"]
+
 [[bench]]
 harness = false
 name = "bench_color"
