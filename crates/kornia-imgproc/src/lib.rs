@@ -31,6 +31,9 @@ pub mod clahe;
 /// color transformations module.
 pub mod color;
 
+/// connected-component labeling module.
+pub mod connected_components;
+
 /// image basic operations module.
 pub mod core;
 

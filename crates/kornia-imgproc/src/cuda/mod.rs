@@ -35,6 +35,10 @@ pub mod bilateral;
 /// Canny edge-detection kernels (byte-exact vs the CPU path and cv2).
 pub mod canny;
 
+/// Connected-component labeling kernels (label-identical to the CPU
+/// union-find and cv2's SAUF numbering).
+pub mod ccl;
+
 /// CLAHE LUT-build + blend kernels (byte-exact vs the CPU path and cv2).
 pub mod clahe;
 pub mod histogram;

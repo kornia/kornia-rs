@@ -156,6 +156,10 @@ def normalize_mean_std(
     """Per-channel ``(x/255 - mean) / std`` (3-channel u8 -> float32 HWC)."""
     ...
 def compute_histogram(image: np.ndarray | Image, num_bins: int) -> list[int]: ...
+def connected_components(
+    image: np.ndarray | Image,
+    connectivity: int = 8,
+) -> tuple[int, np.ndarray | Image]: ...
 def canny(
     image: np.ndarray | Image,
     low_threshold: float = 50.0,

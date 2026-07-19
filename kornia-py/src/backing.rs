@@ -2,7 +2,7 @@
 use std::alloc::{alloc, alloc_zeroed, dealloc, Layout};
 use std::ptr::NonNull;
 
-use dlpack_rs::ffi::{DLDataType, K_DL_CPU, K_DL_FLOAT, K_DL_UINT};
+use dlpack_rs::ffi::{DLDataType, K_DL_CPU, K_DL_FLOAT, K_DL_INT, K_DL_UINT};
 use dlpack_rs::safe::{dtype_f32, dtype_u16, dtype_u8};
 use kornia_image::allocator::host_alloc;
 use kornia_image::{Image, ImageError, ImageSize};
@@ -16,6 +16,7 @@ pub enum Dtype {
     U8,
     U16,
     F32,
+    I32,
 }
 impl Dtype {
     pub fn itemsize(self) -> usize {
@@ -23,6 +24,7 @@ impl Dtype {
             Dtype::U8 => 1,
             Dtype::U16 => 2,
             Dtype::F32 => 4,
+            Dtype::I32 => 4,
         }
     }
     pub fn name(self) -> &'static str {
@@ -30,6 +32,7 @@ impl Dtype {
             Dtype::U8 => "uint8",
             Dtype::U16 => "uint16",
             Dtype::F32 => "float32",
+            Dtype::I32 => "int32",
         }
     }
     #[allow(dead_code)]
@@ -38,6 +41,7 @@ impl Dtype {
             "uint8" | "u8" | "|u1" | "B" => Ok(Dtype::U8),
             "uint16" | "u16" | "<u2" | "=u2" | "H" => Ok(Dtype::U16),
             "float32" | "f32" | "<f4" | "=f4" | "f" => Ok(Dtype::F32),
+            "int32" | "i32" | "<i4" | "=i4" | "i" => Ok(Dtype::I32),
             other => Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "unsupported dtype {other:?}; expected uint8, uint16, or float32"
             ))),
@@ -50,6 +54,11 @@ impl Dtype {
             Dtype::U8 => dtype_u8(),
             Dtype::U16 => dtype_u16(),
             Dtype::F32 => dtype_f32(),
+            Dtype::I32 => DLDataType {
+                code: K_DL_INT,
+                bits: 32,
+                lanes: 1,
+            },
         }
     }
 

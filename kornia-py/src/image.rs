@@ -343,6 +343,23 @@ pub(crate) unsafe fn alloc_output_pyarray<const C: usize>(
     Ok((img, arr.unbind()))
 }
 
+pub(crate) unsafe fn alloc_output_pyarray_i32<const C: usize>(
+    py: Python<'_>,
+    size: ImageSize,
+) -> PyResult<AllocOutput<i32, C, PyArray3<i32>>> {
+    let arr = PyArray::<i32, _>::new(py, [size.height, size.width, C], false);
+    // from_raw_parts takes a BYTE length (see the f32 helper).
+    let len = size.height * size.width * C * std::mem::size_of::<i32>();
+    let img = Image::from_raw_parts(
+        size,
+        arr.data() as *const i32,
+        len,
+        kornia_image::allocator::host_alloc(),
+    )
+    .map_err(to_pyerr)?;
+    Ok((img, arr.unbind()))
+}
+
 pub(crate) unsafe fn alloc_output_pyarray_u16<const C: usize>(
     py: Python<'_>,
     size: ImageSize,
@@ -835,6 +852,9 @@ pub(crate) fn mode_for_dtype(dtype: backing::Dtype, channels: usize) -> String {
         backing::Dtype::U8 => mode_from_channels(channels, false),
         backing::Dtype::U16 => mode_from_channels(channels, true),
         backing::Dtype::F32 => mode_from_channels_f32(channels),
+        // i32 images are label maps, not display images; reuse the f32
+        // single-channel mode naming.
+        backing::Dtype::I32 => mode_from_channels_f32(channels),
     }
 }
 
@@ -1063,6 +1083,7 @@ fn dtype_to_numpy_obj(dtype: backing::Dtype, py: Python<'_>) -> Py<PyAny> {
         backing::Dtype::U8 => numpy::dtype::<u8>(py),
         backing::Dtype::U16 => numpy::dtype::<u16>(py),
         backing::Dtype::F32 => numpy::dtype::<f32>(py),
+        backing::Dtype::I32 => numpy::dtype::<i32>(py),
     };
     d.into_any().unbind()
 }
@@ -1333,6 +1354,7 @@ impl PyImageApi {
                 backing::Dtype::U8 => probe!(u8),
                 backing::Dtype::U16 => probe!(u16),
                 backing::Dtype::F32 => probe!(f32),
+                backing::Dtype::I32 => probe!(i32),
             }
         };
 
@@ -1357,6 +1379,9 @@ impl PyImageApi {
                 }
                 backing::Dtype::F32 => {
                     contig.extract::<Py<PyArray3<f32>>>()?.bind(py).data() as *const u8
+                }
+                backing::Dtype::I32 => {
+                    contig.extract::<Py<PyArray3<i32>>>()?.bind(py).data() as *const u8
                 }
             };
             let src = unsafe { std::slice::from_raw_parts(bptr, n) };
@@ -1583,6 +1608,7 @@ impl PyImageApi {
                 backing::Dtype::U8 => me.make_typed_view::<u8>(py, base)?.into_any(),
                 backing::Dtype::U16 => me.make_typed_view::<u16>(py, base)?.into_any(),
                 backing::Dtype::F32 => me.make_typed_view::<f32>(py, base)?.into_any(),
+                backing::Dtype::I32 => me.make_typed_view::<i32>(py, base)?.into_any(),
             }
         };
         Ok(arr)
@@ -1709,6 +1735,9 @@ impl PyImageApi {
             backing::Dtype::U8 => Ok(()),
             backing::Dtype::U16 => Err(u16_imgproc_unsupported(method)),
             backing::Dtype::F32 => Err(f32_imgproc_unsupported(method)),
+            backing::Dtype::I32 => Err(pyo3::exceptions::PyNotImplementedError::new_err(format!(
+                "{method}: int32 images (label maps) are not supported by this op"
+            ))),
         }
     }
 
@@ -2961,6 +2990,9 @@ impl PyImageApi {
     fn to_float(&self, py: Python<'_>) -> PyResult<Self> {
         self.backing.ensure_host()?;
         match self.dtype {
+            backing::Dtype::I32 => Err(pyo3::exceptions::PyNotImplementedError::new_err(
+                "to_float: int32 label images are not convertible",
+            )),
             backing::Dtype::F32 => Ok(self.clone_handle(py)),
             backing::Dtype::U8 => {
                 let [h, w, c] = self.shape;
@@ -2989,6 +3021,9 @@ impl PyImageApi {
     fn to_uint8(&self, py: Python<'_>) -> PyResult<Self> {
         self.backing.ensure_host()?;
         match self.dtype {
+            backing::Dtype::I32 => Err(pyo3::exceptions::PyNotImplementedError::new_err(
+                "to_uint8: int32 label images are not convertible",
+            )),
             backing::Dtype::U8 => Ok(self.clone_handle(py)),
             backing::Dtype::F32 => {
                 let [h, w, c] = self.shape;
@@ -3250,6 +3285,7 @@ impl PyImageApi {
             backing::Dtype::U8 => b"B\0",
             backing::Dtype::U16 => b"H\0",
             backing::Dtype::F32 => b"f\0",
+            backing::Dtype::I32 => b"i\0",
         };
         // Heap-boxed shape/strides arrays (3 dims).
         let shape_box: Box<[pyo3::ffi::Py_ssize_t; 3]> = Box::new([h as _, w as _, c as _]);
@@ -4328,6 +4364,7 @@ impl PyImageApi {
                 backing::Dtype::U8 => "|u1",
                 backing::Dtype::U16 => "<u2",
                 backing::Dtype::F32 => "<f4",
+                backing::Dtype::I32 => "<i4",
             };
             let d = pyo3::types::PyDict::new(py);
             d.set_item("shape", (h, w, c))?;

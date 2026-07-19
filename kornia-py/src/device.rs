@@ -31,6 +31,8 @@ pub enum DeviceImage {
     U8C4(Image<u8, 4>),
     F32C1(Image<f32, 1>),
     F32C3(Image<f32, 3>),
+    /// 32-bit integer single-channel (e.g. connected-component labels).
+    I32C1(Image<i32, 1>),
 }
 
 /// Bind the inner typed `Image<T, C>` of any variant as `$i` and evaluate
@@ -44,6 +46,7 @@ macro_rules! dispatch {
             DeviceImage::U8C4($i) => $body,
             DeviceImage::F32C1($i) => $body,
             DeviceImage::F32C3($i) => $body,
+            DeviceImage::I32C1($i) => $body,
         }
     };
 }
@@ -57,7 +60,7 @@ impl DeviceImage {
     /// Channel count (1, 3, or 4).
     pub fn channels(&self) -> usize {
         match self {
-            DeviceImage::U8C1(_) | DeviceImage::F32C1(_) => 1,
+            DeviceImage::U8C1(_) | DeviceImage::F32C1(_) | DeviceImage::I32C1(_) => 1,
             DeviceImage::U8C3(_) | DeviceImage::F32C3(_) => 3,
             DeviceImage::U8C4(_) => 4,
         }
@@ -68,6 +71,7 @@ impl DeviceImage {
         match self {
             DeviceImage::U8C1(_) | DeviceImage::U8C3(_) | DeviceImage::U8C4(_) => Dtype::U8,
             DeviceImage::F32C1(_) | DeviceImage::F32C3(_) => Dtype::F32,
+            DeviceImage::I32C1(_) => Dtype::I32,
         }
     }
 

@@ -102,12 +102,13 @@ pub(crate) fn is_device<T, const C: usize>(img: &Image<T, C>) -> bool {
 /// are supported via event fences — see [`DeviceExec`]. Streams are compared
 /// by raw `CUstream` handle (every `ctx.default_stream()` call returns a
 /// fresh `Arc` over the same null handle, so `Arc` identity is wrong).
-pub(crate) fn pair_residency<T, const C: usize, const D: usize>(
+pub(crate) fn pair_residency<T, U, const C: usize, const D: usize>(
     src: &Image<T, C>,
-    dst: &Image<T, D>,
+    dst: &Image<U, D>,
 ) -> Result<Residency, ImageError>
 where
     T: DeviceRepr + ValidAsZeroBits + 'static,
+    U: DeviceRepr + ValidAsZeroBits + 'static,
 {
     match (is_device(src), is_device(dst)) {
         (false, false) => Ok(Residency::Host),
