@@ -65,6 +65,25 @@ reads: zero registers, warp-broadcast), so chains don't pay register cost
 for carrying state. Same-shape pipelines with different parameter values
 share one compiled kernel — params are data, shapes are code.
 
+## FKL head-to-head (the paper's pipeline)
+
+The example also runs FusedKernelLibrary's flagship pipeline —
+`bilinear resize → Mul(1/255) → SplitWrite planar` — in single and
+batch-4 form, matching FKL's own benchmark harness (their
+`executeOperations<TransformDPP<>>` example). Measured same-minute
+against the FKL C++ binary compiled on the same Jetson AGX Orin
+(sm_87, locked clocks):
+
+| pipeline (1080p → 640×640) | kornia fused | FKL (C++ templates) |
+|---|---|---|
+| single | 0.13–0.14 ms | 0.12–0.13 ms |
+| batch-4 | 0.49–0.50 ms | 0.49 ms |
+
+Runtime NVRTC composition matches compile-time template fusion at
+steady state — the composed kernels are the same shape; only the
+composition mechanism differs (and ours composes at runtime, e.g. from
+Python-driven pipeline definitions).
+
 ## Precision contract
 
 Fused chains keep intermediates in f32 registers, so output is NOT
