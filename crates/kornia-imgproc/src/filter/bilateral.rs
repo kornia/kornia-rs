@@ -24,6 +24,7 @@
 //! simultaneously is impossible; cv2 is the reference here, matching the
 //! rest of the library.
 
+use crate::clahe::reflect_101;
 use kornia_image::{Image, ImageError};
 use rayon::prelude::*;
 
@@ -163,22 +164,6 @@ pub fn build_tables(d: i32, sigma_color: f64, sigma_space: f64) -> BilateralTabl
     }
 }
 
-#[inline]
-fn reflect_101(p: i64, len: i64) -> i64 {
-    if len == 1 {
-        return 0;
-    }
-    let mut p = p;
-    while p < 0 || p >= len {
-        if p < 0 {
-            p = -p;
-        } else {
-            p = 2 * (len - 1) - p;
-        }
-    }
-    p
-}
-
 /// Bilateral filter for 8-bit single-channel images — byte-for-byte with
 /// `cv2.bilateralFilter(src, d, sigma_color, sigma_space)` (default
 /// reflect_101 border). `sigma <= 1e-6` copies the input through,
@@ -225,6 +210,7 @@ pub fn bilateral_filter(
 
     let (w, h) = (src.cols(), src.rows());
     let s = src.as_slice();
+    let simd_end = simd_region_end(w);
 
     // Fine chunks: at ~10 ms total, work-stealing smooths preemption
     // stragglers (a static per-core split measured 20% WORSE here, while
@@ -234,8 +220,6 @@ pub fn bilateral_filter(
         .enumerate()
         .with_min_len(8)
         .for_each(|(y, drow)| {
-            let simd_end = simd_region_end(w);
-
             // NEON: 16 pixels per iteration, per-tap. Lane-wise the op
             // sequence is IDENTICAL to the scalar loop below (vabd -> f32
             // widen -> mul -> add/fma -> IEEE div -> vcvtn), and blocks are
@@ -248,30 +232,42 @@ pub fn bilateral_filter(
             let scalar_start = 0usize;
 
             for (x, dpx) in drow.iter_mut().enumerate().skip(scalar_start) {
-                let val0 = s[y * w + x] as i32;
-                let mut wsum = 0f32;
-                let mut sum = 0f32;
-                let in_simd = x < simd_end;
-                for kk in 0..t.taps.len() {
-                    // cv2's SIMD region accumulates in simd_order; its
-                    // scalar tail accumulates sequentially (see
-                    // BilateralTables::simd_order).
-                    let k = if in_simd { t.simd_order[kk] } else { kk };
-                    let (dy, dx) = t.taps[k];
-                    let sy = reflect_101(y as i64 + dy as i64, h as i64) as usize;
-                    let sx = reflect_101(x as i64 + dx as i64, w as i64) as usize;
-                    let val = s[sy * w + sx] as i32;
-                    // cv2's inner expression: w = space·color, wsum += w,
-                    // sum = fma(val, w, sum). The CUDA kernel mirrors this.
-                    let wgt =
-                        t.space_weight[k] * t.color_weight[(val - val0).unsigned_abs() as usize];
-                    wsum += wgt;
-                    sum = (val as f32).mul_add(wgt, sum);
-                }
-                *dpx = (sum / wsum).round_ties_even() as u8;
+                *dpx = scalar_pixel(s, w, h, y, x, &t, simd_end);
             }
         });
     Ok(())
+}
+
+/// One scalar output pixel — cv2's accumulation with the position-correct
+/// tap order (permuted inside the SIMD region, sequential in the tail).
+/// Shared by the portable path and the NEON row kernel's prefix.
+#[inline]
+fn scalar_pixel(
+    s: &[u8],
+    w: usize,
+    h: usize,
+    y: usize,
+    x: usize,
+    t: &BilateralTables,
+    simd_end: usize,
+) -> u8 {
+    let val0 = s[y * w + x] as i32;
+    let mut wsum = 0f32;
+    let mut sum = 0f32;
+    let in_simd = x < simd_end;
+    for kk in 0..t.taps.len() {
+        let k = if in_simd { t.simd_order[kk] } else { kk };
+        let (dy, dx) = t.taps[k];
+        let sy = reflect_101(y as i64 + dy as i64, h as i64) as usize;
+        let sx = reflect_101(x as i64 + dx as i64, w as i64) as usize;
+        let val = s[sy * w + sx] as i32;
+        // cv2's inner expression: w = space·color, wsum += w,
+        // sum = fma(val, w, sum). The CUDA kernel mirrors this.
+        let wgt = t.space_weight[k] * t.color_weight[(val - val0).unsigned_abs() as usize];
+        wsum += wgt;
+        sum = (val as f32).mul_add(wgt, sum);
+    }
+    (sum / wsum).round_ties_even() as u8
 }
 
 /// NEON row kernel: processes 16-aligned blocks that need no horizontal
@@ -299,7 +295,7 @@ fn neon_row(
     // The scalar loop resumes at `end`; it re-handles [0, x0) too, so we
     // only vectorize when the row splits cleanly: scalar handles the
     // prefix separately below.
-    let mut end = simd_end.min(((w - r - 16) / 16) * 16 + 16);
+    let end = simd_end.min(((w - r - 16) / 16) * 16 + 16);
     if end <= x0 {
         return 0;
     }
@@ -351,24 +347,9 @@ fn neon_row(
             std::ptr::copy_nonoverlapping(out.as_ptr(), drow.as_mut_ptr().add(x), 16);
         }
         // Scalar must still do [0, x0): do it here so the caller resumes at `end`.
-        for x in 0..x0 {
-            let val0 = s[y * w + x] as i32;
-            let mut wsum_s = 0f32;
-            let mut sum_s = 0f32;
-            let in_simd = x < simd_end;
-            for kk in 0..t.taps.len() {
-                let k = if in_simd { t.simd_order[kk] } else { kk };
-                let (dy, dx) = t.taps[k];
-                let sy = reflect_101(y as i64 + dy as i64, h as i64) as usize;
-                let sx = reflect_101(x as i64 + dx as i64, w as i64) as usize;
-                let val = s[sy * w + sx] as i32;
-                let wgt = t.space_weight[k] * t.color_weight[(val - val0).unsigned_abs() as usize];
-                wsum_s += wgt;
-                sum_s = (val as f32).mul_add(wgt, sum_s);
-            }
-            drow[x] = (sum_s / wsum_s).round_ties_even() as u8;
+        for (x, d) in drow.iter_mut().enumerate().take(x0) {
+            *d = scalar_pixel(s, w, h, y, x, t, simd_end);
         }
-        let _ = &mut end;
     }
     end
 }

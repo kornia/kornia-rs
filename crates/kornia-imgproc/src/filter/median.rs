@@ -200,83 +200,46 @@ pub fn median_blur<const C: usize>(
     let s = src.as_slice();
     let r = (ksize / 2) as i64;
 
-    // 3×3 C1 on aarch64: two output rows per task share source loads
-    // (memory-bound op). Other shapes take the per-row path below.
+    // C1 on aarch64: the NEON module owns its parallelization and tiling
+    // (two-rows-per-pass 3×3, sorted-column 5×5, per-op-size chunking).
     #[cfg(target_arch = "aarch64")]
-    if C == 1 && ksize == 3 && w >= 34 && h >= 2 {
-        // One task per worker (static split): the whole op is ~0.3 ms, so
-        // rayon's per-task overhead and work-stealing dominate with small
-        // chunks.
-        let pairs = h.div_ceil(2);
-        let min_pairs = pairs.div_ceil(rayon::current_num_threads()).max(1);
-        dst.as_slice_mut()
-            .par_chunks_mut(w * 2)
-            .enumerate()
-            .with_min_len(min_pairs)
-            .for_each(|(i, dchunk)| {
-                let y = i * 2;
-                if dchunk.len() == w * 2 && neon::median3_row2(s, dchunk, w, h, y) {
-                    return;
-                }
-                // Odd final row (or fallback): per-row kernel.
-                for (j, drow) in dchunk.chunks_mut(w).enumerate() {
-                    if !neon::median3_row(s, drow, w, h, y + j) {
-                        unreachable!("w >= 34 guaranteed");
-                    }
-                }
-            });
+    if C == 1 && neon::par_c1(s, dst.as_slice_mut(), w, h, ksize) {
         return Ok(());
     }
 
-    // Middle ground for the ~2 ms 5×5: quarter-per-core chunks keep
-    // stealing available without per-task overhead dominating.
     let min_rows = (h.div_ceil(rayon::current_num_threads() * 4)).max(16);
     dst.as_slice_mut()
         .par_chunks_mut(w * C)
         .enumerate()
         .with_min_len(min_rows)
         .for_each(|(y, drow)| {
-            // NEON C1 fast path: run the same network on 16 lanes at once
-            // (u8 min/max are exact — byte-identical to the scalar walk).
-            #[cfg(target_arch = "aarch64")]
-            if C == 1 {
-                let done = if ksize == 3 {
-                    neon::median3_row(s, drow, w, h, y)
-                } else {
-                    neon::median5_row(s, drow, w, h, y)
-                };
-                if done {
-                    return;
-                }
+            // Portable path: one gather loop for both window sizes
+            // (25-slot buffer, first ksize² slots used); the row clamps
+            // depend only on y and are hoisted out of the pixel loop.
+            let mut sy = [0usize; 5];
+            for (i, dy) in (-r..=r).enumerate() {
+                sy[i] = (y as i64 + dy).clamp(0, h as i64 - 1) as usize;
             }
-            // Replicate-clamped source row pointers for the window.
             for x in 0..w {
+                let mut sx = [0usize; 5];
+                for (i, dx) in (-r..=r).enumerate() {
+                    sx[i] = (x as i64 + dx).clamp(0, w as i64 - 1) as usize;
+                }
                 for c in 0..C {
-                    if ksize == 3 {
-                        let mut win = [0u8; 9];
-                        let mut n = 0;
-                        for dy in -1i64..=1 {
-                            let sy = (y as i64 + dy).clamp(0, h as i64 - 1) as usize;
-                            for dx in -1i64..=1 {
-                                let sx = (x as i64 + dx).clamp(0, w as i64 - 1) as usize;
-                                win[n] = s[(sy * w + sx) * C + c];
-                                n += 1;
-                            }
+                    let mut win = [0u8; 25];
+                    let mut n = 0;
+                    for row in sy.iter().take(ksize) {
+                        for col in sx.iter().take(ksize) {
+                            win[n] = s[(row * w + col) * C + c];
+                            n += 1;
                         }
-                        drow[x * C + c] = median9(&mut win);
-                    } else {
-                        let mut win = [0u8; 25];
-                        let mut n = 0;
-                        for dy in -r..=r {
-                            let sy = (y as i64 + dy).clamp(0, h as i64 - 1) as usize;
-                            for dx in -r..=r {
-                                let sx = (x as i64 + dx).clamp(0, w as i64 - 1) as usize;
-                                win[n] = s[(sy * w + sx) * C + c];
-                                n += 1;
-                            }
-                        }
-                        drow[x * C + c] = median25(&mut win);
                     }
+                    drow[x * C + c] = if ksize == 3 {
+                        let mut w9: [u8; 9] = win[..9].try_into().unwrap();
+                        median9(&mut w9)
+                    } else {
+                        median25(&mut win)
+                    };
                 }
             }
         });
@@ -285,7 +248,110 @@ pub fn median_blur<const C: usize>(
 
 #[cfg(target_arch = "aarch64")]
 mod neon {
+    use rayon::prelude::*;
     use std::arch::aarch64::*;
+
+    /// Whole-image C1 entry: owns tiling and rayon chunking (the
+    /// parallelization heuristics live next to the kernels they describe).
+    /// Returns false for shapes the vector kernels don't cover.
+    pub(super) fn par_c1(s: &[u8], dst: &mut [u8], w: usize, h: usize, ksize: usize) -> bool {
+        if ksize == 3 {
+            if w < 34 {
+                return false;
+            }
+            if h >= 2 {
+                // Two output rows per task share their 4 source-row loads
+                // (memory-bound); static per-core split — at ~0.3 ms total,
+                // rayon per-task overhead dominates smaller chunks.
+                let pairs = h.div_ceil(2);
+                let min_pairs = pairs.div_ceil(rayon::current_num_threads()).max(1);
+                dst.par_chunks_mut(w * 2)
+                    .enumerate()
+                    .with_min_len(min_pairs)
+                    .for_each(|(i, dchunk)| {
+                        let y = i * 2;
+                        if dchunk.len() == w * 2 && median3_row2(s, dchunk, w, h, y) {
+                            return;
+                        }
+                        for (j, drow) in dchunk.chunks_mut(w).enumerate() {
+                            let ok = median3_row(s, drow, w, h, y + j);
+                            debug_assert!(ok, "w >= 34 guaranteed");
+                        }
+                    });
+            } else {
+                let ok = median3_row(s, dst, w, h, 0);
+                debug_assert!(ok);
+            }
+            true
+        } else {
+            if w < 48 {
+                return false;
+            }
+            // Quarter-per-core chunks for the ~2 ms 5×5: stealing stays
+            // available without per-task overhead dominating.
+            let min_rows = h.div_ceil(rayon::current_num_threads() * 4).max(16);
+            dst.par_chunks_mut(w)
+                .enumerate()
+                .with_min_len(min_rows)
+                .for_each(|(y, drow)| {
+                    let ok = median5_row(s, drow, w, h, y);
+                    debug_assert!(ok, "w >= 48 guaranteed");
+                });
+            true
+        }
+    }
+
+    /// Sorted-column triple (lo, mid, hi) — the working type of the 3×3
+    /// kernels.
+    pub(super) type S = (uint8x16_t, uint8x16_t, uint8x16_t);
+
+    /// `med9 = med3(max(col lows), med3(col mids), min(col highs))` on the
+    /// left/mid/right sorted-column triples.
+    #[inline(always)]
+    unsafe fn fold(l: S, m: S, r: S) -> uint8x16_t {
+        med3(
+            max3(l.0, m.0, r.0),
+            med3(l.1, m.1, r.1),
+            min3(l.2, m.2, r.2),
+        )
+    }
+    /// Shift a sorted-column triple one column left (prev block's lane 15
+    /// enters at lane 0).
+    #[inline(always)]
+    unsafe fn shl(p: &S, c: &S) -> S {
+        (
+            vextq_u8(p.0, c.0, 15),
+            vextq_u8(p.1, c.1, 15),
+            vextq_u8(p.2, c.2, 15),
+        )
+    }
+    /// Shift a sorted-column triple one column right (next block's lane 0
+    /// enters at lane 15).
+    #[inline(always)]
+    unsafe fn shr(c: &S, n: &S) -> S {
+        (
+            vextq_u8(c.0, n.0, 1),
+            vextq_u8(c.1, n.1, 1),
+            vextq_u8(c.2, n.2, 1),
+        )
+    }
+    /// Synthetic replicate columns for the image edges.
+    #[inline(always)]
+    unsafe fn dup0(c: &S) -> S {
+        (
+            vdupq_laneq_u8(c.0, 0),
+            vdupq_laneq_u8(c.1, 0),
+            vdupq_laneq_u8(c.2, 0),
+        )
+    }
+    #[inline(always)]
+    unsafe fn dup15(c: &S) -> S {
+        (
+            vdupq_laneq_u8(c.0, 15),
+            vdupq_laneq_u8(c.1, 15),
+            vdupq_laneq_u8(c.2, 15),
+        )
+    }
 
     #[inline(always)]
     unsafe fn min3(a: uint8x16_t, b: uint8x16_t, c: uint8x16_t) -> uint8x16_t {
@@ -317,40 +383,21 @@ mod neon {
             let r0 = s.as_ptr().add(y.saturating_sub(1).min(h - 1) * w);
             let r1 = s.as_ptr().add(y * w);
             let r2 = s.as_ptr().add((y + 1).min(h - 1) * w);
-            type S = (uint8x16_t, uint8x16_t, uint8x16_t);
             let sort3v = |off: usize| -> S {
                 let a = vld1q_u8(r0.add(off));
                 let b = vld1q_u8(r1.add(off));
                 let c = vld1q_u8(r2.add(off));
                 (min3(a, b, c), med3(a, b, c), max3(a, b, c))
             };
-            let fold = |l: S, m: S, r: S| {
-                med3(
-                    max3(l.0, m.0, r.0),
-                    med3(l.1, m.1, r.1),
-                    min3(l.2, m.2, r.2),
-                )
-            };
             let mut cur = sort3v(0);
-            let mut prev: S = (
-                vdupq_laneq_u8(cur.0, 0),
-                vdupq_laneq_u8(cur.1, 0),
-                vdupq_laneq_u8(cur.2, 0),
-            );
+            let mut prev = dup0(&cur);
             let mut x = 0usize;
             while x + 32 <= w {
                 let next = sort3v(x + 16);
-                let l: S = (
-                    vextq_u8(prev.0, cur.0, 15),
-                    vextq_u8(prev.1, cur.1, 15),
-                    vextq_u8(prev.2, cur.2, 15),
+                vst1q_u8(
+                    drow.as_mut_ptr().add(x),
+                    fold(shl(&prev, &cur), cur, shr(&cur, &next)),
                 );
-                let r: S = (
-                    vextq_u8(cur.0, next.0, 1),
-                    vextq_u8(cur.1, next.1, 1),
-                    vextq_u8(cur.2, next.2, 1),
-                );
-                vst1q_u8(drow.as_mut_ptr().add(x), fold(l, cur, r));
                 prev = cur;
                 cur = next;
                 x += 16;
@@ -358,17 +405,7 @@ mod neon {
             let xt = w - 16;
             let c = sort3v(xt);
             let l = sort3v(xt - 1);
-            let n: S = (
-                vdupq_laneq_u8(c.0, 15),
-                vdupq_laneq_u8(c.1, 15),
-                vdupq_laneq_u8(c.2, 15),
-            );
-            let r: S = (
-                vextq_u8(c.0, n.0, 1),
-                vextq_u8(c.1, n.1, 1),
-                vextq_u8(c.2, n.2, 1),
-            );
-            vst1q_u8(drow.as_mut_ptr().add(xt), fold(l, c, r));
+            vst1q_u8(drow.as_mut_ptr().add(xt), fold(l, c, shr(&c, &dup15(&c))));
             let mut xg = x;
             while xg < xt {
                 let c = sort3v(xg);
@@ -395,7 +432,6 @@ mod neon {
             let r2 = s.as_ptr().add((y + 1).min(h - 1) * w);
             let r3 = s.as_ptr().add((y + 2).min(h - 1) * w);
             let (d0, d1) = drow2.split_at_mut(w);
-            type S = (uint8x16_t, uint8x16_t, uint8x16_t);
             let sort2 = |off: usize| -> (S, S) {
                 let a = vld1q_u8(r0.add(off));
                 let b = vld1q_u8(r1.add(off));
@@ -406,42 +442,6 @@ mod neon {
                     (min3(b, c, d), med3(b, c, d), max3(b, c, d)),
                 )
             };
-            let fold = |l: S, m: S, r: S| {
-                med3(
-                    max3(l.0, m.0, r.0),
-                    med3(l.1, m.1, r.1),
-                    min3(l.2, m.2, r.2),
-                )
-            };
-            let shl = |p: &S, c: &S| -> S {
-                (
-                    vextq_u8(p.0, c.0, 15),
-                    vextq_u8(p.1, c.1, 15),
-                    vextq_u8(p.2, c.2, 15),
-                )
-            };
-            let shr = |c: &S, n: &S| -> S {
-                (
-                    vextq_u8(c.0, n.0, 1),
-                    vextq_u8(c.1, n.1, 1),
-                    vextq_u8(c.2, n.2, 1),
-                )
-            };
-            let dup0 = |c: &S| -> S {
-                (
-                    vdupq_laneq_u8(c.0, 0),
-                    vdupq_laneq_u8(c.1, 0),
-                    vdupq_laneq_u8(c.2, 0),
-                )
-            };
-            let dup15 = |c: &S| -> S {
-                (
-                    vdupq_laneq_u8(c.0, 15),
-                    vdupq_laneq_u8(c.1, 15),
-                    vdupq_laneq_u8(c.2, 15),
-                )
-            };
-
             let (mut cur_a, mut cur_b) = sort2(0);
             let mut prev_a = dup0(&cur_a);
             let mut prev_b = dup0(&cur_b);

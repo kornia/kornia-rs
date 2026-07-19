@@ -30,9 +30,10 @@ use rayon::prelude::*;
 
 /// `cv::borderInterpolate(p, len, BORDER_REFLECT_101)` — iterative form so
 /// degenerate cases (padding wider than the image) fold repeatedly exactly
-/// like OpenCV. The CUDA `reflect_101` device function is its textual twin.
+/// like OpenCV. Shared by CLAHE and the bilateral filter; the CUDA device
+/// twins compute identical indices.
 #[inline]
-fn reflect_101(mut p: i64, len: i64) -> i64 {
+pub(crate) fn reflect_101(mut p: i64, len: i64) -> i64 {
     if len == 1 {
         return 0;
     }

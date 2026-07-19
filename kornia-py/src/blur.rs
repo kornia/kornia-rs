@@ -100,6 +100,38 @@ pub fn sobel(py: Python<'_>, image: &Bound<'_, PyAny>, kernel_size: usize) -> Py
     })
 }
 
+/// Resolve `out=` (shape-validated view) or allocate a fresh output array.
+/// Shared by the median/bilateral CPU paths.
+fn resolve_out<const C: usize>(
+    py: Python<'_>,
+    op: &str,
+    rows: usize,
+    cols: usize,
+    out: Option<crate::image::PyImage>,
+) -> PyResult<(kornia_image::Image<u8, C>, crate::image::PyImage)> {
+    match out {
+        Some(out_pyarr) => {
+            if out_pyarr.bind(py).shape() != [rows, cols, C] {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "{op}: out shape {:?} must match the source ({rows}, {cols}, {C})",
+                    out_pyarr.bind(py).shape(),
+                )));
+            }
+            let img = unsafe { numpy_as_image::<C>(py, &out_pyarr)? };
+            Ok((img, out_pyarr))
+        }
+        None => unsafe {
+            alloc_output_pyarray::<C>(
+                py,
+                kornia_image::ImageSize {
+                    width: cols,
+                    height: rows,
+                },
+            )
+        },
+    }
+}
+
 /// Median blur — byte-for-byte with `cv2.medianBlur` and VPI's CUDA
 /// `MedianFilter`. `kernel_size` must be 3 or 5; borders replicate.
 ///
@@ -134,22 +166,8 @@ pub fn median_blur(
             out: Option<crate::image::PyImage>,
         ) -> PyResult<crate::image::PyImage> {
             let src = unsafe { numpy_as_image::<C>(py, arr)? };
-            let (mut dst, out_arr) = match out {
-                Some(out_pyarr) => {
-                    let shape: Vec<usize> = out_pyarr.bind(py).shape().to_vec();
-                    if shape != [src.rows(), src.cols(), C] {
-                        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                            "median_blur: out shape {:?} must match the source ({}, {}, {C})",
-                            shape,
-                            src.rows(),
-                            src.cols()
-                        )));
-                    }
-                    let img = unsafe { numpy_as_image::<C>(py, &out_pyarr)? };
-                    (img, out_pyarr)
-                }
-                None => unsafe { alloc_output_pyarray::<C>(py, src.size())? },
-            };
+            let (mut dst, out_arr) =
+                resolve_out::<C>(py, "median_blur", src.rows(), src.cols(), out)?;
             py.detach(|| filter::median_blur(&src, &mut dst, kernel_size))
                 .map_err(to_pyerr)?;
             Ok(out_arr)
@@ -198,22 +216,8 @@ pub fn bilateral_filter(
     }
     cpu_op(py, image, move |py, arr: Py<numpy::PyArray3<u8>>| {
         let src = unsafe { numpy_as_image::<1>(py, &arr)? };
-        let (mut dst, out_arr) = match out {
-            Some(out_pyarr) => {
-                let shape: Vec<usize> = out_pyarr.bind(py).shape().to_vec();
-                if shape != [src.rows(), src.cols(), 1] {
-                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                        "bilateral_filter: out shape {:?} must match the source ({}, {}, 1)",
-                        shape,
-                        src.rows(),
-                        src.cols()
-                    )));
-                }
-                let img = unsafe { numpy_as_image::<1>(py, &out_pyarr)? };
-                (img, out_pyarr)
-            }
-            None => unsafe { alloc_output_pyarray::<1>(py, src.size())? },
-        };
+        let (mut dst, out_arr) =
+            resolve_out::<1>(py, "bilateral_filter", src.rows(), src.cols(), out)?;
         py.detach(|| filter::bilateral_filter(&src, &mut dst, d, sigma_color, sigma_space))
             .map_err(to_pyerr)?;
         Ok(out_arr)

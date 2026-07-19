@@ -91,27 +91,27 @@ extern "C" __global__ void {name}(
     (name, src)
 }
 
-type KernelMap = Mutex<HashMap<(usize, usize), &'static CudaKernel>>;
+type KernelMap = Mutex<HashMap<(usize, usize), Arc<CudaKernel>>>;
 static KERNELS: OnceLock<KernelMap> = OnceLock::new();
 
 fn get_kernel(
     ctx: &Arc<CudaContext>,
     ksize: usize,
     channels: usize,
-) -> Result<&'static CudaKernel, CudaMedianError> {
+) -> Result<Arc<CudaKernel>, CudaMedianError> {
     let map = KERNELS.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Some(k) = map.lock().unwrap().get(&(ksize, channels)).copied() {
+    if let Some(k) = map.lock().unwrap().get(&(ksize, channels)).cloned() {
         return Ok(k);
     }
-    // Build outside the lock (scoped-guard idiom).
+    // Build outside the lock (scoped-guard idiom, like the sibling caches).
     let (name, src) = median_src(ksize, channels);
-    let kernel = try_compile_with_l1(ctx, &src, &name).map_err(CudaMedianError::Cuda)?;
-    let leaked: &'static CudaKernel = Box::leak(Box::new(kernel));
-    Ok(*map
+    let kernel = Arc::new(try_compile_with_l1(ctx, &src, &name).map_err(CudaMedianError::Cuda)?);
+    Ok(map
         .lock()
         .unwrap()
         .entry((ksize, channels))
-        .or_insert(leaked))
+        .or_insert(kernel)
+        .clone())
 }
 
 /// Median blur on device. `ksize` must be 3 or 5; borders replicate;

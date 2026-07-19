@@ -41,16 +41,10 @@ fn check_slice(what: &'static str, got: usize, need: usize) -> Result<(), CudaBi
     Ok(())
 }
 
+// Kernel body; the shared `REFLECT_101` device preamble (cuda/pyramid.rs)
+// is prepended at compile time — it computes the same indices as the CPU
+// `reflect_101` (modulo form vs iterative form, identical results).
 static BILATERAL_SRC: &str = r#"
-// Textual twin of bilateral.rs::reflect_101.
-__device__ __forceinline__ int reflect_101(int p, int len) {
-    if (len == 1) return 0;
-    while (p < 0 || p >= len) {
-        if (p < 0) p = -p; else p = 2 * (len - 1) - p;
-    }
-    return p;
-}
-
 extern "C" __global__ void bilateral_u8(
     const unsigned char* __restrict__ src,
     unsigned char* __restrict__       dst,
@@ -136,7 +130,10 @@ pub fn launch_bilateral_u8(
     let d_or = stream.clone_htod(&ord).map_err(err)?;
 
     let kernel = KERNEL
-        .get_or_init(|| try_compile_with_l1(ctx, BILATERAL_SRC, "bilateral_u8"))
+        .get_or_init(|| {
+            let src = format!("{}{}", super::pyramid::REFLECT_101, BILATERAL_SRC);
+            try_compile_with_l1(ctx, &src, "bilateral_u8")
+        })
         .as_ref()
         .map_err(|e| CudaBilateralError::Cuda(e.clone()))?;
     let cfg = super::make_config(w as u32, h as u32, None);
