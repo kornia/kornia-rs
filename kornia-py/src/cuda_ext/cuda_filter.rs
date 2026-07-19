@@ -91,3 +91,72 @@ pub(crate) fn sobel(img: &PyImageApi, kernel_size: usize) -> PyResult<PyOut> {
         ))),
     }
 }
+
+pub(crate) fn median_blur(img: &PyImageApi, kernel_size: usize) -> PyResult<PyOut> {
+    let dev = img.as_device().ok_or_else(|| {
+        PyValueError::new_err(
+            "median_blur: expected a device Image; for a host image pass its numpy array",
+        )
+    })?;
+    fn run<const C: usize>(
+        img: &PyImageApi,
+        src: &Image<u8, C>,
+        ksize: usize,
+        wrap: fn(Image<u8, C>) -> Inner,
+    ) -> PyResult<PyOut> {
+        let stream = source_stream(src)?;
+        // SAFETY: the median kernel writes every output pixel (bounds-
+        // guarded grid, all channels), so the uninitialized destination is
+        // fully overwritten.
+        let mut dst = unsafe { Image::<u8, C>::uninit_cuda(src.size(), &stream) }.map_err(err)?;
+        kornia_imgproc::filter::median_blur(src, &mut dst, ksize).map_err(err)?;
+        Ok(PyOut::New(PyImageApi::from_device(
+            wrap(dst),
+            img.color_space,
+            device_mode::<u8>(C),
+        )))
+    }
+    match dev {
+        Inner::U8C1(src) => run::<1>(img, src, kernel_size, Inner::U8C1),
+        Inner::U8C3(src) => run::<3>(img, src, kernel_size, Inner::U8C3),
+        Inner::U8C4(src) => run::<4>(img, src, kernel_size, Inner::U8C4),
+        other => Err(PyValueError::new_err(format!(
+            "median_blur: the GPU path supports u8 1/3/4-channel device images, \
+             got {:?} with {} channel(s)",
+            other.dtype_enum(),
+            other.channels(),
+        ))),
+    }
+}
+
+pub(crate) fn bilateral_filter(
+    img: &PyImageApi,
+    d: i32,
+    sigma_color: f64,
+    sigma_space: f64,
+) -> PyResult<PyOut> {
+    let dev = img.as_device().ok_or_else(|| {
+        PyValueError::new_err(
+            "bilateral_filter: expected a device Image; for a host image pass its numpy array",
+        )
+    })?;
+    let Inner::U8C1(src) = dev else {
+        return Err(PyValueError::new_err(format!(
+            "bilateral_filter: the GPU path supports u8 single-channel device images, \
+             got {:?} with {} channel(s)",
+            dev.dtype_enum(),
+            dev.channels(),
+        )));
+    };
+    let stream = source_stream(src)?;
+    // SAFETY: the bilateral kernel writes every output pixel (bounds-
+    // guarded grid), so the uninitialized destination is fully overwritten.
+    let mut dst = unsafe { Image::<u8, 1>::uninit_cuda(src.size(), &stream) }.map_err(err)?;
+    kornia_imgproc::filter::bilateral_filter(src, &mut dst, d, sigma_color, sigma_space)
+        .map_err(err)?;
+    Ok(PyOut::New(PyImageApi::from_device(
+        Inner::U8C1(dst),
+        img.color_space,
+        device_mode::<u8>(1),
+    )))
+}

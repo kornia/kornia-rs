@@ -99,3 +99,81 @@ pub fn sobel(py: Python<'_>, image: &Bound<'_, PyAny>, kernel_size: usize) -> Py
         }
     })
 }
+
+/// Median blur — byte-for-byte with `cv2.medianBlur` and VPI's CUDA
+/// `MedianFilter`. `kernel_size` must be 3 or 5; borders replicate.
+///
+/// Residency-dispatched: a u8 device `Image` (1/3/4-channel) runs the CUDA
+/// sorting-network kernel (byte-identical to the CPU path); a numpy u8
+/// array of shape (H, W, 1|3) runs the CPU path.
+#[pyfunction]
+#[pyo3(signature = (image, kernel_size=3))]
+pub fn median_blur(
+    py: Python<'_>,
+    image: &Bound<'_, PyAny>,
+    kernel_size: usize,
+) -> PyResult<Py<PyAny>> {
+    #[cfg(feature = "cuda")]
+    if let Ok(api) = image.cast::<crate::image::PyImageApi>() {
+        let img = api.borrow();
+        if img.is_device() {
+            return crate::cuda_ext::filter::median_blur(&img, kernel_size)?.into_py(py);
+        }
+    }
+    cpu_op(py, image, move |py, arr: Py<numpy::PyArray3<u8>>| {
+        let c = arr.bind(py).shape()[2];
+        match c {
+            1 => {
+                let src = unsafe { numpy_as_image::<1>(py, &arr)? };
+                let (mut dst, out) = unsafe { alloc_output_pyarray::<1>(py, src.size())? };
+                py.detach(|| filter::median_blur(&src, &mut dst, kernel_size))
+                    .map_err(to_pyerr)?;
+                Ok(out)
+            }
+            3 => {
+                let src = unsafe { numpy_as_image::<3>(py, &arr)? };
+                let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, src.size())? };
+                py.detach(|| filter::median_blur(&src, &mut dst, kernel_size))
+                    .map_err(to_pyerr)?;
+                Ok(out)
+            }
+            c => Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "median_blur supports 1 or 3 channels; got {c}"
+            ))),
+        }
+    })
+}
+
+/// Bilateral filter — byte-for-byte with
+/// `cv2.bilateralFilter(src, d, sigma_color, sigma_space)` for u8
+/// single-channel images (VPI's bilateral uses a different formula and is
+/// NOT byte-comparable).
+///
+/// Residency-dispatched: a u8 single-channel device `Image` runs the CUDA
+/// kernel (byte-identical to the CPU path); a numpy u8 array of shape
+/// (H, W, 1) runs the CPU path.
+#[pyfunction]
+#[pyo3(signature = (image, d=5, sigma_color=50.0, sigma_space=50.0))]
+pub fn bilateral_filter(
+    py: Python<'_>,
+    image: &Bound<'_, PyAny>,
+    d: i32,
+    sigma_color: f64,
+    sigma_space: f64,
+) -> PyResult<Py<PyAny>> {
+    #[cfg(feature = "cuda")]
+    if let Ok(api) = image.cast::<crate::image::PyImageApi>() {
+        let img = api.borrow();
+        if img.is_device() {
+            return crate::cuda_ext::filter::bilateral_filter(&img, d, sigma_color, sigma_space)?
+                .into_py(py);
+        }
+    }
+    cpu_op(py, image, move |py, arr: Py<numpy::PyArray3<u8>>| {
+        let src = unsafe { numpy_as_image::<1>(py, &arr)? };
+        let (mut dst, out) = unsafe { alloc_output_pyarray::<1>(py, src.size())? };
+        py.detach(|| filter::bilateral_filter(&src, &mut dst, d, sigma_color, sigma_space))
+            .map_err(to_pyerr)?;
+        Ok(out)
+    })
+}

@@ -13,6 +13,19 @@ changes early: `cargo add kornia-imgproc@0.1.15-rc.1` or `pip install --pre korn
 
 ## [Unreleased]
 
+**Median blur + bilateral filter (CPU and CUDA), byte-for-byte with
+OpenCV — median also bit-identical to VPI.** New `median_blur` (u8, 3×3
+and 5×5, replicate borders, exact sorting-network medians — NEON on CPU,
+register networks on CUDA; `cv2.medianBlur` and VPI's CUDA `MedianFilter`
+agree bit-for-bit here, so kornia matches BOTH) and `bilateral_filter`
+(u8 C1, `cv2.bilateralFilter` mirrored end to end: its own SIMD exp
+polynomial for the color table, circular taps, reflect_101 borders, fma
+accumulation — including cv2's different tap-summation order between its
+16-pixel SIMD region and its scalar row tail; VPI's bilateral uses a
+different formula and is not byte-comparable). CPU and GPU outputs are
+byte-identical. Measured 1080p sustained (GPU): median 0.015 ms (16–132×
+cv2, 43–80× VPI), bilateral d=5 0.065 ms (139× cv2, 10× VPI).
+
 **CLAHE (CPU and CUDA), byte-for-byte with OpenCV.** New `clahe` for u8
 single-channel images (`kornia_rs.imgproc.clahe` in Python), matching
 `cv2.createCLAHE(clip, grid).apply()` exactly — including OpenCV's
