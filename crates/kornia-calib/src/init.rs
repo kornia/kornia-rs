@@ -6,34 +6,9 @@ use kornia_3d::pose::{triangulate_matched_points, Pose3d, TriangulationConfig};
 use kornia_algebra::{Mat3F64, Vec2F64, Vec3F64};
 use kornia_apriltag::pose::estimate_tag_pose;
 
-use crate::board::AprilGridBoard;
 use crate::error::CalibError;
 use crate::types::{CalibConfig, FeatureMatch, TagObservation};
-
-/// Bundle adjustment runs on this identity pinhole; every pixel is pre-normalized
-/// by its own camera's intrinsics, so residuals live in normalized coordinates.
-pub(crate) fn identity_camera() -> PinholeCamera {
-    PinholeCamera {
-        fx: 1.0,
-        fy: 1.0,
-        cx: 0.0,
-        cy: 0.0,
-        k1: 0.0,
-        k2: 0.0,
-        p1: 0.0,
-        p2: 0.0,
-    }
-}
-
-/// Undistort a pixel and map it to normalized image coordinates `(x, y)`.
-/// With zero distortion this reduces to `((u - cx) / fx, (v - cy) / fy)`.
-pub(crate) fn normalize(camera: &PinholeCamera, uv: Vec2F64) -> Vec2F64 {
-    let up = camera.undistort(uv.x, uv.y);
-    Vec2F64::new(
-        (up.x - camera.cx) / camera.fx,
-        (up.y - camera.cy) / camera.fy,
-    )
-}
+use kornia_apriltag::board::AprilGridBoard;
 
 /// Result of initialization: per-camera init poses (world→cam), a per-camera
 /// "registered" mask, and the index of the reference tag in `tags`.
@@ -92,7 +67,7 @@ pub(crate) fn init_poses(
         max_reprojection_error: config.max_reprojection_error,
         ..Default::default()
     };
-    let idcam = identity_camera();
+    let idcam = PinholeCamera::IDENTITY;
 
     // Score every branch combination by feature reprojection under its init.
     // Wrong planar branches make non-coplanar features triangulate/reproject
@@ -114,8 +89,8 @@ pub(crate) fn init_poses(
             if !hv[f.cam_a] || !hv[f.cam_b] {
                 continue;
             }
-            let na = normalize(&cameras[f.cam_a], f.uv_a);
-            let nb2 = normalize(&cameras[f.cam_b], f.uv_b);
+            let na = cameras[f.cam_a].normalize(f.uv_a);
+            let nb2 = cameras[f.cam_b].normalize(f.uv_b);
             cnt += 2;
             let tri = triangulate_matched_points(
                 &[na],

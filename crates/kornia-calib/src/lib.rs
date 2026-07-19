@@ -37,7 +37,6 @@
 //!   or feature matches for a well-constrained solve.
 
 mod assemble;
-mod board;
 mod covariance;
 mod error;
 mod init;
@@ -46,9 +45,11 @@ mod multishot;
 mod tracks;
 mod types;
 
-pub use board::AprilGridBoard;
+// AprilGridBoard lives in kornia-apriltag (it's an AprilTag layout concept, reusable beyond
+// calibration); re-exported here so `kornia_calib::AprilGridBoard` keeps working.
 pub use error::CalibError;
 pub use intrinsics::estimate_focal;
+pub use kornia_apriltag::board::AprilGridBoard;
 pub use multishot::{calibrate_multishot, MultiShotCalibration, MultiShotConfig, Shot};
 pub use tracks::{build_tracks, TrackEdge};
 pub use types::{
@@ -164,7 +165,7 @@ fn finalize(
     reference_tag_id: u16,
     config: &CalibConfig,
 ) -> Result<RigCalibration, CalibError> {
-    let idcam = init::identity_camera();
+    let idcam = PinholeCamera::IDENTITY;
 
     // Pass 1: Huber warm-start over ALL observations.
     let res1 = bundle_adjust_schur(

@@ -8,9 +8,8 @@ use kornia_3d::camera::PinholeCamera;
 use kornia_3d::pose::{triangulate_matched_points, Pose3d, TriangulationConfig};
 use kornia_algebra::{Vec2F64, Vec3F64};
 
-use crate::board::AprilGridBoard;
-use crate::init::{identity_camera, normalize};
 use crate::types::{CalibConfig, FeatureMatch, FeatureTrack, TagObservation};
+use kornia_apriltag::board::AprilGridBoard;
 
 fn ba_obs(pose_idx: usize, point_idx: usize, n: Vec2F64, fixed_point: bool) -> BaObservation {
     BaObservation {
@@ -37,7 +36,7 @@ pub(crate) fn assemble_problem(
     ref_ti: usize,
     config: &CalibConfig,
 ) -> (Vec<Vec3F64>, Vec<BaObservation>) {
-    let idcam = identity_camera();
+    let idcam = PinholeCamera::IDENTITY;
     let tcfg = TriangulationConfig {
         min_parallax_deg: config.min_parallax_deg,
         max_reprojection_error: config.max_reprojection_error,
@@ -59,7 +58,7 @@ pub(crate) fn assemble_problem(
     points.extend_from_slice(&ref_corners);
     for (cam_idx, corners) in &tags[ref_ti].per_camera {
         for k in 0..4 {
-            let n = normalize(&cameras[*cam_idx], corners[k]);
+            let n = cameras[*cam_idx].normalize(corners[k]);
             obs.push(ba_obs(*cam_idx, base + k, n, true));
         }
     }
@@ -85,7 +84,7 @@ pub(crate) fn assemble_problem(
                     continue;
                 }
                 for k in 0..4 {
-                    let n = normalize(&cameras[*cam_idx], corners[k]);
+                    let n = cameras[*cam_idx].normalize(corners[k]);
                     obs.push(ba_obs(*cam_idx, base + k, n, true)); // FIXED measured board corner
                 }
             }
@@ -104,8 +103,8 @@ pub(crate) fn assemble_problem(
             }
             let (ca, ua) = seers[0];
             let (cb, ub) = seers[1];
-            let na = normalize(&cameras[ca], ua);
-            let nb = normalize(&cameras[cb], ub);
+            let na = cameras[ca].normalize(ua);
+            let nb = cameras[cb].normalize(ub);
             let Ok(pts) =
                 triangulate_matched_points(&[na], &[nb], &poses[ca], &poses[cb], &idcam, &tcfg)
             else {
@@ -117,7 +116,7 @@ pub(crate) fn assemble_problem(
             let pidx = points.len();
             points.push(pts[0].position);
             for (c, uv) in &seers {
-                let n = normalize(&cameras[*c], *uv);
+                let n = cameras[*c].normalize(*uv);
                 obs.push(ba_obs(*c, pidx, n, false));
             }
         }
@@ -129,8 +128,8 @@ pub(crate) fn assemble_problem(
         if !have[f.cam_a] || !have[f.cam_b] {
             continue;
         }
-        let na = normalize(&cameras[f.cam_a], f.uv_a);
-        let nb = normalize(&cameras[f.cam_b], f.uv_b);
+        let na = cameras[f.cam_a].normalize(f.uv_a);
+        let nb = cameras[f.cam_b].normalize(f.uv_b);
         let Ok(pts) = triangulate_matched_points(
             &[na],
             &[nb],
@@ -167,7 +166,7 @@ pub(crate) fn assemble_board(
     have: &[bool],
     config: &CalibConfig,
 ) -> (Vec<Vec3F64>, Vec<BaObservation>) {
-    let idcam = identity_camera();
+    let idcam = PinholeCamera::IDENTITY;
     let tcfg = TriangulationConfig {
         min_parallax_deg: config.min_parallax_deg,
         max_reprojection_error: config.max_reprojection_error,
@@ -194,7 +193,7 @@ pub(crate) fn assemble_board(
                 if !have[*c] {
                     continue;
                 }
-                let n = normalize(&cameras[*c], corners[k]);
+                let n = cameras[*c].normalize(corners[k]);
                 obs.push(ba_obs(*c, pidx, n, true)); // fixed board point
             }
         }
@@ -226,8 +225,8 @@ pub(crate) fn assemble_board(
         }
         let (ca, ua) = regs[best.0];
         let (cb, ub) = regs[best.1];
-        let na = normalize(&cameras[ca], ua);
-        let nb = normalize(&cameras[cb], ub);
+        let na = cameras[ca].normalize(ua);
+        let nb = cameras[cb].normalize(ub);
         let Ok(pts) =
             triangulate_matched_points(&[na], &[nb], &poses[ca], &poses[cb], &idcam, &tcfg)
         else {
@@ -239,7 +238,7 @@ pub(crate) fn assemble_board(
         let pidx = points.len();
         points.push(pts[0].position);
         for (c, uv) in &regs {
-            let n = normalize(&cameras[*c], *uv);
+            let n = cameras[*c].normalize(*uv);
             obs.push(ba_obs(*c, pidx, n, false));
         }
     }
