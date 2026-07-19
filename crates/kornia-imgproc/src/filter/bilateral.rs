@@ -226,6 +226,9 @@ pub fn bilateral_filter(
     let (w, h) = (src.cols(), src.rows());
     let s = src.as_slice();
 
+    // Fine chunks: at ~10 ms total, work-stealing smooths preemption
+    // stragglers (a static per-core split measured 20% WORSE here, while
+    // it wins on the sub-millisecond median ops).
     dst.as_slice_mut()
         .par_chunks_mut(w)
         .enumerate()

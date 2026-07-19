@@ -204,10 +204,15 @@ pub fn median_blur<const C: usize>(
     // (memory-bound op). Other shapes take the per-row path below.
     #[cfg(target_arch = "aarch64")]
     if C == 1 && ksize == 3 && w >= 34 && h >= 2 {
+        // One task per worker (static split): the whole op is ~0.3 ms, so
+        // rayon's per-task overhead and work-stealing dominate with small
+        // chunks.
+        let pairs = h.div_ceil(2);
+        let min_pairs = pairs.div_ceil(rayon::current_num_threads()).max(1);
         dst.as_slice_mut()
             .par_chunks_mut(w * 2)
             .enumerate()
-            .with_min_len(8)
+            .with_min_len(min_pairs)
             .for_each(|(i, dchunk)| {
                 let y = i * 2;
                 if dchunk.len() == w * 2 && neon::median3_row2(s, dchunk, w, h, y) {
@@ -223,10 +228,13 @@ pub fn median_blur<const C: usize>(
         return Ok(());
     }
 
+    // Middle ground for the ~2 ms 5×5: quarter-per-core chunks keep
+    // stealing available without per-task overhead dominating.
+    let min_rows = (h.div_ceil(rayon::current_num_threads() * 4)).max(16);
     dst.as_slice_mut()
         .par_chunks_mut(w * C)
         .enumerate()
-        .with_min_len(16)
+        .with_min_len(min_rows)
         .for_each(|(y, drow)| {
             // NEON C1 fast path: run the same network on 16 lanes at once
             // (u8 min/max are exact — byte-identical to the scalar walk).
@@ -438,6 +446,33 @@ mod neon {
             let mut prev_a = dup0(&cur_a);
             let mut prev_b = dup0(&cur_b);
             let mut x = 0usize;
+            // 32 columns per iteration; the two 16-wide results per row go
+            // out through one non-temporal pair store (stnp) — the output
+            // is write-once, so pulling its cache lines in (RFO) is pure
+            // wasted DRAM traffic on this memory-bound op.
+            while x + 48 <= w {
+                let (mid_a, mid_b) = sort2(x + 16);
+                let (next_a, next_b) = sort2(x + 32);
+                let m0a = fold(shl(&prev_a, &cur_a), cur_a, shr(&cur_a, &mid_a));
+                let m1a = fold(shl(&cur_a, &mid_a), mid_a, shr(&mid_a, &next_a));
+                let m0b = fold(shl(&prev_b, &cur_b), cur_b, shr(&cur_b, &mid_b));
+                let m1b = fold(shl(&cur_b, &mid_b), mid_b, shr(&mid_b, &next_b));
+                std::arch::asm!(
+                    "stnp {0:q}, {1:q}, [{2}]",
+                    in(vreg) m0a, in(vreg) m1a, in(reg) d0.as_mut_ptr().add(x),
+                    options(nostack, preserves_flags)
+                );
+                std::arch::asm!(
+                    "stnp {0:q}, {1:q}, [{2}]",
+                    in(vreg) m0b, in(vreg) m1b, in(reg) d1.as_mut_ptr().add(x),
+                    options(nostack, preserves_flags)
+                );
+                prev_a = mid_a;
+                prev_b = mid_b;
+                cur_a = next_a;
+                cur_b = next_b;
+                x += 32;
+            }
             while x + 32 <= w {
                 let (next_a, next_b) = sort2(x + 16);
                 vst1q_u8(
