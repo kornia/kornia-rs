@@ -45,11 +45,8 @@ mod multishot;
 mod tracks;
 mod types;
 
-// AprilGridBoard lives in kornia-apriltag (it's an AprilTag layout concept, reusable beyond
-// calibration); re-exported here so `kornia_calib::AprilGridBoard` keeps working.
 pub use error::CalibError;
 pub use intrinsics::estimate_focal;
-pub use kornia_apriltag::board::AprilGridBoard;
 pub use multishot::{calibrate_multishot, MultiShotCalibration, MultiShotConfig, Shot};
 pub use tracks::{build_tracks, TrackEdge};
 pub use types::{
@@ -69,6 +66,9 @@ use kornia_3d::ba_schur::bundle_adjust_schur;
 use kornia_3d::camera::PinholeCamera;
 use kornia_3d::ransac::RobustKernelKind;
 use kornia_algebra::Vec3F64;
+// AprilGridBoard is defined in kornia-apriltag (a tag-layout concept); imported for the board path,
+// NOT re-exported — callers depend on kornia-apriltag directly for it.
+use kornia_apriltag::board::AprilGridBoard;
 
 /// Normalized reprojection residual norm of one observation under a solved (poses, points).
 /// `None` if the point is behind the camera.

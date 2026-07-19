@@ -10,7 +10,8 @@
 use kornia_3d::camera::PinholeCamera;
 use kornia_3d::pose::Pose3d;
 use kornia_algebra::{Mat3F64, Vec2F64, Vec3F64};
-use kornia_calib::{calibrate_apriltag, AprilGridBoard, CalibConfig, TagObservation};
+use kornia_apriltag::board::AprilGridBoard;
+use kornia_calib::{calibrate_apriltag, CalibConfig, TagObservation};
 
 /// Square pixels, principal point at image centre (640x480), no distortion.
 fn pinhole(f: f64) -> PinholeCamera {
