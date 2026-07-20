@@ -57,8 +57,15 @@ Create one todo per step.
      release tag**: `[X.Y.Z]: https://github.com/kornia/kornia-rs/compare/<prev-tag>...vX.Y.Z`.
      This is what keeps the changelog navigable across releases.
    - Dates: ask the human or read from the environment; never invent one.
-4. **Bump version** in root `Cargo.toml`. Run `cargo update -p <workspace crate>`
-   / `cargo check` so `Cargo.lock` reflects the bump.
+4. **Bump version** in root `Cargo.toml` — BOTH places: `workspace.package.version`
+   AND every kornia-* pin in `[workspace.dependencies]` (11 lines; Cargo cannot
+   inherit those, and locally `path` wins so a stale pin builds fine and only
+   ships a wrong requirement at publish — this bit the rc.5 cut).
+   `sed -i 's/version = "<old>"/version = "<new>"/g' Cargo.toml` covers both;
+   `python3 scripts/check_version_pins.py` (also a pre-commit hook on
+   Cargo.toml) verifies. Then `cargo check` so `Cargo.lock` reflects the bump.
+   Sanity: the release commit's Cargo.toml diff should touch ~12 version lines,
+   not 1 — compare against the previous release commit's diff shape.
 5. **Release branch + PR:** `release/vX.Y.Z`, commit `chore(release): vX.Y.Z`
    with the version bump + CHANGELOG. Open PR, let CI pass, get it merged. Never
    force-push a contributor's fork branch — release commits go on a repo branch.
