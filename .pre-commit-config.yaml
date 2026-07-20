@@ -17,3 +17,11 @@ repos:
     rev: v1.0
     hooks:
     - id: fmt
+  - repo: local
+    hooks:
+    - id: check-version-pins
+      name: workspace dependency pins match workspace.package.version
+      entry: python3 scripts/check_version_pins.py
+      language: system
+      files: ^Cargo\.toml$
+      pass_filenames: false
