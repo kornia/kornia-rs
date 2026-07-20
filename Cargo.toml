@@ -54,7 +54,11 @@ image = "0.25"
 imageproc = "0.27"
 indicatif = { version = "0.18.4", features = ["rayon"] }
 kiddo = "5.3"
-# NOTE: remember to update the kornia-py package version in `kornia-py/Cargo.toml` when updating the Rust package version
+# RELEASE NOTE: these kornia-* version pins CANNOT inherit
+# workspace.package.version (Cargo limitation) and must be bumped together
+# with it on every release — locally `path` wins so a stale pin builds fine
+# and only ships a wrong dependency requirement at publish time. Enforced by
+# scripts/check_version_pins.py (pre-commit hook on this file).
 kornia = { path = "crates/kornia", version = "0.1.15-rc.5" }
 kornia-3d = { path = "crates/kornia-3d", version = "0.1.15-rc.5" }
 kornia-algebra = { path = "crates/kornia-algebra", version = "0.1.15-rc.5" }
