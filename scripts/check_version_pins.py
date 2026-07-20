@@ -28,9 +28,16 @@ for line in text.splitlines():
     if pin and pin.group(2) != ws_version:
         bad.append(f"  {pin.group(1)}: {pin.group(2)} (workspace is {ws_version})")
 
+# kornia-cpp commits its build.rs-generated header; a stale copy ships the
+# wrong version string to pure-CMake consumers who never run cargo.
+hpp = root.parent / "kornia-cpp" / "include" / "kornia" / "version.hpp"
+if hpp.exists() and f'#define KORNIA_VERSION "{ws_version}"' not in hpp.read_text():
+    bad.append(f"  kornia-cpp/include/kornia/version.hpp (workspace is {ws_version})")
+
 if bad:
-    print("workspace-dependency version pins out of sync with workspace.package.version:")
+    print("version pins out of sync with workspace.package.version:")
     print("\n".join(bad))
-    print(f'fix: sed -i \'s/version = "<stale>"/version = "{ws_version}"/g\' Cargo.toml')
+    print(f'fix: sed -i \'s/version = "<stale>"/version = "{ws_version}"/g\' Cargo.toml'
+          " && cargo check -p kornia-cpp  # regenerates version.hpp")
     sys.exit(1)
 print(f"version pins OK ({ws_version})")

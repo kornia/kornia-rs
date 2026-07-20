@@ -66,6 +66,10 @@ Create one todo per step.
    Cargo.toml) verifies. Then `cargo check` so `Cargo.lock` reflects the bump.
    Sanity: the release commit's Cargo.toml diff should touch ~12 version lines,
    not 1 — compare against the previous release commit's diff shape.
+   Also `cargo check -p kornia-cpp` and commit the regenerated
+   `kornia-cpp/include/kornia/version.hpp` (build.rs writes the committed
+   header; pure-CMake consumers read it from git). kornia-py needs nothing:
+   it inherits the workspace version and pyproject uses dynamic version.
 5. **Release branch + PR:** `release/vX.Y.Z`, commit `chore(release): vX.Y.Z`
    with the version bump + CHANGELOG. Open PR, let CI pass, get it merged. Never
    force-push a contributor's fork branch — release commits go on a repo branch.
