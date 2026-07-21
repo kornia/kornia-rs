@@ -180,8 +180,9 @@ pub mod cuda;
 
 #[cfg(feature = "cuda")]
 pub use crate::cuda::{
-    pinned_alloc, uninit_cuda, zeros_cuda, zeros_pinned, CudaAllocator, CudaError, CudaKernel,
-    CudaLaunchBuilder, PinnedAllocator, PinnedResource,
+    pinned_alloc, unified_alloc, uninit_cuda, zeros_cuda, zeros_pinned, zeros_unified,
+    CudaAllocator, CudaError, CudaKernel, CudaLaunchBuilder, CudaUnifiedAllocator, PinnedAllocator,
+    PinnedResource, UnifiedResource,
 };
 
 /// Storage module containing low-level memory buffer implementations.
@@ -195,6 +196,13 @@ pub mod storage;
 /// This module provides the core [`tensor::Tensor`] struct and related functionality.
 pub mod tensor;
 
+/// Element-wise and reduction operations on [`Tensor<f32, N>`] with automatic
+/// CPU / GPU dispatch via [`MemoryDomain`](resource::MemoryDomain).
+///
+/// Provides [`ops::apply_unary`], [`ops::apply_binary`], and [`ops::reduce`]
+/// free functions plus matching convenience methods on `Tensor<f32, N>`.
+pub mod ops;
+
 /// View module containing non-owning tensor view implementations.
 ///
 /// This module provides [`view::TensorView`] for creating efficient, zero-copy views
@@ -202,6 +210,7 @@ pub mod tensor;
 pub mod view;
 
 pub use crate::allocator::{host_alloc, AllocHandle, CpuAllocator, TensorAllocator};
+pub use crate::ops::{apply_binary, apply_unary, reduce, BinaryOp, OpsError, ReduceOp, UnaryOp};
 pub use crate::resource::{ForeignResource, HostResource, MemoryDomain, MemoryResource};
 // Keep backward-compatible re-export: `use kornia_tensor::storage::MemoryDomain` still resolves
 // because storage.rs now re-exports from resource.

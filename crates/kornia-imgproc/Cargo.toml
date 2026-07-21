@@ -14,6 +14,18 @@ publish = true
 name = "bench_cuda_color_conversions"
 required-features = ["cuda"]
 
+[[example]]
+name = "dump_cuda_resize"
+required-features = ["cuda"]
+
+[[example]]
+name = "dump_cuda_warp_affine"
+required-features = ["cuda"]
+
+[[example]]
+name = "dump_cuda_warp_perspective"
+required-features = ["cuda"]
+
 [[bench]]
 harness = false
 name = "bench_color"
