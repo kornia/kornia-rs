@@ -148,6 +148,7 @@ macro_rules! py_f32_3to3 {
         #[doc = $doc]
         #[pyfunction]
         pub fn $name(py: Python<'_>, image: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+            crate::dispatch::require_f32_host(py, image, stringify!($name))?;
             cpu_op(py, image, |py, image| {
                 let src = unsafe { numpy_as_image_f32::<3>(py, &image)? };
                 let (mut dst, out) = unsafe { alloc_output_pyarray_f32::<3>(py, src.size())? };
@@ -161,12 +162,61 @@ macro_rules! py_f32_3to3 {
         #[pyfunction]
         pub fn $name(py: Python<'_>, image: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
             try_dispatch_device!(py, image, $dev);
+            crate::dispatch::require_f32_host(py, image, stringify!($name))?;
             cpu_op(py, image, |py, image| {
                 let src = unsafe { numpy_as_image_f32::<3>(py, &image)? };
                 let (mut dst, out) = unsafe { alloc_output_pyarray_f32::<3>(py, src.size())? };
                 py.detach(|| $func(&src, &mut dst)).map_err(to_pyerr)?;
                 Ok(out)
             })
+        }
+    };
+}
+
+/// Like `py_f32_3to3!`, but for the two YCbCr conversions, which have real
+/// u8 crate support (`color::YuvFamily` is impl'd for u8/f32/f64) — so the
+/// host path dispatches on the numpy array's dtype instead of assuming f32.
+macro_rules! py_ycbcr_family {
+    ($name:ident, $func:path, $dev:path, $pyname:literal, $doc:literal) => {
+        #[doc = $doc]
+        #[pyfunction]
+        pub fn $name(py: Python<'_>, image: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+            try_dispatch_device!(py, image, $dev);
+            let (view, is_host_image) = if let Ok(api) = image.cast::<crate::image::PyImageApi>() {
+                crate::dispatch::no_gpu_kernel_if_device(&api.borrow())?;
+                (api.call_method0("numpy")?, true)
+            } else {
+                (image.clone(), false)
+            };
+            use pyo3::types::PyAnyMethods;
+            let dtype = view.getattr("dtype")?.getattr("name")?.extract::<String>()?;
+            let out: Py<PyAny> = match dtype.as_str() {
+                "uint8" => {
+                    let arr: Py<numpy::PyArray3<u8>> = view.extract()?;
+                    let src = unsafe { numpy_as_image::<3>(py, &arr)? };
+                    let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, src.size())? };
+                    py.detach(|| $func(&src, &mut dst)).map_err(to_pyerr)?;
+                    out.into_py(py)
+                }
+                "float32" => {
+                    let arr: Py<numpy::PyArray3<f32>> = view.extract()?;
+                    let src = unsafe { numpy_as_image_f32::<3>(py, &arr)? };
+                    let (mut dst, out) = unsafe { alloc_output_pyarray_f32::<3>(py, src.size())? };
+                    py.detach(|| $func(&src, &mut dst)).map_err(to_pyerr)?;
+                    out.into_py(py)
+                }
+                other => {
+                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                        concat!($pyname, ": host path supports uint8 or float32, got dtype={}"),
+                        other
+                    )))
+                }
+            };
+            if is_host_image {
+                let img = crate::image::PyImageApi::from_numpy_borrow(py, out.bind(py), None, None, false)?;
+                return Ok(Py::new(py, img)?.into_any());
+            }
+            Ok(out)
         }
     };
 }
@@ -243,17 +293,19 @@ py_f32_3to3!(
     crate::cuda_ext::rgb_from_linear_rgb,
     "linear-RGB f32 → sRGB f32 (gamma compress)."
 );
-py_f32_3to3!(
+py_ycbcr_family!(
     ycbcr_from_rgb,
     color::ycbcr_from_rgb,
     crate::cuda_ext::ycbcr_from_rgb,
-    "RGB f32 → YCbCr f32 (full range)."
+    "ycbcr_from_rgb",
+    "RGB → YCbCr (full range). Host accepts uint8 (Q14 fixed-point) or float32."
 );
-py_f32_3to3!(
+py_ycbcr_family!(
     rgb_from_ycbcr,
     color::rgb_from_ycbcr,
     crate::cuda_ext::rgb_from_ycbcr,
-    "YCbCr f32 → RGB f32."
+    "rgb_from_ycbcr",
+    "YCbCr → RGB. Host accepts uint8 or float32."
 );
 py_f32_3to3!(
     yuv_from_rgb,
