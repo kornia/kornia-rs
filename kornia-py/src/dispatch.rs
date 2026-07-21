@@ -86,3 +86,27 @@ pub(crate) fn no_gpu_kernel_if_device(api: &PyImageApi) -> PyResult<()> {
 
 /// Early-return the GPU result when `$image` is a device `Image`.
 pub(crate) use crate::__try_dispatch_device as try_dispatch_device;
+
+/// Raise a clear error naming the actual dtype if a non-f32 numpy array or
+/// host `Image` reaches an f32-only CPU color conversion, instead of letting
+/// pyo3's generic array-downcast error surface (`'ndarray' object is not an
+/// instance of 'ndarray'`).
+pub(crate) fn require_f32_host(py: Python<'_>, image: &Bound<'_, PyAny>, op: &str) -> PyResult<()> {
+    let view = if let Ok(api) = image.cast::<PyImageApi>() {
+        if api.borrow().is_device() {
+            return Ok(()); // device path handled separately by try_dispatch_device!
+        }
+        api.call_method0("numpy")?
+    } else {
+        image.clone()
+    };
+    use pyo3::types::PyAnyMethods;
+    let dtype = view.getattr("dtype")?.getattr("name")?.extract::<String>()?;
+    if dtype != "float32" {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "{op}: host path supports float32 only (got dtype={dtype}); \
+             there is currently no uint8 kernel for this conversion in kornia-imgproc"
+        )));
+    }
+    Ok(())
+}
