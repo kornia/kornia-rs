@@ -201,10 +201,52 @@ jobs:
           name: windows-${{ matrix.target }}-${{ matrix.python-version }}-wheels
           path: dist
 
+  windows-arm64:
+    name: py${{ matrix.python-version }}-windows-arm64
+    runs-on: windows-11-arm
+    strategy:
+      fail-fast: false
+      matrix:
+        # CPython first published native Windows ARM64 installers in 3.11.
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+    env:
+      CMAKE_GENERATOR: Ninja
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          architecture: arm64
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-pc-windows-msvc
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: arm64
+      - name: Install native build tools
+        run: python -m pip install --upgrade cmake ninja
+      - uses: messense/maturin-action@v1
+        with:
+          command: build
+          maturin-version: latest
+          args: --release --target aarch64-pc-windows-msvc --out dist -i python${{ matrix.python-version }} -m kornia-py/Cargo.toml
+      - name: Verify native ARM64 wheel
+        shell: pwsh
+        run: |
+          $wheel = Get-ChildItem dist\*-win_arm64.whl | Select-Object -First 1
+          if (-not $wheel) { throw "No win_arm64 wheel was produced" }
+          python -m pip install --force-reinstall $wheel.FullName
+          python -c "import kornia_rs, platform; assert platform.machine().upper() == 'ARM64'; assert kornia_rs.cpu.cpu_features().has_neon; print(kornia_rs.cpu.cpu_features())"
+      - name: Upload wheels
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-arm64-${{ matrix.python-version }}-wheels
+          path: dist
+
   release:
     name: Release
     runs-on: ubuntu-latest
-    needs: [macos, windows, linux]
+    needs: [macos, windows, windows-arm64, linux]
     steps:
       - run: sudo apt-get update
       - uses: actions/download-artifact@v8
