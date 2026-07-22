@@ -26,6 +26,15 @@ pub enum JpegTurboError {
     #[error("Mutex is poisoned")]
     MutexPoisoned,
 
+    /// The pixel buffer length does not match `width * height * channels`.
+    #[error("pixel buffer length {got} != expected {expected}")]
+    InvalidBufferLength {
+        /// Actual slice length.
+        got: usize,
+        /// Length implied by the given `ImageSize` and channel count.
+        expected: usize,
+    },
+
     /// I/O error, e.g. when reading a JPEG file from disk.
     #[error(transparent)]
     IoError(#[from] std::io::Error),
@@ -67,19 +76,40 @@ impl JpegTurboEncoder {
     ///
     /// The encoded data as `Vec<u8>`.
     pub fn encode_rgb8(&self, image: &Image<u8, 3>) -> Result<Vec<u8>, JpegTurboError> {
-        // get the image data
-        let image_data = image.as_slice();
+        self.encode_rgb8_slice(image.as_slice(), image.size())
+    }
 
-        // create a turbojpeg image
+    /// Encodes a borrowed RGB8 pixel slice (`width * height * 3`, row-major, no padding) into a
+    /// JPEG image.
+    ///
+    /// Zero-copy input: turbojpeg reads the slice directly, so no owning [`Image`] has to be
+    /// built first. [`encode_rgb8`](Self::encode_rgb8) delegates here.
+    ///
+    /// # Arguments
+    ///
+    /// * `pixels` - The RGB8 pixels, row-major `R,G,B` with no row padding.
+    /// * `size` - The image dimensions; `pixels.len()` must equal `width * height * 3`.
+    pub fn encode_rgb8_slice(
+        &self,
+        pixels: &[u8],
+        size: ImageSize,
+    ) -> Result<Vec<u8>, JpegTurboError> {
+        let expected = size.width * size.height * 3;
+        if pixels.len() != expected {
+            return Err(JpegTurboError::InvalidBufferLength {
+                got: pixels.len(),
+                expected,
+            });
+        }
+
         let buf = turbojpeg::Image {
-            pixels: image_data,
-            width: image.width(),
-            pitch: 3 * image.width(),
-            height: image.height(),
+            pixels,
+            width: size.width,
+            pitch: 3 * size.width,
+            height: size.height,
             format: turbojpeg::PixelFormat::RGB,
         };
 
-        // encode the image
         Ok(self
             .0
             .lock()
@@ -313,6 +343,30 @@ pub fn write_image_jpegturbo_rgb8(
 mod tests {
     use super::*;
     use crate::error::IoError;
+
+    #[test]
+    fn encode_rgb8_slice_matches_owning_and_validates_len() -> Result<(), JpegTurboError> {
+        let size = ImageSize {
+            width: 64,
+            height: 48,
+        };
+        let pixels: Vec<u8> = (0..size.width * size.height * 3)
+            .map(|i| (i % 251) as u8)
+            .collect();
+        let enc = JpegTurboEncoder::new()?;
+        // The zero-copy slice path and the owning path must produce identical bytes.
+        let img = Image::<u8, 3>::from_size_slice(size, &pixels)?;
+        assert_eq!(
+            enc.encode_rgb8_slice(&pixels, size)?,
+            enc.encode_rgb8(&img)?
+        );
+        // A wrong-length slice is rejected, not read out of bounds.
+        assert!(matches!(
+            enc.encode_rgb8_slice(&pixels[..pixels.len() - 1], size),
+            Err(JpegTurboError::InvalidBufferLength { .. })
+        ));
+        Ok(())
+    }
 
     #[test]
     fn image_decoder() -> Result<(), JpegTurboError> {
