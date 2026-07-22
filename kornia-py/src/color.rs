@@ -201,13 +201,22 @@ macro_rules! py_ycbcr_family {
                 }
                 other => {
                     return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                        concat!($pyname, ": host path supports uint8 or float32, got dtype={}"),
+                        concat!(
+                            $pyname,
+                            ": host path supports uint8 or float32, got dtype={}"
+                        ),
                         other
                     )))
                 }
             };
             if is_host_image {
-                let img = crate::image::PyImageApi::from_numpy_borrow(py, out.bind(py), None, None, false)?;
+                let img = crate::image::PyImageApi::from_numpy_borrow(
+                    py,
+                    out.bind(py),
+                    None,
+                    None,
+                    false,
+                )?;
                 return Ok(Py::new(py, img)?.into_any());
             }
             Ok(out)

@@ -1,5 +1,5 @@
-use pyo3::prelude::*;
 use numpy::{PyArrayMethods, PyUntypedArrayMethods};
+use pyo3::prelude::*;
 
 use crate::dispatch::cpu_op;
 use crate::image::{
@@ -175,7 +175,7 @@ pub fn build_pyramid(
     };
     let mut current = view.call_method0("copy")?;
     out.push(current.clone().unbind());
-    
+
     for _ in 0..max_level {
         let shape: (usize, usize, usize) = current.getattr("shape")?.extract()?;
         if shape.0 == 1 && shape.1 == 1 {

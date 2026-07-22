@@ -101,7 +101,10 @@ pub(crate) fn host_view_and_dtype<'py>(
         image.clone()
     };
     use pyo3::types::PyAnyMethods;
-    let dtype = view.getattr("dtype")?.getattr("name")?.extract::<String>()?;
+    let dtype = view
+        .getattr("dtype")?
+        .getattr("name")?
+        .extract::<String>()?;
     Ok((view, dtype))
 }
 
