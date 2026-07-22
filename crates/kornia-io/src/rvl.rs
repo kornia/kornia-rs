@@ -23,6 +23,13 @@ use std::{fs, path::Path};
 const MAGIC: &[u8; 4] = b"RVL1";
 const HEADER_LEN: usize = 12; // magic(4) + width(4) + height(4)
 
+/// Sanity ceiling on decoded image pixels. `decode_image_rvl` takes the image dimensions from an
+/// untrusted 12-byte header and allocates `width * height` up front, before reading any pixel
+/// data. A tiny payload can declare a huge image (e.g. 65535x65535), so without a bound a corrupt
+/// or hostile buffer drives a multi-gigabyte allocation — an OOM/abort instead of a clean error.
+/// 8192x8192 covers any real frame with wide margin; anything larger is rejected.
+const MAX_PIXELS: usize = 8192 * 8192;
+
 // ── NibbleWriter ──────────────────────────────────────────────────────────────
 
 struct NibbleWriter {
@@ -302,6 +309,11 @@ pub fn decode_image_rvl(src: &[u8]) -> Result<Image<u16, 1>, IoError> {
     let n_pixels = width
         .checked_mul(height)
         .ok_or_else(|| IoError::RvlDecodeError("image dimensions overflow".into()))?;
+    if n_pixels > MAX_PIXELS {
+        return Err(IoError::RvlDecodeError(format!(
+            "image {width}x{height} exceeds max {MAX_PIXELS} pixels"
+        )));
+    }
 
     let mut pixels = vec![0u16; n_pixels];
     let mut reader = NibbleReader::new(&src[HEADER_LEN..]);
@@ -349,6 +361,16 @@ mod tests {
             data,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn decode_rejects_oversized_dimensions() {
+        // A tiny payload declaring a 65535x65535 image (~4.29e9 px) must be rejected, not drive a
+        // multi-gigabyte allocation. Magic + width + height, empty stream.
+        let mut data = MAGIC.to_vec();
+        data.extend_from_slice(&0xFFFF_u32.to_le_bytes());
+        data.extend_from_slice(&0xFFFF_u32.to_le_bytes());
+        assert!(decode_image_rvl(&data).is_err());
     }
 
     #[test]
