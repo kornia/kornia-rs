@@ -42,12 +42,14 @@ mod error;
 mod init;
 mod intrinsics;
 mod multishot;
+mod sfm;
 mod tracks;
 mod types;
 
 pub use error::CalibError;
 pub use intrinsics::estimate_focal;
 pub use multishot::{calibrate_multishot, MultiShotCalibration, MultiShotConfig, Shot};
+pub use sfm::calibrate_features;
 pub use tracks::{build_tracks, TrackEdge};
 pub use types::{
     CalibConfig, CameraStats, FeatureMatch, FeatureTrack, RigCalibration, TagObservation,
