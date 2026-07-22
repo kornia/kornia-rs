@@ -21,6 +21,7 @@ pub fn compute_histogram(
     }
 
     let arr: Py<numpy::PyArray3<u8>> = if let Ok(api) = image.cast::<crate::image::PyImageApi>() {
+        crate::dispatch::no_gpu_kernel_if_device(&api.borrow())?;
         let view = api.call_method0("numpy")?;
         view.extract()?
     } else {
