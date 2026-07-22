@@ -1,5 +1,5 @@
 use pyo3::prelude::*;
-use numpy::PyArrayMethods;
+use numpy::{PyArrayMethods, PyUntypedArrayMethods};
 
 use crate::dispatch::cpu_op;
 use crate::image::{
@@ -41,7 +41,7 @@ where
     let mut dst = unsafe { Image::<T, C>::uninit_cuda(out_size, &stream) }.map_err(to_pyerr)?;
     op(src, &mut dst).map_err(to_pyerr)?;
     let api = PyImageApi::from_device(wrap(dst), img.color_space, device_mode::<T>(C));
-    Python::with_gil(|py| Ok(Py::new(py, api)?.into_any()))
+    Python::attach(|py| Ok(Py::new(py, api)?.into_any()))
 }
 
 fn run_cpu_u8<const C: usize>(
@@ -108,15 +108,7 @@ macro_rules! py_pyramid_op {
                 }
             }
 
-            let view = if let Ok(api) = image.cast::<PyImageApi>() {
-                crate::dispatch::no_gpu_kernel_if_device(&api.borrow())?;
-                api.call_method0("numpy")?
-            } else {
-                image.clone()
-            };
-
-            use pyo3::types::PyAnyMethods;
-            let dtype = view.getattr("dtype")?.getattr("name")?.extract::<String>()?;
+            let (view, dtype) = crate::dispatch::host_view_and_dtype(image)?;
             match dtype.as_str() {
                 "uint8" => {
                     cpu_op(py, image, |py, image| {
@@ -175,9 +167,20 @@ pub fn build_pyramid(
     max_level: usize,
 ) -> PyResult<Vec<Py<PyAny>>> {
     let mut out = Vec::with_capacity(max_level + 1);
-    out.push(image.clone().unbind());
-    let mut current = image.clone();
+    let view = if let Ok(api) = image.cast::<crate::image::PyImageApi>() {
+        crate::dispatch::no_gpu_kernel_if_device(&api.borrow())?;
+        api.call_method0("numpy")?
+    } else {
+        image.clone()
+    };
+    let mut current = view.call_method0("copy")?;
+    out.push(current.clone().unbind());
+    
     for _ in 0..max_level {
+        let shape: (usize, usize, usize) = current.getattr("shape")?.extract()?;
+        if shape.0 == 1 && shape.1 == 1 {
+            break;
+        }
         current = pyrdown(py, &current)?.into_bound(py);
         out.push(current.clone().unbind());
     }
