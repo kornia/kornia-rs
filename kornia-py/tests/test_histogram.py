@@ -15,3 +15,15 @@ def test_histogram():
     assert img_histogram[0] == 3
     assert img_histogram[1] == 3
     assert img_histogram[2] == 3
+
+def test_histogram_image():
+    img_arr = np.array([0, 2, 4, 128, 130, 132, 254, 255, 255], dtype=np.uint8).reshape(
+        3, 3, 1
+    )
+    img = K.image.Image(img_arr)
+    img_histogram: list[int] = K.imgproc.compute_histogram(img, num_bins=3)
+
+    assert len(img_histogram) == 3
+    assert img_histogram[0] == 3
+    assert img_histogram[1] == 3
+    assert img_histogram[2] == 3
