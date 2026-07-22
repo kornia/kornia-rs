@@ -6,9 +6,9 @@ use kornia_3d::pose::{triangulate_matched_points, Pose3d, TriangulationConfig};
 use kornia_algebra::{Mat3F64, Vec2F64, Vec3F64};
 use kornia_apriltag::pose::estimate_tag_pose;
 
+use crate::board::BoardGeometry;
 use crate::error::CalibError;
 use crate::types::{CalibConfig, FeatureMatch, TagObservation};
-use kornia_apriltag::board::AprilGridBoard;
 
 /// Result of initialization: per-camera init poses (world→cam), a per-camera
 /// "registered" mask, and the index of the reference tag in `tags`.
@@ -253,7 +253,7 @@ pub(crate) fn measure_tag_corners(
 fn board_reproj_err(
     cam: &PinholeCamera,
     t_cam_board: &Pose3d,
-    board: &AprilGridBoard,
+    board: &BoardGeometry,
     obs: &[(u16, [Vec2F64; 4])],
 ) -> f64 {
     let mut e = 0.0f64;
@@ -293,20 +293,11 @@ fn board_reproj_err(
 pub(crate) fn init_poses_board(
     cameras: &[PinholeCamera],
     tags: &[TagObservation],
-    board: &AprilGridBoard,
+    board: &BoardGeometry,
 ) -> (Vec<Pose3d>, Vec<bool>) {
     let n_cams = cameras.len();
     let mut poses = vec![Pose3d::IDENTITY; n_cams];
     let mut have = vec![false; n_cams];
-
-    let h = board.tag_size_m / 2.0;
-    // estimate_tag_pose object frame: tag centred, corners (BL, BR, TR, TL) at ±h.
-    let object_centered = [
-        Vec3F64::new(-h, -h, 0.0),
-        Vec3F64::new(h, -h, 0.0),
-        Vec3F64::new(h, h, 0.0),
-        Vec3F64::new(-h, h, 0.0),
-    ];
 
     // Regroup observations per camera (only board tags).
     let mut per_cam: Vec<Vec<(u16, [Vec2F64; 4])>> = vec![Vec::new(); n_cams];
@@ -329,9 +320,19 @@ pub(crate) fn init_poses_board(
         }
         let mut best: Option<(f64, Pose3d)> = None;
         for (tid, corners) in obs {
-            let Some(center) = board.tag_center(*tid) else {
+            let Some(op) = board.object_points(*tid) else {
                 continue;
             };
+            // Per-tag centred object frame (no uniform tag-size assumption): estimate_tag_pose wants
+            // corners about the tag centre in (BL, BR, TR, TL) order = board corners (TL,TR,BR,BL)
+            // reversed, minus the centre.
+            let center = (op[0] + op[1] + op[2] + op[3]) * 0.25;
+            let object_centered = [
+                op[3] - center, // BL
+                op[2] - center, // BR
+                op[1] - center, // TR
+                op[0] - center, // TL
+            ];
             // Undistort corners; feed reversed (aruco TL,TR,BR,BL → BL,BR,TR,TL).
             let img = [
                 cam.undistort(corners[3].x, corners[3].y),

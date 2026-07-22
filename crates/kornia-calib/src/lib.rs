@@ -9,7 +9,7 @@
 //! - [`calibrate_apriltag`] — extrinsics from free AprilTag corners (+ optional feature matches). A
 //!   second tag is auto-measured into fixed board geometry (per-camera PnP averaged into the
 //!   reference-tag frame) so any rigid multi-tag arrangement constrains rotation without a layout.
-//! - [`calibrate_board`] — extrinsics from a known rigid [`AprilGridBoard`] (every corner a fixed
+//! - [`calibrate_board`] — extrinsics from a known rigid [`BoardGeometry`] (every corner a fixed
 //!   metric anchor) plus optional multi-view feature tracks ([`build_tracks`]).
 //! - [`calibrate_multishot`] — multi-shot self-calibration: **refines each camera's focal**
 //!   ([`estimate_focal`], Zhang median across shots) and averages the extrinsics over N board poses
@@ -37,6 +37,7 @@
 //!   or feature matches for a well-constrained solve.
 
 mod assemble;
+mod board;
 mod covariance;
 mod error;
 mod init;
@@ -46,6 +47,7 @@ mod sfm;
 mod tracks;
 mod types;
 
+pub use board::BoardGeometry;
 pub use error::CalibError;
 pub use intrinsics::estimate_focal;
 pub use multishot::{calibrate_multishot, MultiShotCalibration, MultiShotConfig, Shot};
@@ -68,9 +70,6 @@ use kornia_3d::ba_schur::bundle_adjust_schur;
 use kornia_3d::camera::PinholeCamera;
 use kornia_3d::ransac::RobustKernelKind;
 use kornia_algebra::Vec3F64;
-// AprilGridBoard is defined in kornia-apriltag (a tag-layout concept); imported for the board path,
-// NOT re-exported — callers depend on kornia-apriltag directly for it.
-use kornia_apriltag::board::AprilGridBoard;
 
 /// Normalized reprojection residual norm of one observation under a solved (poses, points).
 /// `None` if the point is behind the camera.
@@ -251,7 +250,7 @@ fn finalize(
     })
 }
 
-/// Calibrate a multi-camera rig from a KNOWN rigid AprilGrid [`AprilGridBoard`] (and optional feature
+/// Calibrate a multi-camera rig from a KNOWN rigid [`BoardGeometry`] (and optional feature
 /// matches).
 ///
 /// The board is the world frame: every observed tag corner is a fixed metric anchor (no free reference
@@ -262,7 +261,7 @@ pub fn calibrate_board(
     cameras: &[PinholeCamera],
     tags: &[TagObservation],
     tracks: &[FeatureTrack],
-    board: &AprilGridBoard,
+    board: &BoardGeometry,
     config: &CalibConfig,
 ) -> Result<RigCalibration, CalibError> {
     if tags.is_empty() {
@@ -499,7 +498,7 @@ mod tests {
             yaw_pose(0.10, Vec3F64::new(-0.30, 0.0, -2.4)),
             yaw_pose(-0.08, Vec3F64::new(0.30, -0.05, -2.6)),
         ];
-        let board = AprilGridBoard::new(3, 3, 0.08, 0.02); // extent ~0.28 m
+        let board = BoardGeometry::april_grid(3, 3, 0.08, 0.02); // extent ~0.28 m
 
         let mut tags = Vec::new();
         for id in 0..9u16 {
@@ -523,7 +522,7 @@ mod tests {
             });
         }
 
-        let cfg = CalibConfig::new(board.tag_size_m);
+        let cfg = CalibConfig::new(0.08);
         let out = calibrate_board(&ks, &tags, &[], &board, &cfg).unwrap();
         assert!(
             out.reproj_rmse_px >= 0.0 && out.reproj_rmse_px < 0.5,
@@ -557,7 +556,7 @@ mod tests {
             yaw_pose(0.10, Vec3F64::new(-0.30, 0.0, -2.4)),
             yaw_pose(-0.08, Vec3F64::new(0.30, -0.05, -2.6)),
         ];
-        let board = AprilGridBoard::new(3, 3, 0.08, 0.02);
+        let board = BoardGeometry::april_grid(3, 3, 0.08, 0.02);
         let mut tags = Vec::new();
         for id in 0..9u16 {
             let op = board.object_points(id).unwrap();
@@ -579,7 +578,7 @@ mod tests {
                 per_camera,
             });
         }
-        let cfg = CalibConfig::new(board.tag_size_m);
+        let cfg = CalibConfig::new(0.08);
         let board_cal = calibrate_board(&ks, &tags, &[], &board, &cfg).unwrap();
         let board_min_eig = board_cal
             .per_camera
@@ -594,7 +593,7 @@ mod tests {
         }
 
         // A single centered planar tag at the world origin → only 4 coplanar fixed corners.
-        let sq = square(board.tag_size_m / 2.0);
+        let sq = square(0.08 / 2.0);
         let one_tag = TagObservation {
             tag_id: 0,
             per_camera: (0..3)
@@ -650,7 +649,7 @@ mod tests {
             yaw_pose(0.10, Vec3F64::new(-0.30, 0.0, -2.4)),
             yaw_pose(-0.08, Vec3F64::new(0.30, -0.05, -2.6)),
         ];
-        let board = AprilGridBoard::new(3, 3, 0.08, 0.02);
+        let board = BoardGeometry::april_grid(3, 3, 0.08, 0.02);
         let mut tags = Vec::new();
         for id in 0..9u16 {
             let op = board.object_points(id).unwrap();
@@ -697,7 +696,7 @@ mod tests {
             ],
         });
 
-        let cfg = CalibConfig::new(board.tag_size_m);
+        let cfg = CalibConfig::new(0.08);
         let out = calibrate_board(&ks, &tags, &tracks, &board, &cfg).unwrap();
         for c in 1..3 {
             let (dr, dt) = rel_error(
@@ -725,7 +724,7 @@ mod tests {
             yaw_pose(0.10, Vec3F64::new(-0.30, 0.0, -2.4)),
             yaw_pose(-0.08, Vec3F64::new(0.30, -0.05, -2.6)),
         ];
-        let board = AprilGridBoard::new(3, 3, 0.08, 0.02);
+        let board = BoardGeometry::april_grid(3, 3, 0.08, 0.02);
 
         let mut tags = Vec::new();
         for id in 0..9u16 {
@@ -772,7 +771,7 @@ mod tests {
         assert_eq!(tracks.len(), 3);
         assert!(tracks.iter().all(|t| t.obs.len() == 3));
 
-        let cfg = CalibConfig::new(board.tag_size_m);
+        let cfg = CalibConfig::new(0.08);
         let out = calibrate_board(&ks, &tags, &tracks, &board, &cfg).unwrap();
         assert!(
             out.reproj_rmse_px >= 0.0 && out.reproj_rmse_px < 0.5,

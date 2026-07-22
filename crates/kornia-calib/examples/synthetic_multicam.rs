@@ -10,8 +10,7 @@
 use kornia_3d::camera::PinholeCamera;
 use kornia_3d::pose::Pose3d;
 use kornia_algebra::{Mat3F64, Vec2F64, Vec3F64};
-use kornia_apriltag::board::AprilGridBoard;
-use kornia_calib::{calibrate_apriltag, CalibConfig, TagObservation};
+use kornia_calib::{calibrate_apriltag, BoardGeometry, CalibConfig, TagObservation};
 
 /// Square pixels, principal point at image centre (640x480), no distortion.
 fn pinhole(f: f64) -> PinholeCamera {
@@ -54,7 +53,8 @@ fn main() {
         Pose3d::new(rot(-0.25, 0.15), Vec3F64::new(-0.35, 0.0, 2.4)),
         Pose3d::new(rot(0.30, -0.10), Vec3F64::new(0.35, -0.05, 2.6)),
     ];
-    let board = AprilGridBoard::new(3, 3, 0.08, 0.02); // used only to GENERATE the scene
+    let tag_size = 0.08;
+    let board = BoardGeometry::april_grid(3, 3, tag_size, 0.02); // used only to GENERATE the scene
 
     // Project every board-tag corner into every camera → one TagObservation per tag id. Note the
     // solver is NOT given the board — it recovers the rigid layout from these observations.
@@ -81,7 +81,7 @@ fn main() {
     }
 
     // --- Calibrate ---------------------------------------------------------------------------
-    let cfg = CalibConfig::new(board.tag_size_m);
+    let cfg = CalibConfig::new(tag_size);
     let cal = calibrate_apriltag(&cams, &tags, &[], &cfg).expect("calibration failed");
 
     println!("reference tag id : {}", cal.reference_tag_id);

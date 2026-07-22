@@ -18,10 +18,10 @@ use kornia_3d::camera::PinholeCamera;
 use kornia_3d::pose::Pose3d;
 use kornia_algebra::{Mat3F64, Vec2F64, Vec3F64, SO3F64};
 
+use crate::board::BoardGeometry;
 use crate::error::CalibError;
 use crate::intrinsics::estimate_focal;
 use crate::types::{CalibConfig, CameraStats, TagObservation};
-use kornia_apriltag::board::AprilGridBoard;
 
 /// One captured shot: the tags each camera saw with the board at a single (unknown) pose. Move the
 /// board between shots so each camera observes it from several angles.
@@ -41,7 +41,7 @@ pub struct MultiShotConfig {
     pub min_focal_samples: usize,
     /// Known rigid board layout. `Some` → each shot solves with [`crate::calibrate_board`] (fixed grid
     /// anchors); `None` → [`crate::calibrate_apriltag`] auto-measures the tag arrangement per shot.
-    pub board: Option<AprilGridBoard>,
+    pub board: Option<BoardGeometry>,
 }
 
 impl MultiShotConfig {

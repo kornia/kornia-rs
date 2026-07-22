@@ -8,8 +8,8 @@ use kornia_3d::camera::PinholeCamera;
 use kornia_3d::pose::{triangulate_matched_points, Pose3d, TriangulationConfig};
 use kornia_algebra::{Vec2F64, Vec3F64};
 
+use crate::board::BoardGeometry;
 use crate::types::{CalibConfig, FeatureMatch, FeatureTrack, TagObservation};
-use kornia_apriltag::board::AprilGridBoard;
 
 fn ba_obs(pose_idx: usize, point_idx: usize, n: Vec2F64, fixed_point: bool) -> BaObservation {
     BaObservation {
@@ -180,7 +180,7 @@ pub(crate) fn assemble_board(
     cameras: &[PinholeCamera],
     tags: &[TagObservation],
     tracks: &[FeatureTrack],
-    board: &AprilGridBoard,
+    board: &BoardGeometry,
     poses: &[Pose3d],
     have: &[bool],
     config: &CalibConfig,
