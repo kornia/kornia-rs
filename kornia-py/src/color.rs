@@ -148,7 +148,7 @@ macro_rules! py_f32_3to3 {
         #[doc = $doc]
         #[pyfunction]
         pub fn $name(py: Python<'_>, image: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-            crate::dispatch::require_f32_host(py, image, stringify!($name))?;
+            crate::dispatch::require_f32_host(image, stringify!($name))?;
             cpu_op(py, image, |py, image| {
                 let src = unsafe { numpy_as_image_f32::<3>(py, &image)? };
                 let (mut dst, out) = unsafe { alloc_output_pyarray_f32::<3>(py, src.size())? };
@@ -162,7 +162,7 @@ macro_rules! py_f32_3to3 {
         #[pyfunction]
         pub fn $name(py: Python<'_>, image: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
             try_dispatch_device!(py, image, $dev);
-            crate::dispatch::require_f32_host(py, image, stringify!($name))?;
+            crate::dispatch::require_f32_host(image, stringify!($name))?;
             cpu_op(py, image, |py, image| {
                 let src = unsafe { numpy_as_image_f32::<3>(py, &image)? };
                 let (mut dst, out) = unsafe { alloc_output_pyarray_f32::<3>(py, src.size())? };
@@ -182,28 +182,22 @@ macro_rules! py_ycbcr_family {
         #[pyfunction]
         pub fn $name(py: Python<'_>, image: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
             try_dispatch_device!(py, image, $dev);
-            let (view, is_host_image) = if let Ok(api) = image.cast::<crate::image::PyImageApi>() {
-                crate::dispatch::no_gpu_kernel_if_device(&api.borrow())?;
-                (api.call_method0("numpy")?, true)
-            } else {
-                (image.clone(), false)
-            };
-            use pyo3::types::PyAnyMethods;
-            let dtype = view.getattr("dtype")?.getattr("name")?.extract::<String>()?;
+            let (view, dtype) = crate::dispatch::host_view_and_dtype(image)?;
+            let is_host_image = image.cast::<crate::image::PyImageApi>().is_ok();
             let out: Py<PyAny> = match dtype.as_str() {
                 "uint8" => {
                     let arr: Py<numpy::PyArray3<u8>> = view.extract()?;
                     let src = unsafe { numpy_as_image::<3>(py, &arr)? };
                     let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, src.size())? };
                     py.detach(|| $func(&src, &mut dst)).map_err(to_pyerr)?;
-                    out.into_py(py)
+                    out.into_any()
                 }
                 "float32" => {
                     let arr: Py<numpy::PyArray3<f32>> = view.extract()?;
                     let src = unsafe { numpy_as_image_f32::<3>(py, &arr)? };
                     let (mut dst, out) = unsafe { alloc_output_pyarray_f32::<3>(py, src.size())? };
                     py.detach(|| $func(&src, &mut dst)).map_err(to_pyerr)?;
-                    out.into_py(py)
+                    out.into_any()
                 }
                 other => {
                     return Err(pyo3::exceptions::PyValueError::new_err(format!(
