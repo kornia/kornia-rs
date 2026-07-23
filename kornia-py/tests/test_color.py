@@ -147,14 +147,14 @@ def test_rgb_from_bgra_with_background():
 def test_ycbcr_u8_roundtrip():
     # R=178, G=50, B=50
     rgb = np.array([[[178, 50, 50]]], dtype=np.uint8)
-    
+
     ycbcr = K.imgproc.ycbcr_from_rgb(rgb)
     assert ycbcr.dtype == np.uint8
     assert ycbcr.shape == (1, 1, 3)
-    
+
     back = K.imgproc.rgb_from_ycbcr(ycbcr)
     assert back.dtype == np.uint8
     assert back.shape == (1, 1, 3)
-    
+
     # allow 1-2 levels of quantization error
     assert np.max(np.abs(back.astype(np.int32) - rgb.astype(np.int32))) <= 2

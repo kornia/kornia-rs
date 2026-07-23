@@ -25,7 +25,7 @@ def test_pyrdown_u8(dummy_image):
     out = kornia_rs.imgproc.pyrdown(dummy_image)
     assert out.dtype == np.uint8
     assert out.shape == (4, 4, 3)
-    
+
     expected = cv2.pyrDown(dummy_image.numpy())
     assert np.allclose(out, expected)
 
@@ -34,7 +34,7 @@ def test_pyrup_u8(dummy_image):
     out = kornia_rs.imgproc.pyrup(dummy_image)
     assert out.dtype == np.uint8
     assert out.shape == (16, 16, 3)
-    
+
     expected = cv2.pyrUp(dummy_image.numpy())
     assert np.allclose(out, expected)
 
@@ -43,7 +43,7 @@ def test_pyrdown_f32(dummy_image_f32):
     out = kornia_rs.imgproc.pyrdown(dummy_image_f32)
     assert out.dtype == np.float32
     assert out.shape == (4, 4, 3)
-    
+
     expected = cv2.pyrDown(dummy_image_f32.numpy())
     assert np.allclose(out, expected, atol=1e-5)
 
@@ -52,7 +52,7 @@ def test_pyrup_f32(dummy_image_f32):
     out = kornia_rs.imgproc.pyrup(dummy_image_f32)
     assert out.dtype == np.float32
     assert out.shape == (16, 16, 3)
-    
+
     expected = cv2.pyrUp(dummy_image_f32.numpy())
     assert np.allclose(out, expected, atol=1e-5)
 
@@ -64,7 +64,7 @@ def test_build_pyramid(dummy_image):
     assert pyramid[1].shape == (4, 4, 3)
     assert pyramid[2].shape == (2, 2, 3)
     assert pyramid[3].shape == (1, 1, 3)
-    
+
     # check no aliasing
     assert pyramid[0] is not dummy_image
 
@@ -75,11 +75,11 @@ def test_pyramid_device(dummy_image):
         dev_img = dummy_image.to("cuda")
     except Exception:
         pytest.skip("CUDA device not available")
-    
+
     out_down = kornia_rs.imgproc.pyrdown(dev_img)
     assert out_down.is_device()
     assert out_down.shape == (4, 4, 3)
-    
+
     out_up = kornia_rs.imgproc.pyrup(dev_img)
     assert out_up.is_device()
     assert out_up.shape == (16, 16, 3)
