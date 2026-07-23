@@ -120,6 +120,25 @@ where
         Image::try_from(t)
     }
 
+    /// Allocate a zero-initialized **unified-memory** image (host + device
+    /// accessible without explicit copies, e.g. for Jetson or fine-grained UVM
+    /// workflows).
+    ///
+    /// Mirrors [`Self::zeros_cuda`] / [`Self::zeros_pinned`] for the unified
+    /// memory domain.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ImageError::Cuda`] on allocation failure.
+    pub fn zeros_unified(
+        size: ImageSize,
+        ctx: &Arc<cudarc::driver::CudaContext>,
+    ) -> Result<Image<T, C>, ImageError> {
+        let t = kornia_tensor::zeros_unified::<T, 3>([size.height, size.width, C], ctx)
+            .map_err(|e| ImageError::Cuda(e.to_string()))?;
+        Image::try_from(t)
+    }
+
     /// Copy this device-resident image back to a new, owned host image using
     /// the image's **own carried stream** (no stream parameter to get wrong).
     ///

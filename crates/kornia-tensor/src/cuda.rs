@@ -468,7 +468,7 @@ impl TensorAllocator for CudaUnifiedAllocator {
         let id = self.ctx.ordinal() as i32;
         Ok(Box::new(UnifiedResource {
             ptr,
-            len_bytes: layout.size(),
+            len_bytes: n_bytes,
             id,
             _ctx: self.ctx.clone(),
         }))
@@ -1531,12 +1531,13 @@ mod tests {
     /// Unified memory is host-accessible, domain is `Unified`, and it round-trips
     /// through CUDA kernel execution without an explicit H2D copy.
     #[test]
-    fn unified_host_access_and_domain() {
-        let ctx = Arc::new(CudaContext::new(0).unwrap());
+    #[ignore = "requires CUDA"]
+    fn unified_host_access_and_domain() -> Result<(), Box<dyn std::error::Error>> {
+        let ctx = Arc::new(CudaContext::new(0)?);
         let stream = ctx.default_stream();
 
         // Allocate 8-byte unified tensor.
-        let mut t = zeros_unified::<u8, 1>([8], &ctx).unwrap();
+        let mut t = zeros_unified::<u8, 1>([8], &ctx)?;
         assert!(
             matches!(t.storage.domain(), MemoryDomain::Unified { .. }),
             "expected Unified domain, got {:?}",
@@ -1556,22 +1557,21 @@ mod tests {
                 if (i < n) data[i] += 1;
             }
         "#;
-        let kernel = CudaKernel::compile(&ctx, ADD_ONE_SRC, "add_one_unified").unwrap();
+        let kernel = CudaKernel::compile(&ctx, ADD_ONE_SRC, "add_one_unified")?;
 
-        // `upgrade_device_ptr` creates a CudaSlice alias without taking ownership.
-        // We `forget` the alias so cudarc does not free memory we own via UnifiedResource.
+        // `upgrade_device_ptr` creates a CudaSlice that would free the pointer on drop.
+        // Use ManuallyDrop so the alias is defused unconditionally — even on panic —
+        // preventing a double-free with UnifiedResource::drop.
         let cu_ptr = t.as_ptr() as u64;
-        let mut dev_alias = unsafe { stream.upgrade_device_ptr::<u8>(cu_ptr, 8) };
+        let mut dev_alias =
+            std::mem::ManuallyDrop::new(unsafe { stream.upgrade_device_ptr::<u8>(cu_ptr, 8) });
         let n_i32: i32 = 8;
         kernel
             .launch_builder(&stream)
-            .arg(&mut dev_alias)
+            .arg(&mut *dev_alias)
             .arg(&n_i32)
-            .launch_1d(8)
-            .unwrap();
-        stream.synchronize().unwrap();
-        // Prevent double-free: the alias does not own the memory.
-        std::mem::forget(dev_alias);
+            .launch_1d(8)?;
+        stream.synchronize()?;
 
         // Read result back on the CPU — still no D2H copy needed.
         assert_eq!(
@@ -1579,17 +1579,20 @@ mod tests {
             &[11u8, 21, 31, 41, 51, 61, 71, 81],
             "GPU kernel must have incremented each element via unified pointer"
         );
+        Ok(())
     }
 
     /// `zeros_unified` drop must not double-free: a subsequent alloc must succeed.
     #[test]
-    fn unified_drop_no_double_free() {
-        let ctx = Arc::new(CudaContext::new(0).unwrap());
+    #[ignore = "requires CUDA"]
+    fn unified_drop_no_double_free() -> Result<(), Box<dyn std::error::Error>> {
+        let ctx = Arc::new(CudaContext::new(0)?);
 
-        let t = zeros_unified::<u8, 1>([16], &ctx).unwrap();
+        let t = zeros_unified::<u8, 1>([16], &ctx)?;
         drop(t);
         // A subsequent unified alloc must succeed (no CUDA error state after the free).
-        let _t2 = zeros_unified::<u8, 1>([16], &ctx).expect("second unified alloc must succeed");
+        zeros_unified::<u8, 1>([16], &ctx)?;
+        Ok(())
     }
 
     /// Pinned round-trip: pinned host tensor → device → pinned host via
