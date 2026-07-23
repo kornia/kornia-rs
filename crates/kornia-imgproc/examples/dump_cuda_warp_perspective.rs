@@ -12,14 +12,9 @@
 //! in a 3×3 matrix, bottom row = [0, 0, 1]), matching what cv2.getPerspectiveTransform
 //! and vpi.perspwarp expect.
 
-use std::sync::Arc;
-
-use cudarc::driver::CudaContext;
 use kornia_image::{Image, ImageSize};
-use kornia_imgproc::cuda::warp_perspective::{
-    launch_warp_perspective_bicubic_cuda, launch_warp_perspective_bilinear_cuda,
-    launch_warp_perspective_lanczos_cuda, launch_warp_perspective_nearest_cuda,
-};
+use kornia_imgproc::interpolation::InterpolationMode;
+use kornia_imgproc::warp::warp_perspective;
 
 fn usage() -> ! {
     eprintln!("Usage: dump_cuda_warp_perspective bilinear|nearest|bicubic|lanczos W H ANGLE_DEG");
@@ -58,6 +53,14 @@ fn main() {
     let h: u32 = args[2].parse().unwrap_or_else(|_| usage());
     let angle: f32 = args[3].parse().unwrap_or_else(|_| usage());
 
+    let interpolation = match mode {
+        "bilinear" => InterpolationMode::Bilinear,
+        "nearest" => InterpolationMode::Nearest,
+        "bicubic" => InterpolationMode::Bicubic,
+        "lanczos" => InterpolationMode::Lanczos,
+        _ => usage(),
+    };
+
     let total = w as usize * h as usize * 3;
     let src_data: Vec<f32> = (0..total)
         .map(|i| i as f32 / (total - 1).max(1) as f32)
@@ -65,10 +68,9 @@ fn main() {
 
     let hmat = homography_rotation(w, h, angle);
 
-    let ctx = Arc::new(CudaContext::new(0).expect("CUDA context"));
+    let ctx = std::sync::Arc::new(cudarc::driver::CudaContext::new(0).expect("CUDA context"));
     let stream = ctx.default_stream();
 
-    // Build host Image and upload to device in one call.
     let src_host = Image::<f32, 3>::new(
         ImageSize {
             width: w as usize,
@@ -77,8 +79,10 @@ fn main() {
         src_data,
     )
     .expect("src image");
-    let src_dev = src_host.to_cuda(&stream).expect("H→D src");
 
+    // Upload to device — warp_perspective() dispatches to the CUDA kernel automatically
+    // via pair_residency when both src and dst are device-resident.
+    let src_dev = src_host.to_cuda(&stream).expect("H→D src");
     let mut dst_dev = Image::<f32, 3>::zeros_cuda(
         ImageSize {
             width: w as usize,
@@ -88,28 +92,7 @@ fn main() {
     )
     .expect("alloc dst");
 
-    let src_slice = src_dev.0.as_cudaslice().expect("src CudaSlice");
-    let dst_slice = dst_dev.0.as_cudaslice_mut().expect("dst CudaSlice");
-
-    match mode {
-        "bilinear" => launch_warp_perspective_bilinear_cuda(
-            &ctx, &stream, src_slice, dst_slice, w, h, w, h, &hmat, None,
-        )
-        .expect("launch bilinear"),
-        "nearest" => launch_warp_perspective_nearest_cuda(
-            &ctx, &stream, src_slice, dst_slice, w, h, w, h, &hmat, None,
-        )
-        .expect("launch nearest"),
-        "bicubic" => launch_warp_perspective_bicubic_cuda(
-            &ctx, &stream, src_slice, dst_slice, w, h, w, h, &hmat, None,
-        )
-        .expect("launch bicubic"),
-        "lanczos" => launch_warp_perspective_lanczos_cuda(
-            &ctx, &stream, src_slice, dst_slice, w, h, w, h, &hmat, None,
-        )
-        .expect("launch lanczos"),
-        _ => usage(),
-    }
+    warp_perspective(&src_dev, &mut dst_dev, &hmat, interpolation).expect("warp_perspective");
 
     let dst_host = dst_dev.to_host_image(&stream).expect("D→H dst");
 
