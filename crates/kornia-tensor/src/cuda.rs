@@ -9,6 +9,13 @@
 //! - [`CudaAllocator`]: a [`TensorAllocator`] that allocates zero-initialised device
 //!   memory via `stream.alloc_zeros::<u8>(n)` and wraps the result in a `CudaResource`.
 //!
+//! - [`UnifiedResource`]: an owning [`MemoryResource`] backed by CUDA managed memory
+//!   (`cuMemAllocManaged`, `CU_MEM_ATTACH_GLOBAL`).  Accessible from both CPU and GPU
+//!   with no explicit H2D copy; domain is [`MemoryDomain::Unified`].
+//!
+//! - [`CudaUnifiedAllocator`]: a [`TensorAllocator`] for unified memory. Use
+//!   [`zeros_unified`] for zero-initialised tensors or [`unified_alloc`] for the handle.
+//!
 //! - Methods on [`Tensor`]:
 //!   - [`Tensor::from_cudaslice`] — wrap an existing `CudaSlice<T>` as a device tensor.
 //!   - [`Tensor::as_cudaslice`] — borrow the underlying `CudaSlice<u8>` (if any).
@@ -346,6 +353,151 @@ where
     T: DeviceRepr + ValidAsZeroBits + 'static,
 {
     let alloc = pinned_alloc(ctx);
+    let numel: usize = shape.iter().product();
+    let layout =
+        std::alloc::Layout::array::<T>(numel).map_err(|e| CudaError::Driver(e.to_string()))?;
+    let owner = alloc
+        .allocate(layout)
+        .map_err(|e| CudaError::Driver(e.to_string()))?;
+    let ptr = owner.as_ptr() as *mut T;
+    // SAFETY: allocator returned non-null storage of `layout.size()` bytes.
+    let nn_ptr = unsafe { NonNull::new_unchecked(ptr) };
+    let storage = TensorStorage {
+        ptr: nn_ptr,
+        len: layout.size(),
+        owner,
+        alloc,
+        _marker: PhantomData,
+    };
+    let strides = get_strides_from_shape(shape);
+    Ok(Tensor {
+        storage,
+        shape,
+        strides,
+    })
+}
+
+// ── UnifiedResource / CudaUnifiedAllocator ───────────────────────────────────
+
+/// An owning [`MemoryResource`] over CUDA managed (unified) memory
+/// (`cuMemAllocManaged` with `CU_MEM_ATTACH_GLOBAL`).
+///
+/// Unified memory is accessible from **both** the CPU and any GPU stream that
+/// can see the device, so its domain is [`MemoryDomain::Unified`] and
+/// [`as_slice`](crate::storage::TensorStorage::as_slice) works without an
+/// explicit H2D copy.  The CUDA driver migrates pages on demand, so on Jetson
+/// (integrated GPU + CPU on shared physical memory) there is literally no copy;
+/// on discrete GPUs (e.g. GTX/RTX) the driver still handles migration, though
+/// demand-paging overhead makes explicit copies faster for large bulk transfers.
+///
+/// Freed with `cuMemFree` exactly once on drop.
+pub struct UnifiedResource {
+    ptr: NonNull<u8>,
+    len_bytes: usize,
+    /// CUDA device ordinal.
+    id: i32,
+    /// Keeps the CUDA context alive for the free call.
+    _ctx: Arc<CudaContext>,
+}
+
+// SAFETY: unified memory is accessible from any thread once attached globally;
+// `ptr` is uniquely owned by this resource.
+unsafe impl Send for UnifiedResource {}
+unsafe impl Sync for UnifiedResource {}
+
+impl MemoryResource for UnifiedResource {
+    fn as_ptr(&self) -> *mut u8 {
+        self.ptr.as_ptr()
+    }
+    fn len_bytes(&self) -> usize {
+        self.len_bytes
+    }
+    fn domain(&self) -> MemoryDomain {
+        MemoryDomain::Unified { id: self.id }
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
+impl Drop for UnifiedResource {
+    fn drop(&mut self) {
+        // SAFETY: ptr came from cuMemAllocManaged and is freed exactly once.
+        // cuMemFree (via memory_free) is the correct free for managed allocations.
+        unsafe {
+            let _ = cudarc::driver::result::memory_free(self.ptr.as_ptr() as u64);
+        }
+    }
+}
+
+/// A [`TensorAllocator`] that allocates zero-initialised CUDA managed (unified) memory.
+///
+/// Use [`unified_alloc`] to obtain a handle, then pass it to `_in` constructors
+/// or [`zeros_unified`] to create host-and-device-accessible tensors.
+#[derive(Clone)]
+pub struct CudaUnifiedAllocator {
+    /// Shared CUDA context (keeps the driver alive and provides the device id).
+    pub ctx: Arc<CudaContext>,
+}
+
+// SAFETY: Arc<CudaContext> is Send + Sync.
+unsafe impl Send for CudaUnifiedAllocator {}
+unsafe impl Sync for CudaUnifiedAllocator {}
+
+impl TensorAllocator for CudaUnifiedAllocator {
+    fn allocate(
+        &self,
+        layout: std::alloc::Layout,
+    ) -> Result<Box<dyn MemoryResource>, TensorAllocatorError> {
+        let n_bytes = layout.size().max(1);
+        // CU_MEM_ATTACH_GLOBAL: allocation is accessible from any stream/GPU.
+        let cu_ptr = unsafe {
+            cudarc::driver::result::malloc_managed(
+                n_bytes,
+                cudarc::driver::sys::CUmemAttach_flags::CU_MEM_ATTACH_GLOBAL,
+            )
+        }
+        .map_err(|e| TensorAllocatorError::CudaError(e.to_string()))?;
+        // Zero-initialise on the host side — unified memory is host-accessible immediately.
+        unsafe { std::ptr::write_bytes(cu_ptr as *mut u8, 0, n_bytes) };
+        let ptr = NonNull::new(cu_ptr as *mut u8)
+            .ok_or_else(|| TensorAllocatorError::CudaError("null unified alloc".into()))?;
+        let id = self.ctx.ordinal() as i32;
+        Ok(Box::new(UnifiedResource {
+            ptr,
+            len_bytes: n_bytes,
+            id,
+            _ctx: self.ctx.clone(),
+        }))
+    }
+}
+
+/// Convenience: an [`AllocHandle`] for CUDA managed (unified) memory on `ctx`.
+pub fn unified_alloc(ctx: &Arc<CudaContext>) -> AllocHandle {
+    Arc::new(CudaUnifiedAllocator { ctx: ctx.clone() })
+}
+
+/// Allocate a zero-initialised tensor in **unified** (managed) memory.
+///
+/// The result is host-accessible (no H2D copy required before GPU use) and
+/// carries domain [`MemoryDomain::Unified`].  On Jetson, unified memory
+/// eliminates the copy entirely; on discrete GPUs, the driver handles demand
+/// paging transparently.
+///
+/// # Errors
+///
+/// Returns [`CudaError::Driver`] on allocation failure.
+pub fn zeros_unified<T, const N: usize>(
+    shape: [usize; N],
+    ctx: &Arc<CudaContext>,
+) -> Result<Tensor<T, N>, CudaError>
+where
+    T: DeviceRepr + ValidAsZeroBits + 'static,
+{
+    let alloc = unified_alloc(ctx);
     let numel: usize = shape.iter().product();
     let layout =
         std::alloc::Layout::array::<T>(numel).map_err(|e| CudaError::Driver(e.to_string()))?;
@@ -1374,6 +1526,73 @@ mod tests {
             result, input_data,
             "copy_bytes kernel output must match input"
         );
+    }
+
+    /// Unified memory is host-accessible, domain is `Unified`, and it round-trips
+    /// through CUDA kernel execution without an explicit H2D copy.
+    #[test]
+    #[ignore = "requires CUDA"]
+    fn unified_host_access_and_domain() -> Result<(), Box<dyn std::error::Error>> {
+        let ctx = Arc::new(CudaContext::new(0)?);
+        let stream = ctx.default_stream();
+
+        // Allocate 8-byte unified tensor.
+        let mut t = zeros_unified::<u8, 1>([8], &ctx)?;
+        assert!(
+            matches!(t.storage.domain(), MemoryDomain::Unified { .. }),
+            "expected Unified domain, got {:?}",
+            t.storage.domain()
+        );
+
+        // Unified memory is host-accessible — write from CPU.
+        t.as_slice_mut()
+            .copy_from_slice(&[10, 20, 30, 40, 50, 60, 70, 80]);
+        assert_eq!(t.as_slice(), &[10u8, 20, 30, 40, 50, 60, 70, 80]);
+
+        // Run a GPU kernel that increments each element, passing the unified pointer
+        // as a device address — no H2D copy needed.
+        const ADD_ONE_SRC: &str = r#"
+            extern "C" __global__ void add_one_unified(unsigned char* data, int n) {
+                int i = blockIdx.x * blockDim.x + threadIdx.x;
+                if (i < n) data[i] += 1;
+            }
+        "#;
+        let kernel = CudaKernel::compile(&ctx, ADD_ONE_SRC, "add_one_unified")?;
+
+        // `upgrade_device_ptr` creates a CudaSlice that would free the pointer on drop.
+        // Use ManuallyDrop so the alias is defused unconditionally — even on panic —
+        // preventing a double-free with UnifiedResource::drop.
+        let cu_ptr = t.as_ptr() as u64;
+        let mut dev_alias =
+            std::mem::ManuallyDrop::new(unsafe { stream.upgrade_device_ptr::<u8>(cu_ptr, 8) });
+        let n_i32: i32 = 8;
+        kernel
+            .launch_builder(&stream)
+            .arg(&mut *dev_alias)
+            .arg(&n_i32)
+            .launch_1d(8)?;
+        stream.synchronize()?;
+
+        // Read result back on the CPU — still no D2H copy needed.
+        assert_eq!(
+            t.as_slice(),
+            &[11u8, 21, 31, 41, 51, 61, 71, 81],
+            "GPU kernel must have incremented each element via unified pointer"
+        );
+        Ok(())
+    }
+
+    /// `zeros_unified` drop must not double-free: a subsequent alloc must succeed.
+    #[test]
+    #[ignore = "requires CUDA"]
+    fn unified_drop_no_double_free() -> Result<(), Box<dyn std::error::Error>> {
+        let ctx = Arc::new(CudaContext::new(0)?);
+
+        let t = zeros_unified::<u8, 1>([16], &ctx)?;
+        drop(t);
+        // A subsequent unified alloc must succeed (no CUDA error state after the free).
+        zeros_unified::<u8, 1>([16], &ctx)?;
+        Ok(())
     }
 
     /// Pinned round-trip: pinned host tensor → device → pinned host via
