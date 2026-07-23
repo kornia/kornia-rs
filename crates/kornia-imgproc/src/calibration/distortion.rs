@@ -144,9 +144,9 @@ pub fn generate_correction_map_polynomial(
         let (xdst, ydst) = distort_point_polynomial(x as f64, y as f64, intrinsic, distortion);
         Ok((xdst as f32, ydst as f32))
     })
-    .map_err(|e| kornia_image::ImageError::Cuda(e.to_string()))?;
-    let map_x = Image::<f32, 1>::new(*size, t_x.as_slice().to_vec())?;
-    let map_y = Image::<f32, 1>::new(*size, t_y.as_slice().to_vec())?;
+    .map_err(kornia_image::ImageError::InvalidImageShape)?;
+    let map_x = Image::<f32, 1>::new(*size, t_x.into_vec())?;
+    let map_y = Image::<f32, 1>::new(*size, t_y.into_vec())?;
     Ok((map_x, map_y))
 }
 

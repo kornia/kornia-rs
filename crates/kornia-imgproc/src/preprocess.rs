@@ -938,7 +938,7 @@ impl Preprocessor {
     ) -> Result<(), PreprocessError> {
         // CPU preprocessor requires host-resident operands.
         #[cfg(feature = "cuda")]
-        if src.0.as_cudaslice().is_some() || dst.as_cudaslice().is_some() {
+        if src.as_cudaslice().is_some() || dst.as_cudaslice().is_some() {
             return Err(PreprocessError::NotHostData);
         }
 
