@@ -26,6 +26,9 @@ pub mod warp_perspective;
 /// fixed point, byte-exact with the CPU `warp_perspective_u8`).
 pub mod warp_perspective_u8;
 
+/// Native CUDA remap kernel — generic warp via precomputed coordinate maps.
+pub mod remap;
+
 /// Native CUDA color-space conversion kernels.
 pub mod color;
 

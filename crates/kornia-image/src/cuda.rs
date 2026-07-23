@@ -28,7 +28,7 @@
 
 use std::sync::Arc;
 
-use cudarc::driver::{CudaStream, DeviceRepr, ValidAsZeroBits};
+use cudarc::driver::{CudaSlice, CudaStream, DeviceRepr, ValidAsZeroBits};
 
 use crate::error::ImageError;
 use crate::image::{Image, ImageSize};
@@ -164,5 +164,21 @@ where
             .to_host(stream)
             .map_err(|e| ImageError::Cuda(e.to_string()))?;
         Image::try_from(host)
+    }
+
+    /// Borrow the underlying device `CudaSlice<T>` for this image.
+    ///
+    /// Returns `None` if the image is not backed by a typed `CudaResource<T>`.
+    /// Delegates to [`kornia_tensor::Tensor::as_cudaslice`].
+    pub fn as_cudaslice(&self) -> Option<&CudaSlice<T>> {
+        self.0.as_cudaslice()
+    }
+
+    /// Mutably borrow the underlying device `CudaSlice<T>` for this image.
+    ///
+    /// Returns `None` if the image is not backed by a typed `CudaResource<T>`.
+    /// Delegates to [`kornia_tensor::Tensor::as_cudaslice_mut`].
+    pub fn as_cudaslice_mut(&mut self) -> Option<&mut CudaSlice<T>> {
+        self.0.as_cudaslice_mut()
     }
 }

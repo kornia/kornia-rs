@@ -1,6 +1,8 @@
 use pyo3::prelude::*;
 
 use crate::dispatch::cpu_op;
+#[cfg(feature = "cuda")]
+use crate::image::PyImageApi;
 use crate::image::{alloc_output_pyarray, numpy_as_image, parse_interpolation, to_pyerr};
 use kornia_image::ImageSize;
 use kornia_imgproc::resize::resize_fast_rgb_aa;
