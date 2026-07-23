@@ -62,10 +62,10 @@ pub fn remap<const C: usize>(
                     "remap: map_x and map_y must be device-resident when src/dst are on GPU".into(),
                 ));
             }
-            let mx = map_x.0.as_cudaslice().ok_or_else(|| {
+            let mx = map_x.as_cudaslice().ok_or_else(|| {
                 ImageError::Cuda("remap: cannot extract map_x device slice".into())
             })?;
-            let my = map_y.0.as_cudaslice().ok_or_else(|| {
+            let my = map_y.as_cudaslice().ok_or_else(|| {
                 ImageError::Cuda("remap: cannot extract map_y device slice".into())
             })?;
             return exec.run(|stream| {
@@ -103,7 +103,7 @@ pub fn remap<const C: usize>(
 mod tests {
     use kornia_image::{Image, ImageError, ImageSize};
 
-    fn make_map(w: usize, h: usize, data: Vec<f32>) -> Image<f32, 1> {
+    fn make_map(w: usize, h: usize, data: Vec<f32>) -> Result<Image<f32, 1>, ImageError> {
         Image::<f32, 1>::new(
             ImageSize {
                 width: w,
@@ -111,7 +111,6 @@ mod tests {
             },
             data,
         )
-        .unwrap()
     }
 
     /// All four interpolation modes are supported since the bicubic/lanczos
@@ -125,8 +124,8 @@ mod tests {
             },
             vec![1.0f32, 2.0, 3.0, 4.0],
         )?;
-        let map_x = make_map(2, 2, vec![0.0, 1.0, 0.0, 1.0]);
-        let map_y = make_map(2, 2, vec![0.0, 0.0, 1.0, 1.0]);
+        let map_x = make_map(2, 2, vec![0.0, 1.0, 0.0, 1.0])?;
+        let map_y = make_map(2, 2, vec![0.0, 0.0, 1.0, 1.0])?;
         let mut dst = Image::<_, 1>::from_size_val(
             ImageSize {
                 width: 2,
@@ -154,8 +153,8 @@ mod tests {
             vec![0f32, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
         )?;
 
-        let map_x = make_map(2, 2, vec![0.0, 2.0, 0.0, 2.0]);
-        let map_y = make_map(2, 2, vec![0.0, 0.0, 2.0, 2.0]);
+        let map_x = make_map(2, 2, vec![0.0, 2.0, 0.0, 2.0])?;
+        let map_y = make_map(2, 2, vec![0.0, 0.0, 2.0, 2.0])?;
 
         let expected = Image::<_, 1>::new(
             ImageSize {

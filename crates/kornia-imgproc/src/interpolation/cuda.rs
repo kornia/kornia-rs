@@ -54,24 +54,22 @@ mod tests {
     use crate::interpolation::{remap::remap, InterpolationMode};
     use kornia_image::{Image, ImageError, ImageSize};
 
-    fn identity_maps(w: usize, h: usize) -> (Image<f32, 1>, Image<f32, 1>) {
+    fn identity_maps(w: usize, h: usize) -> Result<(Image<f32, 1>, Image<f32, 1>), ImageError> {
         let size = ImageSize {
             width: w,
             height: h,
         };
         let mx: Vec<f32> = (0..h).flat_map(|_| (0..w).map(|x| x as f32)).collect();
         let my: Vec<f32> = (0..h).flat_map(|y| (0..w).map(move |_| y as f32)).collect();
-        (
-            Image::<f32, 1>::new(size, mx).unwrap(),
-            Image::<f32, 1>::new(size, my).unwrap(),
-        )
+        Ok((
+            Image::<f32, 1>::new(size, mx)?,
+            Image::<f32, 1>::new(size, my)?,
+        ))
     }
 
     /// `remap` with device images and an identity map must be bit-identical to
     /// the CPU path — the byte-exact contract for the remap kernel.
-    #[test]
-    #[ignore = "requires CUDA"]
-    fn public_remap_device_equals_host() -> Result<(), ImageError> {
+    fn check_remap_mode(mode: InterpolationMode) -> Result<(), ImageError> {
         let stream = default_stream();
         let (w, h) = (65, 33);
         let size = ImageSize {
@@ -79,75 +77,47 @@ mod tests {
             height: h,
         };
 
-        let src = Image::<f32, 3>::new(size, pattern_f32(w * h * 3)).unwrap();
-        let (mx, my) = identity_maps(w, h);
+        let src = Image::<f32, 3>::new(size, pattern_f32(w * h * 3))?;
+        let (mx, my) = identity_maps(w, h)?;
 
         let mut cpu_dst = Image::<f32, 3>::from_size_val(size, 0.0)?;
-        remap(&src, &mut cpu_dst, &mx, &my, InterpolationMode::Bilinear)?;
+        remap(&src, &mut cpu_dst, &mx, &my, mode)?;
 
-        let d_src = src.to_cuda(&stream).unwrap();
-        let mut d_dst = Image::<f32, 3>::zeros_cuda(size, &stream).unwrap();
-        let d_mx = mx.to_cuda(&stream).unwrap();
-        let d_my = my.to_cuda(&stream).unwrap();
-        remap(
-            &d_src,
-            &mut d_dst,
-            &d_mx,
-            &d_my,
-            InterpolationMode::Bilinear,
-        )?;
+        let d_src = src.to_cuda(&stream)?;
+        let mut d_dst = Image::<f32, 3>::zeros_cuda(size, &stream)?;
+        let d_mx = mx.to_cuda(&stream)?;
+        let d_my = my.to_cuda(&stream)?;
+        remap(&d_src, &mut d_dst, &d_mx, &d_my, mode)?;
 
         let back = d_dst.to_host_owned()?;
         for (i, (c, g)) in cpu_dst.as_slice().iter().zip(back.as_slice()).enumerate() {
             assert!(
                 c.to_bits() == g.to_bits(),
-                "remap bilinear element {i}: cpu {c} ({:#010x}) gpu {g} ({:#010x})",
+                "remap {mode:?} element {i}: cpu {c} ({:#010x}) gpu {g} ({:#010x})",
                 c.to_bits(),
                 g.to_bits()
             );
         }
         Ok(())
+    }
+
+    #[test]
+    #[ignore = "requires CUDA"]
+    fn public_remap_device_equals_host() -> Result<(), ImageError> {
+        check_remap_mode(InterpolationMode::Bilinear)
     }
 
     /// Nearest-neighbor device path is bit-identical to host.
     #[test]
     #[ignore = "requires CUDA"]
     fn public_remap_nearest_device_equals_host() -> Result<(), ImageError> {
-        let stream = default_stream();
-        let (w, h) = (65, 33);
-        let size = ImageSize {
-            width: w,
-            height: h,
-        };
-
-        let src = Image::<f32, 3>::new(size, pattern_f32(w * h * 3)).unwrap();
-        let (mx, my) = identity_maps(w, h);
-
-        let mut cpu_dst = Image::<f32, 3>::from_size_val(size, 0.0)?;
-        remap(&src, &mut cpu_dst, &mx, &my, InterpolationMode::Nearest)?;
-
-        let d_src = src.to_cuda(&stream).unwrap();
-        let mut d_dst = Image::<f32, 3>::zeros_cuda(size, &stream).unwrap();
-        let d_mx = mx.to_cuda(&stream).unwrap();
-        let d_my = my.to_cuda(&stream).unwrap();
-        remap(&d_src, &mut d_dst, &d_mx, &d_my, InterpolationMode::Nearest)?;
-
-        let back = d_dst.to_host_owned()?;
-        for (i, (c, g)) in cpu_dst.as_slice().iter().zip(back.as_slice()).enumerate() {
-            assert!(
-                c.to_bits() == g.to_bits(),
-                "remap nearest element {i}: cpu {c} ({:#010x}) gpu {g} ({:#010x})",
-                c.to_bits(),
-                g.to_bits()
-            );
-        }
-        Ok(())
+        check_remap_mode(InterpolationMode::Nearest)
     }
 
     /// Mixed residency — device src/dst but host maps — must be a typed error.
     #[test]
     #[ignore = "requires CUDA"]
-    fn device_images_with_host_maps_is_error() {
+    fn device_images_with_host_maps_is_error() -> Result<(), ImageError> {
         let stream = default_stream();
         let (w, h) = (16, 16);
         let size = ImageSize {
@@ -155,16 +125,16 @@ mod tests {
             height: h,
         };
 
-        let src = Image::<f32, 3>::new(size, pattern_f32(w * h * 3)).unwrap();
-        let d_src = src.to_cuda(&stream).unwrap();
-        let mut d_dst = Image::<f32, 3>::zeros_cuda(size, &stream).unwrap();
-
-        let (mx, my) = identity_maps(w, h); // host maps
+        let src = Image::<f32, 3>::new(size, pattern_f32(w * h * 3))?;
+        let d_src = src.to_cuda(&stream)?;
+        let mut d_dst = Image::<f32, 3>::zeros_cuda(size, &stream)?;
+        let (mx, my) = identity_maps(w, h)?;
 
         let err = remap(&d_src, &mut d_dst, &mx, &my, InterpolationMode::Bilinear).unwrap_err();
         assert!(
             matches!(&err, ImageError::Cuda(msg) if msg.contains("device-resident")),
             "expected a Cuda error about device-resident maps, got {err:?}"
         );
+        Ok(())
     }
 }

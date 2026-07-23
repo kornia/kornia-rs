@@ -160,61 +160,13 @@ extern "C" __global__ void remap_nearest_3c(
 static BILINEAR_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
 static NEAREST_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
 
-// ── Internal helpers ──────────────────────────────────────────────────────────
-
-fn check_image_slice(
-    slice: &CudaSlice<f32>,
-    what: &'static str,
-    width: u32,
-    height: u32,
-) -> Result<(), CudaRemapError> {
-    let need = (width as usize) * (height as usize) * 3;
-    if slice.len() < need {
-        return Err(CudaRemapError::SliceTooSmall {
-            what,
-            got: slice.len(),
-            need,
-        });
-    }
-    Ok(())
-}
-
-fn check_map(
-    map: &CudaSlice<f32>,
-    what: &'static str,
-    dst_width: u32,
-    dst_height: u32,
-) -> Result<(), CudaRemapError> {
-    let need = (dst_width as usize) * (dst_height as usize);
-    if map.len() < need {
-        return Err(CudaRemapError::SliceTooSmall {
-            what,
-            got: map.len(),
-            need,
-        });
-    }
-    Ok(())
-}
-
 // ── Error type ────────────────────────────────────────────────────────────────
 
-/// Error returned by the CUDA remap launchers.
-#[derive(Debug, thiserror::Error)]
-pub enum CudaRemapError {
-    /// CUDA driver / launch error.
-    #[error("CUDA remap error: {0}")]
-    Cuda(String),
-    /// A device slice is smaller than required.
-    #[error("device slice '{what}' length {got} < required {need}")]
-    SliceTooSmall {
-        /// Which operand was too small (e.g. `"src"`, `"dst"`, `"map_x"`, `"map_y"`).
-        what: &'static str,
-        /// Actual slice length (in elements).
-        got: usize,
-        /// Minimum required length.
-        need: usize,
-    },
-}
+super::define_cuda_error!(
+    /// Error returned by the CUDA remap launchers.
+    CudaRemapError,
+    "CUDA remap error: {0}"
+);
 
 // ── Private launcher core ─────────────────────────────────────────────────────
 
@@ -237,10 +189,26 @@ fn launch_remap(
 ) -> Result<(), CudaRemapError> {
     check_geometry(src_width, src_height, dst_width, dst_height, block_dim)
         .map_err(CudaRemapError::Cuda)?;
-    check_image_slice(src, "src", src_width, src_height)?;
-    check_image_slice(dst, "dst", dst_width, dst_height)?;
-    check_map(map_x, "map_x", dst_width, dst_height)?;
-    check_map(map_y, "map_y", dst_width, dst_height)?;
+    CudaRemapError::check_slice(
+        "src",
+        src.len(),
+        (src_width as usize) * (src_height as usize) * 3,
+    )?;
+    CudaRemapError::check_slice(
+        "dst",
+        dst.len(),
+        (dst_width as usize) * (dst_height as usize) * 3,
+    )?;
+    CudaRemapError::check_slice(
+        "map_x",
+        map_x.len(),
+        (dst_width as usize) * (dst_height as usize),
+    )?;
+    CudaRemapError::check_slice(
+        "map_y",
+        map_y.len(),
+        (dst_width as usize) * (dst_height as usize),
+    )?;
 
     let kernel = kernel_cell
         .get_or_init(|| try_compile_with_l1(ctx, kernel_src, fn_name))
@@ -380,6 +348,7 @@ mod tests {
     use crate::interpolation::InterpolationMode;
     use kornia_image::{Image, ImageSize};
 
+    #[cfg(feature = "cuda")]
     fn cpu_and_gpu(
         w: usize,
         h: usize,
