@@ -50,10 +50,13 @@ __device__ __forceinline__ int cv_round_ori(float v) {{ return __float2int_rn(v)
 extern "C" __global__ void sift_orientation(
     const float* __restrict__ img, int w, int h,
     const float* __restrict__ kp_in, int n_kp, int kp_stride,
-    float* __restrict__ out_kp, int* __restrict__ out_count, int max_out)
+    float* __restrict__ out_kp, int* __restrict__ out_count, int max_out,
+    int layer_filter)
 {{
     const int t = blockIdx.x * blockDim.x + threadIdx.x;
     if (t >= n_kp) return;
+    if (layer_filter >= 0 && __float_as_int(kp_in[(long)t * kp_stride + 5]) != layer_filter)
+        return;
 
     const float* k = kp_in + (long)t * kp_stride;
     const float kx = k[0], ky = k[1], ksize = k[2], kresp = k[3];
@@ -231,10 +234,16 @@ __device__ __forceinline__ int cv_round_ori(float v) {{ return __float2int_rn(v)
 extern "C" __global__ void sift_orientation_block(
     const float* __restrict__ img, int w, int h,
     const float* __restrict__ kp_in, int n_kp, int kp_stride,
-    float* __restrict__ out_kp, int* __restrict__ out_count, int max_out{dbg_params})
+    float* __restrict__ out_kp, int* __restrict__ out_count, int max_out,
+    int layer_filter{dbg_params})
 {{
     const int t = blockIdx.x;
     if (t >= n_kp) return;
+    // Keypoints stay on device; each launch handles the ones belonging to the
+    // Gaussian layer it was given. Filtering here instead of on the host saves a
+    // download and an upload per layer per octave.
+    if (layer_filter >= 0 && __float_as_int(kp_in[(long)t * kp_stride + 5]) != layer_filter)
+        return;
     const int tid = threadIdx.x;
 
     __shared__ float temphist[ORI_N];
@@ -423,6 +432,7 @@ pub fn launch_sift_orientation_debug_cuda(
         .arg(out_kp)
         .arg(out_count)
         .arg(&max_out)
+        .arg(&(-1i32))
         .arg(dbg)
         .arg(&dbg_idx)
         .launch_cfg(cfg)
@@ -451,6 +461,7 @@ pub fn launch_sift_orientation_cuda_view(
     kp_stride: u32,
     out_kp: &mut CudaViewMut<'_, f32>,
     out_count: &mut CudaViewMut<'_, i32>,
+    layer_filter: i32,
 ) -> Result<(), SiftCudaError> {
     if width == 0 || height == 0 {
         return Err(SiftCudaError::Geometry(
@@ -498,6 +509,7 @@ pub fn launch_sift_orientation_cuda_view(
             .arg(out_kp)
             .arg(out_count)
             .arg(&max_out)
+            .arg(&layer_filter)
             .launch_2d(n_kp, 1, make_config(n_kp, 1, Some((64, 1))))
             .map_err(|e| SiftCudaError::Cuda(e.to_string()));
     }
@@ -531,6 +543,7 @@ pub fn launch_sift_orientation_cuda_view(
         .arg(out_kp)
         .arg(out_count)
         .arg(&max_out)
+        .arg(&layer_filter)
         .launch_cfg(cfg)
         .map_err(|e| SiftCudaError::Cuda(e.to_string()))
 }
@@ -549,6 +562,7 @@ pub fn launch_sift_orientation_cuda(
     kp_stride: u32,
     out_kp: &mut CudaSlice<f32>,
     out_count: &mut CudaSlice<i32>,
+    layer_filter: i32,
 ) -> Result<(), SiftCudaError> {
     launch_sift_orientation_cuda_view(
         ctx,
@@ -562,6 +576,7 @@ pub fn launch_sift_orientation_cuda(
         kp_stride,
         &mut out_kp.as_view_mut(),
         &mut out_count.as_view_mut(),
+        layer_filter,
     )
 }
 
@@ -809,6 +824,7 @@ mod tests {
                 KP_STRIDE as u32,
                 &mut d_out,
                 &mut d_oc,
+                -1,
             )
             .unwrap();
             let oc = stream.clone_dtoh(&d_oc).unwrap()[0] as usize;

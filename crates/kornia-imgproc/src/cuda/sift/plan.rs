@@ -367,20 +367,11 @@ impl SiftCuda {
             let n_kp = n_kp.min(self.cfg.max_keypoints);
             if n_kp > 0 {
                 // Orientation and descriptors read the Gaussian layer the
-                // keypoint was found in, so group by layer.
-                let raw = stream.clone_dtoh(&self.kp.slice(0..n_kp * KP_STRIDE))?;
+                // keypoint was found in, so each launch is given one layer and
+                // skips the keypoints that do not belong to it. The filter runs
+                // on device: partitioning on the host cost a download of the
+                // whole keypoint buffer plus an upload per layer, per octave.
                 for layer in 1..=self.cfg.n_octave_layers {
-                    let idx: Vec<usize> = (0..n_kp)
-                        .filter(|&i| raw[i * KP_STRIDE + 5].to_bits() as i32 == layer as i32)
-                        .collect();
-                    if idx.is_empty() {
-                        continue;
-                    }
-                    let mut packed = Vec::with_capacity(idx.len() * KP_STRIDE);
-                    for &i in &idx {
-                        packed.extend_from_slice(&raw[i * KP_STRIDE..(i + 1) * KP_STRIDE]);
-                    }
-                    let d_in = stream.clone_htod(&packed)?;
                     let img = self.gauss[layer].slice(0..plane);
 
                     let to = mark(probe);
@@ -392,11 +383,12 @@ impl SiftCuda {
                         &img,
                         cw as u32,
                         ch as u32,
-                        &d_in.as_view(),
-                        idx.len() as u32,
+                        &self.kp.slice(0..n_kp * KP_STRIDE),
+                        n_kp as u32,
                         KP_STRIDE as u32,
                         &mut self.ori_kp.as_view_mut(),
                         &mut self.ori_count.as_view_mut(),
+                        layer as i32,
                     )?;
                     since(to, stream, &mut t_ori);
                     let n_ori = stream.clone_dtoh(&self.ori_count)?[0].max(0) as usize;

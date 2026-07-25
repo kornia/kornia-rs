@@ -39,6 +39,36 @@ pub const DESCR_LEN: usize = DESCR_WIDTH * DESCR_WIDTH * DESCR_HIST_BINS;
 /// 512 threads still each get real work, and the wider block cuts the number of
 /// shared-memory atomic collisions per histogram bin.
 pub const DESC_BLOCK_THREADS: usize = 512;
+
+// ── Falsified descriptor optimisations (do not re-try) ───────────────────────
+//
+// This stage is ~8.3 ms of a ~20 ms pipeline, and the shared-memory atomics are
+// 5.2 ms of that: replacing the eight `atomicAdd`s with plain (racy) adds
+// measures 3.1 ms. So the atomics are the cost. Three ways of attacking them
+// were implemented and measured, and all three lost:
+//
+// * **Transposed patch walk** — give consecutive lanes consecutive *rows*, so
+//   their rotated bins differ and the atomics stop colliding. 8.3 -> 9.3 ms.
+//   The lost coalescing on the image reads outweighs the conflict win.
+// * **Replicated histograms** — one copy per warp (`REPL` of 2/4/8), reduced at
+//   the end, so atomics contend only within a warp. Worse at every width and
+//   block size: best case 9.6 ms, worst 24.7. The extra shared memory costs more
+//   occupancy than the contention costs time — the same result this module has
+//   now seen seven times.
+// * **Run-merged atomics** — each thread takes `P` consecutive samples and sums
+//   those landing in the same cell in registers, paying one set of eight atomics
+//   per run. The bookkeeping alone regressed the P=1 case to 12.3 ms, and P=4
+//   only recovered to 8.7. Net a wash against the plain scatter.
+//
+// Also falsified: `KORNIA_SIFT_FASTMATH=1`, which swaps the exact HAL primitives
+// for CUDA intrinsics, changes this stage by under 1% (12.8 -> 12.9 ms measured
+// at the time). The stage is not bound on arithmetic either.
+//
+// What would actually help is not doing the scatter at all: CudaSift samples
+// gradients through a texture unit in the *rotated* frame, so each thread owns
+// fixed histogram bins and needs no atomics. That is a different sampling
+// pattern from the reference's, so it cannot be adopted without giving up
+// parity with `cv::SIFT`.
 /// Patch scale factor (`SIFT_DESCR_SCL_FCTR`).
 pub const DESCR_SCL_FCTR: f32 = 3.0;
 /// Post-normalisation clamp (`SIFT_DESCR_MAG_THR`).
