@@ -123,6 +123,12 @@ pub enum SiftCudaError {
     Geometry(String),
 }
 
+impl From<cudarc::driver::DriverError> for SiftCudaError {
+    fn from(e: cudarc::driver::DriverError) -> Self {
+        SiftCudaError::Cuda(e.to_string())
+    }
+}
+
 /// Blur assumed to be already present in the input image.
 pub const SIFT_INIT_SIGMA: f32 = 0.5;
 
