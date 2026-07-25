@@ -1,0 +1,590 @@
+//! NVRTC source generation and the per-device kernel cache for CUDA SIFT.
+//!
+//! Shapes are code, parameters are data: tap counts and Gaussian coefficients
+//! are baked into the source as literals (a `__constant__` array measured ~3x
+//! worse on Orin — per-block cold misses), and the compiled module is cached
+//! per `(device ordinal, shape key)`.
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
+
+use cudarc::driver::CudaContext;
+use kornia_tensor::CudaKernel;
+
+use super::SiftCudaError;
+
+/// Gaussian kernel generation matching the reference implementation exactly.
+///
+/// The reference evaluates this in software floating point for cross-platform
+/// determinism. Hardware `f64` is used here instead: the result is narrowed to
+/// `f32` at the end, which absorbs any sub-ULP disagreement, and the output was
+/// verified bit-identical to the reference for every sigma the default
+/// configuration uses. [`tests::gaussian_kernel_matches_reference_bitwise`]
+/// pins the exact bit patterns.
+///
+/// The structure matters as much as the formula:
+/// * `x` steps over *odd integers* `1-n, 3-n, ...` (doubled coordinates) with
+///   `scale2x = -0.125 / sigma^2` instead of `-0.5 / sigma^2`, so `x*x` stays an
+///   exact integer and only `exp` rounds.
+/// * Only the half kernel is evaluated; the centre tap is exactly `1.0` before
+///   normalisation and the other half is mirrored, so symmetry is exact rather
+///   than approximate.
+pub fn gaussian_kernel_f32(n: usize, sigma: f64) -> Vec<f32> {
+    assert!(n > 0, "kernel size must be positive");
+    assert!(sigma > 0.0, "only the sigma > 0 branch is used by SIFT");
+
+    let scale2x = -0.125 / (sigma * sigma);
+    let n2 = (n - 1) / 2;
+
+    let mut values = Vec::with_capacity(n2);
+    let mut sum = 0.0f64;
+    let mut x = 1i64 - n as i64;
+    for _ in 0..n2 {
+        let t = ((x * x) as f64 * scale2x).exp();
+        values.push(t);
+        sum += t;
+        x += 2;
+    }
+    sum = sum * 2.0 + 1.0;
+    if n.is_multiple_of(2) {
+        sum += 1.0;
+    }
+
+    let mul1 = 1.0 / sum;
+    let mut result = vec![0.0f32; n];
+    for (i, &v) in values.iter().enumerate() {
+        let t = (v * mul1) as f32;
+        result[i] = t;
+        result[n - 1 - i] = t;
+    }
+    result[n2] = mul1 as f32;
+    if n.is_multiple_of(2) {
+        result[n2 + 1] = result[n2];
+    }
+    result
+}
+
+/// Emit an `f32` literal that cannot be perturbed by decimal round-tripping.
+pub(crate) fn f32_lit(v: f32) -> String {
+    format!("__int_as_float(0x{:08x})", v.to_bits())
+}
+
+const BORDER_HELPERS: &str = r#"
+// Reflect-101 border: ... 2 1 | 0 1 2 ... n-1 | n-2 n-3 ...  (edge not repeated)
+__device__ __forceinline__ int refl101(int i, int n) {
+    if (n == 1) return 0;
+    while (i < 0 || i >= n) { i = (i < 0) ? -i : (2 * n - i - 2); }
+    return i;
+}
+// Reflect border: ... 1 0 | 0 1 2 ... n-1 | n-1 n-2 ...  (edge repeated)
+__device__ __forceinline__ int refl(int i, int n) {
+    while (i < 0 || i >= n) { i = (i < 0) ? (-i - 1) : (2 * n - i - 1); }
+    return i;
+}
+"#;
+
+/// 2x upsample of the base image.
+///
+/// The reference's precise-upscale option defaults to **off**, so the base
+/// image is built with an ordinary separable bilinear resize — *not* the affine
+/// warp the precise path uses. The two differ by a quarter pixel, which shifts
+/// every downstream keypoint, so this distinction is load-bearing.
+///
+/// Source coordinates follow `fx = (dx + 0.5) * scale - 0.5`, `sx = floor(fx)`,
+/// `fx -= sx`, with out-of-range `sx` clamped and its fraction forced to zero.
+/// For a 2x upscale that yields alternating `{0.75, 0.25}` and `{0.25, 0.75}`
+/// weights, with the first and last output columns/rows degenerating to a copy.
+///
+/// Horizontal and vertical passes are fused: the reference materialises an f32
+/// intermediate row buffer, and an f32 register holds exactly the same value,
+/// so fusing changes no rounding.
+pub fn upsample2x_src() -> String {
+    r#"
+// Source tap and fraction for one output coordinate of a 2x bilinear upscale.
+__device__ __forceinline__ void up_tab(int d, int n_src, int* sx, float* fx) {
+    float f = (float)(((double)d + 0.5) * 0.5 - 0.5);
+    int s = (int)floorf(f);
+    f -= (float)s;
+    if (s < 0) { f = 0.0f; s = 0; }
+    if (s >= n_src - 1) { f = 0.0f; s = n_src - 1; }
+    *sx = s; *fx = f;
+}
+
+extern "C" __global__ void sift_upsample2x(
+    const float* __restrict__ src, float* __restrict__ dst, int sw, int sh)
+{
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+    const int dw = sw * 2, dh = sh * 2;
+    if (x >= dw || y >= dh) return;
+
+    int sx, sy; float fx, fy;
+    up_tab(x, sw, &sx, &fx);
+    up_tab(y, sh, &sy, &fy);
+    const int sx1 = min(sx + 1, sw - 1);
+    const int sy1 = min(sy + 1, sh - 1);
+
+    // Horizontal pass on both contributing rows, then the vertical blend.
+    const float r0 = src[sy  * sw + sx] * (1.0f - fx) + src[sy  * sw + sx1] * fx;
+    const float r1 = src[sy1 * sw + sx] * (1.0f - fx) + src[sy1 * sw + sx1] * fx;
+
+    dst[y * dw + x] = r0 * (1.0f - fy) + r1 * fy;
+}
+"#
+    .to_string()
+}
+
+/// Horizontal pass of the separable Gaussian.
+///
+/// Mirrors the reference's row vector filter: seed with a plain multiply, then
+/// accumulate every remaining tap with a single-rounding FMA.
+/// `acc = s[0]*k[0]` then `acc = fma(s[k], k[k], acc)` for `k >= 1`.
+pub fn blur_h_src(kernel: &[f32]) -> String {
+    let n = kernel.len();
+    let n2 = n / 2;
+    let mut taps = String::new();
+    let mut fast = String::new();
+    taps.push_str(&format!(
+        "        float acc = src[row + refl101(x - {n2}, w)] * {};\n",
+        f32_lit(kernel[0])
+    ));
+    fast.push_str(&format!(
+        "        float acc = __ldg(&s0[0]) * {};\n",
+        f32_lit(kernel[0])
+    ));
+    for (k, &c) in kernel.iter().enumerate().skip(1) {
+        taps.push_str(&format!(
+            "        acc = __fmaf_rn(src[row + refl101(x - {n2} + {k}, w)], {}, acc);\n",
+            f32_lit(c)
+        ));
+        fast.push_str(&format!(
+            "        acc = __fmaf_rn(__ldg(&s0[{k}]), {}, acc);\n",
+            f32_lit(c)
+        ));
+    }
+    format!(
+        r#"{BORDER_HELPERS}
+extern "C" __global__ void sift_blur_h(
+    const float* __restrict__ src, float* __restrict__ dst, int w, int h)
+{{
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= w || y >= h) return;
+    const int row = y * w;
+    // Interior columns need no reflection; the border path is identical maths
+    // with the index clamped, so the two produce bit-identical results.
+    if (x >= {n2} && x < w - {n2}) {{
+        const float* __restrict__ s0 = src + row + x - {n2};
+{fast}        dst[row + x] = acc;
+    }} else {{
+{taps}        dst[row + x] = acc;
+    }}
+}}
+"#
+    )
+}
+
+/// Horizontal Gaussian pass computing `P` consecutive outputs per thread.
+///
+/// A `K`-tap filter over `P` neighbouring outputs touches only `K + P - 1`
+/// distinct inputs, so tiling along the filter axis cuts loads from `K*P` to
+/// `K+P-1` (for K=27, P=4: 108 -> 30). The taps live in registers and each is
+/// reused by up to `P` accumulators.
+///
+/// The arithmetic per output is unchanged and in the same order, so results are
+/// bit-identical to [`blur_h_src`].
+///
+/// Note the workspace has measured regressions from multi-pixel-per-thread on
+/// *elementwise/gather* kernels; this one has much higher arithmetic intensity,
+/// so it is measured rather than assumed either way.
+pub(crate) fn blur_h_tiled_src(kernel: &[f32], p: usize) -> String {
+    let n = kernel.len();
+    let n2 = n / 2;
+    let ntaps = n + p - 1;
+
+    let mut loads = String::new();
+    for t in 0..ntaps {
+        loads.push_str(&format!("        const float t{t} = __ldg(&s0[{t}]);\n"));
+    }
+    let mut accs = String::new();
+    for j in 0..p {
+        accs.push_str(&format!(
+            "        float acc{j} = t{j} * {};\n",
+            f32_lit(kernel[0])
+        ));
+        for (k, &c) in kernel.iter().enumerate().skip(1) {
+            accs.push_str(&format!(
+                "        acc{j} = __fmaf_rn(t{}, {}, acc{j});\n",
+                j + k,
+                f32_lit(c)
+            ));
+        }
+    }
+    let mut stores = String::new();
+    for j in 0..p {
+        stores.push_str(&format!("        dst[row + xb + {j}] = acc{j};\n"));
+    }
+
+    format!(
+        r#"{BORDER_HELPERS}
+extern "C" __global__ void sift_blur_h_tiled(
+    const float* __restrict__ src, float* __restrict__ dst, int w, int h)
+{{
+    const int xb = (blockIdx.x * blockDim.x + threadIdx.x) * {p};
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (xb >= w || y >= h) return;
+    const int row = y * w;
+
+    if (xb >= {n2} && xb + {p} - 1 < w - {n2}) {{
+        const float* __restrict__ s0 = src + row + xb - {n2};
+{loads}{accs}{stores}    }} else {{
+        for (int j = 0; j < {p}; ++j) {{
+            const int x = xb + j;
+            if (x >= w) break;
+            float acc = src[row + refl101(x - {n2}, w)] * {k0};
+{tail}            dst[row + x] = acc;
+        }}
+    }}
+}}
+"#,
+        k0 = f32_lit(kernel[0]),
+        tail = kernel
+            .iter()
+            .enumerate()
+            .skip(1)
+            .map(|(k, &c)| format!(
+                "            acc = __fmaf_rn(src[row + refl101(x - {n2} + {k}, w)], {}, acc);\n",
+                f32_lit(c)
+            ))
+            .collect::<String>(),
+    )
+}
+
+/// Vertical pass of the separable Gaussian.
+///
+/// Mirrors the reference's symmetric-column vector filter: the kernel is folded
+/// about its centre, and each symmetric pair is **summed before** the FMA.
+/// `acc = fma(s[0], ky[0], 0)` then `acc = fma(s[k] + s[-k], ky[k], acc)`.
+/// Replacing the pair-sum with two separate FMAs changes the result and breaks
+/// bit equality.
+pub fn blur_v_src(kernel: &[f32]) -> String {
+    let n = kernel.len();
+    let n2 = n / 2;
+    let ky = &kernel[n2..];
+    let mut taps = String::new();
+    let mut fast = String::new();
+    taps.push_str(&format!(
+        "        float acc = __fmaf_rn(src[refl101(y, h) * w + x], {}, 0.0f);\n",
+        f32_lit(ky[0])
+    ));
+    fast.push_str(&format!(
+        "        float acc = __fmaf_rn(__ldg(&c0[0]), {}, 0.0f);\n",
+        f32_lit(ky[0])
+    ));
+    for (k, &c) in ky.iter().enumerate().skip(1) {
+        taps.push_str(&format!(
+            "        acc = __fmaf_rn(src[refl101(y + {k}, h) * w + x] + src[refl101(y - {k}, h) * w + x], {}, acc);\n",
+            f32_lit(c)
+        ));
+        fast.push_str(&format!(
+            "        acc = __fmaf_rn(__ldg(&c0[{k} * w]) + __ldg(&c0[-{k} * w]), {}, acc);\n",
+            f32_lit(c)
+        ));
+    }
+    format!(
+        r#"{BORDER_HELPERS}
+extern "C" __global__ void sift_blur_v(
+    const float* __restrict__ src, float* __restrict__ dst, int w, int h)
+{{
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= w || y >= h) return;
+    if (y >= {n2} && y < h - {n2}) {{
+        const float* __restrict__ c0 = src + y * w + x;
+{fast}        dst[y * w + x] = acc;
+    }} else {{
+{taps}        dst[y * w + x] = acc;
+    }}
+}}
+"#
+    )
+}
+
+/// Vertical Gaussian pass fused with the DoG subtract.
+///
+/// The vertical pass already has the blurred value in a register, so writing
+/// `dog = blurred - lower` here costs one extra load and one extra store but
+/// removes a whole separate pass that would re-read the layer and re-write the
+/// difference. Numerically identical to running the two kernels back to back:
+/// the subtract operates on exactly the f32 value the unfused kernel stores.
+pub fn blur_v_dog_src(kernel: &[f32]) -> String {
+    let base = blur_v_src(kernel)
+        .replace("void sift_blur_v(", "void sift_blur_v_dog(")
+        .replace(
+            "const float* __restrict__ src, float* __restrict__ dst, int w, int h)",
+            "const float* __restrict__ src, float* __restrict__ dst,\n    const float* __restrict__ lower, float* __restrict__ dog, int w, int h)",
+        );
+    // Emit the DoG store after every `dst` store (interior and border paths).
+    base.replace(
+        "        dst[y * w + x] = acc;",
+        "        dst[y * w + x] = acc;\n        dog[y * w + x] = acc - lower[y * w + x];",
+    )
+}
+
+/// Fused horizontal+vertical Gaussian in one launch, via a shared-memory band.
+///
+/// Halves DRAM traffic (one read of the source, one write of the result, instead
+/// of read+write+read+write). **Only worth it when the pass is DRAM-bound.**
+/// Measured on this part (`bench_roofline_taps`): the blur saturates at
+/// ~58.8 GB/s and is flat from ksize 5..11, then becomes issue-bound from
+/// ksize >= 17. So fusion pays for small kernels and costs occupancy for large
+/// ones — which is why uniform smem fusion regressed here five times before.
+///
+/// The block computes `BLOCK_H + ksize - 1` horizontally-blurred rows into
+/// shared memory, then each thread accumulates the vertical pass from it.
+/// Numerically identical to the two-pass path: the intermediate is the same f32
+/// value the unfused kernel would have written to global memory.
+pub(crate) fn blur_hv_fused_src(kernel: &[f32], block_w: usize, block_h: usize) -> String {
+    let n = kernel.len();
+    let n2 = n / 2;
+    let band = block_h + n - 1;
+    let ky = &kernel[n2..];
+
+    let mut htaps = String::new();
+    htaps.push_str(&format!(
+        "            float acc = src[srow + refl101(gx - {n2}, w)] * {};\n",
+        f32_lit(kernel[0])
+    ));
+    for (k, &c) in kernel.iter().enumerate().skip(1) {
+        htaps.push_str(&format!(
+            "            acc = __fmaf_rn(src[srow + refl101(gx - {n2} + {k}, w)], {}, acc);\n",
+            f32_lit(c)
+        ));
+    }
+    let mut vtaps = String::new();
+    vtaps.push_str(&format!(
+        "    float out = __fmaf_rn(tile[(ty + {n2}) * {block_w} + tx], {}, 0.0f);\n",
+        f32_lit(ky[0])
+    ));
+    for (k, &c) in ky.iter().enumerate().skip(1) {
+        vtaps.push_str(&format!(
+            "    out = __fmaf_rn(tile[(ty + {n2} + {k}) * {block_w} + tx] + tile[(ty + {n2} - {k}) * {block_w} + tx], {}, out);\n",
+            f32_lit(c)
+        ));
+    }
+
+    format!(
+        r#"{BORDER_HELPERS}
+extern "C" __global__ void sift_blur_hv(
+    const float* __restrict__ src, float* __restrict__ dst, int w, int h)
+{{
+    __shared__ float tile[{band} * {block_w}];
+    const int tx = threadIdx.x, ty = threadIdx.y;
+    const int gx = blockIdx.x * {block_w} + tx;
+    const int gy = blockIdx.y * {block_h} + ty;
+    const int y0 = blockIdx.y * {block_h} - {n2};
+
+    // Fill the band: {band} rows x {block_w} cols, strided over the whole block.
+    for (int idx = ty * {block_w} + tx; idx < {band} * {block_w}; idx += {block_w} * {block_h}) {{
+        const int r = idx / {block_w};
+        const int c = idx % {block_w};
+        const int gxx = blockIdx.x * {block_w} + c;
+        if (gxx < w) {{
+            const int srow = refl101(y0 + r, h) * w;
+            const int gx = gxx;
+{htaps}            tile[idx] = acc;
+        }} else {{
+            tile[idx] = 0.0f;
+        }}
+    }}
+    __syncthreads();
+
+    if (gx >= w || gy >= h) return;
+{vtaps}    dst[gy * w + gx] = out;
+}}
+"#
+    )
+}
+
+/// Base image of each new octave: nearest-neighbour subsample to half size.
+///
+/// The reference computes the source index as `floor(x * src_w / dst_w)` in
+/// `double`, clamped to the last column; the same expression is evaluated per
+/// thread here. This is deliberately *not* a blur-and-decimate pyramid step —
+/// the blur is already baked into the source layer, and adding another would
+/// break bit equality.
+pub fn downsample_nearest_src() -> String {
+    r#"
+extern "C" __global__ void sift_downsample_nearest(
+    const float* __restrict__ src, float* __restrict__ dst,
+    int sw, int sh, int dw, int dh)
+{
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= dw || y >= dh) return;
+
+    const double ifx = (double)sw / (double)dw;
+    const double ify = (double)sh / (double)dh;
+    int sx = (int)floor((double)x * ifx); if (sx > sw - 1) sx = sw - 1;
+    int sy = (int)floor((double)y * ify); if (sy > sh - 1) sy = sh - 1;
+
+    dst[y * dw + x] = src[sy * sw + sx];
+}
+"#
+    .to_string()
+}
+
+/// Difference-of-Gaussians between two adjacent scale-space layers.
+///
+/// The reference computes `dst = src2 - src1` as a plain elementwise f32
+/// subtract, which is exactly representable — no contraction or accumulation
+/// order to mirror here.
+pub fn dog_src() -> String {
+    r#"
+extern "C" __global__ void sift_dog(
+    const float* __restrict__ lower, const float* __restrict__ upper,
+    float* __restrict__ dst, int w, int h)
+{
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= w || y >= h) return;
+    const int i = y * w + x;
+    dst[i] = upper[i] - lower[i];
+}
+"#
+    .to_string()
+}
+
+// ── Kernel cache ──────────────────────────────────────────────────────────────
+
+type CacheMap = HashMap<(usize, String), Arc<CudaKernel>>;
+
+/// Bounded cache; evict a single entry at capacity rather than clearing the map
+/// (wholesale clearing makes working sets larger than the cap stampede).
+const CACHE_CAP: usize = 64;
+
+fn cache() -> &'static Mutex<CacheMap> {
+    static CACHE: OnceLock<Mutex<CacheMap>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Compile-and-cache a kernel keyed on `(device ordinal, key)`.
+///
+/// The lookup deliberately clones out of the guard and drops it before
+/// compiling: holding the lock across the miss path is a measured deadlock in
+/// this workspace.
+pub(crate) fn get_or_compile(
+    ctx: &Arc<CudaContext>,
+    key: &str,
+    build_src: impl FnOnce() -> String,
+    fn_name: &str,
+) -> Result<Arc<CudaKernel>, SiftCudaError> {
+    // The source is built BEFORE the cache lookup and its hash forms part of the
+    // key. Keying on a caller-supplied name alone silently returns a stale
+    // kernel whenever the generated source changes but the name does not —
+    // which makes every "isolation" measurement suspect.
+    let src = build_src();
+    let src_hash = {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for b in src.as_bytes() {
+            h ^= *b as u64;
+            h = h.wrapping_mul(0x100_0000_01b3);
+        }
+        h
+    };
+    let cache_key = (ctx.ordinal(), format!("{key}:{src_hash:016x}"));
+
+    {
+        let guard = cache().lock().expect("SIFT kernel cache mutex poisoned");
+        if let Some(k) = guard.get(&cache_key).cloned() {
+            return Ok(k);
+        }
+    }
+
+    let kernel = CudaKernel::compile(ctx, &src, fn_name)
+        .map_err(|e| SiftCudaError::Cuda(format!("failed to compile {fn_name}: {e}")))?;
+    let _ = kernel.prefer_l1_cache();
+    let kernel = Arc::new(kernel);
+
+    let mut guard = cache().lock().expect("SIFT kernel cache mutex poisoned");
+    if guard.len() >= CACHE_CAP {
+        if let Some(victim) = guard.keys().next().cloned() {
+            guard.remove(&victim);
+        }
+    }
+    Ok(guard.entry(cache_key).or_insert(kernel).clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gaussian_kernel_is_normalised_and_symmetric() {
+        for &(n, sigma) in &[(11, 1.2489995956420898f64), (27, 3.090015587289591)] {
+            let k = gaussian_kernel_f32(n, sigma);
+            assert_eq!(k.len(), n);
+            for i in 0..n / 2 {
+                assert_eq!(k[i], k[n - 1 - i], "kernel not symmetric at {i}");
+            }
+            let sum: f64 = k.iter().map(|&v| v as f64).sum();
+            assert!((sum - 1.0).abs() < 1e-6, "sum = {sum}");
+        }
+    }
+
+    /// Raw bit patterns captured from the reference's kernel generator for the
+    /// narrowest and widest sigmas the default configuration uses. Refresh from
+    /// the oracle dumper if the reference version ever changes.
+    #[test]
+    fn gaussian_kernel_matches_reference_bitwise() {
+        let k11 = gaussian_kernel_f32(11, 1.2489995956420898);
+        let want11: [u32; 11] = [
+            0x38ddd93d, 0x3af825aa, 0x3c9234f8, 0x3db581b7, 0x3e6d6298, 0x3ea389e7, 0x3e6d6298,
+            0x3db581b7, 0x3c9234f8, 0x3af825aa, 0x38ddd93d,
+        ];
+        assert_eq!(
+            k11.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            want11.to_vec()
+        );
+
+        let k27 = gaussian_kernel_f32(27, 3.090015587289591);
+        let want27: [u32; 27] = [
+            0x379b5026, 0x388fc81f, 0x396fbe10, 0x3a33ffe9, 0x3af369c2, 0x3b9437e2, 0x3c228e8c,
+            0x3ca08e1d, 0x3d0ecf5d, 0x3d64ca77, 0x3da50bb5, 0x3dd671db, 0x3dfaec87, 0x3e0434fb,
+            0x3dfaec87, 0x3dd671db, 0x3da50bb5, 0x3d64ca77, 0x3d0ecf5d, 0x3ca08e1d, 0x3c228e8c,
+            0x3b9437e2, 0x3af369c2, 0x3a33ffe9, 0x396fbe10, 0x388fc81f, 0x379b5026,
+        ];
+        assert_eq!(
+            k27.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            want27.to_vec()
+        );
+    }
+
+    #[test]
+    fn blur_v_dog_generates_fused_kernel() {
+        let k = gaussian_kernel_f32(11, 1.2489995956420898);
+        let src = blur_v_dog_src(&k);
+        assert!(src.contains("void sift_blur_v_dog("), "kernel not renamed");
+        assert!(
+            src.contains("const float* __restrict__ lower"),
+            "lower arg missing"
+        );
+        assert_eq!(
+            src.matches("dog[y * w + x] = acc - lower[y * w + x];")
+                .count(),
+            2,
+            "DoG store must be emitted on BOTH the interior and border paths"
+        );
+    }
+
+    #[test]
+    fn f32_literals_round_trip_exactly() {
+        for v in [1.0f32, 0.1, 3.0900156, f32::MIN_POSITIVE] {
+            let lit = f32_lit(v);
+            let hex = lit
+                .trim_start_matches("__int_as_float(0x")
+                .trim_end_matches(')');
+            assert_eq!(u32::from_str_radix(hex, 16).unwrap(), v.to_bits());
+        }
+    }
+}
