@@ -52,13 +52,18 @@
 mod detect;
 mod hal;
 mod kernels;
+mod orientation;
 mod pyramid;
 
 pub use detect::{
     decode_keypoints, extrema_threshold, launch_sift_find_extrema_cuda, SiftRawKeypoint, KP_STRIDE,
 };
-pub use hal::{exp_table_f32, hal_device_src, vrecpe_table};
+pub use hal::{exp_table_f32, vrecpe_table};
 pub use kernels::gaussian_kernel_f32;
+pub use orientation::{
+    launch_sift_orientation_cuda, ORI_HIST_BINS, ORI_KP_STRIDE, ORI_PEAK_RATIO, ORI_RADIUS,
+    ORI_SIG_FCTR,
+};
 pub use pyramid::{
     launch_sift_blur_h_cuda, launch_sift_blur_h_tiled_cuda, launch_sift_blur_hv_cuda,
     launch_sift_blur_v_cuda, launch_sift_blur_v_dog_cuda, launch_sift_dog_cuda,

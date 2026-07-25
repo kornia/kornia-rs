@@ -73,7 +73,7 @@ pub fn exp_table_f32() -> [f32; 64] {
 }
 
 /// Device-side source for both primitives, with all tables baked as literals.
-pub fn hal_device_src() -> String {
+pub(crate) fn hal_device_src() -> String {
     let recp = vrecpe_table()
         .iter()
         .map(|v| v.to_string())

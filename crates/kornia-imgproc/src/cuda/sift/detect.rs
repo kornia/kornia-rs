@@ -22,7 +22,7 @@ use super::{SiftCudaConfig, SiftCudaError, SIFT_IMG_BORDER, SIFT_MAX_INTERP_STEP
 use crate::cuda::make_config;
 
 /// Number of `f32` slots each detected keypoint occupies in the output buffer.
-pub const KP_STRIDE: usize = 7;
+pub const KP_STRIDE: usize = 9;
 
 /// A refined keypoint as produced by the detector, before orientation
 /// assignment. Field meanings mirror the reference's `KeyPoint`.
@@ -43,6 +43,11 @@ pub struct SiftRawKeypoint {
     /// Sub-scale offset; `size` depends only on this, so it is the sensitive
     /// probe of the refinement solve.
     pub xi: f32,
+    /// Integer column the refinement converged to, in the octave's frame.
+    /// Orientation samples its patch around this pixel, not the sub-pixel one.
+    pub cc: i32,
+    /// Integer row the refinement converged to.
+    pub rr: i32,
 }
 
 /// Extremum-rejection threshold: an *integer*, because the reference floors it
@@ -362,6 +367,8 @@ extern "C" __global__ void sift_find_extrema(
     o[4] = __int_as_float(packed);
     o[5] = __int_as_float(layer);
     o[6] = xi;
+    o[7] = __int_as_float(cc);
+    o[8] = __int_as_float(rr);
 }}
 "#,
         KP_STRIDE = KP_STRIDE
@@ -477,6 +484,8 @@ pub fn decode_keypoints(raw: &[f32], count: usize) -> Vec<SiftRawKeypoint> {
             octave: c[4].to_bits() as i32,
             layer: c[5].to_bits() as i32,
             xi: c[6],
+            cc: c[7].to_bits() as i32,
+            rr: c[8].to_bits() as i32,
         })
         .collect()
 }
