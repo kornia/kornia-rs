@@ -31,6 +31,9 @@ pub const DESCR_WIDTH: usize = 4;
 pub const DESCR_HIST_BINS: usize = 8;
 /// Descriptor length in floats.
 pub const DESCR_LEN: usize = DESCR_WIDTH * DESCR_WIDTH * DESCR_HIST_BINS;
+/// Threads per block for the shared-memory descriptor kernel. Must be a power
+/// of two: the L2-norm reduction halves the active range each step.
+pub const DESC_BLOCK_THREADS: usize = 128;
 /// Patch scale factor (`SIFT_DESCR_SCL_FCTR`).
 pub const DESCR_SCL_FCTR: f32 = 3.0;
 /// Post-normalisation clamp (`SIFT_DESCR_MAG_THR`).
@@ -187,6 +190,173 @@ extern "C" __global__ void sift_descriptor(
     )
 }
 
+/// Block-per-keypoint descriptor: the 360-float histogram lives in shared
+/// memory and the patch loop is split across the block.
+///
+/// The one-thread-per-keypoint kernel keeps the reference's sequential
+/// accumulation order and is therefore bit-exact, but 360 floats per thread is
+/// 1440 bytes -- far past any register budget, so it spills to local memory and
+/// every histogram update becomes a local round-trip. Measured at 55% of the
+/// whole pipeline, ~0.9 ms per keypoint.
+///
+/// Splitting the patch across a block and accumulating with shared-memory
+/// atomics changes the summation order, so this is NOT bit-exact against the
+/// reference (float addition is not associative). Orientation keeps the
+/// sequential form because its histogram is 36 bins and stays in registers.
+fn descriptor_block_src(threads: usize) -> String {
+    let d = DESCR_WIDTH;
+    let n = DESCR_HIST_BINS;
+    let histlen = (d + 2) * (d + 2) * (n + 2);
+    format!(
+        r#"{hal}
+
+#define DD {d}
+#define NN {n}
+#define HISTLEN {histlen}
+#define DLEN {dlen}
+#define NTHREADS {threads}
+
+__device__ __forceinline__ int cv_round_d(float v) {{ return __float2int_rn(v); }}
+__device__ __forceinline__ int cv_floor_d(float v) {{ return (int)floorf(v); }}
+
+extern "C" __global__ void sift_descriptor_block(
+    const float* __restrict__ img, int w, int h,
+    const float* __restrict__ kp_in, int n_kp, int kp_stride,
+    float* __restrict__ out_desc)
+{{
+    const int t = blockIdx.x;
+    if (t >= n_kp) return;
+    const int tid = threadIdx.x;
+
+    __shared__ float hist[HISTLEN];
+    __shared__ float raw[DLEN];
+    __shared__ float red[NTHREADS];
+
+    const float* k = kp_in + (long)t * kp_stride;
+    const float ptx = k[0], pty = k[1], scl = k[2], ori = k[3];
+
+    const int px = cv_round_d(ptx), py = cv_round_d(pty);
+    float cos_t = cosf(ori * (float)(3.14159265358979323846 / 180.0));
+    float sin_t = sinf(ori * (float)(3.14159265358979323846 / 180.0));
+    const float bins_per_rad = (float)NN / 360.0f;
+    const float exp_scale = -1.0f / ((float)DD * (float)DD * 0.5f);
+    const float hist_width = {scl_fctr:?}f * scl;
+    int radius = cv_round_d(hist_width * 1.4142135623730951f * ((float)DD + 1.0f) * 0.5f);
+    // `diag` bounds the patch to the image; computing it per thread in double
+    // would be an FP64 op at 1/32 rate, and the bound needs no more than f32.
+    const int diag = (int)sqrtf((float)w * (float)w + (float)h * (float)h);
+    if (radius > diag) radius = diag;
+    cos_t /= hist_width;
+    sin_t /= hist_width;
+
+    for (int i = tid; i < HISTLEN; i += NTHREADS) hist[i] = 0.0f;
+    __syncthreads();
+
+    // Flatten the patch so the block strides over it; each thread accumulates
+    // into shared memory with atomics.
+    const int side = 2 * radius + 1;
+    const int total = side * side;
+    for (int s = tid; s < total; s += NTHREADS) {{
+        const int i = s / side - radius;
+        const int j = s % side - radius;
+        const float c_rot = j * cos_t - i * sin_t;
+        const float r_rot = j * sin_t + i * cos_t;
+        const float rbin = r_rot + (float)DD / 2.0f - 0.5f;
+        const float cbin = c_rot + (float)DD / 2.0f - 0.5f;
+        const int r = py + i, c = px + j;
+
+        if (rbin > -1.0f && rbin < (float)DD && cbin > -1.0f && cbin < (float)DD &&
+            r > 0 && r < h - 1 && c > 0 && c < w - 1) {{
+            const float dx = img[r * w + c + 1] - img[r * w + c - 1];
+            const float dy = img[(r - 1) * w + c] - img[(r + 1) * w + c];
+            const float wgt = sift_exp((c_rot * c_rot + r_rot * r_rot) * exp_scale);
+            const float ang = sift_atan2_deg(dy, dx);
+            const float mag = sift_magnitude(dx, dy);
+
+            float obin = (ang - ori) * bins_per_rad;
+            float rb = rbin, cb = cbin;
+            int r0 = cv_floor_d(rb), c0 = cv_floor_d(cb), o0 = cv_floor_d(obin);
+            rb -= r0; cb -= c0; obin -= o0;
+            if (o0 < 0) o0 += NN;
+            if (o0 >= NN) o0 -= NN;
+
+            const float m = mag * wgt;
+            const float v_r1 = m * rb,      v_r0 = m - v_r1;
+            const float v_rc11 = v_r1 * cb, v_rc10 = v_r1 - v_rc11;
+            const float v_rc01 = v_r0 * cb, v_rc00 = v_r0 - v_rc01;
+            const float v_rco111 = v_rc11 * obin, v_rco110 = v_rc11 - v_rco111;
+            const float v_rco101 = v_rc10 * obin, v_rco100 = v_rc10 - v_rco101;
+            const float v_rco011 = v_rc01 * obin, v_rco010 = v_rc01 - v_rco011;
+            const float v_rco001 = v_rc00 * obin, v_rco000 = v_rc00 - v_rco001;
+
+            const int idx = ((r0 + 1) * (DD + 2) + (c0 + 1)) * (NN + 2) + o0;
+            atomicAdd(&hist[idx], v_rco000);
+            atomicAdd(&hist[idx + 1], v_rco001);
+            atomicAdd(&hist[idx + (NN + 2)], v_rco010);
+            atomicAdd(&hist[idx + (NN + 3)], v_rco011);
+            atomicAdd(&hist[idx + (DD + 2) * (NN + 2)], v_rco100);
+            atomicAdd(&hist[idx + (DD + 2) * (NN + 2) + 1], v_rco101);
+            atomicAdd(&hist[idx + (DD + 3) * (NN + 2)], v_rco110);
+            atomicAdd(&hist[idx + (DD + 3) * (NN + 2) + 1], v_rco111);
+        }}
+    }}
+    __syncthreads();
+
+    // Fold the circular orientation bins back into the d*d*n array.
+    for (int cell = tid; cell < DD * DD; cell += NTHREADS) {{
+        const int i = cell / DD, j = cell % DD;
+        const int idx = ((i + 1) * (DD + 2) + (j + 1)) * (NN + 2);
+        hist[idx] += hist[idx + NN];
+        hist[idx + 1] += hist[idx + NN + 1];
+        for (int kk = 0; kk < NN; kk++) raw[cell * NN + kk] = hist[idx + kk];
+    }}
+    __syncthreads();
+
+    // Block-reduced L2 norm, clamp at MAG_THR, renormalise.
+    float part = 0.0f;
+    for (int i = tid; i < DLEN; i += NTHREADS) part = __fmaf_rn(raw[i], raw[i], part);
+    red[tid] = part;
+    __syncthreads();
+    for (int off = NTHREADS / 2; off > 0; off >>= 1) {{
+        if (tid < off) red[tid] += red[tid + off];
+        __syncthreads();
+    }}
+    const float thr = sqrtf(red[0]) * {mag_thr:?}f;
+    __syncthreads();
+
+    part = 0.0f;
+    for (int i = tid; i < DLEN; i += NTHREADS) {{
+        const float val = fminf(raw[i], thr);
+        raw[i] = val;
+        part = __fmaf_rn(val, val, part);
+    }}
+    red[tid] = part;
+    __syncthreads();
+    for (int off = NTHREADS / 2; off > 0; off >>= 1) {{
+        if (tid < off) red[tid] += red[tid + off];
+        __syncthreads();
+    }}
+    const float scale = {int_fctr:?}f / fmaxf(sqrtf(red[0]), 1.1920929e-07f);
+
+    float* o = out_desc + (long)t * DLEN;
+    for (int i = tid; i < DLEN; i += NTHREADS) {{
+        float v = (float)cv_round_d(raw[i] * scale);
+        o[i] = fminf(fmaxf(v, 0.0f), 255.0f);
+    }}
+}}
+"#,
+        hal = hal_device_src(),
+        d = d,
+        n = n,
+        histlen = histlen,
+        dlen = DESCR_LEN,
+        threads = threads,
+        scl_fctr = DESCR_SCL_FCTR,
+        mag_thr = DESCR_MAG_THR,
+        int_fctr = INT_DESCR_FCTR,
+    )
+}
+
 /// Compute 128-D descriptors for oriented keypoints.
 ///
 /// `kp_in` supplies `(x, y, scl, ori)` per keypoint **in the octave's own
@@ -235,8 +405,42 @@ pub fn launch_sift_descriptor_cuda_view(
         });
     }
 
-    let kernel = get_or_compile(ctx, "sift_descriptor", descriptor_src, "sift_descriptor")?;
+    // `KORNIA_SIFT_DESC=exact` selects the one-thread-per-keypoint kernel, which
+    // reproduces the reference's sequential accumulation bit for bit but spills
+    // its 360-float histogram to local memory. The default block kernel keeps
+    // that histogram in shared memory and is ~an order of magnitude faster, at
+    // the cost of a different (still correct) summation order.
+    let exact = std::env::var("KORNIA_SIFT_DESC").as_deref() == Ok("exact");
     let (w_i, h_i, n_i, s_i) = (width as i32, height as i32, n_kp as i32, kp_stride as i32);
+
+    if exact {
+        let kernel = get_or_compile(ctx, "sift_descriptor", descriptor_src, "sift_descriptor")?;
+        return kernel
+            .launch_builder(stream)
+            .arg(img)
+            .arg(&w_i)
+            .arg(&h_i)
+            .arg(kp_in)
+            .arg(&n_i)
+            .arg(&s_i)
+            .arg(out_desc)
+            .launch_2d(n_kp, 1, make_config(n_kp, 1, Some((64, 1))))
+            .map_err(|e| SiftCudaError::Cuda(e.to_string()));
+    }
+
+    let kernel = get_or_compile(
+        ctx,
+        &format!("sift_descriptor_block:{DESC_BLOCK_THREADS}"),
+        || descriptor_block_src(DESC_BLOCK_THREADS),
+        "sift_descriptor_block",
+    )?;
+    // One block per keypoint: the grid is the keypoint count, not a tiling of
+    // it, so this cannot go through the 2-D helper.
+    let cfg = cudarc::driver::LaunchConfig {
+        grid_dim: (n_kp, 1, 1),
+        block_dim: (DESC_BLOCK_THREADS as u32, 1, 1),
+        shared_mem_bytes: 0,
+    };
     kernel
         .launch_builder(stream)
         .arg(img)
@@ -246,7 +450,7 @@ pub fn launch_sift_descriptor_cuda_view(
         .arg(&n_i)
         .arg(&s_i)
         .arg(out_desc)
-        .launch_2d(n_kp, 1, make_config(n_kp, 1, Some((64, 1))))
+        .launch_cfg(cfg)
         .map_err(|e| SiftCudaError::Cuda(e.to_string()))
 }
 
