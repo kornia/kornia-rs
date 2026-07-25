@@ -22,9 +22,16 @@
 ///     **high nibble first**.
 ///
 /// Wire format (12-byte header):
-///   `[4 bytes: magic b"RVL1"][4 bytes: width u32 LE][4 bytes: height u32 LE]`
+///   `[4 bytes: magic][4 bytes: width u32 LE][4 bytes: height u32 LE]`
 ///   followed by, repeated to the end of the frame:
 ///   `VLE(zero_run_len) VLE(non_zero_run_len) VLE(zigzag(delta)) × non_zero_run_len`
+///
+/// Two magics share that layout byte-for-byte, differing only in what the values mean:
+///   - `RVL1` — absolute depth in millimetres. Self-contained; decode with `decode_image_rvl`.
+///   - `RVLD` — a temporal delta against the previous frame, so an unchanged pixel becomes 0 and
+///     phase 1 collapses it. Needs that reference frame to decode, so it goes through
+///     `decode_image_rvl_delta` instead. See `encode_image_rvl_delta` for why the gain on real
+///     (noisy) depth is far smaller than a static test scene suggests.
 ///
 /// Compression ratio: measured **5.71×** over raw u16 on 60 live 320x180 OAK-D
 /// frames that are 64% invalid, at 0.297 ms to encode and 0.236 ms to decode
@@ -35,6 +42,11 @@ use kornia_image::{Image, ImageSize};
 use std::{fs, path::Path};
 
 const MAGIC: &[u8; 4] = b"RVL1";
+/// Temporal-delta variant. The stream layout is byte-for-byte identical to `RVL1`; only the meaning
+/// of the values changes — each is the zigzagged delta against the *previous frame* rather than an
+/// absolute depth. A decoder must be handed that reference frame, which is why
+/// [`decode_image_rvl`] deliberately does not accept this magic: it has no way to supply one.
+const MAGIC_DELTA: &[u8; 4] = b"RVLD";
 const HEADER_LEN: usize = 12; // magic(4) + width(4) + height(4)
 
 /// Sanity ceiling on decoded image pixels. `decode_image_rvl` takes the image dimensions from an
@@ -194,15 +206,111 @@ fn unzigzag(v: u32) -> i32 {
 /// assert_eq!(decoded.as_slice(), img.as_slice());
 /// ```
 pub fn encode_image_rvl(image: &Image<u16, 1>) -> Result<Vec<u8>, IoError> {
-    let pixels = image.as_slice();
-    let w = image.width() as u32;
-    let h = image.height() as u32;
+    Ok(encode_rvl_stream(
+        image.as_slice(),
+        image.width() as u32,
+        image.height() as u32,
+        MAGIC,
+    ))
+}
 
-    let mut header = Vec::with_capacity(HEADER_LEN);
-    header.extend_from_slice(MAGIC);
-    header.extend_from_slice(&w.to_le_bytes());
-    header.extend_from_slice(&h.to_le_bytes());
+/// Encodes depth straight from a `&[u16]` slice, without requiring an owning [`Image`].
+///
+/// Same bytes as [`encode_image_rvl`]. This exists because a producer typically holds only a
+/// *borrow* of the frame — out of a shared buffer, an `Arc`, or a driver's mapped memory — and
+/// [`Image`] can only be built from an owned `Vec`. Going through the image type would mean
+/// copying the whole frame just to hand it straight to the encoder, which reads it once and
+/// discards it. At 320x180 that is 115 KB per frame, per camera; at 720p, 1.8 MB.
+///
+/// # Example
+///
+/// ```rust
+/// use kornia_io::rvl::{encode_image_rvl_slice, decode_image_rvl};
+///
+/// let pixels = [1000u16, 1001, 1002, 1003, 0, 500, 500, 500];
+/// let compressed = encode_image_rvl_slice(&pixels, 4, 2).unwrap();
+/// assert_eq!(decode_image_rvl(&compressed).unwrap().as_slice(), &pixels);
+/// ```
+pub fn encode_image_rvl_slice(
+    pixels: &[u16],
+    width: usize,
+    height: usize,
+) -> Result<Vec<u8>, IoError> {
+    let expected = width.checked_mul(height).ok_or_else(|| {
+        IoError::RvlEncodeError(format!("image dimensions {width}x{height} overflow"))
+    })?;
+    if pixels.len() != expected {
+        return Err(IoError::RvlEncodeError(format!(
+            "{width}x{height} needs {expected} values, got {}",
+            pixels.len()
+        )));
+    }
+    Ok(encode_rvl_stream(
+        pixels,
+        width as u32,
+        height as u32,
+        MAGIC,
+    ))
+}
 
+/// Encodes `image` as a temporal delta against `previous` (`RVLD`).
+///
+/// Each pixel becomes `zigzag(cur - prev)`, so an **unchanged pixel maps to 0** and RVL's
+/// run-length phase collapses it. The caller owns keyframe policy: a decoder can only apply this
+/// against the exact frame it was encoded from, so a dropped payload poisons every delta after it
+/// until the next keyframe ([`encode_image_rvl`]).
+///
+/// **Expect far less than a synthetic static scene suggests.** Measured on live OAK-D frames
+/// (320x180, 63% invalid) a delta came out only **11% smaller** than a keyframe — 18.0 vs 20.2 KB —
+/// because per-pixel sensor noise jitters every valid reading by a few millimetres, and RVL
+/// collapses *runs*, not small values. An identical frame compresses spectacularly; a real one
+/// barely moves. Worth it only where that 11% matters and the transport is reliable and in-order.
+///
+/// # Errors
+///
+/// Returns an error if the two frames differ in size, or if any `cur - prev` falls outside
+/// `-32768..=32767`. That interval is asymmetric because the zigzag is: it maps exactly that range
+/// onto `0..=65535`, so `-32768` fits and `+32768` does not. Depth is `u16` with no guaranteed
+/// upstream clamp, so a hole (0) adjacent to a saturated or sentinel reading can reach it. The
+/// encoder already visits every pixel, so the check is free — and without it the value would wrap
+/// and reconstruction would be silently lossy.
+pub fn encode_image_rvl_delta(
+    image: &Image<u16, 1>,
+    previous: &Image<u16, 1>,
+) -> Result<Vec<u8>, IoError> {
+    let (pixels, prev) = (image.as_slice(), previous.as_slice());
+    if pixels.len() != prev.len() {
+        return Err(IoError::RvlEncodeError(format!(
+            "delta reference is {} values, frame is {}",
+            prev.len(),
+            pixels.len()
+        )));
+    }
+    let mut deltas = Vec::with_capacity(pixels.len());
+    for (i, (&cur, &prev)) in pixels.iter().zip(prev).enumerate() {
+        let delta = cur as i32 - prev as i32;
+        // The `as u16` below is the whole reason for this bound: zigzag(32768) = 65536 overflows it.
+        if !(-32768..32768).contains(&delta) {
+            return Err(IoError::RvlEncodeError(format!(
+                "delta {delta} at pixel {i} ({prev} -> {cur}) is outside -32768..=32767; the \
+                 zigzag would wrap and the payload would not be lossless — send a keyframe \
+                 (`encode_image_rvl`) for that frame instead"
+            )));
+        }
+        deltas.push(zigzag(delta) as u16);
+    }
+    Ok(encode_rvl_stream(
+        &deltas,
+        image.width() as u32,
+        image.height() as u32,
+        MAGIC_DELTA,
+    ))
+}
+
+/// The run-length + zigzag + nibble core, shared by the absolute (`RVL1`) and delta (`RVLD`)
+/// entry points — they differ only in the four magic bytes and in what the values *mean*.
+/// Pure transform over whatever `u16`s it is handed; never fails.
+fn encode_rvl_stream(pixels: &[u16], width: u32, height: u32, magic: &[u8; 4]) -> Vec<u8> {
     // Real depth runs ~1.5 nibbles/pixel; preallocating avoids ~15 reallocations per frame.
     let mut writer = NibbleWriter::with_capacity(pixels.len());
     let mut previous: i32 = 0;
@@ -230,9 +338,13 @@ pub fn encode_image_rvl(image: &Image<u16, 1>) -> Result<Vec<u8>, IoError> {
         }
     }
 
-    let mut out = header;
-    out.extend_from_slice(&writer.finish());
-    Ok(out)
+    let stream = writer.finish();
+    let mut out = Vec::with_capacity(HEADER_LEN + stream.len());
+    out.extend_from_slice(magic);
+    out.extend_from_slice(&width.to_le_bytes());
+    out.extend_from_slice(&height.to_le_bytes());
+    out.extend_from_slice(&stream);
+    out
 }
 
 /// Decodes RVL-compressed bytes back to a single-channel 16-bit depth image.
@@ -240,15 +352,82 @@ pub fn encode_image_rvl(image: &Image<u16, 1>) -> Result<Vec<u8>, IoError> {
 /// Reads the 12-byte header produced by [`encode_image_rvl`] to recover the image dimensions,
 /// then walks the run-length stream.
 pub fn decode_image_rvl(src: &[u8]) -> Result<Image<u16, 1>, IoError> {
+    let s = decode_rvl_stream(src, MAGIC, "RVL1")?;
+    let size = ImageSize {
+        width: s.width,
+        height: s.height,
+    };
+    Ok(Image::new(size, s.values)?)
+}
+
+/// Decodes an `RVLD` temporal delta and applies it to `previous`, reconstructing the depth image.
+///
+/// `previous` must be the exact frame the delta was encoded against — see
+/// [`encode_image_rvl_delta`]. Reconstruction wraps at 16 bits, mirroring the encoder's `as u16`
+/// narrowing, so a **mismatched reference yields wrong depth rather than an error**: the payload
+/// carries no fingerprint of the frame it was built from. Sequencing is the caller's job.
+///
+/// # Example
+///
+/// ```rust
+/// use kornia_io::rvl::{encode_image_rvl_delta, decode_image_rvl_delta};
+/// use kornia_image::{Image, ImageSize};
+///
+/// let size = ImageSize { width: 4, height: 1 };
+/// let prev = Image::<u16, 1>::new(size, vec![1000u16, 1000, 0, 500]).unwrap();
+/// let cur = Image::<u16, 1>::new(size, vec![1000u16, 1002, 0, 495]).unwrap();
+///
+/// let delta = encode_image_rvl_delta(&cur, &prev).unwrap();
+/// let decoded = decode_image_rvl_delta(&delta, &prev).unwrap();
+/// assert_eq!(decoded.as_slice(), cur.as_slice());
+/// ```
+pub fn decode_image_rvl_delta(
+    src: &[u8],
+    previous: &Image<u16, 1>,
+) -> Result<Image<u16, 1>, IoError> {
+    let s = decode_rvl_stream(src, MAGIC_DELTA, "RVLD")?;
+    let prev = previous.as_slice();
+    if s.values.len() != prev.len() {
+        return Err(IoError::RvlDecodeError(format!(
+            "delta reference is {} values, payload is {}",
+            prev.len(),
+            s.values.len()
+        )));
+    }
+    let pixels = s
+        .values
+        .iter()
+        .zip(prev)
+        .map(|(&zz, &p)| (p as i32 + unzigzag(zz as u32)) as u16)
+        .collect();
+    let size = ImageSize {
+        width: s.width,
+        height: s.height,
+    };
+    Ok(Image::new(size, pixels)?)
+}
+
+/// The raw contents of a decoded RVL stream: `width * height` values plus the header dims.
+///
+/// Deliberately *not* an [`Image`]: for an `RVLD` payload these are zigzagged **deltas**, not depth
+/// in millimetres, and typing them as an image is exactly what would let one be displayed or
+/// published as if it were a frame.
+struct RvlStream {
+    values: Vec<u16>,
+    width: usize,
+    height: usize,
+}
+
+fn decode_rvl_stream(src: &[u8], magic: &[u8; 4], what: &str) -> Result<RvlStream, IoError> {
     if src.len() < HEADER_LEN {
         return Err(IoError::RvlDecodeError(
             "buffer too short for 12-byte RVL header".into(),
         ));
     }
-    if &src[..4] != MAGIC {
-        return Err(IoError::RvlDecodeError(
-            "invalid magic bytes — expected b\"RVL1\"".into(),
-        ));
+    if &src[..4] != magic {
+        return Err(IoError::RvlDecodeError(format!(
+            "invalid magic bytes — expected a {what} payload"
+        )));
     }
     let width = u32::from_le_bytes(src[4..8].try_into().unwrap()) as usize;
     let height = u32::from_le_bytes(src[8..12].try_into().unwrap()) as usize;
@@ -301,8 +480,11 @@ pub fn decode_image_rvl(src: &[u8]) -> Result<Image<u16, 1>, IoError> {
         i = end;
     }
 
-    let size = ImageSize { width, height };
-    Ok(Image::new(size, pixels)?)
+    Ok(RvlStream {
+        values: pixels,
+        width,
+        height,
+    })
 }
 
 /// Writes a single-channel 16-bit depth image to an RVL file.
@@ -497,5 +679,94 @@ mod tests {
             raw as f64 / enc.len() as f64,
             enc.len()
         );
+    }
+
+    // ── Slice encoder ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn slice_encoder_matches_the_image_encoder_byte_for_byte() {
+        // The point of the slice entry point is to skip building an Image, so the one thing that
+        // must hold is that it does not change the bytes.
+        let data = vec![0u16, 0, 1000, 1002, 0, 65535, 1, 0];
+        let img = make_image(data.clone(), 4, 2);
+        assert_eq!(
+            encode_image_rvl_slice(&data, 4, 2).unwrap(),
+            encode_image_rvl(&img).unwrap()
+        );
+    }
+
+    #[test]
+    fn slice_encoder_rejects_dims_that_disagree_with_the_buffer() {
+        // Without this the header would claim a size the stream cannot fill, and the error would
+        // surface in some other process's decoder instead of here.
+        let data = vec![0u16; 8];
+        assert!(encode_image_rvl_slice(&data, 4, 3).is_err());
+        assert!(encode_image_rvl_slice(&data, 4, 2).is_ok());
+    }
+
+    // ── Temporal delta (RVLD) ─────────────────────────────────────────────────
+
+    #[test]
+    fn roundtrip_delta_against_its_reference() {
+        let size = (4usize, 2usize);
+        let prev = make_image(vec![1000u16, 1000, 0, 500, 0, 0, 300, 301], size.0, size.1);
+        let cur = make_image(vec![1000u16, 1002, 0, 495, 0, 7, 300, 299], size.0, size.1);
+        let enc = encode_image_rvl_delta(&cur, &prev).unwrap();
+        assert_eq!(&enc[..4], MAGIC_DELTA, "delta must carry the RVLD magic");
+        let dec = decode_image_rvl_delta(&enc, &prev).unwrap();
+        assert_eq!(dec.as_slice(), cur.as_slice());
+    }
+
+    #[test]
+    fn an_unchanged_frame_collapses_to_almost_nothing() {
+        // This is the entire reason RVLD exists: every delta is 0, so phase 1 sees one giant zero
+        // run. It is also why the doc warns that real (noisy) depth gets nowhere near this.
+        let (w, h) = (320usize, 180usize);
+        let data: Vec<u16> = (0..w * h).map(|i| (900 + i % 500) as u16).collect();
+        let img = make_image(data, w, h);
+        let enc = encode_image_rvl_delta(&img, &img).unwrap();
+        assert!(
+            enc.len() < 64,
+            "an identical frame should cost a handful of bytes, got {}",
+            enc.len()
+        );
+    }
+
+    #[test]
+    fn delta_rejects_a_swing_the_zigzag_cannot_represent() {
+        // Asymmetric on purpose: the zigzag maps -32768..=32767 onto 0..=65535, so the negative
+        // edge fits and the positive one does not. A hole (0) next to a saturated reading reaches
+        // exactly this, so both edges are pinned.
+        let one = |v: u16| make_image(vec![v], 1, 1);
+        assert!(
+            encode_image_rvl_delta(&one(0), &one(32768)).is_ok(),
+            "-32768 is representable and must encode"
+        );
+        assert!(
+            encode_image_rvl_delta(&one(32768), &one(0)).is_err(),
+            "+32768 would wrap the zigzag and must be refused, not silently truncated"
+        );
+    }
+
+    #[test]
+    fn delta_rejects_a_mismatched_reference_size() {
+        let cur = make_image(vec![1u16; 8], 4, 2);
+        let prev = make_image(vec![1u16; 6], 3, 2);
+        assert!(encode_image_rvl_delta(&cur, &prev).is_err());
+
+        let enc = encode_image_rvl_delta(&cur, &cur).unwrap();
+        assert!(decode_image_rvl_delta(&enc, &prev).is_err());
+    }
+
+    #[test]
+    fn the_two_magics_do_not_decode_as_each_other() {
+        // An RVLD payload decoded as absolute depth would be a frame of near-zero "depth" rather
+        // than an error — the layouts are identical, so only the magic can catch it.
+        let img = make_image(vec![1000u16, 1001, 0, 500], 4, 1);
+        let keyframe = encode_image_rvl(&img).unwrap();
+        let delta = encode_image_rvl_delta(&img, &img).unwrap();
+
+        assert!(decode_image_rvl(&delta).is_err());
+        assert!(decode_image_rvl_delta(&keyframe, &img).is_err());
     }
 }
