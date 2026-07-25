@@ -9,6 +9,9 @@ mod params;
 pub(crate) use params::refl101;
 pub use params::{gaussian_kernel_f32, gaussian_ksize, SiftConfig};
 
+mod descriptor;
+pub use descriptor::{compute_descriptor, descriptor_inputs, DESCR_LEN};
+
 mod hal;
 pub use hal::{atan2_deg, exp as sift_exp, magnitude};
 
