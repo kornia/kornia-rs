@@ -7,7 +7,7 @@ use super::descriptor::{compute_descriptor, descriptor_inputs, DESCR_LEN};
 use super::detect::{find_extrema, RawKeypoint};
 use super::orient::{assign_orientations, OrientedKeypoint};
 use super::params::{gaussian_kernel_f32, gaussian_ksize, SiftConfig};
-use super::scalespace::{blur_h_f32, blur_v_f32};
+use super::scalespace::{blur_h_f32_mode, blur_v_f32};
 
 /// Which scale the pyramid starts from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,6 +109,7 @@ pub fn detect_and_compute(
     cfg: &SiftConfig,
     first_octave: FirstOctave,
     max_octaves: usize,
+    fast: bool,
 ) -> SiftFeatures {
     assert_eq!(src.len(), w * h, "source length must be w * h");
     let doubled = first_octave == FirstOctave::Double;
@@ -132,7 +133,7 @@ pub fn detect_and_compute(
         base.copy_from_slice(src);
     }
     let mut gauss: Vec<Vec<f32>> = (0..n_layers).map(|_| vec![0.0f32; plane]).collect();
-    blur_h_f32(&base, &mut tmp, cw, ch, &base_kernel);
+    blur_h_f32_mode(&base, &mut tmp, cw, ch, &base_kernel, fast);
     blur_v_f32(&tmp, &mut gauss[0], cw, ch, &base_kernel, None, None);
 
     // KORNIA_SIFT_STAGES=1 breaks the pass down. Each probe is a plain elapsed
@@ -157,7 +158,7 @@ pub fn detect_and_compute(
         let tb = mark();
         for i in 1..n_layers {
             let k = &layer_kernels[i - 1];
-            blur_h_f32(&gauss[i - 1], &mut tmp[..p], cw, ch, k);
+            blur_h_f32_mode(&gauss[i - 1], &mut tmp[..p], cw, ch, k, fast);
             let (lo, hi) = gauss.split_at_mut(i);
             blur_v_f32(
                 &tmp[..p],
@@ -354,19 +355,21 @@ mod tests {
             ("fo=0", FirstOctave::Native, usize::MAX),
             ("fo=0 4oct", FirstOctave::Native, 4),
         ] {
-            let f = detect_and_compute(&img, w, h, &cfg, fo, moct);
-            let mut ts = Vec::new();
-            for _ in 0..5 {
-                let t = std::time::Instant::now();
-                let _ = detect_and_compute(&img, w, h, &cfg, fo, moct);
-                ts.push(t.elapsed().as_secs_f64() * 1e3);
+            for fast in [false, true] {
+                let f = detect_and_compute(&img, w, h, &cfg, fo, moct, fast);
+                let mut ts = Vec::new();
+                for _ in 0..5 {
+                    let t = std::time::Instant::now();
+                    let _ = detect_and_compute(&img, w, h, &cfg, fo, moct, fast);
+                    ts.push(t.elapsed().as_secs_f64() * 1e3);
+                }
+                ts.sort_by(f64::total_cmp);
+                eprintln!(
+                    "  cpu pipeline {name:10} fast={fast:<5} {:8.1} ms   kp={}",
+                    ts[2],
+                    f.keypoints.len()
+                );
             }
-            ts.sort_by(f64::total_cmp);
-            eprintln!(
-                "  cpu pipeline {name:10} {:8.1} ms   kp={}",
-                ts[2],
-                f.keypoints.len()
-            );
         }
     }
 }

@@ -33,6 +33,27 @@ const ROWS_PER_TASK: usize = 16;
 /// taps are consecutive, so tap `j` for lanes `x..x+3` is just the source vector
 /// at `x - n2 + j`. Only the `n2` columns at each edge need reflection.
 pub fn blur_h_f32(src: &[f32], dst: &mut [f32], w: usize, h: usize, kernel: &[f32]) {
+    blur_h_f32_mode(src, dst, w, h, kernel, false)
+}
+
+/// Horizontal pass, optionally exploiting the kernel's symmetry.
+///
+/// `symmetric` halves the multiply-adds by folding tap pairs before the
+/// multiply — `(s[n2-j] + s[n2+j]) * k[n2+j]` — which is what a normal
+/// implementation does and what the *column* pass already does.
+///
+/// It is not the default because the reference's row filter does **not** pair:
+/// it accumulates all `ksize` taps individually, and reproducing that rounding
+/// is what makes this bit-exact. So bit-exactness costs roughly twice the
+/// multiply-adds on this pass, and this flag is where that cost is given back.
+pub fn blur_h_f32_mode(
+    src: &[f32],
+    dst: &mut [f32],
+    w: usize,
+    h: usize,
+    kernel: &[f32],
+    symmetric: bool,
+) {
     debug_assert_eq!(src.len(), w * h);
     debug_assert_eq!(dst.len(), w * h);
     let n = kernel.len();
@@ -60,7 +81,11 @@ pub fn blur_h_f32(src: &[f32], dst: &mut [f32], w: usize, h: usize, kernel: &[f3
                     *out = row_border(s, w, x, n2, kernel);
                 }
                 if hi > lo {
-                    row_interior(s, &mut d[lo..hi], lo, n2, kernel);
+                    if symmetric {
+                        row_interior_sym(s, &mut d[lo..hi], lo, n2, kernel);
+                    } else {
+                        row_interior(s, &mut d[lo..hi], lo, n2, kernel);
+                    }
                 }
             }
         });
@@ -131,6 +156,63 @@ fn row_interior(s: &[f32], d: &mut [f32], x0: usize, n2: usize, kernel: &[f32]) 
         }
         d[i] = acc;
         i += 1;
+    }
+}
+
+/// Symmetric row interior: half the taps, four independent accumulators.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+fn row_interior_sym(s: &[f32], d: &mut [f32], x0: usize, n2: usize, kernel: &[f32]) {
+    use std::arch::aarch64::*;
+    let len = d.len();
+    let mut i = 0usize;
+    // SAFETY: the caller's interior bounds keep every load inside the row.
+    unsafe {
+        while i + 16 <= len {
+            let ctr = s.as_ptr().add(x0 + i);
+            let k0 = kernel[n2];
+            let mut a0 = vmulq_n_f32(vld1q_f32(ctr), k0);
+            let mut a1 = vmulq_n_f32(vld1q_f32(ctr.add(4)), k0);
+            let mut a2 = vmulq_n_f32(vld1q_f32(ctr.add(8)), k0);
+            let mut a3 = vmulq_n_f32(vld1q_f32(ctr.add(12)), k0);
+            for j in 1..=n2 {
+                let c = kernel[n2 + j];
+                let p = ctr.add(j);
+                let m = ctr.sub(j);
+                a0 = vfmaq_n_f32(a0, vaddq_f32(vld1q_f32(p), vld1q_f32(m)), c);
+                a1 = vfmaq_n_f32(a1, vaddq_f32(vld1q_f32(p.add(4)), vld1q_f32(m.add(4))), c);
+                a2 = vfmaq_n_f32(a2, vaddq_f32(vld1q_f32(p.add(8)), vld1q_f32(m.add(8))), c);
+                a3 = vfmaq_n_f32(a3, vaddq_f32(vld1q_f32(p.add(12)), vld1q_f32(m.add(12))), c);
+            }
+            let o = d.as_mut_ptr().add(i);
+            vst1q_f32(o, a0);
+            vst1q_f32(o.add(4), a1);
+            vst1q_f32(o.add(8), a2);
+            vst1q_f32(o.add(12), a3);
+            i += 16;
+        }
+    }
+    while i < len {
+        let ctr = x0 + i;
+        let mut acc = s[ctr] * kernel[n2];
+        for j in 1..=n2 {
+            acc = (s[ctr + j] + s[ctr - j]).mul_add(kernel[n2 + j], acc);
+        }
+        d[i] = acc;
+        i += 1;
+    }
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+#[inline]
+fn row_interior_sym(s: &[f32], d: &mut [f32], x0: usize, n2: usize, kernel: &[f32]) {
+    for (i, out) in d.iter_mut().enumerate() {
+        let ctr = x0 + i;
+        let mut acc = s[ctr] * kernel[n2];
+        for j in 1..=n2 {
+            acc = (s[ctr + j] + s[ctr - j]).mul_add(kernel[n2 + j], acc);
+        }
+        *out = acc;
     }
 }
 
