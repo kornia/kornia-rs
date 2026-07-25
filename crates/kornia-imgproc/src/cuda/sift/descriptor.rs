@@ -64,11 +64,17 @@ pub const DESC_BLOCK_THREADS: usize = 512;
 // for CUDA intrinsics, changes this stage by under 1% (12.8 -> 12.9 ms measured
 // at the time). The stage is not bound on arithmetic either.
 //
-// What would actually help is not doing the scatter at all: CudaSift samples
-// gradients through a texture unit in the *rotated* frame, so each thread owns
-// fixed histogram bins and needs no atomics. That is a different sampling
-// pattern from the reference's, so it cannot be adopted without giving up
-// parity with `cv::SIFT`.
+// * **Padded histogram stride** — see `ostride` below. 8.7 -> 18.2 ms at best.
+//
+// Five distinct attacks, all lost. Conflict reduction (transposed walk, padding),
+// privatisation (replication) and count reduction (run-merging) have each been
+// implemented and measured, so this is not a matter of picking a better one:
+// the scatter itself is the cost.
+//
+// What does work is not scattering at all: sample in the *rotated* frame, where
+// the cell is decided by the loop rather than the data. That is
+// `descriptor_fast_src`, which does the same work in 2.64 ms against 7.71, and
+// it is opt-in because the sampling differs from the reference's.
 /// Patch scale factor (`SIFT_DESCR_SCL_FCTR`).
 pub const DESCR_SCL_FCTR: f32 = 3.0;
 /// Post-normalisation clamp (`SIFT_DESCR_MAG_THR`).
@@ -238,18 +244,40 @@ extern "C" __global__ void sift_descriptor(
 /// atomics changes the summation order, so this is NOT bit-exact against the
 /// reference (float addition is not associative). Orientation keeps the
 /// sequential form because its histogram is 36 bins and stays in registers.
+/// Floats per histogram cell in the shared-memory kernels.
+///
+/// The natural stride `NN + 2 = 10` maps the 36 cells onto only 16 of the 32
+/// shared-memory banks, so on paper every spatial scatter takes a 2-way bank
+/// conflict and an odd stride should fix it. Measured, padding is far worse —
+/// descriptor stage, mh01, `KORNIA_SIFT_DESC_OSTRIDE`:
+///
+/// ```text
+/// 10 (packed)  8.7 ms      11  18.4 ms      13  21.1 ms      17  18.2 ms
+/// ```
+///
+/// So bank conflicts are not what these atomics are waiting on; spreading the
+/// eight targets over a wider address range costs more than the conflicts did.
+/// The knob stays for re-measurement, but do not pad by default.
+fn ostride() -> usize {
+    std::env::var("KORNIA_SIFT_DESC_OSTRIDE")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|v| *v >= DESCR_HIST_BINS + 2)
+        .unwrap_or(DESCR_HIST_BINS + 2)
+}
+
 fn descriptor_block_src(threads: usize) -> String {
     let d = DESCR_WIDTH;
     let n = DESCR_HIST_BINS;
-    let histlen = (d + 2) * (d + 2) * (n + 2);
     format!(
         r#"{hal}
 
 #define DD {d}
 #define NN {n}
-#define HISTLEN {histlen}
+#define HISTLEN ((DD + 2) * (DD + 2) * OSTRIDE)
 #define DLEN {dlen}
 #define NTHREADS {threads}
+#define OSTRIDE {ostride}
 
 __device__ __forceinline__ int cv_round_d(float v) {{ return __float2int_rn(v); }}
 __device__ __forceinline__ int cv_floor_d(float v) {{ return (int)floorf(v); }}
@@ -326,15 +354,15 @@ extern "C" __global__ void sift_descriptor_block(
             const float v_rco011 = v_rc01 * obin, v_rco010 = v_rc01 - v_rco011;
             const float v_rco001 = v_rc00 * obin, v_rco000 = v_rc00 - v_rco001;
 
-            const int idx = ((r0 + 1) * (DD + 2) + (c0 + 1)) * (NN + 2) + o0;
+            const int idx = ((r0 + 1) * (DD + 2) + (c0 + 1)) * OSTRIDE + o0;
             atomicAdd(&hist[idx], v_rco000);
             atomicAdd(&hist[idx + 1], v_rco001);
-            atomicAdd(&hist[idx + (NN + 2)], v_rco010);
-            atomicAdd(&hist[idx + (NN + 3)], v_rco011);
-            atomicAdd(&hist[idx + (DD + 2) * (NN + 2)], v_rco100);
-            atomicAdd(&hist[idx + (DD + 2) * (NN + 2) + 1], v_rco101);
-            atomicAdd(&hist[idx + (DD + 3) * (NN + 2)], v_rco110);
-            atomicAdd(&hist[idx + (DD + 3) * (NN + 2) + 1], v_rco111);
+            atomicAdd(&hist[idx + OSTRIDE], v_rco010);
+            atomicAdd(&hist[idx + OSTRIDE + 1], v_rco011);
+            atomicAdd(&hist[idx + (DD + 2) * OSTRIDE], v_rco100);
+            atomicAdd(&hist[idx + (DD + 2) * OSTRIDE + 1], v_rco101);
+            atomicAdd(&hist[idx + (DD + 3) * OSTRIDE], v_rco110);
+            atomicAdd(&hist[idx + (DD + 3) * OSTRIDE + 1], v_rco111);
         }}
     }}
     __syncthreads();
@@ -342,7 +370,7 @@ extern "C" __global__ void sift_descriptor_block(
     // Fold the circular orientation bins back into the d*d*n array.
     for (int cell = tid; cell < DD * DD; cell += NTHREADS) {{
         const int i = cell / DD, j = cell % DD;
-        const int idx = ((i + 1) * (DD + 2) + (j + 1)) * (NN + 2);
+        const int idx = ((i + 1) * (DD + 2) + (j + 1)) * OSTRIDE;
         hist[idx] += hist[idx + NN];
         hist[idx + 1] += hist[idx + NN + 1];
         for (int kk = 0; kk < NN; kk++) raw[cell * NN + kk] = hist[idx + kk];
@@ -385,9 +413,9 @@ extern "C" __global__ void sift_descriptor_block(
         hal = hal_device_src(),
         d = d,
         n = n,
-        histlen = histlen,
         dlen = DESCR_LEN,
         threads = threads,
+        ostride = ostride(),
         scl_fctr = DESCR_SCL_FCTR,
         mag_thr = DESCR_MAG_THR,
         int_fctr = INT_DESCR_FCTR,
@@ -433,17 +461,17 @@ pub const DESC_FAST_SAMP: usize = 4;
 fn descriptor_fast_src(threads: usize, samp: usize) -> String {
     let d = DESCR_WIDTH;
     let n = DESCR_HIST_BINS;
-    let histlen = (d + 2) * (d + 2) * (n + 2);
     format!(
         r#"{hal}
 
 #define DD {d}
 #define NN {n}
-#define HISTLEN {histlen}
+#define HISTLEN ((DD + 2) * (DD + 2) * OSTRIDE)
 #define DLEN {dlen}
 #define NTHREADS {threads}
 #define SAMP {samp}
 #define NSAMP ((DD + 2) * SAMP)
+#define OSTRIDE {ostride}
 
 __device__ __forceinline__ int cv_round_d(float v) {{ return __float2int_rn(v); }}
 __device__ __forceinline__ int cv_floor_d(float v) {{ return (int)floorf(v); }}
@@ -532,21 +560,21 @@ extern "C" __global__ void sift_descriptor_fast(
         const float v_rco011 = v_rc01 * obin, v_rco010 = v_rc01 - v_rco011;
         const float v_rco001 = v_rc00 * obin, v_rco000 = v_rc00 - v_rco001;
 
-        const int idx = ((r0 + 1) * (DD + 2) + (c0 + 1)) * (NN + 2) + o0;
+        const int idx = ((r0 + 1) * (DD + 2) + (c0 + 1)) * OSTRIDE + o0;
         atomicAdd(&hist[idx], v_rco000);
         atomicAdd(&hist[idx + 1], v_rco001);
-        atomicAdd(&hist[idx + (NN + 2)], v_rco010);
-        atomicAdd(&hist[idx + (NN + 3)], v_rco011);
-        atomicAdd(&hist[idx + (DD + 2) * (NN + 2)], v_rco100);
-        atomicAdd(&hist[idx + (DD + 2) * (NN + 2) + 1], v_rco101);
-        atomicAdd(&hist[idx + (DD + 3) * (NN + 2)], v_rco110);
-        atomicAdd(&hist[idx + (DD + 3) * (NN + 2) + 1], v_rco111);
+        atomicAdd(&hist[idx + OSTRIDE], v_rco010);
+        atomicAdd(&hist[idx + OSTRIDE + 1], v_rco011);
+        atomicAdd(&hist[idx + (DD + 2) * OSTRIDE], v_rco100);
+        atomicAdd(&hist[idx + (DD + 2) * OSTRIDE + 1], v_rco101);
+        atomicAdd(&hist[idx + (DD + 3) * OSTRIDE], v_rco110);
+        atomicAdd(&hist[idx + (DD + 3) * OSTRIDE + 1], v_rco111);
     }}
     __syncthreads();
 
     for (int cell = tid; cell < DD * DD; cell += NTHREADS) {{
         const int i = cell / DD, j = cell % DD;
-        const int idx = ((i + 1) * (DD + 2) + (j + 1)) * (NN + 2);
+        const int idx = ((i + 1) * (DD + 2) + (j + 1)) * OSTRIDE;
         hist[idx] += hist[idx + NN];
         hist[idx + 1] += hist[idx + NN + 1];
         for (int kk = 0; kk < NN; kk++) raw[cell * NN + kk] = hist[idx + kk];
@@ -588,10 +616,10 @@ extern "C" __global__ void sift_descriptor_fast(
         hal = hal_device_src(),
         d = d,
         n = n,
-        histlen = histlen,
         dlen = DESCR_LEN,
         threads = threads,
         samp = samp,
+        ostride = ostride(),
         scl_fctr = DESCR_SCL_FCTR,
         mag_thr = DESCR_MAG_THR,
         int_fctr = INT_DESCR_FCTR,
@@ -679,7 +707,10 @@ pub fn launch_sift_descriptor_cuda_view(
     if fast {
         let kernel = get_or_compile(
             ctx,
-            &format!("sift_descriptor_fast:{DESC_BLOCK_THREADS}:{DESC_FAST_SAMP}"),
+            &format!(
+                "sift_descriptor_fast:{DESC_BLOCK_THREADS}:{DESC_FAST_SAMP}:{}",
+                ostride()
+            ),
             || descriptor_fast_src(DESC_BLOCK_THREADS, DESC_FAST_SAMP),
             "sift_descriptor_fast",
         )?;
