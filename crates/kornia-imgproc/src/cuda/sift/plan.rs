@@ -191,6 +191,21 @@ impl SiftCuda {
         }
         let n_layers = self.cfg.n_octave_layers + 3;
         let n_dog = self.cfg.n_octave_layers + 2;
+        // KORNIA_SIFT_STAGES=1 breaks the pass down; each probe synchronises,
+        // so the total is inflated -- read the ratios, not the absolutes.
+        let probe = std::env::var("KORNIA_SIFT_STAGES").is_ok();
+        let mut t_blur = 0.0f64;
+        let mut t_det = 0.0f64;
+        let mut t_ori = 0.0f64;
+        let mut t_desc = 0.0f64;
+        let mut t_copy = 0.0f64;
+        let mark = |on: bool| -> Option<std::time::Instant> { on.then(std::time::Instant::now) };
+        let since = |t: Option<std::time::Instant>, stream: &Arc<CudaStream>, acc: &mut f64| {
+            if let Some(t) = t {
+                stream.synchronize().ok();
+                *acc += t.elapsed().as_secs_f64() * 1e3;
+            }
+        };
 
         // ── Base image of the first octave ──────────────────────────────────
         let (mut cw, mut ch) = match self.first_octave {
@@ -240,6 +255,7 @@ impl SiftCuda {
             let plane = cw * ch;
 
             // ── Gaussian layers and their DoGs ──────────────────────────────
+            let tb = mark(probe);
             for i in 1..n_layers {
                 let gk = &self.layer_kernels[i - 1];
                 launch_sift_blur_h_tiled_cuda_view(
@@ -267,7 +283,10 @@ impl SiftCuda {
                 )?;
             }
 
+            since(tb, stream, &mut t_blur);
+
             // ── Detect, orient, describe for this octave ────────────────────
+            let td = mark(probe);
             stream.memset_zeros(&mut self.kp_count)?;
             for layer in 1..=self.cfg.n_octave_layers {
                 launch_sift_find_extrema_cuda_view(
@@ -284,12 +303,13 @@ impl SiftCuda {
                     octv as u32,
                 )?;
             }
+            since(td, stream, &mut t_det);
             let n_kp = stream.clone_dtoh(&self.kp_count)?[0].max(0) as usize;
             let n_kp = n_kp.min(self.cfg.max_keypoints);
             if n_kp > 0 {
                 // Orientation and descriptors read the Gaussian layer the
                 // keypoint was found in, so group by layer.
-                let raw = stream.clone_dtoh(&self.kp)?;
+                let raw = stream.clone_dtoh(&self.kp.slice(0..n_kp * KP_STRIDE))?;
                 for layer in 1..=self.cfg.n_octave_layers {
                     let idx: Vec<usize> = (0..n_kp)
                         .filter(|&i| raw[i * KP_STRIDE + 5].to_bits() as i32 == layer as i32)
@@ -304,6 +324,7 @@ impl SiftCuda {
                     let d_in = stream.clone_htod(&packed)?;
                     let img = self.gauss[layer].slice(0..plane);
 
+                    let to = mark(probe);
                     stream.memset_zeros(&mut self.ori_count)?;
                     launch_sift_orientation_cuda_view(
                         ctx,
@@ -318,12 +339,14 @@ impl SiftCuda {
                         &mut self.ori_kp.as_view_mut(),
                         &mut self.ori_count.as_view_mut(),
                     )?;
+                    since(to, stream, &mut t_ori);
                     let n_ori = stream.clone_dtoh(&self.ori_count)?[0].max(0) as usize;
                     let cap = self.ori_kp.len() / ORI_KP_STRIDE;
                     let n_ori = n_ori.min(cap);
                     if n_ori == 0 {
                         continue;
                     }
+                    let tds = mark(probe);
                     launch_sift_descriptor_cuda_view(
                         ctx,
                         stream,
@@ -336,14 +359,22 @@ impl SiftCuda {
                         &mut self.desc.as_view_mut(),
                     )?;
 
-                    let ok = stream.clone_dtoh(&self.ori_kp)?;
-                    let od = stream.clone_dtoh(&self.desc)?;
+                    since(tds, stream, &mut t_desc);
+                    let tc = mark(probe);
+                    // Copy back only the rows this launch actually wrote.
+                    // The buffers are sized for `max_keypoints * 4` oriented
+                    // keypoints, so downloading them whole moves ~17 MB per
+                    // layer per octave -- ~400 MB an image, which dominated
+                    // the end-to-end time by an order of magnitude.
+                    let ok = stream.clone_dtoh(&self.ori_kp.slice(0..n_ori * ORI_KP_STRIDE))?;
+                    let od = stream.clone_dtoh(&self.desc.slice(0..n_ori * DESCR_LEN))?;
                     // first_octave = -1 post-processing: halve position and
                     // size, and rewrite the packed octave byte.
                     let scale = match self.first_octave {
                         FirstOctave::Double => 0.5f32,
                         FirstOctave::Native => 1.0f32,
                     };
+                    since(tc, stream, &mut t_copy);
                     for r in 0..n_ori {
                         let o = &ok[r * ORI_KP_STRIDE..(r + 1) * ORI_KP_STRIDE];
                         let packed_oct = o[4].to_bits() as i32;
@@ -388,6 +419,12 @@ impl SiftCuda {
             ch = nh;
         }
 
+        if probe {
+            eprintln!(
+                "  stages: blur={t_blur:.1} detect={t_det:.1} orient={t_ori:.1} \
+                 descriptor={t_desc:.1} copyback={t_copy:.1} (ms)"
+            );
+        }
         Ok(SiftFeatures {
             keypoints: all_kps,
             descriptors: all_desc,

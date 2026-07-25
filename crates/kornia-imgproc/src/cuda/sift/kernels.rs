@@ -499,20 +499,18 @@ pub(crate) fn get_or_compile(
     build_src: impl FnOnce() -> String,
     fn_name: &str,
 ) -> Result<Arc<CudaKernel>, SiftCudaError> {
-    // The source is built BEFORE the cache lookup and its hash forms part of the
-    // key. Keying on a caller-supplied name alone silently returns a stale
-    // kernel whenever the generated source changes but the name does not —
-    // which makes every "isolation" measurement suspect.
-    let src = build_src();
-    let src_hash = {
-        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-        for b in src.as_bytes() {
-            h ^= *b as u64;
-            h = h.wrapping_mul(0x100_0000_01b3);
-        }
-        h
-    };
-    let cache_key = (ctx.ordinal(), format!("{key}:{src_hash:016x}"));
+    // Look up BEFORE generating any source. Every caller's key is already
+    // content-derived — the blur keys embed the tap count and a digest of the
+    // coefficients, the orientation and descriptor keys embed their variant
+    // selectors — so two different sources cannot share a key.
+    //
+    // An earlier version hashed the generated source into the key to guard
+    // against a stale-kernel hypothesis. That hypothesis was later disproved
+    // (the cache is an in-process `OnceLock`, and every test run is a fresh
+    // process), but the guard remained and cost a full source regeneration plus
+    // a hash of it on EVERY launch — ~50 times per image, and the single
+    // largest cost in the assembled pipeline.
+    let cache_key = (ctx.ordinal(), key.to_string());
 
     {
         let guard = cache().lock().expect("SIFT kernel cache mutex poisoned");
@@ -520,6 +518,8 @@ pub(crate) fn get_or_compile(
             return Ok(k);
         }
     }
+
+    let src = build_src();
 
     let kernel = CudaKernel::compile(ctx, &src, fn_name)
         .map_err(|e| SiftCudaError::Cuda(format!("failed to compile {fn_name}: {e}")))?;
