@@ -1,5 +1,32 @@
 //! CUDA SIFT — scale-invariant feature detector, descriptor and matcher.
 //!
+//! # Attribution and licensing
+//!
+//! This module is written to reproduce **OpenCV's** SIFT bit-for-bit, and was
+//! developed by reading OpenCV's implementation (`modules/features2d/src/
+//! sift.dispatch.cpp` and `sift.simd.hpp`, plus `getGaussianKernelBitExact` in
+//! `modules/imgproc/src/smooth.dispatch.cpp`) and reproducing its expression
+//! trees, constants and rounding behaviour. It should be treated as a
+//! derivative work of OpenCV, which is licensed under **Apache-2.0** — the same
+//! licence as this crate. Retain this notice.
+//!
+//! On this platform OpenCV's scalar-math entry points are additionally
+//! overridden by the bundled **carotene / Tegra HAL** (also Apache-2.0); the
+//! reciprocal- and reciprocal-square-root-estimate step counts reproduced in
+//! [`hal`] follow that implementation.
+//!
+//! [`detect::exp2f_device_src`] reproduces **glibc's** `exp2f`
+//! (`sysdeps/ieee754/flt-32/e_exp2f.c`). The lookup table is derived
+//! numerically rather than copied, but the three polynomial coefficients are
+//! glibc's literal values; glibc is **LGPL-2.1-or-later**, which differs from
+//! this crate's licence. If that is a concern for redistribution, replace them
+//! with independently fitted coefficients — the surrounding algorithm is a
+//! standard table-plus-polynomial exponential and is not specific to glibc.
+//!
+//! The SIFT algorithm itself is due to D. Lowe; the associated patent
+//! (US 6,711,293, filed 1999) has expired, which is why OpenCV moved SIFT out
+//! of its `nonfree` module and into the main tree in 4.4.0.
+//!
 //! # Numerical contract: bit equality with the reference implementation
 //!
 //! Unlike the rest of this crate, SIFT has no CPU twin in kornia-rs. The
