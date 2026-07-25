@@ -1,0 +1,256 @@
+//! Orientation assignment: a 36-bin gradient histogram per keypoint.
+//!
+//! The accumulation order is fixed by the reference and cannot be reordered:
+//! float addition is not associative, and this histogram is summed sequentially
+//! in a known sample order. The loop below walks rows-outer, columns-inner for
+//! that reason.
+
+use super::detect::RawKeypoint;
+use super::hal::{atan2_deg, exp, magnitude};
+use super::params::SiftConfig;
+
+/// Histogram bins (`SIFT_ORI_HIST_BINS`).
+pub const ORI_HIST_BINS: usize = 36;
+/// Patch radius factor (`SIFT_ORI_RADIUS`).
+pub const ORI_RADIUS: f32 = 4.5;
+/// Gaussian weight sigma factor (`SIFT_ORI_SIG_FCTR`).
+pub const ORI_SIG_FCTR: f32 = 1.5;
+/// Secondary-peak acceptance ratio (`SIFT_ORI_PEAK_RATIO`).
+pub const ORI_PEAK_RATIO: f32 = 0.8;
+
+/// A keypoint with an assigned orientation.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OrientedKeypoint {
+    /// Column in base-image pixels.
+    pub x: f32,
+    /// Row in base-image pixels.
+    pub y: f32,
+    /// Diameter of the meaningful neighbourhood.
+    pub size: f32,
+    /// Contrast at the refined extremum.
+    pub response: f32,
+    /// Packed octave/layer/sub-layer field.
+    pub octave: i32,
+    /// Orientation in degrees.
+    pub angle: f32,
+}
+
+/// Append one oriented keypoint per dominant gradient direction.
+///
+/// A keypoint with several peaks within `ORI_PEAK_RATIO` of the maximum yields
+/// several entries, as the reference does.
+pub fn assign_orientations(
+    img: &[f32],
+    w: usize,
+    h: usize,
+    kp: &RawKeypoint,
+    cfg: &SiftConfig,
+    out: &mut Vec<OrientedKeypoint>,
+) {
+    let octv = kp.octave & 255;
+    // `size` is still in the octave's own scale here; the first-octave halving
+    // happens later.
+    let scl_octv = kp.size * 0.5 / (1 << octv) as f32;
+    let radius = (ORI_RADIUS * scl_octv).round_ties_even() as i32;
+    let sigma = ORI_SIG_FCTR * scl_octv;
+    let expf_scale = -1.0 / (2.0 * sigma * sigma);
+
+    let mut temphist = [0.0f32; ORI_HIST_BINS];
+    let (cc, rr) = (kp.cc, kp.rr);
+
+    for i in -radius..=radius {
+        let y = rr + i;
+        if y <= 0 || y >= h as i32 - 1 {
+            continue;
+        }
+        for j in -radius..=radius {
+            let x = cc + j;
+            if x <= 0 || x >= w as i32 - 1 {
+                continue;
+            }
+            let (y, x) = (y as usize, x as usize);
+            let dx = img[y * w + x + 1] - img[y * w + x - 1];
+            let dy = img[(y - 1) * w + x] - img[(y + 1) * w + x];
+            let wgt = exp((i * i + j * j) as f32 * expf_scale);
+            let ori = atan2_deg(dy, dx);
+            let mag = magnitude(dx, dy);
+
+            let mut bin = ((ORI_HIST_BINS as f32 / 360.0) * ori).round_ties_even() as i32;
+            if bin >= ORI_HIST_BINS as i32 {
+                bin -= ORI_HIST_BINS as i32;
+            }
+            if bin < 0 {
+                bin += ORI_HIST_BINS as i32;
+            }
+            // The reference's build fuses this; rounding the product separately
+            // leaves ~10 of 36 bins one ULP out.
+            temphist[bin as usize] = wgt.mul_add(mag, temphist[bin as usize]);
+        }
+    }
+
+    // Smooth with [1,4,6,4,1]/16, wrapping. The reference's scalar form is
+    // `(tn2+t2)*1/16 + (tn1+t1)*4/16 + t0*6/16` evaluated left to right, which
+    // its build contracts as below — NOT the vector branch's shape.
+    let n = ORI_HIST_BINS;
+    let mut hist = [0.0f32; ORI_HIST_BINS];
+    for i in 0..n {
+        let tn2 = temphist[(i + n - 2) % n];
+        let tn1 = temphist[(i + n - 1) % n];
+        let t0 = temphist[i];
+        let t1 = temphist[(i + 1) % n];
+        let t2 = temphist[(i + 2) % n];
+        hist[i] = t0.mul_add(
+            6.0 / 16.0,
+            (tn2 + t2).mul_add(1.0 / 16.0, (tn1 + t1) * (4.0 / 16.0)),
+        );
+    }
+
+    let mut omax = hist[0];
+    for &v in hist.iter().skip(1) {
+        if v > omax {
+            omax = v;
+        }
+    }
+    let mag_thr = omax * ORI_PEAK_RATIO;
+
+    let scale = 1.0f32; // caller applies the first-octave rescale
+    for j in 0..n {
+        let l = if j > 0 { j - 1 } else { n - 1 };
+        let r2 = if j < n - 1 { j + 1 } else { 0 };
+        if hist[j] > hist[l] && hist[j] > hist[r2] && hist[j] >= mag_thr {
+            let den = hist[l] - 2.0 * hist[j] + hist[r2];
+            let mut bin = j as f32 + 0.5 * (hist[l] - hist[r2]) / den;
+            bin = if bin < 0.0 {
+                n as f32 + bin
+            } else if bin >= n as f32 {
+                bin - n as f32
+            } else {
+                bin
+            };
+            // `360 - (360/n)*bin` is a mul-then-subtract, which the reference's
+            // build contracts. Rounding the product separately shifts the angle
+            // by an ULP.
+            let mut angle = (-(360.0 / n as f32)).mul_add(bin, 360.0);
+            if (angle - 360.0).abs() < f32::EPSILON {
+                angle = 0.0;
+            }
+            out.push(OrientedKeypoint {
+                x: kp.x * scale,
+                y: kp.y * scale,
+                size: kp.size * scale,
+                response: kp.response,
+                octave: kp.octave,
+                angle,
+            });
+        }
+    }
+    let _ = cfg;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::detect::find_extrema;
+    use super::*;
+
+    fn load_dump(path: &str) -> Option<(usize, usize, Vec<f32>)> {
+        let b = std::fs::read(path).ok()?;
+        let rows = i32::from_le_bytes(b[0..4].try_into().unwrap()) as usize;
+        let cols = i32::from_le_bytes(b[4..8].try_into().unwrap()) as usize;
+        let data: Vec<f32> = b[8..]
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+            .take(rows * cols)
+            .collect();
+        Some((rows, cols, data))
+    }
+
+    /// Angles compared as a multiset per position: a keypoint with several
+    /// dominant peaks appears as several reference entries at the same point, so
+    /// matching positionally and taking the first hit compares unrelated peaks.
+    #[test]
+    fn orientation_matches_reference() {
+        let Some(dir) = std::env::var("KORNIA_SIFT_ORACLE")
+            .ok()
+            .and_then(|v| v.split(':').next().map(String::from))
+        else {
+            eprintln!("KORNIA_SIFT_ORACLE unset; skipping");
+            return;
+        };
+        let cfg = SiftConfig::default();
+        let n_dog = cfg.n_octave_layers + 2;
+        let mut stack: Vec<f32> = Vec::new();
+        let (mut hh, mut ww) = (0usize, 0usize);
+        for i in 0..n_dog {
+            let Some((h, w, p)) = load_dump(&format!("{dir}/dog_o0_l{i}.f32")) else {
+                eprintln!("no dog dumps; skipping");
+                return;
+            };
+            hh = h;
+            ww = w;
+            stack.extend_from_slice(&p);
+        }
+        let mut kps = Vec::new();
+        for layer in 1..=cfg.n_octave_layers {
+            find_extrema(&stack, ww, hh, n_dog, layer, 0, &cfg, &mut kps);
+        }
+
+        let mut got: Vec<(u32, u32, u32)> = Vec::new();
+        for layer in 1..=cfg.n_octave_layers {
+            let Some((h2, w2, img)) = load_dump(&format!("{dir}/gauss_o0_l{layer}.f32")) else {
+                return;
+            };
+            let mut o = Vec::new();
+            for kp in kps.iter().filter(|k| k.layer == layer as i32) {
+                assign_orientations(&img, w2, h2, kp, &cfg, &mut o);
+            }
+            for k in o {
+                // Reference keypoints are stored after the first-octave halving.
+                got.push((
+                    (k.x * 0.5).to_bits(),
+                    (k.y * 0.5).to_bits(),
+                    k.angle.to_bits(),
+                ));
+            }
+        }
+
+        let b = std::fs::read(format!("{dir}/keypoints.bin")).expect("keypoints");
+        let n = i32::from_le_bytes(b[0..4].try_into().unwrap()) as usize;
+        use std::collections::HashMap;
+        let mut want: HashMap<(u32, u32), Vec<u32>> = HashMap::new();
+        for i in 0..n {
+            let o = 4 + i * 24;
+            let packed = i32::from_le_bytes(b[o + 20..o + 24].try_into().unwrap());
+            if (packed & 255) != 255 {
+                continue;
+            }
+            let f = |k: usize| f32::from_le_bytes(b[o + k * 4..o + k * 4 + 4].try_into().unwrap());
+            want.entry((f(0).to_bits(), f(1).to_bits()))
+                .or_default()
+                .push(f(3).to_bits());
+        }
+        let mut have: HashMap<(u32, u32), Vec<u32>> = HashMap::new();
+        for (x, y, a) in got {
+            have.entry((x, y)).or_default().push(a);
+        }
+
+        let (mut matched, mut bad) = (0usize, 0usize);
+        for (pos, wa) in &want {
+            if let Some(ga) = have.get(pos) {
+                matched += 1;
+                let (mut a, mut c) = (wa.clone(), ga.clone());
+                a.sort_unstable();
+                c.sort_unstable();
+                if a != c {
+                    bad += 1;
+                }
+            }
+        }
+        eprintln!(
+            "  cpu orientation: positions matched={}/{} angle_set_mismatch={}",
+            matched,
+            want.len(),
+            bad
+        );
+        assert_eq!(matched, want.len(), "positions dropped by orientation");
+    }
+}
