@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use cudarc::driver::{CudaContext, CudaSlice, CudaStream};
+use cudarc::driver::{CudaContext, CudaSlice, CudaStream, CudaView, CudaViewMut};
 
 use super::kernels::{
     blur_h_src, blur_h_tiled_src, blur_hv_fused_src, blur_v_dog_src, blur_v_src, dog_src,
@@ -50,11 +50,11 @@ fn check_len(slice_len: usize, need: usize) -> Result<(), SiftCudaError> {
 /// Double the image in both axes to form the base of octave 0.
 ///
 /// `dst` must hold at least `4 * src_width * src_height` elements.
-pub fn launch_sift_upsample2x_cuda(
+pub fn launch_sift_upsample2x_cuda_view(
     ctx: &Arc<CudaContext>,
     stream: &Arc<CudaStream>,
-    src: &CudaSlice<f32>,
-    dst: &mut CudaSlice<f32>,
+    src: &CudaView<'_, f32>,
+    dst: &mut CudaViewMut<'_, f32>,
     src_width: u32,
     src_height: u32,
 ) -> Result<(), SiftCudaError> {
@@ -112,11 +112,11 @@ pub fn launch_sift_blur_h_cuda(
 }
 
 /// Vertical (symmetric column) pass of the separable Gaussian.
-pub fn launch_sift_blur_v_cuda(
+pub fn launch_sift_blur_v_cuda_view(
     ctx: &Arc<CudaContext>,
     stream: &Arc<CudaStream>,
-    src: &CudaSlice<f32>,
-    dst: &mut CudaSlice<f32>,
+    src: &CudaView<'_, f32>,
+    dst: &mut CudaViewMut<'_, f32>,
     width: u32,
     height: u32,
     gauss_kernel: &[f32],
@@ -150,11 +150,11 @@ pub fn launch_sift_blur_v_cuda(
 
 /// Nearest-neighbour subsample forming the base layer of the next octave.
 #[allow(clippy::too_many_arguments)]
-pub fn launch_sift_downsample_nearest_cuda(
+pub fn launch_sift_downsample_nearest_cuda_view(
     ctx: &Arc<CudaContext>,
     stream: &Arc<CudaStream>,
-    src: &CudaSlice<f32>,
-    dst: &mut CudaSlice<f32>,
+    src: &CudaView<'_, f32>,
+    dst: &mut CudaViewMut<'_, f32>,
     src_width: u32,
     src_height: u32,
     dst_width: u32,
@@ -221,13 +221,13 @@ pub fn launch_sift_dog_cuda(
 /// [`launch_sift_dog_cuda`], but writes the difference from the register the
 /// blur already holds instead of re-reading the layer in a second pass.
 #[allow(clippy::too_many_arguments)]
-pub fn launch_sift_blur_v_dog_cuda(
+pub fn launch_sift_blur_v_dog_cuda_view(
     ctx: &Arc<CudaContext>,
     stream: &Arc<CudaStream>,
-    src: &CudaSlice<f32>,
-    dst: &mut CudaSlice<f32>,
-    lower: &CudaSlice<f32>,
-    dog: &mut CudaSlice<f32>,
+    src: &CudaView<'_, f32>,
+    dst: &mut CudaViewMut<'_, f32>,
+    lower: &CudaView<'_, f32>,
+    dog: &mut CudaViewMut<'_, f32>,
     width: u32,
     height: u32,
     gauss_kernel: &[f32],
@@ -274,11 +274,11 @@ pub fn launch_sift_blur_v_dog_cuda(
 pub const TILE_P: usize = 4;
 
 /// Register-tiled horizontal pass. Same contract as [`launch_sift_blur_h_cuda`].
-pub fn launch_sift_blur_h_tiled_cuda(
+pub fn launch_sift_blur_h_tiled_cuda_view(
     ctx: &Arc<CudaContext>,
     stream: &Arc<CudaStream>,
-    src: &CudaSlice<f32>,
-    dst: &mut CudaSlice<f32>,
+    src: &CudaView<'_, f32>,
+    dst: &mut CudaViewMut<'_, f32>,
     width: u32,
     height: u32,
     gauss_kernel: &[f32],
@@ -369,6 +369,120 @@ pub fn launch_sift_blur_hv_cuda(
             make_config(width, height, Some((HV_BLOCK_W as u32, HV_BLOCK_H as u32))),
         )
         .map_err(|e| SiftCudaError::Cuda(e.to_string()))
+}
+
+/// Convenience wrapper over [`launch_sift_upsample2x_cuda_view`] for whole buffers.
+#[allow(clippy::too_many_arguments)]
+pub fn launch_sift_upsample2x_cuda(
+    ctx: &Arc<CudaContext>,
+    stream: &Arc<CudaStream>,
+    src: &CudaSlice<f32>,
+    dst: &mut CudaSlice<f32>,
+    src_width: u32,
+    src_height: u32,
+) -> Result<(), SiftCudaError> {
+    launch_sift_upsample2x_cuda_view(
+        ctx,
+        stream,
+        &src.as_view(),
+        &mut dst.as_view_mut(),
+        src_width,
+        src_height,
+    )
+}
+
+/// Convenience wrapper over [`launch_sift_blur_h_tiled_cuda_view`] for whole buffers.
+#[allow(clippy::too_many_arguments)]
+pub fn launch_sift_blur_h_tiled_cuda(
+    ctx: &Arc<CudaContext>,
+    stream: &Arc<CudaStream>,
+    src: &CudaSlice<f32>,
+    dst: &mut CudaSlice<f32>,
+    width: u32,
+    height: u32,
+    gauss_kernel: &[f32],
+) -> Result<(), SiftCudaError> {
+    launch_sift_blur_h_tiled_cuda_view(
+        ctx,
+        stream,
+        &src.as_view(),
+        &mut dst.as_view_mut(),
+        width,
+        height,
+        gauss_kernel,
+    )
+}
+
+/// Convenience wrapper over [`launch_sift_blur_v_cuda_view`] for whole buffers.
+#[allow(clippy::too_many_arguments)]
+pub fn launch_sift_blur_v_cuda(
+    ctx: &Arc<CudaContext>,
+    stream: &Arc<CudaStream>,
+    src: &CudaSlice<f32>,
+    dst: &mut CudaSlice<f32>,
+    width: u32,
+    height: u32,
+    gauss_kernel: &[f32],
+) -> Result<(), SiftCudaError> {
+    launch_sift_blur_v_cuda_view(
+        ctx,
+        stream,
+        &src.as_view(),
+        &mut dst.as_view_mut(),
+        width,
+        height,
+        gauss_kernel,
+    )
+}
+
+/// Convenience wrapper over [`launch_sift_downsample_nearest_cuda_view`] for whole buffers.
+#[allow(clippy::too_many_arguments)]
+pub fn launch_sift_downsample_nearest_cuda(
+    ctx: &Arc<CudaContext>,
+    stream: &Arc<CudaStream>,
+    src: &CudaSlice<f32>,
+    dst: &mut CudaSlice<f32>,
+    src_width: u32,
+    src_height: u32,
+    dst_width: u32,
+    dst_height: u32,
+) -> Result<(), SiftCudaError> {
+    launch_sift_downsample_nearest_cuda_view(
+        ctx,
+        stream,
+        &src.as_view(),
+        &mut dst.as_view_mut(),
+        src_width,
+        src_height,
+        dst_width,
+        dst_height,
+    )
+}
+
+/// Convenience wrapper over [`launch_sift_blur_v_dog_cuda_view`] for whole buffers.
+#[allow(clippy::too_many_arguments)]
+pub fn launch_sift_blur_v_dog_cuda(
+    ctx: &Arc<CudaContext>,
+    stream: &Arc<CudaStream>,
+    src: &CudaSlice<f32>,
+    dst: &mut CudaSlice<f32>,
+    lower: &CudaSlice<f32>,
+    dog: &mut CudaSlice<f32>,
+    width: u32,
+    height: u32,
+    gauss_kernel: &[f32],
+) -> Result<(), SiftCudaError> {
+    launch_sift_blur_v_dog_cuda_view(
+        ctx,
+        stream,
+        &src.as_view(),
+        &mut dst.as_view_mut(),
+        &lower.as_view(),
+        &mut dog.as_view_mut(),
+        width,
+        height,
+        gauss_kernel,
+    )
 }
 
 #[cfg(test)]

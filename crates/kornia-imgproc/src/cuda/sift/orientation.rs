@@ -18,7 +18,7 @@
 
 use std::sync::Arc;
 
-use cudarc::driver::{CudaContext, CudaSlice, CudaStream};
+use cudarc::driver::{CudaContext, CudaSlice, CudaStream, CudaView, CudaViewMut};
 
 use super::hal::hal_device_src;
 use super::kernels::get_or_compile;
@@ -184,18 +184,18 @@ extern "C" __global__ void sift_orientation(
 /// oriented copies, so `out_count` is incremented atomically and may exceed
 /// `max_out` — treat that as overflow rather than assuming every hit was stored.
 #[allow(clippy::too_many_arguments)]
-pub fn launch_sift_orientation_cuda(
+pub fn launch_sift_orientation_cuda_view(
     ctx: &Arc<CudaContext>,
     stream: &Arc<CudaStream>,
     _cfg: &SiftCudaConfig,
-    img: &CudaSlice<f32>,
+    img: &CudaView<'_, f32>,
     width: u32,
     height: u32,
-    kp_in: &CudaSlice<f32>,
+    kp_in: &CudaView<'_, f32>,
     n_kp: u32,
     kp_stride: u32,
-    out_kp: &mut CudaSlice<f32>,
-    out_count: &mut CudaSlice<i32>,
+    out_kp: &mut CudaViewMut<'_, f32>,
+    out_count: &mut CudaViewMut<'_, i32>,
 ) -> Result<(), SiftCudaError> {
     if width == 0 || height == 0 {
         return Err(SiftCudaError::Geometry(
@@ -242,6 +242,36 @@ pub fn launch_sift_orientation_cuda(
         .arg(&max_out)
         .launch_2d(n_kp, 1, make_config(n_kp, 1, Some((64, 1))))
         .map_err(|e| SiftCudaError::Cuda(e.to_string()))
+}
+
+/// Convenience wrapper over [`launch_sift_orientation_cuda_view`] for whole buffers.
+#[allow(clippy::too_many_arguments)]
+pub fn launch_sift_orientation_cuda(
+    ctx: &Arc<CudaContext>,
+    stream: &Arc<CudaStream>,
+    _cfg: &SiftCudaConfig,
+    img: &CudaSlice<f32>,
+    width: u32,
+    height: u32,
+    kp_in: &CudaSlice<f32>,
+    n_kp: u32,
+    kp_stride: u32,
+    out_kp: &mut CudaSlice<f32>,
+    out_count: &mut CudaSlice<i32>,
+) -> Result<(), SiftCudaError> {
+    launch_sift_orientation_cuda_view(
+        ctx,
+        stream,
+        _cfg,
+        &img.as_view(),
+        width,
+        height,
+        &kp_in.as_view(),
+        n_kp,
+        kp_stride,
+        &mut out_kp.as_view_mut(),
+        &mut out_count.as_view_mut(),
+    )
 }
 
 #[cfg(test)]

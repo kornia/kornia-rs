@@ -15,7 +15,7 @@
 
 use std::sync::Arc;
 
-use cudarc::driver::{CudaContext, CudaSlice, CudaStream};
+use cudarc::driver::{CudaContext, CudaSlice, CudaStream, CudaView, CudaViewMut};
 
 use super::kernels::get_or_compile;
 use super::{SiftCudaConfig, SiftCudaError, SIFT_IMG_BORDER, SIFT_MAX_INTERP_STEPS};
@@ -388,13 +388,13 @@ extern "C" __global__ void sift_find_extrema(
 /// incremented atomically. The counter may exceed `max_kp`; the caller must
 /// treat that as overflow rather than assuming the buffer holds every hit.
 #[allow(clippy::too_many_arguments)]
-pub fn launch_sift_find_extrema_cuda(
+pub fn launch_sift_find_extrema_cuda_view(
     ctx: &Arc<CudaContext>,
     stream: &Arc<CudaStream>,
     cfg: &SiftCudaConfig,
-    dog: &CudaSlice<f32>,
-    out_kp: &mut CudaSlice<f32>,
-    counter: &mut CudaSlice<i32>,
+    dog: &CudaView<'_, f32>,
+    out_kp: &mut CudaViewMut<'_, f32>,
+    counter: &mut CudaViewMut<'_, i32>,
     width: u32,
     height: u32,
     n_dog: u32,
@@ -494,6 +494,36 @@ pub fn decode_keypoints(raw: &[f32], count: usize) -> Vec<SiftRawKeypoint> {
             rr: c[8].to_bits() as i32,
         })
         .collect()
+}
+
+/// Convenience wrapper over [`launch_sift_find_extrema_cuda_view`] for whole buffers.
+#[allow(clippy::too_many_arguments)]
+pub fn launch_sift_find_extrema_cuda(
+    ctx: &Arc<CudaContext>,
+    stream: &Arc<CudaStream>,
+    cfg: &SiftCudaConfig,
+    dog: &CudaSlice<f32>,
+    out_kp: &mut CudaSlice<f32>,
+    counter: &mut CudaSlice<i32>,
+    width: u32,
+    height: u32,
+    n_dog: u32,
+    layer: u32,
+    octave: u32,
+) -> Result<(), SiftCudaError> {
+    launch_sift_find_extrema_cuda_view(
+        ctx,
+        stream,
+        cfg,
+        &dog.as_view(),
+        &mut out_kp.as_view_mut(),
+        &mut counter.as_view_mut(),
+        width,
+        height,
+        n_dog,
+        layer,
+        octave,
+    )
 }
 
 #[cfg(test)]
