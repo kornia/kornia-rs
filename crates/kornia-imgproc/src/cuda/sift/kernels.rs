@@ -234,6 +234,10 @@ pub(crate) fn blur_h_tiled_src(kernel: &[f32], p: usize) -> String {
             ));
         }
     }
+    // Vectorised stores (float2/float4 for the whole tile, guarded on the width
+    // being a multiple of the tile so the row stays 16-byte aligned) were
+    // implemented and measured: neutral at 752x480 and at 1080p, within noise
+    // either way. Reverted -- this kernel is not store-issue bound.
     let mut stores = String::new();
     for j in 0..p {
         stores.push_str(&format!("        dst[row + xb + {j}] = acc{j};\n"));

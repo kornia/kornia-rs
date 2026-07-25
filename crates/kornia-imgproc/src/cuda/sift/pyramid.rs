@@ -271,7 +271,23 @@ pub fn launch_sift_blur_v_dog_cuda_view(
 /// Horizontal Gaussian pass with `TILE_P` outputs per thread.
 ///
 /// Bit-identical to [`launch_sift_blur_h_cuda`]; see [`blur_h_tiled_src`].
-pub const TILE_P: usize = 4;
+/// Outputs per thread in the tiled horizontal blur.
+///
+/// Swept end to end on mh01 (`KORNIA_SIFT_TILE_P`, min of 4 medians):
+/// 1 -> 17.66 ms, **2 -> 16.99**, 3 -> 16.98, 4 -> 17.33, 8 -> 20.5. The
+/// original 4 was tuned at 1080p against a very different pipeline; at these
+/// sizes the wider tile costs more in redundant edge taps than it saves in
+/// loads.
+pub const TILE_P: usize = 2;
+
+/// `KORNIA_SIFT_TILE_P` overrides [`TILE_P`] for sweeps.
+fn tile_p() -> usize {
+    std::env::var("KORNIA_SIFT_TILE_P")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|v| *v >= 1 && *v <= 16)
+        .unwrap_or(TILE_P)
+}
 
 /// Register-tiled horizontal pass. Same contract as [`launch_sift_blur_h_cuda`].
 pub fn launch_sift_blur_h_tiled_cuda_view(
@@ -297,16 +313,16 @@ pub fn launch_sift_blur_h_tiled_cuda_view(
     let key = format!(
         "sift_blur_h_tiled:{}:{}:{:016x}",
         gauss_kernel.len(),
-        TILE_P,
+        tile_p(),
         kernel_digest(gauss_kernel)
     );
     let kernel = get_or_compile(
         ctx,
         &key,
-        || blur_h_tiled_src(gauss_kernel, TILE_P),
+        || blur_h_tiled_src(gauss_kernel, tile_p()),
         "sift_blur_h_tiled",
     )?;
-    let gw = width.div_ceil(TILE_P as u32);
+    let gw = width.div_ceil(tile_p() as u32);
     kernel
         .launch_builder(stream)
         .arg(src)
