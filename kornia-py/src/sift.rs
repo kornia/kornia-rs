@@ -45,6 +45,25 @@ pub struct Sift {
     upsample: bool,
     max_octaves: usize,
     plan: crate::cuda_ext::cuda_sift::PlanSlot,
+    store: crate::cuda_ext::cuda_sift::MatchStore,
+}
+
+/// Borrow a device `Image` from a Python object, or explain what is wrong.
+#[cfg(feature = "cuda")]
+fn device_image<'py>(obj: &Bound<'py, PyAny>, who: &str) -> PyResult<Bound<'py, PyImageApi>> {
+    let api = obj.cast::<PyImageApi>().map_err(|_| {
+        pyo3::exceptions::PyValueError::new_err(format!(
+            "{who}: expected a device Image; SIFT has no CPU path, so convert with \
+             Image.from_numpy(a).to_cuda(stream) first"
+        ))
+    })?;
+    if !api.borrow().is_device() {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "{who}: this Image lives on the host and SIFT has no CPU kernel; move \
+             it with .to_cuda(stream) first"
+        )));
+    }
+    Ok(api.clone())
 }
 
 #[cfg(feature = "cuda")]
@@ -85,6 +104,7 @@ impl Sift {
             upsample,
             max_octaves,
             plan: None,
+            store: Default::default(),
         })
     }
 
@@ -102,23 +122,59 @@ impl Sift {
         py: Python<'py>,
         image: &Bound<'py, PyAny>,
     ) -> PyResult<(Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<f32>>)> {
-        let api = image.cast::<PyImageApi>().map_err(|_| {
-            pyo3::exceptions::PyValueError::new_err(
-                "Sift.detect_and_compute: expected a device Image; SIFT has no CPU \
-                 path, so convert with Image.from_numpy(a).to_cuda(stream) first",
-            )
-        })?;
-        let img = api.borrow();
-        if !img.is_device() {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "Sift.detect_and_compute: this Image lives on the host and SIFT has \
-                 no CPU kernel; move it with .to_cuda(stream) first",
-            ));
-        }
+        let api = device_image(image, "Sift.detect_and_compute")?;
         crate::cuda_ext::cuda_sift::sift_cuda_with_plan(
             py,
-            &img,
+            &api.borrow(),
             &mut self.plan,
+            self.n_features,
+            self.n_octave_layers,
+            self.contrast_threshold,
+            self.edge_threshold,
+            self.sigma,
+            self.max_keypoints,
+            self.upsample,
+            self.max_octaves,
+        )
+    }
+
+    /// Detect in both images and match, without the descriptors ever leaving
+    /// the device.
+    ///
+    /// This is the reason to prefer it over calling `detect_and_compute` twice
+    /// and matching on the host: the descriptors are the bulk of the data (128
+    /// floats per keypoint, megabytes a frame) and here they are produced,
+    /// stored and compared entirely in device memory. Only the keypoints and the
+    /// surviving pairs cross the bus.
+    ///
+    /// `ratio` is Lowe's ratio; `>= 1.0` disables it. `cross_check` requires
+    /// each pair to be a mutual nearest neighbour.
+    ///
+    /// Returns `(keypoints_a, keypoints_b, matches)`, where `matches` is
+    /// `(M, 2)` of indices into the two keypoint arrays.
+    #[pyo3(signature = (image_a, image_b, ratio=0.8, cross_check=true))]
+    fn r#match<'py>(
+        &mut self,
+        py: Python<'py>,
+        image_a: &Bound<'py, PyAny>,
+        image_b: &Bound<'py, PyAny>,
+        ratio: f32,
+        cross_check: bool,
+    ) -> PyResult<(
+        Bound<'py, PyArray2<f32>>,
+        Bound<'py, PyArray2<f32>>,
+        Bound<'py, PyArray2<i32>>,
+    )> {
+        let a = device_image(image_a, "Sift.match")?;
+        let b = device_image(image_b, "Sift.match")?;
+        crate::cuda_ext::cuda_sift::sift_match(
+            py,
+            &a.borrow(),
+            &b.borrow(),
+            &mut self.plan,
+            &mut self.store,
+            ratio,
+            cross_check,
             self.n_features,
             self.n_octave_layers,
             self.contrast_threshold,

@@ -18,8 +18,8 @@ use std::sync::Arc;
 use cudarc::driver::{CudaContext, CudaSlice, CudaStream};
 
 use super::descriptor::{
-    launch_sift_descriptor_cuda_view, launch_sift_pack_descriptor_input_cuda_view, DESCR_LEN,
-    DESC_IN_STRIDE,
+    launch_sift_descriptor_cuda_view, launch_sift_gather_descriptors_cuda_view,
+    launch_sift_pack_descriptor_input_cuda_view, DESCR_LEN, DESC_IN_STRIDE,
 };
 use super::detect::launch_sift_find_extrema_cuda_view;
 use super::kernels::gaussian_kernel_f32;
@@ -106,6 +106,12 @@ pub struct SiftCuda {
     ori_count: CudaSlice<i32>,
     desc_in: CudaSlice<f32>,
     desc: CudaSlice<f32>,
+    /// Descriptors appended across every octave, in detection order.
+    desc_all: CudaSlice<f32>,
+    /// The same descriptors in final keypoint order — what callers see.
+    desc_out: CudaSlice<f32>,
+    perm: CudaSlice<i32>,
+    n_desc: usize,
     base_kernel: Vec<f32>,
     layer_kernels: Vec<Vec<f32>>,
 }
@@ -167,6 +173,10 @@ impl SiftCuda {
             ori_count: stream.alloc_zeros::<i32>(1)?,
             desc_in: stream.alloc_zeros::<f32>(ori_cap * DESC_IN_STRIDE)?,
             desc: stream.alloc_zeros::<f32>(ori_cap * DESCR_LEN)?,
+            desc_all: stream.alloc_zeros::<f32>(ori_cap * DESCR_LEN)?,
+            desc_out: stream.alloc_zeros::<f32>(ori_cap * DESCR_LEN)?,
+            perm: stream.alloc_zeros::<i32>(ori_cap)?,
+            n_desc: 0,
             base_kernel,
             layer_kernels,
         })
@@ -177,16 +187,19 @@ impl SiftCuda {
         self.cfg.n_octaves(bw.min(bh)).min(self.max_octaves)
     }
 
-    /// Detect, orient and describe, returning host-side results.
+    /// Detect, orient and describe, leaving the descriptors on device.
     ///
     /// `src` is a `width * height` f32 grayscale image in 0..255, matching the
-    /// reference's internal representation.
-    pub fn detect_and_compute(
+    /// reference's internal representation. Returns the keypoints; the matching
+    /// descriptor rows are reachable through
+    /// [`SiftCuda::descriptors_device`], so a caller that goes straight on to
+    /// matching never moves them across the bus.
+    pub fn detect_and_compute_device(
         &mut self,
         ctx: &Arc<CudaContext>,
         stream: &Arc<CudaStream>,
         src: &CudaSlice<f32>,
-    ) -> Result<SiftFeatures, SiftCudaError> {
+    ) -> Result<Vec<SiftKeypoint>, SiftCudaError> {
         let need = self.width * self.height;
         if src.len() < need {
             return Err(SiftCudaError::SliceTooSmall {
@@ -251,7 +264,7 @@ impl SiftCuda {
 
         let n_oct = self.n_octaves(cw, ch);
         let mut all_kps: Vec<SiftKeypoint> = Vec::new();
-        let mut all_desc: Vec<f32> = Vec::new();
+        let mut desc_off = 0usize;
 
         for octv in 0..n_oct {
             if cw < 16 || ch < 16 {
@@ -387,7 +400,22 @@ impl SiftCuda {
                     // layer per octave -- ~400 MB an image, which dominated
                     // the end-to-end time by an order of magnitude.
                     let ok = stream.clone_dtoh(&self.ori_kp.slice(0..n_ori * ORI_KP_STRIDE))?;
-                    let od = stream.clone_dtoh(&self.desc.slice(0..n_ori * DESCR_LEN))?;
+                    // Descriptors stay on device. They are appended to one slab
+                    // in the same order the keypoints are pushed on the host, so
+                    // a keypoint's position in `all_kps` indexes its row here.
+                    let room = (self.desc_all.len() - desc_off) / DESCR_LEN;
+                    let n_ori = n_ori.min(room);
+                    if n_ori == 0 {
+                        continue;
+                    }
+                    {
+                        let src = self.desc.slice(0..n_ori * DESCR_LEN);
+                        let mut dst = self
+                            .desc_all
+                            .slice_mut(desc_off..desc_off + n_ori * DESCR_LEN);
+                        stream.memcpy_dtod(&src, &mut dst)?;
+                    }
+                    desc_off += n_ori * DESCR_LEN;
                     // first_octave = -1 post-processing: halve position and
                     // size, and rewrite the packed octave byte.
                     let scale = match self.first_octave {
@@ -410,7 +438,6 @@ impl SiftCuda {
                             response: o[3],
                             octave: oct,
                         });
-                        all_desc.extend_from_slice(&od[r * DESCR_LEN..(r + 1) * DESCR_LEN]);
                     }
                 }
             }
@@ -445,13 +472,65 @@ impl SiftCuda {
                  descriptor={t_desc:.1} copyback={t_copy:.1} (ms)"
             );
         }
-        let (keypoints, descriptors) = sort_and_dedup(all_kps, all_desc);
-        let (keypoints, descriptors) = retain_best(keypoints, descriptors, self.cfg.n_features);
+        // Decide the final order on the host, then apply it to the descriptors
+        // on device — they are never downloaded just to be shuffled.
+        let order = final_order(&all_kps, self.cfg.n_features);
+        let n = order.len().min(desc_off / DESCR_LEN.max(1));
+        let keypoints: Vec<SiftKeypoint> = order[..n].iter().map(|&i| all_kps[i]).collect();
+        if n > 0 {
+            let perm: Vec<i32> = order[..n].iter().map(|&i| i as i32).collect();
+            stream.memcpy_htod(&perm, &mut self.perm.slice_mut(0..n))?;
+            let src = self.desc_all.slice(0..desc_off);
+            let p = self.perm.slice(0..n);
+            let mut out = self.desc_out.slice_mut(0..n * DESCR_LEN);
+            launch_sift_gather_descriptors_cuda_view(ctx, stream, &src, &p, n as u32, &mut out)?;
+        }
+        self.n_desc = n;
+        Ok(keypoints)
+    }
+
+    /// Detect, orient and describe, returning host-side results.
+    ///
+    /// This is [`SiftCuda::detect_and_compute_device`] plus a single download of
+    /// the ordered descriptor block. A caller that goes straight on to matching
+    /// should use the device form and skip the round trip entirely.
+    pub fn detect_and_compute(
+        &mut self,
+        ctx: &Arc<CudaContext>,
+        stream: &Arc<CudaStream>,
+        src: &CudaSlice<f32>,
+    ) -> Result<SiftFeatures, SiftCudaError> {
+        let keypoints = self.detect_and_compute_device(ctx, stream, src)?;
+        let descriptors = if self.n_desc == 0 {
+            Vec::new()
+        } else {
+            stream.clone_dtoh(&self.desc_out.slice(0..self.n_desc * DESCR_LEN))?
+        };
         Ok(SiftFeatures {
             keypoints,
             descriptors,
         })
     }
+
+    /// The ordered descriptor block from the last call, on device.
+    ///
+    /// Row `i` belongs to keypoint `i` of the returned keypoint list. Valid
+    /// until the next call, which overwrites it.
+    pub fn descriptors_device(&self) -> &CudaSlice<f32> {
+        &self.desc_out
+    }
+
+    /// Number of descriptor rows written by the last call.
+    pub fn descriptor_count(&self) -> usize {
+        self.n_desc
+    }
+}
+
+/// The reference's final keypoint order: `removeDuplicatedSorted`, then
+/// `retainBest`. Returns indices into the appended order.
+fn final_order(kps: &[SiftKeypoint], n_features: usize) -> Vec<usize> {
+    let deduped = sorted_dedup_order(kps);
+    retain_best_order(kps, deduped, n_features)
 }
 
 /// Keep the `n` highest-response keypoints, matching `KeyPointsFilter::retainBest`.
@@ -468,28 +547,18 @@ impl SiftCuda {
 /// high-contrast texture and thins the periphery — for pose estimation a
 /// spatially-binned variant (as `orb::ExtractorNode::divide` does here) spreads
 /// correspondences better, but it would not be what `cv2` returns.
-fn retain_best(kps: Vec<SiftKeypoint>, desc: Vec<f32>, n: usize) -> (Vec<SiftKeypoint>, Vec<f32>) {
-    if n == 0 || kps.len() <= n {
-        return (kps, desc);
+fn retain_best_order(kps: &[SiftKeypoint], order: Vec<usize>, n: usize) -> Vec<usize> {
+    if n == 0 || order.len() <= n {
+        return order;
     }
-    let mut rank: Vec<usize> = (0..kps.len()).collect();
+    let mut rank = order.clone();
     // Descending response, index breaking ties so the choice is reproducible.
     rank.sort_by(|&a, &b| kps[b].response.total_cmp(&kps[a].response).then(a.cmp(&b)));
     let cutoff = kps[rank[n - 1]].response;
-    let mut keep = vec![false; kps.len()];
-    for (i, k) in kps.iter().enumerate() {
-        keep[i] = k.response >= cutoff;
-    }
-
-    let mut out_kp = Vec::with_capacity(n);
-    let mut out_desc = Vec::with_capacity(n * DESCR_LEN);
-    for (i, k) in kps.iter().enumerate() {
-        if keep[i] {
-            out_kp.push(*k);
-            out_desc.extend_from_slice(&desc[i * DESCR_LEN..(i + 1) * DESCR_LEN]);
-        }
-    }
-    (out_kp, out_desc)
+    order
+        .into_iter()
+        .filter(|&i| kps[i].response >= cutoff)
+        .collect()
 }
 
 /// Order keypoints the way `KeyPointsFilter::removeDuplicatedSorted` does, and
@@ -503,10 +572,9 @@ fn retain_best(kps: Vec<SiftKeypoint>, desc: Vec<f32>, n: usize) -> (Vec<SiftKey
 ///
 /// The comparator is the reference's, including its descending fields: `size`,
 /// `response` and `octave` sort the opposite way to `x`, `y` and `angle`.
-/// Descriptors are permuted alongside, so the pairing survives.
-fn sort_and_dedup(kps: Vec<SiftKeypoint>, desc: Vec<f32>) -> (Vec<SiftKeypoint>, Vec<f32>) {
+fn sorted_dedup_order(kps: &[SiftKeypoint]) -> Vec<usize> {
     if kps.is_empty() {
-        return (kps, desc);
+        return Vec::new();
     }
     let mut order: Vec<usize> = (0..kps.len()).collect();
     order.sort_by(|&a, &b| {
@@ -520,17 +588,15 @@ fn sort_and_dedup(kps: Vec<SiftKeypoint>, desc: Vec<f32>) -> (Vec<SiftKeypoint>,
             .then(a.cmp(&b))
     });
 
-    let mut out_kp: Vec<SiftKeypoint> = Vec::with_capacity(kps.len());
-    let mut out_desc: Vec<f32> = Vec::with_capacity(desc.len());
+    let mut out: Vec<usize> = Vec::with_capacity(order.len());
     for &i in &order {
         // Adjacent-equal only: the sort has already grouped duplicates.
-        if out_kp.last() == Some(&kps[i]) {
+        if out.last().is_some_and(|&p| kps[p] == kps[i]) {
             continue;
         }
-        out_kp.push(kps[i]);
-        out_desc.extend_from_slice(&desc[i * DESCR_LEN..(i + 1) * DESCR_LEN]);
+        out.push(i);
     }
-    (out_kp, out_desc)
+    out
 }
 
 #[cfg(test)]

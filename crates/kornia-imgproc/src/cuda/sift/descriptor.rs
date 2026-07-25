@@ -556,6 +556,80 @@ extern "C" __global__ void sift_pack_desc_input(
         .map_err(|e| SiftCudaError::Cuda(e.to_string()))
 }
 
+/// Reorder descriptors on device by a host-computed permutation.
+///
+/// The final keypoint order — the reference's `removeDuplicatedSorted`, then
+/// `retainBest` — is decided on the host, because it is a comparison sort over a
+/// few thousand records and the comparator has six tie-break levels. Applying it
+/// to the descriptors is the part worth keeping on device: `out[i]` is
+/// `src[perm[i]]`, one coalesced 128-float row per keypoint, so the descriptors
+/// never have to make a round trip just to be shuffled.
+pub fn launch_sift_gather_descriptors_cuda_view(
+    ctx: &Arc<CudaContext>,
+    stream: &Arc<CudaStream>,
+    src: &CudaView<'_, f32>,
+    perm: &CudaView<'_, i32>,
+    n: u32,
+    out: &mut CudaViewMut<'_, f32>,
+) -> Result<(), SiftCudaError> {
+    if n == 0 {
+        return Ok(());
+    }
+    let need = (n as usize) * DESCR_LEN;
+    if out.len() < need {
+        return Err(SiftCudaError::SliceTooSmall {
+            got: out.len(),
+            need,
+        });
+    }
+    if perm.len() < n as usize {
+        return Err(SiftCudaError::SliceTooSmall {
+            got: perm.len(),
+            need: n as usize,
+        });
+    }
+
+    let kernel = get_or_compile(
+        ctx,
+        "sift_gather_desc",
+        || {
+            format!(
+                r#"
+extern "C" __global__ void sift_gather_desc(
+    const float* __restrict__ src, const int* __restrict__ perm, int n,
+    int n_src, float* __restrict__ out)
+{{
+    const int i = blockIdx.x;
+    if (i >= n) return;
+    const int s = perm[i];
+    if (s < 0 || s >= n_src) return;
+    const float* a = src + (long)s * {dlen};
+    float* b = out + (long)i * {dlen};
+    for (int c = threadIdx.x; c < {dlen}; c += blockDim.x) b[c] = a[c];
+}}
+"#,
+                dlen = DESCR_LEN
+            )
+        },
+        "sift_gather_desc",
+    )?;
+    let (n_i, n_src) = (n as i32, (src.len() / DESCR_LEN) as i32);
+    let cfg = cudarc::driver::LaunchConfig {
+        grid_dim: (n, 1, 1),
+        block_dim: (DESCR_LEN as u32, 1, 1),
+        shared_mem_bytes: 0,
+    };
+    kernel
+        .launch_builder(stream)
+        .arg(src)
+        .arg(perm)
+        .arg(&n_i)
+        .arg(&n_src)
+        .arg(out)
+        .launch_cfg(cfg)
+        .map_err(|e| SiftCudaError::Cuda(e.to_string()))
+}
+
 /// Convenience wrapper over [`launch_sift_descriptor_cuda_view`] for whole buffers.
 #[allow(clippy::too_many_arguments)]
 pub fn launch_sift_descriptor_cuda(

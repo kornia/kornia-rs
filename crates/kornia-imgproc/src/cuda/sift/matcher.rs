@@ -59,21 +59,24 @@ extern "C" __global__ void sift_match_best2(
     if (warp_id >= nq) return;
 
     // This lane's slice of the query, held in registers for the whole scan.
-    float qv[PERLANE];
-    const float* qp = q + (long)warp_id * DLEN + lane * PERLANE;
-    #pragma unroll
-    for (int c = 0; c < PERLANE; c++) qv[c] = qp[c];
+    // PERLANE is 4, so each lane's slice is exactly one float4 and a warp reads
+    // a whole 512-byte descriptor in one transaction. Rows are 128 floats, so
+    // every lane's offset is 16-byte aligned by construction.
+    const float4 qv = *(const float4*)(q + (long)warp_id * DLEN + lane * PERLANE);
 
     float best = 3.402823466e+38f, second = 3.402823466e+38f;
     int best_j = -1;
 
     for (int j = 0; j < nt; j++) {{
-        const float* tp = t + (long)j * DLEN + lane * PERLANE;
+        const float4 tv = *(const float4*)(t + (long)j * DLEN + lane * PERLANE);
         float acc = 0.0f;
-        #pragma unroll
-        for (int c = 0; c < PERLANE; c++) {{
-            const float d = qv[c] - tp[c];
-            acc = __fmaf_rn(d, d, acc);
+        {{
+            const float dx = qv.x - tv.x, dy = qv.y - tv.y;
+            const float dz = qv.z - tv.z, dw = qv.w - tv.w;
+            acc = __fmaf_rn(dx, dx, acc);
+            acc = __fmaf_rn(dy, dy, acc);
+            acc = __fmaf_rn(dz, dz, acc);
+            acc = __fmaf_rn(dw, dw, acc);
         }}
         // Butterfly reduction: every lane ends with the full distance, so the
         // best/second bookkeeping needs no broadcast.
