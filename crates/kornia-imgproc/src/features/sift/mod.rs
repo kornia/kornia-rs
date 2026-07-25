@@ -15,7 +15,9 @@ pub use pipeline::{
 };
 
 mod descriptor;
-pub use descriptor::{compute_descriptor, descriptor_inputs, DESCR_LEN};
+pub use descriptor::{
+    compute_descriptor, compute_descriptor_fast, descriptor_inputs, DESCR_LEN, FAST_SAMP,
+};
 
 mod hal;
 pub use hal::{atan2_deg, exp as sift_exp, magnitude};

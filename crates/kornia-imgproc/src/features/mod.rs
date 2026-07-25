@@ -18,8 +18,9 @@ pub use cells::{
 
 mod sift;
 pub use sift::{
-    assign_orientations, atan2_deg, blur_h_f32, blur_v_f32, compute_descriptor, descriptor_inputs,
-    extrema_threshold, find_extrema, gaussian_kernel_f32, gaussian_ksize, magnitude,
-    sift_detect_and_compute, sift_exp, FirstOctave, OrientedKeypoint, RawKeypoint, SiftConfig,
-    SiftFeatures, SiftKeypoint, DESCR_LEN, ORI_HIST_BINS, SIFT_IMG_BORDER, SIFT_MAX_INTERP_STEPS,
+    assign_orientations, atan2_deg, blur_h_f32, blur_v_f32, compute_descriptor,
+    compute_descriptor_fast, descriptor_inputs, extrema_threshold, find_extrema,
+    gaussian_kernel_f32, gaussian_ksize, magnitude, sift_detect_and_compute, sift_exp, FirstOctave,
+    OrientedKeypoint, RawKeypoint, SiftConfig, SiftFeatures, SiftKeypoint, DESCR_LEN, FAST_SAMP,
+    ORI_HIST_BINS, SIFT_IMG_BORDER, SIFT_MAX_INTERP_STEPS,
 };

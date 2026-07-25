@@ -222,6 +222,11 @@ pub fn detect_and_compute(
             .for_each(|(out, (k, layer))| {
                 let img = &gauss[*layer][..p];
                 let (x, y, s, a) = descriptor_inputs(k, octv as i32);
+                // `fast` deliberately does NOT select the rotated-frame
+                // descriptor here: see `compute_descriptor_fast`, which is
+                // measured slower on CPU despite sampling a third as many
+                // points. It remains available for callers at very large
+                // scales, where the sample-count scaling eventually wins.
                 compute_descriptor(img, cw, ch, x, y, s, a, out);
             });
         desc.extend_from_slice(&block);
