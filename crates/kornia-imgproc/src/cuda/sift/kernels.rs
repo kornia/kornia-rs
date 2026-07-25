@@ -510,7 +510,16 @@ pub(crate) fn get_or_compile(
     // process), but the guard remained and cost a full source regeneration plus
     // a hash of it on EVERY launch — ~50 times per image, and the single
     // largest cost in the assembled pipeline.
-    let cache_key = (ctx.ordinal(), key.to_string());
+    // The fast-math flag changes the HAL body embedded in nearly every kernel
+    // without changing any caller's key, so it has to be part of the key here.
+    let cache_key = (
+        ctx.ordinal(),
+        if super::hal::fastmath_enabled() {
+            format!("fm:{key}")
+        } else {
+            key.to_string()
+        },
+    );
 
     {
         let guard = cache().lock().expect("SIFT kernel cache mutex poisoned");

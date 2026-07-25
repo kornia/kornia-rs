@@ -83,10 +83,12 @@ extern "C" __global__ void sift_orientation(
     // NOTE: `magnitude32f`'s NEON body and scalar tail disagree -- the body
     // composes `recip(rsqrt(x*x + y*y))` from ARM's estimate instructions while
     // the tail is a plain `sqrtf`, and dumping the reference's own Mag array
-    // confirms the last `len % 4` samples take the sqrt. Reproducing that was
-    // measured to change no angle on the test set, so it is not worth the
-    // counting prepass it needs. (`exp32f` and `fastAtan2` were checked the
-    // same way and show no tail difference at all.)
+    // confirms the last `len % 4` samples take the sqrt. Reproducing it changes
+    // no angle: the sample count is `nx * ny` in closed form (the column bound
+    // does not depend on the row), so this was implemented exactly and measured
+    // -- 5 / 96 / 65 / 99 / 38 mismatches on dog / mh01 / tags / frame2 / sat,
+    // identical to without. Do not re-try. (`exp32f` and `fastAtan2` were
+    // checked the same way and show no tail difference at all.)
     for (int i = -radius; i <= radius; i++) {{
         const int y = rr + i;
         if (y <= 0 || y >= h - 1) continue;
@@ -462,6 +464,21 @@ mod tests {
                         );
                     }
                 }
+            } else if std::env::var("KORNIA_SIFT_ORIDBG").is_ok() {
+                // A reference position we never emit. `patch` is keyed off OUR
+                // detector's output, so its presence separates "the detector
+                // never found it" from "orientation dropped it".
+                let p = patch.get(pos).copied().unwrap_or_default();
+                eprintln!(
+                    "    MISSING detected={} layer={} cc={} rr={} radius={} sigma={} want={:?}",
+                    patch.contains_key(pos),
+                    p.0,
+                    p.1,
+                    p.2,
+                    p.3,
+                    p.4,
+                    wa.iter().map(|v| f32::from_bits(*v)).collect::<Vec<_>>(),
+                );
             }
         }
         eprintln!(

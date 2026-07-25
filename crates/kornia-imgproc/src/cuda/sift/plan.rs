@@ -446,11 +446,50 @@ impl SiftCuda {
             );
         }
         let (keypoints, descriptors) = sort_and_dedup(all_kps, all_desc);
+        let (keypoints, descriptors) = retain_best(keypoints, descriptors, self.cfg.n_features);
         Ok(SiftFeatures {
             keypoints,
             descriptors,
         })
     }
+}
+
+/// Keep the `n` highest-response keypoints, matching `KeyPointsFilter::retainBest`.
+///
+/// `n == 0` means unlimited, as it does in `cv::SIFT::create`.
+///
+/// The subtlety worth preserving is the boundary: the reference partitions on
+/// `response >= keypoints[n-1].response` **after** selecting, so every keypoint
+/// tied with the cut-off survives and the result can be longer than `n`.
+/// Truncating at exactly `n` would drop an arbitrary member of a tie group,
+/// which is precisely the case the reference goes out of its way to avoid.
+///
+/// This is the faithful response-rank cut. It clusters keypoints on
+/// high-contrast texture and thins the periphery — for pose estimation a
+/// spatially-binned variant (as `orb::ExtractorNode::divide` does here) spreads
+/// correspondences better, but it would not be what `cv2` returns.
+fn retain_best(kps: Vec<SiftKeypoint>, desc: Vec<f32>, n: usize) -> (Vec<SiftKeypoint>, Vec<f32>) {
+    if n == 0 || kps.len() <= n {
+        return (kps, desc);
+    }
+    let mut rank: Vec<usize> = (0..kps.len()).collect();
+    // Descending response, index breaking ties so the choice is reproducible.
+    rank.sort_by(|&a, &b| kps[b].response.total_cmp(&kps[a].response).then(a.cmp(&b)));
+    let cutoff = kps[rank[n - 1]].response;
+    let mut keep = vec![false; kps.len()];
+    for (i, k) in kps.iter().enumerate() {
+        keep[i] = k.response >= cutoff;
+    }
+
+    let mut out_kp = Vec::with_capacity(n);
+    let mut out_desc = Vec::with_capacity(n * DESCR_LEN);
+    for (i, k) in kps.iter().enumerate() {
+        if keep[i] {
+            out_kp.push(*k);
+            out_desc.extend_from_slice(&desc[i * DESCR_LEN..(i + 1) * DESCR_LEN]);
+        }
+    }
+    (out_kp, out_desc)
 }
 
 /// Order keypoints the way `KeyPointsFilter::removeDuplicatedSorted` does, and
