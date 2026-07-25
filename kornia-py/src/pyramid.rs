@@ -1,10 +1,9 @@
-use numpy::{PyArrayMethods, PyUntypedArrayMethods};
+use numpy::PyUntypedArrayMethods;
 use pyo3::prelude::*;
 
 use crate::dispatch::cpu_op;
 use crate::image::{
     alloc_output_pyarray, alloc_output_pyarray_f32, numpy_as_image, numpy_as_image_f32, to_pyerr,
-    PyImageApi,
 };
 use kornia_image::{Image, ImageError, ImageSize};
 use kornia_imgproc::pyramid;
@@ -13,9 +12,13 @@ use kornia_imgproc::pyramid;
 use crate::cuda_ext::{device_mode, source_stream};
 #[cfg(feature = "cuda")]
 use crate::device::DeviceImage;
+#[cfg(feature = "cuda")]
+use crate::image::PyImageApi;
+
+type SizeFn = fn((usize, usize, usize)) -> (usize, usize, usize);
 
 fn pyrdown_size(s: (usize, usize, usize)) -> (usize, usize, usize) {
-    ((s.0 + 1) / 2, (s.1 + 1) / 2, s.2)
+    (s.0.div_ceil(2), s.1.div_ceil(2), s.2)
 }
 
 fn pyrup_size(s: (usize, usize, usize)) -> (usize, usize, usize) {
@@ -48,7 +51,7 @@ fn run_cpu_u8<const C: usize>(
     py: Python<'_>,
     arr: &Py<numpy::PyArray3<u8>>,
     op: fn(&Image<u8, C>, &mut Image<u8, C>) -> Result<(), ImageError>,
-    size_fn: fn((usize, usize, usize)) -> (usize, usize, usize),
+    size_fn: SizeFn,
 ) -> PyResult<Py<numpy::PyArray3<u8>>> {
     let shape = arr.bind(py).shape();
     let src = unsafe { numpy_as_image::<C>(py, arr)? };
@@ -66,7 +69,7 @@ fn run_cpu_f32<const C: usize>(
     py: Python<'_>,
     arr: &Py<numpy::PyArray3<f32>>,
     op: fn(&Image<f32, C>, &mut Image<f32, C>) -> Result<(), ImageError>,
-    size_fn: fn((usize, usize, usize)) -> (usize, usize, usize),
+    size_fn: SizeFn,
 ) -> PyResult<Py<numpy::PyArray3<f32>>> {
     let shape = arr.bind(py).shape();
     let src = unsafe { numpy_as_image_f32::<C>(py, arr)? };
@@ -108,7 +111,7 @@ macro_rules! py_pyramid_op {
                 }
             }
 
-            let (view, dtype) = crate::dispatch::host_view_and_dtype(image)?;
+            let (_, dtype) = crate::dispatch::host_view_and_dtype(image)?;
             match dtype.as_str() {
                 "uint8" => {
                     cpu_op(py, image, |py, image| {
