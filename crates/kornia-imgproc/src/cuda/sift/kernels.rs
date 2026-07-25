@@ -101,10 +101,24 @@ __device__ __forceinline__ int refl(int i, int n) {
 pub fn upsample2x_src() -> String {
     r#"
 // Source tap and fraction for one output coordinate of a 2x bilinear upscale.
+//
+// The reference computes `(float)(((double)d + 0.5) * scale - 0.5)` then floors
+// it. Evaluating that in double per output pixel is what it says, but it is not
+// what it MEANS: with `scale = 0.5` the expression is `d/2 - 0.25`, and for
+// integer `d < 2^23` every step is exactly representable in f32 -- `d + 0.5` is
+// exact, scaling by a power of two is exact, and subtracting 0.5 is exact -- so
+// no rounding can occur and the double and f32 evaluations agree bit for bit.
+//
+// It then reduces to a parity test, with no floating-point work at all:
+//   d = 2m      -> d/2 - 0.25 = m - 0.25  ->  s = m - 1, f = 0.75
+//   d = 2m + 1  -> d/2 - 0.25 = m + 0.25  ->  s = m,     f = 0.25
+//
+// This matters because FP64 runs at 1/32 rate on this part, and the upsample
+// evaluated it twice per thread: it cost 5.9 ms against a 0.7 ms traffic floor.
 __device__ __forceinline__ void up_tab(int d, int n_src, int* sx, float* fx) {
-    float f = (float)(((double)d + 0.5) * 0.5 - 0.5);
-    int s = (int)floorf(f);
-    f -= (float)s;
+    const int odd = d & 1;
+    int s = (d >> 1) - (odd ^ 1);
+    float f = odd ? 0.25f : 0.75f;
     if (s < 0) { f = 0.0f; s = 0; }
     if (s >= n_src - 1) { f = 0.0f; s = n_src - 1; }
     *sx = s; *fx = f;
@@ -423,10 +437,16 @@ extern "C" __global__ void sift_downsample_nearest(
     const int y = blockIdx.y * blockDim.y + threadIdx.y;
     if (x >= dw || y >= dh) return;
 
-    const double ifx = (double)sw / (double)dw;
-    const double ify = (double)sh / (double)dh;
-    int sx = (int)floor((double)x * ifx); if (sx > sw - 1) sx = sw - 1;
-    int sy = (int)floor((double)y * ify); if (sy > sh - 1) sy = sh - 1;
+    // The reference computes `floor(x * (double)sw / dw)`. That equals the exact
+    // rational floor, and therefore integer division, whenever rounding cannot
+    // push the product across an integer boundary -- which it cannot here:
+    // `x*sw/dw` is a rational with denominator `dw`, so when it is not an
+    // integer it misses one by at least `1/dw >= 1/2160`, astronomically more
+    // than the ~1e-16 relative error of the double evaluation. So this is
+    // bit-identical, and avoids two FP64 divisions per output pixel (FP64 runs
+    // at 1/32 rate on this part). `x*sw` peaks at ~7.4M, well inside int range.
+    int sx = (x * sw) / dw; if (sx > sw - 1) sx = sw - 1;
+    int sy = (y * sh) / dh; if (sy > sh - 1) sy = sh - 1;
 
     dst[y * dw + x] = src[sy * sw + sx];
 }

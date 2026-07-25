@@ -806,11 +806,31 @@ mod tests {
             } else {
                 stream.memcpy_dtod(&d_src, a).unwrap();
             }
-            launch_sift_blur_h_cuda(ctx, stream, a, b, bw as u32, bh as u32, &base_gk).unwrap();
-            launch_sift_blur_v_cuda(ctx, stream, b, c, bw as u32, bh as u32, &base_gk).unwrap();
+            // The base blur runs on the doubled image -- the single largest
+            // plane in the pyramid -- so it gets the same tiled kernel the
+            // octave loop uses, not the plain one.
+            // KORNIA_SIFT_BASE=1 stops after the upsample, 2 after blur-H.
+            let base_stage = std::env::var("KORNIA_SIFT_BASE")
+                .ok()
+                .and_then(|v| v.parse::<u32>().ok())
+                .unwrap_or(3);
+            if base_stage >= 2 {
+                launch_sift_blur_h_tiled_cuda(ctx, stream, a, b, bw as u32, bh as u32, &base_gk)
+                    .unwrap();
+            }
+            if base_stage >= 3 {
+                launch_sift_blur_v_cuda(ctx, stream, b, c, bw as u32, bh as u32, &base_gk).unwrap();
+            }
             // `c` now holds the octave base.
             let (mut cw, mut ch) = (bw, bh);
-            for _o in 0..cfg.n_octaves(bh.min(bw)) {
+            // Cumulative-octave timing: running with KORNIA_SIFT_MAXOCT=K for
+            // K = 1..n and differencing gives each octave's cost with ONE sync,
+            // instead of a sync per octave that inflates the first one.
+            let max_oct = std::env::var("KORNIA_SIFT_MAXOCT")
+                .ok()
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(usize::MAX);
+            for _o in 0..cfg.n_octaves(bh.min(bw)).min(max_oct) {
                 if cw < 16 || ch < 16 {
                     break;
                 }
