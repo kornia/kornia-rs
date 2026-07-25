@@ -221,8 +221,8 @@ mod tests {
         Some((rows, cols, data))
     }
 
-    /// Reference `(x, y, angle)` triples, first octave only.
-    fn load_ref_angles(dir: &str) -> Vec<(f32, f32, f32)> {
+    /// Reference `(x, y, angle, size)` tuples, first octave only.
+    fn load_ref_angles(dir: &str) -> Vec<(f32, f32, f32, f32)> {
         let b = std::fs::read(format!("{dir}/keypoints.bin")).expect("keypoints");
         let n = i32::from_le_bytes(b[0..4].try_into().unwrap()) as usize;
         (0..n)
@@ -231,7 +231,7 @@ mod tests {
                 let f =
                     |k: usize| f32::from_le_bytes(b[o + k * 4..o + k * 4 + 4].try_into().unwrap());
                 let oct = i32::from_le_bytes(b[o + 20..o + 24].try_into().unwrap());
-                ((oct & 255) == 255).then(|| (f(0), f(1), f(3)))
+                ((oct & 255) == 255).then(|| (f(0), f(1), f(3), f(2)))
             })
             .collect()
     }
@@ -286,7 +286,7 @@ mod tests {
         assert!(cnt > 0, "detector produced no keypoints");
 
         // Group by layer: orientation reads the Gaussian layer, not the DoG.
-        let mut got: Vec<(f32, f32, f32)> = Vec::new();
+        let mut got: Vec<(f32, f32, f32, f32)> = Vec::new();
         for layer in 1..=cfg.n_octave_layers {
             let idx: Vec<usize> = (0..cnt).filter(|&i| kps[i].layer == layer as i32).collect();
             if idx.is_empty() {
@@ -323,21 +323,33 @@ mod tests {
             let oc = stream.clone_dtoh(&d_oc).unwrap()[0] as usize;
             let out = stream.clone_dtoh(&d_out).unwrap();
             for r in out.chunks_exact(ORI_KP_STRIDE).take(oc) {
-                got.push((r[0] * 0.5, r[1] * 0.5, r[5]));
+                got.push((r[0] * 0.5, r[1] * 0.5, r[5], r[2]));
             }
         }
 
         let want = load_ref_angles(&dir);
-        let mut matched = 0usize;
-        let mut angle_bad = 0usize;
+        let (mut matched, mut angle_bad) = (0usize, 0usize);
+        // Split by whether OUR `size` for that keypoint is bit-exact: the patch
+        // radius and weight sigma both derive from it, so a wrong `size`
+        // corrupts the whole histogram. This separates inherited failures from
+        // genuine orientation bugs.
+        let (mut exact_sz, mut exact_sz_bad) = (0usize, 0usize);
         for w in &want {
             if let Some(g) = got
                 .iter()
                 .find(|g| g.0.to_bits() == w.0.to_bits() && g.1.to_bits() == w.1.to_bits())
             {
                 matched += 1;
-                if g.2.to_bits() != w.2.to_bits() {
+                let bad = g.2.to_bits() != w.2.to_bits();
+                if bad {
                     angle_bad += 1;
+                }
+                // `got` carries our size in slot 2 (pre-halving), reference in w.3.
+                if (g.3 * 0.5).to_bits() == w.3.to_bits() {
+                    exact_sz += 1;
+                    if bad {
+                        exact_sz_bad += 1;
+                    }
                 }
             }
         }
@@ -347,6 +359,9 @@ mod tests {
             matched,
             want.len(),
             angle_bad
+        );
+        eprintln!(
+            "  FILTERED to bit-exact `size`: {exact_sz} keypoints, angle_mismatch={exact_sz_bad}"
         );
         assert!(matched > 0, "no keypoints matched by position");
     }

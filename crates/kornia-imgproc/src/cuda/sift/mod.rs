@@ -49,12 +49,17 @@
 //! image becomes f32 values in `0..=255`. Device inputs here follow the same
 //! convention: **f32 in `0..=255`**, not `0..=1`.
 
+mod descriptor;
 mod detect;
 mod hal;
 mod kernels;
 mod orientation;
 mod pyramid;
 
+pub use descriptor::{
+    launch_sift_descriptor_cuda, DESCR_HIST_BINS, DESCR_LEN, DESCR_MAG_THR, DESCR_SCL_FCTR,
+    DESCR_WIDTH, INT_DESCR_FCTR,
+};
 pub use detect::{
     decode_keypoints, extrema_threshold, launch_sift_find_extrema_cuda, SiftRawKeypoint, KP_STRIDE,
 };
