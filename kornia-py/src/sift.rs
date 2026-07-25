@@ -44,6 +44,7 @@ pub struct Sift {
     max_keypoints: usize,
     upsample: bool,
     max_octaves: usize,
+    fast_descriptor: bool,
     plan: crate::cuda_ext::cuda_sift::PlanSlot,
     store: crate::cuda_ext::cuda_sift::MatchStore,
 }
@@ -72,7 +73,7 @@ impl Sift {
     #[new]
     #[pyo3(signature = (n_features=0, n_octave_layers=3, contrast_threshold=0.04,
                         edge_threshold=10.0, sigma=1.6, max_keypoints=8192,
-                        upsample=true, max_octaves=0))]
+                        upsample=true, max_octaves=0, fast_descriptor=false))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         n_features: usize,
@@ -83,6 +84,7 @@ impl Sift {
         max_keypoints: usize,
         upsample: bool,
         max_octaves: usize,
+        fast_descriptor: bool,
     ) -> PyResult<Self> {
         if n_octave_layers == 0 {
             return Err(pyo3::exceptions::PyValueError::new_err(
@@ -110,6 +112,7 @@ impl Sift {
             max_keypoints,
             upsample,
             max_octaves,
+            fast_descriptor,
             plan: None,
             store: Default::default(),
         })
@@ -136,6 +139,7 @@ impl Sift {
             &mut self.plan,
             self.n_features,
             self.n_octave_layers,
+            self.fast_descriptor,
             self.contrast_threshold,
             self.edge_threshold,
             self.sigma,
@@ -184,6 +188,7 @@ impl Sift {
             cross_check,
             self.n_features,
             self.n_octave_layers,
+            self.fast_descriptor,
             self.contrast_threshold,
             self.edge_threshold,
             self.sigma,
@@ -196,7 +201,8 @@ impl Sift {
     fn __repr__(&self) -> String {
         format!(
             "Sift(n_features={}, n_octave_layers={}, contrast_threshold={}, \
-             edge_threshold={}, sigma={}, max_keypoints={}, upsample={}, max_octaves={})",
+             edge_threshold={}, sigma={}, max_keypoints={}, upsample={}, \
+             max_octaves={}, fast_descriptor={})",
             self.n_features,
             self.n_octave_layers,
             self.contrast_threshold,
@@ -207,6 +213,11 @@ impl Sift {
             // anyone pastes it back.
             if self.upsample { "True" } else { "False" },
             self.max_octaves,
+            if self.fast_descriptor {
+                "True"
+            } else {
+                "False"
+            },
         )
     }
 }
@@ -222,7 +233,7 @@ impl Sift {
     #[new]
     #[pyo3(signature = (n_features=0, n_octave_layers=3, contrast_threshold=0.04,
                         edge_threshold=10.0, sigma=1.6, max_keypoints=8192,
-                        upsample=true, max_octaves=0))]
+                        upsample=true, max_octaves=0, fast_descriptor=false))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         n_features: usize,
@@ -233,6 +244,7 @@ impl Sift {
         max_keypoints: usize,
         upsample: bool,
         max_octaves: usize,
+        fast_descriptor: bool,
     ) -> PyResult<Self> {
         let _ = (
             n_features,
@@ -243,6 +255,7 @@ impl Sift {
             max_keypoints,
             upsample,
             max_octaves,
+            fast_descriptor,
         );
         Err(pyo3::exceptions::PyRuntimeError::new_err(
             "Sift: CUDA support is not compiled in",

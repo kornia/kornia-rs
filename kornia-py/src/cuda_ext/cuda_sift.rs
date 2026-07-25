@@ -23,6 +23,7 @@ pub(crate) struct PlanKey {
     height: usize,
     n_features: usize,
     n_octave_layers: usize,
+    fast_descriptor: bool,
     contrast_bits: u64,
     edge_bits: u64,
     sigma_bits: u64,
@@ -46,6 +47,7 @@ pub(crate) fn sift_cuda_with_plan<'py>(
     slot: &mut PlanSlot,
     n_features: usize,
     n_octave_layers: usize,
+    fast_descriptor: bool,
     contrast_threshold: f64,
     edge_threshold: f64,
     sigma: f64,
@@ -56,6 +58,7 @@ pub(crate) fn sift_cuda_with_plan<'py>(
     let params = (
         n_features,
         n_octave_layers,
+        fast_descriptor,
         contrast_threshold,
         edge_threshold,
         sigma,
@@ -66,6 +69,7 @@ pub(crate) fn sift_cuda_with_plan<'py>(
     let src = device_f32c1(img)?;
     let (stream, ctx) = ensure_plan(src, slot, params)?;
     let (_, plan) = slot.as_mut().expect("plan just installed");
+    plan.set_fast_descriptor(fast_descriptor);
     let d_src = src
         .0
         .as_cudaslice()
@@ -106,7 +110,17 @@ fn ensure_plan(
     std::sync::Arc<cudarc::driver::CudaStream>,
     std::sync::Arc<cudarc::driver::CudaContext>,
 )> {
-    let (n_features, n_octave_layers, contrast, edge, sigma, max_kp, upsample, max_oct) = p;
+    let (
+        n_features,
+        n_octave_layers,
+        fast_descriptor,
+        contrast,
+        edge,
+        sigma,
+        max_kp,
+        upsample,
+        max_oct,
+    ) = p;
     if n_octave_layers == 0 {
         return Err(PyValueError::new_err(
             "sift: n_octave_layers must be non-zero",
@@ -140,6 +154,7 @@ fn ensure_plan(
         height: size.height,
         n_features,
         n_octave_layers,
+        fast_descriptor,
         contrast_bits: contrast.to_bits(),
         edge_bits: edge.to_bits(),
         sigma_bits: sigma.to_bits(),
@@ -215,6 +230,7 @@ pub(crate) fn sift_match<'py>(
     cross_check: bool,
     n_features: usize,
     n_octave_layers: usize,
+    fast_descriptor: bool,
     contrast_threshold: f64,
     edge_threshold: f64,
     sigma: f64,
@@ -229,6 +245,7 @@ pub(crate) fn sift_match<'py>(
     let params = (
         n_features,
         n_octave_layers,
+        fast_descriptor,
         contrast_threshold,
         edge_threshold,
         sigma,
@@ -294,7 +311,7 @@ pub(crate) fn sift_match<'py>(
     ))
 }
 
-type DetectParams = (usize, usize, f64, f64, f64, usize, bool, usize);
+type DetectParams = (usize, usize, bool, f64, f64, f64, usize, bool, usize);
 
 /// Run detection, leaving descriptors in the plan's device buffer.
 fn detect_device(
@@ -310,6 +327,7 @@ fn detect_device(
     let src = device_f32c1(img)?;
     let (stream, ctx) = ensure_plan(src, slot, p)?;
     let (_, plan) = slot.as_mut().expect("plan just installed");
+    plan.set_fast_descriptor(p.2);
     let d_src = src
         .0
         .as_cudaslice()

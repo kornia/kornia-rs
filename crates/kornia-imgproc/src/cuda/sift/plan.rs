@@ -112,6 +112,9 @@ pub struct SiftCuda {
     desc_out: CudaSlice<f32>,
     perm: CudaSlice<i32>,
     n_desc: usize,
+    /// Opt-in rotated-frame descriptor: faster, not bit-exact. See
+    /// [`super::descriptor`].
+    fast_descriptor: bool,
     base_kernel: Vec<f32>,
     layer_kernels: Vec<Vec<f32>>,
 }
@@ -199,9 +202,19 @@ impl SiftCuda {
             desc_out: stream.alloc_zeros::<f32>(ori_cap * DESCR_LEN)?,
             perm: stream.alloc_zeros::<i32>(ori_cap)?,
             n_desc: 0,
+            fast_descriptor: false,
             base_kernel,
             layer_kernels,
         })
+    }
+
+    /// Select the rotated-frame descriptor kernel.
+    ///
+    /// Faster, and its cost does not grow with keypoint scale, but the
+    /// descriptors are a sampling approximation of `cv::SIFT`'s rather than a
+    /// reproduction. Detection, orientation and the scale space are unaffected.
+    pub fn set_fast_descriptor(&mut self, on: bool) {
+        self.fast_descriptor = on;
     }
 
     /// Number of octaves this configuration will build.
@@ -423,6 +436,7 @@ impl SiftCuda {
                         n_ori as u32,
                         DESC_IN_STRIDE as u32,
                         &mut self.desc.as_view_mut(),
+                        self.fast_descriptor,
                     )?;
 
                     since(tds, stream, &mut t_desc);

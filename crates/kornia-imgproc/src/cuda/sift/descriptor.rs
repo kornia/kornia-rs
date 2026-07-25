@@ -392,6 +392,208 @@ extern "C" __global__ void sift_descriptor_block(
     )
 }
 
+/// Samples per descriptor bin per axis in the rotated-frame kernel.
+///
+/// The sampling grid covers `[-1, DD]` in bin units, so the total is
+/// `((DD + 2) * DESC_FAST_SAMP)^2` samples — 576 at the default, and constant
+/// regardless of the keypoint's scale.
+pub const DESC_FAST_SAMP: usize = 4;
+
+/// Rotated-frame descriptor: **not** bit-exact, and much faster at large scales.
+///
+/// # What changes
+///
+/// The reference walks every pixel of an axis-aligned bounding square around the
+/// keypoint and rotates each one into descriptor space. The square has side
+/// `2 * round(3 * scl * sqrt(2) * 2.5) + 1`, so the sample count grows as
+/// `scl^2` — roughly 1850 samples at a typical scale and far more at coarse
+/// octaves, and about 28% of them are then thrown away for landing outside the
+/// rotated patch.
+///
+/// This kernel inverts that. It walks a fixed grid *in the rotated frame* and
+/// samples the image bilinearly at each point, the way CudaSift and VLFeat do.
+/// Two consequences:
+///
+/// * the sample count is constant — `(6 * DESC_FAST_SAMP)^2` — so cost no longer
+///   scales with the keypoint's size, which is where the reference's shape hurts
+///   most;
+/// * no sample is wasted, because the grid *is* the patch.
+///
+/// Trilinear interpolation, the Gaussian weighting, the two-pass normalisation
+/// and the exact HAL primitives are all unchanged, so this is a sampling
+/// approximation rather than a different descriptor.
+///
+/// # Why it is not the default
+///
+/// Bilinear resampling and a coarser grid give different bins, so descriptors
+/// differ from `cv::SIFT` in more than the last bits. The default kernel stays
+/// the one that reproduces the reference.
+fn descriptor_fast_src(threads: usize, samp: usize) -> String {
+    let d = DESCR_WIDTH;
+    let n = DESCR_HIST_BINS;
+    let histlen = (d + 2) * (d + 2) * (n + 2);
+    format!(
+        r#"{hal}
+
+#define DD {d}
+#define NN {n}
+#define HISTLEN {histlen}
+#define DLEN {dlen}
+#define NTHREADS {threads}
+#define SAMP {samp}
+#define NSAMP ((DD + 2) * SAMP)
+
+__device__ __forceinline__ int cv_round_d(float v) {{ return __float2int_rn(v); }}
+__device__ __forceinline__ int cv_floor_d(float v) {{ return (int)floorf(v); }}
+
+// Bilinear image sample, clamped at the border.
+__device__ __forceinline__ float sift_tex(
+    const float* __restrict__ img, int w, int h, float x, float y)
+{{
+    x = fminf(fmaxf(x, 0.0f), (float)(w - 1));
+    y = fminf(fmaxf(y, 0.0f), (float)(h - 1));
+    const int x0 = (int)x, y0 = (int)y;
+    const int x1 = min(x0 + 1, w - 1), y1 = min(y0 + 1, h - 1);
+    const float fx = x - (float)x0, fy = y - (float)y0;
+    const float a = img[y0 * w + x0], b = img[y0 * w + x1];
+    const float c = img[y1 * w + x0], e = img[y1 * w + x1];
+    const float top = __fmaf_rn(b - a, fx, a);
+    const float bot = __fmaf_rn(e - c, fx, c);
+    return __fmaf_rn(bot - top, fy, top);
+}}
+
+extern "C" __global__ void sift_descriptor_fast(
+    const float* __restrict__ img, int w, int h,
+    const float* __restrict__ kp_in, int n_kp, int kp_stride,
+    float* __restrict__ out_desc)
+{{
+    const int t = blockIdx.x;
+    if (t >= n_kp) return;
+    const int tid = threadIdx.x;
+
+    __shared__ float hist[HISTLEN];
+    __shared__ float raw[DLEN];
+    __shared__ float red[NTHREADS];
+
+    const float* k = kp_in + (long)t * kp_stride;
+    const float ptx = k[0], pty = k[1], scl = k[2], ori = k[3];
+
+    const float cos_o = cosf(ori * (float)(3.14159265358979323846 / 180.0));
+    const float sin_o = sinf(ori * (float)(3.14159265358979323846 / 180.0));
+    const float bins_per_rad = (float)NN / 360.0f;
+    const float exp_scale = -1.0f / ((float)DD * (float)DD * 0.5f);
+    const float hist_width = {scl_fctr:?}f * scl;
+
+    for (int i = tid; i < HISTLEN; i += NTHREADS) hist[i] = 0.0f;
+    __syncthreads();
+
+    // The grid walks descriptor space directly: `cb`/`rb` are bin coordinates,
+    // so the cell a sample lands in is decided by the loop, not by the data.
+    const float step = 1.0f / (float)SAMP;
+    const int total = NSAMP * NSAMP;
+    for (int s = tid; s < total; s += NTHREADS) {{
+        const float cb = -1.0f + ((float)(s % NSAMP) + 0.5f) * step;
+        const float rb = -1.0f + ((float)(s / NSAMP) + 0.5f) * step;
+        // Bin coords -> the reference's rotated coords, in units of hist_width.
+        const float c_rot = cb - ((float)DD / 2.0f - 0.5f);
+        const float r_rot = rb - ((float)DD / 2.0f - 0.5f);
+        // ...and back to the image by the inverse rotation.
+        const float jx = hist_width * (c_rot * cos_o + r_rot * sin_o);
+        const float iy = hist_width * (r_rot * cos_o - c_rot * sin_o);
+        const float x = ptx + jx, y = pty + iy;
+        if (x < 1.0f || x > (float)(w - 2) || y < 1.0f || y > (float)(h - 2)) continue;
+
+        const float dx = sift_tex(img, w, h, x + 1.0f, y) - sift_tex(img, w, h, x - 1.0f, y);
+        const float dy = sift_tex(img, w, h, x, y - 1.0f) - sift_tex(img, w, h, x, y + 1.0f);
+        const float wgt = sift_exp((c_rot * c_rot + r_rot * r_rot) * exp_scale);
+        const float ang = sift_atan2_deg(dy, dx);
+        const float mag = sift_magnitude(dx, dy);
+
+        float obin = (ang - ori) * bins_per_rad;
+        float rf = rb, cf = cb;
+        int r0 = cv_floor_d(rf), c0 = cv_floor_d(cf), o0 = cv_floor_d(obin);
+        rf -= r0; cf -= c0; obin -= o0;
+        if (o0 < 0) o0 += NN;
+        if (o0 >= NN) o0 -= NN;
+        if (r0 < -1 || r0 >= DD || c0 < -1 || c0 >= DD) continue;
+
+        // The grid is denser than the reference's pixel walk at small scales and
+        // sparser at large ones; rescale so the total weight is comparable.
+        const float m = mag * wgt * (step * step);
+        const float v_r1 = m * rf,      v_r0 = m - v_r1;
+        const float v_rc11 = v_r1 * cf, v_rc10 = v_r1 - v_rc11;
+        const float v_rc01 = v_r0 * cf, v_rc00 = v_r0 - v_rc01;
+        const float v_rco111 = v_rc11 * obin, v_rco110 = v_rc11 - v_rco111;
+        const float v_rco101 = v_rc10 * obin, v_rco100 = v_rc10 - v_rco101;
+        const float v_rco011 = v_rc01 * obin, v_rco010 = v_rc01 - v_rco011;
+        const float v_rco001 = v_rc00 * obin, v_rco000 = v_rc00 - v_rco001;
+
+        const int idx = ((r0 + 1) * (DD + 2) + (c0 + 1)) * (NN + 2) + o0;
+        atomicAdd(&hist[idx], v_rco000);
+        atomicAdd(&hist[idx + 1], v_rco001);
+        atomicAdd(&hist[idx + (NN + 2)], v_rco010);
+        atomicAdd(&hist[idx + (NN + 3)], v_rco011);
+        atomicAdd(&hist[idx + (DD + 2) * (NN + 2)], v_rco100);
+        atomicAdd(&hist[idx + (DD + 2) * (NN + 2) + 1], v_rco101);
+        atomicAdd(&hist[idx + (DD + 3) * (NN + 2)], v_rco110);
+        atomicAdd(&hist[idx + (DD + 3) * (NN + 2) + 1], v_rco111);
+    }}
+    __syncthreads();
+
+    for (int cell = tid; cell < DD * DD; cell += NTHREADS) {{
+        const int i = cell / DD, j = cell % DD;
+        const int idx = ((i + 1) * (DD + 2) + (j + 1)) * (NN + 2);
+        hist[idx] += hist[idx + NN];
+        hist[idx + 1] += hist[idx + NN + 1];
+        for (int kk = 0; kk < NN; kk++) raw[cell * NN + kk] = hist[idx + kk];
+    }}
+    __syncthreads();
+
+    float part = 0.0f;
+    for (int i = tid; i < DLEN; i += NTHREADS) part = __fmaf_rn(raw[i], raw[i], part);
+    red[tid] = part;
+    __syncthreads();
+    for (int off = NTHREADS / 2; off > 0; off >>= 1) {{
+        if (tid < off) red[tid] += red[tid + off];
+        __syncthreads();
+    }}
+    const float thr = sqrtf(red[0]) * {mag_thr:?}f;
+    __syncthreads();
+
+    part = 0.0f;
+    for (int i = tid; i < DLEN; i += NTHREADS) {{
+        const float val = fminf(raw[i], thr);
+        raw[i] = val;
+        part = __fmaf_rn(val, val, part);
+    }}
+    red[tid] = part;
+    __syncthreads();
+    for (int off = NTHREADS / 2; off > 0; off >>= 1) {{
+        if (tid < off) red[tid] += red[tid + off];
+        __syncthreads();
+    }}
+    const float scale = {int_fctr:?}f / fmaxf(sqrtf(red[0]), 1.1920929e-07f);
+
+    float* o = out_desc + (long)t * DLEN;
+    for (int i = tid; i < DLEN; i += NTHREADS) {{
+        float v = (float)cv_round_d(raw[i] * scale);
+        o[i] = fminf(fmaxf(v, 0.0f), 255.0f);
+    }}
+}}
+"#,
+        hal = hal_device_src(),
+        d = d,
+        n = n,
+        histlen = histlen,
+        dlen = DESCR_LEN,
+        threads = threads,
+        samp = samp,
+        scl_fctr = DESCR_SCL_FCTR,
+        mag_thr = DESCR_MAG_THR,
+        int_fctr = INT_DESCR_FCTR,
+    )
+}
+
 /// Compute 128-D descriptors for oriented keypoints.
 ///
 /// `kp_in` supplies `(x, y, scl, ori)` per keypoint **in the octave's own
@@ -409,6 +611,7 @@ pub fn launch_sift_descriptor_cuda_view(
     n_kp: u32,
     kp_stride: u32,
     out_desc: &mut CudaViewMut<'_, f32>,
+    fast_descriptor: bool,
 ) -> Result<(), SiftCudaError> {
     if width == 0 || height == 0 {
         return Err(SiftCudaError::Geometry(
@@ -445,7 +648,9 @@ pub fn launch_sift_descriptor_cuda_view(
     // its 360-float histogram to local memory. The default block kernel keeps
     // that histogram in shared memory and is ~an order of magnitude faster, at
     // the cost of a different (still correct) summation order.
-    let exact = std::env::var("KORNIA_SIFT_DESC").as_deref() == Ok("exact");
+    let mode = std::env::var("KORNIA_SIFT_DESC");
+    let exact = mode.as_deref() == Ok("exact");
+    let fast = fast_descriptor || mode.as_deref() == Ok("fast");
     let (w_i, h_i, n_i, s_i) = (width as i32, height as i32, n_kp as i32, kp_stride as i32);
 
     if exact {
@@ -460,6 +665,31 @@ pub fn launch_sift_descriptor_cuda_view(
             .arg(&s_i)
             .arg(out_desc)
             .launch_2d(n_kp, 1, make_config(n_kp, 1, Some((64, 1))))
+            .map_err(|e| SiftCudaError::Cuda(e.to_string()));
+    }
+
+    if fast {
+        let kernel = get_or_compile(
+            ctx,
+            &format!("sift_descriptor_fast:{DESC_BLOCK_THREADS}:{DESC_FAST_SAMP}"),
+            || descriptor_fast_src(DESC_BLOCK_THREADS, DESC_FAST_SAMP),
+            "sift_descriptor_fast",
+        )?;
+        let cfg = cudarc::driver::LaunchConfig {
+            grid_dim: (n_kp, 1, 1),
+            block_dim: (DESC_BLOCK_THREADS as u32, 1, 1),
+            shared_mem_bytes: 0,
+        };
+        return kernel
+            .launch_builder(stream)
+            .arg(img)
+            .arg(&w_i)
+            .arg(&h_i)
+            .arg(kp_in)
+            .arg(&n_i)
+            .arg(&s_i)
+            .arg(out_desc)
+            .launch_cfg(cfg)
             .map_err(|e| SiftCudaError::Cuda(e.to_string()));
     }
 
@@ -672,6 +902,7 @@ pub fn launch_sift_descriptor_cuda(
     n_kp: u32,
     kp_stride: u32,
     out_desc: &mut CudaSlice<f32>,
+    fast_descriptor: bool,
 ) -> Result<(), SiftCudaError> {
     launch_sift_descriptor_cuda_view(
         ctx,
@@ -683,6 +914,7 @@ pub fn launch_sift_descriptor_cuda(
         n_kp,
         kp_stride,
         &mut out_desc.as_view_mut(),
+        fast_descriptor,
     )
 }
 
@@ -701,6 +933,90 @@ mod tests {
             .take(rows * cols)
             .collect();
         Some((rows, cols, data))
+    }
+
+    /// The fast kernel is a sampling approximation, so it is checked by
+    /// agreement with the exact one rather than against the oracle's bits: same
+    /// normalisation, and descriptors that still point the same way.
+    #[test]
+    fn fast_descriptor_agrees_with_exact() {
+        let Some(dir) = std::env::var("KORNIA_SIFT_ORACLE")
+            .ok()
+            .and_then(|v| v.split(':').next().map(String::from))
+        else {
+            eprintln!("KORNIA_SIFT_ORACLE unset; skipping");
+            return;
+        };
+        let b = std::fs::read(format!("{dir}/keypoints.bin")).expect("keypoints");
+        let n = i32::from_le_bytes(b[0..4].try_into().unwrap()) as usize;
+        let stream = default_stream();
+        let ctx = &stream.context();
+
+        // Octave -1, layer 1 only: enough keypoints to be meaningful, one layer
+        // to load.
+        let mut flat: Vec<f32> = Vec::new();
+        for i in 0..n {
+            let o = 4 + i * 24;
+            let f = |k: usize| f32::from_le_bytes(b[o + k * 4..o + k * 4 + 4].try_into().unwrap());
+            let packed = i32::from_le_bytes(b[o + 20..o + 24].try_into().unwrap());
+            if (packed & 255) != 255 || ((packed >> 8) & 255) != 1 {
+                continue;
+            }
+            let mut angle = 360.0f32 - f(3);
+            if (angle - 360.0).abs() < f32::EPSILON {
+                angle = 0.0;
+            }
+            flat.extend_from_slice(&[f(0) * 2.0, f(1) * 2.0, f(2) * 2.0 * 0.5, angle]);
+        }
+        let n_kp = flat.len() / 4;
+        assert!(n_kp > 0, "no octave -1 layer 1 keypoints");
+        let (h, w, img) = load_dump(&format!("{dir}/gauss_o0_l1.f32")).expect("gauss");
+
+        let d_img = stream.clone_htod(&img).unwrap();
+        let d_kp = stream.clone_htod(&flat).unwrap();
+        let run = |fast: bool| {
+            let mut out = stream.alloc_zeros::<f32>(n_kp * DESCR_LEN).unwrap();
+            launch_sift_descriptor_cuda(
+                ctx,
+                &stream,
+                &d_img,
+                w as u32,
+                h as u32,
+                &d_kp,
+                n_kp as u32,
+                4,
+                &mut out,
+                fast,
+            )
+            .unwrap();
+            stream.clone_dtoh(&out).unwrap()
+        };
+        let slow = run(false);
+        let fast = run(true);
+
+        let mut cos: Vec<f32> = Vec::with_capacity(n_kp);
+        for i in 0..n_kp {
+            let (a, c) = (
+                &slow[i * DESCR_LEN..(i + 1) * DESCR_LEN],
+                &fast[i * DESCR_LEN..(i + 1) * DESCR_LEN],
+            );
+            let dot: f32 = a.iter().zip(c).map(|(x, y)| x * y).sum();
+            let na: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+            let nc: f32 = c.iter().map(|x| x * x).sum::<f32>().sqrt();
+            // Every descriptor is L2-normalised to 512 before quantisation.
+            assert!(nc > 1.0, "fast descriptor {i} is all zero");
+            cos.push(dot / (na * nc));
+        }
+        cos.sort_by(f32::total_cmp);
+        let median = cos[cos.len() / 2];
+        eprintln!(
+            "  fast vs exact descriptor: n={n_kp} median cos={median:.4} min={:.4}",
+            cos[0]
+        );
+        assert!(
+            median > 0.85,
+            "fast descriptor diverges from the exact one: median cosine {median}"
+        );
     }
 
     /// Drive the descriptor from the REFERENCE keypoints, so this test isolates
@@ -794,6 +1110,7 @@ mod tests {
                 group.len() as u32,
                 4,
                 &mut d_out,
+                false,
             )
             .unwrap();
             let got = stream.clone_dtoh(&d_out).unwrap();
