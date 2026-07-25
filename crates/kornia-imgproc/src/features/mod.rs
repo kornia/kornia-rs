@@ -17,4 +17,7 @@ pub use cells::{
 };
 
 mod sift;
-pub use sift::{blur_h_f32, blur_v_f32, gaussian_kernel_f32, gaussian_ksize, SiftConfig};
+pub use sift::{
+    blur_h_f32, blur_v_f32, extrema_threshold, find_extrema, gaussian_kernel_f32, gaussian_ksize,
+    RawKeypoint, SiftConfig, SIFT_IMG_BORDER, SIFT_MAX_INTERP_STEPS,
+};
