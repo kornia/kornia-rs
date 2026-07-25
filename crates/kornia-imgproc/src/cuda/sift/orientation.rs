@@ -43,6 +43,7 @@ fn orientation_src() -> String {
         r#"{hal}
 
 #define ORI_N {n}
+#define PEAK_V {peak_v}
 
 __device__ __forceinline__ int cv_round_ori(float v) {{ return __float2int_rn(v); }}
 
@@ -114,8 +115,19 @@ extern "C" __global__ void sift_orientation(
         const int l = j > 0 ? j - 1 : ORI_N - 1;
         const int r2 = j < ORI_N - 1 ? j + 1 : 0;
         if (hist[j] > hist[l] && hist[j] > hist[r2] && hist[j] >= mag_thr) {{
-            float bin = (float)j + 0.5f * (hist[l] - hist[r2])
-                      / (hist[l] - 2.0f * hist[j] + hist[r2]);
+#if PEAK_V == 0
+            const float den = hist[l] - 2.0f * hist[j] + hist[r2];
+            float bin = (float)j + 0.5f * (hist[l] - hist[r2]) / den;
+#elif PEAK_V == 1
+            const float den = __fmaf_rn(-2.0f, hist[j], hist[l]) + hist[r2];
+            float bin = (float)j + 0.5f * (hist[l] - hist[r2]) / den;
+#elif PEAK_V == 2
+            const float den = hist[l] - 2.0f * hist[j] + hist[r2];
+            float bin = __fmaf_rn(0.5f, (hist[l] - hist[r2]) / den, (float)j);
+#else
+            const float den = __fmaf_rn(-2.0f, hist[j], hist[l]) + hist[r2];
+            float bin = __fmaf_rn(0.5f, (hist[l] - hist[r2]) / den, (float)j);
+#endif
             bin = bin < 0.0f ? (float)ORI_N + bin
                 : bin >= (float)ORI_N ? bin - (float)ORI_N : bin;
             float angle = 360.0f - (360.0f / (float)ORI_N) * bin;
@@ -133,6 +145,10 @@ extern "C" __global__ void sift_orientation(
 "#,
         hal = hal_device_src(),
         n = n,
+        peak_v = std::env::var("KORNIA_SIFT_PEAK")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(0),
         ori_radius = ORI_RADIUS,
         ori_sig = ORI_SIG_FCTR,
         peak_ratio = ORI_PEAK_RATIO,
@@ -186,7 +202,11 @@ pub fn launch_sift_orientation_cuda(
     }
     let max_out = (out_kp.len() / ORI_KP_STRIDE) as i32;
 
-    let kernel = get_or_compile(ctx, "sift_orientation", orientation_src, "sift_orientation")?;
+    let key = format!(
+        "sift_orientation:{}",
+        std::env::var("KORNIA_SIFT_PEAK").unwrap_or_default()
+    );
+    let kernel = get_or_compile(ctx, &key, orientation_src, "sift_orientation")?;
     let (w_i, h_i, n_i, s_i) = (width as i32, height as i32, n_kp as i32, kp_stride as i32);
     kernel
         .launch_builder(stream)
@@ -328,40 +348,44 @@ mod tests {
         }
 
         let want = load_ref_angles(&dir);
-        let (mut matched, mut angle_bad) = (0usize, 0usize);
-        // Split by whether OUR `size` for that keypoint is bit-exact: the patch
-        // radius and weight sigma both derive from it, so a wrong `size`
-        // corrupts the whole histogram. This separates inherited failures from
-        // genuine orientation bugs.
-        let (mut exact_sz, mut exact_sz_bad) = (0usize, 0usize);
+        // A keypoint with several orientation peaks appears as SEVERAL
+        // reference entries at the same position. Compare the multiset of
+        // angles per position, not entry-by-entry — matching positionally and
+        // taking the first hit compares unrelated peaks.
+        use std::collections::HashMap;
+        let mut want_by_pos: HashMap<(u32, u32), Vec<u32>> = HashMap::new();
         for w in &want {
-            if let Some(g) = got
-                .iter()
-                .find(|g| g.0.to_bits() == w.0.to_bits() && g.1.to_bits() == w.1.to_bits())
-            {
+            want_by_pos
+                .entry((w.0.to_bits(), w.1.to_bits()))
+                .or_default()
+                .push(w.2.to_bits());
+        }
+        let mut got_by_pos: HashMap<(u32, u32), Vec<u32>> = HashMap::new();
+        for g in &got {
+            got_by_pos
+                .entry((g.0.to_bits(), g.1.to_bits()))
+                .or_default()
+                .push(g.2.to_bits());
+        }
+
+        let (mut matched, mut set_bad) = (0usize, 0usize);
+        for (pos, wa) in &want_by_pos {
+            if let Some(ga) = got_by_pos.get(pos) {
                 matched += 1;
-                let bad = g.2.to_bits() != w.2.to_bits();
-                if bad {
-                    angle_bad += 1;
-                }
-                // `got` carries our size in slot 2 (pre-halving), reference in w.3.
-                if (g.3 * 0.5).to_bits() == w.3.to_bits() {
-                    exact_sz += 1;
-                    if bad {
-                        exact_sz_bad += 1;
-                    }
+                let (mut a, mut b) = (wa.clone(), ga.clone());
+                a.sort_unstable();
+                b.sort_unstable();
+                if a != b {
+                    set_bad += 1;
                 }
             }
         }
         eprintln!(
-            "  orientation: produced={} matched={}/{} angle_mismatch={}",
+            "  orientation: produced={} positions matched={}/{} angle_set_mismatch={}",
             got.len(),
             matched,
-            want.len(),
-            angle_bad
-        );
-        eprintln!(
-            "  FILTERED to bit-exact `size`: {exact_sz} keypoints, angle_mismatch={exact_sz_bad}"
+            want_by_pos.len(),
+            set_bad
         );
         assert!(matched > 0, "no keypoints matched by position");
     }
