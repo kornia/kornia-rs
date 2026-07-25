@@ -257,10 +257,12 @@ __device__ __forceinline__ int cv_floor_d(float v) {{ return (int)floorf(v); }}
 extern "C" __global__ void sift_descriptor_block(
     const float* __restrict__ img, int w, int h,
     const float* __restrict__ kp_in, int n_kp, int kp_stride,
-    float* __restrict__ out_desc)
+    float* __restrict__ out_desc,
+    const int* __restrict__ range_start, const int* __restrict__ live_count)
 {{
-    const int t = blockIdx.x;
-    if (t >= n_kp) return;
+    // Grid is an upper bound; blocks past the live count retire immediately.
+    const int t = range_start[0] + blockIdx.x;
+    if (t >= min(range_start[0] + n_kp, *live_count)) return;
     const int tid = threadIdx.x;
 
     __shared__ float hist[HISTLEN];
@@ -465,10 +467,12 @@ __device__ __forceinline__ float sift_tex(
 extern "C" __global__ void sift_descriptor_fast(
     const float* __restrict__ img, int w, int h,
     const float* __restrict__ kp_in, int n_kp, int kp_stride,
-    float* __restrict__ out_desc)
+    float* __restrict__ out_desc,
+    const int* __restrict__ range_start, const int* __restrict__ live_count)
 {{
-    const int t = blockIdx.x;
-    if (t >= n_kp) return;
+    // Grid is an upper bound; blocks past the live count retire immediately.
+    const int t = range_start[0] + blockIdx.x;
+    if (t >= min(range_start[0] + n_kp, *live_count)) return;
     const int tid = threadIdx.x;
 
     __shared__ float hist[HISTLEN];
@@ -612,6 +616,8 @@ pub fn launch_sift_descriptor_cuda_view(
     kp_stride: u32,
     out_desc: &mut CudaViewMut<'_, f32>,
     fast_descriptor: bool,
+    range_start: &CudaView<'_, i32>,
+    live_count: &CudaView<'_, i32>,
 ) -> Result<(), SiftCudaError> {
     if width == 0 || height == 0 {
         return Err(SiftCudaError::Geometry(
@@ -664,6 +670,8 @@ pub fn launch_sift_descriptor_cuda_view(
             .arg(&n_i)
             .arg(&s_i)
             .arg(out_desc)
+            .arg(range_start)
+            .arg(live_count)
             .launch_2d(n_kp, 1, make_config(n_kp, 1, Some((64, 1))))
             .map_err(|e| SiftCudaError::Cuda(e.to_string()));
     }
@@ -689,6 +697,8 @@ pub fn launch_sift_descriptor_cuda_view(
             .arg(&n_i)
             .arg(&s_i)
             .arg(out_desc)
+            .arg(range_start)
+            .arg(live_count)
             .launch_cfg(cfg)
             .map_err(|e| SiftCudaError::Cuda(e.to_string()));
     }
@@ -722,6 +732,8 @@ pub fn launch_sift_descriptor_cuda_view(
         .arg(&n_i)
         .arg(&s_i)
         .arg(out_desc)
+        .arg(range_start)
+        .arg(live_count)
         .launch_cfg(cfg)
         .map_err(|e| SiftCudaError::Cuda(e.to_string()))
 }
@@ -751,6 +763,8 @@ pub fn launch_sift_pack_descriptor_input_cuda_view(
     angle_col: u32,
     oct_scale: f32,
     out: &mut CudaViewMut<'_, f32>,
+    range_start: &CudaView<'_, i32>,
+    live_count: &CudaView<'_, i32>,
 ) -> Result<(), SiftCudaError> {
     if n_kp == 0 {
         return Ok(());
@@ -783,10 +797,13 @@ pub fn launch_sift_pack_descriptor_input_cuda_view(
                 r#"
 extern "C" __global__ void sift_pack_desc_input(
     const float* __restrict__ kp_in, int n_kp, int kp_stride, int angle_col,
-    float scale, float* __restrict__ out)
+    float scale, float* __restrict__ out,
+    const int* __restrict__ range_start, const int* __restrict__ live_count)
 {{
-    const int t = blockIdx.x * blockDim.x + threadIdx.x;
-    if (t >= n_kp) return;
+    // `n_kp` is only an upper bound; the real row range lives on device, so the
+    // host never has to read a count back to size this launch.
+    const int t = range_start[0] + blockIdx.x * blockDim.x + threadIdx.x;
+    if (t >= min(range_start[0] + n_kp, *live_count)) return;
     const float* k = kp_in + (long)t * kp_stride;
     // `360 - angle`, with the reference's collapse of a near-360 result to 0.
     float ang = 360.0f - k[angle_col];
@@ -812,6 +829,8 @@ extern "C" __global__ void sift_pack_desc_input(
         .arg(&a_i)
         .arg(&oct_scale)
         .arg(out)
+        .arg(range_start)
+        .arg(live_count)
         .launch_2d(n_kp, 1, make_config(n_kp, 1, Some((64, 1))))
         .map_err(|e| SiftCudaError::Cuda(e.to_string()))
 }
@@ -903,6 +922,8 @@ pub fn launch_sift_descriptor_cuda(
     kp_stride: u32,
     out_desc: &mut CudaSlice<f32>,
     fast_descriptor: bool,
+    range_start: &CudaView<'_, i32>,
+    live_count: &CudaView<'_, i32>,
 ) -> Result<(), SiftCudaError> {
     launch_sift_descriptor_cuda_view(
         ctx,
@@ -915,6 +936,8 @@ pub fn launch_sift_descriptor_cuda(
         kp_stride,
         &mut out_desc.as_view_mut(),
         fast_descriptor,
+        range_start,
+        live_count,
     )
 }
 
@@ -974,6 +997,8 @@ mod tests {
 
         let d_img = stream.clone_htod(&img).unwrap();
         let d_kp = stream.clone_htod(&flat).unwrap();
+        let d_zero = stream.clone_htod(&vec![0i32]).unwrap();
+        let d_n = stream.clone_htod(&vec![n_kp as i32]).unwrap();
         let run = |fast: bool| {
             let mut out = stream.alloc_zeros::<f32>(n_kp * DESCR_LEN).unwrap();
             launch_sift_descriptor_cuda(
@@ -987,6 +1012,8 @@ mod tests {
                 4,
                 &mut out,
                 fast,
+                &d_zero.as_view(),
+                &d_n.as_view(),
             )
             .unwrap();
             stream.clone_dtoh(&out).unwrap()
@@ -1100,6 +1127,8 @@ mod tests {
             let d_img = stream.clone_htod(&img).unwrap();
             let d_kp = stream.clone_htod(&flat).unwrap();
             let mut d_out = stream.alloc_zeros::<f32>(group.len() * DESCR_LEN).unwrap();
+            let d_zero = stream.clone_htod(&vec![0i32]).unwrap();
+            let d_n = stream.clone_htod(&vec![group.len() as i32]).unwrap();
             launch_sift_descriptor_cuda(
                 ctx,
                 &stream,
@@ -1111,6 +1140,8 @@ mod tests {
                 4,
                 &mut d_out,
                 false,
+                &d_zero.as_view(),
+                &d_n.as_view(),
             )
             .unwrap();
             let got = stream.clone_dtoh(&d_out).unwrap();

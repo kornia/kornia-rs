@@ -105,12 +105,15 @@ pub struct SiftCuda {
     ori_kp: CudaSlice<f32>,
     ori_count: CudaSlice<i32>,
     desc_in: CudaSlice<f32>,
-    desc: CudaSlice<f32>,
-    /// Descriptors appended across every octave, in detection order.
+    /// Descriptors for the whole frame, in detection order. Each launch writes
+    /// straight into its own row range, so there is no per-layer staging copy.
     desc_all: CudaSlice<f32>,
     /// The same descriptors in final keypoint order — what callers see.
     desc_out: CudaSlice<f32>,
     perm: CudaSlice<i32>,
+    /// Row where each (octave, layer) group's oriented keypoints start. Written
+    /// device-to-device so no count ever has to come back to the host mid-frame.
+    ranges: CudaSlice<i32>,
     n_desc: usize,
     /// Opt-in rotated-frame descriptor: faster, not bit-exact. See
     /// [`super::descriptor`].
@@ -197,10 +200,10 @@ impl SiftCuda {
             ori_kp: stream.alloc_zeros::<f32>(ori_cap * ORI_KP_STRIDE)?,
             ori_count: stream.alloc_zeros::<i32>(1)?,
             desc_in: stream.alloc_zeros::<f32>(ori_cap * DESC_IN_STRIDE)?,
-            desc: stream.alloc_zeros::<f32>(ori_cap * DESCR_LEN)?,
             desc_all: stream.alloc_zeros::<f32>(ori_cap * DESCR_LEN)?,
             desc_out: stream.alloc_zeros::<f32>(ori_cap * DESCR_LEN)?,
             perm: stream.alloc_zeros::<i32>(ori_cap)?,
+            ranges: stream.alloc_zeros::<i32>(64 * (cfg.n_octave_layers + 1))?,
             n_desc: 0,
             fast_descriptor: false,
             base_kernel,
@@ -262,7 +265,7 @@ impl SiftCuda {
         let mut t_det = 0.0f64;
         let mut t_ori = 0.0f64;
         let mut t_desc = 0.0f64;
-        let mut t_copy = 0.0f64;
+        let t_copy = 0.0f64;
         let mark = |on: bool| -> Option<std::time::Instant> { on.then(std::time::Instant::now) };
         let since = |t: Option<std::time::Instant>, stream: &Arc<CudaStream>, acc: &mut f64| {
             if let Some(t) = t {
@@ -312,8 +315,8 @@ impl SiftCuda {
         )?;
 
         let n_oct = self.n_octaves(cw, ch);
-        let mut all_kps: Vec<SiftKeypoint> = Vec::new();
-        let mut desc_off = 0usize;
+        let mut range_i = 0usize;
+        stream.memset_zeros(&mut self.ori_count)?;
 
         for octv in 0..n_oct {
             // Deliberate divergence from the reference, which has no lower bound
@@ -381,14 +384,26 @@ impl SiftCuda {
             if n_kp > 0 {
                 // Orientation and descriptors read the Gaussian layer the
                 // keypoint was found in, so each launch is given one layer and
-                // skips the keypoints that do not belong to it. The filter runs
-                // on device: partitioning on the host cost a download of the
-                // whole keypoint buffer plus an upload per layer, per octave.
+                // skips the keypoints that do not belong to it.
+                //
+                // Oriented keypoints accumulate across the WHOLE frame rather
+                // than being reset per layer, and each layer's row range is
+                // recorded on device (`ranges`) with a 4-byte device-to-device
+                // copy. The descriptor launches size their grid from an upper
+                // bound and retire the blocks past the live count. That is what
+                // removes the per-layer count read: every one of those was a
+                // blocking D2H that drained the stream, 54 of them a frame, and
+                // they left no octave able to overlap the next.
                 for layer in 1..=self.cfg.n_octave_layers {
                     let img = self.gauss[layer].slice(0..plane);
+                    // Snapshot where this layer's rows will start.
+                    {
+                        let src = self.ori_count.slice(0..1);
+                        let mut dst = self.ranges.slice_mut(range_i..range_i + 1);
+                        stream.memcpy_dtod(&src, &mut dst)?;
+                    }
 
                     let to = mark(probe);
-                    stream.memset_zeros(&mut self.ori_count)?;
                     launch_sift_orientation_cuda_view(
                         ctx,
                         stream,
@@ -404,12 +419,10 @@ impl SiftCuda {
                         layer as i32,
                     )?;
                     since(to, stream, &mut t_ori);
-                    let n_ori = stream.clone_dtoh(&self.ori_count)?[0].max(0) as usize;
-                    let cap = self.ori_kp.len() / ORI_KP_STRIDE;
-                    let n_ori = n_ori.min(cap);
-                    if n_ori == 0 {
-                        continue;
-                    }
+
+                    // One keypoint can emit several angles; the reference caps
+                    // at four dominant peaks, which bounds this layer's rows.
+                    let bound = (n_kp * 4).min(self.ori_kp.len() / ORI_KP_STRIDE) as u32;
                     let tds = mark(probe);
                     // The orientation record is in the pyramid base's frame; the
                     // descriptor works in this octave's. Every octave rescales
@@ -420,11 +433,13 @@ impl SiftCuda {
                         ctx,
                         stream,
                         &self.ori_kp.as_view(),
-                        n_ori as u32,
+                        bound,
                         ORI_KP_STRIDE as u32,
                         5,
                         1.0 / ((1u32 << octv) as f32),
                         &mut self.desc_in.as_view_mut(),
+                        &self.ranges.slice(range_i..range_i + 1),
+                        &self.ori_count.slice(0..1),
                     )?;
                     launch_sift_descriptor_cuda_view(
                         ctx,
@@ -433,59 +448,15 @@ impl SiftCuda {
                         cw as u32,
                         ch as u32,
                         &self.desc_in.as_view(),
-                        n_ori as u32,
+                        bound,
                         DESC_IN_STRIDE as u32,
-                        &mut self.desc.as_view_mut(),
+                        &mut self.desc_all.as_view_mut(),
                         self.fast_descriptor,
+                        &self.ranges.slice(range_i..range_i + 1),
+                        &self.ori_count.slice(0..1),
                     )?;
-
                     since(tds, stream, &mut t_desc);
-                    let tc = mark(probe);
-                    // Copy back only the rows this launch actually wrote.
-                    // The buffers are sized for `max_keypoints * 4` oriented
-                    // keypoints, so downloading them whole moves ~17 MB per
-                    // layer per octave -- ~400 MB an image, which dominated
-                    // the end-to-end time by an order of magnitude.
-                    let ok = stream.clone_dtoh(&self.ori_kp.slice(0..n_ori * ORI_KP_STRIDE))?;
-                    // Descriptors stay on device. They are appended to one slab
-                    // in the same order the keypoints are pushed on the host, so
-                    // a keypoint's position in `all_kps` indexes its row here.
-                    let room = (self.desc_all.len() - desc_off) / DESCR_LEN;
-                    let n_ori = n_ori.min(room);
-                    if n_ori == 0 {
-                        continue;
-                    }
-                    {
-                        let src = self.desc.slice(0..n_ori * DESCR_LEN);
-                        let mut dst = self
-                            .desc_all
-                            .slice_mut(desc_off..desc_off + n_ori * DESCR_LEN);
-                        stream.memcpy_dtod(&src, &mut dst)?;
-                    }
-                    desc_off += n_ori * DESCR_LEN;
-                    // first_octave = -1 post-processing: halve position and
-                    // size, and rewrite the packed octave byte.
-                    let scale = match self.first_octave {
-                        FirstOctave::Double => 0.5f32,
-                        FirstOctave::Native => 1.0f32,
-                    };
-                    since(tc, stream, &mut t_copy);
-                    for r in 0..n_ori {
-                        let o = &ok[r * ORI_KP_STRIDE..(r + 1) * ORI_KP_STRIDE];
-                        let packed_oct = o[4].to_bits() as i32;
-                        let oct = match self.first_octave {
-                            FirstOctave::Double => (packed_oct & !255) | ((packed_oct - 1) & 255),
-                            FirstOctave::Native => packed_oct,
-                        };
-                        all_kps.push(SiftKeypoint {
-                            x: o[0] * scale,
-                            y: o[1] * scale,
-                            size: o[2] * scale,
-                            angle: o[5],
-                            response: o[3],
-                            octave: oct,
-                        });
-                    }
+                    range_i += 1;
                 }
             }
 
@@ -519,17 +490,48 @@ impl SiftCuda {
                  descriptor={t_desc:.1} copyback={t_copy:.1} (ms)"
             );
         }
+        // One download for the whole frame. The packed octave field already
+        // carries the octave and layer, so the host can reconstruct everything
+        // from this single copy instead of one per layer per octave.
+        let n_ori = stream.clone_dtoh(&self.ori_count)?[0].max(0) as usize;
+        let n_ori = n_ori
+            .min(self.ori_kp.len() / ORI_KP_STRIDE)
+            .min(self.desc_all.len() / DESCR_LEN);
+        let ok = stream.clone_dtoh(&self.ori_kp.slice(0..n_ori * ORI_KP_STRIDE))?;
+
+        // first_octave = -1 post-processing: halve position and size, and
+        // rewrite the packed octave byte.
+        let scale = match self.first_octave {
+            FirstOctave::Double => 0.5f32,
+            FirstOctave::Native => 1.0f32,
+        };
+        let all_kps: Vec<SiftKeypoint> = (0..n_ori)
+            .map(|r| {
+                let o = &ok[r * ORI_KP_STRIDE..(r + 1) * ORI_KP_STRIDE];
+                let packed_oct = o[4].to_bits() as i32;
+                SiftKeypoint {
+                    x: o[0] * scale,
+                    y: o[1] * scale,
+                    size: o[2] * scale,
+                    angle: o[5],
+                    response: o[3],
+                    octave: match self.first_octave {
+                        FirstOctave::Double => (packed_oct & !255) | ((packed_oct - 1) & 255),
+                        FirstOctave::Native => packed_oct,
+                    },
+                }
+            })
+            .collect();
+
         // Decide the final order on the host, then apply it to the descriptors
-        // on device — they are never downloaded just to be shuffled.
+        // on device -- they are never downloaded just to be shuffled.
         let order = final_order(&all_kps, self.cfg.n_features);
-        // `all_kps` and `desc_all` grow together, so this min is a belt-and-braces
-        // bound on the gather rather than a real truncation.
-        let n = order.len().min(desc_off / DESCR_LEN);
+        let n = order.len().min(n_ori);
         let keypoints: Vec<SiftKeypoint> = order[..n].iter().map(|&i| all_kps[i]).collect();
         if n > 0 {
             let perm: Vec<i32> = order[..n].iter().map(|&i| i as i32).collect();
             stream.memcpy_htod(&perm, &mut self.perm.slice_mut(0..n))?;
-            let src = self.desc_all.slice(0..desc_off);
+            let src = self.desc_all.slice(0..n_ori * DESCR_LEN);
             let p = self.perm.slice(0..n);
             let mut out = self.desc_out.slice_mut(0..n * DESCR_LEN);
             launch_sift_gather_descriptors_cuda_view(ctx, stream, &src, &p, n as u32, &mut out)?;
