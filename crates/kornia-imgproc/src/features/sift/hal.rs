@@ -117,7 +117,7 @@ pub fn atan2_deg(y: f32, x: f32) -> f32 {
 /// exponential, and this is called once per patch sample — tens of millions of
 /// times an image. That is the same mistake, in a different guise, as the baked
 /// tables that ended up in per-thread local memory on the CUDA side.
-static EXP_TAB: std::sync::LazyLock<[f32; 64]> = std::sync::LazyLock::new(|| {
+pub(crate) static EXP_TAB: std::sync::LazyLock<[f32; 64]> = std::sync::LazyLock::new(|| {
     const A0: f64 = 0.009_670_371_139_572_338;
     let mut t = [0.0f32; 64];
     for (i, slot) in t.iter_mut().enumerate() {
@@ -127,18 +127,18 @@ static EXP_TAB: std::sync::LazyLock<[f32; 64]> = std::sync::LazyLock::new(|| {
 });
 
 /// The exponential's polynomial coefficients and range, also built once.
-struct ExpConsts {
-    a1: f32,
-    a2: f32,
-    a3: f32,
-    a4: f32,
-    prescale: f32,
-    postscale: f32,
-    minval: f32,
-    maxval: f32,
+pub(crate) struct ExpConsts {
+    pub(crate) a1: f32,
+    pub(crate) a2: f32,
+    pub(crate) a3: f32,
+    pub(crate) a4: f32,
+    pub(crate) prescale: f32,
+    pub(crate) postscale: f32,
+    pub(crate) minval: f32,
+    pub(crate) maxval: f32,
 }
 
-static EXP_C: std::sync::LazyLock<ExpConsts> = std::sync::LazyLock::new(|| {
+pub(crate) static EXP_C: std::sync::LazyLock<ExpConsts> = std::sync::LazyLock::new(|| {
     const A0: f64 = 0.009_670_371_139_572_338;
     let pre = std::f64::consts::LOG2_E * 64.0;
     let exp_max = 3000.0f64 * 64.0;
@@ -155,15 +155,15 @@ static EXP_C: std::sync::LazyLock<ExpConsts> = std::sync::LazyLock::new(|| {
 });
 
 /// The angle polynomial's constants: products evaluated in `f64` then narrowed.
-struct AtanConsts {
-    p1: f32,
-    p3: f32,
-    p5: f32,
-    p7: f32,
-    eps: f32,
+pub(crate) struct AtanConsts {
+    pub(crate) p1: f32,
+    pub(crate) p3: f32,
+    pub(crate) p5: f32,
+    pub(crate) p7: f32,
+    pub(crate) eps: f32,
 }
 
-static ATAN_C: std::sync::LazyLock<AtanConsts> = std::sync::LazyLock::new(|| {
+pub(crate) static ATAN_C: std::sync::LazyLock<AtanConsts> = std::sync::LazyLock::new(|| {
     const D: f64 = 180.0 / std::f64::consts::PI;
     AtanConsts {
         p1: (0.999_787_841_279_480_7 * D) as f32,
@@ -231,5 +231,148 @@ mod tests {
         eprintln!("  cpu hal: exp {bad_exp}/{n} atan2 {bad_atan}/{n} mismatched");
         assert_eq!(bad_exp, 0, "exp differs from the reference");
         assert_eq!(bad_atan, 0, "atan2 differs from the reference");
+    }
+}
+
+/// Four-lane forms of the three primitives.
+///
+/// Lane-wise identical to the scalar versions — the same instructions, four at a
+/// time — so a caller can vectorise the *evaluation* of a patch while still
+/// scattering the results sequentially, and stay bit-exact. That split is what
+/// makes the descriptor and orientation loops vectorisable at all: their
+/// accumulation order is fixed, but the work feeding it is not.
+#[cfg(target_arch = "aarch64")]
+pub mod x4 {
+    use super::{ATAN_C, EXP_C, EXP_TAB};
+    use std::arch::aarch64::*;
+
+    #[inline]
+    unsafe fn recip(x: float32x4_t) -> float32x4_t {
+        let mut r = vrecpeq_f32(x);
+        r = vmulq_f32(vrecpsq_f32(x, r), r);
+        r = vmulq_f32(vrecpsq_f32(x, r), r);
+        r
+    }
+
+    #[inline]
+    unsafe fn rsqrt(x: float32x4_t) -> float32x4_t {
+        let mut e = vrsqrteq_f32(x);
+        e = vmulq_f32(vrsqrtsq_f32(vmulq_f32(e, e), x), e);
+        e = vmulq_f32(vrsqrtsq_f32(vmulq_f32(e, e), x), e);
+        e
+    }
+
+    /// `recip(rsqrt(x*x + y*y))`, with the sum as one fused multiply-add.
+    ///
+    /// # Safety
+    /// Requires NEON, which is baseline on aarch64.
+    #[inline]
+    pub unsafe fn magnitude(x: float32x4_t, y: float32x4_t) -> float32x4_t {
+        recip(rsqrt(vfmaq_f32(vmulq_f32(y, y), x, x)))
+    }
+
+    /// Angle in degrees, clockwise from +x, in `[0, 360)`.
+    ///
+    /// # Safety
+    /// Requires NEON, which is baseline on aarch64.
+    #[inline]
+    pub unsafe fn atan2_deg(y: float32x4_t, x: float32x4_t) -> float32x4_t {
+        let c = &*ATAN_C;
+        let ax = vabsq_f32(x);
+        let ay = vabsq_f32(y);
+        let tmin = vminq_f32(ax, ay);
+        let tmax = vmaxq_f32(ax, ay);
+        let cc = vmulq_f32(tmin, recip(vaddq_f32(tmax, vdupq_n_f32(c.eps))));
+        let c2 = vmulq_f32(cc, cc);
+
+        let mut a = vfmaq_n_f32(vdupq_n_f32(c.p5), c2, c.p7);
+        a = vfmaq_f32(vdupq_n_f32(c.p3), a, c2);
+        a = vfmaq_f32(vdupq_n_f32(c.p1), a, c2);
+        a = vmulq_f32(a, cc);
+
+        // `!(ax >= ay)` — the negated form, matching the reference, which
+        // differs from `ax < ay` when an operand is NaN.
+        let swap = vmvnq_u32(vcgeq_f32(ax, ay));
+        a = vbslq_f32(swap, vsubq_f32(vdupq_n_f32(90.0), a), a);
+        let negx = vcltq_f32(x, vdupq_n_f32(0.0));
+        a = vbslq_f32(negx, vsubq_f32(vdupq_n_f32(180.0), a), a);
+        let negy = vcltq_f32(y, vdupq_n_f32(0.0));
+        vbslq_f32(negy, vsubq_f32(vdupq_n_f32(360.0), a), a)
+    }
+
+    /// Table-and-polynomial exponential.
+    ///
+    /// The table index is data-dependent, so those four lookups stay scalar;
+    /// everything around them is vector.
+    ///
+    /// # Safety
+    /// Requires NEON, which is baseline on aarch64.
+    #[inline]
+    pub unsafe fn exp(x: float32x4_t) -> float32x4_t {
+        let c = &*EXP_C;
+        let tab = &*EXP_TAB;
+        let x = vminq_f32(vmaxq_f32(x, vdupq_n_f32(c.minval)), vdupq_n_f32(c.maxval));
+        let x = vmulq_f32(x, vdupq_n_f32(c.prescale));
+        let xi = vcvtnq_s32_f32(x); // round to nearest, ties to even
+        let xf = vmulq_n_f32(vsubq_f32(x, vcvtq_f32_s32(xi)), c.postscale);
+
+        let mut idx = [0i32; 4];
+        vst1q_s32(idx.as_mut_ptr(), xi);
+        let mut yf = [0.0f32; 4];
+        for (l, &i) in idx.iter().enumerate() {
+            let t = ((i >> 6) + 127).clamp(0, 255) as u32;
+            yf[l] = tab[(i & 63) as usize] * f32::from_bits(t << 23);
+        }
+        let yf = vld1q_f32(yf.as_ptr());
+
+        let mut z = vaddq_f32(xf, vdupq_n_f32(c.a1));
+        z = vfmaq_f32(vdupq_n_f32(c.a2), z, xf);
+        z = vfmaq_f32(vdupq_n_f32(c.a3), z, xf);
+        z = vfmaq_f32(vdupq_n_f32(c.a4), z, xf);
+        vmulq_f32(z, yf)
+    }
+}
+
+#[cfg(all(test, target_arch = "aarch64"))]
+mod x4_tests {
+    use super::*;
+    use std::arch::aarch64::{vld1q_f32, vmulq_n_f32, vst1q_f32};
+
+    /// The four-lane forms must be lane-wise identical to the scalar ones —
+    /// that identity is what lets the descriptor vectorise its evaluation while
+    /// keeping the reference's scatter order.
+    #[test]
+    fn x4_matches_scalar_bitwise() {
+        let mut seed = 0x9E3779B97F4A7C15u64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            ((seed >> 33) as f32 / (1u32 << 31) as f32 - 0.5) * 400.0
+        };
+        for _ in 0..4096 {
+            let xs = [next(), next(), next(), next()];
+            let ys = [next(), next(), next(), next()];
+            // SAFETY: NEON is baseline on aarch64.
+            unsafe {
+                let vx = vld1q_f32(xs.as_ptr());
+                let vy = vld1q_f32(ys.as_ptr());
+                let mut m = [0.0f32; 4];
+                let mut a = [0.0f32; 4];
+                let mut e = [0.0f32; 4];
+                vst1q_f32(m.as_mut_ptr(), x4::magnitude(vx, vy));
+                vst1q_f32(a.as_mut_ptr(), x4::atan2_deg(vy, vx));
+                vst1q_f32(e.as_mut_ptr(), x4::exp(vmulq_n_f32(vx, 0.01)));
+                for l in 0..4 {
+                    assert_eq!(
+                        m[l].to_bits(),
+                        magnitude(xs[l], ys[l]).to_bits(),
+                        "magnitude"
+                    );
+                    assert_eq!(a[l].to_bits(), atan2_deg(ys[l], xs[l]).to_bits(), "atan2");
+                    assert_eq!(e[l].to_bits(), exp(xs[l] * 0.01).to_bits(), "exp");
+                }
+            }
+        }
     }
 }

@@ -135,6 +135,13 @@ pub fn detect_and_compute(
     blur_h_f32(&base, &mut tmp, cw, ch, &base_kernel);
     blur_v_f32(&tmp, &mut gauss[0], cw, ch, &base_kernel, None, None);
 
+    // KORNIA_SIFT_STAGES=1 breaks the pass down. Each probe is a plain elapsed
+    // measurement -- no synchronisation needed on CPU -- so the total is not
+    // inflated the way the CUDA equivalent is.
+    let probe = std::env::var("KORNIA_SIFT_STAGES").is_ok();
+    let (mut t_blur, mut t_det, mut t_ori, mut t_desc) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+    let mark = || std::time::Instant::now();
+
     let n_oct = cfg
         .n_octaves(cw.min(ch), if doubled { -1 } else { 0 })
         .min(max_octaves.max(1));
@@ -147,6 +154,7 @@ pub fn detect_and_compute(
             break;
         }
         let p = cw * ch;
+        let tb = mark();
         for i in 1..n_layers {
             let k = &layer_kernels[i - 1];
             blur_h_f32(&gauss[i - 1], &mut tmp[..p], cw, ch, k);
@@ -162,10 +170,19 @@ pub fn detect_and_compute(
             );
         }
 
+        if probe {
+            t_blur += tb.elapsed().as_secs_f64() * 1e3;
+        }
+
+        let td = mark();
         let mut kps: Vec<RawKeypoint> = Vec::new();
         for layer in 1..=cfg.n_octave_layers {
             find_extrema(&dog[..p * n_dog], cw, ch, n_dog, layer, octv, cfg, &mut kps);
         }
+        if probe {
+            t_det += td.elapsed().as_secs_f64() * 1e3;
+        }
+        let to = mark();
         // Indexing by layer is the point here: `gauss[layer]` is the Gaussian
         // the keypoints of that layer were found in.
         #[allow(clippy::needless_range_loop)]
@@ -187,6 +204,10 @@ pub fn detect_and_compute(
                 all.push((k, octv, layer));
             }
         }
+        if probe {
+            t_ori += to.elapsed().as_secs_f64() * 1e3;
+        }
+        let tds = mark();
         // Descriptors for this octave, before its layers are overwritten.
         let start = desc.len() / DESCR_LEN;
         let todo: Vec<(OrientedKeypoint, usize)> = all[start..]
@@ -203,6 +224,9 @@ pub fn detect_and_compute(
                 compute_descriptor(img, cw, ch, x, y, s, a, out);
             });
         desc.extend_from_slice(&block);
+        if probe {
+            t_desc += tds.elapsed().as_secs_f64() * 1e3;
+        }
 
         let (nw, nh) = (cw / 2, ch / 2);
         if nw == 0 || nh == 0 || octv + 1 >= n_oct {
@@ -215,6 +239,11 @@ pub fn detect_and_compute(
         ch = nh;
     }
 
+    if probe {
+        eprintln!(
+            "    stages: blur={t_blur:.1} detect={t_det:.1} orient={t_ori:.1} desc={t_desc:.1} (ms)"
+        );
+    }
     // first_octave = -1 post-processing, then the reference's ordering.
     let scale = if doubled { 0.5f32 } else { 1.0f32 };
     let mut kps: Vec<SiftKeypoint> = all

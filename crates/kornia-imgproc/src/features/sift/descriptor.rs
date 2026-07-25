@@ -50,6 +50,99 @@ fn nrm2(v: &[f32]) -> f32 {
     s
 }
 
+/// Evaluate up to four buffered samples and scatter them in order.
+///
+/// `n < 4` falls back to the scalar primitives, which are bit-identical to the
+/// lane-wise ones, so the tail needs no special casing beyond the width.
+#[allow(clippy::too_many_arguments)]
+#[inline]
+fn flush(
+    dx: &[f32; 4],
+    dy: &[f32; 4],
+    c_rot: &[f32; 4],
+    r_rot: &[f32; 4],
+    rbin: &[f32; 4],
+    cbin: &[f32; 4],
+    n: usize,
+    ori: f32,
+    bins_per_rad: f32,
+    exp_scale: f32,
+    hist: &mut [f32],
+) {
+    const D: usize = DESCR_WIDTH;
+    const N: usize = DESCR_HIST_BINS;
+    let mut wgt = [0.0f32; 4];
+    let mut ang = [0.0f32; 4];
+    let mut mag = [0.0f32; 4];
+
+    #[cfg(target_arch = "aarch64")]
+    if n == 4 {
+        use super::hal::x4;
+        use std::arch::aarch64::*;
+        // SAFETY: NEON is baseline on aarch64; all buffers are 4 wide.
+        unsafe {
+            let vcr = vld1q_f32(c_rot.as_ptr());
+            let vrr = vld1q_f32(r_rot.as_ptr());
+            let vdx = vld1q_f32(dx.as_ptr());
+            let vdy = vld1q_f32(dy.as_ptr());
+            let q = vfmaq_f32(vmulq_f32(vrr, vrr), vcr, vcr);
+            vst1q_f32(wgt.as_mut_ptr(), x4::exp(vmulq_n_f32(q, exp_scale)));
+            vst1q_f32(ang.as_mut_ptr(), x4::atan2_deg(vdy, vdx));
+            vst1q_f32(mag.as_mut_ptr(), x4::magnitude(vdx, vdy));
+        }
+    }
+    let vectorised = cfg!(target_arch = "aarch64") && n == 4;
+    if !vectorised {
+        for k in 0..n {
+            wgt[k] = exp((c_rot[k] * c_rot[k] + r_rot[k] * r_rot[k]) * exp_scale);
+            ang[k] = atan2_deg(dy[k], dx[k]);
+            mag[k] = magnitude(dx[k], dy[k]);
+        }
+    }
+
+    for k in 0..n {
+        let mut obin = (ang[k] - ori) * bins_per_rad;
+        let (mut rb, mut cb) = (rbin[k], cbin[k]);
+        let (r0, c0) = (floor_i(rb), floor_i(cb));
+        let mut o0 = floor_i(obin);
+        rb -= r0 as f32;
+        cb -= c0 as f32;
+        obin -= o0 as f32;
+        if o0 < 0 {
+            o0 += N as i32;
+        }
+        if o0 >= N as i32 {
+            o0 -= N as i32;
+        }
+
+        let m = mag[k] * wgt[k];
+        let v_r1 = m * rb;
+        let v_r0 = m - v_r1;
+        let v_rc11 = v_r1 * cb;
+        let v_rc10 = v_r1 - v_rc11;
+        let v_rc01 = v_r0 * cb;
+        let v_rc00 = v_r0 - v_rc01;
+        let v_rco111 = v_rc11 * obin;
+        let v_rco110 = v_rc11 - v_rco111;
+        let v_rco101 = v_rc10 * obin;
+        let v_rco100 = v_rc10 - v_rco101;
+        let v_rco011 = v_rc01 * obin;
+        let v_rco010 = v_rc01 - v_rco011;
+        let v_rco001 = v_rc00 * obin;
+        let v_rco000 = v_rc00 - v_rco001;
+
+        let idx = (((r0 + 1) as usize * (D + 2) + (c0 + 1) as usize) * (N + 2)) + o0 as usize;
+        hist[idx] += v_rco000;
+        hist[idx + 1] += v_rco001;
+        hist[idx + (N + 2)] += v_rco010;
+        hist[idx + (N + 3)] += v_rco011;
+        hist[idx + (D + 2) * (N + 2)] += v_rco100;
+        hist[idx + (D + 2) * (N + 2) + 1] += v_rco101;
+        hist[idx + (D + 3) * (N + 2)] += v_rco110;
+        hist[idx + (D + 3) * (N + 2) + 1] += v_rco111;
+    }
+}
+
 /// Compute one 128-D descriptor.
 ///
 /// `ptx`, `pty` and `scl` are in the **octave's** coordinate frame, and `ori` is
@@ -89,6 +182,22 @@ pub fn compute_descriptor(
 
     let mut hist = [0.0f32; HISTLEN];
 
+    // Evaluate four samples at a time, scatter them one at a time.
+    //
+    // The scatter order is fixed by the reference and cannot move — float
+    // addition is not associative. The *evaluation* feeding it can: `exp`,
+    // `atan2` and `magnitude` are pure functions of the sample, and the 4-lane
+    // forms are lane-wise identical to the scalar ones. So the batch below is
+    // bit-exact by construction, and it is where the time goes: this stage is
+    // ~47% of the pipeline and every sample costs three primitive evaluations.
+    let mut b_dx = [0.0f32; 4];
+    let mut b_dy = [0.0f32; 4];
+    let mut b_cr = [0.0f32; 4];
+    let mut b_rr = [0.0f32; 4];
+    let mut b_rbin = [0.0f32; 4];
+    let mut b_cbin = [0.0f32; 4];
+    let mut nb = 0usize;
+
     for i in -radius..=radius {
         for j in -radius..=radius {
             let c_rot = j as f32 * cos_t - i as f32 * sin_t;
@@ -109,52 +218,45 @@ pub fn compute_descriptor(
                 continue;
             }
             let (r, c) = (r as usize, c as usize);
-            let dx = img[r * w + c + 1] - img[r * w + c - 1];
-            let dy = img[(r - 1) * w + c] - img[(r + 1) * w + c];
-            let wgt = exp((c_rot * c_rot + r_rot * r_rot) * exp_scale);
-            let ang = atan2_deg(dy, dx);
-            let mag = magnitude(dx, dy);
-
-            let mut obin = (ang - ori) * bins_per_rad;
-            let (mut rb, mut cb) = (rbin, cbin);
-            let (r0, c0) = (floor_i(rb), floor_i(cb));
-            let mut o0 = floor_i(obin);
-            rb -= r0 as f32;
-            cb -= c0 as f32;
-            obin -= o0 as f32;
-            if o0 < 0 {
-                o0 += N as i32;
+            b_dx[nb] = img[r * w + c + 1] - img[r * w + c - 1];
+            b_dy[nb] = img[(r - 1) * w + c] - img[(r + 1) * w + c];
+            b_cr[nb] = c_rot;
+            b_rr[nb] = r_rot;
+            b_rbin[nb] = rbin;
+            b_cbin[nb] = cbin;
+            nb += 1;
+            if nb == 4 {
+                flush(
+                    &b_dx,
+                    &b_dy,
+                    &b_cr,
+                    &b_rr,
+                    &b_rbin,
+                    &b_cbin,
+                    4,
+                    ori,
+                    bins_per_rad,
+                    exp_scale,
+                    &mut hist,
+                );
+                nb = 0;
             }
-            if o0 >= N as i32 {
-                o0 -= N as i32;
-            }
-
-            let m = mag * wgt;
-            let v_r1 = m * rb;
-            let v_r0 = m - v_r1;
-            let v_rc11 = v_r1 * cb;
-            let v_rc10 = v_r1 - v_rc11;
-            let v_rc01 = v_r0 * cb;
-            let v_rc00 = v_r0 - v_rc01;
-            let v_rco111 = v_rc11 * obin;
-            let v_rco110 = v_rc11 - v_rco111;
-            let v_rco101 = v_rc10 * obin;
-            let v_rco100 = v_rc10 - v_rco101;
-            let v_rco011 = v_rc01 * obin;
-            let v_rco010 = v_rc01 - v_rco011;
-            let v_rco001 = v_rc00 * obin;
-            let v_rco000 = v_rc00 - v_rco001;
-
-            let idx = (((r0 + 1) as usize * (D + 2) + (c0 + 1) as usize) * (N + 2)) + o0 as usize;
-            hist[idx] += v_rco000;
-            hist[idx + 1] += v_rco001;
-            hist[idx + (N + 2)] += v_rco010;
-            hist[idx + (N + 3)] += v_rco011;
-            hist[idx + (D + 2) * (N + 2)] += v_rco100;
-            hist[idx + (D + 2) * (N + 2) + 1] += v_rco101;
-            hist[idx + (D + 3) * (N + 2)] += v_rco110;
-            hist[idx + (D + 3) * (N + 2) + 1] += v_rco111;
         }
+    }
+    if nb > 0 {
+        flush(
+            &b_dx,
+            &b_dy,
+            &b_cr,
+            &b_rr,
+            &b_rbin,
+            &b_cbin,
+            nb,
+            ori,
+            bins_per_rad,
+            exp_scale,
+            &mut hist,
+        );
     }
 
     // Fold the circular orientation bins back into the d*d*n array.
