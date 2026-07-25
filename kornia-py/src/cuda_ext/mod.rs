@@ -288,6 +288,8 @@ pub(crate) mod cuda_histogram;
 #[cfg(feature = "cuda")]
 pub(crate) mod cuda_morphology;
 #[cfg(feature = "cuda")]
+pub(crate) mod cuda_sift;
+#[cfg(feature = "cuda")]
 pub(crate) use cuda_canny as canny_dev;
 #[cfg(feature = "cuda")]
 pub(crate) use cuda_ccl as ccl_dev;
