@@ -79,9 +79,11 @@ pub(crate) fn hal_device_src() -> String {
         .map(|v| v.to_string())
         .collect::<Vec<_>>()
         .join(", ");
+    // Bit patterns, not `__int_as_float(...)` calls: a `__device__` array must
+    // have a constant initialiser, and the intrinsic does not qualify.
     let exp_tab = exp_table_f32()
         .iter()
-        .map(|&v| f32_lit(v))
+        .map(|&v| format!("0x{:08x}u", v.to_bits()))
         .collect::<Vec<_>>()
         .join(", ");
 
@@ -121,11 +123,21 @@ pub(crate) fn hal_device_src() -> String {
 
     format!(
         r#"
-__device__ __constant__ unsigned short KORNIA_RECP_TAB_UNUSED[1] = {{0}};
+// The estimate tables live at FILE scope, not inside the functions that read
+// them. A `const` array declared inside a `__device__` function and indexed by a
+// runtime value cannot live in registers, so nvcc gives it a per-thread local
+// allocation and re-materialises all of it on every call: ptxas reported a
+// 768-byte stack frame per thread, and the resulting local-memory traffic made
+// the descriptor stage ~85% of the whole pipeline. At file scope they are read
+// once into L1 and shared by every thread.
+__device__ const unsigned short KORNIA_SIFT_RECP_TAB[256] = {{ {recp} }};
+__device__ const unsigned short KORNIA_SIFT_RSQRT_LO[128] = {{ {rs_lo} }};
+__device__ const unsigned short KORNIA_SIFT_RSQRT_HI[128] = {{ {rs_hi} }};
+__device__ const unsigned int KORNIA_SIFT_EXP_TAB[64] = {{ {exp_tab} }};
 
 __device__ __forceinline__ float sift_vrecpe(float v) {{
-    // Baked estimate table; `q` depends only on the top 8 fraction bits.
-    const unsigned short tab[256] = {{ {recp} }};
+    // `q` indexes the baked estimate table by the top 8 fraction bits.
+    const unsigned short* tab = KORNIA_SIFT_RECP_TAB;
     const unsigned int b = __float_as_uint(v);
     const unsigned int e = (b >> 23) & 0xFFu;
     const unsigned int q = (b >> 15) & 0xFFu;
@@ -180,8 +192,8 @@ __device__ __forceinline__ float sift_atan2_deg(float y, float x) {{
 
 
 __device__ __forceinline__ float sift_rsqrte(float v) {{
-    const unsigned short lo[128] = {{ {rs_lo} }};
-    const unsigned short hi[128] = {{ {rs_hi} }};
+    const unsigned short* lo = KORNIA_SIFT_RSQRT_LO;
+    const unsigned short* hi = KORNIA_SIFT_RSQRT_HI;
     const unsigned int b = __float_as_uint(v);
     const unsigned int e = (b >> 23) & 0xFFu;
     const unsigned int idx = (b >> 16) & 0x7Fu;
@@ -212,12 +224,12 @@ __device__ __forceinline__ float sift_magnitude(float x, float y) {{
 }}
 
 __device__ __forceinline__ float sift_exp(float x) {{
-    const float tab[64] = {{ {exp_tab} }};
+    const unsigned int* tab = KORNIA_SIFT_EXP_TAB;
     x = fminf(fmaxf(x, {minval}), {maxval});
     x = x * {pres};
     const int xi = __float2int_rn(x);           // round-to-nearest-even
     const float xf = (x - (float)xi) * {posts};
-    float yf = tab[xi & 63];
+    float yf = __uint_as_float(tab[xi & 63]);
     int t = (xi >> 6) + 127;
     t = min(max(t, 0), 255);
     yf = yf * __uint_as_float((unsigned int)t << 23);
