@@ -445,11 +445,53 @@ impl SiftCuda {
                  descriptor={t_desc:.1} copyback={t_copy:.1} (ms)"
             );
         }
+        let (keypoints, descriptors) = sort_and_dedup(all_kps, all_desc);
         Ok(SiftFeatures {
-            keypoints: all_kps,
-            descriptors: all_desc,
+            keypoints,
+            descriptors,
         })
     }
+}
+
+/// Order keypoints the way `KeyPointsFilter::removeDuplicatedSorted` does, and
+/// drop the exact duplicates it drops.
+///
+/// Two reasons this is not optional. The detector appends through an atomic
+/// counter, so without it the row order varies run to run even though the set
+/// does not — surprising for anything that caches indices or diffs two runs.
+/// And the reference genuinely removes duplicates: one extremum can be reached
+/// from neighbouring start pixels and land on the same refined point.
+///
+/// The comparator is the reference's, including its descending fields: `size`,
+/// `response` and `octave` sort the opposite way to `x`, `y` and `angle`.
+/// Descriptors are permuted alongside, so the pairing survives.
+fn sort_and_dedup(kps: Vec<SiftKeypoint>, desc: Vec<f32>) -> (Vec<SiftKeypoint>, Vec<f32>) {
+    if kps.is_empty() {
+        return (kps, desc);
+    }
+    let mut order: Vec<usize> = (0..kps.len()).collect();
+    order.sort_by(|&a, &b| {
+        let (p, q) = (&kps[a], &kps[b]);
+        p.x.total_cmp(&q.x)
+            .then(p.y.total_cmp(&q.y))
+            .then(q.size.total_cmp(&p.size))
+            .then(p.angle.total_cmp(&q.angle))
+            .then(q.response.total_cmp(&p.response))
+            .then(q.octave.cmp(&p.octave))
+            .then(a.cmp(&b))
+    });
+
+    let mut out_kp: Vec<SiftKeypoint> = Vec::with_capacity(kps.len());
+    let mut out_desc: Vec<f32> = Vec::with_capacity(desc.len());
+    for &i in &order {
+        // Adjacent-equal only: the sort has already grouped duplicates.
+        if out_kp.last() == Some(&kps[i]) {
+            continue;
+        }
+        out_kp.push(kps[i]);
+        out_desc.extend_from_slice(&desc[i * DESCR_LEN..(i + 1) * DESCR_LEN]);
+    }
+    (out_kp, out_desc)
 }
 
 #[cfg(test)]
