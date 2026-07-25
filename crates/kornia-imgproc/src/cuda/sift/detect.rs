@@ -296,7 +296,13 @@ extern "C" __global__ void sift_find_extrema(
         float x1 = d * outer3(dxx, mul_sub(dDy, dss, dys, dDs),
                               dDx, mul_sub(dxy, dss, dys, dxs),
                               dxs, mul_sub(dxy, dDs, dDy, dxs));
-        float x2 = d * outer3(dxx, mul_sub(dyy, dDs, dDy, dys),
+        // x2's first cofactor is written `a11*b2 - b1*a21` in the reference, but
+        // x0's third term is its exact negation `b1*a21 - a11*b2`. CSE evaluates
+        // the pair ONCE and negates, and under the reference build's contraction
+        // the two spellings are not bitwise negations: one rounds `a11*b2` and
+        // fuses `b1*a21`, the other does the reverse. Mirror x0's spelling and
+        // negate, or x2 lands 1-3 ULP out on ~30% of keypoints.
+        float x2 = d * outer3(dxx, -mul_sub(dDy, dys, dyy, dDs),
                               dxy, mul_sub(dxy, dDs, dDy, dxs),
                               dDx, mul_sub(dxy, dys, dyy, dxs));
 
@@ -622,13 +628,21 @@ mod tests {
                         .append(true)
                         .open(&path)
                         .unwrap();
-                    let (px, py) = (kp.x * 0.5, kp.y * 0.5);
+                    let (px, py, psz) = (kp.x * 0.5, kp.y * 0.5, kp.size * 0.5);
+                    // Same columns as verify_adjust.cpp's XIDUMP, so the two can
+                    // be joined on (x, y): carrying the converged (layer, r, c)
+                    // separates a different refinement PATH from a different
+                    // result along the same path.
                     writeln!(
                         f,
-                        "{:08x} {:08x} {:08x}",
+                        "{:08x} {:08x} {:08x} {:08x} {} {} {}",
                         px.to_bits(),
                         py.to_bits(),
-                        kp.xi.to_bits()
+                        kp.xi.to_bits(),
+                        psz.to_bits(),
+                        kp.layer,
+                        kp.rr,
+                        kp.cc
                     )
                     .unwrap();
                 }
