@@ -454,6 +454,96 @@ pub fn launch_sift_descriptor_cuda_view(
         .map_err(|e| SiftCudaError::Cuda(e.to_string()))
 }
 
+/// Floats per packed descriptor input row: `x, y, scl, ori`.
+pub const DESC_IN_STRIDE: usize = 4;
+
+/// Convert oriented keypoints into the descriptor's input frame.
+///
+/// The orientation stage emits `x, y, size, response, octave, angle` with
+/// positions and sizes in the coordinates of the pyramid's *base*, because that
+/// is what the caller ultimately reports. The descriptor works in the octave's
+/// own frame, so the reference rescales by `1 / (1 << octave)` and passes
+/// `size * scale * 0.5` as the patch scale. It also flips the angle: the stored
+/// orientation is measured counter-clockwise, the descriptor's rotation is
+/// clockwise.
+///
+/// Every factor here is a power of two, so the rescale is exact regardless of
+/// how the multiplications are grouped.
+#[allow(clippy::too_many_arguments)]
+pub fn launch_sift_pack_descriptor_input_cuda_view(
+    ctx: &Arc<CudaContext>,
+    stream: &Arc<CudaStream>,
+    kp_in: &CudaView<'_, f32>,
+    n_kp: u32,
+    kp_stride: u32,
+    angle_col: u32,
+    oct_scale: f32,
+    out: &mut CudaViewMut<'_, f32>,
+) -> Result<(), SiftCudaError> {
+    if n_kp == 0 {
+        return Ok(());
+    }
+    if angle_col >= kp_stride {
+        return Err(SiftCudaError::Geometry(format!(
+            "angle column {angle_col} is outside a stride of {kp_stride}"
+        )));
+    }
+    let need_kp = (n_kp as usize) * (kp_stride as usize);
+    if kp_in.len() < need_kp {
+        return Err(SiftCudaError::SliceTooSmall {
+            got: kp_in.len(),
+            need: need_kp,
+        });
+    }
+    let need_out = (n_kp as usize) * DESC_IN_STRIDE;
+    if out.len() < need_out {
+        return Err(SiftCudaError::SliceTooSmall {
+            got: out.len(),
+            need: need_out,
+        });
+    }
+
+    let kernel = get_or_compile(
+        ctx,
+        "sift_pack_desc_input",
+        || {
+            format!(
+                r#"
+extern "C" __global__ void sift_pack_desc_input(
+    const float* __restrict__ kp_in, int n_kp, int kp_stride, int angle_col,
+    float scale, float* __restrict__ out)
+{{
+    const int t = blockIdx.x * blockDim.x + threadIdx.x;
+    if (t >= n_kp) return;
+    const float* k = kp_in + (long)t * kp_stride;
+    // `360 - angle`, with the reference's collapse of a near-360 result to 0.
+    float ang = 360.0f - k[angle_col];
+    if (fabsf(ang - 360.0f) < 1.19209290e-07f) ang = 0.0f;
+    float* o = out + (long)t * {stride};
+    o[0] = k[0] * scale;
+    o[1] = k[1] * scale;
+    o[2] = (k[2] * scale) * 0.5f;
+    o[3] = ang;
+}}
+"#,
+                stride = DESC_IN_STRIDE
+            )
+        },
+        "sift_pack_desc_input",
+    )?;
+    let (n_i, s_i, a_i) = (n_kp as i32, kp_stride as i32, angle_col as i32);
+    kernel
+        .launch_builder(stream)
+        .arg(kp_in)
+        .arg(&n_i)
+        .arg(&s_i)
+        .arg(&a_i)
+        .arg(&oct_scale)
+        .arg(out)
+        .launch_2d(n_kp, 1, make_config(n_kp, 1, Some((64, 1))))
+        .map_err(|e| SiftCudaError::Cuda(e.to_string()))
+}
+
 /// Convenience wrapper over [`launch_sift_descriptor_cuda_view`] for whole buffers.
 #[allow(clippy::too_many_arguments)]
 pub fn launch_sift_descriptor_cuda(
@@ -604,5 +694,17 @@ mod tests {
         let close = total - bad;
         eprintln!("  descriptor: {close}/{total} exact (octave -1, from reference keypoints)");
         assert!(total > 0);
+        // The `exact` kernel reproduces the reference's summation order and must
+        // be bit-identical. The default block kernel accumulates in shared
+        // memory, so a bin can round differently; require it to still land on
+        // the same bits for the overwhelming majority.
+        if std::env::var("KORNIA_SIFT_DESC").as_deref() == Ok("exact") {
+            assert_eq!(bad, 0, "exact descriptor kernel is not bit-exact");
+        } else {
+            assert!(
+                bad * 100 <= total,
+                "block descriptor kernel differs on {bad} of {total} descriptors"
+            );
+        }
     }
 }

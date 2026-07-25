@@ -17,7 +17,10 @@ use std::sync::Arc;
 
 use cudarc::driver::{CudaContext, CudaSlice, CudaStream};
 
-use super::descriptor::{launch_sift_descriptor_cuda_view, DESCR_LEN};
+use super::descriptor::{
+    launch_sift_descriptor_cuda_view, launch_sift_pack_descriptor_input_cuda_view, DESCR_LEN,
+    DESC_IN_STRIDE,
+};
 use super::detect::launch_sift_find_extrema_cuda_view;
 use super::kernels::gaussian_kernel_f32;
 use super::orientation::{launch_sift_orientation_cuda_view, ORI_KP_STRIDE};
@@ -101,6 +104,7 @@ pub struct SiftCuda {
     kp_count: CudaSlice<i32>,
     ori_kp: CudaSlice<f32>,
     ori_count: CudaSlice<i32>,
+    desc_in: CudaSlice<f32>,
     desc: CudaSlice<f32>,
     base_kernel: Vec<f32>,
     layer_kernels: Vec<Vec<f32>>,
@@ -161,6 +165,7 @@ impl SiftCuda {
             kp_count: stream.alloc_zeros::<i32>(1)?,
             ori_kp: stream.alloc_zeros::<f32>(ori_cap * ORI_KP_STRIDE)?,
             ori_count: stream.alloc_zeros::<i32>(1)?,
+            desc_in: stream.alloc_zeros::<f32>(ori_cap * DESC_IN_STRIDE)?,
             desc: stream.alloc_zeros::<f32>(ori_cap * DESCR_LEN)?,
             base_kernel,
             layer_kernels,
@@ -347,15 +352,30 @@ impl SiftCuda {
                         continue;
                     }
                     let tds = mark(probe);
+                    // The orientation record is in the pyramid base's frame; the
+                    // descriptor works in this octave's. Every octave rescales
+                    // by 1 / (1 << octv) -- for `Double` the loop index and the
+                    // reference's signed octave differ by one, but so do the
+                    // stored position and size, and the two offsets cancel.
+                    launch_sift_pack_descriptor_input_cuda_view(
+                        ctx,
+                        stream,
+                        &self.ori_kp.as_view(),
+                        n_ori as u32,
+                        ORI_KP_STRIDE as u32,
+                        5,
+                        1.0 / ((1u32 << octv) as f32),
+                        &mut self.desc_in.as_view_mut(),
+                    )?;
                     launch_sift_descriptor_cuda_view(
                         ctx,
                         stream,
                         &img,
                         cw as u32,
                         ch as u32,
-                        &self.ori_kp.as_view(),
+                        &self.desc_in.as_view(),
                         n_ori as u32,
-                        ORI_KP_STRIDE as u32,
+                        DESC_IN_STRIDE as u32,
                         &mut self.desc.as_view_mut(),
                     )?;
 
