@@ -9,6 +9,11 @@ mod params;
 pub(crate) use params::refl101;
 pub use params::{gaussian_kernel_f32, gaussian_ksize, SiftConfig};
 
+mod pipeline;
+pub use pipeline::{
+    detect_and_compute as sift_detect_and_compute, FirstOctave, SiftFeatures, SiftKeypoint,
+};
+
 mod descriptor;
 pub use descriptor::{compute_descriptor, descriptor_inputs, DESCR_LEN};
 

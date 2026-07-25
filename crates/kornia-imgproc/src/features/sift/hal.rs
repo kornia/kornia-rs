@@ -72,12 +72,13 @@ pub fn magnitude(x: f32, y: f32) -> f32 {
 /// narrowed; computing them from `f32` literals changes `p1`'s last bit.
 #[inline]
 pub fn atan2_deg(y: f32, x: f32) -> f32 {
-    const D: f64 = 180.0 / std::f64::consts::PI;
-    let p1 = (0.999_787_841_279_480_7 * D) as f32;
-    let p3 = (-0.325_808_397_464_097_5 * D) as f32;
-    let p5 = (0.155_578_651_846_328_1 * D) as f32;
-    let p7 = (-0.044_326_555_547_921_28 * D) as f32;
-    let eps = f64::EPSILON as f32;
+    let AtanConsts {
+        p1,
+        p3,
+        p5,
+        p7,
+        eps,
+    } = *ATAN_C;
 
     let (ax, ay) = (x.abs(), y.abs());
     let (tmin, tmax) = (ax.min(ay), ax.max(ay));
@@ -111,36 +112,79 @@ pub fn atan2_deg(y: f32, x: f32) -> f32 {
 /// `2^(i/64) * A0`, where `A0` is the constant the polynomial's coefficients are
 /// divided by. The factor cancels algebraically, but the intermediate rounding
 /// does not, so it has to be kept.
-fn exp_table() -> [f32; 64] {
+///
+/// Built **once**. Rebuilding it per call means 64 `powf` evaluations for every
+/// exponential, and this is called once per patch sample — tens of millions of
+/// times an image. That is the same mistake, in a different guise, as the baked
+/// tables that ended up in per-thread local memory on the CUDA side.
+static EXP_TAB: std::sync::LazyLock<[f32; 64]> = std::sync::LazyLock::new(|| {
     const A0: f64 = 0.009_670_371_139_572_338;
     let mut t = [0.0f32; 64];
     for (i, slot) in t.iter_mut().enumerate() {
         *slot = (2f64.powf(i as f64 / 64.0) * A0) as f32;
     }
     t
+});
+
+/// The exponential's polynomial coefficients and range, also built once.
+struct ExpConsts {
+    a1: f32,
+    a2: f32,
+    a3: f32,
+    a4: f32,
+    prescale: f32,
+    postscale: f32,
+    minval: f32,
+    maxval: f32,
 }
+
+static EXP_C: std::sync::LazyLock<ExpConsts> = std::sync::LazyLock::new(|| {
+    const A0: f64 = 0.009_670_371_139_572_338;
+    let pre = std::f64::consts::LOG2_E * 64.0;
+    let exp_max = 3000.0f64 * 64.0;
+    ExpConsts {
+        a1: (0.055_503_393_667_531_25 / A0) as f32,
+        a2: (0.240_226_510_951_330_15 / A0) as f32,
+        a3: (0.693_147_180_552_144_8 / A0) as f32,
+        a4: (1.0f64 / A0) as f32,
+        prescale: pre as f32,
+        postscale: (1.0f64 / 64.0) as f32,
+        minval: (-exp_max / pre) as f32,
+        maxval: (exp_max / pre) as f32,
+    }
+});
+
+/// The angle polynomial's constants: products evaluated in `f64` then narrowed.
+struct AtanConsts {
+    p1: f32,
+    p3: f32,
+    p5: f32,
+    p7: f32,
+    eps: f32,
+}
+
+static ATAN_C: std::sync::LazyLock<AtanConsts> = std::sync::LazyLock::new(|| {
+    const D: f64 = 180.0 / std::f64::consts::PI;
+    AtanConsts {
+        p1: (0.999_787_841_279_480_7 * D) as f32,
+        p3: (-0.325_808_397_464_097_5 * D) as f32,
+        p5: (0.155_578_651_846_328_1 * D) as f32,
+        p7: (-0.044_326_555_547_921_28 * D) as f32,
+        eps: f64::EPSILON as f32,
+    }
+});
 
 /// The reference's exponential: 64-entry table, exponent injection, and a
 /// four-term FMA polynomial. Not `expf`.
 #[inline]
 pub fn exp(x: f32) -> f32 {
-    const A0: f64 = 0.009_670_371_139_572_338;
-    let a4 = (1.0f64 / A0) as f32;
-    let a3 = (0.693_147_180_552_144_8 / A0) as f32;
-    let a2 = (0.240_226_510_951_330_15 / A0) as f32;
-    let a1 = (0.055_503_393_667_531_25 / A0) as f32;
-
-    let prescale = (std::f64::consts::LOG2_E * 64.0) as f32;
-    let postscale = (1.0f64 / 64.0) as f32;
-    let exp_max = 3000.0f64 * 64.0;
-    let minval = (-exp_max / (std::f64::consts::LOG2_E * 64.0)) as f32;
-    let maxval = (exp_max / (std::f64::consts::LOG2_E * 64.0)) as f32;
-
-    let tab = exp_table();
-    let mut x = x.clamp(minval, maxval);
-    x *= prescale;
+    let c = &*EXP_C;
+    let (a1, a2, a3, a4) = (c.a1, c.a2, c.a3, c.a4);
+    let tab = &*EXP_TAB;
+    let mut x = x.clamp(c.minval, c.maxval);
+    x *= c.prescale;
     let xi = x.round_ties_even() as i32;
-    let xf = (x - xi as f32) * postscale;
+    let xf = (x - xi as f32) * c.postscale;
     let mut yf = tab[(xi & 63) as usize];
     let t = ((xi >> 6) + 127).clamp(0, 255) as u32;
     yf *= f32::from_bits(t << 23);

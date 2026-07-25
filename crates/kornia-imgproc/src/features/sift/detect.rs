@@ -10,6 +10,8 @@
 //!
 //! `f32::mul_add` is the exact twin of the fused ops the reference's build emits.
 
+use rayon::prelude::*;
+
 use super::params::SiftConfig;
 
 /// Border in pixels excluded from the extrema search (`SIFT_IMG_BORDER`).
@@ -112,42 +114,60 @@ pub fn find_extrema(
     let prv = &dog[(layer - 1) * plane..layer * plane];
     let nxt = &dog[(layer + 1) * plane..(layer + 2) * plane];
 
-    for r in IMG_BORDER..h - IMG_BORDER {
-        for c in IMG_BORDER..w - IMG_BORDER {
-            let val = cur[r * w + c];
-            if val.abs() <= thr {
-                continue;
-            }
-            // 26-neighbour test: strictly greater than, or strictly less than,
-            // every neighbour in the 3x3x3 cube.
-            let mut is_max = true;
-            let mut is_min = true;
-            'nb: for (pl, dz) in [(prv, -1i32), (cur, 0), (nxt, 1)] {
-                for dr in -1i32..=1 {
-                    for dc in -1i32..=1 {
-                        if dz == 0 && dr == 0 && dc == 0 {
-                            continue;
-                        }
-                        let n = pl[(r as i32 + dr) as usize * w + (c as i32 + dc) as usize];
-                        if n >= val {
-                            is_max = false;
-                        }
-                        if n <= val {
-                            is_min = false;
-                        }
-                        if !is_max && !is_min {
-                            break 'nb;
+    // Rows in parallel. The scan is read-only over the DoG and each row owns its
+    // output, so the only thing this loses is the append order — which the
+    // reference's final sort normalises anyway.
+    let mut bands: Vec<(usize, Vec<RawKeypoint>)> = (IMG_BORDER..h - IMG_BORDER)
+        .into_par_iter()
+        .map(|r| {
+            let mut acc = Vec::new();
+            for c in IMG_BORDER..w - IMG_BORDER {
+                let val = cur[r * w + c];
+                if val.abs() <= thr {
+                    continue;
+                }
+                // 26-neighbour test: strictly greater than, or strictly less
+                // than, every neighbour in the 3x3x3 cube.
+                let mut is_max = true;
+                let mut is_min = true;
+                'nb: for (pi, pl) in [prv, cur, nxt].into_iter().enumerate() {
+                    for dr in -1i32..=1 {
+                        let rr = (r as i32 + dr) as usize * w;
+                        for dc in -1i32..=1 {
+                            // The centre is not its own neighbour: comparing it
+                            // against itself fails both tests and rejects every
+                            // candidate.
+                            if pi == 1 && dr == 0 && dc == 0 {
+                                continue;
+                            }
+                            let n = pl[rr + (c as i32 + dc) as usize];
+                            if n >= val {
+                                is_max = false;
+                            }
+                            if n <= val {
+                                is_min = false;
+                            }
+                            if !is_max && !is_min {
+                                break 'nb;
+                            }
                         }
                     }
                 }
+                if !(is_max || is_min) {
+                    continue;
+                }
+                if let Some(kp) = refine(dog, w, h, n_dog, layer, r, c, octv, cfg) {
+                    acc.push(kp);
+                }
             }
-            if !(is_max || is_min) {
-                continue;
-            }
-            if let Some(kp) = refine(dog, w, h, n_dog, layer, r, c, octv, cfg) {
-                out.push(kp);
-            }
-        }
+            (r, acc)
+        })
+        .filter(|(_, v)| !v.is_empty())
+        .collect();
+    // Restore row order so a run is reproducible before the final sort.
+    bands.sort_by_key(|(r, _)| *r);
+    for (_, b) in bands {
+        out.extend_from_slice(&b);
     }
 }
 
