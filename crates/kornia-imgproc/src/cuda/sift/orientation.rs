@@ -44,6 +44,7 @@ fn orientation_src() -> String {
 
 #define ORI_N {n}
 #define PEAK_V {peak_v}
+#define TAIL_FMA {tail_fma}
 
 __device__ __forceinline__ int cv_round_ori(float v) {{ return __float2int_rn(v); }}
 
@@ -73,7 +74,27 @@ extern "C" __global__ void sift_orientation(
     float temphist[ORI_N];
     for (int i = 0; i < ORI_N; i++) temphist[i] = 0.0f;
 
+    // The reference accumulates in TWO loops: a SIMD block over
+    // `k <= len - vecsize` and a scalar tail for the last `len % vecsize`
+    // samples. The SIMD block rounds `w * mag` into a buffer and then adds it;
+    // the scalar tail writes `temphist[bin] += W[k]*Mag[k]`, which the backend's
+    // `-ffp-contract=fast` build fuses. So the last `len % 4` samples use an FMA
+    // and the rest do not. `len` is only known after the gather, so count it
+    // first — the prepass is pure index arithmetic, no loads.
+    int len = 0;
+    for (int i = -radius; i <= radius; i++) {{
+        const int y = rr + i;
+        if (y <= 0 || y >= h - 1) continue;
+        for (int j = -radius; j <= radius; j++) {{
+            const int x = cc + j;
+            if (x <= 0 || x >= w - 1) continue;
+            len++;
+        }}
+    }}
+    const int tail_from = TAIL_FMA ? (len & ~3) : len;
+
     // Same traversal order as the reference: rows outer, columns inner.
+    int kk = 0;
     for (int i = -radius; i <= radius; i++) {{
         const int y = rr + i;
         if (y <= 0 || y >= h - 1) continue;
@@ -90,7 +111,9 @@ extern "C" __global__ void sift_orientation(
             int bin = cv_round_ori(((float)ORI_N / 360.0f) * ori);
             if (bin >= ORI_N) bin -= ORI_N;
             if (bin < 0) bin += ORI_N;
-            temphist[bin] += wgt * mag;
+            if (kk >= tail_from) temphist[bin] = __fmaf_rn(wgt, mag, temphist[bin]);
+            else                 temphist[bin] += wgt * mag;
+            kk++;
         }}
     }}
 
@@ -149,6 +172,10 @@ extern "C" __global__ void sift_orientation(
             .ok()
             .and_then(|v| v.parse::<u32>().ok())
             .unwrap_or(0),
+        tail_fma = std::env::var("KORNIA_SIFT_TAIL")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(1),
         ori_radius = ORI_RADIUS,
         ori_sig = ORI_SIG_FCTR,
         peak_ratio = ORI_PEAK_RATIO,
@@ -203,8 +230,9 @@ pub fn launch_sift_orientation_cuda(
     let max_out = (out_kp.len() / ORI_KP_STRIDE) as i32;
 
     let key = format!(
-        "sift_orientation:{}",
-        std::env::var("KORNIA_SIFT_PEAK").unwrap_or_default()
+        "sift_orientation:{}:{}",
+        std::env::var("KORNIA_SIFT_PEAK").unwrap_or_default(),
+        std::env::var("KORNIA_SIFT_TAIL").unwrap_or_default()
     );
     let kernel = get_or_compile(ctx, &key, orientation_src, "sift_orientation")?;
     let (w_i, h_i, n_i, s_i) = (width as i32, height as i32, n_kp as i32, kp_stride as i32);

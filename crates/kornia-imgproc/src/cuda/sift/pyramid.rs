@@ -783,9 +783,14 @@ mod tests {
             .map(|i| gaussian_kernel_f32(crate::cuda::sift::gaussian_ksize(sigmas[i]), sigmas[i]))
             .collect();
 
+        // `first_octave`: -1 (the OpenCV/COLMAP/VLFeat default) doubles the base
+        // image and so quadruples every downstream pixel count; 0 starts at
+        // native resolution. Set KORNIA_SIFT_FIRSTOCT=0 to measure the latter.
+        let upsample = std::env::var("KORNIA_SIFT_FIRSTOCT").as_deref() != Ok("0");
+
         // Preallocate once and ping-pong, mirroring what the plan object does:
         // no per-octave allocation and no device-to-device copies per layer.
-        let (bw, bh) = (w * 2, h * 2);
+        let (bw, bh) = if upsample { (w * 2, h * 2) } else { (w, h) };
         let mut buf_a = stream.alloc_zeros::<f32>(bw * bh).unwrap();
         let mut buf_b = stream.alloc_zeros::<f32>(bw * bh).unwrap();
         let mut buf_c = stream.alloc_zeros::<f32>(bw * bh).unwrap();
@@ -796,7 +801,11 @@ mod tests {
                    b: &mut cudarc::driver::CudaSlice<f32>,
                    c: &mut cudarc::driver::CudaSlice<f32>,
                    d: &mut cudarc::driver::CudaSlice<f32>| {
-            launch_sift_upsample2x_cuda(ctx, stream, &d_src, a, w as u32, h as u32).unwrap();
+            if upsample {
+                launch_sift_upsample2x_cuda(ctx, stream, &d_src, a, w as u32, h as u32).unwrap();
+            } else {
+                stream.memcpy_dtod(&d_src, a).unwrap();
+            }
             launch_sift_blur_h_cuda(ctx, stream, a, b, bw as u32, bh as u32, &base_gk).unwrap();
             launch_sift_blur_v_cuda(ctx, stream, b, c, bw as u32, bh as u32, &base_gk).unwrap();
             // `c` now holds the octave base.
@@ -839,7 +848,9 @@ mod tests {
         }
         ts.sort_by(|a, b| a.partial_cmp(b).unwrap());
         eprintln!(
-            "GPU scale-space (upsample+blur+DoG+downsample, all octaves) @1080p: median {:.2} ms",
+            "GPU scale-space (upsample+blur+DoG+downsample, all octaves) @1080p \
+             first_octave={}: median {:.2} ms",
+            if upsample { -1 } else { 0 },
             ts[ts.len() / 2]
         );
     }
@@ -969,6 +980,96 @@ mod tests {
             let a = stream.clone_dtoh(&d_two).unwrap();
             let b = stream.clone_dtoh(&d_fused).unwrap();
             assert_bit_equal(&b, &a, &format!("fused blur-HV (sigma={sigma})"));
+        }
+    }
+
+    /// Per-octave cost breakdown. OpenCV's octave count formula mandates 8 for a
+    /// doubled 1080p base, but the last octaves are tiny and launch-bound —
+    /// this measures what they actually cost.
+    #[test]
+    fn bench_per_octave() {
+        if std::env::var("KORNIA_SIFT_BENCH").is_err() {
+            eprintln!("KORNIA_SIFT_BENCH unset; skipping");
+            return;
+        }
+        let cfg = SiftCudaConfig::default();
+        let stream = default_stream();
+        let ctx = &stream.context();
+        let (w, h) = (1920usize, 1080usize);
+        let src: Vec<f32> = (0..w * h)
+            .map(|i| ((i * 2654435761usize) % 255) as f32)
+            .collect();
+        let d_src = stream.clone_htod(&src).unwrap();
+
+        let sigmas = cfg.layer_sigmas();
+        let layers = cfg.n_octave_layers + 3;
+        let base_sigma = cfg.base_sig_diff() as f64;
+        let base_gk =
+            gaussian_kernel_f32(crate::cuda::sift::gaussian_ksize(base_sigma), base_sigma);
+        let layer_gks: Vec<Vec<f32>> = (1..layers)
+            .map(|i| gaussian_kernel_f32(crate::cuda::sift::gaussian_ksize(sigmas[i]), sigmas[i]))
+            .collect();
+
+        let (bw, bh) = (w * 2, h * 2);
+        let mut a = stream.alloc_zeros::<f32>(bw * bh).unwrap();
+        let mut b = stream.alloc_zeros::<f32>(bw * bh).unwrap();
+        let mut c = stream.alloc_zeros::<f32>(bw * bh).unwrap();
+        let mut d = stream.alloc_zeros::<f32>(bw * bh).unwrap();
+
+        let n_oct = cfg.n_octaves(bh.min(bw));
+        let mut per_oct = vec![0.0f64; n_oct];
+        let reps = 5;
+
+        for _ in 0..(reps + 2) {
+            launch_sift_upsample2x_cuda(ctx, &stream, &d_src, &mut a, w as u32, h as u32).unwrap();
+            launch_sift_blur_h_cuda(ctx, &stream, &a, &mut b, bw as u32, bh as u32, &base_gk)
+                .unwrap();
+            launch_sift_blur_v_cuda(ctx, &stream, &b, &mut c, bw as u32, bh as u32, &base_gk)
+                .unwrap();
+            let (mut cw, mut ch) = (bw, bh);
+            for slot in per_oct.iter_mut() {
+                if cw < 16 || ch < 16 {
+                    break;
+                }
+                stream.synchronize().unwrap();
+                let t0 = std::time::Instant::now();
+                for gk in layer_gks.iter() {
+                    launch_sift_blur_h_tiled_cuda(
+                        ctx, &stream, &c, &mut b, cw as u32, ch as u32, gk,
+                    )
+                    .unwrap();
+                    launch_sift_blur_v_dog_cuda(
+                        ctx, &stream, &b, &mut a, &c, &mut d, cw as u32, ch as u32, gk,
+                    )
+                    .unwrap();
+                    std::mem::swap(&mut a, &mut c);
+                }
+                let (nw, nh) = (cw / 2, ch / 2);
+                if nw > 0 && nh > 0 {
+                    launch_sift_downsample_nearest_cuda(
+                        ctx, &stream, &c, &mut b, cw as u32, ch as u32, nw as u32, nh as u32,
+                    )
+                    .unwrap();
+                    std::mem::swap(&mut b, &mut c);
+                }
+                stream.synchronize().unwrap();
+                *slot += t0.elapsed().as_secs_f64() * 1e3;
+                cw = nw;
+                ch = nh;
+            }
+        }
+
+        let total: f64 = per_oct.iter().sum::<f64>() / (reps + 2) as f64;
+        eprintln!("  per-octave cost @1080p (total {total:.2} ms):");
+        let mut cum = 0.0;
+        for (o, t) in per_oct.iter().enumerate() {
+            let ms = t / (reps + 2) as f64;
+            cum += ms;
+            eprintln!(
+                "    octave {o}: {ms:7.3} ms  ({:5.1}% of total, cumulative {:5.1}%)",
+                100.0 * ms / total,
+                100.0 * cum / total
+            );
         }
     }
 }
