@@ -59,6 +59,17 @@
 //! * Coefficients are baked into the kernel source as `__int_as_float(0x..)`
 //!   literals so no decimal round-trip can perturb them.
 //!
+//! ## Where the default build steps outside that contract
+//!
+//! Scale space, detection and orientation are bit-exact as shipped. The
+//! **descriptor is not**: the default kernel accumulates its histogram with
+//! shared-memory float atomics, so the summation order varies run to run and
+//! the last bits of a descriptor with it (an order of magnitude faster than the
+//! sequential form — see [`descriptor`]). Set `KORNIA_SIFT_DESC=exact` for the
+//! bit-exact one-thread-per-keypoint kernel. `KORNIA_SIFT_FASTMATH=1`
+//! additionally replaces the [`hal`] primitives with SFU approximations, which
+//! moves angles and descriptors but leaves keypoint positions exact.
+//!
 //! # Version scope
 //!
 //! Verified against the reference version the `opencv` dev-dependency links.
@@ -194,27 +205,47 @@ impl SiftCudaConfig {
         sig
     }
 
-    /// Blur applied to the doubled base image.
+    /// Blur applied to the base image of the first octave.
     ///
-    /// `sqrt(max(sigma^2 - 4*INIT^2, 0.01))` in plain `f32` with **two**
+    /// `sqrt(max(sigma^2 - k*INIT^2, 0.01))` in plain `f32` with **two**
     /// roundings. The reference's build does NOT contract this into an FMA —
     /// verified by instrumenting it and reading back the raw bits
     /// (`0x3f9fdf39` = 1.2489997, not `0x3f9fdf38` = 1.2489996). One ULP here
     /// changes every coefficient of the base blur kernel and shifts all 48
     /// pyramid layers, so do not "optimise" this into a `mul_add`.
-    pub fn base_sig_diff(&self) -> f32 {
+    ///
+    /// `doubled` selects between the reference's two `createInitialImage`
+    /// branches: doubling the image halves the effective input blur, so `k` is
+    /// **4** there and **1** when starting at the native resolution. Using the
+    /// doubled constant on the native path under-blurs every layer of the whole
+    /// scale space (1.2490 instead of 1.5199 at the default sigma).
+    pub fn base_sig_diff_for(&self, doubled: bool) -> f32 {
         let sigma = self.sigma as f32;
-        (sigma * sigma - SIFT_INIT_SIGMA * SIFT_INIT_SIGMA * 4.0)
-            .max(0.01)
-            .sqrt()
+        // `0.25 * 4.0` and `0.25 * 1.0` are both exact, so this is the same two
+        // roundings the pinned bit pattern was measured with.
+        let init2 = SIFT_INIT_SIGMA * SIFT_INIT_SIGMA * if doubled { 4.0 } else { 1.0 };
+        (sigma * sigma - init2).max(0.01).sqrt()
+    }
+
+    /// Blur applied to the doubled base image — [`Self::base_sig_diff_for`] with
+    /// `doubled = true`, the reference's default.
+    pub fn base_sig_diff(&self) -> f32 {
+        self.base_sig_diff_for(true)
     }
 
     /// Number of octaves for a base image whose smaller side is `base_min_dim`.
     ///
-    /// `round(log2(min_dim) - 2) - first_octave` with `first_octave = -1`.
-    pub fn n_octaves(&self, base_min_dim: usize) -> usize {
+    /// `round(log2(min_dim) - 2) - first_octave`. `first_octave` is `-1` when the
+    /// base image was doubled and `0` when it was not; passing the doubled value
+    /// on the native path builds one octave too many.
+    pub fn n_octaves_for(&self, base_min_dim: usize, first_octave: i32) -> usize {
         let v = (base_min_dim as f64).ln() / std::f64::consts::LN_2 - 2.0;
-        (round_ties_even(v) as i32 + 1).max(1) as usize
+        (round_ties_even(v) as i32 - first_octave).max(1) as usize
+    }
+
+    /// [`Self::n_octaves_for`] with `first_octave = -1`, the reference's default.
+    pub fn n_octaves(&self, base_min_dim: usize) -> usize {
+        self.n_octaves_for(base_min_dim, -1)
     }
 }
 
@@ -283,5 +314,18 @@ mod tests {
     fn n_octaves_matches_reference() {
         // 258x195 input -> 516x390 base -> 8 octaves.
         assert_eq!(SiftCudaConfig::default().n_octaves(390), 8);
+        // first_octave = 0 keeps the base at 195 and drops the extra octave the
+        // doubled path gets from `- first_octave`.
+        assert_eq!(SiftCudaConfig::default().n_octaves_for(195, 0), 6);
+    }
+
+    #[test]
+    fn base_sig_diff_native_removes_one_init_sigma() {
+        let cfg = SiftCudaConfig::default();
+        // The doubled branch keeps the pinned reference value ...
+        assert_eq!(cfg.base_sig_diff_for(true), cfg.base_sig_diff());
+        // ... and the native branch removes INIT^2 rather than 4*INIT^2.
+        let want = (1.6f32 * 1.6 - SIFT_INIT_SIGMA * SIFT_INIT_SIGMA).sqrt();
+        assert_eq!(cfg.base_sig_diff_for(false).to_bits(), want.to_bits());
     }
 }

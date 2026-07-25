@@ -94,6 +94,13 @@ impl Sift {
                 "Sift: max_keypoints must be non-zero",
             ));
         }
+        // A non-positive sigma reaches an `assert!` deep in the Gaussian kernel
+        // builder, which surfaces as a PanicException rather than a ValueError.
+        if !(sigma.is_finite() && sigma > 0.0) {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "Sift: sigma must be finite and positive, got {sigma}"
+            )));
+        }
         Ok(Self {
             n_features,
             n_octave_layers,

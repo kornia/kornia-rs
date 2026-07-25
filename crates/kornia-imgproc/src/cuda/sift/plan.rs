@@ -137,6 +137,25 @@ impl SiftCuda {
                 "max_keypoints must be non-zero".into(),
             ));
         }
+        if cfg.n_octave_layers == 0 {
+            return Err(SiftCudaError::Geometry(
+                "n_octave_layers must be non-zero".into(),
+            ));
+        }
+        if max_octaves == 0 {
+            return Err(SiftCudaError::Geometry(
+                "max_octaves must be non-zero".into(),
+            ));
+        }
+        // `gaussian_kernel_f32` asserts on a non-positive sigma, and these values
+        // come straight from a public constructor (including the Python one), so
+        // reject them here rather than panicking across the FFI boundary.
+        if !(cfg.sigma.is_finite() && cfg.sigma > 0.0) {
+            return Err(SiftCudaError::Geometry(format!(
+                "sigma must be finite and positive, got {}",
+                cfg.sigma
+            )));
+        }
         let (bw, bh) = match first_octave {
             FirstOctave::Double => (width * 2, height * 2),
             FirstOctave::Native => (width, height),
@@ -146,7 +165,10 @@ impl SiftCuda {
         let n_dog = cfg.n_octave_layers + 2;
 
         let sigmas = cfg.layer_sigmas();
-        let base_sigma = cfg.base_sig_diff() as f64;
+        // The doubled and native branches of the reference's `createInitialImage`
+        // remove different multiples of the assumed input blur; using the doubled
+        // constant on the native path under-blurs every pyramid layer.
+        let base_sigma = cfg.base_sig_diff_for(first_octave == FirstOctave::Double) as f64;
         let base_kernel = gaussian_kernel_f32(gaussian_ksize(base_sigma), base_sigma);
         let layer_kernels = (1..n_layers)
             .map(|i| gaussian_kernel_f32(gaussian_ksize(sigmas[i]), sigmas[i]))
@@ -183,8 +205,17 @@ impl SiftCuda {
     }
 
     /// Number of octaves this configuration will build.
+    ///
+    /// The reference's count carries a `- first_octave` term, so the doubled and
+    /// native paths differ by one octave even before the base image is resized.
     fn n_octaves(&self, bw: usize, bh: usize) -> usize {
-        self.cfg.n_octaves(bw.min(bh)).min(self.max_octaves)
+        let first_octave = match self.first_octave {
+            FirstOctave::Double => -1,
+            FirstOctave::Native => 0,
+        };
+        self.cfg
+            .n_octaves_for(bw.min(bh), first_octave)
+            .min(self.max_octaves)
     }
 
     /// Detect, orient and describe, leaving the descriptors on device.
@@ -211,7 +242,9 @@ impl SiftCuda {
         let n_dog = self.cfg.n_octave_layers + 2;
         // KORNIA_SIFT_STAGES=1 breaks the pass down; each probe synchronises,
         // so the total is inflated -- read the ratios, not the absolutes.
-        let probe = std::env::var("KORNIA_SIFT_STAGES").is_ok();
+        // Read once: this is a per-frame path and `env::var` allocates.
+        static PROBE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let probe = *PROBE.get_or_init(|| std::env::var("KORNIA_SIFT_STAGES").is_ok());
         let mut t_blur = 0.0f64;
         let mut t_det = 0.0f64;
         let mut t_ori = 0.0f64;
@@ -239,7 +272,10 @@ impl SiftCuda {
                 (self.width * 2, self.height * 2)
             }
             FirstOctave::Native => {
-                stream.memcpy_dtod(src, &mut self.buf_a)?;
+                // Slice both sides: `src` is only required to be *at least*
+                // `need` long, and `memcpy_dtod` asserts `dst.len() >= src.len()`
+                // — an over-long input would panic instead of copying.
+                stream.memcpy_dtod(&src.slice(0..need), &mut self.buf_a.slice_mut(0..need))?;
                 (self.width, self.height)
             }
         };
@@ -267,6 +303,11 @@ impl SiftCuda {
         let mut desc_off = 0usize;
 
         for octv in 0..n_oct {
+            // Deliberate divergence from the reference, which has no lower bound
+            // and keeps halving. Below 16 px the interior left by the 5-px
+            // detection border is a handful of pixels wide and the octave
+            // contributes essentially nothing, while the orientation kernel
+            // needs `h >= 3` to have any samples at all.
             if cw < 16 || ch < 16 {
                 break;
             }
@@ -475,7 +516,9 @@ impl SiftCuda {
         // Decide the final order on the host, then apply it to the descriptors
         // on device — they are never downloaded just to be shuffled.
         let order = final_order(&all_kps, self.cfg.n_features);
-        let n = order.len().min(desc_off / DESCR_LEN.max(1));
+        // `all_kps` and `desc_all` grow together, so this min is a belt-and-braces
+        // bound on the gather rather than a real truncation.
+        let n = order.len().min(desc_off / DESCR_LEN);
         let keypoints: Vec<SiftKeypoint> = order[..n].iter().map(|&i| all_kps[i]).collect();
         if n > 0 {
             let perm: Vec<i32> = order[..n].iter().map(|&i| i as i32).collect();
@@ -588,10 +631,17 @@ fn sorted_dedup_order(kps: &[SiftKeypoint]) -> Vec<usize> {
             .then(a.cmp(&b))
     });
 
+    // The reference's duplicate test is NOT the full record: it compares only
+    // `pt.x`, `pt.y`, `size` and `angle`, so two keypoints that agree on those
+    // but differ in `response` or `octave` are still duplicates to it. Deriving
+    // this from `PartialEq` on the whole struct would keep such a pair.
+    let same = |a: &SiftKeypoint, b: &SiftKeypoint| {
+        a.x == b.x && a.y == b.y && a.size == b.size && a.angle == b.angle
+    };
     let mut out: Vec<usize> = Vec::with_capacity(order.len());
     for &i in &order {
         // Adjacent-equal only: the sort has already grouped duplicates.
-        if out.last().is_some_and(|&p| kps[p] == kps[i]) {
+        if out.last().is_some_and(|&p| same(&kps[p], &kps[i])) {
             continue;
         }
         out.push(i);
@@ -677,9 +727,10 @@ mod tests {
             "descriptor block must be one 128-vector per keypoint"
         );
         assert!(!feats.is_empty(), "pipeline produced no keypoints");
-        // The reference additionally de-duplicates and retains the best N; this
-        // pipeline does not, so compare coverage of the reference set rather
-        // than requiring equal counts.
+        // Coverage, not equality: the default descriptor kernel accumulates its
+        // histogram with shared-memory float atomics, so the last bits of a few
+        // descriptors — and with them the odd `retainBest` tie — are not
+        // reproducible. Positions are; that is what is compared here.
         let cover = hit as f64 / want.len() as f64;
         assert!(
             cover > 0.9,

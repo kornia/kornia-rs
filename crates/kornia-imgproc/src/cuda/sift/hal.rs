@@ -72,10 +72,13 @@ pub fn exp_table_f32() -> [f32; 64] {
     t
 }
 
-/// Device-side source for both primitives, with all tables baked as literals.
 /// Whether `KORNIA_SIFT_FASTMATH=1` selected the approximate primitives.
+///
+/// Read once: this is on the kernel-cache lookup path, which runs ~50 times per
+/// image, and `env::var` allocates and scans the whole environment each call.
 pub(crate) fn fastmath_enabled() -> bool {
-    std::env::var("KORNIA_SIFT_FASTMATH").as_deref() == Ok("1")
+    static FASTMATH: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FASTMATH.get_or_init(|| std::env::var("KORNIA_SIFT_FASTMATH").as_deref() == Ok("1"))
 }
 
 /// Approximate stand-ins for the three reference primitives.
@@ -105,6 +108,8 @@ __device__ __forceinline__ float sift_atan2_deg(float y, float x) {
     .to_string()
 }
 
+/// Device-side source for all three primitives, with every table baked in as
+/// literals.
 pub(crate) fn hal_device_src() -> String {
     if fastmath_enabled() {
         return hal_fastmath_src();
@@ -171,6 +176,10 @@ __device__ const unsigned short KORNIA_SIFT_RSQRT_HI[128] = {{ {rs_hi} }};
 __device__ const unsigned int KORNIA_SIFT_EXP_TAB[64] = {{ {exp_tab} }};
 
 __device__ __forceinline__ float sift_vrecpe(float v) {{
+    // ARM FRECPE's special cases. The table construction below is only valid
+    // for positive normals; the hardware maps zero to infinity and back.
+    if (v == 0.0f) return __int_as_float(0x7f800000);
+    if (isinf(v)) return 0.0f;
     // `q` indexes the baked estimate table by the top 8 fraction bits.
     const unsigned short* tab = KORNIA_SIFT_RECP_TAB;
     const unsigned int b = __float_as_uint(v);
@@ -180,8 +189,10 @@ __device__ __forceinline__ float sift_vrecpe(float v) {{
     return __uint_as_float(((253u - e) << 23) | ((s - 256u) << 15));
 }}
 
-// FRECPS: fused 2 - a*b.
+// FRECPS: fused 2 - a*b, with ARM's FPRecipStepFused special case. Without it
+// the zero-magnitude path multiplies infinity by zero and yields NaN.
 __device__ __forceinline__ float sift_vrecps(float a, float b) {{
+    if ((a == 0.0f && isinf(b)) || (isinf(a) && b == 0.0f)) return 2.0f;
     return __fmaf_rn(-a, b, 2.0f);
 }}
 
@@ -227,6 +238,9 @@ __device__ __forceinline__ float sift_atan2_deg(float y, float x) {{
 
 
 __device__ __forceinline__ float sift_rsqrte(float v) {{
+    // ARM FRSQRTE's special cases, as for FRECPE above.
+    if (v == 0.0f) return __int_as_float(0x7f800000);
+    if (isinf(v)) return 0.0f;
     const unsigned short* lo = KORNIA_SIFT_RSQRT_LO;
     const unsigned short* hi = KORNIA_SIFT_RSQRT_HI;
     const unsigned int b = __float_as_uint(v);
@@ -236,8 +250,18 @@ __device__ __forceinline__ float sift_rsqrte(float v) {{
     return __uint_as_float((((380u - e) >> 1) << 23) | ((s - 256u) << 15));
 }}
 
-// FRSQRTS: fused (3 - a*b) / 2.
+// FRSQRTS: fused (3 - a*b) / 2, with ARM's FPRSqrtStepFused special case.
+//
+// This one is load-bearing. `magnitude(0, 0)` — any sample whose gradient is
+// exactly zero, i.e. a locally flat patch — feeds s = 0 into rsqrt. The estimate
+// is then +inf, `e * e` overflows, and a plain fused step computes
+// `fma(-inf, 0, 3)` = NaN. The hardware returns 1.5 instead, so the composition
+// collapses to magnitude 0 as it should. Without this the NaN poisons one
+// histogram bin, and since `omax` is seeded from `hist[0]` and every comparison
+// against NaN is false, `omax` itself becomes NaN and the keypoint emits no
+// orientation at all.
 __device__ __forceinline__ float sift_rsqrts(float a, float b) {{
+    if ((a == 0.0f && isinf(b)) || (isinf(a) && b == 0.0f)) return 1.5f;
     return __fmaf_rn(-a, b, 3.0f) * 0.5f;
 }}
 
