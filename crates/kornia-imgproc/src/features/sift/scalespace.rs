@@ -18,7 +18,14 @@
 //! rather than by tolerance — the border columns fall out of the vector loop and
 //! must produce identical bits to the interior.
 
+use rayon::prelude::*;
+
 use super::refl101;
+
+/// Rows per rayon task. Matches the crate's existing sharding granularity: at
+/// one row per task the ~2-5 us spawn overhead rivals the per-row work, and the
+/// pyramid's upper octaves have few rows to begin with.
+const ROWS_PER_TASK: usize = 16;
 
 /// Horizontal (row) pass.
 ///
@@ -31,26 +38,32 @@ pub fn blur_h_f32(src: &[f32], dst: &mut [f32], w: usize, h: usize, kernel: &[f3
     let n = kernel.len();
     let n2 = n / 2;
 
-    for y in 0..h {
-        let row = y * w;
-        let s = &src[row..row + w];
-        let d = &mut dst[row..row + w];
+    // Rows are independent in both passes -- this is exactly the parallelism the
+    // reference gives up, because its pyramid is built layer by layer on one
+    // thread (measured: cv2 SIFT scales 1.13x across six cores).
+    dst.par_chunks_mut(w * ROWS_PER_TASK)
+        .enumerate()
+        .for_each(|(chunk, dchunk)| {
+            let y0 = chunk * ROWS_PER_TASK;
+            for (yy, d) in dchunk.chunks_mut(w).enumerate() {
+                let row = (y0 + yy) * w;
+                let s = &src[row..row + w];
 
-        // Left border.
-        let lo = n2.min(w);
-        for (x, out) in d.iter_mut().enumerate().take(lo) {
-            *out = row_border(s, w, x, n2, kernel);
-        }
-        // Right border.
-        let hi = w.saturating_sub(n2).max(lo);
-        for (x, out) in d.iter_mut().enumerate().skip(hi) {
-            *out = row_border(s, w, x, n2, kernel);
-        }
-        if hi <= lo {
-            continue;
-        }
-        row_interior(s, &mut d[lo..hi], lo, n2, kernel);
-    }
+                // Left border.
+                let lo = n2.min(w);
+                for (x, out) in d.iter_mut().enumerate().take(lo) {
+                    *out = row_border(s, w, x, n2, kernel);
+                }
+                // Right border.
+                let hi = w.saturating_sub(n2).max(lo);
+                for (x, out) in d.iter_mut().enumerate().skip(hi) {
+                    *out = row_border(s, w, x, n2, kernel);
+                }
+                if hi > lo {
+                    row_interior(s, &mut d[lo..hi], lo, n2, kernel);
+                }
+            }
+        });
 }
 
 #[inline]
@@ -153,22 +166,37 @@ pub fn blur_v_f32(
 ) {
     let n2 = kernel.len() / 2;
     let hh = h as i64;
-    let mut dog = dog;
 
-    for y in 0..h {
-        let row = y * w;
-        // Row offsets for the centre tap and each symmetric pair.
-        let c0 = refl101(y as i64, hh) * w;
-        let out = &mut dst[row..row + w];
-        column_row(src, out, w, c0, y, n2, hh, kernel);
-
-        if let (Some(lo), Some(dg)) = (lower, dog.as_deref_mut()) {
-            let lo = &lo[row..row + w];
-            let dg = &mut dg[row..row + w];
-            for ((g, o), l) in dg.iter_mut().zip(out.iter()).zip(lo.iter()) {
-                *g = *o - *l;
-            }
-        }
+    match dog {
+        Some(dg) => dst
+            .par_chunks_mut(w * ROWS_PER_TASK)
+            .zip(dg.par_chunks_mut(w * ROWS_PER_TASK))
+            .enumerate()
+            .for_each(|(chunk, (dchunk, gchunk))| {
+                let y0 = chunk * ROWS_PER_TASK;
+                for (yy, (out, g)) in dchunk.chunks_mut(w).zip(gchunk.chunks_mut(w)).enumerate() {
+                    let y = y0 + yy;
+                    let c0 = refl101(y as i64, hh) * w;
+                    column_row(src, out, w, c0, y, n2, hh, kernel);
+                    if let Some(lo) = lower {
+                        let lo = &lo[y * w..y * w + w];
+                        for ((gv, o), l) in g.iter_mut().zip(out.iter()).zip(lo.iter()) {
+                            *gv = *o - *l;
+                        }
+                    }
+                }
+            }),
+        None => dst
+            .par_chunks_mut(w * ROWS_PER_TASK)
+            .enumerate()
+            .for_each(|(chunk, dchunk)| {
+                let y0 = chunk * ROWS_PER_TASK;
+                for (yy, out) in dchunk.chunks_mut(w).enumerate() {
+                    let y = y0 + yy;
+                    let c0 = refl101(y as i64, hh) * w;
+                    column_row(src, out, w, c0, y, n2, hh, kernel);
+                }
+            }),
     }
 }
 
