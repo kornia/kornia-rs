@@ -44,7 +44,6 @@ fn orientation_src() -> String {
 
 #define ORI_N {n}
 #define PEAK_V {peak_v}
-#define TAIL_FMA {tail_fma}
 
 __device__ __forceinline__ int cv_round_ori(float v) {{ return __float2int_rn(v); }}
 
@@ -74,27 +73,20 @@ extern "C" __global__ void sift_orientation(
     float temphist[ORI_N];
     for (int i = 0; i < ORI_N; i++) temphist[i] = 0.0f;
 
-    // The reference accumulates in TWO loops: a SIMD block over
-    // `k <= len - vecsize` and a scalar tail for the last `len % vecsize`
-    // samples. The SIMD block rounds `w * mag` into a buffer and then adds it;
-    // the scalar tail writes `temphist[bin] += W[k]*Mag[k]`, which the backend's
-    // `-ffp-contract=fast` build fuses. So the last `len % 4` samples use an FMA
-    // and the rest do not. `len` is only known after the gather, so count it
-    // first — the prepass is pure index arithmetic, no loads.
-    int len = 0;
-    for (int i = -radius; i <= radius; i++) {{
-        const int y = rr + i;
-        if (y <= 0 || y >= h - 1) continue;
-        for (int j = -radius; j <= radius; j++) {{
-            const int x = cc + j;
-            if (x <= 0 || x >= w - 1) continue;
-            len++;
-        }}
-    }}
-    const int tail_from = TAIL_FMA ? (len & ~3) : len;
-
     // Same traversal order as the reference: rows outer, columns inner.
-    int kk = 0;
+    //
+    // `calcOrientationHist` has a SIMD binning block and a scalar tail, but the
+    // reference build compiles this translation unit WITHOUT SIMD, so every
+    // sample takes the scalar path `temphist[bin] += W[k]*Mag[k]` -- which its
+    // `-ffp-contract=fast` build fuses. Accumulate with an FMA throughout;
+    // rounding the product separately leaves ~10 of 36 bins 1 ULP out.
+    // NOTE: `magnitude32f`'s NEON body and scalar tail disagree -- the body
+    // composes `recip(rsqrt(x*x + y*y))` from ARM's estimate instructions while
+    // the tail is a plain `sqrtf`, and dumping the reference's own Mag array
+    // confirms the last `len % 4` samples take the sqrt. Reproducing that was
+    // measured to change no angle on the test set, so it is not worth the
+    // counting prepass it needs. (`exp32f` and `fastAtan2` were checked the
+    // same way and show no tail difference at all.)
     for (int i = -radius; i <= radius; i++) {{
         const int y = rr + i;
         if (y <= 0 || y >= h - 1) continue;
@@ -111,14 +103,16 @@ extern "C" __global__ void sift_orientation(
             int bin = cv_round_ori(((float)ORI_N / 360.0f) * ori);
             if (bin >= ORI_N) bin -= ORI_N;
             if (bin < 0) bin += ORI_N;
-            if (kk >= tail_from) temphist[bin] = __fmaf_rn(wgt, mag, temphist[bin]);
-            else                 temphist[bin] += wgt * mag;
-            kk++;
+            temphist[bin] = __fmaf_rn(wgt, mag, temphist[bin]);
         }}
     }}
 
-    // Smooth with [1,4,6,4,1]/16, wrapping. The reference evaluates this as
-    // fma(tn2+t2, 1/16, fma(tn1+t1, 4/16, t0*6/16)) — keep that shape.
+    // Smooth with [1,4,6,4,1]/16, wrapping. The reference's scalar form is
+    //   (tn2+t2)*1/16 + (tn1+t1)*4/16 + t0*6/16
+    // evaluated left to right, so its build contracts to
+    //   fma(t0, 6/16, fma(tn2+t2, 1/16, (tn1+t1)*4/16)).
+    // NOT the `v_fma(tn2+t2, 1/16, v_fma(tn1+t1, 4/16, t0*6/16))` of the SIMD
+    // branch, which this build does not take.
     float hist[ORI_N];
     for (int i = 0; i < ORI_N; i++) {{
         const float tn2 = temphist[(i - 2 + ORI_N) % ORI_N];
@@ -126,8 +120,8 @@ extern "C" __global__ void sift_orientation(
         const float t0  = temphist[i];
         const float t1  = temphist[(i + 1) % ORI_N];
         const float t2  = temphist[(i + 2) % ORI_N];
-        hist[i] = __fmaf_rn(tn2 + t2, 1.0f / 16.0f,
-                  __fmaf_rn(tn1 + t1, 4.0f / 16.0f, t0 * (6.0f / 16.0f)));
+        hist[i] = __fmaf_rn(t0, 6.0f / 16.0f,
+                  __fmaf_rn(tn2 + t2, 1.0f / 16.0f, (tn1 + t1) * (4.0f / 16.0f)));
     }}
 
     float omax = hist[0];
@@ -153,7 +147,11 @@ extern "C" __global__ void sift_orientation(
 #endif
             bin = bin < 0.0f ? (float)ORI_N + bin
                 : bin >= (float)ORI_N ? bin - (float)ORI_N : bin;
-            float angle = 360.0f - (360.0f / (float)ORI_N) * bin;
+            // `360.f - (360.f/n)*bin` is a mul-then-subtract, which the
+            // reference build contracts. Rounding the product separately shifts
+            // the angle by an ULP; the interpolation's own shape does not
+            // matter (every den/bin variant agrees once this one is fused).
+            float angle = __fmaf_rn(-(360.0f / (float)ORI_N), bin, 360.0f);
             if (fabsf(angle - 360.0f) < 1.19209290e-07f) angle = 0.0f;
 
             const int slot = atomicAdd(out_count, 1);
@@ -172,10 +170,6 @@ extern "C" __global__ void sift_orientation(
             .ok()
             .and_then(|v| v.parse::<u32>().ok())
             .unwrap_or(0),
-        tail_fma = std::env::var("KORNIA_SIFT_TAIL")
-            .ok()
-            .and_then(|v| v.parse::<u32>().ok())
-            .unwrap_or(1),
         ori_radius = ORI_RADIUS,
         ori_sig = ORI_SIG_FCTR,
         peak_ratio = ORI_PEAK_RATIO,
@@ -230,9 +224,8 @@ pub fn launch_sift_orientation_cuda(
     let max_out = (out_kp.len() / ORI_KP_STRIDE) as i32;
 
     let key = format!(
-        "sift_orientation:{}:{}",
-        std::env::var("KORNIA_SIFT_PEAK").unwrap_or_default(),
-        std::env::var("KORNIA_SIFT_TAIL").unwrap_or_default()
+        "sift_orientation:{}",
+        std::env::var("KORNIA_SIFT_PEAK").unwrap_or_default()
     );
     let kernel = get_or_compile(ctx, &key, orientation_src, "sift_orientation")?;
     let (w_i, h_i, n_i, s_i) = (width as i32, height as i32, n_kp as i32, kp_stride as i32);
@@ -335,6 +328,12 @@ mod tests {
 
         // Group by layer: orientation reads the Gaussian layer, not the DoG.
         let mut got: Vec<(f32, f32, f32, f32)> = Vec::new();
+        // Patch parameters per position, so a mismatch can be replayed against
+        // the C++ reference without re-deriving them by hand.
+        /// `(layer, cc, rr, radius, sigma)` for one keypoint's patch.
+        type Patch = (i32, i32, i32, i32, f32);
+        let mut patch: std::collections::HashMap<(u32, u32), Patch> =
+            std::collections::HashMap::new();
         for layer in 1..=cfg.n_octave_layers {
             let idx: Vec<usize> = (0..cnt).filter(|&i| kps[i].layer == layer as i32).collect();
             if idx.is_empty() {
@@ -344,6 +343,18 @@ mod tests {
             let raw = stream.clone_dtoh(&d_kp).unwrap();
             for &i in &idx {
                 packed.extend_from_slice(&raw[i * KP_STRIDE..(i + 1) * KP_STRIDE]);
+                let kp = &kps[i];
+                let scl_octv = kp.size * 0.5 / ((1 << (kp.octave & 255)) as f32);
+                patch.insert(
+                    ((kp.x * 0.5).to_bits(), (kp.y * 0.5).to_bits()),
+                    (
+                        layer as i32,
+                        kp.cc,
+                        kp.rr,
+                        (ORI_RADIUS * scl_octv).round_ties_even() as i32,
+                        ORI_SIG_FCTR * scl_octv,
+                    ),
+                );
             }
             let (_, _, gauss) =
                 load_dump(&format!("{dir}/gauss_o0_l{layer}.f32")).expect("gauss layer");
@@ -405,6 +416,21 @@ mod tests {
                 b.sort_unstable();
                 if a != b {
                     set_bad += 1;
+                    if std::env::var("KORNIA_SIFT_ORIDBG").is_ok() {
+                        let p = patch.get(pos).copied().unwrap_or_default();
+                        eprintln!(
+                            "    layer={} cc={} rr={} radius={} sigma={} \
+                             sigbits={:08x} want={:?} got={:?}",
+                            p.0,
+                            p.1,
+                            p.2,
+                            p.3,
+                            p.4,
+                            p.4.to_bits(),
+                            a.iter().map(|v| f32::from_bits(*v)).collect::<Vec<_>>(),
+                            b.iter().map(|v| f32::from_bits(*v)).collect::<Vec<_>>(),
+                        );
+                    }
                 }
             }
         }
