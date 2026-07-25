@@ -1,5 +1,28 @@
 //! End-to-end CPU SIFT: base image, octave loop, and the reference's final
 //! ordering.
+//!
+//! # Measured position
+//!
+//! On mh01 (752x480), median of 5, against `cv::SIFT` on one thread:
+//!
+//! ```text
+//! OpenCV 5.0.0   225.4 ms      OpenCV 4.13.0   223.1 ms     (both 2515 kp)
+//!
+//! ours, fo=-1            ~138 ms exact    ~108 ms fast      1.6x / 2.1x
+//! ours, fo=0, 4 octaves   ~40 ms exact     ~32 ms fast      5.7x / 7.1x
+//! ```
+//!
+//! The two OpenCV versions are within 1% of each other — 5.0 dropped the Tegra
+//! HAL that accelerates `exp`/`atan2`/`magnitude` on aarch64, and it makes no
+//! measurable difference to SIFT.
+//!
+//! The ceiling is set by one comparison: OpenCV's own `GaussianBlur` runs the
+//! scale space's five layers in 42.7 ms, ours in 45.0 single-threaded. We are at
+//! 0.95x of OpenCV *per core*, so the speedup has to come from threading, and
+//! six cores bound that near 6x — which is where `fo=0` lands. Every lever has
+//! been implemented and measured: threading, four-accumulator latency hiding,
+//! a 4-lane NEON HAL, the symmetric row filter, and the rotated-frame
+//! descriptor (which regresses here; see `compute_descriptor_fast`).
 
 use rayon::prelude::*;
 
