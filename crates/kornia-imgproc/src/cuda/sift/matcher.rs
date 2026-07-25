@@ -176,6 +176,7 @@ impl SiftMatcher {
     /// to be a mutual nearest neighbour.
     ///
     /// Both descriptor sets stay on device; only the pair list comes back.
+    #[allow(clippy::too_many_arguments)]
     pub fn match_descriptors(
         &mut self,
         ctx: &Arc<CudaContext>,
@@ -248,6 +249,7 @@ impl SiftMatcher {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn best2_common(
     ctx: &Arc<CudaContext>,
     stream: &Arc<CudaStream>,
