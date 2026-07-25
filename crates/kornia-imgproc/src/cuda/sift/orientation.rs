@@ -179,12 +179,173 @@ extern "C" __global__ void sift_orientation(
     )
 }
 
+/// Threads per block for the block-per-keypoint orientation kernel.
+///
+/// Swept on mh01 (whole-pipeline median, `KORNIA_SIFT_ORI_T`): **32 -> 20.6 ms**,
+/// 64 -> 21.5, 128 -> 22.1, 256 -> 23.4. The opposite of the descriptor's
+/// preference, and for a clear reason: the orientation patch is much smaller, so
+/// a wide block leaves most threads idle, and the serial fold that preserves the
+/// reference's accumulation order costs one sync per chunk regardless of width.
+pub const ORI_BLOCK_THREADS: usize = 32;
+
+/// Block-per-keypoint orientation, bit-identical to [`orientation_src`].
+///
+/// # Why this is still exact
+///
+/// The reference bins sequentially, `temphist[bin] = fma(w, m, temphist[bin])`,
+/// and float addition is not associative — so the accumulation order cannot
+/// change. It doesn't. The block splits only the *gather*: each thread computes
+/// `(bin, w, m)` for one sample into shared memory, and a single thread then
+/// folds a chunk into the histogram in the reference's own index order. Chunks
+/// run in order, and samples within a chunk run in order, so every FMA happens
+/// exactly where it did before.
+///
+/// That split is worth it because the gather is the expensive half — four
+/// scattered global loads and three primitive evaluations per sample — while
+/// the serial fold is one FMA. The old kernel ran one thread per keypoint,
+/// which at realistic counts is ~2500 threads, under three warps per SM: it was
+/// starved of occupancy, not of arithmetic (proved by `KORNIA_SIFT_FASTMATH`,
+/// which removes the arithmetic and changes nothing).
+///
+/// The sample count is `nx * ny` in closed form — the loop is a rectangle
+/// clipped to the image interior and the column bound does not depend on the
+/// row — so a thread can map its flat index straight to a pixel.
+fn orientation_block_src(threads: usize) -> String {
+    let n = ORI_HIST_BINS;
+    format!(
+        r#"{hal}
+
+#define ORI_N {n}
+#define NTHREADS {threads}
+
+__device__ __forceinline__ int cv_round_ori(float v) {{ return __float2int_rn(v); }}
+
+extern "C" __global__ void sift_orientation_block(
+    const float* __restrict__ img, int w, int h,
+    const float* __restrict__ kp_in, int n_kp, int kp_stride,
+    float* __restrict__ out_kp, int* __restrict__ out_count, int max_out)
+{{
+    const int t = blockIdx.x;
+    if (t >= n_kp) return;
+    const int tid = threadIdx.x;
+
+    __shared__ float temphist[ORI_N];
+    __shared__ float hist[ORI_N];
+    __shared__ int   s_bin[NTHREADS];
+    __shared__ float s_w[NTHREADS];
+    __shared__ float s_m[NTHREADS];
+    __shared__ float s_omax;
+
+    const float* k = kp_in + (long)t * kp_stride;
+    const float kx = k[0], ky = k[1], ksize = k[2], kresp = k[3];
+    const int packed = __float_as_int(k[4]);
+    const int cc     = __float_as_int(k[7]);
+    const int rr     = __float_as_int(k[8]);
+    const int octv   = packed & 255;
+
+    const float scl_octv = ksize * 0.5f / (float)(1 << octv);
+    const int radius = cv_round_ori({ori_radius}f * scl_octv);
+    const float sigma = {ori_sig}f * scl_octv;
+    const float expf_scale = -1.0f / (2.0f * sigma * sigma);
+
+    for (int i = tid; i < ORI_N; i += NTHREADS) temphist[i] = 0.0f;
+
+    // Rows outer, columns inner — the reference's traversal, flattened.
+    const int y0 = max(rr - radius, 1), y1 = min(rr + radius, h - 2);
+    const int x0 = max(cc - radius, 1), x1 = min(cc + radius, w - 2);
+    const int nx = x1 >= x0 ? x1 - x0 + 1 : 0;
+    const int ny = y1 >= y0 ? y1 - y0 + 1 : 0;
+    const int total = nx * ny;
+    __syncthreads();
+
+    for (int base = 0; base < total; base += NTHREADS) {{
+        const int s = base + tid;
+        int bin = -1;
+        float wgt = 0.0f, mag = 0.0f;
+        if (s < total) {{
+            const int y = y0 + s / nx, x = x0 + s % nx;
+            const int i = y - rr, j = x - cc;
+            const float dx = img[y * w + x + 1] - img[y * w + x - 1];
+            const float dy = img[(y - 1) * w + x] - img[(y + 1) * w + x];
+            wgt = sift_exp((float)(i * i + j * j) * expf_scale);
+            const float ori = sift_atan2_deg(dy, dx);
+            mag = sift_magnitude(dx, dy);
+            bin = cv_round_ori(((float)ORI_N / 360.0f) * ori);
+            if (bin >= ORI_N) bin -= ORI_N;
+            if (bin < 0) bin += ORI_N;
+        }}
+        s_bin[tid] = bin; s_w[tid] = wgt; s_m[tid] = mag;
+        __syncthreads();
+        // Serial fold, in the reference's sample order. One FMA per sample.
+        if (tid == 0) {{
+            const int m = min(NTHREADS, total - base);
+            for (int q = 0; q < m; q++)
+                temphist[s_bin[q]] = __fmaf_rn(s_w[q], s_m[q], temphist[s_bin[q]]);
+        }}
+        __syncthreads();
+    }}
+
+    // Smoothing is per-bin independent, so it parallelises freely.
+    for (int i = tid; i < ORI_N; i += NTHREADS) {{
+        const float tn2 = temphist[(i - 2 + ORI_N) % ORI_N];
+        const float tn1 = temphist[(i - 1 + ORI_N) % ORI_N];
+        const float t0  = temphist[i];
+        const float t1  = temphist[(i + 1) % ORI_N];
+        const float t2  = temphist[(i + 2) % ORI_N];
+        hist[i] = __fmaf_rn(t0, 6.0f / 16.0f,
+                  __fmaf_rn(tn2 + t2, 1.0f / 16.0f, (tn1 + t1) * (4.0f / 16.0f)));
+    }}
+    __syncthreads();
+    if (tid == 0) {{
+        float omax = hist[0];
+        for (int i = 1; i < ORI_N; i++) if (hist[i] > omax) omax = hist[i];
+        s_omax = omax;
+    }}
+    __syncthreads();
+    const float mag_thr = s_omax * {peak_ratio}f;
+
+    // One thread per bin. Peaks are emitted in whatever order the atomics land;
+    // the host sorts the final keypoint list, so order here is not observable.
+    for (int j = tid; j < ORI_N; j += NTHREADS) {{
+        const int l = j > 0 ? j - 1 : ORI_N - 1;
+        const int r2 = j < ORI_N - 1 ? j + 1 : 0;
+        if (hist[j] > hist[l] && hist[j] > hist[r2] && hist[j] >= mag_thr) {{
+            const float den = hist[l] - 2.0f * hist[j] + hist[r2];
+            float bin = (float)j + 0.5f * (hist[l] - hist[r2]) / den;
+            bin = bin < 0.0f ? (float)ORI_N + bin
+                : bin >= (float)ORI_N ? bin - (float)ORI_N : bin;
+            float angle = __fmaf_rn(-(360.0f / (float)ORI_N), bin, 360.0f);
+            if (fabsf(angle - 360.0f) < 1.19209290e-07f) angle = 0.0f;
+
+            const int slot = atomicAdd(out_count, 1);
+            if (slot < max_out) {{
+                float* o = out_kp + (long)slot * {stride};
+                o[0] = kx; o[1] = ky; o[2] = ksize; o[3] = kresp;
+                o[4] = __int_as_float(packed); o[5] = angle;
+            }}
+        }}
+    }}
+}}
+"#,
+        hal = hal_device_src(),
+        n = n,
+        threads = threads,
+        ori_radius = ORI_RADIUS,
+        ori_sig = ORI_SIG_FCTR,
+        peak_ratio = ORI_PEAK_RATIO,
+        stride = ORI_KP_STRIDE,
+    )
+}
+
 /// Assign orientations to detected keypoints.
 ///
 /// `kp_in` is the detector's SoA buffer (stride [`super::KP_STRIDE`]); `img` is
 /// the Gaussian layer the keypoint was found in. One keypoint may emit several
 /// oriented copies, so `out_count` is incremented atomically and may exceed
 /// `max_out` — treat that as overflow rather than assuming every hit was stored.
+///
+/// `KORNIA_SIFT_ORI=exact` selects the one-thread-per-keypoint kernel. Both are
+/// bit-identical; the block kernel is the default because it is far faster.
 #[allow(clippy::too_many_arguments)]
 pub fn launch_sift_orientation_cuda_view(
     ctx: &Arc<CudaContext>,
@@ -225,12 +386,48 @@ pub fn launch_sift_orientation_cuda_view(
     }
     let max_out = (out_kp.len() / ORI_KP_STRIDE) as i32;
 
-    let key = format!(
-        "sift_orientation:{}",
-        std::env::var("KORNIA_SIFT_PEAK").unwrap_or_default()
-    );
-    let kernel = get_or_compile(ctx, &key, orientation_src, "sift_orientation")?;
     let (w_i, h_i, n_i, s_i) = (width as i32, height as i32, n_kp as i32, kp_stride as i32);
+    let exact = std::env::var("KORNIA_SIFT_ORI").as_deref() == Ok("exact");
+
+    if exact {
+        let key = format!(
+            "sift_orientation:{}",
+            std::env::var("KORNIA_SIFT_PEAK").unwrap_or_default()
+        );
+        let kernel = get_or_compile(ctx, &key, orientation_src, "sift_orientation")?;
+        return kernel
+            .launch_builder(stream)
+            .arg(img)
+            .arg(&w_i)
+            .arg(&h_i)
+            .arg(kp_in)
+            .arg(&n_i)
+            .arg(&s_i)
+            .arg(out_kp)
+            .arg(out_count)
+            .arg(&max_out)
+            .launch_2d(n_kp, 1, make_config(n_kp, 1, Some((64, 1))))
+            .map_err(|e| SiftCudaError::Cuda(e.to_string()));
+    }
+
+    // Swept with KORNIA_SIFT_ORI_T.
+    let threads = std::env::var("KORNIA_SIFT_ORI_T")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|t| t.is_power_of_two() && *t >= 32 && *t <= 1024)
+        .unwrap_or(ORI_BLOCK_THREADS);
+    let kernel = get_or_compile(
+        ctx,
+        &format!("sift_orientation_block:{threads}"),
+        || orientation_block_src(threads),
+        "sift_orientation_block",
+    )?;
+    // One block per keypoint: the grid is the keypoint count, not a tiling.
+    let cfg = cudarc::driver::LaunchConfig {
+        grid_dim: (n_kp, 1, 1),
+        block_dim: (threads as u32, 1, 1),
+        shared_mem_bytes: 0,
+    };
     kernel
         .launch_builder(stream)
         .arg(img)
@@ -242,7 +439,7 @@ pub fn launch_sift_orientation_cuda_view(
         .arg(out_kp)
         .arg(out_count)
         .arg(&max_out)
-        .launch_2d(n_kp, 1, make_config(n_kp, 1, Some((64, 1))))
+        .launch_cfg(cfg)
         .map_err(|e| SiftCudaError::Cuda(e.to_string()))
 }
 

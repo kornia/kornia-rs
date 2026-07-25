@@ -33,7 +33,12 @@ pub const DESCR_HIST_BINS: usize = 8;
 pub const DESCR_LEN: usize = DESCR_WIDTH * DESCR_WIDTH * DESCR_HIST_BINS;
 /// Threads per block for the shared-memory descriptor kernel. Must be a power
 /// of two: the L2-norm reduction halves the active range each step.
-pub const DESC_BLOCK_THREADS: usize = 128;
+///
+/// Swept on mh01 (whole-pipeline median, `KORNIA_SIFT_DESC_T`): 128 -> 25.6 ms,
+/// 256 -> 26.3, **512 -> 20.6**, 1024 -> 25.8. The patch is large enough that
+/// 512 threads still each get real work, and the wider block cuts the number of
+/// shared-memory atomic collisions per histogram bin.
+pub const DESC_BLOCK_THREADS: usize = 512;
 /// Patch scale factor (`SIFT_DESCR_SCL_FCTR`).
 pub const DESCR_SCL_FCTR: f32 = 3.0;
 /// Post-normalisation clamp (`SIFT_DESCR_MAG_THR`).
@@ -428,17 +433,24 @@ pub fn launch_sift_descriptor_cuda_view(
             .map_err(|e| SiftCudaError::Cuda(e.to_string()));
     }
 
+    // Block size is swept with KORNIA_SIFT_DESC_T; the reduction halves the
+    // active range each step, so it must stay a power of two.
+    let threads = std::env::var("KORNIA_SIFT_DESC_T")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|t| t.is_power_of_two() && *t >= 32 && *t <= 1024)
+        .unwrap_or(DESC_BLOCK_THREADS);
     let kernel = get_or_compile(
         ctx,
-        &format!("sift_descriptor_block:{DESC_BLOCK_THREADS}"),
-        || descriptor_block_src(DESC_BLOCK_THREADS),
+        &format!("sift_descriptor_block:{threads}"),
+        || descriptor_block_src(threads),
         "sift_descriptor_block",
     )?;
     // One block per keypoint: the grid is the keypoint count, not a tiling of
     // it, so this cannot go through the 2-D helper.
     let cfg = cudarc::driver::LaunchConfig {
         grid_dim: (n_kp, 1, 1),
-        block_dim: (DESC_BLOCK_THREADS as u32, 1, 1),
+        block_dim: (threads as u32, 1, 1),
         shared_mem_bytes: 0,
     };
     kernel

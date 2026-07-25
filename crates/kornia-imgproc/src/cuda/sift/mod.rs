@@ -80,6 +80,7 @@ mod descriptor;
 mod detect;
 mod hal;
 mod kernels;
+mod matcher;
 mod orientation;
 mod plan;
 mod pyramid;
@@ -93,6 +94,7 @@ pub use detect::{
 };
 pub use hal::{exp_table_f32, vrecpe_table};
 pub use kernels::gaussian_kernel_f32;
+pub use matcher::{SiftMatcher, MATCH_STRIDE};
 pub use orientation::{
     launch_sift_orientation_cuda, ORI_HIST_BINS, ORI_KP_STRIDE, ORI_PEAK_RATIO, ORI_RADIUS,
     ORI_SIG_FCTR,
