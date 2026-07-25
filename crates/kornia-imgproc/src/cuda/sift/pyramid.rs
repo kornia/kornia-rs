@@ -767,7 +767,15 @@ mod tests {
         let cfg = SiftCudaConfig::default();
         let stream = default_stream();
         let ctx = &stream.context();
-        let (w, h) = (1920usize, 1080usize);
+        // KORNIA_SIFT_WH=WxH overrides the input size. Resolution is the only
+        // lever that moves a bandwidth-bound pyramid: time tracks pixel count.
+        let (w, h) = std::env::var("KORNIA_SIFT_WH")
+            .ok()
+            .and_then(|v| {
+                let (a, b) = v.split_once('x')?;
+                Some((a.parse().ok()?, b.parse().ok()?))
+            })
+            .unwrap_or((1920usize, 1080usize));
 
         let src: Vec<f32> = (0..w * h)
             .map(|i| ((i * 2654435761usize) % 255) as f32)
