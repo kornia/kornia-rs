@@ -333,6 +333,28 @@ done
 costs the NEON path ~15%, and pinning OpenCV to one thread while ours uses six
 is not a comparison — that mistake produced a bogus 2.3x in this document.
 
+### Instruction counts (callgrind, CPU)
+
+```bash
+cargo bench -p kornia-imgproc --bench bench_sift_instr
+```
+
+Deterministic instruction and cache-hit counts — same numbers every run, no
+warm-up, unaffected by machine load. Several of this module's wins are 1-3%
+effects that needed interleaved arms to measure at all on a contended host;
+this answers "did it issue less work" directly.
+
+It does **not** replace the criterion benches. Callgrind models neither the
+store-forwarding stalls that dominate the descriptor's histogram scatter nor
+real cache timing, so a change can cut instructions and still be slower. First
+reading: `l2_sq` NEON 9,612 instructions against the scalar twin's 52,493 —
+5.46x — where the wall-clock A/B of the same pair measured 3.9x. The difference
+between those two numbers is memory behaviour, and that is the point of having
+both.
+
+Needs `valgrind` and `cargo install iai-callgrind-runner --version 0.14.2`
+(the runner version must match the `iai-callgrind` dev-dependency exactly).
+
 ### Rust benchmarks (criterion, CPU)
 
 ```bash
@@ -377,8 +399,10 @@ separate times in this module.
 
 ### Per-kernel truth (nsys)
 
-`ncu` needs `NVreg_RestrictProfilingToAdminUsers=0` plus a reboot on this host.
-`nsys` does not — it uses CUPTI tracing and works as a normal user:
+`ncu` is now available at `/usr/local/cuda/bin/ncu` (2024.3.1), which unblocks
+the per-kernel counters several open questions need — descriptor shared-atomic
+collision rates, and the split of orientation's time between occupancy cap,
+serial fold and barriers. `nsys` also works and needs no privileges:
 
 ```bash
 nsys profile -t cuda --force-overwrite true -o /tmp/sift python3 prof.py
