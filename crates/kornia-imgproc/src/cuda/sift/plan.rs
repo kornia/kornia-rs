@@ -5,21 +5,30 @@
 //! pays no per-call allocation. Everything stays in device memory until
 //! [`SiftCudaFeatures::to_host`], which is the only synchronisation point.
 //!
-//! # Why the octave loop owns the whole pipeline
+//! # Why the whole pyramid stays resident
 //!
 //! Orientation and descriptors sample the octave's *Gaussian* layers, not the
-//! DoG. Running detection for every octave first would mean keeping every
-//! octave's Gaussian slab alive at once. Instead each octave is built, mined
-//! for keypoints, oriented and described before moving on, so only one octave's
-//! layers are ever resident.
+//! DoG, so an earlier revision built, mined and described one octave at a time
+//! to keep only one octave's layers alive.
+//!
+//! That ordering is wrong, and it cost more than it saved. The reference applies
+//! `retainBest` **before** computing descriptors (`sift.dispatch.cpp:568-600`);
+//! describing inside the octave loop means the keypoint budget cannot be applied
+//! until every descriptor has already been computed. Measured: `n_features` of
+//! 200 or 2515 both took 18.3 ms, i.e. 2315 descriptors were computed and thrown
+//! away.
+//!
+//! Keeping every octave resident costs far less than it appears: the octave
+//! sizes are a geometric series, so the whole pyramid is only ~1.33x the octave-0
+//! slab that was already allocated — about +12 MB at `fo=-1` on 752x480.
 
 use std::sync::Arc;
 
 use cudarc::driver::{CudaContext, CudaSlice, CudaStream};
 
 use super::descriptor::{
-    launch_sift_descriptor_cuda_view, launch_sift_gather_descriptors_cuda_view,
-    launch_sift_pack_descriptor_input_cuda_view, DESCR_LEN, DESC_IN_STRIDE,
+    launch_sift_descriptor_cuda_view, launch_sift_gather_descriptors_cuda_view, DESCR_LEN,
+    DESC_IN_STRIDE,
 };
 use super::detect::launch_sift_find_extrema_cuda_view;
 use super::kernels::gaussian_kernel_f32;
@@ -97,7 +106,11 @@ pub struct SiftCuda {
     /// each: the vertical-blur-plus-DoG pass needs layer `i-1` shared and layer
     /// `i` mutable at the same time, which `split_at_mut` gives only across
     /// separate allocations.
-    gauss: Vec<CudaSlice<f32>>,
+    /// Gaussian layers for every octave: `pyr[octave][layer]`.
+    ///
+    /// Resident for the whole frame so descriptors can run after the keypoint
+    /// budget has been applied. See the module docs.
+    pyr: Vec<Vec<CudaSlice<f32>>>,
     /// `n_octave_layers + 2` DoG layers of the current octave.
     dog: CudaSlice<f32>,
     kp: CudaSlice<f32>,
@@ -111,6 +124,8 @@ pub struct SiftCuda {
     /// The same descriptors in final keypoint order — what callers see.
     desc_out: CudaSlice<f32>,
     perm: CudaSlice<i32>,
+    /// Survivor count for the deferred descriptor pass.
+    desc_live: CudaSlice<i32>,
     /// Row where each (octave, layer) group's oriented keypoints start. Written
     /// device-to-device so no count ever has to come back to the host mid-frame.
     ranges: CudaSlice<i32>,
@@ -172,6 +187,20 @@ impl SiftCuda {
         };
         let plane = bw * bh;
         let n_layers = cfg.n_octave_layers + 3;
+        // Every octave stays resident (see the module docs), so size the pyramid
+        // for the octave count this geometry can actually reach. The sizes are a
+        // geometric series, so this is ~1.33x one octave's slab, not Nx it.
+        let n_oct_max = cfg
+            .n_octaves_for(
+                bw.min(bh),
+                if first_octave == FirstOctave::Double {
+                    -1
+                } else {
+                    0
+                },
+            )
+            .min(max_octaves)
+            .max(1);
         let n_dog = cfg.n_octave_layers + 2;
 
         let sigmas = cfg.layer_sigmas();
@@ -200,8 +229,13 @@ impl SiftCuda {
             height,
             buf_a: stream.alloc_zeros::<f32>(plane)?,
             buf_b: stream.alloc_zeros::<f32>(plane)?,
-            gauss: (0..n_layers)
-                .map(|_| stream.alloc_zeros::<f32>(plane))
+            pyr: (0..n_oct_max)
+                .map(|o| {
+                    let op = (bw >> o).max(1) * (bh >> o).max(1);
+                    (0..n_layers)
+                        .map(|_| stream.alloc_zeros::<f32>(op))
+                        .collect::<Result<Vec<_>, _>>()
+                })
                 .collect::<Result<Vec<_>, _>>()?,
             dog: stream.alloc_zeros::<f32>(plane * n_dog)?,
             kp: stream.alloc_zeros::<f32>(cfg.max_keypoints * KP_STRIDE)?,
@@ -212,6 +246,7 @@ impl SiftCuda {
             desc_all: stream.alloc_zeros::<f32>(ori_cap * DESCR_LEN)?,
             desc_out: stream.alloc_zeros::<f32>(ori_cap * DESCR_LEN)?,
             perm: stream.alloc_zeros::<i32>(ori_cap)?,
+            desc_live: stream.alloc_zeros::<i32>(1)?,
             ranges: stream.alloc_zeros::<i32>(64 * (cfg.n_octave_layers + 1))?,
             n_desc: 0,
             fast_descriptor: false,
@@ -316,7 +351,7 @@ impl SiftCuda {
             ctx,
             stream,
             &self.buf_b.slice(0..cw * ch),
-            &mut self.gauss[0].slice_mut(0..cw * ch),
+            &mut self.pyr[0][0].slice_mut(0..cw * ch),
             cw as u32,
             ch as u32,
             &self.base_kernel,
@@ -324,6 +359,9 @@ impl SiftCuda {
 
         let n_oct = self.n_octaves(cw, ch);
         let mut range_i = 0usize;
+        // The deferred descriptor pass needs each octave's dimensions; the loop
+        // halves with integer division, which is not `>>` for odd sizes.
+        let mut oct_dims: Vec<(usize, usize)> = Vec::with_capacity(n_oct);
         stream.memset_zeros(&mut self.ori_count)?;
 
         for octv in 0..n_oct {
@@ -336,6 +374,7 @@ impl SiftCuda {
                 break;
             }
             let plane = cw * ch;
+            oct_dims.push((cw, ch));
 
             // ── Gaussian layers and their DoGs ──────────────────────────────
             let tb = mark(probe);
@@ -344,7 +383,7 @@ impl SiftCuda {
                 launch_sift_blur_h_tiled_cuda_view(
                     ctx,
                     stream,
-                    &self.gauss[i - 1].slice(0..plane),
+                    &self.pyr[octv][i - 1].slice(0..plane),
                     &mut self.buf_b.slice_mut(0..plane),
                     cw as u32,
                     ch as u32,
@@ -352,7 +391,7 @@ impl SiftCuda {
                 )?;
                 // blur-V writes layer `i` and the DoG against layer `i-1` from
                 // the same registers, so the difference costs no extra pass.
-                let (lo_half, hi_half) = self.gauss.split_at_mut(i);
+                let (lo_half, hi_half) = self.pyr[octv].split_at_mut(i);
                 launch_sift_blur_v_dog_cuda_view(
                     ctx,
                     stream,
@@ -403,7 +442,7 @@ impl SiftCuda {
                 // blocking D2H that drained the stream, 54 of them a frame, and
                 // they left no octave able to overlap the next.
                 for layer in 1..=self.cfg.n_octave_layers {
-                    let img = self.gauss[layer].slice(0..plane);
+                    let img = self.pyr[octv][layer].slice(0..plane);
                     // Snapshot where this layer's rows will start.
                     {
                         let src = self.ori_count.slice(0..1);
@@ -428,47 +467,6 @@ impl SiftCuda {
                     )?;
                     since(to, stream, &mut t_ori);
 
-                    // Upper bound on the rows THIS layer can add. `n_kp` is the
-                    // whole octave's detected count while only this layer's
-                    // subset emits here, so 4x it covers a per-keypoint peak
-                    // count well above the ~1.3 average even though the
-                    // orientation stage has no hard cap (see `ori_cap`). Rows
-                    // past `bound` would get no descriptor at all, so the
-                    // margin — not the factor 4 itself — is what matters.
-                    let bound = (n_kp * 4).min(self.ori_kp.len() / ORI_KP_STRIDE) as u32;
-                    let tds = mark(probe);
-                    // The orientation record is in the pyramid base's frame; the
-                    // descriptor works in this octave's. Every octave rescales
-                    // by 1 / (1 << octv) -- for `Double` the loop index and the
-                    // reference's signed octave differ by one, but so do the
-                    // stored position and size, and the two offsets cancel.
-                    launch_sift_pack_descriptor_input_cuda_view(
-                        ctx,
-                        stream,
-                        &self.ori_kp.as_view(),
-                        bound,
-                        ORI_KP_STRIDE as u32,
-                        5,
-                        1.0 / ((1u32 << octv) as f32),
-                        &mut self.desc_in.as_view_mut(),
-                        &self.ranges.slice(range_i..range_i + 1),
-                        &self.ori_count.slice(0..1),
-                    )?;
-                    launch_sift_descriptor_cuda_view(
-                        ctx,
-                        stream,
-                        &img,
-                        cw as u32,
-                        ch as u32,
-                        &self.desc_in.as_view(),
-                        bound,
-                        DESC_IN_STRIDE as u32,
-                        &mut self.desc_all.as_view_mut(),
-                        self.fast_descriptor,
-                        &self.ranges.slice(range_i..range_i + 1),
-                        &self.ori_count.slice(0..1),
-                    )?;
-                    since(tds, stream, &mut t_desc);
                     range_i += 1;
                 }
             }
@@ -481,7 +479,7 @@ impl SiftCuda {
             launch_sift_downsample_nearest_cuda_view(
                 ctx,
                 stream,
-                &self.gauss[self.cfg.n_octave_layers].slice(0..plane),
+                &self.pyr[octv][self.cfg.n_octave_layers].slice(0..plane),
                 &mut self.buf_a.slice_mut(0..nw * nh),
                 cw as u32,
                 ch as u32,
@@ -489,7 +487,7 @@ impl SiftCuda {
                 nh as u32,
             )?;
             {
-                let (src_base, l0) = (self.buf_a.slice(0..nw * nh), &mut self.gauss[0]);
+                let (src_base, l0) = (self.buf_a.slice(0..nw * nh), &mut self.pyr[octv + 1][0]);
                 let mut dst = l0.slice_mut(0..nw * nh);
                 stream.memcpy_dtod(&src_base, &mut dst)?;
             }
@@ -497,12 +495,6 @@ impl SiftCuda {
             ch = nh;
         }
 
-        if probe {
-            eprintln!(
-                "  stages: blur={t_blur:.1} detect={t_det:.1} orient={t_ori:.1} \
-                 descriptor={t_desc:.1} (ms)"
-            );
-        }
         // One download for the whole frame. The packed octave field already
         // carries the octave and layer, so the host can reconstruct everything
         // from this single copy instead of one per layer per octave.
@@ -541,13 +533,107 @@ impl SiftCuda {
         let order = final_order(&all_kps, self.cfg.n_features);
         let n = order.len().min(n_ori);
         let keypoints: Vec<SiftKeypoint> = order[..n].iter().map(|&i| all_kps[i]).collect();
+
+        // ── Descriptors, for the survivors only ─────────────────────────────
+        //
+        // This is why the pyramid stays resident. The reference applies
+        // `retainBest` before `calcDescriptors`; describing inside the octave
+        // loop meant computing every descriptor and discarding the ones the
+        // budget cut. Grouped by (octave, layer) because each launch reads one
+        // Gaussian layer, then permuted back into the caller's order by the
+        // gather that was already here.
+        let tds = mark(probe);
         if n > 0 {
-            let perm: Vec<i32> = order[..n].iter().map(|&i| i as i32).collect();
+            // Stable sort keeps each group in the order the octave loop
+            // produced, so the descriptor sees the same rows it always did.
+            let mut describe: Vec<usize> = (0..n).collect();
+            describe.sort_by_key(|&i| {
+                let packed = ok[order[i] * ORI_KP_STRIDE + 4].to_bits() as i32;
+                ((packed & 255) as u8, ((packed >> 8) & 255) as u8)
+            });
+
+            // Pack on the host: four f32 ops per keypoint, the same expressions
+            // and the same order as `sift_pack_desc_input`, so the values are
+            // identical. Doing it here removes a kernel launch per layer and
+            // the device-side range bookkeeping it needed.
+            let mut din = vec![0.0f32; n * DESC_IN_STRIDE];
+            for (pos, &i) in describe.iter().enumerate() {
+                let k = &ok[order[i] * ORI_KP_STRIDE..(order[i] + 1) * ORI_KP_STRIDE];
+                let packed = k[4].to_bits() as i32;
+                let scale = 1.0f32 / ((1u32 << (packed & 255)) as f32);
+                let mut ang = 360.0f32 - k[5];
+                if (ang - 360.0).abs() < f32::EPSILON {
+                    ang = 0.0;
+                }
+                let o = &mut din[pos * DESC_IN_STRIDE..pos * DESC_IN_STRIDE + 4];
+                o[0] = k[0] * scale;
+                o[1] = k[1] * scale;
+                o[2] = (k[2] * scale) * 0.5;
+                o[3] = ang;
+            }
+            stream.memcpy_htod(&din, &mut self.desc_in.slice_mut(0..n * DESC_IN_STRIDE))?;
+
+            // One launch per contiguous (octave, layer) run.
+            let key = |i: usize| {
+                let packed = ok[order[i] * ORI_KP_STRIDE + 4].to_bits() as i32;
+                ((packed & 255) as usize, ((packed >> 8) & 255) as usize)
+            };
+            let mut starts: Vec<i32> = Vec::new();
+            let mut groups: Vec<(usize, usize, usize, usize)> = Vec::new();
+            let mut p0 = 0usize;
+            while p0 < n {
+                let (oct, layer) = key(describe[p0]);
+                let mut p1 = p0 + 1;
+                while p1 < n && key(describe[p1]) == (oct, layer) {
+                    p1 += 1;
+                }
+                if oct < oct_dims.len() && layer < self.pyr[oct].len() {
+                    starts.push(p0 as i32);
+                    groups.push((oct, layer, p0, p1 - p0));
+                }
+                p0 = p1;
+            }
+            let n_i = [n as i32];
+            stream.memcpy_htod(&n_i, &mut self.desc_live.slice_mut(0..1))?;
+            if !starts.is_empty() {
+                let cap = self.ranges.len().min(starts.len());
+                stream.memcpy_htod(&starts[..cap], &mut self.ranges.slice_mut(0..cap))?;
+                for (g, &(oct, layer, _, len)) in groups.iter().enumerate().take(cap) {
+                    let (gw, gh) = oct_dims[oct];
+                    launch_sift_descriptor_cuda_view(
+                        ctx,
+                        stream,
+                        &self.pyr[oct][layer].slice(0..gw * gh),
+                        gw as u32,
+                        gh as u32,
+                        &self.desc_in.as_view(),
+                        len as u32,
+                        DESC_IN_STRIDE as u32,
+                        &mut self.desc_all.as_view_mut(),
+                        self.fast_descriptor,
+                        &self.ranges.slice(g..g + 1),
+                        &self.desc_live.slice(0..1),
+                    )?;
+                }
+            }
+            since(tds, stream, &mut t_desc);
+
+            // `describe` reordered the rows; put them back in caller order.
+            let mut perm = vec![0i32; n];
+            for (pos, &i) in describe.iter().enumerate() {
+                perm[i] = pos as i32;
+            }
             stream.memcpy_htod(&perm, &mut self.perm.slice_mut(0..n))?;
-            let src = self.desc_all.slice(0..n_ori * DESCR_LEN);
+            let src = self.desc_all.slice(0..n * DESCR_LEN);
             let p = self.perm.slice(0..n);
             let mut out = self.desc_out.slice_mut(0..n * DESCR_LEN);
             launch_sift_gather_descriptors_cuda_view(ctx, stream, &src, &p, n as u32, &mut out)?;
+        }
+        if probe {
+            eprintln!(
+                "  stages: blur={t_blur:.1} detect={t_det:.1} orient={t_ori:.1} \
+                 descriptor={t_desc:.1} (ms)"
+            );
         }
         self.n_desc = n;
         Ok(keypoints)
