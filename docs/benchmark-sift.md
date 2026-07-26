@@ -8,7 +8,7 @@ before trusting a difference under ~5%.
 
 | | |
 |---|---|
-| Date (UTC) | 2026-07-26 18:40 |
+| Date (UTC) | 2026-07-26 21:15 |
 | Host | nvidia-orin00 |
 | Machine | NVIDIA Jetson Orin Nano Engineering Reference Developer Kit Super |
 | Kernel / arch | 5.15.148-tegra aarch64 |
@@ -36,8 +36,8 @@ misleading:
 | CUDA | `fo=-1` (OpenCV's default) | **19.7** | 11.4x | **5.3x** |
 | CUDA | `fo=-1`, fast descriptor | 13.9 | 16.2x | 7.5x |
 | CUDA | `fo=0`, 4 octaves | **7.7** | 29x | 13.5x |
-| CPU (NEON) | `fo=-1` | 95 | 2.4x | **1.14x** |
-| CPU (NEON) | `fo=0`, 4 octaves | 40 | 5.6x | 2.6x |
+| CPU (NEON) | `fo=-1` | 81 | 2.8x | **1.25x** |
+| CPU (NEON) | `fo=0`, 4 octaves | 28 | 8.0x | 3.6x |
 | OpenCV 5.0.0 | default, 1 thread | 224.7 | 1.0x | — |
 | OpenCV 5.0.0 | default, 6 threads | 104 | 2.15x | 1.0x |
 
@@ -54,13 +54,13 @@ median epipolar error.
 
 | threads | cv2 | kornia NEON | ratio |
 |---|---|---|---|
-| 1 | 224.5 | 296.0 | 0.76x |
-| 2 | 146.6 | 156.9 | 0.93x |
-| 4 | 111.8 | 92.7 | 1.21x |
-| 6 | ~108 | 95.0 | **~1.15x** |
+| 1 | 224.6 | 287.9 | 0.78x |
+| 2 | 145.8 | 148.9 | 0.98x |
+| 4 | 106.6 | 88.1 | 1.21x |
+| 6 | 100.7 | 81 | **~1.25x** |
 
-Per core the NEON path is still 1.3x slower than OpenCV; on all six cores it is
-ahead. Earlier revisions of this document claimed 2.3x-7x on CPU; those compared
+Per core the NEON path is still 1.28x slower than OpenCV; from two threads up it
+is ahead. Earlier revisions of this document claimed 2.3x-7x on CPU; those compared
 our six-thread figure against `setNumThreads(1)` and were wrong. The CUDA rows
 are unaffected in kind — a GPU is being compared against a CPU either way — but
 their ratios are restated above against the faster baseline.
@@ -77,13 +77,13 @@ Measured with `KORNIA_SIFT_STAGES=1` at `RAYON_NUM_THREADS=1` on apriltags
 
 | stage | cv2 | was | now |
 |---|---|---|---|
-| pyramid / blur | 61.1 | 73.7 | 74.4 |
-| gradients | inline | 31.1 | 30.9 |
-| extrema + orient | 38.7 | 75.8 | 36.3 |
-| descriptors | 78.6 | 112.3 | 84.3 |
-| **total** | **178.4** | **311.0** | **241** |
+| pyramid / blur | 61.1 | 73.7 | 74.1 |
+| gradients | inline | 31.1 | — |
+| extrema + orient | 38.7 | 75.8 | 38.2 |
+| descriptors | 78.6 | 112.3 | 103.1 |
+| **total** | **178.4** | **311.0** | **230.5** |
 
-Three changes got there, each held to the bitwise oracle:
+Four changes got there, each held to the bitwise oracle:
 
 * **Extrema scan** — 34.1% of pixels clear the contrast threshold and enter the
   26-neighbour test, but only 0.09% are extrema. A NEON prefilter, staged by
@@ -98,10 +98,24 @@ Three changes got there, each held to the bitwise oracle:
   affine in `j`, so each row's accepted samples form one contiguous run —
   5.50M iterations were being run for 2.63M accepted samples.
 
-The remaining gap is `gradients` (31 ms), which cv2 does not have as a separate
-pass: it computes gradients inline per keypoint patch, over ~3.6M samples
-against our 5.63M whole-layer pixels. Closing that means moving the magnitude
-and angle evaluation into the descriptor and orientation loops.
+* **Whole-layer gradient precompute removed**, 30.9 ms saved for 20.9 added.
+  Both consumers now derive `dx`/`dy` from the Gaussian layer, as
+  `calcOrientationHist` and `calcSIFTDescriptor` do. The precompute evaluated
+  the two carotene primitives for all 5.63M pixels of the searched layers when
+  the keypoint patches read only ~3.1M. Orientation gained the same 4-wide
+  batching the descriptor already had, which also lifted its Gaussian weight
+  out of a per-sample scalar `exp`. The workspace drops eight full-resolution
+  planes with it — about 46 MB at `fo=-1`.
+
+  This is deliberately the **opposite** of the CUDA plan, which keeps the
+  precompute. On the GPU every pixel is computed in parallel with coalesced
+  stores and the per-keypoint stages then do one aligned load instead of four
+  gathers; on the CPU the same design just does 1.8x the transcendental work.
+  A layout that is right for one backend is not evidence about the other.
+
+Extrema and orientation are now at parity with cv2 (38.2 vs 38.7). What is left
+is the descriptor (103.1 vs 78.6, both including gradients) and the pyramid
+(74.1 vs 61.1).
 
 ### Falsified, do not retry
 
