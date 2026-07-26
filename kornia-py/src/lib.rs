@@ -34,6 +34,7 @@ mod pgo;
 mod pipeline;
 mod pnp;
 mod pointcloud;
+mod pyramid;
 mod pyutils;
 mod ransac;
 mod resize;
@@ -516,6 +517,9 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     imgproc_mod.add_function(wrap_pyfunction!(blur::median_blur, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(blur::bilateral_filter, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(blur::sobel, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(pyramid::pyrdown, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(pyramid::pyrup, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(pyramid::build_pyramid, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(morphology::dilate, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(morphology::erode, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(

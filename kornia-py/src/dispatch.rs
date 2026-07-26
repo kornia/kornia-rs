@@ -86,3 +86,47 @@ pub(crate) fn no_gpu_kernel_if_device(api: &PyImageApi) -> PyResult<()> {
 
 /// Early-return the GPU result when `$image` is a device `Image`.
 pub(crate) use crate::__try_dispatch_device as try_dispatch_device;
+
+/// Helper to handle host-path boilerplate: given a Python object that may be a
+/// numpy array or a host `Image`, return its numpy view and the name of its
+/// dtype (e.g. "uint8", "float32"). If it is a device `Image`, returns an error
+/// demanding `.cpu()` first.
+pub(crate) fn host_view_and_dtype<'py>(
+    image: &Bound<'py, PyAny>,
+) -> PyResult<(Bound<'py, PyAny>, String)> {
+    let view = if let Ok(api) = image.cast::<PyImageApi>() {
+        no_gpu_kernel_if_device(&api.borrow())?;
+        api.call_method0("numpy")?
+    } else {
+        image.clone()
+    };
+    use pyo3::types::PyAnyMethods;
+    let dtype = view
+        .getattr("dtype")?
+        .getattr("name")?
+        .extract::<String>()?;
+    Ok((view, dtype))
+}
+
+/// Raise a clear error naming the actual dtype if a non-f32 numpy array or
+/// host `Image` reaches an f32-only CPU color conversion, instead of letting
+/// pyo3's generic array-downcast error surface (`'ndarray' object is not an
+/// instance of 'ndarray'`).
+pub(crate) fn require_f32_host(image: &Bound<'_, PyAny>, op: &str) -> PyResult<()> {
+    // If it's a device Image, we don't throw here; try_dispatch_device! already
+    // handled the fast path, or if we got here it means there's no GPU kernel,
+    // in which case host_view_and_dtype will correctly emit the "no GPU kernel"
+    // error. Wait, we want to allow device image if try_dispatch_device was used!
+    // But require_f32_host is called *after* try_dispatch_device!. If we get here
+    // with a device image, it's either an error anyway (no GPU kernel), or it shouldn't
+    // happen.
+    // Actually, host_view_and_dtype throws if device image. So it's perfect.
+    let (_, dtype) = host_view_and_dtype(image)?;
+    if dtype != "float32" {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "{op}: host path supports float32 only (got dtype={dtype}); \
+             there is currently no uint8 kernel for this conversion in kornia-imgproc"
+        )));
+    }
+    Ok(())
+}

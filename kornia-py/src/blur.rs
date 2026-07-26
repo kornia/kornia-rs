@@ -11,8 +11,8 @@ use kornia_imgproc::filter;
 ///
 /// Residency-dispatched: a device `Image` (u8 1/3/4-channel or f32
 /// 1/3-channel) runs the CUDA separable kernels — byte-exact (u8) /
-/// bit-exact (f32) with the CPU paths — and a numpy u8 array runs the CPU
-/// path.
+/// bit-exact (f32) with the CPU paths — and a numpy u8 array of shape
+/// (H, W, 1|3|4) runs the CPU path, matching what the device path accepts.
 #[pyfunction]
 pub fn gaussian_blur(
     py: Python<'_>,
@@ -28,17 +28,34 @@ pub fn gaussian_blur(
         }
     }
     cpu_op(py, image, move |py, arr: Py<numpy::PyArray3<u8>>| {
-        let src = unsafe { numpy_as_image::<3>(py, &arr)? };
-        let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, src.size())? };
-        py.detach(|| filter::gaussian_blur_u8(&src, &mut dst, kernel_size, sigma))
-            .map_err(to_pyerr)?;
-        Ok(out)
+        fn run<const C: usize>(
+            py: Python<'_>,
+            arr: &Py<numpy::PyArray3<u8>>,
+            kernel_size: (usize, usize),
+            sigma: (f32, f32),
+        ) -> PyResult<crate::image::PyImage> {
+            let src = unsafe { numpy_as_image::<C>(py, arr)? };
+            let (mut dst, out) = unsafe { alloc_output_pyarray::<C>(py, src.size())? };
+            py.detach(|| filter::gaussian_blur_u8(&src, &mut dst, kernel_size, sigma))
+                .map_err(to_pyerr)?;
+            Ok(out)
+        }
+        let c = arr.bind(py).shape()[2];
+        match c {
+            1 => run::<1>(py, &arr, kernel_size, sigma),
+            3 => run::<3>(py, &arr, kernel_size, sigma),
+            4 => run::<4>(py, &arr, kernel_size, sigma),
+            c => Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "gaussian_blur: host path supports 1, 3, or 4 channels (u8); got {c}"
+            ))),
+        }
     })
 }
 
 /// Box blur.
 ///
-/// Residency-dispatched like [`gaussian_blur`].
+/// Residency-dispatched like [`gaussian_blur`]; the host path accepts the
+/// same 1/3/4-channel u8 shapes as the device path.
 #[pyfunction]
 pub fn box_blur(
     py: Python<'_>,
@@ -53,11 +70,26 @@ pub fn box_blur(
         }
     }
     cpu_op(py, image, move |py, arr: Py<numpy::PyArray3<u8>>| {
-        let src = unsafe { numpy_as_image::<3>(py, &arr)? };
-        let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, src.size())? };
-        py.detach(|| filter::box_blur_u8(&src, &mut dst, kernel_size))
-            .map_err(to_pyerr)?;
-        Ok(out)
+        fn run<const C: usize>(
+            py: Python<'_>,
+            arr: &Py<numpy::PyArray3<u8>>,
+            kernel_size: (usize, usize),
+        ) -> PyResult<crate::image::PyImage> {
+            let src = unsafe { numpy_as_image::<C>(py, arr)? };
+            let (mut dst, out) = unsafe { alloc_output_pyarray::<C>(py, src.size())? };
+            py.detach(|| filter::box_blur_u8(&src, &mut dst, kernel_size))
+                .map_err(to_pyerr)?;
+            Ok(out)
+        }
+        let c = arr.bind(py).shape()[2];
+        match c {
+            1 => run::<1>(py, &arr, kernel_size),
+            3 => run::<3>(py, &arr, kernel_size),
+            4 => run::<4>(py, &arr, kernel_size),
+            c => Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "box_blur: host path supports 1, 3, or 4 channels (u8); got {c}"
+            ))),
+        }
     })
 }
 
