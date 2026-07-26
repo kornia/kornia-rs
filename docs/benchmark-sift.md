@@ -224,6 +224,38 @@ budget only pays because `retainBest` now runs *before* descriptors, as the
 reference does — before that change `n_features` cost the same at 200 as at
 2515.
 
+## Descriptor kernel counters (ncu)
+
+`sudo -E bash /tmp/ncu.sh`, 2026-07-26, two launches of `sift_descriptor_block`
+at `fo=-1`:
+
+| metric | 590 blocks | 555 blocks |
+|---|---|---|
+| `l1tex__data_bank_conflicts_pipe_lsu_mem_shared.sum` | 317,618 | 382,055 |
+| `sm__warps_active.avg.pct_of_peak_sustained_active` | **98.16%** | 98.44% |
+| `smsp__inst_executed.sum` | 22.3 M | 32.0 M |
+
+Two things follow, and both correct earlier guesses in this document's history.
+
+**There is no occupancy to recover.** The kernel runs at ~98% warps active, so
+the claim that its rejected samples "retire threads and cost occupancy" was
+wrong: the sample loop is *strided*, nothing retires, and the cost of a rejected
+sample is SIMT masking — 46 of 308 instructions, sharing a warp with accepted
+lanes. Any win from narrowing the sample domain comes purely from fewer
+warp-iterations, which caps it near 1.0-1.3 ms rather than the 2.0-3.5 ms first
+estimated.
+
+**Shared-atomic bank conflicts are low.** Against roughly 6.7M shared atomic
+operations per launch (~590 keypoints x ~1431 accepted samples x 8), 318k
+conflicts is about a 5% rate. Exact packing would double accepted lanes per warp
+(16 -> 32), so worst case lands near 10% — short of what would erase the win.
+That was the one question no static analysis could settle, and it comes back
+favourable, so packing is worth writing.
+
+Keep the control when it is written: run the packed variant once with the eight
+`atomicAdd`s replaced by plain racy adds (timing only, wrong output). If the racy
+variant shows the win and the atomic one does not, conflicts bit after all.
+
 ## Matching quality (homography + epipolar)
 
 `python3 kornia-py/benchmarks/bench_sift_quality.py`, 2026-07-26. Matching is
