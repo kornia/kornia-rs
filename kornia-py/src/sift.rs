@@ -24,6 +24,21 @@ use numpy::{PyArray2, PyArray3, PyArrayMethods, PyUntypedArrayMethods};
 #[cfg(feature = "cuda")]
 use crate::image::PyImageApi;
 
+/// `(keypoints, descriptors)`: `(N, 6)` of `x, y, size, angle, response, octave`
+/// and `(N, 128)` of descriptor rows.
+///
+/// Both backends and both the public method and its two private halves return
+/// this shape, so it is named once rather than spelled out at each of them.
+pub(crate) type DetectOut<'py> = PyResult<(Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<f32>>)>;
+
+/// `(keypoints_a, keypoints_b, matches)`, with `matches` an `(M, 2)` int32 array
+/// of indices into the two keypoint arrays.
+pub(crate) type MatchOut<'py> = PyResult<(
+    Bound<'py, PyArray2<f32>>,
+    Bound<'py, PyArray2<f32>>,
+    Bound<'py, PyArray2<i32>>,
+)>;
+
 /// A reusable SIFT detector, shaped like `cv2.SIFT`.
 ///
 /// ```python
@@ -40,6 +55,14 @@ use crate::image::PyImageApi;
 /// Parameters match `cv2.SIFT_create`, plus three knobs OpenCV hardcodes:
 /// `upsample` selects `first_octave`, `max_octaves` caps the pyramid, and
 /// `fast_descriptor` trades bit-exactness for speed on the GPU.
+///
+/// `max_keypoints` is **not** one of those: it sizes the CUDA plan's device
+/// buffers, and the device path silently truncates to it. The host path has no
+/// such ceiling, so it is the one parameter that makes the two backends return
+/// different results — leave it at the default unless a frame genuinely exceeds
+/// it, and raise it rather than relying on the truncation. Use `n_features` for
+/// an actual keypoint budget: that one is the reference's `retainBest` and both
+/// backends apply it identically.
 ///
 /// `unsendable`: the CUDA plan holds stream and buffer handles that are not
 /// `Sync`, so an instance stays on the thread that built it.
@@ -150,7 +173,7 @@ impl Sift {
         &mut self,
         py: Python<'py>,
         image: &Bound<'py, PyAny>,
-    ) -> PyResult<(Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<f32>>)> {
+    ) -> DetectOut<'py> {
         #[cfg(feature = "cuda")]
         if let Ok(api) = image.cast::<PyImageApi>() {
             let img = api.borrow();
@@ -187,7 +210,6 @@ impl Sift {
     /// Returns `(keypoints_a, keypoints_b, matches)`, where `matches` is
     /// `(M, 2)` of indices into the two keypoint arrays.
     #[pyo3(signature = (image_a, image_b, ratio=0.8, cross_check=true))]
-    #[allow(unused_variables)]
     fn r#match<'py>(
         &mut self,
         py: Python<'py>,
@@ -195,11 +217,7 @@ impl Sift {
         image_b: &Bound<'py, PyAny>,
         ratio: f32,
         cross_check: bool,
-    ) -> PyResult<(
-        Bound<'py, PyArray2<f32>>,
-        Bound<'py, PyArray2<f32>>,
-        Bound<'py, PyArray2<i32>>,
-    )> {
+    ) -> MatchOut<'py> {
         #[cfg(feature = "cuda")]
         if is_device(image_a) || is_device(image_b) {
             let a = device_image(image_a, "Sift.match")?;
@@ -267,11 +285,7 @@ impl Sift {
         image_b: &Bound<'py, PyAny>,
         ratio: f32,
         cross_check: bool,
-    ) -> PyResult<(
-        Bound<'py, PyArray2<f32>>,
-        Bound<'py, PyArray2<f32>>,
-        Bound<'py, PyArray2<i32>>,
-    )> {
+    ) -> MatchOut<'py> {
         let (ka, da) = self.detect_host(py, image_a)?;
         let (kb, db) = self.detect_host(py, image_b)?;
         let (na, nb) = (ka.shape()[0], kb.shape()[0]);
@@ -284,11 +298,7 @@ impl Sift {
     }
 
     /// The NEON path, for a numpy array or a host `Image`.
-    fn detect_host<'py>(
-        &mut self,
-        py: Python<'py>,
-        image: &Bound<'py, PyAny>,
-    ) -> PyResult<(Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<f32>>)> {
+    fn detect_host<'py>(&mut self, py: Python<'py>, image: &Bound<'py, PyAny>) -> DetectOut<'py> {
         // A host `Image` exposes its buffer through `numpy()`; a numpy array is
         // already one. Either way the CPU path wants a contiguous `(H, W, 1)`
         // f32 view, and neither is copied.

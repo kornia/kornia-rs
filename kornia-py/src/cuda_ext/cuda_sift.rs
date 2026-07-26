@@ -59,7 +59,7 @@ pub(crate) fn sift_cuda_with_plan<'py>(
     max_keypoints: usize,
     upsample: bool,
     max_octaves: usize,
-) -> PyResult<(Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<f32>>)> {
+) -> crate::sift::DetectOut<'py> {
     let params = (
         n_features,
         n_octave_layers,
@@ -224,11 +224,7 @@ pub(crate) fn sift_match<'py>(
     max_keypoints: usize,
     upsample: bool,
     max_octaves: usize,
-) -> PyResult<(
-    Bound<'py, PyArray2<f32>>,
-    Bound<'py, PyArray2<f32>>,
-    Bound<'py, PyArray2<i32>>,
-)> {
+) -> crate::sift::MatchOut<'py> {
     let params = (
         n_features,
         n_octave_layers,
@@ -300,17 +296,17 @@ pub(crate) fn sift_match<'py>(
 
 type DetectParams = (usize, usize, bool, f64, f64, f64, usize, bool, usize);
 
-/// Run detection, leaving descriptors in the plan's device buffer.
-fn detect_device(
-    img: &PyImageApi,
-    slot: &mut PlanSlot,
-    p: DetectParams,
-) -> PyResult<(
+/// The host-side keypoints and their count, plus the stream and context the
+/// descriptors were left on — the caller needs both to issue the match.
+type DetectDeviceOut = PyResult<(
     Vec<SiftKeypoint>,
     usize,
     std::sync::Arc<cudarc::driver::CudaStream>,
     std::sync::Arc<cudarc::driver::CudaContext>,
-)> {
+)>;
+
+/// Run detection, leaving descriptors in the plan's device buffer.
+fn detect_device(img: &PyImageApi, slot: &mut PlanSlot, p: DetectParams) -> DetectDeviceOut {
     let src = device_f32c1(img)?;
     let (stream, ctx) = ensure_plan(src, slot, p)?;
     let (_, plan) = slot.as_mut().expect("plan just installed");

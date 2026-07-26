@@ -49,7 +49,17 @@ use super::params::{
 };
 use super::scalespace::{blur_h_f32_mode, blur_v_f32};
 
+// These three types are the backend-independent vocabulary of the pipeline, so
+// like `params` they have one definition and `cuda::sift` re-exports it. They
+// were declared twice — identical fields, identical derives — which meant the
+// two backends' results were nominally different types and the Python binding
+// had to import one of them under an alias.
+
 /// Which scale the pyramid starts from.
+///
+/// `Double` matches OpenCV, COLMAP and VLFeat, which all upsample 2x before
+/// building the pyramid; it roughly doubles the keypoint count and costs about
+/// 3.6x the time. `Native` starts at the input resolution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FirstOctave {
     /// `first_octave = -1`: upsample 2x first (the reference's default).
@@ -67,21 +77,32 @@ pub struct SiftKeypoint {
     pub y: f32,
     /// Diameter of the meaningful neighbourhood.
     pub size: f32,
-    /// Orientation in degrees.
+    /// Dominant gradient orientation, in degrees, clockwise from +x.
     pub angle: f32,
     /// Contrast at the refined extremum.
     pub response: f32,
-    /// Packed octave field.
+    /// Packed `octave | (layer << 8) | (round((xi + 0.5) * 255) << 16)`.
     pub octave: i32,
 }
 
-/// Host-side result of a full pass.
+/// Host-side result of a full detect-and-compute pass.
 #[derive(Debug, Clone, Default)]
 pub struct SiftFeatures {
     /// One entry per oriented keypoint.
     pub keypoints: Vec<SiftKeypoint>,
     /// Row-major `keypoints.len() * 128` descriptor block.
     pub descriptors: Vec<f32>,
+}
+
+impl SiftFeatures {
+    /// Number of keypoints.
+    pub fn len(&self) -> usize {
+        self.keypoints.len()
+    }
+    /// Whether any keypoint was found.
+    pub fn is_empty(&self) -> bool {
+        self.keypoints.is_empty()
+    }
 }
 
 /// Separable bilinear 2x upsample forming the base of octave 0.
@@ -200,9 +221,54 @@ impl SiftWorkspace {
 
 /// Detect, orient and describe.
 ///
-/// `src` is a `w * h` f32 grayscale image in 0..255 — the reference's own
-/// internal representation. Normalising to 0..1 changes what the contrast
-/// threshold means.
+/// Allocates its own scratch. For more than one frame use
+/// [`detect_and_compute_with`], which takes a reusable [`SiftWorkspace`].
+///
+/// # Arguments
+///
+/// * `src` - Row-major `w * h` f32 grayscale image in **0..255** — the
+///   reference's own internal representation. Normalising to 0..1 changes what
+///   `cfg.contrast_threshold` means and silently returns far fewer keypoints.
+/// * `w`, `h` - Image dimensions; `src.len()` must equal `w * h`.
+/// * `cfg` - Detector parameters, mirroring `cv::SIFT::create`.
+/// * `first_octave` - [`FirstOctave::Double`] upsamples 2x first, as OpenCV does
+///   by default; [`FirstOctave::Native`] starts at the input resolution.
+/// * `max_octaves` - Ceiling on the pyramid depth; `usize::MAX` for unlimited.
+/// * `fast` - Trade the reference's exact tap order for speed in the row blur.
+///   Keypoints and descriptors are then no longer bit-exact against `cv2`.
+///
+/// # Returns
+///
+/// [`SiftFeatures`]: the keypoints in the reference's final order, and a
+/// row-major `keypoints.len() * 128` descriptor block.
+///
+/// # Errors
+///
+/// Returns [`SiftConfigError::SourceLen`] if `src.len() != w * h`, and
+/// [`SiftConfigError::Invalid`] if the dimensions overflow or a parameter in
+/// `cfg` is out of range (for example `n_octave_layers == 0`).
+///
+/// # Example
+///
+/// ```rust
+/// use kornia_imgproc::features::{sift_detect_and_compute, FirstOctave, SiftConfig};
+///
+/// let (w, h) = (64, 64);
+/// // A single bright square: enough structure to exercise the pipeline.
+/// let mut img = vec![0.0f32; w * h];
+/// for y in 24..40 {
+///     for x in 24..40 {
+///         img[y * w + x] = 255.0;
+///     }
+/// }
+///
+/// let cfg = SiftConfig::default();
+/// let feats = sift_detect_and_compute(
+///     &img, w, h, &cfg, FirstOctave::Native, usize::MAX, false,
+/// )?;
+/// assert_eq!(feats.descriptors.len(), feats.keypoints.len() * 128);
+/// # Ok::<(), kornia_imgproc::features::SiftConfigError>(())
+/// ```
 pub fn detect_and_compute(
     src: &[f32],
     w: usize,
@@ -220,6 +286,39 @@ pub fn detect_and_compute(
 ///
 /// Prefer this when processing more than one frame: it is the same work without
 /// the per-call allocation of ~20 full-resolution planes.
+///
+/// # Arguments
+///
+/// * `ws` - Reusable scratch, sized on first use and regrown only when a later
+///   frame is larger. Keep one per thread and pass it every call.
+/// * All remaining arguments are as in [`detect_and_compute`].
+///
+/// # Returns
+///
+/// [`SiftFeatures`], identical to what [`detect_and_compute`] returns for the
+/// same inputs — `ws` affects allocation, never the result.
+///
+/// # Errors
+///
+/// The same [`SiftConfigError`] cases as [`detect_and_compute`].
+///
+/// # Example
+///
+/// ```rust
+/// use kornia_imgproc::features::{sift_detect_with, FirstOctave, SiftConfig, SiftWorkspace};
+///
+/// let (w, h) = (64, 64);
+/// let img = vec![0.0f32; w * h];
+/// let cfg = SiftConfig::default();
+/// let mut ws = SiftWorkspace::new();
+/// for _frame in 0..2 {
+///     let feats = sift_detect_with(
+///         &mut ws, &img, w, h, &cfg, FirstOctave::Native, usize::MAX, false,
+///     )?;
+///     assert!(feats.is_empty()); // a flat image has no extrema
+/// }
+/// # Ok::<(), kornia_imgproc::features::SiftConfigError>(())
+/// ```
 #[allow(clippy::too_many_arguments)]
 pub fn detect_and_compute_with(
     ws: &mut SiftWorkspace,
@@ -291,7 +390,10 @@ pub fn detect_and_compute_with(
     // KORNIA_SIFT_STAGES=1 breaks the pass down. Each probe is a plain elapsed
     // measurement -- no synchronisation needed on CPU -- so the total is not
     // inflated the way the CUDA equivalent is.
-    let probe = std::env::var("KORNIA_SIFT_STAGES").is_ok();
+    // Read once: this is a per-frame path and `env::var` locks and allocates.
+    // Same treatment as the CUDA path in `cuda::sift::plan`.
+    static PROBE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let probe = *PROBE.get_or_init(|| std::env::var("KORNIA_SIFT_STAGES").is_ok());
     let (mut t_blur, mut t_det, mut t_ori, mut t_desc) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
     let mark = || std::time::Instant::now();
 
@@ -449,11 +551,29 @@ orient={t_ori:.1} desc={t_desc:.1} (ms)"
     })
 }
 
-/// `removeDuplicatedSorted` then `retainBest`, as indices into the input order.
+/// The reference's final keypoint order: `removeDuplicatedSorted`, then
+/// `retainBest`. Returns indices into the input order.
+///
+/// Shared with the CUDA pipeline: both backends must return the same rows in the
+/// same order, and this ordering is subtle enough in two places (the comparator's
+/// descending fields, the tie behaviour at the budget cut-off) that keeping two
+/// copies in step was never going to hold.
+pub(crate) fn final_order(kps: &[SiftKeypoint], n_features: usize) -> Vec<usize> {
+    retain_best_order(kps, sorted_dedup_order(kps), n_features)
+}
+
+/// Order keypoints the way `KeyPointsFilter::removeDuplicatedSorted` does, and
+/// drop the exact duplicates it drops.
+///
+/// Two reasons this is not optional. The CUDA detector appends through an atomic
+/// counter, so without it the row order varies run to run even though the set
+/// does not — surprising for anything that caches indices or diffs two runs.
+/// And the reference genuinely removes duplicates: one extremum can be reached
+/// from neighbouring start pixels and land on the same refined point.
 ///
 /// The comparator is the reference's, including its descending fields: `size`,
 /// `response` and `octave` sort the opposite way to `x`, `y` and `angle`.
-fn final_order(kps: &[SiftKeypoint], n_features: usize) -> Vec<usize> {
+fn sorted_dedup_order(kps: &[SiftKeypoint]) -> Vec<usize> {
     if kps.is_empty() {
         return Vec::new();
     }
@@ -468,24 +588,48 @@ fn final_order(kps: &[SiftKeypoint], n_features: usize) -> Vec<usize> {
             .then(q.octave.cmp(&p.octave))
             .then(a.cmp(&b))
     });
-    // The reference compares only these four fields when removing duplicates.
-    let mut dedup: Vec<usize> = Vec::with_capacity(order.len());
+
+    // The reference's duplicate test is NOT the full record: it compares only
+    // `pt.x`, `pt.y`, `size` and `angle`, so two keypoints that agree on those
+    // but differ in `response` or `octave` are still duplicates to it. Deriving
+    // this from `PartialEq` on the whole struct would keep such a pair.
+    let same = |a: &SiftKeypoint, b: &SiftKeypoint| {
+        a.x == b.x && a.y == b.y && a.size == b.size && a.angle == b.angle
+    };
+    let mut out: Vec<usize> = Vec::with_capacity(order.len());
     for &i in &order {
-        if let Some(&p) = dedup.last() {
-            let (a, b) = (&kps[p], &kps[i]);
-            if a.x == b.x && a.y == b.y && a.size == b.size && a.angle == b.angle {
-                continue;
-            }
+        // Adjacent-equal only: the sort has already grouped duplicates.
+        if out.last().is_some_and(|&p| same(&kps[p], &kps[i])) {
+            continue;
         }
-        dedup.push(i);
+        out.push(i);
     }
-    if n_features == 0 || dedup.len() <= n_features {
-        return dedup;
+    out
+}
+
+/// Keep the `n` highest-response keypoints, matching `KeyPointsFilter::retainBest`.
+///
+/// `n == 0` means unlimited, as it does in `cv::SIFT::create`.
+///
+/// The subtlety worth preserving is the boundary: the reference partitions on
+/// `response >= keypoints[n-1].response` **after** selecting, so every keypoint
+/// tied with the cut-off survives and the result can be longer than `n`.
+/// Truncating at exactly `n` would drop an arbitrary member of a tie group,
+/// which is precisely the case the reference goes out of its way to avoid.
+///
+/// This is the faithful response-rank cut. It clusters keypoints on
+/// high-contrast texture and thins the periphery — for pose estimation a
+/// spatially-binned variant (as `orb::ExtractorNode::divide` does here) spreads
+/// correspondences better, but it would not be what `cv2` returns.
+fn retain_best_order(kps: &[SiftKeypoint], order: Vec<usize>, n: usize) -> Vec<usize> {
+    if n == 0 || order.len() <= n {
+        return order;
     }
-    let mut rank = dedup.clone();
+    let mut rank = order.clone();
+    // Descending response, index breaking ties so the choice is reproducible.
     rank.sort_by(|&a, &b| kps[b].response.total_cmp(&kps[a].response).then(a.cmp(&b)));
-    let cutoff = kps[rank[n_features - 1]].response;
-    dedup
+    let cutoff = kps[rank[n - 1]].response;
+    order
         .into_iter()
         .filter(|&i| kps[i].response >= cutoff)
         .collect()

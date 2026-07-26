@@ -148,10 +148,12 @@ impl From<cudarc::driver::DriverError> for SiftCudaError {
 pub const SIFT_INIT_SIGMA: f32 = 0.5;
 
 /// Width of the border in which extrema are not detected.
-pub const SIFT_IMG_BORDER: i32 = 5;
+///
+/// The CPU definition, widened: the kernels index with signed arithmetic.
+pub const SIFT_IMG_BORDER: i32 = crate::features::SIFT_IMG_BORDER as i32;
 
 /// Maximum sub-pixel interpolation steps during extremum refinement.
-pub const SIFT_MAX_INTERP_STEPS: i32 = 5;
+pub const SIFT_MAX_INTERP_STEPS: i32 = crate::features::SIFT_MAX_INTERP_STEPS as i32;
 
 /// Configuration mirroring the reference detector's constructor parameters.
 #[derive(Debug, Clone, Copy)]

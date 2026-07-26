@@ -205,7 +205,7 @@ fn bench_descriptor_matching(c: &mut Criterion) {
 /// The CUDA path is not benchmarked from here: it needs a device, a stream and a
 /// warm kernel cache, and mixing that into a CPU criterion group makes both
 /// numbers harder to read. Use `KORNIA_SIFT_STAGES=1` through the Python
-/// binding for it — see `docs/BENCHMARKING.md`.
+/// binding for it — see `docs/benchmark-sift.md`.
 fn bench_sift(c: &mut Criterion) {
     let mut group = c.benchmark_group("Sift");
 

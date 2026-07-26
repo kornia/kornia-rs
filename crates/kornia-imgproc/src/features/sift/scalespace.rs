@@ -34,16 +34,11 @@ const ROWS_PER_TASK: usize = 16;
 // the hardware prefetcher long sequential streams, and losing that costs more
 // than L1 residency returns. Do not retry without addressing the prefetcher.
 
-/// Horizontal (row) pass.
+/// Horizontal (row) pass, optionally exploiting the kernel's symmetry.
 ///
 /// The interior is vectorised four columns at a time with unaligned loads: the
 /// taps are consecutive, so tap `j` for lanes `x..x+3` is just the source vector
 /// at `x - n2 + j`. Only the `n2` columns at each edge need reflection.
-pub fn blur_h_f32(src: &[f32], dst: &mut [f32], w: usize, h: usize, kernel: &[f32]) {
-    blur_h_f32_mode(src, dst, w, h, kernel, false)
-}
-
-/// Horizontal pass, optionally exploiting the kernel's symmetry.
 ///
 /// `symmetric` halves the multiply-adds by folding tap pairs before the
 /// multiply — `(s[n2-j] + s[n2+j]) * k[n2+j]` — which is what a normal
@@ -529,7 +524,9 @@ mod tests {
             let k = gaussian_kernel_f32(gaussian_ksize(sigma), sigma);
             let mut tmp = vec![0.0f32; w * h];
             let mut got = vec![0.0f32; w * h];
-            blur_h_f32(&prev, &mut tmp, w, h, &k);
+            // `symmetric = false`: this compares against the reference dump, and
+            // the reference's row filter does not pair its taps.
+            blur_h_f32_mode(&prev, &mut tmp, w, h, &k, false);
             blur_v_f32(&tmp, &mut got, w, h, &k, None);
 
             let bad = got

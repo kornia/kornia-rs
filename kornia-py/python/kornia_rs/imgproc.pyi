@@ -192,7 +192,8 @@ class Sift:
     Dispatches on residency: a device ``Image`` runs the CUDA pipeline, a host
     ``Image`` or a numpy array runs the NEON one. Both reproduce ``cv::SIFT``
     bit for bit and return the same descriptors, so residency changes the speed
-    and nothing else.
+    and nothing else — with one exception, ``max_keypoints``, which bounds the
+    device buffers only. See its note below.
 
     The input must be single-channel float32 with values in **0..255** — the
     reference's own internal representation. Normalising to 0..1 changes what
@@ -216,7 +217,13 @@ class Sift:
     ) -> None:
         """``upsample`` selects ``first_octave``: True is OpenCV's ``-1``, which
         doubles the base image. ``max_octaves=0`` means unlimited.
-        ``fast_descriptor`` trades bit-exactness for speed on the GPU."""
+        ``fast_descriptor`` trades bit-exactness for speed on the GPU.
+
+        ``max_keypoints`` sizes the CUDA plan's device buffers and the device
+        path truncates to it; the host path has no ceiling. It is therefore the
+        one parameter under which the two backends disagree. For a real keypoint
+        budget use ``n_features`` — the reference's ``retainBest``, applied
+        identically by both."""
 
     def detect_and_compute(
         self, image: np.ndarray | Image

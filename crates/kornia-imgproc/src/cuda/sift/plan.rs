@@ -40,55 +40,17 @@ use super::pyramid::{
 };
 use super::{gaussian_ksize, SiftCudaConfig, SiftCudaError, KP_STRIDE};
 
-/// A detected, oriented and described keypoint, in input-image coordinates.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct SiftKeypoint {
-    /// Column, in input-image pixels.
-    pub x: f32,
-    /// Row, in input-image pixels.
-    pub y: f32,
-    /// Diameter of the meaningful neighbourhood.
-    pub size: f32,
-    /// Dominant gradient orientation, in degrees, clockwise from +x.
-    pub angle: f32,
-    /// Contrast at the refined extremum.
-    pub response: f32,
-    /// Packed `octave | (layer << 8) | (round((xi + 0.5) * 255) << 16)`.
-    pub octave: i32,
-}
+// `final_order` — `removeDuplicatedSorted` then `retainBest` — is the shared
+// implementation. Both backends must return the same rows in the same order, so
+// it has one definition rather than two copies kept in step by hand.
+use crate::features::sift_final_order as final_order;
 
-/// Host-side result of a full detect-and-compute pass.
-#[derive(Debug, Clone, Default)]
-pub struct SiftFeatures {
-    /// One entry per oriented keypoint.
-    pub keypoints: Vec<SiftKeypoint>,
-    /// Row-major `keypoints.len() * 128` descriptor block.
-    pub descriptors: Vec<f32>,
-}
-
-impl SiftFeatures {
-    /// Number of keypoints.
-    pub fn len(&self) -> usize {
-        self.keypoints.len()
-    }
-    /// Whether any keypoint was found.
-    pub fn is_empty(&self) -> bool {
-        self.keypoints.is_empty()
-    }
-}
-
-/// Which scale the pyramid starts from.
-///
-/// `Double` matches OpenCV, COLMAP and VLFeat, which all upsample 2x before
-/// building the pyramid; it roughly doubles the keypoint count and costs about
-/// 3.6x the time. `Native` starts at the input resolution.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FirstOctave {
-    /// `first_octave = -1`: upsample 2x first (the reference default).
-    Double,
-    /// `first_octave = 0`: start at the input resolution.
-    Native,
-}
+// The keypoint record, the result bundle and the starting-scale selector are
+// backend-independent, so they have one definition — in `features::sift` — and
+// this module re-exports it. Declaring a second, structurally identical copy
+// here made the two backends' results different types to the compiler for no
+// reason, and forced the Python binding to alias one of them.
+pub use crate::features::{FirstOctave, SiftFeatures, SiftKeypoint};
 
 /// Reusable device-resident SIFT pipeline for one image size.
 pub struct SiftCuda {
@@ -675,86 +637,6 @@ impl SiftCuda {
     pub fn descriptor_count(&self) -> usize {
         self.n_desc
     }
-}
-
-/// The reference's final keypoint order: `removeDuplicatedSorted`, then
-/// `retainBest`. Returns indices into the appended order.
-fn final_order(kps: &[SiftKeypoint], n_features: usize) -> Vec<usize> {
-    let deduped = sorted_dedup_order(kps);
-    retain_best_order(kps, deduped, n_features)
-}
-
-/// Keep the `n` highest-response keypoints, matching `KeyPointsFilter::retainBest`.
-///
-/// `n == 0` means unlimited, as it does in `cv::SIFT::create`.
-///
-/// The subtlety worth preserving is the boundary: the reference partitions on
-/// `response >= keypoints[n-1].response` **after** selecting, so every keypoint
-/// tied with the cut-off survives and the result can be longer than `n`.
-/// Truncating at exactly `n` would drop an arbitrary member of a tie group,
-/// which is precisely the case the reference goes out of its way to avoid.
-///
-/// This is the faithful response-rank cut. It clusters keypoints on
-/// high-contrast texture and thins the periphery — for pose estimation a
-/// spatially-binned variant (as `orb::ExtractorNode::divide` does here) spreads
-/// correspondences better, but it would not be what `cv2` returns.
-fn retain_best_order(kps: &[SiftKeypoint], order: Vec<usize>, n: usize) -> Vec<usize> {
-    if n == 0 || order.len() <= n {
-        return order;
-    }
-    let mut rank = order.clone();
-    // Descending response, index breaking ties so the choice is reproducible.
-    rank.sort_by(|&a, &b| kps[b].response.total_cmp(&kps[a].response).then(a.cmp(&b)));
-    let cutoff = kps[rank[n - 1]].response;
-    order
-        .into_iter()
-        .filter(|&i| kps[i].response >= cutoff)
-        .collect()
-}
-
-/// Order keypoints the way `KeyPointsFilter::removeDuplicatedSorted` does, and
-/// drop the exact duplicates it drops.
-///
-/// Two reasons this is not optional. The detector appends through an atomic
-/// counter, so without it the row order varies run to run even though the set
-/// does not — surprising for anything that caches indices or diffs two runs.
-/// And the reference genuinely removes duplicates: one extremum can be reached
-/// from neighbouring start pixels and land on the same refined point.
-///
-/// The comparator is the reference's, including its descending fields: `size`,
-/// `response` and `octave` sort the opposite way to `x`, `y` and `angle`.
-fn sorted_dedup_order(kps: &[SiftKeypoint]) -> Vec<usize> {
-    if kps.is_empty() {
-        return Vec::new();
-    }
-    let mut order: Vec<usize> = (0..kps.len()).collect();
-    order.sort_by(|&a, &b| {
-        let (p, q) = (&kps[a], &kps[b]);
-        p.x.total_cmp(&q.x)
-            .then(p.y.total_cmp(&q.y))
-            .then(q.size.total_cmp(&p.size))
-            .then(p.angle.total_cmp(&q.angle))
-            .then(q.response.total_cmp(&p.response))
-            .then(q.octave.cmp(&p.octave))
-            .then(a.cmp(&b))
-    });
-
-    // The reference's duplicate test is NOT the full record: it compares only
-    // `pt.x`, `pt.y`, `size` and `angle`, so two keypoints that agree on those
-    // but differ in `response` or `octave` are still duplicates to it. Deriving
-    // this from `PartialEq` on the whole struct would keep such a pair.
-    let same = |a: &SiftKeypoint, b: &SiftKeypoint| {
-        a.x == b.x && a.y == b.y && a.size == b.size && a.angle == b.angle
-    };
-    let mut out: Vec<usize> = Vec::with_capacity(order.len());
-    for &i in &order {
-        // Adjacent-equal only: the sort has already grouped duplicates.
-        if out.last().is_some_and(|&p| same(&kps[p], &kps[i])) {
-            continue;
-        }
-        out.push(i);
-    }
-    out
 }
 
 #[cfg(test)]

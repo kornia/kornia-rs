@@ -25,12 +25,16 @@ use super::kernels::get_or_compile;
 use super::SiftCudaError;
 use crate::cuda::make_config;
 
+// The reference's descriptor geometry has one definition, in
+// `features::sift::descriptor`, and both backends read it from there. These are
+// baked into the kernel source as literals, so a divergence would not be a
+// compile error — it would be a silently different descriptor.
 /// Grid width (`SIFT_DESCR_WIDTH`).
-pub const DESCR_WIDTH: usize = 4;
+pub const DESCR_WIDTH: usize = crate::features::DESCR_WIDTH;
 /// Orientation bins per cell (`SIFT_DESCR_HIST_BINS`).
-pub const DESCR_HIST_BINS: usize = 8;
+pub const DESCR_HIST_BINS: usize = crate::features::DESCR_HIST_BINS;
 /// Descriptor length in floats.
-pub const DESCR_LEN: usize = DESCR_WIDTH * DESCR_WIDTH * DESCR_HIST_BINS;
+pub const DESCR_LEN: usize = crate::features::DESCR_LEN;
 /// Threads per block for the shared-memory descriptor kernel. Must be a power
 /// of two: the L2-norm reduction halves the active range each step.
 ///
@@ -112,11 +116,11 @@ fn desc_block_threads() -> usize {
 }
 
 /// Patch scale factor (`SIFT_DESCR_SCL_FCTR`).
-pub const DESCR_SCL_FCTR: f32 = 3.0;
+pub const DESCR_SCL_FCTR: f32 = crate::features::DESCR_SCL_FCTR;
 /// Post-normalisation clamp (`SIFT_DESCR_MAG_THR`).
-pub const DESCR_MAG_THR: f32 = 0.2;
+pub const DESCR_MAG_THR: f32 = crate::features::DESCR_MAG_THR;
 /// Quantisation factor (`SIFT_INT_DESCR_FCTR`).
-pub const INT_DESCR_FCTR: f32 = 512.0;
+pub const INT_DESCR_FCTR: f32 = crate::features::INT_DESCR_FCTR;
 
 fn descriptor_src() -> String {
     let d = DESCR_WIDTH;

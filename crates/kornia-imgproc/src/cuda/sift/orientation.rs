@@ -25,14 +25,18 @@ use super::kernels::get_or_compile;
 use super::{SiftCudaConfig, SiftCudaError};
 use crate::cuda::make_config;
 
+// The reference's orientation constants have one definition, in
+// `features::sift::orient`, and both backends read it from there. Re-declaring
+// the literals here is what let the layer sigmas drift once already; see
+// `SiftCudaConfig::shared_config`.
 /// Histogram bins (`SIFT_ORI_HIST_BINS`).
-pub const ORI_HIST_BINS: usize = 36;
+pub const ORI_HIST_BINS: usize = crate::features::ORI_HIST_BINS;
 /// Patch radius factor (`SIFT_ORI_RADIUS`).
-pub const ORI_RADIUS: f32 = 4.5;
+pub const ORI_RADIUS: f32 = crate::features::ORI_RADIUS;
 /// Gaussian weight sigma factor (`SIFT_ORI_SIG_FCTR`).
-pub const ORI_SIG_FCTR: f32 = 1.5;
+pub const ORI_SIG_FCTR: f32 = crate::features::ORI_SIG_FCTR;
 /// Secondary-peak acceptance ratio (`SIFT_ORI_PEAK_RATIO`).
-pub const ORI_PEAK_RATIO: f32 = 0.8;
+pub const ORI_PEAK_RATIO: f32 = crate::features::ORI_PEAK_RATIO;
 
 /// `f32` slots per oriented keypoint: `x, y, size, response, octave, angle`.
 pub const ORI_KP_STRIDE: usize = 6;
