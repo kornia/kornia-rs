@@ -256,10 +256,13 @@ pub fn blur_v_f32(
             .enumerate()
             .for_each(|(chunk, (dchunk, gchunk))| {
                 let y0 = chunk * ROWS_PER_TASK;
+                // One scratch buffer per task, not per row: `column_row` used to
+                // allocate this every row, i.e. once per output row per blur.
+                let mut pairs = Vec::with_capacity(n2);
                 for (yy, (out, g)) in dchunk.chunks_mut(w).zip(gchunk.chunks_mut(w)).enumerate() {
                     let y = y0 + yy;
                     let c0 = refl101(y as i64, hh) * w;
-                    column_row(src, out, w, c0, y, n2, hh, kernel);
+                    column_row(src, out, w, c0, y, n2, hh, kernel, &mut pairs);
                     if let Some(lo) = lower {
                         let lo = &lo[y * w..y * w + w];
                         for ((gv, o), l) in g.iter_mut().zip(out.iter()).zip(lo.iter()) {
@@ -273,10 +276,11 @@ pub fn blur_v_f32(
             .enumerate()
             .for_each(|(chunk, dchunk)| {
                 let y0 = chunk * ROWS_PER_TASK;
+                let mut pairs = Vec::with_capacity(n2);
                 for (yy, out) in dchunk.chunks_mut(w).enumerate() {
                     let y = y0 + yy;
                     let c0 = refl101(y as i64, hh) * w;
-                    column_row(src, out, w, c0, y, n2, hh, kernel);
+                    column_row(src, out, w, c0, y, n2, hh, kernel, &mut pairs);
                 }
             }),
     }
@@ -293,14 +297,17 @@ fn column_row(
     n2: usize,
     hh: i64,
     kernel: &[f32],
+    pairs: &mut Vec<(usize, usize, f32)>,
 ) {
-    // Precompute the reflected row bases once for the whole row.
-    let mut pairs: Vec<(usize, usize, f32)> = Vec::with_capacity(n2);
+    // Precompute the reflected row bases once for the whole row. `pairs` is the
+    // caller's per-task scratch, reused across rows.
+    pairs.clear();
     for j in 1..=n2 {
         let a = refl101(y as i64 + j as i64, hh) * w;
         let b = refl101(y as i64 - j as i64, hh) * w;
         pairs.push((a, b, kernel[n2 + j]));
     }
+    let pairs: &[(usize, usize, f32)] = pairs;
     let k0 = kernel[n2];
 
     #[cfg(target_arch = "aarch64")]
@@ -316,7 +323,7 @@ fn column_row(
                 let mut a1 = vmulq_n_f32(vld1q_f32(c.add(4)), k0);
                 let mut a2 = vmulq_n_f32(vld1q_f32(c.add(8)), k0);
                 let mut a3 = vmulq_n_f32(vld1q_f32(c.add(12)), k0);
-                for &(pa, pb, kc) in &pairs {
+                for &(pa, pb, kc) in pairs {
                     let pa = src.as_ptr().add(pa + x);
                     let pb = src.as_ptr().add(pb + x);
                     a0 = vfmaq_n_f32(a0, vaddq_f32(vld1q_f32(pa), vld1q_f32(pb)), kc);
@@ -345,7 +352,7 @@ fn column_row(
             }
             while x + 4 <= w {
                 let mut acc = vmulq_n_f32(vld1q_f32(src.as_ptr().add(c0 + x)), k0);
-                for &(a, b, c) in &pairs {
+                for &(a, b, c) in pairs {
                     let sum = vaddq_f32(
                         vld1q_f32(src.as_ptr().add(a + x)),
                         vld1q_f32(src.as_ptr().add(b + x)),
@@ -358,7 +365,7 @@ fn column_row(
         }
         while x < w {
             let mut acc = src[c0 + x] * k0;
-            for &(a, b, c) in &pairs {
+            for &(a, b, c) in pairs {
                 acc = (src[a + x] + src[b + x]).mul_add(c, acc);
             }
             out[x] = acc;
@@ -368,7 +375,7 @@ fn column_row(
     #[cfg(not(target_arch = "aarch64"))]
     for x in 0..w {
         let mut acc = src[c0 + x] * k0;
-        for &(a, b, c) in &pairs {
+        for &(a, b, c) in pairs {
             acc = (src[a + x] + src[b + x]).mul_add(c, acc);
         }
         out[x] = acc;

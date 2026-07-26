@@ -16,6 +16,11 @@ use numpy::PyArray2;
 /// Everything that changes a plan's shape. Floats are compared by bits: these
 /// come straight from the caller and are only ever tested for equality, so NaN's
 /// `!=` itself would silently defeat the cache.
+///
+/// `fast_descriptor` is deliberately absent: it selects a kernel, not a buffer
+/// size, and `SiftCuda::set_fast_descriptor` applies it on every call. Keying on
+/// it would reallocate a dozen full-resolution device planes each time the flag
+/// flipped.
 #[derive(PartialEq, Eq)]
 pub(crate) struct PlanKey {
     ordinal: usize,
@@ -23,7 +28,6 @@ pub(crate) struct PlanKey {
     height: usize,
     n_features: usize,
     n_octave_layers: usize,
-    fast_descriptor: bool,
     contrast_bits: u64,
     edge_bits: u64,
     sigma_bits: u64,
@@ -113,7 +117,7 @@ fn ensure_plan(
     let (
         n_features,
         n_octave_layers,
-        fast_descriptor,
+        _fast_descriptor,
         contrast,
         edge,
         sigma,
@@ -154,7 +158,6 @@ fn ensure_plan(
         height: size.height,
         n_features,
         n_octave_layers,
-        fast_descriptor,
         contrast_bits: contrast.to_bits(),
         edge_bits: edge.to_bits(),
         sigma_bits: sigma.to_bits(),
@@ -353,7 +356,11 @@ impl MatchStore {
         stream: &std::sync::Arc<cudarc::driver::CudaStream>,
         cap: usize,
     ) -> PyResult<()> {
-        if self.cap >= cap && self.desc_a.is_some() {
+        // Both halves must be present, not just the stash: if a previous call
+        // allocated `desc_a` and then failed to build the matcher, `cap` was
+        // never updated, so a later call for a SMALLER cap would short-circuit
+        // here and leave `matcher` None for the `expect` below.
+        if self.cap >= cap && self.desc_a.is_some() && self.matcher.is_some() {
             return Ok(());
         }
         self.desc_a = Some(

@@ -131,7 +131,12 @@ impl SiftConfig {
         let mut out = vec![0.0; n];
         out[0] = self.sigma;
         for (i, slot) in out.iter_mut().enumerate().skip(1) {
-            let prev = self.sigma * k.powi(i as i32 - 1);
+            // `powf`, not `powi`: the reference calls the generic
+            // `pow(double, double)`, and repeated multiplication gives a
+            // different last bit. This must stay spelled exactly as
+            // `SiftCudaConfig::layer_sigmas` spells it or the CPU and CUDA
+            // pyramids diverge — see that function's comment.
+            let prev = k.powf(i as f64 - 1.0) * self.sigma;
             let total = prev * k;
             // Contracted in the reference's build; the two-rounding form shifts
             // every coefficient of the resulting kernel.

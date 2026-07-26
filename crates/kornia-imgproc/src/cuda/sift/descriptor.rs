@@ -75,6 +75,42 @@ pub const DESC_BLOCK_THREADS: usize = 512;
 // the cell is decided by the loop rather than the data. That is
 // `descriptor_fast_src`, which does the same work in 2.64 ms against 7.71, and
 // it is opt-in because the sampling differs from the reference's.
+/// Which descriptor kernel `KORNIA_SIFT_DESC` selected.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DescMode {
+    /// The default block kernel.
+    Block,
+    /// One thread per keypoint, the reference's summation order.
+    Exact,
+    /// Rotated-frame sampling approximation.
+    Fast,
+}
+
+/// Read once: the descriptor launcher runs once per (octave, layer) — tens of
+/// times per frame — and `env::var` allocates and scans the whole environment.
+fn desc_mode() -> DescMode {
+    static MODE: std::sync::OnceLock<DescMode> = std::sync::OnceLock::new();
+    *MODE.get_or_init(|| match std::env::var("KORNIA_SIFT_DESC").ok().as_deref() {
+        Some("exact") => DescMode::Exact,
+        Some("fast") => DescMode::Fast,
+        _ => DescMode::Block,
+    })
+}
+
+/// Block size for the block kernel, swept with `KORNIA_SIFT_DESC_T`. The
+/// reduction halves the active range each step, so it must stay a power of two.
+/// Read once, for the same reason as [`desc_mode`].
+fn desc_block_threads() -> usize {
+    static THREADS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *THREADS.get_or_init(|| {
+        std::env::var("KORNIA_SIFT_DESC_T")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|t| t.is_power_of_two() && *t >= 32 && *t <= 1024)
+            .unwrap_or(DESC_BLOCK_THREADS)
+    })
+}
+
 /// Patch scale factor (`SIFT_DESCR_SCL_FCTR`).
 pub const DESCR_SCL_FCTR: f32 = 3.0;
 /// Post-normalisation clamp (`SIFT_DESCR_MAG_THR`).
@@ -119,10 +155,15 @@ __device__ __forceinline__ float sift_descr_nrm2(const float* v, int len) {{
 extern "C" __global__ void sift_descriptor(
     const float* __restrict__ img, int w, int h,
     const float* __restrict__ kp_in, int n_kp, int kp_stride,
-    float* __restrict__ out_desc)
+    float* __restrict__ out_desc,
+    const int* __restrict__ range_start, const int* __restrict__ live_count,
+    int cap)
 {{
-    const int t = blockIdx.x * blockDim.x + threadIdx.x;
-    if (t >= n_kp) return;
+    // Same row range as the block kernel: the assembled pipeline calls this per
+    // (octave, layer) and every layer owns its own slice of the output, so
+    // starting at 0 would make each layer clobber the previous one's rows.
+    const int t = range_start[0] + blockIdx.x * blockDim.x + threadIdx.x;
+    if (t >= min(min(range_start[0] + n_kp, *live_count), cap)) return;
 
     const float* k = kp_in + (long)t * kp_stride;
     // Position and scale are supplied in the OCTAVE's coordinate frame.
@@ -286,11 +327,16 @@ extern "C" __global__ void sift_descriptor_block(
     const float* __restrict__ img, int w, int h,
     const float* __restrict__ kp_in, int n_kp, int kp_stride,
     float* __restrict__ out_desc,
-    const int* __restrict__ range_start, const int* __restrict__ live_count)
+    const int* __restrict__ range_start, const int* __restrict__ live_count,
+    int cap)
 {{
     // Grid is an upper bound; blocks past the live count retire immediately.
+    // `cap` is the launcher's row capacity: the orientation stage's counter is a
+    // bare `atomicAdd`, so `*live_count` (and therefore `range_start[0]`) can
+    // run past the buffer when a frame overflows. Without this clamp that is an
+    // out-of-bounds device write, not just a dropped keypoint.
     const int t = range_start[0] + blockIdx.x;
-    if (t >= min(range_start[0] + n_kp, *live_count)) return;
+    if (t >= min(min(range_start[0] + n_kp, *live_count), cap)) return;
     const int tid = threadIdx.x;
 
     __shared__ float hist[HISTLEN];
@@ -496,11 +542,16 @@ extern "C" __global__ void sift_descriptor_fast(
     const float* __restrict__ img, int w, int h,
     const float* __restrict__ kp_in, int n_kp, int kp_stride,
     float* __restrict__ out_desc,
-    const int* __restrict__ range_start, const int* __restrict__ live_count)
+    const int* __restrict__ range_start, const int* __restrict__ live_count,
+    int cap)
 {{
     // Grid is an upper bound; blocks past the live count retire immediately.
+    // `cap` is the launcher's row capacity: the orientation stage's counter is a
+    // bare `atomicAdd`, so `*live_count` (and therefore `range_start[0]`) can
+    // run past the buffer when a frame overflows. Without this clamp that is an
+    // out-of-bounds device write, not just a dropped keypoint.
     const int t = range_start[0] + blockIdx.x;
-    if (t >= min(range_start[0] + n_kp, *live_count)) return;
+    if (t >= min(min(range_start[0] + n_kp, *live_count), cap)) return;
     const int tid = threadIdx.x;
 
     __shared__ float hist[HISTLEN];
@@ -677,14 +728,19 @@ pub fn launch_sift_descriptor_cuda_view(
         });
     }
 
+    // Rows the kernel is allowed to touch. `n_kp` only bounds the launch WIDTH;
+    // the first row comes from `range_start` on device, so this is the only
+    // place that can stop an overflowing count from writing past either buffer.
+    let cap = (out_desc.len() / DESCR_LEN).min(kp_in.len() / kp_stride as usize) as i32;
+
     // `KORNIA_SIFT_DESC=exact` selects the one-thread-per-keypoint kernel, which
     // reproduces the reference's sequential accumulation bit for bit but spills
     // its 360-float histogram to local memory. The default block kernel keeps
     // that histogram in shared memory and is ~an order of magnitude faster, at
     // the cost of a different (still correct) summation order.
-    let mode = std::env::var("KORNIA_SIFT_DESC");
-    let exact = mode.as_deref() == Ok("exact");
-    let fast = fast_descriptor || mode.as_deref() == Ok("fast");
+    let mode = desc_mode();
+    let exact = mode == DescMode::Exact;
+    let fast = fast_descriptor || mode == DescMode::Fast;
     let (w_i, h_i, n_i, s_i) = (width as i32, height as i32, n_kp as i32, kp_stride as i32);
 
     if exact {
@@ -700,6 +756,7 @@ pub fn launch_sift_descriptor_cuda_view(
             .arg(out_desc)
             .arg(range_start)
             .arg(live_count)
+            .arg(&cap)
             .launch_2d(n_kp, 1, make_config(n_kp, 1, Some((64, 1))))
             .map_err(|e| SiftCudaError::Cuda(e.to_string()));
     }
@@ -730,17 +787,12 @@ pub fn launch_sift_descriptor_cuda_view(
             .arg(out_desc)
             .arg(range_start)
             .arg(live_count)
+            .arg(&cap)
             .launch_cfg(cfg)
             .map_err(|e| SiftCudaError::Cuda(e.to_string()));
     }
 
-    // Block size is swept with KORNIA_SIFT_DESC_T; the reduction halves the
-    // active range each step, so it must stay a power of two.
-    let threads = std::env::var("KORNIA_SIFT_DESC_T")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .filter(|t| t.is_power_of_two() && *t >= 32 && *t <= 1024)
-        .unwrap_or(DESC_BLOCK_THREADS);
+    let threads = desc_block_threads();
     let kernel = get_or_compile(
         ctx,
         &format!("sift_descriptor_block:{threads}"),
@@ -765,6 +817,7 @@ pub fn launch_sift_descriptor_cuda_view(
         .arg(out_desc)
         .arg(range_start)
         .arg(live_count)
+        .arg(&cap)
         .launch_cfg(cfg)
         .map_err(|e| SiftCudaError::Cuda(e.to_string()))
 }
@@ -819,6 +872,9 @@ pub fn launch_sift_pack_descriptor_input_cuda_view(
             need: need_out,
         });
     }
+    // Rows the kernel may touch. The first row comes from `range_start` on
+    // device, so `n_kp` alone cannot bound the write range — see the kernel.
+    let cap = (out.len() / DESC_IN_STRIDE).min(kp_in.len() / kp_stride as usize) as i32;
 
     let kernel = get_or_compile(
         ctx,
@@ -829,12 +885,15 @@ pub fn launch_sift_pack_descriptor_input_cuda_view(
 extern "C" __global__ void sift_pack_desc_input(
     const float* __restrict__ kp_in, int n_kp, int kp_stride, int angle_col,
     float scale, float* __restrict__ out,
-    const int* __restrict__ range_start, const int* __restrict__ live_count)
+    const int* __restrict__ range_start, const int* __restrict__ live_count,
+    int cap)
 {{
     // `n_kp` is only an upper bound; the real row range lives on device, so the
-    // host never has to read a count back to size this launch.
+    // host never has to read a count back to size this launch. `cap` bounds it
+    // from above: the orientation counter is a bare `atomicAdd` and overruns its
+    // buffer on an overflowing frame, which would put these writes out of range.
     const int t = range_start[0] + blockIdx.x * blockDim.x + threadIdx.x;
-    if (t >= min(range_start[0] + n_kp, *live_count)) return;
+    if (t >= min(min(range_start[0] + n_kp, *live_count), cap)) return;
     const float* k = kp_in + (long)t * kp_stride;
     // `360 - angle`, with the reference's collapse of a near-360 result to 0.
     float ang = 360.0f - k[angle_col];
@@ -862,6 +921,7 @@ extern "C" __global__ void sift_pack_desc_input(
         .arg(out)
         .arg(range_start)
         .arg(live_count)
+        .arg(&cap)
         .launch_2d(n_kp, 1, make_config(n_kp, 1, Some((64, 1))))
         .map_err(|e| SiftCudaError::Cuda(e.to_string()))
 }

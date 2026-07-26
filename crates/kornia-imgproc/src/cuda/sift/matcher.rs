@@ -210,11 +210,11 @@ impl SiftMatcher {
         }
 
         launch_best2(ctx, stream, d1, n1, d2, n2, self)?;
-        // The reverse scan is only needed for the mutual check.
+        // The reverse scan is only needed for the mutual check. Without it
+        // `rev_idx` is never read — the pair kernel's test is `cross_check &&
+        // rev_idx[j] != i` — so there is nothing to clear either.
         if cross_check {
             launch_best2_rev(ctx, stream, d2, n2, d1, n1, self)?;
-        } else {
-            stream.memset_zeros(&mut self.rev_idx)?;
         }
 
         stream.memset_zeros(&mut self.count)?;

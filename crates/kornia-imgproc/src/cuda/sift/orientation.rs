@@ -490,14 +490,20 @@ pub fn launch_sift_orientation_cuda_view(
     let max_out = (out_kp.len() / ORI_KP_STRIDE) as i32;
 
     let (w_i, h_i, n_i, s_i) = (width as i32, height as i32, n_kp as i32, kp_stride as i32);
-    let exact = std::env::var("KORNIA_SIFT_ORI").as_deref() == Ok("exact");
+    // Read once: this launcher runs once per (octave, layer), and `env::var`
+    // allocates and scans the whole environment on every call.
+    static EXACT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let exact = *EXACT.get_or_init(|| std::env::var("KORNIA_SIFT_ORI").as_deref() == Ok("exact"));
 
     if exact {
-        let key = format!(
-            "sift_orientation:{}",
-            std::env::var("KORNIA_SIFT_PEAK").unwrap_or_default()
-        );
-        let kernel = get_or_compile(ctx, &key, orientation_src, "sift_orientation")?;
+        static KEY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        let key = KEY.get_or_init(|| {
+            format!(
+                "sift_orientation:{}",
+                std::env::var("KORNIA_SIFT_PEAK").unwrap_or_default()
+            )
+        });
+        let kernel = get_or_compile(ctx, key, orientation_src, "sift_orientation")?;
         return kernel
             .launch_builder(stream)
             .arg(img)
@@ -514,12 +520,15 @@ pub fn launch_sift_orientation_cuda_view(
             .map_err(|e| SiftCudaError::Cuda(e.to_string()));
     }
 
-    // Swept with KORNIA_SIFT_ORI_T.
-    let threads = std::env::var("KORNIA_SIFT_ORI_T")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .filter(|t| t.is_power_of_two() && *t >= 32 && *t <= 1024)
-        .unwrap_or(ORI_BLOCK_THREADS);
+    // Swept with KORNIA_SIFT_ORI_T; read once, as above.
+    static THREADS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    let threads = *THREADS.get_or_init(|| {
+        std::env::var("KORNIA_SIFT_ORI_T")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|t| t.is_power_of_two() && *t >= 32 && *t <= 1024)
+            .unwrap_or(ORI_BLOCK_THREADS)
+    });
     let kernel = get_or_compile(
         ctx,
         &format!("sift_orientation_block:{threads}"),

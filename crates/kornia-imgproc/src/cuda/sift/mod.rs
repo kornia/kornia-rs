@@ -291,6 +291,51 @@ mod tests {
         }
     }
 
+    /// The CPU and CUDA paths keep separate copies of these host numerics, and
+    /// the pyramids are only comparable if the copies agree to the last bit.
+    /// They did not: the CPU copy spelled the power as `powi`, which the CUDA
+    /// copy's own comment already warned changes the result. Tolerance would
+    /// have hidden it — the layer sigmas feed `gaussian_kernel_f32`, whose
+    /// coefficients are pinned bitwise.
+    #[test]
+    fn layer_sigmas_agree_with_the_cpu_twin() {
+        for n_octave_layers in [1usize, 3, 5, 8] {
+            let gpu = SiftCudaConfig {
+                n_octave_layers,
+                ..Default::default()
+            };
+            let cpu = crate::features::SiftConfig {
+                n_octave_layers,
+                ..Default::default()
+            };
+            let (g, c) = (gpu.layer_sigmas(), cpu.layer_sigmas());
+            assert_eq!(g.len(), c.len());
+            for (i, (a, b)) in g.iter().zip(c.iter()).enumerate() {
+                assert_eq!(
+                    a.to_bits(),
+                    b.to_bits(),
+                    "layer {i} at n_octave_layers={n_octave_layers}: gpu {a} != cpu {b}"
+                );
+            }
+            for doubled in [true, false] {
+                assert_eq!(
+                    gpu.base_sig_diff_for(doubled).to_bits(),
+                    cpu.base_sig_diff(doubled).to_bits(),
+                    "base sig_diff (doubled={doubled})"
+                );
+            }
+            for min_dim in [64usize, 195, 390, 1080] {
+                for first_octave in [-1i32, 0] {
+                    assert_eq!(
+                        gpu.n_octaves_for(min_dim, first_octave),
+                        cpu.n_octaves(min_dim, first_octave),
+                        "n_octaves({min_dim}, {first_octave})"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn ksize_matches_reference() {
         assert_eq!(gaussian_ksize(1.2489995956420898), 11);

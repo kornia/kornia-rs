@@ -261,7 +261,10 @@ pub fn detect_and_compute_with(
         let tb = mark();
         for i in 1..n_layers {
             let k = &layer_kernels[i - 1];
-            blur_h_f32_mode(&gauss[i - 1], &mut tmp[..p], cw, ch, k, fast);
+            // Slice to this octave's plane: the workspace buffers stay sized for
+            // the FIRST octave, so from octave 1 on the full `gauss[i - 1]` is
+            // longer than `cw * ch` and trips `blur_h_f32_mode`'s length assert.
+            blur_h_f32_mode(&gauss[i - 1][..p], &mut tmp[..p], cw, ch, k, fast);
             let (lo, hi) = gauss.split_at_mut(i);
             blur_v_f32(
                 &tmp[..p],
@@ -437,6 +440,25 @@ fn final_order(kps: &[SiftKeypoint], n_features: usize) -> Vec<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every octave past the first runs on a plane smaller than the workspace
+    /// buffers, so the scale-space calls must slice down to it. Passing a whole
+    /// workspace buffer tripped `blur_h_f32_mode`'s length assert on octave 1,
+    /// and nothing covered it: the only other test here is opt-in via env vars.
+    #[test]
+    fn runs_every_octave_on_reused_workspace() {
+        let (w, h) = (128usize, 128usize);
+        let img: Vec<f32> = (0..w * h).map(|i| ((i * 37) % 251) as f32).collect();
+        let cfg = SiftConfig::default();
+        let mut ws = SiftWorkspace::new();
+        for fo in [FirstOctave::Native, FirstOctave::Double] {
+            // Two passes: the second reuses scratch sized by the first.
+            for _ in 0..2 {
+                let f = detect_and_compute_with(&mut ws, &img, w, h, &cfg, fo, usize::MAX, false);
+                assert_eq!(f.descriptors.len(), f.keypoints.len() * DESCR_LEN);
+            }
+        }
+    }
 
     /// End-to-end timing and keypoint count, to compare against cv2 directly.
     /// `KORNIA_SIFT_BENCH=1`, image from `KORNIA_SIFT_RAW=<w>x<h>:<path>` (raw

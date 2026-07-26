@@ -689,6 +689,54 @@ mod tests {
             .collect()
     }
 
+    /// Unconditional device smoke test for the assembled pipeline. The bitwise
+    /// end-to-end test below needs an oracle dump, so without this nothing
+    /// exercised the descriptor launches at all — which is how a kernel that
+    /// ignored `range_start` (every layer overwriting row 0) survived.
+    ///
+    /// Both descriptor kernels are covered: `fast` is a parameter, and the
+    /// `KORNIA_SIFT_DESC=exact` kernel shares the row-range contract asserted
+    /// here.
+    #[test]
+    fn assembled_pipeline_fills_every_descriptor_row() {
+        let stream = default_stream();
+        let ctx = stream.context();
+        let (w, h) = (256usize, 192usize);
+        let host: Vec<f32> = (0..w * h)
+            .map(|i| {
+                let (x, y) = ((i % w) as f32, (i / w) as f32);
+                128.0 + 100.0 * ((x * 0.37).sin() * (y * 0.29).cos())
+            })
+            .collect();
+        let d_src = stream.clone_htod(&host).expect("upload");
+        let mut plan = SiftCuda::new(
+            ctx,
+            &stream,
+            w,
+            h,
+            SiftCudaConfig::default(),
+            FirstOctave::Double,
+            8,
+        )
+        .expect("plan");
+        for fast in [false, true] {
+            plan.set_fast_descriptor(fast);
+            let f = plan
+                .detect_and_compute(ctx, &stream, &d_src)
+                .expect("detect");
+            assert!(f.len() > 10, "expected keypoints, got {}", f.len());
+            assert_eq!(f.descriptors.len(), f.len() * DESCR_LEN);
+            // Every row must have been written. An all-zero row means its
+            // launch retired the block or wrote somewhere else.
+            for (i, row) in f.descriptors.chunks_exact(DESCR_LEN).enumerate() {
+                assert!(
+                    row.iter().any(|v| *v != 0.0),
+                    "descriptor row {i} is all zero (fast={fast})"
+                );
+            }
+        }
+    }
+
     #[test]
     fn end_to_end_matches_reference_keypoints() {
         let Some(dir) = std::env::var("KORNIA_SIFT_ORACLE")

@@ -432,12 +432,20 @@ pub fn launch_sift_find_extrema_cuda_view(
     }
     let (gw, gh) = (width - 2 * border, height - 2 * border);
 
-    let key = format!(
-        "sift_find_extrema:{}:{}:{}",
-        cfg.n_octave_layers,
-        std::env::var("KORNIA_SIFT_INNER").unwrap_or_default(),
-        std::env::var("KORNIA_SIFT_OUTER").unwrap_or_default(),
-    ) + &std::env::var("KORNIA_SIFT_DET").unwrap_or_default();
+    // The sweep suffix is read once and cached: this launcher runs once per
+    // (octave, layer) — tens of times per frame — and each `env::var` allocates
+    // and scans the whole environment, on the same path the kernel-cache
+    // lookup was already trimmed for.
+    static SWEEP_SUFFIX: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    let suffix = SWEEP_SUFFIX.get_or_init(|| {
+        format!(
+            ":{}:{}{}",
+            std::env::var("KORNIA_SIFT_INNER").unwrap_or_default(),
+            std::env::var("KORNIA_SIFT_OUTER").unwrap_or_default(),
+            std::env::var("KORNIA_SIFT_DET").unwrap_or_default(),
+        )
+    });
+    let key = format!("sift_find_extrema:{}{suffix}", cfg.n_octave_layers);
     let kernel = get_or_compile(
         ctx,
         &key,
