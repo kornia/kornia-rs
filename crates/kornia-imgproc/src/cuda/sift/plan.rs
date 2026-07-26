@@ -815,27 +815,27 @@ mod tests {
     /// image is enough and the test runs on every CUDA build. The oracle tests
     /// cover values, and they all run at `n_features = 0`.
     ///
-    /// **Strength of each assertion, measured not assumed.** The count, the
-    /// descriptor row count, and the above-count no-op (which compares the whole
-    /// descriptor block) fail immediately if `retainBest` miscounts or the rows
-    /// stop lining up. The `response <= worst_kept` check is *weaker than it
-    /// looks*: two fault injections into the selection — reversing the retained
-    /// order, and replacing the response cut with an arbitrary subset — were
-    /// both undetected here. The first genuinely cannot fail (reordering does
-    /// not change set membership); the second should have, and the likeliest
-    /// reason it did not is that a pseudo-random image yields keypoints whose
-    /// responses cluster too tightly to separate. Treat that assertion as
-    /// indicative until it is exercised on a natural image.
+    /// **Every assertion is fault-injected, not assumed.** Replacing the
+    /// response cut in `final_order` with an arbitrary subset fails this with
+    /// "dropped a keypoint stronger than one kept"; miscounting fails the count;
+    /// misaligning a row fails the above-count no-op, which compares the whole
+    /// descriptor block.
+    ///
+    /// It uses a real frame rather than synthetic noise deliberately. An earlier
+    /// version generated a pseudo-random image, and the response-ordering check
+    /// could not be shown to have teeth on it.
     #[test]
     fn budget_caps_the_count_and_keeps_the_strongest() {
-        let (w, h) = (192usize, 144usize);
-        let mut seed = 0x9E3779B9u32;
-        let img: Vec<f32> = (0..w * h)
-            .map(|_| {
-                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
-                ((seed >> 16) & 255) as f32
-            })
-            .collect();
+        // A real frame, not synthetic noise: a pseudo-random image yields
+        // keypoint responses clustered too tightly for the "keeps the strongest"
+        // assertion below to separate, which an injected selection bug proved by
+        // going undetected on one.
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/data/mh01_frame1.png");
+        let gray = kornia_io::png::read_image_png_mono8(path).expect("mh01_frame1.png");
+        let (w, h) = (gray.width(), gray.height());
+        // The reference works in 0..255 floats, not 0..1.
+        let img: Vec<f32> = gray.as_slice().iter().map(|&p| p as f32).collect();
 
         let stream = default_stream();
         let ctx = &stream.context();
