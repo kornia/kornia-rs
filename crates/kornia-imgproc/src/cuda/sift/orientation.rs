@@ -78,11 +78,18 @@ extern "C" __global__ void sift_orientation(
 
     // Same traversal order as the reference: rows outer, columns inner.
     //
-    // `calcOrientationHist` has a SIMD binning block and a scalar tail, but the
-    // reference build compiles this translation unit WITHOUT SIMD, so every
-    // sample takes the scalar path `temphist[bin] += W[k]*Mag[k]` -- which its
-    // `-ffp-contract=fast` build fuses. Accumulate with an FMA throughout;
-    // rounding the product separately leaves ~10 of 36 bins 1 ULP out.
+    // `calcOrientationHist` has a SIMD binning block and a scalar tail, and the
+    // reference build DOES take the vector path. The two round differently:
+    //
+    //   SIMD:  w = w * mag;  then  temphist[bin] += w;   // two roundings
+    //   tail:  temphist[bin] += W[k] * Mag[k];           // contracts to one fma
+    //
+    // Which samples land in the tail depends only on the total count, and that
+    // count is `nx * ny` in closed form because the loop is a rectangle clipped
+    // to the image interior and the column bound does not depend on the row.
+    //
+    // Assuming the scalar form throughout -- which this comment used to assert
+    // -- left 96 of 1334 angles wrong on mh01.
     // NOTE: `magnitude32f`'s NEON body and scalar tail disagree -- the body
     // composes `recip(rsqrt(x*x + y*y))` from ARM's estimate instructions while
     // the tail is a plain `sqrtf`, and dumping the reference's own Mag array
@@ -92,6 +99,13 @@ extern "C" __global__ void sift_orientation(
     // -- 5 / 96 / 65 / 99 / 38 mismatches on dog / mh01 / tags / frame2 / sat,
     // identical to without. Do not re-try. (`exp32f` and `fastAtan2` were
     // checked the same way and show no tail difference at all.)
+    const int y0 = max(rr - radius, 1), y1 = min(rr + radius, h - 2);
+    const int x0 = max(cc - radius, 1), x1 = min(cc + radius, w - 2);
+    const int nx = x1 >= x0 ? x1 - x0 + 1 : 0;
+    const int ny = y1 >= y0 ? y1 - y0 + 1 : 0;
+    const int vec_end = (nx * ny) & ~3;
+    int ki = 0;
+
     for (int i = -radius; i <= radius; i++) {{
         const int y = rr + i;
         if (y <= 0 || y >= h - 1) continue;
@@ -108,16 +122,14 @@ extern "C" __global__ void sift_orientation(
             int bin = cv_round_ori(((float)ORI_N / 360.0f) * ori);
             if (bin >= ORI_N) bin -= ORI_N;
             if (bin < 0) bin += ORI_N;
-            temphist[bin] = __fmaf_rn(wgt, mag, temphist[bin]);
+            if (ki++ < vec_end) temphist[bin] += wgt * mag;
+            else temphist[bin] = __fmaf_rn(wgt, mag, temphist[bin]);
         }}
     }}
 
-    // Smooth with [1,4,6,4,1]/16, wrapping. The reference's scalar form is
-    //   (tn2+t2)*1/16 + (tn1+t1)*4/16 + t0*6/16
-    // evaluated left to right, so its build contracts to
-    //   fma(t0, 6/16, fma(tn2+t2, 1/16, (tn1+t1)*4/16)).
-    // NOT the `v_fma(tn2+t2, 1/16, v_fma(tn1+t1, 4/16, t0*6/16))` of the SIMD
-    // branch, which this build does not take.
+    // Smooth with [1,4,6,4,1]/16, wrapping, in the SIMD branch's association --
+    // the same dispatch the binning above takes. n = 36 is a multiple of the
+    // vector width, so there is no scalar remainder here.
     float hist[ORI_N];
     for (int i = 0; i < ORI_N; i++) {{
         const float tn2 = temphist[(i - 2 + ORI_N) % ORI_N];
@@ -125,8 +137,8 @@ extern "C" __global__ void sift_orientation(
         const float t0  = temphist[i];
         const float t1  = temphist[(i + 1) % ORI_N];
         const float t2  = temphist[(i + 2) % ORI_N];
-        hist[i] = __fmaf_rn(t0, 6.0f / 16.0f,
-                  __fmaf_rn(tn2 + t2, 1.0f / 16.0f, (tn1 + t1) * (4.0f / 16.0f)));
+        hist[i] = __fmaf_rn(tn2 + t2, 1.0f / 16.0f,
+                  __fmaf_rn(tn1 + t1, 4.0f / 16.0f, t0 * (6.0f / 16.0f)));
     }}
 
     float omax = hist[0];
@@ -273,6 +285,7 @@ extern "C" __global__ void sift_orientation_block(
     const int nx = x1 >= x0 ? x1 - x0 + 1 : 0;
     const int ny = y1 >= y0 ? y1 - y0 + 1 : 0;
     const int total = nx * ny;
+    const int vec_end = total & ~3;
     __syncthreads();
 
     for (int base = 0; base < total; base += NTHREADS) {{
@@ -296,8 +309,12 @@ extern "C" __global__ void sift_orientation_block(
         // Serial fold, in the reference's sample order. One FMA per sample.
         if (tid == 0) {{
             const int m = min(NTHREADS, total - base);
-            for (int q = 0; q < m; q++)
-                temphist[s_bin[q]] = __fmaf_rn(s_w[q], s_m[q], temphist[s_bin[q]]);
+            for (int q = 0; q < m; q++) {{
+                // Vector body rounds the product then adds; the scalar tail
+                // fuses. See the note on the exact kernel above.
+                if (base + q < vec_end) temphist[s_bin[q]] += s_w[q] * s_m[q];
+                else temphist[s_bin[q]] = __fmaf_rn(s_w[q], s_m[q], temphist[s_bin[q]]);
+            }}
         }}
         __syncthreads();
     }}
@@ -309,8 +326,8 @@ extern "C" __global__ void sift_orientation_block(
         const float t0  = temphist[i];
         const float t1  = temphist[(i + 1) % ORI_N];
         const float t2  = temphist[(i + 2) % ORI_N];
-        hist[i] = __fmaf_rn(t0, 6.0f / 16.0f,
-                  __fmaf_rn(tn2 + t2, 1.0f / 16.0f, (tn1 + t1) * (4.0f / 16.0f)));
+        hist[i] = __fmaf_rn(tn2 + t2, 1.0f / 16.0f,
+                  __fmaf_rn(tn1 + t1, 4.0f / 16.0f, t0 * (6.0f / 16.0f)));
     }}
     __syncthreads();
 {dbg_body}
@@ -871,6 +888,13 @@ mod tests {
                 let (mut a, mut b) = (wa.clone(), ga.clone());
                 a.sort_unstable();
                 b.sort_unstable();
+                // One extremum can be reached from neighbouring start pixels and
+                // refine onto the same point, so this stage emits it more than
+                // once; the reference's `removeDuplicatedSorted` runs AFTER
+                // orientation and collapses them. Compare like for like — the
+                // plan dedups, and `end_to_end` covers that.
+                a.dedup();
+                b.dedup();
                 if a != b {
                     set_bad += 1;
                     if std::env::var("KORNIA_SIFT_ORIDBG").is_ok() {

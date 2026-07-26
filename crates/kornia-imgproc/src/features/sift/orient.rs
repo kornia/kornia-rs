@@ -59,6 +59,24 @@ pub fn assign_orientations(
     let mut temphist = [0.0f32; ORI_HIST_BINS];
     let (cc, rr) = (kp.cc, kp.rr);
 
+    // The reference's binning loop has a SIMD block and a scalar tail, and they
+    // round DIFFERENTLY:
+    //
+    //   SIMD:   w = w * mag;  then  temphist[bin] += w;   // two roundings
+    //   tail:   temphist[bin] += W[k] * Mag[k];           // contracts to one fma
+    //
+    // So which samples get which depends only on the total count, and the count
+    // is `nx * ny` in closed form because the loop is a rectangle clipped to the
+    // image interior and the column bound does not depend on the row.
+    let y0 = (rr - radius).max(1);
+    let y1 = (rr + radius).min(h as i32 - 2);
+    let x0 = (cc - radius).max(1);
+    let x1 = (cc + radius).min(w as i32 - 2);
+    let nx = (x1 - x0 + 1).max(0);
+    let ny = (y1 - y0 + 1).max(0);
+    let vec_end = (nx * ny) & !3;
+    let mut k = 0i32;
+
     for i in -radius..=radius {
         let y = rr + i;
         if y <= 0 || y >= h as i32 - 1 {
@@ -74,6 +92,11 @@ pub fn assign_orientations(
             // the Gaussian weight depends on this keypoint.
             let wgt = exp((i * i + j * j) as f32 * expf_scale);
             let ori = grad_ang[y * w + x];
+            // NOTE: `magnitude32f`'s vector body composes `recip(rsqrt(s))`
+            // from ARM's estimate instructions while its scalar tail issues a
+            // real square root. Reproducing that split for the last `len % 4`
+            // samples was implemented and measured here and on the GPU: it
+            // changes no angle either time. Do not re-try.
             let mag = grad_mag[y * w + x];
 
             let mut bin = ((ORI_HIST_BINS as f32 / 360.0) * ori).round_ties_even() as i32;
@@ -83,9 +106,12 @@ pub fn assign_orientations(
             if bin < 0 {
                 bin += ORI_HIST_BINS as i32;
             }
-            // The reference's build fuses this; rounding the product separately
-            // leaves ~10 of 36 bins one ULP out.
-            temphist[bin as usize] = wgt.mul_add(mag, temphist[bin as usize]);
+            if k < vec_end {
+                temphist[bin as usize] += wgt * mag;
+            } else {
+                temphist[bin as usize] = wgt.mul_add(mag, temphist[bin as usize]);
+            }
+            k += 1;
         }
     }
 
@@ -100,9 +126,12 @@ pub fn assign_orientations(
         let t0 = temphist[i];
         let t1 = temphist[(i + 1) % n];
         let t2 = temphist[(i + 2) % n];
-        hist[i] = t0.mul_add(
-            6.0 / 16.0,
-            (tn2 + t2).mul_add(1.0 / 16.0, (tn1 + t1) * (4.0 / 16.0)),
+        // Vector branch's association, matching the binning loop above: the
+        // whole translation unit takes one dispatch or the other, so if the
+        // accumulation is the SIMD form the smoothing is too.
+        hist[i] = (tn2 + t2).mul_add(
+            1.0 / 16.0,
+            (tn1 + t1).mul_add(4.0 / 16.0, t0 * (6.0 / 16.0)),
         );
     }
 
@@ -244,8 +273,20 @@ mod tests {
                 let (mut a, mut c) = (wa.clone(), ga.clone());
                 a.sort_unstable();
                 c.sort_unstable();
+                // One extremum can be reached from neighbouring start pixels and
+                // refine onto the same point, so this stage emits it more than
+                // once; the reference's `removeDuplicatedSorted` runs AFTER
+                // orientation and collapses them. Compare like for like — the
+                // assembled pipeline dedups, and `end_to_end` covers that.
+                a.dedup();
+                c.dedup();
                 if a != c {
                     bad += 1;
+                    if std::env::var("KORNIA_SIFT_ORIDBG").is_ok() {
+                        let f =
+                            |v: &Vec<u32>| v.iter().map(|x| f32::from_bits(*x)).collect::<Vec<_>>();
+                        eprintln!("    want={:?} got={:?}", f(&a), f(&c));
+                    }
                 }
             }
         }
@@ -256,5 +297,6 @@ mod tests {
             bad
         );
         assert_eq!(matched, want.len(), "positions dropped by orientation");
+        assert_eq!(bad, 0, "{bad} positions have a different angle set");
     }
 }
