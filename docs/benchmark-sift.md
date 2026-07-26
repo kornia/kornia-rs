@@ -107,11 +107,12 @@ Six changes got there, each held to the bitwise oracle:
   out of a per-sample scalar `exp`. The workspace drops eight full-resolution
   planes with it — about 46 MB at `fo=-1`.
 
-  This is deliberately the **opposite** of the CUDA plan, which keeps the
-  precompute. On the GPU every pixel is computed in parallel with coalesced
-  stores and the per-keypoint stages then do one aligned load instead of four
-  gathers; on the CPU the same design just does 1.8x the transcendental work.
-  A layout that is right for one backend is not evidence about the other.
+  **Correction (2026-07-27):** an earlier revision of this document said the
+  CUDA path keeps such a precompute and that the CPU deliberately diverged from
+  it. That was wrong — the CUDA kernels have always taken the `dx`/`dy` stencil
+  per sample, and the plan allocates no gradient planes. The claim came from the
+  design plan, which *proposed* a `float2` gradient layer, repeated as
+  implemented fact. This change **converged** the two backends.
 
 * **Descriptor patch batched whole**, 103.1 -> 87.3 ms. Per accepted sample we
   cost 39 ns against the reference's 22 ns even though `clip_j` means we iterate
