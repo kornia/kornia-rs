@@ -8,7 +8,7 @@ before trusting a difference under ~5%.
 
 | | |
 |---|---|
-| Date (UTC) | 2026-07-26 14:10 |
+| Date (UTC) | 2026-07-26 18:40 |
 | Host | nvidia-orin00 |
 | Machine | NVIDIA Jetson Orin Nano Engineering Reference Developer Kit Super |
 | Kernel / arch | 5.15.148-tegra aarch64 |
@@ -36,8 +36,8 @@ misleading:
 | CUDA | `fo=-1` (OpenCV's default) | **19.7** | 11.4x | **5.3x** |
 | CUDA | `fo=-1`, fast descriptor | 13.9 | 16.2x | 7.5x |
 | CUDA | `fo=0`, 4 octaves | **7.7** | 29x | 13.5x |
-| CPU (NEON) | `fo=-1` | 105 | 2.1x | **0.99x** |
-| CPU (NEON) | `fo=0`, 4 octaves | 45 | 5.0x | 2.3x |
+| CPU (NEON) | `fo=-1` | 95 | 2.4x | **1.14x** |
+| CPU (NEON) | `fo=0`, 4 octaves | 40 | 5.6x | 2.6x |
 | OpenCV 5.0.0 | default, 1 thread | 224.7 | 1.0x | — |
 | OpenCV 5.0.0 | default, 6 threads | 104 | 2.15x | 1.0x |
 
@@ -54,22 +54,66 @@ median epipolar error.
 
 | threads | cv2 | kornia NEON | ratio |
 |---|---|---|---|
-| 1 | 224.7 | 389.6 | 0.58x |
-| 2 | 145.7 | 204.4 | 0.71x |
-| 4 | 106.4 | 122.3 | 0.87x |
-| 6 | 104 | 105 | **1.00x** |
+| 1 | 224.5 | 296.0 | 0.76x |
+| 2 | 146.6 | 156.9 | 0.93x |
+| 4 | 111.8 | 92.7 | 1.21x |
+| 6 | ~108 | 95.0 | **~1.15x** |
 
-**Per core the NEON path is 1.7x slower than OpenCV; on all six cores it is a
-tie.** It scales better (3.7x vs OpenCV's 2.15x) but from a worse starting
-point, and the two effects cancel. Earlier revisions of this document claimed
-2.3x-7x on CPU; those compared our six-thread figure against `setNumThreads(1)`
-and were wrong. The CUDA rows are unaffected in kind — a GPU is being compared
-against a CPU either way — but their ratios are restated above against the
-faster baseline.
+Per core the NEON path is still 1.3x slower than OpenCV; on all six cores it is
+ahead. Earlier revisions of this document claimed 2.3x-7x on CPU; those compared
+our six-thread figure against `setNumThreads(1)` and were wrong. The CUDA rows
+are unaffected in kind — a GPU is being compared against a CPU either way — but
+their ratios are restated above against the faster baseline.
 
 The single-thread column is the kernel-quality diagnostic and the one to
-optimise against: it is where the 1.7x deficit lives, and it is not a scheduler
-artefact.
+optimise against: it is where the remaining deficit lives, and it is not a
+scheduler artefact. It has come down from 389.6 ms (0.58x) — see below.
+
+### Single-thread stage split
+
+Measured with `KORNIA_SIFT_STAGES=1` at `RAYON_NUM_THREADS=1` on apriltags
+(752x480, ~1800 kp), against cv2's own split from `detect` / `compute` /
+`detectAndCompute` timings:
+
+| stage | cv2 | was | now |
+|---|---|---|---|
+| pyramid / blur | 61.1 | 73.7 | 74.4 |
+| gradients | inline | 31.1 | 30.9 |
+| extrema + orient | 38.7 | 75.8 | 36.3 |
+| descriptors | 78.6 | 112.3 | 84.3 |
+| **total** | **178.4** | **311.0** | **241** |
+
+Three changes got there, each held to the bitwise oracle:
+
+* **Extrema scan** — 34.1% of pixels clear the contrast threshold and enter the
+  26-neighbour test, but only 0.09% are extrema. A NEON prefilter, staged by
+  plane so the previous and next planes' 18 loads are usually never issued,
+  cut it 58.4 -> 19.5 ms. `val >= max(neighbours)` is implied by the strict
+  test, so it cannot drop a candidate; the exact scalar test still decides.
+* **Descriptor trilinear weights** vectorised, 98.0 -> 84.3 ms. Every op up to
+  the scatter is elementwise and so bit-identical lane-wise; only the histogram
+  accumulation is order-sensitive and stays scalar. This is the split
+  `calcSIFTDescriptor` itself uses.
+* **Descriptor sample loop** narrowed, 112.3 -> 98.0 ms. `rbin` and `cbin` are
+  affine in `j`, so each row's accepted samples form one contiguous run —
+  5.50M iterations were being run for 2.63M accepted samples.
+
+The remaining gap is `gradients` (31 ms), which cv2 does not have as a separate
+pass: it computes gradients inline per keypoint patch, over ~3.6M samples
+against our 5.63M whole-layer pixels. Closing that means moving the magnitude
+and angle evaluation into the descriptor and orientation loops.
+
+### Falsified, do not retry
+
+* **Interleaving the magnitude and angle planes** into one `(mag, ang)` plane:
+  +5% (descriptor 98.0 -> 101.6, gradients 30.9 -> 32.2). The pair is still two
+  load instructions — adjacent addresses do not merge — while `vst2q_f32` adds
+  an interleaving shuffle two plain stores avoid.
+* **X-tiling the vertical blur** so its `ksize`-row window fits L1 (162 KB at
+  the base octave, so it does not): 74.4 -> 79.0 ms at a 128-column strip, even
+  with the reflected row bases hoisted out of the strip loop. The full-width
+  walk feeds the hardware prefetcher long sequential streams, which is worth
+  more than L1 residency.
 
 **Measure each engine in a separate process.** Running both in one process
 inflates the NEON figure to ~118-127 ms, because OpenCV's worker pool stays
@@ -84,8 +128,8 @@ not matchers.
 | engine | kp | ms | H match | H ok | F match | F inl | inl% | sed |
 |---|---|---|---|---|---|---|---|---|
 | opencv (1 thread) | 2515 | 225.2 | 5293 | 5232 | 816 | 533 | 65.3% | 0.29 |
-| opencv (all cores) | 2515 | 101.2 | 5293 | 5232 | 816 | 533 | 65.3% | 0.29 |
-| cuda `fo=-1` | 2515 | 19.4 | 5293 | 5232 | 816 | 533 | 65.3% | 0.29 |
+| opencv (all cores) | 2515 | 103.8 | 5293 | 5232 | 816 | 533 | 65.3% | 0.29 |
+| cuda `fo=-1` | 2515 | 19.6 | 5293 | 5232 | 816 | 533 | 65.3% | 0.29 |
 | cuda `fo=-1` fast | 2515 | 13.9 | 5313 | 5252 | 819 | 496 | 60.6% | 0.26 |
 | cuda `fo=0` 4oct | 933 | 7.7 | 1911 | 1884 | 346 | 207 | 59.8% | 0.28 |
 | neon `fo=-1` | 2515 | 117.8 | 5293 | 5232 | 816 | 533 | 65.3% | 0.29 |
