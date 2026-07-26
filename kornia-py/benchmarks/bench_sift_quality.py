@@ -23,6 +23,26 @@ were zero, and a zero descriptor is equidistant from everything, so the ratio
 test *rejected* rather than mismatched. Reporting both is what made that
 visible.
 
+Threading
+---------
+Both engines are reported at one thread and at all cores, because the two
+answer different questions and quoting only one is how a comparison goes
+wrong. The single-thread column is the *kernel* diagnostic: it isolates the
+arithmetic from the scheduler. The all-core column is what a caller actually
+gets. Comparing one engine's all-core figure against another's single-thread
+figure — which this harness originally did, via a `setNumThreads(1)` left in
+from the first measurement — flatters the parallel one by whatever its
+scaling happens to be.
+
+Both engines parallelise, and by similar amounts: on this host OpenCV scales
+2.15x across six cores and this one 3.7x. Because rayon's pool size is fixed
+when the process starts, only the row matching `RAYON_NUM_THREADS` is a
+like-for-like comparison; the others are printed to show OpenCV's scaling
+curve, and their ratios are deliberately left blank rather than reported as
+if they meant something.
+
+    for n in 1 2 4 6; do RAYON_NUM_THREADS=$n python3 <this file> ; done
+
 Columns
 -------
   kp        keypoints on frame 1
@@ -39,6 +59,7 @@ descriptors rather than matchers. `bench_sift_matchers` below compares the
 matcher implementations against each other on identical descriptors.
 """
 
+import os
 import time
 from pathlib import Path
 
@@ -82,6 +103,33 @@ def _timed(fn, reps=5):
         fn()
         ts.append((time.perf_counter() - t) * 1e3)
     return sorted(ts)[len(ts) // 2]
+
+
+def thread_scaling(img):
+    """cv2 across thread counts, against this process's fixed rayon pool.
+
+    Only the row whose thread count equals the rayon pool is a real
+    comparison — see the module docstring for the sweep loop.
+    """
+    sift = cv2.SIFT_create()
+    arr = np.ascontiguousarray(img.astype(np.float32)[..., None])
+    detector = K.imgproc.Sift()
+
+    pool = int(os.environ.get("RAYON_NUM_THREADS") or (os.cpu_count() or 1))
+    neon_ms = _timed(lambda: detector.detect_and_compute(arr))
+    ncpu = cv2.getNumberOfCPUs()
+
+    print(f"\nthread scaling (mh01_frame1, fo=-1) — rayon pool = {pool}")
+    print(f"{'threads':<10}{'opencv ms':>12}{'kornia ms':>12}{'ratio':>9}")
+    for nt in sorted({1, 2, 4, ncpu}):
+        cv2.setNumThreads(nt)
+        cv_ms = _timed(lambda: sift.detectAndCompute(img, None))
+        # A ratio is only meaningful where both engines have the same cores.
+        if nt == pool:
+            print(f"{nt:<10}{cv_ms:>12.1f}{neon_ms:>12.1f}{cv_ms / neon_ms:>8.2f}x")
+        else:
+            print(f"{nt:<10}{cv_ms:>12.1f}{'-':>12}{'-':>9}")
+    cv2.setNumThreads(1)
 
 
 def homography_audit(img, detect):
@@ -156,7 +204,17 @@ def _engines(stream):
         kp, desc = cache[key].detect_and_compute(src)
         return np.ascontiguousarray(kp[:, :2]), np.ascontiguousarray(desc)
 
-    out = [("opencv (1 thread)", cv_detect)]
+    # OpenCV at both extremes: one thread isolates kernel quality, all cores is
+    # what a caller actually gets. Quoting only the first flatters us by cv2's
+    # scaling factor, which is how this table originally read.
+    def cv_detect_mt(img):
+        cv2.setNumThreads(cv2.getNumberOfCPUs())
+        try:
+            return cv_detect(img)
+        finally:
+            cv2.setNumThreads(1)
+
+    out = [("opencv (1 thread)", cv_detect), ("opencv (all cores)", cv_detect_mt)]
     if stream is not None:
         out += [
             ("cuda fo=-1", lambda im: kornia_detect(im, True)),
@@ -207,6 +265,9 @@ def main():
     img_b = _load("mh01_frame2.png")
     cv2.setNumThreads(1)
 
+    print(f"quality table: kornia at its rayon pool "
+          f"({os.environ.get('RAYON_NUM_THREADS') or os.cpu_count()} threads); "
+          f"opencv reported at 1 thread and at all cores")
     hdr = (f"{'engine':<20}{'kp':>7}{'ms':>9}{'H match':>9}{'H ok':>7}"
            f"{'F match':>9}{'F inl':>7}{'inl%':>7}{'sed':>7}")
     print(hdr)
@@ -221,6 +282,7 @@ def main():
               f"{fm:>9}{fi:>7}{pct:>6.1f}%{sed:>7.2f}")
 
     bench_sift_matchers(stream)
+    thread_scaling(img_a)
 
 
 if __name__ == "__main__":

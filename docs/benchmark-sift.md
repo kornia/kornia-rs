@@ -8,7 +8,7 @@ before trusting a difference under ~5%.
 
 | | |
 |---|---|
-| Date (UTC) | 2026-07-26 08:30 |
+| Date (UTC) | 2026-07-26 14:10 |
 | Host | nvidia-orin00 |
 | Machine | NVIDIA Jetson Orin Nano Engineering Reference Developer Kit Super |
 | Kernel / arch | 5.15.148-tegra aarch64 |
@@ -24,22 +24,56 @@ before trusting a difference under ~5%.
 
 ## End to end, mh01_frame1 (752x480)
 
-Detection plus descriptors, median of 5, against `cv::SIFT` on one thread.
-OpenCV 4.13 and 5.0 are within 1% of each other here (223.1 / 225.4 ms), so the
-baseline column is either.
+Detection plus descriptors, median of 9, each engine in its **own process** with
+`RAYON_NUM_THREADS` and `cv2.setNumThreads` set to the same value. OpenCV 4.13
+and 5.0 are within 1% of each other here, so the baseline column is either.
 
-| backend | config | ms | vs OpenCV |
-|---|---|---|---|
-| CUDA | `fo=-1` (OpenCV's default) | **17.8** | 12.7x |
-| CUDA | `fo=-1`, fast descriptor | 13.4 | 16.8x |
-| CUDA | `fo=0`, 4 octaves | **6.9** | 32.6x |
-| CPU (NEON) | `fo=-1` | 98 | 2.3x |
-| CPU (NEON) | `fo=0`, 4 octaves | 32 | 7.0x |
-| OpenCV 5.0.0 | default | 225.4 | 1.0x |
+Two baselines, because OpenCV parallelises too and quoting only the first is
+misleading:
+
+| backend | config | ms | vs cv2 1-thread | vs cv2 6-thread |
+|---|---|---|---|---|
+| CUDA | `fo=-1` (OpenCV's default) | **19.7** | 11.4x | **5.3x** |
+| CUDA | `fo=-1`, fast descriptor | 13.9 | 16.2x | 7.5x |
+| CUDA | `fo=0`, 4 octaves | **7.7** | 29x | 13.5x |
+| CPU (NEON) | `fo=-1` | 105 | 2.1x | **0.99x** |
+| CPU (NEON) | `fo=0`, 4 octaves | 45 | 5.0x | 2.3x |
+| OpenCV 5.0.0 | default, 1 thread | 224.7 | 1.0x | — |
+| OpenCV 5.0.0 | default, 6 threads | 104 | 2.15x | 1.0x |
+
+Only the `fo=-1` rows are like-for-like: `fo=0, 4 octaves` skips the 2x upsample
+and two octaves, producing 933 keypoints instead of 2515. It is a different
+amount of work, not a faster way to do the same work, and its ratio should not
+be read as a speedup.
 
 At `fo=-1` the CUDA path's output is **identical to cv2 on every column** of the
 matching audit — keypoint count, homography matches, fundamental-matrix inliers,
 median epipolar error.
+
+### Threading
+
+| threads | cv2 | kornia NEON | ratio |
+|---|---|---|---|
+| 1 | 224.7 | 389.6 | 0.58x |
+| 2 | 145.7 | 204.4 | 0.71x |
+| 4 | 106.4 | 122.3 | 0.87x |
+| 6 | 104 | 105 | **1.00x** |
+
+**Per core the NEON path is 1.7x slower than OpenCV; on all six cores it is a
+tie.** It scales better (3.7x vs OpenCV's 2.15x) but from a worse starting
+point, and the two effects cancel. Earlier revisions of this document claimed
+2.3x-7x on CPU; those compared our six-thread figure against `setNumThreads(1)`
+and were wrong. The CUDA rows are unaffected in kind — a GPU is being compared
+against a CPU either way — but their ratios are restated above against the
+faster baseline.
+
+The single-thread column is the kernel-quality diagnostic and the one to
+optimise against: it is where the 1.7x deficit lives, and it is not a scheduler
+artefact.
+
+**Measure each engine in a separate process.** Running both in one process
+inflates the NEON figure to ~118-127 ms, because OpenCV's worker pool stays
+alive and competes for cores.
 
 ## Matching quality (homography + epipolar)
 
@@ -49,12 +83,17 @@ not matchers.
 
 | engine | kp | ms | H match | H ok | F match | F inl | inl% | sed |
 |---|---|---|---|---|---|---|---|---|
-| opencv (1 thread) | 2515 | 226.4 | 5293 | 5232 | 816 | 533 | 65.3% | 0.29 |
-| cuda `fo=-1` | 2515 | 20.0 | 5293 | 5232 | 816 | 533 | 65.3% | 0.29 |
-| cuda `fo=-1` fast | 2515 | 14.0 | 5313 | 5252 | 819 | 496 | 60.6% | 0.26 |
+| opencv (1 thread) | 2515 | 225.2 | 5293 | 5232 | 816 | 533 | 65.3% | 0.29 |
+| opencv (all cores) | 2515 | 101.2 | 5293 | 5232 | 816 | 533 | 65.3% | 0.29 |
+| cuda `fo=-1` | 2515 | 19.4 | 5293 | 5232 | 816 | 533 | 65.3% | 0.29 |
+| cuda `fo=-1` fast | 2515 | 13.9 | 5313 | 5252 | 819 | 496 | 60.6% | 0.26 |
 | cuda `fo=0` 4oct | 933 | 7.7 | 1911 | 1884 | 346 | 207 | 59.8% | 0.28 |
-| neon `fo=-1` | 2515 | 119.3 | 5293 | 5232 | 816 | 533 | 65.3% | 0.29 |
-| neon `fo=0` 4oct | 933 | 48.8 | 1911 | 1884 | 346 | 207 | 59.8% | 0.28 |
+| neon `fo=-1` | 2515 | 117.8 | 5293 | 5232 | 816 | 533 | 65.3% | 0.29 |
+| neon `fo=0` 4oct | 933 | 39.6 | 1911 | 1884 | 346 | 207 | 59.8% | 0.28 |
+
+The `ms` column here is **in-process** and both engines' pools are live at once,
+so the CPU rows run slower than the dedicated-process table above. Use this
+table for the quality columns and that one for speed.
 
 Both `fo=-1` backends match OpenCV on **every** column. The fast descriptor
 trades a little epipolar inlier ratio for a slightly better homography count
@@ -118,8 +157,21 @@ python3 kornia-py/benchmarks/bench_sift_quality.py
 ```
 
 Speed plus the homography and epipolar tables above, for every backend, against
-OpenCV. Run this after any change that could move descriptors — a speedup that
-costs matches is not a speedup.
+OpenCV at one thread and at all cores. Run this after any change that could move
+descriptors — a speedup that costs matches is not a speedup.
+
+For the threading table, sweep the rayon pool (it is fixed at process start, so
+one run only produces one valid row):
+
+```bash
+for n in 1 2 4 6; do
+  RAYON_NUM_THREADS=$n python3 kornia-py/benchmarks/bench_sift_quality.py
+done
+```
+
+**Compare CPU engines in separate processes.** Both pools live in one process
+costs the NEON path ~15%, and pinning OpenCV to one thread while ours uses six
+is not a comparison — that mistake produced a bogus 2.3x in this document.
 
 ### Rust benchmarks (criterion, CPU)
 
