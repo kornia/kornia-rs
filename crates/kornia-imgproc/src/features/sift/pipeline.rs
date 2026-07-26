@@ -30,7 +30,7 @@ use super::descriptor::{compute_descriptor, descriptor_inputs, DESCR_LEN};
 use super::detect::{find_extrema, RawKeypoint};
 use super::orient::{assign_orientations, OrientedKeypoint};
 use super::params::{gaussian_kernel_f32, gaussian_ksize, SiftConfig};
-use super::scalespace::{blur_h_f32_mode, blur_v_f32};
+use super::scalespace::{blur_h_f32_mode, blur_v_f32, gradients};
 
 /// Which scale the pyramid starts from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,12 +120,70 @@ fn downsample(src: &[f32], sw: usize, sh: usize, dst: &mut [f32], dw: usize, dh:
         });
 }
 
+/// Reusable scratch for [`detect_and_compute_with`].
+///
+/// The pipeline touches roughly twenty full-resolution planes — six Gaussian
+/// layers, five DoG layers, two gradient planes per searched layer, plus the
+/// base and a transpose buffer. Allocating and zeroing those per call is around
+/// 120 MB of pure overhead at `fo=-1`, which is why a streaming caller should
+/// hold one of these and reuse it. This is the same reason the CUDA path owns a
+/// plan object.
+#[derive(Default)]
+pub struct SiftWorkspace {
+    plane: usize,
+    base: Vec<f32>,
+    tmp: Vec<f32>,
+    gauss: Vec<Vec<f32>>,
+    dog: Vec<f32>,
+    g_mag: Vec<Vec<f32>>,
+    g_ang: Vec<Vec<f32>>,
+}
+
+impl SiftWorkspace {
+    /// Empty scratch; sized on first use.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn ensure(&mut self, plane: usize, n_layers: usize, n_dog: usize, n_search: usize) {
+        if self.plane >= plane && self.gauss.len() >= n_layers {
+            return;
+        }
+        self.plane = plane;
+        self.base = vec![0.0; plane];
+        self.tmp = vec![0.0; plane];
+        self.gauss = (0..n_layers).map(|_| vec![0.0; plane]).collect();
+        self.dog = vec![0.0; plane * n_dog];
+        self.g_mag = (0..=n_search).map(|_| vec![0.0; plane]).collect();
+        self.g_ang = (0..=n_search).map(|_| vec![0.0; plane]).collect();
+    }
+}
+
 /// Detect, orient and describe.
 ///
 /// `src` is a `w * h` f32 grayscale image in 0..255 — the reference's own
 /// internal representation. Normalising to 0..1 changes what the contrast
 /// threshold means.
 pub fn detect_and_compute(
+    src: &[f32],
+    w: usize,
+    h: usize,
+    cfg: &SiftConfig,
+    first_octave: FirstOctave,
+    max_octaves: usize,
+    fast: bool,
+) -> SiftFeatures {
+    let mut ws = SiftWorkspace::new();
+    detect_and_compute_with(&mut ws, src, w, h, cfg, first_octave, max_octaves, fast)
+}
+
+/// Detect, orient and describe against caller-owned scratch.
+///
+/// Prefer this when processing more than one frame: it is the same work without
+/// the per-call allocation of ~20 full-resolution planes.
+#[allow(clippy::too_many_arguments)]
+pub fn detect_and_compute_with(
+    ws: &mut SiftWorkspace,
     src: &[f32],
     w: usize,
     h: usize,
@@ -148,16 +206,38 @@ pub fn detect_and_compute(
         .collect();
 
     let plane = cw * ch;
-    let mut base = vec![0.0f32; plane];
-    let mut tmp = vec![0.0f32; plane];
+    ws.ensure(plane, n_layers, n_dog, cfg.n_octave_layers);
+    let SiftWorkspace {
+        base,
+        tmp,
+        gauss,
+        dog,
+        g_mag,
+        g_ang,
+        ..
+    } = ws;
     if doubled {
-        upsample2x(src, w, h, &mut base);
+        upsample2x(src, w, h, base);
     } else {
-        base.copy_from_slice(src);
+        base[..plane].copy_from_slice(src);
     }
-    let mut gauss: Vec<Vec<f32>> = (0..n_layers).map(|_| vec![0.0f32; plane]).collect();
-    blur_h_f32_mode(&base, &mut tmp, cw, ch, &base_kernel, fast);
-    blur_v_f32(&tmp, &mut gauss[0], cw, ch, &base_kernel, None, None);
+    blur_h_f32_mode(
+        &base[..plane],
+        &mut tmp[..plane],
+        cw,
+        ch,
+        &base_kernel,
+        fast,
+    );
+    blur_v_f32(
+        &tmp[..plane],
+        &mut gauss[0][..plane],
+        cw,
+        ch,
+        &base_kernel,
+        None,
+        None,
+    );
 
     // KORNIA_SIFT_STAGES=1 breaks the pass down. Each probe is a plain elapsed
     // measurement -- no synchronisation needed on CPU -- so the total is not
@@ -169,7 +249,7 @@ pub fn detect_and_compute(
     let n_oct = cfg
         .n_octaves(cw.min(ch), if doubled { -1 } else { 0 })
         .min(max_octaves.max(1));
-    let mut dog = vec![0.0f32; plane * n_dog];
+
     let mut all: Vec<(OrientedKeypoint, usize, usize)> = Vec::new();
     let mut desc: Vec<f32> = Vec::new();
 
@@ -198,6 +278,11 @@ pub fn detect_and_compute(
             t_blur += tb.elapsed().as_secs_f64() * 1e3;
         }
 
+        for layer in 1..=cfg.n_octave_layers {
+            let (m, a) = (&mut g_mag[layer], &mut g_ang[layer]);
+            gradients(&gauss[layer][..p], cw, ch, &mut m[..p], &mut a[..p]);
+        }
+
         let td = mark();
         let mut kps: Vec<RawKeypoint> = Vec::new();
         for layer in 1..=cfg.n_octave_layers {
@@ -211,7 +296,7 @@ pub fn detect_and_compute(
         // the keypoints of that layer were found in.
         #[allow(clippy::needless_range_loop)]
         for layer in 1..=cfg.n_octave_layers {
-            let img = &gauss[layer][..p];
+            let (gm, ga) = (&g_mag[layer][..p], &g_ang[layer][..p]);
             // One task per keypoint group: each histogram is independent, and
             // the reference's order within a keypoint is preserved because a
             // single task owns it.
@@ -220,7 +305,7 @@ pub fn detect_and_compute(
                 .par_iter()
                 .flat_map_iter(|kp| {
                     let mut o = Vec::new();
-                    assign_orientations(img, cw, ch, kp, cfg, &mut o);
+                    assign_orientations(gm, ga, cw, ch, kp, cfg, &mut o);
                     o.into_iter()
                 })
                 .collect();
@@ -243,14 +328,14 @@ pub fn detect_and_compute(
             .par_chunks_mut(DESCR_LEN)
             .zip(todo.par_iter())
             .for_each(|(out, (k, layer))| {
-                let img = &gauss[*layer][..p];
+                let (gm, ga) = (&g_mag[*layer][..p], &g_ang[*layer][..p]);
                 let (x, y, s, a) = descriptor_inputs(k, octv as i32);
                 // `fast` deliberately does NOT select the rotated-frame
                 // descriptor here: see `compute_descriptor_fast`, which is
                 // measured slower on CPU despite sampling a third as many
                 // points. It remains available for callers at very large
                 // scales, where the sample-count scaling eventually wins.
-                compute_descriptor(img, cw, ch, x, y, s, a, out);
+                compute_descriptor(gm, ga, cw, ch, x, y, s, a, out);
             });
         desc.extend_from_slice(&block);
         if probe {
@@ -384,11 +469,12 @@ mod tests {
             ("fo=0 4oct", FirstOctave::Native, 4),
         ] {
             for fast in [false, true] {
-                let f = detect_and_compute(&img, w, h, &cfg, fo, moct, fast);
+                let mut ws = SiftWorkspace::new();
+                let f = detect_and_compute_with(&mut ws, &img, w, h, &cfg, fo, moct, fast);
                 let mut ts = Vec::new();
                 for _ in 0..5 {
                     let t = std::time::Instant::now();
-                    let _ = detect_and_compute(&img, w, h, &cfg, fo, moct, fast);
+                    let _ = detect_and_compute_with(&mut ws, &img, w, h, &cfg, fo, moct, fast);
                     ts.push(t.elapsed().as_secs_f64() * 1e3);
                 }
                 ts.sort_by(f64::total_cmp);

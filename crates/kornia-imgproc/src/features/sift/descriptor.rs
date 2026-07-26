@@ -9,6 +9,7 @@
 //! followed by a pairwise reduction**, not a scalar sum — see [`nrm2`].
 
 use super::hal::{atan2_deg, exp, magnitude};
+
 use super::orient::OrientedKeypoint;
 
 /// Grid width (`SIFT_DESCR_WIDTH`).
@@ -71,9 +72,10 @@ fn flush(
 ) {
     const D: usize = DESCR_WIDTH;
     const N: usize = DESCR_HIST_BINS;
+    // `dx`/`dy` carry the precomputed magnitude and angle; only the weight is
+    // still evaluated, and it vectorises over the four buffered samples.
+    let (mag, ang) = (dx, dy);
     let mut wgt = [0.0f32; 4];
-    let mut ang = [0.0f32; 4];
-    let mut mag = [0.0f32; 4];
 
     #[cfg(target_arch = "aarch64")]
     if n == 4 {
@@ -83,20 +85,13 @@ fn flush(
         unsafe {
             let vcr = vld1q_f32(c_rot.as_ptr());
             let vrr = vld1q_f32(r_rot.as_ptr());
-            let vdx = vld1q_f32(dx.as_ptr());
-            let vdy = vld1q_f32(dy.as_ptr());
             let q = vfmaq_f32(vmulq_f32(vrr, vrr), vcr, vcr);
             vst1q_f32(wgt.as_mut_ptr(), x4::exp(vmulq_n_f32(q, exp_scale)));
-            vst1q_f32(ang.as_mut_ptr(), x4::atan2_deg(vdy, vdx));
-            vst1q_f32(mag.as_mut_ptr(), x4::magnitude(vdx, vdy));
         }
     }
-    let vectorised = cfg!(target_arch = "aarch64") && n == 4;
-    if !vectorised {
+    if !(cfg!(target_arch = "aarch64") && n == 4) {
         for k in 0..n {
             wgt[k] = exp((c_rot[k] * c_rot[k] + r_rot[k] * r_rot[k]) * exp_scale);
-            ang[k] = atan2_deg(dy[k], dx[k]);
-            mag[k] = magnitude(dx[k], dy[k]);
         }
     }
 
@@ -150,7 +145,8 @@ fn flush(
 /// caller applies both conversions, as `calcDescriptors` does.
 #[allow(clippy::too_many_arguments)]
 pub fn compute_descriptor(
-    img: &[f32],
+    grad_mag: &[f32],
+    grad_ang: &[f32],
     w: usize,
     h: usize,
     ptx: f32,
@@ -218,8 +214,10 @@ pub fn compute_descriptor(
                 continue;
             }
             let (r, c) = (r as usize, c as usize);
-            b_dx[nb] = img[r * w + c + 1] - img[r * w + c - 1];
-            b_dy[nb] = img[(r - 1) * w + c] - img[(r + 1) * w + c];
+            // Magnitude and angle come from the layer's precomputed planes; only
+            // the Gaussian weight is keypoint-dependent and still evaluated here.
+            b_dx[nb] = grad_mag[r * w + c];
+            b_dy[nb] = grad_ang[r * w + c];
             b_cr[nb] = c_rot;
             b_rr[nb] = r_rot;
             b_rbin[nb] = rbin;
@@ -494,6 +492,9 @@ mod tests {
             let Some((h, w, img)) = load_dump(&format!("{dir}/gauss_o0_l{layer}.f32")) else {
                 return;
             };
+            let mut gm = vec![0.0f32; w * h];
+            let mut ga = vec![0.0f32; w * h];
+            super::super::scalespace::gradients(&img, w, h, &mut gm, &mut ga);
             for i in 0..n {
                 let o = 4 + i * 24;
                 let packed = i32::from_le_bytes(b[o + 20..o + 24].try_into().unwrap());
@@ -509,7 +510,8 @@ mod tests {
                 }
                 let mut got = [0.0f32; DESCR_LEN];
                 compute_descriptor(
-                    &img,
+                    &gm,
+                    &ga,
                     w,
                     h,
                     f(0) * 2.0,

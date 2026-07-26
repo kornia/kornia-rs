@@ -6,7 +6,7 @@
 //! that reason.
 
 use super::detect::RawKeypoint;
-use super::hal::{atan2_deg, exp, magnitude};
+use super::hal::exp;
 use super::params::SiftConfig;
 
 /// Histogram bins (`SIFT_ORI_HIST_BINS`).
@@ -40,7 +40,8 @@ pub struct OrientedKeypoint {
 /// A keypoint with several peaks within `ORI_PEAK_RATIO` of the maximum yields
 /// several entries, as the reference does.
 pub fn assign_orientations(
-    img: &[f32],
+    grad_mag: &[f32],
+    grad_ang: &[f32],
     w: usize,
     h: usize,
     kp: &RawKeypoint,
@@ -69,11 +70,11 @@ pub fn assign_orientations(
                 continue;
             }
             let (y, x) = (y as usize, x as usize);
-            let dx = img[y * w + x + 1] - img[y * w + x - 1];
-            let dy = img[(y - 1) * w + x] - img[(y + 1) * w + x];
+            // Magnitude and angle were computed once for the whole layer; only
+            // the Gaussian weight depends on this keypoint.
             let wgt = exp((i * i + j * j) as f32 * expf_scale);
-            let ori = atan2_deg(dy, dx);
-            let mag = magnitude(dx, dy);
+            let ori = grad_ang[y * w + x];
+            let mag = grad_mag[y * w + x];
 
             let mut bin = ((ORI_HIST_BINS as f32 / 360.0) * ori).round_ties_even() as i32;
             if bin >= ORI_HIST_BINS as i32 {
@@ -200,8 +201,11 @@ mod tests {
                 return;
             };
             let mut o = Vec::new();
+            let mut gm = vec![0.0f32; w2 * h2];
+            let mut ga = vec![0.0f32; w2 * h2];
+            super::super::scalespace::gradients(&img, w2, h2, &mut gm, &mut ga);
             for kp in kps.iter().filter(|k| k.layer == layer as i32) {
-                assign_orientations(&img, w2, h2, kp, &cfg, &mut o);
+                assign_orientations(&gm, &ga, w2, h2, kp, &cfg, &mut o);
             }
             for k in o {
                 // Reference keypoints are stored after the first-octave halving.
