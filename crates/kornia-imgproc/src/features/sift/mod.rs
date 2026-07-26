@@ -39,4 +39,4 @@ mod orient;
 pub use orient::{assign_orientations, OrientedKeypoint, ORI_HIST_BINS};
 
 mod scalespace;
-pub use scalespace::{blur_h_f32, blur_h_f32_mode, blur_v_f32, gradients};
+pub use scalespace::{blur_h_f32, blur_h_f32_mode, blur_v_f32};

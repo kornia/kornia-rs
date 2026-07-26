@@ -16,6 +16,16 @@
 //! HAL that accelerates `exp`/`atan2`/`magnitude` on aarch64, and it makes no
 //! measurable difference to SIFT.
 //!
+//! There is deliberately **no whole-layer gradient precompute** on this path,
+//! though the CUDA one has exactly that. On the GPU it is right: every pixel is
+//! computed in parallel with coalesced stores, and the per-keypoint stages then
+//! do one aligned load instead of four gathers. On the CPU it is not, for the
+//! plain reason that it evaluates `magnitude` and `atan2` for every pixel of
+//! every searched layer — 5.63M of them on a 752x480 frame — when the keypoint
+//! patches only ever read about 3.1M. Deriving the gradient inside the
+//! orientation and descriptor loops, as the reference does, was measured at
+//! 30.9 ms saved against 20.9 ms added, and drops ~46 MB of workspace.
+//!
 //! The ceiling is set by one comparison: OpenCV's own `GaussianBlur` runs the
 //! scale space's five layers in 42.7 ms, ours in 45.0 single-threaded. We are at
 //! 0.95x of OpenCV *per core*, so the speedup has to come from threading, and
@@ -32,7 +42,7 @@ use super::orient::{assign_orientations, OrientedKeypoint};
 use super::params::{
     gaussian_kernel_f32, gaussian_ksize, validate_source, SiftConfig, SiftConfigError,
 };
-use super::scalespace::{blur_h_f32_mode, blur_v_f32, gradients};
+use super::scalespace::{blur_h_f32_mode, blur_v_f32};
 
 /// Which scale the pyramid starts from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -137,8 +147,6 @@ pub struct SiftWorkspace {
     tmp: Vec<f32>,
     gauss: Vec<Vec<f32>>,
     dog: Vec<f32>,
-    g_mag: Vec<Vec<f32>>,
-    g_ang: Vec<Vec<f32>>,
 }
 
 impl SiftWorkspace {
@@ -147,7 +155,7 @@ impl SiftWorkspace {
         Self::default()
     }
 
-    fn ensure(&mut self, plane: usize, n_layers: usize, n_dog: usize, n_search: usize) {
+    fn ensure(&mut self, plane: usize, n_layers: usize, n_dog: usize) {
         if self.plane >= plane && self.gauss.len() >= n_layers {
             return;
         }
@@ -156,8 +164,6 @@ impl SiftWorkspace {
         self.tmp = vec![0.0; plane];
         self.gauss = (0..n_layers).map(|_| vec![0.0; plane]).collect();
         self.dog = vec![0.0; plane * n_dog];
-        self.g_mag = (0..=n_search).map(|_| vec![0.0; plane]).collect();
-        self.g_ang = (0..=n_search).map(|_| vec![0.0; plane]).collect();
     }
 }
 
@@ -211,14 +217,12 @@ pub fn detect_and_compute_with(
         .collect();
 
     let plane = cw * ch;
-    ws.ensure(plane, n_layers, n_dog, cfg.n_octave_layers);
+    ws.ensure(plane, n_layers, n_dog);
     let SiftWorkspace {
         base,
         tmp,
         gauss,
         dog,
-        g_mag,
-        g_ang,
         ..
     } = ws;
     if doubled {
@@ -249,7 +253,6 @@ pub fn detect_and_compute_with(
     // inflated the way the CUDA equivalent is.
     let probe = std::env::var("KORNIA_SIFT_STAGES").is_ok();
     let (mut t_blur, mut t_det, mut t_ori, mut t_desc) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
-    let mut t_grad = 0.0f64;
     let mark = || std::time::Instant::now();
 
     let n_oct = cfg
@@ -287,15 +290,6 @@ pub fn detect_and_compute_with(
             t_blur += tb.elapsed().as_secs_f64() * 1e3;
         }
 
-        let tg = mark();
-        for layer in 1..=cfg.n_octave_layers {
-            let (m, a) = (&mut g_mag[layer], &mut g_ang[layer]);
-            gradients(&gauss[layer][..p], cw, ch, &mut m[..p], &mut a[..p]);
-        }
-        if probe {
-            t_grad += tg.elapsed().as_secs_f64() * 1e3;
-        }
-
         let td = mark();
         let mut kps: Vec<RawKeypoint> = Vec::new();
         for layer in 1..=cfg.n_octave_layers {
@@ -309,7 +303,7 @@ pub fn detect_and_compute_with(
         // the keypoints of that layer were found in.
         #[allow(clippy::needless_range_loop)]
         for layer in 1..=cfg.n_octave_layers {
-            let (gm, ga) = (&g_mag[layer][..p], &g_ang[layer][..p]);
+            let gl = &gauss[layer][..p];
             // One task per keypoint group: each histogram is independent, and
             // the reference's order within a keypoint is preserved because a
             // single task owns it.
@@ -318,7 +312,7 @@ pub fn detect_and_compute_with(
                 .par_iter()
                 .flat_map_iter(|kp| {
                     let mut o = Vec::new();
-                    assign_orientations(gm, ga, cw, ch, kp, cfg, &mut o);
+                    assign_orientations(gl, cw, ch, kp, cfg, &mut o);
                     o.into_iter()
                 })
                 .collect();
@@ -345,14 +339,14 @@ pub fn detect_and_compute_with(
             .par_chunks_mut(DESCR_LEN)
             .zip(todo.par_iter())
             .for_each(|(out, (k, layer))| {
-                let (gm, ga) = (&g_mag[*layer][..p], &g_ang[*layer][..p]);
+                let gl = &gauss[*layer][..p];
                 let (x, y, s, a) = descriptor_inputs(k, octv as i32);
                 // `fast` deliberately does NOT select the rotated-frame
                 // descriptor here: see `compute_descriptor_fast`, which is
                 // measured slower on CPU despite sampling a third as many
                 // points. It remains available for callers at very large
                 // scales, where the sample-count scaling eventually wins.
-                compute_descriptor(gm, ga, cw, ch, x, y, s, a, out);
+                compute_descriptor(gl, cw, ch, x, y, s, a, out);
             });
         if probe {
             t_desc += tds.elapsed().as_secs_f64() * 1e3;
@@ -371,7 +365,7 @@ pub fn detect_and_compute_with(
 
     if probe {
         eprintln!(
-            "    stages: blur={t_blur:.1} grad={t_grad:.1} detect={t_det:.1} \
+            "    stages: blur={t_blur:.1} detect={t_det:.1} \
 orient={t_ori:.1} desc={t_desc:.1} (ms)"
         );
     }

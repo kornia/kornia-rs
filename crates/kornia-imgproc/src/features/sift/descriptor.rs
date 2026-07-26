@@ -74,6 +74,11 @@ fn nrm2(v: &[f32]) -> f32 {
 
 /// Evaluate up to four buffered samples and scatter them in order.
 ///
+/// `dx`/`dy` are the raw gradient differences; magnitude and angle are derived
+/// here rather than read from a precomputed layer, which is what the reference
+/// does and what keeps the evaluation count proportional to *samples* instead
+/// of to whole-layer *pixels*.
+///
 /// `n < 4` falls back to the scalar primitives, which are bit-identical to the
 /// lane-wise ones, so the tail needs no special casing beyond the width.
 #[allow(clippy::too_many_arguments)]
@@ -93,9 +98,6 @@ fn flush(
 ) {
     const D: usize = DESCR_WIDTH;
     const N: usize = DESCR_HIST_BINS;
-    // `dx`/`dy` carry the precomputed magnitude and angle; only the weight is
-    // still evaluated, and it vectorises over the four buffered samples.
-    let (mag, ang) = (dx, dy);
     let mut wgt = [0.0f32; 4];
 
     #[cfg(target_arch = "aarch64")]
@@ -111,6 +113,11 @@ fn flush(
             let q = vfmaq_f32(vmulq_f32(vrr, vrr), vcr, vcr);
             let vwgt = x4::exp(vmulq_n_f32(q, exp_scale));
 
+            let vdx = vld1q_f32(dx.as_ptr());
+            let vdy = vld1q_f32(dy.as_ptr());
+            let vmag = x4::magnitude(vdx, vdy);
+            let vang = x4::atan2_deg(vdy, vdx);
+
             // Everything up to the scatter is elementwise, so the four lanes are
             // bit-identical to the scalar tail below. Only the histogram
             // accumulation is order-sensitive (float addition does not
@@ -118,10 +125,7 @@ fn flush(
             // order. This is the split `calcSIFTDescriptor` itself uses.
             let mut rb = vld1q_f32(rbin.as_ptr());
             let mut cb = vld1q_f32(cbin.as_ptr());
-            let mut ob = vmulq_n_f32(
-                vsubq_f32(vld1q_f32(ang.as_ptr()), vdupq_n_f32(ori)),
-                bins_per_rad,
-            );
+            let mut ob = vmulq_n_f32(vsubq_f32(vang, vdupq_n_f32(ori)), bins_per_rad);
             // Round toward minus infinity: `floor_i`'s twin.
             let r0 = vcvtmq_s32_f32(rb);
             let c0 = vcvtmq_s32_f32(cb);
@@ -134,7 +138,7 @@ fn flush(
             o0 = vbslq_s32(vcltq_s32(o0, vdupq_n_s32(0)), vaddq_s32(o0, vn), o0);
             o0 = vbslq_s32(vcgeq_s32(o0, vn), vsubq_s32(o0, vn), o0);
 
-            let m = vmulq_f32(vld1q_f32(mag.as_ptr()), vwgt);
+            let m = vmulq_f32(vmag, vwgt);
             let v_r1 = vmulq_f32(m, rb);
             let v_r0 = vsubq_f32(m, v_r1);
             let v_rc11 = vmulq_f32(v_r1, cb);
@@ -184,10 +188,12 @@ fn flush(
         }
         return;
     }
-    {
-        for k in 0..n {
-            wgt[k] = exp((c_rot[k] * c_rot[k] + r_rot[k] * r_rot[k]) * exp_scale);
-        }
+    let mut mag = [0.0f32; 4];
+    let mut ang = [0.0f32; 4];
+    for k in 0..n {
+        wgt[k] = exp((c_rot[k] * c_rot[k] + r_rot[k] * r_rot[k]) * exp_scale);
+        mag[k] = magnitude(dx[k], dy[k]);
+        ang[k] = atan2_deg(dy[k], dx[k]);
     }
 
     for k in 0..n {
@@ -240,8 +246,7 @@ fn flush(
 /// caller applies both conversions, as `calcDescriptors` does.
 #[allow(clippy::too_many_arguments)]
 pub fn compute_descriptor(
-    grad_mag: &[f32],
-    grad_ang: &[f32],
+    img: &[f32],
     w: usize,
     h: usize,
     ptx: f32,
@@ -348,8 +353,10 @@ pub fn compute_descriptor(
             let (r, c) = (r as usize, c as usize);
             // Magnitude and angle come from the layer's precomputed planes; only
             // the Gaussian weight is keypoint-dependent and still evaluated here.
-            b_dx[nb] = grad_mag[r * w + c];
-            b_dy[nb] = grad_ang[r * w + c];
+            // Raw differences, exactly the reference's stencil. The bounds
+            // test above already guarantees all four neighbours exist.
+            b_dx[nb] = img[r * w + c + 1] - img[r * w + c - 1];
+            b_dy[nb] = img[(r - 1) * w + c] - img[(r + 1) * w + c];
             b_cr[nb] = c_rot;
             b_rr[nb] = r_rot;
             b_rbin[nb] = rbin;
@@ -624,9 +631,7 @@ mod tests {
             let Some((h, w, img)) = load_dump(&format!("{dir}/gauss_o0_l{layer}.f32")) else {
                 return;
             };
-            let mut gm = vec![0.0f32; w * h];
-            let mut ga = vec![0.0f32; w * h];
-            super::super::scalespace::gradients(&img, w, h, &mut gm, &mut ga);
+
             for i in 0..n {
                 let o = 4 + i * 24;
                 let packed = i32::from_le_bytes(b[o + 20..o + 24].try_into().unwrap());
@@ -642,8 +647,7 @@ mod tests {
                 }
                 let mut got = [0.0f32; DESCR_LEN];
                 compute_descriptor(
-                    &gm,
-                    &ga,
+                    &img,
                     w,
                     h,
                     f(0) * 2.0,
