@@ -175,24 +175,38 @@ fn scatter(sc: &DescriptorScratch, len: usize, ori: f32, bins_per_rad: f32, hist
                 );
 
                 let mut ib = [0i32; 4];
-                let mut rco = [0.0f32; 32];
                 vst1q_s32(ib.as_mut_ptr(), idx);
-                for (slot, v) in [v000, v001, v010, v011, v100, v101, v110, v111]
+
+                // The eight destinations are four *adjacent* pairs — offsets
+                // 0,1 / 10,11 / 60,61 / 70,71 — so each pair can accumulate as
+                // one 2-lane read-modify-write instead of two scalar ones.
+                // Interleaving each pair's two vectors puts lane `t`'s values
+                // next to each other, which is what makes the paired load
+                // possible. Elementwise vector add over distinct addresses is
+                // bit-identical to the scalar pair, and samples still land one
+                // after another, so the order the reference fixes is intact.
+                let mut pr = [0.0f32; 32];
+                for (slot, (a, b)) in [(v000, v001), (v010, v011), (v100, v101), (v110, v111)]
                     .into_iter()
                     .enumerate()
                 {
-                    vst1q_f32(rco.as_mut_ptr().add(slot * 4), v);
+                    vst1q_f32(pr.as_mut_ptr().add(slot * 8), vzip1q_f32(a, b));
+                    vst1q_f32(pr.as_mut_ptr().add(slot * 8 + 4), vzip2q_f32(a, b));
                 }
+                const OFF: [usize; 4] = [0, N + 2, (D + 2) * (N + 2), (D + 3) * (N + 2)];
+                let hp = hist.as_mut_ptr();
                 for (t, &base) in ib.iter().enumerate() {
                     let b = base as usize;
-                    hist[b] += rco[t];
-                    hist[b + 1] += rco[4 + t];
-                    hist[b + (N + 2)] += rco[8 + t];
-                    hist[b + (N + 3)] += rco[12 + t];
-                    hist[b + (D + 2) * (N + 2)] += rco[16 + t];
-                    hist[b + (D + 2) * (N + 2) + 1] += rco[20 + t];
-                    hist[b + (D + 3) * (N + 2)] += rco[24 + t];
-                    hist[b + (D + 3) * (N + 2) + 1] += rco[28 + t];
+                    for (slot, &o) in OFF.iter().enumerate() {
+                        // SAFETY: `rbin`/`cbin` were range-checked during
+                        // collection, so `b <= 287` and the widest touched
+                        // index is `b + 71 < HISTLEN`.
+                        let h = hp.add(b + o);
+                        vst1_f32(
+                            h,
+                            vadd_f32(vld1_f32(h), vld1_f32(pr.as_ptr().add(slot * 8 + t * 2))),
+                        );
+                    }
                 }
                 k += 4;
             }
