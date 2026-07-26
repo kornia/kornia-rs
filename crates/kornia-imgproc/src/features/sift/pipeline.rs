@@ -165,7 +165,13 @@ pub struct SiftWorkspace {
     plane: usize,
     base: Vec<f32>,
     tmp: Vec<f32>,
-    gauss: Vec<Vec<f32>>,
+    /// Gaussian layers for every octave: `pyr[octave][layer]`.
+    ///
+    /// Resident for the whole frame so descriptors can run after the keypoint
+    /// budget has been applied — the reference applies `retainBest` before
+    /// `calcDescriptors`. Octave sizes are a geometric series, so holding all of
+    /// them is ~1.33x the single-octave slab this used to keep.
+    pyr: Vec<Vec<Vec<f32>>>,
     dog: Vec<f32>,
 }
 
@@ -175,14 +181,19 @@ impl SiftWorkspace {
         Self::default()
     }
 
-    fn ensure(&mut self, plane: usize, n_layers: usize, n_dog: usize) {
-        if self.plane >= plane && self.gauss.len() >= n_layers {
+    fn ensure(&mut self, plane: usize, n_layers: usize, n_dog: usize, n_oct: usize) {
+        if self.plane >= plane && self.pyr.first().is_some_and(|o| o.len() >= n_layers) {
             return;
         }
         self.plane = plane;
         self.base = vec![0.0; plane];
         self.tmp = vec![0.0; plane];
-        self.gauss = (0..n_layers).map(|_| vec![0.0; plane]).collect();
+        self.pyr = (0..n_oct)
+            .map(|o| {
+                let op = (plane >> (2 * o)).max(16);
+                (0..n_layers).map(|_| vec![0.0; op]).collect()
+            })
+            .collect();
         self.dog = vec![0.0; plane * n_dog];
     }
 }
@@ -238,11 +249,16 @@ pub fn detect_and_compute_with(
         .collect();
 
     let plane = cw * ch;
-    ws.ensure(plane, n_layers, n_dog);
+    // Needed before `ensure`: the workspace now sizes one Gaussian slab per
+    // octave rather than one shared slab.
+    let n_oct = cfg
+        .n_octaves(cw.min(ch), if doubled { -1 } else { 0 })
+        .min(max_octaves);
+    ws.ensure(plane, n_layers, n_dog, n_oct);
     let SiftWorkspace {
         base,
         tmp,
-        gauss,
+        pyr,
         dog,
         ..
     } = ws;
@@ -265,7 +281,7 @@ pub fn detect_and_compute_with(
     );
     blur_v_f32(
         &tmp[..plane],
-        &mut gauss[0][..plane],
+        &mut pyr[0][0][..plane],
         cw,
         ch,
         &base_kernel,
@@ -283,26 +299,26 @@ pub fn detect_and_compute_with(
     // a full plane, and it sat outside every probe until it was measured at
     // 12 ms — the same way the gradient pass hid between two timers.
     let t_base = t_start.elapsed().as_secs_f64() * 1e3;
-    let n_oct = cfg
-        .n_octaves(cw.min(ch), if doubled { -1 } else { 0 })
-        .min(max_octaves);
 
     let mut all: Vec<(OrientedKeypoint, usize, usize)> = Vec::new();
-    let mut desc: Vec<f32> = Vec::new();
+    // The deferred descriptor pass needs each octave's dimensions; the loop
+    // halves with integer division, which is not `>>` for odd sizes.
+    let mut oct_dims: Vec<(usize, usize)> = Vec::with_capacity(n_oct);
 
     for octv in 0..n_oct {
         if cw < 16 || ch < 16 {
             break;
         }
         let p = cw * ch;
+        oct_dims.push((cw, ch));
         let tb = mark();
         for i in 1..n_layers {
             let k = &layer_kernels[i - 1];
             // Slice to this octave's plane: the workspace buffers stay sized for
             // the FIRST octave, so from octave 1 on the full `gauss[i - 1]` is
             // longer than `cw * ch` and trips `blur_h_f32_mode`'s length assert.
-            blur_h_f32_mode(&gauss[i - 1][..p], &mut tmp[..p], cw, ch, k, fast);
-            let (lo, hi) = gauss.split_at_mut(i);
+            blur_h_f32_mode(&pyr[octv][i - 1][..p], &mut tmp[..p], cw, ch, k, fast);
+            let (lo, hi) = pyr[octv].split_at_mut(i);
             blur_v_f32(
                 &tmp[..p],
                 &mut hi[0][..p],
@@ -330,7 +346,7 @@ pub fn detect_and_compute_with(
         // the keypoints of that layer were found in.
         #[allow(clippy::needless_range_loop)]
         for layer in 1..=cfg.n_octave_layers {
-            let gl = &gauss[layer][..p];
+            let gl = &pyr[octv][layer][..p];
             // One task per keypoint group: each histogram is independent, and
             // the reference's order within a keypoint is preserved because a
             // single task owns it.
@@ -352,53 +368,23 @@ pub fn detect_and_compute_with(
         if probe {
             t_ori += to.elapsed().as_secs_f64() * 1e3;
         }
-        let tds = mark();
-        // Descriptors for this octave, before its layers are overwritten.
-        let start = desc.len() / DESCR_LEN;
-        let todo: Vec<(OrientedKeypoint, usize)> = all[start..]
-            .iter()
-            .map(|(k, _, layer)| (*k, *layer))
-            .collect();
-        // Grow the frame's block and fill the new rows in place; staging into a
-        // temporary and copying would duplicate every descriptor once per
-        // octave.
-        let start_f = desc.len();
-        desc.resize(start_f + todo.len() * DESCR_LEN, 0.0);
-        desc[start_f..]
-            .par_chunks_mut(DESCR_LEN)
-            .zip(todo.par_iter())
-            // One scratch per worker, not per keypoint: a patch is a few
-            // thousand floats and allocating it per descriptor would dominate.
-            .for_each_init(DescriptorScratch::new, |sc, (out, (k, layer))| {
-                let gl = &gauss[*layer][..p];
-                let (x, y, s, a) = descriptor_inputs(k, octv as i32);
-                // `fast` deliberately does NOT select a rotated-frame
-                // descriptor here: that variant is measured slower on CPU
-                // despite sampling a third as many points, so it exists only on
-                // the CUDA path. See this module's docs.
-                compute_descriptor(gl, cw, ch, x, y, s, a, out, sc);
-            });
-        if probe {
-            t_desc += tds.elapsed().as_secs_f64() * 1e3;
-        }
-
         let (nw, nh) = (cw / 2, ch / 2);
         if nw == 0 || nh == 0 || octv + 1 >= n_oct {
             break;
         }
-        let src_layer = std::mem::take(&mut gauss[cfg.n_octave_layers]);
-        downsample(&src_layer[..p], cw, ch, &mut gauss[0], nw, nh);
-        gauss[cfg.n_octave_layers] = src_layer;
+        let (cur, next) = pyr.split_at_mut(octv + 1);
+        downsample(
+            &cur[octv][cfg.n_octave_layers][..p],
+            cw,
+            ch,
+            &mut next[0][0],
+            nw,
+            nh,
+        );
         cw = nw;
         ch = nh;
     }
 
-    if probe {
-        eprintln!(
-            "    stages: base={t_base:.1} blur={t_blur:.1} detect={t_det:.1} \
-orient={t_ori:.1} desc={t_desc:.1} (ms)"
-        );
-    }
     // first_octave = -1 post-processing, then the reference's ordering.
     let scale = if doubled { 0.5f32 } else { 1.0f32 };
     let mut kps: Vec<SiftKeypoint> = all
@@ -422,11 +408,41 @@ orient={t_ori:.1} desc={t_desc:.1} (ms)"
 
     let order = final_order(&kps, cfg.n_features);
     let n = order.len();
-    let mut out_desc = Vec::with_capacity(n * DESCR_LEN);
-    for &i in &order {
-        out_desc.extend_from_slice(&desc[i * DESCR_LEN..(i + 1) * DESCR_LEN]);
+
+    // ── Descriptors, for the survivors only ─────────────────────────────────
+    //
+    // The reference applies `retainBest` before `calcDescriptors`; describing
+    // inside the octave loop meant computing every descriptor and discarding
+    // the ones the budget cut. That is why the pyramid stays resident. Writing
+    // straight into `order` also removes the permutation the old code needed.
+    let tds = mark();
+    let mut out_desc = vec![0.0f32; n * DESCR_LEN];
+    out_desc
+        .par_chunks_mut(DESCR_LEN)
+        .zip(order.par_iter())
+        // One scratch per worker, not per keypoint: a patch is a few thousand
+        // floats and allocating it per descriptor would dominate.
+        .for_each_init(DescriptorScratch::new, |sc, (out, &i)| {
+            let (k, octv, layer) = all[i];
+            let (gw, gh) = oct_dims[octv];
+            let gl = &pyr[octv][layer][..gw * gh];
+            let (x, y, s, a) = descriptor_inputs(&k, octv as i32);
+            // `fast` deliberately does NOT select a rotated-frame descriptor
+            // here: that variant is measured slower on CPU despite sampling a
+            // third as many points, so it exists only on the CUDA path. See
+            // this module's docs.
+            compute_descriptor(gl, gw, gh, x, y, s, a, out, sc);
+        });
+    if probe {
+        t_desc += tds.elapsed().as_secs_f64() * 1e3;
     }
     kps = order.iter().map(|&i| kps[i]).collect();
+    if probe {
+        eprintln!(
+            "    stages: base={t_base:.1} blur={t_blur:.1} detect={t_det:.1} \
+orient={t_ori:.1} desc={t_desc:.1} (ms)"
+        );
+    }
     Ok(SiftFeatures {
         keypoints: kps,
         descriptors: out_desc,
