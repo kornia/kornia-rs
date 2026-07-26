@@ -471,7 +471,7 @@ extern "C" __global__ void sift_descriptor_block(
 /// Samples per descriptor bin per axis in the rotated-frame kernel.
 ///
 /// The sampling grid covers `[-1, DD]` in bin units, so the total is
-/// `((DD + 2) * DESC_FAST_SAMP)^2` samples — 576 at the default, and constant
+/// `((DD + 1) * DESC_FAST_SAMP)^2` samples — 400 at the default, and constant
 /// regardless of the keypoint's scale.
 pub const DESC_FAST_SAMP: usize = 4;
 
@@ -490,7 +490,7 @@ pub const DESC_FAST_SAMP: usize = 4;
 /// samples the image bilinearly at each point, the way CudaSift and VLFeat do.
 /// Two consequences:
 ///
-/// * the sample count is constant — `(6 * DESC_FAST_SAMP)^2` — so cost no longer
+/// * the sample count is constant — `(5 * DESC_FAST_SAMP)^2` — so cost no longer
 ///   scales with the keypoint's size, which is where the reference's shape hurts
 ///   most;
 /// * no sample is wasted, because the grid *is* the patch.
@@ -516,7 +516,12 @@ fn descriptor_fast_src(threads: usize, samp: usize) -> String {
 #define DLEN {dlen}
 #define NTHREADS {threads}
 #define SAMP {samp}
-#define NSAMP ((DD + 2) * SAMP)
+// The grid spans the bin range the reject below actually admits, `[-1, DD)`,
+// which is DD+1 bins wide — NOT DD+2. It was DD+2, so `cb` ran to 4.875 while
+// `floor(cb) >= DD` is discarded, and 4 of every 24 steps per axis were
+// computed and thrown away: 1 - (5/6)^2 = 30.6% of the samples. The accepted
+// set is unchanged, so this costs nothing in quality.
+#define NSAMP ((DD + 1) * SAMP)
 #define OSTRIDE {ostride}
 
 __device__ __forceinline__ int cv_round_d(float v) {{ return __float2int_rn(v); }}
@@ -598,6 +603,10 @@ extern "C" __global__ void sift_descriptor_fast(
         rf -= r0; cf -= c0; obin -= o0;
         if (o0 < 0) o0 += NN;
         if (o0 >= NN) o0 -= NN;
+        // Retained as a guard although the grid above no longer produces an
+        // out-of-range bin: it is the definition of the admitted region, and a
+        // future change to NSAMP or SAMP should fail safe rather than scatter
+        // outside `hist`.
         if (r0 < -1 || r0 >= DD || c0 < -1 || c0 >= DD) continue;
 
         // The grid is denser than the reference's pixel walk at small scales and
