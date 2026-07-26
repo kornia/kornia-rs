@@ -41,6 +41,47 @@ At `fo=-1` the CUDA path's output is **identical to cv2 on every column** of the
 matching audit — keypoint count, homography matches, fundamental-matrix inliers,
 median epipolar error.
 
+## Matching quality (homography + epipolar)
+
+`python3 kornia-py/benchmarks/bench_sift_quality.py`, 2026-07-26. Matching is
+cv2's `BFMatcher` for every engine, so these columns compare **descriptors**,
+not matchers.
+
+| engine | kp | ms | H match | H ok | F match | F inl | inl% | sed |
+|---|---|---|---|---|---|---|---|---|
+| opencv (1 thread) | 2515 | 226.4 | 5293 | 5232 | 816 | 533 | 65.3% | 0.29 |
+| cuda `fo=-1` | 2515 | 20.0 | 5293 | 5232 | 816 | 533 | 65.3% | 0.29 |
+| cuda `fo=-1` fast | 2515 | 14.0 | 5313 | 5252 | 819 | 496 | 60.6% | 0.26 |
+| cuda `fo=0` 4oct | 933 | 7.7 | 1911 | 1884 | 346 | 207 | 59.8% | 0.28 |
+| neon `fo=-1` | 2515 | 119.3 | 5293 | 5232 | 816 | 533 | 65.3% | 0.29 |
+| neon `fo=0` 4oct | 933 | 48.8 | 1911 | 1884 | 346 | 207 | 59.8% | 0.28 |
+
+Both `fo=-1` backends match OpenCV on **every** column. The fast descriptor
+trades a little epipolar inlier ratio for a slightly better homography count
+and median error — it samples coarse octaves more evenly than the reference's
+pixel walk does.
+
+### Why two geometric tests
+
+Keypoint counts and wall time say nothing about descriptor quality, and a
+detector can be made arbitrarily fast by being wrong.
+
+* **Homography** warps a planar image by a known `H`, so every correct match is
+  consistent with it by construction. Measures invariance to rotation and
+  scale; says nothing about 3D parallax.
+* **Epipolar** uses a real stereo-motion pair where no homography exists, scored
+  by symmetric epipolar distance under a RANSAC fundamental matrix — the
+  geometry SfM and VO actually rely on.
+
+A backend can look fine on one and fail the other. An early version of this port
+scored a healthy median epipolar error while returning a fifth of OpenCV's
+homography matches: descriptors for every octave but the first were zero, and a
+zero descriptor is equidistant from everything, so the ratio test *rejected*
+rather than mismatched. Reporting both is what made that visible.
+
+The script also checks the matcher implementations against cv2's `BFMatcher` on
+identical descriptors — CUDA, NEON and OpenCV return the same 816-pair set.
+
 ## CUDA kernel breakdown (nsys, per frame)
 
 | kernel | exact | fast descriptor |
@@ -69,6 +110,16 @@ The criterion group measures the two CPU kernels in isolation on 2515x2515
 descriptors: NEON 55.1 ms, scalar 212.8 ms — **3.9x**.
 
 ## How to run
+
+### Matching quality
+
+```bash
+python3 kornia-py/benchmarks/bench_sift_quality.py
+```
+
+Speed plus the homography and epipolar tables above, for every backend, against
+OpenCV. Run this after any change that could move descriptors — a speedup that
+costs matches is not a speedup.
 
 ### Rust benchmarks (criterion, CPU)
 

@@ -185,3 +185,58 @@ def clahe(
     grid_size: tuple[int, int] = (8, 8),
     out: Optional[np.ndarray] = None,
 ) -> np.ndarray | Image: ...
+
+class Sift:
+    """SIFT detector/descriptor, shaped like ``cv2.SIFT``.
+
+    Dispatches on residency: a device ``Image`` runs the CUDA pipeline, a host
+    ``Image`` or a numpy array runs the NEON one. Both reproduce ``cv::SIFT``
+    bit for bit and return the same descriptors, so residency changes the speed
+    and nothing else.
+
+    The input must be single-channel float32 with values in **0..255** — the
+    reference's own internal representation. Normalising to 0..1 changes what
+    ``contrast_threshold`` means and silently returns far fewer keypoints.
+
+    The instance owns both backends' scratch, so keep it alive across frames;
+    constructing one per call gives up that reuse.
+    """
+
+    def __init__(
+        self,
+        n_features: int = 0,
+        n_octave_layers: int = 3,
+        contrast_threshold: float = 0.04,
+        edge_threshold: float = 10.0,
+        sigma: float = 1.6,
+        max_keypoints: int = 8192,
+        upsample: bool = True,
+        max_octaves: int = 0,
+        fast_descriptor: bool = False,
+    ) -> None:
+        """``upsample`` selects ``first_octave``: True is OpenCV's ``-1``, which
+        doubles the base image. ``max_octaves=0`` means unlimited.
+        ``fast_descriptor`` trades bit-exactness for speed on the GPU."""
+
+    def detect_and_compute(
+        self, image: np.ndarray | Image
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Returns ``(keypoints, descriptors)``: ``(N, 6)`` of
+        ``x, y, size, angle, response, octave`` and ``(N, 128)``."""
+
+    def match(
+        self,
+        image_a: np.ndarray | Image,
+        image_b: np.ndarray | Image,
+        ratio: float = 0.8,
+        cross_check: bool = True,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Detect in both images and match.
+
+        Two device ``Image`` s match on device and the descriptors never cross
+        the bus; anything else detects and matches on the CPU. Mixing residency
+        is an error rather than a silent transfer.
+
+        ``ratio`` is Lowe's ratio; ``>= 1.0`` disables it. Returns
+        ``(keypoints_a, keypoints_b, matches)`` with ``matches`` an ``(M, 2)``
+        int32 array of indices into the two keypoint arrays."""
