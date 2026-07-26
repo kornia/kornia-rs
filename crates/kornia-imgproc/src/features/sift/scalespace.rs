@@ -256,14 +256,18 @@ pub fn blur_v_f32(
     w: usize,
     h: usize,
     kernel: &[f32],
-    lower: Option<&[f32]>,
-    dog: Option<&mut [f32]>,
+    // One argument, not two Options: the DoG difference needs *both* the lower
+    // layer and somewhere to put the result, and as separate Options
+    // `dog: Some, lower: None` type-checks and silently leaves the caller's
+    // buffer untouched. The CUDA side avoids the same trap by exposing two
+    // launchers rather than one with optional halves.
+    dog: Option<(&[f32], &mut [f32])>,
 ) {
     let n2 = kernel.len() / 2;
     let hh = h as i64;
 
     match dog {
-        Some(dg) => dst
+        Some((lower, dg)) => dst
             .par_chunks_mut(w * ROWS_PER_TASK)
             .zip(dg.par_chunks_mut(w * ROWS_PER_TASK))
             .enumerate()
@@ -275,34 +279,19 @@ pub fn blur_v_f32(
                 for (yy, (out, g)) in dchunk.chunks_mut(w).zip(gchunk.chunks_mut(w)).enumerate() {
                     let y = y0 + yy;
                     let c0 = refl101(y as i64, hh) * w;
-                    match lower {
-                        Some(lo) => column_row::<true>(
-                            src,
-                            out,
-                            &lo[y * w..y * w + w],
-                            g,
-                            w,
-                            c0,
-                            y,
-                            n2,
-                            hh,
-                            kernel,
-                            &mut pairs,
-                        ),
-                        None => column_row::<false>(
-                            src,
-                            out,
-                            &[],
-                            &mut [],
-                            w,
-                            c0,
-                            y,
-                            n2,
-                            hh,
-                            kernel,
-                            &mut pairs,
-                        ),
-                    }
+                    column_row::<true>(
+                        src,
+                        out,
+                        &lower[y * w..y * w + w],
+                        g,
+                        w,
+                        c0,
+                        y,
+                        n2,
+                        hh,
+                        kernel,
+                        &mut pairs,
+                    );
                 }
             }),
         None => dst
@@ -492,18 +481,10 @@ mod tests {
 
         let mut layer = vec![0.0f32; w * h];
         let mut dog = vec![0.0f32; w * h];
-        blur_v_f32(
-            &src,
-            &mut layer,
-            w,
-            h,
-            &kernel,
-            Some(&lower),
-            Some(&mut dog),
-        );
+        blur_v_f32(&src, &mut layer, w, h, &kernel, Some((&lower, &mut dog)));
 
         let mut plain = vec![0.0f32; w * h];
-        blur_v_f32(&src, &mut plain, w, h, &kernel, None, None);
+        blur_v_f32(&src, &mut plain, w, h, &kernel, None);
 
         assert_eq!(layer, plain, "fusing the DoG changed the layer");
         for i in 0..w * h {
@@ -549,7 +530,7 @@ mod tests {
             let mut tmp = vec![0.0f32; w * h];
             let mut got = vec![0.0f32; w * h];
             blur_h_f32(&prev, &mut tmp, w, h, &k);
-            blur_v_f32(&tmp, &mut got, w, h, &k, None, None);
+            blur_v_f32(&tmp, &mut got, w, h, &k, None);
 
             let bad = got
                 .iter()

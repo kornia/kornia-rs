@@ -16,23 +16,28 @@
 //! HAL that accelerates `exp`/`atan2`/`magnitude` on aarch64, and it makes no
 //! measurable difference to SIFT.
 //!
-//! There is deliberately **no whole-layer gradient precompute** on this path,
-//! though the CUDA one has exactly that. On the GPU it is right: every pixel is
-//! computed in parallel with coalesced stores, and the per-keypoint stages then
-//! do one aligned load instead of four gathers. On the CPU it is not, for the
-//! plain reason that it evaluates `magnitude` and `atan2` for every pixel of
-//! every searched layer — 5.63M of them on a 752x480 frame — when the keypoint
-//! patches only ever read about 3.1M. Deriving the gradient inside the
-//! orientation and descriptor loops, as the reference does, was measured at
-//! 30.9 ms saved against 20.9 ms added, and drops ~46 MB of workspace.
+//! There is deliberately **no whole-layer gradient precompute** on this path.
+//! Deriving magnitude and angle inside the orientation and descriptor loops is
+//! what the reference does, and it is what the CUDA twin does too
+//! (`cuda/sift/orientation.rs` and `cuda/sift/descriptor.rs` both take the
+//! `dx`/`dy` stencil per sample) — so the two backends agree here.
+//!
+//! The precompute this replaced evaluated `magnitude` and `atan2` for every
+//! pixel of every searched layer — 5.63M of them on a 752x480 frame — when the
+//! keypoint patches only ever read about 3.1M. Measured at 30.9 ms saved
+//! against 20.9 ms added, and it drops ~46 MB of workspace.
 //!
 //! The ceiling is set by one comparison: OpenCV's own `GaussianBlur` runs the
 //! scale space's five layers in 42.7 ms, ours in 45.0 single-threaded. We are at
 //! 0.95x of OpenCV *per core*, so the speedup has to come from threading, and
 //! six cores bound that near 6x — which is where `fo=0` lands. Every lever has
 //! been implemented and measured: threading, four-accumulator latency hiding,
-//! a 4-lane NEON HAL, the symmetric row filter, and the rotated-frame
-//! descriptor (which regresses here; see `compute_descriptor_fast`).
+//! a 4-lane NEON HAL, and the symmetric row filter. A rotated-frame descriptor
+//! that samples a fixed 576 points regardless of scale was implemented too and
+//! **regressed on CPU** despite sampling a third as many points — the rotated
+//! walk loses the sequential row access the reference's stencil gets. It is
+//! worth 2.9x on the GPU, where the access pattern does not matter the same
+//! way, and lives there only.
 
 use rayon::prelude::*;
 
@@ -134,12 +139,11 @@ fn downsample(src: &[f32], sw: usize, sh: usize, dst: &mut [f32], dw: usize, dh:
 
 /// Reusable scratch for [`detect_and_compute_with`].
 ///
-/// The pipeline touches roughly twenty full-resolution planes — six Gaussian
-/// layers, five DoG layers, two gradient planes per searched layer, plus the
-/// base and a transpose buffer. Allocating and zeroing those per call is around
-/// 120 MB of pure overhead at `fo=-1`, which is why a streaming caller should
-/// hold one of these and reuse it. This is the same reason the CUDA path owns a
-/// plan object.
+/// The pipeline touches a dozen full-resolution planes — six Gaussian layers,
+/// five DoG layers, plus the base and a transpose buffer. Allocating and
+/// zeroing those per call is tens of megabytes of pure overhead at `fo=-1`,
+/// which is why a streaming caller should hold one of these and reuse it. This
+/// is the same reason the CUDA path owns a plan object.
 #[derive(Default)]
 pub struct SiftWorkspace {
     plane: usize,
@@ -249,7 +253,6 @@ pub fn detect_and_compute_with(
         ch,
         &base_kernel,
         None,
-        None,
     );
 
     // KORNIA_SIFT_STAGES=1 breaks the pass down. Each probe is a plain elapsed
@@ -285,8 +288,7 @@ pub fn detect_and_compute_with(
                 cw,
                 ch,
                 k,
-                Some(&lo[i - 1][..p]),
-                Some(&mut dog[(i - 1) * p..i * p]),
+                Some((&lo[i - 1][..p], &mut dog[(i - 1) * p..i * p])),
             );
         }
 
@@ -347,11 +349,10 @@ pub fn detect_and_compute_with(
             .for_each_init(DescriptorScratch::new, |sc, (out, (k, layer))| {
                 let gl = &gauss[*layer][..p];
                 let (x, y, s, a) = descriptor_inputs(k, octv as i32);
-                // `fast` deliberately does NOT select the rotated-frame
-                // descriptor here: see `compute_descriptor_fast`, which is
-                // measured slower on CPU despite sampling a third as many
-                // points. It remains available for callers at very large
-                // scales, where the sample-count scaling eventually wins.
+                // `fast` deliberately does NOT select a rotated-frame
+                // descriptor here: that variant is measured slower on CPU
+                // despite sampling a third as many points, so it exists only on
+                // the CUDA path. See this module's docs.
                 compute_descriptor(gl, cw, ch, x, y, s, a, out, sc);
             });
         if probe {

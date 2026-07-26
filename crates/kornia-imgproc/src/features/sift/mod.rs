@@ -16,10 +16,7 @@ pub use pipeline::{
 };
 
 mod descriptor;
-pub use descriptor::{
-    compute_descriptor, compute_descriptor_fast, descriptor_inputs, DescriptorScratch, DESCR_LEN,
-    FAST_SAMP,
-};
+pub use descriptor::{compute_descriptor, descriptor_inputs, DESCR_LEN};
 
 mod matcher;
 pub use matcher::{
