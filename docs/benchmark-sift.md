@@ -8,7 +8,7 @@ before trusting a difference under ~5%.
 
 | | |
 |---|---|
-| Date (UTC) | 2026-07-27 03:10 |
+| Date (UTC) | 2026-07-27 05:40 |
 | Host | nvidia-orin00 |
 | Machine | NVIDIA Jetson Orin Nano Engineering Reference Developer Kit Super |
 | Kernel / arch | 5.15.148-tegra aarch64 |
@@ -36,8 +36,8 @@ misleading:
 | CUDA | `fo=-1` (OpenCV's default) | **19.7** | 11.4x | **5.3x** |
 | CUDA | `fo=-1`, fast descriptor | 13.9 | 16.2x | 7.5x |
 | CUDA | `fo=0`, 4 octaves | **7.7** | 29x | 13.5x |
-| CPU (NEON) | `fo=-1` | 81 | 2.8x | **1.35x** |
-| CPU (NEON) | `fo=0`, 4 octaves | 24 | 9.3x | 4.3x |
+| CPU (NEON) | `fo=-1` | 77 | 2.9x | **1.40x** |
+| CPU (NEON) | `fo=0`, 4 octaves | 23 | 9.8x | 4.7x |
 | OpenCV 5.0.0 | default, 1 thread | 224.7 | 1.0x | — |
 | OpenCV 5.0.0 | default, 6 threads | 104 | 2.15x | 1.0x |
 
@@ -54,12 +54,12 @@ median epipolar error.
 
 | threads | cv2 | kornia NEON | ratio |
 |---|---|---|---|
-| 1 | 225.7 | 254.3 | 0.89x |
-| 2 | 146.7 | 132.0 | 1.11x |
-| 4 | 109.6 | 80.5 | 1.36x |
-| 6 | ~110 | ~81 | **~1.35x** |
+| 1 | 224.6 | 245.3 | 0.92x |
+| 2 | 146.7 | 128.4 | 1.14x |
+| 4 | 109.6 | 78.2 | 1.40x |
+| 6 | ~107 | ~77 | **~1.40x** |
 
-Per core the NEON path is 1.13x slower than OpenCV; from two threads up it is
+Per core the NEON path is 1.09x slower than OpenCV; from two threads up it is
 ahead. Earlier revisions of this document claimed 2.3x-7x on CPU; those compared
 our six-thread figure against `setNumThreads(1)` and were wrong. The CUDA rows
 are unaffected in kind — a GPU is being compared against a CPU either way — but
@@ -77,13 +77,14 @@ Measured with `KORNIA_SIFT_STAGES=1` at `RAYON_NUM_THREADS=1` on apriltags
 
 | stage | cv2 | was | now |
 |---|---|---|---|
-| pyramid / blur | 61.1 | 73.7 | 66.0 |
+| base image | — | 12.1 | 7.3 |
+| pyramid / blur | 61.1 | 73.7 | 64.5 |
 | gradients | inline | 31.1 | — |
-| extrema + orient | 38.7 | 75.8 | 35.7 |
-| descriptors | 78.6 | 112.3 | 87.6 |
-| **total** | **178.4** | **311.0** | **204.5** |
+| extrema + orient | 38.7 | 75.8 | 35.4 |
+| descriptors | 78.6 | 112.3 | 83.3 |
+| **total** | **178.4** | **311.0** | **195.6** |
 
-Seven changes got there, each held to the bitwise oracle:
+Nine changes got there, each held to the bitwise oracle:
 
 * **Extrema scan** — 34.1% of pixels clear the contrast threshold and enter the
   26-neighbour test, but only 0.09% are extrema. A NEON prefilter, staged by
@@ -136,9 +137,29 @@ Seven changes got there, each held to the bitwise oracle:
   patch removes the width-four call, so the preamble amortises over hundreds of
   samples instead of being paid per four.
 
-Extrema and orientation are now **ahead** of cv2 (35.7 vs 38.7). What is left is
-the descriptor (87.6 vs 78.6, both including gradients) and the pyramid (66.0 vs
-61.1, ours also producing the DoG).
+* **Descriptor collection by index**, 88.0 -> 83.6 ms. Splitting the stage gave
+  collect 31.4 / batch 23.1 / scatter 33.5, and 10.8 ns per collect iteration
+  was too high for four loads and a few multiplies. The cost was five
+  `Vec::push` per sample — a capacity check each, ~13M per frame. The reference
+  fills preallocated arrays with a running counter; this now does too.
+* **Base image build**, 12.1 -> 7.3 ms. `upsample2x` evaluated a full bilinear
+  per output pixel, so each source row's horizontal lerp was computed twice —
+  it is `r0` for one output row and `r1` for the next. Split into a horizontal
+  pass and a vertical pass over it.
+
+  That stage was invisible: it ran before every probe and only surfaced when the
+  stage sum was compared against wall time, the same way the gradient pass hid
+  between two timers. `base` is now a permanent column.
+
+Extrema and orientation are **ahead** of cv2 (35.4 vs 38.7). What is left is the
+descriptor (83.3 vs 78.6, both including gradients) and the blur.
+
+The blur is left alone deliberately. cv2's five octave-0 blurs measure 42.7 ms
+without the DoG; ours are ~48.8 **with** it, so the two are within about 4%. The
+one structural idea remaining is a `FilterEngine`-style row ring buffer that
+keeps the horizontal intermediate off DRAM, worth ~4 ms of traffic — but it
+needs a `ksize`-row halo per rayon task, which at any thread count above one
+costs more in recomputed horizontal work than it saves.
 
 ### A bug the optimisation introduced, and the test that now covers it
 
@@ -184,7 +205,7 @@ all six cores and on one thread respectively.
 | **CUDA `fo=-1`** (identical output) | **18.3** | 2515 | **5.5x** | **12.3x** |
 | CUDA `fo=-1` fast descriptor | 13.2 | 2515 | 7.6x | 17.1x |
 | CUDA `fo=0`, 4 octaves | 7.1 | 933 | 14.1x | 31.6x |
-| **NEON `fo=-1`** (identical output) | **83.1** | 2515 | **1.3x** | 2.7x |
+| **NEON `fo=-1`** (identical output) | **80.6** | 2515 | **1.4x** | 2.8x |
 | NEON `fo=0`, 4 octaves | 25.6 | 933 | 3.9x | 8.8x |
 
 Only the `fo=-1` rows do the same work as cv2 — same 2515 keypoints, and every
@@ -223,7 +244,7 @@ not matchers.
 | engine | kp | ms | H match | H ok | F match | F inl | inl% | sed |
 |---|---|---|---|---|---|---|---|---|
 | opencv (1 thread) | 2515 | 225.2 | 5293 | 5232 | 816 | 533 | 65.3% | 0.29 |
-| opencv (all cores) | 2515 | 110.7 | 5293 | 5232 | 816 | 533 | 65.3% | 0.29 |
+| opencv (all cores) | 2515 | 114.6 | 5293 | 5232 | 816 | 533 | 65.3% | 0.29 |
 | cuda `fo=-1` | 2515 | 19.6 | 5293 | 5232 | 816 | 533 | 65.3% | 0.29 |
 | cuda `fo=-1` fast | 2515 | 13.9 | 5313 | 5252 | 819 | 496 | 60.6% | 0.26 |
 | cuda `fo=0` 4oct | 933 | 7.7 | 1911 | 1884 | 346 | 207 | 59.8% | 0.28 |
