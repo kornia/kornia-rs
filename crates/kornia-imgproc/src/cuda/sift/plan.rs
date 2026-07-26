@@ -184,8 +184,13 @@ impl SiftCuda {
             .map(|i| gaussian_kernel_f32(gaussian_ksize(sigmas[i]), sigmas[i]))
             .collect();
 
-        // One oriented keypoint can emit several angles; the reference caps at
-        // 4 dominant peaks in practice, so size the oriented buffer accordingly.
+        // One detected keypoint can emit several angles. The reference imposes
+        // no hard cap — every bin that is a strict local maximum of the
+        // 36-bin smoothed histogram AND at least `ORI_PEAK_RATIO` of its peak
+        // is emitted, so up to 18 in the pathological (near-flat histogram)
+        // case. Four is the empirical average, not a bound: this is a capacity,
+        // and a frame that exceeds it drops the surplus (the orientation
+        // kernel's `slot < max_out` guard) rather than overrunning anything.
         let ori_cap = cfg.max_keypoints * 4;
         Ok(Self {
             cfg,
@@ -269,7 +274,6 @@ impl SiftCuda {
         let mut t_det = 0.0f64;
         let mut t_ori = 0.0f64;
         let mut t_desc = 0.0f64;
-        let t_copy = 0.0f64;
         let mark = |on: bool| -> Option<std::time::Instant> { on.then(std::time::Instant::now) };
         let since = |t: Option<std::time::Instant>, stream: &Arc<CudaStream>, acc: &mut f64| {
             if let Some(t) = t {
@@ -424,8 +428,13 @@ impl SiftCuda {
                     )?;
                     since(to, stream, &mut t_ori);
 
-                    // One keypoint can emit several angles; the reference caps
-                    // at four dominant peaks, which bounds this layer's rows.
+                    // Upper bound on the rows THIS layer can add. `n_kp` is the
+                    // whole octave's detected count while only this layer's
+                    // subset emits here, so 4x it covers a per-keypoint peak
+                    // count well above the ~1.3 average even though the
+                    // orientation stage has no hard cap (see `ori_cap`). Rows
+                    // past `bound` would get no descriptor at all, so the
+                    // margin — not the factor 4 itself — is what matters.
                     let bound = (n_kp * 4).min(self.ori_kp.len() / ORI_KP_STRIDE) as u32;
                     let tds = mark(probe);
                     // The orientation record is in the pyramid base's frame; the
@@ -491,7 +500,7 @@ impl SiftCuda {
         if probe {
             eprintln!(
                 "  stages: blur={t_blur:.1} detect={t_det:.1} orient={t_ori:.1} \
-                 descriptor={t_desc:.1} copyback={t_copy:.1} (ms)"
+                 descriptor={t_desc:.1} (ms)"
             );
         }
         // One download for the whole frame. The packed octave field already

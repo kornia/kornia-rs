@@ -228,7 +228,11 @@ pub fn detect_and_compute_with(
     if doubled {
         upsample2x(src, w, h, base);
     } else {
-        base[..plane].copy_from_slice(src);
+        // Slice both sides: `validate_source` only requires `src` to be *at
+        // least* `w * h` long, so an over-long input would trip
+        // `copy_from_slice`'s equal-length requirement and panic. The CUDA twin
+        // slices for exactly this reason.
+        base[..plane].copy_from_slice(&src[..plane]);
     }
     blur_h_f32_mode(
         &base[..plane],

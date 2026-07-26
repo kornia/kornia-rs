@@ -492,6 +492,17 @@ pub fn launch_sift_orientation_cuda_view(
             need,
         });
     }
+    // Both kernels read columns 0..=8 of every row (position, size, response,
+    // the packed octave, the layer, and the converged `cc`/`rr`). A shorter
+    // stride is not just wrong, it reads past the end of the buffer on the last
+    // row — this is a `pub` entry point, so the precondition is checked here
+    // rather than left to the pipeline that happens to satisfy it.
+    if (kp_stride as usize) < super::KP_STRIDE {
+        return Err(SiftCudaError::Geometry(format!(
+            "keypoint stride {kp_stride} is smaller than the {} columns the kernel reads",
+            super::KP_STRIDE
+        )));
+    }
     if kp_in.len() < (n_kp as usize) * (kp_stride as usize) {
         return Err(SiftCudaError::SliceTooSmall {
             got: kp_in.len(),

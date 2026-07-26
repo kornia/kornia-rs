@@ -713,6 +713,14 @@ pub fn launch_sift_descriptor_cuda_view(
     if n_kp == 0 {
         return Ok(());
     }
+    // Every kernel below reads `x, y, scl, ori` from columns 0..=3 of each row.
+    // With a shorter stride the last row's read runs past the buffer, so the
+    // precondition is enforced here rather than assumed of the caller.
+    if (kp_stride as usize) < DESC_IN_STRIDE {
+        return Err(SiftCudaError::Geometry(format!(
+            "keypoint stride {kp_stride} is smaller than the {DESC_IN_STRIDE} columns the kernel reads"
+        )));
+    }
     let need_kp = (n_kp as usize) * (kp_stride as usize);
     if kp_in.len() < need_kp {
         return Err(SiftCudaError::SliceTooSmall {
@@ -856,6 +864,14 @@ pub fn launch_sift_pack_descriptor_input_cuda_view(
     if angle_col >= kp_stride {
         return Err(SiftCudaError::Geometry(format!(
             "angle column {angle_col} is outside a stride of {kp_stride}"
+        )));
+    }
+    // The kernel also reads `x, y, size` from columns 0..=2, so bounding
+    // `angle_col` alone still leaves the last row's read past the buffer for a
+    // stride below 3.
+    if kp_stride < 3 {
+        return Err(SiftCudaError::Geometry(format!(
+            "keypoint stride {kp_stride} is smaller than the 3 position columns the kernel reads"
         )));
     }
     let need_kp = (n_kp as usize) * (kp_stride as usize);

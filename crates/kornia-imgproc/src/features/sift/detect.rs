@@ -128,10 +128,30 @@ pub fn find_extrema(
                 if val.abs() <= thr {
                     return;
                 }
-                // 26-neighbour test: strictly greater than, or strictly less
-                // than, every neighbour in the 3x3x3 cube.
-                let mut is_max = true;
-                let mut is_min = true;
+                // 26-neighbour test, exactly the reference's shape:
+                //
+                //   (val > 0 && val >= every neighbour) ||
+                //   (val < 0 && val <= every neighbour)
+                //
+                // Both halves are load-bearing and neither is a stylistic
+                // choice. The comparisons are NOT strict — a plateau where the
+                // centre ties a neighbour is an extremum to the reference, and
+                // it is `removeDuplicatedSorted` downstream that collapses the
+                // copies such a plateau produces. And the sign guard is what
+                // rejects a strict local *maximum* whose value is negative,
+                // which is not a SIFT extremum at all.
+                //
+                // The NEON prefilter below already applies exactly this test,
+                // and `cuda::sift::detect`'s `sift_find_extrema` spells it the
+                // same way; a strict, sign-free decider here made the scalar
+                // tail columns disagree with the vectorised ones in the same
+                // row, and both disagree with the CUDA twin.
+                //
+                // Written as the negation (`!(val >= n)`) rather than
+                // `val < n` so a non-finite `val` is rejected, as the
+                // reference's `&&` chain rejects it.
+                let positive = val > 0.0;
+                let mut ok = true;
                 'nb: for (pi, pl) in [prv, cur, nxt].into_iter().enumerate() {
                     for dr in -1i32..=1 {
                         let rr = (r as i32 + dr) as usize * w;
@@ -143,19 +163,15 @@ pub fn find_extrema(
                                 continue;
                             }
                             let n = pl[rr + (c as i32 + dc) as usize];
-                            if n >= val {
-                                is_max = false;
-                            }
-                            if n <= val {
-                                is_min = false;
-                            }
-                            if !is_max && !is_min {
+                            let keeps = if positive { val >= n } else { val <= n };
+                            if !keeps {
+                                ok = false;
                                 break 'nb;
                             }
                         }
                     }
                 }
-                if !(is_max || is_min) {
+                if !ok {
                     return;
                 }
                 if let Some(kp) = refine(dog, w, h, n_dog, layer, r, c, octv, cfg) {
@@ -169,11 +185,12 @@ pub fn find_extrema(
             // contrast threshold and enter the 26-neighbour test, but only 0.09%
             // are extrema — so the scalar path spends its time proving negatives.
             //
-            // `val >= max(neighbours)` is implied by the strict `val > every
-            // neighbour`, so a lane the exact test would accept can never be
-            // dropped here; `check` still decides. This is the same conservative
-            // prefilter `findScaleSpaceExtrema` uses, including its behaviour on
-            // a non-finite DoG, where `FMAX` drops NaN.
+            // `val >= max(neighbours)` is implied by `val >= every neighbour`,
+            // so a lane the exact test would accept can never be dropped here;
+            // `check` still decides. This is the same conservative prefilter
+            // `findScaleSpaceExtrema` uses — including the `val > 0` / `val < 0`
+            // split, which `check` applies too — and its behaviour on a
+            // non-finite DoG, where `FMAX` drops NaN.
             #[cfg(target_arch = "aarch64")]
             {
                 use std::arch::aarch64::*;
