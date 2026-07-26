@@ -121,10 +121,12 @@ pub fn find_extrema(
         .into_par_iter()
         .map(|r| {
             let mut acc = Vec::new();
-            for c in IMG_BORDER..w - IMG_BORDER {
+            // The exact test, unchanged. Everything below only decides which
+            // columns reach it.
+            let check = |c: usize, acc: &mut Vec<RawKeypoint>| {
                 let val = cur[r * w + c];
                 if val.abs() <= thr {
-                    continue;
+                    return;
                 }
                 // 26-neighbour test: strictly greater than, or strictly less
                 // than, every neighbour in the 3x3x3 cube.
@@ -154,11 +156,76 @@ pub fn find_extrema(
                     }
                 }
                 if !(is_max || is_min) {
-                    continue;
+                    return;
                 }
                 if let Some(kp) = refine(dog, w, h, n_dog, layer, r, c, octv, cfg) {
                     acc.push(kp);
                 }
+            };
+
+            let (c_lo, c_hi) = (IMG_BORDER, w - IMG_BORDER);
+            let mut c = c_lo;
+            // Vector prefilter. Measured on apriltags: 34.1% of pixels clear the
+            // contrast threshold and enter the 26-neighbour test, but only 0.09%
+            // are extrema — so the scalar path spends its time proving negatives.
+            //
+            // `val >= max(neighbours)` is implied by the strict `val > every
+            // neighbour`, so a lane the exact test would accept can never be
+            // dropped here; `check` still decides. This is the same conservative
+            // prefilter `findScaleSpaceExtrema` uses, including its behaviour on
+            // a non-finite DoG, where `FMAX` drops NaN.
+            #[cfg(target_arch = "aarch64")]
+            {
+                use std::arch::aarch64::*;
+                // SAFETY: `r` is in `IMG_BORDER..h - IMG_BORDER` so `r - 1` and
+                // `r + 1` are in range, and the loop guard keeps `c + 4` (the
+                // widest column touched, from the `c + 1` shift of a 4-wide
+                // block) below `w`.
+                unsafe {
+                    let vthr = vdupq_n_f32(thr);
+                    while c + 4 <= c_hi {
+                        let val = vld1q_f32(cur.as_ptr().add(r * w + c));
+                        // |val| > thr, the same rejection as the scalar head.
+                        let mut cond = vcgtq_f32(vabsq_f32(val), vthr);
+                        if vmaxvq_u32(cond) == 0 {
+                            c += 4;
+                            continue;
+                        }
+                        let (mut vmax, mut vmin) =
+                            (vdupq_n_f32(f32::NEG_INFINITY), vdupq_n_f32(f32::INFINITY));
+                        for pl in [prv, cur, nxt] {
+                            for dr in 0..3usize {
+                                let base = pl.as_ptr().add((r + dr - 1) * w + c);
+                                for dc in 0..3usize {
+                                    // The centre is not its own neighbour.
+                                    if std::ptr::eq(pl.as_ptr(), cur.as_ptr()) && dr == 1 && dc == 1
+                                    {
+                                        continue;
+                                    }
+                                    let n = vld1q_f32(base.add(dc).sub(1));
+                                    vmax = vmaxq_f32(vmax, n);
+                                    vmin = vminq_f32(vmin, n);
+                                }
+                            }
+                        }
+                        cond =
+                            vandq_u32(cond, vorrq_u32(vcgeq_f32(val, vmax), vcleq_f32(val, vmin)));
+                        if vmaxvq_u32(cond) != 0 {
+                            let mut lanes = [0u32; 4];
+                            vst1q_u32(lanes.as_mut_ptr(), cond);
+                            for (k, &l) in lanes.iter().enumerate() {
+                                if l != 0 {
+                                    check(c + k, &mut acc);
+                                }
+                            }
+                        }
+                        c += 4;
+                    }
+                }
+            }
+            while c < c_hi {
+                check(c, &mut acc);
+                c += 1;
             }
             (r, acc)
         })

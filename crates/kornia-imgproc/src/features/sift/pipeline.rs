@@ -249,6 +249,7 @@ pub fn detect_and_compute_with(
     // inflated the way the CUDA equivalent is.
     let probe = std::env::var("KORNIA_SIFT_STAGES").is_ok();
     let (mut t_blur, mut t_det, mut t_ori, mut t_desc) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+    let mut t_grad = 0.0f64;
     let mark = || std::time::Instant::now();
 
     let n_oct = cfg
@@ -286,9 +287,13 @@ pub fn detect_and_compute_with(
             t_blur += tb.elapsed().as_secs_f64() * 1e3;
         }
 
+        let tg = mark();
         for layer in 1..=cfg.n_octave_layers {
             let (m, a) = (&mut g_mag[layer], &mut g_ang[layer]);
             gradients(&gauss[layer][..p], cw, ch, &mut m[..p], &mut a[..p]);
+        }
+        if probe {
+            t_grad += tg.elapsed().as_secs_f64() * 1e3;
         }
 
         let td = mark();
@@ -366,7 +371,8 @@ pub fn detect_and_compute_with(
 
     if probe {
         eprintln!(
-            "    stages: blur={t_blur:.1} detect={t_det:.1} orient={t_ori:.1} desc={t_desc:.1} (ms)"
+            "    stages: blur={t_blur:.1} grad={t_grad:.1} detect={t_det:.1} \
+orient={t_ori:.1} desc={t_desc:.1} (ms)"
         );
     }
     // first_octave = -1 post-processing, then the reference's ordering.

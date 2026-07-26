@@ -31,6 +31,27 @@ fn floor_i(v: f32) -> i32 {
     i - i32::from(v < i as f32)
 }
 
+/// Narrow `[lo, hi]` to the `j` satisfying `-1 < j * coef + off < limit`.
+///
+/// Both descriptor bin coordinates are affine in `j` (`r_rot = j * sin_t +
+/// i * cos_t`, and likewise for `c_rot`), so each bound is a half-plane and the
+/// accepted `j` of a row form one contiguous run. `coef == 0` makes the
+/// constraint independent of `j`: it either holds for the whole row or kills it.
+#[inline]
+fn clip_j(coef: f32, off: f32, limit: f32, lo: &mut f32, hi: &mut f32) {
+    if coef > 0.0 {
+        *lo = lo.max((-1.0 - off) / coef);
+        *hi = hi.min((limit - off) / coef);
+    } else if coef < 0.0 {
+        *lo = lo.max((limit - off) / coef);
+        *hi = hi.min((-1.0 - off) / coef);
+    } else if !(off > -1.0 && off < limit) {
+        // Empty row.
+        *lo = 1.0;
+        *hi = 0.0;
+    }
+}
+
 /// The reference accumulates over four SIMD lanes with FMA, then reduces
 /// pairwise: `((l0+l1) + (l2+l3))`. A plain scalar sum gives a different value.
 fn nrm2(v: &[f32]) -> f32 {
@@ -81,15 +102,89 @@ fn flush(
     if n == 4 {
         use super::hal::x4;
         use std::arch::aarch64::*;
-        // SAFETY: NEON is baseline on aarch64; all buffers are 4 wide.
+        // SAFETY: NEON is baseline on aarch64; all buffers are 4 wide, and the
+        // scatter indices are bounded by the same `rbin`/`cbin` range check the
+        // caller applied before buffering.
         unsafe {
             let vcr = vld1q_f32(c_rot.as_ptr());
             let vrr = vld1q_f32(r_rot.as_ptr());
             let q = vfmaq_f32(vmulq_f32(vrr, vrr), vcr, vcr);
-            vst1q_f32(wgt.as_mut_ptr(), x4::exp(vmulq_n_f32(q, exp_scale)));
+            let vwgt = x4::exp(vmulq_n_f32(q, exp_scale));
+
+            // Everything up to the scatter is elementwise, so the four lanes are
+            // bit-identical to the scalar tail below. Only the histogram
+            // accumulation is order-sensitive (float addition does not
+            // associate), so that alone stays scalar, in the reference's sample
+            // order. This is the split `calcSIFTDescriptor` itself uses.
+            let mut rb = vld1q_f32(rbin.as_ptr());
+            let mut cb = vld1q_f32(cbin.as_ptr());
+            let mut ob = vmulq_n_f32(
+                vsubq_f32(vld1q_f32(ang.as_ptr()), vdupq_n_f32(ori)),
+                bins_per_rad,
+            );
+            // Round toward minus infinity: `floor_i`'s twin.
+            let r0 = vcvtmq_s32_f32(rb);
+            let c0 = vcvtmq_s32_f32(cb);
+            let mut o0 = vcvtmq_s32_f32(ob);
+            rb = vsubq_f32(rb, vcvtq_f32_s32(r0));
+            cb = vsubq_f32(cb, vcvtq_f32_s32(c0));
+            ob = vsubq_f32(ob, vcvtq_f32_s32(o0));
+
+            let vn = vdupq_n_s32(N as i32);
+            o0 = vbslq_s32(vcltq_s32(o0, vdupq_n_s32(0)), vaddq_s32(o0, vn), o0);
+            o0 = vbslq_s32(vcgeq_s32(o0, vn), vsubq_s32(o0, vn), o0);
+
+            let m = vmulq_f32(vld1q_f32(mag.as_ptr()), vwgt);
+            let v_r1 = vmulq_f32(m, rb);
+            let v_r0 = vsubq_f32(m, v_r1);
+            let v_rc11 = vmulq_f32(v_r1, cb);
+            let v_rc10 = vsubq_f32(v_r1, v_rc11);
+            let v_rc01 = vmulq_f32(v_r0, cb);
+            let v_rc00 = vsubq_f32(v_r0, v_rc01);
+            let v111 = vmulq_f32(v_rc11, ob);
+            let v110 = vsubq_f32(v_rc11, v111);
+            let v101 = vmulq_f32(v_rc10, ob);
+            let v100 = vsubq_f32(v_rc10, v101);
+            let v011 = vmulq_f32(v_rc01, ob);
+            let v010 = vsubq_f32(v_rc01, v011);
+            let v001 = vmulq_f32(v_rc00, ob);
+            let v000 = vsubq_f32(v_rc00, v001);
+
+            let idx = vaddq_s32(
+                vmulq_n_s32(
+                    vaddq_s32(
+                        vmulq_n_s32(vaddq_s32(r0, vdupq_n_s32(1)), (D + 2) as i32),
+                        vaddq_s32(c0, vdupq_n_s32(1)),
+                    ),
+                    (N + 2) as i32,
+                ),
+                o0,
+            );
+
+            let mut ib = [0i32; 4];
+            let mut rco = [0.0f32; 32];
+            vst1q_s32(ib.as_mut_ptr(), idx);
+            for (slot, v) in [v000, v001, v010, v011, v100, v101, v110, v111]
+                .into_iter()
+                .enumerate()
+            {
+                vst1q_f32(rco.as_mut_ptr().add(slot * 4), v);
+            }
+            for (k, &base) in ib.iter().enumerate() {
+                let b = base as usize;
+                hist[b] += rco[k];
+                hist[b + 1] += rco[4 + k];
+                hist[b + (N + 2)] += rco[8 + k];
+                hist[b + (N + 3)] += rco[12 + k];
+                hist[b + (D + 2) * (N + 2)] += rco[16 + k];
+                hist[b + (D + 2) * (N + 2) + 1] += rco[20 + k];
+                hist[b + (D + 3) * (N + 2)] += rco[24 + k];
+                hist[b + (D + 3) * (N + 2) + 1] += rco[28 + k];
+            }
         }
+        return;
     }
-    if !(cfg!(target_arch = "aarch64") && n == 4) {
+    {
         for k in 0..n {
             wgt[k] = exp((c_rot[k] * c_rot[k] + r_rot[k] * r_rot[k]) * exp_scale);
         }
@@ -194,8 +289,45 @@ pub fn compute_descriptor(
     let mut b_cbin = [0.0f32; 4];
     let mut nb = 0usize;
 
-    for i in -radius..=radius {
-        for j in -radius..=radius {
+    // The row bound is exactly the reference's `r > 0 && r < rows - 1`, hoisted
+    // out of the inner test: it depends only on `i`.
+    let i_lo = (-radius).max(1 - py);
+    let i_hi = radius.min(h as i32 - 2 - py);
+
+    for i in i_lo..=i_hi {
+        // Accepted `j` form one contiguous run per row (see `clip_j`). Deriving
+        // it skips the ~52% of the square the predicate rejects — measured on
+        // apriltags: 5.50M iterations for 2.63M accepted samples.
+        //
+        // The derived bounds are float arithmetic and the original predicate is
+        // NOT float-associative-safe to replace, so the run is widened by one on
+        // each side and every surviving `j` still faces the identical test
+        // below. Skipping is therefore an optimisation of provably-rejected
+        // iterations only, and cannot move a sample into or out of the
+        // histogram.
+        let (mut jf_lo, mut jf_hi) = (-(radius as f32), radius as f32);
+        let half = D as f32 / 2.0 - 0.5;
+        clip_j(
+            sin_t,
+            i as f32 * cos_t + half,
+            D as f32,
+            &mut jf_lo,
+            &mut jf_hi,
+        );
+        clip_j(
+            cos_t,
+            -(i as f32) * sin_t + half,
+            D as f32,
+            &mut jf_lo,
+            &mut jf_hi,
+        );
+        if jf_lo > jf_hi {
+            continue;
+        }
+        let j_lo = (jf_lo.floor() as i32 - 1).max(-radius).max(1 - px);
+        let j_hi = (jf_hi.ceil() as i32 + 1).min(radius).min(w as i32 - 2 - px);
+
+        for j in j_lo..=j_hi {
             let c_rot = j as f32 * cos_t - i as f32 * sin_t;
             let r_rot = j as f32 * sin_t + i as f32 * cos_t;
             let rbin = r_rot + D as f32 / 2.0 - 0.5;

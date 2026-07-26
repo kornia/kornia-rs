@@ -429,6 +429,14 @@ pub fn gradients(img: &[f32], w: usize, h: usize, mag: &mut [f32], ang: &mut [f3
         });
 }
 
+/// One row of magnitudes and angles.
+///
+/// Two separate planes, not one interleaved `(mag, ang)` plane. Interleaving was
+/// measured on 2026-07-26 and **regressed** — descriptor 98.0 -> 101.6 ms,
+/// gradients 30.9 -> 32.2, total +5%. The pair is still two load instructions
+/// either way (adjacent addresses do not merge), so there is no gather to save,
+/// while `vst2q_f32` adds an interleaving shuffle the two plain stores avoid.
+/// Do not retry without a mechanism that addresses both.
 #[inline]
 fn grad_row(img: &[f32], w: usize, y: usize, mrow: &mut [f32], arow: &mut [f32]) {
     use super::hal::{atan2_deg, magnitude};
