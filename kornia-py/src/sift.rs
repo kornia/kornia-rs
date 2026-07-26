@@ -8,15 +8,16 @@
 //! result and the set of rejected inputs do not depend on where the image lives
 //! — only the speed does.
 //!
-//! `Sift.match` is the exception, and says so: the brute-force matcher is a CUDA
-//! kernel, so it requires device images rather than silently uploading.
+//! `Sift.match` dispatches the same way: two device images match on device, with
+//! the descriptors never crossing the bus; anything else detects and matches on
+//! the CPU. Mixing residency is refused rather than silently transferred.
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use kornia_imgproc::features::{
-    sift_detect_with, FirstOctave as CpuFirstOctave, SiftConfig, SiftKeypoint, SiftWorkspace,
-    DESCR_LEN,
+    sift_detect_with, sift_match_descriptors, FirstOctave as CpuFirstOctave, SiftConfig,
+    SiftKeypoint, SiftWorkspace, DESCR_LEN,
 };
 use numpy::{PyArray2, PyArray3, PyArrayMethods, PyUntypedArrayMethods};
 
@@ -61,15 +62,20 @@ pub struct Sift {
 }
 
 /// `(N, 6)` of `x, y, size, angle, response, octave`.
+///
+/// Flat buffer then reshape, through the same helper the CUDA path uses:
+/// `from_vec2` would need a `Vec<Vec<f32>>` first — an allocation per keypoint
+/// and a second copy — and gives an empty result the shape `(0, 0)` rather than
+/// `(0, 6)`.
 fn keypoints_to_numpy<'py>(
     py: Python<'py>,
     kps: &[SiftKeypoint],
 ) -> PyResult<Bound<'py, PyArray2<f32>>> {
-    let rows: Vec<Vec<f32>> = kps
-        .iter()
-        .map(|k| vec![k.x, k.y, k.size, k.angle, k.response, k.octave as f32])
-        .collect();
-    PyArray2::from_vec2(py, &rows).map_err(|e| PyValueError::new_err(e.to_string()))
+    let mut flat = Vec::with_capacity(kps.len() * 6);
+    for k in kps {
+        flat.extend_from_slice(&[k.x, k.y, k.size, k.angle, k.response, k.octave as f32]);
+    }
+    crate::pyutils::rows_to_numpy(py, flat, 6)
 }
 
 #[pymethods]
@@ -168,13 +174,12 @@ impl Sift {
         self.detect_host(py, image)
     }
 
-    /// Detect in both images and match, without the descriptors leaving the
-    /// device.
+    /// Detect in both images and match.
     ///
-    /// Device images only: the matcher is a CUDA kernel, and uploading on the
-    /// caller's behalf would hide a full-frame transfer inside what looks like a
-    /// matching call. Detection alone runs on either backend — see
-    /// [`Sift::detect_and_compute`].
+    /// Two **device** images match on device, and the descriptors — the bulk of
+    /// the data at 128 floats per keypoint — never cross the bus. Anything else
+    /// runs the NEON detector and the NEON matcher. A device image paired with a
+    /// host one is refused rather than silently transferred.
     ///
     /// `ratio` is Lowe's ratio; `>= 1.0` disables it. `cross_check` requires
     /// each pair to be a mutual nearest neighbour.
@@ -196,10 +201,10 @@ impl Sift {
         Bound<'py, PyArray2<i32>>,
     )> {
         #[cfg(feature = "cuda")]
-        {
+        if is_device(image_a) || is_device(image_b) {
             let a = device_image(image_a, "Sift.match")?;
             let b = device_image(image_b, "Sift.match")?;
-            crate::cuda_ext::cuda_sift::sift_match(
+            return crate::cuda_ext::cuda_sift::sift_match(
                 py,
                 &a.borrow(),
                 &b.borrow(),
@@ -216,13 +221,9 @@ impl Sift {
                 self.max_keypoints,
                 self.upsample,
                 self.max_octaves,
-            )
+            );
         }
-        #[cfg(not(feature = "cuda"))]
-        Err(PyValueError::new_err(
-            "Sift.match: the matcher is a CUDA kernel and this build has no CUDA \
-             support; detect on the CPU and match with your own routine",
-        ))
+        self.match_host(py, image_a, image_b, ratio, cross_check)
     }
 
     fn __repr__(&self) -> String {
@@ -249,7 +250,39 @@ impl Sift {
     }
 }
 
+/// Whether an object is a device-resident `Image`.
+#[cfg(feature = "cuda")]
+fn is_device(obj: &Bound<'_, PyAny>) -> bool {
+    obj.cast::<PyImageApi>()
+        .map(|a| a.borrow().is_device())
+        .unwrap_or(false)
+}
+
 impl Sift {
+    /// Detect and match entirely on CPU.
+    fn match_host<'py>(
+        &mut self,
+        py: Python<'py>,
+        image_a: &Bound<'py, PyAny>,
+        image_b: &Bound<'py, PyAny>,
+        ratio: f32,
+        cross_check: bool,
+    ) -> PyResult<(
+        Bound<'py, PyArray2<f32>>,
+        Bound<'py, PyArray2<f32>>,
+        Bound<'py, PyArray2<i32>>,
+    )> {
+        let (ka, da) = self.detect_host(py, image_a)?;
+        let (kb, db) = self.detect_host(py, image_b)?;
+        let (na, nb) = (ka.shape()[0], kb.shape()[0]);
+        let (ra, rb) = (da.readonly(), db.readonly());
+        let (sa, sb) = (ra.as_slice().unwrap(), rb.as_slice().unwrap());
+        let pairs = py.detach(|| sift_match_descriptors(sa, na, sb, nb, ratio, cross_check));
+        let flat: Vec<i32> = pairs.iter().flat_map(|p| [p[0], p[1]]).collect();
+        let m = crate::pyutils::rows_to_numpy(py, flat, 2)?;
+        Ok((ka, kb, m))
+    }
+
     /// The NEON path, for a numpy array or a host `Image`.
     fn detect_host<'py>(
         &mut self,
@@ -310,15 +343,7 @@ impl Sift {
             .map_err(|e| PyValueError::new_err(format!("Sift: {e}")))?;
 
         let kp = keypoints_to_numpy(py, &feats.keypoints)?;
-        let desc = PyArray2::from_vec2(
-            py,
-            &feats
-                .descriptors
-                .chunks(DESCR_LEN)
-                .map(|c| c.to_vec())
-                .collect::<Vec<_>>(),
-        )
-        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let desc = crate::pyutils::rows_to_numpy(py, feats.descriptors, DESCR_LEN)?;
         Ok((kp, desc))
     }
 }

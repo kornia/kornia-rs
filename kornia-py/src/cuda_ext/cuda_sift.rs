@@ -8,6 +8,7 @@
 //! changes but reused across frames of the same size.
 
 use super::*;
+use crate::pyutils::rows_to_numpy;
 use kornia_imgproc::cuda::sift::{
     FirstOctave, SiftCuda, SiftCudaConfig, SiftKeypoint, SiftMatcher, DESCR_LEN,
 };
@@ -83,23 +84,6 @@ pub(crate) fn sift_cuda_with_plan<'py>(
     let kp_arr = keypoints_to_numpy(py, &feats.keypoints)?;
     let desc_arr = rows_to_numpy(py, feats.descriptors, DESCR_LEN)?;
     Ok((kp_arr, desc_arr))
-}
-
-/// Reshape a flat row-major block into `(len / cols, cols)`.
-///
-/// `PyArray2::from_vec2` derives the column count from the first row, so an
-/// empty result would come back as `(0, 0)` instead of `(0, cols)` and break
-/// any caller that slices a column or stacks the array. Going through a flat
-/// vector also skips the per-row `Vec` allocation and copy.
-fn rows_to_numpy<T: numpy::Element>(
-    py: Python<'_>,
-    flat: Vec<T>,
-    cols: usize,
-) -> PyResult<Bound<'_, PyArray2<T>>> {
-    let rows = flat.len() / cols;
-    numpy::PyArray1::from_vec(py, flat)
-        .reshape([rows, cols])
-        .map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
 /// Install a plan for `src` if the current one does not match, returning the

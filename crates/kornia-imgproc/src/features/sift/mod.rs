@@ -20,6 +20,12 @@ pub use descriptor::{
     compute_descriptor, compute_descriptor_fast, descriptor_inputs, DESCR_LEN, FAST_SAMP,
 };
 
+mod matcher;
+pub use matcher::{
+    l2_sq, l2_sq_scalar, match_descriptors as sift_match_descriptors,
+    match_descriptors_scalar as sift_match_descriptors_scalar,
+};
+
 mod hal;
 pub use hal::{atan2_deg, exp as sift_exp, magnitude};
 

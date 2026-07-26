@@ -5,9 +5,27 @@
 //! contiguity — they are thin reinterpret-then-copy helpers, not validators.
 
 use numpy::{PyArray, PyArray1, PyArray2, PyArrayMethods, PyUntypedArrayMethods};
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use kornia_algebra::{Mat3F64, Vec2F64};
+
+/// Reshape a flat row-major block into `(len / cols, cols)`.
+///
+/// `PyArray2::from_vec2` derives the column count from the first row, so an
+/// empty result would come back as `(0, 0)` instead of `(0, cols)` and break
+/// any caller that slices a column or stacks the array. Going through a flat
+/// vector also skips the per-row `Vec` allocation and copy.
+pub(crate) fn rows_to_numpy<T: numpy::Element>(
+    py: Python<'_>,
+    flat: Vec<T>,
+    cols: usize,
+) -> PyResult<Bound<'_, PyArray2<T>>> {
+    let rows = flat.len() / cols;
+    numpy::PyArray1::from_vec(py, flat)
+        .reshape([rows, cols])
+        .map_err(|e| PyValueError::new_err(e.to_string()))
+}
 
 /// Copy a `(N, 2)` C-contiguous float64 numpy array into a `Vec<Vec2F64>`.
 pub(crate) fn unpack_pts(arr: &Bound<'_, PyArray2<f64>>) -> Vec<Vec2F64> {

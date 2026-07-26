@@ -331,8 +331,12 @@ pub fn detect_and_compute_with(
             .iter()
             .map(|(k, _, layer)| (*k, *layer))
             .collect();
-        let mut block = vec![0.0f32; todo.len() * DESCR_LEN];
-        block
+        // Grow the frame's block and fill the new rows in place; staging into a
+        // temporary and copying would duplicate every descriptor once per
+        // octave.
+        let start_f = desc.len();
+        desc.resize(start_f + todo.len() * DESCR_LEN, 0.0);
+        desc[start_f..]
             .par_chunks_mut(DESCR_LEN)
             .zip(todo.par_iter())
             .for_each(|(out, (k, layer))| {
@@ -345,7 +349,6 @@ pub fn detect_and_compute_with(
                 // scales, where the sample-count scaling eventually wins.
                 compute_descriptor(gm, ga, cw, ch, x, y, s, a, out);
             });
-        desc.extend_from_slice(&block);
         if probe {
             t_desc += tds.elapsed().as_secs_f64() * 1e3;
         }
