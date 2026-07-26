@@ -552,4 +552,81 @@ mod tests {
         };
         assert!(!ok(&c, usize::MAX, 64 * 64, 64, 64));
     }
+
+    /// A keypoint budget selects the highest-response keypoints, and a survivor
+    /// keeps the descriptor row it would have had unbudgeted.
+    ///
+    /// `n_features > 0` had no test on either backend when `retainBest` was
+    /// moved ahead of the descriptor stage, which is what this covers.
+    ///
+    /// **Scope, established by injecting faults rather than assumed.** The
+    /// descriptor comparison is against this same pipeline with no budget, so it
+    /// cannot catch anything that corrupts both runs identically — a wrong
+    /// Gaussian layer and a uniform index shift were both injected and both went
+    /// undetected, because the unbudgeted run computes them equally wrongly.
+    /// What it does catch is budget-*specific* breakage: a survivor paired with
+    /// another's row, a permutation that only misbehaves on a sparse set, or a
+    /// grouping that depends on which keypoints survive — the code paths the
+    /// reorder actually added. Descriptor *values* are the bitwise oracle's job
+    /// (`descriptor_matches_reference_bitwise`), which runs at `n_features = 0`.
+    #[test]
+    fn budget_keeps_the_best_and_their_own_descriptors() {
+        let (w, h) = (192usize, 144usize);
+        let mut seed = 0x9E3779B9u32;
+        let img: Vec<f32> = (0..w * h)
+            .map(|_| {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                ((seed >> 16) & 255) as f32
+            })
+            .collect();
+        let cfg = SiftConfig::default();
+        let all = detect_and_compute(&img, w, h, &cfg, FirstOctave::Native, 3, false).unwrap();
+        assert!(all.keypoints.len() > 8, "need enough keypoints to budget");
+
+        let n = all.keypoints.len() / 2;
+        let budget = SiftConfig {
+            n_features: n,
+            ..cfg
+        };
+        let cut = detect_and_compute(&img, w, h, &budget, FirstOctave::Native, 3, false).unwrap();
+
+        assert_eq!(cut.keypoints.len(), n, "budget must cap the count");
+        assert_eq!(cut.descriptors.len(), n * DESCR_LEN, "one row per keypoint");
+
+        // Every survivor must be at least as strong as every keypoint dropped,
+        // which is what `retainBest` guarantees.
+        let kept: Vec<f32> = cut.keypoints.iter().map(|k| k.response).collect();
+        let worst_kept = kept.iter().cloned().fold(f32::INFINITY, f32::min);
+        let dropped = all
+            .keypoints
+            .iter()
+            .filter(|a| !cut.keypoints.iter().any(|b| b.x == a.x && b.y == a.y))
+            .count();
+        assert_eq!(dropped, all.keypoints.len() - n);
+        for a in &all.keypoints {
+            if !cut.keypoints.iter().any(|b| b.x == a.x && b.y == a.y) {
+                assert!(
+                    a.response <= worst_kept,
+                    "dropped a keypoint stronger than one kept"
+                );
+            }
+        }
+
+        // ...and each survivor carries its own descriptor, bit for bit.
+        for (i, k) in cut.keypoints.iter().enumerate() {
+            let j = all
+                .keypoints
+                .iter()
+                .position(|a| a.x == k.x && a.y == k.y && a.angle == k.angle)
+                .expect("survivor missing from the unbudgeted run");
+            let got = &cut.descriptors[i * DESCR_LEN..(i + 1) * DESCR_LEN];
+            let want = &all.descriptors[j * DESCR_LEN..(j + 1) * DESCR_LEN];
+            assert!(
+                got.iter()
+                    .zip(want)
+                    .all(|(a, b)| a.to_bits() == b.to_bits()),
+                "keypoint {i} got a different descriptor under the budget"
+            );
+        }
+    }
 }
