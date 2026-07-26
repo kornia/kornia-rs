@@ -6,7 +6,7 @@
 //! that reason.
 
 use super::detect::RawKeypoint;
-use super::hal::{atan2_deg, exp, magnitude};
+use super::hal::{exp_batch, grow_to, mag_ang_batch};
 use super::params::SiftConfig;
 
 /// Histogram bins (`SIFT_ORI_HIST_BINS`).
@@ -35,6 +35,27 @@ pub struct OrientedKeypoint {
     pub angle: f32,
 }
 
+/// Per-worker scratch for [`assign_orientations`].
+///
+/// Same reason the descriptor has one: the reference runs each primitive as a
+/// single pass over the whole patch, and doing it a few samples at a time makes
+/// the transcendental emulations share registers with the binning loop.
+#[derive(Default)]
+pub struct OrientScratch {
+    dx: Vec<f32>,
+    dy: Vec<f32>,
+    wt: Vec<f32>,
+    mag: Vec<f32>,
+    ang: Vec<f32>,
+}
+
+impl OrientScratch {
+    /// Empty scratch; sized on first use.
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
 /// Append one oriented keypoint per dominant gradient direction.
 ///
 /// A keypoint with several peaks within `ORI_PEAK_RATIO` of the maximum yields
@@ -46,6 +67,7 @@ pub fn assign_orientations(
     kp: &RawKeypoint,
     cfg: &SiftConfig,
     out: &mut Vec<OrientedKeypoint>,
+    sc: &mut OrientScratch,
 ) {
     let octv = kp.octave & 255;
     // `size` is still in the octave's own scale here; the first-octave halving
@@ -74,114 +96,63 @@ pub fn assign_orientations(
     let nx = (x1 - x0 + 1).max(0);
     let ny = (y1 - y0 + 1).max(0);
     let vec_end = (nx * ny) & !3;
-    let mut k = 0i32;
 
-    // Samples are buffered four at a time so `magnitude`, `atan2` and the
-    // Gaussian weight evaluate lane-wise instead of one sample at a time.
+    // Collect the whole patch, then run one pass per primitive, as
+    // `calcOrientationHist` does. Batching four at a time was measured here and
+    // lost: at that width the helpers' loop preambles do not fold away, and the
+    // emulations share registers with the binning loop.
     //
-    // This deliberately does NOT call `hal::{exp_batch, mag_ang_batch}`, which
-    // the descriptor uses and which express the same dispatch. Routing this
-    // through them was implemented and measured on 2026-07-27: orientation went
-    // 19.0 -> 22.5 ms, an 18% regression, because at a fixed width of four the
-    // helpers' loop preambles do not fold away (`#[inline]` did not recover it)
-    // whereas the straight-line block below has none. The duplication is the
-    // price of that; do not "clean it up" without re-measuring.
-    //
-    // The
-    // primitives are bit-identical across the two widths, and the binning below
-    // still runs in strict sample order with its own `k`, so neither the values
-    // nor the two-roundings split depend on where a batch boundary falls.
-    let mut b_dx = [0.0f32; 4];
-    let mut b_dy = [0.0f32; 4];
-    let mut b_q = [0.0f32; 4];
-    let mut nb = 0usize;
-
-    let bin_batch = |dx: &[f32; 4],
-                     dy: &[f32; 4],
-                     q: &[f32; 4],
-                     n: usize,
-                     k: &mut i32,
-                     temphist: &mut [f32; ORI_HIST_BINS]| {
-        let mut mag = [0.0f32; 4];
-        let mut ang = [0.0f32; 4];
-        let mut wgt = [0.0f32; 4];
-
-        #[cfg(target_arch = "aarch64")]
-        let vectorised = n == 4;
-        #[cfg(not(target_arch = "aarch64"))]
-        let vectorised = false;
-
-        #[cfg(target_arch = "aarch64")]
-        if n == 4 {
-            use super::hal::x4;
-            use std::arch::aarch64::*;
-            // SAFETY: NEON is baseline on aarch64; every buffer is 4 wide.
-            unsafe {
-                let vdx = vld1q_f32(dx.as_ptr());
-                let vdy = vld1q_f32(dy.as_ptr());
-                vst1q_f32(mag.as_mut_ptr(), x4::magnitude(vdx, vdy));
-                vst1q_f32(ang.as_mut_ptr(), x4::atan2_deg(vdy, vdx));
-                vst1q_f32(
-                    wgt.as_mut_ptr(),
-                    x4::exp(vmulq_n_f32(vld1q_f32(q.as_ptr()), expf_scale)),
-                );
-            }
-        }
-        if !vectorised {
-            for t in 0..n {
-                mag[t] = magnitude(dx[t], dy[t]);
-                ang[t] = atan2_deg(dy[t], dx[t]);
-                wgt[t] = exp(q[t] * expf_scale);
-            }
-        }
-
-        for t in 0..n {
-            let mut bin = ((ORI_HIST_BINS as f32 / 360.0) * ang[t]).round_ties_even() as i32;
-            if bin >= ORI_HIST_BINS as i32 {
-                bin -= ORI_HIST_BINS as i32;
-            }
-            if bin < 0 {
-                bin += ORI_HIST_BINS as i32;
-            }
-            // NOTE: `magnitude32f`'s vector body composes `recip(rsqrt(s))`
-            // from ARM's estimate instructions while its scalar tail issues a
-            // real square root. Reproducing that split for the last `len % 4`
-            // samples was implemented and measured here and on the GPU: it
-            // changes no angle either time. Do not re-try.
-            if *k < vec_end {
-                temphist[bin as usize] += wgt[t] * mag[t];
-            } else {
-                temphist[bin as usize] = wgt[t].mul_add(mag[t], temphist[bin as usize]);
-            }
-            *k += 1;
-        }
-    };
+    // The primitives are elementwise, so the values do not depend on where a
+    // batch boundary falls; the binning below still runs in strict sample order
+    // and its `vec_end` split is indexed by the sample counter, so neither is
+    // affected.
+    sc.dx.clear();
+    sc.dy.clear();
+    sc.wt.clear();
 
     for i in -radius..=radius {
         let y = rr + i;
         if y <= 0 || y >= h as i32 - 1 {
             continue;
         }
+        let y = y as usize;
+        let (row, up, dn) = (y * w, (y - 1) * w, (y + 1) * w);
         for j in -radius..=radius {
             let x = cc + j;
             if x <= 0 || x >= w as i32 - 1 {
                 continue;
             }
-            let (y, x) = (y as usize, x as usize);
-            // Raw differences, the reference's stencil; magnitude and angle are
-            // derived per sample rather than read from a precomputed layer.
-            b_dx[nb] = img[y * w + x + 1] - img[y * w + x - 1];
-            b_dy[nb] = img[(y - 1) * w + x] - img[(y + 1) * w + x];
-            b_q[nb] = (i * i + j * j) as f32;
-            nb += 1;
-            if nb == 4 {
-                bin_batch(&b_dx, &b_dy, &b_q, 4, &mut k, &mut temphist);
-                nb = 0;
-            }
+            let x = x as usize;
+            sc.dx.push(img[row + x + 1] - img[row + x - 1]);
+            sc.dy.push(img[up + x] - img[dn + x]);
+            sc.wt.push((i * i + j * j) as f32 * expf_scale);
         }
     }
-    if nb > 0 {
-        bin_batch(&b_dx, &b_dy, &b_q, nb, &mut k, &mut temphist);
+
+    let len = sc.dx.len();
+    grow_to(&mut sc.mag, len);
+    grow_to(&mut sc.ang, len);
+    exp_batch(&mut sc.wt);
+    mag_ang_batch(&sc.dx, &sc.dy, &mut sc.mag[..len], &mut sc.ang[..len]);
+
+    for k in 0..len {
+        let mut bin = ((ORI_HIST_BINS as f32 / 360.0) * sc.ang[k]).round_ties_even() as i32;
+        if bin >= ORI_HIST_BINS as i32 {
+            bin -= ORI_HIST_BINS as i32;
+        }
+        if bin < 0 {
+            bin += ORI_HIST_BINS as i32;
+        }
+        // NOTE: `magnitude32f`'s vector body composes `recip(rsqrt(s))` from
+        // ARM's estimate instructions while its scalar tail issues a real
+        // square root. Reproducing that split for the last `len % 4` samples
+        // was implemented and measured here and on the GPU: it changes no angle
+        // either time. Do not re-try.
+        if (k as i32) < vec_end {
+            temphist[bin as usize] += sc.wt[k] * sc.mag[k];
+        } else {
+            temphist[bin as usize] = sc.wt[k].mul_add(sc.mag[k], temphist[bin as usize]);
+        }
     }
 
     // Smooth with [1,4,6,4,1]/16, wrapping. The reference's scalar form is
@@ -298,10 +269,11 @@ mod tests {
             let Some((h2, w2, img)) = load_dump(&format!("{dir}/gauss_o0_l{layer}.f32")) else {
                 return;
             };
+            let mut sc = OrientScratch::new();
             let mut o = Vec::new();
 
             for kp in kps.iter().filter(|k| k.layer == layer as i32) {
-                assign_orientations(&img, w2, h2, kp, &cfg, &mut o);
+                assign_orientations(&img, w2, h2, kp, &cfg, &mut o, &mut sc);
             }
             for k in o {
                 // Reference keypoints are stored after the first-octave halving.

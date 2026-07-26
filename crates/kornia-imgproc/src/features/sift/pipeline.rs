@@ -43,7 +43,7 @@ use rayon::prelude::*;
 
 use super::descriptor::{compute_descriptor, descriptor_inputs, DescriptorScratch, DESCR_LEN};
 use super::detect::{find_extrema, RawKeypoint};
-use super::orient::{assign_orientations, OrientedKeypoint};
+use super::orient::{assign_orientations, OrientScratch, OrientedKeypoint};
 use super::params::{
     gaussian_kernel_f32, gaussian_ksize, validate_source, SiftConfig, SiftConfigError,
 };
@@ -316,11 +316,13 @@ pub fn detect_and_compute_with(
             let group: Vec<&RawKeypoint> = kps.iter().filter(|k| k.layer == layer as i32).collect();
             let oriented: Vec<OrientedKeypoint> = group
                 .par_iter()
-                .flat_map_iter(|kp| {
+                // One scratch per worker, not per keypoint.
+                .map_init(OrientScratch::new, |sc, kp| {
                     let mut o = Vec::new();
-                    assign_orientations(gl, cw, ch, kp, cfg, &mut o);
-                    o.into_iter()
+                    assign_orientations(gl, cw, ch, kp, cfg, &mut o, sc);
+                    o
                 })
+                .flatten_iter()
                 .collect();
             for k in oriented {
                 all.push((k, octv, layer));
