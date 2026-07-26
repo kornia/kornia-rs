@@ -464,6 +464,7 @@ impl SiftCuda {
                         &mut self.ori_kp.as_view_mut(),
                         &mut self.ori_count.as_view_mut(),
                         layer as i32,
+                        self.fast_descriptor,
                     )?;
                     since(to, stream, &mut t_ori);
 

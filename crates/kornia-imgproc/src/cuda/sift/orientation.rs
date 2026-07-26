@@ -225,15 +225,31 @@ pub const ORI_BLOCK_THREADS: usize = 32;
 /// The sample count is `nx * ny` in closed form — the loop is a rectangle
 /// clipped to the image interior and the column bound does not depend on the
 /// row — so a thread can map its flat index straight to a pixel.
-fn orientation_block_src(threads: usize) -> String {
-    orientation_block_src_dbg(threads, false)
-}
-
-/// `dbg` adds a debug output: for keypoint `dbg_idx`, the 36 raw histogram bins
-/// followed by the 36 smoothed ones. Used by the chain diff against the
-/// reference's own `calcOrientationHist`; the production kernel never carries
-/// the extra parameters.
-fn orientation_block_src_dbg(threads: usize, dbg: bool) -> String {
+fn orientation_block_src_dbg(threads: usize, dbg: bool, fast: bool) -> String {
+    // The exact fold replays the reference's sample order: one thread, under two
+    // barriers per chunk, carrying a dependency through `temphist`. The fast
+    // tier drops that ordering for shared atomics -- **not bit-exact**, because
+    // float addition does not associate. That ordering, not the arithmetic, is
+    // what this kernel pays for: it also forces a one-warp block, which pins
+    // occupancy at 33% on GA10x regardless of registers or shared memory.
+    let fold = if fast {
+        "        if (s < total) atomicAdd(&temphist[bin], wgt * mag);
+        __syncthreads();"
+    } else {
+        "        s_bin[tid] = bin; s_w[tid] = wgt; s_m[tid] = mag;
+        __syncthreads();
+        // Serial fold, in the reference's sample order. One FMA per sample.
+        if (tid == 0) {
+            const int m = min(NTHREADS, total - base);
+            for (int q = 0; q < m; q++) {
+                // Vector body rounds the product then adds; the scalar tail
+                // fuses. See the note on the exact kernel above.
+                if (base + q < vec_end) temphist[s_bin[q]] += s_w[q] * s_m[q];
+                else temphist[s_bin[q]] = __fmaf_rn(s_w[q], s_m[q], temphist[s_bin[q]]);
+            }
+        }
+        __syncthreads();"
+    };
     let n = ORI_HIST_BINS;
     format!(
         r#"{hal}
@@ -304,19 +320,7 @@ extern "C" __global__ void sift_orientation_block(
             if (bin >= ORI_N) bin -= ORI_N;
             if (bin < 0) bin += ORI_N;
         }}
-        s_bin[tid] = bin; s_w[tid] = wgt; s_m[tid] = mag;
-        __syncthreads();
-        // Serial fold, in the reference's sample order. One FMA per sample.
-        if (tid == 0) {{
-            const int m = min(NTHREADS, total - base);
-            for (int q = 0; q < m; q++) {{
-                // Vector body rounds the product then adds; the scalar tail
-                // fuses. See the note on the exact kernel above.
-                if (base + q < vec_end) temphist[s_bin[q]] += s_w[q] * s_m[q];
-                else temphist[s_bin[q]] = __fmaf_rn(s_w[q], s_m[q], temphist[s_bin[q]]);
-            }}
-        }}
-        __syncthreads();
+{fold}
     }}
 
     // Smoothing is per-bin independent, so it parallelises freely.
@@ -428,7 +432,7 @@ pub fn launch_sift_orientation_debug_cuda(
     let kernel = get_or_compile(
         ctx,
         &format!("sift_orientation_block_dbg:{threads}"),
-        || orientation_block_src_dbg(threads, true),
+        || orientation_block_src_dbg(threads, true, false),
         "sift_orientation_block",
     )?;
     let max_out = (out_kp.len() / ORI_KP_STRIDE) as i32;
@@ -479,6 +483,9 @@ pub fn launch_sift_orientation_cuda_view(
     out_kp: &mut CudaViewMut<'_, f32>,
     out_count: &mut CudaViewMut<'_, i32>,
     layer_filter: i32,
+    // Fast tier: shared-atomic accumulation instead of the reference's serial
+    // fold. NOT bit-exact -- float addition does not associate.
+    fast: bool,
 ) -> Result<(), SiftCudaError> {
     if width == 0 || height == 0 {
         return Err(SiftCudaError::Geometry(
@@ -548,19 +555,25 @@ pub fn launch_sift_orientation_cuda_view(
             .map_err(|e| SiftCudaError::Cuda(e.to_string()));
     }
 
+    // The fast tier accumulates with atomics, so the one-warp block that the
+    // serial fold required no longer applies: widen it to clear the 33%
+    // occupancy cap that block shape imposes on GA10x.
+    let threads = if fast { 128 } else { 0 };
     // Swept with KORNIA_SIFT_ORI_T; read once, as above.
     static THREADS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    let threads = *THREADS.get_or_init(|| {
+    let _ = &THREADS;
+    let threads_env = *THREADS.get_or_init(|| {
         std::env::var("KORNIA_SIFT_ORI_T")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
             .filter(|t| t.is_power_of_two() && *t >= 32 && *t <= 1024)
             .unwrap_or(ORI_BLOCK_THREADS)
     });
+    let threads = if threads != 0 { threads } else { threads_env };
     let kernel = get_or_compile(
         ctx,
-        &format!("sift_orientation_block:{threads}"),
-        || orientation_block_src(threads),
+        &format!("sift_orientation_block:{threads}:{fast}"),
+        || orientation_block_src_dbg(threads, false, fast),
         "sift_orientation_block",
     )?;
     // One block per keypoint: the grid is the keypoint count, not a tiling.
@@ -614,6 +627,7 @@ pub fn launch_sift_orientation_cuda(
         &mut out_kp.as_view_mut(),
         &mut out_count.as_view_mut(),
         layer_filter,
+        false,
     )
 }
 
