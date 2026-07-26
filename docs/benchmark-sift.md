@@ -8,7 +8,7 @@ before trusting a difference under ~5%.
 
 | | |
 |---|---|
-| Date (UTC) | 2026-07-27 00:30 |
+| Date (UTC) | 2026-07-27 03:10 |
 | Host | nvidia-orin00 |
 | Machine | NVIDIA Jetson Orin Nano Engineering Reference Developer Kit Super |
 | Kernel / arch | 5.15.148-tegra aarch64 |
@@ -36,7 +36,7 @@ misleading:
 | CUDA | `fo=-1` (OpenCV's default) | **19.7** | 11.4x | **5.3x** |
 | CUDA | `fo=-1`, fast descriptor | 13.9 | 16.2x | 7.5x |
 | CUDA | `fo=0`, 4 octaves | **7.7** | 29x | 13.5x |
-| CPU (NEON) | `fo=-1` | 81 | 2.8x | **1.27x** |
+| CPU (NEON) | `fo=-1` | 81 | 2.8x | **1.35x** |
 | CPU (NEON) | `fo=0`, 4 octaves | 24 | 9.3x | 4.3x |
 | OpenCV 5.0.0 | default, 1 thread | 224.7 | 1.0x | — |
 | OpenCV 5.0.0 | default, 6 threads | 104 | 2.15x | 1.0x |
@@ -54,12 +54,12 @@ median epipolar error.
 
 | threads | cv2 | kornia NEON | ratio |
 |---|---|---|---|
-| 1 | 224.0 | 258.4 | 0.87x |
-| 2 | 146.7 | 135.2 | 1.09x |
-| 4 | 109.6 | 82.3 | 1.33x |
-| 6 | ~103 | ~81 | **~1.27x** |
+| 1 | 225.7 | 254.3 | 0.89x |
+| 2 | 146.7 | 132.0 | 1.11x |
+| 4 | 109.6 | 80.5 | 1.36x |
+| 6 | ~110 | ~81 | **~1.35x** |
 
-Per core the NEON path is 1.15x slower than OpenCV; from two threads up it is
+Per core the NEON path is 1.13x slower than OpenCV; from two threads up it is
 ahead. Earlier revisions of this document claimed 2.3x-7x on CPU; those compared
 our six-thread figure against `setNumThreads(1)` and were wrong. The CUDA rows
 are unaffected in kind — a GPU is being compared against a CPU either way — but
@@ -77,13 +77,13 @@ Measured with `KORNIA_SIFT_STAGES=1` at `RAYON_NUM_THREADS=1` on apriltags
 
 | stage | cv2 | was | now |
 |---|---|---|---|
-| pyramid / blur | 61.1 | 73.7 | 67.8 |
+| pyramid / blur | 61.1 | 73.7 | 66.0 |
 | gradients | inline | 31.1 | — |
-| extrema + orient | 38.7 | 75.8 | 37.8 |
-| descriptors | 78.6 | 112.3 | 87.2 |
-| **total** | **178.4** | **311.0** | **207.8** |
+| extrema + orient | 38.7 | 75.8 | 35.7 |
+| descriptors | 78.6 | 112.3 | 87.6 |
+| **total** | **178.4** | **311.0** | **204.5** |
 
-Six changes got there, each held to the bitwise oracle:
+Seven changes got there, each held to the bitwise oracle:
 
 * **Extrema scan** — 34.1% of pixels clear the contrast threshold and enter the
   26-neighbour test, but only 0.09% are extrema. A NEON prefilter, staged by
@@ -128,8 +128,16 @@ Six changes got there, each held to the bitwise oracle:
   loop then *re-read that store* to subtract the lower layer. Taking the
   difference off the accumulator removes a 5.8 MB read per layer at octave 0.
 
-Extrema and orientation are at parity with cv2 (37.8 vs 38.7). What is left is
-the descriptor (87.2 vs 78.6, both including gradients) and the pyramid (67.8 vs
+* **Orientation patch batched whole**, 19.0 -> 16.7 ms. It was still collecting
+  four samples at a time between binning steps, the shape the descriptor was
+  moved off. Note this is *not* the change that was falsified: routing the
+  four-at-a-time form through the shared helpers regressed 18%, because at a
+  fixed width of four their loop preambles do not fold away. Batching the whole
+  patch removes the width-four call, so the preamble amortises over hundreds of
+  samples instead of being paid per four.
+
+Extrema and orientation are now **ahead** of cv2 (35.7 vs 38.7). What is left is
+the descriptor (87.6 vs 78.6, both including gradients) and the pyramid (66.0 vs
 61.1, ours also producing the DoG).
 
 ### A bug the optimisation introduced, and the test that now covers it
@@ -176,7 +184,7 @@ all six cores and on one thread respectively.
 | **CUDA `fo=-1`** (identical output) | **18.3** | 2515 | **5.5x** | **12.3x** |
 | CUDA `fo=-1` fast descriptor | 13.2 | 2515 | 7.6x | 17.1x |
 | CUDA `fo=0`, 4 octaves | 7.1 | 933 | 14.1x | 31.6x |
-| **NEON `fo=-1`** (identical output) | **78.2** | 2515 | **1.3x** | 2.9x |
+| **NEON `fo=-1`** (identical output) | **83.1** | 2515 | **1.3x** | 2.7x |
 | NEON `fo=0`, 4 octaves | 25.6 | 933 | 3.9x | 8.8x |
 
 Only the `fo=-1` rows do the same work as cv2 — same 2515 keypoints, and every
@@ -215,7 +223,7 @@ not matchers.
 | engine | kp | ms | H match | H ok | F match | F inl | inl% | sed |
 |---|---|---|---|---|---|---|---|---|
 | opencv (1 thread) | 2515 | 225.2 | 5293 | 5232 | 816 | 533 | 65.3% | 0.29 |
-| opencv (all cores) | 2515 | 103.8 | 5293 | 5232 | 816 | 533 | 65.3% | 0.29 |
+| opencv (all cores) | 2515 | 110.7 | 5293 | 5232 | 816 | 533 | 65.3% | 0.29 |
 | cuda `fo=-1` | 2515 | 19.6 | 5293 | 5232 | 816 | 533 | 65.3% | 0.29 |
 | cuda `fo=-1` fast | 2515 | 13.9 | 5313 | 5252 | 819 | 496 | 60.6% | 0.26 |
 | cuda `fo=0` 4oct | 933 | 7.7 | 1911 | 1884 | 346 | 207 | 59.8% | 0.28 |
