@@ -89,7 +89,7 @@ pub struct SiftFeatures {
 /// This is the reference's ordinary resize, **not** its precise-upscale affine
 /// warp — the option defaults to off, and the two differ by a quarter pixel,
 /// which shifts every downstream keypoint.
-fn upsample2x(src: &[f32], sw: usize, sh: usize, dst: &mut [f32]) {
+fn upsample2x(src: &[f32], sw: usize, sh: usize, dst: &mut [f32], hbuf: &mut [f32]) {
     let (dw, dh) = (sw * 2, sh * 2);
     // For a 2x upscale the source tap reduces to a parity test with weights
     // {0.75, 0.25}: `d/2 - 0.25` is exact in f32 for any integer `d`.
@@ -107,18 +107,34 @@ fn upsample2x(src: &[f32], sw: usize, sh: usize, dst: &mut [f32]) {
         }
         (s as usize, f)
     };
+
+    // Separate the two axes instead of evaluating a full bilinear per output
+    // pixel. The row lerp of a given source row is what the fused form calls
+    // `r0` for one output row and `r1` for the next, so it was computed twice
+    // for every source row; here it is computed once. Bit-exact by
+    // construction: the horizontal expression and its operands are unchanged,
+    // and the vertical lerp still combines exactly those two values.
+    hbuf[..sh * dw]
+        .par_chunks_mut(dw)
+        .enumerate()
+        .for_each(|(sy, hrow)| {
+            let base = sy * sw;
+            for (x, o) in hrow.iter_mut().enumerate() {
+                let (sx, fx) = tap(x, sw);
+                let sx1 = (sx + 1).min(sw - 1);
+                *o = src[base + sx] * (1.0 - fx) + src[base + sx1] * fx;
+            }
+        });
+
     dst[..dw * dh]
         .par_chunks_mut(dw)
         .enumerate()
         .for_each(|(y, row)| {
             let (sy, fy) = tap(y, sh);
             let sy1 = (sy + 1).min(sh - 1);
-            for (x, o) in row.iter_mut().enumerate() {
-                let (sx, fx) = tap(x, sw);
-                let sx1 = (sx + 1).min(sw - 1);
-                let r0 = src[sy * sw + sx] * (1.0 - fx) + src[sy * sw + sx1] * fx;
-                let r1 = src[sy1 * sw + sx] * (1.0 - fx) + src[sy1 * sw + sx1] * fx;
-                *o = r0 * (1.0 - fy) + r1 * fy;
+            let (r0, r1) = (&hbuf[sy * dw..sy * dw + dw], &hbuf[sy1 * dw..sy1 * dw + dw]);
+            for ((o, a), b) in row.iter_mut().zip(r0.iter()).zip(r1.iter()) {
+                *o = a * (1.0 - fy) + b * fy;
             }
         });
 }
@@ -206,6 +222,7 @@ pub fn detect_and_compute_with(
 ) -> Result<SiftFeatures, SiftConfigError> {
     // Validated through the same selector the CUDA path uses, so which inputs
     // are rejected does not depend on where the image lives.
+    let t_start = std::time::Instant::now();
     validate_source(src.len(), w, h)?;
     cfg.validate(max_octaves)?;
     let doubled = first_octave == FirstOctave::Double;
@@ -230,7 +247,7 @@ pub fn detect_and_compute_with(
         ..
     } = ws;
     if doubled {
-        upsample2x(src, w, h, base);
+        upsample2x(src, w, h, base, tmp);
     } else {
         // Slice both sides: `validate_source` only requires `src` to be *at
         // least* `w * h` long, so an over-long input would trip
@@ -262,6 +279,10 @@ pub fn detect_and_compute_with(
     let (mut t_blur, mut t_det, mut t_ori, mut t_desc) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
     let mark = || std::time::Instant::now();
 
+    // The base image build is a stage in its own right: it upsamples and blurs
+    // a full plane, and it sat outside every probe until it was measured at
+    // 12 ms — the same way the gradient pass hid between two timers.
+    let t_base = t_start.elapsed().as_secs_f64() * 1e3;
     let n_oct = cfg
         .n_octaves(cw.min(ch), if doubled { -1 } else { 0 })
         .min(max_octaves);
@@ -374,7 +395,7 @@ pub fn detect_and_compute_with(
 
     if probe {
         eprintln!(
-            "    stages: blur={t_blur:.1} detect={t_det:.1} \
+            "    stages: base={t_base:.1} blur={t_blur:.1} detect={t_det:.1} \
 orient={t_ori:.1} desc={t_desc:.1} (ms)"
         );
     }

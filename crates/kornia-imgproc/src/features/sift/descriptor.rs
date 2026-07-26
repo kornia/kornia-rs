@@ -96,20 +96,12 @@ pub struct DescriptorScratch {
 
 impl DescriptorScratch {
     /// Empty scratch; sized on first use.
+    ///
+    /// The buffers are grown monotonically and written by index with a sample
+    /// counter, never cleared: every element read is written first, so a reset
+    /// would only cost a pass that changes nothing.
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// Reset the collected sample buffers, keeping their capacity.
-    ///
-    /// `mag` and `ang` are not cleared: they are outputs, sized by `grow_to`
-    /// and fully overwritten by `mag_ang_batch` before anything reads them.
-    fn clear(&mut self) {
-        self.rbin.clear();
-        self.cbin.clear();
-        self.dx.clear();
-        self.dy.clear();
-        self.wt.clear();
     }
 }
 
@@ -293,13 +285,23 @@ pub fn compute_descriptor(
     sin_t /= hist_width;
 
     let mut hist = [0.0f32; HISTLEN];
-    sc.clear();
+
+    // Size the buffers to the row span once, then write by index. The
+    // reference fills preallocated arrays with a running counter; `Vec::push`
+    // costs a capacity check per element, and there are five buffers times
+    // ~1400 samples per keypoint.
+    let i_lo = (-radius).max(1 - py);
+    let i_hi = radius.min(h as i32 - 2 - py);
+    let cap = (i_hi - i_lo + 1).max(0) as usize * (2 * radius + 1) as usize;
+    grow_to(&mut sc.dx, cap);
+    grow_to(&mut sc.dy, cap);
+    grow_to(&mut sc.rbin, cap);
+    grow_to(&mut sc.cbin, cap);
+    grow_to(&mut sc.wt, cap);
+    let mut n = 0usize;
 
     // The row bound is exactly the reference's `r > 0 && r < rows - 1`, hoisted
     // out of the inner test: it depends only on `i`.
-    let i_lo = (-radius).max(1 - py);
-    let i_hi = radius.min(h as i32 - 2 - py);
-
     for i in i_lo..=i_hi {
         // Accepted `j` form one contiguous run per row (see `clip_j`). Deriving
         // it skips the ~52% of the square the predicate rejects — measured on
@@ -347,20 +349,32 @@ pub fn compute_descriptor(
             let c = (px + j) as usize;
             // Raw differences, exactly the reference's stencil. The row and
             // column bounds already guarantee all four neighbours exist.
-            sc.dx.push(img[row + c + 1] - img[row + c - 1]);
-            sc.dy.push(img[up + c] - img[dn + c]);
-            sc.rbin.push(rbin);
-            sc.cbin.push(cbin);
-            sc.wt.push((c_rot * c_rot + r_rot * r_rot) * exp_scale);
+            //
+            // SAFETY: `n` counts accepted samples, and the two loops run at
+            // most `(i_hi - i_lo + 1) * (2 * radius + 1) == cap` times between
+            // them, so `n < cap` and every buffer is `cap` long.
+            unsafe {
+                *sc.dx.get_unchecked_mut(n) = img[row + c + 1] - img[row + c - 1];
+                *sc.dy.get_unchecked_mut(n) = img[up + c] - img[dn + c];
+                *sc.rbin.get_unchecked_mut(n) = rbin;
+                *sc.cbin.get_unchecked_mut(n) = cbin;
+                *sc.wt.get_unchecked_mut(n) = (c_rot * c_rot + r_rot * r_rot) * exp_scale;
+            }
+            n += 1;
         }
     }
 
     // One long pass per primitive, as the reference does.
-    let len = sc.dx.len();
+    let len = n;
     grow_to(&mut sc.mag, len);
     grow_to(&mut sc.ang, len);
-    exp_batch(&mut sc.wt);
-    mag_ang_batch(&sc.dx, &sc.dy, &mut sc.mag[..len], &mut sc.ang[..len]);
+    exp_batch(&mut sc.wt[..len]);
+    mag_ang_batch(
+        &sc.dx[..len],
+        &sc.dy[..len],
+        &mut sc.mag[..len],
+        &mut sc.ang[..len],
+    );
     scatter(sc, len, ori, bins_per_rad, &mut hist);
 
     // Fold the circular orientation bins back into the d*d*n array.
