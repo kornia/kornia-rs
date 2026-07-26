@@ -1,0 +1,18 @@
+[package]
+name = "cuda-fusion"
+version = "0.1.0"
+authors = ["Edgar Riba <edgar.riba@gmail.com>"]
+license = "Apache-2.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+cudarc = { version = "0.19", default-features = false, features = [
+  "cuda-version-from-build-system",
+  "driver",
+  "fallback-dynamic-loading",
+  "fallback-latest",
+  "nvrtc",
+  "std",
+] }
+kornia-imgproc = { path = "../../crates/kornia-imgproc", features = ["cuda"] }

@@ -223,6 +223,14 @@ pub fn pyrup_f32<const C: usize>(
         ));
     }
 
+    #[cfg(feature = "cuda")]
+    {
+        use crate::try_device;
+        try_device!(src, dst, |stream| cuda_adapters::pyrup_f32_cuda(
+            src, dst, stream
+        ));
+    }
+
     // Intermediate buffer for horizontal pass, pyrup_horizontal writes here
     let mut buffer = vec![0.0f32; dst.width() * src.height() * C];
     pyrup_horizontal_pass_f32::<C>(src, &mut buffer, dst.width());
@@ -314,6 +322,14 @@ pub fn pyrdown_f32<const C: usize>(
             expected_height,
             dst.width(),
             dst.height(),
+        ));
+    }
+
+    #[cfg(feature = "cuda")]
+    {
+        use crate::try_device;
+        try_device!(src, dst, |stream| cuda_adapters::pyrdown_f32_cuda(
+            src, dst, stream
         ));
     }
 
@@ -463,6 +479,14 @@ pub fn pyrdown_u8<const C: usize>(
             expected_height,
             dst.width(),
             dst.height(),
+        ));
+    }
+
+    #[cfg(feature = "cuda")]
+    {
+        use crate::try_device;
+        try_device!(src, dst, |stream| cuda_adapters::pyrdown_u8_cuda(
+            src, dst, stream
         ));
     }
 
@@ -794,6 +818,14 @@ pub fn pyrup_u8<const C: usize>(
     }
 
     // Intermediate buffer for horizontal pass
+    #[cfg(feature = "cuda")]
+    {
+        use crate::try_device;
+        try_device!(src, dst, |stream| cuda_adapters::pyrup_u8_cuda(
+            src, dst, stream
+        ));
+    }
+
     let mut buffer = vec![0u8; dst.width() * src.height() * C];
     pyrup_horizontal_pass_u8::<C>(src, &mut buffer, dst.width());
 
@@ -1417,5 +1449,353 @@ mod tests {
         }
 
         Ok(())
+    }
+}
+
+// ── CUDA adapters + PyramidPlan ──────────────────────────────────────────────
+
+#[cfg(feature = "cuda")]
+mod cuda_adapters {
+    use super::*;
+    use crate::cuda::dispatch::{device_slices, dims_u32, untyped_device_err};
+    use crate::cuda::pyramid::{
+        launch_pyrdown_f32, launch_pyrdown_u8, launch_pyrup_f32, launch_pyrup_u8,
+    };
+    use cudarc::driver::CudaStream;
+    use std::sync::Arc;
+
+    fn err(e: impl std::fmt::Display) -> ImageError {
+        ImageError::Cuda(e.to_string())
+    }
+
+    pub(super) fn pyrdown_f32_cuda<const C: usize>(
+        src: &Image<f32, C>,
+        dst: &mut Image<f32, C>,
+        stream: &Arc<CudaStream>,
+    ) -> Result<(), ImageError> {
+        let (sw, sh) = dims_u32(src)?;
+        let (dw, dh) = dims_u32(dst)?;
+        let ctx = stream.context();
+        let (s, d) = device_slices!(src, dst);
+        launch_pyrdown_f32(ctx, stream, s, d, sw, sh, dw, dh, C as u32).map_err(err)
+    }
+
+    pub(super) fn pyrup_f32_cuda<const C: usize>(
+        src: &Image<f32, C>,
+        dst: &mut Image<f32, C>,
+        stream: &Arc<CudaStream>,
+    ) -> Result<(), ImageError> {
+        let (sw, sh) = dims_u32(src)?;
+        let ctx = stream.context();
+        let (s, d) = device_slices!(src, dst);
+        let n = (sw as usize * 2) * sh as usize * C;
+        let mut scratch = unsafe { stream.alloc::<f32>(n) }.map_err(err)?;
+        launch_pyrup_f32(ctx, stream, s, d, &mut scratch, sw, sh, C as u32).map_err(err)
+    }
+
+    pub(super) fn pyrdown_u8_cuda<const C: usize>(
+        src: &Image<u8, C>,
+        dst: &mut Image<u8, C>,
+        stream: &Arc<CudaStream>,
+    ) -> Result<(), ImageError> {
+        let (sw, sh) = dims_u32(src)?;
+        let (dw, dh) = dims_u32(dst)?;
+        let ctx = stream.context();
+        let (s, d) = device_slices!(src, dst);
+        let n = dw as usize * sh as usize * C;
+        let mut scratch = unsafe { stream.alloc::<u16>(n) }.map_err(err)?;
+        launch_pyrdown_u8(ctx, stream, s, d, &mut scratch, sw, sh, dw, dh, C as u32).map_err(err)
+    }
+
+    pub(super) fn pyrup_u8_cuda<const C: usize>(
+        src: &Image<u8, C>,
+        dst: &mut Image<u8, C>,
+        stream: &Arc<CudaStream>,
+    ) -> Result<(), ImageError> {
+        let (sw, sh) = dims_u32(src)?;
+        let ctx = stream.context();
+        let (s, d) = device_slices!(src, dst);
+        let n = (sw as usize * 2) * sh as usize * C;
+        let mut scratch = unsafe { stream.alloc::<u8>(n) }.map_err(err)?;
+        launch_pyrup_u8(ctx, stream, s, d, &mut scratch, sw, sh, C as u32).map_err(err)
+    }
+}
+
+/// Device Gaussian pyramid with every buffer (levels AND pass scratch)
+/// preallocated — the steady state allocates nothing, so `run` is a pure
+/// kernel-launch sequence (CUDA-Graph-capturable).
+#[cfg(feature = "cuda")]
+pub struct PyramidPlan<const C: usize> {
+    levels: Vec<Image<f32, C>>,
+    stream: std::sync::Arc<cudarc::driver::CudaStream>,
+}
+
+#[cfg(feature = "cuda")]
+impl<const C: usize> PyramidPlan<C> {
+    /// Allocate a plan producing `max_level` downsampled levels of `size`
+    /// (level 0 buffer holds a copy of the input; levels shrink by 2×).
+    pub fn new(
+        stream: &std::sync::Arc<cudarc::driver::CudaStream>,
+        size: ImageSize,
+        max_level: usize,
+    ) -> Result<Self, ImageError> {
+        let mut levels = Vec::with_capacity(max_level + 1);
+        let (mut w, mut h) = (size.width, size.height);
+        for _ in 0..=max_level {
+            levels.push(Image::<f32, C>::zeros_cuda(
+                ImageSize {
+                    width: w,
+                    height: h,
+                },
+                stream,
+            )?);
+            w = w.div_ceil(2);
+            h = h.div_ceil(2);
+        }
+        Ok(Self {
+            levels,
+            stream: stream.clone(),
+        })
+    }
+
+    /// Run the pyramid: `src` must match level 0's size and residency.
+    /// After return, [`Self::levels`] holds the Gaussian pyramid.
+    pub fn run(&mut self, src: &Image<f32, C>) -> Result<(), ImageError> {
+        if src.size() != self.levels[0].size() {
+            return Err(ImageError::InvalidImageSize(
+                self.levels[0].width(),
+                self.levels[0].height(),
+                src.width(),
+                src.height(),
+            ));
+        }
+        // Level 0 = copy of src (device-to-device, stream-ordered).
+        {
+            let s0 = src
+                .0
+                .as_cudaslice()
+                .ok_or_else(|| ImageError::Cuda("plan src not device-resident".into()))?;
+            let d0 = self.levels[0]
+                .0
+                .as_cudaslice_mut()
+                .ok_or_else(|| ImageError::Cuda("plan level not device-resident".into()))?;
+            self.stream
+                .memcpy_dtod(s0, d0)
+                .map_err(|e| ImageError::Cuda(e.to_string()))?;
+        }
+        // Levels are device-resident by construction, so call the adapter
+        // directly (no per-level residency re-check) — one shared path to
+        // the launcher instead of open-coding slice extraction here.
+        for i in 1..self.levels.len() {
+            let (prev, rest) = self.levels.split_at_mut(i);
+            cuda_adapters::pyrdown_f32_cuda(&prev[i - 1], &mut rest[0], &self.stream)?;
+        }
+        Ok(())
+    }
+
+    /// The pyramid levels (level 0 = full resolution).
+    pub fn levels(&self) -> &[Image<f32, C>] {
+        &self.levels
+    }
+}
+
+#[cfg(all(test, feature = "cuda"))]
+mod cuda_tests {
+    use super::*;
+    use crate::cuda::color::test_utils::{default_stream, pattern_f32, pattern_u8};
+
+    fn sz(w: usize, h: usize) -> ImageSize {
+        ImageSize {
+            width: w,
+            height: h,
+        }
+    }
+
+    /// f32 pyrdown/pyrup device output must be BIT-identical to the CPU
+    /// (fused 5x5 weights, polyphase expressions, fmad-free), including the
+    /// reflect_101 border ring and degenerate 1-wide/1-tall sources.
+    #[test]
+    fn f32_pyramid_device_equals_host_bitexact() {
+        let stream = default_stream();
+        for (w, h) in [(64usize, 48usize), (67, 43), (5, 4), (1, 7), (8, 1)] {
+            let src = Image::<f32, 3>::new(sz(w, h), pattern_f32(w * h * 3)).unwrap();
+            let d_src = src.to_cuda(&stream).unwrap();
+
+            // pyrdown
+            let (dw, dh) = (w.div_ceil(2), h.div_ceil(2));
+            let mut cpu = Image::<f32, 3>::from_size_val(sz(dw, dh), 0.0).unwrap();
+            pyrdown_f32(&src, &mut cpu).unwrap();
+            let mut d_dst = Image::<f32, 3>::zeros_cuda(sz(dw, dh), &stream).unwrap();
+            pyrdown_f32(&d_src, &mut d_dst).unwrap();
+            let back = d_dst.to_host_owned().unwrap();
+            for (i, (a, b)) in back.as_slice().iter().zip(cpu.as_slice()).enumerate() {
+                assert!(
+                    a.to_bits() == b.to_bits(),
+                    "pyrdown {w}x{h} elem {i}: {a} vs {b}"
+                );
+            }
+
+            // pyrup
+            let (uw, uh) = (w * 2, h * 2);
+            let mut cpu = Image::<f32, 3>::from_size_val(sz(uw, uh), 0.0).unwrap();
+            pyrup_f32(&src, &mut cpu).unwrap();
+            let mut d_dst = Image::<f32, 3>::zeros_cuda(sz(uw, uh), &stream).unwrap();
+            pyrup_f32(&d_src, &mut d_dst).unwrap();
+            let back = d_dst.to_host_owned().unwrap();
+            for (i, (a, b)) in back.as_slice().iter().zip(cpu.as_slice()).enumerate() {
+                assert!(
+                    a.to_bits() == b.to_bits(),
+                    "pyrup {w}x{h} elem {i}: {a} vs {b}"
+                );
+            }
+        }
+    }
+
+    /// u8 pyrdown/pyrup must be byte-exact vs the CPU separable paths.
+    #[test]
+    fn u8_pyramid_device_equals_host_byte_exact() {
+        let stream = default_stream();
+        for (w, h) in [(64usize, 48usize), (67, 43), (5, 4), (1, 7), (8, 1)] {
+            let src = Image::<u8, 3>::new(sz(w, h), pattern_u8(w * h * 3)).unwrap();
+            let d_src = src.to_cuda(&stream).unwrap();
+
+            let (dw, dh) = (w.div_ceil(2), h.div_ceil(2));
+            let mut cpu = Image::<u8, 3>::from_size_val(sz(dw, dh), 0).unwrap();
+            pyrdown_u8(&src, &mut cpu).unwrap();
+            let mut d_dst = Image::<u8, 3>::zeros_cuda(sz(dw, dh), &stream).unwrap();
+            pyrdown_u8(&d_src, &mut d_dst).unwrap();
+            assert_eq!(
+                d_dst.to_host_owned().unwrap().as_slice(),
+                cpu.as_slice(),
+                "pyrdown_u8 {w}x{h}"
+            );
+
+            let (uw, uh) = (w * 2, h * 2);
+            let mut cpu = Image::<u8, 3>::from_size_val(sz(uw, uh), 0).unwrap();
+            pyrup_u8(&src, &mut cpu).unwrap();
+            let mut d_dst = Image::<u8, 3>::zeros_cuda(sz(uw, uh), &stream).unwrap();
+            pyrup_u8(&d_src, &mut d_dst).unwrap();
+            assert_eq!(
+                d_dst.to_host_owned().unwrap().as_slice(),
+                cpu.as_slice(),
+                "pyrup_u8 {w}x{h}"
+            );
+        }
+    }
+
+    /// PyramidPlan levels must be bit-identical to the CPU build_pyramid.
+    #[test]
+    fn pyramid_plan_matches_cpu_build_pyramid() {
+        let stream = default_stream();
+        let (w, h) = (97usize, 61usize);
+        let src = Image::<f32, 1>::new(sz(w, h), pattern_f32(w * h)).unwrap();
+        let cpu_levels = build_pyramid(&src, 3).unwrap();
+
+        let d_src = src.to_cuda(&stream).unwrap();
+        let mut plan = PyramidPlan::<1>::new(&stream, sz(w, h), 3).unwrap();
+        plan.run(&d_src).unwrap();
+        // Reuse: second run must produce the same result from the same input.
+        plan.run(&d_src).unwrap();
+
+        assert_eq!(plan.levels().len(), cpu_levels.len());
+        for (li, (gpu_lvl, cpu_lvl)) in plan.levels().iter().zip(&cpu_levels).enumerate() {
+            let back = gpu_lvl.to_host_owned().unwrap();
+            for (i, (a, b)) in back.as_slice().iter().zip(cpu_lvl.as_slice()).enumerate() {
+                assert!(
+                    a.to_bits() == b.to_bits(),
+                    "plan level {li} elem {i}: {a} vs {b}"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(all(test, feature = "cuda"))]
+mod cuda_probe {
+    use super::*;
+    use crate::cuda::color::test_utils::{default_stream, pattern_f32, pattern_u8};
+
+    /// Sustained 1080p probes + single launches for ncu (ignored).
+    #[test]
+    #[ignore]
+    fn probe_pyramid_1080p() {
+        let stream = default_stream();
+        let sz = ImageSize {
+            width: 1920,
+            height: 1080,
+        };
+        let dsz = ImageSize {
+            width: 960,
+            height: 540,
+        };
+        let f = Image::<f32, 1>::new(sz, pattern_f32(1920 * 1080)).unwrap();
+        let u = Image::<u8, 3>::new(sz, pattern_u8(1920 * 1080 * 3)).unwrap();
+        let df = f.to_cuda(&stream).unwrap();
+        let du = u.to_cuda(&stream).unwrap();
+        let mut df_d = Image::<f32, 1>::zeros_cuda(dsz, &stream).unwrap();
+        let mut du_d = Image::<u8, 3>::zeros_cuda(dsz, &stream).unwrap();
+
+        let bench_min = |name: &str, mut op: Box<dyn FnMut() + '_>| {
+            for _ in 0..30 {
+                op();
+            }
+            stream.synchronize().unwrap();
+            let mut best = f64::MAX;
+            for _ in 0..5 {
+                let t0 = std::time::Instant::now();
+                for _ in 0..100 {
+                    op();
+                }
+                stream.synchronize().unwrap();
+                best = best.min(t0.elapsed().as_secs_f64() * 1000.0 / 100.0);
+            }
+            println!("{name}: {best:.3} ms (min of 5x100)");
+        };
+
+        bench_min(
+            "pyrdown_f32 C1",
+            Box::new(|| pyrdown_f32(&df, &mut df_d).unwrap()),
+        );
+        bench_min(
+            "pyrdown_u8 C3",
+            Box::new(|| pyrdown_u8(&du, &mut du_d).unwrap()),
+        );
+        let mut plan = PyramidPlan::<1>::new(&stream, sz, 3).unwrap();
+        bench_min(
+            "PyramidPlan 4-level f32 C1 1080p",
+            Box::new(|| plan.run(&df).unwrap()),
+        );
+    }
+
+    /// One launch per kernel for ncu (ignored).
+    #[test]
+    #[ignore]
+    fn ncu_single_launches() {
+        let stream = default_stream();
+        let sz = ImageSize {
+            width: 1920,
+            height: 1080,
+        };
+        let dsz = ImageSize {
+            width: 960,
+            height: 540,
+        };
+        let usz = ImageSize {
+            width: 3840,
+            height: 2160,
+        };
+        let f = Image::<f32, 1>::new(sz, pattern_f32(1920 * 1080)).unwrap();
+        let u = Image::<u8, 3>::new(sz, pattern_u8(1920 * 1080 * 3)).unwrap();
+        let df = f.to_cuda(&stream).unwrap();
+        let du = u.to_cuda(&stream).unwrap();
+        let mut d1 = Image::<f32, 1>::zeros_cuda(dsz, &stream).unwrap();
+        let mut d2 = Image::<u8, 3>::zeros_cuda(dsz, &stream).unwrap();
+        let mut u1 = Image::<f32, 1>::zeros_cuda(usz, &stream).unwrap();
+        let mut u2 = Image::<u8, 3>::zeros_cuda(usz, &stream).unwrap();
+        pyrdown_f32(&df, &mut d1).unwrap();
+        pyrdown_u8(&du, &mut d2).unwrap();
+        pyrup_f32(&df, &mut u1).unwrap();
+        pyrup_u8(&du, &mut u2).unwrap();
+        stream.synchronize().unwrap();
     }
 }

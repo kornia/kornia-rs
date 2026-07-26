@@ -157,10 +157,38 @@ pub fn rgb_from_bayer_dispatch(
     #[cfg(target_arch = "aarch64")]
     {
         rgb_from_bayer_neon(src, dst, rows, cols, pattern);
+        bayer_border_replicate(dst, rows, cols);
         return;
     }
     #[allow(unreachable_code)]
-    rgb_from_bayer_scalar(src, dst, rows, cols, pattern);
+    {
+        rgb_from_bayer_scalar(src, dst, rows, cols, pattern);
+        bayer_border_replicate(dst, rows, cols);
+    }
+}
+
+/// cv2's demosaic border semantics: after interpolation, the 1-pixel frame is
+/// replaced by its interior neighbour (rows first, then columns, so corners
+/// end up equal to the (1,1)-interior pixel) — byte-parity with
+/// `cv2.cvtColor(COLOR_Bayer*2RGB)`. Images narrower than 3 pixels keep the
+/// replicate-interpolated values (no interior row/column to copy from).
+pub(crate) fn bayer_border_replicate(dst: &mut [u8], rows: usize, cols: usize) {
+    let w = cols * 3;
+    if rows >= 3 {
+        let (first, rest) = dst.split_at_mut(w);
+        first.copy_from_slice(&rest[..w]);
+        let (head, last) = dst.split_at_mut((rows - 1) * w);
+        last.copy_from_slice(&head[(rows - 2) * w..]);
+    }
+    if cols >= 3 {
+        for r in 0..rows {
+            let row = &mut dst[r * w..(r + 1) * w];
+            let (c0, c1): (usize, usize) = (0, 3);
+            row.copy_within(c1..c1 + 3, c0);
+            let (cl, cp) = ((cols - 1) * 3, (cols - 2) * 3);
+            row.copy_within(cp..cp + 3, cl);
+        }
+    }
 }
 
 /// NEON Bayer demosaic.

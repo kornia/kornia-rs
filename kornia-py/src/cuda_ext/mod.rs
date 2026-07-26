@@ -30,7 +30,10 @@ use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 
 #[cfg(feature = "cuda")]
-use kornia_image::color_spaces::{Bgr8, Bgra8, Gray8, Hsvf32, Labf32, Rgb8, Rgba8, Rgbf32, YCbCr8};
+use kornia_image::color_spaces::{
+    Bgr8, Bgra8, Gray8, Grayf32, Hlsf32, Hsvf32, Labf32, LinearRgbf32, Luvf32, Rgb8, Rgba8, Rgbf32,
+    Xyzf32, YCbCr8, YCbCrf32, Yuv8, Yuvf32,
+};
 #[cfg(feature = "cuda")]
 use kornia_image::Image;
 #[cfg(feature = "cuda")]
@@ -243,10 +246,63 @@ use capsule::{arc_dlpack_capsule, arc_dlpack_capsule_versioned};
 // ── GPU color conversions (device-resident `Image` in and out) ────────────────
 // Self-contained device-only submodule; re-exported so `crate::cuda_ext::<op>`
 // (used by `crate::color`'s residency dispatch) keeps resolving unchanged.
+/// PIL-style mode string for a device output of channel count `channels`.
+#[cfg(feature = "cuda")]
+pub(crate) fn device_mode<T: 'static>(channels: usize) -> String {
+    let dt = if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f32>() {
+        crate::backing::Dtype::F32
+    } else {
+        crate::backing::Dtype::U8
+    };
+    crate::image::mode_for_dtype(dt, channels)
+}
+
+/// The stream a device source image lives on, for allocating a same-device
+/// destination. Falls back to device 0's default stream if the backing carries
+/// no stream (shouldn't normally happen for a typed device image).
+#[cfg(feature = "cuda")]
+pub(crate) fn source_stream<T, const C: usize>(src: &Image<T, C>) -> PyResult<Arc<CudaStream>>
+where
+    T: cudarc::driver::DeviceRepr + cudarc::driver::ValidAsZeroBits + 'static,
+{
+    match src.cuda_stream() {
+        Some(s) => Ok(s.clone()),
+        None => default_stream(),
+    }
+}
+
+#[cfg(feature = "cuda")]
+pub(crate) mod cuda_canny;
+#[cfg(feature = "cuda")]
+pub(crate) mod cuda_ccl;
+#[cfg(feature = "cuda")]
+pub(crate) mod cuda_clahe;
 #[cfg(feature = "cuda")]
 mod cuda_color;
 #[cfg(feature = "cuda")]
+pub(crate) mod cuda_filter;
+#[cfg(feature = "cuda")]
+pub(crate) mod cuda_geometry;
+#[cfg(feature = "cuda")]
+pub(crate) mod cuda_histogram;
+#[cfg(feature = "cuda")]
+pub(crate) mod cuda_morphology;
+#[cfg(feature = "cuda")]
+pub(crate) use cuda_canny as canny_dev;
+#[cfg(feature = "cuda")]
+pub(crate) use cuda_ccl as ccl_dev;
+#[cfg(feature = "cuda")]
+pub(crate) use cuda_clahe as clahe_dev;
+#[cfg(feature = "cuda")]
 pub(crate) use cuda_color::*;
+#[cfg(feature = "cuda")]
+pub(crate) use cuda_filter as filter;
+#[cfg(feature = "cuda")]
+pub(crate) use cuda_geometry as geometry;
+#[cfg(feature = "cuda")]
+pub(crate) use cuda_histogram as histogram;
+#[cfg(feature = "cuda")]
+pub(crate) use cuda_morphology as morphology;
 
 // ── Tensor (model input) ──────────────────────────────────────────────────────
 //
@@ -1542,10 +1598,121 @@ pub fn register(py: Python<'_>, parent: &Bound<'_, PyModule>) -> PyResult<()> {
     // `pub(crate)` and are called by `crate::color`.
     crate::add_imagenet_consts(&m)?;
     m.add_class::<crate::image::PyStream>()?;
+    #[cfg(feature = "cuda")]
+    m.add_class::<PyGraph>()?;
     parent.add_submodule(&m)?;
     // Make `import kornia_rs.cuda` work (mirror of the other submodules).
     py.import("sys")?
         .getattr("modules")?
         .set_item("kornia_rs.cuda", &m)?;
     Ok(())
+}
+
+// ── CUDA Graph capture / replay ───────────────────────────────────────────────
+
+/// A captured CUDA graph: record a fixed sequence of device ops once, replay
+/// it per frame with microsecond launch overhead.
+///
+/// Capture requires the recorded ops to be **allocation-free** — pass
+/// preallocated `out=` device images to the geometry ops (allocations inside
+/// a capture become graph-owned memory nodes and typically fail with the
+/// stream-ordered allocator). The captured topology is fixed: same shapes,
+/// same source/destination buffers every replay; update the *contents* of the
+/// input image between replays (e.g. `img.copy_from_numpy(...)` or an
+/// upstream graph node), not the objects.
+#[cfg(feature = "cuda")]
+#[pyclass(name = "Graph", module = "kornia_rs.cuda", frozen)]
+pub struct PyGraph {
+    graph: cudarc::driver::CudaGraph,
+    /// Keep-alives: every Python object the captured kernels read or write.
+    /// The graph holds raw device pointers; dropping the images would free
+    /// the memory under the next replay.
+    #[allow(dead_code)]
+    retained: Vec<Py<PyAny>>,
+}
+
+// SAFETY: CUgraph/CUgraphExec are opaque driver handles; the CUDA driver API
+// is thread-safe for graph launch/destroy, and cudarc's CudaGraph carries the
+// owning Arc<CudaStream> (itself Send+Sync). The raw pointers are only handed
+// back to driver calls, never dereferenced on the host.
+#[cfg(feature = "cuda")]
+unsafe impl Send for PyGraph {}
+#[cfg(feature = "cuda")]
+unsafe impl Sync for PyGraph {}
+
+#[cfg(feature = "cuda")]
+#[pymethods]
+impl PyGraph {
+    /// Capture `f()` — a callable that enqueues device ops on `stream` (the
+    /// default stream if `None`) — and return a replayable `Graph`.
+    ///
+    /// `retain` must list every device `Image` the callable reads from or
+    /// writes into; the graph keeps them alive for its own lifetime.
+    #[staticmethod]
+    #[pyo3(signature = (f, retain, stream=None))]
+    fn capture(
+        py: Python<'_>,
+        f: Py<PyAny>,
+        retain: Vec<Py<PyAny>>,
+        stream: Option<PyRef<'_, crate::image::PyStream>>,
+    ) -> PyResult<Self> {
+        let arc = match stream {
+            Some(s) => s.owned_arc()?,
+            None => default_stream()?,
+        };
+        // cudarc's automatic multi-stream fencing waits on legacy CudaEvents
+        // recorded before the capture began, and cuStreamWaitEvent on a
+        // pre-capture legacy event invalidates a capture. The check happens at
+        // kernel-arg time, so suspending event tracking for the capture window
+        // keeps the recorded graph clean. Cross-stream correctness inside
+        // kornia ops is unaffected — the residency dispatch does its own
+        // explicit event fencing — and drop-safety holds because frees are
+        // stream-ordered (cuMemFreeAsync).
+        //
+        // SAFETY (disable/enable_event_tracking): scoped to the capture; the
+        // flag is context-global, so concurrent slice *creation* on other
+        // threads during this window would skip tracking — capture is a
+        // setup-time operation, documented as such.
+        let ctx = arc.context();
+        let was_tracking = ctx.is_event_tracking();
+        if was_tracking {
+            unsafe { ctx.disable_event_tracking() };
+        }
+        let restore = |on: bool| {
+            if on {
+                unsafe { ctx.enable_event_tracking() };
+            }
+        };
+        if let Err(e) = arc.begin_capture(
+            cudarc::driver::sys::CUstreamCaptureMode::CU_STREAM_CAPTURE_MODE_THREAD_LOCAL,
+        ) {
+            restore(was_tracking);
+            return Err(err(e));
+        }
+        // Run the recording callable. Always end the capture (even on error)
+        // so the stream is usable again, then surface the original error.
+        let call_result = f.call0(py);
+        let graph = arc.end_capture(
+            cudarc::driver::sys::CUgraphInstantiate_flags::CUDA_GRAPH_INSTANTIATE_FLAG_USE_NODE_PRIORITY,
+        );
+        restore(was_tracking);
+        let graph = graph.map_err(err)?;
+        call_result?;
+        let graph = graph.ok_or_else(|| {
+            PyValueError::new_err(
+                "Graph.capture: nothing was captured (the callable enqueued no \
+                 device work on this stream)",
+            )
+        })?;
+        Ok(Self {
+            graph,
+            retained: retain,
+        })
+    }
+
+    /// Enqueue one replay of the captured work on the capture stream.
+    /// Asynchronous — pair with `Stream.synchronize()` (or another replay).
+    fn replay(&self) -> PyResult<()> {
+        self.graph.launch().map_err(err)
+    }
 }

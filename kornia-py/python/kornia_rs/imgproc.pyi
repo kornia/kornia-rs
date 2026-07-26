@@ -78,30 +78,42 @@ def nv12_from_rgb(image: np.ndarray) -> np.ndarray:
 
 # --- geometric ---
 def resize(
-    image: np.ndarray,
+    image: np.ndarray | Image,
     new_size: tuple[int, int],
     interpolation: str,
     antialias: bool = ...,
-) -> np.ndarray:
-    """``new_size`` is ``(height, width)``; ``interpolation`` is e.g. ``"bilinear"`` / ``"nearest"``."""
+    out: Image | None = ...,
+) -> np.ndarray | Image:
+    """``new_size`` is ``(height, width)``; ``interpolation`` is e.g. ``"bilinear"`` / ``"nearest"``.
+
+    A device ``Image`` (f32 3-channel, or u8 1/3/4-channel) runs on the GPU,
+    bit-identical to the matching CPU path, and returns a device ``Image``.
+    ``antialias`` shapes the u8 bicubic/lanczos kernels (CPU and GPU alike)
+    and is ignored for f32 and for nearest/bilinear."""
     ...
 def warp_affine(
-    image: np.ndarray,
+    image: np.ndarray | Image,
     m: Sequence[float],
     new_size: tuple[int, int],
     interpolation: str,
     out: Optional[np.ndarray] = ...,
-) -> np.ndarray:
-    """``m`` is the 2x3 affine matrix (row-major, length 6)."""
+) -> np.ndarray | Image:
+    """``m`` is the 2x3 affine matrix (row-major, length 6).
+
+    A device ``Image`` (f32, 3-channel) runs on the GPU and returns a device
+    ``Image``; ``out=`` is unsupported there."""
     ...
 def warp_perspective(
-    image: np.ndarray,
+    image: np.ndarray | Image,
     m: Sequence[float],
     new_size: tuple[int, int],
     interpolation: str,
     out: Optional[np.ndarray] = ...,
-) -> np.ndarray:
-    """``m`` is the 3x3 perspective matrix (row-major, length 9)."""
+) -> np.ndarray | Image:
+    """``m`` is the 3x3 perspective matrix (row-major, length 9).
+
+    A device ``Image`` (f32, 3-channel) runs on the GPU and returns a device
+    ``Image``; ``out=`` is unsupported there."""
     ...
 def crop(image: np.ndarray, x: int, y: int, width: int, height: int) -> np.ndarray: ...
 def horizontal_flip(image: np.ndarray) -> np.ndarray: ...
@@ -112,6 +124,28 @@ def gaussian_blur(
     image: np.ndarray, kernel_size: tuple[int, int], sigma: tuple[float, float]
 ) -> np.ndarray: ...
 def box_blur(image: np.ndarray, kernel_size: tuple[int, int]) -> np.ndarray: ...
+def dilate(
+    image: np.ndarray | Image,
+    kernel: str = ...,
+    size: tuple[int, int] = ...,
+    border: str = ...,
+    constant_value: int = ...,
+) -> np.ndarray | Image:
+    """Neighborhood maximum over a ``"box"`` / ``"cross"`` / ``"ellipse"``
+    structuring element of ``size`` ``(height, width)``. ``border`` is one of
+    ``"constant"`` / ``"replicate"`` / ``"reflect101"`` / ``"reflect"`` /
+    ``"wrap"``. A u8 device ``Image`` (1/3/4-channel) runs on the GPU,
+    bit-identical to the numpy CPU path."""
+    ...
+def erode(
+    image: np.ndarray | Image,
+    kernel: str = ...,
+    size: tuple[int, int] = ...,
+    border: str = ...,
+    constant_value: int = ...,
+) -> np.ndarray | Image:
+    """Neighborhood minimum — see :func:`dilate` for parameters and the GPU path."""
+    ...
 def adjust_brightness(image: np.ndarray, factor: float) -> np.ndarray: ...
 def add_weighted(
     src1: np.ndarray, alpha: float, src2: np.ndarray, beta: float, gamma: float
@@ -121,4 +155,33 @@ def normalize_mean_std(
 ) -> np.ndarray:
     """Per-channel ``(x/255 - mean) / std`` (3-channel u8 -> float32 HWC)."""
     ...
-def compute_histogram(image: np.ndarray, num_bins: int) -> list[int]: ...
+def compute_histogram(image: np.ndarray | Image, num_bins: int) -> list[int]: ...
+def connected_components(
+    image: np.ndarray | Image,
+    connectivity: int = 8,
+) -> tuple[int, np.ndarray | Image]: ...
+def canny(
+    image: np.ndarray | Image,
+    low_threshold: float = 50.0,
+    high_threshold: float = 150.0,
+    l2_gradient: bool = False,
+) -> np.ndarray | Image: ...
+def median_blur(
+    image: np.ndarray | Image,
+    kernel_size: int = 3,
+    out: Optional[np.ndarray] = None,
+) -> np.ndarray | Image: ...
+def bilateral_filter(
+    image: np.ndarray | Image,
+    d: int = 5,
+    sigma_color: float = 50.0,
+    sigma_space: float = 50.0,
+    out: Optional[np.ndarray] = None,
+) -> np.ndarray | Image: ...
+def equalize_hist(image: np.ndarray | Image) -> np.ndarray | Image: ...
+def clahe(
+    image: np.ndarray | Image,
+    clip_limit: float = 40.0,
+    grid_size: tuple[int, int] = (8, 8),
+    out: Optional[np.ndarray] = None,
+) -> np.ndarray | Image: ...

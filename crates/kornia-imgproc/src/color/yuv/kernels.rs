@@ -36,12 +36,30 @@ const C_CR2G: i32 = -11698; // -0.714 * 2^14
 const C_CB2G: i32 = -5636; //  -0.344 * 2^14
 const C_CB2B: i32 = 29049; //  1.773  * 2^14
 
+// cv2 RGB2YUV / YUV2RGB (analog Y'UV) chroma constants — kornia's YUV order
+// matches cv2.cvtColor byte-for-byte (and kornia-python's rgb_to_yuv).
+const C_VI: i32 = 14369; //  0.877 * 2^14  ((R-Y) -> V)
+const C_UI: i32 = 8061; //   0.492 * 2^14  ((B-Y) -> U)
+const C_V2R: i32 = 18678; //  1.140 * 2^14
+const C_U2G: i32 = -6472; // -0.395 * 2^14
+const C_V2G: i32 = -9519; // -0.581 * 2^14
+                          // 2.032 * 2^14 = 33292 overflows i16 for the NEON `vmlal_n_s16` path, so it
+                          // is carried as 16646 and doubled in 32-bit — exact, since 33292 = 16646 << 1.
+const C_U2B_HALF: i32 = 16646;
+
 // f32 full-range coefficients (inputs in [0,1]).
 const F_YR: f32 = 0.299;
 const F_YG: f32 = 0.587;
 const F_YB: f32 = 0.114;
 const F_CR: f32 = 0.713; // (R-Y) * 0.713 + 0.5
 const F_CB: f32 = 0.564; // (B-Y) * 0.564 + 0.5
+                         // f32 Y'UV (cv2 RGB2YUV / YUV2RGB float constants).
+const F_VI: f32 = 0.877;
+const F_UI: f32 = 0.492;
+const F_V2R: f32 = 1.140;
+const F_U2G: f32 = -0.395;
+const F_V2G: f32 = -0.581;
+const F_U2B: f32 = 2.032;
 
 /// Store order for the chroma channels of an RGB->{YCbCr,YUV} conversion.
 ///
@@ -57,12 +75,18 @@ pub enum ChromaOrder {
 
 // ===== Family A scalar oracles (u8 Q14) =============================================
 
-/// Scalar RGB u8 -> (Y, Cr, Cb) u8, full-range Q14. Bit-exact oracle.
+/// Scalar RGB u8 -> (Y, chroma-R-slot, chroma-B-slot) u8, full-range Q14.
+/// `YCrCb` produces OpenCV's (Cr, Cb); `YuvCbCr` produces cv2 RGB2YUV's
+/// (V, U) — same shape, Y'UV chroma scales. Bit-exact oracle.
 #[inline]
-fn ycc_from_rgb_u8_px(r: i32, g: i32, b: i32) -> (u8, u8, u8) {
+fn ycc_from_rgb_u8_px(r: i32, g: i32, b: i32, order: ChromaOrder) -> (u8, u8, u8) {
+    let (c_rv, c_bu) = match order {
+        ChromaOrder::YCrCb => (C_YCRI, C_YCBI),
+        ChromaOrder::YuvCbCr => (C_VI, C_UI),
+    };
     let y = (C_YR * r + C_YG * g + C_YB * b + Q14_HALF) >> Q14_SHIFT;
-    let cr = ((r - y) * C_YCRI + (128 << Q14_SHIFT) + Q14_HALF) >> Q14_SHIFT;
-    let cb = ((b - y) * C_YCBI + (128 << Q14_SHIFT) + Q14_HALF) >> Q14_SHIFT;
+    let cr = ((r - y) * c_rv + (128 << Q14_SHIFT) + Q14_HALF) >> Q14_SHIFT;
+    let cb = ((b - y) * c_bu + (128 << Q14_SHIFT) + Q14_HALF) >> Q14_SHIFT;
     (
         y.clamp(0, 255) as u8,
         cr.clamp(0, 255) as u8,
@@ -70,14 +94,24 @@ fn ycc_from_rgb_u8_px(r: i32, g: i32, b: i32) -> (u8, u8, u8) {
     )
 }
 
-/// Scalar (Y, Cr, Cb) u8 -> RGB u8, full-range Q14. Bit-exact oracle.
+/// Scalar (Y, Cr|V, Cb|U) u8 -> RGB u8, full-range Q14, per-order inverse
+/// matrix (`YuvCbCr` = cv2 YUV2RGB constants). Bit-exact oracle.
 #[inline]
-fn rgb_from_ycc_u8_px(y: i32, cr: i32, cb: i32) -> (u8, u8, u8) {
+fn rgb_from_ycc_u8_px(y: i32, cr: i32, cb: i32, order: ChromaOrder) -> (u8, u8, u8) {
     let cr = cr - 128;
     let cb = cb - 128;
-    let r = y + ((C_CR2R * cr + Q14_HALF) >> Q14_SHIFT);
-    let g = y + ((C_CR2G * cr + C_CB2G * cb + Q14_HALF) >> Q14_SHIFT);
-    let b = y + ((C_CB2B * cb + Q14_HALF) >> Q14_SHIFT);
+    let (r, g, b) = match order {
+        ChromaOrder::YCrCb => (
+            y + ((C_CR2R * cr + Q14_HALF) >> Q14_SHIFT),
+            y + ((C_CR2G * cr + C_CB2G * cb + Q14_HALF) >> Q14_SHIFT),
+            y + ((C_CB2B * cb + Q14_HALF) >> Q14_SHIFT),
+        ),
+        ChromaOrder::YuvCbCr => (
+            y + ((C_V2R * cr + Q14_HALF) >> Q14_SHIFT),
+            y + ((C_V2G * cr + C_U2G * cb + Q14_HALF) >> Q14_SHIFT),
+            y + (((C_U2B_HALF * cb) * 2 + Q14_HALF) >> Q14_SHIFT),
+        ),
+    };
     (
         r.clamp(0, 255) as u8,
         g.clamp(0, 255) as u8,
@@ -119,6 +153,10 @@ fn ycc_from_rgb_u8_neon(src: &[u8], dst: &mut [u8], npixels: usize, order: Chrom
         let dp = dst.as_mut_ptr();
         let half = vdupq_n_s32(Q14_HALF);
         let bias128 = vdupq_n_s32((128 << Q14_SHIFT) + Q14_HALF);
+        let (c_rv, c_bu) = match order {
+            ChromaOrder::YCrCb => (C_YCRI as i16, C_YCBI as i16),
+            ChromaOrder::YuvCbCr => (C_VI as i16, C_UI as i16),
+        };
 
         // Process one 8-lane (s16) half: r,g,b are int16x8 in [0,255].
         let conv8 =
@@ -153,14 +191,14 @@ fn ycc_from_rgb_u8_neon(src: &[u8], dst: &mut [u8], npixels: usize, order: Chrom
                 // Cr = ((R-Y)*C_YCRI + 128<<14 + half) >> 14
                 let drl = vsub_s16(rl, yl16);
                 let drh = vsub_s16(rh, yh16);
-                let crl = vshrq_n_s32::<Q14_SHIFT>(vmlal_n_s16(bias128, drl, C_YCRI as i16));
-                let crh = vshrq_n_s32::<Q14_SHIFT>(vmlal_n_s16(bias128, drh, C_YCRI as i16));
+                let crl = vshrq_n_s32::<Q14_SHIFT>(vmlal_n_s16(bias128, drl, c_rv));
+                let crh = vshrq_n_s32::<Q14_SHIFT>(vmlal_n_s16(bias128, drh, c_rv));
 
                 // Cb = ((B-Y)*C_YCBI + 128<<14 + half) >> 14
                 let dbl = vsub_s16(bl, yl16);
                 let dbh = vsub_s16(bh, yh16);
-                let cbl = vshrq_n_s32::<Q14_SHIFT>(vmlal_n_s16(bias128, dbl, C_YCBI as i16));
-                let cbh = vshrq_n_s32::<Q14_SHIFT>(vmlal_n_s16(bias128, dbh, C_YCBI as i16));
+                let cbl = vshrq_n_s32::<Q14_SHIFT>(vmlal_n_s16(bias128, dbl, c_bu));
+                let cbh = vshrq_n_s32::<Q14_SHIFT>(vmlal_n_s16(bias128, dbh, c_bu));
 
                 // saturating narrow s32 -> s16 -> u8
                 let y8 = vqmovun_s16(vcombine_s16(vqmovn_s32(y32_lo), vqmovn_s32(y32_hi)));
@@ -207,6 +245,7 @@ fn ycc_from_rgb_u8_neon(src: &[u8], dst: &mut [u8], npixels: usize, order: Chrom
                 *sp.add(si) as i32,
                 *sp.add(si + 1) as i32,
                 *sp.add(si + 2) as i32,
+                order,
             );
             store_ycc(dp, si, y, cr, cb, order);
             i += 1;
@@ -236,8 +275,12 @@ unsafe fn store_ycc(dp: *mut u8, si: usize, y: u8, cr: u8, cb: u8, order: Chroma
 pub fn ycc_from_rgb_u8_scalar(src: &[u8], dst: &mut [u8], npixels: usize, order: ChromaOrder) {
     for i in 0..npixels {
         let si = i * 3;
-        let (y, cr, cb) =
-            ycc_from_rgb_u8_px(src[si] as i32, src[si + 1] as i32, src[si + 2] as i32);
+        let (y, cr, cb) = ycc_from_rgb_u8_px(
+            src[si] as i32,
+            src[si + 1] as i32,
+            src[si + 2] as i32,
+            order,
+        );
         dst[si] = y;
         match order {
             ChromaOrder::YCrCb => {
@@ -285,60 +328,65 @@ fn rgb_from_ycc_u8_neon(src: &[u8], dst: &mut [u8], npixels: usize, order: Chrom
         let dp = dst.as_mut_ptr();
         let half = vdupq_n_s32(Q14_HALF);
         let c128 = vdup_n_s16(128);
+        let (c_cr2r, c_cr2g, c_cb2g) = match order {
+            ChromaOrder::YCrCb => (C_CR2R as i16, C_CR2G as i16, C_CB2G as i16),
+            ChromaOrder::YuvCbCr => (C_V2R as i16, C_V2G as i16, C_U2G as i16),
+        };
+        // The B coefficient may exceed i16 (cv2's 2.032*2^14 = 33292); carry
+        // its half and double the 32-bit product — exact.
+        let (c_cb2b_half, double_b) = match order {
+            ChromaOrder::YCrCb => (C_CB2B as i16, false),
+            ChromaOrder::YuvCbCr => (C_U2B_HALF as i16, true),
+        };
 
-        let conv8 =
-            |y: int16x8_t, cr: int16x8_t, cb: int16x8_t| -> (uint8x8_t, uint8x8_t, uint8x8_t) {
-                let (yl, yh) = (vget_low_s16(y), vget_high_s16(y));
-                let crl = vsub_s16(vget_low_s16(cr), c128);
-                let crh = vsub_s16(vget_high_s16(cr), c128);
-                let cbl = vsub_s16(vget_low_s16(cb), c128);
-                let cbh = vsub_s16(vget_high_s16(cb), c128);
+        let conv8 = |y: int16x8_t,
+                     cr: int16x8_t,
+                     cb: int16x8_t|
+         -> (uint8x8_t, uint8x8_t, uint8x8_t) {
+            let (yl, yh) = (vget_low_s16(y), vget_high_s16(y));
+            let crl = vsub_s16(vget_low_s16(cr), c128);
+            let crh = vsub_s16(vget_high_s16(cr), c128);
+            let cbl = vsub_s16(vget_low_s16(cb), c128);
+            let cbh = vsub_s16(vget_high_s16(cb), c128);
 
-                // y in s32 (no shift), as base for adds
-                let yl32 = vmovl_s16(yl);
-                let yh32 = vmovl_s16(yh);
+            // y in s32 (no shift), as base for adds
+            let yl32 = vmovl_s16(yl);
+            let yh32 = vmovl_s16(yh);
 
-                // R = Y + ((C_CR2R*cr + half) >> 14)
-                let rl = vaddq_s32(
-                    yl32,
-                    vshrq_n_s32::<Q14_SHIFT>(vmlal_n_s16(half, crl, C_CR2R as i16)),
-                );
-                let rh = vaddq_s32(
-                    yh32,
-                    vshrq_n_s32::<Q14_SHIFT>(vmlal_n_s16(half, crh, C_CR2R as i16)),
-                );
-                // G = Y + ((C_CR2G*cr + C_CB2G*cb + half) >> 14)
-                let gl = vaddq_s32(
-                    yl32,
-                    vshrq_n_s32::<Q14_SHIFT>(vmlal_n_s16(
-                        vmlal_n_s16(half, crl, C_CR2G as i16),
-                        cbl,
-                        C_CB2G as i16,
-                    )),
-                );
-                let gh = vaddq_s32(
-                    yh32,
-                    vshrq_n_s32::<Q14_SHIFT>(vmlal_n_s16(
-                        vmlal_n_s16(half, crh, C_CR2G as i16),
-                        cbh,
-                        C_CB2G as i16,
-                    )),
-                );
-                // B = Y + ((C_CB2B*cb + half) >> 14)
-                let bl = vaddq_s32(
-                    yl32,
-                    vshrq_n_s32::<Q14_SHIFT>(vmlal_n_s16(half, cbl, C_CB2B as i16)),
-                );
-                let bh = vaddq_s32(
-                    yh32,
-                    vshrq_n_s32::<Q14_SHIFT>(vmlal_n_s16(half, cbh, C_CB2B as i16)),
-                );
+            // R = Y + ((C_CR2R*cr + half) >> 14)
+            let rl = vaddq_s32(
+                yl32,
+                vshrq_n_s32::<Q14_SHIFT>(vmlal_n_s16(half, crl, c_cr2r)),
+            );
+            let rh = vaddq_s32(
+                yh32,
+                vshrq_n_s32::<Q14_SHIFT>(vmlal_n_s16(half, crh, c_cr2r)),
+            );
+            // G = Y + ((C_CR2G*cr + C_CB2G*cb + half) >> 14)
+            let gl = vaddq_s32(
+                yl32,
+                vshrq_n_s32::<Q14_SHIFT>(vmlal_n_s16(vmlal_n_s16(half, crl, c_cr2g), cbl, c_cb2g)),
+            );
+            let gh = vaddq_s32(
+                yh32,
+                vshrq_n_s32::<Q14_SHIFT>(vmlal_n_s16(vmlal_n_s16(half, crh, c_cr2g), cbh, c_cb2g)),
+            );
+            // B = Y + ((c_b*cb + half) >> 14), with the product doubled
+            // when the coefficient was halved to fit i16.
+            let mut bpl = vmull_n_s16(cbl, c_cb2b_half);
+            let mut bph = vmull_n_s16(cbh, c_cb2b_half);
+            if double_b {
+                bpl = vaddq_s32(bpl, bpl);
+                bph = vaddq_s32(bph, bph);
+            }
+            let bl = vaddq_s32(yl32, vshrq_n_s32::<Q14_SHIFT>(vaddq_s32(bpl, half)));
+            let bh = vaddq_s32(yh32, vshrq_n_s32::<Q14_SHIFT>(vaddq_s32(bph, half)));
 
-                let r8 = vqmovun_s16(vcombine_s16(vqmovn_s32(rl), vqmovn_s32(rh)));
-                let g8 = vqmovun_s16(vcombine_s16(vqmovn_s32(gl), vqmovn_s32(gh)));
-                let b8 = vqmovun_s16(vcombine_s16(vqmovn_s32(bl), vqmovn_s32(bh)));
-                (r8, g8, b8)
-            };
+            let r8 = vqmovun_s16(vcombine_s16(vqmovn_s32(rl), vqmovn_s32(rh)));
+            let g8 = vqmovun_s16(vcombine_s16(vqmovn_s32(gl), vqmovn_s32(gh)));
+            let b8 = vqmovun_s16(vcombine_s16(vqmovn_s32(bl), vqmovn_s32(bh)));
+            (r8, g8, b8)
+        };
 
         let bulk16 = npixels & !15;
         let mut i = 0usize;
@@ -375,7 +423,7 @@ fn rgb_from_ycc_u8_neon(src: &[u8], dst: &mut [u8], npixels: usize, order: Chrom
                 ChromaOrder::YCrCb => (*sp.add(si + 1) as i32, *sp.add(si + 2) as i32),
                 ChromaOrder::YuvCbCr => (*sp.add(si + 2) as i32, *sp.add(si + 1) as i32),
             };
-            let (r, g, b) = rgb_from_ycc_u8_px(*sp.add(si) as i32, cr, cb);
+            let (r, g, b) = rgb_from_ycc_u8_px(*sp.add(si) as i32, cr, cb, order);
             *dp.add(si) = r;
             *dp.add(si + 1) = g;
             *dp.add(si + 2) = b;
@@ -392,7 +440,7 @@ pub fn rgb_from_ycc_u8_scalar(src: &[u8], dst: &mut [u8], npixels: usize, order:
             ChromaOrder::YCrCb => (src[si + 1] as i32, src[si + 2] as i32),
             ChromaOrder::YuvCbCr => (src[si + 2] as i32, src[si + 1] as i32),
         };
-        let (r, g, b) = rgb_from_ycc_u8_px(src[si] as i32, cr, cb);
+        let (r, g, b) = rgb_from_ycc_u8_px(src[si] as i32, cr, cb, order);
         dst[si] = r;
         dst[si + 1] = g;
         dst[si + 2] = b;
@@ -430,8 +478,12 @@ fn ycc_from_rgb_f32_neon(src: &[f32], dst: &mut [f32], npixels: usize, order: Ch
         let yr = vdupq_n_f32(F_YR);
         let yg = vdupq_n_f32(F_YG);
         let yb = vdupq_n_f32(F_YB);
-        let kcr = vdupq_n_f32(F_CR);
-        let kcb = vdupq_n_f32(F_CB);
+        let (k_rv, k_bu) = match order {
+            ChromaOrder::YCrCb => (F_CR, F_CB),
+            ChromaOrder::YuvCbCr => (F_VI, F_UI),
+        };
+        let kcr = vdupq_n_f32(k_rv);
+        let kcb = vdupq_n_f32(k_bu);
         let half = vdupq_n_f32(0.5);
 
         let transform = |p: float32x4x3_t| -> float32x4x3_t {
@@ -460,7 +512,8 @@ fn ycc_from_rgb_f32_neon(src: &[f32], dst: &mut [f32], npixels: usize, order: Ch
         }
         while i < npixels {
             let si = i * 3;
-            let (y, cr, cb) = ycc_from_rgb_f32_px(*sp.add(si), *sp.add(si + 1), *sp.add(si + 2));
+            let (y, cr, cb) =
+                ycc_from_rgb_f32_px(*sp.add(si), *sp.add(si + 1), *sp.add(si + 2), order);
             store_ycc_f32(dp, si, y, cr, cb, order);
             i += 1;
         }
@@ -486,10 +539,14 @@ unsafe fn store_ycc_f32(dp: *mut f32, si: usize, y: f32, cr: f32, cb: f32, order
 }
 
 #[inline]
-fn ycc_from_rgb_f32_px(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
+fn ycc_from_rgb_f32_px(r: f32, g: f32, b: f32, order: ChromaOrder) -> (f32, f32, f32) {
+    let (k_rv, k_bu) = match order {
+        ChromaOrder::YCrCb => (F_CR, F_CB),
+        ChromaOrder::YuvCbCr => (F_VI, F_UI),
+    };
     let y = F_YR * r + F_YG * g + F_YB * b;
-    let cr = (r - y) * F_CR + 0.5;
-    let cb = (b - y) * F_CB + 0.5;
+    let cr = (r - y) * k_rv + 0.5;
+    let cb = (b - y) * k_bu + 0.5;
     (y, cr, cb)
 }
 
@@ -497,7 +554,7 @@ fn ycc_from_rgb_f32_px(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
 pub fn ycc_from_rgb_f32_scalar(src: &[f32], dst: &mut [f32], npixels: usize, order: ChromaOrder) {
     for i in 0..npixels {
         let si = i * 3;
-        let (y, cr, cb) = ycc_from_rgb_f32_px(src[si], src[si + 1], src[si + 2]);
+        let (y, cr, cb) = ycc_from_rgb_f32_px(src[si], src[si + 1], src[si + 2], order);
         dst[si] = y;
         match order {
             ChromaOrder::YCrCb => {
@@ -542,8 +599,16 @@ fn rgb_from_ycc_f32_neon(src: &[f32], dst: &mut [f32], npixels: usize, order: Ch
         //   r = y + (cr-0.5)/F_CR
         //   b = y + (cb-0.5)/F_CB
         //   g = (y - F_YR*r - F_YB*b) / F_YG
-        let inv_cr = vdupq_n_f32(1.0 / F_CR);
-        let inv_cb = vdupq_n_f32(1.0 / F_CB);
+        // YCrCb inverts via the derived reciprocals; YuvCbCr uses cv2's
+        // literal YUV2RGB float constants (1.140 / 2.032 / -0.395 / -0.581).
+        let (kr, kb) = match order {
+            ChromaOrder::YCrCb => (1.0 / F_CR, 1.0 / F_CB),
+            ChromaOrder::YuvCbCr => (F_V2R, F_U2B),
+        };
+        let inv_cr = vdupq_n_f32(kr);
+        let inv_cb = vdupq_n_f32(kb);
+        let ku2g = vdupq_n_f32(F_U2G);
+        let kv2g = vdupq_n_f32(F_V2G);
         let inv_yg = vdupq_n_f32(1.0 / F_YG);
         let yr = vdupq_n_f32(F_YR);
         let yb = vdupq_n_f32(F_YB);
@@ -557,9 +622,21 @@ fn rgb_from_ycc_f32_neon(src: &[f32], dst: &mut [f32], npixels: usize, order: Ch
             };
             let r = vfmaq_f32(y, vsubq_f32(cr, half), inv_cr);
             let b = vfmaq_f32(y, vsubq_f32(cb, half), inv_cb);
-            // g = (y - yr*r - yb*b) * inv_yg
-            let num = vsubq_f32(vsubq_f32(y, vmulq_f32(yr, r)), vmulq_f32(yb, b));
-            let g = vmulq_f32(num, inv_yg);
+            let g = match order {
+                ChromaOrder::YCrCb => {
+                    // g = (y - yr*r - yb*b) * inv_yg
+                    let num = vsubq_f32(vsubq_f32(y, vmulq_f32(yr, r)), vmulq_f32(yb, b));
+                    vmulq_f32(num, inv_yg)
+                }
+                ChromaOrder::YuvCbCr => {
+                    // g = y - 0.395*(u-0.5) - 0.581*(v-0.5)
+                    vfmaq_f32(
+                        vfmaq_f32(y, vsubq_f32(cb, half), ku2g),
+                        vsubq_f32(cr, half),
+                        kv2g,
+                    )
+                }
+            };
             float32x4x3_t(r, g, b)
         };
 
@@ -583,7 +660,7 @@ fn rgb_from_ycc_f32_neon(src: &[f32], dst: &mut [f32], npixels: usize, order: Ch
                 ChromaOrder::YCrCb => (*sp.add(si + 1), *sp.add(si + 2)),
                 ChromaOrder::YuvCbCr => (*sp.add(si + 2), *sp.add(si + 1)),
             };
-            let (r, g, b) = rgb_from_ycc_f32_px(*sp.add(si), cr, cb);
+            let (r, g, b) = rgb_from_ycc_f32_px(*sp.add(si), cr, cb, order);
             *dp.add(si) = r;
             *dp.add(si + 1) = g;
             *dp.add(si + 2) = b;
@@ -593,11 +670,21 @@ fn rgb_from_ycc_f32_neon(src: &[f32], dst: &mut [f32], npixels: usize, order: Ch
 }
 
 #[inline]
-fn rgb_from_ycc_f32_px(y: f32, cr: f32, cb: f32) -> (f32, f32, f32) {
-    let r = y + (cr - 0.5) / F_CR;
-    let b = y + (cb - 0.5) / F_CB;
-    let g = (y - F_YR * r - F_YB * b) / F_YG;
-    (r, g, b)
+fn rgb_from_ycc_f32_px(y: f32, cr: f32, cb: f32, order: ChromaOrder) -> (f32, f32, f32) {
+    match order {
+        ChromaOrder::YCrCb => {
+            let r = y + (cr - 0.5) / F_CR;
+            let b = y + (cb - 0.5) / F_CB;
+            let g = (y - F_YR * r - F_YB * b) / F_YG;
+            (r, g, b)
+        }
+        ChromaOrder::YuvCbCr => {
+            let r = y + F_V2R * (cr - 0.5);
+            let g = y + F_U2G * (cb - 0.5) + F_V2G * (cr - 0.5);
+            let b = y + F_U2B * (cb - 0.5);
+            (r, g, b)
+        }
+    }
 }
 
 /// Portable scalar YCbCr/YUV f32 -> RGB f32. Oracle for the tests.
@@ -608,7 +695,7 @@ pub fn rgb_from_ycc_f32_scalar(src: &[f32], dst: &mut [f32], npixels: usize, ord
             ChromaOrder::YCrCb => (src[si + 1], src[si + 2]),
             ChromaOrder::YuvCbCr => (src[si + 2], src[si + 1]),
         };
-        let (r, g, b) = rgb_from_ycc_f32_px(src[si], cr, cb);
+        let (r, g, b) = rgb_from_ycc_f32_px(src[si], cr, cb, order);
         dst[si] = r;
         dst[si + 1] = g;
         dst[si + 2] = b;
@@ -1947,8 +2034,11 @@ mod tests {
         let mut back = vec![0f32; npix * 3];
         ycc_from_rgb_f32(&rgb, &mut ycc, npix, ChromaOrder::YuvCbCr);
         rgb_from_ycc_f32(&ycc, &mut back, npix, ChromaOrder::YuvCbCr);
+        // cv2's Y'UV forward/inverse constants are independently rounded
+        // (0.492/0.877 vs 2.032/1.140), so the round-trip is only ~1e-4
+        // faithful — matching cv2's own round-trip error.
         for (a, b) in rgb.iter().zip(back.iter()) {
-            assert!((a - b).abs() <= 1e-5, "{a} != {b}");
+            assert!((a - b).abs() <= 5e-4, "{a} != {b}");
         }
     }
 

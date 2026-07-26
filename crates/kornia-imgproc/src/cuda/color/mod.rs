@@ -55,10 +55,12 @@ __device__ __forceinline__ float clamp01(float v) {
 }
 
 // BT.601 luma weights.
-// u8 Q8 fixed point — matches color/gray/kernels.rs (77*R + 150*G + 29*B) >> 8.
-#define GRAY_WR_Q8 77
-#define GRAY_WG_Q8 150
-#define GRAY_WB_Q8 29
+// u8: OpenCV's Q14 fixed point — matches color/gray/kernels.rs
+// (4899*R + 9617*G + 1868*B + 8192) >> 14, byte-parity with cv2.
+#define GRAY_WR_Q14 4899u
+#define GRAY_WG_Q14 9617u
+#define GRAY_WB_Q14 1868u
+#define GRAY_Q14_HALF 8192u
 // f32 — matches color/gray/kernels.rs RW_F32/GW_F32/BW_F32.
 #define GRAY_WR_F 0.299f
 #define GRAY_WG_F 0.587f
@@ -84,6 +86,19 @@ __device__ __forceinline__ float clamp01(float v) {
 #define F_YB 0.114f
 #define F_CR 0.713f
 #define F_CB 0.564f
+// cv2 Y'UV constants (RGB2YUV / YUV2RGB) — color/yuv/kernels.rs C_VI..F_U2B.
+#define C_VI   14369
+#define C_UI   8061
+#define C_V2R  18678
+#define C_U2G  (-6472)
+#define C_V2G  (-9519)
+#define C_U2B  33292
+#define F_VI  0.877f
+#define F_UI  0.492f
+#define F_V2R 1.140f
+#define F_U2G (-0.395f)
+#define F_V2G (-0.581f)
+#define F_U2B 2.032f
 
 // ── Word-vectorized 3-byte-pixel quad helpers ────────────────────────────────
 // Four interleaved RGB pixels = 12 bytes = three 32-bit words (always 4-byte

@@ -80,8 +80,10 @@
 
 use std::sync::{Arc, OnceLock};
 
-use cudarc::driver::{CudaContext, CudaSlice, CudaStream, LaunchConfig};
+use cudarc::driver::{CudaContext, CudaSlice, CudaStream};
 use kornia_tensor::CudaKernel;
+
+use super::{make_config, try_compile_with_l1};
 
 // ── CUDA C source: bilinear, 32×8 block, __ldg reads ─────────────────────────
 //
@@ -254,9 +256,10 @@ extern "C" __global__ void resize_bicubic_3c(
     unsigned int dst_y = blockIdx.y * blockDim.y + threadIdx.y;
     if (dst_x >= dst_w || dst_y >= dst_h) return;
 
-    // Half-pixel centre alignment (matches OpenCV / PIL convention).
-    float sx = fmaxf(fminf(fmaf(ax, (float)dst_x, bx), (float)(src_w - 1u)), 0.0f);
-    float sy = fmaxf(fminf(fmaf(ay, (float)dst_y, by), (float)(src_h - 1u)), 0.0f);
+    // Plain multiply-add (not fmaf): bit-identical to the CPU LUT's `a*x + b`
+    // under --fmad=false — the byte-exact contract, same as bilinear/nearest.
+    float sx = fmaxf(fminf(ax * (float)dst_x + bx, (float)(src_w - 1u)), 0.0f);
+    float sy = fmaxf(fminf(ay * (float)dst_y + by, (float)(src_h - 1u)), 0.0f);
 
     int x0 = (int)floorf(sx);
     int y0 = (int)floorf(sy);
@@ -315,47 +318,34 @@ extern "C" __global__ void resize_bicubic_3c(
 //   2× downscale: ~2× fewer reads   (e.g. 1080p→540p: 18.7M → 9.3M)
 //   2× upscale:   ~4× fewer reads   (e.g. 1080p→4K:   299M  → 75M)
 //
-// Both kernels use `__sinf` / `__fdividef` fast intrinsics (single-precision
-// image processing does not need full double-rounding sinf precision).
+// Both kernels use precise `sinf` / IEEE division rather than the fast
+// `__sinf` / `__fdividef` intrinsics: the CPU lanczos weight computation must
+// reproduce the same bits, and the approximate intrinsics have no host
+// equivalent. Weight computation is a per-output-pixel prologue; the precise
+// forms measure in the noise on Orin.
 
 // Each of the three Lanczos NVRTC modules (H, V, and warp-affine) defines the
 // same `lanczos3` device helper. They are compiled as separate translation units,
 // so sharing the name is fine — no ODR violation across NVRTC compilations.
 static LANCZOS_H_SRC: &str = r#"
-__device__ inline float lanczos3(float x) {
-    const float PI = 3.14159265358979f;
-    if (fabsf(x) < 1e-5f) return 1.0f;
-    if (fabsf(x) >= 3.0f) return 0.0f;
-    float pix  = PI * x;
-    float pix3 = pix * 0.33333333f;
-    return __sinf(pix) * __sinf(pix3) * __fdividef(1.0f, pix * pix3);
-}
-
 extern "C" __global__ void resize_lanczos_h_3c(
     const float* __restrict__ src,
     float* __restrict__       dst,
+    const int*   __restrict__ x0s,
+    const float* __restrict__ wtab,
     unsigned int src_w,
     unsigned int src_h,
-    unsigned int dst_w,
-    float ax, float bx
+    unsigned int dst_w
 ) {
     unsigned int dst_x = blockIdx.x * blockDim.x + threadIdx.x;
     unsigned int src_y = blockIdx.y * blockDim.y + threadIdx.y;
     if (dst_x >= dst_w || src_y >= src_h) return;
 
-    float sx = fmaxf(fminf(fmaf(ax, (float)dst_x, bx), (float)(src_w - 1u)), 0.0f);
-    int x0 = (int)floorf(sx);
-    float frac = sx - (float)x0;
-
-    float wx[6];
-    wx[0] = lanczos3(frac + 2.0f); wx[1] = lanczos3(frac + 1.0f);
-    wx[2] = lanczos3(frac);        wx[3] = lanczos3(frac - 1.0f);
-    wx[4] = lanczos3(frac - 2.0f); wx[5] = lanczos3(frac - 3.0f);
-
-    float sum = wx[0]+wx[1]+wx[2]+wx[3]+wx[4]+wx[5];
-    float inv = __fdividef(1.0f, sum);
-    #pragma unroll
-    for (int i = 0; i < 6; i++) wx[i] *= inv;
+    // Per-column tap base and normalized weights are host-precomputed by the
+    // same Rust code the CPU path uses (`lanczos_axis`), so the two paths are
+    // byte-exact by construction and the kernel is pure gather + FMA.
+    int x0 = __ldg(&x0s[dst_x]);
+    const float* w = &wtab[dst_x * 6u];
 
     unsigned int row = src_y * src_w * 3u;
     float acc0 = 0.0f, acc1 = 0.0f, acc2 = 0.0f;
@@ -363,9 +353,10 @@ extern "C" __global__ void resize_lanczos_h_3c(
     for (int dx = 0; dx < 6; dx++) {
         int xi = max(0, min(x0 + dx - 2, (int)src_w - 1));
         unsigned int b = row + (unsigned int)xi * 3u;
-        acc0 = fmaf(wx[dx], __ldg(&src[b]),   acc0);
-        acc1 = fmaf(wx[dx], __ldg(&src[b+1]), acc1);
-        acc2 = fmaf(wx[dx], __ldg(&src[b+2]), acc2);
+        float wd = __ldg(&w[dx]);
+        acc0 = fmaf(wd, __ldg(&src[b]),   acc0);
+        acc1 = fmaf(wd, __ldg(&src[b+1]), acc1);
+        acc2 = fmaf(wd, __ldg(&src[b+2]), acc2);
     }
 
     unsigned int out = (src_y * dst_w + dst_x) * 3u;
@@ -376,52 +367,34 @@ extern "C" __global__ void resize_lanczos_h_3c(
 "#;
 
 static LANCZOS_V_SRC: &str = r#"
-__device__ inline float lanczos3(float x) {
-    const float PI = 3.14159265358979f;
-    if (fabsf(x) < 1e-5f) return 1.0f;
-    if (fabsf(x) >= 3.0f) return 0.0f;
-    float pix  = PI * x;
-    float pix3 = pix * 0.33333333f;
-    return __sinf(pix) * __sinf(pix3) * __fdividef(1.0f, pix * pix3);
-}
-
 extern "C" __global__ void resize_lanczos_v_3c(
-    const float* __restrict__ src,
+    const float* __restrict__ inter,
     float* __restrict__       dst,
-    unsigned int inter_w,
+    const int*   __restrict__ y0s,
+    const float* __restrict__ wtab,
+    unsigned int dst_w,
     unsigned int inter_h,
-    unsigned int dst_h,
-    float ay, float by
+    unsigned int dst_h
 ) {
     unsigned int dst_x = blockIdx.x * blockDim.x + threadIdx.x;
     unsigned int dst_y = blockIdx.y * blockDim.y + threadIdx.y;
-    if (dst_x >= inter_w || dst_y >= dst_h) return;
+    if (dst_x >= dst_w || dst_y >= dst_h) return;
 
-    float sy = fmaxf(fminf(fmaf(ay, (float)dst_y, by), (float)(inter_h - 1u)), 0.0f);
-    int y0 = (int)floorf(sy);
-    float frac = sy - (float)y0;
-
-    float wy[6];
-    wy[0] = lanczos3(frac + 2.0f); wy[1] = lanczos3(frac + 1.0f);
-    wy[2] = lanczos3(frac);        wy[3] = lanczos3(frac - 1.0f);
-    wy[4] = lanczos3(frac - 2.0f); wy[5] = lanczos3(frac - 3.0f);
-
-    float sum = wy[0]+wy[1]+wy[2]+wy[3]+wy[4]+wy[5];
-    float inv = __fdividef(1.0f, sum);
-    #pragma unroll
-    for (int i = 0; i < 6; i++) wy[i] *= inv;
+    int y0 = __ldg(&y0s[dst_y]);
+    const float* w = &wtab[dst_y * 6u];
 
     float acc0 = 0.0f, acc1 = 0.0f, acc2 = 0.0f;
     #pragma unroll
     for (int dy = 0; dy < 6; dy++) {
         int yi = max(0, min(y0 + dy - 2, (int)inter_h - 1));
-        unsigned int b = ((unsigned int)yi * inter_w + dst_x) * 3u;
-        acc0 = fmaf(wy[dy], __ldg(&src[b]),   acc0);
-        acc1 = fmaf(wy[dy], __ldg(&src[b+1]), acc1);
-        acc2 = fmaf(wy[dy], __ldg(&src[b+2]), acc2);
+        unsigned int b = ((unsigned int)yi * dst_w + dst_x) * 3u;
+        float wd = __ldg(&w[dy]);
+        acc0 = fmaf(wd, __ldg(&inter[b]),   acc0);
+        acc1 = fmaf(wd, __ldg(&inter[b+1]), acc1);
+        acc2 = fmaf(wd, __ldg(&inter[b+2]), acc2);
     }
 
-    unsigned int out = (dst_y * inter_w + dst_x) * 3u;
+    unsigned int out = (dst_y * dst_w + dst_x) * 3u;
     dst[out]     = acc0;
     dst[out + 1] = acc1;
     dst[out + 2] = acc2;
@@ -430,17 +403,12 @@ extern "C" __global__ void resize_lanczos_v_3c(
 
 // ── Kernel caches ─────────────────────────────────────────────────────────────
 
-static BILINEAR_KERNEL: OnceLock<CudaKernel> = OnceLock::new();
-static NEAREST_KERNEL: OnceLock<CudaKernel> = OnceLock::new();
-static BILINEAR_NORMALIZE_KERNEL: OnceLock<CudaKernel> = OnceLock::new();
+static BILINEAR_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
+static NEAREST_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
+static BILINEAR_NORMALIZE_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
 static BICUBIC_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
 static LANCZOS_H_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
 static LANCZOS_V_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
-
-// 32 threads wide → full warp maps to one output row (better write coalescing).
-// 8 threads tall → 256 threads total, same occupancy as 16×16.
-const BLOCK_W: u32 = 32;
-const BLOCK_H: u32 = 8;
 
 // ── Error type ────────────────────────────────────────────────────────────────
 
@@ -460,42 +428,6 @@ pub enum CudaResizeError {
     },
 }
 
-// ── Internal helpers ──────────────────────────────────────────────────────────
-
-fn make_config(dst_width: u32, dst_height: u32, block_dim: Option<(u32, u32)>) -> LaunchConfig {
-    let (bw, bh) = block_dim.unwrap_or_else(|| {
-        // Auto mode: clamp to image size so small images don't launch
-        // blocks that are mostly idle (e.g. a 4×4 image with 32×8 = 256
-        // threads has 93% idle threads).
-        (BLOCK_W.min(dst_width), BLOCK_H.min(dst_height))
-    });
-    LaunchConfig {
-        block_dim: (bw, bh, 1),
-        grid_dim: (dst_width.div_ceil(bw), dst_height.div_ceil(bh), 1),
-        shared_mem_bytes: 0,
-    }
-}
-
-fn compile_with_l1(ctx: &Arc<CudaContext>, src: &str, fn_name: &str) -> CudaKernel {
-    let k = CudaKernel::compile(ctx, src, fn_name)
-        .unwrap_or_else(|e| panic!("failed to compile {fn_name}: {e}"));
-    // Prefer L1 over shared memory (kernel uses no smem).
-    // Ignoring errors: unsupported on some platforms but never fatal.
-    let _ = k.prefer_l1_cache();
-    k
-}
-
-fn try_compile_with_l1(
-    ctx: &Arc<CudaContext>,
-    src: &str,
-    fn_name: &str,
-) -> Result<CudaKernel, String> {
-    let k = CudaKernel::compile(ctx, src, fn_name)
-        .map_err(|e| format!("failed to compile {fn_name}: {e}"))?;
-    let _ = k.prefer_l1_cache();
-    Ok(k)
-}
-
 // ── Pixel mapping ─────────────────────────────────────────────────────────────
 
 /// How destination pixel coordinates map to source coordinates.
@@ -509,7 +441,7 @@ pub enum PixelMapping {
     /// The convention of OpenCV, Pillow, ONNX `Resize`
     /// (`coordinate_transformation_mode = half_pixel`), PyTorch
     /// (`align_corners=False`), and NVIDIA VPI — and of the CPU
-    /// [`resize_native`](crate::resize::resize_native). Use this unless you
+    /// [`resize`](crate::resize::resize). Use this unless you
     /// specifically need to reproduce align-corners output.
     HalfPixel,
     /// Corner-aligned sampling, `src = dst * (src_len-1)/(dst_len-1)`.
@@ -594,7 +526,9 @@ pub fn launch_resize_bilinear_downscale_cuda(
     }
 
     let kernel = BILINEAR_KERNEL
-        .get_or_init(|| compile_with_l1(ctx, BILINEAR_SRC, "resize_bilinear_downscale_3c"));
+        .get_or_init(|| try_compile_with_l1(ctx, BILINEAR_SRC, "resize_bilinear_downscale_3c"))
+        .as_ref()
+        .map_err(|e| CudaResizeError::Cuda(e.clone()))?;
 
     let (ax, bx) = mapping.coeffs(src_width, dst_width);
     let (ay, by) = mapping.coeffs(src_height, dst_height);
@@ -675,9 +609,12 @@ pub fn launch_resize_bilinear_normalize_cuda(
         ));
     }
 
-    let kernel = BILINEAR_NORMALIZE_KERNEL.get_or_init(|| {
-        compile_with_l1(ctx, BILINEAR_NORMALIZE_SRC, "resize_bilinear_normalize_3c")
-    });
+    let kernel = BILINEAR_NORMALIZE_KERNEL
+        .get_or_init(|| {
+            try_compile_with_l1(ctx, BILINEAR_NORMALIZE_SRC, "resize_bilinear_normalize_3c")
+        })
+        .as_ref()
+        .map_err(|e| CudaResizeError::Cuda(e.clone()))?;
 
     let (ax, bx) = mapping.coeffs(src_width, dst_width);
     let (ay, by) = mapping.coeffs(src_height, dst_height);
@@ -751,7 +688,9 @@ pub fn launch_resize_nearest_downscale_cuda(
     }
 
     let kernel = NEAREST_KERNEL
-        .get_or_init(|| compile_with_l1(ctx, NEAREST_SRC, "resize_nearest_downscale_3c"));
+        .get_or_init(|| try_compile_with_l1(ctx, NEAREST_SRC, "resize_nearest_downscale_3c"))
+        .as_ref()
+        .map_err(|e| CudaResizeError::Cuda(e.clone()))?;
 
     let (ax, bx) = mapping.coeffs(src_width, dst_width);
     let (ay, by) = mapping.coeffs(src_height, dst_height);
@@ -917,6 +856,26 @@ pub fn launch_resize_lanczos_cuda(
         .as_ref()
         .map_err(|e| CudaResizeError::Cuda(e.clone()))?;
 
+    // Per-axis tap/weight tables, host-built by the SAME `lanczos_axis` the
+    // CPU separable path uses — byte-exact across backends by construction,
+    // and the kernels stay pure gather + FMA (the pre-table kernels spent
+    // ~40% of their time recomputing identical per-column weights per row).
+    // `mapping` is fixed to the half-pixel contract the tables encode.
+    if mapping != PixelMapping::HalfPixel {
+        return Err(CudaResizeError::Cuda(
+            "lanczos resize supports PixelMapping::HalfPixel only".into(),
+        ));
+    }
+    let (x0s_h, wtab_h) =
+        crate::interpolation::lanczos::lanczos_axis(src_width as usize, dst_width as usize);
+    let (y0s_v, wtab_v) =
+        crate::interpolation::lanczos::lanczos_axis(src_height as usize, dst_height as usize);
+    let to_cuda_err = |e: cudarc::driver::result::DriverError| CudaResizeError::Cuda(e.to_string());
+    let d_x0s = stream.clone_htod(&x0s_h).map_err(to_cuda_err)?;
+    let d_wtab_h = stream.clone_htod(&wtab_h).map_err(to_cuda_err)?;
+    let d_y0s = stream.clone_htod(&y0s_v).map_err(to_cuda_err)?;
+    let d_wtab_v = stream.clone_htod(&wtab_v).map_err(to_cuda_err)?;
+
     // Intermediate: dst_w columns, src_h rows — horizontal pass output.
     // Pass 1 writes every element before pass 2 reads; no zero-fill needed.
     let inter_len = (dst_width as usize) * (src_height as usize) * 3;
@@ -924,16 +883,15 @@ pub fn launch_resize_lanczos_cuda(
         .map_err(|e| CudaResizeError::Cuda(e.to_string()))?;
 
     // Pass 1 — horizontal: (src_w, src_h) → (dst_w, src_h).
-    let (ax, bx) = mapping.coeffs(src_width, dst_width);
     kernel_h
         .launch_builder(stream)
         .arg(src)
         .arg(&mut intermediate)
+        .arg(&d_x0s)
+        .arg(&d_wtab_h)
         .arg(&src_width)
         .arg(&src_height)
         .arg(&dst_width)
-        .arg(&ax)
-        .arg(&bx)
         .launch_2d(
             dst_width,
             src_height,
@@ -942,16 +900,15 @@ pub fn launch_resize_lanczos_cuda(
         .map_err(|e| CudaResizeError::Cuda(e.to_string()))?;
 
     // Pass 2 — vertical: (dst_w, src_h) → (dst_w, dst_h).
-    let (ay, by) = mapping.coeffs(src_height, dst_height);
     kernel_v
         .launch_builder(stream)
         .arg(&intermediate)
         .arg(dst)
+        .arg(&d_y0s)
+        .arg(&d_wtab_v)
         .arg(&dst_width)
         .arg(&src_height)
         .arg(&dst_height)
-        .arg(&ay)
-        .arg(&by)
         .launch_2d(
             dst_width,
             dst_height,
@@ -967,7 +924,7 @@ mod tests {
     use super::*;
     use crate::cuda::color::test_utils::{default_stream, pattern_f32};
     use crate::interpolation::InterpolationMode;
-    use crate::resize::resize_native;
+    use crate::resize::resize;
     use kornia_image::{Image, ImageSize};
 
     #[test]
@@ -982,7 +939,7 @@ mod tests {
         assert_eq!(PixelMapping::AlignCorners.coeffs(9, 1), (0.0, 0.0));
     }
 
-    /// Run CPU `resize_native` (half-pixel) and the GPU launcher on the same
+    /// Run CPU `resize` (half-pixel) and the GPU launcher on the same
     /// deterministic input; return both outputs.
     fn cpu_and_gpu(
         (sw, sh): (usize, usize),
@@ -1006,7 +963,7 @@ mod tests {
             0.0,
         )
         .unwrap();
-        resize_native(&src, &mut cpu, interpolation).unwrap();
+        resize(&src, &mut cpu, interpolation).unwrap();
 
         let stream = default_stream();
         let ctx = &stream.context();
@@ -1048,7 +1005,7 @@ mod tests {
 
     /// Byte-exact comparison: the CPU LUT and the kernels compute the identical
     /// uncontracted `a*x + b` coordinate (see the contract note in
-    /// `resize_native`), and the bilinear weight/sum expression shapes match,
+    /// `resize`), and the bilinear weight/sum expression shapes match,
     /// so CPU and GPU must agree bit-for-bit — no tolerance, no exclusions.
     fn assert_bit_exact(
         src: (usize, usize),

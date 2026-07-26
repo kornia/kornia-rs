@@ -111,12 +111,13 @@ def test_bgr_from_rgb():
     assert np.allclose(img_bgr, np.array([[[3, 2, 1]]]))
 
 def test_gray_from_rgb():
-    # Formula: (77*R + 150*G + 29*B) >> 8  (integer BT.601, same as PIL convert("L"))
-    # R=0, G=128, B=255 → (0 + 19200 + 7395) >> 8 = 103
+    # Formula: (4899*R + 9617*G + 1868*B + 8192) >> 14 — OpenCV's exact Q14
+    # BT.601 (byte-parity with cv2.cvtColor RGB2GRAY).
+    # R=0, G=128, B=255 → (0 + 1230976 + 476340 + 8192) >> 14 = 104
     img: np.ndarray = np.array([[[0, 128, 255]]], dtype=np.uint8)
     img_gray: np.ndarray = K.imgproc.gray_from_rgb(img)
     assert img_gray.shape == (1, 1, 1)
-    assert np.allclose(img_gray, np.array([[[103]]]))
+    assert np.allclose(img_gray, np.array([[[104]]]))
 
 def test_rgb_from_rgba():
     img: np.ndarray = np.array([[[0, 1, 2, 255]]], dtype=np.uint8)
@@ -142,3 +143,18 @@ def test_rgb_from_bgra_with_background():
     img_rgb: np.ndarray = K.imgproc.rgb_from_bgra(img, background=[100, 100, 100])
     assert img_rgb.shape == (1, 1, 3)
     assert np.allclose(img_rgb, np.array([[[178, 50, 50]]]))
+
+def test_ycbcr_u8_roundtrip():
+    # R=178, G=50, B=50
+    rgb = np.array([[[178, 50, 50]]], dtype=np.uint8)
+
+    ycbcr = K.imgproc.ycbcr_from_rgb(rgb)
+    assert ycbcr.dtype == np.uint8
+    assert ycbcr.shape == (1, 1, 3)
+
+    back = K.imgproc.rgb_from_ycbcr(ycbcr)
+    assert back.dtype == np.uint8
+    assert back.shape == (1, 1, 3)
+
+    # allow 1-2 levels of quantization error
+    assert np.max(np.abs(back.astype(np.int32) - rgb.astype(np.int32))) <= 2

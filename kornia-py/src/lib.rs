@@ -7,6 +7,8 @@ mod augmentations;
 mod ba;
 mod blur;
 mod brightness;
+mod canny;
+mod ccl;
 mod color;
 mod color_space;
 mod cpu;
@@ -15,6 +17,7 @@ mod cuda_ext;
 mod depth;
 #[cfg(feature = "cuda")]
 mod device;
+mod dispatch;
 mod dlpack;
 mod enhance;
 mod feature_match;
@@ -24,12 +27,14 @@ mod homography;
 mod icp;
 mod image;
 mod io;
+mod morphology;
 mod normalize;
 mod orb;
 mod pgo;
 mod pipeline;
 mod pnp;
 mod pointcloud;
+mod pyramid;
 mod pyutils;
 mod ransac;
 mod resize;
@@ -170,7 +175,7 @@ pub fn compute_histogram_deprecated(
         py,
         "kornia_rs.compute_histogram is deprecated. Use kornia_rs.imgproc.compute_histogram.",
     )?;
-    histogram::compute_histogram(py, image, nbins)
+    histogram::compute_histogram(py, image.bind(py).as_any(), nbins)
 }
 
 // ICP
@@ -270,7 +275,17 @@ pub fn resize_deprecated(
         py,
         "kornia_rs.resize is deprecated. Use kornia_rs.imgproc.resize.",
     )?;
-    resize::resize(py, image, new_size, interpolation, true)
+    as_pyimage(
+        py,
+        resize::resize(
+            py,
+            image.bind(py).as_any(),
+            new_size,
+            interpolation,
+            true,
+            None,
+        )?,
+    )
 }
 
 // Warp
@@ -286,7 +301,17 @@ pub fn warp_affine_deprecated(
         py,
         "kornia_rs.warp_affine is deprecated. Use kornia_rs.imgproc.warp_affine.",
     )?;
-    warp::warp_affine(py, image, m, new_size, interpolation, None)
+    as_pyimage(
+        py,
+        warp::warp_affine(
+            py,
+            image.bind(py).as_any(),
+            m,
+            new_size,
+            interpolation,
+            None,
+        )?,
+    )
 }
 
 #[pyfunction(name = "warp_perspective")]
@@ -301,7 +326,17 @@ pub fn warp_perspective_deprecated(
         py,
         "kornia_rs.warp_perspective is deprecated. Use kornia_rs.imgproc.warp_perspective.",
     )?;
-    warp::warp_perspective(py, image, m, new_size, interpolation, None)
+    as_pyimage(
+        py,
+        warp::warp_perspective(
+            py,
+            image.bind(py).as_any(),
+            m,
+            new_size,
+            interpolation,
+            None,
+        )?,
+    )
 }
 
 // Main Python Module Definition
@@ -464,6 +499,13 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
         histogram::compute_histogram,
         &imgproc_mod
     )?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(histogram::equalize_hist, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(histogram::clahe, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(canny::canny, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(
+        ccl::connected_components_op,
+        &imgproc_mod
+    )?)?;
     imgproc_mod.add_function(wrap_pyfunction!(resize::resize, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(warp::warp_affine, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(warp::warp_perspective, &imgproc_mod)?)?;
@@ -472,6 +514,14 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     imgproc_mod.add_function(wrap_pyfunction!(crop::crop, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(blur::gaussian_blur, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(blur::box_blur, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(blur::median_blur, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(blur::bilateral_filter, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(blur::sobel, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(pyramid::pyrdown, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(pyramid::pyrup, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(pyramid::build_pyramid, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(morphology::dilate, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(morphology::erode, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(
         brightness::adjust_brightness_py,
         &imgproc_mod

@@ -278,3 +278,60 @@ def test_cuda_color_op_on_unified_image():
     assert gray.device == "cuda:0" and gray.channels == 1
     cpu_gray = np.asarray(kornia_rs.imgproc.gray_from_rgb(a)).squeeze()
     np.testing.assert_array_equal(gray.numpy().squeeze(-1), cpu_gray)
+
+
+# ── device arms wired 2026-07-18: every color op with a CUDA kernel must accept
+# a device Image and match the CPU path (u8 bit-exact; f32 tolerance) ─────────
+
+_F32_3TO3_OPS = [
+    "hsv_from_rgb", "rgb_from_hsv",
+    "hls_from_rgb", "rgb_from_hls",
+    "lab_from_rgb", "rgb_from_lab",
+    "luv_from_rgb", "rgb_from_luv",
+    "xyz_from_rgb", "rgb_from_xyz",
+    "linear_rgb_from_rgb", "rgb_from_linear_rgb",
+    "ycbcr_from_rgb", "rgb_from_ycbcr",
+    "yuv_from_rgb", "rgb_from_yuv",
+    "sepia_from_rgb",
+]
+
+
+# f32 color is a tolerance contract (not bit-exact): transcendental-heavy ops
+# (lab/luv: cbrt + powf) accumulate more ULP drift between host libm and the
+# CUDA math library than the rational ones.
+_F32_ATOL = {"lab_from_rgb": 5e-2, "rgb_from_lab": 5e-2, "luv_from_rgb": 5e-2, "rgb_from_luv": 5e-2}
+
+
+@pytest.mark.parametrize("op", _F32_3TO3_OPS)
+def test_cuda_f32_color_op_matches_cpu(op):
+    a = _rgbf()
+    fn = getattr(kornia_rs.imgproc, op)
+    dev = fn(_dev(a))
+    assert dev.device == "cuda:0" and dev.channels == 3
+    cpu = np.asarray(fn(a))
+    np.testing.assert_allclose(dev.numpy(), cpu, atol=_F32_ATOL.get(op, 1e-3))
+
+
+@pytest.mark.parametrize("op", ["ycbcr_from_rgb", "rgb_from_ycbcr", "yuv_from_rgb", "rgb_from_yuv"])
+def test_cuda_u8_color_op_device_arm(op):
+    # CPU<->GPU bit-exactness for the u8 kernels is asserted in the imgproc
+    # crate tests; here we pin the python surface: a u8 device Image is
+    # accepted (was "no GPU kernel"/"wrong dtype" before the dual-dtype arms),
+    # stays on device with the right shape/dtype, and is deterministic.
+    a = _rgb()
+    fn = getattr(kornia_rs.imgproc, op)
+    dev = fn(_dev(a))
+    assert dev.device == "cuda:0" and dev.channels == 3
+    out = dev.numpy()
+    assert out.dtype == np.uint8 and out.shape == a.shape
+    np.testing.assert_array_equal(out, fn(_dev(a)).numpy())
+
+
+def test_cuda_f32_gray_arms():
+    a = _rgbf()
+    gray = kornia_rs.imgproc.gray_from_rgb(_dev(a))
+    assert gray.device == "cuda:0" and gray.channels == 1
+    cpu = np.asarray(kornia_rs.imgproc.gray_from_rgb_f32(a))
+    np.testing.assert_allclose(gray.numpy(), cpu, atol=1e-3)
+    back = kornia_rs.imgproc.rgb_from_gray(gray)
+    assert back.device == "cuda:0" and back.channels == 3

@@ -9,3 +9,6 @@ pub use kernels::*;
 /// Morphological operations
 mod ops;
 pub use ops::*;
+
+#[cfg(feature = "cuda")]
+mod cuda;

@@ -109,9 +109,34 @@ extern "C" __global__ void rgb_from_bayer_u8(
         if (c + 1 < cols) demosaic_px(src, dst, r + 1, c + 1, rows, cols, cell11);
     }
 }
+// cv2 border semantics: replace the 1-px frame with its interior neighbour
+// (rows first, then columns — corners resolve to the (1,1) interior pixel),
+// matching the CPU post-pass `bayer_border_replicate`. One thread per border
+// pixel; reads only interior values the demosaic kernel already wrote.
+extern "C" __global__ void bayer_border_replicate_u8(
+    unsigned char* __restrict__ dst, int rows, int cols)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int nborder = 2 * cols + 2 * rows;
+    if (i >= nborder) return;
+    int r, c;
+    if (i < cols)                { r = 0;        c = i; }
+    else if (i < 2 * cols)       { r = rows - 1; c = i - cols; }
+    else if (i < 2 * cols + rows){ r = i - 2 * cols; c = 0; }
+    else                         { r = i - 2 * cols - rows; c = cols - 1; }
+    // rows-then-cols copy order == clamp both coordinates into the interior.
+    int rs = min(max(r, 1), rows - 2);
+    int cs = min(max(c, 1), cols - 2);
+    int d = (r * cols + c) * 3;
+    int sidx = (rs * cols + cs) * 3;
+    dst[d]     = dst[sidx];
+    dst[d + 1] = dst[sidx + 1];
+    dst[d + 2] = dst[sidx + 2];
+}
 "#;
 
 static BAYER: KernelCell = KernelCell::new();
+static BAYER_BORDER: KernelCell = KernelCell::new();
 
 /// Phase table as kernel cell codes `[row&1][col&1]` — derived from the CPU
 /// path's format-defining `phase_table` so the two can never drift
@@ -151,7 +176,7 @@ pub fn launch_rgb_from_bayer_u8(
     kernel
         .launch_builder(stream)
         .arg(src)
-        .arg(dst)
+        .arg(&mut *dst)
         .arg(&rows_i)
         .arg(&cols_i)
         .arg(&c00)
@@ -159,6 +184,30 @@ pub fn launch_rgb_from_bayer_u8(
         .arg(&c10)
         .arg(&c11)
         .launch_cfg(cfg)?;
+
+    // cv2 border semantics: overwrite the 1-px frame from the interior
+    // (same stream — ordered after the demosaic). Skipped for images too
+    // small to have an interior, matching the CPU post-pass.
+    if rows >= 3 && cols >= 3 {
+        let border = get_kernel(
+            &BAYER_BORDER,
+            stream,
+            BAYER_SRC,
+            "bayer_border_replicate_u8",
+        )?;
+        let nborder = (2 * rows + 2 * cols) as u32;
+        let bcfg = cudarc::driver::LaunchConfig {
+            block_dim: (256, 1, 1),
+            grid_dim: (nborder.div_ceil(256), 1, 1),
+            shared_mem_bytes: 0,
+        };
+        border
+            .launch_builder(stream)
+            .arg(dst)
+            .arg(&rows_i)
+            .arg(&cols_i)
+            .launch_cfg(bcfg)?;
+    }
     Ok(())
 }
 
@@ -182,6 +231,7 @@ mod tests {
                 crate::color::bayer::kernels::rgb_from_bayer_scalar(
                     &mosaic, &mut cpu, rows, cols, pattern,
                 );
+                crate::color::bayer::kernels::bayer_border_replicate(&mut cpu, rows, cols);
 
                 let d_src = stream.clone_htod(&mosaic).unwrap();
                 let mut d_dst = stream.alloc_zeros::<u8>(rows * cols * 3).unwrap();

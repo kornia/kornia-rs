@@ -2,7 +2,7 @@
 //!
 //! Opt-in compatibility mode reproducing OpenCV 4.x `INTER_LINEAR` and
 //! `INTER_NEAREST` output exactly, for migration and cross-validation against
-//! OpenCV pipelines. The default kornia resize ([`resize_native`] and the
+//! OpenCV pipelines. The default kornia resize ([`resize`] and the
 //! `resize_fast_*` family) is *not* byte-compatible with OpenCV by design:
 //! OpenCV quantizes u8 interpolation weights to 11-bit fixed point and
 //! evaluates separably, both of which discard precision that kornia's own
@@ -32,7 +32,7 @@
 //!   half-pixel variant is OpenCV's separate `INTER_NEAREST_EXACT`, not
 //!   reproduced here.
 //!
-//! [`resize_native`]: crate::resize::resize_native
+//! [`resize`]: crate::resize::resize
 
 use crate::interpolation::InterpolationMode;
 use kornia_image::{Image, ImageError};

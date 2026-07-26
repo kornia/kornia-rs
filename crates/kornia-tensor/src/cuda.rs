@@ -162,12 +162,57 @@ pub struct CudaAllocator {
 unsafe impl Send for CudaAllocator {}
 unsafe impl Sync for CudaAllocator {}
 
+/// Raise the device's default memory-pool release threshold, once per device.
+///
+/// `CudaSlice` allocation goes through `cuMemAllocAsync`, whose default pool
+/// has a release threshold of 0: **every stream synchronization returns all
+/// freed blocks to the OS**, so a per-frame `op(); sync()` loop pays the full
+/// OS allocation cost on every iteration — measured at ~7 ms/frame of pure
+/// alloc/free churn for 1080p f32 images on Jetson Orin (unified memory makes
+/// the re-mapping especially expensive), against ~1 ms steady-state. With the
+/// threshold at `u64::MAX`, freed blocks stay in the pool across syncs and
+/// per-call destination allocation becomes effectively free.
+///
+/// No-op when the driver lacks async-alloc support (cudarc then falls back to
+/// synchronous `cuMemAlloc`, which no pool setting would help).
+pub fn tune_default_mem_pool(stream: &Arc<CudaStream>) {
+    static TUNED: OnceLock<Mutex<std::collections::HashSet<i32>>> = OnceLock::new();
+    let ordinal = stream.context().ordinal() as i32;
+    let mut tuned = TUNED
+        .get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+        .lock()
+        .expect("TUNED mutex poisoned");
+    if !tuned.insert(ordinal) {
+        return;
+    }
+    // SAFETY: the device ordinal comes from a live context; the pool handle is
+    // the device's default pool; the attribute value outlives the call. Errors
+    // (old drivers without pool support) are deliberately ignored — behavior
+    // then simply stays as before.
+    unsafe {
+        use cudarc::driver::sys;
+        let mut pool = std::mem::MaybeUninit::uninit();
+        if sys::cuDeviceGetDefaultMemPool(pool.as_mut_ptr(), ordinal) != sys::CUresult::CUDA_SUCCESS
+        {
+            return;
+        }
+        let pool = pool.assume_init();
+        let mut threshold: u64 = u64::MAX;
+        let _ = sys::cuMemPoolSetAttribute(
+            pool,
+            sys::CUmemPool_attribute::CU_MEMPOOL_ATTR_RELEASE_THRESHOLD,
+            &mut threshold as *mut u64 as *mut core::ffi::c_void,
+        );
+    }
+}
+
 impl TensorAllocator for CudaAllocator {
     fn allocate(
         &self,
         layout: std::alloc::Layout,
     ) -> Result<Box<dyn MemoryResource>, TensorAllocatorError> {
         let n_bytes = layout.size();
+        tune_default_mem_pool(&self.stream);
         let slice: CudaSlice<u8> = self
             .stream
             .alloc_zeros::<u8>(n_bytes)
@@ -596,6 +641,7 @@ pub fn zeros_cuda<T, const N: usize>(
 where
     T: DeviceRepr + ValidAsZeroBits + 'static,
 {
+    tune_default_mem_pool(stream);
     let numel: usize = shape.iter().product();
     // Zero-initialised, **typed** device memory so the storage is backed by
     // `CudaResource<T>` (not `CudaResource<u8>`) — `as_cudaslice::<T>()` then works.
@@ -626,6 +672,7 @@ pub unsafe fn uninit_cuda<T, const N: usize>(
 where
     T: DeviceRepr + 'static,
 {
+    tune_default_mem_pool(stream);
     let numel: usize = shape.iter().product();
     // SAFETY: the caller's contract (documented above) guarantees the memory is
     // fully written before it is read; this mirrors `zeros_cuda` minus the memset.
@@ -922,6 +969,7 @@ where
     ///
     /// Returns [`CudaError::Driver`] on CUDA failure.
     pub fn to_cuda(&self, stream: &Arc<CudaStream>) -> Result<Tensor<T, N>, CudaError> {
+        tune_default_mem_pool(stream);
         let src_slice = self.as_slice(); // panics (correctly) if non-host-accessible
                                          // Copy host slice → a new device CudaSlice<T> (this is a transfer, copy is
                                          // correct), then wrap it via the shared owner/pointer-caching path so

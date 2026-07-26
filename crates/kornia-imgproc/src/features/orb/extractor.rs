@@ -5,7 +5,7 @@ use crate::{
     features::{FastDetector, HarrisResponse},
     filter::{gaussian_blur, gaussian_blur_u8},
     interpolation::InterpolationMode,
-    resize::{resize_fast_u8, resize_native},
+    resize::{resize, resize_fast_u8},
 };
 
 use super::pattern::{POS0, POS1};
@@ -881,7 +881,7 @@ fn pyramid_reduce(
     gaussian_blur(img, &mut smoothed, (0, 0), (sigma, 0.0))?;
 
     let mut resized = Image::from_size_val(target, 0.0)?;
-    resize_native(
+    resize(
         &smoothed,
         &mut resized,
         crate::interpolation::InterpolationMode::Bilinear,

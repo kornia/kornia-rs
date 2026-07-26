@@ -13,6 +13,273 @@ changes early: `cargo add kornia-imgproc@0.1.15-rc.1` or `pip install --pre korn
 
 ## [Unreleased]
 
+## [0.1.15-rc.5] — 2026-07-19 (pre-release)
+
+**Connected components 3-5x faster on CPU, ~2x on GPU.** The CPU path
+now indexes its union-find by run id instead of pixel index (tables stay
+cache-resident rather than costing two full-image allocations per call)
+and scans rows with u64 word tricks that skip 8 background/foreground
+pixels per step; the CUDA path replaces the serial 1-thread-per-row init
+with a block-parallel ballot/shared-scan run-start kernel, a
+warp-shuffle compaction scan, and a u16 rank array. 1080p,
+stream-synchronized, labels still exactly equal to cv2's `CCL_WU`
+(SAUF): CPU 4.9-6.1 ms → 0.67-1.40 ms — now faster than OpenCV's
+*default* (Spaghetti) algorithm on every tested content/connectivity
+(1.1-2.2x); GPU 2.5-3.0 ms → 1.09-1.60 ms — faster than or tied with
+cv2's default except many-small-components 8-connectivity content
+(0.82x), where Spaghetti's specialized decision tree still wins against
+the fixed 5-kernel pipeline cost. VPI has no CCL op.
+
+**CUDA module cleanup + faster pyramid borders.** The per-module CUDA
+error enums and `check_slice`/`get_kernel` helpers of the newer kernel
+families (histogram, CLAHE, bilateral, median, Canny, CCL) are now
+generated from one shared definition (public error types unchanged), and
+the pyramid kernels use a single-fold `reflect_101` variant for their
+±2-tap borders instead of the integer-modulo form — 1080p u8 `pyrdown`
+0.62 → 0.44 ms, bit-exactness pinned by the existing parity suites.
+
+**`cuda-fusion` example + docs.** New runnable example
+(`examples/cuda_fusion`) showing the kernel-fusion API (build/exec model
+borrowed from the Fused Kernel Library; scoped to linear per-pixel
+transform chains — documented explicitly as narrower than FKL):
+composing the DNN-preprocess chain and a novel resize→normalize→gray
+chain from the stage library, printing the generated CUDA source, and a
+sustained benchmark (~0.13 ms/frame, 1080p → 640×640 CHW on Orin). The
+README documents pipeline composition, batching, the custom-`FusedStage`
+recipe, and the f32-intermediate precision contract.
+
+**Connected-component labeling (CPU and CUDA), label-exact with OpenCV's
+SAUF.** New `connected_components` for u8 single-channel masks
+(`kornia_rs.imgproc.connected_components` in Python, returning
+`(n, labels)` with int32 labels), matching
+`cv2.connectedComponentsWithAlgorithm(..., cv2.CCL_WU)` label-for-label:
+background 0, components numbered in raster order of first appearance,
+for both 4- and 8-connectivity. (cv2's default 8-way algorithm, BBDT,
+produces the same partition with a different numbering.) The CPU path is
+a run-based min-index union-find; the CUDA path is an atomicMin
+label-equivalence fixpoint with row-run initialization plus a device
+compaction — device labels are identical to the CPU's; the union phase
+is a single lock-free pass (Komura atomicMin-with-retry union, atomic
+path halving), no iteration loop. Python `Image` gains int32 (label map)
+dtype support. Measured 1080p: GPU 4.3 ms vs cv2 5.8 ms on dense 40%
+noise (1.3×); sparse-blob content is fixed-overhead-bound (task #38
+tracks the block-local rewrite). CPU is a stripe-parallel run-based
+union-find (~22 ms dense; SAUF two-pass is the same follow-up).
+
+**Canny edge detection (CPU and CUDA), byte-for-byte with OpenCV.** New
+`canny` for u8 single-channel images (`kornia_rs.imgproc.canny` in
+Python), matching `cv2.Canny` exactly — the all-integer pipeline (Sobel
+3×3 `CV_16S` replicate-border gradients, L1/L2 magnitude with cv2's
+threshold clamp-and-square rules, the fixed-point TG22 sector test with
+cv2's exact per-sector tie-breaks, and hysteresis as pure reachability)
+transcribes cv2's semantics, so CPU, GPU and cv2 agree on every byte.
+CPU is NEON-vectorized end to end (separable Sobel, magnitude, a
+branchless 4-lane NMS evaluating all three sector tests and selecting by
+mask, map finalize) with hysteresis as a parallel tile-worklist flood
+(round 1 floods from strong seeds, woken rounds re-scan only tile
+boundary rings); the CUDA path runs fused sobel+magnitude, NMS, an
+active-tile-worklist block-fixpoint hysteresis (blocks read-and-clear
+their own worklist entries — no per-sweep buffer resets) and finalize.
+(VPI's CUDA Canny uses a different algorithm — ~5% differing pixels vs
+cv2, and its L2 threshold semantics diverge from the standard convention
+— so it is not byte-comparable.) Measured 1080p under load: GPU
+1.6–4.3 ms ≈ 2.1–2.6× `cv2.Canny` CPU; kornia CPU 3.4–5.7 ms ≈ 1.2–1.6×
+cv2.
+
+**Median blur + bilateral filter (CPU and CUDA), byte-for-byte with
+OpenCV — median also bit-identical to VPI.** New `median_blur` (u8, 3×3
+and 5×5, replicate borders, exact sorting-network medians — NEON on CPU,
+register networks on CUDA; `cv2.medianBlur` and VPI's CUDA `MedianFilter`
+agree bit-for-bit here, so kornia matches BOTH) and `bilateral_filter`
+(u8 C1, `cv2.bilateralFilter` mirrored end to end: its own SIMD exp
+polynomial for the color table, circular taps, reflect_101 borders, fma
+accumulation — including cv2's different tap-summation order between its
+16-pixel SIMD region and its scalar row tail; VPI's bilateral uses a
+different formula and is not byte-comparable). CPU and GPU outputs are
+byte-identical. The CPU paths are NEON-vectorized — 3×3 median via the
+exact `med3(max-lows, med-mids, min-highs)` column identity with rolling
+`vext`-shared column sorts and two output rows per pass; 5×5 via rolling
+sorted columns feeding a 71-exchange selection network (derived from
+Smith's 99 by greedy deletion, proven exact on the sorted-column input
+subspace via the zero-one principle — pinned by a unit test over all 6^5
+column-sorted 0-1 patterns); bilateral 16 lanes per tap — and beat
+OpenCV's CPU on 5×5 median (1.15×) and bilateral (1.1×), with 3×3 median
+at 0.77× (both sides at the DRAM wall). `out=` supported on the CPU
+paths. Measured 1080p sustained (GPU, stream-synchronized): median3 0.31 ms
+(1.1× cv2, 2.3× VPI), median5 1.18 ms (1.5× cv2, 1.1× VPI), bilateral
+d=5 3.24 ms (2.9× cv2; VPI's non-comparable variant is faster).
+
+**CLAHE (CPU and CUDA), byte-for-byte with OpenCV.** New `clahe` for u8
+single-channel images (`kornia_rs.imgproc.clahe` in Python), matching
+`cv2.createCLAHE(clip, grid).apply()` exactly — including OpenCV's
+reflect_101 tile padding rule, integer clip limit with two-phase excess
+redistribution, f32 LUT quantization (round-half-to-even) and the f32
+bilinear blend of the four surrounding tile LUTs with the exact FMA
+contraction OpenCV's aarch64 wheels compile to (calibrated empirically:
+22 configurations, zero differing bytes). CPU and GPU outputs are
+byte-identical (`f32::mul_add` / explicit `fmaf`, mirrored expression
+trees). The CPU interpolation stage is NEON-vectorized with packed
+per-span LUT tables (one gather per pixel; identical bytes, pure
+access-pattern change). The Python binding takes `out=` on the CPU path.
+Measured 1080p sustained (stream-synchronized): GPU 0.54 ms ≈ 7.1× and
+CPU 1.9 ms ≈ 2.1× `cv2.createCLAHE` CPU (VPI has no CLAHE op).
+
+**GPU histogram + `equalize_hist` (CPU and CUDA), byte-for-byte with
+OpenCV.** New `equalize_hist` for u8 single-channel images on CPU and
+device (`kornia_rs.imgproc.equalize_hist` in Python), matching
+`cv2.equalizeHist` exactly — including its f32 round-half-to-even LUT
+rounding and identity behavior on constant images. `compute_histogram`
+now routes device images to a CUDA shared-memory-bins kernel whose counts
+are exactly equal to the CPU's for any bin count. CPU and GPU equalize
+outputs are byte-identical.
+
+**GPU Gaussian pyramids + `PyramidPlan`.** `pyrdown_f32` (one fused
+5×5-Gaussian+subsample kernel), `pyrup_f32` (polyphase pair), `pyrdown_u8`
+and `pyrup_u8` (separable `[1,4,6,4,1]` integer pairs) now route device
+images to CUDA kernels that are bit-identical (f32) / byte-identical (u8)
+to the CPU paths, including the `reflect_101` borders and 1-pixel-wide
+degenerate sources. `PyramidPlan` preallocates every level buffer so a
+steady-state pyramid build launches kernels only (CUDA-Graph-capturable);
+its levels are bit-identical to `build_pyramid`. Measured 1080p: pyrdown
+u8 RGB 0.62 ms (4.1× OpenCV CPU), 4-level f32 plan 0.68 ms.
+
+**Faster Lanczos-3 warps on CUDA; sub-ULP output change in Lanczos warp/remap
+sampling.** The warp kernels now derive all six tap weights per axis from four
+`sin(πx)` evaluations instead of twelve, using the sinc lattice's periodicity
+(`sin(π(frac+n)) = ±sin(π·frac)`); the CPU sampler (`lanczos_sample`, used by
+`warp_affine`/`warp_perspective`/`remap` with `InterpolationMode::Lanczos`) is
+refactored identically, so CPU and GPU remain bit-exact to each other. Absolute
+values shift by ≤1e-6 relative to previous releases (weights are identical in
+real arithmetic, rounding differs). Measured on Jetson AGX Orin (locked
+clocks, 1080p→1080p 3-channel f32): warp-affine lanczos 5.49→4.26 ms,
+warp-perspective lanczos 5.93→4.28 ms sustained.
+
+**GPU separable filters: gaussian, box, sobel, scharr.** New CUDA separable
+engine (`cuda/filter.rs`) with residency dispatch on `gaussian_blur`,
+`box_blur`, `sobel`, `scharr` (f32) and `gaussian_blur_u8`, `box_blur_u8` —
+f32 paths bit-identical to the CPU engine (skip-zero border, sequential
+taps, fmad-free), u8 paths byte-identical to the Q8 striped blur (replicate
+borders) and the 3×3 binomial fast path, with the u8 kernel/sigma routing
+decided by one selector shared with the CPU. Python `gaussian_blur` /
+`box_blur` accept device images; new `imgproc.sobel` (f32, numpy + device).
+Measured 1080p vs OpenCV CPU: gaussian 5×5 u8 RGB 9.2×, box 5×5 9.5×,
+sobel-3 f32 13×. The u8 binomial tails/edges now use the same nested
+halving-add rounding as the SIMD bulk (≤1 LSB shift on border bytes vs
+previous releases).
+
+**u8 color conversions are now byte-for-byte with OpenCV.** Three alignments
+(CPU and CUDA changed together, so device output stays `assert_eq!`-equal to
+host): u8 grayscale now uses cv2's exact Q14 formula
+(`(4899·R + 9617·G + 1868·B + 8192) >> 14`; ±1 LSB vs previous releases);
+`yuv_from_rgb`/`rgb_from_yuv` switch to the classic Y'UV chroma constants
+cv2 and kornia-python use (0.492/0.877 forward, 1.140/2.032/−0.395/−0.581
+inverse) instead of Cb/Cr in YUV order — a semantic change for chroma
+values; and Bayer demosaic adopts cv2's border rule (the 1-px frame is the
+interior neighbour's result). Verified byte-exact against cv2 for
+yuv (both directions), bayer (all pixels), ycbcr, bgr, rgba and colormap;
+gray matches cv2's documented formula exactly (cv2's own NEON build deviates
+from its spec on ~0.25% of pixels). BGR/YCbCr/colormap already matched.
+
+**Python: every color conversion with a CUDA kernel now accepts a device
+`Image`.** Previously ~10 GPU color paths existed in the Rust crates but the
+Python surface raised "no GPU kernel for a device Image": HLS, Luv, XYZ,
+linear-RGB (f32 pairs), planar YUV (u8 **and** f32 pairs), plus the f32 arms
+of YCbCr, sepia and gray (`imgproc.gray_from_rgb` on an f32 device image now
+returns a device gray f32 image). u8 arms stay bit-exact with the CPU path;
+f32 arms follow the existing tolerance contract. Covered by device-vs-CPU
+parity tests and a memory-leak loop over the new arms.
+
+**u8 CUDA morphology (dilate / erode), bit-identical to the CPU ops, plus
+first-time Python bindings.** `dilate` / `erode` route u8 device images
+(1/3/4-channel) to a CUDA kernel that samples the exact tap multiset the CPU
+does — same active structuring-element offsets, same border index mapping
+for all five padding modes — so min/max output is byte-for-byte equal
+(`assert_eq!` parity tests over box/cross/ellipse and even-sized kernels).
+The structuring element is cached on-device per geometry (Jetson pageable
+H2D tail; warm path is CUDA-Graph-capturable). New
+`kornia_rs.imgproc.dilate` / `erode` Python functions cover the numpy u8 CPU
+path and u8 device images alike. Non-u8 device pairs error with the typed
+no-GPU-kernel message instead of touching device memory from the CPU.
+
+**u8 CUDA warps (bilinear), bit-identical to the CPU fast paths — which are
+now bit-identical to each other too.** `warp_affine_u8` and
+`warp_perspective_u8` route u8 device images (1/3/4-channel) to new
+integer-only CUDA kernels that mirror the CPU's per-row span math and
+Q16/Q10 fixed-point sampling exactly; `kornia_rs.imgproc.warp_affine` /
+`warp_perspective` accept u8 device images including `out=`. Along the way
+the CPU u8 perspective warp switched from incremental coordinate updates
+(`nx += dnx` per column, with a SIMD reciprocal estimate) to direct
+per-column evaluation with exact IEEE division — scalar, NEON, and AVX2 now
+produce identical bytes instead of agreeing "up to sub-ULP noise". Output
+shifts by at most one Q10 quantum on some pixels relative to earlier
+releases; benchmarks show no measurable CPU cost (the division latency hides
+behind the 4-lane structure).
+
+**u8 CUDA resize — every mode, bit-identical to the CPU fast paths.** Camera
+data is u8; until now the GPU only resized f32 (4× the memory traffic once you
+count the conversion). `resize_fast_u8_aa` (Rust) and `kornia_rs.imgproc.resize`
+(Python, including `out=`) now route u8 device images — 1/3/4-channel — to new
+integer-only CUDA kernels covering the full CPU cascade: exact-2× pyramid fast
+paths, nearest, Q14 bilinear, and antialiased/plain separable bicubic and
+Lanczos-3. The coordinate and weight tables are built by the same host
+functions the CPU uses and uploaded once per geometry (a device-side LUT
+cache — Jetson pageable H2D uploads have a ~250 µs average latency tail that
+otherwise dominates, and the warm path is CUDA-Graph-capturable), so device
+output is byte-for-byte equal to host output (asserted with `assert_eq!`
+across modes, channel counts, odd sizes, and extreme downscales). Measured on
+Jetson Orin at 1080p→720p u8 RGB (median, out= reuse): nearest 0.22 ms,
+bilinear 0.38 ms, bicubic 1.20 ms — faster than VPI-CUDA on every comparable
+op (5.4× / 3.4× / 1.1×) and 3–6× ahead of OpenCV CPU. Kernel compile failures
+now surface as errors instead of panics across all resize launchers.
+
+**Python: `out=` and CUDA Graphs for allocation-free frame loops.** The device
+geometry ops accept a preallocated device `out=` image (torch-style, returned
+back); `kornia_rs.cuda.Stream.new()` creates a capturable non-default stream;
+and `kornia_rs.cuda.Graph.capture(f, retain, stream)` records an
+allocation-free op sequence for microsecond-overhead `replay()`. Measured on
+Jetson Orin (1080p→720p f32 resize, per frame with sync): 1.31 ms → 0.62 ms
+with `out=` on a created stream → **0.42 ms** with graph replay — 20× the
+naive pattern of two days ago, byte-exact output preserved through capture.
+
+**Jetson/CUDA: per-call device allocations no longer stall frame loops.** The
+default CUDA memory pool releases freed blocks back to the OS at every stream
+synchronization (release threshold 0), so a per-frame `op(); sync()` pattern
+re-paid the full allocation cost each frame — ~8.5 ms/frame of alloc/free churn
+for 1080p f32 on Jetson Orin. kornia-tensor now raises the pool's release
+threshold once per device at first allocation: the same loop drops to 1.3
+ms/frame (and pipelined use improves 1.08 → 0.60 ms). Applies to every device
+op (color conversions included).
+
+**Bicubic and Lanczos-3 for the f32 geometry ops, byte-exact CPU↔GPU.**
+`resize`, `warp_affine`, `warp_perspective`, and `remap` accept
+`InterpolationMode::Bicubic` and `::Lanczos` on the CPU, and device images
+route to the previously launcher-only CUDA kernels — all six now reachable
+from the public API, with bit-identical output between backends. Lanczos
+weights use a shared deterministic sin(πx) polynomial (libm/CUDA `sinf`
+rounding differs between platforms); resize-lanczos builds its per-axis weight
+tables on the host once per call, shared verbatim with the GPU launcher —
+which also made the GPU kernels up to 27% faster than the old `__sinf` path.
+Hot-loop interpolation dispatch is hoisted per mode, making CPU f32 resize
+~30% faster and warp-perspective ~7% faster than before.
+
+**Python: GPU resize and warps.** `kornia_rs.imgproc.resize` / `warp_affine` /
+`warp_perspective` now accept a device `Image` (f32, 3-channel) and run the
+CUDA kernels, returning a device `Image` — output bit-identical to the CPU f32
+path. numpy u8 inputs behave exactly as before; a device image with an
+unsupported dtype/channel count raises instead of silently copying to the
+host. `out=` is unsupported on the device path.
+
+**`resize_native` is renamed to `resize`** (clean rename, no alias).
+
+**GPU resize and warps from the high-level API.** `resize` (né `resize_native`),
+`warp_affine`, and `warp_perspective` now run on the GPU when called with
+device-resident images (`Image::to_cuda` / `zeros_cuda`), with **bit-identical
+output to the CPU path**. Same rules as the color conversions: both operands
+must be on the same device (mixed pairs are a typed error, no implicit
+transfers), and unsupported dtype/channel combinations error instead of
+silently falling back (the GPU kernels are 3-channel f32).
+
+
 **OpenCV-compatible resize (opt-in).** New `resize_opencv_u8` / `resize_opencv_f32`
 reproduce OpenCV's reference `INTER_LINEAR` (u8: 11-bit fixed point; f32:
 separable float) and floor-based `INTER_NEAREST` semantics, for migrating from
@@ -189,6 +456,7 @@ linear layer / kornia-nn, kornia-apriltag, zero-copy gstreamer images. See the
 [GitHub release](https://github.com/kornia/kornia-rs/releases/tag/v0.1.10) for
 the full per-PR list.
 
+[0.1.15-rc.5]: https://github.com/kornia/kornia-rs/compare/v0.1.15-rc.4...v0.1.15-rc.5
 [0.1.15-rc.4]: https://github.com/kornia/kornia-rs/compare/v0.1.15-rc.3...v0.1.15-rc.4
 [0.1.15-rc.3]: https://github.com/kornia/kornia-rs/compare/v0.1.15-rc.2...v0.1.15-rc.3
 [0.1.15-rc.2]: https://github.com/kornia/kornia-rs/compare/v0.1.15-rc.1...v0.1.15-rc.2

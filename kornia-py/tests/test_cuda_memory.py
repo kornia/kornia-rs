@@ -256,3 +256,93 @@ def test_no_leak_full_pipeline():
         del dev, gray, rgb, cap
 
     assert_no_leak(body)
+
+
+def test_no_leak_histogram_device_arms():
+    """equalize_hist allocates a fresh device destination plus per-call
+    hist/lut scratch; compute_histogram allocates per-call device bins."""
+    dev = _dev(_gray()) if "_gray" in globals() else None
+    if dev is None:
+        rng = np.random.default_rng(7)
+        dev = _dev(rng.integers(0, 256, size=(240, 320, 1), dtype=np.uint8))
+
+    def body():
+        eq = kornia_rs.imgproc.equalize_hist(dev)
+        _ = kornia_rs.imgproc.compute_histogram(dev, num_bins=256)
+        del eq
+
+    assert_no_leak(body)
+
+
+def test_no_leak_clahe_device_arm():
+    """clahe allocates a fresh device destination plus per-call tile-LUT
+    scratch."""
+    rng = np.random.default_rng(9)
+    dev = _dev(rng.integers(0, 256, size=(240, 320, 1), dtype=np.uint8))
+
+    def body():
+        out = kornia_rs.imgproc.clahe(dev)
+        del out
+
+    assert_no_leak(body)
+
+
+def test_no_leak_median_bilateral_device_arms():
+    """median_blur / bilateral_filter allocate fresh device destinations;
+    bilateral also uploads per-call tap/weight tables."""
+    rng = np.random.default_rng(11)
+    dev = _dev(rng.integers(0, 256, size=(240, 320, 1), dtype=np.uint8))
+
+    def body():
+        m = kornia_rs.imgproc.median_blur(dev, kernel_size=3)
+        b = kornia_rs.imgproc.bilateral_filter(dev)
+        del m, b
+
+    assert_no_leak(body)
+
+
+def test_no_leak_canny_device_arm():
+    """canny allocates fresh device gradients/magnitude/map scratch and a
+    destination per call."""
+    rng = np.random.default_rng(13)
+    dev = _dev(rng.integers(0, 256, size=(240, 320, 1), dtype=np.uint8))
+
+    def body():
+        out = kornia_rs.imgproc.canny(dev)
+        del out
+
+    assert_no_leak(body)
+
+
+def test_no_leak_ccl_device_arm():
+    """connected_components allocates label/pos/scan scratch and an i32
+    destination per call."""
+    rng = np.random.default_rng(17)
+    dev = _dev(((rng.random((240, 320)) < 0.4) * 255).astype(np.uint8)[..., None])
+
+    def body():
+        n, lab = kornia_rs.imgproc.connected_components(dev)
+        del lab
+
+    assert_no_leak(body)
+
+
+def test_no_leak_new_color_device_arms():
+    """The dual-dtype / f32 arms wired 2026-07-18 (hls/luv/xyz/linear/yuv/
+    f32-ycbcr/f32-sepia/f32-gray) allocate fresh device destinations — chain a
+    representative set and assert steady-state."""
+    dev = _dev(_rgbf())
+    dev8 = _dev(_rgb())
+
+    def body():
+        hls = kornia_rs.imgproc.hls_from_rgb(dev)
+        luv = kornia_rs.imgproc.luv_from_rgb(dev)
+        xyz = kornia_rs.imgproc.rgb_from_xyz(kornia_rs.imgproc.xyz_from_rgb(dev))
+        lin = kornia_rs.imgproc.linear_rgb_from_rgb(dev)
+        yuvf = kornia_rs.imgproc.rgb_from_yuv(kornia_rs.imgproc.yuv_from_rgb(dev))
+        yuv8 = kornia_rs.imgproc.yuv_from_rgb(dev8)
+        sep = kornia_rs.imgproc.sepia_from_rgb(dev)
+        gray = kornia_rs.imgproc.gray_from_rgb(dev)
+        del hls, luv, xyz, lin, yuvf, yuv8, sep, gray
+
+    assert_no_leak(body)

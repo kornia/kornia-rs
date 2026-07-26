@@ -128,6 +128,17 @@ pub fn warp_affine<const C: usize>(
 ) -> Result<(), ImageError> {
     validate_interpolation(interpolation)?;
 
+    // Device pairs route to the CUDA kernels (bit-identical output — the
+    // byte-exact contract asserted in `cuda::warp_affine`). Mixed pairs are a
+    // typed error; no implicit transfers.
+    #[cfg(feature = "cuda")]
+    if let crate::cuda::dispatch::Residency::Device(exec) =
+        crate::cuda::dispatch::pair_residency(src, dst)?
+    {
+        return exec
+            .run(|stream| super::cuda::warp_affine_f32_cuda(src, dst, m, interpolation, stream));
+    }
+
     let m_inv = invert_affine_transform(m);
 
     let src_w = src.cols();
@@ -308,9 +319,47 @@ pub fn warp_affine<const C: usize>(
                     );
                 });
         }
-        // validate_interpolation at the top of this function rejects every mode
-        // other than Nearest and Bilinear, so this arm is unreachable.
-        _ => unreachable!(),
+        // Bicubic / Lanczos: the per-pixel samplers in `interpolation` are the
+        // byte-exact twins of the CUDA kernels; the coordinate and span math
+        // is identical to the fast modes above.
+        InterpolationMode::Bicubic | InterpolationMode::Lanczos => {
+            // Mode hoisted out of the pixel loop like everywhere else; the
+            // samplers are the byte-exact twins of the CUDA kernels.
+            macro_rules! run_sampled {
+                ($sampler:path) => {
+                    dst.as_slice_mut()
+                        .par_chunks_mut(row_len * ROWS_PER_TASK)
+                        .enumerate()
+                        .for_each(|(ci, chunk)| {
+                            run_rows!(
+                                chunk,
+                                ci * ROWS_PER_TASK,
+                                |dst_row: &mut [f32],
+                                 x_lo: usize,
+                                 x_hi: usize,
+                                 sx0: f32,
+                                 sy0: f32| {
+                                    let pixels = dst_row[x_lo * C..x_hi * C].chunks_exact_mut(C);
+                                    let steps =
+                                        xstep_x[x_lo..x_hi].iter().zip(&xstep_y[x_lo..x_hi]);
+                                    for (dst_pixel, (&tx, &ty)) in pixels.zip(steps) {
+                                        let sx = tx + sx0;
+                                        let sy = ty + sy0;
+                                        for (k, pixel) in dst_pixel.iter_mut().enumerate() {
+                                            *pixel = $sampler(src, sx, sy, k);
+                                        }
+                                    }
+                                }
+                            );
+                        })
+                };
+            }
+            if interpolation == InterpolationMode::Bicubic {
+                run_sampled!(crate::interpolation::bicubic_sample);
+            } else {
+                run_sampled!(crate::interpolation::lanczos_sample);
+            }
+        }
     }
 
     Ok(())
@@ -327,6 +376,18 @@ pub fn warp_affine_u8<const C: usize>(
     m: &[f32; 6],
 ) -> Result<(), ImageError> {
     use rayon::prelude::*;
+
+    // Device pairs route to the CUDA u8 kernel (bit-identical output — the
+    // kernel mirrors this function's span + Q16/Q10 arithmetic; see
+    // `cuda::warp_affine_u8`). Mixed host/device pairs are a typed error;
+    // there is no implicit transfer in either direction.
+    #[cfg(feature = "cuda")]
+    if let crate::cuda::dispatch::Residency::Device(exec) =
+        crate::cuda::dispatch::pair_residency(src, dst)?
+    {
+        return exec.run(|stream| super::cuda::warp_affine_u8_cuda(src, dst, m, stream));
+    }
+
     let m_inv = invert_affine_transform(m);
     let src_w = src.cols() as i32;
     let src_h = src.rows() as i32;
@@ -464,8 +525,10 @@ mod tests {
         Ok(())
     }
 
+    /// Bicubic/Lanczos are supported since the CPU samplers landed; an
+    /// identity warp must succeed on all modes.
     #[test]
-    fn warp_affine_unsupported_interpolation() -> Result<(), ImageError> {
+    fn warp_affine_supports_all_modes() -> Result<(), ImageError> {
         let src = Image::<_, 1>::from_size_val(
             ImageSize {
                 width: 2,
@@ -481,8 +544,8 @@ mod tests {
             0.0f32,
         )?;
         let m = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
-        let err = super::warp_affine(&src, &mut dst, &m, super::InterpolationMode::Bicubic);
-        assert!(err.is_err());
+        super::warp_affine(&src, &mut dst, &m, super::InterpolationMode::Bicubic)?;
+        super::warp_affine(&src, &mut dst, &m, super::InterpolationMode::Lanczos)?;
         Ok(())
     }
 

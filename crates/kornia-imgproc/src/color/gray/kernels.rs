@@ -3,11 +3,21 @@ pub(super) const RW_F32: f32 = 0.299;
 pub(super) const GW_F32: f32 = 0.587;
 pub(super) const BW_F32: f32 = 0.114;
 
+/// BT.601 luma weights in OpenCV's Q14 fixed point — `(R·4899 + G·9617 +
+/// B·1868 + 8192) >> 14` is byte-for-byte what `cv2.cvtColor(RGB2GRAY)`
+/// computes for u8, so kornia's u8 gray (CPU and CUDA, which share these
+/// constants) matches OpenCV exactly.
+pub(crate) const RW_Q14: u32 = 4899;
+pub(crate) const GW_Q14: u32 = 9617;
+pub(crate) const BW_Q14: u32 = 1868;
+pub(crate) const Q14_GRAY_HALF: u32 = 1 << 13;
+
 use super::super::kernel_common::par_strip_dispatch_nm;
 
 // ===== RGB8 → Gray8 ================================================================
 
-/// RGB u8 to grayscale u8: gray = (77*R + 150*G + 29*B) >> 8.
+/// RGB u8 to grayscale u8: gray = (4899*R + 9617*G + 1868*B + 8192) >> 14
+/// — OpenCV's exact Q14 formula (byte-parity with cv2).
 ///
 /// Parallelized over row-strips for large images; single-threaded SIMD below
 /// the threshold to avoid rayon dispatch overhead.
@@ -39,93 +49,70 @@ fn gray_from_rgb_u8_kernel(src: &[u8], dst: &mut [u8], npixels: usize) {
     gray_from_rgb_u8_scalar(src, dst, npixels);
 }
 
-/// NEON RGB u8 → gray u8: 32 pixels per iteration (2× vld3q_u8).
-///
-/// `vld3q_u8` deinterleaves 16 RGB pixels into R/G/B lanes in one structured load.
-/// Two loads cover 32 pixels; both load pipes stay fed and widening MAC chains
-/// (vmull_u8 / vmlal_u8) are independent between the two groups.
+/// NEON RGB u8 → gray u8: 16 pixels per iteration (vld3q_u8) in OpenCV's
+/// Q14 fixed point. The weights exceed 8 bits, so the chain widens
+/// u8 → u16 → u32 (`vmull_n_u16`/`vmlal_n_u16`), adds the rounding half,
+/// shifts down 14 and narrows back to u8. Bit-exact with the scalar oracle
+/// and with cv2's u8 path.
 #[cfg(target_arch = "aarch64")]
 fn gray_from_rgb_u8_neon(src: &[u8], dst: &mut [u8], npixels: usize) {
     use std::arch::aarch64::*;
     unsafe {
-        let w_r = vdup_n_u8(77);
-        let w_g = vdup_n_u8(150);
-        let w_b = vdup_n_u8(29);
         let sp = src.as_ptr();
         let dp = dst.as_mut_ptr();
+        let half = vdupq_n_u32(Q14_GRAY_HALF);
 
-        // 32 pixels per iteration (2x vld3q_u8)
-        let bulk32 = npixels & !31;
-        let mut i = 0usize;
-        while i < bulk32 {
-            let rgb0 = vld3q_u8(sp.add(i * 3));
-            let rgb1 = vld3q_u8(sp.add((i + 16) * 3));
-
-            let a0_lo = vmlal_u8(
-                vmlal_u8(vmull_u8(vget_low_u8(rgb0.0), w_r), vget_low_u8(rgb0.1), w_g),
-                vget_low_u8(rgb0.2),
-                w_b,
-            );
-            let a1_lo = vmlal_u8(
-                vmlal_u8(vmull_u8(vget_low_u8(rgb1.0), w_r), vget_low_u8(rgb1.1), w_g),
-                vget_low_u8(rgb1.2),
-                w_b,
-            );
-            let a0_hi = vmlal_u8(
-                vmlal_u8(
-                    vmull_u8(vget_high_u8(rgb0.0), w_r),
-                    vget_high_u8(rgb0.1),
-                    w_g,
+        #[inline(always)]
+        unsafe fn q14_u16x8(
+            r: uint16x8_t,
+            g: uint16x8_t,
+            b: uint16x8_t,
+            half: uint32x4_t,
+        ) -> uint16x8_t {
+            let lo = vmlal_n_u16(
+                vmlal_n_u16(
+                    vmlal_n_u16(half, vget_low_u16(r), RW_Q14 as u16),
+                    vget_low_u16(g),
+                    GW_Q14 as u16,
                 ),
-                vget_high_u8(rgb0.2),
-                w_b,
+                vget_low_u16(b),
+                BW_Q14 as u16,
             );
-            let a1_hi = vmlal_u8(
-                vmlal_u8(
-                    vmull_u8(vget_high_u8(rgb1.0), w_r),
-                    vget_high_u8(rgb1.1),
-                    w_g,
+            let hi = vmlal_n_u16(
+                vmlal_n_u16(
+                    vmlal_n_u16(half, vget_high_u16(r), RW_Q14 as u16),
+                    vget_high_u16(g),
+                    GW_Q14 as u16,
                 ),
-                vget_high_u8(rgb1.2),
-                w_b,
+                vget_high_u16(b),
+                BW_Q14 as u16,
             );
-
-            vst1q_u8(
-                dp.add(i),
-                vcombine_u8(vshrn_n_u16(a0_lo, 8), vshrn_n_u16(a0_hi, 8)),
-            );
-            vst1q_u8(
-                dp.add(i + 16),
-                vcombine_u8(vshrn_n_u16(a1_lo, 8), vshrn_n_u16(a1_hi, 8)),
-            );
-            i += 32;
+            vcombine_u16(vshrn_n_u32(lo, 14), vshrn_n_u32(hi, 14))
         }
-        // 16-pixel remainder
-        if i + 16 <= npixels {
+
+        let bulk16 = npixels & !15;
+        let mut i = 0usize;
+        while i < bulk16 {
             let rgb = vld3q_u8(sp.add(i * 3));
-            let a_lo = vmlal_u8(
-                vmlal_u8(vmull_u8(vget_low_u8(rgb.0), w_r), vget_low_u8(rgb.1), w_g),
-                vget_low_u8(rgb.2),
-                w_b,
-            );
-            let a_hi = vmlal_u8(
-                vmlal_u8(vmull_u8(vget_high_u8(rgb.0), w_r), vget_high_u8(rgb.1), w_g),
-                vget_high_u8(rgb.2),
-                w_b,
-            );
-            vst1q_u8(
-                dp.add(i),
-                vcombine_u8(vshrn_n_u16(a_lo, 8), vshrn_n_u16(a_hi, 8)),
-            );
+            let r_lo = vmovl_u8(vget_low_u8(rgb.0));
+            let r_hi = vmovl_u8(vget_high_u8(rgb.0));
+            let g_lo = vmovl_u8(vget_low_u8(rgb.1));
+            let g_hi = vmovl_u8(vget_high_u8(rgb.1));
+            let b_lo = vmovl_u8(vget_low_u8(rgb.2));
+            let b_hi = vmovl_u8(vget_high_u8(rgb.2));
+            let y_lo = q14_u16x8(r_lo, g_lo, b_lo, half);
+            let y_hi = q14_u16x8(r_hi, g_hi, b_hi, half);
+            vst1q_u8(dp.add(i), vcombine_u8(vmovn_u16(y_lo), vmovn_u16(y_hi)));
             i += 16;
         }
         // Scalar tail
         while i < npixels {
             let si = i * 3;
-            *dp.add(i) = ((77 * *sp.add(si) as u32
-                + 150 * *sp.add(si + 1) as u32
-                + 29 * *sp.add(si + 2) as u32)
-                >> 8) as u8;
+            *dp.add(i) = ((RW_Q14 * *sp.add(si) as u32
+                + GW_Q14 * *sp.add(si + 1) as u32
+                + BW_Q14 * *sp.add(si + 2) as u32
+                + Q14_GRAY_HALF)
+                >> 14) as u8;
             i += 1;
         }
     }
@@ -161,10 +148,10 @@ unsafe fn gray_from_rgb_u8_avx2(src: &[u8], dst: &mut [u8], npixels: usize) {
     let m_b_b = _mm_setr_epi8(-1, -1, -1, -1, -1, 1, 4, 7, 10, 13, -1, -1, -1, -1, -1, -1);
     let m_c_b = _mm_setr_epi8(-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 0, 3, 6, 9, 12, 15);
 
-    let w_r = _mm_set1_epi16(77);
-    let w_g = _mm_set1_epi16(150);
-    let w_b = _mm_set1_epi16(29);
-    let zero = _mm_setzero_si128();
+    let half = _mm256_set1_epi32(Q14_GRAY_HALF as i32);
+    let w_r = _mm256_set1_epi32(RW_Q14 as i32);
+    let w_g = _mm256_set1_epi32(GW_Q14 as i32);
+    let w_b = _mm256_set1_epi32(BW_Q14 as i32);
 
     let bulk = npixels & !15;
     let mut i = 0usize;
@@ -186,30 +173,41 @@ unsafe fn gray_from_rgb_u8_avx2(src: &[u8], dst: &mut [u8], npixels: usize) {
             _mm_shuffle_epi8(c, m_c_b),
         );
 
-        // Widen u8→u16 via zero-unpack (low and high halves).
-        let r_lo = _mm_unpacklo_epi8(r, zero);
-        let r_hi = _mm_unpackhi_epi8(r, zero);
-        let g_lo = _mm_unpacklo_epi8(g, zero);
-        let g_hi = _mm_unpackhi_epi8(g, zero);
-        let b_lo = _mm_unpacklo_epi8(bch, zero);
-        let b_hi = _mm_unpackhi_epi8(bch, zero);
-
-        // 77*R + 150*G + 29*B in u16. Max = 256*(77+150+29) = 65536 → would
-        // overflow u16. With 8-bit inputs (max 255), max sum = 65280 < 65536, ok.
-        let acc_lo = _mm_add_epi16(
-            _mm_add_epi16(_mm_mullo_epi16(r_lo, w_r), _mm_mullo_epi16(g_lo, w_g)),
-            _mm_mullo_epi16(b_lo, w_b),
-        );
-        let acc_hi = _mm_add_epi16(
-            _mm_add_epi16(_mm_mullo_epi16(r_hi, w_r), _mm_mullo_epi16(g_hi, w_g)),
-            _mm_mullo_epi16(b_hi, w_b),
-        );
-
-        // (acc >> 8), pack two u16 vectors back to one u8 vector.
-        let s_lo = _mm_srli_epi16(acc_lo, 8);
-        let s_hi = _mm_srli_epi16(acc_hi, 8);
-        let gray = _mm_packus_epi16(s_lo, s_hi);
-        _mm_storeu_si128(dp.add(i) as *mut __m128i, gray);
+        // Q14 weights exceed 16-bit products, so widen u8 → epi32 and use
+        // 32-bit MACs; (acc + 8192) >> 14, then pack 32→16→8.
+        #[inline(always)]
+        unsafe fn q14_8px(
+            px: __m128i,
+            w_r: __m256i,
+            w_g: __m256i,
+            w_b: __m256i,
+            half: __m256i,
+            g: __m128i,
+            bch: __m128i,
+        ) -> __m128i {
+            let r32 = _mm256_cvtepu8_epi32(px);
+            let g32 = _mm256_cvtepu8_epi32(g);
+            let b32 = _mm256_cvtepu8_epi32(bch);
+            let acc = _mm256_add_epi32(
+                _mm256_add_epi32(
+                    _mm256_add_epi32(_mm256_mullo_epi32(r32, w_r), _mm256_mullo_epi32(g32, w_g)),
+                    _mm256_mullo_epi32(b32, w_b),
+                ),
+                half,
+            );
+            let sh = _mm256_srli_epi32(acc, 14);
+            let packed16 = _mm256_packus_epi32(sh, sh); // lanes duplicated per 128-bit half
+            let lo = _mm256_castsi256_si128(packed16);
+            let hi = _mm256_extracti128_si256(packed16, 1);
+            let u16x8 = _mm_unpacklo_epi64(lo, hi);
+            _mm_packus_epi16(u16x8, u16x8)
+        }
+        let y0 = q14_8px(r, w_r, w_g, w_b, half, g, bch);
+        let r_hi = _mm_srli_si128(r, 8);
+        let g_hi = _mm_srli_si128(g, 8);
+        let b_hi = _mm_srli_si128(bch, 8);
+        let y1 = q14_8px(r_hi, w_r, w_g, w_b, half, g_hi, b_hi);
+        _mm_storeu_si128(dp.add(i) as *mut __m128i, _mm_unpacklo_epi64(y0, y1));
 
         i += 16;
     }
@@ -217,9 +215,11 @@ unsafe fn gray_from_rgb_u8_avx2(src: &[u8], dst: &mut [u8], npixels: usize) {
     // Scalar tail.
     while i < npixels {
         let si = i * 3;
-        *dp.add(i) =
-            ((77 * *sp.add(si) as u32 + 150 * *sp.add(si + 1) as u32 + 29 * *sp.add(si + 2) as u32)
-                >> 8) as u8;
+        *dp.add(i) = ((RW_Q14 * *sp.add(si) as u32
+            + GW_Q14 * *sp.add(si + 1) as u32
+            + BW_Q14 * *sp.add(si + 2) as u32
+            + Q14_GRAY_HALF)
+            >> 14) as u8;
         i += 1;
     }
 }
@@ -229,8 +229,11 @@ unsafe fn gray_from_rgb_u8_avx2(src: &[u8], dst: &mut [u8], npixels: usize) {
 fn gray_from_rgb_u8_scalar(src: &[u8], dst: &mut [u8], npixels: usize) {
     for (i, out) in dst.iter_mut().take(npixels).enumerate() {
         let si = i * 3;
-        *out =
-            ((77 * src[si] as u32 + 150 * src[si + 1] as u32 + 29 * src[si + 2] as u32) >> 8) as u8;
+        *out = ((RW_Q14 * src[si] as u32
+            + GW_Q14 * src[si + 1] as u32
+            + BW_Q14 * src[si + 2] as u32
+            + Q14_GRAY_HALF)
+            >> 14) as u8;
     }
 }
 

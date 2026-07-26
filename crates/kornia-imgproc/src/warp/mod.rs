@@ -1,5 +1,7 @@
 mod affine;
 mod common;
+#[cfg(feature = "cuda")]
+mod cuda;
 mod kernels;
 mod perspective;
 mod span;

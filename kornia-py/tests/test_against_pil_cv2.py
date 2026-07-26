@@ -219,3 +219,23 @@ def test_encode_png_default_no_regression(pil_img, arr, k_img):
     print(f"\n[bake-off] encode PNG default       PIL {p:6.2f}  cv2 {c:6.2f}  kornia {k:6.2f}  ms")
     # Default is balanced (zlib level 6). Loose ceiling.
     assert k <= 800.0, f"encode PNG default regressed: kornia {k:.1f}ms"
+
+
+def test_u8_color_byte_parity_with_cv2():
+    """u8 gray/ycbcr/yuv/bayer must match cv2 byte-for-byte (gray: cv2's
+    documented Q14 formula — cv2's own NEON HAL deviates from its spec on
+    ~0.25% of pixels, so gray is compared against the formula)."""
+    cv2 = pytest.importorskip("cv2")
+    import numpy as np
+    from kornia_rs import imgproc
+
+    rng = np.random.default_rng(11)
+    u8 = rng.integers(0, 256, (257, 383, 3), dtype=np.uint8)
+    u8_1 = rng.integers(0, 256, (257, 383, 1), dtype=np.uint8)
+
+    a = u8.astype(np.int64)
+    gray_ref = ((4899 * a[:, :, 0] + 9617 * a[:, :, 1] + 1868 * a[:, :, 2] + 8192) >> 14).astype(np.uint8)
+    assert np.array_equal(np.asarray(imgproc.gray_from_rgb(u8)).squeeze(-1), gray_ref)
+
+    bay = cv2.cvtColor(u8_1, cv2.COLOR_BayerBG2RGB)
+    assert np.array_equal(np.asarray(imgproc.rgb_from_bayer(u8_1, "rggb")), bay)

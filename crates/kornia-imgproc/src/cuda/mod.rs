@@ -7,14 +7,55 @@
 /// Native CUDA downscale kernels using `__ldg` read-only cache.
 pub mod resize;
 
+/// Native CUDA u8 resize kernels (integer LUT-driven, byte-exact with the
+/// CPU u8 fast paths).
+pub mod filter;
+pub mod resize_u8;
+
 /// Native CUDA warp-affine kernels (bilinear and nearest-neighbor).
 pub mod warp_affine;
+
+/// Native CUDA u8 warp-affine kernel (Q16/Q10 fixed point, byte-exact with
+/// the CPU `warp_affine_u8`).
+pub mod warp_affine_u8;
 
 /// Native CUDA warp-perspective kernels (homography, bilinear / nearest / bicubic / Lanczos-3).
 pub mod warp_perspective;
 
+/// Native CUDA u8 warp-perspective kernel (direct rational coords + Q10
+/// fixed point, byte-exact with the CPU `warp_perspective_u8`).
+pub mod warp_perspective_u8;
+
 /// Native CUDA color-space conversion kernels.
 pub mod color;
+
+/// Bilateral-filter kernel (byte-exact vs the CPU path and cv2).
+pub mod bilateral;
+
+/// Canny edge-detection kernels (byte-exact vs the CPU path and cv2).
+pub mod canny;
+
+/// Connected-component labeling kernels (label-identical to the CPU
+/// union-find and cv2's SAUF numbering).
+pub mod ccl;
+
+/// CLAHE LUT-build + blend kernels (byte-exact vs the CPU path and cv2).
+pub mod clahe;
+pub mod histogram;
+
+/// Median-blur sorting-network kernels (byte-exact vs the CPU path, cv2
+/// and VPI).
+pub mod median;
+/// Native CUDA u8 morphology kernels (dilate / erode, byte-exact with the
+/// CPU ops).
+pub mod morphology;
+pub mod pyramid;
+
+/// Residency-aware dispatch machinery shared by all device-capable ops.
+pub(crate) mod dispatch;
+
+/// FKL-style kernel fusion engine (register-flow stage composition).
+pub mod fusion;
 
 use std::sync::Arc;
 
@@ -40,6 +81,79 @@ pub(crate) fn make_config(
         grid_dim: (dst_width.div_ceil(bw), dst_height.div_ceil(bh), 1),
         shared_mem_bytes: 0,
     }
+}
+
+/// Generate a per-module CUDA error enum (`Cuda(String)` +
+/// `SliceTooSmall`) plus its `check_slice` helper — the shape every
+/// launcher module shares. Public error types stay per-module (API
+/// compatibility); only the definition is centralized.
+macro_rules! define_cuda_error {
+    ($(#[$meta:meta])* $name:ident, $msg:literal) => {
+        $(#[$meta])*
+        #[derive(Debug, thiserror::Error)]
+        pub enum $name {
+            /// CUDA driver / compile / launch error.
+            #[error($msg)]
+            Cuda(String),
+            /// A slice is smaller than required.
+            #[error("device slice '{what}' length {got} < required {need}")]
+            SliceTooSmall {
+                /// Which operand was too small.
+                what: &'static str,
+                /// Actual length (elements).
+                got: usize,
+                /// Required length (elements).
+                need: usize,
+            },
+        }
+
+        impl $name {
+            fn check_slice(
+                what: &'static str,
+                got: usize,
+                need: usize,
+            ) -> Result<(), $name> {
+                if got < need {
+                    return Err($name::SliceTooSmall { what, got, need });
+                }
+                Ok(())
+            }
+
+            /// Once-compiled kernel accessor for parameter-free kernels
+            /// (modules with keyed caches roll their own).
+            #[allow(dead_code)]
+            fn get_kernel(
+                cell: &'static std::sync::OnceLock<Result<CudaKernel, String>>,
+                ctx: &Arc<CudaContext>,
+                src: &str,
+                name: &str,
+            ) -> Result<&'static CudaKernel, $name> {
+                $crate::cuda::get_kernel_cached(cell, ctx, src, name).map_err($name::Cuda)
+            }
+        }
+
+        impl From<cudarc::driver::DriverError> for $name {
+            fn from(e: cudarc::driver::DriverError) -> Self {
+                $name::Cuda(e.to_string())
+            }
+        }
+    };
+}
+pub(crate) use define_cuda_error;
+
+/// Shared once-compiled kernel accessor for modules whose kernels have no
+/// shape parameters: compile into the `OnceLock` on first use, hand out
+/// the cached reference afterwards. The `String` error is mapped into the
+/// module's error type at the call site.
+pub(crate) fn get_kernel_cached(
+    cell: &'static std::sync::OnceLock<Result<CudaKernel, String>>,
+    ctx: &Arc<CudaContext>,
+    src: &str,
+    name: &str,
+) -> Result<&'static CudaKernel, String> {
+    cell.get_or_init(|| try_compile_with_l1(ctx, src, name))
+        .as_ref()
+        .map_err(String::clone)
 }
 
 /// Compile a kernel and set `CU_FUNC_CACHE_PREFER_L1` (none of the geometry

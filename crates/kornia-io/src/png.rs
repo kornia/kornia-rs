@@ -577,8 +577,32 @@ pub fn encode_image_png_gray16(
     buffer: &mut Vec<u8>,
     compress_level: Option<u8>,
 ) -> Result<(), IoError> {
-    let image_size = image.size();
-    let image_buf = convert_buf_u16_u8(image.as_slice());
+    encode_image_png_gray16_slice(image.as_slice(), image.size(), buffer, compress_level)
+}
+
+/// Encodes a borrowed 16-bit grayscale pixel slice (`width * height` u16, row-major) into a PNG.
+///
+/// Zero-copy of the caller's buffer: the u16 values are borrowed and packed straight to
+/// big-endian PNG bytes, so no owning [`Image`] has to be built first.
+/// [`encode_image_png_gray16`] delegates here.
+///
+/// # Arguments
+///
+/// * `pixels` - The 16-bit grayscale values, row-major; `pixels.len()` must equal `width * height`.
+/// * `image_size` - The image dimensions.
+/// * `buffer` - The output buffer the PNG bytes are appended to.
+/// * `compress_level` - Optional zlib compression level.
+pub fn encode_image_png_gray16_slice(
+    pixels: &[u16],
+    image_size: ImageSize,
+    buffer: &mut Vec<u8>,
+    compress_level: Option<u8>,
+) -> Result<(), IoError> {
+    let expected = image_size.width * image_size.height;
+    if pixels.len() != expected {
+        return Err(IoError::InvalidBufferSize(pixels.len(), expected));
+    }
+    let image_buf = convert_buf_u16_u8(pixels);
     buffer.reserve(image_buf.len() / 2);
     write_png_into(
         buffer,
@@ -593,6 +617,31 @@ pub fn encode_image_png_gray16(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn encode_gray16_slice_matches_owning_and_validates_len() -> Result<(), IoError> {
+        let size = ImageSize {
+            width: 40,
+            height: 30,
+        };
+        let pixels: Vec<u16> = (0..(size.width * size.height) as u32)
+            .map(|i| (i % 9000) as u16)
+            .collect();
+        // The zero-copy slice path and the owning path must produce identical PNG bytes.
+        let img = Image::<u16, 1>::from_size_slice(size, &pixels)?;
+        let mut via_slice = Vec::new();
+        let mut via_owning = Vec::new();
+        encode_image_png_gray16_slice(&pixels, size, &mut via_slice, None)?;
+        encode_image_png_gray16(&img, &mut via_owning, None)?;
+        assert_eq!(via_slice, via_owning);
+        // A wrong-length slice is rejected.
+        let mut sink = Vec::new();
+        assert!(matches!(
+            encode_image_png_gray16_slice(&pixels[..pixels.len() - 1], size, &mut sink, None),
+            Err(IoError::InvalidBufferSize(..))
+        ));
+        Ok(())
+    }
     use crate::error::IoError;
     use std::fs::{create_dir_all, read};
 
