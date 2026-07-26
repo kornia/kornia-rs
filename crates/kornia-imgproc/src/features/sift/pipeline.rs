@@ -36,7 +36,7 @@
 
 use rayon::prelude::*;
 
-use super::descriptor::{compute_descriptor, descriptor_inputs, DESCR_LEN};
+use super::descriptor::{compute_descriptor, descriptor_inputs, DescriptorScratch, DESCR_LEN};
 use super::detect::{find_extrema, RawKeypoint};
 use super::orient::{assign_orientations, OrientedKeypoint};
 use super::params::{
@@ -338,7 +338,9 @@ pub fn detect_and_compute_with(
         desc[start_f..]
             .par_chunks_mut(DESCR_LEN)
             .zip(todo.par_iter())
-            .for_each(|(out, (k, layer))| {
+            // One scratch per worker, not per keypoint: a patch is a few
+            // thousand floats and allocating it per descriptor would dominate.
+            .for_each_init(DescriptorScratch::new, |sc, (out, (k, layer))| {
                 let gl = &gauss[*layer][..p];
                 let (x, y, s, a) = descriptor_inputs(k, octv as i32);
                 // `fast` deliberately does NOT select the rotated-frame
@@ -346,7 +348,7 @@ pub fn detect_and_compute_with(
                 // measured slower on CPU despite sampling a third as many
                 // points. It remains available for callers at very large
                 // scales, where the sample-count scaling eventually wins.
-                compute_descriptor(gl, cw, ch, x, y, s, a, out);
+                compute_descriptor(gl, cw, ch, x, y, s, a, out, sc);
             });
         if probe {
             t_desc += tds.elapsed().as_secs_f64() * 1e3;

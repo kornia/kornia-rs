@@ -269,12 +269,33 @@ pub fn blur_v_f32(
                 for (yy, (out, g)) in dchunk.chunks_mut(w).zip(gchunk.chunks_mut(w)).enumerate() {
                     let y = y0 + yy;
                     let c0 = refl101(y as i64, hh) * w;
-                    column_row(src, out, w, c0, y, n2, hh, kernel, &mut pairs);
-                    if let Some(lo) = lower {
-                        let lo = &lo[y * w..y * w + w];
-                        for ((gv, o), l) in g.iter_mut().zip(out.iter()).zip(lo.iter()) {
-                            *gv = *o - *l;
-                        }
+                    match lower {
+                        Some(lo) => column_row::<true>(
+                            src,
+                            out,
+                            &lo[y * w..y * w + w],
+                            g,
+                            w,
+                            c0,
+                            y,
+                            n2,
+                            hh,
+                            kernel,
+                            &mut pairs,
+                        ),
+                        None => column_row::<false>(
+                            src,
+                            out,
+                            &[],
+                            &mut [],
+                            w,
+                            c0,
+                            y,
+                            n2,
+                            hh,
+                            kernel,
+                            &mut pairs,
+                        ),
                     }
                 }
             }),
@@ -287,7 +308,19 @@ pub fn blur_v_f32(
                 for (yy, out) in dchunk.chunks_mut(w).enumerate() {
                     let y = y0 + yy;
                     let c0 = refl101(y as i64, hh) * w;
-                    column_row(src, out, w, c0, y, n2, hh, kernel, &mut pairs);
+                    column_row::<false>(
+                        src,
+                        out,
+                        &[],
+                        &mut [],
+                        w,
+                        c0,
+                        y,
+                        n2,
+                        hh,
+                        kernel,
+                        &mut pairs,
+                    );
                 }
             }),
     }
@@ -295,9 +328,11 @@ pub fn blur_v_f32(
 
 #[inline]
 #[allow(clippy::too_many_arguments)]
-fn column_row(
+fn column_row<const DOG: bool>(
     src: &[f32],
     out: &mut [f32],
+    lo: &[f32],
+    dg: &mut [f32],
     w: usize,
     c0: usize,
     y: usize,
@@ -355,6 +390,17 @@ fn column_row(
                 vst1q_f32(o.add(4), a1);
                 vst1q_f32(o.add(8), a2);
                 vst1q_f32(o.add(12), a3);
+                // The DoG difference is taken from the accumulator that is
+                // still in a register, not by reading `out` back: the layer and
+                // its difference are produced by the same store pass.
+                if DOG {
+                    let l = lo.as_ptr().add(x);
+                    let d = dg.as_mut_ptr().add(x);
+                    vst1q_f32(d, vsubq_f32(a0, vld1q_f32(l)));
+                    vst1q_f32(d.add(4), vsubq_f32(a1, vld1q_f32(l.add(4))));
+                    vst1q_f32(d.add(8), vsubq_f32(a2, vld1q_f32(l.add(8))));
+                    vst1q_f32(d.add(12), vsubq_f32(a3, vld1q_f32(l.add(12))));
+                }
                 x += 16;
             }
             while x + 4 <= w {
@@ -367,6 +413,12 @@ fn column_row(
                     acc = vfmaq_n_f32(acc, sum, c);
                 }
                 vst1q_f32(out.as_mut_ptr().add(x), acc);
+                if DOG {
+                    vst1q_f32(
+                        dg.as_mut_ptr().add(x),
+                        vsubq_f32(acc, vld1q_f32(lo.as_ptr().add(x))),
+                    );
+                }
                 x += 4;
             }
         }
@@ -376,6 +428,9 @@ fn column_row(
                 acc = (src[a + x] + src[b + x]).mul_add(c, acc);
             }
             out[x] = acc;
+            if DOG {
+                dg[x] = acc - lo[x];
+            }
             x += 1;
         }
     }
@@ -386,6 +441,9 @@ fn column_row(
             acc = (src[a + x] + src[b + x]).mul_add(c, acc);
         }
         out[x] = acc;
+        if DOG {
+            dg[x] = acc - lo[x];
+        }
     }
 }
 
@@ -404,6 +462,52 @@ mod tests {
             .take(rows * cols)
             .collect();
         Some((rows, cols, data))
+    }
+
+    /// The fused DoG store must equal the difference the caller would have
+    /// computed from the written layer.
+    ///
+    /// Runs unconditionally and on every architecture, unlike the oracle tests.
+    /// The vertical pass writes the layer and its difference from one
+    /// accumulator, and the scalar fallback for non-NEON targets is a separate
+    /// piece of code that this host never executes — it shipped without the
+    /// difference store once, and only a portable test catches that.
+    #[test]
+    fn fused_dog_equals_the_explicit_difference() {
+        let (w, h) = (37usize, 23usize);
+        let mut seed = 0x9E3779B9u32;
+        let mut rnd = || {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            ((seed >> 9) % 1000) as f32 * 0.25
+        };
+        let src: Vec<f32> = (0..w * h).map(|_| rnd()).collect();
+        let lower: Vec<f32> = (0..w * h).map(|_| rnd()).collect();
+        let kernel = gaussian_kernel_f32(gaussian_ksize(1.6), 1.6);
+
+        let mut layer = vec![0.0f32; w * h];
+        let mut dog = vec![0.0f32; w * h];
+        blur_v_f32(
+            &src,
+            &mut layer,
+            w,
+            h,
+            &kernel,
+            Some(&lower),
+            Some(&mut dog),
+        );
+
+        let mut plain = vec![0.0f32; w * h];
+        blur_v_f32(&src, &mut plain, w, h, &kernel, None, None);
+
+        assert_eq!(layer, plain, "fusing the DoG changed the layer");
+        for i in 0..w * h {
+            assert_eq!(
+                dog[i].to_bits(),
+                (layer[i] - lower[i]).to_bits(),
+                "dog[{i}] disagrees with layer - lower"
+            );
+        }
+        assert!(dog.iter().any(|v| *v != 0.0), "dog was never written");
     }
 
     /// Bit-exact against the reference's own dumped layers, using the same

@@ -72,133 +72,196 @@ fn nrm2(v: &[f32]) -> f32 {
     s
 }
 
-/// Evaluate up to four buffered samples and scatter them in order.
+/// Per-thread scratch for [`compute_descriptor`].
 ///
-/// `dx`/`dy` are the raw gradient differences; magnitude and angle are derived
-/// here rather than read from a precomputed layer, which is what the reference
-/// does and what keeps the evaluation count proportional to *samples* instead
-/// of to whole-layer *pixels*.
-///
-/// `n < 4` falls back to the scalar primitives, which are bit-identical to the
-/// lane-wise ones, so the tail needs no special casing beyond the width.
-#[allow(clippy::too_many_arguments)]
-#[inline]
-fn flush(
-    dx: &[f32; 4],
-    dy: &[f32; 4],
-    c_rot: &[f32; 4],
-    r_rot: &[f32; 4],
-    rbin: &[f32; 4],
-    cbin: &[f32; 4],
-    n: usize,
-    ori: f32,
-    bins_per_rad: f32,
-    exp_scale: f32,
-    hist: &mut [f32],
-) {
-    const D: usize = DESCR_WIDTH;
-    const N: usize = DESCR_HIST_BINS;
-    let mut wgt = [0.0f32; 4];
+/// The reference batches each HAL primitive over the **whole patch** —
+/// `fastAtan2`, `magnitude32f` and `exp32f` each run as one long loop — instead
+/// of evaluating four samples at a time between scatters. That turns out to
+/// matter a lot: four-at-a-time measured 39 ns per accepted sample against the
+/// reference's 22 ns, because the three transcendental emulations and the
+/// histogram scatter all compete for registers inside one loop body. These
+/// buffers make the same split possible here. One per rayon worker, reused
+/// across keypoints, since a patch is a few thousand floats and allocating per
+/// keypoint would dominate.
+#[derive(Default)]
+pub struct DescriptorScratch {
+    rbin: Vec<f32>,
+    cbin: Vec<f32>,
+    dx: Vec<f32>,
+    dy: Vec<f32>,
+    wt: Vec<f32>,
+    mag: Vec<f32>,
+    ang: Vec<f32>,
+}
 
+impl DescriptorScratch {
+    /// Empty scratch; sized on first use.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn clear(&mut self) {
+        self.rbin.clear();
+        self.cbin.clear();
+        self.dx.clear();
+        self.dy.clear();
+        self.wt.clear();
+    }
+}
+
+/// `exp` in place over a whole buffer, four lanes at a time with a scalar tail.
+///
+/// The lane-wise and scalar forms are bit-identical, so where the tail begins
+/// does not affect the result.
+fn exp_batch(v: &mut [f32]) {
+    let mut k = 0usize;
     #[cfg(target_arch = "aarch64")]
-    if n == 4 {
+    {
         use super::hal::x4;
         use std::arch::aarch64::*;
-        // SAFETY: NEON is baseline on aarch64; all buffers are 4 wide, and the
-        // scatter indices are bounded by the same `rbin`/`cbin` range check the
-        // caller applied before buffering.
+        // SAFETY: `k + 4 <= v.len()` on every iteration.
         unsafe {
-            let vcr = vld1q_f32(c_rot.as_ptr());
-            let vrr = vld1q_f32(r_rot.as_ptr());
-            let q = vfmaq_f32(vmulq_f32(vrr, vrr), vcr, vcr);
-            let vwgt = x4::exp(vmulq_n_f32(q, exp_scale));
-
-            let vdx = vld1q_f32(dx.as_ptr());
-            let vdy = vld1q_f32(dy.as_ptr());
-            let vmag = x4::magnitude(vdx, vdy);
-            let vang = x4::atan2_deg(vdy, vdx);
-
-            // Everything up to the scatter is elementwise, so the four lanes are
-            // bit-identical to the scalar tail below. Only the histogram
-            // accumulation is order-sensitive (float addition does not
-            // associate), so that alone stays scalar, in the reference's sample
-            // order. This is the split `calcSIFTDescriptor` itself uses.
-            let mut rb = vld1q_f32(rbin.as_ptr());
-            let mut cb = vld1q_f32(cbin.as_ptr());
-            let mut ob = vmulq_n_f32(vsubq_f32(vang, vdupq_n_f32(ori)), bins_per_rad);
-            // Round toward minus infinity: `floor_i`'s twin.
-            let r0 = vcvtmq_s32_f32(rb);
-            let c0 = vcvtmq_s32_f32(cb);
-            let mut o0 = vcvtmq_s32_f32(ob);
-            rb = vsubq_f32(rb, vcvtq_f32_s32(r0));
-            cb = vsubq_f32(cb, vcvtq_f32_s32(c0));
-            ob = vsubq_f32(ob, vcvtq_f32_s32(o0));
-
-            let vn = vdupq_n_s32(N as i32);
-            o0 = vbslq_s32(vcltq_s32(o0, vdupq_n_s32(0)), vaddq_s32(o0, vn), o0);
-            o0 = vbslq_s32(vcgeq_s32(o0, vn), vsubq_s32(o0, vn), o0);
-
-            let m = vmulq_f32(vmag, vwgt);
-            let v_r1 = vmulq_f32(m, rb);
-            let v_r0 = vsubq_f32(m, v_r1);
-            let v_rc11 = vmulq_f32(v_r1, cb);
-            let v_rc10 = vsubq_f32(v_r1, v_rc11);
-            let v_rc01 = vmulq_f32(v_r0, cb);
-            let v_rc00 = vsubq_f32(v_r0, v_rc01);
-            let v111 = vmulq_f32(v_rc11, ob);
-            let v110 = vsubq_f32(v_rc11, v111);
-            let v101 = vmulq_f32(v_rc10, ob);
-            let v100 = vsubq_f32(v_rc10, v101);
-            let v011 = vmulq_f32(v_rc01, ob);
-            let v010 = vsubq_f32(v_rc01, v011);
-            let v001 = vmulq_f32(v_rc00, ob);
-            let v000 = vsubq_f32(v_rc00, v001);
-
-            let idx = vaddq_s32(
-                vmulq_n_s32(
-                    vaddq_s32(
-                        vmulq_n_s32(vaddq_s32(r0, vdupq_n_s32(1)), (D + 2) as i32),
-                        vaddq_s32(c0, vdupq_n_s32(1)),
-                    ),
-                    (N + 2) as i32,
-                ),
-                o0,
-            );
-
-            let mut ib = [0i32; 4];
-            let mut rco = [0.0f32; 32];
-            vst1q_s32(ib.as_mut_ptr(), idx);
-            for (slot, v) in [v000, v001, v010, v011, v100, v101, v110, v111]
-                .into_iter()
-                .enumerate()
-            {
-                vst1q_f32(rco.as_mut_ptr().add(slot * 4), v);
-            }
-            for (k, &base) in ib.iter().enumerate() {
-                let b = base as usize;
-                hist[b] += rco[k];
-                hist[b + 1] += rco[4 + k];
-                hist[b + (N + 2)] += rco[8 + k];
-                hist[b + (N + 3)] += rco[12 + k];
-                hist[b + (D + 2) * (N + 2)] += rco[16 + k];
-                hist[b + (D + 2) * (N + 2) + 1] += rco[20 + k];
-                hist[b + (D + 3) * (N + 2)] += rco[24 + k];
-                hist[b + (D + 3) * (N + 2) + 1] += rco[28 + k];
+            while k + 4 <= v.len() {
+                let p = v.as_mut_ptr().add(k);
+                vst1q_f32(p, x4::exp(vld1q_f32(p)));
+                k += 4;
             }
         }
-        return;
     }
-    let mut mag = [0.0f32; 4];
-    let mut ang = [0.0f32; 4];
-    for k in 0..n {
-        wgt[k] = exp((c_rot[k] * c_rot[k] + r_rot[k] * r_rot[k]) * exp_scale);
+    while k < v.len() {
+        v[k] = exp(v[k]);
+        k += 1;
+    }
+}
+
+/// `magnitude` and `atan2` over a whole buffer, four lanes at a time.
+fn mag_ang_batch(dx: &[f32], dy: &[f32], mag: &mut Vec<f32>, ang: &mut Vec<f32>) {
+    let len = dx.len();
+    mag.clear();
+    ang.clear();
+    mag.resize(len, 0.0);
+    ang.resize(len, 0.0);
+    let mut k = 0usize;
+    #[cfg(target_arch = "aarch64")]
+    {
+        use super::hal::x4;
+        use std::arch::aarch64::*;
+        // SAFETY: `k + 4 <= len` and all four buffers are `len` long.
+        unsafe {
+            while k + 4 <= len {
+                let vdx = vld1q_f32(dx.as_ptr().add(k));
+                let vdy = vld1q_f32(dy.as_ptr().add(k));
+                vst1q_f32(mag.as_mut_ptr().add(k), x4::magnitude(vdx, vdy));
+                vst1q_f32(ang.as_mut_ptr().add(k), x4::atan2_deg(vdy, vdx));
+                k += 4;
+            }
+        }
+    }
+    while k < len {
         mag[k] = magnitude(dx[k], dy[k]);
         ang[k] = atan2_deg(dy[k], dx[k]);
+        k += 1;
+    }
+}
+
+/// Trilinear scatter of every resolved sample into `hist`.
+///
+/// Everything up to the eight accumulations is elementwise, so four lanes are
+/// bit-identical to the scalar tail; only the accumulation is order-sensitive
+/// (float addition does not associate) and it stays scalar, in the reference's
+/// sample order. This is the split `calcSIFTDescriptor` itself uses.
+fn scatter(sc: &DescriptorScratch, ori: f32, bins_per_rad: f32, hist: &mut [f32]) {
+    const D: usize = DESCR_WIDTH;
+    const N: usize = DESCR_HIST_BINS;
+    let len = sc.rbin.len();
+    let mut k = 0usize;
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        use std::arch::aarch64::*;
+        // SAFETY: every buffer is `len` long, `k + 4 <= len`, and the scatter
+        // indices are bounded by the `rbin`/`cbin` range test applied during
+        // collection.
+        unsafe {
+            let vori = vdupq_n_f32(ori);
+            let vn = vdupq_n_s32(N as i32);
+            let vone = vdupq_n_s32(1);
+            while k + 4 <= len {
+                let mut rb = vld1q_f32(sc.rbin.as_ptr().add(k));
+                let mut cb = vld1q_f32(sc.cbin.as_ptr().add(k));
+                let mut ob = vmulq_n_f32(
+                    vsubq_f32(vld1q_f32(sc.ang.as_ptr().add(k)), vori),
+                    bins_per_rad,
+                );
+                // Round toward minus infinity: `floor_i`'s twin.
+                let r0 = vcvtmq_s32_f32(rb);
+                let c0 = vcvtmq_s32_f32(cb);
+                let mut o0 = vcvtmq_s32_f32(ob);
+                rb = vsubq_f32(rb, vcvtq_f32_s32(r0));
+                cb = vsubq_f32(cb, vcvtq_f32_s32(c0));
+                ob = vsubq_f32(ob, vcvtq_f32_s32(o0));
+
+                o0 = vbslq_s32(vcltq_s32(o0, vdupq_n_s32(0)), vaddq_s32(o0, vn), o0);
+                o0 = vbslq_s32(vcgeq_s32(o0, vn), vsubq_s32(o0, vn), o0);
+
+                let m = vmulq_f32(
+                    vld1q_f32(sc.mag.as_ptr().add(k)),
+                    vld1q_f32(sc.wt.as_ptr().add(k)),
+                );
+                let v_r1 = vmulq_f32(m, rb);
+                let v_r0 = vsubq_f32(m, v_r1);
+                let v_rc11 = vmulq_f32(v_r1, cb);
+                let v_rc10 = vsubq_f32(v_r1, v_rc11);
+                let v_rc01 = vmulq_f32(v_r0, cb);
+                let v_rc00 = vsubq_f32(v_r0, v_rc01);
+                let v111 = vmulq_f32(v_rc11, ob);
+                let v110 = vsubq_f32(v_rc11, v111);
+                let v101 = vmulq_f32(v_rc10, ob);
+                let v100 = vsubq_f32(v_rc10, v101);
+                let v011 = vmulq_f32(v_rc01, ob);
+                let v010 = vsubq_f32(v_rc01, v011);
+                let v001 = vmulq_f32(v_rc00, ob);
+                let v000 = vsubq_f32(v_rc00, v001);
+
+                let idx = vaddq_s32(
+                    vmulq_n_s32(
+                        vaddq_s32(
+                            vmulq_n_s32(vaddq_s32(r0, vone), (D + 2) as i32),
+                            vaddq_s32(c0, vone),
+                        ),
+                        (N + 2) as i32,
+                    ),
+                    o0,
+                );
+
+                let mut ib = [0i32; 4];
+                let mut rco = [0.0f32; 32];
+                vst1q_s32(ib.as_mut_ptr(), idx);
+                for (slot, v) in [v000, v001, v010, v011, v100, v101, v110, v111]
+                    .into_iter()
+                    .enumerate()
+                {
+                    vst1q_f32(rco.as_mut_ptr().add(slot * 4), v);
+                }
+                for (t, &base) in ib.iter().enumerate() {
+                    let b = base as usize;
+                    hist[b] += rco[t];
+                    hist[b + 1] += rco[4 + t];
+                    hist[b + (N + 2)] += rco[8 + t];
+                    hist[b + (N + 3)] += rco[12 + t];
+                    hist[b + (D + 2) * (N + 2)] += rco[16 + t];
+                    hist[b + (D + 2) * (N + 2) + 1] += rco[20 + t];
+                    hist[b + (D + 3) * (N + 2)] += rco[24 + t];
+                    hist[b + (D + 3) * (N + 2) + 1] += rco[28 + t];
+                }
+                k += 4;
+            }
+        }
     }
 
-    for k in 0..n {
-        let mut obin = (ang[k] - ori) * bins_per_rad;
-        let (mut rb, mut cb) = (rbin[k], cbin[k]);
+    while k < len {
+        let mut obin = (sc.ang[k] - ori) * bins_per_rad;
+        let (mut rb, mut cb) = (sc.rbin[k], sc.cbin[k]);
         let (r0, c0) = (floor_i(rb), floor_i(cb));
         let mut o0 = floor_i(obin);
         rb -= r0 as f32;
@@ -211,7 +274,7 @@ fn flush(
             o0 -= N as i32;
         }
 
-        let m = mag[k] * wgt[k];
+        let m = sc.mag[k] * sc.wt[k];
         let v_r1 = m * rb;
         let v_r0 = m - v_r1;
         let v_rc11 = v_r1 * cb;
@@ -236,6 +299,7 @@ fn flush(
         hist[idx + (D + 2) * (N + 2) + 1] += v_rco101;
         hist[idx + (D + 3) * (N + 2)] += v_rco110;
         hist[idx + (D + 3) * (N + 2) + 1] += v_rco111;
+        k += 1;
     }
 }
 
@@ -244,6 +308,9 @@ fn flush(
 /// `ptx`, `pty` and `scl` are in the **octave's** coordinate frame, and `ori` is
 /// the reference's `360 - angle` with a near-360 result collapsed to zero — the
 /// caller applies both conversions, as `calcDescriptors` does.
+///
+/// `sc` is caller-owned scratch; see [`DescriptorScratch`] for why the patch is
+/// buffered whole rather than four samples at a time.
 #[allow(clippy::too_many_arguments)]
 pub fn compute_descriptor(
     img: &[f32],
@@ -254,6 +321,7 @@ pub fn compute_descriptor(
     scl: f32,
     ori: f32,
     out: &mut [f32],
+    sc: &mut DescriptorScratch,
 ) {
     const D: usize = DESCR_WIDTH;
     const N: usize = DESCR_HIST_BINS;
@@ -277,22 +345,7 @@ pub fn compute_descriptor(
     sin_t /= hist_width;
 
     let mut hist = [0.0f32; HISTLEN];
-
-    // Evaluate four samples at a time, scatter them one at a time.
-    //
-    // The scatter order is fixed by the reference and cannot move — float
-    // addition is not associative. The *evaluation* feeding it can: `exp`,
-    // `atan2` and `magnitude` are pure functions of the sample, and the 4-lane
-    // forms are lane-wise identical to the scalar ones. So the batch below is
-    // bit-exact by construction, and it is where the time goes: this stage is
-    // ~47% of the pipeline and every sample costs three primitive evaluations.
-    let mut b_dx = [0.0f32; 4];
-    let mut b_dy = [0.0f32; 4];
-    let mut b_cr = [0.0f32; 4];
-    let mut b_rr = [0.0f32; 4];
-    let mut b_rbin = [0.0f32; 4];
-    let mut b_cbin = [0.0f32; 4];
-    let mut nb = 0usize;
+    sc.clear();
 
     // The row bound is exactly the reference's `r > 0 && r < rows - 1`, hoisted
     // out of the inner test: it depends only on `i`.
@@ -307,9 +360,8 @@ pub fn compute_descriptor(
         // The derived bounds are float arithmetic and the original predicate is
         // NOT float-associative-safe to replace, so the run is widened by one on
         // each side and every surviving `j` still faces the identical test
-        // below. Skipping is therefore an optimisation of provably-rejected
-        // iterations only, and cannot move a sample into or out of the
-        // histogram.
+        // below. Skipping therefore removes provably-rejected iterations only,
+        // and cannot move a sample into or out of the histogram.
         let (mut jf_lo, mut jf_hi) = (-(radius as f32), radius as f32);
         let half = D as f32 / 2.0 - 0.5;
         clip_j(
@@ -332,69 +384,33 @@ pub fn compute_descriptor(
         let j_lo = (jf_lo.floor() as i32 - 1).max(-radius).max(1 - px);
         let j_hi = (jf_hi.ceil() as i32 + 1).min(radius).min(w as i32 - 2 - px);
 
+        let r = (py + i) as usize;
+        let (row, up, dn) = (r * w, (r - 1) * w, (r + 1) * w);
+
         for j in j_lo..=j_hi {
             let c_rot = j as f32 * cos_t - i as f32 * sin_t;
             let r_rot = j as f32 * sin_t + i as f32 * cos_t;
             let rbin = r_rot + D as f32 / 2.0 - 0.5;
             let cbin = c_rot + D as f32 / 2.0 - 0.5;
-            let (r, c) = (py + i, px + j);
 
-            if !(rbin > -1.0
-                && rbin < D as f32
-                && cbin > -1.0
-                && cbin < D as f32
-                && r > 0
-                && r < h as i32 - 1
-                && c > 0
-                && c < w as i32 - 1)
-            {
+            if !(rbin > -1.0 && rbin < D as f32 && cbin > -1.0 && cbin < D as f32) {
                 continue;
             }
-            let (r, c) = (r as usize, c as usize);
-            // Magnitude and angle come from the layer's precomputed planes; only
-            // the Gaussian weight is keypoint-dependent and still evaluated here.
-            // Raw differences, exactly the reference's stencil. The bounds
-            // test above already guarantees all four neighbours exist.
-            b_dx[nb] = img[r * w + c + 1] - img[r * w + c - 1];
-            b_dy[nb] = img[(r - 1) * w + c] - img[(r + 1) * w + c];
-            b_cr[nb] = c_rot;
-            b_rr[nb] = r_rot;
-            b_rbin[nb] = rbin;
-            b_cbin[nb] = cbin;
-            nb += 1;
-            if nb == 4 {
-                flush(
-                    &b_dx,
-                    &b_dy,
-                    &b_cr,
-                    &b_rr,
-                    &b_rbin,
-                    &b_cbin,
-                    4,
-                    ori,
-                    bins_per_rad,
-                    exp_scale,
-                    &mut hist,
-                );
-                nb = 0;
-            }
+            let c = (px + j) as usize;
+            // Raw differences, exactly the reference's stencil. The row and
+            // column bounds already guarantee all four neighbours exist.
+            sc.dx.push(img[row + c + 1] - img[row + c - 1]);
+            sc.dy.push(img[up + c] - img[dn + c]);
+            sc.rbin.push(rbin);
+            sc.cbin.push(cbin);
+            sc.wt.push((c_rot * c_rot + r_rot * r_rot) * exp_scale);
         }
     }
-    if nb > 0 {
-        flush(
-            &b_dx,
-            &b_dy,
-            &b_cr,
-            &b_rr,
-            &b_rbin,
-            &b_cbin,
-            nb,
-            ori,
-            bins_per_rad,
-            exp_scale,
-            &mut hist,
-        );
-    }
+
+    // One long pass per primitive, as the reference does.
+    exp_batch(&mut sc.wt);
+    mag_ang_batch(&sc.dx, &sc.dy, &mut sc.mag, &mut sc.ang);
+    scatter(sc, ori, bins_per_rad, &mut hist);
 
     // Fold the circular orientation bins back into the d*d*n array.
     let mut raw = [0.0f32; DESCR_LEN];
@@ -626,6 +642,7 @@ mod tests {
         };
         assert_eq!(dcols, DESCR_LEN);
 
+        let mut sc = DescriptorScratch::new();
         let (mut total, mut bad) = (0usize, 0usize);
         for layer in 1..=3usize {
             let Some((h, w, img)) = load_dump(&format!("{dir}/gauss_o0_l{layer}.f32")) else {
@@ -655,6 +672,7 @@ mod tests {
                     f(2) * 2.0 * 0.5,
                     angle,
                     &mut got,
+                    &mut sc,
                 );
                 let e = &want[i * DESCR_LEN..(i + 1) * DESCR_LEN];
                 total += 1;
