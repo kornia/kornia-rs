@@ -801,4 +801,127 @@ mod tests {
             cover * 100.0
         );
     }
+
+    /// A keypoint budget must cap the count, emit one descriptor row per
+    /// survivor, and drop only the weakest keypoints.
+    ///
+    /// `retainBest` runs *before* the descriptor stage on this path, matching
+    /// `sift.dispatch.cpp:568-600`; previously every descriptor was computed and
+    /// the ones the budget cut were thrown away. `n_features > 0` had no test on
+    /// either backend when that reorder landed.
+    ///
+    /// Deliberately not gated on `KORNIA_SIFT_ORACLE`: this is a contract about
+    /// selection and row alignment, not about descriptor values, so a synthetic
+    /// image is enough and the test runs on every CUDA build. The oracle tests
+    /// cover values, and they all run at `n_features = 0`.
+    ///
+    /// **Strength of each assertion, measured not assumed.** The count, the
+    /// descriptor row count, and the above-count no-op (which compares the whole
+    /// descriptor block) fail immediately if `retainBest` miscounts or the rows
+    /// stop lining up. The `response <= worst_kept` check is *weaker than it
+    /// looks*: two fault injections into the selection — reversing the retained
+    /// order, and replacing the response cut with an arbitrary subset — were
+    /// both undetected here. The first genuinely cannot fail (reordering does
+    /// not change set membership); the second should have, and the likeliest
+    /// reason it did not is that a pseudo-random image yields keypoints whose
+    /// responses cluster too tightly to separate. Treat that assertion as
+    /// indicative until it is exercised on a natural image.
+    #[test]
+    fn budget_caps_the_count_and_keeps_the_strongest() {
+        let (w, h) = (192usize, 144usize);
+        let mut seed = 0x9E3779B9u32;
+        let img: Vec<f32> = (0..w * h)
+            .map(|_| {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                ((seed >> 16) & 255) as f32
+            })
+            .collect();
+
+        let stream = default_stream();
+        let ctx = &stream.context();
+        let d_src = stream.clone_htod(&img).unwrap();
+
+        let mut all_plan = SiftCuda::new(
+            ctx,
+            &stream,
+            w,
+            h,
+            SiftCudaConfig::default(),
+            FirstOctave::Native,
+            8,
+        )
+        .expect("plan");
+        let all = all_plan
+            .detect_and_compute(ctx, &stream, &d_src)
+            .expect("detect");
+        assert!(
+            all.keypoints.len() > 8,
+            "need enough keypoints to budget, got {}",
+            all.keypoints.len()
+        );
+
+        let n = all.keypoints.len() / 2;
+        let mut cut_plan = SiftCuda::new(
+            ctx,
+            &stream,
+            w,
+            h,
+            SiftCudaConfig {
+                n_features: n,
+                ..SiftCudaConfig::default()
+            },
+            FirstOctave::Native,
+            8,
+        )
+        .expect("plan");
+        let cut = cut_plan
+            .detect_and_compute(ctx, &stream, &d_src)
+            .expect("detect");
+
+        assert_eq!(cut.keypoints.len(), n, "budget must cap the count");
+        assert_eq!(
+            cut.descriptors.len(),
+            n * DESCR_LEN,
+            "one descriptor row per surviving keypoint"
+        );
+
+        // Every dropped keypoint must be no stronger than every kept one, which
+        // is what `retainBest` guarantees.
+        let worst_kept = cut
+            .keypoints
+            .iter()
+            .map(|k| k.response)
+            .fold(f32::INFINITY, f32::min);
+        let mut dropped = 0usize;
+        for a in &all.keypoints {
+            if !cut.keypoints.iter().any(|b| b.x == a.x && b.y == a.y) {
+                dropped += 1;
+                assert!(
+                    a.response <= worst_kept,
+                    "dropped a keypoint stronger than one kept"
+                );
+            }
+        }
+        assert_eq!(dropped, all.keypoints.len() - n);
+
+        // A budget above the keypoint count is a no-op.
+        let mut big_plan = SiftCuda::new(
+            ctx,
+            &stream,
+            w,
+            h,
+            SiftCudaConfig {
+                n_features: all.keypoints.len() + 1000,
+                ..SiftCudaConfig::default()
+            },
+            FirstOctave::Native,
+            8,
+        )
+        .expect("plan");
+        let big = big_plan
+            .detect_and_compute(ctx, &stream, &d_src)
+            .expect("detect");
+        assert_eq!(big.keypoints.len(), all.keypoints.len());
+        assert_eq!(big.descriptors, all.descriptors);
+    }
 }
