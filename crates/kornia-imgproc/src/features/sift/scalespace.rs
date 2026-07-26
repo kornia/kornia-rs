@@ -66,9 +66,15 @@ pub fn blur_h_f32_mode(
     let n = kernel.len();
     let n2 = n / 2;
 
-    // Rows are independent in both passes -- this is exactly the parallelism the
-    // reference gives up, because its pyramid is built layer by layer on one
-    // thread (measured: cv2 SIFT scales 1.13x across six cores).
+    // Rows are independent in both passes. The reference parallelises its
+    // extrema search and descriptors but builds the pyramid serially, which is
+    // most of why it scales 2.15x across six cores here where this does 3.2x.
+    //
+    // Falsified 2026-07-27: making the split adaptive so small octaves get one
+    // task per worker instead of a fixed 16 rows (a 60-row plane otherwise
+    // yields 4 tasks for 6 threads) measured no change, p = 0.15. Rayon's
+    // work-stealing already absorbs it; task granularity is not what limits the
+    // blur's 2.65x scaling.
     dst.par_chunks_mut(w * ROWS_PER_TASK)
         .enumerate()
         .for_each(|(chunk, dchunk)| {
