@@ -195,45 +195,34 @@ alive and competes for cores.
 
 ## What each backend buys, against both baselines
 
-mh01_frame1, own process, medians of 9. `vs cv2` columns are against OpenCV on
-all six cores and on one thread respectively.
+mh01_frame1, own process, medians of 13 after 8 warm-up frames. `vs cv2` is
+against OpenCV on all six cores (~110 ms).
 
-| config | ms | kp | vs cv2 all-cores | vs cv2 1-thread |
+### The two levers compose
+
+`fast_descriptor` (rotated-frame descriptor + shared-atomic orientation) and
+`n_features` (the keypoint budget) are independent, and nothing had measured
+them together:
+
+| config | kp | ms | min | vs cv2 |
 |---|---|---|---|---|
-| cv2, all cores | 100.3 | 2515 | 1.0x | — |
-| cv2, 1 thread | 225.2 | 2515 | — | 1.0x |
-| **CUDA `fo=-1`** (identical output) | **18.3** | 2515 | **5.5x** | **12.3x** |
-| CUDA `fo=-1` fast descriptor | 13.2 | 2515 | 7.6x | 17.1x |
-| CUDA `fo=0`, 4 octaves | 7.1 | 933 | 14.1x | 31.6x |
-| **NEON `fo=-1`** (identical output) | **80.6** | 2515 | **1.4x** | 2.8x |
-| NEON `fo=0`, 4 octaves | 25.6 | 933 | 3.9x | 8.8x |
+| exact, no budget | 2515 | 17.9 | 17.9 | 6.1x |
+| **fast**, no budget | 2516 | 10.20 | 10.06 | 10.8x |
+| exact + budget 1000 | 1000 | 13.91 | 13.71 | 7.9x |
+| **fast + budget 1000** | 1000 | **8.91** | 8.67 | 12.3x |
+| exact + budget 500 | 500 | 12.81 | 12.30 | 8.6x |
+| **fast + budget 500** | 500 | **8.38** | **8.22** | **13.1x** |
 
-Only the `fo=-1` rows do the same work as cv2 — same 2515 keypoints, and every
-column of the matching audit equal. `fo=0, 4 octaves` skips the 2x upsample and
-two octaves for 933 keypoints; it is a different amount of work, and its ratio
-is not a speedup at fixed output.
+**8.4 ms at a 500-feature budget**, from 19.4 at the start of the optimisation
+work. The exact path at the default config remains bit-identical to cv2.
 
-### Why the CPU path is 1.3x and not more
-
-It is at **per-core parity with OpenCV on every stage** (blur 67.8 vs ~60,
-descriptor 87.2 vs 78.6, extrema plus orientation 37.8 vs 38.7). Reaching 5x
-against cv2's all-core 100.3 ms would mean 20 ms on six A78AE cores — beating a
-mature, fully NEON-vectorised implementation of the *identical algorithm* by 5x
-on the same ISA and the same cores, while emitting bit-identical output. That is
-not a tuning gap; several of this session's wins were ported from OpenCV's own
-`sift.simd.hpp`.
-
-A rough floor supports it: the pyramid's 178 taps per pixel over ~1.9 Mpx is
-~340 Mops, or ~4.8 ms at 100% of the six cores' f32 FMA peak, and the
-descriptor's ~30M order-sensitive scalar histogram accumulations add several ms
-that do not vectorise at all. Perfect efficiency everywhere lands near 10-15 ms;
-20 ms leaves no headroom for 90 sequential barriers and data-dependent scatters.
-
-**5x at fixed output is a GPU result on this part, and it is already met:** CUDA
-`fo=-1` is 5.5x cv2's best and 12.3x its single thread, with output identical on
-every quality column. On CPU, 5x is only reachable by changing the
-configuration — `fo=0` with 4 octaves gets 3.9x/8.8x for a third of the
-keypoints, which is the right trade for VO and SLAM but is not the same result.
+Two notes on reading this table. The fast tier reports 2516 keypoints against
+the exact path's 2515: the fast orientation accumulates with atomics, so its
+ordering is non-deterministic and a borderline peak can land either side of the
+threshold. That is why it is validated geometrically rather than bitwise. And a
+budget only pays because `retainBest` now runs *before* descriptors, as the
+reference does — before that change `n_features` cost the same at 200 as at
+2515.
 
 ## Matching quality (homography + epipolar)
 
