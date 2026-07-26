@@ -133,6 +133,10 @@ impl SiftCuda {
         first_octave: FirstOctave,
         max_octaves: usize,
     ) -> Result<Self, SiftCudaError> {
+        // Same selector the CPU path uses, so the two agree on what is invalid.
+        cfg.shared_config()
+            .validate(max_octaves)
+            .map_err(|e| SiftCudaError::Geometry(e.to_string()))?;
         if width == 0 || height == 0 {
             return Err(SiftCudaError::Geometry(
                 "image dimensions must be non-zero".into(),
@@ -697,6 +701,31 @@ mod tests {
     /// Both descriptor kernels are covered: `fast` is a parameter, and the
     /// `KORNIA_SIFT_DESC=exact` kernel shares the row-range contract asserted
     /// here.
+    /// The mirror of `features::sift::pipeline::rejects_the_same_configurations_as_cuda`:
+    /// both backends route through `SiftConfig::validate`, so the set of
+    /// rejected configurations is residency-independent rather than
+    /// hand-mirrored.
+    #[test]
+    fn rejects_the_same_configurations_as_cpu() {
+        let stream = default_stream();
+        let ctx = &stream.context();
+        let base = SiftCudaConfig::default();
+        let mk = |c: SiftCudaConfig, m: usize| {
+            SiftCuda::new(ctx, &stream, 64, 64, c, FirstOctave::Native, m).is_ok()
+        };
+        assert!(mk(base, usize::MAX));
+        assert!(!mk(base, 0), "max_octaves = 0 must be rejected");
+        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let c = SiftCudaConfig { sigma: bad, ..base };
+            assert!(!mk(c, usize::MAX), "sigma {bad} accepted");
+        }
+        let c = SiftCudaConfig {
+            n_octave_layers: 0,
+            ..base
+        };
+        assert!(!mk(c, usize::MAX));
+    }
+
     #[test]
     fn assembled_pipeline_fills_every_descriptor_row() {
         let stream = default_stream();

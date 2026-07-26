@@ -84,6 +84,56 @@ pub fn refl101(mut i: i64, n: i64) -> usize {
     i as usize
 }
 
+/// Why a configuration was rejected.
+///
+/// Both backends validate through [`SiftConfig::validate`] and
+/// [`validate_source`], so which inputs are rejected — and the wording of the
+/// complaint — is residency-independent by construction. Each backend wraps this
+/// in its own error type rather than sharing one, but neither decides the rule
+/// itself: they drifted when they did (`max_octaves = 0` errored on GPU and
+/// silently clamped on CPU, and a non-positive sigma errored on GPU and panicked
+/// on CPU).
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum SiftConfigError {
+    /// A parameter is outside the range the pipeline supports.
+    #[error("invalid SIFT configuration: {0}")]
+    Invalid(String),
+
+    /// The source buffer does not match the stated geometry.
+    #[error("source has {got} elements, need {need} for {width}x{height}")]
+    SourceLen {
+        /// Length of the buffer passed in.
+        got: usize,
+        /// Length the geometry requires.
+        need: usize,
+        /// Stated width.
+        width: usize,
+        /// Stated height.
+        height: usize,
+    },
+}
+
+/// Check a source buffer against its stated geometry.
+pub fn validate_source(len: usize, width: usize, height: usize) -> Result<(), SiftConfigError> {
+    if width == 0 || height == 0 {
+        return Err(SiftConfigError::Invalid(
+            "image dimensions must be non-zero".into(),
+        ));
+    }
+    let need = width
+        .checked_mul(height)
+        .ok_or_else(|| SiftConfigError::Invalid("image dimensions overflow".into()))?;
+    if len < need {
+        return Err(SiftConfigError::SourceLen {
+            got: len,
+            need,
+            width,
+            height,
+        });
+    }
+    Ok(())
+}
+
 /// Detector configuration, matching `cv::SIFT::create`'s defaults.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SiftConfig {
@@ -143,6 +193,34 @@ impl SiftConfig {
             *slot = (total * total - prev * prev).sqrt();
         }
         out
+    }
+
+    /// Reject configurations neither backend can honour.
+    ///
+    /// The single place that decision is made; see [`SiftConfigError`].
+    pub fn validate(&self, max_octaves: usize) -> Result<(), SiftConfigError> {
+        if self.n_octave_layers == 0 {
+            return Err(SiftConfigError::Invalid(
+                "n_octave_layers must be non-zero".into(),
+            ));
+        }
+        if !(self.sigma.is_finite() && self.sigma > 0.0) {
+            return Err(SiftConfigError::Invalid(format!(
+                "sigma must be finite and positive, got {}",
+                self.sigma
+            )));
+        }
+        if !self.contrast_threshold.is_finite() || !self.edge_threshold.is_finite() {
+            return Err(SiftConfigError::Invalid(
+                "contrast and edge thresholds must be finite".into(),
+            ));
+        }
+        if max_octaves == 0 {
+            return Err(SiftConfigError::Invalid(
+                "max_octaves must be non-zero; use usize::MAX for unlimited".into(),
+            ));
+        }
+        Ok(())
     }
 
     /// Octaves built for a base image whose smaller side is `base_min_dim`.

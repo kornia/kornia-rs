@@ -29,7 +29,9 @@ use rayon::prelude::*;
 use super::descriptor::{compute_descriptor, descriptor_inputs, DESCR_LEN};
 use super::detect::{find_extrema, RawKeypoint};
 use super::orient::{assign_orientations, OrientedKeypoint};
-use super::params::{gaussian_kernel_f32, gaussian_ksize, SiftConfig};
+use super::params::{
+    gaussian_kernel_f32, gaussian_ksize, validate_source, SiftConfig, SiftConfigError,
+};
 use super::scalespace::{blur_h_f32_mode, blur_v_f32, gradients};
 
 /// Which scale the pyramid starts from.
@@ -172,7 +174,7 @@ pub fn detect_and_compute(
     first_octave: FirstOctave,
     max_octaves: usize,
     fast: bool,
-) -> SiftFeatures {
+) -> Result<SiftFeatures, SiftConfigError> {
     let mut ws = SiftWorkspace::new();
     detect_and_compute_with(&mut ws, src, w, h, cfg, first_octave, max_octaves, fast)
 }
@@ -191,8 +193,11 @@ pub fn detect_and_compute_with(
     first_octave: FirstOctave,
     max_octaves: usize,
     fast: bool,
-) -> SiftFeatures {
-    assert_eq!(src.len(), w * h, "source length must be w * h");
+) -> Result<SiftFeatures, SiftConfigError> {
+    // Validated through the same selector the CUDA path uses, so which inputs
+    // are rejected does not depend on where the image lives.
+    validate_source(src.len(), w, h)?;
+    cfg.validate(max_octaves)?;
     let doubled = first_octave == FirstOctave::Double;
     let (mut cw, mut ch) = if doubled { (w * 2, h * 2) } else { (w, h) };
 
@@ -248,7 +253,7 @@ pub fn detect_and_compute_with(
 
     let n_oct = cfg
         .n_octaves(cw.min(ch), if doubled { -1 } else { 0 })
-        .min(max_octaves.max(1));
+        .min(max_octaves);
 
     let mut all: Vec<(OrientedKeypoint, usize, usize)> = Vec::new();
     let mut desc: Vec<f32> = Vec::new();
@@ -389,10 +394,10 @@ pub fn detect_and_compute_with(
         out_desc.extend_from_slice(&desc[i * DESCR_LEN..(i + 1) * DESCR_LEN]);
     }
     kps = order.iter().map(|&i| kps[i]).collect();
-    SiftFeatures {
+    Ok(SiftFeatures {
         keypoints: kps,
         descriptors: out_desc,
-    }
+    })
 }
 
 /// `removeDuplicatedSorted` then `retainBest`, as indices into the input order.
@@ -454,10 +459,49 @@ mod tests {
         for fo in [FirstOctave::Native, FirstOctave::Double] {
             // Two passes: the second reuses scratch sized by the first.
             for _ in 0..2 {
-                let f = detect_and_compute_with(&mut ws, &img, w, h, &cfg, fo, usize::MAX, false);
+                let f = detect_and_compute_with(&mut ws, &img, w, h, &cfg, fo, usize::MAX, false)
+                    .expect("valid configuration");
                 assert_eq!(f.descriptors.len(), f.keypoints.len() * DESCR_LEN);
             }
         }
+    }
+
+    /// The rejections are residency-independent: both backends route through
+    /// `SiftConfig::validate` and `validate_source`, so this pins what the CPU
+    /// side refuses. The CUDA side asserts the same set against the same
+    /// selector in `cuda::sift::tests`.
+    #[test]
+    fn rejects_the_same_configurations_as_cuda() {
+        let img = vec![0.0f32; 64 * 64];
+        let cfg = SiftConfig::default();
+        let ok = |c: &SiftConfig, m: usize, len: usize, w: usize, h: usize| {
+            detect_and_compute_with(
+                &mut SiftWorkspace::new(),
+                &img[..len],
+                w,
+                h,
+                c,
+                FirstOctave::Native,
+                m,
+                false,
+            )
+            .is_ok()
+        };
+        assert!(ok(&cfg, usize::MAX, 64 * 64, 64, 64));
+        // max_octaves = 0 used to clamp silently here and error on the GPU.
+        assert!(!ok(&cfg, 0, 64 * 64, 64, 64));
+        // A short source used to panic here and error on the GPU.
+        assert!(!ok(&cfg, usize::MAX, 64 * 63, 64, 64));
+        assert!(!ok(&cfg, usize::MAX, 64 * 64, 0, 64));
+        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let c = SiftConfig { sigma: bad, ..cfg };
+            assert!(!ok(&c, usize::MAX, 64 * 64, 64, 64), "sigma {bad} accepted");
+        }
+        let c = SiftConfig {
+            n_octave_layers: 0,
+            ..cfg
+        };
+        assert!(!ok(&c, usize::MAX, 64 * 64, 64, 64));
     }
 
     /// End-to-end timing and keypoint count, to compare against cv2 directly.
@@ -492,7 +536,7 @@ mod tests {
         ] {
             for fast in [false, true] {
                 let mut ws = SiftWorkspace::new();
-                let f = detect_and_compute_with(&mut ws, &img, w, h, &cfg, fo, moct, fast);
+                let f = detect_and_compute_with(&mut ws, &img, w, h, &cfg, fo, moct, fast).unwrap();
                 let mut ts = Vec::new();
                 for _ in 0..5 {
                     let t = std::time::Instant::now();

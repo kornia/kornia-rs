@@ -184,25 +184,31 @@ impl Default for SiftCudaConfig {
 }
 
 impl SiftCudaConfig {
+    /// The backend-independent half of this configuration.
+    ///
+    /// Every host-side numeric that both paths must agree on lives in
+    /// [`crate::features::SiftConfig`] and is reached through here. They used to
+    /// be duplicated, and the copies drifted: one spelled a power `powi` where
+    /// the other spelled it `powf`, which changes the last bit of four of eleven
+    /// layer sigmas at `n_octave_layers = 8` and therefore every coefficient of
+    /// the resulting Gaussian. Delegation is what stops that recurring.
+    pub(crate) fn shared_config(&self) -> crate::features::SiftConfig {
+        crate::features::SiftConfig {
+            n_features: self.n_features,
+            n_octave_layers: self.n_octave_layers,
+            contrast_threshold: self.contrast_threshold,
+            edge_threshold: self.edge_threshold,
+            sigma: self.sigma,
+        }
+    }
+
     /// Per-layer incremental blur sigmas.
     ///
     /// `sig[0]` is the base sigma; `sig[i]` for `i >= 1` is the *incremental*
     /// blur that takes layer `i-1` to layer `i`, chosen so the total blur
     /// follows `sigma * k^i` with `k = 2^(1/n_octave_layers)`.
     pub fn layer_sigmas(&self) -> Vec<f64> {
-        let n = self.n_octave_layers + 3;
-        let mut sig = vec![0.0; n];
-        sig[0] = self.sigma;
-        let k = 2f64.powf(1.0 / self.n_octave_layers as f64);
-        for (i, s) in sig.iter_mut().enumerate().skip(1) {
-            // `powf`, not `powi`: the reference calls the generic
-            // `pow(double, double)`, and repeated multiplication gives a
-            // different last bit.
-            let sig_prev = k.powf(i as f64 - 1.0) * self.sigma;
-            let sig_total = sig_prev * k;
-            *s = (sig_total * sig_total - sig_prev * sig_prev).sqrt();
-        }
-        sig
+        self.shared_config().layer_sigmas()
     }
 
     /// Blur applied to the base image of the first octave.
@@ -220,11 +226,7 @@ impl SiftCudaConfig {
     /// doubled constant on the native path under-blurs every layer of the whole
     /// scale space (1.2490 instead of 1.5199 at the default sigma).
     pub fn base_sig_diff_for(&self, doubled: bool) -> f32 {
-        let sigma = self.sigma as f32;
-        // `0.25 * 4.0` and `0.25 * 1.0` are both exact, so this is the same two
-        // roundings the pinned bit pattern was measured with.
-        let init2 = SIFT_INIT_SIGMA * SIFT_INIT_SIGMA * if doubled { 4.0 } else { 1.0 };
-        (sigma * sigma - init2).max(0.01).sqrt()
+        self.shared_config().base_sig_diff(doubled)
     }
 
     /// Blur applied to the doubled base image — [`Self::base_sig_diff_for`] with
@@ -239,8 +241,7 @@ impl SiftCudaConfig {
     /// base image was doubled and `0` when it was not; passing the doubled value
     /// on the native path builds one octave too many.
     pub fn n_octaves_for(&self, base_min_dim: usize, first_octave: i32) -> usize {
-        let v = (base_min_dim as f64).ln() / std::f64::consts::LN_2 - 2.0;
-        (round_ties_even(v) as i32 - first_octave).max(1) as usize
+        self.shared_config().n_octaves(base_min_dim, first_octave)
     }
 
     /// [`Self::n_octaves_for`] with `first_octave = -1`, the reference's default.
@@ -249,17 +250,12 @@ impl SiftCudaConfig {
     }
 }
 
-/// Round to nearest, ties to even — the rounding the reference's integer
-/// rounding helper uses. Rust's `f64::round` rounds half away from zero and
-/// would disagree on exact `.5` inputs.
-pub(crate) fn round_ties_even(v: f64) -> f64 {
-    v.round_ties_even()
-}
-
 /// Kernel length derived from sigma for float images: `round(sigma * 8 + 1) | 1`.
+///
+/// Delegates to the shared implementation; see [`SiftCudaConfig::shared_config`]
+/// for why every host numeric both backends depend on lives in one place.
 pub fn gaussian_ksize(sigma: f64) -> usize {
-    let n = round_ties_even(sigma * 4.0 * 2.0 + 1.0) as i64;
-    (n | 1) as usize
+    crate::features::gaussian_ksize(sigma)
 }
 
 #[cfg(test)]
