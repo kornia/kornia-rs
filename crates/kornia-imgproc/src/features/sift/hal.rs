@@ -202,6 +202,78 @@ pub fn exp(x: f32) -> f32 {
     z * yf
 }
 
+/// `exp` in place over a whole buffer, four lanes at a time with a scalar tail.
+///
+/// The reference runs each of its primitives as one long pass over the sample
+/// set rather than a few samples at a time between consumers, and that is worth
+/// a lot here: interleaved, the transcendental emulations and the caller's
+/// scatter compete for the same registers. The lane-wise and scalar forms are
+/// bit-identical, so where the tail begins does not affect the result.
+#[inline]
+pub(super) fn exp_batch(v: &mut [f32]) {
+    let mut k = 0usize;
+    #[cfg(target_arch = "aarch64")]
+    {
+        use std::arch::aarch64::*;
+        // SAFETY: `k + 4 <= v.len()` on every iteration.
+        unsafe {
+            while k + 4 <= v.len() {
+                let p = v.as_mut_ptr().add(k);
+                vst1q_f32(p, x4::exp(vld1q_f32(p)));
+                k += 4;
+            }
+        }
+    }
+    while k < v.len() {
+        v[k] = exp(v[k]);
+        k += 1;
+    }
+}
+
+/// `magnitude` and `atan2` over a whole buffer, four lanes at a time.
+///
+/// `mag` and `ang` are fully overwritten, so callers pass scratch that is sized
+/// but not zeroed.
+#[inline]
+pub(super) fn mag_ang_batch(dx: &[f32], dy: &[f32], mag: &mut [f32], ang: &mut [f32]) {
+    let len = dx.len();
+    debug_assert_eq!(dy.len(), len);
+    debug_assert_eq!(mag.len(), len);
+    debug_assert_eq!(ang.len(), len);
+    let mut k = 0usize;
+    #[cfg(target_arch = "aarch64")]
+    {
+        use std::arch::aarch64::*;
+        // SAFETY: `k + 4 <= len` and all four buffers are `len` long.
+        unsafe {
+            while k + 4 <= len {
+                let vdx = vld1q_f32(dx.as_ptr().add(k));
+                let vdy = vld1q_f32(dy.as_ptr().add(k));
+                vst1q_f32(mag.as_mut_ptr().add(k), x4::magnitude(vdx, vdy));
+                vst1q_f32(ang.as_mut_ptr().add(k), x4::atan2_deg(vdy, vdx));
+                k += 4;
+            }
+        }
+    }
+    while k < len {
+        mag[k] = magnitude(dx[k], dy[k]);
+        ang[k] = atan2_deg(dy[k], dx[k]);
+        k += 1;
+    }
+}
+
+/// Grow `v` to at least `len` without re-zeroing what is already there.
+///
+/// The buffers these back are fully overwritten before they are read, so the
+/// fill value never survives; `Vec::clear` + `resize` would zero every element
+/// once per keypoint for nothing.
+#[inline]
+pub(super) fn grow_to(v: &mut Vec<f32>, len: usize) {
+    if v.len() < len {
+        v.resize(len, 0.0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -247,6 +319,11 @@ mod tests {
 /// scattering the results sequentially, and stay bit-exact. That split is what
 /// makes the descriptor and orientation loops vectorisable at all: their
 /// accumulation order is fixed, but the work feeding it is not.
+///
+/// Keep this `cfg` attached to `x4` and nothing else: the batch helpers above
+/// are portable (each has its own inner `cfg` around the NEON body) and are
+/// imported unconditionally, so an item inserted between this attribute and the
+/// module steals the gate and breaks every non-aarch64 build.
 #[cfg(target_arch = "aarch64")]
 pub mod x4 {
     use super::{ATAN_C, EXP_C, EXP_TAB};

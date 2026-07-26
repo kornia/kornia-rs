@@ -8,7 +8,7 @@
 //! normalisation tail computes `nrm2` with a **four-lane FMA accumulation
 //! followed by a pairwise reduction**, not a scalar sum — see [`nrm2`].
 
-use super::hal::{atan2_deg, exp, magnitude};
+use super::hal::{atan2_deg, exp, exp_batch, grow_to, mag_ang_batch, magnitude};
 
 use super::orient::OrientedKeypoint;
 
@@ -100,6 +100,10 @@ impl DescriptorScratch {
         Self::default()
     }
 
+    /// Reset the collected sample buffers, keeping their capacity.
+    ///
+    /// `mag` and `ang` are not cleared: they are outputs, sized by `grow_to`
+    /// and fully overwritten by `mag_ang_batch` before anything reads them.
     fn clear(&mut self) {
         self.rbin.clear();
         self.cbin.clear();
@@ -109,71 +113,15 @@ impl DescriptorScratch {
     }
 }
 
-/// `exp` in place over a whole buffer, four lanes at a time with a scalar tail.
-///
-/// The lane-wise and scalar forms are bit-identical, so where the tail begins
-/// does not affect the result.
-fn exp_batch(v: &mut [f32]) {
-    let mut k = 0usize;
-    #[cfg(target_arch = "aarch64")]
-    {
-        use super::hal::x4;
-        use std::arch::aarch64::*;
-        // SAFETY: `k + 4 <= v.len()` on every iteration.
-        unsafe {
-            while k + 4 <= v.len() {
-                let p = v.as_mut_ptr().add(k);
-                vst1q_f32(p, x4::exp(vld1q_f32(p)));
-                k += 4;
-            }
-        }
-    }
-    while k < v.len() {
-        v[k] = exp(v[k]);
-        k += 1;
-    }
-}
-
-/// `magnitude` and `atan2` over a whole buffer, four lanes at a time.
-fn mag_ang_batch(dx: &[f32], dy: &[f32], mag: &mut Vec<f32>, ang: &mut Vec<f32>) {
-    let len = dx.len();
-    mag.clear();
-    ang.clear();
-    mag.resize(len, 0.0);
-    ang.resize(len, 0.0);
-    let mut k = 0usize;
-    #[cfg(target_arch = "aarch64")]
-    {
-        use super::hal::x4;
-        use std::arch::aarch64::*;
-        // SAFETY: `k + 4 <= len` and all four buffers are `len` long.
-        unsafe {
-            while k + 4 <= len {
-                let vdx = vld1q_f32(dx.as_ptr().add(k));
-                let vdy = vld1q_f32(dy.as_ptr().add(k));
-                vst1q_f32(mag.as_mut_ptr().add(k), x4::magnitude(vdx, vdy));
-                vst1q_f32(ang.as_mut_ptr().add(k), x4::atan2_deg(vdy, vdx));
-                k += 4;
-            }
-        }
-    }
-    while k < len {
-        mag[k] = magnitude(dx[k], dy[k]);
-        ang[k] = atan2_deg(dy[k], dx[k]);
-        k += 1;
-    }
-}
-
 /// Trilinear scatter of every resolved sample into `hist`.
 ///
 /// Everything up to the eight accumulations is elementwise, so four lanes are
 /// bit-identical to the scalar tail; only the accumulation is order-sensitive
 /// (float addition does not associate) and it stays scalar, in the reference's
 /// sample order. This is the split `calcSIFTDescriptor` itself uses.
-fn scatter(sc: &DescriptorScratch, ori: f32, bins_per_rad: f32, hist: &mut [f32]) {
+fn scatter(sc: &DescriptorScratch, len: usize, ori: f32, bins_per_rad: f32, hist: &mut [f32]) {
     const D: usize = DESCR_WIDTH;
     const N: usize = DESCR_HIST_BINS;
-    let len = sc.rbin.len();
     let mut k = 0usize;
 
     #[cfg(target_arch = "aarch64")]
@@ -408,9 +356,12 @@ pub fn compute_descriptor(
     }
 
     // One long pass per primitive, as the reference does.
+    let len = sc.dx.len();
+    grow_to(&mut sc.mag, len);
+    grow_to(&mut sc.ang, len);
     exp_batch(&mut sc.wt);
-    mag_ang_batch(&sc.dx, &sc.dy, &mut sc.mag, &mut sc.ang);
-    scatter(sc, ori, bins_per_rad, &mut hist);
+    mag_ang_batch(&sc.dx, &sc.dy, &mut sc.mag[..len], &mut sc.ang[..len]);
+    scatter(sc, len, ori, bins_per_rad, &mut hist);
 
     // Fold the circular orientation bins back into the d*d*n array.
     let mut raw = [0.0f32; DESCR_LEN];

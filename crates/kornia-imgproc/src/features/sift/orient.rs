@@ -77,7 +77,17 @@ pub fn assign_orientations(
     let mut k = 0i32;
 
     // Samples are buffered four at a time so `magnitude`, `atan2` and the
-    // Gaussian weight evaluate lane-wise instead of one sample at a time. The
+    // Gaussian weight evaluate lane-wise instead of one sample at a time.
+    //
+    // This deliberately does NOT call `hal::{exp_batch, mag_ang_batch}`, which
+    // the descriptor uses and which express the same dispatch. Routing this
+    // through them was implemented and measured on 2026-07-27: orientation went
+    // 19.0 -> 22.5 ms, an 18% regression, because at a fixed width of four the
+    // helpers' loop preambles do not fold away (`#[inline]` did not recover it)
+    // whereas the straight-line block below has none. The duplication is the
+    // price of that; do not "clean it up" without re-measuring.
+    //
+    // The
     // primitives are bit-identical across the two widths, and the binning below
     // still runs in strict sample order with its own `k`, so neither the values
     // nor the two-roundings split depend on where a batch boundary falls.
