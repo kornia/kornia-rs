@@ -74,28 +74,29 @@ pub fn estimate_focal(
     // Two rotation-column constraints, each an independent estimate of f²:
     //   orthogonality  r₁·r₂ = 0        → f² = -(u1 u2 + v1 v2)/(w1 w2)
     //   equal-norm     ‖r₁‖ = ‖r₂‖      → f² = (u1²+v1² − u2²−v2²)/(w2² − w1²)
-    // Each degenerates on a different fronto-parallel condition (w1 w2 → 0, or
-    // w1 ≈ w2), so we keep whichever roots are positive and average them.
+    // Each degenerates on a different fronto-parallel condition (w1 w2 → 0, or w1 ≈ w2). The
+    // absolute epsilon on the denominator does NOT catch a near-degenerate root that stays finite
+    // but blows up (small-denominator ratio under pixel noise), so gate each root on a PLAUSIBLE
+    // focal before averaging — otherwise a garbage root drags the average off the good one.
     let mut roots: Vec<f64> = Vec::with_capacity(2);
-    let denom_ortho = w1 * w2;
-    if denom_ortho.abs() > 1e-12 {
-        let f2 = -(u1 * u2 + v1 * v2) / denom_ortho;
-        if f2 > 0.0 {
+    let mut push_root = |f2: f64| {
+        if f2 > 0.0 && (FOCAL_MIN_PX..=FOCAL_MAX_PX).contains(&f2.sqrt()) {
             roots.push(f2);
         }
+    };
+    let denom_ortho = w1 * w2;
+    if denom_ortho.abs() > 1e-12 {
+        push_root(-(u1 * u2 + v1 * v2) / denom_ortho);
     }
     let denom_norm = w2 * w2 - w1 * w1;
     if denom_norm.abs() > 1e-12 {
-        let f2 = (u1 * u1 + v1 * v1 - u2 * u2 - v2 * v2) / denom_norm;
-        if f2 > 0.0 {
-            roots.push(f2);
-        }
+        push_root((u1 * u1 + v1 * v1 - u2 * u2 - v2 * v2) / denom_norm);
     }
     if roots.is_empty() {
         return None;
     }
-    let f = (roots.iter().sum::<f64>() / roots.len() as f64).sqrt();
-    (FOCAL_MIN_PX..=FOCAL_MAX_PX).contains(&f).then_some(f)
+    // Each root is already in [FOCAL_MIN, FOCAL_MAX]², so their mean's sqrt is too.
+    Some((roots.iter().sum::<f64>() / roots.len() as f64).sqrt())
 }
 
 #[cfg(test)]

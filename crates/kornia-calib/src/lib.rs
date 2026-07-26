@@ -90,7 +90,9 @@ fn x84_threshold(res: &mut [f64], k: f64) -> f64 {
         return f64::INFINITY;
     }
     // Median via quickselect (O(n)); we only need the middle element, not a full sort.
-    let cmp = |a: &f64, b: &f64| a.partial_cmp(b).unwrap();
+    // `total_cmp` (not `partial_cmp().unwrap()`) so a NaN residual from a degenerate BA iteration
+    // can't panic this library-public path.
+    let cmp = |a: &f64, b: &f64| a.total_cmp(b);
     let mid = res.len() / 2;
     res.select_nth_unstable_by(mid, cmp);
     let med = res[mid];

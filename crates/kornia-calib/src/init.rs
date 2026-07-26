@@ -47,6 +47,9 @@ pub(crate) fn init_poses(
 
     let mut branches: Vec<(usize, [Pose3d; 2])> = Vec::new();
     for (cam_idx, corners) in &tags[ref_ti].per_camera {
+        if *cam_idx >= n_cams {
+            continue; // ignore out-of-range camera index (matches init_poses_board)
+        }
         let cam = &cameras[*cam_idx];
         // Undistort corners so the planar pose init is distortion-correct too.
         let image_pts = [
@@ -80,8 +83,11 @@ pub(crate) fn init_poses(
     // disambiguate the planar branch even with NO natural features (the correct branch combo is the
     // only one under which the shared corners triangulate + reproject consistently). One tag alone
     // still can't be disambiguated — that's the documented single-planar-tag degeneracy.
+    // Only in-range camera indices participate (out-of-range → dropped, as in init_poses_board),
+    // so the `cameras[..]`/`ps[..]`/`hv[..]` accesses below never index out of bounds.
     let mut corr: Vec<(usize, Vec2F64, usize, Vec2F64)> = features
         .iter()
+        .filter(|f| f.cam_a < n_cams && f.cam_b < n_cams)
         .map(|f| (f.cam_a, f.uv_a, f.cam_b, f.uv_b))
         .collect();
     for (ti, tag) in tags.iter().enumerate() {
@@ -89,8 +95,12 @@ pub(crate) fn init_poses(
             continue;
         }
         for k in 0..4 {
-            let seers: Vec<(usize, Vec2F64)> =
-                tag.per_camera.iter().map(|(c, cs)| (*c, cs[k])).collect();
+            let seers: Vec<(usize, Vec2F64)> = tag
+                .per_camera
+                .iter()
+                .filter(|(c, _)| *c < n_cams)
+                .map(|(c, cs)| (*c, cs[k]))
+                .collect();
             for j in 1..seers.len() {
                 corr.push((seers[0].0, seers[0].1, seers[j].0, seers[j].1));
             }
@@ -222,14 +232,14 @@ pub(crate) fn measure_tag_corners(
         return None;
     }
 
-    // Anchor = the camera whose two branches disagree MOST (the most head-on view — least ambiguous,
-    // so its `best` is the most trustworthy). Then each camera contributes the branch closest to the
-    // anchor's `best`, and we average the agreeing branches.
+    // Anchor = the camera whose two branches disagree MOST — an OBLIQUE view, where the planar
+    // 2-fold flip is well separated so `best` is genuinely reliable. (A fronto-parallel view is the
+    // opposite: the two flips nearly coincide and `best` is a coin-flip.) Then each camera
+    // contributes the branch closest to the anchor's `best`, and we average the agreeing branches.
+    // `total_cmp` (not `partial_cmp().unwrap()`) so a NaN from a near-degenerate pose can't panic.
     let anchor_i = (0..cands.len())
         .max_by(|&a, &b| {
-            set_dist(&cands[a][0], &cands[a][1])
-                .partial_cmp(&set_dist(&cands[b][0], &cands[b][1]))
-                .unwrap()
+            set_dist(&cands[a][0], &cands[a][1]).total_cmp(&set_dist(&cands[b][0], &cands[b][1]))
         })
         .unwrap();
     let anchor = cands[anchor_i][0];

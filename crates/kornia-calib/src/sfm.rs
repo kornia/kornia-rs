@@ -12,7 +12,7 @@
 //! [`kornia_3d::pnp::solve_pnp_ransac`] (register a new camera into the cloud), and
 //! [`kornia_3d::ba_schur::bundle_adjust_schur`].
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use kornia_3d::ba::{BaObservation, BaParams};
 use kornia_3d::ba_schur::bundle_adjust_schur;
@@ -98,9 +98,12 @@ pub fn calibrate_features(
             }
         }
     }
+    // Most-shared-track pair; deterministic tie-break on the smaller (a, b) so the whole
+    // reconstruction (world frame, seed cloud, growth order) is reproducible run-to-run — HashMap
+    // iteration order is randomized and must not decide the bootstrap.
     let &(a0, b0) = pair_count
         .iter()
-        .max_by_key(|(_, &n)| n)
+        .max_by(|x, y| x.1.cmp(y.1).then_with(|| y.0.cmp(x.0)))
         .map(|(p, _)| p)
         .ok_or(CalibError::NoReferenceTagView)?;
 
@@ -119,6 +122,12 @@ pub fn calibrate_features(
     // homography on a converging rig): a calibrated rig always wants the essential.
     let n1: Vec<Vec2F64> = x1.iter().map(|p| cameras[a0].normalize(*p)).collect();
     let n2: Vec<Vec2F64> = x2.iter().map(|p| cameras[b0].normalize(*p)).collect();
+    // `ransac_essential_5pt` only normalizes with K⁻¹ — it does NOT undistort. Feed UNDISTORTED
+    // pixels so the essential arm matches the undistorted-normalized coords every other stage uses
+    // (cheirality vote, triangulation, BA); K⁻¹·undistort(px) == normalize(px). The 2.0 px threshold
+    // stays valid in undistorted pixel space. (Raw pixels here would bias R/t on a distorted lens.)
+    let x1u: Vec<Vec2F64> = x1.iter().map(|p| cameras[a0].undistort(p.x, p.y)).collect();
+    let x2u: Vec<Vec2F64> = x2.iter().map(|p| cameras[b0].undistort(p.x, p.y)).collect();
     let rp = TvRp {
         max_iterations: 2000,
         threshold: 2.0,
@@ -127,8 +136,8 @@ pub fn calibrate_features(
         refit: true,
     };
     let ess = ransac_essential_5pt(
-        &x1,
-        &x2,
+        &x1u,
+        &x2u,
         &cameras[a0].intrinsic_matrix(),
         &cameras[b0].intrinsic_matrix(),
         &rp,
@@ -182,11 +191,15 @@ pub fn calibrate_features(
     triangulate_new(&mut point3d, &norm, &poses, &idcam, &tcfg);
 
     // --- Incremental grow: register the unplaced camera with the most 2D↔3D links via PnP. ---
+    // PnP (nondeterministic EPnP-RANSAC) can transiently fail for one camera while others remain
+    // solvable, so a failure marks just that camera unregisterable and the loop keeps growing —
+    // NOT aborting every remaining camera.
+    let mut pnp_failed: HashSet<usize> = HashSet::new();
     loop {
         // For each unplaced camera, gather (world_point, normalized_pixel) from tracks with a 3D point.
         let mut best: Option<(usize, Vec<Vec3F64>, Vec<Vec2F64>)> = None;
         for c in 0..n_cams {
-            if poses[c].is_some() {
+            if poses[c].is_some() || pnp_failed.contains(&c) {
                 continue;
             }
             let (mut wp, mut ip) = (Vec::new(), Vec::new());
@@ -228,7 +241,9 @@ pub fn calibrate_features(
                 poses[c] = Some(pose_from_pnp(r.pose.rotation, r.pose.translation));
                 triangulate_new(&mut point3d, &norm, &poses, &idcam, &tcfg);
             }
-            Err(_) => break, // no more cameras can be registered
+            Err(_) => {
+                pnp_failed.insert(c); // this camera can't register now; try the others
+            }
         }
     }
 
@@ -289,21 +304,30 @@ pub fn calibrate_features(
     );
 
     // Per-camera reprojection RMS (pixels); analytical covariance is tag-oriented so stays `None`.
+    // Use the BA-optimized points (`res.points`), NOT the pre-BA cloud: BA moves points as free
+    // variables, so evaluating the pre-BA cloud under post-BA poses would report a stale residual.
+    // `pt_index` indexes both identically (same order as the BA input).
     let per_camera = (0..n_cams)
         .map(|c| {
             feature_stats(
                 c,
                 &res.poses,
                 &registered,
-                &points,
+                &res.points,
                 &pt_index,
                 &norm,
                 &cameras[c],
             )
         })
         .collect();
-    let reproj_rmse_px =
-        global_reproj_rmse(&res.poses, &registered, &points, &pt_index, &norm, cameras);
+    let reproj_rmse_px = global_reproj_rmse(
+        &res.poses,
+        &registered,
+        &res.points,
+        &pt_index,
+        &norm,
+        cameras,
+    );
 
     // Output `T_world_cam` (camera→world): invert the metric world→cam (translation scaled).
     let out_poses: Vec<Option<Pose3d>> = (0..n_cams)

@@ -85,7 +85,7 @@ pub fn calibrate_multishot(
     config: &MultiShotConfig,
 ) -> Result<MultiShotCalibration, CalibError> {
     let n_cams = cameras.len();
-    if shots.is_empty() {
+    if shots.is_empty() || n_cams == 0 {
         return Err(CalibError::NoTags);
     }
 
