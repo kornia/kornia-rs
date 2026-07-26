@@ -27,6 +27,13 @@ use super::refl101;
 /// pyramid's upper octaves have few rows to begin with.
 const ROWS_PER_TASK: usize = 16;
 
+// Falsified 2026-07-26: tiling the vertical pass into column strips so its
+// `ksize`-row window fits L1 (162 KB at the base octave, so it does not) made
+// the blur *slower* — 74.4 -> 79.0 ms at a 128-column strip, even with the
+// reflected row bases hoisted out of the strip loop. The full-width walk feeds
+// the hardware prefetcher long sequential streams, and losing that costs more
+// than L1 residency returns. Do not retry without addressing the prefetcher.
+
 /// Horizontal (row) pass.
 ///
 /// The interior is vectorised four columns at a time with unaligned loads: the

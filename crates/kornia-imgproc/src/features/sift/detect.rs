@@ -182,37 +182,67 @@ pub fn find_extrema(
                 // widest column touched, from the `c + 1` shift of a 4-wide
                 // block) below `w`.
                 unsafe {
+                    // Min and max over a plane's 3x3 block about `(r, c)`,
+                    // optionally dropping the centre — which is not its own
+                    // neighbour in the current plane.
+                    let block = |pl: &[f32], c: usize, skip_centre: bool| {
+                        let (mut mx, mut mn) =
+                            (vdupq_n_f32(f32::NEG_INFINITY), vdupq_n_f32(f32::INFINITY));
+                        for dr in 0..3usize {
+                            let base = pl.as_ptr().add((r + dr - 1) * w + c);
+                            for dc in 0..3usize {
+                                if skip_centre && dr == 1 && dc == 1 {
+                                    continue;
+                                }
+                                let n = vld1q_f32(base.add(dc).sub(1));
+                                mx = vmaxq_f32(mx, n);
+                                mn = vminq_f32(mn, n);
+                            }
+                        }
+                        (mx, mn)
+                    };
+
                     let vthr = vdupq_n_f32(thr);
+                    let vzero = vdupq_n_f32(0.0);
                     while c + 4 <= c_hi {
                         let val = vld1q_f32(cur.as_ptr().add(r * w + c));
                         // |val| > thr, the same rejection as the scalar head.
-                        let mut cond = vcgtq_f32(vabsq_f32(val), vthr);
+                        let cond = vcgtq_f32(vabsq_f32(val), vthr);
                         if vmaxvq_u32(cond) == 0 {
                             c += 4;
                             continue;
                         }
-                        let (mut vmax, mut vmin) =
-                            (vdupq_n_f32(f32::NEG_INFINITY), vdupq_n_f32(f32::INFINITY));
-                        for pl in [prv, cur, nxt] {
-                            for dr in 0..3usize {
-                                let base = pl.as_ptr().add((r + dr - 1) * w + c);
-                                for dc in 0..3usize {
-                                    // The centre is not its own neighbour.
-                                    if std::ptr::eq(pl.as_ptr(), cur.as_ptr()) && dr == 1 && dc == 1
-                                    {
-                                        continue;
-                                    }
-                                    let n = vld1q_f32(base.add(dc).sub(1));
-                                    vmax = vmaxq_f32(vmax, n);
-                                    vmin = vminq_f32(vmin, n);
-                                }
+
+                        // Staged by plane with a bail between stages. A block
+                        // that clears the threshold is still almost never an
+                        // extremum, and the current plane alone rejects nearly
+                        // all of them, so the other two planes' 18 loads are
+                        // usually never issued. Splitting on the sign of `val`
+                        // narrows each stage further: a positive sample can only
+                        // ever be a maximum.
+                        let (mx, mn) = block(cur, c, true);
+                        let mut condp =
+                            vandq_u32(vandq_u32(cond, vcgtq_f32(val, vzero)), vcgeq_f32(val, mx));
+                        let mut condm =
+                            vandq_u32(vandq_u32(cond, vcltq_f32(val, vzero)), vcleq_f32(val, mn));
+                        if vmaxvq_u32(vorrq_u32(condp, condm)) == 0 {
+                            c += 4;
+                            continue;
+                        }
+
+                        for pl in [prv, nxt] {
+                            let (mx, mn) = block(pl, c, false);
+                            condp = vandq_u32(condp, vcgeq_f32(val, mx));
+                            condm = vandq_u32(condm, vcleq_f32(val, mn));
+                            if vmaxvq_u32(vorrq_u32(condp, condm)) == 0 {
+                                break;
                             }
                         }
-                        cond =
-                            vandq_u32(cond, vorrq_u32(vcgeq_f32(val, vmax), vcleq_f32(val, vmin)));
-                        if vmaxvq_u32(cond) != 0 {
+
+                        let survivors = vorrq_u32(condp, condm);
+                        if vmaxvq_u32(survivors) != 0 {
                             let mut lanes = [0u32; 4];
-                            vst1q_u32(lanes.as_mut_ptr(), cond);
+                            vst1q_u32(lanes.as_mut_ptr(), survivors);
                             for (k, &l) in lanes.iter().enumerate() {
                                 if l != 0 {
                                     check(c + k, &mut acc);
