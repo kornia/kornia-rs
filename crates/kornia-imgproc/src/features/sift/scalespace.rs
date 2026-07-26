@@ -483,49 +483,6 @@ mod tests {
         Some((rows, cols, data))
     }
 
-    /// Scale-space throughput, to size the CPU budget against cv2's 226 ms.
-    /// `KORNIA_SIFT_BENCH=1`; skipped otherwise.
-    #[test]
-    fn bench_neon_scale_space() {
-        if std::env::var("KORNIA_SIFT_BENCH").is_err() {
-            eprintln!("KORNIA_SIFT_BENCH unset; skipping");
-            return;
-        }
-        let cfg = super::super::params::SiftConfig::default();
-        let sigmas = cfg.layer_sigmas();
-        // Octave 0 of a doubled 752x480 input, the audit's configuration.
-        let (w, h) = (1504usize, 960usize);
-        let kernels: Vec<Vec<f32>> = (1..cfg.n_octave_layers + 3)
-            .map(|i| gaussian_kernel_f32(gaussian_ksize(sigmas[i]), sigmas[i]))
-            .collect();
-
-        let mut a = vec![0.5f32; w * h];
-        for (i, v) in a.iter_mut().enumerate() {
-            *v = ((i * 37) % 251) as f32;
-        }
-        let mut tmp = vec![0.0f32; w * h];
-        let mut b = vec![0.0f32; w * h];
-
-        let mut ts = Vec::new();
-        for rep in 0..6 {
-            let t = std::time::Instant::now();
-            for k in &kernels {
-                blur_h_f32(&a, &mut tmp, w, h, k);
-                blur_v_f32(&tmp, &mut b, w, h, k, None, None);
-            }
-            if rep > 0 {
-                ts.push(t.elapsed().as_secs_f64() * 1e3);
-            }
-        }
-        ts.sort_by(f64::total_cmp);
-        let oct0 = ts[2];
-        // Later octaves are a geometric 1/4 series -> ~4/3 of octave 0.
-        eprintln!(
-            "  NEON scale-space octave0 {oct0:.1} ms  =>  all octaves ~{:.1} ms (1 thread)",
-            oct0 * 4.0 / 3.0
-        );
-    }
-
     /// Bit-exact against the reference's own dumped layers, using the same
     /// oracle the CUDA path is held to.
     #[test]
