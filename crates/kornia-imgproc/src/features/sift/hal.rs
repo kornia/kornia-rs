@@ -57,6 +57,12 @@ pub fn magnitude(x: f32, y: f32) -> f32 {
     recip(rsqrt(x.mul_add(x, y * y)))
 }
 
+/// Magnitude, portable fallback.
+///
+/// **Not** bit-exact against the reference: off aarch64 the estimate
+/// instructions the backend composes are unavailable, so this issues a real
+/// square root. The bit-exactness contract holds on aarch64 only, and the
+/// oracle tests that assert it are skipped elsewhere.
 #[cfg(not(target_arch = "aarch64"))]
 #[inline]
 pub fn magnitude(x: f32, y: f32) -> f32 {

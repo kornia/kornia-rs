@@ -53,6 +53,10 @@ pub fn l2_sq(a: &[f32], b: &[f32]) -> f32 {
     }
 }
 
+/// Squared L2 between two descriptors.
+///
+/// Off aarch64 this is [`l2_sq_scalar`]; the vector form is the aarch64 twin
+/// above.
 #[cfg(not(target_arch = "aarch64"))]
 #[inline]
 pub fn l2_sq(a: &[f32], b: &[f32]) -> f32 {
