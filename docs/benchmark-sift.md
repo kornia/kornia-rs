@@ -8,7 +8,7 @@ before trusting a difference under ~5%.
 
 | | |
 |---|---|
-| Date (UTC) | 2026-07-26 21:15 |
+| Date (UTC) | 2026-07-27 00:30 |
 | Host | nvidia-orin00 |
 | Machine | NVIDIA Jetson Orin Nano Engineering Reference Developer Kit Super |
 | Kernel / arch | 5.15.148-tegra aarch64 |
@@ -36,8 +36,8 @@ misleading:
 | CUDA | `fo=-1` (OpenCV's default) | **19.7** | 11.4x | **5.3x** |
 | CUDA | `fo=-1`, fast descriptor | 13.9 | 16.2x | 7.5x |
 | CUDA | `fo=0`, 4 octaves | **7.7** | 29x | 13.5x |
-| CPU (NEON) | `fo=-1` | 81 | 2.8x | **1.25x** |
-| CPU (NEON) | `fo=0`, 4 octaves | 28 | 8.0x | 3.6x |
+| CPU (NEON) | `fo=-1` | 81 | 2.8x | **1.27x** |
+| CPU (NEON) | `fo=0`, 4 octaves | 24 | 9.3x | 4.3x |
 | OpenCV 5.0.0 | default, 1 thread | 224.7 | 1.0x | — |
 | OpenCV 5.0.0 | default, 6 threads | 104 | 2.15x | 1.0x |
 
@@ -54,13 +54,13 @@ median epipolar error.
 
 | threads | cv2 | kornia NEON | ratio |
 |---|---|---|---|
-| 1 | 224.6 | 287.9 | 0.78x |
-| 2 | 145.8 | 148.9 | 0.98x |
-| 4 | 106.6 | 88.1 | 1.21x |
-| 6 | 100.7 | 81 | **~1.25x** |
+| 1 | 224.0 | 258.4 | 0.87x |
+| 2 | 146.7 | 135.2 | 1.09x |
+| 4 | 109.6 | 82.3 | 1.33x |
+| 6 | ~103 | ~81 | **~1.27x** |
 
-Per core the NEON path is still 1.28x slower than OpenCV; from two threads up it
-is ahead. Earlier revisions of this document claimed 2.3x-7x on CPU; those compared
+Per core the NEON path is 1.15x slower than OpenCV; from two threads up it is
+ahead. Earlier revisions of this document claimed 2.3x-7x on CPU; those compared
 our six-thread figure against `setNumThreads(1)` and were wrong. The CUDA rows
 are unaffected in kind — a GPU is being compared against a CPU either way — but
 their ratios are restated above against the faster baseline.
@@ -77,13 +77,13 @@ Measured with `KORNIA_SIFT_STAGES=1` at `RAYON_NUM_THREADS=1` on apriltags
 
 | stage | cv2 | was | now |
 |---|---|---|---|
-| pyramid / blur | 61.1 | 73.7 | 74.1 |
+| pyramid / blur | 61.1 | 73.7 | 67.8 |
 | gradients | inline | 31.1 | — |
-| extrema + orient | 38.7 | 75.8 | 38.2 |
-| descriptors | 78.6 | 112.3 | 103.1 |
-| **total** | **178.4** | **311.0** | **230.5** |
+| extrema + orient | 38.7 | 75.8 | 37.8 |
+| descriptors | 78.6 | 112.3 | 87.2 |
+| **total** | **178.4** | **311.0** | **207.8** |
 
-Four changes got there, each held to the bitwise oracle:
+Six changes got there, each held to the bitwise oracle:
 
 * **Extrema scan** — 34.1% of pixels clear the contrast threshold and enter the
   26-neighbour test, but only 0.09% are extrema. A NEON prefilter, staged by
@@ -113,9 +113,39 @@ Four changes got there, each held to the bitwise oracle:
   gathers; on the CPU the same design just does 1.8x the transcendental work.
   A layout that is right for one backend is not evidence about the other.
 
-Extrema and orientation are now at parity with cv2 (38.2 vs 38.7). What is left
-is the descriptor (103.1 vs 78.6, both including gradients) and the pyramid
-(74.1 vs 61.1).
+* **Descriptor patch batched whole**, 103.1 -> 87.3 ms. Per accepted sample we
+  cost 39 ns against the reference's 22 ns even though `clip_j` means we iterate
+  half as much — so the loss was per-sample. The reference runs each HAL
+  primitive as one long pass over the patch; four-at-a-time made three
+  transcendental emulations and the histogram scatter compete for registers in
+  a single loop body. Collected into per-worker scratch and split the same way,
+  with the scatter still scalar and in sample order.
+* **DoG store fused into the column accumulator**, vertical blur 33.1 -> 26.0 ms
+  at octave 0. Splitting the blur stage showed the vertical pass running at 3x
+  the horizontal for the same tap count. It was not the strided reads:
+  `column_row` computed the accumulator in a register, stored it, and a separate
+  loop then *re-read that store* to subtract the lower layer. Taking the
+  difference off the accumulator removes a 5.8 MB read per layer at octave 0.
+
+Extrema and orientation are at parity with cv2 (37.8 vs 38.7). What is left is
+the descriptor (87.2 vs 78.6, both including gradients) and the pyramid (67.8 vs
+61.1, ours also producing the DoG).
+
+### A bug the optimisation introduced, and the test that now covers it
+
+The DoG fusion first landed on the NEON path only — the non-aarch64 scalar
+fallback in `column_row` never wrote the difference, so an x86 build would have
+produced all-zero DoG planes and found no keypoints at all. This host never
+executes that code, and every bitwise oracle test skips without its env var, so
+nothing in the suite would have caught it.
+
+`fused_dog_equals_the_explicit_difference` now runs unconditionally on every
+architecture: it asserts the fused layer is unchanged, the difference matches
+`layer - lower` bit for bit, and the buffer is not left untouched. It was
+verified to fail when the store is removed. This is the third defect in this
+module traced to a code path the dev machine cannot run — cross-compiling is
+necessary but not sufficient, since `cargo clippy --target` only proves it
+compiles.
 
 ### Falsified, do not retry
 
