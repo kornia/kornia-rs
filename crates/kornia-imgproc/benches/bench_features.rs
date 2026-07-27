@@ -196,11 +196,96 @@ fn bench_descriptor_matching(c: &mut Criterion) {
     group.finish();
 }
 
+/// SIFT: the NEON detector end to end, its stages, and the descriptor matcher.
+///
+/// Grouped here with the other feature benchmarks rather than living as
+/// env-gated `#[test]`s, so `cargo bench --bench bench_features -- Sift` reports
+/// them next to FAST, Harris and ORB and criterion tracks the regression.
+///
+/// The CUDA path is not benchmarked from here: it needs a device, a stream and a
+/// warm kernel cache, and mixing that into a CPU criterion group makes both
+/// numbers harder to read. Use `KORNIA_SIFT_STAGES=1` through the Python
+/// binding for it — see `docs/benchmark-sift.md`.
+fn bench_sift(c: &mut Criterion) {
+    let mut group = c.benchmark_group("Sift");
+
+    // Same source image and working size as the other detector benches here, so
+    // the numbers sit on a comparable scale.
+    let img_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/data/apriltags_tag36h11.jpg");
+    let img_rgb8 = io::read_image_any_rgb8(img_path).unwrap();
+    let size = [752, 480].into();
+    let mut resized = Image::from_size_val(size, 0).unwrap();
+    resize_fast_rgb(&img_rgb8, &mut resized, InterpolationMode::Bilinear).unwrap();
+    let mut gray8 = Image::from_size_val(size, 0).unwrap();
+    gray_from_rgb_u8(&resized, &mut gray8).unwrap();
+    // The reference works in 0..255 floats, not 0..1.
+    let img: Vec<f32> = gray8.as_slice().iter().map(|&p| p as f32).collect();
+    let (w, h) = (size.width, size.height);
+
+    let cfg = SiftConfig::default();
+    // One workspace per configuration, reused across iterations: allocating the
+    // ~20 full-resolution planes per call is ~120 MB of overhead and would swamp
+    // the measurement.
+    for (name, fo, oct, fast) in [
+        ("detect/fo=-1", FirstOctave::Double, usize::MAX, false),
+        ("detect/fo=-1,fast", FirstOctave::Double, usize::MAX, true),
+        ("detect/fo=0", FirstOctave::Native, usize::MAX, false),
+        ("detect/fo=0,4oct", FirstOctave::Native, 4, false),
+    ] {
+        let mut ws = SiftWorkspace::new();
+        group.bench_function(BenchmarkId::from_parameter(name), |b| {
+            b.iter(|| {
+                std::hint::black_box(
+                    sift_detect_with(&mut ws, &img, w, h, &cfg, fo, oct, fast).unwrap(),
+                )
+            })
+        });
+    }
+
+    // Matching, on descriptors the detector actually produced.
+    let mut ws = SiftWorkspace::new();
+    let f = sift_detect_with(
+        &mut ws,
+        &img,
+        w,
+        h,
+        &cfg,
+        FirstOctave::Double,
+        usize::MAX,
+        false,
+    )
+    .unwrap();
+    let n = f.keypoints.len();
+    if n > 0 {
+        for (name, scalar) in [("match/neon", false), ("match/scalar", true)] {
+            group.bench_function(BenchmarkId::from_parameter(name), |b| {
+                b.iter(|| {
+                    let m = if scalar {
+                        sift_match_descriptors_scalar(
+                            &f.descriptors,
+                            n,
+                            &f.descriptors,
+                            n,
+                            0.8,
+                            true,
+                        )
+                    } else {
+                        sift_match_descriptors(&f.descriptors, n, &f.descriptors, n, 0.8, true)
+                    };
+                    std::hint::black_box(m)
+                })
+            });
+        }
+    }
+    group.finish();
+}
+
 criterion_group!(
     name = benches;
     config = Criterion::default().warm_up_time(std::time::Duration::new(10, 0));
     targets = bench_harris_response, bench_dog_response, bench_fast_corner_detect,
-              bench_orb_detect_extract, bench_descriptor_matching
+              bench_orb_detect_extract, bench_descriptor_matching, bench_sift
 );
 criterion_main!(benches);
 

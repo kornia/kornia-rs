@@ -29,6 +29,9 @@ pub mod warp_perspective_u8;
 /// Native CUDA color-space conversion kernels.
 pub mod color;
 
+/// Native CUDA SIFT scale-space, detector, descriptor and matcher.
+pub mod sift;
+
 /// Bilateral-filter kernel (byte-exact vs the CPU path and cv2).
 pub mod bilateral;
 

@@ -39,6 +39,7 @@ mod pyutils;
 mod ransac;
 mod resize;
 mod segmentation;
+mod sift;
 mod twoview;
 mod warp;
 
@@ -501,6 +502,7 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     )?)?;
     imgproc_mod.add_function(wrap_pyfunction!(histogram::equalize_hist, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(histogram::clahe, &imgproc_mod)?)?;
+    imgproc_mod.add_class::<sift::Sift>()?;
     imgproc_mod.add_function(wrap_pyfunction!(canny::canny, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(
         ccl::connected_components_op,
