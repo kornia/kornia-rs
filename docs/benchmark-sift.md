@@ -8,7 +8,7 @@ before trusting a difference under ~5%.
 
 | | |
 |---|---|
-| Date (UTC) | 2026-07-27 08:15 |
+| Date (UTC) | 2026-07-27 11:30 |
 | Host | nvidia-orin00 |
 | Machine | NVIDIA Jetson Orin Nano Engineering Reference Developer Kit Super |
 | Kernel / arch | 5.15.148-tegra aarch64 |
@@ -200,16 +200,29 @@ OpenCV 5.0 on all six cores and on one thread.
 
 | backend / config | kp | ms | vs cv2 all-cores | vs cv2 1-thread |
 |---|---|---|---|---|
-| OpenCV 5.0, all cores | 2515 | 100.6 | 1.0x | 2.2x |
-| OpenCV 5.0, 1 thread | 2515 | 224.4 | 0.4x | 1.0x |
-| **CUDA exact** | 2515 | **18.6** | 5.4x | 12.1x |
-| CUDA exact + budget 500 | 500 | 12.4 | 8.1x | 18.2x |
-| CUDA fast | 2515 | 10.2 | 9.9x | 22.0x |
-| **CUDA fast + budget 500** | 500 | **8.1** | **12.4x** | **27.6x** |
-| CUDA `fo=0`, 4 octaves | 933 | 7.1 | 14.1x | 31.5x |
-| NEON exact (6 threads) | 2515 | 72.9 | 1.4x | 3.1x |
-| NEON exact + budget 500 | 500 | 49.0 | 2.1x | 4.6x |
-| NEON `fo=0`, 4 octaves | 933 | 24.3 | 4.1x | 9.2x |
+| OpenCV 5.0, all cores | 2515 | 110.0 | 1.0x | 2.0x |
+| OpenCV 5.0, 1 thread | 2515 | 224.1 | 0.5x | 1.0x |
+| **CUDA exact** | 2515 | **18.6** | 5.9x | 12.0x |
+| CUDA exact + budget 500 | 500 | 12.8 | 8.6x | 17.5x |
+| CUDA fast | 2516 | 10.0 | 11.0x | 22.3x |
+| **CUDA fast + budget 500** | 500 | **8.4** | **13.1x** | **26.7x** |
+| CUDA `fo=0`, 4 octaves | 933 | 7.1 | 15.5x | 31.6x |
+| NEON exact (6 threads) | 2515 | 79.3 | 1.4x | 2.8x |
+| NEON exact + budget 500 | 500 | 52.2 | 2.1x | 4.3x |
+| NEON `fo=0`, 4 octaves | 933 | 23.5 | 4.7x | 9.5x |
+
+**Measurement conditions.** This run was pinned with `taskset -c 0-3` because
+the host had an unrelated 34-hour job at ~97% CPU. The GPU rows are unaffected
+(CUDA exact reads 18.60 here against 18.61 and 18.57 on an idle box — three runs
+inside 0.05 ms). The **CPU rows are conservative**: four pinned cores instead of
+six, so NEON on an idle machine measures ~72.9 ms exact and ~49.0 ms at a
+budget. Reported as measured rather than mixing runs.
+
+Without pinning, the same script produced a NEON row where a 500-keypoint budget
+was *slower* than no budget at all — impossible, since a budget strictly removes
+descriptor work, and a useful signal that the numbers were contended rather than
+merely noisy.
+
 
 Read the ratios with the keypoint count beside them. Only the 2515-keypoint rows
 do the same work as OpenCV; a budget or `fo=0` produces fewer keypoints, so
