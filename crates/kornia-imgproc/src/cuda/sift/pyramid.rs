@@ -5,6 +5,39 @@
 //! rather than trusting its caller: these are `pub` entry points reachable from
 //! outside the pipeline, so a kernel precondition checked only by the caller is
 //! a memory-safety hazard for anyone else.
+//!
+//! # These are not the generic filters, despite the names
+//!
+//! Investigated 2026-07-27 and rejected: routing this module's blurs through
+//! [`crate::cuda::filter::launch_separable_filter_f32`], or the octave
+//! subsample through [`crate::cuda::pyramid::launch_pyrdown_f32`], **cannot**
+//! preserve the bit-exactness contract. Four independent mismatches, any one of
+//! which is disqualifying:
+//!
+//! | | `cuda/filter.rs` | here |
+//! |---|---|---|
+//! | border | constant-zero, out-of-range taps skipped | `BORDER_REFLECT_101` |
+//! | accumulation | ascending taps, plain `acc += v * k` | column pass sums the **symmetric pair first**, then one FMA |
+//! | taps | a device `CudaSlice` | baked as literals per shape (`__constant__` measured ~3x worse) |
+//! | fusion | none | the DoG subtraction is folded into the vertical pass |
+//!
+//! The border difference alone changes every pixel within `ksize / 2` of an
+//! edge, which at this module's largest kernel (27 taps) is most of the frame's
+//! margin. The accumulation order is not stylistic either: the pair-sum-then-FMA
+//! shape was established by diffing against the reference's own dumped
+//! intermediates, and getting it wrong shifts every layer of the pyramid.
+//!
+//! `launch_pyrdown_f32` additionally blurs before decimating; the octave
+//! subsample here is a bare stride-2 pick, because an extra blur breaks parity
+//! with the reference.
+//!
+//! So SIFT's blur is not a specialisation of the generic separable filter — it
+//! is a different filter with a similar name. Teaching the generic path
+//! reflect-101 *and* pair-summing *and* baked taps would leave two
+//! implementations behind one signature, which is worse than two honest ones.
+//! Only [`launch_sift_downsample_nearest_cuda_view`] is free of
+//! reference-specific arithmetic and could reasonably move, as a sibling of
+//! `pyrdown` rather than a reuse of it.
 
 use std::sync::Arc;
 
