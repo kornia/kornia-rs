@@ -8,7 +8,7 @@ before trusting a difference under ~5%.
 
 | | |
 |---|---|
-| Date (UTC) | 2026-07-27 05:40 |
+| Date (UTC) | 2026-07-27 08:15 |
 | Host | nvidia-orin00 |
 | Machine | NVIDIA Jetson Orin Nano Engineering Reference Developer Kit Super |
 | Kernel / arch | 5.15.148-tegra aarch64 |
@@ -206,18 +206,18 @@ them together:
 
 | config | kp | ms | min | vs cv2 |
 |---|---|---|---|---|
-| exact, no budget | 2515 | 17.9 | 17.9 | 6.1x |
-| **fast**, no budget | 2516 | 10.20 | 10.06 | 10.8x |
-| exact + budget 1000 | 1000 | 13.91 | 13.71 | 7.9x |
-| **fast + budget 1000** | 1000 | **8.91** | 8.67 | 12.3x |
-| exact + budget 500 | 500 | 12.81 | 12.30 | 8.6x |
-| **fast + budget 500** | 500 | **8.38** | **8.22** | **13.1x** |
+| exact, no budget | 2515 | 17.84 | 17.75 | 6.3x |
+| **fast**, no budget | 2515 | 10.18 | 10.03 | 11.1x |
+| exact + budget 1000 | 1000 | 13.69 | 13.58 | 8.3x |
+| **fast + budget 1000** | 1000 | **8.76** | 8.60 | 12.9x |
+| exact + budget 500 | 500 | 12.27 | 12.18 | 9.2x |
+| **fast + budget 500** | 500 | **8.30** | **8.16** | **13.6x** |
 
-**8.4 ms at a 500-feature budget**, from 19.4 at the start of the optimisation
+**8.3 ms at a 500-feature budget**, from 19.4 at the start of the optimisation
 work. The exact path at the default config remains bit-identical to cv2.
 
-Two notes on reading this table. The fast tier reports 2516 keypoints against
-the exact path's 2515: the fast orientation accumulates with atomics, so its
+Two notes on reading this table. The fast tier's keypoint count can differ from
+the exact path's by one or two: the fast orientation accumulates with atomics, so its
 ordering is non-deterministic and a borderline peak can land either side of the
 threshold. That is why it is validated geometrically rather than bitwise. And a
 budget only pays because `retainBest` now runs *before* descriptors, as the
@@ -265,10 +265,10 @@ not matchers.
 | engine | kp | ms | H match | H ok | F match | F inl | inl% | sed |
 |---|---|---|---|---|---|---|---|---|
 | opencv (1 thread) | 2515 | 225.2 | 5293 | 5232 | 816 | 533 | 65.3% | 0.29 |
-| opencv (all cores) | 2515 | 114.6 | 5293 | 5232 | 816 | 533 | 65.3% | 0.29 |
-| cuda `fo=-1` | 2515 | 19.6 | 5293 | 5232 | 816 | 533 | 65.3% | 0.29 |
-| cuda `fo=-1` fast | 2515 | 13.9 | 5313 | 5252 | 819 | 496 | 60.6% | 0.26 |
-| cuda `fo=0` 4oct | 933 | 7.7 | 1911 | 1884 | 346 | 207 | 59.8% | 0.28 |
+| opencv (all cores) | 2515 | 113.0 | 5293 | 5232 | 816 | 533 | 65.3% | 0.29 |
+| cuda `fo=-1` | 2515 | 19.0 | 5293 | 5232 | 816 | 533 | 65.3% | 0.29 |
+| cuda `fo=-1` fast | 2516 | 10.8 | 5310 | 5249 | 818 | 516 | 63.1% | 0.22 |
+| cuda `fo=0` 4oct | 933 | 7.4 | 1911 | 1884 | 346 | 207 | 59.8% | 0.28 |
 | neon `fo=-1` | 2515 | 117.8 | 5293 | 5232 | 816 | 533 | 65.3% | 0.29 |
 | neon `fo=0` 4oct | 933 | 39.6 | 1911 | 1884 | 346 | 207 | 59.8% | 0.28 |
 
