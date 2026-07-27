@@ -111,23 +111,8 @@ fn detect_src(n_octave_layers: usize) -> String {
     let max_steps = SIFT_MAX_INTERP_STEPS;
     let border = SIFT_IMG_BORDER;
     let exp2f_src = exp2f_device_src();
-    let inner_v: u32 = std::env::var("KORNIA_SIFT_INNER")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0);
-    let outer_v: u32 = std::env::var("KORNIA_SIFT_OUTER")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0);
-    let det_v: u32 = std::env::var("KORNIA_SIFT_DET")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0);
     format!(
         r#"{exp2f_src}
-#define DET_V {det_v}
-#define INNER_V {inner_v}
-#define OUTER_V {outer_v}
 #define IMG_BORDER {border}
 #define MAX_INTERP_STEPS {max_steps}
 #define N_OCTAVE_LAYERS {n_octave_layers}
@@ -143,27 +128,23 @@ __device__ __forceinline__ int cv_round_f(float v) {{
 // Cofactor expansion in the reference's operand order, with the FMA
 // contractions its build performs. For `A*B - C*D` the compiler rounds `C*D`
 // then fuses; for `p - q + r` it chains two fused ops left to right.
+//
+// These three shapes were selected by an exhaustive sweep, not by inspection:
+// 12 numerator combinations and 4 determinant ones, scored against the
+// reference's own keypoints. Each axis is closed — the shape here won every
+// field on every image — so the sweep's env knobs are gone. Do not re-sweep;
+// the residual that motivated it turned out to be elsewhere entirely.
+//
+// The Hessian is near-singular (entries ~2.5e-3, determinant ~1e-9), so a
+// single-ULP change here is amplified ~1e5 into the solved offset. Changing any
+// of these three expressions breaks the bit-exactness contract.
 __device__ __forceinline__ float mul_sub(float a, float b, float c, float d) {{
-#if INNER_V == 0
     return __fmaf_rn(a, b, -(c * d));
-#elif INNER_V == 1
-    return -__fmaf_rn(c, d, -(a * b));
-#else
-    return a * b - c * d;
-#endif
 }}
 
 __device__ __forceinline__ float outer3(float p0, float p1, float q0, float q1,
                                         float r0, float r1) {{
-#if OUTER_V == 0
     return __fmaf_rn(r0, r1, __fmaf_rn(p0, p1, -(q0 * q1)));
-#elif OUTER_V == 1
-    return __fmaf_rn(r0, r1, p0 * p1 - q0 * q1);
-#elif OUTER_V == 2
-    return __fmaf_rn(p0, p1, -(q0 * q1)) + r0 * r1;
-#else
-    return p0 * p1 - q0 * q1 + r0 * r1;
-#endif
 }}
 __device__ __forceinline__ float det3(
     float a00, float a01, float a02,
@@ -173,15 +154,7 @@ __device__ __forceinline__ float det3(
     const float m0 = mul_sub(a11, a22, a21, a12);
     const float m1 = mul_sub(a10, a22, a20, a12);
     const float m2 = mul_sub(a10, a21, a20, a11);
-#if DET_V == 0
     return outer3(a00, m0, a01, m1, a02, m2);
-#elif DET_V == 1
-    return __fmaf_rn(a02, m2, a00 * m0 - a01 * m1);
-#elif DET_V == 2
-    return __fmaf_rn(a00, m0, -(a01 * m1)) + a02 * m2;
-#else
-    return a00 * m0 - a01 * m1 + a02 * m2;
-#endif
 }}
 
 extern "C" __global__ void sift_find_extrema(
@@ -436,16 +409,7 @@ pub fn launch_sift_find_extrema_cuda_view(
     // (octave, layer) — tens of times per frame — and each `env::var` allocates
     // and scans the whole environment, on the same path the kernel-cache
     // lookup was already trimmed for.
-    static SWEEP_SUFFIX: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    let suffix = SWEEP_SUFFIX.get_or_init(|| {
-        format!(
-            ":{}:{}{}",
-            std::env::var("KORNIA_SIFT_INNER").unwrap_or_default(),
-            std::env::var("KORNIA_SIFT_OUTER").unwrap_or_default(),
-            std::env::var("KORNIA_SIFT_DET").unwrap_or_default(),
-        )
-    });
-    let key = format!("sift_find_extrema:{}{suffix}", cfg.n_octave_layers);
+    let key = format!("sift_find_extrema:{}", cfg.n_octave_layers);
     let kernel = get_or_compile(
         ctx,
         &key,

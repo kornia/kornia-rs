@@ -47,7 +47,6 @@ fn orientation_src() -> String {
         r#"{hal}
 
 #define ORI_N {n}
-#define PEAK_V {peak_v}
 
 __device__ __forceinline__ int cv_round_ori(float v) {{ return __float2int_rn(v); }}
 
@@ -153,19 +152,12 @@ extern "C" __global__ void sift_orientation(
         const int l = j > 0 ? j - 1 : ORI_N - 1;
         const int r2 = j < ORI_N - 1 ? j + 1 : 0;
         if (hist[j] > hist[l] && hist[j] > hist[r2] && hist[j] >= mag_thr) {{
-#if PEAK_V == 0
+            // Parabolic peak interpolation, unfused in both the denominator
+            // and the offset. All four fused/unfused combinations were swept
+            // and scored identically against the reference, so this is the
+            // plain reading of its source rather than a tuned shape.
             const float den = hist[l] - 2.0f * hist[j] + hist[r2];
             float bin = (float)j + 0.5f * (hist[l] - hist[r2]) / den;
-#elif PEAK_V == 1
-            const float den = __fmaf_rn(-2.0f, hist[j], hist[l]) + hist[r2];
-            float bin = (float)j + 0.5f * (hist[l] - hist[r2]) / den;
-#elif PEAK_V == 2
-            const float den = hist[l] - 2.0f * hist[j] + hist[r2];
-            float bin = __fmaf_rn(0.5f, (hist[l] - hist[r2]) / den, (float)j);
-#else
-            const float den = __fmaf_rn(-2.0f, hist[j], hist[l]) + hist[r2];
-            float bin = __fmaf_rn(0.5f, (hist[l] - hist[r2]) / den, (float)j);
-#endif
             bin = bin < 0.0f ? (float)ORI_N + bin
                 : bin >= (float)ORI_N ? bin - (float)ORI_N : bin;
             // `360.f - (360.f/n)*bin` is a mul-then-subtract, which the
@@ -187,10 +179,6 @@ extern "C" __global__ void sift_orientation(
 "#,
         hal = hal_device_src(),
         n = n,
-        peak_v = std::env::var("KORNIA_SIFT_PEAK")
-            .ok()
-            .and_then(|v| v.parse::<u32>().ok())
-            .unwrap_or(0),
         ori_radius = ORI_RADIUS,
         ori_sig = ORI_SIG_FCTR,
         peak_ratio = ORI_PEAK_RATIO,
@@ -535,14 +523,7 @@ pub fn launch_sift_orientation_cuda_view(
     let exact = *EXACT.get_or_init(|| std::env::var("KORNIA_SIFT_ORI").as_deref() == Ok("exact"));
 
     if exact {
-        static KEY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-        let key = KEY.get_or_init(|| {
-            format!(
-                "sift_orientation:{}",
-                std::env::var("KORNIA_SIFT_PEAK").unwrap_or_default()
-            )
-        });
-        let kernel = get_or_compile(ctx, key, orientation_src, "sift_orientation")?;
+        let kernel = get_or_compile(ctx, "sift_orientation", orientation_src, "sift_orientation")?;
         return kernel
             .launch_builder(stream)
             .arg(img)
