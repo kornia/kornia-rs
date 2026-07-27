@@ -193,6 +193,36 @@ compiles.
 inflates the NEON figure to ~118-127 ms, because OpenCV's worker pool stays
 alive and competes for cores.
 
+## Full comparison — every backend and config
+
+mh01_frame1 (752x480), own process, medians of 11 after warm-up, against
+OpenCV 5.0 on all six cores and on one thread.
+
+| backend / config | kp | ms | vs cv2 all-cores | vs cv2 1-thread |
+|---|---|---|---|---|
+| OpenCV 5.0, all cores | 2515 | 100.6 | 1.0x | 2.2x |
+| OpenCV 5.0, 1 thread | 2515 | 224.4 | 0.4x | 1.0x |
+| **CUDA exact** | 2515 | **18.6** | 5.4x | 12.1x |
+| CUDA exact + budget 500 | 500 | 12.4 | 8.1x | 18.2x |
+| CUDA fast | 2515 | 10.2 | 9.9x | 22.0x |
+| **CUDA fast + budget 500** | 500 | **8.1** | **12.4x** | **27.6x** |
+| CUDA `fo=0`, 4 octaves | 933 | 7.1 | 14.1x | 31.5x |
+| NEON exact (6 threads) | 2515 | 72.9 | 1.4x | 3.1x |
+| NEON exact + budget 500 | 500 | 49.0 | 2.1x | 4.6x |
+| NEON `fo=0`, 4 octaves | 933 | 24.3 | 4.1x | 9.2x |
+
+Read the ratios with the keypoint count beside them. Only the 2515-keypoint rows
+do the same work as OpenCV; a budget or `fo=0` produces fewer keypoints, so
+those ratios are an operating point, not a speedup at fixed output. The rows
+that are directly comparable are **CUDA exact at 5.4x** — bit-identical to cv2
+on every quality column — and **NEON exact at 1.4x**, which is a CPU beating a
+CPU running the same algorithm.
+
+`fo=0` is the fastest row and the worst trade for pose: it deletes the finest
+octave, scoring 59.8% epipolar inlier ratio against the exact path's 65.3%. A
+keypoint budget is the better lever, since it keeps every octave and cuts only
+the weakest keypoints.
+
 ## What each backend buys, against both baselines
 
 mh01_frame1, own process, medians of 13 after 8 warm-up frames. `vs cv2` is
