@@ -38,6 +38,7 @@ pub enum BaError {
 }
 
 /// A single observation linking a pose to a 3D point via a pixel measurement.
+#[derive(Debug, Clone, Copy)]
 pub struct BaObservation {
     /// Index into the poses slice.
     pub pose_idx: usize,
