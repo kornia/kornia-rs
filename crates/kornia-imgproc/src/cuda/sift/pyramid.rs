@@ -35,9 +35,23 @@
 //! is a different filter with a similar name. Teaching the generic path
 //! reflect-101 *and* pair-summing *and* baked taps would leave two
 //! implementations behind one signature, which is worse than two honest ones.
-//! Only [`launch_sift_downsample_nearest_cuda_view`] is free of
-//! reference-specific arithmetic and could reasonably move, as a sibling of
-//! `pyrdown` rather than a reuse of it.
+//!
+//! [`launch_sift_downsample_nearest_cuda_view`] should stay here too, even
+//! though its *arithmetic* is general — a bare stride-2 pick. Arithmetic is the
+//! wrong test; the contract is what binds:
+//!
+//! * Beside `pyrdown`/`pyrup` it would alias the very thing it is not. Those
+//!   blur before decimating, which is the Gaussian-pyramid contract a caller
+//!   reaching into that module expects. Skipping the blur is deliberate here and
+//!   breaks parity with the reference, so a neighbour that silently omits it is
+//!   the same name-collision trap this section exists to warn about.
+//! * It is coupled to the octave geometry: the pipeline's `cw / 2` integer
+//!   truncation, which the CPU twin mirrors and the oracle tests pin. Publishing
+//!   it means publishing that truncation as a contract.
+//! * It has exactly one caller and no prospect of a second.
+//!
+//! Moving it would widen the public surface for no consumer, days after that
+//! surface was deliberately narrowed from 30 names to 16.
 
 use std::sync::Arc;
 
