@@ -3262,6 +3262,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "cuda-camera-sift"
+version = "0.1.0"
+dependencies = [
+ "argh",
+ "cudarc 0.19.8",
+ "kornia-image",
+ "kornia-imgproc",
+ "kornia-io",
+ "kornia-tensor",
+]
+
+[[package]]
 name = "cuda-fusion"
 version = "0.1.0"
 dependencies = [
