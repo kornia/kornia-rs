@@ -64,22 +64,12 @@ pub const DESC_BLOCK_THREADS: usize = 512;
 //   per run. The bookkeeping alone regressed the P=1 case to 12.3 ms, and P=4
 //   only recovered to 8.7. Net a wash against the plain scatter.
 //
-// Also falsified: `KORNIA_SIFT_FASTMATH=1`, which swaps the exact HAL primitives
-// for CUDA intrinsics, changes this stage by under 1% (12.8 -> 12.9 ms measured
-// at the time). The stage is not bound on arithmetic either.
-//
-// * **Padded histogram stride** — see `ostride` below. 8.7 -> 18.2 ms at best.
-//
-// Five distinct attacks, all lost. Conflict reduction (transposed walk, padding),
-// privatisation (replication) and count reduction (run-merging) have each been
-// implemented and measured, so this is not a matter of picking a better one:
-// the scatter itself is the cost.
-//
-// What does work is not scattering at all: sample in the *rotated* frame, where
-// the cell is decided by the loop rather than the data. That is
-// `descriptor_fast_src`, which does the same work in 2.64 ms against 7.71, and
-// it is opt-in because the sampling differs from the reference's.
-/// Which descriptor kernel `KORNIA_SIFT_DESC` selected.
+// NOT evidence about approximate math: a `KORNIA_SIFT_FASTMATH` knob once
+// swapped the HAL for `__expf`/`atan2f`/`sqrtf` here and measured no gain.
+// SASS counts later showed why — CUDA's `atan2f` is IEEE-accurate without
+// `--use_fast_math` and compiles to 213 instructions against the exact HAL's
+// 44, so that path was ~2x SLOWER than the one it replaced. The knob is gone.
+// The exact HAL is ~0.73 ms of a 15.9 ms frame: little to win here either way.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DescMode {
     /// The default block kernel.

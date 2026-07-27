@@ -66,9 +66,7 @@
 //! shared-memory float atomics, so the summation order varies run to run and
 //! the last bits of a descriptor with it (an order of magnitude faster than the
 //! sequential form — see [`descriptor`]). Set `KORNIA_SIFT_DESC=exact` for the
-//! bit-exact one-thread-per-keypoint kernel. `KORNIA_SIFT_FASTMATH=1`
-//! additionally replaces the [`hal`] primitives with SFU approximations, which
-//! moves angles and descriptors but leaves keypoint positions exact.
+//! bit-exact one-thread-per-keypoint kernel.
 //!
 //! # Version scope
 //!

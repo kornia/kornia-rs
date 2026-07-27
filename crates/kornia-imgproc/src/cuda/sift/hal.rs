@@ -72,48 +72,9 @@ pub fn exp_table_f32() -> [f32; 64] {
     t
 }
 
-/// Whether `KORNIA_SIFT_FASTMATH=1` selected the approximate primitives.
-///
-/// Read once: this is on the kernel-cache lookup path, which runs ~50 times per
-/// image, and `env::var` allocates and scans the whole environment each call.
-pub(crate) fn fastmath_enabled() -> bool {
-    static FASTMATH: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *FASTMATH.get_or_init(|| std::env::var("KORNIA_SIFT_FASTMATH").as_deref() == Ok("1"))
-}
-
-/// Approximate stand-ins for the three reference primitives.
-///
-/// Each of the exact versions is tens of instructions — a baked estimate table,
-/// two fused Newton steps, a Horner chain — because it reproduces the ARM
-/// backend's own estimate-based arithmetic bit for bit. These map to a handful
-/// of SFU instructions instead, and are the single lever that trades exactness
-/// for speed. Everything else in the pipeline is unaffected.
-///
-/// Selected by `KORNIA_SIFT_FASTMATH=1`. Detection is untouched (it uses none of
-/// these), so keypoint positions stay bit-exact either way; only angles and
-/// descriptors move.
-fn hal_fastmath_src() -> String {
-    r#"
-__device__ __forceinline__ float sift_exp(float x) { return __expf(x); }
-
-__device__ __forceinline__ float sift_magnitude(float x, float y) {
-    return sqrtf(__fmaf_rn(x, x, y * y));
-}
-
-__device__ __forceinline__ float sift_atan2_deg(float y, float x) {
-    float a = atan2f(y, x) * (float)(180.0 / 3.14159265358979323846);
-    return a < 0.0f ? a + 360.0f : a;
-}
-"#
-    .to_string()
-}
-
 /// Device-side source for all three primitives, with every table baked in as
 /// literals.
 pub(crate) fn hal_device_src() -> String {
-    if fastmath_enabled() {
-        return hal_fastmath_src();
-    }
     let recp = vrecpe_table()
         .iter()
         .map(|v| v.to_string())

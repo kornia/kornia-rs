@@ -223,7 +223,7 @@ pub const ORI_BLOCK_THREADS: usize = 32;
 /// scattered global loads and three primitive evaluations per sample — while
 /// the serial fold is one FMA. The old kernel ran one thread per keypoint,
 /// which at realistic counts is ~2500 threads, under three warps per SM: it was
-/// starved of occupancy, not of arithmetic (proved by `KORNIA_SIFT_FASTMATH`,
+/// starved of occupancy, not of arithmetic (the HAL is ~4.6% of frame time,
 /// which removes the arithmetic and changes nothing).
 ///
 /// The sample count is `nx * ny` in closed form — the loop is a rectangle

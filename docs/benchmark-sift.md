@@ -499,7 +499,6 @@ distinction is deliberate.
 | `KORNIA_SIFT_DESC=exact` | the sequential, bit-exact descriptor kernel |
 | `KORNIA_SIFT_DESC_T=<n>` | descriptor block size; power of two in 32..1024, default 512 |
 | `KORNIA_SIFT_DESC_OSTRIDE=<n>` | descriptor output stride, for the padding sweep |
-| `KORNIA_SIFT_FASTMATH=1` | approximate HAL primitives (measured: no gain) |
 | `KORNIA_SIFT_DUMP_SRC=<path>` | write generated NVRTC source to disk |
 
 The two `KORNIA_SIFT_DESC_*` sweep knobs are what produced the block-size and
