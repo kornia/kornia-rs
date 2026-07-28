@@ -395,30 +395,103 @@ pub fn compute_descriptor(
         let r = (py + i) as usize;
         let (row, up, dn) = (r * w, (r - 1) * w, (r + 1) * w);
 
-        for j in j_lo..=j_hi {
-            let c_rot = j as f32 * cos_t - i as f32 * sin_t;
-            let r_rot = j as f32 * sin_t + i as f32 * cos_t;
-            let rbin = r_rot + D as f32 / 2.0 - 0.5;
-            let cbin = c_rot + D as f32 / 2.0 - 0.5;
+        // Scalar body, shared by the 4-wide fallback and the tail.
+        //
+        // SAFETY (both paths): `n` counts accepted samples, and the loops run
+        // at most `(i_hi - i_lo + 1) * (2 * radius + 1) == cap` times between
+        // them, so `n < cap` and every buffer is `cap` long. The row and
+        // column bounds already guarantee all four stencil neighbours exist.
+        macro_rules! push_sample {
+            ($j:expr) => {{
+                let j = $j;
+                let c_rot = j as f32 * cos_t - i as f32 * sin_t;
+                let r_rot = j as f32 * sin_t + i as f32 * cos_t;
+                let rbin = r_rot + D as f32 / 2.0 - 0.5;
+                let cbin = c_rot + D as f32 / 2.0 - 0.5;
+                if rbin > -1.0 && rbin < D as f32 && cbin > -1.0 && cbin < D as f32 {
+                    let c = (px + j) as usize;
+                    unsafe {
+                        *sc.dx.get_unchecked_mut(n) = img[row + c + 1] - img[row + c - 1];
+                        *sc.dy.get_unchecked_mut(n) = img[up + c] - img[dn + c];
+                        *sc.rbin.get_unchecked_mut(n) = rbin;
+                        *sc.cbin.get_unchecked_mut(n) = cbin;
+                        *sc.wt.get_unchecked_mut(n) = (c_rot * c_rot + r_rot * r_rot) * exp_scale;
+                    }
+                    n += 1;
+                }
+            }};
+        }
 
-            if !(rbin > -1.0 && rbin < D as f32 && cbin > -1.0 && cbin < D as f32) {
-                continue;
+        let mut j = j_lo;
+
+        // 4-wide body. `clip_j` widens the accepted run by at most one on each
+        // side, so rejects sit only at the run's two ends and almost every
+        // block passes whole; a partial block falls back to the scalar body so
+        // packing order is preserved. Expression shapes are the scalar's
+        // exactly — mul/mul/sub for c_rot, mul/mul/add for r_rot, and
+        // mul,mul,add,mul for the weight; **no FMA anywhere** (Rust never
+        // contracts, so introducing one would change the descriptor). The
+        // hoisted i*sin_t / i*cos_t are the same product the scalar computed
+        // per iteration, rounded once — identical value.
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            use std::arch::aarch64::*;
+            let isin = i as f32 * sin_t;
+            let icos = i as f32 * cos_t;
+            let half = D as f32 / 2.0 - 0.5;
+            let dsize = D as f32;
+            let base = vld1q_f32([0.0f32, 1.0, 2.0, 3.0].as_ptr());
+            while j + 3 <= j_hi {
+                let jv = vaddq_f32(vdupq_n_f32(j as f32), base);
+                let c_rot = vsubq_f32(vmulq_n_f32(jv, cos_t), vdupq_n_f32(isin));
+                let r_rot = vaddq_f32(vmulq_n_f32(jv, sin_t), vdupq_n_f32(icos));
+                let rbin = vaddq_f32(r_rot, vdupq_n_f32(half));
+                let cbin = vaddq_f32(c_rot, vdupq_n_f32(half));
+
+                let ok = vandq_u32(
+                    vandq_u32(
+                        vcgtq_f32(rbin, vdupq_n_f32(-1.0)),
+                        vcltq_f32(rbin, vdupq_n_f32(dsize)),
+                    ),
+                    vandq_u32(
+                        vcgtq_f32(cbin, vdupq_n_f32(-1.0)),
+                        vcltq_f32(cbin, vdupq_n_f32(dsize)),
+                    ),
+                );
+                if vminvq_u32(ok) != u32::MAX {
+                    // Partial block: rejects only at run ends. Scalar keeps
+                    // the packed order exact.
+                    for jj in j..j + 4 {
+                        push_sample!(jj);
+                    }
+                } else {
+                    let c0 = (px + j) as usize;
+                    let wt = vmulq_n_f32(
+                        vaddq_f32(vmulq_f32(c_rot, c_rot), vmulq_f32(r_rot, r_rot)),
+                        exp_scale,
+                    );
+                    let dxv = vsubq_f32(
+                        vld1q_f32(img.as_ptr().add(row + c0 + 1)),
+                        vld1q_f32(img.as_ptr().add(row + c0 - 1)),
+                    );
+                    let dyv = vsubq_f32(
+                        vld1q_f32(img.as_ptr().add(up + c0)),
+                        vld1q_f32(img.as_ptr().add(dn + c0)),
+                    );
+                    vst1q_f32(sc.dx.as_mut_ptr().add(n), dxv);
+                    vst1q_f32(sc.dy.as_mut_ptr().add(n), dyv);
+                    vst1q_f32(sc.rbin.as_mut_ptr().add(n), rbin);
+                    vst1q_f32(sc.cbin.as_mut_ptr().add(n), cbin);
+                    vst1q_f32(sc.wt.as_mut_ptr().add(n), wt);
+                    n += 4;
+                }
+                j += 4;
             }
-            let c = (px + j) as usize;
-            // Raw differences, exactly the reference's stencil. The row and
-            // column bounds already guarantee all four neighbours exist.
-            //
-            // SAFETY: `n` counts accepted samples, and the two loops run at
-            // most `(i_hi - i_lo + 1) * (2 * radius + 1) == cap` times between
-            // them, so `n < cap` and every buffer is `cap` long.
-            unsafe {
-                *sc.dx.get_unchecked_mut(n) = img[row + c + 1] - img[row + c - 1];
-                *sc.dy.get_unchecked_mut(n) = img[up + c] - img[dn + c];
-                *sc.rbin.get_unchecked_mut(n) = rbin;
-                *sc.cbin.get_unchecked_mut(n) = cbin;
-                *sc.wt.get_unchecked_mut(n) = (c_rot * c_rot + r_rot * r_rot) * exp_scale;
-            }
-            n += 1;
+        }
+
+        while j <= j_hi {
+            push_sample!(j);
+            j += 1;
         }
     }
 
