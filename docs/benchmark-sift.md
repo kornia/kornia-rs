@@ -27,14 +27,19 @@ before trusting a difference under ~5%.
 A three-pass audit (fresh nsys, four finder agents, adversarial skeptic) and
 its implementation. Everything landed is oracle-gated (56/56 bitwise) and the
 matcher's pair set was re-verified identical to cv2's BFMatcher (816 on mh01).
-Measured after, pinned `taskset -c 0-3`, contended host (load ~3):
+Final numbers on a quiet host (load ~0.5), medians of 15, pinned:
 
 ```text
-CUDA exact            18.6 -> 16.3 ms
-CUDA exact + 500      12.4 -> 12.1 ms
-CUDA fast  + 500       8.4 ->  8.0 ms
-device match (2515x2447, both scans + ratio + readback)  12.8 ms with __dp4a
+CUDA exact            18.6 -> 16.7 ms      NEON exact, 6 threads   79.3 -> 68.2 ms
+CUDA exact + 500      12.8 -> 12.3 ms      CPU single-thread       ~186 -> 164.2 ms
+CUDA fast  + 500       8.4 ->  8.0-8.8 ms  (criterion, pinned; the whole NEON round)
+device match (2515x2447, both scans + ratio + readback)  12.6 ms with __dp4a
 ```
+
+Quality re-verified on the final build: the exact rows are identical to cv2 on
+every audit column (5293/5232 homography, 816/533 epipolar, 65.3%, sed 0.29)
+and BOTH matchers reproduce cv2's BFMatcher pair set exactly — the dp4a
+matcher included.
 
 What landed: dead `ranges` snapshots + dead descriptor-copy memset + env-read
 hoists; the descriptor scatter skips the 36% of writes landing in the
@@ -46,8 +51,17 @@ blur_h border test; the u8 `__dp4a` matcher (descriptors are exact integers
 0..255, so distances are identical i32s — a representation change, not an
 approximation); the NEON scatter's zip staging moved register-to-register.
 
-One finding was falsified BY implementation and reverted: per-layer
-orientation ranges. `adjustLocalExtrema` reassigns a keypoint's layer during
+The NEON round that followed (commits `214cf31d..c80309ed`): blur H borders
+through the vector interior over a reflected edge buffer, the upsample's
+horizontal pass and the descriptor's collect loop vectorised (no FMA
+introduced anywhere the reference has two roundings), and inline pointer
+stepping for the blur V interior taps (-1.28% on a pinned criterion A/B).
+
+Two findings were falsified BY implementation and reverted. C6(ii) 2-row
+blocking for the V pass: implemented bit-exactly as derived, measured +0.76%
+(p = 0.00) — the pass is not load-bound; the full-width walk's prefetcher
+already serves adjacent-row re-reads, the same mechanism that falsified
+column tiling. And per-layer orientation ranges. `adjustLocalExtrema` reassigns a keypoint's layer during
 refinement, so launch-order slot contiguity does not partition by the refined
 layer that selects the Gaussian image — the oracle budget test caught it at
 472 != 471. Recorded in `sift-audit-2026-07-28.md` with the full verdict
