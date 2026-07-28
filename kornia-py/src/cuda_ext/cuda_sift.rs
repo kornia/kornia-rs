@@ -95,13 +95,9 @@ pub(crate) fn sift_cuda_with_plan(
 }
 
 /// Copy the plan's descriptor block into a caller-owned device `Tensor` of
-/// shape `(1, 1, n, 128)`.
+/// shape `(n, 128)` — one row per keypoint, as every consumer expects it.
 ///
-/// Rank 4 because `Tensor` is currently scoped to `[N, C, H, W]`; the block is
-/// the trailing `(n, 128)` plane. `data_ptr`, `__cuda_array_interface__` and
-/// DLPack all address the same contiguous bytes regardless.
-///
-/// An empty detection returns a **host** `(1, 1, 0, 128)` tensor: there are no
+/// An empty detection returns a **host** `(0, 128)` tensor: there are no
 /// descriptor bytes to keep on device, and a zero-byte device allocation is not
 /// something CUDA promises to hand back.
 fn own_descriptors(
@@ -110,9 +106,9 @@ fn own_descriptors(
     stream: &Arc<cudarc::driver::CudaStream>,
     n: usize,
 ) -> PyResult<Py<PyAny>> {
-    let shape = [1, 1, n, DESCR_LEN];
+    let shape = [n, DESCR_LEN];
     let inner = if n == 0 {
-        TensorInnerEnum::F32(kornia_tensor::Tensor::<f32, 4>::zeros(shape))
+        TensorInnerEnum::F32R2(kornia_tensor::Tensor::<f32, 2>::zeros(shape))
     } else {
         let mut dst = stream
             .alloc_zeros::<f32>(n * DESCR_LEN)
@@ -120,7 +116,7 @@ fn own_descriptors(
         stream
             .memcpy_dtod(&plan.descriptors_device().slice(0..n * DESCR_LEN), &mut dst)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        TensorInnerEnum::F32(kornia_tensor::Tensor::from_cudaslice(
+        TensorInnerEnum::F32R2(kornia_tensor::Tensor::from_cudaslice(
             dst,
             shape,
             stream.clone(),
@@ -240,17 +236,19 @@ fn descriptor_block<'a>(
     &'a cudarc::driver::CudaSlice<f32>,
     &'a Arc<cudarc::driver::CudaStream>,
 )> {
-    let TensorInnerEnum::F32(inner) = &*t.inner else {
+    let TensorInnerEnum::F32R2(inner) = &*t.inner else {
         return Err(PyValueError::new_err(format!(
-            "Sift.match: {who} must be a float32 Tensor, got float16"
+            "Sift.match: {who} must be a rank-2 float32 Tensor of shape \
+             (N, {DESCR_LEN}); pass the descriptors from `detect_and_compute` \
+             unmodified"
         )));
     };
     let shape = inner.shape;
-    if shape[3] != DESCR_LEN {
+    if shape[1] != DESCR_LEN {
         return Err(PyValueError::new_err(format!(
             "Sift.match: {who} has a trailing dimension of {}, expected {DESCR_LEN}; \
              pass the descriptors from `detect_and_compute` unmodified",
-            shape[3]
+            shape[1]
         )));
     }
     let (slice, stream) = inner
@@ -262,7 +260,7 @@ fn descriptor_block<'a>(
                  Image to get device descriptors"
             ))
         })?;
-    Ok((shape[2], slice, stream))
+    Ok((shape[0], slice, stream))
 }
 
 /// Match two device descriptor blocks, without either leaving the device.
@@ -282,8 +280,10 @@ pub(crate) fn sift_match_device<'py>(
     // Spelled out rather than via `tdispatch!`: that macro is defined after this
     // module's declaration in `mod.rs`, so it is not in textual scope here.
     let empty = |t: &PyTensor| match &*t.inner {
-        TensorInnerEnum::F32(x) => x.shape[2] == 0,
-        TensorInnerEnum::F16(x) => x.shape[2] == 0,
+        TensorInnerEnum::F32R2(x) => x.shape[0] == 0,
+        // Not a descriptor block at all; `descriptor_block` below rejects it
+        // with a message naming what it wanted.
+        _ => false,
     };
     if empty(a) || empty(b) {
         // `(0, 2)` rather than `(0, 0)`, so a caller can still slice a column.

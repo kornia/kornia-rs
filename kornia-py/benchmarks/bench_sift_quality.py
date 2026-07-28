@@ -202,11 +202,11 @@ def _engines(stream):
         arr = np.ascontiguousarray(img.astype(np.float32)[..., None])
         src = K.image.Image.from_numpy(arr).to_cuda(stream) if device else arr
         kp, desc = cache[key].detect_and_compute(src)
-        # A device detect leaves the descriptors on the GPU as a (1, 1, N, 128)
+        # A device detect leaves the descriptors on the GPU as an (N, 128)
         # Tensor; the audits below are host code (cv2's matcher, findHomography),
         # so this is the one place they have to come back.
         if not isinstance(desc, np.ndarray):
-            desc = desc.numpy()[0, 0]
+            desc = desc.numpy()
         xy = np.empty((len(kp), 2), dtype=np.float32)
         for i, k in enumerate(kp):
             xy[i, 0], xy[i, 1] = k.x, k.y

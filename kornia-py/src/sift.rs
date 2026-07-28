@@ -253,7 +253,7 @@ impl Sift {
     /// Returns `(keypoints, descriptors)`. `keypoints` is a list of
     /// `SiftKeypoint`, always on the host, shaped like what
     /// `cv2.SIFT.detectAndCompute` returns. `descriptors` follows the input's
-    /// residency: a device `Tensor` of shape `(1, 1, N, 128)` for a device
+    /// residency: a device `Tensor` of shape `(N, 128)` for a device
     /// image, a numpy `(N, 128)` for a host one. Feed either straight back to
     /// `match`.
     ///

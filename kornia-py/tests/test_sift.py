@@ -51,13 +51,12 @@ def _kp_block(kp) -> list:
 def _desc_numpy(desc) -> np.ndarray:
     """Descriptors as a host (N, 128) array, whichever container they came in.
 
-    The device path returns a ``(1, 1, N, 128)`` Tensor — rank 4 because that is
-    what ``Tensor`` currently models — so the leading singleton axes come off
-    here rather than at every call site.
+    Both containers carry the same shape; the device one just has to come back
+    across the bus first.
     """
     if isinstance(desc, np.ndarray):
         return desc
-    return desc.numpy()[0, 0]
+    return desc.numpy()
 
 
 # ── Keypoints ────────────────────────────────────────────────────────────────
@@ -277,7 +276,7 @@ def test_cuda_descriptors_stay_on_device():
     kp, desc = K.imgproc.Sift().detect_and_compute(_device(_image()))
     assert not isinstance(desc, np.ndarray)
     assert desc.device.startswith("cuda:")
-    assert desc.shape == (1, 1, len(kp), 128)
+    assert desc.shape == (len(kp), 128), "one row per keypoint, no padded axes"
     assert desc.dtype == "float32"
 
 
@@ -331,7 +330,7 @@ def test_cuda_n_features_caps_the_count():
 
     kp_cut, d_cut = K.imgproc.Sift(n_features=n).detect_and_compute(dev)
     assert len(kp_cut) == n
-    assert d_cut.shape == (1, 1, n, 128)
+    assert d_cut.shape == (n, 128)
 
     kept = {(k.x, k.y) for k in kp_cut}
     dropped = [k.response for k in kp_all if (k.x, k.y) not in kept]
@@ -350,7 +349,7 @@ def test_fast_descriptor_keeps_the_keypoints_and_the_descriptor_shape():
     kp_exact, _ = K.imgproc.Sift().detect_and_compute(dev)
     kp_fast, d_fast = K.imgproc.Sift(fast_descriptor=True).detect_and_compute(dev)
 
-    assert d_fast.shape == (1, 1, len(kp_fast), 128)
+    assert d_fast.shape == (len(kp_fast), 128)
     # Atomic accumulation makes a borderline orientation peak non-deterministic,
     # so allow a small drift rather than requiring an exact count.
     assert abs(len(kp_fast) - len(kp_exact)) <= max(2, len(kp_exact) // 100)
