@@ -32,6 +32,22 @@ def _device(img: np.ndarray):
     return K.image.Image.from_numpy(img).to_cuda(_cuda_stream())
 
 
+def _col(kp, name: str) -> np.ndarray:
+    """One field of a keypoint list as an array.
+
+    The list is one Python object per keypoint, so bulk assertions build the
+    column once here rather than re-walking it per comparison.
+    """
+    return np.fromiter((getattr(k, name) for k in kp), float, len(kp))
+
+
+def _kp_block(kp) -> list:
+    """A keypoint list flattened to comparable tuples, for equality asserts."""
+    return [
+        (k.x, k.y, k.size, k.angle, k.response, k.packed_octave) for k in kp
+    ]
+
+
 def _desc_numpy(desc) -> np.ndarray:
     """Descriptors as a host (N, 128) array, whichever container they came in.
 
@@ -44,90 +60,60 @@ def _desc_numpy(desc) -> np.ndarray:
     return desc.numpy()[0, 0]
 
 
-# ── Keypoint struct ──────────────────────────────────────────────────────────
+# ── Keypoints ────────────────────────────────────────────────────────────────
 
 
 def test_detect_and_compute_shapes():
     kp, desc = K.imgproc.Sift().detect_and_compute(_image())
+    assert isinstance(kp, list), "shaped like cv2.SIFT.detectAndCompute"
     assert len(kp) > 8, "test image should yield enough keypoints to be useful"
     assert desc.shape == (len(kp), 128), "one descriptor row per keypoint"
-    for col in (kp.x, kp.y, kp.size, kp.angle, kp.response):
-        assert col.shape == (len(kp),)
-        assert col.dtype == np.float32
-    assert kp.packed_octave.dtype == np.int32
-
-
-def test_columns_are_views_not_copies():
-    """The whole point of the struct-of-arrays: reading a column twice must not
-    copy the buffer, or a per-frame loop pays for six allocations it did not
-    ask for."""
-    kp, _ = K.imgproc.Sift().detect_and_compute(_image())
-    assert kp.x is kp.x or np.shares_memory(kp.x, kp.x)
-    # A write through one reference is visible through another.
-    a, b = kp.x, kp.x
-    a[0] = -12345.0
-    assert b[0] == -12345.0
+    k = kp[0]
+    for name in ("x", "y", "size", "angle", "response", "xi"):
+        assert isinstance(getattr(k, name), float)
+    for name in ("octave", "layer", "packed_octave"):
+        assert isinstance(getattr(k, name), int)
 
 
 def test_keypoints_are_in_bounds():
     img = _image()
     kp, _ = K.imgproc.Sift().detect_and_compute(img)
     h, w = img.shape[:2]
-    assert kp.x.min() >= 0 and kp.x.max() <= w
-    assert kp.y.min() >= 0 and kp.y.max() <= h
-    assert np.all(kp.size > 0)
-    assert kp.angle.min() >= 0 and kp.angle.max() < 360
+    x, y = _col(kp, "x"), _col(kp, "y")
+    assert x.min() >= 0 and x.max() <= w
+    assert y.min() >= 0 and y.max() <= h
+    assert np.all(_col(kp, "size") > 0)
+    angle = _col(kp, "angle")
+    assert angle.min() >= 0 and angle.max() < 360
 
 
 def test_octave_layer_xi_decode_the_packed_field():
     """``packed_octave`` is OpenCV's own three-values-in-an-int32; the decoded
-    columns must be exactly ``unpackOctave``, including the sign extension that
+    fields must be exactly ``unpackOctave``, including the sign extension that
     turns the low byte 255 into ``firstOctave = -1``."""
     kp, _ = K.imgproc.Sift().detect_and_compute(_image())
-    packed = kp.packed_octave
-
-    lo = packed & 255
-    expect_octave = np.where(lo < 128, lo, lo | -128).astype(np.int32)
-    np.testing.assert_array_equal(kp.octave, expect_octave)
-    np.testing.assert_array_equal(kp.layer, (packed >> 8) & 255)
-    # In float32, as the decode computes it: numpy would otherwise widen to
-    # float64 and disagree in the last bit on ~20% of the values.
-    expect_xi = ((packed >> 16) & 255).astype(np.float32) / np.float32(255.0) - np.float32(0.5)
-    np.testing.assert_array_equal(kp.xi, expect_xi)
+    for k in kp:
+        lo = k.packed_octave & 255
+        assert k.octave == (lo if lo < 128 else lo | -128)
+        assert k.layer == (k.packed_octave >> 8) & 255
+        # In float32, as the decode computes it: Python would otherwise use
+        # float64 and disagree in the last bit on ~20% of the values.
+        expect_xi = np.float32((k.packed_octave >> 16) & 255) / np.float32(
+            255.0
+        ) - np.float32(0.5)
+        assert np.float32(k.xi) == expect_xi
+        assert -0.5 <= k.xi <= 0.5
 
     # upsample=True is firstOctave=-1, so the finest octave must be present.
-    assert kp.octave.min() == -1
-    assert np.all(np.abs(kp.xi) <= 0.5)
+    assert min(k.octave for k in kp) == -1
 
 
-def test_indexing_matches_the_columns():
+def test_keypoint_repr_is_readable():
     kp, _ = K.imgproc.Sift().detect_and_compute(_image())
-    for i in (0, 3, len(kp) - 1, -1):
-        k = kp[i]
-        assert k.x == kp.x[i]
-        assert k.y == kp.y[i]
-        assert k.size == kp.size[i]
-        assert k.angle == kp.angle[i]
-        assert k.response == kp.response[i]
-        assert k.octave == kp.octave[i]
-        assert k.layer == kp.layer[i]
-        assert k.packed_octave == kp.packed_octave[i]
-    with pytest.raises(IndexError):
-        kp[len(kp)]
-    with pytest.raises(IndexError):
-        kp[-len(kp) - 1]
-
-
-def test_numpy_matches_the_columns():
-    """The legacy ``(N, 6)`` block, with the octave column bit-punned."""
-    kp, _ = K.imgproc.Sift().detect_and_compute(_image())
-    block = kp.numpy()
-    assert block.shape == (len(kp), 6)
-    for col, arr in enumerate((kp.x, kp.y, kp.size, kp.angle, kp.response)):
-        np.testing.assert_array_equal(block[:, col], arr)
-    # Column 5 is the packed int32 stored as f32, matching what the old API
-    # returned; it is a value cast, not a bit-pun, so compare as floats.
-    np.testing.assert_array_equal(block[:, 5], kp.packed_octave.astype(np.float32))
+    r = repr(kp[0])
+    assert r.startswith("SiftKeypoint(")
+    for field in ("x=", "y=", "size=", "angle=", "response=", "octave=", "layer="):
+        assert field in r
 
 
 # ── Detection ────────────────────────────────────────────────────────────────
@@ -146,7 +132,7 @@ def test_is_deterministic():
     s = K.imgproc.Sift()
     kp1, d1 = s.detect_and_compute(img)
     kp2, d2 = s.detect_and_compute(img)
-    np.testing.assert_array_equal(kp1.numpy(), kp2.numpy())
+    assert _kp_block(kp1) == _kp_block(kp2)
     np.testing.assert_array_equal(d1, d2)
 
 
@@ -158,7 +144,7 @@ def test_reusing_one_detector_matches_a_fresh_one():
     reused.detect_and_compute(_image(seed=12345))
     kp_reused, d_reused = reused.detect_and_compute(img)
     kp_fresh, d_fresh = K.imgproc.Sift().detect_and_compute(img)
-    np.testing.assert_array_equal(kp_reused.numpy(), kp_fresh.numpy())
+    assert _kp_block(kp_reused) == _kp_block(kp_fresh)
     np.testing.assert_array_equal(d_reused, d_fresh)
 
 
@@ -178,19 +164,18 @@ def test_n_features_caps_and_keeps_the_strongest():
     assert len(kp_cut) == n
     assert d_cut.shape == (n, 128)
 
-    kept = set(zip(kp_cut.x.tolist(), kp_cut.y.tolist()))
-    all_xy = list(zip(kp_all.x.tolist(), kp_all.y.tolist()))
-    dropped = [r for xy, r in zip(all_xy, kp_all.response) if xy not in kept]
+    kept = {(k.x, k.y) for k in kp_cut}
+    dropped = [k.response for k in kp_all if (k.x, k.y) not in kept]
     assert len(dropped) == len(kp_all) - n
     if dropped:
-        assert max(dropped) <= kp_cut.response.min()
+        assert max(dropped) <= min(k.response for k in kp_cut)
 
 
 def test_n_features_above_the_count_is_a_no_op():
     img = _image()
     kp_all, d_all = K.imgproc.Sift().detect_and_compute(img)
     kp, d = K.imgproc.Sift(n_features=len(kp_all) + 1000).detect_and_compute(img)
-    np.testing.assert_array_equal(kp.numpy(), kp_all.numpy())
+    assert _kp_block(kp) == _kp_block(kp_all)
     np.testing.assert_array_equal(d, d_all)
 
 
@@ -202,7 +187,7 @@ def test_upsample_false_is_faster_and_finds_fewer_keypoints():
     few, _ = K.imgproc.Sift(upsample=False).detect_and_compute(img)
     assert 0 < len(few) < len(many)
     # Without the doubling there is no octave below zero.
-    assert few.octave.min() == 0
+    assert min(k.octave for k in few) == 0
 
 
 def test_rejects_wrong_shapes():
@@ -281,7 +266,7 @@ def test_cuda_matches_the_host_path():
     kp_d, d_d = K.imgproc.Sift().detect_and_compute(_device(img))
 
     assert len(kp_d) == len(kp_h)
-    np.testing.assert_array_equal(kp_d.numpy(), kp_h.numpy())
+    assert _kp_block(kp_d) == _kp_block(kp_h)
     np.testing.assert_array_equal(_desc_numpy(d_d), d_h)
 
 
@@ -348,11 +333,10 @@ def test_cuda_n_features_caps_the_count():
     assert len(kp_cut) == n
     assert d_cut.shape == (1, 1, n, 128)
 
-    kept = set(zip(kp_cut.x.tolist(), kp_cut.y.tolist()))
-    all_xy = list(zip(kp_all.x.tolist(), kp_all.y.tolist()))
-    dropped = [r for xy, r in zip(all_xy, kp_all.response) if xy not in kept]
+    kept = {(k.x, k.y) for k in kp_cut}
+    dropped = [k.response for k in kp_all if (k.x, k.y) not in kept]
     if dropped:
-        assert max(dropped) <= kp_cut.response.min()
+        assert max(dropped) <= min(k.response for k in kp_cut)
 
 
 @pytest.mark.skipif(_cuda_stream() is None, reason="no CUDA device")

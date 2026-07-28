@@ -15,9 +15,10 @@
 //! containers back and dispatches on them, so a device-to-device match never
 //! touches host memory.
 //!
-//! Keypoints always come back on the host, as a `SiftKeypoints` struct of
-//! arrays. They are two orders of magnitude smaller than the descriptors and
-//! every consumer of them (drawing, pose, bookkeeping) is host code.
+//! Keypoints always come back on the host, as a list of `SiftKeypoint` — the
+//! shape `cv2.SIFT.detectAndCompute` returns. They are two orders of magnitude
+//! smaller than the descriptors and every consumer of them (drawing, pose,
+//! bookkeeping) is host code.
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -26,28 +27,34 @@ use kornia_imgproc::features::{
     sift_detect_with, sift_match_descriptors, FirstOctave as CpuFirstOctave, SiftConfig,
     SiftKeypoint as CoreKeypoint, SiftWorkspace, DESCR_LEN,
 };
-use numpy::{PyArray1, PyArray2, PyArray3, PyArrayMethods, PyUntypedArrayMethods};
+use numpy::{PyArray2, PyArray3, PyArrayMethods, PyUntypedArrayMethods};
 
 #[cfg(feature = "cuda")]
 use crate::image::PyImageApi;
 
 /// `(keypoints, descriptors)`.
 ///
-/// `descriptors` is a numpy `(N, 128)` on the host path and a device `Tensor` on
-/// the CUDA one, so it is typed as `Py<PyAny>`; the residency of the image
-/// decides which. Both backends and both the public method and its two private
-/// halves return this shape, so it is named once rather than spelled out at each
-/// of them.
-pub(crate) type DetectOut = PyResult<(SiftKeypoints, Py<PyAny>)>;
+/// `keypoints` is a Python list of `SiftKeypoint`, shaped like what
+/// `cv2.SIFT.detectAndCompute` returns. `descriptors` is a numpy `(N, 128)` on
+/// the host path and a device `Tensor` on the CUDA one, so it is typed as
+/// `Py<PyAny>`; the residency of the image decides which. Both backends and both
+/// the public method and its two private halves return this shape, so it is
+/// named once rather than spelled out at each of them.
+pub(crate) type DetectOut = PyResult<(Vec<PyKeypoint>, Py<PyAny>)>;
 
 // ── Keypoints ────────────────────────────────────────────────────────────────
 
-/// A single keypoint, as returned by indexing `SiftKeypoints`.
+/// A single detected keypoint. `detect_and_compute` returns a list of these,
+/// matching the shape of `cv2.SIFT.detectAndCompute`.
 ///
-/// Exists for readability at the one-keypoint-at-a-time sites (printing,
-/// asserting, debugging). Bulk code should use the column views instead — this
-/// allocates a Python object per keypoint, which is exactly what the columns
-/// exist to avoid.
+/// `octave`, `layer` and `xi` are decoded from OpenCV's packed `KeyPoint.octave`
+/// field; `packed_octave` is that field verbatim, for comparing against `cv2`.
+///
+/// Every field is a plain attribute read, but the list itself is one Python
+/// object per keypoint — a few thousand of them on a 752x480 frame. Bulk numeric
+/// work wants a column, so build it once
+/// (`np.fromiter((k.x for k in kp), np.float32, len(kp))`) rather than
+/// re-walking the list per operation.
 #[pyclass(
     name = "SiftKeypoint",
     module = "kornia_rs.imgproc",
@@ -89,46 +96,6 @@ impl PyKeypoint {
     }
 }
 
-/// Detected keypoints, as a struct of arrays.
-///
-/// ```python
-/// kp, desc = sift.detect_and_compute(image)
-/// xy = np.stack([kp.x, kp.y], axis=1)     # views, not copies
-/// strong = kp.response > 0.05
-/// ```
-///
-/// # Why columns and not a list
-///
-/// Every consumer in this repo — the quality benchmark, the matcher, anything
-/// feeding pose estimation — works on whole columns. A list of `N` Python
-/// objects would allocate one object per keypoint and force a Python-level loop
-/// at each of those sites. The five raw columns are therefore built once and
-/// handed out as **views onto the same buffers**: `kp.x` twice is the same
-/// array, not two copies.
-///
-/// The arrays are writable, because making them read-only would also block the
-/// in-place numpy idioms callers reach for. Writing to one mutates what every
-/// other reference to that column sees.
-///
-/// # The packed octave
-///
-/// OpenCV stores three values in `KeyPoint.octave`: the signed octave index in
-/// the low byte, the layer in the next, and a quantised sub-layer offset above
-/// that. `packed_octave` is that field verbatim, for anyone comparing against
-/// `cv2`. `octave`, `layer` and `xi` are the decoded forms — each **computed on
-/// access**, so hoist them out of a loop rather than indexing them repeatedly.
-#[pyclass(name = "SiftKeypoints", module = "kornia_rs.imgproc", frozen)]
-pub struct SiftKeypoints {
-    x: Py<PyArray1<f32>>,
-    y: Py<PyArray1<f32>>,
-    size: Py<PyArray1<f32>>,
-    angle: Py<PyArray1<f32>>,
-    response: Py<PyArray1<f32>>,
-    packed: Py<PyArray1<i32>>,
-    /// Cached because `__len__` must not need the GIL to read a numpy shape.
-    len: usize,
-}
-
 /// Decode OpenCV's packed octave field into `(octave, layer, xi)`.
 ///
 /// Mirrors `unpackOctave` in `sift.dispatch.cpp`: the low byte is a *signed*
@@ -142,175 +109,30 @@ fn unpack_octave(packed: i32) -> (i32, i32, f32) {
     (octave, layer, xi)
 }
 
-impl SiftKeypoints {
-    /// Transpose a keypoint list into columns.
-    ///
-    /// One pass over the input filling six vectors, rather than six passes: the
-    /// list is a `Vec` of 24-byte structs and is read once while it is hot.
-    pub(crate) fn build(py: Python<'_>, kps: &[CoreKeypoint]) -> PyResult<Self> {
-        let n = kps.len();
-        let (mut x, mut y) = (Vec::with_capacity(n), Vec::with_capacity(n));
-        let (mut size, mut angle) = (Vec::with_capacity(n), Vec::with_capacity(n));
-        let (mut response, mut packed) = (Vec::with_capacity(n), Vec::with_capacity(n));
-        for k in kps {
-            x.push(k.x);
-            y.push(k.y);
-            size.push(k.size);
-            angle.push(k.angle);
-            response.push(k.response);
-            packed.push(k.octave);
-        }
-        Ok(Self {
-            x: PyArray1::from_vec(py, x).unbind(),
-            y: PyArray1::from_vec(py, y).unbind(),
-            size: PyArray1::from_vec(py, size).unbind(),
-            angle: PyArray1::from_vec(py, angle).unbind(),
-            response: PyArray1::from_vec(py, response).unbind(),
-            packed: PyArray1::from_vec(py, packed).unbind(),
-            len: n,
-        })
-    }
-
-    /// The packed octave column as a slice, for the derived accessors.
-    ///
-    /// Safe because `packed` is a `(N,)` array this type built itself and never
-    /// reshapes, and the borrow lasts only for the map that follows.
-    fn packed_slice<T>(&self, py: Python<'_>, f: impl FnOnce(&[i32]) -> T) -> T {
-        let arr = self.packed.bind(py).readonly();
-        f(arr.as_slice().expect("built contiguous by `build`"))
-    }
-}
-
-#[pymethods]
-impl SiftKeypoints {
-    /// Column coordinates, `(N,)` float32. A view, not a copy.
-    #[getter]
-    fn x(&self, py: Python<'_>) -> Py<PyArray1<f32>> {
-        self.x.clone_ref(py)
-    }
-
-    /// Row coordinates, `(N,)` float32. A view, not a copy.
-    #[getter]
-    fn y(&self, py: Python<'_>) -> Py<PyArray1<f32>> {
-        self.y.clone_ref(py)
-    }
-
-    /// Neighbourhood diameters, `(N,)` float32. A view, not a copy.
-    #[getter]
-    fn size(&self, py: Python<'_>) -> Py<PyArray1<f32>> {
-        self.size.clone_ref(py)
-    }
-
-    /// Orientations in degrees, `(N,)` float32. A view, not a copy.
-    #[getter]
-    fn angle(&self, py: Python<'_>) -> Py<PyArray1<f32>> {
-        self.angle.clone_ref(py)
-    }
-
-    /// Extremum contrasts, `(N,)` float32 — the `n_features` ranking key. A
-    /// view, not a copy.
-    #[getter]
-    fn response(&self, py: Python<'_>) -> Py<PyArray1<f32>> {
-        self.response.clone_ref(py)
-    }
-
-    /// OpenCV's packed `KeyPoint.octave` field, `(N,)` int32. A view, not a
-    /// copy. Use `octave` / `layer` / `xi` unless you are comparing against
-    /// `cv2` directly.
-    #[getter]
-    fn packed_octave(&self, py: Python<'_>) -> Py<PyArray1<i32>> {
-        self.packed.clone_ref(py)
-    }
-
-    /// Signed octave indices, `(N,)` int32. **Computed on access** — bind it
-    /// once rather than indexing it in a loop.
-    #[getter]
-    fn octave<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<i32>> {
-        let v = self.packed_slice(py, |s| s.iter().map(|&p| unpack_octave(p).0).collect());
-        PyArray1::from_vec(py, v)
-    }
-
-    /// Layer indices within each octave, `(N,)` int32. **Computed on access.**
-    #[getter]
-    fn layer<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<i32>> {
-        let v = self.packed_slice(py, |s| s.iter().map(|&p| unpack_octave(p).1).collect());
-        PyArray1::from_vec(py, v)
-    }
-
-    /// Sub-layer offsets in `[-0.5, 0.5)`, `(N,)` float32. **Computed on
-    /// access.**
-    #[getter]
-    fn xi<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f32>> {
-        let v = self.packed_slice(py, |s| s.iter().map(|&p| unpack_octave(p).2).collect());
-        PyArray1::from_vec(py, v)
-    }
-
-    /// The five raw columns plus the packed octave as one `(N, 6)` float32
-    /// array: `x, y, size, angle, response, octave`.
-    ///
-    /// A **copy**, and the octave column is a packed int32 bit-punned through
-    /// f32 — recover it with `.view(np.int32)`, or just read `packed_octave`.
-    /// Provided for callers that want a single block to stack or save.
-    fn numpy<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f32>>> {
-        let mut flat = Vec::with_capacity(self.len * 6);
-        let (x, y) = (self.x.bind(py).readonly(), self.y.bind(py).readonly());
-        let (s, a) = (
-            self.size.bind(py).readonly(),
-            self.angle.bind(py).readonly(),
-        );
-        let r = self.response.bind(py).readonly();
-        let p = self.packed.bind(py).readonly();
-        const MSG: &str = "built contiguous by `build`";
-        let cols: [&[f32]; 5] = [
-            x.as_slice().expect(MSG),
-            y.as_slice().expect(MSG),
-            s.as_slice().expect(MSG),
-            a.as_slice().expect(MSG),
-            r.as_slice().expect(MSG),
-        ];
-        let packed = p.as_slice().expect(MSG);
-        for i in 0..self.len {
-            for c in &cols {
-                flat.push(c[i]);
+/// Transpose a core keypoint list into Python objects.
+///
+/// The packed octave is decoded here rather than exposed raw: OpenCV stores
+/// three values in `KeyPoint.octave` — the signed octave index in the low byte,
+/// the layer in the next, and a quantised sub-layer offset above that — and
+/// making every caller remember that is how the field ends up misread.
+/// `packed_octave` keeps the original for anyone comparing against `cv2`.
+pub(crate) fn keypoints_to_list(kps: &[CoreKeypoint]) -> Vec<PyKeypoint> {
+    kps.iter()
+        .map(|k| {
+            let (octave, layer, xi) = unpack_octave(k.octave);
+            PyKeypoint {
+                x: k.x,
+                y: k.y,
+                size: k.size,
+                angle: k.angle,
+                response: k.response,
+                octave,
+                layer,
+                xi,
+                packed_octave: k.octave,
             }
-            flat.push(packed[i] as f32);
-        }
-        crate::pyutils::rows_to_numpy(py, flat, 6)
-    }
-
-    fn __len__(&self) -> usize {
-        self.len
-    }
-
-    /// One keypoint, with negative indices counted from the end.
-    fn __getitem__(&self, py: Python<'_>, index: isize) -> PyResult<PyKeypoint> {
-        let n = self.len as isize;
-        let i = if index < 0 { index + n } else { index };
-        if i < 0 || i >= n {
-            return Err(pyo3::exceptions::PyIndexError::new_err(
-                "SiftKeypoints index out of range",
-            ));
-        }
-        let i = i as usize;
-        let at = |a: &Py<PyArray1<f32>>| a.bind(py).readonly().as_slice().expect("contiguous")[i];
-        let packed = self.packed_slice(py, |s| s[i]);
-        let (octave, layer, xi) = unpack_octave(packed);
-        Ok(PyKeypoint {
-            x: at(&self.x),
-            y: at(&self.y),
-            size: at(&self.size),
-            angle: at(&self.angle),
-            response: at(&self.response),
-            octave,
-            layer,
-            xi,
-            packed_octave: packed,
         })
-    }
-
-    fn __repr__(&self) -> String {
-        format!("SiftKeypoints({} keypoints)", self.len)
-    }
+        .collect()
 }
 
 // ── Detector ─────────────────────────────────────────────────────────────────
@@ -321,6 +143,7 @@ impl SiftKeypoints {
 /// sift = kornia_rs.imgproc.Sift(contrast_threshold=0.04)
 /// kp, desc = sift.detect_and_compute(device_image)   # CUDA, desc is a Tensor
 /// kp, desc = sift.detect_and_compute(numpy_array)    # NEON, desc is ndarray
+/// kp[0].x, kp[0].octave, kp[0].response
 /// pairs = sift.match(desc_a, desc_b)
 /// ```
 ///
@@ -427,8 +250,9 @@ impl Sift {
     /// the contrast threshold means and will silently return far fewer
     /// keypoints.
     ///
-    /// Returns `(keypoints, descriptors)`. `keypoints` is a `SiftKeypoints`
-    /// struct of arrays, always on the host. `descriptors` follows the input's
+    /// Returns `(keypoints, descriptors)`. `keypoints` is a list of
+    /// `SiftKeypoint`, always on the host, shaped like what
+    /// `cv2.SIFT.detectAndCompute` returns. `descriptors` follows the input's
     /// residency: a device `Tensor` of shape `(1, 1, N, 128)` for a device
     /// image, a numpy `(N, 128)` for a host one. Feed either straight back to
     /// `match`.
@@ -631,9 +455,11 @@ impl Sift {
             .detach(|| sift_detect_with(ws, src, w, h, &cfg, first_octave, max_octaves, fast))
             .map_err(|e| PyValueError::new_err(format!("Sift: {e}")))?;
 
-        let kp = SiftKeypoints::build(py, &feats.keypoints)?;
         let desc = crate::pyutils::rows_to_numpy(py, feats.descriptors, DESCR_LEN)?;
-        Ok((kp, desc.into_any().unbind()))
+        Ok((
+            keypoints_to_list(&feats.keypoints),
+            desc.into_any().unbind(),
+        ))
     }
 }
 

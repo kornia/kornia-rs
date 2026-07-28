@@ -207,7 +207,31 @@ def _engines(stream):
         # so this is the one place they have to come back.
         if not isinstance(desc, np.ndarray):
             desc = desc.numpy()[0, 0]
-        return np.stack([kp.x, kp.y], axis=1), np.ascontiguousarray(desc)
+        xy = np.empty((len(kp), 2), dtype=np.float32)
+        for i, k in enumerate(kp):
+            xy[i, 0], xy[i, 1] = k.x, k.y
+        return xy, np.ascontiguousarray(desc)
+
+    def kornia_time(device, **kw):
+        """The detector call alone, without the host-side unpack above.
+
+        `detect_and_compute` returns a list of keypoint objects, and walking a
+        few thousand of them into a column is real Python time that has nothing
+        to do with the kernel. Timing the audit's `detect` would fold it in and
+        silently inflate every kornia row against cv2's.
+        """
+        def run(img):
+            # Looked up per call, not captured: `_engines` builds these before
+            # any detection has run, so the cache entry does not exist yet.
+            key = (device, tuple(sorted(kw.items())))
+            if key not in cache:
+                cache[key] = K.imgproc.Sift(**kw)
+            det = cache[key]
+            arr = np.ascontiguousarray(img.astype(np.float32)[..., None])
+            src = K.image.Image.from_numpy(arr).to_cuda(stream) if device else arr
+            return det.detect_and_compute(src)
+
+        return run
 
     # OpenCV at both extremes: one thread isolates kernel quality, all cores is
     # what a caller actually gets. Quoting only the first flatters us by cv2's
@@ -219,16 +243,29 @@ def _engines(stream):
         finally:
             cv2.setNumThreads(1)
 
-    out = [("opencv (1 thread)", cv_detect), ("opencv (all cores)", cv_detect_mt)]
+    # (name, detect -> (xy, desc), time_this). cv2's two entries time the same
+    # call they audit; the kornia ones time the detector without the unpack.
+    out = [
+        ("opencv (1 thread)", cv_detect, cv_detect),
+        ("opencv (all cores)", cv_detect_mt, cv_detect_mt),
+    ]
+
+    def entry(name, device, **kw):
+        return (
+            name,
+            lambda im: kornia_detect(im, device, **kw),
+            kornia_time(device, **kw),
+        )
+
     if stream is not None:
         out += [
-            ("cuda fo=-1", lambda im: kornia_detect(im, True)),
-            ("cuda fo=-1 fast", lambda im: kornia_detect(im, True, fast_descriptor=True)),
-            ("cuda fo=0 4oct", lambda im: kornia_detect(im, True, upsample=False, max_octaves=4)),
+            entry("cuda fo=-1", True),
+            entry("cuda fo=-1 fast", True, fast_descriptor=True),
+            entry("cuda fo=0 4oct", True, upsample=False, max_octaves=4),
         ]
     out += [
-        ("neon fo=-1", lambda im: kornia_detect(im, False)),
-        ("neon fo=0 4oct", lambda im: kornia_detect(im, False, upsample=False, max_octaves=4)),
+        entry("neon fo=-1", False),
+        entry("neon fo=0 4oct", False, upsample=False, max_octaves=4),
     ]
     return out
 
@@ -277,9 +314,9 @@ def main():
            f"{'F match':>9}{'F inl':>7}{'inl%':>7}{'sed':>7}")
     print(hdr)
     print("-" * len(hdr))
-    for name, detect in _engines(stream):
+    for name, detect, timed in _engines(stream):
         kp, _ = detect(img_a)
-        ms = _timed(lambda d=detect: d(img_a))
+        ms = _timed(lambda t=timed: t(img_a))
         hm, ho = homography_audit(img_a, detect)
         fm, fi, sed = epipolar_audit(img_a, img_b, detect)
         pct = 100 * fi / fm if fm else 0.0

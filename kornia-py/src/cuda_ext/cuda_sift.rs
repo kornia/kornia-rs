@@ -91,7 +91,7 @@ pub(crate) fn sift_cuda_with_plan(
     let n = plan.descriptor_count();
 
     let desc = own_descriptors(py, plan, &stream, n)?;
-    Ok((crate::sift::SiftKeypoints::build(py, &kps)?, desc))
+    Ok((crate::sift::keypoints_to_list(&kps), desc))
 }
 
 /// Copy the plan's descriptor block into a caller-owned device `Tensor` of
