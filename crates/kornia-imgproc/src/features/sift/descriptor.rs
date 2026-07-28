@@ -189,44 +189,58 @@ fn scatter(sc: &DescriptorScratch, len: usize, ori: f32, bins_per_rad: f32, hist
                 // 0,1 / 10,11 / 60,61 / 70,71 — so each pair can accumulate as
                 // one 2-lane read-modify-write instead of two scalar ones.
                 // Interleaving each pair's two vectors puts lane `t`'s values
-                // next to each other, which is what makes the paired load
-                // possible. Elementwise vector add over distinct addresses is
-                // bit-identical to the scalar pair, and samples still land one
-                // after another, so the order the reference fixes is intact.
-                let mut pr = [0.0f32; 32];
-                for (slot, (a, b)) in [(v000, v001), (v010, v011), (v100, v101), (v110, v111)]
-                    .into_iter()
-                    .enumerate()
-                {
-                    vst1q_f32(pr.as_mut_ptr().add(slot * 8), vzip1q_f32(a, b));
-                    vst1q_f32(pr.as_mut_ptr().add(slot * 8 + 4), vzip2q_f32(a, b));
-                }
+                // next to each other: lane t's (a_t, b_t) is exactly one half
+                // of vzip1q/vzip2q, handed over REGISTER-TO-REGISTER. The
+                // previous form staged the zips through a 32-float stack
+                // buffer — 8 stores per 4 samples on the single store-data
+                // port, plus a load-behind-store round trip per pair — which
+                // the audit measured as a third of the scatter's stores.
+                // Elementwise vector add over distinct addresses is
+                // bit-identical to the scalar pair, and the t-outer order
+                // below is the sample order the reference fixes.
+                let z0 = (vzip1q_f32(v000, v001), vzip2q_f32(v000, v001));
+                let z1 = (vzip1q_f32(v010, v011), vzip2q_f32(v010, v011));
+                let z2 = (vzip1q_f32(v100, v101), vzip2q_f32(v100, v101));
+                let z3 = (vzip1q_f32(v110, v111), vzip2q_f32(v110, v111));
                 const OFF: [usize; 4] = [0, N + 2, (D + 2) * (N + 2), (D + 3) * (N + 2)];
                 let hp = hist.as_mut_ptr();
-                for (t, &base) in ib.iter().enumerate() {
-                    let b = base as usize;
-                    // Slot liveness: 0 = (r+1,c+1), 1 = (r+1,c+2),
-                    // 2 = (r+2,c+1), 3 = (r+2,c+2). Skipping a dead slot
-                    // removes only writes to never-read cells; the live
-                    // accumulations keep their exact order, so the result is
-                    // bit-identical.
-                    let (rlo, rhi) = (rb4[t] >= 0, rb4[t] <= D as i32 - 2);
-                    let (clo, chi) = (cb4[t] >= 0, cb4[t] <= D as i32 - 2);
-                    let live = [rlo && clo, rlo && chi, rhi && clo, rhi && chi];
-                    for (slot, &o) in OFF.iter().enumerate() {
-                        if !live[slot] {
-                            continue;
-                        }
+                // One block per lane `t`, fully unrolled: vget_low/vget_high
+                // need a compile-time half. Slot liveness: 0 = (r+1,c+1),
+                // 1 = (r+1,c+2), 2 = (r+2,c+1), 3 = (r+2,c+2); a dead slot
+                // writes only never-read border cells (see the scalar tail),
+                // and skipping it keeps the live accumulation order exact.
+                macro_rules! lane_scatter {
+                    ($t:expr, $half:ident, $zi:tt) => {{
                         // SAFETY: `rbin`/`cbin` were range-checked during
                         // collection, so `b <= 287` and the widest touched
                         // index is `b + 71 < HISTLEN`.
-                        let h = hp.add(b + o);
-                        vst1_f32(
-                            h,
-                            vadd_f32(vld1_f32(h), vld1_f32(pr.as_ptr().add(slot * 8 + t * 2))),
-                        );
-                    }
+                        let b = ib[$t] as usize;
+                        let (rlo, rhi) = (rb4[$t] >= 0, rb4[$t] <= D as i32 - 2);
+                        let (clo, chi) = (cb4[$t] >= 0, cb4[$t] <= D as i32 - 2);
+                        if rlo && clo {
+                            let h = hp.add(b + OFF[0]);
+                            vst1_f32(h, vadd_f32(vld1_f32(h), $half(z0.$zi)));
+                        }
+                        if rlo && chi {
+                            let h = hp.add(b + OFF[1]);
+                            vst1_f32(h, vadd_f32(vld1_f32(h), $half(z1.$zi)));
+                        }
+                        if rhi && clo {
+                            let h = hp.add(b + OFF[2]);
+                            vst1_f32(h, vadd_f32(vld1_f32(h), $half(z2.$zi)));
+                        }
+                        if rhi && chi {
+                            let h = hp.add(b + OFF[3]);
+                            vst1_f32(h, vadd_f32(vld1_f32(h), $half(z3.$zi)));
+                        }
+                    }};
                 }
+                // Lane t's pair: t 0/1 = low/high half of zip1, t 2/3 = low/
+                // high half of zip2 — [a0,b0,a1,b1] and [a2,b2,a3,b3].
+                lane_scatter!(0, vget_low_f32, 0);
+                lane_scatter!(1, vget_high_f32, 0);
+                lane_scatter!(2, vget_low_f32, 1);
+                lane_scatter!(3, vget_high_f32, 1);
                 k += 4;
             }
         }
