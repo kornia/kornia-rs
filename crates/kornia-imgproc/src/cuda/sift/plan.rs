@@ -88,8 +88,9 @@ pub struct SiftCuda {
     perm: CudaSlice<i32>,
     /// Survivor count for the deferred descriptor pass.
     desc_live: CudaSlice<i32>,
-    /// Row where each (octave, layer) group's oriented keypoints start. Written
-    /// device-to-device so no count ever has to come back to the host mid-frame.
+    /// Row where each (octave, layer) group's oriented keypoints start,
+    /// uploaded from the host once per frame after `retain_best` decides the
+    /// survivor grouping.
     ranges: CudaSlice<i32>,
     n_desc: usize,
     /// Opt-in rotated-frame descriptor: faster, not bit-exact. See
@@ -320,7 +321,6 @@ impl SiftCuda {
         )?;
 
         let n_oct = self.n_octaves(cw, ch);
-        let mut range_i = 0usize;
         // The deferred descriptor pass needs each octave's dimensions; the loop
         // halves with integer division, which is not `>>` for odd sizes.
         let mut oct_dims: Vec<(usize, usize)> = Vec::with_capacity(n_oct);
@@ -396,21 +396,14 @@ impl SiftCuda {
                 // skips the keypoints that do not belong to it.
                 //
                 // Oriented keypoints accumulate across the WHOLE frame rather
-                // than being reset per layer, and each layer's row range is
-                // recorded on device (`ranges`) with a 4-byte device-to-device
-                // copy. The descriptor launches size their grid from an upper
-                // bound and retire the blocks past the live count. That is what
-                // removes the per-layer count read: every one of those was a
-                // blocking D2H that drained the stream, 54 of them a frame, and
-                // they left no octave able to overlap the next.
+                // than being reset per layer. `ranges` is NOT written here:
+                // an earlier revision snapshotted `ori_count` per layer for a
+                // device-side descriptor pass, but the retain_best reorder
+                // moved descriptor grouping to the host, which uploads its own
+                // `starts` into `ranges` — the audit found the in-loop
+                // snapshots written and then overwritten, never read.
                 for layer in 1..=self.cfg.n_octave_layers {
                     let img = self.pyr[octv][layer].slice(0..plane);
-                    // Snapshot where this layer's rows will start.
-                    {
-                        let src = self.ori_count.slice(0..1);
-                        let mut dst = self.ranges.slice_mut(range_i..range_i + 1);
-                        stream.memcpy_dtod(&src, &mut dst)?;
-                    }
 
                     let to = mark(probe);
                     launch_sift_orientation_cuda_view(
@@ -429,8 +422,6 @@ impl SiftCuda {
                         self.fast_descriptor,
                     )?;
                     since(to, stream, &mut t_ori);
-
-                    range_i += 1;
                 }
             }
 

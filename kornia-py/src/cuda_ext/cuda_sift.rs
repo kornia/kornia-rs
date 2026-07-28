@@ -110,17 +110,19 @@ fn own_descriptors(
     let inner = if n == 0 {
         TensorInnerEnum::F32R2(kornia_tensor::Tensor::<f32, 2>::zeros(shape))
     } else {
-        let mut dst = stream
-            .alloc_zeros::<f32>(n * DESCR_LEN)
+        // SAFETY: uninitialised is fine — the D2D below overwrites every one of
+        // the `n * DESCR_LEN` elements before anything can read the tensor.
+        // (`alloc_zeros` here was a dead 1.3 MB memset per frame.)
+        let mut dst = unsafe { kornia_tensor::uninit_cuda::<f32, 2>(shape, stream) }
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
         stream
-            .memcpy_dtod(&plan.descriptors_device().slice(0..n * DESCR_LEN), &mut dst)
+            .memcpy_dtod(
+                &plan.descriptors_device().slice(0..n * DESCR_LEN),
+                dst.as_cudaslice_mut()
+                    .expect("uninit_cuda builds CudaResource-backed storage"),
+            )
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        TensorInnerEnum::F32R2(kornia_tensor::Tensor::from_cudaslice(
-            dst,
-            shape,
-            stream.clone(),
-        ))
+        TensorInnerEnum::F32R2(dst)
     };
     Ok(PyTensor {
         inner: Arc::new(inner),

@@ -294,11 +294,15 @@ extern "C" __global__ void sift_descriptor(
 /// eight targets over a wider address range costs more than the conflicts did.
 /// The knob stays for re-measurement, but do not pad by default.
 fn ostride() -> usize {
-    std::env::var("KORNIA_SIFT_DESC_OSTRIDE")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .filter(|v| *v >= DESCR_HIST_BINS + 2)
-        .unwrap_or(DESCR_HIST_BINS + 2)
+    // Read once — this is called per fast-descriptor launch.
+    static V: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("KORNIA_SIFT_DESC_OSTRIDE")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|v| *v >= DESCR_HIST_BINS + 2)
+            .unwrap_or(DESCR_HIST_BINS + 2)
+    })
 }
 
 fn descriptor_block_src(threads: usize) -> String {
