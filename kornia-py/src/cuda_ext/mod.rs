@@ -322,6 +322,13 @@ enum TensorInnerEnum {
     /// producer here is an image pipeline: SIFT's descriptor block is an
     /// `(N, 128)` matrix, and padding it to rank 4 to fit would report a shape
     /// its consumers would then have to undo.
+    ///
+    /// Its only producer today is `cuda_sift`, which is CUDA-gated, so a
+    /// no-feature build constructs it nowhere and `dead_code` fires. The variant
+    /// still has to exist in that build: every `match` over this enum is
+    /// compiled unconditionally, and gating the variant would mean gating each
+    /// of those arms too.
+    #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
     F32R2(Tensor<f32, 2>),
 }
 
