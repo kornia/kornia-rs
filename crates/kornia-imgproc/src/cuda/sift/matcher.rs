@@ -28,10 +28,27 @@
 //! Everything is squared L2. The ratio test `d_best < ratio * d_second` on true
 //! distances is equivalent to `d2_best < ratio^2 * d2_second` on squared ones,
 //! so no square root is ever taken.
+//!
+//! # Why u8 + `__dp4a`, and why it is lossless
+//!
+//! SIFT descriptors are **exactly** the integers 0..255 stored as f32 (the
+//! reference scales, rounds and saturates to uchar; both backends reproduce
+//! that bit-for-bit). So a u8 copy loses nothing, and the distance becomes
+//! integer arithmetic: `||a-b||^2 = ||a||^2 + ||b||^2 - 2*a.b` with every term
+//! exact in i32 (`||a||^2 + ||b||^2 <= 2*128*255^2 = 16.6M < 2^31`). The old
+//! f32 kernel's sums were exact integers too (all partials < 2^24), so the
+//! distances — and therefore the pairs, including tie behaviour — are
+//! IDENTICAL; `__dp4a` just computes them with 4 MACs per instruction over a
+//! quarter of the bytes.
+//!
+//! The one-time quantise pass costs two reads and half a write of each
+//! descriptor set and is folded into the same stream. Inputs that are not
+//! integer-valued 0..255 are outside the matcher's contract (nothing in this
+//! crate produces them); they would be truncated per C cast.
 
 use std::sync::Arc;
 
-use cudarc::driver::{CudaContext, CudaSlice, CudaStream, CudaView, CudaViewMut};
+use cudarc::driver::{CudaContext, CudaSlice, CudaStream, CudaView};
 
 use super::descriptor::DESCR_LEN;
 use super::kernels::get_or_compile;
@@ -41,6 +58,39 @@ use crate::cuda::make_config;
 /// `i32` slots per emitted match: `query, train`.
 pub const MATCH_STRIDE: usize = 2;
 
+fn quantize_src() -> String {
+    format!(
+        r#"
+#define DLEN {dlen}
+
+// f32 descriptors (exact integers 0..255) -> packed u8 rows + i32 squared
+// norms. One warp per row: each lane packs its 4 components into one u32, so
+// a row is 32 u32 = 128 B, then the self-dot collapses in 5 shuffles.
+extern "C" __global__ void __launch_bounds__(128) sift_desc_quantize(
+    const float* __restrict__ src, int n,
+    unsigned int* __restrict__ packed, int* __restrict__ norm)
+{{
+    const int row = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+    const int lane = threadIdx.x & 31;
+    if (row >= n) return;
+
+    const float4 v = *(const float4*)(src + (long)row * DLEN + lane * 4);
+    const unsigned int b0 = (unsigned int)v.x, b1 = (unsigned int)v.y;
+    const unsigned int b2 = (unsigned int)v.z, b3 = (unsigned int)v.w;
+    const unsigned int p = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+    packed[(long)row * 32 + lane] = p;
+
+    int nrm = __dp4a(p, p, 0u);
+    #pragma unroll
+    for (int off = 16; off > 0; off >>= 1)
+        nrm += __shfl_xor_sync(0xffffffffu, nrm, off);
+    if (lane == 0) norm[row] = nrm;
+}}
+"#,
+        dlen = DESCR_LEN,
+    )
+}
+
 fn best2_src() -> String {
     format!(
         r#"
@@ -48,50 +98,48 @@ fn best2_src() -> String {
 #define PERLANE {perlane}
 
 // For each query descriptor, the nearest and second-nearest train descriptor,
-// as squared L2 distances. One warp per query.
-extern "C" __global__ void sift_match_best2(
-    const float* __restrict__ q, int nq,
-    const float* __restrict__ t, int nt,
+// as squared L2 distances. One warp per query, over the u8-packed rows.
+//
+// dist = ||q||^2 + ||t||^2 - 2*q.t, all exact in i32. Every distance the old
+// f32 kernel produced was an exact integer below 2^24, so the values — and the
+// tie behaviour (strict <, first j wins) — are identical; the outputs are
+// still written as f32 for the unchanged ratio kernel downstream.
+extern "C" __global__ void __launch_bounds__(128) sift_match_best2(
+    const unsigned int* __restrict__ q, const int* __restrict__ qn, int nq,
+    const unsigned int* __restrict__ t, const int* __restrict__ tn, int nt,
     int* __restrict__ out_idx, float* __restrict__ out_d1, float* __restrict__ out_d2)
 {{
     const int warp_id = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
     const int lane = threadIdx.x & 31;
     if (warp_id >= nq) return;
 
-    // This lane's slice of the query, held in registers for the whole scan.
-    // PERLANE is 4, so each lane's slice is exactly one float4 and a warp reads
-    // a whole 512-byte descriptor in one transaction. Rows are 128 floats, so
-    // every lane's offset is 16-byte aligned by construction.
-    const float4 qv = *(const float4*)(q + (long)warp_id * DLEN + lane * PERLANE);
+    // This lane's u32 (4 components) of the query, held for the whole scan; a
+    // warp reads one 128-byte packed row per candidate in one transaction.
+    const unsigned int qv = q[(long)warp_id * 32 + lane];
+    const int my_norm = qn[warp_id];
 
-    float best = 3.402823466e+38f, second = 3.402823466e+38f;
+    int best = 2147483647, second = 2147483647;
     int best_j = -1;
 
     for (int j = 0; j < nt; j++) {{
-        const float4 tv = *(const float4*)(t + (long)j * DLEN + lane * PERLANE);
-        float acc = 0.0f;
-        {{
-            const float dx = qv.x - tv.x, dy = qv.y - tv.y;
-            const float dz = qv.z - tv.z, dw = qv.w - tv.w;
-            acc = __fmaf_rn(dx, dx, acc);
-            acc = __fmaf_rn(dy, dy, acc);
-            acc = __fmaf_rn(dz, dz, acc);
-            acc = __fmaf_rn(dw, dw, acc);
-        }}
-        // Butterfly reduction: every lane ends with the full distance, so the
-        // best/second bookkeeping needs no broadcast.
+        int acc = __dp4a(qv, t[(long)j * 32 + lane], 0u);
+        // Butterfly reduction: every lane ends with the full dot product, so
+        // the best/second bookkeeping needs no broadcast.
         #pragma unroll
         for (int off = 16; off > 0; off >>= 1)
             acc += __shfl_xor_sync(0xffffffffu, acc, off);
+        const int d = my_norm + tn[j] - 2 * acc;
 
-        if (acc < best) {{ second = best; best = acc; best_j = j; }}
-        else if (acc < second) {{ second = acc; }}
+        if (d < best) {{ second = best; best = d; best_j = j; }}
+        else if (d < second) {{ second = d; }}
     }}
 
     if (lane == 0) {{
         out_idx[warp_id] = best_j;
-        out_d1[warp_id] = best;
-        out_d2[warp_id] = second;
+        // INT_MAX marks "no second candidate"; the pairs kernel tests against
+        // f32 +MAX for that, so map it to the old sentinel explicitly.
+        out_d1[warp_id] = (float)best;
+        out_d2[warp_id] = second == 2147483647 ? 3.402823466e+38f : (float)second;
     }}
 }}
 "#,
@@ -140,6 +188,12 @@ extern "C" __global__ void sift_match_pairs(
 
 /// Scratch for one match call, sized for the largest descriptor set.
 pub struct SiftMatcher {
+    /// u8-packed descriptor rows (32 u32 per row) and their i32 squared norms,
+    /// one pair of buffers per side, refilled by the quantise pass each call.
+    q8: CudaSlice<u32>,
+    qn: CudaSlice<i32>,
+    t8: CudaSlice<u32>,
+    tn: CudaSlice<i32>,
     fwd_idx: CudaSlice<i32>,
     fwd_d1: CudaSlice<f32>,
     fwd_d2: CudaSlice<f32>,
@@ -160,6 +214,10 @@ impl SiftMatcher {
             ));
         }
         Ok(Self {
+            q8: stream.alloc_zeros::<u32>(cap * (DESCR_LEN / 4))?,
+            qn: stream.alloc_zeros::<i32>(cap)?,
+            t8: stream.alloc_zeros::<u32>(cap * (DESCR_LEN / 4))?,
+            tn: stream.alloc_zeros::<i32>(cap)?,
             fwd_idx: stream.alloc_zeros::<i32>(cap)?,
             fwd_d1: stream.alloc_zeros::<f32>(cap)?,
             fwd_d2: stream.alloc_zeros::<f32>(cap)?,
@@ -209,12 +267,18 @@ impl SiftMatcher {
             }
         }
 
-        launch_best2(ctx, stream, d1, n1, d2, n2, self)?;
+        // One quantise pass per side: exact for integer-valued descriptors
+        // (which is all this crate produces), and it shrinks every subsequent
+        // candidate read 4x while turning 4 FMAs into one __dp4a.
+        launch_quantize(ctx, stream, d1, n1, &mut self.q8, &mut self.qn)?;
+        launch_quantize(ctx, stream, d2, n2, &mut self.t8, &mut self.tn)?;
+
+        launch_best2(ctx, stream, n1, n2, self)?;
         // The reverse scan is only needed for the mutual check. Without it
         // `rev_idx` is never read — the pair kernel's test is `cross_check &&
         // rev_idx[j] != i` — so there is nothing to clear either.
         if cross_check {
-            launch_best2_rev(ctx, stream, d2, n2, d1, n1, self)?;
+            launch_best2_rev(ctx, stream, n2, n1, self)?;
         }
 
         stream.memset_zeros(&mut self.count)?;
@@ -252,17 +316,47 @@ impl SiftMatcher {
     }
 }
 
+fn launch_quantize(
+    ctx: &Arc<CudaContext>,
+    stream: &Arc<CudaStream>,
+    src: &CudaView<'_, f32>,
+    n: usize,
+    packed: &mut CudaSlice<u32>,
+    norm: &mut CudaSlice<i32>,
+) -> Result<(), SiftCudaError> {
+    let kernel = get_or_compile(
+        ctx,
+        "sift_desc_quantize",
+        quantize_src,
+        "sift_desc_quantize",
+    )?;
+    let n_i = n as i32;
+    let threads = 128u32;
+    let blocks = (n as u32).div_ceil(threads / 32);
+    let cfg = cudarc::driver::LaunchConfig {
+        grid_dim: (blocks, 1, 1),
+        block_dim: (threads, 1, 1),
+        shared_mem_bytes: 0,
+    };
+    kernel
+        .launch_builder(stream)
+        .arg(src)
+        .arg(&n_i)
+        .arg(packed)
+        .arg(norm)
+        .launch_cfg(cfg)
+        .map_err(|e| SiftCudaError::Cuda(e.to_string()))
+}
+
+/// `swap`: false = forward (q8 vs t8 into fwd_*), true = reverse.
 #[allow(clippy::too_many_arguments)]
 fn best2_common(
     ctx: &Arc<CudaContext>,
     stream: &Arc<CudaStream>,
-    q: &CudaView<'_, f32>,
+    m: &mut SiftMatcher,
     nq: usize,
-    t: &CudaView<'_, f32>,
     nt: usize,
-    out_idx: &mut CudaViewMut<'_, i32>,
-    out_d1: &mut CudaViewMut<'_, f32>,
-    out_d2: &mut CudaViewMut<'_, f32>,
+    swap: bool,
 ) -> Result<(), SiftCudaError> {
     let kernel = get_or_compile(ctx, "sift_match_best2", best2_src, "sift_match_best2")?;
     let (nq_i, nt_i) = (nq as i32, nt as i32);
@@ -275,11 +369,23 @@ fn best2_common(
         block_dim: (threads, 1, 1),
         shared_mem_bytes: 0,
     };
+    let (q, qn, t, tn) = if swap {
+        (&m.t8, &m.tn, &m.q8, &m.qn)
+    } else {
+        (&m.q8, &m.qn, &m.t8, &m.tn)
+    };
+    let (out_idx, out_d1, out_d2) = if swap {
+        (&mut m.rev_idx, &mut m.rev_d1, &mut m.rev_d2)
+    } else {
+        (&mut m.fwd_idx, &mut m.fwd_d1, &mut m.fwd_d2)
+    };
     kernel
         .launch_builder(stream)
         .arg(q)
+        .arg(qn)
         .arg(&nq_i)
         .arg(t)
+        .arg(tn)
         .arg(&nt_i)
         .arg(out_idx)
         .arg(out_d1)
@@ -291,35 +397,21 @@ fn best2_common(
 fn launch_best2(
     ctx: &Arc<CudaContext>,
     stream: &Arc<CudaStream>,
-    d1: &CudaView<'_, f32>,
     n1: usize,
-    d2: &CudaView<'_, f32>,
     n2: usize,
     m: &mut SiftMatcher,
 ) -> Result<(), SiftCudaError> {
-    let (mut i, mut a, mut b) = (
-        m.fwd_idx.as_view_mut(),
-        m.fwd_d1.as_view_mut(),
-        m.fwd_d2.as_view_mut(),
-    );
-    best2_common(ctx, stream, d1, n1, d2, n2, &mut i, &mut a, &mut b)
+    best2_common(ctx, stream, m, n1, n2, false)
 }
 
 fn launch_best2_rev(
     ctx: &Arc<CudaContext>,
     stream: &Arc<CudaStream>,
-    d2: &CudaView<'_, f32>,
     n2: usize,
-    d1: &CudaView<'_, f32>,
     n1: usize,
     m: &mut SiftMatcher,
 ) -> Result<(), SiftCudaError> {
-    let (mut i, mut a, mut b) = (
-        m.rev_idx.as_view_mut(),
-        m.rev_d1.as_view_mut(),
-        m.rev_d2.as_view_mut(),
-    );
-    best2_common(ctx, stream, d2, n2, d1, n1, &mut i, &mut a, &mut b)
+    best2_common(ctx, stream, m, n2, n1, true)
 }
 
 #[cfg(test)]
