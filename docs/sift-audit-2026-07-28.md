@@ -1,10 +1,35 @@
 # SIFT optimisation audit — 2026-07-28
 
-Working notes, not results. Three-pass audit: an inline first pass against a
-fresh `nsys` profile, four read-only finder agents with distinct lenses, then an
-adversarial skeptic pass over the 12 highest-value claims. **Verdicts are
-integrated below** — see "SKEPTIC VERDICTS" for the summary table. Nothing has
-been implemented. Line numbers are as of commit `07f5f1d2`.
+Working notes. Three-pass audit: an inline first pass against a fresh `nsys`
+profile, four read-only finder agents with distinct lenses, then an adversarial
+skeptic pass over the 12 highest-value claims. Line numbers as of `07f5f1d2`.
+
+## IMPLEMENTATION STATUS (2026-07-28, commits b87ae4a0..d3dfc7d4)
+
+DONE, oracle-gated 56/56 at every step:
+- A1 + B4-memset + B9 (tier-1 deletions)
+- B1 dead border writes, both backends, + the o-bin-9 no-op
+- C1 downsample udiv -> 2x (+ `host=` stage-probe column, the B8 gate)
+- D1 red[RLEN] + D2 __launch_bounds__ everywhere + D8 incremental divisions
+  + D4 refl101 closed form + warp-uniform blur_h border test
+  + D11: fold widened to 128 threads, downsample writes layer 0 direct
+- dp4a u8 matcher — pairs verified IDENTICAL to cv2 BFMatcher (816 on mh01),
+  device match 12.75 ms for 2515x2447 including both scans + ratio + readback
+- C2 zip staging register-to-register
+
+FALSIFIED DURING IMPLEMENTATION:
+- B3/D7 per-layer orientation ranges — see the verdict table; adjustLocalExtrema
+  reassigns layers, launch-layer contiguity does not partition by refined layer.
+
+NOT DONE (remaining, in value order):
+- C3 vectorised collect (~3-5 ms ST, three contraction traps documented)
+- C5 blur H border edge-buffer (~2-4 ms ST)
+- C6 blur V restructure (~4-6 ms ST, register-pressure risk)
+- C4 upsample H vectorise (~2-4 ms ST)
+- B2/B7 deferred readback + prefix graph (re-budget with the host= probe first)
+- D3 needs -Xptxas -v before any action; D10 block-size sweep; remaining D11
+  smalls (branch-free extrema max, diag hoist, sift_tex clamps); C8 rayon items;
+  B10 PlanKey hazards; B11 columnar keypoint API.
 
 ## SKEPTIC VERDICTS (adversarial verification, source-level)
 
