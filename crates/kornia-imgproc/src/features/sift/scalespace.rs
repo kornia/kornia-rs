@@ -357,6 +357,8 @@ fn column_row<const DOG: bool>(
     // the tap loop stops loading a 24-byte (usize, usize, f32) tuple per tap
     // on top of its 8 data loads (audit finding C6). Same offsets, same tap
     // order, same pair-sum-before-FMA — bit-exact either way.
+    // Consumed only by the 16-wide NEON loop's inline-stepping branch.
+    #[cfg(target_arch = "aarch64")]
     let interior = y >= n2 && y + n2 < (hh as usize);
     // Always built: the 4-wide and scalar tails (and the non-NEON build) read
     // it for every row; only the 16-wide loop takes the inline-stepping path.

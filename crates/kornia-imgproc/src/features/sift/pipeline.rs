@@ -140,8 +140,13 @@ fn upsample2x(src: &[f32], sw: usize, sh: usize, dst: &mut [f32], hbuf: &mut [f3
         .enumerate()
         .for_each(|(sy, hrow)| {
             let base = sy * sw;
-            let row = &src[base..base + sw];
+            // `x` advances (and `row` is read) only inside the NEON block, so
+            // the x86 fallback build sees them unused — allow, don't gate the
+            // declaration, since the tail loops below consume `x` on both.
+            #[cfg_attr(not(target_arch = "aarch64"), allow(unused_mut))]
             let mut x = 0usize;
+            #[cfg(target_arch = "aarch64")]
+            let row = &src[base..base + sw];
 
             // Vector body: away from the two clamped outputs (x = 0 and
             // x = dw-1) the taps are a fixed two-phase pattern —
