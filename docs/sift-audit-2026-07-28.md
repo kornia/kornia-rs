@@ -26,14 +26,16 @@ ROUND 2 (2026-07-28, after the box freed): C5, C4, C3 all landed
 criterion A/B: 166.4 -> 164.2 ms ST, -1.28%, p=0.00 — consistent with the
 ~10%-of-V estimate.
 
-NOT DONE (remaining):
-- C6(ii) 2-row blocking (~47% fewer V-pass loads). Derivation for next time:
-  outputs y and y+1 share rows via a 2-step sliding window — at pair step j,
-  load up_{j+1} and dn_j; acc_y takes (up_j + dn_j)*kc[j], acc_{y+1} takes
-  (up_{j+1} + dn_{j-1})*kc[j] with dn_0 = the centre row. 2n2+2 loads per 2
-  outputs vs 4n2+2. Use width 8 (2 vecs/row) so there are still 4 FMA chains;
-  ~14 live q-regs. Odd-h tail row falls back to the single-row path. Gate on
-  the same pinned A/B — this is the half with the register-pressure risk.
+FALSIFIED 2026-07-28 — C6(ii) 2-row blocking: implemented exactly as
+derived (2-step sliding window, width 8, 4 FMA chains, 2n2+2 loads per two
+outputs vs 4n2+2, bit-exact — oracle 56/56), and the pinned A/B measured a
+REGRESSION: 164.2 -> 165.5 ms ST (+0.76%, p = 0.00). Mechanism: the V pass is
+not load-bound at this shape — the full-width walk's prefetcher already
+serves the adjacent-row re-reads (the same mechanism that falsified column
+tiling, scalespace.rs:30-35), so halving the loads saves nothing while the
+window shuffling and doubled live registers cost real issue slots. Reverted;
+C6(i) (inline pointer stepping, -1.28%) is the part that pays. Do not re-try
+row blocking here without first showing the pass load-bound in a counter.
 - B2/B7 deferred readback + prefix graph (re-budget with the host= probe first)
 - D3 needs -Xptxas -v before any action; D10 block-size sweep; remaining D11
   smalls (branch-free extrema max, diag hoist, sift_tex clamps); C8 rayon items;
