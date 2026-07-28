@@ -72,11 +72,32 @@ pub fn blur_h_f32_mode(
     // blur's 2.65x scaling.
     dst.par_chunks_mut(w * ROWS_PER_TASK)
         .enumerate()
-        .for_each(|(chunk, dchunk)| {
+        .for_each_init(Vec::new, |ext: &mut Vec<f32>, (chunk, dchunk)| {
             let y0 = chunk * ROWS_PER_TASK;
             for (yy, d) in dchunk.chunks_mut(w).enumerate() {
                 let row = (y0 + yy) * w;
                 let s = &src[row..row + w];
+
+                if !symmetric && w > 2 * n2 {
+                    // Materialise the reflected edges once and run the vector
+                    // interior over the whole row (FilterEngine's shape). The
+                    // old border loops paid `ksize` scalar serial-latency FMAs
+                    // and a `refl101` per TAP per border pixel — ~872 scalar
+                    // taps/row at the default config, a third of the whole
+                    // vector interior's cost, and the ratio doubles each
+                    // octave. `row_interior` over the extended row computes
+                    // the identical seed-then-ascending-FMA expression on the
+                    // identical tap values, so this is bit-exact.
+                    ext.resize(w + 2 * n2, 0.0);
+                    ext[n2..n2 + w].copy_from_slice(s);
+                    let wi = w as i64;
+                    for t in 0..n2 {
+                        ext[t] = s[refl101(t as i64 - n2 as i64, wi)];
+                        ext[n2 + w + t] = s[refl101((w + t) as i64, wi)];
+                    }
+                    row_interior(ext, d, n2, n2, kernel);
+                    continue;
+                }
 
                 // Left border.
                 let lo = n2.min(w);
