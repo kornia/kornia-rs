@@ -9,7 +9,7 @@ is ``<out>_from_<in>``.
 
 from __future__ import annotations
 
-from typing import Optional, Sequence, Union
+from typing import Any, Optional, Sequence, Union
 
 import numpy as np
 
@@ -227,23 +227,121 @@ class Sift:
 
     def detect_and_compute(
         self, image: np.ndarray | Image
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Returns ``(keypoints, descriptors)``: ``(N, 6)`` of
-        ``x, y, size, angle, response, octave`` and ``(N, 128)``."""
+    ) -> tuple[SiftKeypoints, np.ndarray | Any]:
+        """Returns ``(keypoints, descriptors)``.
+
+        ``keypoints`` is a :class:`SiftKeypoints` struct of arrays, always on
+        the host. ``descriptors`` follows the input's residency: a device
+        ``Tensor`` of shape ``(1, 1, N, 128)`` for a device ``Image``, a numpy
+        ``(N, 128)`` for a host one. Feed either straight back to ``match``.
+
+        The device descriptors are a fresh allocation, not a view into the
+        detector's scratch — the next call overwrites that, so a view would
+        change under a caller holding two frames."""
 
     def match(
         self,
-        image_a: np.ndarray | Image,
-        image_b: np.ndarray | Image,
+        descriptors_a: np.ndarray | Any,
+        descriptors_b: np.ndarray | Any,
         ratio: float = 0.8,
         cross_check: bool = True,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Detect in both images and match.
+    ) -> np.ndarray:
+        """Match two descriptor blocks from ``detect_and_compute``.
 
-        Two device ``Image`` s match on device and the descriptors never cross
-        the bus; anything else detects and matches on the CPU. Mixing residency
-        is an error rather than a silent transfer.
+        Detection and matching are separable: detect once, then match against
+        several frames, or match descriptors that came from elsewhere.
 
-        ``ratio`` is Lowe's ratio; ``>= 1.0`` disables it. Returns
-        ``(keypoints_a, keypoints_b, matches)`` with ``matches`` an ``(M, 2)``
-        int32 array of indices into the two keypoint arrays."""
+        Dispatches on the descriptors. Two device ``Tensor`` s match on device
+        and never cross the bus; two numpy arrays run the NEON matcher. Mixing
+        the two is an error rather than a silent transfer — the transfer is the
+        expensive part, and hiding it is how a frame budget disappears.
+
+        ``ratio`` is Lowe's ratio; ``>= 1.0`` disables it. Returns an ``(M, 2)``
+        int32 array of indices into the two keypoint lists."""
+
+
+class SiftKeypoint:
+    """One keypoint, as returned by indexing :class:`SiftKeypoints`.
+
+    For readability at one-keypoint-at-a-time sites. Bulk code should use the
+    column views instead — indexing allocates a Python object per keypoint,
+    which is what the columns exist to avoid."""
+
+    x: float
+    y: float
+    size: float
+    angle: float
+    response: float
+    octave: int
+    layer: int
+    xi: float
+    packed_octave: int
+
+
+class SiftKeypoints:
+    """Detected keypoints, as a struct of arrays.
+
+    .. code-block:: python
+
+        kp, desc = sift.detect_and_compute(image)
+        xy = np.stack([kp.x, kp.y], axis=1)   # views, not copies
+        strong = kp.response > 0.05
+
+    The five raw columns are built once and handed out as **views onto the same
+    buffers**: ``kp.x`` twice is the same array, not two copies. They are
+    writable; writing to one mutates what every other reference sees.
+
+    ``octave``, ``layer`` and ``xi`` are decoded from OpenCV's packed
+    ``KeyPoint.octave`` field and are **computed on access** — bind them once
+    rather than indexing them in a loop. ``packed_octave`` is that field
+    verbatim, for comparing against ``cv2``."""
+
+    @property
+    def x(self) -> np.ndarray:
+        """Column coordinates, ``(N,)`` float32. A view."""
+
+    @property
+    def y(self) -> np.ndarray:
+        """Row coordinates, ``(N,)`` float32. A view."""
+
+    @property
+    def size(self) -> np.ndarray:
+        """Neighbourhood diameters, ``(N,)`` float32. A view."""
+
+    @property
+    def angle(self) -> np.ndarray:
+        """Orientations in degrees, ``(N,)`` float32. A view."""
+
+    @property
+    def response(self) -> np.ndarray:
+        """Extremum contrasts, ``(N,)`` float32 — the ``n_features`` ranking
+        key. A view."""
+
+    @property
+    def packed_octave(self) -> np.ndarray:
+        """OpenCV's packed ``KeyPoint.octave`` field, ``(N,)`` int32. A view."""
+
+    @property
+    def octave(self) -> np.ndarray:
+        """Signed octave indices, ``(N,)`` int32. Computed on access."""
+
+    @property
+    def layer(self) -> np.ndarray:
+        """Layer indices within each octave, ``(N,)`` int32. Computed on
+        access."""
+
+    @property
+    def xi(self) -> np.ndarray:
+        """Sub-layer offsets in ``[-0.5, 0.5)``, ``(N,)`` float32. Computed on
+        access."""
+
+    def numpy(self) -> np.ndarray:
+        """The five raw columns plus the packed octave as one ``(N, 6)``
+        float32 array: ``x, y, size, angle, response, octave``.
+
+        A copy, and the octave column is a packed int32 bit-punned through
+        float32 — recover it with ``.view(np.int32)``, or read
+        ``packed_octave``."""
+
+    def __len__(self) -> int: ...
+    def __getitem__(self, index: int) -> SiftKeypoint: ...

@@ -202,7 +202,12 @@ def _engines(stream):
         arr = np.ascontiguousarray(img.astype(np.float32)[..., None])
         src = K.image.Image.from_numpy(arr).to_cuda(stream) if device else arr
         kp, desc = cache[key].detect_and_compute(src)
-        return np.ascontiguousarray(kp[:, :2]), np.ascontiguousarray(desc)
+        # A device detect leaves the descriptors on the GPU as a (1, 1, N, 128)
+        # Tensor; the audits below are host code (cv2's matcher, findHomography),
+        # so this is the one place they have to come back.
+        if not isinstance(desc, np.ndarray):
+            desc = desc.numpy()[0, 0]
+        return np.stack([kp.x, kp.y], axis=1), np.ascontiguousarray(desc)
 
     # OpenCV at both extremes: one thread isolates kernel quality, all cores is
     # what a caller actually gets. Quoting only the first flatters us by cv2's
@@ -239,19 +244,19 @@ def bench_sift_matchers(stream):
     _, da = sift.detect_and_compute(a)
     _, db = sift.detect_and_compute(b)
 
-    bf = cv2.BFMatcher(cv2.NORM_L2)
     cv_pairs = {tuple(x) for x in _match(da, db)}
-    neon_pairs = {tuple(x) for x in sift.match(a, b)[2]}
+    neon_pairs = {tuple(x) for x in sift.match(da, db)}
     agree = cv_pairs == neon_pairs
     print(f"\nmatcher pair sets identical (neon vs cv2 BFMatcher): {agree}  "
           f"({len(neon_pairs)} pairs)")
     if stream is not None:
-        da_d = K.image.Image.from_numpy(a).to_cuda(stream)
-        db_d = K.image.Image.from_numpy(b).to_cuda(stream)
-        cuda_pairs = {tuple(x) for x in sift.match(da_d, db_d)[2]}
+        # Detect on device so the descriptors are already there; the CUDA
+        # matcher then reads them in place and only the pairs come back.
+        _, dda = sift.detect_and_compute(K.image.Image.from_numpy(a).to_cuda(stream))
+        _, ddb = sift.detect_and_compute(K.image.Image.from_numpy(b).to_cuda(stream))
+        cuda_pairs = {tuple(x) for x in sift.match(dda, ddb)}
         print(f"matcher pair sets identical (cuda vs cv2 BFMatcher): "
               f"{cuda_pairs == cv_pairs}  ({len(cuda_pairs)} pairs)")
-    del bf
 
 
 def main():

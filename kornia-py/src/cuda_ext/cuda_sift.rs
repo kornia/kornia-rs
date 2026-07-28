@@ -1,27 +1,46 @@
-//! Device-resident CUDA SIFT (`kornia_rs.imgproc.sift_cuda`).
+//! Device-resident CUDA SIFT, behind `kornia_rs.imgproc.Sift`.
 //!
 //! Takes an f32 single-channel device `Image` in 0..255 -- the reference's own
 //! internal representation, so a caller comparing against it must not normalise
-//! to 0..1 -- and returns keypoints and 128-D descriptors as numpy arrays.
+//! to 0..1 -- and returns host keypoints plus a **device** descriptor `Tensor`.
+//!
+//! The descriptors staying on device is the whole point: a 2515x128 block is
+//! 1.3 MB, and moving it to the host costs more than the detection that produced
+//! it. `Sift.match` takes those tensors straight back, so a frame-to-frame match
+//! never touches host memory.
 //!
 //! The plan object owns its scratch, so it is rebuilt whenever the image size
 //! changes but reused across frames of the same size.
 
 use super::*;
-use crate::pyutils::rows_to_numpy;
-use kornia_imgproc::cuda::sift::{
-    FirstOctave, SiftCuda, SiftCudaConfig, SiftKeypoint, SiftMatcher, DESCR_LEN,
-};
+use kornia_imgproc::cuda::sift::{FirstOctave, SiftCuda, SiftCudaConfig, SiftMatcher, DESCR_LEN};
 use numpy::PyArray2;
+
+/// Everything that changes a plan's shape, plus the one flag that does not.
+///
+/// Passed as a struct rather than nine positional arguments because the call
+/// site had four `usize`s and three `f64`s in a row — a reordering that still
+/// compiles and silently detects with the wrong thresholds.
+#[derive(Clone, Copy)]
+pub(crate) struct DetectParams {
+    pub n_features: usize,
+    pub n_octave_layers: usize,
+    /// Selects a kernel, not a buffer size, so it is deliberately absent from
+    /// `PlanKey`: keying on it would reallocate a dozen full-resolution device
+    /// planes every time the flag flipped. `set_fast_descriptor` applies it on
+    /// every call instead.
+    pub fast_descriptor: bool,
+    pub contrast_threshold: f64,
+    pub edge_threshold: f64,
+    pub sigma: f64,
+    pub max_keypoints: usize,
+    pub upsample: bool,
+    pub max_octaves: usize,
+}
 
 /// Everything that changes a plan's shape. Floats are compared by bits: these
 /// come straight from the caller and are only ever tested for equality, so NaN's
 /// `!=` itself would silently defeat the cache.
-///
-/// `fast_descriptor` is deliberately absent: it selects a kernel, not a buffer
-/// size, and `SiftCuda::set_fast_descriptor` applies it on every call. Keying on
-/// it would reallocate a dozen full-resolution device planes each time the flag
-/// flipped.
 #[derive(PartialEq, Eq)]
 pub(crate) struct PlanKey {
     ordinal: usize,
@@ -45,76 +64,92 @@ pub(crate) type PlanSlot = Option<(PlanKey, SiftCuda)>;
 /// The plan holds every scratch buffer in the pipeline — roughly a dozen
 /// full-resolution planes — so it is rebuilt only when something that changes
 /// its shape changes.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn sift_cuda_with_plan<'py>(
-    py: Python<'py>,
+///
+/// The returned descriptors are a **fresh device allocation**, not a view into
+/// the plan. The plan has one descriptor buffer and the next detect overwrites
+/// it, so a view would mutate under a caller holding two frames — precisely the
+/// frame-to-frame matching this API exists for. One D2D copy of at most
+/// `n * 128` floats is the price, and it is two orders of magnitude cheaper than
+/// the host round trip it replaces.
+pub(crate) fn sift_cuda_with_plan(
+    py: Python<'_>,
     img: &PyImageApi,
     slot: &mut PlanSlot,
-    n_features: usize,
-    n_octave_layers: usize,
-    fast_descriptor: bool,
-    contrast_threshold: f64,
-    edge_threshold: f64,
-    sigma: f64,
-    max_keypoints: usize,
-    upsample: bool,
-    max_octaves: usize,
-) -> crate::sift::DetectOut<'py> {
-    let params = (
-        n_features,
-        n_octave_layers,
-        fast_descriptor,
-        contrast_threshold,
-        edge_threshold,
-        sigma,
-        max_keypoints,
-        upsample,
-        max_octaves,
-    );
+    p: DetectParams,
+) -> crate::sift::DetectOut {
     let src = device_f32c1(img)?;
-    let (stream, ctx) = ensure_plan(src, slot, params)?;
+    let (stream, ctx) = ensure_plan(src, slot, p)?;
     let (_, plan) = slot.as_mut().expect("plan just installed");
-    plan.set_fast_descriptor(fast_descriptor);
+    plan.set_fast_descriptor(p.fast_descriptor);
     let d_src = src
         .0
         .as_cudaslice()
         .ok_or_else(|| PyValueError::new_err("sift: device image has no typed f32 storage"))?;
-    let feats = plan.detect_and_compute(&ctx, &stream, d_src).map_err(err)?;
+    let kps = plan
+        .detect_and_compute_device(&ctx, &stream, d_src)
+        .map_err(err)?;
+    let n = plan.descriptor_count();
 
-    let kp_arr = keypoints_to_numpy(py, &feats.keypoints)?;
-    let desc_arr = rows_to_numpy(py, feats.descriptors, DESCR_LEN)?;
-    Ok((kp_arr, desc_arr))
+    let desc = own_descriptors(py, plan, &stream, n)?;
+    Ok((crate::sift::SiftKeypoints::build(py, &kps)?, desc))
+}
+
+/// Copy the plan's descriptor block into a caller-owned device `Tensor` of
+/// shape `(1, 1, n, 128)`.
+///
+/// Rank 4 because `Tensor` is currently scoped to `[N, C, H, W]`; the block is
+/// the trailing `(n, 128)` plane. `data_ptr`, `__cuda_array_interface__` and
+/// DLPack all address the same contiguous bytes regardless.
+///
+/// An empty detection returns a **host** `(1, 1, 0, 128)` tensor: there are no
+/// descriptor bytes to keep on device, and a zero-byte device allocation is not
+/// something CUDA promises to hand back.
+fn own_descriptors(
+    py: Python<'_>,
+    plan: &SiftCuda,
+    stream: &Arc<cudarc::driver::CudaStream>,
+    n: usize,
+) -> PyResult<Py<PyAny>> {
+    let shape = [1, 1, n, DESCR_LEN];
+    let inner = if n == 0 {
+        TensorInnerEnum::F32(kornia_tensor::Tensor::<f32, 4>::zeros(shape))
+    } else {
+        let mut dst = stream
+            .alloc_zeros::<f32>(n * DESCR_LEN)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        stream
+            .memcpy_dtod(&plan.descriptors_device().slice(0..n * DESCR_LEN), &mut dst)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        TensorInnerEnum::F32(kornia_tensor::Tensor::from_cudaslice(
+            dst,
+            shape,
+            stream.clone(),
+        ))
+    };
+    Ok(PyTensor {
+        inner: Arc::new(inner),
+    }
+    .into_pyobject(py)?
+    .into_any()
+    .unbind())
 }
 
 /// Install a plan for `src` if the current one does not match, returning the
 /// image's stream and context.
-///
-/// Shared by both entry points so the key and the rebuild rule cannot drift.
 fn ensure_plan(
     src: &Image<f32, 1>,
     slot: &mut PlanSlot,
     p: DetectParams,
 ) -> PyResult<(
-    std::sync::Arc<cudarc::driver::CudaStream>,
-    std::sync::Arc<cudarc::driver::CudaContext>,
+    Arc<cudarc::driver::CudaStream>,
+    Arc<cudarc::driver::CudaContext>,
 )> {
-    let (
-        n_features,
-        n_octave_layers,
-        _fast_descriptor,
-        contrast,
-        edge,
-        sigma,
-        max_kp,
-        upsample,
-        max_oct,
-    ) = p;
-    if n_octave_layers == 0 {
+    if p.n_octave_layers == 0 {
         return Err(PyValueError::new_err(
             "sift: n_octave_layers must be non-zero",
         ));
     }
-    if max_kp == 0 {
+    if p.max_keypoints == 0 {
         return Err(PyValueError::new_err(
             "sift: max_keypoints must be non-zero",
         ));
@@ -123,29 +158,33 @@ fn ensure_plan(
     let ctx = stream.context().clone();
     let size = src.size();
     let cfg = SiftCudaConfig {
-        n_features,
-        n_octave_layers,
-        contrast_threshold: contrast,
-        edge_threshold: edge,
-        sigma,
-        max_keypoints: max_kp,
+        n_features: p.n_features,
+        n_octave_layers: p.n_octave_layers,
+        contrast_threshold: p.contrast_threshold,
+        edge_threshold: p.edge_threshold,
+        sigma: p.sigma,
+        max_keypoints: p.max_keypoints,
     };
-    let first_octave = if upsample {
+    let first_octave = if p.upsample {
         FirstOctave::Double
     } else {
         FirstOctave::Native
     };
-    let max_octaves = if max_oct == 0 { usize::MAX } else { max_oct };
+    let max_octaves = if p.max_octaves == 0 {
+        usize::MAX
+    } else {
+        p.max_octaves
+    };
     let key = PlanKey {
         ordinal: ctx.ordinal(),
         width: size.width,
         height: size.height,
-        n_features,
-        n_octave_layers,
-        contrast_bits: contrast.to_bits(),
-        edge_bits: edge.to_bits(),
-        sigma_bits: sigma.to_bits(),
-        max_keypoints: max_kp,
+        n_features: p.n_features,
+        n_octave_layers: p.n_octave_layers,
+        contrast_bits: p.contrast_threshold.to_bits(),
+        edge_bits: p.edge_threshold.to_bits(),
+        sigma_bits: p.sigma.to_bits(),
+        max_keypoints: p.max_keypoints,
         first_octave,
         max_octaves,
     };
@@ -185,169 +224,123 @@ fn device_f32c1(img: &PyImageApi) -> PyResult<&Image<f32, 1>> {
     }
 }
 
-/// Columns in the keypoint array: `x, y, size, angle, response, octave`.
-const KP_COLS: usize = 6;
+// ── Matching ─────────────────────────────────────────────────────────────────
 
-/// `(N, 6)` of `x, y, size, angle, response, octave` — `(0, 6)` when empty.
-fn keypoints_to_numpy<'py>(
-    py: Python<'py>,
-    kps: &[SiftKeypoint],
-) -> PyResult<Bound<'py, PyArray2<f32>>> {
-    let mut flat = Vec::with_capacity(kps.len() * KP_COLS);
-    for k in kps {
-        flat.extend_from_slice(&[k.x, k.y, k.size, k.angle, k.response, k.octave as f32]);
+/// The `(n, slice, stream)` behind a descriptor `Tensor`, or an error naming
+/// what is wrong with it.
+///
+/// Validates the trailing dimension rather than trusting it: the matcher derives
+/// its row count from the buffer length, so a `(1, 1, n, 64)` tensor would be
+/// read as half as many 128-D rows instead of being rejected.
+fn descriptor_block<'a>(
+    t: &'a PyTensor,
+    who: &str,
+) -> PyResult<(
+    usize,
+    &'a cudarc::driver::CudaSlice<f32>,
+    &'a Arc<cudarc::driver::CudaStream>,
+)> {
+    let TensorInnerEnum::F32(inner) = &*t.inner else {
+        return Err(PyValueError::new_err(format!(
+            "Sift.match: {who} must be a float32 Tensor, got float16"
+        )));
+    };
+    let shape = inner.shape;
+    if shape[3] != DESCR_LEN {
+        return Err(PyValueError::new_err(format!(
+            "Sift.match: {who} has a trailing dimension of {}, expected {DESCR_LEN}; \
+             pass the descriptors from `detect_and_compute` unmodified",
+            shape[3]
+        )));
     }
-    rows_to_numpy(py, flat, KP_COLS)
+    let (slice, stream) = inner
+        .as_cudaslice()
+        .zip(inner.cuda_stream())
+        .ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "Sift.match: {who} is not device-resident; detect from a device \
+                 Image to get device descriptors"
+            ))
+        })?;
+    Ok((shape[2], slice, stream))
 }
 
-/// Detect in both images and match, without the descriptors ever leaving the
-/// device.
+/// Match two device descriptor blocks, without either leaving the device.
 ///
-/// The first image's descriptors are copied device-to-device into `store`
-/// because the plan has one output buffer and the second detection overwrites
-/// it. Only the keypoints and the surviving pairs come back to the host.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn sift_match<'py>(
+/// Only the surviving pair indices come back to the host.
+pub(crate) fn sift_match_device<'py>(
     py: Python<'py>,
-    img_a: &PyImageApi,
-    img_b: &PyImageApi,
-    slot: &mut PlanSlot,
+    a: &PyTensor,
+    b: &PyTensor,
     store: &mut MatchStore,
+    max_keypoints: usize,
     ratio: f32,
     cross_check: bool,
-    n_features: usize,
-    n_octave_layers: usize,
-    fast_descriptor: bool,
-    contrast_threshold: f64,
-    edge_threshold: f64,
-    sigma: f64,
-    max_keypoints: usize,
-    upsample: bool,
-    max_octaves: usize,
-) -> crate::sift::MatchOut<'py> {
-    let params = (
-        n_features,
-        n_octave_layers,
-        fast_descriptor,
-        contrast_threshold,
-        edge_threshold,
-        sigma,
-        max_keypoints,
-        upsample,
-        max_octaves,
-    );
-    let (kps_a, na, stream, ctx) = detect_device(img_a, slot, params)?;
-    // Everything after this point — the descriptor stash, B's detection and the
-    // matcher launches — is issued on A's stream. If B lives on a different one
-    // there is no ordering edge between B's kernels and the match, so refuse
-    // rather than race.
-    if !std::sync::Arc::ptr_eq(&stream, &source_stream(device_f32c1(img_b)?)?) {
+) -> PyResult<Bound<'py, PyArray2<i32>>> {
+    // An empty side has no pairs and no buffers to inspect, so answer before
+    // demanding device residency — an empty detection yields a host tensor.
+    // Spelled out rather than via `tdispatch!`: that macro is defined after this
+    // module's declaration in `mod.rs`, so it is not in textual scope here.
+    let empty = |t: &PyTensor| match &*t.inner {
+        TensorInnerEnum::F32(x) => x.shape[2] == 0,
+        TensorInnerEnum::F16(x) => x.shape[2] == 0,
+    };
+    if empty(a) || empty(b) {
+        // `(0, 2)` rather than `(0, 0)`, so a caller can still slice a column.
+        return crate::pyutils::rows_to_numpy(py, Vec::<i32>::new(), 2);
+    }
+
+    let (na, da, stream) = descriptor_block(a, "descriptors_a")?;
+    let (nb, db, stream_b) = descriptor_block(b, "descriptors_b")?;
+    // Both blocks and every matcher launch are ordered on A's stream. If B was
+    // produced on a different one there is no ordering edge between the kernel
+    // that wrote B and the match that reads it, so refuse rather than race.
+    if !Arc::ptr_eq(stream, stream_b) {
         return Err(PyValueError::new_err(
-            "Sift.match: both images must be on the same CUDA stream",
+            "Sift.match: both descriptor blocks must be on the same CUDA stream",
         ));
     }
-    {
-        // Stash image A's descriptors before B's run overwrites the plan's
-        // output buffer.
-        let (_, plan) = slot.as_mut().expect("plan present after detect");
-        store.ensure(&stream, max_keypoints * 4)?;
-        if na > 0 {
-            let src = plan.descriptors_device().slice(0..na * DESCR_LEN);
-            let mut dst = store
-                .desc_a
-                .as_mut()
-                .expect("just ensured")
-                .slice_mut(0..na * DESCR_LEN);
-            stream
-                .memcpy_dtod(&src, &mut dst)
-                .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        }
-    }
-    let (kps_b, nb, _, _) = detect_device(img_b, slot, params)?;
+    let ctx = stream.context().clone();
 
-    let pairs = if na == 0 || nb == 0 {
-        Vec::new()
-    } else {
-        let (_, plan) = slot.as_mut().expect("plan present after detect");
-        let matcher = store.matcher.as_mut().expect("ensured");
-        let a = store
-            .desc_a
-            .as_ref()
-            .expect("ensured")
-            .slice(0..na * DESCR_LEN);
-        let b = plan.descriptors_device().slice(0..nb * DESCR_LEN);
-        matcher
-            .match_descriptors(&ctx, &stream, &a, na, &b, nb, ratio, cross_check)
-            .map_err(err)?
-    };
-
-    let mut pair_flat = Vec::with_capacity(pairs.len() * 2);
-    for p in &pairs {
-        pair_flat.extend_from_slice(p);
-    }
-    // `(0, 2)` rather than `(0, 0)` when nothing matched.
-    let pair_arr = rows_to_numpy(py, pair_flat, 2)?;
-    Ok((
-        keypoints_to_numpy(py, &kps_a)?,
-        keypoints_to_numpy(py, &kps_b)?,
-        pair_arr,
-    ))
-}
-
-type DetectParams = (usize, usize, bool, f64, f64, f64, usize, bool, usize);
-
-/// The host-side keypoints and their count, plus the stream and context the
-/// descriptors were left on — the caller needs both to issue the match.
-type DetectDeviceOut = PyResult<(
-    Vec<SiftKeypoint>,
-    usize,
-    std::sync::Arc<cudarc::driver::CudaStream>,
-    std::sync::Arc<cudarc::driver::CudaContext>,
-)>;
-
-/// Run detection, leaving descriptors in the plan's device buffer.
-fn detect_device(img: &PyImageApi, slot: &mut PlanSlot, p: DetectParams) -> DetectDeviceOut {
-    let src = device_f32c1(img)?;
-    let (stream, ctx) = ensure_plan(src, slot, p)?;
-    let (_, plan) = slot.as_mut().expect("plan just installed");
-    plan.set_fast_descriptor(p.2);
-    let d_src = src
-        .0
-        .as_cudaslice()
-        .ok_or_else(|| PyValueError::new_err("sift: device image has no typed f32 storage"))?;
-    let kps = plan
-        .detect_and_compute_device(&ctx, &stream, d_src)
+    // The matcher's scratch is indexed by keypoint, so it must cover the larger
+    // of the two blocks — which `max_keypoints` bounds, but a caller-supplied
+    // tensor need not obey.
+    store.ensure(stream, na.max(nb).max(max_keypoints))?;
+    let matcher = store.matcher.as_mut().expect("just ensured");
+    let pairs = matcher
+        .match_descriptors(
+            &ctx,
+            stream,
+            &da.slice(0..na * DESCR_LEN),
+            na,
+            &db.slice(0..nb * DESCR_LEN),
+            nb,
+            ratio,
+            cross_check,
+        )
         .map_err(err)?;
-    let n = plan.descriptor_count();
-    Ok((kps, n, stream.clone(), ctx.clone()))
+
+    let flat: Vec<i32> = pairs.iter().flat_map(|p| [p[0], p[1]]).collect();
+    crate::pyutils::rows_to_numpy(py, flat, 2)
 }
 
-/// Descriptor stash and matcher scratch, owned by the Python `Sift` object.
+/// Matcher scratch, owned by the Python `Sift` object so it is allocated once
+/// rather than per matched frame.
 #[derive(Default)]
 pub(crate) struct MatchStore {
-    desc_a: Option<cudarc::driver::CudaSlice<f32>>,
     matcher: Option<SiftMatcher>,
     cap: usize,
 }
 
 impl MatchStore {
-    fn ensure(
-        &mut self,
-        stream: &std::sync::Arc<cudarc::driver::CudaStream>,
-        cap: usize,
-    ) -> PyResult<()> {
-        // Both halves must be present, not just the stash: if a previous call
-        // allocated `desc_a` and then failed to build the matcher, `cap` was
-        // never updated, so a later call for a SMALLER cap would short-circuit
-        // here and leave `matcher` None for the `expect` below.
-        if self.cap >= cap && self.desc_a.is_some() && self.matcher.is_some() {
+    fn ensure(&mut self, stream: &Arc<cudarc::driver::CudaStream>, cap: usize) -> PyResult<()> {
+        // `cap` is checked alongside `is_some` rather than instead of it: if a
+        // previous call failed to build the matcher, `cap` was never updated,
+        // and a later call for a SMALLER cap would short-circuit here and leave
+        // `matcher` None for the `expect` above.
+        if self.cap >= cap && self.matcher.is_some() {
             return Ok(());
         }
-        self.desc_a = Some(
-            stream
-                .alloc_zeros::<f32>(cap * DESCR_LEN)
-                .map_err(|e| PyValueError::new_err(e.to_string()))?,
-        );
         self.matcher = Some(SiftMatcher::new(stream, cap).map_err(err)?);
         self.cap = cap;
         Ok(())
