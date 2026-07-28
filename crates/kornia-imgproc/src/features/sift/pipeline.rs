@@ -163,13 +163,29 @@ fn upsample2x(src: &[f32], sw: usize, sh: usize, dst: &mut [f32], hbuf: &mut [f3
 /// Nearest stride-2 subsample — **not** a blur-and-decimate, which would break
 /// parity with the reference.
 fn downsample(src: &[f32], sw: usize, sh: usize, dst: &mut [f32], dw: usize, dh: usize) {
+    // The only caller passes `dw = sw / 2`, `dh = sh / 2`, and under that the
+    // general rescale index reduces to the even pixel: `sw ∈ {2dw, 2dw+1}`, so
+    // `(x * sw) / dw = 2x + x/dw = 2x` for every `x < dw` (identically for y).
+    // The general form cost a non-pipelined 64-bit `udiv` per output pixel —
+    // ~15 cycles in a loop that is otherwise one load and one store — and this
+    // function sits between two stage probes, so none of it ever showed up in
+    // a breakdown. Keep the general path for any future caller that halves
+    // differently.
+    let halving = dw > 0 && dh > 0 && sw / 2 == dw && sh / 2 == dh;
     dst[..dw * dh]
         .par_chunks_mut(dw)
         .enumerate()
         .for_each(|(y, row)| {
-            let sy = (y * sh) / dh;
-            for (x, o) in row.iter_mut().enumerate() {
-                *o = src[sy * sw + (x * sw) / dw];
+            if halving {
+                let r = &src[(2 * y) * sw..(2 * y) * sw + sw];
+                for (x, o) in row.iter_mut().enumerate() {
+                    *o = r[2 * x];
+                }
+            } else {
+                let sy = (y * sh) / dh;
+                for (x, o) in row.iter_mut().enumerate() {
+                    *o = src[sy * sw + (x * sw) / dw];
+                }
             }
         });
 }

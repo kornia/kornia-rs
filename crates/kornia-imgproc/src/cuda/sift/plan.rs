@@ -458,6 +458,13 @@ impl SiftCuda {
             .min(self.desc_all.len() / DESCR_LEN);
         let ok = stream.clone_dtoh(&self.ori_kp.slice(0..n_ori * ORI_KP_STRIDE))?;
 
+        // Host-only window: the queue is empty from here until the descriptor
+        // launches, so every millisecond in this span is GPU idle time. The
+        // audit found it invisible to the stage probes — the probes bracket
+        // launches — which is why it gets its own timer. No sync needed: there
+        // is nothing in flight to wait for.
+        let th_start = mark(probe);
+
         // first_octave = -1 post-processing: halve position and size, and
         // rewrite the packed octave byte.
         let scale = match self.first_octave {
@@ -487,6 +494,10 @@ impl SiftCuda {
         let order = final_order(&all_kps, self.cfg.n_features);
         let n = order.len().min(n_ori);
         let keypoints: Vec<SiftKeypoint> = order[..n].iter().map(|&i| all_kps[i]).collect();
+
+        let t_host = th_start
+            .map(|t| t.elapsed().as_secs_f64() * 1e3)
+            .unwrap_or(0.0);
 
         // ── Descriptors, for the survivors only ─────────────────────────────
         //
@@ -586,7 +597,7 @@ impl SiftCuda {
         if probe {
             eprintln!(
                 "  stages: blur={t_blur:.1} detect={t_det:.1} orient={t_ori:.1} \
-                 descriptor={t_desc:.1} (ms)"
+                 host={t_host:.1} descriptor={t_desc:.1} (ms)"
             );
         }
         self.n_desc = n;
