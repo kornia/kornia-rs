@@ -140,8 +140,48 @@ fn upsample2x(src: &[f32], sw: usize, sh: usize, dst: &mut [f32], hbuf: &mut [f3
         .enumerate()
         .for_each(|(sy, hrow)| {
             let base = sy * sw;
-            for (x, o) in hrow.iter_mut().enumerate() {
-                let (sx, fx) = tap(x, sw);
+            let row = &src[base..base + sw];
+            let mut x = 0usize;
+
+            // Vector body: away from the two clamped outputs (x = 0 and
+            // x = dw-1) the taps are a fixed two-phase pattern —
+            //   even x = 2m: src[m-1]*0.25 + src[m]*0.75
+            //   odd  x = 2m+1: src[m]*0.75 + src[m+1]*0.25
+            // so four source pixels yield eight outputs: two mul+mul+add
+            // vectors (the scalar's exact expression shape — no FMA, Rust
+            // does not contract) interleaved with vzip. The scalar loop
+            // below remains the head (x < 2), the tail, and the whole row
+            // for the non-NEON build.
+            #[cfg(target_arch = "aarch64")]
+            unsafe {
+                use std::arch::aarch64::*;
+                if sw >= 6 {
+                    let mut m = 1usize;
+                    x = 2;
+                    while m + 5 <= sw {
+                        let am1 = vld1q_f32(row.as_ptr().add(m - 1));
+                        let a = vld1q_f32(row.as_ptr().add(m));
+                        let ap1 = vld1q_f32(row.as_ptr().add(m + 1));
+                        // even: src[m-1]*(1-0.75) + src[m]*0.75
+                        let e = vaddq_f32(vmulq_n_f32(am1, 0.25), vmulq_n_f32(a, 0.75));
+                        // odd: src[m]*(1-0.25) + src[m+1]*0.25
+                        let o = vaddq_f32(vmulq_n_f32(a, 0.75), vmulq_n_f32(ap1, 0.25));
+                        vst1q_f32(hrow.as_mut_ptr().add(x), vzip1q_f32(e, o));
+                        vst1q_f32(hrow.as_mut_ptr().add(x + 4), vzip2q_f32(e, o));
+                        m += 4;
+                        x += 8;
+                    }
+                }
+            }
+
+            for (xx, o) in hrow.iter_mut().enumerate().skip(x) {
+                let (sx, fx) = tap(xx, sw);
+                let sx1 = (sx + 1).min(sw - 1);
+                *o = src[base + sx] * (1.0 - fx) + src[base + sx1] * fx;
+            }
+            // The head (x = 0..2) is not covered by the vector loop.
+            for (xx, o) in hrow.iter_mut().enumerate().take(x.min(2)) {
+                let (sx, fx) = tap(xx, sw);
                 let sx1 = (sx + 1).min(sw - 1);
                 *o = src[base + sx] * (1.0 - fx) + src[base + sx1] * fx;
             }
