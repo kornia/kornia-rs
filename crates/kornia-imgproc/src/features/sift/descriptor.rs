@@ -176,6 +176,14 @@ fn scatter(sc: &DescriptorScratch, len: usize, ori: f32, bins_per_rad: f32, hist
 
                 let mut ib = [0i32; 4];
                 vst1q_s32(ib.as_mut_ptr(), idx);
+                // The bin coordinates come out too, to gate the dead pairs:
+                // the fold only reads cell rows/cols 1..D, so a pair whose
+                // row is 0/D+1 or whose column is 0/D+1 writes memory nothing
+                // ever reads. That is 36% of the pairs on average.
+                let mut rb4 = [0i32; 4];
+                vst1q_s32(rb4.as_mut_ptr(), r0);
+                let mut cb4 = [0i32; 4];
+                vst1q_s32(cb4.as_mut_ptr(), c0);
 
                 // The eight destinations are four *adjacent* pairs — offsets
                 // 0,1 / 10,11 / 60,61 / 70,71 — so each pair can accumulate as
@@ -197,7 +205,18 @@ fn scatter(sc: &DescriptorScratch, len: usize, ori: f32, bins_per_rad: f32, hist
                 let hp = hist.as_mut_ptr();
                 for (t, &base) in ib.iter().enumerate() {
                     let b = base as usize;
+                    // Slot liveness: 0 = (r+1,c+1), 1 = (r+1,c+2),
+                    // 2 = (r+2,c+1), 3 = (r+2,c+2). Skipping a dead slot
+                    // removes only writes to never-read cells; the live
+                    // accumulations keep their exact order, so the result is
+                    // bit-identical.
+                    let (rlo, rhi) = (rb4[t] >= 0, rb4[t] <= D as i32 - 2);
+                    let (clo, chi) = (cb4[t] >= 0, cb4[t] <= D as i32 - 2);
+                    let live = [rlo && clo, rlo && chi, rhi && clo, rhi && chi];
                     for (slot, &o) in OFF.iter().enumerate() {
+                        if !live[slot] {
+                            continue;
+                        }
                         // SAFETY: `rbin`/`cbin` were range-checked during
                         // collection, so `b <= 287` and the widest touched
                         // index is `b + 71 < HISTLEN`.
@@ -244,15 +263,26 @@ fn scatter(sc: &DescriptorScratch, len: usize, ori: f32, bins_per_rad: f32, hist
         let v_rco001 = v_rc00 * obin;
         let v_rco000 = v_rc00 - v_rco001;
 
+        // Same border-ring elision as the vector block above.
+        let (rlo, rhi) = (r0 >= 0, r0 <= D as i32 - 2);
+        let (clo, chi) = (c0 >= 0, c0 <= D as i32 - 2);
         let idx = (((r0 + 1) as usize * (D + 2) + (c0 + 1) as usize) * (N + 2)) + o0 as usize;
-        hist[idx] += v_rco000;
-        hist[idx + 1] += v_rco001;
-        hist[idx + (N + 2)] += v_rco010;
-        hist[idx + (N + 3)] += v_rco011;
-        hist[idx + (D + 2) * (N + 2)] += v_rco100;
-        hist[idx + (D + 2) * (N + 2) + 1] += v_rco101;
-        hist[idx + (D + 3) * (N + 2)] += v_rco110;
-        hist[idx + (D + 3) * (N + 2) + 1] += v_rco111;
+        if rlo && clo {
+            hist[idx] += v_rco000;
+            hist[idx + 1] += v_rco001;
+        }
+        if rlo && chi {
+            hist[idx + (N + 2)] += v_rco010;
+            hist[idx + (N + 3)] += v_rco011;
+        }
+        if rhi && clo {
+            hist[idx + (D + 2) * (N + 2)] += v_rco100;
+            hist[idx + (D + 2) * (N + 2) + 1] += v_rco101;
+        }
+        if rhi && chi {
+            hist[idx + (D + 3) * (N + 2)] += v_rco110;
+            hist[idx + (D + 3) * (N + 2) + 1] += v_rco111;
+        }
         k += 1;
     }
 }
@@ -397,7 +427,10 @@ pub fn compute_descriptor(
         for j in 0..D {
             let idx = ((i + 1) * (D + 2) + (j + 1)) * (N + 2);
             hist[idx] += hist[idx + N];
-            hist[idx + 1] += hist[idx + N + 1];
+            // The reference also folds o-bin N+1 into bin 1, but no scatter can
+            // write it: o0 wraps into 0..N-1, so writes reach offset N at most.
+            // Folding that guaranteed +0.0 is a no-op (all accumulands are
+            // non-negative, so there is no -0.0 for it to normalise).
             for k in 0..N {
                 raw[(i * D + j) * N + k] = hist[idx + k];
             }

@@ -210,15 +210,30 @@ extern "C" __global__ void sift_descriptor(
                 const float v_rco011 = v_rc01 * obin, v_rco010 = v_rc01 - v_rco011;
                 const float v_rco001 = v_rc00 * obin, v_rco000 = v_rc00 - v_rco001;
 
+                // The fold below reads only cell rows/cols 1..DD; the border
+                // ring of the (DD+2)x(DD+2) grid is write-only. With r0,c0 in
+                // -1..DD-1, 36% of these adds land there — skip them. The
+                // guarded adds touch exactly the same live cells in the same
+                // order, so this is bitwise identical.
+                const int rlo = r0 >= 0, rhi = r0 <= DD - 2;
+                const int clo = c0 >= 0, chi = c0 <= DD - 2;
                 const int idx = ((r0 + 1) * (DD + 2) + (c0 + 1)) * (NN + 2) + o0;
-                hist[idx] += v_rco000;
-                hist[idx + 1] += v_rco001;
-                hist[idx + (NN + 2)] += v_rco010;
-                hist[idx + (NN + 3)] += v_rco011;
-                hist[idx + (DD + 2) * (NN + 2)] += v_rco100;
-                hist[idx + (DD + 2) * (NN + 2) + 1] += v_rco101;
-                hist[idx + (DD + 3) * (NN + 2)] += v_rco110;
-                hist[idx + (DD + 3) * (NN + 2) + 1] += v_rco111;
+                if (rlo && clo) {{
+                    hist[idx] += v_rco000;
+                    hist[idx + 1] += v_rco001;
+                }}
+                if (rlo && chi) {{
+                    hist[idx + (NN + 2)] += v_rco010;
+                    hist[idx + (NN + 3)] += v_rco011;
+                }}
+                if (rhi && clo) {{
+                    hist[idx + (DD + 2) * (NN + 2)] += v_rco100;
+                    hist[idx + (DD + 2) * (NN + 2) + 1] += v_rco101;
+                }}
+                if (rhi && chi) {{
+                    hist[idx + (DD + 3) * (NN + 2)] += v_rco110;
+                    hist[idx + (DD + 3) * (NN + 2) + 1] += v_rco111;
+                }}
             }}
         }}
     }}
@@ -229,7 +244,10 @@ extern "C" __global__ void sift_descriptor(
         for (int j = 0; j < DD; j++) {{
             const int idx = ((i + 1) * (DD + 2) + (j + 1)) * (NN + 2);
             hist[idx] += hist[idx + NN];
-            hist[idx + 1] += hist[idx + NN + 1];
+            // The reference also folds o-bin NN+1 into bin 1, but no scatter
+            // can write it: o0 wraps to 0..NN-1, so writes reach NN at most.
+            // Adding that guaranteed +0.0 is a no-op (all accumulands are
+            // non-negative, so no -0.0 exists to be normalised by it).
             for (int kk = 0; kk < NN; kk++)
                 raw[(i * DD + j) * NN + kk] = hist[idx + kk];
         }}
@@ -398,15 +416,28 @@ extern "C" __global__ void sift_descriptor_block(
             const float v_rco011 = v_rc01 * obin, v_rco010 = v_rc01 - v_rco011;
             const float v_rco001 = v_rc00 * obin, v_rco000 = v_rc00 - v_rco001;
 
+            // Skip the 36% of adds that land in the write-only border ring —
+            // the fold reads cell rows/cols 1..DD only. Fewer shared atomics,
+            // and the survivors are the already-contended interior addresses.
+            const int rlo = r0 >= 0, rhi = r0 <= DD - 2;
+            const int clo = c0 >= 0, chi = c0 <= DD - 2;
             const int idx = ((r0 + 1) * (DD + 2) + (c0 + 1)) * OSTRIDE + o0;
-            atomicAdd(&hist[idx], v_rco000);
-            atomicAdd(&hist[idx + 1], v_rco001);
-            atomicAdd(&hist[idx + OSTRIDE], v_rco010);
-            atomicAdd(&hist[idx + OSTRIDE + 1], v_rco011);
-            atomicAdd(&hist[idx + (DD + 2) * OSTRIDE], v_rco100);
-            atomicAdd(&hist[idx + (DD + 2) * OSTRIDE + 1], v_rco101);
-            atomicAdd(&hist[idx + (DD + 3) * OSTRIDE], v_rco110);
-            atomicAdd(&hist[idx + (DD + 3) * OSTRIDE + 1], v_rco111);
+            if (rlo && clo) {{
+                atomicAdd(&hist[idx], v_rco000);
+                atomicAdd(&hist[idx + 1], v_rco001);
+            }}
+            if (rlo && chi) {{
+                atomicAdd(&hist[idx + OSTRIDE], v_rco010);
+                atomicAdd(&hist[idx + OSTRIDE + 1], v_rco011);
+            }}
+            if (rhi && clo) {{
+                atomicAdd(&hist[idx + (DD + 2) * OSTRIDE], v_rco100);
+                atomicAdd(&hist[idx + (DD + 2) * OSTRIDE + 1], v_rco101);
+            }}
+            if (rhi && chi) {{
+                atomicAdd(&hist[idx + (DD + 3) * OSTRIDE], v_rco110);
+                atomicAdd(&hist[idx + (DD + 3) * OSTRIDE + 1], v_rco111);
+            }}
         }}
     }}
     __syncthreads();
@@ -416,7 +447,8 @@ extern "C" __global__ void sift_descriptor_block(
         const int i = cell / DD, j = cell % DD;
         const int idx = ((i + 1) * (DD + 2) + (j + 1)) * OSTRIDE;
         hist[idx] += hist[idx + NN];
-        hist[idx + 1] += hist[idx + NN + 1];
+        // o-bin NN+1 is never written (o0 wraps to 0..NN-1); folding its
+        // guaranteed +0.0 into bin 1 is a no-op. See the exact kernel's note.
         for (int kk = 0; kk < NN; kk++) raw[cell * NN + kk] = hist[idx + kk];
     }}
     __syncthreads();
@@ -618,15 +650,27 @@ extern "C" __global__ void sift_descriptor_fast(
         const float v_rco011 = v_rc01 * obin, v_rco010 = v_rc01 - v_rco011;
         const float v_rco001 = v_rc00 * obin, v_rco000 = v_rc00 - v_rco001;
 
+        // Same border-ring elision as the block kernel: only cell rows/cols
+        // 1..DD are ever read back.
+        const int rlo = r0 >= 0, rhi = r0 <= DD - 2;
+        const int clo = c0 >= 0, chi = c0 <= DD - 2;
         const int idx = ((r0 + 1) * (DD + 2) + (c0 + 1)) * OSTRIDE + o0;
-        atomicAdd(&hist[idx], v_rco000);
-        atomicAdd(&hist[idx + 1], v_rco001);
-        atomicAdd(&hist[idx + OSTRIDE], v_rco010);
-        atomicAdd(&hist[idx + OSTRIDE + 1], v_rco011);
-        atomicAdd(&hist[idx + (DD + 2) * OSTRIDE], v_rco100);
-        atomicAdd(&hist[idx + (DD + 2) * OSTRIDE + 1], v_rco101);
-        atomicAdd(&hist[idx + (DD + 3) * OSTRIDE], v_rco110);
-        atomicAdd(&hist[idx + (DD + 3) * OSTRIDE + 1], v_rco111);
+        if (rlo && clo) {{
+            atomicAdd(&hist[idx], v_rco000);
+            atomicAdd(&hist[idx + 1], v_rco001);
+        }}
+        if (rlo && chi) {{
+            atomicAdd(&hist[idx + OSTRIDE], v_rco010);
+            atomicAdd(&hist[idx + OSTRIDE + 1], v_rco011);
+        }}
+        if (rhi && clo) {{
+            atomicAdd(&hist[idx + (DD + 2) * OSTRIDE], v_rco100);
+            atomicAdd(&hist[idx + (DD + 2) * OSTRIDE + 1], v_rco101);
+        }}
+        if (rhi && chi) {{
+            atomicAdd(&hist[idx + (DD + 3) * OSTRIDE], v_rco110);
+            atomicAdd(&hist[idx + (DD + 3) * OSTRIDE + 1], v_rco111);
+        }}
     }}
     __syncthreads();
 
@@ -634,7 +678,8 @@ extern "C" __global__ void sift_descriptor_fast(
         const int i = cell / DD, j = cell % DD;
         const int idx = ((i + 1) * (DD + 2) + (j + 1)) * OSTRIDE;
         hist[idx] += hist[idx + NN];
-        hist[idx + 1] += hist[idx + NN + 1];
+        // o-bin NN+1 is never written (o0 wraps to 0..NN-1); folding its
+        // guaranteed +0.0 into bin 1 is a no-op. See the exact kernel's note.
         for (int kk = 0; kk < NN; kk++) raw[cell * NN + kk] = hist[idx + kk];
     }}
     __syncthreads();
