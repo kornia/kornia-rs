@@ -22,6 +22,37 @@ before trusting a difference under ~5%.
 | OpenCV (C++) | 5.0.0 (`/mnt/data/ocv5build/install`) |
 | Git commit | 1623345e60 |
 
+## 2026-07-28 audit round (commits b941e2f4..d3dfc7d4)
+
+A three-pass audit (fresh nsys, four finder agents, adversarial skeptic) and
+its implementation. Everything landed is oracle-gated (56/56 bitwise) and the
+matcher's pair set was re-verified identical to cv2's BFMatcher (816 on mh01).
+Measured after, pinned `taskset -c 0-3`, contended host (load ~3):
+
+```text
+CUDA exact            18.6 -> 16.3 ms
+CUDA exact + 500      12.4 -> 12.1 ms
+CUDA fast  + 500       8.4 ->  8.0 ms
+device match (2515x2447, both scans + ratio + readback)  12.8 ms with __dp4a
+```
+
+What landed: dead `ranges` snapshots + dead descriptor-copy memset + env-read
+hoists; the descriptor scatter skips the 36% of writes landing in the
+never-read histogram border ring (both backends, bit-exact); the CPU
+downsample's per-pixel udiv reduced to `2*x` (proof in the source — it was
+invisible to the stage probes); `red[RLEN]` + `__launch_bounds__` +
+incremental sample-index divisions + a one-step `refl101` + a warp-uniform
+blur_h border test; the u8 `__dp4a` matcher (descriptors are exact integers
+0..255, so distances are identical i32s — a representation change, not an
+approximation); the NEON scatter's zip staging moved register-to-register.
+
+One finding was falsified BY implementation and reverted: per-layer
+orientation ranges. `adjustLocalExtrema` reassigns a keypoint's layer during
+refinement, so launch-order slot contiguity does not partition by the refined
+layer that selects the Gaussian image — the oracle budget test caught it at
+472 != 471. Recorded in `sift-audit-2026-07-28.md` with the full verdict
+table and the remaining (unimplemented) items.
+
 ## End to end, mh01_frame1 (752x480)
 
 Detection plus descriptors, median of 9, each engine in its **own process** with
