@@ -251,7 +251,7 @@ fn orientation_block_src_dbg(threads: usize, dbg: bool, fast: bool) -> String {
 
 __device__ __forceinline__ int cv_round_ori(float v) {{ return __float2int_rn(v); }}
 
-extern "C" __global__ void sift_orientation_block(
+extern "C" __global__ void __launch_bounds__(NTHREADS) sift_orientation_block(
     const float* __restrict__ img, int w, int h,
     const float* __restrict__ kp_in, int n_kp, int kp_stride,
     float* __restrict__ out_kp, int* __restrict__ out_count, int max_out,
@@ -296,12 +296,20 @@ extern "C" __global__ void sift_orientation_block(
     const int vec_end = total & ~3;
     __syncthreads();
 
-    for (int base = 0; base < total; base += NTHREADS) {{
+    // (sy, sx) carried incrementally: `nx` is runtime, so s/nx + s%nx was a
+    // full division sequence per sample. The stride is the compile-time
+    // NTHREADS, so one divide per keypoint splits it and the loop pays an add
+    // and a wrap test. The (y, x) each `s` maps to is IDENTICAL, so the serial
+    // fold consumes the same values in the same order — bit-exact.
+    const int stp_y = NTHREADS / nx, stp_x = NTHREADS % nx;
+    int sy = tid / nx, sx = tid % nx;
+    for (int base = 0; base < total; base += NTHREADS,
+         sx += stp_x, sy += stp_y + (sx >= nx), sx -= (sx >= nx) ? nx : 0) {{
         const int s = base + tid;
         int bin = -1;
         float wgt = 0.0f, mag = 0.0f;
         if (s < total) {{
-            const int y = y0 + s / nx, x = x0 + s % nx;
+            const int y = y0 + sy, x = x0 + sx;
             const int i = y - rr, j = x - cc;
             const float dx = img[y * w + x + 1] - img[y * w + x - 1];
             const float dy = img[(y - 1) * w + x] - img[(y + 1) * w + x];

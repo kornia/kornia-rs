@@ -430,20 +430,18 @@ impl SiftCuda {
             if nw == 0 || nh == 0 || octv + 1 >= n_oct {
                 break;
             }
-            launch_sift_downsample_nearest_cuda_view(
-                ctx,
-                stream,
-                &self.pyr[octv][self.cfg.n_octave_layers].slice(0..plane),
-                &mut self.buf_a.slice_mut(0..nw * nh),
-                cw as u32,
-                ch as u32,
-                nw as u32,
-                nh as u32,
-            )?;
+            // Straight into the next octave's layer 0. `split_at_mut` at the
+            // octave boundary lets the source layer and the destination
+            // borrow simultaneously (the blur loop uses the same trick), which
+            // removes the buf_a staging hop and its full-plane
+            // device-to-device copy.
             {
-                let (src_base, l0) = (self.buf_a.slice(0..nw * nh), &mut self.pyr[octv + 1][0]);
-                let mut dst = l0.slice_mut(0..nw * nh);
-                stream.memcpy_dtod(&src_base, &mut dst)?;
+                let (head, rest) = self.pyr.split_at_mut(octv + 1);
+                let src = head[octv][self.cfg.n_octave_layers].slice(0..plane);
+                let mut dst = rest[0][0].slice_mut(0..nw * nh);
+                launch_sift_downsample_nearest_cuda_view(
+                    ctx, stream, &src, &mut dst, cw as u32, ch as u32, nw as u32, nh as u32,
+                )?;
             }
             cw = nw;
             ch = nh;

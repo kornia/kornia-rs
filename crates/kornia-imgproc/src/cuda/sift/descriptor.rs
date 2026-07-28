@@ -335,11 +335,16 @@ fn descriptor_block_src(threads: usize) -> String {
 #define DLEN {dlen}
 #define NTHREADS {threads}
 #define OSTRIDE {ostride}
+// Reduction scratch length: the L2-norm tree reduces DLEN partials, so sizing
+// the scratch to the BLOCK inflated static shared memory by NTHREADS/DLEN
+// (2048 B at 512 threads) and ran log2(NTHREADS/DLEN) tree levels that only
+// added exact zeros. min(NTHREADS, DLEN); both are powers of two.
+#define RLEN (NTHREADS < DLEN ? NTHREADS : DLEN)
 
 __device__ __forceinline__ int cv_round_d(float v) {{ return __float2int_rn(v); }}
 __device__ __forceinline__ int cv_floor_d(float v) {{ return (int)floorf(v); }}
 
-extern "C" __global__ void sift_descriptor_block(
+extern "C" __global__ void __launch_bounds__(NTHREADS) sift_descriptor_block(
     const float* __restrict__ img, int w, int h,
     const float* __restrict__ kp_in, int n_kp, int kp_stride,
     float* __restrict__ out_desc,
@@ -357,7 +362,7 @@ extern "C" __global__ void sift_descriptor_block(
 
     __shared__ float hist[HISTLEN];
     __shared__ float raw[DLEN];
-    __shared__ float red[NTHREADS];
+    __shared__ float red[RLEN];
 
     const float* k = kp_in + (long)t * kp_stride;
     const float ptx = k[0], pty = k[1], scl = k[2], ori = k[3];
@@ -381,11 +386,22 @@ extern "C" __global__ void sift_descriptor_block(
 
     // Flatten the patch so the block strides over it; each thread accumulates
     // into shared memory with atomics.
+    //
+    // (i, j) are carried incrementally instead of recomputed as s/side, s%side:
+    // `side` is a runtime value, so those were a ~20-instruction division
+    // sequence per SAMPLE (~4.6M/frame). The stride per step is the
+    // compile-time NTHREADS, so the carry needs one divide per KEYPOINT to
+    // split it, then an add and a wrap test per step. The sample↔thread map is
+    // unchanged, and it is not contractual anyway — the atomics already admit
+    // any arrival order.
     const int side = 2 * radius + 1;
     const int total = side * side;
-    for (int s = tid; s < total; s += NTHREADS) {{
-        const int i = s / side - radius;
-        const int j = s % side - radius;
+    const int step_i = NTHREADS / side, step_j = NTHREADS % side;
+    int ii = tid / side, jj = tid % side;
+    for (int s = tid; s < total; s += NTHREADS,
+         jj += step_j, ii += step_i + (jj >= side), jj -= (jj >= side) ? side : 0) {{
+        const int i = ii - radius;
+        const int j = jj - radius;
         const float c_rot = j * cos_t - i * sin_t;
         const float r_rot = j * sin_t + i * cos_t;
         const float rbin = r_rot + (float)DD / 2.0f - 0.5f;
@@ -443,22 +459,25 @@ extern "C" __global__ void sift_descriptor_block(
     __syncthreads();
 
     // Fold the circular orientation bins back into the d*d*n array.
-    for (int cell = tid; cell < DD * DD; cell += NTHREADS) {{
+    // One thread per OUTPUT element (128 active) instead of one per cell (16
+    // active, 496 waiting at the barrier). Pure reads of `hist` producing the
+    // identical expression per element; the o-bin NN wrap folds into kk == 0
+    // only, and o-bin NN+1 is never written (o0 wraps to 0..NN-1) so its fold
+    // was a guaranteed +0.0 no-op.
+    for (int e = tid; e < DLEN; e += NTHREADS) {{
+        const int cell = e / NN, kk = e % NN;
         const int i = cell / DD, j = cell % DD;
         const int idx = ((i + 1) * (DD + 2) + (j + 1)) * OSTRIDE;
-        hist[idx] += hist[idx + NN];
-        // o-bin NN+1 is never written (o0 wraps to 0..NN-1); folding its
-        // guaranteed +0.0 into bin 1 is a no-op. See the exact kernel's note.
-        for (int kk = 0; kk < NN; kk++) raw[cell * NN + kk] = hist[idx + kk];
+        raw[e] = kk == 0 ? hist[idx] + hist[idx + NN] : hist[idx + kk];
     }}
     __syncthreads();
 
     // Block-reduced L2 norm, clamp at MAG_THR, renormalise.
     float part = 0.0f;
     for (int i = tid; i < DLEN; i += NTHREADS) part = __fmaf_rn(raw[i], raw[i], part);
-    red[tid] = part;
+    if (tid < RLEN) red[tid] = part;
     __syncthreads();
-    for (int off = NTHREADS / 2; off > 0; off >>= 1) {{
+    for (int off = RLEN / 2; off > 0; off >>= 1) {{
         if (tid < off) red[tid] += red[tid + off];
         __syncthreads();
     }}
@@ -471,9 +490,9 @@ extern "C" __global__ void sift_descriptor_block(
         raw[i] = val;
         part = __fmaf_rn(val, val, part);
     }}
-    red[tid] = part;
+    if (tid < RLEN) red[tid] = part;
     __syncthreads();
-    for (int off = NTHREADS / 2; off > 0; off >>= 1) {{
+    for (int off = RLEN / 2; off > 0; off >>= 1) {{
         if (tid < off) red[tid] += red[tid + off];
         __syncthreads();
     }}
@@ -546,6 +565,11 @@ fn descriptor_fast_src(threads: usize, samp: usize) -> String {
 #define DLEN {dlen}
 #define NTHREADS {threads}
 #define SAMP {samp}
+// Reduction scratch length: the L2-norm tree reduces DLEN partials, so sizing
+// the scratch to the BLOCK inflated static shared memory by NTHREADS/DLEN
+// (2048 B at 512 threads) and ran log2(NTHREADS/DLEN) tree levels that only
+// added exact zeros. min(NTHREADS, DLEN); both are powers of two.
+#define RLEN (NTHREADS < DLEN ? NTHREADS : DLEN)
 // The grid spans the bin range the reject below actually admits, `[-1, DD)`,
 // which is DD+1 bins wide — NOT DD+2. It was DD+2, so `cb` ran to 4.875 while
 // `floor(cb) >= DD` is discarded, and 4 of every 24 steps per axis were
@@ -573,7 +597,7 @@ __device__ __forceinline__ float sift_tex(
     return __fmaf_rn(bot - top, fy, top);
 }}
 
-extern "C" __global__ void sift_descriptor_fast(
+extern "C" __global__ void __launch_bounds__(NTHREADS) sift_descriptor_fast(
     const float* __restrict__ img, int w, int h,
     const float* __restrict__ kp_in, int n_kp, int kp_stride,
     float* __restrict__ out_desc,
@@ -591,7 +615,7 @@ extern "C" __global__ void sift_descriptor_fast(
 
     __shared__ float hist[HISTLEN];
     __shared__ float raw[DLEN];
-    __shared__ float red[NTHREADS];
+    __shared__ float red[RLEN];
 
     const float* k = kp_in + (long)t * kp_stride;
     const float ptx = k[0], pty = k[1], scl = k[2], ori = k[3];
@@ -674,21 +698,24 @@ extern "C" __global__ void sift_descriptor_fast(
     }}
     __syncthreads();
 
-    for (int cell = tid; cell < DD * DD; cell += NTHREADS) {{
+    // One thread per OUTPUT element (128 active) instead of one per cell (16
+    // active, 496 waiting at the barrier). Pure reads of `hist` producing the
+    // identical expression per element; the o-bin NN wrap folds into kk == 0
+    // only, and o-bin NN+1 is never written (o0 wraps to 0..NN-1) so its fold
+    // was a guaranteed +0.0 no-op.
+    for (int e = tid; e < DLEN; e += NTHREADS) {{
+        const int cell = e / NN, kk = e % NN;
         const int i = cell / DD, j = cell % DD;
         const int idx = ((i + 1) * (DD + 2) + (j + 1)) * OSTRIDE;
-        hist[idx] += hist[idx + NN];
-        // o-bin NN+1 is never written (o0 wraps to 0..NN-1); folding its
-        // guaranteed +0.0 into bin 1 is a no-op. See the exact kernel's note.
-        for (int kk = 0; kk < NN; kk++) raw[cell * NN + kk] = hist[idx + kk];
+        raw[e] = kk == 0 ? hist[idx] + hist[idx + NN] : hist[idx + kk];
     }}
     __syncthreads();
 
     float part = 0.0f;
     for (int i = tid; i < DLEN; i += NTHREADS) part = __fmaf_rn(raw[i], raw[i], part);
-    red[tid] = part;
+    if (tid < RLEN) red[tid] = part;
     __syncthreads();
-    for (int off = NTHREADS / 2; off > 0; off >>= 1) {{
+    for (int off = RLEN / 2; off > 0; off >>= 1) {{
         if (tid < off) red[tid] += red[tid + off];
         __syncthreads();
     }}
@@ -701,9 +728,9 @@ extern "C" __global__ void sift_descriptor_fast(
         raw[i] = val;
         part = __fmaf_rn(val, val, part);
     }}
-    red[tid] = part;
+    if (tid < RLEN) red[tid] = part;
     __syncthreads();
-    for (int off = NTHREADS / 2; off > 0; off >>= 1) {{
+    for (int off = RLEN / 2; off > 0; off >>= 1) {{
         if (tid < off) red[tid] += red[tid + off];
         __syncthreads();
     }}

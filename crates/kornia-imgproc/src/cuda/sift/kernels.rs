@@ -40,8 +40,17 @@ pub(crate) fn f32_lit(v: f32) -> String {
 
 const BORDER_HELPERS: &str = r#"
 // Reflect-101 border: ... 2 1 | 0 1 2 ... n-1 | n-2 n-3 ...  (edge not repeated)
+//
+// The one-step closed form covers every overshoot up to n-1 past either edge,
+// which holds for all SIFT blur call sites (taps reach at most n2 <= 13 past
+// an edge and the pipeline floors octaves at 16 px). The while-loop is kept as
+// the general fallback — NVRTC cannot prove the loop terminates in one step,
+// so with it on the hot path every border TAP carried a loop, ~5x the cost of
+// the fast-path tap and a divergence amplifier (audit finding D4).
 __device__ __forceinline__ int refl101(int i, int n) {
     if (n == 1) return 0;
+    const int r = (i < 0) ? -i : ((i >= n) ? 2 * n - i - 2 : i);
+    if (r >= 0 && r < n) return r;
     while (i < 0 || i >= n) { i = (i < 0) ? -i : (2 * n - i - 2); }
     return i;
 }
@@ -93,7 +102,7 @@ __device__ __forceinline__ void up_tab(int d, int n_src, int* sx, float* fx) {
     *sx = s; *fx = f;
 }
 
-extern "C" __global__ void sift_upsample2x(
+extern "C" __global__ void __launch_bounds__(256) sift_upsample2x(
     const float* __restrict__ src, float* __restrict__ dst, int sw, int sh)
 {
     const int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -147,7 +156,7 @@ pub fn blur_h_src(kernel: &[f32]) -> String {
     }
     format!(
         r#"{BORDER_HELPERS}
-extern "C" __global__ void sift_blur_h(
+extern "C" __global__ void __launch_bounds__(256) sift_blur_h(
     const float* __restrict__ src, float* __restrict__ dst, int w, int h)
 {{
     const int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -214,7 +223,7 @@ pub(crate) fn blur_h_tiled_src(kernel: &[f32], p: usize) -> String {
 
     format!(
         r#"{BORDER_HELPERS}
-extern "C" __global__ void sift_blur_h_tiled(
+extern "C" __global__ void __launch_bounds__(256) sift_blur_h_tiled(
     const float* __restrict__ src, float* __restrict__ dst, int w, int h)
 {{
     const int xb = (blockIdx.x * blockDim.x + threadIdx.x) * {p};
@@ -222,7 +231,14 @@ extern "C" __global__ void sift_blur_h_tiled(
     if (xb >= w || y >= h) return;
     const int row = y * w;
 
-    if (xb >= {n2} && xb + {p} - 1 < w - {n2}) {{
+    // Border test at WARP granularity: the per-lane test made warp 0 of every
+    // row execute both the fast and the border path (threads are consecutive
+    // in x, so the test diverges inside the warp). Testing the warp's whole
+    // x-span keeps every warp on one path; edge warps take the border path for
+    // all lanes, which is identical arithmetic with reflected indices, so the
+    // result is bit-identical and only the (already slow) edge warps widen.
+    const int wx0 = (blockIdx.x * blockDim.x + (threadIdx.x & ~31)) * {p};
+    if (wx0 >= {n2} && wx0 + 32 * {p} - 1 < w - {n2}) {{
         const float* __restrict__ s0 = src + row + xb - {n2};
 {loads}{accs}{stores}    }} else {{
         for (int j = 0; j < {p}; ++j) {{
@@ -280,7 +296,7 @@ pub fn blur_v_src(kernel: &[f32]) -> String {
     }
     format!(
         r#"{BORDER_HELPERS}
-extern "C" __global__ void sift_blur_v(
+extern "C" __global__ void __launch_bounds__(256) sift_blur_v(
     const float* __restrict__ src, float* __restrict__ dst, int w, int h)
 {{
     const int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -305,8 +321,12 @@ extern "C" __global__ void sift_blur_v(
 /// difference. Numerically identical to running the two kernels back to back:
 /// the subtract operates on exactly the f32 value the unfused kernel stores.
 pub fn blur_v_dog_src(kernel: &[f32]) -> String {
+    // NOTE: this pattern must match the declaration in `blur_v_src` INCLUDING
+    // its `__launch_bounds__` attribute — a signature edit there that misses
+    // here silently generates an unrenamed kernel (caught by
+    // `blur_v_dog_generates_fused_kernel`).
     let base = blur_v_src(kernel)
-        .replace("void sift_blur_v(", "void sift_blur_v_dog(")
+        .replace("void __launch_bounds__(256) sift_blur_v(", "void __launch_bounds__(256) sift_blur_v_dog(")
         .replace(
             "const float* __restrict__ src, float* __restrict__ dst, int w, int h)",
             "const float* __restrict__ src, float* __restrict__ dst,\n    const float* __restrict__ lower, float* __restrict__ dog, int w, int h)",
@@ -362,7 +382,7 @@ pub(crate) fn blur_hv_fused_src(kernel: &[f32], block_w: usize, block_h: usize) 
 
     format!(
         r#"{BORDER_HELPERS}
-extern "C" __global__ void sift_blur_hv(
+extern "C" __global__ void __launch_bounds__(256) sift_blur_hv(
     const float* __restrict__ src, float* __restrict__ dst, int w, int h)
 {{
     __shared__ float tile[{band} * {block_w}];
@@ -402,7 +422,7 @@ extern "C" __global__ void sift_blur_hv(
 /// break bit equality.
 pub fn downsample_nearest_src() -> String {
     r#"
-extern "C" __global__ void sift_downsample_nearest(
+extern "C" __global__ void __launch_bounds__(256) sift_downsample_nearest(
     const float* __restrict__ src, float* __restrict__ dst,
     int sw, int sh, int dw, int dh)
 {
@@ -434,7 +454,7 @@ extern "C" __global__ void sift_downsample_nearest(
 /// order to mirror here.
 pub fn dog_src() -> String {
     r#"
-extern "C" __global__ void sift_dog(
+extern "C" __global__ void __launch_bounds__(256) sift_dog(
     const float* __restrict__ lower, const float* __restrict__ upper,
     float* __restrict__ dst, int w, int h)
 {
@@ -557,7 +577,7 @@ mod tests {
     fn blur_v_dog_generates_fused_kernel() {
         let k = gaussian_kernel_f32(11, 1.2489995956420898);
         let src = blur_v_dog_src(&k);
-        assert!(src.contains("void sift_blur_v_dog("), "kernel not renamed");
+        assert!(src.contains("sift_blur_v_dog("), "kernel not renamed");
         assert!(
             src.contains("const float* __restrict__ lower"),
             "lower arg missing"
