@@ -65,12 +65,9 @@ pub(crate) type PlanSlot = Option<(PlanKey, SiftCuda)>;
 /// full-resolution planes — so it is rebuilt only when something that changes
 /// its shape changes.
 ///
-/// The returned descriptors are a **fresh device allocation**, not a view into
-/// the plan. The plan has one descriptor buffer and the next detect overwrites
-/// it, so a view would mutate under a caller holding two frames — precisely the
-/// frame-to-frame matching this API exists for. One D2D copy of at most
-/// `n * 128` floats is the price, and it is two orders of magnitude cheaper than
-/// the host round trip it replaces.
+/// `SiftCuda::detect_and_compute` returns an OWNED device descriptor buffer
+/// (the final gather writes each frame into a fresh allocation), so the
+/// `Tensor` takes it over zero-copy — no defensive D2D exists on this path.
 pub(crate) fn sift_cuda_with_plan(
     py: Python<'_>,
     img: &PyImageApi,
@@ -81,53 +78,29 @@ pub(crate) fn sift_cuda_with_plan(
     let (stream, ctx) = ensure_plan(src, slot, p)?;
     let (_, plan) = slot.as_mut().expect("plan just installed");
     plan.set_fast_descriptor(p.fast_descriptor);
-    let d_src = src
-        .0
-        .as_cudaslice()
-        .ok_or_else(|| PyValueError::new_err("sift: device image has no typed f32 storage"))?;
-    let kps = plan.detect_and_compute(&ctx, &stream, d_src).map_err(err)?;
-    let n = plan.descriptor_count();
+    let feats = plan.detect_and_compute(&ctx, &stream, src).map_err(err)?;
+    let n = feats.len();
 
-    let desc = own_descriptors(py, plan, &stream, n)?;
-    Ok((crate::sift::keypoints_to_list(&kps), desc))
-}
-
-/// Copy the plan's descriptor block into a caller-owned device `Tensor` of
-/// shape `(n, 128)` — one row per keypoint, as every consumer expects it.
-///
-/// An empty detection returns a **host** `(0, 128)` tensor: there are no
-/// descriptor bytes to keep on device, and a zero-byte device allocation is not
-/// something CUDA promises to hand back.
-fn own_descriptors(
-    py: Python<'_>,
-    plan: &SiftCuda,
-    stream: &Arc<cudarc::driver::CudaStream>,
-    n: usize,
-) -> PyResult<Py<PyAny>> {
-    let shape = [n, DESCR_LEN];
     let inner = if n == 0 {
-        TensorInnerEnum::F32R2(kornia_tensor::Tensor::<f32, 2>::zeros(shape))
+        // No descriptor bytes exist; a host (0, 128) tensor states that
+        // honestly. (The plan's returned device allocation is a 1-element
+        // placeholder in this case — CUDA does not promise zero-byte
+        // allocations — and it is simply dropped.)
+        TensorInnerEnum::F32R2(kornia_tensor::Tensor::<f32, 2>::zeros([0, DESCR_LEN]))
     } else {
-        // SAFETY: uninitialised is fine — the D2D below overwrites every one of
-        // the `n * DESCR_LEN` elements before anything can read the tensor.
-        // (`alloc_zeros` here was a dead 1.3 MB memset per frame.)
-        let mut dst = unsafe { kornia_tensor::uninit_cuda::<f32, 2>(shape, stream) }
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        stream
-            .memcpy_dtod(
-                &plan.descriptors().slice(0..n * DESCR_LEN),
-                dst.as_cudaslice_mut()
-                    .expect("uninit_cuda builds CudaResource-backed storage"),
-            )
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        TensorInnerEnum::F32R2(dst)
+        TensorInnerEnum::F32R2(kornia_tensor::Tensor::from_cudaslice(
+            feats.descriptors,
+            [n, DESCR_LEN],
+            stream.clone(),
+        ))
     };
-    Ok(PyTensor {
+    let desc = PyTensor {
         inner: Arc::new(inner),
     }
     .into_pyobject(py)?
     .into_any()
-    .unbind())
+    .unbind();
+    Ok((crate::sift::keypoints_to_list(&feats.keypoints), desc))
 }
 
 /// Install a plan for `src` if the current one does not match, returning the

@@ -50,7 +50,7 @@ mod linux {
     use cudarc::driver::CudaContext;
     use kornia_image::{Image, ImageSize};
     use kornia_imgproc::cuda::sift::{
-        FirstOctave, SiftCuda, SiftCudaConfig, SiftKeypoint, SiftMatcher, DESCR_LEN,
+        FirstOctave, SiftCuda, SiftCudaConfig, SiftCudaFeatures, SiftMatcher, DESCR_LEN,
     };
     use kornia_io::v4l::{PixelFormat, V4LCameraConfig, V4lVideoCapture};
 
@@ -134,12 +134,10 @@ mod linux {
             height: h,
         };
 
-        // The previous frame's descriptors have to survive into the next
-        // iteration, but `descriptors()` is invalidated by the next
-        // detect call. One device-to-device copy per frame keeps them alive —
-        // still far cheaper than a round trip through host memory.
-        let mut d_prev = stream.alloc_zeros::<f32>(max_kp * DESCR_LEN)?;
-        let mut prev_kp: Vec<SiftKeypoint> = Vec::new();
+        // Each frame's result OWNS its device descriptors, so keeping the
+        // previous frame alive for matching is just holding the struct — no
+        // copy, no invalidation.
+        let mut prev: Option<SiftCudaFeatures> = None;
 
         println!(
             "SIFT: budget {} | {} descriptor | ratio {}",
@@ -158,8 +156,7 @@ mod linux {
         if let Some(frame) = cam.grab_frame()? {
             luma_to_f32(frame.buffer.as_slice(), &mut gray, w, h);
             let dev = Image::<f32, 1>::from_size_slice(size, &gray)?.to_cuda(&stream)?;
-            let d_gray = dev.0.as_cudaslice().expect("device image");
-            sift.detect_and_compute(&ctx, &stream, d_gray)?;
+            sift.detect_and_compute(&ctx, &stream, &dev)?;
             stream.synchronize()?;
             println!("Kernels compiled.\n");
         }
@@ -182,37 +179,31 @@ mod linux {
             let dev = Image::<f32, 1>::from_size_slice(size, &gray)?.to_cuda(&stream)?;
             let t1 = Instant::now();
 
-            // Detect + describe. Descriptors stay on device.
-            let d_gray = dev.0.as_cudaslice().expect("device image");
-            let kps = sift.detect_and_compute(&ctx, &stream, d_gray)?;
+            // Detect + describe. Descriptors stay on device, owned by `cur`.
+            let cur = sift.detect_and_compute(&ctx, &stream, &dev)?;
             stream.synchronize()?;
             let t2 = Instant::now();
 
             // Match against the previous frame, device to device.
-            let n_cur = sift.descriptor_count();
-            let pairs = if !prev_kp.is_empty() && n_cur > 0 {
-                matcher.match_descriptors(
+            let n_cur = cur.len();
+            let pairs = match &prev {
+                Some(p) if !p.is_empty() && n_cur > 0 => matcher.match_descriptors(
                     &ctx,
                     &stream,
-                    &sift.descriptors().slice(0..n_cur * DESCR_LEN),
+                    &cur.descriptors.slice(0..n_cur * DESCR_LEN),
                     n_cur,
-                    &d_prev.slice(0..prev_kp.len() * DESCR_LEN),
-                    prev_kp.len(),
+                    &p.descriptors.slice(0..p.len() * DESCR_LEN),
+                    p.len(),
                     args.ratio,
                     true,
-                )?
-            } else {
-                Vec::new()
+                )?,
+                _ => Vec::new(),
             };
             let t3 = Instant::now();
 
-            // Carry this frame's descriptors forward for the next iteration.
-            if n_cur > 0 {
-                let src = sift.descriptors().slice(0..n_cur * DESCR_LEN);
-                let mut dst = d_prev.slice_mut(0..n_cur * DESCR_LEN);
-                stream.memcpy_dtod(&src, &mut dst)?;
-            }
-            prev_kp = kps;
+            // This frame simply becomes the previous one; its descriptors come
+            // with it because the result owns them.
+            prev = Some(cur);
 
             t_grab += (t1 - t0).as_secs_f64();
             t_det += (t2 - t1).as_secs_f64();
