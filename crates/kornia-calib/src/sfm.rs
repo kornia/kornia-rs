@@ -15,7 +15,8 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use kornia_3d::ba::{BaObservation, BaParams};
-use kornia_3d::ba_schur::bundle_adjust_schur;
+use kornia_3d::ba::{BaMotionPrior, BaPosePrior};
+use kornia_3d::ba_schur::bundle_adjust_schur_with_all_priors;
 use kornia_3d::camera::PinholeCamera;
 use kornia_3d::pnp::{solve_pnp_ransac, PnPMethod, RansacParams as PnpRansacParams};
 use kornia_3d::pose::{
@@ -69,6 +70,34 @@ pub fn calibrate_features(
     tracks: &[FeatureTrack],
     config: &CalibConfig,
 ) -> Result<RigCalibration, CalibError> {
+    calibrate_features_with_depth(cameras, tags_for_scale, tracks, config, None)
+}
+
+/// [`calibrate_features`] with optional per-observation METRIC depth priors.
+///
+/// `obs_depth` is parallel to `tracks`: `obs_depth[ti][j]` is the measured camera-frame depth in
+/// METRES of `tracks[ti].obs[j]`, or `None` where no measurement exists. When
+/// `config.depth_prior_rel_sigma > 0`, each such measurement becomes a depth residual
+/// `(z_pred − d)/σ` in every bundle adjustment, with `σ = rel_sigma · d`.
+///
+/// Two things this buys that reprojection alone cannot:
+/// 1. **Metric scale without a fiducial.** Monocular reprojection is exactly scale-invariant, so
+///    the gauge has one free DoF that LM navigates by numerical accident. Depth residuals observe
+///    absolute scale directly; the reconstruction lands in metres.
+/// 2. **No scale drift.** Along a no-revisit walkthrough the reconstruction's scale wanders (the
+///    measured symptom: rooms later in a clip reconstructing several times larger than early
+///    ones). Per-observation depth pins the scale of EVERY segment of the chain, not just a
+///    global average.
+///
+/// The seed cloud is pre-scaled to the depth measurements (median ratio) before growth, so the
+/// priors start near-satisfied instead of asking LM to cross a large scale gap.
+pub fn calibrate_features_with_depth(
+    cameras: &[PinholeCamera],
+    tags_for_scale: &[TagObservation],
+    tracks: &[FeatureTrack],
+    config: &CalibConfig,
+    obs_depth: Option<&[Vec<Option<f64>>]>,
+) -> Result<RigCalibration, CalibError> {
     let n_cams = cameras.len();
     let idcam = PinholeCamera::IDENTITY;
     let tcfg = TriangulationConfig {
@@ -87,6 +116,16 @@ pub fn calibrate_features(
                 .collect()
         })
         .collect();
+    // Parallel to `norm`: metric depth per observation, or None. All-None when priors are off, so
+    // downstream indexing never branches on the feature being enabled.
+    let use_depth = config.depth_prior_rel_sigma > 0.0 && obs_depth.is_some();
+    let norm_depth: Vec<Vec<Option<f32>>> = match (use_depth, obs_depth) {
+        (true, Some(d)) => d
+            .iter()
+            .map(|t| t.iter().map(|x| x.map(|v| v as f32)).collect())
+            .collect(),
+        _ => norm.iter().map(|t| vec![None; t.len()]).collect(),
+    };
 
     // Count shared tracks per camera pair to choose the bootstrap pair.
     let mut pair_count: HashMap<(usize, usize), usize> = HashMap::new();
@@ -259,6 +298,41 @@ pub fn calibrate_features(
     let mut point3d: BTreeMap<usize, Vec3F64> = BTreeMap::new();
     triangulate_new(&mut point3d, &norm, &poses, &idcam, &tcfg);
 
+    // Metric prescale of the seed. The bootstrap's unit-baseline gauge can sit orders of magnitude
+    // from metres; asking LM to close that gap through Huber-gated depth residuals is asking it to
+    // climb out of a robust-kernel plateau. Rescaling the seed cloud AND the seed baseline by the
+    // median measured/predicted depth ratio starts the priors near-satisfied.
+    if use_depth && std::env::var_os("KORNIA_CALIB_NO_PRESCALE").is_none() {
+        let mut ratios: Vec<f64> = Vec::new();
+        for (ti, p) in &point3d {
+            for (j, (c, _)) in norm[*ti].iter().enumerate() {
+                let (Some(pose), Some(d)) = (&poses[*c], norm_depth[*ti].get(j).copied().flatten())
+                else {
+                    continue;
+                };
+                let z = pose.transform_point(p).z;
+                if z > 1e-9 && d > 0.0 {
+                    ratios.push(d as f64 / z);
+                }
+            }
+        }
+        if ratios.len() >= 8 {
+            ratios.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let s = ratios[ratios.len() / 2];
+            if s.is_finite() && s > 1e-9 {
+                for p in point3d.values_mut() {
+                    *p = *p * s;
+                }
+                for pose in poses.iter_mut().flatten() {
+                    pose.translation = pose.translation * s;
+                }
+                if std::env::var_os("KORNIA_CALIB_DEBUG").is_some() {
+                    eprintln!("[calib] metric prescale x{s:.4} from {} depth pairs", ratios.len());
+                }
+            }
+        }
+    }
+
     // Growth-time triangulation floor. Creation must be AT LEAST as strict on angle as
     // `filter_points`, or the pair composes into a resurrection loop: the filter drops a point in
     // [config floor, filter floor) and the very next `triangulate_new` — running on the SAME poses,
@@ -281,8 +355,8 @@ pub fn calibrate_features(
     // legitimately rejects, and growth stalls precisely as the reconstruction gets better.
     let mut next_ba = (registered_now(&poses) as f64 * BA_IMAGES_RATIO).max(3.0);
     grow_registrations(
-        &mut poses, &mut point3d, &norm, n_cams, &idcam, &tcfg_grow, 30, 0.0, a0, config,
-        BA_IMAGES_RATIO, &mut next_ba,
+        &mut poses, &mut point3d, &norm, &norm_depth, n_cams, &idcam, &tcfg_grow, config.min_registration_inliers, 0.0, a0,
+        config, BA_IMAGES_RATIO, &mut next_ba,
     );
 
     // --- Bundle adjustment: all track points free, the reference camera (a0) fixed to anchor gauge. ---
@@ -293,18 +367,20 @@ pub fn calibrate_features(
         let pidx = points.len();
         pt_index.insert(*ti, pidx);
         points.push(*p);
-        for (c, nrm) in &norm[*ti] {
+        for (j, (c, nrm)) in norm[*ti].iter().enumerate() {
             if poses[*c].is_none() {
                 continue;
             }
+            let (depth_meas, depth_sigma) =
+                depth_fields(&norm_depth, *ti, j, config);
             obs.push(BaObservation {
                 pose_idx: *c,
                 point_idx: pidx,
                 pixel: [nrm.x as f32, nrm.y as f32],
                 fixed_pose: *c == a0, // reference camera fixed → gauge anchor
                 fixed_point: false,
-                depth_meas: None,
-                depth_sigma: 1.0,
+                depth_meas,
+                depth_sigma,
             });
         }
     }
@@ -312,7 +388,7 @@ pub fn calibrate_features(
         .iter()
         .map(|p| p.unwrap_or(Pose3d::IDENTITY))
         .collect();
-    let res = bundle_adjust_schur(
+    let res = bundle_adjust_schur_with_all_priors(
         &poses_ba,
         &points,
         &obs,
@@ -321,8 +397,16 @@ pub fn calibrate_features(
             max_iterations: config.max_iterations,
             robust: RobustKernelKind::Huber,
             robust_scale_sq: config.robust_scale_sq,
+            // Depth residuals now live in reprojection-like units (see `depth_fields`), so the
+            // Huber knee is 1.345 × the reprojection noise scale, squared.
+            depth_robust_scale_sq: {
+                let sr = (config.max_reprojection_error / 2.0).max(1e-6) as f32;
+                (1.345 * sr) * (1.345 * sr)
+            },
             ..Default::default()
         },
+        up_priors(&poses, config).as_deref(),
+        motion_priors_for(&poses, config).as_deref(),
     )
     .map_err(|e| CalibError::BundleAdjust(format!("{e:?}")))?;
 
@@ -374,8 +458,9 @@ pub fn calibrate_features(
     // keeps the coverage that is real and refuses the rest.
     let added = if config.second_pass {
         grow_registrations(
-            &mut poses, &mut point3d, &norm, n_cams, &idcam, &tcfg_grow, 30, 0.0, a0, config,
-            BA_IMAGES_RATIO, &mut next_ba,
+            &mut poses, &mut point3d, &norm, &norm_depth, n_cams, &idcam, &tcfg_grow,
+            config.min_registration_inliers, 0.0,
+            a0, config, BA_IMAGES_RATIO, &mut next_ba,
         )
     } else {
         0
@@ -398,18 +483,20 @@ pub fn calibrate_features(
             let pidx = points2.len();
             pt_index2.insert(*ti, pidx);
             points2.push(*p);
-            for (c, nrm) in &norm[*ti] {
+            for (j, (c, nrm)) in norm[*ti].iter().enumerate() {
                 if poses[*c].is_none() {
                     continue;
                 }
+                let (depth_meas, depth_sigma) =
+                    depth_fields(&norm_depth, *ti, j, config);
                 obs2.push(BaObservation {
                     pose_idx: *c,
                     point_idx: pidx,
                     pixel: [nrm.x as f32, nrm.y as f32],
                     fixed_pose: *c == a0,
                     fixed_point: false,
-                    depth_meas: None,
-                    depth_sigma: 1.0,
+                    depth_meas,
+                    depth_sigma,
                 });
             }
         }
@@ -417,7 +504,7 @@ pub fn calibrate_features(
             .iter()
             .map(|p| p.unwrap_or(Pose3d::IDENTITY))
             .collect();
-        let res2 = bundle_adjust_schur(
+        let res2 = bundle_adjust_schur_with_all_priors(
             &poses_ba2,
             &points2,
             &obs2,
@@ -426,8 +513,16 @@ pub fn calibrate_features(
                 max_iterations: config.max_iterations,
                 robust: RobustKernelKind::Huber,
                 robust_scale_sq: config.robust_scale_sq,
+            // Depth residuals now live in reprojection-like units (see `depth_fields`), so the
+            // Huber knee is 1.345 × the reprojection noise scale, squared.
+            depth_robust_scale_sq: {
+                let sr = (config.max_reprojection_error / 2.0).max(1e-6) as f32;
+                (1.345 * sr) * (1.345 * sr)
+            },
                 ..Default::default()
             },
+            up_priors(&poses, config).as_deref(),
+        motion_priors_for(&poses, config).as_deref(),
         )
         .map_err(|e| CalibError::BundleAdjust(format!("{e:?}")))?;
         pt_index = pt_index2;
@@ -588,6 +683,32 @@ fn homography_vs_fundamental_ratio(x1: &[Vec2F64], x2: &[Vec2F64], seed: u64) ->
 }
 
 /// How many cameras currently hold a pose.
+/// Depth-prior fields for one observation: `(depth_meas, depth_sigma)`.
+///
+/// The returned sigma is DEFLATED-into-reprojection-units, not the raw metric sigma. The solver's
+/// reprojection residuals are unwhitened normalized-camera values (implicit σ = 1 normalized unit
+/// — i.e. an entire focal length!), while its depth residuals divide by their sigma. Passing the
+/// honest metric sigma therefore makes each depth row carry orders of magnitude more cost than a
+/// reprojection row, and the solve becomes depth-dominated no matter how "loose" the relative
+/// sigma looks — measured: rel_sigma 5.0 (≈ no confidence at all) still halved registration.
+/// Multiplying the sigma by 1/σ_r — where σ_r is the reprojection noise scale in normalized units
+/// (threshold treated as 2σ) — expresses both families in the same implicit unit.
+fn depth_fields(
+    norm_depth: &[Vec<Option<f32>>],
+    ti: usize,
+    j: usize,
+    config: &CalibConfig,
+) -> (Option<f32>, f32) {
+    let rel_sigma = config.depth_prior_rel_sigma;
+    match norm_depth.get(ti).and_then(|t| t.get(j)).copied().flatten() {
+        Some(d) if rel_sigma > 0.0 && d > 0.0 => {
+            let sigma_r = (config.max_reprojection_error / 2.0).max(1e-6) as f32;
+            (Some(d), (rel_sigma as f32) * d / sigma_r)
+        }
+        _ => (None, 0.0),
+    }
+}
+
 fn registered_now(poses: &[Option<Pose3d>]) -> usize {
     poses.iter().filter(|p| p.is_some()).count()
 }
@@ -724,10 +845,78 @@ fn deregister_starved(
 /// joins the problem as a fixed constraint. The gauge anchor stays fixed regardless. Failure is
 /// swallowed: a local refinement that cannot run (too few observations) just leaves the PnP pose
 /// for the next global BA, which is exactly the pre-local-BA behaviour.
+/// Per-pose gravity priors for `bundle_adjust_schur_with_priors`, or `None` when disabled.
+///
+/// The prior direction is `(0, -1, 0)` in the SOLVE frame — the reference camera's own image-up,
+/// since the gauge fixes `a0` at identity. Every camera of a handheld capture shares (roughly)
+/// one physical up, so pulling them all toward the same direction removes RELATIVE pitch/roll
+/// drift; whatever global tilt `a0` itself carries is a gauge choice a caller can rotate away
+/// afterwards. Registered poses only; the anchor gets one too (harmless — its pose is fixed).
+fn up_priors(
+    poses: &[Option<Pose3d>],
+    config: &CalibConfig,
+) -> Option<Vec<Option<BaPosePrior>>> {
+    if config.up_prior_sigma <= 0.0 {
+        return None;
+    }
+    Some(
+        poses
+            .iter()
+            .map(|p| {
+                p.as_ref().map(|_| BaPosePrior {
+                    // No positional anchor: sigma is unused when infinite-like; use a huge sigma
+                    // so the centre residual contributes nothing.
+                    center_world: [0.0; 3],
+                    sigma: 1e6,
+                    up_world: Some([0.0, -1.0, 0.0]),
+                    up_sigma: config.up_prior_sigma as f32,
+                })
+            })
+            .collect(),
+    )
+}
+
+/// Constant-velocity motion priors over consecutive REGISTERED triplets, or `None` when off.
+///
+/// Consecutive in camera-index order (video keyframes are time-ordered), with `alpha` from the
+/// index spacing and triplets spanning a gap larger than 12 indices skipped — a bridge across an
+/// unregistered stretch is not a constant-velocity hypothesis worth asserting. Sigmas are
+/// deflated into reprojection units exactly like the depth priors (see `depth_fields`).
+fn motion_priors_for(poses: &[Option<Pose3d>], config: &CalibConfig) -> Option<Vec<BaMotionPrior>> {
+    if config.motion_prior_sigma <= 0.0 {
+        return None;
+    }
+    let sigma_r = (config.max_reprojection_error / 2.0).max(1e-6);
+    let sp = (config.motion_prior_sigma / sigma_r) as f32;
+    let so = (0.5 * config.motion_prior_sigma / sigma_r) as f32;
+    let reg: Vec<usize> = poses
+        .iter()
+        .enumerate()
+        .filter_map(|(i, p)| p.as_ref().map(|_| i))
+        .collect();
+    let mut out = Vec::new();
+    for w in reg.windows(3) {
+        let (i0, i1, i2) = (w[0], w[1], w[2]);
+        if i2 - i0 > 12 {
+            continue;
+        }
+        out.push(BaMotionPrior {
+            i0,
+            i1,
+            i2,
+            alpha: (i1 - i0) as f32 / (i2 - i0) as f32,
+            position_sigma: sp,
+            orientation_sigma: so,
+        });
+    }
+    (!out.is_empty()).then_some(out)
+}
+
 fn run_local_ba(
     poses: &mut [Option<Pose3d>],
     point3d: &mut BTreeMap<usize, Vec3F64>,
     norm: &[Vec<(usize, Vec2F64)>],
+    norm_depth: &[Vec<Option<f32>>],
     idcam: &PinholeCamera,
     a0: usize,
     c_new: usize,
@@ -769,18 +958,20 @@ fn run_local_ba(
         let pidx = points.len();
         points.push(*p);
         pt_index.insert(*ti, pidx);
-        for (c, nrm) in track {
+        for (j, (c, nrm)) in track.iter().enumerate() {
             if poses[*c].is_none() {
                 continue;
             }
+            let (depth_meas, depth_sigma) =
+                depth_fields(norm_depth, *ti, j, config);
             obs.push(BaObservation {
                 pose_idx: *c,
                 point_idx: pidx,
                 pixel: [nrm.x as f32, nrm.y as f32],
                 fixed_pose: !is_free(*c),
                 fixed_point: false,
-                depth_meas: None,
-                depth_sigma: 0.0,
+                depth_meas,
+                depth_sigma,
             });
         }
     }
@@ -789,7 +980,7 @@ fn run_local_ba(
     }
 
     let poses_ba: Vec<Pose3d> = poses.iter().map(|p| p.unwrap_or(Pose3d::IDENTITY)).collect();
-    let Ok(res) = bundle_adjust_schur(
+    let Ok(res) = bundle_adjust_schur_with_all_priors(
         &poses_ba,
         &points,
         &obs,
@@ -798,8 +989,16 @@ fn run_local_ba(
             max_iterations: LOCAL_BA_ITERATIONS,
             robust: RobustKernelKind::Huber,
             robust_scale_sq: config.robust_scale_sq,
+            // Depth residuals now live in reprojection-like units (see `depth_fields`), so the
+            // Huber knee is 1.345 × the reprojection noise scale, squared.
+            depth_robust_scale_sq: {
+                let sr = (config.max_reprojection_error / 2.0).max(1e-6) as f32;
+                (1.345 * sr) * (1.345 * sr)
+            },
             ..Default::default()
         },
+        up_priors(poses, config).as_deref(),
+        motion_priors_for(poses, config).as_deref(),
     ) else {
         return;
     };
@@ -820,6 +1019,7 @@ fn run_global_ba(
     poses: &mut [Option<Pose3d>],
     point3d: &mut BTreeMap<usize, Vec3F64>,
     norm: &[Vec<(usize, Vec2F64)>],
+    norm_depth: &[Vec<Option<f32>>],
     idcam: &PinholeCamera,
     a0: usize,
     config: &CalibConfig,
@@ -831,18 +1031,20 @@ fn run_global_ba(
         let pidx = points.len();
         pt_index.insert(*ti, pidx);
         points.push(*p);
-        for (c, nrm) in &norm[*ti] {
+        for (j, (c, nrm)) in norm[*ti].iter().enumerate() {
             if poses[*c].is_none() {
                 continue;
             }
+            let (depth_meas, depth_sigma) =
+                depth_fields(norm_depth, *ti, j, config);
             obs.push(BaObservation {
                 pose_idx: *c,
                 point_idx: pidx,
                 pixel: [nrm.x as f32, nrm.y as f32],
                 fixed_pose: *c == a0,
                 fixed_point: false,
-                depth_meas: None,
-                depth_sigma: 0.0,
+                depth_meas,
+                depth_sigma,
             });
         }
     }
@@ -850,7 +1052,7 @@ fn run_global_ba(
         return Err(CalibError::BundleAdjust("nothing to optimize".into()));
     }
     let poses_ba: Vec<Pose3d> = poses.iter().map(|p| p.unwrap_or(Pose3d::IDENTITY)).collect();
-    let res = bundle_adjust_schur(
+    let res = bundle_adjust_schur_with_all_priors(
         &poses_ba,
         &points,
         &obs,
@@ -859,8 +1061,16 @@ fn run_global_ba(
             max_iterations: config.max_iterations,
             robust: RobustKernelKind::Huber,
             robust_scale_sq: config.robust_scale_sq,
+            // Depth residuals now live in reprojection-like units (see `depth_fields`), so the
+            // Huber knee is 1.345 × the reprojection noise scale, squared.
+            depth_robust_scale_sq: {
+                let sr = (config.max_reprojection_error / 2.0).max(1e-6) as f32;
+                (1.345 * sr) * (1.345 * sr)
+            },
             ..Default::default()
         },
+        up_priors(poses, config).as_deref(),
+        motion_priors_for(poses, config).as_deref(),
     )
     .map_err(|e| CalibError::BundleAdjust(format!("{e:?}")))?;
 
@@ -888,6 +1098,7 @@ fn grow_registrations(
     poses: &mut [Option<Pose3d>],
     point3d: &mut BTreeMap<usize, Vec3F64>,
     norm: &[Vec<(usize, Vec2F64)>],
+    norm_depth: &[Vec<Option<f32>>],
     n_cams: usize,
     idcam: &PinholeCamera,
     tcfg: &TriangulationConfig,
@@ -1054,7 +1265,7 @@ fn grow_registrations(
                 // Refine the pose against the existing map BEFORE triangulating from it — points
                 // created off a raw linear-PnP pose inherit its error and then feed the next
                 // view's PnP (see `run_local_ba`).
-                run_local_ba(poses, point3d, norm, idcam, a0, c, config);
+                run_local_ba(poses, point3d, norm, norm_depth, idcam, a0, c, config);
                 let before = point3d.len();
                 triangulate_new(point3d, norm, &poses, idcam, tcfg);
                 // A camera that could not register earlier may well register now: each successful
@@ -1083,7 +1294,7 @@ fn grow_registrations(
                 // rarely once the map is large.
                 if ba_every > 0.0
                     && registered_now(poses) as f64 >= *next_ba
-                    && run_global_ba(poses, point3d, norm, idcam, a0, config).is_ok()
+                    && run_global_ba(poses, point3d, norm, norm_depth, idcam, a0, config).is_ok()
                 {
                     *next_ba = (registered_now(poses) as f64 * ba_every).max(*next_ba + 1.0);
                     // COLMAP's iterate step: BA → filter → retriangulate. Filtering after the

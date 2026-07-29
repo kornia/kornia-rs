@@ -77,6 +77,36 @@ pub struct CalibConfig {
     /// residual exceeds `median + x84_k·1.4826·MAD` are dropped before the final Cauchy pass. `2.5`
     /// is the standard X84 value; fixed board/tag corners (the gauge) are never dropped.
     pub x84_k: f64,
+    /// Gravity-prior strength for video reconstruction: standard deviation (unit-vector units) of
+    /// a per-pose prior pulling each camera's image-up toward the reference camera's image-up.
+    ///
+    /// `0` disables (the rig-calibration default — rig cameras are NOT all upright). For handheld
+    /// walkthrough video this is the only absolute-orientation observation the capture carries:
+    /// with no revisits, rotational drift accumulates freely along the chain (measured 30 degrees
+    /// of pitch/roll drift across a 45 s clip), and no amount of reprojection cost can see it.
+    /// `0.25` tolerates ~14 degrees of genuine hand tilt at 1 sigma.
+    pub up_prior_sigma: f64,
+    /// Relative sigma of metric depth priors (`σ = rel · d`); 0 disables. See
+    /// `calibrate_features_with_depth`. `0.15` trusts a monocular depth network to ~15%.
+    pub depth_prior_rel_sigma: f64,
+    /// Constant-velocity motion-prior sigma over consecutive registered triplets; 0 disables.
+    ///
+    /// The value is the sigma of the translation norm-RATIO residual (unitless, see
+    /// `BaMotionPrior`); the angular-velocity sigma is derived as half of it in radians. `0.1`
+    /// tolerates ~10% deviation from constant-velocity at 1 sigma — loose enough for a human
+    /// walking pace, tight enough to suppress the frame-to-frame scale/rotation jitter that
+    /// accumulates into drift on GPS-less no-revisit video.
+    pub motion_prior_sigma: f64,
+    /// Absolute PnP inlier count required to register a view (COLMAP's
+    /// `abs_pose_min_num_inliers`, default 30).
+    ///
+    /// 30 is calibrated for COLMAP-resolution imagery. On low-resolution video the correspondence
+    /// pool at hard transitions (blurred doorway pans) runs 40-70, and the measured margin at the
+    /// gate can be ZERO — one clip's coverage hinged on a boundary view passing with exactly 30
+    /// inliers, and any perturbation (e.g. enabling depth priors, which trade a few percent of
+    /// local fit) collapsed 190/200 to 88/200. The post-BA filter + de-registration hygiene is
+    /// what polices bad registrations now; the gate only needs to reject garbage.
+    pub min_registration_inliers: usize,
 }
 
 impl CalibConfig {
@@ -89,6 +119,10 @@ impl CalibConfig {
             min_parallax_deg: 0.2,
             max_reprojection_error: 0.01,
             x84_k: 2.5,
+            up_prior_sigma: 0.0,
+            depth_prior_rel_sigma: 0.0,
+            motion_prior_sigma: 0.0,
+            min_registration_inliers: 30,
             second_pass: false,
             seed_rank: 0,
         }

@@ -42,7 +42,7 @@ use faer::Mat;
 use kornia_algebra::{Mat3AF32, Mat3F64, Vec3AF32, Vec3F64, SE3F32, SO3F32};
 use thiserror::Error;
 
-use crate::ba::{BaError, BaObservation, BaParams, BaPosePrior, BaResult};
+use crate::ba::{BaError, BaMotionPrior, BaObservation, BaParams, BaPosePrior, BaResult};
 use crate::camera::PinholeCamera;
 use crate::pose::Pose3d;
 use crate::ransac::RobustKernelKind;
@@ -64,6 +64,88 @@ pub enum SchurBaError {
 }
 
 // ── f32 ↔ f64 conversion helpers (shared shape with ba.rs) ───────────────
+
+
+/// 6-vector residual of one motion prior on the CURRENT pose estimates.
+///
+/// Layout: `[t_ratio, 0, 0, w01 − α·w02] / σ` (ratio branch) or
+/// `[α(C2−C0) − (C1−C0), w01 − α·w02] / σ` when `C0 ≈ C2`. `C` are camera CENTRES (−Rᵀt), the
+/// physically meaningful quantity; `w` are SO(3) logs of the relative rotations.
+fn motion_prior_residual(p0: &SE3F32, p1: &SE3F32, p2: &SE3F32, mp: &BaMotionPrior) -> [f32; 6] {
+    let centre = |p: &SE3F32| -> [f32; 3] {
+        let rm = p.r.matrix();
+        let t = p.t;
+        let (c0, c1, c2) = (rm.col(0), rm.col(1), rm.col(2));
+        [
+            -(c0.x * t.x + c0.y * t.y + c0.z * t.z),
+            -(c1.x * t.x + c1.y * t.y + c1.z * t.z),
+            -(c2.x * t.x + c2.y * t.y + c2.z * t.z),
+        ]
+    };
+    // SO(3) log of Ra · Rb^T, via the axis-angle (Rodrigues) formula on the composed matrix.
+    let rel_log = |a: &SE3F32, b: &SE3F32| -> [f32; 3] {
+        let (ra, rb) = (a.r.matrix(), b.r.matrix());
+        // m = Ra · Rb^T  — element (i,j) = sum_k Ra[i,k]·Rb[j,k]
+        let get = |m: &kornia_algebra::Mat3AF32, i: usize, j: usize| -> f32 {
+            let c = m.col(j);
+            match i {
+                0 => c.x,
+                1 => c.y,
+                _ => c.z,
+            }
+        };
+        let mut m = [[0.0f32; 3]; 3];
+        for i in 0..3 {
+            for j in 0..3 {
+                let mut sacc = 0.0;
+                for k in 0..3 {
+                    sacc += get(&ra, i, k) * get(&rb, j, k);
+                }
+                m[i][j] = sacc;
+            }
+        }
+        let tr = (m[0][0] + m[1][1] + m[2][2]).clamp(-1.0, 3.0);
+        let cos_t = ((tr - 1.0) * 0.5).clamp(-1.0, 1.0);
+        let theta = cos_t.acos();
+        if theta < 1e-6 {
+            return [
+                0.5 * (m[2][1] - m[1][2]),
+                0.5 * (m[0][2] - m[2][0]),
+                0.5 * (m[1][0] - m[0][1]),
+            ];
+        }
+        let k = 0.5 * theta / theta.sin().max(1e-9);
+        [
+            k * (m[2][1] - m[1][2]),
+            k * (m[0][2] - m[2][0]),
+            k * (m[1][0] - m[0][1]),
+        ]
+    };
+
+    let (c0, c1, c2) = (centre(p0), centre(p1), centre(p2));
+    let d01 = [c1[0] - c0[0], c1[1] - c0[1], c1[2] - c0[2]];
+    let d02 = [c2[0] - c0[0], c2[1] - c0[1], c2[2] - c0[2]];
+    let n01 = (d01[0] * d01[0] + d01[1] * d01[1] + d01[2] * d01[2]).sqrt();
+    let n02 = (d02[0] * d02[0] + d02[1] * d02[1] + d02[2] * d02[2]).sqrt();
+    let inv_sp = 1.0 / mp.position_sigma.max(1e-6);
+    let inv_so = 1.0 / mp.orientation_sigma.max(1e-6);
+
+    let mut r = [0.0f32; 6];
+    if n02 > 1e-6 {
+        r[0] = (mp.alpha - n01 / n02) * inv_sp;
+    } else {
+        // Stationary endpoints: fall back to the position difference (no scale in play).
+        r[0] = (mp.alpha * d02[0] - d01[0]) * inv_sp;
+        r[1] = (mp.alpha * d02[1] - d01[1]) * inv_sp;
+        r[2] = (mp.alpha * d02[2] - d01[2]) * inv_sp;
+    }
+    let w01 = rel_log(p1, p0);
+    let w02 = rel_log(p2, p0);
+    r[3] = (w01[0] - mp.alpha * w02[0]) * inv_so;
+    r[4] = (w01[1] - mp.alpha * w02[1]) * inv_so;
+    r[5] = (w01[2] - mp.alpha * w02[2]) * inv_so;
+    r
+}
 
 fn pose_to_se3(pose: &Pose3d) -> SE3F32 {
     let r = Mat3AF32::from_cols(
@@ -390,6 +472,36 @@ pub fn bundle_adjust_schur_with_priors(
     params: &BaParams,
     pose_priors: Option<&[Option<BaPosePrior>]>,
 ) -> Result<BaResult, SchurBaError> {
+    bundle_adjust_schur_with_all_priors(
+        poses,
+        points,
+        observations,
+        camera,
+        params,
+        pose_priors,
+        None,
+    )
+}
+
+/// [`bundle_adjust_schur_with_priors`] plus constant-velocity motion priors over shot triplets
+/// (see [`BaMotionPrior`]).
+///
+/// Motion residuals couple THREE pose blocks, so unlike every other residual family here they
+/// contribute off-diagonal pose-pose blocks to the reduced camera system. Their Jacobians are
+/// obtained by finite differences over the solver's own retraction — the residual (a norm ratio
+/// composed with an SO(3) log) has an unpleasant closed form, the FD cost is negligible
+/// (~tens of triplets × 19 residual evaluations), and using `retract` itself guarantees the
+/// perturbation convention can never drift out of sync with the analytic residuals.
+#[allow(clippy::too_many_arguments)]
+pub fn bundle_adjust_schur_with_all_priors(
+    poses: &[Pose3d],
+    points: &[Vec3F64],
+    observations: &[BaObservation],
+    camera: &PinholeCamera,
+    params: &BaParams,
+    pose_priors: Option<&[Option<BaPosePrior>]>,
+    motion_priors: Option<&[BaMotionPrior]>,
+) -> Result<BaResult, SchurBaError> {
     // Validate prior slice length matches poses.
     if let Some(pp) = pose_priors {
         if pp.len() != poses.len() {
@@ -493,6 +605,26 @@ pub fn bundle_adjust_schur_with_priors(
         };
         let cauchy_w = |r_sq: f32| -> f32 {
             let s2 = robust_scale * robust_scale;
+            s2 / (s2 + r_sq)
+        };
+        // Depth residuals are σ-whitened (1.0 == one standard deviation) while reprojection
+        // residuals are in normalized-camera units — a shared knee treats a 1σ depth measurement
+        // as a gross outlier. See `BaParams::depth_robust_scale_sq`.
+        let depth_scale = if params.depth_robust_scale_sq > 0.0 {
+            params.depth_robust_scale_sq.sqrt()
+        } else {
+            robust_scale
+        };
+        let huber_w_depth = |r_sq: f32| -> f32 {
+            let r_norm = r_sq.sqrt();
+            if r_norm <= depth_scale {
+                1.0
+            } else {
+                depth_scale / r_norm
+            }
+        };
+        let cauchy_w_depth = |r_sq: f32| -> f32 {
+            let s2 = depth_scale * depth_scale;
             s2 / (s2 + r_sq)
         };
 
@@ -614,8 +746,8 @@ pub fn bundle_adjust_schur_with_priors(
                 let r_sq_d = r_z * r_z;
                 let w_d = match robust {
                     RobustKernelKind::Identity => 1.0,
-                    RobustKernelKind::Huber => huber_w(r_sq_d),
-                    RobustKernelKind::Cauchy | RobustKernelKind::Tukey => cauchy_w(r_sq_d),
+                    RobustKernelKind::Huber => huber_w_depth(r_sq_d),
+                    RobustKernelKind::Cauchy | RobustKernelKind::Tukey => cauchy_w_depth(r_sq_d),
                 };
                 cost += 0.5 * w_d * r_sq_d;
                 n_depth_obs_iter += 1;
@@ -783,6 +915,154 @@ pub fn bundle_adjust_schur_with_priors(
                         gp[ii] -= w_p * row[ii] * r_pos[r_idx];
                     }
                 }
+
+                // ── Optional gravity (up-vector) prior ────────────────────
+                // u_pred = R^T · (0,−1,0): the camera's image-up expressed in
+                // the world. For a fixed camera-frame vector v, this solver's
+                // convention gives ∂(R^T v)/∂ω = +[R^T v]× and no ρ coupling —
+                // the same pattern the centre prior's ω-part follows (its
+                // [C]× IS [R^T(−t)]×). Purely rotational, so it augments only
+                // A_ii like the centre prior.
+                if let Some(upw) = prior.up_world {
+                    let inv_su = 1.0_f32 / prior.up_sigma.max(1e-6);
+                    // u_pred = R^T · (0,−1,0) = −(row 1 of R) = −(r01, r11, r21),
+                    // i.e. the negated middle entries of each column.
+                    let u_pred = [-r_col0.y, -r_col1.y, -r_col2.y];
+                    let r_up = [
+                        (u_pred[0] - upw[0]) * inv_su,
+                        (u_pred[1] - upw[1]) * inv_su,
+                        (u_pred[2] - upw[2]) * inv_su,
+                    ];
+                    let r_sq_u = r_up[0] * r_up[0] + r_up[1] * r_up[1] + r_up[2] * r_up[2];
+                    let w_u = match robust {
+                        RobustKernelKind::Identity => 1.0,
+                        RobustKernelKind::Huber => huber_w(r_sq_u),
+                        RobustKernelKind::Cauchy | RobustKernelKind::Tukey => cauchy_w(r_sq_u),
+                    };
+                    cost += 0.5 * w_u * r_sq_u;
+
+                    let (ux, uy, uz) = (u_pred[0], u_pred[1], u_pred[2]);
+                    // Rows of [u]× scaled by 1/σ, ρ-part zero.
+                    let j_up: [f32; 18] = [
+                        0.0, 0.0, 0.0, 0.0, -uz * inv_su, uy * inv_su,
+                        0.0, 0.0, 0.0, uz * inv_su, 0.0, -ux * inv_su,
+                        0.0, 0.0, 0.0, -uy * inv_su, ux * inv_su, 0.0,
+                    ];
+                    let ab = &mut a_blocks[pli_u];
+                    for r_idx in 0..3 {
+                        let row = &j_up[r_idx * 6..(r_idx + 1) * 6];
+                        for ii in 0..6 {
+                            for kk in 0..6 {
+                                ab[ii * 6 + kk] += w_u * row[ii] * row[kk];
+                            }
+                        }
+                    }
+                    for r_idx in 0..3 {
+                        let row = &j_up[r_idx * 6..(r_idx + 1) * 6];
+                        for ii in 0..6 {
+                            gp[ii] -= w_u * row[ii] * r_up[r_idx];
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Motion priors (constant-velocity triplets) ──────────────────
+        // FD Jacobians over the solver's own retraction; residuals whitened by their sigmas, so
+        // gate with the depth-family knee (same "whitened units" family — see
+        // `BaParams::depth_robust_scale_sq` for why they must not share the reprojection knee).
+        let mut h_offdiag: std::collections::HashMap<(usize, usize), [f32; 36]> =
+            std::collections::HashMap::new();
+        if let Some(mps) = motion_priors {
+            const FD_EPS: f32 = 1e-4;
+            for mp in mps {
+                if mp.i0 >= p_total || mp.i1 >= p_total || mp.i2 >= p_total {
+                    continue;
+                }
+                let tri = [mp.i0, mp.i1, mp.i2];
+                let locs: Vec<i64> = tri.iter().map(|&g| pose_local[g]).collect();
+                if locs.iter().all(|&l| l < 0) {
+                    continue; // fully fixed triplet constrains nothing
+                }
+                let r0 = motion_prior_residual(&se3s[mp.i0], &se3s[mp.i1], &se3s[mp.i2], mp);
+                let r_sq_m: f32 = r0.iter().map(|v| v * v).sum();
+                let w_m = match robust {
+                    RobustKernelKind::Identity => 1.0,
+                    RobustKernelKind::Huber => huber_w_depth(r_sq_m),
+                    RobustKernelKind::Cauchy | RobustKernelKind::Tukey => cauchy_w_depth(r_sq_m),
+                };
+                cost += 0.5 * w_m * r_sq_m;
+
+                // J: 6 residual rows × (3 poses × 6 params), FD one param at a time.
+                let mut jac = [[0.0f32; 18]; 6];
+                for (pi, &g) in tri.iter().enumerate() {
+                    if locs[pi] < 0 {
+                        continue;
+                    }
+                    for k in 0..6 {
+                        let mut delta = [0.0f32; 6];
+                        delta[k] = FD_EPS;
+                        let pert = se3s[g].retract(&delta);
+                        let refs = [
+                            if pi == 0 { &pert } else { &se3s[mp.i0] },
+                            if pi == 1 { &pert } else { &se3s[mp.i1] },
+                            if pi == 2 { &pert } else { &se3s[mp.i2] },
+                        ];
+                        let rp = motion_prior_residual(refs[0], refs[1], refs[2], mp);
+                        for row in 0..6 {
+                            jac[row][pi * 6 + k] = (rp[row] - r0[row]) / FD_EPS;
+                        }
+                    }
+                }
+
+                // Accumulate JᵀJ (per pose-pair block) and Jᵀr (per pose).
+                for (a, &ga) in tri.iter().enumerate() {
+                    let la = locs[a];
+                    if la < 0 {
+                        continue;
+                    }
+                    let la = la as usize;
+                    let _ = ga;
+                    // Gradient.
+                    let gp = &mut g_pose[la];
+                    for i in 0..6 {
+                        let mut acc = 0.0f32;
+                        for row in 0..6 {
+                            acc += jac[row][a * 6 + i] * r0[row];
+                        }
+                        gp[i] -= w_m * acc;
+                    }
+                    for (b, &gb) in tri.iter().enumerate() {
+                        let lb = locs[b];
+                        if lb < 0 {
+                            continue;
+                        }
+                        let lb = lb as usize;
+                        let _ = gb;
+                        // 6×6 block JaᵀJb.
+                        let mut blk = [0.0f32; 36];
+                        for i in 0..6 {
+                            for j in 0..6 {
+                                let mut acc = 0.0f32;
+                                for row in 0..6 {
+                                    acc += jac[row][a * 6 + i] * jac[row][b * 6 + j];
+                                }
+                                blk[i * 6 + j] = w_m * acc;
+                            }
+                        }
+                        if la == lb {
+                            let ab = &mut a_blocks[la];
+                            for x in 0..36 {
+                                ab[x] += blk[x];
+                            }
+                        } else {
+                            let e = h_offdiag.entry((la, lb)).or_insert([0.0f32; 36]);
+                            for x in 0..36 {
+                                e[x] += blk[x];
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -819,6 +1099,15 @@ pub fn bundle_adjust_schur_with_priors(
             }
             for i in 0..6 {
                 m_vec[k * 6 + i] = g_pose[k][i] as f64;
+            }
+        }
+
+        // Motion-prior off-diagonal pose-pose blocks (already weighted).
+        for ((la, lb), blk) in &h_offdiag {
+            for i in 0..6 {
+                for j in 0..6 {
+                    m_mat[(la * 6 + i, lb * 6 + j)] += blk[i * 6 + j] as f64;
+                }
             }
         }
 
@@ -994,8 +1283,8 @@ pub fn bundle_adjust_schur_with_priors(
                 let r_sq_d = r_z * r_z;
                 let w_d = match robust {
                     RobustKernelKind::Identity => 1.0,
-                    RobustKernelKind::Huber => huber_w(r_sq_d),
-                    RobustKernelKind::Cauchy | RobustKernelKind::Tukey => cauchy_w(r_sq_d),
+                    RobustKernelKind::Huber => huber_w_depth(r_sq_d),
+                    RobustKernelKind::Cauchy | RobustKernelKind::Tukey => cauchy_w_depth(r_sq_d),
                 };
                 new_cost += 0.5 * w_d * r_sq_d;
             }
@@ -1034,6 +1323,48 @@ pub fn bundle_adjust_schur_with_priors(
                     RobustKernelKind::Cauchy | RobustKernelKind::Tukey => cauchy_w(r_sq_p),
                 };
                 new_cost += 0.5 * w_p * r_sq_p;
+
+                // Up-prior contribution — the accept/reject decision must see the
+                // same objective the linearisation minimised or the LM loop
+                // rejects every step that trades reprojection for uprightness.
+                if let Some(upw) = prior.up_world {
+                    let inv_su = 1.0_f32 / prior.up_sigma.max(1e-6);
+                    let u_pred = [-r_col0.y, -r_col1.y, -r_col2.y];
+                    let ru0 = (u_pred[0] - upw[0]) * inv_su;
+                    let ru1 = (u_pred[1] - upw[1]) * inv_su;
+                    let ru2 = (u_pred[2] - upw[2]) * inv_su;
+                    let r_sq_u = ru0 * ru0 + ru1 * ru1 + ru2 * ru2;
+                    let w_u = match robust {
+                        RobustKernelKind::Identity => 1.0,
+                        RobustKernelKind::Huber => huber_w(r_sq_u),
+                        RobustKernelKind::Cauchy | RobustKernelKind::Tukey => cauchy_w(r_sq_u),
+                    };
+                    new_cost += 0.5 * w_u * r_sq_u;
+                }
+            }
+        }
+
+        if let Some(mps) = motion_priors {
+            for mp in mps {
+                if mp.i0 >= p_total || mp.i1 >= p_total || mp.i2 >= p_total {
+                    continue;
+                }
+                if [mp.i0, mp.i1, mp.i2].iter().all(|&g| pose_local[g] < 0) {
+                    continue;
+                }
+                let r = motion_prior_residual(
+                    &se3s_trial[mp.i0],
+                    &se3s_trial[mp.i1],
+                    &se3s_trial[mp.i2],
+                    mp,
+                );
+                let r_sq_m: f32 = r.iter().map(|v| v * v).sum();
+                let w_m = match robust {
+                    RobustKernelKind::Identity => 1.0,
+                    RobustKernelKind::Huber => huber_w_depth(r_sq_m),
+                    RobustKernelKind::Cauchy | RobustKernelKind::Tukey => cauchy_w_depth(r_sq_m),
+                };
+                new_cost += 0.5 * w_m * r_sq_m;
             }
         }
 
@@ -1541,6 +1872,8 @@ mod tests {
                 Some(BaPosePrior {
                     center_world: [c.x as f32, c.y as f32, c.z as f32],
                     sigma: 0.05,
+                    up_world: None,
+                    up_sigma: 0.0,
                 })
             })
             .collect();

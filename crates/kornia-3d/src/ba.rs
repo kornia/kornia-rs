@@ -111,12 +111,59 @@ pub struct BaPosePrior {
     /// Standard deviation (metres). Clamped to ≥ 1e-6 internally. Smaller
     /// σ → tighter anchor.
     pub sigma: f32,
+    /// Optional gravity prior: the world-frame direction this camera's image-up
+    /// (camera −Y) should point. Adds an orientation residual
+    /// `r_up = (R_c2w·(0,−1,0) − up_world) / up_sigma` — the IMU-less "the phone
+    /// was held roughly upright" constraint. Rotational drift accumulates freely
+    /// along a monocular chain with no revisits; a soft per-view up prior is the
+    /// only observation of absolute orientation such a capture carries.
+    pub up_world: Option<[f32; 3]>,
+    /// Standard deviation of the up prior, in unit-vector units (e.g. 0.2 ≈
+    /// tolerate ~11 degrees of tilt at 1σ). Ignored when `up_world` is None.
+    pub up_sigma: f32,
+}
+
+/// Constant-velocity motion prior over a triplet of consecutive shots (OpenSfM's
+/// `LinearMotionError`).
+///
+/// Encodes "shot `i1` lies a fraction `alpha` of the way from `i0` to `i2`, and rotation advances
+/// at constant angular velocity". The translation term deliberately uses the norm-RATIO form
+/// `alpha − |C1−C0|/|C2−C0|` rather than a position difference: a raw difference is degenerate
+/// while scale is itself being estimated (shrinking the whole map satisfies it), while the ratio
+/// is scale-invariant and only constrains the SHAPE of the motion. This is the drift mechanism
+/// both OpenSfM and (implicitly, via its dense-network requirement) OpenMVG lean on for
+/// GPS-less sequential capture.
+#[derive(Debug, Clone, Copy)]
+pub struct BaMotionPrior {
+    /// Pose indices of the triplet, in temporal order.
+    pub i0: usize,
+    /// Middle pose.
+    pub i1: usize,
+    /// Last pose.
+    pub i2: usize,
+    /// Fractional position of `i1` between `i0` and `i2` (0..1), e.g. from frame timestamps.
+    pub alpha: f32,
+    /// Sigma of the translation-ratio residual (unitless).
+    pub position_sigma: f32,
+    /// Sigma of the angular-velocity residual (radians).
+    pub orientation_sigma: f32,
 }
 
 /// Parameters for bundle adjustment.
 pub struct BaParams {
     /// Maximum number of LM iterations.
     pub max_iterations: usize,
+    /// Robust-kernel scale (squared) for DEPTH residuals specifically. `0` reuses
+    /// `robust_scale_sq` (legacy behaviour).
+    ///
+    /// The two residual families live in different units: reprojection residuals are in
+    /// normalized-camera units (a sensible knee is ~2 px / fx ≈ 0.004), while depth residuals are
+    /// σ-WHITENED — 1.0 means "one standard deviation". Sharing one knee means a 1σ depth
+    /// measurement is gated like a hundreds-of-σ reprojection outlier and contributes a few
+    /// percent of its intended weight, silently disabling metric anchoring while still injecting
+    /// biased gradients. The whitened-residual convention puts the Huber knee at 1.345 (95%
+    /// Gaussian efficiency), i.e. `depth_robust_scale_sq = 1.345² ≈ 1.81`.
+    pub depth_robust_scale_sq: f32,
     /// Cost convergence tolerance.
     pub cost_tolerance: f32,
     /// Gradient convergence tolerance.
@@ -143,6 +190,7 @@ pub struct BaParams {
 impl Default for BaParams {
     fn default() -> Self {
         Self {
+            depth_robust_scale_sq: 0.0,
             max_iterations: 10,
             cost_tolerance: 1e-5,
             gradient_tolerance: 1e-5,
