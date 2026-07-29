@@ -32,10 +32,6 @@ name = "bench_sift_instr"
 
 [[bench]]
 harness = false
-name = "bench_sift_instr"
-
-[[bench]]
-harness = false
 name = "bench_color"
 
 [[bench]]
