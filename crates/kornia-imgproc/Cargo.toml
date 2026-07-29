@@ -28,6 +28,10 @@ required-features = ["cuda"]
 
 [[bench]]
 harness = false
+name = "bench_sift_instr"
+
+[[bench]]
+harness = false
 name = "bench_color"
 
 [[bench]]
@@ -107,6 +111,9 @@ wide = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
+# Deterministic instruction counts, immune to machine load. Needs valgrind and
+# `cargo install iai-callgrind-runner --version 0.14.0`.
+iai-callgrind = "0.14.0"
 image = { workspace = true }
 imageproc = { workspace = true }
 kornia-io = { workspace = true }

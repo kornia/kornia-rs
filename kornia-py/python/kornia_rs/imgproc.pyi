@@ -9,7 +9,7 @@ is ``<out>_from_<in>``.
 
 from __future__ import annotations
 
-from typing import Optional, Sequence, Union
+from typing import Any, Optional, Sequence, Union
 
 import numpy as np
 
@@ -185,3 +185,111 @@ def clahe(
     grid_size: tuple[int, int] = (8, 8),
     out: Optional[np.ndarray] = None,
 ) -> np.ndarray | Image: ...
+
+class Sift:
+    """SIFT detector/descriptor, shaped like ``cv2.SIFT``.
+
+    Dispatches on residency: a device ``Image`` runs the CUDA pipeline, a host
+    ``Image`` or a numpy array runs the NEON one. Both reproduce ``cv::SIFT``
+    bit for bit and return the same descriptors, so residency changes the speed
+    and nothing else — with one exception, ``max_keypoints``, which bounds the
+    device buffers only. See its note below.
+
+    The input must be single-channel float32 with values in **0..255** — the
+    reference's own internal representation. Normalising to 0..1 changes what
+    ``contrast_threshold`` means and silently returns far fewer keypoints.
+
+    The instance owns both backends' scratch, so keep it alive across frames;
+    constructing one per call gives up that reuse.
+    """
+
+    def __init__(
+        self,
+        n_features: int = 0,
+        n_octave_layers: int = 3,
+        contrast_threshold: float = 0.04,
+        edge_threshold: float = 10.0,
+        sigma: float = 1.6,
+        max_keypoints: int = 8192,
+        upsample: bool = True,
+        max_octaves: int = 0,
+        fast_descriptor: bool = False,
+    ) -> None:
+        """``upsample`` selects ``first_octave``: True is OpenCV's ``-1``, which
+        doubles the base image. ``max_octaves=0`` means unlimited.
+        ``fast_descriptor`` trades bit-exactness for speed on the GPU.
+
+        ``max_keypoints`` sizes the CUDA plan's device buffers and the device
+        path truncates to it; the host path has no ceiling. It is therefore the
+        one parameter under which the two backends disagree. For a real keypoint
+        budget use ``n_features`` — the reference's ``retainBest``, applied
+        identically by both."""
+
+    def detect_and_compute(
+        self, image: np.ndarray | Image
+    ) -> tuple[list[SiftKeypoint], np.ndarray | Any]:
+        """Returns ``(keypoints, descriptors)``.
+
+        ``keypoints`` is a list of :class:`SiftKeypoint`, always on the host,
+        shaped like what ``cv2.SIFT.detectAndCompute`` returns. ``descriptors`` follows the input's residency: a device
+        ``Tensor`` of shape ``(N, 128)`` for a device ``Image``, a numpy
+        ``(N, 128)`` for a host one. Feed either straight back to ``match``.
+
+        The device descriptors are a fresh allocation, not a view into the
+        detector's scratch — the next call overwrites that, so a view would
+        change under a caller holding two frames."""
+
+    def match(
+        self,
+        descriptors_a: np.ndarray | Any,
+        descriptors_b: np.ndarray | Any,
+        ratio: float = 0.8,
+        cross_check: bool = True,
+    ) -> np.ndarray:
+        """Match two descriptor blocks from ``detect_and_compute``.
+
+        Detection and matching are separable: detect once, then match against
+        several frames, or match descriptors that came from elsewhere.
+
+        Dispatches on the descriptors. Two device ``Tensor`` s match on device
+        and never cross the bus; two numpy arrays run the NEON matcher. Mixing
+        the two is an error rather than a silent transfer — the transfer is the
+        expensive part, and hiding it is how a frame budget disappears.
+
+        ``ratio`` is Lowe's ratio; ``>= 1.0`` disables it. Returns an ``(M, 2)``
+        int32 array of indices into the two keypoint lists."""
+
+
+class SiftKeypoint:
+    """A single detected keypoint. ``detect_and_compute`` returns a list of
+    these, matching the shape of ``cv2.SIFT.detectAndCompute``.
+
+    ``octave``, ``layer`` and ``xi`` are decoded from OpenCV's packed
+    ``KeyPoint.octave`` field; ``packed_octave`` is that field verbatim, for
+    comparing against ``cv2``.
+
+    Every field is a plain attribute read, but the list is one Python object per
+    keypoint — a few thousand on a 752x480 frame. Bulk numeric work wants a
+    column, so build it once
+    (``np.fromiter((k.x for k in kp), np.float32, len(kp))``) rather than
+    re-walking the list per operation."""
+
+    x: float
+    """Column coordinate, in pixels of the input image."""
+    y: float
+    """Row coordinate, in pixels of the input image."""
+    size: float
+    """Diameter of the meaningful neighbourhood."""
+    angle: float
+    """Dominant gradient orientation, in degrees clockwise from +x."""
+    response: float
+    """Contrast at the interpolated extremum; the ``n_features`` ranking key."""
+    octave: int
+    """Signed octave index. ``-1`` when ``upsample=True``, OpenCV's own
+    ``firstOctave = -1``."""
+    layer: int
+    """Layer within the octave."""
+    xi: float
+    """Sub-layer offset in ``[-0.5, 0.5)``, quantised to 1/255 by the packing."""
+    packed_octave: int
+    """The raw packed field, as ``cv2.KeyPoint.octave`` reports it."""

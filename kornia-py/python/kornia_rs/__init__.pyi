@@ -40,7 +40,9 @@ class Tensor:
     """
 
     @property
-    def shape(self) -> Tuple[int, int, int, int]: ...
+    def shape(self) -> Tuple[int, ...]:
+        """The tensor's shape, of its own rank — ``(N, C, H, W)`` for a
+        preprocessor output, ``(N, 128)`` for a SIFT descriptor block."""
     @property
     def dtype(self) -> str: ...
     @property

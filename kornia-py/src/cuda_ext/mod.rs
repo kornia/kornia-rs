@@ -288,6 +288,8 @@ pub(crate) mod cuda_histogram;
 #[cfg(feature = "cuda")]
 pub(crate) mod cuda_morphology;
 #[cfg(feature = "cuda")]
+pub(crate) mod cuda_sift;
+#[cfg(feature = "cuda")]
 pub(crate) use cuda_canny as canny_dev;
 #[cfg(feature = "cuda")]
 pub(crate) use cuda_ccl as ccl_dev;
@@ -309,24 +311,39 @@ pub(crate) use cuda_morphology as morphology;
 // Mirrors `kornia_tensor::Tensor<T, N>` as its own Python type instead of a
 // bespoke "CudaTensor" — `Image` is for 2-D HWC pixel data (with color-space
 // semantics); this is for the N-D device/host arrays (e.g. the preprocessor's
-// `[N, C, H, W]` model input) that don't fit that shape. Currently scoped to
-// the CUDA preprocessor's 4-D f32/f16 output; a fuller rank/dtype-generic
-// binding can grow from here.
+// `[N, C, H, W]` model input) that don't fit that shape. Carries the CUDA
+// preprocessor's 4-D f32/f16 output and SIFT's 2-D f32 descriptor block; more
+// (rank, dtype) pairs are one enum variant each.
 
 enum TensorInnerEnum {
     F32(Tensor<f32, 4>),
     F16(Tensor<half::f16, 4>),
+    /// Rank 2, f32. The preprocessor's output is `[N, C, H, W]`, but not every
+    /// producer here is an image pipeline: SIFT's descriptor block is an
+    /// `(N, 128)` matrix, and padding it to rank 4 to fit would report a shape
+    /// its consumers would then have to undo.
+    ///
+    /// Its only producer today is `cuda_sift`, which is CUDA-gated, so a
+    /// no-feature build constructs it nowhere and `dead_code` fires. The variant
+    /// still has to exist in that build: every `match` over this enum is
+    /// compiled unconditionally, and gating the variant would mean gating each
+    /// of those arms too.
+    #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+    F32R2(Tensor<f32, 2>),
 }
 
-/// Bind the inner typed `Tensor` of either dtype variant as `$t` and evaluate
-/// `$body` — collapses the identical 2-arm `F32 | F16` match that every
-/// type-agnostic accessor would otherwise spell out (mirrors `device.rs`'s
-/// `dispatch!`). Only usable where `$body` type-checks for both element types.
+/// Bind the inner typed `Tensor` of any variant as `$t` and evaluate
+/// `$body` — collapses the identical match that every type-agnostic accessor
+/// would otherwise spell out (mirrors `device.rs`'s `dispatch!`). Only usable
+/// where `$body` type-checks for every element type **and rank**: variants
+/// differ in `N`, so `t.shape` is a different array type in each arm and must be
+/// widened (`t.shape.to_vec()`) inside the body.
 macro_rules! tdispatch {
     ($self:expr, $t:ident => $body:expr) => {
         match &*$self.inner {
             TensorInnerEnum::F32($t) => $body,
             TensorInnerEnum::F16($t) => $body,
+            TensorInnerEnum::F32R2($t) => $body,
         }
     };
 }
@@ -371,18 +388,19 @@ impl PyTensor {
 
 #[pymethods]
 impl PyTensor {
-    /// Tensor shape `(N, C, H, W)`.
+    /// Tensor shape, as a tuple of the tensor's own rank — `(N, C, H, W)` for
+    /// a preprocessor output, `(N, 128)` for a SIFT descriptor block.
     #[getter]
-    fn shape(&self) -> (usize, usize, usize, usize) {
-        let s = tdispatch!(self, t => t.shape);
-        (s[0], s[1], s[2], s[3])
+    fn shape<'py>(&self, py: Python<'py>) -> Bound<'py, pyo3::types::PyTuple> {
+        let s = tdispatch!(self, t => t.shape.to_vec());
+        pyo3::types::PyTuple::new(py, s).expect("shape elements are all usize")
     }
 
     /// Element dtype: `"float32"` or `"float16"`.
     #[getter]
     fn dtype(&self) -> &'static str {
         match &*self.inner {
-            TensorInnerEnum::F32(_) => "float32",
+            TensorInnerEnum::F32(_) | TensorInnerEnum::F32R2(_) => "float32",
             TensorInnerEnum::F16(_) => "float16",
         }
     }
@@ -430,23 +448,29 @@ impl PyTensor {
             use pyo3::types::PyDict;
             let (shape, typestr, ptr, stream) = match &*self.inner {
                 TensorInnerEnum::F32(t) => (
-                    t.shape,
+                    t.shape.to_vec(),
                     "<f4",
                     t.as_ptr() as usize,
                     t.cuda_stream().map(|s| s.cu_stream() as usize),
                 ),
                 TensorInnerEnum::F16(t) => (
-                    t.shape,
+                    t.shape.to_vec(),
                     "<f2",
+                    t.as_ptr() as usize,
+                    t.cuda_stream().map(|s| s.cu_stream() as usize),
+                ),
+                TensorInnerEnum::F32R2(t) => (
+                    t.shape.to_vec(),
+                    "<f4",
                     t.as_ptr() as usize,
                     t.cuda_stream().map(|s| s.cu_stream() as usize),
                 ),
             };
             let d = PyDict::new(py);
-            d.set_item("shape", (shape[0], shape[1], shape[2], shape[3]))?;
+            d.set_item("shape", pyo3::types::PyTuple::new(py, &shape)?)?;
             d.set_item("typestr", typestr)?;
             d.set_item("data", (ptr, false))?;
-            // C-contiguous NCHW — `strides = None` per the interface.
+            // C-contiguous — `strides = None` per the interface.
             d.set_item("strides", py.None())?;
             d.set_item("version", 3)?;
             d.set_item("stream", crate::image::cai_stream_value(py, stream))?;
@@ -465,33 +489,64 @@ impl PyTensor {
         // The four (residency x dtype) cases, spelled out explicitly: only
         // host+F32 is a true zero-copy view, the other three all copy.
         if !me.is_device() {
-            if let TensorInnerEnum::F32(t) = &*me.inner {
-                let base: Py<PyAny> = slf.clone().into_any().unbind();
-                // SAFETY: `t.as_ptr()` points to `t.shape.iter().product()` live
-                // f32 elements for as long as `self.inner` (the base) is alive.
-                return Ok(unsafe {
-                    crate::numpy_view::view::<f32>(py, t.as_ptr() as *mut u8, &t.shape, base, false)
-                }?
-                .unbind());
+            // SAFETY (both arms): `t.as_ptr()` points to
+            // `t.shape.iter().product()` live f32 elements for as long as
+            // `self.inner` (the base) is alive.
+            let base: Py<PyAny> = slf.clone().into_any().unbind();
+            match &*me.inner {
+                TensorInnerEnum::F32(t) => {
+                    return Ok(unsafe {
+                        crate::numpy_view::view::<f32>(
+                            py,
+                            t.as_ptr() as *mut u8,
+                            &t.shape,
+                            base,
+                            false,
+                        )
+                    }?
+                    .unbind())
+                }
+                TensorInnerEnum::F32R2(t) => {
+                    return Ok(unsafe {
+                        crate::numpy_view::view::<f32>(
+                            py,
+                            t.as_ptr() as *mut u8,
+                            &t.shape,
+                            base,
+                            false,
+                        )
+                    }?
+                    .unbind())
+                }
+                TensorInnerEnum::F16(_) => {}
             }
         }
-        let (data, shape): (Vec<f32>, [usize; 4]) = match &*me.inner {
+        let (data, shape): (Vec<f32>, Vec<usize>) = match &*me.inner {
             // Unreachable without `cuda`: `me.is_device()` is always false, so
             // F32 always took the zero-copy view above, and F16's `is_device()`
             // guard below never matches.
             #[cfg(feature = "cuda")]
             TensorInnerEnum::F32(t) => {
+                // `into_vec` moves the freshly downloaded buffer out — the
+                // previous `as_slice().to_vec()` copied it a second time.
                 let host = t.to_host_owned().map_err(err)?;
-                (host.as_slice().to_vec(), t.shape)
+                (host.into_vec(), t.shape.to_vec())
+            }
+            #[cfg(feature = "cuda")]
+            TensorInnerEnum::F32R2(t) => {
+                let host = t.to_host_owned().map_err(err)?;
+                (host.into_vec(), t.shape.to_vec())
             }
             #[cfg(not(feature = "cuda"))]
-            TensorInnerEnum::F32(_) => unreachable!("host F32 already returned above"),
+            TensorInnerEnum::F32(_) | TensorInnerEnum::F32R2(_) => {
+                unreachable!("host F32 already returned above")
+            }
             #[cfg(feature = "cuda")]
             TensorInnerEnum::F16(t) if me.is_device() => {
                 let host = t.to_host_owned().map_err(err)?;
-                (widen_f16_to_f32(host.as_slice()), t.shape)
+                (widen_f16_to_f32(host.as_slice()), t.shape.to_vec())
             }
-            TensorInnerEnum::F16(t) => (widen_f16_to_f32(t.as_slice()), t.shape),
+            TensorInnerEnum::F16(t) => (widen_f16_to_f32(t.as_slice()), t.shape.to_vec()),
         };
         let arr = PyArray1::from_vec(py, data);
         let arr = arr.reshape(shape)?;
@@ -565,6 +620,14 @@ impl PyTensor {
                     arc_dlpack_capsule_versioned(py, self.inner.clone(), t, f16_dtype, 0, dl_device)
                 } else {
                     arc_dlpack_capsule(py, self.inner.clone(), t, f16_dtype, dl_device)
+                }
+            }
+            TensorInnerEnum::F32R2(t) => {
+                let dt = f32::dl_dtype();
+                if versioned {
+                    arc_dlpack_capsule_versioned(py, self.inner.clone(), t, dt, 0, dl_device)
+                } else {
+                    arc_dlpack_capsule(py, self.inner.clone(), t, dt, dl_device)
                 }
             }
         }
@@ -1321,6 +1384,16 @@ impl PyPreprocessor {
                     ));
                 }
                 t.shape
+            }
+            // The preprocessor writes `[1, 3, H, W]`; a rank-2 tensor cannot be
+            // that shape, so reject it here rather than letting the rank check
+            // below report a confusing dimension mismatch.
+            TensorInnerEnum::F32R2(t) => {
+                return Err(PyValueError::new_err(format!(
+                    "run: out= is a rank-2 {:?} tensor; this preprocessor writes \
+                     [1, 3, H, W]",
+                    t.shape
+                )))
             }
         };
         if out_shape[0] != 1 || out_shape[1] != 3 {

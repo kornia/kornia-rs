@@ -3262,6 +3262,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "cuda-camera-sift"
+version = "0.1.0"
+dependencies = [
+ "argh",
+ "cudarc 0.19.8",
+ "kornia-image",
+ "kornia-imgproc",
+ "kornia-io",
+ "kornia-tensor",
+]
+
+[[package]]
 name = "cuda-fusion"
 version = "0.1.0"
 dependencies = [
@@ -6941,6 +6953,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "iai-callgrind"
+version = "0.14.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1c9e864ad001cbbf35a64f7b574998823b8622bb483a25246fa1b0e2b3888686"
+dependencies = [
+ "bincode 1.3.3",
+ "derive_more",
+ "iai-callgrind-macros",
+ "iai-callgrind-runner",
+]
+
+[[package]]
+name = "iai-callgrind-macros"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c9cee6c3bc32b63ff40e5e56190b1276d2bd0e0b319aa6f998864c27865d3b4e"
+dependencies = [
+ "derive_more",
+ "proc-macro-error2",
+ "proc-macro2",
+ "quote",
+ "serde",
+ "serde_json",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "iai-callgrind-runner"
+version = "0.14.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a82491521e6505b06a824274712a1307904e7cdfdf047735f7dfdb28b5f7a337"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "iana-time-zone"
 version = "0.1.65"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7828,6 +7876,7 @@ dependencies = [
  "criterion 0.8.2",
  "cudarc 0.19.8",
  "half",
+ "iai-callgrind",
  "image",
  "imageproc 0.27.0",
  "kornia-algebra",
@@ -10865,6 +10914,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e67ba7e9b2b56446f1d419b1d807906278ffa1a658a8a5d8a39dcb1f5a78614f"
 dependencies = [
  "toml_edit",
+]
+
+[[package]]
+name = "proc-macro-error-attr2"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "96de42df36bb9bba5542fe9f1a054b8cc87e172759a1868aa05c1f3acc89dfc5"
+dependencies = [
+ "proc-macro2",
+ "quote",
+]
+
+[[package]]
+name = "proc-macro-error2"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "11ec05c52be0a07b08061f7dd003e7d7092e0472bc731b4af7bb1ef876109802"
+dependencies = [
+ "proc-macro-error-attr2",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]
