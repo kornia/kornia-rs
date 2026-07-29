@@ -16,15 +16,14 @@ use std::path::{Path, PathBuf};
 use argh::FromArgs;
 use kornia::k3d::camera::PinholeCamera;
 use kornia::k3d::pose::Pose3d;
-use kornia_algebra::{Vec2F64, Vec3F64};
+use kornia_algebra::{QuatF64, Vec2F64, Vec3F64};
 use kornia_apriltag::{
     decoder::Detection, family::TagFamilyKind, AprilTagDecoder, DecodeTagsConfig,
 };
 use kornia_calib::{
     calibrate_board, estimate_focal, BoardGeometry, CalibConfig, RigCalibration, TagObservation,
 };
-use kornia_image::{color_spaces::Rgb8, Image};
-use kornia_imgproc::color::gray_from_rgb_u8;
+use kornia_imgproc::color::{ConvertColorExt, Gray8, Rgb8};
 use kornia_io::functional::read_image_any_rgb8;
 use rerun::blueprint::{
     Blueprint, BlueprintActivation, ContainerLike, Horizontal, Spatial2DView, Spatial3DView,
@@ -234,13 +233,8 @@ fn solve_calibration(
 
 /// Converts a Kornia rotation matrix into a Rerun quaternion.
 fn rerun_quaternion(pose: &Pose3d) -> rerun::Quaternion {
-    let quaternion = glam::DQuat::from_mat3(&pose.rotation);
-    rerun::Quaternion::from_wxyz([
-        quaternion.w as f32,
-        quaternion.x as f32,
-        quaternion.y as f32,
-        quaternion.z as f32,
-    ])
+    let [x, y, z, w] = QuatF64::from_mat3(&pose.rotation).to_array();
+    rerun::Quaternion::from_wxyz([w as f32, x as f32, y as f32, z as f32])
 }
 
 fn open_recording_stream() -> Result<rerun::RecordingStream, Box<dyn Error>> {
@@ -412,6 +406,19 @@ fn log_rerun(
     Ok(())
 }
 
+fn load_camera_image(path: &Path) -> Result<(Rgb8, PinholeCamera, Vec<Detection>), Box<dyn Error>> {
+    let image = read_image_any_rgb8(path)?;
+    let gray: Gray8 = image.cvt()?;
+
+    let mut config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag36H11])?;
+    config.downscale_factor = DETECTOR_DOWNSCALE_FACTOR;
+    config.refine_edges_enabled = true;
+    let mut detector = AprilTagDecoder::new(config, gray.size())?;
+    let detections = detector.decode(&gray)?;
+    let camera = approximate_pinhole(image.width(), image.height());
+    Ok((image, camera, detections))
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Args = argh::from_env();
     let image_paths = validated_image_paths(args.image_paths)?;
@@ -421,23 +428,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut detections_per_camera = Vec::new();
 
     for (camera_index, path) in image_paths.iter().enumerate() {
-        let image = read_image_any_rgb8(path)?;
-        let mut gray = Image::from_size_val(image.size(), 0u8)?;
-        gray_from_rgb_u8(&image, &mut gray)?;
-
-        let mut config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag36H11])?;
-        config.downscale_factor = DETECTOR_DOWNSCALE_FACTOR;
-        config.refine_edges_enabled = true;
-        let mut detector = AprilTagDecoder::new(config, gray.size())?;
-        let detections = detector.decode(&gray)?;
-
+        let (image, camera, detections) = load_camera_image(path)?;
         println!(
             "camera {camera_index}: {} detections, {}x{}",
             detections.len(),
             image.width(),
             image.height()
         );
-        cameras.push(approximate_pinhole(image.width(), image.height()));
+        cameras.push(camera);
         images.push(image);
         detections_per_camera.push(detections);
     }
@@ -572,6 +570,52 @@ mod tests {
             );
         }
 
+        Ok(())
+    }
+
+    #[test]
+    fn sample_images_produce_valid_two_camera_calibration() -> Result<(), Box<dyn Error>> {
+        const MAX_REPROJECTION_RMS_PX: f64 = 1.5;
+        const MIN_BASELINE_M: f64 = 0.34;
+        const MAX_BASELINE_M: f64 = 0.38;
+
+        let image_paths = [
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tests/data/apriltag_board_multicam/camera_0.jpg"
+            ),
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tests/data/apriltag_board_multicam/camera_1.jpg"
+            ),
+        ];
+        let board = makerworld_6x6_board();
+        let mut cameras = Vec::new();
+        let mut detections_per_camera = Vec::new();
+        for path in image_paths {
+            let (_, camera, detections) = load_camera_image(Path::new(path))?;
+            cameras.push(camera);
+            detections_per_camera.push(detections);
+        }
+
+        let solution = solve_calibration(&cameras, &detections_per_camera, &board)?;
+        assert!(
+            solution.calibration.reproj_rmse_px < MAX_REPROJECTION_RMS_PX,
+            "reprojection RMS was {} px",
+            solution.calibration.reproj_rmse_px
+        );
+
+        let relative_poses = solution.calibration.rebased(0, None)?;
+        let camera_1 = relative_poses
+            .get(1)
+            .copied()
+            .flatten()
+            .ok_or_else(|| std::io::Error::other("camera 1 was not registered"))?;
+        let baseline = camera_1.translation.length();
+        assert!(
+            (MIN_BASELINE_M..=MAX_BASELINE_M).contains(&baseline),
+            "baseline was {baseline} m"
+        );
         Ok(())
     }
 

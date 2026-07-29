@@ -403,12 +403,10 @@ name = "apriltag_board_multicam"
 version = "0.1.15-rc.5"
 dependencies = [
  "argh",
- "glam 0.33.2",
  "kornia",
  "kornia-algebra",
  "kornia-apriltag",
  "kornia-calib",
- "kornia-image",
  "kornia-imgproc",
  "kornia-io",
  "rerun",

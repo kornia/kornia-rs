@@ -6,16 +6,22 @@ the reference frame for the reported relative poses and baselines.
 
 ## Run
 
-Pass one image path per camera. At least two paths are required:
+Run the included two-camera example from the repository root:
 
 ```bash
 pixi run cargo run -p apriltag_board_multicam \
   -- \
-  /path/to/camera_0.png \
-  /path/to/camera_1.png
+  tests/data/apriltag_board_multicam/camera_0.jpg \
+  tests/data/apriltag_board_multicam/camera_1.jpg
 ```
 
-Add more paths for larger rigs:
+The sample pair should register both cameras with a reprojection RMS of about
+1 px and a baseline of about 0.36 m.
+
+![Two-camera calibration in Rerun](https://github.com/user-attachments/assets/3bbc65fd-d75c-490c-9d1f-808bef0c8879)
+
+Pass one image path per camera to use your own images. At least two paths are
+required, and more paths can be added for larger rigs:
 
 ```bash
 pixi run cargo run -p apriltag_board_multicam \
