@@ -107,11 +107,20 @@ pub fn solve_pnp_ransac(
         .into());
     }
 
-    // Minimal set size: EPnP uses 5 points (unless only 4 points available)
-    let sample_size: usize = if n == MIN_CORRESPONDENCES {
-        MIN_CORRESPONDENCES
-    } else {
-        EPNP_MIN_SAMPLE_SIZE
+    // Minimal set size is a property of the KERNEL: AP3P is an exact 3-point solver (it rejects
+    // any other count), while EPnP samples 5 (unless only 4 points exist). Using the kernel's
+    // true minimal size is not merely a fix — it is the point of a P3P kernel inside RANSAC: at
+    // inlier ratio w the probability of a clean sample is w^k, so k=3 vs k=5 is a factor of w^2
+    // more successful iterations (16x at w=0.25).
+    let sample_size: usize = match &base {
+        PnPMethod::AP3P(_) | PnPMethod::AP3PDefault => 3,
+        PnPMethod::EPnP(_) | PnPMethod::EPnPDefault => {
+            if n == MIN_CORRESPONDENCES {
+                MIN_CORRESPONDENCES
+            } else {
+                EPNP_MIN_SAMPLE_SIZE
+            }
+        }
     };
 
     // Precompute intrinsics vectors
@@ -233,14 +242,20 @@ pub fn solve_pnp_ransac(
     }
 
     let mut final_pose = if params.refine {
-        // Refit on all inliers using the base solver.
+        // Refit on all inliers. A minimal solver cannot do this — AP3P rejects any count other
+        // than 3 — so the non-minimal refit always uses EPnP, the standard minimal-kernel /
+        // non-minimal-refit split.
+        let refit_method = match &base {
+            PnPMethod::AP3P(_) | PnPMethod::AP3PDefault => PnPMethod::EPnPDefault,
+            other => other.clone(),
+        };
         let mut w_all = Vec::with_capacity(best_inliers.len());
         let mut i_all = Vec::with_capacity(best_inliers.len());
         for &idx in &best_inliers {
             w_all.push(world[idx]);
             i_all.push(image[idx]);
         }
-        solve_pnp(&w_all, &i_all, k, distortion, base.clone())?
+        solve_pnp(&w_all, &i_all, k, distortion, refit_method)?
     } else {
         match best_pose {
             Some(p) => p,

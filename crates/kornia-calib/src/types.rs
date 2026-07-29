@@ -52,6 +52,22 @@ pub struct CalibConfig {
     pub max_iterations: usize,
     /// Squared Huber scale (normalized units). `(0.01)^2` ≈ 5 px at focal 500.
     pub robust_scale_sq: f32,
+    /// Run a second registration pass against the bundle-adjusted map.
+    ///
+    /// Raises coverage substantially where the first pass was conservative (7-Scenes chess: 23/60
+    /// -> 59/60 registered), but on scenes with repetitive structure the extra registrations are
+    /// wrong and wreck the result (stairs: 1.68 -> 23.19 cm ATE). It therefore belongs in a
+    /// caller's search rather than being always-on.
+    pub second_pass: bool,
+    /// Which bootstrap seed pair to use, `0` being the best-scoring one.
+    ///
+    /// The seed fixes the gauge, seeds the point cloud, and decides which cameras can register at
+    /// all — so it dominates the result, and no scalar computed from the pair alone reliably picks
+    /// the winner (parallax, RH ratio and support have each been tried as the ranking criterion and
+    /// each traded one scene for another). Exposing the rank lets a caller reconstruct against the
+    /// top few seeds and choose on the finished map instead. Ranks past the last viable seed
+    /// saturate rather than fail.
+    pub seed_rank: usize,
     /// Minimum parallax (degrees) for a triangulated free point.
     pub min_parallax_deg: f64,
     /// Maximum reprojection error (normalized units) when validating a
@@ -73,6 +89,8 @@ impl CalibConfig {
             min_parallax_deg: 0.2,
             max_reprojection_error: 0.01,
             x84_k: 2.5,
+            second_pass: false,
+            seed_rank: 0,
         }
     }
 }
