@@ -22,7 +22,9 @@ def _preload_nvrtc() -> None:
 
 
 _preload_nvrtc()
+del _preload_nvrtc
 
+from . import kornia_rs
 from .kornia_rs import *
 
 __doc__ = kornia_rs.__doc__

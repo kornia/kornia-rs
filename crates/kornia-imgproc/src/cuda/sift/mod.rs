@@ -108,7 +108,7 @@ pub use orientation::{
     launch_sift_orientation_cuda, ORI_HIST_BINS, ORI_KP_STRIDE, ORI_PEAK_RATIO, ORI_RADIUS,
     ORI_SIG_FCTR,
 };
-pub use plan::{FirstOctave, SiftCuda, SiftFeatures, SiftKeypoint};
+pub use plan::{FirstOctave, SiftCuda, SiftCudaFeatures, SiftFeatures, SiftKeypoint};
 pub use pyramid::{
     launch_sift_blur_h_cuda, launch_sift_blur_h_tiled_cuda, launch_sift_blur_hv_cuda,
     launch_sift_blur_v_cuda, launch_sift_blur_v_dog_cuda, launch_sift_dog_cuda,
@@ -255,7 +255,7 @@ impl SiftCudaConfig {
 /// Delegates to the shared implementation; see [`SiftCudaConfig::shared_config`]
 /// for why every host numeric both backends depend on lives in one place.
 pub fn gaussian_ksize(sigma: f64) -> usize {
-    crate::features::gaussian_ksize(sigma)
+    crate::features::sift::params::gaussian_ksize(sigma)
 }
 
 #[cfg(test)]

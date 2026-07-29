@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "bubbaloop": {
+      "type": "streamable-http",
+      "url": "http://127.0.0.1:8088/mcp",
+      "headers": {
+        "Authorization": "Bearer ${BUBBALOOP_MCP_TOKEN}"
+      }
+    }
+  }
+}

@@ -72,11 +72,32 @@ pub fn blur_h_f32_mode(
     // blur's 2.65x scaling.
     dst.par_chunks_mut(w * ROWS_PER_TASK)
         .enumerate()
-        .for_each(|(chunk, dchunk)| {
+        .for_each_init(Vec::new, |ext: &mut Vec<f32>, (chunk, dchunk)| {
             let y0 = chunk * ROWS_PER_TASK;
             for (yy, d) in dchunk.chunks_mut(w).enumerate() {
                 let row = (y0 + yy) * w;
                 let s = &src[row..row + w];
+
+                if !symmetric && w > 2 * n2 {
+                    // Materialise the reflected edges once and run the vector
+                    // interior over the whole row (FilterEngine's shape). The
+                    // old border loops paid `ksize` scalar serial-latency FMAs
+                    // and a `refl101` per TAP per border pixel — ~872 scalar
+                    // taps/row at the default config, a third of the whole
+                    // vector interior's cost, and the ratio doubles each
+                    // octave. `row_interior` over the extended row computes
+                    // the identical seed-then-ascending-FMA expression on the
+                    // identical tap values, so this is bit-exact.
+                    ext.resize(w + 2 * n2, 0.0);
+                    ext[n2..n2 + w].copy_from_slice(s);
+                    let wi = w as i64;
+                    for t in 0..n2 {
+                        ext[t] = s[refl101(t as i64 - n2 as i64, wi)];
+                        ext[n2 + w + t] = s[refl101((w + t) as i64, wi)];
+                    }
+                    row_interior(ext, d, n2, n2, kernel);
+                    continue;
+                }
 
                 // Left border.
                 let lo = n2.min(w);
@@ -331,8 +352,16 @@ fn column_row<const DOG: bool>(
     kernel: &[f32],
     pairs: &mut Vec<(usize, usize, f32)>,
 ) {
-    // Precompute the reflected row bases once for the whole row. `pairs` is the
-    // caller's per-task scratch, reused across rows.
+    // Only rows within n2 of an edge need reflection; everywhere else the
+    // pair offsets are the arithmetic sequence c0 ± j*w, computed inline so
+    // the tap loop stops loading a 24-byte (usize, usize, f32) tuple per tap
+    // on top of its 8 data loads (audit finding C6). Same offsets, same tap
+    // order, same pair-sum-before-FMA — bit-exact either way.
+    // Consumed only by the 16-wide NEON loop's inline-stepping branch.
+    #[cfg(target_arch = "aarch64")]
+    let interior = y >= n2 && y + n2 < (hh as usize);
+    // Always built: the 4-wide and scalar tails (and the non-NEON build) read
+    // it for every row; only the 16-wide loop takes the inline-stepping path.
     pairs.clear();
     for j in 1..=n2 {
         let a = refl101(y as i64 + j as i64, hh) * w;
@@ -347,7 +376,8 @@ fn column_row<const DOG: bool>(
         use std::arch::aarch64::*;
         let mut x = 0usize;
         // Four independent chains, as in the row pass.
-        // SAFETY: all offsets are reflected row bases plus `x < w`.
+        // SAFETY: all offsets are reflected row bases plus `x < w`; on the
+        // interior path `c0 = y*w >= n2*w`, so `c0 - j*w` cannot underflow.
         unsafe {
             while x + 16 <= w {
                 let c = src.as_ptr().add(c0 + x);
@@ -355,25 +385,39 @@ fn column_row<const DOG: bool>(
                 let mut a1 = vmulq_n_f32(vld1q_f32(c.add(4)), k0);
                 let mut a2 = vmulq_n_f32(vld1q_f32(c.add(8)), k0);
                 let mut a3 = vmulq_n_f32(vld1q_f32(c.add(12)), k0);
-                for &(pa, pb, kc) in pairs {
-                    let pa = src.as_ptr().add(pa + x);
-                    let pb = src.as_ptr().add(pb + x);
-                    a0 = vfmaq_n_f32(a0, vaddq_f32(vld1q_f32(pa), vld1q_f32(pb)), kc);
-                    a1 = vfmaq_n_f32(
-                        a1,
-                        vaddq_f32(vld1q_f32(pa.add(4)), vld1q_f32(pb.add(4))),
-                        kc,
-                    );
-                    a2 = vfmaq_n_f32(
-                        a2,
-                        vaddq_f32(vld1q_f32(pa.add(8)), vld1q_f32(pb.add(8))),
-                        kc,
-                    );
-                    a3 = vfmaq_n_f32(
-                        a3,
-                        vaddq_f32(vld1q_f32(pa.add(12)), vld1q_f32(pb.add(12))),
-                        kc,
-                    );
+                macro_rules! tap {
+                    ($pa:expr, $pb:expr, $kc:expr) => {{
+                        let (pa, pb, kc): (*const f32, *const f32, f32) = ($pa, $pb, $kc);
+                        a0 = vfmaq_n_f32(a0, vaddq_f32(vld1q_f32(pa), vld1q_f32(pb)), kc);
+                        a1 = vfmaq_n_f32(
+                            a1,
+                            vaddq_f32(vld1q_f32(pa.add(4)), vld1q_f32(pb.add(4))),
+                            kc,
+                        );
+                        a2 = vfmaq_n_f32(
+                            a2,
+                            vaddq_f32(vld1q_f32(pa.add(8)), vld1q_f32(pb.add(8))),
+                            kc,
+                        );
+                        a3 = vfmaq_n_f32(
+                            a3,
+                            vaddq_f32(vld1q_f32(pa.add(12)), vld1q_f32(pb.add(12))),
+                            kc,
+                        );
+                    }};
+                }
+                if interior {
+                    let mut up = src.as_ptr().add(c0 + x);
+                    let mut dn = src.as_ptr().add(c0 + x);
+                    for j in 1..=n2 {
+                        up = up.add(w);
+                        dn = dn.sub(w);
+                        tap!(up, dn, *kernel.get_unchecked(n2 + j));
+                    }
+                } else {
+                    for &(pa, pb, kc) in pairs {
+                        tap!(src.as_ptr().add(pa + x), src.as_ptr().add(pb + x), kc);
+                    }
                 }
                 let o = out.as_mut_ptr().add(x);
                 vst1q_f32(o, a0);

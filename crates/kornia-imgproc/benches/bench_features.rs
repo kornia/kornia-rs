@@ -237,7 +237,7 @@ fn bench_sift(c: &mut Criterion) {
         group.bench_function(BenchmarkId::from_parameter(name), |b| {
             b.iter(|| {
                 std::hint::black_box(
-                    sift_detect_with(&mut ws, &img, w, h, &cfg, fo, oct, fast).unwrap(),
+                    sift_detect_and_compute(&mut ws, &img, w, h, &cfg, fo, oct, fast).unwrap(),
                 )
             })
         });
@@ -245,7 +245,7 @@ fn bench_sift(c: &mut Criterion) {
 
     // Matching, on descriptors the detector actually produced.
     let mut ws = SiftWorkspace::new();
-    let f = sift_detect_with(
+    let f = sift_detect_and_compute(
         &mut ws,
         &img,
         w,

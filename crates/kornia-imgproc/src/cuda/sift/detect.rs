@@ -157,7 +157,7 @@ __device__ __forceinline__ float det3(
     return outer3(a00, m0, a01, m1, a02, m2);
 }}
 
-extern "C" __global__ void sift_find_extrema(
+extern "C" __global__ void __launch_bounds__(256) sift_find_extrema(
     const float* __restrict__ dog,   // base of this octave's DoG stack
     int w, int h, int n_dog,
     int layer0, int octv,

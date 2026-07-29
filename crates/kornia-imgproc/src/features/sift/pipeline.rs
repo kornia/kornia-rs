@@ -140,8 +140,53 @@ fn upsample2x(src: &[f32], sw: usize, sh: usize, dst: &mut [f32], hbuf: &mut [f3
         .enumerate()
         .for_each(|(sy, hrow)| {
             let base = sy * sw;
-            for (x, o) in hrow.iter_mut().enumerate() {
-                let (sx, fx) = tap(x, sw);
+            // `x` advances (and `row` is read) only inside the NEON block, so
+            // the x86 fallback build sees them unused — allow, don't gate the
+            // declaration, since the tail loops below consume `x` on both.
+            #[cfg_attr(not(target_arch = "aarch64"), allow(unused_mut))]
+            let mut x = 0usize;
+            #[cfg(target_arch = "aarch64")]
+            let row = &src[base..base + sw];
+
+            // Vector body: away from the two clamped outputs (x = 0 and
+            // x = dw-1) the taps are a fixed two-phase pattern —
+            //   even x = 2m: src[m-1]*0.25 + src[m]*0.75
+            //   odd  x = 2m+1: src[m]*0.75 + src[m+1]*0.25
+            // so four source pixels yield eight outputs: two mul+mul+add
+            // vectors (the scalar's exact expression shape — no FMA, Rust
+            // does not contract) interleaved with vzip. The scalar loop
+            // below remains the head (x < 2), the tail, and the whole row
+            // for the non-NEON build.
+            #[cfg(target_arch = "aarch64")]
+            unsafe {
+                use std::arch::aarch64::*;
+                if sw >= 6 {
+                    let mut m = 1usize;
+                    x = 2;
+                    while m + 5 <= sw {
+                        let am1 = vld1q_f32(row.as_ptr().add(m - 1));
+                        let a = vld1q_f32(row.as_ptr().add(m));
+                        let ap1 = vld1q_f32(row.as_ptr().add(m + 1));
+                        // even: src[m-1]*(1-0.75) + src[m]*0.75
+                        let e = vaddq_f32(vmulq_n_f32(am1, 0.25), vmulq_n_f32(a, 0.75));
+                        // odd: src[m]*(1-0.25) + src[m+1]*0.25
+                        let o = vaddq_f32(vmulq_n_f32(a, 0.75), vmulq_n_f32(ap1, 0.25));
+                        vst1q_f32(hrow.as_mut_ptr().add(x), vzip1q_f32(e, o));
+                        vst1q_f32(hrow.as_mut_ptr().add(x + 4), vzip2q_f32(e, o));
+                        m += 4;
+                        x += 8;
+                    }
+                }
+            }
+
+            for (xx, o) in hrow.iter_mut().enumerate().skip(x) {
+                let (sx, fx) = tap(xx, sw);
+                let sx1 = (sx + 1).min(sw - 1);
+                *o = src[base + sx] * (1.0 - fx) + src[base + sx1] * fx;
+            }
+            // The head (x = 0..2) is not covered by the vector loop.
+            for (xx, o) in hrow.iter_mut().enumerate().take(x.min(2)) {
+                let (sx, fx) = tap(xx, sw);
                 let sx1 = (sx + 1).min(sw - 1);
                 *o = src[base + sx] * (1.0 - fx) + src[base + sx1] * fx;
             }
@@ -163,18 +208,34 @@ fn upsample2x(src: &[f32], sw: usize, sh: usize, dst: &mut [f32], hbuf: &mut [f3
 /// Nearest stride-2 subsample — **not** a blur-and-decimate, which would break
 /// parity with the reference.
 fn downsample(src: &[f32], sw: usize, sh: usize, dst: &mut [f32], dw: usize, dh: usize) {
+    // The only caller passes `dw = sw / 2`, `dh = sh / 2`, and under that the
+    // general rescale index reduces to the even pixel: `sw ∈ {2dw, 2dw+1}`, so
+    // `(x * sw) / dw = 2x + x/dw = 2x` for every `x < dw` (identically for y).
+    // The general form cost a non-pipelined 64-bit `udiv` per output pixel —
+    // ~15 cycles in a loop that is otherwise one load and one store — and this
+    // function sits between two stage probes, so none of it ever showed up in
+    // a breakdown. Keep the general path for any future caller that halves
+    // differently.
+    let halving = dw > 0 && dh > 0 && sw / 2 == dw && sh / 2 == dh;
     dst[..dw * dh]
         .par_chunks_mut(dw)
         .enumerate()
         .for_each(|(y, row)| {
-            let sy = (y * sh) / dh;
-            for (x, o) in row.iter_mut().enumerate() {
-                *o = src[sy * sw + (x * sw) / dw];
+            if halving {
+                let r = &src[(2 * y) * sw..(2 * y) * sw + sw];
+                for (x, o) in row.iter_mut().enumerate() {
+                    *o = r[2 * x];
+                }
+            } else {
+                let sy = (y * sh) / dh;
+                for (x, o) in row.iter_mut().enumerate() {
+                    *o = src[sy * sw + (x * sw) / dw];
+                }
             }
         });
 }
 
-/// Reusable scratch for [`detect_and_compute_with`].
+/// Reusable scratch for [`detect_and_compute`].
 ///
 /// The pipeline touches a dozen full-resolution planes — six Gaussian layers,
 /// five DoG layers, plus the base and a transpose buffer. Allocating and
@@ -219,69 +280,6 @@ impl SiftWorkspace {
     }
 }
 
-/// Detect, orient and describe.
-///
-/// Allocates its own scratch. For more than one frame use
-/// [`detect_and_compute_with`], which takes a reusable [`SiftWorkspace`].
-///
-/// # Arguments
-///
-/// * `src` - Row-major `w * h` f32 grayscale image in **0..255** — the
-///   reference's own internal representation. Normalising to 0..1 changes what
-///   `cfg.contrast_threshold` means and silently returns far fewer keypoints.
-/// * `w`, `h` - Image dimensions; `src.len()` must equal `w * h`.
-/// * `cfg` - Detector parameters, mirroring `cv::SIFT::create`.
-/// * `first_octave` - [`FirstOctave::Double`] upsamples 2x first, as OpenCV does
-///   by default; [`FirstOctave::Native`] starts at the input resolution.
-/// * `max_octaves` - Ceiling on the pyramid depth; `usize::MAX` for unlimited.
-/// * `fast` - Trade the reference's exact tap order for speed in the row blur.
-///   Keypoints and descriptors are then no longer bit-exact against `cv2`.
-///
-/// # Returns
-///
-/// [`SiftFeatures`]: the keypoints in the reference's final order, and a
-/// row-major `keypoints.len() * 128` descriptor block.
-///
-/// # Errors
-///
-/// Returns [`SiftConfigError::SourceLen`] if `src.len() != w * h`, and
-/// [`SiftConfigError::Invalid`] if the dimensions overflow or a parameter in
-/// `cfg` is out of range (for example `n_octave_layers == 0`).
-///
-/// # Example
-///
-/// ```rust
-/// use kornia_imgproc::features::{sift_detect_and_compute, FirstOctave, SiftConfig};
-///
-/// let (w, h) = (64, 64);
-/// // A single bright square: enough structure to exercise the pipeline.
-/// let mut img = vec![0.0f32; w * h];
-/// for y in 24..40 {
-///     for x in 24..40 {
-///         img[y * w + x] = 255.0;
-///     }
-/// }
-///
-/// let cfg = SiftConfig::default();
-/// let feats = sift_detect_and_compute(
-///     &img, w, h, &cfg, FirstOctave::Native, usize::MAX, false,
-/// )?;
-/// assert_eq!(feats.descriptors.len(), feats.keypoints.len() * 128);
-/// # Ok::<(), kornia_imgproc::features::SiftConfigError>(())
-/// ```
-pub fn detect_and_compute(
-    src: &[f32],
-    w: usize,
-    h: usize,
-    cfg: &SiftConfig,
-    first_octave: FirstOctave,
-    max_octaves: usize,
-    fast: bool,
-) -> Result<SiftFeatures, SiftConfigError> {
-    let mut ws = SiftWorkspace::new();
-    detect_and_compute_with(&mut ws, src, w, h, cfg, first_octave, max_octaves, fast)
-}
-
 /// Detect, orient and describe against caller-owned scratch.
 ///
 /// Prefer this when processing more than one frame: it is the same work without
@@ -295,24 +293,27 @@ pub fn detect_and_compute(
 ///
 /// # Returns
 ///
-/// [`SiftFeatures`], identical to what [`detect_and_compute`] returns for the
-/// same inputs — `ws` affects allocation, never the result.
+/// [`SiftFeatures`]: the keypoints in the reference's final order, and a
+/// row-major `keypoints.len() * 128` descriptor block. `ws` affects
+/// allocation, never the result.
 ///
 /// # Errors
 ///
-/// The same [`SiftConfigError`] cases as [`detect_and_compute`].
+/// [`SiftConfigError::SourceLen`] if `src.len() < w * h`, and
+/// [`SiftConfigError::Invalid`] if the dimensions overflow or a parameter in
+/// `cfg` is out of range (for example `n_octave_layers == 0`).
 ///
 /// # Example
 ///
 /// ```rust
-/// use kornia_imgproc::features::{sift_detect_with, FirstOctave, SiftConfig, SiftWorkspace};
+/// use kornia_imgproc::features::{sift_detect_and_compute, FirstOctave, SiftConfig, SiftWorkspace};
 ///
 /// let (w, h) = (64, 64);
 /// let img = vec![0.0f32; w * h];
 /// let cfg = SiftConfig::default();
 /// let mut ws = SiftWorkspace::new();
 /// for _frame in 0..2 {
-///     let feats = sift_detect_with(
+///     let feats = sift_detect_and_compute(
 ///         &mut ws, &img, w, h, &cfg, FirstOctave::Native, usize::MAX, false,
 ///     )?;
 ///     assert!(feats.is_empty()); // a flat image has no extrema
@@ -320,7 +321,7 @@ pub fn detect_and_compute(
 /// # Ok::<(), kornia_imgproc::features::SiftConfigError>(())
 /// ```
 #[allow(clippy::too_many_arguments)]
-pub fn detect_and_compute_with(
+pub fn detect_and_compute(
     ws: &mut SiftWorkspace,
     src: &[f32],
     w: usize,
@@ -652,7 +653,7 @@ mod tests {
         for fo in [FirstOctave::Native, FirstOctave::Double] {
             // Two passes: the second reuses scratch sized by the first.
             for _ in 0..2 {
-                let f = detect_and_compute_with(&mut ws, &img, w, h, &cfg, fo, usize::MAX, false)
+                let f = detect_and_compute(&mut ws, &img, w, h, &cfg, fo, usize::MAX, false)
                     .expect("valid configuration");
                 assert_eq!(f.descriptors.len(), f.keypoints.len() * DESCR_LEN);
             }
@@ -668,7 +669,7 @@ mod tests {
         let img = vec![0.0f32; 64 * 64];
         let cfg = SiftConfig::default();
         let ok = |c: &SiftConfig, m: usize, len: usize, w: usize, h: usize| {
-            detect_and_compute_with(
+            detect_and_compute(
                 &mut SiftWorkspace::new(),
                 &img[..len],
                 w,
@@ -724,7 +725,17 @@ mod tests {
             })
             .collect();
         let cfg = SiftConfig::default();
-        let all = detect_and_compute(&img, w, h, &cfg, FirstOctave::Native, 3, false).unwrap();
+        let all = detect_and_compute(
+            &mut SiftWorkspace::new(),
+            &img,
+            w,
+            h,
+            &cfg,
+            FirstOctave::Native,
+            3,
+            false,
+        )
+        .unwrap();
         assert!(all.keypoints.len() > 8, "need enough keypoints to budget");
 
         let n = all.keypoints.len() / 2;
@@ -732,7 +743,17 @@ mod tests {
             n_features: n,
             ..cfg
         };
-        let cut = detect_and_compute(&img, w, h, &budget, FirstOctave::Native, 3, false).unwrap();
+        let cut = detect_and_compute(
+            &mut SiftWorkspace::new(),
+            &img,
+            w,
+            h,
+            &budget,
+            FirstOctave::Native,
+            3,
+            false,
+        )
+        .unwrap();
 
         assert_eq!(cut.keypoints.len(), n, "budget must cap the count");
         assert_eq!(cut.descriptors.len(), n * DESCR_LEN, "one row per keypoint");

@@ -328,12 +328,19 @@ pub fn launch_sift_blur_v_dog_cuda_view(
 pub const TILE_P: usize = 2;
 
 /// `KORNIA_SIFT_TILE_P` overrides [`TILE_P`] for sweeps.
+///
+/// Read once: this sits on the per-launch path (twice per horizontal blur, ~74
+/// environment scans a frame before the audit), and every sibling knob in the
+/// module already gets the `OnceLock` treatment for exactly that reason.
 fn tile_p() -> usize {
-    std::env::var("KORNIA_SIFT_TILE_P")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .filter(|v| *v >= 1 && *v <= 16)
-        .unwrap_or(TILE_P)
+    static V: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("KORNIA_SIFT_TILE_P")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|v| *v >= 1 && *v <= 16)
+            .unwrap_or(TILE_P)
+    })
 }
 
 /// Register-tiled horizontal pass. Same contract as [`launch_sift_blur_h_cuda`].

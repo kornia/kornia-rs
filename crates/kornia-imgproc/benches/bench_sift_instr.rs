@@ -24,7 +24,7 @@ use std::hint::black_box;
 
 use iai_callgrind::{library_benchmark, library_benchmark_group, main};
 use kornia_imgproc::features::{
-    l2_sq, l2_sq_scalar, sift_detect_and_compute, FirstOctave, SiftConfig,
+    l2_sq, l2_sq_scalar, sift_detect_and_compute, FirstOctave, SiftConfig, SiftWorkspace,
 };
 
 /// Deterministic pseudo-image; a fixed seed keeps the counts reproducible.
@@ -71,7 +71,9 @@ fn pipeline() {
     let (w, h) = (192usize, 144usize);
     let img = image(w, h);
     let cfg = SiftConfig::default();
-    let r = sift_detect_and_compute(&img, w, h, &cfg, FirstOctave::Native, 3, false).unwrap();
+    let mut ws = SiftWorkspace::new();
+    let r =
+        sift_detect_and_compute(&mut ws, &img, w, h, &cfg, FirstOctave::Native, 3, false).unwrap();
     black_box(r.keypoints.len());
 }
 

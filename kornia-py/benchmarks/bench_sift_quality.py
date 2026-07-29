@@ -202,7 +202,36 @@ def _engines(stream):
         arr = np.ascontiguousarray(img.astype(np.float32)[..., None])
         src = K.image.Image.from_numpy(arr).to_cuda(stream) if device else arr
         kp, desc = cache[key].detect_and_compute(src)
-        return np.ascontiguousarray(kp[:, :2]), np.ascontiguousarray(desc)
+        # A device detect leaves the descriptors on the GPU as an (N, 128)
+        # Tensor; the audits below are host code (cv2's matcher, findHomography),
+        # so this is the one place they have to come back.
+        if not isinstance(desc, np.ndarray):
+            desc = desc.numpy()
+        xy = np.empty((len(kp), 2), dtype=np.float32)
+        for i, k in enumerate(kp):
+            xy[i, 0], xy[i, 1] = k.x, k.y
+        return xy, np.ascontiguousarray(desc)
+
+    def kornia_time(device, **kw):
+        """The detector call alone, without the host-side unpack above.
+
+        `detect_and_compute` returns a list of keypoint objects, and walking a
+        few thousand of them into a column is real Python time that has nothing
+        to do with the kernel. Timing the audit's `detect` would fold it in and
+        silently inflate every kornia row against cv2's.
+        """
+        def run(img):
+            # Looked up per call, not captured: `_engines` builds these before
+            # any detection has run, so the cache entry does not exist yet.
+            key = (device, tuple(sorted(kw.items())))
+            if key not in cache:
+                cache[key] = K.imgproc.Sift(**kw)
+            det = cache[key]
+            arr = np.ascontiguousarray(img.astype(np.float32)[..., None])
+            src = K.image.Image.from_numpy(arr).to_cuda(stream) if device else arr
+            return det.detect_and_compute(src)
+
+        return run
 
     # OpenCV at both extremes: one thread isolates kernel quality, all cores is
     # what a caller actually gets. Quoting only the first flatters us by cv2's
@@ -214,16 +243,29 @@ def _engines(stream):
         finally:
             cv2.setNumThreads(1)
 
-    out = [("opencv (1 thread)", cv_detect), ("opencv (all cores)", cv_detect_mt)]
+    # (name, detect -> (xy, desc), time_this). cv2's two entries time the same
+    # call they audit; the kornia ones time the detector without the unpack.
+    out = [
+        ("opencv (1 thread)", cv_detect, cv_detect),
+        ("opencv (all cores)", cv_detect_mt, cv_detect_mt),
+    ]
+
+    def entry(name, device, **kw):
+        return (
+            name,
+            lambda im: kornia_detect(im, device, **kw),
+            kornia_time(device, **kw),
+        )
+
     if stream is not None:
         out += [
-            ("cuda fo=-1", lambda im: kornia_detect(im, True)),
-            ("cuda fo=-1 fast", lambda im: kornia_detect(im, True, fast_descriptor=True)),
-            ("cuda fo=0 4oct", lambda im: kornia_detect(im, True, upsample=False, max_octaves=4)),
+            entry("cuda fo=-1", True),
+            entry("cuda fo=-1 fast", True, fast_descriptor=True),
+            entry("cuda fo=0 4oct", True, upsample=False, max_octaves=4),
         ]
     out += [
-        ("neon fo=-1", lambda im: kornia_detect(im, False)),
-        ("neon fo=0 4oct", lambda im: kornia_detect(im, False, upsample=False, max_octaves=4)),
+        entry("neon fo=-1", False),
+        entry("neon fo=0 4oct", False, upsample=False, max_octaves=4),
     ]
     return out
 
@@ -239,19 +281,19 @@ def bench_sift_matchers(stream):
     _, da = sift.detect_and_compute(a)
     _, db = sift.detect_and_compute(b)
 
-    bf = cv2.BFMatcher(cv2.NORM_L2)
     cv_pairs = {tuple(x) for x in _match(da, db)}
-    neon_pairs = {tuple(x) for x in sift.match(a, b)[2]}
+    neon_pairs = {tuple(x) for x in sift.match(da, db)}
     agree = cv_pairs == neon_pairs
     print(f"\nmatcher pair sets identical (neon vs cv2 BFMatcher): {agree}  "
           f"({len(neon_pairs)} pairs)")
     if stream is not None:
-        da_d = K.image.Image.from_numpy(a).to_cuda(stream)
-        db_d = K.image.Image.from_numpy(b).to_cuda(stream)
-        cuda_pairs = {tuple(x) for x in sift.match(da_d, db_d)[2]}
+        # Detect on device so the descriptors are already there; the CUDA
+        # matcher then reads them in place and only the pairs come back.
+        _, dda = sift.detect_and_compute(K.image.Image.from_numpy(a).to_cuda(stream))
+        _, ddb = sift.detect_and_compute(K.image.Image.from_numpy(b).to_cuda(stream))
+        cuda_pairs = {tuple(x) for x in sift.match(dda, ddb)}
         print(f"matcher pair sets identical (cuda vs cv2 BFMatcher): "
               f"{cuda_pairs == cv_pairs}  ({len(cuda_pairs)} pairs)")
-    del bf
 
 
 def main():
@@ -272,9 +314,9 @@ def main():
            f"{'F match':>9}{'F inl':>7}{'inl%':>7}{'sed':>7}")
     print(hdr)
     print("-" * len(hdr))
-    for name, detect in _engines(stream):
+    for name, detect, timed in _engines(stream):
         kp, _ = detect(img_a)
-        ms = _timed(lambda d=detect: d(img_a))
+        ms = _timed(lambda t=timed: t(img_a))
         hm, ho = homography_audit(img_a, detect)
         fm, fi, sed = epipolar_audit(img_a, img_b, detect)
         pct = 100 * fi / fm if fm else 0.0

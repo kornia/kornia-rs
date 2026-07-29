@@ -176,38 +176,71 @@ fn scatter(sc: &DescriptorScratch, len: usize, ori: f32, bins_per_rad: f32, hist
 
                 let mut ib = [0i32; 4];
                 vst1q_s32(ib.as_mut_ptr(), idx);
+                // The bin coordinates come out too, to gate the dead pairs:
+                // the fold only reads cell rows/cols 1..D, so a pair whose
+                // row is 0/D+1 or whose column is 0/D+1 writes memory nothing
+                // ever reads. That is 36% of the pairs on average.
+                let mut rb4 = [0i32; 4];
+                vst1q_s32(rb4.as_mut_ptr(), r0);
+                let mut cb4 = [0i32; 4];
+                vst1q_s32(cb4.as_mut_ptr(), c0);
 
                 // The eight destinations are four *adjacent* pairs — offsets
                 // 0,1 / 10,11 / 60,61 / 70,71 — so each pair can accumulate as
                 // one 2-lane read-modify-write instead of two scalar ones.
                 // Interleaving each pair's two vectors puts lane `t`'s values
-                // next to each other, which is what makes the paired load
-                // possible. Elementwise vector add over distinct addresses is
-                // bit-identical to the scalar pair, and samples still land one
-                // after another, so the order the reference fixes is intact.
-                let mut pr = [0.0f32; 32];
-                for (slot, (a, b)) in [(v000, v001), (v010, v011), (v100, v101), (v110, v111)]
-                    .into_iter()
-                    .enumerate()
-                {
-                    vst1q_f32(pr.as_mut_ptr().add(slot * 8), vzip1q_f32(a, b));
-                    vst1q_f32(pr.as_mut_ptr().add(slot * 8 + 4), vzip2q_f32(a, b));
-                }
+                // next to each other: lane t's (a_t, b_t) is exactly one half
+                // of vzip1q/vzip2q, handed over REGISTER-TO-REGISTER. The
+                // previous form staged the zips through a 32-float stack
+                // buffer — 8 stores per 4 samples on the single store-data
+                // port, plus a load-behind-store round trip per pair — which
+                // the audit measured as a third of the scatter's stores.
+                // Elementwise vector add over distinct addresses is
+                // bit-identical to the scalar pair, and the t-outer order
+                // below is the sample order the reference fixes.
+                let z0 = (vzip1q_f32(v000, v001), vzip2q_f32(v000, v001));
+                let z1 = (vzip1q_f32(v010, v011), vzip2q_f32(v010, v011));
+                let z2 = (vzip1q_f32(v100, v101), vzip2q_f32(v100, v101));
+                let z3 = (vzip1q_f32(v110, v111), vzip2q_f32(v110, v111));
                 const OFF: [usize; 4] = [0, N + 2, (D + 2) * (N + 2), (D + 3) * (N + 2)];
                 let hp = hist.as_mut_ptr();
-                for (t, &base) in ib.iter().enumerate() {
-                    let b = base as usize;
-                    for (slot, &o) in OFF.iter().enumerate() {
+                // One block per lane `t`, fully unrolled: vget_low/vget_high
+                // need a compile-time half. Slot liveness: 0 = (r+1,c+1),
+                // 1 = (r+1,c+2), 2 = (r+2,c+1), 3 = (r+2,c+2); a dead slot
+                // writes only never-read border cells (see the scalar tail),
+                // and skipping it keeps the live accumulation order exact.
+                macro_rules! lane_scatter {
+                    ($t:expr, $half:ident, $zi:tt) => {{
                         // SAFETY: `rbin`/`cbin` were range-checked during
                         // collection, so `b <= 287` and the widest touched
                         // index is `b + 71 < HISTLEN`.
-                        let h = hp.add(b + o);
-                        vst1_f32(
-                            h,
-                            vadd_f32(vld1_f32(h), vld1_f32(pr.as_ptr().add(slot * 8 + t * 2))),
-                        );
-                    }
+                        let b = ib[$t] as usize;
+                        let (rlo, rhi) = (rb4[$t] >= 0, rb4[$t] <= D as i32 - 2);
+                        let (clo, chi) = (cb4[$t] >= 0, cb4[$t] <= D as i32 - 2);
+                        if rlo && clo {
+                            let h = hp.add(b + OFF[0]);
+                            vst1_f32(h, vadd_f32(vld1_f32(h), $half(z0.$zi)));
+                        }
+                        if rlo && chi {
+                            let h = hp.add(b + OFF[1]);
+                            vst1_f32(h, vadd_f32(vld1_f32(h), $half(z1.$zi)));
+                        }
+                        if rhi && clo {
+                            let h = hp.add(b + OFF[2]);
+                            vst1_f32(h, vadd_f32(vld1_f32(h), $half(z2.$zi)));
+                        }
+                        if rhi && chi {
+                            let h = hp.add(b + OFF[3]);
+                            vst1_f32(h, vadd_f32(vld1_f32(h), $half(z3.$zi)));
+                        }
+                    }};
                 }
+                // Lane t's pair: t 0/1 = low/high half of zip1, t 2/3 = low/
+                // high half of zip2 — [a0,b0,a1,b1] and [a2,b2,a3,b3].
+                lane_scatter!(0, vget_low_f32, 0);
+                lane_scatter!(1, vget_high_f32, 0);
+                lane_scatter!(2, vget_low_f32, 1);
+                lane_scatter!(3, vget_high_f32, 1);
                 k += 4;
             }
         }
@@ -244,15 +277,26 @@ fn scatter(sc: &DescriptorScratch, len: usize, ori: f32, bins_per_rad: f32, hist
         let v_rco001 = v_rc00 * obin;
         let v_rco000 = v_rc00 - v_rco001;
 
+        // Same border-ring elision as the vector block above.
+        let (rlo, rhi) = (r0 >= 0, r0 <= D as i32 - 2);
+        let (clo, chi) = (c0 >= 0, c0 <= D as i32 - 2);
         let idx = (((r0 + 1) as usize * (D + 2) + (c0 + 1) as usize) * (N + 2)) + o0 as usize;
-        hist[idx] += v_rco000;
-        hist[idx + 1] += v_rco001;
-        hist[idx + (N + 2)] += v_rco010;
-        hist[idx + (N + 3)] += v_rco011;
-        hist[idx + (D + 2) * (N + 2)] += v_rco100;
-        hist[idx + (D + 2) * (N + 2) + 1] += v_rco101;
-        hist[idx + (D + 3) * (N + 2)] += v_rco110;
-        hist[idx + (D + 3) * (N + 2) + 1] += v_rco111;
+        if rlo && clo {
+            hist[idx] += v_rco000;
+            hist[idx + 1] += v_rco001;
+        }
+        if rlo && chi {
+            hist[idx + (N + 2)] += v_rco010;
+            hist[idx + (N + 3)] += v_rco011;
+        }
+        if rhi && clo {
+            hist[idx + (D + 2) * (N + 2)] += v_rco100;
+            hist[idx + (D + 2) * (N + 2) + 1] += v_rco101;
+        }
+        if rhi && chi {
+            hist[idx + (D + 3) * (N + 2)] += v_rco110;
+            hist[idx + (D + 3) * (N + 2) + 1] += v_rco111;
+        }
         k += 1;
     }
 }
@@ -351,30 +395,106 @@ pub fn compute_descriptor(
         let r = (py + i) as usize;
         let (row, up, dn) = (r * w, (r - 1) * w, (r + 1) * w);
 
-        for j in j_lo..=j_hi {
-            let c_rot = j as f32 * cos_t - i as f32 * sin_t;
-            let r_rot = j as f32 * sin_t + i as f32 * cos_t;
-            let rbin = r_rot + D as f32 / 2.0 - 0.5;
-            let cbin = c_rot + D as f32 / 2.0 - 0.5;
+        // Scalar body, shared by the 4-wide fallback and the tail.
+        //
+        // SAFETY (both paths): `n` counts accepted samples, and the loops run
+        // at most `(i_hi - i_lo + 1) * (2 * radius + 1) == cap` times between
+        // them, so `n < cap` and every buffer is `cap` long. The row and
+        // column bounds already guarantee all four stencil neighbours exist.
+        macro_rules! push_sample {
+            ($j:expr) => {{
+                let j = $j;
+                let c_rot = j as f32 * cos_t - i as f32 * sin_t;
+                let r_rot = j as f32 * sin_t + i as f32 * cos_t;
+                let rbin = r_rot + D as f32 / 2.0 - 0.5;
+                let cbin = c_rot + D as f32 / 2.0 - 0.5;
+                if rbin > -1.0 && rbin < D as f32 && cbin > -1.0 && cbin < D as f32 {
+                    let c = (px + j) as usize;
+                    // The macro expands both inside and outside the NEON
+                    // unsafe block, so this inner one is redundant there.
+                    #[allow(unused_unsafe)]
+                    unsafe {
+                        *sc.dx.get_unchecked_mut(n) = img[row + c + 1] - img[row + c - 1];
+                        *sc.dy.get_unchecked_mut(n) = img[up + c] - img[dn + c];
+                        *sc.rbin.get_unchecked_mut(n) = rbin;
+                        *sc.cbin.get_unchecked_mut(n) = cbin;
+                        *sc.wt.get_unchecked_mut(n) = (c_rot * c_rot + r_rot * r_rot) * exp_scale;
+                    }
+                    n += 1;
+                }
+            }};
+        }
 
-            if !(rbin > -1.0 && rbin < D as f32 && cbin > -1.0 && cbin < D as f32) {
-                continue;
+        let mut j = j_lo;
+
+        // 4-wide body. `clip_j` widens the accepted run by at most one on each
+        // side, so rejects sit only at the run's two ends and almost every
+        // block passes whole; a partial block falls back to the scalar body so
+        // packing order is preserved. Expression shapes are the scalar's
+        // exactly — mul/mul/sub for c_rot, mul/mul/add for r_rot, and
+        // mul,mul,add,mul for the weight; **no FMA anywhere** (Rust never
+        // contracts, so introducing one would change the descriptor). The
+        // hoisted i*sin_t / i*cos_t are the same product the scalar computed
+        // per iteration, rounded once — identical value.
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            use std::arch::aarch64::*;
+            let isin = i as f32 * sin_t;
+            let icos = i as f32 * cos_t;
+            let half = D as f32 / 2.0 - 0.5;
+            let dsize = D as f32;
+            let base = vld1q_f32([0.0f32, 1.0, 2.0, 3.0].as_ptr());
+            while j + 3 <= j_hi {
+                let jv = vaddq_f32(vdupq_n_f32(j as f32), base);
+                let c_rot = vsubq_f32(vmulq_n_f32(jv, cos_t), vdupq_n_f32(isin));
+                let r_rot = vaddq_f32(vmulq_n_f32(jv, sin_t), vdupq_n_f32(icos));
+                let rbin = vaddq_f32(r_rot, vdupq_n_f32(half));
+                let cbin = vaddq_f32(c_rot, vdupq_n_f32(half));
+
+                let ok = vandq_u32(
+                    vandq_u32(
+                        vcgtq_f32(rbin, vdupq_n_f32(-1.0)),
+                        vcltq_f32(rbin, vdupq_n_f32(dsize)),
+                    ),
+                    vandq_u32(
+                        vcgtq_f32(cbin, vdupq_n_f32(-1.0)),
+                        vcltq_f32(cbin, vdupq_n_f32(dsize)),
+                    ),
+                );
+                if vminvq_u32(ok) != u32::MAX {
+                    // Partial block: rejects only at run ends. Scalar keeps
+                    // the packed order exact.
+                    for jj in j..j + 4 {
+                        push_sample!(jj);
+                    }
+                } else {
+                    let c0 = (px + j) as usize;
+                    let wt = vmulq_n_f32(
+                        vaddq_f32(vmulq_f32(c_rot, c_rot), vmulq_f32(r_rot, r_rot)),
+                        exp_scale,
+                    );
+                    let dxv = vsubq_f32(
+                        vld1q_f32(img.as_ptr().add(row + c0 + 1)),
+                        vld1q_f32(img.as_ptr().add(row + c0 - 1)),
+                    );
+                    let dyv = vsubq_f32(
+                        vld1q_f32(img.as_ptr().add(up + c0)),
+                        vld1q_f32(img.as_ptr().add(dn + c0)),
+                    );
+                    vst1q_f32(sc.dx.as_mut_ptr().add(n), dxv);
+                    vst1q_f32(sc.dy.as_mut_ptr().add(n), dyv);
+                    vst1q_f32(sc.rbin.as_mut_ptr().add(n), rbin);
+                    vst1q_f32(sc.cbin.as_mut_ptr().add(n), cbin);
+                    vst1q_f32(sc.wt.as_mut_ptr().add(n), wt);
+                    n += 4;
+                }
+                j += 4;
             }
-            let c = (px + j) as usize;
-            // Raw differences, exactly the reference's stencil. The row and
-            // column bounds already guarantee all four neighbours exist.
-            //
-            // SAFETY: `n` counts accepted samples, and the two loops run at
-            // most `(i_hi - i_lo + 1) * (2 * radius + 1) == cap` times between
-            // them, so `n < cap` and every buffer is `cap` long.
-            unsafe {
-                *sc.dx.get_unchecked_mut(n) = img[row + c + 1] - img[row + c - 1];
-                *sc.dy.get_unchecked_mut(n) = img[up + c] - img[dn + c];
-                *sc.rbin.get_unchecked_mut(n) = rbin;
-                *sc.cbin.get_unchecked_mut(n) = cbin;
-                *sc.wt.get_unchecked_mut(n) = (c_rot * c_rot + r_rot * r_rot) * exp_scale;
-            }
-            n += 1;
+        }
+
+        while j <= j_hi {
+            push_sample!(j);
+            j += 1;
         }
     }
 
@@ -397,7 +517,10 @@ pub fn compute_descriptor(
         for j in 0..D {
             let idx = ((i + 1) * (D + 2) + (j + 1)) * (N + 2);
             hist[idx] += hist[idx + N];
-            hist[idx + 1] += hist[idx + N + 1];
+            // The reference also folds o-bin N+1 into bin 1, but no scatter can
+            // write it: o0 wraps into 0..N-1, so writes reach offset N at most.
+            // Folding that guaranteed +0.0 is a no-op (all accumulands are
+            // non-negative, so there is no -0.0 for it to normalise).
             for k in 0..N {
                 raw[(i * D + j) * N + k] = hist[idx + k];
             }

@@ -27,8 +27,8 @@ use std::sync::Arc;
 use cudarc::driver::{CudaContext, CudaSlice, CudaStream};
 
 use super::descriptor::{
-    launch_sift_descriptor_cuda_view, launch_sift_gather_descriptors_cuda_view, DESCR_LEN,
-    DESC_IN_STRIDE,
+    launch_sift_descriptor_cuda_view, launch_sift_gather_descriptors_cuda_view,
+    launch_sift_pack_desc_cuda_view, DESCR_LEN, DESC_IN_STRIDE,
 };
 use super::detect::launch_sift_find_extrema_cuda_view;
 use super::kernels::gaussian_kernel_f32;
@@ -39,11 +39,12 @@ use super::pyramid::{
     launch_sift_upsample2x_cuda_view,
 };
 use super::{gaussian_ksize, SiftCudaConfig, SiftCudaError, KP_STRIDE};
+use kornia_image::Image;
 
 // `final_order` — `removeDuplicatedSorted` then `retainBest` — is the shared
 // implementation. Both backends must return the same rows in the same order, so
 // it has one definition rather than two copies kept in step by hand.
-use crate::features::sift_final_order as final_order;
+use crate::features::sift::pipeline::final_order;
 
 // The keypoint record, the result bundle and the starting-scale selector are
 // backend-independent, so they have one definition — in `features::sift` — and
@@ -51,6 +52,33 @@ use crate::features::sift_final_order as final_order;
 // here made the two backends' results different types to the compiler for no
 // reason, and forced the Python binding to alias one of them.
 pub use crate::features::{FirstOctave, SiftFeatures, SiftKeypoint};
+
+/// One frame's output: host keypoints, device descriptors.
+///
+/// `descriptors` is an **owned** `keypoints.len() * 128` device buffer — the
+/// final gather writes each frame straight into a fresh allocation, so the
+/// result has its own lifetime (holding two frames for matching just works)
+/// and nothing is copied to make that true. Keypoints come to the host
+/// because the reference's final ordering is a host-side sort; they are two
+/// orders of magnitude smaller than the descriptors.
+pub struct SiftCudaFeatures {
+    /// Keypoints in the reference's final order.
+    pub keypoints: Vec<SiftKeypoint>,
+    /// Row-major `keypoints.len() * DESCR_LEN` block on device; row `i`
+    /// belongs to `keypoints[i]`.
+    pub descriptors: CudaSlice<f32>,
+}
+
+impl SiftCudaFeatures {
+    /// Number of keypoints.
+    pub fn len(&self) -> usize {
+        self.keypoints.len()
+    }
+    /// Whether any keypoint was found.
+    pub fn is_empty(&self) -> bool {
+        self.keypoints.is_empty()
+    }
+}
 
 /// Reusable device-resident SIFT pipeline for one image size.
 pub struct SiftCuda {
@@ -83,13 +111,12 @@ pub struct SiftCuda {
     /// Descriptors for the whole frame, in detection order. Each launch writes
     /// straight into its own row range, so there is no per-layer staging copy.
     desc_all: CudaSlice<f32>,
-    /// The same descriptors in final keypoint order — what callers see.
-    desc_out: CudaSlice<f32>,
     perm: CudaSlice<i32>,
     /// Survivor count for the deferred descriptor pass.
     desc_live: CudaSlice<i32>,
-    /// Row where each (octave, layer) group's oriented keypoints start. Written
-    /// device-to-device so no count ever has to come back to the host mid-frame.
+    /// Row where each (octave, layer) group's oriented keypoints start,
+    /// uploaded from the host once per frame after `retain_best` decides the
+    /// survivor grouping.
     ranges: CudaSlice<i32>,
     n_desc: usize,
     /// Opt-in rotated-frame descriptor: faster, not bit-exact. See
@@ -206,7 +233,6 @@ impl SiftCuda {
             ori_count: stream.alloc_zeros::<i32>(1)?,
             desc_in: stream.alloc_zeros::<f32>(ori_cap * DESC_IN_STRIDE)?,
             desc_all: stream.alloc_zeros::<f32>(ori_cap * DESCR_LEN)?,
-            desc_out: stream.alloc_zeros::<f32>(ori_cap * DESCR_LEN)?,
             perm: stream.alloc_zeros::<i32>(ori_cap)?,
             desc_live: stream.alloc_zeros::<i32>(1)?,
             ranges: stream.alloc_zeros::<i32>(64 * (cfg.n_octave_layers + 1))?,
@@ -242,17 +268,29 @@ impl SiftCuda {
 
     /// Detect, orient and describe, leaving the descriptors on device.
     ///
-    /// `src` is a `width * height` f32 grayscale image in 0..255, matching the
-    /// reference's internal representation. Returns the keypoints; the matching
-    /// descriptor rows are reachable through
-    /// [`SiftCuda::descriptors_device`], so a caller that goes straight on to
-    /// matching never moves them across the bus.
-    pub fn detect_and_compute_device(
+    /// `src` is a device-resident single-channel f32 [`Image`] in 0..255,
+    /// matching the reference's internal representation. Returns
+    /// [`SiftCudaFeatures`]: host keypoints and an owned device descriptor
+    /// block — the CUDA path never downloads what a caller did not ask to
+    /// move.
+    pub fn detect_and_compute(
         &mut self,
         ctx: &Arc<CudaContext>,
         stream: &Arc<CudaStream>,
-        src: &CudaSlice<f32>,
-    ) -> Result<Vec<SiftKeypoint>, SiftCudaError> {
+        src: &Image<f32, 1>,
+    ) -> Result<SiftCudaFeatures, SiftCudaError> {
+        let size = src.size();
+        if size.width != self.width || size.height != self.height {
+            return Err(SiftCudaError::Geometry(format!(
+                "plan built for {}x{}, image is {}x{}",
+                self.width, self.height, size.width, size.height
+            )));
+        }
+        let src = src.0.as_cudaslice().ok_or_else(|| {
+            SiftCudaError::Geometry(
+                "image is not device-resident; move it with Image::to_cuda first".into(),
+            )
+        })?;
         let need = self.width * self.height;
         if src.len() < need {
             return Err(SiftCudaError::SliceTooSmall {
@@ -320,7 +358,6 @@ impl SiftCuda {
         )?;
 
         let n_oct = self.n_octaves(cw, ch);
-        let mut range_i = 0usize;
         // The deferred descriptor pass needs each octave's dimensions; the loop
         // halves with integer division, which is not `>>` for odd sizes.
         let mut oct_dims: Vec<(usize, usize)> = Vec::with_capacity(n_oct);
@@ -396,21 +433,14 @@ impl SiftCuda {
                 // skips the keypoints that do not belong to it.
                 //
                 // Oriented keypoints accumulate across the WHOLE frame rather
-                // than being reset per layer, and each layer's row range is
-                // recorded on device (`ranges`) with a 4-byte device-to-device
-                // copy. The descriptor launches size their grid from an upper
-                // bound and retire the blocks past the live count. That is what
-                // removes the per-layer count read: every one of those was a
-                // blocking D2H that drained the stream, 54 of them a frame, and
-                // they left no octave able to overlap the next.
+                // than being reset per layer. `ranges` is NOT written here:
+                // an earlier revision snapshotted `ori_count` per layer for a
+                // device-side descriptor pass, but the retain_best reorder
+                // moved descriptor grouping to the host, which uploads its own
+                // `starts` into `ranges` — the audit found the in-loop
+                // snapshots written and then overwritten, never read.
                 for layer in 1..=self.cfg.n_octave_layers {
                     let img = self.pyr[octv][layer].slice(0..plane);
-                    // Snapshot where this layer's rows will start.
-                    {
-                        let src = self.ori_count.slice(0..1);
-                        let mut dst = self.ranges.slice_mut(range_i..range_i + 1);
-                        stream.memcpy_dtod(&src, &mut dst)?;
-                    }
 
                     let to = mark(probe);
                     launch_sift_orientation_cuda_view(
@@ -429,8 +459,6 @@ impl SiftCuda {
                         self.fast_descriptor,
                     )?;
                     since(to, stream, &mut t_ori);
-
-                    range_i += 1;
                 }
             }
 
@@ -439,20 +467,18 @@ impl SiftCuda {
             if nw == 0 || nh == 0 || octv + 1 >= n_oct {
                 break;
             }
-            launch_sift_downsample_nearest_cuda_view(
-                ctx,
-                stream,
-                &self.pyr[octv][self.cfg.n_octave_layers].slice(0..plane),
-                &mut self.buf_a.slice_mut(0..nw * nh),
-                cw as u32,
-                ch as u32,
-                nw as u32,
-                nh as u32,
-            )?;
+            // Straight into the next octave's layer 0. `split_at_mut` at the
+            // octave boundary lets the source layer and the destination
+            // borrow simultaneously (the blur loop uses the same trick), which
+            // removes the buf_a staging hop and its full-plane
+            // device-to-device copy.
             {
-                let (src_base, l0) = (self.buf_a.slice(0..nw * nh), &mut self.pyr[octv + 1][0]);
-                let mut dst = l0.slice_mut(0..nw * nh);
-                stream.memcpy_dtod(&src_base, &mut dst)?;
+                let (head, rest) = self.pyr.split_at_mut(octv + 1);
+                let src = head[octv][self.cfg.n_octave_layers].slice(0..plane);
+                let mut dst = rest[0][0].slice_mut(0..nw * nh);
+                launch_sift_downsample_nearest_cuda_view(
+                    ctx, stream, &src, &mut dst, cw as u32, ch as u32, nw as u32, nh as u32,
+                )?;
             }
             cw = nw;
             ch = nh;
@@ -466,6 +492,13 @@ impl SiftCuda {
             .min(self.ori_kp.len() / ORI_KP_STRIDE)
             .min(self.desc_all.len() / DESCR_LEN);
         let ok = stream.clone_dtoh(&self.ori_kp.slice(0..n_ori * ORI_KP_STRIDE))?;
+
+        // Host-only window: the queue is empty from here until the descriptor
+        // launches, so every millisecond in this span is GPU idle time. The
+        // audit found it invisible to the stage probes — the probes bracket
+        // launches — which is why it gets its own timer. No sync needed: there
+        // is nothing in flight to wait for.
+        let th_start = mark(probe);
 
         // first_octave = -1 post-processing: halve position and size, and
         // rewrite the packed octave byte.
@@ -497,6 +530,10 @@ impl SiftCuda {
         let n = order.len().min(n_ori);
         let keypoints: Vec<SiftKeypoint> = order[..n].iter().map(|&i| all_kps[i]).collect();
 
+        let t_host = th_start
+            .map(|t| t.elapsed().as_secs_f64() * 1e3)
+            .unwrap_or(0.0);
+
         // ── Descriptors, for the survivors only ─────────────────────────────
         //
         // This is why the pyramid stays resident. The reference applies
@@ -515,26 +552,22 @@ impl SiftCuda {
                 ((packed & 255) as u8, ((packed >> 8) & 255) as u8)
             });
 
-            // Pack on the host: four f32 ops per keypoint, the same expressions
-            // and the same order as `sift_pack_desc_input`, so the values are
-            // identical. Doing it here removes a kernel launch per layer and
-            // the device-side range bookkeeping it needed.
-            let mut din = vec![0.0f32; n * DESC_IN_STRIDE];
-            for (pos, &i) in describe.iter().enumerate() {
-                let k = &ok[order[i] * ORI_KP_STRIDE..(order[i] + 1) * ORI_KP_STRIDE];
-                let packed = k[4].to_bits() as i32;
-                let scale = 1.0f32 / ((1u32 << (packed & 255)) as f32);
-                let mut ang = 360.0f32 - k[5];
-                if (ang - 360.0).abs() < f32::EPSILON {
-                    ang = 0.0;
-                }
-                let o = &mut din[pos * DESC_IN_STRIDE..pos * DESC_IN_STRIDE + 4];
-                o[0] = k[0] * scale;
-                o[1] = k[1] * scale;
-                o[2] = (k[2] * scale) * 0.5;
-                o[3] = ang;
-            }
-            stream.memcpy_htod(&din, &mut self.desc_in.slice_mut(0..n * DESC_IN_STRIDE))?;
+            // Pack on DEVICE from the ori_kp rows it already owns: only the
+            // 4-byte row indices cross the bus (the ordering is a host-side
+            // sort, so the indices genuinely originate on the host). The
+            // kernel's expressions match the previous host pack bit for bit.
+            // The `perm` buffer stages the indices; the gather's own upload
+            // later overwrites it AFTER this kernel in stream order.
+            let rows: Vec<i32> = describe.iter().map(|&i| order[i] as i32).collect();
+            stream.memcpy_htod(&rows, &mut self.perm.slice_mut(0..n))?;
+            launch_sift_pack_desc_cuda_view(
+                ctx,
+                stream,
+                &self.ori_kp.slice(0..n_ori * ORI_KP_STRIDE),
+                &self.perm.slice(0..n),
+                n as u32,
+                &mut self.desc_in.slice_mut(0..n * DESC_IN_STRIDE),
+            )?;
 
             // One launch per contiguous (octave, layer) run.
             let key = |i: usize| {
@@ -556,6 +589,9 @@ impl SiftCuda {
                 }
                 p0 = p1;
             }
+            // `n` and `starts` are host-DERIVED control data (retain_best and
+            // the group sort run on the host), not device data round-tripped:
+            // together they are under 100 bytes.
             let n_i = [n as i32];
             stream.memcpy_htod(&n_i, &mut self.desc_live.slice_mut(0..1))?;
             if !starts.is_empty() {
@@ -587,50 +623,32 @@ impl SiftCuda {
                 perm[i] = pos as i32;
             }
             stream.memcpy_htod(&perm, &mut self.perm.slice_mut(0..n))?;
+        }
+        // The final gather writes each frame's block into a FRESH allocation
+        // rather than a plan-owned slab: the result owns its descriptors, so a
+        // caller holding two frames for matching needs no defensive copy.
+        // SAFETY: the gather kernel writes all n * DESCR_LEN elements before
+        // anything reads them; n == 0 allocates a single unread element
+        // because a zero-length device allocation is not something CUDA
+        // promises to hand back.
+        let mut descriptors = unsafe { stream.alloc::<f32>((n * DESCR_LEN).max(1))? };
+        if n > 0 {
             let src = self.desc_all.slice(0..n * DESCR_LEN);
             let p = self.perm.slice(0..n);
-            let mut out = self.desc_out.slice_mut(0..n * DESCR_LEN);
+            let mut out = descriptors.slice_mut(0..n * DESCR_LEN);
             launch_sift_gather_descriptors_cuda_view(ctx, stream, &src, &p, n as u32, &mut out)?;
         }
         if probe {
             eprintln!(
                 "  stages: blur={t_blur:.1} detect={t_det:.1} orient={t_ori:.1} \
-                 descriptor={t_desc:.1} (ms)"
+                 host={t_host:.1} descriptor={t_desc:.1} (ms)"
             );
         }
         self.n_desc = n;
-        Ok(keypoints)
-    }
-
-    /// Detect, orient and describe, returning host-side results.
-    ///
-    /// This is [`SiftCuda::detect_and_compute_device`] plus a single download of
-    /// the ordered descriptor block. A caller that goes straight on to matching
-    /// should use the device form and skip the round trip entirely.
-    pub fn detect_and_compute(
-        &mut self,
-        ctx: &Arc<CudaContext>,
-        stream: &Arc<CudaStream>,
-        src: &CudaSlice<f32>,
-    ) -> Result<SiftFeatures, SiftCudaError> {
-        let keypoints = self.detect_and_compute_device(ctx, stream, src)?;
-        let descriptors = if self.n_desc == 0 {
-            Vec::new()
-        } else {
-            stream.clone_dtoh(&self.desc_out.slice(0..self.n_desc * DESCR_LEN))?
-        };
-        Ok(SiftFeatures {
+        Ok(SiftCudaFeatures {
             keypoints,
             descriptors,
         })
-    }
-
-    /// The ordered descriptor block from the last call, on device.
-    ///
-    /// Row `i` belongs to keypoint `i` of the returned keypoint list. Valid
-    /// until the next call, which overwrites it.
-    pub fn descriptors_device(&self) -> &CudaSlice<f32> {
-        &self.desc_out
     }
 
     /// Number of descriptor rows written by the last call.
@@ -643,6 +661,7 @@ impl SiftCuda {
 mod tests {
     use super::*;
     use crate::cuda::color::test_utils::default_stream;
+    use kornia_image::ImageSize;
 
     fn load_dump(path: &str) -> Option<(usize, usize, Vec<f32>)> {
         let b = std::fs::read(path).ok()?;
@@ -715,7 +734,16 @@ mod tests {
                 128.0 + 100.0 * ((x * 0.37).sin() * (y * 0.29).cos())
             })
             .collect();
-        let d_src = stream.clone_htod(&host).expect("upload");
+        let d_src = Image::<f32, 1>::from_size_slice(
+            ImageSize {
+                width: w,
+                height: h,
+            },
+            &host,
+        )
+        .expect("image")
+        .to_cuda(&stream)
+        .expect("upload");
         let mut plan = SiftCuda::new(
             ctx,
             &stream,
@@ -732,10 +760,13 @@ mod tests {
                 .detect_and_compute(ctx, &stream, &d_src)
                 .expect("detect");
             assert!(f.len() > 10, "expected keypoints, got {}", f.len());
-            assert_eq!(f.descriptors.len(), f.len() * DESCR_LEN);
+            assert_eq!(plan.n_desc * DESCR_LEN, f.len() * DESCR_LEN);
             // Every row must have been written. An all-zero row means its
             // launch retired the block or wrote somewhere else.
-            for (i, row) in f.descriptors.chunks_exact(DESCR_LEN).enumerate() {
+            let descs = stream
+                .clone_dtoh(&f.descriptors.slice(0..f.len() * DESCR_LEN))
+                .unwrap();
+            for (i, row) in descs.chunks_exact(DESCR_LEN).enumerate() {
                 assert!(
                     row.iter().any(|v| *v != 0.0),
                     "descriptor row {i} is all zero (fast={fast})"
@@ -756,7 +787,16 @@ mod tests {
         let (h, w, img) = load_dump(&format!("{dir}/gray_fpt.f32")).expect("gray_fpt");
         let stream = default_stream();
         let ctx = &stream.context();
-        let d_src = stream.clone_htod(&img).unwrap();
+        let d_src = Image::<f32, 1>::from_size_slice(
+            ImageSize {
+                width: w,
+                height: h,
+            },
+            &img,
+        )
+        .unwrap()
+        .to_cuda(&stream)
+        .unwrap();
 
         let mut plan = SiftCuda::new(
             ctx,
@@ -785,8 +825,8 @@ mod tests {
             hit
         );
         assert_eq!(
-            feats.descriptors.len(),
-            feats.len() * DESCR_LEN,
+            plan.n_desc,
+            feats.len(),
             "descriptor block must be one 128-vector per keypoint"
         );
         assert!(!feats.is_empty(), "pipeline produced no keypoints");
@@ -839,7 +879,16 @@ mod tests {
 
         let stream = default_stream();
         let ctx = &stream.context();
-        let d_src = stream.clone_htod(&img).unwrap();
+        let d_src = Image::<f32, 1>::from_size_slice(
+            ImageSize {
+                width: w,
+                height: h,
+            },
+            &img,
+        )
+        .unwrap()
+        .to_cuda(&stream)
+        .unwrap();
 
         let mut all_plan = SiftCuda::new(
             ctx,
@@ -855,12 +904,12 @@ mod tests {
             .detect_and_compute(ctx, &stream, &d_src)
             .expect("detect");
         assert!(
-            all.keypoints.len() > 8,
+            all.len() > 8,
             "need enough keypoints to budget, got {}",
-            all.keypoints.len()
+            all.len()
         );
 
-        let n = all.keypoints.len() / 2;
+        let n = all.len() / 2;
         let mut cut_plan = SiftCuda::new(
             ctx,
             &stream,
@@ -878,12 +927,15 @@ mod tests {
             .detect_and_compute(ctx, &stream, &d_src)
             .expect("detect");
 
-        assert_eq!(cut.keypoints.len(), n, "budget must cap the count");
+        assert_eq!(cut.len(), n, "budget must cap the count");
         assert_eq!(
-            cut.descriptors.len(),
-            n * DESCR_LEN,
+            cut_plan.descriptor_count(),
+            n,
             "one descriptor row per surviving keypoint"
         );
+        let cut_desc = stream
+            .clone_dtoh(&cut.descriptors.slice(0..n * DESCR_LEN))
+            .unwrap();
 
         // Every dropped keypoint must be no stronger than every kept one, which
         // is what `retainBest` guarantees.
@@ -902,7 +954,7 @@ mod tests {
                 );
             }
         }
-        assert_eq!(dropped, all.keypoints.len() - n);
+        assert_eq!(dropped, all.len() - n);
 
         // A budget above the keypoint count is a no-op.
         let mut big_plan = SiftCuda::new(
@@ -911,7 +963,7 @@ mod tests {
             w,
             h,
             SiftCudaConfig {
-                n_features: all.keypoints.len() + 1000,
+                n_features: all.len() + 1000,
                 ..SiftCudaConfig::default()
             },
             FirstOctave::Native,
@@ -921,7 +973,16 @@ mod tests {
         let big = big_plan
             .detect_and_compute(ctx, &stream, &d_src)
             .expect("detect");
-        assert_eq!(big.keypoints.len(), all.keypoints.len());
-        assert_eq!(big.descriptors, all.descriptors);
+        assert_eq!(big.len(), all.len());
+        let big_desc = stream
+            .clone_dtoh(&big.descriptors.slice(0..big.len() * DESCR_LEN))
+            .unwrap();
+        // `cut_desc` pins the budgeted rows too: the kept keypoints' rows must
+        // be a prefix-by-order subset of the unbudgeted block's rows.
+        assert_eq!(cut_desc.len(), n * DESCR_LEN);
+        let all_desc = stream
+            .clone_dtoh(&all.descriptors.slice(0..all.len() * DESCR_LEN))
+            .unwrap();
+        assert_eq!(big_desc, all_desc);
     }
 }
