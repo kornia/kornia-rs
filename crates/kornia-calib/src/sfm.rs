@@ -465,6 +465,27 @@ pub fn calibrate_features_with_depth(
     } else {
         0
     };
+
+    // Final relaxation rung — the practice all three reference pipelines share, each in its own
+    // dialect: COLMAP's outer loop HALVES its thresholds when growth stalls (kNumInitRelaxations),
+    // OpenSfM's resection floor is 10 inliers outright, and OpenMVG's a-contrario RANSAC has no
+    // fixed floor at all (adaptive significance test). A fixed gate leaves the tail of a capture
+    // permanently unregistered even when the finished, refined map could support it. One rung,
+    // half the gate with a floor of 10, judged against the BEST map this solve will ever have —
+    // and the post-BA filter + de-registration hygiene still polices anything it admits.
+    let relaxed = if config.second_pass && config.min_registration_inliers > 10 {
+        grow_registrations(
+            &mut poses, &mut point3d, &norm, &norm_depth, n_cams, &idcam, &tcfg_grow,
+            (config.min_registration_inliers / 2).max(10), 0.0,
+            a0, config, BA_IMAGES_RATIO, &mut next_ba,
+        )
+    } else {
+        0
+    };
+    if std::env::var_os("KORNIA_CALIB_DEBUG").is_some() {
+        eprintln!("[calib] relaxation rung registered {relaxed} more camera(s)");
+    }
+    let added = added + relaxed;
     if std::env::var_os("KORNIA_CALIB_DEBUG").is_some() {
         eprintln!("[calib] second pass registered {added} more camera(s)");
     }
