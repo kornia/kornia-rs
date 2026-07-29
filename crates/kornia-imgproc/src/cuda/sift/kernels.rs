@@ -30,7 +30,7 @@ use super::SiftCudaError;
 ///   normalisation and the other half is mirrored, so symmetry is exact rather
 ///   than approximate.
 pub fn gaussian_kernel_f32(n: usize, sigma: f64) -> Vec<f32> {
-    crate::features::gaussian_kernel_f32(n, sigma)
+    crate::features::sift::params::gaussian_kernel_f32(n, sigma)
 }
 
 /// Emit an `f32` literal that cannot be perturbed by decimal round-tripping.

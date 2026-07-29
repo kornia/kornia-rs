@@ -30,9 +30,9 @@ use crate::cuda::make_config;
 // baked into the kernel source as literals, so a divergence would not be a
 // compile error — it would be a silently different descriptor.
 /// Grid width (`SIFT_DESCR_WIDTH`).
-pub const DESCR_WIDTH: usize = crate::features::DESCR_WIDTH;
+pub const DESCR_WIDTH: usize = crate::features::sift::descriptor::DESCR_WIDTH;
 /// Orientation bins per cell (`SIFT_DESCR_HIST_BINS`).
-pub const DESCR_HIST_BINS: usize = crate::features::DESCR_HIST_BINS;
+pub const DESCR_HIST_BINS: usize = crate::features::sift::descriptor::DESCR_HIST_BINS;
 /// Descriptor length in floats.
 pub const DESCR_LEN: usize = crate::features::DESCR_LEN;
 /// Threads per block for the shared-memory descriptor kernel. Must be a power
@@ -106,11 +106,11 @@ fn desc_block_threads() -> usize {
 }
 
 /// Patch scale factor (`SIFT_DESCR_SCL_FCTR`).
-pub const DESCR_SCL_FCTR: f32 = crate::features::DESCR_SCL_FCTR;
+pub const DESCR_SCL_FCTR: f32 = crate::features::sift::descriptor::DESCR_SCL_FCTR;
 /// Post-normalisation clamp (`SIFT_DESCR_MAG_THR`).
-pub const DESCR_MAG_THR: f32 = crate::features::DESCR_MAG_THR;
+pub const DESCR_MAG_THR: f32 = crate::features::sift::descriptor::DESCR_MAG_THR;
 /// Quantisation factor (`SIFT_INT_DESCR_FCTR`).
-pub const INT_DESCR_FCTR: f32 = crate::features::INT_DESCR_FCTR;
+pub const INT_DESCR_FCTR: f32 = crate::features::sift::descriptor::INT_DESCR_FCTR;
 
 fn descriptor_src() -> String {
     let d = DESCR_WIDTH;
@@ -321,6 +321,69 @@ fn ostride() -> usize {
             .filter(|v| *v >= DESCR_HIST_BINS + 2)
             .unwrap_or(DESCR_HIST_BINS + 2)
     })
+}
+
+fn pack_desc_src() -> String {
+    format!(
+        r#"
+// Oriented-keypoint rows -> descriptor launch input, on device.
+//
+// `rows[i]` names the ori_kp row backing output slot `i` (the host decides the
+// order — retain_best and the (octave, layer) grouping are host-side sorts).
+// Packing here means the 6-float rows the device already owns are never
+// downloaded, repacked and re-uploaded; only the 4-byte row indices cross the
+// bus. Expressions match the previous host pack exactly: 1/2^octv is exact in
+// f32, and each product rounds once in both versions.
+extern "C" __global__ void __launch_bounds__(256) sift_pack_desc(
+    const float* __restrict__ ori_kp, const int* __restrict__ rows, int n,
+    float* __restrict__ out)
+{{
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    const float* k = ori_kp + (long)rows[i] * {ori_stride};
+    const int packed = __float_as_int(k[4]);
+    const float scale = 1.0f / (float)(1u << (packed & 255));
+    float ang = 360.0f - k[5];
+    if (fabsf(ang - 360.0f) < 1.1920929e-07f) ang = 0.0f;
+    float* o = out + (long)i * {in_stride};
+    o[0] = k[0] * scale;
+    o[1] = k[1] * scale;
+    o[2] = (k[2] * scale) * 0.5f;
+    o[3] = ang;
+}}
+"#,
+        ori_stride = 6usize,
+        in_stride = DESC_IN_STRIDE,
+    )
+}
+
+/// Launch [`pack_desc_src`]'s kernel: `n` threads, one output slot each.
+pub fn launch_sift_pack_desc_cuda_view(
+    ctx: &Arc<CudaContext>,
+    stream: &Arc<CudaStream>,
+    ori_kp: &CudaView<'_, f32>,
+    rows: &CudaView<'_, i32>,
+    n: u32,
+    out: &mut CudaViewMut<'_, f32>,
+) -> Result<(), SiftCudaError> {
+    if n == 0 {
+        return Ok(());
+    }
+    let kernel = get_or_compile(ctx, "sift_pack_desc", pack_desc_src, "sift_pack_desc")?;
+    let n_i = n as i32;
+    let cfg = cudarc::driver::LaunchConfig {
+        grid_dim: (n.div_ceil(256), 1, 1),
+        block_dim: (256, 1, 1),
+        shared_mem_bytes: 0,
+    };
+    kernel
+        .launch_builder(stream)
+        .arg(ori_kp)
+        .arg(rows)
+        .arg(&n_i)
+        .arg(out)
+        .launch_cfg(cfg)
+        .map_err(|e| SiftCudaError::Cuda(e.to_string()))
 }
 
 fn descriptor_block_src(threads: usize) -> String {

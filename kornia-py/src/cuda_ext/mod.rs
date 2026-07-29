@@ -527,13 +527,15 @@ impl PyTensor {
             // guard below never matches.
             #[cfg(feature = "cuda")]
             TensorInnerEnum::F32(t) => {
+                // `into_vec` moves the freshly downloaded buffer out — the
+                // previous `as_slice().to_vec()` copied it a second time.
                 let host = t.to_host_owned().map_err(err)?;
-                (host.as_slice().to_vec(), t.shape.to_vec())
+                (host.into_vec(), t.shape.to_vec())
             }
             #[cfg(feature = "cuda")]
             TensorInnerEnum::F32R2(t) => {
                 let host = t.to_host_owned().map_err(err)?;
-                (host.as_slice().to_vec(), t.shape.to_vec())
+                (host.into_vec(), t.shape.to_vec())
             }
             #[cfg(not(feature = "cuda"))]
             TensorInnerEnum::F32(_) | TensorInnerEnum::F32R2(_) => {

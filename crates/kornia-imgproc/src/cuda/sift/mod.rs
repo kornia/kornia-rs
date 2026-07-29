@@ -255,7 +255,7 @@ impl SiftCudaConfig {
 /// Delegates to the shared implementation; see [`SiftCudaConfig::shared_config`]
 /// for why every host numeric both backends depend on lives in one place.
 pub fn gaussian_ksize(sigma: f64) -> usize {
-    crate::features::gaussian_ksize(sigma)
+    crate::features::sift::params::gaussian_ksize(sigma)
 }
 
 #[cfg(test)]

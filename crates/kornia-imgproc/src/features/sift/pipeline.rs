@@ -235,7 +235,7 @@ fn downsample(src: &[f32], sw: usize, sh: usize, dst: &mut [f32], dw: usize, dh:
         });
 }
 
-/// Reusable scratch for [`detect_and_compute_with`].
+/// Reusable scratch for [`detect_and_compute`].
 ///
 /// The pipeline touches a dozen full-resolution planes — six Gaussian layers,
 /// five DoG layers, plus the base and a transpose buffer. Allocating and
@@ -280,69 +280,6 @@ impl SiftWorkspace {
     }
 }
 
-/// Detect, orient and describe.
-///
-/// Allocates its own scratch. For more than one frame use
-/// [`detect_and_compute_with`], which takes a reusable [`SiftWorkspace`].
-///
-/// # Arguments
-///
-/// * `src` - Row-major `w * h` f32 grayscale image in **0..255** — the
-///   reference's own internal representation. Normalising to 0..1 changes what
-///   `cfg.contrast_threshold` means and silently returns far fewer keypoints.
-/// * `w`, `h` - Image dimensions; `src.len()` must equal `w * h`.
-/// * `cfg` - Detector parameters, mirroring `cv::SIFT::create`.
-/// * `first_octave` - [`FirstOctave::Double`] upsamples 2x first, as OpenCV does
-///   by default; [`FirstOctave::Native`] starts at the input resolution.
-/// * `max_octaves` - Ceiling on the pyramid depth; `usize::MAX` for unlimited.
-/// * `fast` - Trade the reference's exact tap order for speed in the row blur.
-///   Keypoints and descriptors are then no longer bit-exact against `cv2`.
-///
-/// # Returns
-///
-/// [`SiftFeatures`]: the keypoints in the reference's final order, and a
-/// row-major `keypoints.len() * 128` descriptor block.
-///
-/// # Errors
-///
-/// Returns [`SiftConfigError::SourceLen`] if `src.len() != w * h`, and
-/// [`SiftConfigError::Invalid`] if the dimensions overflow or a parameter in
-/// `cfg` is out of range (for example `n_octave_layers == 0`).
-///
-/// # Example
-///
-/// ```rust
-/// use kornia_imgproc::features::{sift_detect_and_compute, FirstOctave, SiftConfig};
-///
-/// let (w, h) = (64, 64);
-/// // A single bright square: enough structure to exercise the pipeline.
-/// let mut img = vec![0.0f32; w * h];
-/// for y in 24..40 {
-///     for x in 24..40 {
-///         img[y * w + x] = 255.0;
-///     }
-/// }
-///
-/// let cfg = SiftConfig::default();
-/// let feats = sift_detect_and_compute(
-///     &img, w, h, &cfg, FirstOctave::Native, usize::MAX, false,
-/// )?;
-/// assert_eq!(feats.descriptors.len(), feats.keypoints.len() * 128);
-/// # Ok::<(), kornia_imgproc::features::SiftConfigError>(())
-/// ```
-pub fn detect_and_compute(
-    src: &[f32],
-    w: usize,
-    h: usize,
-    cfg: &SiftConfig,
-    first_octave: FirstOctave,
-    max_octaves: usize,
-    fast: bool,
-) -> Result<SiftFeatures, SiftConfigError> {
-    let mut ws = SiftWorkspace::new();
-    detect_and_compute_with(&mut ws, src, w, h, cfg, first_octave, max_octaves, fast)
-}
-
 /// Detect, orient and describe against caller-owned scratch.
 ///
 /// Prefer this when processing more than one frame: it is the same work without
@@ -356,24 +293,27 @@ pub fn detect_and_compute(
 ///
 /// # Returns
 ///
-/// [`SiftFeatures`], identical to what [`detect_and_compute`] returns for the
-/// same inputs — `ws` affects allocation, never the result.
+/// [`SiftFeatures`]: the keypoints in the reference's final order, and a
+/// row-major `keypoints.len() * 128` descriptor block. `ws` affects
+/// allocation, never the result.
 ///
 /// # Errors
 ///
-/// The same [`SiftConfigError`] cases as [`detect_and_compute`].
+/// [`SiftConfigError::SourceLen`] if `src.len() < w * h`, and
+/// [`SiftConfigError::Invalid`] if the dimensions overflow or a parameter in
+/// `cfg` is out of range (for example `n_octave_layers == 0`).
 ///
 /// # Example
 ///
 /// ```rust
-/// use kornia_imgproc::features::{sift_detect_with, FirstOctave, SiftConfig, SiftWorkspace};
+/// use kornia_imgproc::features::{sift_detect_and_compute, FirstOctave, SiftConfig, SiftWorkspace};
 ///
 /// let (w, h) = (64, 64);
 /// let img = vec![0.0f32; w * h];
 /// let cfg = SiftConfig::default();
 /// let mut ws = SiftWorkspace::new();
 /// for _frame in 0..2 {
-///     let feats = sift_detect_with(
+///     let feats = sift_detect_and_compute(
 ///         &mut ws, &img, w, h, &cfg, FirstOctave::Native, usize::MAX, false,
 ///     )?;
 ///     assert!(feats.is_empty()); // a flat image has no extrema
@@ -381,7 +321,7 @@ pub fn detect_and_compute(
 /// # Ok::<(), kornia_imgproc::features::SiftConfigError>(())
 /// ```
 #[allow(clippy::too_many_arguments)]
-pub fn detect_and_compute_with(
+pub fn detect_and_compute(
     ws: &mut SiftWorkspace,
     src: &[f32],
     w: usize,
@@ -713,7 +653,7 @@ mod tests {
         for fo in [FirstOctave::Native, FirstOctave::Double] {
             // Two passes: the second reuses scratch sized by the first.
             for _ in 0..2 {
-                let f = detect_and_compute_with(&mut ws, &img, w, h, &cfg, fo, usize::MAX, false)
+                let f = detect_and_compute(&mut ws, &img, w, h, &cfg, fo, usize::MAX, false)
                     .expect("valid configuration");
                 assert_eq!(f.descriptors.len(), f.keypoints.len() * DESCR_LEN);
             }
@@ -729,7 +669,7 @@ mod tests {
         let img = vec![0.0f32; 64 * 64];
         let cfg = SiftConfig::default();
         let ok = |c: &SiftConfig, m: usize, len: usize, w: usize, h: usize| {
-            detect_and_compute_with(
+            detect_and_compute(
                 &mut SiftWorkspace::new(),
                 &img[..len],
                 w,
@@ -785,7 +725,17 @@ mod tests {
             })
             .collect();
         let cfg = SiftConfig::default();
-        let all = detect_and_compute(&img, w, h, &cfg, FirstOctave::Native, 3, false).unwrap();
+        let all = detect_and_compute(
+            &mut SiftWorkspace::new(),
+            &img,
+            w,
+            h,
+            &cfg,
+            FirstOctave::Native,
+            3,
+            false,
+        )
+        .unwrap();
         assert!(all.keypoints.len() > 8, "need enough keypoints to budget");
 
         let n = all.keypoints.len() / 2;
@@ -793,7 +743,17 @@ mod tests {
             n_features: n,
             ..cfg
         };
-        let cut = detect_and_compute(&img, w, h, &budget, FirstOctave::Native, 3, false).unwrap();
+        let cut = detect_and_compute(
+            &mut SiftWorkspace::new(),
+            &img,
+            w,
+            h,
+            &budget,
+            FirstOctave::Native,
+            3,
+            false,
+        )
+        .unwrap();
 
         assert_eq!(cut.keypoints.len(), n, "budget must cap the count");
         assert_eq!(cut.descriptors.len(), n * DESCR_LEN, "one row per keypoint");

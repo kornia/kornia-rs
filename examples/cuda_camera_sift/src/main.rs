@@ -2,8 +2,8 @@
 //!
 //! Captures V4L2 frames and, for each one, detects SIFT keypoints, describes
 //! them, and matches against the previous frame — **without the descriptors ever
-//! touching host memory**. `detect_and_compute_device` leaves the descriptor
-//! block on the GPU and `descriptors_device` hands it straight to the matcher,
+//! touching host memory**. `detect_and_compute` leaves the descriptor
+//! block on the GPU and `descriptors` hands it straight to the matcher,
 //! so the only per-frame download is the keypoint list and the final pair
 //! indices. That is the whole point of the device API: a host round trip of two
 //! 2515x128 descriptor blocks costs more than the detection that produced them.
@@ -48,7 +48,7 @@ mod linux {
 
     use argh::FromArgs;
     use cudarc::driver::CudaContext;
-    use kornia_image::ImageSize;
+    use kornia_image::{Image, ImageSize};
     use kornia_imgproc::cuda::sift::{
         FirstOctave, SiftCuda, SiftCudaConfig, SiftKeypoint, SiftMatcher, DESCR_LEN,
     };
@@ -126,12 +126,16 @@ mod linux {
         sift.set_fast_descriptor(args.fast);
         let mut matcher = SiftMatcher::new(&stream, max_kp)?;
 
-        // Host staging for the grayscale plane, allocated once.
+        // Host staging for the grayscale plane, allocated once; each frame
+        // goes to the device through the `Image::to_cuda` API.
         let mut gray = vec![0.0f32; w * h];
-        let mut d_gray = stream.alloc_zeros::<f32>(w * h)?;
+        let size = ImageSize {
+            width: w,
+            height: h,
+        };
 
         // The previous frame's descriptors have to survive into the next
-        // iteration, but `descriptors_device()` is invalidated by the next
+        // iteration, but `descriptors()` is invalidated by the next
         // detect call. One device-to-device copy per frame keeps them alive —
         // still far cheaper than a round trip through host memory.
         let mut d_prev = stream.alloc_zeros::<f32>(max_kp * DESCR_LEN)?;
@@ -153,8 +157,9 @@ mod linux {
         // this module has made before.
         if let Some(frame) = cam.grab_frame()? {
             luma_to_f32(frame.buffer.as_slice(), &mut gray, w, h);
-            stream.memcpy_htod(&gray, &mut d_gray)?;
-            sift.detect_and_compute_device(&ctx, &stream, &d_gray)?;
+            let dev = Image::<f32, 1>::from_size_slice(size, &gray)?.to_cuda(&stream)?;
+            let d_gray = dev.0.as_cudaslice().expect("device image");
+            sift.detect_and_compute(&ctx, &stream, d_gray)?;
             stream.synchronize()?;
             println!("Kernels compiled.\n");
         }
@@ -174,11 +179,12 @@ mod linux {
                 continue; // short or corrupt buffer
             }
             luma_to_f32(buf, &mut gray, w, h);
-            stream.memcpy_htod(&gray, &mut d_gray)?;
+            let dev = Image::<f32, 1>::from_size_slice(size, &gray)?.to_cuda(&stream)?;
             let t1 = Instant::now();
 
             // Detect + describe. Descriptors stay on device.
-            let kps = sift.detect_and_compute_device(&ctx, &stream, &d_gray)?;
+            let d_gray = dev.0.as_cudaslice().expect("device image");
+            let kps = sift.detect_and_compute(&ctx, &stream, d_gray)?;
             stream.synchronize()?;
             let t2 = Instant::now();
 
@@ -188,7 +194,7 @@ mod linux {
                 matcher.match_descriptors(
                     &ctx,
                     &stream,
-                    &sift.descriptors_device().slice(0..n_cur * DESCR_LEN),
+                    &sift.descriptors().slice(0..n_cur * DESCR_LEN),
                     n_cur,
                     &d_prev.slice(0..prev_kp.len() * DESCR_LEN),
                     prev_kp.len(),
@@ -202,7 +208,7 @@ mod linux {
 
             // Carry this frame's descriptors forward for the next iteration.
             if n_cur > 0 {
-                let src = sift.descriptors_device().slice(0..n_cur * DESCR_LEN);
+                let src = sift.descriptors().slice(0..n_cur * DESCR_LEN);
                 let mut dst = d_prev.slice_mut(0..n_cur * DESCR_LEN);
                 stream.memcpy_dtod(&src, &mut dst)?;
             }

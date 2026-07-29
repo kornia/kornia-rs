@@ -32,11 +32,11 @@ use crate::cuda::make_config;
 /// Histogram bins (`SIFT_ORI_HIST_BINS`).
 pub const ORI_HIST_BINS: usize = crate::features::ORI_HIST_BINS;
 /// Patch radius factor (`SIFT_ORI_RADIUS`).
-pub const ORI_RADIUS: f32 = crate::features::ORI_RADIUS;
+pub const ORI_RADIUS: f32 = crate::features::sift::orient::ORI_RADIUS;
 /// Gaussian weight sigma factor (`SIFT_ORI_SIG_FCTR`).
-pub const ORI_SIG_FCTR: f32 = crate::features::ORI_SIG_FCTR;
+pub const ORI_SIG_FCTR: f32 = crate::features::sift::orient::ORI_SIG_FCTR;
 /// Secondary-peak acceptance ratio (`SIFT_ORI_PEAK_RATIO`).
-pub const ORI_PEAK_RATIO: f32 = crate::features::ORI_PEAK_RATIO;
+pub const ORI_PEAK_RATIO: f32 = crate::features::sift::orient::ORI_PEAK_RATIO;
 
 /// `f32` slots per oriented keypoint: `x, y, size, response, octave, angle`.
 pub const ORI_KP_STRIDE: usize = 6;

@@ -24,7 +24,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use kornia_imgproc::features::{
-    sift_detect_with, sift_match_descriptors, FirstOctave as CpuFirstOctave, SiftConfig,
+    sift_detect_and_compute, sift_match_descriptors, FirstOctave as CpuFirstOctave, SiftConfig,
     SiftKeypoint as CoreKeypoint, SiftWorkspace, DESCR_LEN,
 };
 use numpy::{PyArray2, PyArray3, PyArrayMethods, PyUntypedArrayMethods};
@@ -452,7 +452,9 @@ impl Sift {
         let ws = &mut self.ws;
         let fast = self.fast_descriptor;
         let feats = py
-            .detach(|| sift_detect_with(ws, src, w, h, &cfg, first_octave, max_octaves, fast))
+            .detach(|| {
+                sift_detect_and_compute(ws, src, w, h, &cfg, first_octave, max_octaves, fast)
+            })
             .map_err(|e| PyValueError::new_err(format!("Sift: {e}")))?;
 
         let desc = crate::pyutils::rows_to_numpy(py, feats.descriptors, DESCR_LEN)?;

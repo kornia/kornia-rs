@@ -410,6 +410,9 @@ pub fn compute_descriptor(
                 let cbin = c_rot + D as f32 / 2.0 - 0.5;
                 if rbin > -1.0 && rbin < D as f32 && cbin > -1.0 && cbin < D as f32 {
                     let c = (px + j) as usize;
+                    // The macro expands both inside and outside the NEON
+                    // unsafe block, so this inner one is redundant there.
+                    #[allow(unused_unsafe)]
                     unsafe {
                         *sc.dx.get_unchecked_mut(n) = img[row + c + 1] - img[row + c - 1];
                         *sc.dy.get_unchecked_mut(n) = img[up + c] - img[dn + c];

@@ -27,8 +27,8 @@ use std::sync::Arc;
 use cudarc::driver::{CudaContext, CudaSlice, CudaStream};
 
 use super::descriptor::{
-    launch_sift_descriptor_cuda_view, launch_sift_gather_descriptors_cuda_view, DESCR_LEN,
-    DESC_IN_STRIDE,
+    launch_sift_descriptor_cuda_view, launch_sift_gather_descriptors_cuda_view,
+    launch_sift_pack_desc_cuda_view, DESCR_LEN, DESC_IN_STRIDE,
 };
 use super::detect::launch_sift_find_extrema_cuda_view;
 use super::kernels::gaussian_kernel_f32;
@@ -43,7 +43,7 @@ use super::{gaussian_ksize, SiftCudaConfig, SiftCudaError, KP_STRIDE};
 // `final_order` — `removeDuplicatedSorted` then `retainBest` — is the shared
 // implementation. Both backends must return the same rows in the same order, so
 // it has one definition rather than two copies kept in step by hand.
-use crate::features::sift_final_order as final_order;
+use crate::features::sift::pipeline::final_order;
 
 // The keypoint record, the result bundle and the starting-scale selector are
 // backend-independent, so they have one definition — in `features::sift` — and
@@ -245,10 +245,10 @@ impl SiftCuda {
     ///
     /// `src` is a `width * height` f32 grayscale image in 0..255, matching the
     /// reference's internal representation. Returns the keypoints; the matching
-    /// descriptor rows are reachable through
-    /// [`SiftCuda::descriptors_device`], so a caller that goes straight on to
-    /// matching never moves them across the bus.
-    pub fn detect_and_compute_device(
+    /// descriptor rows stay on device, reachable through
+    /// [`SiftCuda::descriptors`] — the CUDA path never downloads what a caller
+    /// did not ask to move.
+    pub fn detect_and_compute(
         &mut self,
         ctx: &Arc<CudaContext>,
         stream: &Arc<CudaStream>,
@@ -515,26 +515,22 @@ impl SiftCuda {
                 ((packed & 255) as u8, ((packed >> 8) & 255) as u8)
             });
 
-            // Pack on the host: four f32 ops per keypoint, the same expressions
-            // and the same order as `sift_pack_desc_input`, so the values are
-            // identical. Doing it here removes a kernel launch per layer and
-            // the device-side range bookkeeping it needed.
-            let mut din = vec![0.0f32; n * DESC_IN_STRIDE];
-            for (pos, &i) in describe.iter().enumerate() {
-                let k = &ok[order[i] * ORI_KP_STRIDE..(order[i] + 1) * ORI_KP_STRIDE];
-                let packed = k[4].to_bits() as i32;
-                let scale = 1.0f32 / ((1u32 << (packed & 255)) as f32);
-                let mut ang = 360.0f32 - k[5];
-                if (ang - 360.0).abs() < f32::EPSILON {
-                    ang = 0.0;
-                }
-                let o = &mut din[pos * DESC_IN_STRIDE..pos * DESC_IN_STRIDE + 4];
-                o[0] = k[0] * scale;
-                o[1] = k[1] * scale;
-                o[2] = (k[2] * scale) * 0.5;
-                o[3] = ang;
-            }
-            stream.memcpy_htod(&din, &mut self.desc_in.slice_mut(0..n * DESC_IN_STRIDE))?;
+            // Pack on DEVICE from the ori_kp rows it already owns: only the
+            // 4-byte row indices cross the bus (the ordering is a host-side
+            // sort, so the indices genuinely originate on the host). The
+            // kernel's expressions match the previous host pack bit for bit.
+            // The `perm` buffer stages the indices; the gather's own upload
+            // later overwrites it AFTER this kernel in stream order.
+            let rows: Vec<i32> = describe.iter().map(|&i| order[i] as i32).collect();
+            stream.memcpy_htod(&rows, &mut self.perm.slice_mut(0..n))?;
+            launch_sift_pack_desc_cuda_view(
+                ctx,
+                stream,
+                &self.ori_kp.slice(0..n_ori * ORI_KP_STRIDE),
+                &self.perm.slice(0..n),
+                n as u32,
+                &mut self.desc_in.slice_mut(0..n * DESC_IN_STRIDE),
+            )?;
 
             // One launch per contiguous (octave, layer) run.
             let key = |i: usize| {
@@ -556,6 +552,9 @@ impl SiftCuda {
                 }
                 p0 = p1;
             }
+            // `n` and `starts` are host-DERIVED control data (retain_best and
+            // the group sort run on the host), not device data round-tripped:
+            // together they are under 100 bytes.
             let n_i = [n as i32];
             stream.memcpy_htod(&n_i, &mut self.desc_live.slice_mut(0..1))?;
             if !starts.is_empty() {
@@ -602,34 +601,11 @@ impl SiftCuda {
         Ok(keypoints)
     }
 
-    /// Detect, orient and describe, returning host-side results.
-    ///
-    /// This is [`SiftCuda::detect_and_compute_device`] plus a single download of
-    /// the ordered descriptor block. A caller that goes straight on to matching
-    /// should use the device form and skip the round trip entirely.
-    pub fn detect_and_compute(
-        &mut self,
-        ctx: &Arc<CudaContext>,
-        stream: &Arc<CudaStream>,
-        src: &CudaSlice<f32>,
-    ) -> Result<SiftFeatures, SiftCudaError> {
-        let keypoints = self.detect_and_compute_device(ctx, stream, src)?;
-        let descriptors = if self.n_desc == 0 {
-            Vec::new()
-        } else {
-            stream.clone_dtoh(&self.desc_out.slice(0..self.n_desc * DESCR_LEN))?
-        };
-        Ok(SiftFeatures {
-            keypoints,
-            descriptors,
-        })
-    }
-
     /// The ordered descriptor block from the last call, on device.
     ///
     /// Row `i` belongs to keypoint `i` of the returned keypoint list. Valid
     /// until the next call, which overwrites it.
-    pub fn descriptors_device(&self) -> &CudaSlice<f32> {
+    pub fn descriptors(&self) -> &CudaSlice<f32> {
         &self.desc_out
     }
 
@@ -732,10 +708,13 @@ mod tests {
                 .detect_and_compute(ctx, &stream, &d_src)
                 .expect("detect");
             assert!(f.len() > 10, "expected keypoints, got {}", f.len());
-            assert_eq!(f.descriptors.len(), f.len() * DESCR_LEN);
+            assert_eq!(plan.n_desc * DESCR_LEN, f.len() * DESCR_LEN);
             // Every row must have been written. An all-zero row means its
             // launch retired the block or wrote somewhere else.
-            for (i, row) in f.descriptors.chunks_exact(DESCR_LEN).enumerate() {
+            let descs = stream
+                .clone_dtoh(&plan.descriptors().slice(0..f.len() * DESCR_LEN))
+                .unwrap();
+            for (i, row) in descs.chunks_exact(DESCR_LEN).enumerate() {
                 assert!(
                     row.iter().any(|v| *v != 0.0),
                     "descriptor row {i} is all zero (fast={fast})"
@@ -772,7 +751,6 @@ mod tests {
 
         let want: std::collections::HashSet<(u32, u32)> = ref_positions(&dir).into_iter().collect();
         let got: std::collections::HashSet<(u32, u32)> = feats
-            .keypoints
             .iter()
             .map(|k| (k.x.to_bits(), k.y.to_bits()))
             .collect();
@@ -785,8 +763,8 @@ mod tests {
             hit
         );
         assert_eq!(
-            feats.descriptors.len(),
-            feats.len() * DESCR_LEN,
+            plan.n_desc,
+            feats.len(),
             "descriptor block must be one 128-vector per keypoint"
         );
         assert!(!feats.is_empty(), "pipeline produced no keypoints");
@@ -855,12 +833,12 @@ mod tests {
             .detect_and_compute(ctx, &stream, &d_src)
             .expect("detect");
         assert!(
-            all.keypoints.len() > 8,
+            all.len() > 8,
             "need enough keypoints to budget, got {}",
-            all.keypoints.len()
+            all.len()
         );
 
-        let n = all.keypoints.len() / 2;
+        let n = all.len() / 2;
         let mut cut_plan = SiftCuda::new(
             ctx,
             &stream,
@@ -878,23 +856,22 @@ mod tests {
             .detect_and_compute(ctx, &stream, &d_src)
             .expect("detect");
 
-        assert_eq!(cut.keypoints.len(), n, "budget must cap the count");
+        assert_eq!(cut.len(), n, "budget must cap the count");
         assert_eq!(
-            cut.descriptors.len(),
-            n * DESCR_LEN,
+            cut_plan.descriptor_count(),
+            n,
             "one descriptor row per surviving keypoint"
         );
+        let cut_desc = stream
+            .clone_dtoh(&cut_plan.descriptors().slice(0..n * DESCR_LEN))
+            .unwrap();
 
         // Every dropped keypoint must be no stronger than every kept one, which
         // is what `retainBest` guarantees.
-        let worst_kept = cut
-            .keypoints
-            .iter()
-            .map(|k| k.response)
-            .fold(f32::INFINITY, f32::min);
+        let worst_kept = cut.iter().map(|k| k.response).fold(f32::INFINITY, f32::min);
         let mut dropped = 0usize;
-        for a in &all.keypoints {
-            if !cut.keypoints.iter().any(|b| b.x == a.x && b.y == a.y) {
+        for a in &all {
+            if !cut.iter().any(|b| b.x == a.x && b.y == a.y) {
                 dropped += 1;
                 assert!(
                     a.response <= worst_kept,
@@ -902,7 +879,7 @@ mod tests {
                 );
             }
         }
-        assert_eq!(dropped, all.keypoints.len() - n);
+        assert_eq!(dropped, all.len() - n);
 
         // A budget above the keypoint count is a no-op.
         let mut big_plan = SiftCuda::new(
@@ -911,7 +888,7 @@ mod tests {
             w,
             h,
             SiftCudaConfig {
-                n_features: all.keypoints.len() + 1000,
+                n_features: all.len() + 1000,
                 ..SiftCudaConfig::default()
             },
             FirstOctave::Native,
@@ -921,7 +898,16 @@ mod tests {
         let big = big_plan
             .detect_and_compute(ctx, &stream, &d_src)
             .expect("detect");
-        assert_eq!(big.keypoints.len(), all.keypoints.len());
-        assert_eq!(big.descriptors, all.descriptors);
+        assert_eq!(big.len(), all.len());
+        let big_desc = stream
+            .clone_dtoh(&big_plan.descriptors().slice(0..big.len() * DESCR_LEN))
+            .unwrap();
+        // `cut_desc` pins the budgeted rows too: the kept keypoints' rows must
+        // be a prefix-by-order subset of the unbudgeted block's rows.
+        assert_eq!(cut_desc.len(), n * DESCR_LEN);
+        let all_desc = stream
+            .clone_dtoh(&all_plan.descriptors().slice(0..all.len() * DESCR_LEN))
+            .unwrap();
+        assert_eq!(big_desc, all_desc);
     }
 }

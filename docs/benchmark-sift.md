@@ -64,8 +64,7 @@ already serves adjacent-row re-reads, the same mechanism that falsified
 column tiling. And per-layer orientation ranges. `adjustLocalExtrema` reassigns a keypoint's layer during
 refinement, so launch-order slot contiguity does not partition by the refined
 layer that selects the Gaussian image — the oracle budget test caught it at
-472 != 471. Recorded in `sift-audit-2026-07-28.md` with the full verdict
-table and the remaining (unimplemented) items.
+472 != 471. Recorded here and in the falsifying commits' messages.
 
 ## End to end, mh01_frame1 (752x480)
 

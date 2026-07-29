@@ -85,9 +85,7 @@ pub(crate) fn sift_cuda_with_plan(
         .0
         .as_cudaslice()
         .ok_or_else(|| PyValueError::new_err("sift: device image has no typed f32 storage"))?;
-    let kps = plan
-        .detect_and_compute_device(&ctx, &stream, d_src)
-        .map_err(err)?;
+    let kps = plan.detect_and_compute(&ctx, &stream, d_src).map_err(err)?;
     let n = plan.descriptor_count();
 
     let desc = own_descriptors(py, plan, &stream, n)?;
@@ -117,7 +115,7 @@ fn own_descriptors(
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
         stream
             .memcpy_dtod(
-                &plan.descriptors_device().slice(0..n * DESCR_LEN),
+                &plan.descriptors().slice(0..n * DESCR_LEN),
                 dst.as_cudaslice_mut()
                     .expect("uninit_cuda builds CudaResource-backed storage"),
             )
