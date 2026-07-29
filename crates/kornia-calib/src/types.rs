@@ -97,6 +97,10 @@ pub struct CalibConfig {
     /// walking pace, tight enough to suppress the frame-to-frame scale/rotation jitter that
     /// accumulates into drift on GPS-less no-revisit video.
     pub motion_prior_sigma: f64,
+    /// Refine global focal scale + leading radial distortion (k1) against the reconstruction,
+    /// alternating with the bundle adjustment (see the closed-form fit in `sfm.rs`). For guessed
+    /// phone intrinsics; leave OFF when intrinsics are calibrated.
+    pub refine_intrinsics: bool,
     /// Absolute PnP inlier count required to register a view (COLMAP's
     /// `abs_pose_min_num_inliers`, default 30).
     ///
@@ -122,6 +126,7 @@ impl CalibConfig {
             up_prior_sigma: 0.0,
             depth_prior_rel_sigma: 0.0,
             motion_prior_sigma: 0.0,
+            refine_intrinsics: false,
             min_registration_inliers: 30,
             second_pass: false,
             seed_rank: 0,

@@ -107,7 +107,7 @@ pub fn calibrate_features_with_depth(
     };
 
     // Per track: normalized observation per camera (undistort + K⁻¹). Raw pixels stay in `tracks`.
-    let norm: Vec<Vec<(usize, Vec2F64)>> = tracks
+    let mut norm: Vec<Vec<(usize, Vec2F64)>> = tracks
         .iter()
         .map(|t| {
             t.obs
@@ -431,6 +431,65 @@ pub fn calibrate_features_with_depth(
     for (ti, pidx) in &pt_index {
         if let Some(v) = res.points.get(*pidx) {
             point3d.insert(*ti, *v);
+        }
+    }
+
+    // ── Alternating intrinsics refinement (COLMAP refines focal/distortion INSIDE its BA; this
+    // is the alternating equivalent that needs no solver surgery). The solver sees normalized
+    // coordinates, so a focal error is a single global scale gamma on them and leading radial
+    // distortion a k1 term: u_true ≈ gamma·n·(1 + k1·r²). Given the current map, that model is
+    // LINEAR in (gamma, gamma·k1) against the predicted normalized projections — one closed-form
+    // least squares per round, then re-normalize the observations and let the next BA re-settle
+    // geometry. Guessed phone intrinsics (a fov sweep, k1 assumed zero on an ultra-wide) bend
+    // the whole reconstruction; this lets the data correct them.
+    if config.refine_intrinsics {
+        let mut num = [0.0f64; 2];
+        let mut a00 = 0.0f64;
+        let mut a01 = 0.0f64;
+        let mut a11 = 0.0f64;
+        for (ti, pidx) in &pt_index {
+            let Some(p) = res.points.get(*pidx) else { continue };
+            for (c, n) in &norm[*ti] {
+                let Some(_) = &poses[*c] else { continue };
+                let pc = res.poses[*c].transform_point(p);
+                if pc.z <= 1e-9 {
+                    continue;
+                }
+                let u = Vec2F64::new(pc.x / pc.z, pc.y / pc.z);
+                let r2 = n.x * n.x + n.y * n.y;
+                // Model: u ≈ a·n + b·(n·r²), a = gamma, b = gamma·k1. Two scalar unknowns fit
+                // over both residual components.
+                for (nu, uu) in [(n.x, u.x), (n.y, u.y)] {
+                    let x0 = nu;
+                    let x1 = nu * r2;
+                    a00 += x0 * x0;
+                    a01 += x0 * x1;
+                    a11 += x1 * x1;
+                    num[0] += x0 * uu;
+                    num[1] += x1 * uu;
+                }
+            }
+        }
+        let det = a00 * a11 - a01 * a01;
+        if det.abs() > 1e-12 {
+            let gamma = (num[0] * a11 - num[1] * a01) / det;
+            let gk1 = (num[1] * a00 - num[0] * a01) / det;
+            let k1 = if gamma.abs() > 1e-9 { gk1 / gamma } else { 0.0 };
+            // Sanity bounds: a fit outside them means the map (not the camera) is wrong, and
+            // applying it would let geometry errors masquerade as optics.
+            if (0.7..1.3).contains(&gamma) && (-0.3..0.3).contains(&k1) {
+                if std::env::var_os("KORNIA_CALIB_DEBUG").is_some() {
+                    eprintln!("[calib] intrinsics refinement: gamma={gamma:.4} k1={k1:.4}");
+                }
+                for track in norm.iter_mut() {
+                    for (_, n) in track.iter_mut() {
+                        let r2 = n.x * n.x + n.y * n.y;
+                        let f = gamma * (1.0 + k1 * r2);
+                        n.x *= f;
+                        n.y *= f;
+                    }
+                }
+            }
         }
     }
 
@@ -1151,7 +1210,33 @@ fn grow_registrations(
                     ip.push(*uv);
                 }
             }
-            if wp.len() >= 4 && best.as_ref().is_none_or(|(_, w, _)| wp.len() > w.len()) {
+            if wp.len() < 4 {
+                continue;
+            }
+            // COLMAP's visibility score, small version: count OCCUPIED cells of a coarse grid
+            // over the view's 2D-3D correspondences instead of raw count. Many correspondences
+            // clustered in one corner are abundant evidence and terrible PnP conditioning; a
+            // spread of fewer points is the better next view. Score = occupied 8x8 cells * 1000
+            // + count (count as tie-break), on normalized coords which span roughly [-1, 1].
+            let mut cells = [false; 64];
+            for uv in &ip {
+                let gx = (((uv.x + 1.5) / 3.0) * 8.0).clamp(0.0, 7.999) as usize;
+                let gy = (((uv.y + 1.5) / 3.0) * 8.0).clamp(0.0, 7.999) as usize;
+                cells[gy * 8 + gx] = true;
+            }
+            let score = cells.iter().filter(|&&b| b).count() * 1000 + wp.len();
+            if best
+                .as_ref()
+                .is_none_or(|(_, w, i2)| {
+                    let mut bc = [false; 64];
+                    for uv in i2 {
+                        let gx = (((uv.x + 1.5) / 3.0) * 8.0).clamp(0.0, 7.999) as usize;
+                        let gy = (((uv.y + 1.5) / 3.0) * 8.0).clamp(0.0, 7.999) as usize;
+                        bc[gy * 8 + gx] = true;
+                    }
+                    score > bc.iter().filter(|&&b| b).count() * 1000 + w.len()
+                })
+            {
                 best = Some((c, wp, ip));
             }
         }
@@ -1528,46 +1613,55 @@ fn triangulate_new(
         if placed.len() < 2 {
             continue;
         }
-        // Widest-baseline pair among placed cameras.
+        // Candidate pairs by baseline, widest first. Trying several and keeping the most
+        // SUPPORTED result (COLMAP's robust triangulation, small-K version) matters because the
+        // widest pair is also the most likely to contain the one mismatched observation a track
+        // picked up — triangulating from a bad widest pair poisons the point even though a
+        // slightly narrower pair would have placed it correctly.
         let centers: Vec<Vec3F64> = placed
             .iter()
             .map(|(c, _)| poses[*c].unwrap().inverse().translation)
             .collect();
-        let mut best = (0usize, 1usize, -1.0f64);
+        let mut by_baseline: Vec<(usize, usize, f64)> = Vec::new();
         for i in 0..placed.len() {
             for j in (i + 1)..placed.len() {
-                let d = (centers[i] - centers[j]).length();
-                if d > best.2 {
-                    best = (i, j, d);
-                }
+                by_baseline.push((i, j, (centers[i] - centers[j]).length()));
             }
         }
-        let (ca, ua) = placed[best.0];
-        let (cb, ub) = placed[best.1];
-        if let Ok(pts) = triangulate_matched_points(
-            &[ua],
-            &[ub],
-            &poses[ca].unwrap(),
-            &poses[cb].unwrap(),
-            idcam,
-            tcfg,
-        ) {
-            if pts.len() == 1 {
-                // `triangulate_matched_points` validated the point against the TWO views it was
-                // built from; a track has more. Requiring a majority of ALL placed views to agree
-                // (cheirality + reprojection within the same threshold) rejects the tracks that
-                // union-find contaminated — two distinct 3D points merged by one wrong match
-                // triangulate fine in one pair and reproject nowhere else. Counting the source
-                // views too keeps this the SAME predicate `filter_points` applies, so a point
-                // cannot be admitted here and dropped there (or vice versa) on grading alone.
-                let p = pts[0].position;
-                let ok = placed
-                    .iter()
-                    .filter(|(c, uv)| {
-                        norm_residual(&poses[*c].unwrap(), p, *uv)
-                            .is_some_and(|e| e <= tcfg.max_reprojection_error)
-                    })
-                    .count();
+        by_baseline.sort_by(|x, y| y.2.partial_cmp(&x.2).unwrap_or(std::cmp::Ordering::Equal));
+        let mut best_pt: Option<(Vec3F64, usize)> = None;
+        for &(i, j, _) in by_baseline.iter().take(3) {
+            let (ca, ua) = placed[i];
+            let (cb, ub) = placed[j];
+            let Ok(pts) = triangulate_matched_points(
+                &[ua],
+                &[ub],
+                &poses[ca].unwrap(),
+                &poses[cb].unwrap(),
+                idcam,
+                tcfg,
+            ) else {
+                continue;
+            };
+            if pts.len() != 1 {
+                continue;
+            }
+            let p = pts[0].position;
+            let ok = placed
+                .iter()
+                .filter(|(c, uv)| {
+                    norm_residual(&poses[*c].unwrap(), p, *uv)
+                        .is_some_and(|e| e <= tcfg.max_reprojection_error)
+                })
+                .count();
+            if best_pt.is_none_or(|(_, b)| ok > b) {
+                best_pt = Some((p, ok));
+            }
+        }
+        {
+            if let Some((p, ok)) = best_pt {
+                // Majority of ALL placed views must agree — the SAME predicate `filter_points`
+                // applies, so a point cannot be admitted here and dropped there on grading alone.
                 if ok >= 2 && 2 * ok >= placed.len() {
                     point3d.insert(ti, p);
                 }
