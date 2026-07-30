@@ -321,6 +321,67 @@ impl<T, const C: usize> Image<T, C> {
         Image::new_in(size, data.to_vec(), alloc)
     }
 
+    /// Wrap a foreign buffer without copying, specifying its memory domain, specifying its memory domain.
+    /// `keepalive` must own whatever keeps `data` valid.
+    ///
+    /// # Arguments
+    ///
+    /// * `size` - The size of the Image.
+    /// * `data` - A pointer to the data of the Image.
+    /// * `domain` - The memory domain (Host or Device) where the data resides.
+    /// * `keepalive` - A thread safe pointer to the buffer.
+    ///
+    /// # Safety
+    ///
+    /// - `data` must be valid for `size.width * size.height * C` elements of `T`
+    /// - the memory must stay valid for as long as `keepalive` is alive
+    pub unsafe fn from_borrowed(
+        size: ImageSize,
+        data: *const T,
+        domain: kornia_tensor::resource::MemoryDomain,
+        keepalive: Arc<dyn Any + Send + Sync>,
+    ) -> Result<Self, ImageError> {
+        let len = size.height * size.width * C;
+
+        let tensor =
+            Tensor3::from_borrowed([size.height, size.width, C], data, len, domain, keepalive)?;
+
+        Ok(Self(tensor))
+    }
+
+    /// Wrap a foreign buffer without copying and ensures Read-only access, specifying its memory domain.
+    /// `keepalive` must own whatever keeps `data` valid.
+    ///
+    /// # Arguments
+    ///
+    /// * `size` - The size of the Image.
+    /// * `data` - A pointer to the data of the Image.
+    /// * `domain` - The memory domain (Host or Device) where the data resides.
+    /// * `keepalive` - A thread safe pointer to the buffer.
+    ///
+    /// # Safety
+    ///
+    /// - `data` must be valid for `size.width * size.height * C` elements of `T`
+    /// - the memory must stay valid for as long as `keepalive` is alive
+    pub unsafe fn from_borrowed_readonly(
+        size: ImageSize,
+        data: *const T,
+        domain: kornia_tensor::resource::MemoryDomain,
+        keepalive: Arc<dyn Any + Send + Sync>,
+    ) -> Result<Self, ImageError> {
+        let len = size.height * size.width * C;
+
+        let tensor = Tensor3::from_borrowed_readonly(
+            [size.height, size.width, C],
+            data,
+            len,
+            domain,
+            keepalive,
+        )?;
+
+        Ok(Self(tensor))
+    }
+
     /// Wrap a foreign host buffer without copying. `keepalive` must own whatever
     /// keeps `data` valid (mmap, GstBuffer, refcounted driver frame, ...).
     ///
@@ -339,12 +400,12 @@ impl<T, const C: usize> Image<T, C> {
         data: *const T,
         keepalive: Arc<dyn Any + Send + Sync>,
     ) -> Result<Self, ImageError> {
-        let len = size.height * size.width * C;
-
-        let tensor =
-            Tensor3::from_borrowed_host([size.height, size.width, C], data, len, keepalive)?;
-
-        Ok(Self(tensor))
+        Self::from_borrowed(
+            size,
+            data,
+            kornia_tensor::resource::MemoryDomain::Host,
+            keepalive,
+        )
     }
 
     /// Wrap a foreign host buffer without copying and ensures Read-only access. `keepalive` must own whatever
@@ -365,16 +426,12 @@ impl<T, const C: usize> Image<T, C> {
         data: *const T,
         keepalive: Arc<dyn Any + Send + Sync>,
     ) -> Result<Self, ImageError> {
-        let len = size.height * size.width * C;
-
-        let tensor = Tensor3::from_borrowed_host_readonly(
-            [size.height, size.width, C],
+        Self::from_borrowed_readonly(
+            size,
             data,
-            len,
+            kornia_tensor::resource::MemoryDomain::Host,
             keepalive,
-        )?;
-
-        Ok(Self(tensor))
+        )
     }
 
     /// Map the pixel data of the image to a different type.

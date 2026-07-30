@@ -26,6 +26,7 @@ pub use crate::stream::video::VideoWriter;
 use std::any::Any;
 use std::sync::Arc;
 
+use kornia_image::Image;
 use kornia_tensor::resource::{MemoryDomain, MemoryResource};
 
 /// A proper [`MemoryResource`] for a GStreamer-mapped buffer (sysmem).
@@ -100,9 +101,6 @@ pub(crate) fn image_from_gst_buffer(
     size: kornia_image::ImageSize,
     mapped_buffer: gstreamer::buffer::MappedBuffer<gstreamer::buffer::Readable>,
 ) -> Result<kornia_image::Image<u8, 3>, crate::stream::error::StreamCaptureError> {
-    use kornia_tensor::storage::{MemoryDomain, TensorStorage};
-    use kornia_tensor::Tensor;
-
     // Capture pointer and length BEFORE moving mapped_buffer into GstResource.
     let data_ptr: *const u8 = mapped_buffer.as_ptr();
     let data_len: usize = mapped_buffer.len();
@@ -135,36 +133,12 @@ pub(crate) fn image_from_gst_buffer(
     };
     let keepalive: Arc<dyn Any + Send + Sync> = Arc::new(resource);
 
-    // Build a TensorStorage that borrows the gst memory and holds the keepalive.
-    // SAFETY:
-    //   - data_ptr is non-null (gst sysmem buffers are always non-null).
-    //   - data_len equals the mapped size (captured above from mapped_buffer.len()).
-    //   - The memory is host-accessible (MemoryDomain::Host).
-    //   - The keepalive (Arc<GstResource>) holds the map alive for the storage's lifetime.
-    //   - The storage is read-only: `as_mut_slice` will panic (GstMappedBuffer is Readable).
-    let storage: TensorStorage<u8> = unsafe {
-        TensorStorage::from_borrowed_readonly(
-            data_ptr,
-            data_len,
-            kornia_tensor::host_alloc(),
-            MemoryDomain::Host,
-            keepalive,
-        )
+    let image = unsafe {
+        Image::<u8, 3>::from_borrowed_host(size, data_ptr, keepalive)
+            .map_err(crate::stream::error::StreamCaptureError::ImageError)?
     };
 
-    // Row-major strides for shape [H, W, 3]: strides = [W*3, 3, 1].
-    // We compute this inline since `get_strides_from_shape` is pub(crate) in kornia-tensor.
-    let shape = [size.height, size.width, 3_usize];
-    let strides = [size.width * 3, 3, 1];
-    let tensor = Tensor {
-        storage,
-        shape,
-        strides,
-    };
-
-    // TryFrom<Tensor3<T, >> for Image<T, C> validates that shape[2] == C (== 3).
-    kornia_image::Image::try_from(tensor)
-        .map_err(crate::stream::error::StreamCaptureError::ImageError)
+    Ok(image)
 }
 
 #[cfg(test)]

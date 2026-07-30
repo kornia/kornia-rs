@@ -13,7 +13,6 @@ use dlpack_rs::{
 };
 
 use crate::{
-    allocator::host_alloc,
     storage::MemoryDomain,
     tensor::{Tensor, TensorError},
 };
@@ -239,9 +238,6 @@ where
         .iter()
         .try_fold(1usize, |a, &d| a.checked_mul(d))
         .ok_or(DlpackError::Overflow)?;
-    let len_bytes = n_elems
-        .checked_mul(std::mem::size_of::<T>())
-        .ok_or(DlpackError::Overflow)?;
 
     // Map device (the device id is encoded in the returned domain).
     let (domain, _) = map_dl_device(dl.device);
@@ -253,23 +249,13 @@ where
     // SAFETY: data pointer is valid for len_bytes (caller contract), keepalive keeps
     // the source alive, domain correctly reflects the DLDevice.
     let data_ptr = unsafe { (dl.data as *const u8).add(byte_offset) as *const T };
-    let storage = unsafe {
-        crate::storage::TensorStorage::from_borrowed(
-            data_ptr,
-            len_bytes,
-            host_alloc(),
-            domain,
-            keepalive,
-        )
+
+    let tensor = unsafe {
+        Tensor::<T, N>::from_borrowed(shape, data_ptr, n_elems, domain, keepalive)
+            .map_err(|_| DlpackError::Overflow)? // If shape != len, though mathematically impossible here
     };
 
-    // Build tensor.
-    let strides = crate::tensor::get_strides_from_shape(shape);
-    Ok(Tensor {
-        storage,
-        shape,
-        strides,
-    })
+    Ok(tensor)
 }
 
 /// Maps a `DLDevice` to `(MemoryDomain, device_id)`.

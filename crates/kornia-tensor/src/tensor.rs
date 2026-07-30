@@ -411,6 +411,50 @@ impl<T, const N: usize> Tensor<T, N> {
         }
     }
 
+    /// Creates a tensor from a foreign borrowed buffer with zero-copy, specifying its memory domain.
+    ///
+    /// The `keepalive` argument ensures that the external owner of the memory
+    /// (e.g., a GStreamer buffer or C++ reference count) is not dropped until
+    /// this tensor and all its views are destroyed.
+    ///
+    /// # Arguments
+    ///
+    /// * `shape` - An array containing the shape of the tensor.
+    /// * `data` - A pointer to the data of the tensor.
+    /// * `len` - The length of the data.
+    /// * `domain` - The memory domain (Host or Device) where the data resides.
+    /// * `keepalive` - A thread safe pointer to the host buffer.
+    ///
+    /// # Safety
+    ///
+    /// - `data` must point to valid memory containing at least `len` elements of `T`.
+    /// - The memory must remain valid for the lifetime of `keepalive`.
+    pub unsafe fn from_borrowed(
+        shape: [usize; N],
+        data: *const T,
+        len: usize,
+        domain: MemoryDomain,
+        keepalive: Arc<dyn Any + Send + Sync>,
+    ) -> Result<Self, TensorError> {
+        let expected_len = shape.iter().product::<usize>();
+        if expected_len != len {
+            return Err(TensorError::InvalidShape(expected_len));
+        }
+
+        let len_bytes = len * std::mem::size_of::<T>();
+
+        let storage =
+            TensorStorage::from_borrowed(data, len_bytes, host_alloc(), domain, keepalive);
+
+        let strides = get_strides_from_shape(shape);
+
+        Ok(Self {
+            storage,
+            shape,
+            strides,
+        })
+    }
+
     /// Creates a tensor from a foreign borrowed buffer with zero-copy.
     ///
     /// The `keepalive` argument ensures that the external owner of the memory
@@ -434,6 +478,33 @@ impl<T, const N: usize> Tensor<T, N> {
         len: usize,
         keepalive: Arc<dyn Any + Send + Sync>,
     ) -> Result<Self, TensorError> {
+        Self::from_borrowed(shape, data, len, MemoryDomain::Host, keepalive)
+    }
+
+    /// Creates a read-only tensor from a foreign borrowed buffer with zero-copy, specifying its memory domain.
+    ///
+    /// Similar to `from_borrowed_host`, but strictly forbids mutable access
+    /// to the underlying foreign memory slice.
+    ///
+    /// # Arguments
+    ///
+    /// * `shape` - An array containing the shape of the tensor.
+    /// * `data` - A pointer to the data of the tensor.
+    /// * `len` - The length of the data.
+    /// * `domain` - The memory domain (Host or Device) where the data resides.
+    /// * `keepalive` - A thread safe pointer to the host buffer.
+    ///
+    /// # Safety
+    ///
+    /// - `data` must point to valid memory containing at least `len` elements of `T`.
+    /// - The memory must remain valid for the lifetime of `keepalive`.
+    pub unsafe fn from_borrowed_readonly(
+        shape: [usize; N],
+        data: *const T,
+        len: usize,
+        domain: MemoryDomain,
+        keepalive: Arc<dyn Any + Send + Sync>,
+    ) -> Result<Self, TensorError> {
         let expected_len = shape.iter().product::<usize>();
         if expected_len != len {
             return Err(TensorError::InvalidShape(expected_len));
@@ -441,13 +512,8 @@ impl<T, const N: usize> Tensor<T, N> {
 
         let len_bytes = len * std::mem::size_of::<T>();
 
-        let storage = TensorStorage::from_borrowed(
-            data,
-            len_bytes,
-            host_alloc(),
-            MemoryDomain::Host,
-            keepalive,
-        );
+        let storage =
+            TensorStorage::from_borrowed_readonly(data, len_bytes, host_alloc(), domain, keepalive);
 
         let strides = get_strides_from_shape(shape);
 
@@ -480,28 +546,7 @@ impl<T, const N: usize> Tensor<T, N> {
         len: usize,
         keepalive: Arc<dyn Any + Send + Sync>,
     ) -> Result<Self, TensorError> {
-        let expected_len = shape.iter().product::<usize>();
-        if expected_len != len {
-            return Err(TensorError::InvalidShape(expected_len));
-        }
-
-        let len_bytes = len * std::mem::size_of::<T>();
-
-        let storage = TensorStorage::from_borrowed_readonly(
-            data,
-            len_bytes,
-            host_alloc(),
-            MemoryDomain::Host,
-            keepalive,
-        );
-
-        let strides = get_strides_from_shape(shape);
-
-        Ok(Self {
-            storage,
-            shape,
-            strides,
-        })
+        Self::from_borrowed_readonly(shape, data, len, MemoryDomain::Host, keepalive)
     }
 
     /// Returns the number of elements in the tensor.
