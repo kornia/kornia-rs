@@ -111,7 +111,7 @@ pub(crate) fn image_from_v4l_buffer(
 
     if data_len < expected_len {
         return Err(kornia_image::ImageError::InvalidImageShape(
-            kornia_tensor::TensorError::InvalidShape(expected_len)
+            kornia_tensor::TensorError::InvalidShape(expected_len),
         ));
     }
 
@@ -119,9 +119,7 @@ pub(crate) fn image_from_v4l_buffer(
     let resource = V4lResource { buffer };
     let keepalive: Arc<dyn Any + Send + Sync> = Arc::new(resource);
 
-    let image = unsafe{
-        Image::<u8, 3>::from_borrowed_host_readonly(size, data_ptr, keepalive)?
-    };
+    let image = unsafe { Image::<u8, 3>::from_borrowed_host_readonly(size, data_ptr, keepalive)? };
 
     Ok(image)
 }
