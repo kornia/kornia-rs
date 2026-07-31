@@ -133,6 +133,10 @@ pub(crate) fn image_from_gst_buffer(
     };
     let keepalive: Arc<dyn Any + Send + Sync> = Arc::new(resource);
 
+    // SAFETY:
+    // - `data_ptr` is non-null as GStreamer sysmem buffers are always non-null.
+    // - We verified `data_len >= expected_len` above, preventing out-of-bounds reads.
+    // - `keepalive` (GstResource) holds the map alive for the lifetime of the Image.
     let image = unsafe {
         Image::<u8, 3>::from_borrowed_host(size, data_ptr, keepalive)
             .map_err(crate::stream::error::StreamCaptureError::ImageError)?

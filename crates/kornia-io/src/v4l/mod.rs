@@ -107,7 +107,7 @@ pub(crate) fn image_from_v4l_buffer(
         .width
         .checked_mul(size.height)
         .and_then(|n| n.checked_mul(3))
-        .expect("Image dimensions overflow");
+        .ok_or(kornia_tensor::TensorError::ShapeOverflow)?;
 
     if data_len < expected_len {
         return Err(kornia_image::ImageError::InvalidImageShape(

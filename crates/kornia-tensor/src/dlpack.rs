@@ -250,6 +250,11 @@ where
     // the source alive, domain correctly reflects the DLDevice.
     let data_ptr = unsafe { (dl.data as *const u8).add(byte_offset) as *const T };
 
+    // SAFETY:
+    // - `byte_offset` arithmetic is within bounds of the allocated tensor data per DLPack spec.
+    // - `data_ptr` is valid for `n_elems` elements of type `T` (guaranteed by the caller contract of this function).
+    // - `domain` correctly reflects the physical location of the memory (CPU vs GPU).
+    // - `keepalive` retains ownership of the underlying `DLManagedTensor`, ensuring the memory outlives the returned Tensor.
     let tensor = unsafe {
         Tensor::<T, N>::from_borrowed(shape, data_ptr, n_elems, domain, keepalive)
             .map_err(|_| DlpackError::Overflow)? // If shape != len, though mathematically impossible here

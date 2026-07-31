@@ -341,7 +341,13 @@ impl<T, const C: usize> Image<T, C> {
         domain: kornia_tensor::resource::MemoryDomain,
         keepalive: Arc<dyn Any + Send + Sync>,
     ) -> Result<Self, ImageError> {
-        let len = size.height * size.width * C;
+        let len = size
+            .height
+            .checked_mul(size.width)
+            .and_then(|n| n.checked_mul(C))
+            .ok_or(ImageError::InvalidImageShape(
+                kornia_tensor::TensorError::ShapeOverflow,
+            ))?;
 
         let tensor =
             Tensor3::from_borrowed([size.height, size.width, C], data, len, domain, keepalive)?;
@@ -369,7 +375,13 @@ impl<T, const C: usize> Image<T, C> {
         domain: kornia_tensor::resource::MemoryDomain,
         keepalive: Arc<dyn Any + Send + Sync>,
     ) -> Result<Self, ImageError> {
-        let len = size.height * size.width * C;
+        let len = size
+            .height
+            .checked_mul(size.width)
+            .and_then(|n| n.checked_mul(C))
+            .ok_or(ImageError::InvalidImageShape(
+                kornia_tensor::TensorError::ShapeOverflow,
+            ))?;
 
         let tensor = Tensor3::from_borrowed_readonly(
             [size.height, size.width, C],

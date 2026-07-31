@@ -36,6 +36,10 @@ pub enum TensorError {
     /// Unsupported operation for the given data type or tensor configuration.
     #[error("Unsupported operation: {0}")]
     UnsupportedOperation(String),
+
+    /// The computed tensor dimensions exceed the maximum capacity of usize.
+    #[error("The computed tensor dimensions exceed the maximum capacity of usize")]
+    ShapeOverflow,
 }
 
 /// Computes the strides for a row-major (C-contiguous) tensor layout.
