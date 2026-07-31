@@ -68,10 +68,11 @@ impl Dtype {
             (c, 8, 1) if c == K_DL_UINT => Ok(Dtype::U8),
             (c, 16, 1) if c == K_DL_UINT => Ok(Dtype::U16),
             (c, 32, 1) if c == K_DL_FLOAT => Ok(Dtype::F32),
+            (c, 32, 1) if c == K_DL_INT => Ok(Dtype::I32),
             _ => Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "from_dlpack: unsupported DLPack dtype \
                  (code={code}, bits={bits}, lanes={lanes}); \
-                 expected uint8, uint16, or float32",
+                 expected uint8, uint16, float32, or int32",
                 code = dt.code,
                 bits = dt.bits,
                 lanes = dt.lanes,
