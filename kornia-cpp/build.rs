@@ -16,6 +16,17 @@ fn main() {
 
 fn generate_version_header() {
     let version = env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.0.0".to_string());
+
+    // Strip any pre-release/build metadata (e.g. "1.2.3-beta.1" -> "1.2.3",
+    // "1.2.3+build5" -> "1.2.3") before splitting into numeric components.
+    // Without this, a semver pre-release suffix would leak into the patch
+    // component (e.g. "3-beta.1"), producing an invalid, non-numeric
+    // #define that fails to compile wherever it's used in an integer context.
+    let numeric_version = version
+        .split(|c| c == '-' || c == '+')
+        .next()
+        .unwrap_or(&version);
+
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
     let version_hpp = format!(
@@ -40,9 +51,9 @@ inline const char* get_version() {{
 }} // namespace kornia
 "#,
         version = version,
-        major = version.split('.').next().unwrap_or("0"),
-        minor = version.split('.').nth(1).unwrap_or("0"),
-        patch = version.split('.').nth(2).unwrap_or("0"),
+        major = numeric_version.split('.').next().unwrap_or("0"),
+        minor = numeric_version.split('.').nth(1).unwrap_or("0"),
+        patch = numeric_version.split('.').nth(2).unwrap_or("0"),
     );
 
     // Write to OUT_DIR for Rust build

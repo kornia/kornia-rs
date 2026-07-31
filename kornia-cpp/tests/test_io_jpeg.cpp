@@ -9,7 +9,21 @@ namespace jpeg = kornia::io::jpeg;
 static std::string get_test_image_path() {
     fs::path test_data =
         fs::path(__FILE__).parent_path() / ".." / ".." / "tests" / "data" / "dog.jpeg";
-    return fs::canonical(test_data).string();
+
+    // fs::canonical() throws if the path doesn't exist, which would abort the
+    // test binary instead of allowing callers to SKIP(). Check existence first
+    // and return an empty string so callers can detect missing test data.
+    std::error_code ec;
+    if (!fs::exists(test_data, ec) || ec) {
+        return "";
+    }
+
+    fs::path canonical_path = fs::canonical(test_data, ec);
+    if (ec) {
+        return "";
+    }
+
+    return canonical_path.string();
 }
 
 TEST_CASE("Read JPEG RGB8", "[io][jpeg]") {
