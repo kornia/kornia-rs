@@ -871,7 +871,6 @@ pub fn bundle_adjust_schur_with_all_priors(
             //          every depth test scene (they all use Mat3F64::IDENTITY), so
             //          the suite could not see it.
             // ∂Z/∂ω  = row 2 of S = -R · skew(p_w)
-            // ∂Z/∂Xw = row 2 of R
             // We treat the depth residual as a single extra row in the
             // stacked Jacobian, weighted by 1/σ. Its outer products are
             // added to A_p, C_p, B as for any other residual.
@@ -905,8 +904,6 @@ pub fn bundle_adjust_schur_with_all_priors(
                 let s22 = -py * r20 + px * r21;
 
                 // J_pose_depth (1×6): [ρ(r20, r21, r22) | ω(s20, s21, s22)] / σ
-                // The ρ block equals the point block below — both are ∂z/∂(world
-                // displacement) = row 2 of R. See the derivation above.
                 let jpd = [
                     r20 * inv_sigma,
                     r21 * inv_sigma,
@@ -915,8 +912,8 @@ pub fn bundle_adjust_schur_with_all_priors(
                     s21 * inv_sigma,
                     s22 * inv_sigma,
                 ];
-                // J_point_depth (1×3): [r20, r21, r22] / σ
-                let jxd = [r20 * inv_sigma, r21 * inv_sigma, r22 * inv_sigma];
+                // J_point_depth (1×3) IS the ρ block: both are ∂z/∂(world displacement).
+                let jxd = &jpd[..3];
 
                 // ── Apply IRLS robust weight to the depth residual ────────
                 // The depth residual is a single scalar r_z (already scaled by
