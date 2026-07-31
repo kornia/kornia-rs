@@ -111,6 +111,83 @@ pub struct CalibConfig {
     /// local fit) collapsed 190/200 to 88/200. The post-BA filter + de-registration hygiene is
     /// what polices bad registrations now; the gate only needs to reject garbage.
     pub min_registration_inliers: usize,
+    /// Cameras left FREE in each periodic bundle adjustment during growth; 0 optimises all of them.
+    ///
+    /// The Schur reduction solves a DENSE `6P x 6P` reduced camera system, so a global BA costs
+    /// `O(P^3)` per LM iteration. That is the right choice at rig scale — 8 cameras, or even the ~170
+    /// this solver was designed around, give a 1020x1020 matrix a dense Cholesky eats in milliseconds.
+    /// Per-frame video is a different regime: 1095 keyframes make it 6570x6570, which is 345 MB and
+    /// ~9e10 flops PER ITERATION, times `max_iterations`, times every periodic BA.
+    ///
+    /// Windowing makes that cost constant rather than cubic: only the most co-visible
+    /// `local_ba_window` cameras around the newly registered ones stay free, the rest are pinned via
+    /// `BaObservation::fixed_pose`, and the reduced system shrinks to `6 x window`. Points seen only by
+    /// pinned cameras are pinned too — optimising them would move the very structure the free cameras
+    /// are being fitted against. This is the standard local-BA arrangement (ORB-SLAM's local window);
+    /// correcting accumulated global error remains the terminal BA's job.
+    ///
+    /// Defaults to 0 so existing callers keep exactly the behaviour they were tuned against.
+    pub local_ba_window: usize,
+    /// Called after each camera is registered, as `(registered_so_far, total_cameras)`.
+    ///
+    /// Registration is the longest phase of a large solve and the only one whose duration is
+    /// data-dependent: a caller driving a progress UI has nothing to report for tens of minutes
+    /// without this, and cannot tell a solve that is growing from one that has stalled at a
+    /// barrier. `None` by default, so existing callers are unaffected.
+    pub progress: Option<std::sync::Arc<dyn Fn(usize, usize) + Send + Sync>>,
+    /// Re-gauge each keyframe's monocular depth priors by its own fitted scale before every bundle
+    /// adjustment, instead of trusting one global scale for the whole map.
+    ///
+    /// Learned depth is not gauge-stable frame to frame, and on forward motion a per-frame scale
+    /// error is indistinguishable from along-axis translation — so a global scale hands every wander
+    /// straight to the trajectory. See `fit_depth_scales` for why this is scale-only rather than the
+    /// affine fit ViPE uses.
+    pub depth_per_keyframe_scale: bool,
+    /// Let bundle adjustment OPTIMISE the per-keyframe depth scales instead of freezing them at the
+    /// fitted median, and switch the depth residual to log space. Requires
+    /// [`Self::depth_per_keyframe_scale`]; ignored without it.
+    ///
+    /// The value is the strength of the prior holding each scale near its fitted seed, as a
+    /// multiple of that keyframe's own depth weight — see `kornia_3d::ba::BaParams::depth_scale_prior`.
+    /// `< 0` (the default) keeps the fitted-then-frozen behaviour.
+    ///
+    /// Why freezing is a trap: a scale fitted from the CURRENT geometry inherits that geometry's
+    /// drift, so the prior then certifies the error it was supposed to correct. Letting BA move the
+    /// scale breaks that circularity — but only while the prior is present. At `0` the scales
+    /// absorb the whole depth residual and the term goes inert (measured: 5.7 m of point error
+    /// against 0.08 m frozen, on the synthetic in `ba_schur`).
+    ///
+    /// `1.0` is the calibrated default: converged by ~10 LM iterations, where `0.1` still carries
+    /// 1.8 m of error at 10 and needs 50+ to settle. Follows VidMap (ECCV 2026) eq. 3–4.
+    pub depth_scale_prior: f64,
+    /// MEASURED gravity direction per camera, in that camera's own frame (OpenCV axes, so roughly
+    /// `+y` for an upright camera). `None` per entry where it could not be measured.
+    ///
+    /// Turns the "up" prior from an assumption into an observation. Without it the prior asserts a
+    /// FIXED camera-frame up of `(0,−1,0)` for every view — "the phone was held perfectly upright,
+    /// identically, all walk" — which is measurably false: a reference clip averages `(0.03, 0.93,
+    /// 0.38)`, tilted 22 degrees. At a 3-degree sigma that is a 22-degree lie asserted on every
+    /// frame.
+    ///
+    /// It matters far beyond correcting a bias. On a single forward pass with no revisits, global
+    /// orientation is UNOBSERVABLE from correspondences alone, so accumulated tilt drift has nothing
+    /// to bound it — measured consequence: 4.14 m of camera-height variation on a one-floor walk,
+    /// with no axis identifiable as vertical. An external reference is the only fix, and with no IMU
+    /// the scene's own verticals are the one available.
+    pub gravity_cam: Option<std::sync::Arc<Vec<Option<[f64; 3]>>>>,
+    /// Sigma for the up residual when it carries a MEASUREMENT rather than the upright assumption.
+    ///
+    /// Deliberately far looser than `up_prior_sigma`. A prior's sigma must state the ESTIMATOR's
+    /// accuracy, not the precision one would like: vanishing-point gravity lands at 1-2 degrees at
+    /// best, and a hand-rolled detector measured 7.6 degrees off OpenCV's LSD on the same frames.
+    /// Asserting that at the 0.05 (~3 degree) sigma used for the assumption collapsed a
+    /// reconstruction outright — extents 6.6 m -> 1.9 m, trajectory 62.5 m -> 12.7 m, 24 cameras
+    /// lost — because bundle adjustment believes what it is told, and a confident wrong rotation
+    /// drags the points and then the scale with it.
+    ///
+    /// 0.15 is ~8.6 degrees: enough for gravity to break the tilt-drift degeneracy that
+    /// correspondences alone cannot see, not enough to overrule them.
+    pub gravity_sigma: f64,
 }
 
 impl CalibConfig {
@@ -130,6 +207,12 @@ impl CalibConfig {
             min_registration_inliers: 30,
             second_pass: false,
             seed_rank: 0,
+            local_ba_window: 0,
+            progress: None,
+            depth_per_keyframe_scale: true,
+            depth_scale_prior: -1.0,
+            gravity_cam: None,
+            gravity_sigma: 0.15,
         }
     }
 }

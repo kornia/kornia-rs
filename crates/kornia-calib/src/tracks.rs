@@ -15,6 +15,7 @@ use crate::types::FeatureTrack;
 /// A pairwise match between two cameras' keypoints. `kpt_*` are stable per-camera keypoint ids (e.g.
 /// indices into that camera's detected-keypoint list) so matches chain into tracks; `uv_*` are the
 /// raw pixels.
+#[derive(Debug, Clone)]
 pub struct TrackEdge {
     /// First camera index.
     pub cam_a: usize,

@@ -119,7 +119,7 @@ pub fn calibrate_features_with_depth(
     // Parallel to `norm`: metric depth per observation, or None. All-None when priors are off, so
     // downstream indexing never branches on the feature being enabled.
     let use_depth = config.depth_prior_rel_sigma > 0.0 && obs_depth.is_some();
-    let norm_depth: Vec<Vec<Option<f32>>> = match (use_depth, obs_depth) {
+    let mut norm_depth: Vec<Vec<Option<f32>>> = match (use_depth, obs_depth) {
         (true, Some(d)) => d
             .iter()
             .map(|t| t.iter().map(|x| x.map(|v| v as f32)).collect())
@@ -355,11 +355,23 @@ pub fn calibrate_features_with_depth(
     // legitimately rejects, and growth stalls precisely as the reconstruction gets better.
     let mut next_ba = (registered_now(&poses) as f64 * BA_IMAGES_RATIO).max(3.0);
     grow_registrations(
-        &mut poses, &mut point3d, &norm, &norm_depth, n_cams, &idcam, &tcfg_grow, config.min_registration_inliers, 0.0, a0,
+        &mut poses, &mut point3d, &mut norm, &mut norm_depth, n_cams, &idcam, &tcfg_grow, config.min_registration_inliers, 0.0, a0,
         config, BA_IMAGES_RATIO, &mut next_ba,
     );
 
     // --- Bundle adjustment: all track points free, the reference camera (a0) fixed to anchor gauge. ---
+    // Re-fit the per-keyframe depth gauge against the CURRENT geometry before every solve. This is
+    // an alternating scheme rather than joint optimisation: the scales are cheap closed-form medians,
+    // BA runs repeatedly during growth, and each pass therefore refines the other. Joint estimation
+    // would mean widening the reduced camera system from 6 to 7 parameters per pose, which is a much
+    // larger change to `ba_schur` for a gain that has not been measured here.
+    let depth_scale = if config.depth_per_keyframe_scale {
+        fit_depth_scales(&poses, &point3d, &norm, &norm_depth, poses.len())
+    } else {
+        vec![1.0; poses.len()]
+    };
+    let (depth_log, depth_scale_prior, depth_scales_init) = depth_ba_params(config, &depth_scale);
+
     let mut points: Vec<Vec3F64> = Vec::new();
     let mut pt_index: HashMap<usize, usize> = HashMap::new();
     let mut obs: Vec<BaObservation> = Vec::new();
@@ -371,8 +383,10 @@ pub fn calibrate_features_with_depth(
             if poses[*c].is_none() {
                 continue;
             }
-            let (depth_meas, depth_sigma) =
-                depth_fields(&norm_depth, *ti, j, config);
+            let (depth_meas, depth_sigma) = depth_fields(&norm_depth, *ti, j, config);
+            // This camera's own gauge, so the residual measures the shape the network got right
+            // rather than the scale it got wrong.
+            let depth_meas = gauged_depth(depth_meas, depth_scale[*c], depth_log);
             obs.push(BaObservation {
                 pose_idx: *c,
                 point_idx: pidx,
@@ -403,9 +417,12 @@ pub fn calibrate_features_with_depth(
                 let sr = (config.max_reprojection_error / 2.0).max(1e-6) as f32;
                 (1.345 * sr) * (1.345 * sr)
             },
+            depth_log_residual: depth_log,
+            depth_scale_prior,
+            depth_scales_init,
             ..Default::default()
         },
-        up_priors(&poses, config).as_deref(),
+        up_priors(&poses, a0, config).as_deref(),
         motion_priors_for(&poses, config).as_deref(),
     )
     .map_err(|e| CalibError::BundleAdjust(format!("{e:?}")))?;
@@ -443,10 +460,16 @@ pub fn calibrate_features_with_depth(
     // geometry. Guessed phone intrinsics (a fov sweep, k1 assumed zero on an ultra-wide) bend
     // the whole reconstruction; this lets the data correct them.
     if config.refine_intrinsics {
-        let mut num = [0.0f64; 2];
-        let mut a00 = 0.0f64;
-        let mut a01 = 0.0f64;
-        let mut a11 = 0.0f64;
+        // Full OPENCV-style model (COLMAP's default camera for unknown lenses), still linear in
+        // the stacked unknowns beta = (gamma, gamma*k1, gamma*k2, gamma*p1, gamma*p2):
+        //   u_x = b0*x + b1*x*r2 + b2*x*r4 + b3*(2xy)      + b4*(r2+2x2)
+        //   u_y = b0*y + b1*y*r2 + b2*y*r4 + b3*(r2+2y2)   + b4*(2xy)
+        // so the whole set still costs one closed-form least squares per round. The tangential
+        // terms are what the two-parameter fit could never see: a decentered ultra-wide phone
+        // module bends verticals asymmetrically, and forcing that into k1 is part of the
+        // bas-relief residue.
+        let mut ata = [[0.0f64; 5]; 5];
+        let mut atb = [0.0f64; 5];
         for (ti, pidx) in &pt_index {
             let Some(p) = res.points.get(*pidx) else { continue };
             for (c, n) in &norm[*ti] {
@@ -456,38 +479,66 @@ pub fn calibrate_features_with_depth(
                     continue;
                 }
                 let u = Vec2F64::new(pc.x / pc.z, pc.y / pc.z);
-                let r2 = n.x * n.x + n.y * n.y;
-                // Model: u ≈ a·n + b·(n·r²), a = gamma, b = gamma·k1. Two scalar unknowns fit
-                // over both residual components.
-                for (nu, uu) in [(n.x, u.x), (n.y, u.y)] {
-                    let x0 = nu;
-                    let x1 = nu * r2;
-                    a00 += x0 * x0;
-                    a01 += x0 * x1;
-                    a11 += x1 * x1;
-                    num[0] += x0 * uu;
-                    num[1] += x1 * uu;
+                let (x, y) = (n.x, n.y);
+                let r2 = x * x + y * y;
+                let r4 = r2 * r2;
+                let rows = [
+                    ([x, x * r2, x * r4, 2.0 * x * y, r2 + 2.0 * x * x], u.x),
+                    ([y, y * r2, y * r4, r2 + 2.0 * y * y, 2.0 * x * y], u.y),
+                ];
+                for (basis, target) in rows {
+                    for i in 0..5 {
+                        for j in 0..5 {
+                            ata[i][j] += basis[i] * basis[j];
+                        }
+                        atb[i] += basis[i] * target;
+                    }
                 }
             }
         }
-        let det = a00 * a11 - a01 * a01;
-        if det.abs() > 1e-12 {
-            let gamma = (num[0] * a11 - num[1] * a01) / det;
-            let gk1 = (num[1] * a00 - num[0] * a01) / det;
+        // Try the full 5-parameter fit first; when it is out of bounds or singular, fall back to
+        // the proven (gamma, k1) subproblem rather than applying a fit the geometry cannot
+        // support (thin tracks make r4/tangential columns nearly collinear on narrow-FOV rigs).
+        let full = solve_sym5(&ata, &atb).and_then(|b| {
+            let gamma = b[0];
+            if gamma.abs() < 1e-9 {
+                return None;
+            }
+            let (k1, k2, p1, p2) = (b[1] / gamma, b[2] / gamma, b[3] / gamma, b[4] / gamma);
+            ((0.7..1.3).contains(&gamma)
+                && (-0.3..0.3).contains(&k1)
+                && (-0.1..0.1).contains(&k2)
+                && (-0.05..0.05).contains(&p1)
+                && (-0.05..0.05).contains(&p2))
+            .then_some((gamma, k1, k2, p1, p2))
+        });
+        let fit = full.or_else(|| {
+            let det = ata[0][0] * ata[1][1] - ata[0][1] * ata[0][1];
+            if det.abs() <= 1e-12 {
+                return None;
+            }
+            let gamma = (atb[0] * ata[1][1] - atb[1] * ata[0][1]) / det;
+            let gk1 = (atb[1] * ata[0][0] - atb[0] * ata[0][1]) / det;
             let k1 = if gamma.abs() > 1e-9 { gk1 / gamma } else { 0.0 };
             // Sanity bounds: a fit outside them means the map (not the camera) is wrong, and
             // applying it would let geometry errors masquerade as optics.
-            if (0.7..1.3).contains(&gamma) && (-0.3..0.3).contains(&k1) {
-                if std::env::var_os("KORNIA_CALIB_DEBUG").is_some() {
-                    eprintln!("[calib] intrinsics refinement: gamma={gamma:.4} k1={k1:.4}");
-                }
-                for track in norm.iter_mut() {
-                    for (_, n) in track.iter_mut() {
-                        let r2 = n.x * n.x + n.y * n.y;
-                        let f = gamma * (1.0 + k1 * r2);
-                        n.x *= f;
-                        n.y *= f;
-                    }
+            ((0.7..1.3).contains(&gamma) && (-0.3..0.3).contains(&k1))
+                .then_some((gamma, k1, 0.0, 0.0, 0.0))
+        });
+        if let Some((gamma, k1, k2, p1, p2)) = fit {
+            if std::env::var_os("KORNIA_CALIB_DEBUG").is_some() {
+                eprintln!(
+                    "[calib] intrinsics refinement: gamma={gamma:.4} k1={k1:.4} k2={k2:.5} \
+                     p1={p1:.5} p2={p2:.5}"
+                );
+            }
+            for track in norm.iter_mut() {
+                for (_, n) in track.iter_mut() {
+                    let (x, y) = (n.x, n.y);
+                    let r2 = x * x + y * y;
+                    let radial = 1.0 + k1 * r2 + k2 * r2 * r2;
+                    n.x = gamma * (x * radial + 2.0 * p1 * x * y + p2 * (r2 + 2.0 * x * x));
+                    n.y = gamma * (y * radial + p1 * (r2 + 2.0 * y * y) + 2.0 * p2 * x * y);
                 }
             }
         }
@@ -501,7 +552,8 @@ pub fn calibrate_features_with_depth(
     // floors already agree via `tcfg_grow`.
     filter_points(
         &mut point3d,
-        &norm,
+        &mut norm,
+        &mut norm_depth,
         &poses,
         2.0 * config.max_reprojection_error,
         config.min_parallax_deg,
@@ -517,7 +569,7 @@ pub fn calibrate_features_with_depth(
     // keeps the coverage that is real and refuses the rest.
     let added = if config.second_pass {
         grow_registrations(
-            &mut poses, &mut point3d, &norm, &norm_depth, n_cams, &idcam, &tcfg_grow,
+            &mut poses, &mut point3d, &mut norm, &mut norm_depth, n_cams, &idcam, &tcfg_grow,
             config.min_registration_inliers, 0.0,
             a0, config, BA_IMAGES_RATIO, &mut next_ba,
         )
@@ -534,7 +586,7 @@ pub fn calibrate_features_with_depth(
     // and the post-BA filter + de-registration hygiene still polices anything it admits.
     let relaxed = if config.second_pass && config.min_registration_inliers > 10 {
         grow_registrations(
-            &mut poses, &mut point3d, &norm, &norm_depth, n_cams, &idcam, &tcfg_grow,
+            &mut poses, &mut point3d, &mut norm, &mut norm_depth, n_cams, &idcam, &tcfg_grow,
             (config.min_registration_inliers / 2).max(10), 0.0,
             a0, config, BA_IMAGES_RATIO, &mut next_ba,
         )
@@ -549,6 +601,48 @@ pub fn calibrate_features_with_depth(
         eprintln!("[calib] second pass registered {added} more camera(s)");
     }
 
+    // ── Multi-model remainder (COLMAP starts a new model when growth stalls and merges models
+    // that share images; this is the two-model version). Views the main chain could never
+    // register — a fast end-pan whose frames only see each other — can still form a coherent
+    // reconstruction among THEMSELVES. Build that sub-model from the leftover views only, then
+    // rescue it into the main frame with a similarity fit over the tracks the two models share.
+    // A failed merge discards the sub-model: an unanchored island is worse than absent coverage,
+    // because every consumer of this function assumes one gauge.
+    if config.second_pass {
+        let n_unreg = poses.iter().filter(|p| p.is_none()).count();
+        if n_unreg >= 3 {
+            let merged = merge_submodel(
+                &mut poses,
+                &point3d,
+                &norm,
+                &norm_depth,
+                tracks,
+                cameras,
+                n_cams,
+                &idcam,
+                &tcfg_grow,
+                config,
+            );
+            if merged > 0 {
+                // The seam is raw: sub-model poses were fitted in their own gauge and snapped
+                // over by a 7-DOF similarity. Let the shared final BA below settle it, but give
+                // it a clean cloud to start from.
+                filter_points(
+                    &mut point3d,
+                    &mut norm,
+                    &mut norm_depth,
+                    &poses,
+                    2.0 * config.max_reprojection_error,
+                    config.min_parallax_deg,
+                );
+                triangulate_new(&mut point3d, &norm, &poses, &idcam, &tcfg_grow);
+            }
+            if std::env::var_os("KORNIA_CALIB_DEBUG").is_some() {
+                eprintln!("[calib] sub-model merge recovered {merged} camera(s)");
+            }
+        }
+    }
+
     // Final solve on the filtered, retriangulated cloud. This ALWAYS runs (it used to be skipped
     // when the second pass added nothing): the filter/retriangulate step above changed the point
     // set, so the first BA's result no longer describes the problem, and the terminal statistics
@@ -556,6 +650,16 @@ pub fn calibrate_features_with_depth(
     // silently discarding the cleanup.
     let res = {
         let _ = res;
+        // Re-fit the depth gauge against the filtered, retriangulated cloud. This solve used to
+        // pass UNGAUGED depth while every other solve gauged it — so the pass whose result is
+        // actually reported was the one fighting a per-frame scale error the rest had removed.
+        let depth_scale = if config.depth_per_keyframe_scale {
+            fit_depth_scales(&poses, &point3d, &norm, &norm_depth, poses.len())
+        } else {
+            vec![1.0; poses.len()]
+        };
+        let (depth_log, depth_scale_prior, depth_scales_init) =
+            depth_ba_params(config, &depth_scale);
         let mut points2: Vec<Vec3F64> = Vec::new();
         let mut pt_index2: HashMap<usize, usize> = HashMap::new();
         let mut obs2: Vec<BaObservation> = Vec::new();
@@ -567,8 +671,20 @@ pub fn calibrate_features_with_depth(
                 if poses[*c].is_none() {
                     continue;
                 }
-                let (depth_meas, depth_sigma) =
-                    depth_fields(&norm_depth, *ti, j, config);
+                let (depth_meas, depth_sigma) = depth_fields(&norm_depth, *ti, j, config);
+                // REVERTED, on measurement. Gauging this solve like the others is the obviously
+                // consistent thing to do, and it improved every internal metric on a walkthrough
+                // clip (+19% points, -25% rmse). Against 7-Scenes ground truth it made all five
+                // scenes WORSE — chess 0.66 -> 2.46 cm, pumpkin 2.70 -> 16.74 cm.
+                //
+                // The likely reason it is right to leave this one ungauged: `fit_depth_scales`
+                // fits against the CURRENT geometry, and by this final pass the cloud has been
+                // filtered and retriangulated, so the fit chases the solution it is about to
+                // constrain. Earlier solves re-fit repeatedly and each pass corrects the last;
+                // this one has no successor to correct it.
+                //
+                // Do not "fix" this again without a ground-truth run. Internal consistency
+                // arguments have now been wrong about it twice.
                 obs2.push(BaObservation {
                     pose_idx: *c,
                     point_idx: pidx,
@@ -599,9 +715,12 @@ pub fn calibrate_features_with_depth(
                 let sr = (config.max_reprojection_error / 2.0).max(1e-6) as f32;
                 (1.345 * sr) * (1.345 * sr)
             },
+                depth_log_residual: depth_log,
+                depth_scale_prior,
+                depth_scales_init,
                 ..Default::default()
             },
-            up_priors(&poses, config).as_deref(),
+            up_priors(&poses, a0, config).as_deref(),
         motion_priors_for(&poses, config).as_deref(),
         )
         .map_err(|e| CalibError::BundleAdjust(format!("{e:?}")))?;
@@ -783,10 +902,53 @@ fn depth_fields(
     match norm_depth.get(ti).and_then(|t| t.get(j)).copied().flatten() {
         Some(d) if rel_sigma > 0.0 && d > 0.0 => {
             let sigma_r = (config.max_reprojection_error / 2.0).max(1e-6) as f32;
-            (Some(d), (rel_sigma as f32) * d / sigma_r)
+            // The log residual is already relative, so it must NOT carry the `× d` that converts a
+            // relative sigma into metres — including it would re-introduce exactly the depth
+            // dependence the log form exists to remove. Both forms keep the `1/σ_r` deflation into
+            // reprojection-like units, so the Huber knee below stays valid for either.
+            let sigma = if depth_log_mode(config) {
+                (rel_sigma as f32) / sigma_r
+            } else {
+                (rel_sigma as f32) * d / sigma_r
+            };
+            (Some(d), sigma)
         }
         _ => (None, 0.0),
     }
+}
+
+/// Whether depth priors use the log residual with BA-optimised per-keyframe scales.
+fn depth_log_mode(config: &CalibConfig) -> bool {
+    config.depth_per_keyframe_scale && config.depth_scale_prior >= 0.0
+}
+
+/// Apply a keyframe's fitted depth gauge to its own prediction.
+///
+/// In log mode the scale is a BA VARIABLE, so the measurement must stay raw and the fit is handed
+/// over as a seed instead — pre-multiplying here would apply it twice. Frozen mode has no other
+/// channel for it, so it is baked into the measurement.
+#[inline]
+fn gauged_depth(d: Option<f32>, scale: f64, log_mode: bool) -> Option<f32> {
+    if log_mode {
+        d
+    } else {
+        d.map(|d| d * scale as f32)
+    }
+}
+
+/// The three depth-scale fields of [`BaParams`], derived from the config and the fitted scales.
+///
+/// Every solve site must agree on these; a site that set them differently would optimise a
+/// different objective from its neighbours and the alternating scheme would oscillate.
+fn depth_ba_params(config: &CalibConfig, depth_scale: &[f64]) -> (bool, f32, Vec<f32>) {
+    if !depth_log_mode(config) {
+        return (false, -1.0, Vec::new());
+    }
+    (
+        true,
+        config.depth_scale_prior as f32,
+        depth_scale.iter().map(|&s| s as f32).collect(),
+    )
 }
 
 fn registered_now(poses: &[Option<Pose3d>]) -> usize {
@@ -832,9 +994,268 @@ const FILTER_MIN_TRI_ANGLE_DEG: f64 = 1.5;
 /// (creation at least as strict as filtering) without executing the seed scaffolding the young
 /// map stands on. Low-parallax seed points remain policed by the reprojection and cheirality
 /// majority vote.
+/// COLMAP's multi-model rescue, two-model version: reconstruct the unregistered remainder in its
+/// own gauge, then snap it into the main frame with a similarity fit over shared tracks.
+///
+/// Returns how many cameras were merged into `poses` (0 when no sub-model forms or the merge is
+/// rejected). The main cloud and tracks are untouched: merged cameras re-enter the pipeline
+/// through the caller's filter/retriangulate step, which rebuilds their geometry against the main
+/// map instead of trusting the sub-model's points at a different accuracy.
+#[allow(clippy::too_many_arguments)]
+fn merge_submodel(
+    poses: &mut [Option<Pose3d>],
+    point3d: &BTreeMap<usize, Vec3F64>,
+    norm: &[Vec<(usize, Vec2F64)>],
+    norm_depth: &[Vec<Option<f32>>],
+    tracks: &[FeatureTrack],
+    cameras: &[PinholeCamera],
+    n_cams: usize,
+    idcam: &PinholeCamera,
+    tcfg_grow: &TriangulationConfig,
+    config: &CalibConfig,
+) -> usize {
+    let debug = std::env::var_os("KORNIA_CALIB_DEBUG").is_some();
+    // Sub-problem = the leftover views only. Observations of main-registered cameras are stripped
+    // so the growth loop can never "register" a camera the main model already owns, and so the
+    // sub-model's evidence is exactly the evidence the main model failed to use.
+    let mut norm_sub: Vec<Vec<(usize, Vec2F64)>> = norm.to_vec();
+    let mut norm_depth_sub: Vec<Vec<Option<f32>>> = norm_depth.to_vec();
+    for (t, d) in norm_sub.iter_mut().zip(norm_depth_sub.iter_mut()) {
+        let mut j = 0usize;
+        while j < t.len() {
+            if poses[t[j].0].is_some() {
+                t.swap_remove(j);
+                d.swap_remove(j);
+            } else {
+                j += 1;
+            }
+        }
+    }
+
+    // Seed among the leftovers, same candidate policy as the main bootstrap.
+    let mut pair_count: HashMap<(usize, usize), usize> = HashMap::new();
+    for obs in &norm_sub {
+        for i in 0..obs.len() {
+            for j in (i + 1)..obs.len() {
+                let (a, b) = (obs[i].0.min(obs[j].0), obs[i].0.max(obs[j].0));
+                *pair_count.entry((a, b)).or_insert(0) += 1;
+            }
+        }
+    }
+    let mut by_count: Vec<((usize, usize), usize)> =
+        pair_count.iter().map(|(k, v)| (*k, *v)).collect();
+    by_count.sort_by(|x, y| y.1.cmp(&x.1).then_with(|| x.0.cmp(&y.0)));
+    let mut seed: Option<(usize, usize, Pose3d, usize, f64)> = None;
+    for ((ca, cb), n_shared) in by_count.iter().take(12) {
+        if *n_shared < 8 {
+            break;
+        }
+        let Some((pose, cnt, par, _rh)) = try_bootstrap_pair(*ca, *cb, tracks, cameras, idcam)
+        else {
+            continue;
+        };
+        let better = match &seed {
+            None => true,
+            Some((_, _, _, best_cnt, best_par)) => {
+                let (ok, best_ok) = (par >= 1.5, *best_par >= 1.5);
+                ok.cmp(&best_ok)
+                    .then_with(|| cnt.cmp(best_cnt))
+                    .is_gt()
+            }
+        };
+        if better {
+            seed = Some((*ca, *cb, pose, cnt, par));
+        }
+    }
+    let Some((sa, sb, seed_pose, _, _)) = seed else {
+        return 0;
+    };
+
+    let mut sub_poses: Vec<Option<Pose3d>> = vec![None; n_cams];
+    sub_poses[sa] = Some(Pose3d::IDENTITY);
+    sub_poses[sb] = Some(seed_pose);
+    let tcfg_seed = TriangulationConfig {
+        min_parallax_deg: config.min_parallax_deg,
+        max_reprojection_error: config.max_reprojection_error,
+        ..Default::default()
+    };
+    let mut sub_points: BTreeMap<usize, Vec3F64> = BTreeMap::new();
+    triangulate_new(&mut sub_points, &norm_sub, &sub_poses, idcam, &tcfg_seed);
+    if sub_points.len() < 8 {
+        return 0;
+    }
+    let mut sub_next_ba = 3.0f64;
+    grow_registrations(
+        &mut sub_poses,
+        &mut sub_points,
+        &mut norm_sub,
+        &mut norm_depth_sub,
+        n_cams,
+        idcam,
+        tcfg_grow,
+        (config.min_registration_inliers / 2).max(10),
+        0.0,
+        sa,
+        config,
+        1.1,
+        &mut sub_next_ba,
+    );
+    let sub_regs: Vec<usize> = (0..n_cams).filter(|c| sub_poses[*c].is_some()).collect();
+    if sub_regs.len() < 2 {
+        return 0;
+    }
+
+    // Similarity from shared tracks: points both models triangulated independently. The sub-model
+    // deliberately kept NO main-camera observations, so a shared track means the same physical
+    // feature was seen from both sides of the registration boundary — exactly the seam evidence a
+    // merge needs.
+    let common: Vec<(Vec3F64, Vec3F64)> = sub_points
+        .iter()
+        .filter_map(|(ti, ps)| point3d.get(ti).map(|pm| (*ps, *pm)))
+        .collect();
+    if common.len() < 8 {
+        if debug {
+            eprintln!(
+                "[calib] sub-model of {} cams found, but only {} shared tracks — merge impossible",
+                sub_regs.len(),
+                common.len()
+            );
+        }
+        return 0;
+    }
+    let Some((s, r, t)) = fit_sim3(&common) else {
+        return 0;
+    };
+    // Merge gate, relative to the main map's own spread: a similarity that leaves the shared
+    // points scattered at a noticeable fraction of the scene size is fitting noise, and snapping
+    // a whole camera chain onto it would inject exactly the poison the growth gates keep out.
+    let centroid = common.iter().fold(Vec3F64::ZERO, |a, (_, pm)| a + *pm) / common.len() as f64;
+    let spread = (common
+        .iter()
+        .map(|(_, pm)| { let v = *pm - centroid; v.dot(v) })
+        .sum::<f64>()
+        / common.len() as f64)
+        .sqrt();
+    let mut errs: Vec<f64> = common
+        .iter()
+        .map(|(ps, pm)| (r * (*ps * s) + t - *pm).length())
+        .collect();
+    errs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let med = errs[errs.len() / 2];
+    if !(med.is_finite() && spread > 1e-12 && med < 0.1 * spread) {
+        if debug {
+            eprintln!(
+                "[calib] sub-model merge REJECTED: median seam error {med:.4} vs spread {spread:.4}"
+            );
+        }
+        return 0;
+    }
+
+    let mut merged = 0usize;
+    for c in sub_regs {
+        let sub = sub_poses[c].expect("registered sub pose");
+        // Rigid main-frame pose from the sub pose and the sub→main similarity: rotate the camera
+        // orientation, map the camera CENTRE through the similarity (scale applies to positions,
+        // never to the rotation), and rebuild w2c translation from the new centre.
+        let c_sub = sub.inverse().translation;
+        let c_main = r * (c_sub * s) + t;
+        let rot = sub.rotation * r.transpose();
+        poses[c] = Some(Pose3d::new(rot, -(rot * c_main)));
+        merged += 1;
+    }
+    if debug {
+        eprintln!(
+            "[calib] sub-model merged: {merged} cams via {} shared tracks, scale {s:.4}, \
+             median seam error {med:.4}",
+            common.len()
+        );
+    }
+    merged
+}
+
+/// Least-squares similarity (Umeyama) mapping `src → dst` over 3D point pairs `(src, dst)`.
+/// Returns `(scale, rotation, translation)` with `dst ≈ R·(s·src) + t`, or `None` on a
+/// degenerate configuration (fewer than 3 points, zero variance, reflective fit).
+fn fit_sim3(pairs: &[(Vec3F64, Vec3F64)]) -> Option<(f64, Mat3F64, Vec3F64)> {
+    if pairs.len() < 3 {
+        return None;
+    }
+    let n = pairs.len() as f64;
+    let mu_s = pairs.iter().fold(Vec3F64::ZERO, |a, (s, _)| a + *s) / n;
+    let mu_d = pairs.iter().fold(Vec3F64::ZERO, |a, (_, d)| a + *d) / n;
+    let mut cov = Mat3F64::ZERO;
+    let mut var_s = 0.0f64;
+    for (s, d) in pairs {
+        let cs = *s - mu_s;
+        let cd = *d - mu_d;
+        cov += Mat3F64::from_cols(cd * cs.x, cd * cs.y, cd * cs.z);
+        var_s += cs.dot(cs);
+    }
+    cov *= 1.0 / n;
+    var_s /= n;
+    if var_s < 1e-12 {
+        return None;
+    }
+    let svd = kornia_algebra::linalg::svd::svd3_f64(&cov);
+    let (u, sm, v) = (*svd.u(), *svd.s(), *svd.v());
+    let d = (u * v.transpose()).determinant().signum();
+    let fix = Mat3F64::from_cols(
+        Vec3F64::new(1.0, 0.0, 0.0),
+        Vec3F64::new(0.0, 1.0, 0.0),
+        Vec3F64::new(0.0, 0.0, d),
+    );
+    let r = u * fix * v.transpose();
+    let scale = (sm.col(0).x + sm.col(1).y + d * sm.col(2).z) / var_s;
+    if !(scale.is_finite() && scale > 1e-9) {
+        return None;
+    }
+    let t = mu_d - r * (mu_s * scale);
+    Some((scale, r, t))
+}
+
+/// Solve the symmetric positive-semidefinite 5x5 system `A x = b` by Gaussian elimination with
+/// partial pivoting. Returns `None` when a pivot collapses — for the intrinsics fit that means
+/// the distortion columns are collinear (narrow FOV, thin tracks) and the caller falls back to
+/// the two-parameter model.
+fn solve_sym5(a: &[[f64; 5]; 5], b: &[f64; 5]) -> Option<[f64; 5]> {
+    let mut m = [[0.0f64; 6]; 5];
+    for i in 0..5 {
+        m[i][..5].copy_from_slice(&a[i]);
+        m[i][5] = b[i];
+    }
+    for col in 0..5 {
+        let piv = (col..5).max_by(|&i, &j| {
+            m[i][col]
+                .abs()
+                .partial_cmp(&m[j][col].abs())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })?;
+        if m[piv][col].abs() < 1e-12 {
+            return None;
+        }
+        m.swap(col, piv);
+        for row in (col + 1)..5 {
+            let f = m[row][col] / m[col][col];
+            for k in col..6 {
+                m[row][k] -= f * m[col][k];
+            }
+        }
+    }
+    let mut x = [0.0f64; 5];
+    for i in (0..5).rev() {
+        let mut s = m[i][5];
+        for j in (i + 1)..5 {
+            s -= m[i][j] * x[j];
+        }
+        x[i] = s / m[i][i];
+    }
+    Some(x)
+}
+
 fn filter_points(
     point3d: &mut BTreeMap<usize, Vec3F64>,
-    norm: &[Vec<(usize, Vec2F64)>],
+    norm: &mut [Vec<(usize, Vec2F64)>],
+    norm_depth: &mut [Vec<Option<f32>>],
     poses: &[Option<Pose3d>],
     max_reproj_norm: f64,
     min_tri_angle_deg: f64,
@@ -844,6 +1265,13 @@ fn filter_points(
         .map(|p| p.as_ref().map(|p| p.inverse().translation))
         .collect();
     let before = point3d.len();
+    // Tracks whose points survive get their failing observations DELETED (COLMAP filters at the
+    // observation level, not the point level): a view with one blurred sighting of a good point
+    // should lose that sighting, not the point — and the point should stop paying that view's
+    // residual in every subsequent BA. Deletion is restricted to observations of REGISTERED
+    // cameras: an unregistered camera's observations are its future PnP correspondences, and
+    // judging them against a pose that does not exist yet would be meaningless.
+    let mut prune: Vec<usize> = Vec::new();
     point3d.retain(|ti, p| {
         let mut good: Vec<usize> = Vec::new();
         let mut seen = 0usize;
@@ -871,8 +1299,36 @@ fn filter_points(
                 best = best.max(ra.dot(rb).clamp(-1.0, 1.0).acos().to_degrees());
             }
         }
-        best >= min_tri_angle_deg
+        if best < min_tri_angle_deg {
+            return false;
+        }
+        prune.push(*ti);
+        true
     });
+    for ti in prune {
+        let p = point3d[&ti];
+        let track = &mut norm[ti];
+        let depths = &mut norm_depth[ti];
+        let mut j = 0usize;
+        while j < track.len() {
+            let (c, uv) = track[j];
+            let bad = match &poses[c] {
+                // Dropped points keep every observation for retriangulation; surviving points
+                // shed only the sightings that failed against a real pose.
+                None => false,
+                Some(pose) => match norm_residual(pose, p, uv) {
+                    Some(e) => e > max_reproj_norm,
+                    None => true, // behind the camera: never a valid sighting
+                },
+            };
+            if bad {
+                track.swap_remove(j);
+                depths.swap_remove(j);
+            } else {
+                j += 1;
+            }
+        }
+    }
     before - point3d.len()
 }
 
@@ -934,22 +1390,63 @@ fn deregister_starved(
 /// afterwards. Registered poses only; the anchor gets one too (harmless — its pose is fixed).
 fn up_priors(
     poses: &[Option<Pose3d>],
+    a0: usize,
     config: &CalibConfig,
 ) -> Option<Vec<Option<BaPosePrior>>> {
     if config.up_prior_sigma <= 0.0 {
         return None;
     }
+    // World "up" is a GAUGE choice, and it must agree with the anchor camera, whose pose is held
+    // fixed. Derive it from the anchor: `up_world = R_a0^T · up_cam_a0`. Picking any other vector
+    // would fight the one pose the solve is not allowed to move.
+    let up_of = |c: usize| -> Option<[f64; 3]> {
+        let g = config.gravity_cam.as_ref()?.get(c).copied().flatten()?;
+        // Gravity points down; "up" is its negation.
+        Some([-g[0], -g[1], -g[2]])
+    };
+    let anchor_up = up_of(a0);
+    let up_world: [f32; 3] = match (anchor_up, poses.get(a0).and_then(|p| *p)) {
+        (Some(u), Some(pa)) => {
+            let w = pa.rotation.transpose() * Vec3F64::new(u[0], u[1], u[2]);
+            [w.x as f32, w.y as f32, w.z as f32]
+        }
+        // No measurement for the anchor: fall back to the historical assumption, which at least
+        // keeps existing behaviour rather than inventing a frame.
+        _ => [0.0, -1.0, 0.0],
+    };
+    let measured = config.gravity_cam.is_some() && anchor_up.is_some();
     Some(
         poses
             .iter()
-            .map(|p| {
-                p.as_ref().map(|_| BaPosePrior {
-                    // No positional anchor: sigma is unused when infinite-like; use a huge sigma
-                    // so the centre residual contributes nothing.
-                    center_world: [0.0; 3],
-                    sigma: 1e6,
-                    up_world: Some([0.0, -1.0, 0.0]),
-                    up_sigma: config.up_prior_sigma as f32,
+            .enumerate()
+            .map(|(c, p)| {
+                p.as_ref().map(|_| {
+                    // Per-camera MEASURED up where available. Where it is not, assert nothing:
+                    // a camera with no usable verticals gets no rotation prior rather than the old
+                    // blanket assumption, because a vanishing-point prior is documented to make
+                    // results WORSE on views lacking vertical structure.
+                    let up_cam = if measured {
+                        up_of(c)
+                    } else {
+                        Some([0.0, -1.0, 0.0])
+                    };
+                    BaPosePrior {
+                        // No positional anchor: sigma is unused when infinite-like; use a huge sigma
+                        // so the centre residual contributes nothing.
+                        center_world: [0.0; 3],
+                        sigma: 1e6,
+                        up_world: up_cam.map(|_| up_world),
+                        // A measurement gets the estimator's own sigma; the legacy assumption
+                        // keeps the tuned one it was calibrated against.
+                        up_sigma: if measured {
+                            config.gravity_sigma as f32
+                        } else {
+                            config.up_prior_sigma as f32
+                        },
+                        up_cam: up_cam
+                            .map(|u| [u[0] as f32, u[1] as f32, u[2] as f32])
+                            .unwrap_or([0.0, -1.0, 0.0]),
+                    }
                 })
             })
             .collect(),
@@ -1005,6 +1502,17 @@ fn run_local_ba(
     const LOCAL_BA_NEIGHBOURS: usize = 6;
     const LOCAL_BA_ITERATIONS: usize = 25;
 
+    // Same per-keyframe depth gauge as the global solves (see `fit_depth_scales`). It matters MORE
+    // here: this is the motion-only refinement each newly registered camera gets before it
+    // triangulates, so an unmodelled per-frame depth scale is baked into the points it creates and
+    // then inherited by every camera registered against them.
+    let depth_scale = if config.depth_per_keyframe_scale {
+        fit_depth_scales(poses, point3d, norm, norm_depth, poses.len())
+    } else {
+        vec![1.0; poses.len()]
+    };
+    let (depth_log, depth_scale_prior, depth_scales_init) = depth_ba_params(config, &depth_scale);
+
     // Most-connected registered neighbours of the new camera, by shared observed 3D points.
     let mut shared: HashMap<usize, usize> = HashMap::new();
     for ti in point3d.keys() {
@@ -1042,8 +1550,10 @@ fn run_local_ba(
             if poses[*c].is_none() {
                 continue;
             }
-            let (depth_meas, depth_sigma) =
-                depth_fields(norm_depth, *ti, j, config);
+            let (depth_meas, depth_sigma) = depth_fields(norm_depth, *ti, j, config);
+            // Apply this camera's gauge to its own prediction, so the residual measures the shape
+            // the network got right rather than the scale it got wrong.
+            let depth_meas = gauged_depth(depth_meas, depth_scale[*c], depth_log);
             obs.push(BaObservation {
                 pose_idx: *c,
                 point_idx: pidx,
@@ -1075,9 +1585,12 @@ fn run_local_ba(
                 let sr = (config.max_reprojection_error / 2.0).max(1e-6) as f32;
                 (1.345 * sr) * (1.345 * sr)
             },
+            depth_log_residual: depth_log,
+            depth_scale_prior,
+            depth_scales_init,
             ..Default::default()
         },
-        up_priors(poses, config).as_deref(),
+        up_priors(poses, a0, config).as_deref(),
         motion_priors_for(poses, config).as_deref(),
     ) else {
         return;
@@ -1095,6 +1608,153 @@ fn run_local_ba(
     }
 }
 
+/// The `window` cameras most co-visible with `focus`, plus `focus` itself.
+///
+/// Co-visibility rather than index distance, because registration order is not trajectory order: a
+/// camera registered late can sit anywhere along the walk, and its error is shared with whatever
+/// sees the same points, not with whatever has an adjacent number. Ranked by how many tracks each
+/// candidate shares with the focus set, which is the same criterion ORB-SLAM's local window uses.
+fn covisible_window(
+    focus: &[usize],
+    point3d: &BTreeMap<usize, Vec3F64>,
+    norm: &[Vec<(usize, Vec2F64)>],
+    poses: &[Option<Pose3d>],
+    window: usize,
+) -> HashSet<usize> {
+    // De-registration can retire a camera after it was pushed onto the focus list, so filter against
+    // the CURRENT pose state: a retired camera left in the free set would be optimised while nothing
+    // observes it, and its pose is meaningless until it re-registers.
+    let focus_set: HashSet<usize> = focus
+        .iter()
+        .copied()
+        .filter(|&c| poses.get(c).is_some_and(|p| p.is_some()))
+        .collect();
+    if focus_set.is_empty() {
+        return HashSet::new();
+    }
+    let mut shared: HashMap<usize, usize> = HashMap::new();
+    for ti in point3d.keys() {
+        let obs = &norm[*ti];
+        if !obs.iter().any(|(c, _)| focus_set.contains(c)) {
+            continue;
+        }
+        for (c, _) in obs {
+            if poses[*c].is_some() && !focus_set.contains(c) {
+                *shared.entry(*c).or_insert(0) += 1;
+            }
+        }
+    }
+    let mut ranked: Vec<(usize, usize)> = shared.into_iter().collect();
+    // Most-shared first; camera index breaks ties so the window is deterministic.
+    ranked.sort_unstable_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    let mut out = focus_set;
+    for (c, _) in ranked {
+        if out.len() >= window {
+            break;
+        }
+        out.insert(c);
+    }
+    out
+}
+
+/// Bundle adjustment over the registered cameras and the current cloud, written back in place.
+///
+/// `free` restricts which cameras may move: `None` optimises every registered camera (global BA),
+/// `Some(set)` pins the rest through `fixed_pose`, which shrinks the dense reduced camera system from
+/// `6P x 6P` to `6 x |free|` and makes the solve cost independent of clip length. See
+/// `CalibConfig::local_ba_window`.
+/// Per-keyframe depth gauge: `s_c` such that `z_map ≈ s_c · d_pred` for camera `c`.
+///
+/// # Why per keyframe and not one global scale
+///
+/// Learned monocular depth is not gauge-stable frame to frame. Its scale wanders by a few percent
+/// between views even for a "metric" model, and a single global scale (what this solver used to
+/// apply) hands every one of those wanders to the pose. On a forward walk the two are
+/// INDISTINGUISHABLE: a frame read 4% deep and a camera moved 4% further produce the same depth
+/// residual, so the solver dutifully moves the camera. Every frame. That is a drift generator, and
+/// it is the shape of the measured failure — 3.4 m of spurious vertical drift over a 45 s walk,
+/// against 1.4-6.7 cm for published monocular indoor baselines.
+///
+/// # Scale only, not the affine `s·d + t` of ViPE
+///
+/// Two reasons, both load-bearing:
+///
+/// 1. A free intercept absorbs BAS-RELIEF COMPRESSION rather than correcting it. The measured case
+///    on this pipeline: sparse depth spanned a ratio of 1.13 across a view where the network saw
+///    2.13, and an affine fit reproduced that flattening faithfully instead of resisting it (see
+///    `fit_scale` in flux-map's densifier, which reached the same conclusion from the other end).
+/// 2. A free intercept per keyframe makes the map's absolute scale unobservable from depth. That is
+///    acceptable for a pose estimator; it is not acceptable here, where the map must be metric for a
+///    fixed camera to relocalize against it later.
+///
+/// # Gauge
+///
+/// The scales are normalised by their own median, so this pass can re-gauge frames RELATIVE to each
+/// other without moving the map as a whole. Without that normalisation the whole reconstruction
+/// would be free to breathe every time BA ran.
+///
+/// Returns one scale per camera, `1.0` where a camera lacks enough depth pairs to fit.
+fn fit_depth_scales(
+    poses: &[Option<Pose3d>],
+    point3d: &BTreeMap<usize, Vec3F64>,
+    norm: &[Vec<(usize, Vec2F64)>],
+    norm_depth: &[Vec<Option<f32>>],
+    n_cams: usize,
+) -> Vec<f64> {
+    /// Below this many depth pairs a median is noise, and a wrong per-frame gauge is worse than the
+    /// global one it replaces.
+    const MIN_PAIRS: usize = 12;
+
+    let mut per_cam: Vec<Vec<f64>> = vec![Vec::new(); n_cams];
+    for (ti, p) in point3d.iter() {
+        for (j, (c, _)) in norm[*ti].iter().enumerate() {
+            let (Some(pose), Some(d)) = (&poses[*c], norm_depth[*ti].get(j).copied().flatten())
+            else {
+                continue;
+            };
+            let z = pose.transform_point(p).z;
+            if z > 1e-9 && d > 0.0 {
+                // z_map / d_pred: map units per network unit, for this observation.
+                per_cam[*c].push(z / d as f64);
+            }
+        }
+    }
+    // Median, not mean: the network hallucinates at occlusion boundaries and on mirrors, and those
+    // observations are a fat tail, not Gaussian noise.
+    let median = |v: &mut Vec<f64>| -> Option<f64> {
+        if v.len() < MIN_PAIRS {
+            return None;
+        }
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let m = v[v.len() / 2];
+        (m.is_finite() && m > 1e-9).then_some(m)
+    };
+    let mut scales: Vec<Option<f64>> =
+        per_cam.iter_mut().map(|v| median(v)).collect();
+
+    // Re-gauge relative to the median camera so the map's own scale is untouched.
+    let mut fitted: Vec<f64> = scales.iter().flatten().copied().collect();
+    if fitted.len() < 2 {
+        return vec![1.0; n_cams];
+    }
+    fitted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let anchor = fitted[fitted.len() / 2];
+    for s in scales.iter_mut() {
+        if let Some(v) = s {
+            *v /= anchor;
+        }
+    }
+    // A camera whose scale is wildly off has a broken pose or a broken depth map, not a gauge
+    // offset; trusting its fit would let it drag the solve. Fall back to neutral.
+    scales
+        .into_iter()
+        .map(|s| match s {
+            Some(v) if (0.5..2.0).contains(&v) => v,
+            _ => 1.0,
+        })
+        .collect()
+}
+
 fn run_global_ba(
     poses: &mut [Option<Pose3d>],
     point3d: &mut BTreeMap<usize, Vec3F64>,
@@ -1103,11 +1763,30 @@ fn run_global_ba(
     idcam: &PinholeCamera,
     a0: usize,
     config: &CalibConfig,
+    free: Option<&HashSet<usize>>,
 ) -> Result<(), CalibError> {
+    // Re-fit the per-keyframe depth gauge against the CURRENT geometry before every solve — see
+    // `fit_depth_scales`. Alternating rather than joint: the scales are closed-form medians, and BA
+    // runs repeatedly during growth, so each pass refines the other.
+    let depth_scale = if config.depth_per_keyframe_scale {
+        fit_depth_scales(poses, point3d, norm, norm_depth, poses.len())
+    } else {
+        vec![1.0; poses.len()]
+    };
+    let (depth_log, depth_scale_prior, depth_scales_init) = depth_ba_params(config, &depth_scale);
     let mut points: Vec<Vec3F64> = Vec::new();
     let mut pt_index: HashMap<usize, usize> = HashMap::new();
     let mut obs: Vec<BaObservation> = Vec::new();
     for (ti, p) in point3d.iter() {
+        // A point observed by no free camera is structure the window is being fitted AGAINST, so it
+        // must not move: letting it drift would let the window explain its own error by relocating the
+        // map, which is exactly the drift a local BA is supposed to avoid.
+        let point_fixed = match free {
+            Some(f) => !norm[*ti]
+                .iter()
+                .any(|(c, _)| poses[*c].is_some() && f.contains(c)),
+            None => false,
+        };
         let pidx = points.len();
         pt_index.insert(*ti, pidx);
         points.push(*p);
@@ -1115,14 +1794,16 @@ fn run_global_ba(
             if poses[*c].is_none() {
                 continue;
             }
-            let (depth_meas, depth_sigma) =
-                depth_fields(norm_depth, *ti, j, config);
+            let (depth_meas, depth_sigma) = depth_fields(norm_depth, *ti, j, config);
+            // This camera's own gauge (see `fit_depth_scales`), so the residual measures the shape
+            // the network got right rather than the scale it got wrong.
+            let depth_meas = gauged_depth(depth_meas, depth_scale[*c], depth_log);
             obs.push(BaObservation {
                 pose_idx: *c,
                 point_idx: pidx,
                 pixel: [nrm.x as f32, nrm.y as f32],
-                fixed_pose: *c == a0,
-                fixed_point: false,
+                fixed_pose: *c == a0 || free.is_some_and(|f| !f.contains(c)),
+                fixed_point: point_fixed,
                 depth_meas,
                 depth_sigma,
             });
@@ -1147,9 +1828,12 @@ fn run_global_ba(
                 let sr = (config.max_reprojection_error / 2.0).max(1e-6) as f32;
                 (1.345 * sr) * (1.345 * sr)
             },
+            depth_log_residual: depth_log,
+            depth_scale_prior,
+            depth_scales_init,
             ..Default::default()
         },
-        up_priors(poses, config).as_deref(),
+        up_priors(poses, a0, config).as_deref(),
         motion_priors_for(poses, config).as_deref(),
     )
     .map_err(|e| CalibError::BundleAdjust(format!("{e:?}")))?;
@@ -1177,8 +1861,8 @@ fn run_global_ba(
 fn grow_registrations(
     poses: &mut [Option<Pose3d>],
     point3d: &mut BTreeMap<usize, Vec3F64>,
-    norm: &[Vec<(usize, Vec2F64)>],
-    norm_depth: &[Vec<Option<f32>>],
+    norm: &mut [Vec<(usize, Vec2F64)>],
+    norm_depth: &mut [Vec<Option<f32>>],
     n_cams: usize,
     idcam: &PinholeCamera,
     tcfg: &TriangulationConfig,
@@ -1190,11 +1874,50 @@ fn grow_registrations(
     next_ba: &mut f64,
 ) -> usize {
     let mut newly_registered = 0usize;
+    // Cameras registered since the last bundle adjustment — the focus set a local window is built
+    // around, because they are the ones whose error has not been refined yet.
+    let mut since_last_ba: Vec<usize> = Vec::new();
     // PnP (nondeterministic EPnP-RANSAC) can transiently fail for one camera while others remain
     // solvable, so a failure marks just that camera unregisterable and the loop keeps growing —
     // NOT aborting every remaining camera.
     let mut pnp_failed: HashSet<usize> = HashSet::new();
+
+    // Visibility index: camera -> the tracks it observes. COLMAP keeps one for exactly this reason.
+    //
+    // Without it, choosing the next camera rescans EVERY track for EVERY candidate, once per
+    // registration: 365 registrations x 365 candidates x 30k tracks is 4e9 `BTreeMap` descents on a
+    // 365-keyframe clip, and it dominated the build — measured 716 s in reconstruction against 82 s
+    // in matching and 16 s in feature extraction, with the GPU idle throughout. The index turns the
+    // per-candidate gather from O(all tracks) into O(that camera's own observations), ~50x fewer.
+    //
+    // `filter_points` prunes observations after each bundle adjustment, so this is rebuilt whenever
+    // that runs — see `reindex` below. Rebuilding costs one pass over the observations, which is
+    // nothing against the scan it replaces.
+    let build_index = |norm: &[Vec<(usize, Vec2F64)>]| -> Vec<Vec<(usize, Vec2F64)>> {
+        let mut idx: Vec<Vec<(usize, Vec2F64)>> = vec![Vec::new(); n_cams];
+        for (ti, obs) in norm.iter().enumerate() {
+            for (c, uv) in obs {
+                if *c < n_cams {
+                    idx[*c].push((ti, *uv));
+                }
+            }
+        }
+        idx
+    };
+    let mut cam_obs = build_index(norm);
+
     loop {
+        // Dense mirror of the point cloud for this pass. The cloud is a `BTreeMap` for deterministic
+        // iteration (a `HashMap` reordered it per process and changed which cameras registered), but
+        // track ids are already dense `usize`, so a `Vec` gives the same order with O(1) lookup
+        // instead of a tree descent — and the descents were the hot instruction here.
+        let mut point_at: Vec<Option<Vec3F64>> = vec![None; norm.len()];
+        for (ti, p) in point3d.iter() {
+            if *ti < point_at.len() {
+                point_at[*ti] = Some(*p);
+            }
+        }
+
         // For each unplaced camera, gather (world_point, normalized_pixel) from tracks with a 3D point.
         let mut best: Option<(usize, Vec<Vec3F64>, Vec<Vec2F64>)> = None;
         for c in 0..n_cams {
@@ -1202,11 +1925,9 @@ fn grow_registrations(
                 continue;
             }
             let (mut wp, mut ip) = (Vec::new(), Vec::new());
-            for (ti, obs) in norm.iter().enumerate() {
-                if let (Some(p), Some((_, uv))) =
-                    (point3d.get(&ti), obs.iter().find(|(cc, _)| *cc == c))
-                {
-                    wp.push(*p);
+            for (ti, uv) in &cam_obs[c] {
+                if let Some(p) = point_at[*ti] {
+                    wp.push(p);
                     ip.push(*uv);
                 }
             }
@@ -1368,6 +2089,10 @@ fn grow_registrations(
                 };
                 poses[c] = Some(pose);
                 newly_registered += 1;
+                since_last_ba.push(c);
+                if let Some(cb) = config.progress.as_ref() {
+                    cb(poses.iter().filter(|p| p.is_some()).count(), n_cams);
+                }
                 // Refine the pose against the existing map BEFORE triangulating from it — points
                 // created off a raw linear-PnP pose inherit its error and then feed the next
                 // view's PnP (see `run_local_ba`).
@@ -1398,20 +2123,56 @@ fn grow_registrations(
                 // Triggered on a RATIO rather than a fixed interval so the cost stays proportional:
                 // BA runs when the registered set has grown by 10%, which is often early on and
                 // rarely once the map is large.
-                if ba_every > 0.0
-                    && registered_now(poses) as f64 >= *next_ba
-                    && run_global_ba(poses, point3d, norm, norm_depth, idcam, a0, config).is_ok()
+                // Local window (see `CalibConfig::local_ba_window`): free the cameras registered since
+                // the last BA plus their most co-visible neighbours, and pin the rest. Built lazily —
+                // scanning the cloud for co-visibility is only worth it when a BA is actually about to
+                // run — and skipped entirely while the registered set still fits inside the window, so
+                // small problems run exactly the global BA they always did.
+                let ba_due = ba_every > 0.0 && registered_now(poses) as f64 >= *next_ba;
+                let free = if ba_due
+                    && config.local_ba_window > 0
+                    && registered_now(poses) > config.local_ba_window
                 {
+                    // A window with nothing movable in it (every candidate retired, or only the gauge
+                    // anchor left) would pin every variable and the solver would correctly refuse to
+                    // run — which would also skip the filter/retriangulate step that follows. Falling
+                    // back to the global set keeps the iterate loop intact.
+                    Some(covisible_window(
+                        &since_last_ba,
+                        point3d,
+                        norm,
+                        poses,
+                        config.local_ba_window,
+                    ))
+                    .filter(|w| w.iter().any(|&c| c != a0))
+                } else {
+                    None
+                };
+                if ba_due
+                    && run_global_ba(
+                        poses,
+                        point3d,
+                        norm,
+                        norm_depth,
+                        idcam,
+                        a0,
+                        config,
+                        free.as_ref(),
+                    )
+                    .is_ok()
+                {
+                    since_last_ba.clear();
                     *next_ba = (registered_now(poses) as f64 * ba_every).max(*next_ba + 1.0);
                     // COLMAP's iterate step: BA → filter → retriangulate. Filtering after the
                     // solve removes the points BA could not fix (behind-camera, gross residual,
                     // depth-unconstrained), and retriangulating from the refined poses rebuilds
                     // those tracks from better geometry — so the cloud the NEXT registration is
                     // judged against is clean, instead of accreting every early mistake.
-                    let dropped =
-                        filter_points(
+                    // `filter_points` sheds observations, so the visibility index is stale after it.
+                    let dropped = filter_points(
                         point3d,
                         norm,
+                        norm_depth,
                         poses,
                         2.0 * config.max_reprojection_error,
                         config.min_parallax_deg,
@@ -1427,6 +2188,10 @@ fn grow_registrations(
                     }
                     // The refined map can support views rejected against the rough one.
                     pnp_failed.clear();
+                    // `filter_points` shed observations above, so the visibility index no longer
+                    // describes `norm`. Stale entries would offer a camera correspondences that
+                    // were just judged bad — silently re-admitting the outliers the filter removed.
+                    cam_obs = build_index(norm);
                 }
             }
             // Weak consensus is treated exactly like a hard failure: leave the camera

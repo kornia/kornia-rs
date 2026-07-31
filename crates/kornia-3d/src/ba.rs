@@ -118,6 +118,23 @@ pub struct BaPosePrior {
     /// along a monocular chain with no revisits; a soft per-view up prior is the
     /// only observation of absolute orientation such a capture carries.
     pub up_world: Option<[f32; 3]>,
+    /// Which CAMERA-frame direction is being claimed to point along `up_world`.
+    ///
+    /// Defaults to image-up `(0,−1,0)`, i.e. the assumption "the phone was held upright". That
+    /// assumption is measurable, and on real handheld video it is measurably wrong: a walkthrough
+    /// clip measured here averages `(0.03, 0.93, 0.38)` for gravity in the camera frame — the phone
+    /// tilted 22 degrees down. Asserting image-up instead, at a tight sigma, feeds the solver a
+    /// 22-degree lie on every frame.
+    ///
+    /// Set it per camera from a MEASUREMENT — a vertical vanishing point, or an IMU — and this stops
+    /// being an assumption and becomes an absolute rotation constraint. That matters far beyond
+    /// tidiness: on a single forward pass with no revisits, nothing in the data constrains global
+    /// orientation, so an external reference is the ONLY thing that can bound accumulated tilt
+    /// drift.
+    ///
+    /// The Jacobian is `[Rᵀ·up_cam]×`, which depends only on the rotated result, so a per-camera
+    /// direction costs nothing over the fixed one.
+    pub up_cam: [f32; 3],
     /// Standard deviation of the up prior, in unit-vector units (e.g. 0.2 ≈
     /// tolerate ~11 degrees of tilt at 1σ). Ignored when `up_world` is None.
     pub up_sigma: f32,
@@ -185,6 +202,59 @@ pub struct BaParams {
     /// `f32::INFINITY` collapses to the L2 fast path even for non-Identity
     /// kernel choices.
     pub robust_scale_sq: f32,
+    /// Use the LOG-SPACE depth residual with a per-camera scale, instead of the
+    /// legacy metric-difference form.
+    ///
+    /// ```text
+    ///   false (legacy):  r = (z − m) / σ                    σ in METRES
+    ///   true  (log):     r = ln( z / (s_i · m) ) / σ        σ RELATIVE (fraction of depth)
+    ///                    r = (z − s_i·m) / (s_i·m·σ)        when z ≤ 0 (linear continuation)
+    /// ```
+    ///
+    /// Two things change, and both matter for monocular video. The residual becomes a RELATIVE
+    /// depth error, so a 5 m point and a 0.5 m point contribute comparably instead of the far
+    /// point dominating by an order of magnitude. And `s_i` — the per-camera scale that maps the
+    /// monocular network's prediction onto the map's units — becomes a free variable solved
+    /// jointly with geometry rather than a constant fitted beforehand and frozen.
+    ///
+    /// Freezing it is the trap: a monocular depth network's scale error is per-frame, so a scale
+    /// fitted from the CURRENT (drifted) geometry bakes that drift into the prior, and the prior
+    /// then certifies the drift it came from. Follows VidMap (Pataki, Sarlin & Pollefeys, ECCV
+    /// 2026, eq. 3), which introduced this to global SfM.
+    ///
+    /// Interpretation of [`BaObservation::depth_sigma`] changes with this flag: metres when false,
+    /// a relative fraction when true.
+    pub depth_log_residual: bool,
+    /// Strength of the prior pulling each `ln s_i` back to its seed, as a MULTIPLE of that
+    /// camera's own accumulated depth weight.
+    ///
+    /// ```text
+    ///   ln s_i = ln s_seed_i + (Σ_k w_ik·(ln z_ik − ln m_ik − ln s_seed_i)/σ_ik²)
+    ///                          ────────────────────────────────────────────────
+    ///                                 (1 + λ) · Σ_k w_ik/σ_ik²
+    /// ```
+    ///
+    /// Deliberately NOT a plain sigma. A sigma competes against the SUM of a camera's depth
+    /// observations, so its meaningful value moves with the observation count — σ=0.3 is a strong
+    /// prior against 1 observation and utterly inert against 500. Expressing it as a ratio makes
+    /// the knob mean the same thing on every camera in every clip: `λ = 1` says "the seed is worth
+    /// as much as all this camera's depth data", `λ = 9` says "the data may move it 10%".
+    ///
+    /// This term is not a nicety, it is the metric anchor. At `λ = 0` each camera rescales its own
+    /// prior onto whatever geometry it already has; the depth cost goes to zero, consecutive
+    /// frames' priors decouple, and the depth term stops constraining the baseline between frames
+    /// — the exact quantity it was added to constrain. Measured on the synthetic A/B in
+    /// `schur_ba_free_depth_scale_beats_frozen`: `λ = 0` leaves 5.74 m of point error where a
+    /// frozen scale leaves 0.08 m.
+    ///
+    /// `< 0` freezes `s_i` at its seed (the fitted-then-frozen baseline). Ignored entirely when
+    /// [`Self::depth_log_residual`] is false.
+    pub depth_scale_prior: f32,
+    /// Initial per-camera depth scales, indexed like `poses`. Empty → all `1.0`.
+    ///
+    /// Seed this with a robust per-camera fit (e.g. `median(z_sfm / m)`) so the log residual
+    /// starts near its optimum; the regularised update then refines it instead of discovering it.
+    pub depth_scales_init: Vec<f32>,
 }
 
 impl Default for BaParams {
@@ -197,6 +267,9 @@ impl Default for BaParams {
             initial_lambda: 1e-3,
             robust: RobustKernelKind::Identity,
             robust_scale_sq: f32::INFINITY,
+            depth_log_residual: false,
+            depth_scale_prior: -1.0,
+            depth_scales_init: Vec::new(),
         }
     }
 }
@@ -211,6 +284,12 @@ pub struct BaResult {
     pub iterations: usize,
     /// Whether the optimizer converged.
     pub converged: bool,
+    /// Final per-camera depth scales, indexed like [`Self::poses`].
+    ///
+    /// Empty unless [`BaParams::depth_log_residual`] was set. A camera whose scale drifts far from
+    /// 1.0 is reporting that its geometry and its monocular prior disagree about how big the
+    /// world is there — useful as a per-frame diagnostic, not just an internal variable.
+    pub depth_scales: Vec<f32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -854,6 +933,9 @@ pub fn bundle_adjust(
         points: out_points,
         iterations: result.iterations,
         converged,
+        // Per-camera depth scales are a `bundle_adjust_schur` feature; this path ignores
+        // `depth_meas` entirely, so reporting scales here would be fiction.
+        depth_scales: Vec::new(),
     })
 }
 
