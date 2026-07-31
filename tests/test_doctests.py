@@ -29,9 +29,16 @@ def get_testable_objects(mod):
 
             # Check if member belongs to kornia_rs
             mod_name = getattr(member, "__module__", None)
-            if mod_name and "kornia_rs" in mod_name:
+            if mod_name and (mod_name == "kornia_rs" or mod_name.startswith("kornia_rs.")):
                 if inspect.ismodule(member) or inspect.isclass(member):
-                     recurse(member, f"{name_prefix}.{name}")
+                    # Recurse into modules/classes to discover their members
+                    recurse(member, f"{name_prefix}.{name}")
+                elif inspect.isroutine(member):
+                    # Functions and methods (including compiled/builtin ones from
+                    # PyO3) are not modules or classes, so they were previously
+                    # skipped entirely and their doctest examples never ran.
+                    if getattr(member, "__doc__", None):
+                        objects.append((member, f"{name_prefix}.{name}"))
 
     recurse(mod, "kornia_rs")
     return objects
