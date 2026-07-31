@@ -346,7 +346,7 @@ impl<T, const C: usize> Image<T, C> {
             .checked_mul(size.width)
             .and_then(|n| n.checked_mul(C))
             .ok_or(ImageError::InvalidImageShape(
-                kornia_tensor::TensorError::ShapeOverflow,
+                kornia_tensor::TensorError::InvalidShape(usize::MAX),
             ))?;
 
         let tensor =
@@ -380,7 +380,7 @@ impl<T, const C: usize> Image<T, C> {
             .checked_mul(size.width)
             .and_then(|n| n.checked_mul(C))
             .ok_or(ImageError::InvalidImageShape(
-                kornia_tensor::TensorError::ShapeOverflow,
+                kornia_tensor::TensorError::InvalidShape(usize::MAX),
             ))?;
 
         let tensor = Tensor3::from_borrowed_readonly(
