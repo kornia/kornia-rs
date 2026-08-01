@@ -149,6 +149,68 @@ impl Sim3F32 {
         }
     }
 
+    /// The Sim(3) translation matrix `W(sigma, omega)`, shared by [`Self::exp`] and [`Self::log`].
+    ///
+    /// Sim(3) is NOT SE(3) with a scale bolted on. Its translation block is
+    /// `W = A*Omega + B*Omega^2 + C*I` whose coefficients depend on BOTH the rotation angle
+    /// `theta = |omega|` AND the scale rate `sigma` — the two are coupled because a point being
+    /// rotated is simultaneously being scaled, so the swept arc is a logarithmic spiral rather than
+    /// a circle. Using SE(3)'s `V` (which has no sigma in it at all) and dividing by the scale
+    /// afterwards, as this file previously did, is a different function; it agrees only when
+    /// sigma or theta is zero, which is why the existing tests passed — every one of them exercises
+    /// a translation-only, rotation-only or scale-only case.
+    ///
+    /// Returning ONE matrix used by both directions is the point: `log` inverts exactly what `exp`
+    /// applied, so the two are mutual inverses by construction rather than by two derivations
+    /// agreeing. They previously did not: measured round-trip tangent error was ~1.2 on a general
+    /// input, and ~1.2 even on a pure-SE(3) case with `s = 1`.
+    ///
+    /// Follows Strasdat's Sim(3) derivation (the formulation Sophus implements).
+    fn w_matrix(omega: Vec3AF32, sigma: f32) -> Mat3AF32 {
+        let omega_hat = SO3F32::hat(omega);
+        let omega_hat_sq = omega_hat * omega_hat;
+        let theta = omega.length();
+        let scale = sigma.exp();
+
+        let (a, b, c) = if sigma.abs() < SMALL_ANGLE_EPSILON {
+            // Scale rate vanishes: C -> 1 and W degenerates to SE(3)'s V, which is the ONLY
+            // regime where the old code was right.
+            if theta < SMALL_ANGLE_EPSILON {
+                (0.5, 1.0 / 6.0, 1.0)
+            } else {
+                let th2 = theta * theta;
+                (
+                    (1.0 - theta.cos()) / th2,
+                    (theta - theta.sin()) / (th2 * theta),
+                    1.0,
+                )
+            }
+        } else {
+            let c = (scale - 1.0) / sigma;
+            if theta < SMALL_ANGLE_EPSILON {
+                // Pure scaling: the rotation terms take their theta -> 0 limits, which are NOT the
+                // sigma -> 0 limits above.
+                let s2 = sigma * sigma;
+                (
+                    ((sigma - 1.0) * scale + 1.0) / s2,
+                    (scale * 0.5 * s2 + scale - 1.0 - sigma * scale) / (s2 * sigma),
+                    c,
+                )
+            } else {
+                let th2 = theta * theta;
+                let s2 = sigma * sigma;
+                let sin_t = scale * theta.sin();
+                let cos_t = scale * theta.cos();
+                let denom = th2 + s2;
+                let a = (sin_t * sigma + (1.0 - cos_t) * theta) / (theta * denom);
+                let b = (c - ((cos_t - 1.0) * sigma + sin_t * theta) / denom) / th2;
+                (a, b, c)
+            }
+        };
+
+        omega_hat * a + omega_hat_sq * b + Mat3AF32::IDENTITY * c
+    }
+
     /// Exponential map from Lie algebra to group
     ///
     /// Input: 7-vector [upsilon; omega; sigma] where:
@@ -156,30 +218,10 @@ impl Sim3F32 {
     /// - omega: 3D rotation velocity
     /// - sigma: scale velocity
     pub fn exp(upsilon: Vec3AF32, omega: Vec3AF32, sigma: f32) -> Self {
-        let rxso3 = RxSO3F32::exp(omega, sigma);
-        let scale = rxso3.scale();
-
-        // For small angles, use first-order approximation
-        // V ≈ I + 1/2 [ω]× + (1/6)σ [ω]×²
-        let omega_hat = SO3F32::hat(omega);
-
-        let v_mat = if omega.length() < SMALL_ANGLE_EPSILON {
-            // Small angle approximation
-            Mat3AF32::IDENTITY + omega_hat * 0.5
-        } else {
-            let theta = omega.length();
-            let theta_sq = theta * theta;
-
-            Mat3AF32::IDENTITY
-                + omega_hat * ((1.0 - theta.cos()) / theta_sq)
-                + (omega_hat * omega_hat) * ((theta - theta.sin()) / (theta_sq * theta))
-        };
-
-        let t = v_mat * upsilon / scale;
-
         Self {
-            rxso3,
-            translation: t,
+            rxso3: RxSO3F32::exp(omega, sigma),
+            // `W * upsilon`, with NO division by scale: the scale is already inside W through C.
+            translation: Self::w_matrix(omega, sigma) * upsilon,
         }
     }
 
@@ -191,27 +233,10 @@ impl Sim3F32 {
     /// - sigma: scale velocity
     pub fn log(&self) -> (Vec3AF32, Vec3AF32, f32) {
         let (omega, sigma) = self.rxso3.log();
-        let rot_mat = self.rxso3.rotation_matrix();
-        let scale = self.rxso3.scale();
-
-        // Compute W_inv matrix for translation
-        let omega_hat = SO3F32::hat(omega);
-        let theta = omega.length();
-
-        let w_inv = if theta < SMALL_ANGLE_EPSILON {
-            // Small angle approximation
-            Mat3AF32::IDENTITY + omega_hat * 0.5 + (omega_hat * omega_hat) * ((1.0 / 6.0) * sigma)
-        } else {
-            let theta_sq = theta * theta;
-            let a = theta.sin() / theta;
-            // c = (1 - sin(θ)/θ) / θ²  →  1/6 as θ → 0
-            let c = (1.0 - a) / theta_sq;
-
-            Mat3AF32::IDENTITY - omega_hat * 0.5 + (omega_hat * omega_hat) * (c * sigma)
-        };
-
-        let upsilon = w_inv * rot_mat.transpose() * self.translation * scale;
-
+        // Invert exactly the matrix `exp` applied — no separate series, no transpose, no rescale.
+        // W is well conditioned for any real (omega, sigma): C = (e^sigma - 1)/sigma > 0 always, and
+        // the rotation terms are bounded, so it never approaches singularity in practice.
+        let upsilon = Self::w_matrix(omega, sigma).inverse() * self.translation;
         (upsilon, omega, sigma)
     }
 
@@ -294,6 +319,60 @@ impl std::ops::Mul<Vec3AF32> for Sim3F32 {
 
 #[cfg(test)]
 mod tests {
+    /// exp and log must be mutual inverses on COUPLED input — nonzero rotation AND nonzero scale
+    /// AND nonzero translation at once.
+    ///
+    /// This is the case every other test in this file misses. Translation-only, rotation-only and
+    /// scale-only inputs all pass against a wrong `W`, because each of them zeroes the terms where
+    /// sigma and theta interact. Before the shared-`W` rewrite the round-trip tangent error here
+    /// was ~1.2 — including at `sigma = 0`, i.e. on a pure SE(3) element, where Sim(3) must reduce
+    /// exactly to SE(3).
+    #[test]
+    fn sim3_exp_log_roundtrip_coupled() {
+        let cases: [([f32; 3], [f32; 3], f32); 6] = [
+            ([0.4, -0.2, 0.7], [0.3, 0.5, -0.2], 0.35),   // general
+            ([0.4, -0.2, 0.7], [0.3, 0.5, -0.2], 0.0),    // pure SE(3): must reduce exactly
+            ([1.0, 2.0, -0.5], [0.0, 0.0, 0.0], 0.6),     // scale only, no rotation
+            ([-0.3, 0.8, 0.1], [1.2, -0.4, 0.9], -0.45),  // negative scale rate, large angle
+            ([0.05, 0.02, -0.01], [1e-5, -2e-5, 5e-6], 1e-6), // both near zero
+            ([2.0, -1.0, 0.5], [0.0, 3.0, 0.0], 0.9),     // large angle + large scale
+        ];
+        for (u, w, sig) in cases {
+            let (up, om) = (Vec3AF32::new(u[0], u[1], u[2]), Vec3AF32::new(w[0], w[1], w[2]));
+            let (up2, om2, sig2) = Sim3F32::exp(up, om, sig).log();
+            let du = (up2 - up).length();
+            let dw = (om2 - om).length();
+            let ds = (sig2 - sig).abs();
+            assert!(
+                du < 1e-3 && dw < 1e-3 && ds < 1e-4,
+                "roundtrip failed for u={u:?} omega={w:?} sigma={sig}: \
+                 d_upsilon={du:.6} d_omega={dw:.6} d_sigma={ds:.6}"
+            );
+        }
+    }
+
+    /// With `sigma = 0` a Sim(3) element IS an SE(3) element, so `exp` must place the translation
+    /// exactly where SE(3)'s `V * upsilon` would. Pins the reduction the coupled test only implies.
+    #[test]
+    fn sim3_reduces_to_se3_at_unit_scale() {
+        let up = Vec3AF32::new(0.4, -0.2, 0.7);
+        let om = Vec3AF32::new(0.3, 0.5, -0.2);
+        let s = Sim3F32::exp(up, om, 0.0);
+        assert!((s.rxso3.scale() - 1.0).abs() < 1e-6, "scale must be 1 at sigma=0");
+
+        let theta = om.length();
+        let oh = SO3F32::hat(om);
+        let v = Mat3AF32::IDENTITY
+            + oh * ((1.0 - theta.cos()) / (theta * theta))
+            + (oh * oh) * ((theta - theta.sin()) / (theta * theta * theta));
+        let expected = v * up;
+        let got = s.translation;
+        assert!(
+            (got - expected).length() < 1e-5,
+            "sigma=0 translation {got:?} != SE(3) V*upsilon {expected:?}"
+        );
+    }
+
     use super::*;
     use approx::assert_relative_eq;
 
