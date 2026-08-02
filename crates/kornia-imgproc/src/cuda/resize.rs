@@ -1059,4 +1059,59 @@ mod tests {
             assert_bit_exact(src, dst, InterpolationMode::Nearest);
         }
     }
+
+    /// Unified (managed) images must dispatch to the CUDA kernel through the
+    /// public `resize` exactly as device images do, and produce identical bytes.
+    ///
+    /// Allocating managed memory is not sufficient on its own: residency
+    /// dispatch reaches the allocation via `cuda_stream()` / `as_cudaslice()`,
+    /// so a unified tensor that does not satisfy those is rejected before any
+    /// kernel runs. This is the regression test for that path.
+    ///
+    /// Unlike the device path there is no D2H copy to synchronize on, so the
+    /// host must wait on the stream before reading the result.
+    #[test]
+    fn resize_unified_matches_device() -> Result<(), Box<dyn std::error::Error>> {
+        let stream = default_stream();
+        let (sw, sh) = (65, 33);
+        let (dw, dh) = (32, 16);
+        let src_size = ImageSize {
+            width: sw,
+            height: sh,
+        };
+        let dst_size = ImageSize {
+            width: dw,
+            height: dh,
+        };
+
+        let host = Image::<f32, 3>::new(src_size, pattern_f32(sw * sh * 3))?;
+
+        // Device reference: upload, resize, download.
+        let d_src = host.to_cuda(&stream)?;
+        let mut d_dst = Image::<f32, 3>::zeros_cuda(dst_size, &stream)?;
+        resize(&d_src, &mut d_dst, InterpolationMode::Bilinear)?;
+        let device_out = d_dst.to_host_owned()?;
+
+        // Unified: fill in place, resize, read in place.
+        let mut u_src = Image::<f32, 3>::zeros_cuda_unified(src_size, &stream)?;
+        u_src.as_slice_mut().copy_from_slice(host.as_slice());
+        let mut u_dst = Image::<f32, 3>::zeros_cuda_unified(dst_size, &stream)?;
+        resize(&u_src, &mut u_dst, InterpolationMode::Bilinear)?;
+        stream.synchronize()?;
+
+        for (i, (d, u)) in device_out
+            .as_slice()
+            .iter()
+            .zip(u_dst.as_slice())
+            .enumerate()
+        {
+            assert!(
+                d.to_bits() == u.to_bits(),
+                "element {i}: device {d} ({:#010x}) unified {u} ({:#010x})",
+                d.to_bits(),
+                u.to_bits()
+            );
+        }
+        Ok(())
+    }
 }
