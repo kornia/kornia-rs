@@ -188,6 +188,34 @@ pub struct CalibConfig {
     /// 0.15 is ~8.6 degrees: enough for gravity to break the tilt-drift degeneracy that
     /// correspondences alone cannot see, not enough to overrule them.
     pub gravity_sigma: f64,
+    /// Re-admit observations the reprojection filter removed, once the poses that judged them have
+    /// improved (COLMAP's `CompleteTracks`; see `complete_tracks` in `sfm.rs`).
+    ///
+    /// OFF by default because it is measured to help on short sequences and HURT on long ones, and
+    /// the failure is invisible to every aggregate metric.
+    ///
+    /// - 7-Scenes pumpkin (110 keyframes, one room): ATE 16.56 -> 4.24 cm, points 2374 -> 5192,
+    ///   health FAIL -> WARN. chess and fire byte-identical.
+    /// - One house, 643 keyframes, identical argv: residual and track length both IMPROVED —
+    ///   rmse_honest 2.342 -> 1.944 px, observations +2.9%, tracks spanning >= 100 keyframes
+    ///   601 -> 1459 — while the map SEVERED. `cut_min` 17 -> 0, largest step 17.9x -> 76.9x the
+    ///   median, and a revisit that shared 399 points across kf150<->252 shared ZERO.
+    ///
+    /// The two are the same event. Points fell 3.9% while observations rose: tracks MERGED. A merge
+    /// buys exactly what the aggregates reward — longer tracks, lower residual, since one fused
+    /// track fits better than the two distinct points it swallowed — so on a clip with revisits,
+    /// re-admitting at the creation threshold (tighter than the filter's 2x hysteresis) can fuse
+    /// geometry the wider gate had deliberately kept apart. Long tracks starting in kf100-199 went
+    /// 1280 -> 1; the revisit was not outvoted, it was dissolved.
+    ///
+    /// Enable for short clean sequences. On anything with a revisit, verify `cut_min` did not move.
+    pub complete_tracks: bool,
+    /// Penalise camera centres for leaving their own best-fit plane, in map units. 0 disables.
+    ///
+    /// See [`kornia_3d::ba::BaParams::plane_prior_sigma`]. Applies to the LOCAL and GLOBAL bundle
+    /// adjustments alike: the constraint is a statement about the whole trajectory's shape, so a
+    /// windowed BA that ignored it would undo between windows what the global one imposed.
+    pub plane_prior_sigma: f64,
 }
 
 impl CalibConfig {
@@ -213,6 +241,8 @@ impl CalibConfig {
             depth_scale_prior: -1.0,
             gravity_cam: None,
             gravity_sigma: 0.15,
+            complete_tracks: false,
+            plane_prior_sigma: 0.0,
         }
     }
 }

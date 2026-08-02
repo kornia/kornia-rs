@@ -127,6 +127,23 @@ pub fn calibrate_features_with_depth(
         _ => norm.iter().map(|t| vec![None; t.len()]).collect(),
     };
 
+    // PRISTINE copies, never mutated. `filter_points` deletes observations in place and nothing
+    // else can put them back, so without a record of what was originally seen the correspondence
+    // set can only shrink for the life of the solve. ~30 MB on a 680k-observation problem and
+    // ~58 MB at 1.3M — `(usize, Vec2F64)` is 24 B, `Option<f32>` is 8 B with no niche, and each
+    // track carries a Vec header in both stores. That buys the ability to re-admit a sighting once
+    // the pose that condemned it has improved.
+    //
+    // EMPTY when `complete_tracks` is off. They exist solely to feed it, and `complete_tracks`
+    // indexes them with `.get(ti)` — so an empty store is not merely unused, it is inert by the
+    // same code path. Skipping the clone keeps the feature's 58 MB off a 7.4 GB board that has
+    // been observed swapping, rather than paying for a snapshot nothing will read.
+    let (mut norm0, norm_depth0) = if config.complete_tracks {
+        (norm.clone(), norm_depth.clone())
+    } else {
+        (Vec::new(), Vec::new())
+    };
+
     // Count shared tracks per camera pair to choose the bootstrap pair.
     let mut pair_count: HashMap<(usize, usize), usize> = HashMap::new();
     for obs in &norm {
@@ -355,7 +372,7 @@ pub fn calibrate_features_with_depth(
     // legitimately rejects, and growth stalls precisely as the reconstruction gets better.
     let mut next_ba = (registered_now(&poses) as f64 * BA_IMAGES_RATIO).max(3.0);
     grow_registrations(
-        &mut poses, &mut point3d, &mut norm, &mut norm_depth, n_cams, &idcam, &tcfg_grow, config.min_registration_inliers, 0.0, a0,
+        &mut poses, &mut point3d, &mut norm, &mut norm_depth, &norm0, &norm_depth0, n_cams, &idcam, &tcfg_grow, config.min_registration_inliers, 0.0, a0,
         config, BA_IMAGES_RATIO, &mut next_ba,
     );
 
@@ -417,6 +434,7 @@ pub fn calibrate_features_with_depth(
                 let sr = (config.max_reprojection_error / 2.0).max(1e-6) as f32;
                 (1.345 * sr) * (1.345 * sr)
             },
+            plane_prior_sigma: config.plane_prior_sigma as f32,
             depth_log_residual: depth_log,
             depth_scale_prior,
             depth_scales_init,
@@ -532,7 +550,19 @@ pub fn calibrate_features_with_depth(
                      p1={p1:.5} p2={p2:.5}"
                 );
             }
-            for track in norm.iter_mut() {
+            // The PRISTINE store is re-normalised alongside the live one. This is the only place
+            // in the file that rewrites observation VALUES rather than removing them, and missing
+            // it would leave `norm0` holding coordinates in the old camera model while `norm` holds
+            // the new one — so `complete_tracks` would judge a stale pixel against a refined pose
+            // and, worse, push that stale pixel into `norm` for the final bundle adjustment to read
+            // as a measurement.
+            //
+            // The error is not small where it matters. At flux-map's 2 px threshold on a ~1400 px
+            // focal, a 0.35% focal correction already exceeds it at field radius 0.4, and k1 = 0.05
+            // gives ~4.5 px there. Peripheral observations — the ones carrying parallax — would be
+            // silently refused, and the debug line would honestly report "re-admitted 0" while
+            // hiding why.
+            for track in norm.iter_mut().chain(norm0.iter_mut()) {
                 for (_, n) in track.iter_mut() {
                     let (x, y) = (n.x, n.y);
                     let r2 = x * x + y * y;
@@ -558,6 +588,17 @@ pub fn calibrate_features_with_depth(
         2.0 * config.max_reprojection_error,
         config.min_parallax_deg,
     );
+    if config.complete_tracks {
+        complete_tracks(
+            &point3d,
+            &mut norm,
+            &mut norm_depth,
+            &norm0,
+            &norm_depth0,
+            &poses,
+            config.max_reprojection_error,
+        );
+    }
     deregister_starved(&mut poses, &point3d, &norm, a0, 30);
     triangulate_new(&mut point3d, &norm, &poses, &idcam, &tcfg_grow);
 
@@ -569,7 +610,7 @@ pub fn calibrate_features_with_depth(
     // keeps the coverage that is real and refuses the rest.
     let added = if config.second_pass {
         grow_registrations(
-            &mut poses, &mut point3d, &mut norm, &mut norm_depth, n_cams, &idcam, &tcfg_grow,
+            &mut poses, &mut point3d, &mut norm, &mut norm_depth, &norm0, &norm_depth0, n_cams, &idcam, &tcfg_grow,
             config.min_registration_inliers, 0.0,
             a0, config, BA_IMAGES_RATIO, &mut next_ba,
         )
@@ -586,7 +627,7 @@ pub fn calibrate_features_with_depth(
     // and the post-BA filter + de-registration hygiene still polices anything it admits.
     let relaxed = if config.second_pass && config.min_registration_inliers > 10 {
         grow_registrations(
-            &mut poses, &mut point3d, &mut norm, &mut norm_depth, n_cams, &idcam, &tcfg_grow,
+            &mut poses, &mut point3d, &mut norm, &mut norm_depth, &norm0, &norm_depth0, n_cams, &idcam, &tcfg_grow,
             (config.min_registration_inliers / 2).max(10), 0.0,
             a0, config, BA_IMAGES_RATIO, &mut next_ba,
         )
@@ -635,6 +676,22 @@ pub fn calibrate_features_with_depth(
                     2.0 * config.max_reprojection_error,
                     config.min_parallax_deg,
                 );
+                // Completion matters MOST here. `merge_submodel` has just snapped a block of
+                // previously UNREGISTERED cameras into the main gauge, and every observation of
+                // those cameras was untestable until this moment — the residual test skips a
+                // camera with no pose. So this is where the largest block of newly-valid evidence
+                // appears, and the final BA below is immediately able to use it.
+                if config.complete_tracks {
+                    complete_tracks(
+                        &point3d,
+                        &mut norm,
+                        &mut norm_depth,
+                        &norm0,
+                        &norm_depth0,
+                        &poses,
+                        config.max_reprojection_error,
+                    );
+                }
                 triangulate_new(&mut point3d, &norm, &poses, &idcam, &tcfg_grow);
             }
             if std::env::var_os("KORNIA_CALIB_DEBUG").is_some() {
@@ -715,7 +772,8 @@ pub fn calibrate_features_with_depth(
                 let sr = (config.max_reprojection_error / 2.0).max(1e-6) as f32;
                 (1.345 * sr) * (1.345 * sr)
             },
-                depth_log_residual: depth_log,
+                plane_prior_sigma: config.plane_prior_sigma as f32,
+            depth_log_residual: depth_log,
                 depth_scale_prior,
                 depth_scales_init,
                 ..Default::default()
@@ -1085,11 +1143,16 @@ fn merge_submodel(
         return 0;
     }
     let mut sub_next_ba = 3.0f64;
+    // A submodel grows from its own slice, so its pristine store is that slice as handed in.
+    let norm_sub0 = norm_sub.clone();
+    let norm_depth_sub0 = norm_depth_sub.clone();
     grow_registrations(
         &mut sub_poses,
         &mut sub_points,
         &mut norm_sub,
         &mut norm_depth_sub,
+        &norm_sub0,
+        &norm_depth_sub0,
         n_cams,
         idcam,
         tcfg_grow,
@@ -1330,6 +1393,79 @@ fn filter_points(
         }
     }
     before - point3d.len()
+}
+
+/// COLMAP's `CompleteTracks` analogue: re-admit observations the filter removed once the poses that
+/// condemned them have improved.
+///
+/// # Why this has to exist
+///
+/// `filter_points` deletes observations with `swap_remove`, and `triangulate_new` re-consults only
+/// the mutated store, so the correspondence set is a ONE-WAY DOOR: an observation dropped early can
+/// never come back, however much better the poses later get. COLMAP's growth loop is
+/// `BA -> filter -> complete/merge -> retriangulate` precisely because that door has to swing both
+/// ways; without the completion step the loop is `BA -> filter -> retriangulate` and each round can
+/// only lose evidence.
+///
+/// That asymmetry is not neutral — it is selective against exactly the observations a reconstruction
+/// most needs. **A loop-closing observation is, by definition, one that disagrees with an un-closed
+/// trajectory.** It therefore reprojects badly while the loop is still open, gets deleted on the
+/// first filter pass, and is unavailable to the bundle adjustment that would have closed the loop.
+///
+/// Measured on one 643-keyframe walkthrough with two genuine revisits:
+///
+/// - kf150 <-> kf252: drift small enough that its observations survived the filter, so BA absorbed
+///   the loop silently. 208 points observed in both visits.
+/// - kf72 <-> kf382: 399 conflict-free tracks carrying 5,930 observations reach the solver, and the
+///   finished map holds 0-2 points in common. ~99.5% of the delivered evidence discarded.
+///
+/// The front end and the union-find both did their job. The solver threw the result away.
+///
+/// # Why the threshold is the CREATION one, not the filter's
+///
+/// `filter_points` runs at `2x max_reprojection_error` so a boundary point does not flip state every
+/// round. Re-admitting at that same threshold would restore exactly the oscillation that hysteresis
+/// exists to prevent, so completion uses the tighter creation threshold: an observation must be
+/// clearly good now, not merely no longer clearly bad.
+///
+/// Returns the number of observations re-admitted.
+fn complete_tracks(
+    point3d: &BTreeMap<usize, Vec3F64>,
+    norm: &mut [Vec<(usize, Vec2F64)>],
+    norm_depth: &mut [Vec<Option<f32>>],
+    norm0: &[Vec<(usize, Vec2F64)>],
+    norm_depth0: &[Vec<Option<f32>>],
+    poses: &[Option<Pose3d>],
+    max_reproj_norm: f64,
+) -> usize {
+    let mut added = 0usize;
+    for (ti, p) in point3d.iter() {
+        let (Some(orig), Some(orig_d)) = (norm0.get(*ti), norm_depth0.get(*ti)) else {
+            continue;
+        };
+        if orig.len() == norm[*ti].len() {
+            continue; // nothing was ever removed from this track
+        }
+        for (k, (c, uv)) in orig.iter().enumerate() {
+            // Present already? Compare on CAMERA, not on the pixel: a track holds at most one
+            // observation per camera by construction (`build_tracks` drops same-camera collisions),
+            // so the camera index is the identity here and a float comparison would be both slower
+            // and wrong at the boundary.
+            if norm[*ti].iter().any(|(c2, _)| c2 == c) {
+                continue;
+            }
+            let Some(Some(pose)) = poses.get(*c) else { continue };
+            match norm_residual(pose, *p, *uv) {
+                Some(e) if e <= max_reproj_norm => {
+                    norm[*ti].push((*c, *uv));
+                    norm_depth[*ti].push(orig_d.get(k).copied().flatten());
+                    added += 1;
+                }
+                _ => {}
+            }
+        }
+    }
+    added
 }
 
 /// COLMAP's `FilterImages` analogue: un-register cameras whose support the point filter removed.
@@ -1585,6 +1721,7 @@ fn run_local_ba(
                 let sr = (config.max_reprojection_error / 2.0).max(1e-6) as f32;
                 (1.345 * sr) * (1.345 * sr)
             },
+            plane_prior_sigma: config.plane_prior_sigma as f32,
             depth_log_residual: depth_log,
             depth_scale_prior,
             depth_scales_init,
@@ -1828,6 +1965,7 @@ fn run_global_ba(
                 let sr = (config.max_reprojection_error / 2.0).max(1e-6) as f32;
                 (1.345 * sr) * (1.345 * sr)
             },
+            plane_prior_sigma: config.plane_prior_sigma as f32,
             depth_log_residual: depth_log,
             depth_scale_prior,
             depth_scales_init,
@@ -1858,11 +1996,17 @@ fn run_global_ba(
 /// The second pass matters because the first judges every camera against a rough, pre-BA map — a
 /// camera rejected there may register comfortably once poses and points have been optimized, and
 /// without a retry that view is lost for good even though the evidence to place it now exists.
+#[allow(clippy::too_many_arguments)]
 fn grow_registrations(
     poses: &mut [Option<Pose3d>],
     point3d: &mut BTreeMap<usize, Vec3F64>,
     norm: &mut [Vec<(usize, Vec2F64)>],
     norm_depth: &mut [Vec<Option<f32>>],
+    // The correspondence store as it was BEFORE any filtering, so `complete_tracks` can put back
+    // what improved poses have since made valid. Passed in rather than re-derived: `tracks` and
+    // `cameras` are not in scope here, and re-normalising would cost a pass per BA round.
+    norm0: &[Vec<(usize, Vec2F64)>],
+    norm_depth0: &[Vec<Option<f32>>],
     n_cams: usize,
     idcam: &PinholeCamera,
     tcfg: &TriangulationConfig,
@@ -2177,20 +2321,38 @@ fn grow_registrations(
                         2.0 * config.max_reprojection_error,
                         config.min_parallax_deg,
                     );
+                    // Re-admit before deregistering and retriangulating: a camera starved only
+                    // because the filter took its sightings should get them back before it is
+                    // judged, and `triangulate_new` should see the completed store.
+                    let readded = if config.complete_tracks {
+                        complete_tracks(
+                            point3d,
+                            norm,
+                            norm_depth,
+                            norm0,
+                            norm_depth0,
+                            poses,
+                            config.max_reprojection_error,
+                        )
+                    } else {
+                        0
+                    };
                     let dereg = deregister_starved(poses, point3d, norm, a0, min_inliers);
                     triangulate_new(point3d, norm, &poses, idcam, tcfg);
                     if std::env::var_os("KORNIA_CALIB_DEBUG").is_some() {
                         eprintln!(
-                            "[calib] post-BA filter: dropped {dropped} points, deregistered \
-                             {dereg} cams, cloud now {}",
+                            "[calib] post-BA filter: dropped {dropped} points, re-admitted \
+                             {readded} observations, deregistered {dereg} cams, cloud now {}",
                             point3d.len()
                         );
                     }
                     // The refined map can support views rejected against the rough one.
                     pnp_failed.clear();
-                    // `filter_points` shed observations above, so the visibility index no longer
-                    // describes `norm`. Stale entries would offer a camera correspondences that
-                    // were just judged bad — silently re-admitting the outliers the filter removed.
+                    // `filter_points` shed observations above and `complete_tracks` added some
+                    // back, so the visibility index no longer describes `norm` in either direction.
+                    // A stale entry offers a camera correspondences that were just judged bad; a
+                    // MISSING one hides a re-admitted observation from the next registration, which
+                    // silently wastes the very evidence this pass exists to recover.
                     cam_obs = build_index(norm);
                 }
             }
