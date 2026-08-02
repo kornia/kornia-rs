@@ -453,8 +453,17 @@ impl<T> Drop for CudaUnifiedResource<T> {
         // waits on both events first, so no in-flight kernel is still reading or
         // writing the memory when the free below runs.
         let _ = slice.leak();
+        // `leak`'s event waits are enqueued on the stream — they order later
+        // *device* work, they do not block the host. `cuMemFree` below is
+        // synchronous and immediate, so without a host-side wait it can unmap a
+        // managed buffer a kernel is still using. On an integrated GPU those
+        // pages are real host mappings, so the result is a SIGSEGV rather than
+        // a CUDA error. `CudaResource` never needed this because it frees
+        // through cudarc's stream-ordered path instead.
+        let _ = self.stream.synchronize();
         // SAFETY: ptr came from cuMemAllocManaged and is freed exactly once —
-        // `leak` above returns the pointer without freeing it.
+        // `leak` above returns the pointer without freeing it, and the
+        // synchronize guarantees no device work still references it.
         // cuMemFree (via memory_free) is the correct free for managed allocations.
         unsafe {
             let _ = cudarc::driver::result::memory_free(self.ptr.as_ptr() as u64);
