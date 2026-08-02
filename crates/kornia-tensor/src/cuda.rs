@@ -9,7 +9,7 @@
 //! - [`CudaAllocator`]: a [`TensorAllocator`] that allocates zero-initialised device
 //!   memory via `stream.alloc_zeros::<u8>(n)` and wraps the result in a `CudaResource`.
 //!
-//! - [`UnifiedResource`]: an owning [`MemoryResource`] backed by CUDA managed memory
+//! - [`CudaUnifiedResource`]: an owning [`MemoryResource`] backed by CUDA managed memory
 //!   (`cuMemAllocManaged`, `CU_MEM_ATTACH_GLOBAL`).  Accessible from both CPU and GPU
 //!   with no explicit H2D copy; domain is [`MemoryDomain::Unified`].
 //!
@@ -377,7 +377,7 @@ where
     })
 }
 
-// ── UnifiedResource / CudaUnifiedAllocator ───────────────────────────────────
+// ── CudaUnifiedResource / CudaUnifiedAllocator ───────────────────────────────
 
 /// An owning [`MemoryResource`] over CUDA managed (unified) memory
 /// (`cuMemAllocManaged` with `CU_MEM_ATTACH_GLOBAL`).
@@ -391,7 +391,7 @@ where
 /// demand-paging overhead makes explicit copies faster for large bulk transfers.
 ///
 /// Freed with `cuMemFree` exactly once on drop.
-pub struct UnifiedResource {
+pub struct CudaUnifiedResource {
     ptr: NonNull<u8>,
     len_bytes: usize,
     /// CUDA device ordinal.
@@ -402,10 +402,10 @@ pub struct UnifiedResource {
 
 // SAFETY: unified memory is accessible from any thread once attached globally;
 // `ptr` is uniquely owned by this resource.
-unsafe impl Send for UnifiedResource {}
-unsafe impl Sync for UnifiedResource {}
+unsafe impl Send for CudaUnifiedResource {}
+unsafe impl Sync for CudaUnifiedResource {}
 
-impl MemoryResource for UnifiedResource {
+impl MemoryResource for CudaUnifiedResource {
     fn as_ptr(&self) -> *mut u8 {
         self.ptr.as_ptr()
     }
@@ -423,7 +423,7 @@ impl MemoryResource for UnifiedResource {
     }
 }
 
-impl Drop for UnifiedResource {
+impl Drop for CudaUnifiedResource {
     fn drop(&mut self) {
         // SAFETY: ptr came from cuMemAllocManaged and is freed exactly once.
         // cuMemFree (via memory_free) is the correct free for managed allocations.
@@ -466,7 +466,7 @@ impl TensorAllocator for CudaUnifiedAllocator {
         let ptr = NonNull::new(cu_ptr as *mut u8)
             .ok_or_else(|| TensorAllocatorError::CudaError("null unified alloc".into()))?;
         let id = self.ctx.ordinal() as i32;
-        Ok(Box::new(UnifiedResource {
+        Ok(Box::new(CudaUnifiedResource {
             ptr,
             len_bytes: n_bytes,
             id,
@@ -1561,7 +1561,7 @@ mod tests {
 
         // `upgrade_device_ptr` creates a CudaSlice that would free the pointer on drop.
         // Use ManuallyDrop so the alias is defused unconditionally — even on panic —
-        // preventing a double-free with UnifiedResource::drop.
+        // preventing a double-free with CudaUnifiedResource::drop.
         let cu_ptr = t.as_ptr() as u64;
         let mut dev_alias =
             std::mem::ManuallyDrop::new(unsafe { stream.upgrade_device_ptr::<u8>(cu_ptr, 8) });
