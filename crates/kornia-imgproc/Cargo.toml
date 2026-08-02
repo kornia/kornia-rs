@@ -19,6 +19,10 @@ name = "bench_cuda_remap"
 required-features = ["cuda"]
 
 [[example]]
+name = "bench_unified_memory"
+required-features = ["cuda"]
+
+[[example]]
 name = "dump_cuda_resize"
 required-features = ["cuda"]
 
@@ -114,6 +118,7 @@ thiserror = { workspace = true }
 wide = { workspace = true }
 
 [dev-dependencies]
+argh = { workspace = true }
 criterion = { workspace = true }
 # Deterministic instruction counts, immune to machine load. Needs valgrind and
 # `cargo install iai-callgrind-runner --version 0.14.0`.
