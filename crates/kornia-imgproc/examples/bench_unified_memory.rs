@@ -106,6 +106,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "discrete — copies cross PCIe"
         }
     );
+    // Whether the CPU may touch managed memory while *any* kernel is running.
+    // Where this is 0, host access during device work faults outright, and every
+    // read has to be ordered after all device work — not just the stream that
+    // produced it.
+    let concurrent_managed = ctx.attribute(
+        cudarc::driver::sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_CONCURRENT_MANAGED_ACCESS,
+    )?;
+    println!(
+        "concurrent managed access: {} ({})",
+        concurrent_managed,
+        if concurrent_managed == 1 {
+            "CPU may touch managed memory while kernels run"
+        } else {
+            "CPU must wait for all device work before touching managed memory"
+        }
+    );
     println!("iters: {} (warmup {})", args.iters, args.warmup);
 
     println!("\n── one-time, per buffer ─────────────────────────────────────");
