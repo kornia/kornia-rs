@@ -14,7 +14,7 @@
 //!   with no explicit H2D copy; domain is [`MemoryDomain::Unified`].
 //!
 //! - [`CudaUnifiedAllocator`]: a [`TensorAllocator`] for unified memory. Use
-//!   [`zeros_unified`] for zero-initialised tensors or [`unified_alloc`] for the handle.
+//!   [`zeros_cuda_unified`] for zero-initialised tensors or [`unified_alloc`] for the handle.
 //!
 //! - Methods on [`Tensor`]:
 //!   - [`Tensor::from_cudaslice`] — wrap an existing `CudaSlice<T>` as a device tensor.
@@ -436,7 +436,7 @@ impl Drop for CudaUnifiedResource {
 /// A [`TensorAllocator`] that allocates zero-initialised CUDA managed (unified) memory.
 ///
 /// Use [`unified_alloc`] to obtain a handle, then pass it to `_in` constructors
-/// or [`zeros_unified`] to create host-and-device-accessible tensors.
+/// or [`zeros_cuda_unified`] to create host-and-device-accessible tensors.
 #[derive(Clone)]
 pub struct CudaUnifiedAllocator {
     /// Shared CUDA context (keeps the driver alive and provides the device id).
@@ -490,7 +490,7 @@ pub fn unified_alloc(ctx: &Arc<CudaContext>) -> AllocHandle {
 /// # Errors
 ///
 /// Returns [`CudaError::Driver`] on allocation failure.
-pub fn zeros_unified<T, const N: usize>(
+pub fn zeros_cuda_unified<T, const N: usize>(
     shape: [usize; N],
     ctx: &Arc<CudaContext>,
 ) -> Result<Tensor<T, N>, CudaError>
@@ -1531,13 +1531,12 @@ mod tests {
     /// Unified memory is host-accessible, domain is `Unified`, and it round-trips
     /// through CUDA kernel execution without an explicit H2D copy.
     #[test]
-    #[ignore = "requires CUDA"]
     fn unified_host_access_and_domain() -> Result<(), Box<dyn std::error::Error>> {
         let ctx = Arc::new(CudaContext::new(0)?);
         let stream = ctx.default_stream();
 
         // Allocate 8-byte unified tensor.
-        let mut t = zeros_unified::<u8, 1>([8], &ctx)?;
+        let mut t = zeros_cuda_unified::<u8, 1>([8], &ctx)?;
         assert!(
             matches!(t.storage.domain(), MemoryDomain::Unified { .. }),
             "expected Unified domain, got {:?}",
@@ -1582,16 +1581,70 @@ mod tests {
         Ok(())
     }
 
-    /// `zeros_unified` drop must not double-free: a subsequent alloc must succeed.
+    /// `zeros_cuda_unified` drop must not double-free: a subsequent alloc must succeed.
     #[test]
-    #[ignore = "requires CUDA"]
     fn unified_drop_no_double_free() -> Result<(), Box<dyn std::error::Error>> {
         let ctx = Arc::new(CudaContext::new(0)?);
 
-        let t = zeros_unified::<u8, 1>([16], &ctx)?;
+        let t = zeros_cuda_unified::<u8, 1>([16], &ctx)?;
         drop(t);
         // A subsequent unified alloc must succeed (no CUDA error state after the free).
-        zeros_unified::<u8, 1>([16], &ctx)?;
+        zeros_cuda_unified::<u8, 1>([16], &ctx)?;
+        Ok(())
+    }
+
+    /// [`CudaUnifiedAllocator`] used directly through the [`TensorAllocator`]
+    /// trait, rather than via the `zeros_cuda_unified` wrapper: the resource it
+    /// hands back must report the Unified domain and the requested size, arrive
+    /// zeroed, and be readable and writable from the CPU.
+    #[test]
+    fn unified_allocator_allocates_zeroed_host_accessible_memory(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let ctx = Arc::new(CudaContext::new(0)?);
+        let alloc = unified_alloc(&ctx);
+
+        const N: usize = 32;
+        let layout = std::alloc::Layout::array::<f32>(N)?;
+        let owner = alloc.allocate(layout)?;
+
+        assert_eq!(
+            owner.len_bytes(),
+            layout.size(),
+            "allocator must report the requested byte count"
+        );
+        assert!(
+            matches!(owner.domain(), MemoryDomain::Unified { .. }),
+            "expected Unified domain, got {:?}",
+            owner.domain()
+        );
+        assert!(
+            owner
+                .as_any()
+                .downcast_ref::<CudaUnifiedResource>()
+                .is_some(),
+            "unified allocator must produce a CudaUnifiedResource"
+        );
+
+        // The allocator zeroes on the host side, so the buffer is readable
+        // immediately with no H2D copy.
+        // SAFETY: the allocator returned `layout.size()` bytes of host-accessible
+        // unified memory, and f32 has no invalid bit patterns.
+        let buf = unsafe { std::slice::from_raw_parts_mut(owner.as_ptr() as *mut f32, N) };
+        assert!(
+            buf.iter().all(|&x| x == 0.0),
+            "unified allocation must arrive zero-initialised"
+        );
+
+        // ... and writable, which is the property that lets the CPU produce a
+        // frame in place instead of staging it for an H2D copy.
+        for (i, x) in buf.iter_mut().enumerate() {
+            *x = i as f32;
+        }
+        assert_eq!(buf[N - 1], (N - 1) as f32);
+
+        // Freeing through the trait object must leave the context usable.
+        drop(owner);
+        alloc.allocate(layout)?;
         Ok(())
     }
 

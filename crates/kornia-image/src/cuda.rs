@@ -130,11 +130,11 @@ where
     /// # Errors
     ///
     /// Returns [`ImageError::Cuda`] on allocation failure.
-    pub fn zeros_unified(
+    pub fn zeros_cuda_unified(
         size: ImageSize,
         ctx: &Arc<cudarc::driver::CudaContext>,
     ) -> Result<Image<T, C>, ImageError> {
-        let t = kornia_tensor::zeros_unified::<T, 3>([size.height, size.width, C], ctx)
+        let t = kornia_tensor::zeros_cuda_unified::<T, 3>([size.height, size.width, C], ctx)
             .map_err(|e| ImageError::Cuda(e.to_string()))?;
         Image::try_from(t)
     }

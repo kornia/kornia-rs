@@ -1,6 +1,6 @@
 //! Unified (managed) memory vs. explicit H2D/D2H copies.
 //!
-//! The case for [`kornia_tensor::zeros_unified`] / `Image::zeros_unified` is
+//! The case for [`kornia_tensor::zeros_cuda_unified`] / `Image::zeros_cuda_unified` is
 //! that on an **integrated** GPU the CPU and GPU share one physical memory, so
 //! an explicit copy moves bytes from RAM back to the same RAM. This benchmark
 //! measures what that actually costs, so the claim can be checked on the target
@@ -9,7 +9,7 @@
 //! The two paths are not a single number each — they trade a *recurring* cost
 //! for a *one-time* one, so each component is timed separately:
 //!
-//! * `alloc` — one-time, per buffer: `zeros_cuda` vs `zeros_unified`.
+//! * `alloc` — one-time, per buffer: `zeros_cuda` vs `zeros_cuda_unified`.
 //! * `fill` — per frame, whenever the CPU produces the data: writing into a
 //!   pageable host buffer vs writing straight into unified memory. Unified
 //!   memory can be slower to write from the CPU, which is the hidden cost.
@@ -126,7 +126,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         })?;
         let uni = timed(args.warmup, args.iters, || {
-            let u = Image::<f32, 3>::zeros_unified(size, &ctx)?;
+            let u = Image::<f32, 3>::zeros_cuda_unified(size, &ctx)?;
             std::hint::black_box(&u);
             Ok(())
         })?;
@@ -156,7 +156,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // The same production, writing directly into unified memory. Allocated
         // once, outside the timer — allocation is the one-time cost above.
-        let mut uni = Image::<f32, 3>::zeros_unified(size, &ctx)?;
+        let mut uni = Image::<f32, 3>::zeros_cuda_unified(size, &ctx)?;
         let fill_uni = timed(args.warmup, args.iters, || {
             fill_ramp(uni.as_slice_mut());
             Ok(())
@@ -209,14 +209,14 @@ fn device_dispatch_probe(ctx: &Arc<CudaContext>) -> Result<(), Box<dyn std::erro
     use kornia_imgproc::interpolation::InterpolationMode;
     use kornia_imgproc::resize::resize;
 
-    let src = Image::<f32, 3>::zeros_unified(
+    let src = Image::<f32, 3>::zeros_cuda_unified(
         ImageSize {
             width: 64,
             height: 48,
         },
         ctx,
     )?;
-    let mut dst = Image::<f32, 3>::zeros_unified(
+    let mut dst = Image::<f32, 3>::zeros_cuda_unified(
         ImageSize {
             width: 32,
             height: 24,
