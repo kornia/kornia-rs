@@ -391,21 +391,40 @@ where
 /// demand-paging overhead makes explicit copies faster for large bulk transfers.
 ///
 /// Freed with `cuMemFree` exactly once on drop.
-pub struct CudaUnifiedResource {
+///
+/// Typed over `T` for the same reason [`CudaResource<T>`] is: the residency
+/// dispatch reaches a tensor's device memory through
+/// [`as_cudaslice`](Tensor::as_cudaslice) and its stream through
+/// [`cuda_stream`](Tensor::cuda_stream), both of which need a concrete
+/// `CudaSlice<T>`. Carrying one here is what lets a unified image be passed to
+/// an ordinary CUDA kernel — allocating managed memory is not by itself enough.
+pub struct CudaUnifiedResource<T> {
+    /// A `CudaSlice<T>` view over the managed allocation, so unified tensors
+    /// satisfy the same `as_cudaslice` contract as device ones.
+    ///
+    /// `ManuallyDrop` because the slice does **not** own the memory: it was
+    /// built with `upgrade_device_ptr`, whose `Drop` would free the pointer a
+    /// second time. This resource's own [`Drop`] performs the single `cuMemFree`.
+    pub(crate) slice: std::mem::ManuallyDrop<CudaSlice<T>>,
+    /// Host-dereferenceable pointer to the managed allocation. Unlike
+    /// [`CudaResource::ptr`] this one *is* safe to read on the CPU — that is
+    /// the whole point of unified memory.
     ptr: NonNull<u8>,
     len_bytes: usize,
     /// CUDA device ordinal.
     id: i32,
-    /// Keeps the CUDA context alive for the free call.
-    _ctx: Arc<CudaContext>,
+    /// Stream this allocation is associated with, so device-dispatching code
+    /// can recover one from the tensor itself — same contract as
+    /// [`CudaResource::stream`]. Also keeps the CUDA context alive for the free.
+    pub(crate) stream: Arc<CudaStream>,
 }
 
 // SAFETY: unified memory is accessible from any thread once attached globally;
 // `ptr` is uniquely owned by this resource.
-unsafe impl Send for CudaUnifiedResource {}
-unsafe impl Sync for CudaUnifiedResource {}
+unsafe impl<T> Send for CudaUnifiedResource<T> {}
+unsafe impl<T> Sync for CudaUnifiedResource<T> {}
 
-impl MemoryResource for CudaUnifiedResource {
+impl<T: 'static> MemoryResource for CudaUnifiedResource<T> {
     fn as_ptr(&self) -> *mut u8 {
         self.ptr.as_ptr()
     }
@@ -423,9 +442,10 @@ impl MemoryResource for CudaUnifiedResource {
     }
 }
 
-impl Drop for CudaUnifiedResource {
+impl<T> Drop for CudaUnifiedResource<T> {
     fn drop(&mut self) {
-        // SAFETY: ptr came from cuMemAllocManaged and is freed exactly once.
+        // SAFETY: ptr came from cuMemAllocManaged and is freed exactly once —
+        // `slice` is ManuallyDrop, so it never frees the same pointer.
         // cuMemFree (via memory_free) is the correct free for managed allocations.
         unsafe {
             let _ = cudarc::driver::result::memory_free(self.ptr.as_ptr() as u64);
@@ -441,43 +461,77 @@ impl Drop for CudaUnifiedResource {
 pub struct CudaUnifiedAllocator {
     /// Shared CUDA context (keeps the driver alive and provides the device id).
     pub ctx: Arc<CudaContext>,
+    /// Stream the produced resources are associated with, so a tensor built
+    /// through this allocator can still recover a stream for dispatch.
+    pub stream: Arc<CudaStream>,
 }
 
-// SAFETY: Arc<CudaContext> is Send + Sync.
+// SAFETY: Arc<CudaContext> and Arc<CudaStream> are Send + Sync.
 unsafe impl Send for CudaUnifiedAllocator {}
 unsafe impl Sync for CudaUnifiedAllocator {}
 
 impl TensorAllocator for CudaUnifiedAllocator {
+    /// Produces a `CudaUnifiedResource<u8>` — the same untyped shape
+    /// [`CudaAllocator`] yields, because [`TensorAllocator`] is erased over
+    /// [`std::alloc::Layout`] and cannot name `T`. Use [`zeros_cuda_unified`]
+    /// for a `T`-typed allocation whose `as_cudaslice::<T>()` works.
     fn allocate(
         &self,
         layout: std::alloc::Layout,
     ) -> Result<Box<dyn MemoryResource>, TensorAllocatorError> {
         let n_bytes = layout.size().max(1);
-        // CU_MEM_ATTACH_GLOBAL: allocation is accessible from any stream/GPU.
-        let cu_ptr = unsafe {
-            cudarc::driver::result::malloc_managed(
-                n_bytes,
-                cudarc::driver::sys::CUmemAttach_flags::CU_MEM_ATTACH_GLOBAL,
-            )
-        }
-        .map_err(|e| TensorAllocatorError::CudaError(e.to_string()))?;
-        // Zero-initialise on the host side — unified memory is host-accessible immediately.
-        unsafe { std::ptr::write_bytes(cu_ptr as *mut u8, 0, n_bytes) };
-        let ptr = NonNull::new(cu_ptr as *mut u8)
-            .ok_or_else(|| TensorAllocatorError::CudaError("null unified alloc".into()))?;
-        let id = self.ctx.ordinal() as i32;
-        Ok(Box::new(CudaUnifiedResource {
+        let (ptr, slice) = alloc_managed::<u8>(n_bytes, n_bytes, &self.stream)
+            .map_err(|e| TensorAllocatorError::CudaError(e.to_string()))?;
+        Ok(Box::new(CudaUnifiedResource::<u8> {
+            slice: std::mem::ManuallyDrop::new(slice),
             ptr,
             len_bytes: n_bytes,
-            id,
-            _ctx: self.ctx.clone(),
+            id: self.ctx.ordinal() as i32,
+            stream: self.stream.clone(),
         }))
     }
 }
 
-/// Convenience: an [`AllocHandle`] for CUDA managed (unified) memory on `ctx`.
-pub fn unified_alloc(ctx: &Arc<CudaContext>) -> AllocHandle {
-    Arc::new(CudaUnifiedAllocator { ctx: ctx.clone() })
+/// `cuMemAllocManaged` + a `CudaSlice<T>` view over the result.
+///
+/// The single allocation path shared by [`CudaUnifiedAllocator`] and
+/// [`zeros_cuda_unified`]; they differ only in the element type they ask for.
+/// Returns the host pointer and the slice separately because the resource needs
+/// both — the pointer for host access and the free, the slice for dispatch.
+///
+/// The returned slice must be stored in `ManuallyDrop`: it aliases memory owned
+/// by the caller, and dropping it would free the pointer a second time.
+fn alloc_managed<T>(
+    n_bytes: usize,
+    numel: usize,
+    stream: &Arc<CudaStream>,
+) -> Result<(NonNull<u8>, CudaSlice<T>), CudaError> {
+    // CU_MEM_ATTACH_GLOBAL: allocation is accessible from any stream/GPU.
+    let cu_ptr = unsafe {
+        cudarc::driver::result::malloc_managed(
+            n_bytes,
+            cudarc::driver::sys::CUmemAttach_flags::CU_MEM_ATTACH_GLOBAL,
+        )
+    }
+    .map_err(|e| CudaError::Driver(e.to_string()))?;
+    // Zero-initialise on the host side — unified memory is host-accessible immediately.
+    unsafe { std::ptr::write_bytes(cu_ptr as *mut u8, 0, n_bytes) };
+    let ptr = NonNull::new(cu_ptr as *mut u8)
+        .ok_or_else(|| CudaError::Driver("null unified alloc".into()))?;
+    // SAFETY: `cu_ptr` is a live managed allocation of `n_bytes` bytes, which is
+    // `numel` elements of `T`; managed memory is device-addressable, so it is a
+    // valid device pointer to upgrade. The caller guarantees the slice is stored
+    // in `ManuallyDrop` so this alias never frees the allocation.
+    let slice = unsafe { stream.upgrade_device_ptr::<T>(cu_ptr, numel) };
+    Ok((ptr, slice))
+}
+
+/// Convenience: an [`AllocHandle`] for CUDA managed (unified) memory on `stream`.
+pub fn unified_alloc(stream: &Arc<CudaStream>) -> AllocHandle {
+    Arc::new(CudaUnifiedAllocator {
+        ctx: stream.context().clone(),
+        stream: stream.clone(),
+    })
 }
 
 /// Allocate a zero-initialised tensor in **unified** (managed) memory.
@@ -487,31 +541,42 @@ pub fn unified_alloc(ctx: &Arc<CudaContext>) -> AllocHandle {
 /// eliminates the copy entirely; on discrete GPUs, the driver handles demand
 /// paging transparently.
 ///
+/// Takes a `stream` rather than a bare context — like [`zeros_cuda`] — because
+/// the tensor must carry one for residency dispatch to find via
+/// [`cuda_stream`](Tensor::cuda_stream). Backed by a **typed**
+/// `CudaUnifiedResource<T>` (not the allocator's `CudaUnifiedResource<u8>`), so
+/// `as_cudaslice::<T>()` works and the tensor can be handed to a CUDA kernel
+/// through the ordinary public API.
+///
 /// # Errors
 ///
 /// Returns [`CudaError::Driver`] on allocation failure.
 pub fn zeros_cuda_unified<T, const N: usize>(
     shape: [usize; N],
-    ctx: &Arc<CudaContext>,
+    stream: &Arc<CudaStream>,
 ) -> Result<Tensor<T, N>, CudaError>
 where
     T: DeviceRepr + ValidAsZeroBits + 'static,
 {
-    let alloc = unified_alloc(ctx);
     let numel: usize = shape.iter().product();
     let layout =
         std::alloc::Layout::array::<T>(numel).map_err(|e| CudaError::Driver(e.to_string()))?;
-    let owner = alloc
-        .allocate(layout)
-        .map_err(|e| CudaError::Driver(e.to_string()))?;
-    let ptr = owner.as_ptr() as *mut T;
-    // SAFETY: allocator returned non-null storage of `layout.size()` bytes.
-    let nn_ptr = unsafe { NonNull::new_unchecked(ptr) };
+    let n_bytes = layout.size().max(1);
+    let (ptr, slice) = alloc_managed::<T>(n_bytes, numel, stream)?;
+
+    let owner: Box<dyn MemoryResource> = Box::new(CudaUnifiedResource::<T> {
+        slice: std::mem::ManuallyDrop::new(slice),
+        ptr,
+        len_bytes: n_bytes,
+        id: stream.context().ordinal() as i32,
+        stream: stream.clone(),
+    });
+
     let storage = TensorStorage {
-        ptr: nn_ptr,
+        ptr: ptr.cast::<T>(),
         len: layout.size(),
         owner,
-        alloc,
+        alloc: unified_alloc(stream),
         _marker: PhantomData,
     };
     let strides = get_strides_from_shape(shape);
@@ -1012,31 +1077,44 @@ where
     ///
     /// Returns `None` if the storage is not a `CudaResource<T>` (e.g. it was allocated
     /// by [`CudaAllocator`] which produces `CudaResource<u8>`, or T differs).
+    ///
+    /// Also accepts a [`CudaUnifiedResource<T>`] from [`zeros_cuda_unified`]:
+    /// managed memory is device-addressable, so a unified tensor is a valid
+    /// kernel argument and must not be turned away here — that rejection is
+    /// what would otherwise make unified images unusable with every CUDA op.
     pub fn as_cudaslice(&self) -> Option<&CudaSlice<T>> {
-        self.storage
-            .owner
-            .as_any()
+        let owner = self.storage.owner.as_any();
+        owner
             .downcast_ref::<CudaResource<T>>()
             .map(|r| &*r.slice)
+            .or_else(|| {
+                owner
+                    .downcast_ref::<CudaUnifiedResource<T>>()
+                    .map(|r| &*r.slice)
+            })
     }
 
     /// Return the stream this device tensor's allocation was created on, if the
-    /// storage is backed by a [`CudaResource<T>`].
+    /// storage is backed by a [`CudaResource<T>`] or a [`CudaUnifiedResource<T>`].
     ///
     /// This is how residency-aware dispatch (e.g. color conversion on device
     /// images) recovers a stream without any global state: the stream travels
     /// inside the tensor. Returns `None` for host tensors or element-type
     /// mismatches (same rules as [`as_cudaslice`](Self::as_cudaslice)).
     pub fn cuda_stream(&self) -> Option<&Arc<CudaStream>> {
-        self.storage
-            .owner
-            .as_any()
+        let owner = self.storage.owner.as_any();
+        owner
             .downcast_ref::<CudaResource<T>>()
             .map(|r| &r.stream)
+            .or_else(|| {
+                owner
+                    .downcast_ref::<CudaUnifiedResource<T>>()
+                    .map(|r| &r.stream)
+            })
     }
 
     /// Mutably borrow the underlying `CudaSlice<T>` if the storage is backed by a
-    /// [`CudaResource<T>`].
+    /// [`CudaResource<T>`] or a [`CudaUnifiedResource<T>`].
     ///
     /// This is the mutable sibling of [`as_cudaslice`](Self::as_cudaslice); it lets a
     /// device-owning output tensor be passed as a mutable kernel argument
@@ -1044,10 +1122,26 @@ where
     ///
     /// Returns `None` if the storage is not a `CudaResource<T>` (e.g. host-backed, or T differs).
     pub fn as_cudaslice_mut(&mut self) -> Option<&mut CudaSlice<T>> {
-        self.storage
+        // Two `downcast_mut` calls cannot both be live, so this is written as an
+        // early return rather than the `or_else` the shared-borrow siblings use.
+        if self
+            .storage
             .owner
             .as_any_mut()
             .downcast_mut::<CudaResource<T>>()
+            .is_some()
+        {
+            return self
+                .storage
+                .owner
+                .as_any_mut()
+                .downcast_mut::<CudaResource<T>>()
+                .map(|r| &mut *r.slice);
+        }
+        self.storage
+            .owner
+            .as_any_mut()
+            .downcast_mut::<CudaUnifiedResource<T>>()
             .map(|r| &mut *r.slice)
     }
 
@@ -1532,11 +1626,11 @@ mod tests {
     /// through CUDA kernel execution without an explicit H2D copy.
     #[test]
     fn unified_host_access_and_domain() -> Result<(), Box<dyn std::error::Error>> {
-        let ctx = Arc::new(CudaContext::new(0)?);
+        let ctx = CudaContext::new(0)?;
         let stream = ctx.default_stream();
 
         // Allocate 8-byte unified tensor.
-        let mut t = zeros_cuda_unified::<u8, 1>([8], &ctx)?;
+        let mut t = zeros_cuda_unified::<u8, 1>([8], &stream)?;
         assert!(
             matches!(t.storage.domain(), MemoryDomain::Unified { .. }),
             "expected Unified domain, got {:?}",
@@ -1584,12 +1678,12 @@ mod tests {
     /// `zeros_cuda_unified` drop must not double-free: a subsequent alloc must succeed.
     #[test]
     fn unified_drop_no_double_free() -> Result<(), Box<dyn std::error::Error>> {
-        let ctx = Arc::new(CudaContext::new(0)?);
+        let stream = CudaContext::new(0)?.default_stream();
 
-        let t = zeros_cuda_unified::<u8, 1>([16], &ctx)?;
+        let t = zeros_cuda_unified::<u8, 1>([16], &stream)?;
         drop(t);
         // A subsequent unified alloc must succeed (no CUDA error state after the free).
-        zeros_cuda_unified::<u8, 1>([16], &ctx)?;
+        zeros_cuda_unified::<u8, 1>([16], &stream)?;
         Ok(())
     }
 
@@ -1600,8 +1694,8 @@ mod tests {
     #[test]
     fn unified_allocator_allocates_zeroed_host_accessible_memory(
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let ctx = Arc::new(CudaContext::new(0)?);
-        let alloc = unified_alloc(&ctx);
+        let stream = CudaContext::new(0)?.default_stream();
+        let alloc = unified_alloc(&stream);
 
         const N: usize = 32;
         let layout = std::alloc::Layout::array::<f32>(N)?;
@@ -1620,7 +1714,7 @@ mod tests {
         assert!(
             owner
                 .as_any()
-                .downcast_ref::<CudaUnifiedResource>()
+                .downcast_ref::<CudaUnifiedResource<u8>>()
                 .is_some(),
             "unified allocator must produce a CudaUnifiedResource"
         );

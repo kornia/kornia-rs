@@ -27,7 +27,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use argh::FromArgs;
-use cudarc::driver::CudaContext;
+use cudarc::driver::{CudaContext, CudaStream};
 use kornia_image::{Image, ImageError, ImageSize};
 
 /// Benchmark unified memory against explicit device copies.
@@ -126,7 +126,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         })?;
         let uni = timed(args.warmup, args.iters, || {
-            let u = Image::<f32, 3>::zeros_cuda_unified(size, &ctx)?;
+            let u = Image::<f32, 3>::zeros_cuda_unified(size, &stream)?;
             std::hint::black_box(&u);
             Ok(())
         })?;
@@ -156,7 +156,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // The same production, writing directly into unified memory. Allocated
         // once, outside the timer — allocation is the one-time cost above.
-        let mut uni = Image::<f32, 3>::zeros_cuda_unified(size, &ctx)?;
+        let mut uni = Image::<f32, 3>::zeros_cuda_unified(size, &stream)?;
         let fill_uni = timed(args.warmup, args.iters, || {
             fill_ramp(uni.as_slice_mut());
             Ok(())
@@ -187,48 +187,121 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!(
         "\n'explicit' = fill + H2D + D2H. 'unified' = fill_uni, with no transfer.\n\
-         Unified wins where (fill_uni - fill) < (H2D + D2H).\n\
-         \n\
-         Caveat: the unified column is CPU-side only — no kernel reads the\n\
-         buffer, so it excludes whatever the GPU pays to access it. On an\n\
-         integrated part that should be nothing; on a discrete one the driver\n\
-         demand-pages over PCIe. The probe below is why it cannot be measured\n\
-         end-to-end yet."
+         Unified wins where (fill_uni - fill) < (H2D + D2H)."
     );
 
-    device_dispatch_probe(&ctx)?;
+    end_to_end_resize(&stream, args.warmup, args.iters)?;
 
     Ok(())
 }
 
-/// Check whether a unified image can actually reach a kornia CUDA kernel
-/// through the normal public API. Allocation working is not the same as the
-/// operation dispatching, and that difference decides whether the feature is
-/// usable today.
-fn device_dispatch_probe(ctx: &Arc<CudaContext>) -> Result<(), Box<dyn std::error::Error>> {
+/// The measurement that decides the feature: a real `resize()` per frame, both
+/// ways, through the ordinary public API.
+///
+/// * explicit — fill a host image, `to_cuda`, resize, `to_host_image`.
+/// * unified — fill a unified image, resize into a unified destination. The CPU
+///   reads the result directly; there is no transfer on either side.
+///
+/// The two are also checked against each other, because a faster path that
+/// computes something different is worthless.
+fn end_to_end_resize(
+    stream: &Arc<CudaStream>,
+    warmup: usize,
+    iters: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
     use kornia_imgproc::interpolation::InterpolationMode;
     use kornia_imgproc::resize::resize;
 
-    let src = Image::<f32, 3>::zeros_cuda_unified(
-        ImageSize {
-            width: 64,
-            height: 48,
-        },
-        ctx,
-    )?;
-    let mut dst = Image::<f32, 3>::zeros_cuda_unified(
-        ImageSize {
-            width: 32,
-            height: 24,
-        },
-        ctx,
-    )?;
+    const MODE: InterpolationMode = InterpolationMode::Bilinear;
 
-    print!("\nresize() on unified images: ");
-    match resize(&src, &mut dst, InterpolationMode::Bilinear) {
-        Ok(()) => println!("dispatched"),
-        Err(e) => println!("FAILED — {e}"),
+    println!("\n── per frame, end-to-end resize() ───────────────────────────");
+    println!(
+        "{:<16} {:>11} {:>11} {:>9}",
+        "size", "explicit ms", "unified ms", "speedup"
+    );
+    println!("{}", "-".repeat(52));
+
+    for &(label, w, h) in SIZES {
+        let src_size = ImageSize {
+            width: w,
+            height: h,
+        };
+        let dst_size = ImageSize {
+            width: w / 2,
+            height: h / 2,
+        };
+
+        // Explicit: host frame, uploaded and downloaded around the kernel.
+        let mut host = Image::<f32, 3>::from_size_val(src_size, 0.0)?;
+        let explicit = timed(warmup, iters, || {
+            fill_ramp(host.as_slice_mut());
+            let d_src = host.to_cuda(stream)?;
+            let mut d_dst = Image::<f32, 3>::zeros_cuda(dst_size, stream)?;
+            resize(&d_src, &mut d_dst, MODE)?;
+            let back = d_dst.to_host_image(stream)?;
+            std::hint::black_box(&back);
+            Ok(())
+        })?;
+
+        // Unified: the same frame produced in place, resized, read in place.
+        let mut u_src = Image::<f32, 3>::zeros_cuda_unified(src_size, stream)?;
+        let mut u_dst = Image::<f32, 3>::zeros_cuda_unified(dst_size, stream)?;
+        let unified = timed(warmup, iters, || {
+            fill_ramp(u_src.as_slice_mut());
+            resize(&u_src, &mut u_dst, MODE)?;
+            // Unified memory has no D2H copy to implicitly synchronize on, so
+            // the host must wait for the kernel itself before reading — this is
+            // part of the per-frame cost, not something to leave out of it.
+            stream
+                .synchronize()
+                .map_err(|e| ImageError::Cuda(e.to_string()))?;
+            std::hint::black_box(u_dst.as_slice());
+            Ok(())
+        })?;
+
+        println!(
+            "{label:<16} {explicit:>11.3} {unified:>11.3} {:>8.2}x",
+            explicit / unified
+        );
     }
+
+    // Correctness: the unified result must equal the explicit one bit for bit.
+    let src_size = ImageSize {
+        width: 64,
+        height: 48,
+    };
+    let dst_size = ImageSize {
+        width: 32,
+        height: 24,
+    };
+
+    let mut host = Image::<f32, 3>::from_size_val(src_size, 0.0)?;
+    fill_ramp(host.as_slice_mut());
+    let d_src = host.to_cuda(stream)?;
+    let mut d_dst = Image::<f32, 3>::zeros_cuda(dst_size, stream)?;
+    resize(&d_src, &mut d_dst, MODE)?;
+    let device_out = d_dst.to_host_image(stream)?;
+
+    let mut u_src = Image::<f32, 3>::zeros_cuda_unified(src_size, stream)?;
+    fill_ramp(u_src.as_slice_mut());
+    let mut u_dst = Image::<f32, 3>::zeros_cuda_unified(dst_size, stream)?;
+    resize(&u_src, &mut u_dst, MODE)?;
+    stream.synchronize()?;
+
+    let mismatches = device_out
+        .as_slice()
+        .iter()
+        .zip(u_dst.as_slice())
+        .filter(|(a, b)| a.to_bits() != b.to_bits())
+        .count();
+    println!(
+        "\nunified vs device output: {}",
+        if mismatches == 0 {
+            "bit-identical".to_string()
+        } else {
+            format!("{mismatches} mismatched elements")
+        }
+    );
 
     Ok(())
 }

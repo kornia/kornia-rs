@@ -125,16 +125,18 @@ where
     /// workflows).
     ///
     /// Mirrors [`Self::zeros_cuda`] / [`Self::zeros_pinned`] for the unified
-    /// memory domain.
+    /// memory domain, and takes the same `stream` argument as `zeros_cuda`: the
+    /// image carries it so residency dispatch can route the image to a CUDA
+    /// kernel without an explicit upload.
     ///
     /// # Errors
     ///
     /// Returns [`ImageError::Cuda`] on allocation failure.
     pub fn zeros_cuda_unified(
         size: ImageSize,
-        ctx: &Arc<cudarc::driver::CudaContext>,
+        stream: &Arc<CudaStream>,
     ) -> Result<Image<T, C>, ImageError> {
-        let t = kornia_tensor::zeros_cuda_unified::<T, 3>([size.height, size.width, C], ctx)
+        let t = kornia_tensor::zeros_cuda_unified::<T, 3>([size.height, size.width, C], stream)
             .map_err(|e| ImageError::Cuda(e.to_string()))?;
         Image::try_from(t)
     }
