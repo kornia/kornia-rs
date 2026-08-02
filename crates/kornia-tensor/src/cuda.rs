@@ -575,6 +575,21 @@ pub fn unified_alloc(stream: &Arc<CudaStream>) -> AllocHandle {
 /// `as_cudaslice::<T>()` works and the tensor can be handed to a CUDA kernel
 /// through the ordinary public API.
 ///
+/// # Host access is not free-form
+///
+/// Reading or writing the result from the CPU — `as_slice`, `as_slice_mut` —
+/// is only unconditionally safe where the device reports
+/// `CU_DEVICE_ATTRIBUTE_CONCURRENT_MANAGED_ACCESS`. **Jetson Orin reports 0**
+/// (a discrete GTX/RTX reports 1). Where it is 0 the CPU must not touch *any*
+/// managed allocation while *any* kernel is running anywhere on the device —
+/// not merely on this tensor's stream — and violating that faults the process
+/// rather than returning an error, because the pages are real host mappings.
+///
+/// So on Jetson, order host access after **all** device work
+/// (`CudaContext::synchronize`), not just after this tensor's stream. A
+/// single-threaded produce → run → read loop satisfies this naturally; a
+/// pipeline with concurrent work on other streams does not.
+///
 /// # Errors
 ///
 /// Returns [`CudaError::Driver`] on allocation failure.

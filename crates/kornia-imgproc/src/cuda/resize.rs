@@ -1069,10 +1069,15 @@ mod tests {
     /// kernel runs. This is the regression test for that path.
     ///
     /// Unlike the device path there is no D2H copy to synchronize on, so the
-    /// host must wait on the stream before reading the result.
+    /// host must wait before reading the result — and on a device reporting
+    /// `CONCURRENT_MANAGED_ACCESS = 0` (Jetson Orin does) it must wait for *all*
+    /// device work, not just this stream: touching managed memory while any
+    /// kernel runs faults the process. The test harness runs these tests in
+    /// parallel, so a stream-only wait segfaults here about half the time.
     #[test]
     fn resize_unified_matches_device() -> Result<(), Box<dyn std::error::Error>> {
         let stream = default_stream();
+        let ctx = stream.context();
         let (sw, sh) = (65, 33);
         let (dw, dh) = (32, 16);
         let src_size = ImageSize {
@@ -1092,12 +1097,14 @@ mod tests {
         resize(&d_src, &mut d_dst, InterpolationMode::Bilinear)?;
         let device_out = d_dst.to_host_owned()?;
 
-        // Unified: fill in place, resize, read in place.
+        // Unified: fill in place, resize, read in place. Each host touch is
+        // ordered after all device work, per the note above.
+        ctx.synchronize()?;
         let mut u_src = Image::<f32, 3>::zeros_cuda_unified(src_size, &stream)?;
         u_src.as_slice_mut().copy_from_slice(host.as_slice());
         let mut u_dst = Image::<f32, 3>::zeros_cuda_unified(dst_size, &stream)?;
         resize(&u_src, &mut u_dst, InterpolationMode::Bilinear)?;
-        stream.synchronize()?;
+        ctx.synchronize()?;
 
         for (i, (d, u)) in device_out
             .as_slice()
