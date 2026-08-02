@@ -444,8 +444,17 @@ impl<T: 'static> MemoryResource for CudaUnifiedResource<T> {
 
 impl<T> Drop for CudaUnifiedResource<T> {
     fn drop(&mut self) {
+        // SAFETY: Drop runs exactly once and `slice` is never used afterwards.
+        let slice = unsafe { std::mem::ManuallyDrop::take(&mut self.slice) };
+        // `leak` is what releases the slice's *other* resources without freeing
+        // the pointer: `upgrade_device_ptr` attaches a read and a write CUevent
+        // (event tracking is on by default) plus a stream reference, and simply
+        // forgetting the slice would leak all three on every allocation. It also
+        // waits on both events first, so no in-flight kernel is still reading or
+        // writing the memory when the free below runs.
+        let _ = slice.leak();
         // SAFETY: ptr came from cuMemAllocManaged and is freed exactly once —
-        // `slice` is ManuallyDrop, so it never frees the same pointer.
+        // `leak` above returns the pointer without freeing it.
         // cuMemFree (via memory_free) is the correct free for managed allocations.
         unsafe {
             let _ = cudarc::driver::result::memory_free(self.ptr.as_ptr() as u64);
@@ -455,8 +464,8 @@ impl<T> Drop for CudaUnifiedResource<T> {
 
 /// A [`TensorAllocator`] that allocates zero-initialised CUDA managed (unified) memory.
 ///
-/// Use [`unified_alloc`] to obtain a handle, then pass it to `_in` constructors
-/// or [`zeros_cuda_unified`] to create host-and-device-accessible tensors.
+/// Use [`unified_alloc`] to obtain a handle, then [`zeros_cuda_unified`] to
+/// create host-and-device-accessible tensors.
 #[derive(Clone)]
 pub struct CudaUnifiedAllocator {
     /// Shared CUDA context (keeps the driver alive and provides the device id).
@@ -485,7 +494,10 @@ impl TensorAllocator for CudaUnifiedAllocator {
         Ok(Box::new(CudaUnifiedResource::<u8> {
             slice: std::mem::ManuallyDrop::new(slice),
             ptr,
-            len_bytes: n_bytes,
+            // The requested size, not the `max(1)` padding: `TensorStorage::layout`
+            // reconstructs the layout from this, so a zero-element tensor must
+            // report 0. Matches `PinnedResource`.
+            len_bytes: layout.size(),
             id: self.ctx.ordinal() as i32,
             stream: self.stream.clone(),
         }))
@@ -527,6 +539,12 @@ fn alloc_managed<T>(
 }
 
 /// Convenience: an [`AllocHandle`] for CUDA managed (unified) memory on `stream`.
+///
+/// Note: the `Vec`-based `_in` constructors (`from_shape_vec_in` etc.) adopt
+/// the vec's own heap memory and only *carry* the handle — they do not route
+/// the allocation through it, so the result is ordinary host memory. To get
+/// storage that actually lives in unified memory, use [`zeros_cuda_unified`]
+/// and fill via `as_slice_mut`.
 pub fn unified_alloc(stream: &Arc<CudaStream>) -> AllocHandle {
     Arc::new(CudaUnifiedAllocator {
         ctx: stream.context().clone(),
@@ -567,7 +585,8 @@ where
     let owner: Box<dyn MemoryResource> = Box::new(CudaUnifiedResource::<T> {
         slice: std::mem::ManuallyDrop::new(slice),
         ptr,
-        len_bytes: n_bytes,
+        // The requested size, not the `max(1)` padding — see the allocator.
+        len_bytes: layout.size(),
         id: stream.context().ordinal() as i32,
         stream: stream.clone(),
     });
@@ -1739,6 +1758,45 @@ mod tests {
         // Freeing through the trait object must leave the context usable.
         drop(owner);
         alloc.allocate(layout)?;
+        Ok(())
+    }
+
+    /// A zero-element unified tensor must report 0 bytes, not the `max(1)`
+    /// padding the allocation itself needs. `TensorStorage::layout` is
+    /// reconstructed from `len_bytes`, so padding it makes the storage disagree
+    /// with the layout that was requested.
+    #[test]
+    fn unified_zero_sized_reports_zero_bytes() -> Result<(), Box<dyn std::error::Error>> {
+        let stream = CudaContext::new(0)?.default_stream();
+
+        let t = zeros_cuda_unified::<f32, 1>([0], &stream)?;
+        assert_eq!(t.storage.owner.len_bytes(), 0);
+        assert_eq!(t.storage.layout().size(), 0);
+        assert!(t.as_slice().is_empty());
+
+        let alloc = unified_alloc(&stream);
+        let owner = alloc.allocate(std::alloc::Layout::array::<f32>(0)?)?;
+        assert_eq!(owner.len_bytes(), 0);
+        Ok(())
+    }
+
+    /// Allocate and drop repeatedly: every unified allocation carries a
+    /// `CudaSlice` built by `upgrade_device_ptr`, which attaches two CUevents
+    /// and a stream reference. If `Drop` frees the pointer without releasing
+    /// those, a per-frame loop leaks them steadily — this exercises the path
+    /// that used to.
+    #[test]
+    fn unified_repeated_alloc_drop_is_clean() -> Result<(), Box<dyn std::error::Error>> {
+        let stream = CudaContext::new(0)?.default_stream();
+
+        for i in 0..256 {
+            let mut t = zeros_cuda_unified::<f32, 1>([1024], &stream)?;
+            t.as_slice_mut()[0] = i as f32;
+            assert_eq!(t.as_slice()[0], i as f32);
+        }
+        // A final allocation must still succeed — a driver pushed into an error
+        // state by leaked handles would fail here.
+        zeros_cuda_unified::<f32, 1>([1024], &stream)?;
         Ok(())
     }
 
