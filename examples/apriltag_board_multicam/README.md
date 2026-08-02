@@ -6,13 +6,23 @@ the reference frame for the reported relative poses and baselines.
 
 ## Run
 
-Run the included two-camera example from the repository root:
+Download the two-camera sample from the
+[Hugging Face dataset](https://huggingface.co/datasets/pablovela5620/kornia-rs-apriltag-board-multicam):
+
+```bash
+hf download pablovela5620/kornia-rs-apriltag-board-multicam \
+  camera_0.jpg camera_1.jpg \
+  --repo-type dataset \
+  --local-dir /tmp/kornia-rs-apriltag-board-multicam
+```
+
+Then run the example from the repository root:
 
 ```bash
 pixi run cargo run -p apriltag_board_multicam \
   -- \
-  tests/data/apriltag_board_multicam/camera_0.jpg \
-  tests/data/apriltag_board_multicam/camera_1.jpg
+  /tmp/kornia-rs-apriltag-board-multicam/camera_0.jpg \
+  /tmp/kornia-rs-apriltag-board-multicam/camera_1.jpg
 ```
 
 The sample pair should register both cameras with a reprojection RMS of about
