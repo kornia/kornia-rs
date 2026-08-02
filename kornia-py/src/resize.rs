@@ -1,8 +1,6 @@
 use pyo3::prelude::*;
 
 use crate::dispatch::cpu_op;
-#[cfg(feature = "cuda")]
-use crate::image::PyImageApi;
 use crate::image::{alloc_output_pyarray, numpy_as_image, parse_interpolation, to_pyerr};
 use kornia_image::ImageSize;
 use kornia_imgproc::resize::resize_fast_rgb_aa;
@@ -15,6 +13,10 @@ use kornia_imgproc::resize::resize_fast_rgb_aa;
 /// loops allocate nothing; a host `Image` or numpy u8 array runs the CPU
 /// fast path. `antialias` shapes the u8 bicubic/lanczos kernels (CPU and
 /// GPU alike); the f32 paths have never antialiased.
+///
+/// The `Image` API itself is not CUDA-specific: a host `Image` is accepted on
+/// a CPU-only build too, where `cpu_op` runs it on its numpy view and returns
+/// an `Image`. Only the device branch below is feature-gated.
 #[pyfunction]
 #[pyo3(signature = (image, new_size, interpolation, antialias=true, out=None))]
 pub fn resize(

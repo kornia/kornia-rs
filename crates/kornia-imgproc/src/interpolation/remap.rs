@@ -297,21 +297,18 @@ mod cuda_tests {
     }
 
     #[test]
-    #[ignore = "requires CUDA"]
     fn public_remap_device_equals_host() -> Result<(), ImageError> {
         check_remap_mode(InterpolationMode::Bilinear)
     }
 
     /// Nearest-neighbor device path is bit-identical to host.
     #[test]
-    #[ignore = "requires CUDA"]
     fn public_remap_nearest_device_equals_host() -> Result<(), ImageError> {
         check_remap_mode(InterpolationMode::Nearest)
     }
 
     /// Mixed residency — device src/dst but host maps — must be a typed error.
     #[test]
-    #[ignore = "requires CUDA"]
     fn device_images_with_host_maps_is_error() -> Result<(), ImageError> {
         let stream = default_stream();
         let (w, h) = (16, 16);
