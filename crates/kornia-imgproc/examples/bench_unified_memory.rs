@@ -187,7 +187,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!(
         "\n'explicit' = fill + H2D + D2H. 'unified' = fill_uni, with no transfer.\n\
-         Unified wins where (fill_uni - fill) < (H2D + D2H)."
+         Unified wins where (fill_uni - fill) < (H2D + D2H).\n\
+         \n\
+         Caveat: the unified column is CPU-side only — no kernel reads the\n\
+         buffer, so it excludes whatever the GPU pays to access it. On an\n\
+         integrated part that should be nothing; on a discrete one the driver\n\
+         demand-pages over PCIe. The probe below is why it cannot be measured\n\
+         end-to-end yet."
     );
 
     device_dispatch_probe(&ctx)?;
