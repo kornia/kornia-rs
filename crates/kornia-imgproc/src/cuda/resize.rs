@@ -1068,16 +1068,16 @@ mod tests {
     /// so a unified tensor that does not satisfy those is rejected before any
     /// kernel runs. This is the regression test for that path.
     ///
-    /// Unlike the device path there is no D2H copy to synchronize on, so the
-    /// host must wait before reading the result — and on a device reporting
-    /// `CONCURRENT_MANAGED_ACCESS = 0` (Jetson Orin does) it must wait for *all*
-    /// device work, not just this stream: touching managed memory while any
-    /// kernel runs faults the process. The test harness runs these tests in
-    /// parallel, so a stream-only wait segfaults here about half the time.
+    /// The unified buffers are filled and read back with **device-side copies**,
+    /// never with `as_slice`/`as_slice_mut`. Where a device reports
+    /// `CONCURRENT_MANAGED_ACCESS = 0` — Jetson Orin does — the CPU may not
+    /// touch managed memory while any kernel runs anywhere on the device, and
+    /// since the harness runs tests in parallel there is no safe window to do
+    /// so: a host read here segfaults the whole process about half the time.
+    /// Device-side access has no such restriction.
     #[test]
     fn resize_unified_matches_device() -> Result<(), Box<dyn std::error::Error>> {
         let stream = default_stream();
-        let ctx = stream.context();
         let (sw, sh) = (65, 33);
         let (dw, dh) = (32, 16);
         let src_size = ImageSize {
@@ -1097,19 +1097,20 @@ mod tests {
         resize(&d_src, &mut d_dst, InterpolationMode::Bilinear)?;
         let device_out = d_dst.to_host_owned()?;
 
-        // Unified: fill in place, resize, read in place. Each host touch is
-        // ordered after all device work, per the note above.
-        ctx.synchronize()?;
+        // Unified: same op, but the buffers are unified rather than device.
         let mut u_src = Image::<f32, 3>::zeros_cuda_unified(src_size, &stream)?;
-        u_src.as_slice_mut().copy_from_slice(host.as_slice());
         let mut u_dst = Image::<f32, 3>::zeros_cuda_unified(dst_size, &stream)?;
+        let u_src_slice = u_src
+            .as_cudaslice_mut()
+            .ok_or("unified source has no device slice")?;
+        stream.memcpy_htod(host.as_slice(), u_src_slice)?;
         resize(&u_src, &mut u_dst, InterpolationMode::Bilinear)?;
-        ctx.synchronize()?;
+        let unified_out = u_dst.to_host_image(&stream)?;
 
         for (i, (d, u)) in device_out
             .as_slice()
             .iter()
-            .zip(u_dst.as_slice())
+            .zip(unified_out.as_slice())
             .enumerate()
         {
             assert!(

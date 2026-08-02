@@ -453,13 +453,11 @@ impl<T> Drop for CudaUnifiedResource<T> {
         // waits on both events first, so no in-flight kernel is still reading or
         // writing the memory when the free below runs.
         let _ = slice.leak();
-        // `leak`'s event waits are enqueued on the stream — they order later
-        // *device* work, they do not block the host. `cuMemFree` below is
-        // synchronous and immediate, so without a host-side wait it can unmap a
-        // managed buffer a kernel is still using. On an integrated GPU those
-        // pages are real host mappings, so the result is a SIGSEGV rather than
-        // a CUDA error. `CudaResource` never needed this because it frees
-        // through cudarc's stream-ordered path instead.
+        // `leak`'s event waits are enqueued on the stream: they order later
+        // *device* work but do not block the host, while `cuMemFree` below runs
+        // immediately. Wait here so the free cannot race a kernel still using
+        // the buffer. `CudaResource` needs no equivalent because it frees
+        // through cudarc's stream-ordered path.
         let _ = self.stream.synchronize();
         // SAFETY: ptr came from cuMemAllocManaged and is freed exactly once —
         // `leak` above returns the pointer without freeing it, and the
@@ -1276,18 +1274,19 @@ where
     /// # Errors
     ///
     /// Returns [`CudaError::Driver`] on CUDA failure or [`CudaError::NotCudaBacked`]
-    /// if the storage owner is not a [`CudaResource<T>`].
+    /// if the storage owner is not a [`CudaResource<T>`] or a
+    /// [`CudaUnifiedResource<T>`].
+    ///
+    /// Unified tensors are accepted deliberately: on a device without
+    /// concurrent managed access this D2H copy is the *only* safe way to get
+    /// the contents to the CPU while other device work may be in flight, since
+    /// `as_slice` would fault. See [`zeros_cuda_unified`].
     pub fn to_host(&self, stream: &Arc<CudaStream>) -> Result<Tensor<T, N>, CudaError> {
-        let cuda_res = self
-            .storage
-            .owner
-            .as_any()
-            .downcast_ref::<CudaResource<T>>()
-            .ok_or(CudaError::NotCudaBacked)?;
+        let slice = self.as_cudaslice().ok_or(CudaError::NotCudaBacked)?;
 
         // D→H typed copy into a Vec<T> (this is a transfer, copy is correct).
         let host_data: Vec<T> = stream
-            .clone_dtoh(&*cuda_res.slice)
+            .clone_dtoh(slice)
             .map_err(|e| CudaError::Driver(e.to_string()))?;
         stream
             .synchronize()
