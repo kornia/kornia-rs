@@ -196,6 +196,175 @@ pub enum SchurBaError {
 // ── f32 ↔ f64 conversion helpers (shared shape with ba.rs) ───────────────
 
 
+/// Infer the planarity prior's sigma from the trajectory's own HIGH-FREQUENCY out-of-plane motion.
+///
+/// The whole point is what this must NOT be estimated from. The global out-of-plane spread is the
+/// drift the prior exists to remove, so setting sigma from it would hand the prior a tolerance equal
+/// to the error and render it inert — the identical circularity that makes the loop-closure gauge
+/// absorb trajectory drift as scale. A prior's strength can never be estimated from the quantity it
+/// is meant to correct.
+///
+/// The two components separate by FREQUENCY. A gait bob (or a robot's suspension) is local and
+/// high-frequency; drift is global and low-frequency. Detrending each camera against the median of
+/// its `w` neighbours IN CAPTURE ORDER removes the bend and leaves the bob, and a robust MAD scale
+/// of that residual is the physical variation the capture actually exhibits.
+///
+/// Measured on two real maps. A 643-keyframe house walk carrying 0.89 m of drift returns 0.028 map
+/// units — 3.9 cm at that map's gauge, which is exactly a human's bob — while its global spread is
+/// 0.633, a factor of 22. A 40-keyframe walk with no drift returns 0.062 against a global spread of
+/// 0.037: LARGER than the deviations it would penalise, so the prior goes slack and does nothing.
+/// That self-disabling behaviour is what makes inference safe to enable by default — a good capture
+/// infers a tolerance it never exceeds, and only a drifted one gets pulled.
+///
+/// Ordering assumption: pose index is capture order, which holds for video keyframes. If it does not,
+/// the window averages unrelated cameras and the estimate degrades toward the global spread — slack,
+/// therefore harmless, never over-tight.
+fn infer_plane_sigma(
+    se3s: &[SE3F32],
+    pose_local: &[i64],
+    nrm: &[f64; 3],
+    ctr: &[f64; 3],
+) -> Option<f64> {
+    let d: Vec<f64> = se3s
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| pose_local.get(*i).copied().unwrap_or(-1) >= 0)
+        .map(|(_, p)| {
+            let rm = p.r.matrix();
+            let t = p.t;
+            let (c0, c1, c2) = (rm.col(0), rm.col(1), rm.col(2));
+            let c = [
+                -f64::from(c0.x * t.x + c0.y * t.y + c0.z * t.z),
+                -f64::from(c1.x * t.x + c1.y * t.y + c1.z * t.z),
+                -f64::from(c2.x * t.x + c2.y * t.y + c2.z * t.z),
+            ];
+            (0..3).map(|k| nrm[k] * (c[k] - ctr[k])).sum::<f64>()
+        })
+        .collect();
+    let n = d.len();
+    if n < 12 {
+        return None;
+    }
+    // Window small relative to the trajectory: at n = 40 a +-15 window spans three quarters of the
+    // walk and detrends away real signal. A quarter of the trajectory, capped, keeps it local.
+    let w = (n / 8).clamp(2, 15);
+    let median = |v: &mut Vec<f64>| -> f64 {
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        v[v.len() / 2]
+    };
+    let mut resid: Vec<f64> = (0..n)
+        .map(|i| {
+            let lo = i.saturating_sub(w);
+            let hi = (i + w + 1).min(n);
+            let mut win = d[lo..hi].to_vec();
+            d[i] - median(&mut win)
+        })
+        .collect();
+    let med = median(&mut resid.clone());
+    let mut dev: Vec<f64> = resid.iter().map(|x| (x - med).abs()).collect();
+    let sigma = 1.4826 * median(&mut dev);
+    resid.clear();
+    (sigma.is_finite() && sigma > 1e-9).then_some(sigma)
+}
+
+/// Best-fit plane through the camera centres of the poses being optimised.
+///
+/// Returns `(unit normal, centroid)`, or `None` when fewer than four free poses exist or the
+/// centres are too close to collinear for a normal to mean anything — in both cases there is no
+/// plane to speak of and the prior must not invent one.
+///
+/// Re-fitted every LM iteration and treated as CONSTANT within it (the centroid is not
+/// differentiated through). Differentiating the fit would be exact but couples every pose to every
+/// other, destroying the block structure the Schur reduction exists to exploit; the alternating form
+/// converges because the plane moves far less than the poses do.
+fn fit_centre_plane(se3s: &[SE3F32], pose_local: &[i64]) -> Option<([f64; 3], [f64; 3])> {
+    let mut cs: Vec<[f64; 3]> = Vec::new();
+    for (i, p) in se3s.iter().enumerate() {
+        if pose_local.get(i).copied().unwrap_or(-1) < 0 {
+            continue;
+        }
+        let rm = p.r.matrix();
+        let t = p.t;
+        let (c0, c1, c2) = (rm.col(0), rm.col(1), rm.col(2));
+        cs.push([
+            -f64::from(c0.x * t.x + c0.y * t.y + c0.z * t.z),
+            -f64::from(c1.x * t.x + c1.y * t.y + c1.z * t.z),
+            -f64::from(c2.x * t.x + c2.y * t.y + c2.z * t.z),
+        ]);
+    }
+    if cs.len() < 4 {
+        return None;
+    }
+    let n = cs.len() as f64;
+    let mut mean = [0.0f64; 3];
+    for c in &cs {
+        for k in 0..3 {
+            mean[k] += c[k] / n;
+        }
+    }
+    let mut cov = [[0.0f64; 3]; 3];
+    for c in &cs {
+        let d = [c[0] - mean[0], c[1] - mean[1], c[2] - mean[2]];
+        for i in 0..3 {
+            for j in 0..3 {
+                cov[i][j] += d[i] * d[j] / n;
+            }
+        }
+    }
+    // Jacobi rotation to diagonal. Three axes, so a fixed sweep budget is exact to machine
+    // precision and keeps this dependency-free.
+    let mut a = cov;
+    let mut v = [[0.0f64; 3]; 3];
+    for (i, row) in v.iter_mut().enumerate() {
+        row[i] = 1.0;
+    }
+    for _ in 0..64 {
+        let (mut p, mut q) = (0usize, 1usize);
+        if a[0][2].abs() > a[p][q].abs() {
+            (p, q) = (0, 2);
+        }
+        if a[1][2].abs() > a[p][q].abs() {
+            (p, q) = (1, 2);
+        }
+        if a[p][q].abs() < 1e-18 {
+            break;
+        }
+        let th = 0.5 * (2.0 * a[p][q]).atan2(a[q][q] - a[p][p]);
+        let (c, sn) = (th.cos(), th.sin());
+        for k in 0..3 {
+            let (akp, akq) = (a[k][p], a[k][q]);
+            a[k][p] = c * akp - sn * akq;
+            a[k][q] = sn * akp + c * akq;
+        }
+        for k in 0..3 {
+            let (apk, aqk) = (a[p][k], a[q][k]);
+            a[p][k] = c * apk - sn * aqk;
+            a[q][k] = sn * apk + c * aqk;
+        }
+        for row in v.iter_mut() {
+            let (vp, vq) = (row[p], row[q]);
+            row[p] = c * vp - sn * vq;
+            row[q] = sn * vp + c * vq;
+        }
+    }
+    let mut idx = [0usize, 1, 2];
+    idx.sort_by(|&i, &j| a[i][i].partial_cmp(&a[j][j]).unwrap_or(std::cmp::Ordering::Equal));
+    let (lo, mid, hi) = (idx[0], idx[1], idx[2]);
+    // Degeneracy guard on the SECOND spread, not the smallest. Collinear centres — a straight
+    // corridor, or any short walk — have TWO near-zero eigenvalues, and every plane through the line
+    // fits them equally well; the "normal" is then whichever direction numerical noise picks, and
+    // penalising deviation from it injects a constraint the data never supported. Testing the
+    // smallest eigenvalue instead accepts exactly that case, since a collinear set is maximally
+    // "flat" by that measure. An isotropic blob (lo/hi near 1) is rejected too: there is no plane
+    // to speak of.
+    if a[hi][hi] <= 1e-18 || a[mid][mid] / a[hi][hi] < 1e-4 || a[lo][lo] / a[hi][hi] > 0.98 {
+        return None;
+    }
+    let nvec = [v[0][lo], v[1][lo], v[2][lo]];
+    let len = (nvec[0] * nvec[0] + nvec[1] * nvec[1] + nvec[2] * nvec[2]).sqrt();
+    (len > 1e-12).then(|| ([nvec[0] / len, nvec[1] / len, nvec[2] / len], mean))
+}
+
 /// 6-vector residual of one motion prior on the CURRENT pose estimates.
 ///
 /// Layout: `[t_ratio, 0, 0, w01 − α·w02] / σ` (ratio branch) or
@@ -1153,6 +1322,90 @@ pub fn bundle_adjust_schur_with_all_priors(
             }
         }
 
+        // ── Trajectory planarity prior (1-D out-of-plane residual) ─────────
+        // For each FREE pose, one scalar residual
+        //
+        //     r_plane = n · (C - C_bar) / σ
+        //
+        // with (n, C_bar) the best-fit plane through the free camera centres, refitted this
+        // iteration and held constant within it. Only the component ALONG the normal is penalised,
+        // so the walk moves freely in-plane; this is the anisotropy a `BaPosePrior` cannot express.
+        //
+        // Jacobian: contract the centre prior's own 3×6 block with nᵀ. With ∂C/∂ρ = -I and
+        // ∂C/∂ω = [C]×, and using nᵀ[C]× = (n × C)ᵀ:
+        //
+        //     ∂r/∂ρ = -nᵀ / σ            ∂r/∂ω = (n × C)ᵀ / σ
+        //
+        // One row, no point coupling, so like the other pose priors it touches only A_ii and
+        // g_pose and leaves the Schur reduction's B and C blocks alone.
+        //
+        // NOT robustified. The other priors down-weight a single bad pose so it cannot dominate;
+        // here a large residual is exactly the signal — a camera that has drifted furthest out of
+        // plane is the one most in need of correction, and a robust kernel would switch the prior
+        // off precisely where it matters. The plane fit itself is the outlier defence: it is a
+        // least-squares fit over every free centre, so one excursion cannot carry it.
+        if params.plane_prior_sigma != 0.0 {
+            if let Some((nrm, ctr)) = fit_centre_plane(&se3s, &pose_local) {
+                // Negative means INFER from the trajectory's own high-frequency bob. Falling back to
+                // "no prior" when inference declines is deliberate: the alternative is a guessed
+                // constant, and over-trust is this family's measured failure mode.
+                let sigma = match (params.plane_prior_sigma < 0.0)
+                    .then(|| infer_plane_sigma(&se3s, &pose_local, &nrm, &ctr))
+                {
+                    Some(Some(sg)) => sg,
+                    // Inference declined (too few poses). An infinite sigma zeroes the weight, so the
+                    // term contributes nothing — the same outcome as skipping, without a second path.
+                    Some(None) => f64::INFINITY,
+                    None => f64::from(params.plane_prior_sigma),
+                };
+                let inv_sigma = 1.0_f64 / sigma.max(1e-6);
+                for i_global in 0..p_total {
+                    let pli = pose_local[i_global];
+                    if pli < 0 {
+                        continue;
+                    }
+                    let pli_u = pli as usize;
+                    let pose = &se3s[i_global];
+                    let rm = pose.r.matrix();
+                    let t = pose.t;
+                    let (c0, c1, c2) = (rm.col(0), rm.col(1), rm.col(2));
+                    let c_pred = [
+                        -f64::from(c0.x * t.x + c0.y * t.y + c0.z * t.z),
+                        -f64::from(c1.x * t.x + c1.y * t.y + c1.z * t.z),
+                        -f64::from(c2.x * t.x + c2.y * t.y + c2.z * t.z),
+                    ];
+                    let d = [c_pred[0] - ctr[0], c_pred[1] - ctr[1], c_pred[2] - ctr[2]];
+                    let r_plane = (nrm[0] * d[0] + nrm[1] * d[1] + nrm[2] * d[2]) * inv_sigma;
+                    cost += 0.5 * (r_plane * r_plane) as f32;
+
+                    // n × C
+                    let ncx = [
+                        nrm[1] * c_pred[2] - nrm[2] * c_pred[1],
+                        nrm[2] * c_pred[0] - nrm[0] * c_pred[2],
+                        nrm[0] * c_pred[1] - nrm[1] * c_pred[0],
+                    ];
+                    let j: [f64; 6] = [
+                        -nrm[0] * inv_sigma,
+                        -nrm[1] * inv_sigma,
+                        -nrm[2] * inv_sigma,
+                        ncx[0] * inv_sigma,
+                        ncx[1] * inv_sigma,
+                        ncx[2] * inv_sigma,
+                    ];
+                    let ab = &mut a_blocks[pli_u];
+                    for ii in 0..6 {
+                        for kk in 0..6 {
+                            ab[ii * 6 + kk] += j[ii] * j[kk];
+                        }
+                    }
+                    let gp = &mut g_pose[pli_u];
+                    for ii in 0..6 {
+                        gp[ii] -= j[ii] * r_plane;
+                    }
+                }
+            }
+        }
+
         // ── Motion priors (constant-velocity triplets) ──────────────────
         // FD Jacobians over the solver's own retraction; residuals whitened by their sigmas, so
         // gate with the depth-family knee (same "whitened units" family — see
@@ -1359,20 +1612,68 @@ pub fn bundle_adjust_schur_with_all_priors(
                 m_mat[(j, i)] = avg;
             }
         }
-        let chol = match m_mat.llt(faer::Side::Lower) {
-            Ok(c) => c,
-            Err(e) => {
-                // Bump damping and retry next outer iteration.
-                lambda *= 10.0;
-                if lambda > 1e10 {
-                    return Err(SchurBaError::CholeskyFailed(format!("{e:?}")));
+        // SPARSE PATH. Two cameras couple in this matrix only if they share a point, and on a real
+        // walkthrough that is 2.2% of pairs — so a dense factorisation spends nearly all of its time
+        // on structurally-zero entries. The assembly above already touched only the nonzero blocks;
+        // this just stops materialising the rest.
+        //
+        // Emitted as triplets, which faer SUMS on duplicates, so the same three contributions (the
+        // diagonal A blocks, the motion-prior off-diagonals, the Schur corrections) accumulate
+        // exactly as they did into the dense matrix. Only the LOWER triangle is emitted, which is
+        // all `Side::Lower` reads — and the symmetrisation above has already made the two triangles
+        // agree, so no information is lost by dropping the upper one.
+        let d_pose_col = if params.sparse_reduced_system {
+            let mut trips: Vec<faer::sparse::Triplet<usize, usize, f64>> = Vec::new();
+            for c in 0..dim {
+                for r in c..dim {
+                    let v = m_mat[(r, c)];
+                    if v != 0.0 {
+                        trips.push(faer::sparse::Triplet::new(r, c, v));
+                    }
                 }
-                continue;
             }
+            let a = match faer::sparse::SparseColMat::try_new_from_triplets(dim, dim, &trips) {
+                Ok(a) => a,
+                Err(e) => return Err(SchurBaError::CholeskyFailed(format!("{e:?}"))),
+            };
+            let sym = match faer::sparse::linalg::solvers::SymbolicLlt::try_new(
+                a.symbolic(),
+                faer::Side::Lower,
+            ) {
+                Ok(s) => s,
+                Err(e) => return Err(SchurBaError::CholeskyFailed(format!("{e:?}"))),
+            };
+            match faer::sparse::linalg::solvers::Llt::try_new_with_symbolic(
+                sym,
+                a.as_ref(),
+                faer::Side::Lower,
+            ) {
+                Ok(l) => {
+                    use faer::linalg::solvers::Solve;
+                    l.solve(&Mat::<f64>::from_fn(dim, 1, |i, _| m_vec[i]))
+                }
+                Err(_) => {
+                    lambda *= 10.0;
+                    if lambda > 1e10 {
+                        return Err(SchurBaError::CholeskyFailed("sparse llt".into()));
+                    }
+                    continue;
+                }
+            }
+        } else {
+            let chol = match m_mat.llt(faer::Side::Lower) {
+                Ok(c) => c,
+                Err(e) => {
+                    // Bump damping and retry next outer iteration.
+                    lambda *= 10.0;
+                    if lambda > 1e10 {
+                        return Err(SchurBaError::CholeskyFailed(format!("{e:?}")));
+                    }
+                    continue;
+                }
+            };
+            chol.solve(&Mat::<f64>::from_fn(dim, 1, |i, _| m_vec[i]))
         };
-        // RHS as faer column.
-        let m_col = Mat::<f64>::from_fn(dim, 1, |i, _| m_vec[i]);
-        let d_pose_col = chol.solve(&m_col);
 
         // ── Back-substitute for points: δ_x[j] = C⁻¹ (g_x - B.T · δ_p) ──
         let mut d_pose = vec![0.0_f64; dim];
@@ -1530,6 +1831,47 @@ pub fn bundle_adjust_schur_with_all_priors(
             }
         }
 
+        // Planarity contribution to the trial cost. The accept/reject test must see the SAME
+        // objective the linearisation minimised, or LM rejects every step that trades a little
+        // reprojection for flatness — which is every step this prior exists to take.
+        //
+        // The plane is re-fitted on the TRIAL poses rather than reused from the linearisation. Both
+        // are defensible; refitting is the honest one, because it scores the trial trajectory by its
+        // own best-fit plane instead of by a plane chosen to flatter the previous iterate. A step
+        // that merely rotates the whole trajectory would otherwise look like an improvement.
+        if params.plane_prior_sigma != 0.0 {
+            if let Some((nrm, ctr)) = fit_centre_plane(&se3s_trial, &pose_local) {
+                // Re-inferred on the trial poses for the same reason the plane is re-fitted there:
+                // the trial trajectory must be scored by its own tolerance, not a stale one.
+                let sigma = match (params.plane_prior_sigma < 0.0)
+                    .then(|| infer_plane_sigma(&se3s_trial, &pose_local, &nrm, &ctr))
+                {
+                    Some(Some(sg)) => sg,
+                    Some(None) => f64::INFINITY,
+                    None => f64::from(params.plane_prior_sigma),
+                };
+                let inv_sigma = 1.0_f64 / sigma.max(1e-6);
+                for (i_global, pose) in se3s_trial.iter().enumerate() {
+                    if pose_local[i_global] < 0 {
+                        continue;
+                    }
+                    let rm = pose.r.matrix();
+                    let t = pose.t;
+                    let (c0, c1, c2) = (rm.col(0), rm.col(1), rm.col(2));
+                    let c_pred = [
+                        -f64::from(c0.x * t.x + c0.y * t.y + c0.z * t.z),
+                        -f64::from(c1.x * t.x + c1.y * t.y + c1.z * t.z),
+                        -f64::from(c2.x * t.x + c2.y * t.y + c2.z * t.z),
+                    ];
+                    let r_plane = (nrm[0] * (c_pred[0] - ctr[0])
+                        + nrm[1] * (c_pred[1] - ctr[1])
+                        + nrm[2] * (c_pred[2] - ctr[2]))
+                        * inv_sigma;
+                    new_cost += 0.5 * (r_plane * r_plane) as f32;
+                }
+            }
+        }
+
         if let Some(mps) = motion_priors {
             for mp in mps {
                 if mp.i0 >= p_total || mp.i1 >= p_total || mp.i2 >= p_total {
@@ -1655,6 +1997,115 @@ mod tests {
             p1: 0.0,
             p2: 0.0,
         }
+    }
+
+    /// The sparse reduced-camera solve must produce the same answer as the dense one.
+    ///
+    /// This is the whole safety argument for the flag. The sparse path changes HOW the reduced
+    /// system is factorised, never WHAT is factorised: the assembly above is untouched, and only the
+    /// lower triangle is emitted because that is all `Side::Lower` reads. If the two paths ever
+    /// disagree beyond roundoff, the sparse assembly has dropped or double-counted an entry — which
+    /// is exactly the failure a 2.2%-dense matrix makes easy to miss, since almost every entry it
+    /// could drop is legitimately zero.
+    ///
+    /// Multi-camera on purpose: a two-camera problem has a reduced system of one free 6x6 block and
+    /// no off-diagonal structure at all, so it would pass while telling us nothing about the
+    /// coupling terms.
+    #[test]
+    fn sparse_reduced_system_matches_dense() {
+        let cam = PinholeCamera {
+            fx: 500.0,
+            fy: 500.0,
+            cx: 320.0,
+            cy: 240.0,
+            k1: 0.0,
+            k2: 0.0,
+            p1: 0.0,
+            p2: 0.0,
+        };
+        // Five cameras along an arc, all seeing a common cloud, so the reduced system has genuine
+        // off-diagonal blocks for the Schur correction to fill.
+        let poses: Vec<Pose3d> = (0..5)
+            .map(|i| {
+                let t = i as f64 * 0.2;
+                Pose3d::new(Mat3F64::IDENTITY, Vec3F64::new(-t, 0.02 * t, 0.0))
+            })
+            .collect();
+        let mut points = Vec::new();
+        for gx in 0..4 {
+            for gy in 0..4 {
+                points.push(Vec3F64::new(
+                    -0.6 + 0.4 * gx as f64,
+                    -0.6 + 0.4 * gy as f64,
+                    4.0 + 0.1 * ((gx + gy) as f64),
+                ));
+            }
+        }
+        let project = |pose: &Pose3d, pw: &Vec3F64| -> [f32; 2] {
+            let pc = pose.transform_point(pw);
+            [
+                (cam.fx * pc.x / pc.z + cam.cx) as f32,
+                (cam.fy * pc.y / pc.z + cam.cy) as f32,
+            ]
+        };
+        let mut observations = Vec::new();
+        for (ci, pose) in poses.iter().enumerate() {
+            for (pi, pt) in points.iter().enumerate() {
+                observations.push(BaObservation {
+                    pose_idx: ci,
+                    point_idx: pi,
+                    pixel: project(pose, pt),
+                    fixed_pose: ci == 0,
+                    fixed_point: false,
+                    ..BaObservation::default()
+                });
+            }
+        }
+        // Perturb so the solver has real work to do; both arms get the identical start.
+        let start_pts: Vec<Vec3F64> = points
+            .iter()
+            .map(|p| *p + Vec3F64::new(0.03, -0.02, 0.04))
+            .collect();
+        let start_poses: Vec<Pose3d> = poses
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                if i == 0 {
+                    *p
+                } else {
+                    Pose3d::new(p.rotation, p.translation + Vec3F64::new(0.01, -0.01, 0.02))
+                }
+            })
+            .collect();
+
+        let run = |sparse: bool| {
+            let params = BaParams {
+                max_iterations: 12,
+                sparse_reduced_system: sparse,
+                ..Default::default()
+            };
+            bundle_adjust_schur(&start_poses, &start_pts, &observations, &cam, &params)
+                .expect("ba converges")
+        };
+        let dense = run(false);
+        let sparse = run(true);
+
+        for (i, (d, s)) in dense.poses.iter().zip(sparse.poses.iter()).enumerate() {
+            let dt = (d.translation - s.translation).length();
+            assert!(dt < 1e-6, "camera {i} translation differs by {dt:e}");
+            for r in 0..3 {
+                for c in 0..3 {
+                    let dr = (d.rotation.col(c)[r] - s.rotation.col(c)[r]).abs();
+                    assert!(dr < 1e-6, "camera {i} rotation[{r}][{c}] differs by {dr:e}");
+                }
+            }
+        }
+        for (j, (d, s)) in dense.points.iter().zip(sparse.points.iter()).enumerate() {
+            let dp = (*d - *s).length();
+            assert!(dp < 1e-6, "point {j} differs by {dp:e}");
+        }
+        // And it must actually have been a non-trivial problem: 5 cameras, one fixed.
+        assert_eq!(dense.poses.len(), 5);
     }
 
     #[test]
@@ -2814,5 +3265,237 @@ mod tests {
             "Huber-BA max point error {:.4} m too large (regression in inliers?)",
             max_err_huber,
         );
+    }
+
+    /// Out-of-plane spread of a set of world→cam poses' camera centres, as a fraction of the
+    /// largest spread — the same gauge-free quantity `flux-map`'s `trajectory_planarity` check uses.
+    fn flatness(poses: &[Pose3d]) -> f64 {
+        let se3s: Vec<SE3F32> = poses.iter().map(pose_to_se3).collect();
+        let local: Vec<i64> = (0..poses.len() as i64).collect();
+        let Some((n, ctr)) = fit_centre_plane(&se3s, &local) else {
+            return 0.0;
+        };
+        let cs: Vec<[f64; 3]> = poses
+            .iter()
+            .map(|p| {
+                let c = p.inverse().translation;
+                [c.x, c.y, c.z]
+            })
+            .collect();
+        let out = cs
+            .iter()
+            .map(|c| (0..3).map(|k| n[k] * (c[k] - ctr[k])).sum::<f64>().abs())
+            .fold(0.0f64, f64::max);
+        let span = (0..3)
+            .map(|k| {
+                let v: Vec<f64> = cs.iter().map(|c| c[k]).collect();
+                v.iter().copied().fold(f64::MIN, f64::max) - v.iter().copied().fold(f64::MAX, f64::min)
+            })
+            .fold(0.0f64, f64::max);
+        if span > 1e-12 {
+            out / span
+        } else {
+            0.0
+        }
+    }
+
+    /// The planarity residual's analytic Jacobian agrees with finite differences.
+    ///
+    /// This is the assertion the implementation actually needs. The end-to-end claim — "the prior
+    /// recovers a bent walk" — CANNOT be demonstrated on a compact synthetic scene, and it is worth
+    /// recording why rather than staging something that appears to show it:
+    ///
+    /// - With observations generated from the BENT poses, the bend is the exact global optimum of
+    ///   reprojection. Flattening is not a similarity, so it strictly increases the residual and the
+    ///   prior is correctly refused. Measured: 0.139 -> 0.137 at sigma 0.02.
+    /// - With observations from the FLAT truth and the solve started bent, plain BA recovers
+    ///   flatness 0.0000 unaided at every sigma tried. A 9-camera arc over a 25-point grid observes
+    ///   its own vertical perfectly well; there is nothing for a prior to add.
+    ///
+    /// The prior earns its place only where out-of-plane motion is WEAKLY OBSERVED — hundreds of
+    /// forward-walking keyframes with narrow co-visibility, which is the real clip and not something
+    /// a unit test reconstructs honestly. That claim belongs to ground-truth validation.
+    ///
+    /// One thing the sweep did establish, and it matches the up-prior's history: an over-tight sigma
+    /// HURTS. At 0.005 the prior dragged an otherwise-perfect solve to 0.0227 flatness. The failure
+    /// mode of this family of priors is over-trust, not under-trust.
+    #[test]
+    fn plane_prior_jacobian_matches_finite_differences() {
+        // Rodrigues from an axis-angle. Hand-written columns are not a rotation unless you check —
+        // an earlier version of this test used three plausible-looking columns whose first and third
+        // had a dot product of 0.039, and `pose_to_se3` silently produced a pose whose centre bore no
+        // relation to the inputs, which reads exactly like a wrong Jacobian.
+        let pose = {
+            let axis = {
+                let v = [0.42_f64, -0.31, 0.85];
+                let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+                [v[0] / l, v[1] / l, v[2] / l]
+            };
+            let th = 0.7_f64;
+            let (s_, c_) = th.sin_cos();
+            let k = Mat3F64::from_cols(
+                Vec3F64::new(0.0, axis[2], -axis[1]),
+                Vec3F64::new(-axis[2], 0.0, axis[0]),
+                Vec3F64::new(axis[1], -axis[0], 0.0),
+            );
+            let r = Mat3F64::IDENTITY + k * s_ + (k * k) * (1.0 - c_);
+            Pose3d::new(r, Vec3F64::new(0.35, -0.12, 1.7))
+        };
+        let se3 = pose_to_se3(&pose);
+        let n = {
+            let v = [0.31_f64, -0.62, 0.72];
+            let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+            [v[0] / l, v[1] / l, v[2] / l]
+        };
+        let ctr = [0.11_f64, -0.04, 0.29];
+        let sigma = 0.08_f64;
+
+        let centre = |t: &SE3F32| -> [f64; 3] {
+            let rm = t.r.matrix();
+            let tt = t.t;
+            let (c0, c1, c2) = (rm.col(0), rm.col(1), rm.col(2));
+            [
+                -f64::from(c0.x * tt.x + c0.y * tt.y + c0.z * tt.z),
+                -f64::from(c1.x * tt.x + c1.y * tt.y + c1.z * tt.z),
+                -f64::from(c2.x * tt.x + c2.y * tt.y + c2.z * tt.z),
+            ]
+        };
+        let resid = |t: &SE3F32| -> f64 {
+            let c = centre(t);
+            (0..3).map(|k| n[k] * (c[k] - ctr[k])).sum::<f64>() / sigma
+        };
+
+        // Analytic: dr/drho = -n^T / sigma, dr/domega = (n x C)^T / sigma.
+        let c = centre(&se3);
+        let ncx = [
+            n[1] * c[2] - n[2] * c[1],
+            n[2] * c[0] - n[0] * c[2],
+            n[0] * c[1] - n[1] * c[0],
+        ];
+        let analytic = [
+            -n[0] / sigma,
+            -n[1] / sigma,
+            -n[2] / sigma,
+            ncx[0] / sigma,
+            ncx[1] / sigma,
+            ncx[2] / sigma,
+        ];
+
+        // Central differences over the solver's OWN retraction, which is what the Jacobian must be
+        // taken with respect to — a derivative correct for some other parameterisation would be
+        // silently wrong here and would show up only as a slow LM.
+        let eps = 1e-4_f32;
+        for k in 0..6 {
+            let mut dp = [0.0f32; 6];
+            dp[k] = eps;
+            let mut dm = [0.0f32; 6];
+            dm[k] = -eps;
+            let fd = (resid(&se3.retract(&dp)) - resid(&se3.retract(&dm))) / (2.0 * f64::from(eps));
+            let tol = 1e-2 * analytic[k].abs().max(1.0);
+            assert!(
+                (fd - analytic[k]).abs() < tol,
+                "component {k}: analytic {:.6} vs finite difference {:.6}",
+                analytic[k],
+                fd
+            );
+        }
+    }
+
+    /// A degenerate centre set must not be handed an invented plane.
+    ///
+    /// Collinear cameras — a straight corridor, or any short walk — admit no distinguishable
+    /// normal: every plane through the line fits equally well. Penalising deviation from an
+    /// arbitrary one of them would inject a constraint the data never supported, in a direction
+    /// chosen by numerical noise.
+    #[test]
+    fn plane_fit_refuses_a_collinear_walk() {
+        let along: Vec<SE3F32> = (0..9)
+            .map(|i| {
+                let x = i as f64 * 0.3;
+                pose_to_se3(&Pose3d::new(Mat3F64::IDENTITY, Vec3F64::new(x, 0.0, 0.0)).inverse())
+            })
+            .collect();
+        let local: Vec<i64> = (0..9).collect();
+        assert!(fit_centre_plane(&along, &local).is_none(), "collinear centres must yield no plane");
+
+        let too_few: Vec<SE3F32> = along.iter().take(3).cloned().collect();
+        assert!(fit_centre_plane(&too_few, &[0, 1, 2]).is_none(), "3 centres are always coplanar");
+    }
+
+    /// Inferred sigma tracks the BOB, not the DRIFT — the property the whole scheme rests on.
+    ///
+    /// Two trajectories with the SAME high-frequency wobble, one of them additionally bent by a slow
+    /// low-frequency drift 20x larger. The inferred sigma must be near-identical for both: if the
+    /// drift leaked into it, the prior's tolerance would grow to match the error it exists to
+    /// correct and the term would go inert exactly when it is needed.
+    #[test]
+    fn inferred_sigma_ignores_drift_and_tracks_the_bob() {
+        let bob = 0.03_f64;
+        let make = |drift: f64| -> (Vec<SE3F32>, Vec<i64>) {
+            let n = 120usize;
+            let poses: Vec<SE3F32> = (0..n)
+                .map(|i| {
+                    let u = i as f64 / (n - 1) as f64;
+                    // A SMOOTH high-frequency bob (period 6 keyframes) plus a slow bend. Not a
+                    // square wave: a two-valued signal has no central mass, so its MAD reports the
+                    // peak-to-peak separation rather than the amplitude — an earlier version of this
+                    // test alternated +-bob and the estimator dutifully returned 2.96x the amplitude.
+                    // A real bob is continuous, and for a sine of amplitude A the robust scale is
+                    // A/sqrt(2).
+                    let z = bob * (std::f64::consts::TAU * i as f64 / 6.0).sin()
+                        + drift * (std::f64::consts::PI * u).sin();
+                    // The in-plane path must be functionally ORTHOGONAL to the drift or the plane
+                    // fit simply tilts and absorbs it — a plane can mix the coordinates linearly, so
+                    // any drift expressible as a linear combination of the in-plane shape is not
+                    // out-of-plane at all. `0.7*sin(3u)` looked like a different axis but is a hump
+                    // over u in [0,1], nearly collinear with the sin(pi*u) drift (measured: the
+                    // "drifted" scene came out with a spread of 0.027 instead of 0.6). A fast
+                    // zig-zag in y carries no low-frequency component for the drift to hide in, and
+                    // sin(pi*u) is symmetric about u=0.5 so it is uncorrelated with x as well.
+                    let centre =
+                        Vec3F64::new(2.0 * u, 0.7 * (std::f64::consts::TAU * 2.5 * u).sin(), z);
+                    pose_to_se3(&Pose3d::new(Mat3F64::IDENTITY, centre).inverse())
+                })
+                .collect();
+            let local: Vec<i64> = (0..n as i64).collect();
+            (poses, local)
+        };
+
+        let (flat, lf) = make(0.0);
+        let (drifted, ld) = make(0.6);
+        let (n0, c0) = fit_centre_plane(&flat, &lf).expect("plane");
+        let (n1, c1) = fit_centre_plane(&drifted, &ld).expect("plane");
+        let s_flat = infer_plane_sigma(&flat, &lf, &n0, &c0).expect("sigma");
+        let s_drift = infer_plane_sigma(&drifted, &ld, &n1, &c1).expect("sigma");
+
+        // A sine of amplitude A has robust scale ~A/sqrt(2); allow a factor of two either way,
+        // because the exact constant is a property of the waveform and not of the claim being made.
+        assert!(
+            s_flat > 0.5 * bob / std::f64::consts::SQRT_2 && s_flat < 2.0 * bob,
+            "sigma should be within a factor of 2 of the bob {bob:.4}, got {s_flat:.4}"
+        );
+        assert!(
+            (s_drift / s_flat - 1.0).abs() < 0.35,
+            "drift leaked into the inferred sigma: {s_flat:.4} (flat) vs {s_drift:.4} (drifted, \
+             0.6 of low-frequency bend added)"
+        );
+        // And the global spread must be dominated by that drift, or the scene proves nothing.
+        let spread = |se3s: &[SE3F32], n: &[f64; 3], c: &[f64; 3]| -> f64 {
+            se3s.iter()
+                .map(|p| {
+                    let rm = p.r.matrix();
+                    let t = p.t;
+                    let (a, b, d) = (rm.col(0), rm.col(1), rm.col(2));
+                    let cc = [
+                        -f64::from(a.x * t.x + a.y * t.y + a.z * t.z),
+                        -f64::from(b.x * t.x + b.y * t.y + b.z * t.z),
+                        -f64::from(d.x * t.x + d.y * t.y + d.z * t.z),
+                    ];
+                    (0..3).map(|k| n[k] * (cc[k] - c[k])).sum::<f64>().abs()
+                })
+                .fold(0.0f64, f64::max)
+        };
+        let g = spread(&drifted, &n1, &c1);
+        assert!(g > 5.0 * s_drift, "drifted scene is not actually drifted (spread {g:.3})");
     }
 }

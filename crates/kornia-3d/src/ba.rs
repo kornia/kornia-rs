@@ -187,6 +187,53 @@ pub struct BaParams {
     pub gradient_tolerance: f32,
     /// Initial LM damping parameter.
     pub initial_lambda: f32,
+    /// Solve the reduced camera system with a SPARSE Cholesky instead of a dense one.
+    ///
+    /// The reduced system is `6P x 6P` and is currently factorised dense: at 643 cameras that is a
+    /// 3852x3852 f64 matrix allocated inside every LM iteration (119 MB) and factorised at
+    /// `dim^3/3 = 1.9e10` flops — measured at 4.75 s per iteration on a Jetson Orin, which at the
+    /// 100-iteration cap is eight minutes of factorisation in a single call.
+    ///
+    /// But the camera-camera graph is not dense. Measured on a 643-keyframe walkthrough: 4,556 of
+    /// 206,403 camera pairs co-observe a point — **2.2%** — with median index distance 6 and max
+    /// 110. Two cameras only couple in this matrix if they share a point, so the vast majority of
+    /// those 15 million entries are structurally zero and the factorisation is spending almost all
+    /// of its time on them.
+    ///
+    /// Bounding the win honestly: a solver must size for the WORST coupling, not the median. A block
+    /// distance of 110 is a scalar bandwidth of 660, giving `dim * b^2 = 1.7e9` flops — **~11x**
+    /// fewer, not the hundred-fold the 2.2% figure suggests at first glance.
+    ///
+    /// Off by default: this changes the numerical path of every bundle adjustment, and the dense
+    /// solver stays as the control until an A/B on ground truth says the sparse one agrees with it.
+    pub sparse_reduced_system: bool,
+    /// Penalise camera centres for leaving their own best-fit PLANE, in metres. 0 disables.
+    ///
+    /// A handheld walkthrough is filmed by a person on one floor: the camera centres trace a plane,
+    /// wobbling by the few centimetres a gait and an arm allow. That is the strongest shape prior
+    /// available about such a trajectory, and it constrains the ONE direction a forward walk cannot
+    /// observe — reprojection is exactly blind to an out-of-plane bend, so the error accumulates
+    /// unopposed and no residual will ever report it. Measured on two real maps of the same kind of
+    /// space: a 40-keyframe walk that reconstructed correctly deviates 0.197 of its largest spread
+    /// out of plane, while a 643-keyframe walk whose cloud is unusable deviates 0.603 — 0.89 m
+    /// median and 2.17 m worst, on ONE FLOOR of a house.
+    ///
+    /// The plane is FITTED FROM THE TRAJECTORY ITSELF each iteration, never supplied. That is the
+    /// whole difference from the up/gravity prior, which asks the same question ("which way is
+    /// vertical") but needs an external answer: measured gravity lands 7.6-28 degrees off, an
+    /// uncertainty comparable to the effect, and the measured result was a collapsed map at a tight
+    /// sigma and an inflated one at a loose sigma. This prior needs no such input — it asks only
+    /// that the centres be near SOME plane, which is a claim about human anatomy rather than about
+    /// the world frame.
+    ///
+    /// Anisotropic by construction: one scalar residual along the plane normal, so in-plane motion
+    /// is entirely free and only the out-of-plane component is penalised. A `BaPosePrior` cannot
+    /// express this — its sigma is isotropic, so tightening it enough to flatten the trajectory
+    /// would also freeze the walk.
+    ///
+    /// Off by default, and wrong for a walk that genuinely changes floor: a staircase IS
+    /// out-of-plane, and this prior will fight it.
+    pub plane_prior_sigma: f32,
     /// M-estimator kernel applied per-residual in the IRLS normal
     /// equations. Plumbed through [`kornia_algebra::optim::Factor::get_loss`]
     /// to the LM solver:
@@ -265,6 +312,8 @@ impl Default for BaParams {
             cost_tolerance: 1e-5,
             gradient_tolerance: 1e-5,
             initial_lambda: 1e-3,
+            sparse_reduced_system: false,
+            plane_prior_sigma: 0.0,
             robust: RobustKernelKind::Identity,
             robust_scale_sq: f32::INFINITY,
             depth_log_residual: false,
