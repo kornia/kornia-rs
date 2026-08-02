@@ -305,7 +305,7 @@ fn run_fused_preprocess(stream: &Arc<CudaStream>, width: usize, height: usize, j
             decode(
                 stream,
                 &d_src,
-                rgb_img.0.as_cudaslice_mut().unwrap(),
+                rgb_img.as_cudaslice_mut().unwrap(),
                 width,
                 height,
             );
@@ -319,7 +319,7 @@ fn run_fused_preprocess(stream: &Arc<CudaStream>, width: usize, height: usize, j
                 decode(
                     stream,
                     &d_src,
-                    rgb_img.0.as_cudaslice_mut().unwrap(),
+                    rgb_img.as_cudaslice_mut().unwrap(),
                     width,
                     height,
                 );

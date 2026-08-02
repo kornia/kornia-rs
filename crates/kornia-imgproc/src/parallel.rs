@@ -1,7 +1,6 @@
 use rayon::prelude::*;
 
 use kornia_image::Image;
-use kornia_tensor::Tensor2;
 
 /// Row-group granularity for per-pixel rayon sharding. At 1 row per task,
 /// spawn overhead (~2-5 μs on the 8-core Orin pool) rivals per-row work for
@@ -103,19 +102,17 @@ pub fn par_iter_rows_val_two<T1, const C1: usize, T2, const C2: usize, T3, const
 /// Apply a function to each pixel for grid sampling in parallel.
 pub fn par_iter_rows_resample<const C: usize>(
     dst: &mut Image<f32, C>,
-    map_x: &Tensor2<f32>,
-    map_y: &Tensor2<f32>,
+    map_x: &[f32],
+    map_y: &[f32],
     f: impl Fn(&f32, &f32, &mut [f32]) + Send + Sync,
 ) {
     let cols = dst.cols();
     let dst_slice = dst.as_slice_mut();
-    let map_x_slice = map_x.as_slice();
-    let map_y_slice = map_y.as_slice();
 
     dst_slice
         .par_chunks_mut(ROWS_PER_TASK * C * cols)
-        .zip(map_x_slice.par_chunks(ROWS_PER_TASK * cols))
-        .zip(map_y_slice.par_chunks(ROWS_PER_TASK * cols))
+        .zip(map_x.par_chunks(ROWS_PER_TASK * cols))
+        .zip(map_y.par_chunks(ROWS_PER_TASK * cols))
         .for_each(|((dst_chunk, map_x_chunk), map_y_chunk)| {
             dst_chunk
                 .chunks_exact_mut(C)

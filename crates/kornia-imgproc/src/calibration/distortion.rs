@@ -1,8 +1,8 @@
 use super::{CameraExtrinsic, CameraIntrinsic};
 use crate::interpolation::grid::meshgrid_from_fn;
 use kornia_algebra::{Mat3F64, Mat4F64, Vec3F64, Vec4F64};
-use kornia_image::ImageSize;
-use kornia_tensor::{CpuTensor2, Tensor, TensorError};
+use kornia_image::{Image, ImageError, ImageSize};
+use kornia_tensor::{Tensor, TensorError};
 use rayon::prelude::*;
 
 /// Represents the polynomial distortion parameters of a camera using the Brown-Conrady model.
@@ -124,29 +124,31 @@ pub fn distort_point_polynomial(
 /// # Returns
 ///
 /// A tuple containing:
-/// * `map_x` - A 2D tensor representing the x-coordinates for remapping
-/// * `map_y` - A 2D tensor representing the y-coordinates for remapping
+/// * `map_x` - A single-channel image representing the x-coordinates for remapping
+/// * `map_y` - A single-channel image representing the y-coordinates for remapping
 ///
 /// Both maps have the same dimensions as the input image.
 ///
 /// # Errors
 ///
-/// Returns a `TensorError` if there's an issue creating the meshgrid or performing calculations.
+/// Returns an `ImageError` if there's an issue creating the meshgrid or performing calculations.
 pub fn generate_correction_map_polynomial(
     intrinsic: &CameraIntrinsic,
     _extrinsic: &CameraExtrinsic,
     _new_intrinsic: &CameraIntrinsic,
     distortion: &PolynomialDistortion,
     size: &ImageSize,
-) -> Result<(CpuTensor2<f32>, CpuTensor2<f32>), TensorError> {
+) -> Result<(Image<f32, 1>, Image<f32, 1>), ImageError> {
     //// create a grid of x and y coordinates for the output image
     //// and interpolate the values from the input image.
     let (dst_rows, dst_cols) = (size.height, size.width);
-    let (map_x, map_y) = meshgrid_from_fn(dst_cols, dst_rows, |x, y| {
+    let (t_x, t_y) = meshgrid_from_fn(dst_cols, dst_rows, |x, y| {
         let (xdst, ydst) = distort_point_polynomial(x as f64, y as f64, intrinsic, distortion);
         Ok((xdst as f32, ydst as f32))
-    })?;
-
+    })
+    .map_err(ImageError::InvalidImageShape)?;
+    let map_x = Image::<f32, 1>::new(*size, t_x.into_vec())?;
+    let map_y = Image::<f32, 1>::new(*size, t_y.into_vec())?;
     Ok((map_x, map_y))
 }
 
@@ -626,7 +628,7 @@ mod tests {
     }
 
     #[test]
-    fn test_undistort_rectify_map_polynomial() -> Result<(), TensorError> {
+    fn test_undistort_rectify_map_polynomial() -> Result<(), ImageError> {
         let intrinsic = CameraIntrinsic {
             fx: 577.48583984375,
             fy: 652.8748779296875,
@@ -661,10 +663,10 @@ mod tests {
             &size,
         )?;
 
-        assert_eq!(map_x.shape[0], 4);
-        assert_eq!(map_x.shape[1], 8);
-        assert_eq!(map_y.shape[0], 4);
-        assert_eq!(map_y.shape[1], 8);
+        assert_eq!(map_x.rows(), 4);
+        assert_eq!(map_x.cols(), 8);
+        assert_eq!(map_y.rows(), 4);
+        assert_eq!(map_y.cols(), 8);
 
         Ok(())
     }

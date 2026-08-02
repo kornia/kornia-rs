@@ -15,6 +15,10 @@ name = "bench_cuda_color_conversions"
 required-features = ["cuda"]
 
 [[example]]
+name = "bench_cuda_remap"
+required-features = ["cuda"]
+
+[[example]]
 name = "dump_cuda_resize"
 required-features = ["cuda"]
 
