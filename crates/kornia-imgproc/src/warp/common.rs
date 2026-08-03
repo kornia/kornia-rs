@@ -11,7 +11,7 @@
 ///
 /// `src_stride` is `src_cols * C` (row stride in bytes for u8).
 #[inline(always)]
-pub(super) fn bilinear_sample_u8<const C: usize>(
+pub(crate) fn bilinear_sample_u8<const C: usize>(
     src: &[u8],
     src_w: i32,
     src_h: i32,
@@ -72,7 +72,7 @@ pub(super) fn bilinear_sample_u8<const C: usize>(
 /// `fx_q10`/`fy_q10` must be in `[0, 1024]`.
 #[inline(always)]
 #[allow(clippy::too_many_arguments)]
-pub(super) fn bilinear_sample_u8_valid<const C: usize>(
+pub(crate) fn bilinear_sample_u8_valid<const C: usize>(
     src: &[u8],
     src_w: i32,
     src_h: i32,

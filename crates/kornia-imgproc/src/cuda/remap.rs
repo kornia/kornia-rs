@@ -39,7 +39,8 @@
 //! in `examples/bench_cuda_remap.rs` — they serve the architecture-decision benchmark
 //! only; the library API is the pure remap launchers.
 
-use std::sync::{Arc, OnceLock};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use cudarc::driver::{CudaContext, CudaSlice, CudaStream};
 use kornia_tensor::CudaKernel;
@@ -160,6 +161,10 @@ extern "C" __global__ void remap_nearest_3c(
 static BILINEAR_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
 static NEAREST_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
 
+type PerCKernelCache = Mutex<HashMap<u32, Arc<CudaKernel>>>;
+static BILINEAR_U8_KERNELS: OnceLock<PerCKernelCache> = OnceLock::new();
+static NEAREST_U8_KERNELS: OnceLock<PerCKernelCache> = OnceLock::new();
+
 // ── Error type ────────────────────────────────────────────────────────────────
 
 super::define_cuda_error!(
@@ -257,6 +262,10 @@ fn launch_remap(
 /// * `dst_width` / `dst_height` — Destination image dimensions.
 /// * `block_dim` — Optional `(bw, bh)` thread-block override; `None` → 32×8.
 ///
+/// # Returns
+///
+/// `Ok(())` on success.
+///
 /// # Errors
 ///
 /// Returns [`CudaRemapError`] on compile failure, launch error, or if any
@@ -305,6 +314,10 @@ pub fn launch_remap_bilinear_cuda(
 ///
 /// See [`launch_remap_bilinear_cuda`] — arguments are identical.
 ///
+/// # Returns
+///
+/// `Ok(())` on success.
+///
 /// # Errors
 ///
 /// Returns [`CudaRemapError`] on compile failure, launch error, or if any
@@ -337,6 +350,304 @@ pub fn launch_remap_nearest_cuda(
         src_height,
         dst_width,
         dst_height,
+        block_dim,
+    )
+}
+
+fn remap_u8_bilinear_src(channels: usize) -> String {
+    format!(
+        r#"
+#define C {channels}
+extern "C" __global__ void remap_bilinear_u8_c{channels}(
+    const unsigned char* __restrict__ src,
+    const float* __restrict__ map_x,
+    const float* __restrict__ map_y,
+    unsigned char* __restrict__ dst,
+    unsigned int src_w,
+    unsigned int src_h,
+    unsigned int dst_w,
+    unsigned int dst_h
+) {{
+    unsigned int gx = blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned int gy = blockIdx.y * blockDim.y + threadIdx.y;
+    if (gx >= dst_w || gy >= dst_h) return;
+
+    unsigned long long idx = (unsigned long long)gy * dst_w + gx;
+    float sx = __ldg(&map_x[idx]);
+    float sy = __ldg(&map_y[idx]);
+    unsigned long long out = idx * (unsigned long long)C;
+
+    if (sx < 0.0f || sx >= (float)src_w || sy < 0.0f || sy >= (float)src_h) {{
+        #pragma unroll
+        for (unsigned int ch = 0u; ch < C; ++ch) dst[out + ch] = 0;
+        return;
+    }}
+
+    float sxc = fmaxf(fminf(sx, (float)(src_w - 1u)), 0.0f);
+    float syc = fmaxf(fminf(sy, (float)(src_h - 1u)), 0.0f);
+
+    unsigned int x0 = (unsigned int)sxc;
+    unsigned int y0 = (unsigned int)syc;
+    unsigned int x1 = min(x0 + 1u, src_w - 1u);
+    unsigned int y1 = min(y0 + 1u, src_h - 1u);
+    unsigned int fx = (unsigned int)((sxc - (float)x0) * 1024.0f);
+    unsigned int fy = (unsigned int)((syc - (float)y0) * 1024.0f);
+    unsigned int fx1 = 1024u - fx;
+    unsigned int fy1 = 1024u - fy;
+
+    unsigned long long r0 = (unsigned long long)y0 * src_w;
+    unsigned long long r1 = (unsigned long long)y1 * src_w;
+    unsigned long long b00 = (r0 + x0) * (unsigned long long)C;
+    unsigned long long b10 = (r0 + x1) * (unsigned long long)C;
+    unsigned long long b01 = (r1 + x0) * (unsigned long long)C;
+    unsigned long long b11 = (r1 + x1) * (unsigned long long)C;
+
+    #pragma unroll
+    for (unsigned int ch = 0u; ch < C; ++ch) {{
+        unsigned int p00 = (unsigned int)__ldg(&src[b00 + ch]);
+        unsigned int p10 = (unsigned int)__ldg(&src[b10 + ch]);
+        unsigned int p01 = (unsigned int)__ldg(&src[b01 + ch]);
+        unsigned int p11 = (unsigned int)__ldg(&src[b11 + ch]);
+        unsigned int top = p00 * fx1 + p10 * fx;
+        unsigned int bot = p01 * fx1 + p11 * fx;
+        dst[out + ch] = (unsigned char)((top * fy1 + bot * fy + (1u << 19)) >> 20);
+    }}
+}}
+"#
+    )
+}
+
+fn remap_u8_nearest_src(channels: usize) -> String {
+    format!(
+        r#"
+#define C {channels}
+extern "C" __global__ void remap_nearest_u8_c{channels}(
+    const unsigned char* __restrict__ src,
+    const float* __restrict__ map_x,
+    const float* __restrict__ map_y,
+    unsigned char* __restrict__ dst,
+    unsigned int src_w,
+    unsigned int src_h,
+    unsigned int dst_w,
+    unsigned int dst_h
+) {{
+    unsigned int gx = blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned int gy = blockIdx.y * blockDim.y + threadIdx.y;
+    if (gx >= dst_w || gy >= dst_h) return;
+
+    unsigned long long idx = (unsigned long long)gy * dst_w + gx;
+    float sx = __ldg(&map_x[idx]);
+    float sy = __ldg(&map_y[idx]);
+    unsigned long long out = idx * (unsigned long long)C;
+
+    if (sx < 0.0f || sx >= (float)src_w || sy < 0.0f || sy >= (float)src_h) {{
+        #pragma unroll
+        for (unsigned int ch = 0u; ch < C; ++ch) dst[out + ch] = 0;
+        return;
+    }}
+
+    unsigned int xi = min((unsigned int)roundf(sx), src_w - 1u);
+    unsigned int yi = min((unsigned int)roundf(sy), src_h - 1u);
+    unsigned long long b = ((unsigned long long)yi * src_w + xi) * (unsigned long long)C;
+
+    #pragma unroll
+    for (unsigned int ch = 0u; ch < C; ++ch) {{
+        dst[out + ch] = __ldg(&src[b + ch]);
+    }}
+}}
+"#
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn launch_remap_u8(
+    kernel_cell: &OnceLock<PerCKernelCache>,
+    kernel_src: fn(usize) -> String,
+    fn_name_prefix: &'static str,
+    ctx: &Arc<CudaContext>,
+    stream: &Arc<CudaStream>,
+    src: &CudaSlice<u8>,
+    map_x: &CudaSlice<f32>,
+    map_y: &CudaSlice<f32>,
+    dst: &mut CudaSlice<u8>,
+    src_width: u32,
+    src_height: u32,
+    dst_width: u32,
+    dst_height: u32,
+    channels: u32,
+    block_dim: Option<(u32, u32)>,
+) -> Result<(), CudaRemapError> {
+    check_geometry(src_width, src_height, dst_width, dst_height, block_dim)
+        .map_err(CudaRemapError::Cuda)?;
+    CudaRemapError::check_slice(
+        "src",
+        src.len(),
+        (src_width as usize) * (src_height as usize) * (channels as usize),
+    )?;
+    CudaRemapError::check_slice(
+        "dst",
+        dst.len(),
+        (dst_width as usize) * (dst_height as usize) * (channels as usize),
+    )?;
+    CudaRemapError::check_slice(
+        "map_x",
+        map_x.len(),
+        (dst_width as usize) * (dst_height as usize),
+    )?;
+    CudaRemapError::check_slice(
+        "map_y",
+        map_y.len(),
+        (dst_width as usize) * (dst_height as usize),
+    )?;
+
+    let cache = kernel_cell.get_or_init(Default::default);
+    let cached = cache
+        .lock()
+        .expect("warp kernel cache poisoned")
+        .get(&channels)
+        .cloned();
+    let kernel = if let Some(hit) = cached {
+        hit
+    } else {
+        let src_code = kernel_src(channels as usize);
+        let name = format!("{fn_name_prefix}_c{channels}");
+        let built =
+            Arc::new(try_compile_with_l1(ctx, &src_code, &name).map_err(CudaRemapError::Cuda)?);
+        cache
+            .lock()
+            .expect("warp kernel cache poisoned")
+            .entry(channels)
+            .or_insert(built)
+            .clone()
+    };
+
+    kernel
+        .launch_builder(stream)
+        .arg(src)
+        .arg(map_x)
+        .arg(map_y)
+        .arg(dst)
+        .arg(&src_width)
+        .arg(&src_height)
+        .arg(&dst_width)
+        .arg(&dst_height)
+        .launch_2d(
+            dst_width,
+            dst_height,
+            make_config(dst_width, dst_height, block_dim),
+        )
+        .map_err(|e| CudaRemapError::Cuda(e.to_string()))
+}
+
+/// Launch the bilinear remap kernel for a `u8` image.
+///
+/// Each output pixel at `(gx, gy)` samples `src` at
+/// `(map_x[gy*dst_w+gx], map_y[gy*dst_w+gx])` using Q10 bilinear
+/// interpolation. Source coordinates outside `[0, src_w) × [0, src_h)` produce
+/// 0 output.
+///
+/// # Arguments
+///
+/// * `ctx`       - CUDA context used for kernel compilation on first call.
+/// * `stream`    - CUDA stream for the kernel launch.
+/// * `src`       - Source image, `src_w * src_h * C` u8 elements, row-major.
+/// * `map_x`     - Source x-coordinate per output pixel, `dst_w * dst_h` f32.
+/// * `map_y`     - Source y-coordinate per output pixel, `dst_w * dst_h` f32.
+/// * `dst`       - Destination buffer, at least `dst_w * dst_h * C` u8.
+/// * `src_width` / `src_height` - Source image dimensions.
+/// * `dst_width` / `dst_height` - Destination image dimensions.
+/// * `channels`   - Compile-time channel count forwarded from the caller.
+/// * `block_dim`  - Optional `(bw, bh)` thread-block override; `None` → 32×8.
+///
+/// # Returns
+///
+/// `Ok(())` on success.
+///
+/// # Errors
+///
+/// Returns [`CudaRemapError`] on compile failure, launch error, or if any
+/// slice is too small.
+#[allow(clippy::too_many_arguments)]
+pub fn launch_remap_bilinear_u8_cuda(
+    ctx: &Arc<CudaContext>,
+    stream: &Arc<CudaStream>,
+    src: &CudaSlice<u8>,
+    map_x: &CudaSlice<f32>,
+    map_y: &CudaSlice<f32>,
+    dst: &mut CudaSlice<u8>,
+    src_width: u32,
+    src_height: u32,
+    dst_width: u32,
+    dst_height: u32,
+    channels: u32,
+    block_dim: Option<(u32, u32)>,
+) -> Result<(), CudaRemapError> {
+    launch_remap_u8(
+        &BILINEAR_U8_KERNELS,
+        remap_u8_bilinear_src,
+        "remap_bilinear_u8",
+        ctx,
+        stream,
+        src,
+        map_x,
+        map_y,
+        dst,
+        src_width,
+        src_height,
+        dst_width,
+        dst_height,
+        channels,
+        block_dim,
+    )
+}
+
+/// Launch the nearest-neighbor remap kernel for a `u8` image.
+///
+/// Same as [`launch_remap_bilinear_u8_cuda`] but uses round-to-nearest source
+/// sampling.
+///
+/// # Arguments
+///
+/// See [`launch_remap_bilinear_u8_cuda`] — arguments are identical.
+///
+/// # Returns
+///
+/// `Ok(())` on success.
+///
+/// # Errors
+///
+/// Returns [`CudaRemapError`] on compile failure, launch error, or if any
+/// slice is too small.
+#[allow(clippy::too_many_arguments)]
+pub fn launch_remap_nearest_u8_cuda(
+    ctx: &Arc<CudaContext>,
+    stream: &Arc<CudaStream>,
+    src: &CudaSlice<u8>,
+    map_x: &CudaSlice<f32>,
+    map_y: &CudaSlice<f32>,
+    dst: &mut CudaSlice<u8>,
+    src_width: u32,
+    src_height: u32,
+    dst_width: u32,
+    dst_height: u32,
+    channels: u32,
+    block_dim: Option<(u32, u32)>,
+) -> Result<(), CudaRemapError> {
+    launch_remap_u8(
+        &NEAREST_U8_KERNELS,
+        remap_u8_nearest_src,
+        "remap_nearest_u8",
+        ctx,
+        stream,
+        src,
+        map_x,
+        map_y,
+        dst,
+        src_width,
+        src_height,
+        dst_width,
+        dst_height,
+        channels,
         block_dim,
     )
 }

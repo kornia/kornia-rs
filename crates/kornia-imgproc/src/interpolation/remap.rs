@@ -1,4 +1,5 @@
 use crate::parallel;
+use rayon::prelude::*;
 
 use super::interpolate::validate_interpolation;
 use super::InterpolationMode;
@@ -7,7 +8,10 @@ use kornia_image::{Image, ImageError};
 #[cfg(feature = "cuda")]
 use {
     crate::cuda::dispatch::{device_slices, dims_u32, no_gpu_kernel_err, untyped_device_err},
-    crate::cuda::remap::{launch_remap_bilinear_cuda, launch_remap_nearest_cuda},
+    crate::cuda::remap::{
+        launch_remap_bilinear_cuda, launch_remap_bilinear_u8_cuda, launch_remap_nearest_cuda,
+        launch_remap_nearest_u8_cuda,
+    },
     cudarc::driver::CudaStream,
     std::sync::Arc,
 };
@@ -27,6 +31,10 @@ use {
 /// * `map_x` - Source x coordinate for each output pixel, shape (height, width, 1).
 /// * `map_y` - Source y coordinate for each output pixel, shape (height, width, 1).
 /// * `interpolation` - The interpolation mode to use.
+///
+/// # Returns
+///
+/// `Ok(())` on success.
 ///
 /// # Errors
 ///
@@ -100,6 +108,132 @@ pub fn remap<const C: usize>(
     Ok(())
 }
 
+/// Apply a generic geometric transformation to a `u8` image.
+///
+/// The coordinate maps are still `f32` images, one source coordinate per
+/// output pixel. Bilinear interpolation uses the same Q10 fixed-point sampler
+/// as the `u8` warp kernels, so fractional weights are quantized before the
+/// final byte blend. Nearest-neighbor samples with constant-0 border handling.
+///
+/// # Arguments
+///
+/// * `src` - The input image container with shape (height, width, C).
+/// * `dst` - The output image container with shape (height, width, C).
+/// * `map_x` - Source x coordinate for each output pixel, shape (height, width, 1).
+/// * `map_y` - Source y coordinate for each output pixel, shape (height, width, 1).
+/// * `interpolation` - The interpolation mode to use.
+///
+/// # Returns
+///
+/// `Ok(())` on success.
+///
+/// # Errors
+///
+/// * `map_x` and `map_y` must have the same size.
+/// * `dst` must have the same size as the maps.
+/// * [`ImageError::UnsupportedInterpolation`] is returned for interpolation
+///   modes other than bilinear and nearest-neighbor.
+pub fn remap_u8<const C: usize>(
+    src: &Image<u8, C>,
+    dst: &mut Image<u8, C>,
+    map_x: &Image<f32, 1>,
+    map_y: &Image<f32, 1>,
+    interpolation: InterpolationMode,
+) -> Result<(), ImageError> {
+    if map_x.size() != map_y.size() {
+        return Err(ImageError::InvalidImageSize(
+            map_x.rows(),
+            map_x.cols(),
+            map_y.rows(),
+            map_y.cols(),
+        ));
+    }
+    if dst.size() != map_x.size() {
+        return Err(ImageError::InvalidImageSize(
+            dst.rows(),
+            dst.cols(),
+            map_x.rows(),
+            map_x.cols(),
+        ));
+    }
+
+    validate_interpolation(interpolation)?;
+
+    #[cfg(feature = "cuda")]
+    {
+        use crate::cuda::dispatch::{is_device, pair_residency, Residency};
+        if let Residency::Device(exec) = pair_residency(src, dst)? {
+            if !is_device(map_x) || !is_device(map_y) {
+                return Err(ImageError::Cuda(
+                    "remap_u8: map_x and map_y must be device-resident when src/dst are on GPU"
+                        .into(),
+                ));
+            }
+            return exec.run(|stream| remap_u8_cuda(src, dst, map_x, map_y, interpolation, stream));
+        }
+    }
+
+    let src_slice = src.as_slice();
+    let map_x_slice = map_x.as_slice();
+    let map_y_slice = map_y.as_slice();
+    let src_w = src.cols() as i32;
+    let src_h = src.rows() as i32;
+    let src_w_f = src_w as f32;
+    let src_h_f = src_h as f32;
+    let src_stride = src.cols() * C;
+    let dst_w = dst.cols();
+    let dst_stride = dst_w * C;
+
+    let zero_pixel = |dst_pixel: &mut [u8]| {
+        for pixel in dst_pixel.iter_mut().take(C) {
+            *pixel = 0;
+        }
+    };
+
+    match interpolation {
+        InterpolationMode::Bilinear => {
+            dst.as_slice_mut()
+                .par_chunks_exact_mut(dst_stride)
+                .enumerate()
+                .for_each(|(y, dst_row)| {
+                    let row_base = y * dst_w;
+                    for x in 0..dst_w {
+                        let xf = map_x_slice[row_base + x];
+                        let yf = map_y_slice[row_base + x];
+                        let dst_pixel = &mut dst_row[x * C..x * C + C];
+                        crate::warp::bilinear_sample_u8::<C>(
+                            src_slice, src_w, src_h, src_stride, xf, yf, dst_pixel,
+                        );
+                    }
+                });
+        }
+        InterpolationMode::Nearest => {
+            dst.as_slice_mut()
+                .par_chunks_exact_mut(dst_stride)
+                .enumerate()
+                .for_each(|(y, dst_row)| {
+                    let row_base = y * dst_w;
+                    for x in 0..dst_w {
+                        let xf = map_x_slice[row_base + x];
+                        let yf = map_y_slice[row_base + x];
+                        let dst_pixel = &mut dst_row[x * C..x * C + C];
+                        if xf < 0.0 || xf >= src_w_f || yf < 0.0 || yf >= src_h_f {
+                            zero_pixel(dst_pixel);
+                        } else {
+                            let xi = (xf.round() as i32).clamp(0, src_w - 1) as usize;
+                            let yi = (yf.round() as i32).clamp(0, src_h - 1) as usize;
+                            let src_idx = (yi * src.cols() + xi) * C;
+                            dst_pixel.copy_from_slice(&src_slice[src_idx..src_idx + C]);
+                        }
+                    }
+                });
+        }
+        other => return Err(ImageError::UnsupportedInterpolation(other)),
+    }
+
+    Ok(())
+}
+
 /// Run the CUDA remap for a device-resident f32 triple (src, dst, maps).
 ///
 /// `map_x` and `map_y` are single-channel device images shaped like `dst` — one
@@ -138,6 +272,41 @@ fn remap_f32_cuda<const C: usize>(
         ),
         other => Err(crate::cuda::remap::CudaRemapError::Cuda(format!(
             "remap CUDA: {other:?} is not GPU-accelerated — move images to host for this mode"
+        ))),
+    }
+    .map_err(|e| ImageError::Cuda(e.to_string()))
+}
+
+#[cfg(feature = "cuda")]
+fn remap_u8_cuda<const C: usize>(
+    src: &Image<u8, C>,
+    dst: &mut Image<u8, C>,
+    map_x: &Image<f32, 1>,
+    map_y: &Image<f32, 1>,
+    interpolation: InterpolationMode,
+    stream: &Arc<CudaStream>,
+) -> Result<(), ImageError> {
+    let (src_w, src_h) = dims_u32(src)?;
+    let (dst_w, dst_h) = dims_u32(dst)?;
+    let map_x = map_x
+        .as_cudaslice()
+        .ok_or_else(|| untyped_device_err("map_x"))?;
+    let map_y = map_y
+        .as_cudaslice()
+        .ok_or_else(|| untyped_device_err("map_y"))?;
+    let ctx = stream.context();
+    let (s, d) = device_slices!(src, dst);
+    let channels = C as u32;
+
+    match interpolation {
+        InterpolationMode::Bilinear => launch_remap_bilinear_u8_cuda(
+            ctx, stream, s, map_x, map_y, d, src_w, src_h, dst_w, dst_h, channels, None,
+        ),
+        InterpolationMode::Nearest => launch_remap_nearest_u8_cuda(
+            ctx, stream, s, map_x, map_y, d, src_w, src_h, dst_w, dst_h, channels, None,
+        ),
+        other => Err(crate::cuda::remap::CudaRemapError::Cuda(format!(
+            "remap_u8 CUDA: {other:?} is not GPU-accelerated — move images to host for this mode"
         ))),
     }
     .map_err(|e| ImageError::Cuda(e.to_string()))
@@ -236,6 +405,99 @@ mod tests {
             assert!((a - b).abs() < 1e-6);
         }
 
+        Ok(())
+    }
+
+    #[test]
+    fn remap_u8_identity_bilinear() -> Result<(), ImageError> {
+        let image = Image::<_, 1>::new(
+            ImageSize {
+                width: 2,
+                height: 2,
+            },
+            vec![1u8, 2, 3, 4],
+        )?;
+        let map_x = make_map(2, 2, vec![0.0, 1.0, 0.0, 1.0])?;
+        let map_y = make_map(2, 2, vec![0.0, 0.0, 1.0, 1.0])?;
+        let mut dst = Image::<_, 1>::from_size_val(
+            ImageSize {
+                width: 2,
+                height: 2,
+            },
+            0,
+        )?;
+
+        super::remap_u8(
+            &image,
+            &mut dst,
+            &map_x,
+            &map_y,
+            super::InterpolationMode::Bilinear,
+        )?;
+
+        assert_eq!(dst.as_slice(), image.as_slice());
+        Ok(())
+    }
+
+    #[test]
+    fn remap_u8_bilinear_quantizes_fractional_weights() -> Result<(), ImageError> {
+        let image = Image::<_, 1>::new(
+            ImageSize {
+                width: 2,
+                height: 1,
+            },
+            vec![0u8, 255],
+        )?;
+        let map_x = make_map(1, 1, vec![0.1])?;
+        let map_y = make_map(1, 1, vec![0.0])?;
+        let mut dst = Image::<_, 1>::from_size_val(
+            ImageSize {
+                width: 1,
+                height: 1,
+            },
+            0,
+        )?;
+
+        super::remap_u8(
+            &image,
+            &mut dst,
+            &map_x,
+            &map_y,
+            super::InterpolationMode::Bilinear,
+        )?;
+
+        assert_eq!(dst.as_slice(), &[25]);
+        Ok(())
+    }
+
+    #[test]
+    fn remap_u8_nearest_zeroes_oob_maps() -> Result<(), ImageError> {
+        let image = Image::<_, 1>::new(
+            ImageSize {
+                width: 2,
+                height: 2,
+            },
+            vec![10u8, 20, 30, 40],
+        )?;
+        let map_x = make_map(2, 2, vec![0.49, 1.49, -1.0, 0.5])?;
+        let map_y = make_map(2, 2, vec![0.49, 0.49, 0.5, 2.0])?;
+        let mut dst = Image::<_, 1>::from_size_val(
+            ImageSize {
+                width: 2,
+                height: 2,
+            },
+            0,
+        )?;
+
+        super::remap_u8(
+            &image,
+            &mut dst,
+            &map_x,
+            &map_y,
+            super::InterpolationMode::Nearest,
+        )?;
+
+        assert_eq!(dst.as_slice(), &[10, 20, 0, 0]);
         Ok(())
     }
 }
