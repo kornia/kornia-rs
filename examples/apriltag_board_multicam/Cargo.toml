@@ -1,0 +1,17 @@
+[package]
+name = "apriltag_board_multicam"
+version = { workspace = true }
+authors = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+publish = false
+
+[dependencies]
+argh = { workspace = true }
+kornia = { workspace = true }
+kornia-algebra = { workspace = true }
+kornia-apriltag = { workspace = true }
+kornia-calib = { workspace = true }
+kornia-imgproc = { workspace = true }
+kornia-io = { workspace = true }
+rerun = { workspace = true }

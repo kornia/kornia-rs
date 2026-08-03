@@ -399,6 +399,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "apriltag_board_multicam"
+version = "0.1.15-rc.5"
+dependencies = [
+ "argh",
+ "kornia",
+ "kornia-algebra",
+ "kornia-apriltag",
+ "kornia-calib",
+ "kornia-imgproc",
+ "kornia-io",
+ "rerun",
+]
+
+[[package]]
 name = "arbitrary"
 version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
