@@ -341,7 +341,7 @@ pub fn launch_remap_nearest_cuda(
     )
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "cuda"))]
 mod tests {
     use super::*;
     use crate::cuda::color::test_utils::{default_stream, pattern_f32};
@@ -431,7 +431,6 @@ mod tests {
 
     /// Identity map: GPU output must reproduce the source exactly and match CPU.
     #[test]
-    #[ignore = "requires CUDA"]
     fn remap_identity_bilinear() {
         let (w, h) = (65, 33);
         let mx: Vec<f32> = (0..h).flat_map(|_| (0..w).map(|x| x as f32)).collect();
@@ -440,7 +439,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires CUDA"]
     fn remap_identity_nearest() {
         let (w, h) = (65, 33);
         let mx: Vec<f32> = (0..h).flat_map(|_| (0..w).map(|x| x as f32)).collect();
@@ -451,7 +449,6 @@ mod tests {
     /// Sub-pixel bilinear: non-integer source coordinates in the image interior —
     /// exercises the weight expression against bilinear_interpolation's shape.
     #[test]
-    #[ignore = "requires CUDA"]
     fn remap_subpixel_bilinear() {
         let (w, h) = (97, 65);
         // Each output pixel maps to (x+0.3, y+0.4); clamped to keep both taps
@@ -468,7 +465,6 @@ mod tests {
 
     /// OOB coordinates must produce 0 on GPU; verifies the border guard.
     #[test]
-    #[ignore = "requires CUDA"]
     fn remap_oob_writes_zero() {
         let (w, h) = (32, 32);
         let mx = vec![-5.0f32; w * h];
