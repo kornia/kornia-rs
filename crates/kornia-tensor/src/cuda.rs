@@ -1614,6 +1614,28 @@ mod tests {
         );
     }
 
+    /// Serialises the managed-memory tests against each other.
+    ///
+    /// Jetson Orin reports `CONCURRENT_MANAGED_ACCESS = 0`, and on such a
+    /// device managed allocation, `cuMemFree` and D2H copies out of managed
+    /// memory all need the device effectively to themselves — overlapping them
+    /// across threads faults the process rather than returning an error.
+    /// libtest gives no way to mark a test exclusive, so every test that
+    /// allocates managed memory takes this lock. It is uncontended on a
+    /// discrete GPU, where the same tests are safe to overlap.
+    ///
+    /// The guard is taken for the whole test body, including the tensor's drop,
+    /// because the `cuMemFree` in `Backing::Managed`'s Drop is part of what has
+    /// to be exclusive.
+    static MANAGED: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Take [`MANAGED`], ignoring poisoning: a panicking test has already
+    /// failed, and refusing the lock afterwards would turn one failure into
+    /// a cascade of unrelated ones.
+    fn managed_guard() -> std::sync::MutexGuard<'static, ()> {
+        MANAGED.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// True when the CPU may touch managed memory while kernels run. Jetson
     /// Orin reports 0, a discrete GTX/RTX reports 1. Where it is 0 there is no
     /// safe window for host access in a parallel test harness — another test's
@@ -1631,6 +1653,7 @@ mod tests {
     /// through CUDA kernel execution without an explicit H2D copy.
     #[test]
     fn unified_host_access_and_domain() -> Result<(), Box<dyn std::error::Error>> {
+        let _exclusive = managed_guard();
         let ctx = CudaContext::new(0)?;
         let stream = ctx.default_stream();
 
@@ -1703,6 +1726,7 @@ mod tests {
     /// `zeros_cuda_unified` drop must not double-free: a subsequent alloc must succeed.
     #[test]
     fn unified_drop_no_double_free() -> Result<(), Box<dyn std::error::Error>> {
+        let _exclusive = managed_guard();
         let stream = CudaContext::new(0)?.default_stream();
 
         let t = zeros_cuda_unified::<u8, 1>([16], &stream)?;
@@ -1719,6 +1743,7 @@ mod tests {
     #[test]
     fn unified_allocator_allocates_zeroed_host_accessible_memory(
     ) -> Result<(), Box<dyn std::error::Error>> {
+        let _exclusive = managed_guard();
         let stream = CudaContext::new(0)?.default_stream();
         let alloc = unified_alloc(&stream);
 
@@ -1794,6 +1819,7 @@ mod tests {
     /// The accessors the type split had already been taught.
     #[test]
     fn unified_slice_and_stream_accessors() -> Result<(), Box<dyn std::error::Error>> {
+        let _exclusive = managed_guard();
         let stream = CudaContext::new(0)?.default_stream();
         let t = seeded_unified(&stream)?;
         assert!(t.as_cudaslice().is_some(), "as_cudaslice");
@@ -1809,6 +1835,7 @@ mod tests {
     /// unified tensor could reach a kernel but not get its data back out.
     #[test]
     fn unified_to_host_variants() -> Result<(), Box<dyn std::error::Error>> {
+        let _exclusive = managed_guard();
         let stream = CudaContext::new(0)?.default_stream();
         let t = seeded_unified(&stream)?;
 
@@ -1824,6 +1851,7 @@ mod tests {
     /// `cuda_stream()` call succeeded while the downcast two lines above did not.
     #[test]
     fn unified_to_host_into() -> Result<(), Box<dyn std::error::Error>> {
+        let _exclusive = managed_guard();
         let stream = CudaContext::new(0)?.default_stream();
         let t = seeded_unified(&stream)?;
 
@@ -1837,6 +1865,7 @@ mod tests {
     /// rejected managed tensors.
     #[test]
     fn unified_to_host_in_pinned() -> Result<(), Box<dyn std::error::Error>> {
+        let _exclusive = managed_guard();
         let stream = CudaContext::new(0)?.default_stream();
         let t = seeded_unified(&stream)?;
 
@@ -1851,6 +1880,7 @@ mod tests {
     /// wrong deallocator.
     #[test]
     fn unified_into_cudaslice_refuses() -> Result<(), Box<dyn std::error::Error>> {
+        let _exclusive = managed_guard();
         let stream = CudaContext::new(0)?.default_stream();
         let t = seeded_unified(&stream)?;
         assert!(
@@ -1866,6 +1896,7 @@ mod tests {
     /// with the layout that was requested.
     #[test]
     fn unified_zero_sized_reports_zero_bytes() -> Result<(), Box<dyn std::error::Error>> {
+        let _exclusive = managed_guard();
         let stream = CudaContext::new(0)?.default_stream();
 
         let t = zeros_cuda_unified::<f32, 1>([0], &stream)?;
@@ -1886,6 +1917,7 @@ mod tests {
     /// that used to.
     #[test]
     fn unified_repeated_alloc_drop_is_clean() -> Result<(), Box<dyn std::error::Error>> {
+        let _exclusive = managed_guard();
         let stream = CudaContext::new(0)?.default_stream();
 
         for i in 0..256 {
