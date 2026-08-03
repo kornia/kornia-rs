@@ -1773,57 +1773,86 @@ mod tests {
         Ok(())
     }
 
-    /// Every device accessor must work for a managed tensor, because after the
-    /// merge there is only one resource type to downcast to. Before it, three
-    /// accessors were taught about unified memory and `into_cudaslice`,
-    /// `to_host`, `to_host_into` and `to_host_in` still rejected it — so a
-    /// unified tensor could reach a kernel but not get its data back out
-    /// through the crate's own API.
-    #[test]
-    fn unified_round_trips_through_every_host_accessor() -> Result<(), Box<dyn std::error::Error>> {
-        let stream = CudaContext::new(0)?.default_stream();
-
-        let mut t = zeros_cuda_unified::<u8, 1>([8], &stream)?;
-        // Seeded with a device copy, not `as_slice_mut`: this test is about the
-        // accessors, and on a device without concurrent managed access a host
-        // write here would race the other tests' kernels.
+    /// Seed a managed tensor with a device copy — never `as_slice_mut`, which
+    /// would race other tests' kernels on a device without concurrent managed
+    /// access.
+    fn seeded_unified(
+        stream: &Arc<CudaStream>,
+    ) -> Result<Tensor<u8, 1>, Box<dyn std::error::Error>> {
+        let mut t = zeros_cuda_unified::<u8, 1>([8], stream)?;
         let seed = [1u8, 2, 3, 4, 5, 6, 7, 8];
         {
             let slice = t.as_cudaslice_mut().ok_or("unified tensor has no slice")?;
             stream.memcpy_htod(&seed, slice)?;
         }
         stream.synchronize()?;
+        Ok(t)
+    }
 
-        // The three accessors that were already taught.
+    const SEED: [u8; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
+
+    /// The accessors the type split had already been taught.
+    #[test]
+    fn unified_slice_and_stream_accessors() -> Result<(), Box<dyn std::error::Error>> {
+        let stream = CudaContext::new(0)?.default_stream();
+        let t = seeded_unified(&stream)?;
         assert!(t.as_cudaslice().is_some(), "as_cudaslice");
         assert!(t.cuda_stream().is_some(), "cuda_stream");
         assert!(
             matches!(t.storage.domain(), MemoryDomain::Unified { .. }),
             "domain must stay Unified after the merge"
         );
+        Ok(())
+    }
 
-        // The ones that used to return NotCudaBacked.
+    /// `to_host` and `to_host_owned` used to reject managed tensors, so a
+    /// unified tensor could reach a kernel but not get its data back out.
+    #[test]
+    fn unified_to_host_variants() -> Result<(), Box<dyn std::error::Error>> {
+        let stream = CudaContext::new(0)?.default_stream();
+        let t = seeded_unified(&stream)?;
+
         let host = t.to_host(&stream)?;
-        assert_eq!(host.as_slice(), &[1u8, 2, 3, 4, 5, 6, 7, 8], "to_host");
+        assert_eq!(host.as_slice(), &SEED, "to_host");
+
+        let owned = t.to_host_owned()?;
+        assert_eq!(owned.as_slice(), &SEED, "to_host_owned");
+        Ok(())
+    }
+
+    /// `to_host_into` was the clearest symptom of the half-taught bridge: its
+    /// `cuda_stream()` call succeeded while the downcast two lines above did not.
+    #[test]
+    fn unified_to_host_into() -> Result<(), Box<dyn std::error::Error>> {
+        let stream = CudaContext::new(0)?.default_stream();
+        let t = seeded_unified(&stream)?;
 
         let mut dst = [0u8; 8];
         t.to_host_into(&mut dst)?;
-        assert_eq!(dst, [1u8, 2, 3, 4, 5, 6, 7, 8], "to_host_into");
+        assert_eq!(dst, SEED, "to_host_into");
+        Ok(())
+    }
 
-        let owned = t.to_host_owned()?;
-        assert_eq!(
-            owned.as_slice(),
-            &[1u8, 2, 3, 4, 5, 6, 7, 8],
-            "to_host_owned"
-        );
+    /// `to_host_in` with a pinned destination — the last of the four that
+    /// rejected managed tensors.
+    #[test]
+    fn unified_to_host_in_pinned() -> Result<(), Box<dyn std::error::Error>> {
+        let stream = CudaContext::new(0)?.default_stream();
+        let t = seeded_unified(&stream)?;
 
-        let ctx = stream.context();
-        let pinned = t.to_host_in(&stream, pinned_alloc(ctx))?;
-        assert_eq!(pinned.as_slice(), &[1u8, 2, 3, 4, 5, 6, 7, 8], "to_host_in");
+        let pinned = t.to_host_in(&stream, pinned_alloc(stream.context()))?;
+        assert_eq!(pinned.as_slice(), &SEED, "to_host_in");
+        Ok(())
+    }
 
-        // `into_cudaslice` must still refuse: CudaSlice::drop frees with
-        // cuMemFreeAsync, which is not a valid free for a cuMemAllocManaged
-        // pointer. Handing the slice out would install the wrong deallocator.
+    /// `into_cudaslice` must keep refusing managed memory: `CudaSlice::drop`
+    /// frees with `cuMemFreeAsync`, which is not a valid free for a
+    /// `cuMemAllocManaged` pointer. Handing the slice out would install the
+    /// wrong deallocator.
+    #[test]
+    fn unified_into_cudaslice_refuses() -> Result<(), Box<dyn std::error::Error>> {
+        let stream = CudaContext::new(0)?.default_stream();
+        let t = seeded_unified(&stream)?;
         assert!(
             t.into_cudaslice().is_err(),
             "into_cudaslice must refuse managed memory (mismatched free)"
