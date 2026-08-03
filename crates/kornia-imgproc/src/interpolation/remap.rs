@@ -506,7 +506,7 @@ mod tests {
 
 #[cfg(all(test, feature = "cuda"))]
 mod cuda_tests {
-    use super::remap;
+    use super::{remap, remap_u8};
     use crate::cuda::color::test_utils::{default_stream, pattern_f32};
     use crate::interpolation::InterpolationMode;
     use kornia_image::{Image, ImageError, ImageSize};
@@ -591,6 +591,97 @@ mod cuda_tests {
             matches!(&err, ImageError::Cuda(msg) if msg.contains("device-resident")),
             "expected a Cuda error about device-resident maps, got {err:?}"
         );
+        Ok(())
+    }
+
+    /// Byte-exact contract for the **u8** remap kernel: the GPU quantisation
+    /// must reproduce the CPU u8 path exactly, for a non-trivial map that
+    /// exercises fractional weights rather than just an identity copy.
+    fn check_remap_u8_mode<const C: usize>(
+        mode: InterpolationMode,
+        (w, h): (usize, usize),
+    ) -> Result<(), ImageError> {
+        let stream = default_stream();
+        let size = ImageSize {
+            width: w,
+            height: h,
+        };
+
+        // Deterministic ramp over the full u8 range; 251 is prime so the
+        // pattern does not align with the row stride.
+        let data: Vec<u8> = (0..w * h * C).map(|i| (i % 251) as u8).collect();
+        let src = Image::<u8, C>::new(size, data)?;
+
+        // Fractional map with irrational-ish steps so the bilinear weights are
+        // never 0 or 1 — that is where quantisation actually differs — and a
+        // deliberate negative/overshoot band to exercise the border guard.
+        let mx: Vec<f32> = (0..h)
+            .flat_map(|_| (0..w).map(|x| x as f32 * 1.03 - 1.7))
+            .collect();
+        let my: Vec<f32> = (0..h)
+            .flat_map(|y| (0..w).map(move |_| y as f32 * 1.07 - 2.3))
+            .collect();
+        let map_x = Image::<f32, 1>::new(size, mx)?;
+        let map_y = Image::<f32, 1>::new(size, my)?;
+
+        let mut cpu_dst = Image::<u8, C>::from_size_val(size, 0)?;
+        remap_u8(&src, &mut cpu_dst, &map_x, &map_y, mode)?;
+
+        let d_src = src.to_cuda(&stream)?;
+        let mut d_dst = Image::<u8, C>::zeros_cuda(size, &stream)?;
+        let d_mx = map_x.to_cuda(&stream)?;
+        let d_my = map_y.to_cuda(&stream)?;
+        remap_u8(&d_src, &mut d_dst, &d_mx, &d_my, mode)?;
+        let gpu_dst = d_dst.to_host_owned()?;
+
+        let mismatches: Vec<_> = cpu_dst
+            .as_slice()
+            .iter()
+            .zip(gpu_dst.as_slice())
+            .enumerate()
+            .filter(|(_, (c, g))| c != g)
+            .take(8)
+            .map(|(i, (c, g))| format!("[{i}] cpu {c} gpu {g}"))
+            .collect();
+        assert!(
+            mismatches.is_empty(),
+            "remap_u8 {mode:?} {C}ch {w}x{h}: {} of {} elements differ; first: {}",
+            cpu_dst
+                .as_slice()
+                .iter()
+                .zip(gpu_dst.as_slice())
+                .filter(|(c, g)| c != g)
+                .count(),
+            cpu_dst.as_slice().len(),
+            mismatches.join(", ")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn public_remap_u8_device_equals_host() -> Result<(), ImageError> {
+        for &size in &[(65, 33), (127, 63), (16, 16), (1, 1)] {
+            check_remap_u8_mode::<3>(InterpolationMode::Bilinear, size)?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn public_remap_u8_nearest_device_equals_host() -> Result<(), ImageError> {
+        for &size in &[(65, 33), (127, 63), (16, 16), (1, 1)] {
+            check_remap_u8_mode::<3>(InterpolationMode::Nearest, size)?;
+        }
+        Ok(())
+    }
+
+    /// The kernel takes the channel count as a runtime argument, so 1- and
+    /// 4-channel images exercise a different indexing path than 3-channel.
+    #[test]
+    fn public_remap_u8_channels_device_equals_host() -> Result<(), ImageError> {
+        for &mode in &[InterpolationMode::Bilinear, InterpolationMode::Nearest] {
+            check_remap_u8_mode::<1>(mode, (65, 33))?;
+            check_remap_u8_mode::<4>(mode, (65, 33))?;
+        }
         Ok(())
     }
 }
