@@ -1529,6 +1529,9 @@ fn up_priors(
     a0: usize,
     config: &CalibConfig,
 ) -> Option<Vec<Option<BaPosePrior>>> {
+    // Same normalisation the depth and motion priors use: BA residuals are in normalised image
+    // units, these sigmas are not.
+    let sigma_r = (config.max_reprojection_error / 2.0).max(1e-6);
     if config.up_prior_sigma <= 0.0 {
         return None;
     }
@@ -1572,13 +1575,18 @@ fn up_priors(
                         center_world: [0.0; 3],
                         sigma: 1e6,
                         up_world: up_cam.map(|_| up_world),
-                        // A measurement gets the estimator's own sigma; the legacy assumption
-                        // keeps the tuned one it was calibrated against.
-                        up_sigma: if measured {
-                            config.gravity_sigma as f32
-                        } else {
-                            config.up_prior_sigma as f32
-                        },
+                        // A measurement gets the estimator's own sigma; the legacy assumption keeps
+                        // the tuned one it was calibrated against. BOTH are deflated by `sigma_r`,
+                        // for the same reason the depth and motion priors are (see `depth_fields`):
+                        // bundle adjustment runs against `PinholeCamera::IDENTITY`, so reprojection
+                        // residuals are in NORMALISED units while these sigmas are quoted in
+                        // unit-vector units. Passing them raw made this prior 1/sigma_r times
+                        // stiffer than every other term in the same solve -- 360x at fx 1440 with
+                        // `--max-reproj 8`, where a 1 degree pitch deviation cost what a 489 px
+                        // reprojection error would, and past ~0.1 degree the prior outweighed ALL
+                        // image evidence a camera had.
+                        up_sigma: (if measured { config.gravity_sigma } else { config.up_prior_sigma }
+                            / sigma_r) as f32,
                         up_cam: up_cam
                             .map(|u| [u[0] as f32, u[1] as f32, u[2] as f32])
                             .unwrap_or([0.0, -1.0, 0.0]),
