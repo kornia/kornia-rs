@@ -1614,6 +1614,19 @@ mod tests {
         );
     }
 
+    /// True when the CPU may touch managed memory while kernels run. Jetson
+    /// Orin reports 0, a discrete GTX/RTX reports 1. Where it is 0 there is no
+    /// safe window for host access in a parallel test harness — another test's
+    /// kernel can start at any moment — so those assertions are skipped and the
+    /// data is moved with device-side copies instead.
+    fn concurrent_managed_access(ctx: &Arc<CudaContext>) -> bool {
+        ctx.attribute(
+            cudarc::driver::sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_CONCURRENT_MANAGED_ACCESS,
+        )
+        .unwrap_or(0)
+            == 1
+    }
+
     /// Unified memory is host-accessible, domain is `Unified`, and it round-trips
     /// through CUDA kernel execution without an explicit H2D copy.
     #[test]
@@ -1629,10 +1642,18 @@ mod tests {
             t.storage.domain()
         );
 
-        // Unified memory is host-accessible — write from CPU.
-        t.as_slice_mut()
-            .copy_from_slice(&[10, 20, 30, 40, 50, 60, 70, 80]);
-        assert_eq!(t.as_slice(), &[10u8, 20, 30, 40, 50, 60, 70, 80]);
+        // Unified memory is host-accessible — write from the CPU where the
+        // device permits it concurrently, otherwise seed with a device copy.
+        let host_ok = concurrent_managed_access(&ctx);
+        let seed = [10u8, 20, 30, 40, 50, 60, 70, 80];
+        if host_ok {
+            t.as_slice_mut().copy_from_slice(&seed);
+            assert_eq!(t.as_slice(), &seed);
+        } else {
+            let slice = t.as_cudaslice_mut().ok_or("unified tensor has no slice")?;
+            stream.memcpy_htod(&seed, slice)?;
+            stream.synchronize()?;
+        }
 
         // Run a GPU kernel that increments each element, passing the unified pointer
         // as a device address — no H2D copy needed.
@@ -1658,12 +1679,24 @@ mod tests {
             .launch_1d(8)?;
         stream.synchronize()?;
 
-        // Read result back on the CPU — still no D2H copy needed.
-        assert_eq!(
-            t.as_slice(),
-            &[11u8, 21, 31, 41, 51, 61, 71, 81],
-            "GPU kernel must have incremented each element via unified pointer"
-        );
+        // Read the result back. Where the CPU may touch managed memory
+        // concurrently this needs no D2H copy at all, which is the property
+        // under test; elsewhere the same bytes come back via a device copy.
+        let expected = [11u8, 21, 31, 41, 51, 61, 71, 81];
+        if host_ok {
+            assert_eq!(
+                t.as_slice(),
+                &expected,
+                "GPU kernel must have incremented each element via unified pointer"
+            );
+        } else {
+            let back = t.to_host(&stream)?;
+            assert_eq!(
+                back.as_slice(),
+                &expected,
+                "GPU kernel must have incremented each element via unified pointer"
+            );
+        }
         Ok(())
     }
 
@@ -1712,21 +1745,27 @@ mod tests {
         );
 
         // The allocator zeroes on the host side, so the buffer is readable
-        // immediately with no H2D copy.
-        // SAFETY: the allocator returned `layout.size()` bytes of host-accessible
-        // unified memory, and f32 has no invalid bit patterns.
-        let buf = unsafe { std::slice::from_raw_parts_mut(owner.as_ptr() as *mut f32, N) };
-        assert!(
-            buf.iter().all(|&x| x == 0.0),
-            "unified allocation must arrive zero-initialised"
-        );
+        // immediately with no H2D copy — but only assert that by touching the
+        // pages where the device allows the CPU to do so while kernels run.
+        // Elsewhere this would race the rest of the suite (see
+        // `concurrent_managed_access`).
+        if concurrent_managed_access(&stream.context().clone()) {
+            // SAFETY: the allocator returned `layout.size()` bytes of
+            // host-accessible unified memory, and f32 has no invalid bit
+            // patterns. No kernel is running on this allocation.
+            let buf = unsafe { std::slice::from_raw_parts_mut(owner.as_ptr() as *mut f32, N) };
+            assert!(
+                buf.iter().all(|&x| x == 0.0),
+                "unified allocation must arrive zero-initialised"
+            );
 
-        // ... and writable, which is the property that lets the CPU produce a
-        // frame in place instead of staging it for an H2D copy.
-        for (i, x) in buf.iter_mut().enumerate() {
-            *x = i as f32;
+            // ... and writable, which is the property that lets the CPU produce
+            // a frame in place instead of staging it for an H2D copy.
+            for (i, x) in buf.iter_mut().enumerate() {
+                *x = i as f32;
+            }
+            assert_eq!(buf[N - 1], (N - 1) as f32);
         }
-        assert_eq!(buf[N - 1], (N - 1) as f32);
 
         // Freeing through the trait object must leave the context usable.
         drop(owner);
@@ -1745,8 +1784,15 @@ mod tests {
         let stream = CudaContext::new(0)?.default_stream();
 
         let mut t = zeros_cuda_unified::<u8, 1>([8], &stream)?;
-        t.as_slice_mut()
-            .copy_from_slice(&[1u8, 2, 3, 4, 5, 6, 7, 8]);
+        // Seeded with a device copy, not `as_slice_mut`: this test is about the
+        // accessors, and on a device without concurrent managed access a host
+        // write here would race the other tests' kernels.
+        let seed = [1u8, 2, 3, 4, 5, 6, 7, 8];
+        {
+            let slice = t.as_cudaslice_mut().ok_or("unified tensor has no slice")?;
+            stream.memcpy_htod(&seed, slice)?;
+        }
+        stream.synchronize()?;
 
         // The three accessors that were already taught.
         assert!(t.as_cudaslice().is_some(), "as_cudaslice");
