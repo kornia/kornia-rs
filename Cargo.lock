@@ -7852,7 +7852,6 @@ dependencies = [
  "criterion 0.8.2",
  "kornia-3d",
  "kornia-algebra",
- "kornia-apriltag",
  "log",
  "thiserror 2.0.18",
 ]
