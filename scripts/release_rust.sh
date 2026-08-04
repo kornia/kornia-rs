@@ -22,7 +22,6 @@
 #                        optional/feature-heavy deps)
 #   - kornia-vlm        (pulls in candle, tokio, hf-hub — heavy)
 #   - kornia-apriltag   (large git submodule of test images)
-#   - kornia-calib      (depends on kornia-apriltag, so excluded transitively)
 # Add them back to PUBLISH_ORDER below once those constraints are sorted.
 
 set -euo pipefail
@@ -63,6 +62,7 @@ PUBLISH_ORDER=(
   kornia-io
   kornia-imgproc
   kornia-3d
+  kornia-calib
 )
 
 # Tier-0 leaves (no kornia-* deps) — can be `cargo publish --dry-run`'d
