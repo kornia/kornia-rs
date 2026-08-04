@@ -169,46 +169,89 @@ impl Sim3F32 {
     fn w_matrix(omega: Vec3AF32, sigma: f32) -> Mat3AF32 {
         let omega_hat = SO3F32::hat(omega);
         let omega_hat_sq = omega_hat * omega_hat;
-        let theta = omega.length();
-        let scale = sigma.exp();
+        let (a, b, c) = Self::w_coefficients(omega.length() as f64, sigma as f64);
+        omega_hat * (a as f32) + omega_hat_sq * (b as f32) + Mat3AF32::IDENTITY * (c as f32)
+    }
 
-        let (a, b, c) = if sigma.abs() < SMALL_ANGLE_EPSILON {
-            // Scale rate vanishes: C -> 1 and W degenerates to SE(3)'s V, which is the ONLY
-            // regime where the old code was right.
-            if theta < SMALL_ANGLE_EPSILON {
-                (0.5, 1.0 / 6.0, 1.0)
-            } else {
+    /// `(A, B, C)` for [`Self::w_matrix`], in f64.
+    ///
+    /// # Why f64, and why series near zero
+    ///
+    /// All three coefficients are formed from differences whose leading parts cancel: `A`'s
+    /// numerator is `~sigma^2/2` and `B`'s is `~sigma^3/6`, both assembled from terms of size ~1.
+    /// Evaluated in f32 just above a branch threshold that is catastrophic — at `sigma = 1.1e-3`
+    /// the direct f32 expressions give `A = 0.443` against a true `0.5006`, and `B = 33.6` against
+    /// a true `0.1668`, i.e. wrong by 200x. These are three scalars per call, so the wider type
+    /// costs nothing and removes the cancellation instead of hiding it behind more branches.
+    ///
+    /// Below `SERIES_EPS` even f64 loses the difference, so the Taylor series is used there. Its
+    /// truncation error at the crossover is ~1e-12 relative, far below f32 resolution, so the
+    /// coefficients are continuous across the switch to the precision the caller can observe.
+    fn w_coefficients(theta: f64, sigma: f64) -> (f64, f64, f64) {
+        /// Below this the direct quotients lose their leading term even in f64.
+        const SERIES_EPS: f64 = 1.0e-3;
+
+        // C = (e^s - 1)/s. `exp_m1` keeps this accurate on its own; the series covers s -> 0,
+        // where the quotient is 0/0. C is 1 only in the limit -- pinning it to 1 across the whole
+        // small-sigma branch (as this once did) drops the s/2 term and puts a ~5e-4 RELATIVE step
+        // in every translation at the threshold, which no round-trip test can see because `log`
+        // inverts the same wrong W.
+        let c = if sigma.abs() < SERIES_EPS {
+            1.0 + sigma / 2.0 + sigma * sigma / 6.0 + sigma * sigma * sigma / 24.0
+        } else {
+            sigma.exp_m1() / sigma
+        };
+
+        let theta_small = theta < SMALL_ANGLE_EPSILON as f64;
+        let sigma_small = sigma.abs() < SERIES_EPS;
+
+        let (a, b) = match (theta_small, sigma_small) {
+            // Both vanish: the SE(3) limits.
+            (true, true) => (0.5, 1.0 / 6.0),
+            // Rotation only. A and B take their sigma -> 0 limits, which are SE(3)'s V.
+            (false, true) => {
                 let th2 = theta * theta;
                 (
                     (1.0 - theta.cos()) / th2,
                     (theta - theta.sin()) / (th2 * theta),
-                    1.0,
                 )
             }
-        } else {
-            let c = (scale - 1.0) / sigma;
-            if theta < SMALL_ANGLE_EPSILON {
-                // Pure scaling: the rotation terms take their theta -> 0 limits, which are NOT the
-                // sigma -> 0 limits above.
-                let s2 = sigma * sigma;
-                (
-                    ((sigma - 1.0) * scale + 1.0) / s2,
-                    (scale * 0.5 * s2 + scale - 1.0 - sigma * scale) / (s2 * sigma),
-                    c,
-                )
-            } else {
+            // Scale only. The theta -> 0 limits, which are NOT the sigma -> 0 limits above.
+            // A = sum_{m>=2} s^(m-2) (m-1)/m!, B likewise; both are the cancelling quotients, so
+            // the series runs to the order that leaves the residual under f64 noise at SERIES_EPS.
+            (true, false) => {
+                let s = sigma;
+                let e = sigma.exp();
+                if s.abs() < SERIES_EPS {
+                    (
+                        0.5 + s / 3.0 + s * s / 8.0 + s * s * s / 30.0,
+                        1.0 / 6.0 + s / 8.0 + s * s / 20.0,
+                    )
+                } else {
+                    let s2 = s * s;
+                    (
+                        (s * e - sigma.exp_m1()) / s2,
+                        (e * 0.5 * s2 - s * e + sigma.exp_m1()) / (s2 * s),
+                    )
+                }
+            }
+            // Coupled: both free. This is the branch the old code lacked entirely -- it applied
+            // SE(3)'s V and scaled separately, which is right only when one of the two is zero.
+            (false, false) => {
                 let th2 = theta * theta;
                 let s2 = sigma * sigma;
+                let scale = sigma.exp();
                 let sin_t = scale * theta.sin();
                 let cos_t = scale * theta.cos();
                 let denom = th2 + s2;
-                let a = (sin_t * sigma + (1.0 - cos_t) * theta) / (theta * denom);
-                let b = (c - ((cos_t - 1.0) * sigma + sin_t * theta) / denom) / th2;
-                (a, b, c)
+                (
+                    (sin_t * sigma + (1.0 - cos_t) * theta) / (theta * denom),
+                    (c - ((cos_t - 1.0) * sigma + sin_t * theta) / denom) / th2,
+                )
             }
         };
 
-        omega_hat * a + omega_hat_sq * b + Mat3AF32::IDENTITY * c
+        (a, b, c)
     }
 
     /// Exponential map from Lie algebra to group
@@ -234,8 +277,13 @@ impl Sim3F32 {
     pub fn log(&self) -> (Vec3AF32, Vec3AF32, f32) {
         let (omega, sigma) = self.rxso3.log();
         // Invert exactly the matrix `exp` applied — no separate series, no transpose, no rescale.
-        // W is well conditioned for any real (omega, sigma): C = (e^sigma - 1)/sigma > 0 always, and
-        // the rotation terms are bounded, so it never approaches singularity in practice.
+        //
+        // W is NOT unconditionally invertible: its eigenvalues are (e^l - 1)/l for l in
+        // {sigma, sigma +- i*theta}, so it is exactly singular at sigma = 0, |omega| = 2*pi — an
+        // input `exp` accepts. What makes this call site safe is the source of `omega`, not the
+        // matrix: `RxSO3::log` flips the quaternion when w < 0, so the omega it returns always has
+        // |omega| <= pi. Anyone reusing `w_matrix(..).inverse()` on an EXP-side tangent, which is
+        // unbounded, must handle the singularity themselves — glam does not check the determinant.
         let upsilon = Self::w_matrix(omega, sigma).inverse() * self.translation;
         (upsilon, omega, sigma)
     }
@@ -350,6 +398,85 @@ mod tests {
                 du < 1e-3 && dw < 1e-3 && ds < 1e-4,
                 "roundtrip failed for u={u:?} omega={w:?} sigma={sig}: \
                  d_upsilon={du:.6} d_omega={dw:.6} d_sigma={ds:.6}"
+            );
+        }
+    }
+
+    /// `exp` must agree with the matrix exponential of the sim(3) generator.
+    ///
+    /// This is the test that can actually catch a wrong `W`. The round-trip test CANNOT: `log`
+    /// recovers `(omega, sigma)` from `rxso3` alone and then applies `w_matrix(omega, sigma)`
+    /// inverse to what `exp` produced with that same matrix, so the composition is `W^-1 W = I` for
+    /// ANY invertible `W`. Corrupting the coupled branch leaves every round-trip assertion green.
+    ///
+    /// The reference here is independent of the implementation: a truncated series for
+    /// `expm([[Omega + sigma*I, upsilon], [0, 0]])`, summed in f64. 30 terms is ample for these
+    /// magnitudes (the tangent norms are O(1), so terms fall off factorially).
+    #[test]
+    fn sim3_exp_matches_matrix_exponential() {
+        // (upsilon, omega, sigma) spanning every branch of `w_coefficients`.
+        let cases: [([f32; 3], [f32; 3], f32); 6] = [
+            ([0.4, -0.2, 0.7], [0.3, 0.5, -0.2], 0.35), // coupled: both free
+            ([1.0, 2.0, -0.5], [0.0, 0.0, 0.0], 0.6),   // scale only
+            ([0.4, -0.2, 0.7], [0.3, 0.5, -0.2], 0.0),  // rotation only
+            ([1.0, -2.0, 0.5], [0.0, 0.0, 0.0], 0.0),   // both vanish
+            ([10.0, 0.0, 0.0], [0.0, 0.0, 0.0], 9e-4),  // just INSIDE the sigma series branch
+            ([1.0, 2.0, 3.0], [0.0, 0.0, 0.5], 1.1e-3), // just OUTSIDE it: pins continuity
+        ];
+        for (u, w, sig) in cases {
+            // 4x4 generator [[Omega + sigma*I, upsilon], [0, 0]], row-major in f64.
+            let (wx, wy, wz) = (w[0] as f64, w[1] as f64, w[2] as f64);
+            let s = sig as f64;
+            let gen = [
+                [s, -wz, wy, u[0] as f64],
+                [wz, s, -wx, u[1] as f64],
+                [-wy, wx, s, u[2] as f64],
+                [0.0, 0.0, 0.0, 0.0],
+            ];
+            // expm by its defining series: sum_k G^k / k!.
+            let mut acc = [[0.0f64; 4]; 4];
+            let mut term = [[0.0f64; 4]; 4];
+            for i in 0..4 {
+                acc[i][i] = 1.0;
+                term[i][i] = 1.0;
+            }
+            for k in 1..30 {
+                let mut next = [[0.0f64; 4]; 4];
+                for i in 0..4 {
+                    for j in 0..4 {
+                        let mut v = 0.0;
+                        for (m, gm) in gen.iter().enumerate() {
+                            v += term[i][m] * gm[j];
+                        }
+                        next[i][j] = v / k as f64;
+                    }
+                }
+                term = next;
+                for i in 0..4 {
+                    for j in 0..4 {
+                        acc[i][j] += term[i][j];
+                    }
+                }
+            }
+
+            let got = Sim3F32::exp(
+                Vec3AF32::new(u[0], u[1], u[2]),
+                Vec3AF32::new(w[0], w[1], w[2]),
+                sig,
+            );
+            let t = got.translation;
+            let (tx, ty, tz) = (t.x as f64, t.y as f64, t.z as f64);
+            // Relative tolerance: the f32 group element cannot carry more than ~1e-6 relative.
+            let mag = (acc[0][3].abs() + acc[1][3].abs() + acc[2][3].abs()).max(1.0);
+            let err =
+                ((tx - acc[0][3]).abs() + (ty - acc[1][3]).abs() + (tz - acc[2][3]).abs()) / mag;
+            assert!(
+                err < 1e-5,
+                "exp translation disagrees with expm for u={u:?} w={w:?} sigma={sig}: \
+                 got ({tx:.6}, {ty:.6}, {tz:.6}) want ({:.6}, {:.6}, {:.6}) rel_err={err:.3e}",
+                acc[0][3],
+                acc[1][3],
+                acc[2][3]
             );
         }
     }
