@@ -319,7 +319,7 @@ impl SiftMatcher {
         //
         // That is not cosmetic, because the consumers are order-sensitive: RANSAC draws its minimal
         // samples by index (so even a fixed seed sees different correspondences), and track building
-        // unions in list order. Measured on a 40-keyframe flux-map build from an IDENTICAL keypoint
+        // unions in list order. Measured on a 40-keyframe reconstruction from an IDENTICAL keypoint
         // set (same `total_kpts` to the unit): two GPU runs gave 27375 vs 27265 observations and
         // 6957 vs 6925 points, while the CPU matcher reproduced bit-for-bit across the same pair.
         // On a full 365-keyframe clip it compounds to 25-33% swings in point count — enough to

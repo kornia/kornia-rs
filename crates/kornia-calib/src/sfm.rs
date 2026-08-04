@@ -557,7 +557,7 @@ pub fn calibrate_features_with_depth(
             // and, worse, push that stale pixel into `norm` for the final bundle adjustment to read
             // as a measurement.
             //
-            // The error is not small where it matters. At flux-map's 2 px threshold on a ~1400 px
+            // The error is not small where it matters. At a 2 px threshold on a ~1400 px
             // focal, a 0.35% focal correction already exceeds it at field radius 0.4, and k1 = 0.05
             // gives ~4.5 px there. Peripheral observations — the ones carrying parallax — would be
             // silently refused, and the debug line would honestly report "re-admitted 0" while
@@ -1824,10 +1824,10 @@ fn covisible_window(
 ///
 /// Two reasons, both load-bearing:
 ///
-/// 1. A free intercept absorbs BAS-RELIEF COMPRESSION rather than correcting it. The measured case
-///    on this pipeline: sparse depth spanned a ratio of 1.13 across a view where the network saw
-///    2.13, and an affine fit reproduced that flattening faithfully instead of resisting it (see
-///    `fit_scale` in flux-map's densifier, which reached the same conclusion from the other end).
+/// 1. A free intercept absorbs BAS-RELIEF COMPRESSION rather than correcting it. The measured case:
+///    sparse depth spanned a ratio of 1.13 across a view where the network saw 2.13, and an affine
+///    fit reproduced that flattening faithfully instead of resisting it. A scale-only fit over the
+///    same data, derived independently, reached the same conclusion from the other end.
 /// 2. A free intercept per keyframe makes the map's absolute scale unobservable from depth. That is
 ///    acceptable for a pose estimator; it is not acceptable here, where the map must be metric for a
 ///    fixed camera to relocalize against it later.

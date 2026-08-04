@@ -3268,7 +3268,8 @@ mod tests {
     }
 
     /// Out-of-plane spread of a set of world→cam poses' camera centres, as a fraction of the
-    /// largest spread — the same gauge-free quantity `flux-map`'s `trajectory_planarity` check uses.
+    /// largest spread. Gauge-free: a ratio of principal spreads is invariant to the similarity
+    /// freedom a monocular reconstruction carries.
     fn flatness(poses: &[Pose3d]) -> f64 {
         let se3s: Vec<SE3F32> = poses.iter().map(pose_to_se3).collect();
         let local: Vec<i64> = (0..poses.len() as i64).collect();

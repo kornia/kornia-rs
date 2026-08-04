@@ -219,7 +219,7 @@ pub struct CalibConfig {
 }
 
 impl CalibConfig {
-    /// Config with flux-derived defaults for the given tag size (metres).
+    /// Config with the default solver settings for the given tag size (metres).
     pub fn new(tag_size_m: f64) -> Self {
         Self {
             tag_size_m,

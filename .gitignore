@@ -12,3 +12,6 @@ build/
 .omc/
 tests/data/euroc_mh01_gt/
 target
+
+# samply/Firefox Profiler traces — never commit profiling output to the library repo
+*.json.gz
