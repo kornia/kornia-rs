@@ -78,9 +78,16 @@ pub struct PnPRansacResult {
 
 /// Solve PnP robustly using a legacy RANSAC loop around a base PnP method (e.g., EPnP).
 ///
-/// - Minimal sample size is 5 for EPnP (4 when only 4 points available).
+/// - Minimal sample size follows the KERNEL: 3 for AP3P (an exact P3P solver), 5 for EPnP (4 when
+///   only 4 points are available). This is what makes a P3P kernel worth using here — a clean
+///   sample has probability `w^k` at inlier ratio `w`, so `k = 3` rather than `5` yields `w^2` more
+///   successful iterations (16x at `w = 0.25`).
 /// - Scoring uses Euclidean pixel reprojection error.
 /// - Iterations adapt from current inlier ratio and desired confidence.
+/// - With `params.refine`, the final non-minimal refit over all inliers uses **EPnP even when the
+///   sampling kernel was AP3P**, because a minimal solver cannot consume more than its exact
+///   correspondence count. The returned pose is therefore an EPnP fit to the AP3P-selected
+///   consensus set — the standard minimal-kernel / non-minimal-refit split.
 pub fn solve_pnp_ransac(
     world: &[Vec3AF32],
     image: &[Vec2F32],
@@ -107,11 +114,20 @@ pub fn solve_pnp_ransac(
         .into());
     }
 
-    // Minimal set size: EPnP uses 5 points (unless only 4 points available)
-    let sample_size: usize = if n == MIN_CORRESPONDENCES {
-        MIN_CORRESPONDENCES
-    } else {
-        EPNP_MIN_SAMPLE_SIZE
+    // Minimal set size is a property of the KERNEL: AP3P is an exact 3-point solver (it rejects
+    // any other count), while EPnP samples 5 (unless only 4 points exist). Using the kernel's
+    // true minimal size is not merely a fix — it is the point of a P3P kernel inside RANSAC: at
+    // inlier ratio w the probability of a clean sample is w^k, so k=3 vs k=5 is a factor of w^2
+    // more successful iterations (16x at w=0.25).
+    let sample_size: usize = match &base {
+        PnPMethod::AP3P(_) | PnPMethod::AP3PDefault => 3,
+        PnPMethod::EPnP(_) | PnPMethod::EPnPDefault => {
+            if n == MIN_CORRESPONDENCES {
+                MIN_CORRESPONDENCES
+            } else {
+                EPNP_MIN_SAMPLE_SIZE
+            }
+        }
     };
 
     // Precompute intrinsics vectors
@@ -233,14 +249,20 @@ pub fn solve_pnp_ransac(
     }
 
     let mut final_pose = if params.refine {
-        // Refit on all inliers using the base solver.
+        // Refit on all inliers. A minimal solver cannot do this — AP3P rejects any count other
+        // than 3 — so the non-minimal refit always uses EPnP, the standard minimal-kernel /
+        // non-minimal-refit split.
+        let refit_method = match &base {
+            PnPMethod::AP3P(_) | PnPMethod::AP3PDefault => PnPMethod::EPnPDefault,
+            other => other.clone(),
+        };
         let mut w_all = Vec::with_capacity(best_inliers.len());
         let mut i_all = Vec::with_capacity(best_inliers.len());
         for &idx in &best_inliers {
             w_all.push(world[idx]);
             i_all.push(image[idx]);
         }
-        solve_pnp(&w_all, &i_all, k, distortion, base.clone())?
+        solve_pnp(&w_all, &i_all, k, distortion, refit_method)?
     } else {
         match best_pose {
             Some(p) => p,
@@ -529,5 +551,68 @@ mod tests {
             result.unwrap_err(),
             PnPRansacError::Base(PnPError::InsufficientCorrespondences { .. })
         ));
+    }
+
+    /// AP3P must actually run inside RANSAC.
+    ///
+    /// The minimal sample size used to be EPnP's unconditionally, but AP3P is an exact 3-point
+    /// solver that rejects any other count. So every iteration handed it 5 points, it errored,
+    /// the loop swallowed the error and continued, and `best_pose` stayed `None` — the caller got
+    /// "RANSAC failed to produce a pose despite sufficient inliers", an error blaming the data for
+    /// a kernel that never ran once. This test fails before the fix, both with `refine` off (the
+    /// misleading error) and on (a refit over zero inliers).
+    #[test]
+    fn ap3p_registers_a_pose_inside_ransac() -> Result<(), PnPRansacError> {
+        // A known-good rigid configuration: the module's own test scene, all six points inliers.
+        let points_world: [Vec3AF32; 6] = [
+            Vec3AF32::new(0.0315, 0.03333, -0.10409),
+            Vec3AF32::new(-0.0315, 0.03333, -0.10409),
+            Vec3AF32::new(0.0, -0.00102, -0.12977),
+            Vec3AF32::new(0.02646, -0.03167, -0.1053),
+            Vec3AF32::new(-0.02646, -0.031667, -0.1053),
+            Vec3AF32::new(0.0, 0.04515, -0.11033),
+        ];
+        let points_image: [Vec2F32; 6] = [
+            Vec2F32::new(722.96466, 502.0828),
+            Vec2F32::new(669.88837, 498.61877),
+            Vec2F32::new(707.0025, 478.48975),
+            Vec2F32::new(728.05634, 447.56918),
+            Vec2F32::new(682.6069, 443.91776),
+            Vec2F32::new(696.4414, 511.96442),
+        ];
+        let k = k_default();
+        let params = RansacParams {
+            max_iterations: 50,
+            reproj_threshold_px: 8.0,
+            confidence: 0.99,
+            random_seed: Some(42),
+            refine: false,
+        };
+
+        let res = solve_pnp_ransac(
+            &points_world,
+            &points_image,
+            &k,
+            None,
+            PnPMethod::AP3PDefault,
+            &params,
+        )?;
+        assert_eq!(res.inliers.len(), 6, "AP3P should register every inlier");
+
+        // `refine` must also work: the non-minimal refit cannot use AP3P, so it falls back to
+        // EPnP. Before the fix this path could not be reached at all.
+        let refined = solve_pnp_ransac(
+            &points_world,
+            &points_image,
+            &k,
+            None,
+            PnPMethod::AP3PDefault,
+            &RansacParams {
+                refine: true,
+                ..params
+            },
+        )?;
+        assert_eq!(refined.inliers.len(), 6);
+        Ok(())
     }
 }
