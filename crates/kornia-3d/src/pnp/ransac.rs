@@ -1,16 +1,21 @@
 //! RANSAC-based robust wrapper for PnP solvers.
 
+use super::ap3p::solve_ap3p_multi;
 use super::ops::{intrinsics_as_vectors, project_sq_error};
 use super::{solve_pnp, PnPMethod};
-use super::{PnPError, PnPResult};
+use super::{EPnPParams, LMRefineParams, PnPError, PnPResult};
 use kornia_algebra::{Mat3AF32, Vec2F32, Vec3AF32};
 use kornia_imgproc::calibration::distortion::PolynomialDistortion;
 use rand::seq::SliceRandom;
 use rand::{rngs::StdRng, SeedableRng};
 use thiserror::Error;
 
-const MIN_CORRESPONDENCES: usize = 4; // Minimum 2D-3D pairs required by PnP
+const MIN_CORRESPONDENCES: usize = 4; // Minimum 2D-3D pairs required by EPnP (and by any refit)
+const AP3P_SAMPLE_SIZE: usize = 3; // AP3P is an exact 3-point solver: it rejects any other count
 const EPNP_MIN_SAMPLE_SIZE: usize = 5; // Minimal sample size for EPnP (unless only 4 points available)
+
+/// Upper bound on the number of real roots an exact P3P solver can return.
+const AP3P_MAX_ROOTS: usize = 4;
 
 const DEFAULT_MAX_ITERATIONS: usize = 100;
 const DEFAULT_REPROJ_THRESHOLD_PX: f32 = 8.0;
@@ -38,6 +43,16 @@ pub enum PnPRansacError {
         /// Actual number of inliers found
         actual: usize,
     },
+
+    /// The AP3P sampling kernel was combined with a lens-distortion model.
+    ///
+    /// AP3P consumes bearing vectors obtained by inverting `K` alone, so a distortion model
+    /// cannot be honoured while generating hypotheses. Silently ignoring it would score the
+    /// consensus set under an ideal-pinhole model and then refit it under a distorted one —
+    /// two different camera models for one answer. Undistort the image points up front and
+    /// pass `distortion = None`, or use an EPnP kernel.
+    #[error("AP3P inside RANSAC cannot honour a distortion model: undistort the image points first and pass `distortion = None`, or use an EPnP kernel")]
+    DistortionUnsupportedByKernel,
 }
 
 /// Parameters for RANSAC over PnP.
@@ -79,15 +94,31 @@ pub struct PnPRansacResult {
 /// Solve PnP robustly using a legacy RANSAC loop around a base PnP method (e.g., EPnP).
 ///
 /// - Minimal sample size follows the KERNEL: 3 for AP3P (an exact P3P solver), 5 for EPnP (4 when
-///   only 4 points are available). This is what makes a P3P kernel worth using here — a clean
-///   sample has probability `w^k` at inlier ratio `w`, so `k = 3` rather than `5` yields `w^2` more
-///   successful iterations (16x at `w = 0.25`).
+///   only 4 points are available). This is what makes a P3P kernel worth using here: a sample is
+///   outlier-free with probability `w^k` at inlier ratio `w`, so `k = 3` rather than `5` draws a
+///   clean sample `w^-2` times as often (16x at `w = 0.25`).
+/// - **Every** AP3P root is scored. P3P returns up to four algebraic solutions and cheirality on
+///   only three points rarely narrows that to one, so scoring a single root would waste most
+///   clean samples on the wrong pose and forfeit the `w^-2` advantage above. EPnP returns one
+///   solution and keeps its single-hypothesis path.
 /// - Scoring uses Euclidean pixel reprojection error.
 /// - Iterations adapt from current inlier ratio and desired confidence.
 /// - With `params.refine`, the final non-minimal refit over all inliers uses **EPnP even when the
 ///   sampling kernel was AP3P**, because a minimal solver cannot consume more than its exact
 ///   correspondence count. The returned pose is therefore an EPnP fit to the AP3P-selected
-///   consensus set — the standard minimal-kernel / non-minimal-refit split.
+///   consensus set — the standard minimal-kernel / non-minimal-refit split. LM refinement is
+///   enabled on that refit, since a caller who picked AP3P is often in exactly the regime where
+///   bare EPnP is ill-conditioned (see the `epnp` module docs). If the refit fails, the best
+///   minimal-sample pose is returned rather than discarding a successful RANSAC run.
+/// - Minimum correspondence count is kernel- and refine-aware: AP3P with `refine: false` needs
+///   only 3, everything else needs 4 because the EPnP refit does.
+///
+/// # Errors
+///
+/// Returns [`PnPRansacError::DistortionUnsupportedByKernel`] when an AP3P kernel is combined with
+/// `distortion = Some(..)`: AP3P inverts `K` alone and cannot consume a distortion model, so the
+/// combination is rejected instead of silently generating hypotheses from distorted pixels treated
+/// as ideal. Undistort the image points up front and pass `None`.
 pub fn solve_pnp_ransac(
     world: &[Vec3AF32],
     image: &[Vec2F32],
@@ -106,9 +137,25 @@ pub fn solve_pnp_ransac(
         }
         .into());
     }
-    if n < MIN_CORRESPONDENCES {
+    let is_ap3p = matches!(base, PnPMethod::AP3P(_) | PnPMethod::AP3PDefault);
+
+    // AP3P consumes bearing vectors from K alone; it has nowhere to put a distortion model.
+    // Accepting one would score hypotheses under an ideal pinhole and then refit the very same
+    // consensus set under a distorted model. Reject rather than silently mis-model.
+    if is_ap3p && distortion.is_some() {
+        return Err(PnPRansacError::DistortionUnsupportedByKernel);
+    }
+
+    // Minimum correspondences is kernel- and refine-aware: the AP3P kernel itself needs only its
+    // 3-point minimal sample, but the non-minimal refit is EPnP, which needs 4.
+    let min_correspondences = if is_ap3p && !params.refine {
+        AP3P_SAMPLE_SIZE
+    } else {
+        MIN_CORRESPONDENCES
+    };
+    if n < min_correspondences {
         return Err(PnPError::InsufficientCorrespondences {
-            required: MIN_CORRESPONDENCES,
+            required: min_correspondences,
             actual: n,
         }
         .into());
@@ -117,17 +164,14 @@ pub fn solve_pnp_ransac(
     // Minimal set size is a property of the KERNEL: AP3P is an exact 3-point solver (it rejects
     // any other count), while EPnP samples 5 (unless only 4 points exist). Using the kernel's
     // true minimal size is not merely a fix — it is the point of a P3P kernel inside RANSAC: at
-    // inlier ratio w the probability of a clean sample is w^k, so k=3 vs k=5 is a factor of w^2
-    // more successful iterations (16x at w=0.25).
-    let sample_size: usize = match &base {
-        PnPMethod::AP3P(_) | PnPMethod::AP3PDefault => 3,
-        PnPMethod::EPnP(_) | PnPMethod::EPnPDefault => {
-            if n == MIN_CORRESPONDENCES {
-                MIN_CORRESPONDENCES
-            } else {
-                EPNP_MIN_SAMPLE_SIZE
-            }
-        }
+    // inlier ratio w a sample is outlier-free with probability w^k, so k=3 vs k=5 draws a clean
+    // sample w^-2 times as often (16x at w=0.25).
+    let sample_size: usize = if is_ap3p {
+        AP3P_SAMPLE_SIZE
+    } else if n == MIN_CORRESPONDENCES {
+        MIN_CORRESPONDENCES
+    } else {
+        EPNP_MIN_SAMPLE_SIZE
     };
 
     // Precompute intrinsics vectors
@@ -148,6 +192,8 @@ pub fn solve_pnp_ransac(
     let mut best_pose: Option<PnPResult> = None;
     let mut w_min: Vec<Vec3AF32> = Vec::with_capacity(sample_size);
     let mut i_min: Vec<Vec2F32> = Vec::with_capacity(sample_size);
+    // Hypotheses produced by one minimal sample: up to 4 for AP3P, exactly 1 for EPnP.
+    let mut hypotheses: Vec<PnPResult> = Vec::with_capacity(AP3P_MAX_ROOTS);
 
     let mut iter: usize = 0;
     let mut required_iters = params.max_iterations;
@@ -173,41 +219,59 @@ pub fn solve_pnp_ransac(
             i_min.push(image[idx]);
         }
 
-        // Estimate pose on minimal set
-        let pose_maybe = solve_pnp(&w_min, &i_min, k, distortion, base.clone());
-        let pose_min = match pose_maybe {
-            Ok(p) => p,
-            Err(_e) => {
-                log::debug!("EPnP failed on minimal set");
-                continue;
+        // Generate the hypotheses for this minimal sample. AP3P is a polynomial solver returning
+        // up to 4 real roots; scoring only the first cheirality-passing one throws away most
+        // clean samples, so every root is kept and scored below.
+        hypotheses.clear();
+        if is_ap3p {
+            match solve_ap3p_multi(&w_min, &i_min, k) {
+                Ok(roots) => hypotheses.extend(roots),
+                Err(_e) => {
+                    log::debug!("AP3P failed on minimal set at iteration {iter}");
+                    continue;
+                }
             }
-        };
-
-        // Optional cheirality check on minimal set (all positive depths)
-        if !sample_all_positive_depths(&pose_min.rotation, &pose_min.translation, &w_min) {
-            log::debug!("Cheirality check failed on iteration {iter}");
-            continue;
+        } else {
+            match solve_pnp(&w_min, &i_min, k, distortion, base.clone()) {
+                Ok(p) => hypotheses.push(p),
+                Err(_e) => {
+                    log::debug!("EPnP failed on minimal set at iteration {iter}");
+                    continue;
+                }
+            }
         }
 
-        // Score model on all points
-        let (inliers, _total_squared_error) = classify_points(
-            world,
-            image,
-            None,
-            None,
-            ClassificationParams {
-                rotation_matrix: &pose_min.rotation,
-                translation_vector: &pose_min.translation,
-                camera_intrinsics_x: &intr_x,
-                camera_intrinsics_y: &intr_y,
-                threshold: Some(params.reproj_threshold_px),
-            },
-        );
+        // Score every hypothesis against all points, keeping the one with most inliers.
+        let mut improved = false;
+        for pose_min in hypotheses.drain(..) {
+            // Cheirality check on minimal set (all positive depths)
+            if !sample_all_positive_depths(&pose_min.rotation, &pose_min.translation, &w_min) {
+                log::debug!("Cheirality check failed on iteration {iter}");
+                continue;
+            }
 
-        if inliers.len() > best_inliers.len() {
-            best_inliers = inliers;
-            best_pose = Some(pose_min);
+            let (inliers, _total_squared_error) = classify_points(
+                world,
+                image,
+                None,
+                None,
+                ClassificationParams {
+                    rotation_matrix: &pose_min.rotation,
+                    translation_vector: &pose_min.translation,
+                    camera_intrinsics_x: &intr_x,
+                    camera_intrinsics_y: &intr_y,
+                    threshold: Some(params.reproj_threshold_px),
+                },
+            );
 
+            if inliers.len() > best_inliers.len() {
+                best_inliers = inliers;
+                best_pose = Some(pose_min);
+                improved = true;
+            }
+        }
+
+        if improved {
             // Update required iterations based on current inlier ratio and sample size
             if best_inliers.len() >= sample_size {
                 let w = best_inliers.len() as f32 / n as f32;
@@ -240,21 +304,28 @@ pub fn solve_pnp_ransac(
     }
 
     // Validate and optionally refine
-    if best_inliers.len() < MIN_CORRESPONDENCES {
+    if best_inliers.len() < min_correspondences {
         let err = PnPRansacError::InsufficientInliers {
-            required: MIN_CORRESPONDENCES,
+            required: min_correspondences,
             actual: best_inliers.len(),
         };
         return Err(err);
     }
 
-    let mut final_pose = if params.refine {
+    let refined = if params.refine {
         // Refit on all inliers. A minimal solver cannot do this — AP3P rejects any count other
         // than 3 — so the non-minimal refit always uses EPnP, the standard minimal-kernel /
-        // non-minimal-refit split.
-        let refit_method = match &base {
-            PnPMethod::AP3P(_) | PnPMethod::AP3PDefault => PnPMethod::EPnPDefault,
-            other => other.clone(),
+        // non-minimal-refit split. LM refinement is switched on for that fallback: a caller who
+        // reached for AP3P is often in the small-object / long-range or near-planar regime where
+        // EPnP's PCA control points are ill-conditioned, and handing back a bare EPnP pose there
+        // would silently undo their choice of kernel.
+        let refit_method = if is_ap3p {
+            PnPMethod::EPnP(EPnPParams {
+                refine_lm: Some(LMRefineParams::default()),
+                ..Default::default()
+            })
+        } else {
+            base.clone()
         };
         let mut w_all = Vec::with_capacity(best_inliers.len());
         let mut i_all = Vec::with_capacity(best_inliers.len());
@@ -262,16 +333,27 @@ pub fn solve_pnp_ransac(
             w_all.push(world[idx]);
             i_all.push(image[idx]);
         }
-        solve_pnp(&w_all, &i_all, k, distortion, refit_method)?
-    } else {
-        match best_pose {
-            Some(p) => p,
-            None => {
-                return Err(PnPError::SvdFailed(
-                    "RANSAC failed to produce a pose despite sufficient inliers".to_string(),
-                )
-                .into());
+        // A failed refit must not sink a successful RANSAC run: the consensus set was selected by
+        // the sampling kernel, and with AP3P sampling EPnP was never validated on it, so a
+        // near-degenerate inlier set can make the refit fail on a perfectly usable pose.
+        match solve_pnp(&w_all, &i_all, k, distortion, refit_method) {
+            Ok(p) => Some(p),
+            Err(e) => {
+                log::debug!("RANSAC refit on the consensus set failed ({e}); keeping the best minimal-sample pose");
+                None
             }
+        }
+    } else {
+        None
+    };
+
+    let mut final_pose = match refined.or(best_pose) {
+        Some(p) => p,
+        None => {
+            return Err(PnPError::SvdFailed(
+                "RANSAC failed to produce a pose despite sufficient inliers".to_string(),
+            )
+            .into());
         }
     };
 
@@ -393,6 +475,7 @@ fn classify_points(
 
 #[cfg(test)]
 mod tests {
+    use super::super::ap3p::AP3PParams;
     use super::super::epnp::EPnPParams;
     use super::*;
 
@@ -613,6 +696,313 @@ mod tests {
             },
         )?;
         assert_eq!(refined.inliers.len(), 6);
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Synthetic AP3P scenes: exact pinhole projections of a known pose, so the *returned pose*
+    // can be asserted rather than just the inlier count (which is computed before the refit).
+    // ---------------------------------------------------------------------------------------
+
+    /// Row-major `R = Rz(az) · Ry(ay) · Rx(ax)`.
+    fn rot_zyx(ax: f32, ay: f32, az: f32) -> [[f32; 3]; 3] {
+        let (sx, cx) = ax.sin_cos();
+        let (sy, cy) = ay.sin_cos();
+        let (sz, cz) = az.sin_cos();
+        [
+            [cz * cy, cz * sy * sx - sz * cx, cz * sy * cx + sz * sx],
+            [sz * cy, sz * sy * sx + cz * cx, sz * sy * cx - cz * sx],
+            [-sy, cy * sx, cy * cx],
+        ]
+    }
+
+    /// The ground-truth pose shared by the synthetic scenes: a generic orientation, target
+    /// roughly 1.5 m away.
+    fn pose_gt() -> ([[f32; 3]; 3], [f32; 3]) {
+        (rot_zyx(0.1, -0.15, 0.05), [0.02, -0.01, 1.5])
+    }
+
+    /// Noise-free pinhole projection under `(r, t)` with [`k_default`].
+    fn project_exact(world: &[Vec3AF32], r: &[[f32; 3]; 3], t: &[f32; 3]) -> Vec<Vec2F32> {
+        world
+            .iter()
+            .map(|p| {
+                let pc = [
+                    r[0][0] * p.x + r[0][1] * p.y + r[0][2] * p.z + t[0],
+                    r[1][0] * p.x + r[1][1] * p.y + r[1][2] * p.z + t[1],
+                    r[2][0] * p.x + r[2][1] * p.y + r[2][2] * p.z + t[2],
+                ];
+                Vec2F32::new(800.0 * pc[0] / pc[2] + 640.0, 800.0 * pc[1] / pc[2] + 480.0)
+            })
+            .collect()
+    }
+
+    /// Largest absolute element-wise deviation of an estimated pose from the ground truth.
+    fn pose_deviation(pose: &PnPResult, r: &[[f32; 3]; 3], t: &[f32; 3]) -> (f32, f32) {
+        let est = pose.rotation.to_cols_array(); // column-major: est[col * 3 + row]
+        let dr = (0..3)
+            .flat_map(|row| (0..3).map(move |col| (row, col)))
+            .map(|(row, col)| (est[col * 3 + row] - r[row][col]).abs())
+            .fold(0.0f32, f32::max);
+        let dt = (pose.translation.x - t[0])
+            .abs()
+            .max((pose.translation.y - t[1]).abs())
+            .max((pose.translation.z - t[2]).abs());
+        (dr, dt)
+    }
+
+    /// Six non-coplanar points spanning ~20 cm — a well-conditioned scene for both kernels.
+    fn scene_non_planar() -> [Vec3AF32; 6] {
+        [
+            Vec3AF32::new(-0.1, -0.1, 0.0),
+            Vec3AF32::new(0.1, -0.1, 0.03),
+            Vec3AF32::new(0.1, 0.1, -0.04),
+            Vec3AF32::new(-0.1, 0.1, 0.05),
+            Vec3AF32::new(0.0, -0.05, -0.06),
+            Vec3AF32::new(0.05, 0.0, 0.07),
+        ]
+    }
+
+    /// Six points on a plane — an AprilTag / chessboard target, the classic P3P use case and the
+    /// case EPnP's PCA control points cannot handle (sigma3 = 0 collapses `cw[3]` onto the
+    /// centroid).
+    fn scene_coplanar() -> [Vec3AF32; 6] {
+        [
+            Vec3AF32::new(-0.1, -0.1, 0.0),
+            Vec3AF32::new(0.1, -0.1, 0.0),
+            Vec3AF32::new(0.1, 0.1, 0.0),
+            Vec3AF32::new(-0.1, 0.1, 0.0),
+            Vec3AF32::new(0.0, -0.05, 0.0),
+            Vec3AF32::new(0.05, 0.0, 0.0),
+        ]
+    }
+
+    /// Every algebraic P3P root must be scored, not just the first cheirality-passing one.
+    ///
+    /// P3P returns up to four roots and cheirality on only three points does not disambiguate
+    /// them: on this scene every triple leaves exactly two survivors, and the *first* one is the
+    /// wrong pose for 7 of the 20 triples. Each iteration is therefore capped at one clean
+    /// sample here (`max_iterations: 1`) so a single wasted sample is fatal — scoring only the
+    /// first root collapses the consensus to the 3 sampled points on those triples.
+    #[test]
+    fn ap3p_ransac_scores_every_p3p_root() {
+        let (r_gt, t_gt) = pose_gt();
+        let world = scene_non_planar();
+        let image = project_exact(&world, &r_gt, &t_gt);
+        let k = k_default();
+
+        for seed in 0..16u64 {
+            let params = RansacParams {
+                max_iterations: 1,
+                reproj_threshold_px: 1.0,
+                confidence: 0.99,
+                random_seed: Some(seed),
+                refine: false,
+            };
+            let res = solve_pnp_ransac(&world, &image, &k, None, PnPMethod::AP3PDefault, &params)
+                .unwrap_or_else(|e| panic!("seed {seed}: {e}"));
+
+            assert_eq!(
+                res.inliers.len(),
+                6,
+                "seed {seed}: one outlier-free triple must yield the pose all 6 points agree \
+                 with; a smaller consensus means the wrong P3P root was scored"
+            );
+            let (dr, dt) = pose_deviation(&res.pose, &r_gt, &t_gt);
+            assert!(dr < 1e-3, "seed {seed}: rotation deviates by {dr}");
+            assert!(dt < 1e-3, "seed {seed}: translation deviates by {dt}");
+        }
+    }
+
+    /// The AP3P refit must be an LM-refined EPnP, not a bare one.
+    ///
+    /// This asserts on the *refined* pose, which the inlier list cannot cover: `inliers` is
+    /// `best_inliers`, computed before the refit runs. On this well-conditioned scene a bare
+    /// EPnP refit still lands ~22 px RMSE off (its PCA control points project too close
+    /// together at this object extent / range), while the LM-polished one is exact.
+    #[test]
+    fn ap3p_ransac_refit_is_lm_refined() -> Result<(), PnPRansacError> {
+        let (r_gt, t_gt) = pose_gt();
+        let world = scene_non_planar();
+        let image = project_exact(&world, &r_gt, &t_gt);
+        let k = k_default();
+
+        let params = RansacParams {
+            max_iterations: 30,
+            reproj_threshold_px: 1.0,
+            confidence: 0.99,
+            random_seed: Some(42),
+            refine: true,
+        };
+        let res = solve_pnp_ransac(&world, &image, &k, None, PnPMethod::AP3PDefault, &params)?;
+
+        assert_eq!(res.inliers.len(), 6);
+        let rmse = res
+            .pose
+            .reproj_rmse
+            .expect("RANSAC always fills in the inlier RMSE");
+        assert!(rmse < 0.01, "refined pose reprojects at {rmse} px");
+        let (dr, dt) = pose_deviation(&res.pose, &r_gt, &t_gt);
+        assert!(dr < 1e-3, "refined rotation deviates by {dr}");
+        assert!(dt < 1e-3, "refined translation deviates by {dt}");
+        Ok(())
+    }
+
+    /// A refit that fails must not sink an otherwise successful RANSAC run.
+    ///
+    /// The consensus set is chosen by the AP3P kernel, so EPnP is never validated on it. On a
+    /// coplanar target it is degenerate: the LM-refined EPnP refit fails outright here. The
+    /// AP3P pose is nevertheless exact, and that is what must come back.
+    #[test]
+    fn ap3p_ransac_survives_a_failed_refit() -> Result<(), PnPRansacError> {
+        let (r_gt, t_gt) = pose_gt();
+        let world = scene_coplanar();
+        let image = project_exact(&world, &r_gt, &t_gt);
+        let k = k_default();
+
+        for seed in [42u64, 7, 1] {
+            let params = RansacParams {
+                max_iterations: 30,
+                reproj_threshold_px: 1.0,
+                confidence: 0.99,
+                random_seed: Some(seed),
+                refine: true,
+            };
+            let res = solve_pnp_ransac(&world, &image, &k, None, PnPMethod::AP3PDefault, &params)?;
+
+            assert_eq!(res.inliers.len(), 6, "seed {seed}");
+            let rmse = res.pose.reproj_rmse.expect("RMSE is always filled in");
+            assert!(rmse < 0.01, "seed {seed}: pose reprojects at {rmse} px");
+            let (dr, dt) = pose_deviation(&res.pose, &r_gt, &t_gt);
+            assert!(dr < 1e-3, "seed {seed}: rotation deviates by {dr}");
+            assert!(dt < 1e-3, "seed {seed}: translation deviates by {dt}");
+        }
+        Ok(())
+    }
+
+    /// AP3P consumes bearing vectors from `K` alone, so a distortion model cannot be honoured
+    /// while generating hypotheses. The combination is rejected instead of silently scoring the
+    /// consensus under an ideal pinhole and then refitting it under a distorted model.
+    #[test]
+    fn ap3p_ransac_rejects_a_distortion_model() {
+        let (r_gt, t_gt) = pose_gt();
+        let world = scene_non_planar();
+        let image = project_exact(&world, &r_gt, &t_gt);
+        let k = k_default();
+        let distortion = PolynomialDistortion {
+            k1: -0.2,
+            k2: 0.05,
+            k3: 0.0,
+            k4: 0.0,
+            k5: 0.0,
+            k6: 0.0,
+            p1: 0.001,
+            p2: -0.001,
+        };
+
+        for base in [
+            PnPMethod::AP3PDefault,
+            PnPMethod::AP3P(AP3PParams::default()),
+        ] {
+            let err = solve_pnp_ransac(
+                &world,
+                &image,
+                &k,
+                Some(&distortion),
+                base,
+                &RansacParams::default(),
+            )
+            .expect_err("AP3P + distortion must be rejected");
+            assert!(
+                matches!(err, PnPRansacError::DistortionUnsupportedByKernel),
+                "unexpected error: {err}"
+            );
+        }
+
+        // EPnP does consume the distortion model, so it must still be accepted.
+        assert!(solve_pnp_ransac(
+            &world,
+            &image,
+            &k,
+            Some(&distortion),
+            PnPMethod::EPnPDefault,
+            &RansacParams::default(),
+        )
+        .is_ok());
+    }
+
+    /// AP3P needs only its 3-point minimal sample when no refit is requested, so 3
+    /// correspondences must be accepted — the blanket 4-point floor is EPnP's.
+    ///
+    /// Only the pose's *consistency* is asserted: three points do not disambiguate the P3P
+    /// roots (they all reproject exactly), so which one comes back is genuinely undetermined.
+    #[test]
+    fn ap3p_ransac_accepts_exactly_three_correspondences() -> Result<(), PnPRansacError> {
+        let (r_gt, t_gt) = pose_gt();
+        let all = scene_non_planar();
+        let world = [all[0], all[1], all[2]];
+        let image = project_exact(&world, &r_gt, &t_gt);
+        let k = k_default();
+
+        let params = RansacParams {
+            max_iterations: 5,
+            reproj_threshold_px: 1.0,
+            confidence: 0.99,
+            random_seed: Some(42),
+            refine: false,
+        };
+        let res = solve_pnp_ransac(&world, &image, &k, None, PnPMethod::AP3PDefault, &params)?;
+        assert_eq!(res.inliers.len(), 3);
+        let rmse = res.pose.reproj_rmse.expect("RMSE is always filled in");
+        assert!(rmse < 0.01, "3-point AP3P pose reprojects at {rmse} px");
+
+        // `refine: true` still needs 4, because the refit is EPnP.
+        let err = solve_pnp_ransac(
+            &world,
+            &image,
+            &k,
+            None,
+            PnPMethod::AP3PDefault,
+            &RansacParams {
+                refine: true,
+                ..params
+            },
+        )
+        .expect_err("the EPnP refit cannot run on 3 correspondences");
+        assert!(
+            matches!(
+                err,
+                PnPRansacError::Base(PnPError::InsufficientCorrespondences {
+                    required: MIN_CORRESPONDENCES,
+                    ..
+                })
+            ),
+            "unexpected error: {err}"
+        );
+
+        // EPnP itself is unaffected: it still demands 4 regardless of `refine`.
+        let err = solve_pnp_ransac(
+            &world,
+            &image,
+            &k,
+            None,
+            PnPMethod::EPnPDefault,
+            &RansacParams {
+                refine: false,
+                ..params
+            },
+        )
+        .expect_err("EPnP needs 4 correspondences");
+        assert!(
+            matches!(
+                err,
+                PnPRansacError::Base(PnPError::InsufficientCorrespondences {
+                    required: MIN_CORRESPONDENCES,
+                    ..
+                })
+            ),
+            "unexpected error: {err}"
+        );
         Ok(())
     }
 }
