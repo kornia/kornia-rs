@@ -1,5 +1,9 @@
 use thiserror::Error;
 
+use crate::resource::MemoryDomain;
+use std::any::Any;
+use std::sync::Arc;
+
 use super::{
     allocator::{host_alloc, AllocHandle, TensorAllocatorError},
     storage::TensorStorage,
@@ -405,6 +409,144 @@ impl<T, const N: usize> Tensor<T, N> {
             shape,
             strides,
         }
+    }
+
+    /// Creates a tensor from a foreign borrowed buffer with zero-copy, specifying its memory domain.
+    ///
+    /// The `keepalive` argument ensures that the external owner of the memory
+    /// (e.g., a GStreamer buffer or C++ reference count) is not dropped until
+    /// this tensor and all its views are destroyed.
+    ///
+    /// # Arguments
+    ///
+    /// * `shape` - An array containing the shape of the tensor.
+    /// * `data` - A pointer to the data of the tensor.
+    /// * `len` - The length of the data.
+    /// * `domain` - The memory domain (Host or Device) where the data resides.
+    /// * `keepalive` - A thread safe pointer to the host buffer.
+    ///
+    /// # Safety
+    ///
+    /// - `data` must point to valid memory containing at least `len` elements of `T`.
+    /// - The memory must remain valid for the lifetime of `keepalive`.
+    pub unsafe fn from_borrowed(
+        shape: [usize; N],
+        data: *const T,
+        len: usize,
+        domain: MemoryDomain,
+        keepalive: Arc<dyn Any + Send + Sync>,
+    ) -> Result<Self, TensorError> {
+        let expected_len = shape.iter().product::<usize>();
+        if expected_len != len {
+            return Err(TensorError::InvalidShape(expected_len));
+        }
+
+        let len_bytes = len * std::mem::size_of::<T>();
+
+        let storage =
+            TensorStorage::from_borrowed(data, len_bytes, host_alloc(), domain, keepalive);
+
+        let strides = get_strides_from_shape(shape);
+
+        Ok(Self {
+            storage,
+            shape,
+            strides,
+        })
+    }
+
+    /// Creates a tensor from a foreign borrowed buffer with zero-copy.
+    ///
+    /// The `keepalive` argument ensures that the external owner of the memory
+    /// (e.g., a GStreamer buffer or C++ reference count) is not dropped until
+    /// this tensor and all its views are destroyed.
+    ///
+    /// # Arguments
+    ///
+    /// * `shape` - An array containing the shape of the tensor.
+    /// * `data` - A pointer to the data of the tensor.
+    /// * `len` - The length of the data.
+    /// * `keepalive` - A thread safe pointer to the host buffer.
+    ///
+    /// # Safety
+    ///
+    /// - `data` must point to valid memory containing at least `len` elements of `T`.
+    /// - The memory must remain valid for the lifetime of `keepalive`.
+    pub unsafe fn from_borrowed_host(
+        shape: [usize; N],
+        data: *const T,
+        len: usize,
+        keepalive: Arc<dyn Any + Send + Sync>,
+    ) -> Result<Self, TensorError> {
+        Self::from_borrowed(shape, data, len, MemoryDomain::Host, keepalive)
+    }
+
+    /// Creates a read-only tensor from a foreign borrowed buffer with zero-copy, specifying its memory domain.
+    ///
+    /// Similar to `from_borrowed_host`, but strictly forbids mutable access
+    /// to the underlying foreign memory slice.
+    ///
+    /// # Arguments
+    ///
+    /// * `shape` - An array containing the shape of the tensor.
+    /// * `data` - A pointer to the data of the tensor.
+    /// * `len` - The length of the data.
+    /// * `domain` - The memory domain (Host or Device) where the data resides.
+    /// * `keepalive` - A thread safe pointer to the host buffer.
+    ///
+    /// # Safety
+    ///
+    /// - `data` must point to valid memory containing at least `len` elements of `T`.
+    /// - The memory must remain valid for the lifetime of `keepalive`.
+    pub unsafe fn from_borrowed_readonly(
+        shape: [usize; N],
+        data: *const T,
+        len: usize,
+        domain: MemoryDomain,
+        keepalive: Arc<dyn Any + Send + Sync>,
+    ) -> Result<Self, TensorError> {
+        let expected_len = shape.iter().product::<usize>();
+        if expected_len != len {
+            return Err(TensorError::InvalidShape(expected_len));
+        }
+
+        let len_bytes = len * std::mem::size_of::<T>();
+
+        let storage =
+            TensorStorage::from_borrowed_readonly(data, len_bytes, host_alloc(), domain, keepalive);
+
+        let strides = get_strides_from_shape(shape);
+
+        Ok(Self {
+            storage,
+            shape,
+            strides,
+        })
+    }
+
+    /// Creates a read-only tensor from a foreign borrowed buffer with zero-copy.
+    ///
+    /// Similar to `from_borrowed_host`, but strictly forbids mutable access
+    /// to the underlying foreign memory slice.
+    ///
+    /// # Arguments
+    ///
+    /// * `shape` - An array containing the shape of the tensor.
+    /// * `data` - A pointer to the data of the tensor.
+    /// * `len` - The length of the data.
+    /// * `keepalive` - A thread safe pointer to the host buffer.
+    ///
+    /// # Safety
+    ///
+    /// - `data` must point to valid memory containing at least `len` elements of `T`.
+    /// - The memory must remain valid for the lifetime of `keepalive`.
+    pub unsafe fn from_borrowed_host_readonly(
+        shape: [usize; N],
+        data: *const T,
+        len: usize,
+        keepalive: Arc<dyn Any + Send + Sync>,
+    ) -> Result<Self, TensorError> {
+        Self::from_borrowed_readonly(shape, data, len, MemoryDomain::Host, keepalive)
     }
 
     /// Returns the number of elements in the tensor.
@@ -990,8 +1132,115 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::any::Any;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
     use crate::allocator::host_alloc;
     use crate::tensor::{Tensor, TensorError};
+
+    struct MockForeignBuffer {
+        ptr: *mut f32,
+        len: usize,
+        is_dropped: Arc<AtomicBool>,
+    }
+
+    unsafe impl Send for MockForeignBuffer {}
+    unsafe impl Sync for MockForeignBuffer {}
+
+    impl MockForeignBuffer {
+        fn new(data: Vec<f32>, flag: Arc<AtomicBool>) -> Self {
+            let mut leaked_data = std::mem::ManuallyDrop::new(data);
+
+            Self {
+                ptr: leaked_data.as_mut_ptr(),
+                len: leaked_data.len(),
+                is_dropped: flag,
+            }
+        }
+    }
+
+    impl Drop for MockForeignBuffer {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = Vec::from_raw_parts(self.ptr, self.len, self.len);
+            }
+
+            self.is_dropped.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn test_borrowed_host_lifecycle() -> Result<(), TensorError> {
+        let dropped_flag = Arc::new(AtomicBool::new(false));
+        let buffer = MockForeignBuffer::new(vec![1.0, 2.0, 3.00, 4.0], dropped_flag.clone());
+        let ptr = buffer.ptr as *const f32;
+        let len = buffer.len;
+
+        let keepalive: Arc<dyn Any + Send + Sync> = Arc::new(buffer);
+
+        {
+            let tensor = unsafe {
+                Tensor::<f32, 2>::from_borrowed_host([2, 2], ptr, len, keepalive.clone())?
+            };
+
+            drop(keepalive);
+
+            assert!(!dropped_flag.load(Ordering::SeqCst));
+            assert_eq!(tensor.shape, [2, 2]);
+            assert_eq!(tensor.as_slice(), &[1.0, 2.0, 3.0, 4.0]);
+            assert_eq!(tensor.strides, [2, 1]);
+        }
+
+        assert!(dropped_flag.load(Ordering::SeqCst));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_borrowed_host_readonly_reads() -> Result<(), TensorError> {
+        let data = vec![1.0, 2.0, 3.0, 4.0];
+        let ptr = data.as_ptr();
+        let keepalive: Arc<dyn Any + Send + Sync> = Arc::new(data);
+
+        let tensor =
+            unsafe { Tensor::<f32, 2>::from_borrowed_host_readonly([2, 2], ptr, 4, keepalive)? };
+
+        assert_eq!(tensor.as_slice(), &[1.0, 2.0, 3.0, 4.0]);
+        Ok(())
+    }
+
+    #[test]
+    #[should_panic(expected = "read-only")]
+    fn test_borrowed_host_readonly_prevents_mutation() {
+        let data = vec![1.0, 2.0, 3.0, 4.0];
+        let ptr = data.as_ptr();
+        let keepalive: Arc<dyn Any + Send + Sync> = Arc::new(data);
+
+        let mut tensor = unsafe {
+            Tensor::<f32, 2>::from_borrowed_host_readonly([2, 2], ptr, 4, keepalive).unwrap()
+        };
+
+        let _mut_slice = tensor.as_slice_mut();
+    }
+
+    #[test]
+    fn test_borrowed_host_shape_mismatch() -> Result<(), TensorError> {
+        let dropped_flag = Arc::new(AtomicBool::new(false));
+        let buffer = MockForeignBuffer::new(vec![5.0, 6.0], dropped_flag.clone());
+        let ptr = buffer.ptr as *const f32;
+        let keepalive: Arc<dyn Any + Send + Sync> = Arc::new(buffer);
+
+        let result =
+            unsafe { Tensor::<f32, 1>::from_borrowed_host([3], ptr, 2, keepalive.clone()) };
+
+        assert!(
+            matches!(result, Err(TensorError::InvalidShape(3))),
+            "Expected InvalidShape(4) error"
+        );
+
+        Ok(())
+    }
 
     #[test]
     fn constructor_1d() -> Result<(), TensorError> {

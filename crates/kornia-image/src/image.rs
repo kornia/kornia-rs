@@ -1,6 +1,8 @@
 use crate::error::ImageError;
 use kornia_tensor::{host_alloc, AllocHandle, Tensor, Tensor2, Tensor3};
 use rayon::prelude::*;
+use std::any::Any;
+use std::sync::Arc;
 
 /// Image size in pixels
 ///
@@ -317,6 +319,131 @@ impl<T, const C: usize> Image<T, C> {
         T: Clone,
     {
         Image::new_in(size, data.to_vec(), alloc)
+    }
+
+    /// Wrap a foreign buffer without copying, specifying its memory domain, specifying its memory domain.
+    /// `keepalive` must own whatever keeps `data` valid.
+    ///
+    /// # Arguments
+    ///
+    /// * `size` - The size of the Image.
+    /// * `data` - A pointer to the data of the Image.
+    /// * `domain` - The memory domain (Host or Device) where the data resides.
+    /// * `keepalive` - A thread safe pointer to the buffer.
+    ///
+    /// # Safety
+    ///
+    /// - `data` must be valid for `size.width * size.height * C` elements of `T`
+    /// - the memory must stay valid for as long as `keepalive` is alive
+    pub unsafe fn from_borrowed(
+        size: ImageSize,
+        data: *const T,
+        domain: kornia_tensor::resource::MemoryDomain,
+        keepalive: Arc<dyn Any + Send + Sync>,
+    ) -> Result<Self, ImageError> {
+        let len = size
+            .height
+            .checked_mul(size.width)
+            .and_then(|n| n.checked_mul(C))
+            .ok_or(ImageError::InvalidImageShape(
+                kornia_tensor::TensorError::InvalidShape(usize::MAX),
+            ))?;
+
+        let tensor =
+            Tensor3::from_borrowed([size.height, size.width, C], data, len, domain, keepalive)?;
+
+        Ok(Self(tensor))
+    }
+
+    /// Wrap a foreign buffer without copying and ensures Read-only access, specifying its memory domain.
+    /// `keepalive` must own whatever keeps `data` valid.
+    ///
+    /// # Arguments
+    ///
+    /// * `size` - The size of the Image.
+    /// * `data` - A pointer to the data of the Image.
+    /// * `domain` - The memory domain (Host or Device) where the data resides.
+    /// * `keepalive` - A thread safe pointer to the buffer.
+    ///
+    /// # Safety
+    ///
+    /// - `data` must be valid for `size.width * size.height * C` elements of `T`
+    /// - the memory must stay valid for as long as `keepalive` is alive
+    pub unsafe fn from_borrowed_readonly(
+        size: ImageSize,
+        data: *const T,
+        domain: kornia_tensor::resource::MemoryDomain,
+        keepalive: Arc<dyn Any + Send + Sync>,
+    ) -> Result<Self, ImageError> {
+        let len = size
+            .height
+            .checked_mul(size.width)
+            .and_then(|n| n.checked_mul(C))
+            .ok_or(ImageError::InvalidImageShape(
+                kornia_tensor::TensorError::InvalidShape(usize::MAX),
+            ))?;
+
+        let tensor = Tensor3::from_borrowed_readonly(
+            [size.height, size.width, C],
+            data,
+            len,
+            domain,
+            keepalive,
+        )?;
+
+        Ok(Self(tensor))
+    }
+
+    /// Wrap a foreign host buffer without copying. `keepalive` must own whatever
+    /// keeps `data` valid (mmap, GstBuffer, refcounted driver frame, ...).
+    ///
+    /// # Arguments
+    ///
+    /// * `size` - The size of the Image.
+    /// * `data` - A pointer to the data of the Image.
+    /// * `keepalive` - A thread safe pointer to the host buffer.
+    ///
+    /// # Safety
+    ///
+    /// - `data` must be valid for `size.width * size.height * C` elements of `T`
+    /// - the memory must stay valid for as long as `keepalive` is alive
+    pub unsafe fn from_borrowed_host(
+        size: ImageSize,
+        data: *const T,
+        keepalive: Arc<dyn Any + Send + Sync>,
+    ) -> Result<Self, ImageError> {
+        Self::from_borrowed(
+            size,
+            data,
+            kornia_tensor::resource::MemoryDomain::Host,
+            keepalive,
+        )
+    }
+
+    /// Wrap a foreign host buffer without copying and ensures Read-only access. `keepalive` must own whatever
+    /// keeps `data` valid (mmap, GstBuffer, refcounted driver frame, ...).
+    ///
+    /// # Arguments
+    ///
+    /// * `size` - The size of the Image.
+    /// * `data` - A pointer to the data of the Image.
+    /// * `keepalive` - A thread safe pointer to the host buffer.
+    ///
+    /// # Safety
+    ///
+    /// - `data` must be valid for `size.width * size.height * C` elements of `T`
+    /// - the memory must stay valid for as long as `keepalive` is alive
+    pub unsafe fn from_borrowed_host_readonly(
+        size: ImageSize,
+        data: *const T,
+        keepalive: Arc<dyn Any + Send + Sync>,
+    ) -> Result<Self, ImageError> {
+        Self::from_borrowed_readonly(
+            size,
+            data,
+            kornia_tensor::resource::MemoryDomain::Host,
+            keepalive,
+        )
     }
 
     /// Map the pixel data of the image to a different type.
@@ -698,6 +825,127 @@ impl<T, const C: usize> TryInto<Tensor3<T>> for Image<T, C> {
 mod tests {
     use crate::image::{Image, ImageError, ImageSize};
     use kornia_tensor::{host_alloc, Tensor};
+
+    use std::any::Any;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    struct MockForeignBuffer {
+        ptr: *mut f32,
+        len: usize,
+        is_dropped: Arc<AtomicBool>,
+    }
+
+    unsafe impl Send for MockForeignBuffer {}
+    unsafe impl Sync for MockForeignBuffer {}
+
+    impl MockForeignBuffer {
+        fn new(data: Vec<f32>, flag: Arc<AtomicBool>) -> Self {
+            let mut leaked_data = std::mem::ManuallyDrop::new(data);
+
+            Self {
+                ptr: leaked_data.as_mut_ptr(),
+                len: leaked_data.len(),
+                is_dropped: flag,
+            }
+        }
+    }
+
+    impl Drop for MockForeignBuffer {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = Vec::from_raw_parts(self.ptr, self.len, self.len);
+            }
+
+            self.is_dropped.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn test_image_borrowed_host_lifecycle() -> Result<(), ImageError> {
+        let dropped_flag = Arc::new(AtomicBool::new(false));
+
+        let data = vec![
+            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
+        ];
+        let buffer = MockForeignBuffer::new(data, dropped_flag.clone());
+        let ptr = buffer.ptr as *const f32;
+
+        let keepalive: Arc<dyn Any + Send + Sync> = Arc::new(buffer);
+
+        {
+            let image = unsafe {
+                Image::<f32, 3>::from_borrowed_host(
+                    ImageSize {
+                        width: 2,
+                        height: 2,
+                    },
+                    ptr,
+                    keepalive.clone(),
+                )?
+            };
+
+            // Dropping the keepalive to check if Image data persists.
+            drop(keepalive);
+
+            assert!(!dropped_flag.load(Ordering::SeqCst));
+
+            assert_eq!(image.width(), 2);
+            assert_eq!(image.height(), 2);
+            assert_eq!(image.num_channels(), 3);
+
+            assert_eq!(image.shape, [2, 2, 3]);
+            assert_eq!(image.as_slice()[0], 1.0);
+            assert_eq!(image.as_slice()[11], 12.0);
+        } // `image` goes out of scope.
+
+        assert!(dropped_flag.load(Ordering::SeqCst));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_image_borrowed_host_readonly_reads() -> Result<(), ImageError> {
+        let data = vec![150.0, 200.0];
+        let ptr = data.as_ptr();
+        let keepalive: Arc<dyn Any + Send + Sync> = Arc::new(data);
+
+        let image = unsafe {
+            Image::<f32, 1>::from_borrowed_host_readonly(
+                ImageSize {
+                    width: 2,
+                    height: 1,
+                },
+                ptr,
+                keepalive,
+            )?
+        };
+
+        assert_eq!(image.as_slice(), &[150.0, 200.0]);
+        Ok(())
+    }
+
+    #[test]
+    #[should_panic(expected = "read-only")]
+    fn test_image_borrowed_host_readonly_prevents_mutation() {
+        let data = vec![150.0, 200.0];
+        let ptr = data.as_ptr();
+        let keepalive: Arc<dyn Any + Send + Sync> = Arc::new(data);
+
+        let mut image = unsafe {
+            Image::<f32, 1>::from_borrowed_host_readonly(
+                ImageSize {
+                    width: 2,
+                    height: 1,
+                },
+                ptr,
+                keepalive,
+            )
+            .unwrap()
+        };
+
+        let _mut_slice = image.as_slice_mut();
+    }
 
     #[test]
     fn test_image_size() {

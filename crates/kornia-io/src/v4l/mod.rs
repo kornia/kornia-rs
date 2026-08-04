@@ -9,7 +9,7 @@ pub use pixel_format::PixelFormat;
 pub use stream::MmapBuffer;
 
 use crate::v4l::camera_control::{CameraControlTrait, ControlType};
-use kornia_image::ImageSize;
+use kornia_image::{Image, ImageSize};
 use v4l::{
     buffer::Type, control::Value, video::capture::Parameters, video::Capture, Device, Timestamp,
 };
@@ -98,45 +98,30 @@ pub(crate) fn image_from_v4l_buffer(
     size: kornia_image::ImageSize,
     buffer: MmapBuffer,
 ) -> Result<kornia_image::Image<u8, 3>, kornia_image::ImageError> {
-    use kornia_tensor::storage::TensorStorage;
-    use kornia_tensor::Tensor;
-
     // Capture pointer and length BEFORE moving buffer into V4lResource.
     let data_ptr: *const u8 = buffer.as_slice().as_ptr();
     let data_len: usize = buffer.len();
+
+    // Defense-in-depth: verify the mapped buffer is actually large enough
+    let expected_len = size
+        .width
+        .checked_mul(size.height)
+        .and_then(|n| n.checked_mul(3))
+        .ok_or(kornia_tensor::TensorError::InvalidShape(usize::MAX))?;
+
+    if data_len < expected_len {
+        return Err(kornia_image::ImageError::InvalidImageShape(
+            kornia_tensor::TensorError::InvalidShape(expected_len),
+        ));
+    }
 
     // Move the MmapBuffer into a V4lResource; its implicit Drop releases the mmap.
     let resource = V4lResource { buffer };
     let keepalive: Arc<dyn Any + Send + Sync> = Arc::new(resource);
 
-    // Build a TensorStorage that borrows the mmap memory and holds the keepalive.
-    // SAFETY:
-    //   - data_ptr is non-null (kernel mmap always returns a valid page-aligned address).
-    //   - data_len equals the "used bytes" of the frame (captured above).
-    //   - The memory is host-accessible (MemoryDomain::Host).
-    //   - The keepalive (Arc<V4lResource>) holds the MmapBuffer (and Arc<MmapInfo>) alive.
-    //   - The storage is read-only: `as_mut_slice` will panic (v4l mmap is read-only mapped memory).
-    let storage: TensorStorage<u8> = unsafe {
-        TensorStorage::from_borrowed_readonly(
-            data_ptr,
-            data_len,
-            kornia_tensor::host_alloc(),
-            MemoryDomain::Host,
-            keepalive,
-        )
-    };
+    let image = unsafe { Image::<u8, 3>::from_borrowed_host_readonly(size, data_ptr, keepalive)? };
 
-    // Row-major strides for shape [H, W, 3]: strides = [W*3, 3, 1].
-    let shape = [size.height, size.width, 3_usize];
-    let strides = [size.width * 3, 3, 1];
-    let tensor = Tensor {
-        storage,
-        shape,
-        strides,
-    };
-
-    // TryFrom<Tensor3<T, >> for Image<T, C> validates that shape[2] == C (== 3).
-    kornia_image::Image::try_from(tensor)
+    Ok(image)
 }
 
 /// Error types for the v4l2 module.
