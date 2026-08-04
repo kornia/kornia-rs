@@ -309,10 +309,35 @@ impl SiftMatcher {
             return Ok(Vec::new());
         }
         let flat = stream.clone_dtoh(&self.pairs.slice(0..n * MATCH_STRIDE))?;
-        Ok(flat
+        let mut pairs: Vec<[i32; 2]> = flat
             .chunks_exact(MATCH_STRIDE)
             .map(|c| [c[0], c[1]])
-            .collect())
+            .collect();
+        // DETERMINISM. The pairs kernel appends through `atomicAdd(out_count, 1)`, so the ORDER of
+        // the returned list is whichever order threads happened to reach the atomic — scheduling,
+        // not data. The SET is deterministic; the sequence is not.
+        //
+        // That is not cosmetic, because the consumers are order-sensitive: RANSAC draws its minimal
+        // samples by index (so even a fixed seed sees different correspondences), and track building
+        // unions in list order. Measured on a 40-keyframe reconstruction from an IDENTICAL keypoint
+        // set (same `total_kpts` to the unit): two GPU runs gave 27375 vs 27265 observations and
+        // 6957 vs 6925 points, while the CPU matcher reproduced bit-for-bit across the same pair.
+        // On a full 365-keyframe clip it compounds to 25-33% swings in point count — enough to
+        // swamp whatever change is being A/B'd.
+        //
+        // Sorted here rather than at each call site: reproducibility belongs to the matcher's
+        // contract, and every caller would otherwise have to rediscover this the hard way.
+        //
+        // NOT fully fixed by this sort: if the kernel produces more matches than `max_out`, the
+        // atomic hands out slots past the buffer and those writes are dropped — so WHICH matches
+        // survive truncation is still whichever threads arrived first. Sorting canonicalises the
+        // order of a truncated set, not its membership. Unreachable at the keypoint counts measured
+        // here (a few thousand per frame against a cap sized to the largest descriptor set), but it
+        // would return at per-frame density, where the pair count roughly triples. The real fix
+        // there is a deterministic selection rule — keep the best `max_out` by distance — rather
+        // than "whoever got there first".
+        pairs.sort_unstable();
+        Ok(pairs)
     }
 }
 
