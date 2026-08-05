@@ -145,6 +145,21 @@ pub struct RigCalibration {
     pub per_camera: Vec<CameraStats>,
 }
 
+/// A reconstructed world point and the input track it came from.
+///
+/// One struct rather than parallel `points` / `point_track_id` vectors, so the pairing cannot come
+/// apart: there is no length to keep in sync and no way to reorder one without the other. The
+/// track id is what lets a caller carry its own per-track data -- descriptors, colours, semantic
+/// labels -- onto the map without re-matching.
+#[derive(Debug, Clone, Copy)]
+pub struct Point {
+    /// Position in the world frame, after bundle adjustment and after metric scaling when the
+    /// reconstruction's [`ScaleSource`] is [`ScaleSource::Tag`].
+    pub position: Vec3F64,
+    /// Index of the input track this point was reconstructed from.
+    pub track_id: usize,
+}
+
 /// One image measurement that survived into the final solve: view `view` saw point `point` at
 /// pixel `pixel`.
 #[derive(Debug, Clone, Copy)]
@@ -178,26 +193,22 @@ pub enum ScaleSource {
 
 /// A feature-based reconstruction: the map, not just the cameras.
 ///
-/// [`calibrate_features`](crate::calibrate_features) computes all of this and then throws most of
-/// it away to return a [`RigCalibration`]. That is the right shape for rig calibration, where the
-/// cameras ARE the answer, and the wrong one for mapping, where the points, the correspondence
-/// between tracks and points, and the surviving observations are the answer. Downstream code that
-/// needs the map had to re-derive it or fork; [`reconstruct`](crate::reconstruct) returns it.
+/// The solver computes all of this; the earlier API threw most of it away to return a
+/// [`RigCalibration`]. That is the right shape for rig calibration, where the cameras ARE the
+/// answer, and the wrong one for mapping, where the points, the correspondence between tracks and
+/// points, and the surviving observations are the answer. Downstream code needing the map had to
+/// re-derive it or fork; [`reconstruct`](crate::reconstruct) returns it.
 ///
-/// `RigCalibration` remains available via `From`, so the calibration path is unchanged.
+/// [`RigCalibration`] remains reachable via `From` for the rig-calibration use case.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct Reconstruction {
     /// Per-view pose `T_world_cam` (camera optical frame → world). `None` for a view that could
     /// not be registered.
     pub views: Vec<Option<Pose3d>>,
-    /// Reconstructed world points, after bundle adjustment and after metric scaling when
-    /// [`Self::scale`] is [`ScaleSource::Tag`].
-    pub points: Vec<Vec3F64>,
-    /// `points[i]` was reconstructed from the input track `point_track_id[i]`. Lets a caller carry
-    /// its own per-track data (descriptors, colours, semantic labels) onto the map without
-    /// re-matching.
-    pub point_track_id: Vec<usize>,
+    /// Reconstructed world points, each carrying the input track it came from. Published in
+    /// ascending track order, so two runs over identical input agree.
+    pub points: Vec<Point>,
     /// The observations that survived into the final solve. At most the input observation count,
     /// and usually fewer: tracks that never triangulated, and views that never registered,
     /// contribute none. Equal only when every track triangulates and every view registers.

@@ -15,8 +15,6 @@
 //!   the MAP (poses, points, the track each point came from, surviving observations) as a
 //!   [`Reconstruction`]. A tag is optional and acts only as a scale bar; without one the result is
 //!   honestly [`ScaleSource::UpToScale`].
-//! - [`calibrate_features`] — the same solve when only the rig geometry is wanted; it is
-//!   [`reconstruct`] plus a lossy `From` into [`RigCalibration`].
 //! - [`calibrate_multishot`] — multi-shot self-calibration: **refines each camera's focal**
 //!   ([`estimate_focal`], Zhang median across shots) and averages the extrinsics over N board poses
 //!   for a real empirical covariance. Single-view focal is unobservable (the pose absorbs it); N
@@ -57,10 +55,10 @@ pub use board::BoardGeometry;
 pub use error::CalibError;
 pub use intrinsics::estimate_focal;
 pub use multishot::{calibrate_multishot, MultiShotCalibration, MultiShotConfig, Shot};
-pub use sfm::{calibrate_features, reconstruct};
+pub use sfm::reconstruct;
 pub use tracks::{build_tracks, TrackEdge};
 pub use types::{
-    CalibConfig, CameraStats, FeatureMatch, FeatureTrack, Observation, Reconstruction,
+    CalibConfig, CameraStats, FeatureMatch, FeatureTrack, Observation, Point, Reconstruction,
     RigCalibration, ScaleSource, TagObservation,
 };
 
