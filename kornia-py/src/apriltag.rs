@@ -259,8 +259,10 @@ impl PyApriltagDetection {
     ///     n_iters: Orthogonal iteration steps (default 50).
     ///
     /// Returns:
-    ///     A tuple ``(best, second)`` of :class:`TagPose` objects,
-    ///     where ``best`` has the lower reprojection error.
+    ///     A tuple ``(best, second)``. ``best`` is the :class:`TagPose` with the
+    ///     lower reprojection error. ``second`` is a :class:`TagPose` only when the
+    ///     runner-up solution is physically possible (the whole tag in front of the
+    ///     camera); it is usually ``None``.
     #[pyo3(signature = (fx, fy, cx, cy, tag_size, n_iters=50))]
     pub fn estimate_pose(
         &self,
@@ -270,7 +272,7 @@ impl PyApriltagDetection {
         cy: f64,
         tag_size: f64,
         n_iters: usize,
-    ) -> PyResult<(PyTagPose, PyTagPose)> {
+    ) -> PyResult<(PyTagPose, Option<PyTagPose>)> {
         use kornia_3d::camera::PinholeCamera;
         use kornia_3d::pose::estimate_planar_pose as estimate_tag_pose;
         use kornia_algebra::{Vec2F64, Vec3F64};
@@ -322,7 +324,9 @@ impl PyApriltagDetection {
                 error: tp.error,
             }
         };
-        Ok((to_py(&pair.best), to_py(&pair.second)))
+        // `second` is `None` unless the runner-up is in front of the camera; surfacing that as
+        // `None` rather than a behind-camera pose is what stops callers treating it as usable.
+        Ok((to_py(&pair.best), pair.second.as_ref().map(to_py)))
     }
 }
 

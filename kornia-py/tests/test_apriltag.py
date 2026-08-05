@@ -156,11 +156,12 @@ def test_estimate_pose():
     detection = detections[0]
     result = detection.estimate_pose(fx=800, fy=800, cx=400, cy=267, tag_size=0.162)
 
-    # Result should be a tuple of 2 TagPose objects
+    # Result is (best, second). `second` is None unless the runner-up solution is
+    # physically possible — the whole tag in front of the camera — which is rare.
     assert isinstance(result, tuple)
     assert len(result) == 2
     assert isinstance(result[0], K.apriltag.TagPose)
-    assert isinstance(result[1], K.apriltag.TagPose)
+    assert result[1] is None or isinstance(result[1], K.apriltag.TagPose)
 
     # The first pose should have a valid (non-negative, finite) error
     assert result[0].error >= 0
