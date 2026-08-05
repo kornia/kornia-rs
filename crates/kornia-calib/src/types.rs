@@ -131,7 +131,12 @@ pub struct RigCalibration {
     /// for a camera that did not observe the reference tag. World frame = the
     /// reference tag's frame.
     pub poses: Vec<Option<Pose3d>>,
-    /// Id of the tag chosen as the world/gauge anchor.
+    /// Id of the tag chosen as the world/gauge anchor, for the tag and board producers.
+    ///
+    /// On the feature/SfM path ([`crate::reconstruct`]) the world frame is the bootstrap view's
+    /// and the tag only fixes scale, so this names the scale bar rather than a gauge anchor.
+    /// `0` doubles as "no tag", which collides with a real tag id -- see
+    /// [`ScaleSource`] and the `From<Reconstruction>` impl.
     pub reference_tag_id: u16,
     /// Final reprojection RMS in **pixels** (each residual scaled by its own
     /// camera's focal). `-1.0` if no valid observation remained.
@@ -193,8 +198,9 @@ pub struct Reconstruction {
     /// its own per-track data (descriptors, colours, semantic labels) onto the map without
     /// re-matching.
     pub point_track_id: Vec<usize>,
-    /// The observations that survived into the final solve. Fewer than the input observations:
-    /// tracks that never triangulated, and views that never registered, contribute none.
+    /// The observations that survived into the final solve. At most the input observation count,
+    /// and usually fewer: tracks that never triangulated, and views that never registered,
+    /// contribute none. Equal only when every track triangulates and every view registers.
     pub observations: Vec<Observation>,
     /// Final reprojection RMS in pixels, or `-1.0` if no valid observation remained.
     pub reproj_rmse_px: f64,
@@ -205,8 +211,18 @@ pub struct Reconstruction {
 }
 
 impl From<Reconstruction> for RigCalibration {
-    /// Keep only what rig calibration needs. Lossy by construction: the points, the track
-    /// correspondence and the observations are dropped.
+    /// Keep only what rig calibration needs. Lossy by construction, and in two ways worth stating.
+    ///
+    /// The obvious one: the points, the track correspondence and the observations are dropped.
+    ///
+    /// The consequential one: [`ScaleSource`] collapses into a bare `reference_tag_id`, using `0`
+    /// to mean "no tag". `0` is a VALID tag id, so a `RigCalibration` consumer cannot distinguish
+    /// "metric, anchored by tag 0" from "up to scale, no tag involved" -- the exact ambiguity
+    /// `ScaleSource` exists to remove. Keep the [`Reconstruction`] if that distinction matters.
+    ///
+    /// Note also that on the feature/SfM path the world frame is the bootstrap view's, not the
+    /// tag's: the tag is a scale bar, so `reference_tag_id` names a tag that fixed the metric
+    /// rather than one that anchored the gauge.
     fn from(r: Reconstruction) -> Self {
         RigCalibration {
             poses: r.views,

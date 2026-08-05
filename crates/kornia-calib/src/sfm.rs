@@ -5,7 +5,9 @@
 //! the growing point cloud, and a bundle adjustment polishes everything. The reconstruction is
 //! recovered **up to scale** (the fundamental monocular ambiguity); a single metric tag then fixes
 //! that one scalar — the tag is a *scale bar*, nothing else. Output poses are `T_world_cam` in the
-//! reference camera's frame (metric).
+//! reference camera's frame, metric ONLY when a tag actually anchored the scale: supplying a tag is
+//! not sufficient, since it must also be seen by two registered views and triangulate. See
+//! [`crate::ScaleSource`], which reports which case a given result is.
 //!
 //! Everything except the incremental orchestration is reused: `ransac_essential_5pt` +
 //! `decompose_essential` (bootstrap relative pose), [`kornia_3d::pose::triangulate_matched_points`],
