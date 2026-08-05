@@ -53,7 +53,7 @@ use kornia_image::{Image, ImageError};
 ///
 /// # References
 ///
-/// [Wikipedia - L1 loss](https://en.wikipedia.org/wiki/Huber_loss)
+/// [Wikipedia - Mean absolute error](https://en.wikipedia.org/wiki/Mean_absolute_error)
 pub fn l1_loss<const C: usize>(
     image1: &Image<f32, C>,
     image2: &Image<f32, C>,
