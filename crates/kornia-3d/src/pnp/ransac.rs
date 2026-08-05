@@ -59,23 +59,43 @@ pub enum PnPRansacError {
 ///
 /// Which pose survives when the non-minimal refit has been attempted.
 ///
-/// `Ok` wins; an errored refit falls back to the minimal-sample pose rather than sinking a RANSAC
-/// run that already found a consensus. Split out as a pure function because that is the whole
-/// contract, and because it cannot be tested through the solver: whether a near-degenerate
-/// consensus set makes EPnP's LU/LM solve fail depends on the target's floating-point behaviour,
-/// so a test that arranges a numerical failure asserts the fallback on one architecture and the
-/// success path on another.
+/// The refit is only kept if it does not LOSE support against the pose RANSAC already selected.
+/// Two separate reasons:
+///
+/// - A refit that errors must not sink a run that already found a consensus. With an AP3P kernel
+///   the consensus set was chosen by a solver that never validated EPnP on it, so a
+///   near-degenerate inlier set can fail the refit on a perfectly usable pose.
+/// - A refit that SUCCEEDS can still be worse. When the sampling kernel is AP3P the refit is a
+///   different solver entirely (EPnP), and EPnP degrades in the small-object / long-range regime
+///   an AP3P caller is often in -- measured at 0.29 m translation error where the AP3P pose was
+///   exact. Accepting it unconditionally silently undoes the caller's choice of kernel.
+///
+/// Guarding is what the references do: COLMAP's LORANSAC keeps the minimal-sample model when the
+/// local estimate does not improve support, and this crate's own `ransac::driver` guards the same
+/// way. Ties go to the refit, since with equal support the non-minimal fit uses more data.
 fn keep_better_of(
     refit: Result<PnPResult, PnPError>,
+    refit_inliers: usize,
     minimal: Option<PnPResult>,
-) -> Option<PnPResult> {
+    minimal_inliers: usize,
+    method: PnPMethod,
+) -> (Option<PnPResult>, Refinement) {
     match refit {
-        Ok(p) => Some(p),
+        Ok(p) if minimal.is_none() || refit_inliers >= minimal_inliers => {
+            (Some(p), Refinement::Applied(method))
+        }
+        Ok(_) => {
+            log::debug!(
+                "RANSAC refit scored {refit_inliers} inliers against the minimal-sample pose's \
+                 {minimal_inliers}; keeping the latter"
+            );
+            (minimal, Refinement::RejectedWorse)
+        }
         Err(e) => {
             log::debug!(
                 "RANSAC refit on the consensus set failed ({e}); keeping the best minimal-sample pose"
             );
-            minimal
+            (minimal, Refinement::Failed)
         }
     }
 }
@@ -107,13 +127,37 @@ impl Default for RansacParams {
     }
 }
 
+/// What happened to the non-minimal refit, so the caller can tell WHICH solver produced
+/// [`PnPRansacResult::pose`].
+///
+/// This exists because the answer is not always the method you asked for. A minimal solver cannot
+/// consume more than its exact correspondence count, so with an AP3P kernel the refit is EPnP --
+/// as in OpenCV's `solvePnPRansac` and COLMAP's `LORANSAC<P3PEstimator, EPNPEstimator>`. Reporting
+/// it beats leaving the caller to infer it from `RansacParams::refine`, which only says whether a
+/// refit was attempted.
+#[derive(Debug, Clone)]
+pub enum Refinement {
+    /// `RansacParams::refine` was false; the pose is the best minimal-sample estimate.
+    Skipped,
+    /// The consensus set was refit with this method and the result was kept.
+    Applied(PnPMethod),
+    /// The refit ran but scored fewer inliers, so the minimal-sample pose was kept.
+    RejectedWorse,
+    /// The refit errored, so the minimal-sample pose was kept.
+    Failed,
+}
+
 /// RANSAC result for PnP.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct PnPRansacResult {
     /// Best pose found by RANSAC.
     pub pose: PnPResult,
     /// Indices of inlier correspondences.
     pub inliers: Vec<usize>,
+    /// Which solver produced [`Self::pose`] -- see [`Refinement`]. With an AP3P kernel and
+    /// `refine: true` this is `Applied(EPnP(..))`, not the AP3P you passed in.
+    pub refinement: Refinement,
 }
 
 /// Solve PnP robustly using a legacy RANSAC loop around a base PnP method (e.g., EPnP).
@@ -144,11 +188,11 @@ pub struct PnPRansacResult {
 ///   LM refinement is enabled on that refit, since a caller who picked AP3P is often in exactly
 ///   the regime where bare EPnP is ill-conditioned (see the `epnp` module docs).
 ///
-///   **Unlike those references, this function accepts the refit unconditionally.** COLMAP keeps
-///   the minimal-sample model when the local estimate does not improve support, and this crate's
-///   own newer `ransac::driver` guards the same way. Here a refit that scores worse still wins,
-///   which is the failure documented in kornia-rs#1075. If the refit ERRORS, the best
-///   minimal-sample pose is returned rather than discarding a successful RANSAC run.
+///   The refit is GUARDED: it is kept only if it does not lose inlier support against the pose
+///   RANSAC already selected, matching COLMAP's LORANSAC and this crate's own `ransac::driver`.
+///   A refit that errors, or that scores fewer inliers, leaves the minimal-sample pose in place.
+///   [`PnPRansacResult::refinement`] reports which of those happened, so the caller can see that
+///   an AP3P request was answered by an EPnP fit rather than having to infer it.
 /// - Minimum correspondence count is kernel- and refine-aware: AP3P with `refine: false` needs
 ///   only 3, everything else needs 4 because the EPnP refit does.
 ///
@@ -362,7 +406,7 @@ pub fn solve_pnp_ransac(
         return Err(err);
     }
 
-    let refined = if params.refine {
+    let (refined, refinement) = if params.refine {
         // Refit on all inliers. A minimal solver cannot do this — AP3P rejects any count other
         // than 3 — so the non-minimal refit always uses EPnP, the standard minimal-kernel /
         // non-minimal-refit split. LM refinement is switched on for that fallback: a caller who
@@ -383,15 +427,36 @@ pub fn solve_pnp_ransac(
             w_all.push(world[idx]);
             i_all.push(image[idx]);
         }
-        // A failed refit must not sink a successful RANSAC run: the consensus set was selected by
-        // the sampling kernel, and with AP3P sampling EPnP was never validated on it, so a
-        // near-degenerate inlier set can make the refit fail on a perfectly usable pose.
+        // Score the refit on the SAME points and threshold that chose the consensus set, so the
+        // comparison in `keep_better_of` is like for like.
+        let refit_method_reported = refit_method.clone();
+        let refit_result = solve_pnp(&w_all, &i_all, k, distortion, refit_method);
+        let refit_inliers = refit_result.as_ref().map_or(0, |p| {
+            classify_points(
+                world,
+                image,
+                None,
+                None,
+                ClassificationParams {
+                    rotation_matrix: &p.rotation,
+                    translation_vector: &p.translation,
+                    camera_intrinsics_x: &intr_x,
+                    camera_intrinsics_y: &intr_y,
+                    threshold: Some(params.reproj_threshold_px),
+                },
+            )
+            .0
+            .len()
+        });
         keep_better_of(
-            solve_pnp(&w_all, &i_all, k, distortion, refit_method),
+            refit_result,
+            refit_inliers,
             best_pose.clone(),
+            best_inliers.len(),
+            refit_method_reported,
         )
     } else {
-        None
+        (None, Refinement::Skipped)
     };
 
     let mut final_pose = match refined.or(best_pose) {
@@ -428,6 +493,7 @@ pub fn solve_pnp_ransac(
     Ok(PnPRansacResult {
         pose: final_pose,
         inliers: best_inliers,
+        refinement,
     })
 }
 
@@ -905,22 +971,60 @@ mod tests {
         let minimal = pose(Vec3AF32::new(1.0, 2.0, 3.0), 0.25);
 
         // Refit failed: the minimal-sample pose comes back UNTOUCHED.
-        let kept = keep_better_of(
+        let (kept, how) = keep_better_of(
             Err(PnPError::SvdFailed("degenerate consensus set".to_string())),
+            0,
             Some(minimal.clone()),
-        )
-        .expect("a failed refit must not discard the minimal-sample pose");
+            6,
+            PnPMethod::EPnPDefault,
+        );
+        let kept = kept.expect("a failed refit must not discard the minimal-sample pose");
+        assert!(matches!(how, Refinement::Failed));
         assert_eq!(kept.rotation, minimal.rotation);
         assert_eq!(kept.translation, minimal.translation);
 
         // Refit succeeded: its pose wins.
         let refined = pose(Vec3AF32::new(9.0, 9.0, 9.0), 0.01);
-        let kept = keep_better_of(Ok(refined.clone()), Some(minimal.clone()))
-            .expect("a successful refit must be used");
-        assert_eq!(kept.translation, refined.translation);
+        let (kept, how) = keep_better_of(
+            Ok(refined.clone()),
+            6,
+            Some(minimal.clone()),
+            6,
+            PnPMethod::EPnPDefault,
+        );
+        assert_eq!(
+            kept.expect("a successful refit must be used").translation,
+            refined.translation
+        );
+        assert!(matches!(how, Refinement::Applied(_)));
+
+        // ...but a refit that LOSES support is discarded. This is the case that silently undid an
+        // AP3P caller's choice of kernel: EPnP succeeds, scores worse, and won anyway.
+        let (kept, how) = keep_better_of(
+            Ok(refined.clone()),
+            4,
+            Some(minimal.clone()),
+            6,
+            PnPMethod::EPnPDefault,
+        );
+        assert_eq!(
+            kept.expect("losing support must fall back, not fail")
+                .translation,
+            minimal.translation,
+            "a refit with fewer inliers must not replace the minimal-sample pose"
+        );
+        assert!(matches!(how, Refinement::RejectedWorse));
 
         // Nothing to fall back to: still nothing, and the caller turns that into an error.
-        assert!(keep_better_of(Err(PnPError::SvdFailed("x".to_string())), None).is_none());
+        assert!(keep_better_of(
+            Err(PnPError::SvdFailed("x".to_string())),
+            0,
+            None,
+            0,
+            PnPMethod::EPnPDefault
+        )
+        .0
+        .is_none());
     }
 
     /// The coplanar case must succeed end to end, whichever way the refit goes.
