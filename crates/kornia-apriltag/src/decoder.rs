@@ -313,14 +313,14 @@ impl Detection {
     ///
     /// # Returns
     ///
-    /// [`crate::pose::TagPosePair`] with `best` (lower reprojection error) and
+    /// [`kornia_3d::pose::PlanarPosePair`] with `best` (lower reprojection error) and
     /// `second` (higher error / ambiguous solution).
     pub fn estimate_pose(
         &self,
         camera: &kornia_3d::camera::PinholeCamera,
         tag_size: f64,
         n_iters: usize,
-    ) -> Result<crate::pose::TagPosePair, crate::pose::AprilTagPoseError> {
+    ) -> Result<kornia_3d::pose::PlanarPosePair, kornia_3d::pose::PlanarPoseError> {
         use kornia_algebra::{Vec2F64, Vec3F64};
         let s = tag_size / 2.0;
         // `Quad::corners` are ordered [TR, BR, BL, TL] (image, y-down); the object
@@ -339,7 +339,7 @@ impl Detection {
             Vec2F64::new(self.quad.corners[2].x as f64, self.quad.corners[2].y as f64),
             Vec2F64::new(self.quad.corners[3].x as f64, self.quad.corners[3].y as f64),
         ];
-        crate::pose::estimate_tag_pose(&object_pts, &image_pts, camera, n_iters)
+        kornia_3d::pose::estimate_planar_pose(&object_pts, &image_pts, camera, n_iters)
     }
 }
 
