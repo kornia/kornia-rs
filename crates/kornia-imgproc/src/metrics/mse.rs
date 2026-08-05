@@ -116,7 +116,11 @@ pub fn mse<const C: usize>(
 ///
 /// // MSE here is 4/3, so sqrt(MSE) > MAX and the ratio falls below 1 —
 /// // a negative dB value is correct for a distortion this large.
-/// assert_eq!(psnr, -1.2493869);
+/// //
+/// // Compared with a tolerance rather than for equality: `log10` is not
+/// // required to be correctly rounded, so the last bit of the result varies
+/// // between platforms.
+/// assert!((psnr - -1.2493874).abs() < 1e-5);
 /// ```
 ///
 /// # Panics
@@ -217,8 +221,18 @@ mod tests {
             },
             vec![1f32, 3f32, 2f32, 4f32, 5f32, 6f32],
         )?;
+        // MSE is 4/3 here, so sqrt(MSE) > MAX and the ratio drops below 1 — a
+        // negative dB value is correct for a distortion this large.
+        //
+        // Tolerance rather than equality: `log10` is not required to be
+        // correctly rounded, so the last bit differs between platforms
+        // (aarch64 gives -1.2493869, x86_64 gives -1.249387).
         let psnr = crate::metrics::psnr(&image1, &image2, 1.0)?;
-        assert_eq!(psnr, -1.2493869);
+        let expected = 20.0 * (1.0f32 / (4.0f32 / 3.0).sqrt()).log10();
+        assert!(
+            (psnr - expected).abs() < 1e-5,
+            "expected ~{expected} dB, got {psnr}"
+        );
 
         Ok(())
     }
