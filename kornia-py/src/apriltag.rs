@@ -272,8 +272,8 @@ impl PyApriltagDetection {
         n_iters: usize,
     ) -> PyResult<(PyTagPose, PyTagPose)> {
         use kornia_3d::camera::PinholeCamera;
-        use kornia_algebra::{Vec2F64, Vec3F64};
         use kornia_3d::pose::estimate_planar_pose as estimate_tag_pose;
+        use kornia_algebra::{Vec2F64, Vec3F64};
 
         let camera = PinholeCamera {
             fx,
