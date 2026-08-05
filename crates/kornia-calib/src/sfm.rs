@@ -84,9 +84,61 @@ pub fn calibrate_features(
 /// Prefer this when the scene is the output (mapping, relocalisation, densification). Prefer
 /// [`calibrate_features`] when only the rig geometry matters; it is this function plus a `From`.
 ///
+/// # Arguments
+///
+/// * `cameras` - intrinsics per view, indexed the same way as `FeatureTrack::obs`. Distortion is
+///   applied when normalising observations.
+/// * `tags_for_scale` - optional metric anchor. Empty means the result is up to scale; the first
+///   tag's frame otherwise fixes the world gauge and its known side length fixes the metric.
+/// * `tracks` - multi-view feature tracks. A track needs at least two views to triangulate, and
+///   the reconstruction needs enough shared tracks between views to register them.
+/// * `config` - solver settings; see [`CalibConfig`].
+///
+/// # Returns
+///
+/// A [`Reconstruction`]: the registered view poses (`T_world_cam`, `None` where a view could not
+/// be registered), the triangulated points, the track each point came from, the observations that
+/// survived the solve, per-view statistics, and where the metric scale came from.
+///
 /// # Errors
 ///
-/// See [`calibrate_features`].
+/// [`CalibError`] if the inputs cannot produce a reconstruction — too few views or tracks, no
+/// viable bootstrap pair, or a bundle-adjustment failure. Same conditions as
+/// [`calibrate_features`], which is a thin wrapper over this.
+///
+/// # Example
+///
+/// ```no_run
+/// use kornia_calib::{reconstruct, CalibConfig, FeatureTrack, ScaleSource};
+/// use kornia_3d::camera::PinholeCamera;
+/// use kornia_algebra::Vec2F64;
+///
+/// # fn main() -> Result<(), kornia_calib::CalibError> {
+/// let cam = || PinholeCamera { fx: 600.0, fy: 600.0, cx: 320.0, cy: 240.0, ..PinholeCamera::IDENTITY };
+/// let cameras = vec![cam(), cam(), cam()];
+///
+/// // One scene point seen by three views. Real input comes from a matcher.
+/// let tracks = vec![FeatureTrack {
+///     obs: vec![
+///         (0, Vec2F64::new(320.0, 240.0)),
+///         (1, Vec2F64::new(300.0, 241.0)),
+///         (2, Vec2F64::new(340.0, 239.0)),
+///     ],
+/// }];
+///
+/// let recon = reconstruct(&cameras, &[], &tracks, &CalibConfig::new(0.1))?;
+///
+/// // No tag was supplied, so the map is honestly up to scale rather than silently "metric".
+/// assert_eq!(recon.scale, ScaleSource::UpToScale);
+///
+/// // Carry per-track data onto the map without re-matching.
+/// for (i, &track_id) in recon.point_track_id.iter().enumerate() {
+///     let _world_point = recon.points[i];
+///     let _source_track = &tracks[track_id];
+/// }
+/// # Ok(())
+/// # }
+/// ```
 pub fn reconstruct(
     cameras: &[PinholeCamera],
     tags_for_scale: &[TagObservation],
