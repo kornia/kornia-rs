@@ -130,20 +130,34 @@ pub struct PnPRansacResult {
 ///
 /// - Minimal sample size follows the KERNEL: 3 for AP3P (an exact P3P solver), 5 for EPnP (4 when
 ///   only 4 points are available). This is what makes a P3P kernel worth using here: a sample is
-///   outlier-free with probability `w^k` at inlier ratio `w`, so `k = 3` rather than `5` draws a
-///   clean sample `w^-2` times as often (16x at `w = 0.25`).
+///   outlier-free with probability `w^k` at inlier ratio `w`, so `k = 3` rather than `5` DRAWS a
+///   clean sample `w^-2` times as often (16x at `w = 0.25`). That is a probability ratio, not a
+///   measured speedup — each AP3P iteration now scores up to four hypotheses instead of one, which
+///   the cheaper hypothesis generation has to pay for.
+///
+///   `w^k` is itself the with-replacement approximation; this loop samples WITHOUT replacement, so
+///   the exact figure is the hypergeometric product and `w^k` overstates it, most at small `n`.
 /// - **Every** AP3P root is scored. P3P returns up to four algebraic solutions and cheirality on
-///   only three points rarely narrows that to one, so scoring a single root would waste most
-///   clean samples on the wrong pose and forfeit the `w^-2` advantage above. EPnP returns one
-///   solution and keeps its single-hypothesis path.
+///   only three points rarely narrows that to one — measured on the synthetic scene in the tests,
+///   every triple leaves two, and the first is the wrong pose for 7 of 20 triples. Scoring all of
+///   them is not merely an accuracy improvement: `N = log(1-p)/log(1-w^k)` below assumes a trial
+///   yields the correct model with probability `w^k`, which holds only if every root is tried.
+///   Scoring one root would leave the true probability at `w^k / roots` while the loop kept
+///   planning against `w^k`, and stop early. EPnP returns one solution and keeps its
+///   single-hypothesis path.
 /// - Scoring uses Euclidean pixel reprojection error.
 /// - Iterations adapt from current inlier ratio and desired confidence.
 /// - With `params.refine`, the final non-minimal refit over all inliers uses **EPnP even when the
 ///   sampling kernel was AP3P**, because a minimal solver cannot consume more than its exact
-///   correspondence count. The returned pose is therefore an EPnP fit to the AP3P-selected
-///   consensus set — the standard minimal-kernel / non-minimal-refit split. LM refinement is
-///   enabled on that refit, since a caller who picked AP3P is often in exactly the regime where
-///   bare EPnP is ill-conditioned (see the `epnp` module docs). If the refit fails, the best
+///   correspondence count. This matches OpenCV's `solvePnPRansac`, which refits a P3P/AP3P
+///   consensus set with `SOLVEPNP_EPNP`, and COLMAP's `LORANSAC<P3PEstimator, EPNPEstimator>`.
+///   LM refinement is enabled on that refit, since a caller who picked AP3P is often in exactly
+///   the regime where bare EPnP is ill-conditioned (see the `epnp` module docs).
+///
+///   **Unlike those references, this function accepts the refit unconditionally.** COLMAP keeps
+///   the minimal-sample model when the local estimate does not improve support, and this crate's
+///   own newer `ransac::driver` guards the same way. Here a refit that scores worse still wins,
+///   which is the failure documented in kornia-rs#1075. If the refit ERRORS, the best
 ///   minimal-sample pose is returned rather than discarding a successful RANSAC run.
 /// - Minimum correspondence count is kernel- and refine-aware: AP3P with `refine: false` needs
 ///   only 3, everything else needs 4 because the EPnP refit does.
@@ -151,9 +165,18 @@ pub struct PnPRansacResult {
 /// # Errors
 ///
 /// Returns [`PnPRansacError::DistortionUnsupportedByKernel`] when an AP3P kernel is combined with
-/// `distortion = Some(..)`: AP3P inverts `K` alone and cannot consume a distortion model, so the
-/// combination is rejected instead of silently generating hypotheses from distorted pixels treated
-/// as ideal. Undistort the image points up front and pass `None`.
+/// `distortion = Some(..)`: AP3P inverts `K` alone and cannot consume a distortion model, so it
+/// would generate hypotheses from distorted pixels treated as ideal.
+///
+/// Rejecting is a stopgap, not the reference design. OpenCV and COLMAP both UNDISTORT the
+/// correspondences before sampling and then work in a pure pinhole downstream; this crate has no
+/// such step wired in here, so undistort the image points up front and pass `None`.
+///
+/// Note the EPnP path is not model-consistent either, and this error does not fix that: scoring
+/// (`classify_points` / `project_sq_error`) is pure pinhole and ignores `distortion` entirely,
+/// while the EPnP solve and its LM refinement do apply it. So `EPnP + Some(distortion)` selects a
+/// consensus set on pinhole residuals and refits it under a distorted model. Undistorting up front
+/// is the fix for both.
 pub fn solve_pnp_ransac(
     world: &[Vec3AF32],
     image: &[Vec2F32],
@@ -279,7 +302,9 @@ pub fn solve_pnp_ransac(
         // Score every hypothesis against all points, keeping the one with most inliers.
         let mut improved = false;
         for pose_min in hypotheses.drain(..) {
-            // Cheirality check on minimal set (all positive depths)
+            // Cheirality on the minimal set. Redundant for AP3P -- `solve_ap3p_multi` already
+            // filters its roots by positive depth over these same 3 points, in f64 -- but EPnP
+            // does not, so the gate stays here rather than being hoisted into the AP3P branch.
             if !sample_all_positive_depths(&pose_min.rotation, &pose_min.translation, &w_min) {
                 log::debug!("Cheirality check failed on iteration {iter}");
                 continue;
