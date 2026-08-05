@@ -51,10 +51,11 @@ pub use board::BoardGeometry;
 pub use error::CalibError;
 pub use intrinsics::estimate_focal;
 pub use multishot::{calibrate_multishot, MultiShotCalibration, MultiShotConfig, Shot};
-pub use sfm::calibrate_features;
+pub use sfm::{calibrate_features, reconstruct};
 pub use tracks::{build_tracks, TrackEdge};
 pub use types::{
-    CalibConfig, CameraStats, FeatureMatch, FeatureTrack, RigCalibration, TagObservation,
+    CalibConfig, CameraStats, FeatureMatch, FeatureTrack, Observation, Reconstruction,
+    RigCalibration, ScaleSource, TagObservation,
 };
 
 // Re-exported so callers can name calibration poses without depending on

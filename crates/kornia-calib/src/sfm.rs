@@ -26,7 +26,10 @@ use kornia_3d::ransac::RobustKernelKind;
 use kornia_algebra::{Mat3AF32, Mat3F64, Vec2F32, Vec2F64, Vec3AF32, Vec3F64};
 
 use crate::error::CalibError;
-use crate::types::{CalibConfig, CameraStats, FeatureTrack, RigCalibration, TagObservation};
+use crate::types::{
+    CalibConfig, CameraStats, FeatureTrack, Observation, Reconstruction, RigCalibration,
+    ScaleSource, TagObservation,
+};
 
 /// Convert an f32 PnP rotation/translation (world→cam) into an f64 [`Pose3d`].
 fn pose_from_pnp(r: Mat3AF32, t: Vec3AF32) -> Pose3d {
@@ -69,6 +72,27 @@ pub fn calibrate_features(
     tracks: &[FeatureTrack],
     config: &CalibConfig,
 ) -> Result<RigCalibration, CalibError> {
+    reconstruct(cameras, tags_for_scale, tracks, config).map(Into::into)
+}
+
+/// Reconstruct from feature tracks, returning the MAP as well as the camera poses.
+///
+/// Same solve as [`calibrate_features`] -- bootstrap, incremental registration, bundle adjustment,
+/// optional metric anchoring from a tag -- but it returns a [`Reconstruction`] instead of
+/// discarding the points, the track/point correspondence and the surviving observations.
+///
+/// Prefer this when the scene is the output (mapping, relocalisation, densification). Prefer
+/// [`calibrate_features`] when only the rig geometry matters; it is this function plus a `From`.
+///
+/// # Errors
+///
+/// See [`calibrate_features`].
+pub fn reconstruct(
+    cameras: &[PinholeCamera],
+    tags_for_scale: &[TagObservation],
+    tracks: &[FeatureTrack],
+    config: &CalibConfig,
+) -> Result<Reconstruction, CalibError> {
     let n_cams = cameras.len();
     let idcam = PinholeCamera::IDENTITY;
     let tcfg = TriangulationConfig {
@@ -251,14 +275,24 @@ pub fn calibrate_features(
     let mut points: Vec<Vec3F64> = Vec::new();
     let mut pt_index: HashMap<usize, usize> = HashMap::new();
     let mut obs: Vec<BaObservation> = Vec::new();
+    let mut kept_obs: Vec<Observation> = Vec::new();
+    let mut point_track_id: Vec<usize> = Vec::new();
     for (ti, p) in &point3d {
         let pidx = points.len();
         pt_index.insert(*ti, pidx);
         points.push(*p);
-        for (c, nrm) in &norm[*ti] {
+        point_track_id.push(*ti);
+        for (j, (c, nrm)) in norm[*ti].iter().enumerate() {
             if poses[*c].is_none() {
                 continue;
             }
+            // `norm[ti]` is built by mapping over `tracks[ti].obs`, so index j lines up and the
+            // raw pixel is recoverable without re-normalising.
+            kept_obs.push(Observation {
+                view: *c,
+                point: pidx,
+                pixel: tracks[*ti].obs[j].1,
+            });
             obs.push(BaObservation {
                 pose_idx: *c,
                 point_idx: pidx,
@@ -337,11 +371,23 @@ pub fn calibrate_features(
             })
         })
         .collect();
-    Ok(RigCalibration {
-        poses: out_poses,
-        reference_tag_id: tags_for_scale.first().map(|t| t.tag_id).unwrap_or(0),
+    // Points share the world frame with the output poses, so they take the same metric scale.
+    let out_points: Vec<Vec3F64> = res.points.iter().map(|p| *p * scale).collect();
+
+    Ok(Reconstruction {
+        views: out_poses,
+        points: out_points,
+        point_track_id,
+        observations: kept_obs,
         reproj_rmse_px,
-        per_camera,
+        per_view: per_camera,
+        scale: match tags_for_scale.first() {
+            Some(t) => ScaleSource::Tag {
+                id: t.tag_id,
+                size_m: config.tag_size_m,
+            },
+            None => ScaleSource::UpToScale,
+        },
     })
 }
 
@@ -626,7 +672,7 @@ mod tests {
         };
 
         let cfg = CalibConfig::new(s);
-        let cal = match calibrate_features(&cams, &[tag], &tracks, &cfg) {
+        let cal = match calibrate_features(&cams, std::slice::from_ref(&tag), &tracks, &cfg) {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("ERR: {e:?}");
@@ -654,6 +700,131 @@ mod tests {
             cal.reproj_rmse_px >= 0.0 && cal.reproj_rmse_px < 1.0,
             "reproj {}",
             cal.reproj_rmse_px
+        );
+
+        // The MAP must be metric too, not just the poses. `reconstruct` runs the same solve, so
+        // the points it returns have to share the poses' scale -- this is the assertion the
+        // no-tag consistency test cannot make, because there `scale == 1.0` and dropping the
+        // scaling changes nothing.
+        let recon = reconstruct(&cams, std::slice::from_ref(&tag), &tracks, &cfg)
+            .expect("same solve must succeed");
+        assert_eq!(
+            recon.scale,
+            ScaleSource::Tag {
+                id: 0,
+                size_m: 0.10
+            }
+        );
+        assert!(!recon.points.is_empty());
+
+        // Reproject every observation through its own view and point: metric points against
+        // metric poses land on the measured pixel, unscaled points against scaled poses do not.
+        let mut worst: f64 = 0.0;
+        for o in &recon.observations {
+            let w2c = recon.views[o.view].expect("registered").inverse();
+            worst =
+                worst.max((project(recon.points[o.point], &w2c, &cams[o.view]) - o.pixel).length());
+        }
+        assert!(
+            worst < 2.0,
+            "map is not in the same metric frame as the poses: worst reprojection {worst:.3} px"
+        );
+
+        // And the cloud spans a physically sensible extent -- the synthetic points live within
+        // ~1.2 m of each other, which an unscaled or mis-scaled map would not reproduce.
+        let (lo, hi) = recon
+            .points
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), p| {
+                (lo.min(p.z), hi.max(p.z))
+            });
+        assert!(
+            (0.5..4.0).contains(&lo) && (0.5..4.0).contains(&hi),
+            "point depths {lo:.2}..{hi:.2} m are not the metric scene"
+        );
+    }
+
+    /// `reconstruct` must return a map that is CONSISTENT with the poses it returns.
+    ///
+    /// `calibrate_features` computed all of this and discarded it, so this test could not be
+    /// written against the old API at all -- there was no map to check. Asserting the points are
+    /// merely non-empty would be weak, so this reprojects every returned observation through its
+    /// own view and its own point and requires it to land on the measured pixel.
+    #[test]
+    fn reconstruct_returns_a_map_consistent_with_its_poses() {
+        // Same synthetic rig as the calibration test above: three views of a point cloud.
+        let cams = vec![pinhole(600.0), pinhole(600.0), pinhole(600.0)];
+        let poses_gt = [
+            Pose3d::new(Mat3F64::IDENTITY, Vec3F64::new(0.0, 0.0, 0.0)),
+            Pose3d::new(rot(0.25, 0.0), Vec3F64::new(-0.30, 0.0, 0.02)),
+            Pose3d::new(rot(-0.22, 0.05), Vec3F64::new(0.28, 0.01, 0.03)),
+        ];
+        let world: Vec<Vec3F64> = (0..24)
+            .map(|i| {
+                let (a, b) = ((i % 6) as f64, (i / 6) as f64);
+                Vec3F64::new(
+                    -0.25 + 0.1 * a,
+                    -0.15 + 0.1 * b,
+                    1.4 + 0.05 * ((i % 5) as f64),
+                )
+            })
+            .collect();
+
+        let tracks: Vec<FeatureTrack> = world
+            .iter()
+            .map(|pw| FeatureTrack {
+                obs: (0..3)
+                    .map(|c| (c, project(*pw, &poses_gt[c], &cams[c])))
+                    .collect(),
+            })
+            .collect();
+
+        let cfg = CalibConfig::new(0.1);
+        let recon = reconstruct(&cams, &[], &tracks, &cfg).expect("synthetic scene must solve");
+
+        // The map came back at all -- the whole point of M1.
+        assert!(!recon.points.is_empty(), "no points returned");
+        assert!(!recon.observations.is_empty(), "no observations returned");
+        assert_eq!(
+            recon.points.len(),
+            recon.point_track_id.len(),
+            "every point must name the track it came from"
+        );
+        // No tag was supplied, so the map is honestly up to scale rather than silently "metric".
+        assert_eq!(recon.scale, ScaleSource::UpToScale);
+
+        // Every track id must index the input, and every observation must index the map.
+        for &ti in &recon.point_track_id {
+            assert!(ti < tracks.len(), "track id {ti} out of range");
+        }
+        for o in &recon.observations {
+            assert!(o.view < recon.views.len(), "view {} out of range", o.view);
+            assert!(
+                o.point < recon.points.len(),
+                "point {} out of range",
+                o.point
+            );
+            assert!(
+                recon.views[o.view].is_some(),
+                "an observation names view {} which was never registered",
+                o.view
+            );
+        }
+
+        // The real assertion: reprojecting each returned point through its own returned pose must
+        // reproduce the measured pixel. This fails if points, poses and observations are not
+        // mutually consistent -- e.g. if the points were left in the pre-scaling frame, or if
+        // point_track_id were misaligned with points.
+        let mut worst: f64 = 0.0;
+        for o in &recon.observations {
+            let t_world_cam = recon.views[o.view].expect("checked above");
+            let w2c = t_world_cam.inverse();
+            let uv = project(recon.points[o.point], &w2c, &cams[o.view]);
+            worst = worst.max((uv - o.pixel).length());
+        }
+        assert!(
+            worst < 1.0,
+            "returned map is not consistent with its poses: worst reprojection {worst:.3} px"
         );
     }
 }

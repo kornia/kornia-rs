@@ -1,7 +1,7 @@
 //! Input/output types for multi-camera calibration.
 
 use kornia_3d::pose::Pose3d;
-use kornia_algebra::Vec2F64;
+use kornia_algebra::{Vec2F64, Vec3F64};
 
 use crate::error::CalibError;
 
@@ -10,6 +10,7 @@ use crate::error::CalibError;
 /// Corners are given in **aruco winding** `(TL, TR, BR, BL)` in the raw
 /// (possibly distorted) image pixels of each camera. The same physical corner
 /// index must be used across every camera that observes the tag.
+#[derive(Debug, Clone)]
 pub struct TagObservation {
     /// Tag id (as decoded by the detector).
     pub tag_id: u16,
@@ -21,6 +22,7 @@ pub struct TagObservation {
 /// sees it. Replaces the `C(k,2)` independent two-view points (one per camera pair) with a single
 /// shared 3D point — removing statistical double-counting of each pixel and coupling the poses
 /// through shared structure. Build these from pairwise matches with [`crate::build_tracks`].
+#[derive(Debug, Clone)]
 pub struct FeatureTrack {
     /// `(camera_index, raw_pixel)`, one per camera observing this point (at least two).
     pub obs: Vec<(usize, Vec2F64)>,
@@ -29,6 +31,7 @@ pub struct FeatureTrack {
 /// A single feature correspondence: the same physical scene point seen by two
 /// cameras, given as the source pixel in each. Feature matches are optional;
 /// they add the rotation/translation constraints a single planar tag lacks.
+#[derive(Debug, Clone)]
 pub struct FeatureMatch {
     /// First camera index.
     pub cam_a: usize,
@@ -79,6 +82,7 @@ impl CalibConfig {
 
 /// Per-camera pose covariance + observability, conditional on fixed intrinsics + fixed target
 /// geometry. Computed from each camera's fixed-point (board/gauge) reprojections.
+#[derive(Debug, Clone)]
 pub struct CameraStats {
     /// Camera index.
     pub camera: usize,
@@ -121,6 +125,7 @@ impl CameraStats {
 }
 
 /// Result of a multi-camera extrinsic calibration.
+#[derive(Debug, Clone)]
 pub struct RigCalibration {
     /// Per-camera pose `T_world_cam` (camera optical frame → world). `None`
     /// for a camera that did not observe the reference tag. World frame = the
@@ -133,6 +138,86 @@ pub struct RigCalibration {
     pub reproj_rmse_px: f64,
     /// Per-camera covariance + observability (one entry per camera; see [`CameraStats`]).
     pub per_camera: Vec<CameraStats>,
+}
+
+/// One image measurement that survived into the final solve: view `view` saw point `point` at
+/// pixel `pixel`.
+#[derive(Debug, Clone, Copy)]
+pub struct Observation {
+    /// Index into [`Reconstruction::views`].
+    pub view: usize,
+    /// Index into [`Reconstruction::points`].
+    pub point: usize,
+    /// Raw image pixel, in the same convention the input tracks used.
+    pub pixel: Vec2F64,
+}
+
+/// How the reconstruction's metric scale was fixed.
+///
+/// A feature-only reconstruction is determined up to a similarity, so the scale has to come from
+/// somewhere outside the images. Reporting WHICH is not cosmetic: a caller that mistakes an
+/// up-to-scale map for a metric one gets distances that are self-consistent and wrong.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ScaleSource {
+    /// A tag of known side length anchored the scale; [`Reconstruction::points`] are in metres.
+    Tag {
+        /// Id of the tag used as the metric anchor.
+        id: u16,
+        /// Its known side length, in metres.
+        size_m: f64,
+    },
+    /// No metric anchor was available. Poses and points are consistent with each other but carry
+    /// an arbitrary global scale.
+    UpToScale,
+}
+
+/// A feature-based reconstruction: the map, not just the cameras.
+///
+/// [`calibrate_features`](crate::calibrate_features) computes all of this and then throws most of
+/// it away to return a [`RigCalibration`]. That is the right shape for rig calibration, where the
+/// cameras ARE the answer, and the wrong one for mapping, where the points, the correspondence
+/// between tracks and points, and the surviving observations are the answer. Downstream code that
+/// needs the map had to re-derive it or fork; [`reconstruct`](crate::reconstruct) returns it.
+///
+/// `RigCalibration` remains available via `From`, so the calibration path is unchanged.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct Reconstruction {
+    /// Per-view pose `T_world_cam` (camera optical frame → world). `None` for a view that could
+    /// not be registered.
+    pub views: Vec<Option<Pose3d>>,
+    /// Reconstructed world points, after bundle adjustment and after metric scaling when
+    /// [`Self::scale`] is [`ScaleSource::Tag`].
+    pub points: Vec<Vec3F64>,
+    /// `points[i]` was reconstructed from the input track `point_track_id[i]`. Lets a caller carry
+    /// its own per-track data (descriptors, colours, semantic labels) onto the map without
+    /// re-matching.
+    pub point_track_id: Vec<usize>,
+    /// The observations that survived into the final solve. Fewer than the input observations:
+    /// tracks that never triangulated, and views that never registered, contribute none.
+    pub observations: Vec<Observation>,
+    /// Final reprojection RMS in pixels, or `-1.0` if no valid observation remained.
+    pub reproj_rmse_px: f64,
+    /// Per-view covariance + observability, one entry per input view.
+    pub per_view: Vec<CameraStats>,
+    /// Where the metric scale came from -- see [`ScaleSource`].
+    pub scale: ScaleSource,
+}
+
+impl From<Reconstruction> for RigCalibration {
+    /// Keep only what rig calibration needs. Lossy by construction: the points, the track
+    /// correspondence and the observations are dropped.
+    fn from(r: Reconstruction) -> Self {
+        RigCalibration {
+            poses: r.views,
+            reference_tag_id: match r.scale {
+                ScaleSource::Tag { id, .. } => id,
+                ScaleSource::UpToScale => 0,
+            },
+            reproj_rmse_px: r.reproj_rmse_px,
+            per_camera: r.per_view,
+        }
+    }
 }
 
 impl RigCalibration {
