@@ -1217,6 +1217,30 @@ where
         Ok(wrap_device_slice(dev_slice, self.shape, stream))
     }
 
+    /// Copy this host tensor into a new **unified-memory** tensor (H2D memcpy
+    /// into a `cudaMallocManaged` buffer). The unified buffer is immediately
+    /// accessible from both the CPU and the GPU kernel launched on `stream`
+    /// without a second explicit copy — useful for Jetson and fine-grained UVM
+    /// workflows.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CudaError`] on allocation or copy failure.
+    pub fn to_cuda_unified(&self, stream: &Arc<CudaStream>) -> Result<Tensor<T, N>, CudaError>
+    where
+        T: ValidAsZeroBits + 'static,
+    {
+        let src = self.as_slice(); // panics (correctly) if not host-accessible
+        let mut dst = zeros_cuda_unified::<T, N>(self.shape, stream)?;
+        let dst_slice = dst.as_cudaslice_mut().ok_or_else(|| {
+            CudaError::Driver("to_cuda_unified: unified alloc has no device slice".into())
+        })?;
+        stream
+            .memcpy_htod(src, dst_slice)
+            .map_err(|e| CudaError::Driver(e.to_string()))?;
+        Ok(dst)
+    }
+
     /// Copy this device tensor to a new host-backed tensor.
     ///
     /// Synchronizes the stream before returning so the host data is valid.

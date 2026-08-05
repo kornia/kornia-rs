@@ -1098,12 +1098,8 @@ mod tests {
         let device_out = d_dst.to_host_owned()?;
 
         // Unified: same op, but the buffers are unified rather than device.
-        let mut u_src = Image::<f32, 3>::zeros_cuda_unified(src_size, &stream)?;
+        let u_src = host.to_cuda_unified(&stream)?;
         let mut u_dst = Image::<f32, 3>::zeros_cuda_unified(dst_size, &stream)?;
-        let u_src_slice = u_src
-            .as_cudaslice_mut()
-            .ok_or("unified source has no device slice")?;
-        stream.memcpy_htod(host.as_slice(), u_src_slice)?;
         resize(&u_src, &mut u_dst, InterpolationMode::Bilinear)?;
         let unified_out = u_dst.to_host_image(&stream)?;
 

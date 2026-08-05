@@ -19,10 +19,6 @@ name = "bench_cuda_remap"
 required-features = ["cuda"]
 
 [[example]]
-name = "bench_unified_memory"
-required-features = ["cuda"]
-
-[[example]]
 name = "dump_cuda_resize"
 required-features = ["cuda"]
 
@@ -32,6 +28,11 @@ required-features = ["cuda"]
 
 [[example]]
 name = "dump_cuda_warp_perspective"
+required-features = ["cuda"]
+
+[[bench]]
+harness = false
+name = "bench_unified_memory"
 required-features = ["cuda"]
 
 [[bench]]

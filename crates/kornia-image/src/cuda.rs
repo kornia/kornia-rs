@@ -58,6 +58,22 @@ where
         Image::try_from(dev)
     }
 
+    /// Upload this host image into a new **unified-memory** image (H2D memcpy
+    /// into a `cudaMallocManaged` buffer). Mirrors [`Self::to_cuda`] for the
+    /// unified memory domain; the result is accessible from both the CPU and
+    /// any GPU kernel on `stream` without a second explicit copy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ImageError::Cuda`] on allocation or copy failure.
+    pub fn to_cuda_unified(&self, stream: &Arc<CudaStream>) -> Result<Image<T, C>, ImageError> {
+        let dev = self
+            .0
+            .to_cuda_unified(stream)
+            .map_err(|e| ImageError::Cuda(e.to_string()))?;
+        Image::try_from(dev)
+    }
+
     /// Allocate a zero-initialised **device-resident `Image`** of `size` on `stream`.
     ///
     /// The backing storage is a typed `CudaResource<T>` (allocated via
