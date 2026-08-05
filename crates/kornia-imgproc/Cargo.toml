@@ -108,7 +108,7 @@ kornia-algebra = { workspace = true }
 kornia-image = { workspace = true }
 kornia-tensor = { workspace = true }
 num-traits = { workspace = true }
-opencv = { version = "0.99", optional = true }
+opencv = { version = "0.100", optional = true }
 rayon = { workspace = true }
 thiserror = { workspace = true }
 wide = { workspace = true }
@@ -117,7 +117,7 @@ wide = { workspace = true }
 criterion = { workspace = true }
 # Deterministic instruction counts, immune to machine load. Needs valgrind and
 # `cargo install iai-callgrind-runner --version 0.14.0`.
-iai-callgrind = "0.14.0"
+iai-callgrind = "0.16.1"
 image = { workspace = true }
 imageproc = { workspace = true }
 kornia-io = { workspace = true }
