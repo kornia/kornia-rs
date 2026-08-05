@@ -17,9 +17,14 @@
 //! failure mode and pins the empirical envelope.
 //!
 //! This is the degeneracy the EPnP paper itself documents (Lepetit, Moreno-Noguer & Fua, IJCV
-//! 2009, Sect. 3.3 and Fig. 3): as the camera approaches orthographic, the null space of `MᵀM`
-//! grows from one dimension to four, so all four smallest eigenvalues tend to zero together and
-//! the correct one stops being identifiable. A small object at long range is that regime.
+//! 2009, Sect. 3.3 and Fig. 3). For a purely perspective camera the null space of `MᵀM` has
+//! dimension one, from the scale ambiguity; for an AFFINE camera it has dimension four, from the
+//! depth uncertainty of the four control points. A large focal length approximates an affine
+//! model, so the paper states the dimension "could be any value between 1 and 4" and Fig. 3 plots
+//! the singular values of `MᵀM` across f = 100…10000.
+//!
+//! Reading a small object at long range as the same regime is an inference, not the paper's
+//! framing — it argues from focal length and the affine approximation, not from angular extent.
 //!
 //! Two things this module does NOT diverge from the references on. The control-point spread is
 //! `sqrt(λ_scatter / n)`, algebraically the same as OpenCV's `epnp.cpp` (`k = sqrt(dc[i-1] /
