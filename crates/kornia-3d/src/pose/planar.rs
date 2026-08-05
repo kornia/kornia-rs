@@ -18,11 +18,20 @@
 //! encode; it is conditioning, not correctness.
 //!
 //! This matters because an earlier revision seeded from a FIXED canonical square
-//! `[(-1,-1), (1,-1), (1,1), (-1,1)]`, which was only correct for callers using that exact
-//! winding and phase. Measured on exact projections of a square at 0.3 m / 20 deg tilt, that
-//! seed left a cyclic shift by one 2.56 deg out and a reversed winding 15.58 deg out at
-//! `n_iters = 50` (both converged only by ~500), and left `kornia-apriltag`'s
-//! `[TR, BR, BL, TL]` corner order 4.16 deg out on perfect input.
+//! `[(-1,-1), (1,-1), (1,1), (-1,1)]`, which was only correct for callers whose points shared
+//! that exact winding and phase. Rotation error of `best` against that old seed, on exact
+//! projections of a 10 cm square at 0.3 m, at `n_iters = 50` (every case converges by 500):
+//!
+//! | `object_pts` order | 20 deg tilt | 20 deg tilt + 15 deg yaw |
+//! |---|---|---|
+//! | canonical | 0.0000 deg | 0.0000 deg |
+//! | cyclic shift by one | 3.74 deg | 4.16 deg |
+//! | reversed winding | 18.47 deg | 18.47 deg |
+//!
+//! `kornia-apriltag`'s `[TR, BR, BL, TL]` is itself a cyclic shift of the canonical winding, so
+//! it sat on that middle row: ~4 deg of rotation error on PERFECT input, at the `n_iters = 50`
+//! every in-tree caller passes.
+//!
 //! `seed_is_independent_of_corner_order` pins the current behaviour: every ordering, a 4:1
 //! rectangle, a trapezoid, an off-origin object frame and the same target expressed at 1e-3x and
 //! 1e3x scale all land under 1e-6 deg at `n_iters = 50`.
@@ -43,11 +52,12 @@
 //! (`fix_pose_ambiguities`) and reports `HUGE_VAL` when there is no second minimum. Porting that
 //! is tracked separately.
 //!
-//! Because of that, the second branch is usually not a real hypothesis: across depths of
-//! 0.3--5 m, tilts of 0--75 deg and both noise-free and 1 px-noise inputs, it converged BEHIND
-//! the camera in every configuration measured. It is now gated on cheirality at the source, so
-//! `second` is `Some` only when all four object points lie in front of the camera under it --
-//! which, in practice, means callers get `None` and can stop hand-rolling the check.
+//! Because of that, the second branch is usually not a real hypothesis: across the 36
+//! configurations `second_solution_is_gated_on_cheirality` sweeps (depths 0.3/1/5 m, tilts
+//! 0--75 deg, each noise-free and with 1 px of corner noise) it converged BEHIND the camera in
+//! every one. It is now gated on cheirality at the source, so `second` is `Some` only when all
+//! four object points lie in front of the camera under it -- which, in practice, means callers
+//! get `None` and can stop hand-rolling the check.
 //!
 use crate::camera::PinholeCamera;
 use crate::pose::{homography_4pt2d, Pose3d};
@@ -68,6 +78,13 @@ pub struct PlanarPose {
 #[derive(Debug, Clone)]
 pub struct PlanarPosePair {
     /// Lower-error solution.
+    ///
+    /// NOT cheirality-gated, unlike [`Self::second`]. `best` is whichever branch has the lower
+    /// reprojection error, and that error only *penalises* points behind the camera (a sentinel
+    /// term per point) rather than excluding them — so if BOTH branches put part of the target
+    /// behind the camera, the less-bad one is still returned here. Callers that must not act on
+    /// an impossible pose should check `best.error.is_finite()` and the sign of
+    /// `best.pose.transform_point(..).z`.
     pub best: PlanarPose,
     /// A second local minimum, if the second branch produced a physically possible pose.
     ///
@@ -147,10 +164,12 @@ fn normalized_object_seed(object_pts: &[Vec3F64; 4]) -> Option<[[f64; 2]; 4]> {
         .map(|p| ((p.x - cx).powi(2) + (p.y - cy).powi(2)).sqrt())
         .sum::<f64>()
         * 0.25;
-    if !mean_r.is_finite() || mean_r <= 0.0 {
+    let s = 1.0 / mean_r;
+    // `mean_r` being finite and positive is not enough: a subnormal one still overflows the
+    // reciprocal to infinity, which would put inf coordinates into the homography fit.
+    if !s.is_finite() || s <= 0.0 {
         return None;
     }
-    let s = 1.0 / mean_r;
     Some([0, 1, 2, 3].map(|i| [(object_pts[i].x - cx) * s, (object_pts[i].y - cy) * s]))
 }
 
@@ -666,9 +685,10 @@ mod tests {
 
     /// The second branch must never be handed back pointing away from the camera.
     ///
-    /// Measured across depths 0.3/1/5 m, tilts 0-75 deg and 1 px noise, the second branch landed
-    /// behind the camera in every configuration, so this asserts both halves: `None` in a
-    /// concrete configuration, and — for every configuration — that a `Some` really is in front.
+    /// Sweeps depths 0.3/1/5 m and tilts 0-75 deg, each both noise-free and with 1 px of
+    /// deterministic corner noise (36 configurations). The second branch lands behind the camera
+    /// in every one, so this asserts both halves: that a `Some` really is in front, and — so the
+    /// first loop cannot pass vacuously — that the number of `Some` results is zero.
     #[test]
     fn second_solution_is_gated_on_cheirality() {
         let camera = test_camera();
@@ -679,8 +699,12 @@ mod tests {
             Vec3F64::new(s, s, 0.0),
             Vec3F64::new(-s, s, 0.0),
         ];
+        // Deterministic zero-mean 1 px corner noise, and its absence.
+        let no_noise = [[0.0f64; 2]; 4];
+        let one_px = [[0.6f64, -0.8], [-0.6, 0.8], [0.8, -0.6], [-0.8, 0.6]];
 
         let mut n_some = 0;
+        let mut n_cases = 0;
         for tilt_deg in [0.0f64, 5.0, 20.0, 45.0, 60.0, 75.0] {
             let tilt = tilt_deg.to_radians();
             let r_gt = Mat3F64::from_cols(
@@ -689,33 +713,44 @@ mod tests {
                 Vec3F64::new(0.0, -tilt.sin(), tilt.cos()),
             );
             for depth in [0.3f64, 1.0, 5.0] {
-                let pose_gt = Pose3d::new(r_gt, Vec3F64::new(0.02, -0.01, depth));
-                let image_pts = project_pts(&object_pts, &pose_gt, &camera);
-                let pair = estimate_planar_pose(&object_pts, &image_pts, &camera, 50)
-                    .expect("exact projection must solve");
-                if let Some(second) = &pair.second {
-                    n_some += 1;
-                    for p in &object_pts {
-                        let z = second.pose.transform_point(p).z;
-                        assert!(
-                            z > 0.0,
-                            "tilt {tilt_deg} deg / {depth} m: `second` returned with a point at \
-                             z = {z}, behind the camera"
+                for (label, noise) in [("exact", no_noise), ("1 px noise", one_px)] {
+                    let pose_gt = Pose3d::new(r_gt, Vec3F64::new(0.02, -0.01, depth));
+                    let mut image_pts = project_pts(&object_pts, &pose_gt, &camera);
+                    for i in 0..4 {
+                        image_pts[i] = Vec2F64::new(
+                            image_pts[i].x + noise[i][0],
+                            image_pts[i].y + noise[i][1],
                         );
                     }
-                    assert!(
-                        second.error.is_finite() && second.error < f64::MAX,
-                        "tilt {tilt_deg} deg / {depth} m: `second` carries a sentinel error"
-                    );
+                    n_cases += 1;
+                    let pair = estimate_planar_pose(&object_pts, &image_pts, &camera, 50)
+                        .expect("a well-conditioned quad must solve");
+                    if let Some(second) = &pair.second {
+                        n_some += 1;
+                        for p in &object_pts {
+                            let z = second.pose.transform_point(p).z;
+                            assert!(
+                                z > 0.0,
+                                "tilt {tilt_deg} deg / {depth} m / {label}: `second` returned \
+                                 with a point at z = {z}, behind the camera"
+                            );
+                        }
+                        assert!(
+                            second.error.is_finite() && second.error < f64::MAX,
+                            "tilt {tilt_deg} deg / {depth} m / {label}: `second` carries a \
+                             sentinel error"
+                        );
+                    }
                 }
             }
         }
+        assert_eq!(n_cases, 36, "the sweep should cover 36 configurations");
         // Guard against the loop above passing vacuously in the other direction: if a future
         // change makes the second branch usable everywhere, this fires and the docs must follow.
         assert_eq!(
             n_some, 0,
             "the second branch is documented as always degenerate on these configurations, but \
-             {n_some} came back in front of the camera — update the module docs"
+             {n_some} of {n_cases} came back in front of the camera — update the module docs"
         );
     }
 

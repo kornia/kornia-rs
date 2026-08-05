@@ -1,5 +1,8 @@
-//! Pose initialization: reference-tag selection, per-camera planar pose
-//! (2-fold ambiguity), and branch disambiguation via feature reprojection.
+//! Pose initialization: reference-tag selection, per-camera planar pose, and — for the cameras
+//! whose runner-up pose survives `estimate_planar_pose`'s cheirality gate — branch
+//! disambiguation via feature reprojection. That gate rejects the runner-up in most real
+//! geometries, so the disambiguation usually has a single candidate per camera and reduces to
+//! trusting `best`.
 
 use kornia_3d::camera::PinholeCamera;
 use kornia_3d::pose::estimate_planar_pose as estimate_tag_pose;
@@ -18,9 +21,10 @@ pub(crate) struct Init {
     pub ref_ti: usize,
 }
 
-/// Select the reference tag (seen by the most cameras), estimate each camera's
-/// two planar tag poses, and pick the branch combination that best explains the
-/// feature matches (a single small planar tag alone can't resolve rotation).
+/// Select the reference tag (seen by the most cameras), estimate each camera's planar tag pose
+/// (plus the runner-up branch where one survives the cheirality gate), and pick the branch
+/// combination that best explains the feature matches (a single small planar tag alone can't
+/// resolve rotation).
 pub(crate) fn init_poses(
     cameras: &[PinholeCamera],
     tags: &[TagObservation],
@@ -36,8 +40,10 @@ pub(crate) fn init_poses(
         .ok_or(CalibError::NoTags)?;
 
     let h = config.tag_size_m / 2.0;
-    // estimate_tag_pose expects object/image points in (BL, BR, TR, TL) order;
-    // our tag corners are aruco-wound (TL, TR, BR, BL) — reverse to match.
+    // Object points listed (BL, BR, TR, TL) and the image corners reversed to match, since our
+    // tag corners are aruco-wound (TL, TR, BR, BL). Only the index-wise pairing matters —
+    // estimate_tag_pose seeds itself from these points, so the absolute order is free — but the
+    // two lists must agree or the recovered pose is rotated in-plane.
     let object_pts = [
         Vec3F64::new(-h, -h, 0.0),
         Vec3F64::new(h, -h, 0.0),
@@ -45,7 +51,10 @@ pub(crate) fn init_poses(
         Vec3F64::new(-h, h, 0.0),
     ];
 
-    let mut branches: Vec<(usize, [Pose3d; 2])> = Vec::new();
+    // Per camera: `best`, plus the runner-up branch only when it is physically possible.
+    // `estimate_tag_pose` cheirality-gates that second branch and in practice returns `None` for
+    // it, so most cameras offer a single pose and contribute no bit to the search below.
+    let mut branches: Vec<(usize, Pose3d, Option<Pose3d>)> = Vec::new();
     for (cam_idx, corners) in &tags[ref_ti].per_camera {
         if *cam_idx >= n_cams {
             continue; // ignore out-of-range camera index (matches init_poses_board)
@@ -59,11 +68,7 @@ pub(crate) fn init_poses(
             cam.undistort(corners[0].x, corners[0].y),
         ];
         let result = estimate_tag_pose(&object_pts, &image_pts, cam, 50)?;
-        // `second` is `None` when the runner-up converged behind the camera, which is the norm.
-        // Duplicating `best` keeps the combination search below well-formed (that camera then
-        // contributes the same pose either way) instead of scoring an impossible pose.
-        let second = result.second.map_or(result.best.pose, |s| s.pose);
-        branches.push((*cam_idx, [result.best.pose, second]));
+        branches.push((*cam_idx, result.best.pose, result.second.map(|s| s.pose)));
     }
     if branches.is_empty() {
         return Err(CalibError::NoReferenceTagView);
@@ -78,10 +83,20 @@ pub(crate) fn init_poses(
 
     // Score every branch combination by feature reprojection under its init.
     // Wrong planar branches make non-coplanar features triangulate/reproject
-    // badly, which the score below heavily penalizes. >6 cams: fall back to
-    // each camera's lower-error branch (2^nb combos is too many).
-    let nb = branches.len();
-    let ncomb = if nb <= 6 { 1u32 << nb } else { 1 };
+    // badly, which the score below heavily penalizes. >6 choices: fall back to
+    // each camera's lower-error branch (2^n combos is too many).
+    //
+    // Only cameras with a physically possible SECOND branch get a bit here — a camera offering
+    // one pose has nothing to choose between, and giving it a bit would double the search for
+    // two identical outcomes.
+    let choosers: Vec<usize> = (0..branches.len())
+        .filter(|&i| branches[i].2.is_some())
+        .collect();
+    let ncomb = if choosers.len() <= 6 {
+        1u32 << choosers.len()
+    } else {
+        1
+    };
     // Correspondences for branch scoring: the XFeat feature matches PLUS every non-reference tag
     // corner as an exact cross-camera match. The tag corners let the multi-tag rigid geometry
     // disambiguate the planar branch even with NO natural features (the correct branch combo is the
@@ -122,9 +137,18 @@ pub(crate) fn init_poses(
     for combo in 0..ncomb {
         ps.iter_mut().for_each(|p| *p = Pose3d::IDENTITY);
         hv.iter_mut().for_each(|h| *h = false);
-        for (bi, (cam_idx, brs)) in branches.iter().enumerate() {
-            ps[*cam_idx] = brs[((combo >> bi) & 1) as usize];
+        for (cam_idx, best, _) in branches.iter() {
+            ps[*cam_idx] = *best;
             hv[*cam_idx] = true;
+        }
+        // Flip only the cameras that have a second branch, one bit each.
+        for (bit, &bi) in choosers.iter().enumerate() {
+            if (combo >> bit) & 1 == 1 {
+                let (cam_idx, _, second) = &branches[bi];
+                if let Some(p) = second {
+                    ps[*cam_idx] = *p;
+                }
+            }
         }
         let mut err = 0.0f64;
         let mut cnt = 0usize;
@@ -158,11 +182,20 @@ pub(crate) fn init_poses(
         }
     }
 
+    // Replay the winning combo with the same bit assignment used to score it.
     let mut have = vec![false; n_cams];
     let mut poses = vec![Pose3d::IDENTITY; n_cams];
-    for (bi, (cam_idx, brs)) in branches.iter().enumerate() {
-        poses[*cam_idx] = brs[((best_combo.1 >> bi) & 1) as usize];
+    for (cam_idx, best, _) in branches.iter() {
+        poses[*cam_idx] = *best;
         have[*cam_idx] = true;
+    }
+    for (bit, &bi) in choosers.iter().enumerate() {
+        if (best_combo.1 >> bit) & 1 == 1 {
+            let (cam_idx, _, second) = &branches[bi];
+            if let Some(p) = second {
+                poses[*cam_idx] = *p;
+            }
+        }
     }
 
     Ok(Init {
@@ -187,7 +220,8 @@ pub(crate) fn measure_tag_corners(
     config: &CalibConfig,
 ) -> Option<[Vec3F64; 4]> {
     let h = config.tag_size_m / 2.0;
-    // estimate_tag_pose object frame is (BL, BR, TR, TL); our corners are aruco (TL, TR, BR, BL).
+    // Object frame listed (BL, BR, TR, TL) to pair index-wise with our aruco (TL, TR, BR, BL)
+    // corners reversed below; the absolute order is free, only the pairing matters.
     let object_pts = [
         Vec3F64::new(-h, -h, 0.0), // BL
         Vec3F64::new(h, -h, 0.0),  // BR
@@ -208,10 +242,14 @@ pub(crate) fn measure_tag_corners(
         (0..4).map(|k| (a[k] - b[k]).length()).sum()
     };
 
-    // Per registered camera, BOTH planar-pose branches lifted to world corners. A planar tag has a
-    // 2-fold pose ambiguity; `best` is usually right but flips near fronto-parallel, so we resolve it
-    // by cross-camera consistency rather than trusting `best` blindly.
-    let mut cands: Vec<[[Vec3F64; 4]; 2]> = Vec::new();
+    // Per registered camera, the planar-pose branches lifted to world corners: `best` always, and
+    // the runner-up only when it is physically possible. `estimate_tag_pose` gates that second
+    // branch on cheirality, and in practice it is almost always `None` (it converges behind the
+    // camera), so most cameras contribute a single candidate and there is nothing to disambiguate.
+    // The cross-camera vote below therefore has to tolerate `None` rather than substitute `best`:
+    // substituting would make a camera's two "branches" identical and feed a 0-distance tie into
+    // the anchor selection, silently turning it into an arbitrary pick.
+    let mut cands: Vec<([Vec3F64; 4], Option<[Vec3F64; 4]>)> = Vec::new();
     for (c, corners) in &tag.per_camera {
         if !have[*c] {
             continue;
@@ -227,35 +265,33 @@ pub(crate) fn measure_tag_corners(
             continue;
         };
         let cam_to_world = poses[*c].inverse();
-        // A `None` second branch means it converged behind the camera; fall back to `best` so the
-        // "which branch agrees with the anchor" vote below cannot be won by an impossible pose.
-        let second = result.second.map_or(result.best.pose, |s| s.pose);
-        cands.push([
+        cands.push((
             world_corners(&result.best.pose, &cam_to_world),
-            world_corners(&second, &cam_to_world),
-        ]);
+            result.second.map(|s| world_corners(&s.pose, &cam_to_world)),
+        ));
     }
     if cands.is_empty() {
         return None;
     }
 
-    // Anchor = the camera whose two branches disagree MOST — an OBLIQUE view, where the planar
-    // 2-fold flip is well separated so `best` is genuinely reliable. (A fronto-parallel view is the
-    // opposite: the two flips nearly coincide and `best` is a coin-flip.) Then each camera
-    // contributes the branch closest to the anchor's `best`, and we average the agreeing branches.
-    // `total_cmp` (not `partial_cmp().unwrap()`) so a NaN from a near-degenerate pose can't panic.
-    let anchor_i = (0..cands.len())
-        .max_by(|&a, &b| {
-            set_dist(&cands[a][0], &cands[a][1]).total_cmp(&set_dist(&cands[b][0], &cands[b][1]))
-        })
-        .unwrap();
-    let anchor = cands[anchor_i][0];
+    // Anchor = among the cameras that actually HAVE two branches, the one whose branches disagree
+    // MOST — an OBLIQUE view, where the planar 2-fold flip is well separated so `best` is genuinely
+    // reliable. Cameras with no second branch cannot disagree and so cannot be the anchor; if no
+    // camera has one there is nothing to disambiguate and the first camera's `best` anchors the
+    // average. `total_cmp` (not `partial_cmp().unwrap()`) so a NaN from a near-degenerate pose
+    // can't panic.
+    let anchor = cands
+        .iter()
+        .filter_map(|(best, second)| second.as_ref().map(|s| (best, set_dist(best, s))))
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .map_or(cands[0].0, |(best, _)| *best);
+    // Then each camera contributes whichever of its branches is closest to that anchor, and we
+    // average the agreeing branches. A camera with only `best` contributes it unconditionally.
     let mut acc = [Vec3F64::ZERO; 4];
-    for cand in &cands {
-        let pick = if set_dist(&cand[0], &anchor) <= set_dist(&cand[1], &anchor) {
-            &cand[0]
-        } else {
-            &cand[1]
+    for (best, second) in &cands {
+        let pick = match second {
+            Some(s) if set_dist(s, &anchor) < set_dist(best, &anchor) => s,
+            _ => best,
         };
         for k in 0..4 {
             acc[k] += pick[k];
@@ -340,9 +376,9 @@ pub(crate) fn init_poses_board(
             let Some(op) = board.object_points(*tid) else {
                 continue;
             };
-            // Per-tag centred object frame (no uniform tag-size assumption): estimate_tag_pose wants
-            // corners about the tag centre in (BL, BR, TR, TL) order = board corners (TL,TR,BR,BL)
-            // reversed, minus the centre.
+            // Per-tag centred object frame (no uniform tag-size assumption): corners about the
+            // tag centre, listed (BL, BR, TR, TL) = board corners (TL,TR,BR,BL) reversed, minus
+            // the centre, so they pair index-wise with the reversed image corners below.
             let center = (op[0] + op[1] + op[2] + op[3]) * 0.25;
             let object_centered = [
                 op[3] - center, // BL
