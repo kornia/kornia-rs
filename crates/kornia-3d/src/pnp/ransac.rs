@@ -55,6 +55,41 @@ pub enum PnPRansacError {
     DistortionUnsupportedByKernel,
 }
 
+/// The non-minimal refit over the consensus set.
+///
+/// A thin seam over [`solve_pnp`] so the "refit failed, keep the minimal-sample pose" branch can be
+/// tested deterministically. It cannot be reached by choosing an input: whether a near-degenerate
+/// consensus set makes EPnP's LU/LM solve fail depends on the target ISA's floating-point
+/// behaviour, so a test that arranges a numerical failure passes on one architecture and fails on
+/// another. The fallback is a contract, not a numerical accident, and is tested as one.
+#[cfg(not(test))]
+#[inline]
+fn refit(
+    world: &[Vec3AF32],
+    image: &[Vec2F32],
+    k: &Mat3AF32,
+    distortion: Option<&PolynomialDistortion>,
+    method: PnPMethod,
+) -> Result<PnPResult, PnPError> {
+    solve_pnp(world, image, k, distortion, method)
+}
+
+#[cfg(test)]
+fn refit(
+    world: &[Vec3AF32],
+    image: &[Vec2F32],
+    k: &Mat3AF32,
+    distortion: Option<&PolynomialDistortion>,
+    method: PnPMethod,
+) -> Result<PnPResult, PnPError> {
+    if tests::refit_forced_to_fail() {
+        return Err(PnPError::SvdFailed(
+            "forced refit failure (test seam)".to_string(),
+        ));
+    }
+    solve_pnp(world, image, k, distortion, method)
+}
+
 /// Parameters for RANSAC over PnP.
 #[derive(Debug, Clone)]
 pub struct RansacParams {
@@ -336,7 +371,7 @@ pub fn solve_pnp_ransac(
         // A failed refit must not sink a successful RANSAC run: the consensus set was selected by
         // the sampling kernel, and with AP3P sampling EPnP was never validated on it, so a
         // near-degenerate inlier set can make the refit fail on a perfectly usable pose.
-        match solve_pnp(&w_all, &i_all, k, distortion, refit_method) {
+        match refit(&w_all, &i_all, k, distortion, refit_method) {
             Ok(p) => Some(p),
             Err(e) => {
                 log::debug!("RANSAC refit on the consensus set failed ({e}); keeping the best minimal-sample pose");
@@ -475,6 +510,40 @@ fn classify_points(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    /// Drives the [`super::refit`] seam. Only compiled under `cfg(test)`.
+    static FORCE_REFIT_FAILURE: AtomicBool = AtomicBool::new(false);
+
+    /// `cargo test` runs these in parallel threads over one process, and the flag above is process
+    /// wide — without this lock a forced failure would leak into whatever else is mid-solve.
+    fn refit_lock() -> &'static Mutex<()> {
+        static L: OnceLock<Mutex<()>> = OnceLock::new();
+        L.get_or_init(|| Mutex::new(()))
+    }
+
+    /// Forces the consensus refit to fail for as long as the guard is alive.
+    pub(super) struct ForceRefitFailure(#[allow(dead_code)] MutexGuard<'static, ()>);
+
+    impl ForceRefitFailure {
+        fn new() -> Self {
+            let g = refit_lock().lock().unwrap_or_else(|e| e.into_inner());
+            FORCE_REFIT_FAILURE.store(true, Ordering::SeqCst);
+            Self(g)
+        }
+    }
+
+    impl Drop for ForceRefitFailure {
+        fn drop(&mut self) {
+            FORCE_REFIT_FAILURE.store(false, Ordering::SeqCst);
+        }
+    }
+
+    pub(super) fn refit_forced_to_fail() -> bool {
+        FORCE_REFIT_FAILURE.load(Ordering::SeqCst)
+    }
+
     use super::super::ap3p::AP3PParams;
     use super::super::epnp::EPnPParams;
     use super::*;
@@ -682,20 +751,10 @@ mod tests {
         )?;
         assert_eq!(res.inliers.len(), 6, "AP3P should register every inlier");
 
-        // `refine` must also work: the non-minimal refit cannot use AP3P, so it falls back to
-        // EPnP. Before the fix this path could not be reached at all.
-        let refined = solve_pnp_ransac(
-            &points_world,
-            &points_image,
-            &k,
-            None,
-            PnPMethod::AP3PDefault,
-            &RansacParams {
-                refine: true,
-                ..params
-            },
-        )?;
-        assert_eq!(refined.inliers.len(), 6);
+        // The `refine: true` path is covered by `ap3p_ransac_refit_is_lm_refined` and
+        // `ap3p_ransac_survives_a_failed_refit`, which assert the RETURNED POSE. Asserting the
+        // inlier count here would prove nothing about it: `inliers` is `best_inliers`, computed
+        // before the refit runs, so it is identical whatever the refit does.
         Ok(())
     }
 
@@ -850,9 +909,15 @@ mod tests {
 
     /// A refit that fails must not sink an otherwise successful RANSAC run.
     ///
-    /// The consensus set is chosen by the AP3P kernel, so EPnP is never validated on it. On a
-    /// coplanar target it is degenerate: the LM-refined EPnP refit fails outright here. The
-    /// AP3P pose is nevertheless exact, and that is what must come back.
+    /// Driven through the [`refit`] seam rather than by arranging a numerically degenerate input.
+    /// The earlier version of this test used a coplanar target and relied on the LM-refined EPnP
+    /// refit erroring: it does on aarch64, but on x86_64 the same solve CONVERGES (to 0.145 px), so
+    /// the test asserted the fallback on one architecture and the success path on another, and was
+    /// red on x86_64. Whether an LU solve fails is not a property this crate controls; the fallback
+    /// is.
+    ///
+    /// Asserts bit-equality with the `refine: false` result, which IS `best_pose` — so the test
+    /// fails if the fallback returns anything other than the untouched minimal-sample pose.
     #[test]
     fn ap3p_ransac_survives_a_failed_refit() -> Result<(), PnPRansacError> {
         let (r_gt, t_gt) = pose_gt();
@@ -861,22 +926,85 @@ mod tests {
         let k = k_default();
 
         for seed in [42u64, 7, 1] {
-            let params = RansacParams {
+            let base_params = RansacParams {
                 max_iterations: 30,
                 reproj_threshold_px: 1.0,
                 confidence: 0.99,
                 random_seed: Some(seed),
-                refine: true,
+                refine: false,
             };
-            let res = solve_pnp_ransac(&world, &image, &k, None, PnPMethod::AP3PDefault, &params)?;
+            // The pose RANSAC selected, with no refit applied.
+            let unrefined = solve_pnp_ransac(
+                &world,
+                &image,
+                &k,
+                None,
+                PnPMethod::AP3PDefault,
+                &base_params,
+            )?;
 
-            assert_eq!(res.inliers.len(), 6, "seed {seed}");
-            let rmse = res.pose.reproj_rmse.expect("RMSE is always filled in");
-            assert!(rmse < 0.01, "seed {seed}: pose reprojects at {rmse} px");
-            let (dr, dt) = pose_deviation(&res.pose, &r_gt, &t_gt);
+            let guard = ForceRefitFailure::new();
+            let fell_back = solve_pnp_ransac(
+                &world,
+                &image,
+                &k,
+                None,
+                PnPMethod::AP3PDefault,
+                &RansacParams {
+                    refine: true,
+                    ..base_params
+                },
+            )?;
+            drop(guard);
+
+            assert_eq!(
+                fell_back.inliers, unrefined.inliers,
+                "seed {seed}: the consensus set is chosen before the refit and must not change"
+            );
+            let (a, b) = (&fell_back.pose, &unrefined.pose);
+            assert_eq!(
+                (a.rotation, a.translation),
+                (b.rotation, b.translation),
+                "seed {seed}: a failed refit must return the minimal-sample pose UNCHANGED"
+            );
+            // And that pose is the right answer, not merely the same one.
+            let (dr, dt) = pose_deviation(&fell_back.pose, &r_gt, &t_gt);
             assert!(dr < 1e-3, "seed {seed}: rotation deviates by {dr}");
             assert!(dt < 1e-3, "seed {seed}: translation deviates by {dt}");
         }
+        Ok(())
+    }
+
+    /// The coplanar case must succeed end to end, whichever way the refit goes.
+    ///
+    /// Companion to the test above: that one pins the fallback, this one pins that a coplanar
+    /// target is solvable at all. It deliberately asserts nothing about WHICH path ran, because
+    /// that is exactly the ISA-dependent part.
+    #[test]
+    fn ap3p_ransac_solves_a_coplanar_target() -> Result<(), PnPRansacError> {
+        let (r_gt, t_gt) = pose_gt();
+        let world = scene_coplanar();
+        let image = project_exact(&world, &r_gt, &t_gt);
+        let k = k_default();
+
+        let res = solve_pnp_ransac(
+            &world,
+            &image,
+            &k,
+            None,
+            PnPMethod::AP3PDefault,
+            &RansacParams {
+                max_iterations: 30,
+                reproj_threshold_px: 1.0,
+                confidence: 0.99,
+                random_seed: Some(42),
+                refine: true,
+            },
+        )?;
+        assert_eq!(res.inliers.len(), 6);
+        let (dr, dt) = pose_deviation(&res.pose, &r_gt, &t_gt);
+        assert!(dr < 1e-2, "rotation deviates by {dr}");
+        assert!(dt < 1e-2, "translation deviates by {dt}");
         Ok(())
     }
 
