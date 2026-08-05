@@ -368,11 +368,15 @@ fn log_frame(
                 if let Some(&(q_prev, t_prev)) = pose_state.get(&det.id) {
                     // Near-frontal tags make the two reprojection errors nearly equal,
                     // so the raw "best" flip-flops; pick the one matching last frame.
-                    let q_second = dquat_from_mat3(&pair.second.pose.rotation);
-                    if q_second.dot(q_prev).abs() > q_best.dot(q_prev).abs() {
-                        q = q_second;
-                        let ts = pair.second.pose.translation;
-                        t = glam::DVec3::new(ts.x, ts.y, ts.z);
+                    // `second` is absent unless it is physically possible, so this no longer
+                    // risks locking onto a pose behind the camera.
+                    if let Some(second) = &pair.second {
+                        let q_second = dquat_from_mat3(&second.pose.rotation);
+                        if q_second.dot(q_prev).abs() > q_best.dot(q_prev).abs() {
+                            q = q_second;
+                            let ts = second.pose.translation;
+                            t = glam::DVec3::new(ts.x, ts.y, ts.z);
+                        }
                     }
                     // Align hemispheres before slerp, then low-pass orientation + position.
                     let q_prev = if q_prev.dot(q) < 0.0 {

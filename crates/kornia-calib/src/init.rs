@@ -59,7 +59,11 @@ pub(crate) fn init_poses(
             cam.undistort(corners[0].x, corners[0].y),
         ];
         let result = estimate_tag_pose(&object_pts, &image_pts, cam, 50)?;
-        branches.push((*cam_idx, [result.best.pose, result.second.pose]));
+        // `second` is `None` when the runner-up converged behind the camera, which is the norm.
+        // Duplicating `best` keeps the combination search below well-formed (that camera then
+        // contributes the same pose either way) instead of scoring an impossible pose.
+        let second = result.second.map_or(result.best.pose, |s| s.pose);
+        branches.push((*cam_idx, [result.best.pose, second]));
     }
     if branches.is_empty() {
         return Err(CalibError::NoReferenceTagView);
@@ -223,9 +227,12 @@ pub(crate) fn measure_tag_corners(
             continue;
         };
         let cam_to_world = poses[*c].inverse();
+        // A `None` second branch means it converged behind the camera; fall back to `best` so the
+        // "which branch agrees with the anchor" vote below cannot be won by an impossible pose.
+        let second = result.second.map_or(result.best.pose, |s| s.pose);
         cands.push([
             world_corners(&result.best.pose, &cam_to_world),
-            world_corners(&result.second.pose, &cam_to_world),
+            world_corners(&second, &cam_to_world),
         ]);
     }
     if cands.is_empty() {
@@ -357,7 +364,9 @@ pub(crate) fn init_poses_board(
                 Mat3F64::IDENTITY,
                 Vec3F64::new(-center.x, -center.y, -center.z),
             );
-            for cand in [pair.best.pose, pair.second.pose] {
+            // `pair.second` is absent when the runner-up is behind the camera (the usual case).
+            let seconds = pair.second.map(|s| s.pose);
+            for cand in std::iter::once(pair.best.pose).chain(seconds) {
                 let t_cam_board = cand.compose(&t_object_board);
                 let err = board_reproj_err(cam, &t_cam_board, board, obs);
                 if best.as_ref().is_none_or(|(e, _)| err < *e) {
