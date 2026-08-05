@@ -49,9 +49,6 @@ pub mod decoder;
 /// RLE-based connected components (internal).
 pub(crate) mod rle_cc;
 
-/// AprilTag 6-DOF pose estimation (built on kornia-3d geometry primitives).
-pub mod pose;
-
 /// Rigid AprilGrid target: a planar grid of AprilTags with a known metric layout.
 pub mod board;
 

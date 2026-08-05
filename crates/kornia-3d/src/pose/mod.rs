@@ -36,5 +36,9 @@ pub use pose3d::*;
 mod lm_pose;
 pub use lm_pose::{refine_pose_lm, LmPoseConfig};
 
+/// Planar-quad pose from 4 coplanar correspondences (orthogonal iteration).
+pub mod planar;
+pub use planar::{estimate_planar_pose, PlanarPose, PlanarPoseError, PlanarPosePair};
+
 mod essential_5pt;
 pub use essential_5pt::essential_5pt;

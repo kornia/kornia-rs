@@ -2,9 +2,9 @@
 //! (2-fold ambiguity), and branch disambiguation via feature reprojection.
 
 use kornia_3d::camera::PinholeCamera;
+use kornia_3d::pose::estimate_planar_pose as estimate_tag_pose;
 use kornia_3d::pose::{triangulate_matched_points, Pose3d, TriangulationConfig};
 use kornia_algebra::{Mat3F64, Vec2F64, Vec3F64};
-use kornia_apriltag::pose::estimate_tag_pose;
 
 use crate::board::BoardGeometry;
 use crate::error::CalibError;

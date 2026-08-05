@@ -1,6 +1,6 @@
 //! Error type for calibration.
 
-use kornia_apriltag::pose::AprilTagPoseError;
+use kornia_3d::pose::PlanarPoseError;
 
 /// Errors that can occur during multi-camera calibration.
 #[derive(Debug, thiserror::Error)]
@@ -15,7 +15,7 @@ pub enum CalibError {
 
     /// A per-camera planar tag pose estimate failed.
     #[error("apriltag pose estimation failed: {0}")]
-    TagPose(#[from] AprilTagPoseError),
+    TagPose(#[from] PlanarPoseError),
 
     /// The bundle adjustment solve failed.
     #[error("bundle adjustment failed: {0}")]
