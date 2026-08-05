@@ -175,6 +175,10 @@ extern "C" __global__ void sift_match_pairs(
         !(fwd_d1[i] < ratio2 * fwd_d2[i])) return;
     if (cross_check && rev_idx[j] != i) return;
 
+    // One emit per query thread, so `count <= nq`. The host rejects `n1 > cap` and passes
+    // `max_out = cap`, hence `count <= nq = n1 <= max_out` and this bound never actually trips;
+    // it is kept as a guard against a future caller that sizes the buffer independently. The
+    // one-emit-per-query property is also what makes the host-side sort a TOTAL order.
     const int slot = atomicAdd(out_count, 1);
     if (slot < max_out) {{
         out_pairs[slot * {stride}] = i;
@@ -237,6 +241,11 @@ impl SiftMatcher {
     /// to be a mutual nearest neighbour.
     ///
     /// Both descriptor sets stay on device; only the pair list comes back.
+    ///
+    /// Pairs are returned **sorted by `(query, train)`**, so the result is reproducible run to
+    /// run. The kernel appends through an atomic, which makes its natural output order depend on
+    /// thread scheduling rather than on the data; callers that sample by index (RANSAC) or merge
+    /// in list order (track building) need the guarantee, so it is part of this contract.
     #[allow(clippy::too_many_arguments)]
     pub fn match_descriptors(
         &mut self,
@@ -309,10 +318,26 @@ impl SiftMatcher {
             return Ok(Vec::new());
         }
         let flat = stream.clone_dtoh(&self.pairs.slice(0..n * MATCH_STRIDE))?;
-        Ok(flat
+        let mut pairs: Vec<[i32; 2]> = flat
             .chunks_exact(MATCH_STRIDE)
             .map(|c| [c[0], c[1]])
-            .collect())
+            .collect();
+        // DETERMINISM. The pairs kernel appends through `atomicAdd(out_count, 1)`, so the ORDER of
+        // the returned list is whichever order threads happened to reach the atomic — scheduling,
+        // not data. The SET is deterministic; the sequence is not.
+        //
+        // That is not cosmetic, because the consumers are order-sensitive: RANSAC draws its minimal
+        // samples by index (so even a fixed seed sees different correspondences), and track building
+        // unions in list order. Unsorted, two runs over an identical descriptor set produce
+        // different reconstructions.
+        //
+        // The order is TOTAL, so this fully canonicalises the output: one emit per query (see
+        // `sift_match_pairs`) makes the query indices unique, and no tie reaches the second key.
+        //
+        // Sorted here rather than at each call site: reproducibility belongs to the matcher's
+        // contract, and every caller would otherwise have to rediscover this the hard way.
+        pairs.sort_unstable();
+        Ok(pairs)
     }
 }
 
@@ -519,6 +544,47 @@ mod tests {
         for (i, (bj, _, _)) in want.iter().enumerate() {
             assert_eq!(got[i], *bj, "query {i} matched the wrong descriptor");
         }
+    }
+
+    /// The emitted pair list must be sorted, which is what makes it reproducible.
+    ///
+    /// The module's other tests assert on counts, membership or per-pair properties, none of which
+    /// depend on the order, so dropping the sort in a later refactor would leave them all green.
+    /// This one pins the ordering contract directly.
+    #[test]
+    fn matcher_returns_sorted_pairs() {
+        let stream = default_stream();
+        let ctx = &stream.context();
+        let (n1, n2) = (257usize, 193usize);
+        let a = rand_desc(n1, 17);
+        let b = rand_desc(n2, 71);
+        let da = stream.clone_htod(&a).unwrap();
+        let db = stream.clone_htod(&b).unwrap();
+        let mut m = SiftMatcher::new(&stream, n1.max(n2)).unwrap();
+
+        // Ratio 1.0 with no cross-check keeps EVERY query, so the list is guaranteed non-empty and
+        // maximally long. Random 128-D descriptors are near-equidistant, so a 0.8 ratio rejects
+        // essentially all of them and leaves nothing to order — and an empty list satisfies
+        // `windows(2).all(..)` vacuously, i.e. the test would assert nothing at all. The length
+        // check below is what keeps that from silently happening again.
+        let pairs = m
+            .match_descriptors(
+                ctx,
+                &stream,
+                &da.as_view(),
+                n1,
+                &db.as_view(),
+                n2,
+                1.0,
+                false,
+            )
+            .unwrap();
+        assert_eq!(pairs.len(), n1, "every query should survive at ratio 1.0");
+        assert!(
+            pairs.windows(2).all(|w| w[0] < w[1]),
+            "pairs must be strictly ascending: the kernel's atomic append order is \
+             scheduling-dependent, so an unsorted list changes run to run"
+        );
     }
 
     /// A single train descriptor has no second-best, so the ratio test has
