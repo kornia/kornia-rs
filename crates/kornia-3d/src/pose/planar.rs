@@ -588,9 +588,13 @@ mod tests {
     /// metric scale must not change what `n_iters = 50` recovers from exact data.
     ///
     /// This is the test the module lacked: every other test here passes the canonical square in
-    /// the canonical order, which is exactly the ordering the old hardcoded `tag_norm` seed
-    /// happened to match, so none of them could observe the effect. With that seed restored,
-    /// `shifted` lands 2.56 deg out and `reversed` 15.58 deg out at 50 iterations.
+    /// the canonical order, which is exactly the ordering the old hardcoded canonical-square seed
+    /// happened to match, so none of them could observe the effect.
+    ///
+    /// With that old seed restored, under THIS test's pose (`rz(15 deg) * rx(20 deg)` at 0.3 m --
+    /// the right-hand column of the module table, not the plain-20-deg-tilt one),
+    /// `cyclic shift by one` lands 4.16 deg out and `reversed winding` 18.47 deg out at
+    /// `n_iters = 50`.
     #[test]
     fn seed_is_independent_of_corner_order() {
         let camera = test_camera();
