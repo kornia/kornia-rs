@@ -324,12 +324,23 @@ pub fn reconstruct(
     }
 
     // --- Bundle adjustment: all track points free, the reference camera (a0) fixed to anchor gauge. ---
+    // Iterate the triangulated points in TRACK ORDER, not `HashMap` order. Rust's default hasher
+    // is randomised per process, so `for (ti, p) in &point3d` yields a different order every run.
+    // That was harmless while these only fed bundle adjustment and the RMS statistics, all
+    // permutation-invariant -- but `Reconstruction` publishes `points`, `point_track_id` and
+    // `observations`, so the order becomes part of the contract. A caller diffing two runs,
+    // snapshotting a map, or holding point indices across a rebuild would otherwise see churn
+    // with no cause. This file already guards the same hazard for the bootstrap pair.
+    let mut track_ids: Vec<usize> = point3d.keys().copied().collect();
+    track_ids.sort_unstable();
+
     let mut points: Vec<Vec3F64> = Vec::new();
     let mut pt_index: HashMap<usize, usize> = HashMap::new();
     let mut obs: Vec<BaObservation> = Vec::new();
     let mut kept_obs: Vec<Observation> = Vec::new();
     let mut point_track_id: Vec<usize> = Vec::new();
-    for (ti, p) in &point3d {
+    for ti in &track_ids {
+        let p = &point3d[ti];
         let pidx = points.len();
         pt_index.insert(*ti, pidx);
         points.push(*p);
@@ -379,7 +390,13 @@ pub fn reconstruct(
     // --- Metric scale from the tag: triangulate its corners, compare to the known side length. ---
     // Scaling the world by `s` (points ×s AND world→cam translation ×s) leaves reprojection unchanged,
     // so we compute per-camera stats on the UNSCALED BA result and only scale the output translation.
-    let scale = tag_scale(
+    // `None` when the tag could NOT anchor the scale -- unset size, seen by fewer than two
+    // REGISTERED cameras, or its corners failed to triangulate. Those are ordinary outcomes, not
+    // corner cases: a camera that cannot register via PnP is skipped by design, so "a tag was
+    // supplied but the views that saw it never registered" happens in normal use. Reporting
+    // `ScaleSource::Tag` off `tags_for_scale.first()` would then claim metric for a map still at
+    // the identity scale -- exactly the ambiguity this type exists to remove.
+    let anchored = tag_scale(
         tags_for_scale,
         cameras,
         &res.poses,
@@ -388,6 +405,7 @@ pub fn reconstruct(
         &tcfg,
         config.tag_size_m,
     );
+    let scale = anchored.unwrap_or(1.0);
 
     // Per-camera reprojection RMS (pixels); analytical covariance is tag-oriented so stays `None`.
     // Use the BA-optimized points (`res.points`), NOT the pre-BA cloud: BA moves points as free
@@ -433,12 +451,12 @@ pub fn reconstruct(
         observations: kept_obs,
         reproj_rmse_px,
         per_view: per_camera,
-        scale: match tags_for_scale.first() {
-            Some(t) => ScaleSource::Tag {
+        scale: match (anchored, tags_for_scale.first()) {
+            (Some(_), Some(t)) => ScaleSource::Tag {
                 id: t.tag_id,
                 size_m: config.tag_size_m,
             },
-            None => ScaleSource::UpToScale,
+            _ => ScaleSource::UpToScale,
         },
     })
 }
@@ -505,11 +523,11 @@ fn tag_scale(
     idcam: &PinholeCamera,
     tcfg: &TriangulationConfig,
     tag_size_m: f64,
-) -> f64 {
+) -> Option<f64> {
     if tag_size_m <= 0.0 {
-        return 1.0;
+        return None;
     }
-    let Some(tag) = tags.first() else { return 1.0 };
+    let tag = tags.first()?;
     let seers: Vec<usize> = tag
         .per_camera
         .iter()
@@ -517,7 +535,7 @@ fn tag_scale(
         .filter(|c| registered[*c])
         .collect();
     if seers.len() < 2 {
-        return 1.0;
+        return None;
     }
     // Widest-baseline placed pair seeing the tag (same pair for all 4 corners).
     let centers: Vec<Vec3F64> = seers
@@ -559,9 +577,9 @@ fn tag_scale(
     }
     let recon_side = sum / cnt as f64;
     if cnt == 0 || recon_side < 1e-9 {
-        return 1.0;
+        return None;
     }
-    tag_size_m / recon_side
+    Some(tag_size_m / recon_side)
 }
 
 /// Per-camera reprojection RMS (pixels) for the feature path; analytical covariance fields left `None`.
@@ -877,6 +895,113 @@ mod tests {
         assert!(
             worst < 1.0,
             "returned map is not consistent with its poses: worst reprojection {worst:.3} px"
+        );
+    }
+
+    /// A tag that could not anchor the scale must NOT be reported as the scale source.
+    ///
+    /// `tag_scale` falls back to the identity in ordinary situations -- an unset `tag_size_m`,
+    /// a tag seen by fewer than two REGISTERED views, corners that fail to triangulate. Deciding
+    /// `ScaleSource` from `tags_for_scale.first()` reported `Tag { .. }` in all of them, so the
+    /// caller was told the map is metric while the points sat at the identity scale. That is the
+    /// exact ambiguity `ScaleSource` exists to remove, so it is worth a test: the old
+    /// `reference_tag_id` carried the same lie and nothing caught it.
+    #[test]
+    fn a_tag_that_cannot_anchor_is_reported_as_up_to_scale() {
+        let cams = vec![pinhole(600.0), pinhole(600.0), pinhole(600.0)];
+        let poses_gt = [
+            Pose3d::new(Mat3F64::IDENTITY, Vec3F64::new(0.0, 0.0, 0.0)),
+            Pose3d::new(rot(0.25, 0.0), Vec3F64::new(-0.30, 0.0, 0.02)),
+            Pose3d::new(rot(-0.22, 0.05), Vec3F64::new(0.28, 0.01, 0.03)),
+        ];
+        let world: Vec<Vec3F64> = (0..24)
+            .map(|i| {
+                let (a, b) = ((i % 6) as f64, (i / 6) as f64);
+                Vec3F64::new(
+                    -0.25 + 0.1 * a,
+                    -0.15 + 0.1 * b,
+                    1.4 + 0.05 * ((i % 5) as f64),
+                )
+            })
+            .collect();
+        let tracks: Vec<FeatureTrack> = world
+            .iter()
+            .map(|pw| FeatureTrack {
+                obs: (0..3)
+                    .map(|c| (c, project(*pw, &poses_gt[c], &cams[c])))
+                    .collect(),
+            })
+            .collect();
+
+        // A tag seen by ONE view only: `tag_scale` needs two registered seers, so it cannot
+        // anchor. The tag is supplied, so the old rule would have claimed `Tag { id: 3, .. }`.
+        let s = 0.05;
+        let corners = [
+            Vec3F64::new(-s, s, 1.5),
+            Vec3F64::new(s, s, 1.5),
+            Vec3F64::new(s, -s, 1.5),
+            Vec3F64::new(-s, -s, 1.5),
+        ];
+        let tag = TagObservation {
+            tag_id: 3,
+            per_camera: vec![(
+                0,
+                [
+                    project(corners[0], &poses_gt[0], &cams[0]),
+                    project(corners[1], &poses_gt[0], &cams[0]),
+                    project(corners[2], &poses_gt[0], &cams[0]),
+                    project(corners[3], &poses_gt[0], &cams[0]),
+                ],
+            )],
+        };
+
+        let cfg = CalibConfig::new(2.0 * s);
+        let recon = reconstruct(&cams, std::slice::from_ref(&tag), &tracks, &cfg)
+            .expect("the feature tracks alone must still solve");
+
+        assert_eq!(
+            recon.scale,
+            ScaleSource::UpToScale,
+            "a tag seen by one view cannot anchor scale, so the map must not claim to be metric"
+        );
+    }
+
+    /// The published map order must not depend on `HashMap` iteration order.
+    #[test]
+    fn map_order_is_deterministic_and_sorted_by_track() {
+        let cams = vec![pinhole(600.0), pinhole(600.0)];
+        let poses_gt = [
+            Pose3d::new(Mat3F64::IDENTITY, Vec3F64::new(0.0, 0.0, 0.0)),
+            Pose3d::new(rot(0.25, 0.0), Vec3F64::new(-0.30, 0.0, 0.02)),
+        ];
+        let tracks: Vec<FeatureTrack> = (0..30)
+            .map(|i| {
+                let p = Vec3F64::new(
+                    -0.3 + 0.02 * i as f64,
+                    -0.1 + 0.01 * (i % 7) as f64,
+                    1.3 + 0.03 * (i % 5) as f64,
+                );
+                FeatureTrack {
+                    obs: (0..2)
+                        .map(|c| (c, project(p, &poses_gt[c], &cams[c])))
+                        .collect(),
+                }
+            })
+            .collect();
+        let cfg = CalibConfig::new(0.1);
+
+        let a = reconstruct(&cams, &[], &tracks, &cfg).expect("solves");
+        let b = reconstruct(&cams, &[], &tracks, &cfg).expect("solves");
+
+        assert!(!a.point_track_id.is_empty(), "need points to order");
+        assert!(
+            a.point_track_id.windows(2).all(|w| w[0] < w[1]),
+            "points must be published in ascending track order, got {:?}",
+            &a.point_track_id[..a.point_track_id.len().min(8)]
+        );
+        assert_eq!(
+            a.point_track_id, b.point_track_id,
+            "two runs over identical input must publish the same map order"
         );
     }
 }
