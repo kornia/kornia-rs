@@ -114,7 +114,9 @@ pub fn mse<const C: usize>(
 ///
 /// let psnr = psnr(&image1, &image2, 1.0).unwrap();
 ///
-/// assert_eq!(psnr, 320.15698);
+/// // MSE here is 4/3, so sqrt(MSE) > MAX and the ratio falls below 1 —
+/// // a negative dB value is correct for a distortion this large.
+/// assert_eq!(psnr, -1.2493869);
 /// ```
 ///
 /// # Panics
@@ -148,7 +150,7 @@ pub fn psnr<const C: usize>(
         return Ok(f32::INFINITY);
     }
 
-    Ok(20f32 * (max_value / mse.sqrt().log10()))
+    Ok(20f32 * (max_value / mse.sqrt()).log10())
 }
 
 #[cfg(test)]
@@ -216,7 +218,43 @@ mod tests {
             vec![1f32, 3f32, 2f32, 4f32, 5f32, 6f32],
         )?;
         let psnr = crate::metrics::psnr(&image1, &image2, 1.0)?;
-        assert_eq!(psnr, 320.15698);
+        assert_eq!(psnr, -1.2493869);
+
+        Ok(())
+    }
+
+    /// A case whose expected value can be read off by hand: every element
+    /// differs by 0.25, so MSE = 0.0625, sqrt(MSE) = 0.25, and with MAX = 1.0
+    /// the result is 20*log10(4) = 12.0412 dB.
+    #[test]
+    fn test_psnr_known_ratio() -> Result<(), ImageError> {
+        let size = ImageSize {
+            width: 2,
+            height: 2,
+        };
+        let image1 = Image::<_, 1>::new(size, vec![0.5f32; 4])?;
+        let image2 = Image::<_, 1>::new(size, vec![0.75f32; 4])?;
+
+        let psnr = crate::metrics::psnr(&image1, &image2, 1.0)?;
+        let expected = 20.0 * 4f32.log10();
+        assert!(
+            (psnr - expected).abs() < 1e-5,
+            "expected ~{expected} dB, got {psnr}"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_psnr_identical_is_infinite() -> Result<(), ImageError> {
+        let size = ImageSize {
+            width: 2,
+            height: 2,
+        };
+        let image = Image::<_, 1>::new(size, vec![0.25f32, 0.5, 0.75, 1.0])?;
+
+        let psnr = crate::metrics::psnr(&image, &image, 1.0)?;
+        assert!(psnr.is_infinite() && psnr.is_sign_positive());
 
         Ok(())
     }
