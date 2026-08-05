@@ -966,6 +966,84 @@ mod tests {
             ScaleSource::UpToScale,
             "a tag seen by one view cannot anchor scale, so the map must not claim to be metric"
         );
+
+        // `tag_scale` has four fallback paths, and reporting `Tag { .. }` for ANY of them is the
+        // bug. The case above is "seen by fewer than two registered views"; cover the other three.
+
+        // (a) Size unset: nothing to convert reconstruction units into.
+        let mut two_view = tag.clone();
+        two_view.per_camera.push((
+            1,
+            [
+                project(corners[0], &poses_gt[1], &cams[1]),
+                project(corners[1], &poses_gt[1], &cams[1]),
+                project(corners[2], &poses_gt[1], &cams[1]),
+                project(corners[3], &poses_gt[1], &cams[1]),
+            ],
+        ));
+        let unset = reconstruct(
+            &cams,
+            std::slice::from_ref(&two_view),
+            &tracks,
+            &CalibConfig::new(0.0),
+        )
+        .expect("solves");
+        assert_eq!(
+            unset.scale,
+            ScaleSource::UpToScale,
+            "tag_size_m = 0 cannot anchor scale"
+        );
+
+        // (b) Degenerate corners: all four coincide, so the reconstructed side is ~0 and the
+        // implied scale would be a division by nothing.
+        let degenerate = TagObservation {
+            tag_id: 3,
+            per_camera: (0..2)
+                .map(|c| {
+                    let uv = project(corners[0], &poses_gt[c], &cams[c]);
+                    (c, [uv, uv, uv, uv])
+                })
+                .collect(),
+        };
+        let deg =
+            reconstruct(&cams, std::slice::from_ref(&degenerate), &tracks, &cfg).expect("solves");
+        assert_eq!(
+            deg.scale,
+            ScaleSource::UpToScale,
+            "a tag whose corners coincide has no measurable side, so it cannot anchor scale"
+        );
+
+        // (c) Corners that cannot triangulate: put them behind the cameras, so cheirality rejects
+        // every one and no side is reconstructed at all.
+        let behind: [Vec3F64; 4] = [
+            Vec3F64::new(-s, s, -1.0),
+            Vec3F64::new(s, s, -1.0),
+            Vec3F64::new(s, -s, -1.0),
+            Vec3F64::new(-s, -s, -1.0),
+        ];
+        let untriangulable = TagObservation {
+            tag_id: 3,
+            per_camera: (0..2)
+                .map(|c| {
+                    (
+                        c,
+                        [
+                            project(behind[0], &poses_gt[c], &cams[c]),
+                            project(behind[1], &poses_gt[c], &cams[c]),
+                            project(behind[2], &poses_gt[c], &cams[c]),
+                            project(behind[3], &poses_gt[c], &cams[c]),
+                        ],
+                    )
+                })
+                .collect(),
+        };
+        let untri = reconstruct(&cams, std::slice::from_ref(&untriangulable), &tracks, &cfg)
+            .expect("solves");
+        assert_eq!(
+            untri.scale,
+            ScaleSource::UpToScale,
+            "corners that fail to triangulate cannot anchor scale"
+        );
     }
 
     /// The published map order must not depend on `HashMap` iteration order.
