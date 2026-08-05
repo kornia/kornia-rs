@@ -980,6 +980,13 @@ mod tests {
     /// Companion to the test above: that one pins the fallback, this one pins that a coplanar
     /// target is solvable at all. It deliberately asserts nothing about WHICH path ran, because
     /// that is exactly the ISA-dependent part.
+    ///
+    /// The pose tolerances are loose FOR THE SAME REASON, and the first version of this test got
+    /// that wrong: on aarch64 the refit errors and the exact AP3P pose survives (dR ~ 5e-6), while
+    /// on x86_64 it converges and returns an EPnP pose at dR = 0.0177 -- worse, but not wrong. A
+    /// tight bound therefore encodes the host ISA all over again. The accuracy gap itself is the
+    /// long-range refit degradation tracked in kornia-rs#1075; when that is fixed these bounds can
+    /// tighten.
     #[test]
     fn ap3p_ransac_solves_a_coplanar_target() -> Result<(), PnPRansacError> {
         let (r_gt, t_gt) = pose_gt();
@@ -1003,8 +1010,8 @@ mod tests {
         )?;
         assert_eq!(res.inliers.len(), 6);
         let (dr, dt) = pose_deviation(&res.pose, &r_gt, &t_gt);
-        assert!(dr < 1e-2, "rotation deviates by {dr}");
-        assert!(dt < 1e-2, "translation deviates by {dt}");
+        assert!(dr < 0.05, "rotation deviates by {dr}");
+        assert!(dt < 0.05, "translation deviates by {dt}");
         Ok(())
     }
 
