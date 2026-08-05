@@ -5,27 +5,49 @@
 //! points with known image correspondences work: a fiducial marker, a chessboard cell, a printed
 //! rectangle, a door frame.
 //!
-//! # Corner order affects convergence
+//! # Initialisation is derived from the caller's own points
 //!
-//! The initial estimate comes from a homography fitted between a FIXED canonical square
-//! `[(-1,-1), (1,-1), (1,1), (-1,1)]` and `image_pts`. The orthogonal iteration then refines
-//! against the caller's real `object_pts`, so any consistent correspondence converges eventually,
-//! but how far it starts from the answer depends on how close the caller's ordering is to that
-//! canonical one.
+//! The orthogonal iteration is seeded by decomposing a homography fitted between `object_pts`
+//! and `image_pts`. Because that seed is fitted from the caller's OWN points, it does not depend
+//! on the order, the winding, the size or the shape they come in, and on exact data it already IS
+//! the answer -- the iteration only has work to do in the presence of noise.
 //!
-//! Measured on exact projections of a square at 0.3 m, 20 deg tilt: the canonical order is exact
-//! at `n_iters = 50`, a cyclic shift by one is 2.56 deg out, and a reversed winding 15.58 deg;
-//! all three reach 0.0000 deg by 500 iterations. Pass the corners counter-clockwise from the
-//! `(-x, -y)` corner, or raise `n_iters`.
+//! The points are centred on their centroid and uniformly rescaled first. That is the standard
+//! DLT conditioning step and a similarity of the object plane, so it moves the homography's third
+//! column and rescales the first two by a common factor without touching the rotation those two
+//! encode; it is conditioning, not correctness.
 //!
-//! Target SHAPE is nearly free by comparison: a 4:1 rectangle converges at `n_iters = 50`
-//! indistinguishably from a square.
+//! This matters because an earlier revision seeded from a FIXED canonical square
+//! `[(-1,-1), (1,-1), (1,1), (-1,1)]`, which was only correct for callers using that exact
+//! winding and phase. Measured on exact projections of a square at 0.3 m / 20 deg tilt, that
+//! seed left a cyclic shift by one 2.56 deg out and a reversed winding 15.58 deg out at
+//! `n_iters = 50` (both converged only by ~500), and left `kornia-apriltag`'s
+//! `[TR, BR, BL, TL]` corner order 4.16 deg out on perfect input.
+//! `seed_is_independent_of_corner_order` pins the current behaviour: every ordering, a 4:1
+//! rectangle, a trapezoid, an off-origin object frame and the same target expressed at 1e-3x and
+//! 1e3x scale all land under 1e-6 deg at `n_iters = 50`.
 //!
-//! # Two solutions
+//! # The second solution
 //!
-//! [`PlanarPosePair`] returns two poses rather than silently picking one, so a caller with extra
-//! information (a second view, a motion prior, a known facing direction) can resolve the choice.
-//! Check `second` before relying on it -- see the tracking issue for its measured behaviour.
+//! [`PlanarPosePair::second`] is an `Option`, and it is `None` far more often than not.
+//!
+//! Two independent orthogonal iterations are run: one from the homography seed, one from that
+//! same seed with its first two rotation columns negated (a 180 deg rotation in the object
+//! plane). The two results are then sorted by reprojection error, so `best`/`second` name the
+//! outcomes, not the branches -- the negation describes the SEED and nothing about the pose that
+//! comes back.
+//!
+//! That second seed is a *heuristic* alternative starting point. It is NOT the classical planar
+//! mirror ambiguity, and NOT what the AprilRobotics C reference computes: `apriltag_pose.c`
+//! finds the genuine second local minimum of the same objective by solving a quartic
+//! (`fix_pose_ambiguities`) and reports `HUGE_VAL` when there is no second minimum. Porting that
+//! is tracked separately.
+//!
+//! Because of that, the second branch is usually not a real hypothesis: across depths of
+//! 0.3--5 m, tilts of 0--75 deg and both noise-free and 1 px-noise inputs, it converged BEHIND
+//! the camera in every configuration measured. It is now gated on cheirality at the source, so
+//! `second` is `Some` only when all four object points lie in front of the camera under it --
+//! which, in practice, means callers get `None` and can stop hand-rolling the check.
 //!
 use crate::camera::PinholeCamera;
 use crate::pose::{homography_4pt2d, Pose3d};
@@ -37,30 +59,51 @@ use kornia_algebra::{Mat3F64, Vec2F64, Vec3F64};
 pub struct PlanarPose {
     /// The world-to-camera rigid transform.
     pub pose: Pose3d,
-    /// Sum of squared pixel reprojection errors over the 4 tag corners (pixels²).
+    /// Sum of squared pixel reprojection errors over the 4 correspondences (pixels²).
     /// Lower is better; < 1.0 indicates sub-pixel accuracy.
     pub error: f64,
 }
 
-/// Two candidate poses from the planar ambiguity (one is typically degenerate).
-/// `best` has the lower reprojection error.
+/// The solutions found for one planar-pose problem.
 #[derive(Debug, Clone)]
 pub struct PlanarPosePair {
     /// Lower-error solution.
     pub best: PlanarPose,
-    /// Higher-error solution (may be degenerate/behind-camera).
-    pub second: PlanarPose,
+    /// A second local minimum, if the second branch produced a physically possible pose.
+    ///
+    /// `Some` only when all four object points lie in front of the camera under it; the second
+    /// branch converges behind the camera in most configurations, so expect `None`. Read the
+    /// module docs before treating this as an alternative hypothesis -- it is a heuristic
+    /// re-seed, not the reference implementation's quartic second minimum.
+    pub second: Option<PlanarPose>,
 }
 
-/// Error type for tag pose estimation.
+/// Error type for planar pose estimation.
 #[derive(thiserror::Error, Debug)]
 pub enum PlanarPoseError {
-    /// The homography system is degenerate (coplanar-degenerate inputs).
-    #[error("Homography DLT system is singular")]
-    SingularHomography,
+    /// The initial homography could not be fitted from the 4 correspondences.
+    #[error("initial homography could not be fitted: {0}")]
+    Homography(#[from] crate::pose::HomographyError),
+
+    /// The orthogonal iteration's linear system `(I - avg_F)` is singular, which happens when the
+    /// four image rays are (near) identical. Distinct from [`Self::Homography`]: the homography
+    /// fitted, the refinement is what degenerated.
+    #[error("orthogonal-iteration system is singular (degenerate image rays)")]
+    SingularIteration,
+
+    /// The four object points collapse to a point in their own plane, so there is no frame to
+    /// seed the homography from.
+    #[error("object points are degenerate (zero extent in the object plane)")]
+    DegenerateObjectPoints,
+
+    /// `n_iters` was zero. The refinement loop would never run, so the returned pose would be the
+    /// raw homography decomposition carrying a sentinel error rather than a measured one --
+    /// silently useless, so it is refused instead.
+    #[error("n_iters must be non-zero")]
+    ZeroIterations,
 }
 
-/// Decompose a planar homography (mapping tag-normalized ±1 coords to pixels) into
+/// Decompose a planar homography (mapping normalized object-plane coords to pixels) into
 /// an initial pose using the camera intrinsics.
 ///
 /// The last column of K⁻¹·H is t/scale (not metric t); OI rewrites t on its first step.
@@ -80,6 +123,47 @@ fn homography_to_pose(h: &[[f64; 3]; 3], fx: f64, fy: f64, cx: f64, cy: f64) -> 
     let t = Vec3F64::new(hk[0][2] / scale, hk[1][2] / scale, hk[2][2] / scale);
     Pose3d::new(Mat3F64::from_cols(r1, r2, r3), t)
 }
+
+/// Seed points for the initial homography: the caller's own object x/y, centred on their
+/// centroid and uniformly scaled to unit mean radius.
+///
+/// What makes the seed correct is that it is fitted from the CALLER'S points at all. Writing the
+/// exact projection as `H = K·[r₁ r₂ t]` and substituting `q = s·(p − c)` gives
+/// `H' = K·[r₁/s r₂/s (t + R·c)]`: the first two columns keep their directions and pick up a
+/// COMMON factor, which [`homography_to_pose`] divides out when it normalises them. So the
+/// recovered `R` is the caller's frame whatever order, winding, size or shape their points come
+/// in, and `t` is rewritten by the iteration's first step anyway.
+///
+/// Centring and rescaling are therefore conditioning, not correctness — this is the standard DLT
+/// normalisation. Measured: disabling either one on its own leaves every case in
+/// `seed_is_independent_of_corner_order` passing, so neither is load-bearing for the inputs
+/// tested. They are kept because they cost four sums and make the 8x8 system
+/// [`homography_4pt2d`] solves independent of the unit the caller's object frame is expressed in.
+fn normalized_object_seed(object_pts: &[Vec3F64; 4]) -> Option<[[f64; 2]; 4]> {
+    let cx = object_pts.iter().map(|p| p.x).sum::<f64>() * 0.25;
+    let cy = object_pts.iter().map(|p| p.y).sum::<f64>() * 0.25;
+    let mean_r = object_pts
+        .iter()
+        .map(|p| ((p.x - cx).powi(2) + (p.y - cy).powi(2)).sqrt())
+        .sum::<f64>()
+        * 0.25;
+    if !mean_r.is_finite() || mean_r <= 0.0 {
+        return None;
+    }
+    let s = 1.0 / mean_r;
+    Some([0, 1, 2, 3].map(|i| [(object_pts[i].x - cx) * s, (object_pts[i].y - cy) * s]))
+}
+
+/// Whether every object point lies strictly in front of the camera under `pose`.
+fn all_in_front(pose: &Pose3d, object_pts: &[Vec3F64; 4]) -> bool {
+    object_pts
+        .iter()
+        .all(|p| pose.transform_point(p).z > CHEIRALITY_EPS)
+}
+
+/// Minimum camera-frame depth treated as "in front of the camera". Shared by the reprojection
+/// error accumulation and the cheirality gate on the second solution so they cannot disagree.
+const CHEIRALITY_EPS: f64 = 1e-10;
 
 /// Projection operator for image ray v: F = v·vᵀ / (vᵀ·v).
 fn calc_f(v: Vec3F64) -> Mat3F64 {
@@ -109,7 +193,7 @@ fn orthogonal_iteration(
     let m1 = Mat3F64::IDENTITY - avg_f;
     // (I − avg_F) is singular when all image rays are identical — degenerate input.
     if m1.determinant().abs() < 1e-8 {
-        return Err(PlanarPoseError::SingularHomography);
+        return Err(PlanarPoseError::SingularIteration);
     }
     let m1_inv = m1.inverse();
 
@@ -163,7 +247,7 @@ fn orthogonal_iteration(
         error = 0.0;
         for i in 0..4 {
             let p_cam = rotation * object_pts[i] + translation;
-            if p_cam.z > 1e-10 {
+            if p_cam.z > CHEIRALITY_EPS {
                 let u_hat = fx * p_cam.x / p_cam.z + cx;
                 let v_hat = fy * p_cam.y / p_cam.z + cy;
                 let du = u_hat - image_pts[i].x;
@@ -178,34 +262,85 @@ fn orthogonal_iteration(
     Ok((Pose3d::new(rotation, translation), error))
 }
 
-/// Estimate the 6-DOF pose of a planar AprilTag from 4 corner correspondences.
+/// Estimate the 6-DOF pose of a planar quad from 4 coplanar correspondences.
 ///
 /// # Arguments
-/// * `object_pts` — 4 coplanar tag corners in the tag metric frame (`z = 0`), each at
-///   `±tag_size/2` on x/y. Only the index-wise correspondence with `image_pts` matters,
-///   not the absolute order. `Detection::estimate_pose` lists them in the detector's
-///   `[TR, BR, BL, TL]` corner order — see its comment; using a different order there
-///   rotates the recovered pose in-plane.
-/// * `image_pts` — matching 2D image coordinates (pixels), same index order as object_pts.
-/// * `camera` — pinhole camera intrinsics (fx, fy, cx, cy). Distortion coefficients ignored.
-/// * `n_iters` — number of orthogonal-iteration refinement steps (default: 50).
+/// * `object_pts` — 4 coplanar object points in the target's own metric frame (`z = 0`; only x/y
+///   are used to seed the iteration). Order, winding and scale are free: the seed is fitted from
+///   these points, so only the index-wise correspondence with `image_pts` matters. The recovered
+///   pose is expressed in whatever frame they are given in.
+/// * `image_pts` — matching 2D image coordinates (pixels), same index order as `object_pts`.
+/// * `camera` — pinhole intrinsics. Distortion coefficients are IGNORED; undistort first if your
+///   camera has any.
+/// * `n_iters` — orthogonal-iteration refinement steps (50 is a good default). Must be non-zero.
 ///
 /// # Returns
-/// `PlanarPosePair` with `best` (lower reprojection error) and `second` (higher error / ambiguous solution).
+/// [`PlanarPosePair`]: `best` (lower reprojection error) and `second`, which is `Some` only when
+/// the second branch converged in front of the camera — usually it does not.
+///
+/// # Errors
+/// * [`PlanarPoseError::Homography`] — the initial homography could not be fitted.
+/// * [`PlanarPoseError::SingularIteration`] — the refinement's linear system degenerated (all
+///   four image rays effectively identical).
+/// * [`PlanarPoseError::DegenerateObjectPoints`] — the object points have no extent in their
+///   own plane.
+/// * [`PlanarPoseError::ZeroIterations`] — `n_iters == 0`, which would otherwise return an
+///   unrefined pose carrying a sentinel error.
+///
+/// # Example
+/// ```
+/// use kornia_3d::camera::PinholeCamera;
+/// use kornia_3d::pose::estimate_planar_pose;
+/// use kornia_algebra::{Vec2F64, Vec3F64};
+///
+/// // A 10 cm square target.
+/// let s = 0.05;
+/// let object_pts = [
+///     Vec3F64::new(-s, -s, 0.0),
+///     Vec3F64::new(s, -s, 0.0),
+///     Vec3F64::new(s, s, 0.0),
+///     Vec3F64::new(-s, s, 0.0),
+/// ];
+///
+/// let camera = PinholeCamera {
+///     fx: 500.0,
+///     fy: 500.0,
+///     cx: 320.0,
+///     cy: 240.0,
+///     ..PinholeCamera::IDENTITY
+/// };
+///
+/// // Its image with the target frontal, 0.5 m away: u = fx * X / Z + cx.
+/// let image_pts = [
+///     Vec2F64::new(270.0, 190.0),
+///     Vec2F64::new(370.0, 190.0),
+///     Vec2F64::new(370.0, 290.0),
+///     Vec2F64::new(270.0, 290.0),
+/// ];
+///
+/// let pair = estimate_planar_pose(&object_pts, &image_pts, &camera, 50)?;
+/// assert!((pair.best.pose.translation.z - 0.5).abs() < 1e-6);
+/// # Ok::<(), kornia_3d::pose::PlanarPoseError>(())
+/// ```
 ///
 /// # Note
-/// Uses the Lu-Hager-Mjolsness (1993) orthogonal iteration algorithm, matching the
-/// AprilRobotics C reference implementation in `apriltag_pose.c`.
+/// Lu-Hager-Mjolsness (1993) orthogonal iteration, as in the AprilRobotics C reference
+/// `apriltag_pose.c` — except for how the second solution is obtained, see the module docs.
 pub fn estimate_planar_pose(
     object_pts: &[Vec3F64; 4],
     image_pts: &[Vec2F64; 4],
     camera: &PinholeCamera,
     n_iters: usize,
 ) -> Result<PlanarPosePair, PlanarPoseError> {
+    if n_iters == 0 {
+        return Err(PlanarPoseError::ZeroIterations);
+    }
     let (fx, fy, cx, cy) = camera.intrinsics();
 
-    // H maps tag-normalized corners (±1) → image pixels
-    let tag_norm: [[f64; 2]; 4] = [[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]];
+    // H maps the caller's own object plane (centred, unit mean radius) → image pixels, so the
+    // seed is exact for any ordering/shape/scale rather than only for a canonical square.
+    let obj_norm =
+        normalized_object_seed(object_pts).ok_or(PlanarPoseError::DegenerateObjectPoints)?;
     let img_arr: [[f64; 2]; 4] = [
         [image_pts[0].x, image_pts[0].y],
         [image_pts[1].x, image_pts[1].y],
@@ -213,8 +348,7 @@ pub fn estimate_planar_pose(
         [image_pts[3].x, image_pts[3].y],
     ];
     let mut h = [[0.0f64; 3]; 3];
-    homography_4pt2d(&tag_norm, &img_arr, &mut h)
-        .map_err(|_| PlanarPoseError::SingularHomography)?;
+    homography_4pt2d(&obj_norm, &img_arr, &mut h).map_err(PlanarPoseError::Homography)?;
 
     let init_pose = homography_to_pose(&h, fx, fy, cx, cy);
 
@@ -236,7 +370,9 @@ pub fn estimate_planar_pose(
         camera,
     )?;
 
-    // Pose 2: other planar ambiguity — negate first two R columns
+    // Pose 2: re-seed with the first two rotation columns negated (a 180° in-plane rotation) and
+    // run an independent iteration. This is a heuristic second start, not the reference's quartic
+    // second minimum — see the module docs.
     let r2_init = Mat3F64::from_cols(
         -init_pose.rotation.x_axis(),
         -init_pose.rotation.y_axis(),
@@ -252,30 +388,25 @@ pub fn estimate_planar_pose(
     )?;
 
     let (best, second) = if err1 <= err2 {
-        (
-            PlanarPose {
-                pose: pose1,
-                error: err1,
-            },
-            PlanarPose {
-                pose: pose2,
-                error: err2,
-            },
-        )
+        ((pose1, err1), (pose2, err2))
     } else {
-        (
-            PlanarPose {
-                pose: pose2,
-                error: err2,
-            },
-            PlanarPose {
-                pose: pose1,
-                error: err1,
-            },
-        )
+        ((pose2, err2), (pose1, err1))
     };
 
-    Ok(PlanarPosePair { best, second })
+    // Gate the runner-up on cheirality: a pose that puts the target behind the camera is not an
+    // alternative hypothesis, and callers were silently consuming it as one.
+    let second = all_in_front(&second.0, object_pts).then_some(PlanarPose {
+        pose: second.0,
+        error: second.1,
+    });
+
+    Ok(PlanarPosePair {
+        best: PlanarPose {
+            pose: best.0,
+            error: best.1,
+        },
+        second,
+    })
 }
 
 #[cfg(test)]
@@ -410,8 +541,224 @@ mod tests {
         let image_pts = [Vec2F64::new(320.0, 240.0); 4];
         let result = estimate_planar_pose(&object_pts, &image_pts, &camera, 50);
         assert!(
-            matches!(result, Err(PlanarPoseError::SingularHomography)),
-            "expected SingularHomography, got {result:?}"
+            matches!(
+                result,
+                Err(PlanarPoseError::SingularIteration) | Err(PlanarPoseError::Homography(_))
+            ),
+            "expected a degeneracy error, got {result:?}"
+        );
+    }
+
+    /// Project `object_pts` from `r_gt` at `depth`, solve, and return `best`'s rotation error in
+    /// degrees at `n_iters`.
+    fn rot_err_deg_at(
+        object_pts: &[Vec3F64; 4],
+        camera: &PinholeCamera,
+        r_gt: &Mat3F64,
+        depth: f64,
+        n_iters: usize,
+    ) -> f64 {
+        let pose_gt = Pose3d::new(*r_gt, Vec3F64::new(0.0, 0.0, depth));
+        let image_pts = project_pts(object_pts, &pose_gt, camera);
+        let pair = estimate_planar_pose(object_pts, &image_pts, camera, n_iters)
+            .expect("exact projection must solve");
+        rotation_error_rad(&pair.best.pose.rotation, r_gt).to_degrees()
+    }
+
+    /// The seed is fitted from the caller's OWN object points, so ordering, winding, shape and
+    /// metric scale must not change what `n_iters = 50` recovers from exact data.
+    ///
+    /// This is the test the module lacked: every other test here passes the canonical square in
+    /// the canonical order, which is exactly the ordering the old hardcoded `tag_norm` seed
+    /// happened to match, so none of them could observe the effect. With that seed restored,
+    /// `shifted` lands 2.56 deg out and `reversed` 15.58 deg out at 50 iterations.
+    #[test]
+    fn seed_is_independent_of_corner_order() {
+        let camera = test_camera();
+        let s = 0.05;
+        let canonical = [
+            Vec3F64::new(-s, -s, 0.0),
+            Vec3F64::new(s, -s, 0.0),
+            Vec3F64::new(s, s, 0.0),
+            Vec3F64::new(-s, s, 0.0),
+        ];
+        // A tilted pose: at frontal the ordering effect is near-degenerate and proves nothing.
+        let (ax, az) = (20.0f64.to_radians(), 15.0f64.to_radians());
+        let rx = Mat3F64::from_cols(
+            Vec3F64::new(1.0, 0.0, 0.0),
+            Vec3F64::new(0.0, ax.cos(), ax.sin()),
+            Vec3F64::new(0.0, -ax.sin(), ax.cos()),
+        );
+        let rz = Mat3F64::from_cols(
+            Vec3F64::new(az.cos(), az.sin(), 0.0),
+            Vec3F64::new(-az.sin(), az.cos(), 0.0),
+            Vec3F64::new(0.0, 0.0, 1.0),
+        );
+        let r_gt = rz * rx;
+
+        // (name, object points, depth). Depth is 0.3 m except for the scale cases, which scale
+        // the target AND the distance together so the IMAGE is bit-identical: that isolates the
+        // numerical question (does the object frame's unit matter?) from the physical one (a
+        // 50 um target at 0.3 m really is unsolvable).
+        let cases: [(&str, [Vec3F64; 4], f64); 9] = [
+            ("canonical", canonical, 0.3),
+            // The AprilTag decoder's [TR, BR, BL, TL] winding — the caller that motivated this.
+            (
+                "apriltag TR,BR,BL,TL",
+                [
+                    Vec3F64::new(s, -s, 0.0),
+                    Vec3F64::new(s, s, 0.0),
+                    Vec3F64::new(-s, s, 0.0),
+                    Vec3F64::new(-s, -s, 0.0),
+                ],
+                0.3,
+            ),
+            (
+                "cyclic shift by one",
+                [canonical[1], canonical[2], canonical[3], canonical[0]],
+                0.3,
+            ),
+            (
+                "reversed winding",
+                [canonical[3], canonical[2], canonical[1], canonical[0]],
+                0.3,
+            ),
+            (
+                "4:1 rectangle",
+                [
+                    Vec3F64::new(-4.0 * s, -s, 0.0),
+                    Vec3F64::new(4.0 * s, -s, 0.0),
+                    Vec3F64::new(4.0 * s, s, 0.0),
+                    Vec3F64::new(-4.0 * s, s, 0.0),
+                ],
+                0.3,
+            ),
+            (
+                "trapezoid",
+                [
+                    Vec3F64::new(-3.0 * s, -s, 0.0),
+                    Vec3F64::new(3.0 * s, -s, 0.0),
+                    Vec3F64::new(s, s, 0.0),
+                    Vec3F64::new(-s, s, 0.0),
+                ],
+                0.3,
+            ),
+            // Object frame whose origin is nowhere near the target.
+            (
+                "offset centre",
+                canonical.map(|p| p + Vec3F64::new(0.7, -0.3, 0.0)),
+                0.3,
+            ),
+            // Same image, object frame expressed in millimetres and in kilometres.
+            ("1e-3x scale", canonical.map(|p| p * 1e-3), 0.3 * 1e-3),
+            ("1e3x scale", canonical.map(|p| p * 1e3), 0.3 * 1e3),
+        ];
+
+        for (name, obj, depth) in cases {
+            let err = rot_err_deg_at(&obj, &camera, &r_gt, depth, 50);
+            assert!(
+                err < 1e-6,
+                "{name}: {err} deg at n_iters = 50 — the homography seed is not \
+                 order/shape/scale independent"
+            );
+        }
+    }
+
+    /// The second branch must never be handed back pointing away from the camera.
+    ///
+    /// Measured across depths 0.3/1/5 m, tilts 0-75 deg and 1 px noise, the second branch landed
+    /// behind the camera in every configuration, so this asserts both halves: `None` in a
+    /// concrete configuration, and — for every configuration — that a `Some` really is in front.
+    #[test]
+    fn second_solution_is_gated_on_cheirality() {
+        let camera = test_camera();
+        let s = 0.05;
+        let object_pts = [
+            Vec3F64::new(-s, -s, 0.0),
+            Vec3F64::new(s, -s, 0.0),
+            Vec3F64::new(s, s, 0.0),
+            Vec3F64::new(-s, s, 0.0),
+        ];
+
+        let mut n_some = 0;
+        for tilt_deg in [0.0f64, 5.0, 20.0, 45.0, 60.0, 75.0] {
+            let tilt = tilt_deg.to_radians();
+            let r_gt = Mat3F64::from_cols(
+                Vec3F64::new(1.0, 0.0, 0.0),
+                Vec3F64::new(0.0, tilt.cos(), tilt.sin()),
+                Vec3F64::new(0.0, -tilt.sin(), tilt.cos()),
+            );
+            for depth in [0.3f64, 1.0, 5.0] {
+                let pose_gt = Pose3d::new(r_gt, Vec3F64::new(0.02, -0.01, depth));
+                let image_pts = project_pts(&object_pts, &pose_gt, &camera);
+                let pair = estimate_planar_pose(&object_pts, &image_pts, &camera, 50)
+                    .expect("exact projection must solve");
+                if let Some(second) = &pair.second {
+                    n_some += 1;
+                    for p in &object_pts {
+                        let z = second.pose.transform_point(p).z;
+                        assert!(
+                            z > 0.0,
+                            "tilt {tilt_deg} deg / {depth} m: `second` returned with a point at \
+                             z = {z}, behind the camera"
+                        );
+                    }
+                    assert!(
+                        second.error.is_finite() && second.error < f64::MAX,
+                        "tilt {tilt_deg} deg / {depth} m: `second` carries a sentinel error"
+                    );
+                }
+            }
+        }
+        // Guard against the loop above passing vacuously in the other direction: if a future
+        // change makes the second branch usable everywhere, this fires and the docs must follow.
+        assert_eq!(
+            n_some, 0,
+            "the second branch is documented as always degenerate on these configurations, but \
+             {n_some} came back in front of the camera — update the module docs"
+        );
+    }
+
+    /// `n_iters = 0` must be refused, not answered with an unrefined pose carrying `f64::MAX`.
+    #[test]
+    fn zero_iterations_is_rejected() {
+        let camera = test_camera();
+        let s = 0.05;
+        let object_pts = [
+            Vec3F64::new(-s, -s, 0.0),
+            Vec3F64::new(s, -s, 0.0),
+            Vec3F64::new(s, s, 0.0),
+            Vec3F64::new(-s, s, 0.0),
+        ];
+        let image_pts = [
+            Vec2F64::new(270.0, 190.0),
+            Vec2F64::new(370.0, 190.0),
+            Vec2F64::new(370.0, 290.0),
+            Vec2F64::new(270.0, 290.0),
+        ];
+        let result = estimate_planar_pose(&object_pts, &image_pts, &camera, 0);
+        assert!(
+            matches!(result, Err(PlanarPoseError::ZeroIterations)),
+            "expected ZeroIterations, got {result:?}"
+        );
+    }
+
+    /// Object points with no extent give the seed no frame to fit; that must be an error, not a
+    /// homography built from NaNs.
+    #[test]
+    fn degenerate_object_points_are_rejected() {
+        let camera = test_camera();
+        let object_pts = [Vec3F64::new(0.1, -0.2, 0.0); 4];
+        let image_pts = [
+            Vec2F64::new(270.0, 190.0),
+            Vec2F64::new(370.0, 190.0),
+            Vec2F64::new(370.0, 290.0),
+            Vec2F64::new(270.0, 290.0),
+        ];
+        let result = estimate_planar_pose(&object_pts, &image_pts, &camera, 50);
+        assert!(
+            matches!(result, Err(PlanarPoseError::DegenerateObjectPoints)),
+            "expected DegenerateObjectPoints, got {result:?}"
         );
     }
 }

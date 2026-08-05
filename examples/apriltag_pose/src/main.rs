@@ -87,7 +87,10 @@ fn print_detection(det: &Detection, camera: &PinholeCamera, tag_size: f64, n_ite
             );
             println!("  translation: [{:.4}, {:.4}, {:.4}]", t.x, t.y, t.z);
             println!("  reprojection error (best):   {:.6}", best.error);
-            println!("  reprojection error (second): {:.6}", pair.second.error);
+            match &pair.second {
+                Some(second) => println!("  reprojection error (second): {:.6}", second.error),
+                None => println!("  second solution:             none (behind the camera)"),
+            }
         }
         Err(e) => println!("  pose estimation failed: {e}"),
     }

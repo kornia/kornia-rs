@@ -313,8 +313,8 @@ impl Detection {
     ///
     /// # Returns
     ///
-    /// [`kornia_3d::pose::PlanarPosePair`] with `best` (lower reprojection error) and
-    /// `second` (higher error / ambiguous solution).
+    /// [`kornia_3d::pose::PlanarPosePair`] with `best` (lower reprojection error) and `second`,
+    /// which is `Some` only when the runner-up is physically possible — usually it is not.
     pub fn estimate_pose(
         &self,
         camera: &kornia_3d::camera::PinholeCamera,
