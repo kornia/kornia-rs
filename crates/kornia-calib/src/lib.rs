@@ -11,6 +11,10 @@
 //!   reference-tag frame) so any rigid multi-tag arrangement constrains rotation without a layout.
 //! - [`calibrate_board`] — extrinsics from a known rigid [`BoardGeometry`] (every corner a fixed
 //!   metric anchor) plus optional multi-view feature tracks ([`build_tracks`]).
+//! - [`reconstruct`] — incremental structure-from-motion over multi-view feature tracks, returning
+//!   the MAP (poses, points, the track each point came from, surviving observations) as a
+//!   [`Reconstruction`]. A tag is optional and acts only as a scale bar; without one the result is
+//!   honestly [`ScaleSource::UpToScale`].
 //! - [`calibrate_multishot`] — multi-shot self-calibration: **refines each camera's focal**
 //!   ([`estimate_focal`], Zhang median across shots) and averages the extrinsics over N board poses
 //!   for a real empirical covariance. Single-view focal is unobservable (the pose absorbs it); N
@@ -51,10 +55,11 @@ pub use board::BoardGeometry;
 pub use error::CalibError;
 pub use intrinsics::estimate_focal;
 pub use multishot::{calibrate_multishot, MultiShotCalibration, MultiShotConfig, Shot};
-pub use sfm::calibrate_features;
+pub use sfm::reconstruct;
 pub use tracks::{build_tracks, TrackEdge};
 pub use types::{
-    CalibConfig, CameraStats, FeatureMatch, FeatureTrack, RigCalibration, TagObservation,
+    CalibConfig, CameraStats, FeatureMatch, FeatureTrack, Observation, Point, Reconstruction,
+    RigCalibration, ScaleSource, TagObservation,
 };
 
 // Re-exported so callers can name calibration poses without depending on
