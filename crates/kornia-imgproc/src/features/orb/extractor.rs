@@ -1357,7 +1357,7 @@ fn corner_orientations_u8(src: &Image<u8, 1>, corners: &[[usize; 2]]) -> Vec<f32
     let src_slice = src.as_slice();
 
     #[cfg(target_arch = "aarch64")]
-    let use_neon = std::env::var("KORNIA_ORB_ORI_NEON").map_or(true, |v| v != "0");
+    let use_neon = crate::simd::cpu_features().has_neon;
 
     #[cfg(target_arch = "x86_64")]
     let use_avx2 = crate::simd::cpu_features().has_avx2;
@@ -1777,10 +1777,9 @@ mod tests {
             })
             .collect();
 
-        // Call both kernels directly rather than toggling `KORNIA_ORB_ORI_NEON`
-        // around the dispatcher: the test harness runs tests on multiple
-        // threads, so mutating the process environment here would race any
-        // concurrent reader (and is UB under the 2024 edition).
+        // Call both kernels directly rather than going through the dispatcher:
+        // on aarch64 it always selects NEON, so routing through it could not
+        // reach the scalar reference at all.
         let cols = img.cols();
         let slice = img.as_slice();
         let neon: Vec<f32> = corners
