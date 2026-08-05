@@ -14,9 +14,29 @@
 //! reprojection RMSE even on noise-free synthetic data.
 //!
 //! The `epnp_long_range_regression_documented` test below reproduces the
-//! failure mode and pins the empirical envelope. Mitigation requires
-//! changing the control-point spread heuristic — OpenCV uses a different
-//! σ multiplier whose validation is out of scope for this module.
+//! failure mode and pins the empirical envelope.
+//!
+//! This is the degeneracy the EPnP paper itself documents (Lepetit, Moreno-Noguer & Fua, IJCV
+//! 2009, Sect. 3.3 and Fig. 3). For a purely perspective camera the null space of `MᵀM` has
+//! dimension one, from the scale ambiguity; for an AFFINE camera it has dimension four, from the
+//! depth uncertainty of the four control points. A large focal length approximates an affine
+//! model, so the paper states the dimension "could be any value between 1 and 4" and Fig. 3 plots
+//! the singular values of `MᵀM` across f = 100…10000.
+//!
+//! Reading a small object at long range as the same regime is an inference, not the paper's
+//! framing — it argues from focal length and the affine approximation, not from angular extent.
+//!
+//! Two things this module does NOT diverge from the references on. The control-point spread is
+//! `sqrt(λ_scatter / n)`, algebraically the same as OpenCV's `epnp.cpp` (`k = sqrt(dc[i-1] /
+//! number_of_correspondences)`) — an earlier version of this comment claimed OpenCV used a
+//! different σ multiplier, which is false. And the paper's planar special case (Sect. 3.4, three
+//! control points when the reference points' moment matrix has one very small eigenvalue) is
+//! absent here, but it is equally absent from OpenCV and COLMAP.
+//!
+//! The real divergence is precision: OpenCV and COLMAP run EPnP in `f64` throughout, this module
+//! in `f32`. Forming `MᵀM` squares the condition number, and the paper puts the four smallest
+//! eigenvalues of exactly that matrix on top of each other in this regime — so f32 is the first
+//! hypothesis to test before concluding the algorithm is at fault.
 //! Workarounds for callers stuck in this regime: (1) feed EPnP through
 //! `LMRefineParams` (already supported via `EPnPParams::refine_lm`) which
 //! polishes any pose to sub-pixel given enough iterations; (2) prefer
