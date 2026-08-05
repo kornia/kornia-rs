@@ -1046,6 +1046,76 @@ mod tests {
         );
     }
 
+    /// `calibrate_features` inherits the scale honesty, and that CHANGES its behaviour.
+    ///
+    /// Before this, `reference_tag_id` was `tags_for_scale.first()`'s id whenever a tag was
+    /// supplied — even when `tag_scale` had fallen back to the identity, so a caller could read a
+    /// real tag id off a map that was still up to scale. It is now `0` unless the tag actually
+    /// anchored.
+    ///
+    /// That is a deliberate fix, not a regression, but it is a behaviour change on the EXISTING
+    /// entry point rather than only on the new one, so it is asserted here at the
+    /// `calibrate_features`/`RigCalibration` level and not merely via `ScaleSource`.
+    #[test]
+    fn calibrate_features_reports_no_reference_tag_when_the_tag_did_not_anchor() {
+        let cams = vec![pinhole(600.0), pinhole(600.0), pinhole(600.0)];
+        let poses_gt = [
+            Pose3d::new(Mat3F64::IDENTITY, Vec3F64::new(0.0, 0.0, 0.0)),
+            Pose3d::new(rot(0.25, 0.0), Vec3F64::new(-0.30, 0.0, 0.02)),
+            Pose3d::new(rot(-0.22, 0.05), Vec3F64::new(0.28, 0.01, 0.03)),
+        ];
+        let tracks: Vec<FeatureTrack> = (0..24)
+            .map(|i| {
+                let (a, b) = ((i % 6) as f64, (i / 6) as f64);
+                let p = Vec3F64::new(
+                    -0.25 + 0.1 * a,
+                    -0.15 + 0.1 * b,
+                    1.4 + 0.05 * ((i % 5) as f64),
+                );
+                FeatureTrack {
+                    obs: (0..3)
+                        .map(|c| (c, project(p, &poses_gt[c], &cams[c])))
+                        .collect(),
+                }
+            })
+            .collect();
+
+        // Tag id 9, seen by ONE view: `tag_scale` needs two registered seers, so it cannot anchor.
+        let s = 0.05;
+        let corners = [
+            Vec3F64::new(-s, s, 1.5),
+            Vec3F64::new(s, s, 1.5),
+            Vec3F64::new(s, -s, 1.5),
+            Vec3F64::new(-s, -s, 1.5),
+        ];
+        let tag = TagObservation {
+            tag_id: 9,
+            per_camera: vec![(
+                0,
+                [
+                    project(corners[0], &poses_gt[0], &cams[0]),
+                    project(corners[1], &poses_gt[0], &cams[0]),
+                    project(corners[2], &poses_gt[0], &cams[0]),
+                    project(corners[3], &poses_gt[0], &cams[0]),
+                ],
+            )],
+        };
+
+        let cal = calibrate_features(
+            &cams,
+            std::slice::from_ref(&tag),
+            &tracks,
+            &CalibConfig::new(2.0 * s),
+        )
+        .expect("the feature tracks alone must still solve");
+
+        assert_eq!(
+            cal.reference_tag_id, 0,
+            "tag 9 was supplied but could not anchor scale, so it must not be reported as the \
+             reference — that would tell the caller the map is metric when it is not"
+        );
+    }
+
     /// The published map order must not depend on `HashMap` iteration order.
     #[test]
     fn map_order_is_deterministic_and_sorted_by_track() {
