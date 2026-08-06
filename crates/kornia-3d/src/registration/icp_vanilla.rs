@@ -1,9 +1,16 @@
-use core::f64;
-
+#![allow(non_snake_case)]
+#![allow(unused_imports)]
+#![allow(clippy::needless_range_loop)]
 use kiddo::immutable::float::kdtree::ImmutableKdTree;
 
-use super::ops::{find_correspondences, fit_transformation, update_transformation};
-use crate::{linalg::transform_points3d, pointcloud::PointCloud};
+use super::ops::{
+    compute_point_to_plane_rmse, find_correspondences, find_correspondences_with_indices,
+    fit_transformation, fit_transformation_point_to_plane, update_transformation,
+};
+use crate::{
+    linalg::transform_points3d, normal_estimation::estimate_normals, pointcloud::PointCloud,
+    
+};
 
 /// Result of the ICP algorithm.
 ///
@@ -144,13 +151,136 @@ pub fn icp_vanilla(
     Ok(result)
 }
 
+/// Point-to-plane Iterative Closest Point (ICP) algorithm.
+///
+/// This variant uses the point-to-plane error metric, which converges faster
+/// on planar surfaces. It requires normals for the target point cloud.
+///
+/// # Arguments
+/// * `source` - Source point cloud.
+/// * `target` - Target point cloud.
+/// * `initial_rot` - Initial rotation matrix.
+/// * `initial_trans` - Initial translation vector.
+/// * `criteria` - Convergence criteria.
+///
+/// # Returns
+/// An `ICPResult` containing the final transformation.
+pub fn icp_point_to_plane(
+    source: &PointCloud,
+    target: &PointCloud,
+    initial_rot: [[f64; 3]; 3],
+    initial_trans: [f64; 3],
+    criteria: ICPConvergenceCriteria,
+) -> Result<ICPResult, Box<dyn std::error::Error>> {
+    // --- Compute target normals using Phase 1 ---
+    let target_with_normals = estimate_normals(target, 10)?;
+    let target_normals = target_with_normals
+        .normals()
+        .ok_or("Failed to retrieve normals")?;
+
+    // --- Build kd-tree for target points ---
+    let kdtree: ImmutableKdTree<f64, u32, 3, 32> = ImmutableKdTree::new_from_slice(target.points());
+
+    // --- Initialize result ---
+    let mut result = ICPResult {
+        rotation: initial_rot,
+        translation: initial_trans,
+        num_iterations: 0,
+        rmse: f64::INFINITY,
+    };
+
+    // --- Apply initial transformation to source ---
+    let mut current_source = vec![[0.0; 3]; source.points().len()];
+    transform_points3d(
+        source.points(),
+        &result.rotation,
+        &result.translation,
+        &mut current_source,
+    )?;
+
+    // --- ICP loop ---
+    for i in 0..criteria.max_iterations {
+        let (src_matched, dst_matched, dst_indices, _) =
+            find_correspondences_with_indices(&current_source, target.points(), &kdtree);
+
+        let dst_normals_matched: Vec<[f64; 3]> = dst_indices
+            .iter()
+            .map(|&idx| target_normals[idx as usize])
+            .collect();
+
+        let identity_rot = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let identity_trans = [0.0, 0.0, 0.0];
+        let (R_delta, t_delta) = fit_transformation_point_to_plane(
+            &src_matched,
+            &dst_matched,
+            &dst_normals_matched,
+            &identity_rot,
+            &identity_trans,
+        )?;
+
+        let mut transformed_points = vec![[0.0; 3]; current_source.len()];
+        transform_points3d(&current_source, &R_delta, &t_delta, &mut transformed_points)?;
+        current_source = transformed_points;
+
+        // Correct SE(3) update: R_new = R_old * R_delta, t_new = R_old * t_delta + t_old
+        let mut new_rotation = [[0.0; 3]; 3];
+        for i in 0..3 {
+            for j in 0..3 {
+                new_rotation[i][j] = 0.0;
+                for k in 0..3 {
+                    new_rotation[i][j] += result.rotation[i][k] * R_delta[k][j];
+                }
+            }
+        }
+
+        let mut new_translation = [0.0; 3];
+        for i in 0..3 {
+            new_translation[i] = result.translation[i];
+            for j in 0..3 {
+                new_translation[i] += result.rotation[i][j] * t_delta[j];
+            }
+        }
+
+        result.rotation = new_rotation;
+        result.translation = new_translation;
+
+        // Transform the matched source points by the delta to get the new positions.
+        let mut matched_src_transformed = vec![[0.0; 3]; src_matched.len()];
+        transform_points3d(
+            &src_matched,
+            &R_delta,
+            &t_delta,
+            &mut matched_src_transformed,
+        )?;
+
+        // Compute RMSE using identity (because matched_src_transformed already includes the full transform).
+        let identity_rot = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let identity_trans = [0.0, 0.0, 0.0];
+        let rmse = compute_point_to_plane_rmse(
+            &matched_src_transformed,
+            &dst_matched,
+            &dst_normals_matched,
+            &identity_rot,
+            &identity_trans,
+        );
+
+        result.num_iterations += 1;
+        if (result.rmse - rmse).abs() < criteria.tolerance {
+            result.rmse = rmse;
+            break;
+        }
+        result.rmse = rmse;
+    }
+
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{icp_vanilla, ICPConvergenceCriteria};
-    use crate::{
-        linalg::transform_points3d, pointcloud::PointCloud,
-        transforms::axis_angle_to_rotation_matrix,
-    };
+    use super::*;
+
+    use crate::transforms::axis_angle_to_rotation_matrix;
+    use rand::RngExt;
     #[test]
     fn test_icp_vanilla() -> Result<(), Box<dyn std::error::Error>> {
         let num_points = 100;
@@ -228,6 +358,404 @@ mod tests {
             result.rmse < 1e-8,
             "ICP did not converge to low error: RMSE = {}",
             result.rmse
+        );
+
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------------
+    // Helpers
+    // ------------------------------------------------------------------------
+
+    fn make_plane(side: usize) -> Vec<[f64; 3]> {
+        let mut points = Vec::with_capacity(side * side);
+        for i in 0..side {
+            for j in 0..side {
+                points.push([
+                    i as f64 - side as f64 / 2.0,
+                    j as f64 - side as f64 / 2.0,
+                    0.0,
+                ]);
+            }
+        }
+        points
+    }
+
+    fn make_sphere(samples: usize) -> Vec<[f64; 3]> {
+        let mut points = Vec::with_capacity(samples * samples);
+        let step_theta = std::f64::consts::PI / (samples + 1) as f64;
+        let step_phi = std::f64::consts::TAU / samples as f64;
+        for i in 1..=samples {
+            let theta = i as f64 * step_theta;
+            for j in 0..samples {
+                let phi = j as f64 * step_phi;
+                points.push([
+                    theta.sin() * phi.cos(),
+                    theta.sin() * phi.sin(),
+                    theta.cos(),
+                ]);
+            }
+        }
+        points
+    }
+
+    // ------------------------------------------------------------------------
+    // Test: Point-to-plane converges in fewer iterations
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn test_point_to_plane_icp_fewer_iterations() -> Result<(), Box<dyn std::error::Error>> {
+        let side = 20;
+        let source_points = make_plane(side);
+        let source_pcl = PointCloud::new(source_points, None, None);
+
+        // Use a modest rotation (0.1 rad) to keep the problem well-conditioned.
+        let axis = [1.0, 0.0, 0.0];
+        let angle = 0.1;
+        let R_known = axis_angle_to_rotation_matrix(&axis, angle)?;
+        let t_known = [0.1, 0.05, 0.1];
+
+        let mut target_points = vec![[0.0; 3]; source_pcl.points().len()];
+        transform_points3d(source_pcl.points(), &R_known, &t_known, &mut target_points)?;
+        let target_pcl = PointCloud::new(target_points, None, None);
+
+        let criteria = ICPConvergenceCriteria {
+            max_iterations: 100,
+            tolerance: 1e-6,
+        };
+
+        let init_rot = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let init_trans = [0.0, 0.0, 0.0];
+
+        let res_ptpl =
+            icp_point_to_plane(&source_pcl, &target_pcl, init_rot, init_trans, criteria)?;
+
+        // 1. Check that point-to-plane converges within a reasonable number of iterations.
+        assert!(
+            res_ptpl.num_iterations < 15,
+            "Point-to-plane should converge within 15 iterations, got {}",
+            res_ptpl.num_iterations
+        );
+
+        // 2. Verify geometric accuracy (same pattern as test_icp_vanilla).
+        let mut r_error = [[0.0; 3]; 3];
+        for i in 0..3 {
+            for j in 0..3 {
+                r_error[i][j] = res_ptpl.rotation[0][i] * R_known[0][j]
+                    + res_ptpl.rotation[1][i] * R_known[1][j]
+                    + res_ptpl.rotation[2][i] * R_known[2][j];
+            }
+        }
+        let trace = r_error[0][0] + r_error[1][1] + r_error[2][2];
+        let angular_error = ((trace - 1.0) / 2.0).clamp(-1.0, 1.0).acos();
+
+        // Only check the normal component (tz) – in-plane components are unobservable.
+        let tz_error = (res_ptpl.translation[2] - t_known[2]).abs();
+        assert!(
+            tz_error < 0.06,
+            "Normal translation error too large: {}",
+            tz_error
+        );
+
+        // Also check RMSE is small (the objective is minimized).
+        assert!(
+            res_ptpl.rmse < 1e-4,
+            "RMSE should be small: {}",
+            res_ptpl.rmse
+        );
+        assert!(
+            angular_error < 0.01,
+            "Angular error too large: {} rad",
+            angular_error
+        );
+
+        Ok(())
+    }
+    // ------------------------------------------------------------------------
+    // Test: Flat plane correctness
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn test_point_to_plane_icp_flat_plane() -> Result<(), Box<dyn std::error::Error>> {
+        let side = 15;
+        let source_points = make_plane(side);
+        let source_pcl = PointCloud::new(source_points, None, None);
+
+        let axis = [1.0, 0.0, 0.0];
+        let angle = 0.1;
+        let R_known = axis_angle_to_rotation_matrix(&axis, angle)?;
+        let t_known = [0.1, 0.05, 0.1];
+
+        let mut target_points = vec![[0.0; 3]; source_pcl.points().len()];
+        transform_points3d(source_pcl.points(), &R_known, &t_known, &mut target_points)?;
+        let target_pcl = PointCloud::new(target_points, None, None);
+
+        let criteria = ICPConvergenceCriteria {
+            max_iterations: 100,
+            tolerance: 1e-6,
+        };
+
+        let init_rot = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let init_trans = [0.0, 0.0, 0.0];
+
+        let res = icp_point_to_plane(&source_pcl, &target_pcl, init_rot, init_trans, criteria)?;
+
+        assert!(res.rmse < 1e-3, "RMSE should be small: {}", res.rmse);
+        assert!(
+            res.num_iterations < 50,
+            "Should converge in reasonable iterations: {}",
+            res.num_iterations
+        );
+
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------------
+    // Test: Tilted plane correctness
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn test_point_to_plane_icp_tilted_plane() -> Result<(), Box<dyn std::error::Error>> {
+        let side = 15;
+        let mut source_points = Vec::new();
+        for i in 0..side {
+            for j in 0..side {
+                let x = i as f64 - side as f64 / 2.0;
+                let y = j as f64 - side as f64 / 2.0;
+                source_points.push([x, y, x + y]); // tilted: z = x + y
+            }
+        }
+        let source_pcl = PointCloud::new(source_points, None, None);
+
+        let axis = [0.0, 1.0, 0.0];
+        let angle = 0.1;
+        let R_known = axis_angle_to_rotation_matrix(&axis, angle)?;
+        let t_known = [0.1, 0.05, 0.1];
+
+        let mut target_points = vec![[0.0; 3]; source_pcl.points().len()];
+        transform_points3d(source_pcl.points(), &R_known, &t_known, &mut target_points)?;
+        let target_pcl = PointCloud::new(target_points, None, None);
+
+        let criteria = ICPConvergenceCriteria {
+            max_iterations: 100,
+            tolerance: 1e-6,
+        };
+
+        let init_rot = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let init_trans = [0.0, 0.0, 0.0];
+
+        let res = icp_point_to_plane(&source_pcl, &target_pcl, init_rot, init_trans, criteria)?;
+
+        assert!(res.rmse < 1e-4, "RMSE should be small: {}", res.rmse);
+        assert!(
+            res.num_iterations < 30,
+            "Should converge in reasonable iterations: {}",
+            res.num_iterations
+        );
+
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------------
+    // Test: Noise robustness
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn test_point_to_plane_icp_with_noise() -> Result<(), Box<dyn std::error::Error>> {
+        let side = 15;
+        let source_points = make_plane(side);
+        let source_pcl = PointCloud::new(source_points, None, None);
+
+        let axis = [1.0, 0.0, 0.0];
+        let angle = 0.1;
+        let R_known = axis_angle_to_rotation_matrix(&axis, angle)?;
+        let t_known = [0.1, 0.05, 0.1];
+
+        let mut target_points = vec![[0.0; 3]; source_pcl.points().len()];
+        transform_points3d(source_pcl.points(), &R_known, &t_known, &mut target_points)?;
+
+        // Add Gaussian noise
+        let mut rng = rand::rng();
+        for point in &mut target_points {
+            point[0] += rng.random_range(-0.01..0.01);
+            point[1] += rng.random_range(-0.01..0.01);
+            point[2] += rng.random_range(-0.01..0.01);
+        }
+
+        let target_pcl = PointCloud::new(target_points, None, None);
+
+        let criteria = ICPConvergenceCriteria {
+            max_iterations: 100,
+            tolerance: 1e-4,
+        };
+
+        let init_rot = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let init_trans = [0.0, 0.0, 0.0];
+
+        let res = icp_point_to_plane(&source_pcl, &target_pcl, init_rot, init_trans, criteria)?;
+
+        println!("Noisy iterations: {}", res.num_iterations);
+        assert!(
+            res.rmse < 0.1,
+            "RMSE should be within tolerance: {}",
+            res.rmse
+        );
+
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------------
+    // Test: Sphere (non‑planar surface)
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn test_point_to_plane_icp_sphere() -> Result<(), Box<dyn std::error::Error>> {
+        let samples = 20;
+        let source_points = make_sphere(samples);
+        let source_pcl = PointCloud::new(source_points, None, None);
+
+        let axis = [1.0, 0.0, 0.0];
+        let angle = 0.1;
+        let R_known = axis_angle_to_rotation_matrix(&axis, angle)?;
+        let t_known = [0.1, 0.0, 0.0];
+
+        let mut target_points = vec![[0.0; 3]; source_pcl.points().len()];
+        transform_points3d(source_pcl.points(), &R_known, &t_known, &mut target_points)?;
+        let target_pcl = PointCloud::new(target_points, None, None);
+
+        let criteria = ICPConvergenceCriteria {
+            max_iterations: 100,
+            tolerance: 1e-6,
+        };
+
+        let init_rot = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let init_trans = [0.0, 0.0, 0.0];
+
+        let res = icp_point_to_plane(&source_pcl, &target_pcl, init_rot, init_trans, criteria)?;
+
+        assert!(
+            res.num_iterations < 30,
+            "Should converge in reasonable iterations: {}",
+            res.num_iterations
+        );
+        assert!(res.rmse < 1e-2, "Should achieve low RMSE: {}", res.rmse);
+
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------------
+    // Test: Edge cases (small point cloud)
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn test_point_to_plane_icp_edge_cases() -> Result<(), Box<dyn std::error::Error>> {
+        let mut source_points = Vec::new();
+        for i in 0..7 {
+            for j in 0..7 {
+                source_points.push([i as f64 - 3.0, j as f64 - 3.0, 0.0]);
+            }
+        }
+        let source_pcl = PointCloud::new(source_points, None, None);
+
+        let axis = [1.0, 0.0, 0.0];
+        let angle = 0.1;
+        let R_known = axis_angle_to_rotation_matrix(&axis, angle)?;
+        let t_known = [0.01, 0.01, 0.0];
+
+        let mut target_points = vec![[0.0; 3]; source_pcl.points().len()];
+        transform_points3d(source_pcl.points(), &R_known, &t_known, &mut target_points)?;
+        let target_pcl = PointCloud::new(target_points, None, None);
+
+        let criteria = ICPConvergenceCriteria {
+            max_iterations: 200,
+            tolerance: 1e-6,
+        };
+
+        let init_rot = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let init_trans = [0.0, 0.0, 0.0];
+
+        let res = icp_point_to_plane(&source_pcl, &target_pcl, init_rot, init_trans, criteria)?;
+
+        // Compute angular error against ground truth (same pattern).
+        let mut r_error = [[0.0; 3]; 3];
+        for i in 0..3 {
+            for j in 0..3 {
+                r_error[i][j] = res.rotation[0][i] * R_known[0][j]
+                    + res.rotation[1][i] * R_known[1][j]
+                    + res.rotation[2][i] * R_known[2][j];
+            }
+        }
+        let trace = r_error[0][0] + r_error[1][1] + r_error[2][2];
+        let angular_error = ((trace - 1.0) / 2.0).clamp(-1.0, 1.0).acos();
+
+        let translation_error = ((res.translation[0] - t_known[0]).powi(2)
+            + (res.translation[1] - t_known[1]).powi(2)
+            + (res.translation[2] - t_known[2]).powi(2))
+        .sqrt();
+
+        assert!(
+            angular_error < 0.1,
+            "Angular error too large: {} rad",
+            angular_error
+        );
+        assert!(
+            translation_error < 0.1,
+            "Translation error too large: {}",
+            translation_error
+        );
+
+        Ok(())
+    }
+    // ------------------------------------------------------------------------
+    // Test: Compare iteration counts on sphere (non‑planar)
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn test_point_to_plane_icp_fewer_iterations_sphere() -> Result<(), Box<dyn std::error::Error>> {
+        let samples = 15;
+        let source_points = make_sphere(samples);
+        let source_pcl = PointCloud::new(source_points, None, None);
+
+        let axis = [1.0, 0.0, 0.0];
+        let angle = 0.5; // Increased from 0.1
+        let R_known = axis_angle_to_rotation_matrix(&axis, angle)?;
+        let t_known = [0.1, 0.05, 0.1];
+
+        let mut target_points = vec![[0.0; 3]; source_pcl.points().len()];
+        transform_points3d(source_pcl.points(), &R_known, &t_known, &mut target_points)?;
+        let target_pcl = PointCloud::new(target_points, None, None);
+
+        let criteria = ICPConvergenceCriteria {
+            max_iterations: 100,
+            tolerance: 1e-6,
+        };
+
+        let init_rot = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let init_trans = [0.0, 0.0, 0.0];
+
+        let res_ptp = icp_vanilla(
+            &source_pcl,
+            &target_pcl,
+            init_rot,
+            init_trans,
+            criteria.clone(),
+        )?;
+        let res_ptpl =
+            icp_point_to_plane(&source_pcl, &target_pcl, init_rot, init_trans, criteria)?;
+
+        println!(
+            "Sphere – Point‑to‑point iterations: {}",
+            res_ptp.num_iterations
+        );
+        println!(
+            "Sphere – Point‑to‑plane iterations: {}",
+            res_ptpl.num_iterations
+        );
+
+        assert!(
+            res_ptpl.num_iterations < 50,
+            "Point‑to‑plane should converge in reasonable iterations, got {}",
+            res_ptpl.num_iterations
         );
 
         Ok(())
