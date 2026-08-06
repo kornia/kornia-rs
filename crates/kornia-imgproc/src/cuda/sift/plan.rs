@@ -210,6 +210,30 @@ impl SiftCuda {
         // and a frame that exceeds it drops the surplus (the orientation
         // kernel's `slot < max_out` guard) rather than overrunning anything.
         let ori_cap = cfg.max_keypoints * 4;
+        // DETECTION CAPACITY, and why it is no longer `max_keypoints`.
+        //
+        // The extrema kernel appends through `atomicAdd(counter, 1)` and drops whatever lands past
+        // the buffer (`if (slot >= max_kp) return`, detect.rs:331). Sizing that buffer AT
+        // `max_keypoints` made the surviving SET depend on which threads reached the atomic first,
+        // because the host then kept the leading `max_keypoints` entries of an arrival-ordered list.
+        //
+        // Measured before this change — same binary, same clip, same flags, an 80-keyframe
+        // reconstruction run twice: 40,878 vs 40,795 points and 11.86 vs 3.28 px reprojection RMSE,
+        // the first REJECTED by the 10 px quality gate and the second kept. Sorting the output does
+        // not repair it: a sort canonicalises the ORDER of a truncated set, never its MEMBERSHIP.
+        //
+        // The detector is now given room to report what it actually found, and `select_best_keypoints`
+        // applies the `max_keypoints` limit on the host by response — the same rule
+        // `retain_best_order` already uses on the CPU path. Four is the multiple `ori_cap` uses, for
+        // the same reason: working headroom, not a proof. A frame exceeding even this still loses the
+        // surplus by arrival, and now warns instead of doing it silently.
+        //
+        // EIGHT, not four. Measured on the reference clip at the default 4096 budget: a frame
+        // detected 16,847 extrema against a 4x buffer of 16,384, so 463 were still dropped by
+        // arrival. They happened to fall below the response cutoff and the two runs agreed anyway,
+        // but that is luck, not a property. 8x covers the observed worst case with headroom, and
+        // costs 1.2 MB of device memory at the default budget.
+        let det_cap = cfg.max_keypoints * 8;
         Ok(Self {
             cfg,
             first_octave,
@@ -227,7 +251,7 @@ impl SiftCuda {
                 })
                 .collect::<Result<Vec<_>, _>>()?,
             dog: stream.alloc_zeros::<f32>(plane * n_dog)?,
-            kp: stream.alloc_zeros::<f32>(cfg.max_keypoints * KP_STRIDE)?,
+            kp: stream.alloc_zeros::<f32>(det_cap * KP_STRIDE)?,
             kp_count: stream.alloc_zeros::<i32>(1)?,
             ori_kp: stream.alloc_zeros::<f32>(ori_cap * ORI_KP_STRIDE)?,
             ori_count: stream.alloc_zeros::<i32>(1)?,
@@ -264,6 +288,78 @@ impl SiftCuda {
         self.cfg
             .n_octaves_for(bw.min(bh), first_octave)
             .min(self.max_octaves)
+    }
+
+    /// Apply the `max_keypoints` budget to this octave's detections, deterministically.
+    ///
+    /// The detector appends through an atomic, so `self.kp[0..n_raw]` is in thread-arrival order —
+    /// reproducible as a SET only while nothing is discarded, and not reproducible at all once it
+    /// is. Taking the leading `max_keypoints` of that list (the previous behaviour) therefore made
+    /// the kept keypoints a property of GPU scheduling.
+    ///
+    /// Selection is by descending response, which is the reference's rule and the one
+    /// `retain_best_order` already applies on the CPU path, with position and size breaking ties so
+    /// the order is TOTAL. Two keypoints identical in all four fields are interchangeable: they
+    /// produce the same descriptor from the same patch.
+    ///
+    /// The survivors are written back compacted, in that same canonical order, because the
+    /// orientation stage consumes `kp[0..n]` positionally and its output order feeds matching and
+    /// then track building — both index-sensitive.
+    ///
+    /// Returns the number of keypoints now valid at the front of `self.kp`. Costs one round trip of
+    /// `n_raw * KP_STRIDE` floats (~150 KB at the default budget), and only when the budget binds.
+    fn select_best_keypoints(
+        &mut self,
+        stream: &Arc<CudaStream>,
+        n_raw: usize,
+    ) -> Result<usize, SiftCudaError> {
+        let det_cap = self.kp.len() / KP_STRIDE;
+        if n_raw > det_cap {
+            // Still lossy, and by arrival — but no longer silent. Reaching this means a frame
+            // detected more than 4x the budget, and the answer is a larger budget, not a larger cap.
+            //
+            // Warned ONCE per process, not per frame: this fires on a whole clip's worth of frames
+            // or none of them, and a per-frame line would bury the build log it is meant to inform.
+            // This crate carries no logging facade, and adding one for a single diagnostic is not
+            // worth the dependency.
+            static OVERFLOW_WARNED: std::sync::Once = std::sync::Once::new();
+            let dropped = n_raw - det_cap;
+            OVERFLOW_WARNED.call_once(|| {
+                eprintln!(
+                    "kornia sift: {n_raw} extrema exceed the {det_cap}-slot detection buffer; \
+                     {dropped} dropped by thread arrival, so affected frames are NOT reproducible. \
+                     Raise max_keypoints. (warned once)"
+                );
+            });
+        }
+        let n_have = n_raw.min(det_cap);
+        if n_have <= self.cfg.max_keypoints {
+            // Nothing discarded, so arrival order is a permutation of a fixed set. Canonicalising it
+            // anyway would change results for every frame under budget without fixing anything.
+            return Ok(n_have);
+        }
+
+        let host = stream.clone_dtoh(&self.kp.slice(0..n_have * KP_STRIDE))?;
+        let field = |i: usize, f: usize| host[i * KP_STRIDE + f];
+        let mut order: Vec<usize> = (0..n_have).collect();
+        order.sort_unstable_by(|&a, &b| {
+            // `total_cmp`, not `partial_cmp`: a NaN response would otherwise make the comparator
+            // inconsistent and the resulting order unspecified — the exact failure being removed.
+            field(b, 3)
+                .total_cmp(&field(a, 3))
+                .then(field(a, 0).total_cmp(&field(b, 0)))
+                .then(field(a, 1).total_cmp(&field(b, 1)))
+                .then(field(a, 2).total_cmp(&field(b, 2)))
+        });
+        order.truncate(self.cfg.max_keypoints);
+
+        let mut packed = vec![0.0f32; order.len() * KP_STRIDE];
+        for (dst, &src) in order.iter().enumerate() {
+            packed[dst * KP_STRIDE..(dst + 1) * KP_STRIDE]
+                .copy_from_slice(&host[src * KP_STRIDE..(src + 1) * KP_STRIDE]);
+        }
+        stream.memcpy_htod(&packed, &mut self.kp.slice_mut(0..packed.len()))?;
+        Ok(order.len())
     }
 
     /// Detect, orient and describe, leaving the descriptors on device.
@@ -425,8 +521,8 @@ impl SiftCuda {
                 )?;
             }
             since(td, stream, &mut t_det);
-            let n_kp = stream.clone_dtoh(&self.kp_count)?[0].max(0) as usize;
-            let n_kp = n_kp.min(self.cfg.max_keypoints);
+            let n_raw = stream.clone_dtoh(&self.kp_count)?[0].max(0) as usize;
+            let n_kp = self.select_best_keypoints(stream, n_raw)?;
             if n_kp > 0 {
                 // Orientation and descriptors read the Gaussian layer the
                 // keypoint was found in, so each launch is given one layer and
