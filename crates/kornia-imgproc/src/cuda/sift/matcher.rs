@@ -510,7 +510,6 @@ mod tests {
         }
     }
 
-    #[test]
     /// The same descriptors must match to the same pairs, every time, including when OTHER frames
     /// are matched in between.
     ///
@@ -551,12 +550,16 @@ mod tests {
         let dd = stream.clone_htod(&d).unwrap();
         let mut m = SiftMatcher::new(&stream, n1.max(n2).max(n3).max(n4)).unwrap();
 
-        let mut run = |m: &mut SiftMatcher, x: &_, nx, y: &_, ny| {
-            m.match_descriptors(ctx, &stream, x, nx, y, ny, 0.7, true).unwrap()
+        let run = |m: &mut SiftMatcher, x: &_, nx, y: &_, ny| {
+            m.match_descriptors(ctx, &stream, x, nx, y, ny, 0.7, true)
+                .unwrap()
         };
 
         let first = run(&mut m, &da.as_view(), n1, &db.as_view(), n2);
-        assert!(!first.is_empty(), "the fixture must produce matches to be meaningful");
+        assert!(
+            !first.is_empty(),
+            "the fixture must produce matches to be meaningful"
+        );
         for round in 0..6 {
             // Poison the buffers with a differently-sized frame between repeats.
             let _ = run(&mut m, &dc.as_view(), n3, &dd.as_view(), n4);
@@ -569,6 +572,7 @@ mod tests {
         }
     }
 
+    #[test]
     fn matcher_matches_host_brute_force() {
         let stream = default_stream();
         let ctx = &stream.context();
