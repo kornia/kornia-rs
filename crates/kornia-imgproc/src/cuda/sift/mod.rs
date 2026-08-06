@@ -166,7 +166,12 @@ pub struct SiftCudaConfig {
     pub edge_threshold: f64,
     /// Blur of the base image of octave 0.
     pub sigma: f64,
-    /// Device capacity for detected keypoints.
+    /// Per-octave keypoint budget, applied on the host by descending response.
+    ///
+    /// NOT the device capacity: the detection buffer is allocated at a multiple of this so the
+    /// detector can report everything it found and the budget can then be applied by a deterministic
+    /// rule rather than by which threads reached an atomic first. Raise this if the overflow warning
+    /// fires.
     pub max_keypoints: usize,
 }
 

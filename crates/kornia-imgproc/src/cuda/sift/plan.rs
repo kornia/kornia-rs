@@ -228,11 +228,13 @@ impl SiftCuda {
         // the same reason: working headroom, not a proof. A frame exceeding even this still loses the
         // surplus by arrival, and now warns instead of doing it silently.
         //
-        // EIGHT, not four. Measured on the reference clip at the default 4096 budget: a frame
-        // detected 16,847 extrema against a 4x buffer of 16,384, so 463 were still dropped by
-        // arrival. They happened to fall below the response cutoff and the two runs agreed anyway,
-        // but that is luck, not a property. 8x covers the observed worst case with headroom, and
-        // costs 1.2 MB of device memory at the default budget.
+        // EIGHT, chosen by measurement: on a real clip at a 4096 budget a single frame detected
+        // 16,847 extrema, so a 4x buffer (16,384) still dropped 463 by arrival. Those happened to
+        // fall below the response cutoff and two runs agreed anyway, but that is luck, not a
+        // property.
+        //
+        // Cost at the DEFAULT budget (`max_keypoints` = 8192, see `SiftCudaConfig`): 8192 * 8
+        // rows * KP_STRIDE(9) * 4 B = 2.36 MB of device memory.
         let det_cap = cfg.max_keypoints * 8;
         Ok(Self {
             cfg,
@@ -306,8 +308,14 @@ impl SiftCuda {
     /// orientation stage consumes `kp[0..n]` positionally and its output order feeds matching and
     /// then track building — both index-sensitive.
     ///
-    /// Returns the number of keypoints now valid at the front of `self.kp`. Costs one round trip of
-    /// `n_raw * KP_STRIDE` floats (~150 KB at the default budget), and only when the budget binds.
+    /// Returns the number of keypoints now valid at the front of `self.kp`.
+    ///
+    /// COST, and it is not free: one device-to-host copy of `n_have * KP_STRIDE` floats plus a host
+    /// sort, per OCTAVE, on every octave where the budget binds. At the default `max_keypoints` of
+    /// 8192 the buffer holds 65,536 rows, so the worst case is a 2.36 MB copy and a 65k-element
+    /// `sort_unstable_by` on the critical path. That is the price of a reproducible keypoint set;
+    /// if it shows up in a profile, the shape to reach for is copying only `(response, index)` and
+    /// permuting on device, or a device-side top-k.
     fn select_best_keypoints(
         &mut self,
         stream: &Arc<CudaStream>,
@@ -316,7 +324,7 @@ impl SiftCuda {
         let det_cap = self.kp.len() / KP_STRIDE;
         if n_raw > det_cap {
             // Still lossy, and by arrival — but no longer silent. Reaching this means a frame
-            // detected more than 4x the budget, and the answer is a larger budget, not a larger cap.
+            // detected more than 8x the budget, and the answer is a larger budget, not a larger cap.
             //
             // Warned ONCE per process, not per frame: this fires on a whole clip's worth of frames
             // or none of them, and a per-frame line would bury the build log it is meant to inform.
@@ -583,10 +591,32 @@ impl SiftCuda {
         // One download for the whole frame. The packed octave field already
         // carries the octave and layer, so the host can reconstruct everything
         // from this single copy instead of one per layer per octave.
-        let n_ori = stream.clone_dtoh(&self.ori_count)?[0].max(0) as usize;
-        let n_ori = n_ori
+        let n_ori_raw = stream.clone_dtoh(&self.ori_count)?[0].max(0) as usize;
+        let n_ori = n_ori_raw
             .min(self.ori_kp.len() / ORI_KP_STRIDE)
             .min(self.desc_all.len() / DESCR_LEN);
+        if n_ori_raw > n_ori {
+            // THE SAME ARRIVAL-ORDER PROBLEM the detection stage above now avoids, one stage later
+            // and not yet fixed. `orientation.rs` appends through `atomicAdd(out_count, 1)` and
+            // returns on `slot >= max_out`, so the keypoints lost here are chosen by thread arrival
+            // rather than by response — and `ori_count` accumulates across ALL octaves of the frame,
+            // so a textured frame at budget can reach this even though each individual octave is
+            // within its detection cap.
+            //
+            // Fixing it properly means giving orientation the same treatment: enough capacity to
+            // report everything, then a deterministic host-side selection. Until then the frames it
+            // affects are not reproducible, and saying so is strictly better than the silent clamp
+            // this replaces.
+            static ORI_OVERFLOW_WARNED: std::sync::Once = std::sync::Once::new();
+            let dropped = n_ori_raw - n_ori;
+            ORI_OVERFLOW_WARNED.call_once(|| {
+                eprintln!(
+                    "kornia sift: {n_ori_raw} oriented keypoints exceed the {n_ori}-row buffer; \
+                     {dropped} dropped by thread arrival, so affected frames are NOT reproducible. \
+                     Raise max_keypoints. (warned once)"
+                );
+            });
+        }
         let ok = stream.clone_dtoh(&self.ori_kp.slice(0..n_ori * ORI_KP_STRIDE))?;
 
         // Host-only window: the queue is empty from here until the descriptor
