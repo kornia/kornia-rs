@@ -511,6 +511,64 @@ mod tests {
     }
 
     #[test]
+    /// The same descriptors must match to the same pairs, every time, including when OTHER frames
+    /// are matched in between.
+    ///
+    /// A streaming caller reuses one `SiftMatcher` across a whole clip, so its device buffers carry
+    /// the previous frame's residue. If any kernel reads past the current `nq`/`nt` — or if the
+    /// pairs kernel's `atomicAdd` truncation is ever reachable — the surviving SET depends on what
+    /// ran before, and a reconstruction stops being reproducible. Measured on a real clip: identical
+    /// keypoints and identical descriptors produced DIFFERENT match sets across two runs of the same
+    /// binary, which is what this pins.
+    ///
+    /// The interleaved match with different sizes is the point: matching A/B twice in a row would
+    /// pass even with a tail-read bug, because the residue would happen to be the same data.
+    #[test]
+    fn matcher_is_deterministic_across_reuse() {
+        let stream = default_stream();
+        let ctx = &stream.context();
+        let (n1, n2) = (257usize, 193usize);
+        let a = rand_desc(n1, 999);
+        // Plant true correspondences: uniform random 128-D descriptors all sit at nearly the same
+        // distance from each other (measured elsewhere in this crate: min d1/d2 = 0.87), so a ratio
+        // test at 0.7 would reject every pair and the test would pass vacuously on an empty set.
+        // Copying a's rows with a one-component perturbation gives each of them a genuine nearest
+        // neighbour and a distant runner-up, which is what the ratio test is for.
+        let mut b = rand_desc(n2, 4242);
+        for i in 0..n2 {
+            b[i * DESCR_LEN..(i + 1) * DESCR_LEN]
+                .copy_from_slice(&a[i * DESCR_LEN..(i + 1) * DESCR_LEN]);
+            b[i * DESCR_LEN] += 1.0;
+        }
+        // Deliberately larger, so it leaves residue beyond n1/n2 in every buffer.
+        let (n3, n4) = (401usize, 373usize);
+        let c = rand_desc(n3, 7);
+        let d = rand_desc(n4, 8);
+
+        let da = stream.clone_htod(&a).unwrap();
+        let db = stream.clone_htod(&b).unwrap();
+        let dc = stream.clone_htod(&c).unwrap();
+        let dd = stream.clone_htod(&d).unwrap();
+        let mut m = SiftMatcher::new(&stream, n1.max(n2).max(n3).max(n4)).unwrap();
+
+        let mut run = |m: &mut SiftMatcher, x: &_, nx, y: &_, ny| {
+            m.match_descriptors(ctx, &stream, x, nx, y, ny, 0.7, true).unwrap()
+        };
+
+        let first = run(&mut m, &da.as_view(), n1, &db.as_view(), n2);
+        assert!(!first.is_empty(), "the fixture must produce matches to be meaningful");
+        for round in 0..6 {
+            // Poison the buffers with a differently-sized frame between repeats.
+            let _ = run(&mut m, &dc.as_view(), n3, &dd.as_view(), n4);
+            let again = run(&mut m, &da.as_view(), n1, &db.as_view(), n2);
+            assert_eq!(
+                first, again,
+                "round {round}: identical descriptors produced a different match set after an \
+                 intervening frame -- the matcher depends on leftover device state"
+            );
+        }
+    }
+
     fn matcher_matches_host_brute_force() {
         let stream = default_stream();
         let ctx = &stream.context();
