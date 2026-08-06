@@ -403,7 +403,7 @@ fn descriptor_block_src(threads: usize) -> String {
 // (2048 B at 512 threads) and ran log2(NTHREADS/DLEN) tree levels that only
 // added exact zeros. min(NTHREADS, DLEN); both are powers of two.
 #define RLEN (NTHREADS < DLEN ? NTHREADS : DLEN)
-#define HIST_SCALE 256.0f
+#define HIST_SCALE 1048576.0f
 
 __device__ __forceinline__ int cv_round_d(float v) {{ return __float2int_rn(v); }}
 __device__ __forceinline__ int cv_floor_d(float v) {{ return (int)floorf(v); }}
@@ -427,20 +427,33 @@ extern "C" __global__ void __launch_bounds__(NTHREADS) sift_descriptor_block(
     // FIXED-POINT HISTOGRAM, for determinism.
     //
     // These bins were accumulated with float `atomicAdd`, whose completion order is warp
-    // scheduling. Float addition is not associative, so the same patch produced different
-    // descriptors on every run. Measured: three identical builds of one clip gave three different
-    // descriptor digests, and the 0..255 output quantisation does NOT absorb it -- the emitted
-    // descriptors themselves differed, which flipped ratio-test outcomes and changed the
-    // reconstruction on roughly one run in three.
+    // scheduling. Float addition is not associative, so the same patch produced a different
+    // descriptor on every run. Verified fixed: with fixed point the output is invariant to
+    // NTHREADS (32/128/512/1024 all agree), which the float version could not be, since the block
+    // size remaps samples to threads.
     //
-    // Integer atomicAdd is exact and order-independent, so the sum is now a function of the input
-    // alone. It is also MORE accurate than what it replaces: every contribution is a product of
-    // weights in [0,1] and a gradient magnitude <= 255*sqrt(2) ~= 361, so a per-bin sum over even a
-    // 128x128 patch stays under ~5.9e6. At scale 256 that is ~1.5e9 against `unsigned int`'s 4.29e9
-    // (contributions are all non-negative, so the unsigned range is usable), while a float
-    // accumulator at that magnitude has an ULP of 0.5 -- 128x coarser than this fixed point's
-    // 1/256.
-    __shared__ unsigned int histq[HISTLEN];
+    // BOUND. `radius = round(10.6066 * scl)` clamped to the image diagonal, and `scl` does NOT grow
+    // with octave or image size: it is `sigma * 2^((layer + xi)/n_octave_layers)` with `layer <= n`
+    // and `|xi| < 0.5`, so `scl < 2^1.5 * sigma = 4.53` at the default sigma, giving a patch of at
+    // most 97x97 = 9409 samples. Each contributes a weight in [0,1] times a magnitude of at most
+    // 255*sqrt(2) = 360.62, and the eight trilinear splits of one sample sum to exactly that, so a
+    // bin cannot exceed 9409 * 360.62 = 3.4e6 even if every sample lands in it. Measured across the
+    // oracle set the true maximum is 2413. (The one path that escapes this is the public
+    // `launch_sift_descriptor_cuda` called with hand-built keypoints carrying an arbitrary `scl`,
+    // where only the diagonal clamp applies.)
+    //
+    // WHY 64-BIT AT 2^20, and it is NOT about overflow. u32 at scale 256 has ~7000x headroom here.
+    // The problem is the opposite one: 1/256 is COARSER than the f32 accumulator it replaced. At a
+    // bin magnitude of 2413 an f32 ULP is 2.44e-4, sixteen times finer than 1/256 — and because the
+    // quantisation is applied per CONTRIBUTION and every contribution is non-negative, 4.4% of them
+    // round to zero and the histogram comes out systematically light. Measured effect: 29% of
+    // descriptors differ from the OpenCV reference by at least one byte, against a committed gate of
+    // 1% (`descriptor_matches_reference_bitwise`). Scale 2^20 measures 0 of 1547 differing, and
+    // needs 64 bits to keep its headroom: 3.4e6 * 2^20 = 3.6e12, against 1.8e19.
+    //
+    // Costs HISTLEN * 8 B of shared memory instead of * 4 (2880 B here), and the accumulator wraps
+    // silently rather than saturating if the bound above is ever violated.
+    __shared__ unsigned long long histq[HISTLEN];
     __shared__ float raw[DLEN];
     __shared__ float red[RLEN];
 
@@ -461,7 +474,7 @@ extern "C" __global__ void __launch_bounds__(NTHREADS) sift_descriptor_block(
     cos_t /= hist_width;
     sin_t /= hist_width;
 
-    for (int i = tid; i < HISTLEN; i += NTHREADS) histq[i] = 0u;
+    for (int i = tid; i < HISTLEN; i += NTHREADS) histq[i] = 0ull;
     __syncthreads();
 
     // Flatten the patch so the block strides over it; each thread accumulates
@@ -519,20 +532,20 @@ extern "C" __global__ void __launch_bounds__(NTHREADS) sift_descriptor_block(
             const int clo = c0 >= 0, chi = c0 <= DD - 2;
             const int idx = ((r0 + 1) * (DD + 2) + (c0 + 1)) * OSTRIDE + o0;
             if (rlo && clo) {{
-                atomicAdd(&histq[idx], __float2uint_rn(v_rco000 * HIST_SCALE));
-                atomicAdd(&histq[idx + 1], __float2uint_rn(v_rco001 * HIST_SCALE));
+                atomicAdd(&histq[idx], __float2ull_rn(v_rco000 * HIST_SCALE));
+                atomicAdd(&histq[idx + 1], __float2ull_rn(v_rco001 * HIST_SCALE));
             }}
             if (rlo && chi) {{
-                atomicAdd(&histq[idx + OSTRIDE], __float2uint_rn(v_rco010 * HIST_SCALE));
-                atomicAdd(&histq[idx + OSTRIDE + 1], __float2uint_rn(v_rco011 * HIST_SCALE));
+                atomicAdd(&histq[idx + OSTRIDE], __float2ull_rn(v_rco010 * HIST_SCALE));
+                atomicAdd(&histq[idx + OSTRIDE + 1], __float2ull_rn(v_rco011 * HIST_SCALE));
             }}
             if (rhi && clo) {{
-                atomicAdd(&histq[idx + (DD + 2) * OSTRIDE], __float2uint_rn(v_rco100 * HIST_SCALE));
-                atomicAdd(&histq[idx + (DD + 2) * OSTRIDE + 1], __float2uint_rn(v_rco101 * HIST_SCALE));
+                atomicAdd(&histq[idx + (DD + 2) * OSTRIDE], __float2ull_rn(v_rco100 * HIST_SCALE));
+                atomicAdd(&histq[idx + (DD + 2) * OSTRIDE + 1], __float2ull_rn(v_rco101 * HIST_SCALE));
             }}
             if (rhi && chi) {{
-                atomicAdd(&histq[idx + (DD + 3) * OSTRIDE], __float2uint_rn(v_rco110 * HIST_SCALE));
-                atomicAdd(&histq[idx + (DD + 3) * OSTRIDE + 1], __float2uint_rn(v_rco111 * HIST_SCALE));
+                atomicAdd(&histq[idx + (DD + 3) * OSTRIDE], __float2ull_rn(v_rco110 * HIST_SCALE));
+                atomicAdd(&histq[idx + (DD + 3) * OSTRIDE + 1], __float2ull_rn(v_rco111 * HIST_SCALE));
             }}
         }}
     }}
