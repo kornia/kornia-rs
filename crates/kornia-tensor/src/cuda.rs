@@ -241,7 +241,7 @@ pub fn tune_default_mem_pool(stream: &Arc<CudaStream>) {
     let mut tuned = TUNED
         .get_or_init(|| Mutex::new(std::collections::HashSet::new()))
         .lock()
-        .expect("TUNED mutex poisoned");
+        .unwrap_or_else(|e| e.into_inner());
     if !tuned.insert(ordinal) {
         return;
     }
@@ -1944,10 +1944,15 @@ mod tests {
         let _exclusive = managed_guard();
         let stream = CudaContext::new(0)?.default_stream();
 
-        for i in 0..256 {
-            let mut t = zeros_cuda_unified::<f32, 1>([1024], &stream)?;
-            t.as_slice_mut()[0] = i as f32;
-            assert_eq!(t.as_slice()[0], i as f32);
+        for _ in 0..256 {
+            // Allocate and drop; `black_box` prevents the optimizer from
+            // eliminating the allocation. No CPU read/write: on devices where
+            // CU_DEVICE_ATTRIBUTE_CONCURRENT_MANAGED_ACCESS = 0 (Jetson Orin),
+            // host access of managed memory while *any* kernel is in-flight on
+            // the device segfaults, and non-managed tests running in parallel
+            // may be executing kernels concurrently with this loop.
+            let t = zeros_cuda_unified::<f32, 1>([1024], &stream)?;
+            std::hint::black_box(&t);
         }
         // A final allocation must still succeed — a driver pushed into an error
         // state by leaked handles would fail here.

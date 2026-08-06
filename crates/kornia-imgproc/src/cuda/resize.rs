@@ -945,7 +945,7 @@ mod tests {
         (sw, sh): (usize, usize),
         (dw, dh): (usize, usize),
         interpolation: InterpolationMode,
-    ) -> (Vec<f32>, Vec<f32>) {
+    ) -> Result<(Vec<f32>, Vec<f32>), Box<dyn std::error::Error>> {
         let data = pattern_f32(sw * sh * 3);
         let src = Image::<f32, 3>::new(
             ImageSize {
@@ -953,22 +953,20 @@ mod tests {
                 height: sh,
             },
             data.clone(),
-        )
-        .unwrap();
+        )?;
         let mut cpu = Image::<f32, 3>::from_size_val(
             ImageSize {
                 width: dw,
                 height: dh,
             },
             0.0,
-        )
-        .unwrap();
-        resize(&src, &mut cpu, interpolation).unwrap();
+        )?;
+        resize(&src, &mut cpu, interpolation)?;
 
         let stream = default_stream();
         let ctx = &stream.context();
-        let d_src = stream.clone_htod(&data).unwrap();
-        let mut d_dst = stream.alloc_zeros::<f32>(dw * dh * 3).unwrap();
+        let d_src = stream.clone_htod(&data)?;
+        let mut d_dst = stream.alloc_zeros::<f32>(dw * dh * 3)?;
         let (swu, shu, dwu, dhu) = (sw as u32, sh as u32, dw as u32, dh as u32);
         match interpolation {
             InterpolationMode::Bilinear => launch_resize_bilinear_downscale_cuda(
@@ -995,12 +993,12 @@ mod tests {
                 PixelMapping::HalfPixel,
                 None,
             ),
-            other => panic!("unsupported mode in test: {other:?}"),
+            other => return Err(format!("unsupported mode in test: {other:?}").into()),
         }
-        .unwrap_or_else(|e| panic!("launch failed {sw}x{sh}->{dw}x{dh} ({interpolation:?}): {e}"));
-        let gpu: Vec<f32> = stream.clone_dtoh(&d_dst).unwrap();
-        stream.synchronize().unwrap();
-        (cpu.as_slice().to_vec(), gpu)
+        .map_err(|e| format!("launch failed {sw}x{sh}->{dw}x{dh} ({interpolation:?}): {e}"))?;
+        let gpu: Vec<f32> = stream.clone_dtoh(&d_dst)?;
+        stream.synchronize()?;
+        Ok((cpu.as_slice().to_vec(), gpu))
     }
 
     /// Byte-exact comparison: the CPU LUT and the kernels compute the identical
@@ -1011,36 +1009,37 @@ mod tests {
         src: (usize, usize),
         dst: (usize, usize),
         interpolation: InterpolationMode,
-    ) {
-        let (cpu, gpu) = cpu_and_gpu(src, dst, interpolation);
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (cpu, gpu) = cpu_and_gpu(src, dst, interpolation)?;
         let bad = cpu
             .iter()
             .zip(&gpu)
             .enumerate()
             .find(|(_, (c, g))| c.to_bits() != g.to_bits());
         if let Some((i, (c, g))) = bad {
-            panic!(
+            return Err(format!(
                 "{src:?}->{dst:?} {interpolation:?}: first mismatch at element {i}: cpu {c} ({:#010x}) gpu {g} ({:#010x})",
                 c.to_bits(),
                 g.to_bits()
-            );
+            ).into());
         }
+        Ok(())
     }
 
     /// Dyadic 2× downscale — historically the easy case; now just one instance
     /// of the blanket byte-exact contract.
     #[test]
-    fn resize_2x_downscale_matches_cpu() {
-        assert_bit_exact((640, 480), (320, 240), InterpolationMode::Nearest);
-        assert_bit_exact((640, 480), (320, 240), InterpolationMode::Bilinear);
+    fn resize_2x_downscale_matches_cpu() -> Result<(), Box<dyn std::error::Error>> {
+        assert_bit_exact((640, 480), (320, 240), InterpolationMode::Nearest)?;
+        assert_bit_exact((640, 480), (320, 240), InterpolationMode::Bilinear)
     }
 
     /// Upscale goes through the same kernels (the "downscale" in the launcher
     /// names is historical) — parity must hold in both directions.
     #[test]
-    fn resize_2x_upscale_matches_cpu() {
-        assert_bit_exact((320, 240), (640, 480), InterpolationMode::Bilinear);
-        assert_bit_exact((320, 240), (640, 480), InterpolationMode::Nearest);
+    fn resize_2x_upscale_matches_cpu() -> Result<(), Box<dyn std::error::Error>> {
+        assert_bit_exact((320, 240), (640, 480), InterpolationMode::Bilinear)?;
+        assert_bit_exact((320, 240), (640, 480), InterpolationMode::Nearest)
     }
 
     /// Odd, prime-ish, and unaligned sizes with non-dyadic scales: exactly the
@@ -1048,16 +1047,17 @@ mod tests {
     /// exclusions. Bit-equality here is the point of the fmad=false +
     /// mirrored-expression contract.
     #[test]
-    fn resize_odd_sizes_match_cpu() {
+    fn resize_odd_sizes_match_cpu() -> Result<(), Box<dyn std::error::Error>> {
         for &(src, dst) in &[
             ((127, 63), (65, 33)),
             ((129, 97), (64, 48)),
             ((255, 130), (133, 67)),
             ((63, 129), (127, 255)), // upscale
         ] {
-            assert_bit_exact(src, dst, InterpolationMode::Bilinear);
-            assert_bit_exact(src, dst, InterpolationMode::Nearest);
+            assert_bit_exact(src, dst, InterpolationMode::Bilinear)?;
+            assert_bit_exact(src, dst, InterpolationMode::Nearest)?;
         }
+        Ok(())
     }
 
     /// Unified (managed) images must dispatch to the CUDA kernel through the

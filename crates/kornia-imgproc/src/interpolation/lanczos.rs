@@ -57,6 +57,9 @@ pub(crate) fn lanczos3(x: f32) -> f32 {
 /// Feeds both the CPU separable passes and the CUDA launcher (which uploads
 /// the tables verbatim), so CPU and GPU resize-lanczos share every weight bit.
 pub(crate) fn lanczos_axis(src_len: usize, dst_len: usize) -> (Vec<i32>, Vec<f32>) {
+    if src_len == 0 || dst_len == 0 {
+        return (vec![], vec![]);
+    }
     let a = src_len as f32 / dst_len as f32;
     let b = 0.5 * a - 0.5;
     let max = (src_len - 1) as f32;
