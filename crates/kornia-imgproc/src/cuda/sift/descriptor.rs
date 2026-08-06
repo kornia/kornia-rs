@@ -403,6 +403,7 @@ fn descriptor_block_src(threads: usize) -> String {
 // (2048 B at 512 threads) and ran log2(NTHREADS/DLEN) tree levels that only
 // added exact zeros. min(NTHREADS, DLEN); both are powers of two.
 #define RLEN (NTHREADS < DLEN ? NTHREADS : DLEN)
+#define HIST_SCALE 1048576.0f
 
 __device__ __forceinline__ int cv_round_d(float v) {{ return __float2int_rn(v); }}
 __device__ __forceinline__ int cv_floor_d(float v) {{ return (int)floorf(v); }}
@@ -423,7 +424,23 @@ extern "C" __global__ void __launch_bounds__(NTHREADS) sift_descriptor_block(
     if (t >= min(min(range_start[0] + n_kp, *live_count), cap)) return;
     const int tid = threadIdx.x;
 
-    __shared__ float hist[HISTLEN];
+    // FIXED-POINT HISTOGRAM, for determinism.
+    //
+    // These bins were accumulated with float `atomicAdd`, whose completion order is warp
+    // scheduling. Float addition is not associative, so the same patch produced different
+    // descriptors on every run. Measured: three identical builds of one clip gave three different
+    // descriptor digests, and the 0..255 output quantisation does NOT absorb it -- the emitted
+    // descriptors themselves differed, which flipped ratio-test outcomes and changed the
+    // reconstruction on roughly one run in three.
+    //
+    // Integer atomicAdd is exact and order-independent, so the sum is now a function of the input
+    // alone. It is also MORE accurate than what it replaces: every contribution is a product of
+    // weights in [0,1] and a gradient magnitude <= 255*sqrt(2) ~= 361, so a per-bin sum over even a
+    // 128x128 patch stays under ~5.9e6. At scale 256 that is ~1.5e9 against `unsigned int`'s 4.29e9
+    // (contributions are all non-negative, so the unsigned range is usable), while a float
+    // accumulator at that magnitude has an ULP of 0.5 -- 128x coarser than this fixed point's
+    // 1/256.
+    __shared__ unsigned long long histq[HISTLEN];
     __shared__ float raw[DLEN];
     __shared__ float red[RLEN];
 
@@ -444,7 +461,7 @@ extern "C" __global__ void __launch_bounds__(NTHREADS) sift_descriptor_block(
     cos_t /= hist_width;
     sin_t /= hist_width;
 
-    for (int i = tid; i < HISTLEN; i += NTHREADS) hist[i] = 0.0f;
+    for (int i = tid; i < HISTLEN; i += NTHREADS) histq[i] = 0ull;
     __syncthreads();
 
     // Flatten the patch so the block strides over it; each thread accumulates
@@ -502,20 +519,20 @@ extern "C" __global__ void __launch_bounds__(NTHREADS) sift_descriptor_block(
             const int clo = c0 >= 0, chi = c0 <= DD - 2;
             const int idx = ((r0 + 1) * (DD + 2) + (c0 + 1)) * OSTRIDE + o0;
             if (rlo && clo) {{
-                atomicAdd(&hist[idx], v_rco000);
-                atomicAdd(&hist[idx + 1], v_rco001);
+                atomicAdd(&histq[idx], __float2ull_rn(v_rco000 * HIST_SCALE));
+                atomicAdd(&histq[idx + 1], __float2ull_rn(v_rco001 * HIST_SCALE));
             }}
             if (rlo && chi) {{
-                atomicAdd(&hist[idx + OSTRIDE], v_rco010);
-                atomicAdd(&hist[idx + OSTRIDE + 1], v_rco011);
+                atomicAdd(&histq[idx + OSTRIDE], __float2ull_rn(v_rco010 * HIST_SCALE));
+                atomicAdd(&histq[idx + OSTRIDE + 1], __float2ull_rn(v_rco011 * HIST_SCALE));
             }}
             if (rhi && clo) {{
-                atomicAdd(&hist[idx + (DD + 2) * OSTRIDE], v_rco100);
-                atomicAdd(&hist[idx + (DD + 2) * OSTRIDE + 1], v_rco101);
+                atomicAdd(&histq[idx + (DD + 2) * OSTRIDE], __float2ull_rn(v_rco100 * HIST_SCALE));
+                atomicAdd(&histq[idx + (DD + 2) * OSTRIDE + 1], __float2ull_rn(v_rco101 * HIST_SCALE));
             }}
             if (rhi && chi) {{
-                atomicAdd(&hist[idx + (DD + 3) * OSTRIDE], v_rco110);
-                atomicAdd(&hist[idx + (DD + 3) * OSTRIDE + 1], v_rco111);
+                atomicAdd(&histq[idx + (DD + 3) * OSTRIDE], __float2ull_rn(v_rco110 * HIST_SCALE));
+                atomicAdd(&histq[idx + (DD + 3) * OSTRIDE + 1], __float2ull_rn(v_rco111 * HIST_SCALE));
             }}
         }}
     }}
@@ -531,7 +548,10 @@ extern "C" __global__ void __launch_bounds__(NTHREADS) sift_descriptor_block(
         const int cell = e / NN, kk = e % NN;
         const int i = cell / DD, j = cell % DD;
         const int idx = ((i + 1) * (DD + 2) + (j + 1)) * OSTRIDE;
-        raw[e] = kk == 0 ? hist[idx] + hist[idx + NN] : hist[idx + kk];
+        // Back to float exactly once, after the summation is complete, so the ordering of the
+        // adds can no longer influence the result.
+        raw[e] = kk == 0 ? (float)(histq[idx] + histq[idx + NN]) * (1.0f / HIST_SCALE)
+                         : (float)histq[idx + kk] * (1.0f / HIST_SCALE);
     }}
     __syncthreads();
 
