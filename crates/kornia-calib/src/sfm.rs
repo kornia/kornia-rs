@@ -488,7 +488,20 @@ pub fn calibrate_features_with_depth(
         // bas-relief residue.
         let mut ata = [[0.0f64; 5]; 5];
         let mut atb = [0.0f64; 5];
-        for (ti, pidx) in &pt_index {
+        // DETERMINISM. These are floating-point normal equations, and float addition is not
+        // associative, so the ORDER of accumulation changes the solved correction. `pt_index` is a
+        // `HashMap` and Rust randomises hash iteration per process, so this loop summed in a
+        // different order on every run — yielding slightly different (gamma, k1, k2, p1, p2), hence
+        // different intrinsics, hence a different reconstruction from identical input.
+        //
+        // Measured: with keypoints, descriptors, depth priors, matches and track edges all
+        // bit-identical across three runs, the maps still diverged on roughly one run in three, and
+        // this was the last remaining source. The three sibling `for (ti, pidx) in &pt_index` loops
+        // are unaffected — they only `insert` into a `BTreeMap` keyed by `ti`, where arrival order
+        // cannot matter.
+        let mut ordered: Vec<(&usize, &usize)> = pt_index.iter().collect();
+        ordered.sort_unstable_by_key(|(ti, _)| **ti);
+        for (ti, pidx) in ordered {
             let Some(p) = res.points.get(*pidx) else { continue };
             for (c, n) in &norm[*ti] {
                 let Some(_) = &poses[*c] else { continue };
