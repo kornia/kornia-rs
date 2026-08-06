@@ -6,7 +6,7 @@
 //! adjustment (instead of an independent point per camera pair) removes double-counting and couples
 //! the poses through common structure.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use kornia_algebra::Vec2F64;
 
@@ -79,7 +79,15 @@ pub fn build_tracks(edges: &[TrackEdge]) -> Vec<FeatureTrack> {
     }
 
     // Group nodes by root component.
-    let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
+    // BTreeMap, not HashMap: this map's ITERATION ORDER becomes the order of the returned tracks,
+    // and Rust randomises hash iteration per process. The set of tracks was already reproducible;
+    // their order was not, and downstream that is not cosmetic — bundle adjustment assembles its
+    // residuals in track order, so a permutation changes the order of floating-point summation and
+    // moves the solution. Measured: with keypoints, descriptors, matches and track EDGES all
+    // bit-identical across two runs, the reconstructions still differed (12 of 44 map checks), and
+    // this was why. Keyed by union-find root, which is itself a deterministic function of the edge
+    // list.
+    let mut groups: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
     for n in 0..nodes.len() {
         let r = find(&mut parent, n);
         groups.entry(r).or_default().push(n);
@@ -111,7 +119,10 @@ pub fn build_tracks(edges: &[TrackEdge]) -> Vec<FeatureTrack> {
     // drops the track.
     let mut tracks = Vec::new();
     for members in groups.into_values() {
-        let mut per_cam: HashMap<usize, Vec2F64> = HashMap::new();
+        // Likewise ordered: `obs` is emitted straight from this map, so a hash order would shuffle
+        // each track's observations independently of any other. Sorting by camera index is also the
+        // natural reading order for a track.
+        let mut per_cam: BTreeMap<usize, Vec2F64> = BTreeMap::new();
         let mut conflict = false;
         for &n in &members {
             let (cam, uv) = nodes[n];
@@ -133,6 +144,22 @@ pub fn build_tracks(edges: &[TrackEdge]) -> Vec<FeatureTrack> {
             obs: per_cam.into_iter().collect(),
         });
     }
+    // Canonical order, independent of union-find internals.
+    //
+    // Keying the component map by ROOT removed the hash randomisation but left the order dependent
+    // on which node won each union — an implementation detail of the edge insertion order. Sorting
+    // by the track's own content makes the output a pure function of the input SET, so the same
+    // correspondences produce the same tracks in the same order however they were discovered.
+    //
+    // Comparisons short-circuit on the first differing observation, and every track already has its
+    // observations ascending by camera, so this costs one O(n log n) pass with a cheap comparator
+    // against a bundle adjustment that will touch each observation many times over.
+    tracks.sort_by(|a, b| {
+        a.obs
+            .iter()
+            .map(|(c, uv)| (*c, uv.x.to_bits(), uv.y.to_bits()))
+            .cmp(b.obs.iter().map(|(c, uv)| (*c, uv.x.to_bits(), uv.y.to_bits())))
+    });
     tracks
 }
 
@@ -230,6 +257,49 @@ mod tests {
         let mut cams: Vec<usize> = tracks[0].obs.iter().map(|(c, _)| *c).collect();
         cams.sort_unstable();
         assert_eq!(cams, vec![0, 1, 2]);
+    }
+
+    /// Track ORDER and observation order must be a function of the edges, not of hash iteration.
+    ///
+    /// The set of tracks was always reproducible; the order was not, because both the component map
+    /// and the per-track observation map were `HashMap`s and Rust randomises hash iteration per
+    /// process. That is not cosmetic: bundle adjustment assembles residuals in track order, so a
+    /// permutation changes floating-point summation order and moves the solution. Measured on a real
+    /// clip with keypoints, descriptors, matches and track EDGES all bit-identical across two runs,
+    /// the reconstructions still differed.
+    ///
+    /// A single-process test cannot observe the cross-process randomisation directly, so this pins
+    /// the property that makes it irrelevant: the output is sorted by a key derived from the input.
+    /// Feeding the same edges in a DIFFERENT input order must give the same tracks in the same
+    /// order, and each track's observations must be ascending by camera.
+    #[test]
+    fn track_and_observation_order_are_deterministic() {
+        let edges = vec![
+            edge(0, 5, 1, 7),
+            edge(1, 7, 2, 9),
+            edge(3, 1, 4, 2),
+            edge(0, 11, 2, 13),
+            edge(4, 2, 5, 3),
+        ];
+        let forward = build_tracks(&edges);
+        let mut shuffled = edges.clone();
+        shuffled.reverse();
+        let reversed = build_tracks(&shuffled);
+
+        let key = |ts: &[FeatureTrack]| -> Vec<Vec<usize>> {
+            ts.iter().map(|t| t.obs.iter().map(|(c, _)| *c).collect()).collect()
+        };
+        assert_eq!(
+            key(&forward),
+            key(&reversed),
+            "track order changed with the input edge order"
+        );
+        for t in &forward {
+            let cams: Vec<usize> = t.obs.iter().map(|(c, _)| *c).collect();
+            let mut sorted = cams.clone();
+            sorted.sort_unstable();
+            assert_eq!(cams, sorted, "a track's observations are not ascending by camera");
+        }
     }
 
     /// A GENUINE same-camera ambiguity is still rejected.
