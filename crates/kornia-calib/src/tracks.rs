@@ -48,6 +48,12 @@ const SAME_PIXEL_PX: f64 = 0.5;
 /// Chain pairwise matches into multi-view [`FeatureTrack`]s via union-find over `(camera, keypoint)`
 /// nodes.
 ///
+/// Tracks are returned in a canonical order determined by their own content, and every track's
+/// observations are ascending by camera index. Both are part of the contract: consumers index into
+/// these lists (RANSAC samples correspondences by index, bundle adjustment sums residuals in track
+/// order), so the order must not vary between runs. Note this makes the result a deterministic
+/// function of the edge SEQUENCE — it is not independent of the order of that sequence.
+///
 /// A track is emitted only if it spans **≥ 2 distinct cameras**. A component that reaches the same
 /// camera at two DIFFERENT image locations is dropped: a physical point projects at most once per
 /// view, so that signals a bad merge (the COLMAP/OpenMVG track-consistency invariant). Reaching it
@@ -144,21 +150,37 @@ pub fn build_tracks(edges: &[TrackEdge]) -> Vec<FeatureTrack> {
             obs: per_cam.into_iter().collect(),
         });
     }
-    // Canonical order, independent of union-find internals.
+    // Canonical order, derived from track content rather than from union-find internals.
     //
-    // Keying the component map by ROOT removed the hash randomisation but left the order dependent
-    // on which node won each union — an implementation detail of the edge insertion order. Sorting
-    // by the track's own content makes the output a pure function of the input SET, so the same
-    // correspondences produce the same tracks in the same order however they were discovered.
+    // Keying the component map by ROOT removes the hash randomisation but leaves the order dependent
+    // on which node won each union. Sorting by content removes that too.
+    //
+    // THE PROPERTY THIS GIVES, stated precisely: the output is a deterministic function of the edge
+    // SEQUENCE. It is NOT independent of the order of that sequence, and this sort does not make it
+    // so — `nodes` records the pixel of the FIRST edge naming a given `(cam, kpt)`, and the
+    // `SAME_PIXEL_PX` test below compares against the first-inserted observation, so both the pixel
+    // kept and the drop decision already depend on edge order. Determinism across RUNS is what was
+    // broken and what this fixes; input-order independence is a different property the function has
+    // never had.
+    //
+    // Why order matters downstream, beyond the obvious: bundle adjustment sums residuals in track
+    // order, so a permutation changes floating-point association — but the larger effect is that
+    // `sfm.rs` builds its correspondence arrays by walking tracks in order and RANSAC then samples
+    // BY INDEX, so a permutation changes which correspondences the seeded RNG draws and therefore
+    // the bootstrap essential matrix itself.
     //
     // Comparisons short-circuit on the first differing observation, and every track already has its
-    // observations ascending by camera, so this costs one O(n log n) pass with a cheap comparator
-    // against a bundle adjustment that will touch each observation many times over.
-    tracks.sort_by(|a, b| {
+    // observations ascending by camera, so this is one O(n log n) pass with a cheap comparator
+    // against a solve that will touch each observation many times over.
+    tracks.sort_unstable_by(|a, b| {
         a.obs
             .iter()
             .map(|(c, uv)| (*c, uv.x.to_bits(), uv.y.to_bits()))
-            .cmp(b.obs.iter().map(|(c, uv)| (*c, uv.x.to_bits(), uv.y.to_bits())))
+            .cmp(
+                b.obs
+                    .iter()
+                    .map(|(c, uv)| (*c, uv.x.to_bits(), uv.y.to_bits())),
+            )
     });
     tracks
 }
@@ -268,10 +290,15 @@ mod tests {
     /// clip with keypoints, descriptors, matches and track EDGES all bit-identical across two runs,
     /// the reconstructions still differed.
     ///
-    /// A single-process test cannot observe the cross-process randomisation directly, so this pins
-    /// the property that makes it irrelevant: the output is sorted by a key derived from the input.
-    /// Feeding the same edges in a DIFFERENT input order must give the same tracks in the same
-    /// order, and each track's observations must be ascending by camera.
+    /// A single-process test cannot observe cross-process hash randomisation directly, so this pins
+    /// the property that makes it irrelevant: the emitted order is derived from track CONTENT, not
+    /// from map iteration or from which node won each union.
+    ///
+    /// The reversed-input case is a proxy for that, not a claim of input-order independence — the
+    /// function does not have that property and this edge set is chosen to avoid the cases where it
+    /// visibly fails (a `(cam, kpt)` named by two edges with different pixels, or observations
+    /// straddling `SAME_PIXEL_PX`). What it does catch is a regression to hash-ordered or
+    /// root-ordered output, which is what broke.
     #[test]
     fn track_and_observation_order_are_deterministic() {
         let edges = vec![
@@ -282,23 +309,28 @@ mod tests {
             edge(4, 2, 5, 3),
         ];
         let forward = build_tracks(&edges);
-        let mut shuffled = edges.clone();
-        shuffled.reverse();
-        let reversed = build_tracks(&shuffled);
+        let mut reversed_input = edges.clone();
+        reversed_input.reverse();
+        let reversed = build_tracks(&reversed_input);
 
         let key = |ts: &[FeatureTrack]| -> Vec<Vec<usize>> {
-            ts.iter().map(|t| t.obs.iter().map(|(c, _)| *c).collect()).collect()
+            ts.iter()
+                .map(|t| t.obs.iter().map(|(c, _)| *c).collect())
+                .collect()
         };
         assert_eq!(
             key(&forward),
             key(&reversed),
-            "track order changed with the input edge order"
+            "emitted order is not derived from track content"
         );
         for t in &forward {
             let cams: Vec<usize> = t.obs.iter().map(|(c, _)| *c).collect();
             let mut sorted = cams.clone();
             sorted.sort_unstable();
-            assert_eq!(cams, sorted, "a track's observations are not ascending by camera");
+            assert_eq!(
+                cams, sorted,
+                "a track's observations are not ascending by camera"
+            );
         }
     }
 
