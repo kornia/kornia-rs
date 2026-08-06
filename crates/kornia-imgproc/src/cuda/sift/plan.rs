@@ -724,6 +724,93 @@ mod tests {
     }
 
     #[test]
+    /// The same image must produce the same keypoints and the same descriptor BITS, every run.
+    ///
+    /// Both stages of this pipeline were nondeterministic. Detection kept whichever extrema reached
+    /// an `atomicAdd` first once a frame exceeded `max_keypoints`, and the block descriptor kernel
+    /// accumulated its orientation histograms with float `atomicAdd`, whose completion order is warp
+    /// scheduling — so identical input gave different descriptors run to run, and the 0..255 output
+    /// quantisation did not absorb it.
+    ///
+    /// Repeated in one process because the block size is read once via `OnceLock`, so a single test
+    /// cannot sweep `KORNIA_SIFT_DESC_T`; scheduling still varies between launches, which is what
+    /// this catches. `assert_eq!` on the raw bits, not a tolerance: the property is bit-identity,
+    /// and anything looser would pass on exactly the drift being ruled out.
+    ///
+    /// Runs without `KORNIA_SIFT_ORACLE`, unlike the bitwise reference tests — those skip silently
+    /// when it is unset, so on a machine without the oracle set this is the only thing standing
+    /// between a scheduling-dependent kernel and a green suite.
+    fn pipeline_is_deterministic_across_runs() {
+        let stream = default_stream();
+        let ctx = stream.context();
+        // Large and high-entropy on purpose: the defect is contention on shared-memory atomics, so
+        // the fixture has to produce many keypoints with large descriptor patches. A small smooth
+        // image yields too few colliding updates to expose it.
+        let (w, h) = (512usize, 512usize);
+        let mut seed = 0x2545_F491_4F6C_DD1Du64;
+        let host: Vec<f32> = (0..w * h)
+            .map(|i| {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                let (x, y) = ((i % w) as f32, (i / w) as f32);
+                let smooth = 128.0 + 90.0 * ((x * 0.21).sin() * (y * 0.17).cos());
+                smooth + ((seed >> 40) as f32 / 16_777_216.0) * 60.0
+            })
+            .collect();
+        let d_src = Image::<f32, 1>::from_size_slice(
+            ImageSize {
+                width: w,
+                height: h,
+            },
+            &host,
+        )
+        .expect("image")
+        .to_cuda(&stream)
+        .expect("upload");
+
+        let run = |plan: &mut SiftCuda| {
+            let f = plan
+                .detect_and_compute(ctx, &stream, &d_src)
+                .expect("detect");
+            let d = stream
+                .clone_dtoh(&f.descriptors.slice(0..f.len() * DESCR_LEN))
+                .unwrap();
+            let k: Vec<(u32, u32, u32)> = f
+                .keypoints
+                .iter()
+                .map(|p| (p.x.to_bits(), p.y.to_bits(), p.response.to_bits()))
+                .collect();
+            (k, d)
+        };
+
+        let mut plan = SiftCuda::new(
+            ctx,
+            &stream,
+            w,
+            h,
+            SiftCudaConfig::default(),
+            FirstOctave::Double,
+            8,
+        )
+        .expect("plan");
+        let (k0, d0) = run(&mut plan);
+        assert!(
+            k0.len() > 10,
+            "fixture must produce keypoints, got {}",
+            k0.len()
+        );
+        for round in 0..4 {
+            let (k, d) = run(&mut plan);
+            assert_eq!(
+                k, k0,
+                "round {round}: keypoint set or order changed between runs"
+            );
+            assert_eq!(d, d0, "round {round}: descriptor bits changed between runs");
+        }
+    }
+
+    #[test]
     fn assembled_pipeline_fills_every_descriptor_row() {
         let stream = default_stream();
         let ctx = stream.context();

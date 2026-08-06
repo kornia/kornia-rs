@@ -403,7 +403,7 @@ fn descriptor_block_src(threads: usize) -> String {
 // (2048 B at 512 threads) and ran log2(NTHREADS/DLEN) tree levels that only
 // added exact zeros. min(NTHREADS, DLEN); both are powers of two.
 #define RLEN (NTHREADS < DLEN ? NTHREADS : DLEN)
-#define HIST_SCALE 256.0f
+#define HIST_SCALE 1048576.0f
 
 __device__ __forceinline__ int cv_round_d(float v) {{ return __float2int_rn(v); }}
 __device__ __forceinline__ int cv_floor_d(float v) {{ return (int)floorf(v); }}
@@ -440,7 +440,7 @@ extern "C" __global__ void __launch_bounds__(NTHREADS) sift_descriptor_block(
     // (contributions are all non-negative, so the unsigned range is usable), while a float
     // accumulator at that magnitude has an ULP of 0.5 -- 128x coarser than this fixed point's
     // 1/256.
-    __shared__ unsigned int histq[HISTLEN];
+    __shared__ unsigned long long histq[HISTLEN];
     __shared__ float raw[DLEN];
     __shared__ float red[RLEN];
 
@@ -461,7 +461,7 @@ extern "C" __global__ void __launch_bounds__(NTHREADS) sift_descriptor_block(
     cos_t /= hist_width;
     sin_t /= hist_width;
 
-    for (int i = tid; i < HISTLEN; i += NTHREADS) histq[i] = 0u;
+    for (int i = tid; i < HISTLEN; i += NTHREADS) histq[i] = 0ull;
     __syncthreads();
 
     // Flatten the patch so the block strides over it; each thread accumulates
@@ -519,20 +519,20 @@ extern "C" __global__ void __launch_bounds__(NTHREADS) sift_descriptor_block(
             const int clo = c0 >= 0, chi = c0 <= DD - 2;
             const int idx = ((r0 + 1) * (DD + 2) + (c0 + 1)) * OSTRIDE + o0;
             if (rlo && clo) {{
-                atomicAdd(&histq[idx], __float2uint_rn(v_rco000 * HIST_SCALE));
-                atomicAdd(&histq[idx + 1], __float2uint_rn(v_rco001 * HIST_SCALE));
+                atomicAdd(&histq[idx], __float2ull_rn(v_rco000 * HIST_SCALE));
+                atomicAdd(&histq[idx + 1], __float2ull_rn(v_rco001 * HIST_SCALE));
             }}
             if (rlo && chi) {{
-                atomicAdd(&histq[idx + OSTRIDE], __float2uint_rn(v_rco010 * HIST_SCALE));
-                atomicAdd(&histq[idx + OSTRIDE + 1], __float2uint_rn(v_rco011 * HIST_SCALE));
+                atomicAdd(&histq[idx + OSTRIDE], __float2ull_rn(v_rco010 * HIST_SCALE));
+                atomicAdd(&histq[idx + OSTRIDE + 1], __float2ull_rn(v_rco011 * HIST_SCALE));
             }}
             if (rhi && clo) {{
-                atomicAdd(&histq[idx + (DD + 2) * OSTRIDE], __float2uint_rn(v_rco100 * HIST_SCALE));
-                atomicAdd(&histq[idx + (DD + 2) * OSTRIDE + 1], __float2uint_rn(v_rco101 * HIST_SCALE));
+                atomicAdd(&histq[idx + (DD + 2) * OSTRIDE], __float2ull_rn(v_rco100 * HIST_SCALE));
+                atomicAdd(&histq[idx + (DD + 2) * OSTRIDE + 1], __float2ull_rn(v_rco101 * HIST_SCALE));
             }}
             if (rhi && chi) {{
-                atomicAdd(&histq[idx + (DD + 3) * OSTRIDE], __float2uint_rn(v_rco110 * HIST_SCALE));
-                atomicAdd(&histq[idx + (DD + 3) * OSTRIDE + 1], __float2uint_rn(v_rco111 * HIST_SCALE));
+                atomicAdd(&histq[idx + (DD + 3) * OSTRIDE], __float2ull_rn(v_rco110 * HIST_SCALE));
+                atomicAdd(&histq[idx + (DD + 3) * OSTRIDE + 1], __float2ull_rn(v_rco111 * HIST_SCALE));
             }}
         }}
     }}
