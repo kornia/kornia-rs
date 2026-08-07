@@ -71,6 +71,20 @@ pub static BA_BIG_ITERS: std::sync::atomic::AtomicUsize = std::sync::atomic::Ato
 
 /// Ceres' `min_lm_diagonal` / `max_lm_diagonal`: the LM damping diagonal is clamped to this
 /// range, because extremely small or large entries of diag(JᵀJ) make the regularisation fail.
+/// Per-phase microseconds inside the LM iteration, so "where does an iteration go" is answered
+/// by measurement rather than by a cache model. Linearise = residuals + Jacobians + A/B/C/g;
+/// assemble = damping + building the reduced camera system; factor = Cholesky + back-substitution;
+/// trial = evaluating the objective at the trial point.
+pub static BA_LIN_MICROS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// See [`BA_LIN_MICROS`].
+pub static BA_ASM_MICROS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// See [`BA_LIN_MICROS`].
+pub static BA_FACT_MICROS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// See [`BA_LIN_MICROS`].
+pub static BA_TRIAL_MICROS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Observations actually seen by the adjustment (NOT the map-wide count).
+pub static BA_OBS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 const MIN_LM_DIAGONAL: f64 = 1e-6;
 const MAX_LM_DIAGONAL: f64 = 1e32;
 const MIN_Z: f32 = 1e-3;
@@ -1146,6 +1160,7 @@ pub fn bundle_adjust_schur_with_all_priors(
             }
         };
 
+        let t_lin = std::time::Instant::now();
         let mut cost = 0.0_f32;
         let mut n_depth_obs_iter = 0usize;
 
@@ -1679,6 +1694,9 @@ pub fn bundle_adjust_schur_with_all_priors(
             let _ = pc;
         }
 
+        BA_LIN_MICROS.fetch_add(t_lin.elapsed().as_micros() as u64, std::sync::atomic::Ordering::Relaxed);
+        let t_asm = std::time::Instant::now();
+
         // ── Apply LM damping ────────────────────────────────────────────
         //
         //   A[i] += λ·diag(A),  C[j] += λ·diag(C)
@@ -1905,6 +1923,8 @@ pub fn bundle_adjust_schur_with_all_priors(
         // exactly as they did into the dense matrix. Only the LOWER triangle is emitted, which is
         // all `Side::Lower` reads — and the symmetrisation above has already made the two triangles
         // agree, so no information is lost by dropping the upper one.
+        BA_ASM_MICROS.fetch_add(t_asm.elapsed().as_micros() as u64, std::sync::atomic::Ordering::Relaxed);
+        let t_fact = std::time::Instant::now();
         let d_pose_col = if params.sparse_reduced_system {
             // Straight from the compact blocks. Scanning the dense matrix for nonzeros — what this
             // replaced — was an O(dim^2/2) pass over 117 MB to recover a structure the assembly
@@ -1982,6 +2002,9 @@ pub fn bundle_adjust_schur_with_all_priors(
             d_point[j] = matvec_3x3_3(&c_inv_j, &rhs);
         }
 
+        BA_FACT_MICROS.fetch_add(t_fact.elapsed().as_micros() as u64, std::sync::atomic::Ordering::Relaxed);
+        let t_trial = std::time::Instant::now();
+
         // ── Trial: retract poses, add to points, recompute cost ─────────
         //
         // Evaluates the objective at `x + t·δ`. Parameterised by `t` so the same code path serves
@@ -2044,9 +2067,12 @@ pub fn bundle_adjust_schur_with_all_priors(
                 RobustKernelKind::Cauchy | RobustKernelKind::Tukey => cauchy_w(r_sq),
             };
             new_cost += robust_cost(r_sq, robust_scale);
+            // Counted unconditionally: `BA_OBS` reports what the adjustment actually sees, which
+            // is NOT the map-wide observation count and was the source of a 7x error in a
+            // per-observation timing comparison.
+            trace_reproj_n += 1;
             if trace_on {
                 trace_reproj_sq += f64::from(r_sq);
-                trace_reproj_n += 1;
                 if w < 1.0 {
                     trace_robust_n += 1;
                 }
@@ -2186,6 +2212,8 @@ pub fn bundle_adjust_schur_with_all_priors(
 
         let (new_cost, trace_reproj_sq, trace_reproj_n, trace_robust_n, se3s_trial, xyz_trial) =
             eval_at(1.0);
+        BA_TRIAL_MICROS.fetch_add(t_trial.elapsed().as_micros() as u64, std::sync::atomic::Ordering::Relaxed);
+        BA_OBS.store(trace_reproj_n as u64, std::sync::atomic::Ordering::Relaxed);
 
         // Gain ratio ρ = actual reduction / model-predicted reduction (Ceres/Nielsen trust
         // region). The LM step δ solves (H+λI)δ = g, so the quadratic model predicts a decrease

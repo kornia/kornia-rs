@@ -57,7 +57,10 @@ pub use sfm::{calibrate_features, calibrate_features_with_depth};
 /// The solve's cost was modelled as two terminal global BAs running to a 100-iteration cap.
 /// Measured, the terminal BA converges in 7, so the cost has to be elsewhere — these make the
 /// distribution across all adjustments a number instead of an argument.
-pub use kornia_3d::ba_schur::{BA_BIG_ITERS, BA_BIG_MICROS, BA_CALLS, BA_DIM_CUBED, BA_ITERS, BA_MICROS};
+pub use kornia_3d::ba_schur::{
+    BA_ASM_MICROS, BA_BIG_ITERS, BA_BIG_MICROS, BA_CALLS, BA_DIM_CUBED, BA_FACT_MICROS,
+    BA_ITERS, BA_LIN_MICROS, BA_MICROS, BA_OBS, BA_TRIAL_MICROS,
+};
 pub use tracks::{build_tracks, TrackEdge};
 pub use types::{
     CalibConfig, CameraStats, FeatureMatch, FeatureTrack, RigCalibration, TagObservation,
