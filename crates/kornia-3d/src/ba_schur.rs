@@ -747,10 +747,14 @@ fn matvec_6x3t_6(a: &[f64; 18], b: &[f64; 6]) -> [f64; 3] {
 /// the reduced 6P×6P camera system is solved with `faer`'s dense Cholesky;
 /// points are recovered by back-substitution.
 ///
-/// Currently respects `fixed_pose` and `fixed_point` flags on each
-/// observation but does not yet implement `BaParams::robust` (treats as
-/// identity loss). All other params (max_iterations, initial_lambda,
-/// cost_tolerance, gradient_tolerance) are honoured.
+/// Respects the `fixed_pose` and `fixed_point` flags on each observation, and honours
+/// `BaParams::robust` (IRLS: residual and Jacobian rows scaled by √ρ'(s), while the accept/reject
+/// test compares the true robust cost ½ρ(s)), plus `max_iterations`, `initial_lambda` and
+/// `cost_tolerance`.
+///
+/// `BaParams::gradient_tolerance` is NOT read by this solver. The only termination test is the
+/// relative cost decrease against `cost_tolerance`, and it is checked on accepted steps only.
+/// Callers wanting COLMAP's gradient-based stopping rule do not get it here.
 pub fn bundle_adjust_schur(
     poses: &[Pose3d],
     points: &[Vec3F64],
@@ -801,6 +805,106 @@ pub fn bundle_adjust_schur_with_priors(
         pose_priors,
         None,
     )
+}
+
+/// [`bundle_adjust_schur_with_priors`] plus constant-velocity motion priors over shot triplets
+/// (see [`BaMotionPrior`]).
+///
+/// Motion residuals couple THREE pose blocks, so unlike every other residual family here they
+/// contribute off-diagonal pose-pose blocks to the reduced camera system. Their Jacobians are
+/// obtained by finite differences over the solver's own retraction — the residual (a norm ratio
+/// composed with an SO(3) log) has an unpleasant closed form, the FD cost is negligible
+/// (~tens of triplets × 19 residual evaluations), and using `retract` itself guarantees the
+/// perturbation convention can never drift out of sync with the analytic residuals.
+#[allow(clippy::too_many_arguments)]
+
+/// Block-sparse accumulator for the reduced camera system.
+///
+/// The reduced system is 6Px6P but only ~2% populated: two cameras couple only if they share a
+/// point. Materialising it densely costs 117 MB at P=637 and, worse, makes every 6x6 block write
+/// touch six columns `ld * 8` bytes apart — 36 cache lines on six pages, per block, with no reuse.
+/// Measured on a 300-keyframe solve: ~770k blocks, ~28M line touches, against 0.02 s of arithmetic.
+/// The assembly ran ~70x its flop cost and all of it was memory.
+///
+/// Here each 6x6 block is 288 contiguous bytes, found through a dense index rather than a hash, and
+/// the dense matrix is never allocated at all on the sparse path.
+///
+/// NOTE the failure mode this is written to avoid: an earlier attempt accumulated into compact
+/// blocks and then SCATTERED them into the dense matrix, which performed every one of the original
+/// scattered writes plus the block pass on top — measured 28% slower. Compacting the accumulation
+/// only pays if the dense matrix is never built.
+struct BlockAccum {
+    /// Row-major `(i1, i2) -> slot`, or `usize::MAX` for a pair that never couples. `n * n` entries
+    /// of `usize` is 3.2 MB at P=637 against the 117 MB it replaces, and a direct index beats a hash
+    /// lookup in a loop that runs ~770k times per iteration.
+    index: Vec<usize>,
+    /// Flat 6x6 blocks, one per coupled pair.
+    blocks: Vec<[f64; 36]>,
+    /// `(i1, i2)` for each slot, for emitting triplets without scanning the index.
+    pairs: Vec<(usize, usize)>,
+    n: usize,
+}
+
+impl BlockAccum {
+    /// Build the coupling pattern once. It is a function of which cameras share a point, which no
+    /// LM iteration changes.
+    fn new(n: usize, b_by_point: &[Vec<(usize, [f64; 18])>]) -> Self {
+        let mut index = vec![usize::MAX; n * n];
+        let mut pairs = Vec::new();
+        for b_for_j in b_by_point {
+            for (i1, _) in b_for_j.iter() {
+                for (i2, _) in b_for_j.iter() {
+                    let e = &mut index[i1 * n + i2];
+                    if *e == usize::MAX {
+                        *e = pairs.len();
+                        pairs.push((*i1, *i2));
+                    }
+                }
+            }
+        }
+        // Diagonal blocks always exist: every free camera carries its own A block.
+        for i in 0..n {
+            let e = &mut index[i * n + i];
+            if *e == usize::MAX {
+                *e = pairs.len();
+                pairs.push((i, i));
+            }
+        }
+        let blocks = vec![[0.0; 36]; pairs.len()];
+        Self { index, blocks, pairs, n }
+    }
+
+    fn clear(&mut self) {
+        for b in self.blocks.iter_mut() {
+            *b = [0.0; 36];
+        }
+    }
+
+    /// Slot for a pair, or `None` if these two cameras never share a point.
+    #[inline]
+    fn slot(&self, i1: usize, i2: usize) -> Option<usize> {
+        let s = self.index[i1 * self.n + i2];
+        (s != usize::MAX).then_some(s)
+    }
+
+    /// Lower-triangle triplets, summed on duplicates by faer exactly as the dense path summed into
+    /// the matrix. Only the lower triangle is emitted, which is all `Side::Lower` reads.
+    fn triplets(&self) -> Vec<faer::sparse::Triplet<usize, usize, f64>> {
+        let mut t = Vec::with_capacity(self.blocks.len() * 21);
+        for (slot, &(i1, i2)) in self.pairs.iter().enumerate() {
+            let blk = &self.blocks[slot];
+            let (row0, col0) = (i1 * 6, i2 * 6);
+            for r in 0..6 {
+                for c in 0..6 {
+                    let v = blk[r * 6 + c];
+                    if v != 0.0 && row0 + r >= col0 + c {
+                        t.push(faer::sparse::Triplet::new(row0 + r, col0 + c, v));
+                    }
+                }
+            }
+        }
+        t
+    }
 }
 
 /// [`bundle_adjust_schur_with_priors`] plus constant-velocity motion priors over shot triplets
@@ -883,12 +987,17 @@ pub fn bundle_adjust_schur_with_all_priors(
     let mut se3s: Vec<SE3F32> = poses.iter().map(pose_to_se3).collect();
     let mut xyz: Vec<Vec3F64> = points.to_vec();
 
+    // Diagnostic trace (env-gated, no behaviour change). Read once: this is a hot loop.
+    let trace_on = std::env::var("KORNIA_BA_TRACE").is_ok();
+
     let mut lambda = params.initial_lambda;
     // Nielsen's ν for the reject branch: consecutive rejections escalate the damping bump
     // (2, 4, 8, …) instead of a fixed ×10, so one bad linearization does not overshoot λ past
     // the useful range and cost the next several iterations undoing it.
     let mut nu = 2.0_f32;
     let mut prev_cost: Option<f32> = None;
+    // Block-sparse reduced system, built on the first iteration when the sparse path is enabled.
+    let mut accum: Option<BlockAccum> = None;
     let mut iters_done = 0usize;
     let mut converged = false;
 
@@ -1000,6 +1109,37 @@ pub fn bundle_adjust_schur_with_all_priors(
             let s2 = depth_scale * depth_scale;
             s2 / (s2 + r_sq)
         };
+        // The TRUE robust cost ½·ρ(s) — the objective the weights above are the derivative of
+        // (w = ρ'(s), which is exactly what makes IRLS solve the robust problem).
+        //
+        // The √w-scaled residual accumulates ½·ρ'(s)·s instead, which is NOT that objective. For
+        // Huber past the knee the surrogate is ½k‖r‖ while the real loss is k‖r‖ − k²/2, so it
+        // falls at HALF the true rate on every downweighted observation. The gain ratio
+        // ρ = actual/predicted then divides a halved actual reduction by an unhalved model
+        // prediction and comes out systematically deflated. Nielsen shrinks λ only when ρ > 0.5,
+        // so once enough observations sit past the knee λ can never decay, LM never hands back
+        // over to Gauss-Newton, and convergence degrades from quadratic to linear. Measured on a
+        // 300-keyframe solve: healthy for 10 iterations (ρ≈0.85, λ 9.6e-4→5.9e-5), then ρ pinned
+        // at 0.4157 for the remaining 90 while λ ratcheted back up to 1.4e-4. Ceres compares this
+        // function across a trial step, not the surrogate.
+        let robust_cost = |r_sq: f32, scale: f32| -> f32 {
+            match robust {
+                RobustKernelKind::Identity => 0.5 * r_sq,
+                RobustKernelKind::Huber => {
+                    let r_norm = r_sq.sqrt();
+                    if r_norm <= scale {
+                        0.5 * r_sq
+                    } else {
+                        scale * r_norm - 0.5 * scale * scale
+                    }
+                }
+                // Tukey shares Cauchy's weight here, so it shares Cauchy's loss too.
+                RobustKernelKind::Cauchy | RobustKernelKind::Tukey => {
+                    let s2 = scale * scale;
+                    0.5 * s2 * (1.0 + r_sq / s2).ln()
+                }
+            }
+        };
 
         let mut cost = 0.0_f32;
         let mut n_depth_obs_iter = 0usize;
@@ -1031,7 +1171,7 @@ pub fn bundle_adjust_schur_with_all_priors(
                     *v *= sw;
                 }
             }
-            cost += 0.5 * (r[0] * r[0] + r[1] * r[1]);
+            cost += robust_cost(r_sq, robust_scale);
 
             let pli = pose_local[obs.pose_idx];
             let xli = point_local[obs.point_idx];
@@ -1120,7 +1260,7 @@ pub fn bundle_adjust_schur_with_all_priors(
                     RobustKernelKind::Huber => huber_w_depth(r_sq_d),
                     RobustKernelKind::Cauchy | RobustKernelKind::Tukey => cauchy_w_depth(r_sq_d),
                 };
-                cost += 0.5 * w_d * r_sq_d;
+                cost += robust_cost(r_sq_d, depth_scale);
                 n_depth_obs_iter += 1;
 
                 // Accumulate into A (6×6) — w · outer product jpd·jpdᵀ.
@@ -1233,7 +1373,7 @@ pub fn bundle_adjust_schur_with_all_priors(
                     RobustKernelKind::Huber => huber_w(r_sq_p),
                     RobustKernelKind::Cauchy | RobustKernelKind::Tukey => cauchy_w(r_sq_p),
                 };
-                cost += 0.5 * w_p * r_sq_p;
+                cost += robust_cost(r_sq_p, robust_scale);
 
                 // Jacobian (3×6), all scaled by 1/σ:
                 //   ∂C/∂ρ = -I
@@ -1316,7 +1456,7 @@ pub fn bundle_adjust_schur_with_all_priors(
                         RobustKernelKind::Huber => huber_w(r_sq_u),
                         RobustKernelKind::Cauchy | RobustKernelKind::Tukey => cauchy_w(r_sq_u),
                     };
-                    cost += 0.5 * w_u * r_sq_u;
+                    cost += robust_cost(r_sq_u, robust_scale);
 
                     let (ux, uy, uz) = (u_pred[0], u_pred[1], u_pred[2]);
                     // Rows of [u]× scaled by 1/σ, ρ-part zero.
@@ -1452,7 +1592,7 @@ pub fn bundle_adjust_schur_with_all_priors(
                     RobustKernelKind::Huber => huber_w_depth(r_sq_m),
                     RobustKernelKind::Cauchy | RobustKernelKind::Tukey => cauchy_w_depth(r_sq_m),
                 };
-                cost += 0.5 * w_m * r_sq_m;
+                cost += robust_cost(r_sq_m, depth_scale);
 
                 // J: 6 residual rows × (3 poses × 6 params), FD one param at a time.
                 let mut jac = [[0.0f32; 18]; 6];
@@ -1548,14 +1688,45 @@ pub fn bundle_adjust_schur_with_all_priors(
 
         // ── Build M (dense 6Pf × 6Pf) + m (6Pf) ─────────────────────────
         let dim = n_free_poses * 6;
-        let mut m_mat = Mat::<f64>::zeros(dim, dim);
+        // 117 MB at P=637, allocated and zeroed EVERY LM iteration. The sparse path never touches
+        // it, so it is a 0x0 stub there; `Mat` has no null state and the branches below never index
+        // it when the accumulator is live.
+        let mut m_mat = if params.sparse_reduced_system {
+            Mat::<f64>::zeros(0, 0)
+        } else {
+            Mat::<f64>::zeros(dim, dim)
+        };
         let mut m_vec = vec![0.0_f64; dim];
 
         // Place A blocks on diagonal of M.
+        // Built before ANY write into the reduced system, because the A-block loop below is the
+        // first writer and must not take the dense branch against the 0x0 stub. The pattern is a
+        // function of the observation graph, so it is built once and only cleared thereafter.
+        if params.sparse_reduced_system && accum.is_none() {
+            accum = Some(BlockAccum::new(n_free_poses, &b_by_point));
+        }
+        if let Some(acc) = accum.as_mut() {
+            acc.clear();
+        }
+
         for (k, ab) in a_blocks.iter().enumerate() {
-            for i in 0..6 {
-                for j in 0..6 {
-                    m_mat[(k * 6 + i, k * 6 + j)] = ab[i * 6 + j] as f64;
+            match accum.as_mut() {
+                Some(acc) => {
+                    if let Some(slot) = acc.slot(k, k) {
+                        let blk = &mut acc.blocks[slot];
+                        for i in 0..6 {
+                            for j in 0..6 {
+                                blk[i * 6 + j] = ab[i * 6 + j] as f64;
+                            }
+                        }
+                    }
+                }
+                None => {
+                    for i in 0..6 {
+                        for j in 0..6 {
+                            m_mat[(k * 6 + i, k * 6 + j)] = ab[i * 6 + j] as f64;
+                        }
+                    }
                 }
             }
             for i in 0..6 {
@@ -1565,9 +1736,32 @@ pub fn bundle_adjust_schur_with_all_priors(
 
         // Motion-prior off-diagonal pose-pose blocks (already weighted).
         for ((la, lb), blk) in &h_offdiag {
-            for i in 0..6 {
-                for j in 0..6 {
-                    m_mat[(la * 6 + i, lb * 6 + j)] += blk[i * 6 + j] as f64;
+            match accum.as_mut() {
+                // A motion prior can couple cameras that share no point, so the pair may be absent
+                // from the pattern. Fall back to the dense matrix in that case rather than dropping
+                // the term — the pattern is a superset of point coupling, not of all coupling.
+                Some(acc) => match acc.slot(*la, *lb) {
+                    Some(slot) => {
+                        let dst = &mut acc.blocks[slot];
+                        for i in 0..6 {
+                            for j in 0..6 {
+                                dst[i * 6 + j] += blk[i * 6 + j] as f64;
+                            }
+                        }
+                    }
+                    None => {
+                        return Err(SchurBaError::CholeskyFailed(
+                            "motion prior couples cameras with no shared point; the sparse pattern \
+                             does not cover it".into(),
+                        ))
+                    }
+                },
+                None => {
+                    for i in 0..6 {
+                        for j in 0..6 {
+                            m_mat[(la * 6 + i, lb * 6 + j)] += blk[i * 6 + j] as f64;
+                        }
+                    }
                 }
             }
         }
@@ -1607,17 +1801,39 @@ pub fn bundle_adjust_schur_with_all_priors(
                     let b2 = &b_for_j[idx2].1;
                     // (6×3) @ (3×6) — bc1 (6×3) times b2.T (3×6).
                     // Compute element (r, c): sum_k bc1[r, k] · b2[c, k]
+                    let (i1_loc, i2_loc) = (*i1_loc, *i2_loc);
                     let row0 = i1_loc * 6;
                     let col0 = i2_loc * 6;
                     let _ = idx1;
                     let _ = idx2;
-                    for r in 0..6 {
-                        for c in 0..6 {
-                            let mut s = 0.0_f64;
-                            for k in 0..3 {
-                                s += bc1[r * 3 + k] * b2[c * 3 + k];
+                    match accum.as_mut() {
+                        // THE hot path: ~770k of these per iteration at 300 keyframes. Writing
+                        // straight into the column-major dense matrix touched six columns 84 kB
+                        // apart per block — 36 cache lines on six pages, no reuse, ~28M line touches
+                        // against 0.02 s of arithmetic. A contiguous 288-byte block stays in cache.
+                        Some(acc) => {
+                            let slot = acc.index[i1_loc * acc.n + i2_loc];
+                            let blk = &mut acc.blocks[slot];
+                            for r in 0..6 {
+                                for c in 0..6 {
+                                    let mut s = 0.0_f64;
+                                    for k in 0..3 {
+                                        s += bc1[r * 3 + k] * b2[c * 3 + k];
+                                    }
+                                    blk[r * 6 + c] -= s;
+                                }
                             }
-                            m_mat[(row0 + r, col0 + c)] -= s;
+                        }
+                        None => {
+                            for r in 0..6 {
+                                for c in 0..6 {
+                                    let mut s = 0.0_f64;
+                                    for k in 0..3 {
+                                        s += bc1[r * 3 + k] * b2[c * 3 + k];
+                                    }
+                                    m_mat[(row0 + r, col0 + c)] -= s;
+                                }
+                            }
                         }
                     }
                 }
@@ -1627,11 +1843,15 @@ pub fn bundle_adjust_schur_with_all_priors(
         // ── Solve M · δ_pose = m via Cholesky ────────────────────────────
         // Symmetrize numerically (the construction above should already be
         // symmetric to within roundoff; do an average to guarantee).
-        for i in 0..dim {
-            for j in (i + 1)..dim {
-                let avg = 0.5 * (m_mat[(i, j)] + m_mat[(j, i)]);
-                m_mat[(i, j)] = avg;
-                m_mat[(j, i)] = avg;
+        // Dense path only: O(dim^2/2) with one index striding `ld * 8` bytes. The accumulator's
+        // triplet emission takes the lower triangle directly, so there is nothing to average.
+        if accum.is_none() {
+            for i in 0..dim {
+                for j in (i + 1)..dim {
+                    let avg = 0.5 * (m_mat[(i, j)] + m_mat[(j, i)]);
+                    m_mat[(i, j)] = avg;
+                    m_mat[(j, i)] = avg;
+                }
             }
         }
         // SPARSE PATH. Two cameras couple in this matrix only if they share a point, and on a real
@@ -1645,15 +1865,13 @@ pub fn bundle_adjust_schur_with_all_priors(
         // all `Side::Lower` reads — and the symmetrisation above has already made the two triangles
         // agree, so no information is lost by dropping the upper one.
         let d_pose_col = if params.sparse_reduced_system {
-            let mut trips: Vec<faer::sparse::Triplet<usize, usize, f64>> = Vec::new();
-            for c in 0..dim {
-                for r in c..dim {
-                    let v = m_mat[(r, c)];
-                    if v != 0.0 {
-                        trips.push(faer::sparse::Triplet::new(r, c, v));
-                    }
-                }
-            }
+            // Straight from the compact blocks. Scanning the dense matrix for nonzeros — what this
+            // replaced — was an O(dim^2/2) pass over 117 MB to recover a structure the assembly
+            // already knew, and it forced the matrix to exist at all.
+            let trips = accum
+                .as_ref()
+                .expect("sparse path builds the accumulator before the first solve")
+                .triplets();
             let a = match faer::sparse::SparseColMat::try_new_from_triplets(dim, dim, &trips) {
                 Ok(a) => a,
                 Err(e) => return Err(SchurBaError::CholeskyFailed(format!("{e:?}"))),
@@ -1724,6 +1942,15 @@ pub fn bundle_adjust_schur_with_all_priors(
         }
 
         // ── Trial: retract poses, add to points, recompute cost ─────────
+        //
+        // Evaluates the objective at `x + t·δ`. Parameterised by `t` so the same code path serves
+        // the full trial step (t = 1) and, under the trace, a SHORT step. The short step is what
+        // decides whether a disappointing gain ratio means curvature or a broken model: for any
+        // model that is consistent with the function to first order,
+        //     [F(x) − F(x + tδ)] / (t · δᵀg)  →  1   as t → 0
+        // no matter how strong the curvature, because the quadratic term dies as t². A ratio that
+        // settles anywhere else says the linearisation is not a model of the cost being compared.
+        let eval_at = |t: f32| -> (f32, f64, usize, usize, Vec<SE3F32>, Vec<Vec3F64>) {
         let mut se3s_trial = se3s.clone();
         for i_global in 0..p_total {
             let pli = pose_local[i_global];
@@ -1732,12 +1959,12 @@ pub fn bundle_adjust_schur_with_all_priors(
             }
             let pli = pli as usize;
             let delta: [f32; 6] = [
-                d_pose[pli * 6] as f32,
-                d_pose[pli * 6 + 1] as f32,
-                d_pose[pli * 6 + 2] as f32,
-                d_pose[pli * 6 + 3] as f32,
-                d_pose[pli * 6 + 4] as f32,
-                d_pose[pli * 6 + 5] as f32,
+                d_pose[pli * 6] as f32 * t,
+                d_pose[pli * 6 + 1] as f32 * t,
+                d_pose[pli * 6 + 2] as f32 * t,
+                d_pose[pli * 6 + 3] as f32 * t,
+                d_pose[pli * 6 + 4] as f32 * t,
+                d_pose[pli * 6 + 5] as f32 * t,
             ];
             se3s_trial[i_global] = se3s[i_global].retract(&delta);
         }
@@ -1750,13 +1977,18 @@ pub fn bundle_adjust_schur_with_all_priors(
             let xli = xli as usize;
             let dp = d_point[xli];
             xyz_trial[i_global] = Vec3F64::new(
-                xyz[i_global].x + dp[0] as f64,
-                xyz[i_global].y + dp[1] as f64,
-                xyz[i_global].z + dp[2] as f64,
+                xyz[i_global].x + dp[0] as f64 * f64::from(t),
+                xyz[i_global].y + dp[1] as f64 * f64::from(t),
+                xyz[i_global].z + dp[2] as f64 * f64::from(t),
             );
         }
 
         let mut new_cost = 0.0_f32;
+        // Trace-only: the RAW (unrobustified, unweighted) reprojection error at the trial point,
+        // so a slow tail can be read as real geometric improvement or as drift in the priors.
+        let mut trace_reproj_sq = 0.0_f64;
+        let mut trace_reproj_n = 0usize;
+        let mut trace_robust_n = 0usize;
         for obs in observations {
             if obs.pose_idx >= p_total || obs.point_idx >= n_total {
                 continue;
@@ -1770,11 +2002,17 @@ pub fn bundle_adjust_schur_with_all_priors(
                 RobustKernelKind::Huber => huber_w(r_sq),
                 RobustKernelKind::Cauchy | RobustKernelKind::Tukey => cauchy_w(r_sq),
             };
-            new_cost += 0.5 * w * r_sq;
+            new_cost += robust_cost(r_sq, robust_scale);
+            if trace_on {
+                trace_reproj_sq += f64::from(r_sq);
+                trace_reproj_n += 1;
+                if w < 1.0 {
+                    trace_robust_n += 1;
+                }
+            }
 
-            // Depth residual contribution to trial cost (same Huber/Cauchy
-            // weighting as the linearisation pass, so accept/reject decisions
-            // reflect the robust loss).
+            // Depth residual contribution to the trial cost, through the same `robust_cost`
+            // the linearisation pass uses, so accept/reject compares like with like.
             if let Some(d_meas) = obs.depth_meas {
                 let sigma = obs.depth_sigma.max(1e-6);
                 let z_pred = clamped_z(pose, point);
@@ -1784,12 +2022,7 @@ pub fn bundle_adjust_schur_with_all_priors(
                 let (r_z, _) =
                     depth_residual(z_pred, d_meas, dscales[obs.pose_idx], sigma, log_depth);
                 let r_sq_d = r_z * r_z;
-                let w_d = match robust {
-                    RobustKernelKind::Identity => 1.0,
-                    RobustKernelKind::Huber => huber_w_depth(r_sq_d),
-                    RobustKernelKind::Cauchy | RobustKernelKind::Tukey => cauchy_w_depth(r_sq_d),
-                };
-                new_cost += 0.5 * w_d * r_sq_d;
+                new_cost += robust_cost(r_sq_d, depth_scale);
             }
         }
 
@@ -1817,15 +2050,8 @@ pub fn bundle_adjust_schur_with_all_priors(
                 let r0 = (c_pred[0] - prior.center_world[0]) * inv_sigma;
                 let r1 = (c_pred[1] - prior.center_world[1]) * inv_sigma;
                 let r2 = (c_pred[2] - prior.center_world[2]) * inv_sigma;
-                // Match the linearisation pass's Huber/Cauchy gate so
-                // accept/reject reflects the robust loss.
                 let r_sq_p = r0 * r0 + r1 * r1 + r2 * r2;
-                let w_p = match robust {
-                    RobustKernelKind::Identity => 1.0,
-                    RobustKernelKind::Huber => huber_w(r_sq_p),
-                    RobustKernelKind::Cauchy | RobustKernelKind::Tukey => cauchy_w(r_sq_p),
-                };
-                new_cost += 0.5 * w_p * r_sq_p;
+                new_cost += robust_cost(r_sq_p, robust_scale);
 
                 // Up-prior contribution — the accept/reject decision must see the
                 // same objective the linearisation minimised or the LM loop
@@ -1843,12 +2069,7 @@ pub fn bundle_adjust_schur_with_all_priors(
                     let ru1 = (u_pred[1] - upw[1]) * inv_su;
                     let ru2 = (u_pred[2] - upw[2]) * inv_su;
                     let r_sq_u = ru0 * ru0 + ru1 * ru1 + ru2 * ru2;
-                    let w_u = match robust {
-                        RobustKernelKind::Identity => 1.0,
-                        RobustKernelKind::Huber => huber_w(r_sq_u),
-                        RobustKernelKind::Cauchy | RobustKernelKind::Tukey => cauchy_w(r_sq_u),
-                    };
-                    new_cost += 0.5 * w_u * r_sq_u;
+                    new_cost += robust_cost(r_sq_u, robust_scale);
                 }
             }
         }
@@ -1909,31 +2130,60 @@ pub fn bundle_adjust_schur_with_all_priors(
                     mp,
                 );
                 let r_sq_m: f32 = r.iter().map(|v| v * v).sum();
-                let w_m = match robust {
-                    RobustKernelKind::Identity => 1.0,
-                    RobustKernelKind::Huber => huber_w_depth(r_sq_m),
-                    RobustKernelKind::Cauchy | RobustKernelKind::Tukey => cauchy_w_depth(r_sq_m),
-                };
-                new_cost += 0.5 * w_m * r_sq_m;
+                new_cost += robust_cost(r_sq_m, depth_scale);
             }
         }
+        (
+            new_cost,
+            trace_reproj_sq,
+            trace_reproj_n,
+            trace_robust_n,
+            se3s_trial,
+            xyz_trial,
+        )
+        };
+
+        let (new_cost, trace_reproj_sq, trace_reproj_n, trace_robust_n, se3s_trial, xyz_trial) =
+            eval_at(1.0);
 
         // Gain ratio ρ = actual reduction / model-predicted reduction (Ceres/Nielsen trust
         // region). The LM step δ solves (H+λI)δ = g, so the quadratic model predicts a decrease
         // of 0.5·δᵀ(g + λδ) — computed in the FULL pose+point space (the Schur elimination is
         // algebraic, not a model change), with the UNDAMPED gradients g_pose/g_point.
         let mut pred = 0.0_f64;
+        // Max-norm of the UNDAMPED gradient — the quantity COLMAP terminates on
+        // (`gradient_tolerance = 1e-4`, `function_tolerance = 0`). Traced only; nothing reads it.
+        let mut gmax = 0.0_f64;
+        // δᵀg — the FIRST-ORDER predicted decrease, i.e. the directional derivative along the
+        // step. Unlike `pred` this carries no curvature and no damping, so it is the quantity a
+        // short-step probe must reproduce.
+        let mut gdotd = 0.0_f64;
         for k in 0..n_free_poses {
             for i in 0..6 {
                 let d = d_pose[k * 6 + i];
                 pred += d * (g_pose[k][i] + f64::from(lambda) * d);
+                gdotd += d * g_pose[k][i];
+                gmax = gmax.max(g_pose[k][i].abs());
             }
         }
         for (j, dp) in d_point.iter().enumerate() {
             for c in 0..3 {
                 pred += dp[c] * (g_point[j][c] + f64::from(lambda) * dp[c]);
+                gdotd += dp[c] * g_point[j][c];
+                gmax = gmax.max(g_point[j][c].abs());
             }
         }
+        // Short-step probes. `fo(t)` is the realised decrease over the first-order prediction at
+        // step `tδ`; consistency forces fo(t) → 1 as t → 0.
+        let (fo_10, fo_02) = if trace_on && gdotd > 0.0 {
+            let probe = |t: f32| -> f64 {
+                let (c_t, ..) = eval_at(t);
+                f64::from(cost - c_t) / (f64::from(t) * gdotd)
+            };
+            (probe(0.1), probe(0.02))
+        } else {
+            (f64::NAN, f64::NAN)
+        };
         pred *= 0.5;
         let rho = if pred > 1e-20 {
             f64::from(cost - new_cost) / pred
@@ -1961,12 +2211,36 @@ pub fn bundle_adjust_schur_with_all_priors(
             let scale = (1.0 - f * f * f).max(1.0 / 3.0) as f32;
             lambda = (lambda * scale).max(1e-8);
             nu = 2.0;
+            if trace_on {
+                let rmse = if trace_reproj_n > 0 {
+                    (trace_reproj_sq / trace_reproj_n as f64).sqrt()
+                } else {
+                    0.0
+                };
+                let robust_frac = if trace_reproj_n > 0 {
+                    trace_robust_n as f64 / trace_reproj_n as f64
+                } else {
+                    0.0
+                };
+                eprintln!(
+                    "BA_TRACE iter={iters_done} ACCEPT cost={new_cost:.6e} rel={rel:.3e} rho={rho:.3e} lambda={lambda:.3e} gmax={gmax:.4e} rmse={rmse:.5} rfrac={robust_frac:.4} fo10={fo_10:.4} fo02={fo_02:.4}"
+                );
+            }
             if rel < params.cost_tolerance {
                 converged = true;
                 break;
             }
         } else {
             // Reject — escalate damping and retry.
+            //
+            // NOTE: convergence is NOT tested here, only in the accept branch. A solve sitting at
+            // its minimum, where every trial step is rejected because there is no improvement left
+            // to find, therefore burns its whole iteration budget without ever declaring success.
+            if trace_on {
+                eprintln!(
+                    "BA_TRACE iter={iters_done} REJECT rho={rho:.3e} lambda={lambda:.3e} nu={nu:.1} gmax={gmax:.4e} fo10={fo_10:.4} fo02={fo_02:.4}"
+                );
+            }
             lambda *= nu;
             nu *= 2.0;
             if lambda > 1e10 {

@@ -431,6 +431,11 @@ pub fn calibrate_features_with_depth(
         &obs,
         &idcam,
         &BaParams {
+            // Sparse reduced system: the assembly builds block-sparse triplets directly and never
+            // materialises the 6Px6P dense matrix (117 MB at P=637). Dense Cholesky is cubic in the
+            // camera count while the system is ~2% populated, which is why COLMAP switches to
+            // SPARSE_SCHUR above 50 images and we were running dense at 637.
+            sparse_reduced_system: true,
             max_iterations: config.max_iterations,
             robust: RobustKernelKind::Huber,
             robust_scale_sq: config.robust_scale_sq,
@@ -793,7 +798,12 @@ pub fn calibrate_features_with_depth(
             &obs2,
             &idcam,
             &BaParams {
-                max_iterations: config.max_iterations,
+                // Sparse reduced system: the assembly builds block-sparse triplets directly and never
+            // materialises the 6Px6P dense matrix (117 MB at P=637). Dense Cholesky is cubic in the
+            // camera count while the system is ~2% populated, which is why COLMAP switches to
+            // SPARSE_SCHUR above 50 images and we were running dense at 637.
+            sparse_reduced_system: true,
+            max_iterations: config.max_iterations,
                 robust: RobustKernelKind::Huber,
                 robust_scale_sq: config.robust_scale_sq,
             // Depth residuals now live in reprojection-like units (see `depth_fields`), so the
@@ -1994,6 +2004,11 @@ fn run_global_ba(
         &obs,
         idcam,
         &BaParams {
+            // Sparse reduced system: the assembly builds block-sparse triplets directly and never
+            // materialises the 6Px6P dense matrix (117 MB at P=637). Dense Cholesky is cubic in the
+            // camera count while the system is ~2% populated, which is why COLMAP switches to
+            // SPARSE_SCHUR above 50 images and we were running dense at 637.
+            sparse_reduced_system: true,
             max_iterations: config.max_iterations,
             robust: RobustKernelKind::Huber,
             robust_scale_sq: config.robust_scale_sq,
