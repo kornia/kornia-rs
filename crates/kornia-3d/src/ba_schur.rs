@@ -47,6 +47,27 @@ use crate::camera::PinholeCamera;
 use crate::pose::Pose3d;
 use crate::ransac::RobustKernelKind;
 
+/// Bundle adjustments run, LM iterations summed over them, wall time, and the same split out for
+/// LARGE systems (reduced dimension >= 1000).
+///
+/// These exist because this solve's cost was modelled three times from recorded figures and the
+/// model was wrong every time — "two terminal BAs at a 100-iteration cap dominate" turned out to be
+/// 52 iterations at one scale and 100-without-converging at another, and the factorisation everyone
+/// assumed was the bottleneck measured 5.5% of the large adjustments' time. `BaResult` had carried
+/// `iterations` and `converged` all along and nothing read them.
+pub static BA_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// Total LM iterations across every adjustment. See [`BA_CALLS`].
+pub static BA_ITERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// Summed `dim^3 / 1e6` across every adjustment — the shape of a dense Cholesky's cost, so its
+/// distribution says whether factorisation work sits in one big solve or many small ones.
+pub static BA_DIM_CUBED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Total microseconds spent inside bundle adjustment. See [`BA_CALLS`].
+pub static BA_MICROS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Microseconds spent in adjustments with a reduced system of dimension >= 1000. See [`BA_CALLS`].
+pub static BA_BIG_MICROS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// LM iterations in those same large adjustments. See [`BA_CALLS`].
+pub static BA_BIG_ITERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 const MIN_Z: f32 = 1e-3;
 
 /// `|ln s|` clamp for the per-camera depth scale — a camera may disagree with its monocular prior
@@ -850,6 +871,7 @@ pub fn bundle_adjust_schur_with_all_priors(
         }
         v
     };
+    let ba_t0 = std::time::Instant::now();
     let n_free_poses = pose_local.iter().filter(|&&x| x >= 0).count();
     let n_free_points = point_local.iter().filter(|&&x| x >= 0).count();
 
@@ -1971,6 +1993,14 @@ pub fn bundle_adjust_schur_with_all_priors(
         }
     }
 
+    BA_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    BA_ITERS.fetch_add(iters_done, std::sync::atomic::Ordering::Relaxed);
+    BA_DIM_CUBED.fetch_add((n_free_poses as u64 * 6).pow(3) / 1_000_000, std::sync::atomic::Ordering::Relaxed);
+    BA_MICROS.fetch_add(ba_t0.elapsed().as_micros() as u64, std::sync::atomic::Ordering::Relaxed);
+    if n_free_poses * 6 >= 1000 {
+        BA_BIG_MICROS.fetch_add(ba_t0.elapsed().as_micros() as u64, std::sync::atomic::Ordering::Relaxed);
+        BA_BIG_ITERS.fetch_add(iters_done, std::sync::atomic::Ordering::Relaxed);
+    }
     Ok(BaResult {
         poses: out_poses,
         points: out_points,

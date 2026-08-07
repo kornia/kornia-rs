@@ -27,6 +27,12 @@ use kornia_3d::ransac::RobustKernelKind;
 use kornia_algebra::{Mat3AF32, Mat3F64, Vec2F32, Vec2F64, Vec3AF32, Vec3F64};
 
 use crate::error::CalibError;
+/// How many bundle adjustments this process has run, and how many LM iterations in total.
+///
+/// The solve's cost was modelled as "two terminal global BAs at the 100-iteration cap". Measured,
+/// the terminal BA converges in 7 — so the cap is not the driver and the cost must be spread across
+/// the many WINDOWED and LOCAL adjustments instead. Counting them is the only way to tell, and it is
+/// two atomics on a path that already takes seconds per call.
 use crate::types::{CalibConfig, CameraStats, FeatureTrack, RigCalibration, TagObservation};
 
 /// Convert an f32 PnP rotation/translation (world→cam) into an f64 [`Pose3d`].
@@ -458,6 +464,17 @@ pub fn calibrate_features_with_depth(
     //
     // Feed the refined state back in: BA-optimized poses for registered cameras, BA-optimized
     // points via the same `pt_index` mapping used to build the problem.
+    // Whether this BA CONVERGED or simply ran out of iterations decides how the whole solve's cost
+    // should be read: at `max_iterations` the cap is the cost driver and lowering it is free speed,
+    // while an early exit means the iteration budget is not the lever at all. `BaResult` has carried
+    // both fields all along and nothing surfaced them, so the question was unanswerable without
+    // instrumenting a rerun -- and a rerun of a real clip is an hour.
+    eprintln!(
+        "kornia-calib: global BA finished after {} iterations, converged={} ({} free cameras)",
+        res.iterations,
+        res.converged,
+        poses.iter().filter(|p| p.is_some()).count()
+    );
     for (c, p) in poses.iter_mut().enumerate() {
         if p.is_some() {
             *p = Some(res.poses[c]);
