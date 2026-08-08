@@ -46,7 +46,7 @@ pub struct LMRefineParams {
 impl Default for LMRefineParams {
     fn default() -> Self {
         Self {
-            max_iterations: 20,
+            max_iterations: 50,
             cost_tolerance: 1e-6,
             gradient_tolerance: 1e-6,
             initial_lambda: 1e-3,
