@@ -106,7 +106,7 @@ pub struct OptimizerState {
 
 impl LevenbergMarquardt {
     /// Minimum step norm threshold. Steps smaller than this are considered zero.
-    const STEP_SIZE_TOLERANCE: f32 = 1e-12;
+    const STEP_SIZE_TOLERANCE: f32 = 1e-6;
 
     pub fn optimize(&self, problem: &mut Problem) -> Result<OptimizerResult, OptimizerError> {
         self.optimize_with_callback(problem, |_problem, _state| true)
