@@ -33,9 +33,14 @@
 //!   * Point parameters are the 3-dim world coordinates.
 //!   * z is clamped to `MIN_Z` to handle mid-iteration cheirality flips.
 //!
-//! Currently supports: identity loss only, fixed-pose anchors, fixed-point
-//! gauge (motion-only BA). Robust kernels and full LM-with-backtracking
-//! are TODO.
+//! Supports fixed-pose anchors, fixed-point gauge (motion-only BA), optional
+//! per-observation depth residuals, optional per-pose translation priors, and
+//! the robust kernels in `BaParams::robust` via IRLS (see
+//! [`bundle_adjust_schur`]). LM damping is ellipsoidal — `λ·diag(JᵀJ)`, as
+//! Ceres does it — so `λ` is dimensionless here, unlike
+//! [`crate::ba::bundle_adjust`], which damps by `λ·I`. Full
+//! LM-with-backtracking (a gain-ratio / trust-region update) is still TODO:
+//! the step test is the sign of the cost change only.
 
 use faer::prelude::Solve;
 use faer::Mat;
@@ -48,6 +53,75 @@ use crate::pose::Pose3d;
 use crate::ransac::RobustKernelKind;
 
 const MIN_Z: f32 = 1e-3;
+
+/// Ceres' `min_lm_diagonal` / `max_lm_diagonal`. The LM damping diagonal is clamped to this range
+/// because extremely small or large entries of diag(JᵀJ) make the regularisation fail.
+///
+/// The ceiling is NOT Ceres' `1e32`: Ceres is `double`, this solver is `f32`. The damping actually
+/// added is `λ · clamp(diag)` and `λ` is allowed to reach `1e10` before the loop gives up, so a
+/// `1e32` ceiling overflows to `+inf` (`1e32_f32 * 1e7_f32` is already `inf`) — and an infinite
+/// diagonal sails through `invert_3x3`'s `det.abs() < 1e-20` guard to yield `Some([NaN; 9])`.
+/// `1e24` keeps the worst-case product at `1e34`, inside f32's `3.4e38`.
+const MIN_LM_DIAGONAL: f32 = 1e-6;
+const MAX_LM_DIAGONAL: f32 = 1e24;
+
+/// IRLS weight `w = ρ'(s)` for `s = ‖r‖²`. The residual and its Jacobian rows are scaled by √w,
+/// which is what makes the normal equations those of the robust problem.
+///
+/// `Tukey` deliberately falls back to `Cauchy`, matching `BaParams::robust`'s documented fallback
+/// and `ba::build_robust_loss`. NOTE this disagrees with `impl RobustKernel for RobustKernelKind`
+/// in [`crate::ransac`], which dispatches `Tukey` to the real hard redescender — the same enum
+/// value means two different kernels depending on which module consumes it.
+#[inline]
+fn robust_weight(kind: RobustKernelKind, scale: f32, r_sq: f32) -> f32 {
+    match kind {
+        RobustKernelKind::Identity => 1.0,
+        RobustKernelKind::Huber => {
+            let r_norm = r_sq.sqrt();
+            if r_norm <= scale {
+                1.0
+            } else {
+                scale / r_norm
+            }
+        }
+        RobustKernelKind::Cauchy | RobustKernelKind::Tukey => {
+            let s2 = scale * scale;
+            s2 / (s2 + r_sq)
+        }
+    }
+}
+
+/// The robust cost `½ρ(s)` that [`robust_weight`] is the derivative of: `d/ds[½ρ(s)] = ½·w(s)`.
+/// `robust_weight_is_the_derivative_of_robust_cost` pins that identity.
+///
+/// This must be what the LM accept test compares. Accumulating the √w-scaled residual instead
+/// gives `½ρ'(s)·s`, an IRLS surrogate that is NOT the objective: for Huber past the knee it is
+/// `½k‖r‖` where the loss is `k‖r‖ − k²/2`, so it moves at HALF the true rate on every
+/// downweighted observation, and a step's measured reduction comes out halved.
+#[inline]
+fn robust_cost(kind: RobustKernelKind, scale: f32, r_sq: f32) -> f32 {
+    match kind {
+        RobustKernelKind::Identity => 0.5 * r_sq,
+        RobustKernelKind::Huber => {
+            let r_norm = r_sq.sqrt();
+            if r_norm <= scale {
+                0.5 * r_sq
+            } else {
+                scale * r_norm - 0.5 * scale * scale
+            }
+        }
+        // Tukey shares Cauchy's weight here, so it shares Cauchy's loss too.
+        RobustKernelKind::Cauchy | RobustKernelKind::Tukey => {
+            let s2 = scale * scale;
+            // `ln_1p`, NOT `(1.0 + x).ln()`. In f32 the latter quantises `x` to multiples of
+            // ~1.19e-7 before taking the log, which is exactly the converged regime this cost
+            // has to resolve: at `s2 = 5.99, r_sq = 1e-6` it is 28.6% low, and for
+            // `r_sq/s2 < 6e-8` it returns identically 0.0 — so `new_cost < cost` becomes a
+            // comparison of two quantisation staircases.
+            0.5 * s2 * (r_sq / s2).ln_1p()
+        }
+    }
+}
 
 /// Errors specific to the Schur BA driver. Wraps existing [`BaError`].
 #[derive(Debug, Error)]
@@ -340,15 +414,31 @@ fn matvec_6x3t_6(a: &[f32; 18], b: &[f32; 6]) -> [f32; 3] {
 
 // ── Driver ───────────────────────────────────────────────────────────────
 
-/// Bundle adjustment via dense Schur-complement reduction. Same external
-/// contract as [`crate::ba::bundle_adjust`] but uses Schur internally:
-/// the reduced 6P×6P camera system is solved with `faer`'s dense Cholesky;
-/// points are recovered by back-substitution.
+/// Bundle adjustment via dense Schur-complement reduction. Same argument list as
+/// [`crate::ba::bundle_adjust`] but uses Schur internally: the reduced 6P×6P camera system is
+/// solved with `faer`'s dense Cholesky; points are recovered by back-substitution.
 ///
-/// Currently respects `fixed_pose` and `fixed_point` flags on each
-/// observation but does not yet implement `BaParams::robust` (treats as
-/// identity loss). All other params (max_iterations, initial_lambda,
-/// cost_tolerance, gradient_tolerance) are honoured.
+/// Respects the `fixed_pose` and `fixed_point` flags on each observation, and honours
+/// `BaParams::robust` (IRLS: residual and Jacobian rows are scaled by √ρ'(s), while the
+/// accept test compares the true robust cost ½ρ(s)), plus `max_iterations`,
+/// `initial_lambda` and `cost_tolerance`.
+///
+/// `RobustKernelKind::Tukey` maps to Cauchy, as it does in `BaParams::robust`. A non-finite or
+/// non-positive `BaParams::robust_scale_sq` collapses to plain L2 for every kernel, as
+/// `BaParams::robust_scale_sq` documents.
+///
+/// # `initial_lambda` does NOT mean the same thing here as in [`crate::ba::bundle_adjust`]
+///
+/// This solver damps ELLIPSOIDALLY — `A += λ·diag(A)`, `C += λ·diag(C)`, the diagonal clamped to
+/// `[MIN_LM_DIAGONAL, MAX_LM_DIAGONAL]`, as Ceres' `LevenbergMarquardtStrategy` does. `λ` is
+/// therefore DIMENSIONLESS: a fraction of the local curvature. [`crate::ba::bundle_adjust`] (and
+/// `pgo`, and `pnp::refine`) still damp `JᵀJ + λ·I`, where `λ` carries the units of `JᵀJ`. The
+/// same `BaParams { initial_lambda: 1e-3, .. }` is a ~0.1% relative damping here and an absolute
+/// `1e-3` there; do not port a tuned value between the two.
+///
+/// `BaParams::gradient_tolerance` is NOT read by this solver — the only termination test is
+/// the relative cost decrease against `cost_tolerance`. Callers needing a gradient-based
+/// stopping rule do not get one here.
 pub fn bundle_adjust_schur(
     poses: &[Pose3d],
     points: &[Vec3F64],
@@ -450,8 +540,27 @@ pub fn bundle_adjust_schur_with_priors(
     let mut se3s: Vec<SE3F32> = poses.iter().map(pose_to_se3).collect();
     let mut xyz: Vec<Vec3F64> = points.to_vec();
 
+    // Robust-loss IRLS setup. Loop-invariant, so it is built once rather than per LM iteration.
+    // The weight `w` scales the residual and Jacobian rows by √w (equivalent to multiplying the
+    // observation's contribution to the normal equations by w); the accept test compares
+    // `robust_cost` = ½ρ(s), which `robust_weight` is the derivative of.
+    //
+    // A non-finite or non-positive `robust_scale_sq` collapses to plain L2, matching what
+    // `BaParams::robust_scale_sq` documents ("Default `f32::INFINITY` collapses to the L2 fast
+    // path even for non-Identity kernel choices") and what `ba::build_robust_loss` enforces for
+    // the non-Schur solver. Without this, `Cauchy`/`Tukey` at the DEFAULT scale give
+    // `w = inf/inf` and `cost = 0.5·inf·ln(1) = inf·0`, i.e. NaN — and since `NaN < cost` is
+    // false, every step is rejected and the solver returns its input poses with `Ok`.
+    let robust = if params.robust_scale_sq.is_finite() && params.robust_scale_sq > 0.0 {
+        params.robust
+    } else {
+        RobustKernelKind::Identity
+    };
+    let robust_scale = params.robust_scale_sq.sqrt().max(1e-6);
+    let robust_weight = |r_sq: f32| -> f32 { robust_weight(robust, robust_scale, r_sq) };
+    let robust_cost = |r_sq: f32| -> f32 { robust_cost(robust, robust_scale, r_sq) };
+
     let mut lambda = params.initial_lambda;
-    let mut prev_cost: Option<f32> = None;
     let mut iters_done = 0usize;
     let mut converged = false;
 
@@ -476,25 +585,6 @@ pub fn bundle_adjust_schur_with_priors(
         // contribute to A and g_pose only, no B.
         // (Symmetric case: free point + fixed pose contributes to C and
         //  g_point only. Both we handle below.)
-        // Robust-loss IRLS weight per observation. weight w = min(1, scale/‖r‖)
-        // for Huber, w = scale²/(scale²+‖r‖²) for Cauchy. Identity uses w=1.
-        // Apply √w to both residual and Jacobian rows (equivalent to multiplying
-        // the obs's contribution to the normal equations by w).
-        let robust = params.robust;
-        let robust_scale = params.robust_scale_sq.sqrt().max(1e-6);
-        let huber_w = |r_sq: f32| -> f32 {
-            // ‖r‖ ≤ scale → w=1; else w = scale/‖r‖
-            let r_norm = r_sq.sqrt();
-            if r_norm <= robust_scale {
-                1.0
-            } else {
-                robust_scale / r_norm
-            }
-        };
-        let cauchy_w = |r_sq: f32| -> f32 {
-            let s2 = robust_scale * robust_scale;
-            s2 / (s2 + r_sq)
-        };
 
         let mut cost = 0.0_f32;
         let mut n_depth_obs_iter = 0usize;
@@ -510,11 +600,7 @@ pub fn bundle_adjust_schur_with_priors(
             let r_sq = r[0] * r[0] + r[1] * r[1];
 
             // IRLS weight; apply √w to r and J.
-            let w = match robust {
-                RobustKernelKind::Identity => 1.0,
-                RobustKernelKind::Huber => huber_w(r_sq),
-                RobustKernelKind::Cauchy | RobustKernelKind::Tukey => cauchy_w(r_sq),
-            };
+            let w = robust_weight(r_sq);
             if w != 1.0 {
                 let sw = w.sqrt();
                 r[0] *= sw;
@@ -526,7 +612,7 @@ pub fn bundle_adjust_schur_with_priors(
                     *v *= sw;
                 }
             }
-            cost += 0.5 * (r[0] * r[0] + r[1] * r[1]);
+            cost += robust_cost(r_sq);
 
             let pli = pose_local[obs.pose_idx];
             let xli = point_local[obs.point_idx];
@@ -612,12 +698,8 @@ pub fn bundle_adjust_schur_with_priors(
                 // the χ² interpretation (ORB-SLAM3 §IV.B uses χ²=7.815 for
                 // 3-DoF RGB-D; we reuse `robust_scale_sq` for simplicity).
                 let r_sq_d = r_z * r_z;
-                let w_d = match robust {
-                    RobustKernelKind::Identity => 1.0,
-                    RobustKernelKind::Huber => huber_w(r_sq_d),
-                    RobustKernelKind::Cauchy | RobustKernelKind::Tukey => cauchy_w(r_sq_d),
-                };
-                cost += 0.5 * w_d * r_sq_d;
+                let w_d = robust_weight(r_sq_d);
+                cost += robust_cost(r_sq_d);
                 n_depth_obs_iter += 1;
 
                 // Accumulate into A (6×6) — w · outer product jpd·jpdᵀ.
@@ -725,12 +807,8 @@ pub fn bundle_adjust_schur_with_priors(
                 // reprojection path; the residual is already whitened by 1/σ
                 // so the gate is on the χ²-equivalent magnitude.
                 let r_sq_p = r_pos[0] * r_pos[0] + r_pos[1] * r_pos[1] + r_pos[2] * r_pos[2];
-                let w_p = match robust {
-                    RobustKernelKind::Identity => 1.0,
-                    RobustKernelKind::Huber => huber_w(r_sq_p),
-                    RobustKernelKind::Cauchy | RobustKernelKind::Tukey => cauchy_w(r_sq_p),
-                };
-                cost += 0.5 * w_p * r_sq_p;
+                let w_p = robust_weight(r_sq_p);
+                cost += robust_cost(r_sq_p);
 
                 // Jacobian (3×6), all scaled by 1/σ:
                 //   ∂C/∂ρ = -I
@@ -786,22 +864,25 @@ pub fn bundle_adjust_schur_with_priors(
             }
         }
 
-        // Cost convergence (post-step convergence will follow successful steps below).
-        if let Some(pc) = prev_cost {
-            // Only declare convergence here on a *successful* step path; we'll
-            // do that after accepting a step. For now, just log.
-            let _ = pc;
-        }
-
-        // ── Apply LM damping: A[i] += λ·I, C[j] += λ·I ──────────────────
+        // ── Apply LM damping: A[i] += λ·diag(A), C[j] += λ·diag(C) ─────
+        //
+        // Ellipsoidal, as Ceres' LevenbergMarquardtStrategy does it: damp with diag(JᵀJ) — here
+        // already assembled as the block diagonals — clamped to [min_lm_diagonal,
+        // max_lm_diagonal] = [1e-6, 1e32].
+        //
+        // A spherical λ·I damps every direction by the same ABSOLUTE amount, whatever its
+        // curvature. That is not scale-free: one λ has to serve parameter blocks in different
+        // units — rotation in radians, translation and points in metres — so it over-damps the
+        // stiff directions and under-damps the soft ones, and λ itself is not dimensionless.
+        // Scaling by the local curvature makes the damping relative.
         for ab in &mut a_blocks {
             for d in 0..6 {
-                ab[d * 6 + d] += lambda;
+                ab[d * 6 + d] += lambda * ab[d * 6 + d].clamp(MIN_LM_DIAGONAL, MAX_LM_DIAGONAL);
             }
         }
         for cb in &mut c_blocks {
             for d in 0..3 {
-                cb[d * 3 + d] += lambda;
+                cb[d * 3 + d] += lambda * cb[d * 3 + d].clamp(MIN_LM_DIAGONAL, MAX_LM_DIAGONAL);
             }
         }
 
@@ -967,18 +1048,13 @@ pub fn bundle_adjust_schur_with_priors(
             let point = &xyz_trial[obs.point_idx];
             let (r, _, _) = residual_and_jacobians(pose, point, obs.pixel, camera);
             let r_sq = r[0] * r[0] + r[1] * r[1];
-            let w = match robust {
-                RobustKernelKind::Identity => 1.0,
-                RobustKernelKind::Huber => huber_w(r_sq),
-                RobustKernelKind::Cauchy | RobustKernelKind::Tukey => cauchy_w(r_sq),
-            };
-            new_cost += 0.5 * w * r_sq;
+            new_cost += robust_cost(r_sq);
 
-            // Depth residual contribution to trial cost (same Huber/Cauchy
-            // weighting as the linearisation pass, so accept/reject decisions
-            // reflect the robust loss).
+            // Depth residual contribution to trial cost, scored with the same robust loss as
+            // the linearisation pass so accept/reject reflects one objective.
             if let Some(d_meas) = obs.depth_meas {
                 let sigma = obs.depth_sigma.max(1e-6);
+                let inv_sigma = 1.0_f32 / sigma;
                 let pw = Vec3AF32::new(point.x as f32, point.y as f32, point.z as f32);
                 let pc = *pose * pw;
                 let z_pred = if pc.z.abs() < MIN_Z {
@@ -990,14 +1066,12 @@ pub fn bundle_adjust_schur_with_priors(
                 } else {
                     pc.z
                 };
-                let r_z = (z_pred - d_meas) / sigma;
+                // `* inv_sigma`, matching the linearisation pass exactly — `x / s` and
+                // `x * (1.0 / s)` differ by an ulp in f32 (up to 67% of inputs at σ = 0.03, and
+                // the difference is one-sided), which biases `new_cost < cost` toward accept.
+                let r_z = (z_pred - d_meas) * inv_sigma;
                 let r_sq_d = r_z * r_z;
-                let w_d = match robust {
-                    RobustKernelKind::Identity => 1.0,
-                    RobustKernelKind::Huber => huber_w(r_sq_d),
-                    RobustKernelKind::Cauchy | RobustKernelKind::Tukey => cauchy_w(r_sq_d),
-                };
-                new_cost += 0.5 * w_d * r_sq_d;
+                new_cost += robust_cost(r_sq_d);
             }
         }
 
@@ -1025,15 +1099,10 @@ pub fn bundle_adjust_schur_with_priors(
                 let r0 = (c_pred[0] - prior.center_world[0]) * inv_sigma;
                 let r1 = (c_pred[1] - prior.center_world[1]) * inv_sigma;
                 let r2 = (c_pred[2] - prior.center_world[2]) * inv_sigma;
-                // Match the linearisation pass's Huber/Cauchy gate so
-                // accept/reject reflects the robust loss.
+                // Scored with the same robust loss as the linearisation pass so accept/reject
+                // reflects one objective.
                 let r_sq_p = r0 * r0 + r1 * r1 + r2 * r2;
-                let w_p = match robust {
-                    RobustKernelKind::Identity => 1.0,
-                    RobustKernelKind::Huber => huber_w(r_sq_p),
-                    RobustKernelKind::Cauchy | RobustKernelKind::Tukey => cauchy_w(r_sq_p),
-                };
-                new_cost += 0.5 * w_p * r_sq_p;
+                new_cost += robust_cost(r_sq_p);
             }
         }
 
@@ -1046,8 +1115,11 @@ pub fn bundle_adjust_schur_with_priors(
             };
             se3s = se3s_trial;
             xyz = xyz_trial;
-            prev_cost = Some(new_cost);
-            lambda = (lambda / 3.0).max(1e-8);
+            // Floor at 1e-7, not 1e-8. Damping is now RELATIVE (`λ·diag`), and in f32 any
+            // `λ < 2⁻²⁴ ≈ 6e-8` makes `x + λ·x == x` bit-exactly for every magnitude of `x` —
+            // so a 1e-8 floor is not "almost Gauss-Newton", it is silently NO damping at all,
+            // reached after ~11 accepted steps from the default `initial_lambda = 1e-3`.
+            lambda = (lambda / 3.0).max(1e-7);
             if rel < params.cost_tolerance {
                 converged = true;
                 break;
@@ -1089,6 +1161,225 @@ pub fn bundle_adjust_schur_with_priors(
 
 #[cfg(test)]
 mod tests {
+
+    /// The IRLS weight must be the derivative of the cost the accept test compares:
+    /// `d/ds[½ρ(s)] = ½·w(s)`, for `s = ‖r‖²`.
+    ///
+    /// This is the identity that was broken. The solver used to accumulate the √w-scaled
+    /// residual, i.e. `½ρ'(s)·s`, which for Huber past the knee moves at exactly half the rate
+    /// of the true loss — so every step's measured reduction was halved on downweighted
+    /// observations while the model's prediction was not. Anything that reintroduces the
+    /// surrogate INSIDE THESE TWO FUNCTIONS fails here — but note this test cannot see the
+    /// solver's call sites; `schur_ba_accept_test_uses_the_true_robust_cost` covers those.
+    #[test]
+    fn robust_weight_is_the_derivative_of_robust_cost() {
+        let scale = 1.5_f32;
+        for kind in [
+            RobustKernelKind::Identity,
+            RobustKernelKind::Huber,
+            RobustKernelKind::Cauchy,
+            // Tukey is aliased to Cauchy here; included so the alias is pinned rather than
+            // merely assumed.
+            RobustKernelKind::Tukey,
+        ] {
+            // Straddle the knee: inside, at, and well past it.
+            for &r in &[0.1_f32, 0.9, 1.4, 1.5, 1.6, 3.0, 10.0] {
+                let s = r * r;
+                let h = 1e-3_f32 * s.max(1.0);
+                let d_num =
+                    (robust_cost(kind, scale, s + h) - robust_cost(kind, scale, s - h)) / (2.0 * h);
+                let d_ana = 0.5 * robust_weight(kind, scale, s);
+                assert!(
+                    (d_num - d_ana).abs() <= 2e-3 * d_ana.abs().max(1e-3),
+                    "{kind:?} at r={r}: d/ds cost = {d_num}, but w/2 = {d_ana}"
+                );
+            }
+        }
+    }
+
+    /// Past the Huber knee the IRLS surrogate `½·w·s` is exactly HALF the true loss's slope.
+    /// Pinning the factor keeps the regression legible if the above ever fails.
+    #[test]
+    fn huber_surrogate_moves_at_half_the_true_rate() {
+        let scale = 1.0_f32;
+        for &r in &[1.5_f32, 3.0, 10.0] {
+            let s = r * r;
+            let h = 1e-4_f32 * s;
+            let surrogate = |s: f32| 0.5 * robust_weight(RobustKernelKind::Huber, scale, s) * s;
+            let d_surr = (surrogate(s + h) - surrogate(s - h)) / (2.0 * h);
+            let d_true = (robust_cost(RobustKernelKind::Huber, scale, s + h)
+                - robust_cost(RobustKernelKind::Huber, scale, s - h))
+                / (2.0 * h);
+            let ratio = d_surr / d_true;
+            assert!(
+                (ratio - 0.5).abs() < 1e-2,
+                "r={r}: surrogate/true slope = {ratio}, expected 0.5"
+            );
+        }
+    }
+
+    /// `robust_cost` must stay `½·RobustLoss::rho` from `kornia-algebra` — the shared,
+    /// already-tested loss that `ba::bundle_adjust` routes the SAME `BaParams` through.
+    /// Duplicating the algebra here is what let weight and cost diverge in the first place; this
+    /// pins the copy to the original so the two solvers cannot drift apart silently.
+    #[test]
+    fn robust_cost_is_half_the_shared_kornia_algebra_rho() {
+        use kornia_algebra::optim::losses::{CauchyLoss, HuberLoss, IdentityLoss, RobustLoss};
+        let scale = 1.5_f32;
+        let huber = HuberLoss::new(scale).unwrap();
+        let cauchy = CauchyLoss::new(scale).unwrap();
+        for &r in &[0.1_f32, 0.9, 1.4, 1.5, 1.6, 3.0, 10.0] {
+            let s = r * r;
+            for (kind, rho) in [
+                (RobustKernelKind::Identity, IdentityLoss.rho(s)),
+                (RobustKernelKind::Huber, huber.rho(s)),
+                (RobustKernelKind::Cauchy, cauchy.rho(s)),
+            ] {
+                let ours = robust_cost(kind, scale, s);
+                assert!(
+                    (ours - 0.5 * rho).abs() <= 1e-5 * rho.abs().max(1e-3),
+                    "{kind:?} at r={r}: ba_schur {ours} != 0.5 * kornia-algebra rho {rho}"
+                );
+            }
+        }
+    }
+
+    /// The Cauchy loss must stay accurate for SMALL residuals — the converged regime, which is
+    /// exactly where the accept test has to resolve a difference. `(1.0 + x).ln()` in f32
+    /// quantises `x` to multiples of ~1.19e-7 before the log and returns identically 0.0 once
+    /// `x < 6e-8`; `ln_1p` does not. Reverting to `(1.0 + r_sq / s2).ln()` fails here.
+    #[test]
+    fn cauchy_cost_is_accurate_for_small_residuals() {
+        for &scale in &[1.0_f32, 2.45, 1000.0] {
+            for &r in &[1e-4_f32, 1e-3, 1e-2, 0.1] {
+                let s = r * r;
+                // For s << scale², ½ρ(s) → ½s.
+                let ours = robust_cost(RobustKernelKind::Cauchy, scale, s);
+                let quadratic = 0.5 * s;
+                assert!(
+                    ours > 0.0,
+                    "scale={scale} r={r}: Cauchy cost flushed to zero"
+                );
+                assert!(
+                    (ours - quadratic).abs() <= 1e-2 * quadratic,
+                    "scale={scale} r={r}: Cauchy cost {ours} deviates from the quadratic limit \
+                     {quadratic} by more than 1%"
+                );
+            }
+        }
+    }
+
+    /// Two cameras (the first fixed) seeing four points, with the points perturbed off ground
+    /// truth so there is a real step to take. Shared by the L2-collapse test below.
+    fn perturbed_two_view_problem() -> (
+        Vec<Pose3d>,
+        Vec<Vec3F64>,
+        Vec<BaObservation>,
+        crate::camera::PinholeCamera,
+    ) {
+        let cam = test_camera();
+        let pose0 = Pose3d::new(Mat3F64::IDENTITY, Vec3F64::ZERO);
+        let pose1 = Pose3d::new(Mat3F64::IDENTITY, Vec3F64::new(0.5, 0.0, 0.0));
+        let true_points = [
+            Vec3F64::new(-1.0, -1.0, 5.0),
+            Vec3F64::new(1.0, -1.0, 5.0),
+            Vec3F64::new(1.0, 1.0, 5.0),
+            Vec3F64::new(-1.0, 1.0, 5.0),
+        ];
+        let project = |pose: &Pose3d, pw: &Vec3F64| -> [f32; 2] {
+            let pc = pose.transform_point(pw);
+            [
+                (cam.fx * pc.x / pc.z + cam.cx) as f32,
+                (cam.fy * pc.y / pc.z + cam.cy) as f32,
+            ]
+        };
+        let mut obs = Vec::new();
+        for (pi, pt) in true_points.iter().enumerate() {
+            obs.push(BaObservation {
+                pose_idx: 0,
+                point_idx: pi,
+                pixel: project(&pose0, pt),
+                fixed_pose: true,
+                fixed_point: false,
+                ..BaObservation::default()
+            });
+            obs.push(BaObservation {
+                pose_idx: 1,
+                point_idx: pi,
+                pixel: project(&pose1, pt),
+                fixed_pose: false,
+                fixed_point: false,
+                ..BaObservation::default()
+            });
+        }
+        let perturbed: Vec<Vec3F64> = true_points
+            .iter()
+            .map(|p| *p + Vec3F64::new(0.05, -0.03, 0.02))
+            .collect();
+        (vec![pose0, pose1], perturbed, obs, cam)
+    }
+
+    /// `BaParams::robust_scale_sq` documents that its `f32::INFINITY` default "collapses to the
+    /// L2 fast path even for non-Identity kernel choices", and `ba::build_robust_loss` enforces
+    /// that for the non-Schur solver. Before the guard, `Cauchy` at the default scale made every
+    /// cost NaN, so `new_cost < cost` was always false, every step was rejected, and the solver
+    /// returned its INPUT poses with `Ok` and no error.
+    #[test]
+    fn infinite_robust_scale_collapses_to_l2_instead_of_nan() {
+        // Unit-level: the kernels themselves must not produce NaN at the default scale.
+        for kind in [RobustKernelKind::Cauchy, RobustKernelKind::Tukey] {
+            let w = robust_weight(kind, f32::INFINITY, 4.0);
+            let c = robust_cost(kind, f32::INFINITY, 4.0);
+            assert!(w.is_nan() && c.is_nan(), "precondition for the guard below");
+        }
+
+        // Solver-level: the guard must make Cauchy-with-default-scale behave exactly like L2.
+        let (poses, points, obs, cam) = perturbed_two_view_problem();
+        let l2 = bundle_adjust_schur(
+            &poses,
+            &points,
+            &obs,
+            &cam,
+            &BaParams {
+                max_iterations: 20,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let cauchy_default_scale = bundle_adjust_schur(
+            &poses,
+            &points,
+            &obs,
+            &cam,
+            &BaParams {
+                max_iterations: 20,
+                robust: RobustKernelKind::Cauchy,
+                // robust_scale_sq left at its f32::INFINITY default.
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            cauchy_default_scale.iterations, l2.iterations,
+            "Cauchy at the default (infinite) scale must run the identical L2 solve"
+        );
+        assert_eq!(cauchy_default_scale.converged, l2.converged);
+        for (a, b) in cauchy_default_scale.poses.iter().zip(l2.poses.iter()) {
+            assert!(
+                (a.translation - b.translation).length() < 1e-9,
+                "Cauchy at the default scale diverged from the L2 solve"
+            );
+        }
+        // And it must actually have moved — a NaN cost would return the input untouched.
+        let moved = cauchy_default_scale
+            .poses
+            .iter()
+            .zip(poses.iter())
+            .any(|(a, b)| (a.translation - b.translation).length() > 1e-6);
+        assert!(moved, "solver returned its input poses unchanged");
+    }
+
     use super::*;
     use crate::camera::PinholeCamera;
     use kornia_algebra::Mat3F64;
