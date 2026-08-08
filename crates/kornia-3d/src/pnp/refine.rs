@@ -12,6 +12,9 @@ use kornia_imgproc::calibration::{
     distortion::{distort_point_polynomial, PolynomialDistortion},
     CameraIntrinsic,
 };
+use std::sync::Arc;
+use kornia_algebra::optim::{CauchyLoss, HuberLoss, RobustLoss};
+use crate::ransac::RobustKernelKind;
 
 use super::{PnPError, PnPResult};
 
@@ -28,6 +31,16 @@ pub struct LMRefineParams {
     pub gradient_tolerance: f32,
     /// Initial damping factor (lambda).
     pub initial_lambda: f32,
+    /// M-estimator kernel applied per-residual (pixel-space, unlike
+    /// lightweight_vio's chi-square-whitened residuals — this crate's
+    /// `ReprojectionFactor` residual is raw pixel error). `Identity`
+    /// collapses to plain L2 (today's behavior, so this field is
+    /// backward-compatible).
+    pub robust: RobustKernelKind,
+    /// Squared scale for `robust`; its square root is the linear delta fed
+    /// to `HuberLoss::new`/`CauchyLoss::new`. Default `f32::INFINITY`
+    /// collapses to L2 regardless of `robust`.
+    pub robust_scale_sq: f32,
 }
 
 impl Default for LMRefineParams {
@@ -37,6 +50,8 @@ impl Default for LMRefineParams {
             cost_tolerance: 1e-6,
             gradient_tolerance: 1e-6,
             initial_lambda: 1e-3,
+            robust: RobustKernelKind::Identity,
+            robust_scale_sq: f32::INFINITY,
         }
     }
 }
@@ -46,7 +61,7 @@ impl LMRefineParams {
     pub fn new() -> Self {
         Self::default()
     }
-
+    
     /// Set maximum iterations.
     pub fn with_max_iterations(self, max_iters: usize) -> Self {
         Self {
@@ -102,6 +117,9 @@ pub struct ReprojectionFactor {
     cy: f32,
     /// Optional distortion coefficients (k1, k2, p1, p2, k3, k4, k5, k6)
     distortion_coeffs: Option<[f64; 8]>,
+    /// Optional robust loss applied to this observation's residual by the optimizer
+    /// via 'Factor::get_loss'.
+    loss: Option<Arc<dyn RobustLoss>>,
 }
 
 impl ReprojectionFactor {
@@ -132,7 +150,15 @@ impl ReprojectionFactor {
             cx: k.z_axis().x,
             cy: k.z_axis().y,
             distortion_coeffs,
+            loss: None,
         }
+    }
+
+    /// Attach a shared robust loss; called per-factor once `LMRefineParams`
+    /// has been translated into a concrete `RobustLoss` impl.
+    pub fn with_loss(mut self, loss: Option<Arc<dyn RobustLoss>>) -> Self {
+        self.loss = loss;
+        self
     }
 
     /// Project a 3D point to 2D using the given pose (SE3 parameters as array).
@@ -281,6 +307,10 @@ impl Factor for ReprojectionFactor {
         Ok(LinearizationResult::new(residual, jacobian, 6))
     }
 
+    fn get_loss(&self) -> Option<&dyn RobustLoss> {
+        self.loss.as_deref()
+    }
+
     fn residual_dim(&self) -> usize {
         2
     }
@@ -292,6 +322,32 @@ impl Factor for ReprojectionFactor {
     fn variable_local_dim(&self, _idx: usize) -> usize {
         6 // SE3 local tangent dimension
     }
+}
+
+/// Translate `LMRefineParams::robust`/`robust_scale_sq` into a concrete
+/// `RobustLoss` shared across all reprojection factors, or `None` for plain L2.
+fn build_robust_loss(params: &LMRefineParams) -> Result<Option<Arc<dyn RobustLoss>>, PnPError> {
+    if params.robust == RobustKernelKind::Identity || !params.robust_scale_sq.is_finite() {
+        return Ok(None);
+    }
+
+    let delta = params.robust_scale_sq.sqrt();
+    let loss: Arc<dyn RobustLoss> = match params.robust {
+        RobustKernelKind::Identity => unreachable!("handled above"),
+        RobustKernelKind::Huber => Arc::new(HuberLoss::new(delta).map_err(|e| {
+            PnPError::SvdFailed(format!("Invalid Huber robust loss parameters: {e}"))
+        })?),
+        RobustKernelKind::Cauchy => Arc::new(CauchyLoss::new(delta).map_err(|e| {
+            PnPError::SvdFailed(format!("Invalid Cauchy robust loss parameters: {e}"))
+        })?),
+        RobustKernelKind::Tukey => {
+            return Err(PnPError::SvdFailed(
+                "Tukey robust kernel is not supported for LM pose refinement".to_string(),
+            ));
+        }
+    };
+
+    Ok(Some(loss))
 }
 
 /// Refine a PnP pose estimate using Levenberg-Marquardt optimization.
@@ -357,8 +413,10 @@ pub fn refine_pose_lm(
         .map_err(|e| PnPError::SvdFailed(format!("Failed to add variable: {}", e)))?;
 
     // Add reprojection factors for each correspondence
+    let loss = build_robust_loss(params)?;
     for (pw, pi) in points_world.iter().zip(points_image.iter()) {
-        let factor = Box::new(ReprojectionFactor::new(*pw, *pi, k, distortion));
+        let factor =
+            Box::new(ReprojectionFactor::new(*pw, *pi, k, distortion).with_loss(loss.clone()));
         problem
             .add_factor(factor, vec!["pose".to_string()])
             .map_err(|e| PnPError::SvdFailed(format!("Failed to add factor: {}", e)))?;
@@ -579,6 +637,126 @@ mod tests {
         assert!(result.num_iterations.is_some());
         assert!(result.reproj_rmse.unwrap().is_finite());
         assert!(result.num_iterations.unwrap() > 0);
+
+        Ok(())
+    }
+
+    // TEMP verification test (Claude): checks that `robust: Huber` actually
+    // suppresses a gross outlier's influence on the LM solve, vs. plain L2.
+    // Not part of the requested scaffold — delete or keep at your discretion.
+    #[test]
+    fn temp_huber_suppresses_outlier_influence() -> Result<(), PnPError> {
+        let points_world: [Vec3AF32; 6] = [
+            Vec3AF32::new(0.0315, 0.03333, -0.10409),
+            Vec3AF32::new(-0.0315, 0.03333, -0.10409),
+            Vec3AF32::new(0.0, -0.00102, -0.12977),
+            Vec3AF32::new(0.02646, -0.03167, -0.1053),
+            Vec3AF32::new(-0.02646, -0.031667, -0.1053),
+            Vec3AF32::new(0.0, 0.04515, -0.11033),
+        ];
+        let points_image: [Vec2F32; 6] = [
+            Vec2F32::new(722.96466, 502.0828),
+            Vec2F32::new(669.88837, 498.61877),
+            Vec2F32::new(707.0025, 478.48975),
+            Vec2F32::new(728.05634, 447.56918),
+            Vec2F32::new(682.6069, 443.91776),
+            Vec2F32::new(696.4414, 511.96442),
+        ];
+        let k = k_default();
+        let initial_rotation = Mat3AF32::IDENTITY;
+        let initial_translation = Vec3AF32::new(0.0, 0.0, 1.0);
+
+        // Baseline: LM on the 6 clean correspondences only.
+        let clean = refine_pose_lm(
+            &points_world,
+            &points_image,
+            &k,
+            &initial_rotation,
+            &initial_translation,
+            None,
+            &LMRefineParams::default(),
+        )?;
+
+        // Same 6 points plus one gross outlier (300px pixel error on an
+        // otherwise-valid world point).
+        let mut points_world_out = points_world.to_vec();
+        let mut points_image_out = points_image.to_vec();
+        points_world_out.push(points_world[0]);
+        points_image_out.push(Vec2F32::new(
+            points_image[0].x + 300.0,
+            points_image[0].y - 300.0,
+        ));
+
+        let no_robust = refine_pose_lm(
+            &points_world_out,
+            &points_image_out,
+            &k,
+            &initial_rotation,
+            &initial_translation,
+            None,
+            &LMRefineParams::default(),
+        )?;
+
+        let huber_params = LMRefineParams {
+            robust: RobustKernelKind::Huber,
+            robust_scale_sq: 25.0, // delta = 5px
+            ..LMRefineParams::default()
+        };
+        let with_huber = refine_pose_lm(
+            &points_world_out,
+            &points_image_out,
+            &k,
+            &initial_rotation,
+            &initial_translation,
+            None,
+            &huber_params,
+        )?;
+
+        // Score both outlier-contaminated solves against the CLEAN
+        // correspondence set only, using the clean-only solve as ground
+        // truth. A solve dragged toward the outlier will fit the clean data
+        // worse than one that suppressed it.
+        let rmse_no_robust_vs_clean = compute_rmse(
+            &points_world,
+            &points_image,
+            &no_robust.rotation,
+            &no_robust.translation,
+            &k,
+            None,
+        )?;
+        let rmse_huber_vs_clean = compute_rmse(
+            &points_world,
+            &points_image,
+            &with_huber.rotation,
+            &with_huber.translation,
+            &k,
+            None,
+        )?;
+        let rmse_clean_baseline = compute_rmse(
+            &points_world,
+            &points_image,
+            &clean.rotation,
+            &clean.translation,
+            &k,
+            None,
+        )?;
+
+        println!(
+            "clean_baseline_rmse={rmse_clean_baseline:.4} \
+             no_robust_vs_clean_rmse={rmse_no_robust_vs_clean:.4} \
+             huber_vs_clean_rmse={rmse_huber_vs_clean:.4}"
+        );
+
+        // Huber should fit the clean data much closer to the outlier-free
+        // baseline than plain L2 does.
+        assert!(
+            rmse_huber_vs_clean < rmse_no_robust_vs_clean,
+            "Huber ({rmse_huber_vs_clean}) did not fit the clean set better than L2 ({rmse_no_robust_vs_clean})"
+        );
+        assert!(
+            rmse_huber_vs_clean < 5.0,
+            "Huber result ({rmse_huber_vs_clean}) still far from outlier-free baseline ({rmse_clean_baseline})"
+        );
 
         Ok(())
     }
