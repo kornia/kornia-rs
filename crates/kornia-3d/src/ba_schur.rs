@@ -449,6 +449,31 @@ fn matvec_6x3t_6(a: &[f32; 18], b: &[f32; 6]) -> [f32; 3] {
 /// `BaParams::gradient_tolerance` is NOT read by this solver — the only termination test is
 /// the relative cost decrease against `cost_tolerance`. Callers needing a gradient-based
 /// stopping rule do not get one here.
+///
+/// # Arguments
+///
+/// * `poses` - initial camera poses, `T_world_cam`, one per camera.
+/// * `points` - initial 3-D landmark positions in world coordinates.
+/// * `observations` - the 2-D measurements tying a pose to a point, each carrying its own
+///   `fixed_pose` / `fixed_point` flags and optional depth measurement. Entries whose
+///   `pose_idx` or `point_idx` is out of range are skipped rather than rejected.
+/// * `camera` - the shared pinhole intrinsics used to project every observation.
+/// * `params` - solver settings; see the caveats above on `initial_lambda` and
+///   `gradient_tolerance`, which this solver interprets differently from
+///   [`crate::ba::bundle_adjust`].
+///
+/// # Returns
+///
+/// A [`BaResult`] holding the refined poses and points, the iteration count, whether the
+/// relative cost decrease met `cost_tolerance`, and `final_cost` — the objective
+/// `Σ ½ρ(‖r‖²)` evaluated at the returned solution.
+///
+/// # Errors
+///
+/// Returns [`SchurBaError::NoFreeVariables`] if every pose and point is fixed,
+/// [`SchurBaError::CholeskyFailed`] if the reduced camera system stays non-factorable after the
+/// damping has been escalated past its limit, and [`SchurBaError::Ba`] for setup errors raised
+/// by the shared bundle-adjustment layer.
 pub fn bundle_adjust_schur(
     poses: &[Pose3d],
     points: &[Vec3F64],
