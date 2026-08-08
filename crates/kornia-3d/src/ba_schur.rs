@@ -582,6 +582,12 @@ pub fn bundle_adjust_schur_with_priors(
     let mut lambda = params.initial_lambda.clamp(0.0, MAX_INITIAL_LAMBDA);
     let mut iters_done = 0usize;
     let mut converged = false;
+    // Objective at the parameters currently held in `se3s`/`xyz`. Kept in step with them: set to
+    // `cost` once it is evaluated for this iteration, and to `new_cost` when a step is accepted,
+    // so every exit path — converged, budget exhausted, damping blown out — reports the value at
+    // the parameters actually returned. NaN only if `max_iterations == 0`, where nothing is ever
+    // evaluated.
+    let mut final_cost = f32::NAN;
 
     for _iter in 0..params.max_iterations {
         iters_done += 1;
@@ -883,6 +889,8 @@ pub fn bundle_adjust_schur_with_priors(
             }
         }
 
+        final_cost = cost;
+
         // ── Apply LM damping: A[i] += λ·diag(A), C[j] += λ·diag(C) ─────
         //
         // Ellipsoidal, as Ceres' LevenbergMarquardtStrategy does it: damp with diag(JᵀJ) — here
@@ -1135,6 +1143,7 @@ pub fn bundle_adjust_schur_with_priors(
             };
             se3s = se3s_trial;
             xyz = xyz_trial;
+            final_cost = new_cost;
             // Floor at 1e-7, not 1e-8. Damping is now RELATIVE (`λ·diag`), and in f32 any
             // `λ < 2⁻²⁵ ≈ 3e-8` makes `x + λ·x == x` bit-exactly for EVERY magnitude of `x` (at
             // 6e-8 it depends on where `x` sits in its binade: measured 0/2000 magnitudes) —
@@ -1177,6 +1186,7 @@ pub fn bundle_adjust_schur_with_priors(
         points: out_points,
         iterations: iters_done,
         converged,
+        final_cost,
     })
 }
 
@@ -1241,6 +1251,70 @@ mod tests {
                 "r={r}: surrogate/true slope = {ratio}, expected 0.5"
             );
         }
+    }
+
+    /// THE regression test for this change: the cost the solver reports must be the objective it
+    /// claims to minimise, evaluated independently at the poses and points it returned.
+    ///
+    /// Every other test here exercises `robust_weight`/`robust_cost` in isolation, so all of them
+    /// stay green if the SOLVER goes back to accumulating the IRLS surrogate `½ρ'(s)·s` at its
+    /// `cost +=` / `new_cost +=` sites — which is exactly what the bug was. This one recomputes
+    /// `Σ ½ρ(‖r‖²)` from the returned solution with no help from the solver and compares.
+    ///
+    /// It needs residuals PAST the Huber knee at the optimum to bite, because inside the knee the
+    /// surrogate and the loss agree identically. Hence the deliberate gross outlier: it cannot be
+    /// fitted, so it still sits far past the knee when the solve finishes, where the surrogate is
+    /// exactly half the true loss.
+    #[test]
+    fn reported_cost_is_the_objective_the_solver_minimises() {
+        let (poses, points, mut observations, camera) = perturbed_two_view_problem();
+
+        // A gross outlier, unfittable by construction, so it stays saturated at the solution.
+        let mut outlier = observations[0];
+        outlier.pixel = [
+            observations[0].pixel[0] + 5.0,
+            observations[0].pixel[1] - 4.0,
+        ];
+        observations.push(outlier);
+
+        let scale_sq = 0.01_f32;
+        let params = BaParams {
+            max_iterations: 25,
+            robust: RobustKernelKind::Huber,
+            robust_scale_sq: scale_sq,
+            ..Default::default()
+        };
+        let res = bundle_adjust_schur(&poses, &points, &observations, &camera, &params).unwrap();
+
+        // Independent evaluation of Σ ½ρ(s) at the returned solution.
+        let scale = scale_sq.sqrt();
+        let se3s: Vec<SE3F32> = res.poses.iter().map(pose_to_se3).collect();
+        let mut expected = 0.0_f32;
+        let mut saturated = 0usize;
+        for obs in &observations {
+            let (r, _, _) = residual_and_jacobians(
+                &se3s[obs.pose_idx],
+                &res.points[obs.point_idx],
+                obs.pixel,
+                &camera,
+            );
+            let r_sq = r[0] * r[0] + r[1] * r[1];
+            if r_sq > scale * scale {
+                saturated += 1;
+            }
+            expected += robust_cost(RobustKernelKind::Huber, scale, r_sq);
+        }
+
+        assert!(
+            saturated > 0,
+            "fixture no longer saturates the Huber knee, so it cannot distinguish the surrogate"
+        );
+        assert!(
+            (res.final_cost - expected).abs() <= 1e-4 * expected.max(1e-6),
+            "solver reported {} but the objective at its own solution is {expected} \
+             (the surrogate would report about half of the saturated part)",
+            res.final_cost
+        );
     }
 
     /// The other half of the pair. `robust_cost_is_half_the_shared_kornia_algebra_rho` pins the
