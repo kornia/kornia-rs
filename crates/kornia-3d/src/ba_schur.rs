@@ -65,6 +65,11 @@ const MIN_Z: f32 = 1e-3;
 const MIN_LM_DIAGONAL: f32 = 1e-6;
 const MAX_LM_DIAGONAL: f32 = 1e24;
 
+/// Ceiling on `BaParams::initial_lambda`, so that `λ · MAX_LM_DIAGONAL` cannot overflow `f32`
+/// before the loop's own `λ > 1e10` guards get a chance to fire. `1e10 · 1e24 = 1e34`, inside
+/// `f32::MAX ≈ 3.4e38`.
+const MAX_INITIAL_LAMBDA: f32 = 1e10;
+
 /// IRLS weight `w = ρ'(s)` for `s = ‖r‖²`. The residual and its Jacobian rows are scaled by √w,
 /// which is what makes the normal equations those of the robust problem.
 ///
@@ -77,11 +82,15 @@ fn robust_weight(kind: RobustKernelKind, scale: f32, r_sq: f32) -> f32 {
     match kind {
         RobustKernelKind::Identity => 1.0,
         RobustKernelKind::Huber => {
-            let r_norm = r_sq.sqrt();
-            if r_norm <= scale {
+            // Knee tested as `s <= scale²`, NOT `sqrt(s) <= scale`, to match
+            // `kornia_algebra::optim::losses::HuberLoss::weight`. In f32 `sqrt` and squaring
+            // round differently, so the two predicates disagree for `s` within an ulp of
+            // `scale²` — the same observation weighted 1.0 by one solver and `scale/‖r‖` by the
+            // other, from identical `BaParams`.
+            if r_sq <= scale * scale {
                 1.0
             } else {
-                scale / r_norm
+                scale / r_sq.sqrt()
             }
         }
         RobustKernelKind::Cauchy | RobustKernelKind::Tukey => {
@@ -103,11 +112,12 @@ fn robust_cost(kind: RobustKernelKind, scale: f32, r_sq: f32) -> f32 {
     match kind {
         RobustKernelKind::Identity => 0.5 * r_sq,
         RobustKernelKind::Huber => {
-            let r_norm = r_sq.sqrt();
-            if r_norm <= scale {
+            // Same knee predicate as `robust_weight` — they are a derivative pair and must
+            // switch branches on the identical condition.
+            if r_sq <= scale * scale {
                 0.5 * r_sq
             } else {
-                scale * r_norm - 0.5 * scale * scale
+                scale * r_sq.sqrt() - 0.5 * scale * scale
             }
         }
         // Tukey shares Cauchy's weight here, so it shares Cauchy's loss too.
@@ -556,11 +566,20 @@ pub fn bundle_adjust_schur_with_priors(
     } else {
         RobustKernelKind::Identity
     };
-    let robust_scale = params.robust_scale_sq.sqrt().max(1e-6);
+    // No `.max(1e-6)` floor here. `ba::build_robust_loss` computes `robust_scale_sq.sqrt()` with
+    // no floor, and the guard above has already excluded the non-finite and non-positive cases, so
+    // a floor could only make the two solvers disagree: at `robust_scale_sq = 1e-20` a floor gives
+    // this solver a knee 1e4x wider than `ba::bundle_adjust` gets from the same `BaParams`.
+    let robust_scale = params.robust_scale_sq.sqrt();
     let robust_weight = |r_sq: f32| -> f32 { robust_weight(robust, robust_scale, r_sq) };
     let robust_cost = |r_sq: f32| -> f32 { robust_cost(robust, robust_scale, r_sq) };
 
-    let mut lambda = params.initial_lambda;
+    // Clamped, because `MAX_LM_DIAGONAL`'s overflow argument assumes a bounded λ. That bound
+    // otherwise holds only via the `λ > 1e10` breaks on the reject and factorisation-failure
+    // paths, which a caller-supplied `initial_lambda` reaches BEFORE any of them run:
+    // `1e20 * 1e24` is +inf, the damped diagonal is inf, and the solve returns NaN poses where
+    // absolute damping would merely have returned a very stiff, finite one.
+    let mut lambda = params.initial_lambda.clamp(0.0, MAX_INITIAL_LAMBDA);
     let mut iters_done = 0usize;
     let mut converged = false;
 
@@ -1117,7 +1136,8 @@ pub fn bundle_adjust_schur_with_priors(
             se3s = se3s_trial;
             xyz = xyz_trial;
             // Floor at 1e-7, not 1e-8. Damping is now RELATIVE (`λ·diag`), and in f32 any
-            // `λ < 2⁻²⁴ ≈ 6e-8` makes `x + λ·x == x` bit-exactly for every magnitude of `x` —
+            // `λ < 2⁻²⁵ ≈ 3e-8` makes `x + λ·x == x` bit-exactly for EVERY magnitude of `x` (at
+            // 6e-8 it depends on where `x` sits in its binade: measured 0/2000 magnitudes) —
             // so a 1e-8 floor is not "almost Gauss-Newton", it is silently NO damping at all,
             // reached after ~11 accepted steps from the default `initial_lambda = 1e-3`.
             lambda = (lambda / 3.0).max(1e-7);
@@ -1220,6 +1240,49 @@ mod tests {
                 (ratio - 0.5).abs() < 1e-2,
                 "r={r}: surrogate/true slope = {ratio}, expected 0.5"
             );
+        }
+    }
+
+    /// The other half of the pair. `robust_cost_is_half_the_shared_kornia_algebra_rho` pins the
+    /// COST against kornia-algebra; nothing pinned the WEIGHT, and weight-vs-cost drift is the
+    /// exact failure this whole change exists to fix — so pinning only one of the two closes half
+    /// the hole.
+    ///
+    /// It also catches a subtler divergence: this module tests Huber's knee as `‖r‖ <= scale`
+    /// while `HuberLoss::weight` tests `s <= scale²`. In f32 `sqrt` and squaring round
+    /// differently, so those two disagree for `s` within an ulp of `scale²` — the same
+    /// observation weighted `1.0` by one solver and `scale/‖r‖` by the other.
+    #[test]
+    fn robust_weight_matches_the_shared_kornia_algebra_weight() {
+        use kornia_algebra::optim::losses::{CauchyLoss, HuberLoss, IdentityLoss, RobustLoss};
+        let scale = 1.5_f32;
+        let huber = HuberLoss::new(scale).unwrap();
+        let cauchy = CauchyLoss::new(scale).unwrap();
+        // Straddle the knee tightly: consecutive f32 values either side of scale².
+        let knee = scale * scale;
+        let radii = [
+            1e-4_f32,
+            0.1,
+            0.9,
+            f32::from_bits(knee.to_bits() - 1).sqrt(),
+            scale,
+            f32::from_bits(knee.to_bits() + 1).sqrt(),
+            3.0,
+            10.0,
+        ];
+        for &r in &radii {
+            let s = r * r;
+            for (kind, theirs) in [
+                (RobustKernelKind::Identity, IdentityLoss.weight(s)),
+                (RobustKernelKind::Huber, huber.weight(s)),
+                (RobustKernelKind::Cauchy, cauchy.weight(s)),
+            ] {
+                let ours = robust_weight(kind, scale, s);
+                assert!(
+                    (ours - theirs).abs() <= 1e-4 * theirs.abs().max(f32::MIN_POSITIVE),
+                    "{kind:?} at r={r}: ba_schur weight {ours} != kornia-algebra weight {theirs}"
+                );
+            }
         }
     }
 
