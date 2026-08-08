@@ -868,7 +868,8 @@ pub fn bundle_adjust_schur_with_priors(
         //
         // Ellipsoidal, as Ceres' LevenbergMarquardtStrategy does it: damp with diag(JᵀJ) — here
         // already assembled as the block diagonals — clamped to [min_lm_diagonal,
-        // max_lm_diagonal] = [1e-6, 1e32].
+        // max_lm_diagonal]. See `MAX_LM_DIAGONAL`: the ceiling here is 1e24, NOT Ceres' 1e32,
+        // because this solver is f32 and 1e32 * a large λ overflows to +inf.
         //
         // A spherical λ·I damps every direction by the same ABSOLUTE amount, whatever its
         // curvature. That is not scale-free: one λ has to serve parameter blocks in different
@@ -1169,8 +1170,12 @@ mod tests {
     /// residual, i.e. `½ρ'(s)·s`, which for Huber past the knee moves at exactly half the rate
     /// of the true loss — so every step's measured reduction was halved on downweighted
     /// observations while the model's prediction was not. Anything that reintroduces the
-    /// surrogate INSIDE THESE TWO FUNCTIONS fails here — but note this test cannot see the
-    /// solver's call sites; `schur_ba_accept_test_uses_the_true_robust_cost` covers those.
+    /// surrogate INSIDE THESE TWO FUNCTIONS fails here.
+    ///
+    /// It does NOT see the solver's call sites, and nothing else does either: restoring the
+    /// surrogate at the six `cost +=` / `new_cost +=` sites in `bundle_adjust_schur_with_priors`
+    /// leaves the whole suite green. Closing that needs the compared objective observable from
+    /// outside, i.e. the final cost on `BaResult`.
     #[test]
     fn robust_weight_is_the_derivative_of_robust_cost() {
         let scale = 1.5_f32;
@@ -1228,7 +1233,12 @@ mod tests {
         let scale = 1.5_f32;
         let huber = HuberLoss::new(scale).unwrap();
         let cauchy = CauchyLoss::new(scale).unwrap();
-        for &r in &[0.1_f32, 0.9, 1.4, 1.5, 1.6, 3.0, 10.0] {
+        // The small radii matter as much as the large ones. An earlier revision stopped at 0.1,
+        // and that was the only reason this test and `cauchy_cost_is_accurate_for_small_residuals`
+        // could coexist: `CauchyLoss::rho` used `(1.0 + x).ln()` and was 28% low at r=1e-3, so
+        // pinning one to the other over that range would have failed. Both use `ln_1p` now, so the
+        // pin holds where it actually matters.
+        for &r in &[1e-4_f32, 1e-3, 1e-2, 0.1, 0.9, 1.4, 1.5, 1.6, 3.0, 10.0] {
             let s = r * r;
             for (kind, rho) in [
                 (RobustKernelKind::Identity, IdentityLoss.rho(s)),
@@ -1236,8 +1246,10 @@ mod tests {
                 (RobustKernelKind::Cauchy, cauchy.rho(s)),
             ] {
                 let ours = robust_cost(kind, scale, s);
+                // Relative only — an absolute floor would let the small-r cases pass vacuously,
+                // which is exactly how the earlier revision hid the divergence.
                 assert!(
-                    (ours - 0.5 * rho).abs() <= 1e-5 * rho.abs().max(1e-3),
+                    (ours - 0.5 * rho).abs() <= 1e-4 * (0.5 * rho).abs().max(f32::MIN_POSITIVE),
                     "{kind:?} at r={r}: ba_schur {ours} != 0.5 * kornia-algebra rho {rho}"
                 );
             }
