@@ -41,10 +41,19 @@
 //! [`crate::ba::bundle_adjust`], which damps by `λ·I`. Full
 //! LM-with-backtracking (a gain-ratio / trust-region update) is still TODO:
 //! the step test is the sign of the cost change only.
+//!
+//! # Instrumentation
+//!
+//! [`BA_CALLS`], [`BA_ITERS`] and [`BA_NANOS`] accumulate across every adjustment in the process,
+//! and [`BA_LIN_NANOS`] / [`BA_ASM_NANOS`] / [`BA_FACT_NANOS`] / [`BA_TRIAL_NANOS`] split each LM
+//! iteration into linearise, assemble, factor and trial. [`BA_OBS`] holds the residual-row count
+//! of the most recent iteration. They are process-global with no reset, so they answer "where did
+//! this process spend its solve time", not "what did this call cost".
 
 use faer::prelude::Solve;
 use faer::Mat;
 use kornia_algebra::{Mat3AF32, Mat3F64, Vec3AF32, Vec3F64, SE3F32, SO3F32};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use thiserror::Error;
 
 use crate::ba::{BaError, BaObservation, BaParams, BaPosePrior, BaResult};
@@ -53,6 +62,56 @@ use crate::pose::Pose3d;
 use crate::ransac::RobustKernelKind;
 
 const MIN_Z: f32 = 1e-3;
+
+/// Total adjustments run, and total LM iterations across them. `BaResult` has always carried
+/// `iterations` and `converged`, but a caller that runs hundreds of adjustments has no way to see
+/// the aggregate, so "where does the solve time go" gets answered by argument instead of by
+/// measurement.
+pub static BA_CALLS: AtomicUsize = AtomicUsize::new(0);
+/// See [`BA_CALLS`].
+pub static BA_ITERS: AtomicUsize = AtomicUsize::new(0);
+/// Total nanoseconds inside bundle adjustment. See [`BA_CALLS`].
+pub static BA_NANOS: AtomicU64 = AtomicU64::new(0);
+
+/// Per-phase nanoseconds within the LM iteration. Linearise = residuals, Jacobians and the
+/// A/B/C/g accumulation; assemble = damping plus building the reduced camera system; factor =
+/// Cholesky and back-substitution; trial = evaluating the objective at the trial point.
+///
+/// Nanoseconds, not microseconds: these are accumulated once per LM iteration, and `as_micros()`
+/// truncates DOWNWARD every time. At this crate's own test sizes the factor phase runs ~0.4 µs, so
+/// a microsecond counter reads 0 forever; the bias is worst for the shortest phase, which is the
+/// one any "phase X dominates" conclusion rests on.
+///
+/// These are process-global and never reset, so they are an aggregate over the lifetime of the
+/// process, not of a solve; under concurrent solves the four phases interleave across problems.
+pub static BA_LIN_NANOS: AtomicU64 = AtomicU64::new(0);
+/// See [`BA_LIN_NANOS`].
+pub static BA_ASM_NANOS: AtomicU64 = AtomicU64::new(0);
+/// See [`BA_LIN_NANOS`].
+pub static BA_FACT_NANOS: AtomicU64 = AtomicU64::new(0);
+/// See [`BA_LIN_NANOS`].
+pub static BA_TRIAL_NANOS: AtomicU64 = AtomicU64::new(0);
+/// Residual rows the most recent LM iteration evaluated: every in-range reprojection observation
+/// (including those on fixed poses and fixed points, which are still scored) plus every depth row.
+/// Pose-prior rows are not counted — they scale with the camera count, not the observation count.
+///
+/// Written in the linearisation pass, so it is set on every iteration that runs at all, including
+/// one whose factorisation later fails.
+///
+/// It exists because this number is easy to get wrong from the outside and the error is silent: a
+/// per-observation timing comparison built on the caller's total observation count came out 7x
+/// high, and one built on a count derived from cost and RMS came out 3.5x low.
+pub static BA_OBS: AtomicU64 = AtomicU64::new(0);
+
+/// Fold one adjustment's iteration count and wall time into [`BA_ITERS`] / [`BA_NANOS`].
+///
+/// Must be called on EVERY exit taken after [`BA_CALLS`] was incremented — including the
+/// Cholesky-failure error path — or the aggregate counts calls it never accounts for.
+#[inline]
+fn record_call_totals(t_ba: &std::time::Instant, iters_done: usize) {
+    BA_ITERS.fetch_add(iters_done, Ordering::Relaxed);
+    BA_NANOS.fetch_add(t_ba.elapsed().as_nanos() as u64, Ordering::Relaxed);
+}
 
 /// Ceres' `min_lm_diagonal` / `max_lm_diagonal`. The LM damping diagonal is clamped to this range
 /// because extremely small or large entries of diag(JᵀJ) make the regularisation fail.
@@ -605,6 +664,8 @@ pub fn bundle_adjust_schur_with_priors(
     // `1e20 * 1e24` is +inf, the damped diagonal is inf, and the solve returns NaN poses where
     // absolute damping would merely have returned a very stiff, finite one.
     let mut lambda = params.initial_lambda.clamp(0.0, MAX_INITIAL_LAMBDA);
+    let t_ba = std::time::Instant::now();
+    BA_CALLS.fetch_add(1, Ordering::Relaxed);
     let mut iters_done = 0usize;
     let mut converged = false;
     // Objective at the parameters currently held in `se3s`/`xyz`. Kept in step with them: set to
@@ -636,13 +697,16 @@ pub fn bundle_adjust_schur_with_priors(
         // (Symmetric case: free point + fixed pose contributes to C and
         //  g_point only. Both we handle below.)
 
+        let t_lin = std::time::Instant::now();
         let mut cost = 0.0_f32;
         let mut n_depth_obs_iter = 0usize;
+        let mut n_reproj_obs_iter = 0usize;
 
         for obs in observations {
             if obs.pose_idx >= p_total || obs.point_idx >= n_total {
                 continue;
             }
+            n_reproj_obs_iter += 1;
             let pose = &se3s[obs.pose_idx];
             let point = &xyz[obs.point_idx];
             let (mut r, mut j_pose, mut j_point) =
@@ -793,7 +857,18 @@ pub fn bundle_adjust_schur_with_priors(
                 }
             }
         }
-        let _ = n_depth_obs_iter; // currently unused; reserved for future telemetry
+        // Recorded HERE, in the linearisation pass, not in the trial pass. The trial pass sits
+        // downstream of the factorisation, so a solve whose Cholesky fails on every retry until
+        // `λ > 1e10` would return `Err` having never written `BA_OBS` — leaving it holding the
+        // count from a different, earlier problem, which is precisely the class of error it was
+        // added to prevent. The linearisation pass runs on every iteration that runs at all.
+        //
+        // Depth rows are included: `n_depth_obs_iter` was already being counted and thrown away
+        // one line below this, while `BA_OBS`'s doc apologised for being a lower bound.
+        BA_OBS.store(
+            (n_reproj_obs_iter + n_depth_obs_iter) as u64,
+            Ordering::Relaxed,
+        );
 
         // ── Per-pose translation prior (3-D position residual) ──────────────
         // For each pose i with a Some(prior), contribute a 3-row residual
@@ -915,6 +990,8 @@ pub fn bundle_adjust_schur_with_priors(
         }
 
         final_cost = cost;
+        BA_LIN_NANOS.fetch_add(t_lin.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        let t_asm = std::time::Instant::now();
 
         // ── Apply LM damping: A[i] += λ·diag(A), C[j] += λ·diag(C) ─────
         //
@@ -1018,12 +1095,24 @@ pub fn bundle_adjust_schur_with_priors(
                 m_mat[(j, i)] = avg;
             }
         }
+        BA_ASM_NANOS.fetch_add(t_asm.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        let t_fact = std::time::Instant::now();
         let chol = match m_mat.llt(faer::Side::Lower) {
             Ok(c) => c,
             Err(e) => {
+                // A failed factorisation is not free, and it is not cheaper than a successful
+                // one — charge it to the factor phase before unwinding, or the phase split
+                // silently attributes its (already-banked) linearise and assemble time while
+                // crediting factor with nothing, biasing exactly the comparison these counters
+                // exist to make.
+                BA_FACT_NANOS.fetch_add(t_fact.elapsed().as_nanos() as u64, Ordering::Relaxed);
                 // Bump damping and retry next outer iteration.
                 lambda *= 10.0;
                 if lambda > 1e10 {
+                    // `BA_CALLS` was already incremented on entry; record this call's work on
+                    // the error path too, or `BA_NANOS / BA_CALLS` under-reports by the failure
+                    // rate and `BA_ITERS` loses every iteration of every failed solve.
+                    record_call_totals(&t_ba, iters_done);
                     return Err(SchurBaError::CholeskyFailed(format!("{e:?}")));
                 }
                 continue;
@@ -1058,6 +1147,9 @@ pub fn bundle_adjust_schur_with_priors(
             }
             d_point[j] = matvec_3x3_3(&c_inv_j, &rhs);
         }
+
+        BA_FACT_NANOS.fetch_add(t_fact.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        let t_trial = std::time::Instant::now();
 
         // ── Trial: retract poses, add to points, recompute cost ─────────
         let mut se3s_trial = se3s.clone();
@@ -1159,6 +1251,8 @@ pub fn bundle_adjust_schur_with_priors(
             }
         }
 
+        BA_TRIAL_NANOS.fetch_add(t_trial.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
         if new_cost < cost {
             // Accept step.
             let rel = if cost > 1e-12 {
@@ -1205,6 +1299,8 @@ pub fn bundle_adjust_schur_with_priors(
             out_points.push(points[i]);
         }
     }
+
+    record_call_totals(&t_ba, iters_done);
 
     Ok(BaResult {
         poses: out_poses,
@@ -1339,6 +1435,56 @@ mod tests {
             "solver reported {} but the objective at its own solution is {expected} \
              (the surrogate would report about half of the saturated part)",
             res.final_cost
+        );
+    }
+
+    /// The counters must actually count.
+    ///
+    /// NOTE what this test can and cannot assert, because it is the clearest available evidence
+    /// about the design. The counters are process-global with no reset, and the harness runs
+    /// tests in parallel, so any other test calling a bundle adjustment concurrently perturbs
+    /// every delta measured here. An exact `BA_ITERS` delta or an exact `BA_OBS` value passes in
+    /// isolation and fails in the full suite — verified. So this asserts only monotonic advance,
+    /// which is all that is well-defined for shared global counters under a parallel runner.
+    ///
+    /// If these become `BaResult` fields or move behind a feature gate, this test can assert the
+    /// exact values instead, and `BA_OBS`'s last-writer-wins semantics stop being observable.
+    #[test]
+    fn counters_record_the_solve_they_ran() {
+        let (poses, points, observations, camera) = perturbed_two_view_problem();
+        assert!(!observations.is_empty());
+        let params = BaParams {
+            max_iterations: 5,
+            ..Default::default()
+        };
+
+        let calls_before = BA_CALLS.load(Ordering::Relaxed);
+        let iters_before = BA_ITERS.load(Ordering::Relaxed);
+        let nanos_before = BA_NANOS.load(Ordering::Relaxed);
+        let lin_before = BA_LIN_NANOS.load(Ordering::Relaxed);
+
+        let res = bundle_adjust_schur(&poses, &points, &observations, &camera, &params).unwrap();
+
+        assert!(
+            BA_CALLS.load(Ordering::Relaxed) > calls_before,
+            "BA_CALLS never advanced"
+        );
+        assert!(
+            BA_ITERS.load(Ordering::Relaxed) - iters_before >= res.iterations,
+            "BA_ITERS advanced by less than the iterations this call reports"
+        );
+        assert!(
+            BA_NANOS.load(Ordering::Relaxed) > nanos_before,
+            "BA_NANOS never advanced"
+        );
+        assert!(
+            BA_LIN_NANOS.load(Ordering::Relaxed) > lin_before,
+            "BA_LIN_NANOS never advanced — the linearisation phase is not being timed"
+        );
+        // Non-zero rather than exact: a concurrent test's solve may have stored over it.
+        assert!(
+            BA_OBS.load(Ordering::Relaxed) > 0,
+            "BA_OBS was never written"
         );
     }
 
