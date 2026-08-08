@@ -94,7 +94,13 @@ impl RobustLoss for CauchyLoss {
 
     fn rho(&self, squared_norm: f32) -> f32 {
         let scale_sq = self.scale * self.scale;
-        scale_sq * (1.0 + squared_norm / scale_sq).ln()
+        // `ln_1p`, not `(1.0 + x).ln()`. In f32 the sum quantises to steps of 1.19e-7 BEFORE the
+        // log, so small residuals — the converged regime a step-acceptance test has to resolve —
+        // lose most or all of their value: at scale=2.45, ‖r‖=1e-3 the naive form is 28.4% low,
+        // and at scale=1.5, ‖r‖=1e-4 it returns exactly 0.0. `optim::core::problem` sums this
+        // into the cost the LM solver compares across a trial step, so the error lands directly
+        // on accept/reject.
+        scale_sq * (squared_norm / scale_sq).ln_1p()
     }
 }
 

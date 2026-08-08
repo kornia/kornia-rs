@@ -163,6 +163,16 @@ pub struct BaResult {
     pub iterations: usize,
     /// Whether the optimizer converged.
     pub converged: bool,
+    /// Value of the objective at the returned solution — `Σ ½ρ(‖r‖²)` over every residual the
+    /// solver scored, with `ρ` the robust loss selected by [`BaParams::robust`] (identity when
+    /// none). For an unrobustified problem this is the familiar `½Σ‖r‖²`.
+    ///
+    /// This is the quantity the optimiser minimises and the quantity its accept test compares,
+    /// so it is the only way a caller can check that the two agree. That matters more than it
+    /// sounds: this solver previously scored an IRLS surrogate `½ρ'(s)·s` instead of `½ρ(s)`,
+    /// which is half the true value on every downweighted observation, and the discrepancy was
+    /// invisible from outside because nothing reported the cost.
+    pub final_cost: f32,
 }
 
 // ---------------------------------------------------------------------------
@@ -806,6 +816,7 @@ pub fn bundle_adjust(
         points: out_points,
         iterations: result.iterations,
         converged,
+        final_cost: result.final_cost,
     })
 }
 
