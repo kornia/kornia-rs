@@ -7,7 +7,7 @@ mod perspective;
 mod span;
 
 pub use affine::{get_rotation_matrix2d, invert_affine_transform, warp_affine, warp_affine_u8};
-pub(crate) use common::bilinear_sample_u8;
+pub(crate) use common::bilinear_sample_u8_valid;
 #[cfg(feature = "cuda")]
 pub(crate) use perspective::invert_homography;
 pub use perspective::{warp_perspective, warp_perspective_u8};

@@ -20,6 +20,12 @@ pub(crate) fn bilinear_sample_u8<const C: usize>(
     yf: f32,
     dst_pixel: &mut [u8],
 ) {
+    if !xf.is_finite() || !yf.is_finite() {
+        for p in dst_pixel.iter_mut().take(C) {
+            *p = 0;
+        }
+        return;
+    }
     let xi = xf.floor() as i32;
     let yi = yf.floor() as i32;
 

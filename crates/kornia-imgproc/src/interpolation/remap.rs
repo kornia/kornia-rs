@@ -133,6 +133,19 @@ pub fn remap<const C: usize>(
 /// * `dst` must have the same size as the maps.
 /// * [`ImageError::UnsupportedInterpolation`] is returned for interpolation
 ///   modes other than bilinear and nearest-neighbor.
+///
+/// # Example
+///
+/// ```
+/// use kornia_image::{Image, ImageSize};
+/// use kornia_imgproc::interpolation::{remap_u8, InterpolationMode};
+///
+/// let src = Image::<u8, 3>::from_size_val(ImageSize { width: 4, height: 4 }, 128u8).unwrap();
+/// let mut dst = Image::<u8, 3>::from_size_val(ImageSize { width: 4, height: 4 }, 0u8).unwrap();
+/// let map_x = Image::<f32, 1>::from_size_val(ImageSize { width: 4, height: 4 }, 1.0f32).unwrap();
+/// let map_y = Image::<f32, 1>::from_size_val(ImageSize { width: 4, height: 4 }, 1.0f32).unwrap();
+/// remap_u8(&src, &mut dst, &map_x, &map_y, InterpolationMode::Bilinear).unwrap();
+/// ```
 pub fn remap_u8<const C: usize>(
     src: &Image<u8, C>,
     dst: &mut Image<u8, C>,
@@ -171,6 +184,11 @@ pub fn remap_u8<const C: usize>(
             }
             return exec.run(|stream| remap_u8_cuda(src, dst, map_x, map_y, interpolation, stream));
         }
+        if is_device(map_x) || is_device(map_y) {
+            return Err(ImageError::Cuda(
+                "remap_u8: map_x and map_y must be host-resident when src/dst are on CPU".into(),
+            ));
+        }
     }
 
     let src_slice = src.as_slice();
@@ -183,6 +201,10 @@ pub fn remap_u8<const C: usize>(
     let src_stride = src.cols() * C;
     let dst_w = dst.cols();
     let dst_stride = dst_w * C;
+
+    if dst_stride == 0 {
+        return Ok(());
+    }
 
     let zero_pixel = |dst_pixel: &mut [u8]| {
         for pixel in dst_pixel.iter_mut().take(C) {
@@ -201,8 +223,22 @@ pub fn remap_u8<const C: usize>(
                         let xf = map_x_slice[row_base + x];
                         let yf = map_y_slice[row_base + x];
                         let dst_pixel = &mut dst_row[x * C..x * C + C];
-                        crate::warp::bilinear_sample_u8::<C>(
-                            src_slice, src_w, src_h, src_stride, xf, yf, dst_pixel,
+                        // NaN-safe OOB check followed by AVX2/NEON-accelerated sampler.
+                        if !xf.is_finite() || !yf.is_finite() {
+                            zero_pixel(dst_pixel);
+                            continue;
+                        }
+                        let xi = xf.floor() as i32;
+                        let yi = yf.floor() as i32;
+                        if xi < 0 || xi >= src_w || yi < 0 || yi >= src_h {
+                            zero_pixel(dst_pixel);
+                            continue;
+                        }
+                        let fx_q10 = ((xf - xi as f32) * 1024.0) as u32;
+                        let fy_q10 = ((yf - yi as f32) * 1024.0) as u32;
+                        crate::warp::bilinear_sample_u8_valid::<C>(
+                            src_slice, src_w, src_h, src_stride, xi, yi, fx_q10, fy_q10,
+                            dst_pixel,
                         );
                     }
                 });
@@ -217,7 +253,7 @@ pub fn remap_u8<const C: usize>(
                         let xf = map_x_slice[row_base + x];
                         let yf = map_y_slice[row_base + x];
                         let dst_pixel = &mut dst_row[x * C..x * C + C];
-                        if xf < 0.0 || xf >= src_w_f || yf < 0.0 || yf >= src_h_f {
+                        if !(xf >= 0.0 && xf < src_w_f && yf >= 0.0 && yf < src_h_f) {
                             zero_pixel(dst_pixel);
                         } else {
                             let xi = (xf.round() as i32).clamp(0, src_w - 1) as usize;

@@ -161,7 +161,7 @@ extern "C" __global__ void remap_nearest_3c(
 static BILINEAR_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
 static NEAREST_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
 
-type PerCKernelCache = Mutex<HashMap<u32, Arc<CudaKernel>>>;
+type PerCKernelCache = Mutex<HashMap<(usize, u32), Arc<CudaKernel>>>;
 static BILINEAR_U8_KERNELS: OnceLock<PerCKernelCache> = OnceLock::new();
 static NEAREST_U8_KERNELS: OnceLock<PerCKernelCache> = OnceLock::new();
 
@@ -377,7 +377,7 @@ extern "C" __global__ void remap_bilinear_u8_c{channels}(
     float sy = __ldg(&map_y[idx]);
     unsigned long long out = idx * (unsigned long long)C;
 
-    if (sx < 0.0f || sx >= (float)src_w || sy < 0.0f || sy >= (float)src_h) {{
+    if (!(sx >= 0.0f && sx < (float)src_w && sy >= 0.0f && sy < (float)src_h)) {{
         #pragma unroll
         for (unsigned int ch = 0u; ch < C; ++ch) dst[out + ch] = 0;
         return;
@@ -440,7 +440,7 @@ extern "C" __global__ void remap_nearest_u8_c{channels}(
     float sy = __ldg(&map_y[idx]);
     unsigned long long out = idx * (unsigned long long)C;
 
-    if (sx < 0.0f || sx >= (float)src_w || sy < 0.0f || sy >= (float)src_h) {{
+    if (!(sx >= 0.0f && sx < (float)src_w && sy >= 0.0f && sy < (float)src_h)) {{
         #pragma unroll
         for (unsigned int ch = 0u; ch < C; ++ch) dst[out + ch] = 0;
         return;
@@ -477,6 +477,9 @@ fn launch_remap_u8(
     channels: u32,
     block_dim: Option<(u32, u32)>,
 ) -> Result<(), CudaRemapError> {
+    if channels == 0 {
+        return Err(CudaRemapError::Cuda("channels must be > 0".into()));
+    }
     check_geometry(src_width, src_height, dst_width, dst_height, block_dim)
         .map_err(CudaRemapError::Cuda)?;
     CudaRemapError::check_slice(
@@ -500,11 +503,13 @@ fn launch_remap_u8(
         (dst_width as usize) * (dst_height as usize),
     )?;
 
+    let device_ord = ctx.ordinal();
+    let cache_key = (device_ord, channels);
     let cache = kernel_cell.get_or_init(Default::default);
     let cached = cache
         .lock()
-        .expect("warp kernel cache poisoned")
-        .get(&channels)
+        .map_err(|_| CudaRemapError::Cuda("remap kernel cache mutex poisoned".into()))?
+        .get(&cache_key)
         .cloned();
     let kernel = if let Some(hit) = cached {
         hit
@@ -515,8 +520,8 @@ fn launch_remap_u8(
             Arc::new(try_compile_with_l1(ctx, &src_code, &name).map_err(CudaRemapError::Cuda)?);
         cache
             .lock()
-            .expect("warp kernel cache poisoned")
-            .entry(channels)
+            .map_err(|_| CudaRemapError::Cuda("remap kernel cache mutex poisoned".into()))?
+            .entry(cache_key)
             .or_insert(built)
             .clone()
     };
