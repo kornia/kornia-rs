@@ -78,7 +78,8 @@ extern "C" __global__ void remap_bilinear_3c(
     unsigned long long out = idx * 3ull;
 
     // BORDER_CONSTANT = 0 for any OOB source coordinate.
-    if (sx < 0.0f || sx >= (float)src_w || sy < 0.0f || sy >= (float)src_h) {
+    // Negated conjunction catches NaN (all NaN comparisons are false).
+    if (!(sx >= 0.0f && sx < (float)src_w && sy >= 0.0f && sy < (float)src_h)) {
         dst[out] = 0.0f; dst[out+1] = 0.0f; dst[out+2] = 0.0f;
         return;
     }
@@ -141,7 +142,8 @@ extern "C" __global__ void remap_nearest_3c(
     unsigned long long out = idx * 3ull;
 
     // BORDER_CONSTANT = 0 for any OOB source coordinate.
-    if (sx < 0.0f || sx >= (float)src_w || sy < 0.0f || sy >= (float)src_h) {
+    // Negated conjunction catches NaN (all NaN comparisons are false).
+    if (!(sx >= 0.0f && sx < (float)src_w && sy >= 0.0f && sy < (float)src_h)) {
         dst[out] = 0.0f; dst[out+1] = 0.0f; dst[out+2] = 0.0f;
         return;
     }
@@ -158,9 +160,12 @@ extern "C" __global__ void remap_nearest_3c(
 
 // ── Kernel cache ──────────────────────────────────────────────────────────────
 
-static BILINEAR_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
-static NEAREST_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
+// f32 kernels are single-template (always 3-ch), keyed by device ordinal only.
+type F32KernelCache = Mutex<HashMap<usize, Arc<CudaKernel>>>;
+static BILINEAR_KERNEL: OnceLock<F32KernelCache> = OnceLock::new();
+static NEAREST_KERNEL: OnceLock<F32KernelCache> = OnceLock::new();
 
+// u8 kernels are compiled per (device_ordinal, channel_count).
 type PerCKernelCache = Mutex<HashMap<(usize, u32), Arc<CudaKernel>>>;
 static BILINEAR_U8_KERNELS: OnceLock<PerCKernelCache> = OnceLock::new();
 static NEAREST_U8_KERNELS: OnceLock<PerCKernelCache> = OnceLock::new();
@@ -177,7 +182,7 @@ super::define_cuda_error!(
 
 #[allow(clippy::too_many_arguments)]
 fn launch_remap(
-    kernel_cell: &OnceLock<Result<CudaKernel, String>>,
+    kernel_cell: &OnceLock<F32KernelCache>,
     kernel_src: &'static str,
     fn_name: &'static str,
     ctx: &Arc<CudaContext>,
@@ -215,10 +220,26 @@ fn launch_remap(
         (dst_width as usize) * (dst_height as usize),
     )?;
 
-    let kernel = kernel_cell
-        .get_or_init(|| try_compile_with_l1(ctx, kernel_src, fn_name))
-        .as_ref()
-        .map_err(|e| CudaRemapError::Cuda(e.clone()))?;
+    let device_ord = ctx.ordinal();
+    let cache = kernel_cell.get_or_init(Default::default);
+    let cached = cache
+        .lock()
+        .map_err(|_| CudaRemapError::Cuda("remap kernel cache mutex poisoned".into()))?
+        .get(&device_ord)
+        .cloned();
+    let kernel = if let Some(hit) = cached {
+        hit
+    } else {
+        let built = Arc::new(
+            try_compile_with_l1(ctx, kernel_src, fn_name).map_err(CudaRemapError::Cuda)?,
+        );
+        cache
+            .lock()
+            .map_err(|_| CudaRemapError::Cuda("remap kernel cache mutex poisoned".into()))?
+            .entry(device_ord)
+            .or_insert(built)
+            .clone()
+    };
 
     kernel
         .launch_builder(stream)
@@ -573,7 +594,7 @@ fn launch_remap_u8(
 /// Returns [`CudaRemapError`] on compile failure, launch error, or if any
 /// slice is too small.
 #[allow(clippy::too_many_arguments)]
-pub fn launch_remap_bilinear_u8_cuda(
+pub(crate) fn launch_remap_bilinear_u8_cuda(
     ctx: &Arc<CudaContext>,
     stream: &Arc<CudaStream>,
     src: &CudaSlice<u8>,
@@ -624,7 +645,7 @@ pub fn launch_remap_bilinear_u8_cuda(
 /// Returns [`CudaRemapError`] on compile failure, launch error, or if any
 /// slice is too small.
 #[allow(clippy::too_many_arguments)]
-pub fn launch_remap_nearest_u8_cuda(
+pub(crate) fn launch_remap_nearest_u8_cuda(
     ctx: &Arc<CudaContext>,
     stream: &Arc<CudaStream>,
     src: &CudaSlice<u8>,

@@ -81,6 +81,11 @@ pub fn remap<const C: usize>(
             return exec
                 .run(|stream| remap_f32_cuda(src, dst, map_x, map_y, interpolation, stream));
         }
+        if is_device(map_x) || is_device(map_y) {
+            return Err(ImageError::Cuda(
+                "remap: map_x and map_y must be host-resident when src/dst are on CPU".into(),
+            ));
+        }
     }
 
     // One monomorphic pixel loop per mode — see the note in `resize`.
@@ -140,11 +145,14 @@ pub fn remap<const C: usize>(
 /// use kornia_image::{Image, ImageSize};
 /// use kornia_imgproc::interpolation::{remap_u8, InterpolationMode};
 ///
-/// let src = Image::<u8, 3>::from_size_val(ImageSize { width: 4, height: 4 }, 128u8).unwrap();
-/// let mut dst = Image::<u8, 3>::from_size_val(ImageSize { width: 4, height: 4 }, 0u8).unwrap();
-/// let map_x = Image::<f32, 1>::from_size_val(ImageSize { width: 4, height: 4 }, 1.0f32).unwrap();
-/// let map_y = Image::<f32, 1>::from_size_val(ImageSize { width: 4, height: 4 }, 1.0f32).unwrap();
-/// remap_u8(&src, &mut dst, &map_x, &map_y, InterpolationMode::Bilinear).unwrap();
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let src = Image::<u8, 3>::from_size_val(ImageSize { width: 4, height: 4 }, 128u8)?;
+/// let mut dst = Image::<u8, 3>::from_size_val(ImageSize { width: 4, height: 4 }, 0u8)?;
+/// let map_x = Image::<f32, 1>::from_size_val(ImageSize { width: 4, height: 4 }, 1.0f32)?;
+/// let map_y = Image::<f32, 1>::from_size_val(ImageSize { width: 4, height: 4 }, 1.0f32)?;
+/// remap_u8(&src, &mut dst, &map_x, &map_y, InterpolationMode::Bilinear)?;
+/// # Ok(())
+/// # }
 /// ```
 pub fn remap_u8<const C: usize>(
     src: &Image<u8, C>,
@@ -170,7 +178,13 @@ pub fn remap_u8<const C: usize>(
         ));
     }
 
-    validate_interpolation(interpolation)?;
+    // remap_u8 only accelerates bilinear and nearest; reject others with the
+    // same error type on both CPU and GPU paths so callers get a consistent
+    // error variant regardless of where the images live.
+    match interpolation {
+        InterpolationMode::Bilinear | InterpolationMode::Nearest => {}
+        other => return Err(ImageError::UnsupportedInterpolation(other)),
+    }
 
     #[cfg(feature = "cuda")]
     {
@@ -214,6 +228,27 @@ pub fn remap_u8<const C: usize>(
 
     match interpolation {
         InterpolationMode::Bilinear => {
+            #[cfg(target_arch = "x86_64")]
+            if C == 3 && crate::simd::cpu_features().has_avx2 {
+                // SAFETY: the helper is only compiled on x86_64, we have
+                // already checked AVX2 at runtime, and the helper keeps the
+                // same bounds checks as the scalar path.
+                unsafe {
+                    remap_u8_bilinear_c3_avx2(
+                        src_slice,
+                        dst,
+                        map_x_slice,
+                        map_y_slice,
+                        src_w,
+                        src_h,
+                        src_stride,
+                        dst_w,
+                        dst_stride,
+                    );
+                }
+                return Ok(());
+            }
+
             dst.as_slice_mut()
                 .par_chunks_exact_mut(dst_stride)
                 .enumerate()
@@ -237,8 +272,7 @@ pub fn remap_u8<const C: usize>(
                         let fx_q10 = ((xf - xi as f32) * 1024.0) as u32;
                         let fy_q10 = ((yf - yi as f32) * 1024.0) as u32;
                         crate::warp::bilinear_sample_u8_valid::<C>(
-                            src_slice, src_w, src_h, src_stride, xi, yi, fx_q10, fy_q10,
-                            dst_pixel,
+                            src_slice, src_w, src_h, src_stride, xi, yi, fx_q10, fy_q10, dst_pixel,
                         );
                     }
                 });
@@ -264,10 +298,79 @@ pub fn remap_u8<const C: usize>(
                     }
                 });
         }
-        other => return Err(ImageError::UnsupportedInterpolation(other)),
+        // Bicubic/Lanczos are rejected at the top of remap_u8; unreachable here.
+        _ => unreachable!(),
     }
 
     Ok(())
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn remap_u8_bilinear_c3_avx2<const C: usize>(
+    src_slice: &[u8],
+    dst: &mut Image<u8, C>,
+    map_x_slice: &[f32],
+    map_y_slice: &[f32],
+    src_w: i32,
+    src_h: i32,
+    src_stride: usize,
+    dst_w: usize,
+    dst_stride: usize,
+) {
+    debug_assert!(C == 3);
+
+    let zero_pixel = |dst_pixel: &mut [u8]| {
+        for pixel in dst_pixel.iter_mut().take(C) {
+            *pixel = 0;
+        }
+    };
+
+    dst.as_slice_mut()
+        .par_chunks_exact_mut(dst_stride)
+        .enumerate()
+        .for_each(|(y, dst_row)| {
+            let row_base = y * dst_w;
+            for x in 0..dst_w {
+                let xf = map_x_slice[row_base + x];
+                let yf = map_y_slice[row_base + x];
+                let dst_pixel = &mut dst_row[x * C..x * C + C];
+                if !xf.is_finite() || !yf.is_finite() {
+                    zero_pixel(dst_pixel);
+                    continue;
+                }
+                let xi = xf.floor() as i32;
+                let yi = yf.floor() as i32;
+                if xi < 0 || xi >= src_w || yi < 0 || yi >= src_h {
+                    zero_pixel(dst_pixel);
+                    continue;
+                }
+                let fx_q10 = ((xf - xi as f32) * 1024.0) as u32;
+                let fy_q10 = ((yf - yi as f32) * 1024.0) as u32;
+
+                if xi < src_w - 2 || yi < src_h - 2 {
+                    // SAFETY: x86_64 + AVX2 were checked by the caller, and
+                    // the bounds condition mirrors the helper's preconditions.
+                    unsafe {
+                        crate::warp::bilinear_sample_u8_valid_c3_avx2(
+                            src_slice.as_ptr(),
+                            src_w,
+                            src_h,
+                            src_stride,
+                            xi,
+                            yi,
+                            fx_q10,
+                            fy_q10,
+                            dst_pixel.as_mut_ptr(),
+                        );
+                    }
+                } else {
+                    crate::warp::bilinear_sample_u8_valid::<C>(
+                        src_slice, src_w, src_h, src_stride, xi, yi, fx_q10, fy_q10, dst_pixel,
+                    );
+                }
+            }
+        });
 }
 
 /// Run the CUDA remap for a device-resident f32 triple (src, dst, maps).
@@ -456,6 +559,37 @@ mod tests {
         let map_x = make_map(2, 2, vec![0.0, 1.0, 0.0, 1.0])?;
         let map_y = make_map(2, 2, vec![0.0, 0.0, 1.0, 1.0])?;
         let mut dst = Image::<_, 1>::from_size_val(
+            ImageSize {
+                width: 2,
+                height: 2,
+            },
+            0,
+        )?;
+
+        super::remap_u8(
+            &image,
+            &mut dst,
+            &map_x,
+            &map_y,
+            super::InterpolationMode::Bilinear,
+        )?;
+
+        assert_eq!(dst.as_slice(), image.as_slice());
+        Ok(())
+    }
+
+    #[test]
+    fn remap_u8_rgb_identity_bilinear() -> Result<(), ImageError> {
+        let image = Image::<_, 3>::new(
+            ImageSize {
+                width: 2,
+                height: 2,
+            },
+            vec![1u8, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+        )?;
+        let map_x = make_map(2, 2, vec![0.0, 1.0, 0.0, 1.0])?;
+        let map_y = make_map(2, 2, vec![0.0, 0.0, 1.0, 1.0])?;
+        let mut dst = Image::<_, 3>::from_size_val(
             ImageSize {
                 width: 2,
                 height: 2,

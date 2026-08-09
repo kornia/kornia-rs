@@ -265,7 +265,7 @@ unsafe fn bilinear_sample_u8_valid_c3_neon(
 #[target_feature(enable = "avx2")]
 #[inline]
 #[allow(clippy::too_many_arguments)]
-unsafe fn bilinear_sample_u8_valid_c3_avx2(
+pub(crate) unsafe fn bilinear_sample_u8_valid_c3_avx2(
     src: *const u8,
     src_w: i32,
     src_h: i32,
