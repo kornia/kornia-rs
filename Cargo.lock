@@ -7886,6 +7886,7 @@ dependencies = [
 name = "kornia-imgproc"
 version = "0.1.15-rc.5"
 dependencies = [
+ "argh",
  "criterion 0.8.2",
  "cudarc 0.19.8",
  "half",

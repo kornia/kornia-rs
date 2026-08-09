@@ -11,7 +11,7 @@ mod remap;
 
 pub use interpolate::validate_interpolation;
 pub use interpolate::InterpolationMode;
-pub use remap::remap;
+pub use remap::{remap, remap_u8};
 
 pub(crate) use bicubic::bicubic_sample;
 pub(crate) use bilinear::bilinear_interpolation;
