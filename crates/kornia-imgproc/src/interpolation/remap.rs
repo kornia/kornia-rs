@@ -307,6 +307,7 @@ pub fn remap_u8<const C: usize>(
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
+#[allow(clippy::too_many_arguments)]
 unsafe fn remap_u8_bilinear_c3_avx2<const C: usize>(
     src_slice: &[u8],
     dst: &mut Image<u8, C>,

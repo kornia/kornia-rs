@@ -230,9 +230,8 @@ fn launch_remap(
     let kernel = if let Some(hit) = cached {
         hit
     } else {
-        let built = Arc::new(
-            try_compile_with_l1(ctx, kernel_src, fn_name).map_err(CudaRemapError::Cuda)?,
-        );
+        let built =
+            Arc::new(try_compile_with_l1(ctx, kernel_src, fn_name).map_err(CudaRemapError::Cuda)?);
         cache
             .lock()
             .map_err(|_| CudaRemapError::Cuda("remap kernel cache mutex poisoned".into()))?
