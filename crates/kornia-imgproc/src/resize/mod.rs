@@ -34,6 +34,8 @@ mod opencv_compat;
 mod pyramid;
 mod separable;
 
+pub use bilinear::bilinear_axis_lut;
+pub use nearest::nearest_axis_lut;
 pub use opencv_compat::{resize_opencv_f32, resize_opencv_u8};
 
 pub use fused::{

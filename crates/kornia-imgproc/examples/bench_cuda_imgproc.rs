@@ -1,53 +1,63 @@
 //! GPU image-processing benchmark with H2D / kernel / D2H transfer breakdown.
 //!
-//! Covers resize (bilinear, nearest, bicubic, lanczos) and warp (affine,
-//! perspective) at 1920×1080 and 3840×2160, comparing GPU round-trip timing
+//! Covers resize (f32, u8), warp (affine, perspective, u8), remap (f32, u8),
+//! filters (Gaussian blur, Sobel), morphology (erode, dilate), and color
+//! conversion at 1920×1080 and 3840×2160, comparing GPU round-trip timing
 //! against the kornia CPU baseline.
 //!
 //! # Timing methodology
 //!
 //! Three CUDA events surround `memcpy_htod`, the kernel launch, and
 //! `memcpy_dtoh` on the same stream; `event.elapsed_ms(end)` gives each
-//! segment's hardware time after `stream.synchronize()`.  Events are created
+//! segment's hardware time after `stream.synchronize()`. Events are created
 //! once per case and reused across ITERS to avoid allocation overhead.
 //!
 //! # Output
 //!
-//! Prints a GitHub-flavoured Markdown table to stdout.  Redirect or append:
+//! Prints a GitHub-flavoured Markdown table to stdout. Redirect or append:
 //!
 //! ```text
 //! cargo run --example bench_cuda_imgproc --features cuda --release \
 //!     >> benchmarks.md
 //! ```
-//!
-//! # Build
-//!
-//! ```text
-//! cargo build --example bench_cuda_imgproc --features cuda --release
-//! ./target/release/examples/bench_cuda_imgproc
-//! ```
 
-use std::{sync::Arc, time::Instant};
+use std::{any::Any, sync::Arc, time::Instant};
 
-use cudarc::driver::{sys::CUevent_flags, CudaContext, CudaSlice, CudaStream};
+use cudarc::driver::{sys::CUevent_flags, CudaContext, CudaSlice, CudaStream, DeviceRepr};
 use kornia_image::{Image, ImageSize};
 use kornia_imgproc::{
+    color::gray_from_rgb,
     cuda::{
+        color::gray::launch_gray_from_rgb_f32,
+        filter::{launch_gradient_magnitude_f32, launch_separable_filter_f32},
+        morphology::{launch_morphology_u8_cuda, MorphBorder, MorphOp},
+        remap::launch_remap_bilinear_cuda,
         resize::{
             launch_resize_bicubic_cuda, launch_resize_bilinear_downscale_cuda,
             launch_resize_lanczos_cuda, launch_resize_nearest_downscale_cuda, PixelMapping,
         },
+        resize_u8::{launch_resize_u8_bilinear_cuda, launch_resize_u8_nearest_cuda},
         warp_affine::launch_warp_affine_bilinear_cuda,
+        warp_affine_u8::launch_warp_affine_u8_bilinear_cuda,
         warp_perspective::launch_warp_perspective_bilinear_cuda,
+        warp_perspective_u8::launch_warp_perspective_u8_bilinear_cuda,
     },
-    interpolation::InterpolationMode,
-    resize::resize,
-    warp::{get_rotation_matrix2d, warp_affine, warp_perspective},
+    filter::{gaussian_blur, kernels::gaussian_kernel_1d, sobel},
+    interpolation::{remap, InterpolationMode},
+    morphology::{
+        dilate, erode,
+        kernels::{Kernel, KernelShape},
+    },
+    padding::PaddingMode,
+    resize::{bilinear_axis_lut, nearest_axis_lut, resize},
+    warp::{
+        get_rotation_matrix2d, warp_affine, warp_affine_u8, warp_perspective, warp_perspective_u8,
+    },
 };
 
 const WARMUP: u32 = 30;
 const ITERS: u32 = 100;
-const NC: usize = 3; // RGB f32
+const NC: usize = 3; // RGB
 
 // ── result type ───────────────────────────────────────────────────────────────
 
@@ -66,18 +76,14 @@ impl SegmentTimes {
 // ── core benchmark helper ─────────────────────────────────────────────────────
 
 /// Benchmark one operation with CUDA-event-based H2D / kernel / D2H breakdown.
-///
-/// `launch(src, dst)` receives pre-allocated device slices and must enqueue
-/// the kernel onto `stream`.  `bench_segments` owns the H2D and D2H copies so
-/// the closure does not need to capture `src_dev`.
-fn bench_segments(
+fn bench_segments<T: DeviceRepr + Any + Copy>(
     ctx: &Arc<CudaContext>,
     stream: &Arc<CudaStream>,
-    src_host: &[f32],
-    dst_host: &mut [f32],
-    src_dev: &mut CudaSlice<f32>,
-    dst_dev: &mut CudaSlice<f32>,
-    mut launch: impl FnMut(&CudaSlice<f32>, &mut CudaSlice<f32>),
+    src_host: &[T],
+    dst_host: &mut [T],
+    src_dev: &mut CudaSlice<T>,
+    dst_dev: &mut CudaSlice<T>,
+    mut launch: impl FnMut(&CudaSlice<T>, &mut CudaSlice<T>),
 ) -> SegmentTimes {
     let make_ev = || {
         ctx.new_event(Some(CUevent_flags::CU_EVENT_DEFAULT))
@@ -106,7 +112,7 @@ fn bench_segments(
         launch(src_dev, dst_dev);
         ev2.record(stream).expect("record ev2");
         stream
-            .memcpy_dtoh(dst_dev as &CudaSlice<f32>, dst_host)
+            .memcpy_dtoh(dst_dev as &CudaSlice<T>, dst_host)
             .expect("D→H");
         ev3.record(stream).expect("record ev3");
         stream.synchronize().expect("sync");
@@ -183,6 +189,35 @@ fn cpu_warp_affine_ms(w: u32, h: u32, m: &[f32; 6]) -> f64 {
     t.elapsed().as_secs_f64() * 1e3 / ITERS as f64
 }
 
+fn cpu_warp_affine_u8_ms(w: u32, h: u32, m: &[f32; 6]) -> f64 {
+    let n = w as usize * h as usize * NC;
+    let src = Image::<u8, 3>::new(
+        ImageSize {
+            width: w as usize,
+            height: h as usize,
+        },
+        (0..n).map(|i| (i % 256) as u8).collect(),
+    )
+    .expect("src");
+    let mut dst = Image::<u8, 3>::from_size_val(
+        ImageSize {
+            width: w as usize,
+            height: h as usize,
+        },
+        0,
+    )
+    .expect("dst");
+    for _ in 0..5 {
+        warp_affine_u8(&src, &mut dst, m).expect("warmup");
+    }
+    let t = Instant::now();
+    for _ in 0..ITERS {
+        warp_affine_u8(&src, &mut dst, m).expect("warp_affine_u8");
+        std::hint::black_box(dst.as_slice());
+    }
+    t.elapsed().as_secs_f64() * 1e3 / ITERS as f64
+}
+
 fn cpu_warp_perspective_ms(w: u32, h: u32, hmat: &[f32; 9]) -> f64 {
     let n = w as usize * h as usize * NC;
     let src = Image::<f32, 3>::new(
@@ -208,6 +243,230 @@ fn cpu_warp_perspective_ms(w: u32, h: u32, hmat: &[f32; 9]) -> f64 {
     for _ in 0..ITERS {
         warp_perspective(&src, &mut dst, hmat, InterpolationMode::Bilinear)
             .expect("warp_perspective");
+        std::hint::black_box(dst.as_slice());
+    }
+    t.elapsed().as_secs_f64() * 1e3 / ITERS as f64
+}
+
+fn cpu_warp_perspective_u8_ms(w: u32, h: u32, hmat: &[f32; 9]) -> f64 {
+    let n = w as usize * h as usize * NC;
+    let src = Image::<u8, 3>::new(
+        ImageSize {
+            width: w as usize,
+            height: h as usize,
+        },
+        (0..n).map(|i| (i % 256) as u8).collect(),
+    )
+    .expect("src");
+    let mut dst = Image::<u8, 3>::from_size_val(
+        ImageSize {
+            width: w as usize,
+            height: h as usize,
+        },
+        0,
+    )
+    .expect("dst");
+    for _ in 0..5 {
+        warp_perspective_u8(&src, &mut dst, hmat).expect("warmup");
+    }
+    let t = Instant::now();
+    for _ in 0..ITERS {
+        warp_perspective_u8(&src, &mut dst, hmat).expect("warp_perspective_u8");
+        std::hint::black_box(dst.as_slice());
+    }
+    t.elapsed().as_secs_f64() * 1e3 / ITERS as f64
+}
+
+fn cpu_remap_ms(w: u32, h: u32, mode: InterpolationMode) -> f64 {
+    let n = w as usize * h as usize * NC;
+    let src = Image::<f32, 3>::new(
+        ImageSize {
+            width: w as usize,
+            height: h as usize,
+        },
+        (0..n).map(|i| i as f32 / (n - 1) as f32).collect(),
+    )
+    .expect("src");
+    let mut dst = Image::<f32, 3>::from_size_val(
+        ImageSize {
+            width: w as usize,
+            height: h as usize,
+        },
+        0.0,
+    )
+    .expect("dst");
+    let mx_data: Vec<f32> = (0..h).flat_map(|_| (0..w).map(|x| x as f32)).collect();
+    let my_data: Vec<f32> = (0..h).flat_map(|y| (0..w).map(move |_| y as f32)).collect();
+    let map_x = Image::<f32, 1>::new(
+        ImageSize {
+            width: w as usize,
+            height: h as usize,
+        },
+        mx_data,
+    )
+    .expect("map_x");
+    let map_y = Image::<f32, 1>::new(
+        ImageSize {
+            width: w as usize,
+            height: h as usize,
+        },
+        my_data,
+    )
+    .expect("map_y");
+
+    for _ in 0..5 {
+        remap(&src, &mut dst, &map_x, &map_y, mode).expect("warmup");
+    }
+    let t = Instant::now();
+    for _ in 0..ITERS {
+        remap(&src, &mut dst, &map_x, &map_y, mode).expect("remap");
+        std::hint::black_box(dst.as_slice());
+    }
+    t.elapsed().as_secs_f64() * 1e3 / ITERS as f64
+}
+
+fn cpu_gaussian_blur_ms(w: u32, h: u32) -> f64 {
+    let n = w as usize * h as usize * NC;
+    let src = Image::<f32, 3>::new(
+        ImageSize {
+            width: w as usize,
+            height: h as usize,
+        },
+        (0..n).map(|i| i as f32 / (n - 1) as f32).collect(),
+    )
+    .expect("src");
+    let mut dst = Image::<f32, 3>::from_size_val(
+        ImageSize {
+            width: w as usize,
+            height: h as usize,
+        },
+        0.0,
+    )
+    .expect("dst");
+    for _ in 0..5 {
+        gaussian_blur(&src, &mut dst, (5, 5), (1.5, 1.5)).expect("warmup");
+    }
+    let t = Instant::now();
+    for _ in 0..ITERS {
+        gaussian_blur(&src, &mut dst, (5, 5), (1.5, 1.5)).expect("gaussian_blur");
+        std::hint::black_box(dst.as_slice());
+    }
+    t.elapsed().as_secs_f64() * 1e3 / ITERS as f64
+}
+
+fn cpu_sobel_ms(w: u32, h: u32) -> f64 {
+    let n = w as usize * h as usize * NC;
+    let src = Image::<f32, 3>::new(
+        ImageSize {
+            width: w as usize,
+            height: h as usize,
+        },
+        (0..n).map(|i| i as f32 / (n - 1) as f32).collect(),
+    )
+    .expect("src");
+    let mut dst_x = Image::<f32, 3>::from_size_val(
+        ImageSize {
+            width: w as usize,
+            height: h as usize,
+        },
+        0.0,
+    )
+    .expect("dst_x");
+    for _ in 0..5 {
+        sobel(&src, &mut dst_x, 3).expect("warmup");
+    }
+    let t = Instant::now();
+    for _ in 0..ITERS {
+        sobel(&src, &mut dst_x, 3).expect("sobel");
+        std::hint::black_box(dst_x.as_slice());
+    }
+    t.elapsed().as_secs_f64() * 1e3 / ITERS as f64
+}
+
+fn cpu_erode_ms(w: u32, h: u32) -> f64 {
+    let n = w as usize * h as usize * NC;
+    let src = Image::<u8, 3>::new(
+        ImageSize {
+            width: w as usize,
+            height: h as usize,
+        },
+        (0..n).map(|i| (i % 256) as u8).collect(),
+    )
+    .expect("src");
+    let mut dst = Image::<u8, 3>::from_size_val(
+        ImageSize {
+            width: w as usize,
+            height: h as usize,
+        },
+        0,
+    )
+    .expect("dst");
+    let kernel = Kernel::new(KernelShape::Box { size: 3 });
+    for _ in 0..5 {
+        erode(&src, &mut dst, &kernel, PaddingMode::Constant, [0, 0, 0]).expect("warmup");
+    }
+    let t = Instant::now();
+    for _ in 0..ITERS {
+        erode(&src, &mut dst, &kernel, PaddingMode::Constant, [0, 0, 0]).expect("erode");
+        std::hint::black_box(dst.as_slice());
+    }
+    t.elapsed().as_secs_f64() * 1e3 / ITERS as f64
+}
+
+fn cpu_dilate_ms(w: u32, h: u32) -> f64 {
+    let n = w as usize * h as usize * NC;
+    let src = Image::<u8, 3>::new(
+        ImageSize {
+            width: w as usize,
+            height: h as usize,
+        },
+        (0..n).map(|i| (i % 256) as u8).collect(),
+    )
+    .expect("src");
+    let mut dst = Image::<u8, 3>::from_size_val(
+        ImageSize {
+            width: w as usize,
+            height: h as usize,
+        },
+        0,
+    )
+    .expect("dst");
+    let kernel = Kernel::new(KernelShape::Box { size: 3 });
+    for _ in 0..5 {
+        dilate(&src, &mut dst, &kernel, PaddingMode::Constant, [0, 0, 0]).expect("warmup");
+    }
+    let t = Instant::now();
+    for _ in 0..ITERS {
+        dilate(&src, &mut dst, &kernel, PaddingMode::Constant, [0, 0, 0]).expect("dilate");
+        std::hint::black_box(dst.as_slice());
+    }
+    t.elapsed().as_secs_f64() * 1e3 / ITERS as f64
+}
+
+fn cpu_gray_from_rgb_ms(w: u32, h: u32) -> f64 {
+    let n = w as usize * h as usize * NC;
+    let src = Image::<f32, 3>::new(
+        ImageSize {
+            width: w as usize,
+            height: h as usize,
+        },
+        (0..n).map(|i| i as f32 / (n - 1) as f32).collect(),
+    )
+    .expect("src");
+    let mut dst = Image::<f32, 1>::from_size_val(
+        ImageSize {
+            width: w as usize,
+            height: h as usize,
+        },
+        0.0,
+    )
+    .expect("dst");
+    for _ in 0..5 {
+        gray_from_rgb(&src, &mut dst).expect("warmup");
+    }
+    let t = Instant::now();
+    for _ in 0..ITERS {
+        gray_from_rgb(&src, &mut dst).expect("gray_from_rgb");
         std::hint::black_box(dst.as_slice());
     }
     t.elapsed().as_secs_f64() * 1e3 / ITERS as f64
@@ -278,7 +537,7 @@ fn main() {
     println!();
     print_header();
 
-    // ── resize ────────────────────────────────────────────────────────────────
+    // ── resize f32 ────────────────────────────────────────────────────────────
 
     struct ResizeCase {
         interp: &'static str,
@@ -433,10 +692,72 @@ fn main() {
         );
 
         let res = format!("{sw}×{sh}→{dw}×{dh}");
-        print_row("resize", interp, &res, cpu_ms, &seg);
+        print_row("resize (f32)", interp, &res, cpu_ms, &seg);
     }
 
-    // ── warp affine ───────────────────────────────────────────────────────────
+    // ── resize u8 ─────────────────────────────────────────────────────────────
+
+    for c in &[
+        (1920u32, 1080u32, 960u32, 540u32, "bilinear"),
+        (3840, 2160, 1920, 1080, "bilinear"),
+        (1920, 1080, 960, 540, "nearest"),
+        (3840, 2160, 1920, 1080, "nearest"),
+    ] {
+        let (sw, sh, dw, dh, interp) = *c;
+        let n_src = sw as usize * sh as usize * NC;
+        let n_dst = dw as usize * dh as usize * NC;
+        let src_host: Vec<u8> = (0..n_src).map(|i| (i % 256) as u8).collect();
+        let mut dst_host = vec![0u8; n_dst];
+        let mut src_dev = stream.clone_htod(&src_host).expect("H→D src");
+        let mut dst_dev = stream.alloc_zeros::<u8>(n_dst).expect("alloc dst");
+
+        let ctx2 = ctx.clone();
+        let stream2 = stream.clone();
+        let mode = if interp == "nearest" {
+            InterpolationMode::Nearest
+        } else {
+            InterpolationMode::Bilinear
+        };
+        let cpu_ms = cpu_resize_ms(sw, sh, dw, dh, mode);
+
+        let xmap = nearest_axis_lut(sw as usize, dw as usize);
+        let ymap = nearest_axis_lut(sh as usize, dh as usize);
+        let xmap_dev = stream.clone_htod(&xmap).expect("H→D xmap");
+        let ymap_dev = stream.clone_htod(&ymap).expect("H→D ymap");
+
+        let (xofs, xfx, _) = bilinear_axis_lut(sw as usize, dw as usize);
+        let (yofs, yfy, _) = bilinear_axis_lut(sh as usize, dh as usize);
+        let xofs_dev = stream.clone_htod(&xofs).expect("H→D xofs");
+        let xfx_dev = stream.clone_htod(&xfx).expect("H→D xfx");
+        let yofs_dev = stream.clone_htod(&yofs).expect("H→D yofs");
+        let yfy_dev = stream.clone_htod(&yfy).expect("H→D yfy");
+
+        let seg = bench_segments(
+            &ctx,
+            &stream,
+            &src_host,
+            &mut dst_host,
+            &mut src_dev,
+            &mut dst_dev,
+            |src, dst| match interp {
+                "nearest" => launch_resize_u8_nearest_cuda(
+                    &ctx2, &stream2, src, dst, sw, sh, dw, dh, NC as u32, &xmap_dev, &ymap_dev,
+                    None,
+                )
+                .expect("resize_nearest_u8"),
+                _ => launch_resize_u8_bilinear_cuda(
+                    &ctx2, &stream2, src, dst, sw, sh, dw, dh, NC as u32, &xofs_dev, &xfx_dev,
+                    &yofs_dev, &yfy_dev, None,
+                )
+                .expect("resize_bilinear_u8"),
+            },
+        );
+
+        let res = format!("{sw}×{sh}→{dw}×{dh}");
+        print_row("resize (u8)", interp, &res, cpu_ms, &seg);
+    }
+
+    // ── warp affine f32 ───────────────────────────────────────────────────────
 
     for &(sw, sh) in &[(1920u32, 1080u32), (3840, 2160)] {
         let n = sw as usize * sh as usize * NC;
@@ -466,7 +787,7 @@ fn main() {
         );
 
         print_row(
-            "warp_affine (30° rot)",
+            "warp_affine (30° rot, f32)",
             "bilinear",
             &format!("{sw}×{sh}"),
             cpu_ms,
@@ -474,7 +795,45 @@ fn main() {
         );
     }
 
-    // ── warp perspective ──────────────────────────────────────────────────────
+    // ── warp affine u8 ────────────────────────────────────────────────────────
+
+    for &(sw, sh) in &[(1920u32, 1080u32), (3840, 2160)] {
+        let n = sw as usize * sh as usize * NC;
+        let src_host: Vec<u8> = (0..n).map(|i| (i % 256) as u8).collect();
+        let mut dst_host = vec![0u8; n];
+        let mut src_dev = stream.clone_htod(&src_host).expect("H→D src");
+        let mut dst_dev = stream.alloc_zeros::<u8>(n).expect("alloc dst");
+
+        let m = rotation_2x3(sw, sh, 30.0);
+        let ctx2 = ctx.clone();
+        let stream2 = stream.clone();
+
+        let cpu_ms = cpu_warp_affine_u8_ms(sw, sh, &m);
+        let seg = bench_segments(
+            &ctx,
+            &stream,
+            &src_host,
+            &mut dst_host,
+            &mut src_dev,
+            &mut dst_dev,
+            |src, dst| {
+                launch_warp_affine_u8_bilinear_cuda(
+                    &ctx2, &stream2, src, dst, &m, sw, sh, sw, sh, NC as u32, None,
+                )
+                .expect("warp_affine_u8");
+            },
+        );
+
+        print_row(
+            "warp_affine (30° rot, u8)",
+            "bilinear",
+            &format!("{sw}×{sh}"),
+            cpu_ms,
+            &seg,
+        );
+    }
+
+    // ── warp perspective f32 ──────────────────────────────────────────────────
 
     for &(sw, sh) in &[(1920u32, 1080u32), (3840, 2160)] {
         let n = sw as usize * sh as usize * NC;
@@ -504,8 +863,320 @@ fn main() {
         );
 
         print_row(
-            "warp_perspective (30° rot)",
+            "warp_perspective (30° rot, f32)",
             "bilinear",
+            &format!("{sw}×{sh}"),
+            cpu_ms,
+            &seg,
+        );
+    }
+
+    // ── warp perspective u8 ───────────────────────────────────────────────────
+
+    for &(sw, sh) in &[(1920u32, 1080u32), (3840, 2160)] {
+        let n = sw as usize * sh as usize * NC;
+        let src_host: Vec<u8> = (0..n).map(|i| (i % 256) as u8).collect();
+        let mut dst_host = vec![0u8; n];
+        let mut src_dev = stream.clone_htod(&src_host).expect("H→D src");
+        let mut dst_dev = stream.alloc_zeros::<u8>(n).expect("alloc dst");
+
+        let hmat = rotation_3x3(sw, sh, 30.0);
+        let ctx2 = ctx.clone();
+        let stream2 = stream.clone();
+
+        let cpu_ms = cpu_warp_perspective_u8_ms(sw, sh, &hmat);
+        let seg = bench_segments(
+            &ctx,
+            &stream,
+            &src_host,
+            &mut dst_host,
+            &mut src_dev,
+            &mut dst_dev,
+            |src, dst| {
+                launch_warp_perspective_u8_bilinear_cuda(
+                    &ctx2, &stream2, src, dst, &hmat, sw, sh, sw, sh, NC as u32, None,
+                )
+                .expect("warp_perspective_u8");
+            },
+        );
+
+        print_row(
+            "warp_perspective (30° rot, u8)",
+            "bilinear",
+            &format!("{sw}×{sh}"),
+            cpu_ms,
+            &seg,
+        );
+    }
+
+    // ── remap f32 ─────────────────────────────────────────────────────────────
+
+    for &(sw, sh) in &[(1920u32, 1080u32), (3840, 2160)] {
+        let n = sw as usize * sh as usize * NC;
+        let src_host: Vec<f32> = (0..n).map(|i| i as f32 / (n - 1) as f32).collect();
+        let mut dst_host = vec![0.0f32; n];
+        let mx_host: Vec<f32> = (0..sh).flat_map(|_| (0..sw).map(|x| x as f32)).collect();
+        let my_host: Vec<f32> = (0..sh)
+            .flat_map(|y| (0..sw).map(move |_| y as f32))
+            .collect();
+
+        let mut src_dev = stream.clone_htod(&src_host).expect("H→D src");
+        let mut dst_dev = stream.alloc_zeros::<f32>(n).expect("alloc dst");
+        let map_x_dev = stream.clone_htod(&mx_host).expect("H→D map_x");
+        let map_y_dev = stream.clone_htod(&my_host).expect("H→D map_y");
+
+        let ctx2 = ctx.clone();
+        let stream2 = stream.clone();
+
+        let cpu_ms = cpu_remap_ms(sw, sh, InterpolationMode::Bilinear);
+        let seg = bench_segments(
+            &ctx,
+            &stream,
+            &src_host,
+            &mut dst_host,
+            &mut src_dev,
+            &mut dst_dev,
+            |src, dst| {
+                launch_remap_bilinear_cuda(
+                    &ctx2, &stream2, src, &map_x_dev, &map_y_dev, dst, sw, sh, sw, sh, None,
+                )
+                .expect("remap_bilinear");
+            },
+        );
+
+        print_row(
+            "remap (f32)",
+            "bilinear",
+            &format!("{sw}×{sh}"),
+            cpu_ms,
+            &seg,
+        );
+    }
+
+    // ── filters (gaussian_blur, sobel) ────────────────────────────────────────
+
+    for &(sw, sh) in &[(1920u32, 1080u32), (3840, 2160)] {
+        let n = sw as usize * sh as usize * NC;
+        let src_host: Vec<f32> = (0..n).map(|i| i as f32 / (n - 1) as f32).collect();
+        let mut dst_host = vec![0.0f32; n];
+        let mut src_dev = stream.clone_htod(&src_host).expect("H→D src");
+        let mut dst_dev = stream.alloc_zeros::<f32>(n).expect("alloc dst");
+
+        let kx = gaussian_kernel_1d(5, 1.5);
+        let ky = kx.clone();
+        let kx_dev = stream.clone_htod(&kx).expect("H→D kx");
+        let ky_dev = stream.clone_htod(&ky).expect("H→D ky");
+        let mut scratch = stream.alloc_zeros::<f32>(n).expect("alloc scratch");
+
+        let ctx2 = ctx.clone();
+        let stream2 = stream.clone();
+
+        let cpu_ms = cpu_gaussian_blur_ms(sw, sh);
+        let seg = bench_segments(
+            &ctx,
+            &stream,
+            &src_host,
+            &mut dst_host,
+            &mut src_dev,
+            &mut dst_dev,
+            |src, dst| {
+                launch_separable_filter_f32(
+                    &ctx2,
+                    &stream2,
+                    src,
+                    dst,
+                    &mut scratch,
+                    &kx_dev,
+                    5,
+                    &ky_dev,
+                    5,
+                    sw,
+                    sh,
+                    NC as u32,
+                )
+                .expect("gaussian_blur");
+            },
+        );
+        print_row(
+            "gaussian_blur (5x5, f32)",
+            "n/a",
+            &format!("{sw}×{sh}"),
+            cpu_ms,
+            &seg,
+        );
+
+        let (sobel_x, sobel_y) =
+            kornia_imgproc::filter::kernels::sobel_kernel_1d(3).expect("sobel_kernel_1d");
+        let sx_dev = stream.clone_htod(&sobel_x).expect("H→D sx");
+        let sy_dev = stream.clone_htod(&sobel_y).expect("H→D sy");
+        let mut gx_dev = stream.alloc_zeros::<f32>(n).expect("alloc gx");
+        let mut gy_dev = stream.alloc_zeros::<f32>(n).expect("alloc gy");
+        let cpu_sobel = cpu_sobel_ms(sw, sh);
+        let seg_sobel = bench_segments(
+            &ctx,
+            &stream,
+            &src_host,
+            &mut dst_host,
+            &mut src_dev,
+            &mut dst_dev,
+            |src, dst| {
+                launch_separable_filter_f32(
+                    &ctx2,
+                    &stream2,
+                    src,
+                    &mut gx_dev,
+                    &mut scratch,
+                    &sx_dev,
+                    3,
+                    &sy_dev,
+                    3,
+                    sw,
+                    sh,
+                    NC as u32,
+                )
+                .expect("sobel_gx");
+                launch_separable_filter_f32(
+                    &ctx2,
+                    &stream2,
+                    src,
+                    &mut gy_dev,
+                    &mut scratch,
+                    &sy_dev,
+                    3,
+                    &sx_dev,
+                    3,
+                    sw,
+                    sh,
+                    NC as u32,
+                )
+                .expect("sobel_gy");
+                launch_gradient_magnitude_f32(&ctx2, &stream2, &gx_dev, &gy_dev, dst, n)
+                    .expect("gradient_magnitude");
+            },
+        );
+        print_row(
+            "sobel (3x3, f32)",
+            "n/a",
+            &format!("{sw}×{sh}"),
+            cpu_sobel,
+            &seg_sobel,
+        );
+    }
+
+    // ── morphology (erode, dilate u8) ─────────────────────────────────────────
+
+    for &(sw, sh) in &[(1920u32, 1080u32), (3840, 2160)] {
+        let n = sw as usize * sh as usize * NC;
+        let src_host: Vec<u8> = (0..n).map(|i| (i % 256) as u8).collect();
+        let mut dst_host = vec![0u8; n];
+        let mut src_dev = stream.clone_htod(&src_host).expect("H→D src");
+        let mut dst_dev = stream.alloc_zeros::<u8>(n).expect("alloc dst");
+
+        let ctx2 = ctx.clone();
+        let stream2 = stream.clone();
+
+        let taps = vec![
+            -1i32, -1, -1, 0, -1, 1, 0, -1, 0, 0, 0, 1, 1, -1, 1, 0, 1, 1,
+        ];
+        let cval_dev = stream.clone_htod(&vec![0u8; NC]).expect("H→D cval");
+
+        let cpu_ms = cpu_erode_ms(sw, sh);
+        let seg = bench_segments(
+            &ctx,
+            &stream,
+            &src_host,
+            &mut dst_host,
+            &mut src_dev,
+            &mut dst_dev,
+            |src, dst| {
+                launch_morphology_u8_cuda(
+                    &ctx2,
+                    &stream2,
+                    src,
+                    dst,
+                    sw,
+                    sh,
+                    NC as u32,
+                    &taps,
+                    &cval_dev,
+                    MorphOp::Erode,
+                    MorphBorder::Replicate,
+                    None,
+                )
+                .expect("erode");
+            },
+        );
+        print_row(
+            "erode (3x3, u8)",
+            "n/a",
+            &format!("{sw}×{sh}"),
+            cpu_ms,
+            &seg,
+        );
+
+        let cpu_dilate = cpu_dilate_ms(sw, sh);
+        let seg_dilate = bench_segments(
+            &ctx,
+            &stream,
+            &src_host,
+            &mut dst_host,
+            &mut src_dev,
+            &mut dst_dev,
+            |src, dst| {
+                launch_morphology_u8_cuda(
+                    &ctx2,
+                    &stream2,
+                    src,
+                    dst,
+                    sw,
+                    sh,
+                    NC as u32,
+                    &taps,
+                    &cval_dev,
+                    MorphOp::Dilate,
+                    MorphBorder::Replicate,
+                    None,
+                )
+                .expect("dilate");
+            },
+        );
+        print_row(
+            "dilate (3x3, u8)",
+            "n/a",
+            &format!("{sw}×{sh}"),
+            cpu_dilate,
+            &seg_dilate,
+        );
+    }
+
+    // ── color (gray_from_rgb) ─────────────────────────────────────────────────
+
+    for &(sw, sh) in &[(1920u32, 1080u32), (3840, 2160)] {
+        let n_src = sw as usize * sh as usize * NC;
+        let n_dst = sw as usize * sh as usize;
+        let src_host: Vec<f32> = (0..n_src).map(|i| i as f32 / (n_src - 1) as f32).collect();
+        let mut dst_host = vec![0.0f32; n_dst];
+        let mut src_dev = stream.clone_htod(&src_host).expect("H→D src");
+        let mut dst_dev = stream.alloc_zeros::<f32>(n_dst).expect("alloc dst");
+
+        let stream2 = stream.clone();
+
+        let cpu_ms = cpu_gray_from_rgb_ms(sw, sh);
+        let seg = bench_segments(
+            &ctx,
+            &stream,
+            &src_host,
+            &mut dst_host,
+            &mut src_dev,
+            &mut dst_dev,
+            |src, dst| {
+                launch_gray_from_rgb_f32(&stream2, src, dst, sw as usize * sh as usize)
+                    .expect("gray_from_rgb");
+            },
+        );
+        print_row(
+            "gray_from_rgb (f32)",
+            "n/a",
             &format!("{sw}×{sh}"),
             cpu_ms,
             &seg,
