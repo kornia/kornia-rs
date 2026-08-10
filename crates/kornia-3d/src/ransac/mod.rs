@@ -24,6 +24,7 @@
 
 mod config;
 mod driver;
+mod sprt;
 pub mod estimators;
 pub mod kernels;
 pub mod magsac;
@@ -32,6 +33,7 @@ pub mod samples;
 
 pub use config::{ConsensusKind, RansacConfig};
 pub use driver::{run, run_parallel};
+pub use sprt::{SPRTConfig, SPRTState};
 pub use kernels::{
     CauchyKernel, HuberKernel, IdentityKernel, RobustKernel, RobustKernelKind, TukeyKernel,
 };
