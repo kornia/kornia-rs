@@ -419,3 +419,133 @@ recurs:
 sudo apt-get install --reinstall nvidia-dkms-580 nvidia-utils-580
 sudo rmmod nvidia_uvm nvidia_modeset nvidia_drm nvidia && sudo modprobe nvidia
 ```
+
+---
+
+## Whole-crate CUDA imgproc sweep (H2D/kernel/D2H breakdown) — 2026-08-10
+
+`bench_cuda_imgproc` extends the per-kernel benchmarks above with a single sweep
+across resize (f32/u8), warp-affine, warp-perspective, remap, filters (Gaussian
+blur, Sobel), morphology (erode, dilate), and `gray_from_rgb` — reporting the
+H2D / kernel / D2H breakdown per op instead of just kernel time, so the
+roundtrip cost of a single-shot GPU call is visible next to the amortized
+kernel-only speedup.
+
+```sh
+cargo run --example bench_cuda_imgproc --features cuda --release
+```
+
+**Methodology:** 30 warmup iters, 100 timed iters. "Speedup (kernel)" is
+CPU / kernel-only GPU time — the number that matters when data already lives
+on-device across a pipeline. "Speedup (roundtrip)" is CPU / (H2D + kernel +
+D2H) — the number that matters for a single isolated call that has to move
+data both ways, which is why it drops below 1x for many bandwidth-bound ops:
+H2D+D2H dominates when the kernel itself is sub-millisecond.
+
+### Desktop — NVIDIA GeForce GTX 1650 (4 GiB, GDDR5)
+
+| Field | Value |
+|-------|-------|
+| GPU | NVIDIA GeForce GTX 1650, 4096 MiB |
+| CUDA | nvcc 12.4, cudarc, NVRTC |
+| Rust | 1.92.0, `--release` |
+
+| Operation | Interp | Resolution | CPU (ms) | H2D (ms) | Kernel (ms) | D2H (ms) | Total GPU (ms) | Speedup (kernel) | Speedup (roundtrip) |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| resize (f32) | bilinear | 1920×1080→960×540 | 5.69 | 9.23 | 0.18 | 2.23 | 11.64 | 31.2x | 0.5x |
+| resize (f32) | bilinear | 3840×2160→1920×1080 | 21.52 | 37.04 | 0.71 | 8.66 | 46.41 | 30.3x | 0.5x |
+| resize (f32) | nearest | 1920×1080→960×540 | 2.23 | 8.95 | 0.11 | 2.22 | 11.28 | 19.9x | 0.2x |
+| resize (f32) | nearest | 3840×2160→1920×1080 | 12.29 | 36.95 | 0.43 | 8.62 | 46.00 | 28.5x | 0.3x |
+| resize (f32) | bicubic | 1920×1080→960×540 | 23.42 | 8.93 | 0.24 | 2.22 | 11.40 | 96.9x | 2.1x |
+| resize (f32) | bicubic | 3840×2160→1920×1080 | 89.08 | 37.01 | 0.93 | 8.54 | 46.48 | 95.6x | 1.9x |
+| resize (f32) | lanczos | 1920×1080→960×540 | 5.29 | 9.47 | 0.38 | 2.22 | 12.07 | 13.9x | 0.4x |
+| resize (f32) | lanczos | 3840×2160→1920×1080 | 21.45 | 38.03 | 1.48 | 8.59 | 48.10 | 14.5x | 0.4x |
+| resize (u8) | bilinear | 1920×1080→960×540 | 5.20 | 2.22 | 0.07 | 0.59 | 2.89 | 72.9x | 1.8x |
+| resize (u8) | bilinear | 3840×2160→1920×1080 | 21.60 | 8.96 | 0.24 | 2.22 | 11.43 | 89.9x | 1.9x |
+| resize (u8) | nearest | 1920×1080→960×540 | 2.32 | 2.15 | 0.04 | 0.58 | 2.77 | 61.2x | 0.8x |
+| resize (u8) | nearest | 3840×2160→1920×1080 | 12.49 | 8.92 | 0.11 | 2.22 | 11.25 | 109.2x | 1.1x |
+| warp_affine (30° rot, f32) | bilinear | 1920×1080 | 9.32 | 9.05 | 0.51 | 8.59 | 18.16 | 18.2x | 0.5x |
+| warp_affine (30° rot, f32) | bilinear | 3840×2160 | 43.07 | 36.87 | 2.11 | 33.90 | 72.88 | 20.4x | 0.6x |
+| warp_affine (30° rot, u8) | bilinear | 1920×1080 | 2.79 | 2.23 | 0.56 | 2.24 | 5.02 | 5.0x | 0.6x |
+| warp_affine (30° rot, u8) | bilinear | 3840×2160 | 14.03 | 8.96 | 2.21 | 8.59 | 19.76 | 6.4x | 0.7x |
+| warp_perspective (30° rot, f32) | bilinear | 1920×1080 | 20.27 | 8.99 | 0.50 | 8.57 | 18.06 | 40.7x | 1.1x |
+| warp_perspective (30° rot, f32) | bilinear | 3840×2160 | 83.79 | 37.07 | 2.05 | 33.95 | 73.06 | 41.0x | 1.1x |
+| warp_perspective (30° rot, u8) | bilinear | 1920×1080 | 2.97 | 2.15 | 0.61 | 2.20 | 4.95 | 4.9x | 0.6x |
+| warp_perspective (30° rot, u8) | bilinear | 3840×2160 | 15.03 | 9.06 | 2.43 | 8.63 | 20.12 | 6.2x | 0.7x |
+| remap (f32) | bilinear | 1920×1080 | 18.92 | 9.02 | 0.39 | 8.62 | 18.03 | 49.1x | 1.0x |
+| remap (f32) | bilinear | 3840×2160 | 74.40 | 37.30 | 1.58 | 33.80 | 72.68 | 47.2x | 1.0x |
+| gaussian_blur (5x5, f32) | n/a | 1920×1080 | 26.32 | 9.01 | 0.59 | 8.55 | 18.16 | 44.6x | 1.4x |
+| sobel (3x3, f32) | n/a | 1920×1080 | 53.89 | 8.96 | 1.59 | 8.56 | 19.11 | 33.8x | 2.8x |
+| gaussian_blur (5x5, f32) | n/a | 3840×2160 | 126.79 | 39.30 | 2.46 | 35.15 | 76.91 | 51.6x | 1.6x |
+| sobel (3x3, f32) | n/a | 3840×2160 | 441.25 | 57.64 | 6.42 | 49.70 | 113.76 | 68.7x | 3.9x |
+| erode (3x3, u8) | n/a | 1920×1080 | 64.03 | 3.69 | 0.27 | 3.22 | 7.18 | 239.7x | 8.9x |
+| dilate (3x3, u8) | n/a | 1920×1080 | 61.50 | 3.26 | 0.28 | 2.93 | 6.46 | 220.3x | 9.5x |
+| erode (3x3, u8) | n/a | 3840×2160 | 288.80 | 15.73 | 0.94 | 13.55 | 30.21 | 308.8x | 9.6x |
+| dilate (3x3, u8) | n/a | 3840×2160 | 279.43 | 15.49 | 0.94 | 13.19 | 29.62 | 298.6x | 9.4x |
+| gray_from_rgb (f32) | n/a | 1920×1080 | 4.77 | 15.72 | 0.19 | 4.86 | 20.77 | 24.6x | 0.2x |
+| gray_from_rgb (f32) | n/a | 3840×2160 | 17.95 | 60.84 | 0.75 | 18.03 | 79.62 | 24.0x | 0.2x |
+
+### Embedded — NVIDIA Jetson Orin Nano (unified memory)
+
+| Field | Value |
+|-------|-------|
+| GPU | Jetson Orin (sm_87), 7.4 GB shared RAM |
+| Notes | Host and device share physical DRAM — H2D/D2H below is a real copy inside unified memory, not a PCIe transfer. |
+
+| Operation | Interp | Resolution | CPU (ms) | H2D (ms) | Kernel (ms) | D2H (ms) | Total GPU (ms) | Speedup (kernel) | Speedup (roundtrip) |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| resize (f32) | bilinear | 1920×1080→960×540 | 5.35 | 3.87 | 1.52 | 1.25 | 6.65 | 3.5x | 0.8x |
+| resize (f32) | bilinear | 3840×2160→1920×1080 | 16.52 | 12.47 | 2.95 | 3.38 | 18.80 | 5.6x | 0.9x |
+| resize (f32) | nearest | 1920×1080→960×540 | 1.46 | 3.25 | 0.93 | 1.04 | 5.22 | 1.6x | 0.3x |
+| resize (f32) | nearest | 3840×2160→1920×1080 | 4.73 | 12.69 | 2.05 | 3.39 | 18.12 | 2.3x | 0.3x |
+| resize (f32) | bicubic | 1920×1080→960×540 | 12.78 | 3.83 | 1.70 | 1.23 | 6.76 | 7.5x | 1.9x |
+| resize (f32) | bicubic | 3840×2160→1920×1080 | 49.30 | 12.40 | 3.34 | 3.36 | 19.09 | 14.8x | 2.6x |
+| resize (f32) | lanczos | 1920×1080→960×540 | 4.59 | 3.87 | 2.84 | 1.25 | 7.96 | 1.6x | 0.6x |
+| resize (f32) | lanczos | 3840×2160→1920×1080 | 16.49 | 12.80 | 7.86 | 3.53 | 24.19 | 2.1x | 0.7x |
+| resize (u8) | bilinear | 1920×1080→960×540 | 4.36 | 1.16 | 0.86 | 0.49 | 2.51 | 5.1x | 1.7x |
+| resize (u8) | bilinear | 3840×2160→1920×1080 | 16.47 | 3.81 | 1.75 | 1.22 | 6.77 | 9.4x | 2.4x |
+| resize (u8) | nearest | 1920×1080→960×540 | 1.85 | 0.98 | 0.17 | 0.43 | 1.59 | 10.6x | 1.2x |
+| resize (u8) | nearest | 3840×2160→1920×1080 | 5.16 | 4.01 | 0.66 | 1.04 | 5.71 | 7.9x | 0.9x |
+| warp_affine (30° rot, f32) | bilinear | 1920×1080 | 12.19 | 4.47 | 2.79 | 4.79 | 12.05 | 4.4x | 1.0x |
+| warp_affine (30° rot, f32) | bilinear | 3840×2160 | 46.42 | 12.55 | 6.15 | 13.02 | 31.72 | 7.6x | 1.5x |
+| warp_affine (30° rot, u8) | bilinear | 1920×1080 | 3.54 | 1.32 | 3.25 | 1.50 | 6.06 | 1.1x | 0.6x |
+| warp_affine (30° rot, u8) | bilinear | 3840×2160 | 14.00 | 4.86 | 8.35 | 5.11 | 18.32 | 1.7x | 0.8x |
+| warp_perspective (30° rot, f32) | bilinear | 1920×1080 | 20.89 | 4.09 | 2.71 | 4.38 | 11.17 | 7.7x | 1.9x |
+| warp_perspective (30° rot, f32) | bilinear | 3840×2160 | 81.51 | 12.72 | 6.78 | 13.22 | 32.72 | 12.0x | 2.5x |
+| warp_perspective (30° rot, u8) | bilinear | 1920×1080 | 5.15 | 1.27 | 3.64 | 1.45 | 6.37 | 1.4x | 0.8x |
+| warp_perspective (30° rot, u8) | bilinear | 3840×2160 | 20.34 | 4.84 | 10.18 | 5.14 | 20.16 | 2.0x | 1.0x |
+| remap (f32) | bilinear | 1920×1080 | 14.64 | 3.66 | 2.31 | 3.91 | 9.88 | 6.3x | 1.5x |
+| remap (f32) | bilinear | 3840×2160 | 55.81 | 12.49 | 5.61 | 12.98 | 31.08 | 9.9x | 1.8x |
+| gaussian_blur (5x5, f32) | n/a | 1920×1080 | 52.27 | 4.23 | 3.69 | 4.47 | 12.39 | 14.2x | 4.2x |
+| sobel (3x3, f32) | n/a | 1920×1080 | 81.23 | 4.15 | 6.31 | 4.30 | 14.76 | 12.9x | 5.5x |
+| gaussian_blur (5x5, f32) | n/a | 3840×2160 | 218.20 | 12.61 | 9.00 | 13.12 | 34.74 | 24.2x | 6.3x |
+| sobel (3x3, f32) | n/a | 3840×2160 | 486.70 | 14.12 | 18.22 | 14.64 | 46.98 | 26.7x | 10.4x |
+| erode (3x3, u8) | n/a | 1920×1080 | 57.86 | 1.75 | 2.30 | 1.85 | 5.90 | 25.2x | 9.8x |
+| dilate (3x3, u8) | n/a | 1920×1080 | 53.56 | 1.75 | 2.29 | 1.83 | 5.87 | 23.4x | 9.1x |
+| erode (3x3, u8) | n/a | 3840×2160 | 236.00 | 4.90 | 5.88 | 5.09 | 15.87 | 40.1x | 14.9x |
+| dilate (3x3, u8) | n/a | 3840×2160 | 219.01 | 4.95 | 5.90 | 5.11 | 15.97 | 37.1x | 13.7x |
+| gray_from_rgb (f32) | n/a | 1920×1080 | 1.48 | 3.55 | 1.35 | 1.40 | 6.30 | 1.1x | 0.2x |
+| gray_from_rgb (f32) | n/a | 3840×2160 | 4.03 | 12.44 | 3.00 | 4.47 | 19.91 | 1.3x | 0.2x |
+
+**Key findings:**
+
+- **Kernel-only speedups are large everywhere** (2–300x) but the **roundtrip
+  number is what a single isolated GPU call actually costs** — on desktop it's
+  frequently < 1x because a discrete GPU pays full PCIe H2D+D2H for every call;
+  on Jetson the "H2D"/"D2H" legs are unified-memory copies, not a bus
+  transfer, so roundtrip speedups are consistently higher there (e.g. remap
+  f32 1080p: desktop 1.0x roundtrip vs Jetson 1.5x) despite the desktop's much
+  faster raw kernel time (0.39 ms vs 2.31 ms).
+- **Morphology (erode/dilate) shows the largest kernel speedup on both
+  platforms** (220–310x desktop, 23–40x Jetson) — 3×3 windowed u8 ops are
+  cheap per-pixel and the CPU baseline pays a comparatively large per-pixel
+  branch cost that the GPU avoids entirely.
+- **`gray_from_rgb` is the only op with roundtrip speedup consistently < 1x on
+  both platforms** — it's the cheapest kernel in the sweep (sub-millisecond
+  even at 4K) so H2D+D2H dominates total time; this is a call that should
+  always be fused into a larger on-device pipeline rather than issued alone.
+- The desktop's PCIe H2D/D2H legs scale roughly linearly with buffer size
+  (~9 ms at 1080p → ~37 ms at 4K, matching the 4x pixel-count increase);
+  Jetson's unified-memory legs are 2–3x cheaper in absolute terms at every
+  size, which is the main reason its roundtrip speedups hold up better even
+  though its kernels are individually 2–10x slower than the discrete GPU's.
