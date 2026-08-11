@@ -1,16 +1,14 @@
-#![allow(non_snake_case)]
-#![allow(unused_imports)]
-#![allow(clippy::needless_range_loop)]
 use kiddo::immutable::float::kdtree::ImmutableKdTree;
 
 use super::ops::{
     compute_point_to_plane_rmse, find_correspondences, find_correspondences_with_indices,
-    fit_transformation, fit_transformation_point_to_plane, update_transformation,
+    fit_transformation, fit_transformation_point_to_plane, update_transformation, IcpError,
 };
 use crate::{
     linalg::transform_points3d, normal_estimation::estimate_normals, pointcloud::PointCloud,
-    
 };
+
+use crate::normal_estimation::NormalEstimationError;
 
 /// Result of the ICP algorithm.
 ///
@@ -21,13 +19,13 @@ pub struct ICPResult {
     pub rotation: [[f64; 3]; 3],
     /// Estimated translation vector.
     pub translation: [f64; 3],
-    /// The total number of iterations performed until convergence.
+    /// Number of iterations performed until convergence or the iteration cap.
     pub num_iterations: usize,
-    /// last computed RMSE.
+    /// Final RMSE of the alignment.
     pub rmse: f64,
 }
 
-/// Structure to define the ICP parameters.
+/// Convergence criteria for the ICP loop.
 #[derive(Debug, Clone)]
 pub struct ICPConvergenceCriteria {
     /// Maximum number of iterations to perform.
@@ -165,6 +163,14 @@ pub fn icp_vanilla(
 ///
 /// # Returns
 /// An `ICPResult` containing the final transformation.
+
+/// # Errors
+///
+/// Returns an error if:
+/// * The target cloud has fewer than 3 points and no normals.
+/// * Normal estimation fails.
+/// * No correspondences are found between source and target.
+/// * The Levenberg-Marquardt step fails to improve the objective.
 pub fn icp_point_to_plane(
     source: &PointCloud,
     target: &PointCloud,
@@ -172,11 +178,21 @@ pub fn icp_point_to_plane(
     initial_trans: [f64; 3],
     criteria: ICPConvergenceCriteria,
 ) -> Result<ICPResult, Box<dyn std::error::Error>> {
-    // --- Compute target normals using Phase 1 ---
-    let target_with_normals = estimate_normals(target, 10)?;
-    let target_normals = target_with_normals
-        .normals()
-        .ok_or("Failed to retrieve normals")?;
+    // --- Compute target normals ---
+    let target_normals = if let Some(n) = target.normals() {
+        n.clone()
+    } else {
+        let n_points = target.points().len();
+        if n_points < 3 {
+            return Err(NormalEstimationError::TooFewPoints(n_points).into());
+        }
+        let k = n_points.min(30);
+        let target_with_normals = estimate_normals(target, k)?;
+        target_with_normals
+            .normals()
+            .ok_or(NormalEstimationError::NormalsMissing)?
+            .clone()
+    };
 
     // --- Build kd-tree for target points ---
     let kdtree: ImmutableKdTree<f64, u32, 3, 32> = ImmutableKdTree::new_from_slice(target.points());
@@ -199,9 +215,13 @@ pub fn icp_point_to_plane(
     )?;
 
     // --- ICP loop ---
-    for i in 0..criteria.max_iterations {
+
+    for _i in 0..criteria.max_iterations {
         let (src_matched, dst_matched, dst_indices, _) =
             find_correspondences_with_indices(&current_source, target.points(), &kdtree);
+        if src_matched.is_empty() {
+            return Err(IcpError::EmptyCorrespondences.into());
+        }
 
         let dst_normals_matched: Vec<[f64; 3]> = dst_indices
             .iter()
@@ -210,7 +230,8 @@ pub fn icp_point_to_plane(
 
         let identity_rot = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
         let identity_trans = [0.0, 0.0, 0.0];
-        let (R_delta, t_delta) = fit_transformation_point_to_plane(
+
+        let (rot_delta, trans_delta) = fit_transformation_point_to_plane(
             &src_matched,
             &dst_matched,
             &dst_normals_matched,
@@ -218,44 +239,33 @@ pub fn icp_point_to_plane(
             &identity_trans,
         )?;
 
+        // Update current_source by applying delta to already-transformed points
         let mut transformed_points = vec![[0.0; 3]; current_source.len()];
-        transform_points3d(&current_source, &R_delta, &t_delta, &mut transformed_points)?;
+        transform_points3d(
+            &current_source,
+            &rot_delta,
+            &trans_delta,
+            &mut transformed_points,
+        )?;
         current_source = transformed_points;
 
-        // Correct SE(3) update: R_new = R_old * R_delta, t_new = R_old * t_delta + t_old
-        let mut new_rotation = [[0.0; 3]; 3];
-        for i in 0..3 {
-            for j in 0..3 {
-                new_rotation[i][j] = 0.0;
-                for k in 0..3 {
-                    new_rotation[i][j] += result.rotation[i][k] * R_delta[k][j];
-                }
-            }
-        }
+        // This uses the SAME composition convention as icp_vanilla.
+        update_transformation(
+            &mut result.rotation,
+            &mut result.translation,
+            &rot_delta,
+            &trans_delta,
+        );
 
-        let mut new_translation = [0.0; 3];
-        for i in 0..3 {
-            new_translation[i] = result.translation[i];
-            for j in 0..3 {
-                new_translation[i] += result.rotation[i][j] * t_delta[j];
-            }
-        }
-
-        result.rotation = new_rotation;
-        result.translation = new_translation;
-
-        // Transform the matched source points by the delta to get the new positions.
+        // Compute RMSE on matched points (already transformed by full pose)
         let mut matched_src_transformed = vec![[0.0; 3]; src_matched.len()];
         transform_points3d(
             &src_matched,
-            &R_delta,
-            &t_delta,
+            &rot_delta,
+            &trans_delta,
             &mut matched_src_transformed,
         )?;
 
-        // Compute RMSE using identity (because matched_src_transformed already includes the full transform).
-        let identity_rot = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-        let identity_trans = [0.0, 0.0, 0.0];
         let rmse = compute_point_to_plane_rmse(
             &matched_src_transformed,
             &dst_matched,
@@ -407,16 +417,20 @@ mod tests {
     fn test_point_to_plane_icp_fewer_iterations() -> Result<(), Box<dyn std::error::Error>> {
         let side = 20;
         let source_points = make_plane(side);
-        let source_pcl = PointCloud::new(source_points, None, None);
+        let source_pcl = PointCloud::new(source_points.clone(), None, None);
 
-        // Use a modest rotation (0.1 rad) to keep the problem well-conditioned.
         let axis = [1.0, 0.0, 0.0];
         let angle = 0.1;
-        let R_known = axis_angle_to_rotation_matrix(&axis, angle)?;
-        let t_known = [0.1, 0.05, 0.1];
+        let rot_known = axis_angle_to_rotation_matrix(&axis, angle)?;
+        let trans_known = [0.1, 0.05, 0.1];
 
         let mut target_points = vec![[0.0; 3]; source_pcl.points().len()];
-        transform_points3d(source_pcl.points(), &R_known, &t_known, &mut target_points)?;
+        transform_points3d(
+            source_pcl.points(),
+            &rot_known,
+            &trans_known,
+            &mut target_points,
+        )?;
         let target_pcl = PointCloud::new(target_points, None, None);
 
         let criteria = ICPConvergenceCriteria {
@@ -430,47 +444,81 @@ mod tests {
         let res_ptpl =
             icp_point_to_plane(&source_pcl, &target_pcl, init_rot, init_trans, criteria)?;
 
-        // 1. Check that point-to-plane converges within a reasonable number of iterations.
         assert!(
             res_ptpl.num_iterations < 15,
             "Point-to-plane should converge within 15 iterations, got {}",
             res_ptpl.num_iterations
         );
 
-        // 2. Verify geometric accuracy (same pattern as test_icp_vanilla).
-        let mut r_error = [[0.0; 3]; 3];
-        for i in 0..3 {
-            for j in 0..3 {
-                r_error[i][j] = res_ptpl.rotation[0][i] * R_known[0][j]
-                    + res_ptpl.rotation[1][i] * R_known[1][j]
-                    + res_ptpl.rotation[2][i] * R_known[2][j];
-            }
-        }
-        let trace = r_error[0][0] + r_error[1][1] + r_error[2][2];
-        let angular_error = ((trace - 1.0) / 2.0).clamp(-1.0, 1.0).acos();
-
-        // Only check the normal component (tz) – in-plane components are unobservable.
-        let tz_error = (res_ptpl.translation[2] - t_known[2]).abs();
+        // On a single plane only the normal component of translation is observable.
+        let tz_error = (res_ptpl.translation[2] - trans_known[2]).abs();
         assert!(
             tz_error < 0.06,
             "Normal translation error too large: {}",
             tz_error
         );
 
-        // Also check RMSE is small (the objective is minimized).
         assert!(
             res_ptpl.rmse < 1e-4,
             "RMSE should be small: {}",
             res_ptpl.rmse
         );
+
+        // Verify transformed source points lie on the target plane.
+        // (tx, ty, rz are unobservable on a plane, so we check plane distance, not pose_rmse.)
+        let mut transformed = vec![[0.0; 3]; source_points.len()];
+        transform_points3d(
+            &source_points,
+            &res_ptpl.rotation,
+            &res_ptpl.translation,
+            &mut transformed,
+        )?;
+
+        let target_normal = [rot_known[0][2], rot_known[1][2], rot_known[2][2]];
+        let target_centroid = target_pcl.points().iter().fold([0.0, 0.0, 0.0], |a, p| {
+            [a[0] + p[0], a[1] + p[1], a[2] + p[2]]
+        });
+        let n = target_pcl.points().len() as f64;
+        let target_centroid = [
+            target_centroid[0] / n,
+            target_centroid[1] / n,
+            target_centroid[2] / n,
+        ];
+
+        let max_plane_dist: f64 = transformed
+            .iter()
+            .map(|p| {
+                let d = (p[0] - target_centroid[0]) * target_normal[0]
+                    + (p[1] - target_centroid[1]) * target_normal[1]
+                    + (p[2] - target_centroid[2]) * target_normal[2];
+                d.abs()
+            })
+            .fold(0.0, |a, b| a.max(b));
         assert!(
-            angular_error < 0.01,
-            "Angular error too large: {} rad",
-            angular_error
+            max_plane_dist < 1e-3,
+            "Transformed points deviate from target plane: {}",
+            max_plane_dist
+        );
+
+        // Check that the estimated plane normal matches the ground-truth normal.
+        let est_normal = [
+            res_ptpl.rotation[0][2],
+            res_ptpl.rotation[1][2],
+            res_ptpl.rotation[2][2],
+        ];
+        let normal_dot = est_normal[0] * target_normal[0]
+            + est_normal[1] * target_normal[1]
+            + est_normal[2] * target_normal[2];
+        let normal_angle = normal_dot.clamp(-1.0, 1.0).acos();
+        assert!(
+            normal_angle < 0.01,
+            "Normal angle error too large: {} rad",
+            normal_angle
         );
 
         Ok(())
     }
+
     // ------------------------------------------------------------------------
     // Test: Flat plane correctness
     // ------------------------------------------------------------------------
@@ -479,15 +527,20 @@ mod tests {
     fn test_point_to_plane_icp_flat_plane() -> Result<(), Box<dyn std::error::Error>> {
         let side = 15;
         let source_points = make_plane(side);
-        let source_pcl = PointCloud::new(source_points, None, None);
+        let source_pcl = PointCloud::new(source_points.clone(), None, None);
 
         let axis = [1.0, 0.0, 0.0];
         let angle = 0.1;
-        let R_known = axis_angle_to_rotation_matrix(&axis, angle)?;
-        let t_known = [0.1, 0.05, 0.1];
+        let rot_known = axis_angle_to_rotation_matrix(&axis, angle)?;
+        let trans_known = [0.1, 0.05, 0.1];
 
         let mut target_points = vec![[0.0; 3]; source_pcl.points().len()];
-        transform_points3d(source_pcl.points(), &R_known, &t_known, &mut target_points)?;
+        transform_points3d(
+            source_pcl.points(),
+            &rot_known,
+            &trans_known,
+            &mut target_points,
+        )?;
         let target_pcl = PointCloud::new(target_points, None, None);
 
         let criteria = ICPConvergenceCriteria {
@@ -507,6 +560,41 @@ mod tests {
             res.num_iterations
         );
 
+        // Verify transformed source points lie on the target plane.
+        let mut transformed = vec![[0.0; 3]; source_points.len()];
+        transform_points3d(
+            &source_points,
+            &res.rotation,
+            &res.translation,
+            &mut transformed,
+        )?;
+
+        let target_normal = [rot_known[0][2], rot_known[1][2], rot_known[2][2]];
+        let target_centroid = target_pcl.points().iter().fold([0.0, 0.0, 0.0], |a, p| {
+            [a[0] + p[0], a[1] + p[1], a[2] + p[2]]
+        });
+        let n = target_pcl.points().len() as f64;
+        let target_centroid = [
+            target_centroid[0] / n,
+            target_centroid[1] / n,
+            target_centroid[2] / n,
+        ];
+
+        let max_plane_dist: f64 = transformed
+            .iter()
+            .map(|p| {
+                let d = (p[0] - target_centroid[0]) * target_normal[0]
+                    + (p[1] - target_centroid[1]) * target_normal[1]
+                    + (p[2] - target_centroid[2]) * target_normal[2];
+                d.abs()
+            })
+            .fold(0.0, |a, b| a.max(b));
+        assert!(
+            max_plane_dist < 1e-3,
+            "Transformed points deviate from target plane: {}",
+            max_plane_dist
+        );
+
         Ok(())
     }
 
@@ -522,18 +610,23 @@ mod tests {
             for j in 0..side {
                 let x = i as f64 - side as f64 / 2.0;
                 let y = j as f64 - side as f64 / 2.0;
-                source_points.push([x, y, x + y]); // tilted: z = x + y
+                source_points.push([x, y, x + y]);
             }
         }
-        let source_pcl = PointCloud::new(source_points, None, None);
+        let source_pcl = PointCloud::new(source_points.clone(), None, None);
 
         let axis = [0.0, 1.0, 0.0];
         let angle = 0.1;
-        let R_known = axis_angle_to_rotation_matrix(&axis, angle)?;
-        let t_known = [0.1, 0.05, 0.1];
+        let rot_known = axis_angle_to_rotation_matrix(&axis, angle)?;
+        let trans_known = [0.1, 0.05, 0.1];
 
         let mut target_points = vec![[0.0; 3]; source_pcl.points().len()];
-        transform_points3d(source_pcl.points(), &R_known, &t_known, &mut target_points)?;
+        transform_points3d(
+            source_pcl.points(),
+            &rot_known,
+            &trans_known,
+            &mut target_points,
+        )?;
         let target_pcl = PointCloud::new(target_points, None, None);
 
         let criteria = ICPConvergenceCriteria {
@@ -553,6 +646,56 @@ mod tests {
             res.num_iterations
         );
 
+        // Verify transformed source points lie on the target plane.
+        let mut transformed = vec![[0.0; 3]; source_points.len()];
+        transform_points3d(
+            &source_points,
+            &res.rotation,
+            &res.translation,
+            &mut transformed,
+        )?;
+
+        let source_normal = [
+            -1.0_f64 / 3.0_f64.sqrt(),
+            -1.0_f64 / 3.0_f64.sqrt(),
+            1.0_f64 / 3.0_f64.sqrt(),
+        ];
+        let target_normal = [
+            rot_known[0][0] * source_normal[0]
+                + rot_known[0][1] * source_normal[1]
+                + rot_known[0][2] * source_normal[2],
+            rot_known[1][0] * source_normal[0]
+                + rot_known[1][1] * source_normal[1]
+                + rot_known[1][2] * source_normal[2],
+            rot_known[2][0] * source_normal[0]
+                + rot_known[2][1] * source_normal[1]
+                + rot_known[2][2] * source_normal[2],
+        ];
+        let target_centroid = target_pcl.points().iter().fold([0.0, 0.0, 0.0], |a, p| {
+            [a[0] + p[0], a[1] + p[1], a[2] + p[2]]
+        });
+        let n = target_pcl.points().len() as f64;
+        let target_centroid = [
+            target_centroid[0] / n,
+            target_centroid[1] / n,
+            target_centroid[2] / n,
+        ];
+
+        let max_plane_dist: f64 = transformed
+            .iter()
+            .map(|p| {
+                let d = (p[0] - target_centroid[0]) * target_normal[0]
+                    + (p[1] - target_centroid[1]) * target_normal[1]
+                    + (p[2] - target_centroid[2]) * target_normal[2];
+                d.abs()
+            })
+            .fold(0.0, |a, b| a.max(b));
+        assert!(
+            max_plane_dist < 1e-3,
+            "Transformed points deviate from target plane: {}",
+            max_plane_dist
+        );
+
         Ok(())
     }
 
@@ -564,17 +707,21 @@ mod tests {
     fn test_point_to_plane_icp_with_noise() -> Result<(), Box<dyn std::error::Error>> {
         let side = 15;
         let source_points = make_plane(side);
-        let source_pcl = PointCloud::new(source_points, None, None);
+        let source_pcl = PointCloud::new(source_points.clone(), None, None);
 
         let axis = [1.0, 0.0, 0.0];
         let angle = 0.1;
-        let R_known = axis_angle_to_rotation_matrix(&axis, angle)?;
-        let t_known = [0.1, 0.05, 0.1];
+        let rot_known = axis_angle_to_rotation_matrix(&axis, angle)?;
+        let trans_known = [0.1, 0.05, 0.1];
 
         let mut target_points = vec![[0.0; 3]; source_pcl.points().len()];
-        transform_points3d(source_pcl.points(), &R_known, &t_known, &mut target_points)?;
+        transform_points3d(
+            source_pcl.points(),
+            &rot_known,
+            &trans_known,
+            &mut target_points,
+        )?;
 
-        // Add Gaussian noise
         let mut rng = rand::rng();
         for point in &mut target_points {
             point[0] += rng.random_range(-0.01..0.01);
@@ -601,9 +748,44 @@ mod tests {
             res.rmse
         );
 
+        // With noise, in-plane drift is expected; verify plane alignment only.
+        let mut transformed = vec![[0.0; 3]; source_points.len()];
+        transform_points3d(
+            &source_points,
+            &res.rotation,
+            &res.translation,
+            &mut transformed,
+        )?;
+
+        let target_normal = [rot_known[0][2], rot_known[1][2], rot_known[2][2]];
+        let target_centroid = target_pcl.points().iter().fold([0.0, 0.0, 0.0], |a, p| {
+            [a[0] + p[0], a[1] + p[1], a[2] + p[2]]
+        });
+        let n = target_pcl.points().len() as f64;
+        let target_centroid = [
+            target_centroid[0] / n,
+            target_centroid[1] / n,
+            target_centroid[2] / n,
+        ];
+
+        let max_plane_dist: f64 = transformed
+            .iter()
+            .map(|p| {
+                let d = (p[0] - target_centroid[0]) * target_normal[0]
+                    + (p[1] - target_centroid[1]) * target_normal[1]
+                    + (p[2] - target_centroid[2]) * target_normal[2];
+                d.abs()
+            })
+            .fold(0.0, |a, b| a.max(b));
+        // Looser tolerance because the target itself is noisy.
+        assert!(
+            max_plane_dist < 0.05,
+            "Transformed points deviate from target plane: {}",
+            max_plane_dist
+        );
+
         Ok(())
     }
-
     // ------------------------------------------------------------------------
     // Test: Sphere (non‑planar surface)
     // ------------------------------------------------------------------------
@@ -612,15 +794,20 @@ mod tests {
     fn test_point_to_plane_icp_sphere() -> Result<(), Box<dyn std::error::Error>> {
         let samples = 20;
         let source_points = make_sphere(samples);
-        let source_pcl = PointCloud::new(source_points, None, None);
+        let source_pcl = PointCloud::new(source_points.clone(), None, None);
 
         let axis = [1.0, 0.0, 0.0];
         let angle = 0.1;
-        let R_known = axis_angle_to_rotation_matrix(&axis, angle)?;
-        let t_known = [0.1, 0.0, 0.0];
+        let rot_known = axis_angle_to_rotation_matrix(&axis, angle)?;
+        let trans_known = [0.1, 0.0, 0.0];
 
         let mut target_points = vec![[0.0; 3]; source_pcl.points().len()];
-        transform_points3d(source_pcl.points(), &R_known, &t_known, &mut target_points)?;
+        transform_points3d(
+            source_pcl.points(),
+            &rot_known,
+            &trans_known,
+            &mut target_points,
+        )?;
         let target_pcl = PointCloud::new(target_points, None, None);
 
         let criteria = ICPConvergenceCriteria {
@@ -640,9 +827,45 @@ mod tests {
         );
         assert!(res.rmse < 1e-2, "Should achieve low RMSE: {}", res.rmse);
 
+        // Rotation is unobservable on a sphere; verify centroid alignment instead.
+        let mut transformed = vec![[0.0; 3]; source_points.len()];
+        transform_points3d(
+            &source_points,
+            &res.rotation,
+            &res.translation,
+            &mut transformed,
+        )?;
+
+        let src_centroid = transformed.iter().fold([0.0, 0.0, 0.0], |a, p| {
+            [a[0] + p[0], a[1] + p[1], a[2] + p[2]]
+        });
+        let dst_centroid = target_pcl.points().iter().fold([0.0, 0.0, 0.0], |a, p| {
+            [a[0] + p[0], a[1] + p[1], a[2] + p[2]]
+        });
+        let n = transformed.len() as f64;
+        let src_centroid = [
+            src_centroid[0] / n,
+            src_centroid[1] / n,
+            src_centroid[2] / n,
+        ];
+        let dst_centroid = [
+            dst_centroid[0] / n,
+            dst_centroid[1] / n,
+            dst_centroid[2] / n,
+        ];
+
+        let centroid_err = ((src_centroid[0] - dst_centroid[0]).powi(2)
+            + (src_centroid[1] - dst_centroid[1]).powi(2)
+            + (src_centroid[2] - dst_centroid[2]).powi(2))
+        .sqrt();
+        assert!(
+            centroid_err < 1e-3,
+            "Centroid translation error too large: {}",
+            centroid_err
+        );
+
         Ok(())
     }
-
     // ------------------------------------------------------------------------
     // Test: Edge cases (small point cloud)
     // ------------------------------------------------------------------------
@@ -655,15 +878,20 @@ mod tests {
                 source_points.push([i as f64 - 3.0, j as f64 - 3.0, 0.0]);
             }
         }
-        let source_pcl = PointCloud::new(source_points, None, None);
+        let source_pcl = PointCloud::new(source_points.clone(), None, None);
 
         let axis = [1.0, 0.0, 0.0];
         let angle = 0.1;
-        let R_known = axis_angle_to_rotation_matrix(&axis, angle)?;
-        let t_known = [0.01, 0.01, 0.0];
+        let rot_known = axis_angle_to_rotation_matrix(&axis, angle)?;
+        let trans_known = [0.01, 0.01, 0.0];
 
         let mut target_points = vec![[0.0; 3]; source_pcl.points().len()];
-        transform_points3d(source_pcl.points(), &R_known, &t_known, &mut target_points)?;
+        transform_points3d(
+            source_pcl.points(),
+            &rot_known,
+            &trans_known,
+            &mut target_points,
+        )?;
         let target_pcl = PointCloud::new(target_points, None, None);
 
         let criteria = ICPConvergenceCriteria {
@@ -676,36 +904,64 @@ mod tests {
 
         let res = icp_point_to_plane(&source_pcl, &target_pcl, init_rot, init_trans, criteria)?;
 
-        // Compute angular error against ground truth (same pattern).
-        let mut r_error = [[0.0; 3]; 3];
-        for i in 0..3 {
-            for j in 0..3 {
-                r_error[i][j] = res.rotation[0][i] * R_known[0][j]
-                    + res.rotation[1][i] * R_known[1][j]
-                    + res.rotation[2][i] * R_known[2][j];
-            }
-        }
-        let trace = r_error[0][0] + r_error[1][1] + r_error[2][2];
-        let angular_error = ((trace - 1.0) / 2.0).clamp(-1.0, 1.0).acos();
-
-        let translation_error = ((res.translation[0] - t_known[0]).powi(2)
-            + (res.translation[1] - t_known[1]).powi(2)
-            + (res.translation[2] - t_known[2]).powi(2))
-        .sqrt();
-
+        // On a flat plane only the normal component of translation is observable.
+        let tz_error = (res.translation[2] - trans_known[2]).abs();
         assert!(
-            angular_error < 0.1,
-            "Angular error too large: {} rad",
-            angular_error
+            tz_error < 0.1,
+            "Normal translation error too large: {}",
+            tz_error
         );
+
+        // Verify transformed source points lie on the target plane.
+        let mut transformed = vec![[0.0; 3]; source_points.len()];
+        transform_points3d(
+            &source_points,
+            &res.rotation,
+            &res.translation,
+            &mut transformed,
+        )?;
+
+        let target_normal = [rot_known[0][2], rot_known[1][2], rot_known[2][2]];
+        let target_centroid = target_pcl.points().iter().fold([0.0, 0.0, 0.0], |a, p| {
+            [a[0] + p[0], a[1] + p[1], a[2] + p[2]]
+        });
+        let n = target_pcl.points().len() as f64;
+        let target_centroid = [
+            target_centroid[0] / n,
+            target_centroid[1] / n,
+            target_centroid[2] / n,
+        ];
+
+        let max_plane_dist: f64 = transformed
+            .iter()
+            .map(|p| {
+                let d = (p[0] - target_centroid[0]) * target_normal[0]
+                    + (p[1] - target_centroid[1]) * target_normal[1]
+                    + (p[2] - target_centroid[2]) * target_normal[2];
+                d.abs()
+            })
+            .fold(0.0, |a, b| a.max(b));
         assert!(
-            translation_error < 0.1,
-            "Translation error too large: {}",
-            translation_error
+            max_plane_dist < 1e-3,
+            "Transformed points deviate from target plane: {}",
+            max_plane_dist
+        );
+
+        // Check that the estimated plane normal matches the ground-truth normal.
+        let est_normal = [res.rotation[0][2], res.rotation[1][2], res.rotation[2][2]];
+        let normal_dot = est_normal[0] * target_normal[0]
+            + est_normal[1] * target_normal[1]
+            + est_normal[2] * target_normal[2];
+        let normal_angle = normal_dot.clamp(-1.0, 1.0).acos();
+        assert!(
+            normal_angle < 0.1,
+            "Normal angle error too large: {} rad",
+            normal_angle
         );
 
         Ok(())
     }
+
     // ------------------------------------------------------------------------
     // Test: Compare iteration counts on sphere (non‑planar)
     // ------------------------------------------------------------------------
@@ -714,15 +970,20 @@ mod tests {
     fn test_point_to_plane_icp_fewer_iterations_sphere() -> Result<(), Box<dyn std::error::Error>> {
         let samples = 15;
         let source_points = make_sphere(samples);
-        let source_pcl = PointCloud::new(source_points, None, None);
+        let source_pcl = PointCloud::new(source_points.clone(), None, None);
 
         let axis = [1.0, 0.0, 0.0];
-        let angle = 0.5; // Increased from 0.1
-        let R_known = axis_angle_to_rotation_matrix(&axis, angle)?;
-        let t_known = [0.1, 0.05, 0.1];
+        let angle = 0.5;
+        let rot_known = axis_angle_to_rotation_matrix(&axis, angle)?;
+        let trans_known = [0.1, 0.05, 0.1];
 
         let mut target_points = vec![[0.0; 3]; source_pcl.points().len()];
-        transform_points3d(source_pcl.points(), &R_known, &t_known, &mut target_points)?;
+        transform_points3d(
+            source_pcl.points(),
+            &rot_known,
+            &trans_known,
+            &mut target_points,
+        )?;
         let target_pcl = PointCloud::new(target_points, None, None);
 
         let criteria = ICPConvergenceCriteria {
@@ -757,6 +1018,124 @@ mod tests {
             "Point‑to‑plane should converge in reasonable iterations, got {}",
             res_ptpl.num_iterations
         );
+
+        // Rotation is unobservable on a sphere; verify centroid alignment.
+        let mut transformed = vec![[0.0; 3]; source_points.len()];
+        transform_points3d(
+            &source_points,
+            &res_ptpl.rotation,
+            &res_ptpl.translation,
+            &mut transformed,
+        )?;
+
+        let src_centroid = transformed.iter().fold([0.0, 0.0, 0.0], |a, p| {
+            [a[0] + p[0], a[1] + p[1], a[2] + p[2]]
+        });
+        let dst_centroid = target_pcl.points().iter().fold([0.0, 0.0, 0.0], |a, p| {
+            [a[0] + p[0], a[1] + p[1], a[2] + p[2]]
+        });
+        let n = transformed.len() as f64;
+        let src_centroid = [
+            src_centroid[0] / n,
+            src_centroid[1] / n,
+            src_centroid[2] / n,
+        ];
+        let dst_centroid = [
+            dst_centroid[0] / n,
+            dst_centroid[1] / n,
+            dst_centroid[2] / n,
+        ];
+
+        let centroid_err = ((src_centroid[0] - dst_centroid[0]).powi(2)
+            + (src_centroid[1] - dst_centroid[1]).powi(2)
+            + (src_centroid[2] - dst_centroid[2]).powi(2))
+        .sqrt();
+        assert!(
+            centroid_err < 1e-3,
+            "Centroid translation error too large: {}",
+            centroid_err
+        );
+
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------------
+    //  TEST: Different-axis composition (catches the SE(3) bug)
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn test_point_to_plane_icp_different_axis() -> Result<(), Box<dyn std::error::Error>> {
+        // 3-plane corner: all 6 DOFs are observable (no sliding ambiguity)
+        let mut source_points = Vec::new();
+        for i in 0..5 {
+            for j in 0..5 {
+                source_points.push([i as f64, j as f64, 0.0]);
+            }
+        }
+        for i in 0..5 {
+            for j in 0..5 {
+                source_points.push([0.0, i as f64, j as f64]);
+            }
+        }
+        for i in 0..5 {
+            for j in 0..5 {
+                source_points.push([i as f64, 0.0, j as f64]);
+            }
+        }
+
+        let source_pcl = PointCloud::new(source_points.clone(), None, None);
+
+        // Ground truth: rotate around Y
+        let rot_known = axis_angle_to_rotation_matrix(&[0.0, 1.0, 0.0], 0.2)?;
+        let trans_known = [0.05, 0.03, 0.02];
+
+        let mut target_points = vec![[0.0; 3]; source_pcl.points().len()];
+        transform_points3d(
+            source_pcl.points(),
+            &rot_known,
+            &trans_known,
+            &mut target_points,
+        )?;
+        let target_pcl = PointCloud::new(target_points, None, None);
+
+        // Initial guess: rotate around X (DIFFERENT AXIS!)
+        let init_rot = axis_angle_to_rotation_matrix(&[1.0, 0.0, 0.0], 0.05)?;
+        let init_trans = [0.01, 0.01, 0.01];
+
+        let res = icp_point_to_plane(
+            &source_pcl,
+            &target_pcl,
+            init_rot,
+            init_trans,
+            ICPConvergenceCriteria {
+                max_iterations: 100,
+                tolerance: 1e-6,
+            },
+        )?;
+
+        // CRITICAL: Verify returned pose actually aligns source to target
+        let mut transformed = vec![[0.0; 3]; source_points.len()];
+        transform_points3d(
+            &source_points,
+            &res.rotation,
+            &res.translation,
+            &mut transformed,
+        )?;
+        let pose_rmse: f64 = transformed
+            .iter()
+            .zip(target_pcl.points().iter())
+            .map(|(a, b)| {
+                ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+            })
+            .sum::<f64>()
+            / transformed.len() as f64;
+
+        assert!(
+            pose_rmse < 1e-3,
+            "Returned pose is wrong! pose_rmse={}",
+            pose_rmse
+        );
+        assert!(res.rmse < 1e-4);
 
         Ok(())
     }

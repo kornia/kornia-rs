@@ -13,29 +13,37 @@ use thiserror::Error;
 /// Errors that can occur during normal estimation.
 #[derive(Debug, Error)]
 pub enum NormalEstimationError {
-    /// The point cloud is empty.
+    /// The point cloud has no points.
     #[error("Point cloud is empty")]
     EmptyPointCloud,
 
-    /// The number of neighbors `k` is invalid.
+    /// The requested neighbor count `got` is outside the valid range `[2, max]`.
     #[error("k must be between 2 and {max}, got {got}")]
     InvalidNeighborCount {
-        /// Maximum allowed value.
+        /// Maximum valid neighbor count (usually `n_points`).
         max: usize,
-        /// Actual value provided.
+        /// The invalid neighbor count that was requested.
         got: usize,
     },
 
-    /// Singular Value Decomposition failed.
+    /// The SVD used to compute the local covariance eigenvectors failed.
     #[error("SVD computation failed: {0}")]
     SvdFailed(String),
 
-    /// Neighborhood is degenerate (all points identical or collinear).
+    /// The neighborhood around `index` was degenerate (rank-deficient covariance).
     #[error("Degenerate neighborhood at point {index}: cannot estimate a unique normal")]
     DegenerateNeighborhood {
-        /// Index of the point with the degenerate neighborhood.
+        /// Index of the point whose neighborhood was degenerate.
         index: usize,
     },
+
+    /// The point cloud does not have enough points to estimate normals.
+    #[error("Point cloud has too few points for normal estimation: need at least 3, got {0}")]
+    TooFewPoints(usize),
+
+    /// Normals were required but missing after estimation.
+    #[error("Normals missing from target point cloud")]
+    NormalsMissing,
 }
 
 /// Estimate surface normals using PCA.
@@ -56,7 +64,7 @@ pub enum NormalEstimationError {
 /// * The point cloud is empty.
 /// * `k` is out of bounds.
 /// * SVD fails (numerical issue).
-/// * A local neighborhood is degenerate (all points identical).
+/// * A local neighborhood is degenerate (all points identical or collinear).
 ///
 /// # Performance
 /// The function builds a k-d tree (O(N log N)) and then processes each point
@@ -83,8 +91,12 @@ pub fn estimate_normals(cloud: &PointCloud, k: usize) -> Result<PointCloud, Norm
     for i in 0..n_points {
         let query = points[i];
 
-        let neighbors =
-            kdtree.nearest_n::<kiddo::SquaredEuclidean>(&query, NonZeroUsize::new(k).unwrap());
+        let k_nonzero =
+            NonZeroUsize::new(k).ok_or(NormalEstimationError::InvalidNeighborCount {
+                max: n_points,
+                got: k,
+            })?;
+        let neighbors = kdtree.nearest_n::<kiddo::SquaredEuclidean>(&query, k_nonzero);
 
         let mut neighbor_points = Vec::with_capacity(k);
         for neighbour in &neighbors {
@@ -118,7 +130,6 @@ pub fn estimate_normals(cloud: &PointCloud, k: usize) -> Result<PointCloud, Norm
         let v = svd.V();
 
         // Find the minimum singular value and its index.
-        // This is the normal direction.
         let mut min_idx = 0;
         let mut min_val = s[0];
         for j in 1..3 {
@@ -128,21 +139,23 @@ pub fn estimate_normals(cloud: &PointCloud, k: usize) -> Result<PointCloud, Norm
             }
         }
 
-        // Degeneracy check: the neighborhood must span a plane.
-        // If the second largest singular value is near zero, the points are collinear.
-        // If the largest singular value is near zero, all points are identical.
-        // In both cases, a unique normal cannot be estimated.
-        if s[1] < 1e-12 {
-            return Err(NormalEstimationError::DegenerateNeighborhood { index: i });
-        }
+        // Degeneracy check: scale-independent ratio test.
+        // If all neighbors are identical (s[0] == 0) or the neighborhood is
+        // effectively 1-D (s[1]/s[0] < 1e-6), a unique normal does not exist.
+        // Fall back to Z-up rather than aborting the whole cloud.
+        let is_degenerate = if s[0] > 0.0 { s[1] / s[0] < 1e-6 } else { true };
 
-        let normal = [v[(0, min_idx)], v[(1, min_idx)], v[(2, min_idx)]];
+        let normal = if is_degenerate {
+            [0.0, 0.0, 1.0]
+        } else {
+            [v[(0, min_idx)], v[(1, min_idx)], v[(2, min_idx)]]
+        };
 
         let len = (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]).sqrt();
-        if len > 1e-12 {
+        if len.is_finite() && len > 0.0 {
             normals.push([normal[0] / len, normal[1] / len, normal[2] / len]);
         } else {
-            return Err(NormalEstimationError::DegenerateNeighborhood { index: i });
+            normals.push([0.0, 0.0, 1.0]);
         }
     }
 
