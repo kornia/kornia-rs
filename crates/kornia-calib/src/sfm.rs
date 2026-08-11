@@ -499,6 +499,11 @@ pub fn calibrate_features_with_depth(
     // least squares per round, then re-normalize the observations and let the next BA re-settle
     // geometry. Guessed phone intrinsics (a fov sweep, k1 assumed zero on an ultra-wide) bend
     // the whole reconstruction; this lets the data correct them.
+    // The fit is hoisted OUT of the refinement block so it can be reported on `RigCalibration`.
+    // Refinement corrects the solve by rewriting normalized observations in place; without carrying
+    // the correction out, the caller keeps storing the guess it came in with — a camera that did not
+    // produce these poses. See `RigCalibration::camera_correction`.
+    let mut camera_correction: Option<(f64, f64, f64, f64, f64)> = None;
     if config.refine_intrinsics {
         // Full OPENCV-style model (COLMAP's default camera for unknown lenses), still linear in
         // the stacked unknowns beta = (gamma, gamma*k1, gamma*k2, gamma*p1, gamma*p2):
@@ -578,13 +583,23 @@ pub fn calibrate_features_with_depth(
             ((0.7..1.3).contains(&gamma) && (-0.3..0.3).contains(&k1))
                 .then_some((gamma, k1, 0.0, 0.0, 0.0))
         });
+        // Reported at INFO, not behind KORNIA_CALIB_DEBUG. The refinement's effect is otherwise
+        // invisible from the artifact: a map whose fit was applied and a map whose fit was
+        // bounds-rejected have the SAME residual signature, so without this line there is no way to
+        // tell "the camera was corrected" from "the correction was silently dropped".
+        match fit {
+            Some((gamma, k1, k2, p1, p2)) => log::info!(
+                "intrinsics refinement: gamma={gamma:.4} (fx_true = fx_assumed / gamma, \
+                 i.e. {:+.2}%) k1={k1:.4} k2={k2:.5} p1={p1:.5} p2={p2:.5}",
+                100.0 * (1.0 / gamma - 1.0)
+            ),
+            None => log::info!(
+                "intrinsics refinement produced no usable fit (singular or outside sanity bounds); \
+                 the assumed camera is kept"
+            ),
+        }
+        camera_correction = fit;
         if let Some((gamma, k1, k2, p1, p2)) = fit {
-            if std::env::var_os("KORNIA_CALIB_DEBUG").is_some() {
-                eprintln!(
-                    "[calib] intrinsics refinement: gamma={gamma:.4} k1={k1:.4} k2={k2:.5} \
-                     p1={p1:.5} p2={p2:.5}"
-                );
-            }
             // The PRISTINE store is re-normalised alongside the live one. This is the only place
             // in the file that rewrites observation VALUES rather than removing them, and missing
             // it would leave `norm0` holding coordinates in the old camera model while `norm` holds
@@ -880,6 +895,7 @@ pub fn calibrate_features_with_depth(
         reference_tag_id: tags_for_scale.first().map(|t| t.tag_id).unwrap_or(0),
         reproj_rmse_px,
         per_camera,
+        camera_correction,
     })
 }
 

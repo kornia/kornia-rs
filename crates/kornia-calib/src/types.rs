@@ -303,6 +303,27 @@ pub struct RigCalibration {
     pub reproj_rmse_px: f64,
     /// Per-camera covariance + observability (one entry per camera; see [`CameraStats`]).
     pub per_camera: Vec<CameraStats>,
+    /// Intrinsics correction the solve FITTED, as `(gamma, k1, k2, p1, p2)`. `None` when refinement
+    /// was disabled, found nothing, or produced a fit outside its sanity bounds.
+    ///
+    /// Load-bearing, and previously discarded. Refinement applies itself by rewriting the normalized
+    /// observations in place — `n' = gamma * (n * radial + tangential)` — so the SOLVE gets the
+    /// corrected camera while the caller's own camera model stays at whatever guess it started from.
+    /// A caller that then stores its guess alongside these poses is recording a camera that did not
+    /// produce them, and nothing downstream can detect the mismatch.
+    ///
+    /// `gamma` scales normalized coordinates, so it INVERTS into focal length:
+    /// `fx_true = fx_assumed / gamma`. gamma < 1 means the true focal is LONGER than assumed.
+    ///
+    /// Why this matters more than a few percent suggests: an under-estimated focal inflates every
+    /// recovered rotation by `f_true / f_assumed`, which integrates along a walk into a slow
+    /// trajectory bend that no reprojection residual can see. Measured on a 3208-frame handheld clip
+    /// whose container metadata gave 1440 px against a true focal near 1669 (+15.9%): 81.4% of the
+    /// trajectory's out-of-plane residual fitted a paraboloid with 2.40 m of sagitta. Rebuilding at
+    /// the corrected focal collapsed that to 7.9% and 0.171 m, took `cut_min` from 55 to 319 and
+    /// reprojection rmse from 2.255 to 1.956 px. Every quality number the build printed looked
+    /// healthy in BOTH cases, which is exactly why this has to be reported rather than inferred.
+    pub camera_correction: Option<(f64, f64, f64, f64, f64)>,
 }
 
 impl RigCalibration {

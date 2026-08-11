@@ -258,6 +258,8 @@ fn finalize(
         reference_tag_id,
         reproj_rmse_px,
         per_camera,
+        // The AprilTag rig path calibrates against a known board and does not refine intrinsics.
+        camera_correction: None,
     })
 }
 
@@ -472,6 +474,7 @@ mod tests {
             reference_tag_id: 0,
             reproj_rmse_px: 0.0,
             per_camera: vec![],
+            camera_correction: None,
         };
 
         // No gauge → the reference camera maps to identity.
