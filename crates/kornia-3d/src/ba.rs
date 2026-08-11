@@ -244,6 +244,20 @@ pub struct BaParams {
     ///   exposed by `kornia_algebra::optim::losses`; both are smooth
     ///   redescenders and produce qualitatively similar weight curves).
     pub robust: RobustKernelKind,
+    /// Threads for the reduced-system assembly, which is the single most expensive phase of a
+    /// Schur bundle adjustment (measured 72% of solve time at 300 keyframes, against 5% for the
+    /// factorisation everyone expects to dominate).
+    ///
+    /// `0` means "ask the machine" (`available_parallelism`). Set it explicitly when the solver
+    /// shares a box with something else — on a Jetson the GPU front-end and the solver contend,
+    /// and taking every core is not the fastest setting. `KORNIA_BA_THREADS` overrides this at
+    /// runtime for measurement without recompiling callers.
+    ///
+    /// Results are IDENTICAL at every thread count, bit for bit: the points are partitioned into
+    /// fixed contiguous chunks and the per-chunk accumulators are reduced in chunk order, so the
+    /// float addition order does not depend on which thread finishes first.
+    /// `assembly_is_deterministic_across_thread_counts` pins that.
+    pub assembly_threads: usize,
     /// Squared scale parameter for [`Self::robust`]. The square root is
     /// the linear scale fed to `HuberLoss::new`/`CauchyLoss::new`. Default
     /// `f32::INFINITY` collapses to the L2 fast path even for non-Identity
@@ -315,6 +329,7 @@ impl Default for BaParams {
             sparse_reduced_system: false,
             plane_prior_sigma: 0.0,
             robust: RobustKernelKind::Identity,
+            assembly_threads: 0,
             robust_scale_sq: f32::INFINITY,
             depth_log_residual: false,
             depth_scale_prior: -1.0,

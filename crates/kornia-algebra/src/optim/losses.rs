@@ -94,7 +94,8 @@ impl RobustLoss for CauchyLoss {
 
     fn rho(&self, squared_norm: f32) -> f32 {
         let scale_sq = self.scale * self.scale;
-        scale_sq * (1.0 + squared_norm / scale_sq).ln()
+        // `ln_1p`: in f32 `1.0 + x` quantises before the log, destroying small residuals.
+        scale_sq * (squared_norm / scale_sq).ln_1p()
     }
 }
 

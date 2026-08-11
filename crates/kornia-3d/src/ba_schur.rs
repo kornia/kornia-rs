@@ -68,7 +68,6 @@ pub static BA_BIG_MICROS: std::sync::atomic::AtomicU64 = std::sync::atomic::Atom
 /// LM iterations in those same large adjustments. See [`BA_CALLS`].
 pub static BA_BIG_ITERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-
 /// Ceres' `min_lm_diagonal` / `max_lm_diagonal`: the LM damping diagonal is clamped to this
 /// range, because extremely small or large entries of diag(JᵀJ) make the regularisation fail.
 /// Per-phase microseconds inside the LM iteration, so "where does an iteration go" is answered
@@ -235,7 +234,6 @@ pub enum SchurBaError {
 
 // ── f32 ↔ f64 conversion helpers (shared shape with ba.rs) ───────────────
 
-
 /// Infer the planarity prior's sigma from the trajectory's own HIGH-FREQUENCY out-of-plane motion.
 ///
 /// The whole point is what this must NOT be estimated from. The global out-of-plane spread is the
@@ -388,7 +386,11 @@ fn fit_centre_plane(se3s: &[SE3F32], pose_local: &[i64]) -> Option<([f64; 3], [f
         }
     }
     let mut idx = [0usize, 1, 2];
-    idx.sort_by(|&i, &j| a[i][i].partial_cmp(&a[j][j]).unwrap_or(std::cmp::Ordering::Equal));
+    idx.sort_by(|&i, &j| {
+        a[i][i]
+            .partial_cmp(&a[j][j])
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     let (lo, mid, hi) = (idx[0], idx[1], idx[2]);
     // Degeneracy guard on the SECOND spread, not the smallest. Collinear centres — a straight
     // corridor, or any short walk — have TWO near-zero eigenvalues, and every plane through the line
@@ -637,7 +639,8 @@ fn ata_6x6_into(acc: &mut [f64; 36], j: &[f32; 12]) {
     let r1 = &j[6..12];
     for i in 0..6 {
         for k in 0..6 {
-            acc[i * 6 + k] += f64::from(r0[i]) * f64::from(r0[k]) + f64::from(r1[i]) * f64::from(r1[k]);
+            acc[i * 6 + k] +=
+                f64::from(r0[i]) * f64::from(r0[k]) + f64::from(r1[i]) * f64::from(r1[k]);
         }
     }
 }
@@ -648,7 +651,8 @@ fn ata_3x3_into(acc: &mut [f64; 9], j: &[f32; 6]) {
     let r1 = &j[3..6];
     for i in 0..3 {
         for k in 0..3 {
-            acc[i * 3 + k] += f64::from(r0[i]) * f64::from(r0[k]) + f64::from(r1[i]) * f64::from(r1[k]);
+            acc[i * 3 + k] +=
+                f64::from(r0[i]) * f64::from(r0[k]) + f64::from(r1[i]) * f64::from(r1[k]);
         }
     }
 }
@@ -662,7 +666,8 @@ fn atb_6x3_into(acc: &mut [f64; 18], jp: &[f32; 12], jx: &[f32; 6]) {
     let jx1 = &jx[3..6];
     for i in 0..6 {
         for k in 0..3 {
-            acc[i * 3 + k] += f64::from(jp0[i]) * f64::from(jx0[k]) + f64::from(jp1[i]) * f64::from(jx1[k]);
+            acc[i * 3 + k] +=
+                f64::from(jp0[i]) * f64::from(jx0[k]) + f64::from(jp1[i]) * f64::from(jx1[k]);
         }
     }
 }
@@ -852,6 +857,36 @@ pub fn bundle_adjust_schur_with_priors(
 /// blocks and then SCATTERED them into the dense matrix, which performed every one of the original
 /// scattered writes plus the block pass on top — measured 28% slower. Compacting the accumulation
 /// only pays if the dense matrix is never built.
+
+/// Resolve the assembly thread count: `KORNIA_BA_THREADS` overrides `BaParams::assembly_threads`,
+/// which in turn overrides "ask the machine". Always at least 1.
+///
+/// The env override exists because the right number is a property of the BOX, not the caller — on
+/// a 6-core Jetson sharing the die with the CUDA front-end, 6 is not automatically the fastest
+/// setting, and finding that out should not require rebuilding every downstream binary.
+/// One camera's RHS contribution from a point: `(local pose index, 6-vector)`.
+type RhsContrib = (usize, [f64; 6]);
+/// One camera-pair's 6x6 contribution: `(flat pair key, block)`. The key is
+/// `i1 * n_free_poses + i2`, so the reduction needs no index lookup to decode it.
+type BlockContrib = (usize, [f64; 36]);
+/// What one chunk of points contributes to the reduced system.
+type ChunkContrib = (Vec<RhsContrib>, Vec<BlockContrib>);
+
+fn assembly_threads(params: &BaParams) -> usize {
+    if let Some(v) = std::env::var("KORNIA_BA_THREADS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+    {
+        return v.max(1);
+    }
+    if params.assembly_threads > 0 {
+        return params.assembly_threads;
+    }
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+}
+
 struct BlockAccum {
     /// Row-major `(i1, i2) -> slot`, or `usize::MAX` for a pair that never couples. `n * n` entries
     /// of `usize` is 3.2 MB at P=637 against the 117 MB it replaces, and a direct index beats a hash
@@ -865,9 +900,27 @@ struct BlockAccum {
 }
 
 impl BlockAccum {
-    /// Build the coupling pattern once. It is a function of which cameras share a point, which no
-    /// LM iteration changes.
-    fn new(n: usize, b_by_point: &[Vec<(usize, [f64; 18])>]) -> Self {
+    /// Build the coupling pattern once. It is a function of which cameras share a point — plus any
+    /// pair coupled by a MOTION PRIOR, which no observation need connect.
+    ///
+    /// Covisibility alone is not the whole pattern. A constant-velocity prior couples a triplet
+    /// whether or not those cameras see common structure, and when they do not, the block it writes
+    /// has no slot and the factorisation fails outright:
+    /// `CholeskyFailed("motion prior couples cameras with no shared point")`.
+    ///
+    /// That is not a corner case, it is what coarser sampling produces. Measured on a 3211-frame
+    /// upload: at 6 Hz every consecutive keyframe pair shared points and the bug never fired; at
+    /// 3 Hz — the rate that makes a 570-keyframe solve tractable at all — some consecutive pairs
+    /// stopped overlapping and every candidate died here, at 296 of 322 cameras already registered.
+    ///
+    /// Dropping such priors instead would be worse than the failure: when two consecutive keyframes
+    /// share NO point, the motion prior is the only thing connecting them, so discarding it severs
+    /// the pose graph exactly where the geometry is weakest.
+    fn new(
+        n: usize,
+        b_by_point: &[Vec<(usize, [f64; 18])>],
+        motion_pairs: &[(usize, usize)],
+    ) -> Self {
         let mut index = vec![usize::MAX; n * n];
         let mut pairs = Vec::new();
         for b_for_j in b_by_point {
@@ -881,6 +934,21 @@ impl BlockAccum {
                 }
             }
         }
+        // Motion-prior couplings, added whether or not the cameras share structure. Both triangles:
+        // the accumulator is addressed by (row, col) and the prior writes in one order while the
+        // symmetric read may come in the other.
+        for &(a, b) in motion_pairs {
+            if a >= n || b >= n {
+                continue;
+            }
+            for (i1, i2) in [(a, b), (b, a)] {
+                let e = &mut index[i1 * n + i2];
+                if *e == usize::MAX {
+                    *e = pairs.len();
+                    pairs.push((i1, i2));
+                }
+            }
+        }
         // Diagonal blocks always exist: every free camera carries its own A block.
         for i in 0..n {
             let e = &mut index[i * n + i];
@@ -890,7 +958,12 @@ impl BlockAccum {
             }
         }
         let blocks = vec![[0.0; 36]; pairs.len()];
-        Self { index, blocks, pairs, n }
+        Self {
+            index,
+            blocks,
+            pairs,
+            n,
+        }
     }
 
     fn clear(&mut self) {
@@ -1014,7 +1087,7 @@ pub fn bundle_adjust_schur_with_all_priors(
     // (2, 4, 8, …) instead of a fixed ×10, so one bad linearization does not overshoot λ past
     // the useful range and cost the next several iterations undoing it.
     let mut nu = 2.0_f32;
-    let mut prev_cost: Option<f32> = None;
+    let mut prev_cost: Option<f64> = None;
     // Block-sparse reduced system, built on the first iteration when the sparse path is enabled.
     let mut accum: Option<BlockAccum> = None;
     let mut iters_done = 0usize;
@@ -1093,7 +1166,16 @@ pub fn bundle_adjust_schur_with_all_priors(
         // for Huber, w = scale²/(scale²+‖r‖²) for Cauchy. Identity uses w=1.
         // Apply √w to both residual and Jacobian rows (equivalent to multiplying
         // the obs's contribution to the normal equations by w).
-        let robust = params.robust;
+        // A non-finite or non-positive scale collapses to plain L2 rather than producing NaN.
+        // `robust_scale_sq` DEFAULTS to `f32::INFINITY`, and with Cauchy that gave weight
+        // inf/inf = NaN and cost 0.5·inf·ln(1) = NaN; `NaN < cost` is false forever, so every
+        // step was rejected and the solver returned its input poses with `Ok`.
+        // `ba::build_robust_loss` has always guarded this; this path did not.
+        let robust = if params.robust_scale_sq.is_finite() && params.robust_scale_sq > 0.0 {
+            params.robust
+        } else {
+            RobustKernelKind::Identity
+        };
         let robust_scale = params.robust_scale_sq.sqrt().max(1e-6);
         let huber_w = |r_sq: f32| -> f32 {
             // ‖r‖ ≤ scale → w=1; else w = scale/‖r‖
@@ -1145,23 +1227,34 @@ pub fn bundle_adjust_schur_with_all_priors(
             match robust {
                 RobustKernelKind::Identity => 0.5 * r_sq,
                 RobustKernelKind::Huber => {
-                    let r_norm = r_sq.sqrt();
-                    if r_norm <= scale {
+                    // Knee as `s <= scale²`, matching `HuberLoss::weight`; `sqrt(s) <= scale`
+                    // rounds differently in f32 within an ulp of the knee.
+                    if r_sq <= scale * scale {
                         0.5 * r_sq
                     } else {
-                        scale * r_norm - 0.5 * scale * scale
+                        scale * r_sq.sqrt() - 0.5 * scale * scale
                     }
                 }
                 // Tukey shares Cauchy's weight here, so it shares Cauchy's loss too.
                 RobustKernelKind::Cauchy | RobustKernelKind::Tukey => {
+                    // `ln_1p`, NOT `(1.0 + x).ln()`. In f32 the sum quantises to steps of 1.19e-7
+                    // BEFORE the log, so small residuals — the converged regime the accept test
+                    // has to resolve — lose most or all of their value: 28.4% low at scale=2.45,
+                    // ‖r‖=1e-3, and exactly 0.0 for any r_sq/s2 < 6e-8.
                     let s2 = scale * scale;
-                    0.5 * s2 * (1.0 + r_sq / s2).ln()
+                    0.5 * s2 * (r_sq / s2).ln_1p()
                 }
             }
         };
 
         let t_lin = std::time::Instant::now();
-        let mut cost = 0.0_f32;
+        // f64 ACCUMULATOR over f32 terms. Each residual is computed in f32 (that is what the
+        // Jacobians and blocks are), but ~93k of them are summed here, and an f32 running total
+        // loses precision as it grows: the per-iteration cost decrease this solve reports is
+        // ~5e-4 relative, which is only ~4000 f32 ulps at this magnitude. The short-step
+        // convergence probe visibly hit that noise floor at rel ~ 8e-6. Summing in f64 costs
+        // nothing measurable (one accumulator, not a per-term widening) and removes it.
+        let mut cost = 0.0_f64;
         let mut n_depth_obs_iter = 0usize;
 
         for obs in observations {
@@ -1191,7 +1284,7 @@ pub fn bundle_adjust_schur_with_all_priors(
                     *v *= sw;
                 }
             }
-            cost += robust_cost(r_sq, robust_scale);
+            cost += f64::from(robust_cost(r_sq, robust_scale));
 
             let pli = pose_local[obs.pose_idx];
             let xli = point_local[obs.point_idx];
@@ -1280,7 +1373,7 @@ pub fn bundle_adjust_schur_with_all_priors(
                     RobustKernelKind::Huber => huber_w_depth(r_sq_d),
                     RobustKernelKind::Cauchy | RobustKernelKind::Tukey => cauchy_w_depth(r_sq_d),
                 };
-                cost += robust_cost(r_sq_d, depth_scale);
+                cost += f64::from(robust_cost(r_sq_d, depth_scale));
                 n_depth_obs_iter += 1;
 
                 // Accumulate into A (6×6) — w · outer product jpd·jpdᵀ.
@@ -1393,7 +1486,7 @@ pub fn bundle_adjust_schur_with_all_priors(
                     RobustKernelKind::Huber => huber_w(r_sq_p),
                     RobustKernelKind::Cauchy | RobustKernelKind::Tukey => cauchy_w(r_sq_p),
                 };
-                cost += robust_cost(r_sq_p, robust_scale);
+                cost += f64::from(robust_cost(r_sq_p, robust_scale));
 
                 // Jacobian (3×6), all scaled by 1/σ:
                 //   ∂C/∂ρ = -I
@@ -1476,14 +1569,29 @@ pub fn bundle_adjust_schur_with_all_priors(
                         RobustKernelKind::Huber => huber_w(r_sq_u),
                         RobustKernelKind::Cauchy | RobustKernelKind::Tukey => cauchy_w(r_sq_u),
                     };
-                    cost += robust_cost(r_sq_u, robust_scale);
+                    cost += f64::from(robust_cost(r_sq_u, robust_scale));
 
                     let (ux, uy, uz) = (u_pred[0], u_pred[1], u_pred[2]);
                     // Rows of [u]× scaled by 1/σ, ρ-part zero.
                     let j_up: [f32; 18] = [
-                        0.0, 0.0, 0.0, 0.0, -uz * inv_su, uy * inv_su,
-                        0.0, 0.0, 0.0, uz * inv_su, 0.0, -ux * inv_su,
-                        0.0, 0.0, 0.0, -uy * inv_su, ux * inv_su, 0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        -uz * inv_su,
+                        uy * inv_su,
+                        0.0,
+                        0.0,
+                        0.0,
+                        uz * inv_su,
+                        0.0,
+                        -ux * inv_su,
+                        0.0,
+                        0.0,
+                        0.0,
+                        -uy * inv_su,
+                        ux * inv_su,
+                        0.0,
                     ];
                     let ab = &mut a_blocks[pli_u];
                     for r_idx in 0..3 {
@@ -1558,7 +1666,7 @@ pub fn bundle_adjust_schur_with_all_priors(
                     ];
                     let d = [c_pred[0] - ctr[0], c_pred[1] - ctr[1], c_pred[2] - ctr[2]];
                     let r_plane = (nrm[0] * d[0] + nrm[1] * d[1] + nrm[2] * d[2]) * inv_sigma;
-                    cost += 0.5 * (r_plane * r_plane) as f32;
+                    cost += 0.5 * f64::from(r_plane) * f64::from(r_plane);
 
                     // n × C
                     let ncx = [
@@ -1612,7 +1720,7 @@ pub fn bundle_adjust_schur_with_all_priors(
                     RobustKernelKind::Huber => huber_w_depth(r_sq_m),
                     RobustKernelKind::Cauchy | RobustKernelKind::Tukey => cauchy_w_depth(r_sq_m),
                 };
-                cost += robust_cost(r_sq_m, depth_scale);
+                cost += f64::from(robust_cost(r_sq_m, depth_scale));
 
                 // J: 6 residual rows × (3 poses × 6 params), FD one param at a time.
                 let mut jac = [[0.0f32; 18]; 6];
@@ -1694,7 +1802,10 @@ pub fn bundle_adjust_schur_with_all_priors(
             let _ = pc;
         }
 
-        BA_LIN_MICROS.fetch_add(t_lin.elapsed().as_micros() as u64, std::sync::atomic::Ordering::Relaxed);
+        BA_LIN_MICROS.fetch_add(
+            t_lin.elapsed().as_micros() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
         let t_asm = std::time::Instant::now();
 
         // ── Apply LM damping ────────────────────────────────────────────
@@ -1762,7 +1873,30 @@ pub fn bundle_adjust_schur_with_all_priors(
         // first writer and must not take the dense branch against the 0x0 stub. The pattern is a
         // function of the observation graph, so it is built once and only cleared thereafter.
         if params.sparse_reduced_system && accum.is_none() {
-            accum = Some(BlockAccum::new(n_free_poses, &b_by_point));
+            // Motion priors couple triplets regardless of covisibility, so their pairs must be
+            // in the pattern or the block they write has nowhere to go. Mapped into the SAME local
+            // index space the accumulator uses; unregistered members drop out via `pose_local < 0`.
+            let mut motion_pairs: Vec<(usize, usize)> = Vec::new();
+            if let Some(mps) = motion_priors {
+                for mp in mps {
+                    if mp.i0 >= p_total || mp.i1 >= p_total || mp.i2 >= p_total {
+                        continue;
+                    }
+                    let locs: Vec<usize> = [mp.i0, mp.i1, mp.i2]
+                        .iter()
+                        .filter_map(|&g| {
+                            let l = pose_local[g];
+                            (l >= 0).then_some(l as usize)
+                        })
+                        .collect();
+                    for (x, &a) in locs.iter().enumerate() {
+                        for &b in locs.iter().skip(x + 1) {
+                            motion_pairs.push((a, b));
+                        }
+                    }
+                }
+            }
+            accum = Some(BlockAccum::new(n_free_poses, &b_by_point, &motion_pairs));
         }
         if let Some(acc) = accum.as_mut() {
             acc.clear();
@@ -1808,12 +1942,11 @@ pub fn bundle_adjust_schur_with_all_priors(
                             }
                         }
                     }
-                    None => {
-                        return Err(SchurBaError::CholeskyFailed(
-                            "motion prior couples cameras with no shared point; the sparse pattern \
-                             does not cover it".into(),
-                        ))
-                    }
+                    None => return Err(SchurBaError::CholeskyFailed(
+                        "motion prior couples cameras with no shared point; the sparse pattern \
+                             does not cover it"
+                            .into(),
+                    )),
                 },
                 None => {
                     for i in 0..6 {
@@ -1834,64 +1967,127 @@ pub fn bundle_adjust_schur_with_all_priors(
             c_inv_blocks.push(invert_3x3(cb));
         }
 
-        for (j, b_for_j) in b_by_point.iter().enumerate() {
-            let Some(c_inv_j) = c_inv_blocks[j] else {
-                continue;
-            };
-            // Pre-compute B_i · C⁻¹ for each i in this point's edge list.
-            let bc: Vec<(usize, [f64; 18])> = b_for_j
-                .iter()
-                .map(|(i_loc, b)| (*i_loc, matmul_6x3_3x3(b, &c_inv_j)))
-                .collect();
+        // ── Schur correction, parallel over POINTS ──────────────────────
+        //
+        // Points are independent: each contributes to `m_vec` and to the 6x6 blocks of the camera
+        // pairs that see it. The serial version was 72% of solve time and ran on one core.
+        //
+        // DETERMINISM. The points are cut into `n_threads` FIXED contiguous chunks, each chunk
+        // accumulates into its own buffer, and the buffers are folded back IN CHUNK ORDER. Float
+        // addition is not associative, so a shared accumulator written in thread-arrival order
+        // would make the map depend on scheduling — the exact defect class behind the CUDA
+        // matcher, track-order and descriptor fixes. Here the summation order is a function of the
+        // partition alone, so every thread count produces bit-identical output.
+        let n_threads = assembly_threads(params).min(b_by_point.len().max(1));
+        let chunk = b_by_point.len().div_ceil(n_threads.max(1));
 
-            // RHS: m[i] -= (B_i · C⁻¹) · g_point[j]
-            let gp = g_point[j];
-            for (i_loc, bc_block) in &bc {
-                let bc_g = matvec_6x3_3(bc_block, &gp);
-                let base = i_loc * 6;
-                for r in 0..6 {
-                    m_vec[base + r] -= bc_g[r] as f64;
+        // Per-point work, shared by both paths. Returns the RHS contribution and, for the sparse
+        // path, the (slot, block) contributions.
+        let point_contrib =
+            |j: usize| -> Option<(Vec<(usize, [f64; 6])>, Vec<(usize, [f64; 36])>)> {
+                let c_inv_j = c_inv_blocks[j]?;
+                let b_for_j = &b_by_point[j];
+                let bc: Vec<(usize, [f64; 18])> = b_for_j
+                    .iter()
+                    .map(|(i_loc, b)| (*i_loc, matmul_6x3_3x3(b, &c_inv_j)))
+                    .collect();
+
+                let gp = g_point[j];
+                let mut rhs = Vec::with_capacity(bc.len());
+                for (i_loc, bc_block) in &bc {
+                    rhs.push((*i_loc, matvec_6x3_3(bc_block, &gp)));
                 }
-            }
 
-            // LHS: M[i1, i2] -= (B_i1 · C⁻¹) · B_i2.T   (6×6 block)
-            for (idx1, (i1_loc, bc1)) in bc.iter().enumerate() {
-                for (idx2, (i2_loc, _bc2_unused)) in bc.iter().enumerate() {
-                    let b2 = &b_for_j[idx2].1;
-                    // (6×3) @ (3×6) — bc1 (6×3) times b2.T (3×6).
-                    // Compute element (r, c): sum_k bc1[r, k] · b2[c, k]
-                    let (i1_loc, i2_loc) = (*i1_loc, *i2_loc);
-                    let row0 = i1_loc * 6;
-                    let col0 = i2_loc * 6;
-                    let _ = idx1;
-                    let _ = idx2;
-                    match accum.as_mut() {
-                        // THE hot path: ~770k of these per iteration at 300 keyframes. Writing
-                        // straight into the column-major dense matrix touched six columns 84 kB
-                        // apart per block — 36 cache lines on six pages, no reuse, ~28M line touches
-                        // against 0.02 s of arithmetic. A contiguous 288-byte block stays in cache.
-                        Some(acc) => {
-                            let slot = acc.index[i1_loc * acc.n + i2_loc];
-                            let blk = &mut acc.blocks[slot];
-                            for r in 0..6 {
-                                for c in 0..6 {
-                                    let mut s = 0.0_f64;
-                                    for k in 0..3 {
-                                        s += bc1[r * 3 + k] * b2[c * 3 + k];
-                                    }
-                                    blk[r * 6 + c] -= s;
+                let mut blocks = Vec::with_capacity(bc.len() * bc.len());
+                for (i1_loc, bc1) in bc.iter() {
+                    for (idx2, (i2_loc, _)) in bc.iter().enumerate() {
+                        let b2 = &b_for_j[idx2].1;
+                        let mut blk = [0.0_f64; 36];
+                        for r in 0..6 {
+                            for c in 0..6 {
+                                let mut acc = 0.0_f64;
+                                for k in 0..3 {
+                                    acc += bc1[r * 3 + k] * b2[c * 3 + k];
                                 }
+                                blk[r * 6 + c] = acc;
                             }
                         }
-                        None => {
-                            for r in 0..6 {
-                                for c in 0..6 {
-                                    let mut s = 0.0_f64;
-                                    for k in 0..3 {
-                                        s += bc1[r * 3 + k] * b2[c * 3 + k];
-                                    }
-                                    m_mat[(row0 + r, col0 + c)] -= s;
-                                }
+                        blocks.push(((*i1_loc, *i2_loc), blk));
+                    }
+                }
+                // Encode the pair as a flat key here so the reduction below needs no index lookup.
+                let blocks = blocks
+                    .into_iter()
+                    .map(|((i1, i2), blk)| (i1 * n_free_poses + i2, blk))
+                    .collect();
+                Some((rhs, blocks))
+            };
+
+        let ranges: Vec<(usize, usize)> = (0..b_by_point.len())
+            .step_by(chunk.max(1))
+            .map(|st| (st, (st + chunk).min(b_by_point.len())))
+            .collect();
+
+        let per_chunk: Vec<ChunkContrib> = if n_threads <= 1 {
+            ranges
+                .iter()
+                .map(|&(a, b)| {
+                    let mut r = Vec::new();
+                    let mut k = Vec::new();
+                    for j in a..b {
+                        if let Some((rr, kk)) = point_contrib(j) {
+                            r.extend(rr);
+                            k.extend(kk);
+                        }
+                    }
+                    (r, k)
+                })
+                .collect()
+        } else {
+            use rayon::prelude::*;
+            ranges
+                .par_iter()
+                .map(|&(a, b)| {
+                    let mut r = Vec::new();
+                    let mut k = Vec::new();
+                    for j in a..b {
+                        if let Some((rr, kk)) = point_contrib(j) {
+                            r.extend(rr);
+                            k.extend(kk);
+                        }
+                    }
+                    (r, k)
+                })
+                .collect()
+        };
+
+        // Fold IN CHUNK ORDER. `par_iter().collect()` preserves input order, so this is the same
+        // sequence of additions the serial loop performed, regardless of completion order.
+        for (rhs, blocks) in &per_chunk {
+            for (i_loc, bc_g) in rhs {
+                let base = i_loc * 6;
+                for r in 0..6 {
+                    m_vec[base + r] -= bc_g[r];
+                }
+            }
+            match accum.as_mut() {
+                Some(acc) => {
+                    for (key, blk) in blocks {
+                        let (i1_loc, i2_loc) = (key / n_free_poses, key % n_free_poses);
+                        let slot = acc.index[i1_loc * acc.n + i2_loc];
+                        let dst = &mut acc.blocks[slot];
+                        for t in 0..36 {
+                            dst[t] -= blk[t];
+                        }
+                    }
+                }
+                None => {
+                    for (key, blk) in blocks {
+                        let (i1_loc, i2_loc) = (key / n_free_poses, key % n_free_poses);
+                        let (row0, col0) = (i1_loc * 6, i2_loc * 6);
+                        for r in 0..6 {
+                            for c in 0..6 {
+                                m_mat[(row0 + r, col0 + c)] -= blk[r * 6 + c];
                             }
                         }
                     }
@@ -1923,7 +2119,10 @@ pub fn bundle_adjust_schur_with_all_priors(
         // exactly as they did into the dense matrix. Only the LOWER triangle is emitted, which is
         // all `Side::Lower` reads — and the symmetrisation above has already made the two triangles
         // agree, so no information is lost by dropping the upper one.
-        BA_ASM_MICROS.fetch_add(t_asm.elapsed().as_micros() as u64, std::sync::atomic::Ordering::Relaxed);
+        BA_ASM_MICROS.fetch_add(
+            t_asm.elapsed().as_micros() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
         let t_fact = std::time::Instant::now();
         let d_pose_col = if params.sparse_reduced_system {
             // Straight from the compact blocks. Scanning the dense matrix for nonzeros — what this
@@ -2002,7 +2201,10 @@ pub fn bundle_adjust_schur_with_all_priors(
             d_point[j] = matvec_3x3_3(&c_inv_j, &rhs);
         }
 
-        BA_FACT_MICROS.fetch_add(t_fact.elapsed().as_micros() as u64, std::sync::atomic::Ordering::Relaxed);
+        BA_FACT_MICROS.fetch_add(
+            t_fact.elapsed().as_micros() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
         let t_trial = std::time::Instant::now();
 
         // ── Trial: retract poses, add to points, recompute cost ─────────
@@ -2014,205 +2216,208 @@ pub fn bundle_adjust_schur_with_all_priors(
         //     [F(x) − F(x + tδ)] / (t · δᵀg)  →  1   as t → 0
         // no matter how strong the curvature, because the quadratic term dies as t². A ratio that
         // settles anywhere else says the linearisation is not a model of the cost being compared.
-        let eval_at = |t: f32| -> (f32, f64, usize, usize, Vec<SE3F32>, Vec<Vec3F64>) {
-        let mut se3s_trial = se3s.clone();
-        for i_global in 0..p_total {
-            let pli = pose_local[i_global];
-            if pli < 0 {
-                continue;
-            }
-            let pli = pli as usize;
-            let delta: [f32; 6] = [
-                d_pose[pli * 6] as f32 * t,
-                d_pose[pli * 6 + 1] as f32 * t,
-                d_pose[pli * 6 + 2] as f32 * t,
-                d_pose[pli * 6 + 3] as f32 * t,
-                d_pose[pli * 6 + 4] as f32 * t,
-                d_pose[pli * 6 + 5] as f32 * t,
-            ];
-            se3s_trial[i_global] = se3s[i_global].retract(&delta);
-        }
-        let mut xyz_trial = xyz.clone();
-        for i_global in 0..n_total {
-            let xli = point_local[i_global];
-            if xli < 0 {
-                continue;
-            }
-            let xli = xli as usize;
-            let dp = d_point[xli];
-            xyz_trial[i_global] = Vec3F64::new(
-                xyz[i_global].x + dp[0] as f64 * f64::from(t),
-                xyz[i_global].y + dp[1] as f64 * f64::from(t),
-                xyz[i_global].z + dp[2] as f64 * f64::from(t),
-            );
-        }
-
-        let mut new_cost = 0.0_f32;
-        // Trace-only: the RAW (unrobustified, unweighted) reprojection error at the trial point,
-        // so a slow tail can be read as real geometric improvement or as drift in the priors.
-        let mut trace_reproj_sq = 0.0_f64;
-        let mut trace_reproj_n = 0usize;
-        let mut trace_robust_n = 0usize;
-        for obs in observations {
-            if obs.pose_idx >= p_total || obs.point_idx >= n_total {
-                continue;
-            }
-            let pose = &se3s_trial[obs.pose_idx];
-            let point = &xyz_trial[obs.point_idx];
-            let (r, _, _) = residual_and_jacobians(pose, point, obs.pixel, camera);
-            let r_sq = r[0] * r[0] + r[1] * r[1];
-            let w = match robust {
-                RobustKernelKind::Identity => 1.0,
-                RobustKernelKind::Huber => huber_w(r_sq),
-                RobustKernelKind::Cauchy | RobustKernelKind::Tukey => cauchy_w(r_sq),
-            };
-            new_cost += robust_cost(r_sq, robust_scale);
-            // Counted unconditionally: `BA_OBS` reports what the adjustment actually sees, which
-            // is NOT the map-wide observation count and was the source of a 7x error in a
-            // per-observation timing comparison.
-            trace_reproj_n += 1;
-            if trace_on {
-                trace_reproj_sq += f64::from(r_sq);
-                if w < 1.0 {
-                    trace_robust_n += 1;
-                }
-            }
-
-            // Depth residual contribution to the trial cost, through the same `robust_cost`
-            // the linearisation pass uses, so accept/reject compares like with like.
-            if let Some(d_meas) = obs.depth_meas {
-                let sigma = obs.depth_sigma.max(1e-6);
-                let z_pred = clamped_z(pose, point);
-                // Scales are held at their current value across the trial: the LM accept/reject
-                // must compare the SAME objective the step was computed against, so re-fitting
-                // `s` here would let a rejected step look good on a moved goalpost.
-                let (r_z, _) =
-                    depth_residual(z_pred, d_meas, dscales[obs.pose_idx], sigma, log_depth);
-                let r_sq_d = r_z * r_z;
-                new_cost += robust_cost(r_sq_d, depth_scale);
-            }
-        }
-
-        // Pose-prior contribution to trial cost.
-        if let Some(pp_slice) = pose_priors {
+        let eval_at = |t: f32| -> (f64, f64, usize, usize, Vec<SE3F32>, Vec<Vec3F64>) {
+            let mut se3s_trial = se3s.clone();
             for i_global in 0..p_total {
-                let Some(prior) = pp_slice[i_global] else {
-                    continue;
-                };
-                if pose_local[i_global] < 0 {
+                let pli = pose_local[i_global];
+                if pli < 0 {
                     continue;
                 }
-                let sigma = prior.sigma.max(1e-6);
-                let inv_sigma = 1.0_f32 / sigma;
-                let pose = &se3s_trial[i_global];
-                let rm = pose.r.matrix();
-                let t = pose.t;
-                let r_col0 = rm.col(0);
-                let r_col1 = rm.col(1);
-                let r_col2 = rm.col(2);
-                let rt_t_x = r_col0.x * t.x + r_col0.y * t.y + r_col0.z * t.z;
-                let rt_t_y = r_col1.x * t.x + r_col1.y * t.y + r_col1.z * t.z;
-                let rt_t_z = r_col2.x * t.x + r_col2.y * t.y + r_col2.z * t.z;
-                let c_pred = [-rt_t_x, -rt_t_y, -rt_t_z];
-                let r0 = (c_pred[0] - prior.center_world[0]) * inv_sigma;
-                let r1 = (c_pred[1] - prior.center_world[1]) * inv_sigma;
-                let r2 = (c_pred[2] - prior.center_world[2]) * inv_sigma;
-                let r_sq_p = r0 * r0 + r1 * r1 + r2 * r2;
-                new_cost += robust_cost(r_sq_p, robust_scale);
+                let pli = pli as usize;
+                let delta: [f32; 6] = [
+                    d_pose[pli * 6] as f32 * t,
+                    d_pose[pli * 6 + 1] as f32 * t,
+                    d_pose[pli * 6 + 2] as f32 * t,
+                    d_pose[pli * 6 + 3] as f32 * t,
+                    d_pose[pli * 6 + 4] as f32 * t,
+                    d_pose[pli * 6 + 5] as f32 * t,
+                ];
+                se3s_trial[i_global] = se3s[i_global].retract(&delta);
+            }
+            let mut xyz_trial = xyz.clone();
+            for i_global in 0..n_total {
+                let xli = point_local[i_global];
+                if xli < 0 {
+                    continue;
+                }
+                let xli = xli as usize;
+                let dp = d_point[xli];
+                xyz_trial[i_global] = Vec3F64::new(
+                    xyz[i_global].x + dp[0] as f64 * f64::from(t),
+                    xyz[i_global].y + dp[1] as f64 * f64::from(t),
+                    xyz[i_global].z + dp[2] as f64 * f64::from(t),
+                );
+            }
 
-                // Up-prior contribution — the accept/reject decision must see the
-                // same objective the linearisation minimised or the LM loop
-                // rejects every step that trades reprojection for uprightness.
-                if let Some(upw) = prior.up_world {
-                    let inv_su = 1.0_f32 / prior.up_sigma.max(1e-6);
-                    // Same generalisation as the cost pass — see there.
-                    let a = prior.up_cam;
-                    let u_pred = [
-                        r_col0.x * a[0] + r_col0.y * a[1] + r_col0.z * a[2],
-                        r_col1.x * a[0] + r_col1.y * a[1] + r_col1.z * a[2],
-                        r_col2.x * a[0] + r_col2.y * a[1] + r_col2.z * a[2],
-                    ];
-                    let ru0 = (u_pred[0] - upw[0]) * inv_su;
-                    let ru1 = (u_pred[1] - upw[1]) * inv_su;
-                    let ru2 = (u_pred[2] - upw[2]) * inv_su;
-                    let r_sq_u = ru0 * ru0 + ru1 * ru1 + ru2 * ru2;
-                    new_cost += robust_cost(r_sq_u, robust_scale);
+            let mut new_cost = 0.0_f64;
+            // Trace-only: the RAW (unrobustified, unweighted) reprojection error at the trial point,
+            // so a slow tail can be read as real geometric improvement or as drift in the priors.
+            let mut trace_reproj_sq = 0.0_f64;
+            let mut trace_reproj_n = 0usize;
+            let mut trace_robust_n = 0usize;
+            for obs in observations {
+                if obs.pose_idx >= p_total || obs.point_idx >= n_total {
+                    continue;
+                }
+                let pose = &se3s_trial[obs.pose_idx];
+                let point = &xyz_trial[obs.point_idx];
+                let (r, _, _) = residual_and_jacobians(pose, point, obs.pixel, camera);
+                let r_sq = r[0] * r[0] + r[1] * r[1];
+                let w = match robust {
+                    RobustKernelKind::Identity => 1.0,
+                    RobustKernelKind::Huber => huber_w(r_sq),
+                    RobustKernelKind::Cauchy | RobustKernelKind::Tukey => cauchy_w(r_sq),
+                };
+                new_cost += f64::from(robust_cost(r_sq, robust_scale));
+                // Counted unconditionally: `BA_OBS` reports what the adjustment actually sees, which
+                // is NOT the map-wide observation count and was the source of a 7x error in a
+                // per-observation timing comparison.
+                trace_reproj_n += 1;
+                if trace_on {
+                    trace_reproj_sq += f64::from(r_sq);
+                    if w < 1.0 {
+                        trace_robust_n += 1;
+                    }
+                }
+
+                // Depth residual contribution to the trial cost, through the same `robust_cost`
+                // the linearisation pass uses, so accept/reject compares like with like.
+                if let Some(d_meas) = obs.depth_meas {
+                    let sigma = obs.depth_sigma.max(1e-6);
+                    let z_pred = clamped_z(pose, point);
+                    // Scales are held at their current value across the trial: the LM accept/reject
+                    // must compare the SAME objective the step was computed against, so re-fitting
+                    // `s` here would let a rejected step look good on a moved goalpost.
+                    let (r_z, _) =
+                        depth_residual(z_pred, d_meas, dscales[obs.pose_idx], sigma, log_depth);
+                    let r_sq_d = r_z * r_z;
+                    new_cost += f64::from(robust_cost(r_sq_d, depth_scale));
                 }
             }
-        }
 
-        // Planarity contribution to the trial cost. The accept/reject test must see the SAME
-        // objective the linearisation minimised, or LM rejects every step that trades a little
-        // reprojection for flatness — which is every step this prior exists to take.
-        //
-        // The plane is re-fitted on the TRIAL poses rather than reused from the linearisation. Both
-        // are defensible; refitting is the honest one, because it scores the trial trajectory by its
-        // own best-fit plane instead of by a plane chosen to flatter the previous iterate. A step
-        // that merely rotates the whole trajectory would otherwise look like an improvement.
-        if params.plane_prior_sigma != 0.0 {
-            if let Some((nrm, ctr)) = fit_centre_plane(&se3s_trial, &pose_local) {
-                // Re-inferred on the trial poses for the same reason the plane is re-fitted there:
-                // the trial trajectory must be scored by its own tolerance, not a stale one.
-                let sigma = match (params.plane_prior_sigma < 0.0)
-                    .then(|| infer_plane_sigma(&se3s_trial, &pose_local, &nrm, &ctr))
-                {
-                    Some(Some(sg)) => sg,
-                    Some(None) => f64::INFINITY,
-                    None => f64::from(params.plane_prior_sigma),
-                };
-                let inv_sigma = 1.0_f64 / sigma.max(1e-6);
-                for (i_global, pose) in se3s_trial.iter().enumerate() {
+            // Pose-prior contribution to trial cost.
+            if let Some(pp_slice) = pose_priors {
+                for i_global in 0..p_total {
+                    let Some(prior) = pp_slice[i_global] else {
+                        continue;
+                    };
                     if pose_local[i_global] < 0 {
                         continue;
                     }
+                    let sigma = prior.sigma.max(1e-6);
+                    let inv_sigma = 1.0_f32 / sigma;
+                    let pose = &se3s_trial[i_global];
                     let rm = pose.r.matrix();
                     let t = pose.t;
-                    let (c0, c1, c2) = (rm.col(0), rm.col(1), rm.col(2));
-                    let c_pred = [
-                        -f64::from(c0.x * t.x + c0.y * t.y + c0.z * t.z),
-                        -f64::from(c1.x * t.x + c1.y * t.y + c1.z * t.z),
-                        -f64::from(c2.x * t.x + c2.y * t.y + c2.z * t.z),
-                    ];
-                    let r_plane = (nrm[0] * (c_pred[0] - ctr[0])
-                        + nrm[1] * (c_pred[1] - ctr[1])
-                        + nrm[2] * (c_pred[2] - ctr[2]))
-                        * inv_sigma;
-                    new_cost += 0.5 * (r_plane * r_plane) as f32;
-                }
-            }
-        }
+                    let r_col0 = rm.col(0);
+                    let r_col1 = rm.col(1);
+                    let r_col2 = rm.col(2);
+                    let rt_t_x = r_col0.x * t.x + r_col0.y * t.y + r_col0.z * t.z;
+                    let rt_t_y = r_col1.x * t.x + r_col1.y * t.y + r_col1.z * t.z;
+                    let rt_t_z = r_col2.x * t.x + r_col2.y * t.y + r_col2.z * t.z;
+                    let c_pred = [-rt_t_x, -rt_t_y, -rt_t_z];
+                    let r0 = (c_pred[0] - prior.center_world[0]) * inv_sigma;
+                    let r1 = (c_pred[1] - prior.center_world[1]) * inv_sigma;
+                    let r2 = (c_pred[2] - prior.center_world[2]) * inv_sigma;
+                    let r_sq_p = r0 * r0 + r1 * r1 + r2 * r2;
+                    new_cost += f64::from(robust_cost(r_sq_p, robust_scale));
 
-        if let Some(mps) = motion_priors {
-            for mp in mps {
-                if mp.i0 >= p_total || mp.i1 >= p_total || mp.i2 >= p_total {
-                    continue;
+                    // Up-prior contribution — the accept/reject decision must see the
+                    // same objective the linearisation minimised or the LM loop
+                    // rejects every step that trades reprojection for uprightness.
+                    if let Some(upw) = prior.up_world {
+                        let inv_su = 1.0_f32 / prior.up_sigma.max(1e-6);
+                        // Same generalisation as the cost pass — see there.
+                        let a = prior.up_cam;
+                        let u_pred = [
+                            r_col0.x * a[0] + r_col0.y * a[1] + r_col0.z * a[2],
+                            r_col1.x * a[0] + r_col1.y * a[1] + r_col1.z * a[2],
+                            r_col2.x * a[0] + r_col2.y * a[1] + r_col2.z * a[2],
+                        ];
+                        let ru0 = (u_pred[0] - upw[0]) * inv_su;
+                        let ru1 = (u_pred[1] - upw[1]) * inv_su;
+                        let ru2 = (u_pred[2] - upw[2]) * inv_su;
+                        let r_sq_u = ru0 * ru0 + ru1 * ru1 + ru2 * ru2;
+                        new_cost += f64::from(robust_cost(r_sq_u, robust_scale));
+                    }
                 }
-                if [mp.i0, mp.i1, mp.i2].iter().all(|&g| pose_local[g] < 0) {
-                    continue;
-                }
-                let r = motion_prior_residual(
-                    &se3s_trial[mp.i0],
-                    &se3s_trial[mp.i1],
-                    &se3s_trial[mp.i2],
-                    mp,
-                );
-                let r_sq_m: f32 = r.iter().map(|v| v * v).sum();
-                new_cost += robust_cost(r_sq_m, depth_scale);
             }
-        }
-        (
-            new_cost,
-            trace_reproj_sq,
-            trace_reproj_n,
-            trace_robust_n,
-            se3s_trial,
-            xyz_trial,
-        )
+
+            // Planarity contribution to the trial cost. The accept/reject test must see the SAME
+            // objective the linearisation minimised, or LM rejects every step that trades a little
+            // reprojection for flatness — which is every step this prior exists to take.
+            //
+            // The plane is re-fitted on the TRIAL poses rather than reused from the linearisation. Both
+            // are defensible; refitting is the honest one, because it scores the trial trajectory by its
+            // own best-fit plane instead of by a plane chosen to flatter the previous iterate. A step
+            // that merely rotates the whole trajectory would otherwise look like an improvement.
+            if params.plane_prior_sigma != 0.0 {
+                if let Some((nrm, ctr)) = fit_centre_plane(&se3s_trial, &pose_local) {
+                    // Re-inferred on the trial poses for the same reason the plane is re-fitted there:
+                    // the trial trajectory must be scored by its own tolerance, not a stale one.
+                    let sigma = match (params.plane_prior_sigma < 0.0)
+                        .then(|| infer_plane_sigma(&se3s_trial, &pose_local, &nrm, &ctr))
+                    {
+                        Some(Some(sg)) => sg,
+                        Some(None) => f64::INFINITY,
+                        None => f64::from(params.plane_prior_sigma),
+                    };
+                    let inv_sigma = 1.0_f64 / sigma.max(1e-6);
+                    for (i_global, pose) in se3s_trial.iter().enumerate() {
+                        if pose_local[i_global] < 0 {
+                            continue;
+                        }
+                        let rm = pose.r.matrix();
+                        let t = pose.t;
+                        let (c0, c1, c2) = (rm.col(0), rm.col(1), rm.col(2));
+                        let c_pred = [
+                            -f64::from(c0.x * t.x + c0.y * t.y + c0.z * t.z),
+                            -f64::from(c1.x * t.x + c1.y * t.y + c1.z * t.z),
+                            -f64::from(c2.x * t.x + c2.y * t.y + c2.z * t.z),
+                        ];
+                        let r_plane = (nrm[0] * (c_pred[0] - ctr[0])
+                            + nrm[1] * (c_pred[1] - ctr[1])
+                            + nrm[2] * (c_pred[2] - ctr[2]))
+                            * inv_sigma;
+                        new_cost += 0.5 * f64::from(r_plane) * f64::from(r_plane);
+                    }
+                }
+            }
+
+            if let Some(mps) = motion_priors {
+                for mp in mps {
+                    if mp.i0 >= p_total || mp.i1 >= p_total || mp.i2 >= p_total {
+                        continue;
+                    }
+                    if [mp.i0, mp.i1, mp.i2].iter().all(|&g| pose_local[g] < 0) {
+                        continue;
+                    }
+                    let r = motion_prior_residual(
+                        &se3s_trial[mp.i0],
+                        &se3s_trial[mp.i1],
+                        &se3s_trial[mp.i2],
+                        mp,
+                    );
+                    let r_sq_m: f32 = r.iter().map(|v| v * v).sum();
+                    new_cost += f64::from(robust_cost(r_sq_m, depth_scale));
+                }
+            }
+            (
+                new_cost,
+                trace_reproj_sq,
+                trace_reproj_n,
+                trace_robust_n,
+                se3s_trial,
+                xyz_trial,
+            )
         };
 
         let (new_cost, trace_reproj_sq, trace_reproj_n, trace_robust_n, se3s_trial, xyz_trial) =
             eval_at(1.0);
-        BA_TRIAL_MICROS.fetch_add(t_trial.elapsed().as_micros() as u64, std::sync::atomic::Ordering::Relaxed);
+        BA_TRIAL_MICROS.fetch_add(
+            t_trial.elapsed().as_micros() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
         BA_OBS.store(trace_reproj_n as u64, std::sync::atomic::Ordering::Relaxed);
 
         // Gain ratio ρ = actual reduction / model-predicted reduction (Ceres/Nielsen trust
@@ -2249,7 +2454,7 @@ pub fn bundle_adjust_schur_with_all_priors(
         let (fo_10, fo_02) = if trace_on && gdotd > 0.0 {
             let probe = |t: f32| -> f64 {
                 let (c_t, ..) = eval_at(t);
-                f64::from(cost - c_t) / (f64::from(t) * gdotd)
+                (cost - c_t) / (f64::from(t) * gdotd)
             };
             (probe(0.1), probe(0.02))
         } else {
@@ -2257,11 +2462,15 @@ pub fn bundle_adjust_schur_with_all_priors(
         };
         pred *= 0.5;
         let rho = if pred > 1e-20 {
-            f64::from(cost - new_cost) / pred
+            (cost - new_cost) / pred
         } else {
             // Degenerate model prediction: fall back to plain cost comparison so a solved-but-
             // flat system still makes progress instead of spinning the damping loop.
-            if new_cost < cost { 1.0 } else { -1.0 }
+            if new_cost < cost {
+                1.0
+            } else {
+                -1.0
+            }
         };
 
         if rho > 0.0 && new_cost < cost {
@@ -2297,7 +2506,7 @@ pub fn bundle_adjust_schur_with_all_priors(
                     "BA_TRACE iter={iters_done} ACCEPT cost={new_cost:.6e} rel={rel:.3e} rho={rho:.3e} lambda={lambda:.3e} gmax={gmax:.4e} rmse={rmse:.5} rfrac={robust_frac:.4} fo10={fo_10:.4} fo02={fo_02:.4}"
                 );
             }
-            if rel < params.cost_tolerance {
+            if rel < f64::from(params.cost_tolerance) {
                 converged = true;
                 break;
             }
@@ -2339,11 +2548,30 @@ pub fn bundle_adjust_schur_with_all_priors(
     }
 
     BA_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    // Per-call shape, gated by `KORNIA_BA_SIZES`. Mirrors the same probe on the upstream port so
+    // the two can be compared call-for-call: aggregate totals cannot tell "many small solves" from
+    // "few large ones", and inferring that from totals has gone wrong twice.
+    if std::env::var_os("KORNIA_BA_SIZES").is_some() {
+        eprintln!(
+            "BA_SIZE poses={n_free_poses} points={n_free_points} obs={} iters={iters_done} ms={}",
+            observations.len(),
+            ba_t0.elapsed().as_millis()
+        );
+    }
     BA_ITERS.fetch_add(iters_done, std::sync::atomic::Ordering::Relaxed);
-    BA_DIM_CUBED.fetch_add((n_free_poses as u64 * 6).pow(3) / 1_000_000, std::sync::atomic::Ordering::Relaxed);
-    BA_MICROS.fetch_add(ba_t0.elapsed().as_micros() as u64, std::sync::atomic::Ordering::Relaxed);
+    BA_DIM_CUBED.fetch_add(
+        (n_free_poses as u64 * 6).pow(3) / 1_000_000,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    BA_MICROS.fetch_add(
+        ba_t0.elapsed().as_micros() as u64,
+        std::sync::atomic::Ordering::Relaxed,
+    );
     if n_free_poses * 6 >= 1000 {
-        BA_BIG_MICROS.fetch_add(ba_t0.elapsed().as_micros() as u64, std::sync::atomic::Ordering::Relaxed);
+        BA_BIG_MICROS.fetch_add(
+            ba_t0.elapsed().as_micros() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
         BA_BIG_ITERS.fetch_add(iters_done, std::sync::atomic::Ordering::Relaxed);
     }
     Ok(BaResult {
@@ -2371,6 +2599,211 @@ mod tests {
             k2: 0.0,
             p1: 0.0,
             p2: 0.0,
+        }
+    }
+
+    /// Assembly scaling, `cargo test -p kornia-3d --lib assembly_thread_scaling -- --ignored
+    /// --nocapture`. Not an assertion — a measurement, printed for the reader.
+    #[test]
+    #[ignore]
+    fn assembly_thread_scaling() {
+        let camera = PinholeCamera {
+            fx: 500.0,
+            fy: 500.0,
+            cx: 320.0,
+            cy: 240.0,
+            k1: 0.0,
+            k2: 0.0,
+            p1: 0.0,
+            p2: 0.0,
+        };
+        // 120 cameras over a 3000-point cloud with ~40% visibility: big enough that the assembly
+        // dominates, small enough to run in a test.
+        let n_cam = 120usize;
+        let poses: Vec<Pose3d> = (0..n_cam)
+            .map(|i| {
+                let t = i as f64 * 0.05;
+                Pose3d::new(Mat3F64::IDENTITY, Vec3F64::new(-t, 0.01 * t, 0.0))
+            })
+            .collect();
+        let pts: Vec<Vec3F64> = (0..3000)
+            .map(|k| {
+                let kf = k as f64;
+                Vec3F64::new(
+                    (kf * 0.37).sin() * 3.0,
+                    (kf * 0.29).cos() * 2.0,
+                    5.0 + (kf * 0.11).sin() * 2.0,
+                )
+            })
+            .collect();
+        let mut observations = Vec::new();
+        for (ci, pose) in poses.iter().enumerate() {
+            for (pi, pt) in pts.iter().enumerate() {
+                if (pi + ci * 7) % 5 >= 2 {
+                    continue;
+                }
+                let pc = pose.transform_point(pt);
+                if pc.z <= 0.1 {
+                    continue;
+                }
+                observations.push(BaObservation {
+                    pose_idx: ci,
+                    point_idx: pi,
+                    pixel: [
+                        (camera.fx * pc.x / pc.z + camera.cx) as f32,
+                        (camera.fy * pc.y / pc.z + camera.cy) as f32,
+                    ],
+                    fixed_pose: ci == 0,
+                    fixed_point: false,
+                    ..BaObservation::default()
+                });
+            }
+        }
+        let start_pts: Vec<Vec3F64> = pts
+            .iter()
+            .map(|p| *p + Vec3F64::new(0.02, -0.015, 0.03))
+            .collect();
+        println!(
+            "problem: {n_cam} cameras, {} points, {} observations",
+            pts.len(),
+            observations.len()
+        );
+        for threads in [1usize, 2, 4, 6] {
+            let t0 = std::time::Instant::now();
+            let r = bundle_adjust_schur(
+                &poses,
+                &start_pts,
+                &observations,
+                &camera,
+                &BaParams {
+                    max_iterations: 6,
+                    sparse_reduced_system: true,
+                    assembly_threads: threads,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            println!(
+                "  threads={threads}  {:.2}s  iters={}",
+                t0.elapsed().as_secs_f64(),
+                r.iterations
+            );
+        }
+    }
+
+    /// The parallel assembly must give BIT-IDENTICAL results at every thread count.
+    ///
+    /// This is the whole safety argument for parallelising it. The points are cut into fixed
+    /// contiguous chunks and the per-chunk accumulators are folded back in chunk order, so the
+    /// sequence of float additions is a property of the partition and not of which thread
+    /// finishes first. Had it been a shared accumulator under `par_iter`, the map would depend on
+    /// scheduling — the same defect that made the CUDA matcher, the track ordering and the SIFT
+    /// descriptors nondeterministic, each of which took a separate investigation to find.
+    ///
+    /// Bit-identical, not approximately equal: anything looser would pass while the ordering
+    /// silently varied.
+    #[test]
+    fn assembly_is_deterministic_across_thread_counts() {
+        // The env override wins over `BaParams`, so it must not be set while this runs.
+        assert!(
+            std::env::var_os("KORNIA_BA_THREADS").is_none(),
+            "unset KORNIA_BA_THREADS: it overrides the thread counts this test sweeps"
+        );
+        // Same shape as `sparse_reduced_system_matches_dense`: five cameras on an arc over a
+        // shared 4x4 cloud, so the reduced system has real off-diagonal blocks and the point
+        // partition actually splits across chunks.
+        let camera = PinholeCamera {
+            fx: 500.0,
+            fy: 500.0,
+            cx: 320.0,
+            cy: 240.0,
+            k1: 0.0,
+            k2: 0.0,
+            p1: 0.0,
+            p2: 0.0,
+        };
+        let gt_poses: Vec<Pose3d> = (0..5)
+            .map(|i| {
+                let t = i as f64 * 0.2;
+                Pose3d::new(Mat3F64::IDENTITY, Vec3F64::new(-t, 0.02 * t, 0.0))
+            })
+            .collect();
+        let mut gt_points = Vec::new();
+        for gx in 0..4 {
+            for gy in 0..4 {
+                gt_points.push(Vec3F64::new(
+                    -0.6 + 0.4 * gx as f64,
+                    -0.6 + 0.4 * gy as f64,
+                    4.0 + 0.1 * ((gx + gy) as f64),
+                ));
+            }
+        }
+        let mut observations = Vec::new();
+        for (ci, pose) in gt_poses.iter().enumerate() {
+            for (pi, pt) in gt_points.iter().enumerate() {
+                let pc = pose.transform_point(pt);
+                observations.push(BaObservation {
+                    pose_idx: ci,
+                    point_idx: pi,
+                    pixel: [
+                        (camera.fx * pc.x / pc.z + camera.cx) as f32,
+                        (camera.fy * pc.y / pc.z + camera.cy) as f32,
+                    ],
+                    fixed_pose: ci == 0,
+                    fixed_point: false,
+                    ..BaObservation::default()
+                });
+            }
+        }
+        let points: Vec<Vec3F64> = gt_points
+            .iter()
+            .map(|p| *p + Vec3F64::new(0.03, -0.02, 0.04))
+            .collect();
+        let poses: Vec<Pose3d> = gt_poses
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                if i == 0 {
+                    *p
+                } else {
+                    Pose3d::new(p.rotation, p.translation + Vec3F64::new(0.02, -0.01, 0.015))
+                }
+            })
+            .collect();
+        let mut reference: Option<(Vec<[f64; 3]>, Vec<[f64; 3]>)> = None;
+        for threads in [1_usize, 2, 3, 6] {
+            let r = bundle_adjust_schur(
+                &poses,
+                &points,
+                &observations,
+                &camera,
+                &BaParams {
+                    max_iterations: 15,
+                    assembly_threads: threads,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let got = (
+                r.poses
+                    .iter()
+                    .map(|p| [p.translation.x, p.translation.y, p.translation.z])
+                    .collect::<Vec<_>>(),
+                r.points.iter().map(|p| [p.x, p.y, p.z]).collect::<Vec<_>>(),
+            );
+            match &reference {
+                None => reference = Some(got),
+                Some(want) => {
+                    assert_eq!(
+                        want.0, got.0,
+                        "pose translations differ at {threads} threads (bit-exact comparison)"
+                    );
+                    assert_eq!(
+                        want.1, got.1,
+                        "points differ at {threads} threads (bit-exact comparison)"
+                    );
+                }
+            }
         }
     }
 
@@ -2854,7 +3287,10 @@ mod tests {
 
         // Value and slope are continuous at the changeover.
         let (r_at, d_at) = depth_residual(sm, m, s, sigma, true);
-        assert!(r_at.abs() < 1e-6, "residual at z = s·m should vanish: {r_at}");
+        assert!(
+            r_at.abs() < 1e-6,
+            "residual at z = s·m should vanish: {r_at}"
+        );
         let expected_slope = 1.0 / (sm * sigma);
         assert!(
             (d_at - expected_slope).abs() / expected_slope < 1e-5,
@@ -3036,7 +3472,8 @@ mod tests {
             ..BaParams::default()
         };
         let run = |prior: f32| {
-            bundle_adjust_schur(&init_poses, &init_points, &observations, &cam, &arm(prior)).unwrap()
+            bundle_adjust_schur(&init_poses, &init_points, &observations, &cam, &arm(prior))
+                .unwrap()
         };
 
         let free = run(1.0);
@@ -3175,6 +3612,83 @@ mod tests {
         assert!(
             default_short < 0.1,
             "λ=1.0 should be converged by 10 iterations, got {default_short:.4} m"
+        );
+    }
+
+    /// A motion prior over cameras that share NO point must not kill the sparse factorisation.
+    ///
+    /// Regression test for a failure that only appears at coarse sampling. The sparse reduced
+    /// camera system's pattern is built from COVISIBILITY, but a constant-velocity prior couples a
+    /// triplet whether or not those cameras see common structure — so when they do not, the block
+    /// it writes has no slot and Cholesky fails outright.
+    ///
+    /// Measured on a 3211-frame upload: at 6 Hz every consecutive keyframe pair shared points and
+    /// this never fired; at 3 Hz some pairs stopped overlapping and every candidate died here, with
+    /// 296 of 322 cameras already registered. Dropping such priors would be worse than failing —
+    /// when consecutive keyframes share no point, the prior is the ONLY thing joining them.
+    ///
+    /// The scene below is built so cameras 0 and 2 share nothing: each sees its own disjoint set of
+    /// points, and the prior spans all three.
+    #[test]
+    fn motion_prior_over_disjoint_cameras_survives_sparse_path() {
+        let cam = PinholeCamera {
+            fx: 500.0, fy: 500.0, cx: 320.0, cy: 240.0,
+            k1: 0.0, k2: 0.0, p1: 0.0, p2: 0.0,
+        };
+        // Three cameras marching along +X.
+        let poses: Vec<Pose3d> = (0..3)
+            .map(|k| Pose3d::new(Mat3F64::IDENTITY, Vec3F64::new(-(k as f64) * 0.5, 0.0, 0.0)))
+            .collect();
+
+        // Disjoint structure: camera k sees ONLY points [4k, 4k+4).
+        let mut points = Vec::new();
+        for k in 0..3 {
+            for t in 0..4 {
+                let f = t as f64;
+                points.push(Vec3F64::new(
+                    (k as f64) * 0.5 + f * 0.1 - 0.15,
+                    f * 0.12 - 0.18,
+                    3.0 + f * 0.05,
+                ));
+            }
+        }
+        let mut obs = Vec::new();
+        for (k, pose) in poses.iter().enumerate() {
+            for t in 0..4 {
+                let pi = k * 4 + t;
+                let pc = pose.transform_point(&points[pi]);
+                obs.push(BaObservation {
+                    pose_idx: k,
+                    point_idx: pi,
+                    pixel: [
+                        (cam.fx * pc.x / pc.z + cam.cx) as f32,
+                        (cam.fy * pc.y / pc.z + cam.cy) as f32,
+                    ],
+                    fixed_pose: k == 0,
+                    fixed_point: false,
+                    ..BaObservation::default()
+                });
+            }
+        }
+        // The prior spans 0,1,2 — cameras 0 and 2 share no observation whatsoever.
+        let mps = [BaMotionPrior {
+            i0: 0, i1: 1, i2: 2,
+            alpha: 0.5,
+            position_sigma: 0.1,
+            orientation_sigma: 0.1,
+        }];
+        let params = BaParams {
+            max_iterations: 5,
+            sparse_reduced_system: true,
+            ..BaParams::default()
+        };
+        let r = bundle_adjust_schur_with_all_priors(
+            &poses, &points, &obs, &cam, &params, None, Some(&mps),
+        );
+        assert!(
+            r.is_ok(),
+            "sparse path rejected a motion prior over non-covisible cameras: {:?}",
+            r.err()
         );
     }
 
@@ -3665,7 +4179,8 @@ mod tests {
         let span = (0..3)
             .map(|k| {
                 let v: Vec<f64> = cs.iter().map(|c| c[k]).collect();
-                v.iter().copied().fold(f64::MIN, f64::max) - v.iter().copied().fold(f64::MAX, f64::min)
+                v.iter().copied().fold(f64::MIN, f64::max)
+                    - v.iter().copied().fold(f64::MAX, f64::min)
             })
             .fold(0.0f64, f64::max);
         if span > 1e-12 {
@@ -3792,10 +4307,16 @@ mod tests {
             })
             .collect();
         let local: Vec<i64> = (0..9).collect();
-        assert!(fit_centre_plane(&along, &local).is_none(), "collinear centres must yield no plane");
+        assert!(
+            fit_centre_plane(&along, &local).is_none(),
+            "collinear centres must yield no plane"
+        );
 
         let too_few: Vec<SE3F32> = along.iter().take(3).cloned().collect();
-        assert!(fit_centre_plane(&too_few, &[0, 1, 2]).is_none(), "3 centres are always coplanar");
+        assert!(
+            fit_centre_plane(&too_few, &[0, 1, 2]).is_none(),
+            "3 centres are always coplanar"
+        );
     }
 
     /// Inferred sigma tracks the BOB, not the DRIFT — the property the whole scheme rests on.
@@ -3872,6 +4393,9 @@ mod tests {
                 .fold(0.0f64, f64::max)
         };
         let g = spread(&drifted, &n1, &c1);
-        assert!(g > 5.0 * s_drift, "drifted scene is not actually drifted (spread {g:.3})");
+        assert!(
+            g > 5.0 * s_drift,
+            "drifted scene is not actually drifted (spread {g:.3})"
+        );
     }
 }
