@@ -197,11 +197,12 @@ pub(crate) fn update_transformation(
 ///
 /// Identical to `find_correspondences` but also returns the indices of the
 /// matched target points, needed for looking up normals.
+type Correspondences = (Vec<[f64; 3]>, Vec<[f64; 3]>, Vec<u32>, Vec<f64>);
 pub(crate) fn find_correspondences_with_indices(
     source: &[[f64; 3]],
     target: &[[f64; 3]],
     kdtree: &ImmutableKdTree<f64, u32, 3, 32>,
-) -> (Vec<[f64; 3]>, Vec<[f64; 3]>, Vec<u32>, Vec<f64>) {
+) -> Correspondences {
     let nn_results = source
         .iter()
         .map(|p| kdtree.nearest_one::<kiddo::SquaredEuclidean>(p))
@@ -209,7 +210,7 @@ pub(crate) fn find_correspondences_with_indices(
 
     let mut distances: Vec<f64> = nn_results.iter().map(|nn| nn.distance).collect();
     if distances.is_empty() {
-        return (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        return Correspondences::default();
     }
 
     let mid_dist = distances.len() / 2;

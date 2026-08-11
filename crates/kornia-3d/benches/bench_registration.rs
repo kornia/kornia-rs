@@ -26,18 +26,16 @@ fn bench_icp_registration(c: &mut Criterion) {
     let mut group = c.benchmark_group("icp_registration");
 
     for &n in &[100, 400, 900] {
-        // Generate source and target point clouds
         let source_points = make_plane(n);
         let source_pcl = PointCloud::new(source_points, None, None);
 
-        // Known transformation
         let axis = [0.0, 0.0, 1.0];
         let angle = 0.1745; // 10 degrees
-        let R_known = axis_angle_to_rotation_matrix(&axis, angle).unwrap();
+        let r_known = axis_angle_to_rotation_matrix(&axis, angle).unwrap();
         let t_known = [0.2, 0.1, 0.0];
 
         let mut target_points = vec![[0.0; 3]; source_pcl.points().len()];
-        transform_points3d(source_pcl.points(), &R_known, &t_known, &mut target_points).unwrap();
+        transform_points3d(source_pcl.points(), &r_known, &t_known, &mut target_points).unwrap();
         let target_pcl = PointCloud::new(target_points, None, None);
 
         let criteria = ICPConvergenceCriteria {
@@ -48,7 +46,6 @@ fn bench_icp_registration(c: &mut Criterion) {
         let init_rot = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
         let init_trans = [0.0, 0.0, 0.0];
 
-        // Benchmark point-to-point ICP
         group.bench_with_input(BenchmarkId::new("icp_point_to_point", n), &n, |b, _| {
             b.iter(|| {
                 let _ = std::hint::black_box(icp_vanilla(
@@ -61,7 +58,6 @@ fn bench_icp_registration(c: &mut Criterion) {
             });
         });
 
-        // Benchmark point-to-plane ICP
         group.bench_with_input(BenchmarkId::new("icp_point_to_plane", n), &n, |b, _| {
             b.iter(|| {
                 let _ = std::hint::black_box(icp_point_to_plane(

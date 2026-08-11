@@ -150,10 +150,8 @@ pub fn icp_vanilla(
 }
 
 /// Point-to-plane Iterative Closest Point (ICP) algorithm.
-///
 /// This variant uses the point-to-plane error metric, which converges faster
 /// on planar surfaces. It requires normals for the target point cloud.
-///
 /// # Arguments
 /// * `source` - Source point cloud.
 /// * `target` - Target point cloud.
@@ -163,9 +161,7 @@ pub fn icp_vanilla(
 ///
 /// # Returns
 /// An `ICPResult` containing the final transformation.
-
 /// # Errors
-///
 /// Returns an error if:
 /// * The target cloud has fewer than 3 points and no normals.
 /// * Normal estimation fails.
