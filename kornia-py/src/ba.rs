@@ -234,6 +234,7 @@ pub fn bundle_adjust_py<'py>(
         initial_lambda: 1e-3,
         robust: robust_kind,
         robust_scale_sq: robust_scale * robust_scale,
+        ..Default::default()
     };
 
     // Optional per-pose translation priors. None / all-sigmas <= 0 → no
@@ -261,10 +262,10 @@ pub fn bundle_adjust_py<'py>(
                 for i in 0..n_poses {
                     let sig = s_data[i];
                     if sig.is_finite() && sig > 0.0 {
-                        out.push(Some(BaPosePrior {
-                            center_world: [c_data[i * 3], c_data[i * 3 + 1], c_data[i * 3 + 2]],
-                            sigma: sig,
-                        }));
+                        out.push(Some(BaPosePrior::new(
+                            [c_data[i * 3], c_data[i * 3 + 1], c_data[i * 3 + 2]],
+                            sig,
+                        )));
                         any = true;
                     } else {
                         out.push(None);

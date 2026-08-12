@@ -34,7 +34,10 @@
 //!   * z is clamped to `MIN_Z` to handle mid-iteration cheirality flips.
 //!
 //! Supports fixed-pose anchors, fixed-point gauge (motion-only BA), optional
-//! per-observation depth residuals, optional per-pose translation priors, and
+//! per-observation depth residuals, optional per-pose translation and
+//! orientation priors, optional constant-velocity motion priors over pose
+//! triplets (the one residual family that makes the reduced camera system
+//! non-block-diagonal — see [`bundle_adjust_schur_with_all_priors`]), and
 //! the robust kernels in `BaParams::robust` via IRLS (see
 //! [`bundle_adjust_schur`]). LM damping is ellipsoidal — `λ·diag(JᵀJ)`, as
 //! Ceres does it — so `λ` is dimensionless here, unlike
@@ -56,7 +59,7 @@ use kornia_algebra::{Mat3AF32, Mat3F64, Vec3AF32, Vec3F64, SE3F32, SO3F32};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use thiserror::Error;
 
-use crate::ba::{BaError, BaObservation, BaParams, BaPosePrior, BaResult};
+use crate::ba::{BaError, BaMotionPrior, BaObservation, BaParams, BaPosePrior, BaResult};
 use crate::camera::PinholeCamera;
 use crate::pose::Pose3d;
 use crate::ransac::RobustKernelKind;
@@ -204,6 +207,83 @@ pub enum SchurBaError {
     /// Other BA setup error.
     #[error(transparent)]
     Ba(#[from] BaError),
+}
+/// The orientation-prior residual for one pose: how far the camera's IMAGE-UP axis has drifted
+/// from the direction the caller claims it points, whitened by `up_sigma`.
+///
+/// Shared by the linearisation and the trial-cost evaluation deliberately. Those two must score
+/// the SAME objective — if they drift apart, LM rejects exactly the steps this prior exists to
+/// take — and the motion prior already gets that guarantee from `motion_prior_residual`. Two
+/// copies of ten lines is how the up prior would lose it.
+///
+/// Image-up is FIXED at `(0, −1, 0)` (OpenCV convention: +Y down). A caller with a measured
+/// direction rather than the upright-camera assumption expresses it by rotating `up_world`, which
+/// constrains the same one degree of freedom without a second per-camera field to keep in sync.
+/// `r_row1` is row 1 of the pose's rotation matrix — i.e. `[R[1][0], R[1][1], R[1][2]]`, which for
+/// column-major storage is `(col0.y, col1.y, col2.y)`. `u_pred` is returned alongside the residual
+/// because the Jacobian `[u_pred]×` needs it.
+#[inline]
+fn up_prior_residual(r_row1: [f32; 3], up_world: [f32; 3], up_sigma: f32) -> ([f32; 3], [f32; 3]) {
+    let inv_su = 1.0_f32 / up_sigma.max(1e-6);
+    // u_pred = Rᵀ · (0,−1,0) = minus row 1 of R, i.e. the world direction the image's up axis
+    // currently points. Taking the row directly is why this needs three scalars, not the matrix.
+    let u_pred = [-r_row1[0], -r_row1[1], -r_row1[2]];
+    let r_up = [
+        (u_pred[0] - up_world[0]) * inv_su,
+        (u_pred[1] - up_world[1]) * inv_su,
+        (u_pred[2] - up_world[2]) * inv_su,
+    ];
+    (r_up, u_pred)
+}
+
+/// 6-vector residual of one [`BaMotionPrior`] on the CURRENT pose estimates, already whitened by
+/// the prior's two sigmas.
+///
+/// Layout: `[t_ratio, 0, 0 | w01 − α·w02]` in the general case, or
+/// `[α(C2−C0) − (C1−C0) | w01 − α·w02]` in the degenerate `C0 ≈ C2` case. `C` are camera CENTRES
+/// (`−Rᵀt`) — the physically meaningful quantity, not the camera-frame translations — and `w` are
+/// SO(3) logs of the relative rotations.
+///
+/// The translation term is a norm RATIO precisely because the map's scale is a free parameter of
+/// the problem: a residual on the position difference would be minimised by shrinking the entire
+/// reconstruction, so it would fight the depth anchor instead of complementing it. The ratio is
+/// invariant to global scale and constrains only the shape of the local motion.
+///
+/// The `C0 ≈ C2` fallback is not cosmetic: with the endpoints coincident the ratio's denominator
+/// vanishes and the residual is undefined, yet that is exactly the near-stationary configuration a
+/// walkthrough produces when the operator pauses. There is no scale in play in that case, so the
+/// plain difference form is both well posed and the correct constraint.
+fn motion_prior_residual(p0: &SE3F32, p1: &SE3F32, p2: &SE3F32, mp: &BaMotionPrior) -> [f32; 6] {
+    // Camera centre C = -Rᵀt, and the SO(3) log of Ra·Rbᵀ. Both come from `kornia-algebra`
+    // rather than being spelled out here: `SE3F32::inverse().t` IS -Rᵀt, and `SO3F32::log()`
+    // already carries the small-angle branch that a hand-rolled Rodrigues has to get right to
+    // avoid dividing by a vanishing sine.
+    let centre = |p: &SE3F32| p.inverse().t;
+    let rel_log = |a: &SE3F32, b: &SE3F32| (a.r * b.r.inverse()).log();
+
+    let (c0, c1, c2) = (centre(p0), centre(p1), centre(p2));
+    let d01 = c1 - c0;
+    let d02 = c2 - c0;
+    let n01 = d01.length();
+    let n02 = d02.length();
+    let inv_sp = 1.0 / mp.position_sigma.max(1e-6);
+    let inv_so = 1.0 / mp.orientation_sigma.max(1e-6);
+
+    let mut r = [0.0f32; 6];
+    if n02 > 1e-6 {
+        r[0] = (mp.alpha - n01 / n02) * inv_sp;
+    } else {
+        // Stationary endpoints: fall back to the position difference (no scale in play).
+        let d = d02 * mp.alpha - d01;
+        r[0] = d.x * inv_sp;
+        r[1] = d.y * inv_sp;
+        r[2] = d.z * inv_sp;
+    }
+    let w = rel_log(p1, p0) - rel_log(p2, p0) * mp.alpha;
+    r[3] = w.x * inv_so;
+    r[4] = w.y * inv_so;
+    r[5] = w.z * inv_so;
+    r
 }
 
 // ── f32 ↔ f64 conversion helpers (shared shape with ba.rs) ───────────────
@@ -543,6 +623,49 @@ pub fn bundle_adjust_schur(
     bundle_adjust_schur_with_priors(poses, points, observations, camera, params, None)
 }
 
+/// [`bundle_adjust_schur_with_priors`] plus constant-velocity motion priors over shot triplets
+/// (see [`BaMotionPrior`]).
+///
+/// # What this adds that no other prior does
+///
+/// Every other residual family here — reprojection, depth, the centre and up priors — touches at
+/// most ONE pose block, so the pose part of the Hessian stays block-diagonal and the reduced
+/// camera system `M = A − B C⁻¹ Bᵀ` picks up off-diagonal entries only through shared points. A
+/// motion residual couples THREE poses, so it writes genuine off-diagonal pose-pose blocks into
+/// `M` — including between cameras that share no landmark at all. That is the whole point: it is
+/// the only term that constrains a keyframe whose neighbours give it no parallax.
+///
+/// Jacobians are obtained by finite differences over the solver's own `retract`. The residual (a
+/// norm ratio composed with an SO(3) log) has an unpleasant closed form, the cost is negligible
+/// (a handful of triplets × 19 residual evaluations, against tens of thousands of observations),
+/// and differentiating through `retract` itself means the perturbation convention can never drift
+/// out of sync with the analytic residuals elsewhere in this file.
+///
+/// Motion residuals are σ-whitened, so they are gated by
+/// [`BaParams::depth_robust_scale_sq`] rather than the reprojection knee — see that field.
+///
+/// Triplets that name an out-of-range pose, or whose three poses are ALL fixed, are skipped.
+#[allow(clippy::too_many_arguments)]
+pub fn bundle_adjust_schur_with_all_priors(
+    poses: &[Pose3d],
+    points: &[Vec3F64],
+    observations: &[BaObservation],
+    camera: &PinholeCamera,
+    params: &BaParams,
+    pose_priors: Option<&[Option<BaPosePrior>]>,
+    motion_priors: Option<&[BaMotionPrior]>,
+) -> Result<BaResult, SchurBaError> {
+    bundle_adjust_schur_impl(
+        poses,
+        points,
+        observations,
+        camera,
+        params,
+        pose_priors,
+        motion_priors,
+    )
+}
+
 /// Bundle adjustment via dense Schur-complement reduction with optional
 /// per-pose translation priors.
 ///
@@ -566,6 +689,9 @@ pub fn bundle_adjust_schur(
 ///
 /// Poses marked fixed via `BaObservation::fixed_pose` have no free
 /// parameters; any prior on them is silently ignored.
+///
+/// When a prior also carries an orientation term ([`BaPosePrior::up_world`]) that residual is
+/// applied here too; it is likewise pose-only and lands in the same `A_ii` block.
 pub fn bundle_adjust_schur_with_priors(
     poses: &[Pose3d],
     points: &[Vec3F64],
@@ -573,6 +699,27 @@ pub fn bundle_adjust_schur_with_priors(
     camera: &PinholeCamera,
     params: &BaParams,
     pose_priors: Option<&[Option<BaPosePrior>]>,
+) -> Result<BaResult, SchurBaError> {
+    bundle_adjust_schur_impl(
+        poses,
+        points,
+        observations,
+        camera,
+        params,
+        pose_priors,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn bundle_adjust_schur_impl(
+    poses: &[Pose3d],
+    points: &[Vec3F64],
+    observations: &[BaObservation],
+    camera: &PinholeCamera,
+    params: &BaParams,
+    pose_priors: Option<&[Option<BaPosePrior>]>,
+    motion_priors: Option<&[BaMotionPrior]>,
 ) -> Result<BaResult, SchurBaError> {
     // Validate prior slice length matches poses.
     if let Some(pp) = pose_priors {
@@ -655,6 +802,19 @@ pub fn bundle_adjust_schur_with_priors(
     // a floor could only make the two solvers disagree: at `robust_scale_sq = 1e-20` a floor gives
     // this solver a knee 1e4x wider than `ba::bundle_adjust` gets from the same `BaParams`.
     let robust_scale = params.robust_scale_sq.sqrt();
+    // Separate knee for the σ-WHITENED residual families (depth measurements, motion priors).
+    // `0.0` — the default — reuses the reprojection knee, so nothing changes for callers that do
+    // not set it. See `BaParams::depth_robust_scale_sq` for why sharing one knee across two
+    // different residual units silently throws the whitened family away.
+    //
+    // Bound BEFORE the closures below shadow the free functions of the same name.
+    let depth_scale = if params.depth_robust_scale_sq > 0.0 {
+        params.depth_robust_scale_sq.sqrt()
+    } else {
+        robust_scale
+    };
+    let depth_weight = |r_sq: f32| -> f32 { robust_weight(robust, depth_scale, r_sq) };
+    let depth_cost = |r_sq: f32| -> f32 { robust_cost(robust, depth_scale, r_sq) };
     let robust_weight = |r_sq: f32| -> f32 { robust_weight(robust, robust_scale, r_sq) };
     let robust_cost = |r_sq: f32| -> f32 { robust_cost(robust, robust_scale, r_sq) };
 
@@ -810,10 +970,11 @@ pub fn bundle_adjust_schur_with_priors(
                 // boundary mis-samples) do not dominate the normal equations.
                 // The gate uses ‖r_z‖² of the *whitened* residual, matching
                 // the χ² interpretation (ORB-SLAM3 §IV.B uses χ²=7.815 for
-                // 3-DoF RGB-D; we reuse `robust_scale_sq` for simplicity).
+                // 3-DoF RGB-D; `BaParams::depth_robust_scale_sq` selects the knee, defaulting to
+                // the reprojection one for backwards compatibility).
                 let r_sq_d = r_z * r_z;
-                let w_d = robust_weight(r_sq_d);
-                cost += robust_cost(r_sq_d);
+                let w_d = depth_weight(r_sq_d);
+                cost += depth_cost(r_sq_d);
                 n_depth_obs_iter += 1;
 
                 // Accumulate into A (6×6) — w · outer product jpd·jpdᵀ.
@@ -986,6 +1147,188 @@ pub fn bundle_adjust_schur_with_priors(
                         gp[ii] -= w_p * row[ii] * r_pos[r_idx];
                     }
                 }
+
+                // ── Optional orientation (up-vector) prior ────────────────
+                // u_pred = Rᵀ · (0,−1,0), i.e. minus row 1 of R: where the image's up axis
+                // currently points in the world. See `up_prior_residual`.
+                //
+                // For a FIXED camera-frame vector v this solver's right-perturbation convention
+                // gives ∂(Rᵀv)/∂ω = +[Rᵀv]× and no ρ coupling — the same pattern the centre
+                // prior's ω part follows (its [C]× IS [Rᵀ(−t)]×). Purely rotational, so like the
+                // centre prior it augments only A_ii; B and C are untouched.
+                if let Some(upw) = prior.up_world {
+                    let inv_su = 1.0_f32 / prior.up_sigma.max(1e-6);
+                    let (r_up, u_pred) =
+                        up_prior_residual([r_col0.y, r_col1.y, r_col2.y], upw, prior.up_sigma);
+                    let r_sq_u = r_up[0] * r_up[0] + r_up[1] * r_up[1] + r_up[2] * r_up[2];
+                    // Reprojection knee, not the whitened one: the up residual is divided by
+                    // `up_sigma` in unit-vector units, but it is gated for the same reason the
+                    // centre prior is — to stop one badly-oriented view dominating — and it
+                    // shares the centre prior's knee so a single pose prior is scored coherently.
+                    let w_u = robust_weight(r_sq_u);
+                    cost += robust_cost(r_sq_u);
+
+                    let (ux, uy, uz) = (u_pred[0], u_pred[1], u_pred[2]);
+                    // Row-major 3×6: rows of [u]× scaled by 1/σ in the ω half, ρ half zero.
+                    let j_up: [f32; 18] = [
+                        // Row 0 (dUx)
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        -uz * inv_su,
+                        uy * inv_su,
+                        // Row 1 (dUy)
+                        0.0,
+                        0.0,
+                        0.0,
+                        uz * inv_su,
+                        0.0,
+                        -ux * inv_su,
+                        // Row 2 (dUz)
+                        0.0,
+                        0.0,
+                        0.0,
+                        -uy * inv_su,
+                        ux * inv_su,
+                        0.0,
+                    ];
+                    let ab = &mut a_blocks[pli_u];
+                    for r_idx in 0..3 {
+                        let row = &j_up[r_idx * 6..(r_idx + 1) * 6];
+                        for ii in 0..6 {
+                            for kk in 0..6 {
+                                ab[ii * 6 + kk] += w_u * row[ii] * row[kk];
+                            }
+                        }
+                    }
+                    let gp = &mut g_pose[pli_u];
+                    for r_idx in 0..3 {
+                        let row = &j_up[r_idx * 6..(r_idx + 1) * 6];
+                        for ii in 0..6 {
+                            gp[ii] -= w_u * row[ii] * r_up[r_idx];
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Motion priors (constant-velocity triplets) ──────────────────────
+        // The ONLY residual family here that couples more than one pose, so the only one that
+        // produces off-diagonal pose-pose blocks in the reduced camera system. They are collected
+        // here and written into M after the A blocks are placed.
+        //
+        // Jacobians are finite differences over the solver's own `retract` (see
+        // `bundle_adjust_schur_with_all_priors` for why). Residuals are σ-whitened, so they are
+        // gated with the depth-family knee — see `BaParams::depth_robust_scale_sq` for why they
+        // must not share the reprojection knee.
+        let mut h_offdiag: std::collections::HashMap<(usize, usize), [f32; 36]> =
+            std::collections::HashMap::new();
+        if let Some(mps) = motion_priors {
+            // Finite-difference step, RELATIVE for the translation block.
+            //
+            // The residual's translation term is built from camera centres (`-Rᵀt`, an f32 dot
+            // product of world-scale quantities), so a fixed absolute step loses relative
+            // precision as the map grows: measured, the error on dC/dρ is ~0.06% on a map a few
+            // metres across but degrades linearly with extent, and a walkthrough map is tens of
+            // metres. Scaling the step with the local coordinate magnitude holds the ratio
+            // constant instead. Rotation parameters are dimensionless radians, so they keep the
+            // absolute step.
+            const FD_EPS: f32 = 1e-4;
+            for mp in mps {
+                if mp.i0 >= p_total || mp.i1 >= p_total || mp.i2 >= p_total {
+                    continue;
+                }
+                let tri = [mp.i0, mp.i1, mp.i2];
+                let locs = [pose_local[mp.i0], pose_local[mp.i1], pose_local[mp.i2]];
+                if locs.iter().all(|&l| l < 0) {
+                    // Fully fixed triplet constrains nothing.
+                    continue;
+                }
+                let r0 = motion_prior_residual(&se3s[mp.i0], &se3s[mp.i1], &se3s[mp.i2], mp);
+                let r_sq_m: f32 = r0.iter().map(|v| v * v).sum();
+                let w_m = depth_weight(r_sq_m);
+                cost += depth_cost(r_sq_m);
+
+                // J: 6 residual rows × (3 poses × 6 params), FD one parameter at a time.
+                let mut jac = [[0.0f32; 18]; 6];
+                for (pi, &g) in tri.iter().enumerate() {
+                    if locs[pi] < 0 {
+                        continue;
+                    }
+                    // Magnitude of this camera's centre, the scale the translation columns are
+                    // differentiated at. `1.0 +` keeps the step finite at the origin.
+                    let c_mag = se3s[g].inverse().t.length();
+                    for k in 0..6 {
+                        let step = if k < 3 {
+                            FD_EPS * (1.0 + c_mag)
+                        } else {
+                            FD_EPS
+                        };
+                        let mut delta = [0.0f32; 6];
+                        delta[k] = step;
+                        let pert = se3s[g].retract(&delta);
+                        let refs = [
+                            if pi == 0 { &pert } else { &se3s[mp.i0] },
+                            if pi == 1 { &pert } else { &se3s[mp.i1] },
+                            if pi == 2 { &pert } else { &se3s[mp.i2] },
+                        ];
+                        let rp = motion_prior_residual(refs[0], refs[1], refs[2], mp);
+                        // Divided by the step ACTUALLY taken, not the nominal constant.
+                        for row in 0..6 {
+                            jac[row][pi * 6 + k] = (rp[row] - r0[row]) / step;
+                        }
+                    }
+                }
+
+                // Accumulate JᵀJ (per pose-PAIR block) and Jᵀr (per pose).
+                for a in 0..3 {
+                    let la = locs[a];
+                    if la < 0 {
+                        continue;
+                    }
+                    let la = la as usize;
+                    let gp = &mut g_pose[la];
+                    for i in 0..6 {
+                        let mut acc = 0.0f32;
+                        for row in 0..6 {
+                            acc += jac[row][a * 6 + i] * r0[row];
+                        }
+                        gp[i] -= w_m * acc;
+                    }
+                    for b in 0..3 {
+                        let lb = locs[b];
+                        if lb < 0 {
+                            continue;
+                        }
+                        let lb = lb as usize;
+                        let mut blk = [0.0f32; 36];
+                        for i in 0..6 {
+                            for j in 0..6 {
+                                let mut acc = 0.0f32;
+                                for row in &jac {
+                                    acc += row[a * 6 + i] * row[b * 6 + j];
+                                }
+                                blk[i * 6 + j] = w_m * acc;
+                            }
+                        }
+                        if la == lb {
+                            let ab = &mut a_blocks[la];
+                            for x in 0..36 {
+                                ab[x] += blk[x];
+                            }
+                        } else {
+                            // Both orderings (a,b) and (b,a) are visited by this double loop, so
+                            // BOTH keys get their own block — do NOT additionally write a
+                            // transpose when draining this map or every off-diagonal entry is
+                            // counted twice.
+                            let e = h_offdiag.entry((la, lb)).or_insert([0.0f32; 36]);
+                            for x in 0..36 {
+                                e[x] += blk[x];
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -1030,6 +1373,22 @@ pub fn bundle_adjust_schur_with_priors(
             }
             for i in 0..6 {
                 m_vec[k * 6 + i] = g_pose[k][i] as f64;
+            }
+        }
+
+        // Motion-prior off-diagonal pose-pose blocks (already IRLS-weighted).
+        //
+        // `HashMap` iteration order is randomised per process, which normally makes a
+        // float accumulation order-dependent and therefore non-reproducible. It is safe here and
+        // only here: the keys are unique, each writes a DISJOINT 6×6 destination block, and each
+        // block is written with a single `+=` onto a cell no other key touches. Order cannot
+        // change the result. Do not extend this loop to accumulate onto shared cells without
+        // switching to a deterministic ordering.
+        for ((la, lb), blk) in &h_offdiag {
+            for i in 0..6 {
+                for j in 0..6 {
+                    m_mat[(la * 6 + i, lb * 6 + j)] += blk[i * 6 + j] as f64;
+                }
             }
         }
 
@@ -1216,7 +1575,7 @@ pub fn bundle_adjust_schur_with_priors(
                 // the difference is one-sided), which biases `new_cost < cost` toward accept.
                 let r_z = (z_pred - d_meas) * inv_sigma;
                 let r_sq_d = r_z * r_z;
-                new_cost += robust_cost(r_sq_d);
+                new_cost += depth_cost(r_sq_d);
             }
         }
 
@@ -1248,6 +1607,36 @@ pub fn bundle_adjust_schur_with_priors(
                 // reflects one objective.
                 let r_sq_p = r0 * r0 + r1 * r1 + r2 * r2;
                 new_cost += robust_cost(r_sq_p);
+
+                // Up-prior contribution. The accept test must see the SAME objective the
+                // linearisation minimised, or LM rejects every step that trades a little
+                // reprojection for uprightness — which is every step this prior exists to take.
+                if let Some(upw) = prior.up_world {
+                    let (r_up, _) =
+                        up_prior_residual([r_col0.y, r_col1.y, r_col2.y], upw, prior.up_sigma);
+                    let r_sq_u = r_up[0] * r_up[0] + r_up[1] * r_up[1] + r_up[2] * r_up[2];
+                    new_cost += robust_cost(r_sq_u);
+                }
+            }
+        }
+
+        // Motion-prior contribution to the trial cost — same accept-test-consistency argument.
+        if let Some(mps) = motion_priors {
+            for mp in mps {
+                if mp.i0 >= p_total || mp.i1 >= p_total || mp.i2 >= p_total {
+                    continue;
+                }
+                if [mp.i0, mp.i1, mp.i2].iter().all(|&g| pose_local[g] < 0) {
+                    continue;
+                }
+                let r = motion_prior_residual(
+                    &se3s_trial[mp.i0],
+                    &se3s_trial[mp.i1],
+                    &se3s_trial[mp.i2],
+                    mp,
+                );
+                let r_sq_m: f32 = r.iter().map(|v| v * v).sum();
+                new_cost += depth_cost(r_sq_m);
             }
         }
 
@@ -2149,10 +2538,7 @@ mod tests {
                 // GT camera centre.
                 let r_t = p.rotation.transpose();
                 let c = -(r_t * p.translation);
-                Some(BaPosePrior {
-                    center_world: [c.x as f32, c.y as f32, c.z as f32],
-                    sigma: 0.05,
-                })
+                Some(BaPosePrior::new([c.x as f32, c.y as f32, c.z as f32], 0.05))
             })
             .collect();
 
@@ -2469,6 +2855,518 @@ mod tests {
             max_err_huber < 0.10,
             "Huber-BA max point error {:.4} m too large (regression in inliers?)",
             max_err_huber,
+        );
+    }
+
+    // ── Orientation (up) prior ───────────────────────────────────────────
+
+    /// An orientation prior removes the global TILT that reprojection BA is blind to.
+    ///
+    /// The perturbation applied here is an exact null direction of everything upstream scores:
+    /// the whole reconstruction — every pose and every point — is rotated about the world Z
+    /// axis, which is also the cameras' optical axis and the line their centres sit on. So
+    ///
+    ///   * every reprojection residual is unchanged (rigid rotation of the scene about the
+    ///     cameras),
+    ///   * every camera CENTRE is unchanged (they lie on the rotation axis), so the centre
+    ///     priors — which upstream already has — are satisfied exactly before and after.
+    ///
+    /// That is not a contrived setup, it is the monocular reality in miniature: a forward pass
+    /// with no revisits carries no observation of absolute orientation whatsoever, and the tilt
+    /// it accumulates is invisible to the objective. Only the up prior gives that direction any
+    /// curvature. The control branch below runs the identical problem with `up_world: None` —
+    /// i.e. exactly the upstream code path — and confirms the tilt survives untouched.
+    #[test]
+    fn schur_ba_up_prior_corrects_global_tilt() {
+        let cam = PinholeCamera {
+            fx: 600.0,
+            fy: 600.0,
+            cx: 320.0,
+            cy: 240.0,
+            k1: 0.0,
+            k2: 0.0,
+            p1: 0.0,
+            p2: 0.0,
+        };
+
+        // Cameras ON the world Z axis, identity rotation (looking down +Z). Their centres are
+        // therefore fixed points of any rotation about Z.
+        let centres: Vec<Vec3F64> = (0..5)
+            .map(|i| Vec3F64::new(0.0, 0.0, -0.2 * i as f64))
+            .collect();
+        let true_poses: Vec<Pose3d> = centres
+            .iter()
+            .map(|c| Pose3d::new(Mat3F64::IDENTITY, Vec3F64::new(-c.x, -c.y, -c.z)))
+            .collect();
+
+        // 60 points spread in front of the rig.
+        let mut true_points: Vec<Vec3F64> = Vec::with_capacity(60);
+        for k in 0..60 {
+            let kf = k as f64;
+            let x = (kf * 0.37).sin() * 1.4 + (kf * 0.13).cos() * 0.5;
+            let y = (kf * 0.29).cos() * 1.1 + (kf * 0.11).sin() * 0.4;
+            let z = 4.0 + (kf * 0.41).sin() * 1.5;
+            true_points.push(Vec3F64::new(x, y, z));
+        }
+
+        // Noise-free projections: the point of the test is a null direction, so any residual
+        // floor would just muddy the reading.
+        let mut observations: Vec<BaObservation> = Vec::new();
+        for (pi, pose) in true_poses.iter().enumerate() {
+            for (xi, pt) in true_points.iter().enumerate() {
+                let pc = pose.transform_point(pt);
+                if pc.z <= 0.2 {
+                    continue;
+                }
+                observations.push(BaObservation {
+                    pose_idx: pi,
+                    point_idx: xi,
+                    pixel: [
+                        (cam.fx * pc.x / pc.z + cam.cx) as f32,
+                        (cam.fy * pc.y / pc.z + cam.cy) as f32,
+                    ],
+                    ..Default::default()
+                });
+            }
+        }
+
+        // ── Perturb: roll the ENTIRE reconstruction about world Z by θ. ──
+        // World map p' = G·p, cameras R' = R·Gᵀ, t' = t. Reprojections are preserved exactly
+        // (R'·p' + t' = R·p + t) and centres C' = G·C = C because C is on the axis.
+        let theta = 0.35_f64;
+        let (s, c) = (theta.sin(), theta.cos());
+        let g = Mat3F64::from_cols(
+            Vec3F64::new(c, s, 0.0),
+            Vec3F64::new(-s, c, 0.0),
+            Vec3F64::new(0.0, 0.0, 1.0),
+        );
+        let g_t = g.transpose();
+        let init_poses: Vec<Pose3d> = true_poses
+            .iter()
+            .map(|p| Pose3d::new(p.rotation * g_t, p.translation))
+            .collect();
+        let init_points: Vec<Vec3F64> = true_points.iter().map(|p| g * *p).collect();
+
+        // World-frame up direction the cameras' image-up (0, −1, 0) should point along.
+        const UP_WORLD: [f32; 3] = [0.0, -1.0, 0.0];
+        // Predicted image-up of a pose in the world frame: Rᵀ · (0,−1,0).
+        let up_of = |p: &Pose3d| -> [f64; 3] {
+            let rt = p.rotation.transpose();
+            let u = rt * Vec3F64::new(0.0, -1.0, 0.0);
+            [u.x, u.y, u.z]
+        };
+        let up_err = |p: &Pose3d| -> f64 {
+            let u = up_of(p);
+            ((u[0] - 0.0).powi(2) + (u[1] + 1.0).powi(2) + u[2].powi(2)).sqrt()
+        };
+
+        let init_err = init_poses.iter().map(up_err).fold(0.0_f64, f64::max);
+        assert!(
+            init_err > 0.3,
+            "test is vacuous: initial tilt {init_err:.4} is already small"
+        );
+
+        // Centre priors (an UPSTREAM feature) pin translation and scale but say nothing about
+        // roll — they are satisfied identically before and after the perturbation.
+        let centre_only: Vec<Option<BaPosePrior>> = centres
+            .iter()
+            .map(|c| Some(BaPosePrior::new([c.x as f32, c.y as f32, c.z as f32], 0.05)))
+            .collect();
+        let with_up: Vec<Option<BaPosePrior>> = centre_only
+            .iter()
+            .map(|p| p.map(|p| p.with_up(UP_WORLD, 0.05)))
+            .collect();
+
+        let params = BaParams {
+            max_iterations: 200,
+            cost_tolerance: 1e-10,
+            ..BaParams::default()
+        };
+
+        // Control: centre priors only — this is byte-for-byte the upstream objective.
+        let control = bundle_adjust_schur_with_priors(
+            &init_poses,
+            &init_points,
+            &observations,
+            &cam,
+            &params,
+            Some(&centre_only),
+        )
+        .unwrap();
+        let control_err = control.poses.iter().map(up_err).fold(0.0_f64, f64::max);
+        assert!(
+            control_err > 0.3,
+            "centre-prior-only BA unexpectedly fixed the tilt ({control_err:.4}); the \
+             perturbation is not the intended null direction and the test proves nothing"
+        );
+
+        // With the orientation prior.
+        let result = bundle_adjust_schur_with_priors(
+            &init_poses,
+            &init_points,
+            &observations,
+            &cam,
+            &params,
+            Some(&with_up),
+        )
+        .unwrap();
+        let err = result.poses.iter().map(up_err).fold(0.0_f64, f64::max);
+        assert!(
+            err < 0.05,
+            "up prior left {err:.4} of tilt (control {control_err:.4}, initial {init_err:.4})"
+        );
+    }
+
+    // ── Constant-velocity motion prior ───────────────────────────────────
+
+    /// The constant-velocity prior pulls a middle keyframe back onto its neighbours' trajectory
+    /// when reprojection cannot see where it is.
+    ///
+    /// Middle camera 1 observes a PRIVATE set of landmarks — no co-visibility with 0 or 2. That
+    /// is the near-zero-parallax keyframe in its purest form: camera 1 plus its own points are a
+    /// free-floating piece, and translating or rotating the pair together changes no reprojection
+    /// residual at all. Cameras 0 and 2 are pinned by centre priors (an upstream feature), so
+    /// upstream's objective is completely indifferent to where camera 1 sits between them.
+    ///
+    /// The triplet residual is what supplies the missing constraint, and it does so WITHOUT
+    /// asserting a scale: it constrains the norm RATIO ‖C1−C0‖/‖C2−C0‖ toward `alpha`, plus
+    /// constant angular velocity on the rotations. The control branch (`motion_priors = None`)
+    /// is the upstream path and leaves the jitter exactly where it started.
+    #[test]
+    fn schur_ba_motion_prior_pulls_jittered_middle_pose() {
+        let cam = PinholeCamera {
+            fx: 600.0,
+            fy: 600.0,
+            cx: 320.0,
+            cy: 240.0,
+            k1: 0.0,
+            k2: 0.0,
+            p1: 0.0,
+            p2: 0.0,
+        };
+
+        // True trajectory: C0 = origin, C1 = midpoint, C2 = 2 m back along −Z; identity rotations.
+        let true_centres = [
+            Vec3F64::new(0.0, 0.0, 0.0),
+            Vec3F64::new(0.0, 0.0, -1.0),
+            Vec3F64::new(0.0, 0.0, -2.0),
+        ];
+        let true_poses: Vec<Pose3d> = true_centres
+            .iter()
+            .map(|c| Pose3d::new(Mat3F64::IDENTITY, Vec3F64::new(-c.x, -c.y, -c.z)))
+            .collect();
+
+        // Landmarks: 0..40 shared by cameras 0 and 2; 40..80 seen ONLY by camera 1.
+        let mut points: Vec<Vec3F64> = Vec::with_capacity(80);
+        for k in 0..80 {
+            let kf = k as f64;
+            let x = (kf * 0.37).sin() * 1.5 + (kf * 0.13).cos() * 0.6;
+            let y = (kf * 0.29).cos() * 1.2 + (kf * 0.11).sin() * 0.5;
+            let z = 4.0 + (kf * 0.41).sin() * 1.5;
+            points.push(Vec3F64::new(x, y, z));
+        }
+        let visibility = |pose_idx: usize, point_idx: usize| -> bool {
+            if pose_idx == 1 {
+                point_idx >= 40
+            } else {
+                point_idx < 40
+            }
+        };
+
+        let project = |pose: &Pose3d, pt: &Vec3F64| -> Option<[f32; 2]> {
+            let pc = pose.transform_point(pt);
+            (pc.z > 0.2).then(|| {
+                [
+                    (cam.fx * pc.x / pc.z + cam.cx) as f32,
+                    (cam.fy * pc.y / pc.z + cam.cy) as f32,
+                ]
+            })
+        };
+
+        let mut observations: Vec<BaObservation> = Vec::new();
+        for (pi, pose) in true_poses.iter().enumerate() {
+            for (xi, pt) in points.iter().enumerate() {
+                if !visibility(pi, xi) {
+                    continue;
+                }
+                let Some(pixel) = project(pose, pt) else {
+                    continue;
+                };
+                observations.push(BaObservation {
+                    pose_idx: pi,
+                    point_idx: xi,
+                    pixel,
+                    ..Default::default()
+                });
+            }
+        }
+
+        // ── Jitter camera 1 AND its private points by the same rigid motion, so its
+        // reprojection residuals stay exactly zero. Only the triplet residual can object.
+        let phi = 0.25_f64;
+        let (sp, cp) = (phi.sin(), phi.cos());
+        // Ry(φ) as the jittered world→cam rotation of camera 1.
+        let r1_jit = Mat3F64::from_cols(
+            Vec3F64::new(cp, 0.0, -sp),
+            Vec3F64::new(0.0, 1.0, 0.0),
+            Vec3F64::new(sp, 0.0, cp),
+        );
+        let c1_jit = Vec3F64::new(0.0, 0.0, -0.4);
+        let t1_jit = -(r1_jit * c1_jit);
+        let pose1_jit = Pose3d::new(r1_jit, t1_jit);
+
+        let init_poses = vec![true_poses[0], pose1_jit, true_poses[2]];
+        let init_points: Vec<Vec3F64> = points
+            .iter()
+            .enumerate()
+            .map(|(xi, pt)| {
+                if xi < 40 {
+                    *pt
+                } else {
+                    // p' = R1'ᵀ · (pc − t1'), where pc are the point's TRUE camera-1 coordinates.
+                    let pc = true_poses[1].transform_point(pt);
+                    r1_jit.transpose() * (pc - t1_jit)
+                }
+            })
+            .collect();
+
+        // Centre priors on the ENDPOINTS only (upstream feature). Camera 1 gets none — its
+        // position is exactly what the motion prior is being asked to supply.
+        let pose_priors: Vec<Option<BaPosePrior>> = vec![
+            Some(BaPosePrior::new([0.0, 0.0, 0.0], 0.01)),
+            None,
+            Some(BaPosePrior::new([0.0, 0.0, -2.0], 0.01)),
+        ];
+
+        let motion = [BaMotionPrior {
+            i0: 0,
+            i1: 1,
+            i2: 2,
+            alpha: 0.5,
+            position_sigma: 0.02,
+            orientation_sigma: 0.02,
+        }];
+
+        let params = BaParams {
+            max_iterations: 300,
+            cost_tolerance: 1e-10,
+            ..BaParams::default()
+        };
+
+        // Diagnostics on the returned camera 1.
+        let ratio_of = |poses: &[Pose3d]| -> f64 {
+            let centre = |p: &Pose3d| -(p.rotation.transpose() * p.translation);
+            let (c0, c1, c2) = (centre(&poses[0]), centre(&poses[1]), centre(&poses[2]));
+            (c1 - c0).length() / (c2 - c0).length()
+        };
+        let tilt_of = |poses: &[Pose3d]| -> f64 {
+            let tr = poses[1].rotation.col(0).x
+                + poses[1].rotation.col(1).y
+                + poses[1].rotation.col(2).z;
+            (((tr - 1.0) * 0.5).clamp(-1.0, 1.0)).acos()
+        };
+
+        assert!(
+            (ratio_of(&init_poses) - 0.2).abs() < 1e-6,
+            "setup error: initial ratio {:.4} should be 0.2",
+            ratio_of(&init_poses)
+        );
+
+        // Control: no motion priors — the upstream code path.
+        let control = bundle_adjust_schur_with_all_priors(
+            &init_poses,
+            &init_points,
+            &observations,
+            &cam,
+            &params,
+            Some(&pose_priors),
+            None,
+        )
+        .unwrap();
+        let control_ratio = ratio_of(&control.poses);
+        let control_tilt = tilt_of(&control.poses);
+        assert!(
+            (control_ratio - 0.5).abs() > 0.2 && control_tilt > 0.15,
+            "reprojection alone unexpectedly recovered camera 1 (ratio {control_ratio:.4}, \
+             tilt {control_tilt:.4} rad); the jitter is not the intended null direction"
+        );
+
+        // With the constant-velocity prior.
+        let result = bundle_adjust_schur_with_all_priors(
+            &init_poses,
+            &init_points,
+            &observations,
+            &cam,
+            &params,
+            Some(&pose_priors),
+            Some(&motion),
+        )
+        .unwrap();
+        let ratio = ratio_of(&result.poses);
+        let tilt = tilt_of(&result.poses);
+        assert!(
+            (ratio - 0.5).abs() < 0.05,
+            "motion prior left the position ratio at {ratio:.4} (want 0.5; control {control_ratio:.4})"
+        );
+        assert!(
+            tilt < 0.05,
+            "motion prior left {tilt:.4} rad of angular-velocity error (control {control_tilt:.4})"
+        );
+    }
+
+    /// The motion-prior FD Jacobian must stay usable on a map far from the origin.
+    ///
+    /// Its translation columns are differenced over camera centres — an f32 `-Rᵀt` — so a fixed
+    /// ABSOLUTE step loses relative precision as coordinates grow: at magnitude `m` the perturbed
+    /// centre keeps only `~7 - log10(m)` significant digits of the step.
+    ///
+    /// The offset here is deliberately extreme, and the honest reason is that anything realistic
+    /// does not discriminate. Measured on this test with the absolute step restored: 500 m passes,
+    /// 5 km passes, and only at 50 km does the ratio fall to 0.3864 and the recovery fail. So this
+    /// is a guard against a class of error, not a reproduction of one that was hurting a real map
+    /// — the relative step is simply free, and unlike the absolute one it has no horizon past
+    /// which it quietly stops working.
+    #[test]
+    fn motion_prior_survives_a_map_far_from_the_origin() {
+        const OFFSET: f64 = 50_000.0;
+        let cam = PinholeCamera {
+            fx: 600.0,
+            fy: 600.0,
+            cx: 320.0,
+            cy: 240.0,
+            k1: 0.0,
+            k2: 0.0,
+            p1: 0.0,
+            p2: 0.0,
+        };
+        let shift = Vec3F64::new(OFFSET, OFFSET, OFFSET);
+        let true_centres = [
+            shift,
+            shift + Vec3F64::new(0.0, 0.0, -1.0),
+            shift + Vec3F64::new(0.0, 0.0, -2.0),
+        ];
+        let true_poses: Vec<Pose3d> = true_centres
+            .iter()
+            .map(|c| Pose3d::new(Mat3F64::IDENTITY, -(Mat3F64::IDENTITY * *c)))
+            .collect();
+
+        let mut points: Vec<Vec3F64> = Vec::with_capacity(80);
+        for k in 0..80 {
+            let kf = k as f64;
+            points.push(
+                shift
+                    + Vec3F64::new(
+                        (kf * 0.37).sin() * 1.5 + (kf * 0.13).cos() * 0.6,
+                        (kf * 0.29).cos() * 1.2 + (kf * 0.11).sin() * 0.5,
+                        4.0 + (kf * 0.41).sin() * 1.5,
+                    ),
+            );
+        }
+        // Camera 1 sees a PRIVATE landmark set, so jittering it together with those points keeps
+        // its reprojection residuals at zero and only the triplet residual can object.
+        let visibility = |pose_idx: usize, point_idx: usize| -> bool {
+            if pose_idx == 1 {
+                point_idx >= 40
+            } else {
+                point_idx < 40
+            }
+        };
+        let mut observations: Vec<BaObservation> = Vec::new();
+        for (pi, pose) in true_poses.iter().enumerate() {
+            for (xi, pt) in points.iter().enumerate() {
+                if !visibility(pi, xi) {
+                    continue;
+                }
+                let pc = pose.transform_point(pt);
+                if pc.z <= 0.2 {
+                    continue;
+                }
+                observations.push(BaObservation {
+                    pose_idx: pi,
+                    point_idx: xi,
+                    pixel: [
+                        (cam.fx * pc.x / pc.z + cam.cx) as f32,
+                        (cam.fy * pc.y / pc.z + cam.cy) as f32,
+                    ],
+                    ..Default::default()
+                });
+            }
+        }
+
+        let c1_jit = shift + Vec3F64::new(0.0, 0.0, -0.4);
+        let pose1_jit = Pose3d::new(Mat3F64::IDENTITY, -(Mat3F64::IDENTITY * c1_jit));
+        let init_poses = vec![true_poses[0], pose1_jit, true_poses[2]];
+        let init_points: Vec<Vec3F64> = points
+            .iter()
+            .enumerate()
+            .map(|(xi, pt)| {
+                if xi < 40 {
+                    *pt
+                } else {
+                    let pc = true_poses[1].transform_point(pt);
+                    pose1_jit.rotation.transpose() * (pc - pose1_jit.translation)
+                }
+            })
+            .collect();
+
+        let pose_priors: Vec<Option<BaPosePrior>> = vec![
+            Some(BaPosePrior::new(
+                [
+                    true_centres[0].x as f32,
+                    true_centres[0].y as f32,
+                    true_centres[0].z as f32,
+                ],
+                0.01,
+            )),
+            None,
+            Some(BaPosePrior::new(
+                [
+                    true_centres[2].x as f32,
+                    true_centres[2].y as f32,
+                    true_centres[2].z as f32,
+                ],
+                0.01,
+            )),
+        ];
+        let motion = [BaMotionPrior {
+            i0: 0,
+            i1: 1,
+            i2: 2,
+            alpha: 0.5,
+            position_sigma: 0.02,
+            orientation_sigma: 0.02,
+        }];
+        let params = BaParams {
+            max_iterations: 300,
+            cost_tolerance: 1e-10,
+            ..BaParams::default()
+        };
+        let ratio_of = |poses: &[Pose3d]| -> f64 {
+            let centre = |p: &Pose3d| -(p.rotation.transpose() * p.translation);
+            let (c0, c1, c2) = (centre(&poses[0]), centre(&poses[1]), centre(&poses[2]));
+            (c1 - c0).length() / (c2 - c0).length()
+        };
+        assert!(
+            (ratio_of(&init_poses) - 0.2).abs() < 1e-4,
+            "setup error: initial ratio {:.4} should be 0.2",
+            ratio_of(&init_poses)
+        );
+
+        let res = bundle_adjust_schur_with_all_priors(
+            &init_poses,
+            &init_points,
+            &observations,
+            &cam,
+            &params,
+            Some(&pose_priors),
+            Some(&motion),
+        )
+        .unwrap();
+        let ratio = ratio_of(&res.poses);
+        assert!(
+            (ratio - 0.5).abs() < 0.1,
+            "motion prior left the position ratio at {ratio:.4} on a map {OFFSET} m from the \
+             origin (want 0.5, started 0.2) — the FD step is not tracking coordinate magnitude"
         );
     }
 }
