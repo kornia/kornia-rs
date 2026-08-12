@@ -571,6 +571,21 @@ pub fn reconstruct(
         camera_correction,
     })
 }
+/// The reference reprojection sigma every prior family is deflated by, in NORMALISED units.
+///
+/// Bundle adjustment here runs against `PinholeCamera::IDENTITY`, so its reprojection residuals are
+/// in normalised-camera units while the prior sigmas the caller supplies are quoted in physical
+/// ones (metres, unit-vector components). Dividing each prior sigma by this value puts every family
+/// on one numeric scale, which is what lets a single Huber knee gate them coherently.
+///
+/// `max_reprojection_error / 2` because that threshold reads as 2σ. Derived in ONE place because
+/// four call sites must agree exactly: the depth measurement's sigma, the up prior's, the motion
+/// prior's, and the robust knee that gates all three. If they drift, the knee stops matching the
+/// residuals it is meant to gate and the priors are silently mis-weighted rather than wrong in any
+/// way a test would show.
+fn reproj_sigma(config: &CalibConfig) -> f64 {
+    (config.max_reprojection_error / 2.0).max(1e-6)
+}
 
 /// Depth measurement + already-deflated sigma for observation `j` of track `ti`, or `(None, 0.0)`
 /// when there is no usable depth there.
@@ -592,7 +607,7 @@ fn depth_fields(
     let rel_sigma = config.depth_prior_rel_sigma;
     match norm_depth.get(ti).and_then(|t| t.get(j)).copied().flatten() {
         Some(d) if rel_sigma > 0.0 && d > 0.0 => {
-            let sigma_r = (config.max_reprojection_error / 2.0).max(1e-6) as f32;
+            let sigma_r = reproj_sigma(config) as f32;
             (Some(d), (rel_sigma as f32) * d / sigma_r)
         }
         _ => (None, 0.0),
@@ -687,7 +702,7 @@ fn fit_depth_scales(
 /// believed.
 ///
 /// World up is a GAUGE choice and has to agree with the anchor camera `a0`, whose pose is held
-/// fixed: `up_world = R_a0ᵀ · up_cam`. Any other choice fights the one pose the solve cannot move.
+/// fixed: `up_world = R_a0ᵀ · (0,−1,0)`. Any other choice fights the one pose the solve cannot move.
 fn up_priors(
     poses: &[Option<Pose3d>],
     a0: usize,
@@ -709,19 +724,16 @@ fn up_priors(
     // while this sigma is quoted in unit-vector units. Passing it raw made the prior `1/σ_r` times
     // stiffer than every other term in the same solve — 360× at fx 1440 with an 8 px threshold,
     // where 1° of pitch deviation cost what a 489 px reprojection error would.
-    let sigma_r = (config.max_reprojection_error / 2.0).max(1e-6);
+    let sigma_r = reproj_sigma(config);
     Some(
         poses
             .iter()
             .map(|p| {
-                p.as_ref().map(|_| BaPosePrior {
-                    // No positional anchor: a huge sigma makes the centre residual contribute
-                    // nothing, leaving a purely rotational prior.
-                    center_world: [0.0; 3],
-                    sigma: 1e6,
-                    up_world: Some(up_world),
-                    up_cam: [UP_CAM[0] as f32, UP_CAM[1] as f32, UP_CAM[2] as f32],
-                    up_sigma: (config.up_prior_sigma / sigma_r) as f32,
+                p.as_ref().map(|_| {
+                    BaPosePrior::orientation_only(
+                        up_world,
+                        (config.up_prior_sigma / sigma_r) as f32,
+                    )
                 })
             })
             .collect(),
@@ -741,7 +753,7 @@ fn motion_priors_for(poses: &[Option<Pose3d>], config: &CalibConfig) -> Option<V
     if config.motion_prior_sigma <= 0.0 {
         return None;
     }
-    let sigma_r = (config.max_reprojection_error / 2.0).max(1e-6);
+    let sigma_r = reproj_sigma(config);
     let sp = (config.motion_prior_sigma / sigma_r) as f32;
     let so = (0.5 * config.motion_prior_sigma / sigma_r) as f32;
     let reg: Vec<usize> = poses
@@ -828,12 +840,18 @@ fn global_ba(
             max_iterations: config.max_iterations,
             robust: RobustKernelKind::Huber,
             robust_scale_sq: config.robust_scale_sq,
-            // Depth residuals live in reprojection-like units (see `depth_fields`), so their Huber
-            // knee is 1.345 × the reprojection noise scale, squared. Left at the default `0.0` —
-            // meaning "reuse the reprojection knee" — when depth is off.
-            depth_robust_scale_sq: if config.depth_prior_rel_sigma > 0.0 {
-                let sr = (config.max_reprojection_error / 2.0).max(1e-6) as f32;
-                (1.345 * sr) * (1.345 * sr)
+            // Depth AND motion residuals are both deflated by `reproj_sigma` (see `depth_fields`
+            // and `motion_priors_for`), so their Huber knee is 1.345 × that scale, squared.
+            //
+            // Gated on EITHER family being armed, not just depth: `ba_schur` uses this one knee for
+            // both, so a config with motion priors but no depth would fall back to the reprojection
+            // knee and gate motion residuals at ~2σ instead of 1.345σ — tighter than intended, and
+            // silent.
+            depth_robust_scale_sq: if config.depth_prior_rel_sigma > 0.0
+                || config.motion_prior_sigma > 0.0
+            {
+                let sr = (1.345 * reproj_sigma(config)) as f32;
+                sr * sr
             } else {
                 0.0
             },
