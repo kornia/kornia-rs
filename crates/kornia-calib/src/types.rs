@@ -64,10 +64,64 @@ pub struct CalibConfig {
     /// residual exceeds `median + x84_k·1.4826·MAD` are dropped before the final Cauchy pass. `2.5`
     /// is the standard X84 value; fixed board/tag corners (the gauge) are never dropped.
     pub x84_k: f64,
+    /// Relative standard deviation of the per-observation metric depth priors passed to
+    /// [`crate::reconstruct`], as `σ = depth_prior_rel_sigma · d`. **`0.0` (the default) disables
+    /// depth entirely**; `0.15` trusts a monocular depth network to ~15%.
+    ///
+    /// Depth is what makes a monocular reconstruction metric without a fiducial and — pinning every
+    /// segment of the chain rather than one global average — what stops scale drifting along a
+    /// no-revisit walkthrough. Deflated into reprojection units; see `sfm.rs::depth_fields`.
+    pub depth_prior_rel_sigma: f64,
+    /// Re-gauge each view's depth priors by its OWN fitted scale before bundle adjustment, instead
+    /// of trusting a single global scale. `true` by default; inert unless
+    /// [`Self::depth_prior_rel_sigma`] is non-zero and depths are supplied.
+    ///
+    /// Learned depth is not gauge-stable frame to frame, and on forward motion a per-frame scale
+    /// error is indistinguishable from along-axis translation — so one global scale hands every
+    /// wander of the network to the trajectory. See `sfm.rs::fit_depth_scales`.
+    pub depth_per_keyframe_scale: bool,
+    /// Standard deviation (unit-vector units) of a per-view prior pulling each camera's image-up
+    /// toward world up. **`0.0` (the default) disables it** — rig cameras are not all upright, so
+    /// this must stay off for rig calibration.
+    ///
+    /// On handheld walkthrough video with no revisits it is the only observation of global
+    /// orientation the capture carries. `0.25` tolerates ~14° of genuine hand tilt at 1σ.
+    pub up_prior_sigma: f64,
+    /// Constant-velocity motion-prior sigma over consecutive registered triplets. **`0.0` (the
+    /// default) disables it.**
+    ///
+    /// The value is the sigma of the translation norm-RATIO residual (unitless — see
+    /// [`kornia_3d::ba::BaMotionPrior`]); the angular sigma is half of it, in radians. `0.1`
+    /// tolerates ~10% deviation from constant velocity at 1σ. Only meaningful when view indices are
+    /// TIME-ORDERED, which is why it is off for a rig.
+    pub motion_prior_sigma: f64,
+    /// Absolute PnP inlier count required to register a view (COLMAP's
+    /// `abs_pose_min_num_inliers`). Default `30`.
+    ///
+    /// PnP-RANSAC succeeds whenever it finds *a* consensus, and a thin registration is not a
+    /// self-correcting mistake: new points are triangulated FROM the bad pose and then feed the
+    /// next view's PnP. Set to `0` for the pre-gate behaviour of accepting any successful PnP.
+    pub min_registration_inliers: usize,
+    /// Refine a global focal scale plus radial/tangential distortion against the reconstruction,
+    /// alternating with bundle adjustment. **`false` by default**; leave it off when the intrinsics
+    /// are calibrated.
+    ///
+    /// For guessed intrinsics (a FOV sweep, `k1` assumed zero on an ultra-wide) the error bends the
+    /// whole reconstruction in a way no reprojection residual reveals. The fit is reported on
+    /// [`Reconstruction::camera_correction`] and a second BA re-settles the geometry against it.
+    pub refine_intrinsics: bool,
+    /// Called after each view is registered, as `(registered_so_far, total_views)`. `None` by
+    /// default.
+    pub progress: Option<std::sync::Arc<dyn Fn(usize, usize) + Send + Sync>>,
 }
 
 impl CalibConfig {
     /// Config with flux-derived defaults for the given tag size (metres).
+    ///
+    /// Every prior defaults to off, so none of them touches a solve unless a caller opts in. The
+    /// one exception is [`Self::min_registration_inliers`], which defaults to COLMAP's `30` rather
+    /// than `0`: views whose PnP found only a handful of inliers are now refused where they were
+    /// previously admitted. Set it to `0` for the old behaviour.
     pub fn new(tag_size_m: f64) -> Self {
         Self {
             tag_size_m,
@@ -76,6 +130,13 @@ impl CalibConfig {
             min_parallax_deg: 0.2,
             max_reprojection_error: 0.01,
             x84_k: 2.5,
+            depth_prior_rel_sigma: 0.0,
+            depth_per_keyframe_scale: true,
+            up_prior_sigma: 0.0,
+            motion_prior_sigma: 0.0,
+            min_registration_inliers: 30,
+            refine_intrinsics: false,
+            progress: None,
         }
     }
 }
@@ -219,6 +280,18 @@ pub struct Reconstruction {
     pub per_view: Vec<CameraStats>,
     /// Where the metric scale came from -- see [`ScaleSource`].
     pub scale: ScaleSource,
+    /// Intrinsics correction the solve FITTED, as `(gamma, k1, k2, p1, p2)`. `None` when
+    /// [`CalibConfig::refine_intrinsics`] was off, the fit was singular, or it landed outside its
+    /// sanity bounds.
+    ///
+    /// Load-bearing output, not telemetry: refinement applies itself by rewriting the NORMALIZED
+    /// observations in place, leaving the caller's camera model at its original guess — a caller
+    /// that stores that guess alongside these poses records a camera that did not produce them.
+    ///
+    /// `gamma` scales normalized coordinates, so it INVERTS into focal length:
+    /// `fx_true = fx_assumed / gamma`. The distortion terms are OpenCV's, to be applied to the
+    /// assumed camera's existing model.
+    pub camera_correction: Option<(f64, f64, f64, f64, f64)>,
 }
 
 impl From<Reconstruction> for RigCalibration {

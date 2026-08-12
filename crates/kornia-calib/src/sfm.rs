@@ -16,8 +16,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use kornia_3d::ba::{BaObservation, BaParams};
-use kornia_3d::ba_schur::bundle_adjust_schur;
+use kornia_3d::ba::{BaMotionPrior, BaObservation, BaParams, BaPosePrior, BaResult};
+use kornia_3d::ba_schur::bundle_adjust_schur_with_all_priors;
 use kornia_3d::camera::PinholeCamera;
 use kornia_3d::pnp::{solve_pnp_ransac, PnPMethod, RansacParams as PnpRansacParams};
 use kornia_3d::pose::{
@@ -77,6 +77,17 @@ fn norm_residual(pose: &Pose3d, p_world: Vec3F64, n: Vec2F64) -> Option<f64> {
 /// * `tracks` - multi-view feature tracks. A track needs at least two views to triangulate, and
 ///   the reconstruction needs enough shared tracks between views to register them.
 /// * `config` - solver settings; see [`CalibConfig`].
+/// * `obs_depth` - optional metric depth per observation, shaped exactly like `tracks`:
+///   `obs_depth[i][j]` is the depth of `tracks[i].obs[j]`. `None` for the classic depth-free solve;
+///   ignored unless [`CalibConfig::depth_prior_rel_sigma`] is positive.
+///
+/// # Depth
+///
+/// Monocular reprojection is exactly scale-invariant, so a fiducial-free walkthrough has no metric
+/// scale and no defence against drift along the chain — measured, rooms late in a clip reconstruct
+/// several times larger than early ones. Depth residuals observe absolute scale directly and pin
+/// EVERY segment, not just a global average. They are a soft prior: robustified, sigma-weighted by
+/// [`CalibConfig::depth_prior_rel_sigma`], re-gauged per [`CalibConfig::depth_per_keyframe_scale`].
 ///
 /// # Returns
 ///
@@ -109,7 +120,8 @@ fn norm_residual(pose: &Pose3d, p_world: Vec3F64, n: Vec2F64) -> Option<f64> {
 ///     ],
 /// }];
 ///
-/// let recon = reconstruct(&cameras, &[], &tracks, &CalibConfig::new(0.1))?;
+/// // `None` for the depth argument: no metric depth measurements, so the map is up to scale.
+/// let recon = reconstruct(&cameras, &[], &tracks, &CalibConfig::new(0.1), None)?;
 ///
 /// // No tag was supplied, so the map is honestly up to scale rather than silently "metric".
 /// assert_eq!(recon.scale, ScaleSource::UpToScale);
@@ -127,6 +139,7 @@ pub fn reconstruct(
     tags_for_scale: &[TagObservation],
     tracks: &[FeatureTrack],
     config: &CalibConfig,
+    obs_depth: Option<&[Vec<Option<f64>>]>,
 ) -> Result<Reconstruction, CalibError> {
     let n_cams = cameras.len();
     let idcam = PinholeCamera::IDENTITY;
@@ -137,7 +150,8 @@ pub fn reconstruct(
     };
 
     // Per track: normalized observation per camera (undistort + K⁻¹). Raw pixels stay in `tracks`.
-    let norm: Vec<Vec<(usize, Vec2F64)>> = tracks
+    // MUTABLE because `refine_intrinsics` rewrites these in place once it has fitted a correction.
+    let mut norm: Vec<Vec<(usize, Vec2F64)>> = tracks
         .iter()
         .map(|t| {
             t.obs
@@ -146,6 +160,15 @@ pub fn reconstruct(
                 .collect()
         })
         .collect();
+    // Parallel to `norm`: metric depth per observation, or `None`. All-`None` when the feature is
+    // off, so downstream sites index it unconditionally; a wrong-shaped caller array yields `None`.
+    let norm_depth: Vec<Vec<Option<f32>>> = match obs_depth {
+        Some(d) if config.depth_prior_rel_sigma > 0.0 => d
+            .iter()
+            .map(|t| t.iter().map(|x| x.map(|v| v as f32)).collect())
+            .collect(),
+        _ => norm.iter().map(|t| vec![None; t.len()]).collect(),
+    };
 
     // Count shared tracks per camera pair to choose the bootstrap pair.
     let mut pair_count: HashMap<(usize, usize), usize> = HashMap::new();
@@ -291,17 +314,56 @@ pub fn reconstruct(
             None,
             PnPMethod::EPnPDefault,
             &PnpRansacParams {
-                reproj_threshold_px: 0.01, // normalized units
+                // Normalized units: the pipeline's own outlier bound, defaulting to the 0.01 this
+                // was hardcoded to.
+                reproj_threshold_px: config.max_reprojection_error as f32,
+                // Seed the sampler; `RansacParams::default()` leaves `random_seed: None`, which
+                // made registration NONDETERMINISTIC — 12 / 30 / 39 cameras over three runs of the
+                // same command on EuRoC MH01. A transient PnP failure marks a camera
+                // unregisterable, so that randomness changes the map, not merely its timing.
+                random_seed: Some(0x00C0_FFEE ^ c as u64),
                 ..Default::default()
             },
         );
-        match pnp {
-            Ok(r) => {
-                poses[c] = Some(pose_from_pnp(r.pose.rotation, r.pose.translation));
+        // PnP returning `Ok` is not acceptance: `solve_pnp_ransac` succeeds on *any* consensus, and
+        // `triangulate_new` builds points FROM the pose which feed the next camera's PnP. Measured
+        // on EuRoC MH01, global RMSE rose WITH the registered count: 34 cams 10.4 px, 38 at 23.2.
+        let accepted = pnp.as_ref().ok().and_then(|r| {
+            let pose = pose_from_pnp(r.pose.rotation, r.pose.translation);
+            // Score BOTH the refit pose and the RANSAC consensus, keep the larger: `inliers` is
+            // classified against the PRE-refit minimal-sample model, so it under-counts — a
+            // 107-inlier consensus has been seen reclassifying to under 30 against its own refit.
+            // Same threshold for both.
+            let n_refit = wp
+                .iter()
+                .zip(ip.iter())
+                .filter(|(w, i)| {
+                    norm_residual(&pose, **w, **i)
+                        .is_some_and(|e| e <= config.max_reprojection_error)
+                })
+                .count();
+            (n_refit.max(r.inliers.len()) >= config.min_registration_inliers).then_some(pose)
+        });
+        match accepted {
+            Some(pose) => {
+                poses[c] = Some(pose);
+                if let Some(cb) = config.progress.as_ref() {
+                    cb(poses.iter().filter(|p| p.is_some()).count(), n_cams);
+                }
+                let before = point3d.len();
                 triangulate_new(&mut point3d, &norm, &poses, &idcam, &tcfg);
+                // A camera that failed earlier may register comfortably once the cloud has grown;
+                // without this retry `min_registration_inliers` would make every transient
+                // rejection permanent and strictly REDUCE the registered count versus no gate at
+                // all. Gating on the cloud ACTUALLY growing also makes it terminate: between clears
+                // each iteration either registers a camera or drops one from consideration.
+                if point3d.len() > before {
+                    pnp_failed.clear();
+                }
             }
-            Err(_) => {
-                pnp_failed.insert(c); // this camera can't register now; try the others
+            // Failed outright, or its consensus was too thin: retry once the cloud has grown.
+            None => {
+                pnp_failed.insert(c);
             }
         }
     }
@@ -317,18 +379,14 @@ pub fn reconstruct(
     let mut track_ids: Vec<usize> = point3d.keys().copied().collect();
     track_ids.sort_unstable();
 
-    let mut points: Vec<Vec3F64> = Vec::new(); // BA input; paired with track ids on output
-    let mut pt_index: HashMap<usize, usize> = HashMap::new();
-    let mut obs: Vec<BaObservation> = Vec::new();
+    // `pt_index[ti]` is `ti`'s position in `track_ids`: stable across BA rounds, so the published
+    // `points` order matches the BA input order in every one of them.
+    let pt_index: HashMap<usize, usize> =
+        track_ids.iter().enumerate().map(|(i, t)| (*t, i)).collect();
+    let point_track_id: Vec<usize> = track_ids.clone();
     let mut kept_obs: Vec<Observation> = Vec::new();
-    let mut point_track_id: Vec<usize> = Vec::new();
     for ti in &track_ids {
-        let p = &point3d[ti];
-        let pidx = points.len();
-        pt_index.insert(*ti, pidx);
-        points.push(*p);
-        point_track_id.push(*ti);
-        for (j, (c, nrm)) in norm[*ti].iter().enumerate() {
+        for (j, (c, _)) in norm[*ti].iter().enumerate() {
             if poses[*c].is_none() {
                 continue;
             }
@@ -336,37 +394,65 @@ pub fn reconstruct(
             // raw pixel is recoverable without re-normalising.
             kept_obs.push(Observation {
                 view: *c,
-                point: pidx,
+                point: pt_index[ti],
                 pixel: tracks[*ti].obs[j].1,
-            });
-            obs.push(BaObservation {
-                pose_idx: *c,
-                point_idx: pidx,
-                pixel: [nrm.x as f32, nrm.y as f32],
-                fixed_pose: *c == a0, // reference camera fixed → gauge anchor
-                fixed_point: false,
-                depth_meas: None,
-                depth_sigma: 1.0,
             });
         }
     }
-    let poses_ba: Vec<Pose3d> = poses
-        .iter()
-        .map(|p| p.unwrap_or(Pose3d::IDENTITY))
-        .collect();
-    let res = bundle_adjust_schur(
-        &poses_ba,
-        &points,
-        &obs,
+
+    let mut res = global_ba(
+        &poses,
+        &point3d,
+        &track_ids,
+        &norm,
+        &norm_depth,
         &idcam,
-        &BaParams {
-            max_iterations: config.max_iterations,
-            robust: RobustKernelKind::Huber,
-            robust_scale_sq: config.robust_scale_sq,
-            ..Default::default()
-        },
-    )
-    .map_err(|e| CalibError::BundleAdjust(format!("{e:?}")))?;
+        a0,
+        config,
+    )?;
+
+    // --- Alternating intrinsics refinement (COLMAP does it INSIDE its BA; this equivalent needs no
+    // solver surgery). The solver sees NORMALIZED coordinates, so a focal error is one global scale
+    // `gamma` and distortion a radial/tangential polynomial — linear in the stacked unknowns.
+    let camera_correction = if config.refine_intrinsics {
+        let fit = fit_camera_correction(&res, &pt_index, &norm, &poses);
+        if let Some((gamma, k1, k2, p1, p2)) = fit {
+            for track in norm.iter_mut() {
+                for (_, n) in track.iter_mut() {
+                    let (x, y) = (n.x, n.y);
+                    let r2 = x * x + y * y;
+                    let radial = 1.0 + k1 * r2 + k2 * r2 * r2;
+                    n.x = gamma * (x * radial + 2.0 * p1 * x * y + p2 * (r2 + 2.0 * x * x));
+                    n.y = gamma * (y * radial + p1 * (r2 + 2.0 * y * y) + 2.0 * p2 * x * y);
+                }
+            }
+            // Feed the first solve's state back in and RE-SOLVE against the corrected observations:
+            // without this the refinement would be reported but never reach the returned poses.
+            for (c, p) in poses.iter_mut().enumerate() {
+                if p.is_some() {
+                    *p = Some(res.poses[c]);
+                }
+            }
+            for (ti, pidx) in &pt_index {
+                if let Some(v) = res.points.get(*pidx) {
+                    point3d.insert(*ti, *v);
+                }
+            }
+            res = global_ba(
+                &poses,
+                &point3d,
+                &track_ids,
+                &norm,
+                &norm_depth,
+                &idcam,
+                a0,
+                config,
+            )?;
+        }
+        fit
+    } else {
+        None
+    };
 
     let registered: Vec<bool> = poses.iter().map(|p| p.is_some()).collect();
 
@@ -390,6 +476,10 @@ pub fn reconstruct(
     );
     let scale = anchored.unwrap_or(1.0);
 
+    // Pixels-per-normalized-unit correction: `refine_intrinsics` rewrote `norm` into the true
+    // camera's frame (fx_true = fx_assumed / gamma) but the RMS below uses the ASSUMED fx.
+    let focal_scale = camera_correction.map_or(1.0, |(gamma, ..)| 1.0 / gamma.max(1e-9));
+
     // Per-camera reprojection RMS (pixels); analytical covariance is tag-oriented so stays `None`.
     // Use the BA-optimized points (`res.points`), NOT the pre-BA cloud: BA moves points as free
     // variables, so evaluating the pre-BA cloud under post-BA poses would report a stale residual.
@@ -397,6 +487,7 @@ pub fn reconstruct(
     let per_camera = (0..n_cams)
         .map(|c| {
             feature_stats(
+                focal_scale,
                 c,
                 &res.poses,
                 &registered,
@@ -408,6 +499,7 @@ pub fn reconstruct(
         })
         .collect();
     let reproj_rmse_px = global_reproj_rmse(
+        focal_scale,
         &res.poses,
         &registered,
         &res.points,
@@ -450,7 +542,384 @@ pub fn reconstruct(
             },
             _ => ScaleSource::UpToScale,
         },
+        camera_correction,
     })
+}
+/// The reference reprojection sigma every prior family is deflated by, in NORMALISED units.
+///
+/// Bundle adjustment here runs against `PinholeCamera::IDENTITY`, so its residuals are in
+/// normalised units while caller prior sigmas are physical; dividing by this puts every family on
+/// one scale, which is what lets a single Huber knee gate them. `max_reprojection_error / 2`
+/// because that threshold reads as 2σ. Derived ONCE because four call sites must agree exactly —
+/// depth, up, motion, and the knee gating all three — and drift mis-weights them silently.
+fn reproj_sigma(config: &CalibConfig) -> f64 {
+    (config.max_reprojection_error / 2.0).max(1e-6)
+}
+
+/// Depth measurement + already-deflated sigma for observation `j` of track `ti`, or `(None, 0.0)`.
+///
+/// DEFLATED by [`reproj_sigma`], not the raw metric sigma: reprojection residuals are unwhitened
+/// normalized values (implicit σ = a whole focal length!) while depth residuals divide by theirs,
+/// so the metric sigma goes depth-dominated — measured, `rel_sigma` 5.0 still halved registration.
+fn depth_fields(
+    norm_depth: &[Vec<Option<f32>>],
+    ti: usize,
+    j: usize,
+    config: &CalibConfig,
+) -> (Option<f32>, f32) {
+    let rel_sigma = config.depth_prior_rel_sigma;
+    match norm_depth.get(ti).and_then(|t| t.get(j)).copied().flatten() {
+        Some(d) if rel_sigma > 0.0 && d > 0.0 => {
+            let sigma_r = reproj_sigma(config) as f32;
+            (Some(d), (rel_sigma as f32) * d / sigma_r)
+        }
+        _ => (None, 0.0),
+    }
+}
+
+/// Robust per-view depth gauge: the median of `z_map / d_pred` over that view's depth
+/// observations, re-gauged against the median view and clamped. `1.0` where a view lacks enough
+/// pairs to fit.
+///
+/// Per view rather than one global scale because learned depth is not gauge-stable frame to frame:
+/// on forward motion a per-frame scale error is indistinguishable from along-axis translation, so a
+/// global scale hands every wander of the network to the trajectory. Scale only, NOT the affine
+/// `s·d + t`: a free intercept absorbs bas-relief compression instead of correcting it (measured —
+/// sparse depth spanned 1.13 across a view where the network saw 2.13) and makes ABSOLUTE scale
+/// unobservable from depth. Normalising by the median re-gauges views without moving the map.
+fn fit_depth_scales(
+    poses: &[Option<Pose3d>],
+    point3d: &HashMap<usize, Vec3F64>,
+    track_ids: &[usize],
+    norm: &[Vec<(usize, Vec2F64)>],
+    norm_depth: &[Vec<Option<f32>>],
+    n_cams: usize,
+) -> Vec<f64> {
+    /// Below this many pairs a median is noise, and a wrong gauge is worse than the global one.
+    const MIN_PAIRS: usize = 12;
+
+    let mut per_cam: Vec<Vec<f64>> = vec![Vec::new(); n_cams];
+    for ti in track_ids {
+        let Some(p) = point3d.get(ti) else { continue };
+        for (j, (c, _)) in norm[*ti].iter().enumerate() {
+            // `.get(ti)`, not `[ti]`: a wrong-shaped `obs_depth` must yield `None` per lookup, not
+            // panic — indexing here panicked on depth supplied for only the first N tracks.
+            let (Some(pose), Some(d)) = (
+                &poses[*c],
+                norm_depth
+                    .get(*ti)
+                    .and_then(|t| t.get(j))
+                    .copied()
+                    .flatten(),
+            ) else {
+                continue;
+            };
+            let z = pose.transform_point(p).z;
+            if z > 1e-9 && d > 0.0 {
+                per_cam[*c].push(z / d as f64); // map units per network unit
+            }
+        }
+    }
+    // Median, not mean: depth networks hallucinate at occlusions and on mirrors — a fat tail.
+    let median = |v: &mut Vec<f64>| -> Option<f64> {
+        if v.len() < MIN_PAIRS {
+            return None;
+        }
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let m = v[v.len() / 2];
+        (m.is_finite() && m > 1e-9).then_some(m)
+    };
+    let mut scales: Vec<Option<f64>> = per_cam.iter_mut().map(median).collect();
+
+    let mut fitted: Vec<f64> = scales.iter().flatten().copied().collect();
+    if fitted.len() < 2 {
+        return vec![1.0; n_cams];
+    }
+    fitted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let anchor = fitted[fitted.len() / 2];
+    for s in scales.iter_mut().flatten() {
+        *s /= anchor;
+    }
+    // A wildly-off scale means a broken pose or depth map, not a gauge offset: fall back to neutral.
+    scales
+        .into_iter()
+        .map(|s| match s {
+            Some(v) if (0.5..2.0).contains(&v) => v,
+            _ => 1.0,
+        })
+        .collect()
+}
+
+/// Per-view up priors, or `None` when [`CalibConfig::up_prior_sigma`] is off.
+///
+/// The camera-frame direction asserted to be up is image-up `(0, −1, 0)` — "held roughly upright".
+/// World up is a GAUGE choice and has to agree with the anchor camera `a0`, whose pose is held
+/// fixed: `up_world = R_a0ᵀ · (0,−1,0)`. Any other choice fights the one pose the solve cannot move.
+fn up_priors(
+    poses: &[Option<Pose3d>],
+    a0: usize,
+    config: &CalibConfig,
+) -> Option<Vec<Option<BaPosePrior>>> {
+    if config.up_prior_sigma <= 0.0 {
+        return None;
+    }
+    const UP_CAM: [f64; 3] = [0.0, -1.0, 0.0];
+    let up_world: [f32; 3] = match poses.get(a0).and_then(|p| *p) {
+        Some(pa) => {
+            let w = pa.rotation.transpose() * Vec3F64::new(UP_CAM[0], UP_CAM[1], UP_CAM[2]);
+            [w.x as f32, w.y as f32, w.z as f32]
+        }
+        None => [0.0, -1.0, 0.0],
+    };
+    // Deflated into reprojection units, as in `depth_fields`. Raw, the prior was `1/σ_r` times
+    // stiffer than every other term in the solve — 360× at fx 1440 with an 8 px threshold.
+    let sigma_r = reproj_sigma(config);
+    Some(
+        poses
+            .iter()
+            .map(|p| {
+                p.as_ref().map(|_| {
+                    BaPosePrior::orientation_only(
+                        up_world,
+                        (config.up_prior_sigma / sigma_r) as f32,
+                    )
+                })
+            })
+            .collect(),
+    )
+}
+
+/// Constant-velocity motion priors over consecutive REGISTERED triplets, or `None` when off.
+///
+/// Consecutive in VIEW-INDEX order (video keyframes are time-ordered), with triplets spanning more
+/// than [`MAX_TRIPLET_SPAN`] indices skipped: a bridge across a long unregistered stretch is not a
+/// constant-velocity hypothesis worth asserting. Sigmas are deflated like the other priors.
+fn motion_priors_for(poses: &[Option<Pose3d>], config: &CalibConfig) -> Option<Vec<BaMotionPrior>> {
+    /// Widest index gap a triplet may span before it stops being a plausible motion hypothesis.
+    const MAX_TRIPLET_SPAN: usize = 12;
+
+    if config.motion_prior_sigma <= 0.0 {
+        return None;
+    }
+    let sigma_r = reproj_sigma(config);
+    let sp = (config.motion_prior_sigma / sigma_r) as f32;
+    let so = (0.5 * config.motion_prior_sigma / sigma_r) as f32;
+    let reg: Vec<usize> = poses
+        .iter()
+        .enumerate()
+        .filter_map(|(i, p)| p.as_ref().map(|_| i))
+        .collect();
+    let out: Vec<BaMotionPrior> = reg
+        .windows(3)
+        .filter(|w| w[2] - w[0] <= MAX_TRIPLET_SPAN)
+        .map(|w| BaMotionPrior {
+            i0: w[0],
+            i1: w[1],
+            i2: w[2],
+            alpha: (w[1] - w[0]) as f32 / (w[2] - w[0]) as f32,
+            position_sigma: sp,
+            orientation_sigma: so,
+        })
+        .collect();
+    (!out.is_empty()).then_some(out)
+}
+
+/// One global bundle adjustment over every triangulated point and every registered view, with the
+/// anchor camera `a0` fixed to hold the gauge. Callable more than once on the same problem, which
+/// is what `refine_intrinsics` needs after it rewrites `norm` in place.
+#[allow(clippy::too_many_arguments)]
+fn global_ba(
+    poses: &[Option<Pose3d>],
+    point3d: &HashMap<usize, Vec3F64>,
+    track_ids: &[usize],
+    norm: &[Vec<(usize, Vec2F64)>],
+    norm_depth: &[Vec<Option<f32>>],
+    idcam: &PinholeCamera,
+    a0: usize,
+    config: &CalibConfig,
+) -> Result<BaResult, CalibError> {
+    // Re-fit the per-view depth gauge against the CURRENT geometry before every solve. Alternating
+    // rather than joint: the scales are closed-form medians, so each pass refines the other.
+    let depth_scale = if config.depth_per_keyframe_scale {
+        fit_depth_scales(poses, point3d, track_ids, norm, norm_depth, poses.len())
+    } else {
+        vec![1.0; poses.len()]
+    };
+    let mut points: Vec<Vec3F64> = Vec::with_capacity(track_ids.len());
+    let mut obs: Vec<BaObservation> = Vec::new();
+    for (pidx, ti) in track_ids.iter().enumerate() {
+        // Fail loudly rather than skip: a skip shifts every later `pidx` off its point.
+        let p = point3d.get(ti).ok_or_else(|| {
+            CalibError::BundleAdjust(format!("track {ti} has no triangulated point"))
+        })?;
+        points.push(*p);
+        for (j, (c, nrm)) in norm[*ti].iter().enumerate() {
+            if poses[*c].is_none() {
+                continue;
+            }
+            let (depth_meas, depth_sigma) = depth_fields(norm_depth, *ti, j, config);
+            obs.push(BaObservation {
+                pose_idx: *c,
+                point_idx: pidx,
+                pixel: [nrm.x as f32, nrm.y as f32],
+                fixed_pose: *c == a0, // reference camera fixed → gauge anchor
+                fixed_point: false,
+                // This view's own gauge baked in: the residual measures shape, not scale.
+                depth_meas: depth_meas.map(|d| d * depth_scale[*c] as f32),
+                depth_sigma,
+            });
+        }
+    }
+    let poses_ba: Vec<Pose3d> = poses
+        .iter()
+        .map(|p| p.unwrap_or(Pose3d::IDENTITY))
+        .collect();
+    bundle_adjust_schur_with_all_priors(
+        &poses_ba,
+        &points,
+        &obs,
+        idcam,
+        &BaParams {
+            max_iterations: config.max_iterations,
+            robust: RobustKernelKind::Huber,
+            robust_scale_sq: config.robust_scale_sq,
+            // Depth AND motion residuals are deflated by `reproj_sigma`, so their Huber knee is
+            // 1.345 × that scale, squared. Gated on EITHER family: `ba_schur` uses one knee for
+            // both, so motion priors without depth would silently gate at ~2σ instead of 1.345σ.
+            depth_robust_scale_sq: if config.depth_prior_rel_sigma > 0.0
+                || config.motion_prior_sigma > 0.0
+            {
+                let sr = (1.345 * reproj_sigma(config)) as f32;
+                sr * sr
+            } else {
+                0.0
+            },
+            ..Default::default()
+        },
+        up_priors(poses, a0, config).as_deref(),
+        motion_priors_for(poses, config).as_deref(),
+    )
+    .map_err(|e| CalibError::BundleAdjust(format!("{e:?}")))
+}
+
+/// Closed-form OpenCV-model intrinsics correction `(gamma, k1, k2, p1, p2)` fitted against the
+/// current reconstruction, or `None` when singular or outside its sanity bounds. Linear in the
+/// stacked unknowns `beta = (gamma, gamma·k1, gamma·k2, gamma·p1, gamma·p2)`:
+///
+/// ```text
+///   u_x = b0·x + b1·x·r² + b2·x·r⁴ + b3·(2xy)     + b4·(r²+2x²)
+///   u_y = b0·y + b1·y·r² + b2·y·r⁴ + b3·(r²+2y²)  + b4·(2xy)
+/// ```
+///
+/// so it costs one least squares. The tangential terms are what a focal-only fit can never see;
+/// forcing a decentred lens into `k1` leaves a residue that looks like scene curvature.
+fn fit_camera_correction(
+    res: &BaResult,
+    pt_index: &HashMap<usize, usize>,
+    norm: &[Vec<(usize, Vec2F64)>],
+    poses: &[Option<Pose3d>],
+) -> Option<(f64, f64, f64, f64, f64)> {
+    let mut ata = [[0.0f64; 5]; 5];
+    let mut atb = [0.0f64; 5];
+    // DETERMINISM: float addition is not associative, so accumulation ORDER changes the fitted
+    // correction, and Rust randomises `HashMap` iteration per process. Sort, or the map varies.
+    let mut ordered: Vec<(&usize, &usize)> = pt_index.iter().collect();
+    ordered.sort_unstable_by_key(|(ti, _)| **ti);
+    for (ti, pidx) in ordered {
+        let Some(p) = res.points.get(*pidx) else {
+            continue;
+        };
+        for (c, n) in &norm[*ti] {
+            if poses[*c].is_none() {
+                continue;
+            }
+            let pc = res.poses[*c].transform_point(p);
+            if pc.z <= 1e-9 {
+                continue;
+            }
+            let (u, v) = (pc.x / pc.z, pc.y / pc.z);
+            let (x, y) = (n.x, n.y);
+            let r2 = x * x + y * y;
+            let r4 = r2 * r2;
+            let rows = [
+                ([x, x * r2, x * r4, 2.0 * x * y, r2 + 2.0 * x * x], u),
+                ([y, y * r2, y * r4, r2 + 2.0 * y * y, 2.0 * x * y], v),
+            ];
+            for (basis, target) in rows {
+                for i in 0..5 {
+                    for j in 0..5 {
+                        ata[i][j] += basis[i] * basis[j];
+                    }
+                    atb[i] += basis[i] * target;
+                }
+            }
+        }
+    }
+    // Full 5-parameter fit first, falling back to the (gamma, k1) subproblem: thin tracks make the
+    // r⁴ and tangential columns nearly collinear on a narrow-FOV rig.
+    let full = solve_sym5(&ata, &atb).and_then(|b| {
+        let gamma = b[0];
+        if gamma.abs() < 1e-9 {
+            return None;
+        }
+        let (k1, k2, p1, p2) = (b[1] / gamma, b[2] / gamma, b[3] / gamma, b[4] / gamma);
+        ((0.7..1.3).contains(&gamma)
+            && (-0.3..0.3).contains(&k1)
+            && (-0.1..0.1).contains(&k2)
+            && (-0.05..0.05).contains(&p1)
+            && (-0.05..0.05).contains(&p2))
+        .then_some((gamma, k1, k2, p1, p2))
+    });
+    full.or_else(|| {
+        let det = ata[0][0] * ata[1][1] - ata[0][1] * ata[0][1];
+        if det.abs() <= 1e-12 {
+            return None;
+        }
+        let gamma = (atb[0] * ata[1][1] - atb[1] * ata[0][1]) / det;
+        let gk1 = (atb[1] * ata[0][0] - atb[0] * ata[0][1]) / det;
+        let k1 = if gamma.abs() > 1e-9 { gk1 / gamma } else { 0.0 };
+        // Sanity bounds: a fit outside them means the MAP is wrong, not the camera, and applying
+        // it would let geometry errors masquerade as optics.
+        ((0.7..1.3).contains(&gamma) && (-0.3..0.3).contains(&k1))
+            .then_some((gamma, k1, 0.0, 0.0, 0.0))
+    })
+}
+
+/// Solve the symmetric PSD `5×5` system `A x = b` by Gaussian elimination with partial pivoting.
+/// `None` when a pivot collapses — collinear distortion columns, so the caller falls back to two.
+fn solve_sym5(a: &[[f64; 5]; 5], b: &[f64; 5]) -> Option<[f64; 5]> {
+    let mut m = [[0.0f64; 6]; 5];
+    for i in 0..5 {
+        m[i][..5].copy_from_slice(&a[i]);
+        m[i][5] = b[i];
+    }
+    for col in 0..5 {
+        let piv = (col..5).max_by(|&i, &j| {
+            m[i][col]
+                .abs()
+                .partial_cmp(&m[j][col].abs())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })?;
+        if m[piv][col].abs() < 1e-12 {
+            return None;
+        }
+        m.swap(col, piv);
+        for row in (col + 1)..5 {
+            let f = m[row][col] / m[col][col];
+            for k in col..6 {
+                m[row][k] -= f * m[col][k];
+            }
+        }
+    }
+    let mut x = [0.0f64; 5];
+    for i in (0..5).rev() {
+        let mut s = m[i][5];
+        for j in (i + 1)..5 {
+            s -= m[i][j] * x[j];
+        }
+        x[i] = s / m[i][i];
+    }
+    Some(x)
 }
 
 /// Triangulate every not-yet-reconstructed track that has ≥2 placed cameras, adding it to `point3d`.
@@ -578,6 +1047,7 @@ fn tag_scale(
 /// Reprojection is scale-invariant, so the UNSCALED world→cam BA poses are used directly.
 #[allow(clippy::too_many_arguments)]
 fn feature_stats(
+    focal_scale: f64,
     camera: usize,
     poses_w2c: &[Pose3d],
     registered: &[bool],
@@ -599,7 +1069,8 @@ fn feature_stats(
             continue;
         };
         if let Some(r) = norm_residual(&pose, points[pidx], *n) {
-            se += (r * cam.fx).powi(2); // r is Euclidean in normalized units; fx≈fy assumed
+            // `focal_scale` converts into the CORRECTED camera's pixels; 1.0 when refinement is off.
+            se += (r * cam.fx * focal_scale).powi(2); // r Euclidean in normalized units; fx≈fy
             num += 1;
         }
     }
@@ -611,6 +1082,7 @@ fn feature_stats(
 }
 
 fn global_reproj_rmse(
+    focal_scale: f64,
     poses_w2c: &[Pose3d],
     registered: &[bool],
     points: &[Vec3F64],
@@ -628,7 +1100,7 @@ fn global_reproj_rmse(
                 continue;
             }
             if let Some(r) = norm_residual(&poses_w2c[*c], points[pidx], *n) {
-                se += (r * cameras[*c].fx).powi(2);
+                se += (r * cameras[*c].fx * focal_scale).powi(2);
                 num += 1;
             }
         }
@@ -735,7 +1207,7 @@ mod tests {
         };
 
         let cfg = CalibConfig::new(s);
-        let cal = match reconstruct(&cams, std::slice::from_ref(&tag), &tracks, &cfg)
+        let cal = match reconstruct(&cams, std::slice::from_ref(&tag), &tracks, &cfg, None)
             .map(RigCalibration::from)
         {
             Ok(c) => c,
@@ -771,7 +1243,7 @@ mod tests {
         // the points it returns have to share the poses' scale -- this is the assertion the
         // no-tag consistency test cannot make, because there `scale == 1.0` and dropping the
         // scaling changes nothing.
-        let recon = reconstruct(&cams, std::slice::from_ref(&tag), &tracks, &cfg)
+        let recon = reconstruct(&cams, std::slice::from_ref(&tag), &tracks, &cfg, None)
             .expect("same solve must succeed");
         assert_eq!(
             recon.scale,
@@ -846,7 +1318,8 @@ mod tests {
             .collect();
 
         let cfg = CalibConfig::new(0.1);
-        let recon = reconstruct(&cams, &[], &tracks, &cfg).expect("synthetic scene must solve");
+        let recon =
+            reconstruct(&cams, &[], &tracks, &cfg, None).expect("synthetic scene must solve");
 
         // The map came back at all -- the whole point of M1.
         assert!(!recon.points.is_empty(), "no points returned");
@@ -948,7 +1421,7 @@ mod tests {
         };
 
         let cfg = CalibConfig::new(2.0 * s);
-        let recon = reconstruct(&cams, std::slice::from_ref(&tag), &tracks, &cfg)
+        let recon = reconstruct(&cams, std::slice::from_ref(&tag), &tracks, &cfg, None)
             .expect("the feature tracks alone must still solve");
 
         assert_eq!(
@@ -976,6 +1449,7 @@ mod tests {
             std::slice::from_ref(&two_view),
             &tracks,
             &CalibConfig::new(0.0),
+            None,
         )
         .expect("solves");
         assert_eq!(
@@ -995,8 +1469,14 @@ mod tests {
                 })
                 .collect(),
         };
-        let deg =
-            reconstruct(&cams, std::slice::from_ref(&degenerate), &tracks, &cfg).expect("solves");
+        let deg = reconstruct(
+            &cams,
+            std::slice::from_ref(&degenerate),
+            &tracks,
+            &cfg,
+            None,
+        )
+        .expect("solves");
         assert_eq!(
             deg.scale,
             ScaleSource::UpToScale,
@@ -1027,8 +1507,14 @@ mod tests {
                 })
                 .collect(),
         };
-        let untri = reconstruct(&cams, std::slice::from_ref(&untriangulable), &tracks, &cfg)
-            .expect("solves");
+        let untri = reconstruct(
+            &cams,
+            std::slice::from_ref(&untriangulable),
+            &tracks,
+            &cfg,
+            None,
+        )
+        .expect("solves");
         assert_eq!(
             untri.scale,
             ScaleSource::UpToScale,
@@ -1096,6 +1582,7 @@ mod tests {
             std::slice::from_ref(&tag),
             &tracks,
             &CalibConfig::new(2.0 * s),
+            None,
         )
         .map(RigCalibration::from)
         .expect("the feature tracks alone must still solve");
@@ -1131,8 +1618,8 @@ mod tests {
             .collect();
         let cfg = CalibConfig::new(0.1);
 
-        let a = reconstruct(&cams, &[], &tracks, &cfg).expect("solves");
-        let b = reconstruct(&cams, &[], &tracks, &cfg).expect("solves");
+        let a = reconstruct(&cams, &[], &tracks, &cfg, None).expect("solves");
+        let b = reconstruct(&cams, &[], &tracks, &cfg, None).expect("solves");
 
         let ids = |r: &Reconstruction| r.points.iter().map(|p| p.track_id).collect::<Vec<_>>();
         let (ia, ib) = (ids(&a), ids(&b));
@@ -1145,6 +1632,426 @@ mod tests {
         assert_eq!(
             ia, ib,
             "two runs over identical input must publish the same map order"
+        );
+    }
+
+    /// Three converging views of a textured cloud at a SPECIFIED metric scale (the shape is
+    /// scale-free, so `scale` only moves the metric relative to the bootstrap's unit baseline).
+    /// Returns `(cameras, world→cam ground truth, tracks)`.
+    fn converging_rig(f: f64, scale: f64) -> (Vec<PinholeCamera>, Vec<Pose3d>, Vec<FeatureTrack>) {
+        let cams = vec![pinhole(f), pinhole(f), pinhole(f)];
+        let gt = vec![
+            Pose3d::new(rot(0.0, 0.05), Vec3F64::new(0.0, 0.0, 0.0)),
+            Pose3d::new(rot(0.40, 0.05), Vec3F64::new(-0.6, 0.0, 0.10) * scale),
+            Pose3d::new(rot(-0.40, 0.05), Vec3F64::new(0.6, 0.0, 0.15) * scale),
+        ];
+        let (w, h) = (640.0, 480.0);
+        let mut tracks: Vec<FeatureTrack> = Vec::new();
+        for i in 0..10 {
+            for j in 0..10 {
+                let x = -0.5 + 0.111 * i as f64;
+                let y = -0.5 + 0.111 * j as f64;
+                let z = 1.4 + 0.5 * ((i * 5 + j) as f64 * 0.7).sin() + 0.05 * (i as f64 - j as f64);
+                let p = Vec3F64::new(x, y, z) * scale;
+                let obs: Vec<(usize, Vec2F64)> = (0..3)
+                    .filter_map(|c| {
+                        let pc = gt[c].transform_point(&p);
+                        if pc.z <= 0.1 * scale {
+                            return None;
+                        }
+                        let uv = project(p, &gt[c], &cams[c]);
+                        (uv.x >= 0.0 && uv.x < w && uv.y >= 0.0 && uv.y < h).then_some((c, uv))
+                    })
+                    .collect();
+                if obs.len() >= 2 {
+                    tracks.push(FeatureTrack { obs });
+                }
+            }
+        }
+        (cams, gt, tracks)
+    }
+
+    /// Ground-truth metric depth for every observation, shaped exactly like `tracks`.
+    fn gt_depths(
+        gt: &[Pose3d],
+        tracks: &[FeatureTrack],
+        cams: &[PinholeCamera],
+    ) -> Vec<Vec<Option<f64>>> {
+        // Intersect each track's first two rays under the GT poses — exact for noise-free data.
+        tracks
+            .iter()
+            .map(|t| {
+                let (c0, uv0) = t.obs[0];
+                let (c1, uv1) = t.obs[1];
+                let pts = triangulate_matched_points(
+                    &[cams[c0].normalize(uv0)],
+                    &[cams[c1].normalize(uv1)],
+                    &gt[c0],
+                    &gt[c1],
+                    &PinholeCamera::IDENTITY,
+                    &TriangulationConfig {
+                        min_parallax_deg: 0.0,
+                        max_reprojection_error: 1e9,
+                        min_cheirality_count: 0,
+                        ..Default::default()
+                    },
+                )
+                .expect("synthetic rays must intersect");
+                let p = pts[0].position;
+                t.obs
+                    .iter()
+                    .map(|(c, _)| Some(gt[*c].transform_point(&p).z))
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// Median of `z_reconstructed / d_measured` over every surviving observation: `1.0` exactly
+    /// when the map is at the metric scale the depths assert.
+    fn median_depth_ratio(
+        recon: &Reconstruction,
+        tracks: &[FeatureTrack],
+        depths: &[Vec<Option<f64>>],
+    ) -> f64 {
+        let mut r: Vec<f64> = Vec::new();
+        for o in &recon.observations {
+            let ti = recon.points[o.point].track_id;
+            let Some(j) = tracks[ti].obs.iter().position(|(c, _)| *c == o.view) else {
+                continue;
+            };
+            let Some(d) = depths[ti][j] else { continue };
+            let w2c = recon.views[o.view].expect("registered").inverse();
+            let z = w2c.transform_point(&recon.points[o.point].position).z;
+            if d > 1e-9 {
+                r.push(z / d);
+            }
+        }
+        assert!(!r.is_empty(), "no observation carried a depth to compare");
+        r.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        r[r.len() / 2]
+    }
+
+    /// **Depth measurements fix the scale of an otherwise scale-free reconstruction.**
+    ///
+    /// The bootstrap fixes the gauge with a UNIT seed baseline; here the true seed baseline is
+    /// deliberately far from 1, so the depth-free control lands several times too large. That
+    /// control is load-bearing: without it the assertions would pass on a build that ignored depth.
+    #[test]
+    fn depth_priors_fix_the_scale_of_an_otherwise_scale_free_reconstruction() {
+        // Scale 0.4: widest camera-centre baseline ~0.5 m, so the unit-baseline convention
+        // inflates the depth-free map ~2x.
+        let (cams, gt, tracks) = converging_rig(500.0, 0.4);
+        let depths = gt_depths(&gt, &tracks, &cams);
+
+        // Control: no depth. Same tracks, same config -- only the argument differs.
+        let free = reconstruct(&cams, &[], &tracks, &CalibConfig::new(0.0), None).expect("solves");
+        let free_ratio = median_depth_ratio(&free, &tracks, &depths);
+        assert!(
+            free_ratio > 1.5,
+            "the depth-free control must be visibly off-scale for this test to mean anything, \
+             got ratio {free_ratio:.4}"
+        );
+
+        // With depth. `depth_prior_rel_sigma` is what ARMS the feature.
+        let cfg = CalibConfig {
+            depth_prior_rel_sigma: 0.15,
+            ..CalibConfig::new(0.0)
+        };
+        let metric = reconstruct(&cams, &[], &tracks, &cfg, Some(&depths)).expect("solves");
+        let ratio = median_depth_ratio(&metric, &tracks, &depths);
+        assert!(
+            (ratio - 1.0).abs() < 0.05,
+            "depth priors must bring the map to the metric scale they assert: ratio {ratio:.4} \
+             (depth-free control {free_ratio:.4})"
+        );
+
+        // Metric SCALE, not merely metric depths: camera centres must sit at their true separations.
+        let centre = |p: &Option<Pose3d>| p.expect("registered").translation;
+        let gt_centre = |p: &Pose3d| p.inverse().translation;
+        for (i, j) in [(0, 1), (0, 2), (1, 2)] {
+            let got = (centre(&metric.views[i]) - centre(&metric.views[j])).length();
+            let want = (gt_centre(&gt[i]) - gt_centre(&gt[j])).length();
+            assert!(
+                (got - want).abs() < 0.05 * want,
+                "baseline {i}-{j} is {got:.4} m, ground truth {want:.4} m"
+            );
+        }
+
+        // Still HONEST about the source: depth is a soft prior, and `ScaleSource` names fiducials.
+        assert_eq!(metric.scale, ScaleSource::UpToScale);
+    }
+
+    /// Passing depths while `depth_prior_rel_sigma` is 0 must change NOTHING: the knob, not the
+    /// argument, arms the feature. Bit-identical, not merely close.
+    #[test]
+    fn depths_are_inert_until_the_sigma_arms_them() {
+        let (cams, gt, tracks) = converging_rig(500.0, 0.4);
+        let depths = gt_depths(&gt, &tracks, &cams);
+        let cfg = CalibConfig::new(0.0);
+
+        let without = reconstruct(&cams, &[], &tracks, &cfg, None).expect("solves");
+        let with = reconstruct(&cams, &[], &tracks, &cfg, Some(&depths)).expect("solves");
+
+        assert_eq!(without.points.len(), with.points.len());
+        for (a, b) in without.points.iter().zip(&with.points) {
+            assert_eq!(a.position, b.position, "depth leaked into a disarmed solve");
+        }
+    }
+
+    /// `min_registration_inliers` decides whether a thinly-supported view is admitted. Views 0 and
+    /// 1 share 80 tracks and bootstrap the map; view 2 sees only 20 of them, so its PnP consensus
+    /// cannot exceed 20. The default gate of 30 must refuse it; lowering the gate must admit it.
+    #[test]
+    fn min_registration_inliers_gates_a_thinly_supported_view() {
+        let cams = vec![pinhole(600.0), pinhole(600.0), pinhole(600.0)];
+        let gt = [
+            Pose3d::new(Mat3F64::IDENTITY, Vec3F64::new(0.0, 0.0, 0.0)),
+            Pose3d::new(rot(0.30, 0.0), Vec3F64::new(-0.35, 0.0, 0.02)),
+            Pose3d::new(rot(-0.28, 0.04), Vec3F64::new(0.33, 0.01, 0.03)),
+        ];
+        let tracks: Vec<FeatureTrack> = (0..100)
+            .map(|i| {
+                let p = Vec3F64::new(
+                    -0.30 + 0.006 * i as f64,
+                    -0.20 + 0.004 * (i % 11) as f64,
+                    1.30 + 0.05 * (i % 7) as f64,
+                );
+                // Only the last 20 tracks are visible to view 2.
+                let seen: &[usize] = if i < 80 { &[0, 1] } else { &[0, 1, 2] };
+                FeatureTrack {
+                    obs: seen
+                        .iter()
+                        .map(|c| (*c, project(p, &gt[*c], &cams[*c])))
+                        .collect(),
+                }
+            })
+            .collect();
+
+        let gated = reconstruct(&cams, &[], &tracks, &CalibConfig::new(0.0), None).expect("solves");
+        assert_eq!(
+            CalibConfig::new(0.0).min_registration_inliers,
+            30,
+            "this test is calibrated against the documented default"
+        );
+        assert!(
+            gated.views[2].is_none(),
+            "20 correspondences cannot clear a 30-inlier gate, so view 2 must stay unregistered"
+        );
+        assert!(gated.views[0].is_some() && gated.views[1].is_some());
+
+        let open = reconstruct(
+            &cams,
+            &[],
+            &tracks,
+            &CalibConfig {
+                min_registration_inliers: 15,
+                ..CalibConfig::new(0.0)
+            },
+            None,
+        )
+        .expect("solves");
+        assert!(
+            open.views[2].is_some(),
+            "lowering the gate below the available support must admit the view"
+        );
+    }
+
+    /// `refine_intrinsics` must REPORT its fit and then ACT on it.
+    ///
+    /// 1. It reaches the caller on [`Reconstruction::camera_correction`] — refinement applies
+    ///    itself by rewriting normalized observations in place, so a caller that never sees the fit
+    ///    keeps storing a camera that did not produce these poses.
+    /// 2. It CHANGES THE POSES: without a second solve, the corrected observations are never read.
+    ///
+    /// It deliberately does NOT claim recovery of a known FOCAL error: the fit only sees what
+    /// bundle adjustment failed to absorb, and a focal error is very nearly absorbable — MEASURED,
+    /// handing the solver 320 for a true focal of 400 left `gamma = 0.9994`. Radial DISTORTION is a
+    /// nonlinear warp a rigid reconstruction cannot absorb, so that is what the scene injects.
+    #[test]
+    fn refine_intrinsics_reports_its_fit_and_re_solves_against_it() {
+        const K1_TRUE: f64 = 0.25;
+        let (cams, _, clean) = converging_rig(500.0, 1.0);
+        // Barrel-distort every pixel; the solver's cameras keep `k1 = 0`, so it survives
+        // `normalize`.
+        let tracks: Vec<FeatureTrack> = clean
+            .iter()
+            .map(|t| FeatureTrack {
+                obs: t
+                    .obs
+                    .iter()
+                    .map(|(c, uv)| {
+                        let (x, y) = ((uv.x - 320.0) / 500.0, (uv.y - 240.0) / 500.0);
+                        let s = 1.0 + K1_TRUE * (x * x + y * y);
+                        (
+                            *c,
+                            Vec2F64::new(320.0 + 500.0 * x * s, 240.0 + 500.0 * y * s),
+                        )
+                    })
+                    .collect(),
+            })
+            .collect();
+
+        let plain = reconstruct(&cams, &[], &tracks, &CalibConfig::new(0.0), None).expect("solves");
+        assert_eq!(
+            plain.camera_correction, None,
+            "refinement is off by default, so there is no fit to report"
+        );
+
+        let refined = reconstruct(
+            &cams,
+            &[],
+            &tracks,
+            &CalibConfig {
+                refine_intrinsics: true,
+                ..CalibConfig::new(0.0)
+            },
+            None,
+        )
+        .expect("solves");
+
+        let (gamma, k1, ..) = refined
+            .camera_correction
+            .expect("injected distortion must produce a reportable fit");
+        assert!(
+            k1 < -0.005,
+            "the fit must UNDO the injected barrel distortion (k1_true = +{K1_TRUE}), so its own \
+             k1 has to be negative; got {k1:.5}"
+        );
+        // The focal was correct here, so the fit must not invent one while fitting distortion.
+        assert!(
+            (0.95..1.05).contains(&gamma),
+            "a correctly-assumed focal must survive the fit intact; gamma={gamma:.4} implies \
+             fx_true = {:.1} against the true 500",
+            500.0 / gamma
+        );
+
+        // The second solve is the load-bearing half: without it, poses BIT-IDENTICAL to `plain`.
+        let moved = plain
+            .views
+            .iter()
+            .zip(&refined.views)
+            .filter_map(|(a, b)| Some((a.as_ref()?.translation - b.as_ref()?.translation).length()))
+            .fold(0.0f64, f64::max);
+        assert!(
+            moved > 1e-6,
+            "the refinement was reported but never re-solved against: poses are unchanged"
+        );
+        assert!(
+            refined.views.iter().all(|v| v.is_some()),
+            "the re-solve must not cost a registration"
+        );
+    }
+
+    /// The up and motion priors reach the solver at a strength that does not overrule the images.
+    ///
+    /// Both sigmas are physical and then DEFLATED into normalized reprojection units. Skipping that
+    /// makes each prior row `1/sigma_r` times stiffer than every reprojection row (360x at a phone
+    /// focal) and the solve fits the assumption instead of the scene. So: both priors ON at
+    /// production values must leave a good reconstruction good.
+    #[test]
+    fn up_and_motion_priors_do_not_overrule_the_image_evidence() {
+        // Views are index-ordered along the rig, which is what makes a motion prior meaningful.
+        let (cams, gt, tracks) = converging_rig(500.0, 1.0);
+        let baseline =
+            reconstruct(&cams, &[], &tracks, &CalibConfig::new(0.0), None).expect("solves");
+        let with_priors = reconstruct(
+            &cams,
+            &[],
+            &tracks,
+            &CalibConfig {
+                up_prior_sigma: 0.25,
+                motion_prior_sigma: 0.1,
+                ..CalibConfig::new(0.0)
+            },
+            None,
+        )
+        .expect("solves");
+
+        assert!(
+            with_priors.views.iter().all(|v| v.is_some()),
+            "the priors must not cost a registration"
+        );
+        // Baselines are gauge-invariant only up to the bootstrap's global scale: compare RATIOS.
+        let c = |r: &Reconstruction, i: usize| r.views[i].expect("registered").translation;
+        let g = |i: usize| gt[i].inverse().translation;
+        let want = (g(0) - g(2)).length() / (g(0) - g(1)).length();
+        for (name, r) in [("baseline", &baseline), ("with priors", &with_priors)] {
+            let got = (c(r, 0) - c(r, 2)).length() / (c(r, 0) - c(r, 1)).length();
+            assert!(
+                (got - want).abs() < 0.05 * want,
+                "{name}: baseline ratio {got:.4} vs ground truth {want:.4}"
+            );
+        }
+        assert!(
+            with_priors.reproj_rmse_px < 1.0,
+            "priors drove the fit away from the pixels: rmse {:.3} px",
+            with_priors.reproj_rmse_px
+        );
+    }
+
+    /// The reported pixel RMS must be in the corrected camera's pixels, not the assumed one's:
+    /// `refine_intrinsics` rewrites observations into the TRUE camera's frame, where
+    /// `fx_true = fx_assumed / gamma`, so converting with the assumed `fx` scales every reported
+    /// number by gamma. Worth pinning because `reproj_rmse_px` is callers' acceptance metric.
+    #[test]
+    fn reported_rmse_is_in_corrected_pixels() {
+        const K1_TRUE: f64 = 0.25;
+        let (cams, _, clean) = converging_rig(500.0, 1.0);
+        let tracks: Vec<FeatureTrack> = clean
+            .iter()
+            .map(|t| FeatureTrack {
+                obs: t
+                    .obs
+                    .iter()
+                    .map(|(c, uv)| {
+                        let (x, y) = ((uv.x - 320.0) / 500.0, (uv.y - 240.0) / 500.0);
+                        let s = 1.0 + K1_TRUE * (x * x + y * y);
+                        (
+                            *c,
+                            Vec2F64::new(320.0 + 500.0 * x * s, 240.0 + 500.0 * y * s),
+                        )
+                    })
+                    .collect(),
+            })
+            .collect();
+
+        let refined = reconstruct(
+            &cams,
+            &[],
+            &tracks,
+            &CalibConfig {
+                refine_intrinsics: true,
+                ..CalibConfig::new(0.0)
+            },
+            None,
+        )
+        .expect("solves");
+
+        let (gamma, ..) = refined
+            .camera_correction
+            .expect("injected distortion must produce a fit");
+        assert!(
+            (gamma - 1.0).abs() > 1e-9,
+            "test is vacuous unless the fit actually moved gamma (got {gamma})"
+        );
+
+        // Global vs per-camera under the CORRECTED focal: either left in assumed-fx pixels and this
+        // ratio would sit at gamma rather than 1.
+        let n: usize = refined.per_view.iter().map(|s| s.num_obs).sum();
+        assert!(n > 0, "no observations to check");
+        let pooled: f64 = refined
+            .per_view
+            .iter()
+            .filter(|s| s.num_obs > 0)
+            .map(|s| s.reproj_rmse_px.powi(2) * s.num_obs as f64)
+            .sum::<f64>()
+            / n as f64;
+        let pooled = pooled.sqrt();
+        assert!(
+            (pooled - refined.reproj_rmse_px).abs() <= 1e-6 * refined.reproj_rmse_px.max(1.0),
+            "global RMS {:.6} disagrees with the pooled per-camera RMS {pooled:.6} — the two \
+             conversions are not using the same focal",
+            refined.reproj_rmse_px
         );
     }
 }
