@@ -1225,6 +1225,15 @@ fn bundle_adjust_schur_impl(
         let mut h_offdiag: std::collections::HashMap<(usize, usize), [f32; 36]> =
             std::collections::HashMap::new();
         if let Some(mps) = motion_priors {
+            // Finite-difference step, RELATIVE for the translation block.
+            //
+            // The residual's translation term is built from camera centres (`-Rᵀt`, an f32 dot
+            // product of world-scale quantities), so a fixed absolute step loses relative
+            // precision as the map grows: measured, the error on dC/dρ is ~0.06% on a map a few
+            // metres across but degrades linearly with extent, and a walkthrough map is tens of
+            // metres. Scaling the step with the local coordinate magnitude holds the ratio
+            // constant instead. Rotation parameters are dimensionless radians, so they keep the
+            // absolute step.
             const FD_EPS: f32 = 1e-4;
             for mp in mps {
                 if mp.i0 >= p_total || mp.i1 >= p_total || mp.i2 >= p_total {
@@ -1247,9 +1256,17 @@ fn bundle_adjust_schur_impl(
                     if locs[pi] < 0 {
                         continue;
                     }
+                    // Magnitude of this camera's centre, the scale the translation columns are
+                    // differentiated at. `1.0 +` keeps the step finite at the origin.
+                    let c_mag = se3s[g].inverse().t.length();
                     for k in 0..6 {
+                        let step = if k < 3 {
+                            FD_EPS * (1.0 + c_mag)
+                        } else {
+                            FD_EPS
+                        };
                         let mut delta = [0.0f32; 6];
-                        delta[k] = FD_EPS;
+                        delta[k] = step;
                         let pert = se3s[g].retract(&delta);
                         let refs = [
                             if pi == 0 { &pert } else { &se3s[mp.i0] },
@@ -1257,8 +1274,9 @@ fn bundle_adjust_schur_impl(
                             if pi == 2 { &pert } else { &se3s[mp.i2] },
                         ];
                         let rp = motion_prior_residual(refs[0], refs[1], refs[2], mp);
+                        // Divided by the step ACTUALLY taken, not the nominal constant.
                         for row in 0..6 {
-                            jac[row][pi * 6 + k] = (rp[row] - r0[row]) / FD_EPS;
+                            jac[row][pi * 6 + k] = (rp[row] - r0[row]) / step;
                         }
                     }
                 }
@@ -3193,6 +3211,162 @@ mod tests {
         assert!(
             tilt < 0.05,
             "motion prior left {tilt:.4} rad of angular-velocity error (control {control_tilt:.4})"
+        );
+    }
+
+    /// The motion-prior FD Jacobian must stay usable on a map far from the origin.
+    ///
+    /// Its translation columns are differenced over camera centres — an f32 `-Rᵀt` — so a fixed
+    /// ABSOLUTE step loses relative precision as coordinates grow: at magnitude `m` the perturbed
+    /// centre keeps only `~7 - log10(m)` significant digits of the step.
+    ///
+    /// The offset here is deliberately extreme, and the honest reason is that anything realistic
+    /// does not discriminate. Measured on this test with the absolute step restored: 500 m passes,
+    /// 5 km passes, and only at 50 km does the ratio fall to 0.3864 and the recovery fail. So this
+    /// is a guard against a class of error, not a reproduction of one that was hurting a real map
+    /// — the relative step is simply free, and unlike the absolute one it has no horizon past
+    /// which it quietly stops working.
+    #[test]
+    fn motion_prior_survives_a_map_far_from_the_origin() {
+        const OFFSET: f64 = 50_000.0;
+        let cam = PinholeCamera {
+            fx: 600.0,
+            fy: 600.0,
+            cx: 320.0,
+            cy: 240.0,
+            k1: 0.0,
+            k2: 0.0,
+            p1: 0.0,
+            p2: 0.0,
+        };
+        let shift = Vec3F64::new(OFFSET, OFFSET, OFFSET);
+        let true_centres = [
+            shift,
+            shift + Vec3F64::new(0.0, 0.0, -1.0),
+            shift + Vec3F64::new(0.0, 0.0, -2.0),
+        ];
+        let true_poses: Vec<Pose3d> = true_centres
+            .iter()
+            .map(|c| Pose3d::new(Mat3F64::IDENTITY, -(Mat3F64::IDENTITY * *c)))
+            .collect();
+
+        let mut points: Vec<Vec3F64> = Vec::with_capacity(80);
+        for k in 0..80 {
+            let kf = k as f64;
+            points.push(
+                shift
+                    + Vec3F64::new(
+                        (kf * 0.37).sin() * 1.5 + (kf * 0.13).cos() * 0.6,
+                        (kf * 0.29).cos() * 1.2 + (kf * 0.11).sin() * 0.5,
+                        4.0 + (kf * 0.41).sin() * 1.5,
+                    ),
+            );
+        }
+        // Camera 1 sees a PRIVATE landmark set, so jittering it together with those points keeps
+        // its reprojection residuals at zero and only the triplet residual can object.
+        let visibility = |pose_idx: usize, point_idx: usize| -> bool {
+            if pose_idx == 1 {
+                point_idx >= 40
+            } else {
+                point_idx < 40
+            }
+        };
+        let mut observations: Vec<BaObservation> = Vec::new();
+        for (pi, pose) in true_poses.iter().enumerate() {
+            for (xi, pt) in points.iter().enumerate() {
+                if !visibility(pi, xi) {
+                    continue;
+                }
+                let pc = pose.transform_point(pt);
+                if pc.z <= 0.2 {
+                    continue;
+                }
+                observations.push(BaObservation {
+                    pose_idx: pi,
+                    point_idx: xi,
+                    pixel: [
+                        (cam.fx * pc.x / pc.z + cam.cx) as f32,
+                        (cam.fy * pc.y / pc.z + cam.cy) as f32,
+                    ],
+                    ..Default::default()
+                });
+            }
+        }
+
+        let c1_jit = shift + Vec3F64::new(0.0, 0.0, -0.4);
+        let pose1_jit = Pose3d::new(Mat3F64::IDENTITY, -(Mat3F64::IDENTITY * c1_jit));
+        let init_poses = vec![true_poses[0], pose1_jit, true_poses[2]];
+        let init_points: Vec<Vec3F64> = points
+            .iter()
+            .enumerate()
+            .map(|(xi, pt)| {
+                if xi < 40 {
+                    *pt
+                } else {
+                    let pc = true_poses[1].transform_point(pt);
+                    pose1_jit.rotation.transpose() * (pc - pose1_jit.translation)
+                }
+            })
+            .collect();
+
+        let pose_priors: Vec<Option<BaPosePrior>> = vec![
+            Some(BaPosePrior::new(
+                [
+                    true_centres[0].x as f32,
+                    true_centres[0].y as f32,
+                    true_centres[0].z as f32,
+                ],
+                0.01,
+            )),
+            None,
+            Some(BaPosePrior::new(
+                [
+                    true_centres[2].x as f32,
+                    true_centres[2].y as f32,
+                    true_centres[2].z as f32,
+                ],
+                0.01,
+            )),
+        ];
+        let motion = [BaMotionPrior {
+            i0: 0,
+            i1: 1,
+            i2: 2,
+            alpha: 0.5,
+            position_sigma: 0.02,
+            orientation_sigma: 0.02,
+        }];
+        let params = BaParams {
+            max_iterations: 300,
+            cost_tolerance: 1e-10,
+            ..BaParams::default()
+        };
+        let ratio_of = |poses: &[Pose3d]| -> f64 {
+            let centre = |p: &Pose3d| -(p.rotation.transpose() * p.translation);
+            let (c0, c1, c2) = (centre(&poses[0]), centre(&poses[1]), centre(&poses[2]));
+            (c1 - c0).length() / (c2 - c0).length()
+        };
+        assert!(
+            (ratio_of(&init_poses) - 0.2).abs() < 1e-4,
+            "setup error: initial ratio {:.4} should be 0.2",
+            ratio_of(&init_poses)
+        );
+
+        let res = bundle_adjust_schur_with_all_priors(
+            &init_poses,
+            &init_points,
+            &observations,
+            &cam,
+            &params,
+            Some(&pose_priors),
+            Some(&motion),
+        )
+        .unwrap();
+        let ratio = ratio_of(&res.poses);
+        assert!(
+            (ratio - 0.5).abs() < 0.1,
+            "motion prior left the position ratio at {ratio:.4} on a map {OFFSET} m from the \
+             origin (want 0.5, started 0.2) — the FD step is not tracking coordinate magnitude"
         );
     }
 }
