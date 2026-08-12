@@ -7,7 +7,9 @@
 use kornia_3d::pnp::refine::{refine_pose_lm, LMRefineParams};
 use kornia_3d::ransac::{
     estimators::{AP3PEstimator, EPnPEstimator},
-    run_with_rng, sprt::SPRTConfig, Match2d3d, RansacConfig, ThresholdConsensus, UniformSampler,
+    run_with_rng,
+    sprt::SPRTConfig,
+    Match2d3d, RansacConfig, ThresholdConsensus, UniformSampler,
 };
 use kornia_algebra::{Mat3AF32, Vec2F32, Vec2F64, Vec3AF32, Vec3F64};
 use numpy::{PyArray1, PyArray2, PyArrayMethods, PyUntypedArrayMethods, ToPyArray};
@@ -225,7 +227,14 @@ pub fn solve_pnp_ransac_py<'py>(
         PnPSolverMethod::EPnP => {
             let est = EPnPEstimator::new(k_mat);
             let mut sprt_rng = StdRng::seed_from_u64(seed.unwrap_or(0));
-            let result = run_with_rng(&est, &consensus, &mut sampler, &samples, &cfg, &mut sprt_rng);
+            let result = run_with_rng(
+                &est,
+                &consensus,
+                &mut sampler,
+                &samples,
+                &cfg,
+                &mut sprt_rng,
+            );
             let model = result.model.ok_or_else(|| {
                 pyo3::exceptions::PyValueError::new_err(
                     "solve_pnp_ransac (EPnP): no model recovered (check threshold + iter budget)",
@@ -236,7 +245,14 @@ pub fn solve_pnp_ransac_py<'py>(
         PnPSolverMethod::AP3P => {
             let est = AP3PEstimator::new(k_mat);
             let mut sprt_rng = StdRng::seed_from_u64(seed.unwrap_or(0));
-            let result = run_with_rng(&est, &consensus, &mut sampler, &samples, &cfg, &mut sprt_rng);
+            let result = run_with_rng(
+                &est,
+                &consensus,
+                &mut sampler,
+                &samples,
+                &cfg,
+                &mut sprt_rng,
+            );
             let model = result.model.ok_or_else(|| {
                 pyo3::exceptions::PyValueError::new_err(
                     "solve_pnp_ransac (AP3P): no model recovered (check threshold + iter budget)",
