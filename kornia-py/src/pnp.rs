@@ -2,12 +2,12 @@
 //!
 //! Wraps `kornia_3d::ransac::run` over `EPnPEstimator` or `AP3PEstimator` so the Python
 //! surface matches OpenCV's calling convention while the underlying solver is the
-//! generic kornia RANSAC driver (NEON/AVX2 scoring, adaptive iter cap).
+//! generic kornia RANSAC driver (NEON/AVX2 scoring, adaptive iter cap, optional SPRT).
 
 use kornia_3d::pnp::refine::{refine_pose_lm, LMRefineParams};
 use kornia_3d::ransac::{
     estimators::{AP3PEstimator, EPnPEstimator},
-    run, Match2d3d, RansacConfig, ThresholdConsensus, UniformSampler,
+    run_with_rng, sprt::SPRTConfig, Match2d3d, RansacConfig, ThresholdConsensus, UniformSampler,
 };
 use kornia_algebra::{Mat3AF32, Vec2F32, Vec2F64, Vec3AF32, Vec3F64};
 use numpy::{PyArray1, PyArray2, PyArrayMethods, PyUntypedArrayMethods, ToPyArray};
@@ -30,12 +30,17 @@ pub enum PnPSolverMethod {
 ///     world: `(N, 3)` float64 world points.
 ///     image: `(N, 2)` float64 pixel observations (same length as world).
 ///     k: `(3, 3)` float64 row-major pinhole intrinsics.
-///     method: `PnPSolverMethod` to use (EPnP or AP3P). Default is EPnP.
+///     method: `PnPSolverMethod` to use (EPnP or APnP). Default is EPnP.
 ///     threshold: reprojection-error threshold in pixels (default 4.0).
 ///     max_iterations: RANSAC iteration cap (default 1000).
 ///     confidence: target probability of an all-inlier sample (default 0.999).
 ///     lo_every: frequency of local optimization passes. 0 means disabled (default 0).
 ///     seed: optional RNG seed for deterministic runs.
+///     use_sprt: enable Wald's Sequential Probability Ratio Test to reject bad
+///         hypotheses early without scanning all points (default `False`).
+///     sprt_epsilon: expected inlier ratio passed to SPRT when `use_sprt=True`
+///         (default 0.5).
+///     sprt_delta: Type I error probability for SPRT (default 0.01).
 ///
 /// Returns:
 ///     `(R, t, inlier_mask, inlier_count)` where:
@@ -46,7 +51,7 @@ pub enum PnPSolverMethod {
 ///
 /// Raises ValueError on shape mismatches or when RANSAC produces no model.
 #[pyfunction(name = "solve_pnp_ransac")]
-#[pyo3(signature = (world, image, k, method=PnPSolverMethod::EPnP, threshold=4.0, max_iterations=1000, confidence=0.999, lo_every=0, seed=None))]
+#[pyo3(signature = (world, image, k, method=PnPSolverMethod::EPnP, threshold=4.0, max_iterations=1000, confidence=0.999, lo_every=0, seed=None, use_sprt=false, sprt_epsilon=0.5, sprt_delta=0.01))]
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn solve_pnp_ransac_py<'py>(
     py: Python<'py>,
@@ -59,6 +64,9 @@ pub fn solve_pnp_ransac_py<'py>(
     confidence: f64,
     lo_every: u32,
     seed: Option<u64>,
+    use_sprt: bool,
+    sprt_epsilon: f64,
+    sprt_delta: f64,
 ) -> PyResult<(
     Bound<'py, PyArray2<f64>>,
     Bound<'py, PyArray1<f64>>,
@@ -86,6 +94,16 @@ pub fn solve_pnp_ransac_py<'py>(
     if k_shape.len() != 2 || k_shape[0] != 3 || k_shape[1] != 3 {
         return Err(pyo3::exceptions::PyValueError::new_err(
             "k must be (3, 3) float64",
+        ));
+    }
+    if !(sprt_epsilon.is_finite() && sprt_epsilon > 0.0 && sprt_epsilon < 1.0) {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "sprt_epsilon must be a finite number in (0, 1)",
+        ));
+    }
+    if !(sprt_delta.is_finite() && sprt_delta > 0.0 && sprt_delta < 1.0) {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "sprt_delta must be a finite number in (0, 1)",
         ));
     }
 
@@ -151,6 +169,19 @@ pub fn solve_pnp_ransac_py<'py>(
         confidence,
         inlier_threshold: threshold_sq,
         lo_every,
+        sprt: if use_sprt {
+            Some(SPRTConfig {
+                epsilon: sprt_epsilon,
+                delta: sprt_delta,
+                // Plain Wald decision threshold `A = ln((1 - beta) / alpha)`
+                // (`t_M == t_m`); the time-aware scaling of the threshold
+                // only kicks in when the caller explicitly sets `t_M > t_m`.
+                t_M: 1.0,
+                t_m: 1.0,
+            })
+        } else {
+            None
+        },
         ..Default::default()
     };
 
@@ -187,10 +218,14 @@ pub fn solve_pnp_ransac_py<'py>(
         };
 
     // 1. Execute RANSAC and extract the base model + inlier mask
+    // A second, independent RNG seeded identically to the sampler drives
+    // SPRT's per-hypothesis point order, so a fixed `seed` yields fully
+    // deterministic results even with SPRT enabled.
     let (mut final_rot, mut final_trans, inliers) = match method {
         PnPSolverMethod::EPnP => {
             let est = EPnPEstimator::new(k_mat);
-            let result = run(&est, &consensus, &mut sampler, &samples, &cfg);
+            let mut sprt_rng = StdRng::seed_from_u64(seed.unwrap_or(0));
+            let result = run_with_rng(&est, &consensus, &mut sampler, &samples, &cfg, &mut sprt_rng);
             let model = result.model.ok_or_else(|| {
                 pyo3::exceptions::PyValueError::new_err(
                     "solve_pnp_ransac (EPnP): no model recovered (check threshold + iter budget)",
@@ -200,7 +235,8 @@ pub fn solve_pnp_ransac_py<'py>(
         }
         PnPSolverMethod::AP3P => {
             let est = AP3PEstimator::new(k_mat);
-            let result = run(&est, &consensus, &mut sampler, &samples, &cfg);
+            let mut sprt_rng = StdRng::seed_from_u64(seed.unwrap_or(0));
+            let result = run_with_rng(&est, &consensus, &mut sampler, &samples, &cfg, &mut sprt_rng);
             let model = result.model.ok_or_else(|| {
                 pyo3::exceptions::PyValueError::new_err(
                     "solve_pnp_ransac (AP3P): no model recovered (check threshold + iter budget)",

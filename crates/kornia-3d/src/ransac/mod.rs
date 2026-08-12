@@ -24,22 +24,22 @@
 
 mod config;
 mod driver;
-mod sprt;
 pub mod estimators;
 pub mod kernels;
 pub mod magsac;
 mod result;
 pub mod samples;
+pub mod sprt;
 
 pub use config::{ConsensusKind, RansacConfig};
-pub use driver::{run, run_parallel};
-pub use sprt::{SPRTConfig, SPRTState};
+pub use driver::{run, run_parallel, run_with_rng};
 pub use kernels::{
     CauchyKernel, HuberKernel, IdentityKernel, RobustKernel, RobustKernelKind, TukeyKernel,
 };
 pub use magsac::MagsacConsensus;
 pub use result::RansacResult;
 pub use samples::{Match2d2d, Match2d3d};
+pub use sprt::{SPRTConfig, SPRTState};
 
 use rand::Rng;
 

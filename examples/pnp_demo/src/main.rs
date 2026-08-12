@@ -1,5 +1,6 @@
 use argh::FromArgs;
 use kornia_3d::pnp as kpnp;
+use kornia_3d::ransac::sprt::SPRTConfig;
 use kornia_algebra::{Mat3AF32, Vec2F32, Vec3AF32};
 use kornia_imgproc::calibration::{
     distortion::{distort_point_polynomial, PolynomialDistortion},
@@ -16,6 +17,10 @@ struct Args {
     /// enable LM refinement after initial EPnP solution
     #[argh(switch)]
     refine: bool,
+    /// enable Wald's SPRT inside RANSAC for early hypothesis rejection
+    #[argh(switch)]
+    #[allow(dead_code)]
+    use_sprt: bool,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -156,6 +161,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Dataset: {} points", world_pts.len());
     println!("Using RANSAC: {}", args.use_ransac);
     println!("Using LM refinement: {}", args.refine);
+    println!("Using SPRT filtering: {}", args.use_sprt);
 
     // Create EPnP parameters with optional refinement
     let epnp_params = if args.refine {
@@ -176,6 +182,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             confidence: 0.99,
             random_seed: Some(42),
             refine: true,
+            // SPRT cuts hypothesis evaluation short on bad models before
+            // the full inlier scan. Disabled by default; opt-in via CLI.
+            sprt: if args.use_sprt {
+                Some(SPRTConfig {
+                    // Reasonable defaults for a PnP scene with a tight
+                    // reprojection threshold and moderate inlier ratio.
+                    epsilon: 0.6,
+                    delta: 0.01,
+                    t_M: 1.0,
+                    t_m: 0.1,
+                })
+            } else {
+                None
+            },
         };
 
         let ransac_result = kpnp::solve_pnp_ransac(
