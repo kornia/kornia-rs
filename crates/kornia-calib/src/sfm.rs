@@ -78,25 +78,16 @@ fn norm_residual(pose: &Pose3d, p_world: Vec3F64, n: Vec2F64) -> Option<f64> {
 ///   the reconstruction needs enough shared tracks between views to register them.
 /// * `config` - solver settings; see [`CalibConfig`].
 /// * `obs_depth` - optional metric depth per observation, shaped exactly like `tracks`:
-///   `obs_depth[i][j]` is the depth of `tracks[i].obs[j]`, `None` where none is available. Pass
-///   `None` for the classic depth-free solve. Ignored unless
-///   [`CalibConfig::depth_prior_rel_sigma`] is positive.
+///   `obs_depth[i][j]` is the depth of `tracks[i].obs[j]`. `None` for the classic depth-free solve;
+///   ignored unless [`CalibConfig::depth_prior_rel_sigma`] is positive.
 ///
 /// # Depth
 ///
-/// Monocular reprojection is exactly scale-invariant, so the gauge has one free DoF that the
-/// optimiser navigates by numerical accident. That is the root of two failures a fiducial-free
-/// walkthrough cannot otherwise escape:
-///
-/// 1. **No metric scale.** Depth residuals observe absolute scale directly, so the reconstruction
-///    lands in metres with no tag in the scene.
-/// 2. **Scale drift.** Along a no-revisit walk the reconstruction's scale wanders — the measured
-///    symptom is rooms late in a clip reconstructing several times larger than early ones. A
-///    per-observation depth prior pins EVERY segment of the chain, not just a global average.
-///
-/// Depths are a soft prior, not a constraint: they are robustified, sigma-weighted by
-/// [`CalibConfig::depth_prior_rel_sigma`], and (by default) re-gauged per view — see
-/// [`CalibConfig::depth_per_keyframe_scale`].
+/// Monocular reprojection is exactly scale-invariant, so a fiducial-free walkthrough has no metric
+/// scale and no defence against drift along the chain — measured, rooms late in a clip reconstruct
+/// several times larger than early ones. Depth residuals observe absolute scale directly and pin
+/// EVERY segment, not just a global average. They are a soft prior: robustified, sigma-weighted by
+/// [`CalibConfig::depth_prior_rel_sigma`], re-gauged per [`CalibConfig::depth_per_keyframe_scale`].
 ///
 /// # Returns
 ///
@@ -170,8 +161,7 @@ pub fn reconstruct(
         })
         .collect();
     // Parallel to `norm`: metric depth per observation, or `None`. All-`None` when the feature is
-    // off, so every downstream site indexes it unconditionally instead of branching on whether
-    // depth exists. A caller whose depth array is the wrong shape simply gets `None` per lookup.
+    // off, so downstream sites index it unconditionally; a wrong-shaped caller array yields `None`.
     let norm_depth: Vec<Vec<Option<f32>>> = match obs_depth {
         Some(d) if config.depth_prior_rel_sigma > 0.0 => d
             .iter()
@@ -324,34 +314,26 @@ pub fn reconstruct(
             None,
             PnPMethod::EPnPDefault,
             &PnpRansacParams {
-                // Normalized units, tied to the same threshold the rest of the pipeline calls an
-                // outlier bound. Defaults to 0.01, the value this was hardcoded to.
+                // Normalized units: the pipeline's own outlier bound, defaulting to the 0.01 this
+                // was hardcoded to.
                 reproj_threshold_px: config.max_reprojection_error as f32,
-                // Seed the sampler. `RansacParams::default()` leaves `random_seed: None`, which
-                // draws from the thread RNG, so registration was NONDETERMINISTIC: identical
-                // inputs produced different reconstructions run to run (measured on 40 keyframes
-                // of EuRoC MH01 — 12 / 30 / 39 cameras registered over three runs of the same
-                // command). Because a transient PnP failure marks a camera unregisterable, that
-                // randomness changes the final map, not merely its timing. The seed varies per
-                // camera so different views still draw different sample sequences.
+                // Seed the sampler; `RansacParams::default()` leaves `random_seed: None`, which
+                // made registration NONDETERMINISTIC — 12 / 30 / 39 cameras over three runs of the
+                // same command on EuRoC MH01. A transient PnP failure marks a camera
+                // unregisterable, so that randomness changes the map, not merely its timing.
                 random_seed: Some(0x00C0_FFEE ^ c as u64),
                 ..Default::default()
             },
         );
-        // Accepting a registration is not the same as PnP returning `Ok`. `solve_pnp_ransac`
-        // succeeds whenever it finds *a* consensus, however small, so an unguarded `Ok` arm admits
-        // cameras whose pose is fitted to a handful of correspondences. That is not a
-        // self-correcting mistake: `triangulate_new` immediately creates 3D points FROM the bad
-        // pose, and those points feed the next camera's PnP, so one bad registration propagates.
-        // Measured on EuRoC MH01 the symptom was global RMSE rising WITH the registered count —
-        // 34 cameras at 10.4 px, 38 at 23.2 px — the opposite of a healthy incremental SfM.
+        // PnP returning `Ok` is not acceptance: `solve_pnp_ransac` succeeds on *any* consensus, and
+        // `triangulate_new` builds points FROM the pose which feed the next camera's PnP. Measured
+        // on EuRoC MH01, global RMSE rose WITH the registered count: 34 cams 10.4 px, 38 at 23.2.
         let accepted = pnp.as_ref().ok().and_then(|r| {
             let pose = pose_from_pnp(r.pose.rotation, r.pose.translation);
-            // Score BOTH the returned (refit) pose and the RANSAC consensus, and keep the larger.
-            // `inliers` is classified against the PRE-refit minimal-sample model, and the refit can
-            // move either way, so trusting one alone under-counts: a solid 107-inlier consensus has
-            // been observed reclassifying to under 30 against its own refit, silently losing a good
-            // view. Both counts use the same threshold, so they are directly comparable.
+            // Score BOTH the refit pose and the RANSAC consensus, keep the larger: `inliers` is
+            // classified against the PRE-refit minimal-sample model, so it under-counts — a
+            // 107-inlier consensus has been seen reclassifying to under 30 against its own refit.
+            // Same threshold for both.
             let n_refit = wp
                 .iter()
                 .zip(ip.iter())
@@ -370,25 +352,16 @@ pub fn reconstruct(
                 }
                 let before = point3d.len();
                 triangulate_new(&mut point3d, &norm, &poses, &idcam, &tcfg);
-                // A camera that could not register earlier may register comfortably NOW: each
-                // success triangulates new points, so the 2D-3D evidence available to the remaining
-                // views grows. Without this, `min_registration_inliers` would turn every transient
-                // rejection into a permanent one and strictly REDUCE the registered count versus
-                // having no gate at all — the gate is only safe in the presence of the retry.
-                //
-                // Gated on the cloud ACTUALLY growing, so a registration that added no evidence
-                // does not buy a re-run of every rejected camera against an unchanged map.
-                //
-                // This terminates: the set is cleared only when the cloud grows, the cloud is
-                // bounded by the track count, and between clears each iteration either registers a
-                // camera (at most `n_cams` times) or removes one from consideration.
+                // A camera that failed earlier may register comfortably once the cloud has grown;
+                // without this retry `min_registration_inliers` would make every transient
+                // rejection permanent and strictly REDUCE the registered count versus no gate at
+                // all. Gating on the cloud ACTUALLY growing also makes it terminate: between clears
+                // each iteration either registers a camera or drops one from consideration.
                 if point3d.len() > before {
                     pnp_failed.clear();
                 }
             }
-            // PnP failed outright, or its consensus was too thin to trust. Either way this camera
-            // cannot register against the CURRENT map; try the others and revisit it after the
-            // cloud has grown.
+            // Failed outright, or its consensus was too thin: retry once the cloud has grown.
             None => {
                 pnp_failed.insert(c);
             }
@@ -406,8 +379,8 @@ pub fn reconstruct(
     let mut track_ids: Vec<usize> = point3d.keys().copied().collect();
     track_ids.sort_unstable();
 
-    // `pt_index[ti]` is just `ti`'s position in `track_ids`, so it is stable across BA rounds and
-    // the published `points` order matches the BA input order in every one of them.
+    // `pt_index[ti]` is `ti`'s position in `track_ids`: stable across BA rounds, so the published
+    // `points` order matches the BA input order in every one of them.
     let pt_index: HashMap<usize, usize> =
         track_ids.iter().enumerate().map(|(i, t)| (*t, i)).collect();
     let point_track_id: Vec<usize> = track_ids.clone();
@@ -438,12 +411,9 @@ pub fn reconstruct(
         config,
     )?;
 
-    // --- Alternating intrinsics refinement (COLMAP refines focal/distortion INSIDE its BA; this is
-    // the alternating equivalent, which needs no solver surgery). The solver sees NORMALIZED
-    // coordinates, so a focal error is a single global scale `gamma` on them and lens distortion a
-    // radial/tangential polynomial. Against the current map that model is LINEAR in the stacked
-    // unknowns, so one closed-form least squares per round corrects the camera; the second bundle
-    // adjustment below then re-settles the geometry against it.
+    // --- Alternating intrinsics refinement (COLMAP does it INSIDE its BA; this equivalent needs no
+    // solver surgery). The solver sees NORMALIZED coordinates, so a focal error is one global scale
+    // `gamma` and distortion a radial/tangential polynomial — linear in the stacked unknowns.
     let camera_correction = if config.refine_intrinsics {
         let fit = fit_camera_correction(&res, &pt_index, &norm, &poses);
         if let Some((gamma, k1, k2, p1, p2)) = fit {
@@ -456,10 +426,8 @@ pub fn reconstruct(
                     n.y = gamma * (y * radial + p1 * (r2 + 2.0 * y * y) + 2.0 * p2 * x * y);
                 }
             }
-            // Feed the first solve's state back in, then RE-SOLVE against the corrected
-            // observations. Without this second pass the refinement would be computed, reported,
-            // and never reflected in the poses this function returns — the observations it rewrote
-            // would go unread, since nothing downstream of here solves anything.
+            // Feed the first solve's state back in and RE-SOLVE against the corrected observations:
+            // without this the refinement would be reported but never reach the returned poses.
             for (c, p) in poses.iter_mut().enumerate() {
                 if p.is_some() {
                     *p = Some(res.poses[c]);
@@ -508,13 +476,8 @@ pub fn reconstruct(
     );
     let scale = anchored.unwrap_or(1.0);
 
-    // Pixels-per-normalized-unit correction for the reported RMS.
-    //
-    // `refine_intrinsics` rewrites `norm` IN PLACE into the true camera's normalized frame, where
-    // fx_true = fx_assumed / gamma. Every RMS below converts residuals to pixels with the ASSUMED
-    // fx from `cameras`, so without this the reported number is gamma times too large — and this
-    // is the number the callers quote as their acceptance metric, so a silent few-percent bias in
-    // it is worse than a loud one.
+    // Pixels-per-normalized-unit correction: `refine_intrinsics` rewrote `norm` into the true
+    // camera's frame (fx_true = fx_assumed / gamma) but the RMS below uses the ASSUMED fx.
     let focal_scale = camera_correction.map_or(1.0, |(gamma, ..)| 1.0 / gamma.max(1e-9));
 
     // Per-camera reprojection RMS (pixels); analytical covariance is tag-oriented so stays `None`.
@@ -584,31 +547,20 @@ pub fn reconstruct(
 }
 /// The reference reprojection sigma every prior family is deflated by, in NORMALISED units.
 ///
-/// Bundle adjustment here runs against `PinholeCamera::IDENTITY`, so its reprojection residuals are
-/// in normalised-camera units while the prior sigmas the caller supplies are quoted in physical
-/// ones (metres, unit-vector components). Dividing each prior sigma by this value puts every family
-/// on one numeric scale, which is what lets a single Huber knee gate them coherently.
-///
-/// `max_reprojection_error / 2` because that threshold reads as 2σ. Derived in ONE place because
-/// four call sites must agree exactly: the depth measurement's sigma, the up prior's, the motion
-/// prior's, and the robust knee that gates all three. If they drift, the knee stops matching the
-/// residuals it is meant to gate and the priors are silently mis-weighted rather than wrong in any
-/// way a test would show.
+/// Bundle adjustment here runs against `PinholeCamera::IDENTITY`, so its residuals are in
+/// normalised units while caller prior sigmas are physical; dividing by this puts every family on
+/// one scale, which is what lets a single Huber knee gate them. `max_reprojection_error / 2`
+/// because that threshold reads as 2σ. Derived ONCE because four call sites must agree exactly —
+/// depth, up, motion, and the knee gating all three — and drift mis-weights them silently.
 fn reproj_sigma(config: &CalibConfig) -> f64 {
     (config.max_reprojection_error / 2.0).max(1e-6)
 }
 
-/// Depth measurement + already-deflated sigma for observation `j` of track `ti`, or `(None, 0.0)`
-/// when there is no usable depth there.
+/// Depth measurement + already-deflated sigma for observation `j` of track `ti`, or `(None, 0.0)`.
 ///
-/// The returned sigma is DEFLATED into reprojection units, not the raw metric sigma. The solver's
-/// reprojection residuals are unwhitened normalized-camera values (implicit σ = 1 normalized unit —
-/// an entire focal length!), while its depth residuals divide by their sigma. Passing the honest
-/// metric sigma therefore makes each depth row carry orders of magnitude more cost than a
-/// reprojection row, and the solve goes depth-dominated no matter how loose the relative sigma
-/// looks — measured: `rel_sigma` 5.0 (≈ no confidence at all) still halved registration.
-/// Multiplying by `1/σ_r` — where `σ_r` is the reprojection noise scale in normalized units, the
-/// threshold read as 2σ — puts both families in the same implicit unit.
+/// DEFLATED by [`reproj_sigma`], not the raw metric sigma: reprojection residuals are unwhitened
+/// normalized values (implicit σ = a whole focal length!) while depth residuals divide by theirs,
+/// so the metric sigma goes depth-dominated — measured, `rel_sigma` 5.0 still halved registration.
 fn depth_fields(
     norm_depth: &[Vec<Option<f32>>],
     ti: usize,
@@ -629,25 +581,12 @@ fn depth_fields(
 /// observations, re-gauged against the median view and clamped. `1.0` where a view lacks enough
 /// pairs to fit.
 ///
-/// # Why per view rather than one global scale
-///
-/// Learned depth is not gauge-stable frame to frame. On forward motion a per-frame scale error is
-/// indistinguishable from along-axis translation, so a single global scale hands every wander of
-/// the network straight to the trajectory: the residual is real, the solver dutifully moves the
-/// camera, every frame. That is a drift generator.
-///
-/// # Scale only, not the affine `s·d + t`
-///
-/// A free intercept absorbs bas-relief compression instead of correcting it — measured: sparse
-/// depth spanned a ratio of 1.13 across a view where the network saw 2.13, and an affine fit
-/// reproduced that flattening faithfully. It also makes the map's ABSOLUTE scale unobservable from
-/// depth, which defeats the point of supplying depth at all.
-///
-/// # Gauge
-///
-/// The scales are normalised by their own median, so this re-gauges views RELATIVE to each other
-/// without moving the map as a whole. Without that, the reconstruction would be free to breathe
-/// every time bundle adjustment ran.
+/// Per view rather than one global scale because learned depth is not gauge-stable frame to frame:
+/// on forward motion a per-frame scale error is indistinguishable from along-axis translation, so a
+/// global scale hands every wander of the network to the trajectory. Scale only, NOT the affine
+/// `s·d + t`: a free intercept absorbs bas-relief compression instead of correcting it (measured —
+/// sparse depth spanned 1.13 across a view where the network saw 2.13) and makes ABSOLUTE scale
+/// unobservable from depth. Normalising by the median re-gauges views without moving the map.
 fn fit_depth_scales(
     poses: &[Option<Pose3d>],
     point3d: &HashMap<usize, Vec3F64>,
@@ -656,18 +595,15 @@ fn fit_depth_scales(
     norm_depth: &[Vec<Option<f32>>],
     n_cams: usize,
 ) -> Vec<f64> {
-    /// Below this many depth pairs a median is noise, and a wrong per-view gauge is worse than the
-    /// global one it replaces.
+    /// Below this many pairs a median is noise, and a wrong gauge is worse than the global one.
     const MIN_PAIRS: usize = 12;
 
     let mut per_cam: Vec<Vec<f64>> = vec![Vec::new(); n_cams];
     for ti in track_ids {
         let Some(p) = point3d.get(ti) else { continue };
         for (j, (c, _)) in norm[*ti].iter().enumerate() {
-            // `.get(ti)`, not `[ti]`: the contract on `obs_depth` is that a wrong-shaped array
-            // simply yields `None` per lookup, and `depth_fields` already honours that. Indexing
-            // here made a caller who supplied depth for only the first N tracks panic instead —
-            // the one shape of malformed input the documentation explicitly invites.
+            // `.get(ti)`, not `[ti]`: a wrong-shaped `obs_depth` must yield `None` per lookup, not
+            // panic — indexing here panicked on depth supplied for only the first N tracks.
             let (Some(pose), Some(d)) = (
                 &poses[*c],
                 norm_depth
@@ -684,8 +620,7 @@ fn fit_depth_scales(
             }
         }
     }
-    // Median, not mean: a depth network hallucinates at occlusion boundaries and on mirrors, and
-    // those observations are a fat tail, not Gaussian noise.
+    // Median, not mean: depth networks hallucinate at occlusions and on mirrors — a fat tail.
     let median = |v: &mut Vec<f64>| -> Option<f64> {
         if v.len() < MIN_PAIRS {
             return None;
@@ -705,8 +640,7 @@ fn fit_depth_scales(
     for s in scales.iter_mut().flatten() {
         *s /= anchor;
     }
-    // A view whose scale is wildly off has a broken pose or a broken depth map, not a gauge
-    // offset; trusting its fit would let it drag the solve. Fall back to neutral.
+    // A wildly-off scale means a broken pose or depth map, not a gauge offset: fall back to neutral.
     scales
         .into_iter()
         .map(|s| match s {
@@ -718,10 +652,7 @@ fn fit_depth_scales(
 
 /// Per-view up priors, or `None` when [`CalibConfig::up_prior_sigma`] is off.
 ///
-/// The camera-frame direction asserted to be up is image-up `(0, −1, 0)` — "the camera was held
-/// roughly upright" — so `up_prior_sigma` must be chosen to match how much that is actually
-/// believed.
-///
+/// The camera-frame direction asserted to be up is image-up `(0, −1, 0)` — "held roughly upright".
 /// World up is a GAUGE choice and has to agree with the anchor camera `a0`, whose pose is held
 /// fixed: `up_world = R_a0ᵀ · (0,−1,0)`. Any other choice fights the one pose the solve cannot move.
 fn up_priors(
@@ -740,11 +671,8 @@ fn up_priors(
         }
         None => [0.0, -1.0, 0.0],
     };
-    // Deflated into reprojection units for the same reason as `depth_fields`: bundle adjustment
-    // runs against `PinholeCamera::IDENTITY`, so its reprojection residuals are in NORMALISED units
-    // while this sigma is quoted in unit-vector units. Passing it raw made the prior `1/σ_r` times
-    // stiffer than every other term in the same solve — 360× at fx 1440 with an 8 px threshold,
-    // where 1° of pitch deviation cost what a 489 px reprojection error would.
+    // Deflated into reprojection units, as in `depth_fields`. Raw, the prior was `1/σ_r` times
+    // stiffer than every other term in the solve — 360× at fx 1440 with an 8 px threshold.
     let sigma_r = reproj_sigma(config);
     Some(
         poses
@@ -763,10 +691,9 @@ fn up_priors(
 
 /// Constant-velocity motion priors over consecutive REGISTERED triplets, or `None` when off.
 ///
-/// Consecutive in VIEW-INDEX order (video keyframes are time-ordered), `alpha` from the index
-/// spacing, and triplets spanning more than [`MAX_TRIPLET_SPAN`] indices skipped — a bridge across
-/// a long unregistered stretch is not a constant-velocity hypothesis worth asserting. Sigmas are
-/// deflated into reprojection units exactly like the depth and up priors.
+/// Consecutive in VIEW-INDEX order (video keyframes are time-ordered), with triplets spanning more
+/// than [`MAX_TRIPLET_SPAN`] indices skipped: a bridge across a long unregistered stretch is not a
+/// constant-velocity hypothesis worth asserting. Sigmas are deflated like the other priors.
 fn motion_priors_for(poses: &[Option<Pose3d>], config: &CalibConfig) -> Option<Vec<BaMotionPrior>> {
     /// Widest index gap a triplet may span before it stops being a plausible motion hypothesis.
     const MAX_TRIPLET_SPAN: usize = 12;
@@ -798,10 +725,8 @@ fn motion_priors_for(poses: &[Option<Pose3d>], config: &CalibConfig) -> Option<V
 }
 
 /// One global bundle adjustment over every triangulated point and every registered view, with the
-/// anchor camera `a0` fixed to hold the gauge.
-///
-/// Callable more than once on the same problem, which is what `refine_intrinsics` needs: it
-/// rewrites `norm` in place and the geometry then has to re-settle against the corrected camera.
+/// anchor camera `a0` fixed to hold the gauge. Callable more than once on the same problem, which
+/// is what `refine_intrinsics` needs after it rewrites `norm` in place.
 #[allow(clippy::too_many_arguments)]
 fn global_ba(
     poses: &[Option<Pose3d>],
@@ -823,9 +748,7 @@ fn global_ba(
     let mut points: Vec<Vec3F64> = Vec::with_capacity(track_ids.len());
     let mut obs: Vec<BaObservation> = Vec::new();
     for (pidx, ti) in track_ids.iter().enumerate() {
-        // `track_ids` is derived from `point3d`'s keys and points are only ever updated in place,
-        // so every id resolves. Failing loudly rather than skipping matters: a skip would shift
-        // every later `pidx` off its point and silently solve a scrambled problem.
+        // Fail loudly rather than skip: a skip shifts every later `pidx` off its point.
         let p = point3d.get(ti).ok_or_else(|| {
             CalibError::BundleAdjust(format!("track {ti} has no triangulated point"))
         })?;
@@ -841,8 +764,7 @@ fn global_ba(
                 pixel: [nrm.x as f32, nrm.y as f32],
                 fixed_pose: *c == a0, // reference camera fixed → gauge anchor
                 fixed_point: false,
-                // This view's own gauge baked into the measurement, so the residual measures the
-                // shape the network got right rather than the scale it got wrong.
+                // This view's own gauge baked in: the residual measures shape, not scale.
                 depth_meas: depth_meas.map(|d| d * depth_scale[*c] as f32),
                 depth_sigma,
             });
@@ -861,13 +783,9 @@ fn global_ba(
             max_iterations: config.max_iterations,
             robust: RobustKernelKind::Huber,
             robust_scale_sq: config.robust_scale_sq,
-            // Depth AND motion residuals are both deflated by `reproj_sigma` (see `depth_fields`
-            // and `motion_priors_for`), so their Huber knee is 1.345 × that scale, squared.
-            //
-            // Gated on EITHER family being armed, not just depth: `ba_schur` uses this one knee for
-            // both, so a config with motion priors but no depth would fall back to the reprojection
-            // knee and gate motion residuals at ~2σ instead of 1.345σ — tighter than intended, and
-            // silent.
+            // Depth AND motion residuals are deflated by `reproj_sigma`, so their Huber knee is
+            // 1.345 × that scale, squared. Gated on EITHER family: `ba_schur` uses one knee for
+            // both, so motion priors without depth would silently gate at ~2σ instead of 1.345σ.
             depth_robust_scale_sq: if config.depth_prior_rel_sigma > 0.0
                 || config.motion_prior_sigma > 0.0
             {
@@ -885,18 +803,16 @@ fn global_ba(
 }
 
 /// Closed-form OpenCV-model intrinsics correction `(gamma, k1, k2, p1, p2)` fitted against the
-/// current reconstruction, or `None` when the fit is singular or outside its sanity bounds.
-///
-/// Linear in the stacked unknowns `beta = (gamma, gamma·k1, gamma·k2, gamma·p1, gamma·p2)`:
+/// current reconstruction, or `None` when singular or outside its sanity bounds. Linear in the
+/// stacked unknowns `beta = (gamma, gamma·k1, gamma·k2, gamma·p1, gamma·p2)`:
 ///
 /// ```text
 ///   u_x = b0·x + b1·x·r² + b2·x·r⁴ + b3·(2xy)     + b4·(r²+2x²)
 ///   u_y = b0·y + b1·y·r² + b2·y·r⁴ + b3·(r²+2y²)  + b4·(2xy)
 /// ```
 ///
-/// so the whole set costs one least squares. The tangential terms are what a focal-only fit can
-/// never see: a decentred lens bends verticals asymmetrically, and forcing that into `k1` leaves a
-/// residue that looks like scene curvature.
+/// so it costs one least squares. The tangential terms are what a focal-only fit can never see;
+/// forcing a decentred lens into `k1` leaves a residue that looks like scene curvature.
 fn fit_camera_correction(
     res: &BaResult,
     pt_index: &HashMap<usize, usize>,
@@ -905,11 +821,8 @@ fn fit_camera_correction(
 ) -> Option<(f64, f64, f64, f64, f64)> {
     let mut ata = [[0.0f64; 5]; 5];
     let mut atb = [0.0f64; 5];
-    // DETERMINISM. These are floating-point normal equations, and float addition is not
-    // associative, so the ORDER of accumulation changes the solved correction. `pt_index` is a
-    // `HashMap` and Rust randomises hash iteration per process, so summing in iteration order
-    // yields a different `(gamma, k1, k2, p1, p2)` — hence different intrinsics, hence a different
-    // reconstruction — from bit-identical input.
+    // DETERMINISM: float addition is not associative, so accumulation ORDER changes the fitted
+    // correction, and Rust randomises `HashMap` iteration per process. Sort, or the map varies.
     let mut ordered: Vec<(&usize, &usize)> = pt_index.iter().collect();
     ordered.sort_unstable_by_key(|(ti, _)| **ti);
     for (ti, pidx) in ordered {
@@ -942,9 +855,8 @@ fn fit_camera_correction(
             }
         }
     }
-    // Try the full 5-parameter fit first; when it is singular or out of bounds fall back to the
-    // (gamma, k1) subproblem rather than applying a fit the geometry cannot support — thin tracks
-    // make the r⁴ and tangential columns nearly collinear on a narrow-FOV rig.
+    // Full 5-parameter fit first, falling back to the (gamma, k1) subproblem: thin tracks make the
+    // r⁴ and tangential columns nearly collinear on a narrow-FOV rig.
     let full = solve_sym5(&ata, &atb).and_then(|b| {
         let gamma = b[0];
         if gamma.abs() < 1e-9 {
@@ -973,9 +885,8 @@ fn fit_camera_correction(
     })
 }
 
-/// Solve the symmetric positive-semidefinite `5×5` system `A x = b` by Gaussian elimination with
-/// partial pivoting. `None` when a pivot collapses — for the intrinsics fit that means the
-/// distortion columns are collinear and the caller falls back to the two-parameter model.
+/// Solve the symmetric PSD `5×5` system `A x = b` by Gaussian elimination with partial pivoting.
+/// `None` when a pivot collapses — collinear distortion columns, so the caller falls back to two.
 fn solve_sym5(a: &[[f64; 5]; 5], b: &[f64; 5]) -> Option<[f64; 5]> {
     let mut m = [[0.0f64; 6]; 5];
     for i in 0..5 {
@@ -1158,10 +1069,7 @@ fn feature_stats(
             continue;
         };
         if let Some(r) = norm_residual(&pose, points[pidx], *n) {
-            // `focal_scale` carries the intrinsics refinement: it rewrote `norm` into the TRUE
-            // camera's normalized frame, where fx_true = fx_assumed / gamma, so converting with
-            // the ASSUMED fx would report every residual gamma times too large. 1.0 when
-            // `refine_intrinsics` is off.
+            // `focal_scale` converts into the CORRECTED camera's pixels; 1.0 when refinement is off.
             se += (r * cam.fx * focal_scale).powi(2); // r Euclidean in normalized units; fx≈fy
             num += 1;
         }
@@ -1727,10 +1635,8 @@ mod tests {
         );
     }
 
-    /// Three converging views of a textured cloud, at a SPECIFIED metric scale.
-    ///
-    /// The shape is scale-free, so `scale` changes nothing about how well the geometry
-    /// reconstructs — only where the true metric sits relative to the bootstrap's unit baseline.
+    /// Three converging views of a textured cloud at a SPECIFIED metric scale (the shape is
+    /// scale-free, so `scale` only moves the metric relative to the bootstrap's unit baseline).
     /// Returns `(cameras, world→cam ground truth, tracks)`.
     fn converging_rig(f: f64, scale: f64) -> (Vec<PinholeCamera>, Vec<Pose3d>, Vec<FeatureTrack>) {
         let cams = vec![pinhole(f), pinhole(f), pinhole(f)];
@@ -1771,8 +1677,7 @@ mod tests {
         tracks: &[FeatureTrack],
         cams: &[PinholeCamera],
     ) -> Vec<Vec<Option<f64>>> {
-        // Recover each track's world point by intersecting its first two rays under the GT poses,
-        // which for noise-free synthetic data is exact; then take its z in each observing view.
+        // Intersect each track's first two rays under the GT poses — exact for noise-free data.
         tracks
             .iter()
             .map(|t| {
@@ -1828,20 +1733,13 @@ mod tests {
 
     /// **Depth measurements fix the scale of an otherwise scale-free reconstruction.**
     ///
-    /// This is the whole point of the `obs_depth` argument. A feature-only monocular solve is
-    /// determined only up to a similarity: the bootstrap fixes the gauge by giving its seed pair a
-    /// UNIT baseline, so the map's absolute size is an artifact of that convention and has nothing
-    /// to do with the scene. Here the true seed baseline is deliberately far from 1, so the
-    /// depth-free control lands several times too large — and the depth priors have to pull it back.
-    ///
-    /// The control is not decoration. Every assertion below would also pass on a build where the
-    /// depth arguments were accepted and silently ignored, if the scene happened to be near unit
-    /// scale; asserting that the SAME scene reconstructs at the wrong scale without depth is what
-    /// makes this a test of the depth term rather than of the geometry.
+    /// The bootstrap fixes the gauge with a UNIT seed baseline; here the true seed baseline is
+    /// deliberately far from 1, so the depth-free control lands several times too large. That
+    /// control is load-bearing: without it the assertions would pass on a build that ignored depth.
     #[test]
     fn depth_priors_fix_the_scale_of_an_otherwise_scale_free_reconstruction() {
-        // Scale 0.4: the widest camera-centre baseline is ~0.5 m, so the unit-baseline convention
-        // inflates the depth-free map by roughly 2x.
+        // Scale 0.4: widest camera-centre baseline ~0.5 m, so the unit-baseline convention
+        // inflates the depth-free map ~2x.
         let (cams, gt, tracks) = converging_rig(500.0, 0.4);
         let depths = gt_depths(&gt, &tracks, &cams);
 
@@ -1854,8 +1752,7 @@ mod tests {
              got ratio {free_ratio:.4}"
         );
 
-        // With depth. `depth_prior_rel_sigma` is what ARMS the feature: at 0.0 the depths are
-        // ignored no matter what is passed.
+        // With depth. `depth_prior_rel_sigma` is what ARMS the feature.
         let cfg = CalibConfig {
             depth_prior_rel_sigma: 0.15,
             ..CalibConfig::new(0.0)
@@ -1868,8 +1765,7 @@ mod tests {
              (depth-free control {free_ratio:.4})"
         );
 
-        // Metric SCALE, not merely metric depths: the camera centres must now sit at their true
-        // separations, which is the quantity a downstream consumer actually uses.
+        // Metric SCALE, not merely metric depths: camera centres must sit at their true separations.
         let centre = |p: &Option<Pose3d>| p.expect("registered").translation;
         let gt_centre = |p: &Pose3d| p.inverse().translation;
         for (i, j) in [(0, 1), (0, 2), (1, 2)] {
@@ -1881,16 +1777,12 @@ mod tests {
             );
         }
 
-        // And the map is still HONEST about where that scale came from: no tag anchored it, so the
-        // reported `ScaleSource` stays `UpToScale` even though the numbers are now metric. Depth is
-        // a soft prior, not a fiducial, and `ScaleSource` names fiducials.
+        // Still HONEST about the source: depth is a soft prior, and `ScaleSource` names fiducials.
         assert_eq!(metric.scale, ScaleSource::UpToScale);
     }
 
-    /// Passing depths while `depth_prior_rel_sigma` is 0 must change NOTHING.
-    ///
-    /// The knob, not the argument, arms the feature -- so a caller that wires depth through before
-    /// deciding to trust it gets exactly the solve it had. Bit-identical, not merely close.
+    /// Passing depths while `depth_prior_rel_sigma` is 0 must change NOTHING: the knob, not the
+    /// argument, arms the feature. Bit-identical, not merely close.
     #[test]
     fn depths_are_inert_until_the_sigma_arms_them() {
         let (cams, gt, tracks) = converging_rig(500.0, 0.4);
@@ -1906,13 +1798,9 @@ mod tests {
         }
     }
 
-    /// `min_registration_inliers` decides whether a thinly-supported view is admitted.
-    ///
-    /// Views 0 and 1 share 80 tracks and bootstrap the map; view 2 sees only 20 of them, so its
-    /// PnP consensus cannot exceed 20 however good the pose is. The default gate of 30 must refuse
-    /// it; lowering the gate must admit it. Without the gate there is nothing between a 4-point
-    /// consensus and a registration, and a bad registration is not self-correcting -- points get
-    /// triangulated FROM it and then feed the next view's PnP.
+    /// `min_registration_inliers` decides whether a thinly-supported view is admitted. Views 0 and
+    /// 1 share 80 tracks and bootstrap the map; view 2 sees only 20 of them, so its PnP consensus
+    /// cannot exceed 20. The default gate of 30 must refuse it; lowering the gate must admit it.
     #[test]
     fn min_registration_inliers_gates_a_thinly_supported_view() {
         let cams = vec![pinhole(600.0), pinhole(600.0), pinhole(600.0)];
@@ -1970,38 +1858,21 @@ mod tests {
 
     /// `refine_intrinsics` must REPORT its fit and then ACT on it.
     ///
-    /// Two independent claims, with different failure modes:
-    ///
-    /// 1. The fit reaches the caller on [`Reconstruction::camera_correction`]. Refinement applies
+    /// 1. It reaches the caller on [`Reconstruction::camera_correction`] — refinement applies
     ///    itself by rewriting normalized observations in place, so a caller that never sees the fit
-    ///    keeps storing the camera it guessed — one that did not produce these poses.
-    /// 2. The fit CHANGES THE POSES. Refinement runs after a bundle adjustment; unless a second
-    ///    solve follows it, the corrected observations are never read by anything that moves
-    ///    geometry, and the feature is an expensive no-op that still reports a number.
+    ///    keeps storing a camera that did not produce these poses.
+    /// 2. It CHANGES THE POSES: without a second solve, the corrected observations are never read.
     ///
-    /// # What this test does NOT claim, and why
-    ///
-    /// It does not claim the refinement recovers a known FOCAL error, because on a synthetic of
-    /// this size it cannot and no honest assertion would pass. The fit regresses the map's
-    /// predicted projections onto the observations, so it can only see error that bundle
-    /// adjustment failed to absorb — and a focal error is very nearly absorbable, since scaling
-    /// normalized coordinates stretches space in `x` and `y` at fixed `z`. MEASURED here: handing
-    /// the solver 320 for a true focal of 400 (a 25% error) left `plain.reproj_rmse_px = 0.636`
-    /// and `gamma = 0.9994` on a three-view converging rig, and 0.9994 again on a five-view rig
-    /// orbiting through ±52° of yaw. Bundle adjustment had swallowed all of it. The production
-    /// evidence for focal recovery is a 3208-frame handheld clip with hundreds of cameras, which
-    /// is not a unit test.
-    ///
-    /// Radial DISTORTION is a different matter: it is a nonlinear image warp, not a projective
-    /// one, so a rigid reconstruction cannot absorb it and it leaves the radially-systematic
-    /// residual this fit is shaped to see. So the scene injects barrel distortion the solver is
-    /// not told about, and the assertion is that the fit opposes it.
+    /// It deliberately does NOT claim recovery of a known FOCAL error: the fit only sees what
+    /// bundle adjustment failed to absorb, and a focal error is very nearly absorbable — MEASURED,
+    /// handing the solver 320 for a true focal of 400 left `gamma = 0.9994`. Radial DISTORTION is a
+    /// nonlinear warp a rigid reconstruction cannot absorb, so that is what the scene injects.
     #[test]
     fn refine_intrinsics_reports_its_fit_and_re_solves_against_it() {
         const K1_TRUE: f64 = 0.25;
         let (cams, _, clean) = converging_rig(500.0, 1.0);
-        // Barrel-distort every pixel. The cameras handed to the solver keep `k1 = 0`, so
-        // `normalize` leaves the distortion in the observations for the refinement to find.
+        // Barrel-distort every pixel; the solver's cameras keep `k1 = 0`, so it survives
+        // `normalize`.
         let tracks: Vec<FeatureTrack> = clean
             .iter()
             .map(|t| FeatureTrack {
@@ -2046,8 +1917,7 @@ mod tests {
             "the fit must UNDO the injected barrel distortion (k1_true = +{K1_TRUE}), so its own \
              k1 has to be negative; got {k1:.5}"
         );
-        // The focal was correct here, so the refinement must not invent a focal error while it is
-        // busy fitting distortion. `gamma` inverts into focal: fx_true = fx_assumed / gamma.
+        // The focal was correct here, so the fit must not invent one while fitting distortion.
         assert!(
             (0.95..1.05).contains(&gamma),
             "a correctly-assumed focal must survive the fit intact; gamma={gamma:.4} implies \
@@ -2055,9 +1925,7 @@ mod tests {
             500.0 / gamma
         );
 
-        // The second solve is the load-bearing half. Without it the poses would be BIT-IDENTICAL
-        // to the unrefined run, because nothing after the refinement re-optimises anything: the
-        // rewritten observations would be reported on and then dropped on the floor.
+        // The second solve is the load-bearing half: without it, poses BIT-IDENTICAL to `plain`.
         let moved = plain
             .views
             .iter()
@@ -2076,12 +1944,10 @@ mod tests {
 
     /// The up and motion priors reach the solver at a strength that does not overrule the images.
     ///
-    /// Both sigmas are quoted in their own physical units and then DEFLATED into the normalized
-    /// reprojection units bundle adjustment actually works in. Skipping that deflation is not a
-    /// subtle mis-tuning: it makes each prior row `1/sigma_r` times stiffer than every reprojection
-    /// row in the same solve (360x at a phone focal), and the solve then fits the assumption
-    /// instead of the scene. So the assertion is that turning both priors ON, at their documented
-    /// production values, leaves a good reconstruction good.
+    /// Both sigmas are physical and then DEFLATED into normalized reprojection units. Skipping that
+    /// makes each prior row `1/sigma_r` times stiffer than every reprojection row (360x at a phone
+    /// focal) and the solve fits the assumption instead of the scene. So: both priors ON at
+    /// production values must leave a good reconstruction good.
     #[test]
     fn up_and_motion_priors_do_not_overrule_the_image_evidence() {
         // Views are index-ordered along the rig, which is what makes a motion prior meaningful.
@@ -2105,8 +1971,7 @@ mod tests {
             with_priors.views.iter().all(|v| v.is_some()),
             "the priors must not cost a registration"
         );
-        // Baselines are gauge-invariant up to the one global scale the bootstrap fixed, so compare
-        // their RATIOS against ground truth.
+        // Baselines are gauge-invariant only up to the bootstrap's global scale: compare RATIOS.
         let c = |r: &Reconstruction, i: usize| r.views[i].expect("registered").translation;
         let g = |i: usize| gt[i].inverse().translation;
         let want = (g(0) - g(2)).length() / (g(0) - g(1)).length();
@@ -2124,14 +1989,10 @@ mod tests {
         );
     }
 
-    /// The reported pixel RMS must be in the corrected camera's pixels, not the assumed one's.
-    ///
-    /// `refine_intrinsics` rewrites the observations into the TRUE camera's normalized frame,
-    /// where `fx_true = fx_assumed / gamma`. Converting those residuals to pixels with the
-    /// ASSUMED `fx` — which is what `cameras` still holds — scales every reported number by
-    /// gamma. It is a small factor, which is exactly why it is worth pinning: `reproj_rmse_px` is
-    /// the number callers quote as their acceptance metric, and a silent few-percent bias in an
-    /// acceptance metric is worse than a loud one.
+    /// The reported pixel RMS must be in the corrected camera's pixels, not the assumed one's:
+    /// `refine_intrinsics` rewrites observations into the TRUE camera's frame, where
+    /// `fx_true = fx_assumed / gamma`, so converting with the assumed `fx` scales every reported
+    /// number by gamma. Worth pinning because `reproj_rmse_px` is callers' acceptance metric.
     #[test]
     fn reported_rmse_is_in_corrected_pixels() {
         const K1_TRUE: f64 = 0.25;
@@ -2174,10 +2035,8 @@ mod tests {
             "test is vacuous unless the fit actually moved gamma (got {gamma})"
         );
 
-        // Reproduce the conversion by hand from the same reported per-camera numbers, and check
-        // the global figure is consistent with them under the CORRECTED focal. If the global RMS
-        // had been left in assumed-fx pixels while the per-camera ones were corrected (or vice
-        // versa), this ratio would sit at gamma rather than 1.
+        // Global vs per-camera under the CORRECTED focal: either left in assumed-fx pixels and this
+        // ratio would sit at gamma rather than 1.
         let n: usize = refined.per_view.iter().map(|s| s.num_obs).sum();
         assert!(n > 0, "no observations to check");
         let pooled: f64 = refined
