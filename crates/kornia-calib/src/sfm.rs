@@ -508,6 +508,15 @@ pub fn reconstruct(
     );
     let scale = anchored.unwrap_or(1.0);
 
+    // Pixels-per-normalized-unit correction for the reported RMS.
+    //
+    // `refine_intrinsics` rewrites `norm` IN PLACE into the true camera's normalized frame, where
+    // fx_true = fx_assumed / gamma. Every RMS below converts residuals to pixels with the ASSUMED
+    // fx from `cameras`, so without this the reported number is gamma times too large — and this
+    // is the number the callers quote as their acceptance metric, so a silent few-percent bias in
+    // it is worse than a loud one.
+    let focal_scale = camera_correction.map_or(1.0, |(gamma, ..)| 1.0 / gamma.max(1e-9));
+
     // Per-camera reprojection RMS (pixels); analytical covariance is tag-oriented so stays `None`.
     // Use the BA-optimized points (`res.points`), NOT the pre-BA cloud: BA moves points as free
     // variables, so evaluating the pre-BA cloud under post-BA poses would report a stale residual.
@@ -515,6 +524,7 @@ pub fn reconstruct(
     let per_camera = (0..n_cams)
         .map(|c| {
             feature_stats(
+                focal_scale,
                 c,
                 &res.poses,
                 &registered,
@@ -526,6 +536,7 @@ pub fn reconstruct(
         })
         .collect();
     let reproj_rmse_px = global_reproj_rmse(
+        focal_scale,
         &res.poses,
         &registered,
         &res.points,
@@ -653,8 +664,18 @@ fn fit_depth_scales(
     for ti in track_ids {
         let Some(p) = point3d.get(ti) else { continue };
         for (j, (c, _)) in norm[*ti].iter().enumerate() {
-            let (Some(pose), Some(d)) = (&poses[*c], norm_depth[*ti].get(j).copied().flatten())
-            else {
+            // `.get(ti)`, not `[ti]`: the contract on `obs_depth` is that a wrong-shaped array
+            // simply yields `None` per lookup, and `depth_fields` already honours that. Indexing
+            // here made a caller who supplied depth for only the first N tracks panic instead —
+            // the one shape of malformed input the documentation explicitly invites.
+            let (Some(pose), Some(d)) = (
+                &poses[*c],
+                norm_depth
+                    .get(*ti)
+                    .and_then(|t| t.get(j))
+                    .copied()
+                    .flatten(),
+            ) else {
                 continue;
             };
             let z = pose.transform_point(p).z;
@@ -1115,6 +1136,7 @@ fn tag_scale(
 /// Reprojection is scale-invariant, so the UNSCALED world→cam BA poses are used directly.
 #[allow(clippy::too_many_arguments)]
 fn feature_stats(
+    focal_scale: f64,
     camera: usize,
     poses_w2c: &[Pose3d],
     registered: &[bool],
@@ -1136,7 +1158,11 @@ fn feature_stats(
             continue;
         };
         if let Some(r) = norm_residual(&pose, points[pidx], *n) {
-            se += (r * cam.fx).powi(2); // r is Euclidean in normalized units; fx≈fy assumed
+            // `focal_scale` carries the intrinsics refinement: it rewrote `norm` into the TRUE
+            // camera's normalized frame, where fx_true = fx_assumed / gamma, so converting with
+            // the ASSUMED fx would report every residual gamma times too large. 1.0 when
+            // `refine_intrinsics` is off.
+            se += (r * cam.fx * focal_scale).powi(2); // r Euclidean in normalized units; fx≈fy
             num += 1;
         }
     }
@@ -1148,6 +1174,7 @@ fn feature_stats(
 }
 
 fn global_reproj_rmse(
+    focal_scale: f64,
     poses_w2c: &[Pose3d],
     registered: &[bool],
     points: &[Vec3F64],
@@ -1165,7 +1192,7 @@ fn global_reproj_rmse(
                 continue;
             }
             if let Some(r) = norm_residual(&poses_w2c[*c], points[pidx], *n) {
-                se += (r * cameras[*c].fx).powi(2);
+                se += (r * cameras[*c].fx * focal_scale).powi(2);
                 num += 1;
             }
         }
@@ -2094,6 +2121,78 @@ mod tests {
             with_priors.reproj_rmse_px < 1.0,
             "priors drove the fit away from the pixels: rmse {:.3} px",
             with_priors.reproj_rmse_px
+        );
+    }
+
+    /// The reported pixel RMS must be in the corrected camera's pixels, not the assumed one's.
+    ///
+    /// `refine_intrinsics` rewrites the observations into the TRUE camera's normalized frame,
+    /// where `fx_true = fx_assumed / gamma`. Converting those residuals to pixels with the
+    /// ASSUMED `fx` — which is what `cameras` still holds — scales every reported number by
+    /// gamma. It is a small factor, which is exactly why it is worth pinning: `reproj_rmse_px` is
+    /// the number callers quote as their acceptance metric, and a silent few-percent bias in an
+    /// acceptance metric is worse than a loud one.
+    #[test]
+    fn reported_rmse_is_in_corrected_pixels() {
+        const K1_TRUE: f64 = 0.25;
+        let (cams, _, clean) = converging_rig(500.0, 1.0);
+        let tracks: Vec<FeatureTrack> = clean
+            .iter()
+            .map(|t| FeatureTrack {
+                obs: t
+                    .obs
+                    .iter()
+                    .map(|(c, uv)| {
+                        let (x, y) = ((uv.x - 320.0) / 500.0, (uv.y - 240.0) / 500.0);
+                        let s = 1.0 + K1_TRUE * (x * x + y * y);
+                        (
+                            *c,
+                            Vec2F64::new(320.0 + 500.0 * x * s, 240.0 + 500.0 * y * s),
+                        )
+                    })
+                    .collect(),
+            })
+            .collect();
+
+        let refined = reconstruct(
+            &cams,
+            &[],
+            &tracks,
+            &CalibConfig {
+                refine_intrinsics: true,
+                ..CalibConfig::new(0.0)
+            },
+            None,
+        )
+        .expect("solves");
+
+        let (gamma, ..) = refined
+            .camera_correction
+            .expect("injected distortion must produce a fit");
+        assert!(
+            (gamma - 1.0).abs() > 1e-9,
+            "test is vacuous unless the fit actually moved gamma (got {gamma})"
+        );
+
+        // Reproduce the conversion by hand from the same reported per-camera numbers, and check
+        // the global figure is consistent with them under the CORRECTED focal. If the global RMS
+        // had been left in assumed-fx pixels while the per-camera ones were corrected (or vice
+        // versa), this ratio would sit at gamma rather than 1.
+        let n: usize = refined.per_view.iter().map(|s| s.num_obs).sum();
+        assert!(n > 0, "no observations to check");
+        let pooled: f64 = refined
+            .per_view
+            .iter()
+            .filter(|s| s.num_obs > 0)
+            .map(|s| s.reproj_rmse_px.powi(2) * s.num_obs as f64)
+            .sum::<f64>()
+            / n as f64;
+        let pooled = pooled.sqrt();
+        assert!(
+            (pooled - refined.reproj_rmse_px).abs() <= 1e-6 * refined.reproj_rmse_px.max(1.0),
+            "global RMS {:.6} disagrees with the pooled per-camera RMS {pooled:.6} — the two \
+             conversions are not using the same focal",
+            refined.reproj_rmse_px
         );
     }
 }
