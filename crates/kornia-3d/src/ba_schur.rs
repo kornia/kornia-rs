@@ -208,6 +208,33 @@ pub enum SchurBaError {
     #[error(transparent)]
     Ba(#[from] BaError),
 }
+/// The orientation-prior residual for one pose: how far the camera's IMAGE-UP axis has drifted
+/// from the direction the caller claims it points, whitened by `up_sigma`.
+///
+/// Shared by the linearisation and the trial-cost evaluation deliberately. Those two must score
+/// the SAME objective — if they drift apart, LM rejects exactly the steps this prior exists to
+/// take — and the motion prior already gets that guarantee from `motion_prior_residual`. Two
+/// copies of ten lines is how the up prior would lose it.
+///
+/// Image-up is FIXED at `(0, −1, 0)` (OpenCV convention: +Y down). A caller with a measured
+/// direction rather than the upright-camera assumption expresses it by rotating `up_world`, which
+/// constrains the same one degree of freedom without a second per-camera field to keep in sync.
+/// `r_row1` is row 1 of the pose's rotation matrix — i.e. `[R[1][0], R[1][1], R[1][2]]`, which for
+/// column-major storage is `(col0.y, col1.y, col2.y)`. `u_pred` is returned alongside the residual
+/// because the Jacobian `[u_pred]×` needs it.
+#[inline]
+fn up_prior_residual(r_row1: [f32; 3], up_world: [f32; 3], up_sigma: f32) -> ([f32; 3], [f32; 3]) {
+    let inv_su = 1.0_f32 / up_sigma.max(1e-6);
+    // u_pred = Rᵀ · (0,−1,0) = minus row 1 of R, i.e. the world direction the image's up axis
+    // currently points. Taking the row directly is why this needs three scalars, not the matrix.
+    let u_pred = [-r_row1[0], -r_row1[1], -r_row1[2]];
+    let r_up = [
+        (u_pred[0] - up_world[0]) * inv_su,
+        (u_pred[1] - up_world[1]) * inv_su,
+        (u_pred[2] - up_world[2]) * inv_su,
+    ];
+    (r_up, u_pred)
+}
 
 /// 6-vector residual of one [`BaMotionPrior`] on the CURRENT pose estimates, already whitened by
 /// the prior's two sigmas.
@@ -227,63 +254,18 @@ pub enum SchurBaError {
 /// walkthrough produces when the operator pauses. There is no scale in play in that case, so the
 /// plain difference form is both well posed and the correct constraint.
 fn motion_prior_residual(p0: &SE3F32, p1: &SE3F32, p2: &SE3F32, mp: &BaMotionPrior) -> [f32; 6] {
-    let centre = |p: &SE3F32| -> [f32; 3] {
-        let rm = p.r.matrix();
-        let t = p.t;
-        let (c0, c1, c2) = (rm.col(0), rm.col(1), rm.col(2));
-        [
-            -(c0.x * t.x + c0.y * t.y + c0.z * t.z),
-            -(c1.x * t.x + c1.y * t.y + c1.z * t.z),
-            -(c2.x * t.x + c2.y * t.y + c2.z * t.z),
-        ]
-    };
-    // SO(3) log of Ra · Rbᵀ, via the axis-angle (Rodrigues) formula on the composed matrix.
-    let rel_log = |a: &SE3F32, b: &SE3F32| -> [f32; 3] {
-        let (ra, rb) = (a.r.matrix(), b.r.matrix());
-        // m = Ra · Rbᵀ — element (i, j) = Σ_k Ra[i, k]·Rb[j, k].
-        let get = |m: &Mat3AF32, i: usize, j: usize| -> f32 {
-            let c = m.col(j);
-            match i {
-                0 => c.x,
-                1 => c.y,
-                _ => c.z,
-            }
-        };
-        let mut m = [[0.0f32; 3]; 3];
-        for (i, row) in m.iter_mut().enumerate() {
-            for (j, e) in row.iter_mut().enumerate() {
-                let mut acc = 0.0;
-                for k in 0..3 {
-                    acc += get(&ra, i, k) * get(&rb, j, k);
-                }
-                *e = acc;
-            }
-        }
-        let tr = (m[0][0] + m[1][1] + m[2][2]).clamp(-1.0, 3.0);
-        let cos_t = ((tr - 1.0) * 0.5).clamp(-1.0, 1.0);
-        let theta = cos_t.acos();
-        if theta < 1e-6 {
-            // Small-angle: sin θ ≈ θ, so the 0.5·θ/sin θ factor collapses to 0.5 and the
-            // division by a vanishing sine — which would return inf/NaN — never happens.
-            return [
-                0.5 * (m[2][1] - m[1][2]),
-                0.5 * (m[0][2] - m[2][0]),
-                0.5 * (m[1][0] - m[0][1]),
-            ];
-        }
-        let k = 0.5 * theta / theta.sin().max(1e-9);
-        [
-            k * (m[2][1] - m[1][2]),
-            k * (m[0][2] - m[2][0]),
-            k * (m[1][0] - m[0][1]),
-        ]
-    };
+    // Camera centre C = -Rᵀt, and the SO(3) log of Ra·Rbᵀ. Both come from `kornia-algebra`
+    // rather than being spelled out here: `SE3F32::inverse().t` IS -Rᵀt, and `SO3F32::log()`
+    // already carries the small-angle branch that a hand-rolled Rodrigues has to get right to
+    // avoid dividing by a vanishing sine.
+    let centre = |p: &SE3F32| p.inverse().t;
+    let rel_log = |a: &SE3F32, b: &SE3F32| (a.r * b.r.inverse()).log();
 
     let (c0, c1, c2) = (centre(p0), centre(p1), centre(p2));
-    let d01 = [c1[0] - c0[0], c1[1] - c0[1], c1[2] - c0[2]];
-    let d02 = [c2[0] - c0[0], c2[1] - c0[1], c2[2] - c0[2]];
-    let n01 = (d01[0] * d01[0] + d01[1] * d01[1] + d01[2] * d01[2]).sqrt();
-    let n02 = (d02[0] * d02[0] + d02[1] * d02[1] + d02[2] * d02[2]).sqrt();
+    let d01 = c1 - c0;
+    let d02 = c2 - c0;
+    let n01 = d01.length();
+    let n02 = d02.length();
     let inv_sp = 1.0 / mp.position_sigma.max(1e-6);
     let inv_so = 1.0 / mp.orientation_sigma.max(1e-6);
 
@@ -292,15 +274,15 @@ fn motion_prior_residual(p0: &SE3F32, p1: &SE3F32, p2: &SE3F32, mp: &BaMotionPri
         r[0] = (mp.alpha - n01 / n02) * inv_sp;
     } else {
         // Stationary endpoints: fall back to the position difference (no scale in play).
-        r[0] = (mp.alpha * d02[0] - d01[0]) * inv_sp;
-        r[1] = (mp.alpha * d02[1] - d01[1]) * inv_sp;
-        r[2] = (mp.alpha * d02[2] - d01[2]) * inv_sp;
+        let d = d02 * mp.alpha - d01;
+        r[0] = d.x * inv_sp;
+        r[1] = d.y * inv_sp;
+        r[2] = d.z * inv_sp;
     }
-    let w01 = rel_log(p1, p0);
-    let w02 = rel_log(p2, p0);
-    r[3] = (w01[0] - mp.alpha * w02[0]) * inv_so;
-    r[4] = (w01[1] - mp.alpha * w02[1]) * inv_so;
-    r[5] = (w01[2] - mp.alpha * w02[2]) * inv_so;
+    let w = rel_log(p1, p0) - rel_log(p2, p0) * mp.alpha;
+    r[3] = w.x * inv_so;
+    r[4] = w.y * inv_so;
+    r[5] = w.z * inv_so;
     r
 }
 
@@ -1167,9 +1149,8 @@ fn bundle_adjust_schur_impl(
                 }
 
                 // ── Optional orientation (up-vector) prior ────────────────
-                // u_pred = Rᵀ · up_cam: the claimed camera-frame direction expressed in the
-                // world. With the default up_cam = (0,−1,0) this is minus row 1 of R, i.e. the
-                // plain "image-up is world-up" form.
+                // u_pred = Rᵀ · (0,−1,0), i.e. minus row 1 of R: where the image's up axis
+                // currently points in the world. See `up_prior_residual`.
                 //
                 // For a FIXED camera-frame vector v this solver's right-perturbation convention
                 // gives ∂(Rᵀv)/∂ω = +[Rᵀv]× and no ρ coupling — the same pattern the centre
@@ -1177,17 +1158,8 @@ fn bundle_adjust_schur_impl(
                 // centre prior it augments only A_ii; B and C are untouched.
                 if let Some(upw) = prior.up_world {
                     let inv_su = 1.0_f32 / prior.up_sigma.max(1e-6);
-                    let a = prior.up_cam;
-                    let u_pred = [
-                        r_col0.x * a[0] + r_col0.y * a[1] + r_col0.z * a[2],
-                        r_col1.x * a[0] + r_col1.y * a[1] + r_col1.z * a[2],
-                        r_col2.x * a[0] + r_col2.y * a[1] + r_col2.z * a[2],
-                    ];
-                    let r_up = [
-                        (u_pred[0] - upw[0]) * inv_su,
-                        (u_pred[1] - upw[1]) * inv_su,
-                        (u_pred[2] - upw[2]) * inv_su,
-                    ];
+                    let (r_up, u_pred) =
+                        up_prior_residual([r_col0.y, r_col1.y, r_col2.y], upw, prior.up_sigma);
                     let r_sq_u = r_up[0] * r_up[0] + r_up[1] * r_up[1] + r_up[2] * r_up[2];
                     // Reprojection knee, not the whitened one: the up residual is divided by
                     // `up_sigma` in unit-vector units, but it is gated for the same reason the
@@ -1622,17 +1594,9 @@ fn bundle_adjust_schur_impl(
                 // linearisation minimised, or LM rejects every step that trades a little
                 // reprojection for uprightness — which is every step this prior exists to take.
                 if let Some(upw) = prior.up_world {
-                    let inv_su = 1.0_f32 / prior.up_sigma.max(1e-6);
-                    let a = prior.up_cam;
-                    let u_pred = [
-                        r_col0.x * a[0] + r_col0.y * a[1] + r_col0.z * a[2],
-                        r_col1.x * a[0] + r_col1.y * a[1] + r_col1.z * a[2],
-                        r_col2.x * a[0] + r_col2.y * a[1] + r_col2.z * a[2],
-                    ];
-                    let ru0 = (u_pred[0] - upw[0]) * inv_su;
-                    let ru1 = (u_pred[1] - upw[1]) * inv_su;
-                    let ru2 = (u_pred[2] - upw[2]) * inv_su;
-                    let r_sq_u = ru0 * ru0 + ru1 * ru1 + ru2 * ru2;
+                    let (r_up, _) =
+                        up_prior_residual([r_col0.y, r_col1.y, r_col2.y], upw, prior.up_sigma);
+                    let r_sq_u = r_up[0] * r_up[0] + r_up[1] * r_up[1] + r_up[2] * r_up[2];
                     new_cost += robust_cost(r_sq_u);
                 }
             }
@@ -2967,7 +2931,7 @@ mod tests {
 
         // World-frame up direction the cameras' image-up (0, −1, 0) should point along.
         const UP_WORLD: [f32; 3] = [0.0, -1.0, 0.0];
-        // Predicted image-up of a pose in the world frame: Rᵀ · up_cam.
+        // Predicted image-up of a pose in the world frame: Rᵀ · (0,−1,0).
         let up_of = |p: &Pose3d| -> [f64; 3] {
             let rt = p.rotation.transpose();
             let u = rt * Vec3F64::new(0.0, -1.0, 0.0);

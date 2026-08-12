@@ -114,10 +114,10 @@ pub struct BaPosePrior {
     /// σ → tighter anchor.
     pub sigma: f32,
     /// Optional orientation (up-vector) prior: the world-frame direction that this camera's
-    /// [`Self::up_cam`] axis is claimed to point along. When `Some`, the BA cost gains
+    /// camera's IMAGE-UP axis `(0, −1, 0)` is claimed to point along. When `Some`, the BA cost gains
     ///
     /// ```text
-    ///     r_up_i = (R_i^T · up_cam − up_world) / up_sigma
+    ///     r_up_i = (R_i^T · (0, −1, 0) − up_world) / up_sigma
     /// ```
     ///
     /// `None` — the default — disables the term entirely.
@@ -131,20 +131,10 @@ pub struct BaPosePrior {
     /// reprojection refinement can see, let alone remove. A soft per-view up prior is the only
     /// term in this solver that bounds it.
     ///
-    /// Purely rotational: the Jacobian is `[R^T·up_cam]×` in the ω block and zero in the ρ block,
+    /// Purely rotational: the Jacobian is `[R^T·(0,−1,0)]×` in the ω block and zero in the ρ block,
     /// so like the centre prior it augments only the on-diagonal camera block `A_ii` in the Schur
     /// reduction.
     pub up_world: Option<[f32; 3]>,
-    /// Which CAMERA-frame direction is claimed to point along [`Self::up_world`].
-    ///
-    /// Defaults to image-up `(0, −1, 0)`, i.e. "the camera was held roughly upright". That
-    /// assumption is only as good as the capture — a phone tilted 20° downwards makes image-up a
-    /// 20° lie on every frame — so pick `up_sigma` to match how much you actually believe it.
-    /// The field is per-camera so a caller holding a real MEASUREMENT of this direction (a
-    /// vertical vanishing point, an IMU gravity vector) can supply that instead and tighten
-    /// `up_sigma` accordingly. The Jacobian depends only on the rotated result, so a per-camera
-    /// direction costs nothing over a fixed one.
-    pub up_cam: [f32; 3],
     /// Standard deviation of the up prior, in unit-vector units (e.g. 0.25 ≈ tolerating ~14° of
     /// tilt at 1σ). Clamped to ≥ 1e-6 internally. Ignored when [`Self::up_world`] is `None`.
     pub up_sigma: f32,
@@ -156,7 +146,6 @@ impl Default for BaPosePrior {
             center_world: [0.0; 3],
             sigma: 1.0,
             up_world: None,
-            up_cam: [0.0, -1.0, 0.0],
             up_sigma: 0.25,
         }
     }
@@ -173,17 +162,24 @@ impl BaPosePrior {
         }
     }
 
-    /// Attach an orientation prior claiming that image-up `(0, −1, 0)` points along `up_world`.
-    pub fn with_up(mut self, up_world: [f32; 3], up_sigma: f32) -> Self {
-        self.up_world = Some(up_world);
-        self.up_sigma = up_sigma;
-        self
+    /// An ORIENTATION-ONLY prior: constrain which way the camera is facing, and nothing about
+    /// where it is.
+    ///
+    /// There is no "disable the centre term" flag; the centre residual is disabled by making its
+    /// sigma large enough that its contribution vanishes. That convention lives here rather than
+    /// at each call site so it is stated — and picked — once: `1e6` puts a metre of centre error
+    /// at `1e-6` of whitened residual, which is below the solver's own convergence tolerances.
+    pub fn orientation_only(up_world: [f32; 3], up_sigma: f32) -> Self {
+        Self {
+            center_world: [0.0; 3],
+            sigma: 1e6,
+            up_world: Some(up_world),
+            up_sigma,
+        }
     }
 
-    /// Attach an orientation prior for an arbitrary camera-frame direction. Use this when
-    /// `up_cam` comes from a measurement rather than the upright-camera assumption.
-    pub fn with_up_cam(mut self, up_cam: [f32; 3], up_world: [f32; 3], up_sigma: f32) -> Self {
-        self.up_cam = up_cam;
+    /// Attach an orientation prior claiming that image-up `(0, −1, 0)` points along `up_world`.
+    pub fn with_up(mut self, up_world: [f32; 3], up_sigma: f32) -> Self {
         self.up_world = Some(up_world);
         self.up_sigma = up_sigma;
         self
@@ -258,13 +254,27 @@ pub struct BaParams {
     /// historical single-knee behaviour.
     ///
     /// These families live in different units from reprojection. Reprojection residuals are in
-    /// normalized-camera units, where a sensible Huber knee is ~2 px / fx ≈ 0.004; depth and
-    /// motion residuals are divided by their own sigma, so `1.0` already means "one standard
-    /// deviation". Sharing one knee therefore gates a perfectly ordinary 1σ depth measurement
-    /// like a hundreds-of-σ reprojection outlier: it survives with a few percent of its intended
-    /// weight, which silently disables metric anchoring while still injecting a biased gradient.
-    /// The whitened convention puts the Huber knee at 1.345 (95% Gaussian efficiency), i.e.
-    /// `depth_robust_scale_sq = 1.345² ≈ 1.81`.
+    /// normalized-camera units, where a sensible Huber knee is ~2 px / fx ≈ 0.004. Sharing one
+    /// knee across both therefore gates a perfectly ordinary 1σ depth measurement like a
+    /// hundreds-of-σ reprojection outlier: it survives with a few percent of its intended weight,
+    /// which silently disables metric anchoring while still injecting a biased gradient.
+    ///
+    /// # Picking a value — it depends on how the CALLER scaled its sigmas
+    ///
+    /// The knee is in whatever units the caller's `depth_sigma` and prior sigmas leave the
+    /// residuals in, and there are two conventions in use:
+    ///
+    /// * **Fully whitened** — the caller divides each residual by its own sigma, so `1.0` already
+    ///   means one standard deviation. Use the textbook knee directly:
+    ///   `depth_robust_scale_sq = 1.345² ≈ 1.81` (95% Gaussian efficiency).
+    /// * **Deflated into reprojection units** — the caller folds a reference reprojection sigma
+    ///   `σ_r` into its sigmas so every family shares one numeric range. The knee must be deflated
+    ///   to match: `depth_robust_scale_sq = (1.345 · σ_r)²`. This is what
+    ///   `kornia_calib::sfm::reconstruct` does, and with `σ_r ≈ 0.005` it lands near `4.5e-5` —
+    ///   four orders of magnitude from the whitened value, which is correct, not a typo.
+    ///
+    /// Both are consistent; what is NOT consistent is mixing them. Whichever the caller chose, the
+    /// sigmas fed to the residuals and the knee fed here must come from the same convention.
     ///
     /// Only read by [`crate::ba_schur`]; ignored by [`bundle_adjust`].
     pub depth_robust_scale_sq: f32,
