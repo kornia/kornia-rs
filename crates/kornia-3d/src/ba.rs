@@ -104,6 +104,8 @@ impl BaObservation {
 /// pose's world-frame position simultaneously.
 ///
 /// Currently only honoured by [`crate::ba_schur::bundle_adjust_schur`].
+///
+/// An optional ORIENTATION term rides along on the same struct — see [`BaPosePrior::up_world`].
 #[derive(Debug, Clone, Copy)]
 pub struct BaPosePrior {
     /// Prior camera centre in world frame.
@@ -111,6 +113,118 @@ pub struct BaPosePrior {
     /// Standard deviation (metres). Clamped to ≥ 1e-6 internally. Smaller
     /// σ → tighter anchor.
     pub sigma: f32,
+    /// Optional orientation (up-vector) prior: the world-frame direction that this camera's
+    /// [`Self::up_cam`] axis is claimed to point along. When `Some`, the BA cost gains
+    ///
+    /// ```text
+    ///     r_up_i = (R_i^T · up_cam − up_world) / up_sigma
+    /// ```
+    ///
+    /// `None` — the default — disables the term entirely.
+    ///
+    /// # Why the solver needs it
+    ///
+    /// The centre prior above constrains position and nothing else. On a single forward pass
+    /// with no revisits, **nothing in the image data observes absolute orientation**: the
+    /// reprojection objective is invariant to a global rotation, and along a monocular chain the
+    /// small per-frame rotation errors integrate into unbounded tilt drift that no amount of
+    /// reprojection refinement can see, let alone remove. A soft per-view up prior is the only
+    /// term in this solver that bounds it.
+    ///
+    /// Purely rotational: the Jacobian is `[R^T·up_cam]×` in the ω block and zero in the ρ block,
+    /// so like the centre prior it augments only the on-diagonal camera block `A_ii` in the Schur
+    /// reduction.
+    pub up_world: Option<[f32; 3]>,
+    /// Which CAMERA-frame direction is claimed to point along [`Self::up_world`].
+    ///
+    /// Defaults to image-up `(0, −1, 0)`, i.e. "the camera was held roughly upright". That
+    /// assumption is only as good as the capture — a phone tilted 20° downwards makes image-up a
+    /// 20° lie on every frame — so pick `up_sigma` to match how much you actually believe it.
+    /// The field is per-camera so a caller holding a real MEASUREMENT of this direction (a
+    /// vertical vanishing point, an IMU gravity vector) can supply that instead and tighten
+    /// `up_sigma` accordingly. The Jacobian depends only on the rotated result, so a per-camera
+    /// direction costs nothing over a fixed one.
+    pub up_cam: [f32; 3],
+    /// Standard deviation of the up prior, in unit-vector units (e.g. 0.25 ≈ tolerating ~14° of
+    /// tilt at 1σ). Clamped to ≥ 1e-6 internally. Ignored when [`Self::up_world`] is `None`.
+    pub up_sigma: f32,
+}
+
+impl Default for BaPosePrior {
+    fn default() -> Self {
+        Self {
+            center_world: [0.0; 3],
+            sigma: 1.0,
+            up_world: None,
+            up_cam: [0.0, -1.0, 0.0],
+            up_sigma: 0.25,
+        }
+    }
+}
+
+impl BaPosePrior {
+    /// A centre-only prior: anchor the camera centre at `center_world` with standard deviation
+    /// `sigma`, no orientation term.
+    pub fn new(center_world: [f32; 3], sigma: f32) -> Self {
+        Self {
+            center_world,
+            sigma,
+            ..Default::default()
+        }
+    }
+
+    /// Attach an orientation prior claiming that image-up `(0, −1, 0)` points along `up_world`.
+    pub fn with_up(mut self, up_world: [f32; 3], up_sigma: f32) -> Self {
+        self.up_world = Some(up_world);
+        self.up_sigma = up_sigma;
+        self
+    }
+
+    /// Attach an orientation prior for an arbitrary camera-frame direction. Use this when
+    /// `up_cam` comes from a measurement rather than the upright-camera assumption.
+    pub fn with_up_cam(mut self, up_cam: [f32; 3], up_world: [f32; 3], up_sigma: f32) -> Self {
+        self.up_cam = up_cam;
+        self.up_world = Some(up_world);
+        self.up_sigma = up_sigma;
+        self
+    }
+}
+
+/// Constant-velocity motion prior over a triplet of consecutive shots (OpenSfM's
+/// `LinearMotionError`).
+///
+/// Encodes "shot `i1` lies a fraction `alpha` of the way from `i0` to `i2`, and rotation advances
+/// at constant angular velocity". The translation term deliberately uses the norm-RATIO form
+/// `alpha − ‖C1−C0‖/‖C2−C0‖` rather than a position difference: a raw difference is degenerate
+/// while scale is itself being estimated (shrinking the whole map satisfies it), whereas the
+/// ratio is scale-invariant and constrains only the SHAPE of the motion.
+///
+/// # Why the solver needs it
+///
+/// Reprojection alone leaves a keyframe's baseline nearly unconstrained when its neighbours sit
+/// close together — the near-zero-baseline mode, where a frame's translation wanders along the
+/// viewing direction at almost no cost and the whole trajectory picks up scale drift. The
+/// triplet prior couples three consecutive poses so a middle frame that jumps off the local
+/// trajectory pays for it, while asserting no absolute scale of its own.
+///
+/// Unlike every other residual family in this solver it touches THREE pose blocks, so it is the
+/// only one that contributes off-diagonal pose-pose blocks to the reduced camera system.
+///
+/// Currently only honoured by [`crate::ba_schur::bundle_adjust_schur_with_all_priors`].
+#[derive(Debug, Clone, Copy)]
+pub struct BaMotionPrior {
+    /// First pose index of the triplet, in temporal order.
+    pub i0: usize,
+    /// Middle pose index.
+    pub i1: usize,
+    /// Last pose index.
+    pub i2: usize,
+    /// Fractional position of `i1` between `i0` and `i2` (0..1), e.g. from frame timestamps.
+    pub alpha: f32,
+    /// Sigma of the translation-ratio residual (unitless). Clamped to ≥ 1e-6 internally.
+    pub position_sigma: f32,
+    /// Sigma of the angular-velocity residual (radians). Clamped to ≥ 1e-6 internally.
+    pub orientation_sigma: f32,
 }
 
 /// Parameters for bundle adjustment.
@@ -138,6 +252,22 @@ pub struct BaParams {
     /// `f32::INFINITY` collapses to the L2 fast path even for non-Identity
     /// kernel choices.
     pub robust_scale_sq: f32,
+    /// Robust-kernel scale (squared) for the σ-WHITENED residual families — the per-observation
+    /// depth residual ([`BaObservation::depth_meas`]) and the constant-velocity motion prior
+    /// ([`BaMotionPrior`]). `0.0` (the default) reuses [`Self::robust_scale_sq`], preserving the
+    /// historical single-knee behaviour.
+    ///
+    /// These families live in different units from reprojection. Reprojection residuals are in
+    /// normalized-camera units, where a sensible Huber knee is ~2 px / fx ≈ 0.004; depth and
+    /// motion residuals are divided by their own sigma, so `1.0` already means "one standard
+    /// deviation". Sharing one knee therefore gates a perfectly ordinary 1σ depth measurement
+    /// like a hundreds-of-σ reprojection outlier: it survives with a few percent of its intended
+    /// weight, which silently disables metric anchoring while still injecting a biased gradient.
+    /// The whitened convention puts the Huber knee at 1.345 (95% Gaussian efficiency), i.e.
+    /// `depth_robust_scale_sq = 1.345² ≈ 1.81`.
+    ///
+    /// Only read by [`crate::ba_schur`]; ignored by [`bundle_adjust`].
+    pub depth_robust_scale_sq: f32,
 }
 
 impl Default for BaParams {
@@ -149,6 +279,7 @@ impl Default for BaParams {
             initial_lambda: 1e-3,
             robust: RobustKernelKind::Identity,
             robust_scale_sq: f32::INFINITY,
+            depth_robust_scale_sq: 0.0,
         }
     }
 }
