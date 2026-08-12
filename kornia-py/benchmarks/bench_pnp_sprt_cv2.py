@@ -179,7 +179,7 @@ def evaluate_kornia(world, image, K, R_gt, t_gt, n_inliers, n_outliers,
                     method, lo_every, use_sprt, seed, inlier_ratio):
     total = n_inliers + n_outliers
     R, t, mask = run_kornia(world, image, K, method, lo_every, use_sprt, seed, inlier_ratio)
-    
+
     if R is None:
         return Result(
             method=method_name(method, lo_every, use_sprt),
@@ -215,12 +215,12 @@ def evaluate_kornia(world, image, K, R_gt, t_gt, n_inliers, n_outliers,
 
 def evaluate_cv2(world, image, K, R_gt, t_gt, n_inliers, n_outliers, method_flag):
     total = n_inliers + n_outliers
-    inlier_ratio = n_inliers / total 
-    
+    inlier_ratio = n_inliers / total
+
     t0 = time.perf_counter()
     R, t, mask = run_opencv(world, image, K, method_flag)
     elapsed_ms = (time.perf_counter() - t0) * 1000.0
-    
+
     if R is None:
         return Result(
             method=cv2_method_name(method_flag),
@@ -235,7 +235,7 @@ def evaluate_cv2(world, image, K, R_gt, t_gt, n_inliers, n_outliers, method_flag
             time_ms=0.0,
             success=False,
         )
-    
+
     r_err, t_err = pose_error(R, t, R_gt, t_gt)
     return Result(
         method=cv2_method_name(method_flag),
