@@ -76,11 +76,21 @@ pub struct IcpPlaneResult {
     pub overlap_fraction: f64,
     /// Total Gauss-Newton iterations performed across all levels.
     pub iterations: usize,
-    /// Weakest normal-equation pivot relative to its block, from the final solve: how well the
-    /// geometry pins the least-constrained direction. Near zero means the pose can slide with no
-    /// residual penalty — a wall filling the view yields a perfect [`Self::rmse`] and a perfect
-    /// [`Self::inlier_fraction`] while the estimate drifts along the surface, so neither of those
-    /// can detect it. Compare against [`PIVOT_RTOL`], which is only the hard-failure floor.
+    /// Conditioning of the rotation block: weakest pivot over strongest, in `0..=1`.
+    pub rotation_conditioning: f64,
+    /// Conditioning of the translation block: weakest pivot over strongest, in `0..=1`.
+    ///
+    /// This is the one that catches a camera sweeping along a wall. As the surface comes to
+    /// dominate the view, translation along it stops being constrained while rotation stays
+    /// perfectly determined — measured on a sweep: rotation exact to 0.01 deg, translation four
+    /// times the truth, with [`Self::rmse`] at 0.4 mm and [`Self::inlier_fraction`] at 1.00
+    /// throughout. Residual and inlier fraction cannot see it; they are computed over
+    /// correspondences that all agree, on a surface that cannot pin the pose.
+    ///
+    /// Deliberately a ratio, not an absolute pivot: pivots accumulate over correspondences, so
+    /// an absolute floor tracks the inlier count and the scene depth instead of the geometry.
+    pub translation_conditioning: f64,
+    /// The weaker of the two blocks: a single scalar for callers that just need a gate.
     pub observability: f64,
 }
 
@@ -129,7 +139,8 @@ pub fn icp_projective_plane(
     let mut rotation = initial_rot;
     let mut translation = initial_trans;
     let mut iterations = 0;
-    let mut observability = 0.0;
+    let mut rotation_conditioning = 0.0;
+    let mut translation_conditioning = 0.0;
 
     // coarse-to-fine: level num_levels-1 down to 0 (levels[0] is finest)
     for (coarse_idx, level_idx) in (0..num_levels).rev().enumerate() {
@@ -149,10 +160,11 @@ pub fn icp_projective_plane(
             }
             // solve A x = -b for the twist x = [w, dt]
             let neg_b = eqs.b.map(|v| -v);
-            let (x, pivot) =
+            let (x, rot_cond, trans_cond) =
                 cholesky_solve_6x6(&eqs.a, &neg_b).ok_or(RgbdIcpError::SingularNormalEquations)?;
             // Report the finest level's last solve: the geometry the pose actually rests on.
-            observability = pivot;
+            rotation_conditioning = rot_cond;
+            translation_conditioning = trans_cond;
 
             let omega = [x[0], x[1], x[2]];
             let dt = [x[3], x[4], x[5]];
@@ -198,7 +210,9 @@ pub fn icp_projective_plane(
         rmse,
         inlier_fraction,
         num_associated: eqs.num_associated,
-        observability,
+        rotation_conditioning,
+        translation_conditioning,
+        observability: rotation_conditioning.min(translation_conditioning),
         overlap_fraction,
         iterations,
     })
@@ -334,15 +348,20 @@ fn accumulate_level(
 /// above [`PIVOT_RTOL`]; a wall filling the frame drives it toward zero along the sliding
 /// direction, where the residual stays perfect while the pose drifts. Callers that must not act
 /// on such a pose gate on it; the residual and the inlier fraction cannot see it.
-fn cholesky_solve_6x6(a: &[[f64; 6]; 6], b: &[f64; 6]) -> Option<([f64; 6], f64)> {
+fn cholesky_solve_6x6(a: &[[f64; 6]; 6], b: &[f64; 6]) -> Option<([f64; 6], f64, f64)> {
     let max_diag_rot = (0..3).map(|i| a[i][i]).fold(0.0, f64::max);
     let max_diag_trans = (3..6).map(|i| a[i][i]).fold(0.0, f64::max);
     if max_diag_rot <= 0.0 || max_diag_trans <= 0.0 {
         return None;
     }
 
-    // A = L L^T
-    let mut weakest_pivot = f64::INFINITY;
+    // A = L L^T. Track each block's weakest and strongest pivot: their RATIO is the
+    // conditioning. An absolute pivot is not comparable across scenes — pivots accumulate over
+    // correspondences, so they grow with the inlier count and the depth, and a direction can be
+    // orders of magnitude worse constrained than its neighbours while still being numerically
+    // large. The ratio is scale-free and is what "one direction is unconstrained" means.
+    let (mut min_rot, mut max_rot) = (f64::INFINITY, 0.0f64);
+    let (mut min_trans, mut max_trans) = (f64::INFINITY, 0.0f64);
     let mut l = [[0.0; 6]; 6];
     for i in 0..6 {
         for j in 0..=i {
@@ -352,7 +371,13 @@ fn cholesky_solve_6x6(a: &[[f64; 6]; 6], b: &[f64; 6]) -> Option<([f64; 6], f64)
             }
             if i == j {
                 let block_scale = if i < 3 { max_diag_rot } else { max_diag_trans };
-                weakest_pivot = weakest_pivot.min(sum / block_scale);
+                if i < 3 {
+                    min_rot = min_rot.min(sum);
+                    max_rot = max_rot.max(sum);
+                } else {
+                    min_trans = min_trans.min(sum);
+                    max_trans = max_trans.max(sum);
+                }
                 if sum < PIVOT_RTOL * block_scale {
                     return None;
                 }
@@ -381,7 +406,14 @@ fn cholesky_solve_6x6(a: &[[f64; 6]; 6], b: &[f64; 6]) -> Option<([f64; 6], f64)
         }
         x[i] = sum / l[i][i];
     }
-    Some((x, weakest_pivot))
+    let ratio = |lo: f64, hi: f64| {
+        if hi > 0.0 {
+            (lo / hi).clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
+    };
+    Some((x, ratio(min_rot, max_rot), ratio(min_trans, max_trans)))
 }
 
 #[inline]
@@ -737,8 +769,8 @@ mod tests {
         let (weak_obs, weak_inl, weak_rmse) = measured[0];
         let (rich_obs, rich_inl, _) = measured[1];
 
-        // Measured: 6.4e-7 on the weak scene against 6.5e-2 on the rich one — five orders of
-        // magnitude, so the margin is not a tuning artefact.
+        // Measured: 6.4e-7 on the weak scene against 8.8e-2 on the rich one — five orders of
+        // magnitude at nearly identical association counts, so the margin is geometry, not scale.
         assert!(
             weak_obs < 1e-4 && rich_obs > 1e-3,
             "observability must separate the two geometries: weak {weak_obs:.3e}, rich {rich_obs:.3e}"
@@ -750,6 +782,72 @@ mod tests {
             "expected the deceptive regime: weak inliers {weak_inl} (rich {rich_inl}), \
              weak rmse {weak_rmse}"
         );
+        Ok(())
+    }
+
+    /// Conditioning must not move with the number of correspondences.
+    ///
+    /// This is why the field is a ratio and not a pivot magnitude. Pivots of `J^T W J` accumulate
+    /// over correspondences, so an absolute floor tracks image resolution and scene depth rather
+    /// than geometry: a gate tuned on one scene silently never fires on a denser or nearer one.
+    /// Same geometry at half resolution — a quarter of the correspondences — must report the same
+    /// conditioning.
+    #[test]
+    fn conditioning_is_scale_free() -> Result<(), Box<dyn std::error::Error>> {
+        let scene = Scene::corner_and_sphere();
+        let full = test_intrinsics();
+        let half = DepthIntrinsics {
+            fx: full.fx / 2.0,
+            fy: full.fy / 2.0,
+            cx: (full.cx + 0.5) / 2.0 - 0.5,
+            cy: (full.cy + 0.5) / 2.0 - 0.5,
+            width: full.width / 2,
+            height: full.height / 2,
+        };
+        let slide = [0.02, 0.0, 0.0];
+
+        let mut solved = Vec::new();
+        for intr in [&full, &half] {
+            let src = RgbdPyramid::from_depth_mm(
+                &render_depth_mm(&scene, intr, &IDENTITY_ROT, &[0.0; 3]),
+                intr,
+                2,
+            )?;
+            let tgt = RgbdPyramid::from_depth_mm(
+                &render_depth_mm(&scene, intr, &IDENTITY_ROT, &slide),
+                intr,
+                2,
+            )?;
+            let r = icp_projective_plane(
+                &src,
+                &tgt,
+                IDENTITY_ROT,
+                [0.0; 3],
+                IcpPlaneCriteria::default(),
+            )?;
+            solved.push(r);
+        }
+        let (a, b) = (&solved[0], &solved[1]);
+        assert!(
+            b.num_associated * 3 < a.num_associated,
+            "half resolution should associate far fewer pixels: {} vs {}",
+            b.num_associated,
+            a.num_associated
+        );
+        for (name, lo, hi) in [
+            ("rotation", a.rotation_conditioning, b.rotation_conditioning),
+            (
+                "translation",
+                a.translation_conditioning,
+                b.translation_conditioning,
+            ),
+        ] {
+            let ratio = lo.max(hi) / lo.min(hi).max(f64::MIN_POSITIVE);
+            assert!(
+                ratio < 10.0,
+                "{name} conditioning moved with correspondence count: {lo:.3e} vs {hi:.3e}"
+            );
+        }
         Ok(())
     }
 
