@@ -147,6 +147,8 @@ impl CalibConfig {
     /// # use kornia_calib::CalibConfig;
     /// let cfg = CalibConfig::new(0.0).sequential();
     /// assert!(cfg.min_parallax_deg < CalibConfig::new(0.0).min_parallax_deg);
+    /// assert!(cfg.max_iterations > CalibConfig::new(0.0).max_iterations);
+    /// assert!(cfg.motion_prior_sigma > 0.0); // the rig default is 0.0 = off
     /// ```
     ///
     /// # Why the general defaults are wrong for video
@@ -169,9 +171,25 @@ impl CalibConfig {
     /// should filter by triangulation angle at the point it consumes [`Reconstruction::points`],
     /// which is a separate decision from what the solver may register against.
     ///
-    /// Everything else is left alone — this changes only what the solver is allowed to triangulate.
+    /// # What else changes, and why only these
+    ///
+    /// [`Self::max_iterations`] 40 -> 100. The 40 is sized for rig calibration — a handful of
+    /// cameras and a few hundred points. A video solve carries hundreds of poses and tens of
+    /// thousands of points and is still descending when a 40-iteration cap lands; an
+    /// under-converged BA reads as a smeared cloud no matter how good the correspondences were.
+    ///
+    /// [`Self::motion_prior_sigma`] 0.0 -> 0.1, i.e. armed. The constant-velocity prior is not
+    /// merely a tuning choice here: it is MEANINGLESS for a rig, whose views are simultaneous and
+    /// have no order, and only acquires semantics when the views form a trajectory. Sequential
+    /// capture is exactly the case it was written for.
+    ///
+    /// Deliberately NOT set: [`Self::up_prior_sigma`]. "The camera was held roughly upright" is a
+    /// property of HANDHELD capture, not of sequential capture — a drone or a robot-mounted camera
+    /// is sequential and not upright. That one belongs to the caller.
     pub fn sequential(mut self) -> Self {
         self.min_parallax_deg = 0.05;
+        self.max_iterations = 100;
+        self.motion_prior_sigma = 0.1;
         self
     }
 }
