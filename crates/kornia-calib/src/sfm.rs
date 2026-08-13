@@ -134,12 +134,7 @@ fn filter_points(
     norm_depth: &mut [Vec<Option<f32>>],
     poses: &[Option<Pose3d>],
     max_reproj_norm: f64,
-    min_tri_angle_deg: f64,
 ) -> usize {
-    let centers: Vec<Option<Vec3F64>> = poses
-        .iter()
-        .map(|p| p.as_ref().map(|p| p.inverse().translation))
-        .collect();
     let before = point3d.len();
     // ONE predicate, shared by the survival test and the pruning below. Written twice they diverged
     // on `Some(NaN)`: `is_some_and(|e| e <= max)` rejects it while `Some(e) => e > max` does not, so
@@ -152,36 +147,25 @@ fn filter_points(
     // pruning depends only on itself.
     let mut prune: Vec<usize> = Vec::new();
     point3d.retain(|ti, p| {
-        let mut good: Vec<usize> = Vec::new();
-        let mut seen = 0usize;
+        let (mut good, mut seen) = (0usize, 0usize);
         for (c, uv) in &norm[*ti] {
             let Some(pose) = &poses[*c] else { continue };
             seen += 1;
             if is_good(pose, *p, *uv) {
-                good.push(*c);
+                good += 1;
             }
         }
         // Two surviving sightings is the minimum that still constrains a 3D point, and a track that
         // lost more than half of what saw it is not a point with a bad view — it is a bad point.
-        if good.len() < 2 || 2 * good.len() < seen {
+        if good < 2 || 2 * good < seen {
             return false;
         }
-        // Widest triangulation angle among the SURVIVING observations: the ones that failed cannot
-        // be used to argue the point is well conditioned.
-        let mut best = 0.0f64;
-        for i in 0..good.len() {
-            for j in (i + 1)..good.len() {
-                let (Some(ca), Some(cb)) = (centers[good[i]], centers[good[j]]) else {
-                    continue;
-                };
-                let ra = (*p - ca).normalize();
-                let rb = (*p - cb).normalize();
-                best = best.max(ra.dot(rb).clamp(-1.0, 1.0).acos().to_degrees());
-            }
-        }
-        if best < min_tri_angle_deg {
-            return false;
-        }
+        // NO triangulation-angle gate here. A low-parallax point is badly conditioned, but culling
+        // one is a separate decision from removing a wrong measurement, it is unmeasured by the
+        // work this filter is justified on, and the only threshold available to it runs backwards:
+        // `sequential()` lowers `min_parallax_deg` to 0.05 precisely because video BOOTSTRAP needs
+        // ill-conditioned seed points, so using it as an output cull would give video callers — the
+        // ones whose clouds are actually full of low-parallax points — the loosest cull of all.
         prune.push(*ti);
         true
     });
@@ -633,7 +617,6 @@ fn reconstruct_inner(
                         &mut norm_depth,
                         &poses,
                         FILTER_REPROJ_SLACK * config.max_reprojection_error,
-                        config.min_parallax_deg,
                     );
                     triangulate_new(&mut point3d, &norm, &poses, &idcam, &tcfg);
                     // `max(next_ba + 1.0)` so a set that grew by less than one whole camera per
@@ -658,7 +641,6 @@ fn reconstruct_inner(
         &mut norm_depth,
         &poses,
         FILTER_REPROJ_SLACK * config.max_reprojection_error,
-        config.min_parallax_deg,
     );
 
     // --- Bundle adjustment: all track points free, the reference camera (a0) fixed to anchor gauge. ---
@@ -3206,6 +3188,18 @@ mod tests {
             "the filter must not cost registrations: {registered} / {} views",
             cams.len()
         );
+        // EXACT, and load-bearing. Every other assertion here gets EASIER as the filter destroys
+        // more of the map: rmse falls, registration is settled in the growth loop before the
+        // terminal filter runs, and rotation error is per-view. Only a cloud floor can fail on
+        // over-filtering. Each corrupted track keeps a large majority of good sightings, so none of
+        // them should lose its point — see the companion test for the drop path.
+        assert_eq!(
+            r.points.len(),
+            tracks.len(),
+            "one bad sighting must cost the SIGHTING, not the point: {} of {} points survived",
+            r.points.len(),
+            tracks.len()
+        );
         assert!(
             med_rot < 0.1,
             "the surviving map must also be RIGHT: median relative-rotation error {med_rot:.4} deg"
@@ -3227,6 +3221,78 @@ mod tests {
                 o.view
             );
         }
+    }
+
+    /// The point-drop rule, exercised directly: below two reconcilable sightings a point goes, and
+    /// it takes none of its observations with it.
+    ///
+    /// Driven through `filter_points` rather than the full pipeline deliberately. Ruining tracks in
+    /// a reconstruction does not isolate this rule — the bad points corrupt the poses, which fails
+    /// other points, which changes what the filter sees; measured on a 40-view walk with 19 ruined
+    /// tracks, 44 CLEAN points died with them and 8 ruined ones survived. That feedback loop is
+    /// worth knowing about but it is not this rule, and tuning such a scene until the count looks
+    /// right would be fitting the test to the answer.
+    ///
+    /// Also pins the two invariants a caller cannot see but the rest of the file depends on:
+    /// surviving tracks keep their observations in ascending camera order, and `norm_depth` is
+    /// pruned in lockstep with `norm`.
+    #[test]
+    fn a_point_whose_evidence_is_mostly_wrong_is_dropped_whole() {
+        // Four cameras abreast, identity rotation, all looking at one point ahead of them.
+        let poses: Vec<Option<Pose3d>> = (0..4)
+            .map(|i| {
+                Some(Pose3d::new(
+                    rot(0.0, 0.0),
+                    Vec3F64::new(-(i as f64), 0.0, 0.0),
+                ))
+            })
+            .collect();
+        let p = Vec3F64::new(1.5, 0.0, 5.0);
+        let clean: Vec<(usize, Vec2F64)> = poses
+            .iter()
+            .enumerate()
+            .map(|(c, q)| {
+                let pc = q.as_ref().expect("all posed").transform_point(&p);
+                (c, Vec2F64::new(pc.x / pc.z, pc.y / pc.z))
+            })
+            .collect();
+        // Normalized units: the clean residuals are 0, and every displacement below is >= 15x this.
+        const MAX: f64 = 0.02;
+
+        // ONE bad sighting: the point stays, that sighting goes, the rest keep their order.
+        let mut point3d: HashMap<usize, Vec3F64> = HashMap::from([(0, p)]);
+        let mut norm = vec![clean.clone()];
+        let mut depths = vec![vec![Some(5.0f32); 4]];
+        norm[0][2].1 += Vec2F64::new(0.5, 0.0);
+        let dropped = filter_points(&mut point3d, &mut norm, &mut depths, &poses, MAX);
+        assert_eq!(dropped, 0, "one bad sighting must not cost the point");
+        assert_eq!(
+            norm[0].iter().map(|(c, _)| *c).collect::<Vec<_>>(),
+            vec![0, 1, 3],
+            "the bad sighting must go and the survivors stay in ascending camera order"
+        );
+        assert_eq!(depths[0].len(), 3, "norm_depth must be pruned in lockstep");
+
+        // THREE of four bad, each in its own direction so no pose reconciles them: one sighting is
+        // left standing, which constrains nothing, so the point goes whole.
+        let mut point3d: HashMap<usize, Vec3F64> = HashMap::from([(0, p)]);
+        let mut norm = vec![clean.clone()];
+        let mut depths = vec![vec![Some(5.0f32); 4]];
+        for (j, o) in norm[0].iter_mut().enumerate().skip(1) {
+            o.1 += Vec2F64::new(0.3 * j as f64, 0.2);
+        }
+        let dropped = filter_points(&mut point3d, &mut norm, &mut depths, &poses, MAX);
+        assert_eq!(
+            dropped, 1,
+            "a point with one reconcilable sighting is unconstrained"
+        );
+        assert!(point3d.is_empty());
+        assert_eq!(
+            norm[0].len(),
+            4,
+            "a DROPPED point keeps every observation, so triangulate_new can rebuild it later"
+        );
+        assert_eq!(depths[0].len(), 4);
     }
 
     /// A forward walk: `n_views` cameras marching along their own optical axis toward a shell of
