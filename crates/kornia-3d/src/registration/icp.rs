@@ -214,6 +214,9 @@ pub fn icp_projective_plane(
             if eqs.num_inliers < 6 {
                 return Err(RgbdIcpError::TooFewCorrespondences(eqs.num_inliers));
             }
+            // Diagnostic first, on the DATA-only equations — see `block_conditioning`. A prior
+            // must not be able to make weak geometry look strong to the caller.
+            let (data_rot_cond, data_trans_cond) = block_conditioning(&eqs.a);
             if let Some(prior) = criteria.rotation_prior {
                 // Three rows penalising the current rotation's deviation from the prior.
                 //
@@ -235,11 +238,12 @@ pub fn icp_projective_plane(
             }
             // solve A x = -b for the twist x = [w, dt]
             let neg_b = eqs.b.map(|v| -v);
-            let (x, rot_cond, trans_cond) =
+            let (x, _, _) =
                 cholesky_solve_6x6(&eqs.a, &neg_b).ok_or(RgbdIcpError::SingularNormalEquations)?;
-            // Report the finest level's last solve: the geometry the pose actually rests on.
-            rotation_conditioning = rot_cond;
-            translation_conditioning = trans_cond;
+            // Report the finest level's last solve: the geometry the pose actually rests on,
+            // which is the data-only conditioning even when a prior carried the solve.
+            rotation_conditioning = data_rot_cond;
+            translation_conditioning = data_trans_cond;
 
             let omega = [x[0], x[1], x[2]];
             let dt = [x[3], x[4], x[5]];
@@ -423,7 +427,47 @@ fn accumulate_level(
 /// above [`PIVOT_RTOL`]; a wall filling the frame drives it toward zero along the sliding
 /// direction, where the residual stays perfect while the pose drifts. Callers that must not act
 /// on such a pose gate on it; the residual and the inlier fraction cannot see it.
+/// Conditioning of each block WITHOUT solving: weakest pivot over strongest, `(rotation,
+/// translation)`, or `(0, 0)` when the matrix does not factor at all.
+///
+/// Measured on the DATA-only normal equations, never on the prior-augmented ones. A rotation
+/// prior lifts the rotation block, and because the blocks are coupled through elimination it
+/// lifts the translation block's effective pivots too — measured, a 14x rise at a frame whose
+/// translation error was unchanged at 3.5x the truth. Reporting that would let the regulariser
+/// flatter the diagnostic and silently disarm the gate that catches unobservable translation.
+/// The prior belongs in the solve; the diagnostic must keep describing the geometry.
+fn block_conditioning(a: &[[f64; 6]; 6]) -> (f64, f64) {
+    match cholesky_factor(a) {
+        Some((_, rot, trans)) => (rot, trans),
+        None => (0.0, 0.0),
+    }
+}
+
 fn cholesky_solve_6x6(a: &[[f64; 6]; 6], b: &[f64; 6]) -> Option<([f64; 6], f64, f64)> {
+    let (l, rot_cond, trans_cond) = cholesky_factor(a)?;
+
+    // L y = b
+    let mut y = [0.0; 6];
+    for i in 0..6 {
+        let mut sum = b[i];
+        for k in 0..i {
+            sum -= l[i][k] * y[k];
+        }
+        y[i] = sum / l[i][i];
+    }
+    // L^T x = y
+    let mut x = [0.0; 6];
+    for i in (0..6).rev() {
+        let mut sum = y[i];
+        for k in i + 1..6 {
+            sum -= l[k][i] * x[k];
+        }
+        x[i] = sum / l[i][i];
+    }
+    Some((x, rot_cond, trans_cond))
+}
+
+fn cholesky_factor(a: &[[f64; 6]; 6]) -> Option<([[f64; 6]; 6], f64, f64)> {
     let max_diag_rot = (0..3).map(|i| a[i][i]).fold(0.0, f64::max);
     let max_diag_trans = (3..6).map(|i| a[i][i]).fold(0.0, f64::max);
     if max_diag_rot <= 0.0 || max_diag_trans <= 0.0 {
@@ -463,24 +507,6 @@ fn cholesky_solve_6x6(a: &[[f64; 6]; 6], b: &[f64; 6]) -> Option<([f64; 6], f64,
         }
     }
 
-    // L y = b
-    let mut y = [0.0; 6];
-    for i in 0..6 {
-        let mut sum = b[i];
-        for k in 0..i {
-            sum -= l[i][k] * y[k];
-        }
-        y[i] = sum / l[i][i];
-    }
-    // L^T x = y
-    let mut x = [0.0; 6];
-    for i in (0..6).rev() {
-        let mut sum = y[i];
-        for k in i + 1..6 {
-            sum -= l[k][i] * x[k];
-        }
-        x[i] = sum / l[i][i];
-    }
     let ratio = |lo: f64, hi: f64| {
         if hi > 0.0 {
             (lo / hi).clamp(0.0, 1.0)
@@ -488,7 +514,7 @@ fn cholesky_solve_6x6(a: &[[f64; 6]; 6], b: &[f64; 6]) -> Option<([f64; 6], f64,
             0.0
         }
     };
-    Some((x, ratio(min_rot, max_rot), ratio(min_trans, max_trans)))
+    Some((l, ratio(min_rot, max_rot), ratio(min_trans, max_trans)))
 }
 
 /// Axis-angle of a rotation matrix: the inverse of [`so3_exp`].
@@ -920,6 +946,65 @@ mod tests {
     /// than geometry: a gate tuned on one scene silently never fires on a denser or nearer one.
     /// Same geometry at half resolution — a quarter of the correspondences — must report the same
     /// conditioning.
+    /// A rotation prior must not flatter the conditioning it is reported alongside.
+    ///
+    /// Measured regression: with a prior active, a frame whose translation was unobservable saw
+    /// its reported translation conditioning rise 14x — over the gate that had correctly held it
+    /// — while the published pose stayed wrong by 3.5x. The blocks are coupled through
+    /// elimination, so lifting rotation lifts translation's effective pivots. Conditioning is
+    /// therefore measured on the data-only equations while the solve uses the augmented ones.
+    #[test]
+    fn rotation_prior_does_not_inflate_reported_conditioning(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let intr = test_intrinsics();
+        // Roll-degenerate: rotation unobservable, translation pinned by the sphere.
+        let scene = Scene {
+            planes: vec![Plane {
+                normal: [0.0, 0.0, 1.0],
+                d: 2.5,
+            }],
+            spheres: vec![Sphere {
+                center: [0.0, 0.0, 1.8],
+                radius: 0.55,
+            }],
+        };
+        let true_rot = axis_angle_to_rotation_matrix(&[0.0, 0.0, 1.0], 3.0_f64.to_radians())?;
+        let src = RgbdPyramid::from_depth_mm(
+            &render_depth_mm(&scene, &intr, &IDENTITY_ROT, &[0.0; 3]),
+            &intr,
+            3,
+        )?;
+        let tgt = RgbdPyramid::from_depth_mm(
+            &render_depth_mm(&scene, &intr, &true_rot, &[0.01, 0.0, 0.0]),
+            &intr,
+            3,
+        )?;
+        let (prior_gt, _) = gt_target_source(&true_rot, &[0.01, 0.0, 0.0]);
+
+        let with = icp_projective_plane(
+            &src,
+            &tgt,
+            IDENTITY_ROT,
+            [0.0; 3],
+            IcpPlaneCriteria {
+                rotation_prior: Some(RotationPrior {
+                    rotation: prior_gt,
+                    sigma_rad: 0.1_f64.to_radians(),
+                }),
+                ..Default::default()
+            },
+        )?;
+
+        // The prior rescues the solve — without it the guard rejects this scene outright — but
+        // the rotation it rescued must still be REPORTED as unobservable, because it is.
+        assert!(
+            with.rotation_conditioning < 1e-3,
+            "prior inflated reported rotation conditioning to {:.3e}; the geometry did not change",
+            with.rotation_conditioning
+        );
+        Ok(())
+    }
+
     #[test]
     fn conditioning_is_scale_free() -> Result<(), Box<dyn std::error::Error>> {
         let scene = Scene::corner_and_sphere();
