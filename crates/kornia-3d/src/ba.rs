@@ -278,6 +278,23 @@ pub struct BaParams {
     ///
     /// Only read by [`crate::ba_schur`]; ignored by [`bundle_adjust`].
     pub depth_robust_scale_sq: f32,
+    /// Assemble and factorise the reduced camera system SPARSELY instead of densely.
+    ///
+    /// Two cameras occupy a nonzero 6×6 block of `M = A − B C⁻¹ Bᵀ` only if they share a point, or
+    /// are coupled by a [`BaMotionPrior`]. On a small problem nearly every pair does, and the dense
+    /// path is the right one — which is why this defaults to `false`. On a long sequential capture
+    /// it is the opposite: cameras hundreds of frames apart share nothing, the block pattern is
+    /// overwhelmingly zero, and the dense path pays `O(dim²)` memory and `O(dim³)` factorisation
+    /// for structure that is not there.
+    ///
+    /// This changes HOW the reduced system is stored and factorised, not WHAT it contains: the
+    /// lower triangle handed to the Cholesky is bit-identical either way (asserted by
+    /// `sparse_lower_triangle_is_bit_identical_to_the_dense_one`). The two *solutions* still differ
+    /// at roundoff, because a fill-reducing sparse Cholesky and a dense one do not perform the same
+    /// floating-point operations in the same order.
+    ///
+    /// Only read by [`crate::ba_schur`]; ignored by [`bundle_adjust`].
+    pub sparse_reduced_system: bool,
 }
 
 impl Default for BaParams {
@@ -290,6 +307,7 @@ impl Default for BaParams {
             robust: RobustKernelKind::Identity,
             robust_scale_sq: f32::INFINITY,
             depth_robust_scale_sq: 0.0,
+            sparse_reduced_system: false,
         }
     }
 }
