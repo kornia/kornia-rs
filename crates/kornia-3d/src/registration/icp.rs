@@ -95,9 +95,24 @@ pub struct IcpPlaneResult {
     /// to catch outright degeneracy passes every pose that does damage — that mistake has already
     /// been made once here.
     ///
-    /// No operating band is quoted yet: the numbers this doc previously carried were measured
-    /// against an earlier absolute-pivot formulation and do not transfer to this ratio. Measure
-    /// on your own camera, on the regime that actually misbehaves, before choosing a threshold.
+    /// Measured on a 320x180 depth camera sweeping a room at ~43 deg/s, 20 mm of true motion per
+    /// frame. Calibrate against the ONSET of failure:
+    ///
+    /// | | conditioning | published motion |
+    /// |---|---|---|
+    /// | worst frame still exact | 1.7e-2 | error <= 0.1 mm |
+    /// | first frame that slid | 7.2e-4 | 82.8 mm for 20 mm |
+    ///
+    /// A 24x separation with nothing in it, so a gate anywhere near the 3.5e-3 midpoint behaves
+    /// the same. Take the threshold from that transition only: once a pose is wrong, every later
+    /// frame's conditioning is measured against a corrupted estimate and is not independent
+    /// evidence — averaging those in understates the separation.
+    ///
+    /// Gate on [`Self::observability`], the weaker block, not on this field alone. Measured on
+    /// the same sweep, translation collapses first (7.2e-4 while rotation holds at 2.96e-2) and
+    /// then the blocks SWAP: translation recovers to 1e-1 while rotation falls to 2e-3, with the
+    /// published motion decaying to half of truth throughout. A gate on either block alone passes
+    /// one half of that failure.
     ///
     pub translation_conditioning: f64,
     /// The weaker of the two blocks: a single scalar for callers that just need a gate.
