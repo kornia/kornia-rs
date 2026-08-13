@@ -58,9 +58,22 @@ pub struct IcpPlaneResult {
     /// Root-mean-square point-to-plane residual (metres) of the gated
     /// correspondences at the finest level under the final transform.
     pub rmse: f64,
-    /// Gated correspondences at the finest level divided by valid source
-    /// pixels (valid vertex and normal) under the final transform.
+    /// Gated correspondences divided by *associated* ones at the finest level
+    /// under the final transform: match quality alone. Deliberately not divided
+    /// by all valid source pixels — that conflates quality with view overlap and
+    /// collapses under camera motion, rejecting solves that converged perfectly.
+    /// Pair it with [`Self::overlap_fraction`] and [`Self::num_associated`]: a
+    /// small patch can match perfectly and still be too little to constrain a
+    /// pose.
     pub inlier_fraction: f64,
+    /// Source pixels that projected into the target frame onto valid geometry,
+    /// before the distance and normal-angle gates. The observability figure: how
+    /// much evidence the solve actually had.
+    pub num_associated: usize,
+    /// Associated pixels divided by valid source pixels: how much of the source
+    /// view still overlaps the target. Falls as the camera moves away from the
+    /// keyframe and is the signal to re-key, not to reject the solve.
+    pub overlap_fraction: f64,
     /// Total Gauss-Newton iterations performed across all levels.
     pub iterations: usize,
 }
@@ -129,8 +142,8 @@ pub fn icp_projective_plane(
             }
             // solve A x = -b for the twist x = [w, dt]
             let neg_b = eqs.b.map(|v| -v);
-            let x = cholesky_solve_6x6(&eqs.a, &neg_b)
-                .ok_or(RgbdIcpError::SingularNormalEquations)?;
+            let x =
+                cholesky_solve_6x6(&eqs.a, &neg_b).ok_or(RgbdIcpError::SingularNormalEquations)?;
 
             let omega = [x[0], x[1], x[2]];
             let dt = [x[3], x[4], x[5]];
@@ -159,8 +172,13 @@ pub fn icp_projective_plane(
     } else {
         f64::INFINITY
     };
-    let inlier_fraction = if eqs.num_valid > 0 {
-        eqs.num_inliers as f64 / eqs.num_valid as f64
+    let inlier_fraction = if eqs.num_associated > 0 {
+        eqs.num_inliers as f64 / eqs.num_associated as f64
+    } else {
+        0.0
+    };
+    let overlap_fraction = if eqs.num_valid > 0 {
+        eqs.num_associated as f64 / eqs.num_valid as f64
     } else {
         0.0
     };
@@ -170,6 +188,8 @@ pub fn icp_projective_plane(
         translation,
         rmse,
         inlier_fraction,
+        num_associated: eqs.num_associated,
+        overlap_fraction,
         iterations,
     })
 }
@@ -182,6 +202,8 @@ struct NormalEquations {
     b: [f64; 6],
     /// Correspondences that survived gating.
     num_inliers: usize,
+    /// Projected inside the target onto valid geometry (pre-gating).
+    num_associated: usize,
     /// Source pixels with a valid vertex and normal.
     num_valid: usize,
     /// Unweighted sum of squared residuals over the inliers.
@@ -201,6 +223,7 @@ fn accumulate_level(
         a: [[0.0; 6]; 6],
         b: [0.0; 6],
         num_inliers: 0,
+        num_associated: 0,
         num_valid: 0,
         sum_sq_residual: 0.0,
     };
@@ -234,6 +257,7 @@ fn accumulate_level(
         if !is_valid_vertex(v_t) || !is_valid_normal(n_t) {
             continue;
         }
+        eqs.num_associated += 1;
 
         let diff = [
             p[0] - v_t[0] as f64,
@@ -526,6 +550,78 @@ mod tests {
                 result.inlier_fraction
             );
         }
+        Ok(())
+    }
+
+    /// A partly-overlapping view must keep HIGH match quality while overlap falls.
+    ///
+    /// Regression guard for a live failure: `inlier_fraction` once divided by ALL valid source
+    /// pixels, so it fell with view overlap rather than with match error. A moving camera then
+    /// scored ~11% on solves that had converged to millimetres, every frame was rejected as
+    /// "tracking lost", the pose froze and the map stopped growing. Quality and overlap are
+    /// separate signals: low overlap means re-key, not reject.
+    #[test]
+    fn inlier_fraction_measures_quality_not_overlap() -> Result<(), Box<dyn std::error::Error>> {
+        let intr = test_intrinsics();
+        let scene = Scene::corner_and_sphere();
+        let src_depth = render_depth_mm(&scene, &intr, &IDENTITY_ROT, &[0.0; 3]);
+        let src_pyr = RgbdPyramid::from_depth_mm(&src_depth, &intr, 3)?;
+
+        // Yaw far enough that a large part of the source view leaves the target frustum.
+        let rot_wc = axis_angle_to_rotation_matrix(&[0.0, 1.0, 0.0], 18.0_f64.to_radians())?;
+        let t_wc = [0.35, 0.0, 0.0];
+        let tgt_depth = render_depth_mm(&scene, &intr, &rot_wc, &t_wc);
+        let tgt_pyr = RgbdPyramid::from_depth_mm(&tgt_depth, &intr, 3)?;
+        let (rot_gt, t_gt) = gt_target_source(&rot_wc, &t_wc);
+
+        // Rotation comes from the gyro prior in the live node; translation does not.
+        let result = icp_projective_plane(
+            &src_pyr,
+            &tgt_pyr,
+            rot_gt,
+            [0.0; 3],
+            IcpPlaneCriteria::default(),
+        )?;
+
+        // The solve is genuinely good ...
+        assert!(
+            rotation_error_deg(&result.rotation, &rot_gt) < 0.5,
+            "rotation error {} deg",
+            rotation_error_deg(&result.rotation, &rot_gt)
+        );
+        assert!(
+            translation_error(&result.translation, &t_gt) < 0.01,
+            "translation error {} m",
+            translation_error(&result.translation, &t_gt)
+        );
+        // ... so quality stays high, even though a chunk of the view is gone ...
+        // ... so quality stays high even though half the view has left the frustum ...
+        assert!(
+            result.inlier_fraction > 0.9,
+            "quality collapsed under partial overlap: {} (associated {})",
+            result.inlier_fraction,
+            result.num_associated
+        );
+        // ... the lost view registers as overlap instead, which is what should drive re-keying ...
+        assert!(
+            result.overlap_fraction < 0.7,
+            "overlap should register the rotated-away view: {}",
+            result.overlap_fraction
+        );
+        // ... and the two must not be the same number: the old inliers/valid metric (their
+        // product) is what sank to ~11% on hardware and rejected converged solves.
+        let inliers_over_valid = result.inlier_fraction * result.overlap_fraction;
+        assert!(
+            result.inlier_fraction > inliers_over_valid * 1.5,
+            "quality {} tracks the old inliers/valid metric {} — the split is gone",
+            result.inlier_fraction,
+            inliers_over_valid
+        );
+        assert!(
+            result.num_associated > 1000,
+            "too little evidence to trust the pose: {}",
+            result.num_associated
+        );
         Ok(())
     }
 

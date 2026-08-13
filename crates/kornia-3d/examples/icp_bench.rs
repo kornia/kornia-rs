@@ -148,7 +148,13 @@ fn main() -> Result<(), RgbdIcpError> {
 
     // warmup
     for _ in 0..3 {
-        icp_projective_plane(&src_pyr, &tgt_pyr, identity, [0.0; 3], IcpPlaneCriteria::default())?;
+        icp_projective_plane(
+            &src_pyr,
+            &tgt_pyr,
+            identity,
+            [0.0; 3],
+            IcpPlaneCriteria::default(),
+        )?;
     }
 
     const RUNS: usize = 20;

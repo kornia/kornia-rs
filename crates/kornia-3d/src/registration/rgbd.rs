@@ -86,11 +86,7 @@ pub struct DepthIntrinsics {
 impl DepthIntrinsics {
     /// Back-project pixel `(u, v)` at depth `z` metres into a camera-frame point.
     pub fn unproject(&self, u: f64, v: f64, z: f64) -> [f64; 3] {
-        [
-            (u - self.cx) * z / self.fx,
-            (v - self.cy) * z / self.fy,
-            z,
-        ]
+        [(u - self.cx) * z / self.fx, (v - self.cy) * z / self.fy, z]
     }
 
     /// Project a camera-frame point to continuous pixel coordinates `[u, v]`.
@@ -406,12 +402,7 @@ mod tests {
     #[test]
     fn test_vertex_map_round_trip() -> Result<(), Box<dyn std::error::Error>> {
         let intr = test_intrinsics();
-        let depth = render_depth_mm(
-            &Scene::corner_and_sphere(),
-            &intr,
-            &IDENTITY_ROT,
-            &[0.0; 3],
-        );
+        let depth = render_depth_mm(&Scene::corner_and_sphere(), &intr, &IDENTITY_ROT, &[0.0; 3]);
 
         let mut verts = Vec::new();
         depth_to_vertex_map(&depth, &intr, &mut verts)?;
@@ -442,7 +433,10 @@ mod tests {
                 checked += 1;
             }
         }
-        assert!(checked > 10_000, "scene should cover most pixels: {checked}");
+        assert!(
+            checked > 10_000,
+            "scene should cover most pixels: {checked}"
+        );
 
         // pure f64 unproject/project round trip on a hand-picked point
         let p = intr.unproject(37.25, 101.75, 1.234);
@@ -553,12 +547,8 @@ mod tests {
     #[test]
     fn test_pyramid_levels_and_intrinsics() -> Result<(), Box<dyn std::error::Error>> {
         let intr = test_intrinsics();
-        let mut depth = render_depth_mm(
-            &Scene::corner_and_sphere(),
-            &intr,
-            &IDENTITY_ROT,
-            &[0.0; 3],
-        );
+        let mut depth =
+            render_depth_mm(&Scene::corner_and_sphere(), &intr, &IDENTITY_ROT, &[0.0; 3]);
         // punch a 4x4 hole so coarser levels must keep it invalid
         for y in 60..64 {
             for x in 100..104 {
