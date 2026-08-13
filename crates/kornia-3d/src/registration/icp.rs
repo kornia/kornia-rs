@@ -60,6 +60,26 @@ pub struct RotationPrior {
     ///
     /// The weight is `1/sigma^2`, which puts a 0.05-0.1 deg sigma one to two orders of magnitude
     /// tighter than a collapsed rotation block, and negligible against a healthy one.
+    ///
+    /// Size it against the sensor's TOTAL error, systematic terms included — not its bias and
+    /// noise alone. Two sweeps, measured:
+    ///
+    /// - varying the true error at fixed sigma: the prior is comfortably ahead at sigma, still
+    ///   winning around 1.5x, and loses beyond roughly 2x
+    /// - varying sigma at a fixed realistic error: accuracy improved monotonically as sigma
+    ///   LOOSENED (0.66 mm at 0.2 deg/s, 0.52 at 2.0, 0.24 at 5.0) with the tracked-frame count
+    ///   flat across the whole range
+    ///
+    /// The second is counter-intuitive and decides the tuning. The dominant error there was a
+    /// fixed 3 deg gyro-to-camera misalignment — systematic, not random — so a tight sigma does
+    /// not pull the solve toward truth, it pulls it toward a consistently wrong attitude, while a
+    /// loose one supplies just enough weight to stop the rotation block collapsing and leaves the
+    /// depth free to correct the rest. Tight weighting on a biased measurement buys you the bias.
+    /// The flat frame count is the same fact from the other side: a collapsed block carries
+    /// almost no information, so even a very loose prior dominates it.
+    ///
+    /// That ordering inverts once the systematic term is calibrated away. An unbiased gyro should
+    /// favour a tighter sigma, so re-measure for that case rather than inheriting this guidance.
     pub sigma_rad: f64,
 }
 
