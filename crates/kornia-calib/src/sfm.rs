@@ -2054,4 +2054,81 @@ mod tests {
             refined.reproj_rmse_px
         );
     }
+
+    /// A forward-walking sequence is exactly the case the general defaults mishandle.
+    ///
+    /// Cameras march along -Z looking forward, so consecutive views share the most tracks AND have
+    /// the smallest baseline — the bootstrap picks the worst-conditioned pair available. At the
+    /// default `min_parallax_deg` every triangulation from it is rejected, growth finds nothing to
+    /// register against, and the solve dies with `NoFreeVariables`. `sequential()` is the
+    /// difference between a reconstruction and no reconstruction, not a quality tweak.
+    #[test]
+    fn sequential_preset_rescues_a_forward_walk() {
+        let n_cams = 6;
+        let cams: Vec<PinholeCamera> = (0..n_cams).map(|_| pinhole(500.0)).collect();
+        // Walk forward along -Z in 12 cm steps: a phone walkthrough, not a rig.
+        let gt: Vec<Pose3d> = (0..n_cams)
+            .map(|i| {
+                let c = Vec3F64::new(0.0, 0.0, -0.12 * i as f64);
+                Pose3d::new(Mat3F64::IDENTITY, -(Mat3F64::IDENTITY * c))
+            })
+            .collect();
+        // Landmarks well ahead of the walk, so every view sees them at a shallow angle.
+        let mut pts = Vec::new();
+        for i in 0..90 {
+            let a = i as f64 * 0.7;
+            pts.push(Vec3F64::new(
+                a.cos() * 1.2,
+                a.sin() * 0.9,
+                6.0 + (i % 7) as f64 * 0.3,
+            ));
+        }
+        let tracks: Vec<FeatureTrack> = pts
+            .iter()
+            .map(|p| FeatureTrack {
+                obs: gt
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(c, pose)| {
+                        let pc = pose.transform_point(p);
+                        (pc.z > 0.1).then(|| {
+                            (
+                                c,
+                                Vec2F64::new(
+                                    500.0 * pc.x / pc.z + 320.0,
+                                    500.0 * pc.y / pc.z + 240.0,
+                                ),
+                            )
+                        })
+                    })
+                    .collect(),
+            })
+            .collect();
+
+        let got = reconstruct(&cams, &[], &tracks, &CalibConfig::new(0.0), None);
+        let seq = reconstruct(
+            &cams,
+            &[],
+            &tracks,
+            &CalibConfig::new(0.0).sequential(),
+            None,
+        )
+        .expect("sequential preset must reconstruct a forward walk");
+
+        let placed = seq.views.iter().filter(|v| v.is_some()).count();
+        assert!(
+            placed >= n_cams - 1,
+            "sequential preset placed only {placed} of {n_cams} views"
+        );
+        // The control is allowed to fail OR to place fewer views; what it must not do is match the
+        // preset, because then this test proves nothing about the preset.
+        let placed_base = got
+            .map(|r| r.views.iter().filter(|v| v.is_some()).count())
+            .unwrap_or(0);
+        assert!(
+            placed_base < placed,
+            "default config placed {placed_base} views and the preset {placed} — the scene does not \
+             exercise the parallax gate, so this test would pass on a no-op preset"
+        );
+    }
 }

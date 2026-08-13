@@ -139,6 +139,41 @@ impl CalibConfig {
             progress: None,
         }
     }
+
+    /// Adjust the defaults for **sequential capture** — video, or any walkthrough where consecutive
+    /// views are close together.
+    ///
+    /// ```
+    /// # use kornia_calib::CalibConfig;
+    /// let cfg = CalibConfig::new(0.0).sequential();
+    /// assert!(cfg.min_parallax_deg < CalibConfig::new(0.0).min_parallax_deg);
+    /// ```
+    ///
+    /// # Why the general defaults are wrong for video
+    ///
+    /// The bootstrap pair is chosen by MOST SHARED TRACKS. For a rig of cameras pointed at a common
+    /// subject that is a good proxy for a well-conditioned pair. For forward-motion video it picks
+    /// two ADJACENT frames — which is the pair with the smallest baseline in the whole sequence,
+    /// because adjacency is exactly what maximises shared tracks.
+    ///
+    /// [`Self::min_parallax_deg`] then gates every triangulation from that pair. At a general-purpose
+    /// threshold most of them fall below it, the seed cloud comes back near-empty, and the growth
+    /// loop finds no unplaced camera sharing enough triangulated points to register — so it exits on
+    /// its first iteration and the solve fails with `NoFreeVariables`, having placed only the anchor.
+    /// Measured downstream on a 459-keyframe phone walkthrough, and reproduced at 120 keyframes.
+    ///
+    /// The gate is not wrong in general — small-parallax points genuinely have unconstrained depth.
+    /// It is wrong *for the bootstrap*, where the alternative to an ill-conditioned point cloud is
+    /// no point cloud at all. Registration only needs a scaffold good enough to place the next
+    /// camera; bundle adjustment refines it afterwards, and a caller that wants a clean OUTPUT cloud
+    /// should filter by triangulation angle at the point it consumes [`Reconstruction::points`],
+    /// which is a separate decision from what the solver may register against.
+    ///
+    /// Everything else is left alone — this changes only what the solver is allowed to triangulate.
+    pub fn sequential(mut self) -> Self {
+        self.min_parallax_deg = 0.05;
+        self
+    }
 }
 
 /// Per-camera pose covariance + observability, conditional on fixed intrinsics + fixed target
