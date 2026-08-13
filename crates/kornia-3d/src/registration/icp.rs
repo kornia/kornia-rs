@@ -430,6 +430,11 @@ fn accumulate_level(
 /// Conditioning of each block WITHOUT solving: weakest pivot over strongest, `(rotation,
 /// translation)`, or `(0, 0)` when the matrix does not factor at all.
 ///
+/// Prior-free in its INPUTS, not in the pose. A prior changes the solve, so the final transform
+/// differs, so the last association pass covers a slightly different correspondence set and the
+/// conditioning is computed over that — measured drift of about 5% on the same frame. That is
+/// benign for gating; evaluating at a fixed transform would be required to make it bit-stable.
+///
 /// Measured on the DATA-only normal equations, never on the prior-augmented ones. A rotation
 /// prior lifts the rotation block, and because the blocks are coupled through elimination it
 /// lifts the translation block's effective pivots too — measured, a 14x rise at a frame whose
