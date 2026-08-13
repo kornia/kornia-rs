@@ -76,6 +76,12 @@ pub struct IcpPlaneResult {
     pub overlap_fraction: f64,
     /// Total Gauss-Newton iterations performed across all levels.
     pub iterations: usize,
+    /// Weakest normal-equation pivot relative to its block, from the final solve: how well the
+    /// geometry pins the least-constrained direction. Near zero means the pose can slide with no
+    /// residual penalty — a wall filling the view yields a perfect [`Self::rmse`] and a perfect
+    /// [`Self::inlier_fraction`] while the estimate drifts along the surface, so neither of those
+    /// can detect it. Compare against [`PIVOT_RTOL`], which is only the hard-failure floor.
+    pub observability: f64,
 }
 
 /// Relative Cholesky pivot threshold of the degeneracy guard: while factoring
@@ -123,6 +129,7 @@ pub fn icp_projective_plane(
     let mut rotation = initial_rot;
     let mut translation = initial_trans;
     let mut iterations = 0;
+    let mut observability = 0.0;
 
     // coarse-to-fine: level num_levels-1 down to 0 (levels[0] is finest)
     for (coarse_idx, level_idx) in (0..num_levels).rev().enumerate() {
@@ -142,8 +149,10 @@ pub fn icp_projective_plane(
             }
             // solve A x = -b for the twist x = [w, dt]
             let neg_b = eqs.b.map(|v| -v);
-            let x =
+            let (x, pivot) =
                 cholesky_solve_6x6(&eqs.a, &neg_b).ok_or(RgbdIcpError::SingularNormalEquations)?;
+            // Report the finest level's last solve: the geometry the pose actually rests on.
+            observability = pivot;
 
             let omega = [x[0], x[1], x[2]];
             let dt = [x[3], x[4], x[5]];
@@ -189,6 +198,7 @@ pub fn icp_projective_plane(
         rmse,
         inlier_fraction,
         num_associated: eqs.num_associated,
+        observability,
         overlap_fraction,
         iterations,
     })
@@ -319,7 +329,12 @@ fn accumulate_level(
 /// pivot falls below `PIVOT_RTOL` times its block's max diagonal (rotation /
 /// translation thresholded separately — see [`PIVOT_RTOL`]) — the degeneracy
 /// guard.
-fn cholesky_solve_6x6(a: &[[f64; 6]; 6], b: &[f64; 6]) -> Option<[f64; 6]> {
+/// Solves `A x = b` and reports the weakest pivot relative to its block's max diagonal — the
+/// observability of the least-constrained direction. A view that pins every DOF keeps this well
+/// above [`PIVOT_RTOL`]; a wall filling the frame drives it toward zero along the sliding
+/// direction, where the residual stays perfect while the pose drifts. Callers that must not act
+/// on such a pose gate on it; the residual and the inlier fraction cannot see it.
+fn cholesky_solve_6x6(a: &[[f64; 6]; 6], b: &[f64; 6]) -> Option<([f64; 6], f64)> {
     let max_diag_rot = (0..3).map(|i| a[i][i]).fold(0.0, f64::max);
     let max_diag_trans = (3..6).map(|i| a[i][i]).fold(0.0, f64::max);
     if max_diag_rot <= 0.0 || max_diag_trans <= 0.0 {
@@ -327,6 +342,7 @@ fn cholesky_solve_6x6(a: &[[f64; 6]; 6], b: &[f64; 6]) -> Option<[f64; 6]> {
     }
 
     // A = L L^T
+    let mut weakest_pivot = f64::INFINITY;
     let mut l = [[0.0; 6]; 6];
     for i in 0..6 {
         for j in 0..=i {
@@ -336,6 +352,7 @@ fn cholesky_solve_6x6(a: &[[f64; 6]; 6], b: &[f64; 6]) -> Option<[f64; 6]> {
             }
             if i == j {
                 let block_scale = if i < 3 { max_diag_rot } else { max_diag_trans };
+                weakest_pivot = weakest_pivot.min(sum / block_scale);
                 if sum < PIVOT_RTOL * block_scale {
                     return None;
                 }
@@ -364,7 +381,7 @@ fn cholesky_solve_6x6(a: &[[f64; 6]; 6], b: &[f64; 6]) -> Option<[f64; 6]> {
         }
         x[i] = sum / l[i][i];
     }
-    Some(x)
+    Some((x, weakest_pivot))
 }
 
 #[inline]
@@ -415,7 +432,7 @@ fn so3_exp(w: &[f64; 3]) -> [[f64; 3]; 3] {
 #[cfg(test)]
 mod tests {
     use super::super::rgbd::DepthIntrinsics;
-    use super::super::synth::{render_depth_mm, Plane, Scene};
+    use super::super::synth::{render_depth_mm, Plane, Scene, Sphere};
     use super::*;
     use crate::transforms::axis_angle_to_rotation_matrix;
 
@@ -666,6 +683,72 @@ mod tests {
             t_err < 5e-3,
             "translation error with outliers: {} mm",
             t_err * 1e3
+        );
+        Ok(())
+    }
+
+    /// Weak geometry must be visible in `observability`, because nothing else shows it.
+    ///
+    /// Guards a measured failure: on a near-degenerate view the tracker reported a perfect
+    /// inlier fraction and a sub-millimetre residual while publishing ~3x the true motion,
+    /// sliding along the surface. Residual and inlier fraction are blind to it — the pose moves
+    /// through a direction the geometry does not penalise — so the caller needs the conditioning
+    /// of the normal equations to refuse such a pose.
+    #[test]
+    fn observability_exposes_weak_geometry() -> Result<(), Box<dyn std::error::Error>> {
+        let intr = test_intrinsics();
+        // A wall with one small bump. The plane alone leaves three DoF free; the bump pins them,
+        // but only just — the near-degenerate regime, not the exactly-singular one the guard
+        // already rejects. (Two planes at any angle stay rank-deficient along their intersection,
+        // so a "shallow wedge" is the wrong shape for this test.)
+        let weak = Scene {
+            planes: vec![Plane {
+                normal: [0.0, 0.0, 1.0],
+                d: 2.0,
+            }],
+            spheres: vec![Sphere {
+                center: [0.0, 0.0, 1.9],
+                radius: 0.06,
+            }],
+        };
+        let slide = [0.02, 0.0, 0.0]; // along the surface: little residual to pay
+
+        let mut measured: Vec<(f64, f64, f64)> = Vec::new();
+        for scene in [weak, Scene::corner_and_sphere()] {
+            let src = RgbdPyramid::from_depth_mm(
+                &render_depth_mm(&scene, &intr, &IDENTITY_ROT, &[0.0; 3]),
+                &intr,
+                3,
+            )?;
+            let tgt = RgbdPyramid::from_depth_mm(
+                &render_depth_mm(&scene, &intr, &IDENTITY_ROT, &slide),
+                &intr,
+                3,
+            )?;
+            let r = icp_projective_plane(
+                &src,
+                &tgt,
+                IDENTITY_ROT,
+                [0.0; 3],
+                IcpPlaneCriteria::default(),
+            )?;
+            measured.push((r.observability, r.inlier_fraction, r.rmse));
+        }
+        let (weak_obs, weak_inl, weak_rmse) = measured[0];
+        let (rich_obs, rich_inl, _) = measured[1];
+
+        // Measured: 6.4e-7 on the weak scene against 6.5e-2 on the rich one — five orders of
+        // magnitude, so the margin is not a tuning artefact.
+        assert!(
+            weak_obs < 1e-4 && rich_obs > 1e-3,
+            "observability must separate the two geometries: weak {weak_obs:.3e}, rich {rich_obs:.3e}"
+        );
+        // The trap this field exists for: on the weak scene the numbers a caller would otherwise
+        // trust are not merely acceptable, they are BETTER than on the well-conditioned one.
+        assert!(
+            weak_inl >= rich_inl && weak_rmse < 0.001,
+            "expected the deceptive regime: weak inliers {weak_inl} (rich {rich_inl}), \
+             weak rmse {weak_rmse}"
         );
         Ok(())
     }
