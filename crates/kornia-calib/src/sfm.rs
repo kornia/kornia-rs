@@ -23,8 +23,8 @@ use kornia_3d::ba_schur::bundle_adjust_schur_with_all_priors;
 use kornia_3d::camera::PinholeCamera;
 use kornia_3d::pnp::{solve_pnp_ransac, PnPMethod, RansacParams as PnpRansacParams};
 use kornia_3d::pose::{
-    decompose_essential, ransac_essential_5pt, triangulate_matched_points, Pose3d,
-    RansacParams as TvRp, TriangulationConfig,
+    decompose_essential, ransac_essential_5pt, ransac_fundamental, ransac_homography,
+    triangulate_matched_points, Pose3d, RansacParams as TvRp, TriangulationConfig,
 };
 use kornia_3d::ransac::RobustKernelKind;
 use kornia_algebra::{Mat3AF32, Mat3F64, Vec2F32, Vec2F64, Vec3AF32, Vec3F64};
@@ -77,6 +77,35 @@ const LOCAL_BA_NEIGHBOURS: usize = 6;
 /// once per registered camera and only has to pull a fresh PnP pose onto the existing structure,
 /// not converge the whole map.
 const LOCAL_BA_ITERATIONS: usize = 25;
+
+/// How many of the best-supported view pairs are solved and ranked as bootstrap candidates.
+///
+/// Each rejected candidate costs one two-view solve, so this is the budget for buying a
+/// well-conditioned seed. Twelve is enough to get past a run of adjacent, near-zero-baseline pairs
+/// on video without making the bootstrap a measurable share of the reconstruction.
+const BOOTSTRAP_CANDIDATES: usize = 12;
+
+/// A seed pair whose median triangulation angle is below this is too degenerate to anchor a map.
+///
+/// This ORDERS seeds rather than rejecting them: `select_bootstrap_pair` sorts floor-passing pairs
+/// first and falls back to cheirality support when none qualify, so raising it can change which
+/// pair wins but never whether a reconstruction happens at all. Deliberately far below COLMAP's
+/// `Mapper.init_min_tri_angle = 16`, which assumes a candidate set that can actually reach a
+/// double-digit angle; at keyframe spacing typical of a handheld walkthrough, the widest-parallax
+/// candidate also carries the thinnest support, and a seed fitted to thin support loses to a
+/// shorter-baseline one fitted to plenty.
+const MIN_SEED_PARALLAX_DEG: f64 = 1.5;
+
+/// COLMAP's `Mapper.init_max_forward_motion`, same value: a pair whose unit translation points
+/// nearly along the optical axis triangulates everything near the epipole, where depth is barely
+/// observable. A walkthrough is forward-motion dominated, so this DEMOTES rather than rejects —
+/// rejecting outright would empty the candidate list on exactly the clips that need a seed most.
+const MAX_SEED_FORWARD: f64 = 0.95;
+
+/// Reporting threshold on the homography-vs-fundamental ratio (ORB-SLAM2's value), above which the
+/// pair is planar or rotation-dominated enough that the essential decomposition is ambiguous.
+/// Flagged through `KORNIA_CALIB_DEBUG`, never enforced; see `homography_vs_fundamental_ratio`.
+const MAX_SEED_H_RATIO: f64 = 0.45;
 
 /// How many cameras currently hold a pose.
 fn registered_now(poses: &[Option<Pose3d>]) -> usize {
@@ -253,17 +282,28 @@ pub fn reconstruct(
     config: &ReconstructionConfig,
     obs_depth: Option<&[Vec<Option<f64>>]>,
 ) -> Result<Reconstruction, CalibError> {
-    reconstruct_inner(cameras, tags_for_scale, tracks, config, obs_depth, true)
+    reconstruct_inner(
+        cameras,
+        tags_for_scale,
+        tracks,
+        config,
+        obs_depth,
+        true,
+        true,
+    )
 }
 
-/// [`reconstruct`], with the bundle adjustment that runs DURING growth switchable off.
+/// [`reconstruct`], with its two behaviour-defining choices switchable off.
 ///
 /// `growth_ba: false` leaves only the terminal solve — the arrangement this file had before the
-/// local and periodic solves were added. It exists so
-/// `growth_ba_keeps_the_long_tracks_a_terminal_solve_alone_loses` can measure the two arms of the
-/// same pipeline against each other on one scene, instead of asserting that the current arm is
-/// merely "good enough" — an assertion that would pass on a no-op change. Deliberately NOT public:
-/// a caller has no reason to ask for the worse arm.
+/// local and periodic solves were added. `ranked_seed: false` restricts bootstrap selection to the
+/// single most-shared-tracks pair — the arrangement this file had before the seed was chosen on
+/// geometry. Both exist so
+/// `growth_ba_keeps_the_long_tracks_a_terminal_solve_alone_loses` and
+/// `ranked_bootstrap_registers_more_views_than_the_most_shared_tracks_seed` can measure the two
+/// arms of the same pipeline against each other on one scene, instead of asserting that the current
+/// arm is merely "good enough" — an assertion that would pass on a no-op change. Deliberately NOT
+/// public: a caller has no reason to ask for the worse arm.
 fn reconstruct_inner(
     cameras: &[PinholeCamera],
     tags_for_scale: &[TagObservation],
@@ -271,6 +311,7 @@ fn reconstruct_inner(
     config: &ReconstructionConfig,
     obs_depth: Option<&[Vec<Option<f64>>]>,
     growth_ba: bool,
+    ranked_seed: bool,
 ) -> Result<Reconstruction, CalibError> {
     let n_cams = cameras.len();
     let idcam = PinholeCamera::IDENTITY;
@@ -301,103 +342,12 @@ fn reconstruct_inner(
         _ => norm.iter().map(|t| vec![None; t.len()]).collect(),
     };
 
-    // Count shared tracks per camera pair to choose the bootstrap pair.
-    let mut pair_count: HashMap<(usize, usize), usize> = HashMap::new();
-    for obs in &norm {
-        for i in 0..obs.len() {
-            for j in (i + 1)..obs.len() {
-                let (a, b) = (obs[i].0.min(obs[j].0), obs[i].0.max(obs[j].0));
-                *pair_count.entry((a, b)).or_insert(0) += 1;
-            }
-        }
-    }
-    // Most-shared-track pair; deterministic tie-break on the smaller (a, b) so the whole
-    // reconstruction (world frame, seed cloud, growth order) is reproducible run-to-run — HashMap
-    // iteration order is randomized and must not decide the bootstrap.
-    let &(a0, b0) = pair_count
-        .iter()
-        .max_by(|x, y| x.1.cmp(y.1).then_with(|| y.0.cmp(x.0)))
-        .map(|(p, _)| p)
-        .ok_or(CalibError::NoReferenceTagView)?;
-
-    // --- Bootstrap: two-view essential matrix on the best pair → poses (world = cam a0), s = 1. ---
-    let (mut x1, mut x2) = (Vec::new(), Vec::new());
-    for t in tracks {
-        let pa = t.obs.iter().find(|(c, _)| *c == a0);
-        let pb = t.obs.iter().find(|(c, _)| *c == b0);
-        if let (Some((_, ua)), Some((_, ub))) = (pa, pb) {
-            x1.push(*ua);
-            x2.push(*ub);
-        }
-    }
-    // Calibrated 5-point Nistér essential + explicit cheirality vote. We drive the essential arm
-    // directly (not the full `TwoViewEstimator`, whose F/H model selection can pick a degenerate
-    // homography on a converging rig): a calibrated rig always wants the essential.
-    let n1: Vec<Vec2F64> = x1.iter().map(|p| cameras[a0].normalize(*p)).collect();
-    let n2: Vec<Vec2F64> = x2.iter().map(|p| cameras[b0].normalize(*p)).collect();
-    // `ransac_essential_5pt` only normalizes with K⁻¹ — it does NOT undistort. Feed UNDISTORTED
-    // pixels so the essential arm matches the undistorted-normalized coords every other stage uses
-    // (cheirality vote, triangulation, BA); K⁻¹·undistort(px) == normalize(px). The 2.0 px threshold
-    // stays valid in undistorted pixel space. (Raw pixels here would bias R/t on a distorted lens.)
-    let x1u: Vec<Vec2F64> = x1.iter().map(|p| cameras[a0].undistort(p.x, p.y)).collect();
-    let x2u: Vec<Vec2F64> = x2.iter().map(|p| cameras[b0].undistort(p.x, p.y)).collect();
-    let rp = TvRp {
-        max_iterations: 2000,
-        threshold: 2.0,
-        min_inliers: 8,
-        random_seed: Some(0),
-        refit: true,
-    };
-    let ess = ransac_essential_5pt(
-        &x1u,
-        &x2u,
-        &cameras[a0].intrinsic_matrix(),
-        &cameras[b0].intrinsic_matrix(),
-        &rp,
-    )
-    .map_err(|e| CalibError::BundleAdjust(format!("essential bootstrap: {e:?}")))?;
-    let cands = decompose_essential(&ess.model)
-        .ok_or_else(|| CalibError::BundleAdjust("essential decomposition failed".into()))?;
-    // Lenient triangulation for the cheirality vote (count points in front of BOTH cameras).
-    let tvote = TriangulationConfig {
-        min_parallax_deg: 0.0,
-        max_reprojection_error: 1e9,
-        min_cheirality_count: 0,
-        ..Default::default()
-    };
-    let mut best = (0usize, Pose3d::IDENTITY);
-    for (r, t) in cands {
-        let pb = Pose3d::new(r, t); // world(=a0) → b, unit translation
-        let mut cnt = 0usize;
-        for k in 0..n1.len() {
-            if let Ok(pts) = triangulate_matched_points(
-                &[n1[k]],
-                &[n2[k]],
-                &Pose3d::IDENTITY,
-                &pb,
-                &idcam,
-                &tvote,
-            ) {
-                if let Some(p) = pts.first() {
-                    if p.position.z > 0.0 && pb.transform_point(&p.position).z > 0.0 {
-                        cnt += 1;
-                    }
-                }
-            }
-        }
-        if cnt > best.0 {
-            best = (cnt, pb);
-        }
-    }
-    if best.0 == 0 {
-        return Err(CalibError::BundleAdjust(
-            "essential cheirality: no valid pose".into(),
-        ));
-    }
+    // --- Bootstrap: pick a seed pair on GEOMETRY, then two-view essential (world = cam a0, s = 1). ---
+    let (a0, b0, seed_pose) = select_bootstrap_pair(tracks, &norm, cameras, &idcam, ranked_seed)?;
 
     let mut poses: Vec<Option<Pose3d>> = vec![None; n_cams];
     poses[a0] = Some(Pose3d::IDENTITY);
-    poses[b0] = Some(best.1); // T_b0_a0, unit translation
+    poses[b0] = Some(seed_pose); // T_b0_a0, unit translation
 
     // Triangulate every track visible in the bootstrap pair → seed the point cloud (world = a0 frame).
     let mut point3d: HashMap<usize, Vec3F64> = HashMap::new();
@@ -1139,6 +1089,365 @@ fn solve_sym5(a: &[[f64; 5]; 5], b: &[f64; 5]) -> Option<[f64; 5]> {
     Some(x)
 }
 
+/// Choose the bootstrap pair and recover its two-view pose, as `(a0, b0, T_b0_a0)`.
+///
+/// Picking the pair with the MOST shared tracks is the natural choice for a rig and the wrong one
+/// for a video: consecutive views overlap most precisely because they are closest together, so
+/// "most matches" systematically selects the SMALLEST baseline in the sequence — the worst
+/// conditioning an essential matrix can be given. The seed is not a recoverable mistake either,
+/// because it fixes the world gauge and every later view registers by PnP against the cloud
+/// triangulated from it: a seed with no parallax triangulates nothing, nothing clears the growth
+/// loop's admission bar, and the reconstruction stops at the two seed views.
+///
+/// So: take the best-supported candidates, actually SOLVE each one, and choose on geometry —
+/// median triangulation angle first (a floor that rejects the degenerate low-parallax pairs), then
+/// forward-motion dominance, then cheirality support. The whole ordering is a total order with a
+/// deterministic `(a, b)` tie-break, because `HashMap` iteration order must not decide the seed.
+///
+/// `ranked: false` restricts the candidate list to the single best-supported pair, which is
+/// exactly the argmax-shared-tracks selection this replaced. It is private and exists so
+/// `ranked_bootstrap_registers_more_views_than_the_most_shared_tracks_seed` can measure the two
+/// selections against each other with everything else held fixed.
+fn select_bootstrap_pair(
+    tracks: &[FeatureTrack],
+    norm: &[Vec<(usize, Vec2F64)>],
+    cameras: &[PinholeCamera],
+    idcam: &PinholeCamera,
+    ranked: bool,
+) -> Result<(usize, usize, Pose3d), CalibError> {
+    // Count shared tracks per camera pair.
+    let mut pair_count: HashMap<(usize, usize), usize> = HashMap::new();
+    for obs in norm {
+        for i in 0..obs.len() {
+            for j in (i + 1)..obs.len() {
+                let (a, b) = (obs[i].0.min(obs[j].0), obs[i].0.max(obs[j].0));
+                *pair_count.entry((a, b)).or_insert(0) += 1;
+            }
+        }
+    }
+    if pair_count.is_empty() {
+        return Err(CalibError::NoReferenceTagView);
+    }
+    // Best-supported first, deterministic tie-break on the smaller `(a, b)`.
+    let mut by_count: Vec<((usize, usize), usize)> = pair_count.into_iter().collect();
+    by_count.sort_by(|x, y| y.1.cmp(&x.1).then_with(|| x.0.cmp(&y.0)));
+    let n_candidates = if ranked {
+        BOOTSTRAP_CANDIDATES.min(by_count.len())
+    } else {
+        1
+    };
+
+    // `(a, b, T_b_a, cheirality-valid count, median parallax in degrees, RH ratio)`.
+    let mut seeds: Vec<(usize, usize, Pose3d, usize, f64, Option<f64>)> = Vec::new();
+    for ((ca, cb), n_shared) in &by_count[..n_candidates] {
+        // The 5-point RANSAC needs 8 correspondences; a pair below that cannot be solved at all.
+        if *n_shared < 8 {
+            continue;
+        }
+        if let Some((pose, cnt, par, rh)) = try_bootstrap_pair(*ca, *cb, tracks, cameras, idcam) {
+            seeds.push((*ca, *cb, pose, cnt, par, rh));
+        }
+    }
+    if seeds.is_empty() {
+        return Err(CalibError::BundleAdjust(
+            "no bootstrap pair produced a valid two-view pose".into(),
+        ));
+    }
+
+    // Prefer a pair that clears the parallax floor; among those, the least forward-dominated; among
+    // those, the most cheirality-valid points.
+    //
+    // Each criterion DEMOTES rather than rejects, and that is deliberate: a handheld walkthrough is
+    // forward-motion dominated throughout and can be near-degenerate throughout, so a hard gate can
+    // empty the candidate list on exactly the clips that need a seed most. A weak seed still beats
+    // no map, provided the choice is the best one available.
+    //
+    // The `(a, b)` tie-break is not cosmetic — without a total order, equal-scoring seeds would
+    // reintroduce the run-to-run variability the count sort above exists to remove.
+    seeds.sort_by(|a, b| {
+        let (a_par, b_par) = (a.4 >= MIN_SEED_PARALLAX_DEG, b.4 >= MIN_SEED_PARALLAX_DEG);
+        let (a_fwd, b_fwd) = (
+            a.2.translation.z.abs() <= MAX_SEED_FORWARD,
+            b.2.translation.z.abs() <= MAX_SEED_FORWARD,
+        );
+        b_par
+            .cmp(&a_par)
+            .then_with(|| b_fwd.cmp(&a_fwd))
+            .then_with(|| b.3.cmp(&a.3))
+            .then_with(|| (a.0, a.1).cmp(&(b.0, b.1)))
+    });
+
+    let (a0, b0, pose, cnt, par, rh) = seeds[0];
+    if let Some(rh) = rh {
+        eprintln!(
+            "[calib] seed pair ({a0},{b0}) of {} candidates: cheirality={cnt} \
+             median_parallax={par:.2} deg RH={rh:.3}{}",
+            seeds.len(),
+            if rh > MAX_SEED_H_RATIO {
+                "  (DEGENERATE — no clean pair available)"
+            } else {
+                ""
+            }
+        );
+    }
+    Ok((a0, b0, pose))
+}
+
+/// Solve one candidate bootstrap pair.
+///
+/// Returns `(T_a_to_b with unit translation, cheirality-valid count, median triangulation angle in
+/// degrees, homography-vs-fundamental ratio)`, or `None` when the pair has too few
+/// correspondences, no decomposition survives the cheirality vote, or two decompositions survive it
+/// about equally well.
+///
+/// The median angle is what distinguishes a usable seed from a degenerate one: two nearly
+/// coincident views still produce a confident-looking essential matrix, whose triangulated depths
+/// are meaningless.
+///
+/// The RH ratio is `None` unless `KORNIA_CALIB_DEBUG` is set — see the note at its computation.
+fn try_bootstrap_pair(
+    a0: usize,
+    b0: usize,
+    tracks: &[FeatureTrack],
+    cameras: &[PinholeCamera],
+    idcam: &PinholeCamera,
+) -> Option<(Pose3d, usize, f64, Option<f64>)> {
+    let (mut x1, mut x2) = (Vec::new(), Vec::new());
+    for t in tracks {
+        let pa = t.obs.iter().find(|(c, _)| *c == a0);
+        let pb = t.obs.iter().find(|(c, _)| *c == b0);
+        if let (Some((_, ua)), Some((_, ub))) = (pa, pb) {
+            x1.push(*ua);
+            x2.push(*ub);
+        }
+    }
+    if x1.len() < 8 {
+        return None;
+    }
+
+    // Calibrated 5-point Nistér essential + explicit cheirality vote. We drive the essential arm
+    // directly (not the full `TwoViewEstimator`, whose F/H model selection can pick a degenerate
+    // homography on a converging rig): a calibrated rig always wants the essential.
+    let n1: Vec<Vec2F64> = x1.iter().map(|p| cameras[a0].normalize(*p)).collect();
+    let n2: Vec<Vec2F64> = x2.iter().map(|p| cameras[b0].normalize(*p)).collect();
+    // `ransac_essential_5pt` only normalizes with K⁻¹ — it does NOT undistort. Feed UNDISTORTED
+    // pixels so the essential arm matches the undistorted-normalized coords every other stage uses
+    // (cheirality vote, triangulation, BA); K⁻¹·undistort(px) == normalize(px). The 2.0 px threshold
+    // stays valid in undistorted pixel space. (Raw pixels here would bias R/t on a distorted lens.)
+    let x1u: Vec<Vec2F64> = x1.iter().map(|p| cameras[a0].undistort(p.x, p.y)).collect();
+    let x2u: Vec<Vec2F64> = x2.iter().map(|p| cameras[b0].undistort(p.x, p.y)).collect();
+
+    // Model-selection score: DIAGNOSTIC ONLY, and computed only when someone is looking.
+    //
+    // It is not a ranking criterion — among pairs that are all somewhat planar, "least planar" is
+    // not "best conditioned", and enforcing it as a hard reject fails outright on handheld
+    // sequences whose every pair is near-degenerate. What it does do is identify that regime, which
+    // is the single most useful thing to know when a map comes out mirrored, so it is worth
+    // reporting. Since it costs two extra RANSAC fits per candidate and cannot change the outcome,
+    // it is skipped entirely outside a debug run. The per-pair RNG seed keeps it reproducible
+    // without making every pair share one sampler sequence.
+    let rh = std::env::var_os("KORNIA_CALIB_DEBUG").and_then(|_| {
+        let seed_rng = 0xB007 ^ ((a0 as u64) << 16) ^ b0 as u64;
+        homography_vs_fundamental_ratio(&x1u, &x2u, seed_rng)
+    });
+
+    let rp = TvRp {
+        max_iterations: 2000,
+        threshold: 2.0,
+        min_inliers: 8,
+        random_seed: Some(0),
+        refit: true,
+    };
+    let ess = ransac_essential_5pt(
+        &x1u,
+        &x2u,
+        &cameras[a0].intrinsic_matrix(),
+        &cameras[b0].intrinsic_matrix(),
+        &rp,
+    )
+    .ok()?;
+    let cands = decompose_essential(&ess.model)?;
+
+    // Lenient triangulation for the cheirality vote (count points in front of BOTH cameras).
+    let tvote = TriangulationConfig {
+        min_parallax_deg: 0.0,
+        max_reprojection_error: 1e9,
+        min_cheirality_count: 0,
+        ..Default::default()
+    };
+    let mut best = (0usize, Pose3d::IDENTITY);
+    let mut runner_up = 0usize;
+    for (r, t) in cands {
+        let pb = Pose3d::new(r, t); // world(=a0) → b, unit translation
+        let mut cnt = 0usize;
+        for k in 0..n1.len() {
+            if let Ok(pts) = triangulate_matched_points(
+                &[n1[k]],
+                &[n2[k]],
+                &Pose3d::IDENTITY,
+                &pb,
+                idcam,
+                &tvote,
+            ) {
+                if let Some(p) = pts.first() {
+                    if p.position.z > 0.0 && pb.transform_point(&p.position).z > 0.0 {
+                        cnt += 1;
+                    }
+                }
+            }
+        }
+        if cnt > best.0 {
+            runner_up = best.0;
+            best = (cnt, pb);
+        } else if cnt > runner_up {
+            runner_up = cnt;
+        }
+    }
+    if best.0 == 0 {
+        return None;
+    }
+
+    // Twofold-ambiguity guard.
+    //
+    // The cheirality vote picks whichever of the four essential decompositions puts the most points
+    // in front of both cameras. When the scene is planar or the motion is near-pure rotation, two
+    // decompositions score almost equally — the classic twofold planar ambiguity — and the winner
+    // is then decided by noise. Committing to it yields a MIRRORED reconstruction that is
+    // internally self-consistent: bundle adjustment happily drives its reprojection error down, so
+    // the map looks healthy by every internal metric while being structurally wrong.
+    //
+    // `TriangulationConfig::cheirality_ambiguity_max` encodes the threshold, but the manual vote
+    // above never consults it, so it is applied explicitly here. Rejecting the pair is cheap: the
+    // caller simply ranks the next candidate.
+    if (runner_up as f64) >= tvote.cheirality_ambiguity_max * best.0 as f64 {
+        if std::env::var_os("KORNIA_CALIB_DEBUG").is_some() {
+            eprintln!(
+                "[calib] seed ({a0},{b0}) REJECTED: ambiguous decomposition \
+                 (best={} runner_up={} ratio={:.2})",
+                best.0,
+                runner_up,
+                runner_up as f64 / best.0 as f64
+            );
+        }
+        return None;
+    }
+
+    // Median triangulation angle for the chosen pose: the angle between the two bearing rays, with
+    // the second rotated into the first camera's frame.
+    let r_t = best.1.rotation.transpose();
+    let mut angles: Vec<f64> = Vec::with_capacity(n1.len());
+    for k in 0..n1.len() {
+        let d1 = Vec3F64::new(n1[k].x, n1[k].y, 1.0).normalize();
+        let d2 = r_t * Vec3F64::new(n2[k].x, n2[k].y, 1.0).normalize();
+        let c = d1.dot(d2).clamp(-1.0, 1.0);
+        angles.push(c.acos().to_degrees());
+    }
+    angles.sort_by(|p, q| p.partial_cmp(q).unwrap_or(std::cmp::Ordering::Equal));
+    let median = angles.get(angles.len() / 2).copied().unwrap_or(0.0);
+
+    Some((best.1, best.0, median, rh))
+}
+
+/// ORB-SLAM2's homography-vs-fundamental model-selection score, `RH = SH / (SH + SF)`.
+///
+/// Both models are scored with a symmetric transfer error, accumulating `threshold - chi2` per
+/// inlier observation so a model is rewarded for explaining points *tightly*, not merely for
+/// counting them. The chi-square thresholds and the score cap are ORB-SLAM2's
+/// (`Initializer::CheckHomography` / `CheckFundamental`): 5.991 for the homography (2 degrees of
+/// freedom, point-to-point) and 3.841 for the fundamental (1 DOF, point-to-line), with the
+/// fundamental's per-inlier score capped against 5.991 so the two totals live on the same scale.
+///
+/// A high ratio means a homography explains the correspondences about as well as the epipolar
+/// geometry does, which happens exactly when the scene is planar or the motion is near-pure
+/// rotation. In that regime the essential matrix is not merely imprecise but ambiguous, and
+/// committing to one of its decompositions can produce a mirrored reconstruction that bundle
+/// adjustment then makes internally self-consistent — undetectable from reprojection error alone.
+///
+/// Returns `None` when either model cannot be estimated, or when neither explains anything.
+fn homography_vs_fundamental_ratio(x1: &[Vec2F64], x2: &[Vec2F64], seed: u64) -> Option<f64> {
+    /// Chi-square 95% bound at 2 DOF: the homography's point-to-point transfer error.
+    const TH_H: f64 = 5.991;
+    /// Chi-square 95% bound at 1 DOF: the fundamental's point-to-epipolar-line distance.
+    const TH_F: f64 = 3.841;
+    /// The fundamental's per-inlier score is capped against the HOMOGRAPHY's bound, so a 1-DOF
+    /// inlier and a 2-DOF inlier contribute comparably and `RH` is not biased by the model's
+    /// dimension. Same asymmetry as the reference implementation.
+    const SCORE_CAP: f64 = 5.991;
+    /// Assumed keypoint localization sigma, in pixels.
+    const INV_SIGMA_SQ: f64 = 1.0;
+
+    if x1.len() < 8 {
+        return None;
+    }
+    let rp = TvRp {
+        max_iterations: 2000,
+        threshold: 2.0,
+        min_inliers: 8,
+        random_seed: Some(seed),
+        refit: true,
+    };
+
+    let h = ransac_homography(x1, x2, &rp).ok()?;
+    let f = ransac_fundamental(x1, x2, &rp).ok()?;
+
+    // --- Homography score: symmetric transfer error, both directions. ---
+    let hm = h.model;
+    let hinv = hm.inverse();
+    let mut s_h = 0.0;
+    for (p1, p2) in x1.iter().zip(x2.iter()) {
+        // 1 -> 2
+        let d = hm * Vec3F64::new(p1.x, p1.y, 1.0);
+        if d.z.abs() > 1e-12 {
+            let (u, v) = (d.x / d.z, d.y / d.z);
+            let chi = ((p2.x - u).powi(2) + (p2.y - v).powi(2)) * INV_SIGMA_SQ;
+            if chi < TH_H {
+                s_h += TH_H - chi;
+            }
+        }
+        // 2 -> 1
+        let d = hinv * Vec3F64::new(p2.x, p2.y, 1.0);
+        if d.z.abs() > 1e-12 {
+            let (u, v) = (d.x / d.z, d.y / d.z);
+            let chi = ((p1.x - u).powi(2) + (p1.y - v).powi(2)) * INV_SIGMA_SQ;
+            if chi < TH_H {
+                s_h += TH_H - chi;
+            }
+        }
+    }
+
+    // --- Fundamental score: symmetric point-to-epipolar-line distance. ---
+    let fm = f.model;
+    let ft = fm.transpose();
+    let mut s_f = 0.0;
+    for (p1, p2) in x1.iter().zip(x2.iter()) {
+        // Line in image 2 induced by the point in image 1.
+        let l = fm * Vec3F64::new(p1.x, p1.y, 1.0);
+        let den = l.x * l.x + l.y * l.y;
+        if den > 1e-12 {
+            let num = (l.x * p2.x + l.y * p2.y + l.z).powi(2);
+            let chi = (num / den) * INV_SIGMA_SQ;
+            if chi < TH_F {
+                s_f += SCORE_CAP - chi;
+            }
+        }
+        // Line in image 1 induced by the point in image 2.
+        let l = ft * Vec3F64::new(p2.x, p2.y, 1.0);
+        let den = l.x * l.x + l.y * l.y;
+        if den > 1e-12 {
+            let num = (l.x * p1.x + l.y * p1.y + l.z).powi(2);
+            let chi = (num / den) * INV_SIGMA_SQ;
+            if chi < TH_F {
+                s_f += SCORE_CAP - chi;
+            }
+        }
+    }
+
+    let total = s_h + s_f;
+    if total <= 0.0 {
+        return None;
+    }
+    Some(s_h / total)
+}
 /// Triangulate every not-yet-reconstructed track that has ≥2 placed cameras, adding it to `point3d`.
 fn triangulate_new(
     point3d: &mut HashMap<usize, Vec3F64>,
@@ -2587,9 +2896,10 @@ mod tests {
             ..ReconstructionConfig::new(0.0)
         };
 
-        let with = reconstruct_inner(&cams, &[], &tracks, &config, None, true).expect("with BA");
+        let with =
+            reconstruct_inner(&cams, &[], &tracks, &config, None, true, true).expect("with BA");
         let without =
-            reconstruct_inner(&cams, &[], &tracks, &config, None, false).expect("without BA");
+            reconstruct_inner(&cams, &[], &tracks, &config, None, false, true).expect("without BA");
 
         let reg = |r: &Reconstruction| r.views.iter().filter(|v| v.is_some()).count();
         let span_with = map_spans(&with);
@@ -2669,6 +2979,128 @@ mod tests {
             "growth BA must triangulate more of the scene: {} vs {} points",
             with.points.len(),
             without.points.len()
+        );
+    }
+
+    /// A forward walk: `n_views` cameras marching along their own optical axis toward a shell of
+    /// landmarks ahead, every landmark visible in every view. Returns `(cameras, tracks)`.
+    ///
+    /// This is the geometry a handheld video capture actually has, and the geometry that breaks a
+    /// most-shared-tracks bootstrap. Because every landmark is seen everywhere, EVERY view pair
+    /// shares the same number of tracks, so the shared-track criterion cannot distinguish them at
+    /// all and falls through to its `(a, b)` tie-break — landing on the ADJACENT pair `(0, 1)`,
+    /// whose 6 cm baseline against 7-8 m landmarks is the smallest in the sequence. That is not an
+    /// artefact of the tie: on a real forward walk, adjacency is what MAXIMISES overlap, so the
+    /// argmax lands on an adjacent pair for the same reason with counts that genuinely differ.
+    ///
+    /// The numbers are chosen so the two regimes are unambiguous at the DEFAULT
+    /// `min_parallax_deg` of 0.2. MEASURED on this scene: the adjacent pair's median triangulation
+    /// angle is 0.16 deg and it triangulates 3 of the 240 tracks — below the growth loop's 4-point
+    /// admission bar, so the map ends at its two seed views. `(0, 9)` is the first pair to clear
+    /// the 1.5 deg seed floor, at 1.54 deg, and it triangulates all 240.
+    fn forward_walk(n_views: usize) -> (Vec<PinholeCamera>, Vec<FeatureTrack>) {
+        const F: f64 = 520.0;
+        const STEP: f64 = 0.06;
+        let (w, h) = (640.0, 480.0);
+
+        // xorshift64: deterministic, self-contained, and — unlike a trig lattice — it does not put
+        // the landmarks on a surface the homography arm could fit.
+        let mut state: u64 = 0x2545_F491_4F6C_DD1D;
+        let mut rnd = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state % 100_000) as f64 / 100_000.0
+        };
+
+        let cams: Vec<PinholeCamera> = (0..n_views).map(|_| pinhole(F)).collect();
+        // Camera i sits at (0, 0, i * STEP) looking down +Z, i.e. world→cam is a pure -z translation.
+        let gt: Vec<Pose3d> = (0..n_views)
+            .map(|i| {
+                Pose3d::new(
+                    Mat3F64::IDENTITY,
+                    Vec3F64::new(0.0, 0.0, -(i as f64) * STEP),
+                )
+            })
+            .collect();
+
+        // A shell of landmarks 7.0-8.5 m ahead at 0.45-0.55 of their depth off-axis. A shell rather
+        // than a filled volume so the parallax spread stays tight: with the depth and the off-axis
+        // fraction both wandering, the low-parallax tail of a wide pair would overlap the
+        // high-parallax tail of the adjacent one and neither regime would be clean.
+        let mut tracks: Vec<FeatureTrack> = Vec::new();
+        for _ in 0..240 {
+            let z = 7.0 + 1.5 * rnd();
+            let theta = std::f64::consts::TAU * rnd();
+            let rho = 0.45 + 0.10 * rnd();
+            let p = Vec3F64::new(rho * z * theta.cos(), 0.70 * rho * z * theta.sin(), z);
+            let obs: Vec<(usize, Vec2F64)> = (0..n_views)
+                .filter_map(|c| {
+                    let pc = gt[c].transform_point(&p);
+                    if pc.z <= 0.5 {
+                        return None;
+                    }
+                    let uv = project(p, &gt[c], &cams[c]);
+                    (uv.x >= 0.0 && uv.x < w && uv.y >= 0.0 && uv.y < h).then_some((c, uv))
+                })
+                .collect();
+            if obs.len() >= 2 {
+                tracks.push(FeatureTrack { obs });
+            }
+        }
+        (cams, tracks)
+    }
+
+    /// **Choosing the bootstrap pair on shared-track count strands the reconstruction at the seed.**
+    ///
+    /// Asserted on the number of views the SfM registers BY ITSELF, because that is the quantity
+    /// the seed actually decides and the only one a caller's own repair layer cannot inflate: an
+    /// optical-flow or dead-reckoning fallback downstream will happily report a full trajectory on
+    /// top of a two-view map. Point count would not do either — the argmax arm's failure is that
+    /// its seed cloud is too thin to register anything, so counting points measures the symptom
+    /// through a second lens rather than the outcome.
+    ///
+    /// Both arms run the identical pipeline on the identical scene; `ranked_seed` is the single
+    /// variable. The comparison is against the OLD behaviour rather than a fixed threshold, so this
+    /// cannot pass on a change that does nothing.
+    #[test]
+    fn ranked_bootstrap_registers_more_views_than_the_most_shared_tracks_seed() {
+        let n_views = 14;
+        let (cams, tracks) = forward_walk(n_views);
+        assert_eq!(
+            tracks.len(),
+            240,
+            "every landmark should be seen by every view"
+        );
+        let config = ReconstructionConfig::new(0.0);
+
+        let registered = |r: &Reconstruction| r.views.iter().filter(|p| p.is_some()).count();
+
+        let ranked = reconstruct_inner(&cams, &[], &tracks, &config, None, true, true)
+            .expect("ranked seed selection must reconstruct");
+        // The argmax arm is allowed to fail outright — a seed that triangulates nothing is exactly
+        // the failure under test — so an error counts as zero views rather than aborting the test.
+        let argmax = reconstruct_inner(&cams, &[], &tracks, &config, None, true, false);
+        let n_ranked = registered(&ranked);
+        let n_argmax = argmax.as_ref().map(registered).unwrap_or(0);
+
+        assert!(
+            n_ranked > n_argmax,
+            "ranked seed registered {n_ranked} views, most-shared-tracks seed registered \
+             {n_argmax} of {n_views} — the ranked selection must register STRICTLY more, or this \
+             scene does not exercise the change"
+        );
+        assert_eq!(
+            n_ranked, n_views,
+            "the ranked seed should register the whole walk, not merely beat the argmax"
+        );
+        // Pin the failure mode itself: the argmax arm must stall at (or below) the seed pair, not
+        // merely register somewhat fewer views. Without this the test would keep passing if the
+        // argmax arm degraded gracefully instead of collapsing, which is a different claim.
+        assert!(
+            n_argmax <= 2,
+            "expected the most-shared-tracks seed to strand the map at its two seed views, got \
+             {n_argmax}"
         );
     }
 }
