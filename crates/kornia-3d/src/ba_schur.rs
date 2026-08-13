@@ -569,6 +569,192 @@ fn matvec_6x3t_6(a: &[f32; 18], b: &[f32; 6]) -> [f32; 3] {
     out
 }
 
+// ── Block-sparse reduced camera system ───────────────────────────────────
+
+/// Block-sparse storage for the reduced camera system `M = A − B C⁻¹ Bᵀ`.
+///
+/// The dense path materialises all `(6P)²` entries. Two cameras occupy a NONZERO 6×6 block only if
+/// they share a point (or a motion prior couples them), and on a sequential capture that is a small
+/// fraction of pairs — the rest of the matrix is structurally zero, and both the `O(dim²)` zeroing
+/// and the `O(dim³)` dense factorisation are spent on it.
+///
+/// This holds one 6×6 block per COUPLED pair, addressed by a flat `(i1, i2) -> slot` table. The
+/// table is still `O(P²)` — this does not escape quadratic memory, it cuts the constant by 36×,
+/// one `usize` per pair instead of a 288-byte block: 3.2 MB at `P = 637` against the 117 MB dense
+/// matrix it replaces. A direct index also beats a hash lookup in a loop that runs once per
+/// (camera, camera, point) triple. Past a few thousand cameras the table itself would want a
+/// compressed representation.
+///
+/// Blocks are `f64` because that is what the dense path accumulates into (`Mat::<f64>`). Matching
+/// the storage type is what makes the two assemblies bit-identical rather than merely close.
+///
+/// NOTE the failure mode this is written to avoid: an earlier attempt accumulated into compact
+/// blocks and then SCATTERED them into the dense matrix, which performed every one of the original
+/// scattered writes plus the block pass on top. Compacting the accumulation only pays if the dense
+/// matrix is never built at all.
+struct BlockAccum {
+    /// Row-major `(i1, i2) -> slot`, or `usize::MAX` for a pair that never couples.
+    index: Vec<usize>,
+    /// Flat row-major 6×6 blocks, one per coupled pair.
+    blocks: Vec<[f64; 36]>,
+    /// `(i1, i2)` for each slot, so triplet emission needs no scan of `index`.
+    pairs: Vec<(usize, usize)>,
+    /// Number of free cameras; the stride of `index`.
+    n: usize,
+}
+
+impl BlockAccum {
+    /// Build the coupling pattern once. It is a function of which cameras share a point — plus any
+    /// pair coupled by a MOTION PRIOR, which no observation need connect.
+    ///
+    /// Covisibility alone is not the whole pattern. A constant-velocity prior (see
+    /// [`BaMotionPrior`]) couples a triplet whether or not those cameras share structure, and when
+    /// they do not, the block it writes has no slot to go to. Dropping such priors instead would be
+    /// worse than failing: when two consecutive keyframes share NO point, the motion prior is the
+    /// only thing connecting them, so discarding it severs the pose graph exactly where the
+    /// geometry is weakest. Hence they are added to the pattern up front.
+    ///
+    /// The pattern is symmetric by construction — the covisibility double loop visits `(i1, i2)`
+    /// and `(i2, i1)`, and motion pairs are inserted in both orders — which
+    /// [`BlockAccum::lower_triplets`] relies on when it averages a block against its transpose.
+    fn new(
+        n: usize,
+        b_by_point: &[Vec<(usize, [f32; 18])>],
+        motion_pairs: &[(usize, usize)],
+    ) -> Self {
+        let mut index = vec![usize::MAX; n * n];
+        let mut pairs = Vec::new();
+        let touch = |index: &mut Vec<usize>, pairs: &mut Vec<(usize, usize)>, i1, i2| {
+            let e = &mut index[i1 * n + i2];
+            if *e == usize::MAX {
+                *e = pairs.len();
+                pairs.push((i1, i2));
+            }
+        };
+        for b_for_j in b_by_point {
+            for (i1, _) in b_for_j.iter() {
+                for (i2, _) in b_for_j.iter() {
+                    touch(&mut index, &mut pairs, *i1, *i2);
+                }
+            }
+        }
+        for &(a, b) in motion_pairs {
+            if a >= n || b >= n {
+                continue;
+            }
+            touch(&mut index, &mut pairs, a, b);
+            touch(&mut index, &mut pairs, b, a);
+        }
+        // Every free camera carries its own A block, so the diagonal always exists — even for a
+        // camera whose every observation is on a FIXED point, which contributes to A but to no B.
+        for i in 0..n {
+            touch(&mut index, &mut pairs, i, i);
+        }
+        let blocks = vec![[0.0; 36]; pairs.len()];
+        Self {
+            index,
+            blocks,
+            pairs,
+            n,
+        }
+    }
+
+    /// Zero every block, keeping the pattern. The pattern depends only on the observation graph,
+    /// which does not change across LM iterations; the values do.
+    fn clear(&mut self) {
+        for b in self.blocks.iter_mut() {
+            *b = [0.0; 36];
+        }
+    }
+
+    /// Slot for a pair, or `None` if these two cameras never couple.
+    #[inline]
+    fn slot(&self, i1: usize, i2: usize) -> Option<usize> {
+        let s = self.index[i1 * self.n + i2];
+        (s != usize::MAX).then_some(s)
+    }
+
+    /// The LOWER TRIANGLE as triplets, symmetrised exactly as the dense path symmetrises.
+    ///
+    /// The dense path averages `M[i][j]` with `M[j][i]` over the whole matrix and then reads
+    /// `Side::Lower`. Doing the same here — but only over the blocks that exist — reproduces that
+    /// lower triangle bit for bit: floating-point addition is commutative, so `0.5 * (a + b)` is
+    /// the same value whichever triangle each operand came from.
+    ///
+    /// Structural zeros are dropped, but an entry that happens to evaluate to `0.0` inside a live
+    /// block is kept: dropping it would shrink the pattern from one LM iteration to the next for a
+    /// reason that has nothing to do with the problem's structure.
+    fn lower_triplets(&self) -> Vec<faer::sparse::Triplet<usize, usize, f64>> {
+        let mut t = Vec::with_capacity(self.blocks.len() * 21);
+        for (slot, &(i1, i2)) in self.pairs.iter().enumerate() {
+            if i1 < i2 {
+                continue; // emitted when its transpose slot comes round
+            }
+            let blk = &self.blocks[slot];
+            // Symmetric counterpart. Guaranteed present for i1 > i2 (the pattern is symmetric);
+            // for i1 == i2 it is this same block, transposed within itself.
+            let t_blk = match self.slot(i2, i1) {
+                Some(s) => &self.blocks[s],
+                None => blk,
+            };
+            let (row0, col0) = (i1 * 6, i2 * 6);
+            for r in 0..6 {
+                for c in 0..6 {
+                    if row0 + r < col0 + c {
+                        continue;
+                    }
+                    // Operands in the dense path's order (upper first, then lower) so the two
+                    // expressions are identical on sight as well as in value.
+                    let v = if i1 == i2 && r == c {
+                        blk[r * 6 + c]
+                    } else {
+                        0.5 * (t_blk[c * 6 + r] + blk[r * 6 + c])
+                    };
+                    t.push(faer::sparse::Triplet::new(row0 + r, col0 + c, v));
+                }
+            }
+        }
+        t
+    }
+}
+
+/// Why a reduced-system factorisation failed.
+///
+/// The distinction matters to the LM loop. A `Numeric` failure is a property of the VALUES — an
+/// indefinite or near-singular matrix — and raising λ usually clears it, which is why the dense
+/// path has always retried. A `Structural` failure is a property of the sparsity PATTERN; damping
+/// changes no pattern, so retrying only burns the iteration budget before failing anyway.
+enum FactorFailure {
+    Structural(String),
+    Numeric(String),
+}
+
+/// Factorise the accumulated reduced system sparsely and solve for the pose step.
+///
+/// Only the lower triangle is built, which is all `Side::Lower` reads.
+fn sparse_llt_solve(
+    acc: &BlockAccum,
+    dim: usize,
+    rhs: &Mat<f64>,
+) -> Result<Mat<f64>, FactorFailure> {
+    use faer::linalg::solvers::Solve;
+    // Straight from the compact blocks. Scanning a dense matrix for nonzeros would be an O(dim²)
+    // pass to recover structure the assembly already knows — and it would force the dense matrix
+    // to exist at all, which is the cost this path is here to avoid.
+    let trips = acc.lower_triplets();
+    let a = faer::sparse::SparseColMat::try_new_from_triplets(dim, dim, &trips)
+        .map_err(|e| FactorFailure::Structural(format!("sparse reduced system: {e:?}")))?;
+    let sym = faer::sparse::linalg::solvers::SymbolicLlt::try_new(a.symbolic(), faer::Side::Lower)
+        .map_err(|e| FactorFailure::Structural(format!("symbolic Llt: {e:?}")))?;
+    let llt = faer::sparse::linalg::solvers::Llt::try_new_with_symbolic(
+        sym,
+        a.as_ref(),
+        faer::Side::Lower,
+    )
+    .map_err(|e| FactorFailure::Numeric(format!("sparse Llt: {e:?}")))?;
+    Ok(llt.solve(rhs))
+}
+
 // ── Driver ───────────────────────────────────────────────────────────────
 
 /// Bundle adjustment via dense Schur-complement reduction. Same argument list as
@@ -836,6 +1022,10 @@ fn bundle_adjust_schur_impl(
     BA_CALLS.fetch_add(1, Ordering::Relaxed);
     let mut iters_done = 0usize;
     let mut converged = false;
+    // Block-sparse reduced camera system, built on the first iteration when the sparse path is
+    // enabled and reused (cleared, not rebuilt) thereafter: its pattern is a function of the
+    // observation graph, which does not change across LM iterations.
+    let mut accum: Option<BlockAccum> = None;
     // Objective at the parameters currently held in `se3s`/`xyz`. Kept in step with them: set to
     // `cost` once it is evaluated for this iteration, and to `new_cost` when a step is accepted,
     // so every exit path — converged, budget exhausted, damping blown out — reports the value at
@@ -1367,16 +1557,70 @@ fn bundle_adjust_schur_impl(
             }
         }
 
-        // ── Build M (dense 6Pf × 6Pf) + m (6Pf) ─────────────────────────
+        // ── Build M (6Pf × 6Pf) + m (6Pf) ───────────────────────────────
         let dim = n_free_poses * 6;
-        let mut m_mat = Mat::<f64>::zeros(dim, dim);
+        // 117 MB at P = 637, allocated and zeroed EVERY LM iteration. The sparse path never touches
+        // it, so it is a 0×0 stub there; `Mat` has no null state, and the branches below never index
+        // it while the accumulator is live.
+        let mut m_mat = if params.sparse_reduced_system {
+            Mat::<f64>::zeros(0, 0)
+        } else {
+            Mat::<f64>::zeros(dim, dim)
+        };
         let mut m_vec = vec![0.0_f64; dim];
+
+        // Build the sparse pattern before ANY write into the reduced system: the A-block loop just
+        // below is the first writer and must not take the dense branch against the 0×0 stub.
+        if params.sparse_reduced_system && accum.is_none() {
+            // Motion priors couple cameras regardless of covisibility, so their pairs must be in
+            // the pattern or the block they write has nowhere to go. Mapped into the SAME local
+            // index space the accumulator uses; unregistered members drop out via `pose_local < 0`.
+            let mut motion_pairs: Vec<(usize, usize)> = Vec::new();
+            if let Some(mps) = motion_priors {
+                for mp in mps {
+                    if mp.i0 >= p_total || mp.i1 >= p_total || mp.i2 >= p_total {
+                        continue;
+                    }
+                    let locs: Vec<usize> = [mp.i0, mp.i1, mp.i2]
+                        .iter()
+                        .filter_map(|&g| {
+                            let l = pose_local[g];
+                            (l >= 0).then_some(l as usize)
+                        })
+                        .collect();
+                    for (x, &a) in locs.iter().enumerate() {
+                        for &b in locs.iter().skip(x + 1) {
+                            motion_pairs.push((a, b));
+                        }
+                    }
+                }
+            }
+            accum = Some(BlockAccum::new(n_free_poses, &b_by_point, &motion_pairs));
+        }
+        if let Some(acc) = accum.as_mut() {
+            acc.clear();
+        }
 
         // Place A blocks on diagonal of M.
         for (k, ab) in a_blocks.iter().enumerate() {
-            for i in 0..6 {
-                for j in 0..6 {
-                    m_mat[(k * 6 + i, k * 6 + j)] = ab[i * 6 + j] as f64;
+            match accum.as_mut() {
+                Some(acc) => {
+                    let slot = acc
+                        .slot(k, k)
+                        .expect("BlockAccum::new inserts a diagonal slot for every free camera");
+                    let blk = &mut acc.blocks[slot];
+                    for i in 0..6 {
+                        for j in 0..6 {
+                            blk[i * 6 + j] = ab[i * 6 + j] as f64;
+                        }
+                    }
+                }
+                None => {
+                    for i in 0..6 {
+                        for j in 0..6 {
+                            m_mat[(k * 6 + i, k * 6 + j)] = ab[i * 6 + j] as f64;
+                        }
+                    }
                 }
             }
             for i in 0..6 {
@@ -1393,9 +1637,35 @@ fn bundle_adjust_schur_impl(
         // change the result. Do not extend this loop to accumulate onto shared cells without
         // switching to a deterministic ordering.
         for ((la, lb), blk) in &h_offdiag {
-            for i in 0..6 {
-                for j in 0..6 {
-                    m_mat[(la * 6 + i, lb * 6 + j)] += blk[i * 6 + j] as f64;
+            match accum.as_mut() {
+                // `BlockAccum::new` was handed every motion-prior pair, so a live prior always has
+                // a slot. If one somehow does not, fail loudly rather than silently dropping the
+                // term: when two consecutive keyframes share no point, this prior is the ONLY thing
+                // connecting them, and quietly discarding it severs the pose graph precisely where
+                // the geometry is weakest.
+                Some(acc) => match acc.slot(*la, *lb) {
+                    Some(slot) => {
+                        let dst = &mut acc.blocks[slot];
+                        for i in 0..6 {
+                            for j in 0..6 {
+                                dst[i * 6 + j] += blk[i * 6 + j] as f64;
+                            }
+                        }
+                    }
+                    None => {
+                        record_call_totals(&t_ba, iters_done);
+                        return Err(SchurBaError::CholeskyFailed(format!(
+                            "motion prior couples free cameras {la} and {lb}, which the sparse \
+                             pattern does not cover"
+                        )));
+                    }
+                },
+                None => {
+                    for i in 0..6 {
+                        for j in 0..6 {
+                            m_mat[(la * 6 + i, lb * 6 + j)] += blk[i * 6 + j] as f64;
+                        }
+                    }
                 }
             }
         }
@@ -1439,13 +1709,40 @@ fn bundle_adjust_schur_impl(
                     let col0 = i2_loc * 6;
                     let _ = idx1;
                     let _ = idx2;
-                    for r in 0..6 {
-                        for c in 0..6 {
-                            let mut s = 0.0_f32;
-                            for k in 0..3 {
-                                s += bc1[r * 3 + k] * b2[c * 3 + k];
+                    // Any pair reached here shares point j, so covisibility put it in the pattern.
+                    // Resolved once per pair, outside the element loops: same subtraction, in the
+                    // same order, into the same f64 destination type as the dense branch — only
+                    // the address differs, which is what makes the two assemblies bit-identical.
+                    let slot = accum.as_ref().map(|acc| {
+                        acc.slot(*i1_loc, *i2_loc).expect(
+                            "cameras sharing this point were covisible when the pattern was built",
+                        )
+                    });
+                    match slot {
+                        Some(slot) => {
+                            let dst =
+                                &mut accum.as_mut().expect("slot implies a live accum").blocks
+                                    [slot];
+                            for r in 0..6 {
+                                for c in 0..6 {
+                                    let mut s = 0.0_f32;
+                                    for k in 0..3 {
+                                        s += bc1[r * 3 + k] * b2[c * 3 + k];
+                                    }
+                                    dst[r * 6 + c] -= s as f64;
+                                }
                             }
-                            m_mat[(row0 + r, col0 + c)] -= s as f64;
+                        }
+                        None => {
+                            for r in 0..6 {
+                                for c in 0..6 {
+                                    let mut s = 0.0_f32;
+                                    for k in 0..3 {
+                                        s += bc1[r * 3 + k] * b2[c * 3 + k];
+                                    }
+                                    m_mat[(row0 + r, col0 + c)] -= s as f64;
+                                }
+                            }
                         }
                     }
                 }
@@ -1455,39 +1752,56 @@ fn bundle_adjust_schur_impl(
         // ── Solve M · δ_pose = m via Cholesky ────────────────────────────
         // Symmetrize numerically (the construction above should already be
         // symmetric to within roundoff; do an average to guarantee).
-        for i in 0..dim {
-            for j in (i + 1)..dim {
-                let avg = 0.5 * (m_mat[(i, j)] + m_mat[(j, i)]);
-                m_mat[(i, j)] = avg;
-                m_mat[(j, i)] = avg;
+        //
+        // Dense path only: this is an O(dim²) pass over the full matrix. The accumulator does the
+        // same averaging inside `lower_triplets`, over the blocks that exist rather than over all
+        // of them, and produces the same lower triangle bit for bit.
+        if accum.is_none() {
+            for i in 0..dim {
+                for j in (i + 1)..dim {
+                    let avg = 0.5 * (m_mat[(i, j)] + m_mat[(j, i)]);
+                    m_mat[(i, j)] = avg;
+                    m_mat[(j, i)] = avg;
+                }
             }
         }
         BA_ASM_NANOS.fetch_add(t_asm.elapsed().as_nanos() as u64, Ordering::Relaxed);
         let t_fact = std::time::Instant::now();
-        let chol = match m_mat.llt(faer::Side::Lower) {
-            Ok(c) => c,
-            Err(e) => {
-                // A failed factorisation is not free, and it is not cheaper than a successful
-                // one — charge it to the factor phase before unwinding, or the phase split
-                // silently attributes its (already-banked) linearise and assemble time while
-                // crediting factor with nothing, biasing exactly the comparison these counters
-                // exist to make.
+        // RHS as faer column. Identical for both paths — only the LHS storage differs.
+        let m_col = Mat::<f64>::from_fn(dim, 1, |i, _| m_vec[i]);
+        // A failed factorisation is not free, and it is not cheaper than a successful one — charge
+        // it to the factor phase before unwinding, or the phase split silently attributes its
+        // (already-banked) linearise and assemble time while crediting factor with nothing, biasing
+        // exactly the comparison these counters exist to make.
+        //
+        // `BA_CALLS` was already incremented on entry; the give-up path records this call's work
+        // too, or `BA_NANOS / BA_CALLS` under-reports by the failure rate and `BA_ITERS` loses
+        // every iteration of every failed solve.
+        let solved = match accum.as_ref() {
+            Some(acc) => sparse_llt_solve(acc, dim, &m_col),
+            None => m_mat
+                .llt(faer::Side::Lower)
+                .map(|chol| chol.solve(&m_col))
+                .map_err(|e| FactorFailure::Numeric(format!("{e:?}"))),
+        };
+        let d_pose_col = match solved {
+            Ok(d) => d,
+            Err(FactorFailure::Structural(why)) => {
+                BA_FACT_NANOS.fetch_add(t_fact.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                record_call_totals(&t_ba, iters_done);
+                return Err(SchurBaError::CholeskyFailed(why));
+            }
+            Err(FactorFailure::Numeric(why)) => {
                 BA_FACT_NANOS.fetch_add(t_fact.elapsed().as_nanos() as u64, Ordering::Relaxed);
                 // Bump damping and retry next outer iteration.
                 lambda *= 10.0;
                 if lambda > 1e10 {
-                    // `BA_CALLS` was already incremented on entry; record this call's work on
-                    // the error path too, or `BA_NANOS / BA_CALLS` under-reports by the failure
-                    // rate and `BA_ITERS` loses every iteration of every failed solve.
                     record_call_totals(&t_ba, iters_done);
-                    return Err(SchurBaError::CholeskyFailed(format!("{e:?}")));
+                    return Err(SchurBaError::CholeskyFailed(why));
                 }
                 continue;
             }
         };
-        // RHS as faer column.
-        let m_col = Mat::<f64>::from_fn(dim, 1, |i, _| m_vec[i]);
-        let d_pose_col = chol.solve(&m_col);
 
         // ── Back-substitute for points: δ_x[j] = C⁻¹ (g_x - B.T · δ_p) ──
         let mut d_pose = vec![0.0_f64; dim];
@@ -3376,5 +3690,498 @@ mod tests {
             "motion prior left the position ratio at {ratio:.4} on a map {OFFSET} m from the \
              origin (want 0.5, started 0.2) — the FD step is not tracking coordinate magnitude"
         );
+    }
+
+    // ── Sparse reduced camera system ────────────────────────────────────────
+
+    /// Deterministic, seedable, and NOT the `rand` crate — these tests assert bit-level equality,
+    /// so the numbers must be identical on every machine and every run.
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn next_f32(&mut self) -> f32 {
+            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1);
+            // Top 24 bits → [-1, 1), so the products below stay in a range where f32 rounding is
+            // ordinary rather than denormal.
+            ((self.0 >> 40) as f32 / (1u32 << 23) as f32) - 1.0
+        }
+    }
+
+    /// The dense assembly, written out independently of the solver, so the accumulator is compared
+    /// against something other than itself. Mirrors `bundle_adjust_schur_impl`: A blocks assigned
+    /// onto the diagonal, motion-prior blocks added, per-point Schur corrections subtracted, then
+    /// the whole matrix symmetrised.
+    fn dense_reference(
+        n: usize,
+        a_blocks: &[[f32; 36]],
+        offdiag: &[((usize, usize), [f32; 36])],
+        schur: &[((usize, usize), [f32; 36])],
+    ) -> Mat<f64> {
+        let dim = n * 6;
+        let mut m = Mat::<f64>::zeros(dim, dim);
+        for (k, ab) in a_blocks.iter().enumerate() {
+            for i in 0..6 {
+                for j in 0..6 {
+                    m[(k * 6 + i, k * 6 + j)] = ab[i * 6 + j] as f64;
+                }
+            }
+        }
+        for ((la, lb), blk) in offdiag {
+            for i in 0..6 {
+                for j in 0..6 {
+                    m[(la * 6 + i, lb * 6 + j)] += blk[i * 6 + j] as f64;
+                }
+            }
+        }
+        for ((i1, i2), blk) in schur {
+            for r in 0..6 {
+                for c in 0..6 {
+                    m[(i1 * 6 + r, i2 * 6 + c)] -= blk[r * 6 + c] as f64;
+                }
+            }
+        }
+        for i in 0..dim {
+            for j in (i + 1)..dim {
+                let avg = 0.5 * (m[(i, j)] + m[(j, i)]);
+                m[(i, j)] = avg;
+                m[(j, i)] = avg;
+            }
+        }
+        m
+    }
+
+    /// The lower triangle the sparse path hands to the factorisation must be the SAME NUMBERS the
+    /// dense path hands to its factorisation — not close, identical. Anything less and
+    /// `sparse_reduced_system` would be a second solver with its own convergence behaviour rather
+    /// than a storage choice, and every existing tolerance in this file would be re-tuned by it.
+    ///
+    /// Bit equality is achievable because `BlockAccum` accumulates in `f64`, exactly as `Mat<f64>`
+    /// does, in the same order, and averages the two triangles with the same expression.
+    #[test]
+    fn sparse_lower_triangle_is_bit_identical_to_the_dense_one() {
+        const N: usize = 6;
+        let mut rng = Lcg(0x5eed_1234);
+        let rand_block = |rng: &mut Lcg| {
+            let mut b = [0.0_f32; 36];
+            for v in b.iter_mut() {
+                *v = rng.next_f32();
+            }
+            b
+        };
+
+        // Banded covisibility: point j is seen by cameras j and j+1 only. Cameras 0 and 5 therefore
+        // share nothing, which is the whole point — a dense matrix would store that block anyway.
+        let b_by_point: Vec<Vec<(usize, [f32; 18])>> = (0..N - 1)
+            .map(|j| vec![(j, [0.0; 18]), (j + 1, [0.0; 18])])
+            .collect();
+        // A motion prior couples 0 and 5 with no shared structure.
+        let motion_pairs = [(0usize, N - 1)];
+
+        let a_blocks: Vec<[f32; 36]> = (0..N).map(|_| rand_block(&mut rng)).collect();
+        let offdiag: Vec<((usize, usize), [f32; 36])> = vec![
+            ((0, N - 1), rand_block(&mut rng)),
+            ((N - 1, 0), rand_block(&mut rng)),
+        ];
+        let mut schur: Vec<((usize, usize), [f32; 36])> = Vec::new();
+        for b_for_j in &b_by_point {
+            for (i1, _) in b_for_j {
+                for (i2, _) in b_for_j {
+                    schur.push(((*i1, *i2), rand_block(&mut rng)));
+                }
+            }
+        }
+
+        let dense = dense_reference(N, &a_blocks, &offdiag, &schur);
+
+        let mut acc = BlockAccum::new(N, &b_by_point, &motion_pairs);
+        acc.clear();
+        for (k, ab) in a_blocks.iter().enumerate() {
+            let slot = acc.slot(k, k).expect("diagonal slot");
+            for i in 0..6 {
+                for j in 0..6 {
+                    acc.blocks[slot][i * 6 + j] = ab[i * 6 + j] as f64;
+                }
+            }
+        }
+        for ((la, lb), blk) in &offdiag {
+            let slot = acc.slot(*la, *lb).expect("motion-prior slot");
+            for i in 0..6 {
+                for j in 0..6 {
+                    acc.blocks[slot][i * 6 + j] += blk[i * 6 + j] as f64;
+                }
+            }
+        }
+        for ((i1, i2), blk) in &schur {
+            let slot = acc.slot(*i1, *i2).expect("covisible slot");
+            for r in 0..6 {
+                for c in 0..6 {
+                    acc.blocks[slot][r * 6 + c] -= blk[r * 6 + c] as f64;
+                }
+            }
+        }
+
+        let dim = N * 6;
+        let trips = acc.lower_triplets();
+        let mut got = vec![f64::NAN; dim * dim];
+        for t in &trips {
+            assert!(
+                t.row >= t.col,
+                "upper-triangle triplet at ({}, {})",
+                t.row,
+                t.col
+            );
+            got[t.row * dim + t.col] = t.val;
+        }
+
+        // CONTROL 1: the pattern must actually be sparse, or bit-equality is trivially satisfied by
+        // a dense emission and this test proves nothing about the sparse path.
+        let full = dim * (dim + 1) / 2;
+        assert!(
+            trips.len() < full * 3 / 4,
+            "emitted {} of {full} lower entries — pattern is not sparse, so this test is not \
+             testing sparsity",
+            trips.len()
+        );
+        // CONTROL 2: the dense matrix must have real content in the blocks we do emit, or "equal"
+        // could mean "both all zero".
+        let live: usize = (0..dim)
+            .flat_map(|r| (0..=r).map(move |c| (r, c)))
+            .filter(|&(r, c)| dense[(r, c)] != 0.0)
+            .count();
+        assert!(
+            live > dim,
+            "dense reference is nearly empty ({live} nonzeros)"
+        );
+
+        for r in 0..dim {
+            for c in 0..=r {
+                let want = dense[(r, c)];
+                let have = got[r * dim + c];
+                if have.is_nan() {
+                    // Structurally absent: the dense value must be exactly zero.
+                    assert_eq!(
+                        want, 0.0,
+                        "({r}, {c}) is outside the sparse pattern but dense holds {want}"
+                    );
+                } else {
+                    assert_eq!(
+                        want.to_bits(),
+                        have.to_bits(),
+                        "({r}, {c}): dense {want:e} vs sparse {have:e}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A constant-velocity prior couples a camera triplet whether or not those cameras share a
+    /// point. If the pattern were built from covisibility alone, the prior's 6×6 block would have
+    /// nowhere to go — and dropping it would sever the pose graph exactly where the geometry is
+    /// weakest, because when two keyframes share no point the prior is the ONLY thing connecting
+    /// them.
+    ///
+    /// The control is the same accumulator built WITHOUT the motion pair: it must lack the slot.
+    #[test]
+    fn motion_prior_pairs_enter_the_pattern_without_covisibility() {
+        // Cameras 0 and 1 share point 0. Camera 2 shares nothing with either.
+        let b_by_point: Vec<Vec<(usize, [f32; 18])>> = vec![vec![(0, [0.0; 18]), (1, [0.0; 18])]];
+
+        let covis_only = BlockAccum::new(3, &b_by_point, &[]);
+        assert!(
+            covis_only.slot(1, 2).is_none() && covis_only.slot(2, 1).is_none(),
+            "control failed: (1, 2) is covisible after all, so this test cannot show the \
+             motion-prior pairs are what added it"
+        );
+
+        let with_prior = BlockAccum::new(3, &b_by_point, &[(1, 2)]);
+        assert!(
+            with_prior.slot(1, 2).is_some(),
+            "motion pair (1, 2) missing"
+        );
+        assert!(
+            with_prior.slot(2, 1).is_some(),
+            "motion pair inserted in one order only; `lower_triplets` averages a block against \
+             its transpose and would read the wrong slot"
+        );
+        // Still not a dense pattern: (0, 2) is neither covisible nor coupled by the prior.
+        assert!(with_prior.slot(0, 2).is_none());
+    }
+
+    /// A sequential capture: cameras walking forward, each point visible only from a short window
+    /// of consecutive views. This is the regime `sparse_reduced_system` exists for, and the one
+    /// where a covisibility-only pattern would drop a motion prior.
+    ///
+    /// Returns `(poses_gt, poses_init, points_gt, points_init, observations, motion_priors)`.
+    #[allow(clippy::type_complexity)]
+    fn walkthrough(
+        cam: &PinholeCamera,
+        n_cams: usize,
+        window: usize,
+    ) -> (
+        Vec<Pose3d>,
+        Vec<Pose3d>,
+        Vec<Vec3F64>,
+        Vec<Vec3F64>,
+        Vec<BaObservation>,
+        Vec<BaMotionPrior>,
+    ) {
+        let mut rng = Lcg(0xabcd_ef01);
+        // Camera k sits at x = 0.4k looking down +Z.
+        let pose_at = |x: f64| Pose3d::new(Mat3F64::IDENTITY, Vec3F64::new(-x, 0.0, 0.0));
+        let poses_gt: Vec<Pose3d> = (0..n_cams).map(|k| pose_at(0.4 * k as f64)).collect();
+
+        // Four points per camera window, laid out ahead of the camera that starts the window.
+        let mut points_gt = Vec::new();
+        let mut owner = Vec::new();
+        for k in 0..n_cams.saturating_sub(window - 1) {
+            for q in 0..4 {
+                let x = 0.4 * k as f64 + 0.2 * q as f64 + 0.1 * rng.next_f32() as f64;
+                let y = 0.8 * rng.next_f32() as f64;
+                let z = 5.0 + 0.5 * rng.next_f32() as f64;
+                points_gt.push(Vec3F64::new(x, y, z));
+                owner.push(k);
+            }
+        }
+
+        let project = |pose: &Pose3d, pw: &Vec3F64| -> [f32; 2] {
+            let pc = pose.transform_point(pw);
+            [
+                (cam.fx * pc.x / pc.z + cam.cx) as f32,
+                (cam.fy * pc.y / pc.z + cam.cy) as f32,
+            ]
+        };
+        let mut observations = Vec::new();
+        for (pi, pt) in points_gt.iter().enumerate() {
+            let first = owner[pi];
+            let last = (first + window).min(n_cams);
+            for (k, pose) in poses_gt.iter().enumerate().take(last).skip(first) {
+                observations.push(BaObservation {
+                    pose_idx: k,
+                    point_idx: pi,
+                    pixel: project(pose, pt),
+                    // Camera 0 anchors the gauge.
+                    fixed_pose: k == 0,
+                    fixed_point: false,
+                    ..BaObservation::default()
+                });
+            }
+        }
+
+        // Constant-velocity priors over every consecutive triplet. With `window = 2`, cameras k and
+        // k+2 share NO point, so these are exactly the couplings covisibility does not supply.
+        let motion: Vec<BaMotionPrior> = (0..n_cams.saturating_sub(2))
+            .map(|k| BaMotionPrior {
+                i0: k,
+                i1: k + 1,
+                i2: k + 2,
+                alpha: 0.5,
+                position_sigma: 0.05,
+                orientation_sigma: 0.05,
+            })
+            .collect();
+
+        let poses_init: Vec<Pose3d> = poses_gt
+            .iter()
+            .enumerate()
+            .map(|(k, p)| {
+                if k == 0 {
+                    *p
+                } else {
+                    Pose3d::new(
+                        p.rotation,
+                        p.translation + Vec3F64::new(0.03, -0.02, 0.015) * (k as f64),
+                    )
+                }
+            })
+            .collect();
+        let points_init: Vec<Vec3F64> = points_gt
+            .iter()
+            .map(|p| *p + Vec3F64::new(0.04, -0.05, 0.06))
+            .collect();
+
+        (
+            poses_gt,
+            poses_init,
+            points_gt,
+            points_init,
+            observations,
+            motion,
+        )
+    }
+
+    /// End-to-end A/B: the same problem solved with `sparse_reduced_system` off and on. This is the
+    /// test the unit one cannot be — it exercises the accumulator through the real assembly, so a
+    /// mis-addressed slot or a dropped motion-prior block shows up as a different step and a
+    /// visibly different answer.
+    ///
+    /// The tolerance is loose relative to the bit-equality above, and deliberately so: the two
+    /// paths hand the SAME lower triangle to DIFFERENT factorisations. A fill-reducing sparse
+    /// Cholesky permutes the matrix and does not perform the dense one's operations in the dense
+    /// one's order, so the steps differ at roundoff and the difference compounds over LM
+    /// iterations. What must not differ is where the two land.
+    #[test]
+    fn sparse_reduced_system_matches_dense_on_a_sequential_capture() {
+        let cam = test_camera();
+        let (poses_gt, poses_init, _points_gt, points_init, obs, motion) = walkthrough(&cam, 10, 2);
+
+        let solve = |sparse: bool| {
+            bundle_adjust_schur_with_all_priors(
+                &poses_init,
+                &points_init,
+                &obs,
+                &cam,
+                &BaParams {
+                    max_iterations: 25,
+                    sparse_reduced_system: sparse,
+                    ..BaParams::default()
+                },
+                None,
+                Some(&motion),
+            )
+            .expect("solve failed")
+        };
+        let dense = solve(false);
+        let sparse = solve(true);
+
+        // CONTROL: the solve has to have DONE something, or "the two agree" is a statement about
+        // two no-ops. Measure how far the dense run moved from its initial guess; the agreement
+        // tolerance below is only meaningful if it is far smaller than this.
+        let moved = poses_init
+            .iter()
+            .zip(dense.poses.iter())
+            .map(|(a, b)| (a.translation - b.translation).length())
+            .fold(0.0_f64, f64::max);
+        assert!(
+            moved > 1e-2,
+            "dense run moved poses by at most {moved:e} m — nothing was solved, so agreement \
+             with the sparse run proves nothing"
+        );
+        assert!(
+            dense.final_cost < 1e-4,
+            "dense run did not converge (final cost {})",
+            dense.final_cost
+        );
+
+        let pose_gap = dense
+            .poses
+            .iter()
+            .zip(sparse.poses.iter())
+            .map(|(a, b)| (a.translation - b.translation).length())
+            .fold(0.0_f64, f64::max);
+        let point_gap = dense
+            .points
+            .iter()
+            .zip(sparse.points.iter())
+            .map(|(a, b)| (*a - *b).length())
+            .fold(0.0_f64, f64::max);
+        assert!(
+            pose_gap < 1e-6 && point_gap < 1e-6,
+            "sparse and dense disagree: pose gap {pose_gap:e} m, point gap {point_gap:e} m \
+             (dense moved {moved:e} m from its initial guess)"
+        );
+
+        // And the answer they agree on must be the RIGHT one, or the whole A/B could be two runs
+        // of an identically broken assembly. Stated relative to the initial guess rather than as
+        // an absolute bound: only camera 0 is fixed and every point is free, so the problem keeps
+        // a gauge freedom and exact ground-truth recovery is not on offer at any tolerance.
+        let worst = |a: &[Pose3d], b: &[Pose3d]| {
+            a.iter()
+                .zip(b.iter())
+                .map(|(p, g)| (p.translation - g.translation).length())
+                .fold(0.0_f64, f64::max)
+        };
+        let before = worst(&poses_init, &poses_gt);
+        let after = worst(&sparse.poses, &poses_gt);
+        assert!(
+            after * 3.0 < before,
+            "sparse run left the worst pose {after:e} m from truth, having started {before:e} m \
+             away — it agrees with the dense run about a bad answer"
+        );
+        // Points are NOT checked against ground truth, and that is not an oversight: the residual
+        // gauge is a similarity, the scene sits ~5 m out while the cameras span 3.6 m, and a scale
+        // slide far too small to move a camera walks every point several centimetres. Measured
+        // here: poses end 7× closer to truth while the worst point ends FARTHER out than it
+        // started. The gauge-free statement is the objective, so assert on that instead.
+        assert!(
+            (dense.final_cost - sparse.final_cost).abs()
+                <= 1e-3 * dense.final_cost.abs().max(1e-12),
+            "objective disagrees: dense {:e} vs sparse {:e}",
+            dense.final_cost,
+            sparse.final_cost
+        );
+    }
+
+    /// Where the two paths stand on a problem the size the sparse one is FOR. Not an assertion:
+    /// a wall-clock threshold on a shared machine is a flake, and the answer legitimately flips
+    /// with density — which is why `sparse_reduced_system` defaults to off.
+    ///
+    /// Run it deliberately, in release, single-threaded:
+    ///
+    /// ```text
+    /// cargo test --release -p kornia-3d --lib -- --ignored --nocapture reduced_system_phase_timings
+    /// ```
+    #[test]
+    #[ignore = "measurement, not an assertion; run explicitly in release"]
+    fn reduced_system_phase_timings() {
+        const N_CAMS: usize = 250;
+        const WINDOW: usize = 8;
+        let cam = test_camera();
+        let (_, poses_init, _, points_init, obs, motion) = walkthrough(&cam, N_CAMS, WINDOW);
+
+        let pattern_density = {
+            // Same pattern the solver builds, counted here so the timings can be read against it.
+            let mut by_point: Vec<Vec<usize>> = vec![Vec::new(); points_init.len()];
+            for o in &obs {
+                by_point[o.point_idx].push(o.pose_idx);
+            }
+            let mut seen = std::collections::HashSet::new();
+            for cams in &by_point {
+                for a in cams {
+                    for b in cams {
+                        seen.insert((*a, *b));
+                    }
+                }
+            }
+            seen.len() as f64 / (N_CAMS * N_CAMS) as f64
+        };
+        println!(
+            "{N_CAMS} cameras, {} points, {} observations, dim = {}, covisible pairs = {:.1}%",
+            points_init.len(),
+            obs.len(),
+            N_CAMS * 6,
+            100.0 * pattern_density
+        );
+
+        for sparse in [false, true] {
+            BA_ASM_NANOS.swap(0, Ordering::Relaxed);
+            BA_FACT_NANOS.swap(0, Ordering::Relaxed);
+            BA_LIN_NANOS.swap(0, Ordering::Relaxed);
+            let t = std::time::Instant::now();
+            let r = bundle_adjust_schur_with_all_priors(
+                &poses_init,
+                &points_init,
+                &obs,
+                &cam,
+                &BaParams {
+                    max_iterations: 5,
+                    sparse_reduced_system: sparse,
+                    ..BaParams::default()
+                },
+                None,
+                Some(&motion),
+            )
+            .expect("solve failed");
+            let wall = t.elapsed().as_secs_f64();
+            let per = |n: u64| n as f64 / 1e9 / r.iterations.max(1) as f64;
+            println!(
+                "sparse={sparse:<5} iters={:<3} wall={wall:7.3}s  linearise={:7.3}s/it  \
+                 assemble={:7.3}s/it  factorise={:7.3}s/it  cost={:.6e}",
+                r.iterations,
+                per(BA_LIN_NANOS.load(Ordering::Relaxed)),
+                per(BA_ASM_NANOS.load(Ordering::Relaxed)),
+                per(BA_FACT_NANOS.load(Ordering::Relaxed)),
+                r.final_cost,
+            );
+        }
     }
 }
