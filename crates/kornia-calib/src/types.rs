@@ -43,7 +43,9 @@ pub struct FeatureMatch {
     pub uv_b: Vec2F64,
 }
 
-/// Tunable parameters for [`crate::calibrate_apriltag`].
+/// Tunable parameters for [`crate::calibrate_apriltag`] and the rest of the rig-calibration path.
+///
+/// For [`crate::reconstruct`] (incremental SfM) see [`ReconstructionConfig`] instead.
 ///
 /// Note: `robust_scale_sq`, `min_parallax_deg`, and `max_reprojection_error`
 /// live in **normalized** image coordinates because bundle adjustment runs on
@@ -64,6 +66,44 @@ pub struct CalibConfig {
     /// residual exceeds `median + x84_k·1.4826·MAD` are dropped before the final Cauchy pass. `2.5`
     /// is the standard X84 value; fixed board/tag corners (the gauge) are never dropped.
     pub x84_k: f64,
+}
+
+impl CalibConfig {
+    /// Config with flux-derived defaults for the given tag size (metres).
+    pub fn new(tag_size_m: f64) -> Self {
+        Self {
+            tag_size_m,
+            max_iterations: 40,
+            robust_scale_sq: (0.01f32).powi(2),
+            min_parallax_deg: 0.2,
+            max_reprojection_error: 0.01,
+            x84_k: 2.5,
+        }
+    }
+}
+
+/// Tunable parameters for [`crate::reconstruct`].
+///
+/// Split from [`CalibConfig`]: incremental SfM and rig calibration share a solver core but not a
+/// parameter set, and the priors below are meaningless for a rig (its views are simultaneous and
+/// unordered, and its cameras are not all upright). The two structs duplicate the handful of fields
+/// that genuinely apply to both rather than nest a "common" struct.
+///
+/// Note: `robust_scale_sq`, `min_parallax_deg`, and `max_reprojection_error`
+/// live in **normalized** image coordinates because bundle adjustment runs on
+/// an identity pinhole (per-camera intrinsics are folded into the observations).
+pub struct ReconstructionConfig {
+    /// AprilTag side length in metres (sets absolute metric scale).
+    pub tag_size_m: f64,
+    /// Maximum bundle-adjustment LM iterations.
+    pub max_iterations: usize,
+    /// Squared Huber scale (normalized units). `(0.01)^2` ≈ 5 px at focal 500.
+    pub robust_scale_sq: f32,
+    /// Minimum parallax (degrees) for a triangulated free point.
+    pub min_parallax_deg: f64,
+    /// Maximum reprojection error (normalized units) when validating a
+    /// triangulated point.
+    pub max_reprojection_error: f64,
     /// Relative standard deviation of the per-observation metric depth priors passed to
     /// [`crate::reconstruct`], as `σ = depth_prior_rel_sigma · d`. **`0.0` (the default) disables
     /// depth entirely**; `0.15` trusts a monocular depth network to ~15%.
@@ -115,7 +155,7 @@ pub struct CalibConfig {
     pub progress: Option<std::sync::Arc<dyn Fn(usize, usize) + Send + Sync>>,
 }
 
-impl CalibConfig {
+impl ReconstructionConfig {
     /// Config with flux-derived defaults for the given tag size (metres).
     ///
     /// Every prior defaults to off, so none of them touches a solve unless a caller opts in. The
@@ -129,7 +169,6 @@ impl CalibConfig {
             robust_scale_sq: (0.01f32).powi(2),
             min_parallax_deg: 0.2,
             max_reprojection_error: 0.01,
-            x84_k: 2.5,
             depth_prior_rel_sigma: 0.0,
             depth_per_keyframe_scale: true,
             up_prior_sigma: 0.0,
@@ -138,6 +177,69 @@ impl CalibConfig {
             refine_intrinsics: false,
             progress: None,
         }
+    }
+
+    /// Adjust the defaults for **sequential capture** — video, or any walkthrough where consecutive
+    /// views are close together.
+    ///
+    /// ```
+    /// # use kornia_calib::ReconstructionConfig;
+    /// let cfg = ReconstructionConfig::new(0.0).sequential();
+    /// assert!(cfg.min_parallax_deg < ReconstructionConfig::new(0.0).min_parallax_deg);
+    /// assert!(cfg.max_iterations > ReconstructionConfig::new(0.0).max_iterations);
+    /// assert_eq!(cfg.motion_prior_sigma, 0.0); // NOT armed — see the note below
+    /// ```
+    ///
+    /// # Why the general defaults are wrong for video
+    ///
+    /// The bootstrap pair is chosen by MOST SHARED TRACKS. For a rig of cameras pointed at a common
+    /// subject that is a good proxy for a well-conditioned pair. For forward-motion video it picks
+    /// two ADJACENT frames — which is the pair with the smallest baseline in the whole sequence,
+    /// because adjacency is exactly what maximises shared tracks.
+    ///
+    /// [`Self::min_parallax_deg`] then gates every triangulation from that pair. At a general-purpose
+    /// threshold most of them fall below it, the seed cloud comes back near-empty, and the growth
+    /// loop finds no unplaced camera sharing enough triangulated points to register — so it exits on
+    /// its first iteration and the solve fails with `NoFreeVariables`, having placed only the anchor.
+    /// Measured downstream on a 459-keyframe phone walkthrough, and reproduced at 120 keyframes.
+    ///
+    /// The gate is not wrong in general — small-parallax points genuinely have unconstrained depth.
+    /// It is wrong *for the bootstrap*, where the alternative to an ill-conditioned point cloud is
+    /// no point cloud at all. Registration only needs a scaffold good enough to place the next
+    /// camera; bundle adjustment refines it afterwards, and a caller that wants a clean OUTPUT cloud
+    /// should filter by triangulation angle at the point it consumes [`Reconstruction::points`],
+    /// which is a separate decision from what the solver may register against.
+    ///
+    /// # What else changes, and why only these
+    ///
+    /// [`Self::max_iterations`] 40 -> 100. The 40 is sized for rig calibration — a handful of
+    /// cameras and a few hundred points. A video solve carries hundreds of poses and tens of
+    /// thousands of points and is still descending when a 40-iteration cap lands; an
+    /// under-converged BA reads as a smeared cloud no matter how good the correspondences were.
+    ///
+    /// [`Self::motion_prior_sigma`] is deliberately LEFT OFF, despite being the one prior whose
+    /// semantics require sequential input. Arming it at 0.1 was measured to BEND a variable-speed
+    /// trajectory: on a walk that accelerates and then pauses, the disarmed solve recovers the
+    /// segment lengths exactly while the armed one overshoots one segment by 85%
+    /// (`sequential_preset_does_not_bend_a_variable_speed_walk`). A constant-velocity prior is a
+    /// statement about the capture, not about sequentiality, and a preset cannot know whether the
+    /// operator walked at a constant pace. Callers who know their capture is smooth should set it
+    /// themselves.
+    ///
+    /// The 0.05 is a floor in principle, not in practice: `TriangulationConfig`'s
+    /// `max_midpoint_gap` is absolute in map units and independently rejects points whose two rays
+    /// miss each other by more than it. Since sequential capture bootstraps on the smallest baseline
+    /// in the sequence, scene depths are large in map units and that gate becomes binding around
+    /// `noise/focal` — roughly 0.057 degrees at 1 px and focal 1000. Lowering `min_parallax_deg`
+    /// further without raising `max_midpoint_gap` buys nothing on real, noisy input.
+    ///
+    /// Deliberately NOT set: [`Self::up_prior_sigma`]. "The camera was held roughly upright" is a
+    /// property of HANDHELD capture, not of sequential capture — a drone or a robot-mounted camera
+    /// is sequential and not upright. That one belongs to the caller.
+    pub fn sequential(mut self) -> Self {
+        self.min_parallax_deg = 0.05;
+        self.max_iterations = 100;
+        self
     }
 }
 
@@ -281,8 +383,8 @@ pub struct Reconstruction {
     /// Where the metric scale came from -- see [`ScaleSource`].
     pub scale: ScaleSource,
     /// Intrinsics correction the solve FITTED, as `(gamma, k1, k2, p1, p2)`. `None` when
-    /// [`CalibConfig::refine_intrinsics`] was off, the fit was singular, or it landed outside its
-    /// sanity bounds.
+    /// [`ReconstructionConfig::refine_intrinsics`] was off, the fit was singular, or it landed
+    /// outside its sanity bounds.
     ///
     /// Load-bearing output, not telemetry: refinement applies itself by rewriting the NORMALIZED
     /// observations in place, leaving the caller's camera model at its original guess — a caller
