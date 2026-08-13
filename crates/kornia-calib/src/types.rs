@@ -43,7 +43,9 @@ pub struct FeatureMatch {
     pub uv_b: Vec2F64,
 }
 
-/// Tunable parameters for [`crate::calibrate_apriltag`].
+/// Tunable parameters for [`crate::calibrate_apriltag`] and the rest of the rig-calibration path.
+///
+/// For [`crate::reconstruct`] (incremental SfM) see [`ReconstructionConfig`] instead.
 ///
 /// Note: `robust_scale_sq`, `min_parallax_deg`, and `max_reprojection_error`
 /// live in **normalized** image coordinates because bundle adjustment runs on
@@ -64,6 +66,44 @@ pub struct CalibConfig {
     /// residual exceeds `median + x84_k·1.4826·MAD` are dropped before the final Cauchy pass. `2.5`
     /// is the standard X84 value; fixed board/tag corners (the gauge) are never dropped.
     pub x84_k: f64,
+}
+
+impl CalibConfig {
+    /// Config with flux-derived defaults for the given tag size (metres).
+    pub fn new(tag_size_m: f64) -> Self {
+        Self {
+            tag_size_m,
+            max_iterations: 40,
+            robust_scale_sq: (0.01f32).powi(2),
+            min_parallax_deg: 0.2,
+            max_reprojection_error: 0.01,
+            x84_k: 2.5,
+        }
+    }
+}
+
+/// Tunable parameters for [`crate::reconstruct`].
+///
+/// Split from [`CalibConfig`]: incremental SfM and rig calibration share a solver core but not a
+/// parameter set, and the priors below are meaningless for a rig (its views are simultaneous and
+/// unordered, and its cameras are not all upright). The two structs duplicate the handful of fields
+/// that genuinely apply to both rather than nest a "common" struct.
+///
+/// Note: `robust_scale_sq`, `min_parallax_deg`, and `max_reprojection_error`
+/// live in **normalized** image coordinates because bundle adjustment runs on
+/// an identity pinhole (per-camera intrinsics are folded into the observations).
+pub struct ReconstructionConfig {
+    /// AprilTag side length in metres (sets absolute metric scale).
+    pub tag_size_m: f64,
+    /// Maximum bundle-adjustment LM iterations.
+    pub max_iterations: usize,
+    /// Squared Huber scale (normalized units). `(0.01)^2` ≈ 5 px at focal 500.
+    pub robust_scale_sq: f32,
+    /// Minimum parallax (degrees) for a triangulated free point.
+    pub min_parallax_deg: f64,
+    /// Maximum reprojection error (normalized units) when validating a
+    /// triangulated point.
+    pub max_reprojection_error: f64,
     /// Relative standard deviation of the per-observation metric depth priors passed to
     /// [`crate::reconstruct`], as `σ = depth_prior_rel_sigma · d`. **`0.0` (the default) disables
     /// depth entirely**; `0.15` trusts a monocular depth network to ~15%.
@@ -115,7 +155,7 @@ pub struct CalibConfig {
     pub progress: Option<std::sync::Arc<dyn Fn(usize, usize) + Send + Sync>>,
 }
 
-impl CalibConfig {
+impl ReconstructionConfig {
     /// Config with flux-derived defaults for the given tag size (metres).
     ///
     /// Every prior defaults to off, so none of them touches a solve unless a caller opts in. The
@@ -129,7 +169,6 @@ impl CalibConfig {
             robust_scale_sq: (0.01f32).powi(2),
             min_parallax_deg: 0.2,
             max_reprojection_error: 0.01,
-            x84_k: 2.5,
             depth_prior_rel_sigma: 0.0,
             depth_per_keyframe_scale: true,
             up_prior_sigma: 0.0,
@@ -144,10 +183,10 @@ impl CalibConfig {
     /// views are close together.
     ///
     /// ```
-    /// # use kornia_calib::CalibConfig;
-    /// let cfg = CalibConfig::new(0.0).sequential();
-    /// assert!(cfg.min_parallax_deg < CalibConfig::new(0.0).min_parallax_deg);
-    /// assert!(cfg.max_iterations > CalibConfig::new(0.0).max_iterations);
+    /// # use kornia_calib::ReconstructionConfig;
+    /// let cfg = ReconstructionConfig::new(0.0).sequential();
+    /// assert!(cfg.min_parallax_deg < ReconstructionConfig::new(0.0).min_parallax_deg);
+    /// assert!(cfg.max_iterations > ReconstructionConfig::new(0.0).max_iterations);
     /// assert!(cfg.motion_prior_sigma > 0.0); // the rig default is 0.0 = off
     /// ```
     ///
@@ -334,8 +373,8 @@ pub struct Reconstruction {
     /// Where the metric scale came from -- see [`ScaleSource`].
     pub scale: ScaleSource,
     /// Intrinsics correction the solve FITTED, as `(gamma, k1, k2, p1, p2)`. `None` when
-    /// [`CalibConfig::refine_intrinsics`] was off, the fit was singular, or it landed outside its
-    /// sanity bounds.
+    /// [`ReconstructionConfig::refine_intrinsics`] was off, the fit was singular, or it landed
+    /// outside its sanity bounds.
     ///
     /// Load-bearing output, not telemetry: refinement applies itself by rewriting the NORMALIZED
     /// observations in place, leaving the caller's camera model at its original guess — a caller

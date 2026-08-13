@@ -59,7 +59,7 @@ pub use sfm::reconstruct;
 pub use tracks::{build_tracks, TrackEdge};
 pub use types::{
     CalibConfig, CameraStats, FeatureMatch, FeatureTrack, Observation, Point, Reconstruction,
-    RigCalibration, ScaleSource, TagObservation,
+    ReconstructionConfig, RigCalibration, ScaleSource, TagObservation,
 };
 
 // Re-exported so callers can name calibration poses without depending on

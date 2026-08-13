@@ -29,8 +29,8 @@ use kornia_algebra::{Mat3AF32, Mat3F64, Vec2F32, Vec2F64, Vec3AF32, Vec3F64};
 
 use crate::error::CalibError;
 use crate::types::{
-    CalibConfig, CameraStats, FeatureTrack, Observation, Point, Reconstruction, ScaleSource,
-    TagObservation,
+    CameraStats, FeatureTrack, Observation, Point, Reconstruction, ReconstructionConfig,
+    ScaleSource, TagObservation,
 };
 
 /// Convert an f32 PnP rotation/translation (world→cam) into an f64 [`Pose3d`].
@@ -76,10 +76,10 @@ fn norm_residual(pose: &Pose3d, p_world: Vec3F64, n: Vec2F64) -> Option<f64> {
 ///   tag's frame otherwise fixes the world gauge and its known side length fixes the metric.
 /// * `tracks` - multi-view feature tracks. A track needs at least two views to triangulate, and
 ///   the reconstruction needs enough shared tracks between views to register them.
-/// * `config` - solver settings; see [`CalibConfig`].
+/// * `config` - solver settings; see [`ReconstructionConfig`].
 /// * `obs_depth` - optional metric depth per observation, shaped exactly like `tracks`:
 ///   `obs_depth[i][j]` is the depth of `tracks[i].obs[j]`. `None` for the classic depth-free solve;
-///   ignored unless [`CalibConfig::depth_prior_rel_sigma`] is positive.
+///   ignored unless [`ReconstructionConfig::depth_prior_rel_sigma`] is positive.
 ///
 /// # Depth
 ///
@@ -87,7 +87,8 @@ fn norm_residual(pose: &Pose3d, p_world: Vec3F64, n: Vec2F64) -> Option<f64> {
 /// scale and no defence against drift along the chain — measured, rooms late in a clip reconstruct
 /// several times larger than early ones. Depth residuals observe absolute scale directly and pin
 /// EVERY segment, not just a global average. They are a soft prior: robustified, sigma-weighted by
-/// [`CalibConfig::depth_prior_rel_sigma`], re-gauged per [`CalibConfig::depth_per_keyframe_scale`].
+/// [`ReconstructionConfig::depth_prior_rel_sigma`], re-gauged per
+/// [`ReconstructionConfig::depth_per_keyframe_scale`].
 ///
 /// # Returns
 ///
@@ -103,7 +104,7 @@ fn norm_residual(pose: &Pose3d, p_world: Vec3F64, n: Vec2F64) -> Option<f64> {
 /// # Example
 ///
 /// ```no_run
-/// use kornia_calib::{reconstruct, CalibConfig, FeatureTrack, ScaleSource};
+/// use kornia_calib::{reconstruct, ReconstructionConfig, FeatureTrack, ScaleSource};
 /// use kornia_3d::camera::PinholeCamera;
 /// use kornia_algebra::Vec2F64;
 ///
@@ -121,7 +122,7 @@ fn norm_residual(pose: &Pose3d, p_world: Vec3F64, n: Vec2F64) -> Option<f64> {
 /// }];
 ///
 /// // `None` for the depth argument: no metric depth measurements, so the map is up to scale.
-/// let recon = reconstruct(&cameras, &[], &tracks, &CalibConfig::new(0.1), None)?;
+/// let recon = reconstruct(&cameras, &[], &tracks, &ReconstructionConfig::new(0.1), None)?;
 ///
 /// // No tag was supplied, so the map is honestly up to scale rather than silently "metric".
 /// assert_eq!(recon.scale, ScaleSource::UpToScale);
@@ -138,7 +139,7 @@ pub fn reconstruct(
     cameras: &[PinholeCamera],
     tags_for_scale: &[TagObservation],
     tracks: &[FeatureTrack],
-    config: &CalibConfig,
+    config: &ReconstructionConfig,
     obs_depth: Option<&[Vec<Option<f64>>]>,
 ) -> Result<Reconstruction, CalibError> {
     let n_cams = cameras.len();
@@ -552,7 +553,7 @@ pub fn reconstruct(
 /// one scale, which is what lets a single Huber knee gate them. `max_reprojection_error / 2`
 /// because that threshold reads as 2σ. Derived ONCE because four call sites must agree exactly —
 /// depth, up, motion, and the knee gating all three — and drift mis-weights them silently.
-fn reproj_sigma(config: &CalibConfig) -> f64 {
+fn reproj_sigma(config: &ReconstructionConfig) -> f64 {
     (config.max_reprojection_error / 2.0).max(1e-6)
 }
 
@@ -565,7 +566,7 @@ fn depth_fields(
     norm_depth: &[Vec<Option<f32>>],
     ti: usize,
     j: usize,
-    config: &CalibConfig,
+    config: &ReconstructionConfig,
 ) -> (Option<f32>, f32) {
     let rel_sigma = config.depth_prior_rel_sigma;
     match norm_depth.get(ti).and_then(|t| t.get(j)).copied().flatten() {
@@ -650,7 +651,7 @@ fn fit_depth_scales(
         .collect()
 }
 
-/// Per-view up priors, or `None` when [`CalibConfig::up_prior_sigma`] is off.
+/// Per-view up priors, or `None` when [`ReconstructionConfig::up_prior_sigma`] is off.
 ///
 /// The camera-frame direction asserted to be up is image-up `(0, −1, 0)` — "held roughly upright".
 /// World up is a GAUGE choice and has to agree with the anchor camera `a0`, whose pose is held
@@ -658,7 +659,7 @@ fn fit_depth_scales(
 fn up_priors(
     poses: &[Option<Pose3d>],
     a0: usize,
-    config: &CalibConfig,
+    config: &ReconstructionConfig,
 ) -> Option<Vec<Option<BaPosePrior>>> {
     if config.up_prior_sigma <= 0.0 {
         return None;
@@ -694,7 +695,10 @@ fn up_priors(
 /// Consecutive in VIEW-INDEX order (video keyframes are time-ordered), with triplets spanning more
 /// than [`MAX_TRIPLET_SPAN`] indices skipped: a bridge across a long unregistered stretch is not a
 /// constant-velocity hypothesis worth asserting. Sigmas are deflated like the other priors.
-fn motion_priors_for(poses: &[Option<Pose3d>], config: &CalibConfig) -> Option<Vec<BaMotionPrior>> {
+fn motion_priors_for(
+    poses: &[Option<Pose3d>],
+    config: &ReconstructionConfig,
+) -> Option<Vec<BaMotionPrior>> {
     /// Widest index gap a triplet may span before it stops being a plausible motion hypothesis.
     const MAX_TRIPLET_SPAN: usize = 12;
 
@@ -736,7 +740,7 @@ fn global_ba(
     norm_depth: &[Vec<Option<f32>>],
     idcam: &PinholeCamera,
     a0: usize,
-    config: &CalibConfig,
+    config: &ReconstructionConfig,
 ) -> Result<BaResult, CalibError> {
     // Re-fit the per-view depth gauge against the CURRENT geometry before every solve. Alternating
     // rather than joint: the scales are closed-form medians, so each pass refines the other.
@@ -1206,7 +1210,7 @@ mod tests {
                 .collect(),
         };
 
-        let cfg = CalibConfig::new(s);
+        let cfg = ReconstructionConfig::new(s);
         let cal = match reconstruct(&cams, std::slice::from_ref(&tag), &tracks, &cfg, None)
             .map(RigCalibration::from)
         {
@@ -1317,7 +1321,7 @@ mod tests {
             })
             .collect();
 
-        let cfg = CalibConfig::new(0.1);
+        let cfg = ReconstructionConfig::new(0.1);
         let recon =
             reconstruct(&cams, &[], &tracks, &cfg, None).expect("synthetic scene must solve");
 
@@ -1420,7 +1424,7 @@ mod tests {
             )],
         };
 
-        let cfg = CalibConfig::new(2.0 * s);
+        let cfg = ReconstructionConfig::new(2.0 * s);
         let recon = reconstruct(&cams, std::slice::from_ref(&tag), &tracks, &cfg, None)
             .expect("the feature tracks alone must still solve");
 
@@ -1448,7 +1452,7 @@ mod tests {
             &cams,
             std::slice::from_ref(&two_view),
             &tracks,
-            &CalibConfig::new(0.0),
+            &ReconstructionConfig::new(0.0),
             None,
         )
         .expect("solves");
@@ -1581,7 +1585,7 @@ mod tests {
             &cams,
             std::slice::from_ref(&tag),
             &tracks,
-            &CalibConfig::new(2.0 * s),
+            &ReconstructionConfig::new(2.0 * s),
             None,
         )
         .map(RigCalibration::from)
@@ -1616,7 +1620,7 @@ mod tests {
                 }
             })
             .collect();
-        let cfg = CalibConfig::new(0.1);
+        let cfg = ReconstructionConfig::new(0.1);
 
         let a = reconstruct(&cams, &[], &tracks, &cfg, None).expect("solves");
         let b = reconstruct(&cams, &[], &tracks, &cfg, None).expect("solves");
@@ -1744,7 +1748,8 @@ mod tests {
         let depths = gt_depths(&gt, &tracks, &cams);
 
         // Control: no depth. Same tracks, same config -- only the argument differs.
-        let free = reconstruct(&cams, &[], &tracks, &CalibConfig::new(0.0), None).expect("solves");
+        let free = reconstruct(&cams, &[], &tracks, &ReconstructionConfig::new(0.0), None)
+            .expect("solves");
         let free_ratio = median_depth_ratio(&free, &tracks, &depths);
         assert!(
             free_ratio > 1.5,
@@ -1753,9 +1758,9 @@ mod tests {
         );
 
         // With depth. `depth_prior_rel_sigma` is what ARMS the feature.
-        let cfg = CalibConfig {
+        let cfg = ReconstructionConfig {
             depth_prior_rel_sigma: 0.15,
-            ..CalibConfig::new(0.0)
+            ..ReconstructionConfig::new(0.0)
         };
         let metric = reconstruct(&cams, &[], &tracks, &cfg, Some(&depths)).expect("solves");
         let ratio = median_depth_ratio(&metric, &tracks, &depths);
@@ -1787,7 +1792,7 @@ mod tests {
     fn depths_are_inert_until_the_sigma_arms_them() {
         let (cams, gt, tracks) = converging_rig(500.0, 0.4);
         let depths = gt_depths(&gt, &tracks, &cams);
-        let cfg = CalibConfig::new(0.0);
+        let cfg = ReconstructionConfig::new(0.0);
 
         let without = reconstruct(&cams, &[], &tracks, &cfg, None).expect("solves");
         let with = reconstruct(&cams, &[], &tracks, &cfg, Some(&depths)).expect("solves");
@@ -1827,9 +1832,10 @@ mod tests {
             })
             .collect();
 
-        let gated = reconstruct(&cams, &[], &tracks, &CalibConfig::new(0.0), None).expect("solves");
+        let gated = reconstruct(&cams, &[], &tracks, &ReconstructionConfig::new(0.0), None)
+            .expect("solves");
         assert_eq!(
-            CalibConfig::new(0.0).min_registration_inliers,
+            ReconstructionConfig::new(0.0).min_registration_inliers,
             30,
             "this test is calibrated against the documented default"
         );
@@ -1843,9 +1849,9 @@ mod tests {
             &cams,
             &[],
             &tracks,
-            &CalibConfig {
+            &ReconstructionConfig {
                 min_registration_inliers: 15,
-                ..CalibConfig::new(0.0)
+                ..ReconstructionConfig::new(0.0)
             },
             None,
         )
@@ -1891,7 +1897,8 @@ mod tests {
             })
             .collect();
 
-        let plain = reconstruct(&cams, &[], &tracks, &CalibConfig::new(0.0), None).expect("solves");
+        let plain = reconstruct(&cams, &[], &tracks, &ReconstructionConfig::new(0.0), None)
+            .expect("solves");
         assert_eq!(
             plain.camera_correction, None,
             "refinement is off by default, so there is no fit to report"
@@ -1901,9 +1908,9 @@ mod tests {
             &cams,
             &[],
             &tracks,
-            &CalibConfig {
+            &ReconstructionConfig {
                 refine_intrinsics: true,
-                ..CalibConfig::new(0.0)
+                ..ReconstructionConfig::new(0.0)
             },
             None,
         )
@@ -1952,16 +1959,16 @@ mod tests {
     fn up_and_motion_priors_do_not_overrule_the_image_evidence() {
         // Views are index-ordered along the rig, which is what makes a motion prior meaningful.
         let (cams, gt, tracks) = converging_rig(500.0, 1.0);
-        let baseline =
-            reconstruct(&cams, &[], &tracks, &CalibConfig::new(0.0), None).expect("solves");
+        let baseline = reconstruct(&cams, &[], &tracks, &ReconstructionConfig::new(0.0), None)
+            .expect("solves");
         let with_priors = reconstruct(
             &cams,
             &[],
             &tracks,
-            &CalibConfig {
+            &ReconstructionConfig {
                 up_prior_sigma: 0.25,
                 motion_prior_sigma: 0.1,
-                ..CalibConfig::new(0.0)
+                ..ReconstructionConfig::new(0.0)
             },
             None,
         )
@@ -2019,9 +2026,9 @@ mod tests {
             &cams,
             &[],
             &tracks,
-            &CalibConfig {
+            &ReconstructionConfig {
                 refine_intrinsics: true,
-                ..CalibConfig::new(0.0)
+                ..ReconstructionConfig::new(0.0)
             },
             None,
         )
@@ -2105,12 +2112,12 @@ mod tests {
             })
             .collect();
 
-        let got = reconstruct(&cams, &[], &tracks, &CalibConfig::new(0.0), None);
+        let got = reconstruct(&cams, &[], &tracks, &ReconstructionConfig::new(0.0), None);
         let seq = reconstruct(
             &cams,
             &[],
             &tracks,
-            &CalibConfig::new(0.0).sequential(),
+            &ReconstructionConfig::new(0.0).sequential(),
             None,
         )
         .expect("sequential preset must reconstruct a forward walk");
