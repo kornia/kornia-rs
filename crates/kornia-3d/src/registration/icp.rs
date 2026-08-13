@@ -89,6 +89,23 @@ pub struct IcpPlaneResult {
     ///
     /// Deliberately a ratio, not an absolute pivot: pivots accumulate over correspondences, so
     /// an absolute floor tracks the inlier count and the scene depth instead of the geometry.
+    ///
+    /// Measured operating band, from a 320x180 depth camera sweeping a room at ~43 deg/s
+    /// (20 mm per frame of true motion):
+    ///
+    /// | regime | observability | what the pose did |
+    /// |---|---|---|
+    /// | healthy tracking | 5e-2 .. 7.6e-2 | error <= 0.1 mm |
+    /// | last good frames | 1.7e-2 .. 2.5e-2 | still exact |
+    /// | sliding | 7.2e-4 .. 5e-3 | 62.8 mm published for 20 mm truth |
+    /// | bare wall | ~6e-7 | unusable |
+    ///
+    /// Calibrate a gate against the SLIDING band, not against the degenerate extreme: the
+    /// damaging frames sit three orders of magnitude above a bare wall, so a threshold placed to
+    /// catch outright degeneracy passes every pose that actually corrupts a map. The gap between
+    /// the worst frame that tracked (1.7e-2) and the first that slid (7.2e-4) is 24x with nothing
+    /// in it, so a gate anywhere in 2e-3 .. 1e-2 behaves identically — the value is not delicate,
+    /// but its order of magnitude is.
     pub translation_conditioning: f64,
     /// The weaker of the two blocks: a single scalar for callers that just need a gate.
     pub observability: f64,
