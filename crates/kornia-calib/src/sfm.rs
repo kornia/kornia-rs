@@ -2984,6 +2984,29 @@ mod tests {
         (vec![k; n_views], poses, tracks)
     }
 
+    /// Median angular error, in degrees, of the RELATIVE rotation between consecutive registered
+    /// views against ground truth.
+    ///
+    /// Relative rather than absolute because the comparison must be gauge-free: a reconstruction's
+    /// world frame and its scale are both arbitrary, so absolute poses are not comparable without
+    /// fitting a Sim(3) first. Views with either end unregistered are skipped.
+    fn median_relative_rotation_error_deg(views: &[Option<Pose3d>], gt: &[Pose3d]) -> f64 {
+        let mut err_deg: Vec<f64> = Vec::new();
+        for i in 1..gt.len() {
+            let (Some(a), Some(b)) = (views[i - 1], views[i]) else {
+                continue;
+            };
+            // `views` are T_world_cam, so cam(i-1) -> cam(i) is `a.rotation^T * b.rotation`.
+            let r_est = a.rotation.transpose() * b.rotation;
+            let r_gt = gt[i - 1].rotation * gt[i].rotation.transpose();
+            let d = r_gt.transpose() * r_est;
+            let trace = d.col(0).x + d.col(1).y + d.col(2).z;
+            err_deg.push(((trace - 1.0) / 2.0).clamp(-1.0, 1.0).acos().to_degrees());
+        }
+        err_deg.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        err_deg[err_deg.len() / 2]
+    }
+
     /// How many registered views observe each reconstructed point.
     fn map_spans(recon: &Reconstruction) -> Vec<usize> {
         let mut per_point = vec![0usize; recon.points.len()];
@@ -3046,23 +3069,8 @@ mod tests {
         );
 
         // Ground truth on the arm we ship, so "beats the control" cannot be met by both arms being
-        // wrong. Compared through RELATIVE rotations between consecutive registered views, which
-        // are gauge-free: the map's world frame and its scale are both arbitrary, so absolute
-        // poses are not comparable without fitting a Sim(3) first.
-        let mut rot_err_deg: Vec<f64> = Vec::new();
-        for i in 1..cams.len() {
-            let (Some(a), Some(b)) = (with.views[i - 1], with.views[i]) else {
-                continue;
-            };
-            // `views` are T_world_cam, so cam(i-1) -> cam(i) is `a.rotation^T * b.rotation`.
-            let r_est = a.rotation.transpose() * b.rotation;
-            let r_gt = gt[i - 1].rotation * gt[i].rotation.transpose();
-            let d = r_gt.transpose() * r_est;
-            let trace = d.col(0).x + d.col(1).y + d.col(2).z;
-            rot_err_deg.push(((trace - 1.0) / 2.0).clamp(-1.0, 1.0).acos().to_degrees());
-        }
-        rot_err_deg.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        let med_rot = rot_err_deg[rot_err_deg.len() / 2];
+        // wrong.
+        let med_rot = median_relative_rotation_error_deg(&with.views, &gt);
         println!("with growth BA:   median relative-rotation error {med_rot:.4} deg");
         assert_eq!(
             reg(&with),
@@ -3142,19 +3150,7 @@ mod tests {
         let r = reconstruct_inner(&cams, &[], &tracks, &config, None, true, true).expect("recon");
         let registered = r.views.iter().filter(|v| v.is_some()).count();
 
-        let mut rot_err_deg: Vec<f64> = Vec::new();
-        for i in 1..cams.len() {
-            let (Some(a), Some(b)) = (r.views[i - 1], r.views[i]) else {
-                continue;
-            };
-            let r_est = a.rotation.transpose() * b.rotation;
-            let r_gt = gt[i - 1].rotation * gt[i].rotation.transpose();
-            let d = r_gt.transpose() * r_est;
-            let trace = d.col(0).x + d.col(1).y + d.col(2).z;
-            rot_err_deg.push(((trace - 1.0) / 2.0).clamp(-1.0, 1.0).acos().to_degrees());
-        }
-        rot_err_deg.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        let med_rot = rot_err_deg[rot_err_deg.len() / 2];
+        let med_rot = median_relative_rotation_error_deg(&r.views, &gt);
         println!(
             "{corrupted} corrupted tracks: {registered} / {} views, {} points, rmse {:.4} px, \
              median relative-rotation error {med_rot:.4} deg",
