@@ -288,10 +288,15 @@ pub struct BaParams {
     /// for structure that is not there.
     ///
     /// This changes HOW the reduced system is stored and factorised, not WHAT it contains: the
-    /// lower triangle handed to the Cholesky is bit-identical either way (asserted by
-    /// `sparse_lower_triangle_is_bit_identical_to_the_dense_one`). The two *solutions* still differ
-    /// at roundoff, because a fill-reducing sparse Cholesky and a dense one do not perform the same
-    /// floating-point operations in the same order.
+    /// lower triangle handed to the Cholesky is bit-identical either way. Two tests pin that at
+    /// different levels, and neither alone is the whole claim —
+    /// `sparse_lower_triangle_is_bit_identical_to_the_dense_one` compares the two STORAGE layers
+    /// bit-for-bit via `f64::to_bits` on a hand-built system, while
+    /// `sparse_reduced_system_matches_dense_on_a_sequential_capture` runs the real driver both ways
+    /// and compares at 1e-6. So the assembly is bit-tested and the driver is A/B-tested.
+    ///
+    /// The two *solutions* still differ at roundoff, because a fill-reducing sparse Cholesky and a
+    /// dense one do not perform the same floating-point operations in the same order.
     ///
     /// Only read by [`crate::ba_schur`]; ignored by [`bundle_adjust`].
     pub sparse_reduced_system: bool,
