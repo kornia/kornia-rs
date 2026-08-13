@@ -107,6 +107,107 @@ const MAX_SEED_FORWARD: f64 = 0.95;
 /// Flagged through `KORNIA_CALIB_DEBUG`, never enforced; see `homography_vs_fundamental_ratio`.
 const MAX_SEED_H_RATIO: f64 = 0.45;
 
+/// Filter threshold as a multiple of [`ReconstructionConfig::max_reprojection_error`].
+///
+/// COLMAP creates points at `tri_max_reproj_error` and filters them at the looser
+/// `filter_max_reproj_error`. Filtering at the creation threshold would make a point sitting on the
+/// boundary flip state every round — dropped, retriangulated from the same evidence, dropped again.
+const FILTER_REPROJ_SLACK: f64 = 2.0;
+
+/// Drop points bundle adjustment could not fix, and shed the individual sightings that failed on
+/// the points that survive. Returns how many points were dropped.
+///
+/// Filtering is at the OBSERVATION level, not the point level: a view with one blurred sighting of
+/// an otherwise good point should lose that sighting, not the point — and the point should stop
+/// paying that view's residual in every later solve. Without this a bad sighting is permanent, and
+/// since `Reconstruction::reproj_rmse_px` is a mean over observations, a tail of them inflates it
+/// several-fold while the geometry underneath is fine. Measured on 7-Scenes `pumpkin` at 60
+/// keyframes: 13.49 px reported against a robust 1.40 px, and an ATE indistinguishable from the
+/// filtered arm's.
+///
+/// Only observations of REGISTERED cameras are judged. An unregistered camera's observations are
+/// the 2D-3D correspondences its own PnP will need, and testing them against a pose that does not
+/// exist yet is meaningless.
+fn filter_points(
+    point3d: &mut HashMap<usize, Vec3F64>,
+    norm: &mut [Vec<(usize, Vec2F64)>],
+    norm_depth: &mut [Vec<Option<f32>>],
+    poses: &[Option<Pose3d>],
+    max_reproj_norm: f64,
+    min_tri_angle_deg: f64,
+) -> usize {
+    let centers: Vec<Option<Vec3F64>> = poses
+        .iter()
+        .map(|p| p.as_ref().map(|p| p.inverse().translation))
+        .collect();
+    let before = point3d.len();
+    // Which surviving tracks to prune observations from. Collected rather than pruned in place
+    // because `retain`'s closure holds `point3d` borrowed; the order is irrelevant, as each track's
+    // pruning depends only on itself.
+    let mut prune: Vec<usize> = Vec::new();
+    point3d.retain(|ti, p| {
+        let mut good: Vec<usize> = Vec::new();
+        let mut seen = 0usize;
+        for (c, uv) in &norm[*ti] {
+            let Some(pose) = &poses[*c] else { continue };
+            seen += 1;
+            if norm_residual(pose, *p, *uv).is_some_and(|e| e <= max_reproj_norm) {
+                good.push(*c);
+            }
+        }
+        // Two surviving sightings is the minimum that still constrains a 3D point, and a track that
+        // lost more than half of what saw it is not a point with a bad view — it is a bad point.
+        if good.len() < 2 || 2 * good.len() < seen {
+            return false;
+        }
+        // Widest triangulation angle among the SURVIVING observations: the ones that failed cannot
+        // be used to argue the point is well conditioned.
+        let mut best = 0.0f64;
+        for i in 0..good.len() {
+            for j in (i + 1)..good.len() {
+                let (Some(ca), Some(cb)) = (centers[good[i]], centers[good[j]]) else {
+                    continue;
+                };
+                let ra = (*p - ca).normalize();
+                let rb = (*p - cb).normalize();
+                best = best.max(ra.dot(rb).clamp(-1.0, 1.0).acos().to_degrees());
+            }
+        }
+        if best < min_tri_angle_deg {
+            return false;
+        }
+        prune.push(*ti);
+        true
+    });
+    for ti in prune {
+        let p = point3d[&ti];
+        let track = &mut norm[ti];
+        let depths = &mut norm_depth[ti];
+        let mut j = 0usize;
+        while j < track.len() {
+            let (c, uv) = track[j];
+            let bad = match &poses[c] {
+                // A DROPPED point keeps every observation, so `triangulate_new` can rebuild that
+                // track from better poses later. Only surviving points shed sightings.
+                None => false,
+                Some(pose) => match norm_residual(pose, p, uv) {
+                    Some(e) => e > max_reproj_norm,
+                    None => true, // behind the camera: never a valid sighting
+                },
+            };
+            if bad {
+                // `swap_remove` reorders the track, but deterministically from deterministic input,
+                // and `norm`/`norm_depth` are permuted in lockstep so their indices stay paired.
+                track.swap_remove(j);
+                depths.swap_remove(j);
+            } else {
+                j += 1;
+            }
+        }
+    }
+    before - point3d.len()
+}
+
 /// How many cameras currently hold a pose.
 fn registered_now(poses: &[Option<Pose3d>]) -> usize {
     poses.iter().filter(|p| p.is_some()).count()
@@ -334,7 +435,7 @@ fn reconstruct_inner(
         .collect();
     // Parallel to `norm`: metric depth per observation, or `None`. All-`None` when the feature is
     // off, so downstream sites index it unconditionally; a wrong-shaped caller array yields `None`.
-    let norm_depth: Vec<Vec<Option<f32>>> = match obs_depth {
+    let mut norm_depth: Vec<Vec<Option<f32>>> = match obs_depth {
         Some(d) if config.depth_prior_rel_sigma > 0.0 => d
             .iter()
             .map(|t| t.iter().map(|x| x.map(|v| v as f32)).collect())
@@ -494,6 +595,20 @@ fn reconstruct_inner(
                         None,
                         config.max_iterations,
                     );
+                    // COLMAP's iterate step: BA -> filter -> retriangulate. Filtering after the
+                    // solve drops what BA could not fix and sheds the sightings it could not
+                    // reconcile; retriangulating rebuilds those tracks from the refined poses. So
+                    // the cloud the NEXT registration is judged against is clean, rather than
+                    // accreting every early mistake for the rest of the walk.
+                    filter_points(
+                        &mut point3d,
+                        &mut norm,
+                        &mut norm_depth,
+                        &poses,
+                        FILTER_REPROJ_SLACK * config.max_reprojection_error,
+                        config.min_parallax_deg,
+                    );
+                    triangulate_new(&mut point3d, &norm, &poses, &idcam, &tcfg);
                     // `max(next_ba + 1.0)` so a set that grew by less than one whole camera per
                     // trigger (small maps) still advances the threshold and cannot re-fire on
                     // every registration.
@@ -506,6 +621,18 @@ fn reconstruct_inner(
             }
         }
     }
+
+    // One last filter before the terminal solve, so it is not asked to reconcile sightings that
+    // every earlier solve already failed to — and so the published `observations` carry only
+    // evidence the final geometry actually supports.
+    filter_points(
+        &mut point3d,
+        &mut norm,
+        &mut norm_depth,
+        &poses,
+        FILTER_REPROJ_SLACK * config.max_reprojection_error,
+        config.min_parallax_deg,
+    );
 
     // --- Bundle adjustment: all track points free, the reference camera (a0) fixed to anchor gauge. ---
     // Iterate the triangulated points in TRACK ORDER, not `HashMap` order. Rust's default hasher
@@ -2949,20 +3076,16 @@ mod tests {
         );
 
         // The comparison proper. Measured on this scene, in this order:
-        //   median span      32 vs 22
-        //   >=20-view tracks 233 vs 133
-        //   points           292 vs 220
-        assert!(
-            med(&span_with) > med(&span_without),
-            "growth BA must keep longer tracks: median map span {} vs {}",
-            med(&span_with),
-            med(&span_without)
-        );
-        // ABSOLUTE floor alongside the relative one. `map_spans` counts observations from
-        // REGISTERED views only, so the control's spans are mechanically capped by the 33 views it
-        // places — a future regression that keeps all 72 registered but halves chaining (32 -> 23)
-        // would still satisfy `23 > 22` and slip through. Measured 32 here; 30 leaves headroom for
-        // solver noise without leaving room for a halving.
+        //   >=20-view tracks 233 vs 149
+        //   points           292 vs 181
+        //
+        // MEDIAN span is deliberately NOT compared between the arms. `filter_points` drops points
+        // with fewer than two REGISTERED sightings, and in the control 17 views are unregistered —
+        // so the filter removes precisely that arm's short-span points and RAISES its median (30
+        // before observation filtering existed, 33 after) above the shipped arm's 32, while the
+        // shipped arm loses nothing and stays ahead on every absolute count. A statistic computed
+        // over survivors cannot compare two populations that were culled at different rates. The
+        // absolute floor below still guards chaining in the arm being shipped.
         assert!(
             med(&span_with) >= 30,
             "growth BA median map span {} fell below the absolute floor",
@@ -2979,6 +3102,85 @@ mod tests {
             "growth BA must triangulate more of the scene: {} vs {} points",
             with.points.len(),
             without.points.len()
+        );
+    }
+
+    /// A handful of grossly wrong sightings must not survive into the published map.
+    ///
+    /// Mismatches are not rare in practice, and bundle adjustment cannot fix one: the point is
+    /// pulled between an observation that agrees with the geometry and one that never will, and the
+    /// loser is whichever side has fewer votes. Left in, they are permanent — and because
+    /// [`Reconstruction::reproj_rmse_px`] is a MEAN over observations, a tail of them inflates the
+    /// reported error several-fold over a map whose geometry is fine. Measured on 7-Scenes
+    /// `pumpkin` at 60 keyframes before this filter existed: 13.49 px reported against 1.40 px
+    /// robust, with an ATE (3.78 cm) indistinguishable from the filtered arm's (3.76 cm). A caller
+    /// that gates on reported rmse then rejects a perfectly good reconstruction.
+    ///
+    /// Asserted on the corrupted arm's ABSOLUTE rmse rather than against a clean control, because
+    /// the failure mode is exactly that the number looks plausible while the map is not: a
+    /// regression that stops filtering leaves registration and geometry untouched and moves only
+    /// this statistic. Registration and rotation accuracy are asserted alongside it so the filter
+    /// cannot pass by discarding the good evidence with the bad.
+    #[test]
+    fn gross_outlier_observations_do_not_reach_the_published_map() {
+        let (cams, gt, mut tracks) = walkthrough(40, 300, 0.4);
+        // Every 7th track has one sighting displaced by 40 px: far outside any noise the solver
+        // should tolerate, and the scale a real feature mismatch produces.
+        let mut corrupted = 0usize;
+        for (i, t) in tracks.iter_mut().enumerate() {
+            if i % 7 == 0 && t.obs.len() >= 3 {
+                t.obs[1].1 += Vec2F64::new(40.0, -40.0);
+                corrupted += 1;
+            }
+        }
+        assert!(corrupted > 20, "test needs a meaningful number of outliers");
+
+        let config = ReconstructionConfig {
+            max_iterations: 20,
+            ..ReconstructionConfig::new(0.0)
+        };
+        let r = reconstruct_inner(&cams, &[], &tracks, &config, None, true, true).expect("recon");
+        let registered = r.views.iter().filter(|v| v.is_some()).count();
+
+        let mut rot_err_deg: Vec<f64> = Vec::new();
+        for i in 1..cams.len() {
+            let (Some(a), Some(b)) = (r.views[i - 1], r.views[i]) else {
+                continue;
+            };
+            let r_est = a.rotation.transpose() * b.rotation;
+            let r_gt = gt[i - 1].rotation * gt[i].rotation.transpose();
+            let d = r_gt.transpose() * r_est;
+            let trace = d.col(0).x + d.col(1).y + d.col(2).z;
+            rot_err_deg.push(((trace - 1.0) / 2.0).clamp(-1.0, 1.0).acos().to_degrees());
+        }
+        rot_err_deg.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let med_rot = rot_err_deg[rot_err_deg.len() / 2];
+        println!(
+            "{corrupted} corrupted tracks: {registered} / {} views, {} points, rmse {:.4} px, \
+             median relative-rotation error {med_rot:.4} deg",
+            cams.len(),
+            r.points.len(),
+            r.reproj_rmse_px,
+        );
+
+        // 0.31 px here; the same scene through this file WITHOUT the filter reports 4.27 px at an
+        // identical 207 points / 40 registered views and a comparable rotation error — the
+        // separation is entirely in the statistic, which is the point. `2.0` sits between the two
+        // with a wide margin either way.
+        assert!(
+            r.reproj_rmse_px < 2.0,
+            "outlier sightings reached the published map: rmse {:.3} px",
+            r.reproj_rmse_px
+        );
+        assert_eq!(
+            registered,
+            cams.len(),
+            "the filter must not cost registrations: {registered} / {} views",
+            cams.len()
+        );
+        assert!(
+            med_rot < 0.1,
+            "the surviving map must also be RIGHT: median relative-rotation error {med_rot:.4} deg"
         );
     }
 
