@@ -31,6 +31,36 @@ pub struct IcpPlaneCriteria {
     pub max_normal_angle_rad: f64,
     /// Huber loss scale in metres: residuals beyond it get weight `delta/|r|`.
     pub huber_delta_m: f64,
+    /// Optional independent estimate of the rotation, e.g. an integrated gyro.
+    ///
+    /// Depth geometry does not always determine rotation: on a swept view the rotation block of
+    /// the normal equations collapses and the solve returns rotations wrong by degrees per frame
+    /// (measured: 1.4-4.4 deg against a 3.0 deg truth, eventually freezing at zero) while the
+    /// residual and the inlier fraction stay perfect. A gyro measures exactly that quantity, and
+    /// over a single frame interval it is roughly an order of magnitude more accurate than the
+    /// degraded solve, so it can carry the rotation while the geometry carries the translation.
+    ///
+    /// Regularises, never overrides: it enters as three weighted rows, so ample geometry
+    /// outvotes it and weak geometry defers to it.
+    pub rotation_prior: Option<RotationPrior>,
+}
+
+/// An external rotation estimate for [`IcpPlaneCriteria::rotation_prior`].
+#[derive(Debug, Clone, Copy)]
+pub struct RotationPrior {
+    /// Prior on the source-to-target rotation, same convention as
+    /// [`IcpPlaneResult::rotation`].
+    pub rotation: [[f64; 3]; 3],
+    /// One-sigma expected error of `rotation`, in radians, OVER THE INTERVAL IT SPANS.
+    ///
+    /// Scale it with elapsed time rather than passing a per-frame constant: a prior accumulated
+    /// across held frames covers a longer interval and has drifted further, and a fixed sigma
+    /// would make the constraint overconfident precisely after a stall. For a consumer MEMS gyro,
+    /// bias dominates — roughly 0.5 deg/s uncalibrated, so ~0.025 deg over a 50 ms frame.
+    ///
+    /// The weight is `1/sigma^2`, which puts a 0.05-0.1 deg sigma one to two orders of magnitude
+    /// tighter than a collapsed rotation block, and negligible against a healthy one.
+    pub sigma_rad: f64,
 }
 
 impl Default for IcpPlaneCriteria {
@@ -41,6 +71,7 @@ impl Default for IcpPlaneCriteria {
             max_dist_m: 0.10,
             max_normal_angle_rad: 30.0_f64.to_radians(),
             huber_delta_m: 0.02,
+            rotation_prior: None,
         }
     }
 }
@@ -179,9 +210,28 @@ pub fn icp_projective_plane(
         let tgt = &target.levels[level_idx];
 
         for _ in 0..iters {
-            let eqs = accumulate_level(src, tgt, &rotation, &translation, &criteria);
+            let mut eqs = accumulate_level(src, tgt, &rotation, &translation, &criteria);
             if eqs.num_inliers < 6 {
                 return Err(RgbdIcpError::TooFewCorrespondences(eqs.num_inliers));
+            }
+            if let Some(prior) = criteria.rotation_prior {
+                // Three rows penalising the current rotation's deviation from the prior.
+                //
+                // The error must live in the frame the update acts in. The solver applies
+                // `R <- exp(w) R`, a LEFT multiply, so the error is `e = log(R R_prior^T)`, also
+                // on the left: then `R_new R_prior^T = exp(w) exp(e)` and the residual in `w` is
+                // `e + w` to first order, with an identity Jacobian. Writing the body-frame error
+                // `log(R_prior^T R)` here instead would agree only when the prior is near
+                // identity and would otherwise pull toward the wrong attitude.
+                //
+                // Contribution is `1/sigma^2` on the rotation block's diagonal and `w e` on its
+                // gradient. Only that block is touched — the prior says nothing about translation.
+                let e = so3_log(&mat3_mul(&rotation, &mat3_transpose(&prior.rotation)));
+                let w = 1.0 / (prior.sigma_rad * prior.sigma_rad).max(f64::MIN_POSITIVE);
+                for i in 0..3 {
+                    eqs.a[i][i] += w;
+                    eqs.b[i] += w * e[i];
+                }
             }
             // solve A x = -b for the twist x = [w, dt]
             let neg_b = eqs.b.map(|v| -v);
@@ -439,6 +489,59 @@ fn cholesky_solve_6x6(a: &[[f64; 6]; 6], b: &[f64; 6]) -> Option<([f64; 6], f64,
         }
     };
     Some((x, ratio(min_rot, max_rot), ratio(min_trans, max_trans)))
+}
+
+/// Axis-angle of a rotation matrix: the inverse of [`so3_exp`].
+fn so3_log(r: &[[f64; 3]; 3]) -> [f64; 3] {
+    let trace = r[0][0] + r[1][1] + r[2][2];
+    let cos = ((trace - 1.0) * 0.5).clamp(-1.0, 1.0);
+    let angle = cos.acos();
+    // Near zero the axis is ill-defined but the vector is not: sin(angle)/angle -> 1, so the
+    // off-diagonal difference IS the axis-angle to first order.
+    let scale = if angle < 1e-8 {
+        0.5
+    } else if angle > std::f64::consts::PI - 1e-6 {
+        // Near pi the same expression loses all precision; recover the axis from the symmetric
+        // part, where the diagonal stays well conditioned, and restore the sign from the skew.
+        let mut axis = [
+            ((r[0][0] - cos) / (1.0 - cos)).max(0.0).sqrt(),
+            ((r[1][1] - cos) / (1.0 - cos)).max(0.0).sqrt(),
+            ((r[2][2] - cos) / (1.0 - cos)).max(0.0).sqrt(),
+        ];
+        let skew = [r[2][1] - r[1][2], r[0][2] - r[2][0], r[1][0] - r[0][1]];
+        for k in 0..3 {
+            if skew[k] < 0.0 {
+                axis[k] = -axis[k];
+            }
+        }
+        let n = (axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]).sqrt();
+        return if n > 0.0 {
+            [
+                axis[0] / n * angle,
+                axis[1] / n * angle,
+                axis[2] / n * angle,
+            ]
+        } else {
+            [0.0; 3]
+        };
+    } else {
+        angle / (2.0 * angle.sin())
+    };
+    [
+        scale * (r[2][1] - r[1][2]),
+        scale * (r[0][2] - r[2][0]),
+        scale * (r[1][0] - r[0][1]),
+    ]
+}
+
+fn mat3_transpose(m: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
+    let mut t = [[0.0; 3]; 3];
+    for (i, row) in m.iter().enumerate() {
+        for (j, &v) in row.iter().enumerate() {
+            t[j][i] = v;
+        }
+    }
+    t
 }
 
 #[inline]
@@ -873,6 +976,96 @@ mod tests {
                 "{name} conditioning moved with correspondence count: {lo:.3e} vs {hi:.3e}"
             );
         }
+        Ok(())
+    }
+
+    /// The rotation prior must rescue weak geometry WITHOUT damaging good geometry, and it must
+    /// survive a prior that is itself wrong — a real gyro carries bias, noise and, on hardware
+    /// with no IMU extrinsics, a fixed misalignment. A prior fed the exact answer proves nothing.
+    #[test]
+    fn rotation_prior_rescues_weak_geometry_without_harming_good(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let intr = test_intrinsics();
+        // Rotation-weak, translation-strong: a sphere centred on the optical axis in front of a
+        // fronto-parallel wall. Both are invariant under ROLL, so rotation about the viewing axis
+        // is unobservable, while the sphere's normals span every direction and pin all three
+        // translations. This isolates the mode the prior exists for — a scene that starves
+        // translation as well would be beyond any rotation prior's reach.
+        let weak = Scene {
+            planes: vec![Plane {
+                normal: [0.0, 0.0, 1.0],
+                d: 2.5,
+            }],
+            spheres: vec![Sphere {
+                center: [0.0, 0.0, 1.8],
+                radius: 0.55,
+            }],
+        };
+        let rich = Scene::corner_and_sphere();
+        // Roll about the viewing axis — the unobservable direction on the weak scene.
+        let true_rot = axis_angle_to_rotation_matrix(&[0.0, 0.0, 1.0], 3.0_f64.to_radians())?;
+        let true_t = [0.01, 0.0, 0.0];
+
+        // The prior is deliberately WRONG by 0.15 deg — well beyond a MEMS gyro's error over one
+        // frame, so passing here means it tolerates worse than reality.
+        let prior_err_deg: f64 = 0.15;
+        let prior_rot = mat3_mul(
+            &axis_angle_to_rotation_matrix(&[0.3, 0.6, 0.74], prior_err_deg.to_radians())?,
+            &true_rot,
+        );
+
+        let mut summary = Vec::new();
+        for scene in [&weak, &rich] {
+            let src = RgbdPyramid::from_depth_mm(
+                &render_depth_mm(scene, &intr, &IDENTITY_ROT, &[0.0; 3]),
+                &intr,
+                3,
+            )?;
+            let tgt = RgbdPyramid::from_depth_mm(
+                &render_depth_mm(scene, &intr, &true_rot, &true_t),
+                &intr,
+                3,
+            )?;
+            let (rot_gt, _) = gt_target_source(&true_rot, &true_t);
+
+            let solve = |prior: Option<RotationPrior>| {
+                let mut c = IcpPlaneCriteria {
+                    rotation_prior: prior,
+                    ..Default::default()
+                };
+                c.iters_per_level = vec![10, 7, 5];
+                icp_projective_plane(&src, &tgt, IDENTITY_ROT, [0.0; 3], c)
+            };
+            let (prior_gt, _) = gt_target_source(&prior_rot, &true_t);
+            // Without the prior the weak scene is rejected outright by the degeneracy guard —
+            // rotation is not merely poorly determined, it is unconstrained. Record that as an
+            // infinite error so the two cases compare on one scale.
+            let without = solve(None)
+                .map(|r| rotation_error_deg(&r.rotation, &rot_gt))
+                .unwrap_or(f64::INFINITY);
+            let with = solve(Some(RotationPrior {
+                rotation: prior_gt,
+                sigma_rad: prior_err_deg.to_radians(),
+            }))
+            .map(|r| rotation_error_deg(&r.rotation, &rot_gt))
+            .unwrap_or(f64::INFINITY);
+            summary.push((without, with));
+        }
+        let (weak_without, weak_with) = summary[0];
+        let (rich_without, rich_with) = summary[1];
+
+        // Weak geometry: the prior must take over, landing near its own accuracy rather than the
+        // solve's. Anything close to `prior_err_deg` means the constraint is carrying rotation.
+        assert!(
+            weak_without > 0.5 && weak_with < 0.3,
+            "prior failed to rescue weak rotation: {weak_without} deg without, {weak_with:.3} with"
+        );
+        // Good geometry: the prior is wrong by 0.15 deg and must NOT drag the solve toward it.
+        // Regularise, never override.
+        assert!(
+            rich_with < rich_without.max(0.05) * 3.0,
+            "prior degraded well-conditioned geometry: {rich_without:.4} deg without, {rich_with:.4} with"
+        );
         Ok(())
     }
 
