@@ -58,6 +58,22 @@ where
         Image::try_from(dev)
     }
 
+    /// Upload this host image into a new **unified-memory** image (H2D memcpy
+    /// into a `cudaMallocManaged` buffer). Mirrors [`Self::to_cuda`] for the
+    /// unified memory domain; the result is accessible from both the CPU and
+    /// any GPU kernel on `stream` without a second explicit copy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ImageError::Cuda`] on allocation or copy failure.
+    pub fn to_cuda_unified(&self, stream: &Arc<CudaStream>) -> Result<Image<T, C>, ImageError> {
+        let dev = self
+            .0
+            .to_cuda_unified(stream)
+            .map_err(|e| ImageError::Cuda(e.to_string()))?;
+        Image::try_from(dev)
+    }
+
     /// Allocate a zero-initialised **device-resident `Image`** of `size` on `stream`.
     ///
     /// The backing storage is a typed `CudaResource<T>` (allocated via
@@ -116,6 +132,27 @@ where
         ctx: &Arc<cudarc::driver::CudaContext>,
     ) -> Result<Image<T, C>, ImageError> {
         let t = kornia_tensor::zeros_pinned::<T, 3>([size.height, size.width, C], ctx)
+            .map_err(|e| ImageError::Cuda(e.to_string()))?;
+        Image::try_from(t)
+    }
+
+    /// Allocate a zero-initialized **unified-memory** image (host + device
+    /// accessible without explicit copies, e.g. for Jetson or fine-grained UVM
+    /// workflows).
+    ///
+    /// Mirrors [`Self::zeros_cuda`] / [`Self::zeros_pinned`] for the unified
+    /// memory domain, and takes the same `stream` argument as `zeros_cuda`: the
+    /// image carries it so residency dispatch can route the image to a CUDA
+    /// kernel without an explicit upload.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ImageError::Cuda`] on allocation failure.
+    pub fn zeros_cuda_unified(
+        size: ImageSize,
+        stream: &Arc<CudaStream>,
+    ) -> Result<Image<T, C>, ImageError> {
+        let t = kornia_tensor::zeros_cuda_unified::<T, 3>([size.height, size.width, C], stream)
             .map_err(|e| ImageError::Cuda(e.to_string()))?;
         Image::try_from(t)
     }

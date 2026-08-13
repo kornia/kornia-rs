@@ -61,6 +61,10 @@ use common::FilterKind;
 /// crate's CUDA resize kernels. Earlier releases used align-corners, which
 /// produced different pixel values for the same inputs.
 ///
+/// **CUDA note:** the `Lanczos` mode CUDA path only supports the half-pixel
+/// mapping above. Passing a device image pair with an `AlignCorners` mapping
+/// produces a runtime error. The CPU path has no such restriction.
+///
 /// # Arguments
 ///
 /// * `src` - The input image container.

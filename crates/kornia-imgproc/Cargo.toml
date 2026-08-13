@@ -36,6 +36,11 @@ required-features = ["cuda"]
 
 [[bench]]
 harness = false
+name = "bench_unified_memory"
+required-features = ["cuda"]
+
+[[bench]]
+harness = false
 name = "bench_sift_instr"
 
 [[bench]]

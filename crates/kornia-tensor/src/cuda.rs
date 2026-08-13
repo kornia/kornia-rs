@@ -9,6 +9,13 @@
 //! - [`CudaAllocator`]: a [`TensorAllocator`] that allocates zero-initialised device
 //!   memory via `stream.alloc_zeros::<u8>(n)` and wraps the result in a `CudaResource`.
 //!
+//! - [`Backing::Managed`]: the same [`CudaResource`] over CUDA managed memory
+//!   (`cuMemAllocManaged`, `CU_MEM_ATTACH_GLOBAL`).  Accessible from both CPU and GPU
+//!   with no explicit H2D copy; domain is [`MemoryDomain::Unified`].
+//!
+//! - [`CudaUnifiedAllocator`]: a [`TensorAllocator`] for unified memory. Use
+//!   [`zeros_cuda_unified`] for zero-initialised tensors or [`unified_alloc`] for the handle.
+//!
 //! - Methods on [`Tensor`]:
 //!   - [`Tensor::from_cudaslice`] — wrap an existing `CudaSlice<T>` as a device tensor.
 //!   - [`Tensor::as_cudaslice`] — borrow the underlying `CudaSlice<u8>` (if any).
@@ -81,11 +88,12 @@ use crate::{
 /// [`CudaAllocator`] produces `CudaResource<u8>`.
 pub struct CudaResource<T> {
     /// Owns the device allocation; freed when this struct is dropped —
-    /// unless `foreign` is set, in which case the slice is leaked (the memory
-    /// belongs to an external producer) and the keepalive is released instead.
-    /// `ManuallyDrop` so [`Drop`] can decide between the two.
+    /// unless [`backing`](Self::backing) says the memory is not ours, in which
+    /// case the slice is leaked and the appropriate release runs instead.
+    /// `ManuallyDrop` so [`Drop`] can decide between the strategies.
     pub(crate) slice: std::mem::ManuallyDrop<CudaSlice<T>>,
-    /// Cached raw device pointer (device-addressable; NOT safe to dereference on host).
+    /// Cached raw device pointer. Device-addressable; host-dereferenceable
+    /// **only** for [`Backing::Managed`].
     ptr: *mut u8,
     /// CUDA device ordinal (returned by `CudaContext::ordinal()`).
     id: i32,
@@ -94,21 +102,68 @@ pub struct CudaResource<T> {
     /// a stream from the tensor itself via [`Tensor::cuda_stream`] — no global or
     /// thread-local stream state.
     pub(crate) stream: Arc<CudaStream>,
-    /// `Some` when the device memory belongs to an external producer (e.g. a
-    /// zero-copy DLPack import): the boxed value keeps the producer alive and
-    /// is dropped — releasing it — after the slice is leaked.
-    pub(crate) foreign: Option<Box<dyn std::any::Any + Send>>,
+    /// Where the allocation came from, which decides both the reported
+    /// [`MemoryDomain`] and how it is released.
+    pub(crate) backing: Backing,
+}
+
+/// Provenance of a [`CudaResource`]'s allocation: who owns the memory, and
+/// therefore how it is freed and which [`MemoryDomain`] it reports.
+///
+/// This is one enum rather than one type per provenance on purpose. Accessors
+/// like [`Tensor::as_cudaslice`] and [`Tensor::to_host_into`] reach the slice by
+/// downcasting `dyn MemoryResource` — the trait is erased over `T`, so it cannot
+/// carry a `-> Option<&CudaSlice<T>>` accessor without losing object safety.
+/// A separate type per provenance would therefore need every one of those sites
+/// to try every type, and a site that forgets one silently rejects otherwise
+/// valid tensors. Keeping the variants inside a single resource means the
+/// downcast is written once and every accessor works for every backing.
+pub(crate) enum Backing {
+    /// cudarc owns the allocation; `CudaSlice::drop` frees it.
+    Device,
+    /// `cuMemAllocManaged` — host-dereferenceable, reports
+    /// [`MemoryDomain::Unified`]. The slice is an `upgrade_device_ptr` alias, so
+    /// it is leaked and the pointer freed with `cuMemFree` exactly once.
+    Managed,
+    /// An external producer owns the memory (e.g. a zero-copy DLPack import).
+    /// The slice is leaked and the boxed keepalive dropped, releasing the
+    /// producer's reference.
+    ///
+    /// The payload is never read — it is held solely so its `Drop` runs when
+    /// this resource is released, which is what tells the producer the memory
+    /// is no longer in use.
+    #[allow(dead_code)]
+    Foreign(Box<dyn std::any::Any + Send>),
 }
 
 impl<T> Drop for CudaResource<T> {
     fn drop(&mut self) {
         // SAFETY: Drop runs exactly once and `slice` is never used afterwards.
         let slice = unsafe { std::mem::ManuallyDrop::take(&mut self.slice) };
-        if self.foreign.is_some() {
-            // Foreign memory is not ours to free: leak the aliasing slice so
-            // cuMemFree never runs. The `foreign` keepalive drops right after
-            // this fn returns, releasing the producer's reference.
-            slice.leak();
+        match &self.backing {
+            // cudarc's own allocation: letting the slice drop frees it through
+            // the stream-ordered path.
+            Backing::Device => {}
+            Backing::Managed => {
+                // `leak` releases the alias's read/write events and stream ref
+                // (which `upgrade_device_ptr` attached) and returns the pointer
+                // without freeing it. Its event waits are queued on the stream
+                // and do not block the host, so synchronize before the
+                // immediate `cuMemFree` below cannot race a running kernel.
+                let _ = slice.leak();
+                let _ = self.stream.synchronize();
+                // SAFETY: ptr came from cuMemAllocManaged and is freed exactly
+                // once — the leak above means the alias never frees it too.
+                unsafe {
+                    let _ = cudarc::driver::result::memory_free(self.ptr as u64);
+                }
+            }
+            Backing::Foreign(_) => {
+                // Foreign memory is not ours to free: leak the aliasing slice so
+                // cuMemFree never runs. The keepalive drops right after this fn
+                // returns, releasing the producer's reference.
+                slice.leak();
+            }
         }
     }
 }
@@ -131,7 +186,12 @@ impl<T: 'static> MemoryResource for CudaResource<T> {
     }
 
     fn domain(&self) -> MemoryDomain {
-        MemoryDomain::Device { id: self.id }
+        match self.backing {
+            // Foreign device memory is still device memory; only managed
+            // allocations are host-accessible.
+            Backing::Device | Backing::Foreign(_) => MemoryDomain::Device { id: self.id },
+            Backing::Managed => MemoryDomain::Unified { id: self.id },
+        }
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -181,7 +241,7 @@ pub fn tune_default_mem_pool(stream: &Arc<CudaStream>) {
     let mut tuned = TUNED
         .get_or_init(|| Mutex::new(std::collections::HashSet::new()))
         .lock()
-        .expect("TUNED mutex poisoned");
+        .unwrap_or_else(|e| e.into_inner());
     if !tuned.insert(ordinal) {
         return;
     }
@@ -232,7 +292,7 @@ impl TensorAllocator for CudaAllocator {
             ptr,
             id,
             stream: self.stream.clone(),
-            foreign: None,
+            backing: Backing::Device,
         }))
     }
 }
@@ -360,6 +420,169 @@ where
         len: layout.size(),
         owner,
         alloc,
+        _marker: PhantomData,
+    };
+    let strides = get_strides_from_shape(shape);
+    Ok(Tensor {
+        storage,
+        shape,
+        strides,
+    })
+}
+
+// ── CudaUnifiedAllocator ─────────────────────────────────────────────────────
+
+/// A [`TensorAllocator`] that allocates zero-initialised CUDA managed (unified) memory.
+///
+/// Use [`unified_alloc`] to obtain a handle, then [`zeros_cuda_unified`] to
+/// create host-and-device-accessible tensors.
+#[derive(Clone)]
+pub struct CudaUnifiedAllocator {
+    /// Shared CUDA context (keeps the driver alive and provides the device id).
+    pub ctx: Arc<CudaContext>,
+    /// Stream the produced resources are associated with, so a tensor built
+    /// through this allocator can still recover a stream for dispatch.
+    pub stream: Arc<CudaStream>,
+}
+
+// SAFETY: Arc<CudaContext> and Arc<CudaStream> are Send + Sync.
+unsafe impl Send for CudaUnifiedAllocator {}
+unsafe impl Sync for CudaUnifiedAllocator {}
+
+impl TensorAllocator for CudaUnifiedAllocator {
+    /// Produces a `CudaResource<u8>` with [`Backing::Managed`] — the same
+    /// untyped shape [`CudaAllocator`] yields, because [`TensorAllocator`] is
+    /// erased over [`std::alloc::Layout`] and cannot name `T`. Use
+    /// [`zeros_cuda_unified`] for a `T`-typed allocation whose
+    /// `as_cudaslice::<T>()` works.
+    fn allocate(
+        &self,
+        layout: std::alloc::Layout,
+    ) -> Result<Box<dyn MemoryResource>, TensorAllocatorError> {
+        // Allocate at least one byte (CUDA rejects a zero-size request) but
+        // build the slice over the *requested* count, so `len_bytes` — which
+        // now comes from the slice — reports 0 for a zero-element tensor and
+        // `TensorStorage::layout` agrees with the layout that was asked for.
+        let n_bytes = layout.size().max(1);
+        let (ptr, slice) = alloc_managed::<u8>(n_bytes, layout.size(), &self.stream)
+            .map_err(|e| TensorAllocatorError::CudaError(e.to_string()))?;
+        Ok(Box::new(CudaResource::<u8> {
+            slice: std::mem::ManuallyDrop::new(slice),
+            ptr: ptr.as_ptr(),
+            id: self.ctx.ordinal() as i32,
+            stream: self.stream.clone(),
+            backing: Backing::Managed,
+        }))
+    }
+}
+
+/// `cuMemAllocManaged` + a `CudaSlice<T>` view over the result.
+///
+/// The single allocation path shared by [`CudaUnifiedAllocator`] and
+/// [`zeros_cuda_unified`]; they differ only in the element type they ask for.
+/// Returns the host pointer and the slice separately because the resource needs
+/// both — the pointer for host access and the free, the slice for dispatch.
+///
+/// The returned slice must be stored in `ManuallyDrop`: it aliases memory owned
+/// by the caller, and dropping it would free the pointer a second time.
+fn alloc_managed<T>(
+    n_bytes: usize,
+    numel: usize,
+    stream: &Arc<CudaStream>,
+) -> Result<(NonNull<u8>, CudaSlice<T>), CudaError> {
+    // CU_MEM_ATTACH_GLOBAL: allocation is accessible from any stream/GPU.
+    let cu_ptr = unsafe {
+        cudarc::driver::result::malloc_managed(
+            n_bytes,
+            cudarc::driver::sys::CUmemAttach_flags::CU_MEM_ATTACH_GLOBAL,
+        )
+    }
+    .map_err(|e| CudaError::Driver(e.to_string()))?;
+    // Zero-initialise on the host side — unified memory is host-accessible immediately.
+    unsafe { std::ptr::write_bytes(cu_ptr as *mut u8, 0, n_bytes) };
+    let ptr = NonNull::new(cu_ptr as *mut u8)
+        .ok_or_else(|| CudaError::Driver("null unified alloc".into()))?;
+    // SAFETY: `cu_ptr` is a live managed allocation of `n_bytes` bytes, which is
+    // `numel` elements of `T`; managed memory is device-addressable, so it is a
+    // valid device pointer to upgrade. The caller guarantees the slice is stored
+    // in `ManuallyDrop` so this alias never frees the allocation.
+    let slice = unsafe { stream.upgrade_device_ptr::<T>(cu_ptr, numel) };
+    Ok((ptr, slice))
+}
+
+/// Convenience: an [`AllocHandle`] for CUDA managed (unified) memory on `stream`.
+///
+/// Note: the `Vec`-based `_in` constructors (`from_shape_vec_in` etc.) adopt
+/// the vec's own heap memory and only *carry* the handle — they do not route
+/// the allocation through it, so the result is ordinary host memory. To get
+/// storage that actually lives in unified memory, use [`zeros_cuda_unified`]
+/// and fill via `as_slice_mut`.
+pub fn unified_alloc(stream: &Arc<CudaStream>) -> AllocHandle {
+    Arc::new(CudaUnifiedAllocator {
+        ctx: stream.context().clone(),
+        stream: stream.clone(),
+    })
+}
+
+/// Allocate a zero-initialised tensor in **unified** (managed) memory.
+///
+/// The result is host-accessible (no H2D copy required before GPU use) and
+/// carries domain [`MemoryDomain::Unified`].  On Jetson, unified memory
+/// eliminates the copy entirely; on discrete GPUs, the driver handles demand
+/// paging transparently.
+///
+/// Takes a `stream` rather than a bare context — like [`zeros_cuda`] — because
+/// the tensor must carry one for residency dispatch to find via
+/// [`cuda_stream`](Tensor::cuda_stream). Backed by a **typed**
+/// `CudaResource<T>` with [`Backing::Managed`] (not the allocator's untyped
+/// `CudaResource<u8>`), so
+/// `as_cudaslice::<T>()` works and the tensor can be handed to a CUDA kernel
+/// through the ordinary public API.
+///
+/// # Host access is not free-form
+///
+/// Reading or writing the result from the CPU — `as_slice`, `as_slice_mut` —
+/// is only unconditionally safe where the device reports
+/// `CU_DEVICE_ATTRIBUTE_CONCURRENT_MANAGED_ACCESS`. **Jetson Orin reports 0**
+/// (a discrete GTX/RTX reports 1). Where it is 0 the CPU must not touch *any*
+/// managed allocation while *any* kernel is running anywhere on the device —
+/// not merely on this tensor's stream — and violating that faults the process
+/// rather than returning an error, because the pages are real host mappings.
+///
+/// So on Jetson, order host access after **all** device work
+/// (`CudaContext::synchronize`), not just after this tensor's stream. A
+/// single-threaded produce → run → read loop satisfies this naturally; a
+/// pipeline with concurrent work on other streams does not.
+///
+/// # Errors
+///
+/// Returns [`CudaError::Driver`] on allocation failure.
+pub fn zeros_cuda_unified<T, const N: usize>(
+    shape: [usize; N],
+    stream: &Arc<CudaStream>,
+) -> Result<Tensor<T, N>, CudaError>
+where
+    T: DeviceRepr + ValidAsZeroBits + 'static,
+{
+    let numel: usize = shape.iter().product();
+    let layout =
+        std::alloc::Layout::array::<T>(numel).map_err(|e| CudaError::Driver(e.to_string()))?;
+    let n_bytes = layout.size().max(1);
+    let (ptr, slice) = alloc_managed::<T>(n_bytes, numel, stream)?;
+
+    let owner: Box<dyn MemoryResource> = Box::new(CudaResource::<T> {
+        slice: std::mem::ManuallyDrop::new(slice),
+        ptr: ptr.as_ptr(),
+        id: stream.context().ordinal() as i32,
+        stream: stream.clone(),
+        backing: Backing::Managed,
+    });
+
+    let storage = TensorStorage {
+        ptr: ptr.cast::<T>(),
+        len: layout.size(),
+        owner,
+        alloc: unified_alloc(stream),
         _marker: PhantomData,
     };
     let strides = get_strides_from_shape(shape);
@@ -710,7 +933,7 @@ where
         ptr,
         id,
         stream: stream.clone(),
-        foreign: None,
+        backing: Backing::Device,
     };
     let alloc: AllocHandle = Arc::new(CudaAllocator {
         ctx: ctx.clone(),
@@ -842,7 +1065,10 @@ where
             ptr,
             id,
             stream,
-            foreign,
+            backing: match foreign {
+                Some(keepalive) => Backing::Foreign(keepalive),
+                None => Backing::Device,
+            },
         };
 
         let storage =
@@ -860,6 +1086,10 @@ where
     ///
     /// Returns `None` if the storage is not a `CudaResource<T>` (e.g. it was allocated
     /// by [`CudaAllocator`] which produces `CudaResource<u8>`, or T differs).
+    ///
+    /// Unified tensors from [`zeros_cuda_unified`] are accepted the same way:
+    /// managed memory is device-addressable, so it is a valid kernel argument,
+    /// and it is the same `CudaResource<T>` with [`Backing::Managed`].
     pub fn as_cudaslice(&self) -> Option<&CudaSlice<T>> {
         self.storage
             .owner
@@ -869,7 +1099,7 @@ where
     }
 
     /// Return the stream this device tensor's allocation was created on, if the
-    /// storage is backed by a [`CudaResource<T>`].
+    /// storage is backed by a [`CudaResource<T>`] (any [`Backing`]).
     ///
     /// This is how residency-aware dispatch (e.g. color conversion on device
     /// images) recovers a stream without any global state: the stream travels
@@ -884,7 +1114,7 @@ where
     }
 
     /// Mutably borrow the underlying `CudaSlice<T>` if the storage is backed by a
-    /// [`CudaResource<T>`].
+    /// [`CudaResource<T>`] (any [`Backing`]).
     ///
     /// This is the mutable sibling of [`as_cudaslice`](Self::as_cudaslice); it lets a
     /// device-owning output tensor be passed as a mutable kernel argument
@@ -920,7 +1150,14 @@ where
             // Foreign memory: handing out an owned CudaSlice would let it
             // outlive the keepalive (and its drop would cuMemFree memory we
             // do not own).
-            Some(r) if r.foreign.is_some() => return Err(self),
+            //
+            // Managed memory: `CudaSlice::drop` frees with `cuMemFreeAsync`,
+            // which is not a valid free for a `cuMemAllocManaged` pointer —
+            // that needs `cuMemFree`, which is what this resource's own Drop
+            // does. Handing the slice out would swap in the wrong free, so
+            // managed tensors keep their allocation. Use `to_host*` to get the
+            // contents out.
+            Some(r) if !matches!(r.backing, Backing::Device) => return Err(self),
             Some(_) => {}
             None => return Err(self),
         }
@@ -947,9 +1184,9 @@ where
         let slice = std::mem::ManuallyDrop::into_inner(unsafe { std::ptr::read(&md_res.slice) });
         // Drop the stream Arc explicitly — ManuallyDrop would otherwise leak it.
         let _stream = unsafe { std::ptr::read(&md_res.stream) };
-        // `foreign` is None (checked above) but must still be read out so the
-        // Option itself is not leaked.
-        let _foreign = unsafe { std::ptr::read(&md_res.foreign) };
+        // `backing` is Backing::Device (checked above), but must still be read
+        // out so the value itself is not leaked.
+        let _backing = unsafe { std::ptr::read(&md_res.backing) };
         // Poison the ptr to make residual state obviously invalid (defensive).
         md_res.ptr = std::ptr::null_mut();
 
@@ -980,6 +1217,30 @@ where
         Ok(wrap_device_slice(dev_slice, self.shape, stream))
     }
 
+    /// Copy this host tensor into a new **unified-memory** tensor (H2D memcpy
+    /// into a `cudaMallocManaged` buffer). The unified buffer is immediately
+    /// accessible from both the CPU and the GPU kernel launched on `stream`
+    /// without a second explicit copy — useful for Jetson and fine-grained UVM
+    /// workflows.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CudaError`] on allocation or copy failure.
+    pub fn to_cuda_unified(&self, stream: &Arc<CudaStream>) -> Result<Tensor<T, N>, CudaError>
+    where
+        T: ValidAsZeroBits + 'static,
+    {
+        let src = self.as_slice(); // panics (correctly) if not host-accessible
+        let mut dst = zeros_cuda_unified::<T, N>(self.shape, stream)?;
+        let dst_slice = dst.as_cudaslice_mut().ok_or_else(|| {
+            CudaError::Driver("to_cuda_unified: unified alloc has no device slice".into())
+        })?;
+        stream
+            .memcpy_htod(src, dst_slice)
+            .map_err(|e| CudaError::Driver(e.to_string()))?;
+        Ok(dst)
+    }
+
     /// Copy this device tensor to a new host-backed tensor.
     ///
     /// Synchronizes the stream before returning so the host data is valid.
@@ -987,18 +1248,19 @@ where
     /// # Errors
     ///
     /// Returns [`CudaError::Driver`] on CUDA failure or [`CudaError::NotCudaBacked`]
-    /// if the storage owner is not a [`CudaResource<T>`].
+    /// if the storage owner is not a [`CudaResource<T>`] or a
+    /// a [`CudaResource<T>`].
+    ///
+    /// Unified tensors are accepted deliberately: on a device without
+    /// concurrent managed access this D2H copy is the *only* safe way to get
+    /// the contents to the CPU while other device work may be in flight, since
+    /// `as_slice` would fault. See [`zeros_cuda_unified`].
     pub fn to_host(&self, stream: &Arc<CudaStream>) -> Result<Tensor<T, N>, CudaError> {
-        let cuda_res = self
-            .storage
-            .owner
-            .as_any()
-            .downcast_ref::<CudaResource<T>>()
-            .ok_or(CudaError::NotCudaBacked)?;
+        let slice = self.as_cudaslice().ok_or(CudaError::NotCudaBacked)?;
 
         // D→H typed copy into a Vec<T> (this is a transfer, copy is correct).
         let host_data: Vec<T> = stream
-            .clone_dtoh(&*cuda_res.slice)
+            .clone_dtoh(slice)
             .map_err(|e| CudaError::Driver(e.to_string()))?;
         stream
             .synchronize()
@@ -1374,6 +1636,328 @@ mod tests {
             result, input_data,
             "copy_bytes kernel output must match input"
         );
+    }
+
+    /// Serialises the managed-memory tests against each other.
+    ///
+    /// Jetson Orin reports `CONCURRENT_MANAGED_ACCESS = 0`, and on such a
+    /// device managed allocation, `cuMemFree` and D2H copies out of managed
+    /// memory all need the device effectively to themselves — overlapping them
+    /// across threads faults the process rather than returning an error.
+    /// libtest gives no way to mark a test exclusive, so every test that
+    /// allocates managed memory takes this lock. It is uncontended on a
+    /// discrete GPU, where the same tests are safe to overlap.
+    ///
+    /// The guard is taken for the whole test body, including the tensor's drop,
+    /// because the `cuMemFree` in `Backing::Managed`'s Drop is part of what has
+    /// to be exclusive.
+    static MANAGED: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Take [`MANAGED`], ignoring poisoning: a panicking test has already
+    /// failed, and refusing the lock afterwards would turn one failure into
+    /// a cascade of unrelated ones.
+    fn managed_guard() -> std::sync::MutexGuard<'static, ()> {
+        MANAGED.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// True when the CPU may touch managed memory while kernels run. Jetson
+    /// Orin reports 0, a discrete GTX/RTX reports 1. Where it is 0 there is no
+    /// safe window for host access in a parallel test harness — another test's
+    /// kernel can start at any moment — so those assertions are skipped and the
+    /// data is moved with device-side copies instead.
+    fn concurrent_managed_access(ctx: &Arc<CudaContext>) -> bool {
+        ctx.attribute(
+            cudarc::driver::sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_CONCURRENT_MANAGED_ACCESS,
+        )
+        .unwrap_or(0)
+            == 1
+    }
+
+    /// Unified memory is host-accessible, domain is `Unified`, and it round-trips
+    /// through CUDA kernel execution without an explicit H2D copy.
+    #[test]
+    fn unified_host_access_and_domain() -> Result<(), Box<dyn std::error::Error>> {
+        let _exclusive = managed_guard();
+        let ctx = CudaContext::new(0)?;
+        let stream = ctx.default_stream();
+
+        // Allocate 8-byte unified tensor.
+        let mut t = zeros_cuda_unified::<u8, 1>([8], &stream)?;
+        assert!(
+            matches!(t.storage.domain(), MemoryDomain::Unified { .. }),
+            "expected Unified domain, got {:?}",
+            t.storage.domain()
+        );
+
+        // Unified memory is host-accessible — write from the CPU where the
+        // device permits it concurrently, otherwise seed with a device copy.
+        let host_ok = concurrent_managed_access(&ctx);
+        let seed = [10u8, 20, 30, 40, 50, 60, 70, 80];
+        if host_ok {
+            t.as_slice_mut().copy_from_slice(&seed);
+            assert_eq!(t.as_slice(), &seed);
+        } else {
+            let slice = t.as_cudaslice_mut().ok_or("unified tensor has no slice")?;
+            stream.memcpy_htod(&seed, slice)?;
+            stream.synchronize()?;
+        }
+
+        // Run a GPU kernel that increments each element, passing the unified pointer
+        // as a device address — no H2D copy needed.
+        const ADD_ONE_SRC: &str = r#"
+            extern "C" __global__ void add_one_unified(unsigned char* data, int n) {
+                int i = blockIdx.x * blockDim.x + threadIdx.x;
+                if (i < n) data[i] += 1;
+            }
+        "#;
+        let kernel = CudaKernel::compile(&ctx, ADD_ONE_SRC, "add_one_unified")?;
+
+        // `upgrade_device_ptr` creates a CudaSlice that would free the pointer on drop.
+        // Use ManuallyDrop so the alias is defused unconditionally — even on panic —
+        // preventing a double-free with the Backing::Managed drop path.
+        let cu_ptr = t.as_ptr() as u64;
+        let mut dev_alias =
+            std::mem::ManuallyDrop::new(unsafe { stream.upgrade_device_ptr::<u8>(cu_ptr, 8) });
+        let n_i32: i32 = 8;
+        kernel
+            .launch_builder(&stream)
+            .arg(&mut *dev_alias)
+            .arg(&n_i32)
+            .launch_1d(8)?;
+        stream.synchronize()?;
+
+        // Read the result back. Where the CPU may touch managed memory
+        // concurrently this needs no D2H copy at all, which is the property
+        // under test; elsewhere the same bytes come back via a device copy.
+        let expected = [11u8, 21, 31, 41, 51, 61, 71, 81];
+        if host_ok {
+            assert_eq!(
+                t.as_slice(),
+                &expected,
+                "GPU kernel must have incremented each element via unified pointer"
+            );
+        } else {
+            let back = t.to_host(&stream)?;
+            assert_eq!(
+                back.as_slice(),
+                &expected,
+                "GPU kernel must have incremented each element via unified pointer"
+            );
+        }
+        Ok(())
+    }
+
+    /// `zeros_cuda_unified` drop must not double-free: a subsequent alloc must succeed.
+    #[test]
+    fn unified_drop_no_double_free() -> Result<(), Box<dyn std::error::Error>> {
+        let _exclusive = managed_guard();
+        let stream = CudaContext::new(0)?.default_stream();
+
+        let t = zeros_cuda_unified::<u8, 1>([16], &stream)?;
+        drop(t);
+        // A subsequent unified alloc must succeed (no CUDA error state after the free).
+        zeros_cuda_unified::<u8, 1>([16], &stream)?;
+        Ok(())
+    }
+
+    /// [`CudaUnifiedAllocator`] used directly through the [`TensorAllocator`]
+    /// trait, rather than via the `zeros_cuda_unified` wrapper: the resource it
+    /// hands back must report the Unified domain and the requested size, arrive
+    /// zeroed, and be readable and writable from the CPU.
+    #[test]
+    fn unified_allocator_allocates_zeroed_host_accessible_memory(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let _exclusive = managed_guard();
+        let stream = CudaContext::new(0)?.default_stream();
+        let alloc = unified_alloc(&stream);
+
+        const N: usize = 32;
+        let layout = std::alloc::Layout::array::<f32>(N)?;
+        let owner = alloc.allocate(layout)?;
+
+        assert_eq!(
+            owner.len_bytes(),
+            layout.size(),
+            "allocator must report the requested byte count"
+        );
+        assert!(
+            matches!(owner.domain(), MemoryDomain::Unified { .. }),
+            "expected Unified domain, got {:?}",
+            owner.domain()
+        );
+        assert!(
+            owner
+                .as_any()
+                .downcast_ref::<CudaResource<u8>>()
+                .is_some_and(|r| matches!(r.backing, Backing::Managed)),
+            "unified allocator must produce a Backing::Managed CudaResource"
+        );
+
+        // The allocator zeroes on the host side, so the buffer is readable
+        // immediately with no H2D copy — but only assert that by touching the
+        // pages where the device allows the CPU to do so while kernels run.
+        // Elsewhere this would race the rest of the suite (see
+        // `concurrent_managed_access`).
+        if concurrent_managed_access(&stream.context().clone()) {
+            // SAFETY: the allocator returned `layout.size()` bytes of
+            // host-accessible unified memory, and f32 has no invalid bit
+            // patterns. No kernel is running on this allocation.
+            let buf = unsafe { std::slice::from_raw_parts_mut(owner.as_ptr() as *mut f32, N) };
+            assert!(
+                buf.iter().all(|&x| x == 0.0),
+                "unified allocation must arrive zero-initialised"
+            );
+
+            // ... and writable, which is the property that lets the CPU produce
+            // a frame in place instead of staging it for an H2D copy.
+            for (i, x) in buf.iter_mut().enumerate() {
+                *x = i as f32;
+            }
+            assert_eq!(buf[N - 1], (N - 1) as f32);
+        }
+
+        // Freeing through the trait object must leave the context usable.
+        drop(owner);
+        alloc.allocate(layout)?;
+        Ok(())
+    }
+
+    /// Seed a managed tensor with a device copy — never `as_slice_mut`, which
+    /// would race other tests' kernels on a device without concurrent managed
+    /// access.
+    fn seeded_unified(
+        stream: &Arc<CudaStream>,
+    ) -> Result<Tensor<u8, 1>, Box<dyn std::error::Error>> {
+        let mut t = zeros_cuda_unified::<u8, 1>([8], stream)?;
+        let seed = [1u8, 2, 3, 4, 5, 6, 7, 8];
+        {
+            let slice = t.as_cudaslice_mut().ok_or("unified tensor has no slice")?;
+            stream.memcpy_htod(&seed, slice)?;
+        }
+        stream.synchronize()?;
+        Ok(t)
+    }
+
+    const SEED: [u8; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
+
+    /// The accessors the type split had already been taught.
+    #[test]
+    fn unified_slice_and_stream_accessors() -> Result<(), Box<dyn std::error::Error>> {
+        let _exclusive = managed_guard();
+        let stream = CudaContext::new(0)?.default_stream();
+        let t = seeded_unified(&stream)?;
+        assert!(t.as_cudaslice().is_some(), "as_cudaslice");
+        assert!(t.cuda_stream().is_some(), "cuda_stream");
+        assert!(
+            matches!(t.storage.domain(), MemoryDomain::Unified { .. }),
+            "domain must stay Unified after the merge"
+        );
+        Ok(())
+    }
+
+    /// `to_host` and `to_host_owned` used to reject managed tensors, so a
+    /// unified tensor could reach a kernel but not get its data back out.
+    #[test]
+    fn unified_to_host_variants() -> Result<(), Box<dyn std::error::Error>> {
+        let _exclusive = managed_guard();
+        let stream = CudaContext::new(0)?.default_stream();
+        let t = seeded_unified(&stream)?;
+
+        let host = t.to_host(&stream)?;
+        assert_eq!(host.as_slice(), &SEED, "to_host");
+
+        let owned = t.to_host_owned()?;
+        assert_eq!(owned.as_slice(), &SEED, "to_host_owned");
+        Ok(())
+    }
+
+    /// `to_host_into` was the clearest symptom of the half-taught bridge: its
+    /// `cuda_stream()` call succeeded while the downcast two lines above did not.
+    #[test]
+    fn unified_to_host_into() -> Result<(), Box<dyn std::error::Error>> {
+        let _exclusive = managed_guard();
+        let stream = CudaContext::new(0)?.default_stream();
+        let t = seeded_unified(&stream)?;
+
+        let mut dst = [0u8; 8];
+        t.to_host_into(&mut dst)?;
+        assert_eq!(dst, SEED, "to_host_into");
+        Ok(())
+    }
+
+    /// `to_host_in` with a pinned destination — the last of the four that
+    /// rejected managed tensors.
+    #[test]
+    fn unified_to_host_in_pinned() -> Result<(), Box<dyn std::error::Error>> {
+        let _exclusive = managed_guard();
+        let stream = CudaContext::new(0)?.default_stream();
+        let t = seeded_unified(&stream)?;
+
+        let pinned = t.to_host_in(&stream, pinned_alloc(stream.context()))?;
+        assert_eq!(pinned.as_slice(), &SEED, "to_host_in");
+        Ok(())
+    }
+
+    /// `into_cudaslice` must keep refusing managed memory: `CudaSlice::drop`
+    /// frees with `cuMemFreeAsync`, which is not a valid free for a
+    /// `cuMemAllocManaged` pointer. Handing the slice out would install the
+    /// wrong deallocator.
+    #[test]
+    fn unified_into_cudaslice_refuses() -> Result<(), Box<dyn std::error::Error>> {
+        let _exclusive = managed_guard();
+        let stream = CudaContext::new(0)?.default_stream();
+        let t = seeded_unified(&stream)?;
+        assert!(
+            t.into_cudaslice().is_err(),
+            "into_cudaslice must refuse managed memory (mismatched free)"
+        );
+        Ok(())
+    }
+
+    /// A zero-element unified tensor must report 0 bytes, not the `max(1)`
+    /// padding the allocation itself needs. `TensorStorage::layout` is
+    /// reconstructed from `len_bytes`, so padding it makes the storage disagree
+    /// with the layout that was requested.
+    #[test]
+    fn unified_zero_sized_reports_zero_bytes() -> Result<(), Box<dyn std::error::Error>> {
+        let _exclusive = managed_guard();
+        let stream = CudaContext::new(0)?.default_stream();
+
+        let t = zeros_cuda_unified::<f32, 1>([0], &stream)?;
+        assert_eq!(t.storage.owner.len_bytes(), 0);
+        assert_eq!(t.storage.layout().size(), 0);
+        assert!(t.as_slice().is_empty());
+
+        let alloc = unified_alloc(&stream);
+        let owner = alloc.allocate(std::alloc::Layout::array::<f32>(0)?)?;
+        assert_eq!(owner.len_bytes(), 0);
+        Ok(())
+    }
+
+    /// Allocate and drop repeatedly: every unified allocation carries a
+    /// `CudaSlice` built by `upgrade_device_ptr`, which attaches two CUevents
+    /// and a stream reference. If `Drop` frees the pointer without releasing
+    /// those, a per-frame loop leaks them steadily — this exercises the path
+    /// that used to.
+    #[test]
+    fn unified_repeated_alloc_drop_is_clean() -> Result<(), Box<dyn std::error::Error>> {
+        let _exclusive = managed_guard();
+        let stream = CudaContext::new(0)?.default_stream();
+
+        for _ in 0..256 {
+            // Allocate and drop; `black_box` prevents the optimizer from
+            // eliminating the allocation. No CPU read/write: on devices where
+            // CU_DEVICE_ATTRIBUTE_CONCURRENT_MANAGED_ACCESS = 0 (Jetson Orin),
+            // host access of managed memory while *any* kernel is in-flight on
+            // the device segfaults, and non-managed tests running in parallel
+            // may be executing kernels concurrently with this loop.
+            let t = zeros_cuda_unified::<f32, 1>([1024], &stream)?;
+            std::hint::black_box(&t);
+        }
+        // A final allocation must still succeed — a driver pushed into an error
+        // state by leaked handles would fail here.
+        zeros_cuda_unified::<f32, 1>([1024], &stream)?;
+        Ok(())
     }
 
     /// Pinned round-trip: pinned host tensor → device → pinned host via
