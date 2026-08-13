@@ -374,7 +374,9 @@ pub struct Reconstruction {
     pub points: Vec<Point>,
     /// The observations that survived into the final solve. At most the input observation count,
     /// and usually fewer: tracks that never triangulated, and views that never registered,
-    /// contribute none. Equal only when every track triangulates and every view registers.
+    /// contribute none — and individual sightings whose reprojection the solve could not reconcile
+    /// are filtered out even from tracks that did triangulate in views that did register. Never
+    /// assume equality with the input count, and do not size a per-input-observation array from it.
     pub observations: Vec<Observation>,
     /// Final reprojection RMS in pixels, or `-1.0` if no valid observation remained.
     pub reproj_rmse_px: f64,
