@@ -217,6 +217,3 @@ fmt-all = { depends-on = [
 
 [feature.dev.dependencies]
 pre-commit = "*"
-
-[dependencies]
-numpy = ">=1.24.4,<3"
