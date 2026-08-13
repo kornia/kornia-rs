@@ -2,8 +2,10 @@
 //!
 //! Natural-feature tracks — not a tag — drive the geometry. A best-connected camera pair bootstraps
 //! the reconstruction from the two-view essential matrix, remaining cameras register by PnP against
-//! the growing point cloud, and a bundle adjustment polishes everything. The reconstruction is
-//! recovered **up to scale** (the fundamental monocular ambiguity); a single metric tag then fixes
+//! the growing point cloud — each newly registered camera refined against its co-visible
+//! neighbours before it is allowed to triangulate, and the whole map re-solved every time the
+//! registered set grows 10% — and a terminal bundle adjustment polishes everything. The
+//! reconstruction is recovered **up to scale** (the fundamental monocular ambiguity); a tag fixes
 //! that one scalar — the tag is a *scale bar*, nothing else. Output poses are `T_world_cam` in the
 //! reference camera's frame, metric ONLY when a tag actually anchored the scale: supplying a tag is
 //! not sufficient, since it must also be seen by two registered views and triangulate. See
@@ -58,6 +60,115 @@ fn norm_residual(pose: &Pose3d, p_world: Vec3F64, n: Vec2F64) -> Option<f64> {
         return None;
     }
     Some(((pc.x / pc.z - n.x).powi(2) + (pc.y / pc.z - n.y).powi(2)).sqrt())
+}
+
+/// Run a global bundle adjustment each time the registered set grows by this factor.
+///
+/// COLMAP's `Mapper.ba_global_images_ratio`, same value. A ratio rather than a fixed interval so
+/// the total cost stays proportional to the problem: many cheap solves while the map is small, few
+/// expensive ones once it is large.
+const BA_IMAGES_RATIO: f64 = 1.1;
+
+/// Registered cameras kept free, besides the newly registered one, in the local BA that follows
+/// each registration. ORB-SLAM's local window is the same order of magnitude.
+const LOCAL_BA_NEIGHBOURS: usize = 6;
+
+/// LM iterations for that local BA. Fewer than the global `ReconstructionConfig::max_iterations`: this runs
+/// once per registered camera and only has to pull a fresh PnP pose onto the existing structure,
+/// not converge the whole map.
+const LOCAL_BA_ITERATIONS: usize = 25;
+
+/// How many cameras currently hold a pose.
+fn registered_now(poses: &[Option<Pose3d>]) -> usize {
+    poses.iter().filter(|p| p.is_some()).count()
+}
+
+/// `focus` plus the `neighbours` registered cameras most co-visible with it.
+///
+/// Co-visibility rather than index distance, because registration order is not trajectory order: a
+/// camera registered late can sit anywhere along the walk, and its error is shared with whatever
+/// observes the same points, not with whatever has an adjacent index. Ranked by how many
+/// triangulated tracks each candidate shares with `focus`, which is the criterion ORB-SLAM's local
+/// window uses.
+fn covisible_window(
+    focus: usize,
+    a0: usize,
+    point3d: &HashMap<usize, Vec3F64>,
+    norm: &[Vec<(usize, Vec2F64)>],
+    poses: &[Option<Pose3d>],
+    neighbours: usize,
+) -> HashSet<usize> {
+    let mut shared: HashMap<usize, usize> = HashMap::new();
+    for ti in point3d.keys() {
+        let obs = &norm[*ti];
+        if !obs.iter().any(|(c, _)| *c == focus) {
+            continue;
+        }
+        for (c, _) in obs {
+            // `a0` is excluded: the global gauge anchor is pinned in every solve, so admitting it
+            // would spend one of the `neighbours` slots on a pose the local BA cannot move — a
+            // 7-camera window that frees only 6. It is most co-visible early in growth, which is
+            // exactly when the window is tightest.
+            if *c != focus && *c != a0 && poses[*c].is_some() {
+                *shared.entry(*c).or_insert(0) += 1;
+            }
+        }
+    }
+    let mut ranked: Vec<(usize, usize)> = shared.into_iter().collect();
+    // Most-shared first, camera index breaking ties: `HashMap` iteration order is randomised per
+    // process, so an unstable ranking here would make the whole reconstruction irreproducible.
+    ranked.sort_unstable_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    let mut out: HashSet<usize> = HashSet::from([focus]);
+    out.extend(ranked.into_iter().take(neighbours).map(|(c, _)| c));
+    out
+}
+
+/// Bundle-adjust and write the result back into the growing state.
+///
+/// `free` restricts which cameras may move: `None` frees every registered camera (a global BA),
+/// `Some(set)` pins the rest through `BaObservation::fixed_pose`. Only free cameras are written
+/// back — a pinned camera's entry in the result is its input pose, and the gauge anchor `a0` must
+/// never move at all.
+#[allow(clippy::too_many_arguments)]
+fn refine_in_place(
+    poses: &mut [Option<Pose3d>],
+    point3d: &mut HashMap<usize, Vec3F64>,
+    norm: &[Vec<(usize, Vec2F64)>],
+    norm_depth: &[Vec<Option<f32>>],
+    idcam: &PinholeCamera,
+    a0: usize,
+    config: &ReconstructionConfig,
+    free: Option<&HashSet<usize>>,
+    max_iterations: usize,
+) -> Result<(), CalibError> {
+    // Sorted, not `HashMap` order: the solve accumulates in this order and float addition is not
+    // associative, so an unsorted pass would make the map differ run to run. Same reason the
+    // terminal solve sorts.
+    let mut track_ids: Vec<usize> = point3d.keys().copied().collect();
+    track_ids.sort_unstable();
+    let res = global_ba(
+        poses,
+        point3d,
+        &track_ids,
+        norm,
+        norm_depth,
+        idcam,
+        a0,
+        config,
+        free,
+        max_iterations,
+    )?;
+    for (c, p) in poses.iter_mut().enumerate() {
+        if p.is_some() && c != a0 && free.is_none_or(|f| f.contains(&c)) {
+            *p = Some(res.poses[c]);
+        }
+    }
+    for (pidx, ti) in track_ids.iter().enumerate() {
+        if let Some(v) = res.points.get(pidx) {
+            point3d.insert(*ti, *v);
+        }
+    }
+    Ok(())
 }
 
 /// Reconstruct from feature tracks, returning the MAP as well as the camera poses.
@@ -141,6 +252,25 @@ pub fn reconstruct(
     tracks: &[FeatureTrack],
     config: &ReconstructionConfig,
     obs_depth: Option<&[Vec<Option<f64>>]>,
+) -> Result<Reconstruction, CalibError> {
+    reconstruct_inner(cameras, tags_for_scale, tracks, config, obs_depth, true)
+}
+
+/// [`reconstruct`], with the bundle adjustment that runs DURING growth switchable off.
+///
+/// `growth_ba: false` leaves only the terminal solve — the arrangement this file had before the
+/// local and periodic solves were added. It exists so
+/// `growth_ba_keeps_the_long_tracks_a_terminal_solve_alone_loses` can measure the two arms of the
+/// same pipeline against each other on one scene, instead of asserting that the current arm is
+/// merely "good enough" — an assertion that would pass on a no-op change. Deliberately NOT public:
+/// a caller has no reason to ask for the worse arm.
+fn reconstruct_inner(
+    cameras: &[PinholeCamera],
+    tags_for_scale: &[TagObservation],
+    tracks: &[FeatureTrack],
+    config: &ReconstructionConfig,
+    obs_depth: Option<&[Vec<Option<f64>>]>,
+    growth_ba: bool,
 ) -> Result<Reconstruction, CalibError> {
     let n_cams = cameras.len();
     let idcam = PinholeCamera::IDENTITY;
@@ -278,6 +408,9 @@ pub fn reconstruct(
     // solvable, so a failure marks just that camera unregisterable and the loop keeps growing —
     // NOT aborting every remaining camera.
     let mut pnp_failed: HashSet<usize> = HashSet::new();
+    // Next registered-camera count at which a global bundle adjustment is due. Seeded off the
+    // bootstrap pair, floored at 3 so the first registration does not immediately trigger one.
+    let mut next_ba = (registered_now(&poses) as f64 * BA_IMAGES_RATIO).max(3.0);
     loop {
         // For each unplaced camera, gather (world_point, normalized_pixel) from tracks with a 3D point.
         let mut best: Option<(usize, Vec<Vec3F64>, Vec<Vec2F64>)> = None;
@@ -351,6 +484,26 @@ pub fn reconstruct(
                 if let Some(cb) = config.progress.as_ref() {
                     cb(poses.iter().filter(|p| p.is_some()).count(), n_cams);
                 }
+                // Refine the new pose against the existing map BEFORE triangulating from it. A
+                // point built off a raw PnP pose inherits that pose's error and then becomes the
+                // 2D↔3D evidence the NEXT camera registers against, so the error compounds down
+                // the chain rather than staying local. Failure here (a window with nothing free in
+                // it) is an ordinary no-op: keep the PnP pose and carry on.
+                if growth_ba {
+                    let window =
+                        covisible_window(c, a0, &point3d, &norm, &poses, LOCAL_BA_NEIGHBOURS);
+                    let _ = refine_in_place(
+                        &mut poses,
+                        &mut point3d,
+                        &norm,
+                        &norm_depth,
+                        &idcam,
+                        a0,
+                        config,
+                        Some(&window),
+                        LOCAL_BA_ITERATIONS,
+                    );
+                }
                 let before = point3d.len();
                 triangulate_new(&mut point3d, &norm, &poses, &idcam, &tcfg);
                 // A camera that failed earlier may register comfortably once the cloud has grown;
@@ -360,6 +513,41 @@ pub fn reconstruct(
                 // each iteration either registers a camera or drops one from consideration.
                 if point3d.len() > before {
                     pnp_failed.clear();
+                }
+                // Periodic global bundle adjustment, on COLMAP's `ba_global_images_ratio`: run one
+                // every time the registered set has grown by 10%. A ratio rather than a fixed
+                // interval keeps the total cost proportional — frequent while the map is small and
+                // cheap, rare once it is large and expensive.
+                //
+                // The local BA above only ever moves a seven-camera window, so error accumulated
+                // ALONG the chain is nobody's residual until a solve sees the whole thing. Without
+                // this the reconstruction drifts until PnP inlier counts sink under
+                // `min_registration_inliers` and growth stalls with most views unregistered.
+                if growth_ba && registered_now(&poses) as f64 >= next_ba {
+                    // The solve is ATTEMPTED, and the schedule advances either way. Gating the
+                    // advance on success meant a global BA that failed — `CholeskyFailed` once LM
+                    // damping escalates past 1e10, which is exactly what an ill-conditioned map
+                    // produces — left `next_ba` behind a monotonically growing `registered_now`.
+                    // The guard was then true on every following registration, turning ~23
+                    // scheduled global solves into one per registration, each a full assembly over
+                    // every point and observation, each failing the same way, and each discarded by
+                    // `.is_ok()` so nothing reported it. A failed refinement is a no-op on the map;
+                    // retrying it immediately cannot fix the conditioning that caused it.
+                    let _ = refine_in_place(
+                        &mut poses,
+                        &mut point3d,
+                        &norm,
+                        &norm_depth,
+                        &idcam,
+                        a0,
+                        config,
+                        None,
+                        config.max_iterations,
+                    );
+                    // `max(next_ba + 1.0)` so a set that grew by less than one whole camera per
+                    // trigger (small maps) still advances the threshold and cannot re-fire on
+                    // every registration.
+                    next_ba = (registered_now(&poses) as f64 * BA_IMAGES_RATIO).max(next_ba + 1.0);
                 }
             }
             // Failed outright, or its consensus was too thin: retry once the cloud has grown.
@@ -410,6 +598,8 @@ pub fn reconstruct(
         &idcam,
         a0,
         config,
+        None,
+        config.max_iterations,
     )?;
 
     // --- Alternating intrinsics refinement (COLMAP does it INSIDE its BA; this equivalent needs no
@@ -448,6 +638,8 @@ pub fn reconstruct(
                 &idcam,
                 a0,
                 config,
+                None,
+                config.max_iterations,
             )?;
         }
         fit
@@ -728,9 +920,14 @@ fn motion_priors_for(
     (!out.is_empty()).then_some(out)
 }
 
-/// One global bundle adjustment over every triangulated point and every registered view, with the
-/// anchor camera `a0` fixed to hold the gauge. Callable more than once on the same problem, which
-/// is what `refine_intrinsics` needs after it rewrites `norm` in place.
+/// One bundle adjustment over the triangulated points and the registered views, with the anchor
+/// camera `a0` fixed to hold the gauge. Callable more than once on the same problem, which is what
+/// `refine_intrinsics` needs after it rewrites `norm` in place, and what the periodic refinement
+/// during growth needs by construction.
+///
+/// `free` is `None` for a global solve (every registered camera optimised) or `Some(set)` to pin
+/// everything outside a local window. `max_iterations` is a parameter rather than
+/// [`ReconstructionConfig::max_iterations`] because the mid-growth local solves want far fewer.
 #[allow(clippy::too_many_arguments)]
 fn global_ba(
     poses: &[Option<Pose3d>],
@@ -741,6 +938,8 @@ fn global_ba(
     idcam: &PinholeCamera,
     a0: usize,
     config: &ReconstructionConfig,
+    free: Option<&HashSet<usize>>,
+    max_iterations: usize,
 ) -> Result<BaResult, CalibError> {
     // Re-fit the per-view depth gauge against the CURRENT geometry before every solve. Alternating
     // rather than joint: the scales are closed-form medians, so each pass refines the other.
@@ -757,6 +956,18 @@ fn global_ba(
             CalibError::BundleAdjust(format!("track {ti} has no triangulated point"))
         })?;
         points.push(*p);
+        // In a windowed solve, a point no free camera observes has every one of its observations
+        // pinned on both sides: the whole residual block is a constant that costs assembly and
+        // moves nothing. Skipping it is what keeps a local BA's size proportional to the window
+        // rather than to the whole clip. The entry stays in `points` so `pidx` still lines up with
+        // `track_ids` for the caller's write-back — the solver simply reports it back unchanged.
+        if free.is_some_and(|f| {
+            !norm[*ti]
+                .iter()
+                .any(|(c, _)| poses[*c].is_some() && f.contains(c))
+        }) {
+            continue;
+        }
         for (j, (c, nrm)) in norm[*ti].iter().enumerate() {
             if poses[*c].is_none() {
                 continue;
@@ -765,8 +976,10 @@ fn global_ba(
             obs.push(BaObservation {
                 pose_idx: *c,
                 point_idx: pidx,
+                // Reference camera fixed → gauge anchor; outside a local window, pinned so the
+                // window is fitted TO the surrounding structure instead of dragging it along.
+                fixed_pose: *c == a0 || free.is_some_and(|f| !f.contains(c)),
                 pixel: [nrm.x as f32, nrm.y as f32],
-                fixed_pose: *c == a0, // reference camera fixed → gauge anchor
                 fixed_point: false,
                 // This view's own gauge baked in: the residual measures shape, not scale.
                 depth_meas: depth_meas.map(|d| d * depth_scale[*c] as f32),
@@ -784,7 +997,7 @@ fn global_ba(
         &obs,
         idcam,
         &BaParams {
-            max_iterations: config.max_iterations,
+            max_iterations,
             robust: RobustKernelKind::Huber,
             robust_scale_sq: config.robust_scale_sq,
             // Depth AND motion residuals are deflated by `reproj_sigma`, so their Huber knee is
@@ -2259,5 +2472,203 @@ mod tests {
                 c[i]
             );
         }
+    }
+
+    /// Deterministic uniform noise. `rand` is not a dependency of this crate, and a fixed stream
+    /// keeps the two arms of the comparison below reading the SAME scene.
+    struct Lcg(u64);
+    impl Lcg {
+        fn unit(&mut self) -> f64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (self.0 >> 11) as f64 / (1u64 << 53) as f64
+        }
+        fn signed(&mut self) -> f64 {
+            self.unit() * 2.0 - 1.0
+        }
+    }
+
+    /// A sideways walkthrough: `n_views` cameras stepping 12 cm along +X past a slab of scene
+    /// points, with a little wobble in the pose and `noise_px` of observation noise.
+    ///
+    /// Long enough that no view sees more than a fraction of the walk, which is the regime the
+    /// growth-time bundle adjustment exists for: consecutive views overlap, distant ones do not, so
+    /// registration error has somewhere to compound.
+    fn walkthrough(
+        n_views: usize,
+        n_points: usize,
+        noise_px: f64,
+    ) -> (Vec<PinholeCamera>, Vec<Pose3d>, Vec<FeatureTrack>) {
+        let k = pinhole(600.0);
+        let poses: Vec<Pose3d> = (0..n_views)
+            .map(|i| {
+                let t = i as f64;
+                let c = Vec3F64::new(0.12 * t, 0.03 * (0.7 * t).sin(), 0.02 * (0.5 * t).cos());
+                let r = rot(0.03 * (0.23 * t).sin(), 0.02 * (0.31 * t).cos());
+                Pose3d::new(r, -(r * c))
+            })
+            .collect();
+
+        let mut rng = Lcg(0x5EED_1234_ABCD_0001);
+        let pts: Vec<Vec3F64> = (0..n_points)
+            .map(|_| {
+                Vec3F64::new(
+                    -1.5 + 11.5 * rng.unit(),
+                    -1.6 + 3.2 * rng.unit(),
+                    3.0 + 3.0 * rng.unit(),
+                )
+            })
+            .collect();
+
+        let mut noise = Lcg(0x5EED_1234_ABCD_0002);
+        let tracks: Vec<FeatureTrack> = pts
+            .iter()
+            .filter_map(|p| {
+                let obs: Vec<(usize, Vec2F64)> = (0..n_views)
+                    .filter_map(|c| {
+                        let pc = poses[c].transform_point(p);
+                        if pc.z <= 0.5 {
+                            return None;
+                        }
+                        let uv = project(*p, &poses[c], &k);
+                        (uv.x >= 0.0 && uv.x < 640.0 && uv.y >= 0.0 && uv.y < 480.0).then_some((
+                            c,
+                            Vec2F64::new(
+                                uv.x + noise_px * noise.signed(),
+                                uv.y + noise_px * noise.signed(),
+                            ),
+                        ))
+                    })
+                    .collect();
+                (obs.len() >= 3).then_some(FeatureTrack { obs })
+            })
+            .collect();
+        (vec![k; n_views], poses, tracks)
+    }
+
+    /// How many registered views observe each reconstructed point.
+    fn map_spans(recon: &Reconstruction) -> Vec<usize> {
+        let mut per_point = vec![0usize; recon.points.len()];
+        for o in &recon.observations {
+            per_point[o.point] += 1;
+        }
+        per_point.sort_unstable();
+        per_point
+    }
+
+    /// Bundle adjustment DURING growth is what keeps a long clip growing and its long tracks
+    /// triangulable.
+    ///
+    /// Every registration is fitted by PnP against points that were themselves triangulated from
+    /// poses nothing has refined, so with a terminal-only solve the error compounds ALONG the
+    /// chain. Two things then fail together: `triangulate_new` builds each point from the
+    /// WIDEST-baseline pair of placed cameras and rejects it over `max_reprojection_error` — and
+    /// widest-baseline is also furthest-apart-in-the-walk, so the first structure drift destroys is
+    /// exactly the long tracks — and the views left unregistered lose the 2D-3D links they needed.
+    /// Neither shows up as an error: both arms below return `Ok`.
+    ///
+    /// Asserted against the SAME pipeline with the growth-time solves switched off
+    /// (`reconstruct_inner(.., growth_ba: false)`) rather than against a fixed threshold, so a
+    /// change that silently neuters the local BA fails here instead of passing on a no-op. The
+    /// headline metric is track SPAN in the map, not the point count: a map can hold points and
+    /// still have nothing tying its two ends together.
+    ///
+    /// Invisible at rig scale, which is where every other test in this file lives — at 8 or 20
+    /// views a single terminal BA cleans up whatever drifted. It takes a walk this long to see it.
+    #[test]
+    fn growth_ba_keeps_the_long_tracks_a_terminal_solve_alone_loses() {
+        let (cams, gt, tracks) = walkthrough(72, 300, 0.4);
+        // `max_iterations` below the default 40 only to keep the test quick; both arms get it, and
+        // the terminal solve the control depends on is the one it makes cheaper.
+        let config = ReconstructionConfig {
+            max_iterations: 20,
+            ..ReconstructionConfig::new(0.0)
+        };
+
+        let with = reconstruct_inner(&cams, &[], &tracks, &config, None, true).expect("with BA");
+        let without =
+            reconstruct_inner(&cams, &[], &tracks, &config, None, false).expect("without BA");
+
+        let reg = |r: &Reconstruction| r.views.iter().filter(|v| v.is_some()).count();
+        let span_with = map_spans(&with);
+        let span_without = map_spans(&without);
+        let med = |s: &[usize]| if s.is_empty() { 0 } else { s[s.len() / 2] };
+        let long = |s: &[usize]| s.iter().filter(|&&n| n >= 20).count();
+
+        println!(
+            "with growth BA:   {} / {} views, {} points, median span {}, >=20-view {}, rmse {:.3} px",
+            reg(&with), cams.len(), with.points.len(), med(&span_with), long(&span_with),
+            with.reproj_rmse_px,
+        );
+        println!(
+            "terminal BA only: {} / {} views, {} points, median span {}, >=20-view {}, rmse {:.3} px",
+            reg(&without), cams.len(), without.points.len(), med(&span_without), long(&span_without),
+            without.reproj_rmse_px,
+        );
+
+        // Ground truth on the arm we ship, so "beats the control" cannot be met by both arms being
+        // wrong. Compared through RELATIVE rotations between consecutive registered views, which
+        // are gauge-free: the map's world frame and its scale are both arbitrary, so absolute
+        // poses are not comparable without fitting a Sim(3) first.
+        let mut rot_err_deg: Vec<f64> = Vec::new();
+        for i in 1..cams.len() {
+            let (Some(a), Some(b)) = (with.views[i - 1], with.views[i]) else {
+                continue;
+            };
+            // `views` are T_world_cam, so cam(i-1) -> cam(i) is `a.rotation^T * b.rotation`.
+            let r_est = a.rotation.transpose() * b.rotation;
+            let r_gt = gt[i - 1].rotation * gt[i].rotation.transpose();
+            let d = r_gt.transpose() * r_est;
+            let trace = d.col(0).x + d.col(1).y + d.col(2).z;
+            rot_err_deg.push(((trace - 1.0) / 2.0).clamp(-1.0, 1.0).acos().to_degrees());
+        }
+        rot_err_deg.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let med_rot = rot_err_deg[rot_err_deg.len() / 2];
+        println!("with growth BA:   median relative-rotation error {med_rot:.4} deg");
+        assert_eq!(
+            reg(&with),
+            cams.len(),
+            "the shipped arm should register every view of a clean synthetic walk"
+        );
+        assert!(
+            med_rot < 0.1,
+            "the shipped arm should also be RIGHT, not just better: median relative-rotation \
+             error {med_rot:.4} deg"
+        );
+
+        // The comparison proper. Measured on this scene, in this order:
+        //   median span      32 vs 22
+        //   >=20-view tracks 233 vs 133
+        //   points           292 vs 220
+        assert!(
+            med(&span_with) > med(&span_without),
+            "growth BA must keep longer tracks: median map span {} vs {}",
+            med(&span_with),
+            med(&span_without)
+        );
+        // ABSOLUTE floor alongside the relative one. `map_spans` counts observations from
+        // REGISTERED views only, so the control's spans are mechanically capped by the 33 views it
+        // places — a future regression that keeps all 72 registered but halves chaining (32 -> 23)
+        // would still satisfy `23 > 22` and slip through. Measured 32 here; 30 leaves headroom for
+        // solver noise without leaving room for a halving.
+        assert!(
+            med(&span_with) >= 30,
+            "growth BA median map span {} fell below the absolute floor",
+            med(&span_with)
+        );
+        assert!(
+            long(&span_with) > long(&span_without),
+            "growth BA must keep more >=20-view tracks: {} vs {}",
+            long(&span_with),
+            long(&span_without)
+        );
+        assert!(
+            with.points.len() > without.points.len(),
+            "growth BA must triangulate more of the scene: {} vs {} points",
+            with.points.len(),
+            without.points.len()
+        );
     }
 }
