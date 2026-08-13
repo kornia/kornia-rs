@@ -122,8 +122,8 @@ const FILTER_REPROJ_SLACK: f64 = 2.0;
 /// paying that view's residual in every later solve. Without this a bad sighting is permanent, and
 /// since `Reconstruction::reproj_rmse_px` is a mean over observations, a tail of them inflates it
 /// several-fold while the geometry underneath is fine. Measured on 7-Scenes `pumpkin` at 60
-/// keyframes: 13.49 px reported against a robust 1.40 px, and an ATE indistinguishable from the
-/// filtered arm's.
+/// keyframes: 13.49 px reported against a robust 1.40 px, at an ATE of 3.78 cm versus the filtered
+/// arm's 3.76 cm. A caller that gates on reported rmse then rejects a good reconstruction.
 ///
 /// Only observations of REGISTERED cameras are judged. An unregistered camera's observations are
 /// the 2D-3D correspondences its own PnP will need, and testing them against a pose that does not
@@ -141,6 +141,12 @@ fn filter_points(
         .map(|p| p.as_ref().map(|p| p.inverse().translation))
         .collect();
     let before = point3d.len();
+    // ONE predicate, shared by the survival test and the pruning below. Written twice they diverged
+    // on `Some(NaN)`: `is_some_and(|e| e <= max)` rejects it while `Some(e) => e > max` does not, so
+    // a NaN-poisoned sighting counted against its point's survival AND stayed in the map.
+    let is_good = |pose: &Pose3d, p: Vec3F64, uv: Vec2F64| {
+        norm_residual(pose, p, uv).is_some_and(|e| e <= max_reproj_norm)
+    };
     // Which surviving tracks to prune observations from. Collected rather than pruned in place
     // because `retain`'s closure holds `point3d` borrowed; the order is irrelevant, as each track's
     // pruning depends only on itself.
@@ -151,7 +157,7 @@ fn filter_points(
         for (c, uv) in &norm[*ti] {
             let Some(pose) = &poses[*c] else { continue };
             seen += 1;
-            if norm_residual(pose, *p, *uv).is_some_and(|e| e <= max_reproj_norm) {
+            if is_good(pose, *p, *uv) {
                 good.push(*c);
             }
         }
@@ -181,29 +187,32 @@ fn filter_points(
     });
     for ti in prune {
         let p = point3d[&ti];
-        let track = &mut norm[ti];
-        let depths = &mut norm_depth[ti];
-        let mut j = 0usize;
-        while j < track.len() {
-            let (c, uv) = track[j];
-            let bad = match &poses[c] {
-                // A DROPPED point keeps every observation, so `triangulate_new` can rebuild that
-                // track from better poses later. Only surviving points shed sightings.
-                None => false,
-                Some(pose) => match norm_residual(pose, p, uv) {
-                    Some(e) => e > max_reproj_norm,
-                    None => true, // behind the camera: never a valid sighting
-                },
-            };
-            if bad {
-                // `swap_remove` reorders the track, but deterministically from deterministic input,
-                // and `norm`/`norm_depth` are permuted in lockstep so their indices stay paired.
-                track.swap_remove(j);
-                depths.swap_remove(j);
-            } else {
-                j += 1;
-            }
-        }
+        // Mask first, then retain both arrays through it: `norm` and `norm_depth` must stay index
+        // paired, and the order must SURVIVE. `tracks.rs` publishes ascending-camera-index order as
+        // contract, and observations are emitted in this order — `swap_remove` would be cheaper but
+        // permutes the track, breaking that for every track that loses a sighting.
+        //
+        // A DROPPED point keeps every observation, so `triangulate_new` can rebuild that track from
+        // better poses later; only surviving points shed sightings. Observations of UNREGISTERED
+        // cameras are kept regardless — they are that camera's future PnP correspondences, and
+        // judging them against a pose that does not exist yet is meaningless.
+        let keep: Vec<bool> = norm[ti]
+            .iter()
+            .map(|(c, uv)| match &poses[*c] {
+                None => true,
+                Some(pose) => is_good(pose, p, *uv),
+            })
+            .collect();
+        let mut k = 0usize;
+        norm[ti].retain(|_| {
+            k += 1;
+            keep[k - 1]
+        });
+        let mut k = 0usize;
+        norm_depth[ti].retain(|_| {
+            k += 1;
+            keep[k - 1]
+        });
     }
     before - point3d.len()
 }
@@ -435,10 +444,28 @@ fn reconstruct_inner(
         .collect();
     // Parallel to `norm`: metric depth per observation, or `None`. All-`None` when the feature is
     // off, so downstream sites index it unconditionally; a wrong-shaped caller array yields `None`.
+    //
+    // Built by walking `norm`, NOT `obs_depth`, so that promise is structural rather than a hope
+    // about the caller. Reading `obs_depth` directly made the shape whatever the caller passed:
+    // every reader here goes through `.get().and_then(.get())` and so merely saw `None` on a short
+    // row — but a row of the WRONG length silently pairs each depth with the wrong observation, and
+    // `filter_points` now mutates the two in lockstep, where a length mismatch would desynchronise
+    // them outright.
     let mut norm_depth: Vec<Vec<Option<f32>>> = match obs_depth {
-        Some(d) if config.depth_prior_rel_sigma > 0.0 => d
+        Some(d) if config.depth_prior_rel_sigma > 0.0 => norm
             .iter()
-            .map(|t| t.iter().map(|x| x.map(|v| v as f32)).collect())
+            .enumerate()
+            .map(|(ti, obs)| {
+                let row = d.get(ti);
+                (0..obs.len())
+                    .map(|j| {
+                        row.and_then(|r| r.get(j))
+                            .copied()
+                            .flatten()
+                            .map(|v| v as f32)
+                    })
+                    .collect()
+            })
             .collect(),
         _ => norm.iter().map(|t| vec![None; t.len()]).collect(),
     };
@@ -652,16 +679,23 @@ fn reconstruct_inner(
     let point_track_id: Vec<usize> = track_ids.clone();
     let mut kept_obs: Vec<Observation> = Vec::new();
     for ti in &track_ids {
-        for (j, (c, _)) in norm[*ti].iter().enumerate() {
+        for (c, _) in norm[*ti].iter() {
             if poses[*c].is_none() {
                 continue;
             }
-            // `norm[ti]` is built by mapping over `tracks[ti].obs`, so index j lines up and the
-            // raw pixel is recoverable without re-normalising.
+            // BY CAMERA ID, not by position. `norm[ti]` began as a positional map of
+            // `tracks[ti].obs` and `pixel: tracks[ti].obs[j].1` relied on that — but
+            // `filter_points` removes sightings from `norm` and nothing removes them from `tracks`,
+            // so after any pruning index `j` addresses a different observation and the published
+            // pixel belongs to another view (often the outlier just rejected). A track holds at
+            // most one observation per camera, so the id is unambiguous.
+            let Some((_, pixel)) = tracks[*ti].obs.iter().find(|(cc, _)| cc == c) else {
+                continue;
+            };
             kept_obs.push(Observation {
                 view: *c,
                 point: pt_index[ti],
-                pixel: tracks[*ti].obs[j].1,
+                pixel: *pixel,
             });
         }
     }
@@ -3119,10 +3153,8 @@ mod tests {
     /// pulled between an observation that agrees with the geometry and one that never will, and the
     /// loser is whichever side has fewer votes. Left in, they are permanent — and because
     /// [`Reconstruction::reproj_rmse_px`] is a MEAN over observations, a tail of them inflates the
-    /// reported error several-fold over a map whose geometry is fine. Measured on 7-Scenes
-    /// `pumpkin` at 60 keyframes before this filter existed: 13.49 px reported against 1.40 px
-    /// robust, with an ATE (3.78 cm) indistinguishable from the filtered arm's (3.76 cm). A caller
-    /// that gates on reported rmse then rejects a perfectly good reconstruction.
+    /// reported error several-fold over a map whose geometry is fine. See [`filter_points`] for the
+    /// measurement on real data.
     ///
     /// Asserted on the corrupted arm's ABSOLUTE rmse rather than against a clean control, because
     /// the failure mode is exactly that the number looks plausible while the map is not: a
@@ -3178,6 +3210,23 @@ mod tests {
             med_rot < 0.1,
             "the surviving map must also be RIGHT: median relative-rotation error {med_rot:.4} deg"
         );
+
+        // Every published observation must carry the pixel ITS OWN view saw. Nothing else in this
+        // test can see that: `reproj_rmse_px` is computed over `norm`, so a wrong `pixel` moves it
+        // by exactly zero. `filter_points` prunes `norm` and nothing prunes `tracks`, so a
+        // positional lookup emits another view's pixel for every track that lost a sighting —
+        // frequently the outlier that was just rejected.
+        for o in &r.observations {
+            let track = &tracks[r.points[o.point].track_id];
+            assert!(
+                track
+                    .obs
+                    .iter()
+                    .any(|(c, uv)| *c == o.view && *uv == o.pixel),
+                "published observation for view {} carries a pixel that view never saw",
+                o.view
+            );
+        }
     }
 
     /// A forward walk: `n_views` cameras marching along their own optical axis toward a shell of
