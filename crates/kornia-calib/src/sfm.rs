@@ -2067,8 +2067,11 @@ mod tests {
     /// Cameras march along -Z looking forward, so consecutive views share the most tracks AND have
     /// the smallest baseline — the bootstrap picks the worst-conditioned pair available. At the
     /// default `min_parallax_deg` every triangulation from it is rejected, growth finds nothing to
-    /// register against, and the solve dies with `NoFreeVariables`. `sequential()` is the
-    /// difference between a reconstruction and no reconstruction, not a quality tweak.
+    /// register against. Downstream on real 120- and 459-keyframe clips that ends in
+    /// `NoFreeVariables`; in THIS scene it ends more gently — the default returns `Ok` having placed
+    /// only the two bootstrap views — but the mechanism is the same and the assertion below pins the
+    /// difference rather than the failure mode. `sequential()` is the difference between a
+    /// reconstruction and a two-view stub, not a quality tweak.
     #[test]
     fn sequential_preset_rescues_a_forward_walk() {
         let n_cams = 6;
@@ -2112,6 +2115,14 @@ mod tests {
             })
             .collect();
 
+        // The strict inequality below rests on the registration gate blocking growth from the
+        // tiny seed cloud the default admits, so pin that dependency: if this default ever moves to
+        // 0 the test could silently stop discriminating.
+        assert_eq!(
+            ReconstructionConfig::new(0.0).min_registration_inliers,
+            30,
+            "this test assumes the documented registration gate"
+        );
         let got = reconstruct(&cams, &[], &tracks, &ReconstructionConfig::new(0.0), None);
         let seq = reconstruct(
             &cams,
@@ -2137,5 +2148,116 @@ mod tests {
             "default config placed {placed_base} views and the preset {placed} — the scene does not \
              exercise the parallax gate, so this test would pass on a no-op preset"
         );
+    }
+
+    /// Why `sequential()` does NOT arm the constant-velocity prior.
+    ///
+    /// `sequential_preset_rescues_a_forward_walk` cannot test this: it walks in exactly uniform
+    /// steps, so `alpha = 0.5` holds to machine precision and the motion residual is identically
+    /// zero. This one accelerates and then PAUSES — two steps of 0.05, two of 0.25, then a repeated
+    /// centre — which is where a norm-ratio residual is at its worst: the paused triplet's
+    /// denominator nearly vanishes and its stiffness grows as 1/n02.
+    ///
+    /// Measured: disarmed recovers the segment ratios EXACTLY; armed at 0.1 overshoots segment 1 by
+    /// 85% (0.1230 against 0.0667). The prior overrules the image evidence on a capture whose speed
+    /// genuinely varies, which a preset cannot rule out. This test guards the preset against someone
+    /// re-arming it without measuring — and it is also the test the uniform-speed scene could not
+    /// be: there, `alpha = 0.5` holds exactly and the residual is identically zero.
+    #[test]
+    fn sequential_preset_does_not_bend_a_variable_speed_walk() {
+        let steps = [0.05, 0.05, 0.25, 0.25, 0.0, 0.15];
+        let mut centres = vec![Vec3F64::new(0.0, 0.0, 0.0)];
+        for s in steps {
+            let last = *centres.last().unwrap();
+            centres.push(last + Vec3F64::new(0.0, 0.0, -s));
+        }
+        let n_cams = centres.len();
+        let cams: Vec<PinholeCamera> = (0..n_cams).map(|_| pinhole(500.0)).collect();
+        let gt: Vec<Pose3d> = centres
+            .iter()
+            .map(|c| Pose3d::new(Mat3F64::IDENTITY, -(Mat3F64::IDENTITY * *c)))
+            .collect();
+
+        let mut pts = Vec::new();
+        for i in 0..120 {
+            let a = i as f64 * 0.53;
+            pts.push(Vec3F64::new(
+                a.cos() * 1.3,
+                a.sin() * 1.0,
+                5.0 + (i % 9) as f64 * 0.25,
+            ));
+        }
+        let tracks: Vec<FeatureTrack> = pts
+            .iter()
+            .map(|p| FeatureTrack {
+                obs: gt
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(c, pose)| {
+                        let pc = pose.transform_point(p);
+                        (pc.z > 0.1).then(|| {
+                            (
+                                c,
+                                Vec2F64::new(
+                                    500.0 * pc.x / pc.z + 320.0,
+                                    500.0 * pc.y / pc.z + 240.0,
+                                ),
+                            )
+                        })
+                    })
+                    .collect(),
+            })
+            .collect();
+
+        // CONTROL: same preset with the motion prior disarmed. If this deviates too, the cause is
+        // the pause geometry, not the prior.
+        let mut ctrl_cfg = ReconstructionConfig::new(0.0).sequential();
+        ctrl_cfg.motion_prior_sigma = 0.0;
+        let ctrl = reconstruct(&cams, &[], &tracks, &ctrl_cfg, None).expect("control solves");
+        let r = reconstruct(
+            &cams,
+            &[],
+            &tracks,
+            &ReconstructionConfig::new(0.0).sequential(),
+            None,
+        )
+        .expect("variable-speed walk must still reconstruct");
+        let placed: Vec<usize> = (0..n_cams).filter(|&i| r.views[i].is_some()).collect();
+        assert!(
+            placed.len() >= n_cams - 1,
+            "placed only {} of {n_cams}",
+            placed.len()
+        );
+
+        // Gauge-invariant check: the recovered inter-view distances, normalised by their own total,
+        // must match ground truth's. A prior that bent the trajectory toward constant velocity would
+        // even these out — which is exactly the failure this asserts against.
+        let centre = |p: &Pose3d| -(p.rotation.transpose() * p.translation);
+        let rec: Vec<Vec3F64> = placed
+            .iter()
+            .map(|&i| centre(&r.views[i].unwrap()))
+            .collect();
+        let gtc: Vec<Vec3F64> = placed.iter().map(|&i| centres[i]).collect();
+        let seg = |v: &[Vec3F64]| -> Vec<f64> {
+            let d: Vec<f64> = v.windows(2).map(|w| (w[1] - w[0]).length()).collect();
+            let t: f64 = d.iter().sum();
+            d.iter().map(|x| x / t.max(1e-12)).collect()
+        };
+        let (a, b) = (seg(&rec), seg(&gtc));
+        let cr: Vec<Vec3F64> = placed
+            .iter()
+            .map(|&i| centre(&ctrl.views[i].unwrap()))
+            .collect();
+        let c = seg(&cr);
+        for (i, (ra, rb)) in a.iter().zip(b.iter()).enumerate() {
+            let armed = (ra - rb).abs();
+            let disarmed = (c[i] - rb).abs();
+            assert!(
+                armed < 0.05 || armed <= disarmed + 1e-6,
+                "segment {i}: armed {ra:.4} (err {armed:.4}) vs disarmed {:.4} (err {disarmed:.4}), \
+                 ground truth {rb:.4} — the motion prior made this segment WORSE",
+                c[i]
+            );
+        }
     }
 }

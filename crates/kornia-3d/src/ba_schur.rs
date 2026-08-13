@@ -249,10 +249,18 @@ fn up_prior_residual(r_row1: [f32; 3], up_world: [f32; 3], up_sigma: f32) -> ([f
 /// reconstruction, so it would fight the depth anchor instead of complementing it. The ratio is
 /// invariant to global scale and constrains only the shape of the local motion.
 ///
-/// The `C0 ≈ C2` fallback is not cosmetic: with the endpoints coincident the ratio's denominator
-/// vanishes and the residual is undefined, yet that is exactly the near-stationary configuration a
-/// walkthrough produces when the operator pauses. There is no scale in play in that case, so the
-/// plain difference form is both well posed and the correct constraint.
+/// The `C0 ≈ C2` fallback exists because with the endpoints coincident the ratio's denominator
+/// vanishes and the residual is undefined. Its guard is ABSOLUTE (`n02 > 1e-6`) while the map's unit
+/// is the bootstrap baseline, so on sequential capture — where that baseline is the SMALLEST in the
+/// sequence — an operator pause gives `n02` of order 1e-3..1e-2 map units, a thousand times the
+/// guard. The fallback therefore does NOT fire on the pause case; the ratio branch runs on a small
+/// denominator instead.
+///
+/// That is survivable rather than correct. The stiffness grows as `1/n02`, but the DISPLACEMENT the
+/// residual demands is `O(n02)` — sub-millimetre — so a stalled triplet reshapes local jitter and
+/// cannot pull a keyframe off the trajectory. Making the guard relative to the local baseline
+/// (`n02 > 1e-3 * (n01 + n02)`) would be the honest fix; it is deliberately not done here because it
+/// changes the objective for every existing caller and wants its own measurement.
 fn motion_prior_residual(p0: &SE3F32, p1: &SE3F32, p2: &SE3F32, mp: &BaMotionPrior) -> [f32; 6] {
     // Camera centre C = -Rᵀt, and the SO(3) log of Ra·Rbᵀ. Both come from `kornia-algebra`
     // rather than being spelled out here: `SE3F32::inverse().t` IS -Rᵀt, and `SO3F32::log()`

@@ -187,7 +187,7 @@ impl ReconstructionConfig {
     /// let cfg = ReconstructionConfig::new(0.0).sequential();
     /// assert!(cfg.min_parallax_deg < ReconstructionConfig::new(0.0).min_parallax_deg);
     /// assert!(cfg.max_iterations > ReconstructionConfig::new(0.0).max_iterations);
-    /// assert!(cfg.motion_prior_sigma > 0.0); // the rig default is 0.0 = off
+    /// assert_eq!(cfg.motion_prior_sigma, 0.0); // NOT armed — see the note below
     /// ```
     ///
     /// # Why the general defaults are wrong for video
@@ -217,10 +217,21 @@ impl ReconstructionConfig {
     /// thousands of points and is still descending when a 40-iteration cap lands; an
     /// under-converged BA reads as a smeared cloud no matter how good the correspondences were.
     ///
-    /// [`Self::motion_prior_sigma`] 0.0 -> 0.1, i.e. armed. The constant-velocity prior is not
-    /// merely a tuning choice here: it is MEANINGLESS for a rig, whose views are simultaneous and
-    /// have no order, and only acquires semantics when the views form a trajectory. Sequential
-    /// capture is exactly the case it was written for.
+    /// [`Self::motion_prior_sigma`] is deliberately LEFT OFF, despite being the one prior whose
+    /// semantics require sequential input. Arming it at 0.1 was measured to BEND a variable-speed
+    /// trajectory: on a walk that accelerates and then pauses, the disarmed solve recovers the
+    /// segment lengths exactly while the armed one overshoots one segment by 85%
+    /// (`sequential_preset_does_not_bend_a_variable_speed_walk`). A constant-velocity prior is a
+    /// statement about the capture, not about sequentiality, and a preset cannot know whether the
+    /// operator walked at a constant pace. Callers who know their capture is smooth should set it
+    /// themselves.
+    ///
+    /// The 0.05 is a floor in principle, not in practice: `TriangulationConfig`'s
+    /// `max_midpoint_gap` is absolute in map units and independently rejects points whose two rays
+    /// miss each other by more than it. Since sequential capture bootstraps on the smallest baseline
+    /// in the sequence, scene depths are large in map units and that gate becomes binding around
+    /// `noise/focal` — roughly 0.057 degrees at 1 px and focal 1000. Lowering `min_parallax_deg`
+    /// further without raising `max_midpoint_gap` buys nothing on real, noisy input.
     ///
     /// Deliberately NOT set: [`Self::up_prior_sigma`]. "The camera was held roughly upright" is a
     /// property of HANDHELD capture, not of sequential capture — a drone or a robot-mounted camera
@@ -228,7 +239,6 @@ impl ReconstructionConfig {
     pub fn sequential(mut self) -> Self {
         self.min_parallax_deg = 0.05;
         self.max_iterations = 100;
-        self.motion_prior_sigma = 0.1;
         self
     }
 }
