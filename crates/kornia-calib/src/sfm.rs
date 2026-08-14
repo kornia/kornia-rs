@@ -1104,6 +1104,7 @@ fn global_ba(
             } else {
                 0.0
             },
+            sparse_reduced_system: config.sparse_reduced_system,
             ..Default::default()
         },
         up_priors(poses, a0, config).as_deref(),
@@ -3293,6 +3294,50 @@ mod tests {
             "a DROPPED point keeps every observation, so triangulate_new can rebuild it later"
         );
         assert_eq!(depths[0].len(), 4);
+    }
+
+    /// The sparse reduced system must change the COST of the solve, never its answer.
+    ///
+    /// It is a different storage and factorisation of the same matrix, so anything that makes the
+    /// two disagree is a bug in the sparse assembly rather than a tuning choice — which is why this
+    /// asserts equality of the reconstruction and not merely similar quality. `kornia-3d` pins the
+    /// lower triangle as bit-identical at the matrix level; this pins the end-to-end result a
+    /// caller of [`reconstruct`] actually receives.
+    #[test]
+    fn sparse_reduced_system_does_not_change_the_reconstruction() {
+        let (cams, _gt, tracks) = walkthrough(40, 300, 0.4);
+        let solve = |sparse: bool| {
+            let config = ReconstructionConfig {
+                max_iterations: 20,
+                sparse_reduced_system: sparse,
+                ..ReconstructionConfig::new(0.0)
+            };
+            reconstruct_inner(&cams, &[], &tracks, &config, None, true, true).expect("recon")
+        };
+        let (sp, de) = (solve(true), solve(false));
+
+        assert_eq!(sp.points.len(), de.points.len(), "point count diverged");
+        assert_eq!(
+            sp.views.iter().filter(|v| v.is_some()).count(),
+            de.views.iter().filter(|v| v.is_some()).count(),
+            "registration diverged"
+        );
+        assert!(
+            (sp.reproj_rmse_px - de.reproj_rmse_px).abs() < 1e-6,
+            "rmse diverged: sparse {} vs dense {}",
+            sp.reproj_rmse_px,
+            de.reproj_rmse_px
+        );
+        let worst = sp
+            .points
+            .iter()
+            .zip(&de.points)
+            .map(|(a, b)| {
+                let d = a.position - b.position;
+                (d.x * d.x + d.y * d.y + d.z * d.z).sqrt()
+            })
+            .fold(0.0f64, f64::max);
+        assert!(worst < 1e-9, "point positions diverged by {worst}");
     }
 
     /// A forward walk: `n_views` cameras marching along their own optical axis toward a shell of
