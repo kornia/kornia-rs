@@ -34,7 +34,8 @@ required-features = ["cuda"]
 name = "dump_cuda_warp_perspective"
 required-features = ["cuda"]
 
-[[example]]
+[[bench]]
+harness = false
 name = "bench_cuda_imgproc"
 required-features = ["cuda"]
 
