@@ -195,6 +195,136 @@ fn robust_cost(kind: RobustKernelKind, scale: f32, r_sq: f32) -> f32 {
     }
 }
 
+/// `|ln s|` clamp for the per-camera depth scale — a camera may disagree with its monocular prior
+/// by at most 4×. Beyond that the fit is not a scale, it is a broken pose, and letting it run
+/// lets one bad camera silently switch its own depth prior off.
+const MAX_ABS_LOG_DEPTH_SCALE: f32 = 1.386_294_4; // ln 4
+
+/// Camera-frame depth `z` predicted for a point, with the mid-iteration cheirality clamp.
+#[inline]
+fn clamped_z(pose: &SE3F32, point: &Vec3F64) -> f32 {
+    let pw = Vec3AF32::new(point.x as f32, point.y as f32, point.z as f32);
+    let z = (*pose * pw).z;
+    if z.abs() < MIN_Z {
+        if z >= 0.0 {
+            MIN_Z
+        } else {
+            -MIN_Z
+        }
+    } else {
+        z
+    }
+}
+
+/// Depth residual and its derivative `∂r/∂z`, for both residual forms.
+///
+/// Legacy (`log_mode == false`): `r = (z − m)/σ`, `∂r/∂z = 1/σ`. `σ` is in metres and `s` is
+/// ignored.
+///
+/// Log (`log_mode == true`), following VidMap eq. 3 with `sm = s·m`:
+/// ```text
+///   z > 0:  r = ln(z / sm) / σ            ∂r/∂z = 1 / (z·σ)
+///   z ≤ 0:  r = (z − sm) / (sm·σ)         ∂r/∂z = 1 / (sm·σ)
+/// ```
+/// `σ` is RELATIVE here (a fraction of depth), which is what makes the residual comparable across
+/// near and far points.
+///
+/// The `z ≤ 0` branch is the log residual's own first-order expansion about `z = sm`, not the
+/// paper's bare `z − sm`: matching the derivative at the changeover keeps the cost C¹ there, so a
+/// point crossing the image plane mid-iteration doesn't hand LM a step discontinuity. Behind the
+/// camera the log is undefined and this pushes `z` back toward `sm` linearly.
+#[inline]
+fn depth_residual(z: f32, m: f32, s: f32, sigma: f32, log_mode: bool) -> (f32, f32) {
+    let inv_sigma = 1.0 / sigma.max(1e-6);
+    if !log_mode {
+        return ((z - m) * inv_sigma, inv_sigma);
+    }
+    let sm = (s * m).max(MIN_Z);
+    if z > 0.0 {
+        ((z / sm).ln() * inv_sigma, inv_sigma / z)
+    } else {
+        let inv_sm = 1.0 / sm;
+        ((z - sm) * inv_sm * inv_sigma, inv_sm * inv_sigma)
+    }
+}
+
+/// Regularised closed-form update of the per-camera depth scales, holding poses and points fixed.
+///
+/// The log residual is LINEAR in `ln s_i`, so this block of the objective
+/// ```text
+///   E_i(ln s) = Σ_k w_ik ((a_ik − ln s)/σ_ik)² + λ·(Σ_k w_ik/σ_ik²)·(ln s − ln s_seed_i)²
+/// ```
+/// with `a_ik = ln z_ik − ln m_ik`, is a one-variable weighted least squares whose exact minimiser
+/// is a shrunk weighted mean:
+/// ```text
+///   ln s_i = ln s_seed_i + (Σ_k w_ik(a_ik − ln s_seed_i)/σ_ik²) / ((1+λ)·Σ_k w_ik/σ_ik²)
+/// ```
+/// Alternating this exact block update with the LM step on poses/points is block-coordinate
+/// descent on the joint objective: it reaches the same stationary point as folding `s_i` into the
+/// normal equations as a 7th camera DOF, without widening every 6×6 block in the Schur reduction.
+///
+/// The prior shrinks toward `s = 1` — an ABSOLUTE claim that the metric network's own scale is
+/// right — and NOT toward the seed the caller passed in.
+///
+/// That distinction is the whole load-bearing part of this term, and getting it wrong is silent.
+/// Callers typically re-fit the seed against the CURRENT geometry before every solve, so shrinking
+/// toward the seed means "stay near wherever the geometry already is": the prior then tracks drift
+/// instead of resisting it, and the scales float free exactly as if λ were 0. Measured on a real
+/// 365-keyframe walk, seed-anchored λ=1 doubled the map (54.8 m → 108 m of trajectory, vertical
+/// extent 5.0 m → 13.4 m) while every scale-INVARIANT metric improved — the signature of a
+/// reconstruction whose shape is fine and whose gauge has come loose. An anchor recomputed from
+/// the thing it anchors is not an anchor.
+///
+/// The seed still sets the starting value, which is worth having: it puts the log residual near
+/// its optimum on iteration one instead of making the solver discover the scale.
+///
+/// Cameras with no forward-facing depth observations keep their current scale rather than
+/// collapsing to 1.
+fn update_depth_scales(
+    scales: &mut [f32],
+    se3s: &[SE3F32],
+    xyz: &[Vec3F64],
+    observations: &[BaObservation],
+    prior_weight: f32,
+    robust_w: &dyn Fn(f32) -> f32,
+) {
+    let n = scales.len();
+    let mut num = vec![0.0_f64; n];
+    let mut den = vec![0.0_f64; n];
+
+    for obs in observations {
+        let Some(m) = obs.depth_meas else { continue };
+        if obs.pose_idx >= n || obs.point_idx >= xyz.len() || m <= 0.0 {
+            continue;
+        }
+        let z = clamped_z(&se3s[obs.pose_idx], &xyz[obs.point_idx]);
+        // Only the log branch is linear in `ln s`; behind-camera observations are excluded from
+        // the closed form (they are still penalised by the LM step through the linear branch).
+        if z <= 0.0 {
+            continue;
+        }
+        let sigma = obs.depth_sigma.max(1e-6);
+        let s = scales[obs.pose_idx];
+        let (r, _) = depth_residual(z, m, s, sigma, true);
+        let w = f64::from(robust_w(r * r));
+        let inv_var = f64::from(1.0 / (sigma * sigma));
+        num[obs.pose_idx] += w * inv_var * f64::from((z / m).ln());
+        den[obs.pose_idx] += w * inv_var;
+    }
+
+    let shrink = 1.0 + f64::from(prior_weight.max(0.0));
+    for i in 0..n {
+        if den[i] <= 0.0 {
+            continue;
+        }
+        // Shrink toward ln s = 0, i.e. s = 1. See the note above on why this must not be the seed.
+        let log_s = (num[i] / den[i] / shrink) as f32;
+        scales[i] = log_s
+            .clamp(-MAX_ABS_LOG_DEPTH_SCALE, MAX_ABS_LOG_DEPTH_SCALE)
+            .exp();
+    }
+}
+
 /// Errors specific to the Schur BA driver. Wraps existing [`BaError`].
 #[derive(Debug, Error)]
 pub enum SchurBaError {
@@ -1022,6 +1152,18 @@ fn bundle_adjust_schur_impl(
     BA_CALLS.fetch_add(1, Ordering::Relaxed);
     let mut iters_done = 0usize;
     let mut converged = false;
+    // Per-view depth scale, live only in log mode. Seeded from `depth_scales_init` (a robust
+    // median fit is the intended seed) so the log residual starts near its optimum instead of
+    // making the solver discover the scale; missing or short entries default to 1.0.
+    let log_depth = params.depth_log_residual;
+    let mut dscales: Vec<f32> = vec![1.0; p_total];
+    if log_depth {
+        for (i, s) in params.depth_scales_init.iter().take(p_total).enumerate() {
+            if *s > 0.0 {
+                dscales[i] = *s;
+            }
+        }
+    }
     // Block-sparse reduced camera system, built on the first iteration when the sparse path is
     // enabled and reused (cleared, not rebuilt) thereafter: its pattern is a function of the
     // observation graph, which does not change across LM iterations.
@@ -1035,6 +1177,22 @@ fn bundle_adjust_schur_impl(
 
     for _iter in 0..params.max_iterations {
         iters_done += 1;
+
+        // Exact block update of the depth scales at the current geometry, before linearising the
+        // rest. Alternating this closed form with the LM step is block-coordinate descent on the
+        // joint objective: same stationary point as folding `s_i` in as a 7th camera DOF, without
+        // widening every 6x6 block in the Schur reduction. A negative `depth_scale_prior` freezes
+        // them at the seed — the fitted-then-frozen baseline this mechanism exists to beat.
+        if log_depth && params.depth_scale_prior >= 0.0 {
+            update_depth_scales(
+                &mut dscales,
+                &se3s,
+                &xyz,
+                observations,
+                params.depth_scale_prior,
+                &depth_weight,
+            );
+        }
 
         // ── Linearise: build A, C, B (per-obs), g_pose, g_point ──────────
         // A: n_free_poses × [36] (6×6 blocks).
@@ -1115,25 +1273,18 @@ fn bundle_adjust_schur_impl(
             // added to A_p, C_p, B as for any other residual.
             if let Some(d_meas) = obs.depth_meas {
                 let sigma = obs.depth_sigma.max(1e-6);
-                let inv_sigma = 1.0_f32 / sigma;
 
                 // Recompute Z_pred + jacobian rows. We need the same z-clamp
                 // semantics, and the geometry-only Jacobians (no projection
                 // coefficients a0/b1/a2/b2).
                 let pw = Vec3AF32::new(point.x as f32, point.y as f32, point.z as f32);
-                let pc = *pose * pw;
-                let z_pred = if pc.z.abs() < MIN_Z {
-                    if pc.z >= 0.0 {
-                        MIN_Z
-                    } else {
-                        -MIN_Z
-                    }
-                } else {
-                    pc.z
-                };
+                let z_pred = clamped_z(pose, point);
 
-                // Depth residual (scaled by 1/σ).
-                let r_z = (z_pred - d_meas) * inv_sigma;
+                // Depth residual and `∂r/∂z`. In the absolute form the derivative is the constant
+                // `1/σ` the Jacobian rows used to carry; in the log form it varies with `z`, which
+                // is exactly what makes a fractional error cost the same near and far.
+                let s_depth = dscales.get(obs.pose_idx).copied().unwrap_or(1.0);
+                let (r_z, inv_sigma) = depth_residual(z_pred, d_meas, s_depth, sigma, log_depth);
 
                 // J rows (1×6 pose, 1×3 point), all scaled by 1/σ.
                 let rm = pose.r.matrix();
@@ -1880,22 +2031,13 @@ fn bundle_adjust_schur_impl(
             // the linearisation pass so accept/reject reflects one objective.
             if let Some(d_meas) = obs.depth_meas {
                 let sigma = obs.depth_sigma.max(1e-6);
-                let inv_sigma = 1.0_f32 / sigma;
-                let pw = Vec3AF32::new(point.x as f32, point.y as f32, point.z as f32);
-                let pc = *pose * pw;
-                let z_pred = if pc.z.abs() < MIN_Z {
-                    if pc.z >= 0.0 {
-                        MIN_Z
-                    } else {
-                        -MIN_Z
-                    }
-                } else {
-                    pc.z
-                };
-                // `* inv_sigma`, matching the linearisation pass exactly — `x / s` and
-                // `x * (1.0 / s)` differ by an ulp in f32 (up to 67% of inputs at σ = 0.03, and
-                // the difference is one-sided), which biases `new_cost < cost` toward accept.
-                let r_z = (z_pred - d_meas) * inv_sigma;
+                let z_pred = clamped_z(pose, point);
+                // The SAME `depth_residual` call as the linearisation pass, so accept/reject
+                // scores one objective. Recomputing it by hand here is how the two drift apart —
+                // even `x / s` versus `x * (1.0 / s)` differs by an ulp in f32 (up to 67% of
+                // inputs at σ = 0.03, one-sided), which biases `new_cost < cost` toward accept.
+                let s_depth = dscales.get(obs.pose_idx).copied().unwrap_or(1.0);
+                let (r_z, _) = depth_residual(z_pred, d_meas, s_depth, sigma, log_depth);
                 let r_sq_d = r_z * r_z;
                 new_cost += depth_cost(r_sq_d);
             }
@@ -2016,6 +2158,7 @@ fn bundle_adjust_schur_impl(
     Ok(BaResult {
         poses: out_poses,
         points: out_points,
+        depth_scales: if log_depth { dscales } else { Vec::new() },
         iterations: iters_done,
         converged,
         final_cost,
@@ -2024,6 +2167,297 @@ fn bundle_adjust_schur_impl(
 
 #[cfg(test)]
 mod tests {
+
+    /// Per-camera true depth scales for [`per_camera_scale_scene`]. Product is 1, so `Σ ln s = 0`
+    /// and the regulariser's preferred gauge coincides with true world scale — otherwise the
+    /// recovered map shrinks by `exp(−mean(ln s))` and the tests measure the gauge choice rather
+    /// than the mechanism.
+    const SCENE_S_TRUE: [f64; 5] = [1.0, 1.25, 0.8, 1.25, 0.8];
+
+    /// Scene where the depth "network" carries a PER-CAMERA scale error (±25%) — the actual
+    /// failure mode of monocular metric depth on video, where each frame's prediction is
+    /// individually miscalibrated. Geometry mirrors `schur_ba_with_depth_recovers_scale`, and the
+    /// init carries the same 2× scale drift.
+    ///
+    /// Returns `(camera, true_poses, true_points, observations, init_poses, init_points)`.
+    #[allow(clippy::type_complexity)]
+    fn per_camera_scale_scene() -> (
+        PinholeCamera,
+        Vec<Pose3d>,
+        Vec<Vec3F64>,
+        Vec<BaObservation>,
+        Vec<Pose3d>,
+        Vec<Vec3F64>,
+    ) {
+        struct Lcg {
+            state: u64,
+        }
+        impl Lcg {
+            fn new(seed: u64) -> Self {
+                Self { state: seed }
+            }
+            fn next_u64(&mut self) -> u64 {
+                self.state = self
+                    .state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                self.state
+            }
+            fn normal(&mut self) -> f64 {
+                let u1 = ((self.next_u64() >> 11) as f64) / (1u64 << 53) as f64;
+                let u2 = ((self.next_u64() >> 11) as f64) / (1u64 << 53) as f64;
+                let u1 = u1.max(1e-12);
+                (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
+            }
+        }
+        let mut rng = Lcg::new(0x5EED_1234_5678_9ABC_u64);
+
+        let cam = PinholeCamera {
+            fx: 600.0,
+            fy: 600.0,
+            cx: 320.0,
+            cy: 240.0,
+            k1: 0.0,
+            k2: 0.0,
+            p1: 0.0,
+            p2: 0.0,
+        };
+
+        let cam_positions = [
+            Vec3F64::new(0.0, 0.0, 0.0),
+            Vec3F64::new(0.1, 0.0, 0.0),
+            Vec3F64::new(0.2, 0.0, 0.0),
+            Vec3F64::new(0.3, 0.0, 0.0),
+            Vec3F64::new(0.4, 0.0, 0.0),
+        ];
+        let true_poses: Vec<Pose3d> = cam_positions.iter().map(|&p| translate_pose(p)).collect();
+
+        // Per-camera monocular scale error. Product is 1, so Σ ln s = 0 and the regulariser does
+        // not bias world scale — otherwise the recovered map shrinks by exp(−mean(ln s)) and the
+        // test would be measuring the gauge choice rather than the mechanism.
+        let s_true = [1.0_f64, 1.25, 0.8, 1.25, 0.8];
+
+        let mut true_points: Vec<Vec3F64> = Vec::with_capacity(50);
+        for k in 0..50 {
+            let kf = k as f64;
+            let x = (kf * 0.37).sin() * 1.2 + (kf * 0.13).cos() * 0.4;
+            let y = (kf * 0.29).cos() * 0.9 + (kf * 0.11).sin() * 0.3;
+            let z = 4.0 + (kf * 0.41).sin() * 1.5;
+            true_points.push(Vec3F64::new(x, y, z));
+        }
+
+        const REL_SIGMA: f32 = 0.02;
+        let mut observations: Vec<BaObservation> = Vec::new();
+        for (pi, pose) in true_poses.iter().enumerate() {
+            for (xi, pt) in true_points.iter().enumerate() {
+                let pc = pose.transform_point(pt);
+                if pc.z <= 0.2 {
+                    continue;
+                }
+                let u = cam.fx * pc.x / pc.z + cam.cx + 0.3 * rng.normal();
+                let v = cam.fy * pc.y / pc.z + cam.cy + 0.3 * rng.normal();
+                // The network reports z / s_true — recovering s_true is the job.
+                let d_meas = (pc.z / s_true[pi]) * (1.0 + 0.02 * rng.normal());
+                observations.push(BaObservation {
+                    pose_idx: pi,
+                    point_idx: xi,
+                    pixel: [u as f32, v as f32],
+                    fixed_pose: pi == 0,
+                    fixed_point: false,
+                    depth_meas: Some(d_meas as f32),
+                    depth_sigma: REL_SIGMA,
+                });
+            }
+        }
+
+        // Same 2× scale drift at init as the metric-depth test.
+        let init_poses: Vec<Pose3d> = true_poses
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                if i == 0 {
+                    *p
+                } else {
+                    let t = p.translation;
+                    Pose3d::new(p.rotation, Vec3F64::new(t.x * 2.0, t.y * 2.0, t.z * 2.0))
+                }
+            })
+            .collect();
+        let init_points: Vec<Vec3F64> = true_points
+            .iter()
+            .map(|p| Vec3F64::new(p.x * 2.0, p.y * 2.0, p.z * 2.0))
+            .collect();
+
+        (
+            cam,
+            true_poses,
+            true_points,
+            observations,
+            init_poses,
+            init_points,
+        )
+    }
+
+    /// The log depth residual is C¹ across the cheirality changeover at `z = s·m`.
+    ///
+    /// Both branches must agree in value AND slope there, or a point crossing the image plane
+    /// mid-iteration hands LM a step discontinuity and the line search thrashes.
+    #[test]
+    fn depth_residual_log_branches_match_at_changeover() {
+        let (m, s, sigma) = (3.0_f32, 1.2_f32, 0.05_f32);
+        let sm = s * m;
+
+        // Value and slope are continuous at the changeover.
+        let (r_at, d_at) = depth_residual(sm, m, s, sigma, true);
+        assert!(
+            r_at.abs() < 1e-6,
+            "residual at z = s·m should vanish: {r_at}"
+        );
+        let expected_slope = 1.0 / (sm * sigma);
+        assert!(
+            (d_at - expected_slope).abs() / expected_slope < 1e-5,
+            "slope {d_at} != {expected_slope} at changeover"
+        );
+
+        // Log branch: a relative error is what it reports, so the SAME fractional error at very
+        // different depths yields the same residual. That equalisation is the entire point.
+        let (r_near, _) = depth_residual(1.10 * 1.0 * s, 1.0, s, sigma, true);
+        let (r_far, _) = depth_residual(1.10 * 20.0 * s, 20.0, s, sigma, true);
+        assert!(
+            (r_near - r_far).abs() < 1e-4,
+            "log residual should be depth-invariant: near {r_near} vs far {r_far}"
+        );
+
+        // Legacy branch, same comparison: the far point dominates by 20×.
+        let (l_near, _) = depth_residual(1.10, 1.0, s, sigma, false);
+        let (l_far, _) = depth_residual(22.0, 20.0, s, sigma, false);
+        assert!(
+            l_far > 15.0 * l_near,
+            "metric residual should scale with depth: near {l_near} vs far {l_far}"
+        );
+    }
+
+    /// A FREE per-camera depth scale recovers geometry that a FROZEN one cannot.
+    ///
+    /// Arm A optimises the scales jointly; arm B freezes them at 1.0, which is what a
+    /// fitted-then-frozen implementation does when the fit is stale. Arm B has to distort geometry
+    /// to satisfy five mutually inconsistent depth priors; arm A explains the inconsistency with
+    /// the scales and leaves geometry alone.
+    #[test]
+    fn schur_ba_free_depth_scale_beats_frozen() {
+        let (cam, true_poses, true_points, observations, init_poses, init_points) =
+            per_camera_scale_scene();
+        let s_true = SCENE_S_TRUE;
+
+        let max_err = |pts: &[Vec3F64]| -> f64 {
+            pts.iter()
+                .zip(&true_points)
+                .map(|(a, b)| (*a - *b).length())
+                .fold(0.0_f64, f64::max)
+        };
+
+        let arm = |prior: f32| BaParams {
+            max_iterations: 100,
+            cost_tolerance: 1e-8,
+            depth_log_residual: true,
+            depth_scale_prior: prior,
+            ..BaParams::default()
+        };
+        let run = |prior: f32| {
+            bundle_adjust_schur(&init_poses, &init_points, &observations, &cam, &arm(prior))
+                .unwrap()
+        };
+
+        let free = run(1.0);
+        let frozen = run(-1.0);
+        let unregularised = run(0.0);
+        let err_free = max_err(&free.points);
+        let err_frozen = max_err(&frozen.points);
+
+        // λ = 0: the global rescale direction is exactly flat in the objective, so the scales
+        // absorb the whole 2× init drift (recovered ≈ 2·s_true) and geometry never corrects.
+        // Locked down because it is the mechanism's failure mode, not a hypothetical.
+        assert!(
+            max_err(&unregularised.points) > 1.0,
+            "λ=0 should let the scales absorb the drift — if this now passes, the gauge changed \
+             and the regulariser's justification needs rechecking"
+        );
+
+        // At λ the per-camera deviation is shrunk by 1/(1+λ) BY CONSTRUCTION, so exact recovery is
+        // not the contract. What must hold: every camera's scale moves the right way and captures
+        // a real fraction of its true error.
+        assert_eq!(free.depth_scales.len(), true_poses.len());
+        for (i, (s, t)) in free.depth_scales.iter().zip(&s_true).enumerate() {
+            let (got, want) = (f64::from(*s).ln(), t.ln());
+            if want.abs() < 1e-6 {
+                assert!(got.abs() < 0.02, "camera {i}: scale {s} should stay near 1");
+                continue;
+            }
+            let captured = got / want;
+            assert!(
+                (0.35..=1.0).contains(&captured),
+                "camera {i}: recovered {s:.3} captures {captured:.2} of true {t:.3} \
+                 — expected the λ=1 shrinkage of ~0.5"
+            );
+        }
+
+        assert!(
+            err_free < 0.85 * err_frozen,
+            "free scale ({err_free:.4} m) did not beat frozen ({err_frozen:.4} m) \
+             — the joint scale estimate is inert"
+        );
+    }
+
+    /// The scale prior anchors to `s = 1` ABSOLUTELY, not to whatever seed the caller passed.
+    ///
+    /// Regression test for a measured failure. The real pipeline re-fits `depth_scales_init` from
+    /// the CURRENT geometry before every solve, so an anchor that shrank toward the seed tracked
+    /// the drift instead of resisting it: on a 365-keyframe walk the map doubled (54.8 m → 108 m)
+    /// while every scale-invariant metric improved. The original synthetic missed it because it
+    /// left `depth_scales_init` empty, making the seed 1.0 and the two anchors indistinguishable.
+    ///
+    /// So: hand the solver a badly WRONG seed. The result must barely move — the seed is a starting
+    /// point, not a gauge.
+    #[test]
+    fn schur_ba_scale_prior_anchors_absolutely_not_to_seed() {
+        let (cam, _true_poses, true_points, observations, init_poses, init_points) =
+            per_camera_scale_scene();
+        let max_err = |pts: &[Vec3F64]| -> f64 {
+            pts.iter()
+                .zip(&true_points)
+                .map(|(a, b)| (*a - *b).length())
+                .fold(0.0_f64, f64::max)
+        };
+        let run = |seed: &[f32]| {
+            let p = BaParams {
+                max_iterations: 50,
+                cost_tolerance: 1e-8,
+                depth_log_residual: true,
+                depth_scale_prior: 1.0,
+                depth_scales_init: seed.to_vec(),
+                ..BaParams::default()
+            };
+            let r =
+                bundle_adjust_schur(&init_poses, &init_points, &observations, &cam, &p).unwrap();
+            (max_err(&r.points), r.depth_scales)
+        };
+
+        let (err_unit, scales_unit) = run(&[1.0; 5]);
+        // A seed inflated 2× is exactly what a re-fit against 2×-drifted geometry produces.
+        let (err_bad, scales_bad) = run(&[2.0; 5]);
+
+        assert!(
+            err_bad < 2.0 * err_unit.max(0.02),
+            "a 2× wrong seed moved the solution ({err_unit:.4} m → {err_bad:.4} m) — the prior is \
+             anchoring to the seed, so a caller that re-fits the seed each solve has no gauge"
+        );
+        for (i, (a, b)) in scales_unit.iter().zip(&scales_bad).enumerate() {
+            assert!(
+                (a - b).abs() < 0.15 * a.max(1e-6),
+                "camera {i}: seed changed the converged scale ({a:.3} vs {b:.3})"
+            );
+        }
+    }
 
     /// The IRLS weight must be the derivative of the cost the accept test compares:
     /// `d/ds[½ρ(s)] = ½·w(s)`, for `s = ‖r‖²`.
