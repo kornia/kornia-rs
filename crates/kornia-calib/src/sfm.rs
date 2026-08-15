@@ -258,6 +258,122 @@ fn complete_tracks(
     added
 }
 
+/// COLMAP's `MergeTracks`: fuse tracks that resolved to the same physical point, so the solve
+/// learns they are one. Returns how many tracks were absorbed.
+///
+/// Two views of the same landmark reached through different match chains stay separate tracks
+/// forever otherwise, each carrying half the evidence. That is what makes a revisit inert: loop
+/// closure moves the CAMERAS while every landmark stays duplicated, so the reprojection cost never
+/// learns the loop exists and the next bundle adjustment pulls it back open. Merging is what turns
+/// a revisit into a constraint the solve can feel.
+///
+/// Two conditions, both necessary:
+///
+/// * **No shared camera.** A track holds at most one observation per camera by construction, and a
+///   merged track must too — two sightings of "the same" point in one image mean it is not one
+///   point, whatever the distance says.
+/// * **Every observation of BOTH tracks must reproject within tolerance against the MERGED
+///   position.** Distance alone would fuse a genuinely close pair and hand the solve a point that
+///   fits neither, manufacturing exactly the drift this exists to remove.
+///
+/// Candidates come from a voxel grid at `radius`, so this is linear in the cloud rather than
+/// quadratic. Iteration is over SORTED track ids: `HashMap` order is randomised per process, and
+/// merging is order-dependent (a absorbs b, not the reverse), so unsorted iteration would make the
+/// reconstruction irreproducible.
+fn merge_tracks(
+    point3d: &mut HashMap<usize, Vec3F64>,
+    norm: &mut [Vec<(usize, Vec2F64)>],
+    norm_depth: &mut [Vec<Option<f32>>],
+    poses: &[Option<Pose3d>],
+    max_reproj_norm: f64,
+    radius: f64,
+) -> usize {
+    if radius <= 0.0 {
+        return 0;
+    }
+    let cell = |v: Vec3F64| {
+        (
+            (v.x / radius).floor() as i64,
+            (v.y / radius).floor() as i64,
+            (v.z / radius).floor() as i64,
+        )
+    };
+    let mut grid: HashMap<(i64, i64, i64), Vec<usize>> = HashMap::new();
+    let mut ids: Vec<usize> = point3d.keys().copied().collect();
+    ids.sort_unstable();
+    for ti in &ids {
+        grid.entry(cell(point3d[ti])).or_default().push(*ti);
+    }
+
+    let mut merged = 0usize;
+    let mut absorbed: HashSet<usize> = HashSet::new();
+    for ta in &ids {
+        if absorbed.contains(ta) {
+            continue;
+        }
+        let pa = point3d[ta];
+        let (cx, cy, cz) = cell(pa);
+        let mut cands: Vec<usize> = Vec::new();
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                for dz in -1..=1 {
+                    if let Some(v) = grid.get(&(cx + dx, cy + dy, cz + dz)) {
+                        cands.extend(v.iter().copied());
+                    }
+                }
+            }
+        }
+        cands.sort_unstable();
+        for tb in cands {
+            if tb <= *ta || absorbed.contains(&tb) || !point3d.contains_key(&tb) {
+                continue;
+            }
+            let pb = point3d[&tb];
+            let d = pa - pb;
+            if (d.x * d.x + d.y * d.y + d.z * d.z).sqrt() > radius {
+                continue;
+            }
+            if norm[*ta]
+                .iter()
+                .any(|(c, _)| norm[tb].iter().any(|(c2, _)| c2 == c))
+            {
+                continue;
+            }
+            // Weighted by observation count: the merged point should sit where the combined
+            // evidence puts it, not halfway between a 30-view track and a 2-view one.
+            let (na, nb) = (norm[*ta].len() as f64, norm[tb].len() as f64);
+            let pm = (pa * na + pb * nb) / (na + nb);
+            let fits = |ti: usize| {
+                norm[ti].iter().all(|(c, uv)| match poses.get(*c) {
+                    Some(Some(pose)) => {
+                        norm_residual(pose, pm, *uv).is_some_and(|e| e <= max_reproj_norm)
+                    }
+                    // Unregistered cameras cannot judge, and must not veto.
+                    _ => true,
+                })
+            };
+            if !fits(*ta) || !fits(tb) {
+                continue;
+            }
+            // `tb`'s observations MOVE, they are not copied: leaving them behind would let
+            // `triangulate_new` rebuild `tb` on the next round and silently undo the merge.
+            let taken: Vec<(usize, Vec2F64)> = std::mem::take(&mut norm[tb]);
+            let taken_d: Vec<Option<f32>> = std::mem::take(&mut norm_depth[tb]);
+            norm[*ta].extend(taken);
+            norm_depth[*ta].extend(taken_d);
+            let mut idx: Vec<usize> = (0..norm[*ta].len()).collect();
+            idx.sort_unstable_by_key(|i| norm[*ta][*i].0);
+            norm[*ta] = idx.iter().map(|i| norm[*ta][*i]).collect();
+            norm_depth[*ta] = idx.iter().map(|i| norm_depth[*ta][*i]).collect();
+            point3d.insert(*ta, pm);
+            point3d.remove(&tb);
+            absorbed.insert(tb);
+            merged += 1;
+        }
+    }
+    merged
+}
+
 /// How many cameras currently hold a pose.
 fn registered_now(poses: &[Option<Pose3d>]) -> usize {
     poses.iter().filter(|p| p.is_some()).count()
@@ -698,6 +814,28 @@ fn reconstruct_inner(
                             &poses,
                             FILTER_REPROJ_SLACK * config.max_reprojection_error,
                         );
+                    }
+                    // Merge radius from the reprojection tolerance at TYPICAL depth: a point may
+                    // sit `tol * z` off-axis and still land inside the pixel tolerance at range z.
+                    // Median depth rather than per-point so one radius serves the whole grid.
+                    if config.merge_radius_rel > 0.0 {
+                        let mut zs: Vec<f64> = point3d
+                            .values()
+                            .filter_map(|p| poses[a0].as_ref().map(|q| q.transform_point(p).z))
+                            .filter(|z| *z > 0.0)
+                            .collect();
+                        if !zs.is_empty() {
+                            zs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                            let zmed = zs[zs.len() / 2];
+                            merge_tracks(
+                                &mut point3d,
+                                &mut norm,
+                                &mut norm_depth,
+                                &poses,
+                                FILTER_REPROJ_SLACK * config.max_reprojection_error,
+                                config.merge_radius_rel * config.max_reprojection_error * zmed,
+                            );
+                        }
                     }
                     triangulate_new(&mut point3d, &norm, &poses, &idcam, &tcfg);
                     // `max(next_ba + 1.0)` so a set that grew by less than one whole camera per
@@ -3502,6 +3640,69 @@ mod tests {
             0.02,
         );
         assert_eq!(added, 1, "only the sighting that fits should return");
+    }
+
+    /// Duplicate tracks fuse; tracks that only LOOK close do not.
+    ///
+    /// The negative cases carry the weight. Merging on distance alone would fuse a genuinely close
+    /// pair and hand the solve a point that fits neither observation set, manufacturing exactly the
+    /// drift merging exists to remove — and fusing two sightings that appear in the SAME image
+    /// asserts one landmark was in two places at once.
+    #[test]
+    fn merge_tracks_fuses_duplicates_but_not_distinct_points() {
+        let poses: Vec<Option<Pose3d>> = (0..4)
+            .map(|i| {
+                Some(Pose3d::new(
+                    rot(0.0, 0.0),
+                    Vec3F64::new(-(i as f64), 0.0, 0.0),
+                ))
+            })
+            .collect();
+        let proj = |p: Vec3F64, c: usize| {
+            let pc = poses[c].as_ref().expect("posed").transform_point(&p);
+            (c, Vec2F64::new(pc.x / pc.z, pc.y / pc.z))
+        };
+        let p = Vec3F64::new(1.5, 0.0, 5.0);
+
+        // ONE landmark, split across two tracks by different match chains: cameras 0,1 and 2,3.
+        let mut point3d: HashMap<usize, Vec3F64> = HashMap::from([(0, p), (1, p)]);
+        let mut norm = vec![vec![proj(p, 0), proj(p, 1)], vec![proj(p, 2), proj(p, 3)]];
+        let mut norm_depth = vec![vec![None; 2], vec![None; 2]];
+        let n = merge_tracks(&mut point3d, &mut norm, &mut norm_depth, &poses, 0.02, 0.05);
+        assert_eq!(n, 1, "a split landmark must fuse");
+        assert_eq!(point3d.len(), 1);
+        assert_eq!(
+            norm[0].iter().map(|(c, _)| *c).collect::<Vec<_>>(),
+            vec![0, 1, 2, 3],
+            "merged track must hold both halves in ascending camera order"
+        );
+        assert!(
+            norm[1].is_empty(),
+            "the absorbed track's observations must MOVE, or triangulate_new rebuilds it"
+        );
+
+        // Two DISTINCT points inside the radius: close, but no merged position fits both.
+        let q = Vec3F64::new(1.54, 0.0, 5.0);
+        let mut point3d: HashMap<usize, Vec3F64> = HashMap::from([(0, p), (1, q)]);
+        let mut norm = vec![vec![proj(p, 0), proj(p, 1)], vec![proj(q, 2), proj(q, 3)]];
+        let mut norm_depth = vec![vec![None; 2], vec![None; 2]];
+        let n = merge_tracks(
+            &mut point3d,
+            &mut norm,
+            &mut norm_depth,
+            &poses,
+            0.001,
+            0.05,
+        );
+        assert_eq!(n, 0, "distinct points must not fuse on proximity alone");
+        assert_eq!(point3d.len(), 2);
+
+        // Same camera in both tracks: never one landmark, whatever the distance says.
+        let mut point3d: HashMap<usize, Vec3F64> = HashMap::from([(0, p), (1, p)]);
+        let mut norm = vec![vec![proj(p, 0), proj(p, 1)], vec![proj(p, 1), proj(p, 2)]];
+        let mut norm_depth = vec![vec![None; 2], vec![None; 2]];
+        let n = merge_tracks(&mut point3d, &mut norm, &mut norm_depth, &poses, 0.02, 0.05);
+        assert_eq!(n, 0, "tracks sharing a camera must not fuse");
     }
 
     /// A forward walk: `n_views` cameras marching along their own optical axis toward a shell of

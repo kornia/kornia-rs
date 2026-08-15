@@ -180,6 +180,21 @@ pub struct ReconstructionConfig {
     /// length erodes monotonically over a long capture. Costs one retained copy of the original
     /// observations.
     pub complete_tracks: bool,
+    /// Fuse tracks that resolved to the same physical point (COLMAP's `MergeTracks`), as a
+    /// multiple of the reprojection tolerance at the point's own depth. **`1.0` by default**; `0`
+    /// disables.
+    ///
+    /// Two views of one landmark reached through different match chains stay separate tracks
+    /// forever otherwise, each carrying half the evidence — which is what makes a revisit inert:
+    /// loop closure moves the CAMERAS while every landmark stays duplicated, so the reprojection
+    /// cost never learns the loop exists and the next solve pulls it back open.
+    ///
+    /// Expressed relative to the reprojection tolerance rather than in metres because the map's
+    /// scale is arbitrary: `radius = merge_radius_rel * max_reprojection_error * depth` is the 3D
+    /// distance a point may sit off and still land inside the pixel tolerance at that range. A pair
+    /// is only merged if they share NO camera and the merged position reprojects within tolerance
+    /// in every observation of both.
+    pub merge_radius_rel: f64,
     /// Called after each view is registered, as `(registered_so_far, total_views)`. `None` by
     /// default.
     pub progress: Option<std::sync::Arc<dyn Fn(usize, usize) + Send + Sync>>,
@@ -207,6 +222,7 @@ impl ReconstructionConfig {
             refine_intrinsics: false,
             sparse_reduced_system: true,
             complete_tracks: true,
+            merge_radius_rel: 1.0,
             progress: None,
         }
     }
