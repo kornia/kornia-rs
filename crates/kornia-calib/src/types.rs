@@ -171,6 +171,15 @@ pub struct ReconstructionConfig {
     /// bookkeeping is overhead with nothing to save. [`crate::CalibConfig`]'s rig path is
     /// unaffected: this flag only reaches [`crate::reconstruct`].
     pub sparse_reduced_system: bool,
+    /// Re-admit observations the reprojection filter removed, once the poses that condemned them
+    /// have improved (COLMAP's `CompleteTracks`). **`true` by default.**
+    ///
+    /// Filtering judges a sighting against the geometry of the moment, and the first filter fires
+    /// three cameras in — so without this a sighting rejected against an early, raw PnP pose is
+    /// gone for the rest of the run even after the solve that would have vindicated it, and track
+    /// length erodes monotonically over a long capture. Costs one retained copy of the original
+    /// observations.
+    pub complete_tracks: bool,
     /// Called after each view is registered, as `(registered_so_far, total_views)`. `None` by
     /// default.
     pub progress: Option<std::sync::Arc<dyn Fn(usize, usize) + Send + Sync>>,
@@ -197,6 +206,7 @@ impl ReconstructionConfig {
             min_registration_inliers: 30,
             refine_intrinsics: false,
             sparse_reduced_system: true,
+            complete_tracks: true,
             progress: None,
         }
     }

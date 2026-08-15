@@ -201,6 +201,63 @@ fn filter_points(
     before - point3d.len()
 }
 
+/// COLMAP's `CompleteTracks`: re-admit observations the filter removed, once the poses that
+/// condemned them have improved. Returns how many were recovered.
+///
+/// Filtering happens against the geometry of the moment, and the first filter fires when three
+/// cameras are registered — so without this a sighting rejected against an early, raw PnP pose is
+/// lost for the rest of the run, even after the solve that would have vindicated it. Track length
+/// then erodes monotonically over a long capture: every global BA judges every sighting again, and
+/// the decision only ever goes one way.
+///
+/// Only tracks that actually lost something are considered, and only cameras that now hold a pose.
+/// Observations are matched on CAMERA index, not pixel: a track holds at most one observation per
+/// camera by construction, so the index is the identity, and a float comparison would be slower and
+/// wrong at the boundary.
+fn complete_tracks(
+    point3d: &HashMap<usize, Vec3F64>,
+    norm: &mut [Vec<(usize, Vec2F64)>],
+    norm_depth: &mut [Vec<Option<f32>>],
+    norm0: &[Vec<(usize, Vec2F64)>],
+    norm_depth0: &[Vec<Option<f32>>],
+    poses: &[Option<Pose3d>],
+    max_reproj_norm: f64,
+) -> usize {
+    let mut added = 0usize;
+    for (ti, p) in point3d.iter() {
+        let (Some(orig), Some(orig_d)) = (norm0.get(*ti), norm_depth0.get(*ti)) else {
+            continue;
+        };
+        if orig.len() == norm[*ti].len() {
+            continue; // nothing was ever removed from this track
+        }
+        let before = norm[*ti].len();
+        for (k, (c, uv)) in orig.iter().enumerate() {
+            if norm[*ti].iter().any(|(c2, _)| c2 == c) {
+                continue;
+            }
+            let Some(Some(pose)) = poses.get(*c) else {
+                continue;
+            };
+            if norm_residual(pose, *p, *uv).is_some_and(|e| e <= max_reproj_norm) {
+                norm[*ti].push((*c, *uv));
+                norm_depth[*ti].push(orig_d.get(k).copied().flatten());
+                added += 1;
+            }
+        }
+        // Re-admission APPENDS, so restore ascending camera order — `tracks.rs` publishes that as
+        // contract and `Reconstruction::observations` is emitted in this order. Sorted in lockstep
+        // with `norm_depth` by permuting an index array, since the two are index-paired.
+        if norm[*ti].len() > before {
+            let mut idx: Vec<usize> = (0..norm[*ti].len()).collect();
+            idx.sort_unstable_by_key(|i| norm[*ti][*i].0);
+            norm[*ti] = idx.iter().map(|i| norm[*ti][*i]).collect();
+            norm_depth[*ti] = idx.iter().map(|i| norm_depth[*ti][*i]).collect();
+        }
+    }
+    added
+}
+
 /// How many cameras currently hold a pose.
 fn registered_now(poses: &[Option<Pose3d>]) -> usize {
     poses.iter().filter(|p| p.is_some()).count()
@@ -454,6 +511,16 @@ fn reconstruct_inner(
         _ => norm.iter().map(|t| vec![None; t.len()]).collect(),
     };
 
+    // Pristine copy of every observation, kept so `filter_points`' deletions are RECOVERABLE.
+    //
+    // The filter judges a sighting against the poses of the moment, and the first filter fires when
+    // three cameras are registered — so a sighting rejected against an early, bad pose was gone for
+    // good, even after later solves corrected the geometry that condemned it. COLMAP does not do
+    // that: its `DeleteObservation` cuts the Point3D<->Point2D link while the Point2D survives in
+    // the correspondence graph, precisely so `CompleteTracks` can re-admit it. This is that graph.
+    let norm0 = norm.clone();
+    let norm_depth0 = norm_depth.clone();
+
     // --- Bootstrap: pick a seed pair on GEOMETRY, then two-view essential (world = cam a0, s = 1). ---
     let (a0, b0, seed_pose) = select_bootstrap_pair(tracks, &norm, cameras, &idcam, ranked_seed)?;
 
@@ -618,6 +685,20 @@ fn reconstruct_inner(
                         &poses,
                         FILTER_REPROJ_SLACK * config.max_reprojection_error,
                     );
+                    // Re-admit before retriangulating: a track starved only because the filter took
+                    // its sightings should get them back before `triangulate_new` judges whether it
+                    // can be rebuilt.
+                    if config.complete_tracks {
+                        complete_tracks(
+                            &point3d,
+                            &mut norm,
+                            &mut norm_depth,
+                            &norm0,
+                            &norm_depth0,
+                            &poses,
+                            FILTER_REPROJ_SLACK * config.max_reprojection_error,
+                        );
+                    }
                     triangulate_new(&mut point3d, &norm, &poses, &idcam, &tcfg);
                     // `max(next_ba + 1.0)` so a set that grew by less than one whole camera per
                     // trigger (small maps) still advances the threshold and cannot re-fire on
@@ -642,6 +723,20 @@ fn reconstruct_inner(
         &poses,
         FILTER_REPROJ_SLACK * config.max_reprojection_error,
     );
+    // Every camera now holds its final pose, so this is where the most previously-untestable
+    // evidence becomes testable: a sighting dropped against an early pose is judged one last time
+    // against the pose the map actually ships.
+    if config.complete_tracks {
+        complete_tracks(
+            &point3d,
+            &mut norm,
+            &mut norm_depth,
+            &norm0,
+            &norm_depth0,
+            &poses,
+            FILTER_REPROJ_SLACK * config.max_reprojection_error,
+        );
+    }
 
     // --- Bundle adjustment: all track points free, the reference camera (a0) fixed to anchor gauge. ---
     // Iterate the triangulated points in TRACK ORDER, not `HashMap` order. Rust's default hasher
@@ -3338,6 +3433,75 @@ mod tests {
             })
             .fold(0.0f64, f64::max);
         assert!(worst < 1e-9, "point positions diverged by {worst}");
+    }
+
+    /// A sighting the filter dropped under an early pose comes back once the pose is good — and the
+    /// track it returns to is still in ascending camera order.
+    ///
+    /// This is the half of COLMAP's filter/complete pair that keeps track length from eroding
+    /// monotonically: filtering only ever removes, and it judges against whatever geometry exists
+    /// at the time, so without re-admission a long capture loses evidence permanently to poses it
+    /// later corrects. The ordering assertion is not incidental — re-admission APPENDS, and
+    /// `tracks.rs` publishes ascending camera order as contract.
+    #[test]
+    fn complete_tracks_readmits_what_the_filter_dropped() {
+        let poses: Vec<Option<Pose3d>> = (0..4)
+            .map(|i| {
+                Some(Pose3d::new(
+                    rot(0.0, 0.0),
+                    Vec3F64::new(-(i as f64), 0.0, 0.0),
+                ))
+            })
+            .collect();
+        let p = Vec3F64::new(1.5, 0.0, 5.0);
+        let full: Vec<(usize, Vec2F64)> = poses
+            .iter()
+            .enumerate()
+            .map(|(c, q)| {
+                let pc = q.as_ref().expect("posed").transform_point(&p);
+                (c, Vec2F64::new(pc.x / pc.z, pc.y / pc.z))
+            })
+            .collect();
+
+        // The map as the filter left it: cameras 1 and 2 were dropped against poses since improved.
+        let norm0 = vec![full.clone()];
+        let norm_depth0 = vec![vec![Some(5.0f32); 4]];
+        let mut norm = vec![vec![full[0], full[3]]];
+        let mut norm_depth = vec![vec![Some(5.0f32); 2]];
+        let point3d: HashMap<usize, Vec3F64> = HashMap::from([(0, p)]);
+
+        let added = complete_tracks(
+            &point3d,
+            &mut norm,
+            &mut norm_depth,
+            &norm0,
+            &norm_depth0,
+            &poses,
+            0.02,
+        );
+        assert_eq!(added, 2, "both dropped sightings should be re-admitted");
+        assert_eq!(
+            norm[0].iter().map(|(c, _)| *c).collect::<Vec<_>>(),
+            vec![0, 1, 2, 3],
+            "re-admission must restore ascending camera order, not append"
+        );
+        assert_eq!(norm_depth[0].len(), 4, "norm_depth must stay index-paired");
+
+        // A sighting that does NOT fit the current pose stays out.
+        let mut norm = vec![vec![full[0], full[3]]];
+        let mut norm_depth = vec![vec![Some(5.0f32); 2]];
+        let mut bad0 = norm0.clone();
+        bad0[0][1].1 += Vec2F64::new(0.5, 0.0);
+        let added = complete_tracks(
+            &point3d,
+            &mut norm,
+            &mut norm_depth,
+            &bad0,
+            &norm_depth0,
+            &poses,
+            0.02,
+        );
+        assert_eq!(added, 1, "only the sighting that fits should return");
     }
 
     /// A forward walk: `n_views` cameras marching along their own optical axis toward a shell of
