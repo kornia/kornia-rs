@@ -102,7 +102,6 @@ kornia-cpp/         ← C++ bindings
 - Prefer **borrowing over cloning**, especially for images and tensors
 - No `unwrap()` or `expect()` in library code — always propagate errors with `?`
 - Tests live in `#[cfg(test)]` modules; run per-crate with `cargo test -p <crate>`
-- Benchmarks must be placed in the crate's `benches/` directory (and configured as `[[bench]]` in Cargo.toml), not in `examples/`
 - Use [Conventional Commits](https://www.conventionalcommits.org): `feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`
 
 ### Documentation
