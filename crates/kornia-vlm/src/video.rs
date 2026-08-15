@@ -2,7 +2,7 @@ use candle_core::DType;
 use candle_core::Device;
 use candle_core::Shape;
 use candle_core::Tensor;
-use circular_buffer::CircularBuffer;
+use circular_buffer::FixedCircularBuffer;
 use kornia_image::Image;
 use thiserror::Error;
 
@@ -44,7 +44,7 @@ pub struct VideoMetadata<const N: usize> {
     pub fps: Option<u32>,
 
     /// Timestamps in seconds for each frame in the video.
-    pub timestamps: CircularBuffer<N, u32>,
+    pub timestamps: FixedCircularBuffer<u32, N>,
 
     /// Total duration of the video in seconds, if available.
     pub duration: Option<u32>,
@@ -62,7 +62,7 @@ pub struct VideoMetadata<const N: usize> {
 #[derive(Clone, Default)]
 pub struct VideoSample<const N: usize> {
     /// Circular buffer of image frames that make up the video.
-    frames: CircularBuffer<N, Image<u8, 3>>,
+    frames: FixedCircularBuffer<Image<u8, 3>, N>,
 
     /// Metadata containing timing and video information.
     meta: VideoMetadata<N>,
@@ -72,7 +72,7 @@ pub struct VideoSample<const N: usize> {
     /// Each boolean value indicates whether the corresponding frame has been
     /// processed by operations like `process_frames()`. This helps avoid
     /// redundant processing and tracks which frames have been modified.
-    processed: CircularBuffer<N, bool>,
+    processed: FixedCircularBuffer<bool, N>,
 }
 
 impl<const N: usize> VideoSample<N> {
@@ -90,11 +90,11 @@ impl<const N: usize> VideoSample<N> {
         Self {
             meta: VideoMetadata {
                 fps: None,
-                timestamps: CircularBuffer::new(),
+                timestamps: FixedCircularBuffer::new(),
                 duration: None,
             },
-            frames: CircularBuffer::new(),
-            processed: CircularBuffer::new(),
+            frames: FixedCircularBuffer::new(),
+            processed: FixedCircularBuffer::new(),
         }
     }
 
@@ -158,7 +158,7 @@ impl<const N: usize> VideoSample<N> {
     /// # Returns
     ///
     /// A reference to the frames vector
-    pub fn frames(&self) -> &CircularBuffer<N, Image<u8, 3>> {
+    pub fn frames(&self) -> &FixedCircularBuffer<Image<u8, 3>, N> {
         &self.frames
     }
 

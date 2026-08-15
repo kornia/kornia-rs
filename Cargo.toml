@@ -38,7 +38,7 @@ candle-core = { version = "0.10.2" }
 candle-flash-attn = { version = "0.10.2" }
 candle-nn = { version = "0.10.2" }
 candle-transformers = { version = "0.10.2" }
-circular-buffer = "1.2"
+circular-buffer = "2.0"
 criterion = "0.8"
 ctrlc = "3.5"
 cudarc = "0.19"
