@@ -410,6 +410,39 @@ pub enum ScaleSource {
 /// points, and the surviving observations are the answer. Downstream code needing the map had to
 /// re-derive it or fork; [`reconstruct`](crate::reconstruct) returns it.
 ///
+/// Where an incremental reconstruction spent its time, and what each maintenance pass actually did.
+///
+/// Exists because the alternative is inferring both from aggregates, and that has a poor record:
+/// a solve measured at 2h04 turned out to be only 18% bundle adjustment, and a newly added track
+/// merge was assumed to be working because the map looked different — while the point count moved
+/// the WRONG WAY, which is what "it never fired" looks like from outside. Counters, not guesses.
+///
+/// Seconds are wall-clock and overlap nothing: each pass is timed where it runs.
+#[derive(Debug, Clone, Default)]
+pub struct SfmStats {
+    /// Views registered by PnP, and the seconds spent trying.
+    pub registered: usize,
+    /// Seconds in PnP registration.
+    pub pnp_secs: f64,
+    /// Seconds in triangulation, including every retriangulation round.
+    pub triangulate_secs: f64,
+    /// Points dropped by the reprojection filter, and its cost.
+    pub filtered_points: usize,
+    /// Seconds in `filter_points`.
+    pub filter_secs: f64,
+    /// Observations re-admitted by track completion, and its cost.
+    pub completed_obs: usize,
+    /// Seconds in `complete_tracks`.
+    pub complete_secs: f64,
+    /// Tracks absorbed by merging — **zero here means merging did not fire**, which is not the
+    /// same as merging having no effect, and the two are indistinguishable from the point count.
+    pub merged_tracks: usize,
+    /// Seconds in `merge_tracks`.
+    pub merge_secs: f64,
+    /// Seconds in bundle adjustment, local and global.
+    pub ba_secs: f64,
+}
+
 /// [`RigCalibration`] remains reachable via `From` for the rig-calibration use case.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
@@ -426,6 +459,8 @@ pub struct Reconstruction {
     /// are filtered out even from tracks that did triangulate in views that did register. Never
     /// assume equality with the input count, and do not size a per-input-observation array from it.
     pub observations: Vec<Observation>,
+    /// Where the solve spent its time and what each maintenance pass did. See [`SfmStats`].
+    pub stats: SfmStats,
     /// Final reprojection RMS in pixels, or `-1.0` if no valid observation remained.
     pub reproj_rmse_px: f64,
     /// Per-view covariance + observability, one entry per input view.

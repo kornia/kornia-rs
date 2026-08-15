@@ -30,6 +30,7 @@ use kornia_3d::ransac::RobustKernelKind;
 use kornia_algebra::{Mat3AF32, Mat3F64, Vec2F32, Vec2F64, Vec3AF32, Vec3F64};
 
 use crate::error::CalibError;
+use crate::types::SfmStats;
 use crate::types::{
     CameraStats, FeatureTrack, Observation, Point, Reconstruction, ReconstructionConfig,
     ScaleSource, TagObservation,
@@ -636,6 +637,7 @@ fn reconstruct_inner(
     // the correspondence graph, precisely so `CompleteTracks` can re-admit it. This is that graph.
     let norm0 = norm.clone();
     let norm_depth0 = norm_depth.clone();
+    let mut stats = SfmStats::default();
 
     // --- Bootstrap: pick a seed pair on GEOMETRY, then two-view essential (world = cam a0, s = 1). ---
     let (a0, b0, seed_pose) = select_bootstrap_pair(tracks, &norm, cameras, &idcam, ranked_seed)?;
@@ -794,18 +796,21 @@ fn reconstruct_inner(
                     // reconcile; retriangulating rebuilds those tracks from the refined poses. So
                     // the cloud the NEXT registration is judged against is clean, rather than
                     // accreting every early mistake for the rest of the walk.
-                    filter_points(
+                    let t_f = std::time::Instant::now();
+                    stats.filtered_points += filter_points(
                         &mut point3d,
                         &mut norm,
                         &mut norm_depth,
                         &poses,
                         FILTER_REPROJ_SLACK * config.max_reprojection_error,
                     );
+                    stats.filter_secs += t_f.elapsed().as_secs_f64();
                     // Re-admit before retriangulating: a track starved only because the filter took
                     // its sightings should get them back before `triangulate_new` judges whether it
                     // can be rebuilt.
+                    let t_c = std::time::Instant::now();
                     if config.complete_tracks {
-                        complete_tracks(
+                        stats.completed_obs += complete_tracks(
                             &point3d,
                             &mut norm,
                             &mut norm_depth,
@@ -815,6 +820,7 @@ fn reconstruct_inner(
                             FILTER_REPROJ_SLACK * config.max_reprojection_error,
                         );
                     }
+                    stats.complete_secs += t_c.elapsed().as_secs_f64();
                     // Merge radius from the reprojection tolerance at TYPICAL depth: a point may
                     // sit `tol * z` off-axis and still land inside the pixel tolerance at range z.
                     // Median depth rather than per-point so one radius serves the whole grid.
@@ -827,7 +833,8 @@ fn reconstruct_inner(
                         if !zs.is_empty() {
                             zs.sort_by(|a, b| a.partial_cmp(b).unwrap());
                             let zmed = zs[zs.len() / 2];
-                            merge_tracks(
+                            let t_m = std::time::Instant::now();
+                            stats.merged_tracks += merge_tracks(
                                 &mut point3d,
                                 &mut norm,
                                 &mut norm_depth,
@@ -835,9 +842,12 @@ fn reconstruct_inner(
                                 FILTER_REPROJ_SLACK * config.max_reprojection_error,
                                 config.merge_radius_rel * config.max_reprojection_error * zmed,
                             );
+                            stats.merge_secs += t_m.elapsed().as_secs_f64();
                         }
                     }
+                    let t_t = std::time::Instant::now();
                     triangulate_new(&mut point3d, &norm, &poses, &idcam, &tcfg);
+                    stats.triangulate_secs += t_t.elapsed().as_secs_f64();
                     // `max(next_ba + 1.0)` so a set that grew by less than one whole camera per
                     // trigger (small maps) still advances the threshold and cannot re-fire on
                     // every registration.
@@ -854,18 +864,21 @@ fn reconstruct_inner(
     // One last filter before the terminal solve, so it is not asked to reconcile sightings that
     // every earlier solve already failed to — and so the published `observations` carry only
     // evidence the final geometry actually supports.
-    filter_points(
+    let t_f = std::time::Instant::now();
+    stats.filtered_points += filter_points(
         &mut point3d,
         &mut norm,
         &mut norm_depth,
         &poses,
         FILTER_REPROJ_SLACK * config.max_reprojection_error,
     );
+    stats.filter_secs += t_f.elapsed().as_secs_f64();
     // Every camera now holds its final pose, so this is where the most previously-untestable
     // evidence becomes testable: a sighting dropped against an early pose is judged one last time
     // against the pose the map actually ships.
+    let t_c = std::time::Instant::now();
     if config.complete_tracks {
-        complete_tracks(
+        stats.completed_obs += complete_tracks(
             &point3d,
             &mut norm,
             &mut norm_depth,
@@ -875,6 +888,7 @@ fn reconstruct_inner(
             FILTER_REPROJ_SLACK * config.max_reprojection_error,
         );
     }
+    stats.complete_secs += t_c.elapsed().as_secs_f64();
 
     // --- Bundle adjustment: all track points free, the reference camera (a0) fixed to anchor gauge. ---
     // Iterate the triangulated points in TRACK ORDER, not `HashMap` order. Rust's default hasher
@@ -1048,7 +1062,9 @@ fn reconstruct_inner(
         })
         .collect();
 
+    stats.registered = poses.iter().filter(|p| p.is_some()).count();
     Ok(Reconstruction {
+        stats,
         views: out_poses,
         points: out_points,
         observations: kept_obs,
