@@ -481,7 +481,61 @@ fn se3_to_pose(se3: &SE3F32) -> Pose3d {
 
 // ── Per-observation residual + analytical Jacobian (matches ReprojFactor) ──
 
-/// Computes (residual, J_pose 2×6, J_point 2×3) at the current state.
+/// One-coefficient radial distortion, evaluated at normalised image coordinates.
+///
+/// With `d = 1 + k1·r²` and `r² = xn² + yn²` the distorted point is `(xn·d, yn·d)`, and the
+/// local 2×2 `∂(xd, yd)/∂(xn, yn)` is symmetric:
+///
+/// ```text
+///   [ d + 2k1·xn²    2k1·xn·yn   ]
+///   [ 2k1·xn·yn      d + 2k1·yn² ]
+/// ```
+///
+/// **At `k1 = 0` every field is a hard identity**: `d = 1`, `dxd_dxn = dyd_dyn = 1`,
+/// `cross = 0`. Every consumer below is written so that substituting those exact values
+/// reproduces the bare pinhole *bit for bit* — `x * 1.0 == x` and `x + 0.0 == x` are exact in
+/// IEEE-754, so no consumer rounds differently than it did before distortion existed. The one
+/// exception is zero SIGN (`-0.0 + 0.0 == +0.0`), reachable only for a point exactly on an
+/// optical axis; `radial_term_is_bit_inert_at_k1_zero` covers both cases.
+///
+/// Not exact if `r²` overflows to infinity (`0.0 * inf` is NaN), which needs `|x/z| > 1.8e19`
+/// — far past the point where the pinhole itself has stopped meaning anything.
+struct RadialTerm {
+    /// `d = 1 + k1·r²` — the isotropic scale applied to both normalised coordinates.
+    d: f32,
+    /// `∂xd/∂xn = d + 2k1·xn²`.
+    dxd_dxn: f32,
+    /// `∂yd/∂yn = d + 2k1·yn²`.
+    dyd_dyn: f32,
+    /// `∂xd/∂yn = ∂yd/∂xn = 2k1·xn·yn`.
+    cross: f32,
+    /// `r² = xn² + yn²`, kept because the `∂/∂k1` column needs it.
+    r2: f32,
+}
+
+#[inline]
+fn radial_term(xn: f32, yn: f32, k1: f32) -> RadialTerm {
+    let r2 = xn * xn + yn * yn;
+    let d = 1.0 + k1 * r2;
+    let two_k1 = 2.0 * k1;
+    RadialTerm {
+        d,
+        dxd_dxn: d + two_k1 * xn * xn,
+        dyd_dyn: d + two_k1 * yn * yn,
+        cross: two_k1 * xn * yn,
+        r2,
+    }
+}
+
+/// The distortion coefficient this solver linearises about.
+///
+/// Pinned to zero: the radial term is wired through the residual, the geometric Jacobians and
+/// the intrinsic Jacobian columns, but no intrinsic is a free parameter yet, so the model must
+/// still evaluate to the bare pinhole. Freeing `fx` and `k1` is the next step; until then this
+/// constant is what makes [`residual_and_jacobians`] bit-identical to the pre-distortion code.
+const BA_K1: f32 = 0.0;
+
+/// Computes (residual, J_pose 2×6, J_point 2×3, J_intr 2×5) at the current state.
 /// Returns the camera-frame point and the clamped z too, for back-substitution
 /// reasoning.
 ///
@@ -490,12 +544,37 @@ fn se3_to_pose(se3: &SE3F32) -> Pose3d {
 ///   J_pose[6..12]: [dv/dρ_x, dv/dρ_y, dv/dρ_z, dv/dω_x, dv/dω_y, dv/dω_z]
 ///   J_point[0..3]: [du/dx,   du/dy,   du/dz]
 ///   J_point[3..6]: [dv/dx,   dv/dy,   dv/dz]
+///   J_intr[0..5]:  [du/dfx,  du/dfy,  du/dcx,  du/dcy,  du/dk1]
+///   J_intr[5..10]: [dv/dfx,  dv/dfy,  dv/dcx,  dv/dcy,  dv/dk1]
+///
+/// `J_intr` has no consumer yet — the intrinsics are fixed, so every caller drops it and the
+/// optimiser never sees these columns. It is computed here, next to the geometry it shares
+/// intermediates with, so that freeing an intrinsic later is a plumbing change and not a
+/// re-derivation.
+/// The solver's residual at the CURRENTLY FIXED radial coefficient.
+///
+/// Separate from [`residual_and_jacobians_k1`] only so the coefficient is a parameter somewhere:
+/// while it was a `const`, no test could evaluate the residual at nonzero `k1`, and the composed
+/// chain rule — the part the derivation is easy to get wrong in — was unreachable. Measured: SEVEN
+/// deliberately wrong derivatives passed the entire 207-test suite. Only mutations inside
+/// `radial_term` were caught.
+#[inline]
 fn residual_and_jacobians(
     pose: &SE3F32,
     point_w: &Vec3F64,
     pixel: [f32; 2],
     camera: &PinholeCamera,
-) -> ([f32; 2], [f32; 12], [f32; 6]) {
+) -> ([f32; 2], [f32; 12], [f32; 6], [f32; 10]) {
+    residual_and_jacobians_k1(pose, point_w, pixel, camera, BA_K1)
+}
+
+fn residual_and_jacobians_k1(
+    pose: &SE3F32,
+    point_w: &Vec3F64,
+    pixel: [f32; 2],
+    camera: &PinholeCamera,
+    k1: f32,
+) -> ([f32; 2], [f32; 12], [f32; 6], [f32; 10]) {
     let fx = camera.fx as f32;
     let fy = camera.fy as f32;
     let cx = camera.cx as f32;
@@ -515,15 +594,34 @@ fn residual_and_jacobians(
     let inv_z = 1.0 / z;
     let inv_z2 = inv_z * inv_z;
 
-    let u = fx * pc.x * inv_z + cx;
-    let v = fy * pc.y * inv_z + cy;
+    // Normalised coords, then the radial factors. At `BA_K1 == 0` this is `d = 1`, diagonal 1,
+    // cross 0 (see [`RadialTerm`]).
+    let xn = pc.x * inv_z;
+    let yn = pc.y * inv_z;
+    let rad = radial_term(xn, yn, k1);
+
+    // u = fx·xd + cx with xd = xn·d, and likewise for v.
+    //
+    // Written as `fx * pc.x * inv_z * d` rather than `fx * (xn * d)` on purpose: f32 multiply is
+    // NOT associative, so `fx * (pc.x * inv_z)` is a different float from the `(fx * pc.x) * inv_z`
+    // this has to reproduce. Keeping the original grouping and appending `* d` makes the k1 = 0
+    // case exact, since multiplying by 1.0 is.
+    let u = fx * pc.x * inv_z * rad.d + cx;
+    let v = fy * pc.y * inv_z * rad.d + cy;
     let r = [u - pixel[0], v - pixel[1]];
 
-    // J_proj row coefficients (∂[u; v] / ∂[X_c]).
-    let a0 = fx * inv_z;
-    let a2 = -fx * pc.x * inv_z2;
-    let b1 = fy * inv_z;
-    let b2 = -fy * pc.y * inv_z2;
+    // J_proj row coefficients (∂[u; v] / ∂[X_c]), chained through the distortion:
+    //   ∂[u; v]/∂X_c = diag(fx, fy) · ∂(xd, yd)/∂(xn, yn) · ∂(xn, yn)/∂X_c
+    // with ∂xn/∂X_c = [1/z, 0, -x/z²] and ∂yn/∂X_c = [0, 1/z, -y/z²].
+    //
+    // At k1 = 0 (diagonal 1, cross 0) a0/a2/b1/b2 are exactly the pinhole `fx·inv_z`,
+    // `-fx·x·inv_z²`, `fy·inv_z`, `-fy·y·inv_z²`, and the cross columns a1/b0 are exactly zero.
+    let a0 = fx * rad.dxd_dxn * inv_z;
+    let a1 = fx * rad.cross * inv_z;
+    let a2 = -fx * (rad.dxd_dxn * pc.x + rad.cross * pc.y) * inv_z2;
+    let b0 = fy * rad.cross * inv_z;
+    let b1 = fy * rad.dyd_dyn * inv_z;
+    let b2 = -fy * (rad.cross * pc.x + rad.dyd_dyn * pc.y) * inv_z2;
 
     // Rotation matrix elements (R: world→cam).
     let rm = pose.r.matrix();
@@ -552,21 +650,22 @@ fn residual_and_jacobians(
     let s12 = -py * r10 + px * r11;
     let s22 = -py * r20 + px * r21;
 
-    // J_pt = J_proj · R (3 cols).
-    let jpt_00 = a0 * r00 + a2 * r20;
-    let jpt_01 = a0 * r01 + a2 * r21;
-    let jpt_02 = a0 * r02 + a2 * r22;
-    let jpt_10 = b1 * r10 + b2 * r20;
-    let jpt_11 = b1 * r11 + b2 * r21;
-    let jpt_12 = b1 * r12 + b2 * r22;
+    // J_pt = J_proj · R (3 cols). The a1/b0 terms are the distortion cross-coupling: they are
+    // exactly zero at k1 = 0, and adding an exact zero leaves the remaining sum untouched.
+    let jpt_00 = a0 * r00 + a1 * r10 + a2 * r20;
+    let jpt_01 = a0 * r01 + a1 * r11 + a2 * r21;
+    let jpt_02 = a0 * r02 + a1 * r12 + a2 * r22;
+    let jpt_10 = b0 * r00 + b1 * r10 + b2 * r20;
+    let jpt_11 = b0 * r01 + b1 * r11 + b2 * r21;
+    let jpt_12 = b0 * r02 + b1 * r12 + b2 * r22;
 
     // J_omega = J_proj · S (3 cols).
-    let jom_00 = a0 * s00 + a2 * s20;
-    let jom_01 = a0 * s01 + a2 * s21;
-    let jom_02 = a0 * s02 + a2 * s22;
-    let jom_10 = b1 * s10 + b2 * s20;
-    let jom_11 = b1 * s11 + b2 * s21;
-    let jom_12 = b1 * s12 + b2 * s22;
+    let jom_00 = a0 * s00 + a1 * s10 + a2 * s20;
+    let jom_01 = a0 * s01 + a1 * s11 + a2 * s21;
+    let jom_02 = a0 * s02 + a1 * s12 + a2 * s22;
+    let jom_10 = b0 * s00 + b1 * s10 + b2 * s20;
+    let jom_11 = b0 * s01 + b1 * s11 + b2 * s21;
+    let jom_12 = b0 * s02 + b1 * s12 + b2 * s22;
 
     // Layout J_pose 2×6 row-major: [ρ(3) | ω(3)] per row.
     let j_pose: [f32; 12] = [
@@ -576,7 +675,23 @@ fn residual_and_jacobians(
     // J_point 2×3 row-major.
     let j_point: [f32; 6] = [jpt_00, jpt_01, jpt_02, jpt_10, jpt_11, jpt_12];
 
-    (r, j_pose, j_point)
+    // J_intr 2×5 row-major, columns [fx, fy, cx, cy, k1]. Unused while the intrinsics are fixed.
+    let xd = xn * rad.d;
+    let yd = yn * rad.d;
+    let j_intr: [f32; 10] = [
+        xd,
+        0.0,
+        1.0,
+        0.0,
+        fx * xn * rad.r2,
+        0.0,
+        yd,
+        0.0,
+        1.0,
+        fy * yn * rad.r2,
+    ];
+
+    (r, j_pose, j_point, j_intr)
 }
 
 // ── Small block primitives (f32) ─────────────────────────────────────────
@@ -1236,7 +1351,9 @@ fn bundle_adjust_schur_impl(
             n_reproj_obs_iter += 1;
             let pose = &se3s[obs.pose_idx];
             let point = &xyz[obs.point_idx];
-            let (mut r, mut j_pose, mut j_point) =
+            // `_j_intr`: the intrinsic columns exist but no intrinsic is free, so they never
+            // enter the reduced camera system.
+            let (mut r, mut j_pose, mut j_point, _j_intr) =
                 residual_and_jacobians(pose, point, obs.pixel, camera);
             let r_sq = r[0] * r[0] + r[1] * r[1];
 
@@ -2034,7 +2151,7 @@ fn bundle_adjust_schur_impl(
             }
             let pose = &se3s_trial[obs.pose_idx];
             let point = &xyz_trial[obs.point_idx];
-            let (r, _, _) = residual_and_jacobians(pose, point, obs.pixel, camera);
+            let (r, _, _, _) = residual_and_jacobians(pose, point, obs.pixel, camera);
             let r_sq = r[0] * r[0] + r[1] * r[1];
             new_cost += robust_cost(r_sq);
 
@@ -2179,6 +2296,316 @@ fn bundle_adjust_schur_impl(
 #[cfg(test)]
 mod tests {
 
+    /// The radial term must be INERT at `k1 = 0` — bit for bit, not to within a tolerance.
+    ///
+    /// A tolerance is not good enough here. A 1-ulp shift in one residual changes the trial cost,
+    /// which changes an LM accept/reject, which changes the entire trajectory of the solve. So
+    /// this transcribes the pre-distortion formulas verbatim and compares raw bit patterns.
+    ///
+    /// It is also what pins the two non-obvious writing choices in `residual_and_jacobians`: that
+    /// `u` keeps the original `(fx·x)·inv_z` grouping (f32 multiply is not associative, so
+    /// `fx·(x·inv_z)` is a *different float*), and that the new cross columns are added on the
+    /// side that leaves the surviving sum untouched.
+    #[test]
+    fn radial_term_is_bit_inert_at_k1_zero() {
+        use super::*;
+
+        assert_eq!(BA_K1, 0.0, "this test only characterises the k1 = 0 solver");
+
+        /// The projection exactly as it was before the radial term existed.
+        fn pinhole_reference(
+            pose: &SE3F32,
+            point_w: &Vec3F64,
+            pixel: [f32; 2],
+            camera: &PinholeCamera,
+        ) -> ([f32; 2], [f32; 12], [f32; 6]) {
+            let fx = camera.fx as f32;
+            let fy = camera.fy as f32;
+            let cx = camera.cx as f32;
+            let cy = camera.cy as f32;
+
+            let pw = Vec3AF32::new(point_w.x as f32, point_w.y as f32, point_w.z as f32);
+            let pc = *pose * pw;
+            let z = if pc.z.abs() < MIN_Z {
+                if pc.z >= 0.0 {
+                    MIN_Z
+                } else {
+                    -MIN_Z
+                }
+            } else {
+                pc.z
+            };
+            let inv_z = 1.0 / z;
+            let inv_z2 = inv_z * inv_z;
+
+            let u = fx * pc.x * inv_z + cx;
+            let v = fy * pc.y * inv_z + cy;
+            let r = [u - pixel[0], v - pixel[1]];
+
+            let a0 = fx * inv_z;
+            let a2 = -fx * pc.x * inv_z2;
+            let b1 = fy * inv_z;
+            let b2 = -fy * pc.y * inv_z2;
+
+            let rm = pose.r.matrix();
+            let (r00, r01, r02) = (rm.col(0).x, rm.col(1).x, rm.col(2).x);
+            let (r10, r11, r12) = (rm.col(0).y, rm.col(1).y, rm.col(2).y);
+            let (r20, r21, r22) = (rm.col(0).z, rm.col(1).z, rm.col(2).z);
+
+            let (px, py, pz) = (pw.x, pw.y, pw.z);
+            let s00 = -pz * r01 + py * r02;
+            let s10 = -pz * r11 + py * r12;
+            let s20 = -pz * r21 + py * r22;
+            let s01 = pz * r00 - px * r02;
+            let s11 = pz * r10 - px * r12;
+            let s21 = pz * r20 - px * r22;
+            let s02 = -py * r00 + px * r01;
+            let s12 = -py * r10 + px * r11;
+            let s22 = -py * r20 + px * r21;
+
+            let jpt_00 = a0 * r00 + a2 * r20;
+            let jpt_01 = a0 * r01 + a2 * r21;
+            let jpt_02 = a0 * r02 + a2 * r22;
+            let jpt_10 = b1 * r10 + b2 * r20;
+            let jpt_11 = b1 * r11 + b2 * r21;
+            let jpt_12 = b1 * r12 + b2 * r22;
+
+            let jom_00 = a0 * s00 + a2 * s20;
+            let jom_01 = a0 * s01 + a2 * s21;
+            let jom_02 = a0 * s02 + a2 * s22;
+            let jom_10 = b1 * s10 + b2 * s20;
+            let jom_11 = b1 * s11 + b2 * s21;
+            let jom_12 = b1 * s12 + b2 * s22;
+
+            let j_pose: [f32; 12] = [
+                jpt_00, jpt_01, jpt_02, jom_00, jom_01, jom_02, jpt_10, jpt_11, jpt_12, jom_10,
+                jom_11, jom_12,
+            ];
+            let j_point: [f32; 6] = [jpt_00, jpt_01, jpt_02, jpt_10, jpt_11, jpt_12];
+            (r, j_pose, j_point)
+        }
+
+        struct Rng(u64);
+        impl Rng {
+            fn next_f32(&mut self) -> f32 {
+                self.0 ^= self.0 << 13;
+                self.0 ^= self.0 >> 7;
+                self.0 ^= self.0 << 17;
+                ((self.0 >> 40) as f32 / (1u32 << 24) as f32) * 2.0 - 1.0
+            }
+        }
+        let mut rng = Rng(0x5eed_1234_abcd_ef01);
+
+        // Generic geometry: nothing degenerate, so the bit patterns must match EXACTLY.
+        let mut generic: Vec<(SE3F32, Vec3F64, [f32; 2], PinholeCamera)> = Vec::new();
+        for _ in 0..2000 {
+            let pose = SE3F32::IDENTITY.retract(&[
+                2.0 * rng.next_f32(),
+                2.0 * rng.next_f32(),
+                2.0 * rng.next_f32(),
+                0.8 * rng.next_f32(),
+                0.8 * rng.next_f32(),
+                0.8 * rng.next_f32(),
+            ]);
+            let point = Vec3F64::new(
+                (5.0 * rng.next_f32()) as f64,
+                (5.0 * rng.next_f32()) as f64,
+                (5.0 * rng.next_f32()) as f64,
+            );
+            let pixel = [400.0 * rng.next_f32(), 300.0 * rng.next_f32()];
+            let camera = PinholeCamera {
+                fx: 500.0 + 200.0 * rng.next_f32() as f64,
+                fy: 500.0 + 200.0 * rng.next_f32() as f64,
+                cx: 320.0 + 50.0 * rng.next_f32() as f64,
+                cy: 240.0 + 50.0 * rng.next_f32() as f64,
+                k1: 0.0,
+                k2: 0.0,
+                p1: 0.0,
+                p2: 0.0,
+            };
+            generic.push((pose, point, pixel, camera));
+        }
+        // Degenerate geometry the solver can still hit: points behind the camera and on the
+        // z-clamp, and points sitting exactly on an optical axis (where a coordinate is a signed
+        // zero — see `same_value` below).
+        let cam = PinholeCamera {
+            fx: 517.3,
+            fy: 516.5,
+            cx: 318.6,
+            cy: 255.3,
+            k1: 0.0,
+            k2: 0.0,
+            p1: 0.0,
+            p2: 0.0,
+        };
+        let degenerate: Vec<(SE3F32, Vec3F64, [f32; 2], PinholeCamera)> = vec![
+            (SE3F32::IDENTITY, Vec3F64::ZERO, [0.0, 0.0], cam.clone()),
+            (
+                SE3F32::IDENTITY,
+                Vec3F64::new(0.0, 0.0, 1e-9),
+                [1.0, -1.0],
+                cam.clone(),
+            ),
+            (
+                SE3F32::IDENTITY,
+                Vec3F64::new(0.0, 2.0, -3.0),
+                [12.0, 8.0],
+                cam.clone(),
+            ),
+            (
+                SE3F32::IDENTITY,
+                Vec3F64::new(-0.0, 2.0, 4.0),
+                [3.0, 3.0],
+                cam.clone(),
+            ),
+            (
+                SE3F32::IDENTITY,
+                Vec3F64::new(-0.0, -2.0, 4.0),
+                [3.0, 3.0],
+                cam.clone(),
+            ),
+            (
+                SE3F32::IDENTITY,
+                Vec3F64::new(3.0, -0.0, 4.0),
+                [3.0, 3.0],
+                cam.clone(),
+            ),
+        ];
+
+        /// Same value, allowing the two encodings of zero to count as equal.
+        ///
+        /// `to_bits` equality is the real assertion and holds for all generic geometry. The one
+        /// admitted exception is zero SIGN: when a camera-frame coordinate is `-0.0`, the new
+        /// (exactly zero) cross term can turn `-0.0 + 0.0` into `+0.0` where the old code kept
+        /// `-0.0`. Same value, same behaviour in every sum and product downstream — and only
+        /// reachable for a point lying exactly on an optical axis.
+        fn same_value(a: f32, b: f32) -> bool {
+            a.to_bits() == b.to_bits() || (a == 0.0 && b == 0.0)
+        }
+
+        for (i, (pose, point, pixel, camera)) in generic.iter().chain(degenerate.iter()).enumerate()
+        {
+            let (r, j_pose, j_point, j_intr) = residual_and_jacobians(pose, point, *pixel, camera);
+            let (r_ref, j_pose_ref, j_point_ref) = pinhole_reference(pose, point, *pixel, camera);
+
+            let strict = i < generic.len();
+            for (k, (a, b)) in r.iter().zip(r_ref.iter()).enumerate() {
+                assert!(
+                    same_value(*a, *b),
+                    "case {i}: residual[{k}] {a:?} ({:#010x}) != pinhole {b:?} ({:#010x})",
+                    a.to_bits(),
+                    b.to_bits()
+                );
+                if strict {
+                    assert_eq!(a.to_bits(), b.to_bits(), "case {i}: residual[{k}] bits");
+                }
+            }
+            for (k, (a, b)) in j_pose.iter().zip(j_pose_ref.iter()).enumerate() {
+                assert!(
+                    same_value(*a, *b),
+                    "case {i}: j_pose[{k}] {a:?} ({:#010x}) != pinhole {b:?} ({:#010x})",
+                    a.to_bits(),
+                    b.to_bits()
+                );
+                if strict {
+                    assert_eq!(a.to_bits(), b.to_bits(), "case {i}: j_pose[{k}] bits");
+                }
+            }
+            for (k, (a, b)) in j_point.iter().zip(j_point_ref.iter()).enumerate() {
+                assert!(
+                    same_value(*a, *b),
+                    "case {i}: j_point[{k}] {a:?} ({:#010x}) != pinhole {b:?} ({:#010x})",
+                    a.to_bits(),
+                    b.to_bits()
+                );
+                if strict {
+                    assert_eq!(a.to_bits(), b.to_bits(), "case {i}: j_point[{k}] bits");
+                }
+            }
+
+            // The intrinsic columns are not fed to the solver, but they must be the pinhole ones
+            // at k1 = 0: ∂u/∂fx = x/z, ∂u/∂cx = 1, and the k1 column ∝ r², which is 0 only on the
+            // optical axis. Everything else in the 2×5 is structurally zero.
+            let fx = camera.fx as f32;
+            let pw = Vec3AF32::new(point.x as f32, point.y as f32, point.z as f32);
+            let pc = *pose * pw;
+            let z_ref = if pc.z.abs() < MIN_Z {
+                if pc.z >= 0.0 {
+                    MIN_Z
+                } else {
+                    -MIN_Z
+                }
+            } else {
+                pc.z
+            };
+            // `* (1/z)`, not `/ z`: the two round differently, which is the same non-associativity
+            // trap the residual grouping above is written around.
+            let inv_z = 1.0 / z_ref;
+            let (xn, yn) = (pc.x * inv_z, pc.y * inv_z);
+            let r2 = xn * xn + yn * yn;
+            assert!(same_value(j_intr[0], xn), "case {i}: du/dfx must be x/z");
+            assert_eq!(j_intr[1], 0.0);
+            assert_eq!(j_intr[2], 1.0);
+            assert_eq!(j_intr[3], 0.0);
+            assert!(same_value(j_intr[4], fx * xn * r2), "case {i}: du/dk1");
+            assert_eq!(j_intr[5], 0.0);
+            assert!(same_value(j_intr[6], yn), "case {i}: dv/dfy must be y/z");
+            assert_eq!(j_intr[7], 0.0);
+            assert_eq!(j_intr[8], 1.0);
+        }
+    }
+
+    /// The `k1 = 0` reduction above cannot see an error in the distortion derivative itself —
+    /// every term it checks is multiplied by zero. This pins `∂(xd, yd)/∂(xn, yn)` against a
+    /// numeric derivative at NONZERO `k1`, so the chain rule the next step depends on is checked
+    /// before anything is freed.
+    #[test]
+    fn radial_jacobian_matches_the_numeric_derivative() {
+        use super::*;
+
+        // The distorted point, independently, in f64.
+        let xd = |xn: f64, yn: f64, k1: f64| xn * (1.0 + k1 * (xn * xn + yn * yn));
+        let yd = |xn: f64, yn: f64, k1: f64| yn * (1.0 + k1 * (xn * xn + yn * yn));
+
+        let h = 1e-5;
+        for &k1 in &[-0.35_f64, -0.05, 0.0, 0.05, 0.4] {
+            for &(xn, yn) in &[
+                (0.0_f64, 0.0_f64),
+                (0.3, -0.2),
+                (-0.7, 0.45),
+                (0.9, 0.9),
+                (0.05, -0.8),
+            ] {
+                let rad = radial_term(xn as f32, yn as f32, k1 as f32);
+
+                let num_dxd_dxn = (xd(xn + h, yn, k1) - xd(xn - h, yn, k1)) / (2.0 * h);
+                let num_dxd_dyn = (xd(xn, yn + h, k1) - xd(xn, yn - h, k1)) / (2.0 * h);
+                let num_dyd_dxn = (yd(xn + h, yn, k1) - yd(xn - h, yn, k1)) / (2.0 * h);
+                let num_dyd_dyn = (yd(xn, yn + h, k1) - yd(xn, yn - h, k1)) / (2.0 * h);
+                // The ∂/∂k1 column of the projection is fx·xn·r², i.e. ∂xd/∂k1 scaled by fx.
+                let num_dxd_dk1 = (xd(xn, yn, k1 + h) - xd(xn, yn, k1 - h)) / (2.0 * h);
+
+                let tol = 2e-4;
+                for (name, ours, numeric) in [
+                    ("dxd_dxn", rad.dxd_dxn as f64, num_dxd_dxn),
+                    ("dxd_dyn", rad.cross as f64, num_dxd_dyn),
+                    ("dyd_dxn", rad.cross as f64, num_dyd_dxn),
+                    ("dyd_dyn", rad.dyd_dyn as f64, num_dyd_dyn),
+                    ("dxd_dk1", (xn as f32 * rad.r2) as f64, num_dxd_dk1),
+                ] {
+                    assert!(
+                        (ours - numeric).abs() <= tol * numeric.abs().max(1.0),
+                        "k1={k1} xn={xn} yn={yn}: {name} analytic {ours} vs numeric {numeric}"
+                    );
+                }
+                assert!(
+                    ((rad.d as f64) - (1.0 + k1 * (xn * xn + yn * yn))).abs() <= 1e-6,
+                    "k1={k1} xn={xn} yn={yn}: d"
+                );
+            }
+        }
+    }
+
     /// Per-camera true depth scales for [`per_camera_scale_scene`]. Product is 1, so `Σ ln s = 0`
     /// and the regulariser's preferred gauge coincides with true world scale — otherwise the
     /// recovered map shrinks by `exp(−mean(ln s))` and the tests measure the gauge choice rather
@@ -2314,6 +2741,110 @@ mod tests {
     /// NOTE: this exercises the LOG branch only — `z = s·m` with `s`, `m` > 0 is positive, so the
     /// `z ≤ 0` arm is never taken. It pins that the residual vanishes and the slope is `1/(sm·σ)`
     /// at the expansion point. It does NOT show the two branches agree; see `depth_residual`, where
+    /// Every Jacobian of the residual, checked against central differences at NONZERO `k1`.
+    ///
+    /// This is the test the `const BA_K1` made impossible, and its absence was not theoretical:
+    /// with the coefficient fixed at 0 the composed chain rule is unreachable, and SEVEN
+    /// deliberately wrong derivatives passed the entire suite — `u` missing its `* rad.d`, `a0`
+    /// built from `dyd_dyn`, `b0` scaled by `fx`, the `a2` cross-term sign flipped, the `b2` cross
+    /// using `pc.y`, `du/dfx = xn` instead of `xd`, and `dv/dk1` scaled by `fx`. Only mutations
+    /// INSIDE `radial_term` were caught, because only those changed the `k1 = 0` value.
+    ///
+    /// `k1 = -0.3` with `r^2 ~ 1` deliberately: at a small coefficient near the optical axis the
+    /// distortion terms are within the finite-difference tolerance of zero and two of those seven
+    /// slip through. The regime has to be one where the term being tested actually matters.
+    #[test]
+    fn every_jacobian_matches_central_differences_at_nonzero_k1() {
+        const K1: f32 = -0.3;
+        let camera = PinholeCamera {
+            fx: 600.0,
+            fy: 590.0,
+            ..test_camera()
+        };
+        // A general rotation, not identity: the cross terms of the distorted Jacobian vanish on an
+        // axis-aligned pose and the mutants that flip them would survive.
+        let (ca, sa) = (0.21f64.cos(), 0.21f64.sin());
+        let (cb, sb) = ((-0.14f64).cos(), (-0.14f64).sin());
+        let rot = Mat3F64::from_cols(
+            Vec3F64::new(ca * cb, sa * cb, -sb),
+            Vec3F64::new(-sa, ca, 0.0),
+            Vec3F64::new(ca * sb, sa * sb, cb),
+        );
+        let pose = pose_to_se3(&Pose3d::new(rot, Vec3F64::new(0.4, -0.2, 0.15)));
+        // r^2 ~ 1 in normalised coordinates: far enough off-axis that the radial term dominates.
+        let point = Vec3F64::new(1.6, -1.1, 1.9);
+        let pixel = [301.0f32, 262.0f32];
+
+        let (_, j_pose, j_point, j_intr) =
+            residual_and_jacobians_k1(&pose, &point, pixel, &camera, K1);
+
+        // POINT: perturb the world point.
+        for axis in 0..3 {
+            let h = 1e-4_f64;
+            let mut lo = point;
+            let mut hi = point;
+            match axis {
+                0 => {
+                    lo.x -= h;
+                    hi.x += h;
+                }
+                1 => {
+                    lo.y -= h;
+                    hi.y += h;
+                }
+                _ => {
+                    lo.z -= h;
+                    hi.z += h;
+                }
+            }
+            let (rl, ..) = residual_and_jacobians_k1(&pose, &lo, pixel, &camera, K1);
+            let (rh, ..) = residual_and_jacobians_k1(&pose, &hi, pixel, &camera, K1);
+            for row in 0..2 {
+                let fd = (rh[row] - rl[row]) as f64 / (2.0 * h);
+                let an = j_point[row * 3 + axis] as f64;
+                assert!(
+                    (fd - an).abs() <= 1e-2 * an.abs().max(1.0),
+                    "j_point[{row}][{axis}]: analytic {an}, central difference {fd}"
+                );
+            }
+        }
+
+        // INTRINSICS: fx, fy, cx, cy, k1 — the columns step 2 will free.
+        let probes: [(usize, f32); 5] = [(0, 0.0), (1, 0.0), (2, 0.0), (3, 0.0), (4, K1)];
+        for (col, _) in probes {
+            let h = if col == 4 { 1e-3 } else { 1e-2 };
+            let bump = |s: f32| {
+                let mut c = camera.clone();
+                let mut k = K1;
+                match col {
+                    0 => c.fx += s as f64,
+                    1 => c.fy += s as f64,
+                    2 => c.cx += s as f64,
+                    3 => c.cy += s as f64,
+                    _ => k += s,
+                }
+                residual_and_jacobians_k1(&pose, &point, pixel, &c, k).0
+            };
+            let rl = bump(-h);
+            let rh = bump(h);
+            for row in 0..2 {
+                let fd = (rh[row] - rl[row]) / (2.0 * h);
+                let an = j_intr[row * 5 + col];
+                assert!(
+                    (fd - an).abs() <= 1e-2 * an.abs().max(1.0),
+                    "j_intr[{row}][{col}]: analytic {an}, central difference {fd}"
+                );
+            }
+        }
+        // `dv/dk1` is the last column of the second row and was previously unasserted, which is
+        // exactly why an `fx`-instead-of-`fy` typo there survived.
+        assert!(
+            j_intr[9].abs() > 1.0,
+            "dv/dk1 must be non-trivial in this regime"
+        );
+        let _ = j_pose;
+    }
+
     /// they demonstrably do not.
     #[test]
     fn depth_residual_log_branch_is_zero_and_correctly_sloped_at_z_eq_sm() {
@@ -2571,7 +3102,7 @@ mod tests {
         let mut expected = 0.0_f32;
         let mut saturated = 0usize;
         for obs in &observations {
-            let (r, _, _) = residual_and_jacobians(
+            let (r, _, _, _) = residual_and_jacobians(
                 &se3s[obs.pose_idx],
                 &res.points[obs.point_idx],
                 obs.pixel,
