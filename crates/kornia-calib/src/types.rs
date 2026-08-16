@@ -150,6 +150,36 @@ pub struct ReconstructionConfig {
     /// whole reconstruction in a way no reprojection residual reveals. The fit is reported on
     /// [`Reconstruction::camera_correction`] and a second BA re-settles the geometry against it.
     pub refine_intrinsics: bool,
+    /// Factorise bundle adjustment's reduced camera system SPARSELY. **`true` by default**, which
+    /// is right for anything this entry point reconstructs.
+    ///
+    /// The reduced system is `6P x 6P`, and two cameras occupy a nonzero 6x6 block only if they
+    /// share a point. On a walkthrough, cameras a few hundred frames apart share nothing, so the
+    /// dense path pays `O(dim^2)` memory and `O(dim^3)` factorisation for structure that is not
+    /// there. Measured on a sequential synthetic, 10 LM iterations, same cost to 5 significant
+    /// figures and the same iteration count either way:
+    ///
+    /// | views | dense | sparse |
+    /// |---|---|---|
+    /// | 100 | 0.11 s | 0.02 s |
+    /// | 300 | 1.20 s | 0.08 s |
+    /// | 600 | 8.34 s | **0.13 s** |
+    ///
+    /// The gap widens with camera count — dense grows roughly cubically, sparse roughly linearly —
+    /// and sparse was never slower, down to 8 views. Turn it OFF only for a genuine RIG, where
+    /// every camera sees the same subject, the block pattern really is dense, and the sparse
+    /// bookkeeping is overhead with nothing to save. [`crate::CalibConfig`]'s rig path is
+    /// unaffected: this flag only reaches [`crate::reconstruct`].
+    pub sparse_reduced_system: bool,
+    /// Re-admit observations the reprojection filter removed, once the poses that condemned them
+    /// have improved (COLMAP's `CompleteTracks`). **`true` by default.**
+    ///
+    /// Filtering judges a sighting against the geometry of the moment, and the first filter fires
+    /// three cameras in — so without this a sighting rejected against an early, raw PnP pose is
+    /// gone for the rest of the run even after the solve that would have vindicated it, and track
+    /// length erodes monotonically over a long capture. Costs one retained copy of the original
+    /// observations.
+    pub complete_tracks: bool,
     /// Called after each view is registered, as `(registered_so_far, total_views)`. `None` by
     /// default.
     pub progress: Option<std::sync::Arc<dyn Fn(usize, usize) + Send + Sync>>,
@@ -175,6 +205,8 @@ impl ReconstructionConfig {
             motion_prior_sigma: 0.0,
             min_registration_inliers: 30,
             refine_intrinsics: false,
+            sparse_reduced_system: true,
+            complete_tracks: true,
             progress: None,
         }
     }
@@ -354,6 +386,30 @@ pub enum ScaleSource {
     UpToScale,
 }
 
+/// Where an incremental reconstruction spent its time, and what each maintenance pass actually did.
+///
+/// Exists because the alternative is inferring both from aggregates, and that has a poor record:
+/// a solve measured at 2h04 turned out to be only 18% bundle adjustment, and a newly added track
+/// merge was assumed to be working because the map looked different — while the point count moved
+/// the WRONG WAY, which is what "it never fired" looks like from outside. Counters, not guesses.
+///
+/// Seconds are wall-clock and overlap nothing: each pass is timed where it runs.
+#[derive(Debug, Clone, Default)]
+pub struct SfmStats {
+    /// Views registered by PnP.
+    pub registered: usize,
+    /// Seconds in triangulation, including every retriangulation round.
+    pub triangulate_secs: f64,
+    /// Points dropped by the reprojection filter.
+    pub filtered_points: usize,
+    /// Seconds in `filter_points`.
+    pub filter_secs: f64,
+    /// Observations re-admitted by track completion.
+    pub completed_obs: usize,
+    /// Seconds in `complete_tracks`.
+    pub complete_secs: f64,
+}
+
 /// A feature-based reconstruction: the map, not just the cameras.
 ///
 /// The solver computes all of this; the earlier API threw most of it away to return a
@@ -378,6 +434,8 @@ pub struct Reconstruction {
     /// are filtered out even from tracks that did triangulate in views that did register. Never
     /// assume equality with the input count, and do not size a per-input-observation array from it.
     pub observations: Vec<Observation>,
+    /// Where the solve spent its time and what each maintenance pass did. See [`SfmStats`].
+    pub stats: SfmStats,
     /// Final reprojection RMS in pixels, or `-1.0` if no valid observation remained.
     pub reproj_rmse_px: f64,
     /// Per-view covariance + observability, one entry per input view.

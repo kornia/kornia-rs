@@ -278,6 +278,41 @@ pub struct BaParams {
     ///
     /// Only read by [`crate::ba_schur`]; ignored by [`bundle_adjust`].
     pub depth_robust_scale_sq: f32,
+    /// Score depth measurements in LOG space, `r = ln(z / (s·m)) / σ`, instead of the absolute
+    /// `r = (z − m) / σ`. **`false` by default**, which keeps the existing behaviour.
+    ///
+    /// The absolute form makes `σ` a distance in metres, so the same fractional depth error costs
+    /// ten times more at 10 m than at 1 m and far structure dominates the solve. A monocular depth
+    /// network's error is not shaped like that — it is roughly proportional to depth — so the log
+    /// form, where `σ` is a FRACTION of depth, is the one that matches it and is comparable across
+    /// near and far points.
+    ///
+    /// Turning this on also makes [`Self::depth_scale_prior`] and [`Self::depth_scales_init`] live,
+    /// because a relative residual is only meaningful once each view's depth scale is free.
+    ///
+    /// Only read by [`crate::ba_schur`]; ignored by [`bundle_adjust`].
+    pub depth_log_residual: bool,
+    /// Weight `λ` of the prior pulling each per-view depth scale toward **1.0** — the claim that
+    /// the metric network's own scale is correct. Negative FREEZES the scales at their seed.
+    ///
+    /// Inert unless [`Self::depth_log_residual`] is set. Note the anchor is absolute and NOT the
+    /// seed: callers typically re-fit the seed against the current geometry before every solve, so
+    /// shrinking toward the seed means "stay near wherever the geometry already is" — the prior
+    /// then tracks drift instead of resisting it. Measured on a 365-keyframe walk, seed-anchored
+    /// `λ = 1` doubled the map (54.8 m → 108 m of trajectory) while every scale-INVARIANT metric
+    /// improved: the signature of a reconstruction whose shape is fine and whose gauge came loose.
+    ///
+    /// Only read by [`crate::ba_schur`]; ignored by [`bundle_adjust`].
+    pub depth_scale_prior: f32,
+    /// Starting value for each view's depth scale; a robust median fit is the intended seed.
+    /// Missing or short entries default to `1.0`.
+    ///
+    /// This only sets where the solve STARTS — worth having, since it puts the log residual near
+    /// its optimum on iteration one instead of making the solver discover the scale — and does not
+    /// change what it is pulled toward. See [`Self::depth_scale_prior`].
+    ///
+    /// Only read by [`crate::ba_schur`]; ignored by [`bundle_adjust`].
+    pub depth_scales_init: Vec<f32>,
     /// Assemble and factorise the reduced camera system SPARSELY instead of densely.
     ///
     /// Two cameras occupy a nonzero 6×6 block of `M = A − B C⁻¹ Bᵀ` only if they share a point, or
@@ -312,6 +347,9 @@ impl Default for BaParams {
             robust: RobustKernelKind::Identity,
             robust_scale_sq: f32::INFINITY,
             depth_robust_scale_sq: 0.0,
+            depth_log_residual: false,
+            depth_scale_prior: -1.0,
+            depth_scales_init: Vec::new(),
             sparse_reduced_system: false,
         }
     }
@@ -323,6 +361,9 @@ pub struct BaResult {
     pub poses: Vec<Pose3d>,
     /// Optimized 3D points.
     pub points: Vec<Vec3F64>,
+    /// Fitted per-view depth scale, one per pose. EMPTY unless
+    /// [`BaParams::depth_log_residual`] was set.
+    pub depth_scales: Vec<f32>,
     /// Number of LM iterations performed.
     pub iterations: usize,
     /// Whether the optimizer converged.
@@ -976,6 +1017,8 @@ pub fn bundle_adjust(
     }
 
     Ok(BaResult {
+        // `bundle_adjust` does not implement the log-depth path; see `BaParams::depth_log_residual`.
+        depth_scales: Vec::new(),
         poses: out_poses,
         points: out_points,
         iterations: result.iterations,
