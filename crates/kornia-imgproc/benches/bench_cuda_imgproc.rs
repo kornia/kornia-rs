@@ -26,12 +26,22 @@ use std::{any::Any, sync::Arc, time::Instant};
 use cudarc::driver::{sys::CUevent_flags, CudaContext, CudaSlice, CudaStream, DeviceRepr};
 use kornia_image::{Image, ImageSize};
 use kornia_imgproc::{
-    color::gray_from_rgb,
+    color::{
+        bgr_from_rgb, gray_from_rgb, gray_from_rgb_u8 as cpu_gray_from_rgb_u8, hls_from_rgb,
+        hsv_from_rgb, rgb_from_gray, ycbcr_from_rgb,
+    },
     cuda::{
-        color::gray::launch_gray_from_rgb_f32,
+        color::{
+            gray::{launch_gray_from_rgb_f32, launch_gray_from_rgb_u8, launch_rgb_from_gray_u8},
+            hsv_hls::{launch_hls_from_rgb_f32, launch_hsv_from_rgb_f32},
+            swizzle::launch_bgr_from_rgb_u8,
+            yuv::{launch_ycc_from_rgb_f32, launch_ycc_from_rgb_u8, ChromaOrder},
+        },
         filter::{launch_gradient_magnitude_f32, launch_separable_filter_f32},
         morphology::{launch_morphology_u8_cuda, MorphBorder, MorphOp},
-        remap::launch_remap_bilinear_cuda,
+        remap::{
+            launch_remap_bilinear_cuda, launch_remap_bilinear_u8_cuda, launch_remap_nearest_u8_cuda,
+        },
         resize::{
             launch_resize_bicubic_cuda, launch_resize_bilinear_downscale_cuda,
             launch_resize_lanczos_cuda, launch_resize_nearest_downscale_cuda, PixelMapping,
@@ -43,7 +53,7 @@ use kornia_imgproc::{
         warp_perspective_u8::launch_warp_perspective_u8_bilinear_cuda,
     },
     filter::{gaussian_blur, kernels::gaussian_kernel_1d, sobel},
-    interpolation::{remap, InterpolationMode},
+    interpolation::{remap, remap_u8, InterpolationMode},
     morphology::{
         dilate, erode,
         kernels::{Kernel, KernelShape},
@@ -1176,6 +1186,541 @@ fn main() {
         );
         print_row(
             "gray_from_rgb (f32)",
+            "n/a",
+            &format!("{sw}×{sh}"),
+            cpu_ms,
+            &seg,
+        );
+    }
+
+    // ── remap u8 (bilinear + nearest) ────────────────────────────────────────
+
+    for &(sw, sh) in &[(1920u32, 1080u32), (3840, 2160)] {
+        let n = sw as usize * sh as usize * NC;
+        let src_host: Vec<u8> = (0..n).map(|i| (i % 256) as u8).collect();
+        let mut dst_host = vec![0u8; n];
+        let mx_host: Vec<f32> = (0..sh).flat_map(|_| (0..sw).map(|x| x as f32)).collect();
+        let my_host: Vec<f32> = (0..sh)
+            .flat_map(|y| (0..sw).map(move |_| y as f32))
+            .collect();
+
+        let mut src_dev = stream.clone_htod(&src_host).expect("H→D src");
+        let mut dst_dev = stream.alloc_zeros::<u8>(n).expect("alloc dst");
+        let map_x_dev = stream.clone_htod(&mx_host).expect("H→D map_x");
+        let map_y_dev = stream.clone_htod(&my_host).expect("H→D map_y");
+
+        let ctx2 = ctx.clone();
+        let stream2 = stream.clone();
+
+        // CPU baseline: remap_u8
+        let cpu_ms = {
+            let src_img = Image::<u8, 3>::new(
+                ImageSize {
+                    width: sw as usize,
+                    height: sh as usize,
+                },
+                src_host.clone(),
+            )
+            .expect("src");
+            let mut dst_img = Image::<u8, 3>::from_size_val(
+                ImageSize {
+                    width: sw as usize,
+                    height: sh as usize,
+                },
+                0,
+            )
+            .expect("dst");
+            let map_x_img = Image::<f32, 1>::new(
+                ImageSize {
+                    width: sw as usize,
+                    height: sh as usize,
+                },
+                mx_host.clone(),
+            )
+            .expect("map_x");
+            let map_y_img = Image::<f32, 1>::new(
+                ImageSize {
+                    width: sw as usize,
+                    height: sh as usize,
+                },
+                my_host.clone(),
+            )
+            .expect("map_y");
+            for _ in 0..5 {
+                remap_u8(
+                    &src_img,
+                    &mut dst_img,
+                    &map_x_img,
+                    &map_y_img,
+                    InterpolationMode::Bilinear,
+                )
+                .expect("warmup");
+            }
+            let t = std::time::Instant::now();
+            for _ in 0..ITERS {
+                remap_u8(
+                    &src_img,
+                    &mut dst_img,
+                    &map_x_img,
+                    &map_y_img,
+                    InterpolationMode::Bilinear,
+                )
+                .expect("remap_u8");
+                std::hint::black_box(dst_img.as_slice());
+            }
+            t.elapsed().as_secs_f64() * 1e3 / ITERS as f64
+        };
+
+        let seg = bench_segments(
+            &ctx,
+            &stream,
+            &src_host,
+            &mut dst_host,
+            &mut src_dev,
+            &mut dst_dev,
+            |src, dst| {
+                launch_remap_bilinear_u8_cuda(
+                    &ctx2, &stream2, src, &map_x_dev, &map_y_dev, dst, sw, sh, sw, sh, NC as u32,
+                    None,
+                )
+                .expect("remap_bilinear_u8");
+            },
+        );
+        print_row(
+            "remap (u8)",
+            "bilinear",
+            &format!("{sw}×{sh}"),
+            cpu_ms,
+            &seg,
+        );
+
+        let seg_nn = bench_segments(
+            &ctx,
+            &stream,
+            &src_host,
+            &mut dst_host,
+            &mut src_dev,
+            &mut dst_dev,
+            |src, dst| {
+                launch_remap_nearest_u8_cuda(
+                    &ctx2, &stream2, src, &map_x_dev, &map_y_dev, dst, sw, sh, sw, sh, NC as u32,
+                    None,
+                )
+                .expect("remap_nearest_u8");
+            },
+        );
+        print_row(
+            "remap (u8)",
+            "nearest",
+            &format!("{sw}×{sh}"),
+            cpu_ms,
+            &seg_nn,
+        );
+    }
+
+    // ── color: gray_from_rgb u8 ───────────────────────────────────────────────
+
+    for &(sw, sh) in &[(1920u32, 1080u32), (3840, 2160)] {
+        let n_src = sw as usize * sh as usize * NC;
+        let n_dst = sw as usize * sh as usize;
+        let src_host: Vec<u8> = (0..n_src).map(|i| (i % 256) as u8).collect();
+        let mut dst_host = vec![0u8; n_dst];
+        let mut src_dev = stream.clone_htod(&src_host).expect("H→D src");
+        let mut dst_dev = stream.alloc_zeros::<u8>(n_dst).expect("alloc dst");
+        let stream2 = stream.clone();
+
+        let cpu_ms = {
+            let src_img = Image::<u8, 3>::new(
+                ImageSize {
+                    width: sw as usize,
+                    height: sh as usize,
+                },
+                src_host.clone(),
+            )
+            .expect("src");
+            let mut dst_img = Image::<u8, 1>::from_size_val(
+                ImageSize {
+                    width: sw as usize,
+                    height: sh as usize,
+                },
+                0,
+            )
+            .expect("dst");
+            for _ in 0..5 {
+                cpu_gray_from_rgb_u8(&src_img, &mut dst_img).expect("warmup");
+            }
+            let t = std::time::Instant::now();
+            for _ in 0..ITERS {
+                cpu_gray_from_rgb_u8(&src_img, &mut dst_img).expect("cpu_gray_u8");
+                std::hint::black_box(dst_img.as_slice());
+            }
+            t.elapsed().as_secs_f64() * 1e3 / ITERS as f64
+        };
+        let seg = bench_segments(
+            &ctx,
+            &stream,
+            &src_host,
+            &mut dst_host,
+            &mut src_dev,
+            &mut dst_dev,
+            |src, dst| {
+                launch_gray_from_rgb_u8(&stream2, src, dst, n_dst).expect("gray_from_rgb_u8");
+            },
+        );
+        print_row(
+            "gray_from_rgb (u8)",
+            "n/a",
+            &format!("{sw}×{sh}"),
+            cpu_ms,
+            &seg,
+        );
+    }
+
+    // ── color: rgb_from_gray u8 ───────────────────────────────────────────────
+
+    for &(sw, sh) in &[(1920u32, 1080u32), (3840, 2160)] {
+        let n_src = sw as usize * sh as usize; // 1-ch gray
+        let n_dst = sw as usize * sh as usize * NC; // 3-ch RGB
+        let src_host: Vec<u8> = (0..n_src).map(|i| (i % 256) as u8).collect();
+        let mut dst_host = vec![0u8; n_dst];
+        let mut src_dev = stream.clone_htod(&src_host).expect("H→D src");
+        let mut dst_dev = stream.alloc_zeros::<u8>(n_dst).expect("alloc dst");
+        let stream2 = stream.clone();
+
+        // No dedicated CPU function for rgb_from_gray; measure a trivial broadcast
+        // to give a relative speedup figure.
+        let cpu_ms = {
+            let src_img = Image::<u8, 1>::new(
+                ImageSize {
+                    width: sw as usize,
+                    height: sh as usize,
+                },
+                src_host.clone(),
+            )
+            .expect("src");
+            let mut dst_img = Image::<u8, 3>::from_size_val(
+                ImageSize {
+                    width: sw as usize,
+                    height: sh as usize,
+                },
+                0,
+            )
+            .expect("dst");
+            for _ in 0..5 {
+                rgb_from_gray(&src_img, &mut dst_img).expect("warmup");
+            }
+            let t = std::time::Instant::now();
+            for _ in 0..ITERS {
+                rgb_from_gray(&src_img, &mut dst_img).expect("cpu_rgb_from_gray");
+                std::hint::black_box(dst_img.as_slice());
+            }
+            t.elapsed().as_secs_f64() * 1e3 / ITERS as f64
+        };
+        let seg = bench_segments(
+            &ctx,
+            &stream,
+            &src_host,
+            &mut dst_host,
+            &mut src_dev,
+            &mut dst_dev,
+            |src, dst| {
+                launch_rgb_from_gray_u8(&stream2, src, dst, n_src).expect("rgb_from_gray_u8");
+            },
+        );
+        print_row(
+            "rgb_from_gray (u8)",
+            "n/a",
+            &format!("{sw}×{sh}"),
+            cpu_ms,
+            &seg,
+        );
+    }
+
+    // ── color: HSV ↔ RGB (f32) ────────────────────────────────────────────────
+
+    for &(sw, sh) in &[(1920u32, 1080u32), (3840, 2160)] {
+        let n = sw as usize * sh as usize;
+        let n_elems = n * NC;
+        let src_host: Vec<f32> = (0..n_elems).map(|i| (i % 256) as f32).collect();
+        let mut dst_host = vec![0.0f32; n_elems];
+        let mut src_dev = stream.clone_htod(&src_host).expect("H→D src");
+        let mut dst_dev = stream.alloc_zeros::<f32>(n_elems).expect("alloc dst");
+        let stream2 = stream.clone();
+
+        let cpu_ms = {
+            let src_img = Image::<f32, 3>::new(
+                ImageSize {
+                    width: sw as usize,
+                    height: sh as usize,
+                },
+                src_host.clone(),
+            )
+            .expect("src");
+            let mut dst_img = Image::<f32, 3>::from_size_val(
+                ImageSize {
+                    width: sw as usize,
+                    height: sh as usize,
+                },
+                0.0,
+            )
+            .expect("dst");
+            for _ in 0..5 {
+                hsv_from_rgb(&src_img, &mut dst_img).expect("warmup");
+            }
+            let t = std::time::Instant::now();
+            for _ in 0..ITERS {
+                hsv_from_rgb(&src_img, &mut dst_img).expect("cpu_hsv");
+                std::hint::black_box(dst_img.as_slice());
+            }
+            t.elapsed().as_secs_f64() * 1e3 / ITERS as f64
+        };
+        let seg = bench_segments(
+            &ctx,
+            &stream,
+            &src_host,
+            &mut dst_host,
+            &mut src_dev,
+            &mut dst_dev,
+            |src, dst| {
+                launch_hsv_from_rgb_f32(&stream2, src, dst, n).expect("hsv_from_rgb_f32");
+            },
+        );
+        print_row(
+            "hsv_from_rgb (f32)",
+            "n/a",
+            &format!("{sw}×{sh}"),
+            cpu_ms,
+            &seg,
+        );
+    }
+
+    // ── color: HLS ↔ RGB (f32) ────────────────────────────────────────────────
+
+    for &(sw, sh) in &[(1920u32, 1080u32), (3840, 2160)] {
+        let n = sw as usize * sh as usize;
+        let n_elems = n * NC;
+        let src_host: Vec<f32> = (0..n_elems).map(|i| (i % 256) as f32).collect();
+        let mut dst_host = vec![0.0f32; n_elems];
+        let mut src_dev = stream.clone_htod(&src_host).expect("H→D src");
+        let mut dst_dev = stream.alloc_zeros::<f32>(n_elems).expect("alloc dst");
+        let stream2 = stream.clone();
+
+        let cpu_ms = {
+            let src_img = Image::<f32, 3>::new(
+                ImageSize {
+                    width: sw as usize,
+                    height: sh as usize,
+                },
+                src_host.clone(),
+            )
+            .expect("src");
+            let mut dst_img = Image::<f32, 3>::from_size_val(
+                ImageSize {
+                    width: sw as usize,
+                    height: sh as usize,
+                },
+                0.0,
+            )
+            .expect("dst");
+            for _ in 0..5 {
+                hls_from_rgb(&src_img, &mut dst_img).expect("warmup");
+            }
+            let t = std::time::Instant::now();
+            for _ in 0..ITERS {
+                hls_from_rgb(&src_img, &mut dst_img).expect("cpu_hls");
+                std::hint::black_box(dst_img.as_slice());
+            }
+            t.elapsed().as_secs_f64() * 1e3 / ITERS as f64
+        };
+        let seg = bench_segments(
+            &ctx,
+            &stream,
+            &src_host,
+            &mut dst_host,
+            &mut src_dev,
+            &mut dst_dev,
+            |src, dst| {
+                launch_hls_from_rgb_f32(&stream2, src, dst, n).expect("hls_from_rgb_f32");
+            },
+        );
+        print_row(
+            "hls_from_rgb (f32)",
+            "n/a",
+            &format!("{sw}×{sh}"),
+            cpu_ms,
+            &seg,
+        );
+    }
+
+    // ── color: ycc_from_rgb (u8) ──────────────────────────────────────────────
+
+    for &(sw, sh) in &[(1920u32, 1080u32), (3840, 2160)] {
+        let n = sw as usize * sh as usize;
+        let n_elems = n * NC;
+        let src_host: Vec<u8> = (0..n_elems).map(|i| (i % 256) as u8).collect();
+        let mut dst_host = vec![0u8; n_elems];
+        let mut src_dev = stream.clone_htod(&src_host).expect("H→D src");
+        let mut dst_dev = stream.alloc_zeros::<u8>(n_elems).expect("alloc dst");
+        let stream2 = stream.clone();
+
+        let cpu_ms = {
+            let src_img = Image::<u8, 3>::new(
+                ImageSize {
+                    width: sw as usize,
+                    height: sh as usize,
+                },
+                src_host.clone(),
+            )
+            .expect("src");
+            let mut dst_img = Image::<u8, 3>::from_size_val(
+                ImageSize {
+                    width: sw as usize,
+                    height: sh as usize,
+                },
+                0,
+            )
+            .expect("dst");
+            for _ in 0..5 {
+                ycbcr_from_rgb(&src_img, &mut dst_img).expect("warmup");
+            }
+            let t = std::time::Instant::now();
+            for _ in 0..ITERS {
+                ycbcr_from_rgb(&src_img, &mut dst_img).expect("cpu_ycbcr");
+                std::hint::black_box(dst_img.as_slice());
+            }
+            t.elapsed().as_secs_f64() * 1e3 / ITERS as f64
+        };
+        let seg = bench_segments(
+            &ctx,
+            &stream,
+            &src_host,
+            &mut dst_host,
+            &mut src_dev,
+            &mut dst_dev,
+            |src, dst| {
+                launch_ycc_from_rgb_u8(&stream2, src, dst, n, ChromaOrder::YCrCb)
+                    .expect("ycc_from_rgb_u8");
+            },
+        );
+        print_row(
+            "ycc_from_rgb (u8)",
+            "n/a",
+            &format!("{sw}×{sh}"),
+            cpu_ms,
+            &seg,
+        );
+    }
+
+    // ── color: ycc_from_rgb (f32) ─────────────────────────────────────────────
+
+    for &(sw, sh) in &[(1920u32, 1080u32), (3840, 2160)] {
+        let n = sw as usize * sh as usize;
+        let n_elems = n * NC;
+        let src_host: Vec<f32> = (0..n_elems).map(|i| (i % 256) as f32).collect();
+        let mut dst_host = vec![0.0f32; n_elems];
+        let mut src_dev = stream.clone_htod(&src_host).expect("H→D src");
+        let mut dst_dev = stream.alloc_zeros::<f32>(n_elems).expect("alloc dst");
+        let stream2 = stream.clone();
+
+        let cpu_ms = {
+            let src_img = Image::<f32, 3>::new(
+                ImageSize {
+                    width: sw as usize,
+                    height: sh as usize,
+                },
+                src_host.clone(),
+            )
+            .expect("src");
+            let mut dst_img = Image::<f32, 3>::from_size_val(
+                ImageSize {
+                    width: sw as usize,
+                    height: sh as usize,
+                },
+                0.0,
+            )
+            .expect("dst");
+            for _ in 0..5 {
+                ycbcr_from_rgb(&src_img, &mut dst_img).expect("warmup");
+            }
+            let t = std::time::Instant::now();
+            for _ in 0..ITERS {
+                ycbcr_from_rgb(&src_img, &mut dst_img).expect("cpu_ycbcr_f32");
+                std::hint::black_box(dst_img.as_slice());
+            }
+            t.elapsed().as_secs_f64() * 1e3 / ITERS as f64
+        };
+        let seg = bench_segments(
+            &ctx,
+            &stream,
+            &src_host,
+            &mut dst_host,
+            &mut src_dev,
+            &mut dst_dev,
+            |src, dst| {
+                launch_ycc_from_rgb_f32(&stream2, src, dst, n, ChromaOrder::YCrCb)
+                    .expect("ycc_from_rgb_f32");
+            },
+        );
+        print_row(
+            "ycc_from_rgb (f32)",
+            "n/a",
+            &format!("{sw}×{sh}"),
+            cpu_ms,
+            &seg,
+        );
+    }
+
+    // ── color: bgr_from_rgb (u8) ──────────────────────────────────────────────
+
+    for &(sw, sh) in &[(1920u32, 1080u32), (3840, 2160)] {
+        let n = sw as usize * sh as usize;
+        let n_elems = n * NC;
+        let src_host: Vec<u8> = (0..n_elems).map(|i| (i % 256) as u8).collect();
+        let mut dst_host = vec![0u8; n_elems];
+        let mut src_dev = stream.clone_htod(&src_host).expect("H→D src");
+        let mut dst_dev = stream.alloc_zeros::<u8>(n_elems).expect("alloc dst");
+        let stream2 = stream.clone();
+
+        let cpu_ms = {
+            let src_img = Image::<u8, 3>::new(
+                ImageSize {
+                    width: sw as usize,
+                    height: sh as usize,
+                },
+                src_host.clone(),
+            )
+            .expect("src");
+            let mut dst_img = Image::<u8, 3>::from_size_val(
+                ImageSize {
+                    width: sw as usize,
+                    height: sh as usize,
+                },
+                0,
+            )
+            .expect("dst");
+            for _ in 0..5 {
+                bgr_from_rgb(&src_img, &mut dst_img).expect("warmup");
+            }
+            let t = std::time::Instant::now();
+            for _ in 0..ITERS {
+                bgr_from_rgb(&src_img, &mut dst_img).expect("cpu_bgr");
+                std::hint::black_box(dst_img.as_slice());
+            }
+            t.elapsed().as_secs_f64() * 1e3 / ITERS as f64
+        };
+        let seg = bench_segments(
+            &ctx,
+            &stream,
+            &src_host,
+            &mut dst_host,
+            &mut src_dev,
+            &mut dst_dev,
+            |src, dst| {
+                launch_bgr_from_rgb_u8(&stream2, src, dst, n).expect("bgr_from_rgb_u8");
+            },
+        );
+        print_row(
+            "bgr_from_rgb (u8)",
             "n/a",
             &format!("{sw}×{sh}"),
             cpu_ms,
