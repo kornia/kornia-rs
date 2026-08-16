@@ -230,9 +230,20 @@ fn clamped_z(pose: &SE3F32, point: &Vec3F64) -> f32 {
 /// near and far points.
 ///
 /// The `z ≤ 0` branch is the log residual's own first-order expansion about `z = sm`, not the
-/// paper's bare `z − sm`: matching the derivative at the changeover keeps the cost C¹ there, so a
-/// point crossing the image plane mid-iteration doesn't hand LM a step discontinuity. Behind the
-/// camera the log is undefined and this pushes `z` back toward `sm` linearly.
+/// paper's bare `z − sm`, so behind the camera it still pushes `z` back toward `sm` linearly with
+/// the right slope THERE.
+///
+/// It is NOT continuous with the log branch at the changeover, and the expansion point is not the
+/// changeover: the branches switch at `z = 0` while the expansion is about `z = sm`. At `sm = 1`,
+/// `σ = 0.1` the log branch floored by `MIN_Z` gives `r² ≈ 4772` where the linear branch at
+/// `z = −1e-3` gives `r² ≈ 100`, so the depth term is ~47x CHEAPER just behind the image plane
+/// than just in front of it. A point being squeezed toward the plane therefore has a downhill
+/// direction through it, which is the opposite of what a cheirality clamp is for. `MIN_Z` keeps
+/// the Jacobian finite so this is bad conditioning rather than a NaN, and cheirality is caught
+/// elsewhere — but it is a real defect in this residual and should be fixed by expanding about
+/// `z = 0`, or by making the behind-camera branch strictly more expensive than the log branch at
+/// `MIN_Z`. Not fixed here: this path has no in-tree caller yet, and changing it without one to
+/// measure against is how the last three guesses in this file went wrong.
 #[inline]
 fn depth_residual(z: f32, m: f32, s: f32, sigma: f32, log_mode: bool) -> (f32, f32) {
     let inv_sigma = 1.0 / sigma.max(1e-6);
@@ -2300,10 +2311,12 @@ mod tests {
 
     /// The log depth residual is C¹ across the cheirality changeover at `z = s·m`.
     ///
-    /// Both branches must agree in value AND slope there, or a point crossing the image plane
-    /// mid-iteration hands LM a step discontinuity and the line search thrashes.
+    /// NOTE: this exercises the LOG branch only — `z = s·m` with `s`, `m` > 0 is positive, so the
+    /// `z ≤ 0` arm is never taken. It pins that the residual vanishes and the slope is `1/(sm·σ)`
+    /// at the expansion point. It does NOT show the two branches agree; see `depth_residual`, where
+    /// they demonstrably do not.
     #[test]
-    fn depth_residual_log_branches_match_at_changeover() {
+    fn depth_residual_log_branch_is_zero_and_correctly_sloped_at_z_eq_sm() {
         let (m, s, sigma) = (3.0_f32, 1.2_f32, 0.05_f32);
         let sm = s * m;
 

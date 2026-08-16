@@ -180,21 +180,6 @@ pub struct ReconstructionConfig {
     /// length erodes monotonically over a long capture. Costs one retained copy of the original
     /// observations.
     pub complete_tracks: bool,
-    /// Fuse tracks that resolved to the same physical point (COLMAP's `MergeTracks`), as a
-    /// multiple of the reprojection tolerance at the point's own depth. **`1.0` by default**; `0`
-    /// disables.
-    ///
-    /// Two views of one landmark reached through different match chains stay separate tracks
-    /// forever otherwise, each carrying half the evidence — which is what makes a revisit inert:
-    /// loop closure moves the CAMERAS while every landmark stays duplicated, so the reprojection
-    /// cost never learns the loop exists and the next solve pulls it back open.
-    ///
-    /// Expressed relative to the reprojection tolerance rather than in metres because the map's
-    /// scale is arbitrary: `radius = merge_radius_rel * max_reprojection_error * depth` is the 3D
-    /// distance a point may sit off and still land inside the pixel tolerance at that range. A pair
-    /// is only merged if they share NO camera and the merged position reprojects within tolerance
-    /// in every observation of both.
-    pub merge_radius_rel: f64,
     /// Called after each view is registered, as `(registered_so_far, total_views)`. `None` by
     /// default.
     pub progress: Option<std::sync::Arc<dyn Fn(usize, usize) + Send + Sync>>,
@@ -222,7 +207,6 @@ impl ReconstructionConfig {
             refine_intrinsics: false,
             sparse_reduced_system: true,
             complete_tracks: true,
-            merge_radius_rel: 1.0,
             progress: None,
         }
     }
@@ -402,14 +386,6 @@ pub enum ScaleSource {
     UpToScale,
 }
 
-/// A feature-based reconstruction: the map, not just the cameras.
-///
-/// The solver computes all of this; the earlier API threw most of it away to return a
-/// [`RigCalibration`]. That is the right shape for rig calibration, where the cameras ARE the
-/// answer, and the wrong one for mapping, where the points, the correspondence between tracks and
-/// points, and the surviving observations are the answer. Downstream code needing the map had to
-/// re-derive it or fork; [`reconstruct`](crate::reconstruct) returns it.
-///
 /// Where an incremental reconstruction spent its time, and what each maintenance pass actually did.
 ///
 /// Exists because the alternative is inferring both from aggregates, and that has a poor record:
@@ -420,29 +396,28 @@ pub enum ScaleSource {
 /// Seconds are wall-clock and overlap nothing: each pass is timed where it runs.
 #[derive(Debug, Clone, Default)]
 pub struct SfmStats {
-    /// Views registered by PnP, and the seconds spent trying.
+    /// Views registered by PnP.
     pub registered: usize,
-    /// Seconds in PnP registration.
-    pub pnp_secs: f64,
     /// Seconds in triangulation, including every retriangulation round.
     pub triangulate_secs: f64,
-    /// Points dropped by the reprojection filter, and its cost.
+    /// Points dropped by the reprojection filter.
     pub filtered_points: usize,
     /// Seconds in `filter_points`.
     pub filter_secs: f64,
-    /// Observations re-admitted by track completion, and its cost.
+    /// Observations re-admitted by track completion.
     pub completed_obs: usize,
     /// Seconds in `complete_tracks`.
     pub complete_secs: f64,
-    /// Tracks absorbed by merging — **zero here means merging did not fire**, which is not the
-    /// same as merging having no effect, and the two are indistinguishable from the point count.
-    pub merged_tracks: usize,
-    /// Seconds in `merge_tracks`.
-    pub merge_secs: f64,
-    /// Seconds in bundle adjustment, local and global.
-    pub ba_secs: f64,
 }
 
+/// A feature-based reconstruction: the map, not just the cameras.
+///
+/// The solver computes all of this; the earlier API threw most of it away to return a
+/// [`RigCalibration`]. That is the right shape for rig calibration, where the cameras ARE the
+/// answer, and the wrong one for mapping, where the points, the correspondence between tracks and
+/// points, and the surviving observations are the answer. Downstream code needing the map had to
+/// re-derive it or fork; [`reconstruct`](crate::reconstruct) returns it.
+///
 /// [`RigCalibration`] remains reachable via `From` for the rig-calibration use case.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
