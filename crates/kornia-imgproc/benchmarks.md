@@ -3,20 +3,17 @@
 ## How to run
 
 ```sh
-# CPU baseline (no CUDA required)
-cargo run --example bench_cuda_resize --release
+# Full sweep — all kernels (resize, warp, remap, filters, morphology, color)
+cargo bench --bench bench_cuda_imgproc --features cuda --release
 
-# Native CUDA (NVRTC) GPU + CPU comparison (requires CUDA driver)
-cargo run --example bench_cuda_resize --features cuda --release
-cargo run --example bench_cuda_color_conversions --features cuda --release
-cargo run --example bench_cuda_warp_affine --features cuda --release
+# CPU baseline only (no CUDA required)
+cargo run --example bench_cuda_resize --release
 
 # OpenCV CPU comparison (requires Python + opencv-python)
 python3 crates/kornia-imgproc/examples/bench_opencv_color.py
 python3 crates/kornia-imgproc/examples/bench_opencv_resize.py
 
 # OpenCV CUDA comparison (requires OpenCV built with -DWITH_CUDA=ON)
-# If cv2 CUDA build is in dist-packages rather than site-packages:
 PYTHONPATH=/path/to/cuda-opencv/dist-packages \
   python3 crates/kornia-imgproc/examples/bench_opencv_resize.py
 PYTHONPATH=/path/to/cuda-opencv/dist-packages \
@@ -549,3 +546,38 @@ H2D+D2H dominates when the kernel itself is sub-millisecond.
   Jetson's unified-memory legs are 2–3x cheaper in absolute terms at every
   size, which is the main reason its roundtrip speedups hold up better even
   though its kernels are individually 2–10x slower than the discrete GPU's.
+
+---
+
+## Remap u8 + color conversions sweep — 2026-08-xx (Desktop GTX 1650)
+
+> **TODO:** Run `cargo bench --bench bench_cuda_imgproc --features cuda --release`
+> and paste the new rows below.  The bench prints all new sections after the
+> existing ones; copy lines matching `remap (u8)`, `gray_from_rgb (u8)`,
+> `rgb_from_gray (u8)`, `hsv_from_rgb`, `hls_from_rgb`, `ycc_from_rgb`, and
+> `bgr_from_rgb`.
+
+Same hardware/methodology as the sweep above (GTX 1650, 30 warmup, 100 timed iters, H2D/kernel/D2H breakdown).
+
+### Desktop — NVIDIA GeForce GTX 1650
+
+| Operation | Interp | Resolution | CPU (ms) | H2D (ms) | Kernel (ms) | D2H (ms) | Total GPU (ms) | Speedup (kernel) | Speedup (roundtrip) |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| remap (u8) | bilinear | 1920×1080 | — | — | — | — | — | — | — |
+| remap (u8) | bilinear | 3840×2160 | — | — | — | — | — | — | — |
+| remap (u8) | nearest | 1920×1080 | — | — | — | — | — | — | — |
+| remap (u8) | nearest | 3840×2160 | — | — | — | — | — | — | — |
+| gray_from_rgb (u8) | n/a | 1920×1080 | — | — | — | — | — | — | — |
+| gray_from_rgb (u8) | n/a | 3840×2160 | — | — | — | — | — | — | — |
+| rgb_from_gray (u8) | n/a | 1920×1080 | — | — | — | — | — | — | — |
+| rgb_from_gray (u8) | n/a | 3840×2160 | — | — | — | — | — | — | — |
+| hsv_from_rgb (f32) | n/a | 1920×1080 | — | — | — | — | — | — | — |
+| hsv_from_rgb (f32) | n/a | 3840×2160 | — | — | — | — | — | — | — |
+| hls_from_rgb (f32) | n/a | 1920×1080 | — | — | — | — | — | — | — |
+| hls_from_rgb (f32) | n/a | 3840×2160 | — | — | — | — | — | — | — |
+| ycc_from_rgb (u8) | n/a | 1920×1080 | — | — | — | — | — | — | — |
+| ycc_from_rgb (u8) | n/a | 3840×2160 | — | — | — | — | — | — | — |
+| ycc_from_rgb (f32) | n/a | 1920×1080 | — | — | — | — | — | — | — |
+| ycc_from_rgb (f32) | n/a | 3840×2160 | — | — | — | — | — | — | — |
+| bgr_from_rgb (u8) | n/a | 1920×1080 | — | — | — | — | — | — | — |
+| bgr_from_rgb (u8) | n/a | 3840×2160 | — | — | — | — | — | — | — |
