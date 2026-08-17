@@ -55,9 +55,7 @@ use kornia_imgproc::{
         warp_perspective::launch_warp_perspective_bilinear_cuda,
         warp_perspective_u8::launch_warp_perspective_u8_bilinear_cuda,
     },
-    filter::{
-        box_blur_u8, gaussian_blur, gaussian_blur_u8, kernels::gaussian_kernel_1d, sobel,
-    },
+    filter::{box_blur_u8, gaussian_blur, gaussian_blur_u8, kernels::gaussian_kernel_1d, sobel},
     interpolation::{remap, remap_u8, InterpolationMode},
     morphology::{
         dilate, erode,

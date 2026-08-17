@@ -657,5 +657,3 @@ _Bold rows = newly added kernels._
 - **gray_from_rgb / bgr_from_rgb (u8)** show the smallest kernel times (0.05–0.10 ms at 1080p) and correspondingly the lowest roundtrip speedups (0.1–0.2x) — same pattern as the f32 gray path; always fuse these into a larger on-device graph rather than calling in isolation.
 - **ycc_from_rgb u8** (Q14 fixed-point quad-pixel kernel) at 0.08 ms / 14.5x kernel is slightly slower than the pure-swizzle bgr/gray paths, as expected — the Q14 arithmetic is heavier, but still well within the bandwidth envelope.
 - **box_blur (3x3, u8)** achieves a strong 33–35x kernel speedup because the CPU baseline pays for integer division (`box_blur`), whereas the GPU path compiles to quantized Q8 shifts. **gaussian_blur (3x3, u8)** is faster than box blur on GPU but shows a lower speedup (5-15x) because the CPU baseline (`gaussian_blur_u8`) uses the heavily optimized NEON/AVX2 binomial fast-path, raising the bar significantly.
-
-
