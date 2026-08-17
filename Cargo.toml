@@ -34,10 +34,10 @@ bincode = { version = "2", features = ["derive"] }
 # target feature is enabled (macOS CI, and aarch64 Linux since we force +fp16 there).
 # Still unfixed upstream as of https://github.com/huggingface/candle/commit/39355c6c.
 # Bump back to "0.11" once that's resolved.
-candle-core = { version = "0.10.2" }
-candle-flash-attn = { version = "0.10.2" }
-candle-nn = { version = "0.10.2" }
-candle-transformers = { version = "0.10.2" }
+candle-core = { version = "0.11.0" }
+candle-flash-attn = { version = "0.11.0" }
+candle-nn = { version = "0.11.0" }
+candle-transformers = { version = "0.11.0" }
 circular-buffer = "2.0"
 criterion = "0.8"
 ctrlc = "3.5"
@@ -53,7 +53,7 @@ hf-hub = "0.5.0"
 image = "0.25"
 imageproc = "0.27"
 indicatif = { version = "0.18.4", features = ["rayon"] }
-kiddo = "5.3"
+kiddo = "6.0"
 # RELEASE NOTE: these kornia-* version pins CANNOT inherit
 # workspace.package.version (Cargo limitation) and must be bumped together
 # with it on every release — locally `path` wins so a stale pin builds fine
@@ -90,7 +90,7 @@ reqwest = { version = "0.13", default-features = false, features = [
   "blocking",
   "native-tls"
 ] }
-rerun = "0.30"
+rerun = "0.33"
 rustc-hash = "2"
 serde = { version = "1", features = ["derive"] }
 serde-big-array = "0.5"
