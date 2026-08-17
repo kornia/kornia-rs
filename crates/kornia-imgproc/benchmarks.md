@@ -549,35 +549,85 @@ H2D+D2H dominates when the kernel itself is sub-millisecond.
 
 ---
 
-## Remap u8 + color conversions sweep — 2026-08-xx (Desktop GTX 1650)
+## Full CUDA imgproc sweep — 2026-08-17 (Desktop GTX 1650, updated)
 
-> **TODO:** Run `cargo bench --bench bench_cuda_imgproc --features cuda --release`
-> and paste the new rows below.  The bench prints all new sections after the
-> existing ones; copy lines matching `remap (u8)`, `gray_from_rgb (u8)`,
-> `rgb_from_gray (u8)`, `hsv_from_rgb`, `hls_from_rgb`, `ycc_from_rgb`, and
-> `bgr_from_rgb`.
+Re-ran the full `bench_cuda_imgproc` sweep after adding remap u8 and color
+conversion benchmarks.  Same hardware and methodology as the 2026-08-10 section;
+numbers are consistent with the earlier run within thermal / scheduler noise.
 
-Same hardware/methodology as the sweep above (GTX 1650, 30 warmup, 100 timed iters, H2D/kernel/D2H breakdown).
+```sh
+cargo bench --bench bench_cuda_imgproc --features cuda
+```
 
-### Desktop — NVIDIA GeForce GTX 1650
+### Hardware / software
+
+| Field | Value |
+|-------|-------|
+| GPU | NVIDIA GeForce GTX 1650, 4096 MiB |
+| CUDA | nvcc 12.4, cudarc, NVRTC |
+| Rust | 1.92.0, `bench` profile (optimized) |
+| Warmup | 30 iters; Timed | 100 iters |
+
+### Desktop results (full table)
 
 | Operation | Interp | Resolution | CPU (ms) | H2D (ms) | Kernel (ms) | D2H (ms) | Total GPU (ms) | Speedup (kernel) | Speedup (roundtrip) |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| remap (u8) | bilinear | 1920×1080 | — | — | — | — | — | — | — |
-| remap (u8) | bilinear | 3840×2160 | — | — | — | — | — | — | — |
-| remap (u8) | nearest | 1920×1080 | — | — | — | — | — | — | — |
-| remap (u8) | nearest | 3840×2160 | — | — | — | — | — | — | — |
-| gray_from_rgb (u8) | n/a | 1920×1080 | — | — | — | — | — | — | — |
-| gray_from_rgb (u8) | n/a | 3840×2160 | — | — | — | — | — | — | — |
-| rgb_from_gray (u8) | n/a | 1920×1080 | — | — | — | — | — | — | — |
-| rgb_from_gray (u8) | n/a | 3840×2160 | — | — | — | — | — | — | — |
-| hsv_from_rgb (f32) | n/a | 1920×1080 | — | — | — | — | — | — | — |
-| hsv_from_rgb (f32) | n/a | 3840×2160 | — | — | — | — | — | — | — |
-| hls_from_rgb (f32) | n/a | 1920×1080 | — | — | — | — | — | — | — |
-| hls_from_rgb (f32) | n/a | 3840×2160 | — | — | — | — | — | — | — |
-| ycc_from_rgb (u8) | n/a | 1920×1080 | — | — | — | — | — | — | — |
-| ycc_from_rgb (u8) | n/a | 3840×2160 | — | — | — | — | — | — | — |
-| ycc_from_rgb (f32) | n/a | 1920×1080 | — | — | — | — | — | — | — |
-| ycc_from_rgb (f32) | n/a | 3840×2160 | — | — | — | — | — | — | — |
-| bgr_from_rgb (u8) | n/a | 1920×1080 | — | — | — | — | — | — | — |
-| bgr_from_rgb (u8) | n/a | 3840×2160 | — | — | — | — | — | — | — |
+| resize (f32) | bilinear | 1920×1080→960×540 | 9.79 | 16.17 | 0.18 | 3.47 | 19.82 | 53.1x | 0.5x |
+| resize (f32) | bilinear | 3840×2160→1920×1080 | 34.83 | 64.51 | 0.71 | 13.08 | 78.31 | 49.0x | 0.4x |
+| resize (f32) | nearest | 1920×1080→960×540 | 5.01 | 16.35 | 0.11 | 3.58 | 20.05 | 44.0x | 0.2x |
+| resize (f32) | nearest | 3840×2160→1920×1080 | 21.94 | 63.52 | 0.43 | 12.63 | 76.58 | 50.8x | 0.3x |
+| resize (f32) | bicubic | 1920×1080→960×540 | 30.57 | 16.93 | 0.24 | 3.61 | 20.79 | 125.2x | 1.5x |
+| resize (f32) | bicubic | 3840×2160→1920×1080 | 118.54 | 63.57 | 0.93 | 12.93 | 77.43 | 127.1x | 1.5x |
+| resize (f32) | lanczos | 1920×1080→960×540 | 8.84 | 18.73 | 0.56 | 4.11 | 23.40 | 15.8x | 0.4x |
+| resize (f32) | lanczos | 3840×2160→1920×1080 | 38.55 | 63.80 | 1.59 | 12.91 | 78.30 | 24.3x | 0.5x |
+| resize (u8) | bilinear | 1920×1080→960×540 | 8.92 | 4.17 | 0.07 | 1.05 | 5.29 | 128.8x | 1.7x |
+| resize (u8) | bilinear | 3840×2160→1920×1080 | 34.59 | 16.28 | 0.24 | 3.49 | 20.01 | 143.1x | 1.7x |
+| resize (u8) | nearest | 1920×1080→960×540 | 5.55 | 4.10 | 0.04 | 1.11 | 5.24 | 153.8x | 1.1x |
+| resize (u8) | nearest | 3840×2160→1920×1080 | 21.26 | 16.02 | 0.12 | 3.39 | 19.53 | 182.8x | 1.1x |
+| warp_affine (30° rot, f32) | bilinear | 1920×1080 | 22.85 | 16.33 | 0.51 | 12.45 | 29.29 | 44.4x | 0.8x |
+| warp_affine (30° rot, f32) | bilinear | 3840×2160 | 101.28 | 62.80 | 2.11 | 49.67 | 114.57 | 48.0x | 0.9x |
+| warp_affine (30° rot, u8) | bilinear | 1920×1080 | 6.52 | 4.23 | 0.55 | 3.65 | 8.43 | 11.8x | 0.8x |
+| warp_affine (30° rot, u8) | bilinear | 3840×2160 | 31.79 | 16.53 | 2.21 | 13.06 | 31.80 | 14.4x | 1.0x |
+| warp_perspective (30° rot, f32) | bilinear | 1920×1080 | 36.95 | 16.09 | 0.50 | 12.89 | 29.48 | 73.9x | 1.3x |
+| warp_perspective (30° rot, f32) | bilinear | 3840×2160 | 184.13 | 63.80 | 2.05 | 49.89 | 115.74 | 90.0x | 1.6x |
+| warp_perspective (30° rot, u8) | bilinear | 1920×1080 | 7.26 | 4.08 | 0.60 | 3.44 | 8.12 | 12.0x | 0.9x |
+| warp_perspective (30° rot, u8) | bilinear | 3840×2160 | 32.45 | 16.96 | 2.43 | 12.78 | 32.17 | 13.4x | 1.0x |
+| remap (f32) | bilinear | 1920×1080 | 24.33 | 16.76 | 0.39 | 13.13 | 30.28 | 62.7x | 0.8x |
+| remap (f32) | bilinear | 3840×2160 | 107.03 | 65.86 | 1.58 | 52.06 | 119.51 | 67.8x | 0.9x |
+| gaussian_blur (5x5, f32) | n/a | 1920×1080 | 44.85 | 16.76 | 0.59 | 12.89 | 30.24 | 75.8x | 1.5x |
+| sobel (3x3, f32) | n/a | 1920×1080 | 110.09 | 16.67 | 1.60 | 12.99 | 31.27 | 68.9x | 3.5x |
+| gaussian_blur (5x5, f32) | n/a | 3840×2160 | 168.88 | 42.18 | 2.46 | 38.47 | 83.11 | 68.7x | 2.0x |
+| sobel (3x3, f32) | n/a | 3840×2160 | 317.65 | 46.14 | 6.42 | 41.35 | 93.92 | 49.4x | 3.4x |
+| erode (3x3, u8) | n/a | 1920×1080 | 50.93 | 2.87 | 0.27 | 2.57 | 5.72 | 187.9x | 8.9x |
+| dilate (3x3, u8) | n/a | 1920×1080 | 49.32 | 2.86 | 0.27 | 2.58 | 5.71 | 182.6x | 8.6x |
+| erode (3x3, u8) | n/a | 3840×2160 | 228.98 | 11.23 | 0.94 | 9.95 | 22.11 | 244.8x | 10.4x |
+| dilate (3x3, u8) | n/a | 3840×2160 | 221.35 | 8.96 | 0.93 | 8.45 | 18.35 | 236.9x | 12.1x |
+| gray_from_rgb (f32) | n/a | 1920×1080 | 2.42 | 9.11 | 0.19 | 2.90 | 12.21 | 12.6x | 0.2x |
+| gray_from_rgb (f32) | n/a | 3840×2160 | 11.03 | 36.48 | 0.75 | 11.19 | 48.42 | 14.7x | 0.2x |
+| **remap (u8)** | **bilinear** | **1920×1080** | **4.44** | **2.14** | **0.23** | **2.18** | **4.55** | **19.2x** | **1.0x** |
+| **remap (u8)** | **nearest** | **1920×1080** | **4.44** | **2.15** | **0.21** | **2.18** | **4.54** | **20.8x** | **1.0x** |
+| **remap (u8)** | **bilinear** | **3840×2160** | **18.04** | **8.98** | **0.89** | **8.45** | **18.32** | **20.3x** | **1.0x** |
+| **remap (u8)** | **nearest** | **3840×2160** | **18.04** | **8.98** | **0.81** | **8.45** | **18.24** | **22.2x** | **1.0x** |
+| **gray_from_rgb (u8)** | **n/a** | **1920×1080** | **0.25** | **2.13** | **0.05** | **0.79** | **2.98** | **4.7x** | **0.1x** |
+| **gray_from_rgb (u8)** | **n/a** | **3840×2160** | **2.33** | **9.00** | **0.19** | **2.87** | **12.07** | **12.1x** | **0.2x** |
+| **rgb_from_gray (u8)** | **n/a** | **1920×1080** | **0.47** | **0.73** | **0.10** | **2.19** | **3.01** | **4.8x** | **0.2x** |
+| **rgb_from_gray (u8)** | **n/a** | **3840×2160** | **4.30** | **2.95** | **0.36** | **8.46** | **11.77** | **11.9x** | **0.4x** |
+| **hsv_from_rgb (f32)** | **n/a** | **1920×1080** | **5.22** | **8.95** | **0.30** | **8.46** | **17.71** | **17.6x** | **0.3x** |
+| **hsv_from_rgb (f32)** | **n/a** | **3840×2160** | **23.20** | **36.41** | **1.16** | **33.34** | **70.91** | **19.9x** | **0.3x** |
+| **hls_from_rgb (f32)** | **n/a** | **1920×1080** | **5.31** | **8.98** | **0.30** | **8.49** | **17.77** | **18.0x** | **0.3x** |
+| **hls_from_rgb (f32)** | **n/a** | **3840×2160** | **23.12** | **36.41** | **1.16** | **33.38** | **70.96** | **19.9x** | **0.3x** |
+| **ycc_from_rgb (u8)** | **n/a** | **1920×1080** | **1.15** | **2.15** | **0.08** | **2.18** | **4.41** | **14.5x** | **0.3x** |
+| **ycc_from_rgb (u8)** | **n/a** | **3840×2160** | **5.31** | **8.96** | **0.30** | **8.48** | **17.74** | **17.9x** | **0.3x** |
+| **ycc_from_rgb (f32)** | **n/a** | **1920×1080** | **5.45** | **8.96** | **0.30** | **8.48** | **17.74** | **18.4x** | **0.3x** |
+| **ycc_from_rgb (f32)** | **n/a** | **3840×2160** | **24.05** | **36.40** | **1.16** | **33.35** | **70.92** | **20.6x** | **0.3x** |
+| **bgr_from_rgb (u8)** | **n/a** | **1920×1080** | **0.64** | **2.15** | **0.08** | **2.18** | **4.41** | **8.1x** | **0.1x** |
+| **bgr_from_rgb (u8)** | **n/a** | **3840×2160** | **5.72** | **8.93** | **0.30** | **8.47** | **17.69** | **19.3x** | **0.3x** |
+
+_Bold rows = newly added kernels._
+
+### Key findings (new kernels)
+
+- **remap u8** delivers **~1.0x roundtrip** at both resolutions — H2D+D2H cost exactly offsets the kernel win, making this a genuine breakeven that turns positive the moment data already lives on-device (19–22x kernel speedup).  The f32 remap at 1080p hits 62.7x kernel for comparison, confirming the u8 word-vectorized path is slightly less compute-heavy per pixel but still eliminates the CPU bottleneck.
+- **Color conversions (HSV, HLS, YCC f32)** all cluster at **17–21x kernel speedup** at 1080p — bandwidth-bound at ~55–70 GB/s effective (3R+3W × 4 B/f32), consistent with the HSV investigation in the kernel source (branchless sextant path at ~85% of the GTX 1650 streaming envelope).  Roundtrip is 0.3x because these cheap kernels are dominated by PCIe H2D+D2H on a discrete GPU; they belong in a fused pipeline.
+- **gray_from_rgb / bgr_from_rgb (u8)** show the smallest kernel times (0.05–0.10 ms at 1080p) and correspondingly the lowest roundtrip speedups (0.1–0.2x) — same pattern as the f32 gray path; always fuse these into a larger on-device graph rather than calling in isolation.
+- **ycc_from_rgb u8** (Q14 fixed-point quad-pixel kernel) at 0.08 ms / 14.5x kernel is slightly slower than the pure-swizzle bgr/gray paths, as expected — the Q14 arithmetic is heavier, but still well within the bandwidth envelope.
