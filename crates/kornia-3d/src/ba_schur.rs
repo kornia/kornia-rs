@@ -495,8 +495,10 @@ fn se3_to_pose(se3: &SE3F32) -> Pose3d {
 /// `cross = 0`. Every consumer below is written so that substituting those exact values
 /// reproduces the bare pinhole *bit for bit* — `x * 1.0 == x` and `x + 0.0 == x` are exact in
 /// IEEE-754, so no consumer rounds differently than it did before distortion existed. The one
-/// exception is zero SIGN (`-0.0 + 0.0 == +0.0`), reachable only for a point exactly on an
-/// optical axis; `radial_term_is_bit_inert_at_k1_zero` covers both cases.
+/// exception is zero SIGN (`-0.0 + 0.0 == +0.0`), which needs an EXACT zero in the rotation
+/// matrix — an identity pose, or a gravity-aligned rig, both common — not merely a point near an
+/// optical axis. Randomised poses cannot reach it. Value-identical either way, and a sign of zero
+/// cannot change any accumulation it feeds; `radial_term_is_bit_inert_at_k1_zero` covers both.
 ///
 /// Not exact if `r²` overflows to infinity (`0.0 * inf` is NaN), which needs `|x/z| > 1.8e19`
 /// — far past the point where the pinhole itself has stopped meaning anything.
@@ -536,8 +538,6 @@ fn radial_term(xn: f32, yn: f32, k1: f32) -> RadialTerm {
 const BA_K1: f32 = 0.0;
 
 /// Computes (residual, J_pose 2×6, J_point 2×3, J_intr 2×5) at the current state.
-/// Returns the camera-frame point and the clamped z too, for back-substitution
-/// reasoning.
 ///
 /// Jacobian layout (row-major flat):
 ///   J_pose[0..6]:  [du/dρ_x, du/dρ_y, du/dρ_z, du/dω_x, du/dω_y, du/dω_z]
@@ -2538,8 +2538,6 @@ mod tests {
             } else {
                 pc.z
             };
-            // `* (1/z)`, not `/ z`: the two round differently, which is the same non-associativity
-            // trap the residual grouping above is written around.
             let inv_z = 1.0 / z_ref;
             let (xn, yn) = (pc.x * inv_z, pc.y * inv_z);
             let r2 = xn * xn + yn * yn;
