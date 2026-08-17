@@ -18,3 +18,4 @@ kornia-vlm = { workspace = true }
 
 [features]
 cuda = ["kornia-vlm/cuda"]
+metal = ["kornia-vlm/metal"]
