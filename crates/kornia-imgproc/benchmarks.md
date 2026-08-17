@@ -640,6 +640,10 @@ cargo bench --bench bench_cuda_imgproc --features cuda
 | **ycc_from_rgb (f32)** | **n/a** | **3840×2160** | **24.05** | **36.40** | **1.16** | **33.35** | **70.92** | **20.6x** | **0.3x** |
 | **bgr_from_rgb (u8)** | **n/a** | **1920×1080** | **0.64** | **2.15** | **0.08** | **2.18** | **4.41** | **8.1x** | **0.1x** |
 | **bgr_from_rgb (u8)** | **n/a** | **3840×2160** | **5.72** | **8.93** | **0.30** | **8.47** | **17.69** | **19.3x** | **0.3x** |
+| **gaussian_blur (3x3, u8)** | **n/a** | **1920×1080** | **1.53** | **2.71** | **0.26** | **2.51** | **5.49** | **5.8x** | **0.3x** |
+| **gaussian_blur (3x3, u8)** | **n/a** | **3840×2160** | **15.02** | **20.46** | **1.01** | **18.04** | **39.51** | **14.9x** | **0.4x** |
+| **box_blur (3x3, u8)** | **n/a** | **1920×1080** | **9.18** | **2.70** | **0.28** | **2.56** | **5.53** | **33.2x** | **1.7x** |
+| **box_blur (3x3, u8)** | **n/a** | **3840×2160** | **37.37** | **18.05** | **1.06** | **15.62** | **34.74** | **35.2x** | **1.1x** |
 
 _Bold rows = newly added kernels._
 
@@ -649,5 +653,6 @@ _Bold rows = newly added kernels._
 - **Color conversions (HSV, HLS, YCC f32)** all cluster at **17–21x kernel speedup** at 1080p — bandwidth-bound at ~55–70 GB/s effective (3R+3W × 4 B/f32), consistent with the HSV investigation in the kernel source (branchless sextant path at ~85% of the GTX 1650 streaming envelope).  Roundtrip is 0.3x because these cheap kernels are dominated by PCIe H2D+D2H on a discrete GPU; they belong in a fused pipeline.
 - **gray_from_rgb / bgr_from_rgb (u8)** show the smallest kernel times (0.05–0.10 ms at 1080p) and correspondingly the lowest roundtrip speedups (0.1–0.2x) — same pattern as the f32 gray path; always fuse these into a larger on-device graph rather than calling in isolation.
 - **ycc_from_rgb u8** (Q14 fixed-point quad-pixel kernel) at 0.08 ms / 14.5x kernel is slightly slower than the pure-swizzle bgr/gray paths, as expected — the Q14 arithmetic is heavier, but still well within the bandwidth envelope.
+- **box_blur (3x3, u8)** achieves a strong 33–35x kernel speedup because the CPU baseline pays for integer division (`box_blur`), whereas the GPU path compiles to quantized Q8 shifts. **gaussian_blur (3x3, u8)** is faster than box blur on GPU but shows a lower speedup (5-15x) because the CPU baseline (`gaussian_blur_u8`) uses the heavily optimized NEON/AVX2 binomial fast-path, raising the bar significantly.
 
 
