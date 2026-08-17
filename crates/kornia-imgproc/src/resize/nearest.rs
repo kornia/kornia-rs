@@ -20,9 +20,17 @@ pub(super) fn nearest_index(i: usize, scale: f64, src_len: usize) -> usize {
     v.clamp(0, src_len as i64 - 1) as usize
 }
 
-/// Per-axis nearest LUT as `i32` (the CUDA kernel's gather index type).
-#[cfg(feature = "cuda")]
-pub(super) fn nearest_axis_lut(src_len: usize, dst_len: usize) -> Vec<i32> {
+/// Generates a per-axis nearest-neighbor lookup table (LUT) as `i32` gathering indices.
+///
+/// # Arguments
+///
+/// * `src_len` - Source dimension size.
+/// * `dst_len` - Target dimension size.
+///
+/// # Returns
+///
+/// Vector of `i32` source sample indices for each target coordinate.
+pub fn nearest_axis_lut(src_len: usize, dst_len: usize) -> Vec<i32> {
     let scale = src_len as f64 / dst_len as f64;
     (0..dst_len)
         .map(|i| nearest_index(i, scale, src_len) as i32)

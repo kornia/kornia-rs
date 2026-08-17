@@ -593,7 +593,7 @@ fn launch_remap_u8(
 /// Returns [`CudaRemapError`] on compile failure, launch error, or if any
 /// slice is too small.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn launch_remap_bilinear_u8_cuda(
+pub fn launch_remap_bilinear_u8_cuda(
     ctx: &Arc<CudaContext>,
     stream: &Arc<CudaStream>,
     src: &CudaSlice<u8>,
@@ -644,7 +644,7 @@ pub(crate) fn launch_remap_bilinear_u8_cuda(
 /// Returns [`CudaRemapError`] on compile failure, launch error, or if any
 /// slice is too small.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn launch_remap_nearest_u8_cuda(
+pub fn launch_remap_nearest_u8_cuda(
     ctx: &Arc<CudaContext>,
     stream: &Arc<CudaStream>,
     src: &CudaSlice<u8>,
