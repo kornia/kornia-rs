@@ -657,3 +657,29 @@ _Bold rows = newly added kernels._
 - **gray_from_rgb / bgr_from_rgb (u8)** show the smallest kernel times (0.05–0.10 ms at 1080p) and correspondingly the lowest roundtrip speedups (0.1–0.2x) — same pattern as the f32 gray path; always fuse these into a larger on-device graph rather than calling in isolation.
 - **ycc_from_rgb u8** (Q14 fixed-point quad-pixel kernel) at 0.08 ms / 14.5x kernel is slightly slower than the pure-swizzle bgr/gray paths, as expected — the Q14 arithmetic is heavier, but still well within the bandwidth envelope.
 - **box_blur (3x3, u8)** achieves a strong 33–35x kernel speedup because the CPU baseline pays for integer division (`box_blur`), whereas the GPU path compiles to quantized Q8 shifts. **gaussian_blur (3x3, u8)** is faster than box blur on GPU but shows a lower speedup (5-15x) because the CPU baseline (`gaussian_blur_u8`) uses the heavily optimized NEON/AVX2 binomial fast-path, raising the bar significantly.
+
+### Unified Memory vs Explicit Copies (Zero-copy)
+
+On integrated SoC platforms like the Jetson Orin Nano, physical RAM is shared between the CPU and GPU. Standard pipelines that allocate host memory (`vec![]`) and device memory (`zeros_cuda`), and transfer between them (`memcpy_htod`), waste significant time copying bytes from RAM back to the same RAM.
+
+We tested standard Explicit copies against Kornia's Unified Memory (`zeros_cuda_unified`) and a new Write-Combined Pinned Allocator (`zeros_pinned_wc`), using Rayon to saturate the CPU during the `fill` step.
+
+#### Jetson Orin Nano (Integrated Memory)
+| Size | Explicit (ms) | Unified (ms) | Pinned WC (ms) | Speedup (vs Explicit) |
+|---|---|---|---|---|
+| VGA (640x480) | 2.08 ms | 1.57 ms | 1.81 ms | **1.32x** |
+| HD (1280x720) | 5.93 ms | 3.05 ms | 3.85 ms | **1.94x** |
+| FHD (1920x1080) | 11.23 ms | 5.74 ms | 9.02 ms | **1.95x** |
+| 4K (3840x2160) | 40.25 ms | 16.70 ms | 31.97 ms | **2.41x** |
+
+On Jetson, **Unified Memory perfectly eliminates 100% of the PCIe transfer overhead**, achieving a massive **2.41x speedup at 4K**. The Write-Combined memory accelerates CPU writes by completely bypassing the CPU cache, dropping the CPU `fill` time by ~28% (from 2.17ms down to 1.53ms at 1080p).
+
+#### Desktop RTX 3060 (Discrete Memory)
+| Size | Explicit (ms) | Unified (ms) | Pinned WC (ms) | Speedup (vs Explicit) |
+|---|---|---|---|---|
+| VGA (640x480) | 5.45 ms | 13.14 ms | 6.08 ms | **0.90x** |
+| HD (1280x720) | 15.73 ms | 13.51 ms | 8.26 ms | **1.90x** |
+| FHD (1920x1080) | 30.45 ms | 27.98 ms | 17.63 ms | **1.73x** |
+| 4K (3840x2160) | 111.86 ms | 105.05 ms | 79.21 ms | **1.41x** |
+
+On discrete GPUs, Unified Memory is actually **slower** or barely equivalent due to implicit PCIe page-faulting when the kernel accesses host memory. However, explicitly transferring **Pinned Write-Combined Memory** across the PCIe bus achieves up to a **1.90x speedup** over standard pageable host memory transfers because it maximizes PCIe DMA bandwidth.
