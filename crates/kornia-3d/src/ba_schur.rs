@@ -554,6 +554,9 @@ struct BaIntrinsics {
     cx: f32,
     cy: f32,
     k1: f32,
+    /// Whether `k1` was FITTED. `into_camera` must not write back a coefficient the residual never
+    /// modelled — doing so destroyed a caller's calibrated distortion.
+    refine_k1: bool,
 }
 
 impl BaIntrinsics {
@@ -565,6 +568,7 @@ impl BaIntrinsics {
             cx: camera.cx as f32,
             cy: camera.cy as f32,
             k1: if refine_k1 { camera.k1 as f32 } else { BA_K1 },
+            refine_k1,
         }
     }
 
@@ -574,7 +578,15 @@ impl BaIntrinsics {
         PinholeCamera {
             fx: self.fx as f64,
             fy: self.fy as f64,
-            k1: self.k1 as f64,
+            // Only write back a `k1` the solve actually FITTED. `seed()` pins k1 = 0 when
+            // `refine_k1` is off, so writing it back unconditionally destroyed a caller's
+            // calibrated coefficient — measured: seed k1 = -0.27, k2 = 0.03 returned k1 = 0.0
+            // with k2 untouched, an internally incoherent distortion vector.
+            k1: if self.refine_k1 {
+                self.k1 as f64
+            } else {
+                seed.k1
+            },
             ..seed.clone()
         }
     }
@@ -600,7 +612,9 @@ fn residual_and_jacobians(
     pixel: [f32; 2],
     intr: &BaIntrinsics,
 ) -> ([f32; 2], [f32; 12], [f32; 6], [f32; 10]) {
-    let BaIntrinsics { fx, fy, cx, cy, k1 } = *intr;
+    let BaIntrinsics {
+        fx, fy, cx, cy, k1, ..
+    } = *intr;
 
     let pw = Vec3AF32::new(point_w.x as f32, point_w.y as f32, point_w.z as f32);
     let pc = *pose * pw;
@@ -746,6 +760,13 @@ const K1_FOLD_MARGIN: f32 = 0.9;
 fn clamped_step(x: f32, delta: f64, lo: f32, hi: f32) -> f64 {
     ((x + delta as f32).clamp(lo, hi) - x) as f64
 }
+
+/// IRLS weight below which an observation does not get a vote on the `k1` fold bound.
+///
+/// The bound is a max, so it is set by the single most extreme observation — exactly the position
+/// an outlier occupies. Gating on the weight the robust kernel already assigned costs nothing and
+/// makes one bad landmark unable to disable the parameter.
+const K1_BOUND_MIN_WEIGHT: f32 = 0.5;
 
 /// Symmetric bound on `k1` given the largest `r²` in the linearisation pass: `|k1| ≤ 0.9/r²_max`.
 ///
@@ -893,13 +914,28 @@ fn solve_border(s: &[f64; Q_MAX * Q_MAX], rhs: &[f64; Q_MAX], q: usize) -> Optio
     }
     match q {
         0 => Some([0.0; Q_MAX]),
-        1 => Some([rhs[0] / s[0], 0.0]),
+        // Same finiteness gate as `q = 2`: an infinite `g_intr` (f32 overflow on a pathological
+        // residual) otherwise becomes an infinite step, which the clamp then turns into "jump to
+        // the band edge" rather than the intended zero fallback.
+        1 => {
+            let x0 = rhs[0] / s[0];
+            x0.is_finite().then_some([x0, 0.0])
+        }
         _ => {
             let (a, b, c, d) = (s[0], s[1], s[Q_MAX], s[Q_MAX + 1]);
             let det = a * d - b * c;
-            // Mirrors `invert_3x3`'s guard; `1e-20` is the same "this is not a matrix any more"
-            // threshold, read against a border kept in f64.
-            if det.abs() < 1e-20 || !det.is_finite() {
+            // RELATIVE, not absolute. `D`'s diagonal is `Σ (fx₀·xd)²` — order 1e9 at fx = 500 with
+            // 1e5 observations — so a genuinely rank-deficient border has a determinant of ~1e9 of
+            // pure roundoff, thirty orders above any fixed threshold. Measured: a matrix singular
+            // to 1 part in 4e9 returned a confident step under the old `1e-20` test. `α` and `k1`
+            // are correlated by construction (both scale radially), so near-singular q = 2 borders
+            // are the normal case on narrow-FOV or shallow-parallax segments — exactly where the
+            // zero-step fallback is supposed to engage.
+            //
+            // `det <= 0` is included deliberately: the bordered Hessian is PSD in exact arithmetic,
+            // so a non-positive determinant can only be roundoff, and accepting it yields an ASCENT
+            // direction.
+            if !det.is_finite() || det <= 1e-8 * a.abs() * d.abs() {
                 return None;
             }
             let x0 = (d * rhs[0] - b * rhs[1]) / det;
@@ -916,22 +952,18 @@ fn solve_border(s: &[f64; Q_MAX * Q_MAX], rhs: &[f64; Q_MAX], q: usize) -> Optio
 /// same trade `clamped_z` already makes; it is intrinsic-independent, so no trial/linearisation
 /// discrepancy is possible.
 #[inline]
-fn normalised_r2(pose: &SE3F32, point_w: &Vec3F64) -> f32 {
+fn normalised_r2(pose: &SE3F32, point_w: &Vec3F64) -> Option<f32> {
     let pw = Vec3AF32::new(point_w.x as f32, point_w.y as f32, point_w.z as f32);
     let pc = *pose * pw;
-    let z = if pc.z.abs() < MIN_Z {
-        if pc.z >= 0.0 {
-            MIN_Z
-        } else {
-            -MIN_Z
-        }
-    } else {
-        pc.z
-    };
-    let inv_z = 1.0 / z;
-    let xn = pc.x * inv_z;
-    let yn = pc.y * inv_z;
-    xn * xn + yn * yn
+    // `None` when the point is at or behind the image plane. Callers use this to set the `k1` fold
+    // bound, and a cheirality-clamped z would report an r² of `(x/MIN_Z)²` — an artefact of the
+    // clamp, not a measurement of the lens, and large enough to collapse the bound on its own.
+    if pc.z.abs() < MIN_Z {
+        return None;
+    }
+    let inv_z = 1.0 / pc.z;
+    let (xn, yn) = (pc.x * inv_z, pc.y * inv_z);
+    Some(xn * xn + yn * yn)
 }
 
 // ── Small block primitives (f32) ─────────────────────────────────────────
@@ -1712,7 +1744,20 @@ fn bundle_adjust_schur_impl(
                     }
                 }
                 if ib.refine_k1 {
-                    r2_max = r2_max.max(normalised_r2(pose, point));
+                    // Only observations the solve actually BELIEVES set the fold bound. A raw max
+                    // over everything lets ONE outlier collapse it: measured, a single point 5 cm
+                    // in front of a camera (r² = 164, cheirality-clamped at MIN_Z) drove the bound
+                    // to 0.0055, forced k1 to the band edge every iteration, and every one of 13
+                    // steps was rejected — bundle adjustment became a no-op that returned `Ok`.
+                    // Flying points are endemic in real maps, so this cannot be a raw maximum.
+                    // `w` is the IRLS weight already applied to this observation's Jacobian, and a
+                    // cheirality-clamped z is excluded outright: its r² is an artefact of MIN_Z,
+                    // not a measurement of the lens.
+                    if w > K1_BOUND_MIN_WEIGHT {
+                        if let Some(r2) = normalised_r2(pose, point) {
+                            r2_max = r2_max.max(r2);
+                        }
+                    }
                 }
             }
 
@@ -6551,7 +6596,7 @@ mod tests {
         let (poses, points, obs) = intrinsics_only_scene(&gt, -0.15, 10, 2);
         let r2_max = obs
             .iter()
-            .map(|o| normalised_r2(&pose_to_se3(&poses[o.pose_idx]), &points[o.point_idx]))
+            .filter_map(|o| normalised_r2(&pose_to_se3(&poses[o.pose_idx]), &points[o.point_idx]))
             .fold(0.0_f32, f32::max);
         assert!(r2_max > 0.0);
 
@@ -6598,5 +6643,92 @@ mod tests {
         // q = 1 reads only the top-left entry.
         let x = solve_border(&[5.0, 9.0, 9.0, 9.0], &[10.0, 0.0], 1).unwrap();
         assert!((x[0] - 2.0).abs() < 1e-12);
+    }
+    // ───────── TEMPORARY REVIEW PROBES (to be reverted) ─────────
+
+    #[test]
+    fn probe_r2max_poisoned_by_one_near_zero_z_observation() {
+        let gt = test_camera();
+        const K1_GT: f64 = -0.15;
+        let (poses, points, obs) = intrinsics_only_scene(&gt, K1_GT, 10, 2);
+        let seed_cam = PinholeCamera {
+            k1: K1_GT,
+            ..gt.clone()
+        };
+        let params = BaParams {
+            max_iterations: 40,
+            refine_k1: true,
+            ..BaParams::default()
+        };
+
+        let clean = bundle_adjust_schur(&poses, &points, &obs, &seed_cam, &params).unwrap();
+        println!(
+            "CLEAN  : k1={:?} cost={} iters={} conv={}",
+            clean.camera.as_ref().map(|c| c.k1),
+            clean.final_cost,
+            clean.iterations,
+            clean.converged
+        );
+
+        // One extra landmark 5 cm in front of the FIXED camera 0, seen ONLY by it, FIXED point.
+        // Contributes only to D / g_intr / r2_max. Its pixel is the exact model projection at
+        // the seed k1, so its residual (and cost, and g_intr) contribution is ZERO.
+        let s0 = pose_to_se3(&poses[0]);
+        let pc = Vec3AF32::new(0.5, 0.4, 0.05);
+        let pwa = s0.inverse() * pc;
+        let mut points2 = points.clone();
+        points2.push(Vec3F64::new(pwa.x as f64, pwa.y as f64, pwa.z as f64));
+        let (xn, yn) = (0.5f64 / 0.05, 0.4f64 / 0.05);
+        let r2 = xn * xn + yn * yn;
+        let d = 1.0 + K1_GT * r2;
+        let mut obs2 = obs.clone();
+        obs2.push(BaObservation {
+            pose_idx: 0,
+            point_idx: points2.len() - 1,
+            pixel: [
+                (gt.fx * xn * d + gt.cx) as f32,
+                (gt.fy * yn * d + gt.cy) as f32,
+            ],
+            fixed_pose: true,
+            fixed_point: true,
+            ..BaObservation::default()
+        });
+        println!("outlier r2={} -> k1 bound {}", r2, k1_fold_bound(r2 as f32));
+
+        let dirty = bundle_adjust_schur(&poses, &points2, &obs2, &seed_cam, &params).unwrap();
+        println!(
+            "POISONED: k1={:?} cost={} iters={} conv={}",
+            dirty.camera.as_ref().map(|c| c.k1),
+            dirty.final_cost,
+            dirty.iterations,
+            dirty.converged
+        );
+        // did the geometry move at all?
+        let moved: f64 = dirty
+            .points
+            .iter()
+            .zip(points2.iter())
+            .map(|(a, b)| (*a - *b).length())
+            .fold(0.0, f64::max);
+        let moved_clean: f64 = clean
+            .points
+            .iter()
+            .zip(points.iter())
+            .map(|(a, b)| (*a - *b).length())
+            .fold(0.0, f64::max);
+        println!("max point motion: clean {} poisoned {}", moved_clean, moved);
+    }
+
+    #[test]
+    fn probe_clamped_step_forces_a_move_when_the_band_shrinks() {
+        // k1 sitting at a perfectly good -0.15; the band narrows because r2_max blew up.
+        let hi = k1_fold_bound(164.0);
+        for raw in [0.0_f64, 1e-6, -1e-6] {
+            let step = clamped_step(-0.15, raw, -hi, hi);
+            println!(
+                "hi={hi} raw={raw} -> forced step {step}, k1_trial {}",
+                -0.15 + step as f32
+            );
+        }
     }
 }
