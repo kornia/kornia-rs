@@ -529,13 +529,56 @@ fn radial_term(xn: f32, yn: f32, k1: f32) -> RadialTerm {
     }
 }
 
-/// The distortion coefficient this solver linearises about.
+/// The distortion coefficient the solver SEEDS from when `BaParams::refine_k1` is not set.
 ///
-/// Pinned to zero: the radial term is wired through the residual, the geometric Jacobians and
-/// the intrinsic Jacobian columns, but no intrinsic is a free parameter yet, so the model must
-/// still evaluate to the bare pinhole. Freeing `fx` and `k1` is the next step; until then this
-/// constant is what makes [`residual_and_jacobians`] bit-identical to the pre-distortion code.
+/// Zero, and unconditionally so: with `k1` fixed, the model must evaluate to the bare pinhole
+/// whatever `PinholeCamera::k1` happens to carry, and that is what keeps a default-parameter solve
+/// bit-identical to the pre-distortion code. Only `refine_k1` makes the solver read `camera.k1`.
 const BA_K1: f32 = 0.0;
+
+/// The intrinsic state a residual is evaluated at.
+///
+/// A VALUE, not a borrow of the caller's [`PinholeCamera`], and that is the point. `fx` and `k1`
+/// are free parameters, so the linearisation pass and the trial-cost pass run at DIFFERENT
+/// intrinsics; if both read one shared `&PinholeCamera` the trial cost is computed under the old
+/// model and `new_cost < cost` compares a new step against a stale objective — an LM that looks
+/// convergent and is not. Naming the state at every evaluation makes that a compile error rather
+/// than a review item.
+///
+/// Pre-casting the four `f64` fields once also hoists four casts per observation out of the hot
+/// loop; the values are the same casts, so this is bit-inert.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct BaIntrinsics {
+    fx: f32,
+    fy: f32,
+    cx: f32,
+    cy: f32,
+    k1: f32,
+}
+
+impl BaIntrinsics {
+    /// Seed from the caller's camera. `k1` comes from [`BA_K1`] unless `refine_k1` frees it.
+    fn seed(camera: &PinholeCamera, refine_k1: bool) -> Self {
+        Self {
+            fx: camera.fx as f32,
+            fy: camera.fy as f32,
+            cx: camera.cx as f32,
+            cy: camera.cy as f32,
+            k1: if refine_k1 { camera.k1 as f32 } else { BA_K1 },
+        }
+    }
+
+    /// Write the fitted `fx`/`fy`/`k1` back onto a copy of the seed camera; everything this solver
+    /// does not fit (`cx`, `cy`, `k2`, `p1`, `p2`) is copied through.
+    fn into_camera(self, seed: &PinholeCamera) -> PinholeCamera {
+        PinholeCamera {
+            fx: self.fx as f64,
+            fy: self.fy as f64,
+            k1: self.k1 as f64,
+            ..seed.clone()
+        }
+    }
+}
 
 /// Computes (residual, J_pose 2×6, J_point 2×3, J_intr 2×5) at the current state.
 ///
@@ -547,38 +590,17 @@ const BA_K1: f32 = 0.0;
 ///   J_intr[0..5]:  [du/dfx,  du/dfy,  du/dcx,  du/dcy,  du/dk1]
 ///   J_intr[5..10]: [dv/dfx,  dv/dfy,  dv/dcx,  dv/dcy,  dv/dk1]
 ///
-/// `J_intr` has no consumer yet — the intrinsics are fixed, so every caller drops it and the
-/// optimiser never sees these columns. It is computed here, next to the geometry it shares
-/// intermediates with, so that freeing an intrinsic later is a plumbing change and not a
-/// re-derivation.
-/// The solver's residual at the CURRENTLY FIXED radial coefficient.
-///
-/// Separate from [`residual_and_jacobians_k1`] only so the coefficient is a parameter somewhere:
-/// while it was a `const`, no test could evaluate the residual at nonzero `k1`, and the composed
-/// chain rule — the part the derivation is easy to get wrong in — was unreachable. Measured: SEVEN
-/// deliberately wrong derivatives passed the entire 207-test suite. Only mutations inside
-/// `radial_term` were caught.
+/// The solver consumes only the `fx`/`fy` and `k1` columns, and only when the matching
+/// `BaParams::refine_*` flag is set; `cx`/`cy` are never freed. See `intrinsic_jacobian_columns`
+/// for how the selected columns are packed.
 #[inline]
 fn residual_and_jacobians(
     pose: &SE3F32,
     point_w: &Vec3F64,
     pixel: [f32; 2],
-    camera: &PinholeCamera,
+    intr: &BaIntrinsics,
 ) -> ([f32; 2], [f32; 12], [f32; 6], [f32; 10]) {
-    residual_and_jacobians_k1(pose, point_w, pixel, camera, BA_K1)
-}
-
-fn residual_and_jacobians_k1(
-    pose: &SE3F32,
-    point_w: &Vec3F64,
-    pixel: [f32; 2],
-    camera: &PinholeCamera,
-    k1: f32,
-) -> ([f32; 2], [f32; 12], [f32; 6], [f32; 10]) {
-    let fx = camera.fx as f32;
-    let fy = camera.fy as f32;
-    let cx = camera.cx as f32;
-    let cy = camera.cy as f32;
+    let BaIntrinsics { fx, fy, cx, cy, k1 } = *intr;
 
     let pw = Vec3AF32::new(point_w.x as f32, point_w.y as f32, point_w.z as f32);
     let pc = *pose * pw;
@@ -675,7 +697,7 @@ fn residual_and_jacobians_k1(
     // J_point 2×3 row-major.
     let j_point: [f32; 6] = [jpt_00, jpt_01, jpt_02, jpt_10, jpt_11, jpt_12];
 
-    // J_intr 2×5 row-major, columns [fx, fy, cx, cy, k1]. Unused while the intrinsics are fixed.
+    // J_intr 2×5 row-major, columns [fx, fy, cx, cy, k1].
     let xd = xn * rad.d;
     let yd = yn * rad.d;
     let j_intr: [f32; 10] = [
@@ -692,6 +714,224 @@ fn residual_and_jacobians_k1(
     ];
 
     (r, j_pose, j_point, j_intr)
+}
+
+// ── Shared intrinsic border ──────────────────────────────────────────────
+
+/// Widest border this solver builds: `α` (focal scale) and `k1`.
+const Q_MAX: usize = 2;
+
+/// COLMAP's `min_focal_length_ratio` / `max_focal_length_ratio`, applied to `α = fx / fx₀`.
+const MIN_FOCAL_RATIO: f32 = 0.1;
+/// See [`MIN_FOCAL_RATIO`].
+const MAX_FOCAL_RATIO: f32 = 10.0;
+
+/// How close to the fold `k1` may get: `1 + k1·r²  ≥  1 − K1_FOLD_MARGIN` at the largest observed
+/// `r²`. At `k1 = −1/r²` the radial map collapses that radius to the principal point and the
+/// Jacobian there is meaningless.
+const K1_FOLD_MARGIN: f32 = 0.9;
+
+/// Clamp a parameter step so that `x + δ` lands inside `[lo, hi]`, returning the ADMISSIBLE STEP.
+///
+/// Returning the step and not the new value is what makes this guard impossible to get half-right.
+/// The pose and point back-substitutions and the trial intrinsics all read the one clamped `δ`, so
+/// there is no way to trim the intrinsic while leaving the geometry moving against the untrimmed
+/// one — an inconsistency that costs nothing in the accept test and everything in the step.
+///
+/// The price is that `x + clamped_step(..)` can overshoot the bound by up to an ulp OF `x`, not of
+/// the bound: from `x = −50` toward a bound of `−0.9` the difference `−0.9 − (−50)` cancels. Both
+/// bands here carry a wide safety cushion (COLMAP's ratio band is two orders of magnitude, the
+/// fold margin is 0.1 of the fold), so an ulp is not worth a second rounding pass.
+#[inline]
+fn clamped_step(x: f32, delta: f64, lo: f32, hi: f32) -> f64 {
+    ((x + delta as f32).clamp(lo, hi) - x) as f64
+}
+
+/// Symmetric bound on `k1` given the largest `r²` in the linearisation pass: `|k1| ≤ 0.9/r²_max`.
+///
+/// The barrel side is the singular one — that is what `K1_FOLD_MARGIN` is measured against — but
+/// an unbounded pincushion is just as much a runaway, so the bound is applied both ways. Unbounded
+/// when nothing was observed.
+#[inline]
+fn k1_fold_bound(r2_max: f32) -> f32 {
+    if r2_max > 0.0 {
+        K1_FOLD_MARGIN / r2_max
+    } else {
+        f32::INFINITY
+    }
+}
+
+/// Which intrinsics are free, and in what column order the border stores them.
+///
+/// Column order is `[α, k1]` with the disabled one COMPACTED OUT, not zero-filled: a structurally
+/// zero column would make the `q × q` reduced border singular and send every step down the
+/// unobservable fallback, which is indistinguishable from "the data does not determine it".
+#[derive(Clone, Copy)]
+struct IntrinsicBlock {
+    refine_focal: bool,
+    refine_k1: bool,
+    /// Number of free intrinsics, `0..=Q_MAX`.
+    q: usize,
+    /// Seed focals. `α` multiplies these; they never change during the solve.
+    fx0: f32,
+    fy0: f32,
+}
+
+impl IntrinsicBlock {
+    fn new(params: &BaParams, seed: &BaIntrinsics) -> Self {
+        Self {
+            refine_focal: params.refine_focal,
+            refine_k1: params.refine_k1,
+            q: params.refine_focal as usize + params.refine_k1 as usize,
+            fx0: seed.fx,
+            fy0: seed.fy,
+        }
+    }
+
+    /// Column index of `α` / `k1` in the border, or `None` when that intrinsic is fixed.
+    fn col_alpha(&self) -> Option<usize> {
+        self.refine_focal.then_some(0)
+    }
+    fn col_k1(&self) -> Option<usize> {
+        self.refine_k1.then_some(self.refine_focal as usize)
+    }
+
+    /// The selected intrinsic Jacobian columns, as a 2×q block stored row-major with stride
+    /// [`Q_MAX`]. Columns `q..Q_MAX` stay zero and are never read.
+    ///
+    /// `∂u/∂α = fx₀·∂u/∂fx` and `∂v/∂α = fy₀·∂v/∂fy` — the chain rule through `fx = α·fx₀`,
+    /// `fy = α·fy₀`. No new derivation: this is a fixed linear combination of columns the
+    /// finite-difference test already validates.
+    #[inline]
+    fn columns(&self, j_intr: &[f32; 10]) -> [f32; 2 * Q_MAX] {
+        let mut j = [0.0_f32; 2 * Q_MAX];
+        if let Some(a) = self.col_alpha() {
+            j[a] = self.fx0 * j_intr[0];
+            j[Q_MAX + a] = self.fy0 * j_intr[6];
+        }
+        if let Some(a) = self.col_k1() {
+            j[a] = j_intr[4];
+            j[Q_MAX + a] = j_intr[9];
+        }
+        j
+    }
+}
+
+/// Second Schur elimination: reduce the bordered system to its `q × q` core and solve it.
+///
+/// Parameters are ordered `[δp (6P) | δi (q)]` AFTER the points have already been eliminated:
+///
+/// ```text
+///   [ M  V ] [δp]   [m]
+///   [ Vᵀ S ] [δi] = [s]
+/// ```
+///
+/// `sol` is the multi-RHS solve `M⁻¹·[m | V]` — column 0 is `y₀ = M⁻¹m`, columns `1..=q` are
+/// `Y = M⁻¹V` — against the SAME factorisation of the SAME `M` the pose-only path already needed.
+/// Substituting `δp = y₀ − Y δi` into the second row gives `(S − VᵀY) δi = s − Vᵀy₀`.
+///
+/// One storage serves as both the border column and the border row: `Vᵀ = Eᵀ − FᵀC⁻¹Bᵀ` is exactly
+/// the third row's coefficient of the original three-block system, so the bordered system is
+/// symmetric by construction and needs no averaging pass.
+///
+/// Returns `[0; _]` when the border is unobservable — see [`solve_border`].
+fn eliminate_border(
+    s_mat: &[f64; Q_MAX * Q_MAX],
+    s_vec: &[f64; Q_MAX],
+    v_bord: &[f64],
+    sol: &Mat<f64>,
+    dim: usize,
+    q: usize,
+) -> [f64; Q_MAX] {
+    if q == 0 {
+        return [0.0; Q_MAX];
+    }
+    let mut s_red = *s_mat;
+    let mut r_red = *s_vec;
+    for a in 0..q {
+        for i in 0..dim {
+            let v = v_bord[i * q + a];
+            r_red[a] -= v * sol[(i, 0)];
+            for b in 0..q {
+                s_red[a * Q_MAX + b] -= v * sol[(i, 1 + b)];
+            }
+        }
+    }
+    solve_border(&s_red, &r_red, q).unwrap_or([0.0; Q_MAX])
+}
+
+/// Recover the pose step from the same multi-RHS solve: `δp = y₀ − Y δi`.
+///
+/// Trivial, and factored out anyway so the dense-reference test drives the SOLVER's expression
+/// instead of restating it. A test that recomputes `y₀ − Yδi` itself passes happily against a
+/// driver that dropped the `− Yδi` term — measured: it did.
+fn pose_step_from_border(sol: &Mat<f64>, d_intr: &[f64; Q_MAX], dim: usize, q: usize) -> Vec<f64> {
+    (0..dim)
+        .map(|i| {
+            let mut v = sol[(i, 0)];
+            for (a, di) in d_intr.iter().take(q).enumerate() {
+                v -= sol[(i, 1 + a)] * di;
+            }
+            v
+        })
+        .collect()
+}
+
+/// Solve `S δ = s` for the `q × q` border, `q ≤ 2`.
+///
+/// `None` when the border is singular or has a non-positive diagonal, i.e. the intrinsic is
+/// unobservable at this linearisation point (pure rotation, a single plane). That is a property of
+/// the DATA, so the caller falls back to a zero intrinsic step and keeps the pose solve — it must
+/// not become a factorisation error, or a degenerate segment turns a working solve into a failure.
+fn solve_border(s: &[f64; Q_MAX * Q_MAX], rhs: &[f64; Q_MAX], q: usize) -> Option<[f64; Q_MAX]> {
+    for a in 0..q {
+        // `is_finite` first, so NaN — which compares false against everything — is caught here
+        // rather than sliding through `<= 0.0`.
+        if !s[a * Q_MAX + a].is_finite() || s[a * Q_MAX + a] <= 0.0 {
+            return None;
+        }
+    }
+    match q {
+        0 => Some([0.0; Q_MAX]),
+        1 => Some([rhs[0] / s[0], 0.0]),
+        _ => {
+            let (a, b, c, d) = (s[0], s[1], s[Q_MAX], s[Q_MAX + 1]);
+            let det = a * d - b * c;
+            // Mirrors `invert_3x3`'s guard; `1e-20` is the same "this is not a matrix any more"
+            // threshold, read against a border kept in f64.
+            if det.abs() < 1e-20 || !det.is_finite() {
+                return None;
+            }
+            let x0 = (d * rhs[0] - b * rhs[1]) / det;
+            let x1 = (a * rhs[1] - c * rhs[0]) / det;
+            (x0.is_finite() && x1.is_finite()).then_some([x0, x1])
+        }
+    }
+}
+
+/// `r² = xn² + yn²` in normalised camera coordinates, the argument the radial term is a function
+/// of. Only called when `k1` is free, to bound the clamp that keeps `1 + k1·r²` positive.
+///
+/// Recomputes the projection rather than threading `r²` out of [`residual_and_jacobians`], the
+/// same trade `clamped_z` already makes; it is intrinsic-independent, so no trial/linearisation
+/// discrepancy is possible.
+#[inline]
+fn normalised_r2(pose: &SE3F32, point_w: &Vec3F64) -> f32 {
+    let pw = Vec3AF32::new(point_w.x as f32, point_w.y as f32, point_w.z as f32);
+    let pc = *pose * pw;
+    let z = if pc.z.abs() < MIN_Z {
+        if pc.z >= 0.0 {
+            MIN_Z
+        } else {
+            -MIN_Z
+        }
+    } else {
+        pc.z
+    };
+    let inv_z = 1.0 / z;
+    let xn = pc.x * inv_z;
+    let yn = pc.y * inv_z;
+    xn * xn + yn * yn
 }
 
 // ── Small block primitives (f32) ─────────────────────────────────────────
@@ -1161,16 +1401,35 @@ pub fn bundle_adjust_schur_with_priors(
     )
 }
 
+/// `camera_seed` is named for the two things it may be used for, and it is used for exactly those
+/// two: building the seed [`BaIntrinsics`] on the first line of the body, and copying the fields
+/// this solver does not fit onto the reported camera at the end. `grep -c camera_seed` over the
+/// body is 2, and that is a reviewable invariant.
+///
+/// It is the enforcement mechanism for the accept/reject hazard. Every residual evaluation names a
+/// `&BaIntrinsics`, so reaching for the caller's camera in the trial pass — which would score a new
+/// step against the OLD model and make `new_cost < cost` accept garbage — is a type error rather
+/// than something a reviewer has to notice.
 #[allow(clippy::too_many_arguments)]
 fn bundle_adjust_schur_impl(
     poses: &[Pose3d],
     points: &[Vec3F64],
     observations: &[BaObservation],
-    camera: &PinholeCamera,
+    camera_seed: &PinholeCamera,
     params: &BaParams,
     pose_priors: Option<&[Option<BaPosePrior>]>,
     motion_priors: Option<&[BaMotionPrior]>,
 ) -> Result<BaResult, SchurBaError> {
+    // The ONLY read of `camera_seed` before the result is packed.
+    let intr_seed = BaIntrinsics::seed(camera_seed, params.refine_k1);
+    // Shared free-intrinsic border: which columns exist, and the fixed focals `α` scales.
+    let ib = IntrinsicBlock::new(params, &intr_seed);
+    let q = ib.q;
+    // Live intrinsic state. `alpha` is the parameter; `intr.fx` is `α·fx₀` derived from it, never
+    // the other way round, so the clamp band applies to the quantity it is written for.
+    let mut intr = intr_seed;
+    let mut alpha = 1.0_f32;
+
     // Validate prior slice length matches poses.
     if let Some(pp) = pose_priors {
         if pp.len() != poses.len() {
@@ -1334,6 +1593,28 @@ fn bundle_adjust_schur_impl(
         // pass). We store (pose_local_idx, B_6x3) lists per free-point index.
         let mut b_by_point: Vec<Vec<(usize, [f32; 18])>> = vec![Vec::new(); n_free_points];
 
+        // ── The shared-intrinsic border ─────────────────────────────────
+        // A shared intrinsic couples EVERY camera to every other, so the reduced camera system
+        // grows a DENSE BORDER: (6P + q) × (6P + q) with a full last block-column. Storing it that
+        // way would destroy the covisibility sparsity the sparse path exists to exploit, so the
+        // border lives in these four plain `Vec`s, OUTSIDE both the dense `Mat` and the block
+        // accumulator, and is eliminated by its own Schur complement (see the bordered solve
+        // below). `M`'s pattern, `dim`, and every line of `BlockAccum` are untouched.
+        //
+        //   D (q×q)      = Σ Jᵢᵀ Jᵢ                    — the border's own block
+        //   g_intr (q)   = −Σ Jᵢᵀ r                    — its gradient
+        //   E (6×q each) = Σ J_poseᵀ Jᵢ                — pose ↔ intrinsic coupling
+        //   F (3×q each) = Σ J_pointᵀ Jᵢ               — point ↔ intrinsic coupling
+        //
+        // `F` is indexed BY POINT ONLY, not by (pose, point) as `b_by_point` is. That asymmetry is
+        // exactly why the border is q columns and not 2P.
+        let mut d_intr = [0.0_f32; Q_MAX * Q_MAX];
+        let mut g_intr = [0.0_f32; Q_MAX];
+        let mut e_blocks = vec![[0.0_f32; 6 * Q_MAX]; if q > 0 { n_free_poses } else { 0 }];
+        let mut f_blocks = vec![[0.0_f32; 3 * Q_MAX]; if q > 0 { n_free_points } else { 0 }];
+        // Largest r² seen this iteration, for the `1 + k1·r² > 0` clamp.
+        let mut r2_max = 0.0_f32;
+
         // Also record observations that touch FIXED point but FREE pose —
         // contribute to A and g_pose only, no B.
         // (Symmetric case: free point + fixed pose contributes to C and
@@ -1351,11 +1632,16 @@ fn bundle_adjust_schur_impl(
             n_reproj_obs_iter += 1;
             let pose = &se3s[obs.pose_idx];
             let point = &xyz[obs.point_idx];
-            // `_j_intr`: the intrinsic columns exist but no intrinsic is free, so they never
-            // enter the reduced camera system.
-            let (mut r, mut j_pose, mut j_point, _j_intr) =
-                residual_and_jacobians(pose, point, obs.pixel, camera);
+            // `j_intr` feeds the shared border, and only the selected columns of it.
+            let (mut r, mut j_pose, mut j_point, j_intr) =
+                residual_and_jacobians(pose, point, obs.pixel, &intr);
             let r_sq = r[0] * r[0] + r[1] * r[1];
+            // 2×q border columns, zero-width and skipped when no intrinsic is free.
+            let mut j_i = if q > 0 {
+                ib.columns(&j_intr)
+            } else {
+                [0.0_f32; 2 * Q_MAX]
+            };
 
             // IRLS weight; apply √w to r and J.
             let w = robust_weight(r_sq);
@@ -1367,6 +1653,12 @@ fn bundle_adjust_schur_impl(
                     *v *= sw;
                 }
                 for v in j_point.iter_mut() {
+                    *v *= sw;
+                }
+                // The intrinsic columns take the SAME √w. Omitting this leaves an observation the
+                // robust kernel down-weighted out of the geometry voting at full strength on the
+                // intrinsic it was rejected from having an opinion about.
+                for v in j_i.iter_mut() {
                     *v *= sw;
                 }
             }
@@ -1389,6 +1681,39 @@ fn bundle_adjust_schur_impl(
                 let mut b_block = [0.0_f32; 18];
                 atb_6x3_into(&mut b_block, &j_pose, &j_point);
                 b_by_point[xli as usize].push((pli as usize, b_block));
+            }
+
+            if q > 0 {
+                // `D` and `g_intr` take EVERY in-range observation, including those on fixed poses
+                // and fixed points: a gauge-fixed camera is a perfectly good constraint on a shared
+                // focal, and dropping it would throw away signal for no reason. Only `E` and `F`
+                // are guarded, because only they have a free block to attach to.
+                for a in 0..q {
+                    for b in 0..q {
+                        d_intr[a * Q_MAX + b] += j_i[a] * j_i[b] + j_i[Q_MAX + a] * j_i[Q_MAX + b];
+                    }
+                    g_intr[a] -= j_i[a] * r[0] + j_i[Q_MAX + a] * r[1];
+                }
+                if pli >= 0 {
+                    let e = &mut e_blocks[pli as usize];
+                    for i in 0..6 {
+                        for a in 0..q {
+                            e[i * Q_MAX + a] += j_pose[i] * j_i[a] + j_pose[6 + i] * j_i[Q_MAX + a];
+                        }
+                    }
+                }
+                if xli >= 0 {
+                    let f = &mut f_blocks[xli as usize];
+                    for i in 0..3 {
+                        for a in 0..q {
+                            f[i * Q_MAX + a] +=
+                                j_point[i] * j_i[a] + j_point[3 + i] * j_i[Q_MAX + a];
+                        }
+                    }
+                }
+                if ib.refine_k1 {
+                    r2_max = r2_max.max(normalised_r2(pose, point));
+                }
             }
 
             // ── Depth residual (optional metric anchor) ─────────────────
@@ -1835,6 +2160,13 @@ fn bundle_adjust_schur_impl(
                 cb[d * 3 + d] += lambda * cb[d * 3 + d].clamp(MIN_LM_DIAGONAL, MAX_LM_DIAGONAL);
             }
         }
+        // Same ellipsoidal damping on the border, or the intrinsic direction alone runs at
+        // undamped Gauss-Newton while every other block is damped: a wild focal jump on iteration
+        // one, rejected, escalating λ for everybody.
+        for d in 0..q {
+            d_intr[d * Q_MAX + d] +=
+                lambda * d_intr[d * Q_MAX + d].clamp(MIN_LM_DIAGONAL, MAX_LM_DIAGONAL);
+        }
 
         // ── Build M (6Pf × 6Pf) + m (6Pf) ───────────────────────────────
         let dim = n_free_poses * 6;
@@ -1880,6 +2212,23 @@ fn bundle_adjust_schur_impl(
             acc.clear();
         }
 
+        // ── Border, in f64 alongside `m_vec` ────────────────────────────
+        // `S ← D`, `s ← g_intr`, `V ← E` (dim × q, row-major); the point elimination below
+        // subtracts the `C⁻¹` corrections into all three. In f64 because the two border columns
+        // are badly scaled against each other in pixel-space callers: the `k1` column is `fx·xn·r²`
+        // and the `α` column is `fx₀·xd`, so `D`'s diagonals differ by ~fx² ≈ 2.5e5 at fx = 500.
+        // (In a normalised-coordinate caller, fx₀ = 1, the spread is ~1, and this is moot.) A THIRD
+        // intrinsic would want explicit Jacobi scaling of the border, not just f64.
+        let mut s_mat = [0.0_f64; Q_MAX * Q_MAX];
+        let mut s_vec = [0.0_f64; Q_MAX];
+        for a in 0..q {
+            s_vec[a] = g_intr[a] as f64;
+            for b in 0..q {
+                s_mat[a * Q_MAX + b] = d_intr[a * Q_MAX + b] as f64;
+            }
+        }
+        let mut v_bord = vec![0.0_f64; dim * q];
+
         // Place A blocks on diagonal of M.
         for (k, ab) in a_blocks.iter().enumerate() {
             match accum.as_mut() {
@@ -1904,6 +2253,11 @@ fn bundle_adjust_schur_impl(
             }
             for i in 0..6 {
                 m_vec[k * 6 + i] = g_pose[k][i] as f64;
+            }
+            for i in 0..6 {
+                for a in 0..q {
+                    v_bord[(k * 6 + i) * q + a] = e_blocks[k][i * Q_MAX + a] as f64;
+                }
             }
         }
 
@@ -1978,6 +2332,52 @@ fn bundle_adjust_schur_impl(
                 }
             }
 
+            // Border's share of the SAME point elimination, off the SAME `c_inv_j` and `bc` — no
+            // extra pass over the observation graph:
+            //   fc = F_jᵀ C⁻¹        (q×3)
+            //   s  -= fc · g_point[j]
+            //   S  -= fc · F_j
+            //   V[i] -= (B_i C⁻¹) · F_j     for every camera i on this point
+            if q > 0 {
+                let f_j = &f_blocks[j];
+                let mut fc = [0.0_f32; Q_MAX * 3];
+                for a in 0..q {
+                    for k in 0..3 {
+                        let mut acc = 0.0_f32;
+                        for l in 0..3 {
+                            acc += f_j[l * Q_MAX + a] * c_inv_j[l * 3 + k];
+                        }
+                        fc[a * 3 + k] = acc;
+                    }
+                }
+                for a in 0..q {
+                    let mut sg = 0.0_f32;
+                    for k in 0..3 {
+                        sg += fc[a * 3 + k] * gp[k];
+                    }
+                    s_vec[a] -= sg as f64;
+                    for b in 0..q {
+                        let mut sf = 0.0_f32;
+                        for k in 0..3 {
+                            sf += fc[a * 3 + k] * f_j[k * Q_MAX + b];
+                        }
+                        s_mat[a * Q_MAX + b] -= sf as f64;
+                    }
+                }
+                for (i_loc, bc_block) in &bc {
+                    let base = i_loc * 6;
+                    for r in 0..6 {
+                        for a in 0..q {
+                            let mut sv = 0.0_f32;
+                            for k in 0..3 {
+                                sv += bc_block[r * 3 + k] * f_j[k * Q_MAX + a];
+                            }
+                            v_bord[(base + r) * q + a] -= sv as f64;
+                        }
+                    }
+                }
+            }
+
             // LHS: M[i1, i2] -= (B_i1 · C⁻¹) · B_i2.T   (6×6 block)
             for (idx1, (i1_loc, bc1)) in bc.iter().enumerate() {
                 for (idx2, (i2_loc, _bc2_unused)) in bc.iter().enumerate() {
@@ -2046,8 +2446,20 @@ fn bundle_adjust_schur_impl(
         }
         BA_ASM_NANOS.fetch_add(t_asm.elapsed().as_nanos() as u64, Ordering::Relaxed);
         let t_fact = std::time::Instant::now();
-        // RHS as faer column. Identical for both paths — only the LHS storage differs.
-        let m_col = Mat::<f64>::from_fn(dim, 1, |i, _| m_vec[i]);
+        // RHS as faer columns. Identical for both paths — only the LHS storage differs.
+        //
+        // `1 + q` columns: `m` plus the border column block `V`, solved against the SAME
+        // factorisation of the SAME `M`. That is the whole trick — freeing a shared intrinsic costs
+        // `q` extra triangular solves against a factor that already exists, and touches neither the
+        // sparsity pattern nor `dim`. faer sizes its solve scratch from `rhs.ncols()` on both the
+        // dense and the sparse `Llt`, so no signature changes.
+        let m_col = Mat::<f64>::from_fn(dim, 1 + q, |i, c| {
+            if c == 0 {
+                m_vec[i]
+            } else {
+                v_bord[i * q + (c - 1)]
+            }
+        });
         // A failed factorisation is not free, and it is not cheaper than a successful one — charge
         // it to the factor phase before unwinding, or the phase split silently attributes its
         // (already-banked) linearise and assemble time while crediting factor with nothing, biasing
@@ -2082,17 +2494,44 @@ fn bundle_adjust_schur_impl(
             }
         };
 
-        // ── Back-substitute for points: δ_x[j] = C⁻¹ (g_x - B.T · δ_p) ──
-        let mut d_pose = vec![0.0_f64; dim];
-        for i in 0..dim {
-            d_pose[i] = d_pose_col[(i, 0)];
+        // ── Eliminate the border: S_red δi = s_red, then δp = y₀ − Y δi ──
+        // An unobservable border (pure rotation, a single plane) comes back as δi = 0, which keeps
+        // the pose solve; it must NOT be turned into a `CholeskyFailed` by a property of the data.
+        let mut d_intr_step = eliminate_border(&s_mat, &s_vec, &v_bord, &d_pose_col, dim, q);
+
+        // ── Trial intrinsics, and the guards on them ────────────────────
+        //
+        // CLAMP, do not reject. A clamped step is just a shorter step and `new_cost < cost` still
+        // decides it correctly; rejecting on the band instead would let a runaway focal escalate λ
+        // and stall the pose solve that was doing nothing wrong.
+        //
+        // The clamp is folded back into `d_intr_step` BEFORE the pose and point back-substitutions
+        // read it, so all three blocks move along one consistent step rather than the geometry
+        // compensating for an intrinsic change that was then trimmed.
+        let mut alpha_trial = alpha;
+        let mut intr_trial = intr;
+        if let Some(a) = ib.col_alpha() {
+            d_intr_step[a] = clamped_step(alpha, d_intr_step[a], MIN_FOCAL_RATIO, MAX_FOCAL_RATIO);
+            alpha_trial = alpha + d_intr_step[a] as f32;
+            intr_trial.fx = alpha_trial * ib.fx0;
+            intr_trial.fy = alpha_trial * ib.fy0;
         }
+        if let Some(a) = ib.col_k1() {
+            // `1 + k1·r²` must stay positive over every observed `r²`, or the radial map folds the
+            // image over itself and the residual stops being a function of the geometry.
+            let hi = k1_fold_bound(r2_max);
+            d_intr_step[a] = clamped_step(intr.k1, d_intr_step[a], -hi, hi);
+            intr_trial.k1 = intr.k1 + d_intr_step[a] as f32;
+        }
+
+        // ── Back-substitute for points: δ_x[j] = C⁻¹ (g_x - B.T · δ_p - F · δi) ──
+        let d_pose = pose_step_from_border(&d_pose_col, &d_intr_step, dim, q);
         let mut d_point = vec![[0.0_f32; 3]; n_free_points];
         for (j, b_for_j) in b_by_point.iter().enumerate() {
             let Some(c_inv_j) = c_inv_blocks[j] else {
                 continue;
             };
-            // rhs = g_point[j] - sum_i B[i, j].T · δ_pose[i]
+            // rhs = g_point[j] - sum_i B[i, j].T · δ_pose[i] - F_j · δi
             let mut rhs = g_point[j];
             for (i_loc, b_block) in b_for_j {
                 let mut dp6 = [0.0_f32; 6];
@@ -2103,6 +2542,18 @@ fn bundle_adjust_schur_impl(
                 let contrib = matvec_6x3t_6(b_block, &dp6);
                 for c in 0..3 {
                     rhs[c] -= contrib[c];
+                }
+            }
+            // The `− F_j δi` term. Omitting it is silent: points then absorb the focal change as a
+            // systematic radial depth bias, the cost still decreases, LM still accepts, and the
+            // solve still looks convergent. `bordered_solve_matches_a_dense_reference` is what
+            // catches it.
+            if q > 0 {
+                let f_j = &f_blocks[j];
+                for (c, rhs_c) in rhs.iter_mut().enumerate() {
+                    for a in 0..q {
+                        *rhs_c -= f_j[c * Q_MAX + a] * d_intr_step[a] as f32;
+                    }
                 }
             }
             d_point[j] = matvec_3x3_3(&c_inv_j, &rhs);
@@ -2151,7 +2602,11 @@ fn bundle_adjust_schur_impl(
             }
             let pose = &se3s_trial[obs.pose_idx];
             let point = &xyz_trial[obs.point_idx];
-            let (r, _, _, _) = residual_and_jacobians(pose, point, obs.pixel, camera);
+            // `intr_trial`, NOT `intr`. Once fx/k1 are free, evaluating the trial cost at the old
+            // intrinsics compares the OLD model against a NEW step, and `new_cost < cost` accepts
+            // garbage — a solver that looks convergent and is not. The type system is what makes
+            // this safe: there is no `&PinholeCamera` in scope to reach for by accident.
+            let (r, _, _, _) = residual_and_jacobians(pose, point, obs.pixel, &intr_trial);
             let r_sq = r[0] * r[0] + r[1] * r[1];
             new_cost += robust_cost(r_sq);
 
@@ -2243,6 +2698,10 @@ fn bundle_adjust_schur_impl(
             };
             se3s = se3s_trial;
             xyz = xyz_trial;
+            // Committed with the geometry, in the same breath, so no exit path can return poses
+            // fitted under one intrinsic model and a camera describing another.
+            intr = intr_trial;
+            alpha = alpha_trial;
             final_cost = new_cost;
             // Floor at 1e-7, not 1e-8. Damping is now RELATIVE (`λ·diag`), and in f32 any
             // `λ < 2⁻²⁵ ≈ 3e-8` makes `x + λ·x == x` bit-exactly for EVERY magnitude of `x` (at
@@ -2287,6 +2746,7 @@ fn bundle_adjust_schur_impl(
         poses: out_poses,
         points: out_points,
         depth_scales: if log_depth { dscales } else { Vec::new() },
+        camera: (q > 0).then(|| intr.into_camera(camera_seed)),
         iterations: iters_done,
         converged,
         final_cost,
@@ -2485,7 +2945,9 @@ mod tests {
 
         for (i, (pose, point, pixel, camera)) in generic.iter().chain(degenerate.iter()).enumerate()
         {
-            let (r, j_pose, j_point, j_intr) = residual_and_jacobians(pose, point, *pixel, camera);
+            // `refine_k1: false` — the seed this test characterises, i.e. `BA_K1`.
+            let intr = BaIntrinsics::seed(camera, false);
+            let (r, j_pose, j_point, j_intr) = residual_and_jacobians(pose, point, *pixel, &intr);
             let (r_ref, j_pose_ref, j_point_ref) = pinhole_reference(pose, point, *pixel, camera);
 
             let strict = i < generic.len();
@@ -2773,8 +3235,11 @@ mod tests {
         let point = Vec3F64::new(1.6, -1.1, 1.9);
         let pixel = [301.0f32, 262.0f32];
 
-        let (_, j_pose, j_point, j_intr) =
-            residual_and_jacobians_k1(&pose, &point, pixel, &camera, K1);
+        let intr = BaIntrinsics {
+            k1: K1,
+            ..BaIntrinsics::seed(&camera, false)
+        };
+        let (_, j_pose, j_point, j_intr) = residual_and_jacobians(&pose, &point, pixel, &intr);
 
         // POINT: perturb the world point.
         for axis in 0..3 {
@@ -2795,8 +3260,8 @@ mod tests {
                     hi.z += h;
                 }
             }
-            let (rl, ..) = residual_and_jacobians_k1(&pose, &lo, pixel, &camera, K1);
-            let (rh, ..) = residual_and_jacobians_k1(&pose, &hi, pixel, &camera, K1);
+            let (rl, ..) = residual_and_jacobians(&pose, &lo, pixel, &intr);
+            let (rh, ..) = residual_and_jacobians(&pose, &hi, pixel, &intr);
             for row in 0..2 {
                 let fd = (rh[row] - rl[row]) as f64 / (2.0 * h);
                 let an = j_point[row * 3 + axis] as f64;
@@ -2812,16 +3277,15 @@ mod tests {
         for (col, _) in probes {
             let h = if col == 4 { 1e-3 } else { 1e-2 };
             let bump = |s: f32| {
-                let mut c = camera.clone();
-                let mut k = K1;
+                let mut c = intr;
                 match col {
-                    0 => c.fx += s as f64,
-                    1 => c.fy += s as f64,
-                    2 => c.cx += s as f64,
-                    3 => c.cy += s as f64,
-                    _ => k += s,
+                    0 => c.fx += s,
+                    1 => c.fy += s,
+                    2 => c.cx += s,
+                    3 => c.cy += s,
+                    _ => c.k1 += s,
                 }
-                residual_and_jacobians_k1(&pose, &point, pixel, &c, k).0
+                residual_and_jacobians(&pose, &point, pixel, &c).0
             };
             let rl = bump(-h);
             let rh = bump(h);
@@ -2840,6 +3304,43 @@ mod tests {
             j_intr[9].abs() > 1.0,
             "dv/dk1 must be non-trivial in this regime"
         );
+
+        // The `α` column the solver actually consumes is a FIXED linear combination of the `fx`
+        // and `fy` columns the loop above just validated against central differences — the chain
+        // rule through `fx = α·fx₀`, `fy = α·fy₀`. Asserting the packing here is cheaper, and
+        // strictly stronger, than a second finite-difference pass over `α`.
+        let ib = IntrinsicBlock::new(
+            &BaParams {
+                refine_focal: true,
+                refine_k1: true,
+                ..BaParams::default()
+            },
+            &intr,
+        );
+        assert_eq!(ib.q, 2);
+        assert_eq!(ib.col_alpha(), Some(0));
+        assert_eq!(ib.col_k1(), Some(1));
+        let cols = ib.columns(&j_intr);
+        assert_eq!(cols[0], intr.fx * j_intr[0], "du/dα = fx₀ · du/dfx");
+        assert_eq!(cols[Q_MAX], intr.fy * j_intr[6], "dv/dα = fy₀ · dv/dfy");
+        assert_eq!(cols[1], j_intr[4], "du/dk1 column");
+        assert_eq!(cols[Q_MAX + 1], j_intr[9], "dv/dk1 column");
+
+        // With only `k1` free, its column must COMPACT to index 0, not sit at index 1 behind a
+        // structurally zero `α` column — a zero column makes the reduced border singular and sends
+        // every step down the "unobservable" fallback.
+        let k1_only = IntrinsicBlock::new(
+            &BaParams {
+                refine_k1: true,
+                ..BaParams::default()
+            },
+            &intr,
+        );
+        assert_eq!(k1_only.q, 1);
+        assert_eq!(k1_only.col_alpha(), None);
+        assert_eq!(k1_only.col_k1(), Some(0));
+        assert_eq!(k1_only.columns(&j_intr)[0], j_intr[4]);
+
         let _ = j_pose;
     }
 
@@ -3073,56 +3574,74 @@ mod tests {
     /// surrogate and the loss agree identically. Hence the deliberate gross outlier: it cannot be
     /// fitted, so it still sits far past the knee when the solve finishes, where the surrogate is
     /// exactly half the true loss.
+    ///
+    /// It runs a SECOND time with `refine_focal` and `refine_k1` on, where it becomes the strongest
+    /// single assertion available about the stale-intrinsics hazard: the caller re-projects at the
+    /// RETURNED camera, so a trial pass evaluated at stale intrinsics reports a `final_cost`
+    /// computed under a model the returned camera is not, and the two disagree. It catches a wrong
+    /// `BaResult::camera` in the same breath.
     #[test]
     fn reported_cost_is_the_objective_the_solver_minimises() {
-        let (poses, points, mut observations, camera) = perturbed_two_view_problem();
+        for (refine_focal, refine_k1) in [(false, false), (true, true)] {
+            let (poses, points, mut observations, camera) = perturbed_two_view_problem();
 
-        // A gross outlier, unfittable by construction, so it stays saturated at the solution.
-        let mut outlier = observations[0];
-        outlier.pixel = [
-            observations[0].pixel[0] + 5.0,
-            observations[0].pixel[1] - 4.0,
-        ];
-        observations.push(outlier);
+            // A gross outlier, unfittable by construction, so it stays saturated at the solution.
+            let mut outlier = observations[0];
+            outlier.pixel = [
+                observations[0].pixel[0] + 5.0,
+                observations[0].pixel[1] - 4.0,
+            ];
+            observations.push(outlier);
 
-        let scale_sq = 0.01_f32;
-        let params = BaParams {
-            max_iterations: 25,
-            robust: RobustKernelKind::Huber,
-            robust_scale_sq: scale_sq,
-            ..Default::default()
-        };
-        let res = bundle_adjust_schur(&poses, &points, &observations, &camera, &params).unwrap();
+            let scale_sq = 0.01_f32;
+            let params = BaParams {
+                max_iterations: 25,
+                robust: RobustKernelKind::Huber,
+                robust_scale_sq: scale_sq,
+                refine_focal,
+                refine_k1,
+                ..Default::default()
+            };
+            let res =
+                bundle_adjust_schur(&poses, &points, &observations, &camera, &params).unwrap();
 
-        // Independent evaluation of Σ ½ρ(s) at the returned solution.
-        let scale = scale_sq.sqrt();
-        let se3s: Vec<SE3F32> = res.poses.iter().map(pose_to_se3).collect();
-        let mut expected = 0.0_f32;
-        let mut saturated = 0usize;
-        for obs in &observations {
-            let (r, _, _, _) = residual_and_jacobians(
-                &se3s[obs.pose_idx],
-                &res.points[obs.point_idx],
-                obs.pixel,
-                &camera,
-            );
-            let r_sq = r[0] * r[0] + r[1] * r[1];
-            if r_sq > scale * scale {
-                saturated += 1;
+            let free = refine_focal || refine_k1;
+            assert_eq!(res.camera.is_some(), free, "BaResult::camera presence");
+            // Re-projecting at the RETURNED camera is the point of the second case.
+            let fitted = res.camera.clone().unwrap_or_else(|| camera.clone());
+            let intr = BaIntrinsics::seed(&fitted, refine_k1);
+
+            // Independent evaluation of Σ ½ρ(s) at the returned solution.
+            let scale = scale_sq.sqrt();
+            let se3s: Vec<SE3F32> = res.poses.iter().map(pose_to_se3).collect();
+            let mut expected = 0.0_f32;
+            let mut saturated = 0usize;
+            for obs in &observations {
+                let (r, _, _, _) = residual_and_jacobians(
+                    &se3s[obs.pose_idx],
+                    &res.points[obs.point_idx],
+                    obs.pixel,
+                    &intr,
+                );
+                let r_sq = r[0] * r[0] + r[1] * r[1];
+                if r_sq > scale * scale {
+                    saturated += 1;
+                }
+                expected += robust_cost(RobustKernelKind::Huber, scale, r_sq);
             }
-            expected += robust_cost(RobustKernelKind::Huber, scale, r_sq);
-        }
 
-        assert!(
-            saturated > 0,
-            "fixture no longer saturates the Huber knee, so it cannot distinguish the surrogate"
-        );
-        assert!(
-            (res.final_cost - expected).abs() <= 1e-4 * expected.max(1e-6),
-            "solver reported {} but the objective at its own solution is {expected} \
-             (the surrogate would report about half of the saturated part)",
-            res.final_cost
-        );
+            assert!(
+                saturated > 0,
+                "fixture no longer saturates the Huber knee, so it cannot distinguish the \
+                 surrogate (refine_focal={refine_focal})"
+            );
+            assert!(
+                (res.final_cost - expected).abs() <= 1e-4 * expected.max(1e-6),
+                "refine_focal={refine_focal} refine_k1={refine_k1}: solver reported {} but the \
+                 objective at its own returned poses, points AND camera is {expected}",
+                res.final_cost
+            );
+        }
     }
 
     /// The counters must actually count.
@@ -5128,7 +5647,7 @@ mod tests {
             100.0 * pattern_density
         );
 
-        for sparse in [false, true] {
+        for (sparse, intr) in [(false, false), (true, false), (true, true)] {
             BA_ASM_NANOS.swap(0, Ordering::Relaxed);
             BA_FACT_NANOS.swap(0, Ordering::Relaxed);
             BA_LIN_NANOS.swap(0, Ordering::Relaxed);
@@ -5141,6 +5660,8 @@ mod tests {
                 &BaParams {
                     max_iterations: 5,
                     sparse_reduced_system: sparse,
+                    refine_focal: intr,
+                    refine_k1: intr,
                     ..BaParams::default()
                 },
                 None,
@@ -5150,7 +5671,8 @@ mod tests {
             let wall = t.elapsed().as_secs_f64();
             let per = |n: u64| n as f64 / 1e9 / r.iterations.max(1) as f64;
             println!(
-                "sparse={sparse:<5} iters={:<3} wall={wall:7.3}s  linearise={:7.3}s/it  \
+                "sparse={sparse:<5} intr={intr:<5} iters={:<3} wall={wall:7.3}s  \
+                 linearise={:7.3}s/it  \
                  assemble={:7.3}s/it  factorise={:7.3}s/it  cost={:.6e}",
                 r.iterations,
                 per(BA_LIN_NANOS.load(Ordering::Relaxed)),
@@ -5159,5 +5681,922 @@ mod tests {
                 r.final_cost,
             );
         }
+    }
+
+    // ── Shared free intrinsics: α (focal scale) and k1 ──────────────────
+
+    /// Bit-exactness gate for "every existing caller is unchanged".
+    ///
+    /// `BaParams::refine_focal` / `refine_k1` default false, so a default solve must reproduce the
+    /// solver as it stood at `45e0a846` — the commit before the intrinsics were freed — to the
+    /// LAST BIT, not to a tolerance. That claim covers more than the new border being skipped: the
+    /// `BaIntrinsics` refactor hoisted four `f64 → f32` casts per observation out of the residual's
+    /// hot loop, and the rest of the suite (all of which runs at `BaParams::default()`) would only
+    /// notice a change that exceeded its tolerances.
+    ///
+    /// Constants captured by running that commit's solver on these two fixtures and dumping
+    /// `f64::to_bits` of every returned pose translation, every rotation element and every point,
+    /// plus `f32::to_bits` of `final_cost`. The walkthrough's 229 values are compared through an
+    /// FNV-1a-64 digest of the same byte stream — the two-view fixture is spelled out so a failure
+    /// there says WHICH value moved.
+    #[test]
+    fn defaults_are_bit_identical_to_the_frozen_solver() {
+        fn dump(r: &BaResult) -> Vec<u64> {
+            let mut v: Vec<u64> = vec![r.final_cost.to_bits() as u64];
+            for p in &r.poses {
+                for c in [p.translation.x, p.translation.y, p.translation.z] {
+                    v.push(c.to_bits());
+                }
+                for c in 0..3 {
+                    let col = p.rotation.col(c);
+                    for e in [col.x, col.y, col.z] {
+                        v.push(e.to_bits());
+                    }
+                }
+            }
+            for p in &r.points {
+                for c in [p.x, p.y, p.z] {
+                    v.push(c.to_bits());
+                }
+            }
+            v
+        }
+        fn fnv1a64(v: &[u64]) -> u64 {
+            let mut h = 0xcbf2_9ce4_8422_2325_u64;
+            for x in v {
+                for b in x.to_le_bytes() {
+                    h ^= b as u64;
+                    h = h.wrapping_mul(0x100_0000_01b3);
+                }
+            }
+            h
+        }
+
+        // Fixture 1: `perturbed_two_view_problem` under `BaParams::default()`.
+        const TWO_VIEW: [u64; 37] = [
+            0x0000000000000000,
+            0x0000000000000000,
+            0x0000000000000000,
+            0x0000000000000000,
+            0x3ff0000000000000,
+            0x0000000000000000,
+            0x0000000000000000,
+            0x0000000000000000,
+            0x3ff0000000000000,
+            0x0000000000000000,
+            0x0000000000000000,
+            0x0000000000000000,
+            0x3ff0000000000000,
+            0x3fe00b34e0000000,
+            0x3f52609100000000,
+            0x3ea55843e0000000,
+            0x3ff0000000000000,
+            0xbe701781a0000000,
+            0x3eab7ffde0000000,
+            0x3e700b6460000000,
+            0x3ff0000000000000,
+            0x3f2c319460000000,
+            0xbeab801a20000000,
+            0xbf2c319460000000,
+            0x3ff0000000000000,
+            0xbff00afe9d7f9b33,
+            0xbff00afec2416c7b,
+            0x40140dbe4f497614,
+            0x3ff00bb31400accd,
+            0xbff00bb31c24b47b,
+            0x40140e9fd2944e14,
+            0x3ff00aa382f90ccd,
+            0x3ff00aa3a01c4b85,
+            0x40140d4c83546e14,
+            0xbff00b59aafd8b33,
+            0x3ff00b597e3f2b85,
+            0x40140e300b4cde14,
+        ];
+        let (poses, points, obs, cam) = perturbed_two_view_problem();
+        let r = bundle_adjust_schur(&poses, &points, &obs, &cam, &BaParams::default()).unwrap();
+        assert_eq!(r.iterations, 10);
+        assert!(!r.converged);
+        assert!(r.camera.is_none(), "no flag set, so no camera is invented");
+        let got = dump(&r);
+        assert_eq!(got.len(), TWO_VIEW.len());
+        for (i, (a, b)) in got.iter().zip(TWO_VIEW.iter()).enumerate() {
+            assert_eq!(
+                a, b,
+                "two-view value {i} moved: {a:#018x} != frozen {b:#018x}"
+            );
+        }
+
+        // Fixture 2: `walkthrough(&cam, 10, 2)` with motion priors, both storage paths. The two
+        // agreed bit-for-bit at the frozen commit and must still.
+        const WALKTHROUGH_DIGEST: u64 = 0x456e_57e0_0176_46b6;
+        let cam2 = test_camera();
+        let (_gt, poses_init, _pgt, points_init, obs2, motion) = walkthrough(&cam2, 10, 2);
+        for sparse in [false, true] {
+            let r = bundle_adjust_schur_with_all_priors(
+                &poses_init,
+                &points_init,
+                &obs2,
+                &cam2,
+                &BaParams {
+                    max_iterations: 25,
+                    sparse_reduced_system: sparse,
+                    ..BaParams::default()
+                },
+                None,
+                Some(&motion),
+            )
+            .unwrap();
+            assert_eq!(r.iterations, 25);
+            assert!(r.camera.is_none());
+            let d = fnv1a64(&dump(&r));
+            assert_eq!(
+                d, WALKTHROUGH_DIGEST,
+                "walkthrough (sparse={sparse}) digest {d:#018x} != frozen \
+                 {WALKTHROUGH_DIGEST:#018x} — a default-parameter solve is no longer bit-identical \
+                 to the pre-intrinsics solver"
+            );
+        }
+    }
+
+    /// A scene whose geometry is at ground truth and whose ONLY error is in the camera.
+    ///
+    /// Observations are projected through `gt_cam` and, when `k1_gt != 0`, through the radial
+    /// term — written out here in f64 rather than reusing `residual_and_jacobians`, so a mutation
+    /// to the solver's own model cannot move the data with it.
+    ///
+    /// NOT built on `walkthrough`, and the reason is the whole reason these tests exist. That scene
+    /// translates along x with IDENTICAL rotations, and there the focal is EXACTLY unobservable
+    /// however many poses are fixed: with cameras at `C_k = (x_k, 0, 0)`, the point `(X, Y, sZ)`
+    /// reproduces every pixel of `(X, Y, Z)` at focal `s·f`, because
+    /// `s·f·(X − x_k)/(sZ) = f·(X − x_k)/Z`. Measured: a 15%-wrong focal recovered only to 535 of
+    /// 500 there — LM stopping somewhere along a genuinely flat valley, not a solver bug.
+    ///
+    /// Varying the rotation is what breaks it: the compensating point motion would have to be
+    /// `R_k(p'_w − C_k) ∝ diag(1, 1, s)·R_k(p_w − C_k)` simultaneously for every `k`, which no
+    /// single `p'_w` satisfies once the `R_k` differ. So the cameras here sit on an arc and yaw,
+    /// and the point depths span 4–10 m rather than 5.0–5.5.
+    ///
+    /// `n_fixed` poses are gauge-fixed. At least one must stay free or the solver returns
+    /// `NoFreeVariables`.
+    fn intrinsics_only_scene(
+        gt_cam: &PinholeCamera,
+        k1_gt: f64,
+        n_cams: usize,
+        n_fixed: usize,
+    ) -> (Vec<Pose3d>, Vec<Vec3F64>, Vec<BaObservation>) {
+        let mut rng = Lcg(0x1357_9bdf);
+        let poses: Vec<Pose3d> = (0..n_cams)
+            .map(|k| {
+                let f = k as f64 - 0.5 * (n_cams as f64 - 1.0);
+                let centre = Vec3F64::new(0.7 * f, 0.25 * (0.9 * f).sin(), -0.4 * f * f * 0.05);
+                // Yaw toward the cloud, so no two cameras share a rotation.
+                let yaw = 0.11 * f;
+                let (c, s) = (yaw.cos(), yaw.sin());
+                let r = Mat3F64::from_cols(
+                    Vec3F64::new(c, 0.0, -s),
+                    Vec3F64::new(0.0, 1.0, 0.0),
+                    Vec3F64::new(s, 0.0, c),
+                );
+                // world→cam: p_c = R·p_w + t with t = −R·C.
+                let t = Vec3F64::new(
+                    -(r.col(0).x * centre.x + r.col(1).x * centre.y + r.col(2).x * centre.z),
+                    -(r.col(0).y * centre.x + r.col(1).y * centre.y + r.col(2).y * centre.z),
+                    -(r.col(0).z * centre.x + r.col(1).z * centre.y + r.col(2).z * centre.z),
+                );
+                Pose3d::new(r, t)
+            })
+            .collect();
+        // Depth spread 4–10 m: a shallow slab is a near-planar scene, where the focal trades
+        // against a homography instead of against nothing.
+        let points: Vec<Vec3F64> = (0..60)
+            .map(|_| {
+                Vec3F64::new(
+                    2.0 * rng.next_f32() as f64,
+                    1.6 * rng.next_f32() as f64,
+                    7.0 + 3.0 * rng.next_f32() as f64,
+                )
+            })
+            .collect();
+
+        let project = |pose: &Pose3d, pw: &Vec3F64| -> [f32; 2] {
+            let pc = pose.transform_point(pw);
+            let (xn, yn) = (pc.x / pc.z, pc.y / pc.z);
+            let d = 1.0 + k1_gt * (xn * xn + yn * yn);
+            [
+                (gt_cam.fx * xn * d + gt_cam.cx) as f32,
+                (gt_cam.fy * yn * d + gt_cam.cy) as f32,
+            ]
+        };
+        let mut obs = Vec::new();
+        for (pi, pt) in points.iter().enumerate() {
+            for (k, pose) in poses.iter().enumerate() {
+                obs.push(BaObservation {
+                    pose_idx: k,
+                    point_idx: pi,
+                    pixel: project(pose, pt),
+                    fixed_pose: k < n_fixed,
+                    fixed_point: false,
+                    ..BaObservation::default()
+                });
+            }
+        }
+        (poses, points, obs)
+    }
+
+    /// T2: a 15%-wrong focal seed must be recovered, and must NOT move when the flag is off.
+    ///
+    /// Two gauges, because they exercise different halves of the border. With all but the last
+    /// camera fixed, almost every observation takes the `pli < 0` path and contributes to `D`,
+    /// `g_intr` and `F` but not `E` — the case a border that only accumulated on free poses would
+    /// silently get wrong. With only the first two fixed, `E` carries the work.
+    #[test]
+    fn focal_scale_recovers_a_wrong_seed() {
+        let gt = test_camera(); // fx = fy = 500
+        const SEED_FX: f64 = 575.0; // 15% high
+
+        for n_fixed in [9usize, 2] {
+            let (poses_gt, points_gt, obs) = intrinsics_only_scene(&gt, 0.0, 10, n_fixed);
+            let seed_cam = PinholeCamera {
+                fx: SEED_FX,
+                fy: SEED_FX,
+                ..gt.clone()
+            };
+            let solve = |refine_focal: bool| {
+                bundle_adjust_schur(
+                    &poses_gt,
+                    &points_gt,
+                    &obs,
+                    &seed_cam,
+                    &BaParams {
+                        max_iterations: 40,
+                        refine_focal,
+                        ..BaParams::default()
+                    },
+                )
+                .expect("solve failed")
+            };
+
+            let free = solve(true);
+            let fitted = free
+                .camera
+                .clone()
+                .expect("refine_focal must report a camera");
+            let err = (fitted.fx - gt.fx).abs() / gt.fx;
+            assert!(
+                err < 0.01,
+                "n_fixed={n_fixed}: focal came back {} from a {SEED_FX} seed, want {} (±1%)",
+                fitted.fx,
+                gt.fx
+            );
+            // The aspect ratio is NOT a free parameter — one α scales both axes.
+            assert!(
+                (fitted.fy / fitted.fx - gt.fy / gt.fx).abs() < 1e-6,
+                "α must scale fx and fy together, got fx={} fy={}",
+                fitted.fx,
+                fitted.fy
+            );
+
+            // CONTROL: with the flag off the focal must not move, and the fit must be visibly
+            // worse — otherwise this test would pass on a solver that simply does nothing.
+            let fixed = solve(false);
+            assert!(fixed.camera.is_none());
+            assert!(
+                free.final_cost < 0.05 * fixed.final_cost,
+                "n_fixed={n_fixed}: freeing the focal barely helped ({} vs {}), so the fixture \
+                 does not constrain the focal",
+                free.final_cost,
+                fixed.final_cost
+            );
+        }
+    }
+
+    /// T3: `k1` must be recovered from a scene synthesised through a known radial distortion.
+    ///
+    /// This is the only end-to-end exercise of the `∂/∂k1` column AND its plumbing;
+    /// `every_jacobian_matches_central_differences_at_nonzero_k1` checks the derivative, not the
+    /// wiring. The convergence bound is also what stands in for a unit test of the `− F_j δi` term
+    /// in the point back-substitution: without it the point step is not the Gauss-Newton step and
+    /// the solve needs far more iterations to reach this cost, if it reaches it at all.
+    #[test]
+    fn k1_recovers_a_distorted_scene() {
+        let gt = test_camera();
+        const K1_GT: f64 = -0.15;
+        let (poses_gt, points_gt, obs) = intrinsics_only_scene(&gt, K1_GT, 10, 2);
+        // Seeded at k1 = 0 — the caller's camera carries no distortion estimate.
+        let solve = |refine_k1: bool| {
+            bundle_adjust_schur(
+                &poses_gt,
+                &points_gt,
+                &obs,
+                &gt,
+                &BaParams {
+                    max_iterations: 40,
+                    refine_k1,
+                    ..BaParams::default()
+                },
+            )
+            .expect("solve failed")
+        };
+
+        let free = solve(true);
+        let fitted = free.camera.clone().expect("refine_k1 must report a camera");
+        assert!(
+            (fitted.k1 - K1_GT).abs() < 0.05 * K1_GT.abs(),
+            "k1 came back {} from a 0.0 seed, want {K1_GT} (±5%)",
+            fitted.k1
+        );
+
+        let fixed = solve(false);
+        assert!(
+            free.final_cost < 0.1 * fixed.final_cost,
+            "freeing k1 gave {} against {} with it pinned — under an order of magnitude, so the \
+             fixture does not exercise the distortion",
+            free.final_cost,
+            fixed.final_cost
+        );
+    }
+
+    /// T4's behavioural twin, and the sharpest test of the accept/reject hazard.
+    ///
+    /// The distorted scene with the geometry at GT and only `k1` free to move: the points can
+    /// absorb almost nothing, so `k1` is the ONLY parameter that meaningfully reduces cost.
+    ///
+    /// With a trial pass evaluated at the OLD intrinsics, `new_cost` is scored at `k1 = 0` with
+    /// only a negligible point step, so `new_cost ≈ cost`, LM rejects every step, λ escalates to
+    /// 1e10, the loop breaks, and the solver returns its seed with `Ok` — `final_cost` stuck at the
+    /// first iteration's value and `k1` still 0. Every assertion below then fails.
+    ///
+    /// Run at a wrong focal too: `α` enters the model linearly and `k1` does not, so only one of
+    /// the two would survive a partial fix.
+    #[test]
+    fn trial_cost_is_evaluated_at_the_trial_intrinsics() {
+        let gt = test_camera();
+        for (k1_gt, seed_fx, refine_focal, refine_k1) in [
+            (-0.15_f64, 500.0_f64, false, true),
+            (0.0, 575.0, true, false),
+            (-0.15, 575.0, true, true),
+        ] {
+            let (poses_gt, points_gt, obs) = intrinsics_only_scene(&gt, k1_gt, 10, 2);
+            let seed_cam = PinholeCamera {
+                fx: seed_fx,
+                fy: seed_fx,
+                ..gt.clone()
+            };
+            let params = BaParams {
+                max_iterations: 40,
+                refine_focal,
+                refine_k1,
+                ..BaParams::default()
+            };
+            // Cost at the seed, with nothing free — the value a stale trial pass would return.
+            let seed_cost = bundle_adjust_schur(
+                &poses_gt,
+                &points_gt,
+                &obs,
+                &seed_cam,
+                &BaParams {
+                    max_iterations: 1,
+                    ..BaParams::default()
+                },
+            )
+            .unwrap()
+            .final_cost;
+
+            let res = bundle_adjust_schur(&poses_gt, &points_gt, &obs, &seed_cam, &params).unwrap();
+            let fitted = res.camera.clone().unwrap();
+            assert!(
+                res.iterations >= 2,
+                "k1_gt={k1_gt} fx={seed_fx}: solver stopped after {} iterations — every step was \
+                 rejected, the signature of a trial cost scored at stale intrinsics",
+                res.iterations
+            );
+            assert!(
+                res.final_cost < 0.01 * seed_cost,
+                "k1_gt={k1_gt} fx={seed_fx}: final cost {} against a seed cost of {seed_cost}",
+                res.final_cost
+            );
+            if refine_k1 {
+                assert!(
+                    (fitted.k1 - k1_gt).abs() < 0.02,
+                    "k1 did not move to {k1_gt}: got {}",
+                    fitted.k1
+                );
+            }
+            if refine_focal {
+                assert!(
+                    (fitted.fx - gt.fx).abs() < 0.01 * gt.fx,
+                    "focal did not move to {}: got {}",
+                    gt.fx,
+                    fitted.fx
+                );
+            }
+        }
+    }
+
+    /// T5: the bordered elimination, against a dense Cholesky on the whole `(6P + q)` system.
+    ///
+    /// This is the border's analogue of `sparse_lower_triangle_is_bit_identical_to_the_dense_one`,
+    /// and it is what catches a transposed `V`, a sign slip on `s − Vᵀy₀` and a missing `− Y δi`.
+    /// It also asserts the claim the design rests on: freeing a shared intrinsic does NOT densify
+    /// the reduced camera system — `dim` and the triplet count are the same with the border on.
+    #[test]
+    fn bordered_solve_matches_a_dense_reference() {
+        use faer::linalg::solvers::Solve;
+        for q in 1..=Q_MAX {
+            let n = 4usize;
+            let dim = n * 6;
+            let full = dim + q;
+            let mut rng = Lcg(0x5eed_1234 + q as u64);
+            // H = GᵀG + 4I: symmetric, positive definite, and dense in the border by construction.
+            let g = Mat::<f64>::from_fn(full, full, |_, _| rng.next_f32() as f64);
+            let mut h = Mat::<f64>::zeros(full, full);
+            for i in 0..full {
+                for j in 0..full {
+                    let mut s = 0.0;
+                    for k in 0..full {
+                        s += g[(k, i)] * g[(k, j)];
+                    }
+                    h[(i, j)] = s + if i == j { 4.0 } else { 0.0 };
+                }
+            }
+            let rhs = Mat::<f64>::from_fn(full, 1, |_, _| rng.next_f32() as f64);
+
+            // (a) reference: one dense solve of the whole bordered system.
+            let want = h.llt(faer::Side::Lower).unwrap().solve(&rhs);
+
+            // (b) the implemented path: factor M alone, multi-RHS solve for [y₀ | Y], eliminate.
+            let m = Mat::<f64>::from_fn(dim, dim, |i, j| h[(i, j)]);
+            let mut v_bord = vec![0.0_f64; dim * q];
+            for i in 0..dim {
+                for a in 0..q {
+                    v_bord[i * q + a] = h[(i, dim + a)];
+                }
+            }
+            let mut s_mat = [0.0_f64; Q_MAX * Q_MAX];
+            let mut s_vec = [0.0_f64; Q_MAX];
+            for a in 0..q {
+                s_vec[a] = rhs[(dim + a, 0)];
+                for b in 0..q {
+                    s_mat[a * Q_MAX + b] = h[(dim + a, dim + b)];
+                }
+            }
+            let multi = Mat::<f64>::from_fn(dim, 1 + q, |i, c| {
+                if c == 0 {
+                    rhs[(i, 0)]
+                } else {
+                    v_bord[i * q + (c - 1)]
+                }
+            });
+            let sol = m.llt(faer::Side::Lower).unwrap().solve(&multi);
+            let di = eliminate_border(&s_mat, &s_vec, &v_bord, &sol, dim, q);
+
+            for a in 0..q {
+                let got = di[a];
+                let exp = want[(dim + a, 0)];
+                assert!(
+                    (got - exp).abs() <= 1e-9 * exp.abs().max(1e-6),
+                    "q={q}: δi[{a}] = {got}, dense reference {exp}"
+                );
+            }
+            // Through the SOLVER's own reconstruction, not a restatement of it.
+            let dp = pose_step_from_border(&sol, &di, dim, q);
+            for (i, &got) in dp.iter().enumerate() {
+                let exp = want[(i, 0)];
+                assert!(
+                    (got - exp).abs() <= 1e-9 * exp.abs().max(1e-6),
+                    "q={q}: δp[{i}] = {got}, dense reference {exp}"
+                );
+            }
+        }
+
+        // NO DENSIFICATION. `#1105`'s sparse path measured 64× faster at 600 views; a step-2 that
+        // pushed the border into the reduced system's pattern would have discarded that. The
+        // border lives outside `BlockAccum` entirely, so the pattern must be untouched.
+        let cam = test_camera();
+        let (_gt, poses_init, _pgt, points_init, obs, motion) = walkthrough(&cam, 10, 2);
+        let mut triplets: Vec<usize> = Vec::new();
+        for (refine_focal, refine_k1) in [(false, false), (true, true)] {
+            let mut b_by_point: Vec<Vec<(usize, [f32; 18])>> = vec![Vec::new(); points_init.len()];
+            for o in &obs {
+                if !o.fixed_pose {
+                    b_by_point[o.point_idx].push((o.pose_idx - 1, [0.0; 18]));
+                }
+            }
+            let pairs: Vec<(usize, usize)> = motion
+                .iter()
+                .flat_map(|m| [(m.i0, m.i1), (m.i0, m.i2), (m.i1, m.i2)])
+                .filter(|(a, b)| *a > 0 && *b > 0)
+                .map(|(a, b)| (a - 1, b - 1))
+                .collect();
+            let acc = BlockAccum::new(poses_init.len() - 1, &b_by_point, &pairs);
+            let _ = (refine_focal, refine_k1);
+            triplets.push(acc.lower_triplets().len());
+        }
+        assert_eq!(
+            triplets[0], triplets[1],
+            "the border must not enter the reduced system's sparsity pattern"
+        );
+    }
+
+    /// T6: the sparse/dense A/B of `sparse_reduced_system_matches_dense_on_a_sequential_capture`,
+    /// with both intrinsics free.
+    ///
+    /// `V`, `S`, `s`, `S_red` and `δi` come off ONE shared code path — the border never enters
+    /// either storage — so what differs between the two runs is only what already differed: `y₀`
+    /// and `Y`, because a fill-reducing sparse Cholesky and a dense one do not perform the same
+    /// operations in the same order.
+    #[test]
+    fn sparse_and_dense_agree_with_intrinsics_free() {
+        let gt = test_camera();
+        let (poses_gt, points_gt, obs) = intrinsics_only_scene(&gt, -0.12, 12, 2);
+        let seed_cam = PinholeCamera {
+            fx: 560.0,
+            fy: 560.0,
+            ..gt.clone()
+        };
+        let solve = |sparse: bool| {
+            bundle_adjust_schur(
+                &poses_gt,
+                &points_gt,
+                &obs,
+                &seed_cam,
+                &BaParams {
+                    max_iterations: 30,
+                    sparse_reduced_system: sparse,
+                    refine_focal: true,
+                    refine_k1: true,
+                    ..BaParams::default()
+                },
+            )
+            .expect("solve failed")
+        };
+        let dense = solve(false);
+        let sparse = solve(true);
+        let (cd, cs) = (
+            dense.camera.clone().unwrap(),
+            sparse.camera.clone().unwrap(),
+        );
+
+        // CONTROL: the intrinsics have to have MOVED, or "the two agree" is about two no-ops.
+        assert!(
+            (cd.fx - seed_cam.fx).abs() > 1.0 && (cd.k1 - 0.0).abs() > 0.01,
+            "dense run left the intrinsics at the seed (fx {} k1 {}) — agreement proves nothing",
+            cd.fx,
+            cd.k1
+        );
+
+        let pose_gap = dense
+            .poses
+            .iter()
+            .zip(sparse.poses.iter())
+            .map(|(a, b)| (a.translation - b.translation).length())
+            .fold(0.0_f64, f64::max);
+        let point_gap = dense
+            .points
+            .iter()
+            .zip(sparse.points.iter())
+            .map(|(a, b)| (*a - *b).length())
+            .fold(0.0_f64, f64::max);
+        assert!(
+            pose_gap < 1e-6 && point_gap < 1e-6,
+            "sparse and dense disagree: pose gap {pose_gap:e} m, point gap {point_gap:e} m"
+        );
+        assert!(
+            (cd.fx - cs.fx).abs() < 1e-6 && (cd.k1 - cs.k1).abs() < 1e-6,
+            "sparse and dense disagree on the intrinsics: fx {} vs {}, k1 {} vs {}",
+            cd.fx,
+            cs.fx,
+            cd.k1,
+            cs.k1
+        );
+    }
+
+    /// T7: on a degenerate segment the focal must not run away, and must not fail either.
+    ///
+    /// A pure-rotation pair: no baseline, so no parallax, so the focal is unobservable — either
+    /// `S_red` is singular and the fallback fires, or the step is taken and the ratio band stops
+    /// it. Both outcomes are acceptable; a NaN camera, a `CholeskyFailed`, or a focal outside
+    /// `[0.1, 10]×` the seed are not.
+    #[test]
+    fn focal_ratio_band_clamps_a_runaway() {
+        let gt = test_camera();
+        // Two cameras at the SAME centre, differing only by a yaw. Every point projects with zero
+        // parallax, so depth — and with it the focal — is completely undetermined.
+        let yaw = 0.15_f64;
+        let (c, s) = (yaw.cos(), yaw.sin());
+        let poses = vec![
+            Pose3d::new(Mat3F64::IDENTITY, Vec3F64::ZERO),
+            Pose3d::new(
+                Mat3F64::from_cols(
+                    Vec3F64::new(c, 0.0, -s),
+                    Vec3F64::new(0.0, 1.0, 0.0),
+                    Vec3F64::new(s, 0.0, c),
+                ),
+                Vec3F64::ZERO,
+            ),
+        ];
+        let mut rng = Lcg(0x0bad_f0ca);
+        let points: Vec<Vec3F64> = (0..40)
+            .map(|_| {
+                Vec3F64::new(
+                    1.5 * rng.next_f32() as f64,
+                    1.5 * rng.next_f32() as f64,
+                    6.0 + 3.0 * rng.next_f32() as f64,
+                )
+            })
+            .collect();
+        let mut obs = Vec::new();
+        for (pi, pt) in points.iter().enumerate() {
+            for (k, pose) in poses.iter().enumerate() {
+                let pc = pose.transform_point(pt);
+                obs.push(BaObservation {
+                    pose_idx: k,
+                    point_idx: pi,
+                    pixel: [
+                        (gt.fx * pc.x / pc.z + gt.cx) as f32,
+                        (gt.fy * pc.y / pc.z + gt.cy) as f32,
+                    ],
+                    fixed_pose: k == 0,
+                    fixed_point: false,
+                    ..BaObservation::default()
+                });
+            }
+        }
+        let seed_cam = PinholeCamera {
+            fx: 700.0,
+            fy: 700.0,
+            ..gt.clone()
+        };
+        let res = bundle_adjust_schur(
+            &poses,
+            &points,
+            &obs,
+            &seed_cam,
+            &BaParams {
+                max_iterations: 40,
+                refine_focal: true,
+                refine_k1: true,
+                ..BaParams::default()
+            },
+        )
+        .expect("a degenerate segment must not become a CholeskyFailed");
+        let cam = res.camera.clone().unwrap();
+        assert!(
+            cam.fx.is_finite() && cam.fy.is_finite() && cam.k1.is_finite(),
+            "non-finite intrinsics: {cam:?}"
+        );
+        assert!(res.final_cost.is_finite());
+        let ratio = cam.fx / seed_cam.fx;
+        assert!(
+            (MIN_FOCAL_RATIO as f64..=MAX_FOCAL_RATIO as f64).contains(&ratio),
+            "focal ratio {ratio} left COLMAP's [{MIN_FOCAL_RATIO}, {MAX_FOCAL_RATIO}] band"
+        );
+    }
+
+    /// The band must actually BIND, not merely be present.
+    ///
+    /// A seed 100× below the truth asks for `α = 100`, well outside COLMAP's `[0.1, 10]`. The
+    /// solver must pin `α` at the ceiling and CARRY ON — clamp, do not reject. A clamped step is
+    /// just a shorter step and `new_cost < cost` still decides it correctly, whereas rejecting on
+    /// the band would escalate λ and stall the pose solve that was doing nothing wrong. So the
+    /// fitted focal must land ON the ceiling, and the run must still have improved its cost.
+    #[test]
+    fn a_focal_seed_outside_the_band_is_clamped_not_rejected() {
+        let gt = test_camera();
+        let (poses, points, obs) = intrinsics_only_scene(&gt, 0.0, 10, 2);
+        let seed_fx = gt.fx / 100.0; // asks for α = 100
+        let seed_cam = PinholeCamera {
+            fx: seed_fx,
+            fy: seed_fx,
+            ..gt.clone()
+        };
+        let params = |refine_focal: bool| BaParams {
+            max_iterations: 30,
+            refine_focal,
+            ..BaParams::default()
+        };
+        let res = bundle_adjust_schur(&poses, &points, &obs, &seed_cam, &params(true)).unwrap();
+        let cam = res.camera.clone().unwrap();
+        let alpha = cam.fx / seed_fx;
+        assert!(
+            (alpha - MAX_FOCAL_RATIO as f64).abs() < 1e-4,
+            "α came back {alpha}: the ratio band should have pinned it at {MAX_FOCAL_RATIO}"
+        );
+        // Clamped, not rejected: the run still had to make progress. (That the trimmed `δα` is also
+        // what the geometry steps against is structural — `clamped_step` returns the step, so there
+        // is no untrimmed one left to read.)
+        let pinned = bundle_adjust_schur(&poses, &points, &obs, &seed_cam, &params(false)).unwrap();
+        assert!(
+            res.final_cost < 0.5 * pinned.final_cost && res.final_cost.is_finite(),
+            "a clamped step must still be taken, and taken consistently: cost {} vs {} with the \
+             focal pinned",
+            res.final_cost,
+            pinned.final_cost
+        );
+    }
+
+    /// The robust kernel must down-weight an observation's vote on the INTRINSIC, not only on the
+    /// geometry.
+    ///
+    /// The linearisation pass scales `r`, `J_pose` and `J_point` by `√w`; the border columns must
+    /// take the same `√w` in the same block. If they do not, `g_intr` accumulates `√w·Jᵢᵀr` while
+    /// the correct IRLS term is `w·Jᵢᵀr`, so an outlier the kernel rejected from the geometry still
+    /// gets a `1/√w` over-loud vote on the focal it was rejected from having an opinion about.
+    ///
+    /// The outliers here are RADIALLY BIASED — every outlier pixel is pushed 30% further from the
+    /// principal point — so they consistently ask for a larger focal rather than cancelling out.
+    /// That is what turns a weighting bug into a measurable focal bias instead of noise.
+    #[test]
+    fn the_robust_kernel_down_weights_the_intrinsic_vote_too() {
+        let gt = test_camera();
+        let (poses, points, mut obs) = intrinsics_only_scene(&gt, 0.0, 10, 2);
+        let clean = obs.len();
+        for i in 0..clean {
+            if i % 3 != 0 {
+                continue;
+            }
+            let o = obs[i];
+            obs.push(BaObservation {
+                pixel: [
+                    ((o.pixel[0] as f64 - gt.cx) * 1.3 + gt.cx) as f32,
+                    ((o.pixel[1] as f64 - gt.cy) * 1.3 + gt.cy) as f32,
+                ],
+                ..o
+            });
+        }
+        let seed_cam = PinholeCamera {
+            fx: 520.0,
+            fy: 520.0,
+            ..gt.clone()
+        };
+        let res = bundle_adjust_schur(
+            &poses,
+            &points,
+            &obs,
+            &seed_cam,
+            &BaParams {
+                max_iterations: 40,
+                robust: RobustKernelKind::Huber,
+                robust_scale_sq: 4.0,
+                refine_focal: true,
+                ..BaParams::default()
+            },
+        )
+        .unwrap();
+        let fx = res.camera.clone().unwrap().fx;
+        assert!(
+            (fx - gt.fx).abs() < 0.02 * gt.fx,
+            "focal came back {fx} against a ground truth of {} — the radially-biased outliers \
+             pulled it, so their border columns are not carrying the IRLS weight",
+            gt.fx
+        );
+    }
+
+    /// λ must damp the BORDER as well as `A` and `C`.
+    ///
+    /// Leave the intrinsic direction at undamped Gauss-Newton while every other block is damped and
+    /// iteration one takes a wild focal jump — which then gets rejected, which then escalates λ for
+    /// everybody. Here: one iteration at λ = 1e6, where a damped border can move the focal by
+    /// essentially nothing, and an undamped one takes its full GN step toward the true 500.
+    #[test]
+    fn lambda_damps_the_intrinsic_border() {
+        let gt = test_camera();
+        let (poses, points, obs) = intrinsics_only_scene(&gt, 0.0, 10, 2);
+        let seed_fx = 575.0_f64;
+        let seed_cam = PinholeCamera {
+            fx: seed_fx,
+            fy: seed_fx,
+            ..gt.clone()
+        };
+        let step = |lambda: f32| -> f64 {
+            let r = bundle_adjust_schur(
+                &poses,
+                &points,
+                &obs,
+                &seed_cam,
+                &BaParams {
+                    max_iterations: 1,
+                    initial_lambda: lambda,
+                    refine_focal: true,
+                    ..BaParams::default()
+                },
+            )
+            .unwrap();
+            (r.camera.unwrap().fx - seed_fx).abs()
+        };
+        let stiff = step(1e6);
+        let loose = step(1e-6);
+        assert!(
+            loose > 40.0,
+            "control: at λ = 1e-6 one step should take the focal most of the way from {seed_fx} \
+             to {}, but it moved {loose}",
+            gt.fx
+        );
+        assert!(
+            stiff < 1e-2 * loose,
+            "λ = 1e6 moved the focal by {stiff} against {loose} at λ = 1e-6 — the border is not \
+             being damped"
+        );
+    }
+
+    /// `k1` must stay on the near side of the fold, from any seed and for any step.
+    ///
+    /// `1 + k1·r²` going non-positive is not a large error, it is a different function: at
+    /// `k1 = −1/r²` that radius collapses onto the principal point and every derivative there is
+    /// meaningless.
+    ///
+    /// WHAT THIS DOES NOT SHOW, because it was measured and is worth writing down: on every fixture
+    /// in this file the clamp is not distinguishable from its absence at the RESULT. Seeded at
+    /// `k1 = −50` it does bind — the first raw step is +25.3 and it is stretched to +46.6 so the
+    /// trial lands exactly on `−0.9/r²_max` — but the unclamped solver climbs out of the fold on
+    /// its own within a few iterations and returns the same `k1 = −0.150` at the same cost. So the
+    /// end-to-end half of this test only pins "an absurd seed is not an error"; the guard proper is
+    /// pinned as a PROPERTY of `clamped_step ∘ k1_fold_bound` below, and the regime where it is
+    /// load-bearing is not yet measured.
+    #[test]
+    fn k1_is_held_on_the_near_side_of_the_fold() {
+        // The bound, and the property that composes it with the step clamp: whatever raw step the
+        // border produces, the trial `k1` lands where the radial term is still a function.
+        assert_eq!(k1_fold_bound(0.9), K1_FOLD_MARGIN / 0.9);
+        assert_eq!(k1_fold_bound(0.0), f32::INFINITY);
+        for &r2 in &[0.05_f32, 0.27, 1.0, 4.0] {
+            let hi = k1_fold_bound(r2);
+            for &k1 in &[0.0_f32, -0.4, 0.9, -50.0, 1e6] {
+                for &raw in &[0.0_f64, 1e-9, 3.0, -3.0, 1e9, -1e9] {
+                    let k1_trial = k1 + clamped_step(k1, raw, -hi, hi) as f32;
+                    // Slack of a few ulps OF `k1`, not of the bound: see `clamped_step`.
+                    let slack = 8.0 * f32::EPSILON * k1.abs().max(hi);
+                    assert!(
+                        k1_trial.abs() <= hi + slack,
+                        "k1={k1} raw={raw} r2={r2}: trial {k1_trial} escaped ±{hi}"
+                    );
+                    assert!(
+                        1.0 + k1_trial * r2 >= 1.0 - K1_FOLD_MARGIN - slack * r2 - 1e-6,
+                        "k1={k1} raw={raw} r2={r2}: 1 + k1·r² = {} is past the fold",
+                        1.0 + k1_trial * r2
+                    );
+                }
+            }
+        }
+        // And the focal band composes the same way.
+        for &raw in &[1e9_f64, -1e9, 0.3] {
+            let a = 1.0 + clamped_step(1.0, raw, MIN_FOCAL_RATIO, MAX_FOCAL_RATIO) as f32;
+            assert!(
+                (MIN_FOCAL_RATIO..=MAX_FOCAL_RATIO).contains(&a),
+                "α escaped: {a}"
+            );
+        }
+
+        let gt = test_camera();
+        let (poses, points, obs) = intrinsics_only_scene(&gt, -0.15, 10, 2);
+        let r2_max = obs
+            .iter()
+            .map(|o| normalised_r2(&pose_to_se3(&poses[o.pose_idx]), &points[o.point_idx]))
+            .fold(0.0_f32, f32::max);
+        assert!(r2_max > 0.0);
+
+        let seed_cam = PinholeCamera {
+            k1: -50.0,
+            ..gt.clone()
+        };
+        let res = bundle_adjust_schur(
+            &poses,
+            &points,
+            &obs,
+            &seed_cam,
+            &BaParams {
+                max_iterations: 30,
+                refine_k1: true,
+                ..BaParams::default()
+            },
+        )
+        .expect("an absurd k1 seed must not become an error");
+        let k1 = res.camera.clone().unwrap().k1 as f32;
+        assert!(k1.is_finite() && res.final_cost.is_finite());
+        assert!(
+            1.0 + k1 * r2_max > 0.0,
+            "k1 came back {k1} with r²_max {r2_max}: 1 + k1·r² = {} is past the fold",
+            1.0 + k1 * r2_max
+        );
+    }
+
+    /// The unobservable-border fallback is a value decision, not an error path: `solve_border`
+    /// must return `None` — never a panic and never a wild step — on a singular or non-positive
+    /// `S_red`, and the driver turns that into `δi = 0`.
+    #[test]
+    fn a_singular_border_falls_back_instead_of_failing() {
+        // Rank-1 2×2: two intrinsics that the data cannot tell apart.
+        let s = [1.0_f64, 2.0, 2.0, 4.0];
+        assert!(solve_border(&s, &[1.0, 2.0], 2).is_none());
+        // Non-positive diagonal — not a curvature, so not a direction to step in.
+        assert!(solve_border(&[0.0, 0.0, 0.0, 1.0], &[1.0, 1.0], 2).is_none());
+        assert!(solve_border(&[-1.0, 0.0, 0.0, 1.0], &[1.0, 1.0], 2).is_none());
+        assert!(solve_border(&[f64::NAN, 0.0, 0.0, 1.0], &[1.0, 1.0], 1).is_none());
+        // Well-conditioned: the plain 2×2 solve.
+        let x = solve_border(&[2.0, 0.0, 0.0, 4.0], &[6.0, 8.0], 2).unwrap();
+        assert!((x[0] - 3.0).abs() < 1e-12 && (x[1] - 2.0).abs() < 1e-12);
+        // q = 1 reads only the top-left entry.
+        let x = solve_border(&[5.0, 9.0, 9.0, 9.0], &[10.0, 0.0], 1).unwrap();
+        assert!((x[0] - 2.0).abs() < 1e-12);
     }
 }
