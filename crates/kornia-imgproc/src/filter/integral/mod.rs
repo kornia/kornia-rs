@@ -27,11 +27,11 @@ pub(crate) mod kernels;
 /// # Example
 ///
 /// ```rust
-/// use kornia_image::Image;
+/// use kornia_image::{Image, ImageSize};
 /// use kornia_imgproc::filter::integral_image_f32;
 ///
-/// let src = Image::<f32, 1>::new(vec![1.0, 2.0, 3.0, 4.0], [2, 2]).unwrap();
-/// let mut dst = Image::<f32, 1>::zeros([2, 2]);
+/// let src = Image::<f32, 1>::new(ImageSize { width: 2, height: 2 }, vec![1.0, 2.0, 3.0, 4.0]).unwrap();
+/// let mut dst = Image::<f32, 1>::from_size_val(ImageSize { width: 2, height: 2 }, 0.0).unwrap();
 /// integral_image_f32(&src, &mut dst).unwrap();
 ///
 /// let out = dst.as_slice();

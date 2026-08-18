@@ -27,11 +27,11 @@ pub(crate) mod kernels;
 /// # Example
 ///
 /// ```rust
-/// use kornia_image::Image;
+/// use kornia_image::{Image, ImageSize};
 /// use kornia_imgproc::filter::laplacian_u8;
 ///
-/// let src = Image::<u8, 1>::new(vec![0; 9], [3, 3]).unwrap();
-/// let mut dst = Image::<i16, 1>::zeros([3, 3]);
+/// let src = Image::<u8, 1>::new(ImageSize { width: 3, height: 3 }, vec![0; 9]).unwrap();
+/// let mut dst = Image::<i16, 1>::from_size_val(ImageSize { width: 3, height: 3 }, 0).unwrap();
 /// laplacian_u8(&src, &mut dst).unwrap();
 /// ```
 pub fn laplacian_u8<const C: usize>(

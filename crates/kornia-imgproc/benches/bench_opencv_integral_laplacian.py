@@ -20,7 +20,7 @@ def run_laplacian(label, w, h, data):
         t = time.perf_counter()
         cv2.Laplacian(data, cv2.CV_16S, ksize=3)
         samples.append(time.perf_counter() - t)
-    
+
     mn, md = min(samples), median(samples)
     mu = sum(samples) / len(samples)
     pix_per_s = (w * h) / md / 1e6
@@ -34,7 +34,7 @@ def run_integral(label, w, h, data):
         t = time.perf_counter()
         cv2.integral(data, sdepth=cv2.CV_32F)
         samples.append(time.perf_counter() - t)
-    
+
     mn, md = min(samples), median(samples)
     mu = sum(samples) / len(samples)
     pix_per_s = (w * h) / md / 1e6
