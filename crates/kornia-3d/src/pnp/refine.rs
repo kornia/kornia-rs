@@ -3,6 +3,8 @@
 //! This module provides LM-based nonlinear refinement for camera pose estimates,
 //! leveraging the optimization infrastructure from `kornia-algebra` using factor graph.
 
+use crate::ransac::RobustKernelKind;
+use kornia_algebra::optim::{CauchyLoss, HuberLoss, RobustLoss};
 use kornia_algebra::optim::{
     Factor, FactorError, FactorResult, LevenbergMarquardt, LinearizationResult, Problem, Variable,
     VariableType,
@@ -13,8 +15,6 @@ use kornia_imgproc::calibration::{
     CameraIntrinsic,
 };
 use std::sync::Arc;
-use kornia_algebra::optim::{CauchyLoss, HuberLoss, RobustLoss};
-use crate::ransac::RobustKernelKind;
 
 use super::{PnPError, PnPResult};
 
@@ -61,7 +61,7 @@ impl LMRefineParams {
     pub fn new() -> Self {
         Self::default()
     }
-    
+
     /// Set maximum iterations.
     pub fn with_max_iterations(self, max_iters: usize) -> Self {
         Self {
