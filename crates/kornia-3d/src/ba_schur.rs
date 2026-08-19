@@ -603,7 +603,7 @@ impl BaIntrinsics {
 ///   J_intr[5..10]: [dv/dfx,  dv/dfy,  dv/dcx,  dv/dcy,  dv/dk1]
 ///
 /// The solver consumes only the `fx`/`fy` and `k1` columns, and only when the matching
-/// `BaParams::refine_*` flag is set; `cx`/`cy` are never freed. See `intrinsic_jacobian_columns`
+/// `BaParams::refine_*` flag is set; `cx`/`cy` are never freed. See [`IntrinsicBlock::columns`]
 /// for how the selected columns are packed.
 #[inline]
 fn residual_and_jacobians(
@@ -855,7 +855,7 @@ impl IntrinsicBlock {
 /// the third row's coefficient of the original three-block system, so the bordered system is
 /// symmetric by construction and needs no averaging pass.
 ///
-/// Returns `[0; _]` when the border is unobservable — see [`solve_border`].
+// An unobservable border yields δi = 0; see [`solve_border`].
 fn eliminate_border(
     s_mat: &[f64; Q_MAX * Q_MAX],
     s_vec: &[f64; Q_MAX],
@@ -901,9 +901,7 @@ fn pose_step_from_border(sol: &Mat<f64>, d_intr: &[f64; Q_MAX], dim: usize, q: u
 /// Solve `S δ = s` for the `q × q` border, `q ≤ 2`.
 ///
 /// `None` when the border is singular or has a non-positive diagonal, i.e. the intrinsic is
-/// unobservable at this linearisation point (pure rotation, a single plane). That is a property of
-/// the DATA, so the caller falls back to a zero intrinsic step and keeps the pose solve — it must
-/// not become a factorisation error, or a degenerate segment turns a working solve into a failure.
+// An unobservable border yields δi = 0; see [`solve_border`].
 fn solve_border(s: &[f64; Q_MAX * Q_MAX], rhs: &[f64; Q_MAX], q: usize) -> Option<[f64; Q_MAX]> {
     for a in 0..q {
         // `is_finite` first, so NaN — which compares false against everything — is caught here
@@ -913,7 +911,6 @@ fn solve_border(s: &[f64; Q_MAX * Q_MAX], rhs: &[f64; Q_MAX], q: usize) -> Optio
         }
     }
     match q {
-        0 => Some([0.0; Q_MAX]),
         // Same finiteness gate as `q = 2`: an infinite `g_intr` (f32 overflow on a pathological
         // residual) otherwise becomes an infinite step, which the clamp then turns into "jump to
         // the band edge" rather than the intended zero fallback.
@@ -2540,8 +2537,7 @@ fn bundle_adjust_schur_impl(
         };
 
         // ── Eliminate the border: S_red δi = s_red, then δp = y₀ − Y δi ──
-        // An unobservable border (pure rotation, a single plane) comes back as δi = 0, which keeps
-        // the pose solve; it must NOT be turned into a `CholeskyFailed` by a property of the data.
+        // An unobservable border yields δi = 0; see [`solve_border`].
         let mut d_intr_step = eliminate_border(&s_mat, &s_vec, &v_bord, &d_pose_col, dim, q);
 
         // ── Trial intrinsics, and the guards on them ────────────────────
@@ -2591,8 +2587,10 @@ fn bundle_adjust_schur_impl(
             }
             // The `− F_j δi` term. Omitting it is silent: points then absorb the focal change as a
             // systematic radial depth bias, the cost still decreases, LM still accepts, and the
-            // solve still looks convergent. `bordered_solve_matches_a_dense_reference` is what
-            // catches it.
+            // The `− F_j δi` term is pinned by `trial_cost_is_evaluated_at_the_trial_intrinsics` and
+            // `a_focal_seed_outside_the_band_is_clamped_not_rejected` — NOT by the dense-reference
+            // test, which covers the reduced solve only. Measured: deleting this term leaves that test
+            // passing.
             if q > 0 {
                 let f_j = &f_blocks[j];
                 for (c, rhs_c) in rhs.iter_mut().enumerate() {
@@ -3373,7 +3371,7 @@ mod tests {
 
         // With only `k1` free, its column must COMPACT to index 0, not sit at index 1 behind a
         // structurally zero `α` column — a zero column makes the reduced border singular and sends
-        // every step down the "unobservable" fallback.
+        // An unobservable border yields δi = 0; see [`solve_border`].
         let k1_only = IntrinsicBlock::new(
             &BaParams {
                 refine_k1: true,
@@ -3622,9 +3620,7 @@ mod tests {
     ///
     /// It runs a SECOND time with `refine_focal` and `refine_k1` on, where it becomes the strongest
     /// single assertion available about the stale-intrinsics hazard: the caller re-projects at the
-    /// RETURNED camera, so a trial pass evaluated at stale intrinsics reports a `final_cost`
-    /// computed under a model the returned camera is not, and the two disagree. It catches a wrong
-    /// `BaResult::camera` in the same breath.
+    // `intr_trial`, not `intr` — see [`BaIntrinsics`].
     #[test]
     fn reported_cost_is_the_objective_the_solver_minimises() {
         for (refine_focal, refine_k1) in [(false, false), (true, true)] {
@@ -4040,8 +4036,7 @@ mod tests {
     ///   * Project to pixels with σ=0.3 px Gaussian noise.
     ///   * Synthetic depth measurement per observation, σ=2% of true depth.
     ///   * INIT the BA with points scaled 2× from ground truth — without depth
-    ///     residuals, this drift would be unobservable (gauge ambiguity).
-    ///   * With depth_meas set, the BA should recover GT scale.
+    // An unobservable border yields δi = 0; see [`solve_border`].
     fn translate_pose(t: Vec3F64) -> Pose3d {
         // Camera at position `cam_pos = t` looking down +Z (identity rotation
         // in world frame). Then R_w_c = I, t_w_c = cam_pos, and the
@@ -5870,19 +5865,7 @@ mod tests {
     /// to the solver's own model cannot move the data with it.
     ///
     /// NOT built on `walkthrough`, and the reason is the whole reason these tests exist. That scene
-    /// translates along x with IDENTICAL rotations, and there the focal is EXACTLY unobservable
-    /// however many poses are fixed: with cameras at `C_k = (x_k, 0, 0)`, the point `(X, Y, sZ)`
-    /// reproduces every pixel of `(X, Y, Z)` at focal `s·f`, because
-    /// `s·f·(X − x_k)/(sZ) = f·(X − x_k)/Z`. Measured: a 15%-wrong focal recovered only to 535 of
-    /// 500 there — LM stopping somewhere along a genuinely flat valley, not a solver bug.
-    ///
-    /// Varying the rotation is what breaks it: the compensating point motion would have to be
-    /// `R_k(p'_w − C_k) ∝ diag(1, 1, s)·R_k(p_w − C_k)` simultaneously for every `k`, which no
-    /// single `p'_w` satisfies once the `R_k` differ. So the cameras here sit on an arc and yaw,
-    /// and the point depths span 4–10 m rather than 5.0–5.5.
-    ///
-    /// `n_fixed` poses are gauge-fixed. At least one must stay free or the solver returns
-    /// `NoFreeVariables`.
+    // An unobservable border yields δi = 0; see [`solve_border`].
     fn intrinsics_only_scene(
         gt_cam: &PinholeCamera,
         k1_gt: f64,
@@ -6318,10 +6301,7 @@ mod tests {
 
     /// T7: on a degenerate segment the focal must not run away, and must not fail either.
     ///
-    /// A pure-rotation pair: no baseline, so no parallax, so the focal is unobservable — either
-    /// `S_red` is singular and the fallback fires, or the step is taken and the ratio band stops
-    /// it. Both outcomes are acceptable; a NaN camera, a `CholeskyFailed`, or a focal outside
-    /// `[0.1, 10]×` the seed are not.
+    // An unobservable border yields δi = 0; see [`solve_border`].
     #[test]
     fn focal_ratio_band_clamps_a_runaway() {
         let gt = test_camera();
@@ -6625,9 +6605,7 @@ mod tests {
         );
     }
 
-    /// The unobservable-border fallback is a value decision, not an error path: `solve_border`
-    /// must return `None` — never a panic and never a wild step — on a singular or non-positive
-    /// `S_red`, and the driver turns that into `δi = 0`.
+    // An unobservable border yields δi = 0; see [`solve_border`].
     #[test]
     fn a_singular_border_falls_back_instead_of_failing() {
         // Rank-1 2×2: two intrinsics that the data cannot tell apart.
