@@ -335,6 +335,46 @@ pub struct BaParams {
     ///
     /// Only read by [`crate::ba_schur`]; ignored by [`bundle_adjust`].
     pub sparse_reduced_system: bool,
+    /// Refine the focal length as a SHARED parameter across every camera.
+    ///
+    /// The free variable is a dimensionless scale `α` on the seed focals, not an absolute `fx`:
+    /// `fx = α·fx₀`, `fy = α·fy₀`, seeded at `α = 1`. That fixes the aspect ratio (COLMAP's
+    /// `SIMPLE_RADIAL` carries one focal for both axes) and stays meaningful for callers that
+    /// bundle-adjust in NORMALISED coordinates, where `fx₀ = 1` and an absolute focal is not a
+    /// focal. `cx`/`cy` stay fixed — the principal point is the least observable intrinsic, and
+    /// `SIMPLE_RADIAL` fixes it too.
+    ///
+    /// SHARED means exactly that: [`BaObservation`] carries no camera index, so every observation
+    /// is assumed to come from the one physical camera named by the solver's `camera` argument.
+    ///
+    /// `α` is clamped to `[0.1, 10]` — COLMAP's `min_focal_length_ratio` / `max_focal_length_ratio`
+    /// band, read as a ratio to the SEED, since no image dimensions are available here and the
+    /// band therefore cannot be expressed against the sensor.
+    ///
+    /// Use this WITH A GAUGE. With every pose free and no depth or pose prior, focal trades
+    /// against map scale — the classic focal/depth ambiguity — so the fit is only as determined as
+    /// the fixed poses, pose priors or depth measurements make it. On a degenerate segment (pure
+    /// rotation, a single plane) the intrinsic step falls back to zero rather than failing.
+    ///
+    /// Default `false`, and with both this and [`Self::refine_k1`] false the solve is bit-identical
+    /// to one run before either parameter existed.
+    ///
+    /// Only read by [`crate::ba_schur`]; ignored by [`bundle_adjust`].
+    pub refine_focal: bool,
+    /// Refine the radial distortion coefficient `k1` as a SHARED parameter across every camera.
+    ///
+    /// Seeded from `camera.k1` when this is set — and ONLY when it is set. With this `false` the
+    /// solver pins `k1 = 0` as it always has, whatever the camera carries; that is what keeps
+    /// existing callers bit-identical.
+    ///
+    /// `k1` is clamped so `1 + k1·r²` stays positive over the largest `r²` seen in the
+    /// linearisation pass: past that bound the radial map folds the image over on itself and the
+    /// residual stops being a function of the geometry.
+    ///
+    /// Default `false`. The shared-camera assumption in [`Self::refine_focal`] applies identically.
+    ///
+    /// Only read by [`crate::ba_schur`]; ignored by [`bundle_adjust`].
+    pub refine_k1: bool,
 }
 
 impl Default for BaParams {
@@ -351,6 +391,8 @@ impl Default for BaParams {
             depth_scale_prior: -1.0,
             depth_scales_init: Vec::new(),
             sparse_reduced_system: false,
+            refine_focal: false,
+            refine_k1: false,
         }
     }
 }
@@ -364,6 +406,12 @@ pub struct BaResult {
     /// Fitted per-view depth scale, one per pose. EMPTY unless
     /// [`BaParams::depth_log_residual`] was set.
     pub depth_scales: Vec<f32>,
+    /// Fitted shared intrinsics — the seed camera with `fx`/`fy` scaled by the fitted `α` and `k1`
+    /// replaced by the fitted coefficient. `None` unless [`BaParams::refine_focal`] or
+    /// [`BaParams::refine_k1`] was set, so nothing is invented for callers that did not ask.
+    ///
+    /// `cx`, `cy`, `k2`, `p1`, `p2` are copied through untouched; this solver does not fit them.
+    pub camera: Option<PinholeCamera>,
     /// Number of LM iterations performed.
     pub iterations: usize,
     /// Whether the optimizer converged.
@@ -1019,6 +1067,8 @@ pub fn bundle_adjust(
     Ok(BaResult {
         // `bundle_adjust` does not implement the log-depth path; see `BaParams::depth_log_residual`.
         depth_scales: Vec::new(),
+        // Nor does it free any intrinsic; see `BaParams::refine_focal`.
+        camera: None,
         poses: out_poses,
         points: out_points,
         iterations: result.iterations,
