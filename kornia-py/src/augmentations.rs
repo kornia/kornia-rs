@@ -46,12 +46,20 @@ pub fn set_seed(seed: Option<u64>) {
 
 /// Extract a required key from a params dict.
 ///
-/// Panics on missing key to match the previous `unwrap()` behavior at each call site.
+/// Returns a `PyKeyError` (rather than panicking) if the key is missing,
+/// since `params` dicts come from arbitrary user code and a malformed dict
+/// should surface as a normal Python exception, not a Rust panic.
 fn dict_get<'py, T>(d: &Bound<'py, PyDict>, key: &str) -> PyResult<T>
 where
     T: for<'a> FromPyObject<'a, 'py, Error = PyErr>,
 {
-    d.get_item(key)?.unwrap().extract::<T>()
+    d.get_item(key)?
+        .ok_or_else(|| {
+            PyErr::new::<pyo3::exceptions::PyKeyError, _>(format!(
+                "missing required key {key:?}"
+            ))
+        })?
+        .extract::<T>()
 }
 
 /// Build a one-key `dict` (the common `last_params` shape).
@@ -154,6 +162,29 @@ fn apply_saturation_scalar(src: &[u8], dst: &mut [u8], npixels: usize, saturatio
             *dst.get_unchecked_mut(base) = (r * saturation + gw).clamp(0.0, 255.0) as u8;
             *dst.get_unchecked_mut(base + 1) = (g * saturation + gw).clamp(0.0, 255.0) as u8;
             *dst.get_unchecked_mut(base + 2) = (b * saturation + gw).clamp(0.0, 255.0) as u8;
+        }
+    }
+}
+
+/// In-place saturation: reads then writes each pixel within a single `&mut`
+/// borrow, so it never creates a `&[u8]` aliasing the same memory as a live
+/// `&mut [u8]` (unlike calling `apply_saturation` with a src slice built over
+/// `dst`'s own bytes, which is UB under Rust's aliasing model even when each
+/// element is read before it is written).
+#[inline]
+fn apply_saturation_inplace(buf: &mut [u8], npixels: usize, saturation: f32) {
+    let inv_sat = 1.0 - saturation;
+    for i in 0..npixels {
+        let base = i * 3;
+        unsafe {
+            let r = *buf.get_unchecked(base) as f32;
+            let g = *buf.get_unchecked(base + 1) as f32;
+            let b = *buf.get_unchecked(base + 2) as f32;
+            let gray = r * LW[0] + g * LW[1] + b * LW[2];
+            let gw = gray * inv_sat;
+            *buf.get_unchecked_mut(base) = (r * saturation + gw).clamp(0.0, 255.0) as u8;
+            *buf.get_unchecked_mut(base + 1) = (g * saturation + gw).clamp(0.0, 255.0) as u8;
+            *buf.get_unchecked_mut(base + 2) = (b * saturation + gw).clamp(0.0, 255.0) as u8;
         }
     }
 }
@@ -280,6 +311,35 @@ fn apply_hue(src: &[u8], dst: &mut [u8], npixels: usize, hue: f32) {
     }
 }
 
+/// In-place variant of `apply_hue` — see `apply_saturation_inplace` for why
+/// this avoids the aliasing `&[u8]`/`&mut [u8]` pattern.
+#[inline]
+fn apply_hue_inplace(buf: &mut [u8], npixels: usize, hue: f32) {
+    let angle = hue * std::f32::consts::TAU;
+    let cos_a = angle.cos();
+    let sin_a = angle.sin();
+
+    let one_third = 1.0 / 3.0;
+    let sqrt_third = (1.0_f32 / 3.0).sqrt();
+
+    let a = cos_a + one_third * (1.0 - cos_a);
+    let b = one_third * (1.0 - cos_a) - sqrt_third * sin_a;
+    let c = one_third * (1.0 - cos_a) + sqrt_third * sin_a;
+
+    for i in 0..npixels {
+        let base = i * 3;
+        unsafe {
+            let r = *buf.get_unchecked(base) as f32;
+            let g = *buf.get_unchecked(base + 1) as f32;
+            let b_val = *buf.get_unchecked(base + 2) as f32;
+
+            *buf.get_unchecked_mut(base) = (a * r + b * g + c * b_val).clamp(0.0, 255.0) as u8;
+            *buf.get_unchecked_mut(base + 1) = (c * r + a * g + b * b_val).clamp(0.0, 255.0) as u8;
+            *buf.get_unchecked_mut(base + 2) = (b * r + c * g + a * b_val).clamp(0.0, 255.0) as u8;
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn fused_color_jitter(
     src: &[u8],
@@ -347,8 +407,11 @@ fn fused_color_jitter(
             }
             2 if has_saturation => {
                 if has_pending_linear {
-                    let input = current_src(src, dst, dst_init);
-                    flush_linear(input, dst, pending_b, pending_c, pending_mean);
+                    if dst_init {
+                        flush_linear_inplace(dst, pending_b, pending_c, pending_mean);
+                    } else {
+                        flush_linear(src, dst, pending_b, pending_c, pending_mean);
+                    }
                     pending_b = 0.0;
                     pending_c = 1.0;
                     has_pending_linear = false;
@@ -357,14 +420,20 @@ fn fused_color_jitter(
                         pending_mean = byte_mean(dst);
                     }
                 }
-                let input = current_src(src, dst, dst_init);
-                apply_saturation(input, dst, npixels, saturation);
+                if dst_init {
+                    apply_saturation_inplace(dst, npixels, saturation);
+                } else {
+                    apply_saturation(src, dst, npixels, saturation);
+                }
                 dst_init = true;
             }
             3 if has_hue => {
                 if has_pending_linear {
-                    let input = current_src(src, dst, dst_init);
-                    flush_linear(input, dst, pending_b, pending_c, pending_mean);
+                    if dst_init {
+                        flush_linear_inplace(dst, pending_b, pending_c, pending_mean);
+                    } else {
+                        flush_linear(src, dst, pending_b, pending_c, pending_mean);
+                    }
                     pending_b = 0.0;
                     pending_c = 1.0;
                     has_pending_linear = false;
@@ -373,8 +442,11 @@ fn fused_color_jitter(
                         pending_mean = byte_mean(dst);
                     }
                 }
-                let input = current_src(src, dst, dst_init);
-                apply_hue(input, dst, npixels, hue);
+                if dst_init {
+                    apply_hue_inplace(dst, npixels, hue);
+                } else {
+                    apply_hue(src, dst, npixels, hue);
+                }
                 dst_init = true;
             }
             _ => {}
@@ -382,8 +454,11 @@ fn fused_color_jitter(
     }
 
     if has_pending_linear {
-        let input = current_src(src, dst, dst_init);
-        flush_linear(input, dst, pending_b, pending_c, pending_mean);
+        if dst_init {
+            flush_linear_inplace(dst, pending_b, pending_c, pending_mean);
+        } else {
+            flush_linear(src, dst, pending_b, pending_c, pending_mean);
+        }
         dst_init = true;
     }
 
@@ -396,24 +471,9 @@ fn fused_color_jitter(
     }
 }
 
-/// Return the correct input slice for the next op: the real `src` if `dst` has
-/// not yet been written, otherwise a dst-aliased slice so the op runs in-place.
-///
-/// The returned slice has lifetime `'a` (tied to `src`), not to `dst`, so the
-/// caller is free to pass `dst` mutably to the op. Safety: this is only sound
-/// if each op reads a pixel before writing it, which holds for the LUT,
-/// brightness, saturation, and hue kernels in this module.
-#[inline]
-fn current_src<'a>(src: &'a [u8], dst: &[u8], dst_init: bool) -> &'a [u8] {
-    if dst_init {
-        unsafe { std::slice::from_raw_parts(dst.as_ptr(), dst.len()) }
-    } else {
-        src
-    }
-}
-
 /// Apply accumulated linear (brightness+contrast) transform, src → dst.
-/// `src` and `dst` may alias (in-place operation).
+/// `src` and `dst` must be genuinely distinct buffers — use
+/// `flush_linear_inplace` when operating on `dst` itself.
 #[inline]
 fn flush_linear(src: &[u8], dst: &mut [u8], b: f32, c: f32, m: f32) {
     if c == 1.0 {
@@ -421,6 +481,23 @@ fn flush_linear(src: &[u8], dst: &mut [u8], b: f32, c: f32, m: f32) {
     } else {
         let lut = build_linear_lut(b, c, m);
         apply_lut(src, dst, &lut);
+    }
+}
+
+/// In-place variant of `flush_linear`: reads then writes each byte within a
+/// single `&mut` borrow, so it never creates a `&[u8]` aliasing the same
+/// memory as a live `&mut [u8]` (see `apply_saturation_inplace`).
+#[inline]
+fn flush_linear_inplace(buf: &mut [u8], b: f32, c: f32, m: f32) {
+    if c == 1.0 {
+        for v in buf.iter_mut() {
+            *v = (*v as f32 + b).clamp(0.0, 255.0) as u8;
+        }
+    } else {
+        let lut = build_linear_lut(b, c, m);
+        for v in buf.iter_mut() {
+            *v = lut[*v as usize];
+        }
     }
 }
 
@@ -568,10 +645,15 @@ impl PyColorJitter {
         let h: f64 = dict_get(d, "hue")?;
         let order_list: Vec<u8> = dict_get(d, "order")?;
         let factors = [b, c, s, h];
-        let order: Vec<(u8, f64)> = order_list
-            .iter()
-            .map(|&op| (op, factors[op as usize]))
-            .collect();
+        let mut order: Vec<(u8, f64)> = Vec::with_capacity(order_list.len());
+        for op in order_list {
+            let v = *factors.get(op as usize).ok_or_else(|| {
+                PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                    "invalid op index {op} in 'order' (expected 0..=3)"
+                ))
+            })?;
+            order.push((op, v));
+        }
         Ok((b, c, s, h, order))
     }
 }
