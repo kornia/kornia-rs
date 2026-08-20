@@ -1,5 +1,5 @@
-use crate::paligemma::token_output_stream::TokenOutputStream;
 use crate::paligemma::PaligemmaError;
+use crate::token_output_stream::TokenOutputStream;
 use candle_core::{DType, Device, Tensor};
 use candle_transformers::generation::LogitsProcessor;
 use candle_transformers::models::paligemma::Model;

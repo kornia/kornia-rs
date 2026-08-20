@@ -24,4 +24,5 @@ thiserror = { workspace = true }
 
 [features]
 cuda = ["kornia-vlm/flash-attn", "kornia/cuda"]
+metal = ["kornia-vlm/metal"]
 gstreamer = ["kornia-io/gstreamer"]
