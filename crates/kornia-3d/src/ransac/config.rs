@@ -36,6 +36,11 @@ pub struct RansacConfig {
     pub parallel: bool,
     /// Consensus strategy applied to per-hypothesis residuals.
     pub consensus: ConsensusKind,
+    /// Enable Wald's SPRT to short-circuit bad hypotheses early.
+    /// When `Some`, the driver verifies a hypothesis by sequentially evaluating
+    /// points against the SPRT threshold and stops as soon as the model is
+    /// rejected, instead of scoring the full residual vector in one batch.
+    pub sprt: Option<super::SPRTConfig>,
 }
 
 impl Default for RansacConfig {
@@ -47,6 +52,7 @@ impl Default for RansacConfig {
             lo_every: 0,
             parallel: false,
             consensus: ConsensusKind::Threshold,
+            sprt: None,
         }
     }
 }
