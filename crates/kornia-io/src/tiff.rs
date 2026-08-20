@@ -375,8 +375,8 @@ fn decode_tiff_impl_u16(
     let mut temp_buffer = vec![0u8; bytes_needed];
     decoder.read_image_bytes(&mut temp_buffer)?;
 
-    for (i, chunk) in temp_buffer.chunks_exact(2).enumerate() {
-        dst[i] = u16::from_ne_bytes([chunk[0], chunk[1]]);
+    for (i, chunk) in temp_buffer.as_chunks::<2>().0.iter().enumerate() {
+        dst[i] = u16::from_ne_bytes(*chunk);
     }
 
     Ok(())
@@ -410,8 +410,8 @@ fn decode_tiff_impl_f32(
     let mut temp_buffer = vec![0u8; bytes_needed];
     decoder.read_image_bytes(&mut temp_buffer)?;
 
-    for (i, chunk) in temp_buffer.chunks_exact(4).enumerate() {
-        dst[i] = f32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+    for (i, chunk) in temp_buffer.as_chunks::<4>().0.iter().enumerate() {
+        dst[i] = f32::from_ne_bytes(*chunk);
     }
 
     Ok(())
