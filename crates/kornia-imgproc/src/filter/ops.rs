@@ -191,13 +191,9 @@ pub fn sobel<const C: usize>(
     separable_filter(src, &mut gy, &kernel_y, &kernel_x)?;
 
     // compute the magnitude in parallel by rows
-    dst.as_slice_mut()
-        .iter_mut()
-        .zip(gx.as_slice().iter())
-        .zip(gy.as_slice().iter())
-        .for_each(|((dst, &gx), &gy)| {
-            *dst = (gx * gx + gy * gy).sqrt();
-        });
+    crate::parallel::par_iter_rows_val_two(&gx, &gy, dst, |&gx_val, &gy_val, dst_val| {
+        *dst_val = (gx_val * gx_val + gy_val * gy_val).sqrt();
+    });
 
     Ok(())
 }
@@ -228,13 +224,10 @@ pub fn scharr<const C: usize>(
     let mut gy = Image::<f32, C>::from_size_val(src.size(), 0.0)?;
     separable_filter(src, &mut gy, &kernel_y, &kernel_x)?;
 
-    dst.as_slice_mut()
-        .iter_mut()
-        .zip(gx.as_slice().iter())
-        .zip(gy.as_slice().iter())
-        .for_each(|((dst, &gx), &gy)| {
-            *dst = (gx * gx + gy * gy).sqrt();
-        });
+    // compute the magnitude in parallel by rows
+    crate::parallel::par_iter_rows_val_two(&gx, &gy, dst, |&gx_val, &gy_val, dst_val| {
+        *dst_val = (gx_val * gx_val + gy_val * gy_val).sqrt();
+    });
 
     Ok(())
 }
