@@ -430,6 +430,81 @@ where
     })
 }
 
+// ── PinnedWcResource / PinnedWcAllocator ─────────────────────────────────────
+
+/// A [`TensorAllocator`] that allocates zero-initialised page-locked host
+/// memory with Write-Combining (WC) enabled. This bypasses the CPU cache,
+/// making it massively faster for unidirectional CPU -> GPU streaming
+/// (like uploading camera frames) on platforms like Jetson or desktop.
+#[derive(Clone)]
+pub struct PinnedWcAllocator {
+    /// Context that owns the pinned registration.
+    pub ctx: Arc<CudaContext>,
+}
+
+impl TensorAllocator for PinnedWcAllocator {
+    fn allocate(
+        &self,
+        layout: std::alloc::Layout,
+    ) -> Result<Box<dyn MemoryResource>, TensorAllocatorError> {
+        let n_bytes = layout.size().max(1);
+        // SAFETY: flags = CU_MEMHOSTALLOC_WRITECOMBINED -> bypass CPU cache.
+        let ptr = unsafe {
+            cudarc::driver::result::malloc_host(
+                n_bytes,
+                cudarc::driver::sys::CU_MEMHOSTALLOC_WRITECOMBINED,
+            )
+        }
+        .map_err(|e| TensorAllocatorError::CudaError(e.to_string()))?;
+        let ptr = NonNull::new(ptr as *mut u8)
+            .ok_or_else(|| TensorAllocatorError::CudaError("null pinned wc alloc".into()))?;
+        // Zero-initialise to match the other allocators' contract.
+        unsafe { std::ptr::write_bytes(ptr.as_ptr(), 0, n_bytes) };
+        Ok(Box::new(PinnedResource {
+            ptr,
+            len_bytes: layout.size(),
+            _ctx: self.ctx.clone(),
+        }))
+    }
+}
+
+/// Convenience: an [`AllocHandle`] for Write-Combined page-locked host memory on `ctx`.
+pub fn pinned_wc_alloc(ctx: &Arc<CudaContext>) -> AllocHandle {
+    Arc::new(PinnedWcAllocator { ctx: ctx.clone() })
+}
+
+/// Allocate a zero-initialised **host** tensor in Write-Combined page-locked memory.
+pub fn zeros_pinned_wc<T, const N: usize>(
+    shape: [usize; N],
+    ctx: &Arc<CudaContext>,
+) -> Result<Tensor<T, N>, CudaError>
+where
+    T: DeviceRepr + ValidAsZeroBits + 'static,
+{
+    let alloc = pinned_wc_alloc(ctx);
+    let numel: usize = shape.iter().product();
+    let layout =
+        std::alloc::Layout::array::<T>(numel).map_err(|e| CudaError::Driver(e.to_string()))?;
+    let owner = alloc
+        .allocate(layout)
+        .map_err(|e| CudaError::Driver(e.to_string()))?;
+    let ptr = owner.as_ptr() as *mut T;
+    let nn_ptr = unsafe { NonNull::new_unchecked(ptr) };
+    let storage = TensorStorage {
+        ptr: nn_ptr,
+        len: layout.size(),
+        owner,
+        alloc,
+        _marker: PhantomData,
+    };
+    let strides = get_strides_from_shape(shape);
+    Ok(Tensor {
+        storage,
+        shape,
+        strides,
+    })
+}
+
 // ── CudaUnifiedAllocator ─────────────────────────────────────────────────────
 
 /// A [`TensorAllocator`] that allocates zero-initialised CUDA managed (unified) memory.

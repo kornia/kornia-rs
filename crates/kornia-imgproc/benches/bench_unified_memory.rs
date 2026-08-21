@@ -29,6 +29,8 @@ use std::time::Instant;
 use argh::FromArgs;
 use cudarc::driver::{CudaContext, CudaStream};
 use kornia_image::{Image, ImageError, ImageSize};
+use kornia_tensor::cuda::zeros_pinned_wc;
+use rayon::prelude::*;
 
 /// Benchmark unified memory against explicit device copies.
 #[derive(FromArgs)]
@@ -72,11 +74,19 @@ where
 /// Write a ramp into `buf`. The same work whether `buf` is pageable host
 /// memory or unified memory — only the destination differs, which is exactly
 /// the cost being compared.
+/// Uses Rayon to saturate CPU memory bandwidth.
 fn fill_ramp(buf: &mut [f32]) {
     let inv = 1.0 / buf.len() as f32;
-    for (i, px) in buf.iter_mut().enumerate() {
-        *px = i as f32 * inv;
-    }
+    // Chunking to balance Rayon overhead vs memory write speed
+    let chunk_size = 4096;
+    buf.par_chunks_mut(chunk_size)
+        .enumerate()
+        .for_each(|(chunk_idx, chunk)| {
+            let offset = chunk_idx * chunk_size;
+            for (i, px) in chunk.iter_mut().enumerate() {
+                *px = (offset + i) as f32 * inv;
+            }
+        });
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -124,10 +134,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!("iters: {} (warmup {})", args.iters, args.warmup);
 
-    println!("\n── one-time, per buffer ─────────────────────────────────────");
     println!(
-        "{:<16} {:>9} {:>14} {:>14}",
-        "size", "MiB", "zeros_cuda ms", "unified ms"
+        "\n── one-time, per buffer ─────────────────────────────────────────────────────────────"
+    );
+    println!(
+        "{:<16} {:>9} {:>14} {:>14} {:>14}",
+        "size", "MiB", "zeros_cuda ms", "unified ms", "pinned_wc ms"
     );
     for &(label, w, h) in SIZES {
         let size = ImageSize {
@@ -146,16 +158,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::hint::black_box(&u);
             Ok(())
         })?;
+        let pinned = timed(args.warmup, args.iters, || {
+            let p = Image::<f32, 3>(
+                zeros_pinned_wc([size.height, size.width, 3], stream.context())
+                    .map_err(|e| ImageError::Cuda(e.to_string()))?,
+            );
+            std::hint::black_box(&p);
+            Ok(())
+        })?;
 
-        println!("{label:<16} {mib:>9.1} {dev:>14.3} {uni:>14.3}");
+        println!("{label:<16} {mib:>9.1} {dev:>14.3} {uni:>14.3} {pinned:>14.3}");
     }
 
-    println!("\n── per frame ────────────────────────────────────────────────");
+    println!("\n── per frame ─────────────────────────────────────────────────────────────────────────────────");
     println!(
-        "{:<16} {:>8} {:>9} {:>9} {:>9} {:>9} {:>9}",
-        "size", "fill", "fill_uni", "H2D", "D2H", "explicit", "unified"
+        "{:<16} {:>8} {:>9} {:>9} {:>9} {:>9} {:>9} {:>9}",
+        "size", "fill", "fill_uni", "fill_wc", "H2D", "D2H", "explicit", "unified"
     );
-    println!("{}", "-".repeat(76));
+    println!("{}", "-".repeat(95));
 
     for &(label, w, h) in SIZES {
         let size = ImageSize {
@@ -178,6 +198,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         })?;
 
+        let mut pinned_wc = Image::<f32, 3>(
+            zeros_pinned_wc([size.height, size.width, 3], stream.context())
+                .map_err(|e| ImageError::Cuda(e.to_string()))?,
+        );
+        let fill_wc = timed(args.warmup, args.iters, || {
+            fill_ramp(pinned_wc.as_slice_mut());
+            Ok(())
+        })?;
+
         // Explicit path: upload the produced frame, run, download the result.
         let h2d = timed(args.warmup, args.iters, || {
             let d = host.to_cuda(&stream)?;
@@ -196,7 +225,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let unified = fill_uni;
 
         println!(
-            "{label:<16} {fill:>8.3} {fill_uni:>9.3} {h2d:>9.3} {d2h:>9.3} \
+            "{label:<16} {fill:>8.3} {fill_uni:>9.3} {fill_wc:>9.3} {h2d:>9.3} {d2h:>9.3} \
              {explicit:>9.3} {unified:>9.3}"
         );
     }
@@ -230,12 +259,12 @@ fn end_to_end_resize(
 
     const MODE: InterpolationMode = InterpolationMode::Bilinear;
 
-    println!("\n── per frame, end-to-end resize() ───────────────────────────");
+    println!("\n── per frame, end-to-end resize() ───────────────────────────────────────────────────────────");
     println!(
-        "{:<16} {:>11} {:>11} {:>9}",
-        "size", "explicit ms", "unified ms", "speedup"
+        "{:<16} {:>11} {:>11} {:>11} {:>9}",
+        "size", "explicit ms", "unified ms", "pinned_wc ms", "speedup"
     );
-    println!("{}", "-".repeat(52));
+    println!("{}", "-".repeat(80));
 
     for &(label, w, h) in SIZES {
         let src_size = ImageSize {
@@ -265,9 +294,6 @@ fn end_to_end_resize(
         let unified = timed(warmup, iters, || {
             fill_ramp(u_src.as_slice_mut());
             resize(&u_src, &mut u_dst, MODE)?;
-            // Unified memory has no D2H copy to implicitly synchronize on, so
-            // the host must wait for the kernel itself before reading — this is
-            // part of the per-frame cost, not something to leave out of it.
             stream
                 .synchronize()
                 .map_err(|e| ImageError::Cuda(e.to_string()))?;
@@ -275,9 +301,34 @@ fn end_to_end_resize(
             Ok(())
         })?;
 
+        let mut wc_src = Image::<f32, 3>(
+            zeros_pinned_wc([src_size.height, src_size.width, 3], stream.context())
+                .map_err(|e| ImageError::Cuda(e.to_string()))?,
+        );
+        let mut wc_dst = Image::<f32, 3>(
+            zeros_pinned_wc([dst_size.height, dst_size.width, 3], stream.context())
+                .map_err(|e| ImageError::Cuda(e.to_string()))?,
+        );
+        let pinned = timed(warmup, iters, || {
+            fill_ramp(wc_src.as_slice_mut());
+            // Since pinned is host memory, we must do DMA transfers to device.
+            let d_src = wc_src.to_cuda(stream)?;
+            let mut d_dst = Image::<f32, 3>::zeros_cuda(dst_size, stream)?;
+            resize(&d_src, &mut d_dst, MODE)?;
+            // DMA transfer back
+            d_dst.to_host_into(wc_dst.as_slice_mut())?;
+            // Wait for transfers
+            stream
+                .synchronize()
+                .map_err(|e| ImageError::Cuda(e.to_string()))?;
+            std::hint::black_box(wc_dst.as_slice());
+            Ok(())
+        })?;
+
+        let best_opt = unified.min(pinned);
         println!(
-            "{label:<16} {explicit:>11.3} {unified:>11.3} {:>8.2}x",
-            explicit / unified
+            "{label:<16} {explicit:>11.3} {unified:>11.3} {pinned:>11.3} {:>8.2}x",
+            explicit / best_opt
         );
     }
 

@@ -37,7 +37,10 @@ use kornia_imgproc::{
             swizzle::launch_bgr_from_rgb_u8,
             yuv::{launch_ycc_from_rgb_f32, launch_ycc_from_rgb_u8, ChromaOrder},
         },
-        filter::{launch_gradient_magnitude_f32, launch_separable_filter_f32},
+        filter::{
+            launch_binomial3_u8, launch_gradient_magnitude_f32, launch_separable_blur_u8q8,
+            launch_separable_filter_f32,
+        },
         morphology::{launch_morphology_u8_cuda, MorphBorder, MorphOp},
         remap::{
             launch_remap_bilinear_cuda, launch_remap_bilinear_u8_cuda, launch_remap_nearest_u8_cuda,
@@ -52,7 +55,7 @@ use kornia_imgproc::{
         warp_perspective::launch_warp_perspective_bilinear_cuda,
         warp_perspective_u8::launch_warp_perspective_u8_bilinear_cuda,
     },
-    filter::{gaussian_blur, kernels::gaussian_kernel_1d, sobel},
+    filter::{box_blur_u8, gaussian_blur, gaussian_blur_u8, kernels::gaussian_kernel_1d, sobel},
     interpolation::{remap, remap_u8, InterpolationMode},
     morphology::{
         dilate, erode,
@@ -359,6 +362,64 @@ fn cpu_gaussian_blur_ms(w: u32, h: u32) -> f64 {
     let t = Instant::now();
     for _ in 0..ITERS {
         gaussian_blur(&src, &mut dst, (5, 5), (1.5, 1.5)).expect("gaussian_blur");
+        std::hint::black_box(dst.as_slice());
+    }
+    t.elapsed().as_secs_f64() * 1e3 / ITERS as f64
+}
+
+fn cpu_gaussian_blur_u8_ms(w: u32, h: u32) -> f64 {
+    let n = w as usize * h as usize * NC;
+    let src = Image::<u8, 3>::new(
+        ImageSize {
+            width: w as usize,
+            height: h as usize,
+        },
+        (0..n).map(|i| (i % 256) as u8).collect(),
+    )
+    .expect("src");
+    let mut dst = Image::<u8, 3>::from_size_val(
+        ImageSize {
+            width: w as usize,
+            height: h as usize,
+        },
+        0,
+    )
+    .expect("dst");
+    for _ in 0..5 {
+        gaussian_blur_u8(&src, &mut dst, (3, 3), (1.0, 1.0)).expect("warmup");
+    }
+    let t = Instant::now();
+    for _ in 0..ITERS {
+        gaussian_blur_u8(&src, &mut dst, (3, 3), (1.0, 1.0)).expect("gaussian_blur_u8");
+        std::hint::black_box(dst.as_slice());
+    }
+    t.elapsed().as_secs_f64() * 1e3 / ITERS as f64
+}
+
+fn cpu_box_blur_u8_ms(w: u32, h: u32) -> f64 {
+    let n = w as usize * h as usize * NC;
+    let src = Image::<u8, 3>::new(
+        ImageSize {
+            width: w as usize,
+            height: h as usize,
+        },
+        (0..n).map(|i| (i % 256) as u8).collect(),
+    )
+    .expect("src");
+    let mut dst = Image::<u8, 3>::from_size_val(
+        ImageSize {
+            width: w as usize,
+            height: h as usize,
+        },
+        0,
+    )
+    .expect("dst");
+    for _ in 0..5 {
+        box_blur_u8(&src, &mut dst, (3, 3)).expect("warmup");
+    }
+    let t = Instant::now();
+    for _ in 0..ITERS {
+        box_blur_u8(&src, &mut dst, (3, 3)).expect("box_blur_u8");
         std::hint::black_box(dst.as_slice());
     }
     t.elapsed().as_secs_f64() * 1e3 / ITERS as f64
@@ -1013,6 +1074,80 @@ fn main() {
             &format!("{sw}×{sh}"),
             cpu_ms,
             &seg,
+        );
+
+        // Gaussian blur u8 (3x3 binomial fast path)
+        let src_host_u8: Vec<u8> = (0..n).map(|i| (i % 256) as u8).collect();
+        let mut dst_host_u8 = vec![0u8; n];
+        let mut src_dev_u8 = stream.clone_htod(&src_host_u8).expect("H→D src");
+        let mut dst_dev_u8 = stream.alloc_zeros::<u8>(n).expect("alloc dst");
+        let mut scratch_u8 = stream.alloc_zeros::<u8>(n).expect("alloc scratch");
+
+        let cpu_ms_u8 = cpu_gaussian_blur_u8_ms(sw, sh);
+        let seg_u8 = bench_segments(
+            &ctx,
+            &stream,
+            &src_host_u8,
+            &mut dst_host_u8,
+            &mut src_dev_u8,
+            &mut dst_dev_u8,
+            |src, dst| {
+                launch_binomial3_u8(
+                    &ctx2,
+                    &stream2,
+                    src,
+                    dst,
+                    &mut scratch_u8,
+                    sw,
+                    sh,
+                    NC as u32,
+                )
+                .expect("gaussian_blur_u8 (binomial)");
+            },
+        );
+        print_row(
+            "gaussian_blur (3x3, u8)",
+            "n/a",
+            &format!("{sw}×{sh}"),
+            cpu_ms_u8,
+            &seg_u8,
+        );
+
+        // Box blur u8 (3x3 general Q8 path)
+        let k_box = vec![85u8, 86, 85]; // 256/3 quantized
+        let k_box_dev = stream.clone_htod(&k_box).expect("H→D box kernel");
+        let cpu_box_ms = cpu_box_blur_u8_ms(sw, sh);
+        let seg_box = bench_segments(
+            &ctx,
+            &stream,
+            &src_host_u8,
+            &mut dst_host_u8,
+            &mut src_dev_u8,
+            &mut dst_dev_u8,
+            |src, dst| {
+                launch_separable_blur_u8q8(
+                    &ctx2,
+                    &stream2,
+                    src,
+                    dst,
+                    &mut scratch_u8,
+                    &k_box_dev,
+                    3,
+                    &k_box_dev,
+                    3,
+                    sw,
+                    sh,
+                    NC as u32,
+                )
+                .expect("box_blur_u8");
+            },
+        );
+        print_row(
+            "box_blur (3x3, u8)",
+            "n/a",
+            &format!("{sw}×{sh}"),
+            cpu_box_ms,
+            &seg_box,
         );
 
         let (sobel_x, sobel_y) =
