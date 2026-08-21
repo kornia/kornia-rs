@@ -1353,8 +1353,6 @@ unsafe fn orientation_kp_avx2(src_slice: &[u8], r0: usize, c0: usize, cols: usiz
 
 fn corner_orientations_u8(src: &Image<u8, 1>, corners: &[[usize; 2]]) -> Vec<f32> {
     // Caller must have already filtered keypoints by border distance ≥ 15.
-    const HALF: i32 = 15;
-
     let cols = src.cols();
     let src_slice = src.as_slice();
 
@@ -1376,40 +1374,53 @@ fn corner_orientations_u8(src: &Image<u8, 1>, corners: &[[usize; 2]]) -> Vec<f32
                 return unsafe { orientation_kp_avx2(src_slice, r0, c0, cols) };
             }
 
-            // Standard ORB `ICAngle`: v=0 processed alone, then pairs (+v, -v)
-            // together with half-width UMAX[v]. The mask is not a clean Euclidean
-            // disk — see UMAX docstring for the symmetrization that enforces
-            // 45°-diagonal symmetry.
-            let mut m01: i32 = 0;
-            let mut m10: i32 = 0;
-            let center = r0 as isize * cols as isize + c0 as isize;
-
-            for u in -HALF..=HALF {
-                let idx = (center + u as isize) as usize;
-                let px = unsafe { *src_slice.get_unchecked(idx) } as i32;
-                m10 += u * px;
-            }
-
-            for v in 1..=HALF {
-                let d = UMAX[v as usize];
-                let mut v_sum: i32 = 0;
-                let plus_base = center + (v as isize) * cols as isize;
-                let minus_base = center - (v as isize) * cols as isize;
-                for u in -d..=d {
-                    let val_plus =
-                        unsafe { *src_slice.get_unchecked((plus_base + u as isize) as usize) }
-                            as i32;
-                    let val_minus =
-                        unsafe { *src_slice.get_unchecked((minus_base + u as isize) as usize) }
-                            as i32;
-                    v_sum += val_plus - val_minus;
-                    m10 += u * (val_plus + val_minus);
-                }
-                m01 += v * v_sum;
-            }
-            (m01 as f32).atan2(m10 as f32)
+            unsafe { orientation_kp_scalar(src_slice, r0, c0, cols) }
         })
         .collect()
+}
+
+/// Portable reference orientation for a single keypoint.
+///
+/// Standard ORB `ICAngle`: v=0 processed alone, then pairs (+v, -v) together
+/// with half-width UMAX[v]. The mask is not a clean Euclidean disk — see UMAX
+/// docstring for the symmetrization that enforces 45°-diagonal symmetry.
+///
+/// Split out of [`corner_orientations_u8`] so the SIMD kernels can be compared
+/// against it directly, without routing through the dispatcher.
+///
+/// # Safety
+/// - the 31×31 patch centred on `(r0, c0)` must lie within `src_slice`; callers
+///   filter keypoints by border distance ≥ 15 beforehand.
+unsafe fn orientation_kp_scalar(src_slice: &[u8], r0: usize, c0: usize, cols: usize) -> f32 {
+    const HALF: i32 = 15;
+
+    let mut m01: i32 = 0;
+    let mut m10: i32 = 0;
+    let center = r0 as isize * cols as isize + c0 as isize;
+
+    for u in -HALF..=HALF {
+        let idx = (center + u as isize) as usize;
+        let px = unsafe { *src_slice.get_unchecked(idx) } as i32;
+        m10 += u * px;
+    }
+
+    for v in 1..=HALF {
+        let d = UMAX[v as usize];
+        let mut v_sum: i32 = 0;
+        let plus_base = center + (v as isize) * cols as isize;
+        let minus_base = center - (v as isize) * cols as isize;
+        for u in -d..=d {
+            let val_plus =
+                unsafe { *src_slice.get_unchecked((plus_base + u as isize) as usize) } as i32;
+            let val_minus =
+                unsafe { *src_slice.get_unchecked((minus_base + u as isize) as usize) } as i32;
+            v_sum += val_plus - val_minus;
+            m10 += u * (val_plus + val_minus);
+        }
+        m01 += v * v_sum;
+    }
+
+    (m01 as f32).atan2(m10 as f32)
 }
 
 fn corner_orientations(src: &Image<f32, 1>, corners: &[[usize; 2]]) -> Vec<f32> {
@@ -1766,14 +1777,20 @@ mod tests {
             })
             .collect();
 
-        // TODO: Audit that the environment access only happens in single-threaded code.
-        unsafe { std::env::set_var("KORNIA_ORB_ORI_NEON", "1") };
-        let neon = corner_orientations_u8(&img, &corners);
-        // TODO: Audit that the environment access only happens in single-threaded code.
-        unsafe { std::env::set_var("KORNIA_ORB_ORI_NEON", "0") };
-        let scalar = corner_orientations_u8(&img, &corners);
-        // TODO: Audit that the environment access only happens in single-threaded code.
-        unsafe { std::env::remove_var("KORNIA_ORB_ORI_NEON") };
+        // Call both kernels directly rather than toggling `KORNIA_ORB_ORI_NEON`
+        // around the dispatcher: the test harness runs tests on multiple
+        // threads, so mutating the process environment here would race any
+        // concurrent reader (and is UB under the 2024 edition).
+        let cols = img.cols();
+        let slice = img.as_slice();
+        let neon: Vec<f32> = corners
+            .iter()
+            .map(|&[r0, c0]| unsafe { super::orientation_kp_neon(slice, r0, c0, cols) })
+            .collect();
+        let scalar: Vec<f32> = corners
+            .iter()
+            .map(|&[r0, c0]| unsafe { super::orientation_kp_scalar(slice, r0, c0, cols) })
+            .collect();
 
         for (i, (n, s)) in neon.iter().zip(scalar.iter()).enumerate() {
             // atan2 of identical integer moments is bit-identical.
