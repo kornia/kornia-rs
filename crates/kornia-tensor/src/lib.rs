@@ -210,7 +210,10 @@ pub mod ops;
 pub mod view;
 
 pub use crate::allocator::{host_alloc, AllocHandle, CpuAllocator, TensorAllocator};
-pub use crate::ops::{apply_binary, apply_unary, reduce, BinaryOp, OpsError, ReduceOp, UnaryOp};
+pub use crate::ops::{
+    apply_binary, apply_binary_inplace, apply_unary, apply_unary_inplace, reduce, BinaryOp,
+    OpsError, ReduceOp, UnaryOp,
+};
 pub use crate::resource::{ForeignResource, HostResource, MemoryDomain, MemoryResource};
 // Keep backward-compatible re-export: `use kornia_tensor::storage::MemoryDomain` still resolves
 // because storage.rs now re-exports from resource.

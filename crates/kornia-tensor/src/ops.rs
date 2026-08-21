@@ -9,6 +9,12 @@
 //! | Binary | [`BinaryOp::Add`], [`BinaryOp::Sub`], [`BinaryOp::Mul`], [`BinaryOp::Div`], [`BinaryOp::Min`], [`BinaryOp::Max`] |
 //! | Reduce | [`ReduceOp::Sum`], [`ReduceOp::Mean`] |
 //!
+//! Unary and binary ops come in an out-of-place form writing to a caller-supplied
+//! destination, and an in-place form ([`apply_unary_inplace`] /
+//! [`apply_binary_inplace`], or the `Tensor::apply_unary_` /
+//! `Tensor::apply_binary_` methods) that overwrites the operand and skips the
+//! second allocation. Both forms dispatch identically.
+//!
 //! # Dispatch
 //!
 //! [`apply_unary`], [`apply_binary`], and [`reduce`] inspect the tensor's
@@ -198,6 +204,46 @@ fn cpu_reduce<const N: usize>(input: &Tensor<f32, N>, op: ReduceOp) -> Result<f3
         ReduceOp::Sum => sum,
         ReduceOp::Mean => sum / n as f32,
     })
+}
+
+// ── CPU in-place implementations ──────────────────────────────────────────────
+
+fn cpu_apply_unary_inplace<const N: usize>(
+    tensor: &mut Tensor<f32, N>,
+    op: UnaryOp,
+) -> Result<(), OpsError> {
+    let data = tensor.as_slice_mut();
+    match op {
+        UnaryOp::Abs => data.iter_mut().for_each(|v| *v = v.abs()),
+        UnaryOp::Relu => data.iter_mut().for_each(|v| *v = v.max(0.0)),
+        UnaryOp::Neg => data.iter_mut().for_each(|v| *v = -*v),
+        UnaryOp::Clamp { min, max } => data.iter_mut().for_each(|v| *v = v.clamp(min, max)),
+    }
+    Ok(())
+}
+
+fn cpu_apply_binary_inplace<const N: usize>(
+    tensor: &mut Tensor<f32, N>,
+    other: &Tensor<f32, N>,
+    op: BinaryOp,
+) -> Result<(), OpsError> {
+    if tensor.shape != other.shape {
+        return Err(OpsError::ShapeMismatch(format!(
+            "{:?} vs {:?}",
+            tensor.shape, other.shape
+        )));
+    }
+    let rhs = other.as_slice();
+    let lhs = tensor.as_slice_mut();
+    match op {
+        BinaryOp::Add => lhs.iter_mut().zip(rhs).for_each(|(a, b)| *a += *b),
+        BinaryOp::Sub => lhs.iter_mut().zip(rhs).for_each(|(a, b)| *a -= *b),
+        BinaryOp::Mul => lhs.iter_mut().zip(rhs).for_each(|(a, b)| *a *= *b),
+        BinaryOp::Div => lhs.iter_mut().zip(rhs).for_each(|(a, b)| *a /= *b),
+        BinaryOp::Min => lhs.iter_mut().zip(rhs).for_each(|(a, b)| *a = a.min(*b)),
+        BinaryOp::Max => lhs.iter_mut().zip(rhs).for_each(|(a, b)| *a = a.max(*b)),
+    }
+    Ok(())
 }
 
 // ── CUDA implementations ──────────────────────────────────────────────────────
@@ -419,6 +465,95 @@ extern "C" __global__ void kernel_reduce_sum(
         Ok(())
     }
 
+    /// In-place unary: the same buffer is bound as both operands.
+    ///
+    /// Safe for these kernels because the mapping is strictly element-wise —
+    /// thread `i` reads index `i` and writes index `i`, so no thread observes
+    /// another thread's write and the aliasing is not a data race.
+    pub fn apply_unary_inplace<const N: usize>(
+        tensor: &mut Tensor<f32, N>,
+        op: UnaryOp,
+    ) -> Result<(), OpsError> {
+        let stream = tensor
+            .cuda_stream()
+            .ok_or_else(|| OpsError::NotDeviceAccessible(tensor.storage.domain()))?
+            .clone();
+        let ctx = stream.context().clone();
+        let kernel = get_unary(&ctx)?;
+
+        let numel = tensor.shape.iter().product::<usize>() as i32;
+        let (op_code, lo, hi): (i32, f32, f32) = match op {
+            UnaryOp::Abs => (0, 0.0, 0.0),
+            UnaryOp::Relu => (1, 0.0, 0.0),
+            UnaryOp::Neg => (2, 0.0, 0.0),
+            UnaryOp::Clamp { min, max } => (3, min, max),
+        };
+
+        // SAFETY: both aliases are ManuallyDrop, so neither frees the buffer the
+        // tensor owns; see the element-wise argument above for the aliasing.
+        let src_alias = unsafe { alias(&*tensor, &stream) };
+        let mut dst_alias = unsafe { alias(&*tensor, &stream) };
+
+        kernel
+            .launch_builder(&stream)
+            .arg(&*src_alias)
+            .arg(&mut *dst_alias)
+            .arg(&numel)
+            .arg(&op_code)
+            .arg(&lo)
+            .arg(&hi)
+            .launch_1d(numel as u32)?;
+
+        Ok(())
+    }
+
+    /// In-place binary: `tensor` is bound as both the left operand and the
+    /// destination. Element-wise, so the aliasing is safe for the same reason
+    /// as [`apply_unary_inplace`].
+    pub fn apply_binary_inplace<const N: usize>(
+        tensor: &mut Tensor<f32, N>,
+        other: &Tensor<f32, N>,
+        op: BinaryOp,
+    ) -> Result<(), OpsError> {
+        if tensor.shape != other.shape {
+            return Err(OpsError::ShapeMismatch(format!(
+                "{:?} vs {:?}",
+                tensor.shape, other.shape
+            )));
+        }
+        let stream = tensor
+            .cuda_stream()
+            .ok_or_else(|| OpsError::NotDeviceAccessible(tensor.storage.domain()))?
+            .clone();
+        let ctx = stream.context().clone();
+        let kernel = get_binary(&ctx)?;
+
+        let numel = tensor.shape.iter().product::<usize>() as i32;
+        let op_code: i32 = match op {
+            BinaryOp::Add => 0,
+            BinaryOp::Sub => 1,
+            BinaryOp::Mul => 2,
+            BinaryOp::Div => 3,
+            BinaryOp::Min => 4,
+            BinaryOp::Max => 5,
+        };
+
+        let a_alias = unsafe { alias(&*tensor, &stream) };
+        let b_alias = unsafe { alias(other, &stream) };
+        let mut dst_alias = unsafe { alias(&*tensor, &stream) };
+
+        kernel
+            .launch_builder(&stream)
+            .arg(&*a_alias)
+            .arg(&*b_alias)
+            .arg(&mut *dst_alias)
+            .arg(&numel)
+            .arg(&op_code)
+            .launch_1d(numel as u32)?;
+
+        Ok(())
+    }
+
     pub fn reduce<const N: usize>(input: &Tensor<f32, N>, op: ReduceOp) -> Result<f32, OpsError> {
         let stream = input
             .cuda_stream()
@@ -518,6 +653,56 @@ pub fn apply_binary<const N: usize>(
     }
 }
 
+/// Apply an element-wise unary operation to `tensor` in place.
+///
+/// Equivalent to [`apply_unary`] with the input as its own output, but without
+/// the second allocation. Dispatches on `tensor`'s [`MemoryDomain`] exactly as
+/// the out-of-place form does.
+///
+/// # Errors
+///
+/// - [`OpsError::CudaNotEnabled`] — `Device` tensor but `cuda` feature absent.
+pub fn apply_unary_inplace<const N: usize>(
+    tensor: &mut Tensor<f32, N>,
+    op: UnaryOp,
+) -> Result<(), OpsError> {
+    match tensor.storage.domain() {
+        MemoryDomain::Host | MemoryDomain::Unified { .. } => cpu_apply_unary_inplace(tensor, op),
+        MemoryDomain::Device { .. } => {
+            #[cfg(feature = "cuda")]
+            return cuda_ops::apply_unary_inplace(tensor, op);
+            #[cfg(not(feature = "cuda"))]
+            Err(OpsError::CudaNotEnabled)
+        }
+    }
+}
+
+/// Apply an element-wise binary operation with `other`, into `tensor` in place.
+///
+/// `tensor` is the left operand and the destination.
+///
+/// # Errors
+///
+/// - [`OpsError::ShapeMismatch`] — shapes differ.
+/// - [`OpsError::CudaNotEnabled`] — `Device` tensor but `cuda` feature absent.
+pub fn apply_binary_inplace<const N: usize>(
+    tensor: &mut Tensor<f32, N>,
+    other: &Tensor<f32, N>,
+    op: BinaryOp,
+) -> Result<(), OpsError> {
+    match tensor.storage.domain() {
+        MemoryDomain::Host | MemoryDomain::Unified { .. } => {
+            cpu_apply_binary_inplace(tensor, other, op)
+        }
+        MemoryDomain::Device { .. } => {
+            #[cfg(feature = "cuda")]
+            return cuda_ops::apply_binary_inplace(tensor, other, op);
+            #[cfg(not(feature = "cuda"))]
+            Err(OpsError::CudaNotEnabled)
+        }
+    }
+}
+
 /// Reduce all elements of `input` to a scalar.
 ///
 /// Dispatches to GPU when `input` is `Device`-backed; `Host` / `Unified` use
@@ -546,6 +731,37 @@ impl<const N: usize> Tensor<f32, N> {
     /// Apply an element-wise binary operation with `other`, writing into `out`.
     pub fn apply_binary(&self, other: &Self, out: &mut Self, op: BinaryOp) -> Result<(), OpsError> {
         apply_binary(self, other, out, op)
+    }
+
+    /// Apply an element-wise unary operation in place.
+    ///
+    /// The trailing underscore follows the PyTorch convention for in-place
+    /// tensor operations (`t.abs_()`), and avoids allocating a destination.
+    ///
+    /// ```
+    /// use kornia_tensor::{Tensor, UnaryOp};
+    ///
+    /// let mut t = Tensor::<f32, 1>::from_shape_vec([3], vec![-1.0, 2.0, -3.0]).unwrap();
+    /// t.apply_unary_(UnaryOp::Abs).unwrap();
+    /// assert_eq!(t.as_slice(), &[1.0, 2.0, 3.0]);
+    /// ```
+    pub fn apply_unary_(&mut self, op: UnaryOp) -> Result<(), OpsError> {
+        apply_unary_inplace(self, op)
+    }
+
+    /// Apply an element-wise binary operation with `other` in place, with
+    /// `self` as the left operand and the destination.
+    ///
+    /// ```
+    /// use kornia_tensor::{BinaryOp, Tensor};
+    ///
+    /// let mut a = Tensor::<f32, 1>::from_shape_vec([3], vec![1.0, 2.0, 3.0]).unwrap();
+    /// let b = Tensor::<f32, 1>::from_shape_vec([3], vec![10.0, 20.0, 30.0]).unwrap();
+    /// a.apply_binary_(&b, BinaryOp::Add).unwrap();
+    /// assert_eq!(a.as_slice(), &[11.0, 22.0, 33.0]);
+    /// ```
+    pub fn apply_binary_(&mut self, other: &Self, op: BinaryOp) -> Result<(), OpsError> {
+        apply_binary_inplace(self, other, op)
     }
 
     /// Reduce all elements to a scalar.
@@ -629,6 +845,63 @@ mod tests {
     }
 
     #[test]
+    fn cpu_unary_inplace_matches_out_of_place() {
+        for op in [
+            UnaryOp::Abs,
+            UnaryOp::Relu,
+            UnaryOp::Neg,
+            UnaryOp::Clamp {
+                min: -1.0,
+                max: 1.5,
+            },
+        ] {
+            let src =
+                Tensor::<f32, 1>::from_shape_vec([5], vec![-2.0, -0.5, 0.0, 1.0, 3.0]).unwrap();
+            let mut expected = Tensor::<f32, 1>::zeros([5]);
+            src.apply_unary(&mut expected, op).unwrap();
+
+            let mut actual =
+                Tensor::<f32, 1>::from_shape_vec([5], vec![-2.0, -0.5, 0.0, 1.0, 3.0]).unwrap();
+            actual.apply_unary_(op).unwrap();
+
+            assert_eq!(actual.as_slice(), expected.as_slice(), "op {op:?}");
+        }
+    }
+
+    #[test]
+    fn cpu_binary_inplace_matches_out_of_place() {
+        for op in [
+            BinaryOp::Add,
+            BinaryOp::Sub,
+            BinaryOp::Mul,
+            BinaryOp::Div,
+            BinaryOp::Min,
+            BinaryOp::Max,
+        ] {
+            let a = Tensor::<f32, 1>::from_shape_vec([4], vec![1.0, -2.0, 3.0, 4.0]).unwrap();
+            let b = Tensor::<f32, 1>::from_shape_vec([4], vec![2.0, 2.0, -1.0, 8.0]).unwrap();
+            let mut expected = Tensor::<f32, 1>::zeros([4]);
+            a.apply_binary(&b, &mut expected, op).unwrap();
+
+            let mut actual =
+                Tensor::<f32, 1>::from_shape_vec([4], vec![1.0, -2.0, 3.0, 4.0]).unwrap();
+            actual.apply_binary_(&b, op).unwrap();
+
+            assert_eq!(actual.as_slice(), expected.as_slice(), "op {op:?}");
+        }
+    }
+
+    #[test]
+    fn cpu_binary_inplace_shape_mismatch_is_error() {
+        let mut a = Tensor::<f32, 1>::zeros([4]);
+        let b = Tensor::<f32, 1>::zeros([3]);
+        assert!(matches!(
+            a.apply_binary_(&b, BinaryOp::Add),
+            Err(OpsError::ShapeMismatch(_))
+        ));
+    }
+
+    #[test]
     fn cpu_shape_mismatch_is_error() {
         let a = Tensor::<f32, 1>::zeros([4]);
         let mut b = Tensor::<f32, 1>::zeros([5]);
@@ -693,6 +966,75 @@ mod tests {
                     let err = max_err(cpu_out.as_slice(), host_out.as_slice());
                     assert!(err < 1e-6, "unary {op:?}  n={n}  max_err={err:.2e} > 1e-6");
                 }
+            }
+        }
+
+        #[test]
+        fn parity_unary_inplace_matches_out_of_place() {
+            let ctx = Arc::new(CudaContext::new(0).unwrap());
+            let stream = ctx.default_stream();
+
+            let n = 1_000_000;
+            let data: Vec<f32> = (0..n)
+                .map(|i| (i as f32 / (n - 1) as f32) * 2.0 - 1.0)
+                .collect();
+            let cpu_in = Tensor::<f32, 1>::from_shape_vec([n], data).unwrap();
+
+            for op in [
+                UnaryOp::Abs,
+                UnaryOp::Relu,
+                UnaryOp::Neg,
+                UnaryOp::Clamp {
+                    min: -0.5,
+                    max: 0.5,
+                },
+            ] {
+                let mut cpu_out = Tensor::<f32, 1>::zeros([n]);
+                apply_unary(&cpu_in, &mut cpu_out, op).unwrap();
+
+                // In place on the device: src and dst are the same buffer.
+                let mut gpu = cpu_in.to_cuda(&stream).unwrap();
+                gpu.apply_unary_(op).unwrap();
+                stream.synchronize().unwrap();
+                let host_out = gpu.to_host(&stream).unwrap();
+
+                let err = max_err(cpu_out.as_slice(), host_out.as_slice());
+                assert!(err < 1e-6, "unary_ {op:?}  max_err={err:.2e} > 1e-6");
+            }
+        }
+
+        #[test]
+        fn parity_binary_inplace_matches_out_of_place() {
+            let ctx = Arc::new(CudaContext::new(0).unwrap());
+            let stream = ctx.default_stream();
+
+            let n = 1_000_000;
+            let a_data: Vec<f32> = (0..n)
+                .map(|i| (i as f32 / (n - 1) as f32) * 2.0 - 0.5)
+                .collect();
+            let b_data: Vec<f32> = (0..n).map(|i| 0.5 + (i as f32 / n as f32)).collect();
+            let cpu_a = Tensor::<f32, 1>::from_shape_vec([n], a_data).unwrap();
+            let cpu_b = Tensor::<f32, 1>::from_shape_vec([n], b_data).unwrap();
+            let gpu_b = cpu_b.to_cuda(&stream).unwrap();
+
+            for op in [
+                BinaryOp::Add,
+                BinaryOp::Sub,
+                BinaryOp::Mul,
+                BinaryOp::Div,
+                BinaryOp::Min,
+                BinaryOp::Max,
+            ] {
+                let mut cpu_out = Tensor::<f32, 1>::zeros([n]);
+                apply_binary(&cpu_a, &cpu_b, &mut cpu_out, op).unwrap();
+
+                let mut gpu_a = cpu_a.to_cuda(&stream).unwrap();
+                gpu_a.apply_binary_(&gpu_b, op).unwrap();
+                stream.synchronize().unwrap();
+                let host_out = gpu_a.to_host(&stream).unwrap();
+
+                let err = max_err(cpu_out.as_slice(), host_out.as_slice());
+                assert!(err < 1e-6, "binary_ {op:?}  max_err={err:.2e} > 1e-6");
             }
         }
 
