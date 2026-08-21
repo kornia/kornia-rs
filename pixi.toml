@@ -17,6 +17,7 @@ dev = { features = [
   "python",
   "cpp",
   "dev-tools",
+  "dev",
 ], solve-group = "default" }
 # Python version-specific environments for CI matrix testing
 py38 = { features = ["rust", "python", "py38"] }
