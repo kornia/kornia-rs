@@ -14,6 +14,11 @@ publish = true
 harness = false
 name = "bench_view"
 
+[[bench]]
+harness = false
+name = "bench_tensor_ops"
+required-features = ["cuda"]
+
 [dependencies]
 bincode = { workspace = true, optional = true }
 dlpack-rs = { version = "0.3.3", default-features = false, optional = true }
