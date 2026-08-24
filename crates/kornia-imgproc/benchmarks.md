@@ -199,6 +199,19 @@ python3 crates/kornia-imgproc/examples/bench_opencv_resize.py
 
 GPU is **8–40× faster than OpenCV** across all cases.
 
+#### Spatial Filters (Laplacian & Integral)
+
+Benchmarked on **Desktop (GTX 1650)** vs OpenCV Python CPU bindings (TBB-enabled).
+
+| Operation | Resolution | GPU Kernel ms | GPU Roundtrip ms | OpenCV CPU ms | GPU vs OpenCV (Kernel) | GPU vs OpenCV (Roundtrip) |
+|---|---|---:|---:|---:|---:|---:|
+| laplacian (3x3, u8) | 1920×1080 | 0.11 | 4.73 | 1.01 | **9.2×** | 0.2× |
+| laplacian (3x3, u8) | 3840×2160 | 0.40 | 18.94 | 8.21 | **20.5×** | 0.4× |
+| integral (u8) | 1920×1080 | 1.24 | 8.10 | 4.06 | **3.3×** | 0.5× |
+| integral (u8) | 3840×2160 | 3.58 | 29.63 | 17.71 | **4.9×** | 0.6× |
+
+*Note: For lightweight filters like `laplacian` and prefix-sums like `integral`, the PCIe H2D/D2H transfer completely dominates on a discrete GPU, making the roundtrip slower than OpenCV CPU. However, when fused or kept on-device, the kernels themselves are 3.3x–20.5x faster.*
+
 ---
 
 ## GPU resize benchmarks — native CUDA (NVRTC) — 2026-06-30
@@ -473,8 +486,12 @@ H2D+D2H dominates when the kernel itself is sub-millisecond.
 | remap (f32) | bilinear | 3840×2160 | 74.40 | 37.30 | 1.58 | 33.80 | 72.68 | 47.2x | 1.0x |
 | gaussian_blur (5x5, f32) | n/a | 1920×1080 | 26.32 | 9.01 | 0.59 | 8.55 | 18.16 | 44.6x | 1.4x |
 | sobel (3x3, f32) | n/a | 1920×1080 | 53.89 | 8.96 | 1.59 | 8.56 | 19.11 | 33.8x | 2.8x |
+| laplacian (3x3, u8) | - | 1920×1080 | 2.44 | 1.92 | 0.11 | 2.71 | 4.73 | 23.2x | 0.5x |
+| integral (u8) | - | 1920×1080 | 7.45 | 1.84 | 1.24 | 5.03 | 8.10 | 6.0x | 0.9x |
 | gaussian_blur (5x5, f32) | n/a | 3840×2160 | 126.79 | 39.30 | 2.46 | 35.15 | 76.91 | 51.6x | 1.6x |
 | sobel (3x3, f32) | n/a | 3840×2160 | 441.25 | 57.64 | 6.42 | 49.70 | 113.76 | 68.7x | 3.9x |
+| laplacian (3x3, u8) | - | 3840×2160 | 9.79 | 7.20 | 0.40 | 11.34 | 18.94 | 24.7x | 0.5x |
+| integral (u8) | - | 3840×2160 | 30.80 | 6.73 | 3.58 | 19.32 | 29.63 | 8.6x | 1.0x |
 | erode (3x3, u8) | n/a | 1920×1080 | 64.03 | 3.69 | 0.27 | 3.22 | 7.18 | 239.7x | 8.9x |
 | dilate (3x3, u8) | n/a | 1920×1080 | 61.50 | 3.26 | 0.28 | 2.93 | 6.46 | 220.3x | 9.5x |
 | erode (3x3, u8) | n/a | 3840×2160 | 288.80 | 15.73 | 0.94 | 13.55 | 30.21 | 308.8x | 9.6x |
@@ -515,8 +532,12 @@ H2D+D2H dominates when the kernel itself is sub-millisecond.
 | remap (f32) | bilinear | 3840×2160 | 55.81 | 12.49 | 5.61 | 12.98 | 31.08 | 9.9x | 1.8x |
 | gaussian_blur (5x5, f32) | n/a | 1920×1080 | 52.27 | 4.23 | 3.69 | 4.47 | 12.39 | 14.2x | 4.2x |
 | sobel (3x3, f32) | n/a | 1920×1080 | 81.23 | 4.15 | 6.31 | 4.30 | 14.76 | 12.9x | 5.5x |
+| laplacian (3x3, u8) | - | 1920×1080 | 1.77 | 0.49 | 1.13 | 1.03 | 2.65 | 1.6x | 0.7x |
+| integral (u8) | - | 1920×1080 | 2.60 | 0.49 | 4.78 | 1.78 | 7.05 | 0.5x | 0.4x |
 | gaussian_blur (5x5, f32) | n/a | 3840×2160 | 218.20 | 12.61 | 9.00 | 13.12 | 34.74 | 24.2x | 6.3x |
 | sobel (3x3, f32) | n/a | 3840×2160 | 486.70 | 14.12 | 18.22 | 14.64 | 46.98 | 26.7x | 10.4x |
+| laplacian (3x3, u8) | - | 3840×2160 | 7.45 | 1.74 | 2.90 | 3.51 | 8.14 | 2.6x | 0.9x |
+| integral (u8) | - | 3840×2160 | 7.73 | 1.68 | 10.53 | 6.94 | 19.14 | 0.7x | 0.4x |
 | erode (3x3, u8) | n/a | 1920×1080 | 57.86 | 1.75 | 2.30 | 1.85 | 5.90 | 25.2x | 9.8x |
 | dilate (3x3, u8) | n/a | 1920×1080 | 53.56 | 1.75 | 2.29 | 1.83 | 5.87 | 23.4x | 9.1x |
 | erode (3x3, u8) | n/a | 3840×2160 | 236.00 | 4.90 | 5.88 | 5.09 | 15.87 | 40.1x | 14.9x |

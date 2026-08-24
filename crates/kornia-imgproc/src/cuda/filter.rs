@@ -19,6 +19,9 @@
 //! (occupancy beats staging on Orin — measured repeatedly), and pub launchers
 //! that validate everything the kernels assume.
 
+pub use crate::filter::integral::cuda::integral_image_cuda as launch_integral_image_cuda;
+pub use crate::filter::laplacian::cuda::laplacian_u8_cuda as launch_laplacian_u8_cuda;
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 

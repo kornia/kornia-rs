@@ -23,3 +23,11 @@ pub use bilateral::bilateral_filter;
 /// Median blur (cv2/VPI-byte-exact).
 pub mod median;
 pub use median::median_blur;
+
+/// Integral image (Summed Area Table).
+pub mod integral;
+pub use integral::{integral_image_f32, integral_image_u8};
+
+/// Laplacian filter.
+pub mod laplacian;
+pub use laplacian::laplacian_u8;
