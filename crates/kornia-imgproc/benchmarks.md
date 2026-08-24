@@ -199,6 +199,19 @@ python3 crates/kornia-imgproc/examples/bench_opencv_resize.py
 
 GPU is **8–40× faster than OpenCV** across all cases.
 
+#### Spatial Filters (Laplacian & Integral)
+
+Benchmarked on **Desktop (GTX 1650)** vs OpenCV Python CPU bindings (TBB-enabled).
+
+| Operation | Resolution | GPU Kernel ms | GPU Roundtrip ms | OpenCV CPU ms | GPU vs OpenCV (Kernel) | GPU vs OpenCV (Roundtrip) |
+|---|---|---:|---:|---:|---:|---:|
+| laplacian (3x3, u8) | 1920×1080 | 0.11 | 4.73 | 1.01 | **9.2×** | 0.2× |
+| laplacian (3x3, u8) | 3840×2160 | 0.40 | 18.94 | 8.21 | **20.5×** | 0.4× |
+| integral (u8) | 1920×1080 | 1.24 | 8.10 | 4.06 | **3.3×** | 0.5× |
+| integral (u8) | 3840×2160 | 3.58 | 29.63 | 17.71 | **4.9×** | 0.6× |
+
+*Note: For lightweight filters like `laplacian` and prefix-sums like `integral`, the PCIe H2D/D2H transfer completely dominates on a discrete GPU, making the roundtrip slower than OpenCV CPU. However, when fused or kept on-device, the kernels themselves are 3.3x–20.5x faster.*
+
 ---
 
 ## GPU resize benchmarks — native CUDA (NVRTC) — 2026-06-30
@@ -473,8 +486,12 @@ H2D+D2H dominates when the kernel itself is sub-millisecond.
 | remap (f32) | bilinear | 3840×2160 | 74.40 | 37.30 | 1.58 | 33.80 | 72.68 | 47.2x | 1.0x |
 | gaussian_blur (5x5, f32) | n/a | 1920×1080 | 26.32 | 9.01 | 0.59 | 8.55 | 18.16 | 44.6x | 1.4x |
 | sobel (3x3, f32) | n/a | 1920×1080 | 53.89 | 8.96 | 1.59 | 8.56 | 19.11 | 33.8x | 2.8x |
+| laplacian (3x3, u8) | - | 1920×1080 | 2.44 | 1.92 | 0.11 | 2.71 | 4.73 | 23.2x | 0.5x |
+| integral (u8) | - | 1920×1080 | 7.45 | 1.84 | 1.24 | 5.03 | 8.10 | 6.0x | 0.9x |
 | gaussian_blur (5x5, f32) | n/a | 3840×2160 | 126.79 | 39.30 | 2.46 | 35.15 | 76.91 | 51.6x | 1.6x |
 | sobel (3x3, f32) | n/a | 3840×2160 | 441.25 | 57.64 | 6.42 | 49.70 | 113.76 | 68.7x | 3.9x |
+| laplacian (3x3, u8) | - | 3840×2160 | 9.79 | 7.20 | 0.40 | 11.34 | 18.94 | 24.7x | 0.5x |
+| integral (u8) | - | 3840×2160 | 30.80 | 6.73 | 3.58 | 19.32 | 29.63 | 8.6x | 1.0x |
 | erode (3x3, u8) | n/a | 1920×1080 | 64.03 | 3.69 | 0.27 | 3.22 | 7.18 | 239.7x | 8.9x |
 | dilate (3x3, u8) | n/a | 1920×1080 | 61.50 | 3.26 | 0.28 | 2.93 | 6.46 | 220.3x | 9.5x |
 | erode (3x3, u8) | n/a | 3840×2160 | 288.80 | 15.73 | 0.94 | 13.55 | 30.21 | 308.8x | 9.6x |
@@ -491,38 +508,42 @@ H2D+D2H dominates when the kernel itself is sub-millisecond.
 
 | Operation | Interp | Resolution | CPU (ms) | H2D (ms) | Kernel (ms) | D2H (ms) | Total GPU (ms) | Speedup (kernel) | Speedup (roundtrip) |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| resize (f32) | bilinear | 1920×1080→960×540 | 5.09 | 3.73 | 1.44 | 1.28 | 6.45 | 3.5x | 0.8x |
-| resize (f32) | bilinear | 3840×2160→1920×1080 | 16.70 | 12.44 | 2.95 | 3.39 | 18.78 | 5.7x | 0.9x |
-| resize (f32) | nearest | 1920×1080→960×540 | 1.51 | 3.29 | 0.84 | 1.04 | 5.17 | 1.8x | 0.3x |
-| resize (f32) | nearest | 3840×2160→1920×1080 | 4.88 | 12.48 | 1.98 | 3.41 | 17.87 | 2.5x | 0.3x |
-| resize (f32) | bicubic | 1920×1080→960×540 | 12.90 | 3.79 | 1.64 | 1.21 | 6.65 | 7.8x | 1.9x |
-| resize (f32) | bicubic | 3840×2160→1920×1080 | 51.31 | 12.40 | 3.38 | 3.41 | 19.19 | 15.2x | 2.7x |
-| resize (f32) | lanczos | 1920×1080→960×540 | 4.49 | 3.99 | 2.85 | 1.29 | 8.13 | 1.6x | 0.6x |
-| resize (f32) | lanczos | 3840×2160→1920×1080 | 16.50 | 12.85 | 7.39 | 3.48 | 23.73 | 2.2x | 0.7x |
-| resize (u8) | bilinear | 1920×1080→960×540 | 4.30 | 1.14 | 0.85 | 0.59 | 2.58 | 5.0x | 1.7x |
-| resize (u8) | bilinear | 3840×2160→1920×1080 | 16.85 | 3.89 | 1.86 | 1.24 | 6.99 | 9.0x | 2.4x |
-| resize (u8) | nearest | 1920×1080→960×540 | 1.96 | 1.06 | 0.23 | 0.47 | 1.77 | 8.4x | 1.1x |
-| resize (u8) | nearest | 3840×2160→1920×1080 | 4.98 | 3.96 | 0.61 | 1.04 | 5.61 | 8.2x | 0.9x |
-| warp_affine (30° rot, f32) | bilinear | 1920×1080 | 12.15 | 4.38 | 2.75 | 4.67 | 11.80 | 4.4x | 1.0x |
-| warp_affine (30° rot, f32) | bilinear | 3840×2160 | 46.87 | 12.53 | 6.13 | 13.11 | 31.76 | 7.6x | 1.5x |
-| warp_affine (30° rot, u8) | bilinear | 1920×1080 | 3.88 | 1.29 | 2.72 | 1.51 | 5.51 | 1.4x | 0.7x |
-| warp_affine (30° rot, u8) | bilinear | 3840×2160 | 13.70 | 4.84 | 8.50 | 5.09 | 18.42 | 1.6x | 0.7x |
-| warp_perspective (30° rot, f32) | bilinear | 1920×1080 | 21.63 | 4.50 | 2.91 | 4.80 | 12.21 | 7.4x | 1.8x |
-| warp_perspective (30° rot, f32) | bilinear | 3840×2160 | 85.05 | 12.72 | 6.89 | 13.27 | 32.88 | 12.3x | 2.6x |
-| warp_perspective (30° rot, u8) | bilinear | 1920×1080 | 5.18 | 1.30 | 3.75 | 1.47 | 6.52 | 1.4x | 0.8x |
-| warp_perspective (30° rot, u8) | bilinear | 3840×2160 | 20.08 | 4.84 | 10.16 | 5.14 | 20.13 | 2.0x | 1.0x |
-| remap (f32) | bilinear | 1920×1080 | 14.51 | 3.70 | 2.41 | 3.99 | 10.10 | 6.0x | 1.4x |
-| remap (f32) | bilinear | 3840×2160 | 55.83 | 12.57 | 5.65 | 13.03 | 31.25 | 9.9x | 1.8x |
-| gaussian_blur (5x5, f32) | n/a | 1920×1080 | 42.53 | 3.89 | 3.65 | 4.23 | 11.77 | 11.7x | 3.6x |
-| sobel (3x3, f32) | n/a | 1920×1080 | 72.85 | 4.03 | 6.31 | 4.25 | 14.59 | 11.5x | 5.0x |
-| gaussian_blur (5x5, f32) | n/a | 3840×2160 | 179.83 | 12.61 | 8.96 | 13.18 | 34.76 | 20.1x | 5.2x |
-| sobel (3x3, f32) | n/a | 3840×2160 | 304.47 | 14.14 | 18.14 | 14.66 | 46.93 | 16.8x | 6.5x |
-| erode (3x3, u8) | n/a | 1920×1080 | 50.70 | 1.67 | 1.81 | 1.94 | 5.42 | 28.0x | 9.4x |
-| dilate (3x3, u8) | n/a | 1920×1080 | 46.84 | 1.70 | 1.80 | 1.80 | 5.30 | 26.1x | 8.8x |
-| erode (3x3, u8) | n/a | 3840×2160 | 204.39 | 5.01 | 5.93 | 5.28 | 16.22 | 34.5x | 12.6x |
-| dilate (3x3, u8) | n/a | 3840×2160 | 187.14 | 4.96 | 5.90 | 5.25 | 16.12 | 31.7x | 11.6x |
-| gray_from_rgb (f32) | n/a | 1920×1080 | 1.35 | 3.84 | 1.45 | 1.53 | 6.82 | 0.9x | 0.2x |
-| gray_from_rgb (f32) | n/a | 3840×2160 | 4.19 | 12.48 | 3.09 | 4.56 | 20.13 | 1.4x | 0.2x |
+| resize (f32) | bilinear | 1920×1080→960×540 | 5.35 | 3.87 | 1.52 | 1.25 | 6.65 | 3.5x | 0.8x |
+| resize (f32) | bilinear | 3840×2160→1920×1080 | 16.52 | 12.47 | 2.95 | 3.38 | 18.80 | 5.6x | 0.9x |
+| resize (f32) | nearest | 1920×1080→960×540 | 1.46 | 3.25 | 0.93 | 1.04 | 5.22 | 1.6x | 0.3x |
+| resize (f32) | nearest | 3840×2160→1920×1080 | 4.73 | 12.69 | 2.05 | 3.39 | 18.12 | 2.3x | 0.3x |
+| resize (f32) | bicubic | 1920×1080→960×540 | 12.78 | 3.83 | 1.70 | 1.23 | 6.76 | 7.5x | 1.9x |
+| resize (f32) | bicubic | 3840×2160→1920×1080 | 49.30 | 12.40 | 3.34 | 3.36 | 19.09 | 14.8x | 2.6x |
+| resize (f32) | lanczos | 1920×1080→960×540 | 4.59 | 3.87 | 2.84 | 1.25 | 7.96 | 1.6x | 0.6x |
+| resize (f32) | lanczos | 3840×2160→1920×1080 | 16.49 | 12.80 | 7.86 | 3.53 | 24.19 | 2.1x | 0.7x |
+| resize (u8) | bilinear | 1920×1080→960×540 | 4.36 | 1.16 | 0.86 | 0.49 | 2.51 | 5.1x | 1.7x |
+| resize (u8) | bilinear | 3840×2160→1920×1080 | 16.47 | 3.81 | 1.75 | 1.22 | 6.77 | 9.4x | 2.4x |
+| resize (u8) | nearest | 1920×1080→960×540 | 1.85 | 0.98 | 0.17 | 0.43 | 1.59 | 10.6x | 1.2x |
+| resize (u8) | nearest | 3840×2160→1920×1080 | 5.16 | 4.01 | 0.66 | 1.04 | 5.71 | 7.9x | 0.9x |
+| warp_affine (30° rot, f32) | bilinear | 1920×1080 | 12.19 | 4.47 | 2.79 | 4.79 | 12.05 | 4.4x | 1.0x |
+| warp_affine (30° rot, f32) | bilinear | 3840×2160 | 46.42 | 12.55 | 6.15 | 13.02 | 31.72 | 7.6x | 1.5x |
+| warp_affine (30° rot, u8) | bilinear | 1920×1080 | 3.54 | 1.32 | 3.25 | 1.50 | 6.06 | 1.1x | 0.6x |
+| warp_affine (30° rot, u8) | bilinear | 3840×2160 | 14.00 | 4.86 | 8.35 | 5.11 | 18.32 | 1.7x | 0.8x |
+| warp_perspective (30° rot, f32) | bilinear | 1920×1080 | 20.89 | 4.09 | 2.71 | 4.38 | 11.17 | 7.7x | 1.9x |
+| warp_perspective (30° rot, f32) | bilinear | 3840×2160 | 81.51 | 12.72 | 6.78 | 13.22 | 32.72 | 12.0x | 2.5x |
+| warp_perspective (30° rot, u8) | bilinear | 1920×1080 | 5.15 | 1.27 | 3.64 | 1.45 | 6.37 | 1.4x | 0.8x |
+| warp_perspective (30° rot, u8) | bilinear | 3840×2160 | 20.34 | 4.84 | 10.18 | 5.14 | 20.16 | 2.0x | 1.0x |
+| remap (f32) | bilinear | 1920×1080 | 14.64 | 3.66 | 2.31 | 3.91 | 9.88 | 6.3x | 1.5x |
+| remap (f32) | bilinear | 3840×2160 | 55.81 | 12.49 | 5.61 | 12.98 | 31.08 | 9.9x | 1.8x |
+| gaussian_blur (5x5, f32) | n/a | 1920×1080 | 52.27 | 4.23 | 3.69 | 4.47 | 12.39 | 14.2x | 4.2x |
+| sobel (3x3, f32) | n/a | 1920×1080 | 81.23 | 4.15 | 6.31 | 4.30 | 14.76 | 12.9x | 5.5x |
+| laplacian (3x3, u8) | - | 1920×1080 | 1.77 | 0.49 | 1.13 | 1.03 | 2.65 | 1.6x | 0.7x |
+| integral (u8) | - | 1920×1080 | 2.60 | 0.49 | 4.78 | 1.78 | 7.05 | 0.5x | 0.4x |
+| gaussian_blur (5x5, f32) | n/a | 3840×2160 | 218.20 | 12.61 | 9.00 | 13.12 | 34.74 | 24.2x | 6.3x |
+| sobel (3x3, f32) | n/a | 3840×2160 | 486.70 | 14.12 | 18.22 | 14.64 | 46.98 | 26.7x | 10.4x |
+| laplacian (3x3, u8) | - | 3840×2160 | 7.45 | 1.74 | 2.90 | 3.51 | 8.14 | 2.6x | 0.9x |
+| integral (u8) | - | 3840×2160 | 7.73 | 1.68 | 10.53 | 6.94 | 19.14 | 0.7x | 0.4x |
+| erode (3x3, u8) | n/a | 1920×1080 | 57.86 | 1.75 | 2.30 | 1.85 | 5.90 | 25.2x | 9.8x |
+| dilate (3x3, u8) | n/a | 1920×1080 | 53.56 | 1.75 | 2.29 | 1.83 | 5.87 | 23.4x | 9.1x |
+| erode (3x3, u8) | n/a | 3840×2160 | 236.00 | 4.90 | 5.88 | 5.09 | 15.87 | 40.1x | 14.9x |
+| dilate (3x3, u8) | n/a | 3840×2160 | 219.01 | 4.95 | 5.90 | 5.11 | 15.97 | 37.1x | 13.7x |
+| gray_from_rgb (f32) | n/a | 1920×1080 | 1.48 | 3.55 | 1.35 | 1.40 | 6.30 | 1.1x | 0.2x |
+| gray_from_rgb (f32) | n/a | 3840×2160 | 4.03 | 12.44 | 3.00 | 4.47 | 19.91 | 1.3x | 0.2x |
 | **remap (u8)** | **bilinear** | **1920×1080** | **5.71** | **1.30** | **1.74** | **1.56** | **4.61** | **3.3x** | **1.2x** |
 | **remap (u8)** | **nearest** | **1920×1080** | **5.71** | **1.30** | **1.06** | **1.50** | **3.86** | **5.4x** | **1.5x** |
 | **remap (u8)** | **bilinear** | **3840×2160** | **22.13** | **4.14** | **4.58** | **4.42** | **13.14** | **4.8x** | **1.7x** |
@@ -545,6 +566,7 @@ H2D+D2H dominates when the kernel itself is sub-millisecond.
 | **gaussian_blur (3x3, u8)** | **n/a** | **3840×2160** | **1.87** | **4.15** | **4.74** | **4.36** | **13.24** | **0.4x** | **0.1x** |
 | **box_blur (3x3, u8)** | **n/a** | **1920×1080** | **1.88** | **1.30** | **1.66** | **1.46** | **4.42** | **1.1x** | **0.4x** |
 | **box_blur (3x3, u8)** | **n/a** | **3840×2160** | **4.10** | **4.90** | **5.61** | **5.12** | **15.64** | **0.7x** | **0.3x** |
+
 **Key findings:**
 
 - **Kernel-only speedups are large everywhere** (2–300x) but the **roundtrip
@@ -683,3 +705,57 @@ On Jetson, **Unified Memory perfectly eliminates 100% of the PCIe transfer overh
 | 4K (3840x2160) | 111.86 ms | 105.05 ms | 79.21 ms | **1.41x** |
 
 On discrete GPUs, Unified Memory is actually **slower** or barely equivalent due to implicit PCIe page-faulting when the kernel accesses host memory. However, explicitly transferring **Pinned Write-Combined Memory** across the PCIe bus achieves up to a **1.90x speedup** over standard pageable host memory transfers because it maximizes PCIe DMA bandwidth.
+
+---
+
+## SIFT `detect_and_compute` — unified memory vs explicit copies — 2026-08-21
+
+Measures whether writing the source frame straight into unified memory
+(`Image::zeros_cuda_unified`) beats an explicit `to_cuda` upload for the
+end-to-end SIFT pipeline.
+
+```sh
+cargo bench --bench bench_cuda_sift --features cuda -- --iters 30 --warmup 10
+```
+
+### Desktop — NVIDIA GeForce GTX 1650 (discrete, sm_75)
+
+| Resolution | Explicit copies (ms) | Unified memory (ms) | Unified speedup |
+| --- | ---: | ---: | ---: |
+| VGA 640×480 | 2.451 | 5.114 | 0.48x |
+| HD 1280×720 | 8.086 | 13.715 | 0.59x |
+| FHD 1920×1080 | 19.902 | 25.013 | 0.80x |
+
+On a discrete GPU unified memory is a pageable buffer: every first touch from
+the device is a PCIe page fault, so it loses to a single batched H2D copy.
+
+### Embedded — NVIDIA Jetson Orin Nano (integrated)
+
+| Resolution | Explicit copies (ms) | Unified memory (ms) | Unified speedup |
+| --- | ---: | ---: | ---: |
+| VGA 640×480 | 4.865 | 4.301 | 1.13x |
+| HD 1280×720 | OOM | OOM | n/a |
+
+Jetson shares physical DRAM between CPU and GPU, so unified memory removes a
+real copy and wins at VGA. HD and above exhaust memory under the current
+allocation pattern — the pyramid and unified source are live simultaneously —
+so unified memory is **not** yet a general win on Jetson.
+
+## SIFT — OpenCV vs kornia-rs (Python API) — 2026-08-20
+
+`cv2.SIFT_create().detectAndCompute` against the kornia-rs Python bindings on
+random `uint8` images.
+
+```sh
+python crates/kornia-imgproc/benches/bench_opencv_sift.py
+```
+
+| Resolution | OpenCV SIFT (CPU) | kornia-rs host (CPU) | kornia-rs CUDA (explicit) |
+| --- | ---: | ---: | ---: |
+| VGA 640×480 | 64.11 ms | 210.98 ms | 12.51 ms |
+| HD 1280×720 | 242.21 ms | 591.92 ms | 34.11 ms |
+| FHD 1920×1080 | 527.19 ms | 1266.48 ms | 77.15 ms |
+
+The CUDA path is 5.1x–6.8x faster than OpenCV's CPU SIFT end to end, transfers
+included. The host path is slower than OpenCV on x86 — OpenCV's CPU SIFT is
+IPP/TBB-accelerated and the kornia-rs CPU SIFT is not yet vectorized.

@@ -58,7 +58,7 @@ use std::sync::Arc;
 use cudarc::driver::{CudaContext, CudaSlice, CudaStream, CudaView, CudaViewMut};
 
 use super::kernels::{
-    blur_h_src, blur_h_tiled_src, blur_hv_fused_src, blur_v_dog_src, blur_v_src, dog_src,
+    blur_h_src, blur_h_tiled_src, blur_hv_fused_src, blur_v_tiled_src, dog_src,
     downsample_nearest_src, get_or_compile, upsample2x_src,
 };
 use super::SiftCudaError;
@@ -180,18 +180,25 @@ pub fn launch_sift_blur_v_cuda_view(
     check_len(dst.len(), need)?;
 
     let key = format!(
-        "sift_blur_v:{}:{:016x}",
+        "sift_blur_v_tiled:{}:{}:{:016x}",
         gauss_kernel.len(),
+        tile_q(),
         kernel_digest(gauss_kernel)
     );
-    let kernel = get_or_compile(ctx, &key, || blur_v_src(gauss_kernel), "sift_blur_v")?;
+    let kernel = get_or_compile(
+        ctx,
+        &key,
+        || blur_v_tiled_src(gauss_kernel, tile_q(), false),
+        "sift_blur_v",
+    )?;
+    let gh = height.div_ceil(tile_q() as u32);
     kernel
         .launch_builder(stream)
         .arg(src)
         .arg(dst)
         .arg(&width)
         .arg(&height)
-        .launch_2d(width, height, make_config(width, height, None))
+        .launch_2d(width, height, make_config(width, gh, None))
         .map_err(|e| SiftCudaError::Cuda(e.to_string()))
 }
 
@@ -293,16 +300,18 @@ pub fn launch_sift_blur_v_dog_cuda_view(
     check_len(dog.len(), need)?;
 
     let key = format!(
-        "sift_blur_v_dog:{}:{:016x}",
+        "sift_blur_v_tiled_dog:{}:{}:{:016x}",
         gauss_kernel.len(),
+        tile_q(),
         kernel_digest(gauss_kernel)
     );
     let kernel = get_or_compile(
         ctx,
         &key,
-        || blur_v_dog_src(gauss_kernel),
+        || blur_v_tiled_src(gauss_kernel, tile_q(), true),
         "sift_blur_v_dog",
     )?;
+    let gh = height.div_ceil(tile_q() as u32);
     kernel
         .launch_builder(stream)
         .arg(src)
@@ -311,7 +320,7 @@ pub fn launch_sift_blur_v_dog_cuda_view(
         .arg(dog)
         .arg(&width)
         .arg(&height)
-        .launch_2d(width, height, make_config(width, height, None))
+        .launch_2d(width, height, make_config(width, gh, None))
         .map_err(|e| SiftCudaError::Cuda(e.to_string()))
 }
 
@@ -340,6 +349,21 @@ fn tile_p() -> usize {
             .and_then(|v| v.parse::<usize>().ok())
             .filter(|v| *v >= 1 && *v <= 16)
             .unwrap_or(TILE_P)
+    })
+}
+
+/// Outputs per thread in the tiled vertical blur.
+pub const TILE_Q: usize = 2;
+
+/// `KORNIA_SIFT_TILE_Q` overrides [`TILE_Q`] for sweeps.
+fn tile_q() -> usize {
+    static V: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("KORNIA_SIFT_TILE_Q")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|v| *v >= 1 && *v <= 16)
+            .unwrap_or(TILE_Q)
     })
 }
 

@@ -69,7 +69,12 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned to match the toolchain pixi provides for the `Clippy` job above
+      # (`rust = ">=1.76"` currently resolves to 1.96). Tracking `stable` meant a
+      # compiler release could introduce a lint and fail this job on every open
+      # PR without any source change - Rust 1.98's `chunks_exact_to_as_chunks`
+      # did exactly that. Bump this deliberately, together with pixi's rust pin.
+      - uses: dtolnay/rust-toolchain@1.96.0
         with:
           components: clippy
 

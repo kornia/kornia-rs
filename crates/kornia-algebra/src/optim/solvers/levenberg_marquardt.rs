@@ -106,7 +106,7 @@ pub struct OptimizerState {
 
 impl LevenbergMarquardt {
     /// Minimum step norm threshold. Steps smaller than this are considered zero.
-    const STEP_SIZE_TOLERANCE: f32 = 1e-12;
+    const STEP_SIZE_TOLERANCE: f32 = 1e-6;
 
     pub fn optimize(&self, problem: &mut Problem) -> Result<OptimizerResult, OptimizerError> {
         self.optimize_with_callback(problem, |_problem, _state| true)
@@ -310,7 +310,17 @@ impl LevenbergMarquardt {
             param_offset += local;
         }
 
-        let cost = problem.compute_total_cost().map_err(OptimizerError::from)?;
+        // A trial step can land in an infeasible region (e.g. a reprojected
+        // point behind the camera). Treat that as an infinitely bad cost so
+        // the step is naturally rejected and lambda increased, rather than
+        // aborting the whole optimization.
+        let cost = match problem.compute_total_cost() {
+            Ok(cost) => cost,
+            Err(ProblemError::FactorEvaluation(
+                FactorError::InvalidParameters(_) | FactorError::NumericalInstability(_),
+            )) => f32::INFINITY,
+            Err(e) => return Err(OptimizerError::from(e)),
+        };
         Ok((cost, snapshot))
     }
 

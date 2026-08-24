@@ -68,6 +68,9 @@ use kornia_imgproc::{
     },
 };
 
+use kornia_imgproc::cuda::filter::{launch_integral_image_cuda, launch_laplacian_u8_cuda};
+use kornia_imgproc::filter::{integral_image_u8, laplacian_u8};
+
 const WARMUP: u32 = 30;
 const ITERS: u32 = 100;
 const NC: usize = 3; // RGB
@@ -509,6 +512,64 @@ fn cpu_dilate_ms(w: u32, h: u32) -> f64 {
     let t = Instant::now();
     for _ in 0..ITERS {
         dilate(&src, &mut dst, &kernel, PaddingMode::Constant, [0, 0, 0]).expect("dilate");
+        std::hint::black_box(dst.as_slice());
+    }
+    t.elapsed().as_secs_f64() * 1e3 / ITERS as f64
+}
+
+fn cpu_laplacian_ms(w: u32, h: u32) -> f64 {
+    let n = w as usize * h as usize;
+    let src = Image::<u8, 1>::new(
+        ImageSize {
+            width: w as usize,
+            height: h as usize,
+        },
+        (0..n).map(|i| (i % 256) as u8).collect(),
+    )
+    .expect("src");
+    let mut dst = Image::<i16, 1>::from_size_val(
+        ImageSize {
+            width: w as usize,
+            height: h as usize,
+        },
+        0,
+    )
+    .expect("dst");
+    for _ in 0..5 {
+        laplacian_u8(&src, &mut dst).expect("warmup");
+    }
+    let t = Instant::now();
+    for _ in 0..ITERS {
+        laplacian_u8(&src, &mut dst).expect("laplacian");
+        std::hint::black_box(dst.as_slice());
+    }
+    t.elapsed().as_secs_f64() * 1e3 / ITERS as f64
+}
+
+fn cpu_integral_ms(w: u32, h: u32) -> f64 {
+    let n = w as usize * h as usize;
+    let src = Image::<u8, 1>::new(
+        ImageSize {
+            width: w as usize,
+            height: h as usize,
+        },
+        (0..n).map(|i| (i % 256) as u8).collect(),
+    )
+    .expect("src");
+    let mut dst = Image::<f32, 1>::from_size_val(
+        ImageSize {
+            width: w as usize,
+            height: h as usize,
+        },
+        0.0,
+    )
+    .expect("dst");
+    for _ in 0..5 {
+        integral_image_u8(&src, &mut dst).expect("warmup");
+    }
+    let t = Instant::now();
+    for _ in 0..ITERS {
+        integral_image_u8(&src, &mut dst).expect("integral");
         std::hint::black_box(dst.as_slice());
     }
     t.elapsed().as_secs_f64() * 1e3 / ITERS as f64
@@ -1205,6 +1266,133 @@ fn main() {
             &format!("{sw}×{sh}"),
             cpu_sobel,
             &seg_sobel,
+        );
+
+        let cpu_laplacian = cpu_laplacian_ms(sw, sh);
+        let src_u8 = Image::<u8, 1>::new(
+            ImageSize {
+                width: sw as usize,
+                height: sh as usize,
+            },
+            vec![0u8; (sw * sh) as usize],
+        )
+        .unwrap();
+        let mut dst_i16 = Image::<i16, 1>::from_size_val(
+            ImageSize {
+                width: sw as usize,
+                height: sh as usize,
+            },
+            0,
+        )
+        .unwrap();
+
+        let make_ev = || {
+            ctx.new_event(Some(cudarc::driver::sys::CUevent_flags::CU_EVENT_DEFAULT))
+                .unwrap()
+        };
+        let ev0 = make_ev();
+        let ev1 = make_ev();
+        let ev2 = make_ev();
+        let ev3 = make_ev();
+
+        let mut src_dev_u8 = src_u8.to_cuda(&stream).unwrap();
+        let mut dst_dev_i16 = dst_i16.to_cuda(&stream).unwrap();
+
+        for _ in 0..WARMUP {
+            launch_laplacian_u8_cuda(&src_dev_u8, &mut dst_dev_i16, &stream).unwrap();
+            stream.synchronize().unwrap();
+        }
+
+        let mut h2d_sum = 0.0_f64;
+        let mut k_sum = 0.0_f64;
+        let mut d2h_sum = 0.0_f64;
+        for _ in 0..ITERS {
+            ev0.record(&stream).unwrap();
+            stream
+                .memcpy_htod(src_u8.as_slice(), src_dev_u8.0.as_cudaslice_mut().unwrap())
+                .unwrap();
+            ev1.record(&stream).unwrap();
+            launch_laplacian_u8_cuda(&src_dev_u8, &mut dst_dev_i16, &stream).unwrap();
+            ev2.record(&stream).unwrap();
+            stream
+                .memcpy_dtoh(
+                    dst_dev_i16.0.as_cudaslice().unwrap(),
+                    dst_i16.as_slice_mut(),
+                )
+                .unwrap();
+            ev3.record(&stream).unwrap();
+            stream.synchronize().unwrap();
+            h2d_sum += ev0.elapsed_ms(&ev1).unwrap() as f64;
+            k_sum += ev1.elapsed_ms(&ev2).unwrap() as f64;
+            d2h_sum += ev2.elapsed_ms(&ev3).unwrap() as f64;
+        }
+
+        let seg_laplacian = SegmentTimes {
+            h2d_ms: h2d_sum / ITERS as f64,
+            kernel_ms: k_sum / ITERS as f64,
+            d2h_ms: d2h_sum / ITERS as f64,
+        };
+
+        print_row(
+            "laplacian (3x3, u8)",
+            "-",
+            &format!("{sw}×{sh}"),
+            cpu_laplacian,
+            &seg_laplacian,
+        );
+
+        let cpu_integral = cpu_integral_ms(sw, sh);
+        let mut dst_f32 = Image::<f32, 1>::from_size_val(
+            ImageSize {
+                width: sw as usize,
+                height: sh as usize,
+            },
+            0.0,
+        )
+        .unwrap();
+        let mut dst_dev_f32 = dst_f32.to_cuda(&stream).unwrap();
+
+        for _ in 0..WARMUP {
+            launch_integral_image_cuda(&src_dev_u8, &mut dst_dev_f32, &stream).unwrap();
+            stream.synchronize().unwrap();
+        }
+
+        let mut h2d_sum = 0.0_f64;
+        let mut k_sum = 0.0_f64;
+        let mut d2h_sum = 0.0_f64;
+        for _ in 0..ITERS {
+            ev0.record(&stream).unwrap();
+            stream
+                .memcpy_htod(src_u8.as_slice(), src_dev_u8.0.as_cudaslice_mut().unwrap())
+                .unwrap();
+            ev1.record(&stream).unwrap();
+            launch_integral_image_cuda(&src_dev_u8, &mut dst_dev_f32, &stream).unwrap();
+            ev2.record(&stream).unwrap();
+            stream
+                .memcpy_dtoh(
+                    dst_dev_f32.0.as_cudaslice().unwrap(),
+                    dst_f32.as_slice_mut(),
+                )
+                .unwrap();
+            ev3.record(&stream).unwrap();
+            stream.synchronize().unwrap();
+            h2d_sum += ev0.elapsed_ms(&ev1).unwrap() as f64;
+            k_sum += ev1.elapsed_ms(&ev2).unwrap() as f64;
+            d2h_sum += ev2.elapsed_ms(&ev3).unwrap() as f64;
+        }
+
+        let seg_integral = SegmentTimes {
+            h2d_ms: h2d_sum / ITERS as f64,
+            kernel_ms: k_sum / ITERS as f64,
+            d2h_ms: d2h_sum / ITERS as f64,
+        };
+
+        print_row(
+            "integral (u8)",
+            "-",
+            &format!("{sw}×{sh}"),
+            cpu_integral,
+            &seg_integral,
         );
     }
 
