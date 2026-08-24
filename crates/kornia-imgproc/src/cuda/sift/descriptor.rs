@@ -408,6 +408,46 @@ fn descriptor_block_src(threads: usize) -> String {
 __device__ __forceinline__ int cv_round_d(float v) {{ return __float2int_rn(v); }}
 __device__ __forceinline__ int cv_floor_d(float v) {{ return (int)floorf(v); }}
 
+// Warp-aggregated shared-memory atomic. The trilinear splat below has every
+// lane hammering a small set of histogram bins, so lanes of a warp routinely
+// target the SAME address and serialize on the atomic unit. Here the lanes
+// sharing an address combine their contributions through shuffles and the
+// leader issues one atomicAdd, turning up to 32 serialized atomics into one.
+//
+// Bit equality is preserved: the bins are fixed point (see HIST_SCALE), and
+// unsigned integer addition is associative, so summing the peers in lane
+// order gives exactly the value the per-lane atomics would have produced in
+// any order. This is precisely why the histogram is fixed point and not f32 —
+// the same reordering on floats would NOT be reproducible.
+//
+// Addresses are keyed by their low 32 bits: `histq` is __shared__, the shared
+// window is far below 4 GiB, so two distinct bins cannot collide in the key.
+//
+// __match_any_sync is sm_70+; older devices take the plain per-lane atomic,
+// which is slower but produces the identical result.
+__device__ __forceinline__ void warp_atomicAdd(unsigned long long* address, unsigned long long val) {{
+#if __CUDA_ARCH__ >= 700
+    const unsigned int active = __activemask();
+    const unsigned int match = __match_any_sync(active, (unsigned int)(size_t)address);
+    const int lane = threadIdx.x % 32;
+    const int leader = __ffs(match) - 1;
+
+    unsigned long long sum = 0;
+    unsigned int peers = match;
+    while (peers) {{
+        const int peer = __ffs(peers) - 1;
+        peers &= ~(1u << peer);
+        sum += __shfl_sync(match, val, peer);
+    }}
+
+    if (lane == leader) {{
+        atomicAdd(address, sum);
+    }}
+#else
+    atomicAdd(address, val);
+#endif
+}}
+
 extern "C" __global__ void __launch_bounds__(NTHREADS) sift_descriptor_block(
     const float* __restrict__ img, int w, int h,
     const float* __restrict__ kp_in, int n_kp, int kp_stride,
@@ -519,20 +559,20 @@ extern "C" __global__ void __launch_bounds__(NTHREADS) sift_descriptor_block(
             const int clo = c0 >= 0, chi = c0 <= DD - 2;
             const int idx = ((r0 + 1) * (DD + 2) + (c0 + 1)) * OSTRIDE + o0;
             if (rlo && clo) {{
-                atomicAdd(&histq[idx], __float2ull_rn(v_rco000 * HIST_SCALE));
-                atomicAdd(&histq[idx + 1], __float2ull_rn(v_rco001 * HIST_SCALE));
+                warp_atomicAdd(&histq[idx], __float2ull_rn(v_rco000 * HIST_SCALE));
+                warp_atomicAdd(&histq[idx + 1], __float2ull_rn(v_rco001 * HIST_SCALE));
             }}
             if (rlo && chi) {{
-                atomicAdd(&histq[idx + OSTRIDE], __float2ull_rn(v_rco010 * HIST_SCALE));
-                atomicAdd(&histq[idx + OSTRIDE + 1], __float2ull_rn(v_rco011 * HIST_SCALE));
+                warp_atomicAdd(&histq[idx + OSTRIDE], __float2ull_rn(v_rco010 * HIST_SCALE));
+                warp_atomicAdd(&histq[idx + OSTRIDE + 1], __float2ull_rn(v_rco011 * HIST_SCALE));
             }}
             if (rhi && clo) {{
-                atomicAdd(&histq[idx + (DD + 2) * OSTRIDE], __float2ull_rn(v_rco100 * HIST_SCALE));
-                atomicAdd(&histq[idx + (DD + 2) * OSTRIDE + 1], __float2ull_rn(v_rco101 * HIST_SCALE));
+                warp_atomicAdd(&histq[idx + (DD + 2) * OSTRIDE], __float2ull_rn(v_rco100 * HIST_SCALE));
+                warp_atomicAdd(&histq[idx + (DD + 2) * OSTRIDE + 1], __float2ull_rn(v_rco101 * HIST_SCALE));
             }}
             if (rhi && chi) {{
-                atomicAdd(&histq[idx + (DD + 3) * OSTRIDE], __float2ull_rn(v_rco110 * HIST_SCALE));
-                atomicAdd(&histq[idx + (DD + 3) * OSTRIDE + 1], __float2ull_rn(v_rco111 * HIST_SCALE));
+                warp_atomicAdd(&histq[idx + (DD + 3) * OSTRIDE], __float2ull_rn(v_rco110 * HIST_SCALE));
+                warp_atomicAdd(&histq[idx + (DD + 3) * OSTRIDE + 1], __float2ull_rn(v_rco111 * HIST_SCALE));
             }}
         }}
     }}

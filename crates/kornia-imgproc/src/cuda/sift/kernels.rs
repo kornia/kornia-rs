@@ -263,78 +263,98 @@ extern "C" __global__ void __launch_bounds__(256) sift_blur_h_tiled(
     )
 }
 
-/// Vertical pass of the separable Gaussian.
+/// Vertical pass of the separable Gaussian with `q` outputs per thread.
 ///
 /// Mirrors the reference's symmetric-column vector filter: the kernel is folded
 /// about its centre, and each symmetric pair is **summed before** the FMA.
 /// `acc = fma(s[0], ky[0], 0)` then `acc = fma(s[k] + s[-k], ky[k], acc)`.
 /// Replacing the pair-sum with two separate FMAs changes the result and breaks
 /// bit equality.
-pub fn blur_v_src(kernel: &[f32]) -> String {
+pub(crate) fn blur_v_tiled_src(kernel: &[f32], q: usize, dog: bool) -> String {
     let n = kernel.len();
     let n2 = n / 2;
     let ky = &kernel[n2..];
-    let mut taps = String::new();
+    let ntaps = n + q - 1;
+
     let mut fast = String::new();
-    taps.push_str(&format!(
-        "        float acc = __fmaf_rn(src[refl101(y, h) * w + x], {}, 0.0f);\n",
-        f32_lit(ky[0])
-    ));
-    fast.push_str(&format!(
-        "        float acc = __fmaf_rn(__ldg(&c0[0]), {}, 0.0f);\n",
-        f32_lit(ky[0])
-    ));
-    for (k, &c) in ky.iter().enumerate().skip(1) {
-        taps.push_str(&format!(
-            "        acc = __fmaf_rn(src[refl101(y + {k}, h) * w + x] + src[refl101(y - {k}, h) * w + x], {}, acc);\n",
-            f32_lit(c)
-        ));
+    for t in 0..ntaps {
         fast.push_str(&format!(
-            "        acc = __fmaf_rn(__ldg(&c0[{k} * w]) + __ldg(&c0[-{k} * w]), {}, acc);\n",
-            f32_lit(c)
+            "        const float t{t} = __ldg(&c0[{t} * w]);\n"
         ));
     }
+    for j in 0..q {
+        fast.push_str(&format!(
+            "        float acc{j} = __fmaf_rn(t{}, {}, 0.0f);\n",
+            n2 + j,
+            f32_lit(ky[0])
+        ));
+        for (k, &c) in ky.iter().enumerate().skip(1) {
+            fast.push_str(&format!(
+                "        acc{j} = __fmaf_rn(t{} + t{}, {}, acc{j});\n",
+                n2 + j - k,
+                n2 + j + k,
+                f32_lit(c)
+            ));
+        }
+    }
+    for j in 0..q {
+        fast.push_str(&format!("        dst[(y_base + {j}) * w + x] = acc{j};\n"));
+        if dog {
+            fast.push_str(&format!(
+                "        dog[(y_base + {j}) * w + x] = acc{j} - lower[(y_base + {j}) * w + x];\n"
+            ));
+        }
+    }
+
+    let mut taps = String::new();
+    for j in 0..q {
+        taps.push_str("    {\n");
+        taps.push_str(&format!("        const int y = y_base + {j};\n"));
+        taps.push_str("        if (y < h) {\n");
+        taps.push_str(&format!(
+            "            float acc = __fmaf_rn(src[refl101(y, h) * w + x], {}, 0.0f);\n",
+            f32_lit(ky[0])
+        ));
+        for (k, &c) in ky.iter().enumerate().skip(1) {
+            taps.push_str(&format!(
+                "            acc = __fmaf_rn(src[refl101(y + {k}, h) * w + x] + src[refl101(y - {k}, h) * w + x], {}, acc);\n",
+                f32_lit(c)
+            ));
+        }
+        taps.push_str("            dst[y * w + x] = acc;\n");
+        if dog {
+            taps.push_str("            dog[y * w + x] = acc - lower[y * w + x];\n");
+        }
+        taps.push_str("        }\n");
+        taps.push_str("    }\n");
+    }
+
+    let (fn_name, dog_args) = if dog {
+        (
+            "sift_blur_v_dog",
+            "\n    const float* __restrict__ lower, float* __restrict__ dog,",
+        )
+    } else {
+        ("sift_blur_v", "")
+    };
+
     format!(
         r#"{BORDER_HELPERS}
-extern "C" __global__ void __launch_bounds__(256) sift_blur_v(
-    const float* __restrict__ src, float* __restrict__ dst, int w, int h)
+extern "C" __global__ void __launch_bounds__(256) {fn_name}(
+    const float* __restrict__ src, float* __restrict__ dst,{dog_args} int w, int h)
 {{
     const int x = blockIdx.x * blockDim.x + threadIdx.x;
-    const int y = blockIdx.y * blockDim.y + threadIdx.y;
-    if (x >= w || y >= h) return;
-    if (y >= {n2} && y < h - {n2}) {{
-        const float* __restrict__ c0 = src + y * w + x;
-{fast}        dst[y * w + x] = acc;
-    }} else {{
-{taps}        dst[y * w + x] = acc;
-    }}
+    if (x >= w) return;
+    const int y_base = (blockIdx.y * blockDim.y + threadIdx.y) * {q};
+
+    // Border test at warp granularity: y_base is constant for all lanes if
+    // blockDim.x == 32 (threads in a warp have the same threadIdx.y).
+    if (y_base >= {n2} && y_base + {q} - 1 < h - {n2}) {{
+        const float* __restrict__ c0 = src + (y_base - {n2}) * w + x;
+{fast}    }} else {{
+{taps}    }}
 }}
 "#
-    )
-}
-
-/// Vertical Gaussian pass fused with the DoG subtract.
-///
-/// The vertical pass already has the blurred value in a register, so writing
-/// `dog = blurred - lower` here costs one extra load and one extra store but
-/// removes a whole separate pass that would re-read the layer and re-write the
-/// difference. Numerically identical to running the two kernels back to back:
-/// the subtract operates on exactly the f32 value the unfused kernel stores.
-pub fn blur_v_dog_src(kernel: &[f32]) -> String {
-    // NOTE: this pattern must match the declaration in `blur_v_src` INCLUDING
-    // its `__launch_bounds__` attribute — a signature edit there that misses
-    // here silently generates an unrenamed kernel (caught by
-    // `blur_v_dog_generates_fused_kernel`).
-    let base = blur_v_src(kernel)
-        .replace("void __launch_bounds__(256) sift_blur_v(", "void __launch_bounds__(256) sift_blur_v_dog(")
-        .replace(
-            "const float* __restrict__ src, float* __restrict__ dst, int w, int h)",
-            "const float* __restrict__ src, float* __restrict__ dst,\n    const float* __restrict__ lower, float* __restrict__ dog, int w, int h)",
-        );
-    // Emit the DoG store after every `dst` store (interior and border paths).
-    base.replace(
-        "        dst[y * w + x] = acc;",
-        "        dst[y * w + x] = acc;\n        dog[y * w + x] = acc - lower[y * w + x];",
     )
 }
 
@@ -576,7 +596,7 @@ mod tests {
     #[test]
     fn blur_v_dog_generates_fused_kernel() {
         let k = gaussian_kernel_f32(11, 1.2489995956420898);
-        let src = blur_v_dog_src(&k);
+        let src = blur_v_tiled_src(&k, 2, true);
         assert!(src.contains("sift_blur_v_dog("), "kernel not renamed");
         assert!(
             src.contains("const float* __restrict__ lower"),
@@ -587,6 +607,12 @@ mod tests {
                 .count(),
             2,
             "DoG store must be emitted on BOTH the interior and border paths"
+        );
+        assert_eq!(
+            src.matches("dog[(y_base + 0) * w + x] = acc0 - lower[(y_base + 0) * w + x];")
+                .count(),
+            1,
+            "DoG store must be emitted on fast path"
         );
     }
 

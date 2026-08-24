@@ -46,6 +46,11 @@ required-features = ["cuda"]
 
 [[bench]]
 harness = false
+name = "bench_cuda_sift"
+required-features = ["cuda"]
+
+[[bench]]
+harness = false
 name = "bench_sift_instr"
 
 [[bench]]
