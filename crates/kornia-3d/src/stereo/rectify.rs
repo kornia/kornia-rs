@@ -191,6 +191,25 @@ impl StereoRectifier {
         }
     }
 
+    /// The per-pixel source coordinates for the LEFT rectified view: one `[x, y]` f32 pair per
+    /// output pixel, row-major `width * height`. This is the table [`rectify_left`](Self::rectify_left)
+    /// samples through — exposed so an external sampler (e.g. a CUDA remap kernel, which takes
+    /// the same map split into x/y planes) can consume the exact same geometry instead of
+    /// re-deriving it.
+    ///
+    /// The maps carry geometry only; BORDER POLICY belongs to the sampler. Coordinates in the
+    /// one-pixel band `(w-1, w)` / `(h-1, h)` are skipped (left black) by the CPU sampler here
+    /// but clamp-and-sample in kornia-imgproc's CUDA remap, so rectified border pixels may
+    /// differ between samplers consuming the same map.
+    pub fn left_map(&self) -> &[[f32; 2]] {
+        &self.left_map
+    }
+
+    /// The RIGHT view's map; see [`left_map`](Self::left_map).
+    pub fn right_map(&self) -> &[[f32; 2]] {
+        &self.right_map
+    }
+
     /// Metric baseline between the cameras.
     pub fn baseline(&self) -> f64 {
         self.baseline
