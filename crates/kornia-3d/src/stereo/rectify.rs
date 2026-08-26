@@ -49,7 +49,8 @@ pub enum StereoError {
         expected: (usize, usize),
     },
 
-    /// Failed to build the rectified image from the remapped buffer.
+    /// An underlying image or CUDA operation failed (allocation, upload, residency, or
+    /// resampling).
     #[error(transparent)]
     Image(#[from] ImageError),
 }
@@ -78,11 +79,12 @@ impl RectifiedGeometry {
             fy: self.f,
             cx: self.cx,
             cy: self.cy,
-            k1: 0.0,
-            k2: 0.0,
-            p1: 0.0,
-            p2: 0.0,
+            ..PinholeCamera::IDENTITY
         }
+    }
+
+    fn bf(&self) -> f64 {
+        self.f * self.baseline
     }
 }
 
@@ -232,7 +234,7 @@ impl StereoRectifier {
 
     /// `bf = focal * baseline`, the constant in `depth = bf / disparity`.
     pub fn bf(&self) -> f64 {
-        self.geom.f * self.geom.baseline
+        self.geom.bf()
     }
 
     /// Rectifies a raw left image into `dst` — into-style like every imgproc op, so the
@@ -321,17 +323,12 @@ mod cuda {
                 right_map_y: self.right_map_y.to_cuda(stream)?,
                 stream: stream.clone(),
             };
-            // Warm-up on throwaway device buffers: compiles the kernel through the cache (a
-            // host-side nvrtc step, so failures surface synchronously) and enqueues one launch.
+            // Warm-up on throwaway device buffers, through the REAL entry point so it compiles
+            // the exact kernel later calls launch (a host-side nvrtc step — failures surface
+            // synchronously) and exercises the same residency checks.
             let warm_src: Image<u8, 1> = Image::zeros_cuda(size, stream)?;
             let mut warm_dst = Image::zeros_cuda(size, stream)?;
-            remap_u8(
-                &warm_src,
-                &mut warm_dst,
-                &dev.left_map_x,
-                &dev.left_map_y,
-                InterpolationMode::Bilinear,
-            )?;
+            dev.rectify_left_device(&warm_src, &mut warm_dst)?;
             Ok(dev)
         }
     }
@@ -359,16 +356,7 @@ mod cuda {
             src: &Image<u8, 1>,
             dst: &mut Image<u8, 1>,
         ) -> Result<(), StereoError> {
-            self.check(src)?;
-            self.check(dst)?;
-            remap_u8(
-                src,
-                dst,
-                &self.left_map_x,
-                &self.left_map_y,
-                InterpolationMode::Bilinear,
-            )?;
-            Ok(())
+            self.remap_device(src, dst, &self.left_map_x, &self.left_map_y)
         }
 
         /// See [`rectify_left_device`](Self::rectify_left_device).
@@ -377,15 +365,20 @@ mod cuda {
             src: &Image<u8, 1>,
             dst: &mut Image<u8, 1>,
         ) -> Result<(), StereoError> {
+            self.remap_device(src, dst, &self.right_map_x, &self.right_map_y)
+        }
+
+        /// The device twin of [`StereoRectifier::remap`]: checks, then one `remap_u8` call.
+        fn remap_device(
+            &self,
+            src: &Image<u8, 1>,
+            dst: &mut Image<u8, 1>,
+            map_x: &Image<f32, 1>,
+            map_y: &Image<f32, 1>,
+        ) -> Result<(), StereoError> {
             self.check(src)?;
             self.check(dst)?;
-            remap_u8(
-                src,
-                dst,
-                &self.right_map_x,
-                &self.right_map_y,
-                InterpolationMode::Bilinear,
-            )?;
+            remap_u8(src, dst, map_x, map_y, InterpolationMode::Bilinear)?;
             Ok(())
         }
 
@@ -425,7 +418,7 @@ mod cuda {
 
         /// `bf = focal * baseline`, the constant in `depth = bf / disparity`.
         pub fn bf(&self) -> f64 {
-            self.geom.f * self.geom.baseline
+            self.geom.bf()
         }
 
         /// See [`StereoRectifier::left_rectifying_rotation`].
