@@ -15,6 +15,10 @@
 use crate::camera::PinholeCamera;
 use kornia_algebra::{Mat3F64, Vec3F64, SO3F64};
 use kornia_image::{Image, ImageError, ImageSize};
+use kornia_imgproc::interpolation::{remap_u8, InterpolationMode};
+
+#[cfg(feature = "cuda")]
+use std::sync::Arc;
 use kornia_imgproc::calibration::distortion::{distort_point_polynomial, PolynomialDistortion};
 use kornia_imgproc::calibration::CameraIntrinsic;
 
@@ -66,9 +70,11 @@ pub struct StereoRectifier {
     /// Rotation mapping raw left-camera coordinates into the rectified frame.
     rect_left: Mat3F64,
     /// Per-output-pixel source coordinate in the raw left image (`[u, v]`).
-    left_map: Vec<[f32; 2]>,
+    left_map_x: Image<f32, 1>,
+    left_map_y: Image<f32, 1>,
     /// Per-output-pixel source coordinate in the raw right image.
-    right_map: Vec<[f32; 2]>,
+    right_map_x: Image<f32, 1>,
+    right_map_y: Image<f32, 1>,
 }
 
 /// Per-camera calibration for rectification: intrinsics + Brown-Conrady
@@ -154,8 +160,8 @@ impl StereoRectifier {
         let cx = (width as f64 - 1.0) * 0.5;
         let cy = (height as f64 - 1.0) * 0.5;
 
-        let left_map = build_map(width, height, f, cx, cy, &rect_l, left);
-        let right_map = build_map(width, height, f, cx, cy, &rect_r, right);
+        let (left_map_x, left_map_y) = build_map(width, height, f, cx, cy, &rect_l, left)?;
+        let (right_map_x, right_map_y) = build_map(width, height, f, cx, cy, &rect_r, right)?;
 
         Ok(Self {
             width,
@@ -165,8 +171,10 @@ impl StereoRectifier {
             cy,
             baseline: nt,
             rect_left: rect_l,
-            left_map,
-            right_map,
+            left_map_x,
+            left_map_y,
+            right_map_x,
+            right_map_y,
         })
     }
 
@@ -191,23 +199,17 @@ impl StereoRectifier {
         }
     }
 
-    /// The per-pixel source coordinates for the LEFT rectified view: one `[x, y]` f32 pair per
-    /// output pixel, row-major `width * height`. This is the table [`rectify_left`](Self::rectify_left)
-    /// samples through — exposed so an external sampler (e.g. a CUDA remap kernel, which takes
-    /// the same map split into x/y planes) can consume the exact same geometry instead of
-    /// re-deriving it.
-    ///
-    /// The maps carry geometry only; BORDER POLICY belongs to the sampler. Coordinates in the
-    /// one-pixel band `(w-1, w)` / `(h-1, h)` are skipped (left black) by the CPU sampler here
-    /// but clamp-and-sample in kornia-imgproc's CUDA remap, so rectified border pixels may
-    /// differ between samplers consuming the same map.
-    pub fn left_map(&self) -> &[[f32; 2]] {
-        &self.left_map
+    /// The LEFT view's undistort+rectify map as `(x, y)` planes, one f32 per output pixel,
+    /// row-major `width * height` — exactly the operands [`remap_u8`] takes, on either backend.
+    /// [`rectify_left`](Self::rectify_left) samples through this same table, so an external
+    /// consumer sees identical geometry AND identical border/rounding semantics.
+    pub fn left_maps(&self) -> (&Image<f32, 1>, &Image<f32, 1>) {
+        (&self.left_map_x, &self.left_map_y)
     }
 
-    /// The RIGHT view's map; see [`left_map`](Self::left_map).
-    pub fn right_map(&self) -> &[[f32; 2]] {
-        &self.right_map
+    /// The RIGHT view's map planes; see [`left_maps`](Self::left_maps).
+    pub fn right_maps(&self) -> (&Image<f32, 1>, &Image<f32, 1>) {
+        (&self.right_map_x, &self.right_map_y)
     }
 
     /// Metric baseline between the cameras.
@@ -226,7 +228,7 @@ impl StereoRectifier {
     /// [`StereoError::ImageSizeMismatch`] if `img`'s resolution differs from
     /// the rectifier's.
     pub fn rectify_left(&self, img: &Image<u8, 1>) -> Result<Image<u8, 1>, StereoError> {
-        self.remap(img, &self.left_map)
+        self.remap(img, &self.left_map_x, &self.left_map_y)
     }
 
     /// Rectifies a raw right image.
@@ -235,33 +237,229 @@ impl StereoRectifier {
     /// [`StereoError::ImageSizeMismatch`] if `img`'s resolution differs from
     /// the rectifier's.
     pub fn rectify_right(&self, img: &Image<u8, 1>) -> Result<Image<u8, 1>, StereoError> {
-        self.remap(img, &self.right_map)
+        self.remap(img, &self.right_map_x, &self.right_map_y)
     }
 
-    fn remap(&self, img: &Image<u8, 1>, map: &[[f32; 2]]) -> Result<Image<u8, 1>, StereoError> {
+    /// One sampler for every backend: [`remap_u8`], whose CPU and CUDA paths are byte-exact
+    /// by tested contract. Border semantics are therefore remap_u8's — coordinates in the
+    /// `[w-1, w)` band clamp-sample the edge texel (the previous private sampler left them
+    /// black), and blending is Q10 fixed point.
+    fn remap(
+        &self,
+        img: &Image<u8, 1>,
+        map_x: &Image<f32, 1>,
+        map_y: &Image<f32, 1>,
+    ) -> Result<Image<u8, 1>, StereoError> {
         if (img.width(), img.height()) != (self.width, self.height) {
             return Err(StereoError::ImageSizeMismatch {
                 got: (img.width(), img.height()),
                 expected: (self.width, self.height),
             });
         }
-        let src = img.as_slice();
-        let (sw, sh) = (img.width(), img.height());
-        // `out` starts black; only pixels whose source lands inside the raw
-        // image get written, so out-of-frame borders stay black.
-        let mut out = vec![0u8; self.width * self.height];
-        for (dst, &[fx, fy]) in out.iter_mut().zip(map.iter()) {
-            if let Some(v) = sample_bilinear(src, sw, sh, fx, fy) {
-                *dst = v;
-            }
-        }
-        Ok(Image::from_size_slice(
+        let mut out = Image::from_size_val(
             ImageSize {
                 width: self.width,
                 height: self.height,
             },
-            &out,
-        )?)
+            0u8,
+        )?;
+        remap_u8(img, &mut out, map_x, map_y, InterpolationMode::Bilinear)?;
+        Ok(out)
+    }
+}
+
+#[cfg(feature = "cuda")]
+impl StereoRectifier {
+    /// Uploads both eyes' map planes and warms the kernel, returning a rectifier that serves
+    /// DEVICE-resident work. Explicit — no hidden H2D on first frame — and the warm-up runs a
+    /// full rectify so nvrtc/compile/launch failures surface HERE, where a caller's CPU
+    /// fallback can catch them, not on frame one with the fallback already forfeited.
+    ///
+    /// The stream is only borrowed for the uploads; it is also retained for the host
+    /// convenience methods. No context is created — the application owns that.
+    pub fn to_cuda(
+        &self,
+        stream: &Arc<cudarc::driver::CudaStream>,
+    ) -> Result<CudaStereoRectifier, StereoError> {
+        let size = ImageSize {
+            width: self.width,
+            height: self.height,
+        };
+        let mut dev = CudaStereoRectifier {
+            width: self.width,
+            height: self.height,
+            f: self.f,
+            cx: self.cx,
+            cy: self.cy,
+            baseline: self.baseline,
+            rect_left: self.rect_left,
+            left_map_x: self.left_map_x.to_cuda(stream)?,
+            left_map_y: self.left_map_y.to_cuda(stream)?,
+            right_map_x: self.right_map_x.to_cuda(stream)?,
+            right_map_y: self.right_map_y.to_cuda(stream)?,
+            scratch_in: Image::zeros_cuda(size, stream)?,
+            scratch_out: Image::zeros_cuda(size, stream)?,
+            stream: stream.clone(),
+        };
+        // Warm-up: compiles the kernel through the cache and proves a launch works.
+        let mut sink = vec![0u8; self.width * self.height];
+        let zeros = vec![0u8; self.width * self.height];
+        dev.rectify_left_into(&zeros, &mut sink)?;
+        Ok(dev)
+    }
+}
+
+/// [`StereoRectifier`]'s maps, device-resident, rectifying through the SAME
+/// residency-dispatched [`remap_u8`] as the CPU path — the two produce identical bytes by
+/// kornia-imgproc's tested CPU↔CUDA contract.
+///
+/// Mid-run CUDA errors return typed errors and leave the stream state suspect; the demote-to-CPU
+/// policy belongs to the caller (safe precisely because the bytes match).
+#[cfg(feature = "cuda")]
+pub struct CudaStereoRectifier {
+    width: usize,
+    height: usize,
+    f: f64,
+    cx: f64,
+    cy: f64,
+    baseline: f64,
+    rect_left: Mat3F64,
+    left_map_x: Image<f32, 1>,
+    left_map_y: Image<f32, 1>,
+    right_map_x: Image<f32, 1>,
+    right_map_y: Image<f32, 1>,
+    scratch_in: Image<u8, 1>,
+    scratch_out: Image<u8, 1>,
+    stream: Arc<cudarc::driver::CudaStream>,
+}
+
+#[cfg(feature = "cuda")]
+impl CudaStereoRectifier {
+    /// Rectify a DEVICE-resident left frame into a device-resident destination. Zero copies;
+    /// work is enqueued on the images' stream and the caller synchronizes before reading.
+    pub fn rectify_left_device(
+        &mut self,
+        src: &Image<u8, 1>,
+        dst: &mut Image<u8, 1>,
+    ) -> Result<(), StereoError> {
+        self.check(src)?;
+        self.check(dst)?;
+        remap_u8(
+            src,
+            dst,
+            &self.left_map_x,
+            &self.left_map_y,
+            InterpolationMode::Bilinear,
+        )?;
+        Ok(())
+    }
+
+    /// See [`rectify_left_device`](Self::rectify_left_device).
+    pub fn rectify_right_device(
+        &mut self,
+        src: &Image<u8, 1>,
+        dst: &mut Image<u8, 1>,
+    ) -> Result<(), StereoError> {
+        self.check(src)?;
+        self.check(dst)?;
+        remap_u8(
+            src,
+            dst,
+            &self.right_map_x,
+            &self.right_map_y,
+            InterpolationMode::Bilinear,
+        )?;
+        Ok(())
+    }
+
+    /// Host-bytes convenience for the driver loop: H2D into retained scratch, kernel, blocking
+    /// D2H into `out` (resized once). No per-frame allocation.
+    pub fn rectify_left_into(&mut self, raw: &[u8], out: &mut Vec<u8>) -> Result<(), StereoError> {
+        self.host_roundtrip(raw, out, true)
+    }
+
+    /// See [`rectify_left_into`](Self::rectify_left_into).
+    pub fn rectify_right_into(&mut self, raw: &[u8], out: &mut Vec<u8>) -> Result<(), StereoError> {
+        self.host_roundtrip(raw, out, false)
+    }
+
+    fn host_roundtrip(
+        &mut self,
+        raw: &[u8],
+        out: &mut Vec<u8>,
+        left: bool,
+    ) -> Result<(), StereoError> {
+        let n = self.width * self.height;
+        if raw.len() != n {
+            return Err(StereoError::ImageSizeMismatch {
+                got: (raw.len(), 1),
+                expected: (self.width, self.height),
+            });
+        }
+        {
+            let slice = self
+                .scratch_in
+                .as_cudaslice_mut()
+                .ok_or_else(|| ImageError::Cuda("scratch lost device residency".into()))?;
+            self.stream
+                .memcpy_htod(raw, slice)
+                .map_err(|e| ImageError::Cuda(format!("h2d: {e}")))?;
+        }
+        let (mx, my) = if left {
+            (&self.left_map_x, &self.left_map_y)
+        } else {
+            (&self.right_map_x, &self.right_map_y)
+        };
+        remap_u8(
+            &self.scratch_in,
+            &mut self.scratch_out,
+            mx,
+            my,
+            InterpolationMode::Bilinear,
+        )?;
+        out.resize(n, 0);
+        // Blocking: syncs the stream, so the bytes are final when this returns.
+        self.scratch_out.to_host_into(out)?;
+        Ok(())
+    }
+
+    fn check(&self, img: &Image<u8, 1>) -> Result<(), StereoError> {
+        if (img.width(), img.height()) != (self.width, self.height) {
+            return Err(StereoError::ImageSizeMismatch {
+                got: (img.width(), img.height()),
+                expected: (self.width, self.height),
+            });
+        }
+        Ok(())
+    }
+
+    /// Rectified pinhole camera (shared by both views; zero distortion).
+    pub fn rectified_camera(&self) -> PinholeCamera {
+        PinholeCamera {
+            fx: self.f,
+            fy: self.f,
+            cx: self.cx,
+            cy: self.cy,
+            k1: 0.0,
+            k2: 0.0,
+            p1: 0.0,
+            p2: 0.0,
+        }
+    }
+
+    /// Metric baseline between the cameras.
+    pub fn baseline(&self) -> f64 {
+        self.baseline
+    }
+
+    /// `bf = focal * baseline`, the constant in `depth = bf / disparity`.
+    pub fn bf(&self) -> f64 {
+        self.f * self.baseline
+    }
+
+    /// See [`StereoRectifier::left_rectifying_rotation`].
+    pub fn left_rectifying_rotation(&self) -> Mat3F64 {
+        self.rect_left
     }
 }
 
@@ -275,7 +473,7 @@ fn build_map(
     cy: f64,
     rect: &Mat3F64,
     cam: &CameraCalib,
-) -> Vec<[f32; 2]> {
+) -> Result<(Image<f32, 1>, Image<f32, 1>), ImageError> {
     let rect_t = rect.transpose(); // rectified-normalized -> camera-normalized
     let intrinsic = CameraIntrinsic {
         fx: cam.fx,
@@ -285,7 +483,8 @@ fn build_map(
     };
     let distortion = cam.distortion;
 
-    let mut map = vec![[0.0f32; 2]; width * height];
+    let mut map_x = vec![0.0f32; width * height];
+    let mut map_y = vec![0.0f32; width * height];
     for v in 0..height {
         for u in 0..width {
             // Inverse rectified projection -> normalized rectified coords.
@@ -299,37 +498,17 @@ fn build_map(
             let px = cam.fx * xn + cam.cx;
             let py = cam.fy * yn + cam.cy;
             let (du, dv) = distort_point_polynomial(px, py, &intrinsic, &distortion);
-            map[v * width + u] = [du as f32, dv as f32];
+            map_x[v * width + u] = du as f32;
+            map_y[v * width + u] = dv as f32;
         }
     }
-    map
+    let size = ImageSize { width, height };
+    Ok((
+        Image::from_size_slice(size, &map_x)?,
+        Image::from_size_slice(size, &map_y)?,
+    ))
 }
 
-/// Samples the source image at `(fx, fy)` with bilinear interpolation.
-/// Returns `None` when the coordinate is non-finite or outside the image, so
-/// the caller decides how to fill those (out-of-frame) rectified pixels.
-fn sample_bilinear(src: &[u8], w: usize, h: usize, fx: f32, fy: f32) -> Option<u8> {
-    if !fx.is_finite() || !fy.is_finite() || fx < 0.0 || fy < 0.0 {
-        return None;
-    }
-    let (wf, hf) = (w as f32, h as f32);
-    if fx > wf - 1.0 || fy > hf - 1.0 {
-        return None;
-    }
-    let x0 = fx.floor() as usize;
-    let y0 = fy.floor() as usize;
-    let x1 = (x0 + 1).min(w - 1);
-    let y1 = (y0 + 1).min(h - 1);
-    let ax = fx - x0 as f32;
-    let ay = fy - y0 as f32;
-    let p00 = src[y0 * w + x0] as f32;
-    let p01 = src[y0 * w + x1] as f32;
-    let p10 = src[y1 * w + x0] as f32;
-    let p11 = src[y1 * w + x1] as f32;
-    let top = p00 + (p01 - p00) * ax;
-    let bot = p10 + (p11 - p10) * ax;
-    Some((top + (bot - top) * ay).round().clamp(0.0, 255.0) as u8)
-}
 
 fn component(v: &Vec3F64, idx: usize) -> f64 {
     if idx == 0 {
@@ -593,7 +772,52 @@ mod tests {
             rect.baseline()
         );
         assert!(rect.bf() > 0.0);
-        assert_eq!(rect.left_map.len(), 752 * 480);
+        let (mx, my) = rect.left_maps();
+        assert_eq!(mx.as_slice().len(), 752 * 480);
+        assert_eq!(my.as_slice().len(), 752 * 480);
+        Ok(())
+    }
+
+    /// CPU and CUDA rectification must produce IDENTICAL bytes: both are remap_u8, whose
+    /// backends are byte-exact by kornia-imgproc's tested contract. Requires a CUDA device.
+    #[test]
+    #[cfg(feature = "cuda")]
+    fn cuda_rectify_matches_cpu_byte_exact() -> Result<(), Box<dyn std::error::Error>> {
+        use cudarc::driver::CudaContext;
+        // Same MH01-style rig as the baseline test: distorted 752x480 pair.
+        let left = calib(367.215, 248.375);
+        let right = calib(379.999, 255.238);
+        let rect = StereoRectifier::from_calib(
+            &left,
+            &right,
+            Mat3F64::IDENTITY,
+            Vec3F64::new(-0.11, 0.0, 0.0),
+        )?;
+        let (w, h) = (752usize, 480usize);
+        // Deterministic pseudo-random frame.
+        let mut x = 0x9E3779B97F4A7C15u64;
+        let raw: Vec<u8> = (0..w * h)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                (x & 0xFF) as u8
+            })
+            .collect();
+        let img = Image::from_size_slice(ImageSize { width: w, height: h }, &raw)?;
+        let cpu_l = rect.rectify_left(&img)?;
+        let cpu_r = rect.rectify_right(&img)?;
+
+        let ctx = CudaContext::new(0)?;
+        let stream = ctx.default_stream();
+        let mut dev = rect.to_cuda(&stream)?;
+        let mut gpu_l = Vec::new();
+        let mut gpu_r = Vec::new();
+        dev.rectify_left_into(&raw, &mut gpu_l)?;
+        dev.rectify_right_into(&raw, &mut gpu_r)?;
+
+        assert_eq!(cpu_l.as_slice(), gpu_l.as_slice(), "left bytes diverge");
+        assert_eq!(cpu_r.as_slice(), gpu_r.as_slice(), "right bytes diverge");
         Ok(())
     }
 }

@@ -19,6 +19,12 @@ name = "bench_linalg"
 harness = false
 name = "bench_twoview"
 
+[features]
+# CUDA-resident rectification: uploads the remap tables once and serves device frames through
+# kornia-imgproc's residency-dispatched remap (byte-exact with the CPU path by its tested
+# contract). cudarc appears only for the stream type in `to_cuda`'s signature.
+cuda = ["dep:cudarc", "kornia-imgproc/cuda", "kornia-image/cuda"]
+
 [dependencies]
 bincode = { workspace = true }
 faer = { workspace = true }
@@ -26,6 +32,7 @@ kiddo = { workspace = true }
 kornia-algebra = { workspace = true }
 kornia-image = { workspace = true }
 kornia-imgproc = { workspace = true }
+cudarc = { workspace = true, optional = true }
 log = { workspace = true }
 nalgebra = { workspace = true }
 rand = { workspace = true }
