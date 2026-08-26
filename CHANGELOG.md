@@ -16,8 +16,8 @@ changes early: `cargo add kornia-imgproc@0.1.15-rc.1` or `pip install --pre korn
 **Stereo rectification runs on CUDA, byte-exact with the CPU path.**
 `StereoRectifier` now resamples through the residency-dispatched `remap_u8`, and
 `StereoRectifier::to_cuda(&stream)` returns a `CudaStereoRectifier` that keeps
-both eyes' maps (and reusable scratch) device-resident — `rectify_*_device` for
-zero-copy device frames, `rectify_*_into` for host-byte driver loops. The two
+both eyes' maps device-resident and rectifies device frames zero-copy via
+`rectify_left_device`/`rectify_right_device`. The two
 backends produce identical bytes by kornia-imgproc's tested CPU↔CUDA contract,
 so demoting to CPU on a CUDA failure is lossless. Border semantics changed
 deliberately with the unification: source coordinates in the `[w-1, w)` band now

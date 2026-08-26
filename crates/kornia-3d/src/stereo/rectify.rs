@@ -49,18 +49,6 @@ pub enum StereoError {
         expected: (usize, usize),
     },
 
-    /// A host byte buffer's length does not match the rectifier's pixel count. The same
-    /// caller mistake as [`ImageSizeMismatch`](Self::ImageSizeMismatch), for the raw-slice
-    /// entry points — kept typed so a demote-to-CPU policy can classify it as a caller bug,
-    /// not a CUDA failure.
-    #[error("raw buffer holds {got} bytes, rectifier expects {expected} (width * height)")]
-    RawLengthMismatch {
-        /// Provided buffer length in bytes.
-        got: usize,
-        /// Expected length, the rectifier's `width * height`.
-        expected: usize,
-    },
-
     /// Failed to build the rectified image from the remapped buffer.
     #[error(transparent)]
     Image(#[from] ImageError),
@@ -308,11 +296,15 @@ mod cuda {
     impl StereoRectifier {
         /// Uploads both eyes' map planes and warms the kernel, returning a rectifier that serves
         /// DEVICE-resident work. Explicit — no hidden H2D on first frame — and the warm-up runs a
-        /// full rectify so nvrtc/compile/launch failures surface HERE, where a caller's CPU
-        /// fallback can catch them, not on frame one with the fallback already forfeited.
+        /// full rectify so nvrtc compile failures surface HERE, where a caller's CPU fallback
+        /// can catch them, not on frame one with the fallback already forfeited.
         ///
-        /// The stream is only borrowed for the uploads; it is also retained for the host
-        /// convenience methods. No context is created — the application owns that.
+        /// Everything — map uploads and the warm-up launch — is ENQUEUED on `stream`; this
+        /// method does not synchronize, per the crate convention that synchronization belongs
+        /// to the caller. Work issued later on this same stream is ordered after the uploads
+        /// automatically; before touching the rectifier from a DIFFERENT stream of the same
+        /// device, synchronize this one first, or the kernels may race the map uploads.
+        /// No context is created — the application owns that.
         pub fn to_cuda(
             &self,
             stream: &Arc<cudarc::driver::CudaStream>,
@@ -321,30 +313,25 @@ mod cuda {
                 width: self.geom.width,
                 height: self.geom.height,
             };
-            let mut dev = CudaStereoRectifier {
+            let dev = CudaStereoRectifier {
                 geom: self.geom,
                 left_map_x: self.left_map_x.to_cuda(stream)?,
                 left_map_y: self.left_map_y.to_cuda(stream)?,
                 right_map_x: self.right_map_x.to_cuda(stream)?,
                 right_map_y: self.right_map_y.to_cuda(stream)?,
-                scratch_in: Image::zeros_cuda(size, stream)?,
-                scratch_out: Image::zeros_cuda(size, stream)?,
                 stream: stream.clone(),
             };
-            // Warm-up on the retained device scratch: compiles the kernel through the cache and
-            // proves a launch works, with no host round-trip. The synchronize is also load-bearing
-            // for correctness — it fences the four async map uploads above, so the maps are
-            // quiescent for every later call.
+            // Warm-up on throwaway device buffers: compiles the kernel through the cache (a
+            // host-side nvrtc step, so failures surface synchronously) and enqueues one launch.
+            let warm_src: Image<u8, 1> = Image::zeros_cuda(size, stream)?;
+            let mut warm_dst = Image::zeros_cuda(size, stream)?;
             remap_u8(
-                &dev.scratch_in,
-                &mut dev.scratch_out,
+                &warm_src,
+                &mut warm_dst,
                 &dev.left_map_x,
                 &dev.left_map_y,
                 InterpolationMode::Bilinear,
             )?;
-            stream
-                .synchronize()
-                .map_err(|e| ImageError::Cuda(format!("warm-up sync: {e}")))?;
             Ok(dev)
         }
     }
@@ -361,8 +348,6 @@ mod cuda {
         left_map_y: Image<f32, 1>,
         right_map_x: Image<f32, 1>,
         right_map_y: Image<f32, 1>,
-        scratch_in: Image<u8, 1>,
-        scratch_out: Image<u8, 1>,
         stream: Arc<cudarc::driver::CudaStream>,
     }
 
@@ -401,65 +386,6 @@ mod cuda {
                 &self.right_map_y,
                 InterpolationMode::Bilinear,
             )?;
-            Ok(())
-        }
-
-        /// Host-bytes convenience for the driver loop: H2D into retained scratch, kernel, blocking
-        /// D2H into `out` (resized once). No per-frame allocation.
-        pub fn rectify_left_into(
-            &mut self,
-            raw: &[u8],
-            out: &mut Vec<u8>,
-        ) -> Result<(), StereoError> {
-            self.host_roundtrip(raw, out, true)
-        }
-
-        /// See [`rectify_left_into`](Self::rectify_left_into).
-        pub fn rectify_right_into(
-            &mut self,
-            raw: &[u8],
-            out: &mut Vec<u8>,
-        ) -> Result<(), StereoError> {
-            self.host_roundtrip(raw, out, false)
-        }
-
-        fn host_roundtrip(
-            &mut self,
-            raw: &[u8],
-            out: &mut Vec<u8>,
-            left: bool,
-        ) -> Result<(), StereoError> {
-            let n = self.geom.width * self.geom.height;
-            if raw.len() != n {
-                return Err(StereoError::RawLengthMismatch {
-                    got: raw.len(),
-                    expected: n,
-                });
-            }
-            {
-                let slice = self
-                    .scratch_in
-                    .as_cudaslice_mut()
-                    .ok_or_else(|| ImageError::Cuda("scratch lost device residency".into()))?;
-                self.stream
-                    .memcpy_htod(raw, slice)
-                    .map_err(|e| ImageError::Cuda(format!("h2d: {e}")))?;
-            }
-            let (mx, my) = if left {
-                (&self.left_map_x, &self.left_map_y)
-            } else {
-                (&self.right_map_x, &self.right_map_y)
-            };
-            remap_u8(
-                &self.scratch_in,
-                &mut self.scratch_out,
-                mx,
-                my,
-                InterpolationMode::Bilinear,
-            )?;
-            out.resize(n, 0);
-            // Blocking: syncs the stream, so the bytes are final when this returns.
-            self.scratch_out.to_host_into(out)?;
             Ok(())
         }
 
@@ -871,11 +797,17 @@ mod tests {
 
         let ctx = CudaContext::new(0)?;
         let stream = ctx.default_stream();
-        let mut dev = rect.to_cuda(&stream)?;
-        let mut gpu_l = Vec::new();
-        let mut gpu_r = Vec::new();
-        dev.rectify_left_into(&raw, &mut gpu_l)?;
-        dev.rectify_right_into(&raw, &mut gpu_r)?;
+        let dev = rect.to_cuda(&stream)?;
+        let src_dev = img.to_cuda(&stream)?;
+        let mut dst_l = Image::zeros_cuda(size, &stream)?;
+        let mut dst_r = Image::zeros_cuda(size, &stream)?;
+        dev.rectify_left_device(&src_dev, &mut dst_l)?;
+        dev.rectify_right_device(&src_dev, &mut dst_r)?;
+        // to_host_into synchronizes the images' stream, so the bytes are final on return.
+        let mut gpu_l = vec![0u8; w * h];
+        let mut gpu_r = vec![0u8; w * h];
+        dst_l.to_host_into(&mut gpu_l)?;
+        dst_r.to_host_into(&mut gpu_r)?;
 
         assert_eq!(cpu_l.as_slice(), gpu_l.as_slice(), "left bytes diverge");
         assert_eq!(cpu_r.as_slice(), gpu_r.as_slice(), "right bytes diverge");
