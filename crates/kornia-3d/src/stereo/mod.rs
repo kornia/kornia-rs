@@ -3,3 +3,6 @@
 mod rectify;
 
 pub use rectify::{CameraCalib, StereoError, StereoRectifier};
+
+#[cfg(feature = "cuda")]
+pub use rectify::CudaStereoRectifier;

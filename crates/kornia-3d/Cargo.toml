@@ -21,6 +21,7 @@ name = "bench_twoview"
 
 [dependencies]
 bincode = { workspace = true }
+cudarc = { workspace = true, optional = true }
 faer = { workspace = true }
 kiddo = { workspace = true }
 kornia-algebra = { workspace = true }
@@ -38,3 +39,9 @@ approx = { workspace = true }
 criterion = { workspace = true }
 kornia-io = { workspace = true }
 kornia-tensor = { workspace = true }
+
+[features]
+# CUDA-resident rectification: uploads the remap tables once and serves device frames through
+# kornia-imgproc's residency-dispatched remap (byte-exact with the CPU path by its tested
+# contract). cudarc appears only for the stream type in `to_cuda`'s signature.
+cuda = ["dep:cudarc", "kornia-image/cuda", "kornia-imgproc/cuda"]

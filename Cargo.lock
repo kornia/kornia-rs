@@ -7785,6 +7785,7 @@ dependencies = [
  "approx",
  "bincode 2.0.1",
  "criterion 0.8.2",
+ "cudarc 0.19.8",
  "faer 0.24.4",
  "kiddo",
  "kornia-algebra",

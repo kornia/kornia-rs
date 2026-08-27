@@ -28,7 +28,7 @@ arrow = ["kornia-image/arrow"]
 bincode = ["kornia-tensor/bincode"]
 # CI-compatible feature bundle (everything except cuda/mkl which need special hardware)
 ci = ["arrow", "bincode", "gstreamer", "serde", "turbojpeg", "v4l"]
-cuda = ["kornia-vlm/cuda"]
+cuda = ["kornia-3d/cuda", "kornia-vlm/cuda"]
 gstreamer = ["kornia-io/gstreamer"]
 serde = ["kornia-tensor/serde"]
 turbojpeg = ["kornia-io/turbojpeg"]
