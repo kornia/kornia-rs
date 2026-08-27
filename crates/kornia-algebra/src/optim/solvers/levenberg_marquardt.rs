@@ -72,6 +72,8 @@ pub enum TerminationReason {
 /// [`Self::optimize_with_callback_and_step_tolerance`]. It is intentionally not
 /// stored as another public field: callers can construct this configuration
 /// with exhaustive struct literals, and adding a field would break that source.
+/// The existing optimization entry points use `1e-12`, preserving the step
+/// convergence behavior from before the shared threshold was loosened.
 ///
 /// # Example
 ///
@@ -137,10 +139,12 @@ pub struct OptimizerState {
 
 impl LevenbergMarquardt {
     // Keep the threshold out of this exhaustively constructible public struct so
-    // downstream struct literals remain source-compatible.
-    const DEFAULT_STEP_TOLERANCE: f32 = 1e-6;
+    // downstream struct literals remain source-compatible. The 1e-12 value
+    // restores the historical default; callers that need earlier termination can
+    // opt into a larger threshold per solve.
+    const DEFAULT_STEP_TOLERANCE: f32 = 1e-12;
 
-    /// Optimizes a nonlinear least-squares problem with the default step tolerance.
+    /// Optimizes a nonlinear least-squares problem with a `1e-12` step tolerance.
     ///
     /// # Arguments
     ///
@@ -177,7 +181,7 @@ impl LevenbergMarquardt {
         self.optimize_with_step_tolerance(problem, Self::DEFAULT_STEP_TOLERANCE)
     }
 
-    /// Optimizes a problem with the default step tolerance and an iteration callback.
+    /// Optimizes a problem with a `1e-12` step tolerance and an iteration callback.
     ///
     /// The callback is invoked before the first iteration and after each attempted
     /// step. Returning `false` stops optimization with
@@ -691,6 +695,21 @@ mod tests {
         );
         assert_eq!(loose_result.iterations, 0);
         assert_eq!(loose_problem.get_variables()["x"].values[0], 0.0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_default_step_tolerance_restores_small_step_behavior() -> Result<(), OptimizerError> {
+        // A 1e-6 default would incorrectly terminate before applying this roughly
+        // 5e-7 step. The historical 1e-12 default must let the iteration proceed.
+        let optimizer = single_iteration_optimizer();
+        let mut problem = small_step_problem()?;
+        let result = optimizer.optimize(&mut problem)?;
+
+        assert_eq!(result.termination_reason, TerminationReason::MaxIterations);
+        assert_eq!(result.iterations, 1);
+        assert!(problem.get_variables()["x"].values[0] > 0.0);
 
         Ok(())
     }
