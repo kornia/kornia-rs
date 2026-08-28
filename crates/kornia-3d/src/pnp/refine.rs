@@ -368,6 +368,43 @@ fn build_robust_loss(params: &LMRefineParams) -> Result<Option<Arc<dyn RobustLos
 /// # Returns
 ///
 /// Refined `PnPResult` with updated rotation, translation, and convergence info.
+///
+/// # Errors
+///
+/// Returns a [`PnPError`] if the correspondence counts differ, fewer than three
+/// correspondences are provided, the robust loss is invalid, or optimization
+/// fails.
+///
+/// # Example
+///
+/// ```no_run
+/// use kornia_3d::pnp::{refine_pose_lm, LMRefineParams, PnPError};
+/// use kornia_algebra::{Mat3AF32, Vec2F32, Vec3AF32};
+///
+/// # fn main() -> Result<(), PnPError> {
+/// let points_world = [
+///     Vec3AF32::new(0.0, 0.0, 0.0),
+///     Vec3AF32::new(1.0, 0.0, 0.0),
+///     Vec3AF32::new(0.0, 1.0, 0.0),
+/// ];
+/// let points_image = [
+///     Vec2F32::new(0.0, 0.0),
+///     Vec2F32::new(1.0 / 3.0, 0.0),
+///     Vec2F32::new(0.0, 1.0 / 3.0),
+/// ];
+/// let result = refine_pose_lm(
+///     &points_world,
+///     &points_image,
+///     &Mat3AF32::IDENTITY,
+///     &Mat3AF32::IDENTITY,
+///     &Vec3AF32::new(0.0, 0.0, 3.0),
+///     None,
+///     &LMRefineParams::default(),
+/// )?;
+/// assert!(result.reproj_rmse.is_some());
+/// # Ok(())
+/// # }
+/// ```
 pub fn refine_pose_lm(
     points_world: &[Vec3AF32],
     points_image: &[Vec2F32],
@@ -376,6 +413,115 @@ pub fn refine_pose_lm(
     initial_translation: &Vec3AF32,
     distortion: Option<&PolynomialDistortion>,
     params: &LMRefineParams,
+) -> Result<PnPResult, PnPError> {
+    refine_pose_lm_impl(
+        points_world,
+        points_image,
+        k,
+        initial_rotation,
+        initial_translation,
+        distortion,
+        params,
+        None,
+    )
+}
+
+/// Refine a PnP pose estimate with a caller-supplied LM step tolerance.
+///
+/// A proposed step whose Euclidean norm is smaller than `step_tolerance`
+/// terminates optimization before the step is applied. Use [`refine_pose_lm`]
+/// when the optimizer's default `1e-12` tolerance is appropriate.
+/// Keeping the tolerance as a per-call argument leaves [`LMRefineParams`]
+/// unchanged, so downstream exhaustive struct literals remain source-compatible.
+///
+/// # Arguments
+///
+/// * `points_world` - 3D points in world coordinates.
+/// * `points_image` - Corresponding 2D points in image coordinates.
+/// * `k` - Camera intrinsic matrix.
+/// * `initial_rotation` - Initial rotation estimate.
+/// * `initial_translation` - Initial translation estimate.
+/// * `distortion` - Optional camera distortion model.
+/// * `params` - LM refinement parameters.
+/// * `step_tolerance` - Minimum step norm that will be applied.
+///
+/// # Returns
+///
+/// Refined [`PnPResult`] with updated rotation, translation, and convergence
+/// information.
+///
+/// # Errors
+///
+/// Returns a [`PnPError`] if the correspondence counts differ, fewer than three
+/// correspondences are provided, the robust loss is invalid, or optimization
+/// fails.
+///
+/// # Example
+///
+/// ```no_run
+/// use kornia_3d::pnp::{
+///     refine_pose_lm_with_step_tolerance, LMRefineParams, PnPError,
+/// };
+/// use kornia_algebra::{Mat3AF32, Vec2F32, Vec3AF32};
+///
+/// # fn main() -> Result<(), PnPError> {
+/// let points_world = [
+///     Vec3AF32::new(0.0, 0.0, 0.0),
+///     Vec3AF32::new(1.0, 0.0, 0.0),
+///     Vec3AF32::new(0.0, 1.0, 0.0),
+/// ];
+/// let points_image = [
+///     Vec2F32::new(0.0, 0.0),
+///     Vec2F32::new(1.0 / 3.0, 0.0),
+///     Vec2F32::new(0.0, 1.0 / 3.0),
+/// ];
+/// let result = refine_pose_lm_with_step_tolerance(
+///     &points_world,
+///     &points_image,
+///     &Mat3AF32::IDENTITY,
+///     &Mat3AF32::IDENTITY,
+///     &Vec3AF32::new(0.0, 0.0, 3.0),
+///     None,
+///     &LMRefineParams::default(),
+///     1e-12,
+/// )?;
+/// assert!(result.reproj_rmse.is_some());
+/// # Ok(())
+/// # }
+/// ```
+#[allow(clippy::too_many_arguments)]
+pub fn refine_pose_lm_with_step_tolerance(
+    points_world: &[Vec3AF32],
+    points_image: &[Vec2F32],
+    k: &Mat3AF32,
+    initial_rotation: &Mat3AF32,
+    initial_translation: &Vec3AF32,
+    distortion: Option<&PolynomialDistortion>,
+    params: &LMRefineParams,
+    step_tolerance: f32,
+) -> Result<PnPResult, PnPError> {
+    refine_pose_lm_impl(
+        points_world,
+        points_image,
+        k,
+        initial_rotation,
+        initial_translation,
+        distortion,
+        params,
+        Some(step_tolerance),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn refine_pose_lm_impl(
+    points_world: &[Vec3AF32],
+    points_image: &[Vec2F32],
+    k: &Mat3AF32,
+    initial_rotation: &Mat3AF32,
+    initial_translation: &Vec3AF32,
+    distortion: Option<&PolynomialDistortion>,
+    params: &LMRefineParams,
+    step_tolerance: Option<f32>,
 ) -> Result<PnPResult, PnPError> {
     let n = points_world.len();
     if n != points_image.len() {
@@ -432,9 +578,15 @@ pub fn refine_pose_lm(
         gradient_tolerance: params.gradient_tolerance,
     };
 
-    let result = optimizer
-        .optimize(&mut problem)
-        .map_err(|e| PnPError::SvdFailed(format!("Optimization failed: {}", e)))?;
+    // Keep the original entry point tied to the optimizer's canonical default;
+    // only the additive API supplies a per-solve override.
+    let result = match step_tolerance {
+        Some(step_tolerance) => {
+            optimizer.optimize_with_step_tolerance(&mut problem, step_tolerance)
+        }
+        None => optimizer.optimize(&mut problem),
+    }
+    .map_err(|e| PnPError::SvdFailed(format!("Optimization failed: {}", e)))?;
 
     // Extract refined pose
     let pose_values = problem
@@ -637,6 +789,65 @@ mod tests {
         assert!(result.num_iterations.is_some());
         assert!(result.reproj_rmse.unwrap().is_finite());
         assert!(result.num_iterations.unwrap() > 0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_refine_pose_lm_step_tolerance_is_configurable() -> Result<(), PnPError> {
+        let points_world = [
+            Vec3AF32::new(0.0315, 0.03333, -0.10409),
+            Vec3AF32::new(-0.0315, 0.03333, -0.10409),
+            Vec3AF32::new(0.0, -0.00102, -0.12977),
+            Vec3AF32::new(0.02646, -0.03167, -0.1053),
+            Vec3AF32::new(-0.02646, -0.031667, -0.1053),
+            Vec3AF32::new(0.0, 0.04515, -0.11033),
+        ];
+        let points_image = [
+            Vec2F32::new(722.96466, 502.0828),
+            Vec2F32::new(669.88837, 498.61877),
+            Vec2F32::new(707.0025, 478.48975),
+            Vec2F32::new(728.05634, 447.56918),
+            Vec2F32::new(682.6069, 443.91776),
+            Vec2F32::new(696.4414, 511.96442),
+        ];
+        let k = k_default();
+        let initial_rotation = Mat3AF32::IDENTITY;
+        let initial_translation = Vec3AF32::new(0.0, 0.0, 1.0);
+        let params = LMRefineParams {
+            max_iterations: 1,
+            cost_tolerance: 0.0,
+            gradient_tolerance: 0.0,
+            ..LMRefineParams::default()
+        };
+
+        let strict = refine_pose_lm_with_step_tolerance(
+            &points_world,
+            &points_image,
+            &k,
+            &initial_rotation,
+            &initial_translation,
+            None,
+            &params,
+            0.0,
+        )?;
+        // A zero cutoff allows the single configured iteration to run.
+        assert_eq!(strict.num_iterations, Some(1));
+        assert_eq!(strict.converged, Some(false));
+
+        let loose = refine_pose_lm_with_step_tolerance(
+            &points_world,
+            &points_image,
+            &k,
+            &initial_rotation,
+            &initial_translation,
+            None,
+            &params,
+            1e6,
+        )?;
+        // A loose cutoff terminates before the first step is applied.
+        assert_eq!(loose.num_iterations, Some(0));
+        assert_eq!(loose.converged, Some(true));
 
         Ok(())
     }
