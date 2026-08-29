@@ -42,6 +42,6 @@ kornia-tensor = { workspace = true }
 
 [features]
 # CUDA-resident rectification: uploads the remap tables once and serves device frames through
-# kornia-imgproc's residency-dispatched remap (byte-exact with the CPU path by its tested
-# contract). cudarc appears only for the stream type in `to_cuda`'s signature.
+# kornia-imgproc's residency-dispatched remap — see CudaStereoRectifier's doc for the
+# CPU<->CUDA byte-exact contract
 cuda = ["dep:cudarc", "kornia-image/cuda", "kornia-imgproc/cuda"]

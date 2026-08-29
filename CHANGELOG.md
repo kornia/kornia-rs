@@ -21,10 +21,11 @@ both eyes' maps device-resident and rectifies device frames zero-copy via
 backends produce identical bytes by kornia-imgproc's tested CPU↔CUDA contract,
 so demoting to CPU on a CUDA failure is lossless. Border semantics changed
 deliberately with the unification: source coordinates in the `[w-1, w)` band now
-clamp-sample the edge texel (previously black), and blending is Q10 fixed point.
+clamp-sample the edge texel (previously black; exactly `w-1` sampled the edge under
+both), and blending is Q10 fixed point.
 
 **Breaking:** `StereoRectifier::rectify_left/right` are now into-style —
-`(&self, src, &mut dst) -> Result<(), StereoError>` — matching every imgproc op;
+`(&self, src, &mut dst) -> Result<(), StereoError>` — matching imgproc's into-style convention;
 `left_map()/right_map()` became `left_maps()/right_maps()` returning the x/y
 planes `remap_u8` consumes directly.
 

@@ -19,6 +19,7 @@ use kornia_imgproc::interpolation::{remap_u8, InterpolationMode};
 
 use kornia_imgproc::calibration::distortion::{distort_point_polynomial, PolynomialDistortion};
 use kornia_imgproc::calibration::CameraIntrinsic;
+use kornia_imgproc::interpolation::grid::meshgrid_from_fn;
 
 /// Errors produced while building or applying a [`StereoRectifier`].
 #[derive(Debug, thiserror::Error)]
@@ -86,17 +87,35 @@ impl RectifiedGeometry {
     fn bf(&self) -> f64 {
         self.f * self.baseline
     }
+
+    /// The one home of the size gate both backends apply to every image operand.
+    fn check_size(&self, img: &Image<u8, 1>) -> Result<(), StereoError> {
+        if (img.width(), img.height()) != (self.width, self.height) {
+            return Err(StereoError::ImageSizeMismatch {
+                got: (img.width(), img.height()),
+                expected: (self.width, self.height),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// One eye's undistort+rectify map as x/y planes — the pairing invariant (same size,
+/// built together, consumed together) lives here rather than in field-naming convention.
+struct MapPair {
+    /// Per-output-pixel source COLUMN in the raw image.
+    x: Image<f32, 1>,
+    /// Per-output-pixel source ROW in the raw image.
+    y: Image<f32, 1>,
 }
 
 /// Precomputed stereo rectification for a fixed camera pair and resolution.
 pub struct StereoRectifier {
     geom: RectifiedGeometry,
-    /// Per-output-pixel source coordinate in the raw left image (`[u, v]`).
-    left_map_x: Image<f32, 1>,
-    left_map_y: Image<f32, 1>,
-    /// Per-output-pixel source coordinate in the raw right image.
-    right_map_x: Image<f32, 1>,
-    right_map_y: Image<f32, 1>,
+    /// The LEFT view's map.
+    left_map: MapPair,
+    /// The RIGHT view's map.
+    right_map: MapPair,
 }
 
 /// Per-camera calibration for rectification: intrinsics + Brown-Conrady
@@ -182,8 +201,8 @@ impl StereoRectifier {
         let cx = (width as f64 - 1.0) * 0.5;
         let cy = (height as f64 - 1.0) * 0.5;
 
-        let (left_map_x, left_map_y) = build_map(width, height, f, cx, cy, &rect_l, left)?;
-        let (right_map_x, right_map_y) = build_map(width, height, f, cx, cy, &rect_r, right)?;
+        let left_map = build_map(width, height, f, cx, cy, &rect_l, left)?;
+        let right_map = build_map(width, height, f, cx, cy, &rect_r, right)?;
 
         Ok(Self {
             geom: RectifiedGeometry {
@@ -195,10 +214,8 @@ impl StereoRectifier {
                 baseline: nt,
                 rect_left: rect_l,
             },
-            left_map_x,
-            left_map_y,
-            right_map_x,
-            right_map_y,
+            left_map,
+            right_map,
         })
     }
 
@@ -219,12 +236,12 @@ impl StereoRectifier {
     /// [`rectify_left`](Self::rectify_left) samples through this same table, so an external
     /// consumer sees identical geometry AND identical border/rounding semantics.
     pub fn left_maps(&self) -> (&Image<f32, 1>, &Image<f32, 1>) {
-        (&self.left_map_x, &self.left_map_y)
+        (&self.left_map.x, &self.left_map.y)
     }
 
     /// The RIGHT view's map planes; see [`left_maps`](Self::left_maps).
     pub fn right_maps(&self) -> (&Image<f32, 1>, &Image<f32, 1>) {
-        (&self.right_map_x, &self.right_map_y)
+        (&self.right_map.x, &self.right_map.y)
     }
 
     /// Metric baseline between the cameras.
@@ -237,7 +254,7 @@ impl StereoRectifier {
         self.geom.bf()
     }
 
-    /// Rectifies a raw left image into `dst` — into-style like every imgproc op, so the
+    /// Rectifies a raw left image into `dst` — into-style per imgproc's convention, so the
     /// output's size and residency are the caller's stated intent, not an allocation policy.
     ///
     /// # Errors
@@ -248,38 +265,35 @@ impl StereoRectifier {
         src: &Image<u8, 1>,
         dst: &mut Image<u8, 1>,
     ) -> Result<(), StereoError> {
-        self.remap(src, dst, &self.left_map_x, &self.left_map_y)
+        self.remap(src, dst, &self.left_map)
     }
 
     /// Rectifies a raw right image into `dst`; see [`rectify_left`](Self::rectify_left).
+    ///
+    /// # Errors
+    /// Same as [`rectify_left`](Self::rectify_left).
     pub fn rectify_right(
         &self,
         src: &Image<u8, 1>,
         dst: &mut Image<u8, 1>,
     ) -> Result<(), StereoError> {
-        self.remap(src, dst, &self.right_map_x, &self.right_map_y)
+        self.remap(src, dst, &self.right_map)
     }
 
     /// One sampler for every backend: [`remap_u8`], whose CPU and CUDA paths are byte-exact
     /// by tested contract. Border semantics are therefore remap_u8's — coordinates in the
-    /// `[w-1, w)` band clamp-sample the edge texel (the previous private sampler left them
-    /// black), and blending is Q10 fixed point.
+    /// OPEN `(w-1, w)` band clamp-sample the edge texel (the previous private sampler left
+    /// them black; exactly `w-1` sampled the edge under both), and blending is Q10 fixed
+    /// point.
     fn remap(
         &self,
         src: &Image<u8, 1>,
         dst: &mut Image<u8, 1>,
-        map_x: &Image<f32, 1>,
-        map_y: &Image<f32, 1>,
+        map: &MapPair,
     ) -> Result<(), StereoError> {
-        for img in [src, dst] {
-            if (img.width(), img.height()) != (self.geom.width, self.geom.height) {
-                return Err(StereoError::ImageSizeMismatch {
-                    got: (img.width(), img.height()),
-                    expected: (self.geom.width, self.geom.height),
-                });
-            }
-        }
-        remap_u8(src, dst, map_x, map_y, InterpolationMode::Bilinear)?;
+        self.geom.check_size(src)?;
+        self.geom.check_size(dst)?;
+        remap_u8(src, dst, &map.x, &map.y, InterpolationMode::Bilinear)?;
         Ok(())
     }
 }
@@ -295,18 +309,33 @@ mod cuda {
 
     use super::*;
 
+    impl MapPair {
+        fn to_cuda(&self, stream: &Arc<cudarc::driver::CudaStream>) -> Result<Self, ImageError> {
+            Ok(Self {
+                x: self.x.to_cuda(stream)?,
+                y: self.y.to_cuda(stream)?,
+            })
+        }
+    }
+
     impl StereoRectifier {
         /// Uploads both eyes' map planes and warms the kernel, returning a rectifier that serves
         /// DEVICE-resident work. Explicit — no hidden H2D on first frame — and the warm-up runs a
         /// full rectify so nvrtc compile failures surface HERE, where a caller's CPU fallback
         /// can catch them, not on frame one with the fallback already forfeited.
         ///
-        /// Everything — map uploads and the warm-up launch — is ENQUEUED on `stream`; this
-        /// method does not synchronize, per the crate convention that synchronization belongs
-        /// to the caller. Work issued later on this same stream is ordered after the uploads
-        /// automatically; before touching the rectifier from a DIFFERENT stream of the same
-        /// device, synchronize this one first, or the kernels may race the map uploads.
+        /// Map uploads and the warm-up launch are enqueued on `stream`, and the stream is
+        /// SYNCHRONIZED before returning: unlike per-frame work, the maps must be globally
+        /// visible — a consumer holding a DIFFERENT `CudaContext` instance gets no automatic
+        /// ordering (cudarc's auto-fence is per context instance), and an unfenced launch
+        /// there would race the uploads and read half-written tables, silently. One host
+        /// sync at build time removes the trap; per-frame calls stay unsynchronized.
         /// No context is created — the application owns that.
+        ///
+        /// # Errors
+        /// Upload/allocation failures and the warm-up's nvrtc compile surface here as
+        /// [`StereoError::Image`]`(`[`ImageError::Cuda`]`)` — deliberately, so a caller's
+        /// CPU fallback can catch them before the first real frame.
         pub fn to_cuda(
             &self,
             stream: &Arc<cudarc::driver::CudaStream>,
@@ -317,18 +346,22 @@ mod cuda {
             };
             let dev = CudaStereoRectifier {
                 geom: self.geom,
-                left_map_x: self.left_map_x.to_cuda(stream)?,
-                left_map_y: self.left_map_y.to_cuda(stream)?,
-                right_map_x: self.right_map_x.to_cuda(stream)?,
-                right_map_y: self.right_map_y.to_cuda(stream)?,
+                left_map: self.left_map.to_cuda(stream)?,
+                right_map: self.right_map.to_cuda(stream)?,
                 stream: stream.clone(),
             };
             // Warm-up on throwaway device buffers, through the REAL entry point so it compiles
             // the exact kernel later calls launch (a host-side nvrtc step — failures surface
             // synchronously) and exercises the same residency checks.
             let warm_src: Image<u8, 1> = Image::zeros_cuda(size, stream)?;
-            let mut warm_dst = Image::zeros_cuda(size, stream)?;
+            // SAFETY: the warm-up rectify writes every output pixel before anything reads
+            // `warm_dst`, which is the exact contract `uninit_cuda` asks for — this skips a
+            // full-frame memset. `warm_src` stays zeroed: the kernel READS it.
+            let mut warm_dst = unsafe { Image::uninit_cuda(size, stream)? };
             dev.rectify_left_device(&warm_src, &mut warm_dst)?;
+            stream
+                .synchronize()
+                .map_err(|e| ImageError::Cuda(e.to_string()))?;
             Ok(dev)
         }
     }
@@ -341,31 +374,39 @@ mod cuda {
     /// policy belongs to the caller (safe precisely because the bytes match).
     pub struct CudaStereoRectifier {
         geom: RectifiedGeometry,
-        left_map_x: Image<f32, 1>,
-        left_map_y: Image<f32, 1>,
-        right_map_x: Image<f32, 1>,
-        right_map_y: Image<f32, 1>,
+        left_map: MapPair,
+        right_map: MapPair,
         stream: Arc<cudarc::driver::CudaStream>,
     }
 
     impl CudaStereoRectifier {
         /// Rectify a DEVICE-resident left frame into a device-resident destination. Zero copies;
         /// work is enqueued on the images' stream and the caller synchronizes before reading.
+        ///
+        /// # Errors
+        /// [`StereoError::ImageSizeMismatch`] on a wrong-resolution operand;
+        /// [`ImageError::HostResident`] if either image is not device-resident (a routing
+        /// bug, distinct from [`ImageError::Cuda`]'s genuine driver failures);
+        /// [`ImageError::DeviceMismatch`] on a cross-device operand;
+        /// [`ImageError::Cuda`] for launch failures.
         pub fn rectify_left_device(
             &self,
             src: &Image<u8, 1>,
             dst: &mut Image<u8, 1>,
         ) -> Result<(), StereoError> {
-            self.remap_device(src, dst, &self.left_map_x, &self.left_map_y)
+            self.remap_device(src, dst, &self.left_map)
         }
 
         /// See [`rectify_left_device`](Self::rectify_left_device).
+        ///
+        /// # Errors
+        /// Same as [`rectify_left_device`](Self::rectify_left_device).
         pub fn rectify_right_device(
             &self,
             src: &Image<u8, 1>,
             dst: &mut Image<u8, 1>,
         ) -> Result<(), StereoError> {
-            self.remap_device(src, dst, &self.right_map_x, &self.right_map_y)
+            self.remap_device(src, dst, &self.right_map)
         }
 
         /// The device twin of [`StereoRectifier::remap`]: checks, then one `remap_u8` call.
@@ -373,37 +414,41 @@ mod cuda {
             &self,
             src: &Image<u8, 1>,
             dst: &mut Image<u8, 1>,
-            map_x: &Image<f32, 1>,
-            map_y: &Image<f32, 1>,
+            map: &MapPair,
         ) -> Result<(), StereoError> {
             self.check(src)?;
             self.check(dst)?;
-            remap_u8(src, dst, map_x, map_y, InterpolationMode::Bilinear)?;
+            remap_u8(src, dst, &map.x, &map.y, InterpolationMode::Bilinear)?;
             Ok(())
         }
 
         fn check(&self, img: &Image<u8, 1>) -> Result<(), StereoError> {
-            if (img.width(), img.height()) != (self.geom.width, self.geom.height) {
-                return Err(StereoError::ImageSizeMismatch {
-                    got: (img.width(), img.height()),
-                    expected: (self.geom.width, self.geom.height),
-                });
-            }
-            // Fail HERE with a typed error: the _device methods are device-only by contract,
-            // and nothing downstream compares the MAPS' device to the image's — on a multi-GPU
-            // host a cross-device frame would launch with foreign map pointers (illegal memory
-            // access), not a typed error.
+            self.geom.check_size(img)?;
+            // Fail HERE with typed errors: the _device methods are device-only by contract.
+            // `HostResident` (not `Cuda`) so a demote-to-CPU policy keyed on `Cuda` cannot
+            // mistake a routing bug for a driver failure. The dispatch layer independently
+            // ordinal-checks the MAPS against the frames, so a cross-device frame is a typed
+            // error there too, never a foreign-pointer launch.
             let Some(stream) = img.cuda_stream() else {
-                return Err(ImageError::Cuda(
-                    "rectify_*_device needs a device-resident image (use to_cuda/zeros_cuda)"
-                        .into(),
-                )
-                .into());
+                return Err(ImageError::HostResident.into());
             };
             if stream.context().ordinal() != self.stream.context().ordinal() {
                 return Err(ImageError::DeviceMismatch.into());
             }
             Ok(())
+        }
+
+        /// The LEFT view's device-resident map planes as `(x, y)` — for external device
+        /// samplers (e.g. a fused rectify+disparity kernel) to consume the SAME tables this
+        /// rectifier launches with, instead of re-uploading a second copy that can drift.
+        /// Mirrors [`StereoRectifier::left_maps`].
+        pub fn left_maps(&self) -> (&Image<f32, 1>, &Image<f32, 1>) {
+            (&self.left_map.x, &self.left_map.y)
+        }
+
+        /// The RIGHT view's device-resident map planes; see [`left_maps`](Self::left_maps).
+        pub fn right_maps(&self) -> (&Image<f32, 1>, &Image<f32, 1>) {
+            (&self.right_map.x, &self.right_map.y)
         }
 
         /// Rectified pinhole camera (shared by both views; zero distortion).
@@ -438,7 +483,7 @@ fn build_map(
     cy: f64,
     rect: &Mat3F64,
     cam: &CameraCalib,
-) -> Result<(Image<f32, 1>, Image<f32, 1>), ImageError> {
+) -> Result<MapPair, ImageError> {
     let rect_t = rect.transpose(); // rectified-normalized -> camera-normalized
     let intrinsic = CameraIntrinsic {
         fx: cam.fx,
@@ -448,27 +493,28 @@ fn build_map(
     };
     let distortion = cam.distortion;
 
-    let mut map_x = vec![0.0f32; width * height];
-    let mut map_y = vec![0.0f32; width * height];
-    for v in 0..height {
-        for u in 0..width {
-            // Inverse rectified projection -> normalized rectified coords.
-            let xr = (u as f64 - cx) / f;
-            let yr = (v as f64 - cy) / f;
-            // Back-rotate into the camera frame, normalize.
-            let p = rect_t * Vec3F64::new(xr, yr, 1.0);
-            let xn = p.x / p.z;
-            let yn = p.y / p.z;
-            // Project to an ideal pixel under the camera's K, then distort.
-            let px = cam.fx * xn + cam.cx;
-            let py = cam.fy * yn + cam.cy;
-            let (du, dv) = distort_point_polynomial(px, py, &intrinsic, &distortion);
-            map_x[v * width + u] = du as f32;
-            map_y[v * width + u] = dv as f32;
-        }
-    }
+    // Same plane-pair builder the polynomial correction map uses; per-element writes are
+    // pure, so its fixed-chunk rayon parallelism keeps the maps deterministic.
+    let (t_x, t_y) = meshgrid_from_fn(width, height, |u, v| {
+        // Inverse rectified projection -> normalized rectified coords.
+        let xr = (u as f64 - cx) / f;
+        let yr = (v as f64 - cy) / f;
+        // Back-rotate into the camera frame, normalize.
+        let p = rect_t * Vec3F64::new(xr, yr, 1.0);
+        let xn = p.x / p.z;
+        let yn = p.y / p.z;
+        // Project to an ideal pixel under the camera's K, then distort.
+        let px = cam.fx * xn + cam.cx;
+        let py = cam.fy * yn + cam.cy;
+        let (du, dv) = distort_point_polynomial(px, py, &intrinsic, &distortion);
+        Ok((du as f32, dv as f32))
+    })
+    .map_err(ImageError::InvalidImageShape)?;
     let size = ImageSize { width, height };
-    Ok((Image::new(size, map_x)?, Image::new(size, map_y)?))
+    Ok(MapPair {
+        x: Image::new(size, t_x.into_vec())?,
+        y: Image::new(size, t_y.into_vec())?,
+    })
 }
 
 fn component(v: &Vec3F64, idx: usize) -> f64 {
@@ -746,6 +792,32 @@ mod tests {
         Ok(())
     }
 
+    /// A host frame into a device method must be the TYPED routing-bug error — not
+    /// `Cuda`, which a demote-to-CPU policy treats as a genuine driver failure.
+    #[test]
+    #[cfg(feature = "cuda")]
+    fn host_frame_into_device_method_is_typed() -> Result<(), Box<dyn std::error::Error>> {
+        use cudarc::driver::CudaContext;
+        let left = pinhole(64, 48, 40.0, 32.0, 24.0);
+        let right = pinhole(64, 48, 40.0, 32.0, 24.0);
+        let rect = StereoRectifier::from_calib(
+            &left,
+            &right,
+            Mat3F64::IDENTITY,
+            Vec3F64::new(-0.1, 0.0, 0.0),
+        )?;
+        let ctx = CudaContext::new(0)?;
+        let stream = ctx.default_stream();
+        let dev = rect.to_cuda(&stream)?;
+        let host = dot_image(64, 48, 5, 5)?;
+        let mut host_dst = Image::from_size_val(host.size(), 0u8)?;
+        assert!(matches!(
+            dev.rectify_left_device(&host, &mut host_dst),
+            Err(StereoError::Image(ImageError::HostResident))
+        ));
+        Ok(())
+    }
+
     /// CPU and CUDA rectification must produce IDENTICAL bytes: both are remap_u8, whose
     /// backends are byte-exact by kornia-imgproc's tested contract. Requires a CUDA device.
     #[test]
@@ -762,16 +834,10 @@ mod tests {
             Vec3F64::new(-0.11, 0.0, 0.0),
         )?;
         let (w, h) = (752usize, 480usize);
-        // Deterministic pseudo-random frame.
-        let mut x = 0x9E3779B97F4A7C15u64;
-        let raw: Vec<u8> = (0..w * h)
-            .map(|_| {
-                x ^= x << 13;
-                x ^= x >> 7;
-                x ^= x << 17;
-                (x & 0xFF) as u8
-            })
-            .collect();
+        // Deterministic pseudo-random frame (the crate's seeded-StdRng test idiom).
+        use rand::{rngs::StdRng, RngExt, SeedableRng};
+        let mut rng = StdRng::seed_from_u64(0x9E3779B9);
+        let raw: Vec<u8> = (0..w * h).map(|_| rng.random::<u8>()).collect();
         let img = Image::from_size_slice(
             ImageSize {
                 width: w,

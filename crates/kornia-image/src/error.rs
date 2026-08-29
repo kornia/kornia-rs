@@ -96,6 +96,16 @@ pub enum ImageError {
     #[error("CUDA error: {0}")]
     Cuda(String),
 
+    /// A device-only entry point received a host-resident image. A caller ROUTING bug,
+    /// deliberately distinct from [`ImageError::Cuda`] (genuine driver / nvrtc failures):
+    /// a demote-to-CPU policy must be able to tell "CUDA broke" from "you handed the
+    /// device path a host frame", or the fallback silently masks the routing bug.
+    #[error(
+        "expected a device-resident image (upload with `to_cuda`, or allocate with \
+         `zeros_cuda`)"
+    )]
+    HostResident,
+
     /// Source and destination device images live on different CUDA devices.
     /// (Different streams on the same device are supported — the dispatch
     /// layer orders them with event fences.)
