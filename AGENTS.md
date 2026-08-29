@@ -78,7 +78,7 @@ kornia-cpp/         ← C++ bindings
 | `turbojpeg` | libjpeg-turbo I/O | Requires `nasm` |
 | `gstreamer` | GStreamer video | — |
 | `v4l` | Video4Linux camera | Requires `clang` |
-| `cuda` | CUDA for VLM | — |
+| `cuda` | CUDA for VLM + kornia-3d (stereo rectifier, via imgproc remap) | — |
 | `ci` | All CI-compatible features | Excludes `cuda` |
 | `serde`, `bincode`, `arrow` | Serialization formats | — |
 

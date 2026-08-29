@@ -190,11 +190,25 @@ pub fn remap_u8<const C: usize>(
     {
         use crate::cuda::dispatch::{is_device, pair_residency, Residency};
         if let Residency::Device(exec) = pair_residency(src, dst)? {
-            if !is_device(map_x) || !is_device(map_y) {
-                return Err(ImageError::Cuda(
-                    "remap_u8: map_x and map_y must be device-resident when src/dst are on GPU"
-                        .into(),
-                ));
+            // The maps are operands too: device-resident AND on the same device as the
+            // frames, or the kernel would launch with foreign pointers — an asynchronous
+            // illegal memory access instead of a typed error. `pair_residency` already
+            // ordinal-checks src vs dst, so comparing the maps against src covers all four.
+            let src_ordinal = src.cuda_stream().map(|s| s.context().ordinal());
+            for map_stream in [map_x.cuda_stream(), map_y.cuda_stream()] {
+                match map_stream {
+                    None => {
+                        return Err(ImageError::Cuda(
+                            "remap_u8: map_x and map_y must be device-resident when src/dst \
+                             are on GPU (upload them with `to_cuda`)"
+                                .into(),
+                        ))
+                    }
+                    Some(ms) if Some(ms.context().ordinal()) != src_ordinal => {
+                        return Err(ImageError::DeviceMismatch)
+                    }
+                    Some(_) => {}
+                }
             }
             return exec.run(|stream| remap_u8_cuda(src, dst, map_x, map_y, interpolation, stream));
         }
