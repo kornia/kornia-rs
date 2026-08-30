@@ -32,7 +32,7 @@ pub struct LMRefineParams {
     /// Initial damping factor (lambda).
     pub initial_lambda: f32,
     /// M-estimator kernel applied per-residual (pixel-space, unlike
-    /// lightweight_vio's chi-square-whitened residuals — this crate's
+    /// pnp refine's chi-square-whitened residuals — this crate's
     /// `ReprojectionFactor` residual is raw pixel error). `Identity`
     /// collapses to plain L2 (today's behavior, so this field is
     /// backward-compatible).
@@ -641,11 +641,11 @@ mod tests {
         Ok(())
     }
 
-    // TEMP verification test (Claude): checks that `robust: Huber` actually
+    // Regression test (Claude): checks that `robust: Huber` actually
     // suppresses a gross outlier's influence on the LM solve, vs. plain L2.
     // Not part of the requested scaffold — delete or keep at your discretion.
     #[test]
-    fn temp_huber_suppresses_outlier_influence() -> Result<(), PnPError> {
+    fn huber_suppresses_outlier_influence() -> Result<(), PnPError> {
         let points_world: [Vec3AF32; 6] = [
             Vec3AF32::new(0.0315, 0.03333, -0.10409),
             Vec3AF32::new(-0.0315, 0.03333, -0.10409),

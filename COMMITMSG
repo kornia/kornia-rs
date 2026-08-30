@@ -1,0 +1,7 @@
+fix: Clean up #1111 scaffolding: TEMP test name/comment and lightweight_vio
+
+- crates\kornia-3d\src\pnp\refine.rs: rename TEMP test; clean scaffolding comments
+
+Fixes #1120
+
+Signed-off-by: Vedant Madane <6527493+VedantMadane@users.noreply.github.com>
