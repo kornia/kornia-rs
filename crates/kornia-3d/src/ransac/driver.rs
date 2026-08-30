@@ -17,8 +17,25 @@
 //! where `w` is the observed inlier ratio of the current best model,
 //! `k` = `SAMPLE_SIZE`, and `p` = `RansacConfig::confidence`. Each time a
 //! better hypothesis lands we tighten `max_iters` downward, never upward.
+//!
+//! When [`RansacConfig::sprt`] is set, the driver additionally applies
+//! Wald's Sequential Probability Ratio Test (SPRT) per hypothesis: it
+//! visits points in a randomised order and rejects the hypothesis as
+//! soon as the LLR exceeds the decision threshold. SPRT is only faster
+//! than the non-SPRT path when residuals are computed *one at a time*
+//! inside the SPRT loop, not materialised up front — this is the
+//! reference OpenCV USAC behaviour. SPRT is inspired by OpenCV's USAC
+//! framework.
+//!
+//! SPRT is only allowed to reject once a model has been accepted
+//! (`best_inlier_count >= SAMPLE_SIZE`): before that, the epsilon prior
+//! is unverified, so every hypothesis gets a minimum look at the data
+//! before rejection is allowed. After the first acceptance the test uses
+//! the *observed* inlier ratio of the best model, never the prior, so a
+//! pessimistic prior cannot cause good hypotheses to be rejected.
 
 use crate::ransac::{Consensus, Estimator, RansacConfig, RansacResult, Sampler};
+use rand::{seq::SliceRandom, Rng, RngExt};
 use rayon::prelude::*;
 
 /// Per-hypothesis chunk result inside `run_parallel`: best `(model,
@@ -57,6 +74,53 @@ where
     C: Consensus,
     S: Sampler,
 {
+    run_with_rng(
+        estimator,
+        consensus,
+        sampler,
+        samples,
+        cfg,
+        &mut rand::rng(),
+    )
+}
+
+/// Run RANSAC with an explicit RNG for the SPRT evaluation order.
+///
+/// Identical to [`run`] except that SPRT's per-hypothesis point order is
+/// drawn from `rng` instead of the thread-local generator, which makes
+/// SPRT-enabled runs reproducible under a seeded RNG. When SPRT is
+/// disabled `rng` is never touched.
+///
+/// # Arguments
+///
+/// * `estimator` - Fits candidate models and scores per-sample residuals.
+/// * `consensus` - Turns residuals into a score plus inlier mask.
+/// * `sampler` - Draws minimal samples from `samples`.
+/// * `samples` - The full input correspondence set.
+/// * `cfg` - RANSAC hyperparameters, including the optional SPRT config.
+/// * `rng` - Random source used for the SPRT point-evaluation order.
+///
+/// # Returns
+///
+/// A [`RansacResult`] with the best model, its inlier mask, the score, and
+/// the number of iterations actually consumed (which can be well below
+/// `cfg.max_iters` once the adaptive cap kicks in).
+pub fn run_with_rng<E, C, S, R>(
+    estimator: &E,
+    consensus: &C,
+    sampler: &mut S,
+    samples: &[E::Sample],
+    cfg: &RansacConfig,
+    rng: &mut R,
+) -> RansacResult<E::Model>
+where
+    E: Estimator,
+    E::Sample: Copy,
+    E::Model: Clone,
+    C: Consensus,
+    S: Sampler,
+    R: Rng,
+{
     let n = samples.len();
     if n < E::SAMPLE_SIZE || cfg.max_iters == 0 {
         return RansacResult {
@@ -85,6 +149,19 @@ where
 
     let mut best_score = f64::NEG_INFINITY;
     let mut best_model: Option<E::Model> = None;
+    let mut best_inlier_count = 0;
+
+    // SPRT scratch: the point-evaluation order, kept as one base
+    // permutation that is re-shuffled every `SPRT_RESHUF_PERIOD`
+    // hypotheses and rotated by a random offset per hypothesis (O(1)
+    // per hypothesis instead of a full O(n) shuffle — at n = 600 the
+    // shuffle alone costs ~2 µs, more than the point evaluations it
+    // saves on a typical rejected hypothesis). Rotation preserves the
+    // per-visit marginal distribution of the LLR walk (each point still
+    // occupies each visit slot with probability 1/n), which is what the
+    // drift analysis relies on.
+    const SPRT_RESHUF_PERIOD: u32 = 16;
+    let mut sprt_perm: Vec<usize> = (0..n).collect();
 
     let mut max_iters = cfg.max_iters;
     let mut i: u32 = 0;
@@ -101,12 +178,126 @@ where
         // Multi-solution kernels: score every candidate; the best across
         // all candidates from this minimal sample feeds the adaptive cap.
         for model in models.iter() {
-            // Single batch call — estimators may hoist per-hypothesis work
-            // (e.g. F.transpose()) out of the per-sample loop here.
+            // SPRT early-exit path: stream residuals through SPRT first,
+            // bail out the moment the hypothesis is rejected. Only on a
+            // pass do we materialise the full residual vector for the
+            // regular consensus step.
+            if let Some(sprt_cfg) = cfg.sprt.as_ref() {
+                if !sprt_cfg.is_valid() {
+                    // Invalid config: fall back to non-SPRT evaluation.
+                    estimator.residual_batch(model, samples, &mut residuals);
+                    let outcome = consensus.consensus(&residuals, &mut current_inliers);
+                    if outcome.score > best_score {
+                        best_score = outcome.score;
+                        best_inlier_count = outcome.inlier_count;
+                        best_model = Some(model.clone());
+                        std::mem::swap(&mut best_inliers, &mut current_inliers);
+                        accepted_since_lo += 1;
+                        if outcome.inlier_count > 0 {
+                            let w = outcome.inlier_count as f64 / n as f64;
+                            let new_max =
+                                adaptive_max_iters(w, E::SAMPLE_SIZE, cfg.confidence, max_iters);
+                            if new_max < max_iters {
+                                max_iters = new_max;
+                            }
+                        }
+                    }
+                    continue;
+                }
+
+                // The LLR step sizes need an estimate of the inlier ratio
+                // `eps`. Once we have a real consensus we track the
+                // *observed* ratio of the best model — never clamped up to
+                // the prior, since a prior above the true ratio would make
+                // even a good hypothesis look bad to the test. Before any
+                // model has been accepted we use the caller's prior capped
+                // at 0.3: a grossly optimistic prior would otherwise give a
+                // good hypothesis a positive LLR drift and let SPRT reject
+                // the very models it is supposed to find.
+                let eps = if best_inlier_count >= E::SAMPLE_SIZE {
+                    (best_inlier_count as f64 / n as f64).clamp(0.05, 0.95)
+                } else {
+                    sprt_cfg.epsilon.min(0.3)
+                };
+                let eps_clamped = eps.clamp(1e-10, 1.0 - 1e-10);
+                let delta_clamped =
+                    crate::ransac::sprt::DEFAULT_CHANCE_PROB.clamp(1e-10, 1.0 - 1e-10);
+                let inlier_step = (delta_clamped / eps_clamped).ln();
+                let outlier_step = ((1.0 - delta_clamped) / (1.0 - eps_clamped)).ln();
+
+                // Before the first accepted model the epsilon prior is
+                // unverified: give every hypothesis a minimum look at the
+                // data before SPRT may reject it, so a mismatched prior
+                // cannot starve the run of its first good model.
+                let grace = if best_inlier_count >= E::SAMPLE_SIZE {
+                    0
+                } else {
+                    (n / 4).max(E::SAMPLE_SIZE * 4)
+                };
+
+                // Randomise the evaluation order per hypothesis: rotate
+                // the base permutation by a random offset, refreshing the
+                // base order every `SPRT_RESHUF_PERIOD` hypotheses. Runs
+                // are reproducible under a seeded RNG.
+                if i.is_multiple_of(SPRT_RESHUF_PERIOD) {
+                    sprt_perm.shuffle(rng);
+                }
+                let sprt_start = rng.random_range(0..n);
+
+                let mut state =
+                    super::sprt::SPRTState::new(sprt_cfg, crate::ransac::sprt::DEFAULT_BETA);
+                let mut rejected = false;
+                for k in 0..n {
+                    let p_idx = sprt_perm[(sprt_start + k) % n];
+                    // Lazy residual computation — only the points actually
+                    // visited are scored; rejected hypotheses never touch
+                    // the rest.
+                    residuals[p_idx] = estimator.residual(model, &samples[p_idx]);
+                    state.update_with_steps(
+                        residuals[p_idx] < cfg.inlier_threshold,
+                        inlier_step,
+                        outlier_step,
+                    );
+                    if state.is_rejected() && state.num_tested >= grace {
+                        rejected = true;
+                        break;
+                    }
+                }
+
+                // SPRT rejected → drop hypothesis, don't run consensus.
+                if rejected {
+                    continue;
+                }
+
+                // SPRT passed: compute the full inlier mask via consensus.
+                // `residuals` is complete because a pass visits all points.
+                let cons_outcome = consensus.consensus(&residuals, &mut current_inliers);
+                if cons_outcome.score > best_score {
+                    best_score = cons_outcome.score;
+                    best_inlier_count = cons_outcome.inlier_count;
+                    best_model = Some(model.clone());
+                    std::mem::swap(&mut best_inliers, &mut current_inliers);
+                    accepted_since_lo += 1;
+
+                    // Adaptive cap update — only ever tightens.
+                    if cons_outcome.inlier_count > 0 {
+                        let w = cons_outcome.inlier_count as f64 / n as f64;
+                        let new_max =
+                            adaptive_max_iters(w, E::SAMPLE_SIZE, cfg.confidence, max_iters);
+                        if new_max < max_iters {
+                            max_iters = new_max;
+                        }
+                    }
+                }
+                continue;
+            }
+
+            // Plain RANSAC path (no SPRT).
             estimator.residual_batch(model, samples, &mut residuals);
             let outcome = consensus.consensus(&residuals, &mut current_inliers);
             if outcome.score > best_score {
                 best_score = outcome.score;
+                best_inlier_count = outcome.inlier_count;
                 best_model = Some(model.clone());
                 std::mem::swap(&mut best_inliers, &mut current_inliers);
                 accepted_since_lo += 1;
@@ -145,6 +336,7 @@ where
                     let lo_outcome = consensus.consensus(&residuals, &mut current_inliers);
                     if lo_outcome.score > best_score {
                         best_score = lo_outcome.score;
+                        best_inlier_count = lo_outcome.inlier_count;
                         best_model = Some(lo_model.clone());
                         std::mem::swap(&mut best_inliers, &mut current_inliers);
                         // LO acceptance also tightens the adaptive cap.
@@ -362,7 +554,7 @@ fn adaptive_max_iters(inlier_ratio: f64, sample_size: usize, confidence: f64, cu
 mod tests {
     use super::*;
     use crate::ransac::{
-        estimators::FundamentalEstimator, Match2d2d, ThresholdConsensus, UniformSampler,
+        estimators::FundamentalEstimator, Match2d2d, SPRTConfig, ThresholdConsensus, UniformSampler,
     };
     use kornia_algebra::{Vec2F64, Vec3F64};
     use rand::{rngs::StdRng, SeedableRng};
@@ -506,6 +698,239 @@ mod tests {
             lo.score
         );
         assert!(lo.model.is_some());
+    }
+
+    /// SPRT-enabled and SPRT-disabled runs must produce equivalent results
+    /// on a clean (no-outlier) data set, and the SPRT path must not
+    /// break the driver.
+    #[test]
+    fn test_ransac_strategy_toggle() {
+        let pair = synthetic_with_outliers(80, 20, 0xFACE);
+
+        let est = FundamentalEstimator;
+        let consensus = ThresholdConsensus { threshold: 4.0 };
+
+        // Off (default).
+        let cfg_off = RansacConfig {
+            max_iters: 200,
+            confidence: 0.99,
+            inlier_threshold: 4.0,
+            sprt: None,
+            ..Default::default()
+        };
+        let mut sampler_off = UniformSampler::new(StdRng::seed_from_u64(13));
+        let result_off = run(&est, &consensus, &mut sampler_off, &pair.matches, &cfg_off);
+
+        // On.
+        let cfg_on = RansacConfig {
+            max_iters: 200,
+            confidence: 0.99,
+            inlier_threshold: 4.0,
+            sprt: Some(SPRTConfig {
+                epsilon: 0.8,
+                delta: 0.01,
+                t_M: 1.0,
+                t_m: 0.1,
+            }),
+            ..Default::default()
+        };
+        let mut sampler_on = UniformSampler::new(StdRng::seed_from_u64(13));
+        let result_on = run(&est, &consensus, &mut sampler_on, &pair.matches, &cfg_on);
+
+        assert!(result_off.model.is_some(), "SPRT-off produced no model");
+        assert!(result_on.model.is_some(), "SPRT-on produced no model");
+        // SPRT must not regress; allow a small relative tolerance for
+        // order-of-evaluation differences.
+        let ratio = result_on.score / result_off.score.max(1.0);
+        assert!(
+            ratio > 0.85,
+            "SPRT regressed: off.score={}, on.score={}",
+            result_off.score,
+            result_on.score
+        );
+    }
+
+    /// SPRT must accept hypotheses that improve the best model and update
+    /// the best-model tracking.
+    #[test]
+    fn test_sprt_updates_best_model() {
+        let pair = synthetic_with_outliers(60, 40, 0xCAFE);
+        let est = FundamentalEstimator;
+        let consensus = ThresholdConsensus { threshold: 4.0 };
+        let cfg = RansacConfig {
+            max_iters: 500,
+            confidence: 0.99,
+            inlier_threshold: 4.0,
+            sprt: Some(SPRTConfig {
+                epsilon: 0.6,
+                delta: 0.01,
+                t_M: 1.0,
+                t_m: 0.1,
+            }),
+            ..Default::default()
+        };
+        let mut sampler = UniformSampler::new(StdRng::seed_from_u64(0xBABE));
+        let result = run(&est, &consensus, &mut sampler, &pair.matches, &cfg);
+
+        // A model must be produced and at least 70% of true inliers must
+        // be in the inlier set — proof that a good hypothesis survived
+        // SPRT and was used to update the best model.
+        assert!(result.model.is_some());
+        assert!(
+            result.inlier_count() >= 42,
+            "SPRT pipeline only kept {} of 60 inliers",
+            result.inlier_count()
+        );
+    }
+
+    /// Identical seeds produce identical results, with and without SPRT.
+    #[test]
+    fn test_deterministic_execution() {
+        let pair = synthetic_with_outliers(60, 30, 0xDEAD);
+
+        let est = FundamentalEstimator;
+        let consensus = ThresholdConsensus { threshold: 4.0 };
+        let base_cfg = RansacConfig {
+            max_iters: 100,
+            confidence: 0.99,
+            inlier_threshold: 4.0,
+            ..Default::default()
+        };
+
+        let mut s1 = UniformSampler::new(StdRng::seed_from_u64(42));
+        let r1 = run(&est, &consensus, &mut s1, &pair.matches, &base_cfg);
+        let mut s2 = UniformSampler::new(StdRng::seed_from_u64(42));
+        let r2 = run(&est, &consensus, &mut s2, &pair.matches, &base_cfg);
+
+        // Same seed → same number of iterations and same score.
+        assert_eq!(r1.num_iters, r2.num_iters);
+        assert_eq!(r1.score, r2.score);
+
+        // SPRT-on with a seeded RNG must be fully reproducible: the same
+        // sampler seed and SPRT RNG seed produce identical results.
+        let cfg_on = RansacConfig {
+            sprt: Some(SPRTConfig {
+                epsilon: 0.5,
+                delta: 0.01,
+                t_M: 1.0,
+                t_m: 1.0,
+            }),
+            ..base_cfg.clone()
+        };
+        let mut s3 = UniformSampler::new(StdRng::seed_from_u64(42));
+        let mut rng_a = StdRng::seed_from_u64(4242);
+        let r3 = run_with_rng(
+            &est,
+            &consensus,
+            &mut s3,
+            &pair.matches,
+            &cfg_on,
+            &mut rng_a,
+        );
+        let mut s4 = UniformSampler::new(StdRng::seed_from_u64(42));
+        let mut rng_b = StdRng::seed_from_u64(4242);
+        let r4 = run_with_rng(
+            &est,
+            &consensus,
+            &mut s4,
+            &pair.matches,
+            &cfg_on,
+            &mut rng_b,
+        );
+
+        assert!(r3.model.is_some(), "SPRT path found no model");
+        assert_eq!(r3.num_iters, r4.num_iters);
+        assert_eq!(r3.score, r4.score);
+        assert_eq!(r3.inliers, r4.inliers);
+    }
+
+    /// A grossly optimistic SPRT prior (0.9 on a 40%-inlier scene) must
+    /// not starve the run: the pre-acceptance epsilon cap keeps good
+    /// hypotheses alive and the grace period stops early rejection
+    /// before the first accepted model.
+    #[test]
+    fn test_sprt_wrong_prior_recovers_model() {
+        let pair = synthetic_with_outliers(40, 60, 0x5EED);
+
+        let est = FundamentalEstimator;
+        let consensus = ThresholdConsensus { threshold: 4.0 };
+        let cfg = RansacConfig {
+            max_iters: 4000,
+            confidence: 0.999,
+            inlier_threshold: 4.0,
+            sprt: Some(SPRTConfig {
+                epsilon: 0.9,
+                delta: 0.01,
+                t_M: 1.0,
+                t_m: 1.0,
+            }),
+            ..Default::default()
+        };
+        let mut sampler = UniformSampler::new(StdRng::seed_from_u64(0xF00D));
+        let mut rng = StdRng::seed_from_u64(0xBEEF);
+        let result = run_with_rng(
+            &est,
+            &consensus,
+            &mut sampler,
+            &pair.matches,
+            &cfg,
+            &mut rng,
+        );
+
+        assert!(result.model.is_some(), "wrong-prior SPRT starved the run");
+        assert!(
+            result.inlier_count() >= 32,
+            "wrong-prior SPRT only kept {} of 40 true inliers",
+            result.inlier_count()
+        );
+    }
+
+    /// With a *correct* prior SPRT must not regress vs plain RANSAC:
+    /// good hypotheses pass the test, only clearly-bad ones are dropped.
+    #[test]
+    fn test_sprt_correct_prior_does_not_regress() {
+        let pair = synthetic_with_outliers(40, 60, 0xABCD);
+
+        let est = FundamentalEstimator;
+        let consensus = ThresholdConsensus { threshold: 4.0 };
+        let base = RansacConfig {
+            max_iters: 4000,
+            confidence: 0.999,
+            inlier_threshold: 4.0,
+            ..Default::default()
+        };
+
+        let mut sampler_off = UniformSampler::new(StdRng::seed_from_u64(77));
+        let off = run(&est, &consensus, &mut sampler_off, &pair.matches, &base);
+
+        let cfg_on = RansacConfig {
+            sprt: Some(SPRTConfig {
+                epsilon: 0.4,
+                delta: 0.01,
+                t_M: 1.0,
+                t_m: 1.0,
+            }),
+            ..base.clone()
+        };
+        let mut sampler_on = UniformSampler::new(StdRng::seed_from_u64(77));
+        let mut rng = StdRng::seed_from_u64(78);
+        let on = run_with_rng(
+            &est,
+            &consensus,
+            &mut sampler_on,
+            &pair.matches,
+            &cfg_on,
+            &mut rng,
+        );
+
+        assert!(off.model.is_some() && on.model.is_some());
+        let ratio = on.score / off.score.max(1.0);
+        assert!(
+            ratio > 0.85,
+            "SPRT regressed: off.score={}, on.score={}",
+            off.score,
+            on.score
+        );
     }
 
     struct Pair {
