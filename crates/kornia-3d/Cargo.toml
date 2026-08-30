@@ -19,6 +19,10 @@ name = "bench_linalg"
 harness = false
 name = "bench_twoview"
 
+[[bench]]
+harness = false
+name = "bench_registration"
+
 [dependencies]
 bincode = { workspace = true }
 cudarc = { workspace = true, optional = true }

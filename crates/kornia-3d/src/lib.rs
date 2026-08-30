@@ -16,6 +16,9 @@ pub mod io;
 /// Linear algebra utilities.
 pub mod linalg;
 
+/// Surface normal estimation for point clouds using PCA.
+pub mod normal_estimation;
+
 /// Operations on 3D data processing.
 pub mod ops;
 

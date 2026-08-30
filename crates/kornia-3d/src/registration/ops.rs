@@ -1,5 +1,26 @@
 use crate::linalg;
+use faer::prelude::Solve;
 use kiddo::immutable::float::kdtree::ImmutableKdTree;
+use kornia_algebra::{Mat3F64, Vec3F64};
+/// Errors that can occur during ICP registration.
+#[derive(Debug, thiserror::Error)]
+pub enum IcpError {
+    #[error("LM failed to find a step that improves RMSE")]
+    LmFailed,
+
+    #[error("Mismatched correspondence lengths: expected {expected}, got {got} for {name}")]
+    MismatchedLengths {
+        name: &'static str,
+        expected: usize,
+        got: usize,
+    },
+
+    #[error("No correspondences found between source and target")]
+    EmptyCorrespondences,
+
+    #[error("Rotation matrix construction failed: {0}")]
+    RotationFailed(String),
+}
 
 /// Compute the transformation between two point clouds.
 pub(crate) fn fit_transformation(
@@ -147,13 +168,281 @@ pub(crate) fn update_transformation(
     rr_delta: &[[f64; 3]; 3],
     tt_delta: &[f64; 3],
 ) {
-    // Avoid cloning by passing a mutable reference directly
-    linalg::matmul33(&rr.clone(), rr_delta, rr);
+    let r_old = *rr;
+    let t_old = *tt;
 
-    // Update translation vector
-    tt[0] += tt_delta[0];
-    tt[1] += tt_delta[1];
-    tt[2] += tt_delta[2];
+    // LEFT composition: R_new = R_delta * R_old
+    linalg::matmul33(rr_delta, &r_old, rr);
+
+    // t_new = R_delta * t_old + t_delta
+    tt[0] = rr_delta[0][0] * t_old[0]
+        + rr_delta[0][1] * t_old[1]
+        + rr_delta[0][2] * t_old[2]
+        + tt_delta[0];
+    tt[1] = rr_delta[1][0] * t_old[0]
+        + rr_delta[1][1] * t_old[1]
+        + rr_delta[1][2] * t_old[2]
+        + tt_delta[1];
+    tt[2] = rr_delta[2][0] * t_old[0]
+        + rr_delta[2][1] * t_old[1]
+        + rr_delta[2][2] * t_old[2]
+        + tt_delta[2];
+}
+
+// ============================================================================
+// NEW: Point-to-plane ICP helper functions
+// ============================================================================
+
+/// Find correspondences with indices (for point-to-plane ICP).
+///
+/// Identical to `find_correspondences` but also returns the indices of the
+/// matched target points, needed for looking up normals.
+type Correspondences = (Vec<[f64; 3]>, Vec<[f64; 3]>, Vec<u32>, Vec<f64>);
+pub(crate) fn find_correspondences_with_indices(
+    source: &[[f64; 3]],
+    target: &[[f64; 3]],
+    kdtree: &ImmutableKdTree<f64, u32, 3, 32>,
+) -> Correspondences {
+    let nn_results = source
+        .iter()
+        .map(|p| kdtree.nearest_one::<kiddo::SquaredEuclidean>(p))
+        .collect::<Vec<_>>();
+
+    let mut distances: Vec<f64> = nn_results.iter().map(|nn| nn.distance).collect();
+    if distances.is_empty() {
+        return Correspondences::default();
+    }
+
+    let mid_dist = distances.len() / 2;
+    distances.select_nth_unstable_by(mid_dist, |a, b| a.total_cmp(b));
+    let median_dist = distances[mid_dist];
+
+    let mut dmed = nn_results
+        .iter()
+        .map(|nn| (nn.distance - median_dist).abs())
+        .collect::<Vec<_>>();
+    let mid_mad = dmed.len() / 2;
+    dmed.select_nth_unstable_by(mid_mad, |a, b| a.total_cmp(b));
+    let mad = dmed[mid_mad];
+
+    let sigma_d = 1.4826 * mad;
+    let threshold = median_dist + 3.0 * sigma_d;
+
+    // Single pass: collect filtered correspondences, then push into four vectors.
+    let mut src_matched = Vec::new();
+    let mut dst_matched = Vec::new();
+    let mut dst_indices = Vec::new();
+    let mut distances_out = Vec::new();
+
+    for (i, nn) in nn_results.iter().enumerate() {
+        if nn.distance <= threshold {
+            src_matched.push(source[i]);
+            dst_matched.push(target[nn.item as usize]);
+            dst_indices.push(nn.item);
+            distances_out.push(nn.distance);
+        }
+    }
+
+    (src_matched, dst_matched, dst_indices, distances_out)
+}
+
+/// Compute point-to-plane RMSE.
+pub(crate) fn compute_point_to_plane_rmse(
+    src: &[[f64; 3]],
+    dst: &[[f64; 3]],
+    normals: &[[f64; 3]],
+    rot: &[[f64; 3]; 3],
+    trans: &[f64; 3],
+) -> f64 {
+    if src.is_empty() {
+        return f64::INFINITY;
+    }
+
+    let rot_mat = Mat3F64::from_cols_array(&[
+        rot[0][0], rot[1][0], rot[2][0], rot[0][1], rot[1][1], rot[2][1], rot[0][2], rot[1][2],
+        rot[2][2],
+    ]);
+    let trans_vec = Vec3F64::new(trans[0], trans[1], trans[2]);
+
+    let sum_sq: f64 = src
+        .iter()
+        .zip(dst.iter())
+        .zip(normals.iter())
+        .map(|((p, q), n)| {
+            let p_vec = Vec3F64::new(p[0], p[1], p[2]);
+            let q_vec = Vec3F64::new(q[0], q[1], q[2]);
+            let n_vec = Vec3F64::new(n[0], n[1], n[2]);
+
+            let p_trans = rot_mat * p_vec + trans_vec;
+            let diff = p_trans - q_vec;
+            let proj = diff.dot(n_vec);
+            proj * proj
+        })
+        .sum();
+
+    (sum_sq / src.len() as f64).sqrt()
+}
+
+/// Estimate incremental transformation using point-to-plane error metric.
+/// Solves the linearized least squares problem:
+/// hessian · x = gradient
+/// where hessian = jacᵀ · jac and gradient = jacᵀ · residuals.
+///Returns (rot_delta, trans_delta).
+pub(crate) fn fit_transformation_point_to_plane(
+    src_points: &[[f64; 3]],
+    dst_points: &[[f64; 3]],
+    dst_normals: &[[f64; 3]],
+    rot: &[[f64; 3]; 3],
+    trans: &[f64; 3],
+) -> Result<([[f64; 3]; 3], [f64; 3]), IcpError> {
+    // Validate slice lengths so we don't panic
+    let m = src_points.len();
+    if dst_points.len() != m {
+        return Err(IcpError::MismatchedLengths {
+            name: "dst_points",
+            expected: m,
+            got: dst_points.len(),
+        });
+    }
+    if dst_normals.len() != m {
+        return Err(IcpError::MismatchedLengths {
+            name: "dst_normals",
+            expected: m,
+            got: dst_normals.len(),
+        });
+    }
+
+    if m == 0 {
+        return Ok((
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            [0.0, 0.0, 0.0],
+        ));
+    }
+
+    let mut jac = faer::Mat::<f64>::zeros(m, 6);
+    let mut residuals = faer::Mat::<f64>::zeros(m, 1);
+
+    for i in 0..m {
+        let p = src_points[i];
+        let q = dst_points[i];
+        let n = dst_normals[i];
+
+        // Compute rot * p
+        let rot_p = [
+            rot[0][0] * p[0] + rot[0][1] * p[1] + rot[0][2] * p[2],
+            rot[1][0] * p[0] + rot[1][1] * p[1] + rot[1][2] * p[2],
+            rot[2][0] * p[0] + rot[2][1] * p[1] + rot[2][2] * p[2],
+        ];
+
+        // Full transformed point
+        let p_trans = [
+            rot_p[0] + trans[0],
+            rot_p[1] + trans[1],
+            rot_p[2] + trans[2],
+        ];
+
+        // Residual
+        let residual =
+            (p_trans[0] - q[0]) * n[0] + (p_trans[1] - q[1]) * n[1] + (p_trans[2] - q[2]) * n[2];
+
+        // Jacobian rotation part: rot_p × n
+        let cross = [
+            rot_p[1] * n[2] - rot_p[2] * n[1],
+            rot_p[2] * n[0] - rot_p[0] * n[2],
+            rot_p[0] * n[1] - rot_p[1] * n[0],
+        ];
+
+        jac[(i, 0)] = cross[0];
+        jac[(i, 1)] = cross[1];
+        jac[(i, 2)] = cross[2];
+        jac[(i, 3)] = n[0];
+        jac[(i, 4)] = n[1];
+        jac[(i, 5)] = n[2];
+
+        residuals[(i, 0)] = -residual;
+    }
+
+    // --- Levenberg-Marquardt damping ---
+    let damping_factor = 1e-6;
+    let hessian = jac.transpose() * &jac;
+    let gradient = jac.transpose() * &residuals;
+
+    let mut diag_sum = 0.0;
+    for i in 0..6 {
+        diag_sum += hessian[(i, i)];
+    }
+    let mut lambda = damping_factor * diag_sum / 6.0;
+
+    // Compute current_rmse ONCE, outside the loop
+    let current_rmse = compute_point_to_plane_rmse(src_points, dst_points, dst_normals, rot, trans);
+
+    let mut x = None;
+
+    for _ in 0..15 {
+        let mut hessian_damped = hessian.clone();
+        for i in 0..6 {
+            // Absolute damping (not relative to H_ii)
+            hessian_damped[(i, i)] += lambda;
+        }
+
+        let lu = hessian_damped.partial_piv_lu();
+        let sol = lu.solve(&gradient);
+
+        let all_finite = (0..6).all(|i| sol[(i, 0)].is_finite());
+        if !all_finite {
+            lambda *= 2.0;
+            continue;
+        }
+
+        // Convert to rotation and translation delta
+        let (rot_delta_tmp, trans_delta_tmp) = solution_to_delta(&sol)?;
+
+        // Test candidate using update_transformation (same as icp_vanilla)
+        let mut rot_tmp = *rot;
+        let mut trans_tmp = *trans;
+        update_transformation(
+            &mut rot_tmp,
+            &mut trans_tmp,
+            &rot_delta_tmp,
+            &trans_delta_tmp,
+        );
+
+        let new_rmse =
+            compute_point_to_plane_rmse(src_points, dst_points, dst_normals, &rot_tmp, &trans_tmp);
+
+        // Accept if objective improved (absolute epsilon for numerical noise)
+        if new_rmse <= current_rmse + 1e-12 {
+            x = Some(sol);
+            break;
+        }
+
+        lambda *= 2.0;
+    }
+
+    let x = x.ok_or(IcpError::LmFailed)?;
+    let (rot_delta, trans_delta) = solution_to_delta(&x)?;
+
+    Ok((rot_delta, trans_delta))
+}
+/// Convert a 6-DOF LM solution [α, β, γ, tx, ty, tz] to (R_delta, t_delta).
+fn solution_to_delta(sol: &faer::Mat<f64>) -> Result<([[f64; 3]; 3], [f64; 3]), IcpError> {
+    let alpha = sol[(0, 0)];
+    let beta = sol[(1, 0)];
+    let gamma = sol[(2, 0)];
+    let tx = sol[(3, 0)];
+    let ty = sol[(4, 0)];
+    let tz = sol[(5, 0)];
+
+    let theta = (alpha * alpha + beta * beta + gamma * gamma).sqrt();
+    let rot_delta = if theta < 1e-12 {
+        [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+    } else {
+        let axis = [alpha / theta, beta / theta, gamma / theta];
+        crate::transforms::axis_angle_to_rotation_matrix(&axis, theta)
+            .map_err(|e| IcpError::RotationFailed(e.to_string()))?
+    };
+    let trans_delta = [tx, ty, tz];
+    Ok((rot_delta, trans_delta))
 }
 
 #[cfg(test)]
