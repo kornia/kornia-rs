@@ -66,6 +66,39 @@ pub enum TerminationReason {
 }
 
 /// Levenberg-Marquardt optimizer configuration.
+///
+/// Step tolerance is configured per optimization call through
+/// [`Self::optimize_with_step_tolerance`] or
+/// [`Self::optimize_with_callback_and_step_tolerance`]. It is intentionally not
+/// stored as another public field: callers can construct this configuration
+/// with exhaustive struct literals, and adding a field would break that source.
+/// The existing optimization entry points use `1e-12`, preserving the step
+/// convergence behavior from before the shared threshold was loosened.
+///
+/// # Example
+///
+/// ```rust
+/// use kornia_algebra::optim::{
+///     LevenbergMarquardt, OptimizerError, PriorFactor, Problem, Variable,
+/// };
+///
+/// # fn main() -> Result<(), OptimizerError> {
+/// let optimizer = LevenbergMarquardt {
+///     lambda_init: 1e-3,
+///     lambda_max: 1e10,
+///     lambda_factor: 10.0,
+///     max_iterations: 50,
+///     cost_tolerance: 1e-6,
+///     gradient_tolerance: 1e-6,
+/// };
+/// let mut problem = Problem::new();
+/// problem.add_variable(Variable::euclidean("x", 1), vec![0.0])?;
+/// problem.add_factor(Box::new(PriorFactor::new(vec![1.0])), vec!["x".into()])?;
+///
+/// optimizer.optimize_with_step_tolerance(&mut problem, 1e-12)?;
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Debug, Clone)]
 pub struct LevenbergMarquardt {
     /// Initial damping parameter
@@ -105,21 +138,224 @@ pub struct OptimizerState {
 }
 
 impl LevenbergMarquardt {
-    /// Minimum step norm threshold. Steps smaller than this are considered zero.
-    const STEP_SIZE_TOLERANCE: f32 = 1e-6;
+    // Keep the threshold out of this exhaustively constructible public struct so
+    // downstream struct literals remain source-compatible. The 1e-12 value
+    // restores the historical default; callers that need earlier termination can
+    // opt into a larger threshold per solve.
+    const DEFAULT_STEP_TOLERANCE: f32 = 1e-12;
 
+    /// Optimizes a nonlinear least-squares problem with a `1e-12` step tolerance.
+    ///
+    /// # Arguments
+    ///
+    /// * `problem` - Problem whose variables will be updated in place.
+    ///
+    /// # Returns
+    ///
+    /// The final cost, iteration count, and termination reason.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`OptimizerError`] if the problem is empty or invalid, factor
+    /// evaluation fails, the damped system cannot be solved, or a parameter update
+    /// fails.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use kornia_algebra::optim::{
+    ///     LevenbergMarquardt, OptimizerError, PriorFactor, Problem, Variable,
+    /// };
+    ///
+    /// # fn main() -> Result<(), OptimizerError> {
+    /// let mut problem = Problem::new();
+    /// problem.add_variable(Variable::euclidean("x", 1), vec![0.0])?;
+    /// problem.add_factor(Box::new(PriorFactor::new(vec![2.0])), vec!["x".into()])?;
+    ///
+    /// let result = LevenbergMarquardt::default().optimize(&mut problem)?;
+    /// assert!(result.iterations > 0);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn optimize(&self, problem: &mut Problem) -> Result<OptimizerResult, OptimizerError> {
-        self.optimize_with_callback(problem, |_problem, _state| true)
+        self.optimize_with_step_tolerance(problem, Self::DEFAULT_STEP_TOLERANCE)
     }
 
+    /// Optimizes a problem with a `1e-12` step tolerance and an iteration callback.
+    ///
+    /// The callback is invoked before the first iteration and after each accepted
+    /// or rejected step that does not terminate optimization. Returning `false`
+    /// stops optimization with [`TerminationReason::Interrupted`].
+    ///
+    /// # Arguments
+    ///
+    /// * `problem` - Problem whose variables will be updated in place.
+    /// * `callback` - Function that receives the current problem and optimizer state.
+    ///
+    /// # Returns
+    ///
+    /// The final cost, iteration count, and termination reason.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`OptimizerError`] if the problem is empty or invalid, factor
+    /// evaluation fails, the damped system cannot be solved, or a parameter update
+    /// fails.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use kornia_algebra::optim::{
+    ///     LevenbergMarquardt, OptimizerError, PriorFactor, Problem, Variable,
+    /// };
+    ///
+    /// # fn main() -> Result<(), OptimizerError> {
+    /// let mut problem = Problem::new();
+    /// problem.add_variable(Variable::euclidean("x", 1), vec![0.0])?;
+    /// problem.add_factor(Box::new(PriorFactor::new(vec![2.0])), vec!["x".into()])?;
+    ///
+    /// let mut callback_count = 0;
+    /// LevenbergMarquardt::default().optimize_with_callback(
+    ///     &mut problem,
+    ///     |_problem, _state| {
+    ///         callback_count += 1;
+    ///         true
+    ///     },
+    /// )?;
+    /// assert!(callback_count > 0);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn optimize_with_callback<F>(
         &self,
         problem: &mut Problem,
+        callback: F,
+    ) -> Result<OptimizerResult, OptimizerError>
+    where
+        F: FnMut(&Problem, &OptimizerState) -> bool,
+    {
+        self.optimize_with_callback_and_step_tolerance(
+            problem,
+            Self::DEFAULT_STEP_TOLERANCE,
+            callback,
+        )
+    }
+
+    /// Optimizes a problem with a caller-supplied step tolerance.
+    ///
+    /// A proposed step whose Euclidean norm is smaller than `step_tolerance`
+    /// terminates optimization with [`TerminationReason::CostConverged`] before
+    /// the step is applied.
+    ///
+    /// # Arguments
+    ///
+    /// * `problem` - Problem whose variables will be updated in place.
+    /// * `step_tolerance` - Finite, non-negative minimum step norm that will be applied.
+    ///
+    /// # Returns
+    ///
+    /// The final cost, iteration count, and termination reason.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`OptimizerError`] if `step_tolerance` is negative or non-finite,
+    /// the problem is empty or invalid, factor evaluation fails, the damped system
+    /// cannot be solved, or a parameter update fails.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use kornia_algebra::optim::{
+    ///     LevenbergMarquardt, OptimizerError, PriorFactor, Problem, Variable,
+    /// };
+    ///
+    /// # fn main() -> Result<(), OptimizerError> {
+    /// let mut problem = Problem::new();
+    /// problem.add_variable(Variable::euclidean("x", 1), vec![0.0])?;
+    /// problem.add_factor(Box::new(PriorFactor::new(vec![2.0])), vec!["x".into()])?;
+    ///
+    /// LevenbergMarquardt::default()
+    ///     .optimize_with_step_tolerance(&mut problem, 1e-12)?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn optimize_with_step_tolerance(
+        &self,
+        problem: &mut Problem,
+        step_tolerance: f32,
+    ) -> Result<OptimizerResult, OptimizerError> {
+        self.optimize_with_callback_and_step_tolerance(
+            problem,
+            step_tolerance,
+            |_problem, _state| true,
+        )
+    }
+
+    /// Optimizes a problem with a caller-supplied step tolerance and callback.
+    ///
+    /// A proposed step whose Euclidean norm is smaller than `step_tolerance`
+    /// terminates optimization with [`TerminationReason::CostConverged`] before
+    /// the step is applied. The callback is invoked before the first iteration and
+    /// after each accepted or rejected step that does not terminate optimization.
+    /// Returning `false` from `callback` stops optimization with
+    /// [`TerminationReason::Interrupted`].
+    ///
+    /// # Arguments
+    ///
+    /// * `problem` - Problem whose variables will be updated in place.
+    /// * `step_tolerance` - Finite, non-negative minimum step norm that will be applied.
+    /// * `callback` - Function that receives the current problem and optimizer state.
+    ///
+    /// # Returns
+    ///
+    /// The final cost, iteration count, and termination reason.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`OptimizerError`] if `step_tolerance` is negative or non-finite,
+    /// the problem is empty or invalid, factor evaluation fails, the damped system
+    /// cannot be solved, or a parameter update fails.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use kornia_algebra::optim::{
+    ///     LevenbergMarquardt, OptimizerError, PriorFactor, Problem, Variable,
+    /// };
+    ///
+    /// # fn main() -> Result<(), OptimizerError> {
+    /// let mut problem = Problem::new();
+    /// problem.add_variable(Variable::euclidean("x", 1), vec![0.0])?;
+    /// problem.add_factor(Box::new(PriorFactor::new(vec![2.0])), vec!["x".into()])?;
+    ///
+    /// let mut callback_count = 0;
+    /// LevenbergMarquardt::default().optimize_with_callback_and_step_tolerance(
+    ///     &mut problem,
+    ///     1e-12,
+    ///     |_problem, _state| {
+    ///         callback_count += 1;
+    ///         true
+    ///     },
+    /// )?;
+    /// assert!(callback_count > 0);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn optimize_with_callback_and_step_tolerance<F>(
+        &self,
+        problem: &mut Problem,
+        step_tolerance: f32,
         mut callback: F,
     ) -> Result<OptimizerResult, OptimizerError>
     where
         F: FnMut(&Problem, &OptimizerState) -> bool,
     {
+        if !step_tolerance.is_finite() || step_tolerance < 0.0 {
+            return Err(OptimizerError::NumericalInstability(format!(
+                "Step tolerance must be finite and non-negative, got {step_tolerance}"
+            )));
+        }
+
         let variables = problem.get_variables();
         let factors = problem.get_factors();
 
@@ -191,7 +427,7 @@ impl LevenbergMarquardt {
 
             // Compute step size
             let step_norm = delta.norm();
-            if step_norm < Self::STEP_SIZE_TOLERANCE {
+            if step_norm < step_tolerance {
                 // Step is essentially zero, consider converged
                 return Ok(OptimizerResult {
                     final_cost: current_cost,
@@ -354,6 +590,25 @@ mod tests {
     use super::*;
     use crate::optim::{PriorFactor, Problem, Variable};
 
+    fn small_step_problem() -> Result<Problem, OptimizerError> {
+        let mut problem = Problem::new();
+        problem.add_variable(Variable::euclidean("x", 1), vec![0.0])?;
+        problem.add_factor(
+            Box::new(PriorFactor::new(vec![5e-7])),
+            vec!["x".to_string()],
+        )?;
+        Ok(problem)
+    }
+
+    fn single_iteration_optimizer() -> LevenbergMarquardt {
+        LevenbergMarquardt {
+            max_iterations: 1,
+            cost_tolerance: 0.0,
+            gradient_tolerance: 0.0,
+            ..LevenbergMarquardt::default()
+        }
+    }
+
     #[test]
     fn test_simple_1d_optimization() {
         // Minimize (x - 5)^2
@@ -422,5 +677,68 @@ mod tests {
         assert_eq!(optimizer.lambda_max, 1e10);
         assert_eq!(optimizer.lambda_factor, 10.0);
         assert_eq!(optimizer.max_iterations, 50);
+    }
+
+    #[test]
+    fn test_step_tolerance_is_configurable() -> Result<(), OptimizerError> {
+        // The first LM step is about 5e-7, between the two thresholds. This
+        // isolates step convergence from the disabled cost and gradient checks.
+        let optimizer = single_iteration_optimizer();
+        let mut strict_problem = small_step_problem()?;
+        let strict_result = optimizer.optimize_with_step_tolerance(&mut strict_problem, 1e-12)?;
+
+        assert_eq!(
+            strict_result.termination_reason,
+            TerminationReason::MaxIterations
+        );
+        assert_eq!(strict_result.iterations, 1);
+        assert!(strict_problem.get_variables()["x"].values[0] > 0.0);
+
+        let mut loose_problem = small_step_problem()?;
+        let loose_result = optimizer.optimize_with_step_tolerance(&mut loose_problem, 1e-6)?;
+
+        assert_eq!(
+            loose_result.termination_reason,
+            TerminationReason::CostConverged
+        );
+        assert_eq!(loose_result.iterations, 0);
+        assert_eq!(loose_problem.get_variables()["x"].values[0], 0.0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_step_tolerance_rejects_invalid_values() -> Result<(), OptimizerError> {
+        let optimizer = single_iteration_optimizer();
+
+        for step_tolerance in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -1.0] {
+            let mut problem = small_step_problem()?;
+            let error = optimizer
+                .optimize_with_step_tolerance(&mut problem, step_tolerance)
+                .expect_err("invalid step tolerance should fail");
+
+            assert!(matches!(
+                error,
+                OptimizerError::NumericalInstability(message)
+                    if message.contains("Step tolerance must be finite and non-negative")
+            ));
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_default_step_tolerance_restores_small_step_behavior() -> Result<(), OptimizerError> {
+        // A 1e-6 default would incorrectly terminate before applying this roughly
+        // 5e-7 step. The historical 1e-12 default must let the iteration proceed.
+        let optimizer = single_iteration_optimizer();
+        let mut problem = small_step_problem()?;
+        let result = optimizer.optimize(&mut problem)?;
+
+        assert_eq!(result.termination_reason, TerminationReason::MaxIterations);
+        assert_eq!(result.iterations, 1);
+        assert!(problem.get_variables()["x"].values[0] > 0.0);
+
+        Ok(())
     }
 }

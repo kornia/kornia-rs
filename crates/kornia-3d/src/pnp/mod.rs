@@ -19,7 +19,7 @@ pub use epnp::{EPnP, EPnPParams};
 use kornia_algebra::{Mat3AF32, Vec2F32, Vec3AF32};
 use kornia_imgproc::calibration::distortion::PolynomialDistortion;
 pub use ransac::{solve_pnp_ransac, PnPRansacError, PnPRansacResult, RansacParams};
-pub use refine::{refine_pose_lm, LMRefineParams};
+pub use refine::{refine_pose_lm, refine_pose_lm_with_step_tolerance, LMRefineParams};
 use thiserror::Error;
 
 /// Error types for PnP solvers.
