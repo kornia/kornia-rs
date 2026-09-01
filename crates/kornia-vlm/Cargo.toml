@@ -45,4 +45,9 @@ cuda = [
   "dep:cudarc",
 ]
 flash-attn = ["candle-transformers/flash-attn"]
-metal = ["candle-core/metal"]
+# Must fan out to candle-nn and candle-transformers exactly like `cuda` does:
+# their fused kernels (layer-norm, rms-norm, softmax-last-dim, sdpa) are custom
+# ops whose `metal_fwd` is behind each crate's own `metal` feature. Enabling it
+# on candle-core alone still compiles, but every such op hits the trait default
+# and fails at runtime with "no metal implementation for <op>".
+metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal"]

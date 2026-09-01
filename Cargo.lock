@@ -2032,9 +2032,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a9317a09d6530b758990ed7f625ac69ff43653bc9ee28b0464644ad1169ada87"
 dependencies = [
  "candle-core",
+ "candle-metal-kernels",
  "half",
  "libc",
  "num-traits",
+ "objc2-metal 0.3.2",
  "rayon",
  "safetensors 0.7.0",
  "serde",
@@ -8745,6 +8747,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "moondream"
+version = "0.1.15-rc.5"
+dependencies = [
+ "argh",
+ "env_logger",
+ "kornia-io",
+ "kornia-vlm",
 ]
 
 [[package]]
