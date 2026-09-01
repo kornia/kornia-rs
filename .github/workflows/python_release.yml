@@ -146,7 +146,7 @@ jobs:
     steps:
       - uses: ilammy/setup-nasm@v1
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
       - uses: actions-rs/toolchain@v1
@@ -178,7 +178,7 @@ jobs:
       - uses: ilammy/setup-nasm@v1
       - uses: ilammy/msvc-dev-cmd@v1
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
           # x86 python needs to be available for the win32 wheel
@@ -213,7 +213,7 @@ jobs:
       CMAKE_GENERATOR: Ninja
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
           architecture: arm64
@@ -250,7 +250,7 @@ jobs:
     steps:
       - run: sudo apt-get update
       - uses: actions/download-artifact@v8
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: 3.9
       - name: Publish to PyPi

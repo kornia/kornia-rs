@@ -58,7 +58,7 @@ jobs:
 
       - uses: ./.github/actions/setup-rust-cache
 
-      - uses: prefix-dev/setup-pixi@v0.10.0
+      - uses: prefix-dev/setup-pixi@v0.10.2
         with:
           pixi-version: v0.73.0
           cache: true
@@ -133,7 +133,7 @@ jobs:
       # here — the aarch64 wheel stays disassembly-verified only.
       - name: Set up Python 3.10 to match the wheel's cp310 ABI tag
         if: matrix.target == 'x86_64'
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: "3.10"
       - name: Probe runtime SIMD dispatch from installed wheel
@@ -169,7 +169,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
           architecture: arm64
