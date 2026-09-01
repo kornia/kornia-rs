@@ -183,9 +183,9 @@ impl LevenbergMarquardt {
 
     /// Optimizes a problem with a `1e-12` step tolerance and an iteration callback.
     ///
-    /// The callback is invoked before the first iteration and after each attempted
-    /// step. Returning `false` stops optimization with
-    /// [`TerminationReason::Interrupted`].
+    /// The callback is invoked before the first iteration and after each accepted
+    /// or rejected step that does not terminate optimization. Returning `false`
+    /// stops optimization with [`TerminationReason::Interrupted`].
     ///
     /// # Arguments
     ///
@@ -250,7 +250,7 @@ impl LevenbergMarquardt {
     /// # Arguments
     ///
     /// * `problem` - Problem whose variables will be updated in place.
-    /// * `step_tolerance` - Minimum step norm that will be applied.
+    /// * `step_tolerance` - Finite, non-negative minimum step norm that will be applied.
     ///
     /// # Returns
     ///
@@ -258,9 +258,9 @@ impl LevenbergMarquardt {
     ///
     /// # Errors
     ///
-    /// Returns an [`OptimizerError`] if the problem is empty or invalid, factor
-    /// evaluation fails, the damped system cannot be solved, or a parameter update
-    /// fails.
+    /// Returns an [`OptimizerError`] if `step_tolerance` is negative or non-finite,
+    /// the problem is empty or invalid, factor evaluation fails, the damped system
+    /// cannot be solved, or a parameter update fails.
     ///
     /// # Example
     ///
@@ -295,13 +295,15 @@ impl LevenbergMarquardt {
     ///
     /// A proposed step whose Euclidean norm is smaller than `step_tolerance`
     /// terminates optimization with [`TerminationReason::CostConverged`] before
-    /// the step is applied. Returning `false` from `callback` stops optimization
-    /// with [`TerminationReason::Interrupted`].
+    /// the step is applied. The callback is invoked before the first iteration and
+    /// after each accepted or rejected step that does not terminate optimization.
+    /// Returning `false` from `callback` stops optimization with
+    /// [`TerminationReason::Interrupted`].
     ///
     /// # Arguments
     ///
     /// * `problem` - Problem whose variables will be updated in place.
-    /// * `step_tolerance` - Minimum step norm that will be applied.
+    /// * `step_tolerance` - Finite, non-negative minimum step norm that will be applied.
     /// * `callback` - Function that receives the current problem and optimizer state.
     ///
     /// # Returns
@@ -310,9 +312,9 @@ impl LevenbergMarquardt {
     ///
     /// # Errors
     ///
-    /// Returns an [`OptimizerError`] if the problem is empty or invalid, factor
-    /// evaluation fails, the damped system cannot be solved, or a parameter update
-    /// fails.
+    /// Returns an [`OptimizerError`] if `step_tolerance` is negative or non-finite,
+    /// the problem is empty or invalid, factor evaluation fails, the damped system
+    /// cannot be solved, or a parameter update fails.
     ///
     /// # Example
     ///
@@ -348,6 +350,12 @@ impl LevenbergMarquardt {
     where
         F: FnMut(&Problem, &OptimizerState) -> bool,
     {
+        if !step_tolerance.is_finite() || step_tolerance < 0.0 {
+            return Err(OptimizerError::NumericalInstability(format!(
+                "Step tolerance must be finite and non-negative, got {step_tolerance}"
+            )));
+        }
+
         let variables = problem.get_variables();
         let factors = problem.get_factors();
 
@@ -695,6 +703,26 @@ mod tests {
         );
         assert_eq!(loose_result.iterations, 0);
         assert_eq!(loose_problem.get_variables()["x"].values[0], 0.0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_step_tolerance_rejects_invalid_values() -> Result<(), OptimizerError> {
+        let optimizer = single_iteration_optimizer();
+
+        for step_tolerance in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -1.0] {
+            let mut problem = small_step_problem()?;
+            let error = optimizer
+                .optimize_with_step_tolerance(&mut problem, step_tolerance)
+                .expect_err("invalid step tolerance should fail");
+
+            assert!(matches!(
+                error,
+                OptimizerError::NumericalInstability(message)
+                    if message.contains("Step tolerance must be finite and non-negative")
+            ));
+        }
 
         Ok(())
     }

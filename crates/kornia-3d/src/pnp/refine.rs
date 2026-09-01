@@ -443,7 +443,7 @@ pub fn refine_pose_lm(
 /// * `initial_translation` - Initial translation estimate.
 /// * `distortion` - Optional camera distortion model.
 /// * `params` - LM refinement parameters.
-/// * `step_tolerance` - Minimum step norm that will be applied.
+/// * `step_tolerance` - Finite, non-negative minimum step norm that will be applied.
 ///
 /// # Returns
 ///
@@ -452,9 +452,9 @@ pub fn refine_pose_lm(
 ///
 /// # Errors
 ///
-/// Returns a [`PnPError`] if the correspondence counts differ, fewer than three
-/// correspondences are provided, the robust loss is invalid, or optimization
-/// fails.
+/// Returns a [`PnPError`] if `step_tolerance` is negative or non-finite, the
+/// correspondence counts differ, fewer than three correspondences are provided,
+/// the robust loss is invalid, or optimization fails.
 ///
 /// # Example
 ///
@@ -848,6 +848,22 @@ mod tests {
         // A loose cutoff terminates before the first step is applied.
         assert_eq!(loose.num_iterations, Some(0));
         assert_eq!(loose.converged, Some(true));
+
+        let invalid = refine_pose_lm_with_step_tolerance(
+            &points_world,
+            &points_image,
+            &k,
+            &initial_rotation,
+            &initial_translation,
+            None,
+            &params,
+            f32::NAN,
+        );
+        assert!(matches!(
+            invalid,
+            Err(PnPError::SvdFailed(message))
+                if message.contains("Step tolerance must be finite and non-negative")
+        ));
 
         Ok(())
     }
