@@ -39,7 +39,7 @@
 
 use crate::{
     param::{Param, ParamError},
-    Mat3AF32, Mat3F64, Mat4F32, Mat4F64, QuatF32, QuatF64, Vec3AF32, Vec3F64,
+    Mat3AF32, Mat3F64, Mat4F32, Mat4F64, QuatF32, QuatF64, Vec3AF32, Vec3F32, Vec3F64,
 };
 use rand::RngExt;
 const SMALL_ANGLE_EPSILON: f32 = 1.0e-8;
@@ -106,6 +106,21 @@ impl SO3F32 {
     pub fn from_matrix4(mat: &Mat4F32) -> Self {
         Self {
             q: QuatF32::from_mat4(mat),
+        }
+    }
+
+    /// Shortest-arc rotation taking direction `from` onto direction `to`.
+    ///
+    /// The inputs are normalized internally, so any non-zero vectors are
+    /// accepted. Parallel inputs give the identity; anti-parallel inputs give
+    /// a half-turn about an arbitrary axis perpendicular to `from`. Wraps
+    /// `glam`'s `Quat::from_rotation_arc`.
+    pub fn from_two_vectors(from: Vec3AF32, to: Vec3AF32) -> Self {
+        Self {
+            q: QuatF32::from_rotation_arc(
+                Vec3F32::from(from).normalize(),
+                Vec3F32::from(to).normalize(),
+            ),
         }
     }
 
@@ -410,6 +425,18 @@ impl SO3F64 {
         }
     }
 
+    /// Shortest-arc rotation taking direction `from` onto direction `to`.
+    ///
+    /// The inputs are normalized internally, so any non-zero vectors are
+    /// accepted. Parallel inputs give the identity; anti-parallel inputs give
+    /// a half-turn about an arbitrary axis perpendicular to `from`. Wraps
+    /// `glam`'s `DQuat::from_rotation_arc`.
+    pub fn from_two_vectors(from: Vec3F64, to: Vec3F64) -> Self {
+        Self {
+            q: QuatF64::from_rotation_arc(from.normalize(), to.normalize()),
+        }
+    }
+
     /// Uniformly-random rotation (Shoemake's method).
     pub fn from_random() -> Self {
         let mut rng = rand::rng();
@@ -671,6 +698,40 @@ mod tests {
         assert_relative_eq!(s.q.y, q_expected.y, epsilon = EPSILON);
         assert_relative_eq!(s.q.z, q_expected.z, epsilon = EPSILON);
         assert_relative_eq!(s.q.w, q_expected.w, epsilon = EPSILON);
+    }
+
+    #[test]
+    fn test_from_two_vectors() {
+        let from = Vec3AF32::new(0.0, 0.0, -1.0);
+        let to = Vec3AF32::new(0.3, 2.0, 0.5);
+        let r = SO3F32::from_two_vectors(from, to);
+        let rotated = r * from;
+        let expected = to.normalize();
+        assert_relative_eq!(rotated.x, expected.x, epsilon = ROUNDTRIP_EPSILON);
+        assert_relative_eq!(rotated.y, expected.y, epsilon = ROUNDTRIP_EPSILON);
+        assert_relative_eq!(rotated.z, expected.z, epsilon = ROUNDTRIP_EPSILON);
+        assert_relative_eq!(r.q.length(), 1.0, epsilon = EPSILON);
+    }
+
+    #[test]
+    fn test_from_two_vectors_parallel_is_identity() {
+        let v = Vec3AF32::new(1.0, 2.0, 3.0);
+        let r = SO3F32::from_two_vectors(v, 2.0 * v);
+        assert_relative_eq!(r.q.w.abs(), 1.0, epsilon = EPSILON);
+    }
+
+    #[test]
+    fn test_from_two_vectors_anti_parallel() {
+        for from in [
+            Vec3AF32::new(0.0, 0.0, -1.0),
+            Vec3AF32::new(1.0, 0.0, 0.0),
+            Vec3AF32::new(0.0, 1.0, 0.0),
+        ] {
+            let rotated = SO3F32::from_two_vectors(from, -from) * from;
+            assert_relative_eq!(rotated.x, -from.x, epsilon = EPSILON);
+            assert_relative_eq!(rotated.y, -from.y, epsilon = EPSILON);
+            assert_relative_eq!(rotated.z, -from.z, epsilon = EPSILON);
+        }
     }
 
     #[test]
@@ -1202,5 +1263,35 @@ mod tests_f64 {
         let r = SO3F64::exp(Vec3F64::new(0.4, -0.1, 0.8));
         let r2 = SO3F64::from_matrix(&r.matrix());
         assert_mat_eq(&r.matrix(), &r2.matrix(), 1e-12);
+    }
+
+    #[test]
+    fn test_from_two_vectors() {
+        let from = Vec3F64::new(0.0, 0.0, -1.0);
+        let to = Vec3F64::new(0.3, 2.0, 0.5);
+        let rotated = SO3F64::from_two_vectors(from, to) * from;
+        assert!((rotated - to.normalize()).length() < EPS);
+    }
+
+    #[test]
+    fn test_from_two_vectors_parallel_is_identity() {
+        let v = Vec3F64::new(1.0, 2.0, 3.0);
+        let r = SO3F64::from_two_vectors(v, 2.0 * v);
+        assert!((r.q.w.abs() - 1.0).abs() < EPS);
+    }
+
+    #[test]
+    fn test_from_two_vectors_anti_parallel() {
+        for from in [
+            Vec3F64::new(0.0, 0.0, -1.0),
+            Vec3F64::new(1.0, 0.0, 0.0),
+            Vec3F64::new(0.0, 1.0, 0.0),
+        ] {
+            let rotated = SO3F64::from_two_vectors(from, -from) * from;
+            assert!(
+                (rotated + from).length() < 1e-9,
+                "anti-parallel rotation of {from:?} gave {rotated:?}"
+            );
+        }
     }
 }
