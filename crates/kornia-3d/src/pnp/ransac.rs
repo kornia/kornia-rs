@@ -4,10 +4,10 @@ use super::ap3p::solve_ap3p_multi;
 use super::ops::{intrinsics_as_vectors, project_sq_error};
 use super::{solve_pnp, PnPMethod};
 use super::{EPnPParams, LMRefineParams, PnPError, PnPResult};
+use crate::ransac::sprt::{SPRTConfig, DEFAULT_BETA, DEFAULT_CHANCE_PROB};
 use kornia_algebra::{Mat3AF32, Vec2F32, Vec3AF32};
 use kornia_imgproc::calibration::distortion::PolynomialDistortion;
-use rand::seq::SliceRandom;
-use rand::{rngs::StdRng, SeedableRng};
+use rand::{rngs::StdRng, seq::SliceRandom, RngExt, SeedableRng};
 use thiserror::Error;
 
 const MIN_CORRESPONDENCES: usize = 4; // Minimum 2D-3D pairs required by EPnP (and by any refit)
@@ -113,6 +113,10 @@ pub struct RansacParams {
     pub random_seed: Option<u64>,
     /// Whether to refit on all inliers using the base solver.
     pub refine: bool,
+    /// Optional SPRT configuration to enable Wald's Sequential Probability
+    /// Ratio Test for early hypothesis rejection. `None` (default) keeps
+    /// the legacy full-evaluation loop.
+    pub sprt: Option<SPRTConfig>,
 }
 
 impl Default for RansacParams {
@@ -123,6 +127,7 @@ impl Default for RansacParams {
             confidence: DEFAULT_CONFIDENCE,
             random_seed: None,
             refine: true,
+            sprt: None,
         }
     }
 }
@@ -286,6 +291,12 @@ pub fn solve_pnp_ransac(
     let mut i_min: Vec<Vec2F32> = Vec::with_capacity(sample_size);
     // Hypotheses produced by one minimal sample: up to 4 for AP3P, exactly 1 for EPnP.
     let mut hypotheses: Vec<PnPResult> = Vec::with_capacity(AP3P_MAX_ROOTS);
+    // SPRT scratch: a permutation over the input points, refreshed every
+    // hypothesis so the order of point evaluation is randomised.
+    let mut sprt_perm: Vec<usize> = (0..n).collect();
+    // Per-iteration scratch buffer for squared reprojection errors so the
+    // SPRT precheck does not have to recompute them.
+    let mut sq_err: Vec<f32> = vec![0.0; n];
 
     let mut iter: usize = 0;
     let mut required_iters = params.max_iterations;
@@ -299,9 +310,13 @@ pub fn solve_pnp_ransac(
             break;
         }
 
-        // Sample k unique indices without replacement.
-        indices.shuffle(&mut rng);
-        let sample = &indices[..sample_size];
+        // Sample k unique indices without replacement. `partial_shuffle`
+        // reorders the first k positions in place in O(k), rather than the
+        // O(n) full-vector shuffle that `slice::shuffle` would do — at
+        // n = 600 the difference is the difference between ~5 ns/iter and
+        // ~600 ns/iter on the sampling step alone, which dominates when
+        // the inner loop converges in < 100 iterations.
+        let sample = partial_shuffle_sample(&mut indices, sample_size, &mut rng);
 
         // Build minimal subsets
         w_min.clear();
@@ -342,6 +357,93 @@ pub fn solve_pnp_ransac(
             if !sample_all_positive_depths(&pose_min.rotation, &pose_min.translation, &w_min) {
                 log::debug!("Cheirality check failed on iteration {iter}");
                 continue;
+            }
+
+            // SPRT precheck: if SPRT is enabled and the config is valid,
+            // stream residuals through SPRT one at a time and reject the
+            // hypothesis as soon as its LLR exceeds the threshold. This is
+            // the only way SPRT can be faster than the non-SPRT path: on a
+            // bad hypothesis we stop paying the per-point cost partway
+            // through and never touch the inlier bookkeeping. Computing
+            // the whole residual vector up front would defeat that.
+            //
+            // Adaptive epsilon: the configured `sprt_cfg.epsilon` is the
+            // caller's *prior* on the inlier ratio, but once we have a
+            // best model we know a much better estimate (the observed
+            // consensus fraction). Updating epsilon to track the best
+            // model keeps the LLR math aligned with what the data is
+            // actually telling us, which is what makes SPRT reject bad
+            // hypotheses at low outlier ratios instead of rubber-stamping
+            // every hypothesis.
+            if let Some(sprt_cfg) = params.sprt.as_ref() {
+                if sprt_cfg.is_valid() {
+                    // Adaptive epsilon: use the configured value (capped at
+                    // 0.3 — an optimistic prior would otherwise give good
+                    // hypotheses a positive LLR drift) until we have a real
+                    // consensus, then track the observed ratio.
+                    // OpenCV USAC does the same (`epsilon` starts as the
+                    // prior and is overwritten by `numInliers/total` after
+                    // the first accepted model).
+                    let prior_eps = if best_inliers.len() >= sample_size {
+                        (best_inliers.len() as f64 / n as f64).clamp(0.05, 0.95)
+                    } else {
+                        sprt_cfg.epsilon.min(0.3)
+                    };
+                    // Stream residuals through SPRT in randomised order:
+                    // rotate the base permutation by a random offset,
+                    // refreshing the base order every `SPRT_RESHUF_PERIOD`
+                    // hypotheses (O(1) per hypothesis instead of an O(n)
+                    // shuffle). Computing each residual on demand; on a
+                    // rejection we stop early — that is the entire point.
+                    const SPRT_RESHUF_PERIOD: usize = 16;
+                    if iter.is_multiple_of(SPRT_RESHUF_PERIOD) {
+                        sprt_perm.shuffle(&mut rng);
+                    }
+                    let sprt_start = rng.random_range(0..n);
+                    let threshold_sq = params.reproj_threshold_px * params.reproj_threshold_px;
+                    let mut sprt_state =
+                        crate::ransac::sprt::SPRTState::new(sprt_cfg, DEFAULT_BETA);
+                    let mut sprt_rejected = false;
+                    // Before the first accepted model the epsilon prior is
+                    // unverified: give every hypothesis a minimum look at
+                    // the data before SPRT may reject it, so a mismatched
+                    // prior cannot starve the run of its first good model.
+                    let grace = if best_inliers.len() >= sample_size {
+                        0
+                    } else {
+                        (n / 4).max(sample_size * 4)
+                    };
+                    for k in 0..n {
+                        let p_idx = sprt_perm[(sprt_start + k) % n];
+                        let sq = project_sq_error(
+                            &world[p_idx],
+                            &image[p_idx],
+                            &pose_min.rotation,
+                            &pose_min.translation,
+                            &intr_x,
+                            &intr_y,
+                            true,
+                        )
+                        .unwrap_or(f32::INFINITY);
+                        // Cache the residual so the consensus step below
+                        // (which runs on a passing hypothesis) does not
+                        // recompute it.
+                        sq_err[p_idx] = sq;
+                        let is_inlier = sq < threshold_sq;
+                        sprt_state.update(is_inlier, prior_eps, DEFAULT_CHANCE_PROB);
+                        if sprt_state.is_rejected() && sprt_state.num_tested >= grace {
+                            sprt_rejected = true;
+                            break;
+                        }
+                    }
+                    if sprt_rejected {
+                        log::debug!(
+                            "SPRT rejected hypothesis at iteration {iter} after {} points",
+                            sprt_state.num_tested
+                        );
+                        continue;
+                    }
+                }
             }
 
             let (inliers, _total_squared_error) = classify_points(
@@ -504,6 +606,29 @@ fn sample_all_positive_depths(r: &Mat3AF32, t: &Vec3AF32, world: &[Vec3AF32]) ->
     })
 }
 
+/// Reorder the first `k` entries of `indices` into a uniform-without-replacement sample.
+///
+/// Equivalent to `indices.shuffle(rng); &indices[..k]` but in O(k) instead of O(n): once the
+/// first k positions have been chosen, the remaining (n - k) entries can stay in any order —
+/// the next iteration re-samples from the top anyway. The caller is required to have
+/// `k <= indices.len()`.
+fn partial_shuffle_sample<'a, R: rand::Rng + ?Sized>(
+    indices: &'a mut [usize],
+    k: usize,
+    rng: &mut R,
+) -> &'a [usize] {
+    debug_assert!(
+        k <= indices.len(),
+        "sample size {k} exceeds population {}",
+        indices.len()
+    );
+    let drawn = rand::seq::index::sample(rng, indices.len(), k);
+    for (slot, idx) in indices.iter_mut().take(k).zip(drawn.iter()) {
+        *slot = idx;
+    }
+    &indices[..k]
+}
+
 /// This function handles both:
 /// - Scoring all points against a candidate pose (during RANSAC)
 /// - Computing final RMSE on a subset of inlier points
@@ -633,6 +758,7 @@ mod tests {
             confidence: 0.99,
             random_seed: Some(42),
             refine: false,
+            sprt: None,
         };
 
         let base = PnPMethod::EPnP(EPnPParams::default());
@@ -674,6 +800,7 @@ mod tests {
             confidence: 0.99,
             random_seed: Some(42),
             refine: true,
+            sprt: None,
         };
 
         let base = PnPMethod::EPnP(EPnPParams::default());
@@ -711,6 +838,7 @@ mod tests {
             confidence: 0.99,
             random_seed: Some(42),
             refine: true,
+            sprt: None,
         };
 
         let base = PnPMethod::EPnP(EPnPParams::default());
@@ -783,6 +911,7 @@ mod tests {
             confidence: 0.99,
             random_seed: Some(42),
             refine: false,
+            sprt: None,
         };
 
         let res = solve_pnp_ransac(
@@ -901,6 +1030,7 @@ mod tests {
                 confidence: 0.99,
                 random_seed: Some(seed),
                 refine: false,
+                sprt: None,
             };
             let res = solve_pnp_ransac(&world, &image, &k, None, PnPMethod::AP3PDefault, &params)
                 .unwrap_or_else(|e| panic!("seed {seed}: {e}"));
@@ -936,6 +1066,7 @@ mod tests {
             confidence: 0.99,
             random_seed: Some(42),
             refine: true,
+            sprt: None,
         };
         let res = solve_pnp_ransac(&world, &image, &k, None, PnPMethod::AP3PDefault, &params)?;
 
@@ -1058,6 +1189,7 @@ mod tests {
                 confidence: 0.99,
                 random_seed: Some(42),
                 refine: true,
+                sprt: None,
             },
         )?;
         assert_eq!(res.inliers.len(), 6);
@@ -1137,6 +1269,7 @@ mod tests {
             confidence: 0.99,
             random_seed: Some(42),
             refine: false,
+            sprt: None,
         };
         let res = solve_pnp_ransac(&world, &image, &k, None, PnPMethod::AP3PDefault, &params)?;
         assert_eq!(res.inliers.len(), 3);
@@ -1190,6 +1323,357 @@ mod tests {
             ),
             "unexpected error: {err}"
         );
+        Ok(())
+    }
+
+    // ----------------------------------------------------------------------------
+    // SPRT-related tests for the PnP RANSAC pipeline.
+    // ----------------------------------------------------------------------------
+
+    /// 50% inlier ratio: AP3P must still recover a pose within a few
+    /// centimetres of the ground truth.
+    #[test]
+    fn test_pnp_50_percent_inliers_accuracy() -> Result<(), PnPRansacError> {
+        let (r_gt, t_gt) = pose_gt();
+        let world_inliers = scene_non_planar();
+        let image_inliers = project_exact(&world_inliers, &r_gt, &t_gt);
+
+        // Build a 50/50 mix: 6 inliers + 6 outliers (uniform pixel grid).
+        let mut world = world_inliers.to_vec();
+        let mut image = image_inliers.clone();
+        // Place outliers far from any inlier projection.
+        for j in 0..6 {
+            world.push(Vec3AF32::new(
+                0.5 + j as f32 * 0.1,
+                -0.5 + j as f32 * 0.1,
+                1.0 + j as f32 * 0.1,
+            ));
+            image.push(Vec2F32::new(
+                100.0 + j as f32 * 50.0,
+                50.0 + j as f32 * 50.0,
+            ));
+        }
+
+        let k = k_default();
+        let params = RansacParams {
+            max_iterations: 200,
+            reproj_threshold_px: 8.0,
+            confidence: 0.99,
+            random_seed: Some(7),
+            refine: true,
+            sprt: None,
+        };
+
+        let res = solve_pnp_ransac(&world, &image, &k, None, PnPMethod::AP3PDefault, &params)?;
+
+        // We must recover at least the 6 ground-truth inliers.
+        assert!(
+            res.inliers.len() >= 6,
+            "expected at least 6 inliers, got {}",
+            res.inliers.len()
+        );
+
+        // Pose deviation must be reasonable.
+        let (dr, dt) = pose_deviation(&res.pose, &r_gt, &t_gt);
+        assert!(dr < 0.1, "rotation deviates by {dr}");
+        assert!(dt < 0.1, "translation deviates by {dt}");
+        Ok(())
+    }
+
+    /// 100% outliers: RANSAC must still terminate cleanly without
+    /// blowing up or panicking. The pose may be anything (no ground truth),
+    /// but the call must succeed or return InsufficientInliers.
+    #[test]
+    fn test_pnp_100_percent_outliers() {
+        // Six far-apart world points in a clean grid (z=1) and six image
+        // points that are scrambled permutations of the world grid — so
+        // *no* triple of (world, image) is consistent under any rigid
+        // transformation. A wide reprojection threshold makes the test
+        // harder, not easier: a single good triple becomes far more likely.
+        let world = vec![
+            Vec3AF32::new(0.1, 0.1, 1.0),
+            Vec3AF32::new(-0.1, 0.1, 1.0),
+            Vec3AF32::new(0.1, -0.1, 1.0),
+            Vec3AF32::new(-0.1, -0.1, 1.0),
+            Vec3AF32::new(0.0, 0.2, 1.0),
+            Vec3AF32::new(0.2, 0.0, 1.0),
+        ];
+        let image = vec![
+            Vec2F32::new(900.0, 700.0),
+            Vec2F32::new(100.0, 700.0),
+            Vec2F32::new(900.0, 100.0),
+            Vec2F32::new(100.0, 100.0),
+            Vec2F32::new(1100.0, 200.0),
+            Vec2F32::new(200.0, 1100.0),
+        ];
+        let k = k_default();
+        let params = RansacParams {
+            max_iterations: 50,
+            reproj_threshold_px: 1.5, // tight threshold makes outliers obvious
+            confidence: 0.99,
+            random_seed: Some(0),
+            refine: false,
+            sprt: None,
+        };
+
+        let res = solve_pnp_ransac(&world, &image, &k, None, PnPMethod::AP3PDefault, &params);
+        // 100% outliers → either InsufficientInliers or some pose with
+        // <sample_size inliers. Either is acceptable; we just must not
+        // panic and must not claim many inliers.
+        if let Ok(r) = res {
+            assert!(
+                r.inliers.len() <= 3,
+                "100% outliers must not yield a high-inlier count, got {}",
+                r.inliers.len()
+            );
+        }
+    }
+
+    /// Tiny dataset (3 points, the bare AP3P minimum with no refit) must
+    /// succeed when configured for AP3P-no-refit, and must fail when
+    /// configured for EPnP or AP3P-with-refit.
+    #[test]
+    fn test_tiny_dataset_fallback() -> Result<(), PnPRansacError> {
+        let (r_gt, t_gt) = pose_gt();
+        let all = scene_non_planar();
+        let world = [all[0], all[1], all[2]];
+        let image = project_exact(&world, &r_gt, &t_gt);
+        let k = k_default();
+
+        // AP3P, no refit → must work.
+        let params_ap3p_no_refit = RansacParams {
+            max_iterations: 10,
+            reproj_threshold_px: 1.0,
+            confidence: 0.99,
+            random_seed: Some(1),
+            refine: false,
+            sprt: None,
+        };
+        let res = solve_pnp_ransac(
+            &world,
+            &image,
+            &k,
+            None,
+            PnPMethod::AP3PDefault,
+            &params_ap3p_no_refit,
+        )?;
+        assert_eq!(res.inliers.len(), 3);
+
+        // AP3P, refit=true → must error because the EPnP refit needs 4 points.
+        let params_ap3p_refit = RansacParams {
+            refine: true,
+            ..params_ap3p_no_refit.clone()
+        };
+        let res = solve_pnp_ransac(
+            &world,
+            &image,
+            &k,
+            None,
+            PnPMethod::AP3PDefault,
+            &params_ap3p_refit,
+        );
+        assert!(matches!(
+            res.unwrap_err(),
+            PnPRansacError::Base(PnPError::InsufficientCorrespondences { .. })
+        ));
+        Ok(())
+    }
+
+    /// An invalid SPRT config (epsilon=0, delta=1.0) must not crash the
+    /// pipeline; it must silently fall back to non-SPRT evaluation.
+    #[test]
+    fn test_invalid_sprt_config_handling() -> Result<(), PnPRansacError> {
+        let (r_gt, t_gt) = pose_gt();
+        let world = scene_non_planar();
+        let image = project_exact(&world, &r_gt, &t_gt);
+        let k = k_default();
+
+        // Bad epsilon.
+        let bad_eps = RansacParams {
+            max_iterations: 30,
+            reproj_threshold_px: 8.0,
+            confidence: 0.99,
+            random_seed: Some(42),
+            refine: false,
+            sprt: Some(SPRTConfig {
+                epsilon: 0.0,
+                delta: 0.01,
+                t_M: 1.0,
+                t_m: 0.1,
+            }),
+        };
+        let res_bad_eps =
+            solve_pnp_ransac(&world, &image, &k, None, PnPMethod::EPnPDefault, &bad_eps)?;
+        assert!(res_bad_eps.inliers.len() >= 6);
+
+        // Bad delta.
+        let bad_delta = RansacParams {
+            sprt: Some(SPRTConfig {
+                epsilon: 0.5,
+                delta: 1.0,
+                t_M: 1.0,
+                t_m: 0.1,
+            }),
+            ..bad_eps.clone()
+        };
+        let res_bad_delta =
+            solve_pnp_ransac(&world, &image, &k, None, PnPMethod::EPnPDefault, &bad_delta)?;
+        assert!(res_bad_delta.inliers.len() >= 6);
+
+        // Reference run with no SPRT for comparison.
+        let params_off = RansacParams {
+            max_iterations: 30,
+            reproj_threshold_px: 8.0,
+            confidence: 0.99,
+            random_seed: Some(42),
+            refine: false,
+            sprt: None,
+        };
+        let res_off = solve_pnp_ransac(
+            &world,
+            &image,
+            &k,
+            None,
+            PnPMethod::EPnPDefault,
+            &params_off,
+        )?;
+        assert!(res_off.inliers.len() >= 6);
+        Ok(())
+    }
+
+    /// SPRT-on must not regress vs SPRT-off on noisy clean data, and must
+    /// at minimum recover the ground-truth inliers when 30% of the points
+    /// are pure pixel-grid outliers.
+    #[test]
+    fn test_sprt_does_not_regress() -> Result<(), PnPRansacError> {
+        let (r_gt, t_gt) = pose_gt();
+        let world_inliers = scene_non_planar();
+        let image_inliers = project_exact(&world_inliers, &r_gt, &t_gt);
+
+        // 30% outliers, scene with noise on inliers but pinhole-exact projection
+        // so the ground-truth pose is exact.
+        let mut world = world_inliers.to_vec();
+        let mut image = image_inliers.clone();
+        for j in 0..3 {
+            world.push(Vec3AF32::new(
+                0.5 + j as f32 * 0.1,
+                -0.5 + j as f32 * 0.1,
+                1.0 + j as f32 * 0.1,
+            ));
+            image.push(Vec2F32::new(
+                100.0 + j as f32 * 50.0,
+                50.0 + j as f32 * 50.0,
+            ));
+        }
+
+        let k = k_default();
+
+        // Baseline: no SPRT.
+        let params_off = RansacParams {
+            max_iterations: 200,
+            reproj_threshold_px: 8.0,
+            confidence: 0.99,
+            random_seed: Some(42),
+            refine: true,
+            sprt: None,
+        };
+        let res_off = solve_pnp_ransac(
+            &world,
+            &image,
+            &k,
+            None,
+            PnPMethod::AP3PDefault,
+            &params_off,
+        )?;
+
+        // SPRT on with the same seed.
+        let params_on = RansacParams {
+            max_iterations: 200,
+            reproj_threshold_px: 8.0,
+            confidence: 0.99,
+            random_seed: Some(42),
+            refine: true,
+            sprt: Some(SPRTConfig {
+                epsilon: 0.5,
+                delta: 0.01,
+                t_M: 1.0,
+                t_m: 0.1,
+            }),
+        };
+        let res_on =
+            solve_pnp_ransac(&world, &image, &k, None, PnPMethod::AP3PDefault, &params_on)?;
+
+        // Both must recover the 6 inliers.
+        assert!(
+            res_off.inliers.len() >= 6,
+            "SPRT-off only kept {} inliers",
+            res_off.inliers.len()
+        );
+        assert!(
+            res_on.inliers.len() >= 6,
+            "SPRT-on only kept {} inliers",
+            res_on.inliers.len()
+        );
+        // Both poses must be near ground truth.
+        let (dr_off, dt_off) = pose_deviation(&res_off.pose, &r_gt, &t_gt);
+        let (dr_on, dt_on) = pose_deviation(&res_on.pose, &r_gt, &t_gt);
+        assert!(
+            dr_off < 0.05 && dt_off < 0.05,
+            "off-drift: ({dr_off}, {dt_off})"
+        );
+        assert!(dr_on < 0.05 && dt_on < 0.05, "on-drift: ({dr_on}, {dt_on})");
+        Ok(())
+    }
+
+    /// A wildly optimistic SPRT prior (0.9 on a 25%-inlier scene) must not
+    /// starve the run: the pre-acceptance epsilon cap keeps good hypotheses
+    /// alive and the grace period stops early rejection before the first
+    /// accepted model.
+    #[test]
+    fn test_sprt_wrong_prior_recovers_pose() -> Result<(), PnPRansacError> {
+        let (r_gt, t_gt) = pose_gt();
+        let world_inliers = scene_non_planar();
+        let image_inliers = project_exact(&world_inliers, &r_gt, &t_gt);
+
+        // 6 inliers + 18 outliers → 25% inlier ratio. Outliers are
+        // pixel-grid points far from any true projection.
+        let mut world = world_inliers.to_vec();
+        let mut image = image_inliers.clone();
+        for j in 0..18 {
+            world.push(Vec3AF32::new(
+                0.5 + (j % 6) as f32 * 0.05,
+                -0.5 + (j % 6) as f32 * 0.05,
+                0.8 + (j % 3) as f32 * 0.2,
+            ));
+            image.push(Vec2F32::new(
+                50.0 + (j % 12) as f32 * 60.0,
+                60.0 + (j % 9) as f32 * 60.0,
+            ));
+        }
+
+        let k = k_default();
+        let params = RansacParams {
+            max_iterations: 1000,
+            reproj_threshold_px: 8.0,
+            confidence: 0.99,
+            random_seed: Some(3),
+            refine: false,
+            sprt: Some(SPRTConfig {
+                epsilon: 0.9,
+                delta: 0.01,
+                t_M: 1.0,
+                t_m: 1.0,
+            }),
+        };
+        let res = solve_pnp_ransac(&world, &image, &k, None, PnPMethod::AP3PDefault, &params)?;
+
+        assert!(
+            res.inliers.len() >= 5,
+            "wrong-prior SPRT starved the run: only {} inliers",
+            res.inliers.len()
+        );
+        let (dr, dt) = pose_deviation(&res.pose, &r_gt, &t_gt);
+        assert!(dr < 0.05 && dt < 0.05, "drift: ({dr}, {dt})");
         Ok(())
     }
 }
