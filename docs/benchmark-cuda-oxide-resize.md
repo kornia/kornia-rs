@@ -275,6 +275,25 @@ One caveat: the PTX is pinned to `--arch sm_87`. Shipping for multiple compute
 capabilities means committing one artifact per arch, or keeping NVRTC as a
 fallback.
 
+## Unrelated pre-existing failure in the same test module
+
+`cuda::resize::tests::resize_unified_matches_device` **SIGSEGVs on this box**,
+and it does so on pristine upstream `1fe3bda` with every file from this spike
+removed from compilation. It is not caused by anything here, but it means
+`cargo test --lib cuda::resize` cannot run to completion on Orin without
+
+```
+-- --skip resize_unified_matches_device
+```
+
+The test uses `to_cuda_unified` / `zeros_cuda_unified` / `to_host_image`. The
+obvious hypothesis — that Tegra reports `concurrentManagedAccess = 0`, so the
+host read in `to_host_image` touches managed memory the GPU may still hold —
+**was tested and refuted**: inserting `stream.synchronize()` before the host
+read does not stop the crash. So the fault is earlier, in the unified
+allocation itself or in `resize` over unified buffers. Not investigated
+further; out of scope for this spike.
+
 ## Reproducing
 
 ```
