@@ -51,8 +51,21 @@ fn gb_per_sec(npix_dst: usize, ms_per_iter: f64) -> f64 {
 // --------------------------------------------------------------------------
 
 fn main() {
+    // `nsys` aggregates by kernel name, and the shipping bilinear kernel is
+    // also launched by the other sections below, which would pool their cases
+    // into its average. Set KORNIA_ARMS_ONLY=1 to run just the comparison arms
+    // so the profiler sees one case mix per kernel.
+    #[cfg(feature = "cuda")]
+    if std::env::var("KORNIA_ARMS_ONLY").is_ok() {
+        run_gpu_oxide_arms();
+        return;
+    }
+
     #[cfg(feature = "cuda")]
     run_gpu_cuda();
+
+    #[cfg(feature = "cuda")]
+    run_gpu_oxide_arms();
 
     #[cfg(feature = "cuda")]
     run_gpu_cuda_bicubic();
@@ -216,6 +229,134 @@ fn run_gpu_cuda() {
                 gb_per_sec(npix_dst, ms),
             );
         }
+    }
+}
+
+// --------------------------------------------------------------------------
+// cuda-oxide comparison arms (feature cuda)
+// --------------------------------------------------------------------------
+
+/// Four bilinear arms over the same cases, same launch geometry, same L1
+/// carveout, so the only variable is the kernel.
+///
+/// `noldg` exists because the April cuda-oxide snapshot exposes no `__ldg`
+/// intrinsic and no inline PTX: without it, the `__ldg` gap would be charged to
+/// cuda-oxide's codegen.
+#[cfg(feature = "cuda")]
+fn run_gpu_oxide_arms() {
+    use cudarc::driver::CudaContext;
+    use kornia_imgproc::cuda::resize::launch_resize_bilinear_downscale_cuda;
+    use kornia_imgproc::cuda::resize_oxide::{
+        launch_resize_bilinear_noldg_cuda, launch_resize_bilinear_oxide_cuda,
+        launch_resize_bilinear_oxide_slice_cuda,
+    };
+
+    type Arm = fn(
+        &std::sync::Arc<CudaContext>,
+        &std::sync::Arc<cudarc::driver::CudaStream>,
+        &cudarc::driver::CudaSlice<f32>,
+        &mut cudarc::driver::CudaSlice<f32>,
+        u32,
+        u32,
+        u32,
+        u32,
+        PixelMapping,
+        Option<(u32, u32)>,
+    ) -> Result<(), kornia_imgproc::cuda::resize::CudaResizeError>;
+
+    let mut arms: Vec<(&str, Arm)> = vec![
+        ("A nvrtc (__ldg)", launch_resize_bilinear_downscale_cuda),
+        ("B nvrtc (no __ldg)", launch_resize_bilinear_noldg_cuda),
+        ("C oxide (raw ptr)", launch_resize_bilinear_oxide_cuda),
+        ("D oxide (slices)", launch_resize_bilinear_oxide_slice_cuda),
+    ];
+    // Arm order is a measurement variable until proven otherwise: set
+    // KORNIA_ARM_REVERSE=1 to run them back to front and check the numbers
+    // move with the kernel rather than with the position.
+    if std::env::var("KORNIA_ARM_REVERSE").is_ok() {
+        arms.reverse();
+    }
+    let arms = &arms[..];
+
+    let ctx = std::sync::Arc::new(CudaContext::new(0).expect("CUDA context"));
+    let stream = ctx.default_stream();
+
+    println!("\n=== cuda-oxide arms: bilinear f32 3-ch, 32x8 block, {ITERS} iters ===");
+    println!(
+        "  {:<20}  {:<18}  {:>10}  {:>10}",
+        "case (src->dst)", "arm", "ms/iter", "GB/s"
+    );
+    println!("  {}", "-".repeat(66));
+
+    // Under a profiler, pooling five cases of very different size into one
+    // per-kernel average makes the medians meaningless. KORNIA_ARM_CASE=<idx>
+    // restricts the run to a single case so `nsys` reports one distribution.
+    let only: Option<usize> = std::env::var("KORNIA_ARM_CASE")
+        .ok()
+        .and_then(|v| v.parse().ok());
+
+    for (ci, &(sw, sh, dw, dh)) in CASES.iter().enumerate() {
+        if only.is_some_and(|c| c != ci) {
+            continue;
+        }
+        let npix_src = (sw * sh) as usize;
+        let npix_dst = (dw * dh) as usize;
+        let nc = NC as usize;
+
+        let src_data: Vec<f32> = (0..npix_src * nc)
+            .map(|i| (i % 256) as f32 / 255.0)
+            .collect();
+        let src_dev = stream.clone_htod(&src_data).expect("H->D src copy");
+        let mut dst_dev = stream.alloc_zeros::<f32>(npix_dst * nc).expect("alloc dst");
+
+        for (name, arm) in arms {
+            // Each arm compiles or JITs on its first call (NVRTC ~1.2 s, PTX JIT
+            // ~30 ms); the warmup keeps that off the timed loop.
+            for _ in 0..WARMUP {
+                arm(
+                    &ctx,
+                    &stream,
+                    &src_dev,
+                    &mut dst_dev,
+                    sw,
+                    sh,
+                    dw,
+                    dh,
+                    PixelMapping::HalfPixel,
+                    None,
+                )
+                .expect("warmup launch");
+            }
+            stream.synchronize().expect("sync");
+
+            let t = Instant::now();
+            for _ in 0..ITERS {
+                arm(
+                    &ctx,
+                    &stream,
+                    &src_dev,
+                    &mut dst_dev,
+                    sw,
+                    sh,
+                    dw,
+                    dh,
+                    PixelMapping::HalfPixel,
+                    None,
+                )
+                .expect("timed launch");
+            }
+            stream.synchronize().expect("sync");
+            let ms = t.elapsed().as_secs_f64() * 1e3 / ITERS as f64;
+
+            println!(
+                "  {:<20}  {:<18}  {:>10.3}  {:>10.2}",
+                format!("{sw}x{sh}->{dw}x{dh}"),
+                name,
+                ms,
+                gb_per_sec(npix_dst, ms),
+            );
+        }
+        println!("  {}", "-".repeat(66));
     }
 }
 

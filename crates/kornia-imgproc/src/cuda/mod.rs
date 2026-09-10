@@ -7,6 +7,9 @@
 /// Native CUDA downscale kernels using `__ldg` read-only cache.
 pub mod resize;
 
+/// cuda-oxide comparison arms for the bilinear resize spike.
+pub mod resize_oxide;
+
 /// Native CUDA u8 resize kernels (integer LUT-driven, byte-exact with the
 /// CPU u8 fast paths).
 pub mod filter;

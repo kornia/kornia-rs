@@ -1,0 +1,16 @@
+[package]
+name = "resize_bilinear_oxide"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+# Standalone crate: keeps this nightly-only crate out of the kornia-rs
+# workspace, which is stable (rust-version = "1.89").
+[workspace]
+
+[dependencies]
+cuda-device = { path = "/home/nvidia/.cargo/cuda-oxide/src/crates/cuda-device" }
+cuda-host = { path = "/home/nvidia/.cargo/cuda-oxide/src/crates/cuda-host" }
+
+[profile.release]
+opt-level = 3
