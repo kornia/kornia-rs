@@ -4,6 +4,7 @@
 
 mod features;
 mod matching;
+mod reconstruction;
 mod video;
 
 fn main() {
@@ -11,4 +12,5 @@ fn main() {
     let _ = video::read_frames(std::path::Path::new("sample.mp4"), 1);
     let _extractor = features::make_extractor(features::DetectorKind::Orb, 2000);
     let _edges: Vec<kornia_calib::TrackEdge> = matching::match_sequential_pairs(&[], 5, 0.8);
+    let _cam = reconstruction::make_camera(600.0, 600.0, 320.0, 240.0);
 }
