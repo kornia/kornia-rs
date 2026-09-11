@@ -13,6 +13,9 @@ use kornia_image::Image;
 use kornia_imgproc::color::gray_from_rgb_u8;
 use kornia_io::gstreamer::video::{ImageFormat, VideoReader};
 
+/// Owned frames decoded from a video: parallel RGB and grayscale buffers.
+pub type VideoFrames = (Vec<Image<u8, 3>>, Vec<Image<u8, 1>>);
+
 /// Read a video file into a sequence of RGB and grayscale frames.
 ///
 /// Returns `(rgb_frames, gray_frames)`, both subsampled by `frame_step`:
@@ -27,18 +30,15 @@ use kornia_io::gstreamer::video::{ImageFormat, VideoReader};
 ///
 /// # Returns
 ///
-/// A tuple `(Vec<Image<u8, 3>>, Vec<Image<u8, 1>>)` where the first vector holds
-/// the owned RGB frames and the second holds their grayscale conversions. The two
-/// vectors always have the same length.
+/// A [`VideoFrames`] tuple where the first vector holds the owned RGB frames
+/// and the second holds their grayscale conversions. The two vectors always
+/// have the same length.
 ///
 /// # Errors
 ///
 /// Returns an error if the video cannot be opened or decoded, or if any frame
 /// cannot be converted to grayscale.
-pub fn read_frames(
-    path: &Path,
-    frame_step: usize,
-) -> Result<(Vec<Image<u8, 3>>, Vec<Image<u8, 1>>), Box<dyn Error>> {
+pub fn read_frames(path: &Path, frame_step: usize) -> Result<VideoFrames, Box<dyn Error>> {
     assert!(frame_step >= 1, "frame_step must be >= 1");
 
     // NOTE: `VideoReader` only decodes to RGB via `grab_rgb8()` regardless of the
@@ -55,10 +55,11 @@ pub fn read_frames(
     loop {
         match reader.grab_rgb8()? {
             Some(frame) => {
-                if frame_idx % frame_step == 0 {
+                if frame_idx.is_multiple_of(frame_step) {
                     // `frame` is zero-copy, backed by a read-only GStreamer buffer.
                     // Copy it so the frame data outlives the reader.
-                    let owned_rgb = Image::<u8, 3>::from_size_slice(frame.size(), frame.as_slice())?;
+                    let owned_rgb =
+                        Image::<u8, 3>::from_size_slice(frame.size(), frame.as_slice())?;
                     let mut gray = Image::<u8, 1>::from_size_val(frame.size(), 0)?;
                     gray_from_rgb_u8(&owned_rgb, &mut gray)?;
                     rgb_frames.push(owned_rgb);
@@ -83,4 +84,27 @@ pub fn read_frames(
     reader.close()?;
 
     Ok((rgb_frames, gray_frames))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn read_frames_errors_on_missing_file() {
+        let result = read_frames(Path::new("/nonexistent/video.mp4"), 1);
+        match result {
+            Ok(_) => panic!("reading a missing video must fail"),
+            Err(e) => {
+                // The exact error variant is GStreamer-specific; just assert we got one.
+                assert!(!e.to_string().is_empty());
+            }
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "frame_step must be >= 1")]
+    fn read_frames_rejects_zero_frame_step() {
+        let _ = read_frames(Path::new("x.mp4"), 0);
+    }
 }
