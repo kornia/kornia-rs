@@ -14,12 +14,13 @@ MP4 ─► RGB+gray frames ─► features (ORB/SIFT) ─► pairwise matches
 
 | Stage | Module |
 |---|---|
-| Frame decoding (GStreamer) | `video.rs` |
-| Feature extraction (ORB / SIFT) | `features.rs` |
-| Sliding-window matching | `matching.rs` |
+| Frame decoding (GStreamer, sync or async) | `video.rs` |
+| Feature extraction (ORB / SIFT, sync or parallel) | `features.rs` |
+| Sliding-window matching (sync or parallel) | `matching.rs` |
 | Track building | `kornia_calib::build_tracks` |
 | Incremental SfM | `reconstruction.rs` → `kornia_calib::reconstruct` |
 | PLY export + normals | `ply_writer.rs` |
+| Rerun visualization | `ply_viewer.rs` |
 
 ## Usage
 
@@ -37,6 +38,14 @@ cargo run -p sfm -- sample.mp4 out.ply \
     --detector orb --n-features 2000 --match-window 5 --frame-step 1
 ```
 
+### Fast path (async + parallel)
+
+```sh
+cargo run -p sfm -- sample.mp4 out.ply \
+    --fx 600 --fy 600 --cx 320 --cy 240 \
+    --async-video --buffer-size 64 --threads 8
+```
+
 ### Options
 
 | Flag | Default | Description |
@@ -46,6 +55,23 @@ cargo run -p sfm -- sample.mp4 out.ply \
 | `--match-window` | `5` | Match each frame against this many following frames. |
 | `--ratio` | `0.8` | Lowe's ratio-test threshold (lower = stricter). |
 | `--frame-step` | `1` | Process every Nth frame (1 = all frames). |
+| `--async-video` | off | Enable async video reading plus parallel feature extraction and matching. |
+| `--threads` | `0` | Worker threads for parallel stages (`0` = auto-detect CPU count). |
+| `--buffer-size` | `32` | Channel buffer (frames) for async video reading; larger = less backpressure, more memory. |
+| `--view` | off | Open the output PLY in the rerun viewer after writing. |
+
+### Performance notes
+
+- **Sync mode** is the original sequential pipeline (useful as a baseline).
+- **Async mode** (`--async-video`) decodes video on a tokio task with a
+  bounded channel and runs feature extraction and frame-pair matching on a
+  rayon thread pool. For many frames this can give a near-linear speedup on
+  the extraction/matching stages.
+- Video *decode* itself is paced by GStreamer's real-time clock (`sync=true`
+  in `kornia-io`'s `VideoReader`), so reading a 21 s clip takes ~21 s in
+  either mode. Use `--frame-step` to reduce the number of frames kept.
+- The parallel and sequential paths produce byte-identical results
+  (deterministic ordering).
 
 ## Output
 
@@ -55,7 +81,9 @@ little-endian at 27 bytes per vertex. Colours are sampled from the source RGB
 frames at each point's first track observation; normals are estimated from the
 k nearest neighbours via PCA and oriented toward the cameras.
 
-View the result in MeshLab, CloudCompare, or with the `ply_rerun` example.
+View the result in MeshLab, CloudCompare, the `ply_rerun` example, or with
+this example's `--view` flag (requires the [rerun](https://rerun.io) viewer,
+`pip install rerun-sdk`).
 
 ## Notes and limitations
 
