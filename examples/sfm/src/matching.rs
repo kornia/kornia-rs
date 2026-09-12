@@ -4,6 +4,8 @@
 //! emits the correspondences as [`TrackEdge`]s, ready for `kornia_calib`'s
 //! `build_tracks` to chain into multi-view tracks.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use kornia_algebra::Vec2F64;
 use kornia_calib::TrackEdge;
 use kornia_imgproc::features::{match_descriptors, sift_match_descriptors};
@@ -86,12 +88,19 @@ pub fn match_pairs_parallel(
             (i + 1..end).map(move |j| (i, j))
         })
         .collect();
+    let total_pairs = pairs.len();
+    eprintln!("  matching: {total_pairs} pairs in parallel");
+    let done = AtomicUsize::new(0);
 
     pairs
         .par_iter()
         .flat_map(|&(i, j)| {
+            let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+            if n.is_multiple_of(100) || n == total_pairs {
+                eprintln!("  matching: {n}/{total_pairs} pairs");
+            }
             let matches = match_pair(&features[i], &features[j], ratio);
-            let edges: Vec<TrackEdge> = matches
+            let pair_edges: Vec<TrackEdge> = matches
                 .into_iter()
                 .map(|(kpt_a, kpt_b)| TrackEdge {
                     cam_a: i,
@@ -102,7 +111,7 @@ pub fn match_pairs_parallel(
                     uv_b: keypoint_to_uv(features[j].keypoints[kpt_b]),
                 })
                 .collect();
-            edges.into_par_iter()
+            pair_edges.into_par_iter()
         })
         .collect()
 }

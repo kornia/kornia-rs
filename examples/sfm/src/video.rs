@@ -261,10 +261,13 @@ async fn read_frames_sender(
     frame_step: usize,
     tx: tokio::sync::mpsc::Sender<(Image<u8, 3>, Image<u8, 1>)>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let start = Instant::now();
     let mut reader = VideoReader::new(&path, ImageFormat::Rgb8)?;
     reader.start()?;
 
     let mut frame_idx: usize = 0;
+    let mut frames_grabbed: usize = 0;
+    let mut frames_kept: usize = 0;
     let mut seen_any = false;
     let mut consecutive_none: usize = 0;
 
@@ -273,6 +276,7 @@ async fn read_frames_sender(
             Some(frame) => {
                 seen_any = true;
                 consecutive_none = 0;
+                frames_grabbed += 1;
                 if frame_idx.is_multiple_of(frame_step) {
                     // Copy the zero-copy GStreamer frame so it outlives the reader.
                     let owned_rgb =
@@ -282,6 +286,14 @@ async fn read_frames_sender(
                     if tx.send((owned_rgb, gray)).await.is_err() {
                         // Receiver dropped (e.g. we errored on the other side).
                         break;
+                    }
+                    frames_kept += 1;
+                    if frames_kept.is_multiple_of(PROGRESS_INTERVAL) {
+                        eprint!(
+                            "\r[video:async] decoded {frames_grabbed} frames, kept {frames_kept} | {:.1}s",
+                            start.elapsed().as_secs_f64()
+                        );
+                        let _ = std::io::stderr().flush();
                     }
                 }
                 frame_idx += 1;
@@ -302,6 +314,11 @@ async fn read_frames_sender(
     }
 
     reader.close()?;
+
+    eprintln!(
+        "\r[video:async] reading complete: {frames_grabbed} decoded, {frames_kept} kept in {:.1}s",
+        start.elapsed().as_secs_f64()
+    );
 
     Ok(())
 }
