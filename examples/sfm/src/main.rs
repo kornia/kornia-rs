@@ -11,6 +11,7 @@
 
 mod features;
 mod matching;
+mod ply_viewer;
 mod ply_writer;
 mod reconstruction;
 mod video;
@@ -228,6 +229,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
         args.output.display(),
         t.elapsed().as_secs_f64(),
     );
+
+    // 7. Optional: visualize the result in the rerun viewer.
+    if args.view {
+        eprintln!("[7/7] opening PLY in rerun viewer...");
+        ply_viewer::view_ply(&args.output)?;
+    }
 
     Ok(())
 }
