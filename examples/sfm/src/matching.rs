@@ -7,6 +7,7 @@
 use kornia_algebra::Vec2F64;
 use kornia_calib::TrackEdge;
 use kornia_imgproc::features::{match_descriptors, sift_match_descriptors};
+use rayon::prelude::*;
 
 use crate::features::FrameFeatures;
 
@@ -55,6 +56,55 @@ pub fn match_sequential_pairs(
 fn keypoint_to_uv(kp: [f32; 2]) -> Vec2F64 {
     // keypoints are stored as [col, row]; TrackEdge expects (x, y) = (col, row).
     Vec2F64::new(kp[0] as f64, kp[1] as f64)
+}
+
+/// Like [`match_sequential_pairs`], but matches the frame pairs concurrently
+/// with rayon.
+///
+/// The set of `(i, j)` pairs is identical to the sequential version, so the
+/// resulting edges are the same set (in a different order). Edges are grouped
+/// per pair, so `build_tracks` still chains them identically.
+///
+/// # Arguments
+///
+/// * `features` - Per-frame features, indexed by frame number.
+/// * `window` - How many following frames each frame is matched against.
+/// * `ratio` - Lowe's ratio-test threshold.
+pub fn match_pairs_parallel(
+    features: &[FrameFeatures],
+    window: usize,
+    ratio: f32,
+) -> Vec<TrackEdge> {
+    if features.len() < 2 {
+        return Vec::new();
+    }
+
+    // Enumerate the same (i, j) pairs the sequential version visits.
+    let pairs: Vec<(usize, usize)> = (0..features.len())
+        .flat_map(|i| {
+            let end = (i + 1 + window).min(features.len());
+            (i + 1..end).map(move |j| (i, j))
+        })
+        .collect();
+
+    pairs
+        .par_iter()
+        .flat_map(|&(i, j)| {
+            let matches = match_pair(&features[i], &features[j], ratio);
+            let edges: Vec<TrackEdge> = matches
+                .into_iter()
+                .map(|(kpt_a, kpt_b)| TrackEdge {
+                    cam_a: i,
+                    kpt_a: kpt_a as u32,
+                    uv_a: keypoint_to_uv(features[i].keypoints[kpt_a]),
+                    cam_b: j,
+                    kpt_b: kpt_b as u32,
+                    uv_b: keypoint_to_uv(features[j].keypoints[kpt_b]),
+                })
+                .collect();
+            edges.into_par_iter()
+        })
+        .collect()
 }
 
 /// Match a single frame pair; returns `(idx_in_a, idx_in_b)` pairs.
