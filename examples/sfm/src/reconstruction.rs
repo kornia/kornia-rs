@@ -60,8 +60,7 @@ pub fn run_sfm(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kornia_3d::pose::Pose3d;
-    use kornia_algebra::{Mat3F64, Vec2F64, Vec3F64};
+    use crate::test_util;
     use kornia_calib::ScaleSource;
 
     #[test]
@@ -77,69 +76,19 @@ mod tests {
         assert_eq!(cam.p2, 0.0);
     }
 
-    /// Project a world point through a world→cam pose using the pinhole model.
-    fn project(pw: Vec3F64, pose_w2c: &Pose3d, cam: &PinholeCamera) -> Vec2F64 {
-        let pc = pose_w2c.transform_point(&pw);
-        Vec2F64::new(cam.fx * pc.x / pc.z + cam.cx, cam.fy * pc.y / pc.z + cam.cy)
-    }
-
-    /// A yaw/pitch rotation matrix (matches kornia-calib's own test helper).
-    fn rot(yaw: f64, pitch: f64) -> Mat3F64 {
-        let (cy, sy) = (yaw.cos(), yaw.sin());
-        let (cp, sp) = (pitch.cos(), pitch.sin());
-        Mat3F64::from_cols(
-            Vec3F64::new(cy, 0.0, -sy),
-            Vec3F64::new(sy * sp, cp, cy * sp),
-            Vec3F64::new(sy * cp, -sp, cy * cp),
-        )
-    }
-
-    /// Build a synthetic scene: a grid of 3D points ~2 m away viewed by three
-    /// cameras that converge on it (as a real overlapping-FOV rig would). One
-    /// track per point; a camera only contributes an observation when the
-    /// point is in front of it and inside the 640x480 image.
-    fn synthetic_tracks() -> Vec<FeatureTrack> {
-        let cam = || make_camera(500.0, 500.0, 320.0, 240.0);
-        let cams = [cam(), cam(), cam()];
-        let gt = [
-            Pose3d::new(rot(0.0, 0.05), Vec3F64::new(0.0, 0.0, 0.0)),
-            Pose3d::new(rot(0.40, 0.05), Vec3F64::new(-0.6, 0.0, 0.10)),
-            Pose3d::new(rot(-0.40, 0.05), Vec3F64::new(0.6, 0.0, 0.15)),
-        ];
-        let (w, h) = (640.0, 480.0);
-        let visible = |p: Vec3F64, c: usize| -> Option<Vec2F64> {
-            let pc = gt[c].transform_point(&p);
-            if pc.z <= 0.1 {
-                return None;
-            }
-            let uv = project(p, &gt[c], &cams[c]);
-            (uv.x >= 0.0 && uv.x < w && uv.y >= 0.0 && uv.y < h).then_some(uv)
-        };
-
-        let mut tracks = Vec::new();
-        for i in 0..10 {
-            for j in 0..10 {
-                let x = -0.5 + 0.111 * i as f64;
-                let y = -0.5 + 0.111 * j as f64;
-                let z = 1.4 + 0.5 * ((i * 5 + j) as f64 * 0.7).sin() + 0.05 * (i as f64 - j as f64);
-                let p = Vec3F64::new(x, y, z);
-                let obs: Vec<(usize, Vec2F64)> = (0..3)
-                    .filter_map(|c| visible(p, c).map(|uv| (c, uv)))
-                    .collect();
-                if obs.len() >= 2 {
-                    tracks.push(FeatureTrack { obs });
-                }
-            }
-        }
-        tracks
-    }
-
     #[test]
     fn run_sfm_recovers_points_and_poses_from_synthetic_scene() {
-        let tracks = synthetic_tracks();
+        let tracks = test_util::synthetic_tracks();
 
-        let recon = run_sfm(&tracks, 500.0, 500.0, 320.0, 240.0, 3)
-            .expect("synthetic scene must reconstruct");
+        let recon = run_sfm(
+            &tracks,
+            test_util::FX,
+            test_util::FY,
+            test_util::CX,
+            test_util::CY,
+            test_util::N_FRAMES,
+        )
+        .expect("synthetic scene must reconstruct");
 
         assert!(
             !recon.points.is_empty(),
@@ -154,10 +103,17 @@ mod tests {
 
     #[test]
     fn run_sfm_is_up_to_scale_without_tag() {
-        let tracks = synthetic_tracks();
+        let tracks = test_util::synthetic_tracks();
 
-        let recon = run_sfm(&tracks, 500.0, 500.0, 320.0, 240.0, 3)
-            .expect("synthetic scene must reconstruct");
+        let recon = run_sfm(
+            &tracks,
+            test_util::FX,
+            test_util::FY,
+            test_util::CX,
+            test_util::CY,
+            test_util::N_FRAMES,
+        )
+        .expect("synthetic scene must reconstruct");
         assert_eq!(recon.scale, ScaleSource::UpToScale);
     }
 }
