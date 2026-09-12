@@ -49,6 +49,9 @@ pub struct FrameFeatures {
     pub keypoints: Vec<[f32; 2]>,
     /// ORB descriptors: 256-bit packed binary, one per keypoint.
     pub descriptors_orb: Option<Vec<[u8; 32]>>,
+    /// ORB keypoint orientations (radians), one per keypoint. Used by the
+    /// ORB-SLAM3 style matcher for orientation-histogram consistency filtering.
+    pub orientations_orb: Option<Vec<f32>>,
     /// SIFT descriptors: flat buffer, `keypoints.len() * 128` floats (row-major).
     pub descriptors_sift: Option<Vec<f32>>,
 }
@@ -88,6 +91,7 @@ impl FeatureExtractor for OrbExtractor {
         Ok(FrameFeatures {
             keypoints: features.keypoints_xy,
             descriptors_orb: Some(features.descriptors),
+            orientations_orb: Some(features.orientations),
             descriptors_sift: None,
         })
     }
@@ -132,6 +136,7 @@ impl FeatureExtractor for SiftExtractor {
         Ok(FrameFeatures {
             keypoints,
             descriptors_orb: None,
+            orientations_orb: None,
             descriptors_sift: Some(feats.descriptors),
         })
     }
