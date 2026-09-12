@@ -94,6 +94,9 @@ struct Args {
 async fn main() -> Result<(), Box<dyn Error>> {
     let args: Args = argh::from_env();
 
+    // Configure the rayon thread pool (0 = auto-detect).
+    features::configure_thread_pool(args.threads)?;
+
     // 1. Decode frames (async or sync).
     if args.async_video {
         eprintln!(
@@ -127,21 +130,26 @@ async fn main() -> Result<(), Box<dyn Error>> {
         );
     }
 
-    // 2. Extract features per frame.
-    eprintln!("[2/6] extracting features with {:?}", args.detector);
+    // 2. Extract features per frame (parallel via rayon).
+    if args.async_video {
+        eprintln!(
+            "[2/6] extracting features with {:?} (parallel)",
+            args.detector
+        );
+    } else {
+        eprintln!("[2/6] extracting features with {:?}", args.detector);
+    }
     let t = Instant::now();
     let extractor = features::make_extractor(args.detector, args.n_features);
-    let mut all_features: Vec<features::FrameFeatures> = Vec::with_capacity(gray_frames.len());
-    for (i, frame) in gray_frames.iter().enumerate() {
-        if i % 50 == 0 && i > 0 {
-            eprintln!(
-                "  features: {i}/{} frames ({:.1}s)",
-                gray_frames.len(),
-                t.elapsed().as_secs_f64()
-            );
-        }
-        all_features.push(extractor.extract(frame)?);
-    }
+    let all_features = if args.async_video {
+        features::extract_features_parallel(&gray_frames, extractor.as_ref())
+            .map_err(|e| -> Box<dyn Error> { e.into() })?
+    } else {
+        gray_frames
+            .iter()
+            .map(|frame| extractor.extract(frame))
+            .collect::<Result<_, _>>()?
+    };
     let total_keypoints: usize = all_features.iter().map(|f| f.n_keypoints()).sum();
     eprintln!(
         "[2/6] extracted {total_keypoints} keypoints across {} frames in {:.1}s",
