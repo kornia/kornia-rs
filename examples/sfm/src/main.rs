@@ -5,6 +5,9 @@
 //! tracks via `kornia_calib::build_tracks`, reconstruct the scene with
 //! `kornia_calib::reconstruct`, and export the point cloud (XYZ + RGB +
 //! normals) to a binary PLY file.
+//!
+//! Every pipeline stage logs its start, progress, and completion time to
+//! stderr so slow stages can be identified.
 
 mod features;
 mod matching;
@@ -17,6 +20,8 @@ mod test_util;
 
 use std::error::Error;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Instant;
 
 use argh::FromArgs;
 use kornia_calib::build_tracks;
@@ -73,53 +78,105 @@ fn main() -> Result<(), Box<dyn Error>> {
     let args: Args = argh::from_env();
 
     // 1. Decode frames.
-    eprintln!("Reading video: {}", args.video.display());
+    eprintln!("[1/6] reading video: {}", args.video.display());
+    let t = Instant::now();
     let (rgb_frames, gray_frames) = video::read_frames(&args.video, args.frame_step)?;
-    eprintln!("Decoded {} frames", gray_frames.len());
+    eprintln!(
+        "[1/6] decoded {} frames in {:.1}s",
+        gray_frames.len(),
+        t.elapsed().as_secs_f64()
+    );
     if gray_frames.len() < 2 {
         return Err("need at least two frames to reconstruct".into());
     }
+    if gray_frames.len() > 200 {
+        eprintln!(
+            "  warning: {} frames may make reconstruction slow; consider a larger --frame-step",
+            gray_frames.len()
+        );
+    }
 
     // 2. Extract features per frame.
-    eprintln!("Extracting features with {:?}", args.detector);
+    eprintln!("[2/6] extracting features with {:?}", args.detector);
+    let t = Instant::now();
     let extractor = features::make_extractor(args.detector, args.n_features);
-    let all_features: Vec<features::FrameFeatures> = gray_frames
-        .iter()
-        .map(|frame| extractor.extract(frame))
-        .collect::<Result<_, _>>()?;
+    let mut all_features: Vec<features::FrameFeatures> = Vec::with_capacity(gray_frames.len());
+    for (i, frame) in gray_frames.iter().enumerate() {
+        if i % 50 == 0 && i > 0 {
+            eprintln!(
+                "  features: {i}/{} frames ({:.1}s)",
+                gray_frames.len(),
+                t.elapsed().as_secs_f64()
+            );
+        }
+        all_features.push(extractor.extract(frame)?);
+    }
     let total_keypoints: usize = all_features.iter().map(|f| f.n_keypoints()).sum();
     eprintln!(
-        "Extracted {total_keypoints} keypoints across {} frames",
-        all_features.len()
+        "[2/6] extracted {total_keypoints} keypoints across {} frames in {:.1}s",
+        all_features.len(),
+        t.elapsed().as_secs_f64()
     );
 
     // 3. Match frames in a sliding window.
+    eprintln!("[3/6] matching frames (window={})", args.match_window);
+    let t = Instant::now();
     let edges = matching::match_sequential_pairs(&all_features, args.match_window, args.ratio);
-    eprintln!("Found {} matched correspondences", edges.len());
+    eprintln!(
+        "[3/6] found {} matched correspondences in {:.1}s",
+        edges.len(),
+        t.elapsed().as_secs_f64()
+    );
 
     // 4. Chain matches into multi-view tracks.
+    eprintln!("[4/6] building tracks");
+    let t = Instant::now();
     let tracks = build_tracks(&edges);
-    eprintln!("Built {} tracks", tracks.len());
+    eprintln!(
+        "[4/6] built {} tracks in {:.1}s",
+        tracks.len(),
+        t.elapsed().as_secs_f64()
+    );
 
     // 5. Reconstruct the scene.
+    eprintln!("[5/6] reconstructing scene");
+    let t = Instant::now();
     let n_frames = gray_frames.len();
-    let reconstruction =
-        reconstruction::run_sfm(&tracks, args.fx, args.fy, args.cx, args.cy, n_frames)?;
+    let progress_start = Instant::now();
+    let progress: Arc<dyn Fn(usize, usize) + Send + Sync> = Arc::new(move |registered, n_cams| {
+        eprintln!(
+            "  reconstruct: {registered}/{n_cams} views registered ({:.1}s)",
+            progress_start.elapsed().as_secs_f64()
+        );
+    });
+    let reconstruction = reconstruction::run_sfm(
+        &tracks,
+        args.fx,
+        args.fy,
+        args.cx,
+        args.cy,
+        n_frames,
+        Some(progress),
+    )?;
     let registered = reconstruction.views.iter().filter(|v| v.is_some()).count();
     eprintln!(
-        "Reconstructed {} points across {} registered views (scale: {:?})",
+        "[5/6] reconstructed {} points across {} registered views (scale: {:?}) in {:.1}s",
         reconstruction.points.len(),
         registered,
         reconstruction.scale,
+        t.elapsed().as_secs_f64(),
     );
 
     // 6. Export the point cloud to PLY (XYZ + RGB + normals).
+    eprintln!("[6/6] building vertices and writing PLY");
+    let t = Instant::now();
     let vertices = ply_writer::build_vertices(&reconstruction, &tracks, &rgb_frames);
     ply_writer::write_ply(&args.output, &vertices)?;
     eprintln!(
-        "Wrote {} vertices to {}",
+        "[6/6] wrote {} vertices to {} in {:.1}s",
         vertices.len(),
-        args.output.display()
+        args.output.display(),
+        t.elapsed().as_secs_f64(),
     );
 
     Ok(())

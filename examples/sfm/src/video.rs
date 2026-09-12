@@ -134,10 +134,10 @@ pub fn read_frames(path: &Path, frame_step: usize) -> Result<VideoFrames, Box<dy
 
     let mut stats = ReadStats::new();
 
-    // NOTE: `VideoReader` only decodes to RGB via `grab_rgb8()` regardless of the
-    // requested `ImageFormat`; requesting `Mono8` makes GStreamer produce 1-byte
-    // frames that the RGB validator rejects at runtime. So we always request RGB
-    // and convert to grayscale ourselves.
+    // NOTE: `VideoReader` only decodes to RGB via `grab_rgb8()` regardless of
+    // the requested `ImageFormat`; requesting `Mono8` makes GStreamer produce
+    // 1-byte frames that the RGB validator rejects at runtime. So we always
+    // request RGB and convert to grayscale ourselves.
     let init_start = Instant::now();
     let mut reader = VideoReader::new(path, ImageFormat::Rgb8)?;
     reader.start()?;
@@ -146,6 +146,8 @@ pub fn read_frames(path: &Path, frame_step: usize) -> Result<VideoFrames, Box<dy
     let mut rgb_frames: Vec<Image<u8, 3>> = Vec::new();
     let mut gray_frames: Vec<Image<u8, 1>> = Vec::new();
     let mut frame_idx: usize = 0;
+    let mut seen_any = false;
+    let mut consecutive_none: usize = 0;
 
     loop {
         let grab_start = Instant::now();
@@ -154,6 +156,8 @@ pub fn read_frames(path: &Path, frame_step: usize) -> Result<VideoFrames, Box<dy
 
         match grabbed {
             Some(frame) => {
+                seen_any = true;
+                consecutive_none = 0;
                 stats.frames_grabbed += 1;
                 if frame_idx.is_multiple_of(frame_step) {
                     // `frame` is zero-copy, backed by a read-only GStreamer buffer.
@@ -176,13 +180,19 @@ pub fn read_frames(path: &Path, frame_step: usize) -> Result<VideoFrames, Box<dy
                 stats.progress();
             }
             None => {
+                consecutive_none += 1;
                 // `grab_rgb8()` returns `None` while the pipeline is still
-                // buffering; it does not mean end-of-stream. Detect the end by
-                // comparing playback position against the total duration.
+                // buffering; it does not mean end-of-stream. Prefer detecting
+                // the end via playback position, but some files report a bad
+                // duration (e.g. a malformed moov atom), so fall back to a
+                // sustained silence after having seen frames.
                 if let (Some(pos), Some(dur)) = (reader.get_pos(), reader.get_duration()) {
                     if pos >= dur {
                         break;
                     }
+                }
+                if seen_any && consecutive_none > 30 {
+                    break;
                 }
                 std::thread::sleep(Duration::from_millis(10));
             }
