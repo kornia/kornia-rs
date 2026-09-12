@@ -14857,6 +14857,7 @@ dependencies = [
  "kornia-image",
  "kornia-imgproc",
  "kornia-io",
+ "tempfile",
 ]
 
 [[package]]
