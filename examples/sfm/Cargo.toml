@@ -13,6 +13,10 @@ kornia-calib = { workspace = true }
 kornia-3d = { workspace = true }
 kornia-algebra = { workspace = true }
 kiddo = { workspace = true }
+rayon = { workspace = true }
+rerun = { workspace = true }
+tokio = { workspace = true }
+kornia = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
